@@ -234,6 +234,10 @@ footprint_strip_shared_append() { # scope_json -> 去掉 shared-append 精确路
   [[ "$shared" != '[]' ]] || { printf '%s\n' "$scope"; return; }
   jqf -c --argjson sa "$shared" 'map(select(. as $x | any($sa[]; . == $x) | not))' <<<"$scope"
 }
+footprint_wait_mark() { # unit owner unit_json：记等待方到 unit（值没变不写 units.json），intake 据此不把它算作占用产能
+  say "footprint wait unit=$1 owner=$2"
+  [[ "$(jqf -r '.footprint_wait_owner // empty' <<<"$3")" == "$2" ]] || set_unit "$1" ".footprint_wait_owner=\"$2\""
+}
 _footprint_room() {
   local id="$1" u="${2:-}" scope active conflict check_scope refreshed=false require_fresh="${3:-true}"
   # f9 kill switch（M2 故障注入 #4498）：footprint_mutex.enabled=false 跳过互斥。
@@ -243,7 +247,7 @@ _footprint_room() {
   if [[ "$require_fresh" != true ]] && footprint_preflight_snapshot; then
     conflict="${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[$id]:-}"
     if [[ -n "$conflict" ]]; then
-      say "footprint wait unit=$id owner=$conflict"
+      footprint_wait_mark "$id" "$conflict" "$u"
       return 1
     fi
     [[ -n "${TICK_FOOTPRINT_CACHE[$id]+cached}" ]] && return 0
@@ -272,7 +276,7 @@ _footprint_room() {
   fi
   conflict="$(active_footprint_conflict "$check_scope" "$active" "$id")" || return 1
   if [[ -n "$conflict" ]]; then
-    say "footprint wait unit=$id owner=$conflict"
+    footprint_wait_mark "$id" "$conflict" "$u"
     return 1
   fi
   [[ "$require_fresh" == true ]] || return 0
@@ -283,7 +287,7 @@ _footprint_room() {
     TICK_ACTIVE_FOOTPRINTS="$active"
     conflict="$(active_footprint_conflict "$check_scope" "$active" "$id")" || return 1
     if [[ -n "$conflict" ]]; then
-      say "footprint wait unit=$id owner=$conflict"
+      footprint_wait_mark "$id" "$conflict" "$u"
       return 1
     fi
   fi
@@ -291,6 +295,10 @@ _footprint_room() {
 footprint_room() { # unit type; report checks that materially delay dispatch
   local started=$SECONDS rc=0 elapsed
   _footprint_room "$@" || rc=$?
+  # 放行后清掉等待记录；只在字段真有值时写 units.json
+  if (( rc == 0 )) && [[ -n "$(jqf -r '.footprint_wait_owner // empty' <<<"${2:-null}")" ]]; then
+    set_unit "$1" 'del(.footprint_wait_owner)'
+  fi
   elapsed=$((SECONDS - started))
   (( elapsed >= 2 )) && say "dispatch detail footprint_check unit=$1 secs=${elapsed}s"
   return "$rc"

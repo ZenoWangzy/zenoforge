@@ -2261,6 +2261,12 @@ register_new_issues || :
 register_new_issues || :
 [[ "$(jq '.units | length' "$UNITS")" == 4 ]] || fail 'issue intake admitted more than the idle capacity'
 MAX="$MAX_SAVED"
+# 被 footprint 互斥挡住的 pending 不占产能（只占 upstream 额度）：MAX=2 时两个带 footprint_wait_owner 的 implement-pending 不挡收单
+MAX=2; GH_PR_BRANCHES=''; units '{"units":[{"id":"issue-40","issue":40,"lane":"pr","branch":"agent/issue-40","stage":"implement-pending","footprint_wait_owner":"issue-39","history":[]},{"id":"issue-41","issue":41,"lane":"pr","branch":"agent/issue-41","stage":"implement-pending","footprint_wait_owner":"issue-39","history":[]}]}'
+GH_ISSUE_LIST='[{"number":50,"title":"q","labels":[{"name":"ready-for-agent"}]}]'
+register_new_issues || :
+[[ "$(jq -r '[.units[].id] | join(",")' "$UNITS")" == "issue-40,issue-41,issue-50" ]] || fail "footprint-waiting pending units blocked intake: $(jq -c '[.units[].id]' "$UNITS")"
+MAX="$MAX_SAVED"
 # hotfix 单不进流水线（维护者 10-29：热修由热修 supervisor 直接改生产，验收后再合 main）
 MAX=4; units '{"units":[]}'; GH_PR_BRANCHES=''
 GH_ISSUE_LIST='[{"number":31,"title":"h","labels":[{"name":"ready-for-agent"},{"name":"hotfix"}]},{"number":32,"title":"p","labels":[{"name":"ready-for-agent"}]}]'
