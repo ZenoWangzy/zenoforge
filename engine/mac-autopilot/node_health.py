@@ -749,9 +749,17 @@ def advisor_answer_age_hours(agent_home, repo, now):
     if not queue:
         return 0.0
     newest = 0.0
+    # A finished batch deletes its job dir, so the durable success record is the tick result with outcome "completed".
+    for res in glob.glob(os.path.join(agent_home, "logs", "advisor-batch-*.result.json")):
+        try:
+            if json.load(open(res)).get("outcome") == "completed":
+                newest = max(newest, os.path.getmtime(res))
+        except (OSError, ValueError, AttributeError):
+            continue
     for err in glob.glob(os.path.join(agent_home, "web-advisor-provider-jobs", "*", "answer.err")):
         try:
-            if "FAIL:" not in open(err, errors="replace").read():
+            # answer.txt marks a captured answer; a bare answer.err without FAIL: can be a job that died early.
+            if os.path.exists(os.path.join(os.path.dirname(err), "answer.txt")) and "FAIL:" not in open(err, errors="replace").read():
                 newest = max(newest, os.path.getmtime(err))
         except OSError:
             continue

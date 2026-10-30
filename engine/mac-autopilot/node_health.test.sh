@@ -766,3 +766,15 @@ rows, silent = n.mechanism_heartbeat(reg(False, 6, "no such event"), rt, ah, now
 assert silent == 1, rows  # 没有匹配行的机制照样沉默
 print("node_health mechanism heartbeat units: PASS")
 CHECK
+
+python3 - "$script_dir" <<'CHECK2'
+import json, os, sys, tempfile, datetime; sys.path.insert(0, sys.argv[1]); import node_health as n
+n._gh_json = lambda *a, **k: [{"number": 1}]
+home = tempfile.mkdtemp(); os.makedirs(home + "/logs"); os.makedirs(home + "/web-advisor-provider-jobs/j1")
+open(home + "/web-advisor-provider-jobs/j1/answer.err", "w").write("model_policy: boom\n")  # failed early, no FAIL: line, no answer.txt
+now = datetime.datetime.now(datetime.timezone.utc)
+assert n.advisor_answer_age_hours(home, "r", now) == 9999.0
+json.dump({"outcome": "completed"}, open(home + "/logs/advisor-batch-x.result.json", "w"))
+assert n.advisor_answer_age_hours(home, "r", now) < 1
+print("node_health advisor answer age: PASS")
+CHECK2
