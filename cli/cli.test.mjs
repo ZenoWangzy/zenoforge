@@ -1,21 +1,24 @@
 // End-to-end tests of the subcommands against a throwaway HOME, a local bare repo as "GitHub", and fake gh/systemctl.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import * as cmd from './commands.mjs';
+import { buildCtx, foreground } from './scheduler.mjs';
 import { readEnvFile } from './state.mjs';
-import { run, which } from './util.mjs';
+import { Actions, run, which } from './util.mjs';
 
 const FAKE_GH = `#!/usr/bin/env bash
 echo "gh $*" >> "$ZF_FAKE_LOG"
 case "$1 $2" in
   "auth status") echo "github.com"; echo "  ✓ Logged in to github.com account octo (keyring)"; echo "  - Token scopes: 'repo'" ;;
   "auth token") echo "ghp_FAKESECRETVALUE" ;;
-  "repo view") echo '{"defaultBranchRef":{"name":"main"},"viewerPermission":"ADMIN"}' ;;
-  "repo clone") git clone -q "$ZF_FAKE_ORIGIN" "$4" && { [ -n "$ZF_FAKE_KEEP_ORIGIN" ] || git -C "$4" remote set-url origin "https://github.com/$3.git"; } ;;
+  "repo view") echo "{\\"defaultBranchRef\\":{\\"name\\":\\"main\\"},\\"viewerPermission\\":\\"\${ZF_FAKE_PERM:-ADMIN}\\"}" ;;
+  "repo clone") [ -z "$ZF_FAKE_CLONE_FAIL" ] || { echo "fatal: unable to access the remote" >&2; exit 1; }
+    git clone -q "$ZF_FAKE_ORIGIN" "$4" && { [ -n "$ZF_FAKE_KEEP_ORIGIN" ] || git -C "$4" remote set-url origin "https://github.com/$3.git"; } ;;
   "label list") echo needs-triage ;;
   "variable get") echo "\${ZF_FAKE_PIPELINE:-triage}" ;;
   *) case "$1" in api) echo '{"contexts":["ci / test"],"checks":[]}' ;; esac ;;
@@ -147,9 +150,27 @@ test('checkout guards: foreign directory and a repository that tracks its own en
   fs.writeFileSync(path.join(s.checkout, 'my-work.txt'), 'precious\n');
   await assert.rejects(cmd.init({ repo: REPO, yes: true, noScheduler: true }, s.io), /not created by zenoforge/);
   assert.equal(fs.readFileSync(path.join(s.checkout, 'my-work.txt'), 'utf8'), 'precious\n');
+  assert.equal(fs.existsSync(path.join(s.agent, 'env')), false, 'refused before the first write');
 
   const t = sandbox({ originFiles: { 'engine/main.c': 'int main(){}\n' } });
   await assert.rejects(cmd.init({ repo: REPO, yes: true, noScheduler: true }, t.io), /tracks its own top-level engine\//);
+  assert.equal(fs.existsSync(t.checkout), false, 'the fresh clone is removed again');
+  assert.equal(fs.existsSync(path.join(t.agent, 'env')), false, 'nothing else was written');
+});
+
+test('a failed clone or a read-only gh login stops init before anything is written, and init can be re-run', async () => {
+  const s = sandbox();
+  s.env.ZF_FAKE_CLONE_FAIL = '1';
+  await assert.rejects(cmd.init({ repo: REPO, yes: true, noScheduler: true }, s.io), /gh repo clone .* failed: fatal: unable to access/);
+  assert.equal(fs.existsSync(s.agent), false, 'no env file, no marker, no half clone');
+  delete s.env.ZF_FAKE_CLONE_FAIL;
+  s.env.ZF_FAKE_PERM = 'READ';
+  await assert.rejects(cmd.init({ repo: REPO, yes: true, noScheduler: true }, s.io), /READ access.*write access/);
+  assert.equal(fs.existsSync(s.agent), false);
+  assert.doesNotMatch(s.calls(), /label create|variable set/);
+  delete s.env.ZF_FAKE_PERM;
+  await cmd.init({ repo: REPO, yes: true, noScheduler: true }, s.io);
+  assert.ok(fs.existsSync(path.join(s.checkout, '.git/zenoforge-checkout')));
 });
 
 test('start/stop/status/upgrade/rollback/uninstall drive systemctl and keep state', async () => {
@@ -173,8 +194,69 @@ test('start/stop/status/upgrade/rollback/uninstall drive systemctl and keep stat
   assert.equal(fs.existsSync(path.join(s.unitDir, 'zenoforge-agent.service')), false);
   assert.equal(fs.existsSync(path.join(s.checkout, 'engine')), false);
   assert.ok(fs.existsSync(path.join(s.agent, 'env')), 'state kept without --purge');
-  assert.equal(fs.existsSync(path.join(s.agent, 'cli.json')), false);
-  assert.throws(() => cmd.status({}, s.io), /zenoforge init/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(s.agent, 'cli.json'), 'utf8')).scheduler, 'none');
+  await assert.rejects(cmd.start({ yes: true }, s.io), /zenoforge init/, 'the engine link is gone; start must not half-work');
+
+  // plain uninstall, then uninstall --purge, still reaches everything
+  cmd.uninstall({ purge: true, yes: true }, s.io);
+  assert.equal(fs.existsSync(s.agent), false);
+});
+
+test('uninstall --purge cleans ~/.zenoforge when init never wrote cli.json; plain uninstall points at --purge', () => {
+  const s = sandbox();
+  assert.throws(() => cmd.uninstall({ purge: true, yes: true }, s.io), /nothing to uninstall/);
+  fs.mkdirSync(s.agent, { recursive: true });
+  fs.writeFileSync(path.join(s.agent, 'env'), 'ZF_REPO=x/y\n');
+  assert.throws(() => cmd.uninstall({}, s.io), /uninstall --purge --yes/);
+  assert.throws(() => cmd.uninstall({ purge: true }, s.io), /--yes/);
+  cmd.uninstall({ purge: true, yes: true }, s.io);
+  assert.equal(fs.existsSync(s.agent), false);
+});
+
+test('status warns when origin/main starts tracking its own engine/', async () => {
+  const s = sandbox();
+  s.env.ZF_FAKE_KEEP_ORIGIN = '1'; // keep the local bare repo as origin so the test can push to it
+  await cmd.init({ repo: REPO, yes: true, noScheduler: true }, s.io);
+  cmd.status({}, s.io);
+  assert.doesNotMatch(s.lines.join('\n'), /WARN/);
+  const more = path.join(s.root, 'more');
+  const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@e', ...a], { cwd, stdio: 'pipe' });
+  git(s.root, 'clone', '-q', path.join(s.root, 'origin.git'), more);
+  fs.mkdirSync(path.join(more, 'engine'));
+  fs.writeFileSync(path.join(more, 'engine/main.c'), 'int main(){}\n');
+  git(more, 'add', '-A'); git(more, 'commit', '-q', '-m', 'engine'); git(more, 'push', '-q', 'origin', 'HEAD:main');
+  git(s.checkout, 'fetch', '-q', 'origin');
+  s.lines.length = 0;
+  cmd.status({}, s.io);
+  assert.match(s.lines.join('\n'), /WARN  origin\/main of \S+ now tracks a top-level engine\//);
+});
+
+test('foreground backend only signals a process that is really our loop script', async () => {
+  const s = sandbox();
+  const ctx = buildCtx({ home: s.home, checkout: s.checkout, env: s.env });
+  fs.mkdirSync(path.join(ctx.agentHome, 'run'), { recursive: true });
+  const pidFile = path.join(ctx.agentHome, 'run/scheduler.pid');
+  const start = (cmdline) => { const c = spawn(cmdline[0], cmdline.slice(1), { detached: true, stdio: 'ignore' }); c.unref(); return c.pid; };
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const act = new Actions({ log() {} });
+
+  const stranger = start(['sleep', '60']); // a stale pid file now names an unrelated process
+  try {
+    fs.writeFileSync(pidFile, `${stranger}\n`);
+    assert.equal(foreground.status(ctx)[0].state, 'stopped');
+    foreground.disable(act, ctx);
+    assert.equal(alive(stranger), true, 'the unrelated process group is left alone');
+    assert.equal(fs.existsSync(pidFile), false, 'the stale pid file is dropped');
+  } finally { process.kill(stranger, 'SIGKILL'); }
+
+  fs.mkdirSync(path.join(s.root, 'live'));
+  fs.writeFileSync(path.join(s.root, 'live/loop.sh'), 'sleep 60\n');
+  const mine = start(['bash', path.join(s.root, 'live/loop.sh')]);
+  fs.writeFileSync(pidFile, `${mine}\n`);
+  assert.equal(foreground.status(ctx)[0].state, `running (pid ${mine})`);
+  foreground.disable(act, ctx);
+  for (let i = 0; i < 50 && alive(mine); i++) await sleep(100);
+  assert.equal(alive(mine), false, 'our loop is stopped');
 });
 
 test('purge needs --yes and only deletes a checkout zenoforge created', async () => {

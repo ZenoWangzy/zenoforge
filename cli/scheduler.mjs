@@ -158,6 +158,22 @@ const readPid = (file) => {
   return Number.isInteger(n) && n > 0 ? n : null;
 };
 
+// A pid file outlives its process and the pid gets reused; only a process running our loop script is ours to signal.
+const isLoop = (pid, script) => {
+  let cmd = '';
+  try {
+    cmd = process.platform === 'linux'
+      ? fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ')
+      : run('ps', ['-o', 'command=', '-p', String(pid)]).stdout;
+  } catch { return false; }
+  return cmd.split(/\s+/).some((a) => path.basename(a) === script);
+};
+const runningPid = (ctx, name, script) => {
+  const pf = pidFile(ctx, name);
+  const pid = fs.existsSync(pf) ? readPid(pf) : null;
+  return pid && alive(pid) && isLoop(pid, script) ? pid : null;
+};
+
 export const foreground = {
   name: 'foreground',
   install() { /* nothing to install: processes are started by `zenoforge start` */ },
@@ -167,7 +183,7 @@ export const foreground = {
     if (!sync.ok) return sync;
     for (const [name, script] of FG_LOOPS) {
       const pf = pidFile(ctx, name);
-      if (fs.existsSync(pf) && alive(readPid(pf))) continue;
+      if (runningPid(ctx, name, script)) continue;
       act.note('SPAWN', `bash ${path.join(ctx.checkout, '.scratch-supervisor/autopi-live', script)} (log ${ctx.agentHome}/logs/${name}.log)`);
       if (act.dryRun) continue;
       fs.mkdirSync(path.join(ctx.agentHome, 'logs'), { recursive: true });
@@ -181,13 +197,15 @@ export const foreground = {
     return { ok: true };
   },
   disable(act, ctx) {
-    for (const [name] of FG_LOOPS) {
+    for (const [name, script] of FG_LOOPS) {
       const pf = pidFile(ctx, name);
       if (!fs.existsSync(pf)) continue;
-      const pid = readPid(pf);
-      act.note('KILL', `process group ${pid} (${name})`);
-      if (!act.dryRun && pid && alive(pid)) {
-        try { process.kill(-pid, 'SIGTERM'); } catch { /* already gone */ }
+      const pid = runningPid(ctx, name, script);
+      if (pid) {
+        act.note('KILL', `process group ${pid} (${name})`);
+        if (!act.dryRun) {
+          try { process.kill(-pid, 'SIGTERM'); } catch { /* already gone */ }
+        }
       }
       act.remove(pf);
     }
@@ -196,10 +214,9 @@ export const foreground = {
   uninstall(act, ctx) { foreground.disable(act, ctx); },
   restartLoops(act, ctx) { foreground.disable(act, ctx); return foreground.enable(act, ctx); },
   status(ctx) {
-    return FG_LOOPS.map(([name]) => {
-      const pf = pidFile(ctx, name);
-      const pid = fs.existsSync(pf) ? readPid(pf) : null;
-      return { unit: `zenoforge-${name}`, state: pid && alive(pid) ? `running (pid ${pid})` : 'stopped' };
+    return FG_LOOPS.map(([name, script]) => {
+      const pid = runningPid(ctx, name, script);
+      return { unit: `zenoforge-${name}`, state: pid ? `running (pid ${pid})` : 'stopped' };
     });
   },
   logs({ lines = 100, follow = false }, ctx) {

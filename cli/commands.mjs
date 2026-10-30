@@ -69,8 +69,29 @@ function gitTopLevel(dir) {
   return r.ok ? fs.realpathSync(r.stdout.trim()) : null;
 }
 
-/** The dedicated checkout. The engine resets and cleans it every tick, so refuse anything we did not create. */
-function prepareCheckout(act, { repo, dir, cwd }) {
+const WRITE_PERMISSIONS = ['WRITE', 'MAINTAIN', 'ADMIN']; // viewerPermission values that may create labels
+
+const CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Does `ref` in the checkout track a top-level engine/? That name is where Zenoforge links its own engine. */
+const trackedEngine = (dir, ref) => run('git', ['-C', dir, 'ls-tree', '--name-only', ref, 'engine']).stdout.trim() !== '';
+
+const firstLine = (r) => (r.stderr || r.stdout || '').trim().split('\n')[0] || (r.missing ? 'command not found' : r.code == null ? 'timed out' : `exit ${r.code}`);
+
+/** A failed command stops the run with its first error line. undefined (a backend with nothing to run) passes. */
+function must(r, what) {
+  if (r && !r.ok) throw new UserError(`${what} failed: ${firstLine(r)}`);
+}
+
+function assertNoTrackedEngine(repo, dir) {
+  // shortcut: the engine is linked in as <checkout>/engine, so a repository that tracks its own top-level engine/ cannot be used; upgrade to a ZF_ENGINE_DIR seam in the engine.
+  if (fs.existsSync(path.join(dir, '.git')) && trackedEngine(dir, 'HEAD')) {
+    throw new UserError(`${repo} tracks its own top-level engine/ directory. Zenoforge links its engine there and cannot be installed on this repository yet.`);
+  }
+}
+
+/** Read-only checks of the dedicated checkout. The engine resets and cleans it every tick, so refuse anything we did not create. Runs before anything is written. */
+function checkCheckout({ repo, dir, cwd }) {
   const marker = path.join(dir, '.git', 'zenoforge-checkout');
   if (fs.existsSync(dir)) {
     if (gitTopLevel(cwd) === fs.realpathSync(dir)) throw new UserError(`${dir} is the repository you are standing in. Zenoforge resets its checkout every tick; pass --checkout-dir with a new path.`);
@@ -78,23 +99,27 @@ function prepareCheckout(act, { repo, dir, cwd }) {
       throw new UserError(`${dir} exists and was not created by zenoforge. It would be reset every tick; pass --checkout-dir with a new path.`);
     }
   }
-  if (!fs.existsSync(marker)) {
-    if (fs.existsSync(dir)) act.remove(dir); // empty: gh clone wants a missing or empty target
-    act.exec('gh', ['repo', 'clone', repo, dir]);
-    act.write(marker, `${repo}\n`);
-  } else {
+  if (fs.existsSync(marker)) {
     const origin = run('git', ['-C', dir, 'remote', 'get-url', 'origin']).stdout.trim();
     if (!origin.includes(repo)) throw new UserError(`${dir} belongs to another repository (${origin}).`);
   }
-  if (fs.existsSync(path.join(dir, '.git'))) {
-    // shortcut: the engine is linked in as <checkout>/engine, so a repository that tracks its own top-level engine/ cannot be used; upgrade to a ZF_ENGINE_DIR seam in the engine.
-    if (run('git', ['-C', dir, 'ls-tree', '--name-only', 'HEAD', 'engine']).stdout.trim()) {
-      throw new UserError(`${repo} tracks its own top-level engine/ directory. Zenoforge links its engine there and cannot be installed on this repository yet.`);
-    }
-  }
+  assertNoTrackedEngine(repo, dir);
   const link = path.join(dir, 'engine');
   if (fs.existsSync(link) && !fs.lstatSync(link).isSymbolicLink()) throw new UserError(`${link} is a real directory; Zenoforge needs that name for its engine link.`);
-  act.exec('git', ['-C', dir, 'checkout', 'main']);
+}
+
+/** Clone (when new) and switch to main. Runs first among the writes: a failure leaves ~/.zenoforge untouched. */
+function prepareCheckout(act, { repo, dir }) {
+  const marker = path.join(dir, '.git', 'zenoforge-checkout');
+  if (!fs.existsSync(marker)) {
+    if (fs.existsSync(dir)) act.remove(dir); // empty: gh clone wants a missing or empty target
+    const r = act.exec('gh', ['repo', 'clone', repo, dir], { timeout: CLONE_TIMEOUT_MS });
+    if (!r.ok) act.remove(dir); // a half clone has no marker and would be refused as foreign on the next run
+    must(r, `gh repo clone ${repo}`);
+    act.write(marker, `${repo}\n`);
+    try { assertNoTrackedEngine(repo, dir); } catch (e) { act.remove(dir); throw e; } // only a fresh clone can still surprise us here
+  }
+  must(act.exec('git', ['-C', dir, 'checkout', 'main']), 'git checkout main');
 }
 
 // Engine link and runtime state sit in the checkout but must survive its per-tick `git clean -fd`.
@@ -165,6 +190,10 @@ export async function init(opts, io) {
     if (!opts.dryRun) throw new UserError(`Cannot reach ${repo} with your gh login. Nothing was changed.`);
   } else if (view.defaultBranch !== 'main') {
     throw new UserError(`${repo} has default branch "${view.defaultBranch}". The engine currently requires "main".`);
+  } else if (view.permission && !WRITE_PERMISSIONS.includes(view.permission)) {
+    const msg = `your gh login has ${view.permission} access to ${repo}; init creates labels and sets variables, which needs write access`;
+    if (!opts.dryRun) throw new UserError(`${msg}. Nothing was changed.`);
+    log(`WARN  ${msg}`);
   }
 
   // one host serves one repository
@@ -196,6 +225,7 @@ export async function init(opts, io) {
   const maxWorkers = Number(opts.maxWorkers ?? prior.maxWorkers ?? 2);
   if (!Number.isInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 16) throw new UserError('--max-workers must be an integer from 1 to 16');
   const checkout = path.resolve(opts.checkoutDir ?? path.join(agentHome, 'checkout'));
+  checkCheckout({ repo, dir: checkout, cwd: io.cwd });
   const checks = opts.requiredCheck?.length ? opts.requiredCheck : (view.ok ? gh.requiredChecks(repo, 'main', io.exec) : []);
   const autoMerge = Boolean(opts.autoMerge) || checks.length > 0;
   const scheduler = opts.noScheduler ? 'none' : (io.scheduler ?? detectScheduler({ platform: io.platform, find: io.find, exec: io.exec }));
@@ -220,7 +250,8 @@ export async function init(opts, io) {
   const enable = scheduler !== 'none';
   if (!opts.dryRun) await confirmRisk(opts, io, enable ? 'I understand. Install and switch the factory on now?' : 'I understand. Install (nothing will be switched on)?');
 
-  // 6. execute
+  // 6. execute (the checkout first: cloning is the step most likely to fail, and then nothing is left in ~/.zenoforge)
+  prepareCheckout(act, { repo, dir: checkout });
   act.mkdir(agentHome);
   const auth = ghReady ? io.exec('gh', ['auth', 'status']) : null;
   let ghToken = '';
@@ -247,7 +278,6 @@ export async function init(opts, io) {
   const overlay = buildOverlay(settings, { home: io.home, checkout, pathValue });
   const name = installEngine(act, { srcEngine: PKG_ENGINE, engineRoot, version: pkgVersion(), settings, overlay });
 
-  prepareCheckout(act, { repo, dir: checkout, cwd: io.cwd });
   const excludeFile = path.join(checkout, '.git', 'info', 'exclude');
   const exclude = excludeContent(fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf8') : '');
   if (exclude !== null) act.write(excludeFile, exclude);
@@ -267,16 +297,17 @@ export async function init(opts, io) {
       gh variable set AGENT_PIPELINE --repo ${repo} --body ${enable ? 'triage' : 'off'}`);
   }
 
-  const ctx = { ...buildCtx({ home: io.home, checkout, env: io.env }), units: unitsFromOverlay(overlay, PKG_ENGINE) };
-  if (enable) {
-    backends[scheduler].install(act, ctx);
-    backends[scheduler].enable(act, ctx);
-    // a re-run with changed settings flips to a new engine version; the resident loops only pick it up on restart
-    if (hadEngine && hadEngine !== name) backends[scheduler].restartLoops(act, ctx);
-  }
-
+  // the state goes first: if the scheduler step fails, uninstall still knows what to remove
   const state = { version: pkgVersion(), engine: name, ...settings, installedAt: new Date().toISOString() };
   act.write(statePath(agentHome), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+
+  const ctx = { ...buildCtx({ home: io.home, checkout, env: io.env }), units: unitsFromOverlay(overlay, PKG_ENGINE) };
+  if (enable) {
+    must(backends[scheduler].install(act, ctx), 'installing the scheduler units');
+    must(backends[scheduler].enable(act, ctx), 'switching the scheduler on');
+    // a re-run with changed settings flips to a new engine version; the resident loops only pick it up on restart
+    if (hadEngine && hadEngine !== name) must(backends[scheduler].restartLoops(act, ctx), 'restarting the loops');
+  }
 
   // 7. next steps
   log(`\n${opts.dryRun ? 'Dry run finished' : 'Installed'}: engine ${name}, ${repo}.`);
@@ -303,6 +334,7 @@ function requireState(io) {
 
 export async function start(opts, io) {
   const { ctx, backend, state } = requireState(io);
+  if (!fs.existsSync(path.join(state.checkout, 'engine'))) throw new UserError('The checkout has no engine link (after uninstall?). Run: zenoforge init');
   const act = new Actions({ dryRun: opts.dryRun, log: io.log, runner: io.runner });
   const firstEnable = state.scheduler === 'none'; // init --no-scheduler: this is the moment something gets switched on
   if (firstEnable) {
@@ -313,8 +345,9 @@ export async function start(opts, io) {
   const r = backend.enable(act, ctx);
   if (!r.ok) throw new UserError(`could not start: ${(r.stderr || '').trim().split('\n')[0] || 'see the command output above'}`);
   if (firstEnable) {
-    gh.setVariable(act, state.repo, 'AGENT_PIPELINE', 'triage');
     act.write(statePath(ctx.agentHome), `${JSON.stringify({ ...state, scheduler: backend.name }, null, 2)}\n`, { mode: 0o600 });
+    const v = gh.setVariable(act, state.repo, 'AGENT_PIPELINE', 'triage');
+    if (!v.ok) throw new UserError(`started, but could not set AGENT_PIPELINE (needs admin access): ${firstLine(v)}\nSet it yourself:\n  gh variable set AGENT_PIPELINE --repo ${state.repo} --body triage`);
   }
   io.log('started');
 }
@@ -329,6 +362,9 @@ export function status(opts, io) {
   const { state, ctx, backend } = requireState(io);
   io.log(`repository  ${state.repo}\nscheduler   ${backend.name}\nengine      ${currentVersion(ctx.engineRoot) ?? '(none)'}  previous: ${previousVersion(ctx.engineRoot) ?? '(none)'}\ncheckout    ${state.checkout}`);
   for (const { unit, state: s } of backend.status(ctx)) io.log(`  ${s.padEnd(14)} ${unit}`);
+  if (trackedEngine(state.checkout, 'origin/main')) {
+    io.log(`WARN  origin/main of ${state.repo} now tracks a top-level engine/ directory. The next checkout reset replaces Zenoforge's engine link with it. Run: zenoforge stop`);
+  }
   for (const v of ['AGENT_PIPELINE', 'AGENT_SUPERVISOR']) {
     const r = io.exec('gh', ['variable', 'get', v, '--repo', state.repo]);
     io.log(`${v.padEnd(18)} ${r.ok ? r.stdout.trim() : '(unreadable)'}`);
@@ -351,13 +387,13 @@ export function upgrade(opts, io) {
   const overlay = buildOverlay(settings, { home: io.home, checkout: state.checkout, pathValue });
   const name = installEngine(act, { srcEngine: PKG_ENGINE, engineRoot: ctx.engineRoot, version: pkgVersion(), settings, overlay });
   if (name === before) { io.log(`engine ${name} is already current`); return; }
+  act.write(statePath(ctx.agentHome), `${JSON.stringify({ ...settings, version: pkgVersion(), engine: name, installedAt: state.installedAt }, null, 2)}\n`, { mode: 0o600 });
   if (state.scheduler !== 'none') {
     const withUnits = { ...ctx, units: unitsFromOverlay(overlay, PKG_ENGINE) };
-    backend.install(act, withUnits);
-    backend.restartLoops(act, withUnits);
+    must(backend.install(act, withUnits), `engine ${name} is installed, but installing the units`);
+    must(backend.restartLoops(act, withUnits), `engine ${name} is installed, but restarting the loops`);
   }
   pruneEngines(act, ctx.engineRoot);
-  act.write(statePath(ctx.agentHome), `${JSON.stringify({ ...settings, version: pkgVersion(), engine: name, installedAt: state.installedAt }, null, 2)}\n`, { mode: 0o600 });
   io.log(`engine ${before ?? '(none)'} -> ${name}. Undo with: zenoforge rollback`);
 }
 
@@ -366,14 +402,21 @@ export function rollback(opts, io) {
   const act = new Actions({ dryRun: opts.dryRun, log: io.log, runner: io.runner });
   const to = rollbackEngine(act, ctx.engineRoot);
   if (!to) throw new UserError('No previous engine version to roll back to.');
-  if (state.scheduler !== 'none') { backend.install(act, ctx); backend.restartLoops(act, ctx); }
+  if (state.scheduler !== 'none') {
+    must(backend.install(act, ctx), `engine ${to} is current again, but installing the units`);
+    must(backend.restartLoops(act, ctx), `engine ${to} is current again, but restarting the loops`);
+  }
   io.log(`engine rolled back to ${to}`);
 }
 
 export function uninstall(opts, io) {
   const agentHome = path.join(io.home, AGENT_DIR);
-  const state = loadState(agentHome);
-  if (!state) throw new UserError('Not set up on this machine; nothing to uninstall.');
+  let state = loadState(agentHome);
+  if (!state) {
+    if (!fs.existsSync(agentHome)) throw new UserError('Not set up on this machine; nothing to uninstall.');
+    if (!opts.purge) throw new UserError(`${agentHome} has no cli.json (an earlier init did not finish). Delete it with: zenoforge uninstall --purge --yes`);
+    state = { checkout: path.join(agentHome, 'checkout'), scheduler: 'none' };
+  }
   if (opts.purge && !opts.yes && !opts.dryRun) throw new UserError(`--purge deletes ${agentHome} and ${state.checkout}. Re-run with --yes to confirm.`);
   const act = new Actions({ dryRun: opts.dryRun, log: io.log, runner: io.runner });
   const ctx = buildCtx({ home: io.home, checkout: state.checkout, env: io.env });
@@ -383,7 +426,8 @@ export function uninstall(opts, io) {
     if (fs.existsSync(path.join(state.checkout, '.git', 'zenoforge-checkout'))) act.remove(state.checkout); // only a checkout zenoforge made
     act.remove(agentHome);
   } else {
-    act.remove(statePath(agentHome));
+    // keep cli.json so a later `uninstall --purge` still knows the checkout
+    act.write(statePath(agentHome), `${JSON.stringify({ ...state, scheduler: 'none' }, null, 2)}\n`, { mode: 0o600 });
   }
   io.log(opts.purge ? 'uninstalled and purged' : `uninstalled. State kept in ${agentHome}; add --purge to delete it.`);
 }
