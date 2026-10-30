@@ -30,6 +30,7 @@ esac
 SH
 cat > "$bin/timeout" <<'SH'
 #!/usr/bin/env bash
+[[ "$1" == --foreground ]] && exit 0 # platform_require's GNU-timeout probe (macOS)
 [[ "$1" == 8 ]] || exit 2
 shift
 exec "$@"
