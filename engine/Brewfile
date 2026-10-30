@@ -13,4 +13,4 @@ brew "jq"
 brew "gh"
 brew "git"
 brew "node@22"
-brew "python@3.12" # or the Xcode CLT python3 (3.9+)
+# python3 (3.9+) comes with the Xcode Command Line Tools; brew's python@3.12 fails to link next to a python.org install (macos-15-intel runner).
