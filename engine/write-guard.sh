@@ -37,6 +37,8 @@ agent_pipeline_write_guard() {
     case "$source_dir" in
       # An engine installed by the zenoforge CLI lives in $AGENT_HOME/engine/<version>, outside the checkout it serves.
       "$(realpath -m -- "$agent_home")/engine/"*) _AGENT_WRITE_GUARD_SOURCE_ROOT="$agent_home/checkout" ;;
+      # An engine deployed as an immutable version dir under $AGENT_HOME/engine-versions/<id> serves the checkout.
+      "$(realpath -m -- "$agent_home")/engine-versions/"*) _AGENT_WRITE_GUARD_SOURCE_ROOT="$agent_home/checkout" ;;
       *) _AGENT_WRITE_GUARD_SOURCE_ROOT="$(git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null || true)" ;;
     esac
     # An engine run from an immutable, non-git version directory has no toplevel: the repo it works on stands in.

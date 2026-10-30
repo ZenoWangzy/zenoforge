@@ -86,6 +86,18 @@ if ! cli_output="$(HOME="$guard_sentinel" env -u ZF_AGENT_TEST_MODE -u ZF_AGENT_
 fi
 [[ "$cli_output" == *loaded* ]]
 
+# An engine deployed as an immutable version dir under $AGENT_HOME/engine-versions/<id> serves the checkout.
+mkdir -p "$guard_sentinel/.zenoforge/engine-versions/x/engine"
+copy_agent_library "$guard_sentinel/.zenoforge/engine-versions/x/engine"
+if ! versions_output="$(HOME="$guard_sentinel" env -u ZF_AGENT_TEST_MODE -u ZF_AGENT_TEST_ROOT bash -c '
+  AGENT_HOME="$HOME/.zenoforge"
+  source "$1/lib.sh" && echo loaded
+' _ "$guard_sentinel/.zenoforge/engine-versions/x/engine" 2>&1)"; then
+  printf 'write guard refused an engine version dir under the agent home: %s\n' "$versions_output" >&2
+  exit 1
+fi
+[[ "$versions_output" == *loaded* ]]
+
 if init_output="$(HOME="$HOME" ZF_HOME="$guard_sentinel/agent" bash -c '
   unset AGENT_HOME
   source "$1/lib.sh"
