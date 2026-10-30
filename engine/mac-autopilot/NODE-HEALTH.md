@@ -25,7 +25,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 |---|---|---|---|---|---|
 | implement | run minutes p50 (`implement.wall_p50`) | 2–4 h focused work (estimate) | ≤ 30 | ≥ 60 | — |
 | implement | runs with no report % (`implement.no_output_pct`) | — | ≤ 5 | ≥ 15 | — |
-| implement | overlapping writer unit pairs in a rolling 24h (`dispatch.collisions_per_day`) | #4190/#4192/#4193 concurrently edited the same 8000+ line hook; write-start/end record predicted + actual paths, waits do not count | 0 | ≥ 1 | — |
+| implement | overlapping writer unit pairs in a rolling 24h (`dispatch.collisions_per_day`) | #4190/#4192/#4193 concurrently edited the same 8000+ line hook; write-start/end record predicted + actual paths, waits do not count; since the 2026-10-29 zf-ab ruling a pair whose only overlap is a `footprint_mutex.shared_append` registry file is the legalized parallelism, not a collision (those conflicts move to the rebase metric below) | 0 | ≥ 1 | — |
 | review | first review minutes p50 (`review.wall_p50`) | first response < 1 h for small changes, < 4 h overall at Google [1]; one session ≤ 60 min, 200–400 LOC/h [2] | ≤ 10 | ≥ 20 | — |
 | review | approved on first review % (`review.first_pass_pct`) | most changes need 1–2 iterations (estimate; [1] measured iterations, median not verified) | ≥ 50 | ≤ 30 | — |
 | repair | run minutes p50 (`repair.wall_p50`) | 15–60 min per round (estimate) | ≤ 15 | ≥ 30 | — |
@@ -56,6 +56,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | CI + merge | M1 audited cancelled runs/day: other or unclassified (`ci.cancel_other_per_day`) | no frozen cause baseline | 0 | ≥ 1 | rolling report |
 | CI + merge | active agent PRs with server label `agent/ci-gated` % (`ci.gated_pr_pct`, M12) | frozen M12: 0 of 87 | ≥ 80 | ≤ 50 | GitHub open-PR census |
 | CI + merge | distinct runs held by priority CI gate in last 48 h (`ci.priority_hold_runs_48h`, M13) | retire only after a full 48 h with zero firings | 0 | ≥ 1 | shared cancellation audit |
+| CI + merge | shared-append landings whose rebase conflicted on a shared-append file %, rolling 24 h (`ci.shared_append_rebase_conflict_pct`) | first-cut bound (2026-10-30): the ruling trades occasional rebase conflicts for parallel implement on append-registry files; a day of samples above the bound means tighten the list back to mutual exclusion | ≤ 25 | ≥ 50 | first scorecard sample 2026-10-30 |
 | review loop | ledger PRs over 800 changed lines %, rolling 30 d by ledger activity (`review.large_pr_pct`, from `pr-sizes.json`; active PRs without history are included and missing sizes report no data; the all-time share was a metric bug — one-off oversized PRs never aged out and recovery required dilution, #4482) | small batches: review effectiveness drops past 200–400 LOC [2] | ≤ 10 | ≥ 25 | — |
 | workers | local test Postgres reachable (`workers.local_test_db`, TCP probe of `PGTEST_URL`) | shift left: run integration tests before review, not after approval | 1 | 0 | — |
 | host | host services from `host-prereqs.json` that do not answer (`host.prereqs_missing`; names printed as `host missing:`) | every dependency of a machine is declared and probed (infrastructure as code) | 0 | ≥ 1 | — |

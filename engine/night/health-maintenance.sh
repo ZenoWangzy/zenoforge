@@ -153,12 +153,12 @@ run_maintainer_mail() {
   rm -f -- "$output"
   if [ "$status" -eq 0 ]; then
     if [ -n "$partial_detail" ]; then
-      write_result "$NIGHT/maintainer-health-mail-last-result.json" SLOW "$partial_detail"
+      write_result "$NIGHT/founder-health-mail-last-result.json" SLOW "$partial_detail"
     else
-      write_result "$NIGHT/maintainer-health-mail-last-result.json" OK 'maintainer health mail tick completed'
+      write_result "$NIGHT/founder-health-mail-last-result.json" OK 'maintainer health mail tick completed'
     fi
   else
-    write_result "$NIGHT/maintainer-health-mail-last-result.json" BROKEN "maintainer health mail tick failed (exit $status)${detail:+: $detail}"
+    write_result "$NIGHT/founder-health-mail-last-result.json" BROKEN "maintainer health mail tick failed (exit $status)${detail:+: $detail}"
   fi
 }
 

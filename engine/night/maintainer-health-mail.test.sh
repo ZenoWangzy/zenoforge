@@ -68,8 +68,9 @@ assert_eq 'missed digest becomes slow after five-minute grace' 'SLOW' \
 assert_eq 'missed digest becomes stuck after two-hour grace' 'STUCK' \
   "$(maintainer_health_mail_node_status "$mail_status_ledger" "$((1000 + mail_status_interval + 7200))")"
 
-maintainer_health_mail_efficiency_table() { cat <<'EOF2'
-**效率（最近六小时）**
+# 5297b1e16 起 maintainer_health_mail_maintainer_efficiency_block 返回
+# {count,body,snapshot}；覆盖按同一契约返回固定表格。
+maintainer_health_mail_efficiency_table='**效率（最近六小时）**
 | 指标 | 当前六小时 | 前六小时 | 昨日同时段 |
 | --- | ---: | ---: | ---: |
 | 调度一轮耗时 | 430 秒 | 样本待补 | 样本待补 |
@@ -79,17 +80,14 @@ maintainer_health_mail_efficiency_table() { cat <<'EOF2'
 | 派活失败次数 | 1 次 | 样本待补 | 样本待补 |
 | 重复派活 | 1.0 次/人 | 样本待补 | 样本待补 |
 | 提交失败次数 | 0 次 | 样本待补 | 样本待补 |
-| 系统自动开单 / 关单 | 2 / 1 次 | 样本待补 | 样本待补 |
-EOF2
-}
-# The tick parses the efficiency block as JSON {count, body, snapshot} (changed metrics only); no change reports count 0.
+| 系统自动开单 / 关单 | 2 / 1 次 | 样本待补 | 样本待补 |'
 maintainer_health_mail_maintainer_efficiency_block() {
-  jq -cn --arg body "$(maintainer_health_mail_efficiency_table)" '{count:0,body:$body,snapshot:{}}'
+  jq -cn --arg body "$maintainer_health_mail_efficiency_table" '{count:0,body:$body,snapshot:{}}'
 }
 maintainer_health_mail_no_launch_reason() { printf '主干检查未通过，修复后继续验证'; }
 RETRY_VALID_BODY="$(maintainer_health_mail_build_body \
   '[{"key":"retry:1","section":"事项变化","text":"处理已更新。","kind":"node","created_at":1790640000}]' \
-  "$(maintainer_health_mail_efficiency_table)" '没有新版本通过上线验证' '' '' 1790640000)"
+  "$maintainer_health_mail_efficiency_table" '没有新版本通过上线验证' '' '' 1790640000)"
 
 live_counts_home="$tmp/live-counts"
 mkdir -p "$live_counts_home/night"
@@ -143,14 +141,14 @@ quiet_sends=0
 notify_maintainer_health() { quiet_sends=$((quiet_sends + 1)); }
 maintainer_health_mail_tick "$quiet_home" 1790640000
 assert_eq 'no change produces no maintainer mail' '0' "$quiet_sends"
-maintainer_health_mail_record_event "$quiet_home/night/maintainer-health-mail.json" \
+maintainer_health_mail_record_event "$quiet_home/night/founder-health-mail.json" \
   'release:issue-1:sha-1' '发布进度' '事项已上线。' 1790640001 >/dev/null
 maintainer_health_mail_tick "$quiet_home" 1790640002
 assert_eq 'new change produces one digest' '1' "$quiet_sends"
 assert_eq 'reported item key persists in ledger' 'true' \
-  "$(jq -r '.reported_items | has("release:issue-1:sha-1")' "$quiet_home/night/maintainer-health-mail.json")"
+  "$(jq -r '.reported_items | has("release:issue-1:sha-1")' "$quiet_home/night/founder-health-mail.json")"
 assert_eq 'already reported item cannot be queued again' 'reported' \
-  "$(maintainer_health_mail_record_event "$quiet_home/night/maintainer-health-mail.json" \
+  "$(maintainer_health_mail_record_event "$quiet_home/night/founder-health-mail.json" \
     'release:issue-1:sha-1' '发布进度' '事项已上线。' 1790640100)"
 maintainer_health_mail_tick "$quiet_home" 1790643600
 assert_eq 'already reported item is not repeated next hour' '1' "$quiet_sends"
@@ -175,30 +173,30 @@ assert_eq 'already reported item is not repeated next hour' '1' "$quiet_sends"
   }
   notify_maintainer_incident() { urgent_sends=$((urgent_sends + 1)); }
 
-  maintainer_health_mail_ensure_ledger "$interval_home/night/maintainer-health-mail.json" "$interval_start"
+  maintainer_health_mail_ensure_ledger "$interval_home/night/founder-health-mail.json" "$interval_start"
   jq --argjson sent_at "$((interval_start - 21600))" '.last_sent_at=$sent_at | .last_digest_slot="20260928T00Z"' \
-    "$interval_home/night/maintainer-health-mail.json" > "$interval_home/night/maintainer-health-mail.json.tmp"
-  mv "$interval_home/night/maintainer-health-mail.json.tmp" "$interval_home/night/maintainer-health-mail.json"
+    "$interval_home/night/founder-health-mail.json" > "$interval_home/night/founder-health-mail.json.tmp"
+  mv "$interval_home/night/founder-health-mail.json.tmp" "$interval_home/night/founder-health-mail.json"
   assert_eq 'interval fixture crosses UTC hour in 19 minutes' '10:59 -> 11:18' \
     "$(date -u -d "@$interval_start" +%H:%M) -> $(date -u -d "@$interval_19m" +%H:%M)"
-  maintainer_health_mail_record_event "$interval_home/night/maintainer-health-mail.json" \
+  maintainer_health_mail_record_event "$interval_home/night/founder-health-mail.json" \
     'interval:first' '事项变化' '起始变化。' "$interval_start" >/dev/null
-  maintainer_health_mail_record_event "$interval_home/night/maintainer-health-mail.json" \
+  maintainer_health_mail_record_event "$interval_home/night/founder-health-mail.json" \
     'daily:2026-10-12' '今日汇总' '昨天的统计已生成。' "$interval_start" daily >/dev/null
   maintainer_health_mail_tick "$interval_home" "$interval_start"
   assert_eq 'first six-hour digest sends' '1' "$routine_sends"
   assert_contains 'first six-hour digest carries pre-existing daily event' "$(cat "$routine_mail")" '昨天的统计已生成。'
 
-  maintainer_health_mail_record_event "$interval_home/night/maintainer-health-mail.json" \
+  maintainer_health_mail_record_event "$interval_home/night/founder-health-mail.json" \
     'interval:boundary' '事项变化' '跨小时变化。' "$interval_19m" >/dev/null
-  maintainer_health_mail_record_event "$interval_home/night/maintainer-health-mail.json" \
+  maintainer_health_mail_record_event "$interval_home/night/founder-health-mail.json" \
     'interval:accumulated' '事项变化' '间隔内新增变化。' "$interval_19m" >/dev/null
   maintainer_health_mail_tick "$interval_home" "$interval_19m"
   assert_eq '19-minute cross-hour tick sends no second digest' '1' "$routine_sends"
   assert_eq 'both changes remain queued during cooldown' '2' \
-    "$(jq '.pending_events | length' "$interval_home/night/maintainer-health-mail.json")"
+    "$(jq '.pending_events | length' "$interval_home/night/founder-health-mail.json")"
 
-  maintainer_health_mail_incident_open "$interval_home/night/maintainer-health-mail.json" \
+  maintainer_health_mail_incident_open "$interval_home/night/founder-health-mail.json" \
     99001 '线上服务中断' '服务中断。' '用户暂时无法使用。' '正在恢复服务。' \
     "$((interval_20m + 3600))" "$interval_20m" 1 >/dev/null
   assert_eq 'urgent outage mail sends inside routine interval' '1' "$urgent_sends"
@@ -236,7 +234,7 @@ state_home="$tmp/state-events"
 mkdir -p "$state_home/night" "$state_home/state"
 state_start="$(date -u -d '2026-09-28T10:00:00Z' +%s)"
 state_now="$(date -u -d '2026-09-28T11:00:00Z' +%s)"
-maintainer_health_mail_ensure_ledger "$state_home/night/maintainer-health-mail.json" "$state_start"
+maintainer_health_mail_ensure_ledger "$state_home/night/founder-health-mail.json" "$state_start"
 catalog_implementation="$(declare -f maintainer_health_mail_issue_catalog)"
 cat > "$state_home/state/6001.json" <<'EOF'
 {"state":"concluded","closed_by_pipeline":true,"run":{"outcome":"merged","merged_at":"2026-09-28T10:30:00Z","concluded_at":"2026-09-28T10:40:00Z","evidence":{"pr_number":42}},"deploy_state":"deployed","deployed_sha":"123456789abcdef","deployed_at":"2026-09-28T10:50:00Z"}
@@ -245,40 +243,40 @@ maintainer_health_mail_issue_catalog() {
   jq -cn --argjson ids "${1:-[]}" '[ $ids[] | {number:(tonumber),title:"订单检索",state:"CLOSED",labels:[{name:"focus"},{name:"priority:top"}]} ]'
 }
 maintainer_health_mail_collect_state_events \
-  "$state_home/night/maintainer-health-mail.json" "$state_home" "$state_now"
+  "$state_home/night/founder-health-mail.json" "$state_home" "$state_now"
 assert_eq 'state changes queue release, deploy, and closure events' '3' \
-  "$(jq '.pending_events | length' "$state_home/night/maintainer-health-mail.json")"
+  "$(jq '.pending_events | length' "$state_home/night/founder-health-mail.json")"
 assert_contains 'deployment line uses production evidence timestamp' \
-  "$(jq -r '.pending_events[] | select(.kind == "deploy") | .text' "$state_home/night/maintainer-health-mail.json")" \
+  "$(jq -r '.pending_events[] | select(.kind == "deploy") | .text' "$state_home/night/founder-health-mail.json")" \
   '9月28日 03:50 上线的版本'
 assert_eq 'closed ticket headline hides tracker number' '修好了：订单检索。' \
-  "$(jq -r '.pending_events[] | select(.kind == "closed") | .text' "$state_home/night/maintainer-health-mail.json")"
+  "$(jq -r '.pending_events[] | select(.kind == "closed") | .text' "$state_home/night/founder-health-mail.json")"
 assert_contains 'priority closure appears in digest headline' \
-  "$(maintainer_health_mail_build_body "$(jq -c '[.pending_events[]]' "$state_home/night/maintainer-health-mail.json")")" \
+  "$(maintainer_health_mail_build_body "$(jq -c '[.pending_events[]]' "$state_home/night/founder-health-mail.json")")" \
   '- 修好了：订单检索。'
 
 # One damaged issue-state file must not suppress later valid issue events.
 partial_home="$tmp/state-events-partial"
 mkdir -p "$partial_home/night" "$partial_home/state"
-maintainer_health_mail_ensure_ledger "$partial_home/night/maintainer-health-mail.json" "$state_start"
+maintainer_health_mail_ensure_ledger "$partial_home/night/founder-health-mail.json" "$state_start"
 jq -n '{state:"concluded",closed_by_pipeline:true,run:{outcome:"merged",merged_at:"2026-09-28T10:30:00Z",concluded_at:"2026-09-28T10:40:00Z",evidence:{pr_number:43}},deploy_state:"deployed",deployed_sha:"abcdef123456789",deployed_at:"2026-09-28T10:50:00Z"}' \
   > "$partial_home/state/6003.json"
 head -c 64 /dev/zero > "$partial_home/state/6002.json"
 if ! maintainer_health_mail_collect_state_events \
-  "$partial_home/night/maintainer-health-mail.json" "$partial_home" "$state_now" \
+  "$partial_home/night/founder-health-mail.json" "$partial_home" "$state_now" \
   2> "$partial_home/warnings.log"; then
   echo 'not ok - one damaged issue state must not abort the maintainer mail scan'
   cat "$partial_home/warnings.log"
   exit 1
 fi
 assert_eq 'valid issue after corrupt state still queues all events' '3' \
-  "$(jq '.pending_events | length' "$partial_home/night/maintainer-health-mail.json")"
+  "$(jq '.pending_events | length' "$partial_home/night/founder-health-mail.json")"
 assert_contains 'corrupt issue state creates one supervisor alert' \
   "$(cat "$partial_home/supervisor-inbox")" 'maintainer-health-mail-unreadable-state issue=6002'
 assert_contains 'partial state scan reports skipped issue to health wrapper' \
   "$(cat "$partial_home/warnings.log")" 'partial-state-scan unreadable=1 issues=6002'
 if ! maintainer_health_mail_collect_state_events \
-  "$partial_home/night/maintainer-health-mail.json" "$partial_home" "$state_now" \
+  "$partial_home/night/founder-health-mail.json" "$partial_home" "$state_now" \
   2> "$partial_home/repeat-warnings.log"; then
   echo 'not ok - repeated damaged issue state must remain isolated'
   cat "$partial_home/repeat-warnings.log"
@@ -287,7 +285,7 @@ fi
 assert_eq 'recurring damaged state keeps one supervisor alert' '1' \
   "$(grep -c 'maintainer-health-mail-unreadable-state issue=6002' "$partial_home/supervisor-inbox")"
 assert_eq 'recurring damaged state does not duplicate valid events' '3' \
-  "$(jq '.pending_events | length' "$partial_home/night/maintainer-health-mail.json")"
+  "$(jq '.pending_events | length' "$partial_home/night/founder-health-mail.json")"
 
 # Recently merged old tickets need not appear in the newest 1000 issues.
 catalog_home="$tmp/catalog-window"
@@ -326,11 +324,11 @@ eval "$catalog_implementation"
   export PATH="$catalog_home/bin:$PATH" CATALOG_CALLS="$catalog_home/calls"
   maintainer_health_mail_work_counts() { printf '{"active":0,"queued":0}\n'; }
   notify_maintainer_health() { printf 'sent\n' >> "$catalog_home/sends"; }
-  maintainer_health_mail_ensure_ledger "$catalog_home/night/maintainer-health-mail.json" "$state_start"
+  maintainer_health_mail_ensure_ledger "$catalog_home/night/founder-health-mail.json" "$state_start"
   maintainer_health_mail_tick "$catalog_home" "$state_now"
   maintainer_health_mail_tick "$catalog_home" "$((state_now + 60))"
   assert_eq 'catalog miss reaches one digest without a burst' '1' "$(wc -l < "$catalog_home/sends")"
-  assert_eq 'catalog miss advances send ledger' "$state_now" "$(jq -r '.last_sent_at' "$catalog_home/night/maintainer-health-mail.json")"
+  assert_eq 'catalog miss advances send ledger' "$state_now" "$(jq -r '.last_sent_at' "$catalog_home/night/founder-health-mail.json")"
   assert_eq 'old issue catalog lookup uses exactly one external call' '1' "$(grep -c '^api graphql ' "$catalog_home/calls")"
   assert_contains 'old issue is named directly in GraphQL query' "$(cat "$catalog_home/calls")" 'issue_1598: issue(number: 1598)'
 
@@ -365,7 +363,7 @@ mkdir -p "$poison_home/night"
     printf '%s\n' "$2" > "$poison_home/body"
     printf 'sent\n' >> "$poison_home/sends"
   }
-  ledger="$poison_home/night/maintainer-health-mail.json"
+  ledger="$poison_home/night/founder-health-mail.json"
   maintainer_health_mail_record_event "$ledger" 'release:1598:2716:1' '发布进度' \
     '待上线：No preflight for the。' 1790640000 release >/dev/null
   maintainer_health_mail_record_event "$ledger" 'release:2:3:1' '发布进度' \
@@ -390,7 +388,7 @@ mkdir -p "$poison_home/night"
 # Important open issues get at most one reminder in each four-hour window.
 reminder_home="$tmp/reminders"
 mkdir -p "$reminder_home/night" "$reminder_home/state"
-reminder_ledger="$reminder_home/night/maintainer-health-mail.json"
+reminder_ledger="$reminder_home/night/founder-health-mail.json"
 maintainer_health_mail_ensure_ledger "$reminder_ledger" 100
 maintainer_health_mail_track_important "$reminder_ledger" 'outage:42' outage '订单页无法打开' 42 100
 maintainer_health_mail_collect_reminders "$reminder_ledger" "$reminder_home" 14499
@@ -422,7 +420,7 @@ mkdir -p "$retry_home/night"
     if [ "$(wc -l < "$retry_home/builds")" -eq 1 ]; then return 1; fi
     printf 'body\n'
   }
-  maintainer_health_mail_record_event "$retry_home/night/maintainer-health-mail.json" \
+  maintainer_health_mail_record_event "$retry_home/night/founder-health-mail.json" \
     'retry:1' '事项变化' '处理已更新。' 1790640000 >/dev/null
   maintainer_health_mail_deliver() { printf 'delivered\n' >> "$retry_home/deliveries"; return 0; }
   maintainer_health_mail_incident_tick() { :; }
@@ -461,18 +459,18 @@ mkdir -p "$retry_safe_home/night"
   }
   maintainer_health_mail_incident_tick() { :; }
   maintainer_health_mail_build_body() { printf '%s\n' "$RETRY_VALID_BODY"; }
-  maintainer_health_mail_record_event "$retry_safe_home/night/maintainer-health-mail.json" \
+  maintainer_health_mail_record_event "$retry_safe_home/night/founder-health-mail.json" \
     'retry:1' '事项变化' '处理已更新。' 1790640000 >/dev/null
   if maintainer_health_mail_tick "$retry_safe_home" 1790640000; then
     echo 'not ok - pre-POST failure hidden from health maintenance'; exit 1
   fi
   maintainer_health_mail_tick "$retry_safe_home" 1790640001
   slot="$(maintainer_health_mail_slot_key 1790640000)"
-  if [ "$attempts" -eq 2 ] && [ "$(jq -r '.last_digest_slot' "$retry_safe_home/night/maintainer-health-mail.json")" = "$slot" ] && \
-    [ "$(jq -r '.last_sent_at' "$retry_safe_home/night/maintainer-health-mail.json")" = 1790640001 ]; then
+  if [ "$attempts" -eq 2 ] && [ "$(jq -r '.last_digest_slot' "$retry_safe_home/night/founder-health-mail.json")" = "$slot" ] && \
+    [ "$(jq -r '.last_sent_at' "$retry_safe_home/night/founder-health-mail.json")" = 1790640001 ]; then
     echo 'ok - proven pre-POST failure releases digest slot for same-slot retry'
   else
-    echo "not ok - safe digest retry failed: attempts=$attempts ledger=$(cat "$retry_safe_home/night/maintainer-health-mail.json")"
+    echo "not ok - safe digest retry failed: attempts=$attempts ledger=$(cat "$retry_safe_home/night/founder-health-mail.json")"
     exit 1
   fi
 )
@@ -488,18 +486,18 @@ mkdir -p "$retry_uncertain_home/night"
   }
   maintainer_health_mail_incident_tick() { :; }
   maintainer_health_mail_build_body() { printf '%s\n' "$RETRY_VALID_BODY"; }
-  maintainer_health_mail_record_event "$retry_uncertain_home/night/maintainer-health-mail.json" \
+  maintainer_health_mail_record_event "$retry_uncertain_home/night/founder-health-mail.json" \
     'retry:1' '事项变化' '处理已更新。' 1790640000 >/dev/null
   if maintainer_health_mail_tick "$retry_uncertain_home" 1790640000; then
     echo 'not ok - uncertain send failure hidden from health maintenance'; exit 1
   fi
   maintainer_health_mail_tick "$retry_uncertain_home" 1790640001
   slot="$(maintainer_health_mail_slot_key 1790640000)"
-  if [ "$attempts" -eq 1 ] && [ "$(jq -r '.last_digest_slot' "$retry_uncertain_home/night/maintainer-health-mail.json")" = "$slot" ] && \
-    [ "$(jq -r '.last_sent_at' "$retry_uncertain_home/night/maintainer-health-mail.json")" = 0 ]; then
+  if [ "$attempts" -eq 1 ] && [ "$(jq -r '.last_digest_slot' "$retry_uncertain_home/night/founder-health-mail.json")" = "$slot" ] && \
+    [ "$(jq -r '.last_sent_at' "$retry_uncertain_home/night/founder-health-mail.json")" = 0 ]; then
     echo 'ok - uncertain POST keeps one-per-slot digest protection'
   else
-    echo "not ok - uncertain digest send was retried: attempts=$attempts ledger=$(cat "$retry_uncertain_home/night/maintainer-health-mail.json")"
+    echo "not ok - uncertain digest send was retried: attempts=$attempts ledger=$(cat "$retry_uncertain_home/night/founder-health-mail.json")"
     exit 1
   fi
 )

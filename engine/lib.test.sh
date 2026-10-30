@@ -4461,7 +4461,7 @@ for f in run-triage.sh run-advisor.sh run-recut.sh; do
 done
 # run-recut.sh has one env:gh-api site for its initial `gh issue view`
 # (V79's open gap). run-triage.sh also records failure to persist the new
-# maintainer-test label, so it has two sites with distinct error descriptions.
+# founder-test label, so it has two sites with distinct error descriptions.
 # run-advisor.sh has a SECOND one now --
 # Defect 2, 2026-09-15 (zf-advisor-1205, live): its own initial `gh issue
 # view` already had this (unchanged here), but the LATER mutating `gh`

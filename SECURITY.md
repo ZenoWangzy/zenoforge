@@ -2,9 +2,7 @@
 
 ## Reporting a vulnerability
 
-Do not open a public issue. Contact the maintainer privately through the maintainer's GitHub profile, https://github.com/ZenoWangzy, and ask for a private channel before you describe the problem.
-
-<!-- Maintainer: enable private vulnerability reporting on ZenoWangzy/zenoforge (Settings > Code security and analysis), then replace the paragraph above with a pointer to the Security tab. Until it is enabled, do not claim it here. -->
+Do not open a public issue. Report it privately through the repository's Security tab: [Report a vulnerability](https://github.com/ZenoWangzy/zenoforge/security/advisories/new).
 
 ## Threat model: read this before you run Zenoforge
 

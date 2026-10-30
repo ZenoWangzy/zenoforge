@@ -241,13 +241,13 @@ labels_7101="$(jq -r '.[] | select(.number == 7101) | [.labels[].name] | sort | 
 labels_7109="$(jq -r '.[] | select(.number == 7109) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
 assert_eq "ordinary open issue gets only needs-triage state" bug,needs-triage "$labels_7101"
 assert_eq "second ordinary issue gets only needs-triage after stale-label race" bug,needs-triage "$labels_7109"
-assert_eq "maintainer-filed issue gets maintainer-test during rescue" bug,maintainer-test,needs-triage "$(jq -r '.[] | select(.number == 7113) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "maintainer-filed issue gets founder-test during rescue" bug,founder-test,needs-triage "$(jq -r '.[] | select(.number == 7113) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
 assert_contains "maintainer rescue fetches issue number for the shared label helper" "$(grep -F 'issue view 7113 ' "$FAKE_GH_LOG")" '--json number,state,labels,title,body,author,comments'
-assert_eq "pipeline bot marker excludes generated issue from maintainer-test" bug,needs-triage "$(jq -r '.[] | select(.number == 7114) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
-assert_eq "prerequisite title marker excludes generated issue from maintainer-test" bug,needs-triage "$(jq -r '.[] | select(.number == 7115) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "pipeline bot marker excludes generated issue from founder-test" bug,needs-triage "$(jq -r '.[] | select(.number == 7114) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "prerequisite title marker excludes generated issue from founder-test" bug,needs-triage "$(jq -r '.[] | select(.number == 7115) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
 assert_eq "recut body marker excludes generated issue before bot comment" bug,needs-triage "$(jq -r '.[] | select(.number == 7116) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
-assert_eq "supervisor brief title excludes generated issue from maintainer-test" bug,needs-triage "$(jq -r '.[] | select(.number == 7117) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
-assert_eq "pipeline-system issue keeps its lane without maintainer-test" needs-triage,pipeline-system "$(jq -r '.[] | select(.number == 7118) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "supervisor brief title excludes generated issue from founder-test" bug,needs-triage "$(jq -r '.[] | select(.number == 7117) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "pipeline-system issue keeps its lane without founder-test" needs-triage,pipeline-system "$(jq -r '.[] | select(.number == 7118) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
 state_count="$(jq --argjson n 7101 --argjson states "$FAKE_STATE_LABELS_JSON" '[.[] | select(.number == $n) | .labels[].name | select(. as $name | $states | index($name) != null)] | length' "$FAKE_ISSUES_FILE")"
 assert_eq "rescued issue has exactly one active state label" 1 "$state_count"
 assert_contains "normalization removes terminal state added during write" "$(grep -F 'issue edit 7109 ' "$FAKE_GH_LOG")" '--remove-label needs-recut'
@@ -344,14 +344,14 @@ unlabeled_line="$(grep -nF 'sweep_unlabeled_issues' <<< "$maintenance_fn" | head
 assert_eq "post-dispatch maintenance recovers reopened issues before unlabeled sweep" true \
   "$([[ -n "$reopen_line" && -n "$unlabeled_line" && "$reopen_line" -lt "$unlabeled_line" ]] && echo true || echo false)"
 
-# 2026-09-27: one failed maintainer-test re-read (gateway 504) aborted the whole
+# 2026-09-27: one failed founder-test re-read (gateway 504) aborted the whole
 # scheduler tick. A read failure must skip that issue, not fail the list.
 candidates='[{"number":7201,"state":"OPEN","labels":[{"name":"ready-for-agent"}],"author":{"login":"maintainer"},"title":"Maintainer repro","body":"repro"},{"number":7202,"state":"OPEN","labels":[{"name":"ready-for-agent"}],"author":{"login":"other"},"title":"Other","body":"x"}]'
 mkdir -p "$TEST_HOME/failing-gh"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "Gateway Timeout" >&2; exit 1' >"$TEST_HOME/failing-gh/gh"
 chmod +x "$TEST_HOME/failing-gh/gh"
 labelled="$(PATH="$TEST_HOME/failing-gh:$PATH" label_maintainer_test_candidates "$candidates")" && read_rc=0 || read_rc=$?
-assert_eq "maintainer-test re-read failure does not fail the candidate list" 0 "$read_rc"
+assert_eq "founder-test re-read failure does not fail the candidate list" 0 "$read_rc"
 assert_eq "unreadable maintainer candidate is kept unlabelled for the next tick" 2 "$(jq 'length' <<< "$labelled")"
 
 # 2026-09-27: every maintainer-authored open issue was re-read with comments on every

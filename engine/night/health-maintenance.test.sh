@@ -36,5 +36,5 @@ PATH="$tmp/bin:$PATH" \
 
 [[ "$(cat "$tmp/maintainer-mail-args")" == tick ]]
 jq -e '.verdict == "OK" and .detail == "maintainer health mail tick completed"' \
-  "$fixture_agent/night/maintainer-health-mail-last-result.json" >/dev/null
+  "$fixture_agent/night/founder-health-mail-last-result.json" >/dev/null
 echo 'ok - health maintenance invokes maintainer mail without a HEALTH path'

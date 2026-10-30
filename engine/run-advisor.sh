@@ -585,7 +585,7 @@ fi
 # nothing was applied automatically), never ready-for-agent/needs-recut.
 # Deliberately NOT defaulted straight to "maintainer": that string IS one of
 # the real case arms, and would have applied the maintainer verdict with an
-# empty maintainer_question_md (silently blank comment/email) instead of the
+# empty founder_question_md (silently blank comment/email) instead of the
 # catch-all's actual explanation. See run-advisor.test.sh's malformed-
 # response case for the live check.
 RESULT="$(echo "$OUTPUT" | jq -c '.structured_output // {}')"
@@ -606,8 +606,8 @@ LEVEL="$(echo "$RESULT" | jq -r '.level // empty')"
 REASONING="$(echo "$RESULT" | jq -r '.reasoning_md // empty' | scrub_git_object_ids)"
 DECISION="$(echo "$RESULT" | jq -r '.decision_md // empty' | scrub_git_object_ids)"
 RECUT_MD="$(echo "$RESULT" | jq -r '.recut_md // empty' | scrub_git_object_ids)"
-MAINTAINER_QUESTION="$(echo "$RESULT" | jq -r '.maintainer_question_md // empty' | scrub_git_object_ids)"
-MAINTAINER_SUBJECT="$(echo "$RESULT" | jq -r '.maintainer_subject // empty' | scrub_git_object_ids)"
+MAINTAINER_QUESTION="$(echo "$RESULT" | jq -r '.founder_question_md // empty' | scrub_git_object_ids)"
+MAINTAINER_SUBJECT="$(echo "$RESULT" | jq -r '.founder_subject // empty' | scrub_git_object_ids)"
 MERGE_CONDITIONS="$(echo "$RESULT" | jq -r '.merge_conditions_md // empty' | scrub_git_object_ids)"
 # 2026-09-15 fix (maintainer finding, flagged while building the NOT_READY/
 # gate-4 advisor routing): required_test_paths is merge_conditions_md's own

@@ -17,7 +17,7 @@
     },
     "reasoning_md": {
       "type": "string",
-      "description": "Why the advisor reached this verdict. Posted as an issue comment for misclassified and advised (alongside decision_md for advised); not used for recut (see recut_md) or maintainer (see maintainer_question_md)."
+      "description": "Why the advisor reached this verdict. Posted as an issue comment for misclassified and advised (alongside decision_md for advised); not used for recut (see recut_md) or maintainer (see founder_question_md)."
     },
     "decision_md": {
       "type": "string",
@@ -27,11 +27,11 @@
       "type": "string",
       "description": "Required for verdict=recut: posted as the comment explaining why this issue needs to be split into smaller children before it can be classified. Empty string when not applicable."
     },
-    "maintainer_question_md": {
+    "founder_question_md": {
       "type": "string",
       "description": "Required for verdict=maintainer: a structured business decision for the reporter to read by email and on the issue, in exactly the layout the notification gate (maintainer_mail_rejection_reason in engine/notify.sh) accepts, written in Chinese. Include a 问题 line stating the actual unanswered product/business question from the issue as a direct question ending with ？; separate 客户/公司, 用户动作, and 结果 lines; two or three A）/B）/C） choices, each with an 影响 consequence; a 建议 line selecting one option; and end with 请回复“A”. Keep technical internals out. Empty string when not applicable."
     },
-    "maintainer_subject": {
+    "founder_subject": {
       "type": "string",
       "description": "For verdict=maintainer: concise email subject naming this business choice, at most 40 characters, written in Chinese (the notification gate rejects a subject with no Chinese characters, more Latin letters than Chinese characters, or an issue number or pipeline terminology). Empty string otherwise."
     },
@@ -50,6 +50,6 @@
       "description": "Path prefixes to ADD to the ticket's stored expected_packages (union -- never replaces the original declaration, which stays in force for everything else). Populate only for verdict=misclassified when the refusal you are correcting was the blast-radius gate (gate 4, the merge-time check that every changed file falls under the declared packages) finding a real, legitimate file outside the triage-declared scope -- read the issue's own prior comment for the exact path gate 4 named. Same prefix-match convention as expected_packages itself (exact path or a directory prefix): name the specific file if it is a one-off, or its containing package if more of that package is plausibly in scope too. Empty array for every other case, including every other misclassified correction and every advised verdict -- this field exists for exactly one gap (an advisor ruling that could not otherwise change the gate that provoked it) and nothing else."
     }
   },
-  "required": ["verdict", "risk_class", "level", "reasoning_md", "decision_md", "recut_md", "maintainer_question_md", "maintainer_subject", "merge_conditions_md", "required_test_paths", "expected_packages_addendum"],
+  "required": ["verdict", "risk_class", "level", "reasoning_md", "decision_md", "recut_md", "founder_question_md", "founder_subject", "merge_conditions_md", "required_test_paths", "expected_packages_addendum"],
   "additionalProperties": false
 }

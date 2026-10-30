@@ -38,6 +38,13 @@
     "enabled": true,
     "pilot_label": "stack-pilot"
   },
+  "footprint_mutex": {
+    "shared_append": [
+      "packages/example-pack/src/db/schema.ts",
+      "packages/example-pack/src/db/runtime-permissions.ts",
+      "packages/example-pack/src/v4/register-tools.ts"
+    ]
+  },
   "waste": {
     "slow_worker_minutes": 60,
     "burn_tokens_no_output": 800000,

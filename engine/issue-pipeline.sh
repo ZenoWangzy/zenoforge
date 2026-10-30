@@ -1662,7 +1662,7 @@ if [ "$PIPELINE_STAGE" = fastlane ]; then
 fi
 
 # (b) One triage dialogue handles needs-triage issues first, then unmeasured
-# ready-for-agent issues. Production bugs keep first rank; maintainer-test beats
+# ready-for-agent issues. Production bugs keep first rank; founder-test beats
 # ordinary features, including priority:top. The batch STATE's delay-cost bands
 # (#4363) put critical-path ahead of features and legacy last. Cap leftovers stay queued.
 run_intake_dispatch() {
@@ -1683,7 +1683,7 @@ if ! NEEDS_TRIAGE_JSON="$(gh issue list --repo "$REPO" --limit 1000 --label need
   echo "issue-pipeline: needs-triage candidate snapshot failed; skipping triage dispatch this tick" >&2
 elif ! NEEDS_TRIAGE_JSON="$(label_maintainer_test_candidates "$NEEDS_TRIAGE_JSON")"; then
   TRIAGE_CANDIDATE_QUERY_FAILED=1
-  echo "issue-pipeline: maintainer-test intake failed; skipping triage dispatch this tick" >&2
+  echo "issue-pipeline: founder-test intake failed; skipping triage dispatch this tick" >&2
 # `focus` leads legacy queues only; roadmap mode follows tree order with the standing overrides.
 elif [ "$ROADMAP_ORDER_ENABLED" = true ] && [ "$ROADMAP_TREE_READY" != 1 ]; then
   TRIAGE_CANDIDATE_QUERY_FAILED=1
@@ -1700,7 +1700,7 @@ elif ! NEEDS_TRIAGE_IDS="$(jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_
       (if any(.labels[]?; .name as $label_name | ($lane_labels | index($label_name)) != null) then 1 else 0 end),
       (if any(.labels[]?; .name == "focus") then 0 else 1 end),
       (if any(.labels[]?; .name == "bug") and any(.labels[]?; .name == "priority:top") then 0 else 1 end),
-      (if any(.labels[]?; .name == "maintainer-test") then 0 else 1 end),
+      (if any(.labels[]?; .name == "founder-test") then 0 else 1 end),
       (if any(.labels[]?; .name == "priority:top") then 0 else 1 end),
       (if any(.labels[]?; .name == "critical-path") then 0 else 1 end),
       (if any(.labels[]?; .name == "legacy") then 1 else 0 end),
@@ -1777,7 +1777,7 @@ if ! READY_MEASURE_JSON="$(gh issue list --repo "$REPO" --limit 1000 --label rea
   echo "issue-pipeline: ready-for-agent measurement snapshot failed; skipping triage measurement this tick" >&2
 elif ! READY_MEASURE_JSON="$(label_maintainer_test_candidates "$READY_MEASURE_JSON")"; then
   READY_MEASURE_QUERY_FAILED=1
-  echo "issue-pipeline: maintainer-test measurement intake failed; skipping triage measurement this tick" >&2
+  echo "issue-pipeline: founder-test measurement intake failed; skipping triage measurement this tick" >&2
 elif [ "$ROADMAP_ORDER_ENABLED" = true ] && [ "$ROADMAP_TREE_READY" != 1 ]; then
   READY_MEASURE_QUERY_FAILED=1
   echo "issue-pipeline: roadmap tree unavailable; skipping triage measurement this tick" >&2
@@ -1792,7 +1792,7 @@ elif ! READY_MEASURE_IDS="$(jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS
     sort_by([
       (if any(.labels[]?; .name == "focus") then 0 else 1 end),
       (if any(.labels[]?; .name == "bug") and any(.labels[]?; .name == "priority:top") then 0 else 1 end),
-      (if any(.labels[]?; .name == "maintainer-test") then 0 else 1 end),
+      (if any(.labels[]?; .name == "founder-test") then 0 else 1 end),
       (if any(.labels[]?; .name == "priority:top") then 0 else 1 end),
       (if any(.labels[]?; .name == "critical-path") then 0 else 1 end),
       (if any(.labels[]?; .name == "legacy") then 1 else 0 end),

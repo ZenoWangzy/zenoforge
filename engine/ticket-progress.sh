@@ -90,7 +90,7 @@ umbrellas_path.write_text(json.dumps(umbrellas, separators=(",", ":")) + "\n", e
 PY
 fi
 # A ticket a running triage or advisor batch is working on waits on that batch, not on its stage bound: on
-# 2026-09-30 issue 2074 sat in a running advisor batch and was alerted as stuck at the 30m maintainer-test bound.
+# 2026-09-30 issue 2074 sat in a running advisor batch and was alerted as stuck at the 30m founder-test bound.
 # The member files only count while their unit runs, so a killed batch cannot hide a ticket.
 batch_members='[]'
 if [ -r "$AGENT_HOME/triage-batch-active.json" ] && triage_batch_unit_active 2>/dev/null; then
@@ -120,7 +120,7 @@ result="$(jq -n \
   --arg now_iso "$now_iso" '
   def epoch: if type == "number" then . else try fromdateiso8601 catch 0 end;
   def age($at): if $at > 0 then (($now - $at) / 60 | floor | if . < 0 then 0 else . end) else 0 end;
-  # Bounds: maintainer-test 30m; priority:top configurable (60m default); triage 120m, advisor 180m, implement 9h, release/acceptance 2h;
+  # Bounds: founder-test 30m; priority:top configurable (60m default); triage 120m, advisor 180m, implement 9h, release/acceptance 2h;
   # needs-recut and needs-owner 3h/2h, needs-info 24h, ready-for-human and
   # unrouted 60m, legacy parked labels 2h, terminal labels 24h.
   def bound($s):
@@ -159,7 +159,7 @@ result="$(jq -n \
         or ($events_by_issue | has($id)))
     | (($labels | index("on-hold")) != null) as $held
     | (any($labels[]; . as $name | ($lane_labels | index($name)) != null)) as $pipeline_system
-    | ((($labels | index("maintainer-test")) != null) and ($pipeline_system | not)) as $maintainer_test
+    | ((($labels | index("founder-test")) != null) and ($pipeline_system | not)) as $maintainer_test
     | (($labels | index("priority:top")) != null) as $priority_top
     | ([$states[] as $state | select(($labels | index($state)) != null) | $state][0] // null) as $labeled_stage
     | ($events_by_issue[$id] // []) as $ticket_events
@@ -219,7 +219,7 @@ result="$(jq -n \
     | ([if $looping then "loop flips=\($flips|length)/60m threshold=\($flip_threshold)\(if $writers != "" then " writers=\($writers)" else "" end)" else empty end,
         if $over_bound and no_lane($stage) then "no-lane-consumer age=\($stage_age)m bound=\($stage_bound)m"
         elif $over_bound then "stage-bound age=\($stage_age)m bound=\($stage_bound)m" else empty end] | join("; ")) as $reason
-    | (if $maintainer_test and $over_bound then "maintainer-test; \($reason)"
+    | (if $maintainer_test and $over_bound then "founder-test; \($reason)"
        elif $priority_top and $over_bound then "priority:top; \($reason)" else $reason end) as $reason
     | (if $stage == "ready-for-agent" and $over_bound and $blocker != "" then "blocker:\($blocker)"
        elif $stage == "ready-for-agent" and $over_bound and $noncapacity_skip then "gate:\($implement_gate)"

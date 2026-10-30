@@ -37,6 +37,8 @@ RELEASE_LAG_SECONDS = 60 * 60  # A product change older than one hour should be 
 WORKER_QUEUE_WAIT_SECONDS = 10 * 60  # Admission waits longer than ten minutes need capacity review.
 LOAD_5M_BOUND = 16.0  # Load above sixteen is the requested WSL saturation threshold.
 LOAD_SUSTAIN_SECONDS = 10 * 60  # Saturation must persist for ten minutes before alerting.
+LOAD_5M_LOW = 6.0  # Maintainer 10-30: under half of 12 cores while work waits wastes the box.
+LOAD_LOW_SUSTAIN_SECONDS = 15 * 60
 TRAIN_RED_LIMIT = 2  # Two red outcomes in the recent train window indicate instability.
 TRAIN_WINDOW_SIZE = 4  # Compare the last four completed train outcomes.
 WORKER_ROUNDS_LIMIT = 3  # Three rounds or briefs signals that a ticket needs a reset.
@@ -556,11 +558,20 @@ def worker_queue_wait_alerts(now_wall: float) -> list[tuple[str, str]]:
     return alerts
 
 
-def load_alert(state: dict[str, Any], now_mono: float) -> tuple[str, str] | None:
+def load_alert(state: dict[str, Any], now_mono: float, has_work: bool = False) -> tuple[str, str] | None:
     try:
         load5 = float(Path("/proc/loadavg").read_text().split()[1])
     except (OSError, ValueError, IndexError):
         return None
+    if load5 < LOAD_5M_LOW and has_work:
+        low_since = float(state.setdefault("load_low_since", now_mono))
+        if now_mono - low_since > LOAD_LOW_SUSTAIN_SECONDS:
+            return (
+                "wsl_underused:wsl-load",
+                alert_line("wsl_underused", f"load5={load5:.2f}:for={int((now_mono-low_since)//60)}m", "<6_for_15m_with_work", "raise_worker_concurrency_or_unblock_admission"),
+            )
+    else:
+        state.pop("load_low_since", None)
     if load5 <= LOAD_5M_BOUND:
         state.pop("load_high_since", None)
         return None
@@ -832,10 +843,7 @@ def check_once(state: dict[str, Any]) -> None:
 
     queue_raw, workers, green_queue, queued = local_runner_work()
     del queue_raw
-    if queued:
-        low_rate = landing_rate_alert(queued, now_wall)
-        if low_rate:
-            alerts.append(low_rate)
+    # landing_rate_low/train_red_rate read the legacy drive-train queue (dead since 10-28); node_health flow covers merges.
     pending_count = len(green_queue) + len(workers)
     alerts.extend(runner_alerts(state, pending_count, now_wall, now_mono))
 
@@ -844,12 +852,9 @@ def check_once(state: dict[str, Any]) -> None:
     if release_alert:
         alerts.append(release_alert)
     alerts.extend(worker_queue_wait_alerts(now_wall))
-    load = load_alert(state, now_mono)
+    load = load_alert(state, now_mono, bool(pending_count or queued))
     if load:
         alerts.append(load)
-    train = train_red_alert()
-    if train:
-        alerts.append(train)
     alerts.extend(worker_round_alerts(units))
     alerts.extend(unit_alerts(units, now_mono, now_wall))
 
