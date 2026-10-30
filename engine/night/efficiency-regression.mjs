@@ -1661,7 +1661,7 @@ function maintainerPipelineIssueSamples(home, windows) {
 export function maintainerMailEfficiencySummary(home, now = new Date().toISOString(), { journalFile } = {}) {
   const nowMs = parseTime(now);
   if (nowMs === null) throw new Error('--now must be an ISO timestamp');
-  const policy = readJson(path.join(SCRIPT_DIR, '../state/maintainer-health-mail.json'), null);
+  const policy = readJson(path.join(SCRIPT_DIR, '../state/founder-health-mail.json'), null);
   const intervalMs = Number(policy?.digest_interval_seconds) * 1000;
   if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) throw new Error('maintainer mail digest interval is invalid');
   const windows = maintainerMailWindows(nowMs, intervalMs);

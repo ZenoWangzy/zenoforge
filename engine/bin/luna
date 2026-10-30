@@ -65,7 +65,7 @@ args=(exec -C "$cwd" "${mcp_off[@]}" -m "${CODEX_MODEL:-gpt-6-luna}" -c "model_r
 source $HOME/.zenoforge/checkout/engine/thread-budget.sh && agent_thread_budget
 scope="luna-${key//[^A-Za-z0-9_-]/-}-$$"
 TMPDIR="$root/tmp/$key" PATH="$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
-  systemd-run --user --scope --quiet --unit="$scope" -p MemoryMax="${LUNA_MEM_MAX:-4G}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo 100)" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
+  systemd-run --user --scope --quiet --unit="$scope" -p MemoryMax="${LUNA_MEM_MAX:-4G}" -p CPUQuota="${LUNA_CPU_QUOTA:-200%}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo 100)" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
   codex ${CODEX_SEARCH:+--search} "${args[@]}" - <"$prompt" >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &
 cpid=$!; echo "$cpid" >"$out/codex.pid"; sleep 3; flock -u "$mx"; exec {mx}>&-
 wait "$cpid"; rc=$?

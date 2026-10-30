@@ -51,7 +51,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/comms-format.sh"
 # jq_arg_file() is lib.sh's helper for handing jq untrusted-size data via a
 # temp file instead of argv (see lib.sh for the full comment and incident
 # history) -- send_email() below needs it for the encoded MIME payload,
-# which can carry a maintainer_question_md/brief_md this pipeline sends
+# which can carry a founder_question_md/brief_md this pipeline sends
 # verbatim. Normally already defined (lib.sh sources this file, so its own
 # definition runs first) -- guarded here only because this file's own
 # header says run-tick.sh sources it standalone, deliberately without
@@ -1119,7 +1119,7 @@ maintainer_issue_pr_numbers() {
 # If the stored outcome is missing or mismatched, ask the work model and save
 # a verified answer on the issue. Model refusal never blocks production close.
 # One generation (first try plus one retry) per issue and SHA: the attempt is
-# recorded in night/maintainer-outcome-generated before the model runs, so a
+# recorded in night/founder-outcome-generated before the model runs, so a
 # deferred digest item cannot buy a fresh model call every tick (2313 and 2378
 # made 22 each in 6 hours, 2026-10-07). After that the digest keeps the item
 # deferred and the supervisor inbox carries one maintainer-outcome-missing line.
@@ -1143,7 +1143,7 @@ ensure_maintainer_user_outcome() {
     maintainer_user_outcome_matches_title "$issue_title" "$existing" "$issue_body"; then
     return 0
   fi
-  attempts_ledger="$AGENT_HOME/night/maintainer-outcome-generated"
+  attempts_ledger="$AGENT_HOME/night/founder-outcome-generated"
   attempt_key="$issue_num ${sha_key:--}"
   if grep -Fxq "$attempt_key" "$attempts_ledger" 2>/dev/null; then
     echo "notify: release-time user outcome for issue #$issue_num already generated once for ${sha_key:-this release}; not calling the model again" >&2
@@ -1281,7 +1281,7 @@ queue_maintainer_outcome() (
     return 1
   fi
 
-  queue_file="$AGENT_HOME/night/maintainer-outcomes.json"
+  queue_file="$AGENT_HOME/night/founder-outcomes.json"
   lock_file="$queue_file.lock"
   mkdir -p "$(dirname "$queue_file")" || return 1
   # ponytail: one global queue lock serializes digest sends; split by roster only if multiple pipelines need throughput.
@@ -1298,10 +1298,10 @@ queue_maintainer_outcome() (
 
   # A reopened-and-reclosed ticket must not mail the roster twice for the same
   # deploy (2026-09-25, #1702 was mailed at 23:05Z and again at 00:05Z).
-  if grep -Fxq "$issue_num $deployed_sha" "$AGENT_HOME/night/maintainer-outcomes-sent" 2>/dev/null; then
+  if grep -Fxq "$issue_num $deployed_sha" "$AGENT_HOME/night/founder-outcomes-sent" 2>/dev/null; then
     return 0
   fi
-  if grep -Fxq "$issue_num $deployed_sha" "$AGENT_HOME/night/maintainer-outcomes-internal" 2>/dev/null; then
+  if grep -Fxq "$issue_num $deployed_sha" "$AGENT_HOME/night/founder-outcomes-internal" 2>/dev/null; then
     return 0
   fi
   item="$(jq -n --argjson issue "$issue_num" --arg sha "$deployed_sha" \
@@ -1345,7 +1345,7 @@ sweep_closed_maintainer_outcomes() {
   local repo="$REPO" queue_file last_sent_at cutoff closed_json row issue_num labels state_file released deployed_sha merged_sha
   notify_test_write_guard || return 1
   [ "${DRY_RUN:-0}" = "1" ] && return 0
-  queue_file="$AGENT_HOME/night/maintainer-outcomes.json"
+  queue_file="$AGENT_HOME/night/founder-outcomes.json"
   last_sent_at=0
   if [ -f "$queue_file" ]; then
     if ! jq -e 'type == "object" and (.pending | type == "array") and (.last_sent_at | type == "number")' "$queue_file" >/dev/null 2>&1; then
@@ -1407,8 +1407,8 @@ flush_maintainer_outcome_digest() (
     return 1
   fi
 
-  queue_file="$AGENT_HOME/night/maintainer-outcomes.json"
-  internal_ledger="$AGENT_HOME/night/maintainer-outcomes-internal"
+  queue_file="$AGENT_HOME/night/founder-outcomes.json"
+  internal_ledger="$AGENT_HOME/night/founder-outcomes-internal"
   sweep_closed_maintainer_outcomes || echo "notify: closed-issue outcome sweep failed; existing queued digest will still be checked" >&2
   [ -f "$queue_file" ] || return 0
   lock_file="$queue_file.lock"
@@ -1507,7 +1507,7 @@ flush_maintainer_outcome_digest() (
     done < <(resolve_recipients_everyone_nonmaintainer "")
     if ((${#recipients[@]} == 0)) || send_email_strict "$subject" "$body" --maintainer-kind outcome "${recipients[@]}" >/dev/null; then
       sent=1
-      activity_file="$AGENT_HOME/night/maintainer-health-outcomes.jsonl"
+      activity_file="$AGENT_HOME/night/founder-health-outcomes.jsonl"
       activity_at="$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)"
       if [ -s "$activity_file" ]; then
         activity_tmp="$(mktemp "$AGENT_HOME/night/maintainer-health-outcomes.XXXXXX")" || return 1
@@ -1530,7 +1530,7 @@ flush_maintainer_outcome_digest() (
           >> "$activity_file" || echo "notify: could not retain health summary for deployed issue $issue_num" >&2
       done
       printf '%s\n' "${ready_pending[@]}" | jq -r '"\(.issue) \(.deployed_sha)"' \
-        >> "$AGENT_HOME/night/maintainer-outcomes-sent" || true
+        >> "$AGENT_HOME/night/founder-outcomes-sent" || true
     else
       deferred_pending+=("${ready_pending[@]}")
     fi

@@ -29,7 +29,7 @@ JSON
 printf '%s\n' '{"issue":3001,"deployed_sha":"4b7c032e0","outcome":"现在可以搜索订单","sent_at":"2026-09-26T11:45:00Z"}' \
   '{"issue":3003,"deployed_sha":"123456789abcdef","outcome":"现在可以筛选日报","sent_at":"2026-09-25T16:00:00Z"}' \
   '{"issue":3005,"deployed_sha":"abcdef0123456789","outcome":"现在可以维护客户资料","sent_at":"2026-09-19T11:30:00Z"}' \
-  > "$AGENT_HOME/night/maintainer-health-outcomes.jsonl"
+  > "$AGENT_HOME/night/founder-health-outcomes.jsonl"
 cat > "$AGENT_HOME/state/3001.json" <<'JSON'
 {"deploy_state":"deployed","deployed_sha":"4b7c032e0","deployed_at":"2026-09-26T11:30:00Z"}
 JSON

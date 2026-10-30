@@ -16,6 +16,7 @@ git -C "$C" fetch -q origin main || exit 1
   cat "$S/factory/common.md"; [[ -n $note ]] && { printf "\n## 本票的补充说明（CTO 审核）\n"; cat "$note"; }; printf '\n## Shared brief rules\n'; cat "$S/luna/briefs/_rules.md"
   # maintainer 10-29: notes/issues kept asking for tests and overrode common.md; this line comes last so it wins
   printf '\n## 最终规则（优先于上文任何测试要求）\n非产品代码：落地前不写测试也不跑测试，改完立即 land-direct-main 落地，落地即生效。验收项里的测试要求一律视为不适用。land-direct-main 自带的 preflight 照常运行，不算你在跑测试，不要因此停下来问。\n'; } > "$B"
-systemd-run --user --unit "$key" --collect -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY \
+# 10-30 head: opt workers bypassed the luna CPU cap (CPUQuota=infinity); cap every opt worker at start (hotfix weight is 1000)
+systemd-run --user --unit "$key" --collect -p CPUQuota="${LUNA_CPU_QUOTA:-200%}" -p CPUWeight=100 -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY \
   -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY -E LUNA_PRIORITY=opt -E LUNA_AGE_ADMIT_SECONDS -p WorkingDirectory="$W" \
   "$S/bin/worker" "$key" "$W" "$B" >/dev/null 2>&1 && echo "started $key #$issue" || echo "FAILED $key"

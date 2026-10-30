@@ -112,7 +112,9 @@ function latestCheckInput(input) {
 if (process.argv[2] === '--latest-checks') {
   try {
     const input = JSON.parse(readFileSync(0, 'utf8'));
-    process.stdout.write(`${JSON.stringify(latestCheckInput(input))}\n`);
+    // Wait for the write: process.exit() drops a piped stdout past 64 KiB, which left the
+    // scheduler's merge census truncated ("check census unavailable", 10-29).
+    await new Promise((resolve) => process.stdout.write(`${JSON.stringify(latestCheckInput(input))}\n`, resolve));
   } catch (error) {
     console.error(`could not select latest check rows: ${error.message}`);
     process.exit(2);

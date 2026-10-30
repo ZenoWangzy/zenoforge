@@ -24,7 +24,24 @@ NOW_EPOCH="$(date +%s)"
 LOG="$A/scheduler.log"
 PAUSE_FILE="${AUTOPILOT_PAUSE_FILE:-${HOME:-}/.zenoforge/PAUSE}"
 say() { echo "[$STAMP] $*" >> "$LOG"; }
-jqf() { jq "$@" 2>/dev/null; }
+# jq 的静默包装。坏输入曾在这里变成静默 "{}" 持续约 2 小时（10-29 census 事故），现在把 jq 的
+# 解析/运行错误按「调用方 + stderr 首行」记进 scheduler.log；返回码不变。去重靠本 tick 固定的
+# STAMP 前缀查日志同款行，命令替换子 shell 也能共享一份去重。
+jqf() {
+  local _err _rc _first _who
+  _err="$(mktemp)" || { jq "$@" 2>/dev/null; return $?; }
+  jq "$@" 2>"$_err"
+  _rc=$?
+  if (( _rc != 0 )) && [[ -s "$_err" && -n "${LOG:-}" ]]; then
+    _first="$(head -n1 "$_err")"
+    _who="${FUNCNAME[1]:-top}"
+    if ! grep -Fq "[$STAMP] jqf error (rc=$_rc) in $_who: $_first" "$LOG" 2>/dev/null; then
+      say "jqf error (rc=$_rc) in $_who: $_first"
+    fi
+  fi
+  rm -f "$_err"
+  return "$_rc"
+}
 js() { jq -cn --arg v "$1" '$v'; }  # 任意文本 → jq 字符串字面量，供拼入 set_unit 表达式
 # The scheduler is launched standalone by loop.sh; provide lib.sh's shared helper
 # without making the scheduler depend on lib.sh being sourced into its process.
@@ -81,6 +98,9 @@ IMPLEMENT_CAP="$(jqf -r '.implement_cap // 99' <<<"$CFG")"
 BUDGET="$(jqf -r .daily_token_budget <<<"$CFG")"
 [[ "$BUDGET" =~ ^[0-9]+$ ]] || BUDGET=0
 FOCUS_MODE="$(jqf -r '.focus_mode // "all"' <<<"$CFG")"
+# zf-ab 裁决（10-29）：append-registry 类热点文件（多数情况下只追加的注册表）对 implement 放行并行；
+# 名单以配置为单一事实源（config.template.json 每拍 reconcile 进 runtime config）。
+SHARED_APPEND="$(jqf -c '.footprint_mutex.shared_append // []' <<<"$CFG")"
 # 默认关：早期 stale-base 路由只在 ticket 11 的回放确认零误判后由配置打开
 STALE_BASE_ROUTING="$(jqf -r '.stale_base_routing // false' <<<"$CFG")"
 BUDGET_METER="$(jqf -r '.budget_meter // "sessions_dir"' <<<"$CFG")"
@@ -1129,12 +1149,15 @@ live_writes_union() { # workdir scope_json -> scope ∪ 实际已写路径；wor
     base="$(git -C "$wd" merge-base origin/main HEAD 2>/dev/null || true)"
     live="$(
       {
-        if [[ -n "$base" ]]; then
-          timeout --kill-after=1s 3s git -C "$wd" diff --no-renames --name-only -z "$base" || true
-        else
-          timeout --kill-after=1s 3s git -C "$wd" diff --no-renames --name-only -z HEAD || true
-        fi
-        timeout --kill-after=1s 3s git -C "$wd" ls-files --others --exclude-standard -z || true
+        {
+          if [[ -n "$base" ]]; then
+            timeout --kill-after=1s 3s git -C "$wd" diff --no-renames --name-only -z "$base" || true
+          else
+            timeout --kill-after=1s 3s git -C "$wd" diff --no-renames --name-only -z HEAD || true
+          fi
+        } &
+        { timeout --kill-after=1s 3s git -C "$wd" ls-files --others --exclude-standard -z || true; } &
+        wait || true
       } | jq -Rsc '[splits("\u0000") | select(length>0)]'
     )"
     scope="$(jq -cn --argjson scope "$scope" --argjson live "$live" '($scope + $live) | unique')"
@@ -1176,7 +1199,137 @@ resolve_active_footprints() { # active-unit JSON array → fresh live scopes; sc
   rm -rf -- "$scan_dir"
   printf '%s\n' "$resolved"
 }
-declare -A TICK_FOOTPRINT_CACHE=()
+declare -A TICK_FOOTPRINT_CACHE=() TICK_CHECK_SCOPE_SOURCE=() TICK_CHECK_SCOPE=()
+TICK_ACTIVE_FOOTPRINTS='[]'
+TICK_ACTIVE_FOOTPRINTS_VALID=false
+TICK_FOOTPRINT_PREFLIGHT_STATUS=not-started
+TICK_FOOTPRINT_CONFLICT_VALID=false
+TICK_DISPATCH_LOCAL_REFILL=false
+declare -A TICK_FOOTPRINT_PREFLIGHT_CONFLICT=()
+declare -a TICK_FOOTPRINT_PREFLIGHT_IDS=()
+footprint_drop_check_scope_cache() {
+  TICK_CHECK_SCOPE_SOURCE=()
+  TICK_CHECK_SCOPE=()
+}
+active_footprint_snapshot() { # refresh live writes for all active implementation workers
+  local active
+  active="$(jqf -c --slurpfile w "$WORKERS" '
+    [.units[] | . as $u
+      | select(any($w[0].workers[]; .unit==$u.id and .harvested!=true and (.type | IN("implement","repair"))))
+      | . + {live_workdir: ([$w[0].workers[] | select(.unit==$u.id and .harvested!=true and (.type | IN("implement","repair"))) | .workdir] | first)}]' "$UNITS")"
+  [[ "$active" == '[]' ]] || active="$(resolve_active_footprints "$active")" || return 1
+  printf '%s\n' "$active"
+}
+active_footprint_conflict() (
+  REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
+  source "$SCHEDULER_AGENT_LIB" || exit 2
+  local candidate active_scope owner
+  candidate="$(footprint_strip_shared_append "$1")"
+  # Flatten active scopes once: the previous candidate × active-unit loop ran
+  # expected_packages_collide (and its jq path parsing) once for every owner.
+  active_scope="$(jq -c --arg id "$3" '[.[] | select(.id != $id) | .footprint[]?]' <<<"$2")"
+  active_scope="$(footprint_strip_shared_append "$active_scope")"
+  if expected_packages_collide "$candidate" "$active_scope"; then
+    owner="$(jq -r --arg id "$3" --arg path "$EXPECTED_SCOPE_COLLISION_ACTIVE" \
+      'first(.[] | select(.id != $id) | select(any(.footprint[]?; . == $path)) | .id) // empty' <<<"$2")"
+    printf '%s\n' "$owner"
+  fi
+)
+active_footprint_conflicts_batch() (
+  REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
+  source "$SCHEDULER_AGENT_LIB" || exit 2
+  local active="$1" candidates="$2" id scope candidate active_scope owner
+  while IFS=$'\t' read -r id scope; do
+    [[ -n "$id" ]] || continue
+    candidate="$(footprint_strip_shared_append "$scope")"
+    active_scope="$(jq -c --arg id "$id" '[.[] | select(.id != $id) | .footprint[]?]' <<<"$active")"
+    active_scope="$(footprint_strip_shared_append "$active_scope")"
+    if expected_packages_collide "$candidate" "$active_scope"; then
+      owner="$(jq -r --arg id "$id" --arg path "$EXPECTED_SCOPE_COLLISION_ACTIVE" \
+        'first(.[] | select(.id != $id) | select(any(.footprint[]?; . == $path)) | .id) // empty' <<<"$active")"
+      printf '%s\t%s\n' "$id" "${owner:-unknown}"
+    fi
+  done <<<"$candidates"
+)
+footprint_refresh_conflicts() {
+  local refresh="${1:-true}" started=$SECONDS active candidates='' conflicts id scope owner elapsed
+  if [[ "$refresh" == true ]]; then
+    active="$(active_footprint_snapshot)" || { footprint_drop_check_scope_cache; return 1; }
+    TICK_ACTIVE_FOOTPRINTS="$active"
+    TICK_ACTIVE_FOOTPRINTS_VALID=true
+  else
+    [[ "$TICK_ACTIVE_FOOTPRINTS_VALID" == true ]] || { footprint_drop_check_scope_cache; return 1; }
+    active="$TICK_ACTIVE_FOOTPRINTS"
+  fi
+  for id in "${TICK_FOOTPRINT_PREFLIGHT_IDS[@]}"; do
+    [[ -n "$id" ]] || continue
+    scope="${TICK_CHECK_SCOPE[$id]:-[]}"
+    candidates+="$id"$'\t'"$scope"$'\n'
+  done
+  conflicts="$(active_footprint_conflicts_batch "$active" "$candidates")" \
+    || { footprint_drop_check_scope_cache; return 1; }
+  TICK_FOOTPRINT_PREFLIGHT_CONFLICT=()
+  while IFS=$'\t' read -r id owner; do
+    [[ -n "$id" ]] && TICK_FOOTPRINT_PREFLIGHT_CONFLICT["$id"]="${owner:-unknown}"
+  done <<<"$conflicts"
+  TICK_FOOTPRINT_CONFLICT_VALID=true
+  elapsed=$((SECONDS - started))
+  (( elapsed < 2 )) || say "dispatch detail footprint_conflict_refresh candidates=${#TICK_FOOTPRINT_PREFLIGHT_IDS[@]} secs=${elapsed}s"
+}
+footprint_preflight_snapshot() {
+  if [[ "$TICK_FOOTPRINT_PREFLIGHT_STATUS" == ready ]]; then
+    [[ "$TICK_FOOTPRINT_CONFLICT_VALID" == true ]] && return 0
+    footprint_refresh_conflicts true || return 1
+    return 0
+  fi
+  [[ "$TICK_FOOTPRINT_PREFLIGHT_STATUS" == not-started ]] || return 1
+  TICK_FOOTPRINT_PREFLIGHT_STATUS=failed
+  local started=$SECONDS scope_rows='' clear_scope_rows='' scope_candidates expanded_scopes row updates update_count u id scope check_scope elapsed candidate_count=0
+  local candidate_filter='.units[] | select(.stage == "implement-pending" or .stage == "repair-pending")'
+  [[ "$TICK_DISPATCH_LOCAL_REFILL" != true ]] || candidate_filter='.units[] | select(.stage == "implement-pending")'
+  TICK_FOOTPRINT_PREFLIGHT_IDS=()
+  while IFS= read -r u; do
+    id="$(jqf -r '.id' <<<"$u")"
+    scope="$(scheduler_footprint "$u")" || return 1
+    TICK_FOOTPRINT_CACHE["$id"]="$scope"
+    TICK_FOOTPRINT_PREFLIGHT_IDS+=("$id")
+    TICK_CHECK_SCOPE_SOURCE["$id"]="$scope"
+    TICK_CHECK_SCOPE["$id"]="$scope"
+    scope_rows+="$id"$'\t'"$scope"$'\n'
+    candidate_count=$((candidate_count + 1))
+  done < <(jqf -c "$candidate_filter" "$UNITS")
+  if (( candidate_count == 0 )); then
+    TICK_FOOTPRINT_PREFLIGHT_STATUS=ready
+    TICK_FOOTPRINT_CONFLICT_VALID=true
+    return 0
+  fi
+  footprint_refresh_conflicts true || return 1
+  while IFS=$'\t' read -r id scope; do
+    [[ -n "$id" && -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[$id]:-}" ]] || continue
+    clear_scope_rows+="$id"$'\t'"$scope"$'\n'
+  done <<<"$scope_rows"
+  if [[ -n "$clear_scope_rows" ]]; then
+    scope_candidates="$(jqf -Rn '[inputs | split("\t") | select(length == 2) | {id:.[0],scope:(.[1] | fromjson)}]' <<<"$clear_scope_rows")" \
+      || { footprint_drop_check_scope_cache; return 1; }
+    expanded_scopes="$(hotspot_expand_batch "$scope_candidates")" \
+      || { footprint_drop_check_scope_cache; return 1; }
+    while IFS= read -r row; do
+      id="$(jqf -r '.id' <<<"$row")"
+      check_scope="$(jqf -c '.scope' <<<"$row")"
+      TICK_CHECK_SCOPE["$id"]="$check_scope"
+    done < <(jqf -c '.[]' <<<"$expanded_scopes")
+    footprint_refresh_conflicts cached || return 1
+  fi
+  updates="$(jqf -Rn '[inputs | split("\t") | select(length == 2) | {key:.[0],value:(.[1] | fromjson)}] | from_entries' <<<"$scope_rows")" || return 1
+  update_count="$(jqf --argjson scopes "$updates" '[.units[] | select($scopes[.id] != null and (.footprint // []) != $scopes[.id])] | length' "$UNITS")" || return 1
+  if (( update_count > 0 )); then
+    units_update --argjson scopes "$updates" \
+      '.units |= map(if $scopes[.id] != null then .footprint=$scopes[.id] else . end)' || return 1
+  fi
+  TICK_FOOTPRINT_PREFLIGHT_STATUS=ready
+  elapsed=$((SECONDS - started))
+  (( elapsed < 2 )) || say "dispatch detail footprint_preflight candidates=$candidate_count secs=${elapsed}s"
+}
 # #4488 第二轮（spec #4495 的类级解法）：预测足迹本身也看不准，共享测试文件和
 # 运行时热点是和历史共同修改耦合的。派发检查前把窗口内与预测文件同提交
 # 出现过的热点文件（每提交每文件计一次，共同修改 ≥2 次，取次数前 12）并进
@@ -1205,12 +1358,47 @@ hotspot_expand() { # scope_json -> scope ∪ 共同修改热点；历史读不�
   fi
   printf '%s\n' "$scope"
 }
-footprint_room() {
-  local id="$1" u="${2:-}" scope active conflict check_scope
+hotspot_expand_batch() { # [{id,scope}] → 同一份 30 天 git log 上批量扩展候选 check scope
+  local candidates="$1" log
+  log="$(hotspot_log)"
+  jqf -Rsc --argjson candidates "$candidates" '
+    def in_scope($scope; $path): any($scope[]; . as $s | . == $path or ($path | startswith($s + "/")));
+    (split("\u0001") | map(split("\n") | map(select(length > 0)) | unique)) as $commits
+    | [$candidates[] as $candidate
+        | ($candidate.scope) as $scope
+        | ([ $commits[]
+             | select(length > 1 and length <= 40)
+             | select(any(.[]; in_scope($scope; .)))
+             | .[] | select(in_scope($scope; .) | not)
+           ]
+          | group_by(.) | map(select(length >= 2) | {f:.[0],n:length})
+          | sort_by(-.n) | .[:12] | map(.f) | unique) as $added
+        | {id:$candidate.id,scope:(($scope + $added) | unique)}]
+  ' <<<"$log"
+}
+# shared-append 精确路径从足迹里剥离后再做互斥比较：两边只剩 shared-append 文件时不算冲突
+# （不再串行 implement），文本冲突交给落地 rebase 处理，冲突率由 node_health 的
+# ci.shared_append_rebase_conflict_pct 观测。目录条目不剥离：整包范围仍覆盖非共享文件，保持互斥。
+footprint_strip_shared_append() { # scope_json -> 去掉 shared-append 精确路径后的 scope
+  local scope="$1"
+  local shared="${SHARED_APPEND:-[]}"
+  [[ "$shared" != '[]' ]] || { printf '%s\n' "$scope"; return; }
+  jqf -c --argjson sa "$shared" 'map(select(. as $x | any($sa[]; . == $x) | not))' <<<"$scope"
+}
+_footprint_room() {
+  local id="$1" u="${2:-}" scope active conflict check_scope refreshed=false require_fresh="${3:-true}"
   # f9 kill switch（M2 故障注入 #4498）：footprint_mutex.enabled=false 跳过互斥。
   # 关掉后不再产生 "footprint wait" 事件，mechanism.silent 会在登记的沉默上限内报出。
   [[ "$(jqf -r 'if .footprint_mutex.enabled == false then "false" else "true" end' <<<"$CFG")" == true ]] || return 0
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$id" '.units[] | select(.id==$id)' "$UNITS")"
+  if [[ "$require_fresh" != true ]] && footprint_preflight_snapshot; then
+    conflict="${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[$id]:-}"
+    if [[ -n "$conflict" ]]; then
+      say "footprint wait unit=$id owner=$conflict"
+      return 1
+    fi
+    [[ -n "${TICK_FOOTPRINT_CACHE[$id]+cached}" ]] && return 0
+  fi
   scope="$(scheduler_footprint "$u")" || return 1
   if [[ -n "${TICK_FOOTPRINT_CACHE[$id]+cached}" ]]; then
     [[ "${TICK_FOOTPRINT_CACHE[$id]}" == "$scope" ]] || set_unit "$id" ".footprint=$scope"
@@ -1218,26 +1406,45 @@ footprint_room() {
     [[ "$(jqf -c '.footprint // []' <<<"$u")" == "$scope" ]] || set_unit "$id" ".footprint=$scope"
   fi
   TICK_FOOTPRINT_CACHE["$id"]="$scope"
-  active="$(jqf -c --arg id "$id" --slurpfile w "$WORKERS" '
-    [.units[] | select(.id!=$id) | . as $u
-      | select(any($w[0].workers[]; .unit==$u.id and .harvested!=true and (.type | IN("implement","repair"))))
-      | . + {live_workdir: ([$w[0].workers[] | select(.unit==$u.id and .harvested!=true and (.type | IN("implement","repair"))) | .workdir] | first)}]' "$UNITS")"
-  [[ "$active" == '[]' ]] && return 0
-  active="$(resolve_active_footprints "$active")" || return 1
-  check_scope="$(hotspot_expand "$scope")"
-  conflict="$(
-    REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
-    source "$SCHEDULER_AGENT_LIB" || exit 2
-    while read -r other; do
-      if expected_packages_collide "$check_scope" "$(jq -c '.footprint' <<<"$other")"; then
-        jq -r '.id' <<<"$other"; break
-      fi
-    done < <(jq -c '.[]' <<<"$active")
-  )" || return 1
+  if [[ "${TICK_CHECK_SCOPE_SOURCE[$id]:-}" == "$scope" ]]; then
+    check_scope="${TICK_CHECK_SCOPE[$id]}"
+  else
+    check_scope="$(hotspot_expand "$scope")"
+    TICK_CHECK_SCOPE_SOURCE["$id"]="$scope"
+    TICK_CHECK_SCOPE["$id"]="$check_scope"
+  fi
+  if [[ "$TICK_ACTIVE_FOOTPRINTS_VALID" == true ]]; then
+    active="$TICK_ACTIVE_FOOTPRINTS"
+  else
+    active="$(active_footprint_snapshot)" || return 1
+    TICK_ACTIVE_FOOTPRINTS="$active"
+    TICK_ACTIVE_FOOTPRINTS_VALID=true
+    refreshed=true
+  fi
+  conflict="$(active_footprint_conflict "$check_scope" "$active" "$id")" || return 1
   if [[ -n "$conflict" ]]; then
     say "footprint wait unit=$id owner=$conflict"
     return 1
   fi
+  [[ "$require_fresh" == true ]] || return 0
+  # A cached conflict can conservatively reject a candidate. A candidate that
+  # appears clear must refresh every active worktree before it can be admitted.
+  if [[ "$refreshed" != true ]]; then
+    active="$(active_footprint_snapshot)" || return 1
+    TICK_ACTIVE_FOOTPRINTS="$active"
+    conflict="$(active_footprint_conflict "$check_scope" "$active" "$id")" || return 1
+    if [[ -n "$conflict" ]]; then
+      say "footprint wait unit=$id owner=$conflict"
+      return 1
+    fi
+  fi
+}
+footprint_room() { # unit type; report checks that materially delay dispatch
+  local started=$SECONDS rc=0 elapsed
+  _footprint_room "$@" || rc=$?
+  elapsed=$((SECONDS - started))
+  (( elapsed >= 2 )) && say "dispatch detail footprint_check unit=$1 secs=${elapsed}s"
+  return "$rc"
 }
 
 # The Stop-hook pattern without an LLM: use the Touched packages job's selector.
@@ -1399,15 +1606,17 @@ self_check_run() (
 
 pid_start() { pid_start_id "$1"; } # start ticks: tells a reused pid from the gate
 self_check_before_review() { # unit sha clone; false means wait for the gate/self-fix
-  local id="$1" sha="$2" dir="$3" out result pid rc lane pr_base=""
-  lane="$(unit_field "$id" '.lane // empty')"
+  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base=""
+  [[ -n "$u" ]] || u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  lane="$(jqf -r '.lane // empty' <<<"$u")"
   if [[ "$lane" == pr ]]; then
-    pr_base="$(pr_view "$(unit_field "$id" '.pr // empty')" baseRefName)" || pr_base=""
+    pr="$(jqf -r '.pr // empty' <<<"$u")"
+    pr_base="$(tick_pr_base "$pr")" || pr_base=""
   fi
-  if [[ "$(unit_field "$id" .self_check_sha)" == "$sha" && -n "$(unit_field "$id" .self_check_status)" \
-      && "$(unit_field "$id" '.self_check_lane // empty')" == "$lane" \
-      && "$(unit_field "$id" '.self_check_base // empty')" == "$pr_base" ]]; then return 0; fi
-  out="$SUP/self-check-$id-$sha-$(unit_field "$id" '.self_check_fixes // 0')-$TAG.log"; result="$out.result"
+  if [[ "$(jqf -r '.self_check_sha // empty' <<<"$u")" == "$sha" && -n "$(jqf -r '.self_check_status // empty' <<<"$u")" \
+      && "$(jqf -r '.self_check_lane // empty' <<<"$u")" == "$lane" \
+      && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" ]]; then return 0; fi
+  out="$SUP/self-check-$id-$sha-$(jqf -r '.self_check_fixes // 0' <<<"$u")-$TAG.log"; result="$out.result"
   (
     if self_check_run "$dir" "$sha" "$lane" "$pr_base"; then printf 'pass\n' > "$result"
     else
@@ -1451,7 +1660,7 @@ self_check_harvest() {
 self_fix_dispatch() { # unit JSON; same session, model, branch and workdir
   local u="$1" id dir branch out rep prompt model effort deliver key failure
   id="$(jqf -r .id <<<"$u")"
-  room_for "$id" repair "$u" || return 1
+  room_for "$id" repair "$u" false || return 1
   model="$(jqf -r .implement_model <<<"$u")"; effort="$(jqf -r .implement_effort <<<"$u")"
   cooling "$(provider_of "$model")" && return 1
   dir="$(jqf -r .self_check_workdir <<<"$u")"; branch="$(jqf -r .branch <<<"$u")"
@@ -1512,8 +1721,8 @@ higher_priority_waiting() { # priority → higher-priority live waiter (stdout);
   return 1
 }
 
-room_for() { # unit-id type [unit-json]：焦点与并发检查（先于 clone/gh 调用，满载时不做无用功）
-  local u="${3:-}" priority waiter cur impl_cap n_impl
+room_for() { # unit-id type [unit-json] [fresh-footprint=true]：焦点与并发检查
+  local u="${3:-}" priority waiter cur impl_cap n_impl fresh_footprint="${4:-true}"
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"
   if [[ "$2" == review || "$2" == rereview ]]; then
     jqf -e '(.self_check_pid // null)==null and (.self_fix_pending // false)!=true' <<<"$u" >/dev/null || return 1
@@ -1532,33 +1741,40 @@ room_for() { # unit-id type [unit-json]：焦点与并发检查（先于 clone/g
   if (( cur >= MAX )); then say "skip dispatch unit=$1 (capacity $cur/$MAX)"; return 1; fi
   impl_cap="$IMPLEMENT_CAP"
   if [[ "$2" == "implement" || "$2" == "repair" ]]; then
-    footprint_room "$1" "$u" || return 1
+    footprint_room "$1" "$u" "$fresh_footprint" || return 1
     n_impl=$(live_by_type "implement|repair")
     if (( n_impl >= impl_cap )); then say "skip dispatch unit=$1 (implement at cap $n_impl/$impl_cap)"; return 1; fi
   fi
 }
 
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json]
-  room_for "$1" "$3" "${13:-}" || return 1
-  local prompt="$8"
+  local unit_json="${13:-}" prompt="$8" check_output check_status footprint
+  [[ -n "$unit_json" ]] || unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  room_for "$1" "$3" "$unit_json" || return 1
   if [[ "$3" == review || "$3" == rereview ]] && [[ "${9:-}" =~ $SHA_RE ]]; then
-    self_check_before_review "$1" "$9" "${10:-$ROOT}" || return 1
-    local check_output; check_output="$(unit_field "$1" .self_check_output)"
+    self_check_before_review "$1" "$9" "${10:-$ROOT}" "$unit_json" || return 1
+    check_output="$(jqf -r '.self_check_output // empty' <<<"$unit_json")"
+    check_status="$(jqf -r '.self_check_status // empty' <<<"$unit_json")"
     prompt+="
-流水线确定性自检（当前 head $9）：$(unit_field "$1" .self_check_status)。完整输出 $check_output
+流水线确定性自检（当前 head $9）：$check_status。完整输出 $check_output
 $(tail -80 "$check_output" 2>/dev/null)"
   fi
   dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "${12-$prompt}" || return 1
   if [[ "$3" == review || "$3" == rereview ]]; then set_unit "$1" '.self_check_fixes=0'; fi
   if [[ "$3" == implement || "$3" == repair ]]; then
-    set_unit "$1" "$(STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" hist write-start "$(unit_field "$1" '.footprint // []')") | .implement_model=$(js "$6") | .implement_effort=$(js "$7")"
+    if [[ -n "${TICK_FOOTPRINT_CACHE[$1]+cached}" ]]; then
+      footprint="${TICK_FOOTPRINT_CACHE[$1]}"
+    else
+      footprint="$(unit_field "$1" '.footprint // []')"
+    fi
+    set_unit "$1" "$(STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" hist write-start "$footprint") | .implement_model=$(js "$6") | .implement_effort=$(js "$7")"
   fi
   local extra=""
   [[ "${9:-}" =~ $SHA_RE ]] && extra=" | .review_sha=\"$9\""
-  if [[ ( "$3" == implement || "$3" == repair ) && -n "$(unit_field "$1" '.handoff_start_ref // empty')" ]]; then
+  if [[ ( "$3" == implement || "$3" == repair ) && -n "$(jqf -r '.handoff_start_ref // empty' <<<"$unit_json")" ]]; then
     extra+=' | .handoff_start_applied=true'
   fi
-  if [[ "$3" == implement || "$3" == repair ]] && [[ -n "$(unit_field "$1" '.handoff_worktree_sha // empty')" ]]; then
+  if [[ "$3" == implement || "$3" == repair ]] && [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$unit_json")" ]]; then
     extra+=' | .handoff_worktree_applied=true'
   fi
   set_unit "$1" ".stage=\"$2\"$extra"
@@ -2115,6 +2331,16 @@ tick_pr_head() { # PR → head SHA from this tick's open-PR census, with a direc
   [[ "$head" =~ $SHA_RE ]] || return 1
   printf '%s\n' "$head"
 }
+tick_pr_base() { # PR → base branch from this tick's open-PR census, with a direct fallback for a census miss
+  local pr="$1" prs base
+  prs="$(tick_prs 2>/dev/null || true)"
+  if [[ -n "$prs" ]]; then
+    base="$(jqf -r --argjson p "$pr" '[.[] | select(.number == $p) | .baseRefName][0] // empty' <<<"$prs")"
+  fi
+  [[ -n "$base" ]] || base="$(pr_view "$pr" baseRefName)" || return 1
+  [[ -n "$base" ]] || return 1
+  printf '%s\n' "$base"
+}
 
 # 非产品快车道（2026-10-19 CTO 裁决）：PR 改动全是非产品路径 → lane=direct-main，优先派发，
 # 批准后由 land worker 压成 [skip ci] 提交经 land-direct-main.sh 直落 main（不走 PR CI 等待与合并车道）。
@@ -2619,9 +2845,11 @@ reconcile_stacked_units() {
 
 # 尺寸准入的计数：分支相对 PR 基线（普通 PR 为 main，堆叠 PR 为父分支）的代码加删行数；文档、生成物、锁文件与测试快照不计，
 # 避免这些内容单独变大就触发重切。数不出来（clone 丢了、fetch 失败）返回空，不挡评审。
-changed_lines_of() { # dir branch base-branch → 行数或空
-  local base base_branch="${3:-main}"
-  git -C "$1" fetch -q origin "+refs/heads/$base_branch:refs/remotes/origin/$base_branch" "+refs/heads/$2:refs/remotes/origin/$2" 2>/dev/null || return 0
+changed_lines_of() { # dir branch base-branch [refs-current] → 行数或空
+  local base base_branch="${3:-main}" refs_current="${4:-false}"
+  if [[ "$refs_current" != true || "$base_branch" != main ]]; then
+    git -C "$1" fetch -q origin "+refs/heads/$base_branch:refs/remotes/origin/$base_branch" "+refs/heads/$2:refs/remotes/origin/$2" 2>/dev/null || return 0
+  fi
   base="$(git -C "$1" merge-base "refs/remotes/origin/$base_branch" "refs/remotes/origin/$2" 2>/dev/null)" || return 0
   git -C "$1" diff --numstat "$base" "refs/remotes/origin/$2" 2>/dev/null \
     | awk -F'\t' '$3 !~ /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$/ && $3 !~ /^(docs|lessons|\.trellis)\// && $3 !~ /(^|\/)[^/]+\.md$/ && $3 !~ /(^|\/)(__snapshots__|generated|dist|build|coverage)(\/|$)/ && $3 !~ /(^|\/)[^/]*\.generated\.[^/]+$/ && $3 !~ /\.snap$/ { n += $1 + $2 } END { print n }'
@@ -2637,11 +2865,11 @@ changed_files_of() { # dir branch base-branch → actual diff paths as JSON
 # 尺寸准入在开 PR、派已有 PR 的 implement/repair 前和每次 repair/self-fix 交付后复查。
 # repair-pending 的超线 PR 先走现有 needs-recut 通道，不占 worker；同一 head 已拒过或不能路由时转 supervisor。
 # repair/self-fix 仍需复查新 head（#4482：PR #4396 从 611 增到 1090、#4403 从 796 增到 1063）。返回 1 = 已升级。
-size_admission_recheck() { # unit dir branch context [initial-head]
+size_admission_recheck() { # unit dir branch context [initial-head] [refs-current]
   local lines base_branch issue head="${5:-}" files
   [[ -n "$2" && -n "$3" ]] || return 0
   base_branch="$(unit_field "$1" '.stacked_on_branch // "main"')"
-  lines="$(changed_lines_of "$2" "$3" "$base_branch")"
+  lines="$(changed_lines_of "$2" "$3" "$base_branch" "${6:-false}")"
   [[ "$lines" =~ ^[0-9]+$ ]] || return 0
   files="$(changed_files_of "$2" "$3" "$base_branch")"
   if jqf -e 'type == "array"' <<<"$files" >/dev/null 2>&1; then
@@ -2666,7 +2894,7 @@ pre_dispatch_pr_admission() { # unit branch PR context → prepared clone; nonze
   local id="$1" branch="$2" pr="$3" context="$4" head dir
   head="$(tick_pr_head "$pr")" || return 1
   dir="$(ensure_clone "$id" "$branch" 1 "$head")" || { say "$context unit=$id: PR branch unavailable"; return 1; }
-  size_admission_recheck "$id" "$dir" "$branch" "$context" "$head" || return 1
+  size_admission_recheck "$id" "$dir" "$branch" "$context" "$head" true || return 1
   printf '%s\n' "$dir"
 }
 
@@ -3275,7 +3503,8 @@ advisor_launch() { # unit-json total-rounds
   say "no advisor configured; unit=$id round=$2 routed to arbiter-review"
 }
 repair_failure_prompt() { # unit-json review-report -> only this repair's failure evidence
-  local u="$1" report="$2" hint pr checks name link job
+  local u="$1" report="$2" hint pr checks name link job tmp i pid step_file log_file started=$SECONDS elapsed index=0
+  local -a names=() links=() step_files=() log_files=() pids=()
   hint="$(jqf -r '.repair_hint // empty' <<<"$u")"
   [[ -z "$hint" ]] || printf '%s\n' "$hint"
   case "$(jqf -r '.history[-1].stage // empty' <<<"$u")" in
@@ -3283,13 +3512,36 @@ repair_failure_prompt() { # unit-json review-report -> only this repair's failur
       pr="$(jqf -r '.pr // empty' <<<"$u")"
       checks="$(unset GH_TOKEN; gh pr checks "$pr" --json name,bucket,link 2>/dev/null)" || true
       checks="$(node "$HERE/../ci/pr-required-aggregate.mjs" --latest-checks <<<"$checks" 2>/dev/null)" || checks='[]'
+      tmp="$(mktemp -d)" || return 1
       while IFS=$'\t' read -r name link; do
         job="${link##*/job/}"; [[ "$job" =~ ^[0-9]+$ ]] || continue
-        printf '\nFailing CI check: %s\n%s\n' "$name" "$link"
-        (unset GH_TOKEN; gh api "repos/{owner}/{repo}/actions/jobs/$job" \
-          --jq '.steps[]? | select(.conclusion=="failure") | "Failing CI step: " + .name' 2>/dev/null)
-        (unset GH_TOKEN; gh api --allow-escape-sequences "repos/{owner}/{repo}/actions/jobs/$job/logs" 2>/dev/null) | tail -80
+        step_file="$tmp/$index.steps"; log_file="$tmp/$index.log"
+        names+=("$name"); links+=("$link"); step_files+=("$step_file"); log_files+=("$log_file")
+        (
+          (unset GH_TOKEN; gh api "repos/{owner}/{repo}/actions/jobs/$job" \
+            --jq '.steps[]? | select(.conclusion=="failure") | "Failing CI step: " + .name' 2>/dev/null > "$step_file") &
+          step_pid=$!
+          (unset GH_TOKEN; gh api --allow-escape-sequences "repos/{owner}/{repo}/actions/jobs/$job/logs" 2>/dev/null > "$log_file") &
+          log_pid=$!
+          wait "$step_pid" || true
+          wait "$log_pid" || true
+        ) &
+        pids+=("$!")
+        index=$((index + 1))
+        if (( ${#pids[@]} >= 4 )); then
+          wait "${pids[0]}" || true
+          pids=("${pids[@]:1}")
+        fi
       done < <(jqf -r '.[] | select(.bucket=="fail") | [.name,.link] | @tsv' <<<"$checks")
+      for pid in "${pids[@]}"; do wait "$pid" || true; done
+      for i in "${!names[@]}"; do
+        printf '\nFailing CI check: %s\n%s\n' "${names[$i]}" "${links[$i]}"
+        cat "${step_files[$i]}" 2>/dev/null || true
+        tail -80 "${log_files[$i]}" 2>/dev/null || true
+      done
+      rm -rf -- "$tmp"
+      elapsed=$((SECONDS - started))
+      (( elapsed >= 2 )) && say "dispatch detail repair_failure_evidence PR#$pr checks=${#names[@]} secs=${elapsed}s"
       ;;
     *)
       # Review findings come with the hint too (a hotpatch unit carries a hint and then gets REQUEST-CHANGES).
@@ -3306,6 +3558,7 @@ repair_failure_prompt() { # unit-json review-report -> only this repair's failur
 
 dispatch_pending() {
   local local_refill="${1:-false}" u id stage rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original
+  TICK_DISPATCH_LOCAL_REFILL="$local_refill"
   while read -r u; do
     id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"
     # The independent refill controller only starts implementation workers from local ledger data.
@@ -3392,6 +3645,8 @@ dispatch_pending() {
           [[ "$(unit_field "$id" .stage)" != blocked-external ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
           continue
         fi
+        room_for "$id" repair "$u" false || continue
+        pick implement "$u" || continue
         branch="$(jqf -r '.branch // empty' <<<"$u")"
         if [[ -z "$branch" && -n "$pr_num" ]]; then
           branch="$(pr_view "$pr_num" headRefName)"
@@ -3402,8 +3657,6 @@ dispatch_pending() {
         if [[ "$pr_num" =~ ^[0-9]+$ && "$lane" != direct-main ]]; then
           wt="$(pre_dispatch_pr_admission "$id" "$branch" "$pr_num" "repair-pending before dispatch")" || continue
         fi
-        room_for "$id" repair "$u" || continue
-        pick implement "$u" || continue
         prev_report="$(jqf -r '.review_report // empty' <<<"$u")"
         [[ -n "$prev_report" ]] || prev_report="$(cd "$SUP" && ls -t "review-${key}-"*.md 2>/dev/null | grep -v worker | head -1)"
         [[ -n "$prev_report" || -n "$(jqf -r '.repair_hint // empty' <<<"$u")" ]] || { to_supervisor "$id" "repair-pending without a review report"; continue; }
@@ -3558,11 +3811,11 @@ $(decision_scope "$u")"
         else
           park_if_body_blocked "$u" && continue
         fi
+        room_for "$id" implement "$u" false || continue
+        pick implement "$u" || continue
         if [[ "$local_refill" != true && "$pr_num" =~ ^[0-9]+$ && "$lane" != direct-main ]]; then
           wt="$(pre_dispatch_pr_admission "$id" "$branch" "$pr_num" "implement-pending before dispatch")" || continue
         fi
-        room_for "$id" implement "$u" || continue
-        pick implement "$u" || continue
         stack_branch="$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")"; stack_sha="$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")"
         resume_branch="$(jqf -r '.handoff_start_ref // empty' <<<"$u")"; resume_sha="$(jqf -r '.handoff_start_sha // empty' <<<"$u")"
         if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]]; then
@@ -3753,21 +4006,30 @@ ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不
 # 停线（Jidoka）：失败 job 的日志里已有测试断言失败（vitest FAIL / AssertionError / TAP not ok），就是确定性的代码结论。
 # 以前要等其余检查全部跑完、再整体重跑一次才派修复：热修 #3860 04:15 测试已红，按旧路径约 2 小时后才会开始修（L62）。
 ci_test_red_checks() { # checks_json → 第一行：失败日志含测试失败的检查名（逗号分隔，没有则空）；其后每行是该检查日志里 vitest 标记行的结构化事实
-  local name link job hits="" log facts=""
-  log="$(mktemp)"
+  local name link job hits="" logfile facts="" i pid
+  local -a names=() logfiles=() pids=()
   while IFS=$'\t' read -r name link; do
     job="${link##*/job/}"; [[ "$job" =~ ^[0-9]+$ ]] || continue
     # Dagger 里的 vitest 输出带 ANSI 颜色（ESC[41m FAIL ESC[49m），不去色就匹配不到：热修 #3860 的确定性测试红
     # 三次被当成"旧 base 的红"走 update-branch，每次多耗一整轮 CI（L75）。
     # 一次日志抓取同时给出红判定和 scripts/ci/vitest-fail-facts.mjs 打印的标记行；没有标记行的检查不解析、保持通用提示。
-    gh api --allow-escape-sequences "repos/{owner}/{repo}/actions/jobs/$job/logs" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' > "$log"
-    grep -qaE ' FAIL  .* > |AssertionError|not ok [0-9]+ -' "$log" || continue
-    hits="${hits:+$hits, }$name"
-    facts="${facts}$(grep -a -m1 -oE 'ZENOFORGE-FAIL-FACTS \{.*' "$log" | sed 's/^ZENOFORGE-FAIL-FACTS //')"$'\n'
-    # run-ci-suites.sh 已为每个失败的 engine 套件打印 "[pipeline suites] FAILED suite=<path>"；同一次抓取里取出，供分诊用
-    facts="${facts}$(grep -a -oE '^\[pipeline suites\] FAILED suite=[^ ]+' "$log" | sed 's/.*suite=//' | jq -Rsc 'split("\n") | map(select(. != "")) | select(length > 0) | {pipelineSuites: .}' 2>/dev/null)"$'\n'
+    logfile="$(mktemp)" || continue
+    names+=("$name"); logfiles+=("$logfile")
+    (gh api --allow-escape-sequences "repos/{owner}/{repo}/actions/jobs/$job/logs" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' > "$logfile") &
+    pids+=("$!")
   done < <(jqf -r '.[] | select(.bucket == "fail") | [.name, (.link // "")] | @tsv' <<<"$1")
-  rm -f "$log"
+  for pid in "${pids[@]}"; do wait "$pid" || true; done
+  for i in "${!names[@]}"; do
+    logfile="${logfiles[$i]}"
+    if grep -qaE ' FAIL  .* > |AssertionError|not ok [0-9]+ -' "$logfile"; then
+      name="${names[$i]}"
+      hits="${hits:+$hits, }$name"
+      facts="${facts}$(grep -a -m1 -oE 'ZENOFORGE-FAIL-FACTS \{.*' "$logfile" | sed 's/^ZENOFORGE-FAIL-FACTS //')"$'\n'
+      # run-ci-suites.sh 已为每个失败的 engine 套件打印 "[pipeline suites] FAILED suite=<path>"；同一次抓取里取出，供分诊用
+      facts="${facts}$(grep -a -oE '^\[pipeline suites\] FAILED suite=[^ ]+' "$logfile" | sed 's/.*suite=//' | jq -Rsc 'split("\n") | map(select(. != "")) | select(length > 0) | {pipelineSuites: .}' 2>/dev/null)"$'\n'
+    fi
+    rm -f "$logfile"
+  done
   printf '%s\n' "$hits"
   printf '%s' "$facts" | grep -a '^{' || true
 }
@@ -4027,7 +4289,7 @@ gated_demote_unapproved() { # 门控 PR 已 ready 但单元不在 ready-to-merge
 TICK_PRS=""
 declare -gA TICK_PR_STATE=()
 tick_prs() {
-  [[ -n "$TICK_PRS" ]] || TICK_PRS="$(gh pr list --state open --limit 300 --json number,headRefOid,headRefName,isDraft,title,labels,body,statusCheckRollup 2>/dev/null)" || { TICK_PRS=""; return 1; }
+  [[ -n "$TICK_PRS" ]] || TICK_PRS="$(gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,body,statusCheckRollup 2>/dev/null)" || { TICK_PRS=""; return 1; }
   jqf -e 'type == "array"' <<<"$TICK_PRS" >/dev/null || { TICK_PRS=""; return 1; }
   printf '%s' "$TICK_PRS"
 }
@@ -4726,13 +4988,24 @@ retry_blocked_units() { # BLOCK 只在 head 变了，或 main 已推进且该单
   done < <(jqf -r '.units[] | select(.stage=="blocked-external" and .blocked_on == null and .size_recut_pending != true and ((.note // "") | contains("CONFLICTED") | not)) | [.id, (.pr // "" | tostring), (.reviewed_sha // ""), (.blocked_main_sha // ""), (.block_retries // 0 | tostring)] | @tsv' "$UNITS")
 }
 
+# 打开 PR census 的归一化：同名检查去重（--latest-checks）→ 以 PR 号为键的对象（head/draft/bucket 化的检查行与
+# ci 档位）。merge_candidates 的排序输入与 start.sh 的 pin 切换自检共用这一条链，自检跑的正是合并车道要用的管线。
+pr_census_by_number() { # stdin: gh pr list JSON → stdout: {"<pr>": {head,draft,checks,ci}}
+  node "$HERE/../ci/pr-required-aggregate.mjs" --latest-checks | jqf 'map({key: (.number | tostring), value: {head: .headRefOid, draft: .isDraft, checks: [.statusCheckRollup[]? | {name: (.name // .context // ""), link: (.detailsUrl // .targetUrl // ""), started_at: (if .__typename == "CheckRun" then (.startedAt // .started_at // null) else (.createdAt // .created_at // null) end), bucket: (if .__typename == "StatusContext" then ((.state // "" | ascii_downcase) as $s | if $s == "success" then "pass" elif ($s == "failure" or $s == "error") then "fail" else "pending" end) elif (.status // "COMPLETED") != "COMPLETED" then "pending" else ((.conclusion // "" | ascii_downcase) as $c | if $c == "success" then "pass" elif $c == "neutral" then "skipping" elif $c == "cancelled" then "cancel" elif ($c | IN("failure", "timed_out", "action_required", "startup_failure")) then "fail" else "pending" end) end)}], ci: ([.statusCheckRollup[]? | if .__typename == "StatusContext" then (.state // "" | ascii_downcase) elif (.status // "COMPLETED") != "COMPLETED" then "pending" else (.conclusion // "" | ascii_downcase) end] | if any(.[]; IN("pending", "expected", "queued", "in_progress", "waiting", "requested")) then 2 elif any(.[]; IN("failure", "error", "cancelled", "timed_out", "action_required", "startup_failure")) then 1 else 0 end)}}) | from_entries'
+}
+
 # 队头阻塞（2026-10-21 06:42）：车道每拍只看排序后的前 BATCH_MAX*3 个就绪单元（热修、critical、最老），82 个就绪里
-# 前 12 个全在等 CI 或被挡，排在 21–60 位的绿单元从来轮不到看。现在一次批量取所有 open PR 的检查汇总：
+# 前 12 个全在等 CI 或被挡，排在 21–60 位的绿单元从来轮不到看。对 ready-to-merge PR 子集批量取检查汇总再排序：
 # 还没占到 CI 名额的（本拍不可能合）排到最后；其余同档内 CI 已出结论（绿/红）的先看，还在跑的其次。
 merge_candidates() { # window → 就绪单元（每行一个 JSON）
-  local rf; rf="$(mktemp)" || return 0
-  # 同一份 census 带回 head 与 draft 状态：合并车道不再逐个 gh pr view state/headRefOid（每拍 12 个候选约 24 次调用）。
-  tick_prs | node "$HERE/../ci/pr-required-aggregate.mjs" --latest-checks | jqf 'map({key: (.number | tostring), value: {head: .headRefOid, draft: .isDraft, checks: [.statusCheckRollup[]? | {name: (.name // .context // ""), link: (.detailsUrl // .targetUrl // ""), started_at: (if .__typename == "CheckRun" then (.startedAt // .started_at // null) else (.createdAt // .created_at // null) end), bucket: (if .__typename == "StatusContext" then ((.state // "" | ascii_downcase) as $s | if $s == "success" then "pass" elif ($s == "failure" or $s == "error") then "fail" else "pending" end) elif (.status // "COMPLETED") != "COMPLETED" then "pending" else ((.conclusion // "" | ascii_downcase) as $c | if $c == "success" then "pass" elif $c == "neutral" then "skipping" elif $c == "cancelled" then "cancel" elif ($c | IN("failure", "timed_out", "action_required", "startup_failure")) then "fail" else "pending" end) end)}], ci: ([.statusCheckRollup[]? | if .__typename == "StatusContext" then (.state // "" | ascii_downcase) elif (.status // "COMPLETED") != "COMPLETED" then "pending" else (.conclusion // "" | ascii_downcase) end] | if any(.[]; IN("pending", "expected", "queued", "in_progress", "waiting", "requested")) then 2 elif any(.[]; IN("failure", "error", "cancelled", "timed_out", "action_required", "startup_failure")) then 1 else 0 end)}}) | from_entries' > "$rf"
+  local rf prs; rf="$(mktemp)" || return 0
+  # Use the same open-PR census, but normalize checks only for ready-to-merge PRs before sorting all candidates.
+  prs="$(jqf -c '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.pr // null) != null and (.lane // "") != "direct-main") | .pr | tostring] | unique' "$UNITS")"
+  if [[ "$prs" == '[]' ]]; then
+    printf '{}\n' > "$rf"
+  else
+    tick_prs | jqf --argjson prs "$prs" '[.[] | select((.number | tostring) as $n | $prs | index($n) != null)]' | pr_census_by_number > "$rf"
+  fi
   jqf -e 'type == "object"' "$rf" >/dev/null 2>&1 || echo '{}' > "$rf"
   jqf -c --slurpfile r "$rf" '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.pr // null) != null and (.lane // "") != "direct-main")]
     | sort_by([(if (.ci_wip_wait != null and .ci_wip_wait == .approved_sha) then 1 else 0 end),
@@ -4782,11 +5055,36 @@ merge_lane_awaiting_release() { # ready-unit-json pr
   return 0
 }
 
+# 10-29 事故：jqf 吞错后 check census 静默不可用约 2 小时，每拍只有一行不起眼的 skip。连续 2 拍
+# census 缺失经 supervisor inbox 告警一次（append_once 按 episode 递增的 key 去重），恢复前不重发。
+merge_census_watch() { # missed=1/0：本拍 merge lane 是否出现 check census unavailable
+  local f="$A/merge-census-watch.json" streak alerted episode
+  [[ -f "$f" ]] || printf '{"streak":0,"alerted":0,"episode":0}\n' > "$f"
+  streak="$(jqf -r '.streak // 0' "$f")"; alerted="$(jqf -r '.alerted // 0' "$f")"; episode="$(jqf -r '.episode // 0' "$f")"
+  if [[ "$1" == 1 ]]; then
+    streak=$((streak + 1))
+    if (( streak >= 2 && alerted == 0 )); then
+      episode=$((episode + 1))
+      if ( source "$SCHEDULER_AGENT_LIB" && supervisor_inbox_append_once "merge-census-down:$episode" \
+        "merge-census-down check census 连续 ${streak} 拍不可用，合并车道整拍空转；根因多为上游坏 JSON，查 scheduler.log 当拍 jqf error 行" ) >/dev/null 2>&1; then
+        alerted=1
+      fi
+    fi
+  else
+    streak=0; alerted=0
+  fi
+  jqf -cn --argjson streak "$streak" --argjson alerted "$alerted" --argjson episode "$episode" \
+    '{streak:$streak,alerted:$alerted,episode:$episode}' | write_state "$f" || say "merge census watch: could not persist state"
+}
+
 run_merge_lane() {
-  local merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok candidate_ids cands detail_started detail_elapsed
+  local merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false
+  local -A merge_head_ref=()
+  local -a merge_head_refspecs=() merge_head_refs=()
   # 所有 PR（含流水线 PR）都只由自己 head 上的必需检查把关，合并后由 main CI 验证；没有待验证批、没有合并后等裁决的 merging 态。
   # main 已完成的红裁决仍拦流水线 PR（pipe_open）；产品 PR 照旧不被脚本红拦（2026-10-20：15 个产品 PR 排队 3–22 小时）。
   local pipe_open=1 pipe_dep merged_count=0 mstate i
+  MERGE_CENSUS_MISSED=0
   [[ "$(jqf -r .auto_merge <<<"$CFG")" == "true" ]] || return 0
   # fast_land_lane may advance main earlier in this tick; refresh the rule-lane and suite-gate base here.
   detail_started=$SECONDS
@@ -4872,10 +5170,35 @@ run_merge_lane() {
   fi
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "merge detail candidate_build=${detail_elapsed}s"
+  # Fetch all bounded candidate heads in one GitHub round trip. The census SHA
+  # remains authoritative: if a PR moves after the census, its fetched ref will
+  # not match and that candidate waits for the next pass.
+  merge_head_fetch_started=$SECONDS
+  while IFS=$'\t' read -r candidate_pr candidate_head; do
+    [[ "$candidate_pr" =~ ^[1-9][0-9]*$ && "$candidate_head" =~ $SHA_RE ]] || continue
+    candidate_ref="refs/autopi/merge-candidates/$NOW_EPOCH/$candidate_pr"
+    merge_head_ref["$candidate_pr"]="$candidate_ref"
+    merge_head_refs+=("$candidate_ref")
+    merge_head_refspecs+=("+refs/pull/$candidate_pr/head:$candidate_ref")
+  done < <(jqf -sr '.[] | select((.pr | type) == "number" and (.pr_open_head | type) == "string") | [.pr,.pr_open_head] | @tsv' <<<"$cands")
+  if (( ${#merge_head_refspecs[@]} > 0 )) \
+      && git -C "$ROOT" fetch -q --no-tags origin "${merge_head_refspecs[@]}" 2>/dev/null; then
+    merge_head_batch_ok=true
+  elif (( ${#merge_head_refspecs[@]} > 0 )); then
+    say "merge candidate head batch fetch incomplete; validating candidates individually"
+  fi
+  merge_head_fetch_elapsed=$((SECONDS - merge_head_fetch_started))
+  (( merge_head_fetch_elapsed < 2 )) || say "merge detail candidate_head_fetch=${merge_head_fetch_elapsed}s"
   detail_started=$SECONDS
   while IFS= read -r ready; do
     [[ -z "$ready" || "$ready" == "null" ]] && break
     id="$(jqf -r .id <<<"$ready")"; pr="$(jqf -r .pr <<<"$ready")"
+    checks="$(jqf -c '.pr_open_checks // null' <<<"$ready")"
+    if [[ "$checks" == null && "${TICK_PR_STATE[$pr]:-}" != MERGED && "${TICK_PR_STATE[$pr]:-}" != CLOSED ]]; then
+      say "merge skipped PR#$pr (check census unavailable)"
+      MERGE_CENSUS_MISSED=1
+      continue
+    fi
     # Fair bounded scans rotate past repeatedly blocked candidates; their scan time was written as one ledger update above.
     approved="$(jqf -r '.approved_sha // empty' <<<"$ready")"
     head="$(jqf -r '.pr_open_head // empty' <<<"$ready")"
@@ -4898,10 +5221,6 @@ run_merge_lane() {
       continue
     fi
     if [[ -n "${READIED_PRS[$pr]:-}" ]]; then say "merge skipped PR#$pr (readied this pass; CI starts now)"; continue; fi
-    if jqf -e '(.gated // false) == true and .pr_open_checks == null' <<<"$ready" >/dev/null; then
-      say "merge skipped PR#$pr (check census unavailable)"
-      continue
-    fi
     [[ "$head" =~ $SHA_RE ]] || head="$(pr_view "$pr" headRefOid)"
     # 先沿用批准再跳过 draft：slot_sync 的 update-branch 会换 draft 的 head，不沿用的话 gated_ready 永远不 ready 它
     if [[ "$approved" =~ $SHA_RE && "$head" =~ $SHA_RE && "$head" != "$approved" ]] && approval_carries "$pr" "$approved" "$head"; then
@@ -4947,8 +5266,7 @@ run_merge_lane() {
       fi
       continue
     fi
-    checks="$(jqf -c '.pr_open_checks // empty' <<<"$ready")"
-    if [[ -z "$checks" ]]; then say "merge skipped PR#$pr (check census unavailable)"; continue; fi
+    [[ "$checks" != null && -n "$checks" ]] || { say "merge skipped PR#$pr (check census unavailable)"; MERGE_CENSUS_MISSED=1; continue; }
     fails="$(jqf -r '[.[] | select(.bucket == "fail") | .name] | sort | join(",")' <<<"$checks" 2>/dev/null || true)"
     if [[ -n "$fails" && "$(jqf -r '.ci_test_checked // empty' <<<"$ready")" != "$head:$fails" ]]; then
       set_unit "$id" ".ci_test_checked=$(js "$head:$fails")"
@@ -5034,11 +5352,17 @@ run_merge_lane() {
     # （ZF_AGENT_NAME=supervisor）时非 unit 分支的 PR 走规则通道，按 Rule-Replay 回放报告放行；
     # unit worker 的分支（agent/issue-*、agent/auto-issue-*、factory/*、hand/*）无论环境一律按 unit 判定，
     # 改到规则文件即拒、PR 留修复说明并转 supervisor 队列。
-    if ! git -C "$ROOT" fetch -q origin "refs/pull/$pr/head" 2>/dev/null; then
+    candidate_ref="${merge_head_ref[$pr]:-}"
+    if [[ -z "$candidate_ref" ]]; then
       say "merge skipped PR#$pr (rule diff unavailable)"
       continue
     fi
-    rule_head="$(git -C "$ROOT" rev-parse --verify 'FETCH_HEAD^{commit}' 2>/dev/null || true)"
+    if [[ "$merge_head_batch_ok" != true ]] \
+        && ! git -C "$ROOT" fetch -q --no-tags origin "+refs/pull/$pr/head:$candidate_ref" 2>/dev/null; then
+      say "merge skipped PR#$pr (rule diff unavailable)"
+      continue
+    fi
+    rule_head="$(git -C "$ROOT" rev-parse --verify "$candidate_ref^{commit}" 2>/dev/null || true)"
     if [[ "$rule_head" != "$head" ]]; then
       say "merge skipped PR#$pr (rule diff head moved)"
       continue
@@ -5109,12 +5433,16 @@ run_merge_lane() {
       say "merge skipped PR#$pr (pre-merge main SHA unavailable)"
     fi
   done <<<"$cands"
+  merge_census_watch "$MERGE_CENSUS_MISSED"
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "merge detail candidate_pass=${detail_elapsed}s"
   detail_started=$SECONDS
   retry_blocked_units
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "merge detail blocked_pr_recheck=${detail_elapsed}s"
+  for candidate_ref in "${merge_head_refs[@]}"; do
+    git -C "$ROOT" update-ref -d "$candidate_ref" 2>/dev/null || :
+  done
 }
 
 # ---------- 3b. 完成清理：终态单元回收 clone，台账瘦身，日志轮转 ----------
@@ -5367,7 +5695,7 @@ live_event_watch() { # 每拍：等待生产事件的直落单——事件出现
 # 根因是收单只收 pipeline-system 标签、在途上限 3。现在：空闲槽位 = max_workers - 在跑 - 待派，按空槽收单；
 # 非产品标签走直落车道，产品标签（默认 ready-for-agent）走 PR 车道（实现 → 推分支 → 流水线开 PR → 评审 → 合并 → 发布列车）。
 # WIP 护栏（Little 定律）：开发/评审/返工环节在途 ≤ max_upstream（默认 2×max_workers）；待合并队列 ≥ max_ready（默认 30）时停止收单——瓶颈在合并车道，堆更多 WIP 只会拉长交付时间。
-# maintainer-test 是维护者提的 issue，队列里排第一（docs/agents/issue-pipeline.md），不是跳过标签（2026-10-20 曾误跳过 30 个）。
+# founder-test 是维护者提的 issue，队列里排第一（docs/agents/issue-pipeline.md），不是跳过标签（2026-10-20 曾误跳过 30 个）。
 issue_skip_labels() {
   jqf -cn --arg hotfix "$(hotfix_lane_label)" \
     '["on-hold","needs-info","awaiting-release","ready-for-human","needs-owner","needs-advisor","needs-triage","roadmap-epic","roadmap-theme","roadmap","concluded","needs-recut","checks-blocked","awaiting-pipeline-sync","hotfix","opt-lane",$hotfix] | unique'
@@ -5412,13 +5740,13 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序
       done
     } | jqf -rs --argjson skip "$skip_labels" '
       def rank: [.labels[].name] as $n
-        | if ($n | index("maintainer-test")) then 0 elif ($n | index("priority:top")) then 1
+        | if ($n | index("founder-test")) then 0 elif ($n | index("priority:top")) then 1
           elif ($n | index("critical-path")) then 2  # 批次 STATE 的关键路径（#4363）：排在普通功能前、遗留后
           elif ($n | index("focus")) then 3 elif ($n | index("finish-first")) then 4 elif ($n | index("bug")) then 5
           elif ($n | index("legacy")) then 7 else 6 end;
       map(select(([.labels[].name] - $skip) == [.labels[].name]))
       | group_by(.number) | map(sort_by(.lane) | .[0])
-      | sort_by([rank, -.number]) | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t({number,title,body,state,labels} | @base64)"'
+      | sort_by([rank, -.number]) | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels} | @base64)"'
   )
 }
 predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批量拉进来（拓扑顺序）
@@ -5445,7 +5773,7 @@ predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批�
         | {number,title,body:(.body // ""),state,labels:[.labels.nodes[]? | {name}]}]
       | sort_by(.number)[] | select(.state=="OPEN")
       | select(([.labels[].name] - $skip) == [.labels[].name])
-      | "\(.number)\t\(if any(.labels[]; .name=="pipeline-system") then "direct-main" else "pr" end)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t(. | @base64)"' <<<"$response"
+      | "\(.number)\t\(if any(.labels[]; .name=="pipeline-system") then "direct-main" else "pr" end)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\(. | @base64)"' <<<"$response"
   done
 }
 existing_handoff_candidates() {
@@ -5857,7 +6185,7 @@ reconcile_orphan_prs() {
   rows="$(jqf -r --slurpfile u "$UNITS" --argjson b "$blocked" --argjson states "$states_by_number" '
       ($u[0].units | map(.pr) | map(select(. != null))) as $known
       | map(select(.number as $n | $known | index($n) | not))
-      | map((try (.headRefName | capture("^agent/(auto-)?issue-(?<n>[0-9]+)$").n | tonumber) catch null) as $i
+      | map(((.headRefName | capture("^agent/(auto-)?issue-(?<n>[0-9]+)$").n | tonumber)? // null) as $i
           | . + {issue:$i})
       | map(.issue as $i | . + {blocks: ($i != null and ($b | index($i)) != null), issue_state: (if $i != null then ($states[($i | tostring)] // "UNKNOWN") else "UNKNOWN" end)})
       | sort_by([(if .blocks then 0 else 1 end), .number]) | .[]
@@ -6096,8 +6424,10 @@ stage_slo_watch() {
 
 # ---------- 4c. 发布列车：每 15 分钟触发 issue-pipeline 的 release 选择器（单实例） ----------
 run_release_train() {
+  # Optional release-leg hook: Zenoforge ships none, so this stays a no-op until ZF_RELEASE_TRAIN_SCRIPT names a script.
+  local train_script="${ZF_RELEASE_TRAIN_SCRIPT:-}"
   [[ "$(jqf -r 'if .release_train.enabled == false then "false" else "true" end' <<<"$CFG")" == true ]] || return 0
-  [[ -f "$HERE/release_train.sh" ]] || return 0
+  [[ -n "$train_script" && -f "$train_script" ]] || return 0
   [[ ! -f "$A/.release-train" || -n "$(find "$A/.release-train" -mmin +15 2>/dev/null)" ]] || return 0
   systemctl --user is-active --quiet zf-release-train 2>/dev/null && return 0
   touch "$A/.release-train"
@@ -6108,7 +6438,7 @@ run_release_train() {
       -E PATH -E HOME -E HTTP_PROXY -E HTTPS_PROXY -E ALL_PROXY -E NO_PROXY \
       -E http_proxy -E https_proxy -E no_proxy -E NODE_USE_ENV_PROXY \
       -E MAC_AUTOPILOT_RUNTIME_DIR="$A" -E MAC_AUTOPILOT_ROOT="$ROOT" \
-      /bin/bash -c "exec /bin/bash '$HERE/release_train.sh' >> '$A/release-train.log' 2>&1" >/dev/null 2>&1; then
+      /bin/bash -c "exec /bin/bash '$train_script' >> '$A/release-train.log' 2>&1" >/dev/null 2>&1; then
     say "release train started"
   else
     say "release train launch failed"
@@ -6390,6 +6720,8 @@ phase_yield_lock() { # slow operation; let the local refill controller take the 
   phase "$@" || rc=$?
   acquire_scheduler_lock_wait
   LIVE_WORKER_CACHE_UNTIL=0
+  TICK_ACTIVE_FOOTPRINTS_VALID=false
+  TICK_FOOTPRINT_CONFLICT_VALID=false
   return "$rc"
 }
 

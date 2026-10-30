@@ -7572,7 +7572,7 @@ maintainer_test_issue_candidate() {
 }
 
 issue_has_maintainer_test_label() {
-  jq -e 'any(.labels[]?; .name == "maintainer-test")' <<< "$1" >/dev/null 2>&1
+  jq -e 'any(.labels[]?; .name == "founder-test")' <<< "$1" >/dev/null 2>&1
 }
 
 issue_is_maintainer_test() {
@@ -7584,11 +7584,11 @@ ensure_maintainer_test_label() {
   local existing
   [ "$MAINTAINER_TEST_LABEL_READY" = 1 ] && return 0
   existing="$(gh label list --repo "$REPO" --limit 200 --json name -q '.[].name' 2>/dev/null)" || return 1
-  if ! grep -qx -- maintainer-test <<< "$existing"; then
-    if ! guarded_write gh label create maintainer-test --repo "$REPO" --color 5319E7 \
+  if ! grep -qx -- founder-test <<< "$existing"; then
+    if ! guarded_write gh label create founder-test --repo "$REPO" --color 5319E7 \
         --description "Maintainer-filed test and demo issue" >/dev/null; then
       existing="$(gh label list --repo "$REPO" --limit 200 --json name -q '.[].name' 2>/dev/null)" || return 1
-      grep -qx -- maintainer-test <<< "$existing" || return 1
+      grep -qx -- founder-test <<< "$existing" || return 1
     fi
   fi
   MAINTAINER_TEST_LABEL_READY=1
@@ -7600,7 +7600,7 @@ label_maintainer_test_issue() {
   maintainer_test_issue_candidate "$issue_json" || return 1
   n="$(jq -er '.number | select(type == "number" and . > 0)' <<< "$issue_json")" || return 2
   ensure_maintainer_test_label || return 2
-  guarded_write gh issue edit "$n" --repo "$REPO" --add-label maintainer-test >/dev/null
+  guarded_write gh issue edit "$n" --repo "$REPO" --add-label founder-test >/dev/null
 }
 
 label_maintainer_test_candidates() {
@@ -7613,13 +7613,13 @@ label_maintainer_test_candidates() {
   # Same predicate as point classification; batch the unchanged local gates.
   candidates="$(jq -c --arg maintainer "$maintainer_login" --arg bot_marker "$BOT_COMMENT_MARKER" \
     --arg recut_marker "$RECUT_CHILD_MARKER" \
-    "[.[] | select(any(.labels[]?; .name == \"maintainer-test\") | not) | select($MAINTAINER_TEST_CANDIDATE_FILTER)]" \
+    "[.[] | select(any(.labels[]?; .name == \"founder-test\") | not) | select($MAINTAINER_TEST_CANDIDATE_FILTER)]" \
     <<< "$issues" | python3 -c '
 import json, pathlib, sys
 states = pathlib.Path(sys.argv[1])
 for issue in json.load(sys.stdin):
     try:
-        checked = json.loads((states / (str(issue["number"]) + ".json")).read_text()).get("maintainer_test_checked") is True
+        checked = json.loads((states / (str(issue["number"]) + ".json")).read_text()).get("founder_test_checked") is True
     except (OSError, ValueError, AttributeError):
         checked = False
     if not checked:
@@ -7631,19 +7631,19 @@ for issue in json.load(sys.stdin):
         --json number,title,body,author,comments,labels,state 2>/dev/null)"; then
       # A transient read failure (gateway 504) skips this issue for one tick;
       # failing the whole candidate list aborted the scheduler tick (2026-09-27).
-      echo "issue-pipeline: cannot re-read #$n to classify maintainer-test origin; skipping it this tick" >&2
+      echo "issue-pipeline: cannot re-read #$n to classify founder-test origin; skipping it this tick" >&2
       continue
     fi
     [ "$(jq -r '.state // empty' <<< "$live_issue_json")" = OPEN ] || continue
     if ! maintainer_test_issue_candidate "$live_issue_json"; then
-      state_merge "$n" '.maintainer_test_checked = true' >/dev/null 2>&1 || true
+      state_merge "$n" '.founder_test_checked = true' >/dev/null 2>&1 || true
       continue
     fi
     if ! label_maintainer_test_issue "$live_issue_json"; then
-      echo "issue-pipeline: failed to apply maintainer-test label to #$n" >&2
+      echo "issue-pipeline: failed to apply founder-test label to #$n" >&2
       return 1
     fi
-    issues="$(jq -c --argjson n "$n" 'map(if .number == $n then .labels += [{name:"maintainer-test"}] else . end)' <<< "$issues")" || return 1
+    issues="$(jq -c --argjson n "$n" 'map(if .number == $n then .labels += [{name:"founder-test"}] else . end)' <<< "$issues")" || return 1
   done <<< "$candidates"
   printf '%s\n' "$issues"
 }
@@ -7780,7 +7780,7 @@ sweep_unlabeled_issues() {
   # the maintainer" matched 203 of 210 open issues and every tick re-read each one
   # with comments (17+ min, 2026-09-27). A maintainer test issue is recognised when
   # it is new: only issues created inside the intake window qualify, and one
-  # already judged (maintainer_test_checked in local state) is not re-read.
+  # already judged (founder_test_checked in local state) is not re-read.
   intake_since="$(date -u -d "-${ZF_MAINTAINER_TEST_INTAKE_HOURS:-48} hours" +%Y-%m-%dT%H:%M:%SZ)" || return 1
   if ! candidates="$(jq -r --argjson states "$state_labels_json" --arg maintainer "$maintainer_login" --arg since "$intake_since" '
     if type != "array" or any(.[]; type != "array") then error("invalid paginated issue response")
@@ -7790,7 +7790,7 @@ sweep_unlabeled_issues() {
       | [.labels[]?.name] as $names
       | if all($states[]; . as $state | ($names | index($state)) == null) then "\(.number)\tunlabeled"
         elif ($maintainer != "") and ((.user.login // "") | ascii_downcase) == ($maintainer | ascii_downcase)
-          and (($names | index("maintainer-test")) == null) and ((.created_at // "") >= $since) then "\(.number)\tmaintainer"
+          and (($names | index("founder-test")) == null) and ((.created_at // "") >= $since) then "\(.number)\tmaintainer"
         else empty end
     end
   ' <<< "$issue_pages")"; then
@@ -7802,7 +7802,7 @@ sweep_unlabeled_issues() {
   while IFS=$'\t' read -r n candidate_branch; do
     [[ "$n" =~ ^[0-9]+$ ]] || continue
     if [ "$candidate_branch" = maintainer ] \
-      && state_read "$n" 2>/dev/null | jq -e '.maintainer_test_checked == true' >/dev/null 2>&1; then
+      && state_read "$n" 2>/dev/null | jq -e '.founder_test_checked == true' >/dev/null 2>&1; then
       continue
     fi
     if is_on_hold "$n"; then
@@ -7825,7 +7825,7 @@ sweep_unlabeled_issues() {
     maintainer_test=0
     if maintainer_test_issue_candidate "$issue_json" && ! issue_has_maintainer_test_label "$issue_json"; then
       if ! ensure_maintainer_test_label; then
-        echo "sweep_unlabeled_issues: cannot ensure maintainer-test label for #$n; skipping" >&2
+        echo "sweep_unlabeled_issues: cannot ensure founder-test label for #$n; skipping" >&2
         scan_complete=0
         continue
       fi
@@ -7835,10 +7835,10 @@ sweep_unlabeled_issues() {
       '[.labels[]?.name] as $names | any($states[]; . as $state | ($names | index($state)) != null)' \
       <<< "$issue_json" >/dev/null; then
       if [ "$maintainer_test" = 1 ] && ! label_maintainer_test_issue "$issue_json"; then
-        echo "sweep_unlabeled_issues: failed to label maintainer-test issue #$n; skipping" >&2
+        echo "sweep_unlabeled_issues: failed to label founder-test issue #$n; skipping" >&2
         scan_complete=0
       elif [ "$candidate_branch" = maintainer ]; then
-        state_merge "$n" '.maintainer_test_checked = true' >/dev/null 2>&1 || true
+        state_merge "$n" '.founder_test_checked = true' >/dev/null 2>&1 || true
       fi
       continue
     fi
@@ -7896,7 +7896,7 @@ sweep_unlabeled_issues() {
       break
     fi
     if [ "$maintainer_test" = 1 ] && ! label_maintainer_test_issue "$issue_json"; then
-      echo "sweep_unlabeled_issues: failed to label maintainer-test issue #$n; skipping" >&2
+      echo "sweep_unlabeled_issues: failed to label founder-test issue #$n; skipping" >&2
       mutation_failed=1
       scan_complete=0
       break
@@ -16332,17 +16332,17 @@ run_with_fd_closed() {
 # process-owned flock lease, never a stale marker: closing the fd (including
 # on a crash) releases it. The blocking form intentionally reuses the merge
 # queue's existing bound instead of adding another wait policy.
-WEB_SESSION_LEASE_FILE="${WEB_SESSION_LEASE_FILE:-$AGENT_HOME/web-session.lock}"
+WEB_SESSION_LEASE_FILE="${WEB_SESSION_LEASE_FILE:-$AGENT_HOME/cdp-agent-browser.lock}"
 WEB_SESSION_LEASE_WAIT_SECONDS="${WEB_SESSION_LEASE_WAIT_SECONDS:-$MERGE_LOCK_WAIT_SECONDS}"
 
 try_acquire_web_session_lease() {
-  local __out_fd_var="$1" lock_file="${WEB_SESSION_LEASE_FILE:-$AGENT_HOME/web-session.lock}"
+  local __out_fd_var="$1" lock_file="${WEB_SESSION_LEASE_FILE:-$AGENT_HOME/cdp-browser.lock}"
   try_lock_nonblocking "$lock_file" "$__out_fd_var"
 }
 
 acquire_web_session_lease() {
   local __out_fd_var="$1" wait_seconds="${2:-${WEB_SESSION_LEASE_WAIT_SECONDS:-$MERGE_LOCK_WAIT_SECONDS}}" \
-    lock_file="${WEB_SESSION_LEASE_FILE:-$AGENT_HOME/web-session.lock}" fd
+    lock_file="${WEB_SESSION_LEASE_FILE:-$AGENT_HOME/cdp-browser.lock}" fd
   mkdir -p -- "$(dirname -- "$lock_file")"
   exec {fd}>"$lock_file"
   if flock -w "$wait_seconds" "$fd"; then

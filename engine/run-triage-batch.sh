@@ -52,7 +52,7 @@ triage_needs_queue_selectable_count() {
     .[]
     | select(any(.labels[]?.name; . == "on-hold") | not)
     | select(any(.labels[]?.name; . as $name | ($lane_labels | index($name)) != null) | not)
-    | [.number, (any(.labels[]?; .name == "maintainer-test") | tostring)]
+    | [.number, (any(.labels[]?; .name == "founder-test") | tostring)]
     | @tsv
   ' <<< "$queue_json")" || return 1
   while IFS=$'\t' read -r n maintainer_test; do
@@ -141,11 +141,11 @@ for n in "${BATCH_IDS[@]}"; do
 
   if issue_is_maintainer_test "$ISSUE_JSON"; then
     if ! label_maintainer_test_issue "$ISSUE_JSON"; then
-      echo "run-triage-batch: #$n maintainer-test classification could not be persisted; leaving it queued" >&2
+      echo "run-triage-batch: #$n founder-test classification could not be persisted; leaving it queued" >&2
       continue
     fi
     MAINTAINER_TEST_IDS["$n"]=1
-    ISSUE_JSON="$(jq -c 'if any(.labels[]?; .name == "maintainer-test") then . else .labels += [{name:"maintainer-test"}] end' <<< "$ISSUE_JSON")"
+    ISSUE_JSON="$(jq -c 'if any(.labels[]?; .name == "founder-test") then . else .labels += [{name:"founder-test"}] end' <<< "$ISSUE_JSON")"
   fi
   if triage_retry_deferred "$n" "$TRIAGE_RETRY_NOW" && [ -z "${MAINTAINER_TEST_IDS[$n]:-}" ]; then
     echo "run-triage-batch: #$n is no longer selectable; freshness retry remains active" >&2

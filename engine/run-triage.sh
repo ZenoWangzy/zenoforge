@@ -136,12 +136,12 @@ MAINTAINER_TEST=0
 if [ "$(jq -r '.state // empty' <<< "$ISSUE_JSON")" = OPEN ] \
   && { issue_is_maintainer_test "$ISSUE_JSON" || issue_is_maintainer_test "$VERDICT_SNAPSHOT_JSON"; }; then
   if ! label_maintainer_test_issue "$ISSUE_JSON"; then
-    record_env_fault env:gh-api triage "$N" "could not persist maintainer-test priority label"
+    record_env_fault env:gh-api triage "$N" "could not persist founder-test priority label"
     exit 1
   fi
   MAINTAINER_TEST=1
-  ISSUE_JSON="$(jq -c 'if any(.labels[]?; .name == "maintainer-test") then . else .labels += [{name:"maintainer-test"}] end' <<< "$ISSUE_JSON")"
-  VERDICT_SNAPSHOT_JSON="$(jq -c 'if any(.labels[]?; .name == "maintainer-test") then . else .labels += [{name:"maintainer-test"}] end' <<< "$VERDICT_SNAPSHOT_JSON")"
+  ISSUE_JSON="$(jq -c 'if any(.labels[]?; .name == "founder-test") then . else .labels += [{name:"founder-test"}] end' <<< "$ISSUE_JSON")"
+  VERDICT_SNAPSHOT_JSON="$(jq -c 'if any(.labels[]?; .name == "founder-test") then . else .labels += [{name:"founder-test"}] end' <<< "$VERDICT_SNAPSHOT_JSON")"
 fi
 MODEL_POLICY_QUEUE_LABEL="$(state_read "$N" | jq -r '.model_policy.active.queue_label // empty')"
 if [ -z "$MODEL_POLICY_QUEUE_LABEL" ]; then
