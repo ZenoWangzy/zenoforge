@@ -21,5 +21,20 @@ t = F.trend(events, rep, units, "/nonexistent", days=3, now=datetime.datetime(20
 s = {x["id"]: x["values"] for x in t["series"]}
 assert s["merged"] == [0, 0, 1] and s["wall"] == [None, None, 2.0] and s["tokens"] == [None, None, 500], s
 assert s["waste"] == [None, 0.0, 75.0] and s["first_pass"] == [None, None, 50.0], s
+# daily ROI line: tokens per landed ticket 100 -> 200 -> 300 on 3 consecutive days fires the retro rule; a gap day (None) or a flat day does not
+ev2 = lambda ts, tk, wall: {"event_type": "unit-end", "ts": ts, "wall_s": wall, "tickets": [], "unit": {"key": "k", "stage": "repair"}, "models": [{"tokens": tk}]}
+land = lambda n, d, lead=None: {"ticket": n, "outcome": "landed", "landed_at": d + "T12:00:00Z", "lead_hours": lead}
+evs = [ev2("2026-10-28T01:00:00Z", 100, 3600), ev2("2026-10-29T01:00:00Z", 200, 43200), ev2("2026-10-30T01:00:00Z", 300, 43200)]
+rep2 = {"tickets": [land(1, "2026-10-28", 4), land(2, "2026-10-29", 6), land(3, "2026-10-29", 2), land(4, "2026-10-30")]}
+now2 = datetime.datetime(2026, 10, 30, 12, tzinfo=datetime.timezone.utc)
+t2 = F.trend(evs, rep2, [], "/nonexistent", days=3, now=now2, max_workers=2)
+d2 = {x["id"]: x["values"] for x in t2["daily"]}
+assert d2["spend"] == [100, 200, 300] and d2["accepted"] == [1, 2, 1] and d2["lead_p50"] == [4.0, 4.0, None], d2
+assert d2["per_accepted"] == [100, 100, 300] and d2["idle"] == [97.9, 75.0, 50.0], d2
+assert t2["retro"] == [] and F.retro_line(t2, "2026-10-30") is None
+rep2["tickets"].pop(2)  # one landed ticket per day: 100, 200, 300
+t3 = F.trend(evs, rep2, [], "/nonexistent", days=3, now=now2, max_workers=2)
+assert t3["retro"] == ["2026-10-30"] and "100 → 200 → 300" in F.retro_line(t3, "2026-10-30"), t3["retro"]
+assert F.rising_runs([1, 2, None, 3, 4]) == [] and F.rising_runs([1, 2, 2, 3]) == [] and F.rising_runs([5, 1, 2, 3]) == [3]
 PY
 echo "factory_trend.test.sh: PASS"

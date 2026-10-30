@@ -178,6 +178,19 @@ const ch = renderAll("chips", {units: [{id: "u1", title: "unit in repair", stage
   standards: {"stage.needs-triage.idle_hours": {healthy: 3, unhealthy: 5}}, status: {}, errors: {}}}).out.overview;
 if ((ch.match(/class="uc s-/g)||[]).length < 5 || !ch.includes("+3") || !ch.includes("pcol") || ch.includes("done ticket") || !ch.includes("uc s-bad") || !ch.includes("unit in repair") || ch.includes("NaN") || !/--cols:3/.test(ch))
   throw new Error("overview tiles lack unit chips, the +N overflow, or age colouring");
+// 总览最上面：创始人需求台账（原话 / 阶段 / 负责人 / 卡点 / 确认时间）+ 每日 ROI 一行（含复盘规则）；两块都能在数据缺失时给空态
+const fr = renderAll("founder-roi", {founder_reqs: {stages: ["提出","热修生效","进 main","上线","真人验收"], partial: false, items: [
+  {issue: 4519, title: "t", text: "founder words here", from_ruling: true, labels: ["hotfix"], stage: 2, owner: "热修值班", blocker: "", verified_epoch: Math.floor(Date.now()/1000) - 600},
+  {issue: 7, title: "unit only", text: "unit only", from_ruling: false, labels: ["focus"], stage: 0, owner: "pipeline", blocker: "等 #9", verified_epoch: null}]},
+  factory: {trend: {days: ["2026-10-28","2026-10-29","2026-10-30"], milestones: [], series: [], retro: ["2026-10-30"], daily: [
+    {id: "spend", label: "花费（token，未折美元）", better: "down", fmt: "tok", values: [100, 200, 300]},
+    {id: "per_accepted", label: "每张合入单花费", better: "down", fmt: "tok", values: [100, 200, 300]},
+    {id: "idle", label: "worker 空闲 %", better: "down", fmt: "pct", values: [null, null, null]}]}}}).out.overview;
+if ((fr.match(/class="frq"/g)||[]).length !== 2 || !fr.includes("founder words here") || !fr.includes("等 #9") || !fr.includes("未确认") || !fr.includes("10 分前") || !fr.includes("进 main")
+    || !fr.includes("每张合入单花费") || !fr.includes("触发复盘") || !fr.includes("最近触发 10-30") || (fr.match(/class="tcard /g)||[]).length !== 3)
+  throw new Error("overview lacks the founder requirement rows or the daily ROI line");
+const frBad = renderAll("founder-roi-bad", {founder_reqs: {error: "x"}, factory: {error: "y"}}).out.overview;
+if (!frBad.includes("需求台账不可用") || !frBad.includes("ROI 数据不可用")) throw new Error("founder ledger / ROI line error state missing");
 console.log("modules ok");
 JS
 

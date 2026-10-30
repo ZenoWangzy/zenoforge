@@ -297,6 +297,9 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     echo 'daily-perf-report: failed to record mail-count comparison' >&2
     exit 1
   }
+  # ROI decision rule (#4799): spend per landed ticket rose 3 days in a row -> one inbox line asking the head to open a retro.
+  retro="$(timeout 300 python3 "$SCRIPT_DIR/../mac-autopilot/factory_trend.py" retro "$AGENT_HOME" "$report_day" 2>/dev/null)" || retro=""
+  if [ -n "$retro" ]; then supervisor_inbox_append_once "roi-retro-$report_day" "$retro" || true; fi
   mkdir -p "$AGENT_HOME/logs"
   report_file="$AGENT_HOME/logs/daily-perf-$report_day.md"
   tmp="$(mktemp "${report_file}.XXXXXX")"
