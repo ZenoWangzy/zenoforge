@@ -24,3 +24,5 @@ engine/supervise-exceptions.test.sh
 engine/supervise-pipeline.test.sh
 engine/sweep-brief-banners.test.sh
 engine/worktree-lifecycle.test.sh
+engine/platform-env.test.sh
+engine/proc.test.sh
