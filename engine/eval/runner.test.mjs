@@ -83,10 +83,10 @@ test('comparison CLI reads saved labels and puts a regression before unchanged t
       const out = join(dir, '.zenoforge/eval', value.label); mkdirSync(out, { recursive: true });
       writeFileSync(join(out, 'results.json'), JSON.stringify(value));
     }
-    const output = execFileSync('node', ['engine/eval/run-eval.mjs', '--compare', 'before', 'after'], { env: { ...process.env, HOME: dir }, encoding: 'utf8' });
+    const output = execFileSync('node', ['engine/eval/run-eval.mjs', '--compare', 'before', 'after'], { env: { ...process.env, HOME: dir, AGENT_HOME: join(dir, '.zenoforge') }, encoding: 'utf8' });
     assert.match(output, /^REGRESSION pass→fail triage\/a run 1\nbefore: 1\/2; after: 1\/2\nfail→pass triage\/b/);
     assert.match(output, /inconsistency before: 0/);
-    const armOutput = execFileSync('node', ['engine/eval/run-eval.mjs', '--compare-arms', 'after'], { env: { ...process.env, HOME: dir }, encoding: 'utf8' });
+    const armOutput = execFileSync('node', ['engine/eval/run-eval.mjs', '--compare-arms', 'after'], { env: { ...process.env, HOME: dir, AGENT_HOME: join(dir, '.zenoforge') }, encoding: 'utf8' });
     assert.match(armOutput, /^after: chains with arms=0; complete pairs=0/);
     assert.match(armOutput, /tokens median=unknown sum=unknown/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -256,7 +256,7 @@ printf 'tokens used\n1,234\n'
   const baseSha = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], { encoding: 'utf8' }).trim().split('\n').at(-1);
   const caseFile = join(dir, 'cases.json');
   writeFileSync(caseFile, JSON.stringify({ stage: 'triage', cases: ['c1', 'c2', 'c3'].map((id) => ({ id, baseSha, issue: { number: 1, title: id, body: 'fixture' }, expected: output })) }));
-  const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: '', GITHUB_TOKEN: '',
+  const env = { ...process.env, HOME: home, AGENT_HOME: join(home, '.zenoforge'), PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: '', GITHUB_TOKEN: '',
     ZF_AGENT_TEST_MODE: '1', ZF_AGENT_TEST_ROOT: dir, AGENT_EXECUTION_MIN_MEM_MB: '1', AGENT_EXECUTION_MAX_LOAD: '1000000' };
   const run = (args, envOverrides = {}) => spawnSync('node', ['engine/eval/run-eval.mjs', ...args], {
     encoding: 'utf8', env: { ...env, ...envOverrides },

@@ -39,6 +39,26 @@ assert_not_contains() {
   fi
 }
 
+CI_WORKFLOW="$SCRIPT_DIR/../.github/workflows/ci.yml"
+CI_TEXT="$(<"$CI_WORKFLOW")"
+assert_contains "all-PR CI gate invokes the closing-keyword checker" "$CI_TEXT" \
+  'bash "$PIPELINE_ENGINE_DIR/closing-keyword-gate.sh" --body-file "$body_file"'
+assert_contains "all-PR CI gate can read issue evidence" "$CI_TEXT" 'issues: read'
+assert_contains "all-PR CI backfills the checker for older branches" "$CI_TEXT" \
+  'for f in scripts/repo-path-ownership.mjs "$PIPELINE_ENGINE_DIR/closing-keyword-gate.sh" scripts/ci/install-dagger.sh scripts/ci/dagger-pin.json; do'
+assert_contains "all-PR CI reads branch commit messages" "$CI_TEXT" \
+  'git log --format=%B "${base_sha}..HEAD" > "$commit_messages_file"'
+assert_contains "all-PR CI passes commit messages to the checker" "$CI_TEXT" \
+  '--commits-file "$commit_messages_file"'
+BACKFILL_LINE="$(grep -nF 'for f in scripts/repo-path-ownership.mjs "$PIPELINE_ENGINE_DIR/closing-keyword-gate.sh" scripts/ci/install-dagger.sh scripts/ci/dagger-pin.json; do' "$CI_WORKFLOW" | cut -d: -f1)"
+GATE_LINE="$(grep -nF 'bash "$PIPELINE_ENGINE_DIR/closing-keyword-gate.sh" --body-file "$body_file"' "$CI_WORKFLOW" | cut -d: -f1)"
+if [ "$BACKFILL_LINE" -lt "$GATE_LINE" ]; then
+  echo "ok - all-PR CI backfills the checker before invoking it"
+else
+  echo "not ok - all-PR CI invokes the checker before its backfill"
+  FAILED=1
+fi
+
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/issues"

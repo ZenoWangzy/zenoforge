@@ -20,7 +20,7 @@ hand_agent_issue_is_live_owned 30
 [ "$(cat "$AGENT_HOME/pid-calls")" = . ]
 echo 'ok - ownership probes only matching owners, retains PID/start verification'
 # Already labeled and cached negative issues cause O(1) external commands.
-printf '{"maintainer_login":"maintainer"}\n' > "$AGENT_HOME/recipients.json"
+printf '{"founder_login":"maintainer"}\n' > "$AGENT_HOME/recipients.json"
 for ((i=1;i<=100;i++)); do printf '{"founder_test_checked":true}' > "$STATE_DIR/$i.json"; done
 issues="$(jq -cn '[range(1;201) | {number:.,title:"feature",body:"",author:{login:"maintainer"},labels:(if .>100 then [{name:"founder-test"}] else [] end)}]')"
 jq() { printf . >> "$AGENT_HOME/jq-calls"; command jq "$@"; }

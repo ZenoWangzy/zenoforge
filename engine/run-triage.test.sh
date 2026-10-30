@@ -253,7 +253,7 @@ run_once() {
   TMP_DIRS+=("$agent_home")
   mkdir -p "$agent_home/state" "$agent_home/night"
   jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$SCRIPT_DIR/model-policy.default.json" > "$agent_home/model-policy.json"
-  jq -n --arg f "$MAINTAINER_LOGIN" '{maintainer_login: $f, recipients: {}}' > "$agent_home/recipients.json"
+  jq -n --arg f "$MAINTAINER_LOGIN" '{founder_login: $f, recipients: {}}' > "$agent_home/recipients.json"
   if [ -n "$analyze_outcomes" ]; then
     IFS=, read -r -a analyze_statuses <<< "$analyze_outcomes"
     for status in "${analyze_statuses[@]}"; do
@@ -379,7 +379,7 @@ assert_eq "precut + admissible measurement: exits 0" "0" "$RUN_STATUS"
 assert_contains "...label is ready-for-agent" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
 
 # Configured non-product issues get lightweight classification. Even a
-# maintainer-authored question does not enter the product triage/advisor queue.
+# founder-authored question does not enter the product triage/advisor queue.
 export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-human P2 L3)"
 run_once "$RAW_BODY" testuser 0 0 1
 assert_eq "pipeline-system lightweight classification: exits 0" "0" "$RUN_STATUS"
@@ -482,18 +482,18 @@ assert_eq "successful Codex triage clears the one-outage alert latch" "false" \
 # --- the defaults; used to be ready-for-human ------------------------------
 export FAKE_TRIAGE_STRUCTURED="$(verdict needs-info P1 L1)"
 run_once "$RAW_BODY" "$MAINTAINER_LOGIN"
-assert_eq "maintainer-authored + needs-info: exits 0" "0" "$RUN_STATUS"
+assert_eq "founder-authored + needs-info: exits 0" "0" "$RUN_STATUS"
 assert_contains "...label is needs-advisor" "$GH_LOG_CONTENT" "--add-label needs-advisor"
 assert_not_contains "...never ready-for-human" "$GH_LOG_CONTENT" "--add-label ready-for-human"
 assert_not_contains "...never needs-info" "$GH_LOG_CONTENT" "--add-label needs-info"
 assert_contains "...the pending points and defaults are posted for the advisor" "$GH_LOG_CONTENT" "交给顾问按授权定案"
 assert_not_contains "...no email to anyone" "$RUN_OUTPUT" "notify_reporter_question"
 
-# --- raw report, needs-info, non-maintainer, legible: failed reporter delivery
+# --- raw report, needs-info, non-founder, legible: failed reporter delivery
 # --- must transfer ownership to the advisor -------------------------------
 export FAKE_TRIAGE_STRUCTURED="$(verdict needs-info P1 L1)"
 run_once "$RAW_BODY" "someone-else"
-assert_eq "non-maintainer needs-info with unavailable mail: exits 0" "0" "$RUN_STATUS"
+assert_eq "non-founder needs-info with unavailable mail: exits 0" "0" "$RUN_STATUS"
 assert_contains "...failed reporter delivery enters advisor queue" "$GH_LOG_CONTENT" "--add-label needs-advisor"
 assert_contains "...failed reporter delivery removes needs-info" "$GH_LOG_CONTENT" "--remove-label needs-info"
 assert_eq "...failed reporter delivery persists advisor ownership" "needs-advisor" "$(echo "$STATE_CONTENT" | jq -r '.state')"
@@ -548,7 +548,7 @@ assert_eq "2040 keeps measured risk and level" "L2" "$(echo "$STATE_CONTENT" | j
 assert_eq "2040 preserves raw model verdict for audit" "ready-for-human" "$(echo "$STATE_CONTENT" | jq -r '.model_state')"
 assert_eq "2040 consumes the measure-only marker after measurement" "false" "$(echo "$STATE_CONTENT" | jq 'has("advisor_admission_measure_only")')"
 
-# Maintainer-test bypasses the environment retry, but still sees the same
+# Founder-test bypasses the environment retry, but still sees the same
 # unconfirmed-freshness L2 gate. It must continue to advisor, never agent.
 export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L2)"
 run_once "$RAW_BODY" "$MAINTAINER_LOGIN" 0 0 0 "" 0 1

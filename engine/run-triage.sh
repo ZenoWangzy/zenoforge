@@ -516,7 +516,7 @@ fi
 
 # An unconfirmed product index must never admit an L2 ticket. Defer unchanged
 # tickets for at most two hours; after that, continue triage and route an
-# otherwise-agent-ready L2 result to the advisor. Maintainer-test issues skip
+# otherwise-agent-ready L2 result to the advisor. Founder-test issues skip
 # retry parking, but never bypass this admission gate.
 TRIAGE_FRESHNESS_BLOCKED=0
 if [ "$LEVEL" = "L2" ] && [ "$RISK_CLASS" != "P2" ] && [ "$PHASE" = "3" ] \

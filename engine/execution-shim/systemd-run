@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Admission before launch, and one shared lifetime lease inside every worker unit.
 set -euo pipefail
+if [[ -f "$(dirname -- "${BASH_SOURCE[0]}")/../deploy.env" ]]; then
+  source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/config.sh"
+fi
+# Same setting lib.sh resolves; the shim runs without sourcing it.
+UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 args=("$@")
 unit=; command_at=-1
 for ((i=0; i<${#args[@]}; i++)); do
@@ -17,8 +22,7 @@ for ((i=0; i<${#args[@]}; i++)); do
 done
 execution=0
 case "$unit" in
-  zf-advisor-cdp-chrome*) ;;
-  zf-implement-*|zf-triage-*|zf-recut-*|zf-advisor-*|zf-web-advisor-provider-*|zf-release-*|zf-node-owner-*|zf-hand-*|zf-land-direct-main-*|zf-post-land-*|zf-merge-*|zf-worktree-cleanup-*|zf-maintenance-*|zf-gitnexus-*) execution=1 ;;
+  ${UNIT_PREFIX_TRANSIENT}-implement-*|${UNIT_PREFIX_TRANSIENT}-triage-*|${UNIT_PREFIX_TRANSIENT}-recut-*|${UNIT_PREFIX_TRANSIENT}-advisor-*|${UNIT_PREFIX_TRANSIENT}-web-advisor-provider-*|${UNIT_PREFIX_TRANSIENT}-release-*|${UNIT_PREFIX_TRANSIENT}-node-owner-*|${UNIT_PREFIX_TRANSIENT}-hand-*|${UNIT_PREFIX_TRANSIENT}-land-direct-main-*|${UNIT_PREFIX_TRANSIENT}-post-land-*|${UNIT_PREFIX_TRANSIENT}-merge-*|${UNIT_PREFIX_TRANSIENT}-worktree-cleanup-*|${UNIT_PREFIX_TRANSIENT}-maintenance-*|${UNIT_PREFIX_TRANSIENT}-gitnexus-*) execution=1 ;;
 esac
 if ((command_at>=0 && command_at<${#args[@]})); then
   # Index refresh scopes have generated unit names. Ordinary graph reads stay reads.
@@ -37,9 +41,9 @@ if [[ -z "$real" ]]; then
 fi
 if ((execution)); then
   ((command_at>=0 && command_at<${#args[@]})) || { echo 'execution admission deferred: worker command unresolved' >&2; exit 75; }
-  if [[ "$unit" == zf-release-* ]]; then
+  if [[ "$unit" == ${UNIT_PREFIX_TRANSIENT}-release-* ]]; then
     # A release must not queue behind pipeline load (2026-10-29: load 46.5 over a
-    # maximum of 12 deferred zf-release-batch while opt workers filled the box).
+    # maximum of 12 deferred vecta-release-batch while opt workers filled the box).
     # The unit name marks both admission stages: the check below and run-unit
     # inside the unit.
     export LUNA_PRIORITY=release
@@ -47,10 +51,15 @@ if ((execution)); then
     command_at=$((command_at+2))
   fi
   guard="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/execution-admission.py"
-  if [[ "$unit" == zf-worktree-cleanup-* ]] && python3 "$guard" waiting -- "${args[@]:command_at}"; then
+  if [[ "$unit" == ${UNIT_PREFIX_TRANSIENT}-worktree-cleanup-* ]] && python3 "$guard" waiting -- "${args[@]:command_at}"; then
     exec "$real" "${args[@]}"  # This exact watcher admits only after its target exits.
   fi
   python3 "$guard" check || exit $?
+  # systemd does not inherit the caller's environment. Load the immutable deployment before
+  # the Python admission process and its children start, including direct Node entry points.
+  if [[ -f "${guard%/*}/deploy.env" ]]; then
+    exec "$real" "${args[@]:0:command_at}" bash -c 'source "$1/config.sh"; shift; exec "$@"' _ "${guard%/*}" python3 "$guard" run-unit -- "${args[@]:command_at}"
+  fi
   exec "$real" "${args[@]:0:command_at}" python3 "$guard" run-unit -- "${args[@]:command_at}"
 fi
 exec "$real" "${args[@]}"

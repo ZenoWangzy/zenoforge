@@ -83,7 +83,7 @@ printf '[]\n' > "$issue_file"
 grep -Fq 'progress OK' <<< "$(run_eval)"
 test ! -e "$tmp/home/supervisor-inbox"
 
-# Maintainer-test work uses a 30m bound, tighter than ordinary triage's 120m.
+# Founder-test work uses a 30m bound, tighter than ordinary triage's 120m.
 tmp="$tmp/founder-test"
 mkdir -p "$tmp/home/state"
 transition_file="$tmp/home/state/ticket-transitions.jsonl"

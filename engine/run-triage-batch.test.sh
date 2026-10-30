@@ -10,7 +10,7 @@ export ZF_REPO_DIR="$TEST_ROOT/repo"
 export REPO="test/repo"
 export ZF_REPO="$REPO"
 mkdir -p "$HOME/wt" "$AGENT_HOME/state" "$AGENT_HOME/night"
-jq -n '{maintainer_login:"maintainer"}' > "$AGENT_HOME/recipients.json"
+jq -n '{founder_login:"maintainer"}' > "$AGENT_HOME/recipients.json"
 for n in 910301 910302 910303 910401 910504 910505 910506 910507 910508 910509 910703; do
   if [ -e "$HOME/wt/triage-$n" ]; then
     echo "run-triage-batch.test: refusing to overwrite existing worktree $HOME/wt/triage-$n" >&2
@@ -435,7 +435,7 @@ jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L
   | jq -c --argjson issue 910509 '{issue:$issue,result:.}' > "$FAKE_CODEX_OUTPUT"
 RUN_OUTPUT="$(FAKE_AUTHOR=maintainer FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" bash "$BATCH_SRC" --scheduled 910509 2>&1)"
 assert_eq "founder-test freshness deadline does not suppress triage" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
-assert_contains "maintainer-filed issue gets founder-test label at intake" "$(cat "$FAKE_GH_LOG")" 'issue edit 910509 --repo test/repo --add-label founder-test'
+assert_contains "founder-filed issue gets founder-test label at intake" "$(cat "$FAKE_GH_LOG")" 'issue edit 910509 --repo test/repo --add-label founder-test'
 assert_eq "founder-test stale L2 is fail-closed to advisor" needs-advisor "$(jq -r '.state' "$AGENT_HOME/state/910509.json")"
 assert_contains "founder-test stale L2 enters advisor queue" "$(cat "$FAKE_GH_LOG")" '--add-label needs-advisor'
 assert_not_contains "founder-test stale L2 never enters implement queue" "$(cat "$FAKE_GH_LOG")" '--add-label ready-for-agent'

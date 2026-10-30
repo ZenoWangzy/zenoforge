@@ -3,15 +3,21 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readPackJson } from './pack-dir.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 export const DEFAULT_ROOT = path.resolve(path.dirname(SCRIPT_PATH), '..');
-export const DEFAULT_MAP = 'scripts/e2e/acceptance-regression/catalog.json';
+export const DEFAULT_MAP = 'scripts/e2e/yangfeng-regression/catalog.json';
 const PROOF_PATH_STAGES = ['owner', 'wrapper', 'ci', 'release'];
 
 // The catalog owns feature IDs. A catalog entry may carry a `verification`
 // object ({ paths, owner, release, surfaces, invariants }) that associates its
-// code surfaces and proofs; this file holds no map of the target repo.
+// code surfaces and proofs. A pack may add the same for features whose catalog
+// entry says nothing: state/feature-map.json ({ release, surfaces, features }),
+// which wins over the catalog entry. With neither, a feature has no proofs.
+const PACK_FEATURE_MAP = readPackJson('state/feature-map.json') ?? {};
+const packSurfaces = (caseFeature) => (PACK_FEATURE_MAP.surfaces ?? []).find((rule) =>
+  (!rule.kind || rule.kind === caseFeature.kind) && (!rule.pathPrefix || caseFeature.path?.startsWith(rule.pathPrefix)))?.surfaces;
 
 const emptyProofs = () => ({ owner: [], wrapper: [], ci: [], review: [], release: [] });
 
@@ -20,14 +26,14 @@ function catalogFeatureMap(catalog) {
   return {
     version: 1,
     features: catalog.features.map((caseFeature) => {
-      const metadata = caseFeature.verification ?? {};
+      const metadata = { ...(caseFeature.verification ?? {}), ...(PACK_FEATURE_MAP.features?.[caseFeature.id] ?? {}) };
       const proofs = emptyProofs();
       proofs.owner = metadata.owner ?? [];
-      proofs.release = metadata.release ?? [];
+      proofs.release = metadata.release ?? PACK_FEATURE_MAP.release ?? [];
       return {
         id: caseFeature.id,
         title: caseFeature.name,
-        surfaces: metadata.surfaces ?? [],
+        surfaces: metadata.surfaces ?? packSurfaces(caseFeature) ?? [],
         path_prefixes: metadata.paths ?? [],
         entrypoints: metadata.paths ?? [],
         invariants: metadata.invariants ?? [],

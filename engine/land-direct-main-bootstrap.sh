@@ -4,26 +4,45 @@ set -euo pipefail
 land_entry="$(realpath -- "${1:-}")"
 shift
 land_args=("$@")
-land_code_root="$(git -C "${land_entry%/*}" rev-parse --show-toplevel)"
 repo_root="$(git rev-parse --show-toplevel)"
-land_entry_rel="${land_entry#"$land_code_root"/}"
-[[ "$land_entry_rel" == engine/land-direct-main.sh ]] || {
-  echo 'land-direct-main: startup entry is outside the canonical agent path' >&2
-  exit 2
-}
 
-# Validate the invoking checkout before it changes the owner tree.
-land_entry_head="$(git -C "$land_code_root" rev-parse HEAD)"
-land_entry_ref='refs/remotes/origin/main'
-if ! git -C "$land_code_root" show-ref --verify --quiet "$land_entry_ref"; then
-  echo "land-direct-main: canonical code source ref $land_entry_ref unavailable; refusing startup sync" >&2
-  exit 2
+# Engine layout (Line B A2): the entry sits in the engine directory ZF_ENGINE_DIR outside the target repository, a
+# published immutable version, so there is no entry commit to compare and no snapshot to take. An entry at
+# <toplevel>/engine keeps the checks below, even when ZF_ENGINE_DIR names that directory. With ZF_ENGINE_DIR
+# unset (env -i) the entry's own directory stands in for it when it holds config.sh.
+land_engine_dir="${ZF_ENGINE_DIR:-}"
+[[ -n "$land_engine_dir" || ! -f "${land_entry%/*}/config.sh" ]] || land_engine_dir="${land_entry%/*}"
+land_engine_entry=0
+if [[ -n "$land_engine_dir" && "${land_entry%/*}" == "$(realpath -- "$land_engine_dir" 2>/dev/null || true)" ]]; then
+  land_code_root="$(git -C "${land_entry%/*}" rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ "$land_entry" == "$land_code_root/engine/land-direct-main.sh" ]] || land_engine_entry=1
 fi
-land_entry_source="$(git -C "$land_code_root" rev-parse --verify "${land_entry_ref}^{commit}")"
-if ! git -C "$land_code_root" show "$land_entry_head:engine/land-direct-main.sh" 2>/dev/null | cmp -s -- "$land_entry" - \
-    && ! git -C "$land_code_root" show "$land_entry_source:engine/land-direct-main.sh" 2>/dev/null | cmp -s -- "$land_entry" -; then
-  echo 'land-direct-main: entry differs from both its HEAD commit and origin/main; refusing startup sync' >&2
-  exit 2
+if [[ "$land_engine_entry" == 1 ]]; then
+  # The target repository supplies the branch-delivery policy; the engine directory supplies every script.
+  land_code_root="$repo_root"
+  land_driver_dir="${land_entry%/*}" land_lint_dir="${land_entry%/*}"
+else
+  land_code_root="$(git -C "${land_entry%/*}" rev-parse --show-toplevel)"
+  land_driver_dir="$land_code_root/engine" land_lint_dir="$repo_root/engine"
+  land_entry_rel="${land_entry#"$land_code_root"/}"
+  [[ "$land_entry_rel" == engine/land-direct-main.sh ]] || {
+    echo 'land-direct-main: startup entry is outside the canonical agent path' >&2
+    exit 2
+  }
+
+  # Validate the invoking checkout before it changes the owner tree.
+  land_entry_head="$(git -C "$land_code_root" rev-parse HEAD)"
+  land_entry_ref='refs/remotes/origin/main'
+  if ! git -C "$land_code_root" show-ref --verify --quiet "$land_entry_ref"; then
+    echo "land-direct-main: canonical code source ref $land_entry_ref unavailable; refusing startup sync" >&2
+    exit 2
+  fi
+  land_entry_source="$(git -C "$land_code_root" rev-parse --verify "${land_entry_ref}^{commit}")"
+  if ! git -C "$land_code_root" show "$land_entry_head:engine/land-direct-main.sh" 2>/dev/null | cmp -s -- "$land_entry" - \
+      && ! git -C "$land_code_root" show "$land_entry_source:engine/land-direct-main.sh" 2>/dev/null | cmp -s -- "$land_entry" -; then
+    echo 'land-direct-main: entry differs from both its HEAD commit and origin/main; refusing startup sync' >&2
+    exit 2
+  fi
 fi
 
 branch="$(git -C "$repo_root" branch --show-current)"
@@ -119,7 +138,7 @@ land_configure_git_identity() {
 }
 
 land_git_rebase() {
-  local source_driver="$land_code_root/engine/git-merge-state-json.sh" driver attributes quoted_driver status
+  local source_driver="$land_driver_dir/git-merge-state-json.sh" driver attributes quoted_driver status
   [[ -x "$source_driver" ]] || { echo "land-direct-main: missing state JSON merge driver: $source_driver" >&2; return 1; }
   driver="$(mktemp "${TMPDIR:-/tmp}/zf-state-json-merge.XXXXXX")" || return 1
   attributes="$(mktemp "${TMPDIR:-/tmp}/zf-state-json-attributes.XXXXXX")" || { rm -f -- "$driver"; return 1; }
@@ -183,37 +202,43 @@ fi
 
 # Lesson recurrence lint runs against the rebased candidate before the canonical
 # main snapshot starts landing it, so its verdict is retained in this landing log.
-node "$repo_root/engine/supervisor-hold-lesson-lint.mjs" \
+node "$land_lint_dir/supervisor-hold-lesson-lint.mjs" \
   --repo "$repo_root" --base "$land_main_base" --head HEAD
 
 # The remaining recurrence >= 2 lesson lints (#4503) share the same contract.
-node "$repo_root/engine/lesson-lints.mjs" \
+node "$land_lint_dir/lesson-lints.mjs" \
   --repo "$repo_root" --base "$land_main_base" --head HEAD
 
-land_snapshot="$(mktemp -d "${TMPDIR:-/tmp}/zf-land-code.XXXXXX")"
 land_agent_home="$agent_home"
 land_guard_source_root="$land_code_root"
 if [[ -e "$land_agent_home/checkout" ]]; then
   land_guard_source_root="$land_agent_home/checkout"
 fi
-if [[ "$(git -C "$repo_root" cat-file -t "$land_main_base:engine/land-direct-main.sh" 2>/dev/null || true)" != blob ]]; then
-  echo "land-direct-main: synchronized main $land_main_base lacks the lander entry" >&2
-  exit 2
-fi
-if ! git -C "$repo_root" archive "$land_main_base" engine | tar -x -C "$land_snapshot"; then
-  echo 'land-direct-main: could not snapshot synchronized main' >&2
-  exit 1
+if [[ "$land_engine_entry" == 1 ]]; then
+  # land_snapshot stays empty: the exit trap removes it, and the engine directory is not ours to remove.
+  land_child_marker="${land_entry%/*}" land_child_dir="${land_entry%/*}"
+else
+  land_snapshot="$(mktemp -d "${TMPDIR:-/tmp}/zf-land-code.XXXXXX")"
+  if [[ "$(git -C "$repo_root" cat-file -t "$land_main_base:engine/land-direct-main.sh" 2>/dev/null || true)" != blob ]]; then
+    echo "land-direct-main: synchronized main $land_main_base lacks the lander entry" >&2
+    exit 2
+  fi
+  if ! git -C "$repo_root" archive "$land_main_base" engine | tar -x -C "$land_snapshot"; then
+    echo 'land-direct-main: could not snapshot synchronized main' >&2
+    exit 1
+  fi
+  land_child_marker="$land_snapshot" land_child_dir="$land_snapshot/engine"
 fi
 
 # The snapshot child is the lander; it fetches, rebases and pushes with the main ref as its only
 # serialisation point.
 env \
   "_AGENT_WRITE_GUARD_SOURCE_ROOT=$land_guard_source_root" \
-  "ZF_LAND_STATE_JSON_MERGE_DRIVER=$land_code_root/engine/git-merge-state-json.sh" \
-  "ZF_LAND_CODE_SNAPSHOT=$land_snapshot" \
+  "ZF_LAND_STATE_JSON_MERGE_DRIVER=$land_driver_dir/git-merge-state-json.sh" \
+  "ZF_LAND_CODE_SNAPSHOT=$land_child_marker" \
   "ZF_LAND_CODE_SOURCE_ROOT=$repo_root" \
   "ZF_LAND_CODE_SOURCE_OID=$land_main_base" \
   "ZF_REPO_DIR=${ZF_REPO_DIR:-$repo_root}" \
-  "ZF_EXECUTION_MODULE_DIR=$land_snapshot/engine" \
+  "ZF_EXECUTION_MODULE_DIR=$land_child_dir" \
   "ZF_SYSTEMD_RUN_REAL=" \
-  bash "$land_snapshot/engine/land-direct-main.sh" "${land_args[@]}"
+  bash "$land_child_dir/land-direct-main.sh" "${land_args[@]}"

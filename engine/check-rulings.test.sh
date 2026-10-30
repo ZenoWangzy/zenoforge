@@ -5,7 +5,7 @@ REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
 mkdir -p "$tmp/repo/engine/state" "$tmp/home"
-cp "$REPO_DIR/engine/check-rulings.sh" "$REPO_DIR/engine/test-bootstrap-check.sh" \
+cp "$REPO_DIR/engine/check-rulings.sh" "$REPO_DIR/engine/test-bootstrap-check.sh" "$REPO_DIR/engine/config.sh" \
   "$REPO_DIR/engine/test-env.sh" "$REPO_DIR/engine/scheduling-policy.mjs" \
   "$REPO_DIR/engine/lesson-guard-schema.mjs" "$tmp/repo/engine/"
 # scheduling-policy.mjs verifies the contract against minimal fixture copies; AGENT_HOME points

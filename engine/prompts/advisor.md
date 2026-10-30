@@ -294,7 +294,7 @@ way; if it was wrong, correct it properly rather than reapplying it.
      (which function stays untouched, which package the diff stays inside)
      needs no entry.
    - `maintainer`: only when a real product or business fact is missing. The
-     notification gate in `engine/notify.sh` (`maintainer_mail_rejection_reason`)
+     notification gate in `engine/notify.sh` (`founder_mail_rejection_reason`)
      checks this verdict's output mechanically, and today it accepts only the
      fixed Chinese labels shown below, with the subject and the text after each
      label written in Chinese; a mail that fails the gate is rejected. Write

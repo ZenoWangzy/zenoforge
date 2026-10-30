@@ -39,6 +39,8 @@ agent_pipeline_write_guard() {
       "$(realpath -m -- "$agent_home")/engine/"*) _AGENT_WRITE_GUARD_SOURCE_ROOT="$agent_home/checkout" ;;
       *) _AGENT_WRITE_GUARD_SOURCE_ROOT="$(git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null || true)" ;;
     esac
+    # An engine run from an immutable, non-git version directory has no toplevel: the repo it works on stands in.
+    [[ -n "$_AGENT_WRITE_GUARD_SOURCE_ROOT" ]] || _AGENT_WRITE_GUARD_SOURCE_ROOT="${ZF_REPO_DIR:-}"
   fi
   source_root="${_AGENT_WRITE_GUARD_SOURCE_ROOT:-}"
   if [[ -z "$source_root" ]]; then

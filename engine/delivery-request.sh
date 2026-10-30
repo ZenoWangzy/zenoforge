@@ -27,8 +27,9 @@ if [[ "${ZF_AGENT_TEST_MODE:-0}" != 1 ]]; then
 fi
 AGENT_HOME="${AGENT_HOME:-${HOME:?}/.zenoforge}"
 runtime="$AGENT_HOME/checkout"
-[[ -r "$runtime/engine/lib.sh" ]] || { echo 'delivery-request: controller runtime is unavailable' >&2; exit 78; }
-source "$runtime/engine/lib.sh"
+engine="${ZF_ENGINE_LIVE:-$runtime/engine}"
+[[ -r "$engine/lib.sh" ]] || { echo 'delivery-request: controller runtime is unavailable' >&2; exit 78; }
+source "$engine/lib.sh"
 agent_pipeline_write_guard delivery-request "$AGENT_HOME/delivery-requests" || exit 1
 root="$AGENT_HOME/delivery-requests"
 record="$root/$id.json"
@@ -88,7 +89,7 @@ case "$action" in
       report="$root/$id.report.md"
       [[ -e "$report" ]] || (umask 077; printf 'STATUS: READY\n' > "$report")
       result="$(cd -- "$worktree" && ZF_REPO_DIR="$worktree" ZF_AGENT_NAME="$owner" ZF_AGENT_REPORT="$report" \
-        bash "$runtime/engine/land-direct-main.sh" --enqueue)"
+        bash "$engine/land-direct-main.sh" --enqueue)"
     fi
     ;;
   merge)
@@ -121,9 +122,9 @@ case "$action" in
     row="$(merged_pr_for_issue "$N")" || exit 1
     MERGE_SHA="${row#*$'\t'}"
     git_fetch_bounded "$REPO_DIR" main || exit 1
-    DEPLOY_HOST=cihost DEPLOY_DIR=/srv/app
+    DEPLOY_HOST="$ZF_DEPLOY_HOST" DEPLOY_DIR="$ZF_DEPLOY_DIR"
     # Deployment records are the shared production baseline. A missing record is unavailable, not a prompt to read host-local state.
-    deployment_records="$(bash "$runtime/engine/production-deployment-read.sh" "$REPO")" || exit 75
+    deployment_records="$(bash "$engine/production-deployment-read.sh" "$REPO")" || exit 75
     OLD_DEPLOYED_SHA="$(jq -r '.[0].sha // empty' <<< "$deployment_records")" || exit 75
     [[ -n "$OLD_DEPLOYED_SHA" ]] || {
       echo 'delivery-request: production baseline is unavailable; no successful Deployment record exists' >&2
@@ -132,7 +133,7 @@ case "$action" in
     [[ "$OLD_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
       echo 'delivery-request: production baseline is invalid; refusing candidate binding' >&2; exit 65;
     }
-    source "$runtime/engine/release-candidate.sh"
+    source "$engine/release-candidate.sh"
     release_candidate_bind || exit $?
     # An existing release owns its candidate. A new request cannot advance it.
     [[ "$RELEASE_BATCH_SHA" == "$2" || "$(state_read "$N" | jq -r '.release_candidate.head_sha')" == "$2" ]] || {

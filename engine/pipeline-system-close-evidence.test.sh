@@ -40,7 +40,7 @@ GIT_AUTHOR_DATE='2026-09-18T22:12:27Z' GIT_COMMITTER_DATE='2026-09-18T22:12:27Z'
   git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qm 'docs: close docs-only issue 1340'
 source_close_sha="$(git -C "$repo" rev-parse HEAD)"
 git -C "$repo" update-ref refs/remotes/origin/main "$source_close_sha"
-source_close_comment="$(jq -cn --arg sha "$source_close_sha" '[{user:{login:"testmaintainer"},body:("<!-- zf-source-close-evidence issue=1340 sha=" + $sha + " -->")}]')"
+source_close_comment="$(jq -cn --arg sha "$source_close_sha" '[{user:{login:"testmaintainer"},body:("<!-- vecta-source-close-evidence issue=1340 sha=" + $sha + " -->")}]')"
 assert_true 'maintainer source marker accepts merged docs-only closure evidence' \
   issue_closure_evidence_valid "$repo" 1340 concluded "$source_close_comment" testmaintainer \
     "$source_close_at" "$(date +%s)"
@@ -60,7 +60,7 @@ GIT_AUTHOR_DATE='2026-09-18T22:12:28Z' GIT_COMMITTER_DATE='2026-09-18T22:12:28Z'
   git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -q -m 'fix: product change issue 1340'
 product_source_sha="$(git -C "$repo" rev-parse HEAD)"
 git -C "$repo" update-ref refs/remotes/origin/main "$product_source_sha"
-product_source_comment="$(jq -cn --arg sha "$product_source_sha" '[{user:{login:"testmaintainer"},body:("<!-- zf-source-close-evidence issue=1340 sha=" + $sha + " -->")}]')"
+product_source_comment="$(jq -cn --arg sha "$product_source_sha" '[{user:{login:"testmaintainer"},body:("<!-- vecta-source-close-evidence issue=1340 sha=" + $sha + " -->")}]')"
 assert_false 'source-only closure marker rejects product paths' \
   issue_closure_evidence_valid "$repo" 1340 concluded "$product_source_comment" testmaintainer \
     "$source_close_at" "$(date +%s)"

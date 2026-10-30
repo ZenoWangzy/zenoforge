@@ -3,7 +3,7 @@
 # A unit opts in by putting this directory first on PATH. Rows never carry argument values:
 # unit, calling script basename, subcommand, digit-normalized API path, exit code, milliseconds.
 real="${ZF_GH_REAL:-$HOME/.local/bin/gh}"
-log="${ZF_GH_MEASURE_FILE:-$HOME/.zenoforge/measure/gh-calls.tsv}"
+log="${ZF_GH_MEASURE_FILE:-${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}/measure/gh-calls.tsv}"
 start="${EPOCHREALTIME/./}"
 
 # Background the real gh so a TERM from an outer `timeout` reaches it; `<&0` keeps stdin (`--input -`).

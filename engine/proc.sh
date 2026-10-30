@@ -8,7 +8,7 @@
 # load_process_cwds; lib: the boot id read). They must stay /proc reads and must not become `ps`: one ps per worker per
 # poll drove the origin deployment to load 39 (see pid_running in the unit loop). macOS has no /proc, so those bodies use
 # ps, sysctl and lsof.
-if [[ $OSTYPE == darwin* ]]; then
+if [[ ${OSTYPE:-} == darwin* ]]; then
   pid_live() {
     local pid="$1" state
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null || return 1

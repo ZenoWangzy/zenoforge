@@ -1,0 +1,95 @@
+#!/usr/bin/env node
+// zc-quota: read the GLM Coding Plan 5h/weekly quota from the maintainer's signed-in usage tab in the shared Chrome
+// (127.0.0.1:9222, https://bigmodel.cn/coding-plan/personal/usage), pace ZCode so the 5h window is never used up,
+// and spend one weekly reset once the weekly quota is used up (maintainer 10-30). Run by zf-zc-quota.timer.
+// The page's own quota/limit response is read through CDP Network events, so no token passes through this script.
+// Outputs: ~/.zenoforge/zc-quota.json (last reading), ~/.zenoforge/zcode-exhausted-until (epoch seconds; lib.sh's
+// provider_quota_exhausted and bin/worker's zc breaker both read it), log lines on stdout (journal).
+import fs from 'node:fs';
+const HOME = process.env.HOME;
+const STATE = `${HOME}/.zenoforge/zc-quota.json`;
+const MARKER = `${HOME}/.zenoforge/zcode-exhausted-until`;
+const CAP_5H = Number(process.env.ZC_5H_CAP || 85);              // stop starting ZCode at this 5h percentage
+const RESET_WEEK_AT = Number(process.env.ZC_WEEK_RESET_AT || 98); // spend a weekly reset at this weekly percentage
+const PAGE = 'https://bigmodel.cn/coding-plan/personal/usage';
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const log = (...a) => console.log(new Date().toISOString(), ...a);
+
+const pages = await (await fetch('http://127.0.0.1:9222/json/list')).json();
+const page = pages.find(p => p.type === 'page' && p.url.startsWith(PAGE));
+if (!page) { log('usage tab not open in the shared Chrome; nothing read'); process.exit(3); }
+const ws = new WebSocket(page.webSocketDebuggerUrl);
+let id = 0; const waits = new Map(); let hits = [];
+const call = (method, params = {}) => new Promise(r => { const i = ++id; waits.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+ws.onmessage = e => {
+  const m = JSON.parse(e.data);
+  if (m.id) return waits.get(m.id)?.(m);
+  if (m.method === 'Network.responseReceived' && /\/api\/monitor\/usage\/quota\/limit|reset/i.test(m.params.response.url))
+    hits.push({ requestId: m.params.requestId, url: m.params.response.url });
+  if (m.method === 'Network.loadingFinished') { const h = hits.find(x => x.requestId === m.params.requestId); if (h) h.done = true; }
+};
+const evaluate = async expression => (await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
+const body = async h => (await call('Network.getResponseBody', { requestId: h.requestId })).result?.body;
+
+async function readQuota() {
+  hits = [];
+  await call('Page.reload');
+  for (let i = 0; i < 30 && !hits.some(h => h.done && /quota\/limit/.test(h.url)); i++) await sleep(500);
+  const h = hits.find(x => x.done && /quota\/limit/.test(x.url));
+  if (!h) throw new Error('quota/limit response not seen after reload (signed out?)');
+  const limits = JSON.parse(await body(h)).data?.limits || [];
+  const tok = unit => limits.find(l => l.type === 'TOKENS_LIMIT' && l.unit === unit);
+  const five = tok(3), week = tok(6);  // unit 3 = hours (number 5), unit 6 = week (number 1)
+  if (!five || !week) throw new Error(`unexpected quota shape: ${JSON.stringify(limits).slice(0, 300)}`);
+  return { five_h_pct: five.percentage, five_h_reset: Math.floor(five.nextResetTime / 1000),
+           week_pct: week.percentage, week_reset: Math.floor(week.nextResetTime / 1000) };
+}
+
+// Opens 重置管理 and clicks 使用 on the first (soonest-expiring, 优先) weekly reset, then any confirm button.
+async function spendWeeklyReset() {
+  return evaluate(`(async () => {
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    const open = [...document.querySelectorAll('a,button,span,div')].find(e => e.innerText && e.innerText.trim() === '重置管理');
+    if (!open) return 'no 重置管理 entry';
+    open.click(); await wait(2500);
+    const groups = [...document.querySelectorAll('*')].filter(e => e.innerText && e.innerText.trim().startsWith('周额度')
+      && !e.innerText.includes('5小时额度') && e.querySelector('button.reset-quota-dialog__action'));
+    const group = groups.sort((a, b) => a.innerText.length - b.innerText.length)[0];
+    if (!group) return 'no weekly reset group';
+    const remaining = (group.innerText.match(/可用(\\d+)次/) || [])[1];
+    if (remaining === '0') return 'no weekly resets left';
+    group.querySelector('button.reset-quota-dialog__action').click(); await wait(2000);
+    const confirm = [...document.querySelectorAll('button')].filter(b => b.offsetParent && /^(确定|确认|确认重置|确认使用)$/.test(b.innerText.trim()));
+    if (confirm.length) { confirm[confirm.length - 1].click(); await wait(3000); }
+    return 'clicked weekly reset (remaining before ' + remaining + ', confirm ' + confirm.length + ')';
+  })()`);
+}
+
+try {
+  await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
+  await call('Network.enable');
+  let q = await readQuota();
+  const prev = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return {}; } })();
+  if (q.week_pct >= RESET_WEEK_AT) {
+    log(`weekly ${q.week_pct}% >= ${RESET_WEEK_AT}%: spending one weekly reset`);
+    log(await spendWeeklyReset());
+    for (const h of hits.filter(x => x.done && /reset/i.test(x.url))) log('reset response', h.url, (await body(h) || '').slice(0, 300));
+    q = await readQuota();
+    log(`after reset: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const marker = (() => { try { return Number(fs.readFileSync(MARKER, 'utf8').trim()); } catch { return 0; } })();
+  if (q.five_h_pct >= CAP_5H || q.week_pct >= 100) {
+    const until = q.week_pct >= 100 ? q.week_reset : q.five_h_reset;
+    if (until > marker) fs.writeFileSync(MARKER, `${until}\n`);
+    q.marker_written = Math.max(until, marker);
+    log(`hold ZCode until ${new Date(until * 1000).toISOString()}: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
+  } else if (prev.marker_written && marker === prev.marker_written && marker > now) {
+    fs.rmSync(MARKER, { force: true });  // only clear a hold this script wrote; a provider refusal's marker stays
+    log(`release ZCode hold: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
+  }
+  fs.writeFileSync(STATE, JSON.stringify({ ...q, read_at: now, cap_5h: CAP_5H }) + '\n');
+  log(`5h ${q.five_h_pct}% (reset ${new Date(q.five_h_reset * 1000).toISOString()}) weekly ${q.week_pct}% (reset ${new Date(q.week_reset * 1000).toISOString()})`);
+} catch (e) {
+  log('zc-quota failed:', e.message); process.exitCode = 1;
+} finally { ws.close(); }

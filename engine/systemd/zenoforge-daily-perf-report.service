@@ -12,4 +12,6 @@ Environment=ZF_REPO_DIR=%h/.zenoforge/checkout
 Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 StandardOutput=journal
 StandardError=journal
-ExecStart=%h/.zenoforge/checkout/engine/night/daily-perf-report.sh
+EnvironmentFile=-%h/.zenoforge/engine.env
+# Engine-live pointer, else the checkout path; ":" stops systemd expanding $ (see zenoforge-agent.service).
+ExecStart=:/bin/bash -c 'e="$(readlink -e %h/.zenoforge/engine-live 2>/dev/null)"; if [ -n "$e" ]; then export ZF_ENGINE_DIR="$e" ZF_ENGINE_LIVE="$e"; [ -z "${ZF_PACK_DIR-}" ] || export ZF_PACK_DIR="$e"; for v in ZF_RELEASE_TRAIN_SCRIPT AGENT_INCIDENT_GUARDS_FILE ZF_PRODUCTION_TENANT_MARKER_EXCEPTIONS_FILE; do p="${!v-}"; case "$p" in %h/.zenoforge/engine-live/*) export "$v=$e/${p#%h/.zenoforge/engine-live/}";; esac; done; fi; exec "${e:-%h/.zenoforge/checkout/engine}/night/daily-perf-report.sh"'

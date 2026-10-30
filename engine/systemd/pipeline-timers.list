@@ -9,5 +9,6 @@ zenoforge-label-churn.timer - timer-alerted-zenoforge-label-churn.timer
 zenoforge-disk-reclaim.timer - timer-alerted-zenoforge-disk-reclaim.timer
 zenoforge-daily-perf-report.timer - timer-alerted-zenoforge-daily-perf-report.timer
 zenoforge-health-maintenance.timer - timer-alerted-health-maintenance.timer
-# Maintainer direction: keep zenoforge-health-mail.timer disabled; do not auto-repair it.
+zenoforge-health-mail.timer - timer-alerted-zenoforge-health-mail.timer
 zenoforge-prod-anomaly.timer - timer-alerted-zenoforge-prod-anomaly.timer
+zenoforge-roi-collector.timer - timer-alerted-zenoforge-roi-collector.timer

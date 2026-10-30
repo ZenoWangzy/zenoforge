@@ -95,6 +95,7 @@ run_tick() {
   local scheduler_status=0
   local dirty_status quarantine_root quarantine_entry untracked_paths snapshot_stamp
   local fast_forward_old_head fast_forward_new_head
+  local landing_count landing_subjects
   local timer_alerted_file timer_mode
   local timer_repair_action
   # AGENT_HOME declared+assigned in the SAME statement, not bare
@@ -106,7 +107,7 @@ run_tick() {
   # live AGENT_HOME before it was caught. `local NAME=$NAME` on one line
   # evaluates the right-hand side against the OUTER value first, which is
   # what this launcher needs.
-  local AGENT_HOME="${AGENT_HOME:-$HOME/.zenoforge}"
+  local AGENT_HOME="${AGENT_HOME:-}" # config.sh (sourced below) fills in the default
   # One bounded retry handles a transient stall in the shared TLS proxy
   # without letting a single fetch hold the five-minute timer indefinitely.
   # fetch is read-only/idempotent; each attempt keeps the existing 60s cap.
@@ -162,11 +163,14 @@ run_tick() {
   trap 'refuse "unexpected" "internal error at line $LINENO running: $BASH_COMMAND"' ERR
 
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  # engine/run-tick.sh -> repo root is two levels up.
-  repo_dir="$(cd "$script_dir/.." && pwd)"
+  source "$script_dir/config.sh" # AGENT_HOME, ZF_ENGINE_DIR, ZF_REPO_DIR
+  # Same setting lib.sh resolves; this launcher deliberately does not source lib.sh. Read after config.sh so deploy.env is in effect.
+  local UNIT_PREFIX="${ZF_UNIT_PREFIX:-zenoforge}"
+  # The target checkout: ZF_REPO_DIR, else two levels up from engine (the engine lives inside it).
+  repo_dir="$ZF_REPO_DIR"
   # Load before this checkout self-updates; the shared function is then held in this shell.
   source "$script_dir/model-policy-fast-forward.sh"
-  timer_list="$repo_dir/engine/systemd/pipeline-timers.list"
+  timer_list="$ZF_ENGINE_DIR/systemd/pipeline-timers.list"
   # The target repository, as lib.sh derives it: ZF_REPO, else the checkout's origin remote.
   timer_repo="${ZF_REPO:-$(git -C "$repo_dir" remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##' || true)}"
 
@@ -276,6 +280,29 @@ run_tick() {
   # actually act on.
   echo "run-tick: $repo_dir fast-forwarded to origin/main, now at: $(git -C "$repo_dir" log -1 --format=%s); handing off to issue-pipeline.sh" >&2
 
+  # 2026-10-30 (#4728): every main advance becomes one supervisor-inbox
+  # event, so the head supervisor stops discovering landings by polling git
+  # fetch (114 fetches in 16.7h, retro 2026-10-30 §4). land-direct-main.sh
+  # reports its own landings and fast-forwards this checkout first, so a
+  # landing it already reported produces no advance here — the two writers
+  # do not duplicate each other.
+  if [ "$fast_forward_old_head" != "$fast_forward_new_head" ]; then
+    landing_count="$(git -C "$repo_dir" rev-list --count "$fast_forward_old_head..$fast_forward_new_head" 2>/dev/null || echo 0)"
+    landing_subjects="$(git -C "$repo_dir" log --format=%s --max-count=5 \
+      "$fast_forward_old_head..$fast_forward_new_head" 2>/dev/null \
+      | awk 'NR>1{printf " | "} {printf "%s", $0}')" || landing_subjects=""
+    append_supervisor_event landing "count=$landing_count lane=main-advance subjects=$landing_subjects" 2>/dev/null || true
+  fi
+
+  # Line B: when the engine runs from an immutable version directory, follow ops/zenoforge.pin and this checkout's pack:
+  # build the version if it is missing, check it, point engine-live at it. engine-sync.sh is not part of the engine today
+  # (ZF_ENGINE_SYNC names it where it is installed), so until the flip this does nothing. A failed converge is logged
+  # without refusing the tick; the timeout is for a stalled fetch of the pinned engine.
+  local engine_sync="${ZF_ENGINE_SYNC:-$ZF_ENGINE_DIR/engine-sync.sh}"
+  if [ -x "$engine_sync" ] && ! timeout 600 "$engine_sync" --converge "$repo_dir" "$AGENT_HOME" >&2; then
+    echo "run-tick: engine-sync --converge failed; see engine-sync output" >&2
+  fi
+
   # 2026-09-15 (#1299 review): the checkout above is fast-forwarded every
   # tick, but nothing was ever copying engine/systemd/*.service/
   # *.timer OUT of it into ~/.config/systemd/user/ -- the directory
@@ -337,7 +364,7 @@ run_tick() {
   # TimeoutStartSec is a degraded outer safety net, retried automatically
   # next tick -- not the same class of unsafe as running the pipeline
   # against a dirty or diverged checkout.
-  local unit_src_dir="$repo_dir/engine/systemd"
+  local unit_src_dir="$ZF_ENGINE_DIR/systemd"
   local unit_dest_dir="${SYSTEMD_USER_UNIT_DIR:-$HOME/.config/systemd/user}"
   local unit_src unit_name unit_dest units_changed=0
   if [ -d "$unit_src_dir" ]; then
@@ -363,8 +390,8 @@ run_tick() {
     fi
   fi
 
-  if [[ -f "$repo_dir/engine/check-host-daemons.py" ]] && ! python3 -B \
-    "$repo_dir/engine/check-host-daemons.py" "$repo_dir" --sync "$fast_forward_old_head" "$fast_forward_new_head"; then
+  if [[ -f "$ZF_ENGINE_DIR/check-host-daemons.py" ]] && ! python3 -B \
+    "$ZF_ENGINE_DIR/check-host-daemons.py" "$repo_dir" --sync "$fast_forward_old_head" "$fast_forward_new_head"; then
     refuse "host-daemon-sync-failed" "could not synchronize running host daemons after fast-forward"
   fi
 
@@ -383,6 +410,10 @@ run_tick() {
       ""|\#*) continue ;;
     esac
 
+    # The list is data and cannot expand a variable: the word before its first "-" is a placeholder
+    # for the unit prefix, in the timer name and in the marker name that embeds it.
+    timer_alert_marker="${timer_alert_marker/-${timer%%-*}-/-$UNIT_PREFIX-}"
+    timer="$UNIT_PREFIX-${timer#*-}"
     timer_alerted_file="$AGENT_HOME/$timer_alert_marker"
     if [ "$timer_off_variable" != "-" ]; then
       timer_mode="$(timeout "${timer_gh_timeout_sec}s" gh variable get "$timer_off_variable" \
@@ -447,7 +478,7 @@ run_tick() {
   # reaches this process the same way whether it replaced its own image via
   # `exec` or is parenting a child and waiting on it -- nothing here
   # depends on which shape this process's own PID takes.
-  if "$repo_dir/engine/issue-pipeline.sh"; then
+  if "$ZF_ENGINE_DIR/issue-pipeline.sh"; then
     :
   else
     scheduler_status=$?

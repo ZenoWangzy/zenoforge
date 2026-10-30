@@ -31,16 +31,17 @@ run_refill() {
 # #4628: the slow tick runs beside the refill controller. The scheduler yields the same ledger lock
 # around slow GitHub phases; a busy refill returns 75 and is retried five seconds later.
 refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一拍前的补派窗口
-  local slept=0 cadence="${AUTOPI_REFILL_SECONDS:-30}" signature rc
+  local cadence="${AUTOPI_REFILL_SECONDS:-30}" signature rc started=$SECONDS
   REFILL_SINCE="${REFILL_SINCE:-0}"
   REFILL_LAST_EXIT="${REFILL_LAST_EXIT:-}"
   while :; do
     if [[ -n "${2:-}" ]]; then
       pid_running "$2" || break
     else
-      (( slept < $1 )) || break
+      # wall clock, not summed sleeps: run_refill time inside the window used to stretch the idle gap past tick_seconds (#4686)
+      (( SECONDS - started < $1 )) || break
     fi
-    sleep 5; slept=$((slept + 5)); REFILL_SINCE=$((REFILL_SINCE + 5))
+    sleep 5; REFILL_SINCE=$((REFILL_SINCE + 5))
     signature="$(exited_worker_signature "$A/workers.json")"
     [[ -n "$signature" ]] || REFILL_LAST_EXIT=""
     if [[ -n "$signature" && "$signature" != "$REFILL_LAST_EXIT" ]] || (( REFILL_SINCE >= cadence )); then

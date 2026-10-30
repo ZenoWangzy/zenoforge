@@ -15,6 +15,7 @@ REPO=test/repo
 H="$AGENT_HOME"
 NIGHT="$AGENT_HOME/night"
 REPO_DIR="$test_env_root/repo"
+ZF_ENGINE_DIR="$REPO_DIR/engine" # the stub dispatcher lives in the fixture repo
 WORKTREE_ROOT="$ZF_WORKTREE_ROOT"
 LOG="$test_env_root/tick.log"
 CALLS="$test_env_root/dispatch-calls"

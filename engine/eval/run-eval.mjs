@@ -11,7 +11,7 @@ import { compareResults, formatComparison, compareArms, formatArmComparison, sum
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '../..');
-const evalHome = join(homedir(), '.zenoforge/eval');
+const evalHome = join(process.env.AGENT_HOME || process.env.ZF_HOME || join(homedir(), '.zenoforge'), 'eval');
 const stages = ['triage', 'advisor', 'implement', 'review', 'supervisor', 'end-to-end'];
 const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
 const prompt = (name) => readFileSync(join(repo, 'engine/prompts', `${name}.md`), 'utf8');

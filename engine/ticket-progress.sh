@@ -98,7 +98,7 @@ if [ -r "$AGENT_HOME/triage-batch-active.json" ] && triage_batch_unit_active 2>/
 fi
 advisor_job="$(advisor_batch_job_json 2>/dev/null || true)"
 advisor_job_id="$(jq -r '.job_id // empty' <<< "$advisor_job" 2>/dev/null || true)"
-if [ -n "$advisor_job_id" ] && systemctl --user is-active --quiet "zf-web-advisor-provider-$advisor_job_id.service" 2>/dev/null; then
+if [ -n "$advisor_job_id" ] && systemctl --user is-active --quiet "${UNIT_PREFIX_TRANSIENT}-web-advisor-provider-$advisor_job_id.service" 2>/dev/null; then
   batch_members="$(jq -c --argjson prior "$batch_members" '$prior + [.members[]?.issue | tostring]' <<< "$advisor_job" 2>/dev/null \
     || printf '%s' "$batch_members")"
 fi

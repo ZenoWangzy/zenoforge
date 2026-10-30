@@ -4,9 +4,12 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { readPackJson } from './pack-dir.mjs';
 import { buildVerificationPlan, DEFAULT_MAP, DEFAULT_ROOT, loadFeatureMap } from './verification-plan.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
+// Extra path prefixes a pack counts as user surface: state/user-surface-paths.json ({ prefixes: [...] }); none without a pack.
+const PACK_SURFACE_PREFIXES = readPackJson('state/user-surface-paths.json')?.prefixes ?? [];
 
 function gitChangedPaths(root, base, head) {
   if (!base || !head) return [];
@@ -22,6 +25,7 @@ function gitChangedPaths(root, base, head) {
 function isCandidateUserSurface(file) {
   if (/\.(test|spec)\.[^.]+$/.test(file) || /(^|\/)tests?\//.test(file)) return false;
   if (file.startsWith('scripts/e2e/')) return true;
+  if (PACK_SURFACE_PREFIXES.some((prefix) => file.startsWith(prefix))) return true;
   return /^packages\/[^/]+\/src\//.test(file);
 }
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const defaultRepo = path.resolve(scriptDir, '..');
-const registryPath = 'engine/state/incident-guards.json';
+const defaultRepo = process.env.ZF_REPO_DIR || path.resolve(scriptDir, '..');
+const registryPath = `${process.env.ZF_PACK_REL || 'engine'}/state/incident-guards.json`;
 const outputPath = 'lessons/recurrence-ranking.json';
 
 function textValues(value) {
@@ -235,6 +235,91 @@ export function buildLessonRecurrenceRanking(registry, history = {}) {
   };
 }
 
+function catalogEntries(catalog) {
+  const entries = [];
+  let current = null;
+  for (const line of catalog.split(/\r?\n/)) {
+    if (line.startsWith('### ')) {
+      if (current) entries.push(current);
+      current = { text: line, lines: [line] };
+    } else if (current) {
+      current.text += `\n${line}`;
+      current.lines.push(line);
+    }
+  }
+  if (current) entries.push(current);
+  return entries;
+}
+
+function catalogEntryReferencesLesson(entry, lessonId) {
+  const id = lessonId.toLowerCase();
+  const ruleLinks = [...entry.text.matchAll(/\]\((?:\.\.\/)?(?:\.\/)?RULES\.md#([^\s)]+)/gi)];
+  if (ruleLinks.some((match) => {
+    const anchor = match[1].toLowerCase();
+    return anchor === id || anchor.startsWith(`${id}-`);
+  })) return true;
+  const applicableRule = entry.lines.find((line) => line.includes('适用规则')) ?? '';
+  const referencedIds = applicableRule.match(/\b(?:V|D)[A-Za-z0-9-]+\b/gi) ?? [];
+  return referencedIds.some((reference) => reference.toLowerCase() === id);
+}
+
+function catalogFullLink(entry) {
+  const match = entry.text.match(/\[([^\]]+)\]\((?:\.\/|(?:\.\.\/)?lessons\/)?full\/([^\s)#]+\.md)(?:#[^\s)]*)?\)/i);
+  return match ? { label: match[1], path: `lessons/full/${match[2]}` } : null;
+}
+
+export function buildFootprintLessonBrief(ranking, footprint, catalog, rules, limit = 3) {
+  const paths = footprint
+    .map((value) => String(value).replaceAll('\\', '/').replace(/^\.\//, ''))
+    .filter(Boolean);
+  if (paths.length === 0) return '';
+
+  const entries = catalogEntries(catalog);
+  const ruleLines = rules.split(/\r?\n/);
+  const selected = [];
+  const seen = new Set();
+  for (const row of ranking.ranking) {
+    const lessonId = row.lesson_id;
+    if (row.recurrence_count < 1 || typeof lessonId !== 'string' || seen.has(lessonId)) continue;
+    const entry = entries.find((candidate) => paths.some((file) => candidate.text.includes(file)
+      && catalogEntryReferencesLesson(candidate, lessonId)));
+    if (!entry) continue;
+    const fullLink = catalogFullLink(entry);
+    if (!fullLink) continue;
+    const ruleLine = entry.lines.find((line) => /^\s*\*\*核心动作\*\*[：:]/.test(line))
+      ?? ruleLines.find((line) => line.startsWith(`**${lessonId}**`));
+    if (!ruleLine) continue;
+    selected.push(`- ${lessonId}: ${ruleLine.trim()} → [${fullLink.label}](${fullLink.path})`);
+    seen.add(lessonId);
+    if (selected.length >= limit) break;
+  }
+
+  if (selected.length === 0) return '';
+  const heading = '匹配本单元 footprint 的复发经验：\n';
+  const lines = [];
+  for (const line of selected) {
+    const candidate = `${heading}${[...lines, line].join('\n')}\n`;
+    if (Buffer.byteLength(candidate, 'utf8') > 1024) break;
+    lines.push(line);
+  }
+  return lines.length ? `${heading}${lines.join('\n')}\n` : '';
+}
+
+function recordFootprintLessonHits(runtimeDir, brief) {
+  if (!runtimeDir) return;
+  const lessonIds = brief
+    ? [...new Set([...brief.matchAll(/^- ((?:V|D)\d+):/gm)].map((match) => match[1]))]
+    : [];
+  const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const events = [`[${timestamp}] lesson-rule-observed matches=${lessonIds.length}\n`,
+    ...lessonIds.map((lessonId) => `[${timestamp}] lesson-rule-hit lesson=${lessonId} source=implement-brief\n`)].join('');
+  try {
+    appendFileSync(path.join(runtimeDir, 'scheduler.log'), events, 'utf8');
+  } catch {
+    // Measurement must not prevent the implement dispatch that produced the brief.
+  }
+}
+
 function collectRecordCommits(repo) {
   const history = execFileSync('git', [
     '-C', repo,
@@ -273,13 +358,19 @@ function collectLessonAliases(repo) {
 }
 
 function parseArgs(args) {
-  const options = { repo: defaultRepo, output: outputPath, write: false };
+  const options = { repo: defaultRepo, output: outputPath, write: false, footprintJson: null, limit: 3 };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === '--repo' || arg === '--output') {
+    if (arg === '--repo' || arg === '--output' || arg === '--footprint-json' || arg === '--limit') {
       const value = args[index + 1];
       if (!value) throw new Error(`${arg} requires a value`);
-      options[arg === '--repo' ? 'repo' : 'output'] = value;
+      if (arg === '--repo') options.repo = value;
+      else if (arg === '--output') options.output = value;
+      else if (arg === '--footprint-json') options.footprintJson = value;
+      else {
+        options.limit = Number(value);
+        if (!Number.isSafeInteger(options.limit) || options.limit < 1) throw new Error('--limit must be a positive integer');
+      }
       index += 1;
     } else if (arg === '--write') {
       options.write = true;
@@ -296,13 +387,23 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const repo = path.resolve(options.repo);
     const registry = JSON.parse(readFileSync(path.join(repo, registryPath), 'utf8'));
     const ranking = buildLessonRecurrenceRanking(registry, collectRecordCommits(repo));
-    const target = path.resolve(repo, options.output);
-    const serialized = `${JSON.stringify(ranking, null, 2)}\n`;
-    if (options.write) {
-      writeFileSync(target, serialized);
-      console.log(`lesson-ranking: lessons=${ranking.ranking.length} recurrent=${ranking.recurrent_class_count} recurrences=${ranking.recurrence_event_count} unresolved=${ranking.unresolved_recurrences.length} output=${path.relative(repo, target)}`);
+    if (options.footprintJson !== null) {
+      const footprint = JSON.parse(options.footprintJson);
+      if (!Array.isArray(footprint)) throw new Error('--footprint-json must contain an array');
+      const catalog = readFileSync(path.join(repo, 'lessons/CATALOG.md'), 'utf8');
+      const rules = readFileSync(path.join(repo, 'lessons/RULES.md'), 'utf8');
+      const brief = buildFootprintLessonBrief(ranking, footprint, catalog, rules, options.limit);
+      recordFootprintLessonHits(process.env.MAC_AUTOPILOT_RUNTIME_DIR, brief);
+      process.stdout.write(brief);
     } else {
-      process.stdout.write(serialized);
+      const target = path.resolve(repo, options.output);
+      const serialized = `${JSON.stringify(ranking, null, 2)}\n`;
+      if (options.write) {
+        writeFileSync(target, serialized);
+        console.log(`lesson-ranking: lessons=${ranking.ranking.length} recurrent=${ranking.recurrent_class_count} recurrences=${ranking.recurrence_event_count} unresolved=${ranking.unresolved_recurrences.length} output=${path.relative(repo, target)}`);
+      } else {
+        process.stdout.write(serialized);
+      }
     }
   } catch (error) {
     console.error(`lesson-ranking: ${error instanceof Error ? error.message : String(error)}`);

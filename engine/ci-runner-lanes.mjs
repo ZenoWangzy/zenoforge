@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { validateReservedRunners } from './ci-reserved-runners.mjs';
+import { CI_RUNNER_PREFIX, validateReservedRunners } from './ci-reserved-runners.mjs';
 
 // shortcut: inline runs-on selectors only; add YAML parsing when block selectors appear.
 export function workflowSelectors(source) {
@@ -26,7 +26,8 @@ export function workflowSelectors(source) {
 
 export function validateRunnerLanes(runners, workflows, priorityPr = '') {
   validateReservedRunners(runners);
-  const minimums = { 'cihost-ci-main': 5, 'cihost-ci-postsubmit': 1, 'cihost-ci-light': 4, 'cihost-ci-priority': 1, 'zf-suites': 3 };
+  const minimums = { [`${CI_RUNNER_PREFIX}-main`]: 5, [`${CI_RUNNER_PREFIX}-postsubmit`]: 1, [`${CI_RUNNER_PREFIX}-light`]: 4, [`${CI_RUNNER_PREFIX}-priority`]: 1, 'vecta-suites': 3 };
+  const laneLabel = new RegExp(`\\b(?:${CI_RUNNER_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:-[a-z0-9-]+)?|vecta-suites)\\b`, 'g');
   const counts = [];
   for (const workflow of workflows) {
     for (const [job, config] of Object.entries(workflow.jobs ?? {})) {
@@ -34,10 +35,10 @@ export function validateRunnerLanes(runners, workflows, priorityPr = '') {
       const labels = Array.isArray(selector) ? selector : [selector];
       assert.ok(labels.every(label => typeof label === 'string'), `${job}: unresolved runs-on`);
       const fixed = labels.filter(label => !label.startsWith('${{'));
-      const alternatives = labels.flatMap(label => label.match(/\b(?:cihost-ci(?:-[a-z0-9-]+)?|zf-suites)\b/g) ?? []);
+      const alternatives = labels.flatMap(label => label.match(laneLabel) ?? []);
       assert.ok(!labels.some(label => label.startsWith('${{')) || alternatives.length, `${job}: unresolved runs-on`);
-      for (const lane of new Set(alternatives.filter(label => label !== 'cihost-ci-testcontainers'))) {
-        if (lane === 'cihost-ci-priority' && !priorityPr) continue;
+      for (const lane of new Set(alternatives.filter(label => label !== `${CI_RUNNER_PREFIX}-testcontainers`))) {
+        if (lane === `${CI_RUNNER_PREFIX}-priority` && !priorityPr) continue;
         const required = [...new Set([...fixed, lane])];
         const online = runners.filter(runner => runner.status === 'online' &&
           required.every(label => runner.labels.some(actual => actual.name === label))).length;

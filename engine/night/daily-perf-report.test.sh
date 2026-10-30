@@ -90,13 +90,13 @@ export PATH="$MOCK_BIN:$PATH" MAINTAINER_HEALTH_MAIL_ACTIVITY_FILE="$TMP_DIR/act
   MAC_AUTOPILOT_RUNTIME_DIR="$TMP_DIR/autopi"
 export DAILY_PERF_ISSUES_FILE="$TMP_DIR/issues.json" REPO='example-maintainer/example-repo'
 cat > "$AGENT_HOME/recipients.json" <<'JSON'
-{"maintainer_login":"maintainer","recipients":{"maintainer":"maintainer@example.test"}}
+{"founder_login":"maintainer","recipients":{"maintainer":"maintainer@example.test"}}
 JSON
 printf '2026-09-26T00:00:00Z\trecipients=maintainer@example.test\tsubject=一\tissue=none\tresult=sent\n2026-09-26T23:59:59Z\trecipients=maintainer@example.test\tsubject=二\tissue=none\tresult=sent\n2026-09-26T10:00:00Z\trecipients=maintainer@example.test\tsubject=三\tissue=none\tresult=failed\n' \
   > "$AGENT_HOME/logs/notify.log"
 source "$REPORT_SCRIPT"
 # Keep display assertions independent of live systemd units and GitHub queue state.
-maintainer_health_mail_work_counts() { printf '{"active":2,"queued":7}\n'; }
+founder_health_mail_work_counts() { printf '{"active":2,"queued":7}\n'; }
 REPORT="$(daily_perf_report_build "$AGENT_HOME" "$REPO_DIR" "$REPORT_DAY" '{}')"
 
 run_mail_audit() {
@@ -158,10 +158,10 @@ echo 'ok - daily summary hides IDs, hashes, and internal metrics'
 cat > "$AGENT_HOME/state/3007.json" <<'JSON'
 {"deploy_state":"deployed","deployed_sha":"fedcba9876543210"}
 JSON
-INCOMPLETE_EFFICIENCY="$(maintainer_health_mail_efficiency_block "$AGENT_HOME" daily "$REPORT_DAY" "$NOW")"
+INCOMPLETE_EFFICIENCY="$(founder_health_mail_efficiency_block "$AGENT_HOME" daily "$REPORT_DAY" "$NOW")"
 assert_contains 'release event still counts when another production timestamp is missing' \
   "$INCOMPLETE_EFFICIENCY" '| 上线的改进项数 | 1项 |'
-INCOMPLETE_RELEASES="$(maintainer_health_mail_release_lines "$AGENT_HOME" \
+INCOMPLETE_RELEASES="$(founder_health_mail_release_lines "$AGENT_HOME" \
   "$(date -u -d "$REPORT_DAY 00:00:00" +%s)" "$(date -u -d "$REPORT_DAY +1 day 00:00:00" +%s)")"
 assert_contains 'missing production timestamp is explicit in launch summary' \
   "$INCOMPLETE_RELEASES" '上线时间待核实，无法确认本期上线内容'
@@ -181,7 +181,7 @@ echo 'ok - daily dry-run persists no report or audit output'
 grep -Fq 'OnCalendar=*-*-* 01:00:00 UTC' "$SCRIPT_DIR/../systemd/zenoforge-daily-perf-report.timer" \
   && echo 'ok - daily summary timer runs at 01:00 UTC' \
   || { echo 'not ok - daily summary timer runs at 01:00 UTC' >&2; exit 1; }
-grep -Fq 'ExecStart=%h/.zenoforge/checkout/engine/night/daily-perf-report.sh' \
+grep -Eq '^ExecStart=:/bin/bash -c .*checkout/engine}/night/daily-perf-report\.sh"' \
   "$SCRIPT_DIR/../systemd/zenoforge-daily-perf-report.service" \
   && echo 'ok - daily summary service uses shared checkout script' \
   || { echo 'not ok - daily summary service uses shared checkout script' >&2; exit 1; }

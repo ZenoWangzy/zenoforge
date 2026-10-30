@@ -12,7 +12,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 // labels predate it, and its terra calls are only spent when a diff actually touches it.
 const stages = ['triage', 'advisor', 'implement', 'review', 'end-to-end'];
 const selectableStages = [...stages, 'supervisor'];
-const evalHome = join(homedir(), '.zenoforge/eval');
+const evalHome = join(process.env.AGENT_HOME || process.env.ZF_HOME || join(homedir(), '.zenoforge'), 'eval');
 const json = (path) => JSON.parse(readFileSync(path, 'utf8'));
 
 function parseArgs(args) {

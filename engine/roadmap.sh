@@ -280,7 +280,7 @@ roadmap_choose_epic() {
           else
             ([$candidate_epics[] | . + {score:score($text_words;$text_bigrams;.title)} | select(.score > 0)]
              | sort_by([-.score,.order]) | .[0]) as $best
-            | ($candidate_epics | map(select(.title == "待归类")) | .[0]) as $fallback
+            | ($candidate_epics | map(select(.title == "待归类")) | (map(select(.theme_milestone != "开发流水线与运行稳定")) + .) | .[0]) as $fallback
             | $best // $fallback
           end) as $preferred
        | if $preferred == null then error("roadmap has no matching or 待归类 epic")
@@ -321,7 +321,7 @@ roadmap_ledger_add() {
 }
 
 roadmap_place_issue() {
-  local cache_file="$1" number="$2" issue_json="$3" source="${4:-}" tree flat existing selected epic milestone placed_file linked_file sub_issue_id
+  local cache_file="$1" number="$2" issue_json="$3" source="${4:-}" tree flat existing selected epic milestone placed_file linked_file sub_issue_id link_out
   [[ "$number" =~ ^[1-9][0-9]*$ && -r "$cache_file" ]] || return 64
   tree="$(cat -- "$cache_file")" || return 1
   roadmap_tree_is_valid "$tree" || return 1
@@ -348,8 +348,10 @@ roadmap_place_issue() {
   if ! grep -Fqx -- "$number" "$linked_file" 2>/dev/null; then
     sub_issue_id="$(gh api "repos/$REPO/issues/$number" --jq '.id | select(type == "number" and . > 0)')" || return 1
     [[ "$sub_issue_id" =~ ^[1-9][0-9]*$ ]] || return 1
-    guarded_write gh api "repos/$REPO/issues/$epic/sub_issues" --method POST \
-      -F "sub_issue_id=$sub_issue_id" -F replace_parent=true || return 1
+    # "duplicate sub-issues" = already under this epic (stale tree cache): goal met.
+    link_out="$(guarded_write gh api "repos/$REPO/issues/$epic/sub_issues" --method POST \
+      -F "sub_issue_id=$sub_issue_id" -F replace_parent=true 2>&1)" \
+      || { [[ "$link_out" == *"may not contain duplicate sub-issues"* ]] || { printf '%s\n' "$link_out" >&2; return 1; }; }
     roadmap_ledger_add "$linked_file" "$number" "$placed_file.lock" || return 1
   fi
   if [[ -n "$milestone" ]]; then
@@ -632,7 +634,10 @@ roadmap_health_assess() {
        | (age($issue.createdAt // $issue.created_at)) as $created
        | select($created == null or ($now - $created) > 86400)
        | "unclassified:#" + ($issue.number|tostring)] as $unclassified_keys
-    | ($tree_container_keys + $open_container_keys + $orphan_keys + $unclassified_keys | unique | sort) as $keys
+    | [$tree[] | select(.depth == 1 and (.labels | index("roadmap-theme") != null))
+       | select(. as $theme | any($tree[]; .parent == $theme.number and .title == "待归类") | not)
+       | "fallback-epic-missing:#" + (.number|tostring)] as $fallback_keys
+    | ($tree_container_keys + $open_container_keys + $orphan_keys + $unclassified_keys + $fallback_keys | unique | sort) as $keys
     | {verdict:(if ($keys|length)>0 then "BROKEN" else "OK" end),item_keys:$keys,
        detail:("root=#" + (($tree | map(select(.depth==0)) | .[0].number)|tostring)
          + " open=" + ($open|length|tostring)

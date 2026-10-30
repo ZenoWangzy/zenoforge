@@ -920,7 +920,7 @@ outcomes_reconcile_merged_issues() {
         [.[0] | flatten[]?
           | select((.user.login // "" | ascii_downcase) == ($owner | ascii_downcase))
           | (.body // "") as $body |
-          (try {kind:"marker",pr:($body | capture("<!-- zf-merged-outcome issue=" + $issue + " pr=(?<pr>[1-9][0-9]*) -->").pr)} catch empty),
+          (try {kind:"marker",pr:($body | capture("<!-- vecta-merged-outcome issue=" + $issue + " pr=(?<pr>[1-9][0-9]*) -->").pr)} catch empty),
           (try {kind:"decision",pr:($body | select(test("(?i)decision\\s*\\(supervisor")) |
             capture("(?i)PR\\s+#?(?<pr>[1-9][0-9]*)[^\\n]*is the accepted implementation").pr)} catch empty)
         ] as $signals |
@@ -1043,7 +1043,7 @@ outcomes_audit() {
   esac
   local OUTCOMES_GH_TIMEOUT_SECONDS=10
   local outcomes_deadline=$(( ${ZF_OUTCOMES_SECTION_TIMEOUT_SECONDS:-75} - 5 ))
-  local cutoff_epoch cutoff_iso cutoff_date maintainer_login closed_json awaiting_json open_json open_prs_json state_label_detail
+  local cutoff_epoch cutoff_iso cutoff_date founder_login closed_json awaiting_json open_json open_prs_json state_label_detail
   local row issue title closed_at close_epoch labels state_reason comments_json comment_since evidence_status
   local prs_for_issue timeline_json commit_id state_file state pr_number outcome merged_at merged_epoch closed_linked_rows
   local closed_timeline_ids_json closed_timelines_json awaiting_timeline_ids_json awaiting_timelines_json
@@ -1057,7 +1057,7 @@ outcomes_audit() {
   cutoff_epoch=$((now - 86400))
   cutoff_iso="$(date -u -d "@$cutoff_epoch" +%Y-%m-%dT%H:%M:%SZ)" || outcomes_audit_error 'cannot calculate 24-hour cutoff' || return 2
   cutoff_date="${cutoff_iso%%T*}"
-  maintainer_login="${repo%%/*}"
+  founder_login="${repo%%/*}"
   if [[ -n "${ZF_OPEN_ISSUES_CACHE_FILE:-}" ]] && jq -e '
     (.sampled_at | fromdateiso8601) as $sampled |
     $sampled <= now and now - $sampled <= 900 and
@@ -1252,7 +1252,7 @@ outcomes_audit() {
         return 2
       fi
       if issue_closure_evidence_valid "$REPO_DIR" "$issue" "$labels" \
-        "$comments_json" "$maintainer_login" "$close_epoch" "$now" "" "$state_reason" \
+        "$comments_json" "$founder_login" "$close_epoch" "$now" "" "$state_reason" \
         "${ZF_HEALTH_PROBE_SHA:-}"; then
         :
       else

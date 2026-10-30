@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/config.sh"
+# Same setting lib.sh resolves; this script runs without sourcing it.
+UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
 WORKTREE_ROOT="${ZF_WORKTREE_ROOT:-$HOME/wt}"
 MANIFEST="${ZF_WORKTREE_CLEANUP_MANIFEST:-$NIGHT/worktree-cleanup-manifest.txt}"
@@ -9,6 +11,7 @@ AGENTS_FILE="${ZF_HAND_AGENTS_FILE:-$NIGHT/agents.txt}"
 REPO=""
 REPO_ROOT=""
 _WORKTREE_LIFECYCLE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$_WORKTREE_LIFECYCLE_DIR/proc.sh"
 [[ -r "$_WORKTREE_LIFECYCLE_DIR/night/hand-exit-handoff.sh" ]] && source "$_WORKTREE_LIFECYCLE_DIR/night/hand-exit-handoff.sh"
 REPO_NAME=""
 ACTIVE_UNITS=""
@@ -148,21 +151,7 @@ refresh_origin() {
   done
 }
 
-pid_live() {
-  local pid="$1" stat_line rest state
-  [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null || return 1
-  IFS= read -r stat_line < "/proc/$pid/stat" 2>/dev/null || return 1
-  rest="${stat_line##*) }"
-  read -r state _ <<< "$rest"
-  [ "$state" != Z ]
-}
-
-pid_start_ticks() {
-  local pid="$1" stat_line rest
-  IFS= read -r stat_line < "/proc/$pid/stat" 2>/dev/null || return 1
-  rest="${stat_line##*) }"
-  awk '{print $20}' <<< "$rest"
-}
+pid_start_ticks() { pid_start_id "$1"; }
 
 manifest_record() {
   local action="$1" name="$2" head="$3" detail="${4:-}"
@@ -741,7 +730,7 @@ finish_dispatch() {
 load_live_state() {
   local record active_names active_pid_lines active_pid owner owner_pid owner_branch
   local -a active_unit_names=()
-  ACTIVE_UNITS="$(timeout "${LIFECYCLE_SYSTEMCTL_TIMEOUT_SECONDS:-20}" systemctl --user list-units --state=active --no-legend --plain 'zf-*' 'sup-land-*' 2>/dev/null)" || return 1
+  ACTIVE_UNITS="$(timeout "${LIFECYCLE_SYSTEMCTL_TIMEOUT_SECONDS:-20}" systemctl --user list-units --state=active --no-legend --plain "${UNIT_PREFIX_TRANSIENT}-*" 'sup-land-*' 2>/dev/null)" || return 1
   ACTIVE_UNIT_PIDS=""
   active_names="$(awk 'NF {print $1}' <<< "$ACTIVE_UNITS")"
   if [ -n "$active_names" ]; then
@@ -819,7 +808,7 @@ worktree_lock_state() {
   local target="$1" reason="$2" unit owner_pid owner_ticks current_ticks locked_file created age now has_owner=0
   if [[ "$reason" =~ (^|[[:space:]:])unit=([^[:space:]]+) ]]; then
     unit="${BASH_REMATCH[2]}"
-    if [[ "$unit" != zf-worktree-cleanup-* ]]; then
+    if [[ "$unit" != ${UNIT_PREFIX_TRANSIENT}-worktree-cleanup-* ]]; then
       has_owner=1
       unit_is_active "$unit" 1 && return 0
       if [[ "$unit" != *.service && "$unit" != *.scope ]]; then
@@ -925,7 +914,7 @@ branch_unit_live() {
     *) return 1 ;;
   esac
   [[ "$issue" =~ ^[0-9]+$ ]] || return 1
-  unit="zf-$base-$issue.service"
+  unit="${UNIT_PREFIX_TRANSIENT}-$base-$issue.service"
   unit_is_active "$unit"
 }
 
@@ -935,10 +924,10 @@ worktree_owner_live() {
   if grep -Fq -- "$target" <<< "$ACTIVE_UNITS"; then return 0; fi
   basename="$(basename -- "$target")"
   case "$basename" in
-    issue-[0-9]*) unit_is_active "zf-implement-${basename#issue-}.service" && return 0 ;;
-    triage-[0-9]*) unit_is_active "zf-triage-${basename#triage-}.service" && return 0 ;;
-    advisor-[0-9]*) unit_is_active "zf-advisor-${basename#advisor-}.service" && return 0 ;;
-    recut-[0-9]*) unit_is_active "zf-recut-${basename#recut-}.service" && return 0 ;;
+    issue-[0-9]*) unit_is_active "${UNIT_PREFIX_TRANSIENT}-implement-${basename#issue-}.service" && return 0 ;;
+    triage-[0-9]*) unit_is_active "${UNIT_PREFIX_TRANSIENT}-triage-${basename#triage-}.service" && return 0 ;;
+    advisor-[0-9]*) unit_is_active "${UNIT_PREFIX_TRANSIENT}-advisor-${basename#advisor-}.service" && return 0 ;;
+    recut-[0-9]*) unit_is_active "${UNIT_PREFIX_TRANSIENT}-recut-${basename#recut-}.service" && return 0 ;;
     triage-batch-run-[0-9]*)
       # run-triage-batch.sh names the tree after its own PID.
       pid="${basename#triage-batch-run-}"
@@ -950,18 +939,18 @@ worktree_owner_live() {
       if [[ "$basename" =~ ^advisor-run-([0-9a-f]{32})(-|$) ]]; then
         invocation="${BASH_REMATCH[1]}"
         while read -r unit _; do
-          [[ "$unit" =~ ^zf-advisor(-batch|-[0-9]+)\.service$ ]] || continue
+          [[ "$unit" =~ ^${UNIT_PREFIX_TRANSIENT}-advisor(-batch|-[0-9]+)\.service$ ]] || continue
           [ "$(timeout 5 systemctl --user show --property=InvocationID --value "$unit" 2>/dev/null || true)" = "$invocation" ] \
             && unit_is_active "$unit" && return 0
         done <<< "$ACTIVE_UNITS"
         return 1
       fi
-      unit_is_active "zf-advisor-batch.service" && return 0
-      awk '$1 ~ /^zf-advisor-[0-9]+\\.service$/ { found=1 } END { exit !found }' <<< "$ACTIVE_UNITS" && return 0
+      unit_is_active "${UNIT_PREFIX_TRANSIENT}-advisor-batch.service" && return 0
+      awk "\$1 ~ /^${UNIT_PREFIX_TRANSIENT}-advisor-[0-9]+\\\\.service\$/ { found=1 } END { exit !found }" <<< "$ACTIVE_UNITS" && return 0
       ;;
     tmp.*)
-      unit_is_active "zf-merge-sweeper.service" && return 0
-      awk '$1 ~ /^zf-implement-[0-9]+\\.service$/ { found=1 } END { exit !found }' <<< "$ACTIVE_UNITS" && return 0
+      unit_is_active "${UNIT_PREFIX_TRANSIENT}-merge-sweeper.service" && return 0
+      awk "\$1 ~ /^${UNIT_PREFIX_TRANSIENT}-implement-[0-9]+\\\\.service\$/ { found=1 } END { exit !found }" <<< "$ACTIVE_UNITS" && return 0
       ;;
   esac
   return 1
