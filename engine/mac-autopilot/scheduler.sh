@@ -7,6 +7,8 @@ source "$HERE/../closing-keywords.sh"
 source "$HERE/runtime-env.sh"
 source "$HERE/../verification-plan-runtime.sh"
 source "$HERE/config-reconcile.sh"
+source "$HERE/../matt-skills.sh"
+ENGINE_ROOT="$(cd -- "$HERE/../.." && pwd -P)" # holds .agents/skills and engine/prompts, which read-only Claude reviewers get via --add-dir
 REQUIRED_PR_CHECKS_FILE="${REQUIRED_PR_CHECKS_FILE:-$HERE/required-pr-checks.json}"
 ROOT="$MAC_AUTOPILOT_ROOT"
 SUP="$MAC_AUTOPILOT_SUPERVISOR_DIR"
@@ -151,7 +153,7 @@ write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=�
   fi
 }
 
-# 评审结论只认整行 `VERDICT: X`；旧报告别名规范化为正式 skill 的 verdict。
+# 评审结论只认整行 `VERDICT: X`；旧报告别名规范化为 review-contract.md 的 verdict。
 verdict_of() {
   local found findings
   found="$(grep -E '^[[:space:]>#*-]*(\*\*)?VERDICT:[[:space:]]*(READY|NOT_READY|INPUT_INCOMPLETE|APPROVE|REQUEST-CHANGES|BLOCK)(\*\*)?[[:space:]]*$' "$1" 2>/dev/null \
@@ -193,7 +195,7 @@ verification_plan_brief() { # plan-json → worker-facing structured feature evi
   ' <<<"$1"
 }
 
-# The formal skill owns the review-findings object. Legacy arrays remain readable for reports already on disk.
+# review-contract.md owns the review-findings object. Legacy arrays remain readable for reports already on disk.
 findings_block_of() { # report → stdout: {findings:[...],dispositions:[...]}
   local raw
   raw="$(awk '/^```review-findings[[:space:]]*$/{on=1;buf="";last="";next} on&&/^```[[:space:]]*$/{last=buf;on=0;next} on{buf=buf $0 "\n"} END{printf "%s", last}' "$1" 2>/dev/null)"
@@ -680,7 +682,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure]
     CODEX_COMMAND=(claude -p "$prompt_arg
 （本次运行无写文件权限：把完整报告正文作为最终回答输出，调度器会原样落盘到上述报告路径。
 当前目录就是评审目录：git 命令直接写「git diff ...」，不要加「-C <dir>」「--no-pager」，也不要「cd ... &&」（这些形式不匹配白名单会被拒）。可用命令（白名单外一律被拒）：git diff/log/show/fetch/rev-parse/merge-base/ls-files、gh pr view/diff/checks、gh issue view、head/tail/wc/cat/ls/grep/rg/jq/sort；优先用 Read/Grep 工具读代码。当前目录已是评审目录，直接执行单条命令即可。一条命令被拒只说明其中某一段不在白名单，不代表 Bash 不可用：拆成单条白名单命令重试，不要据此判定 INPUT_INCOMPLETE。）" \
-      --settings '{"disableAllHooks":true}' \
+      --settings '{"disableAllHooks":true}' --add-dir "$ENGINE_ROOT/.agents/skills" --add-dir "$ENGINE_ROOT/engine/prompts" \
       --model "$model" --effort "$effort" --permission-mode dontAsk --strict-mcp-config \
       --tools "Read,Grep,Glob,Bash" --allowedTools "$CLAUDE_REVIEW_TOOLS")
     return 0
@@ -1464,7 +1466,8 @@ self_fix_dispatch() { # unit JSON; same session, model, branch and workdir
   failure="实现后的确定性自检失败。完整输出：$out
 $(tail -100 "$out")"
   prompt="实现后的确定性自检失败，尚未派出评审。这是原实现会话的自修复，保持原任务范围，修复下列失败，不弱化断言。$failure
-在当前隔离 clone $dir、原分支 $branch 修复；$deliver 禁止 merge PR、部署或修改 GitHub 状态。把修复和验证证据写到 $SUP/$rep，然后结束，流水线会重跑同一自检。"
+在当前隔离 clone $dir、原分支 $branch 修复；$deliver 禁止 merge PR、部署或修改 GitHub 状态。把修复和验证证据写到 $SUP/$rep，然后结束，流水线会重跑同一自检。
+$(matt_method_rule "$dir")"
   set_unit "$id" '.self_fix_active=true'
   if dispatch_if_room "$id" repair repair "${rep%.md}.worker.log" "$rep" "$model" "$effort" "$prompt" "" "$dir" "" "$failure" "$u"; then
     set_unit "$id" "$(hist self-fix-dispatched) | .self_fix_pending=false | .self_check_fixes=((.self_check_fixes // 0)+1)"
@@ -1572,7 +1575,17 @@ budget_alert_if_needed() { # 信息性告警：新鲜 token（Codex+worker Claud
   fi
 }
 
-REVIEW_CONTRACT_RULE='`.agents/skills/zf-code-review/SKILL.md` 是唯一评审契约，定义评审标准、verdict 与 review-findings schema。'
+# 评审方法 = Matt 的 code-review 技能（Standards / Spec 两轴）；verdict 行与 review-findings schema 只认 review-contract.md。
+REVIEW_CONTRACT_MD="$ENGINE_ROOT/engine/prompts/review-contract.md"
+review_contract_rule() { # 评审、复审 prompt 的契约句；方法文件只取引擎自带的，不跟被评审代码里的同名文件走
+  printf '评审方法按 Matt 的 code-review 技能（%s）：Standards 与 Spec 两轴分别审、分别报告，不合并不重排，两轴都由你在本会话内自己跑完，不派 sub-agent。verdict 行、review-findings schema 与 author-disposition schema 以 %s 为准（与技能不一致处以它为准）。' \
+    "$(matt_engine_skill_md code-review)" "$REVIEW_CONTRACT_MD"
+}
+# 实现、修复、自修复 worker 共用的方法句：Matt 的 implement + tdd；缺陷、红 CI、评审发现走 diagnosing-bugs。
+matt_method_rule() { # checkout → METHOD 段
+  printf 'METHOD（Matt skills）：按 implement 技能（%s）做事，用 tdd 技能（%s）一次一个垂直切片红-绿推进；修缺陷、红 CI 或评审发现时，先按 diagnosing-bugs 技能（%s）造出一条能复现它的红色反馈回路，再改代码。无人可问：技能里要你询问用户、等确认或派 sub-agent 的步骤一律跳过，自己按证据决定；不要自己跑 code-review，流水线会另派独立评审。' \
+    "$(matt_skill_md implement "${1:-.}")" "$(matt_skill_md tdd "${1:-.}")" "$(matt_skill_md diagnosing-bugs "${1:-.}")"
+}
 
 decision_eval_stages_for_paths() { # newline-delimited paths → affected eval stages
   local path stage
@@ -1583,8 +1596,11 @@ decision_eval_stages_for_paths() { # newline-delimited paths → affected eval s
       engine/prompts/triage.*) affected[triage]=1; affected[end-to-end]=1 ;;
       engine/prompts/advisor*) affected[advisor]=1; affected[end-to-end]=1 ;;
       engine/prompts/implement-contract.md) affected[implement]=1; affected[end-to-end]=1 ;;
-      engine/prompts/review-contract.md|.agents/skills/zf-code-review/*|engine/mac-autopilot/review-contract.sh)
+      engine/prompts/review-contract.md|.agents/skills/code-review/*|engine/mac-autopilot/review-contract.sh)
         affected[review]=1; affected[end-to-end]=1 ;;
+      .agents/skills/triage/*|.agents/skills/ask-matt/*) affected[triage]=1; affected[end-to-end]=1 ;;
+      .agents/skills/implement/*|.agents/skills/tdd/*|.agents/skills/diagnosing-bugs/*) affected[implement]=1; affected[end-to-end]=1 ;;
+      .agents/skills/to-tickets/*|.agents/skills/to-spec/*) affected[end-to-end]=1 ;;
       engine/prompts/recut.*|engine/prompts/guarded-recut-hand.md)
         affected[end-to-end]=1 ;;
       engine/prompts/supervisor-arbiter.md)
@@ -2083,7 +2099,7 @@ review_prompt() { # pr-or-subject title sha report [lane] [checkout]
   local subject="$1"; [[ "$subject" =~ ^[0-9]+$ ]] && subject="PR #$subject"
   printf '%s' "你是 the product 流水线的独立代码评审 subagent，只读【增量评审】（diff-scoped，不做全库漫游）。当前目录是隔离 clone，已检出被评审提交（detached），origin/main 为最新 main；本地 diff：git diff origin/main...HEAD。评审 ${subject}（$2）fixed head $3：
 评审面：① diff（merge-base..head）与关联 issue 验收条件逐条对照；② 变更文件的直接 import/依赖闭包；③ 只读边界下可核实的测试与行为证据。
-请完整读取并遵守正式评审契约，按其要求评审与交付。$REVIEW_CONTRACT_RULE
+请完整读取并遵守正式评审契约，按其要求评审与交付。$(review_contract_rule)
 效率纪律：不重述代码内容；不展开未变更文件的细节；低风险样式性改动一行带过。目标 15-25 分钟内交付。
 只读边界：不编辑/commit/push/merge/评论。报告写到 $SUP/$4。落盘后交付完即结束。$(risk_class_safety_rule "${6:-}")$(lane_rule "${5:-}" "$3")"
 }
@@ -3429,10 +3445,11 @@ dispatch_pending() {
           deliver="node scripts/branch-delivery-preflight.mjs --mode push --publish-topic 通过后 push 到 origin ${branch}（绝不推 main、不 force）。"
         fi
         prompt="你是 the product 流水线的实现 subagent，修复 ${subject} 的评审阻断发现。当前目录是隔离 clone：$wt（分支 ${branch}，已同步 origin）。
+$(matt_method_rule "$wt")
 0. 先看 git stash list：若有「autopilot: kept before redispatch」，那是上一轮未推送的修复，先 git stash pop 恢复并在其基础上继续。
 0b. 先合入最新 main：git merge --no-edit origin/main（不 rebase、不 force；有冲突按两边意图解决）。push preflight 的 freshness 门禁拒绝落后 main 过多的分支，不合就永远推不上。
 1. 读评审报告 $SUP/${prev_report}，逐条处理其中的阻断发现（${title}）。不得为凑绿弱化断言。按缺陷类别修，不按单点修：每条发现先归纳成一类问题（例：单位码被显示名覆盖、幂等键缺字段），在本 PR 全部改动里搜出同类位置一并处理，每一类补一条回归测试；只修被点名的那一行，下一轮评审会在同类的另一处再打回。${hint}
-1b. 修复报告必须按 $REVIEW_CONTRACT_RULE 中的 author-disposition schema，为上一轮每个 finding ID 记录处置和一行理由；复审会从单元历史读取这些处置。
+1b. 修复报告必须按 $REVIEW_CONTRACT_MD 中的 author-disposition schema，为上一轮每个 finding ID 记录处置和一行理由；复审会从单元历史读取这些处置。
 2. 补/改回归测试，定向跑受影响测试与 typecheck 全绿。${INTEGRATION_RULE}
 3. ${deliver}
    若本地分支已有上一轮未推送的提交（git log origin/${branch}..HEAD 非空），在其基础上继续，不要重做。
@@ -3509,7 +3526,7 @@ $(decision_scope "$u")"
         rep="review-${key}-r-${TAG}.md"
         prompt="你是 the product 流水线的独立代码评审 subagent，只读增量复审。当前目录是隔离 clone，已检出 PR 当前 head（detached），origin/main 为最新 main。
 复审 ${subject}（${title}）当前 head ${sha}，上轮 head ${prev_sha}。按正式契约中的 Targeted re-review 流程，仅检查 ${prev_sha}..${sha} 的 PR 增量及其直接依赖闭包；报告写到 $SUP/${rep}。
-读取上轮报告 $SUP/${prev_report} 和单元历史中的作者处置，再按处置逐条核验。$REVIEW_CONTRACT_RULE
+读取上轮报告 $SUP/${prev_report} 和单元历史中的作者处置，再按处置逐条核验。$(review_contract_rule)
 只读边界：不编辑/commit/push/merge/评论。$(review_dispositions_context "$u")$(risk_class_safety_rule "$wt")$(lane_rule "$lane" "$sha")$(sweep_rule "$u" "$sha")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         dispatch_if_room "$id" "rereview" "rereview" "${rep%.md}.worker.log" "$rep" \
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true ;;
@@ -3619,6 +3636,7 @@ SCOPE：
 issue 写明的前置 issue 尚未交付（仍 open、没有已合并的修复）时不要改代码，报告第一行写 BLOCKED-ON: #<前置 issue 号>，流水线会在前置交付后重派。路线图 epic/主题（roadmap-epic、roadmap-theme、roadmap 标签的伞形 issue）不是前置：不要对它写 BLOCKED-ON，直接实现本 issue 自己的切片。
 当前目录是隔离 clone：$wt（分支 ${branch}，基于最新 main 或该分支已有的进度）。若 git stash list 有「autopilot: kept before redispatch」，是上一轮未提交的进度，先 git stash pop 恢复。
 $(decision_scope "$u")
+$(matt_method_rule "$wt")
 Feature verification plan (advisory, from ticket-declared paths): $feature_brief
 After implementation, refresh IDs from the actual changed paths with node engine/verification-plan.mjs --root . --base origin/main --head HEAD. Run node scripts/e2e/acceptance-regression/verify-feature.mjs --feature <IDs> --target <base-url> --json only when a candidate target already serves this build. Record the JSON output path. If no candidate target exists, say so; do not build a local stack. This is worker evidence, not a merge gate.
 

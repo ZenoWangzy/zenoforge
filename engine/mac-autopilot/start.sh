@@ -20,7 +20,10 @@ if [[ ! -d "$version" ]]; then
   trap 'rm -rf -- "$stage"' EXIT
   # Archive the whole tracked engine tree: a hand-kept file list missed verification-plan-runtime.sh
   # and every pinned runtime failed sourcing it (10-29, #4618). 14 MB per version; only two are kept.
-  git -C "$MAC_AUTOPILOT_ROOT" archive "$head" engine | tar -x -C "$stage"
+  # engine/matt-skills.sh falls back to <version>/.agents/skills, so publish it too; an unconditional pathspec aborts for repos without it.
+  paths=(engine)
+  git -C "$MAC_AUTOPILOT_ROOT" cat-file -e "$head:.agents/skills" 2>/dev/null && paths+=(.agents/skills)
+  git -C "$MAC_AUTOPILOT_ROOT" archive "$head" "${paths[@]}" | tar -x -C "$stage"
   mv "$stage" "$version"
   trap - EXIT
 fi

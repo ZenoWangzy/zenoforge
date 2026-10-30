@@ -80,6 +80,7 @@ git -C "$ZF_REPO_DIR" push -q -u origin main
 mkdir -p "$ZF_REPO_DIR/.gitnexus" "$ZF_REPO_DIR/engine/state"
 jq -n --arg sha "$(git -C "$ZF_REPO_DIR" rev-parse HEAD)" '{lastCommit:$sha}' > "$ZF_REPO_DIR/.gitnexus/meta.json"
 cp "$SCRIPT_DIR/state/rulings.json" "$ZF_REPO_DIR/engine/state/rulings.json"
+mkdir -p "$ZF_REPO_DIR/.agents/skills/triage" && : > "$ZF_REPO_DIR/.agents/skills/triage/SKILL.md" # untracked: in $REPO_DIR, not in the origin/main worktree the agent runs in
 # Stage-routing fixture; roadmap admission is covered by roadmap-order.test.sh.
 jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$SCRIPT_DIR/model-policy.default.json" > "$AGENT_HOME/model-policy.json"
 
@@ -272,6 +273,8 @@ assert_contains "Codex uses policy work role and effort" "$(cat "$FAKE_CODEX_ARG
 assert_contains "Codex forwards policy work service tier" "$(cat "$FAKE_CODEX_ARGS")" \
   "service_tier=\"$MODEL_POLICY_TEST_WORK_TIER\""
 assert_contains "one prompt includes every admitted issue" "$(cat "$FAKE_PROMPT_CAPTURE")" '## Issue #910303'
+assert_not_contains "skill path is decided from the agent worktree, not the repo checkout" "$(cat "$FAKE_PROMPT_CAPTURE")" 'triage=.agents/skills/triage/SKILL.md'
+assert_contains "skills note is in the prompt" "$(cat "$FAKE_PROMPT_CAPTURE")" 'Matt skill files for this run'
 assert_not_contains "deferred issue is absent from prompt" "$(cat "$FAKE_PROMPT_CAPTURE")" '## Issue #910304'
 assert_eq "batch spend row records tokens used" 12345 "$(awk -F '\t' '$2 == "triage" {print $6}' "$AGENT_HOME"/spend/*.log)"
 MULTI_BATCH_LOG="$(cat "$AGENT_HOME/logs/triage-multi-ticket-9103.log")"

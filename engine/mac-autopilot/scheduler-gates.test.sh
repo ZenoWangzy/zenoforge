@@ -714,7 +714,7 @@ dispatch_pending || :
 [[ "$(field pr-5 .stage)" == rereview-pending && "$(field pr-5 .arbiter)" == true && ${#DISPATCHED[@]} == 0 ]] || fail 'unchanged head did not turn into one arbiter review'
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == review:pr-5:* && "$DISPATCH_PROMPT" == *"仲裁评审"* ]] || fail "arbiter review not dispatched as a full review (${DISPATCHED[*]:-none})"
-[[ "$DISPATCH_PROMPT" == *".agents/skills/zf-code-review/SKILL.md"* ]] || fail 'arbiter review prompt does not reference the canonical review contract'
+[[ "$DISPATCH_PROMPT" == *".agents/skills/code-review/SKILL.md"* ]] || fail 'arbiter review prompt does not reference the canonical review contract'
 DISPATCHED=()
 units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\"}]}]}"
 dispatch_pending || :
@@ -1234,7 +1234,7 @@ DISPATCHED=()
 units '{"units":[{"id":"pr-6","pr":6,"stage":"rereview-pending","history":[]}]}'
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "review:pr-6:$H1" ]] || fail "rereview without a baseline must be a full review (got ${DISPATCHED[*]:-none})"
-[[ "$DISPATCH_PROMPT" == *".agents/skills/zf-code-review/SKILL.md"* ]] || fail 'full review prompt does not reference the canonical contract'
+[[ "$DISPATCH_PROMPT" == *".agents/skills/code-review/SKILL.md"* ]] || fail 'full review prompt does not reference the canonical contract'
 [[ "$(field pr-6 .review_sha)" == "$H1" ]] || fail 'dispatched review sha not recorded'
 [[ "$DISPATCH_PR_HEAD" == "$H1" ]] || fail 'dispatched review did not retain its observed PR head'
 
@@ -1247,7 +1247,7 @@ DISPATCHED=(); GH_HEAD="$R2"
 units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "rereview:pr-7:$R2" && "$DISPATCH_PR_HEAD" == "$R2" ]] || fail "repair push (PR head moved, old head is an ancestor) did not get an incremental rereview (got ${DISPATCHED[*]:-none})"
-[[ "$DISPATCH_PROMPT" == *"$R1..$R2"* && "$DISPATCH_PROMPT" == *".agents/skills/zf-code-review/SKILL.md"* ]] \
+[[ "$DISPATCH_PROMPT" == *"$R1..$R2"* && "$DISPATCH_PROMPT" == *".agents/skills/code-review/SKILL.md"* ]] \
   || fail 'incremental rereview prompt lost its repair delta or canonical contract reference'
 DISPATCHED=(); GH_HEAD="$R2"
 units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[],\"review_findings\":[{\"disposition_block\":\"ok\",\"dispositions\":[{\"id\":\"F1\",\"disposition\":\"fixed\",\"reason\":\"tenant predicate now precedes the write\"}]}]}]}"
@@ -1335,7 +1335,7 @@ dispatch_pending || :
 [[ "$(field pr-8c .stage)" != supervisor-review ]] || [[ "$(field pr-8c .note)" != non-converging:* ]] || fail 'a supervisor-requeued unit was escalated again before its 4 extra rounds'
 
 # 评审范围：CI/描述措辞不作结论依据；快车道评审本地提交、PR head/CI 不同步不阻断
-[[ "$(review_prompt 1 t "$H1" r.md)" == *".agents/skills/zf-code-review/SKILL.md"* ]] || fail 'review prompt lacks the canonical contract reference'
+[[ "$(review_prompt 1 t "$H1" r.md)" == *".agents/skills/code-review/SKILL.md"* ]] || fail 'review prompt lacks the canonical contract reference'
 [[ "$(review_prompt 1 t "$H1" r.md direct-main)" == *"直落 main"*"$H1"* || "$(review_prompt 1 t "$H1" r.md direct-main)" == *"$H1"*"直落 main"* ]] || fail 'direct-main review prompt lacks the lane rule'
 [[ "$(review_prompt 1 t "$H1" r.md pr)" != *"非产品快车道"* ]] || fail 'PR-lane review prompt got the fast-lane rule'
 
@@ -1830,7 +1830,7 @@ ci_red pr-41 41 "$H2" "CI"
 eval "$gh_def_saved"; GH_RERUNS=()
 
 # The generated reviewer prompt points to the formal contract, which owns all verdict and finding policy.
-[[ "$(review_prompt 41 title "$H1" review-41.md pr "$feature_repo")" == *".agents/skills/zf-code-review/SKILL.md"* ]] \
+[[ "$(review_prompt 41 title "$H1" review-41.md pr "$feature_repo")" == *".agents/skills/code-review/SKILL.md"* ]] \
   || fail 'review prompt does not point at the canonical review contract'
 review_risk_fixture="$fixture/review-risk"
 command git init -q -b main "$review_risk_fixture"
