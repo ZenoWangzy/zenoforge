@@ -6,6 +6,7 @@ engine/codex-usage-budget.test.sh	unexplained: not ok - first concurrent work re
 engine/conclude-false-neg.test.sh	unexplained: not ok - due recovery passes the outer quota gate before dispatch (expected [false], got [true])
 engine/delivery-metrics.test.sh	cat: /proc/sys/kernel/random/boot_id: No such file or directory (PT-5)
 engine/dispatch-codex.test.sh	launch exits 75 (expected [0], got [75]): execution-admission.py:100 reads /proc/<pid>/stat and fails closed (PT-4)
+engine/eval/runner.test.mjs	the stub-codex CLI tests hang to the 600 s limit (rc=137): stage calls exit 75 on macOS (execution-admission.py:100 reads /proc/<pid>/stat and fails closed) and run-eval.mjs reruns exit 75 forever (PT-4)
 engine/execution-admission-metrics.test.sh	FileNotFoundError: [Errno 2] No such file or directory: '/proc/<pid>/stat' (PT-4)
 engine/execution-admission.test.sh	execution metrics: append failed; execution-admission.py:100 reads /proc/<pid>/stat (PT-4)
 engine/focused-test-paths.test.mjs	unexplained: not ok 34 - historical ranges use current focused-test mappings (got an empty selection instead of engine/roadmap-order.test.sh)
