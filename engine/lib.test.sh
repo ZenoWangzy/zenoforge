@@ -4558,7 +4558,7 @@ RAW_BODY='### 入口
 # RECUT_CHILD_MARKER so the predicate excludes it.
 RECUT_CHILD_BODY="## Parent
 
-由 #7 拆分而来的可独立交付子任务之一，$RECUT_CHILD_MARKER。
+由 #7 拆分而来的可独立交付子任务之一，${RECUT_CHILD_MARKER}。
 
 ## What to build
 

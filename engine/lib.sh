@@ -4727,7 +4727,7 @@ loop_break_check_locked() {
   if ! grep -qF "$episode_marker" <<< "$comment_bodies"; then
       guarded_write gh issue comment "$n" --repo "$REPO" --body "$BOT_DISCLAIMER
 $LOOP_ESCALATION_MARKER
-这是循环保护：这张票在 \`$label_a\`/\`$label_b\` 之间切换 $count 次，最近一次是 $latest。已加上 \`on-hold\`，停止本轮自动派发。
+这是循环保护：这张票在 \`$label_a\`/\`$label_b\` 之间切换 $count 次，最近一次是 ${latest}。已加上 \`on-hold\`，停止本轮自动派发。
 $episode_marker
 本轮观测到的标签写入者：\`writers=$writers\`。" || return 1
   fi
@@ -8446,7 +8446,7 @@ $recut_reason
         ;;
       needs-info)
         if [ -n "$recut_reason" ]; then
-          question="拆分未能继续：$recut_reason。请明确可接受的产品范围或权限阶段；流水线会按回复继续。"
+          question="拆分未能继续：${recut_reason}。请明确可接受的产品范围或权限阶段；流水线会按回复继续。"
         elif [ -n "$(jq -r '.recut_refused_at // empty' <<< "$state")" ]; then
           question="拆分拒绝原因无法从记录中恢复。请说明可接受的产品范围或所需前置能力；流水线会按回复继续。"
         else
@@ -10996,7 +10996,7 @@ stage_dispatch_allowed() {
         continue
       fi
       blocked=1
-      STAGE_DISPATCH_BLOCKING_SCOPES="${STAGE_DISPATCH_BLOCKING_SCOPES:+$STAGE_DISPATCH_BLOCKING_SCOPES、}$scope"
+      STAGE_DISPATCH_BLOCKING_SCOPES="${STAGE_DISPATCH_BLOCKING_SCOPES:+${STAGE_DISPATCH_BLOCKING_SCOPES}、}$scope"
       continue
     fi
     decision="$(quarantine_decision "$scope" "$now")"
@@ -11005,7 +11005,7 @@ stage_dispatch_allowed() {
       canary) canary_scopes+=("$scope") ;;
       open)
         blocked=1
-        STAGE_DISPATCH_BLOCKING_SCOPES="${STAGE_DISPATCH_BLOCKING_SCOPES:+$STAGE_DISPATCH_BLOCKING_SCOPES、}$scope" ;;
+        STAGE_DISPATCH_BLOCKING_SCOPES="${STAGE_DISPATCH_BLOCKING_SCOPES:+${STAGE_DISPATCH_BLOCKING_SCOPES}、}$scope" ;;
     esac
   done < <(quarantine_scopes_for "$stage" "$expected_json")
   if [ "$blocked" = "1" ]; then
@@ -11104,7 +11104,7 @@ reconcile_quarantines() {
             probe_rc=0
             env_fault_probe "$signature" || probe_rc=$?
             if [ "$probe_rc" = "0" ]; then
-              quarantine_lift "$scope" "机器自动修复后探测通过（$signature）" "$now"
+              quarantine_lift "$scope" "机器自动修复后探测通过（${signature}）" "$now"
               continue
             fi
           fi
@@ -11122,7 +11122,7 @@ reconcile_quarantines() {
       fi
       newer="$(env_fault_lines_since "$signature" "$last_canary" | wc -l)"
       if [ "$newer" -eq 0 ]; then
-        quarantine_lift "$scope" "试探派发后 $((QUARANTINE_CANARY_GRACE_SECONDS / 60)) 分钟内没有再出现同一故障（$signature）" "$now"
+        quarantine_lift "$scope" "试探派发后 $((QUARANTINE_CANARY_GRACE_SECONDS / 60)) 分钟内没有再出现同一故障（${signature}）" "$now"
         continue
       fi
     fi
@@ -12745,7 +12745,7 @@ ci_flake_report_new_signature_unlocked() {
     excerpt="$(sed -E 's/\x1B\[[0-9;?]*[[:alpha:]]//g' <<< "$log" | awk '/Test Files|Tests? [0-9]+|unhandled error|57P01|Error:/ { print; n++; if (n==8) exit }')"
     body="CI job 在所有测试通过后因 Vitest 未处理错误退出失败。
 
-观察：run $run_id，PR #$pr_number，job $job_name，$(date -u +%Y-%m-%dT%H:%M:%SZ)。
+观察：run ${run_id}，PR #${pr_number}，job ${job_name}，$(date -u +%Y-%m-%dT%H:%M:%SZ)。
 签名：$signature
 
 证据：
@@ -13962,7 +13962,7 @@ main_red_reopen_ticket() {
 main 的自动化验证变红，二分定位到本 ticket 的合入提交是罪魁，已自动回滚。
 
 - 罪魁提交：$culprit
-- 首红 SHA：$red_sha（run $run_id，同一 SHA 重跑一次仍红，排除 flaky）
+- 首红 SHA：${red_sha}（run ${run_id}，同一 SHA 重跑一次仍红，排除 flaky）
 - 回滚 PR：#$revert_pr
 - 证据：engine 的 main-red 会话（$AGENT_HOME/main-red/）
 

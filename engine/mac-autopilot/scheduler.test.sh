@@ -3677,7 +3677,7 @@ landed_at="$(command jq -r '.units[] | select(.id=="issue-4501") | .landed_at' "
 event_epoch=$(( $(date -u -d "$landed_at" +%s) + 1 ))
 event_line="[$(date -u -d "@$event_epoch" +%Y-%m-%dT%H:%M:%SZ)] live-event close issue=99 unit=issue-99 event=factory-m5-live-event-close evidence=fixture-firing"
 printf '%s\n' "$event_line" >> "$TF/supervisor/autopi/scheduler.log"
-existing_comment="结案：已落地 $m5_land_sha（direct-main 车道）并观测到登记的生产事件 factory-m5-live-event-close。证据：$event_line"
+existing_comment="结案：已落地 ${m5_land_sha}（direct-main 车道）并观测到登记的生产事件 factory-m5-live-event-close。证据：$event_line"
 command jq -n --arg body "$issue_body" --arg comment "$existing_comment" '{number:4506,title:"M5 evidence comment already attached",body:$body,state:"CLOSED",labels:[],comments:[{body:$comment}]}' \
   > "$TF/issues/4506.json"
 tick
@@ -3688,7 +3688,7 @@ command jq -e --argjson acc "$acc" '.units[] | select(.id=="issue-4501") | .acce
 grep -Fq 'live-event close issue=4501 unit=issue-4501 event=factory-m5-live-event-close' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'not ok - scheduler.test.sh: the M5 close event line was not logged' >&2; exit 1; }
 m5_close_line="$(grep -E '^issue close 4501 ' "$TF/actions" | head -1)"
-[[ "$m5_close_line" == *"结案：已落地 $m5_land_sha（direct-main 车道）并观测到登记的生产事件 factory-m5-live-event-close"* ]] \
+[[ "$m5_close_line" == *"结案：已落地 ${m5_land_sha}（direct-main 车道）并观测到登记的生产事件 factory-m5-live-event-close"* ]] \
   || { echo "not ok - scheduler.test.sh: close comment lacks the event evidence: $m5_close_line" >&2; exit 1; }
 [[ "$m5_close_line" == *'evidence=fixture-firing'* ]] \
   || { echo "not ok - scheduler.test.sh: close comment lacks the observed evidence line: $m5_close_line" >&2; exit 1; }

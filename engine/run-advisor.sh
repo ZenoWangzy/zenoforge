@@ -686,17 +686,17 @@ case "$VERDICT" in
       EFFECTIVE_VERDICT="malformed"
     elif [ "$(enforce_autonomy_gate ready-for-agent "$RISK_CLASS" "$LEVEL" "$PHASE")" != "ready-for-agent" ]; then
       EFFECTIVE_VERDICT="recut"
-      ROUTE_NOTE="顾问把这张票改判为 risk_class=$RISK_CLASS, level=$LEVEL，但在 AGENT_PHASE=$PHASE 下这个分类仍在无人值守常规准入之外。按阶梯规则，下一步是拆票（recut），不是转人。"
+      ROUTE_NOTE="顾问把这张票改判为 risk_class=$RISK_CLASS, level=${LEVEL}，但在 AGENT_PHASE=$PHASE 下这个分类仍在无人值守常规准入之外。按阶梯规则，下一步是拆票（recut），不是转人。"
     elif advisor_footprint_risky "$EXPECTED_PACKAGES"; then
       EFFECTIVE_VERDICT="recut"
-      ROUTE_NOTE="顾问改判后的分类（risk_class=$RISK_CLASS, level=$LEVEL）本可以准入，但这张票声明会碰到的模块（$EXPECTED_PACKAGES）命中了持久化写边界的路径门禁。按阶梯规则，先拆票：把碰到写边界的那一片单独切出来，其余部分按低风险走。"
+      ROUTE_NOTE="顾问改判后的分类（risk_class=$RISK_CLASS, level=${LEVEL}）本可以准入，但这张票声明会碰到的模块（${EXPECTED_PACKAGES}）命中了持久化写边界的路径门禁。按阶梯规则，先拆票：把碰到写边界的那一片单独切出来，其余部分按低风险走。"
     fi
     ;;
   advised)
     if advisor_footprint_risky "$EXPECTED_PACKAGES" \
       || [ "$(enforce_autonomy_gate ready-for-agent "$STORED_RISK" "$STORED_LEVEL" "$PHASE")" != "ready-for-agent" ]; then
       EFFECTIVE_VERDICT="guarded"
-      ROUTE_NOTE="顾问给出了处理意见并判断拆票无益；这张票的分类（risk_class=${STORED_RISK:-未测量}, level=${STORED_LEVEL:-未测量}）或它声明会碰到的模块（$EXPECTED_PACKAGES）在无人值守常规准入之外。按加强看护继续实现并做独立评审，两次调用都解析持久化策略角色，不切换模型；合并前必须满足顾问给出的条件。"
+      ROUTE_NOTE="顾问给出了处理意见并判断拆票无益；这张票的分类（risk_class=${STORED_RISK:-未测量}, level=${STORED_LEVEL:-未测量}）或它声明会碰到的模块（${EXPECTED_PACKAGES}）在无人值守常规准入之外。按加强看护继续实现并做独立评审，两次调用都解析持久化策略角色，不切换模型；合并前必须满足顾问给出的条件。"
     fi
     ;;
   recut|maintainer|tracker) ;;

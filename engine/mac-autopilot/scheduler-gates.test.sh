@@ -2174,7 +2174,7 @@ DISPATCHED=(); DISPATCH_PROMPT=""
 impl_headings() { # prompt → 0 当六个标题各占一行开头且按序出现
   local h pos last=0
   for h in GOAL SCOPE ACCEPTANCE VERIFY FORBIDDEN REPORT; do
-    pos="$(awk -v h="$h：" 'index($0, h) == 1 { print NR; exit }' <<<"$1")"
+    pos="$(awk -v h="${h}：" 'index($0, h) == 1 { print NR; exit }' <<<"$1")"
     [[ "$pos" =~ ^[0-9]+$ && "$pos" -gt "$last" ]] || return 1
     last="$pos"
   done
