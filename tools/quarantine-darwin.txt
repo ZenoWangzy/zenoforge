@@ -10,6 +10,7 @@ engine/execution-admission-metrics.test.sh	FileNotFoundError: [Errno 2] No such 
 engine/execution-admission.test.sh	execution metrics: append failed; execution-admission.py:100 reads /proc/<pid>/stat (PT-4)
 engine/focused-test-paths.test.mjs	unexplained: not ok 34 - historical ranges use current focused-test mappings (got an empty selection instead of engine/roadmap-order.test.sh)
 engine/gitnexus-refresh-window.test.sh	unexplained: not ok - isolated worktree scan counts zcode hand agents (expected [1], got [0])
+engine/gitnexus-wrapper.test.sh	execution admission deferred: FileNotFoundError (execution-admission.py reads /proc/<pid>/stat; PT-4). The flock -w 0 failure is fixed.
 engine/hand-blocked-on-dependency.test.sh	unexplained: exits 1 with no output at run_lifecycle watch (worktree-lifecycle.sh watch)
 engine/hand-codex-liveness.test.sh	hand-codex-liveness.sh: line 37: /proc/<pid>/stat: No such file or directory (PT-5)
 engine/hand-completion-refill.test.sh	FileNotFoundError: [Errno 2] No such file or directory: '/proc/<pid>/stat' (PT-5)
