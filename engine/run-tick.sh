@@ -106,7 +106,7 @@ run_tick() {
   # live AGENT_HOME before it was caught. `local NAME=$NAME` on one line
   # evaluates the right-hand side against the OUTER value first, which is
   # what this launcher needs.
-  local AGENT_HOME="${AGENT_HOME:-$HOME/.zenoforge}"
+  local AGENT_HOME="${AGENT_HOME:-}" # config.sh (sourced below) fills in the default
   # One bounded retry handles a transient stall in the shared TLS proxy
   # without letting a single fetch hold the five-minute timer indefinitely.
   # fetch is read-only/idempotent; each attempt keeps the existing 60s cap.
@@ -166,9 +166,11 @@ run_tick() {
   repo_dir="$(cd "$script_dir/.." && pwd)"
   # Load before this checkout self-updates; the shared function is then held in this shell.
   source "$script_dir/model-policy-fast-forward.sh"
+  source "$script_dir/config.sh"
   timer_list="$repo_dir/engine/systemd/pipeline-timers.list"
   # The target repository, as lib.sh derives it: ZF_REPO, else the checkout's origin remote.
-  timer_repo="${ZF_REPO:-$(git -C "$repo_dir" remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##' || true)}"
+  ZF_REPO_DIR="$repo_dir" zf_repo_resolve
+  timer_repo="$ZF_REPO"
 
   # AGENT_HOME (see above) is the same one every other wrapper script
   # resolves via lib.sh — outside the repo, outside git, survives a reboot.
