@@ -1,8 +1,14 @@
 #!/usr/bin/env node
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appendMetricRecord, readMetricRows } from './efficiency-regression.mjs';
+
+// Same value as host_boot_id in engine/proc.sh; macOS has no /proc.
+const hostBootId = () => (process.platform === 'darwin'
+  ? execFileSync('sysctl', ['-n', 'kern.bootsessionuuid'], { encoding: 'utf8' })
+  : readFileSync('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
 
 export function classifyTerminal(failure, result) {
   if (result === 'oom-kill') return 'host-memory';
@@ -57,7 +63,7 @@ export function recordAttempt(home, issue, kind, env = process.env, now = new Da
   const event = { record_type: 'event', event_type: `attempt-${kind}`, issue: Number(issue),
     attempt_id: invocation, ts, event_id: `${invocation}|attempt-${kind}` };
   if (kind === 'started') {
-    event.boot_id = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    event.boot_id = hostBootId();
   } else if (kind === 'terminal') {
     const start = readMetricRows(home).find((row) => row.event_type === 'attempt-started' && row.attempt_id === invocation);
     const state = JSON.parse(readFileSync(path.join(home, 'state', `${issue}.json`), 'utf8'));
@@ -85,7 +91,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (process.argv[2] === 'classify-no-diff') {
     console.log(classifyTerminal({stage:'no-reviewable-diff', evidence:readFileSync(0, 'utf8')}, 'success'));
   } else if (process.argv[2] === 'charged-runs') {
-    const lines = chargedRunLines(process.env.AGENT_HOME, process.argv[3], readFileSync(0,'utf8').trim().split('\n'), readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim());
+    const lines = chargedRunLines(process.env.AGENT_HOME, process.argv[3], readFileSync(0,'utf8').trim().split('\n'), hostBootId());
     if (lines.length) console.log(lines.join('\n'));
   } else {
     recordAttempt(process.env.AGENT_HOME || path.join(process.env.HOME, '.zenoforge'), process.argv[3], process.argv[2]);
