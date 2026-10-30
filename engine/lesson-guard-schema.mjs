@@ -12,8 +12,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const REGISTRY_PATH = 'engine/state/incident-guards.json';
+const DEFAULT_ROOT = process.env.ZF_REPO_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const REGISTRY_PATH = `${process.env.ZF_PACK_REL || 'engine'}/state/incident-guards.json`;
 const SCHEMA_START = '2026-10-30';
 const DATE_FORMAT = /^\d{4}-\d{2}-\d{2}$/;
 // Evidence must point at something checkable: a URL, an issue/PR/run number,

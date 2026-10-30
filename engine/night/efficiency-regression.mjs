@@ -19,6 +19,9 @@ import { fileURLToPath } from 'node:url';
 const execFileAsync = promisify(execFile);
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const LIB_PATH = path.resolve(SCRIPT_DIR, '../lib.sh');
+// Same setting lib.sh resolves.
+const UNIT_PREFIX = process.env.ZF_UNIT_PREFIX || 'zenoforge';
+const UNIT_PREFIX_TRANSIENT = process.env.ZF_UNIT_PREFIX || 'zf';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const GH_API_CALL_TIMEOUT_MS = 30_000;
@@ -93,7 +96,7 @@ const DAILY_LABELS = {
   'Pipeline suites shard 3': '自动化测试第四组',
   'Pipeline suites shard 4': '自动化测试第五组',
   'Select pipeline-suite scope': '自动化测试范围筛选',
-  'Example pack PR gate': '示例包检查',
+  [process.env.ZF_PACK_PR_GATE ?? 'Example pack PR gate']: '示例包检查', // default mirrors config.sh
   'Repo-path regression PR gate': '仓库回归检查',
   'Migration SQL parse gate': '数据库变更检查',
   'NUL bytes & lone negative assertions': '文件完整性检查',
@@ -423,13 +426,13 @@ function readRepeatDispatches(home, since, nowMs, errors, events) {
 
 function readRunningImplementIssues(errors) {
   const result = spawnSync('systemctl', [
-    '--user', 'list-units', '--no-legend', '--plain', 'zf-implement-*',
+    '--user', 'list-units', '--no-legend', '--plain', `${UNIT_PREFIX_TRANSIENT}-implement-*`,
   ], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
   if (result.error || result.status !== 0) {
     errors.push('implement-units:unavailable');
     return null;
   }
-  return [...result.stdout.matchAll(/^zf-implement-([1-9][0-9]*)\.service\s+/gm)]
+  return [...result.stdout.matchAll(new RegExp(`^${UNIT_PREFIX_TRANSIENT}-implement-([1-9][0-9]*)\\.service\\s+`, 'gm'))]
     .map((match) => match[1]);
 }
 
@@ -1523,7 +1526,7 @@ function readMaintainerJournal(home, nowMs, windows, journalFile) {
     }
   } else {
     const result = spawnSync('journalctl', [
-      '--user', '-u', 'zenoforge-agent.service', '--since', since, '--until', until, '--output=json',
+      '--user', '-u', `${UNIT_PREFIX}-agent.service`, '--since', since, '--until', until, '--output=json',
     ], { encoding: 'utf8', timeout: 12_000, maxBuffer: 16 * 1024 * 1024 });
     if (result.status !== 0) return [];
     output = result.stdout;
@@ -2566,14 +2569,14 @@ function parseArgs(argv) {
     if (!options.home) throw new Error('usage: efficiency-regression.mjs summary --home DIR');
   } else if (command === 'sync-issue') {
     if (!options.home || !/^\d+$/.test(options.issue || '')) throw new Error('usage: efficiency-regression.mjs sync-issue --home DIR --issue N');
-  } else if (command === 'maintainer-mail') {
-    if (!options.home) throw new Error('usage: efficiency-regression.mjs maintainer-mail --home DIR [--now ISO] [--journal-file FILE]');
+  } else if (command === 'founder-mail') {
+    if (!options.home) throw new Error('usage: efficiency-regression.mjs founder-mail --home DIR [--now ISO] [--journal-file FILE]');
   } else if (command === 'daily') {
     if (!options.home || !options.day || (!options.repo && !options.readOnly)) {
       throw new Error('usage: efficiency-regression.mjs daily --home DIR --day YYYY-MM-DD [--repo OWNER/REPO] [--read-only]');
     }
   } else {
-    throw new Error('usage: efficiency-regression.mjs sample|baseline|summary|daily|maintainer-mail ...');
+    throw new Error('usage: efficiency-regression.mjs sample|baseline|summary|daily|founder-mail ...');
   }
   return { command, options };
 }
@@ -2607,7 +2610,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       process.stdout.write(`${JSON.stringify(result)}\n`);
     } else if (command === 'sync-issue') {
       syncIssueLifecycleEvents(path.resolve(options.home), options.issue);
-    } else if (command === 'maintainer-mail') {
+    } else if (command === 'founder-mail') {
       const summary = maintainerMailEfficiencySummary(path.resolve(options.home), options.now || new Date().toISOString(), {
         journalFile: options['journal-file'] ? path.resolve(options['journal-file']) : undefined,
       });

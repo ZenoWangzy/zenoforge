@@ -390,10 +390,11 @@ try:sys.exit"""))
         self.assertEqual(guard.admission_cap(16, 2048, 12, 1536, 2, dict(sample, cpu_decision="below-target"), 8, "release"), 16)
         tight = {"available_mb": 3000, "load1": 0.0}
         self.assertEqual(guard.admission_cap(16, 2048, 12, 1536, 2, tight, 8, "release"), 8)
-        # opt keeps load headroom against twice the configured maximum; ordinary
-        # pipeline keeps the single maximum; a below-target CPU sample still
-        # grants opt its single incremental worker.
-        self.assertEqual(guard.admission_cap(16, 2048, 12, 1536, 2, {"available_mb": 9999999, "load1": 18}, 8, "opt"), 11)
+        # opt keeps load headroom against 4/3 of the configured maximum (16 on 12,
+        # the maintainer's CPU band); ordinary pipeline keeps the single maximum; a
+        # below-target CPU sample still grants opt its single incremental worker.
+        self.assertEqual(guard.admission_cap(16, 2048, 12, 1536, 2, {"available_mb": 9999999, "load1": 14}, 8, "opt"), 9)
+        self.assertEqual(guard.admission_cap(16, 2048, 12, 1536, 2, {"available_mb": 9999999, "load1": 18}, 8, "opt"), 8)
         self.assertEqual(guard.admission_cap(16, 2048, 12, 1536, 2, sample, 8, "opt"), 8)
         self.assertEqual(guard.admission_cap(16, 2048, 12, 1536, 2, dict(sample, cpu_decision="below-target"), 8, "opt"), 9)
         self.assertEqual(guard.admission_cap(16, 2048, 12, 1536, 2, {"available_mb": 9999999, "load1": 18}, 8, ""), 8)
@@ -436,11 +437,13 @@ try:sys.exit"""))
             guard.resources(proc, 6144, 12, cpu_overload, 85)
         self.env.pop("AGENT_EXECUTION_CPU_TARGET_PERCENT")
         (proc / "loadavg").write_text("46.5 0 0 1/2 3\n")
-        # opt keeps running between the maximum and twice it, where ordinary
-        # pipeline is already deferred.
-        (proc / "loadavg").write_text("18 0 0 1/2 3\n")
+        # opt keeps running between the maximum and 4/3 of it, where ordinary
+        # pipeline is already deferred; above the band opt defers too.
+        (proc / "loadavg").write_text("14 0 0 1/2 3\n")
         self.assertEqual(self.guarded_check(LUNA_PRIORITY="opt").returncode, 0)
         self.assertEqual(self.guarded_check().returncode, 75)
+        (proc / "loadavg").write_text("18 0 0 1/2 3\n")
+        self.assertEqual(self.guarded_check(LUNA_PRIORITY="opt").returncode, 75)
         # The memory floor still refuses priority work.
         (proc / "meminfo").write_text("MemAvailable: 1024 kB\n")
         self.assertEqual(self.guarded_check(LUNA_PRIORITY="release").returncode, 75)
@@ -468,7 +471,7 @@ try:sys.exit"""))
         (harness / "execution-shim/systemd-run").chmod(0o755)
         (harness / "execution-admission.py").write_text(self.driver.read_text())
         shim = str(harness / "execution-shim/systemd-run")
-        result = subprocess.run([shim, "--user", "--unit=zf-release-batch", "--", "/bin/true"],
+        result = subprocess.run([shim, "--user", "--unit=vecta-release-batch", "--", "/bin/true"],
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         launched = called.read_text().splitlines()
@@ -747,6 +750,7 @@ try:sys.exit"""))
         receipt = self.home / 'heavy'
         script.write_text(source[:start] + f'  printf "%s:%s" "${{RELEASE_TEST_JOBS:-unset}}" "${{NIGHT_TEST_JOBS:-unset}}" > "{receipt}"\n}}\n' + source[end:])
         (self.home / 'hand-completion-refill.sh').write_text((ROOT / 'hand-completion-refill.sh').read_text())
+        (self.home / 'config.sh').write_text((ROOT / 'config.sh').read_text())
         resource_proc = self.home / 'resource-proc'
         resource_proc.mkdir()
         (resource_proc / 'meminfo').write_text('MemAvailable: 99999999 kB\n')

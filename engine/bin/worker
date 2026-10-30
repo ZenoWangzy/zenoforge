@@ -31,6 +31,8 @@ inflight() { local n=0 f; for f in "$S"/luna/*/backend; do [[ $(cat "$f" 2>/dev/
 breaker_path() { [[ $1 == zc ]] && echo "$S/tmp/zc-breaker" || echo "$S/tmp/luna-breaker"; }
 breaker_open_for() {
   local file now touched
+  # 10-30 maintainer: bin/zc-quota holds ZCode before the 5h window runs out; same marker lib.sh's provider_quota_exhausted reads.
+  [[ $1 == zc ]] && (( $(cat "$HOME/.zenoforge/zcode-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
   file=$(breaker_path "$1"); [[ -f $file ]] || return 1
   now=$(date +%s); touched=$(stat -c %Y "$file" 2>/dev/null) || return 1
   (( now - touched < ${WORKER_BREAKER_SECONDS:-1800} ))

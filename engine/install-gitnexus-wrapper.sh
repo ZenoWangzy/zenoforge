@@ -4,7 +4,7 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="${ZF_REPO_DIR:-$(git -C "$script_dir/.." rev-parse --show-toplevel)}"
 npm_bin="${ZF_NPM_GLOBAL_BIN_DIR:-${HOME:?HOME is not set}/.npm-global/bin}"
-agent_home="${AGENT_HOME:-$HOME/.zenoforge}"
+agent_home="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"
 cli="$npm_bin/gitnexus"
 real_cli="$npm_bin/gitnexus.real-link"
 
@@ -15,7 +15,7 @@ fi
 
 source_tmp="$(mktemp)"
 trap 'rm -f -- "$source_tmp"' EXIT
-if ! git -C "$repo_dir" show "origin/main:engine/gitnexus-wrapper.sh" > "$source_tmp"; then
+if ! git -C "$repo_dir" show "origin/main:${ZF_PACK_REL:-engine}/gitnexus-wrapper.sh" > "$source_tmp"; then
   echo "Could not read GitNexus wrapper from origin/main in $repo_dir" >&2
   exit 1
 fi

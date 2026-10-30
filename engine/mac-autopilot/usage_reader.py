@@ -54,11 +54,23 @@ class Usage:
     cached: int | None
     output: int
     incomplete_sessions: tuple[str, ...] = ()
+    reasoning: int | None = None
+    cache_write: int | None = None
+
+    def _empty(self):
+        return self.input == 0 and self.cached in (None, 0) and self.output == 0 and not self.incomplete_sessions
 
     def __add__(self, other):
         cached = None if self.cached is None or other.cached is None else self.cached + other.cached
         incomplete = tuple(sorted(set(self.incomplete_sessions) | set(other.incomplete_sessions)))
-        return Usage(self.input + other.input, cached, self.output + other.output, incomplete)
+        if self._empty():
+            reasoning, cache_write = other.reasoning, other.cache_write
+        elif other._empty():
+            reasoning, cache_write = self.reasoning, self.cache_write
+        else:
+            reasoning = None if self.reasoning is None or other.reasoning is None else self.reasoning + other.reasoning
+            cache_write = None if self.cache_write is None or other.cache_write is None else self.cache_write + other.cache_write
+        return Usage(self.input + other.input, cached, self.output + other.output, incomplete, reasoning, cache_write)
 
     @property
     def raw(self):
@@ -72,6 +84,7 @@ class Usage:
     def ledger_fields(self):
         """The counter names the unit ledger's worker records already use, plus raw and fresh."""
         return {"input_tokens": self.input, "cached_input_tokens": self.cached, "output_tokens": self.output,
+                "reasoning_tokens": self.reasoning, "cache_write_input_tokens": self.cache_write,
                 "raw": self.raw, "fresh": self.fresh}
 
 
@@ -104,7 +117,10 @@ def _codex_usage(totals):
     values = [totals.get(name) for name in ("input_tokens", "cached_input_tokens", "output_tokens")]
     if any(type(value) is not int or value < 0 for value in values) or values[1] > values[0]:
         raise ValueError("invalid cumulative token counters")
-    return Usage(*values)
+    reasoning = totals.get("reasoning_output_tokens")
+    cache_write = totals.get("cache_write_input_tokens")
+    return Usage(*values, reasoning=reasoning if _is_count(reasoning) else None,
+                 cache_write=cache_write if _is_count(cache_write) else None)
 
 
 def find_codex_session_file(sessions_root, session_id):
@@ -162,7 +178,11 @@ def codex_stream_facts(path):
                 # (cached=None) rather than being invented as zero.
                 if not (_is_count(cached) and cached <= usage["input_tokens"]):
                     cached = None
-                snapshot = Usage(usage["input_tokens"], cached, usage["output_tokens"])
+                reasoning = usage.get("reasoning_output_tokens")
+                cache_write = usage.get("cache_write_input_tokens")
+                snapshot = Usage(usage["input_tokens"], cached, usage["output_tokens"],
+                                 reasoning=reasoning if _is_count(reasoning) else None,
+                                 cache_write=cache_write if _is_count(cache_write) else None)
                 # A re-delivered completion repeats the same cumulative counters (a real turn always grows
                 # input): it is the same turn, not a second one.
                 if not snapshots or snapshot != snapshots[-1]:
@@ -275,7 +295,8 @@ class TurnEventStore:
             cached = None if inside["cached"] is None or baseline["cached"] is None \
                 else inside["cached"] - baseline["cached"]
             total = total + Usage(inside["in"] - baseline["in"], cached, inside["out"] - baseline["out"])
-        return Usage(total.input, total.cached, total.output, tuple(incomplete_sessions))
+        return Usage(total.input, total.cached, total.output, tuple(incomplete_sessions),
+                     total.reasoning, total.cache_write)
 
 
 # ---------- zcode CLI streams: the result line ----------
@@ -299,13 +320,21 @@ def zcode_stream_usage(path):
     if not (_is_count(usage.get("input_tokens")) and _is_count(usage.get("output_tokens"))):
         raise Unavailable(f"invalid usage counters in the result line of {path}")
     cached = usage.get("cached_input_tokens")
+    reasoning = usage.get("reasoningTokens", usage.get("reasoning_tokens", usage.get("reasoning_output_tokens")))
+    cache_write = usage.get("cache_write_input_tokens")
     if _is_count(cached) and cached <= usage["input_tokens"]:
-        return Usage(usage["input_tokens"], cached, usage["output_tokens"])  # Codex-style subset
+        return Usage(usage["input_tokens"], cached, usage["output_tokens"],
+                     reasoning=reasoning if _is_count(reasoning) else None,
+                     cache_write=cache_write if _is_count(cache_write) else None)  # Codex-style subset
     if _is_count(usage.get("cache_read_input_tokens")) and _is_count(usage.get("cache_creation_input_tokens")):
         # Anthropic style: cache read and cache creation are input-side tokens beside input_tokens
         return Usage(usage["input_tokens"] + usage["cache_read_input_tokens"] + usage["cache_creation_input_tokens"],
-                     usage["cache_read_input_tokens"], usage["output_tokens"])
-    return Usage(usage["input_tokens"], None, usage["output_tokens"])
+                     usage["cache_read_input_tokens"], usage["output_tokens"],
+                     reasoning=reasoning if _is_count(reasoning) else None,
+                     cache_write=usage["cache_creation_input_tokens"])
+    return Usage(usage["input_tokens"], None, usage["output_tokens"],
+                 reasoning=reasoning if _is_count(reasoning) else None,
+                 cache_write=cache_write if _is_count(cache_write) else None)
 
 
 # ---------- Claude review logs: one record per API response ----------
@@ -326,7 +355,10 @@ def _claude_responses(path):
         if any(type(value) is not int or value < 0 for value in values):
             raise ValueError("invalid token counters")
         plain, cache_read, cache_creation, output = values
-        yield record["timestamp"], Usage(plain + cache_read + cache_creation, cache_read, output)
+        reasoning = message["usage"].get("reasoning_output_tokens")
+        yield record["timestamp"], Usage(plain + cache_read + cache_creation, cache_read, output,
+                                          reasoning=reasoning if _is_count(reasoning) else None,
+                                          cache_write=cache_creation)
 
 
 def claude_session_usage(path):
@@ -335,6 +367,21 @@ def claude_session_usage(path):
         return sum((usage for _, usage in _claude_responses(path)), Usage(0, 0, 0))
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise Unavailable(f"Cannot account for Claude session file: {path}: {error}") from error
+
+
+def claude_unit_responses(projects_root, clone_root, unit):
+    """Timestamped Claude responses for one worker worktree, for per-log attribution."""
+    if not os.path.isdir(projects_root):
+        raise Unavailable("Claude projects directory is unavailable")
+    directory = _claude_directory_name(clone_root.rstrip("/") + "/wt-" + str(unit))
+    project = os.path.join(projects_root, directory)
+    responses = []
+    for path in sorted(glob.glob("/".join([glob.escape(project), "*.jsonl"]))):
+        try:
+            responses.extend(_claude_responses(path))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return responses
 
 
 # ---------- per-session reads for the report (read-only, no cache) ----------
@@ -347,7 +394,10 @@ def _last_call_usage(payload):
     values = [last.get(name) for name in ("input_tokens", "cached_input_tokens", "output_tokens")]
     if any(type(value) is not int or value < 0 for value in values) or values[1] > values[0]:
         return None
-    return Usage(*values)
+    reasoning = last.get("reasoning_output_tokens")
+    cache_write = last.get("cache_write_input_tokens")
+    return Usage(*values, reasoning=reasoning if _is_count(reasoning) else None,
+                 cache_write=cache_write if _is_count(cache_write) else None)
 
 
 def _function_call(payload):

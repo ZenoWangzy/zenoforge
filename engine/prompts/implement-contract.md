@@ -7,6 +7,10 @@ do not create a contract file in the repository or try to edit the PR yourself.
 A ticket closed under the optimization-premise rule below delivers the
 `OBSOLETE:` first line instead of a contract block.
 
+**Do the work yourself; do not start sub-agents.** Whatever tools you have for spawning or messaging
+another agent, don't use them: a sub-agent inherits your model and effort, and 72 worker sessions in three days
+spawned 78 of them, paying a second worker's tokens and CPU for one ticket.
+
 ## Verify an optimization premise before implementing
 
 When the ticket claims waste, latency or a race with quantified numbers, the
@@ -38,7 +42,8 @@ body. Use this exact JSON shape and the `contract` fence:
 
 Restate every issue acceptance criterion without weakening it. List the files
 you intend the diff to change, the observable behavior changes, and tests added
-by this implementation. Use empty arrays only when that category has no items.
+by this implementation, each one seen failing before the fix that makes it pass. Use empty arrays only when
+that category has no items.
 Keep each entry specific enough for a reviewer to compare with the issue and
 diff. The contract describes intended work; it does not authorize behavior that
 conflicts with the issue.

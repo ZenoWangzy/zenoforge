@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Launch the next queued ticket only when no opt worker is still waiting at the capacity gate, so queue order = start order.
-F=${HOME:-/tmp}/.zenoforge/scratch/factory; L=${HOME:-/tmp}/.zenoforge/scratch/luna
+S=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}; F=$S/factory; L=$S/luna
 while true; do
   waiting=0
   for d in "$L"/opt-*; do [[ -f $d/rc || ! -f $d/wrapper.pid ]] && continue; kill -0 "$(cat "$d/wrapper.pid")" 2>/dev/null || continue

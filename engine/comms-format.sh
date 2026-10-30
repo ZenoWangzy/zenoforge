@@ -42,7 +42,7 @@ maintainer_timezone() {
   printf '%s\n' "$tz"
 }
 
-# maintainer_local_time <epoch> [format] — maintainer-facing wall-clock time.
+# maintainer_local_time <epoch> [format] — founder-facing wall-clock time.
 # DST transitions come from the zoneinfo database, so summer/winter render
 # correctly without any offset arithmetic here.
 maintainer_local_time() {
@@ -71,7 +71,7 @@ local_artifact_dir() {
   local base="${ZF_ARTIFACT_TMPDIR:-${TMPDIR:-/tmp}}" real
   real="$(cd -- "$base" 2>/dev/null && pwd -P)" || return 1
   case "$real/" in
-    "${REPO_DIR:-/nonexistent-repo-dir}"/|"$HOME"/.zenoforge/checkout*)
+    "${REPO_DIR:-/nonexistent-repo-dir}"/|"${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"/checkout*)
       echo "comms: artifact base '$real' is inside a repository checkout; use a repo-external temp dir" >&2
       return 1
       ;;

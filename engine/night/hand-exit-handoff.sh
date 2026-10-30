@@ -119,7 +119,7 @@ hand_report_first_line() {
 
 hand_exit_finish_deferred_landings() {
   local owner="$1" agent_home="${AGENT_HOME:-${H:-$(dirname -- "$NIGHT")}}"
-  local land_queue="$agent_home/checkout/engine/land-queue.sh"
+  local land_queue="${ZF_ENGINE_LIVE:-$agent_home/checkout/engine}/land-queue.sh"
   [[ -x "$land_queue" ]] || return 0
   bash "$land_queue" finish-deferred-owner "$owner"
 }
@@ -558,7 +558,7 @@ redispatch_landed_blocked_hand_agents() {
       continue
     fi
     worktree="$resume_worktree"
-    if HAND_ISSUES="$owned_issues" HAND_NODES="$owned_nodes" bash "$REPO_DIR/engine/night/dispatch.sh" \
+    if HAND_ISSUES="$owned_issues" HAND_NODES="$owned_nodes" bash "${ZF_ENGINE_DIR:-$REPO_DIR/engine}/night/dispatch.sh" \
       "$worktree" "$brief" "$name" "$role" "$report" "$attempt" "$(hand_blocked_resume_note "$dependency")" >> "$LOG" 2>&1; then
       blocked_hand_agent_remove "$name" || say "HAND-AGENT-BLOCKED-REMOVE-FAILED $name after redispatch"
       say "HAND-AGENT-BLOCKED-REDISPATCHED $name dependency=$dependency worktree=$worktree"

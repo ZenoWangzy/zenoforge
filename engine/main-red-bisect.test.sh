@@ -179,7 +179,7 @@ checks_blocked_sweep() { :; }
 hold_sweep() { :; }
 supervisor_hold_sweep() { :; }
 reconcile_maintainer_outcomes() { :; }
-flush_maintainer_outcome_digest() { :; }
+flush_founder_outcome_digest() { :; }
 read_needs_info_email_replies() { :; }
 sweep_reopened_issues() { :; }
 sweep_blocking_issue_roots() { :; }

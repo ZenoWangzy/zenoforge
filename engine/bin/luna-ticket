@@ -4,7 +4,7 @@
 # Usage: luna-ticket <key> <worktree> <ticket.md> <spec.md> <notes> [--review-only]
 set -uo pipefail
 key="$1" wt="$2" ticket="$3" spec="$4" notes="$5" mode="${6:-}"
-root=${HOME:-/tmp}/.zenoforge/scratch
+root=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}
 L="$root/luna"; dir="$L/ticket-$key"; mkdir -p "$dir"
 log() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >>"$dir/progress.log"; }
 stage() { # name prompt-file schema

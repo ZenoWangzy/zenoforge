@@ -90,6 +90,9 @@ finding() {
   echo "supervise-pipeline: FINDING [$1] $2" >&2
 }
 
+# Pack module: INV-9, the shared-browser tab check (the product's signed-in browser). Sourced only when the pack ships it.
+[[ -n "${ZF_PACK_DIR-}" && -r "$ZF_PACK_DIR/supervise-browser-check.sh" ]] && source "$ZF_PACK_DIR/supervise-browser-check.sh"
+
 # --- cooldown bookkeeping for system-level checks with no single GitHub
 # object to comment on -- a marker FILE under AGENT_HOME, sibling to
 # quarantine/ and spend/, never
@@ -137,7 +140,7 @@ mark_cooldown() {
 # "confirmed none".
 issue_has_live_unit() {
   local out
-  if ! out="$(systemctl --user list-units --no-legend --plain "zf-*-$1.service" 2>&1)"; then
+  if ! out="$(systemctl --user list-units --no-legend --plain "${UNIT_PREFIX_TRANSIENT}-*-$1.service" 2>&1)"; then
     echo "issue_has_live_unit: systemctl --user list-units could not be queried for #$1 -- treating as LIVE (fail-closed), not confirmed-idle: $out" >&2
     return 0
   fi
@@ -185,7 +188,7 @@ check_advisor_ruled_at_regression() {
 }
 
 heal_advisor_ruled_at_regression() {
-  local n="$1" marker="<!-- zenoforge-supervisor-heal-advisor-ruled-at -->"
+  local n="$1" marker="<!-- vecta-supervisor-heal-advisor-ruled-at -->"
   [ "$MODE" = "act" ] || return 0
   # 2026-09-16 fix: this mutated (state_merge + a comment) an on-hold ticket
   # -- a human's explicit pause has to hold at every action boundary that
@@ -317,11 +320,11 @@ check_dispatch_stall() {
     # detect-label-churn.sh's own churn_events_for(): capture first, grep
     # the captured text, never grep a live producer's pipe with `-q`.
     local activity
-    activity="$(journalctl --user -u "zf-$stage-*" --since "-${DISPATCH_STALL_MINUTES} minutes" --no-pager -q 2>/dev/null || true)"
-    if grep -q "Started zf-$stage-" <<< "$activity"; then
+    activity="$(journalctl --user -u "${UNIT_PREFIX_TRANSIENT}-$stage-*" --since "-${DISPATCH_STALL_MINUTES} minutes" --no-pager -q 2>/dev/null || true)"
+    if grep -q "Started ${UNIT_PREFIX_TRANSIENT}-$stage-" <<< "$activity"; then
       continue
     fi
-    finding inv1b "$label has $population open ticket(s) and no zf-$stage-* unit has started in the last ${DISPATCH_STALL_MINUTES}min -- throughput on this queue looks like zero, not a brief gap between ticks"
+    finding inv1b "$label has $population open ticket(s) and no ${UNIT_PREFIX_TRANSIENT}-$stage-* unit has started in the last ${DISPATCH_STALL_MINUTES}min -- throughput on this queue looks like zero, not a brief gap between ticks"
   done
 }
 
@@ -350,7 +353,7 @@ esac
 
 check_repeating_implement_skips() {
   local decisions stalls n gate count start marker prior start_epoch start_iso
-  if ! decisions="$(journalctl --user -u zenoforge-agent.service -n "$IMPLEMENT_SKIP_STALL_JOURNAL_LINES" --no-pager -o cat 2>/dev/null)"; then
+  if ! decisions="$(journalctl --user -u "${UNIT_PREFIX}-agent.service" -n "$IMPLEMENT_SKIP_STALL_JOURNAL_LINES" --no-pager -o cat 2>/dev/null)"; then
     echo "supervise-pipeline: could not read implement decisions; not inferring an implement-skip stall" >&2
     return 0
   fi
@@ -404,7 +407,7 @@ check_repeating_implement_skips() {
       continue
     fi
     marker="implement-skip-stall issue=#$n gate=$gate start=$start"
-    if ! prior="$(journalctl --user -u zenoforge-supervisor.service --since "@$start_epoch" --no-pager -o cat 2>/dev/null)"; then
+    if ! prior="$(journalctl --user -u "${UNIT_PREFIX}-supervisor.service" --since "@$start_epoch" --no-pager -o cat 2>/dev/null)"; then
       echo "supervise-pipeline: could not read prior supervisor findings for #$n; not duplicating an implement-skip stall" >&2
       continue
     fi
@@ -432,7 +435,7 @@ esac
 
 check_repeating_advisor_lease_bails() {
   local decisions stalls n count start marker prior start_epoch start_iso
-  if ! decisions="$(journalctl --user -u 'zf-advisor-*' -n "$ADVISOR_LEASE_BAIL_JOURNAL_LINES" --no-pager -o cat 2>/dev/null)"; then
+  if ! decisions="$(journalctl --user -u "${UNIT_PREFIX_TRANSIENT}-advisor-*" -n "$ADVISOR_LEASE_BAIL_JOURNAL_LINES" --no-pager -o cat 2>/dev/null)"; then
     echo "supervise-pipeline: could not read advisor lease decisions; not inferring a lease-bail stall" >&2
     return 0
   fi
@@ -472,7 +475,7 @@ check_repeating_advisor_lease_bails() {
       continue
     fi
     marker="advisor-lease-bail-stall issue=#$n start=$start"
-    if ! prior="$(journalctl --user -u zenoforge-supervisor.service --since "@$start_epoch" --no-pager -o cat 2>/dev/null)"; then
+    if ! prior="$(journalctl --user -u "${UNIT_PREFIX}-supervisor.service" --since "@$start_epoch" --no-pager -o cat 2>/dev/null)"; then
       echo "supervise-pipeline: could not read prior supervisor findings for #$n; not duplicating an advisor lease-bail stall" >&2
       continue
     fi
@@ -561,21 +564,21 @@ TICK_SILENT_STALL_SECONDS="${TICK_SILENT_STALL_SECONDS:-1800}"
 check_tick_liveness() {
   local active_state enter_ts now age last_trigger
   now="$(date +%s)"
-  active_state="$(systemctl --user show zenoforge-agent.service -p ActiveState -p ActiveEnterTimestamp 2>/dev/null || true)"
+  active_state="$(systemctl --user show "${UNIT_PREFIX}-agent.service" -p ActiveState -p ActiveEnterTimestamp 2>/dev/null || true)"
   if grep -q '^ActiveState=active' <<< "$active_state"; then
     enter_ts="$(echo "$active_state" | sed -n 's/^ActiveEnterTimestamp=//p')"
     if [ -n "$enter_ts" ]; then
       age=$(( now - $(agent_epoch "$enter_ts" 2>/dev/null || echo "$now") ))
       if [ "$age" -ge "$TICK_RUNNING_STALL_SECONDS" ]; then
-        finding inv4 "zenoforge-agent.service has been running for ${age}s -- longer than its own 20min TimeoutStartSec should ever allow (V114's fix may not be installed/effective on this box right now)"
+        finding inv4 "${UNIT_PREFIX}-agent.service has been running for ${age}s -- longer than its own 20min TimeoutStartSec should ever allow (V114's fix may not be installed/effective on this box right now)"
       fi
     fi
   fi
-  last_trigger="$(systemctl --user show zenoforge-agent.timer -p LastTriggerUSec 2>/dev/null | sed -n 's/^LastTriggerUSec=//p' || true)"
+  last_trigger="$(systemctl --user show "${UNIT_PREFIX}-agent.timer" -p LastTriggerUSec 2>/dev/null | sed -n 's/^LastTriggerUSec=//p' || true)"
   if [ -n "$last_trigger" ] && [ "$last_trigger" != "n/a" ]; then
     age=$(( now - $(agent_epoch "$last_trigger" 2>/dev/null || echo "$now") ))
     if [ "$age" -ge "$TICK_SILENT_STALL_SECONDS" ] && ! grep -q '^ActiveState=active' <<< "$active_state"; then
-      finding inv4 "zenoforge-agent.timer's last trigger was ${age}s ago with no tick currently running -- 6x its own 5min cadence with nothing dispatched in between"
+      finding inv4 "${UNIT_PREFIX}-agent.timer's last trigger was ${age}s ago with no tick currently running -- 6x its own 5min cadence with nothing dispatched in between"
     fi
   fi
 }
@@ -1051,9 +1054,9 @@ dispatch_postsubmit_for_sha() {
 
 build_failure_evidence() {
   local run_id="$1" failed_log
-  BUILD_FAILURE_STEP="$(gh run view "$run_id" -R example-org/example-infra --json jobs \
+  BUILD_FAILURE_STEP="$(gh run view "$run_id" -R "$ZF_INFRA_REPO" --json jobs \
     --jq '[.jobs[]?.steps[]? | select(.conclusion == "failure") | .name][0] // empty' 2>/dev/null || true)"
-  failed_log="$(gh run view "$run_id" -R example-org/example-infra --log-failed 2>/dev/null || true)"
+  failed_log="$(gh run view "$run_id" -R "$ZF_INFRA_REPO" --log-failed 2>/dev/null || true)"
   # --log-failed is limited by gh to failed steps. Extract one concrete line
   # from that output, skipping the generic runner epilogue. Classification
   # below still requires its named workflow step; no whole-log heuristic.
@@ -1103,8 +1106,8 @@ classify_build_failure() {
     && [[ "$line_lower" == *'returned error: 401'* || "$line_lower" == *' -> 401:'* ]]; then
     echo environment:nexus-auth
   elif case "$step" in
-      "Set up job"|"Configure git proxy"|"Checkout infra contract"|"Download selected the product source"|"Seed verified Agent base image"|"Build and push production images") true ;;
-      *) false ;;
+      "Set up job"|"Configure git proxy"|"Checkout infra contract"|"Build and push production images") true ;;
+      *) [[ -n "$step" && "|$ZF_INFRA_PROXY_STEPS|" == *"|$step|"* ]] ;;
     esac \
     && [[ "$line_lower" == *"proxy"* && ( "$line_lower" == *"timeout"* || "$line_lower" == *"timed out"* ) ]]; then
     echo environment:proxy-timeout
@@ -1165,7 +1168,7 @@ postsubmit_dispatch_was_skipped_for_run() {
 
 release_find_run() {
   local after="$1"
-  gh run list -R example-org/example-infra --workflow build-cihost-images.yml --limit 20 \
+  gh run list -R "$ZF_INFRA_REPO" --workflow "$ZF_INFRA_BUILD_WORKFLOW" --limit 20 \
     --json databaseId,createdAt,event --jq \
     "[.[] | select(.event == \"workflow_dispatch\" and .createdAt >= \"$after\")] | sort_by(.createdAt) | .[0].databaseId // empty" \
     2>/dev/null || true
@@ -1220,7 +1223,7 @@ reconcile_build_record() {
       return 0
     fi
   fi
-  row="$(gh run view "$run_id" -R example-org/example-infra --json status,conclusion 2>/dev/null || true)"
+  row="$(gh run view "$run_id" -R "$ZF_INFRA_REPO" --json status,conclusion 2>/dev/null || true)"
   [ -n "$row" ] || { finding incident1599-build "build run $run_id for $source_sha could not be read"; return 0; }
   [ "$(jq -r '.status // empty' <<< "$row")" = completed ] || return 0
   conclusion="$(jq -r '.conclusion // empty' <<< "$row")"
@@ -1333,7 +1336,7 @@ check_release_reconciliation() {
   # Persist before the GitHub mutation. If a reboot lands between dispatch and
   # discovery, the next pass finds the run instead of issuing a second SHA pin.
   release_record_write "$live_sha" dispatching "" "" "" "" "" "$live_sha" || return 0
-  if ! guarded_write gh workflow run build-cihost-images.yml -R example-org/example-infra \
+  if ! guarded_write gh workflow run "$ZF_INFRA_BUILD_WORKFLOW" -R "$ZF_INFRA_REPO" \
     -f "source_sha=$live_sha" -f source_branch=main; then
     release_record_write "$live_sha" dispatch-failed "" "" environment:dispatch "" "" "$live_sha" || true
   fi
@@ -1349,6 +1352,7 @@ check_hotfix_stale() {
 
 main() {
   check_hotfix_stale
+  ! declare -F check_shared_browser_tabs >/dev/null || check_shared_browser_tabs
   check_advisor_ruled_at_regression
   check_recut_marker_regression
   check_dispatch_stall

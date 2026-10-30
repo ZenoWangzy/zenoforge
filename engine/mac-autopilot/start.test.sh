@@ -85,6 +85,17 @@ diff -u "$live/config.template.json" "$state/config.json" || fail 'resync left r
 [[ -z "$(git -C "$root" worktree list --porcelain | grep -F "autopi-versions/$first" || true)" ]] \
   || fail 'removed version left a stale worktree record'
 
+# The pin self-check: a repository with zero open PRs is a valid (empty) census; a failed gh read still refuses the switch.
+mkdir -p "$fixture/gh-empty" "$fixture/gh-fail"
+printf '#!/usr/bin/env bash\nprintf "[]"\n' > "$fixture/gh-empty/gh"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$fixture/gh-fail/gh"
+chmod +x "$fixture/gh-empty/gh" "$fixture/gh-fail/gh"
+PATH="$fixture/gh-empty:$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" bash "$script_dir/start.sh" --sync-only >/dev/null 2>&1 \
+  || fail 'a repository with no open PRs failed the pin self-check'
+if PATH="$fixture/gh-fail:$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" bash "$script_dir/start.sh" --sync-only >/dev/null 2>&1; then
+  fail 'a failed open-PR read passed the pin self-check'
+fi
+
 # nohup fallback (no systemd units): stop legacy autopi/ loops as well as autopi-live/ ones before starting new ones.
 rm -f "$fixture/started"
 PATH="$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" bash "$script_dir/start.sh" >/dev/null 2>&1 || true

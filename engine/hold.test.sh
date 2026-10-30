@@ -246,7 +246,7 @@ test_guarded_recut_sweep_queues_once() {
   comments="$(jq -r '[.comments[].body] | join("\n")' "$FAKE_GH_ROOT/issues/4120.json")"
   assert_contains "guarded repeat returns to scheduler" "$labels" ready-for-agent
   assert_not_contains "guarded repeat is no longer held" "$labels" on-hold
-  assert_eq "one handoff comment across repeated ticks" 1 "$(grep -c 'zf-scheduler-handoff issue=4120' <<< "$comments")"
+  assert_eq "one handoff comment across repeated ticks" 1 "$(grep -c 'vecta-scheduler-handoff issue=4120' <<< "$comments")"
   assert_contains "handoff retains the hold release condition" "$comments" dispatch
   assert_eq "requeue clears the held state" ready-for-agent "$(state_read 4120 | jq -r '.state')"
 }
@@ -261,7 +261,7 @@ test_orphaned_hand_dispatch_hold_requeues_named_owner_once() {
   labels="$(jq -r '[.labels[].name] | join(",")' "$FAKE_GH_ROOT/issues/4158.json")"
   assert_contains "orphaned hand returns to scheduler" "$labels" ready-for-agent
   assert_not_contains "orphaned hand releases hold" "$labels" on-hold
-  assert_eq "orphan handoff is recorded once" 1 "$(jq '[.comments[] | select(.body | contains("zf-scheduler-handoff issue=4158"))] | length' "$FAKE_GH_ROOT/issues/4158.json")"
+  assert_eq "orphan handoff is recorded once" 1 "$(jq '[.comments[] | select(.body | contains("vecta-scheduler-handoff issue=4158"))] | length' "$FAKE_GH_ROOT/issues/4158.json")"
 }
 test_supervisor_holds_uses_batch_issue_snapshot() {
   local created output
@@ -318,7 +318,7 @@ test_blocked_on_resolution_sweep_assigns_owner() {
   assert_contains "verification returns to ready queue" "$labels" ready-for-agent
   assert_not_contains "verification releases hold" "$labels" on-hold
   assert_contains "verification context survives handoff" "$comments" 'verify dependency'
-  assert_eq "verification handoff is idempotent" 1 "$(grep -c 'zf-scheduler-handoff issue=4140' <<< "$comments")"
+  assert_eq "verification handoff is idempotent" 1 "$(grep -c 'vecta-scheduler-handoff issue=4140' <<< "$comments")"
 }
 test_blocked_on_resolution_replaces_stale_blocked_owner() {
   local created labels
@@ -609,7 +609,7 @@ test_pipeline_system_fastlane_hold_requeues_hand() {
     supervisor_hold_sweep 4152
     supervisor_hold_sweep 4152
     assert_eq "fastlane hold returns to scheduler ($holder)" ready-for-agent "$(state_read 4152 | jq -r '.state')"
-    assert_eq "fastlane handoff is recorded once ($holder)" 1 "$(jq '[.comments[] | select(.body | contains("zf-scheduler-handoff issue=4152"))] | length' "$FAKE_GH_ROOT/issues/4152.json")"
+    assert_eq "fastlane handoff is recorded once ($holder)" 1 "$(jq '[.comments[] | select(.body | contains("vecta-scheduler-handoff issue=4152"))] | length' "$FAKE_GH_ROOT/issues/4152.json")"
   done
 }
 test_named_queued_hand_owns_fastlane_issue() {
@@ -659,7 +659,7 @@ test_expired_unknown_backfill_stays_ownerless() {
   reset_fixture
   expired="$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
   release='No complete durable hold record existed; inspect or resolve within this 24-hour backfill window.'
-  write_issue 4120 '[{"name":"on-hold"}]' '[{"body":"Backfilled hold record; holder unknown. <!-- zf-hold-backfill issue=4120 -->"}]' 'unknown held issue'
+  write_issue 4120 '[{"name":"on-hold"}]' '[{"body":"Backfilled hold record; holder unknown. <!-- vecta-hold-backfill issue=4120 -->"}]' 'unknown held issue'
   write_state 4120 "$(jq -cn --arg expires "$expired" --arg release "$release" '{state:"on-hold",attempts:3,state_changed_from:"ready-for-agent",hold:{holder:"unknown",release_condition:$release,expires_at:$expires,stage_before:"ready-for-agent",kind:"backfill",explained:true,created_at:(now|todate)}}')"
   before_issue="$(jq -S '.' "$FAKE_GH_ROOT/issues/4120.json")"
   before_state="$(jq -S '.' "$(state_file 4120)")"
@@ -890,10 +890,10 @@ test_expired_hotfix_hold_renews_only_while_marked() {
   assert_contains "renewed hotfix hold stays held" "$labels" on-hold
   assert_not_contains "renewed hotfix hold keeps stage label removed" "$labels" needs-triage
   comments="$(jq -r '[.comments[].body] | join("\n")' "$FAKE_GH_ROOT/issues/4111.json")"
-  assert_eq "renewal comment appears once for expiry" 1 "$(grep -cF "<!-- zf-hold-renewed issue=4111 expires=$now -->" <<< "$comments" || true)"
+  assert_eq "renewal comment appears once for expiry" 1 "$(grep -cF "<!-- vecta-hold-renewed issue=4111 expires=$now -->" <<< "$comments" || true)"
   run_sweep
   comments="$(jq -r '[.comments[].body] | join("\n")' "$FAKE_GH_ROOT/issues/4111.json")"
-  assert_eq "later sweep does not repeat completed renewal comment" 1 "$(grep -cF "<!-- zf-hold-renewed issue=4111 expires=$now -->" <<< "$comments" || true)"
+  assert_eq "later sweep does not repeat completed renewal comment" 1 "$(grep -cF "<!-- vecta-hold-renewed issue=4111 expires=$now -->" <<< "$comments" || true)"
 
   reset_fixture
   write_issue 4112 '[{"name":"on-hold"}]' '[]' 'plain title'
@@ -1185,7 +1185,7 @@ test_cli_records_and_applies_hold() {
   assert_eq "valid hold CLI records original stage" ready-for-agent "$(jq -r '.hold.stage_before // empty' <<< "$state")"
   assert_eq "valid hold CLI marks durable record" true "$(jq -r '.hold.durable_record' <<< "$state")"
   comments="$(jq -r '[.comments[].body] | join("\n")' "$FAKE_GH_ROOT/issues/4106.json")"
-  assert_contains "valid hold CLI writes durable GitHub marker" "$comments" '<!-- zf-hold-record-v1 issue=4106 record='
+  assert_contains "valid hold CLI writes durable GitHub marker" "$comments" '<!-- vecta-hold-record-v1 issue=4106 record='
 }
 
 test_out_of_tick_cli_hold_fetches_and_cleans_roadmap_cache() {
@@ -1231,7 +1231,7 @@ test_cli_rebuilds_ownerless_hold_with_verified_stage() {
   labels="$(jq -r '[.labels[].name] | join(",")' "$FAKE_GH_ROOT/issues/4108.json")"
   assert_contains "repair keeps issue on hold" "$labels" on-hold
   comments="$(jq -r '[.comments[].body] | join("\n")' "$FAKE_GH_ROOT/issues/4108.json")"
-  assert_contains "repair writes durable source comment" "$comments" '<!-- zf-hold-record-v1 issue=4108 record='
+  assert_contains "repair writes durable source comment" "$comments" '<!-- vecta-hold-record-v1 issue=4108 record='
 }
 
 test_durable_hold_restores_deleted_local_state() {
@@ -1256,7 +1256,7 @@ test_durable_hold_restores_deleted_local_state() {
   assert_not_contains "restoration never writes unknown holder" "$(jq -c '.hold' <<< "$restored")" 'unknown'
   assert_not_contains "restoration never writes backfill kind" "$(jq -c '.hold' <<< "$restored")" 'backfill'
   comments="$(jq -r '[.comments[].body] | join("\n")' "$FAKE_GH_ROOT/issues/4107.json")"
-  assert_not_contains "restoration does not invent an expiry comment" "$comments" 'zf-hold-backfill'
+  assert_not_contains "restoration does not invent an expiry comment" "$comments" 'vecta-hold-backfill'
 
   rm -f -- "$(state_file 4107)"
   run_sweep
@@ -1323,7 +1323,7 @@ test_complete_hold_without_created_at_is_durable() {
   assert_eq "legacy hold is durable without synthetic creation time" true "$(jq -r '.hold.durable_record' <<< "$state")"
   assert_eq "legacy hold preserves absent creation time" null "$(jq -r '.hold.created_at // null' <<< "$state")"
   comments="$(jq -r '[.comments[].body] | join("\n")' "$FAKE_GH_ROOT/issues/4194.json")"
-  assert_contains "legacy hold archives exact fields to GitHub" "$comments" '<!-- zf-hold-record-v1 issue=4194 record='
+  assert_contains "legacy hold archives exact fields to GitHub" "$comments" '<!-- vecta-hold-record-v1 issue=4194 record='
 }
 
 run_case "direct hold-label guard" test_no_direct_hold_label_writers
@@ -1410,7 +1410,7 @@ test_routed_ops_dispatch_respects_blockers_and_live_owner() {
   assert_contains "unblocked external hold returns to scheduler" "$labels" ready-for-agent
   assert_not_contains "unblocked external hold is cleared" "$labels" on-hold
   assert_contains "handoff carries external evidence requirement" "$comments" 'host report'
-  assert_eq "external handoff is recorded once" 1 "$(grep -c 'zf-scheduler-handoff issue=4140' <<< "$comments")"
+  assert_eq "external handoff is recorded once" 1 "$(grep -c 'vecta-scheduler-handoff issue=4140' <<< "$comments")"
 }
 test_scheduler_handoff_retries_failed_writes() {
   local created status failing
@@ -1428,7 +1428,7 @@ test_scheduler_handoff_retries_failed_writes() {
     unset FAKE_HOLD_COMMENT_FAILURE FAKE_HOLD_EDIT_FAILURE
     supervisor_hold_sweep 4168
     assert_eq "$failing retry requeues" ready-for-agent "$(state_read 4168 | jq -r '.state')"
-    assert_eq "$failing retry posts one handoff" 1 "$(jq '[.comments[] | select(.body | contains("zf-scheduler-handoff issue=4168"))] | length' "$FAKE_GH_ROOT/issues/4168.json")"
+    assert_eq "$failing retry posts one handoff" 1 "$(jq '[.comments[] | select(.body | contains("vecta-scheduler-handoff issue=4168"))] | length' "$FAKE_GH_ROOT/issues/4168.json")"
     assert_contains "$failing retry preserves failure evidence" "$(jq -r '.comments[-1].body' "$FAKE_GH_ROOT/issues/4168.json")" 'repair evidence'
   done
 }
@@ -1550,7 +1550,7 @@ test_reverted_landing_reopens_before_handoff() {
   jq '.ticket="00000000000000004173" | .landed_sha=("2"*40)' "$request" > "$request.next"
   mv "$request.next" "$request"
   pipeline_system_finish_direct_landing "$request" culprit-reverted
-  assert_eq "a second reverted landing produces a separate handoff" 2 "$(jq '[.comments[] | select(.body | contains("zf-scheduler-handoff issue=4172"))] | length' "$FAKE_GH_ROOT/issues/4172.json")"
+  assert_eq "a second reverted landing produces a separate handoff" 2 "$(jq '[.comments[] | select(.body | contains("vecta-scheduler-handoff issue=4172"))] | length' "$FAKE_GH_ROOT/issues/4172.json")"
   assert_contains "second landing ticket identifies the episode" "$(state_read 4172 | jq -r '.scheduler_handoff.episode')" '00000000000000004173'
 }
 

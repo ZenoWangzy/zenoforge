@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Release failure attribution. Print "issue commit" only when one tracked
 # merge touched the exact failed migration or production image.
+
+# Target-repo specifics come from the pack's state/deploy-culprit.json ({ migration_path: "dir/%s.sql", infrastructure_signatures: [...] });
+# without a pack file the generic defaults apply (migrations at migrations/<stage>.sql, only the built-in infrastructure signatures).
+deploy_culprit_pack_value() {
+  local file
+  file="$(pack_file state/deploy-culprit.json 2>/dev/null)" || file=/dev/null
+  jq -r -n --slurpfile pack "$file" "(\$pack[0] // {}) | $1"
+}
 # shellcheck disable=SC2153 # REPO is set by lib.sh before this file is sourced.
 deploy_culprit() {
   local repo="$1" range="$2" kind="$3" detail="$4" path="" image=""
@@ -15,7 +23,8 @@ deploy_culprit() {
       case "${BASH_REMATCH[2]}" in
         08*|28*|42501|wrong-role|missing|unknown) return 1 ;;
       esac
-      path="migrations/${BASH_REMATCH[1]}.sql"
+      path="$(deploy_culprit_pack_value '.migration_path // "migrations/%s.sql"')"
+      path="${path//%s/${BASH_REMATCH[1]}}"
       ;;
     service) image="$detail" ;;
     *) return 1 ;;
@@ -87,9 +96,13 @@ deploy_failure_class() {
   local kind="$1" detail="$2"
   if [[ "$detail" == *MIGRATION_DATABASE_URL* || "$detail" == *code=42501* || "$detail" == *SQLSTATE\ 42501* || "$detail" == *'docker inspect failed'* || "$detail" == *'docker image inspect failed'* || "$detail" == *'pg_dump'* || "$detail" == *'docker compose up'* ]]; then
     echo infrastructure
-  else
-    echo ambiguous
+    return 0
   fi
+  local signature
+  while IFS= read -r signature; do
+    [[ -n "$signature" && "$detail" == *"$signature"* ]] && { echo infrastructure; return 0; }
+  done < <(deploy_culprit_pack_value '.infrastructure_signatures[]?')
+  echo ambiguous
 }
 
 deploy_supervisor_notice() {
@@ -185,4 +198,89 @@ EOF
   rm -f "$body"
   [ "$result" -eq 0 ] || return 1
   printf '%s\n' "$url"
+}
+
+# Direct-main pipeline landings use the same exact git-revert trailer as the PR
+# path, but publish with main's fast-forward compare-and-swap. A concurrent
+# landing is fetched and retried; a revert conflict stays manual.
+open_direct_main_revert() {
+  local issue="$1" culprit="$2" red_sha="$3" run_id="$4"
+  local attempt base wt revert_sha status message
+  local max_attempts="${ZF_MAIN_RED_DIRECT_REVERT_ATTEMPTS:-3}"
+  [ "$DRY_RUN" != 1 ] || return 1
+  [[ "$issue" =~ ^[1-9][0-9]*$ && "$culprit" =~ ^[0-9a-f]{40}$ \
+    && "$red_sha" =~ ^[0-9a-f]{40}$ && "$run_id" =~ ^[1-9][0-9]*$ \
+    && "$max_attempts" =~ ^[1-9][0-9]*$ ]] || return 2
+
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    git_fetch_bounded "$REPO_DIR" main >/dev/null 2>&1 || return 1
+    base="$(git -C "$REPO_DIR" rev-parse --verify 'origin/main^{commit}')" || return 1
+    if ! git -C "$REPO_DIR" merge-base --is-ancestor "$culprit" "$base" 2>/dev/null; then
+      echo "main-red-bisect: direct revert refused; culprit $culprit is no longer on main" >&2
+      return 2
+    fi
+    revert_sha="$(git -C "$REPO_DIR" log origin/main --format='%H' --fixed-strings \
+      --grep="This reverts commit $culprit." | head -n 1)"
+    if [[ "$revert_sha" =~ ^[0-9a-f]{40}$ ]]; then
+      printf '%s\n' "$revert_sha"
+      return 0
+    fi
+
+    wt="$(mktemp -d "$AGENT_HOME/main-red-direct-revert.XXXXXX")" || return 1
+    rmdir "$wt" || return 1
+    if ! git -C "$REPO_DIR" worktree add -q --detach "$wt" "$base"; then
+      rm -rf -- "$wt"
+      return 1
+    fi
+    local -a parents=()
+    read -r -a parents <<< "$(git -C "$wt" rev-list --parents -n 1 "$culprit")"
+    if [ "${#parents[@]}" -eq 3 ]; then
+      if ! git -C "$wt" -c user.name='the product Agent' -c user.email='zenoforge-agent@users.noreply.github.com' \
+          revert --no-edit -m 1 "$culprit" >/dev/null 2>&1; then
+        git -C "$REPO_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
+        echo "main-red-bisect: direct revert conflict for culprit=$culprit issue=#$issue; leaving it for arbitration" >&2
+        return 2
+      fi
+    elif [ "${#parents[@]}" -eq 2 ]; then
+      if ! git -C "$wt" -c user.name='the product Agent' -c user.email='zenoforge-agent@users.noreply.github.com' \
+          revert --no-edit "$culprit" >/dev/null 2>&1; then
+        git -C "$REPO_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
+        echo "main-red-bisect: direct revert conflict for culprit=$culprit issue=#$issue; leaving it for arbitration" >&2
+        return 2
+      fi
+    else
+      git -C "$REPO_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
+      echo "main-red-bisect: direct revert refused unsupported parent count for culprit=$culprit; leaving it for arbitration" >&2
+      return 2
+    fi
+    if ! git -C "$wt" -c user.name='the product Agent' -c user.email='zenoforge-agent@users.noreply.github.com' \
+        commit --amend --no-edit --trailer "Refs: #$issue" --trailer "Pipeline-Suite-Run: $run_id" >/dev/null; then
+      git -C "$REPO_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
+      return 1
+    fi
+    message="$(git -C "$wt" show -s --format=%B HEAD)" || message=""
+    if ! grep -Fxq "This reverts commit $culprit." <<< "$message"; then
+      git -C "$REPO_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
+      return 1
+    fi
+    revert_sha="$(git -C "$wt" rev-parse HEAD)" || revert_sha=""
+    if [[ ! "$revert_sha" =~ ^[0-9a-f]{40}$ ]]; then
+      git -C "$REPO_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
+      return 1
+    fi
+    if guarded_write git -C "$wt" push origin HEAD:refs/heads/main >/dev/null 2>&1; then
+      git -C "$REPO_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
+      echo "main-red-bisect: direct revert landed issue=#$issue culprit=$culprit revert=$revert_sha red=$red_sha run=$run_id" >&2
+      printf '%s\n' "$revert_sha"
+      return 0
+    else
+      status=$?
+    fi
+    git -C "$REPO_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
+    if ((attempt < max_attempts)); then
+      echo "main-red-bisect: main advanced or push failed during direct revert attempt=$attempt/$max_attempts exit=$status; retrying from its current tip" >&2
+    fi
+  done
+  echo "main-red-bisect: direct revert did not land after $max_attempts compare-and-swap attempts for culprit=$culprit" >&2
+  return 1
 }

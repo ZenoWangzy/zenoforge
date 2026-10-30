@@ -439,7 +439,7 @@ for offset, hours in enumerate(latencies, start=1):
                     "submittedAt":approved_at.strftime("%Y-%m-%dT%H:%M:%SZ"), "body":"reviewed"}]
     if offset == 5:
         reviews = [{"author":{"login":"example-maintainer"}, "state":"APPROVED",
-                    "submittedAt":approved_at.strftime("%Y-%m-%dT%H:%M:%SZ"), "body":"<!-- zenoforge-agent-comment -->"}]
+                    "submittedAt":approved_at.strftime("%Y-%m-%dT%H:%M:%SZ"), "body":"<!-- vecta-agent-comment -->"}]
     merge_sha = f"{1000 + offset:040x}"
     prs.append({"number":pr_number, "mergedAt":merge_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "mergeCommit":{"oid":merge_sha}, "body":body, "commits":commits, "reviews":reviews})

@@ -24,6 +24,7 @@ chmod +x "$tmp/bin/uptime"
 PATH="$tmp/bin:$PATH"
 source "$root/engine/lib.sh"
 source "$root/engine/night/hand-crash-recovery.sh"
+ZF_ENGINE_DIR="$REPO_DIR/engine" # the stub dispatcher lives in the fixture repo
 hand_agent_pid_live() { return 1; }
 hand_agent_role_for_identity() { echo work; }
 sleep() { :; }

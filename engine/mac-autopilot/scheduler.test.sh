@@ -508,10 +508,10 @@ mv "$fixture/units.saved.json" "$A/units.json"
 grep -Fq '(u.journey||{}).status)).length' "$script_dir/dashboard.html" || { echo 'not ok - scheduler.test.sh: in-flight card counts closed/done units' >&2; exit 1; }
 
 # 集成测试左移：repair 与产品 implement 的 prompt 都带本机测试库规则；测试库不可用时照常 push，不卡交付。
-[[ "$(grep -c '${INTEGRATION_RULE}' "$script_dir/scheduler.sh")" -ge 2 ]] || { echo 'not ok - scheduler.test.sh: repair/implement prompts lack the local integration-test rule' >&2; exit 1; }
+[[ "$(grep -h '${INTEGRATION_RULE}' "$script_dir/scheduler.sh" "$script_dir"/scheduler.d/*.sh | wc -l)" -ge 2 ]] || { echo 'not ok - scheduler.test.sh: repair/implement prompts lack the local integration-test rule' >&2; exit 1; }
 grep -E '^INTEGRATION_RULE=.*RUN_INTEGRATION=1.*照常 push' "$script_dir/scheduler.sh" >/dev/null || { echo 'not ok - scheduler.test.sh: integration rule must run tests locally yet never block the push' >&2; exit 1; }
 # 优化类 ticket 先核实前提（#4370）：两条车道的 implement prompt 都带测量规则。
-[[ "$(grep -c 'OPT_PREMISE_RULE}' "$script_dir/scheduler.sh")" -ge 2 ]] || { echo 'not ok - scheduler.test.sh: implement prompts lack the optimization-premise rule' >&2; exit 1; }
+[[ "$(grep -h 'OPT_PREMISE_RULE}' "$script_dir/scheduler.sh" "$script_dir"/scheduler.d/*.sh | wc -l)" -ge 2 ]] || { echo 'not ok - scheduler.test.sh: implement prompts lack the optimization-premise rule' >&2; exit 1; }
 grep -A3 "^OPT_PREMISE_RULE=" "$script_dir/scheduler.sh" | grep -q "测量窗口从被测机制最后一次改动之后开始" \
   || { echo 'not ok - scheduler.test.sh: the optimization-premise rule must bound the measurement window by the mechanism last change' >&2; exit 1; }
 # Exercise the actual tick with external commands isolated from GitHub, git and Codex.
@@ -522,6 +522,21 @@ session_day="${TODAY//-//}"
 tick_gh() {
   printf 'gh %s\n' "$*" >> "$TF/calls"
   case "$1 $2" in
+    # #4725 条件请求包装（gh_api_cached）发出的 `gh api -i [-H …] …`：剥掉 -i/-H 后按原样
+    # 递归分发到下面的既有分支（会多记一行去掉 -i 的调用），再用 200 + ETag 头信封包一层。
+    'api -i')
+      local rest=() skip_next=0 arg body
+      for arg in "$@"; do
+        (( skip_next )) && { skip_next=0; continue; }
+        case "$arg" in
+          -i) ;;
+          -H) skip_next=1 ;;
+          *) rest+=("$arg") ;;
+        esac
+      done
+      body="$(tick_gh "${rest[@]}")" || return $?
+      printf 'HTTP/2.0 200 OK\nEtag: "stub"\n\n%s\n' "$body"
+      return 0 ;;
     'run list')
       if [[ -f "$TF/ci-admission-runs.json" && "$*" == *'--limit 300 --json databaseId,status,event,headBranch,headSha,workflowName'* ]]; then
         cat "$TF/ci-admission-runs.json"
@@ -1010,7 +1025,7 @@ command jq -e --arg hot "$hotfix_sha" --arg normal "$normal_sha" --arg review "$
 # 第二拍：PR runner 恢复在线（2 个），热修 run 已在 runner 1 上跑（busy=true，6adc3ba00 起按
 # runner busy 折算名额）→ 名额 = 2 − 1 = 1，等名额的 normal-active 补进空槽起跑 CI；
 # 名额算术由日志与 slot 1/1 钉住。
-command jq -n '{"runners":[{"id":1,"status":"online","busy":true,"labels":[{"name":"cihost-ci"}]},{"id":2,"status":"online","busy":false,"labels":[{"name":"zf-suites"}]},{"id":3,"status":"online","busy":false,"labels":[{"name":"cihost-ci-postsubmit"}]}]}' > "$TF/ci-runners.json"
+command jq -n '{"runners":[{"id":1,"status":"online","busy":true,"labels":[{"name":"cihost-ci"}]},{"id":2,"status":"online","busy":false,"labels":[{"name":"vecta-suites"}]},{"id":3,"status":"online","busy":false,"labels":[{"name":"cihost-ci-postsubmit"}]}]}' > "$TF/ci-runners.json"
 command jq -n --arg hot "$hotfix_sha" --arg normal "$normal_sha" --arg review "$review_sha" \
   '[
     {databaseId:901,status:"in_progress",event:"pull_request",headBranch:"agent/issue-hf-900",headSha:$hot,workflowName:"CI"},
@@ -3674,7 +3689,7 @@ landed_at="$(command jq -r '.units[] | select(.id=="issue-4501") | .landed_at' "
 event_epoch=$(( $(date -u -d "$landed_at" +%s) + 1 ))
 event_line="[$(date -u -d "@$event_epoch" +%Y-%m-%dT%H:%M:%SZ)] live-event close issue=99 unit=issue-99 event=factory-m5-live-event-close evidence=fixture-firing"
 printf '%s\n' "$event_line" >> "$TF/supervisor/autopi/scheduler.log"
-existing_comment="结案：已落地 $m5_land_sha（direct-main 车道）并观测到登记的生产事件 factory-m5-live-event-close。证据：$event_line"
+existing_comment="结案：已落地 ${m5_land_sha}（direct-main 车道）并观测到登记的生产事件 factory-m5-live-event-close。证据：$event_line"
 command jq -n --arg body "$issue_body" --arg comment "$existing_comment" '{number:4506,title:"M5 evidence comment already attached",body:$body,state:"CLOSED",labels:[],comments:[{body:$comment}]}' \
   > "$TF/issues/4506.json"
 tick
@@ -3685,7 +3700,7 @@ command jq -e --argjson acc "$acc" '.units[] | select(.id=="issue-4501") | .acce
 grep -Fq 'live-event close issue=4501 unit=issue-4501 event=factory-m5-live-event-close' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'not ok - scheduler.test.sh: the M5 close event line was not logged' >&2; exit 1; }
 m5_close_line="$(grep -E '^issue close 4501 ' "$TF/actions" | head -1)"
-[[ "$m5_close_line" == *"结案：已落地 $m5_land_sha（direct-main 车道）并观测到登记的生产事件 factory-m5-live-event-close"* ]] \
+[[ "$m5_close_line" == *"结案：已落地 ${m5_land_sha}（direct-main 车道）并观测到登记的生产事件 factory-m5-live-event-close"* ]] \
   || { echo "not ok - scheduler.test.sh: close comment lacks the event evidence: $m5_close_line" >&2; exit 1; }
 [[ "$m5_close_line" == *'evidence=fixture-firing'* ]] \
   || { echo "not ok - scheduler.test.sh: close comment lacks the observed evidence line: $m5_close_line" >&2; exit 1; }

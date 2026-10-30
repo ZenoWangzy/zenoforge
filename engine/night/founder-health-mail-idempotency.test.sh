@@ -9,7 +9,7 @@ export AGENT_HOME="$fixture_root/home" DRY_RUN=0
 mkdir -p "$AGENT_HOME/night"
 source "$SCRIPT_DIR/../notify.sh"
 agent_epoch() { date +%s; }
-source "$SCRIPT_DIR/maintainer-health-mail.sh"
+source "$SCRIPT_DIR/founder-health-mail.sh"
 cat > "$fixture_root/gcloud" <<'GCLOUD'
 #!/usr/bin/env bash
 printf 'fixture-token'
@@ -23,11 +23,11 @@ gmail_curl() {
 }
 ledger="$AGENT_HOME/night/founder-health-mail.json"
 now=1791803400
-slot="$(maintainer_health_mail_slot_key "$now")"
+slot="$(founder_health_mail_slot_key "$now")"
 events='[{"key":"fixture:change","created_at":1791803400}]'
 body=$'**结论：** 本次有 1 项新变化。\n时间均为协调世界时。\n\n**效率（最近六小时）**\n| 指标 | 当前六小时 | 前六小时 | 昨日同时段 |\n| --- | ---: | ---: | ---: |\n| 调度一轮耗时 | 样本待补 | 样本待补 | 样本待补 |\n| 自动检查浪费占比 | 样本待补 | 样本待补 | 样本待补 |\n| 主干检查通过率 | 样本待补 | 样本待补 | 样本待补 |\n| 上线后复核有效率 | 样本待补 | 样本待补 | 样本待补 |\n| 派活失败次数 | 样本待补 | 样本待补 | 样本待补 |\n| 重复派活 | 样本待补 | 样本待补 | 样本待补 |\n| 提交失败次数 | 样本待补 | 样本待补 | 样本待补 |\n| 系统自动开单 / 关单 | 样本待补 | 样本待补 | 样本待补 |\n\n**上线情况：**\n最近六小时没有上线：没有新版本通过上线验证。\n\n**事项变化**\n订单页面已恢复。'
 deliver() {
-  maintainer_health_mail_deliver "$ledger" "$now" "$slot" '工作进展简报' "$body" "$events"
+  founder_health_mail_deliver "$ledger" "$now" "$slot" '工作进展简报' "$body" "$events"
 }
 assert_one_send() {
   [[ "$(wc -l < "$fixture_root/posts")" -eq 1 ]] || {
@@ -48,13 +48,13 @@ exec {release_fd}<>"$fixture_root/release"
     printf 'ready\n' >&"$ready_fd"
     IFS= read -r -t 10 -u "$release_fd"
   }
-  maintainer_health_mail_ensure_ledger "$ledger" "$now"
+  founder_health_mail_ensure_ledger "$ledger" "$now"
   unset -f mktemp
   deliver
 ) &
 initializer_pid=$!
 IFS= read -r -t 10 -u "$ready_fd"
-maintainer_health_mail_ensure_ledger "$ledger" "$now"
+founder_health_mail_ensure_ledger "$ledger" "$now"
 deliver
 printf 'release\n' >&"$release_fd"
 wait "$initializer_pid"
@@ -64,7 +64,7 @@ assert_one_send 'cold-start initializer cannot erase a completed six-hour send'
 
 # Same-slot concurrent workers plus a later retry share the durable claim.
 rm -f -- "$ledger" "$fixture_root/posts" "$NOTIFY_LOG_FILE"
-maintainer_health_mail_ensure_ledger "$ledger" "$now"
+founder_health_mail_ensure_ledger "$ledger" "$now"
 deliver &
 first_pid=$!
 deliver &

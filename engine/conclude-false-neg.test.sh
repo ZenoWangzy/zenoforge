@@ -141,7 +141,23 @@ CODEX_PROBE_PROMPT_FILE="$AGENT_HOME/probe-prompt.txt"
 CODEX_PROBE_ARGS_FILE="$AGENT_HOME/probe-args.log"
 export CODEX_PROBE_ORDER_FILE CODEX_PROBE_PROMPT_FILE CODEX_PROBE_ARGS_FILE
 
+# Keep the production live-worker probe on a private, valid empty ledger.
+MAC_AUTOPILOT_RUNTIME_DIR="$AGENT_HOME/autopi-runtime"
+mkdir -p "$MAC_AUTOPILOT_RUNTIME_DIR"
+printf '{"workers":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
+printf '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
+export MAC_AUTOPILOT_RUNTIME_DIR
+
 PIPELINE_SRC="$SCRIPT_DIR/issue-pipeline.sh"
+PIPELINE_CLAIM_KEY=""
+PIPELINE_CLAIM_OWNER=""
+PIPELINE_CLAIM_UNIT=""
+PIPELINE_CLAIM_STAGE=""
+eval "$(sed -n '/^pipeline_claim_clear() {/,/^}/p' "$PIPELINE_SRC")"
+eval "$(sed -n '/^pipeline_live_worker_check() {/,/^}/p' "$PIPELINE_SRC")"
+eval "$(sed -n '/^pipeline_claim_drop() {/,/^}/p' "$PIPELINE_SRC")"
+eval "$(sed -n '/^pipeline_claim_keep() {/,/^}/p' "$PIPELINE_SRC")"
+eval "$(sed -n '/^pipeline_claim_begin() {/,/^}/p' "$PIPELINE_SRC")"
 eval "$(sed -n '/^recover_stale_policy_unit() {/,/^}/p' "$PIPELINE_SRC")"
 eval "$(sed -n '/^dispatch_policy_unit() {/,/^}/p' "$PIPELINE_SRC")"
 eval "$(sed -n '/^ensure_issue_roadmap_parent_for_dispatch() {/,/^}/p' "$PIPELINE_SRC")"

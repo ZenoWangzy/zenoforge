@@ -35,6 +35,8 @@ agent_pipeline_write_guard() {
   if [[ -z "${_AGENT_WRITE_GUARD_SOURCE_ROOT+x}" ]]; then
     source_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
     _AGENT_WRITE_GUARD_SOURCE_ROOT="$(git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+    # An engine run from an immutable, non-git version directory has no toplevel: the repo it works on stands in.
+    [[ -n "$_AGENT_WRITE_GUARD_SOURCE_ROOT" ]] || _AGENT_WRITE_GUARD_SOURCE_ROOT="${ZF_REPO_DIR:-}"
   fi
   source_root="${_AGENT_WRITE_GUARD_SOURCE_ROOT:-}"
   if [[ -z "$source_root" ]]; then

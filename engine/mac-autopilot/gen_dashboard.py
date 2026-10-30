@@ -328,6 +328,8 @@ for w in workers:
 
 # ---- 网络流量（engine/network-traffic.py monitor 每 60 秒写一次结果） ----
 AGENT_HOME = os.environ.get("AGENT_HOME") or os.path.expanduser("~/.zenoforge")
+# Same setting lib.sh resolves.
+UNIT_PREFIX_TRANSIENT = os.environ.get("ZF_UNIT_PREFIX") or "zf"
 def read_json(path):
     try:
         with open(path) as stream:
@@ -401,13 +403,14 @@ suites = main_verdict("Pipeline suites")
 ci = main_verdict("CI")
 
 # ---- CI 现状（每拍）：runner、排队、WIP 等待、热修挡板。健康线在 node-health.json 的 ci_standards（node_health.py）----
+CI_RUNNER_PREFIX = os.environ.get("ZF_CI_RUNNER_PREFIX", "cihost-ci")  # default mirrors config.sh
 def runner_pool(r):
     labels = set(r.get("labels") or [])
-    if "cihost-ci-postsubmit" in labels:
+    if f"{CI_RUNNER_PREFIX}-postsubmit" in labels:
         return "Postsubmit"
-    if labels & {"cihost-ci", "cihost-ci-light", "cihost-ci-priority", "zf-suites"}:
+    if labels & {CI_RUNNER_PREFIX, f"{CI_RUNNER_PREFIX}-light", f"{CI_RUNNER_PREFIX}-priority", "vecta-suites"}:
         return "PR"
-    if "cihost-ci-main" in labels:
+    if f"{CI_RUNNER_PREFIX}-main" in labels:
         return "main 专用"
     if r.get("name", "").startswith("zf-mac"):
         return "Mac"
@@ -465,7 +468,7 @@ knobs = [{"key": k, "value": knob_value(k, d), "meaning": m} for k, m, d in KNOB
 infra_runs = (snapshot_section("infra_runs") or [])[:3]
 def ssh_out(cmd):
     try:
-        return subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "cihost", cmd],
+        return subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", os.environ.get("ZF_CIHOST_HOST", "cihost"), cmd],
                               capture_output=True, text=True, timeout=20).stdout
     except Exception:
         return ""
@@ -893,7 +896,7 @@ def front_advisor_panel(now, waiting):
     job, deferred, log_dir = front_advisor_snapshot()
     log_dir = log_dir or os.path.join(AGENT_HOME, "logs")
     results = front_advisor_results(log_dir)
-    units_active = front_unit_active("zf-web-advisor-provider-*")
+    units_active = front_unit_active(f"{UNIT_PREFIX_TRANSIENT}-web-advisor-provider-*")
     job_age_min = round((now - job["started_at"]) / 60, 1) if job and isinstance(job.get("started_at"), (int, float)) else None
     last_ruling = epoch_of(results["last_ruling_at"] or "")
     since_epoch = epoch_of(results["log_since"] or "")
@@ -980,7 +983,7 @@ def front_triage_panel(now, backlog):
     batches = sorted(glob.glob(os.path.join(AGENT_HOME, "logs", "triage-triage-batch-*.log")))
     batch_stamp = re.search(r"-(\d{8}T\d{6}Z)-", os.path.basename(batches[-1])) if batches else None
     batch_at = (datetime.strptime(batch_stamp.group(1), "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%dT%H:%M:%SZ")) if batch_stamp else None
-    running = front_unit_active("zf-triage-batch.service")
+    running = front_unit_active(f"{UNIT_PREFIX_TRANSIENT}-triage-batch.service")
     idle_min = None if last is None else round((now - last) / 60)
     if backlog == 0:  # 没有积压就没有"该出活而没出活"，两条都不判
         front_na.update(("triage.last_done_age_min", "triage.done_today"))

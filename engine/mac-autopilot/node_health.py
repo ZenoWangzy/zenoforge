@@ -61,6 +61,7 @@ CRITERIA = {
     "review.large_pr_pct":     ("review-loop", "ledger PRs over 800 changed lines %, rolling 30 d", 10, 25, False),
     "workers.local_test_db":   ("workers", "local test Postgres (PGTEST_URL) reachable, 1 = yes", 1, 0, True),
     "loop.advisor_fail_pct":   ("review-loop", "advisor asks that got no ruling %", 10, 50, False),
+    "advisor.last_answer_age_hours": ("review-loop", "hours since the newest successful advisor answer while needs-advisor > 0", 2, 6, False),
     "review.findings_missing_pct": ("review-loop", "REQUEST-CHANGES reports without a findings block %", 5, 20, False),
     "delivery.issue_to_accept_p50_7d_hours": ("delivery", "issue created -> release accepted p50, 7 d hours", 24, 72, False),
     "delivery.issue_to_accept_p95_7d_hours": ("delivery", "issue created -> release accepted p95, 7 d hours", 72, 168, False),
@@ -131,6 +132,7 @@ MEANING = {
     "workorders.ticket_tokens_p90": "每张 ticket 生命周期 worker 累计 token（输入+输出）的 p90，取最近 7 天关闭的票；阈值来自之前 30 天已关票的 p50×1.5（健康）与 p90×2（异常）。升高 = 现在这批票比历史更烧钱，去单元表里找是哪张。",
     "workorders.ticket_wall_p90": "每张 ticket 生命周期 worker 墙钟（分钟）的 p90，取最近 7 天关闭的票；阈值同上取历史 p50×1.5 / p90×2。",
     "loop.advisor_fail_pct": "第 2 次评审打回后问顾问（拆票 / 定范围 / 修复方向），没拿到裁决的比例。高 = 顾问 provider 不可用。",
+    "advisor.last_answer_age_hours": "needs-advisor 队列非空时，距最近一次成功 advisor 回答的小时数。高 = 顾问死了而没人发现（10-28 21:17 PDT 起约 30 小时无产出）。队列为空记 0。",
     "review.findings_missing_pct": "打回报告里缺结构化发现块（或块畸形）的比例。缺块 = 这一轮的发现没记进台账，同文件复发规则就看不见它；Claude 评审员不带 review skill，10-20 起 81% 的打回报告没有块。",
     "host.prereqs_missing": "WSL 主机上流水线依赖的服务（测试库、代理等）有几个没响应。非 0 时看体检输出里列出的名字；10-17 重装后这些缺失要几天后才以浪费的形式暴露。",
     "host.github_net_failures_per_hour": "每小时连不上 GitHub 的次数（fetch 最终失败、API TLS 握手超时）。WSL 上 GitHub 只能走 egress 代理，单元缺代理就静默超时：10-22 三个定时单元没有代理 drop-in，6 小时约 1,600 次，没有任何数字显示。",
@@ -193,6 +195,7 @@ SOURCE = {
     "ci.shared_append_rebase_conflict_pct": "logs/shared-append-rebases.jsonl（land-direct-main 记录每次改动范围带 shared-append 文件的落地 rebase）：固定滚动 24h 内 conflict_files 非空的比例；无记录不计值。",
     "review.large_pr_pct": "pr-sizes.json（ci_spend.py 取 PR 增删行数）对照最近 30 天有台账活动的 PR；无历史的在途单也计入，缺尺寸时显示无数据",
     "loop.advisor_fail_pct": "units.json：advisor-unavailable ÷（advisor-ruling + advisor-unavailable），窗口内",
+    "advisor.last_answer_age_hours": "web-advisor-provider-jobs/*/answer.err 中不含 FAIL: 的最新 mtime；needs-advisor 数来自 gh issue list",
     "review.findings_missing_pct": "units.json 每单的 review_findings：窗口内 block=missing 的打回 ÷ 全部打回（调度器收割打回报告时写入）",
     "host.prereqs_missing": "host-prereqs.json 里每项每次体检做一次 TCP 连接或 HTTP 200 探测",
     "host.github_net_failures_per_hour": "journalctl --user 窗口内的最终失败行（origin fetch failed、git fetch: timed out after、api.github.com TLS handshake timeout）÷ 小时；没有 journal（Mac）为空",
@@ -289,9 +292,10 @@ def time_sinks(units, log_path, since, now):
                         out["rereview_queue"].append((rd - done).total_seconds() / 60)
                         out["rereview_work"].append((verdict - rd).total_seconds() / 60)
                         waits.append(("rereview", done, rd))
-                    elif not verdict:
+                    elif not verdict and (rd or u.get("stage") == "rereview-pending"):
                         waits.append(("rereview", done, rd or now))
-                elif not nxt:
+                elif not nxt and (d or u.get("stage") == "repair-pending"):
+                    # An undispatched trigger waits only while the unit is still queued; parked/merged units are not waiting for a worker.
                     waits.append(("repair", t, d or now))
             elif k == "review-approve":
                 nxt = next(((kk, x) for kk, x in hist[i + 1:] if kk in ("ci-red", "ci-test-red", "merge-issued")), None)
@@ -358,11 +362,16 @@ def slot_idle_hours(waits, cost_rows, since):
     by_phase = {}
     for r in cost_rows:
         by_phase.setdefault(r["phase"], []).append((r["start"], r["end"]))
+    # Wall-clock stall: units waiting side by side share one idle slot, so overlapping waits count once.
+    merged = []
+    for phase, start, end in sorted((w[0], max(w[1], since), w[2]) for w in waits):
+        if end > start:
+            if merged and merged[-1][0] == phase and start <= merged[-1][2]:
+                merged[-1][2] = max(merged[-1][2], end)
+            else:
+                merged.append([phase, start, end])
     idle = 0.0
-    for phase, start, end in waits:
-        start, end = max(start, since), end
-        if end <= start:
-            continue
+    for phase, start, end in merged:
         spans = sorted((max(s, start), min(e, end)) for s, e in by_phase.get(phase, [])
                        if max(s, start) < min(e, end))
         frontier = start
@@ -731,6 +740,24 @@ def ledger_metrics(units, since, now):
     }
 
 
+def advisor_answer_age_hours(agent_home, repo, now):
+    """Dead-man: age of the newest successful advisor job, only while tickets wait for it."""
+    queue = _gh_json(["issue", "list", "--repo", repo, "--label", "needs-advisor", "--state", "open",
+                      "--limit", "1", "--json", "number"], 60)
+    if queue is None:
+        return None
+    if not queue:
+        return 0.0
+    newest = 0.0
+    for err in glob.glob(os.path.join(agent_home, "web-advisor-provider-jobs", "*", "answer.err")):
+        try:
+            if "FAIL:" not in open(err, errors="replace").read():
+                newest = max(newest, os.path.getmtime(err))
+        except OSError:
+            continue
+    return max(0.0, (now.timestamp() - newest) / 3600) if newest else 9999.0
+
+
 def read_json(path):
     try:
         value = json.load(open(path))
@@ -844,7 +871,7 @@ def gated_agent_pr_share(repo):
 
 
 RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{40}) closed=\[([0-9,\s]*)\]")
-BOT_COMMENT_MARKER = "<!-- zenoforge-agent-comment -->"
+BOT_COMMENT_MARKER = "<!-- vecta-agent-comment -->"
 BOT_DISCLAIMER = "This comment is posted by the automated the product agent pipeline under the maintainer's GitHub account"
 REVIEW_STAGES = {
     "APPROVED": {"review-approve"},
@@ -1097,9 +1124,19 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
                 incident_rows.append(incident)
         details["incident_records_30d"] = len(incident_rows)
         if accepted_release_issues_30d is not None:
+            # Root-cause records (incident-guards.json) have no `issue` field (0/868); the existing
+            # convention is an explicit "Issue #N" in what_happened. Records naming no issue are not
+            # linkable and counted apart; only a named issue that was never accepted is unlinked.
+            def _incident_issue(incident):
+                direct = _number(incident.get("issue") or incident.get("issue_number"))
+                if direct is not None:
+                    return direct
+                found = re.search(r"\bIssues?\s+#(\d+)", str(incident.get("what_happened") or ""))
+                return int(found.group(1)) if found else None
+            named = [_incident_issue(incident) for incident in incident_rows]
+            details["incident_unreferenced_30d"] = sum(issue is None for issue in named)
             unlinked_incidents = sum(
-                _number(incident.get("issue") or incident.get("issue_number")) not in accepted_release_issues_30d
-                for incident in incident_rows)
+                issue is not None and issue not in accepted_release_issues_30d for issue in named)
             details["unlinked_incidents_30d"] = unlinked_incidents
             values["delivery.unlinked_incidents_30d"] = unlinked_incidents
             if accepted_release_issues_30d:
@@ -1178,7 +1215,7 @@ def file_issues(a, rows, now):
         title = f"pipeline health: {mid} unhealthy"
         # #4487: per-metric symptom fixes twice replaced the behaviour fix (bound/criteria edits in
         # eee674e0c, 6362c5486). The template routes the worker to the behavioural root cause first.
-        body = (f"<!-- zenoforge-agent-comment -->\nnode_health.py at {now:%Y-%m-%dT%H:%MZ}: **{desc}** = {v:.0f} "
+        body = (f"<!-- vecta-agent-comment -->\nnode_health.py at {now:%Y-%m-%dT%H:%MZ}: **{desc}** = {v:.0f} "
                 f"(healthy {'>=' if higher else '<='} {healthy}, unhealthy {'<=' if higher else '>='} {unhealthy}), "
                 f"unhealthy since {entry['since']}.\n\nNode: {node}. Criteria and human baseline: "
                 "engine/mac-autopilot/NODE-HEALTH.md. Fix the behaviour, not the metric (#4487): "
@@ -1350,6 +1387,7 @@ def main():
         now - timedelta(hours=24), now)
     metrics["ci.shared_append_rebase_conflict_pct"] = sa_conflict
     metrics["workers.local_test_db"] = local_test_db()
+    metrics["advisor.last_answer_age_hours"] = advisor_answer_age_hours(agent_home, repo, now)
     host_missing = host_prereqs_missing()
     metrics["host.prereqs_missing"] = None if host_missing is None else len(host_missing)
     metrics["host.github_net_failures_per_hour"] = github_net_failures_per_hour(since, now)

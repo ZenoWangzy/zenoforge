@@ -15,8 +15,8 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
 LIB_TEST_AGENT_HOME="$AGENT_HOME"
 INBOX_HELPER_HOME="$(mktemp -d)"
-trap 'lib_test_status=$?; if [ -n "${LIB_TEST_STDERR_LOG:-}" ] && [ -f "$LIB_TEST_STDERR_LOG" ] && [ "$lib_test_status" -ne 0 ]; then cat "$LIB_TEST_STDERR_LOG" >&4; fi; rm -f -- "${LIB_TEST_STDERR_LOG:-}"; rm -rf -- "$LIB_TEST_AGENT_HOME" "$INBOX_HELPER_HOME"' EXIT
-LIB_TEST_EXIT_TRAP="$(trap -p EXIT)"
+LIB_TEST_TMP_DIRS=()
+trap 'lib_test_status=$?; if [ -n "${LIB_TEST_STDERR_LOG:-}" ] && [ -f "$LIB_TEST_STDERR_LOG" ] && [ "$lib_test_status" -ne 0 ]; then cat "$LIB_TEST_STDERR_LOG" >&4; fi; rm -f -- "${LIB_TEST_STDERR_LOG:-}"; rm -rf -- "$LIB_TEST_AGENT_HOME" "$INBOX_HELPER_HOME" "${LIB_TEST_TMP_DIRS[@]}"' EXIT
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$SCRIPT_DIR/model-policy.default.json" > "$AGENT_HOME/model-policy.json"
 
@@ -1552,7 +1552,7 @@ assert_contains "dead-owner hand hold returns to its recorded stage" \
 assert_contains "dead-owner hold posts one comment naming its owner" \
   "$(cat "$HOLD_LIFECYCLE_HOME/comments.log")" "hand-740040"
 assert_eq "dead-owner hold posts exactly one bot comment" 1 \
-  "$(grep -c '<!-- zf-hold-dead-owner issue=740040 ' "$HOLD_LIFECYCLE_HOME/comments.log")"
+  "$(grep -c '<!-- vecta-hold-dead-owner issue=740040 ' "$HOLD_LIFECYCLE_HOME/comments.log")"
 assert_contains "dead-owner hold replaces on-hold with stage label" \
   "$(cat "$HOLD_LIFECYCLE_HOME/writes.log")" "--remove-label on-hold"
 assert_contains "dead-owner hold returns to its recorded state label" \
@@ -1734,7 +1734,7 @@ assert_eq "an unreadable/missing gh falls back to phase 2" \
 # like a genuinely oversized issue and got the same "adjust your permission
 # settings" email, which nobody could act on).
 TCS_TEST_DIR="$(mktemp -d)"
-trap 'rm -rf "$TCS_TEST_DIR"' EXIT
+LIB_TEST_TMP_DIRS+=("$TCS_TEST_DIR")
 
 assert_eq "no state file at all is unmeasured" \
   "unmeasured" "$(triage_classification_status "$TCS_TEST_DIR/missing.json")"
@@ -1756,7 +1756,6 @@ assert_eq "invalid JSON is malformed, deliberately NOT folded into unmeasured (s
   "malformed" "$(triage_classification_status "$TCS_TEST_DIR/corrupt.json")"
 
 rm -rf "$TCS_TEST_DIR"
-eval "$LIB_TEST_EXIT_TRAP"
 
 # --- open_blocker_ids_from_rest_json / has_open_blocker: issue #1137 (live: blocked by
 # #1132) — native GitHub Issue dependency edges this pipeline previously
@@ -1907,7 +1906,7 @@ assert_false "one over the cap is refused" \
 # would have caught them (prompt-only compliance measures under 2% on this
 # codebase).
 RSV_DIR="$(mktemp -d)"
-trap 'rm -rf "$RSV_DIR"' EXIT
+LIB_TEST_TMP_DIRS+=("$RSV_DIR")
 echo "export function realSymbol() {}" > "$RSV_DIR/a.ts"
 echo "export const anotherReal = 1;" > "$RSV_DIR/b.ts"
 
@@ -1923,7 +1922,6 @@ assert_true "no files and no symbols claimed verifies trivially" \
   recut_slice_verified '[]' '[]' "$RSV_DIR"
 
 rm -rf "$RSV_DIR"
-eval "$LIB_TEST_EXIT_TRAP"
 
 # recut_topo_order(): gh issue create --blocked-by needs its blockers to
 # already exist as real issue numbers, but proposed children only know each
@@ -2018,7 +2016,7 @@ assert_false "a candidate with nothing declared has nothing to collide" \
 # git repo, never the real $REPO_DIR, so these tests write nothing under
 # ~/.zenoforge and make zero `gh`/network calls.
 TEST_REPO="$(mktemp -d)"
-trap 'rm -rf "$TEST_REPO"' EXIT
+LIB_TEST_TMP_DIRS+=("$TEST_REPO")
 git -C "$TEST_REPO" init -q -b main
 git -C "$TEST_REPO" config user.email test@example.com
 git -C "$TEST_REPO" config user.name "lib.test.sh"
@@ -2064,14 +2062,13 @@ assert_false "no marker file at all means nothing is blocked" \
   deploy_is_blocked "$SHA_12" "$MARKER_FILE" "$TEST_REPO"
 
 rm -rf "$TEST_REPO"
-eval "$LIB_TEST_EXIT_TRAP"
 
 # --- bootstrap_old_deployed_sha: defect 2's fresh-install bootstrap range --
 # Built against its own throwaway repo with REAL file changes (not
 # --allow-empty), so the diff range this produces can be checked for real
 # content, not just asserted about which SHA it names.
 BOOTSTRAP_TEST_REPO="$(mktemp -d)"
-trap 'rm -rf "$BOOTSTRAP_TEST_REPO"' EXIT
+LIB_TEST_TMP_DIRS+=("$BOOTSTRAP_TEST_REPO")
 git -C "$BOOTSTRAP_TEST_REPO" init -q -b main
 git -C "$BOOTSTRAP_TEST_REPO" config user.email test@example.com
 git -C "$BOOTSTRAP_TEST_REPO" config user.name "lib.test.sh"
@@ -2110,7 +2107,6 @@ assert_false "the buggy range (current-HEAD^) silently drops the triggering PR's
   bash -c 'printf "%s" "$1" | grep -qF "packages/pkg-a/x.txt"' _ "$BUGGY_RANGE_FILES"
 
 rm -rf "$BOOTSTRAP_TEST_REPO"
-eval "$LIB_TEST_EXIT_TRAP"
 
 # --- acquire_merge_lock / release_merge_lock: the merge-queue mutex --------
 # 2026-09-13 fix: run-implement.sh's merge-queue wait polled for a green
@@ -2715,7 +2711,7 @@ rm -rf "$GITNEXUS_TEST_ROOT"
 ROSTER_TEST_FILE="$(mktemp)"
 cat > "$ROSTER_TEST_FILE" <<'JSON'
 {
-  "maintainer_login": "the-maintainer",
+  "founder_login": "the-maintainer",
   "recipients": {
     "known-reporter": "reporter@example.com",
     "the-maintainer": "maintainer@example.com"
@@ -2762,7 +2758,7 @@ assert_eq "a missing roster file is not the maintainer" \
 
 ROSTER_NO_MAINTAINER="$(mktemp)"
 printf '%s' '{"recipients":{"the-maintainer":"maintainer@example.com"}}' > "$ROSTER_NO_MAINTAINER"
-assert_eq "a roster with no maintainer_login is not the maintainer" \
+assert_eq "a roster with no founder_login is not the maintainer" \
   "no" "$(author_is_maintainer_says "the-maintainer" "$ROSTER_NO_MAINTAINER")"
 rm -f "$ROSTER_NO_MAINTAINER"
 
@@ -3157,7 +3153,7 @@ assert_true "untrusted title/reporter text passes through as literal plain text"
 
 # --- email call-site boundaries --------------------------------------------
 # Operational state remains on the issue/HEALTH. The release incident path
-# uses the shared maintainer-mail ledger; decisions and outcomes use their routes.
+# uses the shared founder-mail ledger; decisions and outcomes use their routes.
 
 # A no-single-container service is fleet-roll pending, not an incident.
 
@@ -3939,7 +3935,7 @@ unset -f ps
 EMAIL_LOOP_ROSTER="$(mktemp)"
 cat > "$EMAIL_LOOP_ROSTER" <<'JSON'
 {
-  "maintainer_login": "the-maintainer",
+  "founder_login": "the-maintainer",
   "recipients": {
     "known-reporter": "Reporter@Example.com",
     "the-maintainer": "maintainer@example.com"
@@ -4558,7 +4554,7 @@ RAW_BODY='### 入口
 # RECUT_CHILD_MARKER so the predicate excludes it.
 RECUT_CHILD_BODY="## Parent
 
-由 #7 拆分而来的可独立交付子任务之一，$RECUT_CHILD_MARKER。
+由 #7 拆分而来的可独立交付子任务之一，${RECUT_CHILD_MARKER}。
 
 ## What to build
 
@@ -5881,7 +5877,7 @@ chmod +x "$EF_BIN/curl"
 T0=1800000000
 EF_OUT="$(
   PATH="$EF_BIN:$PATH" AGENT_HOME="$EF_HOME" AGENT_DRY_RUN=0 ENV_FAULT_LIB_DIR="$SCRIPT_DIR" ENV_FAULT_ENV_FILE="$EF_ENV" REPO="test/repo" EF_NETWORK_PROBE_STATUS=0 \
-  ZF_REPO_DIR="$EF_REPO" \
+  ZF_REPO_DIR="$EF_REPO" ZF_ENGINE_DIR="$EF_REPO/engine" \
   ZF_GCLOUD_BIN=/nonexistent/gcloud bash -c '
     # No set -e here on purpose: this block OBSERVES non-zero return codes
     # (probe=2 "unknown", repair=1 "not allowlisted") as data.
@@ -6094,7 +6090,7 @@ QUARANTINE_FLAP_OUT="$(
     set -uo pipefail
     source "$0/lib.sh"
     : > "$AGENT_HOME/mails"
-    notify_maintainer() { printf "%s\\n" "$1" >> "$AGENT_HOME/mails"; }
+    notify_founder() { printf "%s\\n" "$1" >> "$AGENT_HOME/mails"; }
     quarantine_open implement env:test-gate:docker "docker unavailable" 2 1000
     qfile="$(quarantine_file implement)"
     echo "QUARANTINE-OPEN:$([ -f "$qfile" ] && echo yes || echo no)"
@@ -6686,7 +6682,7 @@ run_rci_failure_case() {
       log="$3"
       mkdir -p "$STATE_DIR"
       printf "{\"attempts\":1}\n" > "$STATE_DIR/$N.json"
-      notify_maintainer() { :; }
+      notify_founder() { :; }
       run_codex_implement /tmp/some-worktree "$POLICY_WORK_MODEL" "$POLICY_WORK_EFFORT" "$prompt" "$log" 120 run-implement:implement
       status=$?
       pause_for_backoff "$N" "$(tail -c 4000 "$log")" "$status" 1 codex "$POLICY_WORK_IDENTITY" run-implement:implement \
@@ -6890,12 +6886,12 @@ assert_eq "implement_model_for_attempt: ...and stays escalated on the next attem
 assert_eq "implement_model_for_attempt: attempt 4 still escalates unconditionally (the old rule, still a backstop)" "$AGENT_MODEL_RETRY" "$(imfa attempt4_no_streak)"
 assert_eq "implement_model_for_attempt: streak defaults to 0 when the caller omits it" "$AGENT_MODEL" "$(imfa attempt1_default_streak)"
 
-# --- #1257: notify_maintainer()'s stdout stays clean even if the notifier --
+# --- #1257: notify_founder()'s stdout stays clean even if the notifier --
 # --- (send_email) itself leaks something onto stdout, exactly like a ----
 # --- real Gmail threadId does on a genuine successful send --------------
 NF_HOME="$(mktemp -d)"
 mkdir -p "$NF_HOME"
-echo '{"maintainer_login":"f","recipients":{"f":"f@example.test"}}' > "$NF_HOME/recipients.json"
+echo '{"founder_login":"f","recipients":{"f":"f@example.test"}}' > "$NF_HOME/recipients.json"
 NF_OUT="$(
   AGENT_HOME="$NF_HOME" bash -c '
     set -uo pipefail
@@ -6908,12 +6904,12 @@ NF_OUT="$(
     # something on stdout, per ITS OWN documented contract (a Gmail
     # threadId) -- so this test actually exercises the leak path.
     send_email() { echo "18abc0000000leak"; return 0; }
-    echo "notify_stdout=[$(notify_maintainer "subject" "body")]"
+    echo "notify_stdout=[$(notify_founder "subject" "body")]"
   ' "$SCRIPT_DIR" 2>/dev/null
 )"
 rm -rf "$NF_HOME"
 nf() { printf '%s\n' "$NF_OUT" | grep -m1 "^$1=" | cut -d= -f2-; }
-assert_eq "#1257: notify_maintainer's own stdout stays empty even when the notifier (send_email) leaks a threadId" "[]" "$(nf notify_stdout)"
+assert_eq "#1257: notify_founder's own stdout stays empty even when the notifier (send_email) leaks a threadId" "[]" "$(nf notify_stdout)"
 
 # --- every leg is executable, in git and on disk (zf-advisor-1131, ------
 # --- 203/EXEC: run-advisor.sh was committed 644) ---------------------------
@@ -6934,7 +6930,7 @@ mkdir -p "$LEG_REPO/engine"
 for leg in triage advisor recut release; do printf '#!/usr/bin/env bash\n' > "$LEG_REPO/engine/run-$leg.sh"; chmod 755 "$LEG_REPO/engine/run-$leg.sh"; done
 chmod 644 "$LEG_REPO/engine/run-advisor.sh"
 LEG_OUT="$(
-  AGENT_HOME="$LEG_HOME" ZF_REPO_DIR="$LEG_REPO" REPO="test/repo" ZF_GCLOUD_BIN=/nonexistent/gcloud bash -c '
+  AGENT_HOME="$LEG_HOME" ZF_REPO_DIR="$LEG_REPO" ZF_ENGINE_DIR="$LEG_REPO/engine" REPO="test/repo" ZF_GCLOUD_BIN=/nonexistent/gcloud bash -c '
     set -uo pipefail
     source "$0/lib.sh"
     legs_executable_check 2>/dev/null
@@ -7316,7 +7312,7 @@ case "$SYSTEMCTL_MODE" in
   inactive) exit 4 ;;
   empty-list) exit 0 ;;
   two-units) printf 'zf-implement-1.service loaded active running\nzf-implement-2.service loaded active running\n'; exit 0 ;;
-  train-and-release) printf 'zf-release-train.service loaded active running\nzf-release-batch.service loaded active running\n'; exit 0 ;;
+  train-and-release) printf 'zf-release-train.service loaded active running\nvecta-release-batch.service loaded active running\n'; exit 0 ;;
   train-only) printf 'zf-release-train.service loaded active running\n'; exit 0 ;;
   fail-list) echo "Failed to connect to user scope bus via local transport: No such file or directory" >&2; exit 1 ;;
 esac
@@ -7466,7 +7462,7 @@ CQE_OUT="$(
     set -uo pipefail
     source "$0/lib.sh"
     mkdir -p "$STATE_DIR"
-    notify_maintainer() { :; }
+    notify_founder() { :; }
 
     codex_quota_exhausted && echo "MARKER-ABSENT:exhausted" || echo "MARKER-ABSENT:open"
 
@@ -7696,7 +7692,7 @@ QUOTA_ALERT_OUT="$(
     source "$0/lib.sh"
     mkdir -p "$STATE_DIR"
     : > "$AGENT_HOME/mails"
-    notify_maintainer() { printf "%s\n%s\n---\n" "$1" "$2" >> "$AGENT_HOME/mails"; }
+    notify_founder() { printf "%s\n%s\n---\n" "$1" "$2" >> "$AGENT_HOME/mails"; }
 
     echo "{\"attempts\":1}" > "$STATE_DIR/700004.json"
     echo "{\"attempts\":1}" > "$STATE_DIR/700005.json"
@@ -7782,7 +7778,7 @@ assert_contains "a non-quota model-call backoff sends no maintainer mail" \
 NONQUOTA_HOME="$(mktemp -d)"
 NO_MAIL_OUT="$(SCRIPT_DIR="$SCRIPT_DIR" AGENT_HOME="$NONQUOTA_HOME" bash -c '
   source "$SCRIPT_DIR/lib.sh"
-  notify_maintainer() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; }
+  notify_founder() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; }
   pause_for_backoff 710009 "invalid triage.schema.json record" 1 1 codex codex:gpt-6-luna:max \
     run-triage-batch:triage-result "" "" "" "" 0 triage 2>/dev/null
   printf "MAILS:%s BACKOFF:%s\n" "$(cat "$AGENT_HOME/mails" 2>/dev/null | wc -l | tr -d "[:space:]")" \
@@ -7903,7 +7899,7 @@ TIMEOUT_OUT="$({
     printf "%s\n" "{\"attempts\":2,\"last_failure_kind\":\"timeout\"}" > "$STATE_DIR/700099.json"
     echo "BUDGET-AFTER:$(model_timeout_for_attempt 30 700099)"
     : > "$AGENT_HOME/mails"
-    notify_maintainer() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; }
+    notify_founder() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; }
     GH_ENV_FAULT_STAGE=implement
     pause_for_backoff 700099 "codex exec timed out after 1s (elapsed 1s)" 124 1
     echo "TIMEOUT-PAUSE:$([ -f "$PAUSE_FILE" ] && echo present || echo missing)"
@@ -7933,7 +7929,7 @@ QUOTA_CONCURRENT_OUT="$(
     source "$0/lib.sh"
     mkdir -p "$STATE_DIR"
     : > "$AGENT_HOME/mails"
-    notify_maintainer() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; sleep 0.05; }
+    notify_founder() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; sleep 0.05; }
     refusal="{\"api_error_status\":429,\"result\":\"weekly usage limit reached\"}"
     pids=()
     for n in 700011 700012 700013 700014; do

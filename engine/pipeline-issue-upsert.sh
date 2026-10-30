@@ -40,8 +40,8 @@ for label in "${labels[@]}"; do
   [[ "$label" =~ ^[[:alnum:]][[:alnum:]_:-]{0,49}$ ]] || { usage; exit 64; }
 done
 
-marker="<!-- zf-incident-class:$class -->"
-if grep -Eq '<!--[[:space:]]*zf-incident-class:' "$body_file"; then
+marker="<!-- vecta-incident-class:$class -->"
+if grep -Eq '<!--[[:space:]]*vecta-incident-class:' "$body_file"; then
   echo "pipeline-issue-upsert: body must not supply its own class marker" >&2
   exit 64
 fi
@@ -92,8 +92,8 @@ trap 'rm -f -- "${new_body:-}"' EXIT
 {
   cat -- "$body_file"
   printf '\n\n%s\n' "$marker"
-  if ! grep -Fq '<!-- zenoforge-agent-comment -->' "$body_file"; then
-    printf '%s\n' '<!-- zenoforge-agent-comment -->'
+  if ! grep -Fq '<!-- vecta-agent-comment -->' "$body_file"; then
+    printf '%s\n' '<!-- vecta-agent-comment -->'
   fi
 } > "$new_body"
 create_args=(gh issue create --repo "$repo")

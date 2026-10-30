@@ -124,6 +124,12 @@ pipeline_health_classified="$(roadmap_choose_epic "$CATEGORY_TREE" '{"title":"pi
 assert_eq 'pipeline health issues map to the pipeline-system epic without a 待归类 epic' 912 \
   "$(jq -r '.epic' <<< "$pipeline_health_classified")"
 
+PF_TREE="$(jq '.roots[0].children[1].children += [{number:915,title:"待归类",state:"OPEN",milestone:"开发流水线与运行稳定",labels:["roadmap-epic"],children:[]}]' <<< "$CATEGORY_TREE")"
+assert_eq 'product fallback ignores pipeline-theme 待归类' 904 \
+  "$(roadmap_choose_epic "$PF_TREE" '{"title":"Unrelated invoice export"}' '' | jq -r '.epic')"
+assert_eq 'theme without 待归类 epic is reported' fallback-epic-missing:#910 \
+  "$(roadmap_health_assess "$CATEGORY_TREE" '[]' 0 | jq -r '.item_keys[] | select(startswith("fallback-epic-missing"))')"
+
 printf '%s\n' "$TREE" > "$test_tmp/tree.json"
 printf '%s\n' '{"switches":{"roadmap-order":false}}' > "$test_tmp/policy.json"
 MODEL_POLICY_FILE="$test_tmp/policy.json"

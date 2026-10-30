@@ -294,8 +294,8 @@ test('an incident-guard registry edit selects its readers suites, not every suit
     'engine/check-rulings.test.sh',
     'engine/land-direct-main.test.sh',
     'engine/lesson-fragments.test.sh',
+    'engine/night/founder-health-mail.test.sh',
     'engine/night/incident-guard-audit.test.mjs',
-    'engine/night/maintainer-health-mail.test.sh',
     'engine/pipeline-system-deliver.test.mjs',
     'scripts/branch-delivery-preflight.test.mjs',
   ]);
@@ -337,11 +337,11 @@ test('workflow scopes PRs and dispatches full main shards under one aggregated c
   assert.match(workflow, /test_paths<<PIPELINE_SUITE_PATHS/);
   assert.match(workflow, /node --test "\$\{suite\}"/);
   assert.match(workflow, /bash "\$\{suite\}"/);
-  assert.match(workflow, /bash engine\/run-ci-suites\.sh --shard/);
+  assert.match(workflow, /bash "\$PIPELINE_ENGINE_DIR\/run-ci-suites\.sh" --shard/);
   assert.match(workflow, /\.dagger\/\*\*/);
   assert.match(workflow, /scripts\/ci\/\*\*/);
   assert.equal((workflow.match(/^    name: Pipeline suites$/gm) ?? []).length, 1);
-  assert.match(workflow, /^  pipeline-suites:\n    name: Pipeline suites\n    if: \$\{\{ !cancelled\(\) && \(github\.event_name != 'pull_request' \|\| startsWith\(github\.head_ref, 'agent\/issue-'\) \|\| vars\.PR_CI == 'on'\) && \(github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.draft == false\) \}\}\n    needs: \[suite-scope, pipeline-suites-focused, pipeline-suites-full\]/m);
+  assert.match(workflow, /^  pipeline-suites:\n    name: Pipeline suites\n    if: \$\{\{ !cancelled\(\) && \(github\.event_name != 'pull_request' \|\| github\.event\.action != 'labeled' \|\| github\.event\.label\.name == 'pipeline-ci' \|\| github\.event\.label\.name == 'hotfix'\) && \(github\.event_name != 'pull_request' \|\| startsWith\(github\.head_ref, 'agent\/issue-'\) \|\| vars\.PR_CI == 'on'\) && \(github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.draft == false\) \}\}\n    needs: \[suite-scope, pipeline-suites-focused, pipeline-suites-full\]/m);
   assert.match(workflow, /name: Pipeline suites shard \$\{\{ matrix\.shard \}\}/);
   assert.match(workflow, /workflow_dispatch:/);
 
@@ -366,7 +366,7 @@ test('workflow scopes PRs and dispatches full main shards under one aggregated c
   assert.match(nightlyWorkflow, /cron: '0 3 \* \* \*'/);
   assert.match(nightlyWorkflow, /workflow_dispatch:/);
   assert.match(nightlyWorkflow, /runs-on: \[self-hosted, cihost-ci\]/);
-  assert.match(nightlyWorkflow, /bash engine\/run-ci-suites\.sh --nightly/);
+  assert.match(nightlyWorkflow, /bash "\$PIPELINE_ENGINE_DIR\/run-ci-suites\.sh" --nightly/);
 });
 
 test('empty focused suite lists pass after static checks and through the aggregate job', { skip: 'needs the the product CI workflows or the product commit history, not exported' }, () => {

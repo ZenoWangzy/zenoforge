@@ -92,7 +92,7 @@ assert_contains "the ticket is put on hold by the gate" "$(cat "$HOLDS_LOG")" '-
 gate
 assert_eq "the parked ticket stays parked on the next tick" 0 "$GATE_STATUS"
 assert_eq "the inbox line is written once" 1 "$(grep -c 'blind-rerun issue=#1902695' "$AGENT_HOME/supervisor-inbox")"
-assert_eq "the comment is posted once" 1 "$(grep -c 'zf-blind-rerun issue=#1902695' "$COMMENTS_LOG")"
+assert_eq "the comment is posted once" 1 "$(grep -c 'vecta-blind-rerun issue=#1902695' "$COMMENTS_LOG")"
 
 # 2. A main commit touching only unrelated paths is no new input.
 main_commit docs/unrelated.md '2026-01-02T08:00:00Z'

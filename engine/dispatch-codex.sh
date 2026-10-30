@@ -542,7 +542,7 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_ID="$STAMP-$$"
 OWNER_UNIT=""
 if [ -n "${ZF_NODE_OWNER_EPISODE:-}" ]; then
-  OWNER_UNIT="zf-node-owner-${ZF_NODE_OWNER_EPISODE}-${RUN_ID}"
+  OWNER_UNIT="${UNIT_PREFIX_TRANSIENT}-node-owner-${ZF_NODE_OWNER_EPISODE}-${RUN_ID}"
   NODE_OWNER_BUDGET_ID="node-owner:$RUN_ID"
   DISPATCH_BUDGET_ID="$NODE_OWNER_BUDGET_ID"
   if ! codex_budget_reserve "$ROLE" "$NODE_OWNER_BUDGET_ID" "" 1 "" "$IDENTITY"; then

@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# The engine this script belongs to, as the caller named it (logical path, like config.sh): the default for ZF_ENGINE_LIVE.
+QUEUE_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/config.sh" # deploy.env: a clean environment (the landing unit) still sees the deployment's home and unit prefix
 AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+# Same setting lib.sh resolves; this script sources lib.sh only on demand.
+UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 QUEUE_DIR="${ZF_LAND_QUEUE_DIR:-$AGENT_HOME/land-queue}"
 REQUEST_DIR="$QUEUE_DIR/requests"
 QUEUE_HEALTH_SUMMARY="$QUEUE_DIR/health-summary.tsv"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/delivery-metrics.sh" || echo 'land-queue: telemetry helper unavailable' >&2
 # One durable request is one item; children are launched from current disk code.
 if [[ -r "$SCRIPT_DIR/runtime-reload.sh" ]]; then
@@ -38,7 +43,7 @@ queue_source_lib() {
 }
 
 queue_owner_issue_ids() {
-  local lib="$AGENT_HOME/checkout/engine/lib.sh"
+  local lib="${ZF_ENGINE_LIVE:-$QUEUE_ENGINE_DIR}/lib.sh"
   [[ -r "$lib" ]] || lib="$SCRIPT_DIR/lib.sh"
   queue_source_lib "$lib" || return 1
   agent_owned_issue_ids "$1" "${2:-}"
@@ -364,7 +369,7 @@ queue_report_landing_complete() (
 
 queue_hand_lock_is_stale() {
   local reason="$1" owner_pid owner_ticks unit unit_state unit_main_pid stat_line rest current_ticks
-  [[ "$reason" =~ ^hand-agent:owner_pid=([1-9][0-9]*)[[:space:]]owner_start_ticks=([0-9]+)[[:space:]]unit=(zf-hand-[[:alnum:]_.-]+)$ ]] || return 1
+  [[ "$reason" =~ ^hand-agent:owner_pid=([1-9][0-9]*)[[:space:]]owner_start_ticks=([0-9]+)[[:space:]]unit=(${UNIT_PREFIX_TRANSIENT}-hand-[[:alnum:]_.-]+)$ ]] || return 1
   owner_pid="${BASH_REMATCH[1]}"
   owner_ticks="${BASH_REMATCH[2]}"
   unit="${BASH_REMATCH[3]}"
@@ -397,7 +402,7 @@ queue_worktree_lock_matches() {
 }
 
 queue_worktree_state() {
-  local repo="$1" ticket="$2" owner="$3" line in_tree=0 primary=0 found=0 first=1 locked=0 reason="" unit="zf-land-direct-main-$2" stat_line rest owner_ticks
+  local repo="$1" ticket="$2" owner="$3" line in_tree=0 primary=0 found=0 first=1 locked=0 reason="" unit="${UNIT_PREFIX_TRANSIENT}-land-direct-main-$2" stat_line rest owner_ticks
   local records
   records="$(git -C "$repo" worktree list --porcelain)" || return 1
   while IFS= read -r line; do
@@ -482,7 +487,7 @@ queue_start_unit() {
     jq -r '[.ticket, .worktree, .owner, .report, .plan_package] | join("\u001f")' "$request"
   )
   [[ "$ticket" =~ ^[0-9]{20}$ && "$owner" =~ ^[[:alnum:]_.-]+$ ]] || return 2
-  unit="zf-land-direct-main-$ticket"
+  unit="${UNIT_PREFIX_TRANSIENT}-land-direct-main-$ticket"
   if systemctl --user is-active --quiet "$unit"; then return 0; fi
   systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
   if [[ -d "$repo" ]]; then
@@ -516,7 +521,7 @@ queue_start_unit() {
     -E "no_proxy=$proxy_bypass" -E "NO_PROXY=$proxy_bypass" \
     -E "NODE_USE_ENV_PROXY=1" \
     "${retry_env[@]}" \
-    -- bash "$AGENT_HOME/checkout/engine/land-queue.sh" run "$request"; then
+    -- bash "${ZF_ENGINE_LIVE:-$QUEUE_ENGINE_DIR}/land-queue.sh" run "$request"; then
     return 0
   fi
   systemctl --user is-active --quiet "$unit"
@@ -617,7 +622,7 @@ queue_enqueue() {
     rm -f -- "$report_backup"
     queue_update_request "$request" cancelled 'systemd-run failed' || true
     queue_unlock_worktree "$repo" || true
-    echo "land-queue: failed to start zf-land-direct-main-$ticket" >&2
+    echo "land-queue: failed to start ${UNIT_PREFIX_TRANSIENT}-land-direct-main-$ticket" >&2
     return 1
   fi
   rm -f -- "$report_backup"
@@ -940,7 +945,7 @@ queue_run_lander() {
       ZF_LAND_QUEUE_DIRECT=1 PLAN_PACKAGE="$package" ZF_AGENT_NAME="${ZF_AGENT_NAME:-${owner:-land-queue}}" \
       ZF_AGENT_ISSUES="$owner_issues" \
       ZF_AGENT_REPORT="${ZF_AGENT_REPORT:-${report:-}}" \
-      bash "$AGENT_HOME/checkout/engine/land-direct-main.sh" "$@") >> "$output_file" 2>&1; then
+      bash "${ZF_ENGINE_LIVE:-$QUEUE_ENGINE_DIR}/land-direct-main.sh" "$@") >> "$output_file" 2>&1; then
     return 0
   else
     return $?
@@ -1261,7 +1266,7 @@ queue_auto_resume_hand_rebase_conflict() (
     rm -f -- "$addendum" "$helper_output"
     return 1
   }
-  if ! bash "$AGENT_HOME/checkout/engine/night/brief-addendum.sh" "$owner" "$addendum" "$role" \
+  if ! bash "${ZF_ENGINE_LIVE:-$QUEUE_ENGINE_DIR}/night/brief-addendum.sh" "$owner" "$addendum" "$role" \
       > "$helper_output" 2>&1; then
     [[ -n "$log" ]] && cat "$helper_output" >> "$log"
     rm -f -- "$addendum" "$helper_output"
@@ -1452,8 +1457,8 @@ queue_requeue_completed_rebase() (
   pid="$(jq -r '.pid' "$registry")"
   ticks="$(jq -r '.start_ticks' "$registry")"
   [[ "$pid" =~ ^[1-9][0-9]*$ && "$ticks" =~ ^[0-9]+$ && ! -e "/proc/$pid" ]] || return 2
-  unit_state="$(systemctl --user show "zf-land-direct-main-$ticket" --property=ActiveState --value)" || return 2
-  unit_pid="$(systemctl --user show "zf-land-direct-main-$ticket" --property=MainPID --value)" || return 2
+  unit_state="$(systemctl --user show "${UNIT_PREFIX_TRANSIENT}-land-direct-main-$ticket" --property=ActiveState --value)" || return 2
+  unit_pid="$(systemctl --user show "${UNIT_PREFIX_TRANSIENT}-land-direct-main-$ticket" --property=MainPID --value)" || return 2
   [[ "$unit_state" == inactive && "$unit_pid" == 0 ]] || return 2
   source_repo="$(jq -r '.owner_worktree' "$request")"
   source "$SCRIPT_DIR/hand-codex-liveness.sh" || return 2
@@ -1466,8 +1471,8 @@ queue_requeue_completed_rebase() (
   locked="$(git -C "$repo" rev-parse --git-path locked)" || return 2
   [[ "$locked" == /* ]] || locked="$repo/$locked"
   reason="$(cat "$locked")" || return 2
-  [[ "$reason" =~ ^land-direct-main:ticket=([0-9]{20})[[:space:]]owner=([a-zA-Z0-9_.-]+)[[:space:]]owner_pid=([1-9][0-9]*)[[:space:]]owner_start_ticks=[0-9]+[[:space:]]unit=(zf-land-direct-main-[0-9]{20})$ ]] || return 2
-  [[ "${BASH_REMATCH[1]}" == "$ticket" && "${BASH_REMATCH[2]}" == "$owner" && "${BASH_REMATCH[4]}" == "zf-land-direct-main-$ticket" ]] || return 2
+  [[ "$reason" =~ ^land-direct-main:ticket=([0-9]{20})[[:space:]]owner=([a-zA-Z0-9_.-]+)[[:space:]]owner_pid=([1-9][0-9]*)[[:space:]]owner_start_ticks=[0-9]+[[:space:]]unit=(${UNIT_PREFIX_TRANSIENT}-land-direct-main-[0-9]{20})$ ]] || return 2
+  [[ "${BASH_REMATCH[1]}" == "$ticket" && "${BASH_REMATCH[2]}" == "$owner" && "${BASH_REMATCH[4]}" == "${UNIT_PREFIX_TRANSIENT}-land-direct-main-$ticket" ]] || return 2
   lock_pid="${BASH_REMATCH[3]}"
   [[ ! -e "/proc/$lock_pid" ]] || return 2
   log="$QUEUE_DIR/logs/$ticket.log"
@@ -1854,7 +1859,7 @@ queue_recover() {
   if ((${#files[@]})); then
     # One parser reads history; only work-bearing records reach shell recovery.
     # Corrupt and empty files are independent errors, including files without trailing newlines.
-    active_units="$(systemctl --user list-units 'zf-land-direct-main-*' --state=active,activating --no-legend --plain --no-pager 2>/dev/null)" || active_units=unknown
+    active_units="$(systemctl --user list-units "${UNIT_PREFIX_TRANSIENT}-land-direct-main-*" --state=active,activating --no-legend --plain --no-pager 2>/dev/null)" || active_units=unknown
     rows="$(python3 - "$now" "$QUEUE_DIR" "$active_units" "${files[@]}" <<'PYSCAN'
 import json, pathlib, re, sys
 now = int(sys.argv[1])
@@ -1920,11 +1925,11 @@ PYSCAN
   retries=("${requests[@]}" "${queued[@]}")
   requests=("${retries[@]}" "${verifiers[@]}" "${running[@]}")
   if (( boot_recovery == 1 )); then
-    [[ "$active_units" != *zf-land-direct-main-* ]] || recovery_active=1
+    [[ "$active_units" != *${UNIT_PREFIX_TRANSIENT}-land-direct-main-* ]] || recovery_active=1
     for request in "${requests[@]}"; do
       ticket="$(jq -r '.ticket // empty' "$request")"
       [[ "$ticket" =~ ^[0-9]{20}$ ]] || continue
-      if systemctl --user is-active --quiet "zf-land-direct-main-$ticket"; then recovery_active=1; break; fi
+      if systemctl --user is-active --quiet "${UNIT_PREFIX_TRANSIENT}-land-direct-main-$ticket"; then recovery_active=1; break; fi
     done
   fi
   for phase in retries verifiers running; do
@@ -1945,7 +1950,7 @@ PYSCAN
         [[ "$retry_after" =~ ^[0-9]+$ ]] || retry_after=0
         ((retry_after <= now)) || continue
       fi
-      unit="zf-land-direct-main-$ticket"
+      unit="${UNIT_PREFIX_TRANSIENT}-land-direct-main-$ticket"
       if systemctl --user is-active --quiet "$unit"; then continue; fi
       if [[ "$state" == running ]]; then
         if queue_recover_landed_push "$request"; then

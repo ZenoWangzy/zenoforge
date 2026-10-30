@@ -19,7 +19,7 @@ class TimerRepair(unittest.TestCase):
             root = Path(directory)
             (root/'timers').write_text(
                 'zenoforge-agent.timer - agent-alert\n'
-                'zf-maintenance.timer CONTROL maintenance-alert\n'
+                'zenoforge-maintenance.timer CONTROL maintenance-alert\n'
             )
             script = '''set -euo pipefail
 declare -A active=()
@@ -27,7 +27,7 @@ systemctl() {
   local timer="${!#}" state=disabled
   case "$timer" in
     zenoforge-agent.timer) state="$AGENT_STATE" ;;
-    zf-maintenance.timer) state="$MAINTENANCE_STATE" ;;
+    zenoforge-maintenance.timer) state="$MAINTENANCE_STATE" ;;
   esac
   case " $* " in
     *" is-enabled "*)
@@ -42,7 +42,7 @@ timeout() { shift; "$@"; }
 gh() { printf '%s' "$OFF_MODE"; }
 refuse() { exit 99; }
 append_supervisor_event() { printf 'alert\\n' >> "$CALLS"; }
-timer_list="$ROOT/timers"; AGENT_HOME="$ROOT"; timer_gh_timeout_sec=1; timer_repo=test/repo
+timer_list="$ROOT/timers"; AGENT_HOME="$ROOT"; UNIT_PREFIX=zenoforge; timer_gh_timeout_sec=1; timer_repo=test/repo
 run() {
 ''' + source[start:end] + '\n}\nrun\n'
             env = {
@@ -60,13 +60,13 @@ run() {
     def test_disabled_dependencies_are_enabled(self):
         self.assertEqual(self.repair('disabled'), [
             '--user enable --now zenoforge-agent.timer',
-            '--user enable --now zf-maintenance.timer',
+            '--user enable --now zenoforge-maintenance.timer',
         ])
 
     def test_enabled_inactive_dependencies_are_started(self):
         self.assertEqual(self.repair('enabled', 'enabled'), [
             '--user start zenoforge-agent.timer',
-            '--user start zf-maintenance.timer',
+            '--user start zenoforge-maintenance.timer',
         ])
 
     def test_explicit_dependency_off_is_preserved(self):

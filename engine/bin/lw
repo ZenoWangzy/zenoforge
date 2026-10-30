@@ -4,7 +4,7 @@
 # prints "DONE rc=<n>" (137: the job died without an rc, 143: lw stop) or "RUNNING" with the log tail; `lw stop <name>` stops the job's whole process group. Logs: .scratch/lw/<name>.{log,rc,pid}
 set -uo pipefail
 unset GH_TOKEN   # the exported GH_TOKEN is dead (401); gh uses the keyring login
-d=${HOME:-/tmp}/.zenoforge/scratch/lw; mkdir -p "$d"
+d=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}/lw; mkdir -p "$d"
 op="$1" name="$2"; shift 2
 case "$op" in
   start)

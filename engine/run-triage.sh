@@ -515,7 +515,7 @@ fi
 
 # An unconfirmed product index must never admit an L2 ticket. Defer unchanged
 # tickets for at most two hours; after that, continue triage and route an
-# otherwise-agent-ready L2 result to the advisor. Maintainer-test issues skip
+# otherwise-agent-ready L2 result to the advisor. Founder-test issues skip
 # retry parking, but never bypass this admission gate.
 TRIAGE_FRESHNESS_BLOCKED=0
 if [ "$LEVEL" = "L2" ] && [ "$RISK_CLASS" != "P2" ] && [ "$PHASE" = "3" ] \
@@ -572,7 +572,7 @@ if [ "$PRECUT" = "1" ]; then
   # model's own (ignored) verdict is recorded for the audit trail.
   STATE="$(ladder_state "$RISK_CLASS" "$LEVEL" "$PHASE")"
   echo "run-triage: #$N is a precut (/to-tickets) ticket -- measure-only; model said state=$MODEL_STATE (ignored), ladder -> $STATE (risk_class=$RISK_CLASS level=$LEVEL phase=$PHASE)" >&2
-  BRIEF="**这张票是切好的执行票（/to-tickets 产出），直接进入无人值守流水线，不重新分诊。** 本条评论只是机器测量——包范围、影响面和风险读数——供实现和评审使用；票的状态由阶梯规则决定（本次：$STATE），不由这条评论的措辞决定。模型原本给出的分诊意见是 \`$MODEL_STATE\`，已按规则忽略。
+  BRIEF="**这张票是切好的执行票（/to-tickets 产出），直接进入无人值守流水线，不重新分诊。** 本条评论只是机器测量——包范围、影响面和风险读数——供实现和评审使用；票的状态由阶梯规则决定（本次：${STATE}），不由这条评论的措辞决定。模型原本给出的分诊意见是 \`$MODEL_STATE\`，已按规则忽略。
 
 $BRIEF"
 elif [ "$ADVISOR_ADMISSION_MEASURE_ONLY" = "1" ]; then

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
 
-const START = '<!-- zf-hotfix-acceptance:start -->';
-const END = '<!-- zf-hotfix-acceptance:end -->';
+const START = '<!-- vecta-hotfix-acceptance:start -->';
+const END = '<!-- vecta-hotfix-acceptance:end -->';
+const ACCEPTANCE_USER = process.env.ZF_ACCEPTANCE_USER ?? '验收用户'; // default mirrors config.sh
 const TEST_ONLY_PATH = /(^|\/)(tests?|__tests__|fixtures?)\/|\.test\.[^/]+$|(^|\/)test_[^/]+\.py$|_test\.py$/;
 
 function validateAcceptance(body, headSha, changedFiles = '') {
@@ -42,8 +43,8 @@ function validateAcceptance(body, headSha, changedFiles = '') {
     const named = JSON.parse(readFileSync(new URL('./release-deferred.json', import.meta.url), 'utf8'));
     if (!pr || !Object.hasOwn(named, pr)) throw new Error(`deferred-to-release is only valid for PRs named in release-deferred.json (PR ${pr ?? 'unknown'})`);
   } else {
-    if (record?.status !== 'passed') throw new Error('验收用户 acceptance status must be passed');
-    if (record?.accepted_by !== '验收用户') throw new Error('accepted_by must be 验收用户');
+    if (record?.status !== 'passed') throw new Error(`${ACCEPTANCE_USER} acceptance status must be passed`);
+    if (record?.accepted_by !== ACCEPTANCE_USER) throw new Error(`accepted_by must be ${ACCEPTANCE_USER}`);
   }
   if (typeof record?.accepted_head_sha !== 'string'
     || !/^[0-9a-f]{40,64}$/i.test(record.accepted_head_sha)
@@ -59,8 +60,8 @@ function validateAcceptance(body, headSha, changedFiles = '') {
 try {
   const status = validateAcceptance(process.env.PR_BODY ?? '', process.env.PR_HEAD_SHA ?? '', process.env.PR_CHANGED_FILES ?? '');
   process.stdout.write({
-    passed: `hotfix acceptance: 验收用户 passed for ${process.env.PR_HEAD_SHA}\n`,
-    not_applicable: `hotfix acceptance: test-only change, 验收用户 acceptance not applicable for ${process.env.PR_HEAD_SHA}\n`,
+    passed: `hotfix acceptance: ${ACCEPTANCE_USER} passed for ${process.env.PR_HEAD_SHA}\n`,
+    not_applicable: `hotfix acceptance: test-only change, ${ACCEPTANCE_USER} acceptance not applicable for ${process.env.PR_HEAD_SHA}\n`,
   }[status] ?? `hotfix acceptance: deferred to release (needs unreleased migration) for ${process.env.PR_HEAD_SHA}\n`);
 } catch (error) {
   process.stderr.write(`hotfix acceptance: ${error.message}\n`);

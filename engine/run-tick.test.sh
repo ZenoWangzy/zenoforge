@@ -161,7 +161,6 @@ make_fixture() {
   # dirty-tree guard this fixture exists to test against.
   mkdir -p "$repo/engine/systemd"
   copy_agent_library "$repo/engine"
-  # The library closure reaches the real scheduler through lib.sh; these fixtures promise to have none (see the header).
   rm -f "$repo/engine/issue-pipeline.sh"
   cp "$TIMER_LIST_SRC" "$repo/engine/systemd/pipeline-timers.list"
   chmod +x "$repo/engine/run-tick.sh"
@@ -188,7 +187,7 @@ fresh_roster() {
   f="$(mktemp)"
   TMP_DIRS+=("$f")
   cat >"$f" <<'JSON'
-{"maintainer_login":"testmaintainer","recipients":{"testmaintainer":"maintainer@example.invalid"}}
+{"founder_login":"testmaintainer","recipients":{"testmaintainer":"maintainer@example.invalid"}}
 JSON
   echo "$f"
 }
@@ -228,7 +227,7 @@ inbox_events() {
   [ -f "$inbox" ] && cat "$inbox" || true
 }
 
-assert_not_contains "run-tick has no maintainer-mail path" "$(cat "$LAUNCHER_SRC")" "notify_maintainer"
+assert_not_contains "run-tick has no founder-mail path" "$(cat "$LAUNCHER_SRC")" "notify_founder"
 
 # Retired timers must not be repaired or reported as outages.
 for retired_timer in zf-work-plan-acceptance.timer zf-mac-ci-runners.timer; do
@@ -252,7 +251,9 @@ all_timers_csv="$(IFS=,; echo "${pipeline_timers[*]}")"
 timer_alert_marker() {
   awk -v timer="$1" '$1 == timer { print $3 }' "$TIMER_LIST_SRC"
 }
-assert_contains "the unit-adjacent timer list keeps the core pipeline timers" "${pipeline_timers[*]}" "zenoforge-agent.timer zenoforge-supervisor.timer"
+for core_timer in zenoforge-agent.timer zenoforge-supervisor.timer; do
+  assert_contains "the unit-adjacent timer list keeps $core_timer" " ${pipeline_timers[*]} " " $core_timer "
+done
 assert_eq "the supervisor keeps #1531's existing outage marker" \
   "supervisor-timer-alerted" "$(timer_alert_marker zenoforge-supervisor.timer)"
 
@@ -328,6 +329,23 @@ assert_eq "a marked legacy supervisor outage is still retried" \
 assert_eq "a marked legacy supervisor outage does not add an inbox event" \
   "" "$(inbox_events "$agent_home")"
 unset FAKE_INACTIVE_TIMERS
+
+# ZF_UNIT_PREFIX renames every timer the list names; no timer keeps the list's own prefix.
+fixture="$(make_fixture)"
+repo="${fixture%%|*}"
+prefix_log="$(mktemp)"
+TMP_DIRS+=("$prefix_log")
+: >"$prefix_log"
+export ZF_UNIT_PREFIX=acme FAKE_INACTIVE_TIMERS=acme-agent.timer FAKE_SUPERVISOR_MODE=observe FAKE_SYSTEMCTL_LOG="$prefix_log"
+agent_home="$(fresh_agent_home)"
+roster="$(fresh_roster)"
+run_launcher "$repo" "$agent_home" "$roster"
+assert_eq "a unit prefix setting renames the timer the list names" \
+  "1" "$(grep -cF -- '--user start acme-agent.timer' "$prefix_log" || true)"
+list_prefix="${pipeline_timers[0]%%-*}"
+assert_eq "no list timer keeps its own prefix under another setting" \
+  "0" "$(grep -cF -- "$list_prefix-" "$prefix_log" || true)"
+unset ZF_UNIT_PREFIX FAKE_INACTIVE_TIMERS
 
 # Disabled is a different fault: enable --now restores boot persistence and
 # current activity, rather than treating it as a plain start.

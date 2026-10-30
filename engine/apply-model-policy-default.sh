@@ -2,17 +2,19 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-REPO_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
-POLICY_PATH="engine/model-policy.default.json"
-AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+source "$SCRIPT_DIR/config.sh"
+REPO_DIR="$(git -C "$ZF_REPO_DIR" rev-parse --show-toplevel)"
+POLICY_PATH="$ZF_PACK_REL/model-policy.default.json"
 LIVE_FILE="$AGENT_HOME/model-policy.json"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/apply-model-policy.XXXXXX")"
 install_tmp=""
 trap 'rm -rf -- "$tmp_dir"; [[ -z "$install_tmp" ]] || rm -f -- "$install_tmp"' EXIT
 
+# The policy applied is the pack's, the same file lib.sh resolves as MODEL_POLICY_DEFAULT; a deployment with no pack ships none.
+policy_file="$(pack_file model-policy.default.json)" || { echo "apply-model-policy-default: this deployment has no pack policy to apply" >&2; exit 1; }
 git -C "$REPO_DIR" fetch origin main
 git -C "$REPO_DIR" show "origin/main:$POLICY_PATH" > "$tmp_dir/landed-policy.json"
-if ! cmp -s "$SCRIPT_DIR/model-policy.default.json" "$tmp_dir/landed-policy.json"; then
+if ! cmp -s "$policy_file" "$tmp_dir/landed-policy.json"; then
   echo "apply-model-policy-default: checkout default is not the landed origin/main default" >&2
   exit 1
 fi

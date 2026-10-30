@@ -13,20 +13,38 @@ VERSIONS="$RUN/autopi-versions"
 SYNC_ONLY=0
 [[ "${1:-}" == "--sync-only" ]] && SYNC_ONLY=1
 mkdir -p "$A/alerts" "$VERSIONS"
-head="$(git -C "$MAC_AUTOPILOT_ROOT" rev-parse HEAD)"
-version="$VERSIONS/$head"
-if [[ ! -d "$version" ]]; then
+# The pin is a worktree of the engine's own repository: the target checkout, unless ZF_ENGINE_DIR names an
+# engine that lives in another checkout (ENGINE_REL = where the engine sits inside that repository).
+# An engine outside every git work tree is an immutable version directory (engine-versions/<id>/engine, Line B): there is
+# nothing to pin, the directory is the pin. Its engine-sync entry checks the version before the live pointer follows it.
+ENGINE_REPO="$MAC_AUTOPILOT_ROOT" ENGINE_REL=engine IMMUTABLE=0
+engine_dir="${ZF_ENGINE_DIR:-$(cd "$SRC/.." && pwd -P)}"
+if ! git -C "$engine_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  IMMUTABLE=1 ENGINE_REL=. ZF_ENGINE_DIR="$engine_dir"
+  export ZF_ENGINE_DIR
+elif [[ -n "${ZF_ENGINE_DIR:-}" ]]; then
+  ENGINE_REPO="$(git -C "$ZF_ENGINE_DIR" rev-parse --show-toplevel)"
+  ENGINE_REL="$(git -C "$ZF_ENGINE_DIR" rev-parse --show-prefix)"; ENGINE_REL="${ENGINE_REL%/}"
+  export ZF_ENGINE_DIR # the pin self-check runs the scheduler in child shells
+fi
+if (( IMMUTABLE )); then
+  head="$(basename "$(dirname "$(readlink -f "$engine_dir")")")" version="$engine_dir" # the version id
+else
+  head="$(git -C "$ENGINE_REPO" rev-parse HEAD)"
+  version="$VERSIONS/$head"
+fi
+if (( ! IMMUTABLE )) && [[ ! -d "$version" ]]; then
   # Full-tree pinned worktree, objects shared with the live checkout; no copy list can miss files
   # again (10-29: the archive list missed verification-plan-runtime.sh, #4618, and
   # engine/ci/pr-required-aggregate.mjs, 8fb5cdbc3 — ~2h with zero merges). --lock, and the reason
   # names the scheduler unit: worktree-lifecycle's reaper releases bare locks after 24h but never
   # a lock owned by the live unit (10-25 the lane deleted three unlocked detached worker worktrees).
-  git -C "$MAC_AUTOPILOT_ROOT" worktree add --detach --lock \
-    --reason "autopi pin: unit=zenoforge-autopilot-scheduler.service" "$version" "$head"
+  git -C "$ENGINE_REPO" worktree add --detach --lock \
+    --reason "autopi pin: unit=${UNIT_PREFIX}-autopilot-scheduler.service" "$version" "$head"
 fi
-code="$version/engine/mac-autopilot"
+code="$version/$ENGINE_REL/mac-autopilot"
 source "$code/config-reconcile.sh"
-reconcile_event="$(reconcile_runtime_config "$code/config.template.json" "$A/config.json" "$MAC_AUTOPILOT_ROOT/engine/lib.sh")"
+reconcile_event="$(reconcile_runtime_config "$code/config.template.json" "$A/config.json" "${ZF_ENGINE_DIR:-$MAC_AUTOPILOT_ROOT/engine}/lib.sh")"
 if [[ -n "$reconcile_event" ]]; then
   printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reconcile_event" | tee -a "$A/scheduler.log"
 fi
@@ -36,9 +54,9 @@ previous="$(readlink "$LIVE" || true)"
 # 的 library 模式（scheduler suites 同一入口）：完整 source 四个 lib 文件，再核对 scheduler.sh
 # 代码里每个 $HERE 相对引用（含 ../../ci/* 与 source 的 lib 文件）在新 pin 内真实存在。
 # 文件齐全 ≠ census 可用：10-29 --latest-checks 的输出在 64 KiB 管道边界被截断，存在性检查全过。
-# 所以再用 live 打开 PR 集合在新 pin 里跑一遍合并车道同一条 census 链，结果不是对象或为空即拒绝切换。
+# 所以再用 live 打开 PR 集合在新 pin 里跑一遍合并车道同一条 census 链，结果不是对象即拒绝切换；零个打开 PR 是合法的空 census（{}），读失败或格式错才是不可用。
 pin_scheduler_self_check() { # version-dir → 0 = 该 pin 可以切 live
-  local code="$1/engine/mac-autopilot" ref
+  local code="$1/$ENGINE_REL/mac-autopilot" ref
   AUTOPI_TEST_LIBRARY_ONLY=true bash "$code/scheduler.sh" || return 1
   while IFS= read -r ref; do
     [[ -e "$code/${ref#\$HERE/}" ]] || { echo "pin self-check: $1 lacks $ref" >&2; return 1; }
@@ -46,28 +64,34 @@ pin_scheduler_self_check() { # version-dir → 0 = 该 pin 可以切 live
   ( cd "$MAC_AUTOPILOT_ROOT" && AUTOPI_TEST_LIBRARY_ONLY=true bash -c '
       set -o pipefail
       source "$1/scheduler.sh"   # $HERE 落在新 pin 内，census 链用的 aggregate/jqf 都是 pin 里的这份
-      tick_prs | pr_census_by_number | jqf -e "type == \"object\" and length > 0" >/dev/null
+      tick_prs | pr_census_by_number | jqf -e "type == \"object\"" >/dev/null
     ' _ "$code" ) || { echo "pin self-check: live merge census unusable in $1" >&2; return 1; }
 }
-if ! pin_scheduler_self_check "$version"; then
+if (( IMMUTABLE )); then
+  self_check=("$engine_dir/engine-sync.sh" --check "$(dirname "$(readlink -f "$engine_dir")")")
+else
+  self_check=(pin_scheduler_self_check "$version")
+fi
+if ! "${self_check[@]}"; then
   printf '[%s] SELF-CHECK FAILED pin=%s; live stays at %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$head" "${previous:-none}" | tee -a "$A/scheduler.log" >&2
   exit 1
 fi
-target="autopi-versions/$head/engine/mac-autopilot"
+target="autopi-versions/$head/$ENGINE_REL/mac-autopilot"
+(( ! IMMUTABLE )) || target="$engine_dir/mac-autopilot"
 # Publish only a complete version; retain the prior tick's sibling files until the next switch.
 ln -sfn "$target" "$RUN/.autopi-live.$$"
 mv -Tf "$RUN/.autopi-live.$$" "$LIVE"
 ln -sfn ../autopi-live/dashboard.html "$A/dashboard.html"
-if [[ "$previous" != "$target" ]]; then
+if (( ! IMMUTABLE )) && [[ "$previous" != "$target" ]]; then
   previous="${previous#autopi-versions/}"; previous="${previous%%/*}"
   for old in "$VERSIONS"/*; do
     [[ -d "$old" && "$old" != "$version" && "${old##*/}" != "$previous" ]] || continue
-    if git -C "$MAC_AUTOPILOT_ROOT" worktree list --porcelain | grep -Fxq "worktree $old"; then
+    if git -C "$ENGINE_REPO" worktree list --porcelain | grep -Fxq "worktree $old"; then
       # Pinned worktrees go through unlock+remove; rm -rf would leave a stale record that
       # breaks the next pin of the same SHA.
-      git -C "$MAC_AUTOPILOT_ROOT" worktree unlock "$old" 2>/dev/null || true
-      git -C "$MAC_AUTOPILOT_ROOT" worktree remove "$old" 2>/dev/null || true
+      git -C "$ENGINE_REPO" worktree unlock "$old" 2>/dev/null || true
+      git -C "$ENGINE_REPO" worktree remove "$old" 2>/dev/null || true
     else
       rm -rf -- "$old"  # archive-based copy from before full-tree pins; no worktree record exists
     fi
@@ -78,7 +102,7 @@ echo "synced autopilot runtime: $LIVE ($head)"
 echo "dashboard: $A/dashboard.html"
 (( SYNC_ONLY )) && exit 0
 
-UNITS=(zenoforge-autopilot-scheduler.service zenoforge-autopilot-bell.service zenoforge-autopilot-zombie.service)
+UNITS=(${UNIT_PREFIX}-autopilot-scheduler.service ${UNIT_PREFIX}-autopilot-bell.service ${UNIT_PREFIX}-autopilot-zombie.service)
 if command -v systemctl >/dev/null 2>&1 && systemctl --user cat "${UNITS[0]}" >/dev/null 2>&1; then
   systemctl --user restart "${UNITS[@]}"
   echo "restarted systemd units: ${UNITS[*]}"

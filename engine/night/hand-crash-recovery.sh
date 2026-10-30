@@ -111,7 +111,7 @@ hand_provider_recover() {
   sleep "${HAND_PROVIDER_RECOVERY_BACKOFF_SECONDS:-15}"
   if hand_crash_report_terminal "$report" "$episode" "$name" "$worktree"; then return 0; fi
   if HAND_ISSUES="${HAND_ISSUES:-}" HAND_NODES="${HAND_NODES:-}" \
-    bash "$REPO_DIR/engine/night/dispatch.sh" \
+    bash "${ZF_ENGINE_DIR:-$REPO_DIR/engine}/night/dispatch.sh" \
       "$worktree" "$brief" "$name" "$role" "$report" "$attempt" "$note" "$next_stage" "$episode"; then
     return 0
   else

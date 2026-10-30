@@ -5,7 +5,7 @@ import { focusedTestPaths } from './focused-test-paths.mjs';
 
 export { focusedTestPaths };
 
-const RUNNER = 'cihost';
+const RUNNER = process.env.ZF_CIHOST_HOST ?? 'cihost'; // default mirrors config.sh
 const ARCHIVE_PATHS = [
   'scripts',
   '.agents',
@@ -85,8 +85,8 @@ export function remoteScript(changedPaths, testPaths) {
     'trap \'rm -rf "$work"\' EXIT',
     'mkdir "$work/home"',
     'tar -xf - -C "$work"',
-    'chown -R zf-ci:zf-ci "$work"',
-    `runuser -u zf-ci -- env HOME="$work/home" TMPDIR="$work" WORK_DIR="$work" bash -c ${shellQuote(checks)}`,
+    'chown -R vecta-ci:vecta-ci "$work"',
+    `runuser -u vecta-ci -- env HOME="$work/home" TMPDIR="$work" WORK_DIR="$work" bash -c ${shellQuote(checks)}`,
   ].join('\n');
 }
 

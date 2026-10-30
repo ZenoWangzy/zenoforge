@@ -103,7 +103,7 @@ grep -Fq 'issue comment 4999 --body-file' "$FAKE_GH_LOG"
 run_upsert --class merge-health-probe --title 'Merge health probe fails' --body-file "$tmp/first.md"
 jq -e 'length == 1 and any(.[0].labels[]; .name == "pipeline-system") and any(.[0].labels[]; .name == "ready-for-agent")' \
   <(jq '[.[] | select(.number == 5001)]' "$FAKE_ISSUES") >/dev/null
-jq -e '[.[] | select(.number == 5001)][0].body | contains("<!-- zf-incident-class:merge-health-probe -->") and contains("<!-- zenoforge-agent-comment -->")' \
+jq -e '[.[] | select(.number == 5001)][0].body | contains("<!-- vecta-incident-class:merge-health-probe -->") and contains("<!-- vecta-agent-comment -->")' \
   "$FAKE_ISSUES" >/dev/null
 
 run_upsert --class merge-health-probe --title 'Merge health probe fails again' --body-file "$tmp/repeat.md"
@@ -134,7 +134,7 @@ echo 'ok - the product pipeline-system issue is attached to the roadmap epic bef
 
 product_class=ci-example-pack-0123456789abcdef0123456789abcdef01234567
 run_zf_upsert --lane product --class "$product_class" --title '主线 CI Example 测试失败' --body-file "$tmp/product.md"
-product_issue="$(jq -r --arg marker "<!-- zf-incident-class:$product_class -->" '.[] | select((.body // "") | contains($marker)) | .number' "$FAKE_ISSUES")"
+product_issue="$(jq -r --arg marker "<!-- vecta-incident-class:$product_class -->" '.[] | select((.body // "") | contains($marker)) | .number' "$FAKE_ISSUES")"
 jq -e --argjson number "$product_issue" '.[] | select(.number==$number)
   | ([.labels[].name] | sort) == ["bug","needs-triage","priority:top"]' "$FAKE_ISSUES" >/dev/null
 grep -Fq 'api repos/example-maintainer/example-repo/issues/913/sub_issues --method POST' "$FAKE_GH_LOG"

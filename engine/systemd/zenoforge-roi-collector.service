@@ -1,0 +1,17 @@
+[Unit]
+Description=the product unit-loop worker ROI ledger collector
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.zenoforge/checkout
+Environment=AGENT_HOME=%h/.zenoforge
+Environment=ZF_HOME=%h/.zenoforge
+Environment=ZF_HOST_ID=origin-wsl
+Environment=MAC_AUTOPILOT_SUPERVISOR_DIR=%h/.zenoforge/checkout/.scratch-supervisor
+Environment=MAC_AUTOPILOT_RUNTIME_DIR=%h/.zenoforge/checkout/.scratch-supervisor/autopi
+Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+StandardOutput=journal
+StandardError=journal
+EnvironmentFile=-%h/.zenoforge/engine.env
+# Engine-live pointer, else the checkout path; ":" stops systemd expanding $ (see zenoforge-agent.service).
+ExecStart=:/bin/bash -c 'e="$(readlink -e %h/.zenoforge/engine-live 2>/dev/null)"; if [ -n "$e" ]; then export ZF_ENGINE_DIR="$e" ZF_ENGINE_LIVE="$e"; [ -z "${ZF_PACK_DIR-}" ] || export ZF_PACK_DIR="$e"; for v in ZF_RELEASE_TRAIN_SCRIPT AGENT_INCIDENT_GUARDS_FILE ZF_PRODUCTION_TENANT_MARKER_EXCEPTIONS_FILE; do p="${!v-}"; case "$p" in %h/.zenoforge/engine-live/*) export "$v=$e/${p#%h/.zenoforge/engine-live/}";; esac; done; fi; exec /usr/bin/python3 -B "${e:-%h/.zenoforge/checkout/engine}/mac-autopilot/roi_collect.py"'

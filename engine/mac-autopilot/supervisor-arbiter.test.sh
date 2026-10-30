@@ -229,9 +229,9 @@ dispatch_supervisor_arbiters
 
 # 人工交接不算升级：三次 "handed to ..." 仍派裁决，不转 needs-info。
 units "$(jq -cn '{units:[{id:"pr-623",issue:623,stage:"supervisor-review",
-  history:[{stage:"supervisor-escalated",result:"handed to zf-29 for maintainer-approved batch land",at:"2026-10-26T00:00:00Z"},
-           {stage:"supervisor-review",result:"handed to zf-29 for maintainer-approved batch land",at:"2026-10-26T01:00:00Z"},
-           {stage:"supervisor-escalated",result:"handed to zf-29 for maintainer-approved batch land",at:"2026-10-26T02:00:00Z"}]}]}')"
+  history:[{stage:"supervisor-escalated",result:"handed to zf-29 for founder-approved batch land",at:"2026-10-26T00:00:00Z"},
+           {stage:"supervisor-review",result:"handed to zf-29 for founder-approved batch land",at:"2026-10-26T01:00:00Z"},
+           {stage:"supervisor-escalated",result:"handed to zf-29 for founder-approved batch land",at:"2026-10-26T02:00:00Z"}]}]}')"
 dispatch_supervisor_arbiters
 [[ "$(field pr-623 .stage)" == supervisor-review ]] || fail "manual handoffs must not exhaust the escalation budget, got $(field pr-623 .stage)"
 jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-623")' "$WORKERS" >/dev/null || fail "a unit with only manual handoffs must get an arbitration"

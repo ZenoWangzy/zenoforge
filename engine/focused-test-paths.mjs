@@ -2,6 +2,13 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readPackJson } from './pack-dir.mjs';
+
+// Where the pack sits in the target repository (ZF_PACK_REL, config.sh). The tables and rules below name pack paths as
+// engine/...; packPath re-roots one onto PACK_PREFIX. Same string unless the deployment moved the pack.
+const PACK_REL = process.env.ZF_PACK_REL || 'engine';
+const PACK_PREFIX = `${PACK_REL}/`;
+const packPath = (path) => path.startsWith('engine/') ? PACK_PREFIX + path.slice('engine/'.length) : path;
 
 const DEPENDENCY_FILE_TESTS = Object.freeze([
   // Suites that import an installed package (yaml) or spawn loaders, plus suites naming the files.
@@ -15,7 +22,7 @@ const DEPENDENCY_FILE_TESTS = Object.freeze([
   'scripts/ci/dagger-input.test.mjs',
   'scripts/ensure-ci-runner-disk.test.mjs',
   'scripts/deploy-regression-contract.test.mjs',
-]);
+].map(packPath));
 
 const CI_TREE_TESTS = Object.freeze([
   'engine/ci-infrastructure-focused.test.sh',
@@ -24,7 +31,7 @@ const CI_TREE_TESTS = Object.freeze([
   'scripts/ci/dagger-input.test.mjs',
   'scripts/ci/dagger-run.test.mjs',
   'scripts/ci/prepare-dagger-input.test.mjs',
-]);
+].map(packPath));
 
 export const RELATED_TESTS = new Map([
   ['engine/eval/graders.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
@@ -73,10 +80,11 @@ export const RELATED_TESTS = new Map([
     'scripts/deploy-regression-contract.test.mjs',
   ]],
   ['engine/execution-admission.py', ['engine/execution-admission.test.sh', 'engine/execution-admission-metrics.test.sh']],
+  ['engine/mac-autopilot/roi_ledger.py', ['engine/mac-autopilot/worker_cost.test.sh']],
+  ['engine/mac-autopilot/roi_collect.py', ['engine/mac-autopilot/worker_cost.test.sh']],
+  ['engine/mac-autopilot/roi_rollup.py', ['engine/mac-autopilot/worker_cost.test.sh']],
   ['engine/execution-admission.test.py', ['engine/execution-admission.test.sh']],
   ['engine/execution-admission-metrics.test.py', ['engine/execution-admission-metrics.test.sh']],
-  ['engine/cihost-exec.py', ['engine/cihost-exec.test.sh']],
-  ['engine/cihost-exec.test.py', ['engine/cihost-exec.test.sh']],
   ['engine/execution-shim/systemd-run', ['engine/execution-admission.test.sh']],
   ['engine/open-pr-snapshot.py', ['engine/tick-speed.test.sh']],
   ['engine/open-pr-snapshot.test.py', ['engine/tick-speed.test.sh']],
@@ -85,9 +93,7 @@ export const RELATED_TESTS = new Map([
   ['engine/network-traffic.py', ['engine/network-traffic.test.sh']],
   ['engine/network-traffic-check.py', ['engine/network-traffic.test.sh']],
   // This gate and its suite were retired; the preflight contracts prove its removal.
-  ['engine/check-cihost-registry-egress.sh', ['engine/build-image-parity.test.sh']],
   ['engine/ci-runner-lanes.mjs', ['engine/ci-runner-lanes.test.mjs']],
-  ['engine/provision-cihost-ci-runner.sh', ['engine/provision-cihost-ci-runner.test.sh']],
   ['engine/ci-reserved-runners.mjs', ['engine/ci-priority-lane.test.mjs']],
   ['.github/workflows/pipeline-suites.yml', [
     'engine/ci-runner-lanes.test.mjs',
@@ -104,7 +110,7 @@ export const RELATED_TESTS = new Map([
   // pipeline-suites-scope.test.mjs pins the workflow structure and FULL_SUITE_PATHS membership;
   // 845f5cb1b landed a ci.yml edit with that suite stale and main stayed red ~2h (#4359).
   ['.github/workflows/ci.yml', [
-      'engine/pipeline-suites-scope.test.mjs',
+    'engine/pipeline-suites-scope.test.mjs',
     'scripts/deploy-regression-contract.test.mjs',
     'scripts/ensure-ci-runner-disk.test.mjs',
   ]],
@@ -128,14 +134,13 @@ export const RELATED_TESTS = new Map([
     'engine/check-rulings.test.sh',
     'engine/land-direct-main.test.sh',
     'engine/lesson-fragments.test.sh',
-    'engine/night/maintainer-health-mail.test.sh',
+    'engine/night/founder-health-mail.test.sh',
     'engine/night/incident-guard-audit.test.mjs',
     'engine/pipeline-system-deliver.test.mjs',
     'scripts/branch-delivery-preflight.test.mjs',
   ]],
   ['engine/gh-auto-merge-guard.sh', ['engine/night/merge-lock.test.sh']],
   ['engine/install-gitnexus-wrapper.sh', ['engine/gitnexus-wrapper.test.sh']],
-  ['engine/gitnexus-cihost-index.sh', ['engine/gitnexus-cihost-index.test.sh']],
   ['engine/record-unit-result.sh', ['engine/issue-pipeline.test.sh']],
   ['engine/advisor-core.sh', [
     'engine/run-advisor.test.sh',
@@ -155,21 +160,21 @@ export const RELATED_TESTS = new Map([
   ]],
   ['engine/night/daily-perf-report.sh', ['engine/night/daily-perf-report.test.sh']],
   ['engine/night/efficiency-regression.mjs', ['engine/night/efficiency-regression.test.mjs']],
-  ['engine/night/maintainer-health-mail.sh', [
-    'engine/night/maintainer-health-mail.test.sh',
-    'engine/night/maintainer-health-mail-incident.test.sh',
+  ['engine/night/founder-health-mail.sh', [
+    'engine/night/founder-health-mail.test.sh',
+    'engine/night/founder-health-mail-incident.test.sh',
     'engine/notify.test.sh',
     'engine/night/daily-perf-report.test.sh',
     'engine/run-release.test.sh',
   ]],
-  ['engine/night/maintainer-health-mail.test.sh', ['engine/run-release.test.sh']],
-  ['engine/night/maintainer-health-mail-incident.test.sh', ['engine/run-release.test.sh']],
+  ['engine/night/founder-health-mail.test.sh', ['engine/run-release.test.sh']],
+  ['engine/night/founder-health-mail-incident.test.sh', ['engine/run-release.test.sh']],
   ['engine/notify.sh', ['engine/notify.test.sh', 'engine/run-release.test.sh']],
   ['engine/notify.test.sh', ['engine/run-release.test.sh']],
   ['engine/run-release.sh', [
     'engine/run-release-shard-profiles.test.sh',
     'engine/run-release.test.sh',
-    'engine/night/maintainer-health-mail-incident.test.sh',
+    'engine/night/founder-health-mail-incident.test.sh',
     'engine/container-audit.test.sh',
   ]],
   ['engine/run-release.test.sh', ['engine/run-release-group-summary.test.sh']],
@@ -184,16 +189,6 @@ export const RELATED_TESTS = new Map([
     'engine/rescue-local-writes.test.sh',
   ]],
   ['engine/rescue-local-writes.sh', ['engine/rescue-local-writes.test.sh']],
-  ['engine/systemd/zenoforge-local-rescue.service', ['engine/rescue-local-writes.test.sh']],
-  ['engine/systemd/zenoforge-local-rescue.timer', ['engine/rescue-local-writes.test.sh']],
-  ['engine/systemd/zenoforge-health-maintenance.service', ['engine/night/health-maintenance.test.sh', 'engine/run-tick.test.sh']],
-  ['engine/systemd/zenoforge-health-maintenance.timer', ['engine/night/health-maintenance.test.sh', 'engine/run-tick.test.sh']],
-  ['engine/systemd/zenoforge-health-mail.service', ['engine/night/night.test.sh', 'engine/run-tick.test.sh']],
-  ['engine/systemd/zenoforge-health-mail.timer', ['engine/night/night.test.sh', 'engine/run-tick.test.sh']],
-  ['engine/systemd/zenoforge-daily-perf-report.service', ['engine/night/daily-perf-report.test.sh']],
-  ['engine/systemd/zenoforge-daily-perf-report.timer', ['engine/night/daily-perf-report.test.sh']],
-  ['engine/systemd/zenoforge-prod-anomaly.service', ['engine/night/node-health-rules.test.sh']],
-  ['engine/systemd/zenoforge-prod-anomaly.timer', ['engine/night/node-health-rules.test.sh']],
   ['engine/night/node-health.sh', [
     'engine/night/node-health-rules.test.sh',
     'engine/night/prod-errors-readonly.test.sh',
@@ -205,20 +200,7 @@ export const RELATED_TESTS = new Map([
     'engine/night/prod-errors-readonly.test.sh',
     'engine/night/prod-errors-assess.test.py',
   ]],
-  ['engine/systemd/sync-cihost-ci-dangling-image-reclaim.sh', ['engine/systemd/sync-cihost-installers.test.sh', 'engine/systemd/sync-cihost-ci-dangling-image-reclaim.test.sh']],
-  ['engine/systemd/sync-cihost-dagger-input-reclaim.sh', ['engine/systemd/sync-cihost-installers.test.sh', 'engine/systemd/cihost-dagger-input-reclaim.test.sh']],
-  ['engine/systemd/sync-cihost-nexus-retention.sh', ['engine/systemd/sync-cihost-installers.test.sh', 'engine/systemd/cihost-nexus-retention.test.sh']],
-  ['engine/systemd/sync-cihost-nexus-retention-marker-sync.sh', ['engine/systemd/sync-cihost-installers.test.sh', 'engine/systemd/cihost-nexus-retention.test.sh']],
-  ['engine/systemd/cihost-build-capacity-reclaim.sh', ['engine/systemd/cihost-build-capacity-reclaim.test.sh']],
-  ['engine/systemd/publish-cihost-nexus-retention-markers.sh', ['engine/systemd/cihost-nexus-retention.test.sh']],
-  ['engine/systemd/cihost-dockerd-restore.sh', ['engine/systemd/cihost-dockerd-restore.test.sh', 'engine/container-audit.test.sh']],
   ['engine/night/prod-errors-readonly.sh', ['engine/night/prod-errors-readonly.test.sh', 'engine/night/node-health-rules.test.sh']],
-  ['engine/systemd/sync-cihost-dockerd-restore.sh', ['engine/systemd/sync-cihost-installers.test.sh', 'engine/systemd/cihost-dockerd-restore.test.sh']],
-  ['engine/systemd/cihost-dockerd-restore.service', ['engine/systemd/cihost-dockerd-restore.test.sh']],
-  ['engine/systemd/cihost-production-containers.list', [
-    'engine/systemd/cihost-dockerd-restore.test.sh',
-    'engine/night/node-health-rules.test.sh',
-  ]],
   ['engine/night/health-maintenance.sh', ['engine/night/health-maintenance.test.sh']],
   ['engine/probe-codex-sandbox.sh', ['engine/lib.test.sh']],
   ['engine/deploy-culprit.sh', ['engine/run-release.test.sh']],
@@ -272,10 +254,10 @@ export const RELATED_TESTS = new Map([
   ]],
   ['engine/verification-map-audit.mjs', ['engine/verification-map-audit.test.mjs']],
   ['engine/throughput-metrics.mjs', ['engine/throughput-metrics.test.mjs']],
-  ['scripts/e2e/acceptance-regression/catalog.json', [
+  ['scripts/e2e/yangfeng-regression/catalog.json', [
     'engine/verification-plan.test.mjs',
     'engine/verification-map-audit.test.mjs',
-    'scripts/e2e/acceptance-regression/verify-feature.test.mjs',
+    'scripts/e2e/yangfeng-regression/verify-feature.test.mjs',
   ]],
   ['engine/prod-e2e.mjs', [
     'engine/production-e2e-taxonomy.test.sh',
@@ -290,7 +272,15 @@ export const RELATED_TESTS = new Map([
   ['engine/ci-repair-receipt.mjs', ['engine/ci-repair-receipt.test.mjs', 'scripts/branch-delivery-preflight.test.mjs', 'engine/pre-push-guard.test.sh']],
   ['scripts/branch-delivery-preflight.mjs', ['scripts/branch-delivery-preflight.test.mjs', 'engine/landing-fast-path.test.mjs']],
   ['engine/focused-test-paths.mjs', ['engine/focused-test-paths.test.mjs', 'engine/landing-fast-path.test.mjs']],
-]);
+  ['engine/pack-dir.mjs', ['engine/risk-class.test.mjs', 'engine/verification-plan.test.mjs']],
+].map(([key, tests]) => [packPath(key), tests.map(packPath)]));
+
+// A pack's state/focused-test-map.json adds or replaces entries; its pack_root lets the same data follow a relocated pack.
+// No pack, no file: the generic map stands.
+const packTestMap = readPackJson('state/focused-test-map.json') ?? {};
+const packDataPrefix = packTestMap.pack_root ? `${packTestMap.pack_root}/` : '';
+const packDataPath = (path) => packDataPrefix && path.startsWith(packDataPrefix) ? PACK_PREFIX + path.slice(packDataPrefix.length) : path;
+for (const [path, tests] of Object.entries(packTestMap.related_tests ?? {})) RELATED_TESTS.set(packDataPath(path), tests.map(packDataPath));
 
 export const CROSS_SCRIPT_TESTS = Object.freeze([
   // Repo-wide scan: a direct (unaudited) run cancellation anywhere under engine turned main red (2026-10-20).
@@ -298,7 +288,7 @@ export const CROSS_SCRIPT_TESTS = Object.freeze([
   'engine/jq-arg-safety.test.sh',
   'engine/notify.test.sh',
   'engine/queue-order.test.sh',
-]);
+].map(packPath));
 
 function gitText(args, cwd) {
   try {
@@ -567,7 +557,7 @@ function helperCallerTests(changedPaths, tracked, { baseRef, headRef, mappingRef
   const suiteRef = mappingRef ?? headRef;
 
   for (const helperPath of changedPaths) {
-    if (!helperPath.startsWith('engine/') || !helperPath.endsWith('.sh') || helperPath.endsWith('.test.sh')) {
+    if (!helperPath.startsWith(PACK_PREFIX) || !helperPath.endsWith('.sh') || helperPath.endsWith('.test.sh')) {
       continue;
     }
     const diff = gitText(['diff', '--unified=0', `${baseRef}..${headRef}`, '--', helperPath], cwd);
@@ -580,7 +570,7 @@ function helperCallerTests(changedPaths, tracked, { baseRef, headRef, mappingRef
     if (!callersByChangedFunction) continue;
     const searchableFunctions = [...new Set([...callersByChangedFunction.values()].flatMap((names) => [...names]))];
     const pattern = `(^|[^[:alnum:]_])(${searchableFunctions.join('|')})([^[:alnum:]_]|$)`;
-    const candidates = gitText(['grep', '-l', '-I', '-E', pattern, suiteRef, '--', 'engine'], cwd)
+    const candidates = gitText(['grep', '-l', '-I', '-E', pattern, suiteRef, '--', PACK_REL], cwd)
       .split('\n')
       .filter(Boolean)
       .map((path) => path.startsWith(`${suiteRef}:`) ? path.slice(suiteRef.length + 1) : path);
@@ -648,7 +638,7 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
   }
 
   for (const path of changedPaths) {
-    if (path.startsWith('engine/') && /\.(?:sh|[cm]?js|ts|py)$/.test(path)) {
+    if (path.startsWith(PACK_PREFIX) && /\.(?:sh|[cm]?js|ts|py)$/.test(path)) {
       for (const candidate of CROSS_SCRIPT_TESTS) {
         if (tracked.has(candidate)) tests.add(candidate);
       }
@@ -664,15 +654,15 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
 
     // Release fixtures load mail indirectly, beyond the shell function caller scan.
     const functionMapped = helperTests.mappedPaths.has(path)
-      && !['engine/night/maintainer-health-mail.sh', 'engine/notify.sh'].includes(path);
+      && !['engine/night/founder-health-mail.sh', 'engine/notify.sh'].map(packPath).includes(path);
     let candidates = functionMapped ? undefined : RELATED_TESTS.get(path);
     if (!candidates && path.startsWith('lessons/')) {
-      candidates = ['engine/land-direct-main.test.sh'];
+      candidates = [packPath('engine/land-direct-main.test.sh')];
     }
-    if (!candidates && path.startsWith('engine/') && /\.(?:sh|[cm]?js|ts|py)$/.test(path)) {
+    if (!candidates && path.startsWith(PACK_PREFIX) && /\.(?:sh|[cm]?js|ts|py)$/.test(path)) {
       candidates = [path.replace(/\.(?:sh|[cm]?js|ts|py)$/, path.endsWith('.sh') || path.endsWith('.py') ? '.test.sh' : '.test.mjs')];
-    } else if (!candidates && path.startsWith('engine/prompts/')) {
-      const prompt = path.slice('engine/prompts/'.length);
+    } else if (!candidates && path.startsWith(`${PACK_PREFIX}prompts/`)) {
+      const prompt = path.slice(`${PACK_PREFIX}prompts/`.length);
       const promptOwner = new Map([
         ['triage.md', 'run-triage'],
         ['advisor.md', 'run-advisor'],
@@ -683,7 +673,7 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
       ]).get(prompt);
       if (promptOwner) {
         candidates = (Array.isArray(promptOwner) ? promptOwner : [promptOwner])
-          .map((owner) => `engine/${owner}.test.sh`);
+          .map((owner) => `${PACK_PREFIX}${owner}.test.sh`);
       }
     }
     if (!candidates && path === 'scripts/code-intelligence-preflight.mjs') {
@@ -693,7 +683,7 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
     if (!candidates) continue;
     const matched = candidates.filter((candidate) => tracked.has(candidate));
     if (
-      path.startsWith('engine/')
+      path.startsWith(PACK_PREFIX)
       && /\.(?:sh|[cm]?js|ts|py)$/.test(path)
       && !deletedPaths.has(path)
       && matched.length === 0
@@ -715,14 +705,14 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
     }
   }
 
-  if (tracked.has('engine/ci-infrastructure-focused.test.sh') && changedPaths.some((path) => (
+  if (tracked.has(packPath('engine/ci-infrastructure-focused.test.sh')) && changedPaths.some((path) => (
     path.startsWith('.dagger/')
     || path.startsWith('scripts/ci/')
     || path.startsWith('.github/workflows/')
     || path === 'scripts/check-production-image-contract.mjs'
     || path === 'scripts/production-image-contract.json'
   ))) {
-    tests.add('engine/ci-infrastructure-focused.test.sh');
+    tests.add(packPath('engine/ci-infrastructure-focused.test.sh'));
   }
 
   return [...tests].sort();
