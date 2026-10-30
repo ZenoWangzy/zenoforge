@@ -5,7 +5,7 @@
 # lane; the merge itself lives in lib.sh (guarded_pr_merge).
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
 if declare -F agent_reload_init >/dev/null; then agent_reload_init "$0" "$@"; agent_reload_restore; fi

@@ -18,6 +18,11 @@ const defaultRepo = path.resolve(scriptDir, '..');
 const lintPath = 'engine/lesson-lints.mjs';
 const rankingPath = 'lessons/recurrence-ranking.json';
 const lib = 'engine/lib.sh';
+const libIssueState = 'engine/lib.d/issue-state.sh';
+const libCiChecks = 'engine/lib.d/ci-checks.sh';
+const libTransport = 'engine/lib.d/transport.sh';
+const libImplementGates = 'engine/lib.d/implement-gates.sh';
+const libHolds = 'engine/lib.d/holds.sh';
 const lander = 'engine/land-direct-main.sh';
 const landQueue = 'engine/land-queue.sh';
 const worktreeLifecycle = 'engine/worktree-lifecycle.sh';
@@ -27,7 +32,7 @@ export const lessonLints = [
     lesson: 'V936',
     classTag: 'state-single-writer',
     files: {
-      [lib]: {
+      [libIssueState]: {
         require: [
           /issue_transition_allowed\(\)/,
           /ISSUE_TRANSITION_TABLE\[/,
@@ -67,7 +72,7 @@ export const lessonLints = [
     lesson: 'V975',
     classTag: 'large-json-never-on-argv',
     files: {
-      [lib]: {
+      [libIssueState]: {
         require: [/jq_arg_file\(\)/],
       },
       'engine/jq-arg-safety.test.sh': {
@@ -80,7 +85,7 @@ export const lessonLints = [
     lesson: 'V797',
     classTag: 'postsubmit-in-progress-masks-red',
     files: {
-      [lib]: {
+      [libCiChecks]: {
         require: [/ci_main_completed_push_runs\(\)/, /status=completed&per_page=\d+&page=1/],
       },
     },
@@ -142,7 +147,7 @@ export const lessonLints = [
     lesson: 'V1203',
     classTag: 'github-egress-transient-fetch-retry',
     files: {
-      [lib]: {
+      [libTransport]: {
         require: [
           /git_fetch_bounded\(\)/,
           /ZF_GIT_FETCH_TRANSIENT_RETRIES:-2/,
@@ -243,12 +248,14 @@ export const lessonLints = [
     lesson: 'V925',
     classTag: 'failure-decisive-line-blind-rerun',
     files: {
-      [lib]: {
+      [libImplementGates]: {
         require: [
           /implement_failure_class_key\(\)/,
           /blind_rerun_failure_paths\(\)/,
-          /last two implement failures share a stage/,
         ],
+      },
+      [lib]: {
+        require: [/last two implement failures share a stage/],
       },
     },
     guidance: 'Keep the blind-rerun gate: failure records keep the decisive line (implement_failure_class_key over the stage and failing commands), and a ticket whose last two implement failures share stage and failure class is parked, not redispatched, until an input actually changes (blind_rerun_failure_paths).',
@@ -277,7 +284,7 @@ export const lessonLints = [
     lesson: 'V1003',
     classTag: 'paused-implement-held-hands-redispatch',
     files: {
-      [lib]: {
+      [libHolds]: {
         require: [
           /scheduler_requeue_issue "\$n" "hold owner \$dead_owner is inactive"/,
           /scheduler_requeue_issue "\$n" "hold expired; \$release_condition"/,

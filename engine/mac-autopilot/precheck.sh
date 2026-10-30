@@ -8,7 +8,7 @@ set -uo pipefail
 dir="$1" pr="$2" head="$3"
 budget="${PRECHECK_TIMEOUT_SECONDS:-900}"
 skip() { echo "PRECHECK: SKIP $*"; exit 0; }
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # The scheduler runs this from the autopi-live copy, where ../.. is not the repo (10-28: every precheck SKIPped).
 repo_root="${MAC_AUTOPILOT_ROOT:-$(cd "$script_dir/../.." && pwd)}"
 evidence_script="$script_dir/test-evidence.py"

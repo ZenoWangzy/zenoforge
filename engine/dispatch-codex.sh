@@ -9,7 +9,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 INDEX_ROOT="${ZF_CODE_INTELLIGENCE_ROOT:-$REPO_DIR}"
 MIN_AVAILABLE_KIB=$((2 * 1024 * 1024))

@@ -28,6 +28,23 @@ measured numbers and how you computed them.
 - The numbers reproduce: implement, and carry the measured numbers in the
   report as the before-baseline that acceptance will compare against.
 
+## Blast-radius proof on risk-class paths
+
+Run `node engine/risk-class.mjs --json origin/main...HEAD`: `[]` means no
+risk-class path and nothing below applies. Any hit means the report carries a
+`## blast-radius` section, written the way
+`engine/vendor/pstack/skills/blast-radius/SKILL.md` describes:
+
+- **The one fact**: the single fact this change's safety depends on.
+- **Affected surfaces**: the callers and surfaces the change reaches, each with
+  the command that listed it and that command's real output.
+- **Level-4 proof**: a small script that imports and calls the real function
+  (not a copy, not a mock) and fails loud if the fact is wrong. Give the script
+  path, the command, and its real output. A line reference or a walkthrough is
+  level 2-3 and does not count; if you cannot reach level 4, write `unproven`
+  and why.
+- **Cheapest pre-merge repro**: the one command that would catch the bug.
+
 Put the block first in the report so the scheduler can carry it into the PR
 body. Use this exact JSON shape and the `contract` fence:
 

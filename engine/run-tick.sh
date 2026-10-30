@@ -162,7 +162,7 @@ run_tick() {
   # covered from its very first line.
   trap 'refuse "unexpected" "internal error at line $LINENO running: $BASH_COMMAND"' ERR
 
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
   source "$script_dir/config.sh" # AGENT_HOME, ZF_ENGINE_DIR, ZF_REPO_DIR
   # Same setting lib.sh resolves; this launcher deliberately does not source lib.sh. Read after config.sh so deploy.env is in effect.
   local UNIT_PREFIX="${ZF_UNIT_PREFIX:-zenoforge}"

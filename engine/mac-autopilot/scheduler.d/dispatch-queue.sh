@@ -314,7 +314,7 @@ $(decision_scope "$u")"
         set_unit "$id" ".report=$(js "$rep")"
         if [[ "$lane" == direct-main ]]; then
           deliver="ACCEPTANCE：
-先确认问题在当前 main 上仍存在：已被修复或不再适用就不改代码，报告第一行写 OBSOLETE: <证据>。${OPT_PREMISE_RULE}
+先确认问题在当前 main 上仍存在：已被修复或不再适用就不改代码，报告第一行写 OBSOLETE: <证据>。${OPT_PREMISE_RULE}${BLAST_RADIUS_RULE}
 VERIFY：
 本地定向验证全绿；node scripts/branch-delivery-preflight.mjs --mode commit 通过后在本地分支 ${branch} 提交（提交信息不带 [skip ci]）——这是非产品快车道，评审通过后流水线把它压成一个提交经 land-direct-main.sh 直落 main。
 FORBIDDEN：
@@ -323,7 +323,7 @@ REPORT：
 产出说明写到 $SUP/${rep}（根因、改动、验证输出摘要、本地提交 SHA）。交付完即结束。"
         else
           deliver="ACCEPTANCE：
-先确认问题在当前 main 上仍存在：已被修复或不再适用就不改代码，报告第一行写 OBSOLETE: <证据>。否则修根因并补回归测试。${OPT_PREMISE_RULE}
+先确认问题在当前 main 上仍存在：已被修复或不再适用就不改代码，报告第一行写 OBSOLETE: <证据>。否则修根因并补回归测试。${OPT_PREMISE_RULE}${BLAST_RADIUS_RULE}
 尺寸准入：${branch} 相对 main 的改动合计（Markdown/文档、生成物、锁文件、测试快照不计入）不超过 ${SIZE_ADMISSION_LINES} 行，push 前用 git diff --numstat origin/main...HEAD 自查。整张票放不进限额时不要硬塞：只实现第一个可独立交付的完整切片（含必要测试），报告第一行改写 SPLIT: <剩余范围一句话>，剩余工作由流水线另开续作票承接；不要为压行数砍掉切片必需的测试。
 VERIFY：
 本地定向验证全绿；${INTEGRATION_RULE}node scripts/branch-delivery-preflight.mjs --mode push --publish-topic 通过后 push 分支 ${branch} 到 origin。

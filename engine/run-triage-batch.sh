@@ -7,7 +7,7 @@ for arg in "$@"; do
   ARGS+=("$arg")
 done
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"

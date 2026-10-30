@@ -34,7 +34,7 @@ for arg in "$@"; do
   fi
 done
 N="${ARGS[0]:?usage: run-advisor.sh [--dry-run] <issue-number>}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
 MODEL_BACKOFF_REMAINING="$(issue_model_failure_backoff_remaining "$N")"

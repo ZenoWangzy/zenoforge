@@ -188,8 +188,10 @@ if [[ ! -f "$repo_root/scripts/branch-delivery-policy.mjs" ]]; then
   echo 'land-direct-main: synchronized candidate lacks scripts/branch-delivery-policy.mjs; refusing direct-main landing' >&2
   exit 2
 fi
+# BWK awk (macOS) lexes the / inside a [^/] regex literal as the closing delimiter and
+# reports a nonterminated character class; the dynamic string form parses everywhere (#3869).
 pending_lesson_fragments="$(git -C "$repo_root" ls-tree -r --name-only HEAD -- lessons/pending \
-  | awk '$0 ~ /^lessons\/pending\/[^/]+\.json$/')"
+  | awk '$0 ~ "^lessons/pending/[^/]+[.]json$"')"
 if git -C "$repo_root" merge-base --is-ancestor HEAD origin/main \
     && [[ -n "$pending_lesson_fragments" ]]; then
   # The child lander can fold fragments left on an already-landed head. Keep

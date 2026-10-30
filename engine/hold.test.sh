@@ -722,7 +722,7 @@ test_manual_hold_release_reconciles_persisted_state() {
 
 test_durable_hold_release_uses_recorded_stage_when_labels_conflict() {
   local expired labels state source_block
-  source_block="$(sed -n '/^hold_sweep() {/,/^}/p' "$SCRIPT_DIR/lib.sh")"
+  source_block="$(sed -n '/^hold_sweep() {/,/^}/p' "$SCRIPT_DIR/lib.d/holds.sh")"
   assert_contains "state-only release checks durable record before resolving conflicting labels" \
     "$source_block" '.durable_record == true'
   assert_contains "state-only release validates durable record before using its saved stage" \

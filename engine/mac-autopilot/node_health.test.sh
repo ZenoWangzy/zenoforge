@@ -255,6 +255,15 @@ os.environ["NODE_HEALTH_JOURNALCTL"] = sys.argv[2] + "/no-such-journalctl"
 missing = n.github_net_failures_per_hour(since, now)
 sys.exit(0 if (got, missing) == (3.0, None) else print(got, missing) or 1)
 CHECK
+# live 引擎跟随落后：.lag-since 存在按小时计，没有记 0
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'engine follow lag wrong'
+import os, sys, datetime as dt; sys.path.insert(0, sys.argv[1]); import node_health as n
+now = dt.datetime(2026, 10, 30, 16, tzinfo=dt.timezone.utc); h = os.path.join(sys.argv[2], "lag-home")
+os.makedirs(os.path.join(h, "engine-versions"), exist_ok=True); zero = n.engine_follow_lag_hours(h, now)
+open(os.path.join(h, "engine-versions", ".lag-since"), "w").write(str(int(now.timestamp()) - 5400))
+got = (zero, n.engine_follow_lag_hours(h, now), n.CRITERIA["engine.follow_lag_hours"][2:4])
+sys.exit(0 if got == (0.0, 1.5, (0.5, 2)) else print(got) or 1)
+CHECK
 # ~/wt 下超过 2 小时的工作目录：按 .git 链接文件的建立时间数；没有 .git 的目录不算；没有 ~/wt（Mac）为空
 wt="$test_env_root/wt"; mkdir -p "$wt/old-a" "$wt/old-b" "$wt/fresh" "$wt/node-auto-owner"
 for d in old-a old-b fresh; do echo "gitdir: /x/$d" > "$wt/$d/.git"; done
@@ -766,3 +775,17 @@ rows, silent = n.mechanism_heartbeat(reg(False, 6, "no such event"), rt, ah, now
 assert silent == 1, rows  # 没有匹配行的机制照样沉默
 print("node_health mechanism heartbeat units: PASS")
 CHECK
+
+python3 - "$repo_root" <<'CHECK2'
+import importlib.util, json, os, sys, tempfile, datetime
+spec = importlib.util.spec_from_file_location("n", os.path.join(sys.argv[1], "engine/mac-autopilot/node_health.py"))
+n = importlib.util.module_from_spec(spec); spec.loader.exec_module(n)
+n._gh_json = lambda *a, **k: [{"number": 1}]
+home = tempfile.mkdtemp(); os.makedirs(home + "/logs"); os.makedirs(home + "/web-advisor-provider-jobs/j1")
+open(home + "/web-advisor-provider-jobs/j1/answer.err", "w").write("model_policy: boom\n")  # failed early, no FAIL: line, no answer.txt
+now = datetime.datetime.now(datetime.timezone.utc)
+assert n.advisor_answer_age_hours(home, "r", now) == 9999.0
+json.dump({"outcome": "completed"}, open(home + "/logs/advisor-batch-x.result.json", "w"))
+assert n.advisor_answer_age_hours(home, "r", now) < 1
+print("node_health advisor answer age: PASS")
+CHECK2

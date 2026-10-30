@@ -738,6 +738,97 @@ main_ci_recovery_current() {
   return 1
 }
 
+# Reconcile an open main-CI quarantine with the current main tip. Dispatch is
+# claimed by source SHA before the external side effect; a failed or ambiguous
+# response leaves that claim in place so later ticks cannot duplicate it.
+# Exit 10 means an active run or existing claim owns the candidate, 11 means
+# this tick attempted the dispatch, and 12 means the evidence was unreadable.
+main_ci_reconcile_red_quarantine() {
+  local quarantine signature main_ref main_sha runs red_run red_sha active_status active_runs
+  local claim_status dispatch_status probe_status
+  quarantine="$(quarantine_file implement)"
+  [ -f "$quarantine" ] || return 0
+  signature="$(jq -er '.signature | select(type == "string")' "$quarantine")" || return 12
+  [ "$signature" = env:main-ci-red ] || return 0
+
+  main_ref="$(timeout -k 1 8 gh api "repos/$REPO/git/ref/heads/main" -H 'Cache-Control: no-cache')" || return 12
+  main_sha="$(jq -er '.object.sha | select(test("^[0-9a-f]{40}$"))' <<< "$main_ref")" || return 12
+  if postsubmit_request_record_state "$main_sha" >/dev/null; then
+    return 10
+  else
+    claim_status=$?
+    [ "$claim_status" = 1 ] || return 12
+  fi
+  runs="$(ci_main_completed_push_runs ci.yml 8)" || return 12
+  red_run="$(jq -c '
+    [.workflow_runs[]?
+      | select(.head_branch == "main" and .path == ".github/workflows/ci.yml"
+        and (.event == "push" or .event == "workflow_dispatch")
+        and .status == "completed" and .conclusion == "failure")]
+    | sort_by([.created_at // "", .id // 0, .run_attempt // 0]) | last // empty
+  ' <<< "$runs")" || return 12
+  [ -n "$red_run" ] && [ "$red_run" != null ] || return 0
+  red_sha="$(jq -er '.head_sha | select(test("^[0-9a-f]{40}$"))' <<< "$red_run")" || return 12
+  [ "$red_sha" != "$main_sha" ] || return 0
+
+  if ! git -C "$REPO_DIR" cat-file -e "$red_sha^{commit}" 2>/dev/null \
+    || ! git -C "$REPO_DIR" cat-file -e "$main_sha^{commit}" 2>/dev/null; then
+    git_fetch_bounded "$REPO_DIR" main >/dev/null 2>&1 || return 12
+    git -C "$REPO_DIR" cat-file -e "$red_sha^{commit}" 2>/dev/null || return 12
+    git -C "$REPO_DIR" cat-file -e "$main_sha^{commit}" 2>/dev/null || return 12
+  fi
+  if git -C "$REPO_DIR" merge-base --is-ancestor "$red_sha" "$main_sha" 2>/dev/null; then
+    :
+  else
+    local ancestry_status=$?
+    [ "$ancestry_status" = 1 ] && return 0
+    return 12
+  fi
+
+  # A valid exact-tip green is handled by reconcile_quarantines. Unknown
+  # evidence must not cause a recovery dispatch or lift.
+  if main_ci_red_quarantine_probe "$main_sha" "$runs" >/dev/null 2>&1; then
+    return 10
+  else
+    probe_status=$?
+    [ "$probe_status" = 1 ] || return 12
+  fi
+
+  for active_status in queued in_progress; do
+    active_runs="$(timeout -k 1 8 gh api \
+      "repos/$REPO/actions/workflows/ci.yml/runs?branch=main&status=$active_status&per_page=100&page=1" \
+      -H 'Cache-Control: no-cache')" || return 12
+    jq -e '.workflow_runs | type == "array" and length < 100' <<< "$active_runs" >/dev/null 2>&1 || return 12
+    if jq -e 'any(.workflow_runs[]; .head_branch == "main"
+      and (.event == "push" or .event == "workflow_dispatch")
+      and .path == ".github/workflows/ci.yml")' <<< "$active_runs" >/dev/null 2>&1; then
+      return 10
+    fi
+  done
+
+  if [ "${DRY_RUN:-0}" = 1 ] || [ "${AGENT_DRY_RUN:-0}" = 1 ]; then return 0; fi
+  if postsubmit_request_dispatch_claim "$main_sha" 600 1; then
+    :
+  else
+    claim_status=$?
+    [ "$claim_status" = 1 ] && return 10
+    return 12
+  fi
+  if guarded_write gh workflow run ci.yml --repo "$REPO" --ref main -f "source_sha=$main_sha"; then
+    postsubmit_request_record_write "$main_sha" requested "" "" || true
+    printf 'main-ci-recovery: dispatched current main validation sha=%s red_run=%s\n' "$main_sha" \
+      "$(jq -r '.id' <<< "$red_run")" >&2
+  else
+    dispatch_status=$?
+    # Preserve the durable claim even when the CLI cannot tell whether GitHub
+    # accepted the request. max_attempts=1 keeps that SHA deduplicated.
+    postsubmit_request_record_write "$main_sha" dispatch-failed "" "" || true
+    printf 'main-ci-recovery: dispatch failed or was ambiguous sha=%s status=%s; claim retained\n' \
+      "$main_sha" "$dispatch_status" >&2
+  fi
+  return 11
+}
+
 # Attribution only: the scheduler owns the revert push (revert_squash_merge) and the unit hand-back.
 # One report line: culprit=<sha> suite=<path> ..., or fallback=<reason> to keep the current rerun-verdict path.
 main_ci_attribute_red() {
@@ -915,6 +1006,10 @@ case "${1:-}" in
     shift
     main_ci_handle_event "$@"
     ;;
+  reconcile-red)
+    (($# == 1)) || exit 2
+    main_ci_reconcile_red_quarantine
+    ;;
   attribute-red)
     (($# == 4)) || exit 2
     main_ci_attribute_red "$2" "$3" "$4"
@@ -928,7 +1023,7 @@ case "${1:-}" in
     main_ci_cancel_run "$2" "${3:-}"
     ;;
   *)
-    printf 'Usage: %s handle <ci|pipeline-suites> <run-id> <attempt> <status> <conclusion> <head-sha> | attribute-red <run-id> <attempt> <head-sha> | cancel-closed-pr-runs | cancel-run <run-id> [repo]\n' "$0" >&2
+    printf 'Usage: %s handle <ci|pipeline-suites> <run-id> <attempt> <status> <conclusion> <head-sha> | reconcile-red | attribute-red <run-id> <attempt> <head-sha> | cancel-closed-pr-runs | cancel-run <run-id> [repo]\n' "$0" >&2
     exit 2
     ;;
 esac

@@ -4,6 +4,9 @@ set -o pipefail
 shopt -s nullglob
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# runtime-env.sh defaults an unset AGENT_HOME to $HOME/.zenoforge; ci_protection must tell an explicit
+# setting (a missing state/ then holds cancellation) from that default (used only when its state/ exists).
+EXPLICIT_AGENT_HOME="${AGENT_HOME:-}"
 source "$HERE/runtime-env.sh"
 ROOT="$MAC_AUTOPILOT_ROOT"
 A="${BELL_AUTOPI_DIR:-$MAC_AUTOPILOT_RUNTIME_DIR}"
@@ -120,7 +123,9 @@ PY
 # release.json is only a human checklist; without an authoritative publisher
 # ledger, pending work cannot prove that an older CI run is disposable.
 ci_protection() {
-  python3 - "$A" "${AGENT_HOME:-}" <<'PY'
+  local agent_home="$EXPLICIT_AGENT_HOME"
+  [[ -n "$agent_home" || ! -d "${AGENT_HOME:-}/state" ]] || agent_home="$AGENT_HOME"
+  python3 - "$A" "$agent_home" <<'PY'
 import glob,json,os,re,sys
 a,agent_home=sys.argv[1:]
 shas=set(); runs=set()

@@ -52,7 +52,7 @@ done
 # Node's fetch ignores HTTP(S)_PROXY unless NODE_USE_ENV_PROXY=1, and WSL reaches Z.ai only through the proxy.
 # Own memory-capped scope, named luna-* so health-watch's memory relief covers it like a codex run.
 # One CPU budget across agent runs (maintainer 10-29 [...]); shared with dispatch-codex.sh.
-source "${ZF_ENGINE_DIR:-$HOME/.zenoforge/checkout/engine}/thread-budget.sh" && agent_thread_budget
+source "${ZF_ENGINE_DIR:-$HOME/.zenoforge/engine-live}/thread-budget.sh" && agent_thread_budget
 scope="luna-zc-${key//[^A-Za-z0-9_-]/-}-$$"
 TMPDIR="$root/tmp/$key" PATH="$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NODE_USE_ENV_PROXY=1 \
   systemd-run --user --scope --quiet --unit="$scope" -p MemoryMax="${LUNA_MEM_MAX:-4G}" -p CPUQuota="${LUNA_CPU_QUOTA:-200%}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo 100)" -p MemorySwapMax=0 -p OOMPolicy=continue -- \

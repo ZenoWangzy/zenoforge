@@ -512,6 +512,7 @@ grep -Fq '(u.journey||{}).status)).length' "$script_dir/dashboard.html" || { ech
 grep -E '^INTEGRATION_RULE=.*RUN_INTEGRATION=1.*照常 push' "$script_dir/scheduler.sh" >/dev/null || { echo 'not ok - scheduler.test.sh: integration rule must run tests locally yet never block the push' >&2; exit 1; }
 # 优化类 ticket 先核实前提（#4370）：两条车道的 implement prompt 都带测量规则。
 [[ "$(grep -h 'OPT_PREMISE_RULE}' "$script_dir/scheduler.sh" "$script_dir"/scheduler.d/*.sh | wc -l)" -ge 2 ]] || { echo 'not ok - scheduler.test.sh: implement prompts lack the optimization-premise rule' >&2; exit 1; }
+[[ "$(grep -h 'BLAST_RADIUS_RULE}' "$script_dir"/scheduler.d/*.sh | wc -l)" -ge 2 ]] && grep -A2 '^BLAST_RADIUS_RULE=' "$script_dir/scheduler.sh" | grep -q 'pstack_skill_md blast-radius' || { echo 'not ok - scheduler.test.sh: implement prompts lack the blast-radius rule' >&2; exit 1; }
 grep -A3 "^OPT_PREMISE_RULE=" "$script_dir/scheduler.sh" | grep -q "测量窗口从被测机制最后一次改动之后开始" \
   || { echo 'not ok - scheduler.test.sh: the optimization-premise rule must bound the measurement window by the mechanism last change' >&2; exit 1; }
 # Exercise the actual tick with external commands isolated from GitHub, git and Codex.
@@ -1721,7 +1722,7 @@ sched_case_oversized_repair_pre_dispatch_recut() {
   command jq -e '
     ([.units[] | select(.id=="issue-930")][0] | .stage=="blocked-external" and .size_recut_pending==true
       and .footprint_source=="pr-diff"
-      and .footprint==["packages/example/src/large.ts","packages/example/src/other.ts"]
+      and .footprint==["packages/fixture/src/index.ts"]
       and any(.history[]; .stage=="size-recut"))
   ' "$TF/supervisor/autopi/units.json" >/dev/null || {
     echo 'not ok - scheduler.test.sh: oversized repair did not enter recut with its actual PR footprint' >&2
@@ -1729,6 +1730,8 @@ sched_case_oversized_repair_pre_dispatch_recut() {
     cat "$TF/tick.out" "$TF/actions" >&2
     exit 1
   }
+  grep -Fq 'gh pr view 930 --json files' "$TF/calls" \
+    || { echo 'not ok - scheduler.test.sh: footprint did not come from the PR file list' >&2; exit 1; }
   command jq -e '.state=="needs-recut" and .size_admission.lines==802 and .size_admission.limit==800' \
     "$TF/agent-home/state/930.json" >/dev/null || { echo 'not ok - scheduler.test.sh: repair preflight size evidence was not recorded' >&2; exit 1; }
   command jq -e '.workers | length==0' "$TF/supervisor/autopi/workers.json" >/dev/null \
@@ -2627,7 +2630,7 @@ sched_case_hold_handoff_resume() {
   mkdir -p "$TF/agent-home/state"
   command jq -n --arg sha "$rescue_sha" '{state:"ready-for-agent",scheduler_handoff:{episode:"hold-777",start_ref:"rescued/issue-777-new",start_sha:$sha}}' > "$TF/agent-home/state/777.json"
   command jq -n '{number:777,title:"direct recovered work",body:"finish",labels:[{name:"ready-for-agent"},{name:"pipeline-system"}]}' > "$TF/intake-issue.json"
-  command jq '.max_workers=1 | .implement_cap=0 | .issue_intake.enabled=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  command jq '.max_workers=1 | .implement_cap=0 | .issue_intake.enabled=true | .issue_intake.labels=["pipeline-system"]' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
   tick
   command jq -e --arg branch "agent/auto-issue-777-recovered-${rescue_sha:0:12}" '.units[0].lane=="direct-main" and .units[0].branch==$branch' "$TF/supervisor/autopi/units.json" >/dev/null \
     || { echo 'not ok - direct-main intake did not select a fresh rescue branch' >&2; exit 1; }

@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost
+import worker_cost, live_workers, factory_trend
 
 _HERE = os.path.dirname(os.path.realpath(__file__))
 _DEFAULT_ROOT = (_HERE.split("/.scratch-supervisor/autopi-versions/", 1)[0] if "/.scratch-supervisor/autopi-versions/" in _HERE else
@@ -785,6 +785,55 @@ def front_run(argv, timeout, **kw):
         raise RuntimeError(f"{argv[0]} exit {proc.returncode}: " + ((proc.stderr or "").strip().splitlines() or [""])[-1][:200])
     return proc.stdout
 
+# 每个 worker 的累计字节：network-traffic.py monitor 每 60 秒写 state/traffic-workers.json（键 wt:<unit> / unit:<scope>）
+worker_traffic = read_json(os.path.join(AGENT_HOME, "state", "traffic-workers.json")) or {}
+try:
+    live_workers_data = live_workers.collect(wl, units, UNIT_PREFIX_TRANSIENT,
+        os.environ.get("ZF_LUNA_DIR", os.path.expanduser("~/project/zf-refactor/.scratch/luna")),
+        os.path.join(AGENT_HOME, "web-advisor-provider-jobs"), SUP, worker_traffic, SESSION_ROOT)
+except Exception as e:
+    live_workers_data = {"error": str(e)[:200]}
+
+try:
+    factory_data = factory_trend.collect(AGENT_HOME, units, {w["unit"] for w in wl if w["alive"]},
+        os.path.join(AGENT_HOME, "engine-versions"), os.path.join(A, "factory-trend.cache.json"), traffic=worker_traffic)
+except Exception as e:
+    factory_data = {"error": str(e)[:200]}
+
+ISSUE_TITLES_PATH = os.path.join(A, "issue-titles.json")
+
+def fill_titles(rows, known):
+    """Cards whose task is only an id (opt-i4727, 4631) get the issue / PR title: ledger and stage-tile titles first, then a
+    persistent cache, then ONE batched GraphQL call for the numbers still missing (titles never change, so cached forever)."""
+    idish = lambda t: not t or re.fullmatch(r"[\w.-]+", t) is not None
+    need = {r["issue"] for r in rows if r.get("issue") and idish(r.get("task"))}
+    cache = read_json(ISSUE_TITLES_PATH) or {}
+    titles = {**cache, **{str(k): v for k, v in known.items() if v}}
+    miss = sorted(n for n in need if str(n) not in titles)[:30]
+    if miss:
+        try:
+            query = ("query($owner:String!,$name:String!){repository(owner:$owner,name:$name){" +
+                     "".join(f"r{n}:issueOrPullRequest(number:{int(n)}){{... on Issue{{title}} ... on PullRequest{{title}}}} " for n in miss) + "}}")
+            repo = ((json.loads(front_run(["gh", "api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", "query=" + query], 30)) or {}).get("data") or {}).get("repository") or {}
+            for n in miss:
+                t = (repo.get(f"r{n}") or {}).get("title")
+                if t: titles[str(n)] = cache[str(n)] = t
+            with open(ISSUE_TITLES_PATH + ".tmp", "w", encoding="utf-8") as out: json.dump(cache, out, ensure_ascii=False)
+            os.replace(ISSUE_TITLES_PATH + ".tmp", ISSUE_TITLES_PATH)
+        except Exception:
+            pass
+    for r in rows:
+        t = titles.get(str(r.get("issue")))
+        if t and idish(r.get("task")): r["task"] = t[:60]
+
+try:
+    known = {u.get("issue"): u.get("title") for u in units}
+    for s in (read_json(FRONT_CACHE_PATH) or {}).get("github", {}).get("stages", []):
+        known.update({i.get("number"): i.get("title") for i in s.get("items") or []})
+    fill_titles((live_workers_data.get("items") or []) + (factory_data.get("archive") or []), known)
+except Exception:
+    pass
+
 def front_unit_active(pattern):
     """正在运行的 systemd 用户单元名（按通配符）；systemctl 不可用返回 None。"""
     try:
@@ -808,8 +857,8 @@ def front_github_stages(now):
         return cached["stages"], {"cached": True, "stale": False, "age_s": int(age), "error": None}
     try:
         query = ("query($owner:String!,$name:String!){repository(owner:$owner,name:$name){" +
-                 "".join(f'a{i}:issues(states:OPEN,labels:["{row[0]}"],first:1,orderBy:{{field:UPDATED_AT,direction:ASC}})'
-                         "{totalCount nodes{number createdAt updatedAt}} " for i, row in enumerate(FRONT_STAGES)) + "}}")
+                 "".join(f'a{i}:issues(states:OPEN,labels:["{row[0]}"],first:10,orderBy:{{field:UPDATED_AT,direction:ASC}})'
+                         "{totalCount nodes{number title createdAt updatedAt}} " for i, row in enumerate(FRONT_STAGES)) + "}}")
         payload = json.loads(front_run(["gh", "api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", "query=" + query], 30))
         repo = ((payload or {}).get("data") or {}).get("repository") if isinstance(payload, dict) else None
         if not isinstance(repo, dict):
@@ -820,7 +869,9 @@ def front_github_stages(now):
             block = repo.get(f"a{i}") or {}
             node = (block.get("nodes") or [None])[0] or {}
             stages.append({"label": row[0], "count": block.get("totalCount"),
-                           "oldest": {"number": node.get("number"), "created_at": node.get("createdAt"), "updated_at": node.get("updatedAt")} if node else None})
+                           "oldest": {"number": node.get("number"), "created_at": node.get("createdAt"), "updated_at": node.get("updatedAt")} if node else None,
+                           # 总览阶段卡：最久没动的 10 张，标题 + 距上次更新
+                           "items": [{"number": n.get("number"), "title": (n.get("title") or "")[:60], "updated_at": n.get("updatedAt")} for n in block.get("nodes") or []]})
         if all(s["count"] is None for s in stages):
             raise RuntimeError("GitHub 返回的阶段计数为空")
         try:
@@ -845,7 +896,7 @@ def front_stage_rows(now):
         s = by_label.get(label) or {}
         oldest, count = s.get("oldest"), s.get("count")
         idle = 0 if count == 0 else front_hours_since(epoch_of(oldest.get("updated_at") or "") if oldest else None, now)
-        rows.append({"label": label, "name": name, "count": count, "oldest": oldest, "idle_hours": idle})
+        rows.append({"label": label, "name": name, "count": count, "oldest": oldest, "idle_hours": idle, "items": s.get("items") or []})
         front_std(f"stage.{label}.count", f"{name}（{label}）数量", c_ok, c_bad, False, "个", meaning,
                   "GitHub GraphQL：该标签的开放 issue 数")
         front_std(f"stage.{label}.idle_hours", f"{name}最久滞留", i_ok, i_bad, False, "小时",
@@ -1073,6 +1124,8 @@ front["elapsed_s"] = round(time.time() - front_started, 2)
 data = {
     "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "repo": os.environ.get("ZF_REPO", ""),
+    "live_workers": live_workers_data,
+    "factory": factory_data,
     "units": units, "workers": wl, "release": release, "cost": cost_data, "cost_ledger": cost_ledger,
     "traffic": traffic, "front": front,
     "release_train": (json.load(open(f"{A}/release-train.json")) if os.path.exists(f"{A}/release-train.json") else {}),

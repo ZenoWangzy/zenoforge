@@ -115,7 +115,7 @@ if [[ "${1:-}" == --quota-only ]]; then lib_case_exit; fi
 
 # lib.sh is sourced by callers whose SCRIPT_DIR is unset (merge-held.sh) or another
 # directory (night/); 2026-10-08 a lib.sh helper died with "SCRIPT_DIR: unbound variable".
-lib_reads_caller_script_dir() { grep -nE '\$\{?SCRIPT_DIR' "$SCRIPT_DIR/lib.sh" | grep -vE '^[0-9]+:[[:space:]]*#'; }
+lib_reads_caller_script_dir() { grep -nE '\$\{?SCRIPT_DIR' "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR"/lib.d/*.sh | grep -vE '^[0-9]+:[[:space:]]*#'; }
 assert_false "lib.sh never reads the caller's SCRIPT_DIR" lib_reads_caller_script_dir
 
 assert_contains() {
@@ -3848,7 +3848,7 @@ assert_contains "source scan reports forbidden CLI model selection" \
 ps() { printf '%s\n' "$MODEL_POLICY_TEST_PROCESSES"; }
 MODEL_POLICY_TEST_PROCESSES='0 claude claude --version'
 assert_eq "live scan ignores an unrelated interactive Claude process" clean "$(model_policy live)"
-MODEL_POLICY_TOKEN_TEST="$(printf 'node\tnode $HOME/wt/x/packages/example-admin/build.mjs\n' | awk -v forbidden_words="sol" "$(sed -n '/function prohibited/,/^          return 0$/p' "$SCRIPT_DIR/lib.sh")"'
+MODEL_POLICY_TOKEN_TEST="$(printf 'node\tnode $HOME/wt/x/packages/example-admin/build.mjs\n' | awk -v forbidden_words="sol" "$(sed -n '/function prohibited/,/^          return 0$/p' "$SCRIPT_DIR/lib.d/model-policy.sh")"'
           }
           { print prohibited($0) }')"
 assert_eq "live scan matches forbidden names as whole tokens, not substrings" 0 "$MODEL_POLICY_TOKEN_TEST"
@@ -4082,8 +4082,8 @@ assert_true "post-dispatch maintenance reads needs-info mail before reply reconc
 # advisor-origin needs-info answer back to needs-advisor (route_to_advisor,
 # which also clears the stale advisor_ruled_at), never to needs-triage --
 # that restart is only correct for the reporter/triage-origin case.
-RESUME_ANSWERED_BODY="$(sed -n '/^needs_info_resume_answered_issue() {/,/^}/p' "$SCRIPT_DIR/lib.sh")"
-TIMEOUT_STEP_BODY="$(sed -n '/^needs_info_timeout_step() {/,/^}/p' "$SCRIPT_DIR/lib.sh")"
+RESUME_ANSWERED_BODY="$(sed -n '/^needs_info_resume_answered_issue() {/,/^}/p' "$SCRIPT_DIR/lib.d/route-advisor.sh")"
+TIMEOUT_STEP_BODY="$(sed -n '/^needs_info_timeout_step() {/,/^}/p' "$SCRIPT_DIR/lib.d/route-advisor.sh")"
 assert_true "needs-info reconciliation and timeout share existing reply transition" \
   bash -c 'echo "$1" | grep -qF -- "needs_info_resume_answered_issue" && echo "$2" | grep -qF -- "needs_info_resume_answered_issue"' _ "$NEEDS_INFO_RECONCILE_BODY" "$TIMEOUT_STEP_BODY"
 assert_true "shared reply transition branches on needs_info_origin" \
@@ -4425,12 +4425,12 @@ assert_eq "a bare date (no time-of-day) is not rejected" \
 # the shared lock. All callers use the same age/commit bounds and bounded lock
 # and 30-minute latest-wins throttle.
 assert_eq "self-referential GitNexus status predicate is removed" \
-  "0" "$( { grep -nF -- 'gitnexus_status_is_up_to_date' "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR/run-triage.sh" "$SCRIPT_DIR/run-triage-batch.sh" "$SCRIPT_DIR/run-advisor.sh" || true; } | wc -l | tr -d ' ')"
+  "0" "$( { grep -nF -- 'gitnexus_status_is_up_to_date' "$SCRIPT_DIR/lib.d/gitnexus.sh" "$SCRIPT_DIR/run-triage.sh" "$SCRIPT_DIR/run-triage-batch.sh" "$SCRIPT_DIR/run-advisor.sh" || true; } | wc -l | tr -d ' ')"
 assert_eq "WSL refresh path never runs GitNexus analyze locally" \
-  "0" "$( { grep -F -- 'gitnexus analyze "$repo_dir" --index-only' "$SCRIPT_DIR/lib.sh" || true; } | wc -l | tr -d ' ')"
-GITNEXUS_LOCK_LINE="$(grep -nF -- 'if ! flock -w "$GITNEXUS_REFRESH_LOCK_WAIT_SECONDS"' "$SCRIPT_DIR/lib.sh" | cut -d: -f1)"
-GITNEXUS_ORIGIN_MAIN_SNAPSHOT_LINE="$(grep -nF -- 'target_sha="$(git -C "$repo_dir" rev-parse --verify refs/remotes/origin/main' "$SCRIPT_DIR/lib.sh" | cut -d: -f1)"
-GITNEXUS_CHECKOUT_SNAPSHOT_LINE="$(grep -nF -- 'target_sha="$(git -C "$repo_dir" rev-parse HEAD' "$SCRIPT_DIR/lib.sh" | cut -d: -f1)"
+  "0" "$( { grep -F -- 'gitnexus analyze "$repo_dir" --index-only' "$SCRIPT_DIR/lib.d/gitnexus.sh" || true; } | wc -l | tr -d ' ')"
+GITNEXUS_LOCK_LINE="$(grep -nF -- 'if ! flock -w "$GITNEXUS_REFRESH_LOCK_WAIT_SECONDS"' "$SCRIPT_DIR/lib.d/gitnexus.sh" | cut -d: -f1)"
+GITNEXUS_ORIGIN_MAIN_SNAPSHOT_LINE="$(grep -nF -- 'target_sha="$(git -C "$repo_dir" rev-parse --verify refs/remotes/origin/main' "$SCRIPT_DIR/lib.d/gitnexus.sh" | cut -d: -f1)"
+GITNEXUS_CHECKOUT_SNAPSHOT_LINE="$(grep -nF -- 'target_sha="$(git -C "$repo_dir" rev-parse HEAD' "$SCRIPT_DIR/lib.d/gitnexus.sh" | cut -d: -f1)"
 assert_true "origin/main SHA is sampled only after acquiring the refresh lock" \
   test "$GITNEXUS_ORIGIN_MAIN_SNAPSHOT_LINE" -gt "$GITNEXUS_LOCK_LINE"
 assert_true "checkout SHA is sampled only after acquiring the refresh lock" \
@@ -5600,11 +5600,11 @@ assert_not_contains "same-label rearm avoids redundant GitHub label edit" \
 #
 # All needs-advisor state-label writes now use issue_transition's computed
 # label set; no literal add-label write may remain in lib.sh.
-BARE_NEEDS_ADVISOR_SITES="$(grep -rn -- '--add-label needs-advisor' "$SCRIPT_DIR"/*.sh \
-  | grep -v '\.test\.sh:' | grep -v "^$SCRIPT_DIR/lib.sh:" || true)"
+BARE_NEEDS_ADVISOR_SITES="$(grep -rn -- '--add-label needs-advisor' "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/lib.d/*.sh \
+  | grep -v '\.test\.sh:' | grep -v "^$SCRIPT_DIR/lib.sh:" | grep -v "^$SCRIPT_DIR/lib.d/issue-state.sh:" || true)"
 assert_eq "no direct needs-advisor label writes remain outside lib.sh" \
   "" "$BARE_NEEDS_ADVISOR_SITES"
-LIB_NEEDS_ADVISOR_COUNT="$(grep -c -- '--add-label needs-advisor' "$SCRIPT_DIR/lib.sh" || true)"
+LIB_NEEDS_ADVISOR_COUNT="$(grep -h -- '--add-label needs-advisor' "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR"/lib.d/*.sh | wc -l | tr -d ' ')"
 assert_eq "lib.sh has no direct needs-advisor label writes outside issue_transition" \
   "0" "$LIB_NEEDS_ADVISOR_COUNT"
 # 2026-09-19: the filter this asserts against grew a third clause
@@ -5618,7 +5618,7 @@ assert_eq "lib.sh has no direct needs-advisor label writes outside issue_transit
 # drops either clause, or moves the increment out of this one call, still
 # fails this test.
 assert_eq "give_up_on_issue() clears a stale advisor_ruled_at (and pending_advisor_verdict) AND bumps advisor_episode_seq, all in one atomic state_merge call, before its own needs-advisor add, same guarantee as route_to_advisor()" \
-  "1" "$(awk '/^give_up_on_issue\(\) \{/,/^\}/' "$SCRIPT_DIR/lib.sh" | grep -cF 'del(.advisor_ruled_at, .pending_advisor_verdict, .web_advisor_provider_job_id')"
+  "1" "$(awk '/^give_up_on_issue\(\) \{/,/^\}/' "$SCRIPT_DIR/lib.d/release-close.sh" | grep -cF 'del(.advisor_ruled_at, .pending_advisor_verdict, .web_advisor_provider_job_id')"
 
 # give_up_on_issue(): the same episode-sequence bump, exercised as a real
 # (non-dry-run) write -- the static check just above only proves the source
@@ -5723,15 +5723,15 @@ assert_eq "route_to_recut never edits labels for a child-completed parent" \
 
 # Static guard: no script may add needs-recut outside issue_transition.
 # Exclude *.test.sh (which asserts on resulting gh-log strings, not call sites).
-BARE_NEEDS_RECUT_SITES="$(grep -rn -- '--add-label needs-recut' "$SCRIPT_DIR"/*.sh \
-  | grep -v '\.test\.sh:' | grep -v "^$SCRIPT_DIR/lib.sh:" || true)"
+BARE_NEEDS_RECUT_SITES="$(grep -rn -- '--add-label needs-recut' "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/lib.d/*.sh \
+  | grep -v '\.test\.sh:' | grep -v "^$SCRIPT_DIR/lib.sh:" | grep -v "^$SCRIPT_DIR/lib.d/issue-state.sh:" || true)"
 assert_eq "no direct needs-recut label writes remain outside lib.sh" \
   "" "$BARE_NEEDS_RECUT_SITES"
-LIB_NEEDS_RECUT_COUNT="$(grep -c -- '--add-label needs-recut' "$SCRIPT_DIR/lib.sh" || true)"
+LIB_NEEDS_RECUT_COUNT="$(grep -h -- '--add-label needs-recut' "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR"/lib.d/*.sh | wc -l | tr -d ' ')"
 assert_eq "lib.sh has no direct needs-recut label writes outside issue_transition" \
   "0" "$LIB_NEEDS_RECUT_COUNT"
 assert_eq "route_to_recut() clears a stale recut_refused_at before its own needs-recut add" \
-  "1" "$(awk '/^route_to_recut\(\) \{/,/^\}/' "$SCRIPT_DIR/lib.sh" | grep -cF 'del(.recut_refused_at, .advisor_convergence_pass, .advisor_convergence_pass_attempt, .web_advisor_provider_job_id')"
+  "1" "$(awk '/^route_to_recut\(\) \{/,/^\}/' "$SCRIPT_DIR/lib.d/recut.sh" | grep -cF 'del(.recut_refused_at, .advisor_convergence_pass, .advisor_convergence_pass_attempt, .web_advisor_provider_job_id')"
 
 # --- V102's third recurrence: a state_merge FAILURE must not still move the
 # --- label -----------------------------------------------------------------
@@ -7424,8 +7424,8 @@ assert_eq "cap_slots_remaining: the fail-closed sentinel count clamps a real cap
 # supervise-pipeline.test.sh's scenario 5/6 proves correct multi-line
 # detection rather than forcing the race) -- this is the static half of
 # that same proof: the vulnerable shape is gone from the source.
-LBC_LINE="$(grep -n 'gh api "repos/\$REPO/issues/\$n/comments" --paginate' "$SCRIPT_DIR/lib.sh" | head -1 | cut -d: -f1)"
-LBC_BODY="$(sed -n "${LBC_LINE},+6p" "$SCRIPT_DIR/lib.sh")"
+LBC_LINE="$(grep -n 'gh api "repos/\$REPO/issues/\$n/comments" --paginate' "$SCRIPT_DIR/lib.d/supervisor-inbox.sh" | head -1 | cut -d: -f1)"
+LBC_BODY="$(sed -n "${LBC_LINE},+6p" "$SCRIPT_DIR/lib.d/supervisor-inbox.sh")"
 assert_not_contains "loop_break_check: the escalation-marker read no longer pipes gh api directly into grep -q" \
   "$LBC_BODY" '| grep -qF "$LOOP_ESCALATION_MARKER"'
 assert_contains "...it captures into a variable first, then greps the captured text" \
