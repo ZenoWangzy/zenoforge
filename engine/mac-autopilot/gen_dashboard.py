@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost, live_workers, factory_trend
+import worker_cost, live_workers, factory_trend, founder_reqs
 
 _HERE = os.path.dirname(os.path.realpath(__file__))
 _DEFAULT_ROOT = (_HERE.split("/.scratch-supervisor/autopi-versions/", 1)[0] if "/.scratch-supervisor/autopi-versions/" in _HERE else
@@ -796,9 +796,15 @@ except Exception as e:
 
 try:
     factory_data = factory_trend.collect(AGENT_HOME, units, {w["unit"] for w in wl if w["alive"]},
-        os.path.join(AGENT_HOME, "engine-versions"), os.path.join(A, "factory-trend.cache.json"), traffic=worker_traffic)
+        os.path.join(AGENT_HOME, "engine-versions"), os.path.join(A, "factory-trend.cache.json"), traffic=worker_traffic, max_workers=cfg["max_workers"])
 except Exception as e:
     factory_data = {"error": str(e)[:200]}
+
+try:
+    founder_data = founder_reqs.collect(units, os.environ.get("ZF_REPO", ""), os.path.join(_HERE, "..", "state", "rulings.json"), A,
+                                        AGENT_HOME, os.path.join(_HERE, "..", "lib.sh"))
+except Exception as e:
+    founder_data = {"error": str(e)[:200]}
 
 ISSUE_TITLES_PATH = os.path.join(A, "issue-titles.json")
 
@@ -1125,7 +1131,7 @@ data = {
     "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "repo": os.environ.get("ZF_REPO", ""),
     "live_workers": live_workers_data,
-    "factory": factory_data,
+    "factory": factory_data, "founder_reqs": founder_data,
     "units": units, "workers": wl, "release": release, "cost": cost_data, "cost_ledger": cost_ledger,
     "traffic": traffic, "front": front,
     "release_train": (json.load(open(f"{A}/release-train.json")) if os.path.exists(f"{A}/release-train.json") else {}),

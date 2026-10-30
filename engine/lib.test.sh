@@ -717,6 +717,7 @@ done
 assert_eq 'node-stuck-30min has no daily wake budget' -1 "$(supervisor_alert_daily_budget node-stuck-30min)"
 assert_eq 'landing-failed has no daily wake budget' -1 "$(supervisor_alert_daily_budget landing-failed)"
 assert_eq 'prod-anomaly has no daily wake budget' -1 "$(supervisor_alert_daily_budget prod-anomaly)"
+assert_eq 'founder-req has no daily wake budget' -1 "$(supervisor_alert_daily_budget founder-req)"
 assert_eq 'efficiency-regression uses its per-metric six-hour cadence' -1 "$(supervisor_alert_daily_budget efficiency-regression)"
 assert_eq 'known node-stuck alert wakes every emitted sample' 12 \
   "$(grep -cF $'\tnode-stuck-30min\t' "$INBOX_NODE_HOME/logs/supervisor-wakes.log")"

@@ -332,6 +332,14 @@
   .pc-v span::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--primary); }
   .uc-m { font-size:11px; color:var(--stone); padding-left:8px; }
   .lwgrid-s { grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); }
+  .frq-list { display:flex; flex-direction:column; gap:6px; max-height:420px; overflow:auto; }
+  .frq { display:grid; grid-template-columns:56px minmax(0,1fr) 210px 110px 140px 70px; gap:10px; align-items:center; padding:6px 10px; background:var(--soft); border:1px solid var(--hairline); border-left:3px solid var(--oc,var(--hairline-strong)); border-radius:8px; font-size:13px; min-width:0; }
+  .fq-w { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink); }
+  .fq-x { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--steel); font-size:12px; }
+  .fq-trk { display:flex; align-items:center; gap:3px; color:var(--steel); font-size:12px; white-space:nowrap; }
+  .fq-trk i { width:14px; height:6px; border-radius:3px; background:var(--hairline-strong); flex:none; }
+  .fq-trk i.on { background:var(--ok); }
+  @media (max-width:900px) { .frq { grid-template-columns:56px minmax(0,1fr); } .frq .fq-x, .frq .fq-trk { grid-column:2; } }
   .tgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:10px; }
   .tcard { background:var(--soft); border:1px solid var(--hairline); border-radius:8px; padding:10px 12px; min-width:0; }
   .t-l { color:var(--steel); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -1060,7 +1068,7 @@ function lwCard(w, nowS, mx) {
   const es = el == null ? "none" : el <= typ ? "ok" : el <= 2*typ ? "warn" : "bad";
   const cur = (w.steps||[])[w.step], sc = STEPC[cur] || oc;
   const steps = `<span class="lw-st">${esc(STEPN[cur]||cur||"")}</span>` + (w.steps||[]).map((s,i) => `<i class="${i<w.step?"d":i===w.step?"c":""}" title="${esc(STEPN[s]||s)}"></i>`).join("");
-  const ref = w.pr ? `<a href="${REPO}/pull/${esc(w.pr)}" target="_blank" rel="noopener">PR ${esc(w.pr)}</a>` : w.issue ? `<a href="${REPO}/issues/${esc(w.issue)}" target="_blank" rel="noopener">#${esc(w.issue)}</a>` : "";
+  const ref = w.pr ? `<a href="${repoUrl()}/pull/${esc(w.pr)}" target="_blank" rel="noopener">PR ${esc(w.pr)}</a>` : w.issue ? `<a href="${repoUrl()}/issues/${esc(w.issue)}" target="_blank" rel="noopener">#${esc(w.issue)}</a>` : "";
   const hs = {ok:"最近 5 分钟内有输出", warn:"5–30 分钟没有输出", bad:"超过 30 分钟没有输出，可能卡住", none:"无日志可判断"}[w.health] || "";
   return `<div class="lwc s-${sk(w.health)}" style="--oc:${oc}" title="${esc(on+" · "+(w.tip||"")+(el==null?"":" · 已用 "+fDur(el)))}">
     <span class="lw-be">${esc(w.backend||"")}</span><span class="lw-t">${esc(w.task||"")}</span><i class="lw-hb" title="${esc(hs)}"></i>
@@ -1095,7 +1103,7 @@ function archivePanel(D) {
   const mw = Math.max(1, ...A.map(a => a.wall_s || 0)), mx = maxUse(A);
   const legend = Object.values(OUTC).map(([n,k]) => `<span class="lwl" style="--oc:${k==="run"?"var(--primary)":`var(--${k})`}"><i></i>${n}</span>`).join("");
   const cards = A.map(a => { const k = a.outcome, c = k==="run" ? "var(--primary)" : `var(--${k})`;
-    const ref = a.pr ? `<a href="${REPO}/pull/${esc(a.pr)}" target="_blank" rel="noopener">PR ${esc(a.pr)}</a>` : a.issue ? `<a href="${REPO}/issues/${esc(a.issue)}" target="_blank" rel="noopener">#${esc(a.issue)}</a>` : "";
+    const ref = a.pr ? `<a href="${repoUrl()}/pull/${esc(a.pr)}" target="_blank" rel="noopener">PR ${esc(a.pr)}</a>` : a.issue ? `<a href="${repoUrl()}/issues/${esc(a.issue)}" target="_blank" rel="noopener">#${esc(a.issue)}</a>` : "";
     return `<div class="lwc lwa" style="--oc:${c}" title="${esc((OUTC[k]||[""])[0]+" · "+a.stage+" · "+a.tip+" · "+fDur(a.wall_s==null?null:Math.round(a.wall_s))+(a.end_epoch?" · "+fDur(nowS-a.end_epoch)+"前结束":""))}">
       <span class="lw-be">${esc(a.backend==="codex"?"cx":(a.backend||"").slice(0,2))}</span><span class="lw-t">${esc(a.task)}</span><span class="lw-ref">${ref}</span>
       <div class="lw-bar" style="--s:var(--steel)"><i style="width:${Math.max(2,100*(a.wall_s||0)/mw)}%"></i></div><span class="lw-el">${a.wall_s==null?"—":fDur(Math.round(a.wall_s))}</span>
@@ -1129,11 +1137,33 @@ function trendPanel(D) {
   return panel("arrow", "工厂是否在变好", `<div class="tgrid">${T.series.map(s => trendCard(s, T.days, T.milestones)).join("")}</div>
     <div class="lg"><span><i style="background:var(--hairline-strong);width:2px"></i>引擎里程碑（悬停看内容）</span><span><i style="background:var(--ok)"></i>比前 7 天好</span><span><i style="background:var(--bad)"></i>比前 7 天差</span></div>`);
 }
+function founderPanel(D) {
+  const R = D.founder_reqs;
+  if (!R || R.error || !Array.isArray(R.items)) return panel("orders", "创始人需求", emptyMsg("需求台账不可用" + (R && R.error ? "：" + R.error : "")));
+  const st = R.stages || [], nowS = Math.floor(Date.now()/1000), last = st.length - 1;
+  const chips = st.map((n, i) => `<span class="chip s-${i===last?"ok":"none"}">${esc(n)} ${R.items.filter(x => x.stage === i).length}</span>`).join(" ");
+  const rows = R.items.map(x => { const c = x.stage === last ? "var(--ok)" : x.blocker ? "var(--bad)" : "var(--hairline-strong)";
+    return `<div class="frq" style="--oc:${c}"><a href="${repoUrl()}/issues/${esc(x.issue)}" target="_blank" rel="noopener">#${esc(x.issue)}</a>
+      <span class="fq-w" title="${esc((x.from_ruling ? "创始人原话：" : "issue 标题：") + x.text)}">${esc(x.text)}</span>
+      <span class="fq-trk" title="${esc(st.join(" → "))}">${st.map((n, i) => `<i class="${i<=x.stage?"on":""}"></i>`).join("")}${esc(st[x.stage])}</span>
+      <span class="fq-x" title="负责人">${esc(x.owner)}</span><span class="fq-x" title="卡点">${esc(x.blocker || "—")}</span>
+      <span class="fq-x" title="本阶段由流水线事件或验收结果确认的时间">${x.verified_epoch ? fDur(Math.max(0, nowS - x.verified_epoch)) + "前" : "未确认"}</span></div>`; }).join("");
+  return panel("orders", "创始人需求", `<div class="lwbar"><span class="lwlg">${chips}</span></div>${R.items.length ? `<div class="frq-list">${rows}</div>` : emptyMsg("没有未完成的创始人需求")}`,
+    R.partial ? stChip("bad", "GitHub 不可用，仅列 units") : "");
+}
+function roiLinePanel(D) {
+  const T = D.factory && D.factory.trend;
+  if (!T || !Array.isArray(T.daily)) return panel("arrow", "每日 ROI", emptyMsg("ROI 数据不可用"));
+  const hit = (T.retro || []).slice(-1)[0];
+  return panel("arrow", "每日 ROI", `<div class="tgrid">${T.daily.map(s => trendCard(s, T.days, T.milestones)).join("")}</div>
+    <div class="lg"><span>规则：每张合入单花费连续 3 天上升 → 开复盘；${hit ? `最近触发 ${esc(hit.slice(5))}` : "窗口内未触发"}。花费按 token（多数记录无价格），合入单代替验收数。</span></div>`,
+    hit === T.days[T.days.length - 1] ? stChip("bad", "触发复盘") : "");
+}
 function vOverview(D) {
   const tiles = MODULES.filter(m => ["health","cost","host"].includes(m.id)).map(m => { const s = safeSum(m, D);
     return `<button class="tile s-${sk(s.s)}" data-m="${m.id}" type="button"><div class="tile-h">${ic(m.icon)}${esc(m.nm)}<span class="si" data-tip="${esc(SL[sk(s.s)])}">${ic(sk(s.s))}</span></div>
       <div class="tile-v"><b>${s.v}</b>${s.u?`<span>${esc(s.u)}</span>`:""}</div><div class="sub">${esc(s.l)}</div>${tally(s.st)}</button>`; });
-  return `<div class="stack16">${panel("arrow","流水线", pipeStrip(D), (FR(D).errors||{}).stages ? stChip("bad","阶段计数不可用") : "")}${livePanel(D)}<div class="tiles" style="--cols:${tiles.length}">${tiles.join("")}</div></div>`;
+  return `<div class="stack16">${founderPanel(D)}${roiLinePanel(D)}${panel("arrow","流水线", pipeStrip(D), (FR(D).errors||{}).stages ? stChip("bad","阶段计数不可用") : "")}${livePanel(D)}<div class="tiles" style="--cols:${tiles.length}">${tiles.join("")}</div></div>`;
 }
 function vRoi(D) { return `<div class="stack16">${archivePanel(D)}${trendPanel(D)}</div>`; }
 function sumRoi(D) { const F = D.factory, n = F && Array.isArray(F.archive) ? F.archive.length : null; return {s:"none", v: n==null ? "—" : n, l:"最近完成"}; }

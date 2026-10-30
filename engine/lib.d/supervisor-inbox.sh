@@ -15,6 +15,8 @@ supervisor_alert_daily_budget() {
     # exits at the observed factory rate (84 finished rounds in 26h), which is the
     # silence the head supervisor polled manually to escape.
     worker-exit|unit-harvest|landing|alert-file) printf '%s\n' -1 ;;
+    # Uncapped: one line per founder-requirement stage change (founder_reqs.py); the push to the founder must not hit the 20/day default.
+    founder-req) printf '%s\n' -1 ;;
     # Uncapped: one line per exited hand owner and unresolved step (hand-exit-handoff.sh ledger), never a loop.
     hand-exit-handoff) printf '%s\n' -1 ;;
     prod-anomaly) printf '%s\n' -1 ;; # Every new signature, rate spike, restart, or OOM wakes the supervisor.
