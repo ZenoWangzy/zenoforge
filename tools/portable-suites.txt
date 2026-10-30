@@ -1,0 +1,26 @@
+# Suites that exercise the platform layer (process identity, locks, supervisors, the unit loop): one path per line.
+# PORTABLE_ONLY=1 tools/run-engine-tests.sh runs only these. They run on every OS leg (macos-intel, wsl2, and later the pidfile-runner leg).
+# Later portability tickets append their own suites here (platform-env, proc, hostinfo, doctor, portable-shim/*, unitgen, coord).
+engine/lib.test.sh
+engine/execution-admission.test.sh
+engine/execution-admission-metrics.test.sh
+engine/mac-autopilot/start.test.sh
+engine/mac-autopilot/scheduler.test.sh
+engine/mac-autopilot/scheduler-gates.test.sh
+engine/bin/worker.test.sh
+engine/call-profile.test.sh
+engine/dispatch-codex.test.sh
+engine/gitnexus-wrapper.test.sh
+engine/hand-completion-refill.test.sh
+engine/hold.test.sh
+engine/issue-pipeline.test.sh
+engine/land-queue-owner.test.sh
+engine/night/pipeline-codex-pid.test.sh
+engine/optimistic-merge.test.sh
+engine/run-recut.test.sh
+engine/run-tick.test.sh
+engine/runtime-reload.test.sh
+engine/supervise-exceptions.test.sh
+engine/supervise-pipeline.test.sh
+engine/sweep-brief-banners.test.sh
+engine/worktree-lifecycle.test.sh
