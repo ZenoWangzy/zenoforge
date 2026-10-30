@@ -157,7 +157,7 @@ test('start/stop/status/upgrade/rollback/uninstall drive systemctl and keep stat
   fs.writeFileSync(path.join(s.root, 'calls.log'), ''); // reset the call log
   cmd.stop({}, s.io);
   assert.match(s.calls(), /systemctl --user disable --now zenoforge-agent\.timer/);
-  cmd.start({}, s.io);
+  await cmd.start({}, s.io);
   assert.match(s.calls(), /systemctl --user enable --now zenoforge-agent\.timer/);
   s.lines.length = 0;
   cmd.status({}, s.io);
@@ -244,4 +244,18 @@ test('dry run shows the scheduler plan for systemd, launchd and foreground befor
   assert.doesNotMatch(ld, /com\.zenoforge\.agent\.plist/, 'macOS gets the unit loop only');
   const fg = await run3('foreground');
   assert.match(fg, /\[dry-run\] SPAWN bash \S+\/autopi-live\/loop\.sh/);
+});
+
+test('start after init --no-scheduler is the first enable: it needs the confirmation and flips the pipeline on', async () => {
+  const s = sandbox();
+  await cmd.init({ repo: REPO, yes: true, noScheduler: true }, s.io);
+  assert.match(s.calls(), /variable set AGENT_PIPELINE --repo \S+ --body off/);
+  assert.doesNotMatch(s.calls(), /systemctl --user enable/);
+  await assert.rejects(cmd.start({}, s.io), /--yes/);
+  assert.doesNotMatch(s.calls(), /systemctl --user enable/);
+  await cmd.start({ yes: true }, s.io);
+  assert.match(s.calls(), /systemctl --user enable --now zenoforge-agent\.timer/);
+  assert.match(s.calls(), /variable set AGENT_PIPELINE --repo \S+ --body triage/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(s.agent, 'cli.json'), 'utf8')).scheduler, 'systemd');
+  assert.ok(fs.existsSync(path.join(s.unitDir, 'zenoforge-agent.service')));
 });

@@ -77,7 +77,7 @@ async function main(argv) {
         return opts.dryRun && r.doctorFailures ? 1 : 0; // a plan that a real run could not carry out is not a success
       }
       case 'doctor': return cmd.doctor(opts, io) ? 0 : 1;
-      case 'start': cmd.start(opts, io); return 0;
+      case 'start': await cmd.start(opts, io); return 0;
       case 'stop': cmd.stop(opts, io); return 0;
       case 'status': cmd.status(opts, io); return 0;
       case 'logs': {

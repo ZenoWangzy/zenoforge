@@ -113,6 +113,15 @@ function writeOnce(act, file, content, mode, log) {
   act.write(file, content, { mode });
 }
 
+/** The one gate before anything is switched on: an interactive yes, or --yes. */
+async function confirmRisk(opts, io, message) {
+  if (opts.yes) return;
+  if (!io.interactive) throw new UserError('Re-run with --yes to confirm the warning above (or use a terminal).');
+  const p = await import('@clack/prompts');
+  const ok = await p.confirm({ message, initialValue: false });
+  if (p.isCancel(ok) || !ok) throw new UserError('Not confirmed. Nothing was changed.');
+}
+
 // ---------------------------------------------------------------------------------------------- init
 
 export async function init(opts, io) {
@@ -209,11 +218,7 @@ export async function init(opts, io) {
   }
   log(RISK_WARNING);
   const enable = scheduler !== 'none';
-  if (!opts.dryRun && !opts.yes) {
-    if (!interactive) throw new UserError('Re-run with --yes to confirm the warning above (or use a terminal).');
-    const ok = bail(await p.confirm({ message: enable ? 'I understand. Install and switch the factory on now?' : 'I understand. Install (nothing will be switched on)?', initialValue: false }));
-    if (!ok) throw new UserError('Not confirmed. Nothing was changed.');
-  }
+  if (!opts.dryRun) await confirmRisk(opts, io, enable ? 'I understand. Install and switch the factory on now?' : 'I understand. Install (nothing will be switched on)?');
 
   // 6. execute
   act.mkdir(agentHome);
@@ -296,12 +301,21 @@ function requireState(io) {
   return { state, ctx, backend: backends[kind] };
 }
 
-export function start(opts, io) {
+export async function start(opts, io) {
   const { ctx, backend, state } = requireState(io);
   const act = new Actions({ dryRun: opts.dryRun, log: io.log, runner: io.runner });
-  if (state.scheduler === 'none') backend.install(act, ctx); // --no-scheduler left the units uninstalled
+  const firstEnable = state.scheduler === 'none'; // init --no-scheduler: this is the moment something gets switched on
+  if (firstEnable) {
+    io.log(RISK_WARNING);
+    if (!opts.dryRun) await confirmRisk(opts, io, 'I understand. Install the scheduler and switch the factory on now?');
+    backend.install(act, ctx);
+  }
   const r = backend.enable(act, ctx);
   if (!r.ok) throw new UserError(`could not start: ${(r.stderr || '').trim().split('\n')[0] || 'see the command output above'}`);
+  if (firstEnable) {
+    gh.setVariable(act, state.repo, 'AGENT_PIPELINE', 'triage');
+    act.write(statePath(ctx.agentHome), `${JSON.stringify({ ...state, scheduler: backend.name }, null, 2)}\n`, { mode: 0o600 });
+  }
   io.log('started');
 }
 
