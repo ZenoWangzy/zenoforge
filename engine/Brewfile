@@ -1,0 +1,16 @@
+# macOS dependencies: brew bundle --file=engine/Brewfile
+# engine/platform-env.sh puts the gnubin directories of these formulae first on PATH for the engine's own processes only.
+brew "bash"        # 5.x; the system bash is 3.2
+brew "coreutils"   # gnubin: date, stat, timeout, base64, readlink, nproc, mv -T ...
+brew "findutils"   # gnubin: find, xargs
+brew "grep"        # gnubin: grep -P
+brew "gnu-sed"     # gnubin: sed
+brew "gnu-tar"     # gnubin: tar
+brew "gawk"        # optional
+brew "util-linux"  # keg-only; used for setsid
+brew "flock"       # homebrew/core, bottled for arm64 and Intel
+brew "jq"
+brew "gh"
+brew "git"
+brew "node@22"
+brew "python@3.12" # or the Xcode CLT python3 (3.9+)
