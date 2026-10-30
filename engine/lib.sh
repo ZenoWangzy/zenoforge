@@ -5,6 +5,7 @@
 
 _AGENT_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$_AGENT_LIB_DIR/closing-keywords.sh"
+[[ -r "$_AGENT_LIB_DIR/platform-env.sh" ]] && source "$_AGENT_LIB_DIR/platform-env.sh"
 # Test fixtures that copy lib.sh alone (nine suites) do not carry systemd/; a real checkout always does.
 [[ -r "$_AGENT_LIB_DIR/systemd/build-capacity-gate.sh" ]] && source "$_AGENT_LIB_DIR/systemd/build-capacity-gate.sh"
 [[ -r "$_AGENT_LIB_DIR/ci-runner-disk-floor.sh" ]] && source "$_AGENT_LIB_DIR/ci-runner-disk-floor.sh"
