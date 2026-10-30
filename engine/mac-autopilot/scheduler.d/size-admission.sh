@@ -53,12 +53,19 @@ size_admission_reject() { # unit lines branch context head estimate actual check
   return 1
 }
 size_admission_recheck_impl() { # unit dir branch context [initial-head] [refs-current]
-  local lines base_branch head="${5:-}" files
+  local lines base_branch head="${5:-}" files pr
   [[ -n "$2" && -n "$3" ]] || return 0
   base_branch="$(unit_field "$1" '.stacked_on_branch // "main"')"
   lines="$(changed_lines_of "$2" "$3" "$base_branch" "${6:-false}")"
   [[ "$lines" =~ ^[0-9]+$ ]] || return 0
-  files="$(changed_files_of "$2" "$3" "$base_branch")"
+  # PR 自己的文件清单（GitHub 权威，不依赖本地 refs 的新旧）；本地 refs 过期时 merge-base 退回旧提交，
+  # 把合入分支的 main 改动算进来（#4631 实 13 个文件却记成 362）。超过 100 个文件 gh 会截断，退回 git diff。
+  pr="$(unit_field "$1" '.pr // empty')"
+  files=""
+  if [[ "$pr" =~ ^[0-9]+$ ]]; then
+    files="$(gh pr view "$pr" --json files --jq '.files[].path' | jqf -Rsc '[split("\n")[] | select(length > 0)]' || true)"
+  fi
+  jqf -e 'type == "array" and length > 0 and length < 100' <<<"$files" >/dev/null 2>&1 || files="$(changed_files_of "$2" "$3" "$base_branch")"
   if jqf -e 'type == "array"' <<<"$files" >/dev/null 2>&1; then
     set_unit "$1" ".footprint=$files | .footprint_source=\"pr-diff\""
   fi

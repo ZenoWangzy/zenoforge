@@ -38,7 +38,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 N="${ARGS[0]:?usage: run-triage.sh [--dry-run] [--batch-result <json-file>] <issue-number>}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
 if [ -n "$BATCH_RESULT_FILE" ] && ! triage_result_matches_schema "$BATCH_RESULT_FILE" "$SCRIPT_DIR/prompts/triage.schema.json"; then

@@ -62,7 +62,7 @@ args=(exec -C "$cwd" "${mcp_off[@]}" -m "${CODEX_MODEL:-gpt-6-luna}" -c "model_r
 # Each run lives in its own cgroup scope with a memory cap, so one runaway tool (2026-10-24: three shellcheck runs
 # took 8.7 GB and pushed memory pressure to 32%) is OOM-killed inside its job instead of freezing WSL.
 # One CPU budget across agent runs (maintainer 10-29 [...]); shared with dispatch-codex.sh.
-source "${ZF_ENGINE_DIR:-$HOME/.zenoforge/checkout/engine}/thread-budget.sh" && agent_thread_budget
+source "${ZF_ENGINE_DIR:-$HOME/.zenoforge/engine-live}/thread-budget.sh" && agent_thread_budget
 scope="luna-${key//[^A-Za-z0-9_-]/-}-$$"
 TMPDIR="$root/tmp/$key" PATH="$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
   systemd-run --user --scope --quiet --unit="$scope" -p MemoryMax="${LUNA_MEM_MAX:-4G}" -p CPUQuota="${LUNA_CPU_QUOTA:-200%}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo 100)" -p MemorySwapMax=0 -p OOMPolicy=continue -- \

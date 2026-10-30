@@ -10,7 +10,7 @@ set -euo pipefail
 base="$1"
 head="$2"
 
-manifest_path=engine/state/rule-files.json
+manifest_path="${ZF_PACK_REL:-engine}/state/rule-files.json"
 rule_fix_hint='规则改动由 supervisor 落地：direct-main 规则通道，或 supervisor 合入的 PR 带 Rule-Replay 回放报告；unit PR 即使带回放报告也会拒绝。健康告警请修行为，并挂到根因票下。'
 
 # 清单优先取被落地 head 的树；head 删除清单时退回 base，使删除本身仍算触碰清单内路径。

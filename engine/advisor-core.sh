@@ -58,7 +58,7 @@
 # the single-ticket path): every function here takes its issue number and
 # JSON explicitly as arguments, none of it reads run-advisor.sh's own
 # script-global variables.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
 

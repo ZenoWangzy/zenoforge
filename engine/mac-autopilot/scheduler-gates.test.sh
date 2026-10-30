@@ -265,7 +265,7 @@ cat > "$r" <<'EOF'
 Review report without a verdict line.
 
 ```review-findings
-{"findings":[{"id":"F3","severity":"P1","file":"packages/example-pack/src/order-entry.ts","line":945,"rule":"Defect","status":"open","summary":"order-revision-3618 fails for the stated region.","introduced_by":"candidate","base_evidence":"The failing revision is present on the reviewed candidate."}],"dispositions":[]}
+{"findings":[{"id":"F3","severity":"P1","file":"packages/example-pack/src/order-entry.ts","line":945,"rule":"Defect","status":"open","summary":"order-revision-3618 fails for the stated region.","introduced_by":"candidate","base_evidence":"The failing revision is present on the reviewed candidate.","rerun_command":"pnpm vitest run a","rerun_output":"FAIL a expected 1 got 2"}],"dispositions":[]}
 ```
 EOF
 [[ "$(verdict_of "$r")" == NOT_READY ]] || fail 'missing verdict with an open P1 finding was not classified NOT_READY'
@@ -337,7 +337,7 @@ cat > "$sup/$issue_2741_report" <<'EOF'
 Review of order-revision-3618. The deterministic self-check was red.
 
 ```review-findings
-{"findings":[{"id":"F3","severity":"P1","file":"packages/example-pack/src/order-entry.ts","line":945,"rule":"Defect","status":"open","summary":"order-revision-3618 fails for the stated region.","introduced_by":"candidate","base_evidence":"The failing revision is present on the reviewed candidate."}],"dispositions":[]}
+{"findings":[{"id":"F3","severity":"P1","file":"packages/example-pack/src/order-entry.ts","line":945,"rule":"Defect","status":"open","summary":"order-revision-3618 fails for the stated region.","introduced_by":"candidate","base_evidence":"The failing revision is present on the reviewed candidate.","rerun_command":"pnpm vitest run a","rerun_output":"FAIL a expected 1 got 2"}],"dispositions":[]}
 ```
 EOF
 issue_2741_gh_saved="$(declare -f gh 2>/dev/null || true)"; ISSUE_2741_COMMENTS=()
@@ -403,9 +403,9 @@ supervisor_needs_info issue-2744 'Which contract version is required?' 'arbiter 
 eval "$scheduler_issue_transition_saved"
 if [[ -n "$needs_info_gh_saved" ]]; then eval "$needs_info_gh_saved"; else unset -f gh; fi
 
-good_block='{"findings":[{"id":"F1","severity":"P1","file":"src/a.ts","line":42,"rule":"Defect","status":"open","summary":"x","introduced_by":"candidate","base_evidence":"New branch is absent from origin/main."},
-{"id":"F2","severity":"P0","file":"src/路径 c.ts","line":9,"rule":"Spec","status":"resolved","summary":"fixed \"quoted\"","introduced_by":"pre_existing","base_evidence":"The same behavior is present at src/路径 c.ts:7 on origin/main."}],"dispositions":[]}'
-good_block="$(jq -c '.findings += [{id:"F3",severity:"P3",file:"src/style.ts",line:3,rule:"Maintainability",status:"open",summary:"Simplify this helper.",introduced_by:"candidate",base_evidence:"The helper was added on this branch."}]' <<<"$good_block")"
+good_block='{"findings":[{"id":"F1","severity":"P1","file":"src/a.ts","line":42,"rule":"Defect","status":"open","summary":"x","introduced_by":"candidate","base_evidence":"New branch is absent from origin/main.","rerun_command":"pnpm vitest run a","rerun_output":"FAIL a expected 1 got 2"},
+{"id":"F2","severity":"P0","file":"src/路径 c.ts","line":9,"rule":"Spec","status":"resolved","summary":"fixed \"quoted\"","introduced_by":"pre_existing","base_evidence":"The same behavior is present at src/路径 c.ts:7 on origin/main.","rerun_command":"pnpm vitest run a","rerun_output":"FAIL a expected 1 got 2"}],"dispositions":[]}'
+good_block="$(jq -c '.findings += [{id:"F3",severity:"P3",file:"src/style.ts",line:3,rule:"Maintainability",status:"open",summary:"Simplify this helper.",introduced_by:"candidate",base_evidence:"The helper was added on this branch.",rerun_command:"pnpm lint",rerun_output:"style.ts:3 helper"}]' <<<"$good_block")"
 findings_report rf-1-T1.md "$good_block"
 harvest_rc pr-f1 rf-1-T1.md
 [[ "$(field pr-f1 .stage)" == repair-pending ]] || fail 'a rejection with a findings block did not reach repair-pending'
@@ -441,6 +441,18 @@ findings_report rf-bad-canonical-T1.md "$bad_canonical"
 harvest_rc pr-bad-canonical rf-bad-canonical-T1.md
 [[ "$(field pr-bad-canonical '.review_findings[0].block')" == missing ]] \
   || fail 'a canonical finding without base evidence was accepted'
+# A canonical finding without a rerunnable command and its output is dropped, not counted; the drop stays visible.
+# Pre-contract objects (no rerun fields at all) take the same path: accepted as a block, every finding dropped.
+unverified_block="$(jq -c '.findings += [(.findings[0] | .id="F9" | del(.rerun_output)), (.findings[0] | .id="F8" | .rerun_command="  " | del(.rerun_output))]' <<<"$good_block")"
+findings_report rf-drop-T1.md "$unverified_block"
+harvest_rc pr-drop rf-drop-T1.md
+[[ "$(field pr-drop '.review_findings[0] | [.block, (.findings|map(.id)|join(",")), (.all_findings|map(.id)|join(",")), .dropped, (.dropped_findings|map(.id)|join(","))] | tojson')" == '["ok","F1,F2","F1,F2,F3",2,"F9,F8"]' \
+  && "$(field pr-drop '.review_findings[0].dropped_findings[0].reason')" == 'no rerunnable evidence: missing rerun_output' ]] \
+  || fail "findings without rerun evidence were not dropped and counted: $(field pr-drop '.review_findings[0] | tojson')"
+findings_report rf-precontract-T1.md "$(jq -c '.findings |= map(del(.rerun_command,.rerun_output))' <<<"$good_block")"
+harvest_rc pr-precontract rf-precontract-T1.md
+[[ "$(field pr-precontract '.review_findings[0] | [.block, (.findings|length), .dropped] | tojson')" == '["ok",0,3]' ]] \
+  || fail 'a pre-contract report was not dropped finding by finding'
 { printf 'VERDICT: REQUEST-CHANGES\n\n%sreview-findings\n[{"id":"F1","severity":"P1","file":"a.ts","line":1,"status":"open"}]\n' "$fence"; } > "$sup/rf-open-T1.md"
 harvest_rc pr-fopen rf-open-T1.md
 [[ "$(field pr-fopen '.review_findings[0].block')" == missing ]] || fail 'a findings block that is never closed was accepted'

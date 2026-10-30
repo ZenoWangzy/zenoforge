@@ -386,7 +386,7 @@ source "$SCRIPT_DIR/lib.sh"
 
 # 2026-10-04: blocked/missing/deferred check conclusions send no mail; the maintainer contract refused every
 # attempt and each refusal flipped mail-credential BROKEN. The issue comment carries the status.
-if sed -n '/blocked|missing|deferred)/,/return 0/p' "$SCRIPT_DIR/lib.sh" | grep -q 'notify_'; then
+if sed -n '/blocked|missing|deferred)/,/return 0/p' "$SCRIPT_DIR/lib.d/conclude-run.sh" | grep -q 'notify_'; then
   echo 'not ok - blocked/missing/deferred check conclusions send no mail' >&2
   exit 1
 fi

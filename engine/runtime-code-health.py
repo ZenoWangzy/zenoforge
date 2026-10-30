@@ -9,9 +9,13 @@ import sys
 import time
 
 
+def lib_paths(root):
+    return [root / 'engine/lib.sh', *sorted((root / 'engine/lib.d').glob('*.sh'))]
+
+
 def signature(script, root, head, home):
     rows = head + '\n'
-    for path in (script, root / 'engine/lib.sh', root / 'engine/runtime-reload.sh'):
+    for path in (script, *lib_paths(root), root / 'engine/runtime-reload.sh'):
         rows += hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + str(path) + '\n'
     capacity = home / 'capacity.env'
     if capacity.is_file():
@@ -70,7 +74,7 @@ def scan(root, home, proc=Path('/proc'), now=None):
                         since = prior.get(key, now)
             if not registered:
                 # Bootstrap old processes without a registration; compare loaded files to start time.
-                changed = [p.stat().st_mtime for p in (script, root / 'engine/lib.sh')
+                changed = [p.stat().st_mtime for p in (script, *lib_paths(root))
                            if p.stat().st_mtime > started]
                 if changed:
                     since = prior.get(key, min(changed))

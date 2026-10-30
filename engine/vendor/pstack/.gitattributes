@@ -1,0 +1,2 @@
+# Vendored upstream text keeps its own whitespace (git diff --check in landing preflight).
+* -whitespace

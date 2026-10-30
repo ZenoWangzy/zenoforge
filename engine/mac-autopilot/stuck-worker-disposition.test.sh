@@ -228,4 +228,14 @@ STUCK_CONFIRM_MINUTES=$CONFIRM stuck_worker_disposition
 kill -0 "$pid6" 2>/dev/null || fail "missing scorecard must be a no-op"
 kill -TERM -- "-$pid6" 2>/dev/null || true
 
+# ---- 7. 盲区：不在 wip_age 点名名单、日志静默超过 slow_worker_minutes 的活 worker 也被探测并停止 --------
+pid8="$(spawn_worker pr-55-unnamed)"
+seed_log pr-55
+touch -d '3 hours ago' "$sup/worker-pr-55.log"
+scorecard HEALTHY > "$A/node-health.json"
+write_workers "[$(mk_worker pr-55 "$pid8")]"
+write_units "$(mk_unit pr-55 "$(probe_update 90 "$(fp_of pr-55 "$pid8")")")" "$(mk_unit pr-88)" "$(mk_unit pr-99)"
+STUCK_CONFIRM_MINUTES=$CONFIRM stuck_worker_disposition
+wait_dead "$pid8" || fail "unnamed worker with a log silent past slow_worker_minutes must be stopped"
+
 echo "stuck-worker-disposition.test.sh: all assertions passed"

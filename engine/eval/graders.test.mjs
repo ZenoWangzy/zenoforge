@@ -32,7 +32,8 @@ test('advisor requires every decision fact, allows synonyms, rejects negated cla
 test('review needs an explicit verdict and the known defect file for rejection', () => {
   const expected = { verdict: 'NOT_READY', defectFiles: ['src/write.ts'] };
   const candidate = { id: 'F1', severity: 'P1', file: 'src/write.ts', line: 12, rule: 'Defect', status: 'open',
-    summary: 'Unauthorized writes cross the tenant boundary.', introduced_by: 'candidate', base_evidence: 'The base has no path to this write.' };
+    summary: 'Unauthorized writes cross the tenant boundary.', introduced_by: 'candidate', base_evidence: 'The base has no path to this write.',
+    rerun_command: 'node write.test.mjs', rerun_output: 'FAIL cross-tenant write allowed' };
   const report = (verdict, finding = candidate) => `VERDICT: ${verdict}\n\n\`\`\`review-findings\n${JSON.stringify({ findings: [finding], dispositions: [] })}\n\`\`\``;
   assert.equal(gradeReview(report('NOT_READY'), expected).pass, true);
   assert.equal(gradeReview('NOT_READY in src/read.ts', expected).pass, false);
@@ -41,6 +42,8 @@ test('review needs an explicit verdict and the known defect file for rejection',
   assert.equal(gradeReview(report('READY', preExisting), { verdict: 'READY' }).pass, true);
   assert.equal(gradeReview(report('APPROVE', preExisting), { verdict: 'READY' }).pass, true);
   assert.equal(gradeReview(report('NOT_READY', preExisting), { verdict: 'NOT_READY', defectFiles: ['src/write.ts'] }).pass, false);
+  const unverified = { ...candidate, rerun_output: '' };
+  assert.equal(gradeReview(report('NOT_READY', unverified), expected).pass, false, 'a finding without rerun output is not a blocker');
   const missingBaseEvidence = { ...candidate, base_evidence: '' };
   assert.equal(gradeReview(report('NOT_READY', missingBaseEvidence), expected).pass, false);
   const authorDispositionInReview = `VERDICT: READY\n\n\`\`\`review-findings\n${JSON.stringify({ findings: [], dispositions: [{ id: 'F1', disposition: 'fixed', reason: 'already fixed' }] })}\n\`\`\``;

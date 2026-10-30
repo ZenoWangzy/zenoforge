@@ -1,0 +1,10 @@
+repo: https://github.com/cursor/plugins
+path: pstack/
+sha: c742dd61706fbacc1b95f1a20b7b988cf096ce6c
+commit_date: 2026-10-27
+version: 0.15.36
+license: MIT (LICENSE)
+vendored: 2026-10-30
+included: skills/ agents/ automations/benny/ LICENSE plugin.json
+excluded: docs/ images assets/ README.md
+upgrade: copy the included paths at the new sha, update this file, review with git diff

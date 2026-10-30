@@ -404,7 +404,7 @@ function pairedFixture({ identity = 'codex:fixture:high', session = 'fixture-ses
   writeFileSync(stub, '#!/usr/bin/env bash\nexec node "$(dirname "$0")/stage-call.mjs" "$@"\n');
   const triage = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
   const readyReview = 'VERDICT: READY\n\n```review-findings\n{"findings":[],"dispositions":[]}\n```';
-  const rejectedReview = 'VERDICT: NOT_READY\n\n```review-findings\n{"findings":[{"id":"F1","severity":"P1","file":"value.mjs","line":1,"rule":"Defect","status":"open","summary":"The known value defect remains.","introduced_by":"candidate","base_evidence":"The base value at value.mjs:1 is zero."}],"dispositions":[]}\n```';
+  const rejectedReview = 'VERDICT: NOT_READY\n\n```review-findings\n{"findings":[{"id":"F1","severity":"P1","file":"value.mjs","line":1,"rule":"Defect","status":"open","summary":"The known value defect remains.","introduced_by":"candidate","base_evidence":"The base value at value.mjs:1 is zero.","rerun_command":"node value.test.mjs","rerun_output":"FAIL value is 1"}],"dispositions":[]}\n```';
   writeFileSync(script, `
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';

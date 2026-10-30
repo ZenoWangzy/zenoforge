@@ -232,7 +232,7 @@ if (($#)); then
     [[ -f "$f" ]] && REAL_SCRIPTS+=("$f")
   done
 else
-  for f in "$SCRIPT_DIR"/*.sh; do
+  for f in "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/lib.d/*.sh; do
     [[ "$f" == *.test.sh ]] || REAL_SCRIPTS+=("$f")
   done
 fi

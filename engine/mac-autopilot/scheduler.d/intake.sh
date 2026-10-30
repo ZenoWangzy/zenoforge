@@ -39,7 +39,8 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序
       query_pids+=("$!"); query_files+=("$query_file"); query_lanes+=("$lane")
       gh_par_throttle query_pids
       index=$((index + 1))
-    done < <(jqf -r '[((.issue_intake.labels // ["pipeline-system"])[] | ["direct-main", .]), ((.issue_intake.product_labels // ["ready-for-agent"])[] | ["pr", .])] | .[] | @tsv' <<<"$CFG")
+    # 10-30 maintainer (#4724): pipeline-system tickets are the supervisor's (opt feeder), never this intake; no direct-main label by default.
+    done < <(jqf -r '[((.issue_intake.labels // [])[] | ["direct-main", .]), ((.issue_intake.product_labels // ["ready-for-agent"])[] | ["pr", .])] | .[] | @tsv' <<<"$CFG")
     for pid in "${query_pids[@]}"; do wait "$pid" || :; done
     {
       for ((index = 0; index < ${#query_files[@]}; index++)); do

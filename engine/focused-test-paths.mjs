@@ -638,6 +638,7 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
   }
 
   for (const path of changedPaths) {
+    if (path.startsWith(`${PACK_PREFIX}vendor/`)) continue; // vendored upstream text has no pipeline test of ours
     if (path.startsWith(PACK_PREFIX) && /\.(?:sh|[cm]?js|ts|py)$/.test(path)) {
       for (const candidate of CROSS_SCRIPT_TESTS) {
         if (tracked.has(candidate)) tests.add(candidate);

@@ -337,6 +337,10 @@ INTEGRATION_RULE="改动涉及集成测试（*.integration.test.*、tests/integr
 # 且其测量窗口跨过了已上线的机制。eval 侧同一条规则在 prompts/implement-contract.md。
 OPT_PREMISE_RULE='
 优化类 ticket（声称浪费、延迟或竞态并给了量化数字）：第一步用现有数据复现这些数字——issue 自带的证据、账本、本 checkout 的文件与 git 历史，不发新的外部请求；测量窗口从被测机制最后一次改动之后开始（用 git log 定位），窗口跨过该改动测的是旧机制。把测到的数字和算法写进报告。复现不了就不实现：报告第一行写 OBSOLETE: <测到的数字、窗口、数据来源>，流水线据此关单。复现了就带着测量结果实现，它就是验收对比的基线。'
+# 风险类路径的 blast-radius 证明（#4787，pstack blast-radius）：auth、RLS、账本、迁移的 implement 交付要说出安全所依赖的那一个事实，
+# 并用真实函数的运行输出证明它。非风险类不要求。评审侧同一条规则在 prompts/review-contract.md，契约在 prompts/implement-contract.md。
+BLAST_RADIUS_RULE="
+风险类路径：先跑 node engine/risk-class.mjs --json origin/main...HEAD，输出 [] 则本条不适用；有命中则报告必须含 ## blast-radius 一节，按 $(pstack_skill_md blast-radius) 写：安全所依赖的那一个事实；受影响的调用方/面（附列出它们的命令和真实输出）；第 4 级证明（写一个小脚本调用真实函数，失败即报错，附脚本路径、命令和真实输出，不接受只指行号或推演）；合并前最便宜的复现。做不到第 4 级就写 unproven 并说明原因。"
 HOTPATCH_HINT='发布阻断：这个 PR 的补丁已作为热修跑在生产上（cihost /srv/app/release-drift-carried.tsv），但没合进 main，所有 Example 发布都因此停住。先 git merge origin/main 解决冲突：冲突时以生产已验证的行为为准，同时保留 main 上的后续修复；保持改动最小，补/修回归测试，推送。'
 
 # ---------- 旧 PR 生命周期（#4360）：超龄/深度落后的 agent PR 自动三分类 ----------

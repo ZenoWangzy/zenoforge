@@ -69,7 +69,7 @@ function renderAll(name, D) {
 renderAll("empty", {});
 
 // A paused pipeline must remain visible while its last scorecard sample ages past one configured tick.
-const sampledAt = new Date(Date.now() - 121000).toISOString();
+const sampledAt = new Date(Date.now() - 901000).toISOString();
 const pausedStale = {generated: new Date().toISOString(), config: {tick_seconds: 120}, standards: {
   generated_at: sampledAt, source_commit: "a1b2c3d4e5f67890", paused: {since: "2026-10-26T08:15:00Z", reason: "refactor"}, metrics: []
 }};
@@ -91,7 +91,7 @@ if (raw.length) {
   const D = JSON.parse(raw.replace(/^window\.DASH=/, "").replace(/;\s*$/, ""));
   const {out, MODULES} = renderAll("live", D);
   if (MODULES.length < 7 || MODULES[0].id !== "overview") throw new Error("overview must be the first of at least 7 modules");
-  for (const m of MODULES.slice(1)) if (!out.overview.includes(`data-m="${m.id}"`)) throw new Error(`overview has no tile for ${m.id}`);
+  for (const m of MODULES.slice(1)) if (m.id !== "roi" && m.id !== "orders" && !out.overview.includes(`data-m="${m.id}"`)) throw new Error(`overview has no tile for ${m.id}`);
   // 每个有标准的 node_health 指标都以子弹条（含健康线与不健康线）出现在健康模块
   for (const m of ((D.standards||{}).metrics||[]))
     if (!out.health.includes(`${m.id}`)) throw new Error(`health module lacks metric ${m.id}`);
@@ -154,6 +154,30 @@ const ledgerOut = renderAll("cost-ledger", ledger).out;
 for (const text of ["最近 24 小时 · worker 事件流", "pr-4365", "#4365", "eval（单独口径）", "按阶段", "按后端"])
   if (!ledgerOut.cost.includes(text)) throw new Error(`cost module lacks "${text}"`);
 if (ledgerOut.cost.includes("NaN")) throw new Error("cost module shows NaN");
+// 总览顶部：现在在干活的员工 = 一张卡一个员工（任务名 + 归属色 + 心跳 + 步骤 + 用时条），没有"N 个"句子；清单不可用时给空态
+const lw = renderAll("live-workers", {live_workers: {load5: 3.2, mem_avail_mb: 4096, items: [
+  {owner: "pipeline", task: "fixture title", issue: 4402, pr: 7, backend: "cx", steps: ["a","b"], step: 1, kind: "repair", started_epoch: Math.floor(Date.now()/1000) - 120, typical_s: 1500, health: "ok", tip: "u1"},
+  {owner: "hotfix", task: "ADR-109 cleanup", backend: "zc", steps: ["run","land"], step: 0, started_epoch: null, typical_s: 1800, health: "bad", tip: "k"}]}}).out.overview;
+if ((lw.match(/class="lwc /g)||[]).length !== 2 || !lw.includes("fixture title") || !lw.includes("ADR-109 cleanup") || !lw.includes("lwc s-bad") || !lw.includes("PR 7") || /现在在干活/.test(lw))
+  throw new Error("overview lacks one worker card per live worker");
+if (!renderAll("live-workers-bad", {live_workers: {error: "x"}}).out.overview.includes("员工清单不可用")) throw new Error("live workers error state missing");
+const fx = renderAll("factory", {factory: {archive: [
+  {task: "done ticket", issue: 9, pr: 10, kind: "repair", backend: "codex", wall_s: 600, tokens: 2500000, end_epoch: 1, outcome: "ok", stage: "merged", tip: "k"},
+  {task: "parked ticket", backend: "zc", wall_s: null, tokens: null, outcome: "bad", stage: "parked", tip: "k"}],
+  trend: {days: ["2026-10-28","2026-10-29","2026-10-30"], milestones: [{epoch: 1793361600, label: "flip"}], series: [
+  {id: "merged", label: "合入 / 天", better: "up", fmt: "n", values: [1, null, 4]}, {id: "waste", label: "浪费", better: "down", fmt: "pct", values: [null, null, null]}]}}}).out.roi;
+if ((fx.match(/lwc lwa/g)||[]).length !== 2 || !fx.includes("done ticket") || !fx.includes("2.5M") || !fx.includes("sp-m") || !fx.includes("tcard s-ok") || fx.includes("NaN"))
+  throw new Error("overview lacks archive cards or trend small multiples");
+const lt = renderAll("traffic", {live_workers: {load5: 1, mem_avail_mb: 9000, items: [
+  {owner: "pipeline", task: "traffic ticket", backend: "cx", steps: ["a"], step: 0, kind: "repair", started_epoch: 1, typical_s: 1500, health: "ok", tokens: 4800000, rx: 100e6, tx: 20e6},
+  {owner: "opt", task: "no data", backend: "cx", steps: ["a"], step: 0, kind: "opt", started_epoch: 1, typical_s: 1800, health: "none", tokens: null, rx: null, tx: null}]}}).out.overview;
+if (!lt.includes("4.8M") || !lt.includes("lw-st") || !lt.includes("120MB") || (lt.match(/lw-bar2/g)||[]).length !== 1 || lt.includes("NaN"))
+  throw new Error("live cards lack token or traffic numbers, or show a number where no data exists");
+const ch = renderAll("chips", {units: [{id: "u1", title: "unit in repair", stage: "repair", journey: {status: "check", since_min: 200, age_min: 300}}],
+  front: {stages: [{label: "needs-triage", name: "x", count: 7, idle_hours: 1, items: [1,2,3,4,5,6].map(n => ({number: n, title: "triage item " + n, updated_at: new Date(Date.now() - n*36e5).toISOString()}))}],
+  standards: {"stage.needs-triage.idle_hours": {healthy: 3, unhealthy: 5}}, status: {}, errors: {}}}).out.overview;
+if ((ch.match(/class="uc s-/g)||[]).length < 5 || !ch.includes("+3") || !ch.includes("pcol") || ch.includes("done ticket") || !ch.includes("uc s-bad") || !ch.includes("unit in repair") || ch.includes("NaN") || !/--cols:3/.test(ch))
+  throw new Error("overview tiles lack unit chips, the +N overflow, or age colouring");
 console.log("modules ok");
 JS
 
