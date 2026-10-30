@@ -1307,6 +1307,8 @@ def source_commit(here):
     parts = source_dir.parts
     if "autopi-versions" in parts:
         return parts[parts.index("autopi-versions") + 1]
+    if "engine-versions" in parts:  # immutable engine version dir (no git tree): its id names the build
+        return parts[parts.index("engine-versions") + 1]
     return subprocess.run(
         ["git", "-C", str(source_dir.parents[1]), "rev-parse", "HEAD"],
         check=True, capture_output=True, text=True,
