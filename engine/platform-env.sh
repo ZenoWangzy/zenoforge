@@ -28,7 +28,8 @@ ZF_PLATFORM_ACTIVE=1
 if [[ $ZF_OS == linux && ${ZF_RUNNER:-systemd} == systemd ]]; then ZF_PLATFORM_ACTIVE=; return 0; fi   # the origin deployment's path ends here
 ZF_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
-_zf_path_front() { local p=":$PATH:"; p="${p//":$1:"/:}"; PATH="$1:${p#:}"; PATH="${PATH%:}"; } # dir to the front, once
+# dir to the front unless already on PATH: a directory the caller put ahead (test stubs, a pinned tool) keeps its place
+_zf_path_front() { case ":$PATH:" in *":$1:"*) ;; *) PATH="$1:$PATH" ;; esac; }
 _zf_path_back() { case ":$PATH:" in *":$1:"*) ;; *) PATH="$PATH:$1" ;; esac; }
 
 if [[ $ZF_OS == darwin ]]; then

@@ -41,9 +41,9 @@ got="$(ZF_BREW_PREFIXES="$t/nothing $t/intel" run darwin24.0 "$base" 'printf %s 
 once="$(ZF_BREW_PREFIXES="$t/arm" run darwin24.0 "$base" 'printf %s "$PATH"')"
 twice="$(ZF_BREW_PREFIXES="$t/arm" run darwin24.0 "$base" 'source "$2/platform-env.sh"; "$BASH" -c "OSTYPE=darwin24.0; source $2/platform-env.sh; printf %s \"\$PATH\""')"
 [[ "$twice" == "$once" ]] || fail 'sourcing platform-env.sh twice changed PATH'
-# A brew directory already later on PATH moves to the front instead of staying behind the system bash.
-got="$(ZF_BREW_PREFIXES="$t/arm" run darwin24.0 "/usr/bin:$t/arm/bin:/bin" 'printf %s "$PATH"')"
-[[ "$got" == "$engine/portable-shim:$t/arm/bin:$(gnubin "$t/arm")/usr/bin:/bin:$t/arm/opt/util-linux/bin" ]] || fail "brew dir not moved to the front: $got"
+# A directory already on PATH keeps its place: test stubs ahead of the brew bin must not be shadowed by the real gh and git.
+got="$(ZF_BREW_PREFIXES="$t/arm" run darwin24.0 "$t/fakebin:$t/arm/bin:/usr/bin" 'printf %s "$PATH"')"
+[[ "$got" == "$engine/portable-shim:$(gnubin "$t/arm")$t/fakebin:$t/arm/bin:/usr/bin:$t/arm/opt/util-linux/bin" ]] || fail "brew dir already on PATH was moved: $got"
 # Defaults and overrides.
 [[ "$(ZF_BREW_PREFIXES="$t/arm" run darwin24.0 "$base" 'printf "%s %s %s" "$ZF_OS" "$ZF_RUNNER" "$ZF_TIMERS"')" == 'darwin pidfile launchd' ]] || fail 'macOS defaults wrong'
 [[ "$(ZF_RUNNER=systemd ZF_BREW_PREFIXES="$t/arm" run darwin24.0 "$base" 'printf %s "$ZF_RUNNER"')" == systemd ]] || fail 'explicit ZF_RUNNER lost on macOS'
