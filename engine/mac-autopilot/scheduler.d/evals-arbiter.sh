@@ -10,11 +10,13 @@ budget_alert_if_needed() { # 信息性告警：新鲜 token（Codex+worker Claud
   fi
 }
 
-# 评审方法 = Matt 的 code-review 技能（Standards / Spec 两轴）；verdict 行与 review-findings schema 只认 review-contract.md。
-REVIEW_CONTRACT_MD="$ENGINE_ROOT/engine/prompts/review-contract.md"
+# 评审方法 = 评审技能（缺省 Matt 的 code-review：Standards / Spec 两轴）；verdict 行与 review-findings schema 只认 review-contract.md。
+# 技能目录名是部署设置 ZF_REVIEW_SKILL（部署的 deploy.env 可改成自己的评审技能）；契约文件从引擎目录解析（同 prompts/ 里其它文件），仓库布局与版本目录布局都成立。
+REVIEW_SKILL="${ZF_REVIEW_SKILL:-code-review}"
+REVIEW_CONTRACT_MD="$HERE/../prompts/review-contract.md"
 review_contract_rule() { # 评审、复审 prompt 的契约句；方法文件只取引擎自带的，不跟被评审代码里的同名文件走
-  printf '评审方法按 Matt 的 code-review 技能（%s）：Standards 与 Spec 两轴分别审、分别报告，不合并不重排，两轴都由你在本会话内自己跑完，不派 sub-agent。verdict 行、review-findings schema 与 author-disposition schema 以 %s 为准（与技能不一致处以它为准）。' \
-    "$(matt_engine_skill_md code-review)" "$REVIEW_CONTRACT_MD"
+  printf '评审方法按 %s 技能（%s）：Standards 与 Spec 两轴分别审、分别报告，不合并不重排，两轴都由你在本会话内自己跑完，不派 sub-agent。verdict 行、review-findings schema 与 author-disposition schema 以 %s 为准（与技能不一致处以它为准）。' \
+    "$REVIEW_SKILL" "$(matt_engine_skill_md "$REVIEW_SKILL")" "$REVIEW_CONTRACT_MD"
 }
 # 实现、修复、自修复 worker 共用的方法句：Matt 的 implement + tdd；缺陷、红 CI、评审发现走 diagnosing-bugs。
 matt_method_rule() { # checkout → METHOD 段
@@ -31,7 +33,7 @@ decision_eval_stages_for_paths() { # newline-delimited paths → affected eval s
       engine/prompts/triage.*) affected[triage]=1; affected[end-to-end]=1 ;;
       engine/prompts/advisor*) affected[advisor]=1; affected[end-to-end]=1 ;;
       engine/prompts/implement-contract.md) affected[implement]=1; affected[end-to-end]=1 ;;
-      engine/prompts/review-contract.md|.agents/skills/code-review/*|engine/mac-autopilot/review-contract.sh)
+      engine/prompts/review-contract.md|".agents/skills/$REVIEW_SKILL"/*|engine/mac-autopilot/review-contract.sh)
         affected[review]=1; affected[end-to-end]=1 ;;
       .agents/skills/triage/*|.agents/skills/ask-matt/*) affected[triage]=1; affected[end-to-end]=1 ;;
       .agents/skills/implement/*|.agents/skills/tdd/*|.agents/skills/diagnosing-bugs/*) affected[implement]=1; affected[end-to-end]=1 ;;

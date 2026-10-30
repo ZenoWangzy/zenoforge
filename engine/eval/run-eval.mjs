@@ -129,7 +129,7 @@ export function renderPrompt(stage, c, context = {}) {
       + (decisions ? `\n${decisions}\n` : '')
       + ((context.failure ?? c.repair?.failureText) ? `\n## Previous attempt failed\n${context.failure ?? c.repair.failureText}\nRepair the failure without weakening a gate.\n` : '');
   }
-  return readFileSync(join(repo, '.agents/skills/code-review/SKILL.md'), 'utf8') + '\n' + prompt('review-contract')
+  return readFileSync(join(repo, '.agents/skills', process.env.ZF_REVIEW_SKILL || 'code-review', 'SKILL.md'), 'utf8') + '\n' + prompt('review-contract')
     + boundary + `\nReview the local diff from ${c.baseSha} to this checkout and use the report format in the formal review contract.\n`
     + issueData(c.issue) + `\n## Implementer report\n${context.report ?? ''}\n`;
 }
