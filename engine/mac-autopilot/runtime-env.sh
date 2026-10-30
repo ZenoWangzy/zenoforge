@@ -14,6 +14,9 @@ fi
 MAC_AUTOPILOT_SUPERVISOR_DIR="${MAC_AUTOPILOT_SUPERVISOR_DIR:-$MAC_AUTOPILOT_ROOT/.scratch-supervisor}"
 MAC_AUTOPILOT_RUNTIME_DIR="${MAC_AUTOPILOT_RUNTIME_DIR:-$MAC_AUTOPILOT_SUPERVISOR_DIR/autopi}"
 export MAC_AUTOPILOT_ROOT MAC_AUTOPILOT_SUPERVISOR_DIR MAC_AUTOPILOT_RUNTIME_DIR
+# Platform layer (engine/platform-env.sh, engine/proc.sh): on macOS the GNU tools first on PATH, exit 78 when one is missing; nothing on Linux.
+source "$_ap_here/../platform-env.sh"; platform_require
+source "$_ap_here/../proc.sh"
 export PATH="$PATH:${HOME:-}/.local/bin:${HOME:-}/.npm-global/bin:/usr/local/bin"
 # gh 调用计量窗口：~/.zenoforge/measure/gh.on 存在时，调度器与它派出的单元经计量 shim 调 gh（engine/gh-measure）。
 if [[ -f "${HOME:-}/.zenoforge/measure/gh.on" && -x "$MAC_AUTOPILOT_ROOT/engine/gh-measure/bin/gh" ]]; then
