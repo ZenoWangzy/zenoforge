@@ -245,11 +245,14 @@ class _Ticket:
         }
 
 
-def tickets_report(home, days=7, prices_path=None, repo=DEFAULT_REPO, repo_root=None, now=None):
+def tickets_report(home, days=7, prices_path=None, repo=None, repo_root=None, now=None):
     """Per-ticket zero-to-landed cost plus fleet, day and per-ticket output ratios.
 
     Delivered means merged or direct-main landed (this deployment has no release gate for
-    pipeline tickets). Waste is the cost of units on tickets closed unmerged or reverted."""
+    pipeline tickets). Waste is the cost of units on tickets closed unmerged or reverted.
+    The issue createdAt census targets `repo`, else the ZF_REPO deployment repo, else the
+    placeholder example repo."""
+    repo = repo or os.environ.get("ZF_REPO") or DEFAULT_REPO
     now = now or datetime.now(timezone.utc)
     since = now - timedelta(days=days)
     if prices_path:
@@ -542,7 +545,8 @@ def main():
     tickets_parser.add_argument("--home", default=os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME")
                                 or os.path.expanduser("~/.zenoforge"))
     tickets_parser.add_argument("--prices", help="use this price table instead of the host default")
-    tickets_parser.add_argument("--repo", default=DEFAULT_REPO, help="GitHub repo for the issue-createdAt census")
+    tickets_parser.add_argument("--repo", default=None,
+                                help="GitHub repo for the issue-createdAt census (default: ZF_REPO, else the example repo)")
     tickets_parser.add_argument("--repo-root", default=None,
                                 help="git checkout scanned for revert commits (default: <home>/checkout)")
     tickets_parser.add_argument("--json", action="store_true")

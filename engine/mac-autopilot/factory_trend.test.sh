@@ -36,5 +36,16 @@ rep2["tickets"].pop(2)  # one landed ticket per day: 100, 200, 300
 t3 = F.trend(evs, rep2, [], "/nonexistent", days=3, now=now2, max_workers=2)
 assert t3["retro"] == ["2026-10-30"] and "100 → 200 → 300" in F.retro_line(t3, "2026-10-30"), t3["retro"]
 assert F.rising_runs([1, 2, None, 3, 4]) == [] and F.rising_runs([1, 2, 2, 3]) == [] and F.rising_runs([5, 1, 2, 3]) == [3]
+# lead-time p50 regression: the createdAt census must target the ZF_REPO deployment repo when the caller
+# passes none (factory_trend.collect never does), else every landed ticket's lead_hours is null
+import os, tempfile, pathlib, roi_rollup as R
+fixture = pathlib.Path(tempfile.mkdtemp()); (fixture / "metrics").mkdir(parents=True)
+(fixture / "metrics" / "efficiency-2026-10.jsonl").write_text(
+    '{"event_type": "merged", "ts": "2026-10-30T10:00:00Z", "issue": 7, "sha": "aa"}\n')
+os.environ["ZF_REPO"] = "example-maintainer/example-live"
+censused = []
+R._issue_created = lambda repo, cutoff: censused.append(repo) or {7: datetime.datetime(2026, 10, 30, 6, tzinfo=datetime.timezone.utc)}
+rep = R.tickets_report(str(fixture), days=3, repo_root="/nonexistent", now=datetime.datetime(2026, 10, 31, tzinfo=datetime.timezone.utc))
+assert censused == ["example-maintainer/example-live"] and rep["tickets"][0]["lead_hours"] == 4.0, (censused, rep["tickets"])
 PY
 echo "factory_trend.test.sh: PASS"
