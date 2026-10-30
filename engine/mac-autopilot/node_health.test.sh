@@ -14,6 +14,7 @@ cat > "$audit" <<'JSON'
 {"when":"2026-10-19T10:01:00Z","run_id":"deferred-1","repo":"example-maintainer/example-repo"}
 {"when":"2026-10-19T10:05:00Z","run_id":"repair-1","repo":"example-maintainer/example-repo","reason":"repair dispatched"}
 {"when":"2026-10-19T10:06:00Z","run_id":"repair-1","repo":"example-maintainer/example-repo"}
+{"when":"2026-10-19T10:07:00Z","run_id":"superseded-1","repo":"example-maintainer/example-repo","reason":"superseded by newer main head"}
 {"when":"2026-10-19T11:00:00Z","run_id":"hold-1","repo":"example-maintainer/example-repo","reason":"ci hold"}
 {"when":"2026-10-18T10:00:00Z","run_id":"hold-2","repo":"example-maintainer/example-repo","reason":"ci hold"}
 {"when":"2026-10-17T10:00:00Z","run_id":"hold-old","repo":"example-maintainer/example-repo","reason":"ci hold"}
@@ -107,6 +108,8 @@ quiet="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --
 grep -Eq 'findings block % +-  .*NO-DATA' <<<"$quiet" || fail "no rejection records in the window must show no value, not 0: $(grep -F 'findings block' <<<"$quiet")"
 grep -Eq ' 5 .*WARN$' <<<"$(row 'M1 audited cancelled runs/day: ci deferred')" || fail "M1 did not count one unique audited deferred run: $(row 'ci deferred')"
 grep -Eq ' 5 .*OK$' <<<"$(row 'M1 audited cancelled runs/day: repair dispatched')" || fail "M1 did not retain the cause for a duplicate no-reason audit: $(row 'repair dispatched')"
+grep -Eq ' 5 .*OK$' <<<"$(row 'M1 audited cancelled runs/day: superseded main run')" || fail "superseded main run not classed as a known cause: $(row 'superseded main run')"
+grep -Eq ' 0 .*OK$' <<<"$(row 'M1 audited cancelled runs/day: other or unclassified')" || fail "superseded run leaked into other: $(row 'other or unclassified')"
 grep -Eq ' 50 .*UNHEALTHY$' <<<"$(row 'active agent PRs with the agent/ci-gated label')" || fail "M12 did not read the provider label census: $(row 'agent/ci-gated')"
 grep -Eq ' 2 .*UNHEALTHY$' <<<"$(row 'unique PR runs cancelled for priority hold in 48 h')" || fail "M13 48-hour priority activity wrong: $(row 'priority hold in 48 h')"
 jq -e '.metrics[] | select(.id == "ci.cancel_deferred_per_day") | .value == 4.8 and .source != "" and .healthy == 0 and .unhealthy == 261' "$a/node-health.json" >/dev/null || fail 'M1 values, bounds or source missing from scorecard JSON'

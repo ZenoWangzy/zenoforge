@@ -53,6 +53,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | CI + merge | M1 audited cancelled runs/day: review requested changes (`ci.cancel_review_changes_per_day`) | frozen M1: 237 / 3.94 days | 0 | ≥ 60 | rolling report |
 | CI + merge | M1 audited cancelled runs/day: review blocked (`ci.cancel_review_blocked_per_day`) | frozen M1: 8 / 3.94 days | ≤ 2 | ≥ 5 | rolling report |
 | CI + merge | M1 audited cancelled runs/day: parked (`ci.cancel_parked_per_day`) | frozen M1: 3 / 3.94 days | ≤ 1 | ≥ 2 | rolling report |
+| CI + merge | M1 audited cancelled runs/day: superseded main run (`ci.cancel_superseded_per_day`) | no frozen cause baseline; tracks main merge rate | ≤ 30 | ≥ 60 | rolling report |
 | CI + merge | M1 audited cancelled runs/day: other or unclassified (`ci.cancel_other_per_day`) | no frozen cause baseline | 0 | ≥ 1 | rolling report |
 | CI + merge | active agent PRs with server label `agent/ci-gated` % (`ci.gated_pr_pct`, M12) | frozen M12: 0 of 87 | ≥ 80 | ≤ 50 | GitHub open-PR census |
 | CI + merge | distinct runs held by priority CI gate in last 48 h (`ci.priority_hold_runs_48h`, M13) | retire only after a full 48 h with zero firings | 0 | ≥ 1 | shared cancellation audit |

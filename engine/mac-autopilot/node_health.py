@@ -54,6 +54,7 @@ CRITERIA = {
     "ci.cancel_review_changes_per_day": ("ci+merge", "M1 audited cancelled runs/day: review requested changes", 0, 60, False),
     "ci.cancel_review_blocked_per_day": ("ci+merge", "M1 audited cancelled runs/day: review blocked", 2, 5, False),
     "ci.cancel_parked_per_day": ("ci+merge", "M1 audited cancelled runs/day: parked", 1, 2, False),
+    "ci.cancel_superseded_per_day": ("ci+merge", "M1 audited cancelled runs/day: superseded main run", 30, 60, False),
     "ci.cancel_other_per_day": ("ci+merge", "M1 audited cancelled runs/day: other or unclassified", 0, 1, False),
     "ci.gated_pr_pct":          ("ci+merge", "active agent PRs with the agent/ci-gated label %", 80, 50, True),
     "ci.priority_hold_runs_48h": ("ci+merge", "unique PR runs cancelled for priority hold in 48 h", 0, 1, False),
@@ -118,6 +119,7 @@ MEANING = {
     "ci.cancel_review_changes_per_day": "M1：共享取消审计中，原因是 review requested changes 的不同 PR run 数按天折算；健康为零，bug 线取冻结基线日均数。",
     "ci.cancel_review_blocked_per_day": "M1：共享取消审计中，原因是 review blocked 的不同 PR run 数按天折算；健康上限为冻结基线日均数，bug 线为其两倍。",
     "ci.cancel_parked_per_day": "M1：共享取消审计中，原因是 parked 的不同 PR run 数按天折算；健康上限为冻结基线日均数，bug 线为其两倍。",
+    "ci.cancel_superseded_per_day": "M1：共享取消审计中，原因是 superseded by newer main head（main 防抖：更新的 main 头取代尚在排队的旧 run）的不同 run 数按天折算；数量随 main 合入节奏，边界为运维设定值。",
     "ci.cancel_other_per_day": "M1：共享取消审计中，原因不在已知类别里的不同 PR run 数按天折算。",
     "ci.gated_pr_pct": "M12：当前活跃 agent/issue-* PR 中带服务端 agent/ci-gated 标签的比例；不读本机台账镜像。",
     "ci.priority_hold_runs_48h": "M13：最近 48 小时共享取消审计中原因是 ci hold 的不同 PR run 数；零活动满足优先挡板的退役观察条件。",
@@ -191,6 +193,7 @@ SOURCE = {
     "ci.cancel_review_changes_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=review requested changes ÷ 窗口小时 × 24；边界取冻结基线 M1。",
     "ci.cancel_review_blocked_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=review blocked ÷ 窗口小时 × 24；边界取冻结基线 M1。",
     "ci.cancel_parked_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 parked reason ÷ 窗口小时 × 24；边界取冻结基线 M1。",
+    "ci.cancel_superseded_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=superseded by newer main head ÷ 窗口小时 × 24。",
     "ci.cancel_other_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的其他或缺失 reason ÷ 窗口小时 × 24。",
     "ci.gated_pr_pct": "GitHub pull request API：带 agent/ci-gated 标签的 open agent/issue-* PR ÷ 所有 open agent/issue-* PR。",
     "ci.priority_hold_runs_48h": "共享 actions-run-cancellations.jsonl：最近 48 小时不同 run_id 的最后一个非空 reason=ci hold。",
@@ -821,6 +824,8 @@ def cancel_reason(reason):
         return "review_blocked"
     if text.startswith("parked"):
         return "parked"
+    if text == "superseded by newer main head":
+        return "superseded"
     if text == "ci hold":
         return "priority_hold"
     return "other"
@@ -853,6 +858,7 @@ def cancel_metrics(records, since, until):
         "review_changes": "ci.cancel_review_changes_per_day",
         "review_blocked": "ci.cancel_review_blocked_per_day",
         "parked": "ci.cancel_parked_per_day",
+        "superseded": "ci.cancel_superseded_per_day",
         "other": "ci.cancel_other_per_day",
     }
     if counts is None:

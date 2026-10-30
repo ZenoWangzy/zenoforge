@@ -444,7 +444,7 @@ if [[ "${BELL_STALE_CI_DISABLE:-0}" != "1" ]]; then
         '(.shas|index($sha))!=null or (.run_ids|index($id))!=null' <<<"$protection" >/dev/null; then
         continue
       fi
-      bash "${ZF_ENGINE_DIR:-$ROOT/engine}/night/main-ci-recovery.sh" cancel-run "$rid" >/dev/null 2>&1 && cancelled="$cancelled $rid"
+      ZF_CANCEL_REASON="superseded by newer main head" bash "${ZF_ENGINE_DIR:-$ROOT/engine}/night/main-ci-recovery.sh" cancel-run "$rid" >/dev/null 2>&1 && cancelled="$cancelled $rid"
     done
   done
   [[ -n "$cancelled" ]] && add_event medium "stale-main-ci-canceled${cancelled}" "stale-main-ci: 取消被更新等待 run 取代、未被候选引用的祖先 run(在跑的不动):${cancelled}" "audited CI/Pipeline suites queue dedupe after candidate and ancestry checks: ${cancelled}"
