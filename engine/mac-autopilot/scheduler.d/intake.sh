@@ -153,9 +153,10 @@ register_new_issues() {
     want=1000000000; busy=""
   else
   live="$(live_workers)"
-  pending="$(jqf '[.units[] | select(.stage | test("-pending$"))] | length' "$UNITS")"
+  # 被 footprint 互斥挡住的 pending 不用 worker，不占产能（仍计入 upstream 的 WIP 额度）
+  pending="$(jqf '[.units[] | select(.stage | test("-pending$")) | select((.footprint_wait_owner // "") == "")] | length' "$UNITS")"
   idle=$(( MAX - live - pending ))
-  (( idle > 0 )) || return 0
+  (( idle > 0 )) || { say "intake held: no idle slot (live $live pending $pending max $MAX)"; return 0; }
   max_up="$(jqf -r ".issue_intake.max_upstream // $((2 * MAX))" <<<"$CFG")"; [[ "$max_up" =~ ^[0-9]+$ ]] || max_up=$((2 * MAX))
   max_ready="$(jqf -r '.issue_intake.max_ready // 30' <<<"$CFG")"; [[ "$max_ready" =~ ^[0-9]+$ ]] || max_ready=30
   upstream="$(jqf '[.units[] | select(.stage | test("^(implement|review|rereview|repair)(-pending)?$"))] | length' "$UNITS")"
