@@ -225,3 +225,23 @@ test('re-running init with a changed setting installs a new engine version and r
   assert.equal(fs.readlinkSync(path.join(s.agent, 'engine/current')), '0.1.0+2');
   assert.deepEqual(fs.readdirSync(path.join(s.agent, 'engine')).sort(), ['0.1.0', '0.1.0+2', 'current', 'previous']);
 });
+
+test('dry run shows the scheduler plan for systemd, launchd and foreground before any engine dir exists', async () => {
+  const run3 = async (scheduler) => {
+    const s = sandbox();
+    s.io.scheduler = scheduler;
+    await cmd.init({ repo: REPO, dryRun: true }, s.io);
+    assert.deepEqual(fs.readdirSync(s.home), [], `${scheduler}: home untouched`);
+    return s.lines.join('\n');
+  };
+  const sd = await run3('systemd');
+  assert.match(sd, /\[dry-run\] WRITE \S+\/\.config\/systemd\/user\/zenoforge-agent\.service/);
+  assert.match(sd, /\[dry-run\] WRITE \S+\/zenoforge-health-mail\.timer/);
+  assert.match(sd, /\[dry-run\] RUN systemctl --user enable --now zenoforge-agent\.timer .*zenoforge-autopilot-bell\.service/);
+  const ld = await run3('launchd');
+  assert.match(ld, /\[dry-run\] WRITE \S+\/Library\/LaunchAgents\/com\.zenoforge\.autopilot-scheduler\.plist/);
+  assert.match(ld, /\[dry-run\] RUN launchctl bootstrap gui\/\d+ \S+com\.zenoforge\.autopilot-bell\.plist/);
+  assert.doesNotMatch(ld, /com\.zenoforge\.agent\.plist/, 'macOS gets the unit loop only');
+  const fg = await run3('foreground');
+  assert.match(fg, /\[dry-run\] SPAWN bash \S+\/autopi-live\/loop\.sh/);
+});

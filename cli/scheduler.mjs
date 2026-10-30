@@ -19,17 +19,30 @@ const listDir = (dir, ext) => {
   try { return fs.readdirSync(dir).filter((f) => f.endsWith(ext)).sort(); } catch { return []; }
 };
 
-/** Names this backend manages, read from the rendered units in the current engine dir. */
+/**
+ * Units this backend manages. During init and upgrade the engine version dir may not exist yet
+ * (dry run), so callers hand in the rendered texts as ctx.units; otherwise they are read from `current`.
+ */
 export function managedUnits(ctx) {
+  if (ctx.units) return ctx.units;
   const unitsDir = path.join(ctx.engineRoot, 'current', 'systemd');
   let list = '';
   try { list = fs.readFileSync(path.join(unitsDir, 'pipeline-timers.list'), 'utf8'); } catch { /* not installed yet */ }
   return {
-    unitsDir,
     files: [...listDir(unitsDir, '.service'), ...listDir(unitsDir, '.timer')],
+    read: (f) => fs.readFileSync(path.join(unitsDir, f), 'utf8'),
     timers: timersFromList(list),
     services: LOOP_SERVICES,
   };
+}
+
+/** The same shape, built from the overlay and the packaged timers before anything is on disk. */
+export function unitsFromOverlay(overlay, pkgEngine) {
+  const rendered = Object.fromEntries(Object.entries(overlay).filter(([k]) => k.startsWith('systemd/')).map(([k, v]) => [k.slice(8), v]));
+  const shipped = listDir(path.join(pkgEngine, 'systemd'), '.timer');
+  const read = (f) => rendered[f] ?? fs.readFileSync(path.join(pkgEngine, 'systemd', f), 'utf8');
+  const files = [...new Set([...Object.keys(rendered).filter((f) => f.endsWith('.service')), ...shipped])].sort();
+  return { files, read, timers: timersFromList(rendered['pipeline-timers.list'] ?? ''), services: LOOP_SERVICES };
 }
 
 // ---------------------------------------------------------------- systemd
@@ -39,7 +52,7 @@ export const systemd = {
   install(act, ctx) {
     const m = managedUnits(ctx);
     for (const f of m.files) {
-      act.write(path.join(ctx.unitDir, f), fs.readFileSync(path.join(m.unitsDir, f), 'utf8'));
+      act.write(path.join(ctx.unitDir, f), m.read(f));
     }
     return act.exec('systemctl', ['--user', 'daemon-reload']);
   },
@@ -91,7 +104,7 @@ export const launchd = {
     for (const { file, label } of launchd.jobs(ctx)) {
       const text = renderPlist({
         name: file,
-        serviceText: fs.readFileSync(path.join(m.unitsDir, file), 'utf8'),
+        serviceText: m.read(file),
         home: ctx.home,
         logDir: path.join(ctx.agentHome, 'logs'),
         utcOffsetMinutes: offset,

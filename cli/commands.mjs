@@ -10,7 +10,7 @@ import {
   AGENT_DIR, buildPath, labelsFromLib, renderCapacityEnv, renderConfigTemplate, renderEnvFile, renderLoopServices,
   renderRecipients, renderRequiredChecks, renderService, renderTimerList,
 } from './render.mjs';
-import { backends, buildCtx, detectScheduler } from './scheduler.mjs';
+import { backends, buildCtx, detectScheduler, unitsFromOverlay } from './scheduler.mjs';
 import { loadState, readEnvFile, statePath } from './state.mjs';
 import { Actions, run, which } from './util.mjs';
 
@@ -239,10 +239,8 @@ export async function init(opts, io) {
 
   const engineRoot = path.join(agentHome, 'engine');
   const hadEngine = currentVersion(engineRoot);
-  const name = installEngine(act, {
-    srcEngine: PKG_ENGINE, engineRoot, version: pkgVersion(), settings,
-    overlay: buildOverlay(settings, { home: io.home, checkout, pathValue }),
-  });
+  const overlay = buildOverlay(settings, { home: io.home, checkout, pathValue });
+  const name = installEngine(act, { srcEngine: PKG_ENGINE, engineRoot, version: pkgVersion(), settings, overlay });
 
   prepareCheckout(act, { repo, dir: checkout, cwd: io.cwd });
   const excludeFile = path.join(checkout, '.git', 'info', 'exclude');
@@ -264,7 +262,7 @@ export async function init(opts, io) {
       gh variable set AGENT_PIPELINE --repo ${repo} --body ${enable ? 'triage' : 'off'}`);
   }
 
-  const ctx = buildCtx({ home: io.home, checkout, env: io.env });
+  const ctx = { ...buildCtx({ home: io.home, checkout, env: io.env }), units: unitsFromOverlay(overlay, PKG_ENGINE) };
   if (enable) {
     backends[scheduler].install(act, ctx);
     backends[scheduler].enable(act, ctx);
@@ -336,12 +334,14 @@ export function upgrade(opts, io) {
   const pathValue = buildPath({ dirs: toolDirs(io.find, io.extraPathDirs), home: io.home });
   const { version: _v, engine: _e, installedAt: _i, ...kept } = state;
   const settings = { ...kept, pathValue };
-  const name = installEngine(act, {
-    srcEngine: PKG_ENGINE, engineRoot: ctx.engineRoot, version: pkgVersion(), settings,
-    overlay: buildOverlay(settings, { home: io.home, checkout: state.checkout, pathValue }),
-  });
+  const overlay = buildOverlay(settings, { home: io.home, checkout: state.checkout, pathValue });
+  const name = installEngine(act, { srcEngine: PKG_ENGINE, engineRoot: ctx.engineRoot, version: pkgVersion(), settings, overlay });
   if (name === before) { io.log(`engine ${name} is already current`); return; }
-  if (state.scheduler !== 'none') { backend.install(act, ctx); backend.restartLoops(act, ctx); }
+  if (state.scheduler !== 'none') {
+    const withUnits = { ...ctx, units: unitsFromOverlay(overlay, PKG_ENGINE) };
+    backend.install(act, withUnits);
+    backend.restartLoops(act, withUnits);
+  }
   pruneEngines(act, ctx.engineRoot);
   act.write(statePath(ctx.agentHome), `${JSON.stringify({ ...settings, version: pkgVersion(), engine: name, installedAt: state.installedAt }, null, 2)}\n`, { mode: 0o600 });
   io.log(`engine ${before ?? '(none)'} -> ${name}. Undo with: zenoforge rollback`);
