@@ -87,3 +87,10 @@ test('no systemd user bus is a warning with a fallback, and formatting shows PAS
   assert.match(text, /^PASS  git/m);
   assert.match(text, /1 required item\(s\) missing\./);
 });
+
+test('native Windows is a single hard failure that points at WSL2', () => {
+  const r = runDoctor({ ...probe(), platform: 'win32' });
+  assert.equal(r.length, 1);
+  assert.match(r[0].fix, /wsl --install/);
+  assert.equal(hardFailures(r).length, 1);
+});

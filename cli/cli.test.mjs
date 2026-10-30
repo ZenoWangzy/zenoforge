@@ -209,3 +209,19 @@ test('a host without a usable gh fails the real run cleanly and still produces a
   assert.match(s.lines.join('\n'), /FAIL  gh authenticated/);
   assert.match(s.lines.join('\n'), /would stop before changing anything/);
 });
+
+test('re-running init with a changed setting installs a new engine version and restarts the loops', async () => {
+  const s = sandbox();
+  await cmd.init({ repo: REPO, yes: true }, s.io);
+  fs.writeFileSync(path.join(s.root, 'calls.log'), '');
+  await cmd.init({ repo: REPO, yes: true, maxWorkers: '4' }, s.io);
+  assert.equal(fs.readlinkSync(path.join(s.agent, 'engine/current')), '0.1.0+2');
+  assert.equal(fs.readlinkSync(path.join(s.agent, 'engine/previous')), '0.1.0');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(s.agent, 'engine/current/mac-autopilot/config.template.json'), 'utf8')).max_workers, 4);
+  assert.match(s.calls(), /systemctl --user restart zenoforge-autopilot-scheduler\.service zenoforge-autopilot-bell\.service/);
+  assert.match(fs.readFileSync(path.join(s.agent, 'capacity.env'), 'utf8'), /^AGENT_GLOBAL_EXECUTION_CAP=4$/m);
+  // a third run without flags keeps the earlier choice and installs nothing new
+  await cmd.init({ repo: REPO, yes: true }, s.io);
+  assert.equal(fs.readlinkSync(path.join(s.agent, 'engine/current')), '0.1.0+2');
+  assert.deepEqual(fs.readdirSync(path.join(s.agent, 'engine')).sort(), ['0.1.0', '0.1.0+2', 'current', 'previous']);
+});

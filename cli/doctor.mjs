@@ -63,6 +63,9 @@ export function runDoctor({
   exists = fs.existsSync,
 } = {}) {
   const out = [];
+  if (platform === 'win32') {
+    return [item('platform', 'a supported OS (Linux, macOS, or Windows through WSL2)', false, { fix: 'install WSL2 (wsl --install), then run zenoforge inside the Linux distribution' })];
+  }
 
   const nodeOk = versionAtLeast(parseVersion(nodeVersion), [20, 0, 0]);
   out.push(item('node', `node >= 20 (found ${nodeVersion})`, nodeOk, { fix: 'install Node 20 or newer: https://nodejs.org/' }));
@@ -128,7 +131,7 @@ export function runDoctor({
     const sc = find('systemctl') ? exec('systemctl', ['--user', 'show-environment']) : { ok: false };
     out.push(item('scheduler', 'systemd user manager', sc.ok, {
       hard: false,
-      fix: 'WSL2: set "[boot]\\nsystemd=true" in /etc/wsl.conf and run "wsl --shutdown". Other Linux: log in with a full session, then "loginctl enable-linger $USER". Without it, init prints a foreground command instead.',
+      fix: 'WSL2: add systemd=true under [boot] in /etc/wsl.conf, then run "wsl --shutdown" from Windows. Other Linux: log in with a full session, then "loginctl enable-linger $USER". Without it, init prints a foreground command instead.',
     }));
   }
   return out;

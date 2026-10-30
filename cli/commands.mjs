@@ -164,16 +164,18 @@ export async function init(opts, io) {
     throw new UserError(`${agentHome} is already set up for ${configured}. Run \`zenoforge uninstall --purge\` first, or use another user account for ${repo}.`);
   }
 
-  // 3. agents
+  // 3. agents (a re-run keeps what the first run chose unless a flag says otherwise)
+  const prior = loadState(agentHome) ?? {};
   const installed = detectAgents(io.find);
   const agents = {};
   for (const role of Object.keys(ROLE_AGENTS)) {
     const allowed = ROLE_AGENTS[role].filter((a) => installed.includes(a));
-    if (!opts[role] && allowed.length > 1 && interactive) {
+    const before = installed.includes(prior.agents?.[role]) ? prior.agents[role] : undefined;
+    if (!opts[role] && !before && allowed.length > 1 && interactive) {
       opts[role] = bail(await p.select({ message: `Agent for the ${role} role`, options: allowed.map((a) => ({ value: a, label: a })) }));
     }
     try {
-      agents[role] = chooseAgent(role, opts[role], installed);
+      agents[role] = chooseAgent(role, opts[role] ?? before, installed);
     } catch (e) {
       if (!opts.dryRun || !(e instanceof UserError)) throw e;
       log(`WARN  ${e.message}`);
@@ -182,7 +184,7 @@ export async function init(opts, io) {
   }
 
   // 4. settings
-  const maxWorkers = Number(opts.maxWorkers ?? 2);
+  const maxWorkers = Number(opts.maxWorkers ?? prior.maxWorkers ?? 2);
   if (!Number.isInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 16) throw new UserError('--max-workers must be an integer from 1 to 16');
   const checkout = path.resolve(opts.checkoutDir ?? path.join(agentHome, 'checkout'));
   const checks = opts.requiredCheck?.length ? opts.requiredCheck : (view.ok ? gh.requiredChecks(repo, 'main', io.exec) : []);
@@ -202,6 +204,9 @@ export async function init(opts, io) {
   auto merge         ${autoMerge ? 'on' : 'OFF (no required checks known; pass --required-check NAME, or --auto-merge to merge anyway)'}
   scheduler          ${scheduler}
 `);
+  if (checkout !== path.join(agentHome, 'checkout')) {
+    log('WARN  a few engine readers (scheduling-policy.mjs, waste_report.py) assume ~/.zenoforge/checkout. A custom --checkout-dir works, but those reports find nothing there; the default location avoids that.');
+  }
   log(RISK_WARNING);
   const enable = scheduler !== 'none';
   if (!opts.dryRun && !opts.yes) {
@@ -219,10 +224,21 @@ export async function init(opts, io) {
     if (!act.dryRun) ghToken = io.exec('gh', ['auth', 'token']).stdout.trim();
   }
   writeOnce(act, path.join(agentHome, 'env'), renderEnvFile({ repo, worktreeRoot: path.join(agentHome, 'wt'), ghToken }), 0o600, log);
-  writeOnce(act, path.join(agentHome, 'capacity.env'), renderCapacityEnv({ maxWorkers, workerBackend: agents.implement === 'zcode' && !installed.includes('codex') ? 'zc' : '' }), 0o600, log);
+  const capacityFile = path.join(agentHome, 'capacity.env');
+  const capacity = renderCapacityEnv({ maxWorkers, workerBackend: agents.implement === 'zcode' && !installed.includes('codex') ? 'zc' : '' });
+  if (fs.existsSync(capacityFile)) {
+    // keep the owner's other tuning; only the worker cap follows --max-workers
+    const current = fs.readFileSync(capacityFile, 'utf8');
+    const next = current.replace(/^AGENT_GLOBAL_EXECUTION_CAP=.*$/m, `AGENT_GLOBAL_EXECUTION_CAP=${maxWorkers}`);
+    if (next !== current) act.write(capacityFile, next, { mode: 0o600 });
+    else log(`kept existing ${capacityFile}`);
+  } else {
+    act.write(capacityFile, capacity, { mode: 0o600 });
+  }
   writeOnce(act, path.join(agentHome, 'recipients.json'), renderRecipients(), 0o600, log);
 
   const engineRoot = path.join(agentHome, 'engine');
+  const hadEngine = currentVersion(engineRoot);
   const name = installEngine(act, {
     srcEngine: PKG_ENGINE, engineRoot, version: pkgVersion(), settings,
     overlay: buildOverlay(settings, { home: io.home, checkout, pathValue }),
@@ -252,6 +268,8 @@ export async function init(opts, io) {
   if (enable) {
     backends[scheduler].install(act, ctx);
     backends[scheduler].enable(act, ctx);
+    // a re-run with changed settings flips to a new engine version; the resident loops only pick it up on restart
+    if (hadEngine && hadEngine !== name) backends[scheduler].restartLoops(act, ctx);
   }
 
   const state = { version: pkgVersion(), engine: name, ...settings, installedAt: new Date().toISOString() };
