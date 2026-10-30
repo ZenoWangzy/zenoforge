@@ -7,6 +7,17 @@ do not create a contract file in the repository or try to edit the PR yourself.
 A ticket closed under the optimization-premise rule below delivers the
 `OBSOLETE:` first line instead of a contract block.
 
+## Method: Matt skills
+
+Implement the way Matt Pocock's `implement` skill does, driving `tdd` one
+red-green slice at a time at the seams the ticket names (the line "Matt skill
+files for this run" gives their paths). When the ticket is a defect or a red
+check, read `diagnosing-bugs` first: a command that already goes red on this
+exact failure comes before any fix, and the regression test sits at the seam
+that command reaches. Nobody answers questions or confirms seams here, so
+decide from the ticket and the code. Do not run `code-review` yourself: an
+independent reviewer does.
+
 ## Verify an optimization premise before implementing
 
 When the ticket claims waste, latency or a race with quantified numbers, the

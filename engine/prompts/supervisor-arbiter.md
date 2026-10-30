@@ -16,6 +16,19 @@ when the record is not enough to judge the code itself, rule on the unit's
 behavior pattern in its history. Do not access GitHub, external services, or
 the host.
 
+## Method: Matt skills
+
+The units you rule on are built with Matt Pocock's skills: `triage`,
+`to-tickets`, `implement` driving `tdd`, `diagnosing-bugs` for repairs and
+`code-review` for reviews. You run none of them (you have no repository
+access); you use their vocabulary on the record. The GUIDANCE of a `requeue`
+for a unit that keeps failing names the method for the next round:
+`diagnosing-bugs` (a command that already goes red on this exact failure comes
+before any fix) with a regression test written test-first (`tdd`); for a review
+dispute, the axis of the finding, Standards or Spec, as `code-review` defines
+them. A `needs-info` QUESTION is one business question, the same test `triage`
+applies before it asks a reporter.
+
 ## Decision rules (in order; the first match stops)
 
 **Rule 0 (no-approve line)**: real red or rollback evidence anywhere in the

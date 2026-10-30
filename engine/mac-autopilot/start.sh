@@ -13,16 +13,35 @@ VERSIONS="$RUN/autopi-versions"
 SYNC_ONLY=0
 [[ "${1:-}" == "--sync-only" ]] && SYNC_ONLY=1
 mkdir -p "$A/alerts" "$VERSIONS"
-head="$(git -C "$MAC_AUTOPILOT_ROOT" rev-parse HEAD)"
+# The zenoforge CLI links an immutable engine version into the checkout as engine/ (untracked), so git has nothing to
+# archive: pin by that version's directory name instead of HEAD.
+if [[ -L "$MAC_AUTOPILOT_ROOT/engine" ]]; then
+  head="$(cd -P -- "$MAC_AUTOPILOT_ROOT/engine" && basename -- "$PWD")"
+else
+  head="$(git -C "$MAC_AUTOPILOT_ROOT" rev-parse HEAD)"
+fi
 version="$VERSIONS/$head"
 if [[ ! -d "$version" ]]; then
-  # Full-tree pinned worktree, objects shared with the live checkout; no copy list can miss files
-  # again (10-29: the archive list missed verification-plan-runtime.sh, #4618, and
-  # engine/ci/pr-required-aggregate.mjs, 8fb5cdbc3 — ~2h with zero merges). --lock, and the reason
-  # names the scheduler unit: worktree-lifecycle's reaper releases bare locks after 24h but never
-  # a lock owned by the live unit (10-25 the lane deleted three unlocked detached worker worktrees).
-  git -C "$MAC_AUTOPILOT_ROOT" worktree add --detach --lock \
-    --reason "autopi pin: unit=zenoforge-autopilot-scheduler.service" "$version" "$head"
+  if [[ -L "$MAC_AUTOPILOT_ROOT/engine" ]]; then
+    # CLI install: engine/ is an untracked link to an engine version, so a worktree of this checkout would not
+    # contain it. Copy the linked version, and the skills its checkout keeps next to engine/.
+    stage="$(mktemp -d "$VERSIONS/.stage.XXXXXX")"
+    trap 'rm -rf -- "$stage"' EXIT
+    mkdir "$stage/engine"
+    tar -c -C "$MAC_AUTOPILOT_ROOT/engine/" . | tar -x -C "$stage/engine"
+    skills="$(cd -P "$MAC_AUTOPILOT_ROOT/engine/.." && pwd)/.agents/skills"
+    [[ -d "$skills" ]] && { mkdir -p "$stage/.agents"; cp -R "$skills" "$stage/.agents/skills"; }
+    mv "$stage" "$version"
+    trap - EXIT
+  else
+    # Full-tree pinned worktree, objects shared with the live checkout; no copy list can miss files
+    # again (10-29: the archive list missed verification-plan-runtime.sh, #4618, and
+    # engine/ci/pr-required-aggregate.mjs, 8fb5cdbc3 — ~2h with zero merges). --lock, and the reason
+    # names the scheduler unit: worktree-lifecycle's reaper releases bare locks after 24h but never
+    # a lock owned by the live unit (10-25 the lane deleted three unlocked detached worker worktrees).
+    git -C "$MAC_AUTOPILOT_ROOT" worktree add --detach --lock \
+      --reason "autopi pin: unit=zenoforge-autopilot-scheduler.service" "$version" "$head"
+  fi
 fi
 code="$version/engine/mac-autopilot"
 source "$code/config-reconcile.sh"
@@ -89,6 +108,7 @@ for loop in loop.sh bell-loop.sh zombie-loop.sh; do
 done
 sleep 1
 for loop in loop.sh bell-loop.sh zombie-loop.sh; do
+  [[ -f "$LIVE/$loop" ]] || { echo "$loop not in $LIVE: not started" >&2; continue; } # zombie-loop.sh is not in every tree
   nohup bash "$LIVE/$loop" >/dev/null 2>&1 </dev/null &
   echo "$!" > "$A/${loop%.sh}.pid"
   echo "$loop pid $!"

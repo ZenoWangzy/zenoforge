@@ -184,7 +184,8 @@ median and sum unknown.
   numbers reproduce must implement and pass the fix's hidden tests
   (`gradeImplementDecision` in `graders.mjs`). `--verify-gold` on the close
   case checks the grader discriminates; it has no diff-level gold.
-* **Review:** canonical `.agents/skills/zf-code-review/SKILL.md`, the
+* **Review:** the Matt `code-review` skill (`.agents/skills/code-review/SKILL.md`)
+  with `review-contract.md`, the
   original issue and fixed local base/head. The implementer report is optional.
   The grader reads the canonical `review-findings` object and requires a known
   blocking defect to be attributed to the candidate with base evidence.

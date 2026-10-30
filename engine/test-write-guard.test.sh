@@ -74,6 +74,18 @@ fi
 [[ "$unmarked_output" == *'record_env_fault: test write guard: refusing write outside runtime checkout'* ]]
 [[ ! -e "$guard_sentinel/.zenoforge/env-faults" ]]
 
+# An engine installed by the zenoforge CLI sits in $AGENT_HOME/engine/<version>, outside the checkout it serves.
+mkdir -p "$guard_sentinel/.zenoforge/engine/0.1.0"
+copy_agent_library "$guard_sentinel/.zenoforge/engine/0.1.0"
+if ! cli_output="$(HOME="$guard_sentinel" env -u ZF_AGENT_TEST_MODE -u ZF_AGENT_TEST_ROOT bash -c '
+  AGENT_HOME="$HOME/.zenoforge"
+  source "$1/lib.sh" && echo loaded
+' _ "$guard_sentinel/.zenoforge/engine/0.1.0" 2>&1)"; then
+  printf 'write guard refused an engine installed under the agent home: %s\n' "$cli_output" >&2
+  exit 1
+fi
+[[ "$cli_output" == *loaded* ]]
+
 if init_output="$(HOME="$HOME" ZF_HOME="$guard_sentinel/agent" bash -c '
   unset AGENT_HOME
   source "$1/lib.sh"
