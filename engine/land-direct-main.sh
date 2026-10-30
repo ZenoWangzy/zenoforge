@@ -7,6 +7,13 @@ unset ZF_NON_PRODUCT_UNIT
 self="$(realpath -- "$0")"
 orig_args=("$@")
 land_snapshot_marker="${ZF_LAND_CODE_SNAPSHOT:-}"
+# $self is realpath-normalized while the marker arrives verbatim from mktemp; macOS TMPDIR
+# (/tmp → /private/tmp, trailing slash → //) made every reentry comparison fail and the
+# snapshot child re-ran bootstrap against a directory without .git (#3869).
+land_snapshot_entry=""
+if [[ -n "$land_snapshot_marker" ]]; then
+  land_snapshot_entry="$(realpath -- "$land_snapshot_marker" 2>/dev/null || printf '%s' "$land_snapshot_marker")/engine/land-direct-main.sh"
+fi
 if [[ -z "$land_snapshot_marker" ]]; then
   land_bootstrap_needed=1
   for land_arg in "${orig_args[@]}"; do
@@ -26,7 +33,7 @@ fi
 land_engine_dir="${ZF_ENGINE_DIR:-}"
 [[ -n "$land_engine_dir" || ! -f "${self%/*}/config.sh" ]] || land_engine_dir="${self%/*}"
 land_engine_entry=0
-if [[ "$self" != "${ZF_LAND_CODE_SNAPSHOT:-}/engine/land-direct-main.sh" && -n "$land_engine_dir" \
+if [[ "$self" != "$land_snapshot_entry" && -n "$land_engine_dir" \
     && "${self%/*}" == "$(realpath -- "$land_engine_dir" 2>/dev/null || true)" ]]; then
   land_entry_top="$(git -C "${self%/*}" rev-parse --show-toplevel 2>/dev/null || true)"
   [[ "$self" == "$land_entry_top/engine/land-direct-main.sh" ]] || land_engine_entry=1
@@ -41,7 +48,7 @@ if [[ "$land_engine_entry" == 1 ]]; then
   printf 'land-direct-main: engine=%s (published engine directory, no snapshot)\n' "${self%/*}" >&2
   export _AGENT_WRITE_GUARD_SOURCE_ROOT="$land_guard_source_root" ZF_LAND_CODE_SNAPSHOT="${self%/*}" \
     ZF_REPO_DIR="${ZF_REPO_DIR:-$land_target_repo}" ZF_EXECUTION_MODULE_DIR="${self%/*}" ZF_SYSTEMD_RUN_REAL=""
-elif [[ "$self" != "${ZF_LAND_CODE_SNAPSHOT:-}/engine/land-direct-main.sh" ]]; then
+elif [[ "$self" != "$land_snapshot_entry" ]]; then
   land_source_root="$(git -C "${self%/*}" rev-parse --show-toplevel)"
   land_entry_head="$(git -C "$land_source_root" rev-parse HEAD)"
   land_source_ref='refs/remotes/origin/main'

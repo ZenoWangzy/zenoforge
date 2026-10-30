@@ -8,7 +8,7 @@
 # GitHub's timeline supplies durable transition timestamps. The latest event
 # keys an episode in state, so repeated scans do not repeat the freeze notice.
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
 

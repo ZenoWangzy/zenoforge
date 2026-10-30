@@ -41,7 +41,7 @@
 # only. `gh variable set AGENT_SUPERVISOR off` is the one-line kill switch;
 # `gh variable set AGENT_SUPERVISOR observe` is the one-line revert from act.
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 pause_guard="${ZF_EXECUTION_MODULE_DIR:-$SCRIPT_DIR}/execution-admission.py"
 [[ -r "$pause_guard" ]] || { echo 'supervise-pipeline: execution admission unavailable' >&2; exit 75; }
 if python3 "$pause_guard" paused; then

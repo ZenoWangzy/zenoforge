@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # The engine this script belongs to, as the caller named it (logical path, like config.sh): the default for ZF_ENGINE_LIVE.
-QUEUE_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+QUEUE_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/config.sh" # deploy.env: a clean environment (the landing unit) still sees the deployment's home and unit prefix
 AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
 # Same setting lib.sh resolves; this script sources lib.sh only on demand.

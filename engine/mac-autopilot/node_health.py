@@ -78,6 +78,7 @@ CRITERIA = {
     "host.prereqs_missing":    ("host", "host services from host-prereqs.json that do not answer", 0, 1, False),
     "host.github_net_failures_per_hour": ("host", "GitHub fetch/API network failures per hour (user journal)", 2, 10, False),
     "host.stale_worktrees":    ("host", "worktrees under ~/wt older than 2 h", 10, 40, False),
+    "engine.follow_lag_hours": ("host", "hours the live engine has not followed example HEAD:scripts", 0.5, 2, False),
     # Factory flow metrics (#4366): throughput vs the 6.5/h SLO, staged WIP age, dispatch
     # stalls, main-red duration and in/out conservation. Crossing the unhealthy bound sends
     # one supervisor-inbox event per episode (--inbox); regular samples reach the dashboard.
@@ -136,6 +137,7 @@ MEANING = {
     "review.findings_missing_pct": "打回报告里缺结构化发现块（或块畸形）的比例。缺块 = 这一轮的发现没记进台账，同文件复发规则就看不见它；Claude 评审员不带 review skill，10-20 起 81% 的打回报告没有块。",
     "host.prereqs_missing": "WSL 主机上流水线依赖的服务（测试库、代理等）有几个没响应。非 0 时看体检输出里列出的名字；10-17 重装后这些缺失要几天后才以浪费的形式暴露。",
     "host.github_net_failures_per_hour": "每小时连不上 GitHub 的次数（fetch 最终失败、API TLS 握手超时）。WSL 上 GitHub 只能走 egress 代理，单元缺代理就静默超时：10-22 三个定时单元没有代理 drop-in，6 小时约 1,600 次，没有任何数字显示。",
+    "engine.follow_lag_hours": "live 引擎没跟上 example HEAD:scripts 的小时数。converge 导出、构建或自检失败时开始计时，跟上后清零。高 = 落地了但没上线。",
     "host.stale_worktrees": "~/wt 下建立超过 2 小时还没删的工作目录数。分诊、顾问、hand 每轮结束就该删掉；堆积 = 收尾清理坏了（10-21/22 收尾先 fetch，代理一卡就全部保留，26 小时堆到 287 个）。",
     "flow.merge_rate_per_hour": "窗口内 merged/landed 单数 ÷ 小时数，对照 6.5/h 的吞吐目标（#4355）。窗口里没有在制品也没进单（无积压）时不计值；跌破 3.5/h 是升级前串行合并道的上限，工厂没在产出。",
     "flow.wip_age_stage_p90_hours": "每张在途单在当前阶段已停留的小时（按阶段分组取 p90，取最差阶段；分组明细在 scorecard 的 flow.wip_age）。高 = 流动卡在某个阶段，去单元表找是哪几张。",
@@ -199,6 +201,7 @@ SOURCE = {
     "review.findings_missing_pct": "units.json 每单的 review_findings：窗口内 block=missing 的打回 ÷ 全部打回（调度器收割打回报告时写入）",
     "host.prereqs_missing": "host-prereqs.json 里每项每次体检做一次 TCP 连接或 HTTP 200 探测",
     "host.github_net_failures_per_hour": "journalctl --user 窗口内的最终失败行（origin fetch failed、git fetch: timed out after、api.github.com TLS handshake timeout）÷ 小时；没有 journal（Mac）为空",
+    "engine.follow_lag_hours": "engine-sync converge 失败时写入的 $AGENT_HOME/engine-versions/.lag-since（epoch 秒），成功跟上即删除；没有该文件记 0",
     "host.stale_worktrees": "ZF_WORKTREE_ROOT（默认 ~/wt）下每个工作目录的 .git 链接文件建立时间早于 2 小时的个数；没有该目录（Mac）为空",
     "flow.merge_rate_per_hour": "units.json merged/landed 事件 ÷ 窗口小时；无积压判定：窗口内没有任何在途或新进入的单",
     "flow.wip_age_stage_p90_hours": "units.json 在途单（stage 非终态）当前 stage 的最后事件时间 → now，按 stage 分组取 p90",
@@ -565,6 +568,14 @@ def github_net_failures_per_hour(since, now):
 
 
 STALE_WORKTREE_HOURS = 2
+
+
+def engine_follow_lag_hours(agent_home, now):
+    try:
+        since = int(open(os.path.join(agent_home, "engine-versions", ".lag-since")).read().strip())
+    except (OSError, ValueError):
+        return 0.0
+    return round(max(0.0, now.timestamp() - since) / 3600, 2)
 
 
 def stale_worktrees(now, root=None):
@@ -1402,6 +1413,7 @@ def main():
     metrics["host.prereqs_missing"] = None if host_missing is None else len(host_missing)
     metrics["host.github_net_failures_per_hour"] = github_net_failures_per_hour(since, now)
     metrics["host.stale_worktrees"] = stale_worktrees(now)
+    metrics["engine.follow_lag_hours"] = engine_follow_lag_hours(agent_home, now)
     orders = work_orders(units, unit_spend(cost_rows), now)
     metrics["workorders.over_standard"] = sum(1 for o in orders if o["over"])
     # Per-ticket spend from the same cost rows; bounds derive from the 30 days of closed

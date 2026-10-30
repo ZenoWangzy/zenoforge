@@ -355,7 +355,7 @@ coord_scheduler_live_worker() { # unit issue -> true if an unharvested worker fo
       [[ "$current_start" == "$expected_start" ]] || continue
     fi
     alive "$pid" && return 0
-  done < <(jqf -c '.workers[] | select(.harvested != true and .lease_expired != true)' "$WORKERS")
+  done < <(jqf -r '.workers[] | select(.harvested != true and .lease_expired != true)' "$WORKERS")
   return 1
 }
 
@@ -450,6 +450,18 @@ stuck_worker_disposition() {
       offenders="$(jqf -r --argjson bound "$bound" '[.flow.wip_age[]? | select((.p90_hours // 0) >= $bound) | .oldest[]?.id] | unique | join(" ")' "$scorecard")"
     fi
   fi
+  # 盲区：点名名单只含 wip_age oldest[]（有上限），名单外的 worker 永远不被探测。
+  # 把所有日志静默超过 slow_worker_minutes 的活 worker 也并入同一个探测输入，走同一条停止路径。
+  local slow_min widened
+  slow_min="$(jqf -r '.waste.slow_worker_minutes // 60' <<<"$CFG")"
+  widened="$(jqf -r '.workers[] | select(.harvested != true and (.type | test("^(implement|repair|review|rereview|land)$"))) | [.unit, .pid, .log] | @tsv' "$WORKERS" 2>/dev/null | while IFS=$'\t' read -r wunit wpid wlog; do
+    [[ "$wpid" =~ ^[0-9]+$ ]] && alive "$wpid" || continue
+    mt="$(stat -c %Y "$SUP/$wlog" 2>/dev/null || true)"
+    if [[ "$mt" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - mt > slow_min * 60 )); then echo "$wunit"; fi
+  done || true)"
+  for id in $widened; do
+    case " $offenders " in *" $id "*) ;; *) offenders="$offenders $id" ;; esac
+  done
   for id in $offenders; do
     named_count=$((named_count + 1))
     w="$(jqf -c --arg unit "$id" '[.workers[] | select(.unit==$unit and .harvested != true)] | sort_by(.started) | last // empty' "$WORKERS")"
@@ -531,7 +543,7 @@ stuck_worker_disposition() {
   for id in $(jqf -r '.units[] | select(.stuck_probe != null) | .id' "$UNITS"); do
     case " $offenders " in *" $id "*) ;; *) set_unit "$id" 'del(.stuck_probe)' ;; esac
   done
-  if (( signal_active )); then
+  if (( signal_active )) || [[ -n "$widened" ]]; then
     action=no-kill
     (( killed_count == 0 )) || action=kill
     say "STUCK-DECISION named=$named_count live=$live_count fingerprint=first-seen:$first_seen,progress:$progress,unchanged-window:$unchanged_window,unchanged-confirmed:$unchanged_confirmed,no-live-worker:$no_live_worker action=$action killed=$killed_count"

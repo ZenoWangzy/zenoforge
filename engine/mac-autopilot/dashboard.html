@@ -141,7 +141,7 @@
   .bul-b i { display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:4px; vertical-align:1px; }
 
   /* ---- 总览 ---- */
-  .tiles { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(min(100%,200px),1fr)); }
+  .tiles { display:grid; gap:12px; grid-template-columns:repeat(var(--cols,4),minmax(0,1fr)); }
   .tile { display:flex; flex-direction:column; gap:10px; padding:16px 16px 14px; border:1px solid var(--hairline); border-radius:12px; background:var(--surface); cursor:pointer; text-align:left; position:relative; overflow:hidden; }
   .tile::before { content:""; position:absolute; left:0; right:0; top:0; height:3px; background:var(--s); }
   .tile:hover { border-color:var(--hairline-strong); }
@@ -151,12 +151,6 @@
   .tile-v { display:flex; align-items:baseline; gap:6px; color:var(--ink); }
   .tile-v b { font-size:30px; font-weight:600; letter-spacing:-.6px; color:var(--ink); line-height:1; font-variant-numeric:tabular-nums; }
   .tile-v span { color:var(--stone); font-size:12.5px; }
-  .flow { display:flex; align-items:flex-end; gap:4px; min-height:190px; }
-  .fl { flex:1; min-width:0; display:flex; flex-direction:column; align-items:center; gap:6px; cursor:pointer; }
-  .fl-n { font-size:15px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
-  .fl-b { width:min(56px,80%); border-radius:4px 4px 0 0; background:var(--s); opacity:.85; min-height:3px; }
-  .fl-l { width:100%; text-align:center; font-size:12px; color:var(--steel); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; border-top:1px solid var(--hairline); padding-top:6px; }
-  .fl-arrow { align-self:flex-end; margin-bottom:28px; color:var(--hairline-strong); }
   .sidechips { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
   .alerts { display:flex; flex-direction:column; }
   .al { display:grid; grid-template-columns:20px 72px minmax(0,1fr); gap:10px; align-items:start; padding:8px 0; border-top:1px solid var(--hairline-soft); font-size:12.5px; }
@@ -282,10 +276,73 @@
     .tk { grid-template-columns:1fr; gap:10px; } .tk-cost { text-align:left; }
     .wk { grid-template-columns:36px minmax(0,1fr) 72px; } .wk > :nth-child(3) { display:none; }
     .striprow { grid-template-columns:1fr; gap:6px; } .striprow .v { text-align:left; }
-    .flow { min-height:150px; } .fl-arrow { display:none; } .fl-l { font-size:10.5px; }
     .tiles { grid-template-columns:repeat(2,minmax(0,1fr)); } .tile-v b { font-size:24px; }
   }
   @media (prefers-reduced-motion: reduce) { #tip { transition:none; } }
+  /* 总览顶部：现在在干活的员工。颜色 = 归属，心跳点 = 日志新鲜度，进度条 = 用时 / 典型用时 */
+  .lwbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+  .lwlg, .lwgs { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .lwl { display:inline-flex; align-items:center; gap:5px; color:var(--steel); font-size:12px; }
+  .lwl i { width:10px; height:10px; border-radius:3px; background:var(--oc); }
+  .lwg { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--steel); }
+  .lwg em { font-style:normal; }
+  .lwg-t { width:56px; height:6px; border-radius:3px; background:var(--sunk); overflow:hidden; }
+  .lwg-t i { display:block; height:100%; background:var(--s); }
+  .lwg b { color:var(--si); font-variant-numeric:tabular-nums; font-weight:600; min-width:34px; }
+  .lwgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:10px; }
+  .lwc { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:6px 8px; padding:10px 12px; background:var(--soft); border:1px solid var(--hairline); border-left:4px solid var(--oc); border-radius:8px; min-width:0; }
+  .lw-be { font-family:var(--mono); font-size:10.5px; font-weight:600; text-transform:uppercase; color:var(--steel); background:var(--sunk); border-radius:4px; padding:2px 4px; }
+  .lw-t { color:var(--ink); font-size:13px; font-weight:600; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; line-height:1.3; min-width:0; }
+  .lw-hb { width:10px; height:10px; border-radius:50%; background:var(--s); }
+  .lwc.s-bad .lw-hb { box-shadow:0 0 0 3px var(--bad-zone); }
+  .lw-tr { display:flex; align-items:center; gap:4px; grid-column:1 / 3; }
+  .lw-tr i { width:16px; height:5px; border-radius:3px; border:1px solid var(--hairline-strong); }
+  .lw-tr i.d { background:var(--hairline-strong); }
+  .lw-tr i.c { background:var(--sc,var(--oc)); border-color:var(--sc,var(--oc)); }
+  .lw-st { font-size:11px; font-weight:600; color:var(--sc); background:color-mix(in srgb, var(--sc) 14%, transparent); border-radius:4px; padding:1px 6px; white-space:nowrap; }
+  .lw-ref { font-size:12px; text-align:right; }
+  .lw-bar { position:relative; grid-column:1 / 3; height:6px; border-radius:3px; background:var(--sunk); }
+  .lw-bar i { position:absolute; left:0; top:0; bottom:0; border-radius:3px; background:var(--s); }
+  .lw-bar b { position:absolute; top:-2px; bottom:-2px; width:1px; background:var(--hairline-strong); }
+  .lw-el { font-size:12px; font-weight:600; color:var(--si); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .lwa .lw-t { -webkit-line-clamp:1; }
+  .lwa { opacity:.92; grid-template-columns:auto 1fr auto; row-gap:4px; }
+  .lwa .lw-bar { grid-column:1 / 3; }
+  .lwa .lw-el { color:var(--body); font-weight:500; }
+  .lw-bar2 i:last-child { opacity:.45; }
+  .uc-l { display:flex; flex-direction:column; gap:3px; }
+  .uc { position:relative; display:flex; align-items:center; gap:6px; height:18px; padding:0 6px 0 8px; border-radius:4px; border:1px solid var(--hairline-strong); overflow:hidden; font-size:11.5px; color:var(--body); }
+  .uc.run { background:var(--sunk); border-color:transparent; }
+  .uc.run i { opacity:.4; }
+  .uc.c { padding:0 4px 0 7px; gap:4px; }
+  .uc::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--s); }
+  .uc i { position:absolute; left:0; top:0; bottom:0; background:var(--s); opacity:.22; }
+  .uc span { position:relative; flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .uc b { position:relative; font-weight:600; color:var(--si); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .uc em { position:relative; width:6px; height:6px; border-radius:50%; background:var(--primary); flex:none; }
+  .pst { display:grid; grid-template-columns:repeat(10,minmax(88px,1fr)); gap:6px; overflow-x:auto; }
+  .pcol { display:flex; flex-direction:column; gap:6px; padding:10px 8px 8px; border:1px solid var(--hairline); border-radius:10px; background:var(--surface); cursor:pointer; text-align:left; position:relative; overflow:hidden; min-width:0; }
+  .pcol::before { content:""; position:absolute; left:0; right:0; top:0; height:3px; background:var(--s); }
+  .pcol:hover { border-color:var(--hairline-strong); }
+  .pc-h { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--steel); white-space:nowrap; }
+  .pc-h i { width:7px; height:7px; border-radius:2px; background:var(--pc); flex:none; }
+  .pc-v { display:flex; align-items:baseline; gap:6px; color:var(--ink); min-height:24px; }
+  .pc-v b { font-size:22px; font-weight:600; line-height:1; font-variant-numeric:tabular-nums; }
+  .pc-v span { font-size:12px; font-weight:600; color:var(--primary); display:inline-flex; align-items:center; gap:3px; }
+  .pc-v span::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--primary); }
+  .uc-m { font-size:11px; color:var(--stone); padding-left:8px; }
+  .lwgrid-s { grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); }
+  .tgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:10px; }
+  .tcard { background:var(--soft); border:1px solid var(--hairline); border-radius:8px; padding:10px 12px; min-width:0; }
+  .t-l { color:var(--steel); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .t-b { font-style:normal; margin-left:4px; color:var(--stone); }
+  .t-r { display:flex; align-items:baseline; justify-content:space-between; gap:6px; margin:2px 0 4px; }
+  .t-v { color:var(--ink); font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .spark { width:100%; height:auto; display:block; overflow:visible; }
+  .sp-l { fill:none; stroke:var(--steel); stroke-width:2; vector-effect:non-scaling-stroke; stroke-linejoin:round; }
+  .sp-d { fill:var(--steel); stroke:var(--soft); stroke-width:2; vector-effect:non-scaling-stroke; }
+  .sp-d.last { fill:var(--s); }
+  .sp-m { stroke:var(--hairline-strong); stroke-width:1; vector-effect:non-scaling-stroke; stroke-dasharray:2 2; }
 </style>
 </head>
 <body>
@@ -484,7 +541,8 @@ const scorecardFreshness = (D, STD) => {
   const age = sampledAt ? (Date.now() - new Date(sampledAt).getTime())/1000 : null;
   const configured = String((D.config||{}).tick_seconds ?? 120);
   const interval = /^[0-9]+$/.test(configured) && Number(configured)>=30 ? Number(configured) : 120;
-  return {sampledAt, age, interval, stale: age!=null && age>interval};
+  // 评分每拍采一次，一拍 = 调度耗时（实测 180–300 秒）+ tick_seconds，比 tick_seconds 长；按看板同一条 900 秒报警线算过期
+  return {sampledAt, age, interval, stale: age!=null && age>=900};
 };
 
 /* ============ 模块 ============ */
@@ -918,7 +976,7 @@ function area(pts, budget) {
   const x = i => i*W/(pts.length-1), y = v => H - (v/top)*(H-4);
   const line = pts.map((p,i)=>`${i?"L":"M"}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
   const bw = W/pts.length;
-  return `<svg class="area" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><path class="fa" d="${line}L${W},${H}L0,${H}Z"/><path class="ln" d="${line}"/>
+  return `<svg class="area" viewBox="0 0 ${W} ${H}" aria-hidden="true"><path class="fa" d="${line}L${W},${H}L0,${H}Z"/><path class="ln" d="${line}"/>
     ${budget?`<line class="bg" x1="0" x2="${W}" y1="${y(budget).toFixed(1)}" y2="${y(budget).toFixed(1)}"/>`:""}
     ${pts.map((p,i)=>`<rect class="hit" x="${(x(i)-bw/2).toFixed(1)}" y="0" width="${bw.toFixed(2)}" height="${H}" data-tip="${esc(hm(p.t*1000, true)+" · "+p.v.toFixed(2)+" GB/时")}"/>`).join("")}</svg>
     <div class="axis"><span>${hm(pts[0].t*1000)}</span>${budget?`<span style="color:var(--bad-ink)">--- 预算 ${budget} GB/时</span>`:""}<span>${hm(pts[pts.length-1].t*1000)}</span></div>`;
@@ -946,34 +1004,138 @@ function vHost(D) {
 }
 
 // 0. 总览
-const FLOW = [
-  {nm:"待分诊", front:"needs-triage", mod:"intake"},
-  {nm:"待顾问", front:"needs-advisor", mod:"advisor"},
-  {nm:"待拆票", front:"needs-recut", mod:"intake"},
-  {nm:"待实现", front:"ready-for-agent", mod:"intake"},
-  {nm:"开发", units:["implement-pending","implement"], mod:"workers"},
-  {nm:"质检/返工", units:["review-pending","review","repair-pending","repair","rereview-pending","rereview"], mod:"workers"},
-  {nm:"待合并", units:["ready-to-merge","landing"], mod:"ci"},
-  {nm:"等发布", front:"awaiting-release", mod:"release"},
-];
-function vOverview(D) {
-  const tiles = MODULES.filter(m => m.id!=="overview").map(m => { const s = safeSum(m, D);
-    return `<button class="tile s-${sk(s.s)}" data-m="${m.id}" type="button"><div class="tile-h">${ic(m.icon)}${esc(m.nm)}<span class="si" data-tip="${esc(SL[sk(s.s)])}">${ic(sk(s.s))}</span></div>
-      <div class="tile-v"><b>${s.v}</b>${s.u?`<span>${esc(s.u)}</span>`:""}</div><div class="sub">${esc(s.l)}</div>${tally(s.st)}</button>`; }).join("");
-  const F = FR(D);
-  const vals = FLOW.map(f => { if (f.front) { const r = stageRow(D, f.front); return {n: r ? r.count : null, s: worst([(F.status||{})[`stage.${f.front}.count`], (F.status||{})[`stage.${f.front}.idle_hours`]]), tip: r ? `${r.name}：${r.count} 张 · 最久滞留 ${fAge(r.idle_hours)}` : ""}; }
-    const n = unitsIn(D, f.units).length; return {n, s:"none", tip:`${f.nm}：${n} 个工作单`}; });
-  const fmax = Math.max(1, ...vals.map(v=>v.n||0));
-  const flow = `<div class="flow">${FLOW.map((f,i) => `${i?`<span class="fl-arrow">${ic("chev")}</span>`:""}<div class="fl s-${vals[i].s==="none"?"none":vals[i].s}" data-m="${f.mod}" data-tip="${esc(vals[i].tip)}" style="${vals[i].s==="none"?"--s:var(--primary)":""}">
-      <span class="fl-n">${vals[i].n==null?"—":vals[i].n}</span><i class="fl-b" style="height:${Math.max(3, 130*(vals[i].n||0)/fmax)}px"></i><span class="fl-l">${esc(f.nm)}</span></div>`).join("")}</div>
-    <div class="sidechips">${["finish-first","needs-info","awaiting-pipeline-sync"].map(l => { const r = stageRow(D,l); return r ? `<span class="chip s-${sk((F.status||{})[`stage.${l}.count`])}" data-tip="${esc(r.name+" · 最久滞留 "+fAge(r.idle_hours))}">${esc(r.name)} <b class="num" style="color:inherit">${r.count}</b></span>` : ""; }).join("")}
-      ${(()=>{ const n = unitsIn(D,["blocked-external","supervisor-review"]).length, h = unitsIn(D,["needs-human"]).length;
-        return `<span class="chip s-none">等外部条件 <b class="num" style="color:inherit">${n}</b></span><span class="chip s-${h?"bad":"none"}">需人决策 <b class="num" style="color:inherit">${h}</b></span>`; })()}</div>
-    <div class="lg"><span><i style="background:var(--primary)"></i>工作单（台账）</span><span><i style="background:var(--ok)"></i><i style="background:var(--warn)"></i><i style="background:var(--bad)"></i>GitHub 阶段，按健康线着色</span></div>`;
-  return `<div class="stack16"><div class="tiles">${tiles}</div>
-    ${panel("arrow","工作在哪里堆积", flow, (FR(D).errors||{}).stages ? stChip("bad","阶段计数不可用") : "")}
-    ${panel("bell","最近的告警", alertList(D, 6), `<button class="ghost" data-m="health" type="button">全部 ${(D.alerts_tail||[]).length}</button>`)}</div>`;
+const OWN = {pipeline:["流水线","var(--c1)"], opt:["优化","var(--c3)"], hotfix:["热修","var(--c2)"], advisor:["顾问","var(--c7)"], release:["发布","var(--c4)"]};
+const fB = v => v==null ? "—" : v >= 1e9 ? (v/1e9).toFixed(1)+"GB" : v >= 1e6 ? (v>=1e8 ? Math.round(v/1e6) : (v/1e6).toFixed(1))+"MB" : v >= 1e3 ? Math.round(v/1e3)+"KB" : Math.round(v)+"B";
+// 一行 = 一个单位的名称；实心 = 有员工在跑，空心 = 在等；底色条长 = 已停 / 不健康线，颜色 = 对健康线 / 不健康线
+const rowSt = r => r.age <= r.ok ? "ok" : r.age < r.bad ? "warn" : "bad";
+function ucList(rows, total, cap = 5, compact = false) {
+  if (!rows || !rows.length) return "";
+  const shown = rows.slice(0, cap), more = total - shown.length;
+  return `<div class="uc-l">${shown.map(r => `<div class="uc s-${rowSt(r)}${r.live?" run":""}${compact?" c":""}" data-tip="${esc(r.t+" · "+(r.live?"在跑 · ":"在等 · ")+"已 "+fAge(r.age)+"（健康 ≤ "+fAge(r.ok)+" · 不健康 ≥ "+fAge(r.bad)+"）")}"><i style="width:${Math.max(4, Math.min(100, 100*r.age/r.bad))}%"></i>${r.live?"<em></em>":""}<span>${esc(r.t)}</span>${compact?"":`<b>${fAge(r.age)}</b>`}</div>`).join("")}
+    ${more > 0 ? `<div class="uc-m">+${more}</div>` : ""}</div>`;
 }
+const STEPN = {implement:"实施", review:"评审", repair:"重修", rereview:"复审", land:"合并", triage:"分拣", supervise:"督导", advisor:"顾问", release:"发布", run:"运行", ask:"提问", answer:"答复"};
+const STEPC = {implement:"var(--c1)", review:"var(--c3)", repair:"var(--c4)", rereview:"var(--c2)", land:"var(--c6)", triage:"var(--c5)", supervise:"var(--steel)", advisor:"var(--c7)", release:"var(--c6)"};
+// 台账站内停留的健康线（小时，初值）：典型用时与 3 倍以内，取自员工卡同一量级
+const STAGE_H = {implement:[.75,1.5], review:[.25,.5], repair:[.42,.83], rereview:[.17,.33], land:[.5,2]};
+// 流水线真实步骤（台账阶段 / GitHub 标签）：分拣 → 顾问 → 拆票 → 待实施 → 实施 → 评审 → 重修 ⇄ 复审 → CI·合并 → 发布
+const PCOLS = [
+  {k:"triage", nm:"分拣", gh:"needs-triage", mod:"intake"}, {k:"advisor", nm:"顾问", gh:"needs-advisor", mod:"advisor"},
+  {k:"split", nm:"拆票", gh:"needs-recut", mod:"intake"}, {k:"queue", nm:"待实施", gh:"ready-for-agent", mod:"intake"},
+  {k:"implement", nm:"实施", st:["implement-pending","implement"], mod:"workers"}, {k:"review", nm:"评审", st:["review-pending","review"], mod:"workers"},
+  {k:"repair", nm:"重修", st:["repair-pending","repair"], mod:"workers"}, {k:"rereview", nm:"复审", st:["rereview-pending","rereview"], mod:"workers"},
+  {k:"land", nm:"CI·合并", st:["ready-to-merge","landing"], mod:"ci"}, {k:"release", nm:"发布", gh:"awaiting-release", mod:"release"}];
+function pipeCol(D, c) {
+  const F = FR(D), now = Date.now(), L = (D.live_workers||{}).items || [];
+  const runN = liveWorkers(D).filter(w => w.type === c.k).length + L.filter(w => w.kind === c.k && (w.owner === "advisor" || w.owner === "release")).length;
+  let rows, wait, st;
+  if (c.gh) { const r = stageRow(D, c.gh), sd = (F.standards||{})[`stage.${c.gh}.idle_hours`] || {healthy:6, unhealthy:24};
+    rows = ((r||{}).items||[]).map(i => ({t: i.title || "#"+i.number, age: Math.max(0, (now - Date.parse(i.updated_at))/36e5), ok: sd.healthy, bad: sd.unhealthy}));
+    wait = r ? r.count : null; st = r ? worst([(F.status||{})[`stage.${c.gh}.count`], (F.status||{})[`stage.${c.gh}.idle_hours`]]) : "none";
+  } else { const live = new Set(liveWorkers(D).map(w => w.unit)), b = STAGE_H[c.k];
+    rows = unitsIn(D, c.st).map(u => ({t: u.title || u.id, age: (u.journey||{}).since_min/60, ok: b[0], bad: b[1], live: live.has(u.id)})).sort((x,y) => (y.live - x.live) || (y.age - x.age));
+    wait = rows.filter(r => !r.live).length; st = rows.length ? worst(rows.map(rowSt)) : "none"; }
+  return `<button class="pcol s-${sk(st)}" data-m="${c.mod}" type="button" style="${sk(st)==="none"?"--s:var(--hairline-strong);":""}--pc:${STEPC[c.k]||"var(--c1)"}"><div class="pc-h"><i></i>${esc(c.nm)}</div>
+    <div class="pc-v"><b>${wait==null?"—":wait}</b>${runN?`<span data-tip="${runN} 个员工在跑">${runN}</span>`:""}</div>${ucList(rows, c.gh ? wait : rows.length, 4, true)}</button>`;
+}
+function pipeStrip(D) {
+  const F = FR(D), n = (l, k) => `<b class="num" style="color:inherit">${k}</b>`;
+  return `<div class="pst">${PCOLS.map(c => pipeCol(D, c)).join("")}</div>
+    <div class="sidechips">${["finish-first","needs-info","awaiting-pipeline-sync"].map(l => { const r = stageRow(D,l); return r ? `<span class="chip s-${sk((F.status||{})[`stage.${l}.count`])}" data-tip="${esc(r.name+" · 最久滞留 "+fAge(r.idle_hours))}">${esc(r.name)} ${n(0,r.count)}</span>` : ""; }).join("")}
+      ${(()=>{ const b = unitsIn(D,["blocked-external"]).length, sv = unitsIn(D,["supervisor-review"]).length, h = unitsIn(D,["needs-human"]).length;
+        return `<span class="chip s-none">等外部条件 ${n(0,b)}</span><span class="chip s-none">督导 ${n(0,sv)}</span><span class="chip s-${h?"bad":"none"}">需人决策 ${n(0,h)}</span>`; })()}</div>
+    <div class="lg"><span><i style="background:var(--sunk);border:1px solid var(--hairline-strong)"></i>实心 = 员工在跑</span><span><i style="border:1px solid var(--hairline-strong)"></i>空心 = 在等</span><span><i style="background:var(--ok)"></i><i style="background:var(--warn)"></i><i style="background:var(--bad)"></i>对该步健康线</span><span class="sub">数字 = 在等，蓝点 = 在跑</span></div>`;
+}
+const maxUse = rows => ({tok: Math.max(1, ...rows.map(a => a.tokens || 0)), b: Math.max(1, ...rows.map(a => (a.rx||0)+(a.tx||0)))});
+// token 条 + 流量条（左段 ↓ 收、右段淡色 ↑ 发）；没有数据显示 —，不估
+function usageRows(a, mx) {
+  const has = a.rx != null || a.tx != null, rx = 100*(a.rx||0)/mx.b, tx = 100*(a.tx||0)/mx.b;
+  return (a.tokens == null ? "" : `<div class="lw-bar" style="--s:var(--c7)"><i style="width:${Math.max(2,100*a.tokens/mx.tok)}%"></i></div><span class="lw-el">${FMT.tok(a.tokens)}</span>`)
+    + (!has ? "" : `<div class="lw-bar lw-bar2" style="--s:var(--c5)"><i style="width:${Math.max(1,rx)}%"></i><i style="left:${rx}%;width:${Math.max(1,tx)}%"></i></div><span class="lw-el" title="${esc("↓ "+fB(a.rx)+" · ↑ "+fB(a.tx)+"（工单累计，采样下限）")}">${fB((a.rx||0)+(a.tx||0))}</span>`);
+}
+function lwCard(w, nowS, mx) {
+  const [on, oc] = OWN[w.owner] || [w.owner, "var(--none)"];
+  const el = w.started_epoch ? Math.max(0, nowS - w.started_epoch) : null, typ = w.typical_s || 1800;
+  const es = el == null ? "none" : el <= typ ? "ok" : el <= 2*typ ? "warn" : "bad";
+  const cur = (w.steps||[])[w.step], sc = STEPC[cur] || oc;
+  const steps = `<span class="lw-st">${esc(STEPN[cur]||cur||"")}</span>` + (w.steps||[]).map((s,i) => `<i class="${i<w.step?"d":i===w.step?"c":""}" title="${esc(STEPN[s]||s)}"></i>`).join("");
+  const ref = w.pr ? `<a href="${REPO}/pull/${esc(w.pr)}" target="_blank" rel="noopener">PR ${esc(w.pr)}</a>` : w.issue ? `<a href="${REPO}/issues/${esc(w.issue)}" target="_blank" rel="noopener">#${esc(w.issue)}</a>` : "";
+  const hs = {ok:"最近 5 分钟内有输出", warn:"5–30 分钟没有输出", bad:"超过 30 分钟没有输出，可能卡住", none:"无日志可判断"}[w.health] || "";
+  return `<div class="lwc s-${sk(w.health)}" style="--oc:${oc}" title="${esc(on+" · "+(w.tip||"")+(el==null?"":" · 已用 "+fDur(el)))}">
+    <span class="lw-be">${esc(w.backend||"")}</span><span class="lw-t">${esc(w.task||"")}</span><i class="lw-hb" title="${esc(hs)}"></i>
+    <div class="lw-tr" style="--sc:${sc}">${steps}</div><span class="lw-ref">${ref}</span>
+    <div class="lw-bar s-${es}" title="典型用时 ${esc(fDur(typ))}"><i style="width:${Math.min(100, 50*(el||0)/typ)}%"></i><b style="left:50%"></b></div><span class="lw-el s-${es}">${el==null?"—":fDur(el)}</span>${usageRows(w, mx)}</div>`;
+}
+function lwGauge(label, frac, st, txt) {
+  return `<span class="lwg s-${st}" title="${esc(label)}"><em>${esc(label)}</em><span class="lwg-t"><i style="width:${Math.max(3,Math.min(100,100*frac))}%"></i></span><b>${esc(txt)}</b></span>`;
+}
+function livePanel(D) {
+  const L = D.live_workers;
+  if (!L || L.error || !Array.isArray(L.items)) return panel("workers", "员工", emptyMsg("员工清单不可用"));
+  const nowS = Math.floor(Date.now()/1000);
+  const ld = L.load5, mem = L.mem_avail_mb;
+  const gauges = lwGauge("CPU", ld==null?0:ld/24, ld==null?"none":ld<6?"none":ld<=16?"ok":"bad", ld==null?"—":ld.toFixed(1))
+    + lwGauge("内存", mem==null?0:mem/16384, mem==null?"none":mem<2048?"bad":mem<4096?"warn":"ok", mem==null?"—":(mem/1024).toFixed(1)+"G");
+  const legend = Object.entries(OWN).map(([k,[n,c]]) => `<span class="lwl" style="--oc:${c}"><i></i>${n}</span>`).join("");
+  const cards = L.items.length ? `<div class="lwgrid">${L.items.map(w => lwCard(w, nowS, maxUse(L.items))).join("")}</div>` : emptyMsg("空闲");
+  const uleg = `<span class="lwl" style="--oc:var(--steel)"><i></i>用时</span><span class="lwl" style="--oc:var(--c7)"><i></i>token</span><span class="lwl" style="--oc:var(--c5)"><i></i>流量 ↓↑</span>`;
+  return panel("workers", "员工", `<div class="lwbar"><span class="lwlg">${legend}${uleg}</span><span class="lwgs">${gauges}</span></div>${cards}`);
+}
+const FMT = {n: v => String(Math.round(v)), h: v => (v < 10 ? v.toFixed(1) : Math.round(v)) + " 时", pct: v => Math.round(v) + "%",
+  tok: v => v >= 1e6 ? (v/1e6).toFixed(1) + "M" : v >= 1e3 ? Math.round(v/1e3) + "K" : String(Math.round(v))};
+const OUTC = {ok:["合入","ok"], bad:["搁置 / 失败","bad"], none:["关闭","none"], run:["流转中","run"]};
+function archivePanel(D) {
+  const F = D.factory;
+  if (!F || F.error || !Array.isArray(F.archive)) return panel("orders", "已完成", emptyMsg("归档不可用"));
+  const A0 = F.archive, nowS = Math.floor(Date.now()/1000), oc = {all:"全部", ok:"合入", bad:"搁置 / 失败", none:"关闭", run:"流转中"};
+  if (!oc[view.o]) view.o = "all";
+  const A = view.o === "all" ? A0 : A0.filter(a => a.outcome === view.o);
+  const ctl = `<div class="bar-ctl">${Object.entries(oc).map(([k,n]) => `<button class="ghost ${view.o===k?"on":""}" data-o="${k}">${n} ${k==="all"?A0.length:A0.filter(a=>a.outcome===k).length}</button>`).join("")}</div>`;
+  const mw = Math.max(1, ...A.map(a => a.wall_s || 0)), mx = maxUse(A);
+  const legend = Object.values(OUTC).map(([n,k]) => `<span class="lwl" style="--oc:${k==="run"?"var(--primary)":`var(--${k})`}"><i></i>${n}</span>`).join("");
+  const cards = A.map(a => { const k = a.outcome, c = k==="run" ? "var(--primary)" : `var(--${k})`;
+    const ref = a.pr ? `<a href="${REPO}/pull/${esc(a.pr)}" target="_blank" rel="noopener">PR ${esc(a.pr)}</a>` : a.issue ? `<a href="${REPO}/issues/${esc(a.issue)}" target="_blank" rel="noopener">#${esc(a.issue)}</a>` : "";
+    return `<div class="lwc lwa" style="--oc:${c}" title="${esc((OUTC[k]||[""])[0]+" · "+a.stage+" · "+a.tip+" · "+fDur(a.wall_s==null?null:Math.round(a.wall_s))+(a.end_epoch?" · "+fDur(nowS-a.end_epoch)+"前结束":""))}">
+      <span class="lw-be">${esc(a.backend==="codex"?"cx":(a.backend||"").slice(0,2))}</span><span class="lw-t">${esc(a.task)}</span><span class="lw-ref">${ref}</span>
+      <div class="lw-bar" style="--s:var(--steel)"><i style="width:${Math.max(2,100*(a.wall_s||0)/mw)}%"></i></div><span class="lw-el">${a.wall_s==null?"—":fDur(Math.round(a.wall_s))}</span>
+      ${usageRows(a, mx)}</div>`; }).join("");
+  return panel("orders", "已完成", `<div class="lwbar"><span class="lwlg">${legend}</span><span class="lwlg"><span class="lwl" style="--oc:var(--steel)"><i></i>用时</span><span class="lwl" style="--oc:var(--c7)"><i></i>token</span><span class="lwl" style="--oc:var(--c5)"><i></i>流量 ↓↑</span></span></div>${ctl}${A.length?`<div class="lwgrid lwgrid-s">${cards}</div>`:emptyMsg("还没有归档")}`);
+}
+function sparkSvg(S, days, marks) {
+  const n = days.length, W = 200, H = 44, x = i => 4 + i*(W-8)/Math.max(1,n-1);
+  const vs = S.values.filter(v => v != null), lo = Math.min(...vs), hi = Math.max(...vs), y = v => hi===lo ? H/2 : H-5 - (v-lo)*(H-10)/(hi-lo);
+  const t0 = Date.parse(days[0]+"T00:00:00Z")/1000, buckets = {};
+  (marks||[]).forEach(m => { const f = (m.epoch - t0)/86400; if (f < 0 || f > n) return; const i = Math.min(n-1, Math.floor(f)); (buckets[i] = buckets[i] || []).push(new Date(m.epoch*1000).toISOString().slice(5,16).replace("T"," ")+" UTC · "+m.label); });
+  const ms = Object.entries(buckets).map(([i,l]) => `<line x1="${x(+i)+((W-8)/Math.max(1,n-1))/2}" x2="${x(+i)+((W-8)/Math.max(1,n-1))/2}" y1="1" y2="${H-1}" class="sp-m"><title>${esc(l.join("\n"))}</title></line>`).join("");
+  let segs = [], cur = []; S.values.forEach((v,i) => { if (v == null) { if (cur.length) segs.push(cur); cur = []; } else cur.push([x(i), y(v)]); }); if (cur.length) segs.push(cur);
+  const lines = segs.filter(s => s.length > 1).map(s => `<polyline class="sp-l" points="${s.map(p => p.join(",")).join(" ")}"/>`).join("");
+  const dots = S.values.map((v,i) => v == null ? "" : `<circle class="sp-d${i===S.last?" last":""}" cx="${x(i)}" cy="${y(v)}" r="${i===S.last?3:2.2}"><title>${esc(days[i].slice(5)+"：" + FMT[S.fmt](v))}</title></circle>`).join("");
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(S.label)}">${ms}${lines}${dots}</svg>`;
+}
+function trendCard(S, days, marks) {
+  let last = -1; S.values.forEach((v,i) => { if (v != null) last = i; });
+  if (last < 0) return `<div class="tcard s-none"><div class="t-l">${esc(S.label)}</div><div class="t-v">—</div></div>`;
+  const base = S.values.slice(Math.max(0, last-7), last).filter(v => v != null), b = base.length ? base.reduce((a,c) => a+c, 0)/base.length : null, v = S.values[last];
+  const d = b == null || b === 0 ? null : (v-b)/Math.abs(b), good = d == null || Math.abs(d) < 0.05 ? "none" : (d > 0) === (S.better === "up") ? "ok" : "bad";
+  const chip = d == null ? "" : `<span class="chip s-${good}">${d>0?"▲":"▼"} ${Math.round(Math.abs(d)*100)}%</span>`;
+  const T = {...S, last};
+  return `<div class="tcard s-${good}" title="${esc("对比前 7 天均值 "+(b==null?"—":FMT[S.fmt](b))+"；"+(S.better==="up"?"越高越好":"越低越好"))}"><div class="t-l">${esc(S.label)}<i class="t-b">${S.better==="up"?"↑":"↓"}</i></div>
+    <div class="t-r"><span class="t-v">${FMT[S.fmt](v)}</span>${chip}</div>${sparkSvg(T, days, marks)}</div>`;
+}
+function trendPanel(D) {
+  const F = D.factory, T = F && F.trend;
+  if (!T || !Array.isArray(T.series)) return panel("arrow", "趋势", emptyMsg("趋势数据不可用"));
+  return panel("arrow", "工厂是否在变好", `<div class="tgrid">${T.series.map(s => trendCard(s, T.days, T.milestones)).join("")}</div>
+    <div class="lg"><span><i style="background:var(--hairline-strong);width:2px"></i>引擎里程碑（悬停看内容）</span><span><i style="background:var(--ok)"></i>比前 7 天好</span><span><i style="background:var(--bad)"></i>比前 7 天差</span></div>`);
+}
+function vOverview(D) {
+  const tiles = MODULES.filter(m => ["health","cost","host"].includes(m.id)).map(m => { const s = safeSum(m, D);
+    return `<button class="tile s-${sk(s.s)}" data-m="${m.id}" type="button"><div class="tile-h">${ic(m.icon)}${esc(m.nm)}<span class="si" data-tip="${esc(SL[sk(s.s)])}">${ic(sk(s.s))}</span></div>
+      <div class="tile-v"><b>${s.v}</b>${s.u?`<span>${esc(s.u)}</span>`:""}</div><div class="sub">${esc(s.l)}</div>${tally(s.st)}</button>`; });
+  return `<div class="stack16">${panel("arrow","流水线", pipeStrip(D), (FR(D).errors||{}).stages ? stChip("bad","阶段计数不可用") : "")}${livePanel(D)}<div class="tiles" style="--cols:${tiles.length}">${tiles.join("")}</div></div>`;
+}
+function vRoi(D) { return `<div class="stack16">${archivePanel(D)}${trendPanel(D)}</div>`; }
+function sumRoi(D) { const F = D.factory, n = F && Array.isArray(F.archive) ? F.archive.length : null; return {s:"none", v: n==null ? "—" : n, l:"最近完成"}; }
 function sumOverview(D) { const f = freshness(D); return {s: f.s, v: f.age==null ? "—" : fDur(Math.round(f.age)), l: "数据新鲜度"}; }
 
 const MODULES = [
@@ -986,6 +1148,7 @@ const MODULES = [
   {id:"release",  nm:"合并 · 发布", en:"Merge & release", icon:"release", render:vRelease, sum:sumRelease},
   {id:"health",   nm:"健康标准", en:"Health & standards", icon:"health", render:vHealth, sum:sumHealth},
   {id:"cost",     nm:"成本", en:"Cost & tokens", icon:"cost", render:vCost, sum:sumCost},
+  {id:"roi",      nm:"效率 · ROI", en:"Efficiency & ROI", icon:"arrow", render:vRoi, sum:sumRoi},
   {id:"host",     nm:"主机 · 运行", en:"Host, network & knobs", icon:"host", render:vHost, sum:sumHost},
 ];
 function safeSum(m, D) { try { return m.sum(D); } catch (e) { return {s:"none", v:"—", l:"出错"}; } }
@@ -1017,7 +1180,7 @@ function renderModule(id) {
   const pauseLabel = pause ? `流水线暂停 · ${pause.since ? utc(pause.since) : "时间未知"} · ${pause.reason || "原因未知"}`
     : Object.prototype.hasOwnProperty.call(STD, "paused") ? "流水线运行中" : "流水线状态未知";
   const pipelineStatus = pause ? "warn" : Object.prototype.hasOwnProperty.call(STD, "paused") ? "ok" : "none";
-  document.getElementById("fresh").innerHTML = `<span class="chip s-${f.s}" data-tip="看板数据生成于 ${esc(utc(D.generated))}\n每 30 秒自动刷新">${ic(f.s==="ok"?"clock":f.s)}${f.age==null?"—":fDur(Math.round(f.age))+"前"}</span><span class="chip s-${sampleStatus}" data-tip="评分采样于 ${esc(utc(sample.sampledAt))} · 每 ${sample.interval} 秒采样">${ic(sampleStatus==="ok"?"clock":sampleStatus)}${sampleLabel}${sample.sampledAt?` · ${esc(utc(sample.sampledAt))}`:""}</span><span class="sub">运行版本 <code>${esc(commit)}</code></span><span class="chip s-${pipelineStatus}" data-tip="PAUSE 开始于 ${esc(pause&&pause.since?utc(pause.since):"—")}">${esc(pauseLabel)}</span>`;
+  document.getElementById("fresh").innerHTML = `<span class="chip s-${f.s}" data-tip="看板数据生成于 ${esc(utc(D.generated))}\n每 30 秒自动刷新">${ic(f.s==="ok"?"clock":f.s)}${f.age==null?"—":fDur(Math.round(f.age))+"前"}</span><span class="chip s-${sampleStatus}" data-tip="评分采样于 ${esc(utc(sample.sampledAt))} · 每个调度拍采样">${ic(sampleStatus==="ok"?"clock":sampleStatus)}${sampleLabel}${sample.sampledAt?` · ${esc(utc(sample.sampledAt))}`:""}</span><span class="sub">运行版本 <code>${esc(commit)}</code></span><span class="chip s-${pipelineStatus}" data-tip="PAUSE 开始于 ${esc(pause&&pause.since?utc(pause.since):"—")}">${esc(pauseLabel)}</span>`;
   try { view.innerHTML = m.render(D); }
   catch (e) { view.innerHTML = `<div class="unavail">${ic("bad")}<div><b style="color:inherit">此模块渲染出错</b><div class="sub">${esc(e && e.stack || e)}</div></div></div>`; }
   document.title = `${m.nm} · the product 流水线看板`;
@@ -1025,11 +1188,12 @@ function renderModule(id) {
 function go(id) { current = id; lsSet(LS_MOD, id); renderModule(id); window.scrollTo(0, 0); }
 
 document.addEventListener("click", ev => {
-  const el = ev.target.closest("[data-m],[data-f],[data-s],[data-p]");
+  const el = ev.target.closest("[data-m],[data-f],[data-s],[data-p],[data-o]");
   if (!el || el.disabled) return;
   if (el.closest("a")) return;
   if (el.dataset.m) return go(el.dataset.m);
   if (el.dataset.f) { view.f = el.dataset.f; view.p = 0; }
+  if (el.dataset.o) view.o = el.dataset.o;
   if (el.dataset.s) { view.s = el.dataset.s; view.p = 0; }
   if (el.dataset.p != null) view.p = Number(el.dataset.p);
   try { sessionStorage.setItem("unitsView2", JSON.stringify(view)); } catch (e) {}

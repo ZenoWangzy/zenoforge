@@ -52,7 +52,7 @@ for arg in "$@"; do
   fi
 done
 N="${ARGS[0]:?usage: run-recut.sh [--dry-run] <issue-number>}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
 if state_read "$N" | jq -e '.pipeline_system.enabled == true' >/dev/null 2>&1; then

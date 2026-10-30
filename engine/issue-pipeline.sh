@@ -35,7 +35,7 @@
 set -euo pipefail
 IMPLEMENT_RECENT_SKIP_SECONDS=600
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/issue-pipeline-slices.sh"

@@ -76,6 +76,8 @@ verification_plan_brief() { # plan-json → worker-facing structured feature evi
 }
 
 # review-contract.md owns the review-findings object. Legacy arrays remain readable for reports already on disk.
+# A canonical finding without a non-blank rerun_command and rerun_output is dropped, not rejected: it never reaches
+# findings, and `dropped` / `dropped_findings` keep the count and reasons visible.
 findings_block_of() { # report → stdout: {findings:[...],dispositions:[...]}
   local raw
   raw="$(awk '/^```review-findings[[:space:]]*$/{on=1;buf="";last="";next} on&&/^```[[:space:]]*$/{last=buf;on=0;next} on{buf=buf $0 "\n"} END{printf "%s", last}' "$1" 2>/dev/null)"
@@ -89,22 +91,25 @@ findings_block_of() { # report → stdout: {findings:[...],dispositions:[...]}
       and (.status|IN("open","resolved","inherited"))
       and ((has("introduced_by")|not and $legacy) or (.introduced_by|IN("candidate","pre_existing","unknown")))
       and ((has("base_evidence")|not and $legacy) or ((.base_evidence|type)=="string" and (.base_evidence|test("\\S"))))
-      and (if $legacy then true else keys==["base_evidence","file","id","introduced_by","line","rule","severity","status","summary"] end)
+      and (if $legacy then true else del(.rerun_command,.rerun_output)|keys==["base_evidence","file","id","introduced_by","line","rule","severity","status","summary"] end)
       and ((has("rule")|not) or (.rule|type)=="string")
       and ((has("summary")|not) or (.summary|type)=="string")
       and (if $legacy then true else (.rule|length)>0 and (.summary|length)>0 end);
+    def evidence_gap: [("rerun_command","rerun_output") as $k | select((.[$k]|type)!="string" or (.[$k]|test("\\S")|not)) | $k];
     def normalized_finding: {id,severity,file,line,rule:(.rule // null),status,summary:(.summary // null),introduced_by:(.introduced_by // null),base_evidence:(.base_evidence // null)};
     def disposition: type=="object" and (.id|type)=="string" and (.id|length)>0
       and (.disposition|IN("fixed","disproved","intentional","out-of-scope"))
       and (.reason|type)=="string" and (.reason|test("\\S")) and (.reason|test("^[^\\r\\n]+$"))
       and keys==["disposition","id","reason"];
     if type=="array" and all(.[]; finding(true)) then
-      {findings:map(normalized_finding),dispositions:[],legacy:true}
+      {findings:map(normalized_finding),dispositions:[],legacy:true,dropped:0,dropped_findings:[]}
     elif type=="object" and keys==["dispositions","findings"] and (.findings|type)=="array" and (.dispositions|type)=="array"
       and all(.findings[]; finding(false)) and all(.dispositions[]; disposition)
       and (([.findings[].id] | length)==([.findings[].id] | unique | length))
       and (([.dispositions[].id] | length)==([.dispositions[].id] | unique | length)) then
-      {findings:(.findings|map(normalized_finding)),dispositions:.dispositions,legacy:false}
+      {findings:(.findings|map(select(evidence_gap==[])|normalized_finding)),dispositions:.dispositions,legacy:false,
+       dropped:([.findings[]|select(evidence_gap!=[])]|length),
+       dropped_findings:[.findings[]|select(evidence_gap!=[])|{id,reason:("no rerunnable evidence: missing "+(evidence_gap|join(", ")))}]}
     else empty end' <<<"$raw" 2>/dev/null
 }
 # Actionable blocking findings provide a concrete target for the repair worker.
@@ -122,7 +127,7 @@ review_findings_hint_update() { # report → jq update fragment for open P0/P1 f
 review_findings_update() { # report-path report-name → set_unit 表达式片段（以 " | " 开头）
   local rec block
   if block="$(findings_block_of "$1")"; then
-    rec="$(jq -c '{block:"ok", findings:[.findings[] | select(.severity=="P0" or .severity=="P1")], all_findings:.findings, dispositions:[]}' <<<"$block")"
+    rec="$(jq -c '{block:"ok", findings:[.findings[] | select(.severity=="P0" or .severity=="P1")], all_findings:.findings, dispositions:[], dropped, dropped_findings}' <<<"$block")"
   else
     rec='{"block":"missing","findings":[],"dispositions":[]}'
   fi

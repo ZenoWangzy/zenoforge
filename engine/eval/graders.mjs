@@ -52,7 +52,7 @@ function reviewFindingsBlock(text) {
   }
   const findingKeys = 'base_evidence,file,id,introduced_by,line,rule,severity,status,summary';
   const findingsValid = value.findings.every((finding) => finding && typeof finding === 'object'
-    && keys(finding) === findingKeys
+    && keys(Object.fromEntries(Object.entries(finding).filter(([key]) => !key.startsWith('rerun_')))) === findingKeys
     && typeof finding.id === 'string' && finding.id.length > 0
     && ['P0', 'P1', 'P2', 'P3'].includes(finding.severity)
     && typeof finding.file === 'string' && finding.file.length > 0
@@ -84,7 +84,8 @@ export function gradeReview(text, expected) {
   else if (block.legacy) failures.push('legacy review-findings array has no provenance fields');
   else {
     if (block.dispositions.length) failures.push('reviewer report must leave author dispositions empty');
-    const blockers = block.findings.filter((finding) => finding.severity === 'P0' || finding.severity === 'P1')
+    const blockers = block.findings.filter((finding) => String(finding.rerun_command ?? '').trim() && String(finding.rerun_output ?? '').trim())
+      .filter((finding) => finding.severity === 'P0' || finding.severity === 'P1')
       .filter((finding) => finding.status !== 'resolved' && finding.introduced_by === 'candidate');
     if (expected.verdict === 'READY' && blockers.length) failures.push('READY report contains a candidate P0/P1 finding');
     if (expected.verdict === 'NOT_READY') for (const file of expected.defectFiles ?? []) {

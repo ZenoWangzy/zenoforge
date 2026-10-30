@@ -255,6 +255,15 @@ os.environ["NODE_HEALTH_JOURNALCTL"] = sys.argv[2] + "/no-such-journalctl"
 missing = n.github_net_failures_per_hour(since, now)
 sys.exit(0 if (got, missing) == (3.0, None) else print(got, missing) or 1)
 CHECK
+# live 引擎跟随落后：.lag-since 存在按小时计，没有记 0
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'engine follow lag wrong'
+import os, sys, datetime as dt; sys.path.insert(0, sys.argv[1]); import node_health as n
+now = dt.datetime(2026, 10, 30, 16, tzinfo=dt.timezone.utc); h = os.path.join(sys.argv[2], "lag-home")
+os.makedirs(os.path.join(h, "engine-versions"), exist_ok=True); zero = n.engine_follow_lag_hours(h, now)
+open(os.path.join(h, "engine-versions", ".lag-since"), "w").write(str(int(now.timestamp()) - 5400))
+got = (zero, n.engine_follow_lag_hours(h, now), n.CRITERIA["engine.follow_lag_hours"][2:4])
+sys.exit(0 if got == (0.0, 1.5, (0.5, 2)) else print(got) or 1)
+CHECK
 # ~/wt 下超过 2 小时的工作目录：按 .git 链接文件的建立时间数；没有 .git 的目录不算；没有 ~/wt（Mac）为空
 wt="$test_env_root/wt"; mkdir -p "$wt/old-a" "$wt/old-b" "$wt/fresh" "$wt/node-auto-owner"
 for d in old-a old-b fresh; do echo "gitdir: /x/$d" > "$wt/$d/.git"; done

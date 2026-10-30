@@ -37,7 +37,7 @@ assert_status 2 18 9 2 invalid
 [[ "$(hand_dispatch_worker_priority general)" == normal ]] || { echo 'not ok - general tier reaches luna/zc as normal' >&2; exit 1; }
 
 # Implement admission is memory only (ruling crash-guard-is-memory-not-load, 2026-10-08).
-if sed -n '/^agent_implement_dispatch_resources_allow() {/,/^}/p' "$SCRIPT_DIR/lib.sh" | grep -q 'dispatch_load_exceeded'; then
+if sed -n '/^agent_implement_dispatch_resources_allow() {/,/^}/p' "$SCRIPT_DIR/lib.d/dispatch-gates.sh" | grep -q 'dispatch_load_exceeded'; then
   echo 'not ok - implement admission must not refuse on CPU load'
   exit 1
 fi

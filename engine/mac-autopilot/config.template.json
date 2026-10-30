@@ -88,7 +88,7 @@
   "notes": "发布批次需要 release train 出车。",
   "implement_cap": 8,
   "release_train": {
-    "enabled": true
+    "enabled": false
   },
   "precheck": false
 }
