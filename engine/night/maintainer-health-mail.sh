@@ -319,7 +319,7 @@ maintainer_health_mail_incident_open() {
     maintainer_health_mail_incident_mark_mail_result "$ledger" "$issue" initial "$send_status" "$now" || return 1
   else
     maintainer_health_mail_record_event "$ledger" "$incident_key:opened" '事项变化' \
-      "$subject：$what 用户影响：$impact 当前处理：$action" "$now" incident >/dev/null || return 1
+      "${subject}：$what 用户影响：$impact 当前处理：$action" "$now" incident >/dev/null || return 1
   fi
   printf 'opened\n'
 }
@@ -502,7 +502,7 @@ maintainer_health_mail_collect_reminders() {
     else
       hours=$(( (now - opened) / 3600 ))
       (( hours < 0 )) && hours=0
-      text="仍在处理：$text（已持续 ${hours} 小时）"
+      text="仍在处理：${text}（已持续 ${hours} 小时）"
     fi
     event_key="reminder:$key:$now"
     tmp="$(mktemp "${ledger}.XXXXXX")" || return 1
@@ -1062,18 +1062,18 @@ maintainer_health_mail_collect_state_events() {
     display_title="$(maintainer_health_mail_plain_title "$title")" || return 1
     case "$kind" in
       release)
-        text="待上线：$display_title。"
+        text="待上线：${display_title}。"
         maintainer_health_mail_record_event "$ledger" "$key" '发布进度' "$text" "$now" release >/dev/null || return 1
         ;;
       deploy)
         local_time="$(maintainer_local_time "$at")" || return 1
-        text="现在可以使用「$display_title」；$local_time 上线的版本。"
+        text="现在可以使用「${display_title}」；$local_time 上线的版本。"
         maintainer_health_mail_record_event "$ledger" "$key" '发布进度' "$text" "$now" deploy >/dev/null || return 1
         ;;
       closed)
         highlight=false
         if [[ "$labels" == *,focus,* || "$labels" == *,priority:top,* ]]; then highlight=true; fi
-        maintainer_health_mail_record_event "$ledger" "$key" '事项完成' "修好了：$display_title。" "$now" closed "$highlight" >/dev/null || return 1
+        maintainer_health_mail_record_event "$ledger" "$key" '事项完成' "修好了：${display_title}。" "$now" closed "$highlight" >/dev/null || return 1
         ;;
     esac
   done
@@ -1115,7 +1115,7 @@ maintainer_health_mail_collect_outcomes() {
     display_title="$(maintainer_health_mail_plain_title "$title")" || return 1
     # Keep an existing readable outcome when the issue title is not readable.
     if [ -n "$title" ] && [ -z "$(maintainer_health_mail_event_rejection_reason '发布进度' "$title")" ]; then
-      outcome="现在可以使用「$display_title」"
+      outcome="现在可以使用「${display_title}」"
     else
       outcome="$(maintainer_health_mail_scrub_text "$outcome")" || return 1
       case "$outcome" in
@@ -1128,9 +1128,9 @@ maintainer_health_mail_collect_outcomes() {
     if [ -n "$deployed_at" ]; then deployed_epoch="$(agent_epoch -u "$deployed_at" 2>/dev/null || true)"; fi
     if [[ "$deployed_epoch" =~ ^[0-9]+$ ]]; then
       local_time="$(maintainer_health_mail_date_time "$deployed_epoch")" || return 1
-      outcome="$outcome；$local_time 上线的版本。"
+      outcome="${outcome}；$local_time 上线的版本。"
     else
-      outcome="$outcome；上线时间待核实。"
+      outcome="${outcome}；上线时间待核实。"
     fi
     maintainer_health_mail_record_event "$ledger" "$key" '发布进度' "$outcome" "$at" deploy >/dev/null || return 1
   done < <(jq -c '.[]' <<< "$activity_rows")

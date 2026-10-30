@@ -214,7 +214,7 @@ fi
 if [ -n "$PARENT_RISK" ] && [ -n "$PARENT_LEVEL" ] \
   && ! recut_categorically_oversized "$PARENT_RISK" "$PARENT_LEVEL" \
   && [ -z "$SIZE_ADMISSION" ]; then
-  refuse_and_exit "这张票上次分诊的结果是 risk_class=$PARENT_RISK, level=$PARENT_LEVEL，在某个权限阶段其实是可以直接派发的，不是「无论如何都太大」——不是拆票能解决的问题，应该调整的是权限阶段，不是把票拆小。"
+  refuse_and_exit "这张票上次分诊的结果是 risk_class=$PARENT_RISK, level=${PARENT_LEVEL}，在某个权限阶段其实是可以直接派发的，不是「无论如何都太大」——不是拆票能解决的问题，应该调整的是权限阶段，不是把票拆小。"
 fi
 
 # --- Worktree + prompt + model call -----------------------------------------
@@ -374,7 +374,7 @@ for ((i = 0; i < CHILD_COUNT; i++)); do
   while IFS= read -r j; do
     [ -z "$j" ] && continue
     if [ "$j" = "$i" ] || [ "$j" -lt 0 ] || [ "$j" -ge "$CHILD_COUNT" ]; then
-      refuse_and_exit "第 $((i + 1)) 个子票声明的阻塞关系引用了一个不存在的子票（索引 $j），整批拆分作废。"
+      refuse_and_exit "第 $((i + 1)) 个子票声明的阻塞关系引用了一个不存在的子票（索引 ${j}），整批拆分作废。"
     fi
   done < <(echo "$CHILDREN_JSON" | jq -r ".[$i].blocked_by_child_indices[]?")
 done
@@ -390,7 +390,7 @@ for ((i = 0; i < CHILD_COUNT; i++)); do
   CHILD_SYMBOLS="$(echo "$CHILDREN_JSON" | jq -c ".[$i].symbols")"
   CHILD_TITLE="$(echo "$CHILDREN_JSON" | jq -r ".[$i].title")"
   if ! recut_slice_verified "$CHILD_FILES" "$CHILD_SYMBOLS" "$WT"; then
-    refuse_and_exit "第 $((i + 1)) 个子票「$CHILD_TITLE」引用的文件或符号在当前代码里核对不到，为避免臆造工作，整批拆分作废，原票保留待人工处理。"
+    refuse_and_exit "第 $((i + 1)) 个子票「${CHILD_TITLE}」引用的文件或符号在当前代码里核对不到，为避免臆造工作，整批拆分作废，原票保留待人工处理。"
   fi
 done
 
@@ -454,7 +454,7 @@ while IFS= read -r i; do
   # measurement) and not a maintainer-cut /to-tickets ticket.
   FULL_BODY="## Parent
 
-由 #$N 拆分而来的可独立交付子任务之一，$RECUT_CHILD_MARKER。
+由 #$N 拆分而来的可独立交付子任务之一，${RECUT_CHILD_MARKER}。
 
 $BODY"
   if [ -n "$BLOCKERS" ]; then

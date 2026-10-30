@@ -21,6 +21,7 @@ case "$1 $2" in
     git clone -q "$ZF_FAKE_ORIGIN" "$4" && { [ -n "$ZF_FAKE_KEEP_ORIGIN" ] || git -C "$4" remote set-url origin "https://github.com/$3.git"; } ;;
   "label list") echo needs-triage ;;
   "variable get") echo "\${ZF_FAKE_PIPELINE:-triage}" ;;
+  "pr list") echo '[]' ;; # the pin self-check reads the open-PR census; a repository with no open PRs is a valid answer
   *) case "$1" in api) echo '{"contexts":["ci / test"],"checks":[]}' ;; esac ;;
 esac
 `;

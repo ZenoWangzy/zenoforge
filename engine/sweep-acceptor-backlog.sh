@@ -99,7 +99,7 @@ for n in $(printf '%s\n' "${!BACKLOG_ACCEPTOR[@]}" | sort -n); do
 
   web_advisor_provider_clear_job_state "$n" || exit 1
   guarded_write gh issue comment "$n" --repo "$REPO" --body "$BOT_DISCLAIMER
-这张票的修复已经合并（#$merged_pr），是在「完成即关闭，不等确认」这条规则生效之前处理完的，属于历史积压。按现在的规则补齐分类（acceptor=$acceptor）并关闭。如果验证下来还是不对，重新打开这张 issue 就行，机器人会当成新的一轮重新处理。"
+这张票的修复已经合并（#${merged_pr}），是在「完成即关闭，不等确认」这条规则生效之前处理完的，属于历史积压。按现在的规则补齐分类（acceptor=${acceptor}）并关闭。如果验证下来还是不对，重新打开这张 issue 就行，机器人会当成新的一轮重新处理。"
   guarded_write gh issue close "$n" --repo "$REPO"
   state_merge "$n" '.closed_by_pipeline = true | del(.web_advisor_provider_job_id, .web_advisor_provider_job_started_at, .web_advisor_provider_job_episode_seq)'
   closed=$((closed + 1))

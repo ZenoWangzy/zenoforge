@@ -752,7 +752,7 @@ maintainer_mail_rejection_reason() {
         return 0
       fi
       last_line="$(printf '%s\n' "$body" | sed '/^[[:space:]]*$/d' | tail -n1)"
-      if [ "$last_line" != "请回复“$recommended”" ]; then
+      if [ "$last_line" != "请回复“${recommended}”" ]; then
         echo decision-reply
         return 0
       fi
@@ -978,7 +978,7 @@ https://github.com/$REPO/pull/$pr_num"
       fi
       impact="$(_maintainer_readable_or_fallback "$impact" '问题仍在处理。')"
       action="$(_maintainer_readable_or_fallback "$action" '继续处理并确认结果。')"
-      event_text="$title：$impact 下一步：$action"
+      event_text="${title}：$impact 下一步：$action"
       if ! _maintainer_health_mail_queue_event "report:$issue_num:$subject" '待跟进事项' "$event_text"; then
         echo "notify: could not queue maintainer digest item for issue $issue_num" >&2
       fi
@@ -1614,7 +1614,7 @@ notify_maintainer_incident() {
 发生了什么：$what
 用户目前看到：$impact
 我们正在：$action
-下次更新：$next_line（$(maintainer_timezone_label)）
+下次更新：${next_line}（$(maintainer_timezone_label)）
 https://github.com/$repo/issues/$issue"
   _send_email_logged strict "$subject" "$body" "$issue" incident "$maintainer" >/dev/null
 }

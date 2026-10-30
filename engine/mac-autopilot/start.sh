@@ -55,7 +55,7 @@ previous="$(readlink "$LIVE" || true)"
 # 的 library 模式（scheduler suites 同一入口）：完整 source 四个 lib 文件，再核对 scheduler.sh
 # 代码里每个 $HERE 相对引用（含 ../../ci/* 与 source 的 lib 文件）在新 pin 内真实存在。
 # 文件齐全 ≠ census 可用：10-29 --latest-checks 的输出在 64 KiB 管道边界被截断，存在性检查全过。
-# 所以再用 live 打开 PR 集合在新 pin 里跑一遍合并车道同一条 census 链，结果不是对象或为空即拒绝切换。
+# 所以再用 live 打开 PR 集合在新 pin 里跑一遍合并车道同一条 census 链，结果不是对象即拒绝切换；零个打开 PR 是合法的空 census（{}），读失败或格式错才是不可用。
 pin_scheduler_self_check() { # version-dir → 0 = 该 pin 可以切 live
   local code="$1/engine/mac-autopilot" ref
   AUTOPI_TEST_LIBRARY_ONLY=true bash "$code/scheduler.sh" || return 1
@@ -65,7 +65,7 @@ pin_scheduler_self_check() { # version-dir → 0 = 该 pin 可以切 live
   ( cd "$MAC_AUTOPILOT_ROOT" && AUTOPI_TEST_LIBRARY_ONLY=true bash -c '
       set -o pipefail
       source "$1/scheduler.sh"   # $HERE 落在新 pin 内，census 链用的 aggregate/jqf 都是 pin 里的这份
-      tick_prs | pr_census_by_number | jqf -e "type == \"object\" and length > 0" >/dev/null
+      tick_prs | pr_census_by_number | jqf -e "type == \"object\"" >/dev/null
     ' _ "$code" ) || { echo "pin self-check: live merge census unusable in $1" >&2; return 1; }
 }
 if ! pin_scheduler_self_check "$version"; then

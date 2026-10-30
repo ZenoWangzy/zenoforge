@@ -1675,7 +1675,7 @@ self_fix_dispatch() { # unit JSON; same session, model, branch and workdir
   failure="实现后的确定性自检失败。完整输出：$out
 $(tail -100 "$out")"
   prompt="实现后的确定性自检失败，尚未派出评审。这是原实现会话的自修复，保持原任务范围，修复下列失败，不弱化断言。$failure
-在当前隔离 clone $dir、原分支 $branch 修复；$deliver 禁止 merge PR、部署或修改 GitHub 状态。把修复和验证证据写到 $SUP/$rep，然后结束，流水线会重跑同一自检。
+在当前隔离 clone ${dir}、原分支 $branch 修复；$deliver 禁止 merge PR、部署或修改 GitHub 状态。把修复和验证证据写到 $SUP/${rep}，然后结束，流水线会重跑同一自检。
 $(matt_method_rule "$dir")"
   set_unit "$id" '.self_fix_active=true'
   if dispatch_if_room "$id" repair repair "${rep%.md}.worker.log" "$rep" "$model" "$effort" "$prompt" "" "$dir" "" "$failure" "$u"; then
@@ -1756,7 +1756,7 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
     check_output="$(jqf -r '.self_check_output // empty' <<<"$unit_json")"
     check_status="$(jqf -r '.self_check_status // empty' <<<"$unit_json")"
     prompt+="
-流水线确定性自检（当前 head $9）：$check_status。完整输出 $check_output
+流水线确定性自检（当前 head $9）：${check_status}。完整输出 $check_output
 $(tail -80 "$check_output" 2>/dev/null)"
   fi
   dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "${12-$prompt}" || return 1
@@ -2107,7 +2107,7 @@ supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute
     target="implement-pending"
     extra=" | .task += ($(js "
 
-supervisor 裁决（$action）后重排：$guidance"))"
+supervisor 裁决（${action}）后重排：$guidance"))"
   else
     # 没有可放回的工作环节：搁置并留原因，不猜。
     set_unit "$id" "$(hist supervisor-park "requeue target missing: no review history and no task/branch" "$decision") | .stage=\"parked\" | .note=$(js "requeue had no work stage to return to")"
@@ -2960,14 +2960,14 @@ $remainder
 ## 切片交付说明（worker 报告）
 
 $(head -n 200 "$rep" 2>/dev/null)"
-  url="$(gh issue create --title "$(unit_field "$unit" .title)（续作自 #$issue）" --body "$body" --label needs-triage --parent "$issue" 2>/dev/null || true)"
+  url="$(gh issue create --title "$(unit_field "$unit" .title)（续作自 #${issue}）" --body "$body" --label needs-triage --parent "$issue" 2>/dev/null || true)"
   if [[ -n "$url" ]]; then
     num="${url##*/}"
     set_unit "$unit" "$(hist split-followup "issue #$num: $remainder") | .split_followup=$num"
     say "unit $unit split delivery: remainder #$num filed; slice in PR #$pr"
   else
     # 切片 PR 已在评审，失败只报 supervisor inbox，不把单元踢出评审队列；剩余范围仍在 worker 报告与 PR 描述里。
-    ( source "$SCHEDULER_AGENT_LIB" && supervisor_inbox_append_once "split-followup-failed:$unit" "split 续作票创建失败 unit=$unit 原票 #$issue 切片 PR #$pr：剩余范围见报告 $(basename "$rep")" ) >/dev/null 2>&1 \
+    ( source "$SCHEDULER_AGENT_LIB" && supervisor_inbox_append_once "split-followup-failed:$unit" "split 续作票创建失败 unit=$unit 原票 #$issue 切片 PR #${pr}：剩余范围见报告 $(basename "$rep")" ) >/dev/null 2>&1 \
       || say "unit $unit split followup create failed; remainder in $(basename "$rep")"
   fi
 }
@@ -3590,7 +3590,7 @@ dispatch_pending() {
           bash "$hold_cli" --hold "$issue" --holder scheduler-stop-loss \
             --release 'supervisor rules on the stop-loss escalation; requeue or approve refills the budget' \
             --expires 24h --kind stop-loss >/dev/null 2>&1 || true
-          gh issue comment "$issue" --body "止损预算（#4363）：这张票自最近一次裁决起已用 $budget，自动搁置（on-hold，24h 后未裁决自动恢复），停止下一轮自动派发。单元 $id 已转 supervisor 裁决；supervisor requeue/approve 后预算重新给满。" >/dev/null 2>&1 || true
+          gh issue comment "$issue" --body "止损预算（#4363）：这张票自最近一次裁决起已用 ${budget}，自动搁置（on-hold，24h 后未裁决自动恢复），停止下一轮自动派发。单元 $id 已转 supervisor 裁决；supervisor requeue/approve 后预算重新给满。" >/dev/null 2>&1 || true
         fi
         to_supervisor "$id" "stop-loss: $budget since the last supervisor ruling; the issue is held on-hold" \
           'Held at the per-ticket stop-loss budget; supervisor decides rescope, split, or requeue' \
@@ -3697,7 +3697,7 @@ dispatch_pending() {
         else
           deliver="node scripts/branch-delivery-preflight.mjs --mode push --publish-topic 通过后 push 到 origin ${branch}（绝不推 main、不 force）。"
         fi
-        prompt="你是 the product 流水线的实现 subagent，修复 ${subject} 的评审阻断发现。当前目录是隔离 clone：$wt（分支 ${branch}，已同步 origin）。
+        prompt="你是 the product 流水线的实现 subagent，修复 ${subject} 的评审阻断发现。当前目录是隔离 clone：${wt}（分支 ${branch}，已同步 origin）。
 $(matt_method_rule "$wt")
 0. 先看 git stash list：若有「autopilot: kept before redispatch」，那是上一轮未推送的修复，先 git stash pop 恢复并在其基础上继续。
 0b. 先合入最新 main：git merge --no-edit origin/main（不 rebase、不 force；有冲突按两边意图解决）。push preflight 的 freshness 门禁拒绝落后 main 过多的分支，不合就永远推不上。
@@ -3887,9 +3887,9 @@ $task
 
 SCOPE：
 issue 写明的前置 issue 尚未交付（仍 open、没有已合并的修复）时不要改代码，报告第一行写 BLOCKED-ON: #<前置 issue 号>，流水线会在前置交付后重派。路线图 epic/主题（roadmap-epic、roadmap-theme、roadmap 标签的伞形 issue）不是前置：不要对它写 BLOCKED-ON，直接实现本 issue 自己的切片。
-当前目录是隔离 clone：$wt（分支 ${branch}，基于最新 main 或该分支已有的进度）。若 git stash list 有「autopilot: kept before redispatch」，是上一轮未提交的进度，先 git stash pop 恢复。
-$(decision_scope "$u")
+当前目录是隔离 clone：${wt}（分支 ${branch}，基于最新 main 或该分支已有的进度）。若 git stash list 有「autopilot: kept before redispatch」，是上一轮未提交的进度，先 git stash pop 恢复。
 $(matt_method_rule "$wt")
+$(decision_scope "$u")
 Feature verification plan (advisory, from ticket-declared paths): $feature_brief
 After implementation, refresh IDs from the actual changed paths with node engine/verification-plan.mjs --root . --base origin/main --head HEAD. Run node scripts/e2e/acceptance-regression/verify-feature.mjs --feature <IDs> --target <base-url> --json only when a candidate target already serves this build. Record the JSON output path. If no candidate target exists, say so; do not build a local stack. This is worker evidence, not a merge gate.
 
@@ -4532,7 +4532,7 @@ precheck_harvest() {
     case "$first" in
       "PRECHECK: FAIL"*)
         fails="$(sed -n '2,12p' "$out" 2>/dev/null)"
-        set_unit "$id" "$(hist precheck-red "${first#PRECHECK: }") | del(.precheck_pid) | del(.ci_wip_wait) | .approved_sha=null | .repair_hint=$(js "批准后本机预检（未占 CI 名额）：PR 自己改动的测试在本机失败。${fails} 完整输出 $out。本机用 PGTEST_URL 复现（RUN_INTEGRATION=1 npx vitest run <文件>），修根因并补回归测试后 push。") | .stage=\"repair-pending\""
+        set_unit "$id" "$(hist precheck-red "${first#PRECHECK: }") | del(.precheck_pid) | del(.ci_wip_wait) | .approved_sha=null | .repair_hint=$(js "批准后本机预检（未占 CI 名额）：PR 自己改动的测试在本机失败。${fails} 完整输出 ${out}。本机用 PGTEST_URL 复现（RUN_INTEGRATION=1 npx vitest run <文件>），修根因并补回归测试后 push。") | .stage=\"repair-pending\""
         say "precheck red unit=$id head=${head:0:9} -> repair-pending without spending a CI slot" ;;
       *)
         set_unit "$id" "$(hist precheck "${first:-PRECHECK: SKIP no output}") | del(.precheck_pid) | .precheck_sha=$(js "$head")"
@@ -4814,7 +4814,7 @@ main_red_attribution() { # sha run-id attempt；置 MAIN_RED_REVERTED（已回�
   echo "[$STAMP] MAIN-RED-REVERTED main=$sha culprit=$culprit suite=$suite run=$run" >> "$A/alerts/gate.md"
   uid="$(jqf -r --arg c "$culprit" 'first(.units[] | select((.land_sha // "") == $c) | .id) // empty' "$UNITS")"
   [[ -n "$uid" ]] || return 0
-  set_unit "$uid" "$(hist main-red-reverted "$culprit reverted after $suite failed on main") | .main_red_reverted=$(js "$culprit") | .approved_sha=null | .repair_hint=$(js "你落地的提交 $culprit 让 main 的 Pipeline suites 失败（run $run attempt $attempt，suite $suite），已被自动回退：父提交通过、该提交失败。用 gh run view $run --attempt $attempt --log-failed 看失败，在你的分支上基于当前 origin/main 重新应用改动（回退的回退或 cherry-pick $culprit），先让 $suite 通过再落地。") | .stage=\"repair-pending\""
+  set_unit "$uid" "$(hist main-red-reverted "$culprit reverted after $suite failed on main") | .main_red_reverted=$(js "$culprit") | .approved_sha=null | .repair_hint=$(js "你落地的提交 $culprit 让 main 的 Pipeline suites 失败（run $run attempt ${attempt}，suite ${suite}），已被自动回退：父提交通过、该提交失败。用 gh run view $run --attempt $attempt --log-failed 看失败，在你的分支上基于当前 origin/main 重新应用改动（回退的回退或 cherry-pick ${culprit}），先让 $suite 通过再落地。") | .stage=\"repair-pending\""
 }
 
 ci_classify_run() { # exact run metadata + failed-step logs; retry budget is deliberately separate
@@ -5277,7 +5277,7 @@ run_merge_lane() {
         set_unit "$id" ".ci_facts_head=$(js "$head") | .ci_facts=$(js "$red_facts")"
         say "triage PR#$pr head ${head:0:9}: $(ci_triage "$head" "$red_facts") (verdict only; routing unchanged)"
         cancel_branch_runs "$(jqf -r '.branch // empty' <<<"$ready")" "tests already red; repair pushes a new head"
-        set_unit "$id" "$(hist ci-test-red "$red") | .approved_sha=null | .repair_hint=$(js "PR head $head 的必需检查已有测试失败：$red。用 gh pr checks $pr 与失败 job 日志定位；失败的是集成测试就先在本机测试库复现（RUN_INTEGRATION=1 npx vitest run <文件>，PGTEST_URL 已配好），修到本地绿再 push；本 PR 引起的就修并补回归测试；确属与本 PR 无关的环境故障就不改代码，在报告里写明证据。$(ci_fact_hint "$head" "$red_facts")") | .stage=\"repair-pending\""
+        set_unit "$id" "$(hist ci-test-red "$red") | .approved_sha=null | .repair_hint=$(js "PR head $head 的必需检查已有测试失败：${red}。用 gh pr checks $pr 与失败 job 日志定位；失败的是集成测试就先在本机测试库复现（RUN_INTEGRATION=1 npx vitest run <文件>，PGTEST_URL 已配好），修到本地绿再 push；本 PR 引起的就修并补回归测试；确属与本 PR 无关的环境故障就不改代码，在报告里写明证据。$(ci_fact_hint "$head" "$red_facts")") | .stage=\"repair-pending\""
         say "merge skipped PR#$pr (tests failed in: $red) -> repair-pending without waiting for the other checks or a rerun"
         continue
       fi
@@ -5526,7 +5526,7 @@ cleanup_tick() {
         git -C "$ROOT" branch -q -D "$b" 2>/dev/null && say "cleanup local branch $b (upstream gone)"
       done < <(git -C "$ROOT" for-each-ref --format='%(refname:short) %(upstream:track)' 'refs/heads/agent/' 'refs/heads/fix/' 2>/dev/null)
     fi
-    # 远端 rescued/* 收尾：issue 已关闭或无 issue 号超龄的先进 bundle（$AGENT_ARCHIVE）再删，逐条记 rescued-gc.log。
+    # 远端 rescued/* 收尾：issue 已关闭或无 issue 号超龄的先进 bundle（${AGENT_ARCHIVE}）再删，逐条记 rescued-gc.log。
     if [[ -f "$HERE/rescued_gc.sh" ]]; then
       r="$(timeout 600 bash "$HERE/rescued_gc.sh" "$ROOT" "$A/rescued-gc.log" 2>&1 | tail -1)"
       [[ -n "$r" ]] && say "$r"
@@ -5662,12 +5662,12 @@ live_event_watch() { # 每拍：等待生产事件的直落单——事件出现
         say "live-event wait unit=$id issue=$issue: event observed but issue state is unreadable; retry next tick"
         continue
       fi
-      close_comment="结案：已落地 $(jqf -r '.land_sha // "见台账"' <<<"$u")（direct-main 车道）并观测到登记的生产事件 $ref。证据：${evidence:0:400}"
+      close_comment="结案：已落地 $(jqf -r '.land_sha // "见台账"' <<<"$u")（direct-main 车道）并观测到登记的生产事件 ${ref}。证据：${evidence:0:400}"
       if ! (
         source "$SCHEDULER_AGENT_LIB" || exit 1
         pipeline_system_close_comment_valid "$ROOT" "$issue" "$close_comment" false "${MAIN_HEAD:-origin/main}"
       ); then
-        to_supervisor "$id" "M5：#$issue 已观测到 $ref，但落地 SHA 不满足 pipeline-system 结案证据，拒绝自动关票"
+        to_supervisor "$id" "M5：#$issue 已观测到 ${ref}，但落地 SHA 不满足 pipeline-system 结案证据，拒绝自动关票"
         continue
       fi
       close_status=0
@@ -5685,7 +5685,7 @@ live_event_watch() { # 每拍：等待生产事件的直落单——事件出现
         say "live-event wait unit=$id issue=$issue: event observed but gh issue close failed; retry next tick"
       fi
     elif (( NOW_EPOCH - landed_epoch > bound * 3600 )); then
-      to_supervisor "$id" "M5：#$issue 落地后超过沉默上限 ${bound}h 仍未出现登记事件 $ref，已落地、待生效转 supervisor"
+      to_supervisor "$id" "M5：#$issue 落地后超过沉默上限 ${bound}h 仍未出现登记事件 ${ref}，已落地、待生效转 supervisor"
     fi
   done < <(jqf -c '.units[] | select(.stage=="awaiting-live-event")' "$UNITS")
 }
@@ -6473,7 +6473,7 @@ open_main_red_unit() { # sha run-id attempt (a repeated, classified code failure
   fi
   main_red_lane_ready "$id" "$1" || return 0
   failed="$(gh run view "$2" --attempt "$attempt" --log-failed 2>/dev/null | grep -oE 'FAILED suite=[^ ]+ exit_code=[^ ]+ first_error=.{0,160}' | sort -u | head -10)"
-  task="你是 the product 流水线的实现 subagent。main 的 Pipeline suites 在 $1 上失败（run $2 attempt $attempt），产品合并门禁因此关闭，这是最高优先级。
+  task="你是 the product 流水线的实现 subagent。main 的 Pipeline suites 在 $1 上失败（run $2 attempt ${attempt}），产品合并门禁因此关闭，这是最高优先级。
 失败 suite：
 ${failed:-（日志里没解析出 FAILED suite= 行，用 gh run view $2 --attempt $attempt --log-failed 自查）}
 用 gh run view $2 --attempt $attempt --log-failed 看完整失败；本地跑失败的 suite 复现。判断是测试/fixture 跟不上新改动、真实回归，还是 CI 负载下的超时（超时看 engine/run-ci-suites.sh 的 suite_weight_seconds：超时 = 3×权重，按实测刷新）。修根因，不弱化断言、不删测试。"
