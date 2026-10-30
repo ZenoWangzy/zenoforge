@@ -446,6 +446,7 @@ main() {
     phase run_release_train
     phase stage_slo_watch
     phase dispatch_pending
+    phase footprint_hog_alert
     views_mode=full
   fi
   cleanup_tick
