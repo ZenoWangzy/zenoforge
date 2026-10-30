@@ -13,13 +13,25 @@ export AGENT_HOME="$fixture/agent-home"
 for tool in pkill systemctl nohup; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "%s/started"\nexit 1\n' "$tool" "$fixture" > "$fixture/bin/$tool"
 done
+# The pin self-check lists open PRs through gh; this fake answers with one open PR, so the suite needs neither network nor a GitHub login.
+cat > "$fixture/bin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s' '[{"number":1,"headRefOid":"1111111111111111111111111111111111111111","headRefName":"agent/issue-1","baseRefName":"main","isDraft":false,"title":"t","labels":[],"body":"","statusCheckRollup":[]}]'
+SH
 chmod +x "$fixture/bin/"*
 echo '{"max_workers":1,"keep":"operator"}' > "$root/.scratch-supervisor/autopi/config.json"
 
 # Materialize committed tree contents, including future modules, without a file manifest.
+# scheduler.sh rides along as a copy root: start.sh self-checks the pinned scheduler before
+# switching the live pointer, so every helper that scheduler sources must be in the fixture.
 mkdir -p "$root/engine"
 cp -a "$script_dir" "$root/engine/mac-autopilot"
-copy_agent_library "$root/engine"
+copy_agent_library "$root/engine" mac-autopilot/scheduler.sh
+# Cross-tree $HERE references the pin self-check resolves inside the version worktree;
+# copy_agent_library walks only engine and skips .md, so these two travel explicitly.
+mkdir -p "$root/engine/ci" "$root/engine/prompts"
+cp "$repo_root/engine/ci/pr-required-aggregate.mjs" "$root/engine/ci/"
+cp "$repo_root/engine/prompts/supervisor-arbiter.md" "$root/engine/prompts/"
 git -C "$root" init -q
 git -C "$root" add engine
 git -C "$root" -c user.name=t -c user.email=t@e commit -qm one
@@ -70,7 +82,8 @@ PATH="$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" bash "$script_dir/start.sh"
 [[ -d "$versions/$second" ]] || fail 'same-HEAD sync removed previous version'
 diff -u "$live/config.template.json" "$state/config.json" || fail 'resync left runtime config different from repository config'
 [[ "$(grep -c 'config-reconcile' "$AGENT_HOME/supervisor-inbox")" == 1 ]] || fail 'unchanged config emitted a duplicate drift event'
-[[ -z "$(find "$versions" -maxdepth 1 -name '.stage.*')" ]] || fail 'stage left behind'
+[[ -z "$(git -C "$root" worktree list --porcelain | grep -F "autopi-versions/$first" || true)" ]] \
+  || fail 'removed version left a stale worktree record'
 
 # nohup fallback (no systemd units): stop legacy autopi/ loops as well as autopi-live/ ones before starting new ones.
 rm -f "$fixture/started"

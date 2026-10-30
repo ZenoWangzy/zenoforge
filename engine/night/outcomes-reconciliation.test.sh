@@ -98,7 +98,7 @@ check 'match issue=#2527 pr=#2545'
 result="$(SECONDS=0 outcomes_reconcile_merged_issues test/repo "$tmp/home" "$now")"
 assert_eq '2527 2545' "$(cat "$tmp/concluded")" 'latest explicit round is merge anchor'
 assert_eq OPEN "$(jq -r '.data.repository.i2527.state' "$tmp/issues.json")" 'round association leaves issue lifecycle open'
-[[ ! -s "$tmp/home/supervisor-inbox" && ! -e "$tmp/home/maintainer-outcomes.json" ]]
+[[ ! -s "$tmp/home/supervisor-inbox" && ! -e "$tmp/home/founder-outcomes.json" ]]
 
 cat > "$tmp/comments.json" <<'JSON'
 [[{"user":{"login":"test"},"body":"Decision (supervisor, 2026-10-12): PR 2534 (merged) is the accepted implementation for this issue."}]]
@@ -106,7 +106,7 @@ JSON
 : > "$tmp/concluded"
 result="$(SECONDS=0 outcomes_reconcile_merged_issues test/repo "$tmp/home" "$now")"
 assert_eq '2527 2534' "$(cat "$tmp/concluded")" 'trusted decision overrides latest round anchor'
-[[ ! -s "$tmp/home/supervisor-inbox" && ! -e "$tmp/home/maintainer-outcomes.json" ]]
+[[ ! -s "$tmp/home/supervisor-inbox" && ! -e "$tmp/home/founder-outcomes.json" ]]
 printf 'ok - explicit title-only rounds use latest merge; trusted decision overrides without closing issue\n'
 
 rewrite '.data.refs.nodes += [.data.refs.nodes[0] | .number=2546 | .title="revert: undo round (issue 2527)" | .body="Refs #2527" | .headRefName="revert/2545"]' "$tmp/prs.json"
@@ -207,7 +207,7 @@ fi
 : > "$tmp/home/supervisor-inbox"
 result="$(SECONDS=0 outcomes_reconcile_merged_issues test/repo "$tmp/home" "$now")"
 [[ ! -s "$tmp/home/supervisor-inbox" ]]
-[[ ! -e "$tmp/home/night/maintainer-outcomes.json" ]]
+[[ ! -e "$tmp/home/night/founder-outcomes.json" ]]
 printf 'ok - association routes only to supervisor once, never maintainer-decision\n'
 
 # Sixty issue aliases must split into 25/25/10, not one oversized query.

@@ -24,7 +24,7 @@ maintainer_health_mail_digest_interval_seconds() {
   local state_dir
   state_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/state"
   jq -er '.digest_interval_seconds | select(type == "number" and . > 0 and . == floor)' \
-    "$state_dir/maintainer-health-mail.json"
+    "$state_dir/founder-health-mail.json"
 }
 
 maintainer_health_mail_ensure_ledger() {
@@ -869,7 +869,7 @@ maintainer_health_mail_maintainer_efficiency_block() {
   pressure="$(maintainer_health_mail_pressure_snapshot)" || return 1
   # Post-land breakage MTTR covers the fixes that landed since the last
   # successful digest, so each completed breakage is reported exactly once.
-  repo_root="$(cd -- "$script_dir/.." && pwd -P)" || return 1
+  repo_root="$(cd -- "$script_dir/../.." && pwd -P)" || return 1
   since="$(jq -r 'if .last_sent_at > 0 then .last_sent_at else .started_at end' "$ledger")" || return 1
   mttr="$(post_land_mttr_summary "$repo_root" "$since" "$now")" \
     || mttr='{"summary":{"count":0},"bounds":{"meaning":""}}'
@@ -1081,7 +1081,7 @@ maintainer_health_mail_collect_state_events() {
 
 maintainer_health_mail_collect_outcomes() {
   local ledger="$1" home="$2" now="$3" activity since activity_rows issue_ids row issue sha outcome at key local_time deployed_at deployed_epoch catalog metadata title display_title catalog_map=''
-  activity="$home/night/maintainer-health-outcomes.jsonl"
+  activity="$home/night/founder-health-outcomes.jsonl"
   [ -r "$activity" ] || return 0
   since="$(jq -r 'if .last_sent_at > 0 then .last_sent_at else .started_at end' "$ledger")" || return 1
   [[ "$since" =~ ^[0-9]+$ ]] || return 1
@@ -1542,7 +1542,7 @@ maintainer_health_mail_filter_events() {
       printf 'maintainer health mail: dropped key=%s reason=%s\n' "$key" "$reason" >&2
       AGENT_HOME="$home" supervisor_inbox_append_once "maintainer-mail-item-rejected:$key" \
         "maintainer-mail-item-rejected key=$key reason=$reason 不可读条目已隔离，其他邮件内容继续发送" || return 1
-      maintainer_health_mail_mark_reported "$home/night/maintainer-health-mail.json" "$key" "$now" "$reason" || return 1
+      maintainer_health_mail_mark_reported "$home/night/founder-health-mail.json" "$key" "$now" "$reason" || return 1
       continue
     fi
     accepted="$(jq -c --argjson event "$event" '. + [$event]' <<< "$accepted")" || return 1
@@ -1811,7 +1811,7 @@ maintainer_health_mail_contract_inbox() {
 
 maintainer_health_mail_deliver() {
   local ledger="$1" now="$2" slot="$3" subject="$4" body="$5" events="$6" claim home contract_errors isolated row key reason
-  home="${ledger%/night/maintainer-health-mail.json}"
+  home="${ledger%/night/founder-health-mail.json}"
   if ! contract_errors="$(maintainer_health_mail_output_contract "$body" "$now")"; then
     isolated="$(maintainer_health_mail_output_contract "$body" "$now" isolate-lines)" || return 1
     while IFS= read -r row; do
@@ -1913,7 +1913,7 @@ maintainer_health_mail_credential_status() {
 maintainer_health_mail_tick() {
   local home="$1" now="${2:-$(date +%s)}" ledger
   local slot last_slot last_sent_at interval body events event_count efficiency efficiency_report efficiency_change_count launch_reason work_data active queued work_reason
-  ledger="$home/night/maintainer-health-mail.json"
+  ledger="$home/night/founder-health-mail.json"
   maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
   maintainer_health_mail_incident_tick "$ledger" "$now" || return 1
   maintainer_health_mail_collect_outcomes "$ledger" "$home" "$now" || return 1
@@ -1955,7 +1955,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   set -euo pipefail
   AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"
   NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
-  ledger="$NIGHT/maintainer-health-mail.json"
+  ledger="$NIGHT/founder-health-mail.json"
   command="${1:-}"
   case "$command" in
     status)

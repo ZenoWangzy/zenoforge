@@ -17,6 +17,7 @@ for ((i=0; i<${#args[@]}; i++)); do
 done
 execution=0
 case "$unit" in
+  zf-advisor-cdp-chrome*) ;;
   zf-implement-*|zf-triage-*|zf-recut-*|zf-advisor-*|zf-web-advisor-provider-*|zf-release-*|zf-node-owner-*|zf-hand-*|zf-land-direct-main-*|zf-post-land-*|zf-merge-*|zf-worktree-cleanup-*|zf-maintenance-*|zf-gitnexus-*) execution=1 ;;
 esac
 if ((command_at>=0 && command_at<${#args[@]})); then

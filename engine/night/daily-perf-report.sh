@@ -273,7 +273,7 @@ daily_perf_report_build() {
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"
-  repo_root="${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
+  repo_root="${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/../.." && pwd -P)}"
   dry_run=0
   if [ "${1:-}" = --dry-run ]; then dry_run=1; shift; fi
   [ "$#" -le 1 ] || { printf 'usage: %s [--dry-run] [YYYY-MM-DD]\n' "$0" >&2; exit 2; }
@@ -302,6 +302,6 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   tmp="$(mktemp "${report_file}.XXXXXX")"
   printf '%s\n' "$report" > "$tmp"
   mv -f "$tmp" "$report_file"
-  maintainer_health_mail_record_event "$AGENT_HOME/night/maintainer-health-mail.json" \
+  maintainer_health_mail_record_event "$AGENT_HOME/night/founder-health-mail.json" \
     "daily:$report_day" '今日汇总' "$report" "$(date +%s)" daily >/dev/null
 fi

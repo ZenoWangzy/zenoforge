@@ -750,7 +750,7 @@ assert_eq "notify_email: blocked report reaches reporter; maintainer copy is que
   'reporter@notify-fixture.invalid' \
   "$(printf '%s\n' "${LAST_SEND_RECIPIENTS[@]}")"
 assert_contains "notify_email: maintainer copy is stored in incremental ledger" \
-  "$(cat "$AGENT_HOME/night/maintainer-health-mail.json")" 'report:9001:[example] fixture 被拦住了'
+  "$(cat "$AGENT_HOME/night/founder-health-mail.json")" 'report:9001:[example] fixture 被拦住了'
 
 gh() {
   echo '{"author":{"login":"someone-unmapped"},"title":"fixture issue"}'
@@ -798,7 +798,7 @@ assert_eq 'maintainer-only decision sends immediately to maintainer' \
 assert_eq 'maintainer-only decision keeps decision mail kind' '--maintainer-kind decision' "$LAST_SEND_KIND"
 assert_eq 'maintainer-only decision enters four-hour reminder ledger' '1' \
   "$(jq '[.important_items[] | select(.kind == "decision" and .issue == "9006" and .status == "open")] | length' \
-    "$AGENT_HOME/night/maintainer-health-mail.json")"
+    "$AGENT_HOME/night/founder-health-mail.json")"
 
 # --- send_email_strict() (#1442) ------------------------------------------
 # config-watchdog.sh's whole reason for needing a separate entry point: it
@@ -1381,7 +1381,7 @@ assert_eq 'health digest uses six-hour UTC slots' \
   '20260926T00Z' "$(maintainer_health_mail_slot_key 1790391000)"
 assert_eq 'health digest advances at the next UTC interval' \
   '20260926T06Z' "$(maintainer_health_mail_slot_key 1790402400)"
-HEALTH_MAIL_LEDGER="$TMP_DIR/maintainer-health-mail.json"
+HEALTH_MAIL_LEDGER="$TMP_DIR/founder-health-mail.json"
 maintainer_health_mail_ensure_ledger "$HEALTH_MAIL_LEDGER" 1000
 HEALTH_MAIL_CLAIM_EVENTS='[{"key":"fixture:1","created_at":1000}]'
 assert_eq 'health digest slot can be reserved once' 'reserved' \
@@ -1641,25 +1641,25 @@ queue_maintainer_outcome 9001 sha-9001
 queue_maintainer_outcome 9002 sha-9002
 queue_maintainer_outcome 9001 sha-9001
 assert_eq 'outcome queue deduplicates the same delivered revision' '2' \
-  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 
 FAKE_OUTCOME_SEND_FAIL=1
 flush_maintainer_outcome_digest 1000 || true
 assert_eq 'failed outcome digest remains queued for retry' '2' \
-  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_eq 'failed send does not advance the hourly window' '0' \
-  "$(jq -r '.last_sent_at' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.last_sent_at' "$OUTCOME_HOME/night/founder-outcomes.json")"
 
 FAKE_OUTCOME_SEND_FAIL=0
 flush_maintainer_outcome_digest 1001
 assert_eq 'successful digest clears pending outcomes' '0' \
-  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_eq 'successful digest records its send time' '1001' \
-  "$(jq -r '.last_sent_at' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.last_sent_at' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_eq 'successful release digest records item-level health history' '2' \
-  "$(jq -s 'length' "$OUTCOME_HOME/night/maintainer-health-outcomes.jsonl")"
+  "$(jq -s 'length' "$OUTCOME_HOME/night/founder-health-outcomes.jsonl")"
 assert_contains 'health history stores user-visible outcomes without re-reading GitHub' \
-  "$(cat "$OUTCOME_HOME/night/maintainer-health-outcomes.jsonl")" '员工可以批量下载订单清单。'
+  "$(cat "$OUTCOME_HOME/night/founder-health-outcomes.jsonl")" '员工可以批量下载订单清单。'
 OUTCOME_FIRST_SEND="$(tail -n 9 "$OUTCOME_SEND_LOG")"
 assert_contains 'digest subject names the first user outcome' "$OUTCOME_FIRST_SEND" 'subject=员工可以批量下载订单清单等2项改进已上线'
 assert_eq 'digest subject keeps product words' '有权限的用户现在可以在 WebUI 或聊天会话中查看报表原文' \
@@ -1682,10 +1682,10 @@ assert_contains 'digest body links each outcome' "$OUTCOME_FIRST_SEND" 'https://
 assert_contains 'outcome mail reaches teammates, not maintainer' "$OUTCOME_FIRST_SEND" 'reporter@fixture.invalid'
 assert_not_contains 'maintainer receives release result through incremental ledger' "$OUTCOME_FIRST_SEND" 'maintainer@fixture.invalid'
 assert_eq 'release results queue in maintainer digest ledger' '2' \
-  "$(jq '.pending_events | length' "$OUTCOME_HOME/night/maintainer-health-mail.json")"
+  "$(jq '.pending_events | length' "$OUTCOME_HOME/night/founder-health-mail.json")"
 queue_maintainer_outcome 9001 sha-9001
 assert_eq 'an outcome already mailed for the same deploy is not queued again' '0' \
-  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 
 queue_maintainer_outcome 9003 sha-9003
 flush_maintainer_outcome_digest 4600
@@ -1703,7 +1703,7 @@ queue_maintainer_outcome 9008 sha-9008
 queue_maintainer_outcome 9009 sha-9009
 flush_maintainer_outcome_digest 29801
 assert_eq 'missing outcomes are generated instead of dropped' '0' \
-  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_eq 'digest sends user outcomes despite engineering titles' '4' \
   "$(grep -c '^subject=' "$OUTCOME_SEND_LOG")"
 OUTCOME_LAST_SEND="$(awk 'BEGIN { send=0 } /^subject=/ { send++ } send == 4 { print }' "$OUTCOME_SEND_LOG")"
@@ -1732,7 +1732,7 @@ JSON
 FAKE_CLOSED_ISSUES_JSON='[{"number":9011,"closedAt":"1970-01-01T08:16:42Z","labels":[{"name":"priority:top"},{"name":"released"}]},{"number":9012,"closedAt":"1970-01-01T08:16:43Z","labels":[{"name":"priority:top"}]}]'
 flush_maintainer_outcome_digest 33400
 assert_eq 'close sweep queues deployed issue before hourly send window' '1' \
-  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_eq 'close sweep does not send before hourly boundary' '4' \
   "$(grep -c '^subject=' "$OUTCOME_SEND_LOG")"
 flush_maintainer_outcome_digest 33401
@@ -1745,7 +1745,7 @@ OUTCOME_MODEL_REPLY='NONE'
 queue_maintainer_outcome 9013 sha-9013
 flush_maintainer_outcome_digest 37001
 assert_eq 'model refusal keeps deployed issue queued' '1' \
-  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_eq 'model refusal does not send an incomplete digest' '5' \
   "$(grep -c '^subject=' "$OUTCOME_SEND_LOG")"
 assert_contains 'model refusal alerts supervisor once' \
@@ -1754,7 +1754,7 @@ flush_maintainer_outcome_digest 37002
 assert_eq 'repeated model refusal does not duplicate supervisor inbox alert' '1' \
   "$(grep -c 'maintainer-outcome-missing issue=#9013' "$OUTCOME_HOME/supervisor-inbox")"
 assert_eq 'repeated model refusal retains the deployed issue' '1' \
-  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 OUTCOME_MODEL_REPLY=''
 
 # Maintainer digest must omit internal outcomes and pipeline-system tickets. The
@@ -1811,25 +1811,25 @@ for internal_term in '项目维护者' '智能体' '工作树' 'CI 已通过' '�
   assert_not_contains "digest excludes internal result: $internal_term" "$FILTER_SEND" "$internal_term"
 done
 assert_eq 'internal outcomes are removed and pipeline-system ticket stays deferred' '1' \
-  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_eq 'only pipeline-system ticket remains queued' '9025' \
-  "$(jq -r '.pending[].issue | tostring' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.pending[].issue | tostring' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_contains 'ops-facing outcome is durably classified as internal' \
-  "$(cat "$OUTCOME_HOME/night/maintainer-outcomes-internal" 2>/dev/null || true)" '9028 sha-9028'
+  "$(cat "$OUTCOME_HOME/night/founder-outcomes-internal" 2>/dev/null || true)" '9028 sha-9028'
 assert_not_contains 'internal outcome is not marked as sent' \
-  "$(cat "$OUTCOME_HOME/night/maintainer-outcomes-sent" 2>/dev/null || true)" '9028 sha-9028'
+  "$(cat "$OUTCOME_HOME/night/founder-outcomes-sent" 2>/dev/null || true)" '9028 sha-9028'
 assert_contains 'mailed result stays in sent ledger' \
-  "$(cat "$OUTCOME_HOME/night/maintainer-outcomes-sent")" '9026 sha-9026'
+  "$(cat "$OUTCOME_HOME/night/founder-outcomes-sent")" '9026 sha-9026'
 queue_maintainer_outcome 9028 sha-9028
 queue_maintainer_outcome 9026 sha-9026
 assert_eq 'internal and already-sent revisions do not re-enter queue' '1' \
-  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 mkdir -p "$OUTCOME_HOME/state"
 printf '{"released":true,"deployed_sha":"sha-9028"}\n' > "$OUTCOME_HOME/state/9028.json"
 FAKE_CLOSED_ISSUES_JSON='[{"number":9028,"closedAt":"1970-01-01T00:17:30Z","labels":[{"name":"priority:top"},{"name":"released"}]}]'
 sweep_closed_maintainer_outcomes
 assert_eq 'close sweep does not requeue an internally classified revision' '1' \
-  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/maintainer-outcomes.json")"
+  "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 FAKE_CLOSED_ISSUES_JSON='[]'
 assert_eq 'digest filtering never requests an outcome for an excluded item' '' \
   "$(cat "$OUTCOME_PR_VIEW_LOG")"
@@ -2001,7 +2001,7 @@ if declare -F ensure_maintainer_user_outcome >/dev/null 2>&1; then
   assert_eq 'budget-refused release outcome never calls Codex' 0 \
     "$(wc -l < "$RELEASE_MODEL_CALLS_FILE" | tr -d '[:space:]')"
   assert_eq 'budget-refused release outcome keeps generation ledger clear' '' \
-    "$(grep -F '9031 sha-budget' "$AGENT_HOME/night/maintainer-outcome-generated" 2>/dev/null || true)"
+    "$(grep -F '9031 sha-budget' "$AGENT_HOME/night/founder-outcome-generated" 2>/dev/null || true)"
   unset FAKE_OUTCOME_CODEX FAKE_OUTCOME_BUDGET_REFUSE
 else
   assert_eq 'release fallback helper exists' 'function' "$(type -t ensure_maintainer_user_outcome || true)"

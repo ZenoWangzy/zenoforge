@@ -59,7 +59,7 @@ if [[ "$missing" == 1 ]]; then
   exit 1
 fi
 
-ledger="$tmp/night/maintainer-health-mail.json"
+ledger="$tmp/night/founder-health-mail.json"
 mkdir -p "$(dirname -- "$ledger")"
 maintainer_health_mail_ensure_ledger "$ledger" 1000
 maintainer_health_mail_incident_open "$ledger" 1221 '线上服务尚未恢复' \

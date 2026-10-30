@@ -45,7 +45,7 @@ The root object must have this exact shape:
   "requested_issues": [1234, 1235],
   "cross_ticket_findings": {"ordering": []},
   "rulings": [
-    {"kind":"ruling","issue":1234,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"...","decision_md":"","recut_md":"","maintainer_question_md":"","maintainer_subject":"","merge_conditions_md":"...","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
+    {"kind":"ruling","issue":1234,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"...","decision_md":"","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"...","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
   ]
 }
 ```
@@ -58,7 +58,7 @@ array when none are needed. Apply the same fields and per-verdict empty vs
 non-empty rules as `prompts/advisor.schema.json`; never omit a field.
 
 Keep the combined contents of `reasoning_md`, `decision_md`, `recut_md`,
-`maintainer_question_md`, `maintainer_subject`, and `merge_conditions_md` at or below
+`founder_question_md`, `founder_subject`, and `merge_conditions_md` at or below
 1,200 characters per ticket. Use concise, issue-specific reasoning. State
 implementation decisions and runnable merge conditions precisely, without
 repeating the ticket body. Do not shorten a ruling by omitting required

@@ -55,7 +55,7 @@ done
 source $HOME/.zenoforge/checkout/engine/thread-budget.sh && agent_thread_budget
 scope="luna-zc-${key//[^A-Za-z0-9_-]/-}-$$"
 TMPDIR="$root/tmp/$key" PATH="$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NODE_USE_ENV_PROXY=1 \
-  systemd-run --user --scope --quiet --unit="$scope" -p MemoryMax="${LUNA_MEM_MAX:-4G}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo 100)" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
+  systemd-run --user --scope --quiet --unit="$scope" -p MemoryMax="${LUNA_MEM_MAX:-4G}" -p CPUQuota="${LUNA_CPU_QUOTA:-200%}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo 100)" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
   "$zsrc/bin/zcode" "$zsrc/repo/apps/zcode-cli/packages/cli/dist/zcode.cjs" \
   --prompt "$(<"$prompt")" --cwd "$cwd" --mode "${ZC_MODE:-yolo}" --output-format stream-json --no-color \
   >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &

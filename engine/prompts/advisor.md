@@ -9,8 +9,8 @@ opening the repo is an engineering call, and it is yours; and that high risk
 is handled by splitting work where useful and by stating concrete acceptance
 conditions, not by stopping. There is no verdict that stops a ticket on risk.
 Your output is validated against a JSON schema (`verdict`, `risk_class`,
-`level`, `reasoning_md`, `decision_md`, `recut_md`, `maintainer_question_md`,
-`maintainer_subject`, `merge_conditions_md`, `required_test_paths`,
+`level`, `reasoning_md`, `decision_md`, `recut_md`, `founder_question_md`,
+`founder_subject`, `merge_conditions_md`, `required_test_paths`,
 `expected_packages_addendum`) — that is your entire deliverable. You cannot run
 `gh`, `git push`, `docker`, or `ssh`, and you must not spawn or message another
 agent: a wrapper script applies whatever label, state-file, and comment your
@@ -298,9 +298,9 @@ way; if it was wrong, correct it properly rather than reapplying it.
      checks this verdict's output mechanically, and today it accepts only the
      fixed Chinese labels shown below, with the subject and the text after each
      label written in Chinese; a mail that fails the gate is rejected. Write
-     `maintainer_subject` as a short Chinese subject that names this specific
+     `founder_subject` as a short Chinese subject that names this specific
      choice, with no English, issue number, or pipeline terms. Write
-     `maintainer_question_md` in this exact structure, using business language
+     `founder_question_md` in this exact structure, using business language
      and concrete facts from the issue. `问题` must state the actual
      unanswered product/business question as a direct question, not a generic
      fallback:
@@ -341,9 +341,9 @@ way; if it was wrong, correct it properly rather than reapplying it.
    - `recut_md`: required when `verdict` is `recut` — the split lines, each
      with its expected classification and which pass the gate today. Empty
      string otherwise.
-   - `maintainer_question_md`: required when `verdict` is `maintainer`. Empty
+   - `founder_question_md`: required when `verdict` is `maintainer`. Empty
      string otherwise.
-   - `maintainer_subject`: required when `verdict` is `maintainer`. Empty string
+   - `founder_subject`: required when `verdict` is `maintainer`. Empty string
      otherwise.
    - `merge_conditions_md`: for `misclassified` and `advised`, a Markdown
      checklist of the executable conditions the diff must satisfy before

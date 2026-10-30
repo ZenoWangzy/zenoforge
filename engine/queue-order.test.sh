@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # queue-order.test.sh — guards the queue's pickup order.
 #
-# Issue selection orders production incidents first, then maintainer-test issues,
+# Issue selection orders production incidents first, then founder-test issues,
 # then ordinary priority:top, the batch STATE critical path (#4363), named
 # implementation authors, other issues, and legacy tickets last; each band is
 # oldest first. Pipeline-system lane priority remains outermost.
@@ -47,7 +47,7 @@ assert_contains() {
 # delay-cost bands (#4363, from the batch STATE via `critical-path`/`legacy`
 # labels) put critical-path work ahead of features and legacy last, behind
 # every other band regardless of age.
-ORDER_JQ='sort_by([(if any(.labels[]?; .name == "bug") and any(.labels[]?; .name == "priority:top") then 0 else 1 end), (if any(.labels[]?; .name == "maintainer-test") then 0 else 1 end), (if any(.labels[]?; .name == "priority:top") then 0 else 1 end), (if any(.labels[]?; .name == "critical-path") then 0 else 1 end), (if (.author.login // "") == "hige1227" or (.author.login // "") == "1661253700-droid" then 0 else 1 end), (if any(.labels[]?; .name == "legacy") then 1 else 0 end), .createdAt]) | .[].number'
+ORDER_JQ='sort_by([(if any(.labels[]?; .name == "bug") and any(.labels[]?; .name == "priority:top") then 0 else 1 end), (if any(.labels[]?; .name == "founder-test") then 0 else 1 end), (if any(.labels[]?; .name == "priority:top") then 0 else 1 end), (if any(.labels[]?; .name == "critical-path") then 0 else 1 end), (if (.author.login // "") == "hige1227" or (.author.login // "") == "1661253700-droid" then 0 else 1 end), (if any(.labels[]?; .name == "legacy") then 1 else 0 end), .createdAt]) | .[].number'
 
 # --- functional: the ordering expression itself ------------------------------
 #
@@ -59,7 +59,7 @@ ORDER_JQ='sort_by([(if any(.labels[]?; .name == "bug") and any(.labels[]?; .name
 fixture='[
   {"number":1130,"createdAt":"2026-09-01T00:00:00Z","labels":[{"name":"ready-for-agent"}]},
   {"number":1442,"createdAt":"2026-09-13T00:00:00Z","labels":[{"name":"enhancement"},{"name":"priority:top"}]},
-  {"number":1441,"createdAt":"2026-09-14T00:00:00Z","labels":[{"name":"enhancement"},{"name":"priority:top"},{"name":"maintainer-test"}]},
+  {"number":1441,"createdAt":"2026-09-14T00:00:00Z","labels":[{"name":"enhancement"},{"name":"priority:top"},{"name":"founder-test"}]},
   {"number":1440,"createdAt":"2026-09-15T00:00:00Z","labels":[{"name":"bug"},{"name":"priority:top"}]},
   {"number":1330,"createdAt":"2026-09-16T00:00:00Z","labels":[{"name":"ready-for-agent"},{"name":"priority:top"}]},
   {"number":1200,"createdAt":"2026-09-05T00:00:00Z","labels":[{"name":"ready-for-agent"}]},
@@ -80,7 +80,7 @@ fixture='[
 # since the pipeline cannot run without it — both cases execute.
 if command -v jq >/dev/null 2>&1; then
   actual="$(printf '%s' "$fixture" | jq -r "$ORDER_JQ" | paste -sd, -)"
-  assert_eq "production incidents first, maintainer-test before priority:top features, critical path before features, legacy last" "1440,1441,1442,1317,1330,1500,1624,1588,1130,1200,1100" "$actual"
+  assert_eq "production incidents first, founder-test before priority:top features, critical path before features, legacy last" "1440,1441,1442,1317,1330,1500,1624,1588,1130,1200,1100" "$actual"
 
   # An empty label list, or only unrelated labels, must still sort into the
   # non-priority band rather than erroring out.
@@ -134,12 +134,12 @@ assert_eq "no selection site sorts on createdAt alone" "" "$bad"
 triage_query="$(sed -n '/NEEDS_TRIAGE_JSON=/,/<<< "\$NEEDS_TRIAGE_JSON")/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 triage_selection="$(sed -n '/^elif ! NEEDS_TRIAGE_IDS=/,/<<< "\$NEEDS_TRIAGE_JSON")/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 assert_contains "triage intake fetches author and issue-origin fields" "$triage_query" '--json number,createdAt,labels,author,title,body'
-assert_contains "triage intake puts maintainer-test ahead of feature priority" "$triage_selection" 'maintainer-test'
+assert_contains "triage intake puts founder-test ahead of feature priority" "$triage_selection" 'founder-test'
 assert_contains "triage intake keeps production incidents ahead" "$triage_selection" 'bug'
 assert_contains "triage intake bands the batch critical path (#4363)" "$triage_selection" 'critical-path'
 assert_contains "triage intake sorts legacy tickets behind features (#4363)" "$triage_selection" 'legacy'
 ready_measure_selection="$(sed -n '/^elif ! READY_MEASURE_IDS=/,/<<< "\$READY_MEASURE_JSON")/p' "$SCRIPT_DIR/issue-pipeline.sh")"
-assert_contains "unmeasured triage queue ranks maintainer-test first" "$ready_measure_selection" 'maintainer-test'
+assert_contains "unmeasured triage queue ranks founder-test first" "$ready_measure_selection" 'founder-test'
 assert_contains "unmeasured triage queue keeps production incidents first" "$ready_measure_selection" 'bug'
 assert_contains "unmeasured triage queue bands the batch critical path (#4363)" "$ready_measure_selection" 'critical-path'
 assert_contains "unmeasured triage queue sorts legacy tickets behind features (#4363)" "$ready_measure_selection" 'legacy'

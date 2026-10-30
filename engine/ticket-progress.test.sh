@@ -84,21 +84,21 @@ grep -Fq 'progress OK' <<< "$(run_eval)"
 test ! -e "$tmp/home/supervisor-inbox"
 
 # Maintainer-test work uses a 30m bound, tighter than ordinary triage's 120m.
-tmp="$tmp/maintainer-test"
+tmp="$tmp/founder-test"
 mkdir -p "$tmp/home/state"
 transition_file="$tmp/home/state/ticket-transitions.jsonl"
 issue_file="$tmp/issues.json"
 maintainer_old="$(date -u -d "@$((now - 31 * 60))" +%Y-%m-%dT%H:%M:%SZ)"
 jq -n --arg at "$maintainer_old" \
-  '[{number:1894,state:"OPEN",createdAt:$at,updatedAt:$at,labels:[{name:"needs-triage"},{name:"maintainer-test"}]},
+  '[{number:1894,state:"OPEN",createdAt:$at,updatedAt:$at,labels:[{name:"needs-triage"},{name:"founder-test"}]},
     {number:1895,state:"OPEN",createdAt:$at,updatedAt:$at,labels:[{name:"needs-triage"}]}]' > "$issue_file"
 grep -Fq 'progress STUCK' <<< "$(run_eval)"
 test "$(jq -r '.tickets["1894"].verdict' "$tmp/home/state/ticket-stage-status.json")" = STUCK
-grep -Fq 'maintainer-test; stage-bound age=31m bound=30m' "$tmp/home/state/ticket-stage-status.json"
+grep -Fq 'founder-test; stage-bound age=31m bound=30m' "$tmp/home/state/ticket-stage-status.json"
 test "$(jq -r '.tickets["1895"].verdict' "$tmp/home/state/ticket-stage-status.json")" = OK
 
 # Reproduce issue 2839 at admission: zero attempts, guarded, ready-for-agent,
-# maintainer-test + priority:top, no implement decision yet, and six full slots.
+# founder-test + priority:top, no implement decision yet, and six full slots.
 # Also include a priority-only candidate missed under the same capacity wait.
 tmp="$root_tmp/priority-top"
 mkdir -p "$tmp/home/state"
@@ -109,7 +109,7 @@ maintainer_priority_old="$(date -u -d "@$((now - 31 * 60))" +%Y-%m-%dT%H:%M:%SZ)
 printf 'implement SLOW capacity-bound active=6/6, ready=166, oldest age=61m\n' > "$health"
 jq -n --arg priority_at "$priority_old" --arg maintainer_at "$maintainer_priority_old" '[
   {number:2838,state:"OPEN",createdAt:$priority_at,updatedAt:$priority_at,labels:[{name:"ready-for-agent"},{name:"priority:top"}]},
-  {number:2839,state:"OPEN",createdAt:$maintainer_at,updatedAt:$maintainer_at,labels:[{name:"bug"},{name:"ready-for-agent"},{name:"priority:top"},{name:"maintainer-test"}]}
+  {number:2839,state:"OPEN",createdAt:$maintainer_at,updatedAt:$maintainer_at,labels:[{name:"bug"},{name:"ready-for-agent"},{name:"priority:top"},{name:"founder-test"}]}
 ]' > "$issue_file"
 jq -n --arg at "$maintainer_priority_old" \
   '{attempts:0,guarded:true,guarded_at:$at}' \
@@ -118,7 +118,7 @@ priority_result="$(env -u PRIORITY_TOP_STAGE_BOUND_MINUTES AGENT_HOME="$tmp/home
   bash "$SCRIPT_DIR/ticket-progress.sh" "$issue_file" "$health" "$now")"
 grep -Fq 'progress STUCK' <<< "$priority_result"
 grep -Fq 'priority:top; stage-bound age=61m bound=60m' "$tmp/home/state/ticket-stage-status.json"
-grep -Fq 'maintainer-test; stage-bound age=31m bound=30m' "$tmp/home/state/ticket-stage-status.json"
+grep -Fq 'founder-test; stage-bound age=31m bound=30m' "$tmp/home/state/ticket-stage-status.json"
 grep -Fq 'ticket-progress issue=#2838' "$tmp/home/supervisor-inbox"
 grep -Fq 'ticket-progress issue=#2839' "$tmp/home/supervisor-inbox"
 
@@ -310,7 +310,7 @@ test "$(jq -r '.tickets["2212"].stage' "$tmp/home/state/ticket-stage-status.json
 test "$(jq -r '.tickets["2212"].verdict' "$tmp/home/state/ticket-stage-status.json")" = WAITING
 test ! -e "$tmp/home/supervisor-inbox"
 
-# A maintainer-test ticket inside a running advisor batch waits on that batch; the 30m bound is not stuck
+# A founder-test ticket inside a running advisor batch waits on that batch; the 30m bound is not stuck
 # (issue 2074, 2026-09-30). A batch job left behind by a dead unit hides nothing, and the triage batch
 # marker counts the same way.
 tmp="$root_tmp/batch"
@@ -322,8 +322,8 @@ old_at="$(date -u -d "@$((now - 45 * 60))" +%Y-%m-%dT%H:%M:%SZ)"
 add_event 2220 "$((now - 45 * 60))" needs-triage needs-advisor advance true
 add_event 2221 "$((now - 45 * 60))" untracked needs-triage advance true
 jq -n --arg at "$old_at" '[
-  {number:2220,state:"OPEN",createdAt:$at,updatedAt:$at,labels:[{name:"needs-advisor"},{name:"maintainer-test"}]},
-  {number:2221,state:"OPEN",createdAt:$at,updatedAt:$at,labels:[{name:"needs-triage"},{name:"maintainer-test"}]}]' > "$issue_file"
+  {number:2220,state:"OPEN",createdAt:$at,updatedAt:$at,labels:[{name:"needs-advisor"},{name:"founder-test"}]},
+  {number:2221,state:"OPEN",createdAt:$at,updatedAt:$at,labels:[{name:"needs-triage"},{name:"founder-test"}]}]' > "$issue_file"
 jq -n '{job:{job_id:"advisor-batch-7",members:[{issue:2220}]}}' > "$tmp/home/advisor-batch.json"
 jq -n '{issues:[2221]}' > "$tmp/home/triage-batch-active.json"
 cat > "$tmp/bin/systemctl" <<'STUB'

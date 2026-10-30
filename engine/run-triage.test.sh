@@ -108,8 +108,8 @@ case "$sub" in
     if [ "${FAKE_PIPELINE_SYSTEM:-0}" = "1" ]; then
       labels='[{"name":"enhancement"},{"name":"pipeline-system"},{"name":"needs-triage"}]'
     fi
-    if [ -e "${FAKE_GH_LOG}.maintainer-test" ]; then
-      labels="$(jq -c '. + [{name:"maintainer-test"}]' <<< "$labels")"
+    if [ -e "${FAKE_GH_LOG}.founder-test" ]; then
+      labels="$(jq -c '. + [{name:"founder-test"}]' <<< "$labels")"
     fi
     if [ "$view_count" -gt 1 ]; then
       case "${FAKE_TRIAGE_STALE_MODE:-}" in
@@ -142,8 +142,8 @@ case "$sub" in
       echo 'simulated stage label failure' >&2
       exit 1
     fi
-    if [ "$sub" = "issue edit" ] && [[ " $* " == *" --add-label maintainer-test "* ]]; then
-      : > "${FAKE_GH_LOG}.maintainer-test"
+    if [ "$sub" = "issue edit" ] && [[ " $* " == *" --add-label founder-test "* ]]; then
+      : > "${FAKE_GH_LOG}.founder-test"
     fi ;;
   "variable get")
     echo "${FAKE_AGENT_PHASE:-3}" ;;
@@ -276,7 +276,7 @@ run_once() {
   export FAKE_GH_COMMENT_CAPTURE="$agent_home/comments.log"
   export FAKE_PROMPT_CAPTURE="$agent_home/prompt.txt"
   : > "$FAKE_GH_LOG"
-  rm -f "${FAKE_GH_LOG}.maintainer-test"
+  rm -f "${FAKE_GH_LOG}.founder-test"
   : > "${FAKE_GH_LOG}.views"
   if [ "$seed_advisor_job" = "1" ]; then
     jq -n --arg j "triage-job-$N" \
@@ -552,11 +552,11 @@ assert_eq "2040 consumes the measure-only marker after measurement" "false" "$(e
 # unconfirmed-freshness L2 gate. It must continue to advisor, never agent.
 export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L2)"
 run_once "$RAW_BODY" "$MAINTAINER_LOGIN" 0 0 0 "" 0 1
-assert_eq "maintainer-test + unconfirmed L2 freshness: exits 0" "0" "$RUN_STATUS"
-assert_contains "maintainer-test label is persisted during direct triage" "$GH_LOG_CONTENT" "--add-label maintainer-test"
+assert_eq "founder-test + unconfirmed L2 freshness: exits 0" "0" "$RUN_STATUS"
+assert_contains "founder-test label is persisted during direct triage" "$GH_LOG_CONTENT" "--add-label founder-test"
 assert_contains "unconfirmed L2 verdict proceeds to advisor" "$GH_LOG_CONTENT" "--add-label needs-advisor"
 assert_not_contains "unconfirmed L2 verdict never reaches implementation" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
-assert_eq "maintainer-test freshness bypass leaves existing retry deadline unchanged" "$ACTIVE_FRESHNESS_RETRY_EPOCH" \
+assert_eq "founder-test freshness bypass leaves existing retry deadline unchanged" "$ACTIVE_FRESHNESS_RETRY_EPOCH" \
   "$(echo "$STATE_CONTENT" | jq -r '.triage_retry_after_epoch')"
 
 # Issue 2007: acceptance that writes outside this checkout belongs to

@@ -111,8 +111,8 @@ case "$1 ${2:-}" in
       state=CLOSED
       labels='[{"name":"priority:top"},{"name":"released"}]'
     fi
-    if [ -e "${FAKE_GH_LOG}.maintainer-test.$n" ]; then
-      labels="$(jq -c '. + [{name:"maintainer-test"}]' <<< "$labels")"
+    if [ -e "${FAKE_GH_LOG}.founder-test.$n" ]; then
+      labels="$(jq -c '. + [{name:"founder-test"}]' <<< "$labels")"
     fi
     updated_at="${FAKE_ISSUE_UPDATED_AT:-2026-01-01T00:00:00Z}"
     if [ "$view_count" -gt 1 ] && [ -n "${FAKE_ISSUE_UPDATED_AT_AFTER_FIRST_VIEW:-}" ]; then
@@ -142,7 +142,7 @@ case "$1 ${2:-}" in
     fi
     ;;
   "label list")
-    printf '%s\n' needs-triage needs-info ready-for-agent ready-for-human needs-owner duplicate finish-first wontfix needs-advisor needs-recut awaiting-release awaiting-pipeline-sync awaiting-pipeline-health released concluded bug enhancement maintainer-test
+    printf '%s\n' needs-triage needs-info ready-for-agent ready-for-human needs-owner duplicate finish-first wontfix needs-advisor needs-recut awaiting-release awaiting-pipeline-sync awaiting-pipeline-health released concluded bug enhancement founder-test
     ;;
   "variable get") echo 3 ;;
   "pr list") echo '[]' ;;
@@ -152,7 +152,7 @@ case "$1 ${2:-}" in
     ;;
   "issue edit")
     printf '%s\n' "$*" >> "$FAKE_GH_LOG"
-    if [[ " $* " == *" --add-label maintainer-test "* ]]; then : > "${FAKE_GH_LOG}.maintainer-test.$3"; fi
+    if [[ " $* " == *" --add-label founder-test "* ]]; then : > "${FAKE_GH_LOG}.founder-test.$3"; fi
     ;;
   "issue comment"|"issue close"|"label create") printf '%s\n' "$*" >> "$FAKE_GH_LOG" ;;
   *) : ;;
@@ -431,11 +431,11 @@ jq -n --arg updated_at "$TEST_UPDATED_AT" --argjson retry "$(( $(date +%s) + 600
 jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",brief_md:"Summary: maintainer test.",notes_md:"Index freshness unconfirmed.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
   | jq -c --argjson issue 910509 '{issue:$issue,result:.}' > "$FAKE_CODEX_OUTPUT"
 RUN_OUTPUT="$(FAKE_AUTHOR=maintainer FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" bash "$BATCH_SRC" --scheduled 910509 2>&1)"
-assert_eq "maintainer-test freshness deadline does not suppress triage" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
-assert_contains "maintainer-filed issue gets maintainer-test label at intake" "$(cat "$FAKE_GH_LOG")" 'issue edit 910509 --repo test/repo --add-label maintainer-test'
-assert_eq "maintainer-test stale L2 is fail-closed to advisor" needs-advisor "$(jq -r '.state' "$AGENT_HOME/state/910509.json")"
-assert_contains "maintainer-test stale L2 enters advisor queue" "$(cat "$FAKE_GH_LOG")" '--add-label needs-advisor'
-assert_not_contains "maintainer-test stale L2 never enters implement queue" "$(cat "$FAKE_GH_LOG")" '--add-label ready-for-agent'
+assert_eq "founder-test freshness deadline does not suppress triage" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
+assert_contains "maintainer-filed issue gets founder-test label at intake" "$(cat "$FAKE_GH_LOG")" 'issue edit 910509 --repo test/repo --add-label founder-test'
+assert_eq "founder-test stale L2 is fail-closed to advisor" needs-advisor "$(jq -r '.state' "$AGENT_HOME/state/910509.json")"
+assert_contains "founder-test stale L2 enters advisor queue" "$(cat "$FAKE_GH_LOG")" '--add-label needs-advisor'
+assert_not_contains "founder-test stale L2 never enters implement queue" "$(cat "$FAKE_GH_LOG")" '--add-label ready-for-agent'
 
 # A missing line follows same isolated retry path; cap remains independent.
 : > "$FAKE_CODEX_ARGS"

@@ -208,7 +208,7 @@
   },
   "areas": {
     "intake": {
-      "rule": "每个新 issue/PR 都进台账并被派发（work-conserving）；maintainer-test > priority:top > critical-path > focus > finish-first > bug > 普通 > legacy，各带内最新优先；非产品 lane 票不排产品队（pipeline-system 直通 ready-for-agent）；roadmap 树外的开放票是缺陷。",
+      "rule": "每个新 issue/PR 都进台账并被派发（work-conserving）；founder-test > priority:top > critical-path > focus > finish-first > bug > 普通 > legacy，各带内最新优先；非产品 lane 票不排产品队（pipeline-system 直通 ready-for-agent）；roadmap 树外的开放票是缺陷。",
       "enforced_by": [
         "engine/mac-autopilot/scheduler.sh",
         "engine/issue-pipeline.sh",

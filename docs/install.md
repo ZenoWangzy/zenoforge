@@ -38,8 +38,8 @@ Use a dedicated checkout. Do not use one you work in:
 
 | Variable | Default | What to do |
 |---|---|---|
-| `ZF_REPO` | `example-maintainer/example-repo` (placeholder, not a usable target) | Set it to `owner/name`. The shipped unit files do not set it, so add it (see section 7) |
-| `ZF_GH_REPO` | the same placeholder | Set it to `owner/name` too. Both variables exist, and this page does not trace why |
+| `ZF_REPO` | none; derived from the checkout's `origin` remote (`git remote get-url origin`, scheme, host and a trailing `.git` stripped, so `git@github.com:owner/name.git` becomes `owner/name`), as `engine/lib.sh` and `engine/run-tick.sh` do | Normally leave it unset. Set it to `owner/name` when the checkout has no `origin` remote (the value is then empty) or the remote URL does not reduce to `owner/name`. The shipped unit files do not set it (see section 7) |
+| `ZF_GH_REPO` | none | Optional `owner/name` that overrides `ZF_REPO` for the `gh` calls of `land-direct-main.sh`, `pipeline-issue-upsert.sh` and `worktree-backlog-sweep.sh`; they fall back to `ZF_REPO`. `worktree-lifecycle.sh` falls back to the checkout path instead, so set `ZF_GH_REPO` when you run it |
 | `AGENT_HOME` (or `ZF_HOME`) | `~/.zenoforge` | State root. Leave the default unless you need another location |
 | `ZF_AGENT_GIT_USER_NAME` | `zenoforge-agent` | Commit identity for agent commits |
 | `ZF_AGENT_GIT_USER_EMAIL` | `zenoforge-agent@users.noreply.github.com` | Commit identity for agent commits |
@@ -88,11 +88,12 @@ Set these in the unit files (with a drop-in, see section 7), in `capacity.env`, 
 | Variable | Default | Used for |
 |---|---|---|
 | `AGENT_HOME` / `ZF_HOME` | `~/.zenoforge` | State root |
-| `ZF_REPO` / `ZF_GH_REPO` | placeholder, not a usable target | `owner/name` for `gh` calls. Must be set |
+| `ZF_REPO` / `ZF_GH_REPO` | `ZF_REPO`: the checkout's `origin` remote as `owner/name`; `ZF_GH_REPO`: none | `owner/name` for `gh` calls. Set `ZF_REPO` only if there is no usable `origin`; see section 3 |
 | `ZF_REPO_DIR` | parent of `engine/` | Checkout root |
 | `ZF_WORKTREE_ROOT` | `~/wt` | Git worktrees |
 | `ZF_NIGHT_DIR` | `$AGENT_HOME/night` | Maintenance state |
 | `ZF_CODEX_SANDBOX` | `danger-full-access` | Sandbox mode for the issue loop's `codex` runs. The unit loop always passes `danger-full-access` (see `architecture.md`, section 11) |
+| `ZF_RELEASE_TRAIN_SCRIPT` | unset | Optional release-leg hook: path of a script the unit loop starts every 15 minutes (`run_release_train`, `engine/mac-autopilot/scheduler.sh`) when `release_train.enabled` is not false. Zenoforge ships none, so the step does nothing until you set it |
 | `ZF_LOCAL_BIN_DIR` / `ZF_CODEX_RUNTIME_BIN_DIR` | `~/.local/bin` | Binaries that the night maintenance checks |
 | `ZF_CHATGPT_RESOURCES_DIR` | a fixed path inside a desktop app bundle | Night-maintenance repair of Codex runtime binaries (`codex_runtime_bundle_dir`, `engine/lib.sh`). Set it to your own install, or leave it if you do not use that repair |
 | `MAC_AUTOPILOT_ROOT` | derived from the engine location | Unit-loop root |
@@ -132,7 +133,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now zenoforge-agent.timer
 ```
 
-Before you run this, check the paths in the unit file. The shipped unit sets only `ZF_REPO_DIR` and `PATH`, so `ZF_REPO` must come from a drop-in. Create one with `systemctl --user edit zenoforge-agent.service` and add:
+Before you run this, check the paths in the unit file. The shipped unit sets only `ZF_REPO_DIR` and `PATH`, so `ZF_REPO` comes from the checkout's `origin` remote. If the checkout has no `origin`, or the URL does not reduce to `owner/name`, set it in a drop-in. Create one with `systemctl --user edit zenoforge-agent.service` and add:
 
 ```
 [Service]

@@ -21,7 +21,7 @@ gmail_curl() {
   printf 'POST\n' >> "$fixture_root/posts"
   printf '{"id":"fixture-message","threadId":"fixture-thread"}\n200'
 }
-ledger="$AGENT_HOME/night/maintainer-health-mail.json"
+ledger="$AGENT_HOME/night/founder-health-mail.json"
 now=1791803400
 slot="$(maintainer_health_mail_slot_key "$now")"
 events='[{"key":"fixture:change","created_at":1791803400}]'

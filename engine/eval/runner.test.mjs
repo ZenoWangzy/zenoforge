@@ -97,7 +97,7 @@ test('the real lower stage seam uses policy and records usage without a model ca
   try {
     const bin = join(dir, 'bin'), home = join(dir, 'home'), artifact = join(dir, 'artifacts');
     for (const path of [bin, home, artifact]) mkdirSync(path);
-    const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], external_deliverable: { required: false, location: '', reason: '' } };
+    const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
     const outputFile = join(dir, 'fake-output.json'); writeFileSync(outputFile, JSON.stringify(output));
     const fake = join(bin, 'codex');
     writeFileSync(fake, '#!/usr/bin/env bash\nset -euo pipefail\noutput=""\nwhile (($#)); do if [[ "$1" == --output-last-message ]]; then output=$2; shift; fi; shift; done\ncat > /dev/null\ncp "$EVAL_FAKE_OUTPUT_FILE" "$output"\nprintf "tokens used\\n1,234\\n"\n', { mode: 0o755 });
@@ -238,7 +238,7 @@ function cliFixture() {
   const bin = join(dir, 'bin'), home = join(dir, 'home');
   mkdirSync(bin); mkdirSync(home);
   const events = join(dir, 'codex-events.log');
-  const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], external_deliverable: { required: false, location: '', reason: '' } };
+  const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
   const outputFile = join(dir, 'triage-output.json');
   writeFileSync(outputFile, JSON.stringify(output));
   writeFileSync(join(bin, 'codex'), `#!/usr/bin/env bash
@@ -402,7 +402,7 @@ function pairedFixture({ identity = 'codex:fixture:high', session = 'fixture-ses
   git('add', '.'); git('commit', '-qm', 'base'); const baseSha = git('rev-parse', 'HEAD');
   const stub = join(dir, 'stage-call.sh'), script = join(dir, 'stage-call.mjs');
   writeFileSync(stub, '#!/usr/bin/env bash\nexec node "$(dirname "$0")/stage-call.mjs" "$@"\n');
-  const triage = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], external_deliverable: { required: false, location: '', reason: '' } };
+  const triage = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
   const readyReview = 'VERDICT: READY\n\n```review-findings\n{"findings":[],"dispositions":[]}\n```';
   const rejectedReview = 'VERDICT: NOT_READY\n\n```review-findings\n{"findings":[{"id":"F1","severity":"P1","file":"value.mjs","line":1,"rule":"Defect","status":"open","summary":"The known value defect remains.","introduced_by":"candidate","base_evidence":"The base value at value.mjs:1 is zero."}],"dispositions":[]}\n```';
   writeFileSync(script, `

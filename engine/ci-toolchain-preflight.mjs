@@ -103,7 +103,7 @@ export function runDeterministicRegressionGate(changedPaths, cwd = process.cwd()
   return spawnSync('pnpm', ['test:regression'], options);
 }
 
-function runGate(base, head) {
+async function runGate(base, head) {
   const changedPaths = nulSeparated(gitRaw([
     'diff', '--name-only', '-z', '--no-renames', '--diff-filter=ACMRTUXB', `${base}..${head}`,
   ]));
@@ -112,8 +112,9 @@ function runGate(base, head) {
   if (regression) {
     if (regression.error) throw regression.error;
     if (regression.status !== 0) {
-      if (regression.stdout) process.stdout.write(regression.stdout);
-      if (regression.stderr) process.stderr.write(regression.stderr);
+      // Wait for the forwarded output: process.exit() drops a piped stdout past 64 KiB (10-29 census incident).
+      if (regression.stdout) await new Promise((resolve) => process.stdout.write(regression.stdout, resolve));
+      if (regression.stderr) await new Promise((resolve) => process.stderr.write(regression.stderr, resolve));
       process.exit(regression.status ?? 1);
     }
     console.log('Deterministic Postsubmit regression gate passed locally: pnpm test:regression.');
@@ -150,8 +151,9 @@ function runGate(base, head) {
     maxBuffer: 32 * 1024 * 1024,
   });
 
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
+  // Wait for the forwarded output: process.exit() drops a piped stdout past 64 KiB (10-29 census incident).
+  if (result.stdout) await new Promise((resolve) => process.stdout.write(result.stdout, resolve));
+  if (result.stderr) await new Promise((resolve) => process.stderr.write(result.stderr, resolve));
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
   console.log(`CI toolchain gate passed on ${RUNNER}: ${testPaths.join(', ')}.`);
@@ -160,5 +162,5 @@ function runGate(base, head) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const [base, head] = process.argv.slice(2);
   if (!base || !head) throw new Error('Usage: node ci-toolchain-preflight.mjs <base> <head>.');
-  runGate(base, head);
+  await runGate(base, head);
 }

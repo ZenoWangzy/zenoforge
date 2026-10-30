@@ -27,7 +27,9 @@ for t in "${suites[@]}"; do
     *) cmd=(bash "$t") ;;
   esac
   log="test-logs/${t//\//__}.log"; mkdir -p test-logs
-  if timeout -s KILL "$timeout_s" "${cmd[@]}" > "$log" 2>&1; then
+  # scheduler.test.sh runs ~55 real scheduler ticks in one process; it needs far more than the default limit.
+  limit=$timeout_s; [[ $t == engine/mac-autopilot/scheduler.test.sh ]] && limit=${SCHEDULER_SUITE_TIMEOUT:-3000}
+  if timeout -s KILL "$limit" "${cmd[@]}" > "$log" 2>&1; then
     pass=$((pass + 1)); echo "PASS $t"; rm -f "$log"
   else
     rc=$?; fail=$((fail + 1)); failed+=("$t rc=$rc"); echo "FAIL $t rc=$rc"; tail -15 "$log" | sed 's/^/    /'

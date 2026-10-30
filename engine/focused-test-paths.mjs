@@ -770,7 +770,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const selected = focusedTestPaths(changedPaths(`${oldBase}..${newMain}`), tracked, {
       baseRef: oldBase, headRef: newMain, mappingRef, cwd: process.cwd(),
     });
-    if (selected.length > 0) process.stdout.write(`${selected.join('\n')}\n`);
+    // Wait for the write: process.exit() drops a piped stdout past 64 KiB (10-29 census incident).
+    if (selected.length > 0) await new Promise((resolve) => process.stdout.write(`${selected.join('\n')}\n`, resolve));
     process.exit(0);
   }
   const trackedPaths = new Set([

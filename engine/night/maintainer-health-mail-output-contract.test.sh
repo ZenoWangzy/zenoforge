@@ -41,7 +41,7 @@ cat > "$AGENT_HOME/metrics/efficiency-2026-10.jsonl" <<'METRICS'
 {"record_type":"hourly","sampled_at":"2026-10-11T13:00:00Z","metrics":{"queue_to_implement_seconds":7200,"implement_to_merge_seconds":1800,"merge_to_release_seconds":null,"ci_queue_seconds":600,"ci_run_seconds":180}}
 {"record_type":"daily","event_id":"daily:2026-10-11","day":"2026-10-11","nodes":{"status":"available","stages":[{"key":"unrouted","samples":2,"mean_seconds":37800,"p50_seconds":36000,"p90_seconds":40000,"open_at_end":1,"comparison":{"previous_day":"2026-10-10","previous_mean_seconds":null,"seven_day_days":["2026-10-04"],"seven_day_mean_seconds":117521.5}}],"terminal":[]},"checks":{"ci":[{"key":"ci:pr:Pipeline suites shard 1","name":"Pipeline suites shard 1","category":"ci","cohort":"pr","source_status":"available","status_samples":1,"fail_cancel_rate":0,"run":{"samples":1,"mean_seconds":1188,"comparison":{"previous_day":"2026-10-10","previous_mean_seconds":null,"seven_day_days":[],"seven_day_mean_seconds":null}},"queue":{"samples":1,"mean_seconds":10008,"comparison":{"previous_day":"2026-10-10","previous_mean_seconds":null,"seven_day_days":[],"seven_day_mean_seconds":null}}}],"local":[]}}
 METRICS
-ledger="$AGENT_HOME/night/maintainer-health-mail.json"
+ledger="$AGENT_HOME/night/founder-health-mail.json"
 cat > "$ledger" <<'LEDGER'
 {"started_at":1791810000,"last_sent_at":0,"last_digest_slot":"","nodes":{},"incidents":[],"reported_items":{},"important_items":{},"pending_events":{
   "node:merge:alert:0":{"key":"node:merge:alert:0","section":"处理变化","text":"变更合入暂停，自1月1日 08:00起约497719小时：部分检查未通过。","kind":"node","created_at":1791809358},

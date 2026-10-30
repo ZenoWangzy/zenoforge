@@ -57,6 +57,7 @@ CRITERIA = {
     "ci.cancel_other_per_day": ("ci+merge", "M1 audited cancelled runs/day: other or unclassified", 0, 1, False),
     "ci.gated_pr_pct":          ("ci+merge", "active agent PRs with the agent/ci-gated label %", 80, 50, True),
     "ci.priority_hold_runs_48h": ("ci+merge", "unique PR runs cancelled for priority hold in 48 h", 0, 1, False),
+    "ci.shared_append_rebase_conflict_pct": ("ci+merge", "shared-append landings whose rebase conflicted on a shared-append file %, rolling 24 h", 25, 50, False),
     "review.large_pr_pct":     ("review-loop", "ledger PRs over 800 changed lines %, rolling 30 d", 10, 25, False),
     "workers.local_test_db":   ("workers", "local test Postgres (PGTEST_URL) reachable, 1 = yes", 1, 0, True),
     "loop.advisor_fail_pct":   ("review-loop", "advisor asks that got no ruling %", 10, 50, False),
@@ -118,6 +119,7 @@ MEANING = {
     "ci.cancel_other_per_day": "M1：共享取消审计中，原因不在已知类别里的不同 PR run 数按天折算。",
     "ci.gated_pr_pct": "M12：当前活跃 agent/issue-* PR 中带服务端 agent/ci-gated 标签的比例；不读本机台账镜像。",
     "ci.priority_hold_runs_48h": "M13：最近 48 小时共享取消审计中原因是 ci hold 的不同 PR run 数；零活动满足优先挡板的退役观察条件。",
+    "ci.shared_append_rebase_conflict_pct": "shared-append 注册表文件（footprint 互斥对其放行并行的名单，config 的 footprint_mutex.shared_append）在 direct-main 落地 rebase 时真的撞出文本冲突的比例。裁决接受少量冲突换并行；一天样本里持续偏高就把对应文件从名单移回互斥。无样本不计值。",
     "supervisor.latency_p50": "升级到主管后多久得到裁决（中位）。",
     "scheduler.tick_gap_p50": "调度两拍之间的秒数（中位）：越长，派活、合并、发布都越慢。",
     "release.hours_waiting": "当前有待发布改动时，本批次已等待的小时数；无待发布工作时为 0。",
@@ -188,6 +190,7 @@ SOURCE = {
     "ci.cancel_other_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的其他或缺失 reason ÷ 窗口小时 × 24。",
     "ci.gated_pr_pct": "GitHub pull request API：带 agent/ci-gated 标签的 open agent/issue-* PR ÷ 所有 open agent/issue-* PR。",
     "ci.priority_hold_runs_48h": "共享 actions-run-cancellations.jsonl：最近 48 小时不同 run_id 的最后一个非空 reason=ci hold。",
+    "ci.shared_append_rebase_conflict_pct": "logs/shared-append-rebases.jsonl（land-direct-main 记录每次改动范围带 shared-append 文件的落地 rebase）：固定滚动 24h 内 conflict_files 非空的比例；无记录不计值。",
     "review.large_pr_pct": "pr-sizes.json（ci_spend.py 取 PR 增删行数）对照最近 30 天有台账活动的 PR；无历史的在途单也计入，缺尺寸时显示无数据",
     "loop.advisor_fail_pct": "units.json：advisor-unavailable ÷（advisor-ruling + advisor-unavailable），窗口内",
     "review.findings_missing_pct": "units.json 每单的 review_findings：窗口内 block=missing 的打回 ÷ 全部打回（调度器收割打回报告时写入）",
@@ -594,12 +597,19 @@ def host_prereqs_missing(path=None):
     return missing
 
 
-def dispatch_collisions(units, now):
+def dispatch_collisions(units, now, shared=frozenset()):
     """Count unit pairs with overlapping writing intervals and path scopes.
 
     End records include the actual diff, so an underpredicted footprint remains
     measurable. Old ledgers without dispatch intervals have no observation.
+    A pair whose ONLY overlapping paths are shared-append registry files is the
+    parallelism the 2026-10-29 zf-ab ruling legalized, not a collision; those
+    conflicts are observed at landing rebase time instead.
     """
+
+    def collides(a, b):
+        return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
     intervals = []
     observed = False
     for unit in units:
@@ -625,9 +635,44 @@ def dispatch_collisions(units, now):
         for vid, vstart, vend, vpaths in intervals[i + 1:]:
             if uid == vid or max(start, vstart, now - timedelta(hours=24)) >= min(end, vend):
                 continue
-            if any(a == b or a.startswith(b + "/") or b.startswith(a + "/") for a in paths for b in vpaths):
-                pairs.add(tuple(sorted((uid, vid))))
+            overlap = ({a for a in paths for b in vpaths if collides(a, b)}
+                       | {b for b in vpaths for a in paths if collides(a, b)})
+            if not overlap:
+                continue
+            if shared and overlap <= shared:
+                continue
+            pairs.add(tuple(sorted((uid, vid))))
     return len(pairs) if observed else None
+
+
+def shared_append_rebase_metrics(path, repo, since, now):
+    """(attempts, pct): shared-append landings whose rebase conflicted on a shared-append file.
+
+    Reads the JSONL land-direct-main appends per rebase attempt whose landing range
+    touches a shared-append file; a conflict row carries the unmerged shared files.
+    None means no observation (no file / no attempts in the window)."""
+    try:
+        rows = []
+        with open(path, errors="replace") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or not row.get("when"):
+                    continue
+                if row.get("repo") and row["repo"] != repo:
+                    continue
+                rows.append(row)
+    except OSError:
+        return None, None
+    attempts = []
+    for row in rows:
+        at = ts(row.get("when"))
+        if at and since <= at <= now and row.get("shared_files"):
+            attempts.append(row)
+    conflicts = [row for row in attempts if row.get("conflict_files")]
+    return len(attempts), (100 * len(conflicts) / len(attempts) if attempts else None)
 
 
 def ledger_metrics(units, since, now):
@@ -1294,7 +1339,16 @@ def main():
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)
     metrics.update(delivery["values"])
-    metrics["dispatch.collisions_per_day"] = dispatch_collisions(units, now)
+    try:
+        shared_append = frozenset((json.load(open(os.path.join(a, "config.json")))
+                                   .get("footprint_mutex") or {}).get("shared_append") or [])
+    except (OSError, ValueError):
+        shared_append = frozenset()
+    metrics["dispatch.collisions_per_day"] = dispatch_collisions(units, now, shared_append)
+    sa_attempts, sa_conflict = shared_append_rebase_metrics(
+        os.path.join(agent_home, "logs", "shared-append-rebases.jsonl"), repo,
+        now - timedelta(hours=24), now)
+    metrics["ci.shared_append_rebase_conflict_pct"] = sa_conflict
     metrics["workers.local_test_db"] = local_test_db()
     host_missing = host_prereqs_missing()
     metrics["host.prereqs_missing"] = None if host_missing is None else len(host_missing)

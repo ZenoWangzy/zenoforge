@@ -651,6 +651,8 @@ tick_gh() {
     'pr list')
       if [[ -f "$TF/aged-prs.json" && "$*" == *'--json number,headRefName,headRefOid,createdAt,baseRefName'* ]]; then cat "$TF/aged-prs.json"; return; fi
       if [[ -f "$TF/handoff-lookup-fail" && "$*" == *'--json number,headRefName,title,body'* ]]; then return 1; fi
+      # The tick census is the open-PR census (948e839b2), so a failing handoff lookup fails that listing too.
+      if [[ -f "$TF/handoff-lookup-fail" && "$*" == *statusCheckRollup* ]]; then return 1; fi
       if [[ -f "$TF/handoff-lookup.json" && "$*" == *'--json number,headRefName,title,body'* ]]; then
         if [[ "$*" == *'--head '* ]]; then
           command jq -c '[.[] | select(.headRefName=="agent/issue-779") | if has("labels") then . else . + {labels:[]} end]' "$TF/handoff-lookup.json"
@@ -659,19 +661,34 @@ tick_gh() {
         fi
         return
       fi
-      if [[ -f "$TF/pr-census.json" && "$*" == *statusCheckRollup* ]]; then cat "$TF/pr-census.json"; return; fi
+      if [[ -f "$TF/pr-census.json" && "$*" == *statusCheckRollup* ]]; then
+        # The census carries the PR body (the handoff finds a PR through its "Refs #N" line); take it from the lookup fixture when the row has none.
+        if [[ -f "$TF/handoff-lookup.json" ]]; then
+          command jq -c --slurpfile RU "$TF/handoff-lookup.json" 'map(. as $r | . + {body: ($r.body // (first($RU[0][] | select(.number == $r.number) | .body) // ""))})' "$TF/pr-census.json"
+        else cat "$TF/pr-census.json"; fi
+        return
+      fi
       if [[ -f "$TF/busy-pr" && "$*" == *'--json headRefName,title,body'* ]]; then
         cat "$TF/busy-pr"
         return
       fi
       if [[ "$*" == *statusCheckRollup* ]]; then
-        # The census: check rows come from the per-PR `pr checks` fixture above, heads left unknown so the lane asks pr view.
+        # The census: check rows come from the per-PR `pr checks` fixture above, heads from the `pr view` fixture.
         local query="." rows='[]' n c previous="" arg
         for arg in "$@"; do [[ "$previous" == --jq ]] && query="$arg"; previous="$arg"; done
         for n in $(command jq -r '.units[] | select(.stage == "ready-to-merge" and .pr != null) | .pr' "$TF/supervisor/autopi/units.json"); do
           c="$(tick_gh pr checks "$n" --json name,bucket,link)"
-          rows="$(command jq -c --argjson n "$n" --argjson c "${c:-[]}" '. += [{number: $n, headRefOid: null, isDraft: false, statusCheckRollup: ($c | map({__typename: "CheckRun", name: .name, detailsUrl: (.link // ""), startedAt: (.started_at // null), status: (if .bucket == "pending" then "IN_PROGRESS" else "COMPLETED" end), conclusion: ({pass: "SUCCESS", fail: "FAILURE", skipping: "SKIPPED", cancel: "CANCELLED"}[.bucket] // null)}))}]' <<<"$rows")"
+          rows="$(command jq -c --argjson n "$n" --arg head "$(tick_gh pr view "$n" --json headRefOid --jq .headRefOid)" --argjson c "${c:-[]}" 'if any(.[]; .number == $n) then . else . + [{number: $n, headRefOid: $head, isDraft: false, title: "", labels: [], statusCheckRollup: ($c | map({__typename: "CheckRun", name: .name, detailsUrl: (.link // ""), startedAt: (.started_at // null), status: (if .bucket == "pending" then "IN_PROGRESS" else "COMPLETED" end), conclusion: ({pass: "SUCCESS", fail: "FAILURE", skipping: "SKIPPED", cancel: "CANCELLED"}[.bucket] // null)}))}] end' <<<"$rows")"
         done
+        # handoff 夹具的 open PR 也在 census 里（948e839b2 起 handoff 复用 tick census），但只补
+        # 没有检查行的 PR，不覆盖 ready-to-merge 单元的 checks。
+        if [[ -f "$TF/handoff-lookup.json" ]]; then
+          rows="$(command jq -c --slurpfile RU "$TF/handoff-lookup.json" '
+            . as $rows
+            | ($rows | map(. as $r | . + (([$RU[0][] | select(.number == $r.number)][0] // {}) | {headRefName, title, body} | with_entries(select(.value != null)))))
+              + [$RU[0][] | select(.number as $n | ($rows | map(.number) | index($n)) == null)
+                   | {number, headRefName, title: (.title // ""), body: (.body // ""), headRefOid: null, isDraft: false, labels: (.labels // []), statusCheckRollup: []}]' <<<"$rows")"
+        fi
         command jq -cr "$query" <<<"$rows"
       else
         echo '[]'
@@ -696,6 +713,14 @@ tick_gh() {
     'api graphql')
       if [[ "$*" == *'i9901:'* ]]; then
         if [[ -f "$TF/dependency-closed" ]]; then printf '9901\tCLOSED\tbug\n'; else printf '9901\tOPEN\tbug\n'; fi
+      elif [[ "$*" == *'labels(first: 100)'* ]]; then
+        # predecessor_candidates batches the blocking issues into one GraphQL call; answer from the issue fixtures.
+        local pred_n pred_resp='{}'
+        for pred_n in $(grep -oE 'issue\(number: [0-9]+\)' <<<"$*" | grep -oE '[0-9]+'); do
+          [[ -f "$TF/issues/$pred_n.json" ]] || continue
+          pred_resp="$(command jq -c --argjson r "$pred_resp" '$r + {("i" + (.number | tostring)): {number, title, body: (.body // ""), state: (.state // "OPEN"), labels: {nodes: (.labels // [])}}}' "$TF/issues/$pred_n.json")"
+        done
+        command jq -cn --argjson r "$pred_resp" '{data: {repository: $r}}'
       else
         echo '{}'
       fi ;;
@@ -738,7 +763,7 @@ tick_git() {
     clone) local destination="${!#}"; mkdir -p "$destination/.git" ;;
     rev-parse)
       case "$*" in
-        *FETCH_HEAD*)
+        *FETCH_HEAD*|*refs/autopi/merge-candidates/*)
           if [[ -f "$TF/real-rule-git" ]]; then command git -C "$TF/repo" "$@"
           elif [[ -f "$TF/fetched-head" ]]; then cat "$TF/fetched-head"
           else cat "$TF/main-sha"; fi ;;
@@ -782,11 +807,14 @@ tick_git() {
       fi ;;
     cherry) [[ ! -f "$TF/aged-head-readable" ]] || printf '%s\n' '- 0000000000000000000000000000000000000001' ;;
     fetch)
-      if [[ -f "$TF/real-rule-git" && "${!#}" == refs/pull/*/head ]]; then
+      if [[ -f "$TF/real-rule-git" && "${!#}" == +refs/pull/*/head:refs/autopi/merge-candidates/* ]]; then
+        command git -C "$TF/repo" "$@"
+      elif [[ -f "$TF/real-rule-git" && "${!#}" == refs/pull/*/head ]]; then
         command git -C "$TF/repo" fetch -q origin "${!#}"
       else
         return 0
       fi ;;
+    update-ref) if [[ -f "$TF/real-rule-git" ]]; then command git -C "$TF/repo" "$@"; else return 0; fi ;;
     init|config|checkout|for-each-ref|branch|sparse-checkout) return 0 ;;
     *) echo "unexpected git call: $*" >&2; return 97 ;;
   esac
@@ -802,6 +830,12 @@ tick_jq() {
     command jq "$@"
   fi
 }
+# The shipped policy has roadmap-order on: a stage label only lands on an issue that sits on the roadmap tree.
+seed_roadmap_tree() {
+  command jq -cn '{roots:[{number:9000,title:"Roadmap",state:"OPEN",labels:["roadmap"],children:[$ARGS.positional[] | {number:tonumber,title:"Issue",state:"OPEN",labels:[],children:[]}]}]}' \
+    --args "$@" > "$TF/roadmap-tree.json"
+}
+
 new_tick_fixture() {
   TF="$test_env_root/tick-$1"; export TF
   mkdir -p "$TF/repo" "$TF/supervisor/autopi/alerts" "$TF/sessions" "$TF/bin"
@@ -849,6 +883,10 @@ SH
   cp -a "$script_dir" "$TF/repo/engine/mac-autopilot"
   copy_agent_library "$TF/repo/engine"
   cp "$TF/supervisor/autopi/config.json" "$TF/repo/engine/mac-autopilot/config.template.json"
+  # merge_candidates 每拍经 $HERE/../../ci/ 调 pr-required-aggregate.mjs（16e097913 起按 run/时间
+  # 取同 head 最新检查行）；夹具 repo 是 engine 子集，需一并带上。
+  mkdir -p "$TF/repo/engine/ci"
+  cp "$repo_root/engine/ci/pr-required-aggregate.mjs" "$TF/repo/engine/ci/pr-required-aggregate.mjs"
   echo '# fixture: dashboard has its own integration test' > "$TF/repo/engine/mac-autopilot/gen_dashboard.py"
   # These tick fixtures exercise the state machine; health/spend have their own suites.
   rm "$TF/repo/engine/mac-autopilot/node_health.py" "$TF/repo/engine/mac-autopilot/ci_spend.py"
@@ -969,9 +1007,10 @@ command jq -e --arg hot "$hotfix_sha" --arg normal "$normal_sha" --arg review "$
   || { echo 'scheduler.test.sh: hotfix admission state or lower-priority cancellation was wrong' >&2; exit 1; }
 ! grep -Fq 'ci hold' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: priority hold fired after retirement (#4625)' >&2; exit 1; }
-# 第二拍：PR runner 恢复在线（2 个），热修 run 已在 runner 1 上跑 → 名额 = 2 − 1 = 1，
-# 等名额的 normal-active 补进空槽起跑 CI；名额算术由日志与 slot 1/1 钉住。
-command jq -n '{"runners":[{"id":1,"status":"online","labels":[{"name":"cihost-ci"}]},{"id":2,"status":"online","labels":[{"name":"zf-suites"}]},{"id":3,"status":"online","labels":[{"name":"cihost-ci-postsubmit"}]}]}' > "$TF/ci-runners.json"
+# 第二拍：PR runner 恢复在线（2 个），热修 run 已在 runner 1 上跑（busy=true，6adc3ba00 起按
+# runner busy 折算名额）→ 名额 = 2 − 1 = 1，等名额的 normal-active 补进空槽起跑 CI；
+# 名额算术由日志与 slot 1/1 钉住。
+command jq -n '{"runners":[{"id":1,"status":"online","busy":true,"labels":[{"name":"cihost-ci"}]},{"id":2,"status":"online","busy":false,"labels":[{"name":"zf-suites"}]},{"id":3,"status":"online","busy":false,"labels":[{"name":"cihost-ci-postsubmit"}]}]}' > "$TF/ci-runners.json"
 command jq -n --arg hot "$hotfix_sha" --arg normal "$normal_sha" --arg review "$review_sha" \
   '[
     {databaseId:901,status:"in_progress",event:"pull_request",headBranch:"agent/issue-hf-900",headSha:$hot,workflowName:"CI"},
@@ -1030,7 +1069,7 @@ if grep -q '^merge 50$' "$TF/actions"; then
   echo 'scheduler.test.sh: tick reused pre-adoption aggregate passes' >&2; exit 1
 fi
 grep -Fq 'required checks without a real pass:' "$TF/supervisor/autopi/scheduler.log" \
-  || { echo 'scheduler.test.sh: stale adopted checks did not hold the merge' >&2; exit 1; }
+  || { echo "scheduler.test.sh: stale adopted checks did not hold the merge" >&2; echo "--- scheduler.log ---" >&2; tail -20 "$TF/supervisor/autopi/scheduler.log" >&2; echo "--- actions ---" >&2; cat "$TF/actions" >&2; exit 1; }
 printf 'fresh\n' > "$TF/pipeline-ci-adoption"
 tick
 [[ "$(command jq -r '.units[0].stage' "$TF/supervisor/autopi/units.json")" == merged ]] \
@@ -1173,9 +1212,9 @@ grep -Fq 'supervisor-review unit=pr-4551: PR#53 改到规则文件' "$TF/supervi
   || { echo 'scheduler.test.sh: comment-failure rejection did not move the unit to the supervisor queue' >&2; exit 1; }
 grep -Fq 'merge skipped PR#52 (rule diff unavailable)' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: unavailable PR diff did not keep the candidate out of merge' >&2; exit 1; }
-grep -Fq 'git fetch -q origin refs/pull/51/head' "$TF/calls" \
+grep -Eq 'git fetch -q --no-tags origin .*\+refs/pull/51/head:refs/autopi/merge-candidates/' "$TF/calls" \
   || { echo 'scheduler.test.sh: merge lane did not fetch the exact PR head for rule-lane' >&2; exit 1; }
-grep -Fq 'git fetch -q origin refs/pull/52/head' "$TF/calls" \
+grep -Eq 'git fetch -q --no-tags origin .*\+refs/pull/52/head:refs/autopi/merge-candidates/' "$TF/calls" \
   || { echo 'scheduler.test.sh: merge lane did not observe the unavailable PR head' >&2; exit 1; }
 grep -Fq 'gh pr merge 54 --squash --match-head-commit' "$TF/calls" \
   || { echo 'scheduler.test.sh: ordinary merge did not pass through gh-shim' >&2; exit 1; }
@@ -1659,6 +1698,7 @@ sched_case_oversized_repair_pre_dispatch_recut() {
   touch "$TF/real-clone-git" "$TF/size-recut-mode" "$TF/allow-dispatch"
   mkdir -p "$TF/agent-home/state"
   printf '%s\n' '{"state":"ready-for-agent"}' > "$TF/agent-home/state/930.json"
+  seed_roadmap_tree 930
   printf 'VERDICT: REQUEST-CHANGES\nexisting review failure\n' > "$TF/supervisor/review-930.md"
   command jq -n '{units:[{id:"issue-930",issue:930,pr:930,lane:"pr",branch:"agent/issue-930",title:"oversized repair",stage:"repair-pending",review_report:"review-930.md",repair_hint:"review failure",footprint:["packages/example"],history:[]}]}' \
     > "$TF/supervisor/autopi/units.json"
@@ -2229,7 +2269,7 @@ train_dir="$(mktemp -d)"
   mkdir -p "$HERE"
   unset http_proxy https_proxy no_proxy
   export HTTPS_PROXY=http://bridge:1 HTTP_PROXY=http://bridge:1 NO_PROXY=localhost
-  touch "$HERE/release_train.sh"
+  touch "$HERE/release_train.sh"; ZF_RELEASE_TRAIN_SCRIPT="$HERE/release_train.sh"
   jqf() { command jq "$@"; }
   say() { :; }
   systemctl() { return 3; }
@@ -2301,6 +2341,9 @@ sched_case_footprint_mutex() {
   # #4488 二轮起派发检查会读 ROOT 的共同修改历史；空目录没有 git 历史，
   # 热点扩展退回原足迹，下面的用例只受声明的足迹影响。
   ROOT="$(mktemp -d)"
+  # The active-footprint snapshot is cached for the length of a tick; this case rewrites the workers between checks, so each check
+  # starts from a fresh snapshot.
+  footprint_room() { TICK_ACTIVE_FOOTPRINTS_VALID=false; TICK_FOOTPRINT_CONFLICT_VALID=false; _footprint_room "$@"; }
   UNITS="$fixture_supervisor/autopi/footprint-units.json"
   WORKERS="$fixture_supervisor/autopi/footprint-workers.json"
   cat > "$UNITS" <<'JSON'
@@ -3270,9 +3313,7 @@ command jq -n '{units:[
   {id:"pr-501",issue:501,pr:501,lane:"pr",branch:"agent/issue-501",stage:"supervisor-review",
    review_report:"review-501.md",
    history:[{stage:"review-request-changes",result:"F1",at:"2026-10-27T00:00:00Z"},
-            {stage:"supervisor-escalated",result:"review report has no single VERDICT line",at:"2026-10-27T00:01:00Z"}]},
-  {id:"pr-502",issue:502,pr:502,lane:"pr",branch:"agent/issue-502",stage:"supervisor-review",
-   history:[{stage:"supervisor-escalated",result:"needs a maintainer business fact",at:"2026-10-27T00:00:00Z"}]}]}' \
+            {stage:"supervisor-escalated",result:"review report has no single VERDICT line",at:"2026-10-27T00:01:00Z"}]}]}' \
   > "$TF/supervisor/autopi/units.json"
 touch "$TF/allow-dispatch"
 echo requeue > "$TF/supervise-action"
@@ -3298,6 +3339,11 @@ command jq -e --arg unit pr-501 '([.units[] | select(.id==$unit) | (.repair_hint
 command jq -e --arg unit pr-501 'any(.units[] | select(.id==$unit) | .history[]; .decision.decision == "Supervisor arbitration: requeue")' \
   "$TF/supervisor/autopi/units.json" >/dev/null || { echo 'not ok - scheduler.test.sh: arbitration decision not recorded in the unit' >&2; exit 1; }
 
+# The scheduler arbitrates one unit per tick, so pr-502 joins only after pr-501's requeue round: otherwise its
+# worker starts during that round and reads the requeue action instead of needs-info.
+command jq '.units += [{id:"pr-502",issue:502,pr:502,lane:"pr",branch:"agent/issue-502",stage:"supervisor-review",
+   history:[{stage:"supervisor-escalated",result:"needs a maintainer business fact",at:"2026-10-27T00:00:00Z"}]}]' \
+  "$TF/supervisor/autopi/units.json" > "$TF/units.with-502" && mv "$TF/units.with-502" "$TF/supervisor/autopi/units.json"
 echo needs-info > "$TF/supervise-action"
 tick
 for attempt in $(seq 1 20); do
@@ -3327,6 +3373,9 @@ prepare_jev_f12_fixture() {
   mkdir -p "$TF/repo/engine/prompts" "$TF/agent-home/logs"
   cp "$repo_root/engine/prompts/supervisor-arbiter.md" "$TF/repo/engine/prompts/supervisor-arbiter.md"
   export ZF_EXECUTION_MODULE_DIR="$TF/repo/engine"
+  # The scheduler reaches the judge through ts-judge.sh (548de8056), which execs the real node, so the node() wrapper below never
+  # sees it; the fixture copy of the wrapper runs the mock driver instead.
+  printf '%s\n' '#!/usr/bin/env bash' 'exec node "$TYPESAFE_TEST_DRIVER" "$@"' > "$TF/repo/engine/ts-judge.sh"
   printf 'VERDICT: REQUEST-CHANGES\nF1 needs a bounded follow-up\n' > "$TF/supervisor/review-4630.md"
   command jq -n '{units:[{id:"pr-4630",issue:4630,pr:4630,lane:"pr",branch:"agent/issue-4630",stage:"supervisor-review",
     review_report:"review-4630.md",history:[{stage:"supervisor-escalated",result:"two review attempts did not converge",at:"2026-10-27T00:00:00Z"}]}]}' \
@@ -3449,6 +3498,7 @@ command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-exte
 command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
   > "$TF/issues/4279.json"
 printf '%s\n' '[{"number":4280,"title":"Runtime migration child","state":"open"}]' > "$TF/sub-issues-4279.json"
+seed_roadmap_tree 4279
 tick
 command jq -e 'all(.units[]; .issue != 4279)' "$TF/supervisor/autopi/units.json" >/dev/null \
   || { echo 'scheduler.test.sh: #4279 was registered as an implement unit' >&2; exit 1; }
@@ -3501,6 +3551,7 @@ command jq -n --arg body "$missing_body" '{number:4281,title:"pipeline ticket wi
   > "$TF/issues/4281.json"
 cp "$TF/issues/4281.json" "$TF/intake-issue.json"
 printf '%s\n' '[]' > "$TF/sub-issues-4281.json"
+seed_roadmap_tree 4281
 tick
 command jq -e 'all(.units[]; .issue != 4281)' "$TF/supervisor/autopi/units.json" >/dev/null \
   || { echo 'not ok - scheduler.test.sh: M5 intake dispatched a unit for a ticket without live-event' >&2; exit 1; }
@@ -3531,6 +3582,7 @@ command jq -n --arg body "$valid_body" '{number:4282,title:"pipeline ticket with
   > "$TF/issues/4282.json"
 cp "$TF/issues/4282.json" "$TF/intake-issue.json"
 printf '%s\n' '[]' > "$TF/sub-issues-4282.json"
+seed_roadmap_tree 4282
 touch "$TF/allow-dispatch" "$TF/worker-alive"
 tick
 command jq -e --argjson acc "$valid_acc" 'any(.units[]; .issue == 4282 and .acceptance == $acc)' "$TF/supervisor/autopi/units.json" >/dev/null \
@@ -3547,6 +3599,7 @@ command jq -n --arg body "$unbound_body" '{number:4283,title:"pipeline ticket wi
   > "$TF/issues/4283.json"
 cp "$TF/issues/4283.json" "$TF/intake-issue.json"
 printf '%s\n' '[]' > "$TF/sub-issues-4283.json"
+seed_roadmap_tree 4283
 tick
 command jq -e 'all(.units[]; .issue != 4283)' "$TF/supervisor/autopi/units.json" >/dev/null \
   || { echo 'not ok - scheduler.test.sh: M5 intake dispatched a ticket with an unregistered event' >&2; exit 1; }

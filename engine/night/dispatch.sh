@@ -16,11 +16,11 @@ HAND_UNIT="zf-hand-$NAME-$$"
 case "$RESUME_NOTE" in *$'\t'*|*$'\n'*) echo "resume note cannot contain tabs or newlines" >&2; exit 2 ;; esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKTREE_LIFECYCLE="$SCRIPT_DIR/worktree-lifecycle.sh"
-REPO_DIR="${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
+REPO_DIR="${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/../.." && pwd -P)}"
 if [[ -f "$REPO_DIR/engine/install-pre-push-guard.sh" ]]; then
   bash "$REPO_DIR/engine/install-pre-push-guard.sh" "$REPO_DIR"
 fi
-INDEX_ROOT="${ZF_CODE_INTELLIGENCE_ROOT:-${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}}"
+INDEX_ROOT="${ZF_CODE_INTELLIGENCE_ROOT:-${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/../.." && pwd -P)}}"
 AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
 WORKTREE_ROOT="${ZF_WORKTREE_ROOT:-$HOME/wt}"
