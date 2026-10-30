@@ -1,0 +1,15 @@
+[Unit]
+Description=the product daily pipeline performance report
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.zenoforge/checkout
+Environment=AGENT_HOME=%h/.zenoforge
+Environment=ZF_HOME=%h/.zenoforge
+Environment=ZF_NIGHT_DIR=%h/.zenoforge/night
+Environment=ZF_REPO_DIR=%h/.zenoforge/checkout
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+StandardOutput=journal
+StandardError=journal
+ExecStart=%h/.zenoforge/checkout/engine/night/daily-perf-report.sh

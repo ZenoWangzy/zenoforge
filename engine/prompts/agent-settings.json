@@ -1,0 +1,33 @@
+{
+  "_comment_permissions": "Permission settings loaded (claude --settings) by the read-only pipeline stages: triage, recut, advisor and release-outcome generation. Matching is deny-by-default under --permission-prompts none: any command not allowed below is refused. Design notes from the audit that produced this list. (1) The permission matcher checks the invoked command STRING, not what the process does, so a blanket Bash(node *) or Bash(<package-manager> *) entry defeats every other deny entry (node -e \"require('child_process').execSync('gh pr merge ...')\" or a plain fetch() of a private key would be allow-listed and would run with the operator's real credentials). Allow only the exact invocations a stage needs; node itself is not allowed at all, because no stage prompt tells the model to invoke it directly. The wrapper scripts' own node/pnpm calls run outside this sandbox as plain bash and need nothing here. (2) Deny wins over allow even when the allow entry is more specific (Bash(pnpm --filter x typecheck) in allow was still blocked by a blanket Bash(pnpm *) in deny), so do not add a broad deny catch-all expecting specific allows to keep working; default-deny-on-no-match already covers everything not explicitly allowed. (3) gitnexus is narrowed to query/context/impact plus the no-argument read-only status: Bash(gitnexus *) would also allow `gitnexus cypher <raw query>` (an arbitrary graph-database query language) and `gitnexus eval-server`. (4) Residual risk a command-prefix allowlist cannot close: the model has unrestricted Write/Edit, so it can write a script into the worktree and run it through an allowed test-runner entry (for example by editing a package script or a test file); this narrows the trivial one-line `node -e` attack, it does not sandbox. Bash(rg *) has the same theoretical shape (ripgrep's --pre flag runs an external preprocessor) but prefix matching cannot exclude one flag anywhere in the argument list, so it is a known, unclosed gap rather than a false fix. To let a stage run your repository's own checks, add the exact commands to the allow list (for example \"Bash(pnpm --filter <package> typecheck)\"), one entry per invocation, and keep that list in step with the repository's validation docs when a package is added.",
+  "permissions": {
+    "allow": [
+      "Bash(rg *)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(gitnexus query*)",
+      "Bash(gitnexus context*)",
+      "Bash(gitnexus impact*)",
+      "Bash(gitnexus status)"
+    ],
+    "deny": [
+      "Bash(gh *)",
+      "Bash(gitnexus analyze*)",
+      "Bash(ssh*)",
+      "Bash(scp*)",
+      "Bash(curl*)",
+      "Bash(wget*)",
+      "Bash(docker*)",
+      "Bash(psql*)",
+      "Bash(git push*)",
+      "Bash(rm -rf*)",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Workflow"
+    ]
+  }
+}

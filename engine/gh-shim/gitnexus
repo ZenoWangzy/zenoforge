@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Hand-dispatched agents: `gitnexus analyze` peaks at 1.5-2.3GB and drove the host to
+# 686MB MemAvailable on 2026-09-23. Queries pass through; analyze is refused with exit 3.
+# Kept in the repository since 2026-10-07: the live-only copy under night/shim was lost
+# when a host restart cleared that directory.
+set -euo pipefail
+if [ "${1:-}" = analyze ]; then
+  echo "gitnexus analyze refused for hand agents (memory); query the existing index with --repo instead" >&2
+  exit 3
+fi
+exec "${ZF_GITNEXUS_REAL_CLI:-$HOME/.npm-global/bin/gitnexus}" "$@"

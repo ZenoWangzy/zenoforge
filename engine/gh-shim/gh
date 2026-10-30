@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+pipeline_system_label() {
+  local value="$1" part
+  local -a labels=()
+  IFS=',' read -r -a labels <<< "$value"
+  for part in "${labels[@]}"; do
+    part="${part#"${part%%[![:space:]]*}"}"
+    part="${part%"${part##*[![:space:]]}"}"
+    [[ "$part" == pipeline-system ]] && return 0
+  done
+  return 1
+}
+
+pipeline_system_issue_create() {
+  local -a args=("$@")
+  local i create_at=-1 arg value
+  for ((i = 0; i + 1 < ${#args[@]}; i++)); do
+    if [[ "${args[i]}" == issue && "${args[i+1]}" == create ]]; then
+      create_at=$((i + 2))
+      break
+    fi
+  done
+  ((create_at >= 0)) || return 1
+  for ((i = create_at; i < ${#args[@]}; i++)); do
+    arg="${args[i]}"
+    case "$arg" in
+      --label|-l)
+        ((i + 1 < ${#args[@]})) || continue
+        value="${args[++i]}"
+        pipeline_system_label "$value" && return 0
+        ;;
+      --label=*|-l=*)
+        value="${arg#*=}"
+        pipeline_system_label "$value" && return 0
+        ;;
+      -l?*)
+        value="${arg#-l}"
+        pipeline_system_label "$value" && return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+if [[ "${ZF_PIPELINE_ISSUE_UPSERT_HELPER:-}" != 1 ]] && pipeline_system_issue_create "$@"; then
+  echo "gh-shim: refusing direct pipeline-system issue creation; use bash engine/pipeline-issue-upsert.sh with a stable class key" >&2
+  exit 2
+fi
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/gh-auto-merge-guard.sh"
+reject_native_auto_merge gh "$@" || exit $?
+exec "${ZF_GH_REAL_CLI:-/usr/bin/gh}" "$@"

@@ -1,0 +1,9 @@
+{
+  "_comment": "#4484 (2026-10-29): each PR workflow has one always-concluding aggregate (alls-green, engine/ci/pr-required-aggregate.mjs), not conditionally-skipping gate names, so a skipped gate can never wedge a PR in 'required checks without a real pass' forever. 'Required CI gates' needs false-green-guards + the three heavy PR gates; 'Required contract gates' needs contract (which still runs check-example-migration-order --ci before release migrations reach production, PR #4024).",
+  "min_gh_version": "2.50.0",
+  "required": [
+    "Enforce branch delivery policy",
+    "Required CI gates",
+    "Required contract gates"
+  ]
+}

@@ -1,0 +1,27 @@
+# Runs supervise-pipeline.sh (engine/supervise-pipeline.sh) as a
+# systemd --user oneshot, triggered by zenoforge-supervisor.timer. Same
+# PATH/proxy/GH_TOKEN environment shape as zenoforge-agent.service/zf-
+# label-churn.service -- see zenoforge-agent.service's own header comment for
+# why each of these is required under a systemd --user unit (it does not
+# source ~/.bashrc). Points at the same dedicated, never-touched-
+# interactively checkout ($HOME/.zenoforge/checkout) the other
+# units use, but does NOT fast-forward it itself, same reasoning as
+# zenoforge-label-churn.service: this reads gh/systemctl/journalctl/local
+# state and spend files, none of which come from the repo's own code, so a
+# stale checkout only means stale threshold constants, never stale data --
+# and run-tick.sh's own unit self-install loop (its own comment, "no
+# linger is configured... copies engine/systemd/*.service/*.timer
+# into ~/.config/systemd/user/") is what actually brings a changed version
+# of THIS file live, the same path every other unit in this directory
+# already relies on.
+[Unit]
+Description=the product issue-pipeline supervisor (system-level invariants)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.zenoforge/checkout
+Environment=ZF_REPO_DIR=%h/.zenoforge/checkout
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+StandardOutput=journal
+StandardError=journal
+ExecStart=%h/.zenoforge/checkout/engine/supervise-pipeline.sh

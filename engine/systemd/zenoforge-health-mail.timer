@@ -1,0 +1,11 @@
+[Unit]
+Description=the product maintainer health mail timer
+
+[Timer]
+OnActiveSec=45s
+OnUnitActiveSec=6h
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

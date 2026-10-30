@@ -1,0 +1,42 @@
+{
+  "units": [
+    {
+      "id": "issue-13159",
+      "issue": 13159,
+      "lane": "pr",
+      "stage": "ready-to-merge",
+      "history": [
+        { "stage": "write-start", "at": "2026-10-28T10:00:00Z" },
+        { "stage": "write-start", "at": "2026-10-28T11:00:00Z" },
+        { "stage": "review-approve", "at": "2026-10-28T12:00:00Z" },
+        { "stage": "write-start", "at": "2026-10-28T13:00:00Z" },
+        { "stage": "supervisor-budget-park", "at": "2026-10-28T14:00:00Z", "result": "lifetime spend budget: tokens=40000000/5000000" },
+        { "stage": "review-approve", "at": "2026-10-28T15:00:00Z" }
+      ]
+    },
+    {
+      "id": "pr-13381",
+      "pr": 13381,
+      "lane": "pr",
+      "stage": "ready-to-merge",
+      "history": [
+        { "stage": "write-start", "at": "2026-10-28T10:00:00Z" },
+        { "stage": "write-start", "at": "2026-10-28T11:00:00Z" },
+        { "stage": "review-approve", "at": "2026-10-28T12:00:00Z" },
+        { "stage": "write-start", "at": "2026-10-28T13:00:00Z" },
+        { "stage": "supervisor-budget-park", "at": "2026-10-28T14:00:00Z", "result": "lifetime spend budget: tokens=7500000/5000000, worker_minutes=300/240, rounds=6/5" },
+        { "stage": "supervisor-approve", "at": "2026-10-28T15:00:00Z" },
+        { "stage": "review-approve", "at": "2026-10-28T16:00:00Z" }
+      ]
+    },
+    {
+      "id": "issue-13680",
+      "issue": 13680,
+      "stage": "closed",
+      "history": [
+        { "stage": "write-start", "at": "2026-10-28T10:00:00Z" },
+        { "stage": "supervisor-budget-park", "at": "2026-10-28T12:00:00Z", "result": "lifetime spend budget: tokens=6000000/5000000" }
+      ]
+    }
+  ]
+}

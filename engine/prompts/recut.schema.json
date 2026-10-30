@@ -1,0 +1,53 @@
+{
+  "type": "object",
+  "properties": {
+    "domain_verified": {
+      "type": "boolean",
+      "description": "true only if you found real, existing files/symbols in this checkout implementing (at least partially) the domain this ticket is about. false means refuse -- children must be empty."
+    },
+    "refuse_reason": {
+      "type": "string",
+      "description": "Plain-language reason when domain_verified is false. Empty string when not refusing."
+    },
+    "needs_production_access": {
+      "type": "boolean",
+      "description": "Set true when refusing because the work requires actions outside this repository checkout, such as operating production hosts or containers, accessing production credentials, or using provider consoles. False for other refusals and when not refusing."
+    },
+    "children": {
+      "type": "array",
+      "description": "Proposed slices. Empty when refusing.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Short, plain-language title for this slice's own behavior, in the language of the parent issue."
+          },
+          "body_md": {
+            "type": "string",
+            "description": "## What to build / ## Key files and symbols / ## Acceptance criteria sections, plain language in the parent issue's language, human-readable. No ## Parent or ## Blocked by section -- the wrapper adds both."
+          },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Real file paths (relative to repo root) this slice expects to touch. Every path must exist in this checkout."
+          },
+          "symbols": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Real symbol/type/function/table names this slice touches or extends. Every one must be found inside one of the files above."
+          },
+          "blocked_by_child_indices": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "description": "0-based indices into this same children array that must land first. Empty if this slice has no sibling dependency."
+          }
+        },
+        "required": ["title", "body_md", "files", "symbols", "blocked_by_child_indices"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["domain_verified", "refuse_reason", "needs_production_access", "children"],
+  "additionalProperties": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": "f6-stop-loss-3-rounds-or-4h",
+  "description": "Candidate stop after three write starts or more than four hours",
+  "predicate": {
+    "any": [
+      { "path": "metrics.rounds", "op": "gte", "value": 3 },
+      { "path": "metrics.elapsedSeconds", "op": "gt", "value": 14400 }
+    ]
+  }
+}

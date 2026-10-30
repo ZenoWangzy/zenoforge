@@ -1,0 +1,1070 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$SCRIPT_DIR/../lib.sh"
+source "$SCRIPT_DIR/outcomes-audit.sh"
+tmp="$(mktemp -d)"
+trap 'rm -rf -- "$tmp"' EXIT
+mkdir -p "$tmp/home/state"
+open_snapshot_requests="$tmp/open-snapshot-requests"
+slow_list_budgets="$tmp/slow-list-budgets"
+SLOW_LIST_QUERY=""
+SLOW_LIST_SECONDS=0
+: > "$slow_list_budgets"
+
+closure_repo="$tmp/closure-repo"
+mkdir -p "$closure_repo"
+git -C "$closure_repo" init -q -b main
+git -C "$closure_repo" config user.name 'Outcome Audit Test'
+git -C "$closure_repo" config user.email 'outcomes-audit@example.test'
+git -C "$closure_repo" commit --allow-empty -qm 'fix(agent): pipeline issue #1754'
+reachable_pipeline_sha="$(git -C "$closure_repo" rev-parse HEAD)"
+git -C "$closure_repo" update-ref refs/remotes/origin/main "$reachable_pipeline_sha"
+git -C "$closure_repo" switch -qc unreachable
+git -C "$closure_repo" commit --allow-empty -qm 'fix(agent): pipeline issue #1755'
+unreachable_pipeline_sha="$(git -C "$closure_repo" rev-parse HEAD)"
+git -C "$closure_repo" switch -q main
+REPO_DIR="$closure_repo"
+
+assert_eq() {
+  local expected="$1" actual="$2" name="$3"
+  if [ "$expected" != "$actual" ]; then
+    printf 'not ok - %s (expected %s, got %s)\n' "$name" "$expected" "$actual" >&2
+    exit 1
+  fi
+  printf 'ok - %s\n' "$name"
+}
+
+audit_test() { SECONDS=0 outcomes_audit "$@"; }
+
+iso_at() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+NOW="$(date +%s)"
+# Put local midnight one minute ago: an empty timestamp parsed as `date -d ""`
+# would then look fresh and hide an awaiting-release issue past its 2h bound
+# (red only between 00:00 and 02:00 local before this pin, 2026-09-29).
+tz_offset_min=$(( (1440 - (NOW / 60) % 1440 + 1) % 1440 ))
+export TZ="PIN-$((tz_offset_min / 60)):$((tz_offset_min % 60))"
+recent_close="$(iso_at "$((NOW - 3600))")"
+recent_label="$(iso_at "$((NOW - 10800))")"
+young_merge="$(iso_at "$((NOW - 3600))")"
+recent_event="$(iso_at "$((NOW - 1800))")"
+
+CLOSED_JSON="$(jq -cn --arg closed "$recent_close" '[
+  {number:101,title:"Top issue without close ruling",closedAt:$closed,labels:[{name:"priority:top"}]},
+  {number:102,title:"Top issue with maintainer ruling",closedAt:$closed,labels:[{name:"priority:top"}]},
+  {number:103,title:"Top issue released",closedAt:$closed,labels:[{name:"priority:top"},{name:"released"}]},
+  {number:109,title:"Top issue not planned",closedAt:$closed,stateReason:"NOT_PLANNED",labels:[{name:"priority:top"}]},
+  {number:111,title:"Top issue closed wontfix (already done)",closedAt:$closed,stateReason:"COMPLETED",labels:[{name:"priority:top"},{name:"wontfix"}]},
+  {number:112,title:"Top issue closed duplicate",closedAt:$closed,stateReason:"COMPLETED",labels:[{name:"priority:top"},{name:"duplicate"}]},
+  {number:1548,title:"Hand-dispatch rules for codex agents live in prose and were each violated the same night",closedAt:$closed,stateReason:"COMPLETED",labels:[{name:"enhancement"},{name:"wontfix"},{name:"priority:top"}]},
+  {number:1549,title:"Closed priority issue with maintainer-account bot comment",closedAt:$closed,stateReason:"COMPLETED",labels:[{name:"priority:top"}]},
+  {number:1754,title:"Pipeline close with reachable issue commit",closedAt:$closed,labels:[{name:"priority:top"},{name:"pipeline-system"}]},
+  {number:1755,title:"Pipeline close with unreachable issue commit",closedAt:$closed,labels:[{name:"priority:top"},{name:"pipeline-system"}]},
+  {number:1756,title:"Pipeline close missing commit",closedAt:$closed,labels:[{name:"priority:top"},{name:"pipeline-system"}]},
+  {number:1819,title:"Advisor gate issue closed as not planned",closedAt:$closed,stateReason:"NOT_PLANNED",labels:[{name:"priority:top"},{name:"pipeline-system"}]},
+  {number:1757,title:"Product close without release",closedAt:$closed,labels:[{name:"priority:top"}]},
+  {number:107,title:"Commit closed while PR open",closedAt:$closed,labels:[]},
+  {number:108,title:"Close without commit event",closedAt:$closed,labels:[]}
+]')"
+AWAITING_JSON='[
+  {"number":104,"title":"Mixed labels","state":"OPEN","labels":[{"name":"awaiting-release"},{"name":"in-progress"}]},
+  {"number":105,"title":"Missing PR evidence","state":"OPEN","labels":[{"name":"awaiting-release"}]},
+  {"number":106,"title":"Young release wait","state":"OPEN","labels":[{"name":"awaiting-release"}]},
+  {"number":110,"title":"Recorded merge","state":"OPEN","labels":[{"name":"awaiting-release"}]}
+]'
+OPEN_PRS_JSON='[
+  {"number":207,"closingIssuesReferences":[{"number":107}]},
+  {"number":208,"closingIssuesReferences":[{"number":108}]}
+]'
+COMMENTS_101='[[]]'
+COMMENTS_102="$(jq -cn --arg at "$recent_event" '[ [{user:{login:"test"},body:"维护者补充裁决：按当前范围关闭。",created_at:$at}] ]')"
+COMMENTS_1548="$(jq -cn --arg at "$recent_event" '[ [{user:{login:"test"},body:"> *This was generated by AI during triage.* This comment is posted by the automated the product agent pipeline under the maintainer account; it is not a maintainer ruling. <!-- zenoforge-agent-comment -->\nHand-dispatched agents now start through one checked command.",created_at:$at}] ]')"
+COMMENTS_1549="$COMMENTS_1548"
+COMMENTS_1754="$(jq -cn --arg at "$recent_event" --arg sha "$reachable_pipeline_sha" '[ [{user:{login:"test"},body:("origin/main 已通过 commit " + $sha[0:8] + " 修复本票描述的问题；该提交可从 origin/main 到达。详情：https://github.com/example-maintainer/example-repo/commit/" + $sha[0:8] + "。按已完成结案。"),created_at:$at}] ]')"
+COMMENTS_1755="$(jq -cn --arg at "$recent_event" --arg sha "$unreachable_pipeline_sha" '[ [{user:{login:"test"},body:("origin/main 已通过 commit " + $sha[0:8] + " 修复本票描述的问题；该提交可从 origin/main 到达。详情：https://github.com/example-maintainer/example-repo/commit/" + $sha[0:8] + "。按已完成结案。"),created_at:$at}] ]')"
+COMMENTS_1756="$(jq -cn --arg at "$recent_event" '[ [{user:{login:"test"},body:"流水线系统改动按已完成结案。",created_at:$at}] ]')"
+TIMELINE_105="$(jq -cn --arg at "$recent_label" '[ [{event:"labeled",label:{name:"awaiting-release"},created_at:$at}] ]')"
+TIMELINE_107="$(jq -cn --arg at "$recent_event" '[ [{event:"closed",commit_id:"abcdef0123456789",created_at:$at}] ]')"
+TIMELINE_108='[[{"event":"closed","commit_id":null,"created_at":"2026-09-25T00:00:00Z"}]]'
+
+jq -n --arg at "$young_merge" '{state:"awaiting-release",run:{merged_at:$at}}' >"$tmp/home/state/104.json"
+jq -n --arg at "$young_merge" '{state:"awaiting-release",run:{merged_at:$at}}' >"$tmp/home/state/106.json"
+jq -n --arg at "$recent_label" '{state:"awaiting-release",run:{outcome:"merged",merged_at:$at,evidence:{pr_number:"210"}}}' \
+  >"$tmp/home/state/110.json"
+
+GH_FAIL=""
+MERGED_PRS_JSON='{"data":{"recent":{"nodes":[],"pageInfo":{"hasNextPage":false}},"boundary":{"nodes":[],"pageInfo":{"hasNextPage":false}},"refs":{"nodes":[],"pageInfo":{"hasNextPage":false}},"implements":{"nodes":[],"pageInfo":{"hasNextPage":false}},"titles":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}'
+OPEN_ISSUES_JSON='[]'
+ISSUE_VIEW_OVERRIDES='{}'
+issue_view_reads="$tmp/issue-view-read-count"
+printf '0\n' > "$issue_view_reads"
+ISSUE_LOOKUP_JSON='{"data":{"repository":{}}}'
+STATE_LABEL_BATCH_JSON='{"data":{"repository":{}}}'
+state_label_batch_calls="$tmp/state-label-batch-calls"
+state_label_batch_sizes="$tmp/state-label-batch-sizes"
+state_label_batch_ids="$tmp/state-label-batch-ids"
+: > "$state_label_batch_calls"
+: > "$state_label_batch_sizes"
+: > "$state_label_batch_ids"
+timeline_rest_calls="$tmp/timeline-rest-calls"
+timeline_graphql_calls="$tmp/timeline-graphql-calls"
+scale_gh_calls="$tmp/scale-gh-calls"
+: > "$timeline_rest_calls"
+: > "$timeline_graphql_calls"
+: > "$scale_gh_calls"
+SCALE_TIMELINE_FIXTURE=0
+SCALE_TIMELINE_FAIL=0
+SCALE_GH_DELAY_SECONDS=0
+SCALE_TIMELINE_PAGE1_JSON='{}'
+SCALE_TIMELINE_PAGE2_JSON='{}'
+SCALE_TIMELINE_CURSORS_JSON='{}'
+conclude_calls="$tmp/conclude-calls"
+conclude_merged_run() {
+  printf '%s\t%s\n' "$1" "$2" >>"$conclude_calls"
+}
+scale_timeline_graphql_response() {
+  local query="" previous="" arg ids id cursor events nodes page_json has_next timeline_data legacy include_typename=false
+  local response='{"data":{"repository":{}}}'
+  [[ "$SCALE_TIMELINE_FIXTURE" == 0 || "$SCALE_TIMELINE_FAIL" == 0 ]] || return 1
+  for arg in "$@"; do
+    if [[ "$previous" == -f && "$arg" == query=* ]]; then query="${arg#query=}"; fi
+    previous="$arg"
+  done
+  if [[ "$query" == *"nodes { __typename"* ]]; then include_typename=true; fi
+  printf 'timeline\n' >> "$timeline_graphql_calls"
+  ids="$(grep -oE 'issue\(number:[0-9]+\)' <<< "$query" | sed -E 's/issue\(number:([0-9]+)\)/\1/')"
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    if [[ "$SCALE_TIMELINE_FIXTURE" == 1 ]]; then
+      cursor="$(jq -r --arg issue "$id" '.[$issue] // empty' <<< "$SCALE_TIMELINE_CURSORS_JSON")"
+      if [[ -n "$cursor" && "$query" == *"after:\"$cursor\""* ]]; then
+        events="$(jq -c --arg issue "$id" '.[$issue] // []' <<< "$SCALE_TIMELINE_PAGE2_JSON")"
+        has_next=false
+      else
+        events="$(jq -c --arg issue "$id" '.[$issue] // []' <<< "$SCALE_TIMELINE_PAGE1_JSON")"
+        has_next=false
+        [[ -n "$cursor" ]] && has_next=true
+      fi
+    else
+      case "$id" in
+        105) legacy="$TIMELINE_105" ;;
+        107) legacy="$TIMELINE_107" ;;
+        108) legacy="$TIMELINE_108" ;;
+        *) legacy='[[]]' ;;
+      esac
+      events="$(jq -c 'flatten' <<< "$legacy")"
+      cursor=""
+      has_next=false
+    fi
+    nodes="$(jq -c --argjson include_typename "$include_typename" 'map(
+      if .event == "closed" then
+        {__typename:"ClosedEvent",createdAt:.created_at,closer:(if .commit_id then {__typename:"Commit",oid:.commit_id} else null end)}
+      elif .event == "labeled" then
+        {__typename:"LabeledEvent",createdAt:.created_at,label:{name:.label.name}}
+      elif .event == "unlabeled" then
+        {__typename:"UnlabeledEvent",createdAt:.created_at,label:{name:.label.name}}
+      else . end
+    ) | map(if $include_typename then . else del(.__typename) end
+    )' <<< "$events")"
+    page_json="$(jq -cn --argjson nodes "$nodes" --argjson has_next "$has_next" --arg cursor "$cursor" \
+      '{nodes:$nodes,pageInfo:{hasNextPage:$has_next,endCursor:(if $has_next then $cursor else null end)}}')"
+    timeline_data="$(jq -cn --argjson number "$id" --argjson timeline "$page_json" \
+      '{number:$number,timelineItems:$timeline}')"
+    response="$(jq -c --arg key "i$id" --argjson timeline "$timeline_data" \
+      '.data.repository[$key]=$timeline' <<< "$response")"
+  done <<< "$ids"
+  printf '%s\n' "$response"
+}
+
+outcomes_comments_graphql_response() {
+  local query="" previous="" issue comments_variable comments_json
+  for arg in "$@"; do
+    if [[ "$previous" == -f && "$arg" == query=* ]]; then query="${arg#query=}"; fi
+    previous="$arg"
+  done
+  cat > "$tmp/comments-graphql-response.json" <<'JSON'
+{"data":{"repository":{}}}
+JSON
+  while IFS= read -r issue; do
+    comments_variable="COMMENTS_$issue"
+    comments_json='[[]]'
+    declare -p "$comments_variable" >/dev/null 2>&1 && comments_json="${!comments_variable}"
+    printf '%s\n' "$issue" > "$tmp/comments-graphql-issue.json"
+    printf '%s\n' "$comments_json" > "$tmp/comments-graphql-data.json"
+    jq -s '
+      .[0] as $response | .[1] as $issue | .[2] as $comments |
+      $response | .data.repository["i" + ($issue | tostring)] = {comments:{
+        nodes:([$comments | flatten[]? | select(type == "object") | {
+          body:(.body // ""), createdAt:(.created_at // .createdAt // ""),
+          author:{login:(.user.login // .author.login // "")}
+        }]), pageInfo:{hasPreviousPage:false}
+      }}
+    ' "$tmp/comments-graphql-response.json" "$tmp/comments-graphql-issue.json" \
+      "$tmp/comments-graphql-data.json" > "$tmp/comments-graphql-next.json"
+    mv -f -- "$tmp/comments-graphql-next.json" "$tmp/comments-graphql-response.json"
+  done < <(grep -oE 'i[0-9]+: issue\(number:[0-9]+\)' <<< "$query" | sed -E 's/i([0-9]+): issue\(number:[0-9]+\)/\1/')
+  cat "$tmp/comments-graphql-response.json"
+}
+
+gh_q() {
+  local args=" $* " arg issue="" view_number="" view_count view_json request_timeout
+  if [[ -n "$SLOW_LIST_QUERY" && "$args" == *"$SLOW_LIST_QUERY"* ]]; then
+    request_timeout="${OUTCOMES_GH_TIMEOUT_SECONDS:-0}"
+    printf '%s\n' "$request_timeout" >> "$slow_list_budgets"
+    if ! [[ "$request_timeout" =~ ^[0-9]+$ ]] || (( SLOW_LIST_SECONDS > request_timeout )); then
+      return 124
+    fi
+    (( SLOW_LIST_SECONDS == 0 )) || sleep "$SLOW_LIST_SECONDS"
+  fi
+  if [[ "$SCALE_TIMELINE_FIXTURE" == 1 ]]; then
+    printf 'request\n' >> "$scale_gh_calls"
+    [ "$SCALE_GH_DELAY_SECONDS" -eq 0 ] || sleep "$SCALE_GH_DELAY_SECONDS"
+  fi
+  if [[ -n "$GH_FAIL" && "$args" == *" $GH_FAIL "* ]]; then return 1; fi
+  if [[ "$args" == *" issue list "* && "$args" == *" --state closed "* ]]; then
+    printf '%s\n' "$CLOSED_JSON"
+  elif [[ "$args" == *" issue view "* ]]; then
+    local previous=""
+    for arg in "$@"; do
+      if [[ "$previous" == view ]]; then view_number="$arg"; break; fi
+      previous="$arg"
+    done
+    view_count="$(cat "$issue_view_reads")"
+    printf '%s\n' "$((view_count + 1))" > "$issue_view_reads"
+    view_json="$(jq -c --arg number "$view_number" '.[$number] // empty' <<< "$ISSUE_VIEW_OVERRIDES")"
+    if [[ -n "$view_json" ]]; then
+      printf '%s\n' "$view_json"
+    else
+      jq -c --argjson number "$view_number" '.[] | select(.number == $number)' <<< "$OPEN_ISSUES_JSON"
+    fi
+  elif [[ "$args" == *" issue list "* && "$args" == *" --state open "* ]]; then
+    printf '%s|%s\n' "${OUTCOMES_GH_TIMEOUT_SECONDS:-}" "${!#}" >> "$open_snapshot_requests"
+    printf '%s\n' "$OPEN_ISSUES_JSON"
+  elif [[ "$args" == *" issue list "* && "$args" == *" --label awaiting-release "* ]]; then
+    printf '%s\n' "$AWAITING_JSON"
+  elif [[ "$args" == *" api graphql "* && "$args" == *"timelineItems"* ]]; then
+    scale_timeline_graphql_response "$@"
+  elif [[ "$args" == *" api graphql "* && "$args" == *" after="* ]]; then
+    printf '%s\n' "$MERGED_PAGE2_JSON"
+  elif [[ "$args" == *" api graphql "* && "$args" == *"search(query:"* ]]; then
+    printf '%s\n' "$MERGED_PRS_JSON"
+  elif [[ "$args" == *" api graphql "* && "$args" == *"issue(number:"* && "$args" == *"labels(first:100)"* ]]; then
+    local previous="" query="" alias_count query_ids
+    for arg in "$@"; do
+      if [[ "$previous" == -f && "$arg" == query=* ]]; then query="${arg#query=}"; fi
+      previous="$arg"
+    done
+    alias_count="$(grep -oE 'i[0-9]+: issue\(number:[0-9]+\)' <<< "$query" | wc -l | tr -d ' ')"
+    query_ids="$(grep -oE 'i[0-9]+: issue\(number:[0-9]+\)' <<< "$query" | sed -E 's/i([0-9]+): issue\(number:[0-9]+\)/\1/' | paste -sd, -)"
+    printf '%s\n' call >> "$state_label_batch_calls"
+    printf '%s\n' "$alias_count" >> "$state_label_batch_sizes"
+    printf '%s\n' "$query_ids" >> "$state_label_batch_ids"
+    printf '%s\n' "$STATE_LABEL_BATCH_JSON"
+  elif [[ "$args" == *" api graphql "* && "$args" == *"comments(last:100)"* ]]; then
+    outcomes_comments_graphql_response "$@"
+  elif [[ "$args" == *" api graphql "* && "$args" == *"repository(owner:"* ]]; then
+    printf '%s\n' "$ISSUE_LOOKUP_JSON"
+  elif [[ "$args" == *" pr list "* && "$args" == *" --state merged "* ]]; then
+    printf '%s\n' "$MERGED_PRS_JSON"
+  elif [[ "$args" == *" pr list "* ]]; then
+    printf '%s\n' "$OPEN_PRS_JSON"
+  elif [[ "$args" == *" api "* && "$args" == *"/comments?"* ]]; then
+    for arg in "$@"; do [[ "$arg" =~ /issues/([0-9]+)/comments ]] && issue="${BASH_REMATCH[1]}"; done
+    case "$issue" in
+      101) printf '%s\n' "$COMMENTS_101" ;;
+      102) printf '%s\n' "$COMMENTS_102" ;;
+      1548) printf '%s\n' "$COMMENTS_1548" ;;
+      1549) printf '%s\n' "$COMMENTS_1549" ;;
+      1754) printf '%s\n' "$COMMENTS_1754" ;;
+      1755) printf '%s\n' "$COMMENTS_1755" ;;
+      1756) printf '%s\n' "$COMMENTS_1756" ;;
+      9004) printf '%s\n' "$COMMENTS_9004" ;;
+      9013) printf '%s\n' "$COMMENTS_9013" ;;
+      9014) printf '%s\n' "$COMMENTS_9014" ;;
+      9016) printf '%s\n' "$COMMENTS_9016" ;;
+      *) printf '[[]]\n' ;;
+    esac
+  elif [[ "$args" == *" api "* && "$args" == *"/timeline?"* ]]; then
+    for arg in "$@"; do [[ "$arg" =~ /issues/([0-9]+)/timeline ]] && issue="${BASH_REMATCH[1]}"; done
+    printf 'timeline\n' >> "$timeline_rest_calls"
+    if [[ "$SCALE_TIMELINE_FIXTURE" == 1 ]]; then
+      jq -cn --arg issue "$issue" --argjson first "$SCALE_TIMELINE_PAGE1_JSON" \
+        --argjson second "$SCALE_TIMELINE_PAGE2_JSON" '[$first[$issue] // [], $second[$issue] // []]'
+    else
+      case "$issue" in
+        105) printf '%s\n' "$TIMELINE_105" ;;
+        107) printf '%s\n' "$TIMELINE_107" ;;
+        108) printf '%s\n' "$TIMELINE_108" ;;
+        *) printf '[[]]\n' ;;
+      esac
+    fi
+  else
+    echo "unexpected gh_q call: $*" >&2
+    return 2
+  fi
+}
+
+jq -n '{state:"needs-advisor"}' > "$tmp/home/state/42001.json"
+cp "$tmp/home/state/42001.json" "$tmp/state-before.json"
+drift_snapshot='[{"number":42001,"labels":[{"name":"ready-for-agent"}]}]'
+drift_detail="$(outcomes_state_label_drift "$tmp/home" "$drift_snapshot")"
+assert_eq 'state-label-drift=1 (#42001(state=needs-advisor labels=ready-for-agent))' \
+  "$drift_detail" 'state-label reconciler reports a mismatch'
+jq -n '{state:false}' > "$tmp/home/state/42001.json"
+assert_eq 'state-label-drift=0' \
+  "$(outcomes_state_label_drift "$tmp/home" "$drift_snapshot")" \
+  'state-label reconciler keeps false state values skipped'
+jq -n '{state:""}' > "$tmp/home/state/42001.json"
+assert_eq 'state-label-drift=0' \
+  "$(outcomes_state_label_drift "$tmp/home" "$drift_snapshot")" \
+  'state-label reconciler keeps empty state values skipped'
+jq -n '{state:null}' > "$tmp/home/state/42001.json"
+assert_eq 'state-label-drift=0' \
+  "$(outcomes_state_label_drift "$tmp/home" "$drift_snapshot")" \
+  'state-label reconciler keeps null state values skipped'
+jq -n '{}' > "$tmp/home/state/42001.json"
+assert_eq 'state-label-drift=0' \
+  "$(outcomes_state_label_drift "$tmp/home" "$drift_snapshot")" \
+  'state-label reconciler keeps missing state values skipped'
+jq -n '{state:{lane:"needs-advisor"}}' > "$tmp/home/state/42001.json"
+object_state_expected='state-label-drift=1 (#42001(state={"lane":"needs-advisor"} labels=<none>))'
+assert_eq "$object_state_expected" \
+  "$(outcomes_state_label_drift "$tmp/home" '[{"number":42001,"labels":[]}]')" \
+  'state-label reconciler keeps object state JSON'
+jq -n --arg state $'needs-advisor\n' '{state:$state}' > "$tmp/home/state/42001.json"
+assert_eq 'state-label-drift=1 (#42001(state=needs-advisor labels=ready-for-agent))' \
+  "$(outcomes_state_label_drift "$tmp/home" "$drift_snapshot")" \
+  'state-label reconciler keeps command-substitution trailing newline trimming'
+jq -n '{state:0}' > "$tmp/home/state/42001.json"
+assert_eq 'state-label-drift=1 (#42001(state=0 labels=<none>))' \
+  "$(outcomes_state_label_drift "$tmp/home" '[{"number":42001,"labels":[]}]')" \
+  'state-label reconciler keeps jq raw scalar state formatting'
+jq -n --arg state $'line-one\nline-two' '{state:$state}' > "$tmp/home/state/42001.json"
+control_state_expected=$'state-label-drift=1 (#42001(state=line-one\nline-two labels=<none>))'
+assert_eq "$control_state_expected" \
+  "$(outcomes_state_label_drift "$tmp/home" '[{"number":42001,"labels":[]}]')" \
+  'state-label reconciler preserves embedded state newlines'
+printf '{malformed' > "$tmp/home/state/42001.json"
+if outcomes_state_label_drift "$tmp/home" "$drift_snapshot" >/dev/null; then malformed_state_status=0; else malformed_state_status=$?; fi
+assert_eq 1 "$malformed_state_status" 'state-label reconciler keeps malformed state fail-closed'
+jq -n '{state:"needs-advisor"}' > "$tmp/home/state/42001.json"
+jq -cn '{number:42001,labels:[{name:"needs-advisor"}],body:("中文\"引号\"\n" * 11000)}' \
+  > "$tmp/long-state-label-snapshot.json"
+long_issue_snapshot="$(<"$tmp/long-state-label-snapshot.json")"
+long_issue_bytes="$(wc -c < "$tmp/long-state-label-snapshot.json")"
+if ((long_issue_bytes <= 131072)); then
+  echo "not ok - long state-label snapshot must exceed one exec argument limit" >&2
+  exit 1
+fi
+assert_eq 'state-label-drift=0' \
+  "$(outcomes_state_label_drift "$tmp/home" "[$long_issue_snapshot]")" \
+  'state-label reconciler reads long quoted Chinese issue rows through stdin'
+
+scale_jq_bin="$tmp/scale-jq-bin"
+mkdir -p "$scale_jq_bin"
+real_jq="$(command -v jq)"
+cat > "$scale_jq_bin/jq" <<'JQ_SHIM'
+#!/usr/bin/env bash
+printf 'call\n' >> "$OUTCOMES_JQ_LOG"
+exec "$REAL_JQ" "$@"
+JQ_SHIM
+chmod +x "$scale_jq_bin/jq"
+scale_state_dir="$tmp/home/state"
+for ((i=1; i<=300; i++)); do
+  number=$((50000 + i))
+  "$real_jq" -n '{state:"needs-advisor"}' > "$scale_state_dir/$number.json"
+done
+scale_snapshot="$("$real_jq" -cn '[range(1;301) as $i | {number:(50000+$i),labels:[{name:(if $i % 50 == 0 then "ready-for-agent" else "needs-advisor" end)}]}]')"
+scale_jq_log="$tmp/outcomes-scale-jq.log"
+: > "$scale_jq_log"
+scale_drift_ids=()
+scale_drift_detail=''
+scale_drift_started_ns="$(date +%s%N)"
+REAL_JQ="$real_jq" OUTCOMES_JQ_LOG="$scale_jq_log" PATH="$scale_jq_bin:$PATH" \
+  outcomes_state_label_drift "$tmp/home" "$scale_snapshot" scale_drift_ids scale_drift_detail >/dev/null
+scale_drift_elapsed_ms=$((( $(date +%s%N) - scale_drift_started_ns ) / 1000000))
+scale_jq_calls="$(wc -l < "$scale_jq_log")"
+[[ "$scale_drift_detail" == 'state-label-drift=6 ('* && ${#scale_drift_ids[@]} -eq 6 && \
+  "${scale_drift_ids[0]}" == 50050 && "${scale_drift_ids[5]}" == 50300 && $scale_jq_calls -le 6 ]] || {
+  printf 'not ok - 300-row state-label scan fanned out jq calls (ids=%s calls=%s detail=%s)\n' \
+    "${#scale_drift_ids[@]}" "$scale_jq_calls" "$scale_drift_detail" >&2
+  exit 1
+}
+echo "ok - 300 persisted states reconcile in $scale_jq_calls jq calls and ${scale_drift_elapsed_ms}ms"
+captured_drift_ids=()
+captured_drift_detail=''
+outcomes_state_label_drift "$tmp/home" "$drift_snapshot" captured_drift_ids captured_drift_detail >/dev/null
+assert_eq 42001 "${captured_drift_ids[*]}" 'state-label reconciler returns the exact candidate set in-process'
+assert_eq "$drift_detail" "$captured_drift_detail" 'state-label reconciler returns detail in-process'
+assert_drift_checker_preserves_caller_state() {
+  local state='caller-sentinel'
+  local -a scoped_drift_ids=()
+  local scoped_drift_detail=''
+  outcomes_state_label_drift "$1" "$2" scoped_drift_ids scoped_drift_detail >/dev/null
+  assert_eq caller-sentinel "$state" 'direct drift checker does not overwrite caller state'
+  assert_eq 42001 "${scoped_drift_ids[*]}" 'direct drift checker still returns candidates with scoped state'
+  assert_eq "$3" "$scoped_drift_detail" 'direct drift checker still returns detail with scoped state'
+}
+assert_drift_checker_preserves_caller_state "$tmp/home" "$drift_snapshot" "$drift_detail"
+cmp -s "$tmp/state-before.json" "$tmp/home/state/42001.json"
+assert_eq 0 "$?" 'state-label reconciler leaves local state unchanged'
+clean_snapshot='[{"number":42001,"labels":[{"name":"needs-advisor"}]}]'
+assert_eq 'state-label-drift=0' "$(outcomes_state_label_drift "$tmp/home" "$clean_snapshot")" \
+  'state-label reconciler accepts matching state'
+jq -n '{state:"concluded",released:true,run:{outcome:"merged"}}' > "$tmp/home/state/42001.json"
+released_snapshot='[{"number":42001,"labels":[{"name":"concluded"},{"name":"released"}]}]'
+assert_eq 'state-label-drift=0' "$(outcomes_state_label_drift "$tmp/home" "$released_snapshot")" \
+  'state-label reconciler accepts released conclusion labels'
+jq -n '{state:"concluded",run:{outcome:"not-completed"}}' > "$tmp/home/state/42001.json"
+conclusion_progress_snapshot='[{"number":42001,"labels":[{"name":"concluded"},{"name":"in-progress"}]}]'
+assert_eq 'state-label-drift=1 (#42001(state=concluded labels=concluded,in-progress))' \
+  "$(outcomes_state_label_drift "$tmp/home" "$conclusion_progress_snapshot")" \
+  'state-label reconciler catches in-progress after conclusion'
+jq -n '{state:"ready-for-agent"}' > "$tmp/home/state/42001.json"
+active_progress_snapshot='[{"number":42001,"labels":[{"name":"ready-for-agent"},{"name":"in-progress"}]}]'
+assert_eq 'state-label-drift=0' "$(outcomes_state_label_drift "$tmp/home" "$active_progress_snapshot")" \
+  'state-label reconciler accepts active implement marker'
+jq -n '{state:"tracker",tracker_parent:true}' > "$tmp/home/state/42001.json"
+tracker_snapshot='[{"number":42001,"labels":[]}]'
+assert_eq 'state-label-drift=0' "$(outcomes_state_label_drift "$tmp/home" "$tracker_snapshot")" \
+  'state-label reconciler accepts unlabeled tracker parent'
+jq -n '{state:"needs-recut",recut_children:[42002]}' > "$tmp/home/state/42001.json"
+recut_umbrella_snapshot='[{"number":42001,"labels":[]}]'
+assert_eq 'state-label-drift=1 (#42001(state=needs-recut labels=<none>))' \
+  "$(outcomes_state_label_drift "$tmp/home" "$recut_umbrella_snapshot")" \
+  'state-label reconciler catches removed recut label while state remains needs-recut'
+recut_umbrella_labeled_snapshot='[{"number":42001,"labels":[{"name":"needs-recut"}]}]'
+assert_eq 'state-label-drift=1 (#42001(state=needs-recut labels=needs-recut))' \
+  "$(outcomes_state_label_drift "$tmp/home" "$recut_umbrella_labeled_snapshot")" \
+  'state-label reconciler still catches an active label on recut umbrella'
+jq -n '{state:"ready-for-agent",recut_children:[42002]}' > "$tmp/home/state/42001.json"
+active_recut_parent_snapshot='[{"number":42001,"labels":[{"name":"ready-for-agent"}]}]'
+assert_eq 'state-label-drift=0' "$(outcomes_state_label_drift "$tmp/home" "$active_recut_parent_snapshot")" \
+  'state-label reconciler accepts a recut parent routed back to an active lane'
+jq -n '{state:"on-hold",recut_children:[42002],hold:{holder:"operator"}}' > "$tmp/home/state/42001.json"
+held_recut_parent_snapshot='[{"number":42001,"labels":[{"name":"on-hold"}]}]'
+assert_eq 'state-label-drift=0' "$(outcomes_state_label_drift "$tmp/home" "$held_recut_parent_snapshot")" \
+  'state-label reconciler preserves a real hold on a recut parent'
+jq -n '{state:"needs-advisor",needs_info_origin:"advisor"}' > "$tmp/home/state/42001.json"
+advisor_needs_info_snapshot='[{"number":42001,"labels":[{"name":"needs-info"}]}]'
+assert_eq 'state-label-drift=1 (#42001(state=needs-advisor labels=needs-info))' \
+  "$(outcomes_state_label_drift "$tmp/home" "$advisor_needs_info_snapshot")" \
+  'state-label reconciler catches advisor route label without matching state'
+advisor_still_active_snapshot='[{"number":42001,"labels":[{"name":"needs-advisor"}]}]'
+assert_eq 'state-label-drift=0' \
+  "$(outcomes_state_label_drift "$tmp/home" "$advisor_still_active_snapshot")" \
+  'state-label reconciler accepts matching advisor state and label'
+
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 0 "$audit_status" 'valid audit snapshots produce a verdict'
+assert_eq BROKEN "$(jq -r '.verdict' <<< "$audit_result")" 'any outcome drift makes the node BROKEN'
+assert_eq '10|number,labels' "$(head -n 1 "$open_snapshot_requests")" \
+  'open state-label snapshot requests only needed fields with bounded read budget'
+for issue in 101 104 105 107 1549 1755 1756 1757; do
+  grep -Fq "#$issue " <<< "$(jq -r '.detail' <<< "$audit_result")" || {
+    echo "not ok - BROKEN detail names #$issue" >&2
+    exit 1
+  }
+done
+if grep -Fq '#1754 ' <<< "$(jq -r '.detail' <<< "$audit_result")"; then
+  echo 'not ok - reachable issue-linked pipeline commit is valid close evidence (#1754)' >&2
+  exit 1
+fi
+echo 'ok - reachable issue-linked pipeline commit is valid close evidence (#1754)'
+if grep -Fq '#1819 ' <<< "$(jq -r '.detail' <<< "$audit_result")"; then
+  echo 'not ok - NOT_PLANNED pipeline closure remains exempt (#1819)' >&2
+  exit 1
+fi
+echo 'ok - NOT_PLANNED pipeline closure remains exempt (#1819)'
+grep -Fq '#1549 Closed priority issue with maintainer-account bot comment closed priority:top without released label or maintainer ruling comment' <<< "$(jq -r '.detail' <<< "$audit_result")"
+echo 'ok - owner-authored triage comment does not count as a maintainer ruling (#1549)'
+for issue in 102 103 106 108 109 110 111 112 1548; do
+  if grep -Fq "#$issue " <<< "$(jq -r '.detail' <<< "$audit_result")"; then
+    echo "not ok - valid outcome #$issue is not reported" >&2
+    exit 1
+  fi
+done
+echo 'ok - maintainer ruling, release, wontfix, duplicate, wait boundary, and non-commit close are exempt'
+
+# 2026-10-08: the open-issue snapshot passed 128 KiB and `jq --argjson` failed exec with E2BIG,
+# leaving the outcomes node unreadable for 7 hours. Snapshots must reach jq through stdin.
+OPEN_ISSUES_JSON="$(jq -cn '[range(900000; 900900) | {number:., title:("large open snapshot row " * 8), state:"OPEN", labels:[{name:"ready-for-agent"}]}]')"
+[ "${#OPEN_ISSUES_JSON}" -gt 131072 ] || { echo 'not ok - large snapshot fixture exceeds one argv string limit' >&2; exit 1; }
+if large_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then large_status=0; else large_status=$?; fi
+assert_eq 0 "$large_status" 'an open snapshot over 128 KiB still produces a verdict'
+assert_eq BROKEN "$(jq -r '.verdict' <<< "$large_result")" 'large snapshot audit keeps the same verdict'
+OPEN_ISSUES_JSON='[]'
+
+CLOSED_JSON="$(jq -cn --arg closed "$recent_close" ' [
+  {number:103,title:"Top issue released",closedAt:$closed,labels:[{name:"priority:top"},{name:"released"}]},
+  {number:1754,title:"Pipeline close with reachable issue commit",closedAt:$closed,labels:[{name:"priority:top"},{name:"pipeline-system"}]}
+]')"
+AWAITING_JSON='[{"number":110,"title":"Recorded merge","state":"OPEN","labels":[{"name":"awaiting-release"}]}]'
+OPEN_PRS_JSON='[]'
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 0 "$audit_status" 'clean audit snapshots produce a verdict'
+assert_eq OK "$(jq -r '.verdict' <<< "$audit_result")" 'clean transitions make the node OK'
+grep -Fq 'state-label-drift=0' <<<"$(jq -r '.detail' <<<"$audit_result")"
+echo 'ok - reachable pipeline-system commit gives clean outcomes audit'
+
+jq -n '{state:"needs-advisor"}' > "$tmp/home/state/42002.json"
+jq -n '{state:"needs-advisor"}' > "$tmp/home/state/42005.json"
+jq -n '{state:"ready-for-agent"}' > "$tmp/home/state/42006.json"
+OPEN_ISSUES_JSON='[{"number":42005,"title":"First mismatch","state":"OPEN","labels":[{"name":"ready-for-agent"}]},{"number":42006,"title":"Matching row","state":"OPEN","labels":[{"name":"ready-for-agent"}]},{"number":42002,"title":"Second mismatch","state":"OPEN","labels":[{"name":"ready-for-agent"}]},{"number":42005,"title":"Duplicate first mismatch","state":"OPEN","labels":[{"name":"ready-for-agent"}]}]'
+STATE_LABEL_BATCH_JSON='{"data":{"repository":{"i42005":{"number":42005,"state":"OPEN","labels":{"nodes":[{"name":"ready-for-agent"}],"pageInfo":{"hasNextPage":false}}},"i42002":{"number":42002,"state":"OPEN","labels":{"nodes":[{"name":"ready-for-agent"}],"pageInfo":{"hasNextPage":false}}}}}}'
+: > "$state_label_batch_calls"
+: > "$state_label_batch_sizes"
+: > "$state_label_batch_ids"
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 0 "$audit_status" 'state-label drift still produces an audit verdict'
+assert_eq BROKEN "$(jq -r '.verdict' <<< "$audit_result")" 'HEALTH reports state-label drift as BROKEN'
+grep -Fq 'state-label-drift=2 (#42002(state=needs-advisor labels=ready-for-agent),#42005(state=needs-advisor labels=ready-for-agent))' <<<"$(jq -r '.detail' <<<"$audit_result")"
+assert_eq 1 "$(wc -l < "$state_label_batch_calls" | tr -d ' ')" 'one current status-label batch is read for drift'
+assert_eq 2 "$(head -n 1 "$state_label_batch_sizes")" 'only local mismatches enter the refresh query'
+assert_eq '42005,42002' "$(head -n 1 "$state_label_batch_ids")" 'production handoff preserves first-drift order and de-duplicates issue rows'
+
+empty_candidate_ids=()
+empty_refresh_input='[{"number":42002,"title":"State label drift","state":"OPEN","labels":[{"name":"ready-for-agent"}]}]'
+: > "$state_label_batch_calls"
+empty_refresh_result="$(outcomes_refresh_state_label_drift test/repo "$tmp/home" "$empty_refresh_input" empty_candidate_ids)"
+assert_eq "$empty_refresh_input" "$empty_refresh_result" 'a provided empty candidate set is a complete no-op'
+assert_eq 0 "$(wc -l < "$state_label_batch_calls" | tr -d ' ')" 'an empty candidate set makes no GitHub request'
+
+# Candidate reuse must retain the standalone helper's full-snapshot ID guard.
+invalid_candidate_ids=(42002)
+invalid_refresh_input='[{"number":42002,"title":"Selected mismatch","state":"OPEN","labels":[{"name":"ready-for-agent"}]},{"number":0,"title":"Invalid noncandidate","state":"OPEN","labels":[]},{"number":42002.5,"title":"Invalid fractional row","state":"OPEN","labels":[]}]'
+: > "$state_label_batch_calls"
+if invalid_refresh_result="$(outcomes_refresh_state_label_drift test/repo "$tmp/home" "$invalid_refresh_input" invalid_candidate_ids)"; then
+  invalid_refresh_status=0
+else
+  invalid_refresh_status=$?
+fi
+assert_eq 1 "$invalid_refresh_status" 'candidate reuse rejects invalid IDs in noncandidate rows'
+assert_eq 0 "$(wc -l < "$state_label_batch_calls" | tr -d ' ')" 'invalid noncandidate IDs fail before any refresh query'
+
+string_number_refresh_input='[{"number":"42002","title":"Numeric string row","state":"OPEN","labels":[]}]'
+: > "$state_label_batch_calls"
+if string_number_refresh_result="$(outcomes_refresh_state_label_drift test/repo "$tmp/home" "$string_number_refresh_input" empty_candidate_ids)"; then
+  string_number_refresh_status=0
+else
+  string_number_refresh_status=$?
+fi
+assert_eq 1 "$string_number_refresh_status" 'empty candidate set still rejects nonnumeric issue number types'
+assert_eq 0 "$(wc -l < "$state_label_batch_calls" | tr -d ' ')" 'nonnumeric issue number fails before any refresh query'
+
+# Callers without an initial candidate set keep the standalone full-scan path.
+STATE_LABEL_BATCH_JSON='{"data":{"repository":{"i42002":{"number":42002,"state":"OPEN","labels":{"nodes":[{"name":"ready-for-agent"}],"pageInfo":{"hasNextPage":false}}}}}}'
+: > "$state_label_batch_calls"
+: > "$state_label_batch_ids"
+fallback_refresh_result="$(outcomes_refresh_state_label_drift test/repo "$tmp/home" "$empty_refresh_input")"
+assert_eq 1 "$(wc -l < "$state_label_batch_calls" | tr -d ' ')" 'standalone refresh still detects and reads local drift'
+assert_eq 42002 "$(head -n 1 "$state_label_batch_ids")" 'standalone refresh keeps the detected issue id'
+assert_eq "$empty_refresh_input" "$fallback_refresh_result" 'standalone refresh preserves its JSON stdout contract'
+
+# A failed first scan with a partial candidate list must not refresh that partial list.
+CLOSED_JSON='[]'
+AWAITING_JSON='[]'
+OPEN_PRS_JSON='[]'
+jq -n '{state:"needs-advisor"}' > "$tmp/home/state/42131.json"
+printf '{' > "$tmp/home/state/42132.json"
+OPEN_ISSUES_JSON='[{"number":42131,"title":"Readable mismatch","state":"OPEN","labels":[{"name":"ready-for-agent"}]},{"number":42132,"title":"Unreadable persisted state","state":"OPEN","labels":[{"name":"ready-for-agent"}]}]'
+: > "$state_label_batch_calls"
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 2 "$audit_status" 'an unreadable row fails the initial drift scan'
+assert_eq UNKNOWN "$(jq -r '.verdict' <<< "$audit_result")" 'partial initial drift evidence cannot produce an audit verdict'
+assert_eq 0 "$(wc -l < "$state_label_batch_calls" | tr -d ' ')" 'a failed initial scan cannot refresh a partial candidate set'
+OPEN_ISSUES_JSON='[]'
+
+jq -n '{state:"concluded",released:true,run:{outcome:"deployed"}}' > "$tmp/home/state/42004.json"
+CLOSED_JSON='[]'
+AWAITING_JSON='[]'
+OPEN_PRS_JSON='[]'
+OPEN_ISSUES_JSON='[{"number":42004,"title":"Release just completed","state":"OPEN","labels":[{"name":"awaiting-release"}]}]'
+ISSUE_VIEW_OVERRIDES='{"42004":{"number":42004,"title":"Release just completed","state":"OPEN","labels":[{"name":"concluded"},{"name":"released"}]}}'
+STATE_LABEL_BATCH_JSON='{"data":{"repository":{"i42004":{"number":42004,"state":"OPEN","labels":{"nodes":[{"name":"concluded"},{"name":"released"}],"pageInfo":{"hasNextPage":false}}}}}}'
+printf '0\n' > "$issue_view_reads"
+: > "$state_label_batch_calls"
+: > "$state_label_batch_sizes"
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 0 "$audit_status" 'a batched current issue read resolves a stale list snapshot'
+assert_eq OK "$(jq -r '.verdict' <<< "$audit_result")" 'stale list labels do not leave outcomes BROKEN'
+assert_eq 0 "$(cat "$issue_view_reads")" 'state-label drift avoids serial issue-view reads'
+assert_eq 1 "$(wc -l < "$state_label_batch_calls" | tr -d ' ')" 'one current status-label batch resolves a stale snapshot'
+assert_eq 1 "$(head -n 1 "$state_label_batch_sizes")" 'single mismatch is one query alias'
+STATE_LABEL_BATCH_JSON='{"data":{"repository":{"i42004":{"number":42004,"state":"OPEN","labels":{"nodes":[{"name":"awaiting-release"}],"pageInfo":{"hasNextPage":false}}}}}}'
+printf '0\n' > "$issue_view_reads"
+: > "$state_label_batch_calls"
+: > "$state_label_batch_sizes"
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq BROKEN "$(jq -r '.verdict' <<< "$audit_result")" 'a confirmed state-label mismatch remains BROKEN'
+grep -Fq 'state-label-drift=1 (#42004(state=concluded labels=awaiting-release))' <<<"$(jq -r '.detail' <<<"$audit_result")"
+assert_eq 0 "$(cat "$issue_view_reads")" 'persistent drift does not fall back to issue-view fanout'
+assert_eq 1 "$(wc -l < "$state_label_batch_calls" | tr -d ' ')" 'persistent drift is checked with one current status-label batch'
+OPEN_ISSUES_JSON='[]'
+ISSUE_VIEW_OVERRIDES='{}'
+
+# A 16-row drift burst must fit in one fresh read; a closed issue is dropped and
+# every still-open row is reconciled from the same validated response.
+drift_batch_ids="$(jq -cn '[range(42100;42116)]')"
+OPEN_ISSUES_JSON="$(jq -cn --argjson ids "$drift_batch_ids" '[ $ids[] | {number:.,title:("Drift " + tostring),state:"OPEN",labels:[{name:"ready-for-agent"}]} ]')"
+for issue in $(seq 42100 42115); do
+  jq -n '{state:"needs-advisor"}' > "$tmp/home/state/$issue.json"
+done
+STATE_LABEL_BATCH_JSON="$(jq -cn --argjson ids "$drift_batch_ids" '{data:{repository:(reduce $ids[] as $id ({}; .["i"+($id|tostring)]={number:$id,state:(if $id == 42115 then "CLOSED" else "OPEN" end),labels:{nodes:(if $id == 42115 then [] else [{name:"needs-advisor"}] end),pageInfo:{hasNextPage:false}}}))}}')"
+: > "$state_label_batch_calls"
+: > "$state_label_batch_sizes"
+printf '0\n' > "$issue_view_reads"
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 0 "$audit_status" '16 mismatches resolve in a bounded current read'
+assert_eq OK "$(jq -r '.verdict' <<< "$audit_result")" 'batched open rows match and a newly closed row is removed'
+assert_eq 1 "$(wc -l < "$state_label_batch_calls" | tr -d ' ')" '16 mismatches are grouped into one GitHub request'
+assert_eq 16 "$(head -n 1 "$state_label_batch_sizes")" 'the burst request contains all 16 expected aliases'
+assert_eq 0 "$(cat "$issue_view_reads")" 'the burst does not fan out to issue-view requests'
+OPEN_ISSUES_JSON='[]'
+
+# Incomplete or uncertain batch responses must keep the audit UNKNOWN and may
+# not fall back to the stale issue-list rows.
+jq -n '{state:"needs-advisor"}' > "$tmp/home/state/42130.json"
+OPEN_ISSUES_JSON='[{"number":42130,"title":"Missing batch row","state":"OPEN","labels":[{"name":"ready-for-agent"}]}]'
+: > "$state_label_batch_calls"
+: > "$state_label_batch_sizes"
+printf '0\n' > "$issue_view_reads"
+STATE_LABEL_BATCH_JSON='{"data":{"repository":{"i42130":{"number":"42130","state":"OPEN","labels":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}'
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 2 "$audit_status" 'malformed label-batch rows fail closed'
+assert_eq UNKNOWN "$(jq -r '.verdict' <<< "$audit_result")" 'malformed label-batch rows cannot produce a verdict'
+assert_eq 0 "$(cat "$issue_view_reads")" 'malformed label-batch rows do not fall back to issue-view fanout'
+STATE_LABEL_BATCH_JSON='{"data":{"repository":{}}}'
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 2 "$audit_status" 'missing label-batch aliases fail closed'
+assert_eq UNKNOWN "$(jq -r '.verdict' <<< "$audit_result")" 'missing label-batch aliases cannot produce a verdict'
+STATE_LABEL_BATCH_JSON='{"data":{"repository":{"i42130":{"number":42130,"state":"OPEN","labels":{"nodes":[{"name":"needs-advisor"}],"pageInfo":{"hasNextPage":true}}}}}}'
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 2 "$audit_status" 'incomplete label pagination fails closed'
+assert_eq UNKNOWN "$(jq -r '.verdict' <<< "$audit_result")" 'incomplete label pagination cannot produce a verdict'
+assert_eq 0 "$(cat "$issue_view_reads")" 'incomplete batch never falls back to stale list labels'
+OPEN_ISSUES_JSON='[]'
+
+jq -n '{state:"on-hold"}' > "$tmp/home/state/42003.json"
+CLOSED_JSON="$(jq -cn --arg closed "$recent_close" '[{number:42003,title:"Closed held issue",closedAt:$closed,labels:[]}]')"
+AWAITING_JSON='[]'
+(
+  jq '.hold={kind:"supervisor-inbox",reason:"protected decision"}' "$tmp/home/state/42003.json" > "$tmp/held-observation.json"
+  mv "$tmp/held-observation.json" "$tmp/home/state/42003.json"
+  cp -a "$tmp/home/state" "$tmp/before-outcomes-observation"
+  forbidden="$tmp/forbidden-observation-mutations"
+  issue_reconcile_closed_state() { echo closed >> "$forbidden"; return 99; }
+  conclude_merged_run() { echo merged >> "$forbidden"; return 99; }
+  guarded_write() { echo gh-write >> "$forbidden"; return 99; }
+  gh() { echo raw-gh >> "$forbidden"; return 99; }
+  if observation="$(audit_test test/repo "$tmp/home" "$NOW" observe)"; then status=0; else status=$?; fi
+  assert_eq 0 "$status" 'observational producer still executes the full outcomes audit'
+  assert_eq BROKEN "$(jq -r .verdict <<< "$observation")" 'closed local drift is reported instead of silently repaired'
+  grep -Fq 'pending=1 issues=#42003 held=1' <<< "$observation"
+  diff -r "$tmp/before-outcomes-observation" "$tmp/home/state"
+  test ! -e "$forbidden"
+  if observation="$(GH_FAIL='--state closed' audit_test test/repo "$tmp/home" "$NOW" observe)"; then status=0; else status=$?; fi
+  assert_eq 2 "$status" 'observational read failure keeps UNKNOWN status'
+  assert_eq UNKNOWN "$(jq -r .verdict <<< "$observation")" 'observation never converts an unreadable closed snapshot to empty'
+  test ! -e "$forbidden"
+  diff -r "$tmp/before-outcomes-observation" "$tmp/home/state"
+)
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 0 "$audit_status" 'recent closed issue skips active state-label audit'
+assert_eq OK "$(jq -r '.verdict' <<< "$audit_result")" 'recent close outcome checks remain clean without an active stage'
+CLOSED_JSON='[]'
+
+merge_old="$(iso_at "$((NOW - 3700))")"
+merge_candidate="$(iso_at "$((NOW - 3600))")"
+merge_later="$(iso_at "$((NOW - 3500))")"
+MERGED_PRS_JSON="$(jq -cn \
+  --arg old "$merge_old" --arg candidate "$merge_candidate" --arg later "$merge_later" '[
+    {number:1902,title:"feat: roster issue",headRefName:"hand/hand-9002",body:"",mergedAt:$old,baseRefName:"main"},
+    {number:1901,title:"fix(#9001): implement",headRefName:"agent/issue-9001",body:"Implements issue 9001.\nContext mentions #1130 and #1494",mergedAt:$candidate,baseRefName:"main"},
+    {number:1903,title:"fix(#9003): conflict",headRefName:"agent/issue-9003",body:"Refs #9999",mergedAt:$later,baseRefName:"main"},
+    {number:1904,title:"fix: test helper",headRefName:"hand/no-roster-row",body:"Refs #9004",mergedAt:$later,baseRefName:"main"},
+    {number:1905,title:"another helper",headRefName:"hand/no-roster-row-2",body:"Refs #9004",mergedAt:$later,baseRefName:"main"},
+    {number:1906,title:"fix(#9006): implementation",headRefName:"agent/issue-9006",body:"Refs #9006",mergedAt:$later,baseRefName:"main"},
+    {number:1907,title:"revert: undo implementation",headRefName:"revert/1906",body:"Refs #9006",mergedAt:$later,baseRefName:"main"},
+    {number:1908,title:"test: mentions #1130",headRefName:"hand/unrostered",body:"This PR only mentions #1130 and #1494 in prose.",mergedAt:$later,baseRefName:"main"},
+    {number:1909,title:"test(issue coverage)",headRefName:"hand/no-roster-row-3",body:"Refs #9007",mergedAt:$later,baseRefName:"main"},
+    {number:1910,title:"implementation notes",headRefName:"hand/no-roster-row-4",body:"Refs #9008 and #9009",mergedAt:$later,baseRefName:"main"},
+    {number:1917,title:"fix: alternate implementation",headRefName:"hand/alternate",body:"Refs #9003, #9999",mergedAt:$later,baseRefName:"main"},
+    {number:1911,title:"reference to a pull request",headRefName:"hand/no-roster-row-5",body:"Refs #9010",mergedAt:$later,baseRefName:"main"},
+    {number:1912,title:"fix(#1754): pipeline closure evidence",headRefName:"agent/issue-1754",body:"Implements issue #1754",mergedAt:$later,baseRefName:"main"}
+  ] as $nodes | {data:{
+    recent:{nodes:[$nodes[] | del(.body)],pageInfo:{hasNextPage:false}},
+    boundary:{nodes:[],pageInfo:{hasNextPage:false}},
+    refs:{nodes:[$nodes[] | select((.body // "") | test("Refs #[0-9]+";"i"))],pageInfo:{hasNextPage:false}},
+    implements:{nodes:[$nodes[] | select((.body // "") | test("Implements issue [0-9]+";"i"))],pageInfo:{hasNextPage:false}},
+    titles:{nodes:[$nodes[] | select((.title // "") | test("\\bissue\\b";"i"))],pageInfo:{hasNextPage:false}}
+  }}')"
+OPEN_ISSUES_JSON="$(jq -cn --arg closed "$recent_close" '[
+  {"number":9001,"title":"Concluded issue","state":"OPEN","labels":[{"name":"concluded"}]},
+  {"number":9002,"title":"Already awaiting","state":"OPEN","labels":[{"name":"awaiting-release"}]},
+  {"number":9003,"title":"Conflicting signals","state":"OPEN","labels":[]},
+  {"number":9999,"title":"Conflicting target","state":"OPEN","labels":[]},
+  {"number":9004,"title":"Multiple PRs","state":"OPEN","labels":[]},
+  {"number":9006,"title":"Reverted PR","state":"OPEN","labels":[]},
+  {"number":9007,"title":"Test-only PR","state":"OPEN","labels":[]},
+  {"number":9008,"title":"Two body references","state":"OPEN","labels":[]},
+  {"number":9009,"title":"Two body references","state":"OPEN","labels":[]},
+  {"number":9010,"title":"This number is a pull request","state":"OPEN","labels":[]},
+  {"number":1754,"title":"Closed pipeline-system issue","state":"CLOSED","closedAt":$closed,"stateReason":"COMPLETED","labels":[{"name":"pipeline-system"}]},
+  {"number":1130,"title":"Mention only","state":"OPEN","labels":[]},
+  {"number":1494,"title":"Mention only","state":"OPEN","labels":[]}
+]')"
+ISSUE_LOOKUP_JSON="$(jq -cn --argjson issues "$OPEN_ISSUES_JSON" '{
+  data:{repository:(reduce $issues[] as $i ({}; .["i"+($i.number|tostring)]={
+    __typename:(if $i.number == 9010 then "PullRequest" else "Issue" end),number:$i.number,state:$i.state,
+    closedAt:($i.closedAt // null),stateReason:($i.stateReason // null),labels:{nodes:$i.labels,pageInfo:{hasNextPage:false}}
+  }))}
+}')"
+mkdir -p "$tmp/home/night"
+printf '1\thand-9002\t%s\t%s\t/tmp/hand-9002\tbrief\treport\tlog\t0\t1\twork\t1\t9002\n' "$MODEL_POLICY_TEST_WORK_MODEL" "$MODEL_POLICY_TEST_WORK_EFFORT" >"$tmp/home/night/agents.txt"
+jq -n '{state:"awaiting-release",run:{outcome:"merged",evidence:{pr_number:"1902"}}}' >"$tmp/home/state/9002.json"
+COMMENTS_9004='[[{"user":{"login":"intruder"},"body":"<!-- zf-merged-outcome issue=9004 pr=1904 -->"}]]'
+(
+  cp -a "$tmp/home/state" "$tmp/before-merged-observation"
+  observation="$(audit_test test/repo "$tmp/home" "$NOW" observe)"
+  assert_eq BROKEN "$(jq -r .verdict <<< "$observation")" 'merged lifecycle candidates and ambiguities remain visible in observation'
+  grep -Fq 'merged-PR lifecycle reconciliation pending' <<< "$observation"
+  grep -Fq 'match issue=#9001 pr=#1901' <<< "$observation"
+  test ! -s "$conclude_calls"
+  diff -r "$tmp/before-merged-observation" "$tmp/home/state"
+)
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 0 "$audit_status" 'merged PR reconciliation completes'
+assert_eq OK "$(jq -r '.verdict' <<< "$audit_result")" 'valid closed pipeline issue does not make outcomes BROKEN'
+grep -Fq 'invalid-closures=0' <<<"$(jq -r '.detail' <<<"$audit_result")"
+assert_eq $'9001\t1901' "$(cat "$conclude_calls")" 'strong signals reconcile through conclude_merged_run once'
+for issue in 9003 9999 9004; do
+  grep -Fq "merged-pr-association-ambiguous issue=#$issue" "$tmp/home/supervisor-inbox" || {
+    echo "not ok - ambiguous issue #$issue is reported" >&2
+    exit 1
+  }
+done
+for issue in 9002 9010 1130 1494 1754; do
+  if grep -Fq "#$issue" "$conclude_calls" "$tmp/home/supervisor-inbox" 2>/dev/null; then
+    echo "not ok - terminal or prose-only issue #$issue is not acted on" >&2
+    exit 1
+  fi
+done
+echo 'ok - roster, competing implementations, reference-only PRs, and passing mentions'
+
+mkdir -p "$tmp/dry-home/night"
+cp "$tmp/home/night/agents.txt" "$tmp/dry-home/night/agents.txt"
+if dry_result="$(SECONDS=0 OUTCOMES_RECONCILE_DRY_RUN=1 outcomes_reconcile_merged_issues test/repo "$tmp/dry-home" "$NOW")"; then
+  dry_status=0
+else
+  dry_status=$?
+fi
+assert_eq 0 "$dry_status" 'merged PR preview completes'
+grep -Fq 'match issue=#9001 pr=#1901' <<<"$dry_result"
+grep -Fq 'match issue=#9008 pr=#1910' <<<"$dry_result"
+grep -Fq 'match issue=#9009 pr=#1910' <<<"$dry_result"
+grep -Fq 'match issue=#9006 pr=#1906' <<<"$dry_result"
+[[ "$dry_result" != *'issue=#9007'* ]]
+grep -Fq 'ambiguous issue=#9004' <<<"$dry_result"
+assert_eq 1 "$(wc -l <"$conclude_calls" | tr -d ' ')" 'preview does not transition issues'
+[[ ! -e "$tmp/dry-home/supervisor-inbox" ]]
+echo 'ok - preview lists matches and ambiguity without writes'
+
+# Stale awaiting-release recovery: ticket-local merge markers disambiguate
+# test or multi-reference PRs; strong hand branch/body references survive the
+# bounded fourteen-day search window.
+stale_merge="$(iso_at "$((NOW - 691200))")"
+marker_merge="$(iso_at "$((NOW - 3600))")"
+merged_prs_before_recovery="$MERGED_PRS_JSON"
+MERGED_PRS_JSON="$(jq -cn --arg stale "$stale_merge" --arg marker "$marker_merge" '[
+  {number:1913,title:"test: recovery fixture",headRefName:"hand/marker-only",body:"Refs #9013",mergedAt:$marker,baseRefName:"main"},
+  {number:1914,title:"fix: recovery fixture",headRefName:"hand/9014-recovery",body:"",mergedAt:$stale,baseRefName:"main"},
+  {number:1915,title:"feat(#9015): recovery fixture",headRefName:"hand/9015",body:"Refs #9015",mergedAt:$stale,baseRefName:"main"},
+  {number:1916,title:"test: untrusted marker",headRefName:"hand/untrusted-marker",body:"Refs #9016",mergedAt:$marker,baseRefName:"main"}
+] as $nodes | {data:{
+  recent:{nodes:[$nodes[] | select(.number == 1913 or .number == 1916) | del(.body)],pageInfo:{hasNextPage:false}},
+  boundary:{nodes:[$nodes[] | select(.number != 1913 and .number != 1916) | del(.body)],pageInfo:{hasNextPage:false}},
+  refs:{nodes:[$nodes[] | select((.body // "") | test("Refs #[0-9]+";"i"))],pageInfo:{hasNextPage:false}},
+  implements:{nodes:[],pageInfo:{hasNextPage:false}},
+  titles:{nodes:[$nodes[] | select((.title // "") | test("\\bissue\\b";"i"))],pageInfo:{hasNextPage:false}}
+}}')"
+OPEN_ISSUES_JSON='[
+  {"number":9013,"title":"Marker-backed test PR","state":"OPEN","labels":[{"name":"awaiting-release"}]},
+  {"number":9014,"title":"Old hand branch PR","state":"OPEN","labels":[{"name":"awaiting-release"}]},
+  {"number":9015,"title":"Old explicit reference PR","state":"OPEN","labels":[{"name":"awaiting-release"}]},
+  {"number":9016,"title":"Wrong author marker","state":"OPEN","labels":[{"name":"awaiting-release"}]}
+]'
+ISSUE_LOOKUP_JSON="$(jq -cn --argjson issues "$OPEN_ISSUES_JSON" '{
+  data:{repository:(reduce $issues[] as $i ({}; .["i"+($i.number|tostring)]={
+    __typename:"Issue",number:$i.number,state:$i.state,
+    labels:{nodes:$i.labels,pageInfo:{hasNextPage:false}}
+  }))}
+}')"
+COMMENTS_9013='[[{"user":{"login":"test"},"body":"<!-- zf-merged-outcome issue=9013 pr=1913 -->"}]]'
+COMMENTS_9016='[[{"user":{"login":"intruder"},"body":"<!-- zf-merged-outcome issue=9016 pr=1916 -->"}]]'
+mkdir -p "$tmp/recovery-home/night"
+if recovery_preview="$(SECONDS=0 OUTCOMES_RECONCILE_DRY_RUN=1 outcomes_reconcile_merged_issues test/repo "$tmp/recovery-home" "$NOW")"; then
+  recovery_status=0
+else
+  recovery_status=$?
+fi
+assert_eq 0 "$recovery_status" 'stale awaiting-release recovery preview completes'
+for expected in 'match issue=#9013 pr=#1913' 'match issue=#9014 pr=#1914' 'match issue=#9015 pr=#1915'; do
+  grep -Fq "$expected" <<<"$recovery_preview" || {
+    echo "not ok - stale merge recovery preview includes $expected" >&2
+    exit 1
+  }
+done
+[[ "$recovery_preview" != *'issue=#9016'* ]]
+[[ ! -e "$tmp/recovery-home/supervisor-inbox" ]]
+MERGED_PRS_JSON="$merged_prs_before_recovery"
+echo 'ok - stale awaiting-release recovery uses exact marker and strong hand references'
+
+OPEN_ISSUES_JSON='[
+  {"number":9001,"title":"Concluded issue","state":"OPEN","labels":[{"name":"awaiting-release"}]},
+  {"number":9002,"title":"Already awaiting","state":"OPEN","labels":[{"name":"awaiting-release"}]},
+  {"number":9003,"title":"Conflicting signals","state":"OPEN","labels":[]},
+  {"number":9999,"title":"Conflicting target","state":"OPEN","labels":[]},
+  {"number":9004,"title":"Multiple PRs","state":"OPEN","labels":[]},
+  {"number":9006,"title":"Reverted PR","state":"OPEN","labels":[{"name":"awaiting-release"}]},
+  {"number":9007,"title":"Test-only PR","state":"OPEN","labels":[]},
+  {"number":9008,"title":"Two body references","state":"OPEN","labels":[{"name":"awaiting-release"}]},
+  {"number":9009,"title":"Two body references","state":"OPEN","labels":[{"name":"awaiting-release"}]},
+  {"number":1130,"title":"Mention only","state":"OPEN","labels":[]},
+  {"number":1494,"title":"Mention only","state":"OPEN","labels":[]}
+]'
+ISSUE_LOOKUP_JSON="$(jq -cn --argjson issues "$OPEN_ISSUES_JSON" '{
+  data:{repository:(reduce $issues[] as $i ({}; .["i"+($i.number|tostring)]={
+    __typename:(if $i.number == 9010 then "PullRequest" else "Issue" end),number:$i.number,state:$i.state,labels:{nodes:$i.labels,pageInfo:{hasNextPage:false}}
+  }))}
+}')"
+for pair in '9006 1906' '9008 1910' '9009 1910'; do
+  read -r recorded_issue recorded_pr <<< "$pair"
+  printf '{"state":"awaiting-release","run":{"outcome":"merged","evidence":{"pr_number":"%s"}}}\n' "$recorded_pr" > "$tmp/home/state/$recorded_issue.json"
+done
+rm -f "$tmp/home/state/9002.json"
+jq -n '{state:"awaiting-release",run:{outcome:"merged",evidence:{pr_number:"1901"}}}' >"$tmp/home/state/9001.json"
+if dry_result="$(SECONDS=0 OUTCOMES_RECONCILE_DRY_RUN=1 outcomes_reconcile_merged_issues test/repo "$tmp/home" "$NOW")"; then
+  dry_status=0
+else
+  dry_status=$?
+fi
+assert_eq 0 "$dry_status" 'awaiting-release repair preview completes'
+grep -Fq 'match issue=#9002 pr=#1902' <<<"$dry_result"
+assert_eq 1 "$(wc -l <"$conclude_calls" | tr -d ' ')" 'repair preview does not transition a missing-evidence issue'
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 0 "$audit_status" 'reconciliation repairs only awaiting-release issues missing evidence'
+assert_eq $'9001\t1901\n9002\t1902' "$(cat "$conclude_calls")" 'missing evidence on an awaiting-release issue is repaired through its unique merged PR'
+jq -n '{state:"awaiting-release",run:{outcome:"merged",evidence:{pr_number:"1902"}}}' >"$tmp/home/state/9002.json"
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 0 "$audit_status" 'reconciled awaiting-release state remains readable'
+assert_eq $'9001\t1901\n9002\t1902' "$(cat "$conclude_calls")" 'valid merged evidence makes awaiting-release reconciliation idempotent'
+for issue in 9003 9999 9004; do
+  assert_eq 1 "$(grep -Fc "merged-pr-association-ambiguous issue=#$issue" "$tmp/home/supervisor-inbox")" \
+    "ambiguity for #$issue is reported once"
+done
+# The supervisor clears supervisor-inbox after handling it; the same ambiguity
+# must not be re-reported every tick (2026-09-25, #1702/#1814 vs PR #1835).
+: > "$tmp/home/supervisor-inbox"
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 0 "$(grep -c 'merged-pr-association-ambiguous' "$tmp/home/supervisor-inbox")" \
+  'handled ambiguity is not re-reported after the inbox is cleared'
+assert_eq $'9001\t1901\n9002\t1902' "$(cat "$conclude_calls")" 'handled ambiguities do not repeat merge reconciliation'
+
+GH_FAIL='pr list'
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 2 "$audit_status" 'unreadable PR snapshot fails closed'
+assert_eq UNKNOWN "$(jq -r '.verdict' <<< "$audit_result")" 'unreadable audit does not report a false BROKEN'
+
+GH_FAIL='api graphql'
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 2 "$audit_status" 'unreadable reconciliation evidence fails closed'
+assert_eq UNKNOWN "$(jq -r '.verdict' <<< "$audit_result")" 'unreadable reconciliation is not reported as clean'
+assert_eq 2 "$(wc -l <"$conclude_calls" | tr -d ' ')" 'unreadable evidence never transitions another issue'
+
+GH_FAIL=""
+CLOSED_JSON='[]'
+AWAITING_JSON='[]'
+OPEN_PRS_JSON='[]'
+MERGED_PRS_JSON="$(jq -cn --arg at "$recent_event" '[{
+  number:1999,title:"fix(#1755): stale pipeline close",headRefName:"agent/issue-1755",
+  body:"Implements issue #1755",mergedAt:$at,baseRefName:"main"
+}] as $nodes | {data:{
+  recent:{nodes:[$nodes[] | del(.body)],pageInfo:{hasNextPage:false}},
+  boundary:{nodes:[],pageInfo:{hasNextPage:false}},
+  refs:{nodes:$nodes,pageInfo:{hasNextPage:false}},
+  implements:{nodes:$nodes,pageInfo:{hasNextPage:false}},
+  titles:{nodes:[],pageInfo:{hasNextPage:false}}
+}}')"
+ISSUE_LOOKUP_JSON="$(jq -cn --arg closed "$recent_close" '{data:{repository:{i1755:{
+  __typename:"Issue",number:1755,state:"CLOSED",closedAt:$closed,stateReason:"COMPLETED",
+  labels:{nodes:[{name:"pipeline-system"}],pageInfo:{hasNextPage:false}}
+}}}}')"
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 0 "$audit_status" 'merged-PR closure evidence check completes'
+assert_eq BROKEN "$(jq -r '.verdict' <<< "$audit_result")" 'merged-PR reconciliation rejects unreachable pipeline close evidence'
+grep -Fq 'merged-pr reconciliation found 1 closed issue(s) without valid closure evidence' <<<"$(jq -r '.detail' <<<"$audit_result")"
+grep -Fq 'invalid-closure-issues=#1755' <<<"$(jq -r '.detail' <<<"$audit_result")"
+assert_eq 2 "$(wc -l <"$conclude_calls" | tr -d ' ')" 'invalid closed issue is never transitioned as a new merge'
+echo 'ok - merged-PR reconciliation rejects closed pipeline issues without shared evidence'
+
+# 2026-10-05: more than 100 merged PRs in 48 h; the first page must not fail closed.
+MERGED_PAGE2_JSON="$(jq -c '{data:{search:{nodes:.data.recent.nodes,pageInfo:{hasNextPage:false,endCursor:"c2"}}}}' <<<"$MERGED_PRS_JSON")"
+MERGED_PRS_JSON="$(jq -c '.data.recent = {nodes:[],pageInfo:{hasNextPage:true,endCursor:"c1"}}' <<<"$MERGED_PRS_JSON")"
+if audit_result="$(audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 0 "$audit_status" 'a second page of merged PRs is read, not treated as a cap'
+grep -Fq 'merged-pr reconciliation found 1 closed issue(s) without valid closure evidence' <<<"$(jq -r '.detail' <<<"$audit_result")"
+echo 'ok - merged-PR reconciliation pages past the first 100 results'
+
+# Scale reproduction: 154 recent closes, 9 awaiting-release, 358 open issues,
+# and 56 open PRs. Preserve full verdict while batching timeline reads.
+SCALE_TIMELINE_FIXTURE=1
+SCALE_TIMELINE_FAIL=0
+SCALE_TIMELINE_CURSORS_JSON='{"1001":"close-page-two","2000":"release-page-two"}'
+CLOSED_JSON="$(jq -cn --arg closed "$recent_close" '[range(1001;1155) | {number:.,title:("Closed issue " + tostring),closedAt:$closed,labels:[]}]')"
+AWAITING_JSON="$(jq -cn '[range(2000;2009) | {number:.,title:("Awaiting issue " + tostring),state:"OPEN",labels:[{name:"awaiting-release"}]}]')"
+OPEN_ISSUES_JSON="$(jq -cn '[range(4000;4358) | {number:.,title:("Open issue " + tostring),state:"OPEN",labels:[]}]')"
+OPEN_PRS_JSON="$(jq -cn '[range(0;56) | {number:(3001 + .),closingIssuesReferences:[{number:(1001 + .)}]}]')"
+MERGED_PRS_JSON='{"data":{"recent":{"nodes":[],"pageInfo":{"hasNextPage":false}},"boundary":{"nodes":[],"pageInfo":{"hasNextPage":false}},"refs":{"nodes":[],"pageInfo":{"hasNextPage":false}},"implements":{"nodes":[],"pageInfo":{"hasNextPage":false}},"titles":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}'
+SCALE_TIMELINE_PAGE1_JSON="$(jq -cn --argjson now "$NOW" '[range(1001;1057) as $issue | {key:($issue|tostring),value:[{event:"closed",commit_id:("aaaaaaaaaaaa" + ($issue|tostring)),created_at:(($now-1800)|todateiso8601)}]}] | from_entries')"
+for issue in $(seq 2000 2008); do
+  SCALE_TIMELINE_PAGE1_JSON="$(jq -c --arg issue "$issue" --argjson now "$NOW" \
+    '.[$issue]=[{event:"labeled",label:{name:"awaiting-release"},created_at:(($now-14400)|todateiso8601)}]' \
+    <<< "$SCALE_TIMELINE_PAGE1_JSON")"
+done
+SCALE_TIMELINE_PAGE2_JSON="$(jq -cn --argjson now "$NOW" '{
+  "1001":[{event:"closed",commit_id:"bbbbbbbbbbbb1234",created_at:(($now-900)|todateiso8601)}],
+  "2000":[{event:"labeled",label:{name:"awaiting-release"},created_at:(($now-3600)|todateiso8601)}]
+}')"
+: > "$timeline_rest_calls"
+: > "$timeline_graphql_calls"
+: > "$scale_gh_calls"
+SCALE_GH_DELAY_SECONDS=1
+audit_started=$SECONDS
+if audit_result="$(OUTCOMES_RECONCILE_DRY_RUN=1 audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+audit_elapsed=$((SECONDS - audit_started))
+assert_eq 0 "$audit_status" 'scale fixture completes a full audit'
+assert_eq BROKEN "$(jq -r '.verdict' <<< "$audit_result")" 'scale fixture preserves full drift verdict'
+assert_eq 154 "$(jq 'length' <<< "$CLOSED_JSON")" 'scale fixture includes all recent closes'
+assert_eq 9 "$(jq 'length' <<< "$AWAITING_JSON")" 'scale fixture includes all awaiting-release issues'
+assert_eq 358 "$(jq 'length' <<< "$OPEN_ISSUES_JSON")" 'scale fixture includes all open issues'
+assert_eq 56 "$(jq 'length' <<< "$OPEN_PRS_JSON")" 'scale fixture includes all open PRs'
+for issue in $(seq 1001 1056) $(seq 2001 2008); do
+  grep -Fq "#$issue " <<<"$(jq -r '.detail' <<< "$audit_result")" || {
+    echo "not ok - scale verdict preserves evidence for #$issue" >&2
+    exit 1
+  }
+done
+if grep -Fq '#2000 ' <<<"$(jq -r '.detail' <<< "$audit_result")"; then
+  echo 'not ok - paginated recent release label prevents stale awaiting-release finding for #2000' >&2
+  exit 1
+fi
+grep -Fq 'bbbbbbbbbbbb' <<<"$(jq -r '.detail' <<< "$audit_result")"
+assert_eq 0 "$(wc -l <"$timeline_rest_calls" | tr -d ' ')" 'scale audit makes no serial REST timeline reads'
+[[ "$(wc -l <"$timeline_graphql_calls" | tr -d ' ')" -le 6 ]] || {
+  echo "not ok - scale audit batches timeline requests (got $(wc -l <"$timeline_graphql_calls" | tr -d ' ') calls)" >&2
+  exit 1
+}
+assert_eq 11 "$(wc -l <"$scale_gh_calls" | tr -d ' ')" 'scale audit performs 11 GitHub calls with paginated timelines'
+[[ "$audit_elapsed" -lt 60 ]] || {
+  echo "not ok - delayed scale audit took ${audit_elapsed}s (budget 60s)" >&2
+  exit 1
+}
+echo "ok - delayed scale audit completes in ${audit_elapsed}s (<60s)"
+echo 'ok - scale audit preserves all evidence with at most six paginated timeline queries'
+
+SCALE_GH_DELAY_SECONDS=0
+(
+  AWAITING_JSON='[{"number":2001,"title":"Awaiting release start-time diagnostic","state":"OPEN","labels":[{"name":"awaiting-release"}]}]'
+  assert_missing_start_reason() {
+    local expected_reason="$1" events_json="$2" description="$3" audit_status audit_result detail
+    SCALE_TIMELINE_PAGE1_JSON="$(jq -c --argjson events "$events_json" '."2001"=$events' <<< "$SCALE_TIMELINE_PAGE1_JSON")"
+    if audit_result="$(OUTCOMES_RECONCILE_DRY_RUN=1 audit_test test/repo "$tmp/home" "$NOW")"; then
+      audit_status=0
+    else
+      audit_status=$?
+    fi
+    assert_eq 2 "$audit_status" "$description fails closed with the existing status"
+    assert_eq UNKNOWN "$(jq -r '.verdict' <<< "$audit_result")" "$description remains UNKNOWN"
+    detail="$(jq -r '.detail' <<< "$audit_result")"
+    grep -Fq "awaiting-release start time unavailable for #2001 reason=$expected_reason" <<< "$detail" || {
+      printf 'not ok - %s reports the safe reason (got %s)\n' "$description" "$detail" >&2
+      exit 1
+    }
+    echo "ok - $description reports $expected_reason"
+  }
+  assert_missing_start_reason no-matching-label-event '[]' 'missing awaiting-release label event'
+  unlabeled_events="$(jq -cn --arg old "$recent_label" --arg new "$recent_event" '[
+    {event:"labeled",label:{name:"awaiting-release"},created_at:$old},
+    {event:"unlabeled",label:{name:"awaiting-release"},created_at:$new}
+  ]')"
+  assert_missing_start_reason latest-event-unlabeled "$unlabeled_events" 'latest awaiting-release event unlabeled'
+  unparseable_event='[{"event":"labeled","label":{"name":"awaiting-release"},"created_at":"not-a-timestamp"}]'
+  assert_missing_start_reason timestamp-unparseable "$unparseable_event" 'unparseable awaiting-release timestamp'
+)
+
+SCALE_TIMELINE_FAIL=1
+if audit_result="$(OUTCOMES_RECONCILE_DRY_RUN=1 audit_test test/repo "$tmp/home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+assert_eq 2 "$audit_status" 'unreadable batched timeline fails closed'
+assert_eq UNKNOWN "$(jq -r '.verdict' <<< "$audit_result")" 'unreadable batched timeline cannot report a clean verdict'
+SCALE_TIMELINE_FAIL=0
+SCALE_TIMELINE_FIXTURE=0
+
+# The per-read ceiling covers normal six-second closed and awaiting-release reads.
+slow_home="$tmp/slow-home"
+mkdir -p "$slow_home/state"
+(
+  CLOSED_JSON='[]'
+  AWAITING_JSON='[]'
+  OPEN_ISSUES_JSON='[]'
+  OPEN_PRS_JSON='[]'
+  ISSUE_LOOKUP_JSON='{"data":{"repository":{}}}'
+  STATE_LABEL_BATCH_JSON='{"data":{"repository":{}}}'
+  MERGED_PRS_JSON='{"data":{"recent":{"nodes":[],"pageInfo":{"hasNextPage":false}},"boundary":{"nodes":[],"pageInfo":{"hasNextPage":false}},"refs":{"nodes":[],"pageInfo":{"hasNextPage":false}},"implements":{"nodes":[],"pageInfo":{"hasNextPage":false}},"titles":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}'
+  GH_FAIL=""
+  SLOW_LIST_SECONDS=6
+  for SLOW_LIST_QUERY in '--state closed' '--label awaiting-release'; do
+    : > "$slow_list_budgets"
+    if audit_result="$(audit_test test/repo "$slow_home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+    assert_eq 0 "$audit_status" "slow $SLOW_LIST_QUERY snapshot succeeds"
+    assert_eq OK "$(jq -r '.verdict' <<< "$audit_result")" "slow $SLOW_LIST_QUERY snapshot remains readable"
+    assert_eq 10 "$(head -n 1 "$slow_list_budgets")" "slow $SLOW_LIST_QUERY snapshot gets ten-second read budget"
+  done
+
+  SLOW_LIST_QUERY=""
+  GH_FAIL='--state closed'
+  if audit_result="$(audit_test test/repo "$slow_home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+  assert_eq 2 "$audit_status" 'permanent closed snapshot failure returns UNKNOWN'
+  assert_eq UNKNOWN "$(jq -r '.verdict' <<< "$audit_result")" 'closed snapshot failure never becomes an empty list'
+  grep -Fq 'recent closed issue list unreadable' <<< "$(jq -r '.detail' <<< "$audit_result")"
+
+  GH_FAIL='--label awaiting-release'
+  if audit_result="$(audit_test test/repo "$slow_home" "$NOW")"; then audit_status=0; else audit_status=$?; fi
+  assert_eq 2 "$audit_status" 'permanent awaiting-release snapshot failure returns UNKNOWN'
+  assert_eq UNKNOWN "$(jq -r '.verdict' <<< "$audit_result")" 'awaiting-release failure never becomes an empty list'
+  grep -Fq 'awaiting-release issue list unreadable' <<< "$(jq -r '.detail' <<< "$audit_result")"
+)
+
+# Read timeout shrinks with remaining worker time and refuses work inside its return reserve.
+(
+  outcomes_deadline=$((SECONDS + 75))
+  OUTCOMES_GH_TIMEOUT_SECONDS=10
+  outcomes_stage_mark closed-issues-snapshot || exit 1
+  assert_eq 10 "$OUTCOMES_GH_TIMEOUT_SECONDS" '75-second worker allows ten-second GH read attempts'
+  outcomes_deadline=$((SECONDS + 15))
+  outcomes_stage_mark closed-issues-snapshot || exit 1
+  assert_eq 5 "$OUTCOMES_GH_TIMEOUT_SECONDS" 'GH attempt budget contracts with remaining worker time'
+  outcomes_deadline=$((SECONDS + 8))
+  outcomes_stage_mark closed-issues-snapshot || exit 1
+  assert_eq 1 "$OUTCOMES_GH_TIMEOUT_SECONDS" 'GH attempt keeps one second when worker reserve is near'
+  outcomes_deadline=$((SECONDS + 6))
+  if outcomes_stage_mark closed-issues-snapshot; then
+    echo 'not ok - stage starts after worker return reserve' >&2
+    exit 1
+  fi
+  echo 'ok - GH reads stop before the worker return reserve'
+)
+
+echo 'outcomes-audit.test.sh: PASS'

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# terra-until-done <key> <cwd> <brief> [max_rounds=4]: rerun terra while a round exits 0 but reports itself unfinished.
+# 2026-10-29: five terra rounds (hf-intent3, hf-4577b/c, rf-3066, …) ended after one 80–235 s Codex turn with an
+# "incomplete" report and no error, so the work only continued when the supervisor noticed and relaunched by hand.
+{
+set -uo pipefail
+key=$1; cwd=$2; brief=$3; max=${4:-4}; S="$(cd "$(dirname "$0")/.." && pwd)"
+unfinished='not complete|incomplete|未完成|尚未完成|remains? (unfinished|outstanding)|still (needs|outstanding)|No PR was opened'
+b=$brief
+for r in $(seq 1 "$max"); do
+  k=$key; (( r > 1 )) && k=$key-r$r
+  rm -rf "$S/luna/$k"; "$S/bin/terra" "$k" "$cwd" "$b"; rc=$?
+  last="$S/luna/$k/last.md"
+  [[ $rc -ne 0 || ! -f $last ]] && { echo "round $r rc=$rc"; exit "$rc"; }
+  grep -qiE "$unfinished" "$last" || { echo "round $r done"; cp "$last" "$S/luna/$key.final.md"; exit 0; }
+  b="$S/tmp/$key.round$((r+1)).md"
+  { cat "$brief"; printf '\n## Round %s: continue (round %s reported unfinished)\nRead `git status` and `git log origin/main..HEAD` in your worktree, then continue from that state. Do the remaining items the previous round listed, and do not stop to report while any acceptance item is unmet unless a decision blocks you. The previous round reported:\n\n' "$((r+1))" "$r"; cat "$last"; } > "$b"
+done
+cp "$last" "$S/luna/$key.final.md"; echo "still unfinished after $max rounds"; exit 3
+}

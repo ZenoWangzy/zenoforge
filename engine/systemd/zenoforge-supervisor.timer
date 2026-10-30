@@ -1,0 +1,23 @@
+# Fires zenoforge-supervisor.service every 10 minutes. Coarser than zf-
+# agent.timer's own 5-minute dispatch cadence (this isn't a dispatch
+# decision, it has no reason to run at that speed) but tighter than
+# zenoforge-label-churn.timer's 30 minutes (this checks more, including a
+# tick-liveness invariant whose own threshold -- see supervise-
+# pipeline.sh's TICK_RUNNING_STALL_SECONDS/TICK_SILENT_STALL_SECONDS,
+# 30min -- would otherwise combine with a coarser poll to more than double
+# real detection latency). Independent of AGENT_PIPELINE's own kill
+# switch (this reads AGENT_SUPERVISOR, a separate gh variable) and
+# independent of zenoforge-agent.timer: a stalled or paused pipeline is
+# exactly one of the states worth surfacing, not a reason to also stop
+# watching it. See OnActiveSec's own comment on zenoforge-agent.timer for why
+# OnUnitActiveSec alone never fires a first tick.
+[Unit]
+Description=the product issue-pipeline supervisor timer
+
+[Timer]
+OnActiveSec=2min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

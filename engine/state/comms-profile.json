@@ -1,0 +1,11 @@
+{
+  "maintainer": {
+    "language": "zh-CN",
+    "timezone": "UTC",
+    "timezone_label": "协调世界时"
+  },
+  "artifacts": {
+    "banned_hosts": ["claude.ai"],
+    "local_temp_only": true
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "schema_version": 3,
+  "roles": {
+    "work": {
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "service_tier": "fast"
+    },
+    "production": {
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "effort": "high"
+    },
+    "advisor": {
+      "provider": "web-advisor-provider",
+      "model": "gpt6",
+      "disabled": true
+    },
+    "hand-zcode": {
+      "provider": "zcode",
+      "model": "GLM-5.3",
+      "effort": "max",
+      "disabled": true
+    },
+    "review": {
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "service_tier": "fast"
+    }
+  },
+  "escalation": {
+    "initial_step": "work",
+    "steps": [
+      {
+        "name": "work",
+        "role": "work",
+        "on_failure": "work"
+      },
+      {
+        "name": "advisor",
+        "role": "advisor",
+        "on_success": "work_retry",
+        "on_failure": "wait"
+      },
+      {
+        "name": "work_retry",
+        "role": "work",
+        "attempts": 1,
+        "on_failure": "conclude"
+      },
+      {
+        "name": "conclude"
+      }
+    ]
+  },
+  "hand_loop_breaker": {
+    "work_no_progress_limit": 2
+  },
+  "switches": {
+    "roadmap-order": true
+  },
+  "forbidden": [
+    "sol",
+    "astra",
+    "terra",
+    "gpt-5",
+    "claude",
+    "sonnet",
+    "opus",
+    "fable"
+  ]
+}

@@ -1,0 +1,882 @@
+#!/usr/bin/env python3
+"""Alert-only throughput and worker health monitor for the scratch supervisor."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+
+SCRATCH = Path(__file__).resolve().parents[1]
+REPO = SCRATCH.parent
+STATE_PATH = SCRATCH / "tmp" / "tput-watch.state.json"
+GH_ATTEMPT_PATH = SCRATCH / "prs" / "queue-runs.json.attempt"
+GH_LOCK_PATH = SCRATCH / "prs" / "queue-runs.json.lock"
+GH_REPO = os.environ.get("ZF_REPO", "")
+
+# Bounds are centralized here so the supervisor can review and tune each alert.
+POLL_SECONDS = 60  # Monitor cadence is one minute as requested.
+ALERT_COOLDOWN_SECONDS = 15 * 60  # Repeating a persistent breach more often adds noise.
+GH_MIN_INTERVAL_SECONDS = 60  # GitHub REST quota is shared with release and train tooling.
+RUNNER_SAMPLE_GAP_SECONDS = 2 * POLL_SECONDS  # A missed pair of samples cannot prove continuous idleness.
+STATE_RETENTION_SECONDS = 30 * 24 * 60 * 60  # Expired breach keys no longer need cooldown state.
+RUNNER_IDLE_SECONDS = 5 * 60  # Green work should not wait behind an idle runner for five minutes.
+LANDING_WINDOW_SECONDS = 3 * 60 * 60  # A three-hour window dampens brief pauses in landing.
+LANDING_MIN_RATE_PER_HOUR = 6.0  # Requested floor; reference days landed 53 and 75 PRs/day.
+RELEASE_LAG_SECONDS = 60 * 60  # A product change older than one hour should be in release.
+WORKER_QUEUE_WAIT_SECONDS = 10 * 60  # Admission waits longer than ten minutes need capacity review.
+LOAD_5M_BOUND = 16.0  # Load above sixteen is the requested WSL saturation threshold.
+LOAD_SUSTAIN_SECONDS = 10 * 60  # Saturation must persist for ten minutes before alerting.
+TRAIN_RED_LIMIT = 2  # Two red outcomes in the recent train window indicate instability.
+TRAIN_WINDOW_SIZE = 4  # Compare the last four completed train outcomes.
+WORKER_ROUNDS_LIMIT = 3  # Three rounds or briefs signals that a ticket needs a reset.
+STUCK_UNIT_SECONDS = 2 * 60 * 60  # Long-lived drive/wait/ship units need inspection after two hours.
+WORKER_EVENT_STALE_SECONDS = 20 * 60  # No worker event growth for twenty minutes indicates a stall.
+
+PRODUCT_PATH_PREFIXES = (
+    "apps/",
+    "packages/",
+    "services/",
+    "web/",
+    "frontend/",
+    "backend/",
+    "server/",
+    "client/",
+    "migrations/",
+    "supabase/",
+)
+
+
+def command(args: list[str], *, cwd: Path | None = None, timeout: int = 20) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(
+            args,
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def read_state() -> dict[str, Any]:
+    try:
+        value = json.loads(STATE_PATH.read_text())
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_state(state: dict[str, Any]) -> None:
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = STATE_PATH.with_name(f"{STATE_PATH.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(state, sort_keys=True) + "\n")
+    os.replace(temporary, STATE_PATH)
+
+
+def alert_line(name: str, value: str, bound: str, hint: str) -> str:
+    safe_value = re.sub(r"\s+", "_", str(value))
+    safe_bound = re.sub(r"\s+", "_", str(bound))
+    safe_hint = re.sub(r"\s+", "_", str(hint))
+    return f"ALERT {name} value={safe_value} bound={safe_bound} hint={safe_hint}"
+
+
+def add_alert(alerts: list[tuple[str, str]], name: str, identity: str, value: str, bound: str, hint: str) -> None:
+    key = f"{name}:{identity}"
+    alerts.append((key, alert_line(name, value, bound, hint)))
+
+
+def emit_alerts(alerts: list[tuple[str, str]], state: dict[str, Any], now: float) -> None:
+    sent = state.setdefault("last_alert", {})
+    output: list[str] = []
+    for key, line in alerts:
+        try:
+            last = float(sent.get(key, 0))
+        except (TypeError, ValueError):
+            last = 0
+        if now - last < ALERT_COOLDOWN_SECONDS:
+            continue
+        sent[key] = now
+        output.append(line)
+    cutoff = now - STATE_RETENTION_SECONDS
+    state["last_alert"] = {
+        key: stamp
+        for key, stamp in sent.items()
+        if isinstance(stamp, (int, float)) and stamp >= cutoff
+    }
+    write_state(state)
+    for line in output:
+        print(line, flush=True)
+
+
+def number_tokens(value: str) -> list[str]:
+    return re.findall(r"(?<![A-Za-z0-9])(\d{3,})(?!\d)", value)
+
+
+def read_queue() -> tuple[str, set[str], set[str]]:
+    path = SCRATCH / "prs" / "queue.txt"
+    try:
+        raw = path.read_text(errors="replace")
+    except OSError:
+        return "", set(), set()
+
+    queued: set[str] = set()
+    green: set[str] = set()
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", ";")):
+            continue
+        ids = number_tokens(stripped)
+        if not ids:
+            continue
+        pr = ids[0]
+        queued.add(pr)
+        if re.search(r"\b(GREEN|READY)\b", stripped, re.IGNORECASE):
+            green.add(pr)
+
+    cache_path = SCRATCH / "prs" / "queue-runs.json"
+    try:
+        cache = json.loads(cache_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        cache = None
+    if isinstance(cache, list):
+        for run in cache:
+            if not isinstance(run, dict):
+                continue
+            if str(run.get("status", "")).lower() != "completed" or str(run.get("conclusion", "")).lower() != "success":
+                continue
+            run_prs: set[str] = set()
+            for key in ("pr", "pull_request_number"):
+                if run.get(key) is not None:
+                    run_prs.update(number_tokens(str(run[key])))
+            pull_requests = run.get("pull_requests")
+            if isinstance(pull_requests, list):
+                for pull in pull_requests:
+                    if isinstance(pull, dict) and pull.get("number") is not None:
+                        run_prs.update(number_tokens(str(pull["number"])))
+            green.update(run_prs & queued)
+
+    log_path = SCRATCH / "prs" / "queue.log"
+    try:
+        log_lines = log_path.read_text(errors="replace").splitlines()
+    except OSError:
+        log_lines = []
+    for line in log_lines:
+        if re.search(r"\b(GREEN|READY)\b", line, re.IGNORECASE):
+            green.update(set(number_tokens(line)) & queued)
+    return raw, queued, green
+
+
+def queue_tokens(queue_raw: str) -> set[str]:
+    return {
+        token
+        for line in queue_raw.splitlines()
+        for token in re.findall(r"[A-Za-z0-9_-]+", line)
+    }
+
+
+def train_and_landed_prs() -> tuple[set[str], set[str]]:
+    in_train: set[str] = set()
+    landed: set[str] = set()
+    train_root = SCRATCH / "prs" / "train"
+    if train_root.is_dir():
+        for prs_file in train_root.glob("*/prs"):
+            try:
+                prs = set(number_tokens(prs_file.read_text(errors="replace")))
+            except OSError:
+                continue
+            try:
+                requeued = set(number_tokens((prs_file.parent / "requeued").read_text(errors="replace")))
+            except OSError:
+                requeued = set()
+            if (prs_file.parent / "landed-sha").exists():
+                landed.update(prs)
+            else:
+                in_train.update(prs - requeued)
+
+    event_log = SCRATCH / "prs" / "merge-events.log"
+    try:
+        lines = event_log.read_text(errors="replace").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        match = re.search(r"\bTRAIN LANDED\s+\S+.*?\bprs=([^;]+)", line, re.IGNORECASE)
+        if match:
+            landed.update(number_tokens(match.group(1)))
+
+    log = command(["git", "log", "origin/main", "--first-parent", "--format=%s"], cwd=REPO, timeout=30)
+    if log and log.returncode == 0:
+        for subject in log.stdout.splitlines():
+            merge = re.match(r"Merge\s+#(\d+)\b", subject, re.IGNORECASE)
+            suffix = re.search(r"\(#(\d+)\)\s*$", subject)
+            if merge:
+                landed.add(merge.group(1))
+            elif suffix:
+                landed.add(suffix.group(1))
+    in_train.difference_update(landed)
+    return in_train, landed
+
+
+def result_status_and_pr(directory: Path, raw: str, result: Any) -> tuple[str | None, str | None]:
+    status: str | None = None
+    pr: str | None = None
+    if isinstance(result, dict):
+        for key in ("status", "verdict"):
+            value = result.get(key)
+            if isinstance(value, str) and value.upper() in {"GREEN", "READY"}:
+                status = value.upper()
+                break
+        for key in ("pr", "pull_request_number"):
+            value = result.get(key)
+            if isinstance(value, (str, int)):
+                ids = number_tokens(str(value))
+                if ids:
+                    pr = ids[0]
+                    break
+        if pr is None:
+            pulls = result.get("pull_requests")
+            if isinstance(pulls, list):
+                for pull in pulls:
+                    if isinstance(pull, dict) and pull.get("number") is not None:
+                        ids = number_tokens(str(pull["number"]))
+                        if ids:
+                            pr = ids[0]
+                            break
+    else:
+        for line in raw.splitlines()[:20]:
+            match = re.match(r"\s*(status|verdict)\s*[:=]\s*[\"']?\s*(GREEN|READY)\b", line, re.IGNORECASE)
+            if match:
+                status = match.group(2).upper()
+                break
+
+    if pr is None:
+        key_numbers = number_tokens(directory.name)
+        if key_numbers:
+            pr = key_numbers[-1]
+    if pr is None:
+        match = re.search(r"\b(?:pull\s+request|PR)\s*[:#]?\s*(\d{3,})\b", raw, re.IGNORECASE)
+        if match:
+            pr = match.group(1)
+    return status, pr
+
+
+def green_worker_work(queue_raw: str, queued: set[str], in_train: set[str], landed: set[str]) -> list[tuple[str, str | None]]:
+    pending: list[tuple[str, str | None]] = []
+    tokens = queue_tokens(queue_raw)
+    luna_root = SCRATCH / "luna"
+    if not luna_root.is_dir():
+        return pending
+    for last in luna_root.glob("*/last.md"):
+        try:
+            raw = last.read_text(errors="replace")
+        except OSError:
+            continue
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError:
+            result = None
+        status, pr = result_status_and_pr(last.parent, raw, result)
+        if status not in {"GREEN", "READY"}:
+            continue
+        key = last.parent.name
+        if key in tokens or (pr is not None and (pr in queued or pr in in_train or pr in landed)):
+            continue
+        if pr is None and number_tokens(key) and number_tokens(key)[-1] in landed:
+            continue
+        pending.append((key, pr))
+    return pending
+
+
+def local_runner_work() -> tuple[set[str], list[tuple[str, str | None]], set[str], set[str]]:
+    queue_raw, queued, green_prs = read_queue()
+    in_train, landed = train_and_landed_prs()
+    untrained_green = green_prs - in_train - landed
+    workers = green_worker_work(queue_raw, queued, in_train, landed)
+    return queue_raw, workers, untrained_green, queued
+
+
+def acquire_runner_snapshot(now_wall: float) -> list[dict[str, Any]] | None:
+    if shutil.which("gh") is None:
+        return None
+    GH_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    GH_ATTEMPT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with GH_LOCK_PATH.open("a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                last = float(GH_ATTEMPT_PATH.read_text().strip())
+            except (OSError, ValueError):
+                last = 0
+            if now_wall - last < GH_MIN_INTERVAL_SECONDS:
+                return None
+            temporary = GH_ATTEMPT_PATH.with_name(f"{GH_ATTEMPT_PATH.name}.{os.getpid()}.tmp")
+            temporary.write_text(f"{int(now_wall)}\n")
+            os.replace(temporary, GH_ATTEMPT_PATH)
+            response = command(
+                ["gh", "api", f"repos/{GH_REPO}/actions/runners?per_page=100"],
+                cwd=REPO,
+                timeout=25,
+            )
+            if response is None or response.returncode != 0:
+                return None
+            try:
+                body = json.loads(response.stdout)
+            except json.JSONDecodeError:
+                return None
+            runners = body.get("runners") if isinstance(body, dict) else None
+            return runners if isinstance(runners, list) else None
+    except OSError:
+        return None
+
+
+def runner_alerts(state: dict[str, Any], pending_count: int, now_wall: float, now_mono: float) -> list[tuple[str, str]]:
+    alerts: list[tuple[str, str]] = []
+    previous = state.setdefault("runner_idle", {})
+    if pending_count <= 0:
+        state["runner_idle"] = {}
+        return alerts
+
+    runners = acquire_runner_snapshot(now_wall)
+    if runners is None:
+        for key, value in list(previous.items()):
+            if not isinstance(value, dict) or now_mono - float(value.get("seen", 0)) > RUNNER_SAMPLE_GAP_SECONDS:
+                previous.pop(key, None)
+        return alerts
+
+    current: dict[str, dict[str, float]] = {}
+    for runner in runners:
+        if not isinstance(runner, dict) or runner.get("name") != "cihost-ci-postsubmit":
+            continue
+        runner_id = str(runner.get("id", runner.get("name", "cihost-ci-postsubmit")))
+        if runner.get("status") != "online" or runner.get("busy") is not False:
+            continue
+        old = previous.get(runner_id)
+        try:
+            old_seen = float(old.get("seen", 0)) if isinstance(old, dict) else 0
+            idle_since = float(old.get("since", now_mono)) if isinstance(old, dict) else now_mono
+        except (TypeError, ValueError):
+            old_seen, idle_since = 0, now_mono
+        if now_mono - old_seen > RUNNER_SAMPLE_GAP_SECONDS:
+            idle_since = now_mono
+        current[runner_id] = {"since": idle_since, "seen": now_mono}
+        idle_for = now_mono - idle_since
+        if idle_for > RUNNER_IDLE_SECONDS:
+            add_alert(
+                alerts,
+                "runner_idle_with_work",
+                runner_id,
+                f"runner={runner_id}:idle={int(idle_for // 60)}m:pending={pending_count}",
+                ">5m",
+                "admit_green_work_or_check_runner_assignment",
+            )
+    state["runner_idle"] = current
+    return alerts
+
+
+def landing_rate_alert(queued: set[str], now_wall: float) -> tuple[str, str] | None:
+    if not queued:
+        return None
+    since = int(now_wall - LANDING_WINDOW_SECONDS)
+    log = command(
+        ["git", "log", "origin/main", "--first-parent", f"--since=@{since}", "--format=%ct%x09%s%n%b%x00"],
+        cwd=REPO,
+        timeout=30,
+    )
+    if not log or log.returncode != 0:
+        return None
+    landed = 0
+    for record in log.stdout.split("\0"):
+        if not record.strip():
+            continue
+        parts = record.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        body = parts[1]
+        subject = body.splitlines()[0] if body else ""
+        if re.search(r"\[skip\s+ci\]", body, re.IGNORECASE):
+            continue
+        if re.search(r"\bMerge\s+#\d+\b|\(#\d+\)\s*$|\bPR\s+#\d+\b", subject, re.IGNORECASE):
+            landed += 1
+    rate = landed / (LANDING_WINDOW_SECONDS / 3600)
+    if rate >= LANDING_MIN_RATE_PER_HOUR:
+        return None
+    line = alert_line(
+        "landing_rate_low",
+        f"{rate:.2f}_per_h:landed={landed}:queued={len(queued)}",
+        "6_per_h",
+        "inspect_train_dispatch_and_CI_capacity",
+    )
+    return "landing_rate_low:origin-main-queued", line
+
+
+def release_is_running(units: list[dict[str, str]]) -> bool:
+    return any(
+        unit.get("ActiveState") == "active"
+        and (unit.get("Id") == "zf-release-batch.service" or unit.get("Id", "").startswith("release-loop"))
+        for unit in units
+    )
+
+
+def deployed_marker() -> tuple[str, float] | None:
+    result = command(
+        ["journalctl", "--user", "-u", "zf-release-batch", "--no-pager", "-o", "short-unix", "--grep=deployed="],
+        timeout=25,
+    )
+    if not result or result.returncode != 0:
+        return None
+    latest: tuple[str, float] | None = None
+    for line in result.stdout.splitlines():
+        stamp = re.match(r"\s*\[?(\d+(?:\.\d+)?)\]?", line)
+        marker = re.search(r"\bdeployed=([0-9a-fA-F]{7,40})\b", line)
+        if not stamp or not marker:
+            continue
+        value = (marker.group(1), float(stamp.group(1)))
+        if latest is None or value[1] > latest[1]:
+            latest = value
+    return latest
+
+
+def product_commit_age(deployed_sha: str) -> tuple[int, float] | None:
+    resolved = command(["git", "rev-parse", "--verify", f"{deployed_sha}^{{commit}}"], cwd=REPO)
+    if not resolved or resolved.returncode != 0:
+        return None
+    full_sha = resolved.stdout.strip()
+    ancestor = command(["git", "merge-base", "--is-ancestor", full_sha, "origin/main"], cwd=REPO)
+    if not ancestor or ancestor.returncode != 0:
+        return None
+    log = command(
+        [
+            "git",
+            "log",
+            "--first-parent",
+            "-m",
+            "--format=COMMIT%x09%H%x09%ct",
+            "--name-only",
+            f"{full_sha}..origin/main",
+        ],
+        cwd=REPO,
+        timeout=30,
+    )
+    if not log or log.returncode != 0:
+        return None
+    commits: dict[str, tuple[float, bool]] = {}
+    current: str | None = None
+    for line in log.stdout.splitlines():
+        if line.startswith("COMMIT\t"):
+            fields = line.split("\t")
+            if len(fields) >= 3:
+                current = fields[1]
+                commits.setdefault(current, (float(fields[2]), False))
+        elif current and line.strip():
+            path = line.strip().lstrip("./")
+            if path.startswith(PRODUCT_PATH_PREFIXES):
+                timestamp, _ = commits[current]
+                commits[current] = (timestamp, True)
+    product_times = [stamp for stamp, product in commits.values() if product]
+    if not product_times:
+        return (0, 0)
+    return len(product_times), min(product_times)
+
+
+def release_lag_alert(units: list[dict[str, str]], now_wall: float) -> tuple[str, str] | None:
+    if release_is_running(units):
+        return None
+    marker = deployed_marker()
+    if marker is None:
+        return None
+    deployed_sha, _ = marker
+    product = product_commit_age(deployed_sha)
+    if product is None:
+        return None
+    count, oldest = product
+    if count == 0 or now_wall - oldest <= RELEASE_LAG_SECONDS:
+        return None
+    lag = int((now_wall - oldest) // 60)
+    line = alert_line(
+        "release_lag",
+        f"oldest_product={lag}m:commits={count}:deployed={deployed_sha[:9]}",
+        ">60m",
+        "check_release_batch_and_dispatch_latest_product_main",
+    )
+    return f"release_lag:{deployed_sha}", line
+
+
+def pid_is_alive(path: Path) -> bool:
+    try:
+        pid = int(path.read_text().strip())
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def worker_queue_wait_alerts(now_wall: float) -> list[tuple[str, str]]:
+    alerts: list[tuple[str, str]] = []
+    luna_root = SCRATCH / "luna"
+    if not luna_root.is_dir():
+        return alerts
+    for directory in luna_root.iterdir():
+        if not directory.is_dir() or directory.name == "briefs":
+            continue
+        wrapper = directory / "wrapper.pid"
+        if not wrapper.exists() or (directory / "codex.pid").exists() or (directory / "rc").exists():
+            continue
+        try:
+            age = now_wall - wrapper.stat().st_mtime
+        except OSError:
+            continue
+        if age <= WORKER_QUEUE_WAIT_SECONDS or not pid_is_alive(wrapper):
+            continue
+        minutes = int(age // 60)
+        add_alert(
+            alerts,
+            "worker_queue_wait",
+            directory.name,
+            f"{directory.name}:wait={minutes}m",
+            ">10m",
+            "free_worker_capacity_or_recheck_admission",
+        )
+    return alerts
+
+
+def load_alert(state: dict[str, Any], now_mono: float) -> tuple[str, str] | None:
+    try:
+        load5 = float(Path("/proc/loadavg").read_text().split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    if load5 <= LOAD_5M_BOUND:
+        state.pop("load_high_since", None)
+        return None
+    try:
+        high_since = float(state.get("load_high_since", now_mono))
+    except (TypeError, ValueError):
+        high_since = now_mono
+    if high_since > now_mono:
+        high_since = now_mono
+    state["load_high_since"] = high_since
+    if now_mono - high_since <= LOAD_SUSTAIN_SECONDS:
+        return None
+    return (
+        "wsl_saturated:wsl-load",
+        alert_line("wsl_saturated", f"load5={load5:.2f}:for={int((now_mono-high_since)//60)}m", ">16_for_10m", "reduce_worker_concurrency_until_load_recovers"),
+    )
+
+
+def maintainer_mail_stale_alert(now_wall: float) -> tuple[str, str] | None:
+    live_checkout = Path.home() / ".zenoforge" / "checkout"
+    status_script = live_checkout / "engine" / "night" / "maintainer-health-mail.sh"
+    result = command(["bash", str(status_script), "status", str(int(now_wall))], cwd=live_checkout, timeout=10)
+    if result is None or result.returncode != 0:
+        return None
+    fields = result.stdout.strip().split()
+    if not fields or fields[0] != "STUCK":
+        return None
+    age = next((field.split("=", 1)[1] for field in fields[1:] if field.startswith("no-successful-mail-age-minutes=")), "unknown")
+    line = alert_line(
+        "maintainer_health_mail_stale",
+        f"{age}m_without_successful_send",
+        ">7h",
+        "inspect_maintainer_health_mail_tick_and_restore_email_delivery",
+    )
+    return ("maintainer_health_mail_stale:maintainer", line)
+
+
+def train_outcomes() -> list[tuple[str, str]]:
+    events: list[tuple[float, int, str, str]] = []
+    sequence = 0
+    files = [SCRATCH / "prs" / "merge-events.log", SCRATCH / "prs" / "queue.log"]
+    for file_index, path in enumerate(files):
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+            fallback_time = path.stat().st_mtime
+        except OSError:
+            continue
+        for line_index, line in enumerate(lines):
+            match = re.search(r"\bTRAIN\s+(RED|GREEN|LANDED)\s+(b\d+(?:-[A-Za-z0-9-]+)?)\b", line, re.IGNORECASE)
+            if not match and path.name == "queue.log":
+                match = re.search(r"\b(red|green)\s+(b\d+(?:-[A-Za-z0-9-]+)?)\b", line, re.IGNORECASE)
+            if not match:
+                continue
+            status, train = match.group(1).upper(), match.group(2)
+            stamp = re.search(r"\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ?)\]", line)
+            order = fallback_time
+            if stamp:
+                try:
+                    import datetime
+
+                    value = stamp.group(1).replace("Z", "+00:00")
+                    order = datetime.datetime.fromisoformat(value).timestamp()
+                except ValueError:
+                    pass
+            sequence += 1
+            events.append((order, sequence + file_index * (len(lines) + 1) + line_index, train, "RED" if status == "RED" else "GREEN"))
+    latest: dict[str, tuple[float, int, str]] = {}
+    for order, seq, train, status in events:
+        previous = latest.get(train)
+        if previous is None or (order, seq) >= (previous[0], previous[1]):
+            latest[train] = (order, seq, status)
+    ordered = sorted(((stamp, seq, train, status) for train, (stamp, seq, status) in latest.items()), reverse=True)
+    return [(train, status) for _, _, train, status in ordered[:TRAIN_WINDOW_SIZE]]
+
+
+def train_red_alert() -> tuple[str, str] | None:
+    outcomes = train_outcomes()
+    if len(outcomes) < TRAIN_WINDOW_SIZE:
+        return None
+    red = sum(status == "RED" for _, status in outcomes)
+    if red < TRAIN_RED_LIMIT:
+        return None
+    train_ids = ",".join(train for train, _ in outcomes)
+    return (
+        "train_red_rate:latest-four",
+        alert_line("train_red_rate", f"{red}/{len(outcomes)}:trains={train_ids}", ">=2/4", "bisect_recent_red_trains_before_dispatch"),
+    )
+
+
+def worker_ticket(key: str) -> str | None:
+    # bin/worker treats keys such as go3-3861 and review-3861 as one ticket. Only a standalone 3+ digit
+    # group is an issue number: "last digits" turned opt-b4b-r2 / acc-rel1 / *-r3 into fake ticket 4 (10-29).
+    groups = number_tokens(key)
+    return groups[-1] if groups else None
+
+
+def worker_round_counts() -> Counter[str]:
+    failed_rounds: Counter[str] = Counter()
+    rounds_log = SCRATCH / "luna" / "rounds.log"
+    try:
+        lines = rounds_log.read_text(errors="replace").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        match = re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\s+(\S+)\s+\S+\s+rc=(-?\d+)",
+            line.strip(),
+        )
+        if not match:
+            continue
+        ticket = worker_ticket(match.group(1))
+        if ticket is None:
+            continue
+        if int(match.group(2)) != 0:
+            failed_rounds[ticket] += 1
+    return failed_rounds
+
+
+def landed_worker_prs() -> set[str]:
+    landed: set[str] = set()
+    event_log = SCRATCH / "prs" / "merge-events.log"
+    try:
+        lines = event_log.read_text(errors="replace").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        match = re.search(r"\bTRAIN LANDED\b.*?\bprs=([^;]+)", line, re.IGNORECASE)
+        if match:
+            landed.update(number_tokens(match.group(1)))
+    return landed
+
+
+def worker_round_alerts(units: list[dict[str, str]]) -> list[tuple[str, str]]:
+    alerts: list[tuple[str, str]] = []
+    failed_rounds = worker_round_counts()
+    _, queued, _ = read_queue()
+    landed = landed_worker_prs()
+    active_workers = {
+        ticket
+        for unit in units
+        if unit.get("ActiveState") == "active"
+        if (key := worker_unit_key(unit.get("Id", ""))) is not None
+        if (ticket := worker_ticket(key)) is not None
+    }
+    for ticket in sorted(failed_rounds, key=lambda value: (int(value), value)):
+        round_count = failed_rounds[ticket]
+        if round_count < WORKER_ROUNDS_LIMIT:
+            continue
+        active = ticket in active_workers
+        queued_open = ticket in queued and ticket not in landed
+        if not active and not queued_open:
+            continue
+        add_alert(
+            alerts,
+            "worker_rounds",
+            ticket,
+            f"ticket={ticket}:failed_rounds={round_count}:active_worker={str(active).lower()}:queued_open={str(queued_open).lower()}",
+            ">=3",
+            "split_or_recut_ticket_before_another_round",
+        )
+    return alerts
+
+
+def systemd_units() -> list[dict[str, str]]:
+    result = command(
+        [
+            "systemctl",
+            "--user",
+            "show",
+            "--type=service",
+            "--type=scope",
+            "-p",
+            "Id",
+            "-p",
+            "ActiveState",
+            "-p",
+            "ActiveEnterTimestampMonotonic",
+            "--no-pager",
+        ],
+        timeout=15,
+    )
+    if not result or result.returncode != 0:
+        return []
+    units: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key == "Id":
+            if current:
+                units.append(current)
+            current = {key: value}
+        elif current:
+            current[key] = value
+    if current:
+        units.append(current)
+    return units
+
+
+def worker_unit_key(unit_id: str) -> str | None:
+    match = re.fullmatch(r"luna-(.+)-\d+\.scope", unit_id)
+    return match.group(1) if match else None
+
+
+def unit_alerts(units: list[dict[str, str]], now_mono: float, now_wall: float) -> list[tuple[str, str]]:
+    alerts: list[tuple[str, str]] = []
+    try:
+        uptime = float(Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        uptime = now_mono
+    luna_dirs = [path for path in (SCRATCH / "luna").iterdir() if path.is_dir()] if (SCRATCH / "luna").is_dir() else []
+    for unit in units:
+        if unit.get("ActiveState") != "active":
+            continue
+        unit_id = unit.get("Id", "")
+        try:
+            entered = float(unit.get("ActiveEnterTimestampMonotonic", "0")) / 1_000_000
+        except ValueError:
+            entered = 0
+        if entered <= 0:
+            continue
+        active_for = max(0, uptime - entered)
+        if re.match(r"^(drive-|wait-|ship-|release-loop)", unit_id) and active_for > STUCK_UNIT_SECONDS:
+            add_alert(
+                alerts,
+                "stuck_unit",
+                unit_id,
+                f"{unit_id}:active={int(active_for // 60)}m",
+                ">120m",
+                "inspect_unit_and_recover_stalled_train_or_release",
+            )
+
+        key = worker_unit_key(unit_id)
+        if key is None:
+            continue
+        directory = next(
+            (path for path in luna_dirs if re.sub(r"[^A-Za-z0-9_-]", "-", path.name) == key),
+            None,
+        )
+        if directory is None:
+            continue
+        events = directory / "events.jsonl"
+        try:
+            modified = events.stat().st_mtime
+            stale_for = now_wall - modified
+        except OSError:
+            stale_for = active_for
+        if stale_for > WORKER_EVENT_STALE_SECONDS:
+            add_alert(
+                alerts,
+                "stuck_unit",
+                unit_id,
+                f"{unit_id}:events_stale={int(stale_for // 60)}m",
+                ">20m_without_growth",
+                "inspect_worker_events_and_resume_or_reap_the_unit",
+            )
+    return alerts
+
+
+def check_once(state: dict[str, Any]) -> None:
+    now_wall = time.time()
+    now_mono = time.monotonic()
+    alerts: list[tuple[str, str]] = []
+
+    mail_alert = maintainer_mail_stale_alert(now_wall)
+    if mail_alert:
+        alerts.append(mail_alert)
+
+    queue_raw, workers, green_queue, queued = local_runner_work()
+    del queue_raw
+    if queued:
+        low_rate = landing_rate_alert(queued, now_wall)
+        if low_rate:
+            alerts.append(low_rate)
+    pending_count = len(green_queue) + len(workers)
+    alerts.extend(runner_alerts(state, pending_count, now_wall, now_mono))
+
+    units = systemd_units()
+    release_alert = release_lag_alert(units, now_wall)
+    if release_alert:
+        alerts.append(release_alert)
+    alerts.extend(worker_queue_wait_alerts(now_wall))
+    load = load_alert(state, now_mono)
+    if load:
+        alerts.append(load)
+    train = train_red_alert()
+    if train:
+        alerts.append(train)
+    alerts.extend(worker_round_alerts(units))
+    alerts.extend(unit_alerts(units, now_mono, now_wall))
+
+    emit_alerts(alerts, state, now_wall)
+
+
+def main() -> int:
+    os.environ.pop("GH_TOKEN", None)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--once", action="store_true", help="run one local-state check and exit")
+    args = parser.parse_args()
+
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = STATE_PATH.with_suffix(".lock")
+    try:
+        with lock_path.open("a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            while True:
+                iteration_started = time.monotonic()
+                state = read_state()
+                check_once(state)
+                if args.once:
+                    return 0
+                time.sleep(max(0, POLL_SECONDS - (time.monotonic() - iteration_started)))
+    except KeyboardInterrupt:
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

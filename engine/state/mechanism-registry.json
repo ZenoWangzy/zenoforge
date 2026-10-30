@@ -1,0 +1,354 @@
+{
+  "_doc": "M2 机制心跳登记表（#4495/#4498，全量登记 #4500 的 STPA 梳理产出，见 docs/agents/pipeline-stpa.md）。node_health.py 每次体检读这份表：events 列出机制应产生的事件（base=runtime 指向运行目录下的文件，如 scheduler.log、alerts/events.md、alerts/slo.md、bell.log、zombie-watch.log；base=agent_home 指向 $AGENT_HOME 下的文件，如 logs/main-red.log、supervisor-inbox；pattern 是行内正则，行首须带 ISO 时间戳，轮转的 .1 代也会读）；沉默超过 silence_hours 小时的机制计入 mechanism.silent。expected_idle=true 的机制允许长期无事件（触发条件可能 legitimately 不出现），只展示最近事件时间、不报警。supervisor 是机制沉默时要找的负责人：head-supervisor（调度器与传感器）、supervisor-arbiter（#4369 工厂仲裁）、night-supervisor（bell/夜间事件分诊）。沉默上限的依据是 10-28 解停后稳态事件间隔的度量，逐项列在 pipeline-stpa.md。",
+  "mechanisms": [
+    {
+      "id": "scheduler-tick",
+      "desc": "调度器每拍本身（回收→派发→门禁→发布）：拍完成即事件，拍停了整条工厂停摆",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "tick done units="}
+      ],
+      "silence_hours": 1,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "dispatch-implement",
+      "desc": "implement/repair/review 派发（implement_cap、动态并发准入之内）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "type=implement unit="},
+        {"base": "runtime", "file": "alerts/events.md", "pattern": "IMPL-DELIVERED unit="}
+      ],
+      "silence_hours": 6,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "self-check-gate",
+      "desc": "评审前确定性自检（构建/typecheck/lint，包测试委派 PR 门，重活在 cihost）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "self-check pid="}
+      ],
+      "silence_hours": 6,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "merge-gate",
+      "desc": "合并门（五条件 + 精确 head 钉住 + guarded_pr_merge，乐观合入）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "merged PR#"},
+        {"base": "runtime", "file": "scheduler.log", "pattern": "merge issued PR"}
+      ],
+      "silence_hours": 12,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "fast-land-lane",
+      "desc": "direct-main 快车道落地 worker 派发（落地链上的规则通道/预检在 worker 内）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "dispatch land pid="}
+      ],
+      "silence_hours": 24,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "ci-admission",
+      "desc": "单一 CI 准入控制器（hotfix > main-red > opt > normal；统一处理 hold、defer 与 WIP 名额）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "ci wip: limit"},
+        {"base": "runtime", "file": "scheduler.log", "pattern": "ci priority:"},
+        {"base": "runtime", "file": "scheduler.log", "pattern": "ci deferred: cancelled"}
+      ],
+      "silence_hours": 24,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "intake",
+      "desc": "工作保有式 intake（新 issue/PR 登记进台账并派发）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "intake issue #"}
+      ],
+      "silence_hours": 24,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "intake-wip-hold",
+      "desc": "intake WIP 上限（max_ready：合并车道是约束时压住上游进料）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "intake held"}
+      ],
+      "silence_hours": 48,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "factory-f1-main-red-bisect",
+      "desc": "main 变红后的二分与回滚（#4356）",
+      "events": [
+        {"base": "agent_home", "file": "logs/main-red.log", "pattern": "."}
+      ],
+      "silence_hours": 24,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "factory-f2-cihost-admission",
+      "desc": "cihost 内存放行与 WSL 动态并发准入决策；两者都向 scheduler.log 写带 ISO 时间戳的读数和决定行（#4616）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "cihost admission decision|execution admission decision"}
+      ],
+      "silence_hours": 3,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "factory-f3-release-train",
+      "desc": "2h 节奏批次发布与批次验收关票（#4358）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "release train started"},
+        {"base": "runtime", "file": "alerts/events.md", "pattern": "release-closer: deployed="}
+      ],
+      "silence_hours": 6,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "factory-f4-main-suites-gate",
+      "desc": "[skip ci] 守卫的运行面（#4359）：workflow 路径映射 suites，调度器把 pipeline PR 合并扣在 main suites 判决后面，状态变化写 GATE 行",
+      "events": [
+        {"base": "runtime", "file": "alerts/gate.md", "pattern": "GATE main="}
+      ],
+      "silence_hours": 24,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "factory-f5-test-evidence",
+      "desc": "测试证据复用（tree id + 目标，test-evidence 账本，#4362）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "test evidence"}
+      ],
+      "silence_hours": 24,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "factory-f6-stop-loss",
+      "desc": "每票止损预算（裁决后 3 轮/4h 先到为准：budget-recut/budget-park/stop-loss hold，#4363）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "supervisor budget-"},
+        {"base": "runtime", "file": "scheduler.log", "pattern": "stop-loss: wall"}
+      ],
+      "silence_hours": 12,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "size-admission",
+      "desc": "尺寸准入（>800 改动行不开评审，转 supervisor 重切，#4363）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "size admission"}
+      ],
+      "silence_hours": 336,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "factory-f7-aged-pr",
+      "desc": "旧 PR 生命周期（>7 天/落后 300 提交三分类：已在 main 关/过时关/重开新票，#4360）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "aged PR#"}
+      ],
+      "silence_hours": 336,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "factory-f8-slo-watch",
+      "desc": "阶段 SLO 监视（stage_slo_watch，越过阈值写 SLO-BREACH；#4366 的只发可操作事件之一）",
+      "events": [
+        {"base": "runtime", "file": "alerts/slo.md", "pattern": "SLO-BREACH"}
+      ],
+      "silence_hours": 72,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "factory-f9-footprint-wait",
+      "desc": "实现/返工派发的文件足迹互斥（#4361）：冲突时等待并记 footprint wait 行",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "footprint wait unit="}
+      ],
+      "silence_hours": 12,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "factory-f10-eval-runner",
+      "desc": "run-eval 运行器（--case/并行/补跑，#4364）：运行面事件与 f13 同源（eval worker 由 run-eval.mjs 驱动）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "eval worker|eval dispatched"}
+      ],
+      "silence_hours": 336,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "factory-f11-supervisor-eval-set",
+      "desc": "工厂 supervisor eval 集（147 次升级的人工结论语料，#4367）：由 eval 报告任务消费，运行面事件与 f13 同源",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "eval worker|eval dispatched"}
+      ],
+      "silence_hours": 336,
+      "supervisor": "supervisor-arbiter",
+      "expected_idle": true
+    },
+    {
+      "id": "factory-f12-supervisor-arbiter",
+      "desc": "工厂 supervisor agent 接管 supervisor-review（#4369）：每单元一条六选一动作并落决策记录",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "supervisor arbitration"}
+      ],
+      "silence_hours": 12,
+      "supervisor": "supervisor-arbiter",
+      "expected_idle": false
+    },
+    {
+      "id": "factory-f13-prompt-eval-gate",
+      "desc": "改 prompt/评审契约/模型策略的单元并行跑 eval 报告（#4368 建，#4656 按裁决 architecture-ships-evals-alongside 改非阻塞）：交付不等待 eval，结果记 SHA/标签，回归升级 supervisor，eval 工作流缺失单独失败",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "eval dispatched|eval passed|eval failed|eval pending|eval skipped"}
+      ],
+      "silence_hours": 336,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "factory-f14-opt-premise",
+      "desc": "优化类 ticket 实现前先核实前提（#4370）：前提不成立经 OBSOLETE 报告协议关票",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "OBSOLETE"}
+      ],
+      "silence_hours": 336,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "factory-f15-stuck-disposition",
+      "desc": "卡住任务处置（#4371）：越界期间每轮在 scheduler.log 记录决策与指纹结论；确认无进展后记录 STUCK-KILL/STUCK-STOPLOSS",
+      "events": [
+        {"base": "runtime", "file": "alerts/events.md", "pattern": "STUCK-"},
+        {"base": "runtime", "file": "scheduler.log", "pattern": "STUCK-DECISION"}
+      ],
+      "silence_hours": 336,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "factory-f16-budget-guard",
+      "desc": "单元 token/墙钟成本护栏（#4365 的成本上看板 + 8M 累计 token 截止/BUDGET-STOP、日预算告警）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "BUDGET-STOP"},
+        {"base": "runtime", "file": "alerts/waste.md", "pattern": "BUDGET-ALERT"}
+      ],
+      "silence_hours": 336,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "loop-runtime-sync",
+      "desc": "落地即生效：main HEAD 变化时发布 pinned runtime 版本并切 live 指针（M1 的机制面）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "SYNC runtime from main"}
+      ],
+      "silence_hours": 336,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "config-reconcile",
+      "desc": "M1 配置单一事实源：仓库模板每拍覆盖运行目录 config，漂移被覆盖并留 keys 行 + inbox 事件",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "config-reconcile keys"}
+      ],
+      "silence_hours": 336,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "operator-pause",
+      "desc": "手工 PAUSE 开关被踩下时的每拍记录（暂停期间稳态机制沉默是预期的，此行让暂停可见）",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "paused by"}
+      ],
+      "silence_hours": 336,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "node-health-scorecard",
+      "desc": "node_health 体检（每拍评分，UNHEALTHY 写告警行；--file-issues 满 3h 升级 pipeline health 票）",
+      "events": [
+        {"base": "runtime", "file": "alerts/node-health.md", "pattern": "NODE-UNHEALTHY"}
+      ],
+      "silence_hours": 72,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "release-hotpatch-gate",
+      "desc": "发布腿热修门（生产带未回传 main 的 hot patch 时扣住发布，RELEASE-BLOCKED-HOTPATCH）",
+      "events": [
+        {"base": "runtime", "file": "alerts/release.md", "pattern": "RELEASE-BLOCKED"}
+      ],
+      "silence_hours": 336,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "zombie-watch",
+      "desc": "CI 僵尸 run 观察器（每 120s 一轮，读 pr-run 快照判定 docker 无活动的长 run 并恢复）",
+      "events": [
+        {"base": "runtime", "file": "zombie-watch.log", "pattern": "."}
+      ],
+      "silence_hours": 336,
+      "supervisor": "night-supervisor",
+      "expected_idle": true
+    },
+    {
+      "id": "bell-triage",
+      "desc": "bell 事件分诊（GitHub/生产事件按严重度入队、通知、升级 supervisor）",
+      "events": [
+        {"base": "runtime", "file": "bell.log", "pattern": "action="}
+      ],
+      "silence_hours": 1,
+      "supervisor": "night-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "supervisor-inbox-events",
+      "desc": "supervisor 收件箱（只收需要动手的事件；规则通道回执、健康升级、异常签名都落这里）",
+      "events": [
+        {"base": "agent_home", "file": "supervisor-inbox", "pattern": "."}
+      ],
+      "silence_hours": 24,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
+      "id": "factory-m5-live-event-close",
+      "desc": "M5 生效即验收（#4495/#4501）：直落单观测到登记的生产事件才关票，落地即关不算验收",
+      "acceptance_item_ids": ["live-event"],
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "live-event close issue="}
+      ],
+      "silence_hours": 24,
+      "supervisor": "head-supervisor",
+      "expected_idle": true
+    }
+  ]
+}

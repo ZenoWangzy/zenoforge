@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+# Run one coding agent on Codex luna by default, with ZCode (GLM-5.3, bin/zc) as failover.
+# Same interface as luna: worker <key> <cwd> <prompt-file> [output-schema.json]
+# Every backend reports in .scratch/luna/<key>/ (last.md = the final JSON, rc, backend). WORKER_BACKEND=luna|zc
+# selects the initial backend; a health failure can still fail over once. WORKER_STALL_MINUTES defaults to 10.
+# Both backends share luna's capacity gate (LUNA_MAX runs in total, started only while CPU < 85%).
+set -uo pipefail
+# Keep the complete body in one block so a live invocation has parsed it before this file is atomically replaced.
+{
+key="$1" cwd="$2" prompt="$3" schema="${4:-}"
+S=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}; d="$S/luna/$key"
+mkdir -p "$S/tmp" "$d"
+model=${CODEX_MODEL:-gpt-6-luna}
+round_model=$model
+model_fallback=''
+trap 'round_rc=$?
+  [[ -z $model_fallback ]] || printf "%s\n" "$model_fallback" >> "$d/stderr.log"
+  printf "%s %s %s rc=%s\n" "$(date -u +%FT%TZ)" "$key" "$round_model" "$round_rc" >> "$S/luna/rounds.log"
+' EXIT
+# Use the last numeric group: go3-3861 and review-3861 refer to the same ticket.
+if [[ -f $S/luna/rounds.log ]] && awk -v key="$key" '
+  function ticket(k) { sub(/[^0-9]*$/, "", k); sub(/^.*[^0-9]/, "", k); return k }
+  BEGIN { wanted = ticket(key) }
+  wanted != "" && ticket($2) == wanted && $4 ~ /^rc=[0-9]+$/ && $4 != "rc=0" { failed++ }
+  END { exit !(failed >= 2) }
+' "$S/luna/rounds.log"; then
+  model=gpt-6.1-terra  # maintainer 10-29: no sol, escalate to terra
+fi
+b=${WORKER_BACKEND:-}  # 10-28: zc's 84% failure was our wrapper (json output, Built-in fatal), fixed
+inflight() { local n=0 f; for f in "$S"/luna/*/backend; do [[ $(cat "$f" 2>/dev/null) == "$1" && ! -f ${f%/backend}/rc ]] && n=$((n+1)); done; echo "$n"; }
+breaker_path() { [[ $1 == zc ]] && echo "$S/tmp/zc-breaker" || echo "$S/tmp/luna-breaker"; }
+breaker_open_for() {
+  local file now touched
+  file=$(breaker_path "$1"); [[ -f $file ]] || return 1
+  now=$(date +%s); touched=$(stat -c %Y "$file" 2>/dev/null) || return 1
+  (( now - touched < ${WORKER_BREAKER_SECONDS:-1800} ))
+}
+if [[ -z $b ]]; then
+  zc_open=0; luna_open=0
+  breaker_open_for zc && zc_open=1
+  breaker_open_for luna && luna_open=1
+  if (( zc_open && !luna_open )); then b=luna
+  elif (( luna_open && !zc_open )); then b=zc
+  else
+    # 10-28: both quotas reset; spread load so neither provider hits its weekly cap first (zc-only burned GLM's in ~1 h)
+    exec {lk}>"$S/tmp/worker-pick.lock"; flock "$lk"
+    l=$(inflight luna) z=$(inflight zc)
+    if (( z < l )); then b=zc; elif (( l < z )); then b=luna
+    else [[ $(cat "$S/tmp/worker-last" 2>/dev/null) == zc ]] && b=luna || b=zc; fi
+    echo "$b" > "$S/tmp/worker-last"
+    flock -u "$lk"; exec {lk}>&-
+  fi
+fi
+if [[ $b != luna && $b != zc ]]; then
+  printf 'worker: unsupported backend %s\n' "$b" >&2; echo 2 > "$d/rc"; exit 2
+fi
+rm -f "$d/rc" "$d/failover"
+echo "$b" > "$d/backend"
+
+stall_after=${WORKER_STALL_SECONDS:-}
+if [[ -z $stall_after ]]; then
+  stall_minutes=${WORKER_STALL_MINUTES:-10}
+  if [[ ! $stall_minutes =~ ^[0-9]+$ ]]; then
+    printf 'worker: WORKER_STALL_MINUTES must be an integer\n' >&2; echo 2 > "$d/rc"; exit 2
+  fi
+  stall_after=$((stall_minutes * 60))
+fi
+health_interval=${WORKER_HEALTH_INTERVAL_SECONDS:-2}
+if [[ ! $stall_after =~ ^[0-9]+$ || ! $health_interval =~ ^[0-9]+([.][0-9]+)?$ || $health_interval == 0 || $health_interval == 0.0 ]]; then
+  printf 'worker: invalid health timeout or interval\n' >&2; echo 2 > "$d/rc"; exit 2
+fi
+
+worktree_state() {
+  local status head
+  status=$(git -C "$cwd" status --porcelain 2>/dev/null) || status='!git-status-unavailable'
+  head=$(git -C "$cwd" rev-parse HEAD 2>/dev/null) || head='!git-head-unavailable'
+  printf '%s\n%s' "$status" "$head"
+}
+file_state() {
+  local size
+  [[ -e $1 ]] || { printf 'missing'; return; }
+  size=$(stat -c %s "$1" 2>/dev/null) || { printf 'missing'; return; }
+  (( size > 0 )) || { printf 'empty'; return; }
+  stat -c '%s:%y' "$1" 2>/dev/null || printf 'missing'
+}
+fatal_reason() {
+  local log count
+  for log in "$d/stderr.log" "$d/backend-run.stderr.log"; do
+    [[ -f $log ]] || continue
+    if grep -qiE 'authentication failed|authentication[_ -]error|auth[_ -]error|unauthorized|not[[:space:]]+authorized|invalid[_ -]api[_ -]key|incorrect.{0,20}api key|api key.{0,40}(invalid|not valid|expired|incorrect)|invalid[_ -]token|token.{0,30}(invalid|expired)|insufficient[_ -]quota|quota.{0,20}(exceeded|exhausted|limit)|exceeded.{0,20}quota|billing.{0,30}(disabled|limit|exceeded)|payment required|resource[_ -]exhausted|rate[_ -]limit|(^|[^0-9])(401|403|429)([^0-9]|$)|too many requests' "$log"; then
+      echo 'fatal stderr pattern: authentication or quota error'; return 0
+    fi
+    # 10-28 factory-mainfix r1: zc's terminal `Error: Turn execution failed` (events.jsonl closes with turn.failed)
+    # exits rc=1 with no last.md; fail over to the other backend on the same dirty worktree instead of ending the round.
+    if grep -qiF 'Turn execution failed' "$log"; then
+      echo 'fatal stderr pattern: Turn execution failed'; return 0
+    fi
+  done
+  count=$(grep -ic 'AI_APICallError' "$d/stderr.log" "$d/backend-run.stderr.log" 2>/dev/null | awk -F: '{n += $NF} END {print n+0}')
+  if (( count >= 2 )); then echo "fatal stderr pattern: repeated AI_APICallError ($count occurrences)"; return 0; fi
+  return 1
+}
+stderr_has_meaningful_delta() {
+  local file=$1 previous=$2 current delta
+  [[ -f $file ]] || return 1
+  current=$(stat -c %s "$file" 2>/dev/null) || return 1
+  (( current > previous )) || return 1
+  delta=$(tail -c +$((previous + 1)) "$file" 2>/dev/null || true)
+  if [[ -n $delta ]] && printf '%s' "$delta" | grep -Eivq 'skipped[[:space:]]*\(not-due\)|^ZCode Built-in '; then return 0; fi
+  return 1
+}
+stop_backend_group() {
+  local pid=$1 i
+  # pid is the session/process-group leader saved by this wrapper, never discovered by process-name scans.
+  kill -TERM -- "-$pid" 2>/dev/null || true
+  for ((i=0; i<10; i++)); do
+    kill -0 -- "-$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  kill -KILL -- "-$pid" 2>/dev/null || true
+}
+run_reason=''
+run_rc=0
+run_backend() {
+  local backend=$1 pid backend_pid last_activity now progress current_worktree previous_worktree
+  local events_state last_state previous_events previous_last stderr_offset=0 stdout_offset=0 wrapper_stderr_offset=0
+  local monitor_reason='' should_stop=0 group_pid zc_prompt="$S/tmp/$key.zc-prompt.md"
+  local -a backend_cmd
+  run_reason=''; run_rc=0
+  echo "$backend" > "$d/backend"
+  # Keep the previous attempt's log: 10-29 a failover wiped the zc-stage events that held the only record of who edited live state.
+  [[ -s $d/events.jsonl ]] && mv "$d/events.jsonl" "$d/events.$(cat "$d/attempt-backend" 2>/dev/null || echo prev).$(date -u +%H%M%S).jsonl"
+  echo "$backend" > "$d/attempt-backend"
+  rm -f "$d/rc" "$d/codex.pid" "$d/backend-run.pid" "$d/last.md" \
+    "$d/stderr.log" "$d/backend-run.stdout.log" "$d/backend-run.stderr.log"
+  previous_worktree=$(worktree_state)
+  previous_events=$(file_state "$d/events.jsonl")
+  previous_last=$(file_state "$d/last.md")
+  last_activity=$(date +%s)
+  if [[ $backend == zc ]]; then
+    round_model=GLM-5.3
+    {
+      cat "$prompt"
+      [[ -n $schema ]] && printf '\n\nYour final message must be exactly one JSON object that matches this JSON Schema, with no prose and no code fence:\n%s\n' "$(cat "$schema")"
+    } > "$zc_prompt"
+    backend_cmd=(env ZC_OUT_ROOT="$S/luna" "$S/bin/zc" "$key" "$cwd" "$zc_prompt")
+  else
+    round_model=$model
+    backend_cmd=(env CODEX_MODEL="$model" "$S/bin/luna" "$key" "$cwd" "$prompt" "$schema")
+  fi
+  setsid --wait bash -c 'pid_file=$1; shift; printf "%s\n" "$$" > "$pid_file"; exec "$@"' \
+    worker-session "$d/backend-run.pid" "${backend_cmd[@]}" \
+    >"$d/backend-run.stdout.log" 2>"$d/backend-run.stderr.log" &
+  pid=$!
+  backend_pid=$pid
+  trap 'stop_backend_group "$backend_pid"; exit 143' TERM INT HUP
+
+  while kill -0 "$pid" 2>/dev/null; do
+    [[ ! -s $d/backend-run.pid ]] || backend_pid=$(cat "$d/backend-run.pid")
+    monitor_reason=$(fatal_reason || true)
+    if [[ -n $monitor_reason ]]; then should_stop=1; break; fi
+    now=$(date +%s); progress=0
+    current_worktree=$(worktree_state)
+    [[ $current_worktree == "$previous_worktree" ]] || progress=1
+    previous_worktree=$current_worktree
+    events_state=$(file_state "$d/events.jsonl")
+    last_state=$(file_state "$d/last.md")
+    if [[ $events_state != "$previous_events" || $last_state != "$previous_last" ]]; then progress=1; fi
+    previous_events=$events_state; previous_last=$last_state
+    stderr_has_meaningful_delta "$d/stderr.log" "$stderr_offset" && progress=1
+    stderr_has_meaningful_delta "$d/backend-run.stdout.log" "$stdout_offset" && progress=1
+    stderr_has_meaningful_delta "$d/backend-run.stderr.log" "$wrapper_stderr_offset" && progress=1
+    stderr_offset=$(stat -c %s "$d/stderr.log" 2>/dev/null || echo "$stderr_offset")
+    stdout_offset=$(stat -c %s "$d/backend-run.stdout.log" 2>/dev/null || echo "$stdout_offset")
+    wrapper_stderr_offset=$(stat -c %s "$d/backend-run.stderr.log" 2>/dev/null || echo "$wrapper_stderr_offset")
+    if (( progress )); then last_activity=$now; fi
+    # Backends write codex.pid only once past the shared capacity gate; queueing there is not a stall (w3 was killed 2026-10-26).
+    [[ -s $d/codex.pid ]] || last_activity=$now
+    if (( now - last_activity >= stall_after )); then
+      monitor_reason="no progress for ${stall_after}s: events/output unchanged and git status --porcelain plus HEAD unchanged"
+      should_stop=1; break
+    fi
+    sleep "$health_interval"
+  done
+  if (( should_stop )) && kill -0 "$pid" 2>/dev/null; then
+    group_pid=$(cat "$d/backend-run.pid" 2>/dev/null || true)
+    [[ $group_pid =~ ^[0-9]+$ ]] && stop_backend_group "$group_pid"
+  fi
+  wait "$pid"; run_rc=$?
+  trap - TERM INT HUP
+  rm -f "$d/backend-run.pid"
+  if [[ -n $monitor_reason ]]; then run_reason=$monitor_reason
+  else run_reason=$(fatal_reason || true); fi
+  printf '%s\n' "$run_rc" > "$d/rc"
+}
+
+run_with_model_fallback() {
+  local backend=$1 from to
+  run_backend "$backend"
+  if [[ $backend == luna && $run_rc != 0 ]] && grep -Fq 'Selected model is at capacity' "$d/events.jsonl" 2>/dev/null; then
+    from=$model
+    case $model in
+      gpt-6.1-terra|gpt-6.1-sol) model=gpt-6-luna; to=default ;;  # maintainer 10-29: no sol
+      *) return ;;
+    esac
+    # Backends replace stderr.log; append this at worker exit, even if health failover follows.
+    model_fallback="model-fallback $from -> $to"
+    run_backend luna
+  fi
+}
+
+run_with_model_fallback "$b"
+final_backend=$b
+if [[ -n $run_reason ]]; then
+  failed_backend=$b; first_reason=$run_reason
+  touch "$(breaker_path "$failed_backend")"
+  next_backend=luna; [[ $failed_backend == luna ]] && next_backend=zc
+  printf '[%s] backend=%s failed; next=%s; reason=%s\n' "$(date -u +%FT%TZ)" "$failed_backend" "$next_backend" "$first_reason" >> "$d/failover"
+  # The next backend starts with no memory of the first: 10-29 #4486 opened a second PR for the same ticket after failover.
+  resume="$S/tmp/$key.resume.md"
+  { cat "$prompt"; printf '\n## Resume after backend failover\nAnother agent already worked in this worktree and stopped (%s). Before doing anything else, read `git status`, `git log origin/main..HEAD` and `gh pr list --head "$(git branch --show-current)" --state open`. Continue from that state: reuse the existing commits and PR, and push to the same branch.\n' "$first_reason"; } > "$resume"
+  prompt=$resume
+  run_with_model_fallback "$next_backend"
+  final_backend=$next_backend
+  if [[ -n $run_reason ]]; then
+    second_reason=$run_reason
+    touch "$(breaker_path "$next_backend")"
+    printf '[%s] backend=%s failed; reason=%s\n' "$(date -u +%FT%TZ)" "$next_backend" "$second_reason" >> "$d/failover"
+    final_reason="both backends failed: $failed_backend: $first_reason; $next_backend: $second_reason"
+    printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
+    printf '%s\n' "$final_reason" >&2
+    echo 75 > "$d/rc"; exit 75
+  fi
+  if (( run_rc != 0 )); then
+    final_reason="both backends failed: $failed_backend: $first_reason; $next_backend exited rc=$run_rc"
+    printf '[%s] backend=%s failed; rc=%s\n' "$(date -u +%FT%TZ)" "$next_backend" "$run_rc" >> "$d/failover"
+    printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
+    printf '%s\n' "$final_reason" >&2
+    echo 75 > "$d/rc"; exit 75
+  fi
+fi
+final_rc=$run_rc
+echo "$final_rc" > "$d/rc"
+if [[ $final_backend == zc && -n $schema && -s $d/last.md ]]; then python3 - "$d/last.md" <<'EOF'
+import json, sys
+p = sys.argv[1]; t = open(p).read(); dec = json.JSONDecoder(); found = None; i = t.find('{')
+while i != -1:
+    try:
+        o, end = dec.raw_decode(t, i)
+        if isinstance(o, dict): found = o
+        i = t.find('{', end)
+    except ValueError:
+        i = t.find('{', i + 1)
+if found is not None:
+    open(p + '.raw', 'w').write(t); open(p, 'w').write(json.dumps(found, ensure_ascii=False))
+EOF
+fi
+exit "$final_rc"
+}

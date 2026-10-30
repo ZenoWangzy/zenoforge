@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "user_outcome": {
+      "type": "string",
+      "description": "One plain-language sentence saying who can do what where after release, or exactly NONE if no user-visible outcome exists."
+    }
+  },
+  "required": ["user_outcome"]
+}

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="${1:?repo root required}"
+source_file="$repo/engine/lib.sh"
+policy_body="$(sed -n '/^model_policy_record_failure() {/,/^}/p' "$source_file")"
+test -n "$policy_body"
+grep -Fq '[ "$unit" = implement ]' <<< "$policy_body"
+grep -Fq '[ "$prior_stage" = "$stage" ]' <<< "$policy_body"
+grep -Fq '[ "$previous_normalized_reason" = "$normalized_reason" ]' <<< "$policy_body"
+grep -Fq 'failure_fingerprint "$1"' "$source_file"
+grep -Fq 'same_failure_streak "$old_reason" "$old_evidence" "$reason" "$evidence" "$old_streak"' "$source_file"
+grep -Fq 'record_implement_failure "$n" "$reason" "$evidence" "$status" "$stage" 1' "$source_file"
+grep -Fq 'same_streak=$((prior_streak + 1))' <<< "$policy_body"
+grep -Fq 'same_failure_streak = 0' <<< "$policy_body"
+grep -Fq 'early_stop: $early_stop' <<< "$policy_body"
+echo 'same-failure policy invariant present'

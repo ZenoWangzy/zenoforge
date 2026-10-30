@@ -1,0 +1,17 @@
+# Fires zenoforge-label-churn.service every 30 minutes. Independent of
+# zenoforge-agent.timer's 5-minute cadence on purpose: this is a notice-only
+# detector (engine/detect-label-churn.sh), not a dispatch decision --
+# it does not need to react within one tick, and a coarser cadence keeps its
+# `gh api` cost (one timeline + one comments call per open ready-for-agent/
+# ready-for-human issue, every run) low. See OnActiveSec's own comment on
+# zenoforge-agent.timer for why OnUnitActiveSec alone never fires a first tick.
+[Unit]
+Description=the product issue-pipeline label-churn detector timer
+
+[Timer]
+OnActiveSec=5min
+OnUnitActiveSec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

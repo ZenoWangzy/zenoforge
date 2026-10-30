@@ -1,0 +1,30 @@
+name: engine-tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  suites:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: git config --global user.name ci && git config --global user.email ci@example.com
+      # engine/ts-judge.mjs imports @typesafe-ai/sdk at top level; it is the only npm runtime dependency of the engine.
+      - run: npm install --no-save @typesafe-ai/sdk@0.7.0
+      - run: bash tools/run-engine-tests.sh ${{ matrix.shard }} 8
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failures-${{ matrix.shard }}
+          path: |
+            engine-test-failures-${{ matrix.shard }}.txt
+            test-logs/

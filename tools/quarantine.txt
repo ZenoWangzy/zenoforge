@@ -1,0 +1,3 @@
+engine/eval/runner.test.mjs	the triage schema now requires estimated_changed_lines but the suite fixtures omit it (test 14: invalid triage schema)
+engine/mac-autopilot/scheduler-gates.test.sh	the suite still calls refill(), which scheduler.sh no longer defines (refill: command not found, line 1141)
+engine/mac-autopilot/scheduler.test.sh	PR CI slots are sized from the runners busy flag but the ci_admission_priority fixture lists no busy runner (2 free slots, not 1: "a freed runner slot did not start the waiting unit CI")

@@ -1,0 +1,9 @@
+{
+  "id": "issue-4053-lifecycle-raw-token-5m",
+  "description": "Candidate stop at 5M lifetime raw tokens",
+  "predicate": {
+    "path": "metrics.rawTokens",
+    "op": "gte",
+    "value": 5000000
+  }
+}

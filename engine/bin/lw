@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Detached long jobs for workflow agents: `lw start <name> <cmd...>` runs <cmd> in its own session;
+# `lw wait <name> [seconds]` blocks up to <seconds> (default 540, under the 10-minute Bash cap) and
+# prints "DONE rc=<n>" (137: the job died without an rc, 143: lw stop) or "RUNNING" with the log tail; `lw stop <name>` stops the job's whole process group. Logs: .scratch/lw/<name>.{log,rc,pid}
+set -uo pipefail
+unset GH_TOKEN   # the exported GH_TOKEN is dead (401); gh uses the keyring login
+d=${HOME:-/tmp}/.zenoforge/scratch/lw; mkdir -p "$d"
+op="$1" name="$2"; shift 2
+case "$op" in
+  start)
+    if [[ -f "$d/$name.pid" && ! -f "$d/$name.rc" ]] && kill -0 "$(cat "$d/$name.pid")" 2>/dev/null; then echo "already running"; exit 0; fi
+    rm -f "$d/$name.rc"
+    setsid bash -c '"$@"; echo $? >"'"$d/$name.rc"'"' _ "$@" >"$d/$name.log" 2>&1 </dev/null &
+    echo $! >"$d/$name.pid"; echo "started $name" ;;
+  wait)
+    end=$((SECONDS + ${1:-540})); pid="$(cat "$d/$name.pid" 2>/dev/null)"
+    while [[ ! -f "$d/$name.rc" && $SECONDS -lt $end ]] && kill -0 "$pid" 2>/dev/null; do sleep 15; done
+    # A job killed from outside never writes its rc; without this a waiter polled a dead job for 11 h (2026-10-24).
+    [[ ! -f "$d/$name.rc" ]] && ! kill -0 "$pid" 2>/dev/null && echo 137 >"$d/$name.rc"
+    if [[ -f "$d/$name.rc" ]]; then echo "DONE rc=$(cat "$d/$name.rc")"; else echo "RUNNING"; tail -n 3 "$d/$name.log"; fi ;;
+  stop)
+    # The job runs in its own session (setsid), so its pid is the process-group id: stop the whole group.
+    # Killing only the pid left the job's script running; restarts on 2026-10-24 stacked 3 merge loops.
+    # Codex runs each command in its own session, so a group kill missed them: an orphaned child process held
+    # its lock 20 min after `lw stop` (2026-10-29). Collect the whole tree first, then kill each group.
+    pid="$(cat "$d/$name.pid" 2>/dev/null)"
+    tree() { local c; for c in $(pgrep -P "$1"); do echo "$c"; tree "$c"; done; }
+    pgids=""; [[ -n "$pid" ]] && pgids="$(for p in "$pid" $(tree "$pid"); do ps -o pgid= -p "$p"; done | sort -u)"
+    for g in $pgids; do kill -- -"$g" 2>/dev/null; done; sleep 1
+    for g in $pgids; do kill -0 -- -"$g" 2>/dev/null && kill -9 -- -"$g" 2>/dev/null; done
+    [[ -f "$d/$name.rc" ]] || echo 143 >"$d/$name.rc"; echo "stopped $name" ;;
+  *) echo "usage: lw start|wait|stop <name> ..." >&2; exit 2 ;;
+esac

@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Run one Codex agent non-interactively, the way the pipeline launches workers.
+# Model and effort: CODEX_MODEL (default gpt-6-luna) and CODEX_EFFORT (default max); use gpt-6.1-sol for heavy batches.
+# CODEX_SEARCH=1 enables live web search.
+# Usage: luna <key> <cwd> <prompt-file> [output-schema.json]
+# Writes .scratch/luna/<key>/{last.md,events.jsonl,stderr.log,rc}.
+set -uo pipefail
+# The whole body is one { ... } block, so bash parses it before running any of it: editing this file while jobs
+# run cannot make a running job read the new bytes at its old offset (2026-10-24: six wrappers deadlocked that way).
+# Replace this file atomically (write a temp file, then mv) all the same.
+{
+key="$1" cwd="$2" prompt="$3" schema="${4:-}"
+root=${HOME:-/tmp}/.zenoforge/scratch
+out="$root/luna/$key"
+mkdir -p "$out" "$root/tmp/$key"
+rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch reads these
+# WSL has 12 GB and 12 cores, shared by both supervisor sessions and all their subagents (maintainer, 2026-10-24:
+# scale the worker count with CPU load, never let WSL freeze). A new Codex run starts only while the box has room:
+#   - always, if fewer than LUNA_MIN (2) runs are going and at least 2 GB is available;
+#   - otherwise only below LUNA_MAX (10) runs, with sampled CPU busy under LUNA_CPU_TARGET (85%), memory pressure
+#     under 5% and at least 3 GB available (maintainer 2026-10-24: keep the box near 85% busy).
+# Runs are counted as top-level codex processes from any caller; the check and the start happen under one mutex.
+slots="$root/tmp/luna-slots"; mkdir -p "$slots"
+codex_runs() { local p n=0 pc; for p in $(pgrep -x codex) $(pgrep -x zcode-cli); do pc=$(ps -o comm= -p "$(ps -o ppid= -p "$p" | tr -d ' ')" 2>/dev/null); [[ "$pc" == codex || "$pc" == zcode-cli ]] || n=$((n+1)); done; echo "$n"; }
+cpu_busy() { local a b; a=($(head -1 /proc/stat)); sleep 2; b=($(head -1 /proc/stat))
+  local busy=$(( (b[1]+b[2]+b[3]+b[6]+b[7]+b[8]) - (a[1]+a[2]+a[3]+a[6]+a[7]+a[8]) )) idle=$(( (b[4]+b[5]) - (a[4]+a[5]) ))
+  echo $(( 100 * busy / (busy + idle + 1) )); }
+box_has_room() {  # maintainer bound: at most 10 agent runs, whatever LUNA_MAX a launcher sets (10-29 a launcher set 14 -> 17 agents)
+  local runs avail cpu mem
+  runs=$(codex_runs)
+  avail=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo)
+  mem=$(awk -F'avg10=' '/^some/{print int($2)}' /proc/pressure/memory)
+  (( runs < ${LUNA_MIN:-2} && avail >= 2048 )) && return 0
+  # maintainer 10-29: hotfix takes whatever it needs first; only the memory floor still applies (LUNA_PRIORITY=hotfix)
+  [[ "${LUNA_PRIORITY:-}" == hotfix ]] && (( avail >= 2048 && mem < 10 )) && return 0
+  # Aging (10-29): strict priority starved opt 25-31 min at CPU>85% while hotfix ran. A run that has waited
+  # LUNA_AGE_ADMIT_SECONDS skips only the CPU target; CPUWeight 100 vs hotfix 1000 keeps it on leftover cycles.
+  (( SECONDS >= ${LUNA_AGE_ADMIT_SECONDS:-1200} && runs < 10 && mem < 5 && avail >= 3072 )) && return 0
+  cpu=$(cpu_busy)
+  (( runs < (${LUNA_MAX:-10} < 10 ? ${LUNA_MAX:-10} : 10) && cpu < ${LUNA_CPU_TARGET:-85} && mem < 5 && avail >= 3072 ))
+}
+# A run that cannot start yet publishes wait-<prio>-<pid> (prio = LUNA_PRIORITY, pid = this wrapper): the autopilot
+# scheduler holds new ordinary workers while a hotfix/opt run queues here (#4621, maintainer 10-29 strict priority
+# hotfix > opt > 普通 pipeline). Removed on start and on exit; a wrapper killed while waiting leaves a stale file
+# that whoever sees next drops (the scheduler's higher_priority_waiting does the same check).
+prio="${LUNA_PRIORITY:-normal}"; wait_f="$slots/wait-$prio-$$"
+wait_stale_drop() { local f p; for f in "$slots"/wait-*; do [[ -e "$f" ]] || continue; p="${f##*-}"; { [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; } || rm -f -- "$f"; done; }
+trap 'rm -f -- "$wait_f"' EXIT
+exec {mx}>"$slots/mutex"
+while :; do
+  flock "$mx"
+  if box_has_room; then rm -f -- "$wait_f"; break; fi
+  : >"$wait_f"; wait_stale_drop
+  flock -u "$mx"; sleep 30
+done
+# Workers need no MCP servers; each codex run otherwise spawns chrome-devtools, gbrain and gitnexus (~360 MB).
+mcp_off=(); for n in $(grep -oE '^\[mcp_servers\.[A-Za-z0-9_-]+\]' ~/.codex/config.toml | sed -E 's/^\[mcp_servers\.([^]]+)\]/\1/' | sort -u); do
+  mcp_off+=(-c "mcp_servers.$n.enabled=false"); done
+args=(exec -C "$cwd" "${mcp_off[@]}" -m "${CODEX_MODEL:-gpt-6-luna}" -c "model_reasoning_effort=\"${CODEX_EFFORT:-max}\"" -c shell_environment_policy.inherit=all
+  -s danger-full-access --skip-git-repo-check -o "$out/last.md" --json)
+[[ -n "$schema" ]] && args+=(--output-schema "$schema")
+# Each run lives in its own cgroup scope with a memory cap, so one runaway tool (2026-10-24: three shellcheck runs
+# took 8.7 GB and pushed memory pressure to 32%) is OOM-killed inside its job instead of freezing WSL.
+# One CPU budget across agent runs (maintainer 10-29 [...]); shared with dispatch-codex.sh.
+source $HOME/.zenoforge/checkout/engine/thread-budget.sh && agent_thread_budget
+scope="luna-${key//[^A-Za-z0-9_-]/-}-$$"
+TMPDIR="$root/tmp/$key" PATH="$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+  systemd-run --user --scope --quiet --unit="$scope" -p MemoryMax="${LUNA_MEM_MAX:-4G}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo 100)" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
+  codex ${CODEX_SEARCH:+--search} "${args[@]}" - <"$prompt" >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &
+cpid=$!; echo "$cpid" >"$out/codex.pid"; sleep 3; flock -u "$mx"; exec {mx}>&-
+wait "$cpid"; rc=$?
+echo "$rc" >"$out/rc"
+exit "$rc"
+}

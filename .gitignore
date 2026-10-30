@@ -1,0 +1,9 @@
+# runtime state and scratch
+.state/
+.scratch/
+*.env
+!*.example.env
+__pycache__/
+node_modules/
+test-logs/
+engine-test-failures-*.txt

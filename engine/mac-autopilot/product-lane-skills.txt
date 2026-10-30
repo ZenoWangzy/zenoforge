@@ -1,0 +1,2 @@
+# Skills a product-lane worker clone keeps visible. One repo-relative skill directory per line,
+# for example .agents/skills/my-skill. Empty: product-lane clones keep every skill.

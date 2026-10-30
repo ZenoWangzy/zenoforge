@@ -1,0 +1,24 @@
+# Security
+
+## Reporting a vulnerability
+
+Do not open a public issue. Contact the maintainer privately through the maintainer's GitHub profile, https://github.com/ZenoWangzy, and ask for a private channel before you describe the problem.
+
+<!-- Maintainer: enable private vulnerability reporting on ZenoWangzy/zenoforge (Settings > Code security and analysis), then replace the paragraph above with a pointer to the Security tab. Until it is enabled, do not claim it here. -->
+
+## Threat model: read this before you run Zenoforge
+
+Zenoforge runs coding agents that read GitHub issue text and then execute code on your machine with your credentials. The engine also pushes to your default branch, removes worktrees and branches, and sends mail. The list below covers each of these.
+
+- **Agents run unsandboxed by default.** The unit loop starts Codex with `-s danger-full-access`. The issue loop defaults `ZF_CODEX_SANDBOX` to `danger-full-access`. `engine/bin/zc` runs ZCode in yolo mode, which is not a sandbox. An agent can run any command the operating user can. Run Zenoforge under a dedicated user account on a machine that holds nothing else of value.
+- **Issue text is untrusted input.** Anyone who can open or comment on an issue in the target repository can try to steer an agent with a prompt injection. Point Zenoforge only at repositories where only trusted collaborators can file the issues it picks up.
+- **Credentials.** The engine uses your `gh` login, and any agent can use it too. Use a dedicated GitHub account or a fine-grained token limited to the target repository. Keep secrets in env files outside the repository. Never commit them.
+- **Merging is automatic.** Changes that pass review and the required checks are merged without a human. Protect your default branch with required status checks that you trust.
+- **Direct-main lane.** Changes that do not need a PR review go through `engine/mac-autopilot/land-pr.sh`, which squashes an approved PR into one commit whose subject starts with `[skip ci]`. `engine/land-direct-main.sh` pushes that commit straight to the default branch, and GitHub starts no workflow run for it. The lane's gate is the target repository's `scripts/branch-delivery-policy.mjs`, which this repository does not ship. Review this lane before you run Zenoforge.
+- **Checkout reset.** Before each issue-loop tick, `engine/run-tick.sh` saves uncommitted changes (tracked diffs and untracked files) to `$AGENT_HOME/quarantine/`. It then runs `git reset --hard HEAD` and `git clean -fd` in its checkout. Use a dedicated checkout, and do not point Zenoforge at one you work in.
+- **Process kills.** The engine kills process groups it started, for example in `engine/mac-autopilot/scheduler.sh` and `engine/run-ci-suites.sh`. Some restart paths stop processes by command-line pattern (`pkill -f`, in `engine/mac-autopilot/bell.sh` and `start.sh`), which can also match processes you did not start.
+- **Worktrees and branches.** The engine removes git worktrees, with `--force` in some paths, and deletes local branches. `engine/mac-autopilot/rescued_gc.sh` deletes `rescued/*` branches on origin, but only after it has pushed each one to `refs/zf-rescue/archived/`, which is the recovery point.
+- **Automatic reverts.** When main goes red, the issue loop searches for the culprit commit and opens a revert PR named `agent/revert-main-<issue>-<sha12>`. `engine/sweep-merges.sh` merges that PR once its checks are green. A failed production release gets a revert PR from `engine/deploy-culprit.sh`, named `agent/revert-deploy-<issue>-<sha12>`. A wrong culprit means a wrong revert, and the merge does not wait for a human.
+- **Mail.** `engine/notify.sh` sends mail with `send_email`. It posts over HTTPS to the Gmail API with `curl`, using an access token from `gcloud auth application-default print-access-token`. Recipients come from `~/.zenoforge/recipients.json`, outside the repository. Maintainer mail covers business decisions, production outcomes and the health digest.
+- **TypeSafe judge.** If `TYPESAFE_API_KEY` is set, or `TYPESAFE_ENV_FILE` points to a file that holds it, several engine steps call the TypeSafe service through its SDK (`engine/ts-judge.mjs`). They send issue titles and bodies, triage and recut plans, the last 12,000 bytes of failed CI logs, failing test lines, commit subjects and changed file names for red-main recovery, and supervisor arbitration records. `engine/redact-secrets.sh` replaces the key and common token patterns before sending. That redaction is pattern-based and is not a guarantee. Leave both variables unset if this data must stay on the host.
+- **Spend.** Agents consume model quota and CI minutes. The daily token budget only raises alerts; it does not stop dispatch. Set `max_workers` and the capacity settings before the first run, and watch the alerts.

@@ -1,0 +1,20 @@
+# Fires zenoforge-agent.service every 5 minutes. Defect fixed 2026-09-12:
+# `OnUnitActiveSec=5min` alone schedules relative to the unit's *last
+# activation* — with none yet (a freshly enabled timer), systemd has nothing
+# to count 5 minutes from and the first tick would never fire (verified:
+# `systemctl --user list-timers` showed `n/a` under NEXT with only
+# OnUnitActiveSec set). OnActiveSec=1min fires the first tick 1 minute after
+# this timer unit itself starts (`systemctl --user start/enable --now
+# zenoforge-agent.timer`), regardless of boot time; OnUnitActiveSec=5min keeps
+# the cadence after that.
+[Unit]
+Description=the product issue-pipeline agent timer
+
+[Timer]
+OnActiveSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

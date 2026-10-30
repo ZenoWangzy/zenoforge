@@ -1,0 +1,13 @@
+# Pipeline timer dependencies observed by run-tick.sh.
+# Format: <timer unit> <GitHub variable whose exact `off` intentionally stops it>
+# <outage marker name under AGENT_HOME>. Use `-` when no switch exists. Both
+# enabled and active are required. The supervisor keeps #1531's marker name.
+zenoforge-agent.timer - timer-alerted-zenoforge-agent.timer
+zenoforge-supervisor.timer AGENT_SUPERVISOR supervisor-timer-alerted
+zenoforge-local-rescue.timer - timer-alerted-zenoforge-local-rescue.timer
+zenoforge-label-churn.timer - timer-alerted-zenoforge-label-churn.timer
+zenoforge-disk-reclaim.timer - timer-alerted-zenoforge-disk-reclaim.timer
+zenoforge-daily-perf-report.timer - timer-alerted-zenoforge-daily-perf-report.timer
+zenoforge-health-maintenance.timer - timer-alerted-health-maintenance.timer
+# Maintainer direction: keep zenoforge-health-mail.timer disabled; do not auto-repair it.
+zenoforge-prod-anomaly.timer - timer-alerted-zenoforge-prod-anomaly.timer

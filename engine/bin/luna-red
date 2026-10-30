@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Fix one red refactor PR on Codex luna. Usage: luna-red <pr> <branch> <check name>. Result: .scratch/luna/red-<pr>/last.md
+set -uo pipefail
+pr="$1" br="$2" check="$3"
+S=${HOME:-/tmp}/.zenoforge/scratch co=$HOME/.zenoforge/checkout
+wt="$HOME/.zenoforge/checkout-wt/refactor-${br#refactor/}"
+if [[ ! -d "$wt" ]]; then git -C "$co" fetch -q origin "$br" && git -C "$co" worktree add -q --lock "$wt" -B "$br" "origin/$br"; fi
+git -C "$wt" fetch -q origin && git -C "$wt" merge -q --ff-only "origin/$br" 2>/dev/null
+p="$S/luna/red-$pr.prompt"
+sed -e "s|{{PR}}|$pr|g" -e "s|{{BRANCH}}|$br|g" -e "s|{{CHECK}}|$check|g" -e "s|{{WT}}|$wt|g" "$S/luna/templates/red-fix.md" >"$p"
+key="${LUNA_KEY:-red-$pr}"; exec "$S/bin/worker" "$key" "$wt" "$p" "$S/luna/red.schema.json"

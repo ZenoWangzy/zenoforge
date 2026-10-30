@@ -1,0 +1,157 @@
+# Runs run-tick.sh (which fast-forwards this unit's dedicated checkout, then
+# hands off to issue-pipeline.sh — see the third gap below; no longer an
+# `exec`, see run-tick.sh's own 2026-09-15 header) as a systemd --user
+# oneshot, triggered by zenoforge-agent.timer. Two defects fixed 2026-09-12
+# (found before this was ever enabled — see the corresponding entries in
+# engine/README.md):
+#
+# 1. PATH: a systemd --user unit does NOT inherit the operator's interactive shell
+#    PATH (no ~/.bashrc, no ~/.profile). issue-pipeline.sh and the wrapper
+#    scripts call gh/git/node (all in /usr/bin, covered by systemd's own
+#    default PATH) but also jq and pnpm (~/.local/bin) and Codex and
+#    gitnexus (~/.npm-global/bin) — neither directory is on systemd's default
+#    PATH, so those four would fail with "command not found". Verified by
+#    `command -v` for every binary these scripts invoke, then cross-checked
+#    against `systemd-run --user --wait --pipe /usr/bin/env`'s actual default
+#    PATH on this box (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin) —
+#    not assumed. The two extra directories are prepended below.
+# 2. Silent failure: without an explicit StandardOutput/StandardError, a
+#    failed tick could still land in the journal by systemd's own default,
+#    but leaving it implicit invited exactly the "silent 5-minute loop that
+#    fails invisibly" this comment is here to prevent. Pinned to `journal`
+#    explicitly. Read it with:
+#      journalctl --user -u zenoforge-agent.service -n 100 --no-pager
+#      journalctl --user -u zenoforge-agent.service -f          (follow live)
+#
+# Found while proving the inert tick, not one of the two defects above but in
+# the same "differs from your interactive shell" category: `gh` on this box
+# authenticates purely via the GH_TOKEN env var set in ~/.bashrc (no
+# ~/.config/gh/hosts.yml exists at all) — confirmed with `systemd-run --user
+# ... gh auth status`, which reported logged out. A systemd --user unit does
+# not source ~/.bashrc, so every `gh` call in issue-pipeline.sh and the
+# wrapper scripts would silently fail once AGENT_PIPELINE leaves "off" (the
+# inert-tick proof itself still holds either way, since `gh variable get ...
+# || echo off` already treats a failed gh call as "off"). Fixed the only way
+# that doesn't put a credential in this repo: the commented EnvironmentFile= example below reads
+# $HOME/.zenoforge/env (outside the repo, alongside the existing
+# state/PAUSE/logs directory, mode 600, `-` prefix so a missing file doesn't
+# fail the unit). That file does not exist in version control and this
+# comment does not say what's in it, only where — populate/rotate it with
+# `gh auth token`, one `GH_TOKEN=...` line.
+#
+# Third gap, found 2026-09-13, not "differs from your interactive shell" but
+# "IS your interactive shell": WorkingDirectory/ExecStart used to point
+# straight at $HOME/src/target-repo, the maintainer's own interactive
+# checkout. On 2026-09-13 that checkout sat one commit behind main while
+# being reported as fixed — the running pipeline executed stale code and
+# missed an instruction already published to main, and nothing distinguished
+# "main has the fix" from "the service is running the fix". Fixed by giving
+# the pipeline its own checkout, never touched interactively:
+# $HOME/.zenoforge/checkout (cloned from the maintainer's checkout,
+# origin repointed at GitHub, alongside the existing state/PAUSE/logs/env
+# under $HOME/.zenoforge/). WorkingDirectory, ExecStart, and
+# ZF_REPO_DIR below all point at it now. ExecStart runs
+# engine/run-tick.sh (in that same dedicated checkout) instead of
+# issue-pipeline.sh directly — run-tick.sh fast-forwards the checkout from
+# origin/main (`--ff-only`, never a merge/reset/rebase/clean) before every
+# tick and refuses to run the tick at all, non-zero exit into this unit's
+# journal logging above, if that fast-forward can't happen cleanly (diverged,
+# dirty, network down) — see run-tick.sh's own header for why it structures
+# around updating the very file it's running as.
+[Unit]
+Description=the product issue-pipeline agent tick
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.zenoforge/checkout
+Environment=ZF_REPO_DIR=%h/.zenoforge/checkout
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+# Optional credentials: if `gh` authenticates through GH_TOKEN, put a single `GH_TOKEN=...` line in
+# %h/.zenoforge/env (mode 600) and uncomment the next line. The `-` prefix keeps a missing file from failing the unit.
+#EnvironmentFile=-%h/.zenoforge/env
+StandardOutput=journal
+StandardError=journal
+# 2026-09-15 (#1204 incident, 2h25m no-alert outage -- see lib.sh's gh()/
+# git_fetch_bounded() and run-tick.sh's own header for the full story):
+# even with every `gh`/`git fetch` in these scripts now individually
+# bounded, this is the backstop for anything NOT covered by that -- a
+# future unbounded wait this fix didn't anticipate, or a genuinely wedged
+# local tool. Without SOME outer bound, any unbounded wait inside this
+# unit holds issue-pipeline.sh's own tick lock (LOCK_FILE, `flock -n 9`)
+# forever, and because that check is NON-blocking (`flock -n 9 || exit
+# 0`), every later tick exits 0 -- a successful-looking no-op, not a
+# failure -- so nothing, not even run-tick.sh's own fail-count/alert
+# machinery, ever sees the outage. That is exactly what happened for
+# 2h25m on 2026-09-15.
+#
+# Verified, not assumed: flock releases only once EVERY process holding a
+# copy of that fd is gone -- a plain kill of just the top-level PID is NOT
+# enough if a child inherited the fd (bash `exec N>file` fds are inherited
+# across fork unless closed), which is exactly this incident's own shape
+# (issue-pipeline.sh held fd 9; its CHILD `gh` process, not issue-
+# pipeline.sh itself, was what actually hung). Reproduced live in a
+# throwaway sandbox: a holder process forked a child that inherited its
+# lock fd and slept; killing only the parent left a second `flock -n`
+# probe BLOCKED; killing the child too made the very next probe succeed
+# immediately. A unit-level timeout is the right seam for this precisely
+# because systemd's default KillMode=control-group signals every process
+# in this unit's cgroup -- the main process, anything it forked, and any
+# orphan reparented to PID 1 that never left the cgroup -- not just the
+# one PID systemd itself started, so it reaches a hung `gh`/`git` child
+# the same way it reaches run-tick.sh's own shell. A bash-level `timeout`
+# wrapper around run-tick.sh would not have this guarantee (it signals its
+# direct child only, not further descendants in their own process group).
+#
+# 2026-09-15, second pass (#1299 review): the directive below was
+# originally RuntimeMaxSec=20min. Two independent gaps found and closed in
+# the same review, neither assumed, both verified live against a
+# throwaway test unit (never the real zenoforge-agent.service/.timer -- those
+# were never stopped, disabled or restarted to produce this evidence):
+#   1. Nothing ever installed a changed unit file from the checkout
+#      run-tick.sh fast-forwards every tick into the directory systemd
+#      --user actually reads (~/.config/systemd/user/, a plain `cp` on
+#      this box, not a symlink) or told systemd to re-read it -- this
+#      exact RuntimeMaxSec/TimeoutStartSec change could merge to main and
+#      still leave the live unit's cap at `infinity` forever, a guarantee
+#      that exists in exactly one place nobody reads. Fixed in
+#      run-tick.sh itself: every tick, right after the fast-forward,
+#      compares (via `diff`, never a hash -- project hash ban) every unit
+#      file this repo ships against what's installed and pushes any
+#      difference in, then `systemctl --user daemon-reload`s once if
+#      anything changed -- see that comment for the full reasoning
+#      (loop over the directory, not this one filename; never touches a
+#      live unit this repo doesn't ship; reload confirmed live to never
+#      disturb an already-active unit).
+#   2. RuntimeMaxSec turned out to have NO EFFECT on this unit at all:
+#      this box's systemd logs, verbatim, "RuntimeMaxSec= has no effect in
+#      combination with Type=oneshot. Ignoring." -- confirmed against a
+#      throwaway Type=oneshot unit, not read off documentation. A oneshot
+#      has no separate "started, now idling" phase for RuntimeMaxSec's
+#      "been active too long" concept to apply to; the entire ExecStart
+#      run IS the start job. TimeoutStartSec is the directive that
+#      actually bounds it -- confirmed live: a throwaway unit with
+#      TimeoutStartSec=2s was SIGTERM-killed (Result=timeout) within 3s of
+#      a fresh start, honoring the same KillMode=control-group stop
+#      procedure as any other unit stop. The directive below is
+#      TimeoutStartSec, not RuntimeMaxSec, for this reason.
+#
+# 20 minutes: the maintainer measured a healthy tick at roughly 5 minutes,
+# and zenoforge-agent.timer fires every 5 minutes, so ticks already run nearly
+# back-to-back. 4x that headroom tolerates a legitimately busy tick (many
+# candidates, several needs-info email replies, a slower-than-usual gh
+# round trip on each) without this being what kills a tick that was
+# actually going to finish. It is also comfortably inside systemd's own
+# default 90s TimeoutStopSec for the SIGTERM sent before SIGKILL, so
+# run-tick.sh's own ERR-trap/refuse() machinery (its header) still gets a
+# chance to record a proper scheduler-failed refusal (counter + maintainer
+# alert) in the common case; the lock's own release does not depend on
+# that trap running at all (see the verification above), so even a bare
+# SIGKILL with no trap chance still frees the next tick. #1232 (a
+# systemd-level OnFailure= alert specifically for a shell killed before it
+# can run its own cleanup) stays the right, still-open, deliberately-
+# deferred design for the alerting half of that same gap -- this change
+# does not close #1232, it adds one more legitimate, expected way to reach
+# the exact state #1232 is about, which if anything makes that issue more
+# relevant, not less.
+TimeoutStartSec=20min
+ExecStart=%h/.zenoforge/checkout/engine/run-tick.sh

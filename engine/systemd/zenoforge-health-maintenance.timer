@@ -1,0 +1,12 @@
+[Unit]
+Description=the product health maintenance checks timer
+
+[Timer]
+OnActiveSec=1min
+OnUnitActiveSec=10min
+Persistent=true
+RandomizedDelaySec=2min
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

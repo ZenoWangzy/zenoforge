@@ -1,0 +1,285 @@
+{
+  "schema": "zf-scheduling-policy/v1",
+  "version": 1,
+  "_doc": "#4655：流水线调度与交付顺序的版本化策略与单元状态机（唯一表述；docs/agents/issue-pipeline.md 只留链接）。intake、lane 路由、并行调度、容量、supervisor 委派/升级、失败唤醒、PR 处理、release 状态八类策略各标 executed_by 的脚本与承载的维护者裁决（engine/state/rulings.json 的 ruling id）；机制是脚本，不是 prompt。engine/scheduling-policy.mjs 校验本文件（由 check-rulings.sh 在落地预检与 Pipeline suites 里执行）：状态集合对 scheduler 源码的 .stage 写入封闭、对 live 台账（$AGENT_HOME/checkout/.scratch-supervisor/autopi/units.json，存在时）封闭，enforced_by 路径与 ruling id 双向存在。改本文件走 supervisor 规则通道（rule-files.json 清单 + Rule-Replay 回测）。",
+  "state_machine": {
+    "executed_by": [
+      "engine/mac-autopilot/scheduler.sh"
+    ],
+    "ledger": ".scratch-supervisor/autopi/units.json",
+    "initial_states": [
+      "implement-pending",
+      "review-pending"
+    ],
+    "_initial_note": "intake 派发进 implement-pending；收养在途 PR（orphan-registered）与 pr-opened/delivered 进 review-pending。",
+    "escalation_targets": [
+      "supervisor-review",
+      "parked",
+      "needs-human",
+      "closed",
+      "blocked-external"
+    ],
+    "_escalation_note": "升级/停放/关单处理器不挑前置 stage：任何非 legacy 状态都可能进入这五个目标（supervisor-escalated、supervisor-park、supervisor-needs-info、obsolete/superseded、blocked-on；reopen 后的 closed 单也会再被升级）。转移表之外只允许这五个目标。",
+    "states": {
+      "implement-pending": {
+        "meaning": "已入账待派发实现（intake/收养/解封/重新入队）"
+      },
+      "review-pending": {
+        "meaning": "实现或返工已交付，待独立评审"
+      },
+      "repair-pending": {
+        "meaning": "评审打回、CI 红、合并冲突或落地失败后待返工"
+      },
+      "rereview-pending": {
+        "meaning": "返工已交付，待对新 head 重评"
+      },
+      "ready-to-merge": {
+        "meaning": "评审通过，待合并门（eval 门单元先经 eval-pending）"
+      },
+      "eval-pending": {
+        "meaning": "改动 prompt/评审契约/模型策略，待 eval 门回调（#4368）"
+      },
+      "landing": {
+        "meaning": "direct-main 快车道已派 land worker，落地中"
+      },
+      "landed": {
+        "meaning": "direct-main 落地完成（merged-is-not-deployed：落地≠部署）"
+      },
+      "merged": {
+        "meaning": "PR 合入 main，awaiting-release 记账，待发布批次"
+      },
+      "awaiting-live-event": {
+        "meaning": "已落地、待登记的生产事件关票（M5 生效即验收，#4501）"
+      },
+      "closed": {
+        "meaning": "终态：OBSOLETE/发布验收/生产事件/supervisor 关单（reopen 重新入账）"
+      },
+      "blocked-external": {
+        "meaning": "等前置 issue 或外部依赖，不占开发产能"
+      },
+      "parked": {
+        "meaning": "supervisor 停放（止损/重切/等待），可恢复"
+      },
+      "supervisor-review": {
+        "meaning": "升级待仲裁（六选一动作，#4369）"
+      },
+      "needs-human": {
+        "meaning": "supervisor-needs-info：只有人能补的事实"
+      },
+      "review": {
+        "meaning": "旧命名，仅兼容读取",
+        "legacy": true
+      },
+      "rereview": {
+        "meaning": "旧命名，仅兼容读取",
+        "legacy": true
+      },
+      "repair": {
+        "meaning": "旧命名，仅兼容读取",
+        "legacy": true
+      },
+      "implement": {
+        "meaning": "旧命名，仅兼容读取",
+        "legacy": true
+      },
+      "done": {
+        "meaning": "旧终态，仅兼容读取",
+        "legacy": true
+      },
+      "wontfix": {
+        "meaning": "旧终态，仅兼容读取",
+        "legacy": true
+      },
+      "duplicate": {
+        "meaning": "旧终态，仅兼容读取",
+        "legacy": true
+      }
+    },
+    "transitions": {
+      "implement-pending": [
+        "review-pending",
+        "blocked-external",
+        "closed",
+        "parked",
+        "needs-human"
+      ],
+      "review-pending": [
+        "ready-to-merge",
+        "eval-pending",
+        "repair-pending",
+        "rereview-pending",
+        "blocked-external",
+        "closed",
+        "needs-human",
+        "parked"
+      ],
+      "repair-pending": [
+        "rereview-pending",
+        "review-pending",
+        "ready-to-merge",
+        "eval-pending",
+        "closed",
+        "parked"
+      ],
+      "rereview-pending": [
+        "review-pending",
+        "ready-to-merge",
+        "eval-pending",
+        "repair-pending",
+        "blocked-external",
+        "closed"
+      ],
+      "eval-pending": [
+        "ready-to-merge",
+        "repair-pending",
+        "review-pending",
+        "rereview-pending",
+        "landing",
+        "landed",
+        "merged",
+        "closed"
+      ],
+      "ready-to-merge": [
+        "landing",
+        "merged",
+        "repair-pending",
+        "eval-pending",
+        "rereview-pending"
+      ],
+      "landing": [
+        "landed",
+        "ready-to-merge",
+        "repair-pending",
+        "rereview-pending"
+      ],
+      "landed": [
+        "awaiting-live-event",
+        "closed",
+        "repair-pending"
+      ],
+      "merged": [
+        "awaiting-live-event",
+        "closed",
+        "repair-pending"
+      ],
+      "awaiting-live-event": [
+        "closed"
+      ],
+      "blocked-external": [
+        "implement-pending",
+        "review-pending",
+        "rereview-pending",
+        "repair-pending",
+        "ready-to-merge",
+        "eval-pending"
+      ],
+      "parked": [
+        "implement-pending",
+        "review-pending",
+        "rereview-pending",
+        "eval-pending"
+      ],
+      "supervisor-review": [
+        "review-pending",
+        "rereview-pending",
+        "repair-pending",
+        "ready-to-merge",
+        "merged",
+        "blocked-external",
+        "parked",
+        "needs-human",
+        "closed"
+      ],
+      "needs-human": [
+        "review-pending",
+        "rereview-pending",
+        "repair-pending",
+        "eval-pending"
+      ],
+      "closed": [
+        "implement-pending",
+        "review-pending",
+        "rereview-pending",
+        "repair-pending",
+        "ready-to-merge",
+        "eval-pending"
+      ]
+    }
+  },
+  "areas": {
+    "intake": {
+      "rule": "每个新 issue/PR 都进台账并被派发（work-conserving）；maintainer-test > priority:top > critical-path > focus > finish-first > bug > 普通 > legacy，各带内最新优先；非产品 lane 票不排产品队（pipeline-system 直通 ready-for-agent）；roadmap 树外的开放票是缺陷。",
+      "enforced_by": [
+        "engine/mac-autopilot/scheduler.sh",
+        "engine/issue-pipeline.sh",
+        "engine/pipeline-issue-upsert.sh",
+        "engine/roadmap.sh",
+        "engine/roadmap-issue-create.sh",
+        "engine/run-triage.sh"
+      ],
+      "rulings": []
+    },
+    "lane-routing": {
+      "rule": "改动全落非产品路径走 direct-main 快车道（land-direct-main 压单提交直落，suites 后置）；产品改动走 PR 车道；生产热修走 expedited PR（hotfix lane，CI 子集先行、全量后置）；评审过的 PR 用既有单列车单 CI 路径，不默认更慢的逐 PR presubmit。",
+      "enforced_by": [
+        "engine/mac-autopilot/scheduler.sh",
+        "engine/land-direct-main.sh",
+        "engine/hotfix/hf-start.sh"
+      ],
+      "rulings": []
+    },
+    "parallel-scheduling": {
+      "rule": "独立工作并行：pending 单元按 main-red > hotpatch > critical > 阶段 > 车道排序派发，文件足迹互斥防冲突，30s refill 在 worker 退出后立即补位，不等慢拍。",
+      "enforced_by": [
+        "engine/mac-autopilot/scheduler.sh",
+        "engine/mac-autopilot/loop.sh"
+      ],
+      "rulings": []
+    },
+    "capacity": {
+      "rule": "容量参数唯一来源是版本化 config.template.json（每拍 reconcile）：max_workers/implement_cap 界并行度，cihost 存放行与 WSL 动态并发准入按实时内存/CPU 调整，不问维护者要例行批准。",
+      "enforced_by": [
+        "engine/mac-autopilot/config.template.json",
+        "engine/execution-admission.sh",
+        "engine/mac-autopilot/scheduler.sh"
+      ],
+      "rulings": []
+    },
+    "supervisor-delegation-escalation": {
+      "rule": "supervisor 只做派发/调度/验收与升级：单元失败按阶梯升级（返工 → advisor/仲裁 → supervisor 兜底），两次以上不收敛交强模型仲裁（supervisor_arbiter）；执行可委派 GLM/zcode subagent（hand-zcode），热修 hand agent 用维护者配置的模型；吞吐与效率由 node_health/throughput-metrics 持续度量，越过阈值才升级。",
+      "enforced_by": [
+        "engine/mac-autopilot/scheduler.sh",
+        "engine/supervise-pipeline.sh",
+        "engine/mac-autopilot/config.template.json",
+        "engine/model-policy.default.json",
+        "engine/mac-autopilot/node_health.py",
+        "engine/throughput-metrics.mjs"
+      ],
+      "rulings": []
+    },
+    "failure-wake": {
+      "rule": "只在失败时唤醒：成功路径不产生 supervisor 事件（bell notify/auto_supervisor 关闭，supervisor inbox 只收要动手的事），30s refill 只在 worker 退出后唤醒派发，不需要 agent 巡检也能自转。",
+      "enforced_by": [
+        "engine/mac-autopilot/loop.sh",
+        "engine/mac-autopilot/bell.sh",
+        "engine/mac-autopilot/scheduler.sh"
+      ],
+      "rulings": []
+    },
+    "pr-handling": {
+      "rule": "单一 CI 准入：hotfix > main-red > opt > normal，各类内按 ready_since；draft PR 不跑重 job；合并门五条件 + 精确 head 钉住 + guarded_pr_merge，乐观合入、合入后验证加 bisect/revert 兜底；合入即记 awaiting-release（merged≠deployed）。",
+      "enforced_by": [
+        "engine/mac-autopilot/scheduler.sh",
+        "engine/mac-autopilot/land-pr.sh"
+      ],
+      "rulings": []
+    },
+    "release-status": {
+      "rule": "发布腿常开：release train 周期出车，白天做主绿/候选/镜像准备一次成功；部署验收（真实用户路径+验收用户批次）后 conclude_run(deployed) 关票；带未回迁热修的生产扣住发布。",
+      "enforced_by": [
+        "engine/mac-autopilot/scheduler.sh"
+      ],
+      "rulings": []
+    }
+  }
+}

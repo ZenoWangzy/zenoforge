@@ -1,0 +1,11 @@
+{
+  "order": ["hotfix", "finishing", "optimization", "general"],
+  "default": "general",
+  "sessions": {
+    "example-hotfix-session": "hotfix",
+    "example-optimization-session": "optimization"
+  },
+  "roles": {"production": "hotfix", "merge-owner": "finishing"},
+  "max_active": {"finishing": 4},
+  "memory_floor_mb": {"hotfix": 2000, "finishing": 2000, "optimization": 6144, "general": 6144}
+}

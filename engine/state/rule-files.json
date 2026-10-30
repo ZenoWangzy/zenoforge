@@ -1,0 +1,17 @@
+{
+  "schema": "zf-rule-files/v1",
+  "_comment": "M3 传感器/执行器分离（#4499，spec #4495）。清单内的文件是 pipeline 的控制信号：unit 的 diff 碰到任意一个，落地脚本（engine/rule-lane.sh，挂在 land-direct-main.sh 检查链上）拒绝落地。改动只能走 supervisor 规则通道：ZF_AGENT_NAME=supervisor 提交，且改动提交带 Rule-Replay: <回测报告路径> trailer，报告 schema 为 zf-control-rule-replay/v1（engine/mac-autopilot/rule-replay.mjs 产出，存 docs/agents/rule-replays/）且 falseStops 为 0。本清单自身也是规则文件。lessons/* 与 engine/state/incident-guards.json 不在清单内：它们由 M6 的教训机制（land-direct-main.sh 的 lesson 折叠）单独管辖。",
+  "files": {
+    "engine/state/rule-files.json": "规则文件清单本身",
+    "engine/state/rulings.json": "维护者裁决",
+    "engine/state/scheduling-policy.json": "统一调度策略与单元状态机（八类策略各标执行脚本与裁决；#4655）",
+    "engine/state/stopgaps.json": "带解除条件的临时规则",
+    "engine/state/traffic-budget.json": "流量预算参数",
+    "engine/state/mechanism-registry.json": "机制沉默上限与事件匹配模式",
+    "engine/mac-autopilot/config.template.json": "配置里的止损、门禁和预算参数（live 配置的仓库来源）",
+    "engine/mac-autopilot/required-pr-checks.json": "PR 门禁参数",
+    "engine/mac-autopilot/node_health.py": "指标定义和阈值、健康标准",
+    "engine/mac-autopilot/NODE-HEALTH.md": "健康标准的唯一表述文档",
+    "engine/mac-autopilot/workorder_cost.py": "单元成本标准（UNIT_STANDARDS）"
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "units": [
+    {
+      "id": "f6-round-accepted",
+      "stage": "ready-to-merge",
+      "history": [
+        { "stage": "write-start", "at": "2026-10-28T11:00:00Z" },
+        { "stage": "write-start", "at": "2026-10-28T11:40:00Z" },
+        { "stage": "write-start", "at": "2026-10-28T12:20:00Z" },
+        { "stage": "review-approve", "at": "2026-10-28T12:30:00Z" }
+      ]
+    },
+    {
+      "id": "f6-wall-intercepted",
+      "stage": "parked",
+      "note": "supervisor budget exhausted: stop-loss wall budget",
+      "history": [
+        { "stage": "write-start", "at": "2026-10-28T08:00:00Z" },
+        { "stage": "supervisor-budget-park", "at": "2026-10-28T12:00:01Z", "result": "stop-loss: wall 240min of 240min after 1 rounds" }
+      ]
+    },
+    {
+      "id": "f6-round-unresolved",
+      "stage": "repair-pending",
+      "history": [
+        { "stage": "write-start", "at": "2026-10-28T15:00:00Z" },
+        { "stage": "write-start", "at": "2026-10-28T15:30:00Z" },
+        { "stage": "write-start", "at": "2026-10-28T16:00:00Z" }
+      ]
+    },
+    {
+      "id": "f6-supervisor-reset",
+      "stage": "repair-pending",
+      "history": [
+        { "stage": "write-start", "at": "2026-10-28T09:00:00Z" },
+        { "stage": "write-start", "at": "2026-10-28T09:30:00Z" },
+        { "stage": "supervisor-approve", "at": "2026-10-28T09:31:00Z" },
+        { "stage": "write-start", "at": "2026-10-28T10:00:00Z" },
+        { "stage": "write-start", "at": "2026-10-28T10:30:00Z" }
+      ]
+    },
+    {
+      "id": "f6-window-seed",
+      "stage": "ready-to-merge",
+      "history": [
+        { "stage": "write-start", "at": "2026-10-21T10:00:00Z" },
+        { "stage": "write-start", "at": "2026-10-21T10:30:00Z" },
+        { "stage": "write-start", "at": "2026-10-23T10:00:00Z" },
+        { "stage": "review-approve", "at": "2026-10-23T10:15:00Z" }
+      ]
+    }
+  ]
+}

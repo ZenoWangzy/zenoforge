@@ -1,0 +1,23 @@
+# Runs detect-label-churn.sh (engine/detect-label-churn.sh) as a
+# systemd --user oneshot, triggered by zenoforge-label-churn.timer. Same
+# PATH/proxy/GH_TOKEN environment shape as zenoforge-agent.service -- see that
+# unit's own header comment for why each of these is required under a
+# systemd --user unit (it does not source ~/.bashrc). Deliberately points at
+# the same dedicated, never-touched-interactively checkout
+# ($HOME/.zenoforge/checkout) zenoforge-agent.service uses, but does
+# NOT fast-forward it itself -- this detector only reads GitHub's own
+# timeline/comments and writes a comment/email, it has no reason to run
+# code newer than whatever zenoforge-agent.timer's own next tick will already
+# bring in; a stale checkout only means a stale THRESHOLD/RECENCY constant,
+# never stale data (both come from `gh api`, not from anything in the repo).
+[Unit]
+Description=the product issue-pipeline label-churn detector tick
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.zenoforge/checkout
+Environment=ZF_REPO_DIR=%h/.zenoforge/checkout
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+StandardOutput=journal
+StandardError=journal
+ExecStart=%h/.zenoforge/checkout/engine/detect-label-churn.sh

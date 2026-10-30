@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily the product pipeline performance report
+
+[Timer]
+OnCalendar=*-*-* 01:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

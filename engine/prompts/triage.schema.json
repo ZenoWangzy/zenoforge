@@ -1,0 +1,67 @@
+{
+  "type": "object",
+  "properties": {
+    "category": {
+      "type": "string",
+      "enum": ["bug", "enhancement"]
+    },
+    "state": {
+      "type": "string",
+      "enum": ["needs-info", "ready-for-agent", "ready-for-human", "needs-owner", "duplicate", "finish-first", "wontfix"]
+    },
+    "risk_class": {
+      "type": "string",
+      "enum": ["P0", "P1", "P2"]
+    },
+    "level": {
+      "type": "string",
+      "enum": ["L0", "L1", "L2", "L3", "L4"]
+    },
+    "entry_surface": {
+      "type": "string",
+      "enum": ["Web /chat/", "Admin Console", "Chat channel", "CLI", "API", "Other"],
+      "description": "The user-facing entry point of the reported flow. Use API for internal automation with no chat or browser-admin flow; Admin Console only for an actual browser-admin user flow."
+    },
+    "acceptor": {
+      "type": "string",
+      "enum": ["none", "reporter", "maintainer"],
+      "description": "Who, if anyone, personally cares that this fix works -- decides ONLY whether a closing notification email goes out and to whom once this merges. Never inferred from author.login (the pipeline may post every comment/PR as the owner's own GitHub account, so hand-cut tickets and the pipeline's own self-filed findings are indistinguishable by author alone). maintainer is the pipeline owner and gets no closing email."
+    },
+    "brief_md": {
+      "type": "string",
+      "description": "The agent-brief-shaped comment body to post (Category, Summary, User outcome, Current behavior, Desired behavior, Key interfaces, Acceptance criteria, Out of scope; without the disclaimer line, which the wrapper adds)."
+    },
+    "notes_md": {
+      "type": "string",
+      "description": "Triage Notes body for needs-info; the pointer-to-original for duplicate; the rationale for wontfix/ready-for-human/needs-owner/finish-first. Empty string when not applicable."
+    },
+    "expected_packages": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Package or path prefixes this issue is expected to touch, used to detect collisions with other in-flight agent/* PRs."
+    },
+    "expected_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Exact repository-relative file or directory prefixes known from evidence. Used only to schedule concurrent work inside an expected package; return an empty array when exact paths are uncertain."
+    },
+    "estimated_changed_lines": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Estimated additions plus deletions for implementation and focused tests, using the size-admission metric: exclude Markdown/docs, generated files, lockfiles, and snapshots. Estimate from likely affected files and comparable merged PR sizes."
+    },
+    "external_deliverable": {
+      "type": "object",
+      "properties": {
+        "required": { "type": "boolean" },
+        "location": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "required": ["required", "location", "reason"],
+      "additionalProperties": false,
+      "description": "Set required true only if acceptance cannot be met by a change in this repository. When false, location and reason are empty strings."
+    }
+  },
+  "required": ["category", "state", "risk_class", "level", "entry_surface", "acceptor", "brief_md", "notes_md", "expected_packages", "expected_paths", "estimated_changed_lines", "external_deliverable"],
+  "additionalProperties": false
+}

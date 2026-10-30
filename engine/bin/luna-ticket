@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# One ticket on Codex luna max: implement (unless --review-only) -> independent zf-code-review ->
+# owner repair and targeted re-review, at most 2 rounds. Result: .scratch/luna/ticket-<key>/result.json
+# Usage: luna-ticket <key> <worktree> <ticket.md> <spec.md> <notes> [--review-only]
+set -uo pipefail
+key="$1" wt="$2" ticket="$3" spec="$4" notes="$5" mode="${6:-}"
+root=${HOME:-/tmp}/.zenoforge/scratch
+L="$root/luna"; dir="$L/ticket-$key"; mkdir -p "$dir"
+log() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >>"$dir/progress.log"; }
+stage() { # name prompt-file schema
+  # REVIEW_BACKEND puts review stages on the other model, so the verifier is never the author.
+  local be="${WORKER_BACKEND:-}"; [[ $1 == review* || $1 == rereview* ]] && be="${REVIEW_BACKEND:-$be}"
+  WORKER_BACKEND="$be" "$root/bin/worker" "$key-$1" "$wt" "$2" "$3" || log "stage $1 exited $?"
+  cat "$L/$key-$1/last.md" 2>/dev/null
+}
+{ cat "$L/common-rules.md"; printf '\nWorktree (cwd): %s\nTicket: %s\nSpec: %s\nSupervisor notes: %s\n' "$wt" "$ticket" "$spec" "$notes"; } >"$dir/context.md"
+impl='{}'
+if [[ "$mode" != --review-only ]]; then
+  { cat "$dir/context.md"; cat <<'P'
+
+You are the implementer for this one ticket. Read the ticket and the spec. Read and follow .agents/skills/tdd/SKILL.md (test-driven: pick the highest existing seam the ticket names as prior art; red-green one slice at a time). Use GLOSSARY.md vocabulary (grep it, do not read it whole). Commit when green. Final answer: JSON per the output schema, reporting each acceptance criterion as met / not met / not applicable with evidence.
+P
+  } >"$dir/impl.prompt"
+  log implement; impl="$(stage impl "$dir/impl.prompt" "$L/impl.schema.json")"
+  if [[ "$(jq -r '.status // "blocked"' <<<"$impl" 2>/dev/null)" != done ]]; then
+    jq -n --arg key "$key" --argjson impl "${impl:-null}" '{key:$key, impl:$impl, final:"blocked"}' >"$dir/result.json" 2>/dev/null \
+      || printf '{"key":"%s","final":"blocked","impl_raw":%s}\n' "$key" "$(jq -Rs . <<<"$impl")" >"$dir/result.json"
+    log blocked; exit 0
+  fi
+fi
+if [[ "$mode" == --impl-only ]]; then
+  jq -n --arg key "$key" --argjson impl "${impl:-null}" '{key:$key, final:"implemented", impl:$impl}' >"$dir/result.json" 2>/dev/null \
+    || printf '{"key":"%s","final":"implemented"}\n' "$key" >"$dir/result.json"
+  log implemented; exit 0
+fi
+review_prompt() { # input-json extra-text
+  { cat "$dir/context.md"; printf '\nYou are the independent reviewer; you did not write this code. Read and follow .agents/skills/zf-code-review/SKILL.md exactly, read-only (do not edit or commit), fixed point origin/main: run `git rev-parse origin/main` and review `origin/main...HEAD`. Check EVERY acceptance checkbox in the ticket; an unmet one is blocking. A custom reimplementation of behaviour an existing dependency provides is blocking. Review by reading the diff and the code it reaches. Run a test only to confirm or refute a specific finding, and then only that test file (for run-release.test.sh only the RELEASE_TEST_GROUP involved). Do not run the Pipeline suites or re-run an eval: the suites run post-land, and evals are compared from the recorded labels with --compare. Lead-level input from the implementer (not proof):\n%s\n%s\nFinal answer: JSON per the output schema (verdict, the HEAD sha you reviewed, blocking findings, the full report).\n' "$1" "${2:-}"; } >"$dir/review.prompt"
+}
+review_prompt "$impl"; log review1; review="$(stage review1 "$dir/review.prompt" "$L/review.schema.json")"
+rounds=0; repairs='[]'
+while [[ "$(jq -r '.verdict // "NOT_READY"' <<<"$review" 2>/dev/null)" == NOT_READY && $rounds -lt 2 ]]; do
+  rounds=$((rounds+1))
+  { cat "$dir/context.md"; printf '\nYou are the implementation owner. Fix every blocking finding in the review below with the smallest change that meets the ticket, test-first where behaviour is involved (.agents/skills/tdd/SKILL.md). If a finding is wrong, do not change code for it; explain why with evidence. Commit the repair as new commits.\nREVIEW:\n%s\nFinal answer: JSON per the output schema.\n' "$(jq -r '.report // .' <<<"$review" 2>/dev/null || printf '%s' "$review")"; } >"$dir/repair$rounds.prompt"
+  log "repair$rounds"; rep="$(stage "repair$rounds" "$dir/repair$rounds.prompt" "$L/impl.schema.json")"
+  repairs="$(jq -c --argjson r "${rep:-null}" '. + [$r]' <<<"$repairs" 2>/dev/null || echo "$repairs")"
+  review_prompt "$rep" "This is a TARGETED RE-REVIEW after repair round $rounds. Previous report: $(jq -r '.report // .' <<<"$review" 2>/dev/null | head -c 20000)"
+  log "rereview$rounds"; review="$(stage "rereview$rounds" "$dir/review.prompt" "$L/review.schema.json")"
+done
+final="$(jq -r '.verdict // "no-review"' <<<"$review" 2>/dev/null || echo no-review)"
+jq -n --arg key "$key" --arg final "$final" --argjson rounds "$rounds" --argjson impl "${impl:-null}" \
+  --argjson repairs "$repairs" --argjson review "${review:-null}" \
+  '{key:$key, final:$final, rounds:$rounds, impl:$impl, repairs:$repairs, review:$review}' >"$dir/result.json" 2>/dev/null \
+  || printf '{"key":"%s","final":"%s","rounds":%s}\n' "$key" "$final" "$rounds" >"$dir/result.json"
+log "final=$final rounds=$rounds"

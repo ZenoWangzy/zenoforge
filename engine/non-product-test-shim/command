@@ -1,0 +1,94 @@
+#!/usr/bin/python3
+"""Block test execution from scheduler direct-main workers."""
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+
+SHIM_FILE = Path(__file__).resolve()
+SHIM_DIR = SHIM_FILE.parent
+COMMAND = Path(sys.argv[0]).name
+ARGS = sys.argv[1:]
+
+
+def real_command():
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = Path(entry or ".") / COMMAND
+        try:
+            if candidate.resolve() == SHIM_FILE:
+                continue
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def test_file(value):
+    return bool(re.search(r"(?:^|[/\\])[^/\\]+\.test\.[^/\\]+$", value))
+
+
+def blocked_reason():
+    test_flags = any(arg == "--test" or arg.startswith("--test=") for arg in ARGS)
+    if COMMAND == "node":
+        if test_flags:
+            return "node-test"
+        if "--check" in ARGS:
+            return ""
+        return "test-file" if any(test_file(arg) for arg in ARGS) else ""
+    if COMMAND == "pnpm":
+        if test_flags:
+            return "node-test"
+        value_flags = {"--filter", "-F", "--dir", "-C", "--config"}
+        i = 0
+        while i < len(ARGS):
+            arg = ARGS[i]
+            if arg in value_flags:
+                i += 2
+                continue
+            if arg.startswith("-"):
+                i += 1
+                continue
+            if arg == "test" or arg.startswith("test:"):
+                return "pnpm-test"
+            if arg == "run" and i + 1 < len(ARGS) and ARGS[i + 1].startswith("test"):
+                return "pnpm-test"
+            break
+        if "--check" not in ARGS and any(test_file(arg) for arg in ARGS):
+            return "test-file"
+        return ""
+    if COMMAND in {"bash", "sh"} and any(arg == "-n" for arg in ARGS):
+        return ""
+    if COMMAND in {"python", "python3"} and len(ARGS) >= 2 and ARGS[:2] == ["-m", "py_compile"]:
+        return ""
+    return "test-file" if any(test_file(arg) for arg in ARGS) else ""
+
+
+def record_violation(reason):
+    reporter = SHIM_DIR.parent / "execution-admission.py"
+    command_name = COMMAND if COMMAND in {"node", "pnpm", "bash", "sh", "python", "python3"} else "unknown"
+    result = subprocess.run(
+        ["/usr/bin/python3", str(reporter), "record-test-violation", command_name, reason],
+        env=os.environ.copy(), check=False,
+    )
+    return result.returncode == 0
+
+
+if os.environ.get("ZF_NON_PRODUCT_UNIT") == "1":
+    reason = blocked_reason()
+    if reason:
+        recorded = record_violation(reason)
+        unit = os.environ.get("ZF_PIPELINE_UNIT", "unknown")
+        print(
+            f"non-product-test-guard: refused unit={unit} command={COMMAND} reason={reason} recorded={int(recorded)}",
+            file=sys.stderr,
+        )
+        sys.exit(78)
+
+real = real_command()
+if not real:
+    print(f"non-product-test-guard: {COMMAND} unavailable", file=sys.stderr)
+    sys.exit(127)
+os.execv(real, [real, *ARGS])

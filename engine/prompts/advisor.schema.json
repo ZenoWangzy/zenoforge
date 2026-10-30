@@ -1,0 +1,55 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["misclassified", "recut", "advised", "maintainer", "tracker"]
+    },
+    "risk_class": {
+      "type": "string",
+      "enum": ["P0", "P1", "P2"],
+      "description": "The advisor's own best-guess classification. Required for verdict=misclassified, where it is the CORRECTED value the wrapper writes into the issue's state file. Ignored by the wrapper for every other verdict, but still required here so the schema stays flat -- the advisor's honest belief is harmless context even when unused."
+    },
+    "level": {
+      "type": "string",
+      "enum": ["L0", "L1", "L2", "L3", "L4"],
+      "description": "Same rule as risk_class: required for verdict=misclassified (the corrected value), otherwise present but unused."
+    },
+    "reasoning_md": {
+      "type": "string",
+      "description": "Why the advisor reached this verdict. Posted as an issue comment for misclassified and advised (alongside decision_md for advised); not used for recut (see recut_md) or maintainer (see maintainer_question_md)."
+    },
+    "decision_md": {
+      "type": "string",
+      "description": "Required for verdict=advised: the actual engineering ruling, stored in the issue's state file under advisor_decision so the implement leg can inject it into its own prompt. Empty string when not applicable."
+    },
+    "recut_md": {
+      "type": "string",
+      "description": "Required for verdict=recut: posted as the comment explaining why this issue needs to be split into smaller children before it can be classified. Empty string when not applicable."
+    },
+    "maintainer_question_md": {
+      "type": "string",
+      "description": "Required for verdict=maintainer: a structured business decision for the reporter to read by email and on the issue, in exactly the layout the notification gate (maintainer_mail_rejection_reason in engine/notify.sh) accepts, written in Chinese. Include a 问题 line stating the actual unanswered product/business question from the issue as a direct question ending with ？; separate 客户/公司, 用户动作, and 结果 lines; two or three A）/B）/C） choices, each with an 影响 consequence; a 建议 line selecting one option; and end with 请回复“A”. Keep technical internals out. Empty string when not applicable."
+    },
+    "maintainer_subject": {
+      "type": "string",
+      "description": "For verdict=maintainer: concise email subject naming this business choice, at most 40 characters, written in Chinese (the notification gate rejects a subject with no Chinese characters, more Latin letters than Chinese characters, or an issue number or pipeline terminology). Empty string otherwise."
+    },
+    "merge_conditions_md": {
+      "type": "string",
+      "description": "For verdict=misclassified or advised: the executable conditions the diff must satisfy before merge, as a Markdown checklist -- which counter-example tests must be in the diff (another tenant cannot see it, another user without access cannot, a revoked user cannot, a replay does not double-write), which existing function must stay untouched, which package the change stays inside. The wrapper stores it in the state file and prepends it to the brief so both the implementer and the reviewer read it. Empty string when there is nothing beyond the standard gates. This is the narrative for a human or a model to read; required_test_paths (below) is the same requirement in a form a script can check."
+    },
+    "required_test_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Every repo-relative file path merge_conditions_md's own checklist depends on a test existing at, one entry per required test file -- a NEW path (following the touched package's own existing test-naming convention) for a counter-example or replay test the diff must add, or an EXISTING path for one it must extend. This is what turns merge_conditions_md from a request into a contract: the wrapper's guarded-merge admission gate checks these exact paths against `git diff --name-only`, mechanically, not by reading prose. Required (non-empty) whenever merge_conditions_md names a counter-example, replay, or migration-safety test as a condition; empty array when merge_conditions_md names no such test (a condition about which function stays untouched, or which package the diff stays inside, needs no test path). Never a directory or a glob -- exact file paths only, since the check is an exact-match diff intersection."
+    },
+    "expected_packages_addendum": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Path prefixes to ADD to the ticket's stored expected_packages (union -- never replaces the original declaration, which stays in force for everything else). Populate only for verdict=misclassified when the refusal you are correcting was the blast-radius gate (gate 4, the merge-time check that every changed file falls under the declared packages) finding a real, legitimate file outside the triage-declared scope -- read the issue's own prior comment for the exact path gate 4 named. Same prefix-match convention as expected_packages itself (exact path or a directory prefix): name the specific file if it is a one-off, or its containing package if more of that package is plausibly in scope too. Empty array for every other case, including every other misclassified correction and every advised verdict -- this field exists for exactly one gap (an advisor ruling that could not otherwise change the gate that provoked it) and nothing else."
+    }
+  },
+  "required": ["verdict", "risk_class", "level", "reasoning_md", "decision_md", "recut_md", "maintainer_question_md", "maintainer_subject", "merge_conditions_md", "required_test_paths", "expected_packages_addendum"],
+  "additionalProperties": false
+}

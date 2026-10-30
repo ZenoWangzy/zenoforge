@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Measurement-only gh shim: one TSV row per call, then gh's own output and exit code.
+# A unit opts in by putting this directory first on PATH. Rows never carry argument values:
+# unit, calling script basename, subcommand, digit-normalized API path, exit code, milliseconds.
+real="${ZF_GH_REAL:-$HOME/.local/bin/gh}"
+log="${ZF_GH_MEASURE_FILE:-$HOME/.zenoforge/measure/gh-calls.tsv}"
+start="${EPOCHREALTIME/./}"
+
+# Background the real gh so a TERM from an outer `timeout` reaches it; `<&0` keeps stdin (`--input -`).
+"$real" "$@" <&0 &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP
+wait "$child"; rc=$?
+while kill -0 "$child" 2>/dev/null; do wait "$child"; rc=$?; done
+
+{
+  sub="${1:-}"; endpoint=""
+  if [ "$sub" = api ]; then
+    shift
+    for a in "$@"; do case "$a" in -*) ;; *) endpoint="$a"; break ;; esac; done
+    endpoint="$(sed -E 's/\?.*$//; s/[0-9]+/N/g' <<< "$endpoint")"
+  else
+    sub="$sub ${2:-}"
+  fi
+  unit="$(sed -n 's#.*/\([^/]*\.\(service\|scope\)\)$#\1#p' /proc/self/cgroup 2>/dev/null | tail -1)"
+  caller="" p=$PPID
+  for _ in 1 2 3 4 5 6; do
+    caller="$(tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -m1 -E '\.(sh|py|mjs|cjs)$')" && [ -n "$caller" ] && break
+    p="$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)"; [ "${p:-1}" -gt 1 ] || break
+  done
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${unit:-?}" "${caller##*/}" "$sub" "$endpoint" "$rc" \
+    "$(( (${EPOCHREALTIME/./} - start) / 1000 ))" >> "$log"
+} 2>/dev/null
+exit "$rc"

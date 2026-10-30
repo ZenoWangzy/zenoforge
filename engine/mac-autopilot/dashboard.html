@@ -1,0 +1,1070 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>the product 流水线看板</title>
+<style>
+  /* 设计令牌：取自 DESIGN.md（冷灰底、单一 navy 强调色、语义色只表状态）；深色是同一套角色的深色取值，不是自动反色。 */
+  :root {
+    color-scheme: light;
+    --canvas:#f7f9fb; --surface:#ffffff; --soft:#f8fafc; --sunk:#f1f5f9;
+    --hairline:#e2e8f0; --hairline-soft:#eef2f6; --hairline-strong:#cbd5e1;
+    --ink:#0f172a; --charcoal:#1e293b; --body:#475569; --steel:#64748b; --stone:#94a3b8;
+    --primary:#1a237e; --primary-subtle:#e8eaf6; --on-primary:#ffffff;
+    --ok:#1aae39; --warn:#dd5b00; --bad:#e03131; --none:#94a3b8;
+    --ok-ink:#12802a; --warn-ink:#b34a00; --bad-ink:#c92a2a; --none-ink:#64748b;
+    --ok-bg:#d9f3e1; --warn-bg:#ffe8d4; --bad-bg:#fde0ec; --none-bg:#f1f5f9;
+    --ok-zone:rgba(26,174,57,.18); --warn-zone:rgba(221,91,0,.16); --bad-zone:rgba(224,49,49,.15);
+    --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100; --c5:#e87ba4; --c6:#008300; --c7:#6250d6; --c8:#e34948;
+    --link:#0066cc;
+    --font:"Manrope","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Noto Sans SC",system-ui,-apple-system,"Segoe UI",sans-serif;
+    --mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --canvas:#0e121a; --surface:#151b26; --soft:#18202c; --sunk:#1f2836;
+      --hairline:#263142; --hairline-soft:#1e2734; --hairline-strong:#34415a;
+      --ink:#eef2f7; --charcoal:#dbe2ec; --body:#b3bfcf; --steel:#8d9ab0; --stone:#66748b;
+      --primary:#9fa8f0; --primary-subtle:#232a4f; --on-primary:#0e121a;
+      --ok:#3cc45e; --warn:#f08c3c; --bad:#f06464; --none:#66748b;
+      --ok-ink:#5fd67c; --warn-ink:#f5a15e; --bad-ink:#f78585; --none-ink:#8d9ab0;
+      --ok-bg:rgba(60,196,94,.16); --warn-bg:rgba(240,140,60,.16); --bad-bg:rgba(240,100,100,.16); --none-bg:#1f2836;
+      --ok-zone:rgba(60,196,94,.16); --warn-zone:rgba(240,140,60,.16); --bad-zone:rgba(240,100,100,.17);
+      --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500; --c5:#d55181; --c6:#2f9a2f; --c7:#9085e9; --c8:#e66767;
+      --link:#7fb4ff;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --canvas:#0e121a; --surface:#151b26; --soft:#18202c; --sunk:#1f2836;
+    --hairline:#263142; --hairline-soft:#1e2734; --hairline-strong:#34415a;
+    --ink:#eef2f7; --charcoal:#dbe2ec; --body:#b3bfcf; --steel:#8d9ab0; --stone:#66748b;
+    --primary:#9fa8f0; --primary-subtle:#232a4f; --on-primary:#0e121a;
+    --ok:#3cc45e; --warn:#f08c3c; --bad:#f06464; --none:#66748b;
+    --ok-ink:#5fd67c; --warn-ink:#f5a15e; --bad-ink:#f78585; --none-ink:#8d9ab0;
+    --ok-bg:rgba(60,196,94,.16); --warn-bg:rgba(240,140,60,.16); --bad-bg:rgba(240,100,100,.16); --none-bg:#1f2836;
+    --ok-zone:rgba(60,196,94,.16); --warn-zone:rgba(240,140,60,.16); --bad-zone:rgba(240,100,100,.17);
+    --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500; --c5:#d55181; --c6:#2f9a2f; --c7:#9085e9; --c8:#e66767;
+    --link:#7fb4ff;
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; background:var(--canvas); color:var(--body); }
+  body { font:14px/1.5 var(--font); -webkit-font-smoothing:antialiased; overflow-x:hidden; }
+  a { color:var(--link); text-decoration:none; } a:hover { text-decoration:underline; }
+  code, .mono { font-family:var(--mono); font-size:12px; }
+  b, strong { color:var(--charcoal); font-weight:600; }
+  button { font:inherit; color:inherit; }
+  .num { font-variant-numeric:tabular-nums; }
+
+  /* ---- 外框：左侧模块栏 + 右侧视图 ---- */
+  .app { display:grid; grid-template-columns:232px minmax(0,1fr); min-height:100vh; }
+  .side { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; gap:4px; padding:20px 12px; background:var(--surface); border-right:1px solid var(--hairline); }
+  .brand { display:flex; align-items:center; gap:10px; padding:0 8px 18px; color:var(--ink); font-weight:600; font-size:15px; letter-spacing:-.2px; }
+  .brand .mark { width:22px; height:22px; color:var(--primary); }
+  .brand small { color:var(--stone); font-weight:500; font-size:12px; }
+  .nav { display:flex; flex-direction:column; gap:2px; }
+  .nv { display:flex; align-items:center; gap:10px; width:100%; height:38px; padding:0 10px; border:0; border-radius:8px; background:transparent; color:var(--steel); cursor:pointer; text-align:left; }
+  .nv:hover { background:var(--soft); color:var(--charcoal); }
+  .nv.on { background:var(--primary-subtle); color:var(--primary); }
+  .nv.on .nv-t { font-weight:600; }
+  .nv .ic { width:18px; height:18px; flex:none; }
+  .nv-t { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:13.5px; }
+  .nv-n { font-size:12px; color:var(--steel); font-variant-numeric:tabular-nums; }
+  .nv.on .nv-n { color:var(--primary); }
+  .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--none); }
+  .dot.s-ok { background:var(--ok); } .dot.s-warn { background:var(--warn); } .dot.s-bad { background:var(--bad); }
+  .side-foot { margin-top:auto; padding:12px 8px 0; border-top:1px solid var(--hairline-soft); display:flex; align-items:center; gap:8px; color:var(--stone); font-size:12px; }
+  .ghost { display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 10px; border:1px solid var(--hairline); border-radius:6px; background:transparent; color:var(--steel); cursor:pointer; font-size:12px; }
+  .ghost:hover { background:var(--soft); color:var(--charcoal); }
+  .ghost.on { background:var(--primary); border-color:var(--primary); color:var(--on-primary); }
+  .ghost[disabled] { opacity:.4; cursor:default; }
+  .ghost .ic { width:14px; height:14px; }
+  .flip { transform:scaleX(-1); }
+  .ic.big { width:20px; height:20px; }
+
+  main { min-width:0; padding:24px 32px 48px; }
+  .top { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:20px; }
+  .top h1 { margin:0; color:var(--ink); font-size:24px; font-weight:600; letter-spacing:-.5px; line-height:1.2; display:flex; align-items:center; gap:10px; }
+  .top h1 .ic { width:22px; height:22px; color:var(--primary); }
+  .top h1 small { font-size:13px; color:var(--stone); font-weight:500; letter-spacing:0; }
+  .fresh { display:inline-flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; font-size:12px; color:var(--steel); }
+
+  /* ---- 面板与网格 ---- */
+  .grid { display:grid; gap:16px; }
+  .g2 { grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr)); }
+  .g3 { grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); }
+  .g4 { grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr)); }
+  .stack16 > * + * { margin-top:16px; }
+  .panel { background:var(--surface); border:1px solid var(--hairline); border-radius:12px; padding:18px 20px; min-width:0; }
+  .panel.span2 { grid-column:1 / -1; }
+  .masonry { columns:2 420px; column-gap:16px; margin-bottom:-16px; }
+  .masonry > .panel { break-inside:avoid; margin:0 0 16px; }
+  .stack16 > .masonry + * { margin-top:16px; }
+  .ph { display:flex; align-items:center; gap:8px; margin:0 0 14px; color:var(--charcoal); font-size:13.5px; font-weight:600; }
+  .ph .ic { width:16px; height:16px; color:var(--steel); }
+  .ph .aside { margin-left:auto; font-weight:400; font-size:12px; color:var(--stone); display:flex; align-items:center; gap:8px; }
+  .sub { color:var(--stone); font-size:12px; }
+  .muted { color:var(--steel); }
+  .ic { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; vertical-align:middle; flex:none; }
+  .s-ok { --s:var(--ok); --si:var(--ok-ink); --sb:var(--ok-bg); }
+  .s-warn { --s:var(--warn); --si:var(--warn-ink); --sb:var(--warn-bg); }
+  .s-bad { --s:var(--bad); --si:var(--bad-ink); --sb:var(--bad-bg); }
+  .s-none { --s:var(--none); --si:var(--none-ink); --sb:var(--none-bg); }
+  .si { color:var(--si); }
+  .chip { display:inline-flex; align-items:center; gap:5px; height:22px; padding:0 8px; border-radius:4px; background:var(--sb, var(--sunk)); color:var(--si, var(--steel)); font-size:12px; font-weight:500; white-space:nowrap; }
+  .chip .ic { width:13px; height:13px; }
+  .tag { display:inline-flex; align-items:center; height:20px; padding:0 7px; border-radius:4px; background:var(--sunk); color:var(--steel); font-size:11.5px; white-space:nowrap; }
+  .empty { display:flex; align-items:center; gap:8px; color:var(--stone); font-size:13px; padding:6px 0; }
+  .unavail { display:flex; gap:10px; align-items:flex-start; padding:12px 14px; border-radius:8px; background:var(--bad-bg); color:var(--bad-ink); font-size:13px; }
+  .unavail .sub { color:inherit; opacity:.8; }
+
+  /* ---- 子弹条：数值 + 健康区 / 警告区 / 不健康区 + 两条界线 ---- */
+  .buls { display:grid; gap:14px 28px; grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr)); }
+  .bul { min-width:0; cursor:default; }
+  .bul-h { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-bottom:6px; }
+  .bul-l { color:var(--body); font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .bul-v { display:inline-flex; align-items:center; gap:5px; color:var(--si); white-space:nowrap; }
+  .bul-v b { color:var(--si); font-size:16px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .bul-v small { color:var(--stone); font-size:11.5px; }
+  .bul-v .ic { width:14px; height:14px; }
+  .bul-t { position:relative; height:8px; border-radius:4px; background:var(--sunk); }
+  .bul-t .z { position:absolute; top:0; bottom:0; }
+  .bul-t .z-ok { background:var(--ok-zone); } .bul-t .z-warn { background:var(--warn-zone); } .bul-t .z-bad { background:var(--bad-zone); }
+  .bul-t .z:first-child { border-radius:4px 0 0 4px; } .bul-t .z:last-of-type { border-radius:0 4px 4px 0; }
+  .bul-t .f { position:absolute; left:0; top:2px; height:4px; border-radius:2px; background:var(--s); }
+  .bul-t .th { position:absolute; top:-3px; bottom:-3px; width:2px; margin-left:-1px; border-radius:1px; background:var(--ok); }
+  .bul-t .th.u { background:var(--bad); }
+  .bul-t .ov { position:absolute; right:-2px; top:-3px; width:0; height:0; border-top:7px solid transparent; border-bottom:7px solid transparent; border-left:7px solid var(--s); }
+  .bul-b { display:flex; gap:12px; margin-top:5px; font-size:11px; color:var(--stone); font-variant-numeric:tabular-nums; }
+  .bul-b i { display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:4px; vertical-align:1px; }
+
+  /* ---- 总览 ---- */
+  .tiles { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(min(100%,200px),1fr)); }
+  .tile { display:flex; flex-direction:column; gap:10px; padding:16px 16px 14px; border:1px solid var(--hairline); border-radius:12px; background:var(--surface); cursor:pointer; text-align:left; position:relative; overflow:hidden; }
+  .tile::before { content:""; position:absolute; left:0; right:0; top:0; height:3px; background:var(--s); }
+  .tile:hover { border-color:var(--hairline-strong); }
+  .tile-h { display:flex; align-items:center; gap:8px; color:var(--steel); font-size:13px; }
+  .tile-h .ic { width:18px; height:18px; color:var(--charcoal); }
+  .tile-h .si { margin-left:auto; } .tile-h .si .ic { color:var(--si); }
+  .tile-v { display:flex; align-items:baseline; gap:6px; color:var(--ink); }
+  .tile-v b { font-size:30px; font-weight:600; letter-spacing:-.6px; color:var(--ink); line-height:1; font-variant-numeric:tabular-nums; }
+  .tile-v span { color:var(--stone); font-size:12.5px; }
+  .flow { display:flex; align-items:flex-end; gap:4px; min-height:190px; }
+  .fl { flex:1; min-width:0; display:flex; flex-direction:column; align-items:center; gap:6px; cursor:pointer; }
+  .fl-n { font-size:15px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
+  .fl-b { width:min(56px,80%); border-radius:4px 4px 0 0; background:var(--s); opacity:.85; min-height:3px; }
+  .fl-l { width:100%; text-align:center; font-size:12px; color:var(--steel); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; border-top:1px solid var(--hairline); padding-top:6px; }
+  .fl-arrow { align-self:flex-end; margin-bottom:28px; color:var(--hairline-strong); }
+  .sidechips { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+  .alerts { display:flex; flex-direction:column; }
+  .al { display:grid; grid-template-columns:20px 72px minmax(0,1fr); gap:10px; align-items:start; padding:8px 0; border-top:1px solid var(--hairline-soft); font-size:12.5px; }
+  .al:first-child { border-top:0; }
+  .al .ic { width:16px; height:16px; margin-top:2px; }
+  .al .t { color:var(--stone); font-variant-numeric:tabular-nums; }
+  .al .x { color:var(--body); overflow-wrap:anywhere; }
+
+  /* ---- 通用图表 ---- */
+  .hb { display:grid; grid-template-columns:minmax(80px,max-content) minmax(0,1fr) max-content; gap:8px 12px; align-items:center; font-size:12.5px; }
+  .hb .l { color:var(--body); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px; }
+  .hb .v { color:var(--charcoal); font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
+  .hb .tr { position:relative; height:10px; background:var(--sunk); border-radius:3px; }
+  .hb .tr i { position:absolute; left:0; top:0; bottom:0; border-radius:3px; background:var(--bc, var(--primary)); }
+  .hb .tr .mk { left:auto; width:2px; margin-left:-1px; top:-3px; bottom:-3px; background:var(--bad); border-radius:1px; }
+  .stk { display:flex; gap:2px; height:14px; border-radius:4px; overflow:hidden; background:var(--sunk); }
+  .stk i { display:block; height:100%; min-width:3px; }
+  .lg { display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:10px; font-size:12px; color:var(--body); }
+  .lg span { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+  .lg i { width:9px; height:9px; border-radius:2px; display:inline-block; }
+  .lg b { font-variant-numeric:tabular-nums; }
+  .kpis { display:flex; flex-wrap:wrap; gap:24px 36px; }
+  .kpi { display:flex; align-items:center; gap:12px; min-width:0; }
+  .kpi .kv { font-size:24px; font-weight:600; color:var(--ink); letter-spacing:-.4px; line-height:1.1; font-variant-numeric:tabular-nums; }
+  .kpi .kv small { font-size:12px; color:var(--stone); font-weight:500; letter-spacing:0; margin-left:3px; }
+  .kpi .kl { font-size:12px; color:var(--steel); }
+  .kpi > .ic { width:20px; height:20px; color:var(--steel); }
+  .ring { display:block; }
+  .ring .trk { stroke:var(--sunk); } .ring .arc { stroke:var(--s, var(--primary)); }
+  .ringbox { display:flex; align-items:center; gap:16px; }
+  .rows > * + * { border-top:1px solid var(--hairline-soft); }
+  .srow { display:grid; grid-template-columns:minmax(120px,170px) minmax(0,1fr) minmax(0,1fr) 72px; gap:24px; align-items:center; padding:12px 0; }
+  .srow .nm { color:var(--charcoal); font-size:13px; font-weight:500; }
+  .srow .nm code { display:block; color:var(--stone); font-size:11px; font-weight:400; }
+  .srow .old { text-align:right; font-size:12px; }
+  .srow-h { padding:0 0 4px; } .srow-h .ic { width:13px; height:13px; }
+  .tally { display:flex; gap:12px; font-size:12px; color:var(--steel); font-variant-numeric:tabular-nums; }
+  .tally span { display:inline-flex; align-items:center; gap:4px; } .tally .ic { width:13px; height:13px; }
+  .area { width:100%; height:140px; display:block; }
+  .area .ln { fill:none; stroke:var(--primary); stroke-width:2; vector-effect:non-scaling-stroke; }
+  .area .fa { fill:var(--primary); opacity:.1; }
+  .area .bg { stroke:var(--bad); stroke-width:1.5; stroke-dasharray:5 4; vector-effect:non-scaling-stroke; }
+  .area .hit { fill:transparent; } .area .hit:hover { fill:var(--primary); opacity:.12; }
+  .axis { display:flex; justify-content:space-between; font-size:11px; color:var(--stone); margin-top:4px; font-variant-numeric:tabular-nums; }
+  .cols { display:flex; align-items:flex-end; gap:12px; height:150px; padding-top:8px; }
+  .col { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:6px; height:100%; }
+  .col i { width:min(64px,90%); border-radius:4px 4px 0 0; background:var(--s, var(--primary)); min-height:3px; }
+  .col .cn { font-size:14px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
+  .col .cl { font-size:11.5px; color:var(--steel); white-space:nowrap; }
+  .squares { display:flex; flex-wrap:wrap; gap:4px; }
+  .sq { width:16px; height:16px; border-radius:3px; border:1.5px solid var(--primary); }
+  .sq.busy { background:var(--primary); } .sq.off { border-style:dashed; border-color:var(--bad); }
+  .pool { display:grid; grid-template-columns:92px minmax(0,1fr) 56px; gap:12px; align-items:center; padding:7px 0; font-size:12.5px; }
+  .pool .v { text-align:right; font-variant-numeric:tabular-nums; color:var(--charcoal); }
+  .strip { position:relative; height:44px; border-radius:4px; background:linear-gradient(to right, var(--ok-zone) 0 var(--h), var(--warn-zone) var(--h) var(--u), var(--bad-zone) var(--u) 100%); }
+  .strip .dt { position:absolute; width:7px; height:7px; margin:-3.5px 0 0 -3.5px; border-radius:50%; background:var(--s); opacity:.8; }
+  .strip .ln { position:absolute; top:-3px; bottom:-3px; width:2px; margin-left:-1px; background:var(--ok); }
+  .strip .ln.u { background:var(--bad); }
+  .striprow { display:grid; grid-template-columns:150px minmax(0,1fr) 120px; gap:16px; align-items:center; padding:10px 0; }
+  .striprow .v { text-align:right; }
+  .wk { display:grid; grid-template-columns:36px minmax(0,1.3fr) minmax(0,1fr) 132px; gap:14px; align-items:center; padding:12px 0; }
+  .av { width:36px; height:36px; border-radius:8px; display:flex; align-items:center; justify-content:center; background:var(--primary-subtle); color:var(--primary); }
+  .av .ic { width:18px; height:18px; }
+  .wk-t { color:var(--charcoal); font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .wk-s { color:var(--steel); font-size:12px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .wk-c { font-family:var(--mono); font-size:11px; color:var(--stone); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .wk .r { text-align:right; font-size:12px; color:var(--steel); font-variant-numeric:tabular-nums; }
+  .board { display:grid; grid-template-columns:repeat(auto-fit,minmax(78px,1fr)); gap:8px; }
+  .st { display:flex; flex-direction:column; align-items:center; gap:6px; padding:10px 4px; border-radius:8px; background:var(--soft); border:1px solid var(--hairline-soft); }
+  .st.hot { background:var(--primary-subtle); border-color:transparent; }
+  .st .n { font-size:20px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; line-height:1; }
+  .st .n.zero { color:var(--stone); font-weight:400; }
+  .st .l { font-size:11.5px; color:var(--steel); text-align:center; line-height:1.3; }
+  .st .w { display:flex; gap:3px; min-height:8px; }
+  .st .w i { width:8px; height:8px; border-radius:50%; background:var(--primary); }
+  .sha { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .sha .node { display:flex; flex-direction:column; gap:2px; padding:10px 14px; border-radius:8px; background:var(--soft); border:1px solid var(--hairline-soft); }
+  .sha .node span { font-size:11.5px; color:var(--stone); }
+  .sha .gap { display:flex; flex-direction:column; align-items:center; color:var(--steel); font-size:12px; }
+  .steps { display:flex; gap:2px; }
+  .step { flex:1; min-width:0; padding:8px; background:var(--soft); text-align:center; font-size:12px; color:var(--steel); }
+  .step:first-child { border-radius:8px 0 0 8px; } .step:last-child { border-radius:0 8px 8px 0; }
+  .step.s-ok, .step.s-bad, .step.s-warn { background:var(--sb); color:var(--si); }
+  .issue-chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .knob { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center; padding:8px 0; font-size:12.5px; }
+  .knob code { color:var(--charcoal); }
+
+  /* ---- 工作单 ---- */
+  .tkstrip { display:flex; gap:2px; height:28px; border-radius:6px; overflow:hidden; margin-bottom:10px; }
+  .tkstrip button { border:0; color:#fff; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 6px; min-width:26px; font-variant-numeric:tabular-nums; }
+  .tkstrip button.off { opacity:.3; }
+  .bar-ctl { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:12px 0; }
+  .tk { display:grid; grid-template-columns:minmax(0,1fr) minmax(200px,280px) 96px; gap:20px; align-items:center; padding:14px 0; border-top:1px solid var(--hairline-soft); }
+  .tk-title { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:13.5px; color:var(--charcoal); }
+  .tk-title .sd { width:9px; height:9px; border-radius:50%; background:var(--c); flex:none; }
+  .tk-title b { font-weight:600; }
+  .tk-meta { font-size:12px; color:var(--stone); margin-top:2px; }
+  .track { display:flex; align-items:center; margin-top:8px; font-size:11.5px; flex-wrap:wrap; row-gap:4px; }
+  .track .s { display:flex; align-items:center; gap:4px; color:var(--stone); white-space:nowrap; }
+  .track .s i { width:9px; height:9px; border-radius:50%; border:1.5px solid var(--hairline-strong); background:var(--surface); }
+  .track .s.done { color:var(--body); } .track .s.done i { background:var(--ok); border-color:var(--ok); }
+  .track .s.cur { color:var(--c); font-weight:600; } .track .s.cur i { background:var(--c); border-color:var(--c); box-shadow:0 0 0 3px color-mix(in srgb, var(--c) 22%, transparent); }
+  .track .ln { width:16px; height:1.5px; background:var(--hairline-strong); margin:0 5px; } .track .ln.done { background:var(--ok); }
+  .tbar { display:flex; gap:2px; height:8px; border-radius:4px; overflow:hidden; background:var(--sunk); }
+  .tbar i { display:block; height:100%; }
+  .tk-time .sm { font-size:12px; color:var(--steel); margin-top:5px; font-variant-numeric:tabular-nums; }
+  .tk-cost { text-align:right; font-size:13px; color:var(--charcoal); font-variant-numeric:tabular-nums; }
+  .tk-cost .sm { font-size:11.5px; color:var(--stone); }
+
+  #tip { position:fixed; z-index:20; max-width:360px; padding:8px 10px; border-radius:6px; background:var(--ink); color:var(--canvas); font-size:12px; line-height:1.45; white-space:pre-line; pointer-events:none; opacity:0; transition:opacity .12s; box-shadow:0 8px 24px rgba(15,15,15,.18); }
+  #tip.on { opacity:1; }
+
+  /* 窄屏：模块栏变成顶部一排，图标为主 */
+  @media (max-width: 900px) {
+    .app { grid-template-columns:1fr; }
+    .side { position:static; height:auto; flex-direction:row; flex-wrap:wrap; align-items:center; padding:10px 12px; border-right:0; border-bottom:1px solid var(--hairline); }
+    .brand { padding:0 8px 0 4px; } .brand small { display:none; }
+    .nav { flex-direction:row; flex-wrap:wrap; gap:4px; }
+    .nv { width:auto; height:34px; } .nv-t, .nv-n { display:none; } .nv.on .nv-t { display:inline; }
+    .side-foot { margin:0 0 0 auto; border:0; padding:0; }
+    main { padding:18px 16px 40px; }
+    .srow { grid-template-columns:1fr; gap:10px; } .srow .old { text-align:left; }
+    .tk { grid-template-columns:1fr; gap:10px; } .tk-cost { text-align:left; }
+    .wk { grid-template-columns:36px minmax(0,1fr) 72px; } .wk > :nth-child(3) { display:none; }
+    .striprow { grid-template-columns:1fr; gap:6px; } .striprow .v { text-align:left; }
+    .flow { min-height:150px; } .fl-arrow { display:none; } .fl-l { font-size:10.5px; }
+    .tiles { grid-template-columns:repeat(2,minmax(0,1fr)); } .tile-v b { font-size:24px; }
+  }
+  @media (prefers-reduced-motion: reduce) { #tip { transition:none; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><svg class="ic mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5l8 14 8-14"/><path d="M8.5 5h7"/></svg>the product <small>流水线看板</small></div>
+    <nav class="nav" id="nav" aria-label="模块"></nav>
+    <div class="side-foot"><button class="ghost" id="theme" type="button" title="主题：跟随系统 / 浅色 / 深色"></button></div>
+  </aside>
+  <main>
+    <div class="top"><h1 id="title">the product 流水线看板</h1><div class="fresh" id="fresh"></div></div>
+    <div id="view"><div class="empty">加载中…</div></div>
+  </main>
+</div>
+<div id="tip" role="tooltip"></div>
+
+<script src="dashboard.data.js"></script>
+<script>
+"use strict";
+// 数据契约：dashboard.data.js 由 gen_dashboard.py 每拍写出 window.DASH；本页只读不改。
+// 页面每 30 秒重新载入 dashboard.data.js 并重画当前模块（不整页刷新，滚动位置与所选模块保留）；
+// 新数据解析失败（例如生成器正写到一半）时继续显示上一份。每 30 分钟整页刷新一次，拿到同步来的新版页面。
+// WSL 的 Chrome 没有彩色 emoji 字体，所有图标都是内联 SVG。
+
+/* ============ 基础工具 ============ */
+const esc = x => String(x ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+const num = v => v==null || v==="" || Number.isNaN(Number(v)) ? "—" : (v = Number(v), Math.abs(v)>=1e12 ? v.toExponential(1) : Math.abs(v)>=1e9 ? (v/1e9).toFixed(1)+"B" : Math.abs(v)>=1e6 ? (v/1e6).toFixed(1)+"M" : Math.abs(v)>=1e4 ? (v/1e3).toFixed(0)+"k" : Number.isInteger(v) ? String(v) : v.toFixed(1));
+const ft = n => !n ? "—" : num(n);
+const money = (n, d=2) => "$" + (Number(n)||0).toFixed(d);
+const hoursAgo = iso => iso ? (Date.now() - new Date(iso).getTime())/3600000 : null;
+const fAge = h => h==null || Number.isNaN(h) ? "—" : h<1 ? Math.max(0,Math.round(h*60))+" 分" : h<48 ? (Math.round(h*10)/10)+" 时" : (Math.round(h/24*10)/10)+" 天";
+const fMin = m => m==null ? "—" : m<60 ? Math.round(m)+" 分" : (m/60).toFixed(m<600?1:0)+" 时";
+const fDur = s => s==null ? "—" : s<60 ? s+" 秒" : s<3600 ? Math.floor(s/60)+" 分" : Math.floor(s/3600)+" 时 "+Math.floor(s%3600/60)+" 分";
+const hm = (t, sec) => { const d = new Date(t); const p = n => String(n).padStart(2,"0"); return p(d.getHours())+":"+p(d.getMinutes())+(sec?":"+p(d.getSeconds()):""); };
+const utc = iso => iso ? String(iso).replace("T"," ").slice(5,16)+" UTC" : "—";
+const liveSec = started => started ? Math.max(0, Math.floor((Date.now() - new Date(started).getTime())/1000)) : null;
+const repoUrl = () => "https://github.com/" + (window.DASH && window.DASH.repo || "");
+const issueLink = n => `<a href="${repoUrl()}/issues/${encodeURIComponent(n)}" target="_blank" rel="noopener">#${esc(n)}</a>`;
+const ghLink = u => u&&u.pr ? `<a href="${repoUrl()}/pull/${esc(u.pr)}" target="_blank" rel="noopener">PR #${esc(u.pr)}</a>` : u&&u.issue ? `<a href="${repoUrl()}/issues/${esc(u.issue)}" target="_blank" rel="noopener">#${esc(u.issue)}</a>` : "";
+
+/* ============ 图标（24 网格，描边 currentColor） ============ */
+const P = {
+  overview:'<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>',
+  intake:'<path d="M3 13h5l1.5 3h5l1.5-3h5"/><path d="M5.6 5h12.8L21 13v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/>',
+  advisor:'<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>',
+  workers:'<rect x="4.5" y="7" width="15" height="12" rx="3"/><path d="M12 3.5V7"/><circle cx="9.5" cy="12.5" r="1"/><circle cx="14.5" cy="12.5" r="1"/><path d="M9.5 16h5"/>',
+  orders:'<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 3h6v2.5H9z"/><path d="M8.5 10h7M8.5 13.5h7M8.5 17h4"/>',
+  ci:'<path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4.5v4h-4"/><path d="M10.5 9.2l4.5 2.8-4.5 2.8z"/>',
+  release:'<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>',
+  health:'<path d="M3 12h4l2.5-6 4 12 2.5-6h5"/>',
+  cost:'<ellipse cx="12" cy="6" rx="7" ry="2.8"/><path d="M5 6v6c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8V6"/><path d="M5 12v6c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8v-6"/>',
+  host:'<rect x="3.5" y="4" width="17" height="7" rx="2"/><rect x="3.5" y="13" width="17" height="7" rx="2"/><path d="M7.5 7.5h.01M7.5 16.5h.01M11 7.5h2M11 16.5h2"/>',
+  ok:'<circle cx="12" cy="12" r="9"/><path d="M8 12.4l2.7 2.6L16 9.6"/>',
+  warn:'<path d="M12 3.8l9 15.7H3z"/><path d="M12 10v4M12 17.2h.01"/>',
+  bad:'<circle cx="12" cy="12" r="9"/><path d="M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6"/>',
+  none:'<circle cx="12" cy="12" r="9" stroke-dasharray="2.5 3"/><path d="M8.5 12h7"/>',
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  arrow:'<path d="M5 12h14M13 6l6 6-6 6"/>',
+  chev:'<path d="M9 6l6 6-6 6"/>',
+  bell:'<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5h4"/>',
+  user:'<circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.5 3.6-5.5 7-5.5s6.2 2 7 5.5"/>',
+  git:'<circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="9" r="2.2"/><path d="M6 8.2v7.6M18 11.2c0 4-4 4.5-9.8 5.6"/>',
+  globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 3.8 5.6 3.8 9s-1.2 6.4-3.8 9c-2.6-2.6-3.8-5.6-3.8-9S9.4 5.6 12 3z"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
+  moon:'<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  auto:'<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17z" fill="currentColor"/>',
+  knob:'<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
+  layers:'<path d="M12 4l9 5-9 5-9-5z"/><path d="M3 14l9 5 9-5"/>',
+  timer:'<circle cx="12" cy="13" r="8"/><path d="M12 9v4.5M9.5 2.5h5"/>',
+  link:'<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+};
+const ic = (n, cls="") => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[n]||""}</svg>`;
+
+/* ============ 状态 ============ */
+// node_health.py / gen_dashboard.py 给出的状态词 → 页面的四种颜色键
+const SK = {OK:"ok", WARN:"warn", UNHEALTHY:"bad", "NO-DATA":"none", "N/A":"none", ok:"ok", warn:"warn", bad:"bad", none:"none"};
+const SL = {ok:"健康", warn:"警告", bad:"不健康", none:"无数据"};
+const RANK = {none:0, ok:1, warn:2, bad:3};
+const sk = s => SK[s] || "none";
+const worst = list => list.map(sk).reduce((w,s) => RANK[s]>RANK[w] ? s : w, "none");
+const stIcon = s => ic(sk(s));
+const bigIcon = s => `<span class="si s-${sk(s)}">${ic(sk(s),"big")}</span>`;
+const stChip = (s, txt) => { s = sk(s); return `<span class="chip s-${s}">${ic(s)}${esc(txt ?? SL[s])}</span>`; };
+const judge = (v, sd) => v==null || !sd ? "NO-DATA" : (sd.higher_is_better ? v>=sd.healthy : v<=sd.healthy) ? "OK"
+  : (sd.higher_is_better ? v<=sd.unhealthy : v>=sd.unhealthy) ? "UNHEALTHY" : "WARN";
+
+/* ============ 图表小工具 ============ */
+// 子弹条：value 落在 健康 / 警告 / 不健康 三段上，两条竖线是健康线（绿）与不健康线（红），超出刻度时右端有箭头。
+function bullet(o) {
+  const s = sk(o.status), hib = !!o.hib, h = Number(o.healthy), u = Number(o.unhealthy);
+  const span = Math.max(Math.abs(h), Math.abs(u));
+  const top = (o.top || span * (hib ? 1.4 : 1.6)) || 1;
+  const pct = x => Math.max(0, Math.min(100, 100 * x / top));
+  const zones = hib ? [[0,u,"bad"],[u,h,"warn"],[h,top,"ok"]] : [[0,h,"ok"],[h,u,"warn"],[u,top,"bad"]];
+  const v = o.value==null ? null : Number(o.value);
+  const tip = [o.label, o.desc, o.meaning, o.source ? "来源："+o.source : "", o.id].filter(Boolean).join("\n");
+  return `<div class="bul s-${s}" data-tip="${esc(tip)}">
+    <div class="bul-h"><span class="bul-l">${esc(o.label)}</span><span class="bul-v">${ic(s)}<b>${o.shown ?? num(v)}</b><small>${esc(o.unit||"")}</small></span></div>
+    <div class="bul-t">${zones.filter(z=>pct(z[1])>pct(z[0])).map(z=>`<i class="z z-${z[2]}" style="left:${pct(z[0])}%;width:${pct(z[1])-pct(z[0])}%"></i>`).join("")}${v==null?"":`<i class="f" style="width:${Math.max(1.5,pct(v))}%"></i>`}${o.budget?"":`<i class="th" style="left:${pct(h)}%"></i>`}<i class="th u" style="left:${pct(u)}%"></i>${v!=null&&v>top?'<i class="ov"></i>':""}</div>
+    <div class="bul-b">${o.budget ? `<span><i style="background:var(--bad)"></i>预算 ${num(u)}</span>` : `<span><i style="background:var(--ok)"></i>${hib?"≥":"≤"} ${num(h)}</span><span><i style="background:var(--bad)"></i>${hib?"≤":"≥"} ${num(u)}</span>`}</div>
+  </div>`;
+}
+// 环形量表：pct 0–100；marks 是界线位置（百分比）
+function ring(pct, s, size=84, center="", marks=[]) {
+  const r = (size-10)/2, c = 2*Math.PI*r, p = Math.max(0, Math.min(100, Number(pct)||0));
+  const mk = marks.map(m => { const a = (m.at/100)*2*Math.PI - Math.PI/2, x1 = size/2+Math.cos(a)*(r-7), y1 = size/2+Math.sin(a)*(r-7), x2 = size/2+Math.cos(a)*(r+7), y2 = size/2+Math.sin(a)*(r+7);
+    return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="var(--${m.c})" stroke-width="2" stroke-linecap="round"/>`; }).join("");
+  return `<svg class="ring s-${sk(s)}" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">
+    <circle class="trk" cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke-width="8"/>
+    <circle class="arc" cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke-width="8" stroke-linecap="round" stroke-dasharray="${(c*p/100).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${size/2} ${size/2})"/>
+    ${mk}<text x="50%" y="50%" dominant-baseline="central" text-anchor="middle" fill="var(--ink)" font-size="${size>80?17:14}" font-weight="600" font-family="inherit">${esc(center)}</text></svg>`;
+}
+// 横条列表：rows = [{label, value, shown, color, tip, mark}]
+function hbars(rows, max) {
+  const m = max || Math.max(1e-9, ...rows.map(r => Math.max(Number(r.value)||0, Number(r.mark)||0)));
+  return `<div class="hb">${rows.map(r => `<span class="l" title="${esc(r.label)}">${r.html || esc(r.label)}</span>
+    <span class="tr" data-tip="${esc(r.tip || r.label+"："+(r.shown ?? num(r.value)))}"><i style="width:${Math.max(0.8, Math.min(100, 100*(Number(r.value)||0)/m))}%;--bc:${r.color||"var(--primary)"}"></i>${r.mark!=null?`<i class="mk" style="left:${Math.min(100,100*r.mark/m)}%"></i>`:""}</span>
+    <span class="v">${r.shown ?? num(r.value)}</span>`).join("")}</div>`;
+}
+// 堆叠条 + 图例：parts = [{label, value, color}]
+function stack(parts, fmt=num) {
+  const ps = parts.filter(p => Number(p.value) > 0), tot = ps.reduce((a,p)=>a+Number(p.value), 0);
+  if (!tot) return `<div class="empty">${ic("none")}暂无</div>`;
+  return `<div class="stk">${ps.map(p=>`<i style="flex:${p.value};background:${p.color}" data-tip="${esc(p.label+"："+fmt(p.value)+"（"+Math.round(100*p.value/tot)+"%）")}"></i>`).join("")}</div>
+    <div class="lg">${ps.map(p=>`<span><i style="background:${p.color}"></i>${esc(p.label)} <b>${fmt(p.value)}</b></span>`).join("")}</div>`;
+}
+const CAT = ["var(--c1)","var(--c2)","var(--c3)","var(--c4)","var(--c5)","var(--c6)","var(--c7)","var(--c8)"];
+const panel = (icon, title, body, aside="", cls="") => `<section class="panel ${cls}"><h2 class="ph">${ic(icon)}${esc(title)}${aside?`<span class="aside">${aside}</span>`:""}</h2>${body}</section>`;
+const unavailable = (what, err) => `<div class="unavail">${ic("bad")}<div><b style="color:inherit">数据不可用</b> · ${esc(what)}<div class="sub">${esc(err)}</div></div></div>`;
+const emptyMsg = t => `<div class="empty">${ic("none")}${esc(t)}</div>`;
+const kpi = (icon, v, unit, label, tip="") => `<div class="kpi" ${tip?`data-tip="${esc(tip)}"`:""}>${ic(icon)}<div><div class="kv">${v}<small>${esc(unit||"")}</small></div><div class="kl">${esc(label)}</div></div></div>`;
+
+/* ============ 标准取数 ============ */
+// node_health.py 的指标 → 短中文名与单位（没列到的用英文 desc）
+const LABELS = {
+  "implement.wall_p50":["开发时长 p50","分"], "implement.no_output_pct":["开发无报告","%"],
+  "review.wall_p50":["首次质检时长 p50","分"], "review.first_pass_pct":["一次通过率","%"],
+  "repair.wall_p50":["返工时长 p50","分"], "loop.rounds_p90":["打回轮数 p90","轮"],
+  "loop.rework_token_pct":["返工 token 占比","%"], "loop.incremental_rereview_pct":["增量复检占比","%"],
+  "workers.deaths":["员工无产出死亡","次"], "workers.local_test_db":["本机测试库可达","1=是"],
+  "ci.approve_to_ship_p50":["批准 → 合并 p50","分"], "ci.red_after_approve_pct":["批准后 CI 变红","%"],
+  "ci.precheck_setup_failures":["预检选包失败","次"],
+  "ci.waste_runner_pct":["CI 浪费","%"],
+  "supervisor.latency_p50":["主管裁决延迟 p50","分"], "scheduler.tick_gap_p50":["调度间隔 p50","秒"],
+  "release.hours_waiting":["当前批次等待","时"], "release.hotpatch_blockers":["未进 main 的热修","个"],
+  "pipeline.orphan_prs":["台账外 agent PR","个"], "workorders.over_standard":["超标工作单","单"],
+  "workorders.ticket_tokens_p90":["每票 token p90","tok"], "workorders.ticket_wall_p90":["每票墙钟 p90","分"],
+  "review.large_pr_pct":["大 PR（>800 行）","%"], "loop.advisor_fail_pct":["顾问没给裁决","%"],
+  "review.findings_missing_pct":["打回报告缺发现块","%"],
+  "host.prereqs_missing":["主机依赖未响应","个"], "host.github_net_failures_per_hour":["GitHub 连接失败","次/时"],
+  "host.stale_worktrees":["超 2 小时的工作目录","个"],
+  "delivery.issue_to_accept_p50_7d_hours":["issue → 验收 p50（7 天）","时"],
+  "delivery.issue_to_accept_p95_7d_hours":["issue → 验收 p95（7 天）","时"],
+  "delivery.issue_to_accept_p50_30d_hours":["issue → 验收 p50（30 天）","时"],
+  "delivery.issue_to_accept_p95_30d_hours":["issue → 验收 p95（30 天）","时"],
+  "delivery.revert_rate_30d_pct":["验收后回退率（30 天）","%"],
+  "delivery.incident_rate_30d_pct":["事故 / 验收单元（30 天）","%"],
+  "delivery.cycles_to_pass_30d":["通过前评审轮次（30 天）","轮/单"],
+  "delivery.approvals_per_merge_30d":["每个合并单元批准数（30 天）","次/单"],
+  "delivery.human_actions_per_merge_30d":["真人评审动作（30 天）","次/单"],
+  "delivery.unlinked_units_30d":["未关联的验收单元（30 天）","个"],
+  "delivery.unlinked_incidents_30d":["未关联的事故（30 天）","个"],
+  "delivery.human_actions_unattributed_30d":["真人动作归属不明（30 天）","次"],
+  "mechanism.silent":["沉默超限的机制","个"],
+};
+const NODE_NM = {implement:"开发", review:"质检", repair:"返工", "review-loop":"评审循环", workers:"AI 员工", "ci+merge":"CI 与合并",
+  supervisor:"主管", scheduler:"调度", release:"发布", delivery:"交付质量", pipeline:"流水线台账", "work-orders":"工作单", host:"主机", mechanisms:"机制心跳"};
+// 指标归属模块：先看 id，再看 node；都不认识的只出现在"健康标准"
+const ID_MOD = {"loop.advisor_fail_pct":"advisor"};
+const NODE_MOD = {implement:"workers", review:"workers", repair:"workers", "review-loop":"workers", workers:"workers", supervisor:"workers",
+  pipeline:"workers", "ci+merge":"ci", release:"release", delivery:"release", "work-orders":"orders", host:"host", scheduler:"host"};
+const nodeMetrics = D => ((D.standards||{}).metrics||[]);
+const modMetrics = (D, mod) => nodeMetrics(D).filter(m => (ID_MOD[m.id] || NODE_MOD[m.node]) === mod);
+const bNode = m => { const lb = LABELS[m.id] || [m.desc, ""];
+  return bullet({id:m.id, label:lb[0], unit:lb[1], value:m.value, healthy:m.healthy, unhealthy:m.unhealthy, hib:m.higher_is_better, status:m.status, desc:m.desc, meaning:m.meaning, source:m.source}); };
+const FR = D => D.front || {};
+const bFront = (D, id, label, shown) => { const F = FR(D), sd = (F.standards||{})[id];
+  if (!sd) return "";
+  return bullet({id, label: label || sd.desc, unit: sd.unit, value: (F.values||{})[id], shown, healthy: sd.healthy, unhealthy: sd.unhealthy, hib: sd.higher_is_better,
+    status: (F.status||{})[id], meaning: sd.meaning, source: sd.source, desc: sd.desc}); };
+const frontStatus = (D, pred) => Object.entries(FR(D).status||{}).filter(([k]) => pred(k)).map(([,v]) => v);
+const ciStd = D => ((D.standards||{}).ci_standards || {});
+const ciStatus = (D, k) => judge(((D.ci_live||{}).values||{})[k], ciStd(D)[k]);
+const bCi = (D, k, label) => { const sd = ciStd(D)[k]; if (!sd) return "";
+  const v = ((D.ci_live||{}).values||{})[k];
+  return bullet({id:"ci_live."+k, label: label || sd.desc, value: v, healthy: sd.healthy, unhealthy: sd.unhealthy, hib: sd.higher_is_better, status: judge(v, sd), meaning: sd.meaning, source: sd.source, desc: sd.desc}); };
+const stageRow = (D, label) => ((FR(D).stages||[]).find(x => x.label===label));
+const units = D => D.units || [];
+const unitsIn = (D, stages) => units(D).filter(u => stages.includes(u.stage));
+const liveWorkers = D => (D.workers||[]).filter(w => w.alive);
+// 新鲜度：bell.sh 在 dashboard.data.js 超过 900 秒没刷新时报警；生成器 2 分钟一拍，600 秒内算健康
+const freshness = D => { const age = D.generated ? (Date.now() - new Date(D.generated).getTime())/1000 : null;
+  return {age, s: age==null ? "none" : age<=600 ? "ok" : age<900 ? "warn" : "bad"}; };
+const scorecardFreshness = (D, STD) => {
+  const sampledAt = STD.generated_at || STD.generated;
+  const age = sampledAt ? (Date.now() - new Date(sampledAt).getTime())/1000 : null;
+  const configured = String((D.config||{}).tick_seconds ?? 120);
+  const interval = /^[0-9]+$/.test(configured) && Number(configured)>=30 ? Number(configured) : 120;
+  return {sampledAt, age, interval, stale: age!=null && age>interval};
+};
+
+/* ============ 模块 ============ */
+// 1. 入口 · 分诊（前段：收单 → triage → advisor → 实现队列 的收单与分诊部分）
+const INTAKE_STAGES = ["needs-triage","finish-first","needs-info","needs-recut","ready-for-agent"];
+function sumIntake(D) {
+  const r = stageRow(D, "needs-triage");
+  const st = frontStatus(D, k => INTAKE_STAGES.some(l => k.startsWith("stage."+l+".")) || k.startsWith("triage."));
+  return {s: FR(D).errors && FR(D).errors.stages ? "bad" : worst(st), v: r ? r.count : "—", l: "待分诊", st};
+}
+function stageMatrix(D, labels) {
+  const F = FR(D);
+  if ((F.errors||{}).stages) return unavailable("GitHub 阶段计数", F.errors.stages);
+  const rows = (F.stages||[]).filter(r => !labels || labels.includes(r.label));
+  if (!rows.length) return emptyMsg("没有阶段计数");
+  return `<div class="srow srow-h sub"><span></span><span>${ic("layers")} 数量</span><span>${ic("clock")} 最久没动的票</span><span></span></div><div class="rows">${rows.map(r => `<div class="srow"><div class="nm">${esc(r.name)}<code>${esc(r.label)}</code></div>
+    ${bFront(D, `stage.${r.label}.count`, " ")}${bFront(D, `stage.${r.label}.idle_hours`, " ", r.count ? (r.idle_hours==null?"—":num(r.idle_hours)) : "—")}
+    <div class="old">${r.oldest && r.oldest.number ? issueLink(r.oldest.number) : '<span class="sub">—</span>'}</div></div>`).join("")}</div>`;
+}
+function vIntake(D) {
+  const F = FR(D), T = D.totals || {}, TR = F.triage, gh = F.github || {};
+  let triage;
+  if ((F.errors||{}).triage) triage = unavailable("分诊记录（流水线效率账）", F.errors.triage);
+  else if (!TR) triage = emptyMsg("没有分诊数据");
+  else triage = `<div class="buls">${bFront(D,"triage.last_done_age_min","上次分诊完成")}${bFront(D,"triage.done_today","今日分诊完成")}</div>
+    <div style="margin-top:18px" class="sub">今日去向</div><div style="margin-top:6px">${stack(Object.entries(TR.routed_today||{}).map(([k,v],i)=>({label:k, value:v, color:CAT[i%8]})))}</div>
+    <div class="lg" style="margin-top:14px">${TR.running===true ? stChip("ok","批处理在跑") : TR.running===false ? stChip("none","批处理未在跑") : stChip("warn","状态未知")}
+      <span data-tip="最近一次分诊批处理日志">${ic("clock")} 批处理 ${fAge(hoursAgo(TR.last_batch_at))}前</span></div>`;
+  const ghTxt = gh.cached ? `缓存 ${num(gh.age_s)} 秒${gh.stale ? " · GitHub 刷新失败" : ""}` : "GitHub 实时";
+  return `<div class="stack16">
+    <section class="panel"><div class="kpis">
+      ${kpi("intake", num(T.issues_open), "", "开放 issue")}${kpi("git", num(T.prs_open), "", "开放 PR")}
+      ${kpi("layers", num((stageRow(D,"needs-triage")||{}).count), "", "待分诊")}${kpi("arrow", num((stageRow(D,"ready-for-agent")||{}).count), "", "待实现队列")}</div></section>
+    ${panel("layers", "阶段积压与滞留", stageMatrix(D, INTAKE_STAGES), `${gh.stale?stChip("warn","GitHub 失败"):""}${esc(ghTxt)}`)}
+    ${panel("intake", "分诊（triage）", triage)}
+  </div>`;
+}
+
+// 2. 顾问
+function sumAdvisor(D) {
+  const F = FR(D), r = stageRow(D, "needs-advisor");
+  const st = [...frontStatus(D, k => k.startsWith("advisor") || k.startsWith("stage.needs-advisor.")), ...modMetrics(D,"advisor").map(m=>m.status)];
+  return {s: (F.errors||{}).advisor ? "bad" : worst(st), v: r ? r.count : ((F.advisor||{}).waiting ?? "—"), l: "待顾问", st};
+}
+function vAdvisor(D) {
+  const F = FR(D), AD = F.advisor, AL = F.advisor_loop, E = F.errors || {};
+  let batch;
+  if (E.advisor) batch = unavailable("批处理状态（lib.sh / 日志）", E.advisor);
+  else if (!AD) batch = emptyMsg("没有批处理数据");
+  else {
+    const job = AD.job;
+    const jobBox = job ? `<div class="lg" style="margin-top:0">${job.worker_active===true ? stChip("ok","工作进程在运行") : job.worker_active===false ? stChip("bad","工作进程已不在") : stChip("warn","进程状态未知")}
+        <span>${ic("timer")} ${fMin(job.age_min)}</span><span>${ic("orders")} ${(job.members||[]).length} 张</span>${job.input_bytes!=null?`<span class="sub">${Math.round(job.input_bytes/1024)} KB</span>`:""}</div>
+        <div class="issue-chips" style="margin-top:10px">${(job.members||[]).slice(0,24).map(n=>`<span class="tag">${issueLink(n)}</span>`).join("")}${(job.members||[]).length>24?`<span class="sub">… 共 ${job.members.length}</span>`:""}</div>`
+      : `<div class="empty">${ic("none")}当前没有批处理任务</div>`;
+    const oc = AD.outcomes_today || {};
+    const OCOL = {completed:"var(--ok)", "job-failed":"var(--bad)", pending:"var(--c4)", dispatched:"var(--c1)", selected:"var(--c7)"};
+    batch = `<div class="buls">${bFront(D,"advisor.job_age_min","批处理任务已跑", num(job ? job.age_min : 0))}${bFront(D,"advisor.failures_today","今日失败")}
+        ${bFront(D,"advisor.ruling_lag_hours","距上次落下裁决", AD.ruling_lag_is_lower_bound && (F.values||{})["advisor.ruling_lag_hours"]!=null ? "≥ "+num(F.values["advisor.ruling_lag_hours"]) : null)}
+        ${bFront(D,"stage.needs-advisor.count","等顾问的票")}${bFront(D,"stage.needs-advisor.idle_hours","最久滞留")}</div>
+      <div class="grid g2" style="margin-top:20px">
+        <div><div class="sub" style="margin-bottom:8px">今日 ${num(AD.ticks_today)} 拍的结果</div>${stack(Object.entries(oc).map(([k,v],i)=>({label:k, value:v, color:OCOL[k]||CAT[(i+2)%8]})))}</div>
+        <div><div class="sub" style="margin-bottom:8px">当前任务</div>${jobBox}</div></div>
+      <div class="lg" style="margin-top:16px;color:var(--steel)"><span>${ic("clock")} 最近一拍 ${fAge(hoursAgo(AD.last_tick_at))}前 · <code>${esc(AD.last_outcome||"—")}</code></span>
+        <span>${ic("ok")} 上次落下裁决 ${AD.last_ruling_at ? fAge(hoursAgo(AD.last_ruling_at))+"前 · "+num(AD.last_ruling_applied)+" 张" : "日志窗口内没有"}</span>
+        <span>今日落下 <b>${num(AD.applied_today)}</b> 张</span>${(AD.deferred||[]).length?`<span>${ic("warn")} 体积推迟 ${AD.deferred.length} 张</span>`:""}</div>`;
+  }
+  let loop;
+  if (E.advisor_loop) loop = unavailable("评审循环里的顾问（units.json）", E.advisor_loop);
+  else if (!AL) loop = emptyMsg("没有评审循环数据");
+  else {
+    const fp = (F.values||{})["advisor_loop.fail_pct_today"], fsd = (F.standards||{})["advisor_loop.fail_pct_today"] || {};
+    loop = `<div class="ringbox">${ring(fp, (F.status||{})["advisor_loop.fail_pct_today"], 96, fp==null?"—":Math.round(fp)+"%", fsd.healthy!=null?[{at:fsd.healthy,c:"ok"},{at:fsd.unhealthy,c:"bad"}]:[])}
+        <div style="flex:1;min-width:0">${hbars([{label:"给出裁决", value:AL.rulings_today, color:"var(--ok)"},{label:"不可用", value:AL.unavailable_today, color:"var(--bad)"}])}
+        <div class="lg"><span>${ic("clock")} 上次裁决 ${fAge(hoursAgo(AL.last_ruling_at))}前</span><span>上次不可用 ${fAge(hoursAgo(AL.last_unavailable_at))}前</span><span>正在问 <b>${num(AL.asking_now)}</b></span></div></div></div>
+      <div class="buls" style="margin-top:18px">${bFront(D,"advisor_loop.fail_pct_today","今日顾问不可用")}${modMetrics(D,"advisor").map(bNode).join("")}</div>`;
+  }
+  return `<div class="stack16">${panel("advisor","顾问批处理（拆票 / 定范围）", batch)}${panel("workers","评审循环里的顾问（第 2 次打回后）", loop)}</div>`;
+}
+
+// 3. 开发 · 评审
+const PIPE = [
+  {key:["implement-pending","implement"], nm:"开发"},
+  {key:["review-pending","review"],        nm:"质检"},
+  {key:["repair-pending","repair"],        nm:"返工"},
+  {key:["rereview-pending","rereview"],    nm:"复检"},
+  {key:["ready-to-merge"],                 nm:"待合并"},
+  {key:["landing"],              nm:"合并中"},
+  {key:["merged","landed"],                nm:"已合并"},
+  {key:["blocked-external","supervisor-review"], nm:"等外部条件"},
+  {key:["parked"], nm:"已搁置"},
+  {key:["needs-human"], nm:"需人决策"},
+];
+const ROLE = {review:"质检员", rereview:"复检员", repair:"返工员", implement:"开发员", triage:"分诊员", land:"落地员"};
+const ROLE_IC = {review:"ok", rereview:"ok", repair:"knob", implement:"workers", triage:"intake", land:"git"};
+function sumWorkers(D) {
+  const s = D.summary || {};
+  const st = modMetrics(D,"workers").map(m=>m.status);
+  return {st, s: worst(st), v: `${num(s.live_workers ?? liveWorkers(D).length)}<span>/ ${num(s.max_workers)}</span>`, l: "在岗员工"};
+}
+function vWorkers(D) {
+  const s = D.summary || {}, c = D.config || {}, W = c.waste || {}, live = liveWorkers(D);
+  const byId = Object.fromEntries(units(D).map(u=>[u.id,u]));
+  const slow = W.slow_worker_minutes || 60;
+  const wk = live.length ? `<div class="rows">${live.map((w,i) => { const u = byId[w.unit] || {}, a = w.activity || {}, sec = liveSec(w.started), m = sec==null?null:sec/60;
+      return `<div class="wk"><div class="av" data-tip="${esc((ROLE[w.type]||w.type)+" · "+(w.model||""))}">${ic(ROLE_IC[w.type]||"workers")}</div>
+        <div style="min-width:0"><div class="wk-t">${esc((u.title||w.unit||"").slice(0,80))}</div><div class="sub">${esc(ROLE[w.type]||w.type||"")} · ${esc(w.unit)} ${ghLink(u)}</div></div>
+        <div style="min-width:0" data-tip="${esc((a.say||"")+(a.cmd?"\n$ "+a.cmd:""))}">${a.say?`<div class="wk-s">${esc(a.say)}</div>`:""}${a.cmd?`<div class="wk-c">$ ${esc(a.cmd)}</div>`:""}${!a.say&&!a.cmd?'<span class="sub">启动中</span>':""}</div>
+        <div data-tip="${esc(`已用时；超过 ${slow} 分钟算慢工，停工由进展指纹确认，不按运行时长回收`)}">${stChip(m==null?"none":m<=slow?"ok":"warn", fDur(sec))}<div class="sub">慢工阈值 ${slow} 分</div>${w.tokens?`<div class="r">${ft(w.tokens)} tok</div>`:""}</div></div>`; }).join("")}</div>`
+    : emptyMsg("当前没有在岗员工");
+  const board = `<div class="board">${PIPE.map(p => { const us = unitsIn(D, p.key), ag = live.filter(w => us.some(u=>u.id===w.unit));
+      return `<div class="st ${ag.length?"hot":""}" data-tip="${esc(p.nm+"："+us.length+" 项\n"+us.slice(0,8).map(u=>"· "+(u.title||u.id).slice(0,40)).join("\n"))}"><div class="n ${us.length?"":"zero"}">${us.length}</div><div class="w">${ag.map(()=>"<i></i>").join("")}</div><div class="l">${esc(p.nm)}</div></div>`; }).join("")}</div>
+    <div class="lg"><span><i style="background:var(--primary);border-radius:50%"></i>在此站干活的员工</span></div>`;
+  const BS = (D.standards||{}).rework_by_size || [];
+  const bsMax = Math.max(1, ...BS.map(r=>r.median_repairs||0));
+  const bySize = BS.length ? `<div class="cols">${BS.map(r => { const s4 = r.share_4plus, st = s4==null?"none":s4>=35?"bad":s4>15?"warn":"ok";
+      return `<div class="col s-${st}" data-tip="${esc(`${r.band} 行：${r.units} 单\n返工中位 ${num(r.median_repairs)} 轮\n≥4 轮占 ${s4==null?"—":s4+"%"}（健康 ≤ 15% · 不健康 ≥ 35%）`)}"><span class="cn">${num(r.median_repairs)}</span><i style="height:${Math.max(3, 100*(r.median_repairs||0)/bsMax)}%"></i><span class="cl">${esc(r.band)}</span></div>`; }).join("")}</div>
+      <div class="lg"><span class="sub">柱高 = 返工轮数中位；颜色 = 返工 ≥4 轮的占比</span><span><i style="background:var(--ok)"></i>≤ 15%</span><span><i style="background:var(--warn)"></i>15–35%</span><span><i style="background:var(--bad)"></i>≥ 35%</span></div>`
+    : emptyMsg("尚无 PR 大小数据");
+  const SKs = ((D.standards||{}).time_sinks||[]).filter(r => /^(repair|rereview|review|implement)/.test(r.id));
+  const models = Object.entries(c.models||{}).map(([k,v]) => `<span class="tag" data-tip="${esc(k+"："+(v||[]).join(" · "))}">${esc(ROLE[k]||k)} · ${esc((v||[])[0]||"—")} · ${esc((v||[])[1]||"")}</span>`).join(" ");
+  const e = D.efficiency || {};
+  return `<div class="stack16">
+    <div class="grid g2">
+      ${panel("workers","在岗", `<div class="ringbox">${ring(100*(s.live_workers||0)/Math.max(1,s.max_workers||1), (s.live_workers||0)>0?"ok":"bad", 96, `${num(s.live_workers)}/${num(s.max_workers)}`)}
+        <div class="kpis" style="flex:1">${kpi("orders", num(e.delivered_reports), "", "已交付报告")}${kpi("bad", num(e.wasted_workers), "", "白跑的员工")}</div></div>
+        <div class="issue-chips" style="margin-top:14px">${models}</div>`)}
+      ${panel("layers","每一站", board)}
+    </div>
+    ${panel("user","员工此刻在做什么", wk, `${ic("timer")} 慢工阈值 ${slow} 分 · 停工按进展确认`)}
+    ${panel("health","开发与评审的标准", `<div class="buls">${modMetrics(D,"workers").map(bNode).join("") || emptyMsg("尚无评分")}</div>`)}
+    <div class="grid g2">
+      ${panel("orders","PR 越大，返工越多", bySize)}
+      ${panel("timer","返工与复检的时间", SKs.length ? `<div class="buls">${SKs.map(bSink).join("")}</div>` : emptyMsg("尚无数据"))}
+    </div>
+  </div>`;
+}
+const bSink = r => bullet({id:r.id, label:r.desc, unit:"分", value:r.value, healthy:r.healthy, unhealthy:r.unhealthy, status:r.status,
+  meaning:`${r.meaning}\n按 ${r.stat} 判 · 样本 ${r.n} · p50 ${num(r.p50)} · p90 ${num(r.p90)} · 合计 ${num(r.total_hours)} 时`, source:r.source});
+
+// 4. 工作单
+const ST = {
+  develop:   ["开发中", "var(--c1)"],
+  check:     ["质检 / 返工", "var(--c4)"],
+  merge:     ["待合并", "var(--c2)"],
+  waiting:   ["等主管处理", "var(--c8)"],
+  parked:    ["已搁置", "var(--c4)"],
+  blocked:   ["等前置 issue", "var(--c5)"],
+  "awaiting-release": ["已合并 · 待发布", "var(--c7)"],
+  released:  ["已上线 · 生产可测", "var(--c6)"],
+  live:      ["已生效（流水线脚本）", "var(--c3)"],
+  reverted:  ["合并后回退", "#a05a4c"],
+  closed:    ["已关闭 / 转交", "var(--stone)"],
+};
+const ACTIVE = ["develop","check","merge","waiting","blocked"];
+const FILTERS = {active:["流转中", ACTIVE], release:["待发布", ["awaiting-release"]], prod:["生产可测", ["released"]],
+                 done:["已完成", ["live","closed","reverted"]], all:["全部", Object.keys(ST)]};
+const SORTS = {age:["存在最久", (a,b)=>b.journey.age_min-a.journey.age_min], idle:["停留最久", (a,b)=>b.journey.since_min-a.journey.since_min], recent:["最近变动", (a,b)=>a.journey.since_min-b.journey.since_min]};
+const STEPS = ["开发","质检","返工","待合并","已合并","已上线"];
+const stepOf = j => ({develop:0, check:j.rounds?2:1, merge:3, waiting:-1, parked:-1, blocked:-1, "awaiting-release":4, reverted:4, released:5, live:5}[j.status]);
+const PAGE = 12;
+const UN = {tokens:["token",""], worker_minutes:["员工分钟","分"], rounds:["返工轮","轮"], age_hours:["年龄","时"]};
+let view = {f:"active", p:0, s:"age"};
+try { view = Object.assign(view, JSON.parse(sessionStorage.getItem("unitsView2")||"{}")); } catch (e) {}
+const journeyOf = u => u.journey || {status:"closed", age_min:0, since_min:0, split_min:{}, rounds:0};
+function sumOrders(D) {
+  const m = nodeMetrics(D).find(x => x.id==="workorders.over_standard");
+  const inflight = (D.units||[]).filter(u=>["develop","check","merge","waiting","blocked"].includes((u.journey||{}).status)).length;
+  return {s: m ? m.status : "none", v: m ? num(m.value) : "—", l: `超标单 · 流转中 ${inflight}`, st: m ? [m.status] : []};
+}
+function costMap(D) { return Object.fromEntries(((D.cost||{}).per_unit||[]).map(x=>[x.unit,x])); }
+function unitCostText(CM, unit) {
+  const row = CM[unit];
+  if (!row) return money(0, 2);
+  if (row.unestimated_sessions) return row.dollars === null ? "无法估算" : "≈ " + money(row.dollars, 2);
+  return money(row.dollars, 2);
+}
+function strips(D) {
+  const STD = D.standards || {}, us = STD.unit_standards || {}, wo = (STD.work_orders || []).filter(o => !["merged","landed","closed","done"].includes(o.stage));
+  return `<div class="rows">${Object.entries(us).map(([k, sd]) => {
+      const top = sd.bug * 1.6, pct = x => Math.max(0, Math.min(100, 100*x/top)), over = (STD.work_orders||[]).filter(o => (o.over||[]).includes(k)).length;
+      const dots = wo.filter(o => o[k]!=null).map((o, i) => { const v = Number(o[k])||0, s = v>=sd.bug?"bad":v>sd.healthy?"warn":"ok";
+        return `<i class="dt s-${s}" style="left:${pct(v)}%;top:${8 + (i*37 % 28)}px" data-tip="${esc(o.id+" · "+o.stage+"\n"+(UN[k]||[k])[0]+" "+num(v))}"></i>`; }).join("");
+      return `<div class="striprow"><div><b>${esc((UN[k]||[k])[0])}</b><div class="sub">${esc(sd.desc)}</div></div>
+        <div class="strip" style="--h:${pct(sd.healthy)}%;--u:${pct(sd.bug)}%"><i class="ln" style="left:${pct(sd.healthy)}%"></i><i class="ln u" style="left:${pct(sd.bug)}%"></i>${dots}</div>
+        <div class="v">${stChip(over?"bad":"ok", over ? `超标 ${over}` : "0")}<div class="sub num">≤ ${num(sd.healthy)} · ≥ ${num(sd.bug)}</div></div></div>`; }).join("")}</div>
+    <div class="lg"><span class="sub">每个点 = 一张在途工作单（超出刻度的贴在右端）</span><span><i style="background:var(--ok)"></i>健康线</span><span><i style="background:var(--bad)"></i>bug 线</span></div>`;
+}
+function vOrders(D) {
+  const CM = costMap(D), STD = D.standards || {};
+  const OVER = Object.fromEntries((STD.work_orders||[]).filter(o=>o.over&&o.over.length).map(o=>[o.id,o]));
+  const all = units(D).map(u => Object.assign({}, u, {journey: journeyOf(u)}));
+  if (!FILTERS[view.f]) view.f = "active"; if (!SORTS[view.s]) view.s = "age";
+  const counts = {}; all.forEach(u => counts[u.journey.status] = (counts[u.journey.status]||0)+1);
+  const sel = FILTERS[view.f][1];
+  const list = all.filter(u => sel.includes(u.journey.status)).sort(SORTS[view.s][1]);
+  const pages = Math.max(1, Math.ceil(list.length/PAGE)); view.p = Math.min(Math.max(0, view.p), pages-1);
+  const agg = {work:0, ready:0, supervisor:0}; list.forEach(u=>Object.keys(agg).forEach(k=>agg[k]+=(u.journey.split_min||{})[k]||0));
+  const filterOf = k => Object.entries(FILTERS).find(([,v])=>v[1].length===1&&v[1][0]===k)?.[0] || Object.entries(FILTERS).find(([,v])=>v[1].includes(k))[0];
+  const stripHtml = `<div class="tkstrip">${Object.entries(ST).filter(([k])=>counts[k]).map(([k,[nm,c]])=>
+      `<button class="${sel.includes(k)?"":"off"}" style="flex:${counts[k]};background:${c}" data-tip="${esc(nm+" "+counts[k]+" 项")}" data-f="${filterOf(k)}">${counts[k]}</button>`).join("")}</div>
+    <div class="lg" style="margin-top:0">${Object.entries(ST).filter(([k])=>counts[k]).map(([k,[nm,c]])=>`<span><i style="background:${c}"></i>${esc(nm)} <b>${counts[k]}</b></span>`).join("")}</div>`;
+  const ctl = `<div class="bar-ctl">${Object.entries(FILTERS).map(([k,[nm,ks]])=>`<button class="ghost ${view.f===k?"on":""}" data-f="${k}">${esc(nm)} ${ks.reduce((a,x)=>a+(counts[x]||0),0)}</button>`).join("")}
+    <span class="sub" style="margin-left:8px">排序</span>${Object.entries(SORTS).map(([k,[nm]])=>`<button class="ghost ${view.s===k?"on":""}" data-s="${k}">${esc(nm)}</button>`).join("")}
+    <span style="flex:1"></span><button class="ghost" data-p="${view.p-1}" ${view.p?"":"disabled"}>${ic("chev","flip")}</button><span class="sub num">${view.p+1} / ${pages}</span><button class="ghost" data-p="${view.p+1}" ${view.p<pages-1?"":"disabled"}>${ic("chev")}</button></div>`;
+  const maxAge = Math.max(1, ...list.map(u=>u.journey.age_min));
+  const card = u => {
+    const j = u.journey, [lab, col] = ST[j.status] || ST.closed, sp = j.split_min || {};
+    const cur = stepOf(j), tot = Math.max(1, (sp.work||0)+(sp.ready||0)+(sp.supervisor||0));
+    const track = cur==null ? "" : `<div class="track">${STEPS.map((nm,i)=>{
+        const st = cur<0 ? (i<3?"done":"") : i<cur ? "done" : i===cur ? "cur" : "";
+        return (i?`<span class="ln ${st?"done":""}"></span>`:"")+`<span class="s ${st}"><i></i>${nm==="返工"&&j.rounds?`返工 ×${j.rounds}`:nm}</span>`; }).join("")}${cur<0?`<span class="ln"></span><span class="s cur"><i></i>${j.status==="blocked"?"等前置 issue":"等主管处理"}</span>`:""}</div>`;
+    const seg = (k,c,nm) => sp[k] ? `<i style="flex:${sp[k]};background:${c}" data-tip="${esc(nm+" "+fMin(sp[k]))}"></i>` : "";
+    const waitPct = Math.round(100*((sp.ready||0)+(sp.supervisor||0))/tot), o = OVER[u.id];
+    return `<div class="tk" style="--c:${col}"><div style="min-width:0">
+        <div class="tk-title"><span class="sd" data-tip="${esc(lab)}"></span><b>${esc((u.title||u.id).slice(0,80))}</b>${u.lane==="direct-main"?'<span class="tag">直落</span>':""}${u.critical?stChip("bad","优先"):""}${o?`<span class="chip s-bad" data-tip="${esc(o.over.map(k=>(UN[k]||[k])[0]+" "+num(o[k])).join(" · "))}">${ic("bad")}超标</span>`:""}</div>
+        <div class="tk-meta">${esc(u.id)} · ${ghLink(u)||"—"}${ACTIVE.includes(j.status)?` · 本环节 <b>${fMin(j.since_min)}</b>`:""}</div>${track}</div>
+      <div class="tk-time"><div style="width:${Math.max(8, Math.round(100*j.age_min/maxAge))}%"><div class="tbar">${seg("work","var(--c1)","开发/质检")}${seg("ready","var(--c2)","等合并")}${seg("supervisor","var(--c8)","等主管")}</div></div>
+        <div class="sm">${ic("clock")} ${fMin(j.age_min)}${tot>1?` · 等待 <b class="${waitPct>=50?"si s-bad":""}">${waitPct}%</b>`:""}</div></div>
+      <div class="tk-cost">${unitCostText(CM, u.id)}<div class="sm">${ft(u.tokens)} tok</div></div></div>`;
+  };
+  const aggT = Math.max(1, agg.work+agg.ready+agg.supervisor);
+  return `<div class="stack16">
+    ${panel("orders","工作单状态", stripHtml)}
+    ${panel("health","单个工作单的花费标准", strips(D), (()=>{ const m = nodeMetrics(D).find(x=>x.id==="workorders.over_standard"); return m ? stChip(m.status, `超标 ${num(m.value)} 单`) : ""; })())}
+    ${panel("layers", `「${FILTERS[view.f][0]}」${list.length} 单`, `<div style="margin-bottom:6px">${stack([{label:"开发/质检", value:agg.work, color:"var(--c1)"},{label:"等合并", value:agg.ready, color:"var(--c2)"},{label:"等主管", value:agg.supervisor, color:"var(--c8)"}], fMin)}</div>
+      ${ctl}<div id="units">${list.slice(view.p*PAGE, view.p*PAGE+PAGE).map(card).join("") || emptyMsg("没有工作单")}</div>`, `${ic("clock")} 累计 ${fMin(aggT)}`)}
+  </div>`;
+}
+
+// 5. CI
+function sumCi(D) {
+  const st = [...Object.keys(ciStd(D)).map(k => ciStatus(D, k)), ...modMetrics(D,"ci").map(m=>m.status)];
+  return {s: worst(st), v: num(((D.ci_live||{}).values||{}).queued_runs), l: "排队 run", st};
+}
+function vCi(D) {
+  const CL = D.ci_live || {}, sp = CL.spend || {}, br = sp.by_reason || {}, t = D.totals || {};
+  const pools = Object.entries(CL.pools||{});
+  const poolHtml = pools.length ? `<div class="rows">${pools.map(([k,p]) => `<div class="pool"><span>${esc(k)}</span><div class="squares">${
+      Array.from({length:p.total||0}, (_,i) => `<i class="sq ${i<(p.total-p.online)?"off":i<(p.total-p.online)+p.busy?"busy":""}"></i>`).join("")}</div><span class="v">${p.busy}/${p.online}</span></div>`).join("")}</div>
+      <div class="lg"><span><i style="background:var(--primary)"></i>忙</span><span><i style="border:1.5px solid var(--primary);width:9px;height:9px"></i>空闲</span><span><i style="border:1.5px dashed var(--bad);width:9px;height:9px"></i>离线</span></div>` : emptyMsg("没有 runner 数据");
+  const verdict = v => { const s = !v || String(v).startsWith("unknown") ? "warn" : String(v).startsWith("success") ? "ok" : "bad"; return stChip(s, s==="ok"?"通过":s==="bad"?"失败":"未知"); };
+  const ws = sp.waste_pct, wst = ws==null?"none":ws>=35?"bad":ws>20?"warn":"ok";
+  const sinks = ((D.standards||{}).time_sinks||[]).filter(r => /^approve/.test(r.id));
+  return `<div class="stack16">
+    <div class="grid g2">
+      ${panel("ci","Runner", poolHtml, `${num((CL.values||{}).runners_online)} 在线`)}
+      ${panel("git","main 分支", `<div class="kpis">
+          <div class="kpi" data-tip="Pipeline suites 红会挡流水线 PR 合并">${ic("layers")}<div><div style="margin-bottom:4px">${verdict(t.suites)}</div><div class="kl">Pipeline suites</div></div></div>
+          <div class="kpi" data-tip="发布只挑 Postsubmit 绿的 main">${ic("release")}<div><div style="margin-bottom:4px">${verdict(t.ci)}</div><div class="kl">Postsubmit</div></div></div>
+          ${kpi("arrow", `${num(CL.running_runs)}`, "", "在跑 run")}${kpi("orders", `${num(CL.ready)}`, "", "就绪单", `WIP 按在线 PR runner 空闲量动态放行；热修 ${CL.hotpatch_ready??0} 个不占常规名额`)}</div>`)}
+    </div>
+    ${panel("health","CI 现状对照标准", `<div class="buls">${["runners_online","pr_runner_busy_pct","queued_runs","wip_waiting"].map(k=>bCi(D,k)).join("")}</div>`)}
+    <div class="grid g2">
+      ${panel("timer","浪费的 runner 时间", `<div class="ringbox">${ring(ws, wst, 96, ws==null?"—":ws+"%", [{at:20,c:"ok"},{at:35,c:"bad"}])}
+          <div style="flex:1;min-width:0">${stack([{label:"取消", value:br.cancelled, color:"var(--c2)"},{label:"未获批被取代", value:br.superseded_unapproved, color:"var(--c7)"},{label:"非产品 Postsubmit", value:br.nonproduct_postsubmit, color:"var(--c4)"}], v=>num(v)+" 分")}
+          <div class="sub" style="margin-top:8px">近 ${num(sp.window_hours??5)} 小时共 ${num(sp.total_min)} 分 · ${num(sp.runs)} 个 run · 健康 ≤ 20% · 不健康 ≥ 35%</div></div></div>`)}
+      ${panel("git","批准之后", `<div class="buls">${modMetrics(D,"ci").map(bNode).join("")}${sinks.map(bSink).join("")}</div>`)}
+    </div>
+  </div>`;
+}
+
+// 6. 合并 · 发布
+const RT_NM = {released:["已发布","ok"], building:["构建中","none"], deploying:["部署中","none"], delegated:["已交主控发布","none"], held:["待主管发布（含迁移）","warn"],
+  "deferred-busy":["fleet 忙，下一班","warn"], "blocked-credentials":["凭据失效","bad"], failed:["失败已回滚","bad"], "no-image-change":["无镜像变化","ok"]};
+function sumRelease(D) {
+  const F = FR(D);
+  const st = [...frontStatus(D, k => k.startsWith("release.") || k.startsWith("stage.awaiting-release.") || k.startsWith("stage.awaiting-pipeline-sync.")), ...modMetrics(D,"release").map(m=>m.status)];
+  const r = stageRow(D, "awaiting-release");
+  return {s: (F.errors||{}).release ? "bad" : worst(st), v: r ? r.count : "—", l: "已合并等发布", st};
+}
+function vRelease(D) {
+  const F = FR(D), RL = F.release, E = F.errors || {}, rt = D.release_train || {}, t = D.totals || {};
+  const rtn = RT_NM[rt.status] || [rt.status || "尚未运行", "warn"];
+  let wait;
+  if (E.release) wait = unavailable("发布等待（release-train.json / alerts / git）", E.release);
+  else if (!RL) wait = emptyMsg("没有发布等待数据");
+  else wait = `<div class="sha"><div class="node"><span>生产</span><code>${esc(RL.prod_sha||"—")}</code></div>
+        <div class="gap">${ic("arrow")}<span>${RL.main_ahead_commits==null?"—":"+"+RL.main_ahead_commits+" 提交"}</span></div>
+        <div class="node"><span>main</span><code>${esc(RL.main_sha||"—")}</code></div>
+        <div class="node"><span>候选</span><code>${esc((RL.candidate||"—").slice(0,9))}</code></div>
+        ${RL.held ? stChip("warn","被挡住") : stChip("ok","未被挡")}</div>
+      <div class="buls" style="margin-top:18px">${bFront(D,"release.hold_hours","被挡时长")}${bFront(D,"release.main_ahead_hours","main 领先生产")}${modMetrics(D,"release").map(bNode).join("")}</div>
+      ${(RL.held_images||[]).length ? `<div class="sub" style="margin:16px 0 6px">${RL.held?"被挡的镜像":"上次被挡的镜像"}${RL.last_held_at?` · ${fAge(hoursAgo(RL.last_held_at))}前`:""}</div><div class="rows">${RL.held_images.map(h=>`<div class="knob"><span>${ic("release")} <code>${esc(h.image)}</code></span><span class="sub">${esc(h.reason)}</span></div>`).join("")}</div>` : ""}`;
+  const steps = ((D.release||{}).steps||[]);
+  const stI = {blocked:"bad", in_progress:"none", done:"ok", pending:"none"};
+  const merged = t.merged_today || [];
+  return `<div class="stack16">
+    ${panel("release","自动发布列车", `<div class="lg" style="margin-top:0">${stChip(rtn[1], rtn[0])}<span>候选 <code>${esc((rt.candidate||"—").slice(0,9))}</code></span>
+        ${rt.released_sha?`<span>${ic("ok")} 最近发布 <code>${esc(rt.released_sha.slice(0,9))}</code> · ${fAge(hoursAgo(rt.released_at))}前</span>`:""}
+        ${(rt.images||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join("")}${rt.consecutive_failures?stChip("bad","连续失败 "+rt.consecutive_failures):""}</div>
+      ${rt.reason?`<div class="sub" style="margin-top:10px">${esc(rt.reason)}</div>`:""}
+      ${steps.length?`<div class="steps" style="margin-top:14px">${steps.map(r=>`<div class="step s-${stI[r.status]||"none"}" data-tip="${esc(r.note||"")}">${ic(stI[r.status]==="ok"?"ok":stI[r.status]==="bad"?"bad":"clock")}<div>${esc(String(r.step||"").replace(/（.*）/,""))}</div></div>`).join("")}</div>`:""}`)}
+    ${panel("git","main → 生产", wait)}
+    <div class="grid g2">
+      ${panel("layers","合并车道", `<div class="board">${PIPE.slice(4,7).map(p=>{ const n = unitsIn(D,p.key).length; return `<div class="st"><div class="n ${n?"":"zero"}">${n}</div><div class="l">${esc(p.nm)}</div></div>`; }).join("")}
+          <div class="st" data-tip="${esc(t.infra_latest?(t.infra_latest.displayTitle||"")+" · "+(t.infra_latest.createdAt||""):"无记录")}"><div class="n">${bigIcon(!t.infra_latest?"none":t.infra_latest.conclusion==="success"?"ok":"bad")}</div><div class="l">镜像构建</div></div>
+          <div class="st" data-tip="${esc(t.deployed_through&&t.deployed_through.sha?"已上线到 "+t.deployed_through.sha+"（"+t.deployed_through.date+"）":"未知")}"><div class="n">${bigIcon(t.deployed_through&&t.deployed_through.sha?"ok":"warn")}</div><div class="l">已上线</div></div></div>
+        <div class="sub" style="margin:14px 0 6px">今日合并 ${merged.length} 个 PR</div><div class="issue-chips">${merged.map(n=>`<span class="tag"><a href="${repoUrl()}/pull/${esc(n)}" target="_blank" rel="noopener">#${esc(n)}</a></span>`).join("")}</div>`)}
+      ${panel("intake","等发布的 issue", (FR(D).errors||{}).stages ? unavailable("GitHub 阶段计数", FR(D).errors.stages) : `<div class="buls">${["awaiting-release","awaiting-pipeline-sync"].map(l => { const r = stageRow(D,l);
+          return r ? bFront(D, `stage.${l}.count`, r.name+" · 数量") + bFront(D, `stage.${l}.idle_hours`, r.name+" · 最久没动", r.count ? null : "—") : ""; }).join("") || emptyMsg("没有阶段计数")}</div>`)}
+    </div>
+  </div>`;
+}
+
+// 7. 健康标准（全部有标准的数字一屏看完）
+function allStatuses(D) {
+  const F = FR(D);
+  return [...nodeMetrics(D).map(m=>sk(m.status)), ...Object.values(F.status||{}).map(sk), ...Object.keys(ciStd(D)).map(k=>sk(ciStatus(D,k))),
+    ...(((D.standards||{}).time_sinks)||[]).map(r=>sk(r.status))];
+}
+function sumHealth(D) {
+  const a = allStatuses(D), bad = a.filter(s=>s==="bad").length, warn = a.filter(s=>s==="warn").length;
+  return {s: !a.length ? "none" : bad ? "bad" : warn ? "warn" : "ok", v: bad, l: `不健康 · 共 ${a.length} 项`, st: a};
+}
+// 状态卡底部：本模块里不健康 / 警告 / 健康各几项
+const tally = st => { if (!st || !st.length) return ""; const c = k => st.map(sk).filter(x=>x===k).length;
+  return `<div class="tally">${["bad","warn","ok"].filter(k=>c(k)).map(k=>`<span class="s-${k}" data-tip="${SL[k]} ${c(k)} 项"><span class="si">${ic(k)}</span>${c(k)}</span>`).join("")}</div>`; };
+const ALERT_IC = l => /UNHEALTHY|failure|failed|BROKEN|red/i.test(l) ? "bad" : /HELD|held|unknown|WARN|stale/i.test(l) ? "warn" : "bell";
+function alertList(D, n) {
+  // alerts_tail 来自多份告警文件，按行首时间倒序排
+  const at = a => { const m = String(a).match(/^\[([^\]]+)\]/); const t = m ? Date.parse(m[1]) : NaN; return Number.isNaN(t) ? 0 : t; };
+  const A = (D.alerts_tail||[]).slice().sort((x,y) => at(y)-at(x)).slice(0, n || 99);
+  if (!A.length) return `<div class="empty">${ic("ok")}一切正常，没有需要注意的事</div>`;
+  return `<div class="alerts">${A.map(a => { const m = String(a).match(/^\[([^\]]+)\]\s*(.*)$/), when = m ? m[1] : "", body = m ? m[2] : String(a), k = ALERT_IC(body);
+    return `<div class="al s-${k==="bell"?"none":k}"><span class="si">${ic(k)}</span><span class="t">${when?fAge(hoursAgo(when))+"前":""}</span><span class="x">${esc(body)}</span></div>`; }).join("")}</div>`;
+}
+// 机制心跳（M2 #4495/#4498）：登记表里每个机制的最近事件时间；沉默超限 = 机制落地了但没在跑
+const bMech = m => bullet({id:m.id, label:m.desc, unit:"", value:m.silent_hours, shown:m.silent_hours==null?"从未":fAge(m.silent_hours),
+  healthy:0, unhealthy:m.bound_hours, hib:false, status:m.silent?"bad":m.silent_hours==null?"none":"ok",
+  meaning:`最近事件 ${m.last_event_at?utc(m.last_event_at):"从未"} · 负责人 ${m.supervisor}${m.expected_idle?" · 允许长期无事件（expected_idle，不报警）":""}\n沉默上限 ${num(m.bound_hours)} 时；事件模式见 engine/state/mechanism-registry.json`,
+  source:"机制登记表（state/mechanism-registry.json）的事件模式"});
+function vHealth(D) {
+  const STD = D.standards || {}, a = allStatuses(D);
+  const cnt = s => a.filter(x=>x===s).length;
+  const groups = {};
+  nodeMetrics(D).forEach(m => (groups[m.node] = groups[m.node] || []).push(m));
+  const SKs = STD.time_sinks || [], maxH = Math.max(1, ...SKs.map(r=>r.total_hours||0));
+  const MK = STD.mechanisms || [];
+  const COL = {ok:"var(--ok)", warn:"var(--warn)", bad:"var(--bad)", none:"var(--none)"};
+  const cs = D.cost || {};
+  return `<div class="stack16">
+    ${panel("health","全部标准", `<div class="ringbox">${ring(a.length?100*cnt("ok")/a.length:0, cnt("bad")?"bad":cnt("warn")?"warn":"ok", 96, `${cnt("ok")}/${a.length}`)}
+        <div style="flex:1;min-width:0">${stack([{label:"健康",value:cnt("ok"),color:COL.ok},{label:"警告",value:cnt("warn"),color:COL.warn},{label:"不健康",value:cnt("bad"),color:COL.bad},{label:"无数据",value:cnt("none"),color:COL.none}])}
+        <div class="sub" style="margin-top:8px">窗口 ${num(STD.window_hours)} 小时 · 评分于 ${utc(STD.generated)} · 不健康持续 3 小时自动开 pipeline-system issue · 依据 NODE-HEALTH.md</div></div></div>`)}
+    ${STD.metrics ? Object.entries(groups).map(([node, ms]) => panel(NODE_ICON[node]||"health", NODE_NM[node]||node, `<div class="buls">${ms.map(bNode).join("")}</div>`, stChip(worst(ms.map(m=>m.status))))).join("").replace(/^/, '<div class="masonry">').replace(/$/, "</div>") : panel("health","节点评分", emptyMsg("尚无评分（node-health.json 由每拍调度生成）"))}
+    ${MK.length ? panel("layers","机制心跳（登记表）", `<div class="buls">${MK.map(bMech).join("")}</div>`, `${MK.filter(m=>m.silent).length}/${MK.length} 沉默`) : ""}
+    ${panel("timer","时间都花在哪（近 "+num(STD.time_sink_hours||24)+" 小时）", SKs.length ? `${hbars(SKs.map(r=>({label:r.desc, value:r.total_hours, shown:num(r.total_hours)+" 时", color:COL[sk(r.status)], tip:`${r.desc}：合计 ${num(r.total_hours)} 时\n${r.meaning}\n${r.stat} = ${num(r.value)} 分（健康 ≤ ${r.healthy} · 不健康 ≥ ${r.unhealthy}）`})), maxH)}
+        <div class="buls" style="margin-top:20px">${SKs.map(bSink).join("")}</div>` : emptyMsg("尚无数据"))}
+    ${panel("bell","需要注意的事", alertList(D) + (cs.budget_tokens_match===false ? `<div class="al s-warn"><span class="si">${ic("warn")}</span><span class="t">今日</span><span class="x">token 对账不一致：sessions ${num(cs.today&&cs.today.tokens)}，budget.json ${num(cs.budget_tokens)}（${esc(cs.budget_date||"未知")}）</span></div>` : ""), `${(D.alerts_tail||[]).length} 条`)}
+  </div>`;
+}
+const NODE_ICON = {implement:"workers", review:"ok", repair:"knob", "review-loop":"ci", workers:"user", "ci+merge":"git", supervisor:"user", scheduler:"clock", release:"release", delivery:"release", pipeline:"layers", "work-orders":"orders", host:"host", mechanisms:"layers"};
+
+// 8. 成本
+function budgetOf(D) { const s = D.summary||{}, c = D.config||{}, budget = Math.max(0, Number(c.daily_token_budget)||0), billable = s.billable_daily_tokens ?? s.real_daily_tokens;
+  return {budget, billable, pct: budget ? 100*(Number(billable)||0)/budget : null}; }
+function sumCost(D) {
+  const s = D.summary || {}, b = budgetOf(D);
+  // 唯一的界线是 config.daily_token_budget：超出预算即红
+  const st = b.pct==null ? "none" : b.pct<=100 ? "ok" : "bad";
+  return {s: st, st: b.pct==null ? [] : [st], v: money(s.real_daily_cost, 0), l: b.pct==null ? "今日成本" : `今日 · 预算 ${Math.round(b.pct)}%`};
+}
+function vCost(D) {
+  const s = D.summary || {}, cs = D.cost || {}, t = D.totals || {}, b = budgetOf(D), y = cs.yesterday || {}, td = cs.today || {};
+  const pu = (cs.per_unit||[]).slice().sort((a,b)=>(b.dollars||0)-(a.dollars||0)).slice(0, 12);
+  const ts = (cs.top_sessions||[]).slice(0, 10);
+  // worker 成本账（worker_cost.py）：24h 合计、单元 / ticket、阶段 / 后端、eval 单独一栏
+  const cl = D.cost_ledger || {}, L24 = cl.last_24h || {}, EV = (cl.eval||{}).last_24h || {};
+  const byUnit = (cl.by_unit||[]).slice(0, 12), byTicket = (cl.by_ticket||[]).slice(0, 12);
+  const incompleteSessions = Array.isArray(cs.budget_incomplete_sessions) ? cs.budget_incomplete_sessions : [];
+  const coverageWarning = cs.budget_status === "partial"
+    ? `<div class="lg" data-tip="${esc(incompleteSessions.join(", "))}">${stChip("warn","日用量部分计量")}<span class="sub">只计已完成 turn；${num(incompleteSessions.length)} 个会话未完成</span></div>` : "";
+  const phases = Object.entries(cl.by_phase||{}), backends = Object.entries(cl.by_backend||{});
+  const evLabels = ((cl.eval||{}).labels||[]).slice(0, 8);
+  const spendTip = r => `${r.unit!=null?"单元 "+r.unit:"#"+r.ticket}：输入 ${ft(r.in||0)} · 未命中缓存 ${r.uncached==null?"未知":ft(r.uncached)} · 输出 ${ft(r.out||0)}\n墙钟 ${fMin(Math.round(r.wall_min||0))} · 失败切换 ${num(r.failovers)} · ${num(r.runs)} 次运行${r.unknown_runs?` · ${r.unknown_runs} 次用量未知`:""}${r.ticket!=null?`\nticket #${r.ticket}`:""}`;
+  return `<div class="stack16">
+    <section class="panel"><div class="kpis">
+      ${kpi("cost", money(s.real_daily_cost, 2), "", "今日成本（估）", cs.pricing_note||"按 config.pricing 估算")}
+      ${kpi("git", money(s.dollars_per_merged, 2), "", `每个合并 PR · 今日 ${(t.merged_today||[]).length} 个`)}
+      ${kpi("layers", num(td.sessions ?? s.sessions_today), "", "今日会话")}
+      ${kpi("workers", ft(b.billable), "", "今日计费 token", `不含缓存读；含缓存 ${ft(s.real_daily_tokens)}`)}</div></section>
+    <div class="grid g2">
+      ${panel("timer","计费 token 对预算", `<div class="ringbox">${ring(Math.min(100, b.pct||0), b.pct==null?"none":b.pct<=100?"ok":"bad", 104, b.pct==null?"—":Math.round(b.pct)+"%")}
+          <div style="flex:1;min-width:0">${hbars([{label:"今日计费", value:b.billable, shown:ft(b.billable), color:b.pct>100?"var(--bad)":"var(--primary)", mark:b.budget||null},{label:"日预算", value:b.budget, shown:ft(b.budget), color:"var(--stone)"}])}
+          <div class="sub" style="margin-top:8px">红线 = config.daily_token_budget</div></div></div>${coverageWarning}`)}
+      ${panel("cost","今日 对 昨日", hbars([{label:"今日 $", value:td.dollars, shown:money(td.dollars), color:"var(--primary)"},{label:"昨日 $", value:y.dollars, shown:money(y.dollars), color:"var(--stone)"}]) +
+          `<div style="height:14px"></div>` + hbars([{label:"今日会话", value:td.sessions, color:"var(--primary)"},{label:"昨日会话", value:y.sessions, color:"var(--stone)"}]) +
+          ((cs.by_model||[]).length ? `<div class="sub" style="margin:16px 0 6px">按模型（昨日 + 今日）</div>` + hbars((cs.by_model||[]).map((r,i)=>({label:r.model, value:r.dollars||0, shown:money(r.dollars), color:CAT[i%8], tip:`${r.model}：${r.sessions} 个会话 · ${ft(r.tokens)} token`}))) : "") +
+          (cs.budget_tokens_match===false ? `<div class="lg">${stChip("warn","token 对账不一致")}<span class="sub">sessions ${num(td.tokens)} · budget.json ${num(cs.budget_tokens)}</span></div>` : ""))}
+    </div>
+    <div class="grid g2">
+      ${panel("orders","花费最多的工作单", pu.length ? hbars(pu.map(r=>({label:r.unit, value:r.dollars||0, shown:r.dollars==null?"—":money(r.dollars), color:r.unit==="unattributed"?"var(--stone)":"var(--primary)", tip:`${r.unit}：${r.sessions} 个会话 · ${r.dollars==null?"无法估算":money(r.dollars,4)}`}))) : emptyMsg("暂无"))}
+      ${panel("layers","单会话 Top 10（按 token）", ts.length ? hbars(ts.map(x=>({label:x.unit+" · "+String(x.session_id||"").slice(0,8), value:x.tokens, shown:ft(x.tokens), tip:`${x.unit} · ${x.session_id}\n${x.mixed_model?"混合模型 "+(x.models||[]).join(", "):x.model}${x.unpriced_model&&!x.mixed_model?"（默认价）":""}\n${x.mixed_model?"成本无法估算":money(x.dollars,4)}`}))) : emptyMsg("昨日与今日暂无会话成本记录"),
+       `<span data-tip="${esc(cs.pricing_note||"")}">${ic("none")} 定价说明</span>`)}
+    </div>
+    <div class="grid g2">
+      ${panel("cost","最近 24 小时 · worker 事件流", `<div class="kpis" style="margin-bottom:12px">
+          ${kpi("layers", ft(L24.in||0), "", "输入 token")}
+          ${kpi("workers", L24.uncached==null?"—":ft(L24.uncached), "", "未命中缓存")}
+          ${kpi("git", ft(L24.out||0), "", "输出 token")}
+          ${kpi("clock", fMin(Math.round(L24.wall_min||0)), "", "墙钟", `${num(L24.runs||0)} 次运行 · 失败切换 ${num(L24.failovers||0)}${L24.unknown_runs?` · ${num(L24.unknown_runs)} 次用量未知`:""}`)}</div>` +
+        (phases.length ? `<div class="sub" style="margin:6px 0">按阶段（token = 输入+输出）</div>` + hbars(phases.map(([k,v],i)=>({label:k, value:v.raw||0, shown:ft(v.raw||0), color:CAT[i%8], tip:`${k}：${ft(v.in||0)} in · ${v.uncached==null?"?":ft(v.uncached)} 未命中 · ${ft(v.out||0)} out · ${fMin(Math.round(v.wall_min||0))}`}))) : emptyMsg("暂无 worker 日志")) +
+        (backends.length ? `<div class="sub" style="margin:16px 0 6px">按后端</div>` + hbars(backends.map(([k,v],i)=>({label:k, value:v.raw||0, shown:ft(v.raw||0), color:CAT[(i+3)%8], tip:`${k}：${ft(v.raw||0)} token · ${fMin(Math.round(v.wall_min||0))} · ${num(v.runs||0)} 次运行`}))) : ""),
+        `数据来源：*.worker.log`)}
+      ${panel("git","eval（单独口径）", `<div class="kpis" style="margin-bottom:12px">
+          ${kpi("layers", EV.tokens==null?"—":ft(EV.tokens), "", "eval token · 24h", `${num(EV.labels||0)} 个标签 · ${num(EV.runs||0)} 轮${EV.unknown_tokens?` · ${num(EV.unknown_tokens)} 轮用量未知`:""}`)}
+          ${kpi("clock", fDur(Math.round(EV.model_wall_seconds||0)), "", "eval 模型墙钟 · 24h", `含等待 ${fDur(Math.round(EV.wall_seconds||0))}`)}</div>` +
+        (evLabels.length ? hbars(evLabels.map(l=>({label:l.label, value:l.tokens==null?0:l.tokens, shown:l.tokens==null?"未知":ft(l.tokens), color:"var(--primary)", tip:`${l.label}：${l.tokens==null?"含未知用量轮":ft(l.tokens)+" token"} · 模型墙钟 ${fDur(Math.round(l.model_wall_seconds||0))} · ${num(l.runs)} 轮`}))) : emptyMsg("24 小时内没有 eval 结果")),
+        "来源：eval/<label>/results.json")}
+    </div>
+    <div class="grid g2">
+      ${panel("orders","每个单元的花费（事件流口径）", byUnit.length ? hbars(byUnit.map(r=>({label:r.unit, value:r.raw||0, shown:ft(r.raw||0), color:r.ticket==null?"var(--stone)":"var(--primary)", tip:spendTip({...r, ticket:r.ticket})}))) : emptyMsg("暂无 worker 日志"),
+        `累计 · ${num((cl.by_unit||[]).length)} 个单元`)}
+      ${panel("ticket","每张 ticket 的花费（累计）", byTicket.length ? hbars(byTicket.map(r=>({label:"#"+r.ticket, value:r.raw||0, shown:ft(r.raw||0), color:"var(--primary)", tip:spendTip({...r, unit:null})}))) : emptyMsg("worker 日志还没有归到任何 ticket"),
+        `累计 · ${num((cl.by_ticket||[]).length)} 张票`)}
+    </div>
+  </div>`;
+}
+
+// 9. 主机 · 运行（网络流量、主机依赖、调度、旋钮）
+const NET = {OK:["正常","ok"], BROKEN:["超预算","bad"], UNKNOWN:["覆盖不全","warn"], STALE:["采样中断","bad"], STARTING:["启动中","warn"], "NOT-INSTALLED":["未安装","bad"]};
+function sumHost(D) {
+  const tr = D.traffic || {}, n = NET[tr.status] || ["未知","none"];
+  const st = [n[1], ...modMetrics(D,"host").map(m=>m.status), ...((((D.standards||{}).host_missing)||[]).length ? ["bad"] : [])];
+  return {st, s: worst(st), v: tr.gb_per_hour==null ? "—" : tr.gb_per_hour.toFixed(1), u:"GB/时", l: "网络 · " + n[0]};
+}
+function area(pts, budget) {
+  if (pts.length < 2) return emptyMsg("采样累积中");
+  const W = 600, H = 140, top = Math.max(budget||0, ...pts.map(p=>p.v)) * 1.12 || 1;
+  const x = i => i*W/(pts.length-1), y = v => H - (v/top)*(H-4);
+  const line = pts.map((p,i)=>`${i?"L":"M"}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
+  const bw = W/pts.length;
+  return `<svg class="area" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><path class="fa" d="${line}L${W},${H}L0,${H}Z"/><path class="ln" d="${line}"/>
+    ${budget?`<line class="bg" x1="0" x2="${W}" y1="${y(budget).toFixed(1)}" y2="${y(budget).toFixed(1)}"/>`:""}
+    ${pts.map((p,i)=>`<rect class="hit" x="${(x(i)-bw/2).toFixed(1)}" y="0" width="${bw.toFixed(2)}" height="${H}" data-tip="${esc(hm(p.t*1000, true)+" · "+p.v.toFixed(2)+" GB/时")}"/>`).join("")}</svg>
+    <div class="axis"><span>${hm(pts[0].t*1000)}</span>${budget?`<span style="color:var(--bad-ink)">--- 预算 ${budget} GB/时</span>`:""}<span>${hm(pts[pts.length-1].t*1000)}</span></div>`;
+}
+function vHost(D) {
+  const tr = D.traffic || {}, bud = tr.budget || {}, n = NET[tr.status] || ["未知","none"], c = D.config || {};
+  const hist = (tr.history||[]).filter(h=>h.gbh!=null).map(h=>({t:h.t, v:h.gbh}));
+  const cats = Array.from(new Set([...Object.keys(tr.category_gb_per_hour||{}), ...Object.keys(tr.today_category_gb||{})]));
+  const budBul = (label, v, b, unit, tip) => b==null ? "" : bullet({label, value:v, shown:v==null?"—":(v>=10?v.toFixed(0):v>=1?v.toFixed(1):v.toFixed(2)), unit, budget:true, healthy:b, unhealthy:b, status:v==null?"none":v<=b?"ok":"bad", meaning:tip, top:Math.max(b*1.6, 0.01)});
+  const hostM = modMetrics(D, "host").sort((a,b) => (a.id==="host.github_net_failures_per_hour"?-1:0) - (b.id==="host.github_net_failures_per_hour"?-1:0));
+  const missing = ((D.standards||{}).host_missing)||[];
+  return `<div class="stack16">
+    ${panel("health","主机与调度的标准", `<div class="buls">${hostM.map(bNode).join("") || emptyMsg("尚无评分")}</div>${missing.length?`<div class="lg">${stChip("bad","未响应")}${missing.map(x=>`<code>${esc(x)}</code>`).join(" ")}</div>`:""}`)}
+    ${panel("globe","WSL 出口流量", `<div class="lg" style="margin:0 0 12px">${stChip(n[1], n[0])}<span class="sub">${tr.sampled_epoch?"采样于 "+hm(tr.sampled_epoch*1000, true):"尚无采样"}</span></div>
+        ${area(hist.slice(-180), bud.gb_per_hour)}
+        <div class="buls" style="margin-top:18px">${budBul("当前速率", tr.gb_per_hour, bud.gb_per_hour, "GB/时", "预算 "+bud.gb_per_hour+" GB/时")}${budBul("今日累计（UTC 日）", tr.today_gb, bud.gb_per_day, "GB", "预算 "+bud.gb_per_day+" GB/天")}</div>
+        ${tr.detail?`<div class="sub" style="margin-top:12px;overflow-wrap:anywhere" data-tip="${esc(tr.detail)}">${esc(String(tr.detail).slice(0,160))}${String(tr.detail).length>160?"…":""}</div>`:""}`)}
+    ${cats.length ? panel("layers","按类别（今日 对 日预算）", `<div class="buls">${cats.map(k=>budBul(k, (tr.today_category_gb||{})[k], (bud.category_gb_per_day||{})[k], "GB", `当前 ${((tr.category_gb_per_hour||{})[k]??0).toFixed(3)} GB/时 · 日预算 ${(bud.category_gb_per_day||{})[k]??"—"} GB`) || `<div class="bul"><div class="bul-h"><span class="bul-l">${esc(k)}</span><span class="bul-v s-none"><b>${num((tr.today_category_gb||{})[k])}</b><small>GB · 无预算</small></span></div></div>`).join("")}</div>`) : ""}
+    <div class="grid g2">
+      ${panel("knob","控制旋钮", `<div class="rows">${(D.knobs||[]).map(k=>`<div class="knob" data-tip="${esc(k.meaning)}"><code>${esc(k.key)}</code><b>${esc(typeof k.value==="object"?JSON.stringify(k.value):k.value)}</b></div>`).join("")}</div>`, "改法：让 CTO 通过 PR 修改 config.template.json")}
+      ${panel("clock","调度", `<div class="kpis">${kpi("clock", num(Math.round((c.tick_seconds||600)/60)), "分", "每拍间隔（配置）")}${kpi("workers", num(c.max_workers), "人", "同时在岗上限")}
+          ${kpi("layers", esc(c.focus_mode||"all"), "", "派发焦点")}<div class="kpi">${ic("git")}<div><div style="margin-bottom:4px">${stChip(c.auto_merge?"ok":"warn", c.auto_merge?"开":"关")}</div><div class="kl">自动合并</div></div></div></div>`)}
+    </div>
+  </div>`;
+}
+
+// 0. 总览
+const FLOW = [
+  {nm:"待分诊", front:"needs-triage", mod:"intake"},
+  {nm:"待顾问", front:"needs-advisor", mod:"advisor"},
+  {nm:"待拆票", front:"needs-recut", mod:"intake"},
+  {nm:"待实现", front:"ready-for-agent", mod:"intake"},
+  {nm:"开发", units:["implement-pending","implement"], mod:"workers"},
+  {nm:"质检/返工", units:["review-pending","review","repair-pending","repair","rereview-pending","rereview"], mod:"workers"},
+  {nm:"待合并", units:["ready-to-merge","landing"], mod:"ci"},
+  {nm:"等发布", front:"awaiting-release", mod:"release"},
+];
+function vOverview(D) {
+  const tiles = MODULES.filter(m => m.id!=="overview").map(m => { const s = safeSum(m, D);
+    return `<button class="tile s-${sk(s.s)}" data-m="${m.id}" type="button"><div class="tile-h">${ic(m.icon)}${esc(m.nm)}<span class="si" data-tip="${esc(SL[sk(s.s)])}">${ic(sk(s.s))}</span></div>
+      <div class="tile-v"><b>${s.v}</b>${s.u?`<span>${esc(s.u)}</span>`:""}</div><div class="sub">${esc(s.l)}</div>${tally(s.st)}</button>`; }).join("");
+  const F = FR(D);
+  const vals = FLOW.map(f => { if (f.front) { const r = stageRow(D, f.front); return {n: r ? r.count : null, s: worst([(F.status||{})[`stage.${f.front}.count`], (F.status||{})[`stage.${f.front}.idle_hours`]]), tip: r ? `${r.name}：${r.count} 张 · 最久滞留 ${fAge(r.idle_hours)}` : ""}; }
+    const n = unitsIn(D, f.units).length; return {n, s:"none", tip:`${f.nm}：${n} 个工作单`}; });
+  const fmax = Math.max(1, ...vals.map(v=>v.n||0));
+  const flow = `<div class="flow">${FLOW.map((f,i) => `${i?`<span class="fl-arrow">${ic("chev")}</span>`:""}<div class="fl s-${vals[i].s==="none"?"none":vals[i].s}" data-m="${f.mod}" data-tip="${esc(vals[i].tip)}" style="${vals[i].s==="none"?"--s:var(--primary)":""}">
+      <span class="fl-n">${vals[i].n==null?"—":vals[i].n}</span><i class="fl-b" style="height:${Math.max(3, 130*(vals[i].n||0)/fmax)}px"></i><span class="fl-l">${esc(f.nm)}</span></div>`).join("")}</div>
+    <div class="sidechips">${["finish-first","needs-info","awaiting-pipeline-sync"].map(l => { const r = stageRow(D,l); return r ? `<span class="chip s-${sk((F.status||{})[`stage.${l}.count`])}" data-tip="${esc(r.name+" · 最久滞留 "+fAge(r.idle_hours))}">${esc(r.name)} <b class="num" style="color:inherit">${r.count}</b></span>` : ""; }).join("")}
+      ${(()=>{ const n = unitsIn(D,["blocked-external","supervisor-review"]).length, h = unitsIn(D,["needs-human"]).length;
+        return `<span class="chip s-none">等外部条件 <b class="num" style="color:inherit">${n}</b></span><span class="chip s-${h?"bad":"none"}">需人决策 <b class="num" style="color:inherit">${h}</b></span>`; })()}</div>
+    <div class="lg"><span><i style="background:var(--primary)"></i>工作单（台账）</span><span><i style="background:var(--ok)"></i><i style="background:var(--warn)"></i><i style="background:var(--bad)"></i>GitHub 阶段，按健康线着色</span></div>`;
+  return `<div class="stack16"><div class="tiles">${tiles}</div>
+    ${panel("arrow","工作在哪里堆积", flow, (FR(D).errors||{}).stages ? stChip("bad","阶段计数不可用") : "")}
+    ${panel("bell","最近的告警", alertList(D, 6), `<button class="ghost" data-m="health" type="button">全部 ${(D.alerts_tail||[]).length}</button>`)}</div>`;
+}
+function sumOverview(D) { const f = freshness(D); return {s: f.s, v: f.age==null ? "—" : fDur(Math.round(f.age)), l: "数据新鲜度"}; }
+
+const MODULES = [
+  {id:"overview", nm:"总览", en:"Overview", icon:"overview", render:vOverview, sum:sumOverview},
+  {id:"intake",   nm:"入口 · 分诊", en:"Intake & triage", icon:"intake", render:vIntake, sum:sumIntake},
+  {id:"advisor",  nm:"顾问", en:"Advisor", icon:"advisor", render:vAdvisor, sum:sumAdvisor},
+  {id:"workers",  nm:"开发 · 评审", en:"Workers & review", icon:"workers", render:vWorkers, sum:sumWorkers},
+  {id:"orders",   nm:"工作单", en:"Work orders", icon:"orders", render:vOrders, sum:sumOrders},
+  {id:"ci",       nm:"CI", en:"Continuous integration", icon:"ci", render:vCi, sum:sumCi},
+  {id:"release",  nm:"合并 · 发布", en:"Merge & release", icon:"release", render:vRelease, sum:sumRelease},
+  {id:"health",   nm:"健康标准", en:"Health & standards", icon:"health", render:vHealth, sum:sumHealth},
+  {id:"cost",     nm:"成本", en:"Cost & tokens", icon:"cost", render:vCost, sum:sumCost},
+  {id:"host",     nm:"主机 · 运行", en:"Host, network & knobs", icon:"host", render:vHost, sum:sumHost},
+];
+function safeSum(m, D) { try { return m.sum(D); } catch (e) { return {s:"none", v:"—", l:"出错"}; } }
+
+/* ============ 外壳：导航、主题、刷新、提示 ============ */
+const LS_MOD = "zfDash.module", LS_THEME = "zfDash.theme";
+const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+let current = lsGet(LS_MOD);
+if (!MODULES.some(m => m.id===current)) current = "overview";
+
+function renderModule(id) {
+  const D = window.DASH, m = MODULES.find(x => x.id===id) || MODULES[0];
+  const nav = document.getElementById("nav"), view = document.getElementById("view");
+  if (!D) {
+    nav.innerHTML = MODULES.map(x => `<button class="nv" type="button" data-m="${x.id}">${ic(x.icon)}<span class="nv-t">${esc(x.nm)}</span></button>`).join("");
+    view.innerHTML = `<div class="unavail">${ic("bad")}<div><b style="color:inherit">数据不可用</b> · dashboard.data.js 尚未生成或无法解析<div class="sub">由 gen_dashboard.py 每拍写出；页面每 30 秒重试</div></div></div>`;
+    return;
+  }
+  nav.innerHTML = MODULES.map(x => { const s = safeSum(x, D);
+    return `<button class="nv ${x.id===m.id?"on":""}" type="button" data-m="${x.id}" title="${esc(x.nm+" · "+SL[sk(s.s)])}">${ic(x.icon)}<span class="nv-t">${esc(x.nm)}</span>${x.id==="overview"?"":`<span class="nv-n">${String(s.v).replace(/<[^>]*>/g,"")}</span>`}<i class="dot s-${sk(s.s)}"></i></button>`; }).join("");
+  document.getElementById("title").innerHTML = `${ic(m.icon)}${esc(m.nm)}<small>${esc(m.en)}</small>`;
+  const f = freshness(D);
+  const STD = D.standards || {}, sample = scorecardFreshness(D, STD);
+  const sampleStatus = sample.age==null ? "none" : sample.stale ? "bad" : "ok";
+  const sampleLabel = sample.age==null ? "健康评分暂无样本" : sample.stale ? "健康评分已过期" : `健康评分 ${fDur(Math.round(sample.age))}前`;
+  const commit = STD.source_commit ? String(STD.source_commit).slice(0,12) : "未知";
+  const pause = STD.paused;
+  const pauseLabel = pause ? `流水线暂停 · ${pause.since ? utc(pause.since) : "时间未知"} · ${pause.reason || "原因未知"}`
+    : Object.prototype.hasOwnProperty.call(STD, "paused") ? "流水线运行中" : "流水线状态未知";
+  const pipelineStatus = pause ? "warn" : Object.prototype.hasOwnProperty.call(STD, "paused") ? "ok" : "none";
+  document.getElementById("fresh").innerHTML = `<span class="chip s-${f.s}" data-tip="看板数据生成于 ${esc(utc(D.generated))}\n每 30 秒自动刷新">${ic(f.s==="ok"?"clock":f.s)}${f.age==null?"—":fDur(Math.round(f.age))+"前"}</span><span class="chip s-${sampleStatus}" data-tip="评分采样于 ${esc(utc(sample.sampledAt))} · 每 ${sample.interval} 秒采样">${ic(sampleStatus==="ok"?"clock":sampleStatus)}${sampleLabel}${sample.sampledAt?` · ${esc(utc(sample.sampledAt))}`:""}</span><span class="sub">运行版本 <code>${esc(commit)}</code></span><span class="chip s-${pipelineStatus}" data-tip="PAUSE 开始于 ${esc(pause&&pause.since?utc(pause.since):"—")}">${esc(pauseLabel)}</span>`;
+  try { view.innerHTML = m.render(D); }
+  catch (e) { view.innerHTML = `<div class="unavail">${ic("bad")}<div><b style="color:inherit">此模块渲染出错</b><div class="sub">${esc(e && e.stack || e)}</div></div></div>`; }
+  document.title = `${m.nm} · the product 流水线看板`;
+}
+function go(id) { current = id; lsSet(LS_MOD, id); renderModule(id); window.scrollTo(0, 0); }
+
+document.addEventListener("click", ev => {
+  const el = ev.target.closest("[data-m],[data-f],[data-s],[data-p]");
+  if (!el || el.disabled) return;
+  if (el.closest("a")) return;
+  if (el.dataset.m) return go(el.dataset.m);
+  if (el.dataset.f) { view.f = el.dataset.f; view.p = 0; }
+  if (el.dataset.s) { view.s = el.dataset.s; view.p = 0; }
+  if (el.dataset.p != null) view.p = Number(el.dataset.p);
+  try { sessionStorage.setItem("unitsView2", JSON.stringify(view)); } catch (e) {}
+  renderModule(current);
+});
+
+const THEMES = ["auto","light","dark"], TH_NM = {auto:"跟随系统", light:"浅色", dark:"深色"};
+let theme = lsGet(LS_THEME); if (!THEMES.includes(theme)) theme = "auto";
+function applyTheme() {
+  if (theme==="auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", theme);
+  document.getElementById("theme").innerHTML = `${ic(theme==="auto"?"auto":theme==="light"?"sun":"moon")}${TH_NM[theme]}`;
+}
+document.getElementById("theme").addEventListener("click", () => { theme = THEMES[(THEMES.indexOf(theme)+1)%3]; lsSet(LS_THEME, theme); applyTheme(); });
+
+const tip = document.getElementById("tip");
+document.addEventListener("mouseover", ev => { const el = ev.target.closest && ev.target.closest("[data-tip]"); const t = el && el.getAttribute("data-tip");
+  if (!t) { tip.classList.remove("on"); return; } tip.textContent = t; tip.classList.add("on"); });
+document.addEventListener("mousemove", ev => { if (!tip.classList.contains("on")) return;
+  const w = tip.offsetWidth, h = tip.offsetHeight, x = Math.min(ev.clientX + 14, innerWidth - w - 8), y = ev.clientY + 16 + h > innerHeight ? ev.clientY - h - 12 : ev.clientY + 16;
+  tip.style.left = Math.max(8, x) + "px"; tip.style.top = Math.max(8, y) + "px"; });
+document.addEventListener("mouseleave", () => tip.classList.remove("on"));
+
+// 每 30 秒重新载入数据：新脚本成功执行后 window.DASH 换成新对象才重画；解析失败（写到一半）保留旧数据。
+function reloadData() {
+  const prev = window.DASH, s = document.createElement("script");
+  s.src = "dashboard.data.js?t=" + Date.now();
+  s.onload = () => { s.remove(); renderModule(current); if (window.DASH !== prev) tip.classList.remove("on"); };
+  s.onerror = () => { s.remove(); renderModule(current); };
+  document.head.appendChild(s);
+}
+applyTheme();
+renderModule(current);
+setInterval(reloadData, 30000);
+setTimeout(() => location.reload(), 30 * 60 * 1000);
+window.__dash = {MODULES, renderModule};
+</script>
+</body>
+</html>
