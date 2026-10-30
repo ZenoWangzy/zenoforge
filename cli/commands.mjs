@@ -19,11 +19,11 @@ export const PKG_ENGINE = path.join(PKG_ROOT, 'engine');
 export const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).version;
 
 // Which agent CLIs can do which job in the engine today (see docs/install.md, "Agents and roles"). Default first.
-export const ROLE_AGENTS = { implement: ['codex', 'zcode'], review: ['claude', 'codex'] };
+const ROLE_AGENTS = { implement: ['codex', 'zcode'], review: ['claude', 'codex'] };
 
 export class UserError extends Error {}
 
-export const RISK_WARNING = `Read this before anything is switched on (full text: SECURITY.md):
+const RISK_WARNING = `Read this before anything is switched on (full text: SECURITY.md):
   - Coding agents run UNSANDBOXED on this machine, with your user's permissions and your gh login.
   - Issue text is UNTRUSTED input. Anyone who can open or comment on an issue in the target
     repository can try to steer an agent. Use this only on repositories where just trusted people file issues.
@@ -36,12 +36,12 @@ export const RISK_WARNING = `Read this before anything is switched on (full text
 const packagedFile = (rel) => fs.readFileSync(path.join(PKG_ENGINE, rel), 'utf8');
 
 /** Tool directories for the PATH baked into units; systemd and launchd do not read your shell profile. */
-export function toolDirs(find = (n) => which(n), extra = []) {
+function toolDirs(find = (n) => which(n), extra = []) {
   const names = ['gh', 'git', 'jq', 'node', 'python3', 'bash', 'flock', 'timeout', 'date', ...AGENT_CLIS];
   return [...extra, ...names.map(find).filter(Boolean).map((p) => path.dirname(p))];
 }
 
-export function chooseAgent(role, given, installed) {
+function chooseAgent(role, given, installed) {
   if (given) {
     if (!ROLE_AGENTS[role].includes(given)) throw new UserError(`--${role} must be one of: ${ROLE_AGENTS[role].join(', ')}`);
     if (!installed.includes(given)) throw new UserError(`--${role} ${given}: ${given} is not installed (run: zenoforge doctor)`);
@@ -53,7 +53,7 @@ export function chooseAgent(role, given, installed) {
 }
 
 /** Settings -> every file the engine version dir overrides. Shared by init and upgrade. */
-export function buildOverlay(settings, unitCtx) {
+function buildOverlay(settings, unitCtx) {
   const shipped = fs.readdirSync(path.join(PKG_ENGINE, 'systemd'));
   const overlay = {};
   for (const f of shipped.filter((n) => n.endsWith('.service'))) overlay[`systemd/${f}`] = renderService(packagedFile(`systemd/${f}`), unitCtx);
@@ -100,7 +100,7 @@ function prepareCheckout(act, { repo, dir, cwd }) {
 // Engine link and runtime state sit in the checkout but must survive its per-tick `git clean -fd`.
 const EXCLUDES = ['/engine', '/.scratch-supervisor', '/.scratch'];
 
-export function excludeContent(existing) {
+function excludeContent(existing) {
   const have = new Set(existing.split('\n'));
   const add = EXCLUDES.filter((l) => !have.has(l));
   if (!add.length) return null;
