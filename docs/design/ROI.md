@@ -2,6 +2,22 @@
 
 Status: design, not implemented. Written 2026-10-29 (US Pacific; the ledgers it cites run to 2026-10-30 UTC) against the exported engine tree (`engine/`) and the origin deployment's live copy and ledgers. Nothing in this document was changed on the host that was probed; the only things created were transient systemd units that removed themselves (section 2.3).
 
+
+## Maintainer decisions (2026-10-30)
+
+These override the body of this document wherever they disagree.
+
+1. **ROI measures what one ticket costs to go from zero to production.** The inputs are wall time, tokens, network traffic and CI minutes, with money derived from them. There is no value model, no hourly rate and no human-equivalent effort. Sections that define `V`, `effort_hours` or `hourly_rate` are void.
+2. **Money is priced at the API list price per model.** Subscription amortization is not used.
+3. **Interactive operator sessions are not counted.** Only pipeline units count.
+4. **The reported return is efficiency, tracked over time.** The rollups report the following, per ticket, per day and in total:
+   - cost per delivered ticket, in dollars, tokens, bytes and hours;
+   - lead time from issue creation to production, or to merge where the deployment has no releases;
+   - the per-stage time breakdown;
+   - the waste share: inputs spent on tickets that never shipped or were reverted, divided by all inputs.
+
+   The standards (bounds) apply to these numbers. RT-2 is re-scoped to compute them.
+
 Scope: one append-only ledger that records, at the end of every unit of work, the tokens, money, wall time, CPU, memory, network bytes and GitHub API calls it used; one rollup that turns the ledger plus the delivered outcomes into ROI; and four surfaces that read that rollup (dashboard, daily report, node health, `zenoforge roi`).
 
 Landing rule: until the source of truth moves, every change below lands first in the origin deployment's copy of the engine, at the same relative path, and reaches this repository through the export. Tickets are changes to `engine/<path>`; the one ticket that lives in the npm CLI repository says so. Tests ship with each ticket; whether they run before or after landing follows the deployment's policy for engine code.
