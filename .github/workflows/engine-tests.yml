@@ -28,3 +28,111 @@ jobs:
           path: |
             engine-test-failures-${{ matrix.shard }}.txt
             test-logs/
+
+  # Placeholder until PT-6 (portable runner shims) lands: the Linux pidfile-runner leg, portable suites only.
+  # suites-pidfile:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with: { node-version: 22 }
+  #     - run: git config --global user.name ci && git config --global user.email ci@example.com
+  #     - run: PORTABLE_ONLY=1 ZF_RUNNER=pidfile bash tools/run-engine-tests.sh 0 1
+
+  # macos-latest (arm64): every suite in 4 shards. macos-15-intel: tools/portable-suites.txt only.
+  # Suites known to fail on macOS are listed in tools/quarantine-darwin.txt; the goal is an empty file.
+  macos:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+        shard: [0, 1, 2, 3]
+        include:
+          - os: macos-15-intel
+            shard: 0
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+      ZF_QUARANTINE_SETS: darwin
+      PORTABLE_ONLY: ${{ matrix.os == 'macos-15-intel' && '1' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The engine needs bash 5 and the GNU userland; macOS ships bash 3.2 and BSD tools.
+      - name: GNU userland from Homebrew
+        run: |
+          brew install bash coreutils findutils gnu-sed grep gnu-tar flock util-linux gawk jq
+          prefix=$(brew --prefix)
+          for f in coreutils findutils gnu-sed grep gnu-tar gawk; do echo "$prefix/opt/$f/libexec/gnubin" >> "$GITHUB_PATH"; done
+      - run: git config --global user.name ci && git config --global user.email ci@example.com
+      - run: npm install --no-save @typesafe-ai/sdk@0.7.0
+      - name: Run suites
+        run: |
+          # util-linux is keg-only and supplies setsid; it goes last so it shadows nothing macOS ships.
+          export PATH="$PATH:$(brew --prefix)/opt/util-linux/bin"
+          bash --version | head -1
+          bash tools/run-engine-tests.sh ${{ matrix.shard }} ${{ matrix.os == 'macos-15-intel' && 1 || 4 }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failures-macos-${{ matrix.os }}-${{ matrix.shard }}
+          path: |
+            engine-test-failures-*.txt
+            test-logs/
+
+  # WSL2 (Ubuntu 24.04, systemd on) on a Windows runner: tools/portable-suites.txt only, inside the Linux filesystem.
+  # Suites known to fail there are listed in tools/quarantine-wsl.txt.
+  wsl2:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      # keep LF endings in the Windows checkout; the tests run from a clone made inside the distro
+      - run: git config --global core.autocrlf false
+        shell: bash
+      - uses: actions/checkout@v4
+      # Vampire/setup-wsl v7.2.0
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4
+        with:
+          distribution: Ubuntu-24.04
+          wsl-conf: |
+            [boot]
+            systemd=true
+          additional-packages: jq git gh python3 tzdata curl gawk util-linux procps
+          wsl-shell-user: zf
+      - name: clone the tree into the Linux filesystem
+        shell: wsl-bash {0}
+        run: |
+          git config --global user.name ci && git config --global user.email ci@example.com
+          git config --global --add safe.directory '*'
+          git clone -q "$(wslpath '${{ github.workspace }}')" ~/zf
+          # wsl.conf only takes effect after a restart of the distro; fail here instead of testing the wrong scheduler
+          [ "$(cat /proc/1/comm)" = systemd ] || { echo "WSL2 is not running systemd (pid 1: $(cat /proc/1/comm))"; exit 1; }
+      # Node 22 from NodeSource (Ubuntu 24.04 ships Node 18); engine suites run .test.mjs and engine/ts-judge.mjs needs the SDK
+      - name: Node 22
+        shell: wsl-bash -u root {0}
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+          apt-get install -y nodejs
+      - name: Run portable suites
+        shell: wsl-bash {0}
+        run: |
+          cd ~/zf
+          npm install --no-save @typesafe-ai/sdk@0.7.0
+          PORTABLE_ONLY=1 ZF_QUARANTINE_SETS=wsl bash tools/run-engine-tests.sh 0 1
+      - name: copy results back for upload
+        if: always()
+        shell: wsl-bash {0}
+        run: |
+          ws=$(wslpath '${{ github.workspace }}')
+          cp -a ~/zf/engine-test-failures-*.txt ~/zf/test-logs "$ws/" || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failures-wsl2
+          path: |
+            engine-test-failures-*.txt
+            test-logs/

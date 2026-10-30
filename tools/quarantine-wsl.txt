@@ -1,0 +1,1 @@
+# Suites skipped on wsl (ZF_QUARANTINE_SETS=wsl): "<suite><TAB><reason>". The goal is an empty file; each reason names the PT ticket that removes it.
