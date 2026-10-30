@@ -5,6 +5,8 @@
 
 _AGENT_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$_AGENT_LIB_DIR/closing-keywords.sh"
+[[ -r "$_AGENT_LIB_DIR/platform-env.sh" ]] && source "$_AGENT_LIB_DIR/platform-env.sh"
+[[ -r "$_AGENT_LIB_DIR/proc.sh" ]] && source "$_AGENT_LIB_DIR/proc.sh" # host_boot_id: macOS has no /proc
 # Test fixtures that copy lib.sh alone (nine suites) do not carry systemd/; a real checkout always does.
 [[ -r "$_AGENT_LIB_DIR/systemd/build-capacity-gate.sh" ]] && source "$_AGENT_LIB_DIR/systemd/build-capacity-gate.sh"
 [[ -r "$_AGENT_LIB_DIR/ci-runner-disk-floor.sh" ]] && source "$_AGENT_LIB_DIR/ci-runner-disk-floor.sh"
@@ -13,6 +15,7 @@ source "$_AGENT_LIB_DIR/closing-keywords.sh"
 [[ -r "$_AGENT_LIB_DIR/land-queue-state.sh" ]] && source "$_AGENT_LIB_DIR/land-queue-state.sh"
 [[ -r "$_AGENT_LIB_DIR/hand-codex-liveness.sh" ]] && source "$_AGENT_LIB_DIR/hand-codex-liveness.sh"
 [[ -r "$_AGENT_LIB_DIR/runtime-reload.sh" ]] && source "$_AGENT_LIB_DIR/runtime-reload.sh"
+[[ -r "$_AGENT_LIB_DIR/matt-skills.sh" ]] && source "$_AGENT_LIB_DIR/matt-skills.sh"
 source "${ZF_EXECUTION_MODULE_DIR:-$_AGENT_LIB_DIR}/execution-admission.sh"
 
 AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"
@@ -1447,7 +1450,7 @@ efficiency_metrics_record_implement_decision() {
   local issue="$1" tick="$2" outcome="$3" gate="$4" reason="$5" object="$6" ts boot_id retry_reason="${7:-}"
   local values_file row
   ts="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" || return 1
-  boot_id="$(cat /proc/sys/kernel/random/boot_id)" || return 1
+  boot_id="$(host_boot_id)" || return 1
   values_file="$(mktemp)" || return 1
   if ! printf '%s\0' "$issue" "$tick" "$outcome" "$gate" "$reason" "$object" "$ts" "$boot_id" "$retry_reason" > "$values_file"; then
     rm -f -- "$values_file"
@@ -11258,7 +11261,7 @@ route_issue_spend_budget() {
   state_merge "$n" ".issue_spend_budget = ((.issue_spend_budget // {}) + $budget_json)" || return 1
   guarded_issue_comment "$n" "$BOT_DISCLAIMER
 $marker
-24 小时预算已达到上限：$calls 次模型调用（上限 $ISSUE_CALL_BUDGET_THRESHOLD），$tokens 个 token（上限 $ISSUE_TOKEN_BUDGET_THRESHOLD）。$route_text"
+24 小时预算已达到上限：$calls 次模型调用（上限 ${ISSUE_CALL_BUDGET_THRESHOLD}），$tokens 个 token（上限 ${ISSUE_TOKEN_BUDGET_THRESHOLD}）。$route_text"
 }
 
 # Stop additional phases inside one implement run after its last permitted

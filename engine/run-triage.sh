@@ -288,6 +288,7 @@ PROMPT_FILE="$(mktemp)"
   # value here, the same way AGENT_PHASE is handed over, removes the need for
   # the model to explore or compute it at all.
   echo "GitNexus repo argument for this run: $REPO_DIR"
+  matt_skills_note "$WT" ask-matt triage
   [ -z "$MODEL_POLICY_RETRY_NOTE" ] || echo "Retry note: $MODEL_POLICY_RETRY_NOTE"
   # 2026-09-14: this wrapper already checked/refreshed the index above
   # (see $INDEX_FRESHNESS_NOTE's own comment) -- told to the model explicitly

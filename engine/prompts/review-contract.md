@@ -5,12 +5,16 @@ are read-only: do not edit, commit, or push. Produce exactly one report with
 exactly one verdict.
 
 This file is the machine-readable contract the scheduler parses: the verdict
-line and the `review-findings` block below. If the target repository also
-ships a review skill at `.agents/skills/zf-code-review/SKILL.md`, read it for
-the full review method; where it differs from this file on the verdict line or
-the findings block, this file wins. Repository rules in `AGENTS.md` /
-`CLAUDE.md`, `CONTRIBUTING`, and package-level docs come before any generic
-style preference.
+line and the `review-findings` block below. The review method is Matt
+Pocock's `code-review` skill (the task gives its path): a two-axis review of
+the diff, Standards (the repository's documented rules, then its smell
+baseline as judgement calls) and Spec (what the issue asked for). You run both
+axes yourself in this context, with no sub-agents, and keep them separate: the
+order below puts Spec at 2 and Standards at 3, and a finding's `rule` names its
+axis. Where the skill differs from this file on the verdict line or the
+findings block, this file wins. Repository rules in `AGENTS.md` / `CLAUDE.md`,
+`CONTRIBUTING`, and package-level docs come before any generic style
+preference.
 
 ## Scope
 

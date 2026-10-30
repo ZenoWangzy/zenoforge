@@ -39,6 +39,7 @@ Then label an issue `needs-triage` to hand it to the factory. For scripts and CI
 ## What it does
 
 - **Issue to merge.** Issues move through a fixed stage chain: triage, recut, implement, self-check, review, repair, and merge. Review is meant to use a different model provider from the implementer; when none is available, the fallback is recorded. GitHub labels carry the state.
+- **Matt skills as the method.** Every stage works the way [Matt Pocock's skills](https://github.com/mattpocock/skills) do, entered through `ask-matt`: triage, to-tickets, implement with tdd, diagnosing-bugs, code-review. They are vendored byte-identical under `.agents/skills/` and stay MIT ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); see [Architecture](docs/architecture.md#23-method-matt-skills).
 - **Quota-aware workers.** One worker interface over two coding-agent CLIs, Codex and ZCode. The shipped unit-loop config uses Claude for review. Circuit breakers, failover, and escalation to a stronger model after repeated failures.
 - **Capacity admission.** Workers start only when CPU and memory allow, so the host is not overloaded.
 - **Safe merging.** Merges pin the reviewed head SHA and go through a serial merge queue. When main goes red, the engine searches for the culprit commit and reverts it automatically.
@@ -83,6 +84,8 @@ node --test cli/*.test.mjs              # the zenoforge CLI
 ## License
 
 Zenoforge is **source-available**, not OSI open source. It is free for personal, noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE). Commercial use requires a commercial license from the maintainer.
+
+The one exception is the vendored Matt Pocock skills under `.agents/skills/`, which stay under the MIT License ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
 
 To ask about a commercial license, open a GitHub issue titled "Commercial license" in [ZenoWangzy/zenoforge](https://github.com/ZenoWangzy/zenoforge/issues), or contact the maintainer through the maintainer's [GitHub profile](https://github.com/ZenoWangzy). The end of [LICENSE](LICENSE) gives the same instructions.
 

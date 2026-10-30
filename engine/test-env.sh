@@ -94,7 +94,7 @@ export MODEL_POLICY_TEST_REVIEW_IDENTITY
 copy_agent_library() {
   local dest="$1"; shift
   local src="$MODEL_POLICY_TEST_REPO/engine"
-  local -a queue=("lib.sh" "$@") closure=()
+  local -a queue=("lib.sh" "proc.sh" "$@") closure=() # proc.sh: runtime-env.sh sources it, lib.sh does not
   local -A queued=()
   local file token rel
   while ((${#queue[@]})); do

@@ -125,6 +125,23 @@ Every state change goes through `issue_transition` (`engine/lib.sh`). It checks 
 
 `ensure_state_labels` (`engine/lib.sh`) creates any missing state label on the repository during the fast-lane tick, so you do not need to create them by hand.
 
+### 2.3 Method: Matt skills
+
+Every stage works the way [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT) work, entered through the `ask-matt` router. The skills are vendored byte-identical under `.agents/skills/` at the upstream commit pinned in `.agents/matt-skills.manifest.json`. `tools/sync-matt-skills.sh <commit>` re-vendors a pin and rewrites the manifest, and `.claude/skills/<name>` symlinks make them visible to Claude Code in a fresh clone. They stay under their MIT license, not the repository's (`THIRD_PARTY_NOTICES.md`).
+
+| Stage | Matt skill | Where the engine names it |
+|---|---|---|
+| triage | `ask-matt` routing, then `triage`; the labels are its roles | `prompts/triage.md`, `run-triage.sh`, `run-triage-batch.sh` |
+| recut | `to-tickets`; `to-spec` first when the parent is an unclear idea | `prompts/recut.md`, `run-recut.sh` |
+| implement | `implement`, test-first with `tdd` | `matt_method_rule` in `scheduler.sh`, `prompts/implement-contract.md`, `bin/luna-ticket` |
+| repair, CI repair, self-fix | `diagnosing-bugs`: a command that goes red on the failure comes before the fix; the regression test follows `tdd` | the same `matt_method_rule` |
+| review | `code-review`: Standards and Spec, run in one session | `review_contract_rule` in `scheduler.sh`, `prompts/review-contract.md`, `bin/luna-ticket` |
+| supervisor arbiter | none is run; the `requeue` guidance names the method | `prompts/supervisor-arbiter.md` |
+
+The skills are interactive and the stages run unattended, so each prompt says what changes: no questions, no sub-agents, no tracker writes (the wrapper does those). The machine contracts are unchanged and win over a skill where they differ: the output schemas, the `VERDICT:` line, the `review-findings` block, the `contract` block.
+
+Where an agent finds a skill (`engine/matt-skills.sh`, function `matt_skill_md`): the target repository's own `.agents/skills/<name>/SKILL.md` wins and is named by a relative path. When the target has none, the engine's vendored copy is named by absolute path. Skill files link to their siblings relatively, so both forms resolve. Read-only Claude reviewers get the engine checkout through `--add-dir`. The wrappers add one line, `Matt skill files for this run`, to the prompt. The eval harness always uses the engine's copy, because its frozen checkouts predate the skills. Installing the skills into a target repository is planned for the CLI installer; until then the fallback is what makes the paths resolve.
+
 ## 3. Workers and backends
 
 There are two worker paths. The unit loop is the main one.

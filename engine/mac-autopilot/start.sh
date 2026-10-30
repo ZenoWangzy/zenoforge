@@ -26,11 +26,17 @@ if [[ ! -d "$version" ]]; then
   trap 'rm -rf -- "$stage"' EXIT
   # Archive the whole tracked engine tree: a hand-kept file list missed verification-plan-runtime.sh
   # and every pinned runtime failed sourcing it (10-29, #4618). 14 MB per version; only two are kept.
+  # engine/matt-skills.sh falls back to <version>/.agents/skills, so publish it too; an unconditional pathspec aborts for repos without it.
   if [[ -L "$MAC_AUTOPILOT_ROOT/engine" ]]; then
     mkdir "$stage/engine"
     tar -c -C "$MAC_AUTOPILOT_ROOT/engine/" . | tar -x -C "$stage/engine"
+    # a linked engine checkout keeps its skills next to engine/
+    skills="$(cd -P "$MAC_AUTOPILOT_ROOT/engine/.." && pwd)/.agents/skills"
+    [[ -d "$skills" ]] && { mkdir -p "$stage/.agents"; cp -R "$skills" "$stage/.agents/skills"; }
   else
-    git -C "$MAC_AUTOPILOT_ROOT" archive "$head" engine | tar -x -C "$stage"
+    paths=(engine)
+    git -C "$MAC_AUTOPILOT_ROOT" cat-file -e "$head:.agents/skills" 2>/dev/null && paths+=(.agents/skills)
+    git -C "$MAC_AUTOPILOT_ROOT" archive "$head" "${paths[@]}" | tar -x -C "$stage"
   fi
   mv "$stage" "$version"
   trap - EXIT
@@ -71,6 +77,7 @@ for loop in loop.sh bell-loop.sh zombie-loop.sh; do
 done
 sleep 1
 for loop in loop.sh bell-loop.sh zombie-loop.sh; do
+  [[ -f "$LIVE/$loop" ]] || { echo "$loop not in $LIVE: not started" >&2; continue; } # zombie-loop.sh is not in every tree
   nohup bash "$LIVE/$loop" >/dev/null 2>&1 </dev/null &
   echo "$!" > "$A/${loop%.sh}.pid"
   echo "$loop pid $!"

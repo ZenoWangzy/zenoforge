@@ -60,10 +60,7 @@ exited_worker_signature() {
   done < <(jq -r '.workers[]? | select(.harvested != true) | .pid' "$1" 2>/dev/null) | sort -n | paste -sd, -
 }
 pid_running() { # read /proc directly: the 5s refill poll spawned one ps per worker (~14/s, 10-29 load 39)
-  local stat
-  read -r stat 2>/dev/null < "/proc/$1/stat" || return 1
-  stat="${stat##*) }"
-  [[ "${stat%% *}" != Z ]]
+  pid_live "$1" # proc.sh: that /proc read on Linux, ps on macOS
 }
 # 落到 main 的机制改动下一拍就生效（维护者：非产品代码做完马上生效）：run-tick 每拍 fast-forward 源 checkout，
 # 它的 HEAD 变了就发布 pinned 版本并切换 live 指针。10-22 之前只能手工 start.sh --sync-only，修好的 advisor 与冷却晚生效一小时。

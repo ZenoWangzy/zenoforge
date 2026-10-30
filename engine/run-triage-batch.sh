@@ -332,6 +332,8 @@ if ! git -C "$REPO_DIR" worktree add -q "$WT" origin/main; then
   echo "run-triage-batch: could not create batch worktree" >&2
   exit 1
 fi
+# The agent reads skills from $WT (a checkout of origin/main), so relative vs absolute is decided there, not from $REPO_DIR.
+{ matt_skills_note "$WT" ask-matt triage; cat "$PROMPT_FILE"; } > "$PROMPT_FILE.matt" && mv "$PROMPT_FILE.matt" "$PROMPT_FILE"
 ACTIVE_TMP="$AGENT_HOME/triage-batch-active-$$.json"
 jq -n --argjson issues "$(printf '%s\n' "${INCLUDED_IDS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')" \
   '{issues:$issues}' > "$ACTIVE_TMP"

@@ -1797,8 +1797,11 @@ sched_run_case stuck_worker_disposition
 [[ "$(decision_eval_stages_for_paths 'engine/prompts/recut.md')" == 'end-to-end ' ]] || {
   echo 'not ok - scheduler.test.sh: recut prompt did not select end-to-end evals' >&2; exit 1;
 }
-[[ "$(decision_eval_stages_for_paths '.agents/skills/zf-code-review/SKILL.md')" == 'review end-to-end ' ]] || {
+[[ "$(decision_eval_stages_for_paths '.agents/skills/code-review/SKILL.md')" == 'review end-to-end ' ]] || {
   echo 'not ok - scheduler.test.sh: review contract did not select review and end-to-end evals' >&2; exit 1;
+}
+[[ "$(decision_eval_stages_for_paths '.agents/skills/tdd/SKILL.md')" == 'implement end-to-end ' ]] || {
+  echo 'not ok - scheduler.test.sh: a Matt implement-side skill did not select implement and end-to-end evals' >&2; exit 1;
 }
 [[ "$(decision_eval_stages_for_paths 'engine/model-policy.default.json')" == 'triage advisor implement review end-to-end ' ]] || {
   echo 'not ok - scheduler.test.sh: model policy did not select every eval stage' >&2; exit 1;

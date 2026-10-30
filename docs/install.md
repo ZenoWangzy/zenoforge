@@ -256,6 +256,7 @@ These are the places where the engine is still tied to the environment it was ex
 
 4. **Files the engine expects in the target repository.**
    - `scripts/branch-delivery-policy.mjs` and `scripts/branch-delivery-preflight.mjs`. The direct-main lane refuses to land without them (`engine/land-direct-main-bootstrap.sh`).
+   - `.agents/skills/<name>/SKILL.md` for the Matt skills the stages name. Optional: a target without them falls back to this engine's vendored copy (`architecture.md`, section 2.3).
    - `docs/agents/*.md`. The engine and its prompts cite about 65 of these, for example `docs/agents/issue-pipeline.md`. Without them, the references are dead.
    - The `lessons/` directory and its generated files (see `architecture.md`, section 9).
    - `eval/cases/*.json`. The eval harness has no case files in this checkout.
