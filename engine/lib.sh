@@ -11259,7 +11259,7 @@ route_issue_spend_budget() {
   state_merge "$n" ".issue_spend_budget = ((.issue_spend_budget // {}) + $budget_json)" || return 1
   guarded_issue_comment "$n" "$BOT_DISCLAIMER
 $marker
-24 小时预算已达到上限：$calls 次模型调用（上限 $ISSUE_CALL_BUDGET_THRESHOLD），$tokens 个 token（上限 $ISSUE_TOKEN_BUDGET_THRESHOLD）。$route_text"
+24 小时预算已达到上限：$calls 次模型调用（上限 ${ISSUE_CALL_BUDGET_THRESHOLD}），$tokens 个 token（上限 ${ISSUE_TOKEN_BUDGET_THRESHOLD}）。$route_text"
 }
 
 # Stop additional phases inside one implement run after its last permitted
