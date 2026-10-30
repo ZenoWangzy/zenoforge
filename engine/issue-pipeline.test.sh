@@ -1135,7 +1135,7 @@ assert_contains "transient delivery-label read leaves tickets open without faili
 assert_contains "transient delivery-label read is non-fatal to pipeline tick" "$DELIVERY_READ_OUT" 'status=0'
 assert_cond "maintainer outcome recovery precedes digest send in post-dispatch maintenance" "$(awk '
   /^[[:space:]]*if reconcile_maintainer_outcomes; then$/ { recover=NR }
-  /^[[:space:]]*flush_founder_outcome_digest \\|\\| true$/ { flush=NR }
+  /^[[:space:]]*flush_maintainer_outcome_digest \\|\\| true$/ { flush=NR }
   END { print recover && flush && recover < flush ? 1 : 0 }
 ' <<< "$POST_DISPATCH_MAINTENANCE_FN")"
 

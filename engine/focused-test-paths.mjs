@@ -134,7 +134,7 @@ export const RELATED_TESTS = new Map([
     'engine/check-rulings.test.sh',
     'engine/land-direct-main.test.sh',
     'engine/lesson-fragments.test.sh',
-    'engine/night/founder-health-mail.test.sh',
+    'engine/night/maintainer-health-mail.test.sh',
     'engine/night/incident-guard-audit.test.mjs',
     'engine/pipeline-system-deliver.test.mjs',
     'scripts/branch-delivery-preflight.test.mjs',
@@ -160,21 +160,21 @@ export const RELATED_TESTS = new Map([
   ]],
   ['engine/night/daily-perf-report.sh', ['engine/night/daily-perf-report.test.sh']],
   ['engine/night/efficiency-regression.mjs', ['engine/night/efficiency-regression.test.mjs']],
-  ['engine/night/founder-health-mail.sh', [
-    'engine/night/founder-health-mail.test.sh',
-    'engine/night/founder-health-mail-incident.test.sh',
+  ['engine/night/maintainer-health-mail.sh', [
+    'engine/night/maintainer-health-mail.test.sh',
+    'engine/night/maintainer-health-mail-incident.test.sh',
     'engine/notify.test.sh',
     'engine/night/daily-perf-report.test.sh',
     'engine/run-release.test.sh',
   ]],
-  ['engine/night/founder-health-mail.test.sh', ['engine/run-release.test.sh']],
-  ['engine/night/founder-health-mail-incident.test.sh', ['engine/run-release.test.sh']],
+  ['engine/night/maintainer-health-mail.test.sh', ['engine/run-release.test.sh']],
+  ['engine/night/maintainer-health-mail-incident.test.sh', ['engine/run-release.test.sh']],
   ['engine/notify.sh', ['engine/notify.test.sh', 'engine/run-release.test.sh']],
   ['engine/notify.test.sh', ['engine/run-release.test.sh']],
   ['engine/run-release.sh', [
     'engine/run-release-shard-profiles.test.sh',
     'engine/run-release.test.sh',
-    'engine/night/founder-health-mail-incident.test.sh',
+    'engine/night/maintainer-health-mail-incident.test.sh',
     'engine/container-audit.test.sh',
   ]],
   ['engine/run-release.test.sh', ['engine/run-release-group-summary.test.sh']],
@@ -654,7 +654,7 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
 
     // Release fixtures load mail indirectly, beyond the shell function caller scan.
     const functionMapped = helperTests.mappedPaths.has(path)
-      && !['engine/night/founder-health-mail.sh', 'engine/notify.sh'].map(packPath).includes(path);
+      && !['engine/night/maintainer-health-mail.sh', 'engine/notify.sh'].map(packPath).includes(path);
     let candidates = functionMapped ? undefined : RELATED_TESTS.get(path);
     if (!candidates && path.startsWith('lessons/')) {
       candidates = [packPath('engine/land-direct-main.test.sh')];

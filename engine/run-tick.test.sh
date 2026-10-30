@@ -227,7 +227,7 @@ inbox_events() {
   [ -f "$inbox" ] && cat "$inbox" || true
 }
 
-assert_not_contains "run-tick has no founder-mail path" "$(cat "$LAUNCHER_SRC")" "notify_founder"
+assert_not_contains "run-tick has no founder-mail path" "$(cat "$LAUNCHER_SRC")" "notify_maintainer"
 
 # Retired timers must not be repaired or reported as outages.
 for retired_timer in zf-work-plan-acceptance.timer zf-mac-ci-runners.timer; do
