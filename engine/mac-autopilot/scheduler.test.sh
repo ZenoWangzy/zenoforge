@@ -2462,6 +2462,50 @@ JSON
 }
 sched_run_case footprint_mutex
 
+sched_case_footprint_hog_alert() {
+# A worker past footprint_mutex.hog_alert_minutes that blocks >hog_alert_blocked pending units gets one inbox line, however many ticks run; a 1h-old worker with the same blockers stays silent.
+(
+  hog_dir="$(mktemp -d)"
+  export AGENT_HOME="$hog_dir/agent-home" DRY_RUN=0
+  mkdir -p "$AGENT_HOME"
+  LOG="$hog_dir/log"; : > "$LOG"
+  alive() { return 0; }
+  CFG='{}'
+  NOW_EPOCH="$(date +%s)"
+  UNITS="$hog_dir/units.json"; WORKERS="$hog_dir/workers.json"
+  cat > "$UNITS" <<JSON
+{"units":[
+ {"id":"issue-3015","stage":"implement"},
+ {"id":"w1","stage":"implement-pending","footprint_wait_owner":"issue-3015"},
+ {"id":"w2","stage":"implement-pending","footprint_wait_owner":"issue-3015"},
+ {"id":"w3","stage":"repair-pending","footprint_wait_owner":"issue-3015"},
+ {"id":"w4","stage":"review-pending","footprint_wait_owner":"issue-3015"},
+ {"id":"issue-4280","stage":"implement"},
+ {"id":"x1","stage":"implement-pending","footprint_wait_owner":"issue-4280"},
+ {"id":"x2","stage":"implement-pending","footprint_wait_owner":"issue-4280"},
+ {"id":"x3","stage":"implement-pending","footprint_wait_owner":"issue-4280"},
+ {"id":"x4","stage":"implement-pending","footprint_wait_owner":"issue-4280"},
+ {"id":"free","stage":"implement-pending"}]}
+JSON
+  cat > "$WORKERS" <<JSON
+{"workers":[
+ {"pid":4242,"unit":"issue-3015","type":"implement","started":"$(date -u -d "@$((NOW_EPOCH - 10800))" +%Y-%m-%dT%H:%M:%SZ)"},
+ {"pid":4343,"unit":"issue-4280","type":"implement","started":"$(date -u -d "@$((NOW_EPOCH - 3600))" +%Y-%m-%dT%H:%M:%SZ)"}]}
+JSON
+  footprint_hog_alert
+  [[ "$(grep -c 'footprint-hog unit=issue-3015 type=implement age_min=180 blocks=4 units=w1,w2,w3,w4$' "$AGENT_HOME/supervisor-inbox")" == 1 ]] \
+    || { echo 'footprint-hog: 3h worker with 4 blocked units did not raise exactly one inbox line' >&2; exit 1; }
+  footprint_hog_alert
+  [[ "$(grep -c 'footprint-hog' "$AGENT_HOME/supervisor-inbox")" == 1 ]] \
+    || { echo 'footprint-hog: second tick duplicated the inbox line' >&2; exit 1; }
+  grep -Fq 'footprint-hog unit=issue-3015' "$LOG" || { echo 'footprint-hog: alert missing from scheduler.log' >&2; exit 1; }
+  grep -Fq 'issue-4280' "$AGENT_HOME/supervisor-inbox" && { echo 'footprint-hog: 1h worker alerted' >&2; exit 1; }
+  grep -Fq 'footprint-hog unit=issue-4280' "$LOG" && { echo 'footprint-hog: 1h worker logged' >&2; exit 1; }
+  rm -rf -- "$hog_dir"
+)
+}
+sched_run_case footprint_hog_alert
+
 sched_case_hold_handoff_resume() {
   new_tick_fixture hold-handoff-resume
   export AGENT_HOME="$TF/agent-home"

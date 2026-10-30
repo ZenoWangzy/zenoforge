@@ -303,6 +303,26 @@ footprint_room() { # unit type; report checks that materially delay dispatch
   (( elapsed >= 2 )) && say "dispatch detail footprint_check unit=$1 secs=${elapsed}s"
   return "$rc"
 }
+# 每 tick：活 worker 跑超 hog_alert_minutes 且挡住 >hog_alert_blocked 个 *-pending 单元时只告警，不停 worker（2026-10-30 issue-3015/4280）
+footprint_hog_alert() {
+  local minutes blocked_min w unit type started pid s age waiters blocked line
+  minutes="$(jqf -r '.footprint_mutex.hog_alert_minutes // 120' <<<"$CFG")"; [[ "$minutes" =~ ^[0-9]+$ ]] || minutes=120
+  blocked_min="$(jqf -r '.footprint_mutex.hog_alert_blocked // 3' <<<"$CFG")"; [[ "$blocked_min" =~ ^[0-9]+$ ]] || blocked_min=3
+  while IFS= read -r w; do
+    unit="$(jqf -r .unit <<<"$w")"; type="$(jqf -r .type <<<"$w")"; started="$(jqf -r .started <<<"$w")"; pid="$(jqf -r .pid <<<"$w")"
+    [[ -n "$unit" && "$pid" =~ ^[0-9]+$ ]] && alive "$pid" || continue
+    s="$(ap_iso_epoch "$started")"; [[ "$s" =~ ^[0-9]+$ ]] || continue
+    age=$(( (NOW_EPOCH - s) / 60 ))
+    (( age > minutes )) || continue
+    waiters="$(jqf -c --arg u "$unit" '[.units[] | select(.stage | test("-pending$")) | select((.footprint_wait_owner // "") == $u) | .id]' "$UNITS")"
+    blocked="$(jqf length <<<"$waiters")"
+    (( blocked > blocked_min )) || continue
+    line="footprint-hog unit=$unit type=$type age_min=$age blocks=$blocked units=$(jqf -r 'join(",")' <<<"$waiters")"
+    say "$line"
+    (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "footprint-hog:$unit:$started" "$line") \
+      || say "footprint-hog alert not delivered unit=$unit"
+  done < <(jqf -c '.workers[] | select(.harvested != true)' "$WORKERS")
+}
 
 # The Stop-hook pattern without an LLM: use the Touched packages job's selector.
 # No workspace package in the diff means no package gate, not a new repo gate.
