@@ -8,13 +8,17 @@
 # so both forms resolve.
 _MATT_SKILLS_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/.agents/skills"
 
+# matt_engine_skill_md <name> -> absolute path of the engine's own copy; for stages that must not follow a method file
+# from the code under review (reviewers).
+matt_engine_skill_md() { printf '%s/%s/SKILL.md\n' "$_MATT_SKILLS_ENGINE_DIR" "$1"; }
+
 # matt_skill_md <name> [<checkout>] -> path of that skill's SKILL.md, readable from <checkout> (default: cwd)
 matt_skill_md() {
   local name="$1" checkout="${2:-.}"
   if [ -f "$checkout/.agents/skills/$name/SKILL.md" ]; then
     printf '.agents/skills/%s/SKILL.md\n' "$name"
   else
-    printf '%s/%s/SKILL.md\n' "$_MATT_SKILLS_ENGINE_DIR" "$name"
+    matt_engine_skill_md "$name"
   fi
 }
 

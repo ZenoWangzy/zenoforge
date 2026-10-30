@@ -682,7 +682,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure]
     CODEX_COMMAND=(claude -p "$prompt_arg
 （本次运行无写文件权限：把完整报告正文作为最终回答输出，调度器会原样落盘到上述报告路径。
 当前目录就是评审目录：git 命令直接写「git diff ...」，不要加「-C <dir>」「--no-pager」，也不要「cd ... &&」（这些形式不匹配白名单会被拒）。可用命令（白名单外一律被拒）：git diff/log/show/fetch/rev-parse/merge-base/ls-files、gh pr view/diff/checks、gh issue view、head/tail/wc/cat/ls/grep/rg/jq/sort；优先用 Read/Grep 工具读代码。当前目录已是评审目录，直接执行单条命令即可。一条命令被拒只说明其中某一段不在白名单，不代表 Bash 不可用：拆成单条白名单命令重试，不要据此判定 INPUT_INCOMPLETE。）" \
-      --settings '{"disableAllHooks":true}' --add-dir "$ENGINE_ROOT" \
+      --settings '{"disableAllHooks":true}' --add-dir "$ENGINE_ROOT/.agents/skills" --add-dir "$ENGINE_ROOT/engine/prompts" \
       --model "$model" --effort "$effort" --permission-mode dontAsk --strict-mcp-config \
       --tools "Read,Grep,Glob,Bash" --allowedTools "$CLAUDE_REVIEW_TOOLS")
     return 0
@@ -1577,9 +1577,9 @@ budget_alert_if_needed() { # 信息性告警：新鲜 token（Codex+worker Claud
 
 # 评审方法 = Matt 的 code-review 技能（Standards / Spec 两轴）；verdict 行与 review-findings schema 只认 review-contract.md。
 REVIEW_CONTRACT_MD="$ENGINE_ROOT/engine/prompts/review-contract.md"
-review_contract_rule() { # checkout → 评审、复审、修复三类 prompt 共用的契约句
+review_contract_rule() { # 评审、复审 prompt 的契约句；方法文件只取引擎自带的，不跟被评审代码里的同名文件走
   printf '评审方法按 Matt 的 code-review 技能（%s）：Standards 与 Spec 两轴分别审、分别报告，不合并不重排，两轴都由你在本会话内自己跑完，不派 sub-agent。verdict 行、review-findings schema 与 author-disposition schema 以 %s 为准（与技能不一致处以它为准）。' \
-    "$(matt_skill_md code-review "${1:-.}")" "$REVIEW_CONTRACT_MD"
+    "$(matt_engine_skill_md code-review)" "$REVIEW_CONTRACT_MD"
 }
 # 实现、修复、自修复 worker 共用的方法句：Matt 的 implement + tdd；缺陷、红 CI、评审发现走 diagnosing-bugs。
 matt_method_rule() { # checkout → METHOD 段
@@ -2099,7 +2099,7 @@ review_prompt() { # pr-or-subject title sha report [lane] [checkout]
   local subject="$1"; [[ "$subject" =~ ^[0-9]+$ ]] && subject="PR #$subject"
   printf '%s' "你是 the product 流水线的独立代码评审 subagent，只读【增量评审】（diff-scoped，不做全库漫游）。当前目录是隔离 clone，已检出被评审提交（detached），origin/main 为最新 main；本地 diff：git diff origin/main...HEAD。评审 ${subject}（$2）fixed head $3：
 评审面：① diff（merge-base..head）与关联 issue 验收条件逐条对照；② 变更文件的直接 import/依赖闭包；③ 只读边界下可核实的测试与行为证据。
-请完整读取并遵守正式评审契约，按其要求评审与交付。$(review_contract_rule "${6:-.}")
+请完整读取并遵守正式评审契约，按其要求评审与交付。$(review_contract_rule)
 效率纪律：不重述代码内容；不展开未变更文件的细节；低风险样式性改动一行带过。目标 15-25 分钟内交付。
 只读边界：不编辑/commit/push/merge/评论。报告写到 $SUP/$4。落盘后交付完即结束。$(risk_class_safety_rule "${6:-}")$(lane_rule "${5:-}" "$3")"
 }
@@ -3526,7 +3526,7 @@ $(decision_scope "$u")"
         rep="review-${key}-r-${TAG}.md"
         prompt="你是 the product 流水线的独立代码评审 subagent，只读增量复审。当前目录是隔离 clone，已检出 PR 当前 head（detached），origin/main 为最新 main。
 复审 ${subject}（${title}）当前 head ${sha}，上轮 head ${prev_sha}。按正式契约中的 Targeted re-review 流程，仅检查 ${prev_sha}..${sha} 的 PR 增量及其直接依赖闭包；报告写到 $SUP/${rep}。
-读取上轮报告 $SUP/${prev_report} 和单元历史中的作者处置，再按处置逐条核验。$(review_contract_rule "$wt")
+读取上轮报告 $SUP/${prev_report} 和单元历史中的作者处置，再按处置逐条核验。$(review_contract_rule)
 只读边界：不编辑/commit/push/merge/评论。$(review_dispositions_context "$u")$(risk_class_safety_rule "$wt")$(lane_rule "$lane" "$sha")$(sweep_rule "$u" "$sha")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         dispatch_if_room "$id" "rereview" "rereview" "${rep%.md}.worker.log" "$rep" \
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true ;;

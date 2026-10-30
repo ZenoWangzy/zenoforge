@@ -56,12 +56,14 @@ PATH="$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" bash "$script_dir/start.sh"
 git -C "$root" show "$first:engine/mac-autopilot/loop.sh" > "$fixture/committed-loop"
 cmp -s "$fixture/committed-loop" "$live/loop.sh" || fail 'dirty checkout leaked into pinned runtime'
 printf 'new module\n' > "$root/engine/mac-autopilot/future-module.txt"
-git -C "$root" add engine
+mkdir -p "$root/.agents/skills/code-review" && printf 'vendored skill\n' > "$root/.agents/skills/code-review/SKILL.md"
+git -C "$root" add engine .agents
 git -C "$root" -c user.name=t -c user.email=t@e commit -qm two
 second="$(git -C "$root" rev-parse HEAD)"
 PATH="$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" bash "$script_dir/start.sh" --sync-only >/dev/null
 [[ "$(readlink "$live")" == "autopi-versions/$second/engine/mac-autopilot" ]] || fail 'second commit not activated'
 [[ -d "$versions/$first" && "$(cat "$live/future-module.txt")" == 'new module' ]] || fail 'previous version or new module missing'
+[[ -f "$live/../../.agents/skills/code-review/SKILL.md" ]] || fail 'published version lacks the vendored .agents/skills'
 git -C "$root" -c user.name=t -c user.email=t@e commit -qm three --allow-empty
 third="$(git -C "$root" rev-parse HEAD)"
 PATH="$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" bash "$script_dir/start.sh" --sync-only >/dev/null

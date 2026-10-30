@@ -3,7 +3,9 @@
 # owner repair and targeted re-review, at most 2 rounds. Result: .scratch/luna/ticket-<key>/result.json
 # Usage: luna-ticket <key> <worktree> <ticket.md> <spec.md> <notes> [--review-only]
 set -uo pipefail
-source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../matt-skills.sh"
+_ms="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../matt-skills.sh"
+[[ -r "$_ms" ]] && source "$_ms" # a copied install has no sibling engine tree
+declare -F matt_skill_md >/dev/null || matt_skill_md() { printf '.agents/skills/%s/SKILL.md\n' "$1"; }
 key="$1" wt="$2" ticket="$3" spec="$4" notes="$5" mode="${6:-}"
 root=${HOME:-/tmp}/.zenoforge/scratch
 L="$root/luna"; dir="$L/ticket-$key"; mkdir -p "$dir"

@@ -12,7 +12,7 @@ Container checks: {{CONTAINER_CHECKS}}
 Network and credentials: use only the credential wrapper the operator configured for this pipeline (see the target repository's `AGENTS.md` / `CLAUDE.md`), and only for the command that needs it.
 Report: `$HOME/.zenoforge/night/hand-{{ISSUE_NUMBER}}.report`.
 
-{{MATT_SKILLS}}
+Matt skills for this run: `diagnosing-bugs`, `tdd` and `code-review`, each at `.agents/skills/<name>/SKILL.md` in the worktree when the target repository has it, otherwise in the engine checkout.
 
 ## Why you
 
