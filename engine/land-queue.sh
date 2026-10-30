@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/config.sh"
 QUEUE_DIR="${ZF_LAND_QUEUE_DIR:-$AGENT_HOME/land-queue}"
 REQUEST_DIR="$QUEUE_DIR/requests"
 QUEUE_HEALTH_SUMMARY="$QUEUE_DIR/health-summary.tsv"
@@ -2013,7 +2013,7 @@ queue_health() {
 }
 
 queue_main() {
-    AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+    source "$SCRIPT_DIR/config.sh"
     QUEUE_DIR="${ZF_LAND_QUEUE_DIR:-$AGENT_HOME/land-queue}"
     REQUEST_DIR="$QUEUE_DIR/requests"
     QUEUE_HEALTH_SUMMARY="$QUEUE_DIR/health-summary.tsv"

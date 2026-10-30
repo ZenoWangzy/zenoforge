@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
 POLICY_PATH="engine/model-policy.default.json"
-AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+source "$SCRIPT_DIR/config.sh"
 LIVE_FILE="$AGENT_HOME/model-policy.json"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/apply-model-policy.XXXXXX")"
 install_tmp=""

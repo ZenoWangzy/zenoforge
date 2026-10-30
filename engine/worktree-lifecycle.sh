@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/config.sh"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
 WORKTREE_ROOT="${ZF_WORKTREE_ROOT:-$HOME/wt}"
 MANIFEST="${ZF_WORKTREE_CLEANUP_MANIFEST:-$NIGHT/worktree-cleanup-manifest.txt}"

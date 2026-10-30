@@ -1953,7 +1953,7 @@ maintainer_health_mail_tick() {
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   set -euo pipefail
-  AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"
+  source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/config.sh"
   NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
   ledger="$NIGHT/maintainer-health-mail.json"
   command="${1:-}"
