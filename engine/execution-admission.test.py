@@ -747,6 +747,7 @@ try:sys.exit"""))
         receipt = self.home / 'heavy'
         script.write_text(source[:start] + f'  printf "%s:%s" "${{RELEASE_TEST_JOBS:-unset}}" "${{NIGHT_TEST_JOBS:-unset}}" > "{receipt}"\n}}\n' + source[end:])
         (self.home / 'hand-completion-refill.sh').write_text((ROOT / 'hand-completion-refill.sh').read_text())
+        (self.home / 'config.sh').write_text((ROOT / 'config.sh').read_text())
         resource_proc = self.home / 'resource-proc'
         resource_proc.mkdir()
         (resource_proc / 'meminfo').write_text('MemAvailable: 99999999 kB\n')

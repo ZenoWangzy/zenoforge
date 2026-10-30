@@ -272,7 +272,7 @@ daily_perf_report_build() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"
+  source "$SCRIPT_DIR/../config.sh"
   repo_root="${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
   dry_run=0
   if [ "${1:-}" = --dry-run ]; then dry_run=1; shift; fi

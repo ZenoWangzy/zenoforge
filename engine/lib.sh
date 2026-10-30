@@ -15,7 +15,7 @@ source "$_AGENT_LIB_DIR/closing-keywords.sh"
 [[ -r "$_AGENT_LIB_DIR/runtime-reload.sh" ]] && source "$_AGENT_LIB_DIR/runtime-reload.sh"
 source "${ZF_EXECUTION_MODULE_DIR:-$_AGENT_LIB_DIR}/execution-admission.sh"
 
-AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"
+source "$(dirname -- "${BASH_SOURCE[0]}")/config.sh" || return 1 # AGENT_HOME, ZF_ENGINE_DIR, ZF_REPO_DIR, ZF_COORD*
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/write-guard.sh"
 agent_pipeline_write_guard 'lib.sh initialization' "$AGENT_HOME" || return 1
 # Host capacity tuning (non-secret) beats the credentials env file. On 2026-10-06 that file pinned
@@ -311,9 +311,10 @@ MAIN_RED_DIR="$AGENT_HOME/main-red"
 # $HOME, and the old fallback made every bare `source lib.sh` there
 # die on `cd "$REPO_DIR"` (PR #1355 CI, full-script regression). An explicit
 # ZF_REPO_DIR still wins, so production systemd units are unaffected.
-REPO_DIR="${ZF_REPO_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}"
-# The target repository as owner/name: ZF_REPO, else derived from the checkout's origin remote. Exported for child processes. A checkout with neither stays empty (|| true: no origin remote is exit 2, which set -e would turn into a silent exit).
-REPO="${ZF_REPO:-$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##' || true)}"
+REPO_DIR="$ZF_REPO_DIR"
+# The target repository as owner/name: ZF_REPO, else derived from the checkout's origin remote (config.sh). Exported for child processes. A checkout with neither stays empty.
+zf_repo_resolve
+REPO="$ZF_REPO"
 export ZF_REPO="$REPO"
 # GNU date treats an empty -d value as today's midnight, so reject it before parsing.
 agent_epoch() {

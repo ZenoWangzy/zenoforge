@@ -24,7 +24,7 @@ If the timers should keep running with no login session open, enable lingering f
 
 The engine expects to live at `<checkout>/engine/`:
 
-- `ZF_REPO_DIR` defaults to the parent of the `engine/` directory (set in `engine/lib.sh`).
+- `ZF_REPO_DIR` defaults to the parent of the `engine/` directory (set in `engine/config.sh`).
 - The unit loop derives its root from its own location (`engine/mac-autopilot/runtime-env.sh`). `start.sh` then publishes `engine/` from the repository's HEAD with `git archive`.
 
 In practice the engine is a directory inside the repository it operates on. The shipped unit files expect the checkout at `$HOME/.zenoforge/checkout` (`engine/systemd/*.service`). If yours is somewhere else, edit those paths.

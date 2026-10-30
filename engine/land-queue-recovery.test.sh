@@ -70,7 +70,10 @@ export QUEUE_SCRIPT="$queue_script"
 export RECOVERY_SLOW_FIFO="$test_env_root/slow-maintenance"
 mkfifo "$RECOVERY_SLOW_FIFO"
 if timeout 10 bash -c '
-  source <(sed '\''/^case "${1:-}" in/,$d'\'' "$QUEUE_SCRIPT")
+  # config.sh is found next to the sourced file, so give the head of the script a real path beside a copy of it.
+  sed '\''/^case "${1:-}" in/,$d'\'' "$QUEUE_SCRIPT" > "$ZF_AGENT_TEST_ROOT/land-queue-head.sh"
+  cp "$(dirname -- "$QUEUE_SCRIPT")/config.sh" "$ZF_AGENT_TEST_ROOT/config.sh"
+  source "$ZF_AGENT_TEST_ROOT/land-queue-head.sh"
   SCRIPT_DIR="$(dirname -- "$QUEUE_SCRIPT")"
   queue_recover_direct_pending() { read -r unused < "$RECOVERY_SLOW_FIFO"; }
   queue_recover

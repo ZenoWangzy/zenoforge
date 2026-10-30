@@ -21,7 +21,7 @@ if [[ -f "$REPO_DIR/engine/install-pre-push-guard.sh" ]]; then
   bash "$REPO_DIR/engine/install-pre-push-guard.sh" "$REPO_DIR"
 fi
 INDEX_ROOT="${ZF_CODE_INTELLIGENCE_ROOT:-${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}}"
-AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+source "$SCRIPT_DIR/config.sh"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
 WORKTREE_ROOT="${ZF_WORKTREE_ROOT:-$HOME/wt}"
 source "$SCRIPT_DIR/lib.sh"

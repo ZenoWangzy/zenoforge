@@ -25,7 +25,7 @@ if [[ "${ZF_AGENT_TEST_MODE:-0}" != 1 ]]; then
     exit 78
   }
 fi
-AGENT_HOME="${AGENT_HOME:-${HOME:?}/.zenoforge}"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/config.sh"
 runtime="$AGENT_HOME/checkout"
 [[ -r "$runtime/engine/lib.sh" ]] || { echo 'delivery-request: controller runtime is unavailable' >&2; exit 78; }
 source "$runtime/engine/lib.sh"

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR_INPUT="${ZF_REPO_DIR:-$SCRIPT_DIR/..}"
 REPO_DIR="$(cd -- "$REPO_DIR_INPUT" 2>/dev/null && pwd -P)" || { echo "ERROR check-rulings: repo directory unavailable: $REPO_DIR_INPUT" >&2; exit 2; }
 SCRIPT_DIR="$REPO_DIR/engine"
-AGENT_HOME="${AGENT_HOME:-${HOME:?HOME is not set}/.zenoforge}"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/config.sh"
 unset ZF_CHECK_RULINGS_POLICY_SOURCE_SCAN_VERIFIED
 AGENT_RULINGS_MODE="${AGENT_RULINGS_MODE:-static}"
 [[ "$AGENT_RULINGS_MODE" == static || "$AGENT_RULINGS_MODE" == source ]] || {
