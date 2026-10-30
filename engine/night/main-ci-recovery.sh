@@ -993,7 +993,7 @@ main_ci_cancel_closed_pr_runs() {
     ' <<< "$pages")" || return 1
     while IFS= read -r run_id; do
       [[ "$run_id" =~ ^[0-9]+$ ]] || continue
-      main_ci_cancel_run "$run_id" || failed=1
+      ZF_CANCEL_REASON="closed pr" main_ci_cancel_run "$run_id" || failed=1
     done <<< "$run_ids"
   done
   return "$failed"

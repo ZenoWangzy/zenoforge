@@ -601,8 +601,7 @@ function vAdvisor(D) {
     const oc = AD.outcomes_today || {};
     const OCOL = {completed:"var(--ok)", "job-failed":"var(--bad)", pending:"var(--c4)", dispatched:"var(--c1)", selected:"var(--c7)"};
     batch = `<div class="buls">${bFront(D,"advisor.job_age_min","批处理任务已跑", num(job ? job.age_min : 0))}${bFront(D,"advisor.failures_today","今日失败")}
-        ${bFront(D,"advisor.ruling_lag_hours","距上次落下裁决", AD.ruling_lag_is_lower_bound && (F.values||{})["advisor.ruling_lag_hours"]!=null ? "≥ "+num(F.values["advisor.ruling_lag_hours"]) : null)}
-        ${bFront(D,"stage.needs-advisor.count","等顾问的票")}${bFront(D,"stage.needs-advisor.idle_hours","最久滞留")}</div>
+        ${bFront(D,"advisor.ruling_lag_hours","距上次落下裁决", AD.ruling_lag_is_lower_bound && (F.values||{})["advisor.ruling_lag_hours"]!=null ? "≥ "+num(F.values["advisor.ruling_lag_hours"]) : null)}</div>
       <div class="grid g2" style="margin-top:20px">
         <div><div class="sub" style="margin-bottom:8px">今日 ${num(AD.ticks_today)} 拍的结果</div>${stack(Object.entries(oc).map(([k,v],i)=>({label:k, value:v, color:OCOL[k]||CAT[(i+2)%8]})))}</div>
         <div><div class="sub" style="margin-bottom:8px">当前任务</div>${jobBox}</div></div>
@@ -610,6 +609,8 @@ function vAdvisor(D) {
         <span>${ic("ok")} 上次落下裁决 ${AD.last_ruling_at ? fAge(hoursAgo(AD.last_ruling_at))+"前 · "+num(AD.last_ruling_applied)+" 张" : "日志窗口内没有"}</span>
         <span>今日落下 <b>${num(AD.applied_today)}</b> 张</span>${(AD.deferred||[]).length?`<span>${ic("warn")} 体积推迟 ${AD.deferred.length} 张</span>`:""}</div>`;
   }
+  // 队列深度来自 GitHub 标签，与批处理状态无关：批处理读取失败时也要画
+  batch += `<div class="buls" style="margin-top:18px">${bFront(D,"stage.needs-advisor.count","等顾问的票")}${bFront(D,"stage.needs-advisor.idle_hours","最久滞留")}</div>`;
   let loop;
   if (E.advisor_loop) loop = unavailable("评审循环里的顾问（units.json）", E.advisor_loop);
   else if (!AL) loop = emptyMsg("没有评审循环数据");
@@ -795,7 +796,7 @@ function vCi(D) {
           <div class="kpi" data-tip="发布只挑 Postsubmit 绿的 main">${ic("release")}<div><div style="margin-bottom:4px">${verdict(t.ci)}</div><div class="kl">Postsubmit</div></div></div>
           ${kpi("arrow", `${num(CL.running_runs)}`, "", "在跑 run")}${kpi("orders", `${num(CL.ready)}`, "", "就绪单", `WIP 按在线 PR runner 空闲量动态放行；热修 ${CL.hotpatch_ready??0} 个不占常规名额`)}</div>`)}
     </div>
-    ${panel("health","CI 现状对照标准", `<div class="buls">${["runners_online","pr_runner_busy_pct","queued_runs","wip_waiting"].map(k=>bCi(D,k)).join("")}</div>`)}
+    ${panel("health","CI 现状对照标准", `<div class="buls">${["runners_online","pr_runner_busy_pct","queued_runs","wip_waiting","held_runs"].map(k=>bCi(D,k)).join("")}</div>`)}
     <div class="grid g2">
       ${panel("timer","浪费的 runner 时间", `<div class="ringbox">${ring(ws, wst, 96, ws==null?"—":ws+"%", [{at:20,c:"ok"},{at:35,c:"bad"}])}
           <div style="flex:1;min-width:0">${stack([{label:"取消", value:br.cancelled, color:"var(--c2)"},{label:"未获批被取代", value:br.superseded_unapproved, color:"var(--c7)"},{label:"非产品 Postsubmit", value:br.nonproduct_postsubmit, color:"var(--c4)"}], v=>num(v)+" 分")}
