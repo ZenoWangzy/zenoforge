@@ -42,4 +42,6 @@ pipeline（`engine/*` 加 `docs/agents/issue-pipeline.md`）是唯一、持久�
 - GitHub REST 预算：每张 ticket ≤200 次调用。核心额度剩余 <1500 时停下来报告。
 - 落地后自己关票：`gh issue close <N> --comment "已落地 <SHA>（direct-main）"`；走 PR 路径的不关。
 - commit trailer：Codex 用通用规则里的那条；ZCode 用 "Co-Authored-By: ZCode glm-5.3 <noreply@z.ai>"。
+- 完成清单（全部勾上才能报 done）：已部署 SHA、验收结果、issue 已关、worktree 已清理、创始人已通知。
+- 理论下限：<如 CI 25 分钟 + 发布 30 分钟>。ETA 一律写区间，不写单一时间点。
 - 自己做，不要派子 agent：子 agent 继承你的模型与 effort，3 天里 72 个 worker 会话派了 78 个，一张票付两份 token 和 CPU。
