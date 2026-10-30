@@ -80,6 +80,19 @@ for loop in loop bell-loop zombie-loop; do
 done
 rm -f "$fixture/started"
 
+# zenoforge CLI layout: engine/ is an untracked symlink to an immutable versioned dir outside git; the pinned copy is keyed by that version.
+cli_root="$fixture/cli-root"
+mkdir -p "$cli_root/.scratch-supervisor/autopi" "$fixture/cli-engine/0.1.0"
+git -C "$cli_root" init -q
+git -C "$cli_root" -c user.name=t -c user.email=t@e commit -qm base --allow-empty
+cp -a "$root/engine/." "$fixture/cli-engine/0.1.0/"
+ln -s ../cli-engine/0.1.0 "$cli_root/engine"
+printf '/engine\n/.scratch-supervisor\n' >> "$cli_root/.git/info/exclude"
+PATH="$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$cli_root" bash "$script_dir/start.sh" --sync-only > "$fixture/cli-out" || fail 'sync-only failed for a symlinked engine'
+[[ "$(readlink "$cli_root/.scratch-supervisor/autopi-live")" == 'autopi-versions/0.1.0/engine/mac-autopilot' ]] || fail 'live pointer not pinned to the engine version'
+diff -r "$fixture/cli-engine/0.1.0/mac-autopilot" "$cli_root/.scratch-supervisor/autopi-live" || fail 'symlinked engine not materialized'
+[[ -z "$(git -C "$cli_root" status --porcelain)" ]] || fail 'engine link or runtime state shows up as untracked'
+
 # live 副本（未设环境变量）从自身位置解析根目录。
 resolved="$(env -u MAC_AUTOPILOT_ROOT -u MAC_AUTOPILOT_SUPERVISOR_DIR -u MAC_AUTOPILOT_RUNTIME_DIR \
   bash -c 'source "$1/runtime-env.sh"; printf "%s|%s" "$MAC_AUTOPILOT_ROOT" "$MAC_AUTOPILOT_RUNTIME_DIR"' _ "$live")"
