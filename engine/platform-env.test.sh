@@ -9,6 +9,7 @@ t="$test_env_root/pe"
 mkdir -p "$t/arm/bin" "$t/intel/bin" "$t/fakebin" "$t/min"
 touch "$t/arm/bin/brew" "$t/intel/bin/brew"; chmod +x "$t/arm/bin/brew" "$t/intel/bin/brew"
 source "$engine/platform-env.sh" # on macOS this is what makes the GNU tools below resolvable; a no-op on Linux
+unset ZF_OS ZF_RUNNER ZF_TIMERS # on macOS it exported these; the cases below must start from the Linux defaults
 
 # run <ostype> <path> <script>: source platform-env.sh in a fresh strict shell that believes it is on <ostype>.
 run() { env "PATH=$2" "$BASH" -u -c 'OSTYPE=$1; source "$2/platform-env.sh"; eval "$3"' _ "$1" "$engine" "$3"; }
