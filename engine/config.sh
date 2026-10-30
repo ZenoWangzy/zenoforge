@@ -65,6 +65,8 @@ export ZF_PACK_REL="${ZF_PACK_REL:-engine}" # a caller-set value wins; empty is 
 #   ZF_DEPLOY_DIR             deployment directory on that host.
 #   ZF_PACK_PR_GATE           name of the product's own PR check in the carried-capacity exception and the mail labels.
 #   ZF_PACK_HOOK_STEP         name of the CI step that exception requires to be skipped.
+#   ZF_REVIEW_SKILL           directory name of the review skill under .agents/skills (scheduler.d/evals-arbiter.sh and eval/run-eval.mjs read it
+#                             with the same default, because neither sources this file).
 #   ZF_SECRET_CONFIG_NAMES    regex alternation of extra service config file names (before .json/.yml) the secret-dump gate refuses.
 [[ -n "${ZF_CIHOST_HOST+x}" ]] || ZF_CIHOST_HOST=cihost
 [[ -n "${ZF_CIHOST_FILE_STEM+x}" ]] || ZF_CIHOST_FILE_STEM=cihost
@@ -84,6 +86,7 @@ fi
 [[ -n "${ZF_PACK_PR_GATE+x}" ]] || ZF_PACK_PR_GATE="Example pack PR gate"
 [[ -n "${ZF_PACK_HOOK_STEP+x}" ]] || ZF_PACK_HOOK_STEP="Test Example Agent hook consumer"
 [[ -n "${ZF_SECRET_CONFIG_NAMES+x}" ]] || ZF_SECRET_CONFIG_NAMES=agent-runtime
+[[ -n "${ZF_REVIEW_SKILL+x}" ]] || ZF_REVIEW_SKILL=code-review
 
 # pack_file <relative path> -- print the pack's copy of that file and succeed, or fail when there is no pack or no such file.
 pack_file() {
