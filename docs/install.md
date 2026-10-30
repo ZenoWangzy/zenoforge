@@ -1,8 +1,53 @@
 # Installing Zenoforge on one host
 
-> **Alpha: expect to read the code.** There is no installer. This page lists what the scripts expect, checked against `engine/`. Some parts are not generic yet. The list is in [Not generic yet](#not-generic-yet), and you will hit most of it on a first install.
+> **Alpha: expect to read the code.** The quickest path is the CLI: `npx zenoforge doctor`, then `npx zenoforge init`. This page explains what the CLI does so you can check it, and lists what the scripts expect when you install by hand (checked against `engine/`). Some parts are not generic yet. The list is in [Not generic yet](#not-generic-yet), and you will hit most of it on a first install.
 
-Scope: one host, one target GitHub repository. The issue loop runs from systemd user timers. The unit loop is started by `engine/mac-autopilot/start.sh`, and you may need to supply its service units yourself. For how the pieces fit together, read [architecture.md](architecture.md).
+Scope: one host, one target GitHub repository. The issue loop runs from systemd user timers. The unit loop is started by `engine/mac-autopilot/start.sh`; the CLI generates the service units for it. For how the pieces fit together, read [architecture.md](architecture.md).
+
+## 0. The CLI path
+
+```
+npx zenoforge doctor
+npx zenoforge init                       # or: pnpm dlx zenoforge init, npm i -g zenoforge
+npx zenoforge init --repo owner/name --yes --dry-run     # print the plan, change nothing
+```
+
+`doctor` runs the checks of [section 1](#1-host-requirements) and prints the exact fix command for each missing item. It exits non-zero if a hard requirement is missing. The systemd or launchd check is a warning, because a foreground mode exists.
+
+`init` asks for the repository (the `gh repo list` of your login, or `--repo owner/name`) and the agent for each role ([Agents and roles](#agents-and-roles)), shows the security warning from [SECURITY.md](../SECURITY.md), and asks you to confirm it (`--yes` confirms without asking). Only then does it write anything outside its own checks. It does these steps, in this order, and each maps to a manual step below:
+
+| Step | Manual equivalent |
+|---|---|
+| Creates a dedicated checkout (`~/.zenoforge/checkout`, or `--checkout-dir`) with `gh repo clone`. It refuses a directory it did not create, the repository you are standing in, and a default branch other than `main` | [Section 2](#2-put-the-engine-where-the-scripts-look-for-it) |
+| Copies the packaged engine to `~/.zenoforge/engine/<version>/`, then flips the `~/.zenoforge/engine/current` link to it. Links `<checkout>/engine` to `current` and lists `/engine`, `/.scratch-supervisor`, `/.scratch` in `<checkout>/.git/info/exclude` | [Section 2](#2-put-the-engine-where-the-scripts-look-for-it) |
+| Writes `~/.zenoforge/env` (repository, worktree root, and a copy of your `gh` token when `gh` keeps it in a keyring or `GH_TOKEN`, which background jobs cannot read), `capacity.env` and `recipients.json`. All mode 600, never overwritten if present | [Sections 3, 5 and 6](#3-set-the-repository-and-the-agent-identity) |
+| Renders `config.template.json` (worker caps, token budget, `auto_merge`, review model) and `required-pr-checks.json` into the engine version | [Section 5](#5-configuration-files) |
+| Creates the pipeline labels that are missing. The list is read from `ALL_STATE_LABELS` in `engine/lib.sh`, plus `on-hold`, `tracker`, `hotfix`, `bug`, `enhancement` | [Section 3](#3-set-the-repository-and-the-agent-identity) |
+| Sets `AGENT_SUPERVISOR=observe` and `AGENT_PIPELINE=triage` (`off` with `--no-scheduler`). Needs admin access; if `gh` refuses, it prints the two commands | [Section 4](#4-github-repository-variables) |
+| Renders the units from `engine/systemd/` into the engine version, copies them to `~/.config/systemd/user/` (or LaunchAgents on macOS), enables the timers in `pipeline-timers.list` and two resident loop services | [Sections 7 and 8](#7-systemd-units) |
+
+Defaults that differ from a bare engine: 2 workers (`--max-workers`), a 2,000,000-token daily budget (it only raises alerts), advisor off, no mail recipients, the release train and the supervisor arbiter off in `config.template.json` (their runners are not shipped), and **auto-merge off unless the repository's branch protection names required checks** or you pass `--auto-merge`. If you pass `--required-check NAME` (repeatable), those names replace the originating project's list.
+
+Keep the default checkout location unless you have a reason: a few readers in the engine (`scheduling-policy.mjs`, `mac-autopilot/waste_report.py`) hardcode `~/.zenoforge/checkout`, and with `--checkout-dir` they find nothing there.
+
+Running `init` again is safe: existing env files are kept, an unchanged engine is reused, and a changed setting installs a new `<version>+2` directory. One host serves one repository; a second `--repo` is refused.
+
+After `init`: `zenoforge status`, `zenoforge logs -f`, `zenoforge stop` and `zenoforge start`. If you installed with `--no-scheduler`, the first `zenoforge start` shows the same security warning, asks for the same confirmation (or `--yes`), installs the units and sets `AGENT_PIPELINE=triage`. `zenoforge upgrade` (run from the newer package, for example `npx zenoforge@latest upgrade`) installs that package's engine as a new version, re-renders the units and restarts the two loop services; `zenoforge rollback` flips back. `zenoforge uninstall` disables and removes the units and the checkout's `engine` link and keeps `~/.zenoforge` (run `init` to set up again); `--purge --yes` deletes it, and the checkout if the CLI made it, also when an earlier `init` stopped before writing `cli.json`. `zenoforge status` warns when the repository's `main` starts tracking its own top-level `engine/` directory.
+
+On macOS the CLI installs the unit loop only (two LaunchAgents). The issue loop dispatches stages with `systemd-run`, which macOS does not have. Without systemd or launchd, `zenoforge start` runs the unit loop as detached background processes with pid files in `~/.zenoforge/run/`.
+
+### Agents and roles
+
+| Role | Choices (first is the default) | What the choice changes |
+|---|---|---|
+| `implement` | `codex`, `zcode` | `codex`: the shipped unit-loop models. `zcode` with no `codex` installed: `WORKER_BACKEND=zc` in `capacity.env` (the `bin/worker` backend) |
+| `review` | `claude`, `codex` | `models.review` in `config.template.json`: the shipped Claude entry, or a copy of the Codex implement entry |
+
+The unit loop implements through Codex. Claude reviews there with a read-only tool list and cannot implement. The issue-loop model policy only accepts Codex roles. That is why the table is short.
+
+## Installing by hand
+
+The sections below are the manual path. They give the same result as `zenoforge init`.
 
 ## 1. Host requirements
 
@@ -20,14 +65,25 @@ Scope: one host, one target GitHub repository. The issue loop runs from systemd 
 
 If the timers should keep running with no login session open, enable lingering for your user (`loginctl enable-linger`). The engine's own operator notes recommend it.
 
-## 2. Put the engine inside a dedicated checkout
+## 2. Put the engine where the scripts look for it
 
-The engine expects to live at `<checkout>/engine/`:
+The scripts expect the engine at `<checkout>/engine/`:
 
-- `ZF_REPO_DIR` defaults to the parent of the `engine/` directory (set in `engine/lib.sh`).
-- The unit loop derives its root from its own location (`engine/mac-autopilot/runtime-env.sh`). `start.sh` then publishes `engine/` from the repository's HEAD with `git archive`.
+- `ZF_REPO_DIR` defaults to the parent of the `engine/` directory (set in `engine/lib.sh`), and the unit loop derives its root the same way (`engine/mac-autopilot/runtime-env.sh`).
+- `start.sh` publishes the unit loop's runtime from `<checkout>/engine/`. When that path is a symlink, it copies the directory and pins the copy by the version directory's name. Otherwise it runs `git archive` of the checkout's HEAD.
+- `write-guard.sh` accepts an engine that lives in `$AGENT_HOME/engine/<version>/`, outside the checkout.
 
-In practice the engine is a directory inside the repository it operates on. The shipped unit files expect the checkout at `$HOME/.zenoforge/checkout` (`engine/systemd/*.service`). If yours is somewhere else, edit those paths.
+So the engine and the repository it operates on are different trees. The CLI keeps the engine outside the repository and links it in:
+
+```
+git clone <repository> ~/.zenoforge/checkout                 # dedicated checkout, on main
+cp -r <engine dir> ~/.zenoforge/engine/0.1.0
+ln -sfn 0.1.0 ~/.zenoforge/engine/current
+ln -s ~/.zenoforge/engine/current ~/.zenoforge/checkout/engine
+printf '/engine\n/.scratch-supervisor\n/.scratch\n' >> ~/.zenoforge/checkout/.git/info/exclude
+```
+
+Keep `/engine` and the runtime directories in `.git/info/exclude`: each tick runs `git clean -fd` in the checkout, which would otherwise delete them. A repository that tracks its own top-level `engine/` directory cannot be used this way; the CLI refuses it. (The alternative is to commit the engine into the target repository, as the project it was extracted from does.)
 
 Use a dedicated checkout. Do not use one you work in:
 
@@ -59,7 +115,7 @@ These are read with `gh variable get`. Set them with `gh variable set NAME --rep
 | File | What reads it | What to change |
 |---|---|---|
 | `engine/model-policy.default.json` | Copied to `$AGENT_HOME/model-policy.json` (`MODEL_POLICY_DEFAULT` in `engine/lib.sh`). The copy is refreshed only when the default changes in git (`engine/model-policy-fast-forward.sh`) | Roles (`work`, `production`, `advisor`, `review`, `hand-zcode`), the `escalation` steps, and the `forbidden` words. The shipped roles use Codex (`gpt-6-luna`). The advisor role is disabled by default, and no advisor provider ships. `hand-zcode` is disabled |
-| `engine/mac-autopilot/config.template.json` | Copied to `<checkout>/.scratch-supervisor/autopi/config.json`. The runtime copy is overwritten whenever it differs from the template (`engine/mac-autopilot/config-reconcile.sh`) | Edit the template and commit. Never edit the runtime copy, because the next sync overwrites it. Keys: `tick_seconds`, `max_workers`, `implement_cap`, `dispatch_priority_order`, `auto_merge`, `hotfix_lane`, `models`, `release_train`, `supervisor_arbiter`, `daily_token_budget`, `pricing`, `node_health` |
+| `engine/mac-autopilot/config.template.json` | Copied to `<checkout>/.scratch-supervisor/autopi/config.json`. The runtime copy is overwritten whenever it differs from the template (`engine/mac-autopilot/config-reconcile.sh`) | Edit the template and commit. Never edit the runtime copy, because the next sync overwrites it. With the CLI the template is the one in the installed engine version (`~/.zenoforge/engine/current/mac-autopilot/`), rendered by `init` and `upgrade` from their flags: change settings by re-running `init` with flags (`--max-workers`, `--required-check`, `--review`), because `upgrade` re-renders the file Keys: `tick_seconds`, `max_workers`, `implement_cap`, `dispatch_priority_order`, `auto_merge`, `hotfix_lane`, `models`, `release_train`, `supervisor_arbiter`, `daily_token_budget`, `pricing`, `node_health` |
 | `engine/mac-autopilot/required-pr-checks.json` | The scheduler's `required_checks_without_pass` and `engine/hotfix/hf-merge.sh` | The check names every PR must pass. The shipped names come from another project's workflows. Replace them with the names your workflows report. See [Not generic yet](#not-generic-yet) |
 | `$AGENT_HOME/capacity.env` | Sourced by `engine/lib.sh` with `set -a`, so any variable in it is exported | Capacity settings (below). It can also carry `ZF_*` variables |
 | `engine/state/*.json` | Shipped state seeds: scheduling policy, rulings, incident guards, hand priority, comms profile, health mail, mechanism registry, rule files | Not audited for this page. Read the ones you use before you rely on them |
@@ -132,7 +188,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now zenoforge-agent.timer
 ```
 
-Before you run this, check the paths in the unit file. The shipped unit sets only `ZF_REPO_DIR` and `PATH`, so `ZF_REPO` must come from a drop-in. Create one with `systemctl --user edit zenoforge-agent.service` and add:
+Before you run this, check the paths in the unit file. The shipped unit sets only `ZF_REPO_DIR` and `PATH`, so `ZF_REPO` must come from a drop-in or an `EnvironmentFile`. The CLI renders every unit with `EnvironmentFile=-%h/.zenoforge/env`, the real tool directories in `PATH` (a user unit does not read your shell profile), and without the local HTTP proxy lines of the original deployment. Create one with `systemctl --user edit zenoforge-agent.service` and add:
 
 ```
 [Service]
@@ -141,7 +197,7 @@ Environment=ZF_REPO=owner/name
 
 **Later installs (by the tick).** Each tick copies every `*.service` and `*.timer` file from `engine/systemd/` into `${SYSTEMD_USER_UNIT_DIR:-~/.config/systemd/user}` when the file differs. It runs `daemon-reload` if anything changed. Then it enables or starts each timer in `pipeline-timers.list`. Two consequences:
 
-- Edits made in `~/.config/systemd/user` are overwritten by the next tick. Put host-specific settings in drop-ins (`systemctl --user edit <unit>`), which the copy does not touch, or edit `engine/systemd/` and commit.
+- Edits made in `~/.config/systemd/user` are overwritten by the next tick. (The CLI renders its units into the engine version's own `systemd/` directory, so the tick copies identical files.) Put host-specific settings in drop-ins (`systemctl --user edit <unit>`), which the copy does not touch, or edit `engine/systemd/` and commit.
 - The shipped health units set a local HTTP proxy and `ZF_WORKTREE_ROOT=$HOME/wt`. Change or remove those lines for your host, through a drop-in.
 
 ## 8. The unit loop and `start.sh`
@@ -159,7 +215,7 @@ Gaps for the unit loop (details in [Not generic yet](#not-generic-yet)):
 - `engine/systemd/` has no `zenoforge-autopilot-*` units. `start.sh` refers to `ops/host-units/`, which is not in this repository.
 - `zombie-loop.sh` is not in this checkout, so the `nohup` fallback fails for it.
 
-In practice you have to supply the unit loop's service units yourself. A simple shape is one unit each for `loop.sh` and `bell-loop.sh`, run from `<checkout>/.scratch-supervisor/autopi-live/`. Start the unit loop last, after the issue loop works.
+The CLI supplies them: `zenoforge-autopilot-scheduler.service` (runs `start.sh --sync-only`, then `loop.sh`) and `zenoforge-autopilot-bell.service` (`bell-loop.sh`), both `Restart=always`, run from `<checkout>/.scratch-supervisor/autopi-live/`. By hand, write one unit each for `loop.sh` and `bell-loop.sh` of that shape. Start the unit loop last, after the issue loop works.
 
 ## 9. First run, in a safe order
 
@@ -180,7 +236,7 @@ In practice you have to supply the unit loop's service units yourself. A simple 
 
 These are the places where the engine is still tied to the environment it was extracted from. Read this list before you install.
 
-1. **The engine must sit inside the repository it operates on.** `ZF_REPO_DIR` and the unit loop's root are both derived from the engine's own location. `start.sh` publishes `engine/` from the repository's HEAD. A separate engine checkout that operates on a different repository is not something the code supports.
+1. **The engine is reached as `<checkout>/engine`.** `ZF_REPO_DIR` and the unit loop's root are derived from that location, and about 60 places build `"$REPO_DIR/engine/..."` paths. The CLI satisfies this with a git-excluded symlink to an installed engine version (see [section 2](#2-put-the-engine-where-the-scripts-look-for-it)). It is a shortcut: a repository with its own top-level `engine/` directory is refused, and the scripts that read the engine from the target repository's git history (`land-direct-main.sh`, `pre-push-guard.sh`, `install-pre-push-guard.sh`) will not find it there. A real engine-directory seam (`ZF_ENGINE_DIR`) would remove both limits.
 
 2. **Names and checks from the originating project.**
    - `engine/mac-autopilot/required-pr-checks.json` names checks from the originating project's workflows.
@@ -207,7 +263,7 @@ These are the places where the engine is still tied to the environment it was ex
 
 5. **Units and timers.**
    - `engine/systemd/pipeline-timers.list` names three timers that are not shipped: `zenoforge-local-rescue`, `zenoforge-disk-reclaim`, and `zenoforge-prod-anomaly`. Each tick tries to enable them, fails, and writes one alert per timer. Ship their units, or remove the lines.
-   - No unit files for the unit loop are shipped (section 8).
+   - No unit files for the unit loop are shipped in `engine/systemd/` (section 8). The CLI generates them.
    - `engine/systemd/user-units-path.test.sh` looks for an `ExecStart` under a `scripts/` path. The engine now lives under `engine/`, so the check skips every shipped unit and checks nothing.
 
 6. **Operator notes are not install docs.** `engine/README.md` is a runbook for one deployment. It has host-specific paths and procedures. The top-level README is the public entry point.
@@ -218,6 +274,6 @@ These are the places where the engine is still tied to the environment it was ex
 
 9. **Language.** About 50 of the 230 non-test files under `engine/` and `tools/` contain Chinese text (comments, strings, prompts and state files).
 
-10. **No installer and no install test.** The steps on this page are not tested by CI. The shell test suites source `engine/test-env.sh`, which isolates `HOME` and `AGENT_HOME`. Nothing in CI runs the install steps.
+10. **The installer is new.** `cli/*.test.mjs` runs `init`, `upgrade` and `uninstall` against a throwaway `HOME`, a local bare repository and fake `gh` and `systemctl`. Nothing runs the installed pipeline against a real GitHub repository in CI, and the launchd path is generated and tested as text only. The shell test suites source `engine/test-env.sh`, which isolates `HOME` and `AGENT_HOME`.
 
 11. **Security.** Workers run with broad permissions by default: Codex runs in `danger-full-access`, and ZCode runs in yolo mode. Run the engine under a dedicated OS account on a machine you can rebuild. See the note in `architecture.md`, section 11.

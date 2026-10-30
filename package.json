@@ -1,0 +1,38 @@
+{
+  "name": "zenoforge",
+  "version": "0.1.0",
+  "description": "One-command installer and operator CLI for Zenoforge, a self-hosted software factory.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "type": "module",
+  "bin": {
+    "zenoforge": "cli/zenoforge.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "engine/",
+    "cli/",
+    "!cli/**/*.test.mjs",
+    "docs/",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md",
+    "CLA.md",
+    "CONTRIBUTING.md"
+  ],
+  "scripts": {
+    "test": "node --test cli/*.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZenoWangzy/zenoforge.git"
+  },
+  "homepage": "https://github.com/ZenoWangzy/zenoforge#readme",
+  "bugs": {
+    "url": "https://github.com/ZenoWangzy/zenoforge/issues"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.8.1"
+  }
+}

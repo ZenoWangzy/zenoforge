@@ -34,7 +34,11 @@ agent_pipeline_write_guard() {
   [[ -e "$agent_home/checkout" ]] || return 0
   if [[ -z "${_AGENT_WRITE_GUARD_SOURCE_ROOT+x}" ]]; then
     source_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
-    _AGENT_WRITE_GUARD_SOURCE_ROOT="$(git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+    case "$source_dir" in
+      # An engine installed by the zenoforge CLI lives in $AGENT_HOME/engine/<version>, outside the checkout it serves.
+      "$(realpath -m -- "$agent_home")/engine/"*) _AGENT_WRITE_GUARD_SOURCE_ROOT="$agent_home/checkout" ;;
+      *) _AGENT_WRITE_GUARD_SOURCE_ROOT="$(git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null || true)" ;;
+    esac
   fi
   source_root="${_AGENT_WRITE_GUARD_SOURCE_ROOT:-}"
   if [[ -z "$source_root" ]]; then

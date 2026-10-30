@@ -13,7 +13,13 @@ VERSIONS="$RUN/autopi-versions"
 SYNC_ONLY=0
 [[ "${1:-}" == "--sync-only" ]] && SYNC_ONLY=1
 mkdir -p "$A/alerts" "$VERSIONS"
-head="$(git -C "$MAC_AUTOPILOT_ROOT" rev-parse HEAD)"
+# The zenoforge CLI links an immutable engine version into the checkout as engine/ (untracked), so git has nothing to
+# archive: pin by that version's directory name instead of HEAD.
+if [[ -L "$MAC_AUTOPILOT_ROOT/engine" ]]; then
+  head="$(cd -P -- "$MAC_AUTOPILOT_ROOT/engine" && basename -- "$PWD")"
+else
+  head="$(git -C "$MAC_AUTOPILOT_ROOT" rev-parse HEAD)"
+fi
 version="$VERSIONS/$head"
 if [[ ! -d "$version" ]]; then
   stage="$(mktemp -d "$VERSIONS/.stage.XXXXXX")"
@@ -21,9 +27,17 @@ if [[ ! -d "$version" ]]; then
   # Archive the whole tracked engine tree: a hand-kept file list missed verification-plan-runtime.sh
   # and every pinned runtime failed sourcing it (10-29, #4618). 14 MB per version; only two are kept.
   # engine/matt-skills.sh falls back to <version>/.agents/skills, so publish it too; an unconditional pathspec aborts for repos without it.
-  paths=(engine)
-  git -C "$MAC_AUTOPILOT_ROOT" cat-file -e "$head:.agents/skills" 2>/dev/null && paths+=(.agents/skills)
-  git -C "$MAC_AUTOPILOT_ROOT" archive "$head" "${paths[@]}" | tar -x -C "$stage"
+  if [[ -L "$MAC_AUTOPILOT_ROOT/engine" ]]; then
+    mkdir "$stage/engine"
+    tar -c -C "$MAC_AUTOPILOT_ROOT/engine/" . | tar -x -C "$stage/engine"
+    # a linked engine checkout keeps its skills next to engine/
+    skills="$(cd -P "$MAC_AUTOPILOT_ROOT/engine/.." && pwd)/.agents/skills"
+    [[ -d "$skills" ]] && { mkdir -p "$stage/.agents"; cp -R "$skills" "$stage/.agents/skills"; }
+  else
+    paths=(engine)
+    git -C "$MAC_AUTOPILOT_ROOT" cat-file -e "$head:.agents/skills" 2>/dev/null && paths+=(.agents/skills)
+    git -C "$MAC_AUTOPILOT_ROOT" archive "$head" "${paths[@]}" | tar -x -C "$stage"
+  fi
   mv "$stage" "$version"
   trap - EXIT
 fi
