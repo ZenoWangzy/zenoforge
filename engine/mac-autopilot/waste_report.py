@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Token and CI-repair report from the pipeline's own records (read-only).
+"""Pipeline waste and rule-use report from the pipeline's own records (read-only).
 
 Usage: waste_report.py [--runtime DIR] [--audit FILE] [--since ISO] [--until ISO]
-                       [--codex-sessions DIR] [--claude-projects DIR --clone-root DIR] [--tokens-json FILE]
+                       [--lesson-zero-hit-days N] [--codex-sessions DIR]
+                       [--claude-projects DIR --clone-root DIR] [--tokens-json FILE]
 With --codex-sessions the report adds token usage, empty-input polls and scoped document reads from the Codex rollouts;
 --claude-projects adds Claude review usage. --tokens-json writes those same numbers as JSON. Without those options the
 report prints the recorded T6 baseline and the T7 CI-repair and review events from the ledger and audit log.
@@ -11,10 +12,13 @@ Sources (all read, nothing written; not synced to the runtime, never run from a 
   <runtime>/scheduler.log and scheduler.log.1   default report window (the log rotates at 5 MB into .1)
   <runtime>/units.json                          the ledger (CI repair, review and session events)
   <runtime>/ci-spend-cache.json                 ci_spend.py's per-run job minutes (24 h), for linked T7 events
+  repository lessons/RULES.md                   IDs reported as zero-hit candidates
   <audit>                                       logs/actions-run-cancellations.jsonl under the agent home
 The window defaults to the time range the scheduler log files cover; --since/--until can select another window.
+Lesson rule matches and footprint observations are events in that same log; zero-hit candidates are withheld when the retained observation span is shorter than the requested interval.
 """
 import argparse, json, math, os, re, sys
+from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import usage_reader
 from datetime import datetime, timedelta, timezone
@@ -43,6 +47,9 @@ LANE_ORDER = ("product", "pipeline-system", "direct-main", "main-red", "hot-patc
 CI_REPAIR_STAGES = {"ci-red", "ci-test-red"}
 REVIEW_SWITCH = "2026-10-22T05:39:00Z"
 CI_CAUSES = ("cancellation", "stale-base", "attributable", "infrastructure", "missing-log", "unclassified")
+LESSON_HIT_RE = re.compile(r"(?:^|\s)lesson-rule-hit lesson=((?:V|D)\d+)(?:\s|$)")
+LESSON_OBSERVED_RE = re.compile(r"(?:^|\s)lesson-rule-observed matches=(\d+)(?:\s|$)")
+RULE_ID_RE = re.compile(r"^\*\*((?:V|D)\d+)\*\*", re.MULTILINE)
 
 
 def parse_ts(value):
@@ -506,6 +513,52 @@ def scoped_document_reads_section(units, codex):
     return lines, data
 
 
+def lesson_rule_hits_section(scheduler_rows, until, zero_hit_days):
+    """Show rules not selected into an implement brief during the requested retained-log window."""
+    end = parse_ts(until)
+    cutoff = end - timedelta(days=zero_hit_days)
+    retained = [(parse_ts(stamp), message) for stamp, message in scheduler_rows
+                if parse_ts(stamp) <= end]
+    observations = [at for at, message in retained if LESSON_OBSERVED_RE.search(message)]
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    rules_path = os.path.join(repo_root, "lessons", "RULES.md")
+    with open(rules_path, encoding="utf-8", errors="replace") as source:
+        rule_ids = sorted(set(RULE_ID_RE.findall(source.read())))
+
+    header = f"T8 lesson rule matches (zero-hit lookback {zero_hit_days} days ending {until}; match = selected into implement brief)"
+    if not observations:
+        return [header, "  no footprint observations in retained scheduler logs; zero-hit candidates withheld"]
+    oldest = min(observations)
+    covered_days = max(0.0, (end - oldest).total_seconds() / 86400)
+    if oldest > cutoff:
+        return [header,
+                f"  retained observations span {covered_days:.2f} days from {oldest.strftime('%Y-%m-%dT%H:%M:%SZ')}; need {zero_hit_days} days, candidates withheld"]
+
+    recorded = Counter()
+    windowed = Counter()
+    last_hit = {}
+    observation_rows = [(at, message) for at, message in retained if at >= oldest]
+    for at, message in observation_rows:
+        match = LESSON_HIT_RE.search(message)
+        if not match:
+            continue
+        lesson_id = match.group(1)
+        recorded[lesson_id] += 1
+        last_hit[lesson_id] = at
+        if at >= cutoff:
+            windowed[lesson_id] += 1
+
+    zero_hit = [lesson_id for lesson_id in rule_ids if windowed[lesson_id] == 0]
+    matched_rules = sum(1 for lesson_id in rule_ids if windowed[lesson_id] > 0)
+    lines = [header,
+             f"  retained observation coverage {covered_days:.2f} days; observations={len(observations)} rules={len(rule_ids)} matched={matched_rules} zero-hit candidates={len(zero_hit)}"]
+    for lesson_id in zero_hit:
+        last = last_hit.get(lesson_id)
+        last_text = last.strftime("%Y-%m-%dT%H:%M:%SZ") if last else "not-recorded"
+        lines.append(f"  {lesson_id} hits_{zero_hit_days}d=0 last_hit={last_text} retained_hits={recorded[lesson_id]}")
+    return lines
+
+
 def main():
     agent_home = os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or os.path.expanduser("~/.zenoforge")
     ap = argparse.ArgumentParser()
@@ -516,9 +569,13 @@ def main():
     ap.add_argument("--claude-projects", help="Claude projects root; adds Claude review usage (needs --clone-root)")
     ap.add_argument("--clone-root", help="the worker clone root whose wt-<unit> directories name the Claude logs")
     ap.add_argument("--tokens-json", help="write the token section as JSON to this file")
+    ap.add_argument("--lesson-zero-hit-days", type=int, default=30,
+                    help="lookback for lesson rules never selected into an implement brief (default: 30)")
     ap.add_argument("--since")
     ap.add_argument("--until")
     args = ap.parse_args()
+    if args.lesson_zero_hit_days < 1:
+        ap.error("--lesson-zero-hit-days must be at least 1")
 
     covered = []  # (file, what was read) for the "read" lines: which files and which time range the report covers
 
@@ -553,6 +610,7 @@ def main():
         sys.exit(f"waste_report: no scheduler log lines under {args.runtime}; pass --runtime (and --since/--until to report other sources alone)")
     since = args.since or min(t for t, _ in sched)
     until = args.until or max(t for t, _ in sched)
+    all_sched = sched
     days = (parse_ts(until) - parse_ts(since)).total_seconds() / 86400
     sched = [(t, m) for t, m in sched if since <= t <= until]
     audit = [r for r in audit or [] if since <= r["when"] <= until]
@@ -561,6 +619,7 @@ def main():
     out += [f"read    {name:<19} {text}" for name, text in covered]
     out += TOKEN_CI_BASELINE
     out += ci_review_events_section(units, audit, cache or {}, since, until, units_doc is not None)
+    out += lesson_rule_hits_section(all_sched, until, args.lesson_zero_hit_days)
     if args.codex_sessions or args.claude_projects:
         try:
             codex = usage_reader.codex_sessions_between(args.codex_sessions, since, until) if args.codex_sessions else None

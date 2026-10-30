@@ -131,6 +131,7 @@ run_lifecycle() {
   ZF_NIGHT_DIR="$NIGHT" \
   ZF_WORKTREE_ROOT="$ROOT/wt-root" \
   ZF_PRIMARY_REPO_DIR="$REPO_PATH" \
+  ZF_ENGINE_DIR="$REPO_PATH/engine" \
   ZF_GH_REPO=test/repo \
   PATH="$BIN:$PATH" \
     bash "$LIFECYCLE" "$@"

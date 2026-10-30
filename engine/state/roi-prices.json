@@ -1,0 +1,30 @@
+{
+  "schema": "zenoforge-roi-prices/v1",
+  "currency": "USD",
+  "version": "2026-10-30",
+  "cost_basis": "api_list",
+  "models": {
+    "gpt-6-luna": {
+      "provider": "openai",
+      "per_million": {
+        "input": 0.1,
+        "cached": 0.01,
+        "cache_write": null,
+        "output": 0.5
+      },
+      "source_url": "https://openai.com/api/pricing/",
+      "retrieved": "2026-10-30"
+    },
+    "gpt-5.6-terra": {
+      "provider": "openai",
+      "per_million": {
+        "input": 2.0,
+        "cached": 0.2,
+        "cache_write": null,
+        "output": 12.0
+      },
+      "source_url": "https://openai.com/api/pricing/",
+      "retrieved": "2026-10-30"
+    }
+  }
+}

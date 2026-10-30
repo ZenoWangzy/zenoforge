@@ -8,7 +8,7 @@ source "$liveness_helper" || exit 1
 
 AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
-agent_lib="$AGENT_HOME/checkout/engine/lib.sh"
+agent_lib="${ZF_ENGINE_LIVE:-$AGENT_HOME/checkout/engine}/lib.sh"
 [[ -r "$agent_lib" ]] || agent_lib="$liveness_dir/../lib.sh"
 [[ -r "$agent_lib" ]] || { echo "brief-addendum: shared agent library missing" >&2; exit 1; }
 source "$agent_lib" || exit 1

@@ -20,7 +20,7 @@ assert_eq() {
   else echo "not ok - $desc (expected [$expected], got [$actual])"; FAILED=1; fi
 }
 infra_requeue_comment_count() {
-  grep -cF '<!-- zf-conclusion-requeue issue=500050 episode=' "$ROOT_WRITE_LOG" || true
+  grep -cF '<!-- vecta-conclusion-requeue issue=500050 episode=' "$ROOT_WRITE_LOG" || true
 }
 assert_not_contains() {
   local desc="$1" value="$2" unexpected="$3"
@@ -386,7 +386,7 @@ assert_contains "conclusion hold is released in the requeue write" \
   "$(grep -F -- '--add-label ready-for-agent' "$ROOT_WRITE_LOG")" "--remove-label on-hold"
 assert_eq "released conclusion hold clears its record" null "$(jq -c '.hold' "$STATE_DIR/500050.json")"
 INFRA_REQUEUE_EPISODE="$(jq -r '.run.concluded_at' "$STATE_DIR/500050.json")"
-INFRA_REQUEUE_MARKER="<!-- zf-conclusion-requeue issue=500050 episode=$INFRA_REQUEUE_EPISODE -->"
+INFRA_REQUEUE_MARKER="<!-- vecta-conclusion-requeue issue=500050 episode=$INFRA_REQUEUE_EPISODE -->"
 ISSUE_COMMENTS_JSON="$(jq -cn --arg marker "$INFRA_REQUEUE_MARKER" '{comments:[{body:$marker}]}')"
 conclusion_requeue_comment_once 500050
 assert_eq "replayed requeue receipt does not duplicate the infrastructure comment" 1 \

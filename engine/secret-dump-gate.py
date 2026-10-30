@@ -12,8 +12,9 @@ PRIVATE_FILE = re.compile(
     r"(?:^|/)(?:\.(?:bashrc|zshrc|bash_profile|bash_login|profile|zprofile|zshenv)|"
     r"(?:bash|zsh)rc|profile|\.env(?:[.\w-]*)|[\w.-]+\.env(?:[.\w-]*)|"
     r"credentials?(?:[.\w-]*)|env)(?:$|[\s'\"])")
-SERVICE_CONFIG = re.compile(
-    r"(?:^|/)(?:agent-runtime|config|[\w.-]*config|litellm[\w.-]*|docker-compose[\w.-]*)\.(?:json|ya?ml)$", re.I)
+SERVICE_CONFIG = re.compile(  # ZF_SECRET_CONFIG_NAMES default mirrors config.sh
+    r"(?:^|/)(?:" + os.environ.get("ZF_SECRET_CONFIG_NAMES", "agent-runtime") +
+    r"|config|[\w.-]*config|litellm[\w.-]*|docker-compose[\w.-]*)\.(?:json|ya?ml)$", re.I)
 READERS = {"cat", "head", "tail", "sed", "awk", "grep", "rg", "less", "more", "bat"}
 HINT = ("secret-dump-gate: refused secret-bearing diagnostic output. "
         "Read one non-secret field directly, or report only presence/length/fingerprint. "

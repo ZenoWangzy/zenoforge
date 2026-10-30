@@ -1,0 +1,1 @@
+engine/mac-autopilot/node_health.test.sh	red upstream at vecta 0e99cec6a791: node_health.py gained the metric advisor.last_answer_age_hours (6880e6e16) without its mac-autopilot/NODE-HEALTH.md row, so the metric-standards alignment check fails in vecta too; remove this line once vecta adds the row

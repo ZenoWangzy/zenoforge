@@ -40,6 +40,106 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 source "$SCRIPT_DIR/hand-completion-refill.sh"
+PIPELINE_CLAIM_KEY=""
+PIPELINE_CLAIM_OWNER=""
+PIPELINE_CLAIM_UNIT=""
+PIPELINE_CLAIM_STAGE=""
+pipeline_claim_clear() {
+  PIPELINE_CLAIM_KEY=""
+  PIPELINE_CLAIM_OWNER=""
+  PIPELINE_CLAIM_UNIT=""
+  PIPELINE_CLAIM_STAGE=""
+}
+pipeline_live_worker_check() {
+  local runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-$REPO_DIR/.scratch-supervisor/autopi}"
+  coord_issue_live_worker "$1" "$runtime_dir"
+}
+pipeline_claim_begin() { # issue stage systemd-unit -> 0 acquired / 1 held / 3 unknown
+  local issue="$1" stage="$2" unit="$3" key owner status
+  if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+    if pipeline_live_worker_check "$issue"; then return 1; else status=$?; (( status == 1 )) || return 3; fi
+  fi
+  if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+    key="$(coord_issue_key "$issue")" || return 2
+  else
+    key="$(coord_unit_key "$unit")" || return 2
+  fi
+  owner="$(coord_new_owner)"
+  if coord_acquire "$key" "$owner" systemd-worker "$issue" "$unit" "$stage"; then
+    PIPELINE_CLAIM_KEY="$key"
+    PIPELINE_CLAIM_OWNER="$owner"
+    PIPELINE_CLAIM_UNIT="$unit"
+    PIPELINE_CLAIM_STAGE="$stage"
+  else
+    status=$?
+    return "$status"
+  fi
+  if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+    if pipeline_live_worker_check "$issue"; then pipeline_claim_drop; return 1; else status=$?; (( status == 1 )) || { pipeline_claim_drop; return 3; }; fi
+  fi
+}
+pipeline_claim_drop() {
+  if [[ -n "$PIPELINE_CLAIM_KEY" && -n "$PIPELINE_CLAIM_OWNER" ]]; then
+    coord_release "$PIPELINE_CLAIM_KEY" "$PIPELINE_CLAIM_OWNER" >/dev/null 2>&1 || :
+  fi
+  pipeline_claim_clear
+}
+pipeline_claim_keep() { # launched unit owns the lease until a later tick sees it inactive
+  local unit="$PIPELINE_CLAIM_UNIT"
+  if ! coord_renew "$PIPELINE_CLAIM_KEY" "$PIPELINE_CLAIM_OWNER"; then
+    echo "issue-pipeline: claim renewal failed after dispatch; stopping $unit" >&2
+    systemctl --user stop "$unit" >/dev/null 2>&1 || :
+    pipeline_claim_clear
+    return 1
+  fi
+  echo "issue-pipeline: dispatch claim=owned unit=$unit" >&2
+  pipeline_claim_clear
+}
+pipeline_batch_claim_acquire() { # owner stage unit issue...; atomically reserve every member before launch
+  local owner="$1" stage="$2" unit="$3" issue key status
+  shift 3
+  for issue in "$@"; do
+    if pipeline_live_worker_check "$issue"; then return 1; else status=$?; (( status == 1 )) || return 3; fi
+  done
+  if coord_acquire_many "$owner" systemd-worker "$unit" "$stage" "$@"; then
+    for issue in "$@"; do
+      key="$(coord_issue_key "$issue")" || { coord_release_many "$owner" "$@" >/dev/null 2>&1 || :; return 2; }
+      if ! coord_assert_owned "$key" "$owner" >/dev/null; then
+        coord_release_many "$owner" "$@" >/dev/null 2>&1 || :
+        return 3
+      fi
+      if pipeline_live_worker_check "$issue"; then
+        coord_release_many "$owner" "$@" >/dev/null 2>&1 || :
+        return 1
+      else
+        status=$?
+        if (( status != 1 )); then coord_release_many "$owner" "$@" >/dev/null 2>&1 || :; return 3; fi
+      fi
+    done
+    return 0
+  else
+    status=$?
+    return "$status"
+  fi
+}
+pipeline_batch_claim_drop() {
+  local owner="$1"; shift
+  coord_release_many "$owner" "$@" >/dev/null 2>&1 || :
+}
+pipeline_batch_claim_keep() { # renew every member after the batch transient unit starts
+  local owner="$1" unit="$2" issue key; shift 2
+  for issue in "$@"; do
+    key="$(coord_issue_key "$issue")" || return 2
+    if ! coord_renew "$key" "$owner"; then
+      echo "issue-pipeline: batch claim renewal failed; stopping $unit" >&2
+      systemctl --user stop "$unit" >/dev/null 2>&1 || :
+      pipeline_batch_claim_drop "$owner" "$@"
+      return 1
+    fi
+  done
+  echo "issue-pipeline: batch claim=owned unit=$unit issues=${*}" >&2
+  return 0
+}
 PIPELINE_STAGE=""
 EVENT_REFILL=0
 EVENT_REFILL_STATUS=0
@@ -65,8 +165,10 @@ if ! codex_dispatch_preflight issue-pipeline; then
   [ "${EVENT_REFILL:-0}" = 0 ] || exit 1
   exit 0
 fi
+coord_reap_expired || echo "issue-pipeline: claim expiry sweep incomplete; dispatch remains fail-closed" >&2
+coord_reconcile_systemd_workers || echo "issue-pipeline: worker claim reconciliation incomplete; dispatch remains fail-closed" >&2
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
-INFRA='example-org/example-infra'
+INFRA="$ZF_INFRA_REPO"
 PIPELINE_ROADMAP_TICK_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 ZF_OPEN_ISSUES_CACHE_FILE="${ZF_OPEN_ISSUES_CACHE_FILE:-$NIGHT/.open-issues-pipeline-$PIPELINE_ROADMAP_TICK_ID.json}"
 ZF_ROADMAP_TREE_CACHE_FILE="${ZF_ROADMAP_TREE_CACHE_FILE:-$(roadmap_cache_path "$ZF_OPEN_ISSUES_CACHE_FILE")}"
@@ -235,7 +337,7 @@ consume_unit_memory_oom() {
 
   prior_ooms="$(jq -r --arg stage "$stage" '.unit_memory_ooms[$stage] // 0' <<< "$state")" || return 2
   unit_name="$(jq -r --arg stage "$stage" '.unit_results[$stage].unit // empty' <<< "$state")" || return 2
-  unit_name="${unit_name:-zf-$stage-$n.service}"
+  unit_name="${unit_name:-${UNIT_PREFIX_TRANSIENT}-$stage-$n.service}"
   current_cap="${AGENT_UNIT_MEMORY_MAX:-4G}"
   [ "$prior_ooms" -le 0 ] || current_cap="${AGENT_UNIT_MEMORY_RETRY_MAX:-6G}"
   retry_cap="${AGENT_UNIT_MEMORY_RETRY_MAX:-6G}"
@@ -381,22 +483,31 @@ ensure_issue_roadmap_parent_for_dispatch() {
   local n="$1" stage="$2" issue_json="${3:-}"
   [[ "${ROADMAP_ORDER_ENABLED:-false}" == true ]] || return 0
   roadmap_stage_requires_parent "$stage" || return 0
+  # Negative cache: a placement that failed is not retried for 30 min (a missing
+  # 待归类 epic fails identically every tick; SRE book "Addressing Cascading
+  # Failures": do not retry deterministic failures every cycle). Success clears it.
+  local mark="${AGENT_HOME:-/nonexistent}/night/roadmap-placement-failed-$n"
+  if [ -n "$(find "$mark" -mmin -30 2>/dev/null)" ]; then return 1; fi
   if ! roadmap_ensure_issue_parent "$n" "$stage" "$issue_json"; then
     echo "issue-pipeline: roadmap parent placement failed for #$n before $stage dispatch" >&2
+    mkdir -p -- "${mark%/*}" 2>/dev/null && : > "$mark" 2>/dev/null
     return 1
   fi
+  rm -f -- "$mark" 2>/dev/null
+  return 0
 }
 
 dispatch() {
-  local stage="$1" n="$2" runtime_max script memory_max oom_count consume_status
+  local stage="$1" n="$2" runtime_max script memory_max oom_count consume_status claim_status claim_unit claim_key
   shift 2
   # Belt and braces with legs_executable_check() (lib.sh) at the top of the
   # tick: never hand systemd a script it cannot spawn -- that ends as a
   # 203/EXEC unit failure indistinguishable from a leg that ran and refused.
-  script="$REPO_DIR/engine/run-$stage.sh"
+  script="$ZF_ENGINE_DIR/run-$stage.sh"
   if [ ! -x "$script" ]; then
     echo "issue-pipeline: leg $stage cannot execute ($script is not executable) -- not dispatching #$n; recorded as an environment fault, not a verdict" >&2
     record_env_fault "env:leg-not-executable:$stage" "$stage" "$n" "$script is not executable (git mode bit)"
+    pipeline_claim_drop
     return 0
   fi
   case "$stage" in
@@ -417,7 +528,7 @@ dispatch() {
         :
       else
         consume_status=$?
-        [ "$consume_status" -eq 1 ] || return "$consume_status"
+        [ "$consume_status" -eq 1 ] || { pipeline_claim_drop; return "$consume_status"; }
       fi
       oom_count="$(state_read "$n" | jq -r --arg stage "$stage" '.unit_memory_ooms[$stage] // 0')"
       memory_max="${AGENT_UNIT_MEMORY_MAX:-4G}"
@@ -448,16 +559,44 @@ dispatch() {
   # No EnvironmentFile for the agent env file: every line in it is shell `export X=...`, which systemd rejects
   # and logs value-included into the user journal (25k lines on 2026-10-22, a GitHub token among them) while
   # loading nothing. Stages read credentials through with-credentials.sh, which sources the file as shell.
-  if ! guarded_write systemd-run --user --unit "zf-$stage-$n" --collect \
+  if [[ "$stage" != release ]]; then
+    claim_unit="${UNIT_PREFIX_TRANSIENT}-$stage-$n"
+    claim_key="$(if [[ "$n" =~ ^[1-9][0-9]*$ ]]; then coord_issue_key "$n"; else coord_unit_key "$claim_unit"; fi)" || return 1
+    if [[ "$PIPELINE_CLAIM_KEY" == "$claim_key" && "$PIPELINE_CLAIM_UNIT" == "$claim_unit" \
+        && "$PIPELINE_CLAIM_STAGE" == "$stage" && -n "$PIPELINE_CLAIM_OWNER" ]]; then
+      : # dispatch_policy_unit acquired before recording the attempt
+    else
+      if [[ -n "$PIPELINE_CLAIM_KEY" ]]; then
+        echo "issue-pipeline: stale in-process claim before $stage dispatch; refusing #$n" >&2
+        pipeline_claim_drop
+        return 1
+      fi
+      if pipeline_claim_begin "$n" "$stage" "$claim_unit"; then
+        :
+      else
+        claim_status=$?
+        echo "issue-pipeline: $stage #$n claim unavailable status=$claim_status; leaving it queued" >&2
+        return 0
+      fi
+    fi
+    if ! coord_assert_owned "$PIPELINE_CLAIM_KEY" "$PIPELINE_CLAIM_OWNER" >/dev/null; then
+      echo "issue-pipeline: $stage #$n claim lost before launch; leaving it queued" >&2
+      pipeline_claim_drop
+      return 0
+    fi
+  fi
+  if ! guarded_write systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-$stage-$n" --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE \
     -p "RuntimeMaxSec=$runtime_max" \
     "${memory_args[@]}" "${result_args[@]}" \
     "$@" \
-    "$REPO_DIR/engine/run-$stage.sh" "$n"; then
-    echo "issue-pipeline: systemd-run dispatch failed for zf-$stage-$n -- no unit was created; refusing to count #$n as dispatched" >&2
-    record_env_fault "env:systemd-run-dispatch-failed:$stage" "$stage" "$n" "systemd-run --user --unit zf-$stage-$n failed; see stderr above"
+    "$ZF_ENGINE_DIR/run-$stage.sh" "$n"; then
+    echo "issue-pipeline: systemd-run dispatch failed for ${UNIT_PREFIX_TRANSIENT}-$stage-$n -- no unit was created; refusing to count #$n as dispatched" >&2
+    record_env_fault "env:systemd-run-dispatch-failed:$stage" "$stage" "$n" "systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-$stage-$n failed; see stderr above"
+    pipeline_claim_drop
     return 1
   fi
+  [[ "$stage" == release ]] || pipeline_claim_keep || return 1
   # Standing rule: a ticket's second implement dispatch wakes the
   # supervisor, and so does every later one. #1799 ran implement 84 times in
   # three days (recut reset its attempts) before anyone looked.
@@ -476,7 +615,7 @@ dispatch() {
 }
 
 dispatch_release_batch() {
-  local anchor="$1" batch_sha="$2" script="$REPO_DIR/engine/run-release.sh"
+  local anchor="$1" batch_sha="$2" script="$ZF_ENGINE_DIR/run-release.sh"
   local -a runtime_env=()
   [ -z "${MAC_AUTOPILOT_RUNTIME_DIR:-}" ] || runtime_env=(-E "MAC_AUTOPILOT_RUNTIME_DIR=$MAC_AUTOPILOT_RUNTIME_DIR")
   if [ ! -x "$script" ]; then
@@ -484,7 +623,7 @@ dispatch_release_batch() {
     record_env_fault "env:leg-not-executable:release-batch" release "$anchor" "$script is not executable (git mode bit)"
     return 0
   fi
-  if guarded_write systemd-run --user --unit zf-release-batch --collect \
+  if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-batch --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY \
     -p "RuntimeMaxSec=$RELEASE_RUNTIME_MAX_SEC" \
     "${runtime_env[@]}" \
@@ -497,8 +636,8 @@ dispatch_release_batch() {
       echo "issue-pipeline: release batch admission deferred; leaving #$anchor pending" >&2
       return 75
     fi
-    echo "issue-pipeline: systemd-run dispatch failed for zf-release-batch -- no unit was created; refusing batch anchored at #$anchor" >&2
-    record_env_fault "env:systemd-run-dispatch-failed:release-batch" release "$anchor" "systemd-run --user --unit zf-release-batch failed; see stderr above"
+    echo "issue-pipeline: systemd-run dispatch failed for ${UNIT_PREFIX_TRANSIENT}-release-batch -- no unit was created; refusing batch anchored at #$anchor" >&2
+    record_env_fault "env:systemd-run-dispatch-failed:release-batch" release "$anchor" "systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-batch failed; see stderr above"
     return 1
   fi
 }
@@ -507,7 +646,7 @@ dispatch_release_batch() {
 # batch keeps its persisted member list. Unit name still shares the advisor
 # capacity ledger.
 dispatch_advisor_batch() {
-  local script="$REPO_DIR/engine/run-advisor-batch.sh" poll_only="${1:-0}" n budget_result budget_state budget_calls budget_tokens
+  local script="$ZF_ENGINE_DIR/run-advisor-batch.sh" poll_only="${1:-0}" n budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status
   local -a issue_ids=()
   if [ "$poll_only" != "1" ]; then
     for n in $NEEDS_ADVISOR_IDS; do
@@ -534,19 +673,36 @@ dispatch_advisor_batch() {
     record_env_fault "env:leg-not-executable:advisor-batch" advisor-batch batch "$script is not executable (git mode bit)"
     return 0
   fi
-  if guarded_write systemd-run --user --unit zf-advisor-batch --collect \
+  if [ "${#issue_ids[@]}" -gt 0 ]; then
+    claim_unit="${UNIT_PREFIX_TRANSIENT}-advisor-batch"
+    claim_owner="$(coord_new_owner)"
+    if pipeline_batch_claim_acquire "$claim_owner" advisor-batch "$claim_unit" "${issue_ids[@]}"; then
+      :
+    else
+      claim_status=$?
+      echo "issue-pipeline: advisor batch claim unavailable status=$claim_status; leaving issues queued" >&2
+      return 75
+    fi
+  fi
+  if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE \
     -p "RuntimeMaxSec=$ADVISOR_RUNTIME_MAX_SEC" \
     "$script" --scheduled "${issue_ids[@]}"; then
+    if [ "${#issue_ids[@]}" -gt 0 ]; then
+      pipeline_batch_claim_keep "$claim_owner" "$claim_unit" "${issue_ids[@]}" || return $?
+    fi
     return 0
   else
     local launch_status=$?
+    if [ "${#issue_ids[@]}" -gt 0 ]; then
+      pipeline_batch_claim_drop "$claim_owner" "${issue_ids[@]}"
+    fi
     if [ "$launch_status" -eq 75 ]; then
       echo "issue-pipeline: advisor batch admission deferred; selected jobs remain pending" >&2
       return 0
     fi
-    echo "issue-pipeline: systemd-run dispatch failed for zf-advisor-batch" >&2
-    record_env_fault "env:systemd-run-dispatch-failed:advisor-batch" advisor-batch batch "systemd-run --user --unit zf-advisor-batch failed; see stderr above"
+    echo "issue-pipeline: systemd-run dispatch failed for ${UNIT_PREFIX_TRANSIENT}-advisor-batch" >&2
+    record_env_fault "env:systemd-run-dispatch-failed:advisor-batch" advisor-batch batch "systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch failed; see stderr above"
     return 1
   fi
 }
@@ -554,7 +710,7 @@ dispatch_advisor_batch() {
 # One transient unit carries the selected issue IDs; the batch wrapper owns
 # one Codex call and isolates result application per issue.
 dispatch_triage_batch() {
-  local script="$REPO_DIR/engine/run-triage-batch.sh" active_tmp="" issues_json="" n memory_max oom_count consume_status budget_result budget_state budget_calls budget_tokens
+  local script="$ZF_ENGINE_DIR/run-triage-batch.sh" active_tmp="" issues_json="" n memory_max oom_count consume_status budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status
   local -a issue_ids=() memory_args=() result_args=()
   for n in "$@"; do
     [[ "$n" =~ ^[0-9]+$ ]] || continue
@@ -577,13 +733,22 @@ dispatch_triage_batch() {
     record_env_fault "env:leg-not-executable:triage-batch" triage-batch batch "$script is not executable (git mode bit)"
     return 0
   fi
+  claim_unit="${UNIT_PREFIX_TRANSIENT}-triage-batch"
+  claim_owner="$(coord_new_owner)"
+  if pipeline_batch_claim_acquire "$claim_owner" triage-batch "$claim_unit" "${issue_ids[@]}"; then
+    :
+  else
+    claim_status=$?
+    echo "issue-pipeline: triage batch claim unavailable status=$claim_status; leaving issues queued" >&2
+    return 75
+  fi
   memory_max="${AGENT_UNIT_MEMORY_MAX:-4G}"
   for n in "${issue_ids[@]}"; do
     if consume_unit_memory_oom "$n" triage; then
       :
     else
       consume_status=$?
-      [ "$consume_status" -eq 1 ] || return "$consume_status"
+      [ "$consume_status" -eq 1 ] || { pipeline_batch_claim_drop "$claim_owner" "${issue_ids[@]}"; return "$consume_status"; }
     fi
     oom_count="$(state_read "$n" | jq -r '.unit_memory_ooms.triage // 0')"
     [ "$oom_count" -le 0 ] || memory_max="${AGENT_UNIT_MEMORY_RETRY_MAX:-6G}"
@@ -594,24 +759,29 @@ dispatch_triage_batch() {
     mkdir -p "$AGENT_HOME"
     active_tmp="$AGENT_HOME/triage-batch-active-dispatch-$$.json"
     issues_json="$(printf '%s\n' "${issue_ids[@]}" | jq -Rsc 'split("\n") | map(select(test("^[0-9]+$")) | tonumber)')"
-    jq -n --argjson issues "$issues_json" '{issues:$issues}' > "$active_tmp"
-    mv "$active_tmp" "$AGENT_HOME/triage-batch-active.json"
+    if ! jq -n --argjson issues "$issues_json" '{issues:$issues}' > "$active_tmp" \
+        || ! mv "$active_tmp" "$AGENT_HOME/triage-batch-active.json"; then
+      rm -f -- "$active_tmp"
+      pipeline_batch_claim_drop "$claim_owner" "${issue_ids[@]}"
+      return 1
+    fi
   fi
-  if guarded_write systemd-run --user --unit zf-triage-batch --collect \
+  if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-triage-batch --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE \
     -p "RuntimeMaxSec=$TRIAGE_RUNTIME_MAX_SEC" \
     "${memory_args[@]}" "${result_args[@]}" \
     "$script" --scheduled "${issue_ids[@]}"; then
-    return 0
+    pipeline_batch_claim_keep "$claim_owner" "$claim_unit" "${issue_ids[@]}"
   else
     local launch_status=$?
     [ -z "$active_tmp" ] || rm -f "$AGENT_HOME/triage-batch-active.json"
+    pipeline_batch_claim_drop "$claim_owner" "${issue_ids[@]}"
     if [ "$launch_status" -eq 75 ]; then
       echo "issue-pipeline: triage batch admission deferred; selected jobs remain pending" >&2
       return 75
     fi
-    echo "issue-pipeline: systemd-run dispatch failed for zf-triage-batch" >&2
-    record_env_fault "env:systemd-run-dispatch-failed:triage-batch" triage-batch batch "systemd-run --user --unit zf-triage-batch failed; see stderr above"
+    echo "issue-pipeline: systemd-run dispatch failed for ${UNIT_PREFIX_TRANSIENT}-triage-batch" >&2
+    record_env_fault "env:systemd-run-dispatch-failed:triage-batch" triage-batch batch "systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-triage-batch failed; see stderr above"
     return 1
   fi
 }
@@ -715,8 +885,20 @@ dispatch_policy_unit() {
   if ! ensure_issue_roadmap_parent_for_dispatch "$n" "$queue_label"; then return 79; fi
   active_patch="$(jq -n --arg u "$unit" --arg q "$queue_label" --arg s "$step" --arg r "$role" --arg i "$identity" --arg boot "$(cat /proc/sys/kernel/random/boot_id)" \
     '{unit:$u,step:$s,role:$r,active:{unit:$u,queue_label:$q,step:$s,role:$r,identity:$i,boot_id:$boot,model_started:false,dispatched_at:(now|todate)}}')"
-  state_merge "$n" ".model_policy = (.model_policy // {}) + $active_patch" || return 1
-  [ "$bump" = 0 ] || state_bump_attempts "$n"
+  if pipeline_claim_begin "$n" "$unit" "${UNIT_PREFIX_TRANSIENT}-$unit-$n"; then
+    :
+  else
+    dispatch_status=$?
+    echo "issue-pipeline: #$n $unit claim unavailable status=$dispatch_status; no attempt charged" >&2
+    return 78
+  fi
+  if ! coord_assert_owned "$PIPELINE_CLAIM_KEY" "$PIPELINE_CLAIM_OWNER" >/dev/null; then
+    pipeline_claim_drop
+    echo "issue-pipeline: #$n $unit claim unknown before attempt accounting; no attempt charged" >&2
+    return 78
+  fi
+  state_merge "$n" ".model_policy = (.model_policy // {}) + $active_patch" || { pipeline_claim_drop; return 1; }
+  if [ "$bump" != 0 ]; then state_bump_attempts "$n" || { pipeline_claim_drop; return 1; }; fi
   echo "issue-pipeline: #$n dispatching $unit with model policy step=$step role=$role" >&2
   if dispatch "$unit" "$n" "$@"; then return 0; else dispatch_status=$?; state_merge "$n" 'del(.model_policy.active)' || true; return "$dispatch_status"; fi
 }
@@ -727,15 +909,15 @@ dispatch_policy_unit() {
 # gitnexus_refresh_index_once owns the lock, throttle and memory floor.
 dispatch_gitnexus_refresh() {
   gitnexus_index_matches_origin_main "$REPO_DIR" && return 0
-  systemctl --user is-active --quiet zf-gitnexus-refresh && return 0
-  if ! guarded_write systemd-run --user --unit zf-gitnexus-refresh --collect \
+  systemctl --user is-active --quiet ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh && return 0
+  if ! guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY \
     -p RuntimeMaxSec=2700 \
-    bash -c 'source "$1/engine/lib.sh" || exit 1
+    bash -c 'source "$2/lib.sh" || exit 1
       gitnexus_refresh_index_once "$1" "$(git -C "$1" rev-parse origin/main)" gitnexus_index_matches_origin_main
-      rc=$?; printf "%s\n" "$GITNEXUS_REFRESH_OUTPUT" | tail -20; exit "$rc"' _ "$REPO_DIR"; then
-    echo "issue-pipeline: systemd-run dispatch failed for zf-gitnexus-refresh -- no unit was created" >&2
-    record_env_fault "env:systemd-run-dispatch-failed:gitnexus-refresh" "gitnexus-refresh" "refresh" "systemd-run --user --unit zf-gitnexus-refresh failed; see stderr above"
+      rc=$?; printf "%s\n" "$GITNEXUS_REFRESH_OUTPUT" | tail -20; exit "$rc"' _ "$REPO_DIR" "$ZF_ENGINE_DIR"; then
+    echo "issue-pipeline: systemd-run dispatch failed for ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh -- no unit was created" >&2
+    record_env_fault "env:systemd-run-dispatch-failed:gitnexus-refresh" "gitnexus-refresh" "refresh" "systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh failed; see stderr above"
     return 1
   fi
 }
@@ -895,7 +1077,7 @@ run_post_dispatch_maintenance() {
   # its order across ticks and no tail sweep is skipped every tick.
   local stop_at=$(( ${TICK_UNIT_TIMEOUT_SECONDS:-1200} - ${MAINTENANCE_STEP_RESERVE_SECONDS:-240} ))
   local resume_file="$AGENT_HOME/night/maintenance-resume" resume="" step i start=0
-  local -a steps=(checks-blocked-sweep hold-sweep supervisor-hold-sweep hand-completion-events maintainer-outcome-recovery needs-info-email
+  local -a steps=(checks-blocked-sweep hold-sweep supervisor-hold-sweep hand-completion-events founder-outcome-recovery needs-info-email
     needs-info-recovery needs-info-blocker-roots needs-info-unlabeled needs-info-loop main-red-bisect batch-state)
   IFS= read -r resume 2>/dev/null < "$resume_file" || resume=""
   for i in "${!steps[@]}"; do
@@ -930,9 +1112,9 @@ run_post_dispatch_maintenance() {
           echo "issue-pipeline: hand completion recovery deferred until next tick" >&2
         fi
         ;;
-      maintainer-outcome-recovery)
+      founder-outcome-recovery)
         if reconcile_maintainer_outcomes; then
-          flush_maintainer_outcome_digest || true
+          flush_founder_outcome_digest || true
         else
           echo "issue-pipeline: maintainer outcome recovery failed; digest send deferred" >&2
         fi
@@ -1265,9 +1447,9 @@ pipeline_system_hand_external_pr_conclusion() {
   local -a pr_refs=()
   mapfile -t pr_refs < <(
     {
-      grep -Eio 'https?://github\.com/example-org/example-infra/pull/[1-9][0-9]*' "$report" 2>/dev/null \
+      grep -Eio "https?://github\.com/$INFRA/pull/[1-9][0-9]*" "$report" 2>/dev/null \
         | grep -Eo '[0-9]+$' || true
-      grep -Eio 'example-org/example-infra[[:space:]]+PR[[:space:]]*#?[1-9][0-9]*' "$report" 2>/dev/null \
+      grep -Eio "$INFRA[[:space:]]+PR[[:space:]]*#?[1-9][0-9]*" "$report" 2>/dev/null \
         | grep -Eo '[0-9]+$' || true
     } | sort -un
   )
@@ -1456,7 +1638,7 @@ pipeline_system_hand_report_conclusion() {
 }
 
 route_pipeline_fastlane_issue() {
-  local n="$1" issue_json="$2" reason="$3" owner_status=0 report_status=0 issue_context
+  local n="$1" issue_json="$2" reason="$3" owner_status=0 report_status=0 issue_context open_prs claim_key claim_owner claim_status active_stage runtime_dir live_status
   pipeline_system_hand_report_conclusion "$n" "$issue_json" || report_status=$?
   case "$report_status" in
     0) return 0 ;;
@@ -1491,13 +1673,85 @@ route_pipeline_fastlane_issue() {
       return 1
     fi
   fi
+  # The feeder and scheduler share this ticket claim. Check GitHub and the
+  # local runner immediately before acquiring it; the claim closes the race
+  # between this snapshot and another local dispatcher.
+  if ! open_prs="$(gh pr list --repo "$REPO" --state open --search "Refs #$n" --limit 1 --json number 2>/dev/null)" \
+      || ! jq -e 'type == "array"' <<<"$open_prs" >/dev/null 2>&1; then
+    echo "issue-pipeline: fastlane #$n open-PR census unavailable; skipped" >&2
+    return 1
+  fi
+  if jq -e 'length > 0' <<<"$open_prs" >/dev/null 2>&1; then
+    echo "issue-pipeline: fastlane #$n already has an open PR; skipped" >&2
+    return 0
+  fi
+  for active_stage in triage implement advisor recut; do
+    if stage_unit_active "$active_stage" "$n"; then
+      echo "issue-pipeline: fastlane #$n already has active $active_stage work; skipped" >&2
+      return 0
+    fi
+  done
+  runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-$REPO_DIR/.scratch-supervisor/autopi}"
+  if coord_issue_live_worker "$n" "$runtime_dir"; then
+    echo "issue-pipeline: fastlane #$n already has a live scheduler worker; skipped" >&2
+    return 0
+  else
+    live_status=$?
+    if (( live_status != 1 )); then
+      echo "issue-pipeline: fastlane #$n live-worker census unknown; skipped" >&2
+      return 1
+    fi
+  fi
+  claim_key="$(coord_issue_key "$n")" || return 1
+  claim_owner="$(coord_new_owner)"
+  if coord_acquire "$claim_key" "$claim_owner" feeder "$n" "fastlane-$n" fastlane; then
+    :
+  else
+    claim_status=$?
+    echo "issue-pipeline: fastlane #$n atomic claim unavailable status=$claim_status; skipped" >&2
+    return 1
+  fi
+  if coord_issue_live_worker "$n" "$runtime_dir"; then
+    coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :
+    echo "issue-pipeline: fastlane #$n worker became live during claim; skipped" >&2
+    return 1
+  else
+    live_status=$?
+    if (( live_status != 1 )); then
+      coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :
+      echo "issue-pipeline: fastlane #$n live-worker census unknown after claim; skipped" >&2
+      return 1
+    fi
+  fi
+  if ! coord_assert_owned "$claim_key" "$claim_owner" >/dev/null; then
+    coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :
+    echo "issue-pipeline: fastlane #$n claim unknown before requeue; skipped" >&2
+    return 1
+  fi
+  echo "issue-pipeline: claim=owned issue=#$n lane=fastlane" >&2
   # Path-only non-product tickets need the scheduler's lane label as well as
   # the ready state; the scheduler owns their dispatch and landing.
-  issue_context="$(jq -r '(.title // "") + "\n" + (.body // "") + "\n" + ([.comments[]?.body // ""] | join("\n"))' <<< "$issue_json")" || return 1
+  issue_context="$(jq -r '(.title // "") + "\n" + (.body // "") + "\n" + ([.comments[]?.body // ""] | join("\n"))' <<< "$issue_json")" \
+    || { coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :; return 1; }
   if ! issue_body_mentions_product_scope "$issue_context"; then
-    guarded_write gh issue edit "$n" --repo "$REPO" --add-label pipeline-system || return 1
+    if ! guarded_write gh issue edit "$n" --repo "$REPO" --add-label pipeline-system; then
+      coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :
+      return 1
+    fi
   fi
-  scheduler_requeue_issue "$n" "$reason" "$issue_json"
+  if ! coord_assert_owned "$claim_key" "$claim_owner" >/dev/null; then
+    coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :
+    echo "issue-pipeline: fastlane #$n claim lost before requeue; skipped" >&2
+    return 1
+  fi
+  if ! scheduler_requeue_issue "$n" "$reason" "$issue_json"; then
+    coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :
+    return 1
+  fi
+  if ! coord_release "$claim_key" "$claim_owner" >/dev/null; then
+    echo "issue-pipeline: fastlane #$n requeued but claim release failed; lease will expire" >&2
+    return 1
+  fi
 }
 
 fastlane_snapshot_candidates() {
@@ -2309,7 +2563,7 @@ select_release_batch() {
       continue
     fi
     if stage_unit_active release batch || stage_unit_active release "$n"; then
-      record_release_decision "$n" skipped active-unit zf-release-batch already-running
+      record_release_decision "$n" skipped active-unit ${UNIT_PREFIX_TRANSIENT}-release-batch already-running
       continue
     fi
     if [ -n "$release_dispatch_block_gate" ]; then
@@ -2351,7 +2605,7 @@ select_release_batch() {
   [ -n "$release_batch_anchor" ] || release_batch_anchor="${release_batch_issues[0]}"
   if [ "$release_batch_anchor_fleet" -ne 1 ] && ! release_batch_cadence_open; then
     for n in "${release_batch_issues[@]}"; do
-      record_release_decision "$n" skipped release-cadence zf-release-batch "window-not-elapsed"
+      record_release_decision "$n" skipped release-cadence ${UNIT_PREFIX_TRANSIENT}-release-batch "window-not-elapsed"
     done
     return 0
   fi
@@ -2359,7 +2613,7 @@ select_release_batch() {
   dispatch_release_batch "$release_batch_anchor" "$release_candidate_sha" || release_dispatch_status=$?
   if [ "$release_dispatch_status" -eq 75 ]; then
     for n in "${release_batch_issues[@]}"; do
-      record_release_decision "$n" skipped execution-admission zf-release-batch temporarily-unavailable
+      record_release_decision "$n" skipped execution-admission ${UNIT_PREFIX_TRANSIENT}-release-batch temporarily-unavailable
     done
     return 0
   fi
@@ -2367,12 +2621,12 @@ select_release_batch() {
   for n in "${release_batch_issues[@]}"; do
     if [ "$n" = "$release_batch_anchor" ]; then
       if [ "$release_batch_anchor_fleet" -eq 1 ]; then
-        record_release_decision "$n" dispatched fleet-roll zf-release-batch retry-persisted-rollout
+        record_release_decision "$n" dispatched fleet-roll ${UNIT_PREFIX_TRANSIENT}-release-batch retry-persisted-rollout
       else
-        record_release_decision "$n" dispatched release-batch zf-release-batch "sha=$release_candidate_sha"
+        record_release_decision "$n" dispatched release-batch ${UNIT_PREFIX_TRANSIENT}-release-batch "sha=$release_candidate_sha"
       fi
     else
-      record_release_decision "$n" batched release-batch zf-release-batch "shared-sha=$release_candidate_sha anchor=#$release_batch_anchor"
+      record_release_decision "$n" batched release-batch ${UNIT_PREFIX_TRANSIENT}-release-batch "shared-sha=$release_candidate_sha anchor=#$release_batch_anchor"
     fi
   done
 }

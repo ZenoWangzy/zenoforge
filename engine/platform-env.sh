@@ -23,7 +23,7 @@ platform_require() {
   exit 78
 }
 
-case "$OSTYPE" in darwin*) ZF_OS=darwin ;; linux*) ZF_OS=linux ;; *) ZF_OS=other ;; esac
+case "${OSTYPE:-}" in darwin*) ZF_OS=darwin ;; linux*) ZF_OS=linux ;; *) ZF_OS=other ;; esac
 ZF_PLATFORM_ACTIVE=1
 if [[ $ZF_OS == linux && ${ZF_RUNNER:-systemd} == systemd ]]; then ZF_PLATFORM_ACTIVE=; return 0; fi   # the origin deployment's path ends here
 ZF_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"

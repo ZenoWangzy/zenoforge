@@ -15,8 +15,14 @@ import sys
 import time
 import uuid
 
+# Maintainer 10-30 CPU band: load above 16 on 12 cores is "too high". opt at 2x the
+# maximum (24) kept WSL at load5 ~20, PSI 37%, 5 GB swap; cap opt at 4/3 of it.
+OPT_LOAD_FACTOR = 4 / 3
 
-WORKER_UNIT = re.compile(r"^zf-(?:implement-|triage-|recut-|advisor-|web-advisor-provider-|release-|node-owner-|hand-|land-direct-main-|merge-|worktree-cleanup-|maintenance-|gitnexus-)")
+
+# Same setting lib.sh resolves.
+UNIT_PREFIX_TRANSIENT = os.environ.get("ZF_UNIT_PREFIX") or "zf"
+WORKER_UNIT = re.compile(rf"^{UNIT_PREFIX_TRANSIENT}-(?:implement-|triage-|recut-|advisor-|web-advisor-provider-|release-|node-owner-|hand-|land-direct-main-|merge-|worktree-cleanup-|maintenance-|gitnexus-)")
 
 
 def append_scheduler_event(home, message):
@@ -229,7 +235,7 @@ def admission_cap(ceiling, memory_floor, max_load, per_worker, load_per_worker, 
     else:
         # opt keeps headroom until twice the configured maximum, where ordinary
         # pipeline is already deferred (#4621 tier order at the gate).
-        headroom = max_load * 2 if priority == "opt" else max_load
+        headroom = max_load * OPT_LOAD_FACTOR if priority == "opt" else max_load
         cpu_more = (max(0, int(headroom - load1) // load_per_worker)
                     if isinstance(load1, (int, float)) and not isinstance(load1, bool) and math.isfinite(load1) else 0)
     return max(0, min(ceiling, held + min(mem_more, cpu_more)))
@@ -369,7 +375,7 @@ def resources(proc, memory, load, cpu=None, target=None, priority=""):
                                   "below-target" if fresh else "load-fallback")
     # hotfix/release keep only the memory floor; opt yields once pipeline is
     # already deferred and load still exceeds twice the configured maximum.
-    load_limit = None if priority_bypass else (load * 2 if priority == "opt" and load is not None else load)
+    load_limit = None if priority_bypass else (load * OPT_LOAD_FACTOR if priority == "opt" and load is not None else load)
     if available < memory or (load_limit is not None and not fresh and (not math.isfinite(current_load) or current_load >= load_limit)):
         raise Deferred(f"resource floor: available_mb={available} load={current_load}", **result)
     if priority not in ("hotfix", "release") and fresh and cpu["cpu_percent"] >= target:
@@ -396,7 +402,7 @@ def occupied(proc):
             info = identity(path.name, proc)
             if WORKER_UNIT.match(Path(info["cgroup"]).name):
                 workers.add(info["cgroup"])
-                if Path(info["cgroup"]).name.startswith("zf-worktree-cleanup-"):
+                if Path(info["cgroup"]).name.startswith(f"{UNIT_PREFIX_TRANSIENT}-worktree-cleanup-"):
                     cleanup_processes.setdefault(info["cgroup"], []).append(info)
                     args = [os.fsdecode(arg) for arg in (path / "cmdline").read_bytes().split(b"\0") if arg]
                     if lifecycle_wait_command(args):

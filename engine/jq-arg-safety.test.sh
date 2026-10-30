@@ -27,7 +27,7 @@
 # What counts as "known-unbounded": a curated name list (the actual bash
 # variable names this codebase's real incidents put through --arg/
 # --argjson: an issue/PR JSON blob, a prior state record, an advisor's
-# reasoning/decision/notes/brief/merge_conditions/maintainer_question, a MIME
+# reasoning/decision/notes/brief/merge_conditions/founder_question, a MIME
 # payload, a gate-log/transcript tail, an env-fault detail, a fail reason)
 # plus a blanket rule for anything named `*_md` -- this codebase's own
 # convention for markdown prose fields (brief_md, decision_md, notes_md,
@@ -71,7 +71,7 @@ files = sys.argv[1:]
 # Exact (case-insensitive) names this codebase's own real call sites put
 # through --arg/--argjson before the 2026-09-16 fix: an issue/PR/prior-state
 # JSON blob, an advisor's reasoning/decision/notes/brief/merge_conditions/
-# maintainer_question/ruling text, a MIME payload, a gate-log/transcript tail,
+# founder_question/ruling text, a MIME payload, a gate-log/transcript tail,
 # an env-fault detail, a fail reason, stored recut/reset reasons, a generic body. Plus: anything named
 # *_md (brief_md, decision_md, notes_md, needs_md, recut_md,
 # review_report_md, ...) -- this codebase's own convention for unbounded
@@ -81,7 +81,7 @@ files = sys.argv[1:]
 BANNED_EXACT = {
     "issue_json", "prior", "prior_state",
     "reasoning", "decision", "notes", "brief", "new_brief", "old_brief",
-    "stored_brief", "merge_conditions", "maintainer_question", "ruling",
+    "stored_brief", "merge_conditions", "founder_question", "ruling",
     "encoded", "detail", "tail", "reason", "recut_reason", "reset_reason", "what", "body", "pr",
     "material", "convergence_material",
     # 2026-10-11: the roadmap tree and open-issue list overflowed the per-argument limit.

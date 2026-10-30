@@ -18,7 +18,7 @@ case "$1 $2" in
        --argjson required "$(jq -c '.required' "$REQ")" '
        def row(name; concl): {name:name,status:"COMPLETED",conclusion:concl,startedAt:"2026-10-30T00:00:00Z",detailsUrl:"https://github.com/example-maintainer/example-repo/actions/runs/100/job/101"};
        {title:"Fix",state:"OPEN",labels:[{name:$label}],headRefOid:$head,
-        body:("<!-- zf-hotfix-acceptance:start -->" + ({schema:"example.hotfix-acceptance/v1",status:"passed",accepted_by:"验收用户",accepted_head_sha:$head,evidence:"验收用户 verified the fix in production"}|tojson) + "<!-- zf-hotfix-acceptance:end -->"),
+        body:("<!-- vecta-hotfix-acceptance:start -->" + ({schema:"example.hotfix-acceptance/v1",status:"passed",accepted_by:"验收用户",accepted_head_sha:$head,evidence:"验收用户 verified the fix in production"}|tojson) + "<!-- vecta-hotfix-acceptance:end -->"),
         statusCheckRollup:(($required|map(row(.;$gate))) + [row("Hotfix acceptance evidence";"SUCCESS")])}'
    fi ;;
  'pr merge') printf '%s\n' "$@" > "$LOG" ;;

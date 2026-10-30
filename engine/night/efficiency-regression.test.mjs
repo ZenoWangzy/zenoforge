@@ -436,7 +436,7 @@ try {
   assert.equal(comparativeSummary.baseline_2026_10_10.metrics.closed_issues, 7);
   console.log('ok - hourly row reads spend, release, merge, stage, repeat-dispatch, and GitHub CI sources');
 
-  const maintainerHome = path.join(root, 'maintainer-mail-efficiency');
+  const maintainerHome = path.join(root, 'founder-mail-efficiency');
   mkdirSync(path.join(maintainerHome, 'night'), { recursive: true });
   mkdirSync(path.join(maintainerHome, 'land-queue', 'logs'), { recursive: true });
   mkdirSync(path.join(maintainerHome, 'land-queue', 'requests'), { recursive: true });

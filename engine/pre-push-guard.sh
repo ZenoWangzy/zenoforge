@@ -70,7 +70,7 @@ invoked_path="$(realpath -m -- "${BASH_SOURCE[0]}")"
 if [[ -n "$common_dir" && "$invoked_path" == "$hook_path" ]]; then
   main_guard_tmp="$(mktemp 2>/dev/null || true)"
   if [[ -z "$main_guard_tmp" ]] \
-    || ! git show origin/main:engine/pre-push-guard.sh > "$main_guard_tmp" 2>/dev/null \
+    || ! git show "origin/main:${ZF_PACK_REL:-engine}/pre-push-guard.sh" > "$main_guard_tmp" 2>/dev/null \
     || ! cmp -s -- "$invoked_path" "$main_guard_tmp"; then
     rm -f -- "$invoked_path"
     [[ -z "$main_guard_tmp" ]] || rm -f -- "$main_guard_tmp"
@@ -184,7 +184,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     if ! [[ "$completed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || [[ -z "$check_link" ]]; then
       allow_api_failure "$local_sha" "$remote_sha" "$branch"
     fi
-    receipt_contract="$(mktemp /tmp/zf-ci-receipt.XXXXXX.mjs 2>/dev/null || true)"
+    receipt_contract="$(mktemp /tmp/vecta-ci-receipt.XXXXXX.mjs 2>/dev/null || true)"
     receipt_matches=1
     if [[ -n "$receipt_contract" ]] \
       && git show origin/main:engine/ci-repair-receipt.mjs > "$receipt_contract" 2>/dev/null; then
@@ -210,8 +210,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     printf 'Push refused: PR #%s latest CI check failed on head %s: %s%s\n' \
       "$pr" "$remote_sha" "$missing_check" "${run_id:+ (run $run_id)}" >&2
     printf 'Read the failed CI step, then run the exact failing unit command locally through:\n' >&2
-    printf 'node "$HOME/.zenoforge/checkout/scripts/branch-delivery-preflight.mjs" --mode push --target main --repair-ci-branch %q --repair-ci-failure-link %q --repair-ci-check %q --repair-ci-failed-head %q --repair-ci-failed-at %q --repair-ci-failing-path %q --repair-ci-command %q\n' \
-      "$branch" "$missing_link" "$missing_check" "$remote_sha" "$missing_completed_at" '<failing test file>' '<exact failing command from CI log>' >&2
+    printf 'node "%s/checkout/scripts/branch-delivery-preflight.mjs" --mode push --target main --repair-ci-branch %q --repair-ci-failure-link %q --repair-ci-check %q --repair-ci-failed-head %q --repair-ci-failed-at %q --repair-ci-failing-path %q --repair-ci-command %q\n' \
+      "$agent_home" "$branch" "$missing_link" "$missing_check" "$remote_sha" "$missing_completed_at" '<failing test file>' '<exact failing command from CI log>' >&2
     printf 'For a complete check, remove --repair-ci-failing-path and add --repair-ci-full-check; use it only after running the entire failed check. A focused unit records focused-passed, never shard passed.\n' >&2
     printf 'If local infrastructure prevents that command, remove --repair-ci-failing-path and replace --repair-ci-command with --repair-ci-only-reason %q. See %s\n' \
       '<specific CI-only limitation>' "https://github.com/$repo/blob/main/engine/night/dispatch.sh" >&2

@@ -3,30 +3,40 @@
 # repo、commit-pinned 版本与过渡期的旧 autopi 副本都可 source；
 # 环境变量显式给出的路径优先（测试与 systemd 单元用）。
 _ap_here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# Only an immutable deployed engine has deploy.env. Ordinary and pinned the product checkouts must keep
+# ZF_ENGINE_DIR unset so the scheduler continues to resolve its helpers from the live checkout.
+if [[ -f "$_ap_here/../deploy.env" ]]; then
+  source "$_ap_here/../config.sh"
+fi
 if [[ -z "${MAC_AUTOPILOT_ROOT:-}" ]]; then
   case "$_ap_here" in
     */.scratch-supervisor/autopi-versions/*/engine/mac-autopilot) MAC_AUTOPILOT_ROOT="${_ap_here%/.scratch-supervisor/autopi-versions/*}" ;;
     */.scratch-supervisor/autopi) MAC_AUTOPILOT_ROOT="${_ap_here%/.scratch-supervisor/autopi}" ;;
     */engine/mac-autopilot) MAC_AUTOPILOT_ROOT="${_ap_here%/engine/mac-autopilot}" ;;
-    *) MAC_AUTOPILOT_ROOT="$_ap_here" ;;
+    *) MAC_AUTOPILOT_ROOT="${ZF_REPO_DIR:-$_ap_here}" ;; # engine outside the target checkout: the target is ZF_REPO_DIR
   esac
 fi
 MAC_AUTOPILOT_SUPERVISOR_DIR="${MAC_AUTOPILOT_SUPERVISOR_DIR:-$MAC_AUTOPILOT_ROOT/.scratch-supervisor}"
 MAC_AUTOPILOT_RUNTIME_DIR="${MAC_AUTOPILOT_RUNTIME_DIR:-$MAC_AUTOPILOT_SUPERVISOR_DIR/autopi}"
 export MAC_AUTOPILOT_ROOT MAC_AUTOPILOT_SUPERVISOR_DIR MAC_AUTOPILOT_RUNTIME_DIR
-# Platform layer (engine/platform-env.sh, engine/proc.sh): on macOS the GNU tools first on PATH, exit 78 when one is missing; nothing on Linux.
+# Linux/systemd keeps its existing PATH; macOS resolves the GNU toolchain before the shared process helpers load.
 source "$_ap_here/../platform-env.sh"; platform_require
 source "$_ap_here/../proc.sh"
+# Same setting lib.sh resolves; the autopilot scripts source this file, not lib.sh.
+UNIT_PREFIX="${ZF_UNIT_PREFIX:-zenoforge}"
+UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
+# 状态根（PAUSE、计量开关）：与 lib.sh/config.sh 同一优先级，部署环境（导出后 ZF_HOME）不改代码即可移走。
+AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:-}/.zenoforge}}"
 export PATH="$PATH:${HOME:-}/.local/bin:${HOME:-}/.npm-global/bin:/usr/local/bin"
-# gh 调用计量窗口：~/.zenoforge/measure/gh.on 存在时，调度器与它派出的单元经计量 shim 调 gh（engine/gh-measure）。
-if [[ -f "${HOME:-}/.zenoforge/measure/gh.on" && -x "$MAC_AUTOPILOT_ROOT/engine/gh-measure/bin/gh" ]]; then
-  export PATH="$MAC_AUTOPILOT_ROOT/engine/gh-measure/bin:$PATH"
+# gh 调用计量窗口：$AGENT_HOME/measure/gh.on 存在时，调度器与它派出的单元经计量 shim 调 gh（engine/gh-measure）。
+if [[ -f "$AGENT_HOME/measure/gh.on" && -x "${ZF_ENGINE_DIR:-$MAC_AUTOPILOT_ROOT/engine}/gh-measure/bin/gh" ]]; then
+  export PATH="${ZF_ENGINE_DIR:-$MAC_AUTOPILOT_ROOT/engine}/gh-measure/bin:$PATH"
 fi
 # WSL 的 /tmp 是 3.9G tmpfs，worker 跑测试的临时目录无人回收会把它写满（2026-10-21 09:10 100%：land 与 #3596 修复
 # 都 ENOSPC，修复 worker 自行改用 /var/tmp 绕过）。/tmp 是 tmpfs 时 TMPDIR 改到同盘短路径（postgres socket 不超
 # 108 字节），cleanup_tick 回收一天未动的条目。
 if [[ "$(uname -s)" == Linux && "$(stat -f -c %T /tmp 2>/dev/null)" == tmpfs && "${TMPDIR:-/tmp}" == /tmp* ]]; then
-  AP_TMPDIR="${AP_TMPDIR:-${HOME:-}/.zf-tmp}"
+  AP_TMPDIR="${AP_TMPDIR:-${HOME:-}/.vecta-tmp}"
   mkdir -p "$AP_TMPDIR" 2>/dev/null && export AP_TMPDIR TMPDIR="$AP_TMPDIR"
 fi
 

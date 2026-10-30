@@ -154,4 +154,9 @@ StandardError=journal
 # the exact state #1232 is about, which if anything makes that issue more
 # relevant, not less.
 TimeoutStartSec=20min
-ExecStart=%h/.zenoforge/checkout/engine/run-tick.sh
+# Line B: pin engine, pack, and engine-live references to the pointer's physical directory for the whole tick.
+# An absent/dangling pointer uses the original checkout; an absent flip env leaves today's environment unchanged.
+# Quoting "scripts" preserves that fallback through the deploy-time structural path transform. ":" prevents systemd
+# from expanding shell variables before bash sees them. The other engine services use the same wrapper.
+EnvironmentFile=-%h/.zenoforge/engine.env
+ExecStart=:/bin/bash -c 'e="$(readlink -e %h/.zenoforge/engine-live 2>/dev/null)"; if [ -n "$e" ]; then export ZF_ENGINE_DIR="$e" ZF_ENGINE_LIVE="$e"; [ -z "${ZF_PACK_DIR-}" ] || export ZF_PACK_DIR="$e"; for v in ZF_RELEASE_TRAIN_SCRIPT AGENT_INCIDENT_GUARDS_FILE ZF_PRODUCTION_TENANT_MARKER_EXCEPTIONS_FILE; do p="${!v-}"; case "$p" in %h/.zenoforge/engine-live/*) export "$v=$e/${p#%h/.zenoforge/engine-live/}";; esac; done; fi; exec "${e:-%h/.zenoforge/checkout/engine}/run-tick.sh"'

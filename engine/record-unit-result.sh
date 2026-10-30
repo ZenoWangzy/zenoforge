@@ -2,6 +2,10 @@
 set -euo pipefail
 
 stage="${1:-}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$SCRIPT_DIR/config.sh" # deploy.env: a clean environment still sees the deployment's unit prefix
+# Same setting lib.sh resolves (lib.sh is sourced further down).
+UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 unit_name=""
 state_stage="$stage"
 issue_ids=()
@@ -9,12 +13,12 @@ case "$stage" in
   implement|triage|recut)
     [ "$#" -eq 2 ] || { echo "record-unit-result: expected one issue number" >&2; exit 64; }
     issue_ids=("$2")
-    unit_name="zf-$stage-$2.service"
+    unit_name="${UNIT_PREFIX_TRANSIENT}-$stage-$2.service"
     ;;
   triage-batch)
     [ "$#" -ge 2 ] || { echo "record-unit-result: expected batch issue numbers" >&2; exit 64; }
     state_stage=triage
-    unit_name=zf-triage-batch.service
+    unit_name="${UNIT_PREFIX_TRANSIENT}-triage-batch.service"
     issue_ids=("${@:2}")
     ;;
   *) echo "record-unit-result: unsupported stage: $stage" >&2; exit 64 ;;
@@ -23,7 +27,6 @@ for n in "${issue_ids[@]}"; do
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "record-unit-result: invalid issue number" >&2; exit 64; }
 done
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
 

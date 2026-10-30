@@ -18,7 +18,30 @@ if [[ -z "$land_snapshot_marker" ]]; then
     exec bash "${self%/*}/land-direct-main-bootstrap.sh" "$self" "${orig_args[@]}"
   fi
 fi
-if [[ "$self" != "${ZF_LAND_CODE_SNAPSHOT:-}/engine/land-direct-main.sh" ]]; then
+# Engine layout (Line B A2): the entry sits in the engine directory ZF_ENGINE_DIR outside the target repository, so
+# there is no <toplevel>/engine entry to compare with a commit. That directory is a published, immutable version:
+# run it in place, no snapshot. An entry at <toplevel>/engine keeps the commit comparison below, even when
+# ZF_ENGINE_DIR names that directory. With ZF_ENGINE_DIR unset (env -i) the entry's own directory stands in for it
+# when it holds config.sh.
+land_engine_dir="${ZF_ENGINE_DIR:-}"
+[[ -n "$land_engine_dir" || ! -f "${self%/*}/config.sh" ]] || land_engine_dir="${self%/*}"
+land_engine_entry=0
+if [[ "$self" != "${ZF_LAND_CODE_SNAPSHOT:-}/engine/land-direct-main.sh" && -n "$land_engine_dir" \
+    && "${self%/*}" == "$(realpath -- "$land_engine_dir" 2>/dev/null || true)" ]]; then
+  land_entry_top="$(git -C "${self%/*}" rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ "$self" == "$land_entry_top/engine/land-direct-main.sh" ]] || land_engine_entry=1
+fi
+if [[ "$land_engine_entry" == 1 ]]; then
+  land_agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+  land_target_repo="$(git rev-parse --show-toplevel)"
+  land_guard_source_root="$land_target_repo"
+  if [[ -e "$land_agent_home/checkout" ]]; then
+    land_guard_source_root="$land_agent_home/checkout"
+  fi
+  printf 'land-direct-main: engine=%s (published engine directory, no snapshot)\n' "${self%/*}" >&2
+  export _AGENT_WRITE_GUARD_SOURCE_ROOT="$land_guard_source_root" ZF_LAND_CODE_SNAPSHOT="${self%/*}" \
+    ZF_REPO_DIR="${ZF_REPO_DIR:-$land_target_repo}" ZF_EXECUTION_MODULE_DIR="${self%/*}" ZF_SYSTEMD_RUN_REAL=""
+elif [[ "$self" != "${ZF_LAND_CODE_SNAPSHOT:-}/engine/land-direct-main.sh" ]]; then
   land_source_root="$(git -C "${self%/*}" rev-parse --show-toplevel)"
   land_entry_head="$(git -C "$land_source_root" rev-parse HEAD)"
   land_source_ref='refs/remotes/origin/main'
@@ -153,7 +176,7 @@ if [[ "$enqueue_only" == 1 ]]; then
   export AGENT_HOME="$agent_home"
   # This fresh process belongs to the live queue, not our code snapshot.
   unset _AGENT_WRITE_GUARD_SOURCE_ROOT
-  exec bash "$agent_home/checkout/engine/land-queue.sh" enqueue "$repo_root" \
+  exec bash "${ZF_ENGINE_LIVE:-$agent_home/checkout/engine}/land-queue.sh" enqueue "$repo_root" \
     "${ZF_AGENT_NAME:-}" "${ZF_AGENT_REPORT:-}"
 fi
 
@@ -239,7 +262,7 @@ land_git_rebase() {
     rm -f -- "$driver" "$attributes"
     return 1
   fi
-  printf '%s\n' 'engine/state/*.json merge=statejson' > "$attributes"
+  printf '%s\n' "$ZF_PACK_REL/state/*.json merge=statejson" > "$attributes"
   printf -v quoted_driver '%q' "$driver"
   if git -c "core.attributesFile=$attributes" \
       -c "merge.statejson.driver=bash $quoted_driver %O %A %B" rebase "$@"; then
@@ -313,7 +336,7 @@ land_git_network() {
   return "$status"
 }
 land_git_transport_retry() {
-  local attempt=1 max_attempts=2 base_delay="${ZF_LAND_TRANSPORT_BACKOFF_BASE_SECONDS:-1}" delay output status
+  local attempt=1 max_attempts=2 base_delay="${ZF_LAND_TRANSPORT_BACKOFF_BASE_SECONDS:-1}" delay output failure_output status
   [[ "$base_delay" =~ ^[0-9]+$ ]] || { echo "land-direct-main: retry backoff must be a non-negative integer" >&2; return 2; }
   ((base_delay <= 4)) || base_delay=4
   output="$(mktemp)" || return 1
@@ -325,8 +348,12 @@ land_git_transport_retry() {
     else
       status=$?
     fi
-    cat "$output" >&2
-    if ((attempt >= max_attempts)) || ! agent_transport_is_transient "$(cat "$output")"; then
+    failure_output="$(cat "$output")"
+    printf '%s\n' "$failure_output" >&2
+    # Linked worktrees share origin/main; concurrent fetches can race its ref update.
+    if ((attempt >= max_attempts)) || {
+      ! agent_transport_is_transient "$failure_output" && ! agent_ref_update_race_is_transient "$failure_output"
+    }; then
       rm -f -- "$output"
       return "$status"
     fi
@@ -422,7 +449,7 @@ added_guard_id_for_lesson_occurrence() {
   local -A base_guard_ids=()
   while IFS= read -r guard_id; do
     [[ -n "$guard_id" ]] && base_guard_ids["$guard_id"]=1
-  done < <(git show "$base:engine/state/incident-guards.json" | jq -r '.incidents[]?.id // empty')
+  done < <(git show "$base:$ZF_PACK_REL/state/incident-guards.json" | jq -r '.incidents[]?.id // empty')
   while IFS= read -r guard_id; do
     [[ -n "$guard_id" && -z "${base_guard_ids[$guard_id]:-}" ]] || continue
     count=$((count + 1))
@@ -431,7 +458,7 @@ added_guard_id_for_lesson_occurrence() {
       return 0
     fi
   done < <(jq -r --arg lesson_id "V$candidate" '.incidents[]? | select(.lesson_id == $lesson_id) | .id' \
-    engine/state/incident-guards.json)
+    "$ZF_PACK_REL/state/incident-guards.json")
   return 1
 }
 
@@ -458,7 +485,7 @@ replace_added_lesson_occurrence() {
   local -a added_lines=()
   local added
 
-  if [[ "$file" == engine/state/incident-guards.json ]]; then
+  if [[ "$file" == "$ZF_PACK_REL/state/incident-guards.json" ]]; then
     guard_id="$(added_guard_id_for_lesson_occurrence "$base" "$candidate" "$occurrence")" || return 0
     temp_file="$(mktemp)"
     if ! jq --arg id "$guard_id" --arg lesson_id "V$assigned" \
@@ -636,17 +663,17 @@ assign_lesson_ids() {
       if [[ "$direction" == added ]]; then
         [[ -n "${added_counts[$candidate]:-}" ]] || candidate_order+=("$candidate")
         added_counts["$candidate"]=$(( ${added_counts[$candidate]:-0} + 1 ))
-        if [[ "$current_path" == engine/state/incident-guards.json ]]; then
+        if [[ "$current_path" == "$ZF_PACK_REL/state/incident-guards.json" ]]; then
           added_incident_counts["$candidate"]=$(( ${added_incident_counts[$candidate]:-0} + 1 ))
         fi
       else
         removed_counts["$candidate"]=$(( ${removed_counts[$candidate]:-0} + 1 ))
-        if [[ "$current_path" == engine/state/incident-guards.json ]]; then
+        if [[ "$current_path" == "$ZF_PACK_REL/state/incident-guards.json" ]]; then
           removed_incident_counts["$candidate"]=$(( ${removed_incident_counts[$candidate]:-0} + 1 ))
         fi
       fi
     fi
-  done < <(git diff --no-ext-diff --unified=0 "$base...HEAD" -- lessons/RULES.md engine/state/incident-guards.json)
+  done < <(git diff --no-ext-diff --unified=0 "$base...HEAD" -- lessons/RULES.md "$ZF_PACK_REL/state/incident-guards.json")
   for candidate in "${candidate_order[@]}"; do
     count="${added_counts[$candidate]}"
     removed="${removed_counts[$candidate]:-0}"
@@ -655,7 +682,7 @@ assign_lesson_ids() {
   ((${#candidates[@]} > 0)) || return 0
 
   rules_ids="$(git show "$base:lessons/RULES.md" | sed -nE 's/^\*\*V([0-9]+)\*\*.*/\1/p')"
-  incident_ids="$(git show "$base:engine/state/incident-guards.json" | jq -r '.incidents[]?.lesson_id // empty' | sed -nE 's/^V([0-9]+)$/\1/p')"
+  incident_ids="$(git show "$base:$ZF_PACK_REL/state/incident-guards.json" | jq -r '.incidents[]?.lesson_id // empty' | sed -nE 's/^V([0-9]+)$/\1/p')"
   while IFS= read -r id; do
     [[ "$id" =~ ^[0-9]+$ ]] || continue
     base_rule_ids["$id"]=1
@@ -665,7 +692,7 @@ assign_lesson_ids() {
     base_incident_ids["$id"]=1
   done <<< "$incident_ids"
   rules_ids="$(git show "$occupied_base:lessons/RULES.md" | sed -nE 's/^\*\*V([0-9]+)\*\*.*/\1/p')"
-  incident_ids="$(git show "$occupied_base:engine/state/incident-guards.json" | jq -r '.incidents[]?.lesson_id // empty' | sed -nE 's/^V([0-9]+)$/\1/p')"
+  incident_ids="$(git show "$occupied_base:$ZF_PACK_REL/state/incident-guards.json" | jq -r '.incidents[]?.lesson_id // empty' | sed -nE 's/^V([0-9]+)$/\1/p')"
   while IFS= read -r id; do
     [[ "$id" =~ ^[0-9]+$ ]] || continue
     used_ids["$id"]=1
@@ -730,7 +757,7 @@ assign_lesson_ids() {
   done
   ((did_rewrite == 1)) || return 0
 
-  mapfile -t lesson_paths < <(git diff --name-only "$base...HEAD" -- lessons/RULES.md lessons/CATALOG.md lessons/full engine/state/incident-guards.json)
+  mapfile -t lesson_paths < <(git diff --name-only "$base...HEAD" -- lessons/RULES.md lessons/CATALOG.md lessons/full "$ZF_PACK_REL/state/incident-guards.json")
   for ((occurrence_index = ${#assignment_keys[@]} - 1; occurrence_index >= 0; occurrence_index--)); do
     assignment_key="${assignment_keys[$occurrence_index]}"
     candidate="${assignment_key%:*}"
@@ -887,7 +914,7 @@ reconcile_merged_pr() {
     return 1
   }
   if git diff --quiet "$merge_parent" "$merge_commit" -- \
-    lessons/RULES.md engine/state/incident-guards.json; then
+    lessons/RULES.md "$ZF_PACK_REL/state/incident-guards.json"; then
     echo "land-direct-main: PR #$pr introduced no numbered lesson records; reconciliation is already complete"
     return 0
   fi
@@ -900,7 +927,7 @@ reconcile_merged_pr() {
     echo "land-direct-main: could not create reconciliation worktree for PR #$pr" >&2
     return 1
   fi
-  land_script="$agent_home/checkout/engine/land-direct-main.sh"
+  land_script="${ZF_ENGINE_LIVE:-$agent_home/checkout/engine}/land-direct-main.sh"
   [[ -r "$land_script" ]] || land_script="$worktree/engine/land-direct-main.sh"
   if (cd -- "$worktree" && AGENT_HOME="$agent_home" ZF_REPO_DIR="$worktree" \
     LESSON_ID_CHANGE_BASE="$merge_parent" LESSON_ID_COMMIT_MODE=new \
@@ -1133,22 +1160,60 @@ revalidate_missing_postsubmit() {
   fi
 }
 
+# Only the focused post-land verdict is needed here. A green focused run itself
+# dispatches the exact-SHA full run into #4719's batched main group.
+pipeline_suites_main_focused_run_covers_sha() {
+  local target_sha="$1" repo="${ZF_GH_REPO:-$REPO}" cache_window_start response
+  cache_window_start="$(date -u -d '10 years ago' '+%Y-%m-%dT%H:%M:%SZ')" || return 2
+  response="$(timeout --signal=TERM --kill-after=2s 45s gh api -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+    "repos/$repo/actions/workflows/pipeline-suites.yml/runs?branch=main&per_page=100&created=%3E%3D${cache_window_start}" 2>/dev/null)" || return 2
+  jq -e --arg sha "$target_sha" '
+    any(.workflow_runs[]?; .head_branch == "main"
+      and (.event == "push" or .event == "workflow_dispatch")
+      and .path == ".github/workflows/pipeline-suites.yml"
+      and (.status == "queued" or .status == "pending" or .status == "in_progress"
+        or (.status == "completed" and (.conclusion == "success" or .conclusion == "failure")))
+      and (.display_title | startswith("Pipeline suites post-land " + $sha + " ")))
+  ' <<< "$response" >/dev/null
+}
+
 dispatch_pipeline_suites_after_landing() {
-  local main_sha="$1" status ticket="${direct_landing_ticket:-${ZF_LAND_QUEUE_TICKET:-unknown}}"
-  # workflow_dispatch is fire-and-forget; bound the API call and never wait for CI.
-  if timeout --signal=TERM --kill-after=2s 45s \
-    gh workflow run pipeline-suites.yml --repo "${ZF_GH_REPO:-$REPO}" --ref main; then
-    echo "land-direct-main: dispatched Pipeline suites event=workflow_dispatch ref=main landed_sha=$main_sha"
-    return 0
+  local main_sha="$1" base_sha="${2:-}" status=0 census_status=0 ticket="${direct_landing_ticket:-${ZF_LAND_QUEUE_TICKET:-unknown}}"
+  local focused_covered=false
+  if pipeline_suites_main_focused_run_covers_sha "$main_sha"; then
+    focused_covered=true
   else
-    status=$?
+    census_status=$?
+    # An unreadable census must not drop the focused landing verdict.
+    if [[ "$census_status" -eq 2 ]]; then
+      echo "land-direct-main: Pipeline suites focused-run census unreadable for landed_sha=$main_sha; dispatching if the base is valid" >&2
+    fi
   fi
-  echo "land-direct-main: Pipeline suites dispatch failed event=workflow_dispatch ref=main landed_sha=$main_sha exit=$status recovery_owner=supervisor" >&2
-  DRY_RUN=0 supervisor_inbox_append_once \
-    "pipeline-suites-dispatch-failed:$main_sha" \
-    "pipeline-suites-dispatch-failed landed_sha=$main_sha ticket=$ticket ref=main exit=$status recovery_owner=supervisor action=inspect exact-SHA Pipeline suites run then redispatch only if absent" \
-    || echo "land-direct-main: failed to record Pipeline suites dispatch recovery in supervisor inbox for $main_sha" >&2
-  return "$status"
+
+  # The post-land group is independent of the non-preemptive main full-suite group.
+  if [[ "$focused_covered" != true ]]; then
+    if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+      status=2
+    else
+      if timeout --signal=TERM --kill-after=2s 45s \
+        gh workflow run pipeline-suites.yml --repo "${ZF_GH_REPO:-$REPO}" --ref main \
+          -f "post_land_base_sha=$base_sha" -f "post_land_head_sha=$main_sha"; then
+        echo "land-direct-main: dispatched Pipeline suites post-land range ${base_sha:0:12}..${main_sha:0:12}"
+      else
+        status=$?
+      fi
+    fi
+  fi
+
+  if [[ "$status" -ne 0 && "$focused_covered" != true ]]; then
+    echo "land-direct-main: Pipeline suites post-land focused dispatch failed landed_sha=$main_sha exit=$status recovery_owner=supervisor" >&2
+    DRY_RUN=0 supervisor_inbox_append_once \
+      "pipeline-suites-dispatch-failed:$main_sha" \
+      "pipeline-suites-dispatch-failed landed_sha=$main_sha ticket=$ticket phase=focused ref=main exit=$status recovery_owner=supervisor action=inspect exact-SHA focused Pipeline suites run and redispatch only if absent" \
+      || echo "land-direct-main: failed to record Pipeline suites dispatch recovery in supervisor inbox for $main_sha" >&2
+    return "$status"
+  fi
+  return 0
 }
 
 landed_range_changes_postsubmit_input() {
@@ -1162,18 +1227,21 @@ landed_range_changes_postsubmit_input() {
 }
 
 # Paths whose landing runs engine/systemd/sync-cihost-*.sh on cihost after the push.
-# ops/host/* stands in for the target repo's own host-installed sources; list yours here and in cihost_sync_archive.
 cihost_sync_path() {
-  case "$1" in
-    engine/systemd/cihost-*|engine/systemd/sync-cihost-*|engine/systemd/build-capacity-gate.sh|ops/host/*) return 0 ;;
-  esac
+  local -a globs=() # ZF_CIHOST_SYNC_PATHS (config.sh); read -a splits without pathname expansion
+  local glob
+  read -ra globs <<< "$ZF_CIHOST_SYNC_PATHS"
+  for glob in ${globs[@]+"${globs[@]}"}; do
+    [[ "$1" == $glob ]] && return 0
+  done
   return 1
 }
 
 # The tree every sync-cihost-* script runs from: its own directory plus the sources it installs.
 cihost_sync_archive() {
-  local -a roots
-  mapfile -t roots < <(git ls-tree --name-only "$1" -- engine/lib.sh engine/closing-keywords.sh engine/systemd ops/host)
+  local -a roots sync_roots=()
+  read -ra sync_roots <<< "$ZF_CIHOST_SYNC_ROOTS"
+  mapfile -t roots < <(git ls-tree --name-only "$1" -- ${sync_roots[@]+"${sync_roots[@]}"})
   git archive "$1" "${roots[@]}"
 }
 
@@ -1186,10 +1254,10 @@ install_landed_host_artifacts() {
   for path in "${landed_paths[@]}"; do
     if cihost_sync_path "$path"; then sync_cihost=1; continue; fi
     case "$path" in
-      engine/install-gitnexus-wrapper.sh|engine/gitnexus-wrapper.sh)
+      "$ZF_PACK_REL"/install-gitnexus-wrapper.sh|"$ZF_PACK_REL"/gitnexus-wrapper.sh)
         install_wrapper=1
         ;;
-      engine/systemd/*.service|engine/systemd/*.timer)
+      "$ZF_PACK_REL"/systemd/*.service|"$ZF_PACK_REL"/systemd/*.timer)
         install_units=1
         ;;
     esac
@@ -1207,14 +1275,14 @@ install_landed_host_artifacts() {
 
   if ((install_wrapper)); then
     ZF_REPO_DIR="$repo_root" \
-      bash "$repo_root/engine/install-gitnexus-wrapper.sh"
+      bash "${ZF_ENGINE_LIVE:-$repo_root/engine}/install-gitnexus-wrapper.sh"
   fi
 
   if ((install_units)); then
     unit_dest_dir="${SYSTEMD_USER_UNIT_DIR:-${HOME:?HOME is not set}/.config/systemd/user}"
     temp_dir="$(mktemp -d)"
     while IFS= read -r path; do
-      case "$path" in */cihost-*) continue ;; *.service|*.timer) ;; *) continue ;; esac
+      case "$path" in */"$ZF_CIHOST_FILE_STEM"-*) continue ;; *.service|*.timer) ;; *) continue ;; esac
       name="${path##*/}"
       git show "origin/main:$path" > "$temp_dir/$name" || { rm -rf -- "$temp_dir"; return 1; }
       dest="$unit_dest_dir/$name"
@@ -1227,7 +1295,7 @@ install_landed_host_artifacts() {
         units_changed=1
         echo "land-direct-main: installed origin/main unit $name -> $unit_dest_dir" >&2
       fi
-    done < <(git ls-tree -r --name-only origin/main -- engine/systemd)
+    done < <(git ls-tree -r --name-only origin/main -- "$ZF_PACK_REL/systemd")
     rm -rf -- "$temp_dir"
     if ((units_changed)) && ! systemctl --user daemon-reload; then
       echo "land-direct-main: systemd --user daemon-reload failed after installing origin/main units" >&2
@@ -1243,17 +1311,18 @@ install_landed_host_artifacts() {
   if ((sync_cihost)); then
     local -a failed_syncs=()
     while IFS= read -r sync_path; do
-      if ! cihost_sync_archive origin/main | ssh -o BatchMode=yes -o ConnectTimeout=15 cihost \
+      if ! cihost_sync_archive origin/main | ssh -o BatchMode=yes -o ConnectTimeout=15 "$ZF_CIHOST_HOST" \
         "t=\$(mktemp -d) && tar -x -C \"\$t\" && bash \"\$t/$sync_path\"; s=\$?; rm -rf -- \"\$t\"; exit \$s"; then
         echo "land-direct-main: failed to run origin/main $sync_path on cihost" >&2
         failed_syncs+=("$sync_path")
         continue
       fi
       echo "land-direct-main: ran origin/main $sync_path on cihost" >&2
-    done < <(git ls-tree -r --name-only origin/main -- engine/systemd | grep '/sync-cihost-[^/]*\.sh$' | grep -v '\.test\.sh$')
+    done < <(git ls-tree -r --name-only origin/main -- "$ZF_PACK_REL/systemd" | grep "/sync-$ZF_CIHOST_FILE_STEM-[^/]*\.sh\$" | grep -v '\.test\.sh$')
     if ((${#failed_syncs[@]})); then
+      local sync_archive_cmd="git archive origin/main $ZF_CIHOST_SYNC_ROOTS"
       supervisor_inbox_append_once "cihost-sync-failed:$(git rev-parse --short origin/main)" \
-        "cihost-sync-failed main=$(git rev-parse --short origin/main) landed but not installed on cihost: ${failed_syncs[*]}; rerun each with git archive origin/main engine/lib.sh engine/closing-keywords.sh engine/systemd ops/host piped to ssh cihost" || true
+        "cihost-sync-failed main=$(git rev-parse --short origin/main) landed but not installed on cihost: ${failed_syncs[*]}; rerun each with $sync_archive_cmd piped to ssh $ZF_CIHOST_HOST" || true
       return 1
     fi
   fi
@@ -1440,6 +1509,16 @@ while :; do
   fi
 done
 
+# 2026-10-30 (#4728): one supervisor-inbox event per landing replaces the
+# head supervisor polling git fetch to discover them. Reached on both
+# push-success and lost-acknowledgment exits from the loop above; every other
+# exit left origin/main without this commit. run-tick.sh reports the main
+# advances it observes, but this landing fast-forwards the live checkout
+# below, so this event is the landing's only inbox record.
+DRY_RUN=0 supervisor_inbox_append landing \
+  "ticket=${direct_landing_ticket:-unknown} branch=$branch lane=direct-main subject=\"$(git log -1 --format=%s)\"" \
+  || echo "land-direct-main: failed to record landing event in supervisor inbox" >&2
+
 # Pipeline suites on the landed head verify the push; the lander only records the range.
 echo "land-direct-main: landed range recorded ${base_before_push:0:12}..${candidate_head:0:12}"
 install_landed_host_artifacts "$base_before_push" \
@@ -1454,8 +1533,8 @@ if [[ -d "$live_checkout/.git" || -f "$live_checkout/.git" ]] \
     && git -C "$live_checkout" merge -q --ff-only origin/main; then
     live_new_head="$(git -C "$live_checkout" rev-parse HEAD)"
     echo "land-direct-main: live checkout fast-forwarded to origin/main" >&2
-    if [[ -f "$live_checkout/engine/check-host-daemons.py" ]] && ! python3 -B \
-      "$live_checkout/engine/check-host-daemons.py" "$live_checkout" --sync "$live_old_head" "$live_new_head"; then
+    if [[ -f "${ZF_ENGINE_LIVE:-$live_checkout/engine}/check-host-daemons.py" ]] && ! python3 -B \
+      "${ZF_ENGINE_LIVE:-$live_checkout/engine}/check-host-daemons.py" "$live_checkout" --sync "$live_old_head" "$live_new_head"; then
       supervisor_inbox_append_once "host-daemon-sync-failed:$live_new_head" \
         "host-daemon-sync-failed main=$live_new_head; run check-host-daemons.py against live checkout and restart affected units" || true
     fi
@@ -1474,7 +1553,7 @@ fi
 # keeps dispatch failures recoverable without changing the successful landing result.
 main_sha="$(git rev-parse HEAD)"
 dispatch_status=0
-if dispatch_pipeline_suites_after_landing "$main_sha"; then :; else dispatch_status=$?; fi
+if dispatch_pipeline_suites_after_landing "$main_sha" "$base_before_push"; then :; else dispatch_status=$?; fi
 if landed_range_changes_postsubmit_input "$base_before_push" "$candidate_head"; then
   if revalidate_missing_postsubmit "$main_sha"; then :; else
     postsubmit_status=$?

@@ -2,7 +2,7 @@
 # rescued/* 分支的生命周期收尾（2026-10-22 维护者裁决：归档后按规则自动清理）。
 # run-implement.sh 在 worker 失败时把未提交改动推到 rescued/issue-N-<时间>，下一次实现会取回；此前从无清理，攒到 479 个。
 # 规则：issue 已关闭 → 删；名字里没有 issue 号且最后提交超过 RESCUED_MAX_AGE_DAYS（默认 14）天 → 删；其余保留。
-# 删除前先把提交以 refs/zf-rescue/archived/<名> 推到 GitHub（git fetch origin refs/zf-rescue/archived/<名> 即可取回），存档成功才删，每删一条在 <log> 记一行。
+# 删除前先把提交以 refs/vecta-rescue/archived/<名> 推到 GitHub（git fetch origin refs/vecta-rescue/archived/<名> 即可取回），存档成功才删，每删一条在 <log> 记一行。
 # 用法：rescued_gc.sh <repo> <log>；GitHub 查询失败就整轮跳过，绝不在不知道 issue 状态时删。
 set -euo pipefail
 repo="${1:?repo}" log="${2:?log file}"
@@ -44,14 +44,14 @@ done
 deleted=0 failed=0
 for ((i = 0; i < ${#victims[@]}; i += 50)); do
   batch=("${victims[@]:i:50}")
-  specs=(); for b in "${batch[@]}"; do specs+=("${sha_of[$b]}:refs/zf-rescue/archived/${b#rescued/}"); done
+  specs=(); for b in "${batch[@]}"; do specs+=("${sha_of[$b]}:refs/vecta-rescue/archived/${b#rescued/}"); done
   # 先把提交以非分支 ref 存档到 GitHub；存档推送失败则这批一条不删。
   if ! git -C "$repo" push -q origin "${specs[@]}" 2>/dev/null; then failed=1; continue; fi
   git -C "$repo" push -q origin --delete "${batch[@]}" 2>/dev/null || continue
   for ((j = 0; j < ${#batch[@]}; j++)); do
-    printf '%s deleted %s %s reason=%s archive=refs/zf-rescue/archived/%s\n' "$stamp" "${batch[j]}" "${sha_of[${batch[j]}]}" "${reasons[i + j]}" "${batch[j]#rescued/}" >> "$log"
+    printf '%s deleted %s %s reason=%s archive=refs/vecta-rescue/archived/%s\n' "$stamp" "${batch[j]}" "${sha_of[${batch[j]}]}" "${reasons[i + j]}" "${batch[j]#rescued/}" >> "$log"
     deleted=$((deleted + 1))
   done
 done
-echo "rescued_gc: deleted $deleted of ${#sha_of[@]} rescued branches (archived under refs/zf-rescue/archived/)"
+echo "rescued_gc: deleted $deleted of ${#sha_of[@]} rescued branches (archived under refs/vecta-rescue/archived/)"
 (( failed == 0 )) || { echo "rescued_gc: archive push failed for at least one batch; that batch was not deleted" >&2; exit 1; }

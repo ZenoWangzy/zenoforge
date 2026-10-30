@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 
 # Sourceable helpers plus the six-hour maintainer health-mail digest.
+# In a deployed engine, load the unit prefix before resolving it; a plain checkout has no deploy.env.
+if [[ -f "$(dirname -- "${BASH_SOURCE[0]}")/../deploy.env" ]]; then
+  source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/config.sh"
+fi
+# Same setting lib.sh resolves; tests that stub agent_epoch skip lib.sh.
+UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 if ! declare -F agent_epoch >/dev/null; then
   source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib.sh"
 fi
@@ -13,21 +19,21 @@ fi
 if ! declare -F post_land_mttr_summary >/dev/null; then
   source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/post-land-mttr.sh"
 fi
-maintainer_health_mail_slot_key() {
+founder_health_mail_slot_key() {
   local now="$1" interval
-  interval="$(maintainer_health_mail_digest_interval_seconds)" || return 1
+  interval="$(founder_health_mail_digest_interval_seconds)" || return 1
   [[ "$now" =~ ^[0-9]+$ && "$interval" =~ ^[1-9][0-9]*$ ]] || return 1
   date -u -d "@$((now / interval * interval))" +%Y%m%dT%HZ
 }
 
-maintainer_health_mail_digest_interval_seconds() {
+founder_health_mail_digest_interval_seconds() {
   local state_dir
   state_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/state"
   jq -er '.digest_interval_seconds | select(type == "number" and . > 0 and . == floor)' \
     "$state_dir/founder-health-mail.json"
 }
 
-maintainer_health_mail_ensure_ledger() {
+founder_health_mail_ensure_ledger() {
   local ledger="$1" now="${2:-$(date +%s)}" tmp
   mkdir -p "$(dirname "$ledger")" || return 1
   if [ -e "$ledger" ]; then
@@ -45,23 +51,23 @@ maintainer_health_mail_ensure_ledger() {
   if ! ln -- "$tmp" "$ledger" 2>/dev/null; then
     rm -f -- "$tmp"
     [ -e "$ledger" ] || return 1
-    maintainer_health_mail_ensure_ledger "$ledger" "$now"
+    founder_health_mail_ensure_ledger "$ledger" "$now"
     return $?
   fi
   rm -f -- "$tmp"
 }
 
-maintainer_health_mail_unlock() {
+founder_health_mail_unlock() {
   local lock_fd="$1"
   flock -u "$lock_fd" 2>/dev/null || true
   exec {lock_fd}>&-
 }
 
-maintainer_health_mail_record_event() {
+founder_health_mail_record_event() {
   local ledger="$1" key="$2" section="$3" text="$4" now="${5:-$(date +%s)}" kind="${6:-event}" highlight="${7:-false}" reminder_for="${8:-}"
   local lock_fd tmp result
   [[ -n "$key" && -n "$section" && "$now" =~ ^[0-9]+$ ]] || return 1
-  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
+  founder_health_mail_ensure_ledger "$ledger" "$now" || return 1
   exec {lock_fd}>"$ledger.lock" || return 1
   flock -x "$lock_fd" || return 1
   result="$(jq -r --arg key "$key" '
@@ -69,7 +75,7 @@ maintainer_health_mail_record_event() {
     elif ((.pending_events // {}) | has($key)) then "existing"
     else "new" end' "$ledger")" || return 1
   if [ "$result" != new ]; then
-    maintainer_health_mail_unlock "$lock_fd"
+    founder_health_mail_unlock "$lock_fd"
     printf '%s\n' "$result"
     return 0
   fi
@@ -82,15 +88,15 @@ maintainer_health_mail_record_event() {
     return 1
   fi
   mv -f -- "$tmp" "$ledger" || return 1
-  maintainer_health_mail_unlock "$lock_fd"
+  founder_health_mail_unlock "$lock_fd"
   printf 'queued\n'
 }
 
-maintainer_health_mail_track_important() {
+founder_health_mail_track_important() {
   local ledger="$1" key="$2" kind="$3" text="$4" issue="${5:-}" now="${6:-$(date +%s)}"
   local lock_fd tmp
   [[ -n "$key" && "$kind" =~ ^(outage|wrong-business-numbers|decision|team-blocker)$ && -n "$text" && "$now" =~ ^[0-9]+$ ]] || return 1
-  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
+  founder_health_mail_ensure_ledger "$ledger" "$now" || return 1
   exec {lock_fd}>"$ledger.lock" || return 1
   flock -x "$lock_fd" || return 1
   tmp="$(mktemp "${ledger}.XXXXXX")" || return 1
@@ -105,16 +111,16 @@ maintainer_health_mail_track_important() {
     return 1
   fi
   mv -f -- "$tmp" "$ledger" || return 1
-  maintainer_health_mail_unlock "$lock_fd"
+  founder_health_mail_unlock "$lock_fd"
 }
 
-maintainer_health_mail_mark_reported() {
+founder_health_mail_mark_reported() {
   local ledger="$1" key="$2" now="$3" reason="${4:-}" lock_fd tmp reason_file
-  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
+  founder_health_mail_ensure_ledger "$ledger" "$now" || return 1
   exec {lock_fd}>"$ledger.lock" || return 1
   flock -x "$lock_fd" || return 1
-  tmp="$(mktemp "${ledger}.XXXXXX")" || { maintainer_health_mail_unlock "$lock_fd"; return 1; }
-  reason_file="$(jq_arg_file "$reason")" || { rm -f -- "$tmp"; maintainer_health_mail_unlock "$lock_fd"; return 1; }
+  tmp="$(mktemp "${ledger}.XXXXXX")" || { founder_health_mail_unlock "$lock_fd"; return 1; }
+  reason_file="$(jq_arg_file "$reason")" || { rm -f -- "$tmp"; founder_health_mail_unlock "$lock_fd"; return 1; }
   if ! jq --arg key "$key" --rawfile reason "$reason_file" --argjson now "$now" '
     (.reported_items //= {}) | .reported_items[$key]=$now
     | if $reason != "" then
@@ -124,18 +130,18 @@ maintainer_health_mail_mark_reported() {
       else . end
   ' "$ledger" > "$tmp"; then
     rm -f -- "$tmp" "$reason_file"
-    maintainer_health_mail_unlock "$lock_fd"
+    founder_health_mail_unlock "$lock_fd"
     return 1
   fi
   rm -f -- "$reason_file"
-  mv -f -- "$tmp" "$ledger" || { maintainer_health_mail_unlock "$lock_fd"; return 1; }
-  maintainer_health_mail_unlock "$lock_fd"
+  mv -f -- "$tmp" "$ledger" || { founder_health_mail_unlock "$lock_fd"; return 1; }
+  founder_health_mail_unlock "$lock_fd"
 }
 
-maintainer_health_mail_resolve_important() {
+founder_health_mail_resolve_important() {
   local ledger="$1" key="$2" now="$3" section="${4:-事项更新}" text="${5:-}"
   local lock_fd tmp
-  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
+  founder_health_mail_ensure_ledger "$ledger" "$now" || return 1
   exec {lock_fd}>"$ledger.lock" || return 1
   flock -x "$lock_fd" || return 1
   tmp="$(mktemp "${ledger}.XXXXXX")" || return 1
@@ -151,17 +157,17 @@ maintainer_health_mail_resolve_important() {
     return 1
   fi
   mv -f -- "$tmp" "$ledger" || return 1
-  maintainer_health_mail_unlock "$lock_fd"
+  founder_health_mail_unlock "$lock_fd"
 }
 
-maintainer_health_mail_node_status() {
+founder_health_mail_node_status() {
   local ledger="$1" now="$2" last age interval slow_after stuck_after
   last="$(jq -r 'if .last_sent_at > 0 then .last_sent_at else .started_at end' "$ledger" 2>/dev/null)" || {
     printf 'UNKNOWN\n'
     return 0
   }
   [[ "$last" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || { printf 'UNKNOWN\n'; return 0; }
-  interval="$(maintainer_health_mail_digest_interval_seconds)" || { printf 'UNKNOWN\n'; return 0; }
+  interval="$(founder_health_mail_digest_interval_seconds)" || { printf 'UNKNOWN\n'; return 0; }
   [[ "$interval" =~ ^[1-9][0-9]*$ ]] || { printf 'UNKNOWN\n'; return 0; }
   age=$((now - last))
   (( age < 0 )) && age=0
@@ -173,10 +179,10 @@ maintainer_health_mail_node_status() {
   else printf 'OK\n'; fi
 }
 
-maintainer_health_mail_claim_digest() {
+founder_health_mail_claim_digest() {
   local ledger="$1" slot="$2" now="$3" events="${4:-[]}" interval lock_fd current last_sent_at tmp
-  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
-  interval="$(maintainer_health_mail_digest_interval_seconds)" || return 1
+  founder_health_mail_ensure_ledger "$ledger" "$now" || return 1
+  interval="$(founder_health_mail_digest_interval_seconds)" || return 1
   [[ "$interval" =~ ^[1-9][0-9]*$ ]] || return 1
   jq -e 'type == "array" and all(.[]; (.key|type)=="string" and (.created_at|type)=="number")' <<< "$events" >/dev/null || return 1
   [ "$(jq -r 'length' <<< "$events")" -gt 0 ] || { printf 'no-change\n'; return 0; }
@@ -185,12 +191,12 @@ maintainer_health_mail_claim_digest() {
   current="$(jq -r '.last_digest_slot' "$ledger")" || return 1
   last_sent_at="$(jq -r '.last_sent_at' "$ledger")" || return 1
   if (( last_sent_at > 0 && now - last_sent_at < interval )); then
-    maintainer_health_mail_unlock "$lock_fd"
+    founder_health_mail_unlock "$lock_fd"
     printf 'cooldown\n'
     return 0
   fi
   if [ "$current" = "$slot" ]; then
-    maintainer_health_mail_unlock "$lock_fd"
+    founder_health_mail_unlock "$lock_fd"
     printf 'duplicate\n'
     return 0
   fi
@@ -204,19 +210,19 @@ maintainer_health_mail_claim_digest() {
     rm -f "$tmp"
     return 1
   fi
-  mv -f "$tmp" "$ledger" || { maintainer_health_mail_unlock "$lock_fd"; return 1; }
-  maintainer_health_mail_unlock "$lock_fd"
+  mv -f "$tmp" "$ledger" || { founder_health_mail_unlock "$lock_fd"; return 1; }
+  founder_health_mail_unlock "$lock_fd"
   printf 'reserved\n'
 }
 
-maintainer_health_mail_release_digest() {
+founder_health_mail_release_digest() {
   local ledger="$1" slot="$2" lock_fd current tmp
-  maintainer_health_mail_ensure_ledger "$ledger" || return 1
+  founder_health_mail_ensure_ledger "$ledger" || return 1
   exec {lock_fd}>"$ledger.lock" || return 1
   flock -x "$lock_fd" || return 1
   current="$(jq -r '.last_digest_slot' "$ledger")" || return 1
   if [ "$current" != "$slot" ]; then
-    maintainer_health_mail_unlock "$lock_fd"
+    founder_health_mail_unlock "$lock_fd"
     printf 'unchanged\n'
     return 0
   fi
@@ -235,15 +241,15 @@ maintainer_health_mail_release_digest() {
     return 1
   fi
   mv -f "$tmp" "$ledger" || return 1
-  maintainer_health_mail_unlock "$lock_fd"
+  founder_health_mail_unlock "$lock_fd"
   printf 'released\n'
 }
 
-maintainer_health_mail_mark_sent() {
+founder_health_mail_mark_sent() {
   local ledger="$1" now="$2" lock_fd tmp efficiency_snapshot="${MAINTAINER_HEALTH_MAIL_EFFICIENCY_SNAPSHOT:-null}"
   exec {lock_fd}>"$ledger.lock" || return 1
   flock -x "$lock_fd" || return 1
-  tmp="$(mktemp "${ledger}.XXXXXX")" || { maintainer_health_mail_unlock "$lock_fd"; return 1; }
+  tmp="$(mktemp "${ledger}.XXXXXX")" || { founder_health_mail_unlock "$lock_fd"; return 1; }
   if ! jq --argjson now "$now" --argjson efficiency "$efficiency_snapshot" '
     (.last_digest_claim.events // []) as $events
     | reduce $events[] as $event (.;
@@ -254,21 +260,21 @@ maintainer_health_mail_mark_sent() {
     | .last_sent_at=$now | del(.last_digest_claim)
   ' "$ledger" > "$tmp"; then
     rm -f "$tmp"
-    maintainer_health_mail_unlock "$lock_fd"
+    founder_health_mail_unlock "$lock_fd"
     return 1
   fi
-  mv -f "$tmp" "$ledger" || { maintainer_health_mail_unlock "$lock_fd"; return 1; }
-  maintainer_health_mail_unlock "$lock_fd"
+  mv -f "$tmp" "$ledger" || { founder_health_mail_unlock "$lock_fd"; return 1; }
+  founder_health_mail_unlock "$lock_fd"
 }
 
-# Incident lifecycle shares the maintainer-mail ledger and lock. Reserving each
+# Incident lifecycle shares the founder-mail ledger and lock. Reserving each
 # send before Gmail prevents a lost response or overlapping tick from sending
 # the same incident update twice.
-maintainer_health_mail_incident_open() {
+founder_health_mail_incident_open() {
   local ledger="$1" issue="$2" subject="$3" what="$4" impact="$5" action="$6" promised="$7" now="$8" urgent="${9:-0}"
   local lock_fd existing tmp send_status important_kind incident_key what_file
   [[ "$issue" =~ ^[0-9]+$ && "$promised" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ && "$urgent" =~ ^[01]$ ]] || return 1
-  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
+  founder_health_mail_ensure_ledger "$ledger" "$now" || return 1
   exec {lock_fd}>"$ledger.lock" || return 1
   flock -x "$lock_fd" || return 1
   existing="$(jq -r --argjson issue "$issue" '[.incidents[]? | select(.issue == $issue)] | last | .status // empty' "$ledger")" || return 1
@@ -282,7 +288,7 @@ maintainer_health_mail_incident_open() {
       rm -f -- "$what_file"
       mv -f -- "$tmp" "$ledger" || { rm -f -- "$tmp"; return 1; }
     fi
-    maintainer_health_mail_unlock "$lock_fd"
+    founder_health_mail_unlock "$lock_fd"
     printf 'existing\n'
     return 0
   fi
@@ -298,7 +304,7 @@ maintainer_health_mail_incident_open() {
   fi
   rm -f -- "$what_file"
   mv -f -- "$tmp" "$ledger" || { rm -f -- "$tmp"; return 1; }
-  maintainer_health_mail_unlock "$lock_fd"
+  founder_health_mail_unlock "$lock_fd"
 
   incident_key="incident:$issue:$now"
   important_kind=''
@@ -308,34 +314,34 @@ maintainer_health_mail_incident_open() {
     important_kind=wrong-business-numbers
   fi
   if [ -n "$important_kind" ]; then
-    maintainer_health_mail_track_important "$ledger" "$incident_key" "$important_kind" "$subject" "$issue" "$now" || return 1
+    founder_health_mail_track_important "$ledger" "$incident_key" "$important_kind" "$subject" "$issue" "$now" || return 1
   fi
   if [ "$urgent" = 1 ]; then
-    if notify_maintainer_incident "$issue" "$subject" "$what" "$impact" "$action" "$promised" >/dev/null; then
+    if notify_founder_incident "$issue" "$subject" "$what" "$impact" "$action" "$promised" >/dev/null; then
       send_status=sent
     else
       send_status=failed
     fi
-    maintainer_health_mail_incident_mark_mail_result "$ledger" "$issue" initial "$send_status" "$now" || return 1
+    founder_health_mail_incident_mark_mail_result "$ledger" "$issue" initial "$send_status" "$now" || return 1
   else
-    maintainer_health_mail_record_event "$ledger" "$incident_key:opened" '事项变化' \
+    founder_health_mail_record_event "$ledger" "$incident_key:opened" '事项变化' \
       "${subject}：$what 用户影响：$impact 当前处理：$action" "$now" incident >/dev/null || return 1
   fi
   printf 'opened\n'
 }
 
-maintainer_health_mail_incident_request_resolution() {
+founder_health_mail_incident_request_resolution() {
   local ledger="$1" issue="$2" kind="$3" reason="$4" now="$5" reference="${6:-}"
   local lock_fd status requested tmp reason_file
   [[ "$issue" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
   [[ "$kind" == release || "$kind" == supervisor ]] || return 1
-  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
+  founder_health_mail_ensure_ledger "$ledger" "$now" || return 1
   exec {lock_fd}>"$ledger.lock" || return 1
   flock -x "$lock_fd" || return 1
   status="$(jq -r --argjson issue "$issue" '[.incidents[]? | select(.issue == $issue)] | last | .status // empty' "$ledger")" || return 1
   requested="$(jq -r --argjson issue "$issue" '[.incidents[]? | select(.issue == $issue)] | last | .resolution_requested_at // empty' "$ledger")" || return 1
   if [ "$status" != open ] || [ -n "$requested" ]; then
-    maintainer_health_mail_unlock "$lock_fd"
+    founder_health_mail_unlock "$lock_fd"
     printf 'unchanged\n'
     return 0
   fi
@@ -346,15 +352,15 @@ maintainer_health_mail_incident_request_resolution() {
     "$ledger" > "$tmp" || { rm -f -- "$reason_file" "$tmp"; return 1; }
   rm -f -- "$reason_file"
   mv -f -- "$tmp" "$ledger" || { rm -f -- "$tmp"; return 1; }
-  maintainer_health_mail_unlock "$lock_fd"
+  founder_health_mail_unlock "$lock_fd"
   printf 'requested\n'
 }
 
-maintainer_health_mail_incident_mark_resolved() {
-  maintainer_health_mail_incident_request_resolution "$1" "$2" supervisor "$3" "$4"
+founder_health_mail_incident_mark_resolved() {
+  founder_health_mail_incident_request_resolution "$1" "$2" supervisor "$3" "$4"
 }
 
-maintainer_health_mail_incident_mark_mail_result() {
+founder_health_mail_incident_mark_mail_result() {
   local ledger="$1" issue="$2" kind="$3" status="$4" now="$5"
   local lock_fd tmp
   exec {lock_fd}>"$ledger.lock" || return 1
@@ -376,14 +382,14 @@ maintainer_health_mail_incident_mark_mail_result() {
     *) rm -f -- "$tmp"; return 2 ;;
   esac
   mv -f -- "$tmp" "$ledger" || return 1
-  maintainer_health_mail_unlock "$lock_fd"
+  founder_health_mail_unlock "$lock_fd"
 }
 
-maintainer_health_mail_incident_tick() {
+founder_health_mail_incident_tick() {
   local ledger="$1" now="$2" only_issue="${3:-}" issue lock_fd eligible tmp event kind reason subject what impact action immediate send_status incident_key
   local -a pending=()
   [[ "$now" =~ ^[0-9]+$ ]] || return 1
-  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
+  founder_health_mail_ensure_ledger "$ledger" "$now" || return 1
 
   mapfile -t pending < <(jq -r --arg only "$only_issue" \
     '.incidents[]? | select(.status == "open" and (.resolution_requested_at // 0) > 0 and ($only == "" or (.issue|tostring) == $only)) | .issue' "$ledger")
@@ -392,7 +398,7 @@ maintainer_health_mail_incident_tick() {
     flock -x "$lock_fd" || return 1
     eligible="$(jq -r --argjson issue "$issue" '[.incidents[]? | select(.issue == $issue)] | last | (.status == "open" and (.resolution_requested_at // 0) > 0 and ((.resolution_mail_status // "") != "reserved")) // false' "$ledger")" || return 1
     if [ "$eligible" != true ]; then
-      maintainer_health_mail_unlock "$lock_fd"
+      founder_health_mail_unlock "$lock_fd"
       continue
     fi
     tmp="$(mktemp "${ledger}.XXXXXX")" || return 1
@@ -402,7 +408,7 @@ maintainer_health_mail_incident_tick() {
       "$ledger" > "$tmp" || { rm -f -- "$tmp"; return 1; }
     mv -f -- "$tmp" "$ledger" || return 1
     event="$(jq -c --argjson issue "$issue" '[.incidents[]? | select(.issue == $issue)] | last' "$ledger")" || return 1
-    maintainer_health_mail_unlock "$lock_fd"
+    founder_health_mail_unlock "$lock_fd"
 
     kind="$(jq -r '.resolution_kind' <<< "$event")"
     reason="$(jq -r '.resolution_reason' <<< "$event")"
@@ -416,46 +422,46 @@ maintainer_health_mail_incident_tick() {
     else
       impact='生产服务现已恢复，用户可以继续正常使用。'
     fi
-    maintainer_health_mail_resolve_important "$ledger" "$incident_key" "$now" '事项变化' '' || return 1
+    founder_health_mail_resolve_important "$ledger" "$incident_key" "$now" '事项变化' '' || return 1
     if [ "$immediate" = true ]; then
-      if notify_maintainer_resolution "$issue" "$subject" "$what" "$impact" "$action" >/dev/null; then
+      if notify_founder_resolution "$issue" "$subject" "$what" "$impact" "$action" >/dev/null; then
         send_status=sent
       else
         send_status=failed
       fi
       # The outage end is itself reported immediately; persist its key before
       # returning so a later digest cannot repeat it after a restart.
-      maintainer_health_mail_mark_reported "$ledger" "$incident_key:resolved" "$now" || return 1
-      maintainer_health_mail_incident_mark_mail_result "$ledger" "$issue" resolution "$send_status" "$now" || return 1
+      founder_health_mail_mark_reported "$ledger" "$incident_key:resolved" "$now" || return 1
+      founder_health_mail_incident_mark_mail_result "$ledger" "$issue" resolution "$send_status" "$now" || return 1
     else
-      maintainer_health_mail_record_event "$ledger" "$incident_key:resolved" '事项变化' \
+      founder_health_mail_record_event "$ledger" "$incident_key:resolved" '事项变化' \
         "生产服务状态已确认：$reason" "$now" incident >/dev/null || return 1
     fi
   done
 }
 
-maintainer_health_mail_incident_release_accepted() {
+founder_health_mail_incident_release_accepted() {
   local ledger="$1" issue="$2" deployed_sha="$3" now="$4"
-  maintainer_health_mail_incident_request_resolution "$ledger" "$issue" release \
+  founder_health_mail_incident_request_resolution "$ledger" "$issue" release \
     "生产服务已通过发布验收，恢复确认完成。" "$now" "$deployed_sha" >/dev/null || return 1
-  maintainer_health_mail_incident_tick "$ledger" "$now" "$issue"
+  founder_health_mail_incident_tick "$ledger" "$now" "$issue"
 }
 
-maintainer_health_mail_incidents_release_accepted() {
+founder_health_mail_incidents_release_accepted() {
   local ledger="$1" deployed_sha="$2" now="$3" issues issue
   local -a open_issues=()
-  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
+  founder_health_mail_ensure_ledger "$ledger" "$now" || return 1
   issues="$(jq -r '.incidents[]? | select(.status == "open") | .issue' "$ledger")" || return 1
   mapfile -t open_issues <<< "$issues"
   for issue in "${open_issues[@]}"; do
     [ -n "$issue" ] || continue
-    maintainer_health_mail_incident_request_resolution "$ledger" "$issue" release \
+    founder_health_mail_incident_request_resolution "$ledger" "$issue" release \
       "生产服务已通过发布验收，恢复确认完成。" "$now" "$deployed_sha" >/dev/null || return 1
   done
-  maintainer_health_mail_incident_tick "$ledger" "$now"
+  founder_health_mail_incident_tick "$ledger" "$now"
 }
 
-maintainer_health_mail_collect_reminders() {
+founder_health_mail_collect_reminders() {
   local ledger="$1" home="$2" now="$3" row key kind issue state_file state text opened last hours event_key lock_fd tmp node earliest_key reminder_for
   local -a items=()
   mapfile -t items < <(jq -c '(.important_items // {}) | to_entries[] | select(.value.status == "open")' "$ledger")
@@ -478,7 +484,7 @@ maintainer_health_mail_collect_reminders() {
       if [ -r "$state_file" ]; then
         state="$(jq -r '.state // empty' "$state_file" 2>/dev/null || true)"
         if [ -n "$state" ] && [ "$state" != needs-info ]; then
-          maintainer_health_mail_resolve_important "$ledger" "$key" "$now" '决定更新' "已收到你的答复：$text" || return 1
+          founder_health_mail_resolve_important "$ledger" "$key" "$now" '决定更新' "已收到你的答复：$text" || return 1
           continue
         fi
       fi
@@ -487,18 +493,18 @@ maintainer_health_mail_collect_reminders() {
     flock -x "$lock_fd" || return 1
     row="$(jq -c --arg key "$key" '.important_items[$key] // empty' "$ledger")" || return 1
     if [ -z "$row" ] || [ "$(jq -r '.status' <<< "$row")" != open ]; then
-      maintainer_health_mail_unlock "$lock_fd"
+      founder_health_mail_unlock "$lock_fd"
       continue
     fi
     opened="$(jq -r '.opened_at' <<< "$row")"
     last="$(jq -r '.last_reminded_at // .opened_at' <<< "$row")"
-    [[ "$opened" =~ ^[0-9]+$ && "$last" =~ ^[0-9]+$ ]] || { maintainer_health_mail_unlock "$lock_fd"; continue; }
-    (( now - last >= 14400 )) || { maintainer_health_mail_unlock "$lock_fd"; continue; }
+    [[ "$opened" =~ ^[0-9]+$ && "$last" =~ ^[0-9]+$ ]] || { founder_health_mail_unlock "$lock_fd"; continue; }
+    (( now - last >= 14400 )) || { founder_health_mail_unlock "$lock_fd"; continue; }
     reminder_for="$key"
     if [ "$kind" = team-blocker ] && [[ "$key" =~ ^node-important:([^:]+):([0-9]+)$ ]]; then
       node="${BASH_REMATCH[1]}"
       opened="${BASH_REMATCH[2]}"
-      text="$(maintainer_health_mail_anomaly_sentence "$node" open "$opened" "$now")" || return 1
+      text="$(founder_health_mail_anomaly_sentence "$node" open "$opened" "$now")" || return 1
     else
       hours=$(( (now - opened) / 3600 ))
       (( hours < 0 )) && hours=0
@@ -517,11 +523,11 @@ maintainer_health_mail_collect_reminders() {
       return 1
     fi
     mv -f -- "$tmp" "$ledger" || return 1
-    maintainer_health_mail_unlock "$lock_fd"
+    founder_health_mail_unlock "$lock_fd"
   done
 }
 
-maintainer_health_mail_issue_catalog() {
+founder_health_mail_issue_catalog() {
   local issue_numbers="${1:-[]}" repo owner name query response issue
   local -a numbers=()
   jq -e 'type == "array" and all(.[]; ((type == "number" and . > 0) or (type == "string" and test("^[1-9][0-9]*$"))))' \
@@ -553,7 +559,7 @@ maintainer_health_mail_issue_catalog() {
   ' <<< "$response"
 }
 
-maintainer_health_mail_deployment_catalog() {
+founder_health_mail_deployment_catalog() {
   local home="$1"
   local -a state_files=()
   [ -d "$home/state" ] || { printf 'null\n'; return 0; }
@@ -573,7 +579,7 @@ maintainer_health_mail_deployment_catalog() {
   ' "${state_files[@]}"
 }
 
-maintainer_health_mail_deployed_at() {
+founder_health_mail_deployed_at() {
   local home="$1" issue="$2" state_file
   [[ "$issue" =~ ^[0-9]+$ ]] || return 0
   state_file="$home/state/$issue.json"
@@ -581,9 +587,9 @@ maintainer_health_mail_deployed_at() {
   jq -r '.deployed_at // .run.deployed_at // .run.evidence.production_evidence_at // empty' "$state_file" 2>/dev/null || true
 }
 
-maintainer_health_mail_plain_title() {
+founder_health_mail_plain_title() {
   local title
-  title="$(maintainer_health_mail_scrub_text "$1")" || return 1
+  title="$(founder_health_mail_scrub_text "$1")" || return 1
   printf '%s' "$title" | jq -Rr '
     gsub("[[:space:]]+"; " ")
     | gsub("^[[:space:][:punct:]]+|[[:space:][:punct:]]+$"; "")
@@ -592,7 +598,7 @@ maintainer_health_mail_plain_title() {
   '
 }
 
-maintainer_health_mail_scrub_text() {
+founder_health_mail_scrub_text() {
   printf '%s' "$1" | jq -Rr '
     gsub("#[[:space:]]*[0-9]+"; "")
     | gsub("[[:xdigit:]]{7,}"; "")
@@ -618,7 +624,7 @@ maintainer_health_mail_scrub_text() {
   '
 }
 
-maintainer_health_mail_acceptance_events() {
+founder_health_mail_acceptance_events() {
   local ledger="$1" home="$2" now="$3" snapshot
   snapshot="$home/state/ticket-stage-status.json"
   local current_file catalog_file title_file current_ids previous_ids catalog titles title lines count key lock_fd tmp
@@ -633,7 +639,7 @@ maintainer_health_mail_acceptance_events() {
   current_ids="$(cat "$current_file")" || return 1
   previous_ids="$(jq -c '.acceptance_snapshot.issues // []' "$ledger")" || return 1
   [ "$current_ids" != "$previous_ids" ] || { rm -f -- "$current_file" "$catalog_file" "$title_file"; return 0; }
-  catalog="$(maintainer_health_mail_issue_catalog "$current_ids")" || { rm -f -- "$current_file" "$catalog_file" "$title_file"; return 0; }
+  catalog="$(founder_health_mail_issue_catalog "$current_ids")" || { rm -f -- "$current_file" "$catalog_file" "$title_file"; return 0; }
   printf '%s\n' "$catalog" > "$catalog_file"
   if ! jq -nr --slurpfile ids "$current_file" --slurpfile issues "$catalog_file" '
     ($ids[0] | map({key:.,value:true}) | from_entries) as $wanted
@@ -648,38 +654,38 @@ maintainer_health_mail_acceptance_events() {
   fi
   titles=()
   while IFS= read -r title; do
-    titles+=("$(maintainer_health_mail_plain_title "$title")")
+    titles+=("$(founder_health_mail_plain_title "$title")")
   done < "$title_file"
   count="${#titles[@]}"
   if (( count > 0 )); then
     lines="$(printf '%s\n' "${titles[@]:0:5}" | sed 's/^/- /')"
     if (( count > 5 )); then lines+=$'\n'"等$((count - 5))项"; fi
     key="acceptance:$now"
-    maintainer_health_mail_record_event "$ledger" "$key" '待验收' "$lines" "$now" acceptance >/dev/null || return 1
+    founder_health_mail_record_event "$ledger" "$key" '待验收' "$lines" "$now" acceptance >/dev/null || return 1
   fi
   exec {lock_fd}>"$ledger.lock" || return 1
   flock -x "$lock_fd" || return 1
-  tmp="$(mktemp "${ledger}.XXXXXX")" || { maintainer_health_mail_unlock "$lock_fd"; return 1; }
+  tmp="$(mktemp "${ledger}.XXXXXX")" || { founder_health_mail_unlock "$lock_fd"; return 1; }
   if ! jq --slurpfile acceptance "$current_file" --slurpfile time <(printf '%s\n' "$now") \
     '.acceptance_snapshot={issues:$acceptance[0],updated_at:($time[0]|tonumber)}' "$ledger" > "$tmp"; then
     rm -f -- "$tmp" "$current_file" "$catalog_file" "$title_file"
-    maintainer_health_mail_unlock "$lock_fd"
+    founder_health_mail_unlock "$lock_fd"
     return 1
   fi
-  mv -f -- "$tmp" "$ledger" || { maintainer_health_mail_unlock "$lock_fd"; return 1; }
-  maintainer_health_mail_unlock "$lock_fd"
+  mv -f -- "$tmp" "$ledger" || { founder_health_mail_unlock "$lock_fd"; return 1; }
+  founder_health_mail_unlock "$lock_fd"
   rm -f -- "$current_file" "$catalog_file" "$title_file"
 }
 
-maintainer_health_mail_active_implements() {
+founder_health_mail_active_implements() {
   local units
-  units="$(timeout 10 systemctl --user list-units 'zf-implement-*' --state=running --plain --no-legend 2>/dev/null)" || return 1
-  awk '$1 ~ /^zf-implement-[0-9]+\.service$/ { n++ } END { print n+0 }' <<< "$units"
+  units="$(timeout 10 systemctl --user list-units "${UNIT_PREFIX_TRANSIENT}-implement-*" --state=running --plain --no-legend 2>/dev/null)" || return 1
+  awk "\$1 ~ /^${UNIT_PREFIX_TRANSIENT}-implement-[0-9]+\\.service\$/ { n++ } END { print n+0 }" <<< "$units"
 }
 
-maintainer_health_mail_work_counts() {
+founder_health_mail_work_counts() {
   local home="$1" now="$2" units=null ready_json ready=''
-  units="$(maintainer_health_mail_active_implements)" || units=null
+  units="$(founder_health_mail_active_implements)" || units=null
   if ready_json="$(timeout 30 gh issue list --repo "$REPO" --state open --label ready-for-agent --limit 1000 --json number,labels 2>/dev/null)" \
     && jq -e 'type == "array" and length < 1000 and all(.[]; (.number|type)=="number" and (.labels|type)=="array")' <<< "$ready_json" >/dev/null 2>&1; then
     ready="$(jq '[.[] | select(all(.labels[]?.name; . != "pipeline-system" and . != "on-hold" and . != "needs-owner" and . != "needs-advisor" and . != "needs-triage" and . != "concluded"))] | length' <<< "$ready_json")"
@@ -688,12 +694,12 @@ maintainer_health_mail_work_counts() {
   printf '{"active":%s,"queued":%s}\n' "$units" "$ready"
 }
 
-maintainer_health_mail_metrics_json() {
+founder_health_mail_metrics_json() {
   local home="$1" mode="$2" anchor="$3" as_of="$4" work="${5:-}" current_start current_end previous_start previous_end week_start week_end earliest interval
   local periods_file work_file activity_json
   local -a metric_files=()
   if [ "$mode" = hourly ]; then
-    interval="$(maintainer_health_mail_digest_interval_seconds)" || return 1
+    interval="$(founder_health_mail_digest_interval_seconds)" || return 1
     current_end="$as_of"
     current_start=$((current_end - interval))
     previous_start=$((current_start - interval))
@@ -712,7 +718,7 @@ maintainer_health_mail_metrics_json() {
   work_file="$(mktemp)" || { rm -f -- "$periods_file"; return 1; }
   printf '{"current":{"start":%s,"end":%s},"previous":{"start":%s,"end":%s},"week":{"start":%s,"end":%s}}\n' \
     "$current_start" "$current_end" "$previous_start" "$previous_end" "$week_start" "$week_end" > "$periods_file"
-  if [ -z "$work" ]; then work="$(maintainer_health_mail_work_counts "$home" "$as_of")" || work='{"active":null,"queued":null}'; fi
+  if [ -z "$work" ]; then work="$(founder_health_mail_work_counts "$home" "$as_of")" || work='{"active":null,"queued":null}'; fi
   printf '%s\n' "$work" > "$work_file"
   shopt -s nullglob
   metric_files=("$home"/metrics/efficiency-????-??.jsonl)
@@ -755,14 +761,14 @@ maintainer_health_mail_metrics_json() {
   rm -f -- "$periods_file" "$work_file"
 }
 
-maintainer_health_mail_efficiency_block() {
+founder_health_mail_efficiency_block() {
   local home="$1" mode="$2" anchor="$3" now="$4" work="${5:-}" data
-  if [ -z "$work" ]; then work="$(maintainer_health_mail_work_counts "$home" "$now")" || work='{"active":null,"queued":null}'; fi
-  data="$(maintainer_health_mail_metrics_json "$home" "$mode" "$anchor" "$now" "$work")" || return 1
-  maintainer_health_mail_render_efficiency "$data" "$mode"
+  if [ -z "$work" ]; then work="$(founder_health_mail_work_counts "$home" "$now")" || work='{"active":null,"queued":null}'; fi
+  data="$(founder_health_mail_metrics_json "$home" "$mode" "$anchor" "$now" "$work")" || return 1
+  founder_health_mail_render_efficiency "$data" "$mode"
 }
 
-maintainer_health_mail_pipeline_efficiency_block() {
+founder_health_mail_pipeline_efficiency_block() {
   local home="$1" period="$2" anchor="$3" script_dir report now_iso
   script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
   if [ "$period" = hourly ]; then
@@ -851,7 +857,7 @@ maintainer_health_mail_pipeline_efficiency_block() {
   ' <<< "$report"
 }
 
-maintainer_health_mail_pressure_snapshot() {
+founder_health_mail_pressure_snapshot() {
   local load5 cpu_psi memory_psi
   load5="$(awk '{print $2}' /proc/loadavg 2>/dev/null || true)"
   cpu_psi="$(awk '$1 == "some" { for (i=2;i<=NF;i++) if ($i ~ /^avg10=/) { sub(/^avg10=/,"",$i); print $i; exit } }' /proc/pressure/cpu 2>/dev/null || true)"
@@ -861,12 +867,12 @@ maintainer_health_mail_pressure_snapshot() {
     {cpu_load_5m:($load5|number),cpu_psi_avg10:($cpu|number),memory_psi_avg10:($memory|number)}'
 }
 
-maintainer_health_mail_maintainer_efficiency_block() {
+founder_health_mail_maintainer_efficiency_block() {
   local home="$1" now="$2" ledger="$3" script_dir now_iso summary pressure snapshot previous result repo_root mttr since
   script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
   now_iso="$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)" || return 1
   summary="$(node "$script_dir/efficiency-regression.mjs" summary --home "$home" --now "$now_iso")" || return 1
-  pressure="$(maintainer_health_mail_pressure_snapshot)" || return 1
+  pressure="$(founder_health_mail_pressure_snapshot)" || return 1
   # Post-land breakage MTTR covers the fixes that landed since the last
   # successful digest, so each completed breakage is reported exactly once.
   repo_root="$(cd -- "$script_dir/../.." && pwd -P)" || return 1
@@ -933,7 +939,7 @@ maintainer_health_mail_maintainer_efficiency_block() {
     '$efficiency + {snapshot:$snapshot}'
 }
 
-maintainer_health_mail_render_efficiency() {
+founder_health_mail_render_efficiency() {
   local data="$1" mode="$2" mode_file status
   mode_file="$(mktemp)" || return 1
   printf '"%s"\n' "$mode" > "$mode_file"
@@ -982,9 +988,9 @@ maintainer_health_mail_render_efficiency() {
   return "$status"
 }
 
-maintainer_health_mail_collect_state_events() {
-  local ledger="$1" home="$2" now="$3" since known candidates catalog catalog_map metadata row issue key kind title labels at highlight text display_title local_time state_file candidate_json issue_summary
-  local -a state_files=() candidate_rows=() candidate_batches=() unreadable_issues=() summary_issues=()
+founder_health_mail_collect_state_events() {
+  local idx ledger="$1" home="$2" now="$3" since known candidates catalog catalog_map metadata row issue key kind title labels at highlight text display_title local_time state_file candidate_json issue_summary
+  local -a state_files=() batch_rows=() candidate_rows=() candidate_batches=() unreadable_issues=() summary_issues=()
   since="$(jq -r 'if .last_sent_at > 0 then .last_sent_at else .started_at end' "$ledger")" || return 1
   [[ "$since" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
   shopt -s nullglob
@@ -992,17 +998,9 @@ maintainer_health_mail_collect_state_events() {
   shopt -u nullglob
   ((${#state_files[@]})) || return 0
   known="$(jq -c '{reported:(.reported_items // {}),pending:(.pending_events // {})}' "$ledger")" || return 1
-  # One damaged issue state must not abort the rest of this digest.
-  for state_file in "${state_files[@]}"; do
-    issue="${state_file##*/}"
-    issue="${issue%.json}"
-    [[ "$issue" =~ ^[0-9]+$ ]] || continue
-    candidate_json="$(jq -cn --arg issue "$issue" --argjson since "$since" --argjson now "$now" --argjson known "$known" '
-      (try [inputs] catch null) as $states
-      | if ($states | type) != "array" or ($states | length) != 1 or ($states[0] | type) != "object" then
-          {unreadable:true}
-        else
-          $states[0] as $s
+  # One jq over all files: 508 per-file jq spawns took ~25 s under load and tripped the 120 s tick timeout.
+  local cand_def='def cands($issue):
+    . as $s
           | ($s.run // {}) as $run
           | [
               (if $run.outcome == "merged" and (($run.evidence.pr_number // "") | tostring | test("^[1-9][0-9]*$")) then
@@ -1019,7 +1017,30 @@ maintainer_health_mail_collect_state_events() {
                else empty end)
             ]
           | map(. as $candidate | select(($known.reported | has($candidate.key) | not) and ($known.pending | has($candidate.key) | not)))
-        end
+  ;'
+  local batch_lines
+  if batch_lines="$(jq -c --argjson since "$since" --argjson now "$now" --argjson known "$known" "$cand_def"'
+      (input_filename | sub(".*/"; "") | sub("\\.json$"; "")) as $issue
+      | if type == "object" then cands($issue) else {unreadable:true} end' "${state_files[@]}")" \
+    && [ "$(wc -l <<< "$batch_lines")" -eq "${#state_files[@]}" ]; then
+    mapfile -t batch_rows <<< "$batch_lines"
+    for idx in "${!state_files[@]}"; do
+      issue="${state_files[idx]##*/}"
+      issue="${issue%.json}"
+      [[ "$issue" =~ ^[0-9]+$ ]] || continue
+      if [[ "${batch_rows[idx]}" == \{* ]]; then unreadable_issues+=("$issue"); else candidate_batches+=("${batch_rows[idx]}"); fi
+    done
+  else
+  # One damaged issue state must not abort the rest of this digest.
+  for state_file in "${state_files[@]}"; do
+    issue="${state_file##*/}"
+    issue="${issue%.json}"
+    [[ "$issue" =~ ^[0-9]+$ ]] || continue
+    candidate_json="$(jq -cn --arg issue "$issue" --argjson since "$since" --argjson now "$now" --argjson known "$known" "$cand_def"'
+      (try [inputs] catch null) as $states
+      | if ($states | type) != "array" or ($states | length) != 1 or ($states[0] | type) != "object" then
+          {unreadable:true}
+        else $states[0] | cands($issue) end
     ' "$state_file")" || return 1
     if [[ "$candidate_json" == \{* ]]; then
       unreadable_issues+=("$issue")
@@ -1027,11 +1048,12 @@ maintainer_health_mail_collect_state_events() {
       candidate_batches+=("$candidate_json")
     fi
   done
+  fi
   candidates="$(printf '%s\n' "${candidate_batches[@]}" | jq -cs 'add // []')" || return 1
   if ((${#unreadable_issues[@]})); then
     for issue in "${unreadable_issues[@]}"; do
-      AGENT_HOME="$home" supervisor_inbox_append_once "maintainer-health-mail-unreadable-state:$issue" \
-        "maintainer-health-mail-unreadable-state issue=$issue state/$issue.json unreadable; maintainer digest omitted this issue's events" || return 1
+      AGENT_HOME="$home" supervisor_inbox_append_once "founder-health-mail-unreadable-state:$issue" \
+        "founder-health-mail-unreadable-state issue=$issue state/$issue.json unreadable; maintainer digest omitted this issue's events" || return 1
     done
     summary_issues=("${unreadable_issues[@]:0:5}")
     issue_summary="$(IFS=,; printf '%s' "${summary_issues[*]}")"
@@ -1042,7 +1064,7 @@ maintainer_health_mail_collect_state_events() {
   [ "$(jq -r 'length' <<< "$candidates")" -gt 0 ] || return 0
   local issue_ids
   issue_ids="$(jq -c '[.[].issue | tonumber] | unique' <<< "$candidates")" || return 1
-  catalog="$(maintainer_health_mail_issue_catalog "$issue_ids")" || {
+  catalog="$(founder_health_mail_issue_catalog "$issue_ids")" || {
     printf 'maintainer health mail: issue catalog lookup failed\n' >&2
     return 1
   }
@@ -1059,27 +1081,27 @@ maintainer_health_mail_collect_state_events() {
     [[ "$labels" == *,pipeline-system,* ]] && continue
     title="$(jq -r '.title' <<< "$metadata" | tr '\n\r' '  ' | sed -E 's/[[:space:]]+/ /g; s/^ | $//g')"
     [[ -n "$title" ]] || return 1
-    display_title="$(maintainer_health_mail_plain_title "$title")" || return 1
+    display_title="$(founder_health_mail_plain_title "$title")" || return 1
     case "$kind" in
       release)
         text="待上线：${display_title}。"
-        maintainer_health_mail_record_event "$ledger" "$key" '发布进度' "$text" "$now" release >/dev/null || return 1
+        founder_health_mail_record_event "$ledger" "$key" '发布进度' "$text" "$now" release >/dev/null || return 1
         ;;
       deploy)
         local_time="$(maintainer_local_time "$at")" || return 1
         text="现在可以使用「${display_title}」；$local_time 上线的版本。"
-        maintainer_health_mail_record_event "$ledger" "$key" '发布进度' "$text" "$now" deploy >/dev/null || return 1
+        founder_health_mail_record_event "$ledger" "$key" '发布进度' "$text" "$now" deploy >/dev/null || return 1
         ;;
       closed)
         highlight=false
         if [[ "$labels" == *,focus,* || "$labels" == *,priority:top,* ]]; then highlight=true; fi
-        maintainer_health_mail_record_event "$ledger" "$key" '事项完成' "修好了：${display_title}。" "$now" closed "$highlight" >/dev/null || return 1
+        founder_health_mail_record_event "$ledger" "$key" '事项完成' "修好了：${display_title}。" "$now" closed "$highlight" >/dev/null || return 1
         ;;
     esac
   done
 }
 
-maintainer_health_mail_collect_outcomes() {
+founder_health_mail_collect_outcomes() {
   local ledger="$1" home="$2" now="$3" activity since activity_rows issue_ids row issue sha outcome at key local_time deployed_at deployed_epoch catalog metadata title display_title catalog_map=''
   activity="$home/night/founder-health-outcomes.jsonl"
   [ -r "$activity" ] || return 0
@@ -1099,7 +1121,7 @@ maintainer_health_mail_collect_outcomes() {
   ' "$activity")" || return 1
   [ "$(jq -r 'length' <<< "$activity_rows")" -gt 0 ] || return 0
   issue_ids="$(jq -c '[.[].issue | tonumber] | unique' <<< "$activity_rows")" || return 1
-  catalog="$(maintainer_health_mail_issue_catalog "$issue_ids")" || return 1
+  catalog="$(founder_health_mail_issue_catalog "$issue_ids")" || return 1
   catalog_map="$(jq -c 'map({key:(.number|tostring),value:.}) | from_entries' <<< "$catalog")" || return 1
   while IFS= read -r row; do
     [ -n "$row" ] || continue
@@ -1108,35 +1130,35 @@ maintainer_health_mail_collect_outcomes() {
     outcome="$(jq -r '.outcome // empty' <<< "$row")"
     at="$(jq -r '.sent_at // empty | try fromdateiso8601 catch empty' <<< "$row")"
     [[ "$issue" =~ ^[0-9]+$ && -n "$sha" && "$at" =~ ^[0-9]+$ && "$at" -gt "$since" && "$at" -le "$now" ]] || continue
-    maintainer_health_mail_safe_outcome "$outcome" || continue
+    founder_health_mail_safe_outcome "$outcome" || continue
     key="deploy:$issue:$sha"
     metadata="$(jq -c --arg issue "$issue" '.[$issue] // empty' <<< "$catalog_map")" || return 1
     title="$(jq -r '.title // empty' <<< "${metadata:-null}")" || return 1
-    display_title="$(maintainer_health_mail_plain_title "$title")" || return 1
+    display_title="$(founder_health_mail_plain_title "$title")" || return 1
     # Keep an existing readable outcome when the issue title is not readable.
-    if [ -n "$title" ] && [ -z "$(maintainer_health_mail_event_rejection_reason '发布进度' "$title")" ]; then
+    if [ -n "$title" ] && [ -z "$(founder_health_mail_event_rejection_reason '发布进度' "$title")" ]; then
       outcome="现在可以使用「${display_title}」"
     else
-      outcome="$(maintainer_health_mail_scrub_text "$outcome")" || return 1
+      outcome="$(founder_health_mail_scrub_text "$outcome")" || return 1
       case "$outcome" in
         现在可以*|修好了*) ;;
         *) outcome="现在可以：$outcome" ;;
       esac
     fi
-    deployed_at="$(maintainer_health_mail_deployed_at "$home" "$issue")" || return 1
+    deployed_at="$(founder_health_mail_deployed_at "$home" "$issue")" || return 1
     deployed_epoch=''
     if [ -n "$deployed_at" ]; then deployed_epoch="$(agent_epoch -u "$deployed_at" 2>/dev/null || true)"; fi
     if [[ "$deployed_epoch" =~ ^[0-9]+$ ]]; then
-      local_time="$(maintainer_health_mail_date_time "$deployed_epoch")" || return 1
+      local_time="$(founder_health_mail_date_time "$deployed_epoch")" || return 1
       outcome="${outcome}；$local_time 上线的版本。"
     else
       outcome="${outcome}；上线时间待核实。"
     fi
-    maintainer_health_mail_record_event "$ledger" "$key" '发布进度' "$outcome" "$at" deploy >/dev/null || return 1
+    founder_health_mail_record_event "$ledger" "$key" '发布进度' "$outcome" "$at" deploy >/dev/null || return 1
   done < <(jq -c '.[]' <<< "$activity_rows")
 }
 
-maintainer_health_mail_safe_outcome() {
+founder_health_mail_safe_outcome() {
   local text="$1" internal="${MAINTAINER_BODY_INTERNAL_PATTERN:-流水线|节点|运维|健康检查|advisor|pipeline|deploy|build|merge|pull request}"
   [[ "$text" =~ [一-龥] ]] || return 1
   grep -iEq "$internal" <<< "$text" && return 1
@@ -1144,7 +1166,7 @@ maintainer_health_mail_safe_outcome() {
   return 0
 }
 
-maintainer_health_mail_alert_stats() {
+founder_health_mail_alert_stats() {
   local agent_dir="$1" end_epoch="$2" repo_root="$3" end_iso since_iso day offset
   local transition_file="$agent_dir/state/ticket-transitions.jsonl"
   local -a alert_files=()
@@ -1201,7 +1223,7 @@ maintainer_health_mail_alert_stats() {
   fi
 }
 
-maintainer_health_mail_measure() {
+founder_health_mail_measure() {
   local agent_dir="$1" day="$2" end_epoch="$3" repo_root="${4:-}"
   local start_epoch end_iso start_iso wake_since_iso week_start end_stamp
   local spend_file incident_file wake_file spend_facts incident_facts wake_facts alert_facts
@@ -1223,7 +1245,7 @@ maintainer_health_mail_measure() {
     repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)" || return 1
   fi
   spend_file="$agent_dir/spend/$day.log"
-  incident_file="${AGENT_INCIDENT_GUARDS_FILE:-$repo_root/engine/state/incident-guards.json}"
+  incident_file="${AGENT_INCIDENT_GUARDS_FILE:-$repo_root/${ZF_PACK_REL:-engine}/state/incident-guards.json}"
   wake_file="$agent_dir/logs/supervisor-wakes.log"
   if [ -r "$spend_file" ]; then
     spend_facts="$(awk -F '\t' -v start="$start_epoch" -v end="$end_epoch" \
@@ -1278,7 +1300,7 @@ maintainer_health_mail_measure() {
           and .ts <= (($park.ts | fromdateiso8601) + 86400 | todateiso8601))) ] | length' \
       "$agent_dir/state/ticket-transitions.jsonl" 2>/dev/null || printf '0')" || return 1
   fi
-  alert_facts="$(maintainer_health_mail_alert_stats "$agent_dir" "$end_epoch" "$repo_root")" || return 1
+  alert_facts="$(founder_health_mail_alert_stats "$agent_dir" "$end_epoch" "$repo_root")" || return 1
   alert_tracking="$(jq -r '.tracking' <<< "$alert_facts")" || return 1
   alert_classes="$(jq -c '.classes' <<< "$alert_facts")" || return 1
   if (( released > 0 )); then
@@ -1347,16 +1369,16 @@ maintainer_health_mail_measure() {
       alert_tracking:$alert_tracking,alert_classes:$alert_classes}'
 }
 
-maintainer_health_mail_metric_lines() {
+founder_health_mail_metric_lines() {
   local agent_dir="$1" now="$2" day measure recurrences avg wakeups success_rate queue_age alert_lines policy_file policy_tmp
   day="$(date -u -d "@$now" +%Y-%m-%d)" || return 1
-  measure="$(maintainer_health_mail_measure "$agent_dir" "$day" "$now")" || return 1
+  measure="$(founder_health_mail_measure "$agent_dir" "$day" "$now")" || return 1
   recurrences="$(jq -r 'if .recurrence_tracking then "\(.recurrences_7d)次" else "待统计" end' <<< "$measure")" || return 1
   avg="$(jq -r '.tokens_per_released_issue // "待统计"' <<< "$measure")" || return 1
   wakeups="$(jq -r 'if .wake_tracking then (.wakeups_24h|tostring) else "待统计" end' <<< "$measure")" || return 1
   success_rate="$(jq -r 'if .implement_success_rate == null then "待统计" else "\((.implement_success_rate * 100|round))%（\(.implement_successes)/\(.implement_result_count) 个终态结果）" end' <<< "$measure")" || return 1
   queue_age="$(jq -r 'if .oldest_queue_age_minutes == null then "待统计" else "\(.oldest_queue_age_minutes)分钟" end' <<< "$measure")" || return 1
-  # A plain count, no class ids: ids like ticket-progress tripped the maintainer-mail internal-word filter and
+  # A plain count, no class ids: ids like ticket-progress tripped the founder-mail internal-word filter and
   # the 2026-10-04 00Z and 08Z digests were refused.
   alert_lines="$(jq -r '[.alert_classes[] | select(.demoted_count > 0 or .low_action)]
     | if length == 0 then "" else
@@ -1388,12 +1410,12 @@ maintainer_health_mail_metric_lines() {
   fi
 }
 
-maintainer_health_mail_date_time() {
+founder_health_mail_date_time() {
   [[ "$1" =~ ^[0-9]{10,}$ ]] && (( $1 >= 946684800 )) || { printf '时间待核实'; return 0; }
   maintainer_local_time "$1"
 }
 
-maintainer_health_mail_elapsed() {
+founder_health_mail_elapsed() {
   local since="$1" now="$2" seconds minutes
   [[ "$since" =~ ^[0-9]{10,}$ && "$now" =~ ^[0-9]+$ ]] && (( since >= 946684800 )) || { printf '持续时间待核实'; return 0; }
   seconds=$((now - since))
@@ -1403,12 +1425,12 @@ maintainer_health_mail_elapsed() {
   else printf '约%d小时' "$((minutes / 60))"; fi
 }
 
-maintainer_health_mail_anomaly_sentence() {
+founder_health_mail_anomaly_sentence() {
   local node="$1" action="$2" since="$3" now="$4" when elapsed shown_since
   if [[ "$since" =~ ^[0-9]{10,}$ && "$now" =~ ^[0-9]+$ ]] && (( since >= 946684800 && since <= now )); then
     shown_since=$((since / 60 * 60))
-    when="自$(maintainer_health_mail_date_time "$shown_since")起"
-    elapsed="$(maintainer_health_mail_elapsed "$shown_since" "$now")"
+    when="自$(founder_health_mail_date_time "$shown_since")起"
+    elapsed="$(founder_health_mail_elapsed "$shown_since" "$now")"
   else
     when='开始时间暂无数据'
     elapsed=''
@@ -1438,11 +1460,11 @@ maintainer_health_mail_anomaly_sentence() {
   esac
 }
 
-maintainer_health_mail_no_launch_reason() {
+founder_health_mail_no_launch_reason() {
   printf '没有新版本通过上线验证'
 }
 
-maintainer_health_mail_no_work_reason() {
+founder_health_mail_no_work_reason() {
   local active="${1:-null}" queued="${2:-null}"
   [[ "$active" =~ ^[0-9]+$ ]] && (( active == 0 )) || return 0
   case "$queued" in
@@ -1453,7 +1475,7 @@ maintainer_health_mail_no_work_reason() {
   esac
 }
 
-maintainer_health_mail_current_anomalies() {
+founder_health_mail_current_anomalies() {
   local home="$1" now="$2" user_home runtime_dir scorecard generated sampled_epoch age result
   user_home="${home%/.zenoforge}"
   [ "$user_home" != "$home" ] || user_home="$home"
@@ -1475,9 +1497,9 @@ maintainer_health_mail_current_anomalies() {
   printf '%s' "$result"
 }
 
-maintainer_health_mail_release_lines() {
+founder_health_mail_release_lines() {
   local home="$1" start="$2" end="$3" deployments complete period_file issues_file rows issue_ids issue title at local_time
-  deployments="$(maintainer_health_mail_deployment_catalog "$home")" || return 1
+  deployments="$(founder_health_mail_deployment_catalog "$home")" || return 1
   if [ "$deployments" = null ]; then
     printf -- '- 上线记录待核实，无法确认本期上线内容。\n'
     return 0
@@ -1494,9 +1516,9 @@ maintainer_health_mail_release_lines() {
   [ "$(jq -r 'length' <<< "$deployments")" -gt 0 ] || return 0
   issue_ids="$(jq -c '[.[].issue | tonumber] | unique' <<< "$deployments")" || return 1
   issues_file="$(mktemp)" || return 1
-  if ! maintainer_health_mail_issue_catalog "$issue_ids" > "$issues_file"; then
+  if ! founder_health_mail_issue_catalog "$issue_ids" > "$issues_file"; then
     while IFS=$'\t' read -r issue at; do
-      local_time="$(maintainer_health_mail_date_time "$at")" || { rm -f -- "$issues_file"; return 1; }
+      local_time="$(founder_health_mail_date_time "$at")" || { rm -f -- "$issues_file"; return 1; }
       printf -- '- 已确认一项改进于%s上线；事项名称待核实。\n' "$local_time"
     done < <(jq -nr --argjson releases "$deployments" '$releases[] | [.issue,.at] | @tsv')
     rm -f -- "$issues_file"
@@ -1510,26 +1532,26 @@ maintainer_health_mail_release_lines() {
   ' 2>/dev/null)" || { rm -f -- "$issues_file"; return 1; }
   while IFS=$'\t' read -r issue title at; do
     [ -n "$issue" ] || continue
-    if [ -n "$title" ]; then title="现在可以使用「$(maintainer_health_mail_plain_title "$title")」"
+    if [ -n "$title" ]; then title="现在可以使用「$(founder_health_mail_plain_title "$title")」"
     else title='已确认一项改进；事项名称待核实。'; fi
-    local_time="$(maintainer_health_mail_date_time "$at")" || { rm -f -- "$issues_file"; return 1; }
+    local_time="$(founder_health_mail_date_time "$at")" || { rm -f -- "$issues_file"; return 1; }
     printf -- '- %s；%s 上线的版本。\n' "$title" "$local_time"
   done <<< "$rows"
   rm -f -- "$issues_file"
 }
 
-maintainer_health_mail_event_rejection_reason() {
+founder_health_mail_event_rejection_reason() {
   local section="$1" text="$2"
-  text="$(maintainer_health_mail_scrub_text "$text")" || return 1
+  text="$(founder_health_mail_scrub_text "$text")" || return 1
   if ! looks_like_maintainer_readable "$text" 0; then
     printf 'body-language\n'
     return 0
   fi
-  maintainer_mail_rejection_reason health '工作进展简报' \
+  founder_mail_rejection_reason health '工作进展简报' \
     "$(printf '**结论：** 本次有 1 项新变化。\n\n**%s**\n%s\n' "$section" "$text")"
 }
 
-maintainer_health_mail_filter_events() {
+founder_health_mail_filter_events() {
   local events="$1" home="$2" now="${3:-$(date +%s)}" event key section text reason accepted='[]'
   local -a rows=()
   mapfile -t rows < <(jq -c '.[]' <<< "$events")
@@ -1537,12 +1559,12 @@ maintainer_health_mail_filter_events() {
     key="$(jq -r '.key' <<< "$event")" || return 1
     section="$(jq -r '.section' <<< "$event")" || return 1
     text="$(jq -r '.text' <<< "$event")" || return 1
-    reason="$(maintainer_health_mail_event_rejection_reason "$section" "$text")" || return 1
+    reason="$(founder_health_mail_event_rejection_reason "$section" "$text")" || return 1
     if [ -n "$reason" ]; then
       printf 'maintainer health mail: dropped key=%s reason=%s\n' "$key" "$reason" >&2
-      AGENT_HOME="$home" supervisor_inbox_append_once "maintainer-mail-item-rejected:$key" \
-        "maintainer-mail-item-rejected key=$key reason=$reason 不可读条目已隔离，其他邮件内容继续发送" || return 1
-      maintainer_health_mail_mark_reported "$home/night/founder-health-mail.json" "$key" "$now" "$reason" || return 1
+      AGENT_HOME="$home" supervisor_inbox_append_once "founder-mail-item-rejected:$key" \
+        "founder-mail-item-rejected key=$key reason=$reason 不可读条目已隔离，其他邮件内容继续发送" || return 1
+      founder_health_mail_mark_reported "$home/night/founder-health-mail.json" "$key" "$now" "$reason" || return 1
       continue
     fi
     accepted="$(jq -c --argjson event "$event" '. + [$event]' <<< "$accepted")" || return 1
@@ -1550,7 +1572,7 @@ maintainer_health_mail_filter_events() {
   printf '%s\n' "$accepted"
 }
 
-maintainer_health_mail_normalize_events() {
+founder_health_mail_normalize_events() {
   local events="$1" now="$2" row key node opened section text normalized
   local -a nodes=()
   mapfile -t nodes < <(jq -r '
@@ -1577,7 +1599,7 @@ maintainer_health_mail_normalize_events() {
     section=处理变化
     if jq -e --arg node "$node" 'any(.[]; ((.reminder_for // "") | startswith("node-important:" + $node + ":")))' \
       <<< "$normalized" >/dev/null; then section=仍在处理; fi
-    text="$(maintainer_health_mail_anomaly_sentence "$node" open "$opened" "$now")" || return 1
+    text="$(founder_health_mail_anomaly_sentence "$node" open "$opened" "$now")" || return 1
     normalized="$(jq -c --arg node "$node" --arg section "$section" --arg text "$text" --argjson opened "$opened" '
       [.[] | select(((.key // "") | test("^node:" + $node + ":alert:")) | not)
         | select(((.reminder_for // "") | startswith("node-important:" + $node + ":")) | not)]
@@ -1594,12 +1616,12 @@ maintainer_health_mail_normalize_events() {
   printf '%s\n' "$normalized"
 }
 
-maintainer_health_mail_build_body() {
+founder_health_mail_build_body() {
   local events="$1" efficiency="${2:-}" launch_reason="${3:-没有新版本通过上线验证}" work_reason="${4:-}" pipeline_efficiency="${5:-}" now="${6:-$(date +%s)}" count closed highlights rest live_lines
   count="$(jq -r '[.[] | select(.kind != "efficiency")] | length' <<< "$events")" || return 1
   count=$((count + ${MAINTAINER_HEALTH_MAIL_EFFICIENCY_CHANGE_COUNT:-0}))
   (( count > 0 )) || return 1
-  events="$(maintainer_health_mail_normalize_events "$events" "$now")" || return 1
+  events="$(founder_health_mail_normalize_events "$events" "$now")" || return 1
   events="$(jq '
     map(. as $event | .text |= (gsub("^[[:space:]]*" + ($event.section // "") + "[：:][[:space:]]*"; "")
       | gsub("^[[:space:]]*-[[:space:]]*" + ($event.section // "") + "[：:][[:space:]]*"; "")
@@ -1652,7 +1674,7 @@ maintainer_health_mail_build_body() {
   }
 }
 
-maintainer_health_mail_output_contract() {
+founder_health_mail_output_contract() {
   local body="$1" now="$2" maintainer_tz
   maintainer_tz="$(maintainer_timezone)" || { printf 'comms-profile-unreadable'; return 1; }
   printf '%s' "$body" | ZF_MAINTAINER_TZ="$maintainer_tz" python3 -c '
@@ -1803,47 +1825,47 @@ else:
 ' "$now" "${3:-validate}"
 }
 
-maintainer_health_mail_contract_inbox() {
+founder_health_mail_contract_inbox() {
   local home="$1" reason="$2"
-  AGENT_HOME="$home" supervisor_inbox_append_once "maintainer-mail-output-contract:$reason" \
-    "maintainer-mail-output-contract status=failed rules=$reason"
+  AGENT_HOME="$home" supervisor_inbox_append_once "founder-mail-output-contract:$reason" \
+    "founder-mail-output-contract status=failed rules=$reason"
 }
 
-maintainer_health_mail_deliver() {
+founder_health_mail_deliver() {
   local ledger="$1" now="$2" slot="$3" subject="$4" body="$5" events="$6" claim home contract_errors isolated row key reason
   home="${ledger%/night/founder-health-mail.json}"
-  if ! contract_errors="$(maintainer_health_mail_output_contract "$body" "$now")"; then
-    isolated="$(maintainer_health_mail_output_contract "$body" "$now" isolate-lines)" || return 1
+  if ! contract_errors="$(founder_health_mail_output_contract "$body" "$now")"; then
+    isolated="$(founder_health_mail_output_contract "$body" "$now" isolate-lines)" || return 1
     while IFS= read -r row; do
       key="$(jq -r '.key' <<< "$row")" || return 1
       reason="$(jq -r '.reason' <<< "$row")" || return 1
       if ! jq -e --arg key "$key" '(.reported_items // {}) | has($key)' "$ledger" >/dev/null; then
-        AGENT_HOME="$home" supervisor_inbox_append_once "maintainer-mail-item-rejected:$key" \
-          "maintainer-mail-item-rejected key=$key reason=$reason 不可读行已隔离，其他邮件内容继续发送" || return 1
-        maintainer_health_mail_mark_reported "$ledger" "$key" "$now" "$reason" || return 1
+        AGENT_HOME="$home" supervisor_inbox_append_once "founder-mail-item-rejected:$key" \
+          "founder-mail-item-rejected key=$key reason=$reason 不可读行已隔离，其他邮件内容继续发送" || return 1
+        founder_health_mail_mark_reported "$ledger" "$key" "$now" "$reason" || return 1
       fi
     done < <(jq -c '.rejected[]' <<< "$isolated")
     body="$(jq -r '.body' <<< "$isolated")" || return 1
-    if ! contract_errors="$(maintainer_health_mail_output_contract "$body" "$now")"; then
-      maintainer_health_mail_contract_inbox "$home" "${contract_errors:-validator-failed}" || return 1
+    if ! contract_errors="$(founder_health_mail_output_contract "$body" "$now")"; then
+      founder_health_mail_contract_inbox "$home" "${contract_errors:-validator-failed}" || return 1
       return 1
     fi
   fi
-  claim="$(maintainer_health_mail_claim_digest "$ledger" "$slot" "$now" "$events")" || return 1
+  claim="$(founder_health_mail_claim_digest "$ledger" "$slot" "$now" "$events")" || return 1
   [ "$claim" = reserved ] || return 0
-  if notify_maintainer_health "$subject" "$body"; then
-    maintainer_health_mail_mark_sent "$ledger" "$now"
+  if notify_founder_health "$subject" "$body"; then
+    founder_health_mail_mark_sent "$ledger" "$now"
     return $?
   fi
   if [ "${NOTIFY_LAST_SEND_RETRY_SAFE:-0}" = 1 ]; then
-    maintainer_health_mail_release_digest "$ledger" "$slot" >/dev/null || return 1
+    founder_health_mail_release_digest "$ledger" "$slot" >/dev/null || return 1
   fi
   return 1
 }
 
 # Prints credential verdict. Probe output is discarded; only allowlisted
 # failure classes reach the maintainer mail ledger.
-maintainer_health_mail_credential_status() {
+founder_health_mail_credential_status() {
   local home="$1"
   local log="$home/logs/notify.log" last_strict gcloud_bin gws_bin
   local gcloud_status=unavailable gws_status=unavailable stderr_file last_sent=0
@@ -1910,30 +1932,34 @@ maintainer_health_mail_credential_status() {
   printf '%s %s\n' "$primary_status" "$primary_detail"
 }
 
-maintainer_health_mail_tick() {
+founder_health_mail_tick() {
   local home="$1" now="${2:-$(date +%s)}" ledger
   local slot last_slot last_sent_at interval body events event_count efficiency efficiency_report efficiency_change_count launch_reason work_data active queued work_reason
   ledger="$home/night/founder-health-mail.json"
-  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
-  maintainer_health_mail_incident_tick "$ledger" "$now" || return 1
-  maintainer_health_mail_collect_outcomes "$ledger" "$home" "$now" || return 1
-  maintainer_health_mail_collect_state_events "$ledger" "$home" "$now" || return 1
-  maintainer_health_mail_acceptance_events "$ledger" "$home" "$now" || return 1
+  founder_health_mail_ensure_ledger "$ledger" "$now" || return 1
+  founder_health_mail_incident_tick "$ledger" "$now" || return 1
+  founder_health_mail_collect_outcomes "$ledger" "$home" "$now" || return 1
+  founder_health_mail_collect_state_events "$ledger" "$home" "$now" || return 1
+  founder_health_mail_acceptance_events "$ledger" "$home" "$now" || return 1
 
-  maintainer_health_mail_collect_reminders "$ledger" "$home" "$now" || return 1
-  slot="$(maintainer_health_mail_slot_key "$now")" || return 1
+  founder_health_mail_collect_reminders "$ledger" "$home" "$now" || return 1
+  # A tick killed after claiming its slot (timeout) leaves the slot reserved and the events marked reported: release stale claims.
+  if jq -e --argjson now "$now" '.last_digest_claim != null and ($now - .last_digest_attempted_at > 900)' "$ledger" >/dev/null; then
+    founder_health_mail_release_digest "$ledger" "$(jq -r '.last_digest_slot' "$ledger")" >/dev/null || return 1
+  fi
+  slot="$(founder_health_mail_slot_key "$now")" || return 1
   last_slot="$(jq -r '.last_digest_slot' "$ledger")" || return 1
   [ "$slot" != "$last_slot" ] || return 0
   events="$(jq -c '[.pending_events // {} | to_entries[] | .value] | sort_by([.section,.created_at,.key])' "$ledger")" || return 1
-  events="$(maintainer_health_mail_filter_events "$events" "$home" "$now")" || return 1
+  events="$(founder_health_mail_filter_events "$events" "$home" "$now")" || return 1
   event_count="$(jq -r 'length' <<< "$events")" || return 1
-  interval="$(maintainer_health_mail_digest_interval_seconds)" || return 1
+  interval="$(founder_health_mail_digest_interval_seconds)" || return 1
   last_sent_at="$(jq -r '.last_sent_at' "$ledger")" || return 1
   if (( last_sent_at > 0 && now - last_sent_at < interval )); then return 0; fi
-  work_data="$(maintainer_health_mail_work_counts "$home" "$now")" || work_data='{"active":null,"queued":null}'
+  work_data="$(founder_health_mail_work_counts "$home" "$now")" || work_data='{"active":null,"queued":null}'
   active="$(jq -r '.active // "null"' <<< "$work_data")" || active=null
   queued="$(jq -r '.queued // "null"' <<< "$work_data")" || queued=null
-  efficiency_report="$(maintainer_health_mail_maintainer_efficiency_block "$home" "$now" "$ledger")" || return 1
+  efficiency_report="$(founder_health_mail_maintainer_efficiency_block "$home" "$now" "$ledger")" || return 1
   efficiency="$(jq -r '.body' <<< "$efficiency_report")" || return 1
   efficiency_change_count="$(jq -r '.count' <<< "$efficiency_report")" || return 1
   MAINTAINER_HEALTH_MAIL_EFFICIENCY_SNAPSHOT="$(jq -c '.snapshot' <<< "$efficiency_report")" || return 1
@@ -1945,37 +1971,37 @@ maintainer_health_mail_tick() {
     events="$(jq -cn --argjson events "$events" --arg key "efficiency:$now" --argjson now "$now" \
       '$events + [{key:$key,section:"效率变化",text:"效率指标有新的变化。",kind:"efficiency",highlight:false,created_at:$now}]')" || return 1
   fi
-  launch_reason="$(maintainer_health_mail_no_launch_reason)"
-  work_reason="$(maintainer_health_mail_no_work_reason "$active" "$queued")"
-  body="$(maintainer_health_mail_build_body "$events" "$efficiency" "$launch_reason" "$work_reason" '' "$now")" || return 1
-  maintainer_health_mail_deliver "$ledger" "$now" "$slot" '工作进展简报' "$body" "$events"
+  launch_reason="$(founder_health_mail_no_launch_reason)"
+  work_reason="$(founder_health_mail_no_work_reason "$active" "$queued")"
+  body="$(founder_health_mail_build_body "$events" "$efficiency" "$launch_reason" "$work_reason" '' "$now")" || return 1
+  founder_health_mail_deliver "$ledger" "$now" "$slot" '工作进展简报' "$body" "$events"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   set -euo pipefail
-  AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"
+  source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/config.sh"
   NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
   ledger="$NIGHT/founder-health-mail.json"
   command="${1:-}"
   case "$command" in
     status)
       now="${2:-$(date +%s)}"
-      if ! maintainer_health_mail_ensure_ledger "$ledger" "$now"; then
+      if ! founder_health_mail_ensure_ledger "$ledger" "$now"; then
         printf 'UNKNOWN mail-ledger-unreadable\n'
         exit 0
       fi
       printf '%s no-successful-mail-age-minutes=%s\n' \
-        "$(maintainer_health_mail_node_status "$ledger" "$now")" \
+        "$(founder_health_mail_node_status "$ledger" "$now")" \
         "$(( (now - $(jq -r 'if .last_sent_at > 0 then .last_sent_at else .started_at end' "$ledger")) / 60 ))"
       ;;
     credential-status)
-      maintainer_health_mail_credential_status "$AGENT_HOME"
+      founder_health_mail_credential_status "$AGENT_HOME"
       ;;
     tick)
       export AGENT_HOME ZF_NIGHT_DIR="$NIGHT"
       DRY_RUN="${DRY_RUN:-0}"
       source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/notify.sh"
-      maintainer_health_mail_tick "$AGENT_HOME"
+      founder_health_mail_tick "$AGENT_HOME"
       ;;
     resolve-incident)
       issue="${2:-}"
@@ -1988,8 +2014,8 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       DRY_RUN="${DRY_RUN:-0}"
       source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/notify.sh"
       now="$(date +%s)"
-      maintainer_health_mail_incident_mark_resolved "$ledger" "$issue" "$reason" "$now" >/dev/null
-      maintainer_health_mail_incident_tick "$ledger" "$now" "$issue"
+      founder_health_mail_incident_mark_resolved "$ledger" "$issue" "$reason" "$now" >/dev/null
+      founder_health_mail_incident_tick "$ledger" "$now" "$issue"
       ;;
     queue-event)
       key="${2:-}"
@@ -2000,7 +2026,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         printf 'usage: %s queue-event <key> <section> <text> [epoch] | track-decision <issue-number> <subject> [epoch]\n' "$0" >&2
         exit 2
       }
-      maintainer_health_mail_record_event "$ledger" "$key" "$section" "$text" "$now"
+      founder_health_mail_record_event "$ledger" "$key" "$section" "$text" "$now"
       ;;
     track-decision)
       issue="${2:-}"
@@ -2010,7 +2036,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         printf 'usage: %s track-decision <issue-number> <subject> [epoch]\n' "$0" >&2
         exit 2
       }
-      maintainer_health_mail_track_important "$ledger" "decision:$issue:$subject" decision "$subject" "$issue" "$now"
+      founder_health_mail_track_important "$ledger" "decision:$issue:$subject" decision "$subject" "$issue" "$now"
       ;;
     *)
       printf 'usage: %s status [epoch] | credential-status | tick | resolve-incident <issue-number> <reason> | queue-event <key> <section> <text> [epoch] | track-decision <issue-number> <subject> [epoch]\n' "$0" >&2

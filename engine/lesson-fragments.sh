@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-DEFAULT_REPO="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+DEFAULT_REPO="${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 
 usage() {
   echo "Usage: $0 --check|--fold [repo-root] [incident-guards.json] [--files fragment.json ...]" >&2
@@ -139,7 +139,7 @@ mode="${1:-}"
 shift
 repo="${1:-$DEFAULT_REPO}"
 [[ $# -eq 0 ]] || shift
-registry="$repo/engine/state/incident-guards.json"
+registry="$repo/${ZF_PACK_REL:-engine}/state/incident-guards.json"
 if [[ $# -gt 0 && "$1" != --files ]]; then
   registry="$1"
   shift

@@ -566,6 +566,21 @@ gated_unit() { # id pr branch approved_sha → 一个 ready-to-merge 单元行�
 }
 gh() {
   case "$1 $2" in
+    # #4725 条件请求包装（gh_api_cached）发出的 `gh api -i [-H …] …`：剥掉 -i/-H 后按原样
+    # 递归分发到下面的既有分支，再用 200 + ETag 头信封包一层，让包装走 200 缓存分支。
+    "api -i")
+      local rest=() skip_next=0 arg body
+      for arg in "$@"; do
+        (( skip_next )) && { skip_next=0; continue; }
+        case "$arg" in
+          -i) ;;
+          -H) skip_next=1 ;;
+          *) rest+=("$arg") ;;
+        esac
+      done
+      body="$(gh "${rest[@]}")" || return $?
+      printf 'HTTP/2.0 200 OK\nEtag: "stub"\n\n%s\n' "$body"
+      return 0 ;;
     "pr list") gh_pr_list "$@" ;;
     "pr ready") shift 2; gh_pr_ready "$@" ;;
     "pr edit")
@@ -618,6 +633,21 @@ gh() {
             jq -c --arg st "$st" '.[] | select(.status == $st)' <<<"$GH_RUNS"
           fi ;;
       esac ;;
+    # #4725 gh_api_cached 递归分发落进来的直连形态（`gh api <url> --jq …`，无 --paginate）：
+    # 与上面 --paginate 分支同款逻辑，URL 从 $2 取。jobs 走下面既有的 jobs 分支。
+    "api repos/{owner}/{repo}/actions/runners?per_page=100")
+      local runners_jq="" runners_prev="" arg
+      for arg in "$@"; do [[ "$runners_prev" == --jq ]] && runners_jq="$arg"; runners_prev="$arg"; done
+      jq -r "${runners_jq:-.runners[].id}" <<<"$GH_RUNNERS" ;;
+    "api repos/{owner}/{repo}/actions/runs?status="*)
+      local st="$2" runs_jq="" runs_prev="" arg
+      st="${st#*status=}"; st="${st%%&*}"
+      for arg in "$@"; do [[ "$runs_prev" == --jq ]] && runs_jq="$arg"; runs_prev="$arg"; done
+      if [[ "$runs_jq" == '.workflow_runs[].id' ]]; then
+        jq -r --arg st "$st" '.[] | select(.status == $st) | .databaseId' <<<"$GH_RUNS"
+      else
+        jq -c --arg st "$st" '.[] | select(.status == $st)' <<<"$GH_RUNS"
+      fi ;;
     # 一个 run 的 job 快照：[{status, runner_id}]（cd947d120 的共享缓存契约）
     "api repos/{owner}/{repo}/actions/runs/"*"/jobs"*)
       local jobs_id="$2" jobs_jq="" jobs_prev="" arg
@@ -895,7 +925,7 @@ DISPATCHED=(); dispatch_pending || :
   || fail "a high-cache-read unit inside the rounds+wall budget was stopped or noted as over budget (stage=$(field issue-711 .stage), dispatches=${DISPATCHED[*]:-none})"
 rm -f "$sup/$high_cache_log"
 # 派发路径不再包 spend runner：worker 命令就是 codex 本身，token 用量不构成停止条件。
-if grep -Fq 'workorder_spend_runner' "$script_dir/scheduler.sh"; then
+if grep -Fq 'workorder_spend_runner' "$script_dir/scheduler.sh" "$script_dir"/scheduler.d/*.sh; then
   fail "the dispatch path still wraps workers with the token spend runner"
 fi
 # A no-PR unit at the current rounds+wall stop-loss enters the real recut route.
@@ -1669,7 +1699,7 @@ root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
 # 名额按 runner busy 折算（6adc3ba00）：两个在线 PR runner，run 60 的 job 占着 runner 1
 # （busy=true）；runner 3（cihost-ci-main）不是 PR 池不参与，另一个 job 在它上面也不占 PR 名额 → 1 个空槽。
 # GH_RUN_JOBS 仍供取消判定读取。
-GH_RUNNERS='{"runners":[{"id":1,"status":"online","busy":true,"labels":[{"name":"cihost-ci"}]},{"id":2,"status":"online","busy":false,"labels":[{"name":"zf-suites"}]},{"id":3,"status":"online","busy":true,"labels":[{"name":"cihost-ci-main"}]},{"id":4,"status":"offline","busy":false,"labels":[{"name":"cihost-ci"}]}]}'
+GH_RUNNERS='{"runners":[{"id":1,"status":"online","busy":true,"labels":[{"name":"cihost-ci"}]},{"id":2,"status":"online","busy":false,"labels":[{"name":"vecta-suites"}]},{"id":3,"status":"online","busy":true,"labels":[{"name":"cihost-ci-main"}]},{"id":4,"status":"offline","busy":false,"labels":[{"name":"cihost-ci"}]}]}'
 GH_RUN_JOBS='{"60":{"jobs":[{"status":"in_progress","runner_id":1},{"status":"in_progress","runner_id":3}]}}'
 : > "$wr/cancelled"
 units "{\"units\":[{\"id\":\"pr-52\",\"pr\":52,\"stage\":\"ready-to-merge\",\"branch\":\"p52\",\"approved_sha\":\"$H1\",\"precheck_sha\":\"$H1\",\"ready_since\":1,\"history\":[]},{\"id\":\"pr-53\",\"pr\":53,\"stage\":\"ready-to-merge\",\"branch\":\"p53\",\"approved_sha\":\"$H2\",\"ci_wip_wait\":\"$H2\",\"ready_since\":2,\"history\":[]}]}"
@@ -2626,7 +2656,7 @@ GH_MERGES=(); run_merge_lane || :
 )
 unset GH_CHECKS; gate_eval_sha() { gate_candidates_stub; }
 unset -f git suites_run_for
-source <(sed -n '/^main_suites_load() {/,/^}/p;/^suites_run_for() {/,/^}/p' "$script_dir/scheduler.sh")
+source <(sed -n '/^main_suites_load() {/,/^}/p;/^suites_run_for() {/,/^}/p' "$script_dir/scheduler.d/merge-prep.sh")
 # 这些尾段场景逐拍改写 GH_RUNS：每次取 run 前丢掉 main_suites_load 的拍内缓存（同 e5c021f3b
 # 的 ci_tick_reset 语义），让真实 suites_run_for 读到当前夹具数据。
 suites_run_for_snap="$(declare -f suites_run_for)"; eval "${suites_run_for_snap/suites_run_for ()/suites_run_for_cached ()}"
@@ -2680,7 +2710,7 @@ for mr_case in culprit fallback revert-conflict still-running; do
 done
 unset -f revert_squash_merge main_red_launch
 main_red_attribution() { MAIN_RED_REVERTED=0; MAIN_RED_PENDING=0; }
-source <(sed -n '/^revert_squash_merge() {/,/^}/p' "$script_dir/scheduler.sh")
+source <(sed -n '/^revert_squash_merge() {/,/^}/p' "$script_dir/scheduler.d/merge-prep.sh")
 # 未知 attempt / 旧预算没有执行身份 / 不同 run 都不证明同一执行已经重跑失败。
 for unavailable in missing-attempt legacy-reservation different-run; do
   units '{"units":[]}'; GH_RERUNS=(); rm -f "$A/gate-net-rerun.json"
@@ -2742,7 +2772,7 @@ units "{\"units\":[{\"id\":\"pr-16\",\"pr\":16,\"stage\":\"ready-to-merge\",\"ap
 run_merge_lane || :
 [[ "${GH_UPDATES[*]:-}" == *"pulls/16/update-branch"*"expected_head_sha=$H1"* && "$(field pr-16 .stage)" == ready-to-merge && "$(field pr-16 '.history[-1].stage')" == ci-red-update-branch ]] || fail 'red PR on a stale base was not updated from main'
 unset GH_CHECKS; unset -f git pr_behind_main; eval "$gh_conf_stub"
-source <(sed -n '/^pr_behind_main() {/,/^}/p' "$script_dir/scheduler.sh")
+source <(sed -n '/^pr_behind_main() {/,/^}/p' "$script_dir/scheduler.d/merge-prep.sh")
 # revert_squash_merge is the single revert primitive (main-red recovery calls it): history-marker idempotency,
 # conflict refusal and commit-not-on-main refusal, against a real bare origin.
 (
@@ -2809,7 +2839,7 @@ MAIN_HEAD="$M3"; retry_blocked_units || :
 GH_HEAD="$H2"; retry_blocked_units || :
 [[ "$(field pr-30 .stage)" == rereview-pending ]] || fail 'BLOCK not retried after head moved'
 unset -f git gate_eval_sha
-source <(sed -n '/^gate_eval_sha() {/,/^}/p' "$script_dir/scheduler.sh")
+source <(sed -n '/^gate_eval_sha() {/,/^}/p' "$script_dir/scheduler.d/merge-prep.sh")
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 
 # ---------- 门禁评估点跳过 [skip ci] 提交；分支清理只删 [gone]；隔离 clone ----------
@@ -2908,7 +2938,7 @@ ROOT="$cleanup_saved_root" WT_ROOT="$cleanup_saved_wt_root" UNITS="$cleanup_save
 WORKERS="$cleanup_saved_workers" SUP="$cleanup_saved_sup" A="$cleanup_saved_runtime" LOG="$cleanup_saved_log"
 
 unset -f ensure_clone
-source <(sed -n '/^fetch_local_first() {/,/^}/p;/^ensure_clone() {/,/^}/p' "$script_dir/scheduler.sh")
+source <(sed -n '/^fetch_local_first() {/,/^}/p' "$script_dir/scheduler.d/worker-command.sh"; sed -n '/^ensure_clone() {/,/^}/p' "$script_dir/scheduler.d/clones.sh")
 WT_ROOT="$fixture/wt"
 wt="$(ensure_clone pr-40)"
 [[ "$(command git -C "$wt" rev-parse HEAD)" == "$(command git -C "$ROOT" rev-parse origin/main)" ]] || fail 'review clone not at origin/main'
@@ -2918,7 +2948,7 @@ if ensure_clone pr-41 fix/missing 1 >/dev/null; then fail 'repair clone accepted
 pr_sha="$(command git -C "$ROOT" rev-parse HEAD~1)"
 command git -C "$remote" update-ref refs/pull/40/head "$pr_sha"
 unset -f checkout_pr_head
-source <(sed -n '/^checkout_pr_head() {/,/^}/p' "$script_dir/scheduler.sh")
+source <(sed -n '/^checkout_pr_head() {/,/^}/p' "$script_dir/scheduler.d/clones.sh")
 checkout_pr_head "$wt" 40 "$pr_sha" "$pr_sha" || fail 'checkout_pr_head failed'
 [[ "$(command git -C "$wt" rev-parse HEAD)" == "$pr_sha" ]] || fail 'review clone not at the PR head'
 if command git -C "$wt" show-ref --verify --quiet refs/remotes/origin/pr/40; then
@@ -2966,7 +2996,7 @@ units '{"units":[{"id":"pr-70","pr":70,"stage":"repair-pending","session_ids":{"
 build_codex_command repair gpt-6-luna max pr-70 'p'
 [[ " ${CODEX_COMMAND[*]} " == *" -c shell_environment_policy.inherit=all "* ]] || fail 'codex command lost proxy env policy'
 
-source <(sed -n '/^dispatch() {/,/^}/p' "$script_dir/scheduler.sh")
+source <(sed -n '/^dispatch() {/,/^}/p' "$script_dir/scheduler.d/dispatch.sh")
 mkdir -p "$fixture/cbin" "$fixture/cwd"
 cat > "$fixture/cbin/claude" <<'SH'
 #!/usr/bin/env bash
@@ -3023,7 +3053,7 @@ NOW_EPOCH=$((300000 + 301))
 
 # #4356 moves product Postsubmit recovery to issue-pipeline's durable tick;
 # the old scheduler watcher would create a second owner and duplicate PRs.
-! grep -q 'phase watch_main_postsubmit' "$script_dir/scheduler.sh" || fail 'scheduler still dispatches the retired main Postsubmit watcher'
+! grep -q 'phase watch_main_postsubmit' "$script_dir/scheduler.sh" "$script_dir"/scheduler.d/*.sh || fail 'scheduler still dispatches the retired main Postsubmit watcher'
 grep -q 'main-red-bisect' "$script_dir/../issue-pipeline.sh" \
   || fail 'issue-pipeline maintenance does not own main-red recovery'
 # L71：没有 pid 文件时 CI 花费采样必须启动（kill -0 0 恒成功曾让它永不启动）

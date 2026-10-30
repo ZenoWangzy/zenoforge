@@ -18,7 +18,8 @@ source "$_AGENT_LIB_DIR/closing-keywords.sh"
 [[ -r "$_AGENT_LIB_DIR/matt-skills.sh" ]] && source "$_AGENT_LIB_DIR/matt-skills.sh"
 source "${ZF_EXECUTION_MODULE_DIR:-$_AGENT_LIB_DIR}/execution-admission.sh"
 
-AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"
+source "$(dirname -- "${BASH_SOURCE[0]}")/config.sh" # AGENT_HOME, ZF_ENGINE_DIR, ZF_REPO_DIR
+source "$(dirname -- "${BASH_SOURCE[0]}")/coord.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/write-guard.sh"
 agent_pipeline_write_guard 'lib.sh initialization' "$AGENT_HOME" || return 1
 # Host capacity tuning (non-secret) beats the credentials env file. On 2026-10-06 that file pinned
@@ -27,11 +28,17 @@ agent_pipeline_write_guard 'lib.sh initialization' "$AGENT_HOME" || return 1
 if [ -r "$AGENT_HOME/capacity.env" ]; then set -a; . "$AGENT_HOME/capacity.env"; set +a; fi
 STATE_DIR="$AGENT_HOME/state"
 LOG_DIR="$AGENT_HOME/logs"
+# One systemd unit-name prefix for the whole engine, set by ZF_UNIT_PREFIX. Long-lived units are
+# "$UNIT_PREFIX-agent.service", "$UNIT_PREFIX-supervisor.timer", ...; transient worker units started with
+# systemd-run are "$UNIT_PREFIX_TRANSIENT-implement-<n>", "$UNIT_PREFIX_TRANSIENT-release-batch", ... .
+# Two names for one setting so the two kinds can have different defaults.
+UNIT_PREFIX="${ZF_UNIT_PREFIX:-zenoforge}"
+UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 
 # Host binaries repaired by the night timer. Keep both roots configurable here
 # so timer, probes and temporary-directory tests resolve identical paths.
 codex_runtime_user_bin_dir() { printf '%s\n' "${ZF_CODEX_RUNTIME_BIN_DIR:-${ZF_LOCAL_BIN_DIR:-$HOME/.local/bin}}"; }
-# Opt-in: unset means no bundled-binary repair (nothing reaches into a desktop app bundle by default).
+# An empty bundle dir means no bundled-binary repair; the public export defaults it to empty.
 codex_runtime_bundle_dir() { printf '%s\n' "${ZF_CHATGPT_RESOURCES_DIR:-}"; }
 
 agent_worktree_is_usable() {
@@ -122,6 +129,11 @@ supervisor_alert_daily_budget() {
     # Uncapped: one line per failed landing or blocked handoff episode. 2026-10-07 >20 failures exhausted the default
     # budget and landings 236/242/243/245 failed silently while their agents had already exited.
     landing-failed|ops-acceptance-after-release|handoff-pr-ambiguous|handoff-preserved-clone) printf '%s\n' -1 ;;
+    # Uncapped (#4728): one line per real episode — finished worker round, harvested
+    # unit, landing batch, changed alert file. The 20/day default would hide worker
+    # exits at the observed factory rate (84 finished rounds in 26h), which is the
+    # silence the head supervisor polled manually to escape.
+    worker-exit|unit-harvest|landing|alert-file) printf '%s\n' -1 ;;
     # Uncapped: one line per exited hand owner and unresolved step (hand-exit-handoff.sh ledger), never a loop.
     hand-exit-handoff) printf '%s\n' -1 ;;
     prod-anomaly) printf '%s\n' -1 ;; # Every new signature, rate spike, restart, or OOM wakes the supervisor.
@@ -314,7 +326,7 @@ MAIN_RED_DIR="$AGENT_HOME/main-red"
 # $HOME, and the old fallback made every bare `source lib.sh` there
 # die on `cd "$REPO_DIR"` (PR #1355 CI, full-script regression). An explicit
 # ZF_REPO_DIR still wins, so production systemd units are unaffected.
-REPO_DIR="${ZF_REPO_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}"
+REPO_DIR="$ZF_REPO_DIR"
 # The target repository as owner/name: ZF_REPO, else derived from the checkout's origin remote. Exported for child processes. A checkout with neither stays empty (|| true: no origin remote is exit 2, which set -e would turn into a silent exit).
 REPO="${ZF_REPO:-$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##' || true)}"
 export ZF_REPO="$REPO"
@@ -334,7 +346,9 @@ agent_epoch() {
 # Model choice has one persistent source: the operator file, seeded from this
 # versioned policy. Launchers pass role names; this helper owns validation,
 # identity formatting, and escalation transitions.
-MODEL_POLICY_DEFAULT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/model-policy.default.json"
+# The default is the pack's model-policy.default.json when the deployment has one (the product: advisor enabled, CI known flakes seeded);
+# with no pack it is the engine's own generic model-policy.default.json (advisor disabled, no known flakes).
+MODEL_POLICY_DEFAULT="$(pack_file model-policy.default.json)" || MODEL_POLICY_DEFAULT="$_AGENT_LIB_DIR/model-policy.default.json"
 MODEL_POLICY_FILE="$AGENT_HOME/model-policy.json"
 model_policy_validate_json() {
   jq -e --slurpfile canonical "$MODEL_POLICY_DEFAULT" '
@@ -811,7 +825,7 @@ model_policy() {
           | flatten | unique | join(",")
       ')"
       pipeline_worktrees="${ZF_WORKTREE_ROOT:-${HOME:?HOME is not set}/wt}/"
-      pipeline_settings="$AGENT_HOME/checkout/engine/prompts/agent-settings.json"
+      pipeline_settings="${ZF_ENGINE_LIVE:-$AGENT_HOME/checkout/engine}/prompts/agent-settings.json"
       # A Codex run older than the live policy file was dispatched under an earlier policy; judging it
       # by today's roles turned 4 in-flight agents BROKEN for hours after a role change (2026-09-30).
       # Forbidden names still apply to it.
@@ -907,7 +921,7 @@ model_policy_scan_sources() {
   for word in "${forbidden_words[@]}"; do forbidden_patterns+=( -e "$word" ); done
   for model in "${role_models[@]}"; do role_patterns+=( -e "$model" ); done
   while IFS= read -r -d '' file; do
-    [[ "$file" == "$MODEL_POLICY_DEFAULT" || "$file" == *.test.* || "${file##*/}" == test-* || "$file" == *-test.* ]] && continue
+    [[ "$file" == "$MODEL_POLICY_DEFAULT" || "$file" == "$script_dir/model-policy.default.json" || "$file" == *.test.* || "${file##*/}" == test-* || "$file" == *-test.* ]] && continue
     if [[ "$file" == "$script_dir/state/rulings.json" ]]; then
       # Keep each switch and argv intact. Only the one exact repository jq assertion is eligible for masking.
       source=""
@@ -926,7 +940,7 @@ model_policy_scan_sources() {
       # This file has hundreds of switches. Extract all command strings in one jq
       # pass instead of starting multiple jq processes for every switch on each
       # HEALTH sample. Preserve the exact approved assertion exception.
-      approved_policy_input='${REPO_DIR}/engine/model-policy.default.json'
+      approved_policy_input="\${REPO_DIR}/$ZF_PACK_REL/model-policy.default.json"
       expanded_approved_policy_input="${approved_policy_input//'${REPO_DIR}'/$REPO_DIR}"
       [[ "$expanded_approved_policy_input" == "$MODEL_POLICY_DEFAULT" ]] || approved_policy_input=""
       while IFS= read -r -d '' target_text; do
@@ -983,7 +997,7 @@ model_policy_scan_sources() {
       echo "model_policy: hardcoded model identity appears in $file" >&2
       return 1
     fi
-  # bin/ holds the worker launchers (luna, terra, worker): the one place that names concrete models on purpose.
+  # bin/ (the worker launchers luna, terra, worker in a packaged engine) names concrete models on purpose.
   done < <(find "$script_dir" -type f ! -name '*.test.*' ! -path "$script_dir/bin/*" -print0)
 }
 # shellcheck source=./dispatch-load-guard.sh
@@ -1221,7 +1235,7 @@ Failure 2: ${second_reason}"
 # — those logins are the same account, so a login comparison can never tell
 # the maintainer's own genuine reply-as-reporter apart from the bot's own
 # comment, and silently never fires on the maintainer's own issues.
-BOT_COMMENT_MARKER='<!-- zenoforge-agent-comment -->'
+BOT_COMMENT_MARKER='<!-- vecta-agent-comment -->'
 # Sandbox mode for every pipeline codex call. Maintainer, 2026-10-06: [...]. The sandbox
 # also made every run depend on bubblewrap, which vanished with the 2026-10-05 codex reinstall and
 # blocked implement for an hour. The implement call still strips GH_TOKEN, and the wrapper pushes.
@@ -1239,7 +1253,7 @@ BOT_DISCLAIMER='> *This was generated by AI during triage.* This comment is post
 # the same marker would make it invisible to that check and leave the
 # issue stuck on needs-info forever, the identical failure mode
 # BOT_COMMENT_MARKER's own comment above describes for quote-replies.
-EMAIL_COMMENT_MARKER='<!-- zenoforge-agent-email-relay -->'
+EMAIL_COMMENT_MARKER='<!-- vecta-agent-email-relay -->'
 
 # Shared wording for notify_email()'s "对用户有什么影响" section (see
 # notify.sh's build_report_body): every "needs a human" email lands here for
@@ -2310,7 +2324,7 @@ hold_durable_record_publish() {
   payload="$(hold_durable_record_payload "$hold_json")" || return 2
   hold_durable_record_valid "$payload" || return 2
   encoded="$(jq -rn --argjson record "$payload" '$record | @base64')" || return 1
-  marker="<!-- zf-hold-record-v1 issue=$n record=$encoded -->"
+  marker="<!-- vecta-hold-record-v1 issue=$n record=$encoded -->"
   [ -n "$issue_json" ] || issue_json="$(gh issue view "$n" --repo "$REPO" --json comments 2>/dev/null)" || return 1
   jq -e 'type == "object" and (.comments | type == "array")' <<< "$issue_json" >/dev/null 2>&1 || return 1
   hold_comment_has_marker "$issue_json" "$marker" && return 0
@@ -2322,7 +2336,7 @@ $marker"
 
 hold_durable_record_from_issue() {
   local n="$1" issue_json="$2" prefix encoded decoded payload
-  prefix="<!-- zf-hold-record-v1 issue=$n record="
+  prefix="<!-- vecta-hold-record-v1 issue=$n record="
   encoded="$(jq -r --arg prefix "$prefix" '
     [.comments[]? | (.body // "") | select(contains($prefix))
       | split($prefix)[1] | split(" -->")[0]] | last // empty
@@ -2486,8 +2500,8 @@ hold_hand_owner_is_live() {
       hand_agent_pid_live "$pid" "$start_ticks" && return 0
     done < "$NIGHT/agents.txt"
   fi
-  if units="$(systemctl --user list-units --state=active --no-legend --no-pager "zf-hand-$owner-*" 2>/dev/null)"; then
-    if awk -v prefix="zf-hand-$owner-" 'index($1, prefix) == 1 { found = 1 } END { exit !found }' <<< "$units"; then
+  if units="$(systemctl --user list-units --state=active --no-legend --no-pager "${UNIT_PREFIX_TRANSIENT}-hand-$owner-*" 2>/dev/null)"; then
+    if awk -v prefix="${UNIT_PREFIX_TRANSIENT}-hand-$owner-" 'index($1, prefix) == 1 { found = 1 } END { exit !found }' <<< "$units"; then
       return 0
     fi
   else
@@ -2688,7 +2702,7 @@ hold_sweep() {
         stage="$(hold_stage_before "$state_json" "$issue_json")" || { failure=1; continue; }
       fi
       hold_created_at="$(jq -r '.created_at // .expires_at' <<< "$hold_json")"
-      marker="<!-- zf-hold-dead-owner issue=$n owner=$dead_owner hold=$hold_created_at -->"
+      marker="<!-- vecta-hold-dead-owner issue=$n owner=$dead_owner hold=$hold_created_at -->"
       if ! hold_comment_has_marker "$issue_json" "$marker"; then
         body="$BOT_DISCLAIMER
 Hold released because hand agent $dead_owner is inactive: no active systemd unit or report newer than 3 hours. Resuming at stage $stage.
@@ -2759,7 +2773,7 @@ $marker"
         exec {hold_lock_fd}>"$f.lock" && flock -x "$hold_lock_fd" || exit 1
         current="$(state_read "$n")" || exit 1
         jq -e --argjson expected "$hold_json" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$current" >/dev/null || exit 1
-        marker="<!-- zf-hold-renewed issue=$n expires=$expires_at -->"
+        marker="<!-- vecta-hold-renewed issue=$n expires=$expires_at -->"
         if ! hold_comment_has_marker "$issue_json" "$marker"; then
           body="$BOT_DISCLAIMER
 Hold renewed for 168 hours $renewal_reason. Holder: $holder; next expiry: $renewal_expiry.
@@ -2785,7 +2799,7 @@ $marker"
     if ! hold_stage_label_is_valid "$stage"; then
       stage="$(hold_stage_before "$state_json" "$issue_json")" || { failure=1; continue; }
     fi
-    marker="<!-- zf-hold-expired issue=$n expires=$expires_at -->"
+    marker="<!-- vecta-hold-expired issue=$n expires=$expires_at -->"
     if ! hold_comment_has_marker "$issue_json" "$marker"; then
       body="$BOT_DISCLAIMER
 Hold expired. Holder: $holder. Release condition was not met: $release_condition. Resuming at stage $stage.
@@ -2844,11 +2858,43 @@ hold_answer() (
     + " and .implement_decision.requested_at == " + ($requested|tojson)
     + " then .implement_decision.answer = " + ($answer|tojson)
     + " | .brief_md = ((.brief_md // \"\" | gsub(\"(?s)<!-- ZF_SUPERVISOR_WORKFLOW_DECISION:BEGIN -->.*?<!-- ZF_SUPERVISOR_WORKFLOW_DECISION:END -->\"; \"\")) + "
-    + ("\n\n<!-- ZF_SUPERVISOR_WORKFLOW_DECISION:BEGIN -->\n## Supervisor workflow decision (automated engineering guidance; not maintainer-authored facts or authority)\nSource: "
+    + ("\n\n<!-- ZF_SUPERVISOR_WORKFLOW_DECISION:BEGIN -->\n## Supervisor workflow decision (automated engineering guidance; not founder-authored facts or authority)\nSource: "
        + $answer.url + "\n\n" + $answer.body + "\n<!-- ZF_SUPERVISOR_WORKFLOW_DECISION:END -->" | tojson) + ")"
     + " else error(\"supervisor decision episode changed\") end"')" || return 1
   state_requeue "$n" release-hold hold-requeue "$patch"
 )
+
+# hold_rule N|issue-N|pr-N requeue|approve|arbiter|recut COMMENT: a supervisor ruling. Records supervisor-<action> in the
+# unit history (refills the stop-loss/arbitration budgets; a parked unit is moved by scheduler.sh --rule) and releases a
+# scheduler-stop-loss hold if the issue has one. COMMENT must be an owner comment on the issue (or the PR for pr-N).
+hold_rule() {
+  local target="${1:-}" action="${2:-}" comment_id="${3:-}" blocker="${4:-}" unit n state="" comment sched
+  [[ "$target" =~ ^[1-9][0-9]*$ ]] && target="issue-$target"
+  [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|approve|arbiter|recut|reblock)$ && "$comment_id" =~ ^[1-9][0-9]*$ ]] || return 64
+  unit="$target"; n="${unit#*-}"
+  if [[ "$unit" == issue-* ]]; then
+    state="$(state_read "$n")" || return 1
+    jq -e '.state != "on-hold" or .hold.holder == "scheduler-stop-loss"' <<< "$state" >/dev/null || {
+      echo "hold_rule: #$n is held by someone other than scheduler-stop-loss" >&2
+      return 1
+    }
+  fi
+  comment="$(gh api "repos/$REPO/issues/comments/$comment_id")" || return 1
+  jq -e --arg u "https://api.github.com/repos/$REPO/issues/$n" '.issue_url == $u and .author_association == "OWNER"' <<< "$comment" >/dev/null || {
+    echo "hold_rule: comment $comment_id is not an owner comment on #$n" >&2
+    return 1
+  }
+  sched="$(dirname -- "${BASH_SOURCE[0]}")/mac-autopilot/scheduler.sh"
+  # recut needs the issue out of on-hold first, or route_to_recut leaves it on-hold
+  if [[ "$action" == recut && -n "$state" ]] && jq -e '.state == "on-hold"' <<< "$state" >/dev/null; then
+    state_requeue "$n" release-hold hold-requeue . "$(jq -c .hold <<< "$state")" || return 1
+    state=""
+  fi
+  bash "$sched" --rule "$unit" "$action" "$(jq -r .html_url <<< "$comment")" "$(jq -r '.body[0:4000]' <<< "$comment")" "$blocker" || return 1
+  if [[ -n "$state" ]] && jq -e '.state == "on-hold"' <<< "$state" >/dev/null; then
+    state_requeue "$n" release-hold hold-requeue . "$(jq -c .hold <<< "$state")"
+  fi
+}
 
 hold_cli_main() {
   if [ "${1:-}" = --sweep ]; then
@@ -2862,6 +2908,9 @@ hold_cli_main() {
   elif [ "${1:-}" = --restore ]; then
     (($# == 2)) || { echo "usage: hold.sh --restore <issue>" >&2; return 64; }
     hold_restore "$2"
+  elif [ "${1:-}" = --rule ]; then
+    (($# == 5 || $# == 7)) && [[ "$3" =~ ^--(requeue|approve|arbiter|recut|reblock)$ && "$4" = --comment ]] && { (($# == 5)) || [ "$6" = --blocked-on ]; } || { echo "usage: hold.sh --rule <issue|issue-N|pr-N> --requeue|--approve|--arbiter|--recut|--reblock --comment <id> [--blocked-on <N>]" >&2; return 64; }
+    hold_rule "$2" "${3#--}" "$5" "${7:-}"
   elif [ "${1:-}" = --answer ]; then
     (($# == 4)) && [ "$3" = --comment ] || { echo "usage: hold.sh --answer <issue> --comment <id>" >&2; return 64; }
     hold_answer "$2" "$4"
@@ -3295,7 +3344,7 @@ model_call_signal_name() {
 }
 
 model_call_capture_termination_source() {
-  local unit="zf-implement-${1:-unknown}.service" output=""
+  local unit="${UNIT_PREFIX_TRANSIENT}-implement-${1:-unknown}.service" output=""
   MODEL_CALL_TERMINATION_SOURCE=unknown
   MODEL_CALL_TERMINATION_EVIDENCE=unknown
   if ! command -v systemctl >/dev/null 2>&1; then
@@ -4455,7 +4504,7 @@ guarded_pr_merge() {
     return 1
   fi
   if ! identity="$(gh pr view "$pr" --repo "$REPO" --json headRefName,headRefOid,files,state,mergeCommit \
-    -q '[.headRefName, .headRefOid, any(.files[]; (.path | startswith("lessons/")) or .path == "engine/state/incident-guards.json"), .state, (.mergeCommit.oid // "")] | @tsv')"; then
+    -q '[.headRefName, .headRefOid, any(.files[]; (.path | startswith("lessons/")) or .path == "'"$ZF_PACK_REL"'/state/incident-guards.json"), .state, (.mergeCommit.oid // "")] | @tsv')"; then
     rm -f "$body_file"
     return 1
   fi
@@ -4492,8 +4541,8 @@ guarded_pr_merge() {
         manifest_failed=1
       fi
       agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
-      reconcile_script="$agent_home/checkout/engine/land-direct-main.sh"
-      [[ -r "$reconcile_script" ]] || reconcile_script="$REPO_DIR/engine/land-direct-main.sh"
+      reconcile_script="${ZF_ENGINE_LIVE:-$agent_home/checkout/engine}/land-direct-main.sh"
+      [[ -r "$reconcile_script" ]] || reconcile_script="$ZF_ENGINE_DIR/land-direct-main.sh"
       if (cd -- "$REPO_DIR" && AGENT_HOME="$agent_home" ZF_REPO_DIR="$REPO_DIR" \
         bash "$reconcile_script" --reconcile-pr "$pr"); then
         if ! worktree_lifecycle_manifest completed-pr-reconciliation "pr-$pr" "$PR_MERGE_COMMIT" \
@@ -4640,7 +4689,7 @@ label_transition_events() {
 LOOP_BREAK_THRESHOLD="${LOOP_BREAK_THRESHOLD:-4}"
 LOOP_BREAK_WINDOW_HOURS="${LOOP_BREAK_WINDOW_HOURS:-6}"
 LOOP_BREAK_RECENCY_MINUTES="${LOOP_BREAK_RECENCY_MINUTES:-90}"
-LOOP_ESCALATION_MARKER="<!-- zf-loop-escalation -->"
+LOOP_ESCALATION_MARKER="<!-- vecta-loop-escalation -->"
 
 # loop_break_check <n> <label_a> <label_b> -- shared by inline route paths
 # and detect-label-churn.sh. A per-issue lock makes episode check-and-freeze
@@ -4718,7 +4767,7 @@ loop_break_check_locked() {
   fi
   comment_bodies="$(gh api "repos/$REPO/issues/$n/comments" --paginate \
       --jq '.[] | select(.created_at >= "'"$since"'") | .body' 2>/dev/null || true)"
-  episode_marker="<!-- zf-loop-episode=$latest -->"
+  episode_marker="<!-- vecta-loop-episode=$latest -->"
   echo "loop_break_check: #$n crossed $LOOP_BREAK_THRESHOLD transitions between $label_a/$label_b in the last ${LOOP_BREAK_WINDOW_HOURS}h (latest $latest) -- freezing on-hold" >&2
   trajectory="$(printf '%s\n' "$events" | nl -ba -s'. ' -w1)"
   supervisor_inbox_append_once \
@@ -4750,10 +4799,14 @@ $episode_marker
     '.loop_hand_dispatch_at = (now | todate)'
 }
 
-# The shipped policy marks the advisor role disabled: no advisor provider ships, so nobody can rule.
-# advisor_role_disabled is the one test for that; callers skip the advisor step (or hold) instead of
-# queueing work for an advisor that never answers.
-advisor_role_disabled() { ! model_policy identity advisor >/dev/null 2>&1; }
+# advisor_role_disabled -- the effective policy marks the advisor role disabled (the generic default policy ships it disabled; the
+# the product pack's policy enables it). A policy that cannot be read is not "disabled": callers then follow their normal path.
+advisor_role_disabled() {
+  local effective
+  model_policy identity advisor >/dev/null 2>&1 && return 1
+  effective="$(model_policy_effective_live_json "$MODEL_POLICY_FILE")" || return 1
+  jq -e '.roles.advisor.disabled == true' <<< "$effective" >/dev/null
+}
 
 # hold_for_missing_advisor <n> [remove_label] -- park the issue for the maintainer, who rules and requeues it.
 hold_for_missing_advisor() {
@@ -5054,7 +5107,7 @@ needs_info_timeout_step() {
     return 0
   fi
 
-  marker="<!-- zf-needs-info-default issue=$n thread=$thread_id -->"
+  marker="<!-- vecta-needs-info-default issue=$n thread=$thread_id -->"
   if jq -e --arg marker "$marker" 'any(.comments[]?; ((.body // "") | contains($marker)))' \
     <<< "$issue_json" >/dev/null 2>&1; then
     marker_exists=1
@@ -5227,7 +5280,7 @@ model_policy_record_failure() {
       *) next="$(model_policy transition "$step" on_failure)" || return 1 ;;
     esac
   fi
-  # Advisor role disabled (the shipped default): skip that step. One work retry, then conclude.
+  # Advisor role disabled (the generic default): skip that step. One work retry, then conclude.
   if [ "$next" = advisor ] && advisor_role_disabled; then
     if [ "$step" = work_retry ] || [ "$same_failure" = 1 ]; then next=conclude; else next=work_retry; fi
   fi
@@ -6444,7 +6497,7 @@ implement_blind_rerun_gate() {
   supervisor_inbox_append_once "$inbox_key" \
     "blind-rerun issue=#$n stage=$stage2 failures=2 since=$since reason=$(tr '\n' ' ' <<< "$decisive" | cut -c1-500) unblock=land-a-fix-touching[$paths_note]|comment-on-issue|change-env" \
     || echo "blind-rerun-gate: supervisor inbox write failed for #$n" >&2
-  marker="<!-- zf-blind-rerun issue=#$n failure=$since -->"
+  marker="<!-- vecta-blind-rerun issue=#$n failure=$since -->"
   if ! jq -e --arg marker "$marker" 'any(.[]; (.body // "") | contains($marker))' <<< "$comments" >/dev/null 2>&1; then
     guarded_issue_comment "$n" "$BOT_DISCLAIMER
 Blind-rerun gate: the last two implement runs failed at \`$stage2\` for the same reason, and nothing changed since (no main commit touching the failing area or run environment, no new issue comment, no environment change). Another run would repeat the failure, so this ticket is parked instead of redispatched.
@@ -6524,11 +6577,11 @@ agent_owned_issue_ids() {
 }
 
 pipeline_system_external_close_comment_valid() {
-  local issue="$1" body="$2" repo='example-org/example-infra' default_branch pr_json pr_ref sha_ref pr_number sha
+  local issue="$1" body="$2" repo="$ZF_INFRA_REPO" default_branch pr_json pr_ref sha_ref pr_number sha
   local -a prs=() sha_refs=()
-  grep -Eiq 'example-org/example-infra' <<< "$body" || return 1
+  grep -Eiq "$repo" <<< "$body" || return 1
   mapfile -t prs < <(grep -Eio 'pull request[[:space:]]*#?[[:space:]]*[0-9]+|pr[[:space:]]*#?[[:space:]]*[0-9]+' <<< "$body" | grep -Eo '[0-9]+' | sort -u || true)
-  mapfile -t sha_refs < <(grep -Eio 'example-org/example-infra@[[:xdigit:]]{40,64}|merge[[:space:]]+sha[[:space:]:=]+[[:xdigit:]]{40,64}' <<< "$body" || true)
+  mapfile -t sha_refs < <(grep -Eio "$repo@[[:xdigit:]]{40,64}|merge[[:space:]]+sha[[:space:]:=]+[[:xdigit:]]{40,64}" <<< "$body" || true)
   ((${#prs[@]} > 0 && ${#sha_refs[@]} > 0)) || return 1
   default_branch="$(gh repo view "$repo" --json defaultBranchRef --jq '.defaultBranchRef.name')" || return 1
   [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
@@ -6559,7 +6612,7 @@ pipeline_system_finish_external_landing() {
     (.number | tostring) == $issue and .state == "OPEN" and
     any(.labels[]?; .name == "pipeline-system")
   ' <<< "$issue_json" >/dev/null 2>&1 || return 1
-  comment="结案：delivered in example-org/example-infra PR $pr_number, merged as example-org/example-infra@$merge_sha."
+  comment="结案：delivered in $ZF_INFRA_REPO PR $pr_number, merged as $ZF_INFRA_REPO@$merge_sha."
   pipeline_system_close_comment_valid "$repo_dir" "$issue" "$comment" || return 1
   guarded_write gh issue close "$issue" --repo "$REPO" --reason completed --comment "$comment" || return 1
   sha_json="$(jq -n --arg sha "$merge_sha" '$sha')" || return 1
@@ -6741,7 +6794,7 @@ pipeline_system_finish_direct_landing() {
 # a main-reachable docs/test commit. Decision closures remain exceptions.
 issue_closure_evidence_valid() {
   local repo_dir="$1" issue="$2" labels="$3" comments_json="$4"
-  local maintainer_login="$5" close_epoch="$6" now_epoch="$7" candidate_comment="${8:-}"
+  local founder_login="$5" close_epoch="$6" now_epoch="$7" candidate_comment="${8:-}"
   local state_reason="${9:-}" reference_sha="${10:-}" start end comment_b64 comment allow_legacy_queue=false
   [[ "$issue" =~ ^[1-9][0-9]*$ && "$close_epoch" =~ ^[0-9]+$ && "$now_epoch" =~ ^[0-9]+$ ]] || return 2
   if ((close_epoch > 0)); then allow_legacy_queue=true; fi
@@ -6783,17 +6836,17 @@ issue_closure_evidence_valid() {
 
   [[ ",$labels," == *,released,* ]] && return 0
   if issue_source_close_comment_valid "$repo_dir" "$issue" "$comments_json" \
-    "$maintainer_login" "$close_epoch" "$reference_sha"; then
+    "$founder_login" "$close_epoch" "$reference_sha"; then
     return 0
   else
     local source_status=$?
     [ "$source_status" -ne 2 ] || return 2
   fi
 
-  [ -n "$maintainer_login" ] || return 1
+  [ -n "$founder_login" ] || return 1
   start="$(date -u -d "@$((close_epoch - 86400))" +%Y-%m-%dT%H:%M:%SZ)" || return 2
   end="$(date -u -d "@$((now_epoch + 600))" +%Y-%m-%dT%H:%M:%SZ)" || return 2
-  jq -e --arg owner "$maintainer_login" --arg start "$start" --arg time_end "$end" '
+  jq -e --arg owner "$founder_login" --arg start "$start" --arg time_end "$end" '
     any(flatten[]?;
       ((.user.login // "" | ascii_downcase) == ($owner | ascii_downcase)) and
       ((.body // "") | test("^维护者(补充)?裁决")) and
@@ -6803,15 +6856,15 @@ issue_closure_evidence_valid() {
 }
 
 issue_source_close_comment_valid() {
-  local repo_dir="$1" issue="$2" comments_json="$3" maintainer_login="$4" close_epoch="$5" reference_sha="${6:-}"
+  local repo_dir="$1" issue="$2" comments_json="$3" founder_login="$4" close_epoch="$5" reference_sha="${6:-}"
   local sha commit commit_epoch path paths main_sha valid_paths
   local -a source_shas=()
-  [[ "$issue" =~ ^[1-9][0-9]*$ && "$close_epoch" =~ ^[0-9]+$ && -n "$maintainer_login" ]] || return 1
-  mapfile -t source_shas < <(jq -r --arg owner "${maintainer_login,,}" --arg issue "$issue" '
+  [[ "$issue" =~ ^[1-9][0-9]*$ && "$close_epoch" =~ ^[0-9]+$ && -n "$founder_login" ]] || return 1
+  mapfile -t source_shas < <(jq -r --arg owner "${founder_login,,}" --arg issue "$issue" '
     flatten[]?
     | select((.user.login // "" | ascii_downcase) == $owner)
     | (.body // "")
-    | try capture("<!-- zf-source-close-evidence issue=" + $issue + " sha=(?<sha>[[:xdigit:]]{40}) -->").sha catch empty
+    | try capture("<!-- vecta-source-close-evidence issue=" + $issue + " sha=(?<sha>[[:xdigit:]]{40}) -->").sha catch empty
   ' <<< "$comments_json")
   ((${#source_shas[@]} > 0)) || return 1
   # A retrospective marker is safe only when its source was on main before closure.
@@ -6969,7 +7022,7 @@ $needs_md
   if [ "$outcome" = "merged" ]; then
     state_merge "$n" ".run.needs_md = $needs_json" || return 1
     mark_awaiting_release "$n" "$pr_number" "$expected_hold" || return 1
-    local merged_comment_marker="<!-- zf-merged-outcome issue=$n pr=$pr_number -->" merged_comments_json
+    local merged_comment_marker="<!-- vecta-merged-outcome issue=$n pr=$pr_number -->" merged_comments_json
     if [ "${AGENT_DRY_RUN:-0}" != 1 ] && [ "${DRY_RUN:-0}" != 1 ]; then
       merged_comments_json="$(gh api "repos/$REPO/issues/$n/comments?per_page=100" --paginate --slurp)" || {
         echo "conclude_run: cannot inspect merged-outcome comments for #$n; leaving merge reconciliation retryable" >&2
@@ -7546,7 +7599,7 @@ sweep_reopened_issues() {
   done
 }
 
-# Maintainer-authored product issues are test/demo work unless pipeline evidence
+# Founder-authored product issues are test/demo work unless pipeline evidence
 # says a script created them. The bot uses the maintainer's GitHub account, so
 # author alone is not enough to classify its generated issues.
 MAINTAINER_TEST_CANDIDATE_FILTER='
@@ -7562,11 +7615,11 @@ MAINTAINER_TEST_CANDIDATE_FILTER='
     and ([.comments[]?.body // ""] | all(contains($bot_marker) | not))
 '
 maintainer_test_issue_candidate() {
-  local issue_json="$1" roster="${ZF_AGENT_RECIPIENTS_FILE:-$AGENT_HOME/recipients.json}" maintainer_login
+  local issue_json="$1" roster="${ZF_AGENT_RECIPIENTS_FILE:-$AGENT_HOME/recipients.json}" founder_login
   [ -f "$roster" ] || return 1
-  maintainer_login="$(jq -r '.maintainer_login // empty' "$roster" 2>/dev/null)" || return 1
-  [ -n "$maintainer_login" ] || return 1
-  jq -e --arg maintainer "$maintainer_login" --arg bot_marker "$BOT_COMMENT_MARKER" \
+  founder_login="$(jq -r '.founder_login // empty' "$roster" 2>/dev/null)" || return 1
+  [ -n "$founder_login" ] || return 1
+  jq -e --arg maintainer "$founder_login" --arg bot_marker "$BOT_COMMENT_MARKER" \
     --arg recut_marker "$RECUT_CHILD_MARKER" "$MAINTAINER_TEST_CANDIDATE_FILTER" \
     <<< "$issue_json" >/dev/null 2>&1
 }
@@ -7604,14 +7657,14 @@ label_maintainer_test_issue() {
 }
 
 label_maintainer_test_candidates() {
-  local issues="$1" live_issue_json n candidates maintainer_login
+  local issues="$1" live_issue_json n candidates founder_login
   local roster="${ZF_AGENT_RECIPIENTS_FILE:-$AGENT_HOME/recipients.json}"
   jq -e 'type == "array" and all(.[]; type == "object" and (.labels | type == "array"))' \
     <<< "$issues" >/dev/null || return 1
   [ -f "$roster" ] || { printf '%s\n' "$issues"; return 0; }
-  maintainer_login="$(jq -r '.maintainer_login // empty' "$roster" 2>/dev/null)" || return 1
+  founder_login="$(jq -r '.founder_login // empty' "$roster" 2>/dev/null)" || return 1
   # Same predicate as point classification; batch the unchanged local gates.
-  candidates="$(jq -c --arg maintainer "$maintainer_login" --arg bot_marker "$BOT_COMMENT_MARKER" \
+  candidates="$(jq -c --arg maintainer "$founder_login" --arg bot_marker "$BOT_COMMENT_MARKER" \
     --arg recut_marker "$RECUT_CHILD_MARKER" \
     "[.[] | select(any(.labels[]?; .name == \"founder-test\") | not) | select($MAINTAINER_TEST_CANDIDATE_FILTER)]" \
     <<< "$issues" | python3 -c '
@@ -7677,17 +7730,17 @@ ensure_delay_cost_labels() {
 }
 
 # batch_state_band_map <issues-json> → 每行 "issue<TAB>critical|legacy|feature"。
-# issues-json 是 open issue 数组（含 body/labels）；父票 = 正文含 zf-batch-state
+# issues-json 是 open issue 数组（含 body/labels）；父票 = 正文含 vecta-batch-state
 # 标记的票。STATE 里 critical_path 列表和 delay_cost=critical 都进关键路径；
 # 解析失败的父票跳过（stderr 一行），不让一张坏父票停掉整个 sweep。
 batch_state_band_map() {
   jq -r '
     def state_blocks($body):
-      [$body | scan("<!-- zf-batch-state\\s*(\\{.*?\\})\\s*-->") | .[0]] ;
+      [$body | scan("<!-- vecta-batch-state\\s*(\\{.*?\\})\\s*-->") | .[0]] ;
     # gh api --paginate --slurp 交付的是页数组；直接喂平铺数组也要能解析。
     [ .[] | if type == "array" then .[] else . end
       | select(type == "object" and has("number") and (has("pull_request") | not)) ] as $issues
-    | ([$issues[] | select((.body // "") | contains("zf-batch-state"))
+    | ([$issues[] | select((.body // "") | contains("vecta-batch-state"))
         | .number as $parent
         | ([state_blocks(.body)[] | try fromjson catch null | select(type == "object")] | last) as $state
         | if $state == null then
@@ -7764,14 +7817,14 @@ sweep_batch_state() {
 # untouched. The REST issue list is paginated and includes pull requests, so
 # filter those out and re-read each candidate before mutation.
 sweep_unlabeled_issues() {
-  local candidates issue_pages n issue_json issue_after_write issue_state recut_status state_labels_json lane_match_status maintainer_test maintainer_login roster intake_since candidate_branch source_issue
+  local candidates issue_pages n issue_json issue_after_write issue_state recut_status state_labels_json lane_match_status maintainer_test founder_login roster intake_since candidate_branch source_issue
   local rescued=0 scan_complete=1 mutation_failed=0 state_label marker="$AGENT_HOME/unlabeled-issue-sweep-alerted"
   local inbox="$AGENT_HOME/supervisor-inbox"
   local -a edit_args=()
 
   state_labels_json="$(printf '%s\n' "${ALL_STATE_LABELS[@]}" | jq -R . | jq -cs .)" || return 1
   roster="${ZF_AGENT_RECIPIENTS_FILE:-$AGENT_HOME/recipients.json}"
-  maintainer_login="$(jq -r '.maintainer_login // empty' "$roster" 2>/dev/null || true)"
+  founder_login="$(jq -r '.founder_login // empty' "$roster" 2>/dev/null || true)"
   if ! issue_pages="$(gh api --paginate --slurp "repos/$REPO/issues?state=open&per_page=100")"; then
     echo "sweep_unlabeled_issues: could not list open issues; leaving alert state unchanged" >&2
     return 1
@@ -7782,7 +7835,7 @@ sweep_unlabeled_issues() {
   # it is new: only issues created inside the intake window qualify, and one
   # already judged (founder_test_checked in local state) is not re-read.
   intake_since="$(date -u -d "-${ZF_MAINTAINER_TEST_INTAKE_HOURS:-48} hours" +%Y-%m-%dT%H:%M:%SZ)" || return 1
-  if ! candidates="$(jq -r --argjson states "$state_labels_json" --arg maintainer "$maintainer_login" --arg since "$intake_since" '
+  if ! candidates="$(jq -r --argjson states "$state_labels_json" --arg maintainer "$founder_login" --arg since "$intake_since" '
     if type != "array" or any(.[]; type != "array") then error("invalid paginated issue response")
     else
       (add // [])[]
@@ -7932,7 +7985,7 @@ conclusion_hold() {
 conclusion_requeue_comment_once() {
   local n="$1" episode marker comments reason comment_status
   episode="$(state_read "$n" | jq -r '.run.concluded_at // "unknown"')"
-  marker="<!-- zf-conclusion-requeue issue=$n episode=$episode -->"
+  marker="<!-- vecta-conclusion-requeue issue=$n episode=$episode -->"
   comments="$(gh issue view "$n" --repo "$REPO" --json comments)" || return 1
   jq -e 'type == "object" and (.comments | type == "array")' <<< "$comments" >/dev/null || return 1
   if jq -e --arg marker "$marker" 'any(.comments[]?; (.body // "") | contains($marker))' <<< "$comments" >/dev/null; then
@@ -8789,24 +8842,108 @@ declared_write_surface_missing() {
   return 0
 }
 
+# Repo-rooted path mentions, one pattern for the structured-section scan and
+# the whole-text fallback that free-form brief notes need (#4722).
+ISSUE_BODY_PATH_REGEX='(\.github/workflows|\.agents|\.claude|lessons|packages|apps|scripts|engine|docs|infra|deploy|templates|migrations)/[[:alnum:]_.-]+(/[[:alnum:]_.-]+)*|Dockerfile([.][[:alnum:]_-]+)?|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|package-lock\.json'
+
 issue_body_file_paths_json() {
-  local include_key_files="${2:-false}"
+  local include_key_files="${2:-false}" whole_text="${3:-false}"
   local paths
-  paths="$(printf '%s\n' "${1:-}" | awk -v include_key_files="$include_key_files" '
-    {
-      lower = tolower($0)
-      key_heading = lower ~ /^[[:space:]]*#{1,6}[[:space:]]*key files( and symbols)?[[:space:]]*$/
-      scope_heading = lower ~ /^[[:space:]]*#{1,6}[[:space:]]*(fix|target|affected|implementation)[ -]*(paths|files)[[:space:]]*$/
-      if ((include_key_files == "true" && key_heading) || scope_heading) { active = 1; next }
-      if (lower ~ /^[[:space:]]*#{1,6}[[:space:]]/) { active = 0; next }
-      key_label = lower ~ /^[[:space:]]*key files( and symbols)?[[:space:]]*:/
-      scope_label = lower ~ /^[[:space:]]*(fix|target|affected|implementation)[ -]*(paths|files)[[:space:]]*:/
-      if ((include_key_files == "true" && key_label) || scope_label) { active = 1; sub(/^[^:]*:[[:space:]]*/, ""); print; next }
-      if (active && lower ~ /^[[:space:]]*[[:alpha:]][[:alnum:] _-]*:[[:space:]]*$/) { active = 0; next }
-      if (active) print
-    }
-  ' | grep -Eo '(\.github/workflows|\.agents|\.claude|lessons|packages|apps|scripts|engine|docs|infra|deploy|templates|migrations)/[[:alnum:]_.-]+(/[[:alnum:]_.-]+)*|Dockerfile([.][[:alnum:]_-]+)?|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|package-lock\.json' | LC_ALL=C sort -u || true)"
+  if [[ "$whole_text" == true ]]; then
+    paths="$(printf '%s\n' "${1:-}" | grep -Eo "$ISSUE_BODY_PATH_REGEX" | LC_ALL=C sort -u || true)"
+  else
+    paths="$(printf '%s\n' "${1:-}" | awk -v include_key_files="$include_key_files" '
+      {
+        lower = tolower($0)
+        key_heading = lower ~ /^[[:space:]]*#{1,6}[[:space:]]*key files( and symbols)?[[:space:]]*$/
+        scope_heading = lower ~ /^[[:space:]]*#{1,6}[[:space:]]*(fix|target|affected|implementation)[ -]*(paths|files)[[:space:]]*$/
+        if ((include_key_files == "true" && key_heading) || scope_heading) { active = 1; next }
+        if (lower ~ /^[[:space:]]*#{1,6}[[:space:]]/) { active = 0; next }
+        key_label = lower ~ /^[[:space:]]*key files( and symbols)?[[:space:]]*:/
+        scope_label = lower ~ /^[[:space:]]*(fix|target|affected|implementation)[ -]*(paths|files)[[:space:]]*:/
+        if ((include_key_files == "true" && key_label) || scope_label) { active = 1; sub(/^[^:]*:[[:space:]]*/, ""); print; next }
+        if (active && lower ~ /^[[:space:]]*[[:alpha:]][[:alnum:] _-]*:[[:space:]]*$/) { active = 0; next }
+        if (active) print
+      }
+    ' | grep -Eo "$ISSUE_BODY_PATH_REGEX" | LC_ALL=C sort -u || true)"
+  fi
   printf '%s\n' "$paths" | jq -Rsc 'split("\n") | map(select(length > 0))'
+}
+
+# brief_lane_verdict <issue-number|0> [note-file] -> worker-facing lane section.
+# The hand dispatcher persists this in the brief before starting an opt worker.
+brief_lane_verdict() {
+  local issue="${1:-}" note="${2:-}" text="" issue_json paths classification verdict="unknown" refs_issue="" recheck_doc
+  [[ "$issue" =~ ^[0-9]+$ ]] || { echo 'brief_lane_verdict: issue number must be numeric' >&2; return 64; }
+  [[ -z "$note" || -r "$note" ]] || { echo "brief_lane_verdict: note file is unreadable: $note" >&2; return 64; }
+
+  [[ -z "$note" ]] || text="$(cat -- "$note")"$'\n'
+  if [[ "$issue" != 0 ]]; then
+    issue_json="$(gh issue view "$issue" --repo "$REPO" --json body,comments 2>/dev/null || true)"
+    if [[ -n "$issue_json" ]]; then
+      text+="$(jq -r '(.body // "") + "\n" + ([.comments[]?.body // ""] | join("\n"))' <<<"$issue_json")"$'\n'
+    fi
+  fi
+
+  paths="$(issue_body_file_paths_json "$text" true)"
+  if [[ "$(jq 'length' <<<"$paths")" -eq 0 ]]; then
+    paths="$(issue_body_file_paths_json "$text" true true)"
+  fi
+  if [[ "$(jq 'length' <<<"$paths")" -gt 0 ]]; then
+    classification="$(node "$REPO_DIR/scripts/branch-delivery-policy.mjs" --classify-path-set - <<<"$paths" 2>/dev/null || true)"
+    case "$classification" in
+      eligible) verdict="direct-main" ;;
+      not-eligible) verdict="pr" ;;
+    esac
+  fi
+
+  [[ "$issue" == 0 ]] || refs_issue="、正文写 Refs #${issue}"
+  recheck_doc="$(cat <<'EOF'
+第一次写文件时先复核车道（在 worktree 根目录执行，覆盖未提交改动和未跟踪新文件）：
+
+    { git diff --name-only origin/main; git ls-files --others --exclude-standard; } | sort -u \
+      | jq -Rsc 'split("\n") | map(select(length > 0))' \
+      | node scripts/branch-delivery-policy.mjs --classify-path-set -
+
+输出 eligible 才继续 direct-main；输出 not-eligible 立即停，本票改走 PR 车道交付，不要继续实现等 land-direct-main 以 exit 2 拒绝。
+EOF
+)"
+
+  case "$verdict" in
+    direct-main)
+      cat <<EOF
+## 车道判定（launch 时已判：direct-main，#4722）
+
+预计改动路径已用 scripts/branch-delivery-policy.mjs --classify-path-set（land-direct-main 落地时同一份判定）判为 eligible：
+
+$(jq -r '.[] | "  - " + .' <<<"$paths")
+
+按 brief 用 engine/land-direct-main.sh 落地。要写上面清单之外的路径时，先按下面的命令重判一次；not-eligible 就改走 PR 车道（开 PR${refs_issue}），不要等 land-direct-main 以 exit 2 拒绝。
+
+${recheck_doc}
+EOF
+      ;;
+    pr)
+      cat <<EOF
+## 车道判定（launch 时已判：PR 车道，#4722）
+
+预计改动路径用 scripts/branch-delivery-policy.mjs --classify-path-set（land-direct-main 落地时同一份判定）判为 not-eligible，直落会被 land-direct-main 以 exit 2 拒绝：
+
+$(jq -r '.[] | "  - " + .' <<<"$paths")
+
+从一开始就按 PR 交付：开 PR${refs_issue}，走产品门禁，不要走 land-direct-main，也不要先写完再搬家。
+EOF
+      ;;
+    *)
+      cat <<EOF
+## 车道判定（launch 未能判定，#4722）
+
+brief 里提取不到仓库内路径，无法预判 direct-main 还是 PR 车道。
+
+${recheck_doc}
+EOF
+      ;;
+  esac
 }
 
 # issue_change_surface_json <state-json> <body> <labels-json> -> scoped paths.
@@ -10147,7 +10284,7 @@ env_fault_probe() {
       return 1
       ;;
     env:leg-not-executable:*)
-      [ -x "$REPO_DIR/engine/run-${1#env:leg-not-executable:}.sh" ]
+      [ -x "$ZF_ENGINE_DIR/run-${1#env:leg-not-executable:}.sh" ]
       ;;
     env:codex-sandbox-probe)
       codex_probe_ok
@@ -10164,7 +10301,7 @@ env_fault_probe() {
       ;;
     env:ci-runner-capacity|env:build-capacity)
       # Match the CI runner's capped disk floor and the shared build gate.
-      df_line="$(timeout 35 ssh -o BatchMode=yes -o ConnectTimeout=15 cihost 'df -Pk /' 2>/dev/null \
+      df_line="$(timeout 35 ssh -o BatchMode=yes -o ConnectTimeout=15 "$ZF_CIHOST_HOST" 'df -Pk /' 2>/dev/null \
         | awk 'NR == 2 && $2 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ { print $2, $4; exit }')" || return 2
       read -r total_kb avail_kb <<< "$df_line"
       [[ "${total_kb:-}" =~ ^[0-9]+$ && "${avail_kb:-}" =~ ^[0-9]+$ ]] || return 2
@@ -10223,7 +10360,7 @@ env_fault_repair() {
       ;;
     env:codex-sandbox-probe)
       # 10-28: the marker went missing and nothing re-ran the probe, so recut stayed quarantined.
-      bash "$REPO_DIR/engine/probe-codex-sandbox.sh" >/dev/null 2>&1 || return 2
+      bash "$ZF_ENGINE_DIR/probe-codex-sandbox.sh" >/dev/null 2>&1 || return 2
       return 0
       ;;
     env:web-advisor-provider:*)
@@ -10482,7 +10619,7 @@ scheduler_requeue_issue() {
   context+="
 Existing PRs: $(jq -c '.' <<< "$prs")
 Rescued refs (newest first): ${rescue_refs:-none}"
-  marker="<!-- zf-scheduler-handoff issue=$n hold=$hold_id -->"
+  marker="<!-- vecta-scheduler-handoff issue=$n hold=$hold_id -->"
   if ! hold_comment_has_marker "$issue_json" "$marker"; then
     body="$BOT_DISCLAIMER
 The scheduler will resume this issue: $reason.
@@ -11033,9 +11170,10 @@ stage_dispatch_allowed() {
 # the fault locally -- distinguishable from a verdict by construction.
 legs_executable_check() {
   local stage script
-  # run-release.sh is not shipped: release is a hook here, not a leg.
-  for stage in triage advisor recut; do
-    script="$REPO_DIR/engine/run-$stage.sh"
+  for stage in triage advisor recut release; do
+    script="$ZF_ENGINE_DIR/run-$stage.sh"
+    # release is a pack leg: a deployment that ships no run-release.sh has no such leg (a present, non-executable one is still an outage).
+    [ "$stage" = release ] && [ ! -e "$script" ] && continue
     [ -x "$script" ] && continue
     echo "issue-pipeline: leg $stage cannot execute -- $script is not executable (git mode bit); this is an outage, not a verdict" >&2
     quarantine_open "$stage" "env:leg-not-executable:$stage" "$script is not executable in the checkout this tick runs from (the file's git mode bit is missing)" 1
@@ -11191,7 +11329,7 @@ issue_spend_budget_status() {
   printf '%s\t%s\t%s\n' "$status" "${calls:-0}" "${tokens:-0}"
 }
 
-ISSUE_SPEND_BUDGET_MARKER='<!-- zf-issue-spend-budget-routed'
+ISSUE_SPEND_BUDGET_MARKER='<!-- vecta-issue-spend-budget-routed'
 hold_issue_spend_budget() {
   local n="$1" window_end="$2" edit_label
   local -a edit_args=(--holder issue-spend-budget \
@@ -12626,9 +12764,14 @@ ci_flake_state_ensure_unlocked() {
       "$CI_FLAKE_STATE_FILE" >/dev/null 2>&1
     return $?
   fi
-  # One-time migration from the old model-policy list; active lookups use this state file.
-  local seed tmp
-  seed="$(jq -c '.hand_loop_breaker.known_flakes // []' "$MODEL_POLICY_DEFAULT")" || return 1
+  # One-time seed; active lookups use this state file. The pack's state/ci-known-flakes.json (a JSON array) is the seed when the
+  # deployment ships one; otherwise the old model-policy list, which the generic default leaves empty.
+  local seed tmp pack_flakes
+  if pack_flakes="$(pack_file state/ci-known-flakes.json)"; then
+    seed="$(jq -c . "$pack_flakes")" || return 1
+  else
+    seed="$(jq -c '.hand_loop_breaker.known_flakes // []' "$MODEL_POLICY_DEFAULT")" || return 1
+  fi
   tmp="$(mktemp "$CI_FLAKE_STATE_FILE.XXXXXX")" || return 1
   if ! jq -n --argjson signatures "$seed" '{version:1,signatures:$signatures,occurrences:[]}' > "$tmp"; then
     rm -f -- "$tmp"
@@ -12754,7 +12897,7 @@ $excerpt
 验收：定位并修复未处理错误根因；添加回归证据，区分真实测试失败与测试结束后的进程错误。
 
 $marker
-<!-- zenoforge-agent-comment -->"
+<!-- vecta-agent-comment -->"
     if [ "$(roadmap_switch_value)" = true ]; then
       created_url="$(guarded_write gh issue create --repo "$REPO" --title "$title" --label pipeline-system --body "$body")" || return 2
     else
@@ -13062,8 +13205,16 @@ ci_main_completed_push_runs() {
     2>/dev/null)" || return 1
   jq -e 'type == "object" and (.workflow_runs | type == "array")' \
     <<< "$response" >/dev/null 2>&1 || return 1
-  jq 'if type == "array" then .[] else . end
-    | .workflow_runs |= map(select(.event == "push" or .event == "workflow_dispatch"))' <<< "$response"
+  jq --arg workflow "$workflow" '
+    if type == "array" then .[] else . end
+    | .workflow_runs |= map(select(.event == "push" or .event == "workflow_dispatch")
+      | select($workflow != "pipeline-suites.yml"
+        or (((.display_title // "") | startswith("Pipeline suites post-land probe ")) | not))
+      | if $workflow == "pipeline-suites.yml" and ((.display_title // "") | startswith("Pipeline suites post-land ")) then
+          .head_sha = (.display_title | split(" ")[3])
+        elif $workflow == "pipeline-suites.yml" and ((.display_title // "") | startswith("Pipeline suites full post-land ")) then
+          .head_sha = (.display_title | split(" ")[4])
+        else . end)' <<< "$response"
 }
 
 # Shared verdict selector for merge admission, main-red recovery and revalidation.
@@ -13258,11 +13409,11 @@ agent_implement_dispatch_resources_allow() {
 
 triage_single_unit_active() {
   local out
-  if out="$(systemctl --user is-active --quiet "zf-triage-$1" 2>&1)"; then
+  if out="$(systemctl --user is-active --quiet "${UNIT_PREFIX_TRANSIENT}-triage-$1" 2>&1)"; then
     return 0
   fi
   if [ -n "$out" ]; then
-    echo "triage_single_unit_active: systemctl --user is-active could not be queried for zf-triage-$1 -- treating as ACTIVE (fail-closed): $out" >&2
+    echo "triage_single_unit_active: systemctl --user is-active could not be queried for ${UNIT_PREFIX_TRANSIENT}-triage-$1 -- treating as ACTIVE (fail-closed): $out" >&2
     return 0
   fi
   return 1
@@ -13270,14 +13421,14 @@ triage_single_unit_active() {
 
 triage_batch_unit_active() {
   local out
-  if ! out="$(systemctl --user list-units --no-legend --plain zf-triage-batch.service 2>&1)"; then
+  if ! out="$(systemctl --user list-units --no-legend --plain "${UNIT_PREFIX_TRANSIENT}-triage-batch.service" 2>&1)"; then
     if [ -n "$out" ]; then
       echo "triage_batch_unit_active: systemctl --user list-units could not be queried -- treating batch as ACTIVE (fail-closed): $out" >&2
       return 0
     fi
     return 1
   fi
-  printf '%s\n' "$out" | awk '$1 == "zf-triage-batch.service" { found=1 } END { exit !found }'
+  printf '%s\n' "$out" | awk -v unit="${UNIT_PREFIX_TRANSIENT}-triage-batch.service" '$1 == unit { found=1 } END { exit !found }'
 }
 
 stage_unit_active() {
@@ -13293,11 +13444,11 @@ stage_unit_active() {
     # pinned on-hold and red the concluded-root-unblock suite.
     return 1
   fi
-  if out="$(systemctl --user is-active --quiet "zf-$1-$2" 2>&1)"; then
+  if out="$(systemctl --user is-active --quiet "${UNIT_PREFIX_TRANSIENT}-$1-$2" 2>&1)"; then
     return 0
   fi
   if [ -n "$out" ]; then
-    echo "stage_unit_active: systemctl --user is-active could not be queried for zf-$1-$2 -- treating as ACTIVE (fail-closed), not confirmed-inactive: $out" >&2
+    echo "stage_unit_active: systemctl --user is-active could not be queried for ${UNIT_PREFIX_TRANSIENT}-$1-$2 -- treating as ACTIVE (fail-closed), not confirmed-inactive: $out" >&2
     return 0
   fi
   if [ "$1" = triage ] && [ "$2" != batch ] && triage_batch_issue_active "$2"; then
@@ -13383,7 +13534,7 @@ triage_result_matches_schema() {
 # needed.
 stage_unit_count() {
   local out
-  if ! out="$(systemctl --user list-units --no-legend --plain "zf-$1-*" 2>&1)"; then
+  if ! out="$(systemctl --user list-units --no-legend --plain "${UNIT_PREFIX_TRANSIENT}-$1-*" 2>&1)"; then
     echo "stage_unit_count: systemctl --user list-units could not be queried for stage $1 -- treating occupancy as FULL (fail-closed), not zero: $out" >&2
     echo 999999999
     return 1
@@ -13403,7 +13554,7 @@ stage_unit_count() {
   # The autopilot release train runs as zf-release-train.service; it delegates to the release slice and is
   # not a release slot. Counting it made RELEASE_CAP=1 always full (2026-10-22: every candidate
   # gate=capacity slots-exhausted while only the train ran).
-  count="$(printf '%s\n' "$out" | grep -vc -e '^$' -e '^zf-release-train\.service')" || status=$?
+  count="$(printf '%s\n' "$out" | grep -vc -e '^$' -e "^${UNIT_PREFIX_TRANSIENT}-release-train\\.service")" || status=$?
   if [ "$status" -gt 1 ]; then
     echo "stage_unit_count: grep failed (exit $status) counting units for stage $1 -- treating occupancy as FULL (fail-closed), not zero" >&2
     echo 999999999
@@ -13512,8 +13663,8 @@ triage_freshness_redefer_unchanged_issue() {
 # line. Used to derive (never store) implement's package-exclusion set — see
 # expected_packages_collide() below.
 stage_active_issues() {
-  systemctl --user list-units --no-legend --plain "zf-$1-*" 2>/dev/null \
-    | awk '{print $1}' | sed -E "s/^zf-$1-([0-9]+)\\.service\$/\\1/"
+  systemctl --user list-units --no-legend --plain "${UNIT_PREFIX_TRANSIENT}-$1-*" 2>/dev/null \
+    | awk '{print $1}' | sed -E "s/^${UNIT_PREFIX_TRANSIENT}-$1-([0-9]+)\\.service\$/\\1/"
 }
 
 # How many more of this stage's cap are free right now? Clamped at 0 so a
@@ -13790,17 +13941,19 @@ deploy_is_blocked() {
 #                    Green midpoint moves the green bound up,
 #                    red midpoint moves the red bound down; a one-commit
 #                    window names the culprit.
-#   culprit-found   culprit commit's `fix(#N):` subject names the ticket.
-#                    No owner (or an un-revertable commit) -> unattributed.
-#   revert-open     dedicated revert PR `agent/revert-main-<issue>-<sha12>`
-#                    carries the git-revert trailer; sweep-merges.sh admits
-#                    only this matching PR through the red gate after its
-#                    checks are green. A Postsubmit red keeps ordinary merges
+#   culprit-found   the culprit's direct landing request (one unique owner)
+#                    or its `fix(#N):` subject names the ticket. Ambiguous
+#                    ownership or an un-revertable commit -> unattributed.
+#   revert-open     direct-main landings receive an exact git-revert commit
+#                    through a fast-forward compare-and-swap; conflicts go to
+#                    supervisor arbitration. PR landings use the dedicated
+#                    `agent/revert-main-<issue>-<sha12>` PR through
+#                    sweep-merges.sh. A Postsubmit red keeps ordinary merges
 #                    held until a later Postsubmit verdict is green; a
-#                    suites-only red does not change that gate. The ticket is
-#                    reopened with the culprit evidence at the same step.
-#   reverted        the revert PR merged; the existing Postsubmit merge gate
-#                   still owns ordinary merge admission.
+#                    suites-only red does not change that gate.
+#   reverted        the direct revert landed or the revert PR merged; the
+#                    existing Postsubmit merge gate still owns ordinary merge
+#                    admission.
 #   flaky           terminal record of a red that reran green.
 #   unattributed    terminal: no culprit could be named. A Postsubmit red
 #                   stays behind its merge gate; every unattributed red sends
@@ -13900,21 +14053,42 @@ main_red_log() {
 }
 
 # Latest completed, non-cancelled verdict for one SHA across main push runs
-# and train-branch workflow_dispatch probes, in the workflow the red session
-# is running (a suites red is probed with Pipeline suites, not Postsubmit).
+# and workflow_dispatch probes, in the workflow the red session is running
+# (a suites red is probed with Pipeline suites, not Postsubmit).
 # Echoes "success" | "failure" | "pending" (a newer non-completed run exists
 # for the SHA) | "none" (no usable verdict). rc 2 on an unreadable answer.
 main_red_probe_verdict() {
-  local sha="$1" workflow="${2:-ci.yml}" cache_window_start runs
+  local sha="$1" workflow="${2:-ci.yml}" focus_head="${3:-}" cache_window_start runs
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 2
   case "$workflow" in ci.yml|pipeline-suites.yml) ;; *) return 2 ;; esac
   cache_window_start="$(ci_main_actions_cache_window_start)" || return 2
+  if [[ "$workflow" == pipeline-suites.yml \
+      && ( "$focus_head" =~ ^[0-9a-f]{40}$ || "$focus_head" == "__rerun__" ) ]]; then
+    runs="$(main_gh api "repos/$REPO/actions/workflows/pipeline-suites.yml/runs?branch=main&per_page=100&page=1&created=%3E%3D${cache_window_start}" \
+      -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' 2>/dev/null)" || return 2
+    jq -r --arg sha "$sha" --arg focus_head "$focus_head" '
+      [.workflow_runs[]?
+        | select(.head_branch == "main" and .path == ".github/workflows/pipeline-suites.yml"
+          and (.event == "push" or .event == "workflow_dispatch")
+          and (if $focus_head == "__rerun__" then
+                ((.display_title // "") | test("^Pipeline suites post-land " + $sha + " ([0-9a-f]{40}|legacy)$"))
+              else .display_title == ("Pipeline suites post-land probe " + $sha + " " + $focus_head)
+              end))]
+      | sort_by([.created_at // "", .id // 0, .run_attempt // 0]) as $all
+      | if ($all | length) == 0 then "none"
+        elif ($all | last | .status) != "completed" then "pending"
+        else ([$all[] | select(.status == "completed" and .conclusion != "cancelled" and .conclusion != "skipped")]
+          | last | .conclusion // "none")
+        end' <<< "$runs" 2>/dev/null || return 2
+    return 0
+  fi
   runs="$(main_gh api "repos/$REPO/actions/runs?head_sha=$sha&per_page=100&page=1&created=%3E%3D${cache_window_start}" \
     -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' 2>/dev/null)" || return 2
-  jq -r --arg sha "$sha" --arg path ".github/workflows/$workflow" '
+  jq -r --arg sha "$sha" --arg path ".github/workflows/$workflow" --arg focus_head "$focus_head" '
     [.workflow_runs[]?
       | select(.head_sha == $sha and .path == $path
-        and (.event == "push" or .event == "workflow_dispatch"))]
+        and (.event == "push" or .event == "workflow_dispatch")
+        and ($focus_head != "__full__" or (((.display_title // "") | startswith("Pipeline suites post-land ")) | not)))]
     | sort_by([.created_at // "", .id // 0, .run_attempt // 0]) as $all
     | if ($all | length) == 0 then "none"
       elif ($all | last | .status) != "completed" then "pending"
@@ -13923,18 +14097,23 @@ main_red_probe_verdict() {
       end' <<< "$runs" 2>/dev/null || return 2
 }
 
-# Push a train ref at the midpoint and dispatch the red's own workflow on
-# it. The ref must point at exactly the probe SHA: ci.yml's postsubmit job
-# only runs a workflow_dispatch whose source_sha input equals the ref head;
-# pipeline-suites.yml takes no inputs and runs the full suite for a train
-# dispatch, which is how a suites-only red reproduces at a midpoint.
+# Push a train ref at the midpoint. Postsubmit probes run on that ref because
+# ci.yml requires source_sha to equal it; focused Pipeline suites probes use
+# the current main workflow definition, carry the train ref only as their
+# concurrency key, and check out the exact probe SHA in the test job.
 main_red_dispatch_probe() {
-  local mid_sha="$1" red_sha="$2" workflow="${3:-ci.yml}" branch="train/bisect-${2:0:12}"
+  local mid_sha="$1" red_sha="$2" workflow="${3:-ci.yml}" focused_base="${4:-}" focused_head="${5:-}" branch="train/bisect-${2:0:12}"
   if ! guarded_write git -C "$REPO_DIR" push -q origin "+${mid_sha}:refs/heads/$branch"; then
     return 1
   fi
   if [ "$workflow" = pipeline-suites.yml ]; then
-    guarded_write gh workflow run pipeline-suites.yml --repo "$REPO" --ref "$branch" || return 1
+    if [[ "$focused_base" =~ ^[0-9a-f]{40}$ && "$focused_head" =~ ^[0-9a-f]{40}$ ]]; then
+      guarded_write gh workflow run pipeline-suites.yml --repo "$REPO" --ref main \
+        -f "post_land_base_sha=$focused_base" -f "post_land_head_sha=$focused_head" \
+        -f "post_land_probe_sha=$mid_sha" -f "post_land_probe_ref=$branch" || return 1
+    else
+      guarded_write gh workflow run pipeline-suites.yml --repo "$REPO" --ref "$branch" || return 1
+    fi
   elif ! guarded_write gh workflow run ci.yml --repo "$REPO" --ref "$branch" -f "source_sha=$mid_sha"; then
     return 1
   fi
@@ -13951,8 +14130,37 @@ main_red_supervisor_event() {
 # implementation. state_requeue resets attempts and labels; a ticket the
 # merge had already closed is reopened first so the lane transition lands on
 # an open issue.
+main_red_direct_landing_request() {
+  local sha="$1" request_dir="${ZF_LAND_QUEUE_DIR:-$AGENT_HOME/land-queue}/requests" request base landed
+  local -a matches=()
+  [[ "$sha" =~ ^[0-9a-f]{40}$ && -d "$request_dir" ]] || return 1
+  for request in "$request_dir"/*.json; do
+    [[ -r "$request" ]] || continue
+    jq -e '.direct_landing == true and .state == "landed"' "$request" >/dev/null 2>&1 || continue
+    base="$(jq -r '.base_sha // empty' "$request")" || continue
+    landed="$(jq -r '.landed_sha // empty' "$request")" || continue
+    [[ "$base" =~ ^[0-9a-f]{40}$ && "$landed" =~ ^[0-9a-f]{40}$ ]] || continue
+    git -C "$REPO_DIR" merge-base --is-ancestor "$base" "$sha" 2>/dev/null || continue
+    git -C "$REPO_DIR" merge-base --is-ancestor "$sha" "$landed" 2>/dev/null || continue
+    matches+=("$request")
+  done
+  if ((${#matches[@]} == 0)); then return 1; fi
+  ((${#matches[@]} == 1)) || return 2
+  printf '%s\n' "${matches[0]}"
+}
+
+main_red_direct_landing_issue() {
+  local request="$1" owned
+  local -a issues=()
+  [[ -r "$request" ]] || return 1
+  owned="$(jq -r '.owned_issues // empty' "$request")" || return 1
+  read -r -a issues <<< "$owned"
+  ((${#issues[@]} == 1)) && [[ "${issues[0]}" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "${issues[0]}"
+}
+
 main_red_reopen_ticket() {
-  local issue="$1" culprit="$2" red_sha="$3" run_id="$4" revert_pr="$5" state
+  local issue="$1" culprit="$2" red_sha="$3" run_id="$4" revert_ref="$5" state
   state="$(gh issue view "$issue" --repo "$REPO" --json state -q .state 2>/dev/null)" || return 1
   if [ "$state" = "CLOSED" ]; then
     guarded_write gh issue reopen "$issue" --repo "$REPO" || return 1
@@ -13963,7 +14171,7 @@ main 的自动化验证变红，二分定位到本 ticket 的合入提交是罪�
 
 - 罪魁提交：$culprit
 - 首红 SHA：${red_sha}（run ${run_id}，同一 SHA 重跑一次仍红，排除 flaky）
-- 回滚 PR：#$revert_pr
+- 回滚：$revert_ref
 - 证据：engine 的 main-red 会话（$AGENT_HOME/main-red/）
 
 请基于回滚合入后的 origin/main 重新应用改动并修复根因，先让对应主线验证通过再重新交付。" || return 1
@@ -13991,11 +14199,51 @@ main_red_open_revert_pr() {
   printf '%s\n' "$pr"
 }
 
+main_red_open_direct_revert() {
+  local issue="$1" culprit="$2" red_sha="$3" run_id="$4" lib_dir revert_sha
+  [ "$DRY_RUN" != 1 ] || return 1
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  declare -F open_direct_main_revert >/dev/null 2>&1 || source "$lib_dir/deploy-culprit.sh"
+  revert_sha="$(open_direct_main_revert "$issue" "$culprit" "$red_sha" "$run_id")" || return 1
+  [[ "$revert_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+  printf '%s\n' "$revert_sha"
+}
+
+main_red_post_land_base_from_run() {
+  local run="$1" sha title request base parent
+  sha="$(jq -r '.head_sha // empty' <<< "$run")" || return 1
+  title="$(jq -r '.display_title // empty' <<< "$run")" || return 1
+  if [[ "$title" =~ ^Pipeline\ suites\ post-land\ ([0-9a-f]{40})\ ([0-9a-f]{40})$ ]] \
+      && [[ "${BASH_REMATCH[1]}" == "$sha" ]]; then
+    printf '%s\n' "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  if [[ "$title" =~ ^Pipeline\ suites\ post-land\ ([0-9a-f]{40})\ legacy$ ]] \
+      && [[ "${BASH_REMATCH[1]}" == "$sha" ]]; then
+    request="$(main_red_direct_landing_request "$sha")" || return 1
+    base="$(jq -r '.base_sha // empty' "$request")" || return 1
+    parent="$(git -C "$REPO_DIR" rev-parse --verify "${sha}^")" || return 1
+    [[ "$base" == "$parent" ]] || return 1
+    printf '%s\n' "$base"
+    return 0
+  fi
+  return 1
+}
+
+main_red_focused_suite_step_failed() {
+  local run_id="$1" attempt="$2" jobs
+  [[ "$run_id" =~ ^[1-9][0-9]*$ && "$attempt" =~ ^[1-9][0-9]*$ ]] || return 1
+  jobs="$(gh run view "$run_id" --repo "$REPO" --attempt "$attempt" --json jobs -q '.jobs' 2>/dev/null)" || return 1
+  jq -e 'type == "array" and any(.[]; .name == "Pipeline suites focused"
+    and any(.steps[]?; .name == "Run focused pipeline suites" and .conclusion == "failure"))' \
+    <<< "$jobs" >/dev/null 2>&1
+}
+
 main_red_step_session() { # sha run_json run_history ; advances one session by one step
   local red_sha="$1" run="$2"
   local red_run_id session status green_sha red_created history lo hi count mid verdict culprit issue
   history="$3"
-  local subject subject_json attempts age issue_pr pr_state
+  local subject subject_json attempts age issue_pr pr_state subject_issue direct_request revert_sha direct_request_status focused_base focused_head direct_base direct_landed focused_update baseline_verdict baseline_attempts baseline_age red_run_attempt
   local workflow
   workflow="$(jq -r '.red_workflow // "ci.yml"' 2>/dev/null <<< "$run")"
   case "$workflow" in ci.yml|pipeline-suites.yml) ;; *) return 0 ;; esac
@@ -14010,14 +14258,23 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
       return 0
     fi
     red_created="$(jq -r '.created_at // empty' <<< "$run")"
-    green_sha="$(jq -r --arg red_created "$red_created" --arg workflow "$workflow" '
-      [.workflow_runs[]?
-        | select(.red_workflow == $workflow and .status == "completed" and .conclusion == "success"
-          and .created_at <= $red_created)]
-      | sort_by([.created_at // "", .id // 0, .run_attempt // 0])
-      | last | .head_sha // empty' <<< "$history" 2>/dev/null)" || green_sha=""
+    focused_base="$(main_red_post_land_base_from_run "$run" 2>/dev/null || true)"
+    focused_update=""
+    if [[ "$workflow" == pipeline-suites.yml && "$focused_base" =~ ^[0-9a-f]{40}$ ]]; then
+      focused_update=" | .focused_base_sha = \"$focused_base\" | .focused_head_sha = \"$red_sha\""
+      green_sha=""
+    else
+      green_sha="$(jq -r --arg red_created "$red_created" --arg workflow "$workflow" '
+        [.workflow_runs[]?
+          | select(.red_workflow == $workflow and .status == "completed" and .conclusion == "success"
+            and .created_at <= $red_created
+            and ($workflow != "pipeline-suites.yml"
+              or ((((.display_title // "") | startswith("Pipeline suites post-land ")) | not))))]
+        | sort_by([.created_at // "", .id // 0, .run_attempt // 0])
+        | last | .head_sha // empty' <<< "$history" 2>/dev/null)" || green_sha=""
+    fi
     if ! main_red_session_write "$red_sha" rerun-requested \
-      ".red_run_id = \"${red_run_id}\" | .green_sha = \"${green_sha:-}\" | .red_workflow = \"$workflow\""; then
+      ".red_run_id = \"${red_run_id}\" | .green_sha = \"${green_sha:-}\" | .red_workflow = \"$workflow\"$focused_update"; then
       echo "main-red-bisect: could not open a session for $red_sha" >&2
       return 0
     fi
@@ -14033,10 +14290,56 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
       # flaky by the sweep's own pass below, never here.) A missing or
       # non-ancestor baseline cannot anchor a bisect.
       green_sha="$(jq -r '.green_sha // empty' <<< "$session")"
+      focused_base="$(jq -r '.focused_base_sha // empty' <<< "$session")"
+      focused_head="$(jq -r '.focused_head_sha // empty' <<< "$session")"
+      if [[ "$workflow" == pipeline-suites.yml && ! "$focused_head" =~ ^[0-9a-f]{40}$ ]]; then
+        focused_head="__full__"
+      fi
+      if [[ "$workflow" == pipeline-suites.yml && "$focused_base" =~ ^[0-9a-f]{40}$ \
+          && "$focused_head" =~ ^[0-9a-f]{40}$ ]]; then
+        baseline_verdict="$(main_red_probe_verdict "$focused_base" "$workflow" "$focused_head")" || return 0
+        case "$baseline_verdict" in
+          success)
+            green_sha="$focused_base"
+            main_red_session_write "$red_sha" bisecting \
+              ".green_sha = \"$focused_base\" | .lo = \"$focused_base\" | .hi = \"$red_sha\" | .probe = null" || return 0
+            main_red_log "red ${red_sha:0:12}: mapped suite is green at pre-land ${focused_base:0:12}; bisecting same suite set"
+            return 0
+            ;;
+          failure)
+            main_red_session_write "$red_sha" unattributed || return 0
+            main_red_supervisor_event "$red_sha" "status=unattributed reason=preland-mapped-suites-red base=${focused_base:0:12} run=$red_run_id"
+            return 0
+            ;;
+          pending)
+            return 0
+            ;;
+          none)
+            baseline_attempts="$(jq -r '.baseline_probe_attempts // 0' <<< "$session")"
+            baseline_age=$(( $(date +%s) - $(stat -c %Y "$(main_red_session_file "$red_sha")" 2>/dev/null || echo 0) ))
+            if [[ ! "$baseline_attempts" =~ ^[0-9]+$ ]] || [ "$baseline_attempts" -ge "$MAIN_RED_PROBE_DISPATCH_ATTEMPTS" ]; then
+              main_red_session_write "$red_sha" unattributed || return 0
+              main_red_supervisor_event "$red_sha" "status=unattributed reason=preland-baseline-dispatch-exhausted base=${focused_base:0:12}"
+            elif [ "$baseline_attempts" -eq 0 ] || [ "$baseline_age" -ge "$MAIN_RED_PROBE_RETRY_DELAY_SECONDS" ]; then
+              main_red_session_write "$red_sha" rerun-requested \
+                ".baseline_probe_attempts = (($baseline_attempts // 0) + 1)" || return 0
+              if ! main_red_dispatch_probe "$focused_base" "$red_sha" "$workflow" "$focused_base" "$focused_head"; then
+                echo "main-red-bisect: pre-land mapped-suite baseline dispatch failed for ${focused_base:0:12} (attempt $((baseline_attempts + 1))/$MAIN_RED_PROBE_DISPATCH_ATTEMPTS)" >&2
+              fi
+            fi
+            return 0
+            ;;
+        esac
+      fi
       if ! [[ "$green_sha" =~ ^[0-9a-f]{40}$ ]] \
         || ! git -C "$REPO_DIR" merge-base --is-ancestor "$green_sha" "$red_sha" 2>/dev/null; then
         main_red_session_write "$red_sha" unattributed || return 0
         main_red_supervisor_event "$red_sha" "status=unattributed reason=no-green-baseline run=$red_run_id"
+        return 0
+      fi
+      if [[ "$green_sha" == "$red_sha" ]]; then
+        main_red_session_write "$red_sha" unattributed || return 0
+        main_red_supervisor_event "$red_sha" "status=unattributed reason=green-and-red-verdicts-share-sha run=$red_run_id"
         return 0
       fi
       main_red_session_write "$red_sha" bisecting \
@@ -14047,6 +14350,8 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
     bisecting)
       green_sha="$(jq -r '.green_sha // empty' <<< "$session")"
       workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$session")"
+      focused_base="$(jq -r '.focused_base_sha // empty' <<< "$session")"
+      focused_head="$(jq -r '.focused_head_sha // empty' <<< "$session")"
       lo="$(jq -r '.lo // .green_sha // empty' <<< "$session")"
       hi="$(jq -r '.hi // .red_sha // empty' <<< "$session")"
       if ! git -C "$REPO_DIR" merge-base --is-ancestor "$green_sha" "$red_sha" 2>/dev/null \
@@ -14063,7 +14368,7 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
       mid="$(git -C "$REPO_DIR" rev-list --reverse "$lo..$hi" 2>/dev/null | sed -n "$(( (count + 1) / 2 ))p")"
       [[ "$mid" =~ ^[0-9a-f]{40}$ ]] || return 0
       if [ "$(jq -r '.probe.sha // empty' <<< "$session")" != "$mid" ]; then
-        verdict="$(main_red_probe_verdict "$mid" "$workflow")" || return 0
+        verdict="$(main_red_probe_verdict "$mid" "$workflow" "$focused_head")" || return 0
         case "$verdict" in
           success)
             main_red_session_write "$red_sha" bisecting ".lo = \"$mid\" | .probe = null" || return 0
@@ -14088,7 +14393,7 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
       fi
       # A probe is either newly recorded or already in flight for this mid.
       attempts="$(jq -r '.probe.attempts // 0' <<< "$session")"
-      verdict="$(main_red_probe_verdict "$mid" "$workflow")" || return 0
+      verdict="$(main_red_probe_verdict "$mid" "$workflow" "$focused_head")" || return 0
       case "$verdict" in
         success)
           main_red_session_write "$red_sha" bisecting ".lo = \"$mid\" | .probe = null" || return 0
@@ -14107,7 +14412,7 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
             main_red_supervisor_event "$red_sha" "status=unattributed reason=probe-dispatch-exhausted mid=${mid:0:12}"
           elif [ "$attempts" -eq 0 ] || [ "$age" -ge "$MAIN_RED_PROBE_RETRY_DELAY_SECONDS" ]; then
             main_red_session_write "$red_sha" bisecting ".probe.attempts = (($attempts // 0) + 1)" || return 0
-            if ! main_red_dispatch_probe "$mid" "$red_sha" "$workflow"; then
+            if ! main_red_dispatch_probe "$mid" "$red_sha" "$workflow" "$focused_base" "$focused_head"; then
               echo "main-red-bisect: midpoint dispatch failed for $mid (attempt $((attempts + 1))/$MAIN_RED_PROBE_DISPATCH_ATTEMPTS)" >&2
             fi
           fi
@@ -14123,12 +14428,53 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
         return 0
       fi
       subject="$(git -C "$REPO_DIR" log -1 --format=%s "$culprit" 2>/dev/null)" || return 0
-      if ! [[ "$subject" =~ ^fix\(#([0-9]+)\): ]]; then
-        main_red_session_write "$red_sha" unattributed
-        main_red_supervisor_event "$red_sha" "status=unattributed reason=no-owner-issue culprit=${culprit:0:12} subject=\"$subject\""
-        return 0
+      subject_issue=""
+      [[ "$subject" =~ ^fix\(#([0-9]+)\): ]] && subject_issue="${BASH_REMATCH[1]}"
+      direct_request=""
+      direct_request_status=1
+      if [[ "$workflow" == pipeline-suites.yml ]]; then
+        if direct_request="$(main_red_direct_landing_request "$culprit" 2>/dev/null)"; then
+          direct_request_status=0
+        else
+          direct_request_status=$?
+        fi
       fi
-      issue="${BASH_REMATCH[1]}"
+      if [[ "$direct_request_status" -eq 2 ]]; then
+        main_red_session_write "$red_sha" unattributed
+        main_red_supervisor_event "$red_sha" "status=unattributed reason=direct-landing-range-ambiguous culprit=${culprit:0:12}"
+        return 0
+      elif [[ -n "$direct_request" ]]; then
+        issue="$(main_red_direct_landing_issue "$direct_request" 2>/dev/null || true)"
+        if [[ ! "$issue" =~ ^[1-9][0-9]*$ || ( -n "$subject_issue" && "$subject_issue" != "$issue" ) ]]; then
+          main_red_session_write "$red_sha" unattributed
+          main_red_supervisor_event "$red_sha" "status=unattributed reason=direct-landing-owner-ambiguous culprit=${culprit:0:12} request=$(basename "$direct_request")"
+          return 0
+        fi
+        focused_base="$(main_red_post_land_base_from_run "$run" 2>/dev/null || true)"
+        direct_base="$(jq -r '.base_sha // empty' "$direct_request")"
+        direct_landed="$(jq -r '.landed_sha // empty' "$direct_request")"
+        if [[ ! "$focused_base" =~ ^[0-9a-f]{40}$ || "$focused_base" != "$direct_base" \
+            || "$direct_landed" != "$red_sha" ]]; then
+          main_red_session_write "$red_sha" unattributed
+          main_red_supervisor_event "$red_sha" \
+            "status=unattributed reason=direct-main-revert-requires-matching-focused-range culprit=${culprit:0:12} request=$(basename "$direct_request")"
+          return 0
+        fi
+        red_run_attempt="$(jq -r '.run_attempt // empty' <<< "$run")"
+        if ! main_red_focused_suite_step_failed "$red_run_id" "$red_run_attempt"; then
+          main_red_session_write "$red_sha" unattributed
+          main_red_supervisor_event "$red_sha" \
+            "status=unattributed reason=focused-suite-test-step-failure-unconfirmed culprit=${culprit:0:12} run=$red_run_id attempt=$red_run_attempt"
+          return 0
+        fi
+      else
+        if [[ ! "$subject_issue" =~ ^[1-9][0-9]*$ ]]; then
+          main_red_session_write "$red_sha" unattributed
+          main_red_supervisor_event "$red_sha" "status=unattributed reason=no-owner-issue culprit=${culprit:0:12} subject=\"$subject\""
+          return 0
+        fi
+        issue="$subject_issue"
+      fi
       subject_json="$(jq -cn --arg value "$subject" '$value')" || return 0
       attempts="$(jq -r '.revert_attempts // 0' <<< "$session")"
       if [ "$attempts" -ge "$MAIN_RED_REVERT_ATTEMPTS" ]; then
@@ -14137,13 +14483,31 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
         return 0
       fi
       main_red_session_write "$red_sha" culprit-found '.revert_attempts = ((.revert_attempts // 0) + 1)'
+      if [[ -n "$direct_request" ]]; then
+        if ! revert_sha="$(main_red_open_direct_revert "$issue" "$culprit" "$red_sha" "$red_run_id")" \
+            || ! [[ "$revert_sha" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "main-red-bisect: direct-main revert for ${culprit:0:12} could not be completed (attempt $((attempts + 1))/$MAIN_RED_REVERT_ATTEMPTS)" >&2
+          return 0
+        fi
+        main_red_session_write "$red_sha" revert-open \
+          ".issue = $issue | .revert_sha = \"$revert_sha\" | .culprit_subject = $subject_json" || return 0
+        if main_red_reopen_ticket "$issue" "$culprit" "$red_sha" "$red_run_id" "direct-main commit $revert_sha"; then
+          main_red_session_write "$red_sha" reverted '.ticket_reopened = true' || return 0
+          main_red_supervisor_event "$red_sha" \
+            "status=reverted workflow=$workflow culprit=${culprit:0:12} issue=$issue revert=${revert_sha:0:12} run=$red_run_id"
+          main_red_log "red ${red_sha:0:12}: direct-main revert ${revert_sha:0:12} landed for culprit ${culprit:0:12}; ticket #$issue reopened"
+        else
+          echo "main-red-bisect: direct revert landed as ${revert_sha:0:12}, but ticket #$issue handoff will retry next tick" >&2
+        fi
+        return 0
+      fi
       if ! issue_pr="$(main_red_open_revert_pr "$issue" "$culprit" "$red_sha" "$red_run_id")" \
         || ! [[ "$issue_pr" =~ ^[0-9]+$ ]]; then
         echo "main-red-bisect: revert PR for ${culprit:0:12} could not be opened (attempt $((attempts + 1))/$MAIN_RED_REVERT_ATTEMPTS)" >&2
         return 0
       fi
       main_red_session_write "$red_sha" revert-open ".issue = $issue | .revert_pr = $issue_pr | .culprit_subject = $subject_json"
-      if main_red_reopen_ticket "$issue" "$culprit" "$red_sha" "$red_run_id" "$issue_pr"; then
+      if main_red_reopen_ticket "$issue" "$culprit" "$red_sha" "$red_run_id" "PR #$issue_pr"; then
         main_red_session_write "$red_sha" revert-open '.ticket_reopened = true'
       else
         echo "main-red-bisect: ticket #$issue reopen/comment failed; retrying next tick" >&2
@@ -14153,9 +14517,28 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
     revert-open)
       issue="$(jq -r '.issue // empty' <<< "$session")"
       culprit="$(jq -r '.culprit // empty' <<< "$session")"
+      revert_sha="$(jq -r '.revert_sha // empty' <<< "$session")"
+      if [[ "$revert_sha" =~ ^[0-9a-f]{40}$ ]]; then
+        git_fetch_bounded "$REPO_DIR" main >/dev/null 2>&1 || return 0
+        if ! git -C "$REPO_DIR" merge-base --is-ancestor "$revert_sha" origin/main 2>/dev/null \
+            || ! git -C "$REPO_DIR" show -s --format=%B "$revert_sha" 2>/dev/null \
+              | grep -Fxq "This reverts commit $culprit."; then
+          return 0
+        fi
+        if [ "$(jq -r '.ticket_reopened // false' <<< "$session")" != true ] \
+            && [[ "$issue" =~ ^[0-9]+$ && "$culprit" =~ ^[0-9a-f]{40}$ ]]; then
+          if main_red_reopen_ticket "$issue" "$culprit" "$red_sha" "$red_run_id" "direct-main commit $revert_sha"; then
+            main_red_session_write "$red_sha" reverted '.ticket_reopened = true' || return 0
+            main_red_supervisor_event "$red_sha" \
+              "status=reverted workflow=$workflow culprit=${culprit:0:12} issue=$issue revert=${revert_sha:0:12} run=$red_run_id"
+            main_red_log "red ${red_sha:0:12}: direct-main revert ${revert_sha:0:12} confirmed; ticket #$issue reopened"
+          fi
+        fi
+        return 0
+      fi
       if [ "$(jq -r '.ticket_reopened // false' <<< "$session")" != true ] \
         && [[ "$issue" =~ ^[0-9]+$ && "$culprit" =~ ^[0-9a-f]{40}$ ]]; then
-        if main_red_reopen_ticket "$issue" "$culprit" "$red_sha" "$red_run_id" "$(jq -r '.revert_pr // empty' <<< "$session")"; then
+        if main_red_reopen_ticket "$issue" "$culprit" "$red_sha" "$red_run_id" "PR #$(jq -r '.revert_pr // empty' <<< "$session")"; then
           main_red_session_write "$red_sha" revert-open '.ticket_reopened = true'
         fi
       fi
@@ -14226,7 +14609,7 @@ main_red_paused_discovery() {
 # (that red was flaky and the latest verdict is green again, so the step
 # path above can no longer see it).
 main_red_bisect_sweep() {
-  local runs run verdict sha session_file session red_sha rerun_verdict workflow
+  local runs run verdict sha session_file session red_sha rerun_verdict workflow focused_head
   if ! runs="$(main_red_completed_runs)"; then
     echo "main-red-bisect: could not read the completed main verdict list" >&2
     return 0
@@ -14252,7 +14635,13 @@ main_red_bisect_sweep() {
     red_sha="$(jq -r '.red_sha // empty' <<< "$session")"
     [[ "$red_sha" =~ ^[0-9a-f]{40}$ ]] || continue
     workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$session")"
-    rerun_verdict="$(main_red_probe_verdict "$red_sha" "$workflow")" || continue
+    focused_head="$(jq -r '.focused_head_sha // empty' <<< "$session")"
+    if [[ "$workflow" == pipeline-suites.yml && ! "$focused_head" =~ ^[0-9a-f]{40}$ ]]; then
+      focused_head="__full__"
+    elif [[ "$workflow" == pipeline-suites.yml && "$focused_head" == "$red_sha" ]]; then
+      focused_head="__rerun__"
+    fi
+    rerun_verdict="$(main_red_probe_verdict "$red_sha" "$workflow" "$focused_head")" || continue
     if [ "$rerun_verdict" = success ]; then
       main_red_session_write "$red_sha" flaky
       main_red_log "red ${red_sha:0:12}: same-SHA rerun went green; recorded flaky, no revert"
@@ -14517,7 +14906,7 @@ main_fix_forward_carried_capacity_check() {
   done
   # The aggregate is red when Touched is red, so this narrow exception must inspect its other
   # children: the carried-capacity exception is valid only when the remaining CI gates passed.
-  for check_name in "NUL bytes & lone negative assertions" "Example pack PR gate" "Repo-path regression PR gate"; do
+  for check_name in "NUL bytes & lone negative assertions" "$ZF_PACK_PR_GATE" "Repo-path regression PR gate"; do
     jq -e --arg name "$check_name" 'any(.[]; .name == $name and .bucket == "pass")' <<< "$checks_json" >/dev/null 2>&1 || return 1
   done
 
@@ -14528,7 +14917,7 @@ main_fix_forward_carried_capacity_check() {
   run_id="${BASH_REMATCH[1]}"
   job_id="${BASH_REMATCH[2]}"
   run_json="$(main_gh run view "$run_id" --repo "$REPO" --json headSha,status,conclusion,jobs -q '{headSha,status,conclusion,jobs}' 2>/dev/null)" || return 1
-  jq -e --arg head "$expected_head" --argjson job_id "$job_id" '
+  jq -e --arg head "$expected_head" --argjson job_id "$job_id" --arg hook_step "$ZF_PACK_HOOK_STEP" '
     .headSha == $head and .status == "completed" and .conclusion == "failure"
     and ([.jobs[]? | select(.databaseId == $job_id)] | length == 1)
     and ([.jobs[]? | select(.databaseId == $job_id)][0] as $job
@@ -14539,7 +14928,7 @@ main_fix_forward_carried_capacity_check() {
       and ([$job.steps[]? | select(.name == "Run touched package gates in Dagger"
           or .name == "Run touched Postsubmit integration gates in Dagger"
           or .name == "Run changed integration tests in Dagger"
-          or .name == "Test Example Agent hook consumer")] as $source
+          or .name == $hook_step)] as $source
         | ($source | length) > 0 and all($source[]; .conclusion == "skipped")))
     and all(.jobs[]?; .conclusion != "failure" or .databaseId == $job_id)
   ' <<< "$run_json" >/dev/null 2>&1
@@ -14548,7 +14937,7 @@ main_fix_forward_carried_capacity_check() {
 main_fix_forward_carried_pr_registered() {
   local pr_number="$1" registry_path remote_command registry result script_dir
   [[ "$pr_number" =~ ^[1-9][0-9]*$ && -n "${DEPLOY_HOST:-}" ]] || return 2
-  registry_path="${DEPLOY_DIR:-/srv/app}/release-drift-carried.tsv"
+  registry_path="${DEPLOY_DIR:-$ZF_DEPLOY_DIR}/release-drift-carried.tsv"
   printf -v remote_command 'path=%q; if [ ! -e "$path" ] && [ ! -L "$path" ]; then exit 0; fi; [ -r "$path" ] || exit 44; cat -- "$path"' "$registry_path"
   registry="$(ssh -o BatchMode=yes -o ConnectTimeout=15 "$DEPLOY_HOST" "$remote_command")" || return 2
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15223,7 +15612,11 @@ gitnexus_index_health() {
   fi
 }
 
-# rebase_agent_pr_onto_main <head_ref> <base_sha>
+# Pack module: the PR migration-number and migration-order merge gates (the product's migration layout). Sourced only when the pack
+# ships it; every call site below checks the function exists, so a deployment without the module simply has no such gate.
+[[ -n "${ZF_PACK_DIR-}" && -r "$ZF_PACK_DIR/lib-migration-gate.sh" ]] && source "$ZF_PACK_DIR/lib-migration-gate.sh"
+
+# rebase_agent_pr_onto_main <head_ref> <base_sha> <pr_number>
 #
 # `main` moves fast enough that agent PRs go CONFLICTING before anyone
 # fixes them (#1287 was rebased by hand and went CONFLICTING again within
@@ -15254,7 +15647,7 @@ gitnexus_index_health() {
 # same "leave it, try again next tick" shape as any other transient
 # failure in this file.
 rebase_agent_pr_onto_main() {
-  local head_ref="$1" base_sha="$2" scratch
+  local head_ref="$1" base_sha="$2" pr_number="${3:-}" scratch
   scratch="$(mktemp -d)"
   if ! git_fetch_bounded "$REPO_DIR" main "$head_ref" \
     || ! git -C "$REPO_DIR" worktree add -q --detach "$scratch" "origin/$head_ref" 2>/dev/null; then
@@ -15267,7 +15660,9 @@ rebase_agent_pr_onto_main() {
 
   local result=0
   if git -C "$scratch" rebase origin/main >/dev/null 2>&1; then
-    if ! ZF_PUSH_GUARD_OVERRIDE_REASON=conflict-sweeper-conflicting-pr guarded_write git -C "$scratch" push origin \
+    if declare -F pack_rebase_hook >/dev/null && ! pack_rebase_hook "$scratch" "$pr_number"; then
+      result=2
+    elif ! ZF_PUSH_GUARD_OVERRIDE_REASON=conflict-sweeper-conflicting-pr guarded_write git -C "$scratch" push origin \
       "HEAD:refs/heads/$head_ref" "--force-with-lease=refs/heads/$head_ref:$base_sha"; then
       result=2
     fi
@@ -15394,6 +15789,10 @@ merge_agent_pr() {
       return 1
     fi
 
+    if declare -F merge_agent_pr_migration_gate >/dev/null && ! merge_agent_pr_migration_gate "$n" "$pr_number" "$match_head_commit"; then
+      return 1
+    fi
+
     # Gate 2 (risk-class.mjs re-check, run-implement.sh's own name for
     # it), re-checked here for the rescue path only -- same reasoning as
     # gate 4 just below: an attended call already ran this in run-
@@ -15511,6 +15910,11 @@ merge_agent_pr() {
     fi
   fi
 
+  if [ "$unattended" != "1" ] && declare -F merge_agent_pr_migration_gate >/dev/null \
+    && ! merge_agent_pr_migration_gate "$n" "$pr_number" "$match_head_commit"; then
+    return 1
+  fi
+
   # 2026-09-16 fix: is_on_hold() was checked at SCHEDULING time (issue-
   # pipeline.sh's own candidate loops) but never here, at the action itself
   # -- this is the ONE merge path shared by the live implement leg and the
@@ -15525,6 +15929,10 @@ merge_agent_pr() {
   if issue_on_hold_live "$n"; then
     MERGE_GATE_FAILURE_KIND="on-hold"
     MERGE_GATE_FAILURE_REASON="#$n is on-hold -- refusing to merge"
+    return 1
+  fi
+
+  if declare -F fruit_migration_order_gate >/dev/null && ! fruit_migration_order_gate "$pr_number" "$match_head_commit"; then
     return 1
   fi
 
@@ -15617,6 +16025,9 @@ merge_agent_pr() {
       if issue_on_hold_live "$n"; then
         MERGE_GATE_FAILURE_KIND="on-hold"
         MERGE_GATE_FAILURE_REASON="#$n is on-hold -- refusing to merge"
+        return 1
+      fi
+      if declare -F fruit_migration_order_gate >/dev/null && ! fruit_migration_order_gate "$pr_number" "$match_head_commit"; then
         return 1
       fi
       if [ "$DRY_RUN" != "1" ] \
@@ -16464,7 +16875,7 @@ fi
 # shellcheck source=./comms-format.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/comms-format.sh"
 
-# notify_email()/notify_maintainer()/resolve_recipients(): see notify.sh. Sourced
+# notify_email()/notify_founder()/resolve_recipients(): see notify.sh. Sourced
 # last (not first) purely so every function/variable above already exists by
 # the time a script that sources lib.sh runs anything — notify.sh itself only
 # depends on REPO and AGENT_HOME, both set at the top of this file, so load

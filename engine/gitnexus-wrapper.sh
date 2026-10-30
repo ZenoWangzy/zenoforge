@@ -30,7 +30,7 @@ fi
 # Each one-shot command loads the whole graph. On 2026-09-29 a hand agent
 # started 24 `gitnexus impact` calls at once; they peaked at 7.6G and froze WSL.
 # One-shot commands queue on one host-wide lock; long-running servers do not.
-# Homebrew flock (macOS) rejects -w 0; -n is the same.
+# Homebrew flock on macOS rejects -w 0; -n is the equivalent non-blocking lock.
 lock_fd() { if [[ $2 == 0 ]]; then flock -n "$1"; else flock -w "$2" "$1"; fi; }
 if [[ "${1:-}" != analyze ]]; then
   case "${1:-}" in

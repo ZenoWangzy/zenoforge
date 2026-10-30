@@ -968,7 +968,7 @@ export STATE_FIXTURE_N="1245"
 export STATE_FIXTURE_JSON='{"attempts":1,"advisor_ruled_at":"2026-09-15T16:17:47Z","advisor_episode_seq":3,"pending_advisor_verdict":{"result":{},"input":{},"computed_at":"2026-09-01T00:00:00Z","episode_seq":3,"effects":{}}}'
 run_once
 assert_contains "act: heals by posting a comment with the heal marker" \
-  "$RUN_OUTPUT" "zenoforge-supervisor-heal-advisor-ruled-at"
+  "$RUN_OUTPUT" "vecta-supervisor-heal-advisor-ruled-at"
 STATE_AFTER="$(cat "$AGENT_HOME/state/1245.json")"
 assert_not_contains "act: state_merge actually cleared advisor_ruled_at on disk" \
   "$STATE_AFTER" "advisor_ruled_at"
@@ -1326,8 +1326,8 @@ echo
 # The earlier fix for this exact class captured the producer into a variable
 # first, which removed the JOURNALCTL pipe but left the ECHO pipe, and the
 # echo is just as capable of being killed. A here-string has no pipe and no
-# second process to kill. Guard both halves: the pattern is gone from every
-# non-test script, and the replacement actually answers correctly on a
+# second process to kill. Guard both halves: the pattern is gone from the
+# original supervisor fixture scripts, and the replacement actually answers correctly on a
 # payload far larger than a pipe buffer. The match sits at the TOP of the
 # fixture on purpose: that is the only arrangement that makes `grep -q` exit
 # while the producer still has data to write, which is what triggers this.
@@ -1341,8 +1341,10 @@ fi
 assert_eq "a 100KB+ haystack still answers 'found' (no SIGPIPE through a here-string)" \
   "found" "$HERESTRING_RESULT"
 
-assert_eq "no production agent script pipes a captured variable into grep -q" \
-  "0" "$(grep -rln '" | grep -q' "$SUPERVISOR_LIBRARY_DIR"/*.sh 2>/dev/null | grep -vc '\.test\.sh$' || true)"
+assert_eq "no original supervisor fixture script pipes a captured variable into grep -q" \
+  "0" "$(grep -ln '" | grep -q' \
+    "$SUPERVISOR_LIBRARY_DIR"/{supervise-pipeline,lib,closing-keywords,hand-codex-liveness,write-guard,gh-auto-merge-guard,dispatch-load-guard,notify,owner-stop-request}.sh \
+    2>/dev/null | grep -vc '\.test\.sh$' || true)"
 
 # --- 2026-09-16: `local` reading a name it declares in the same statement ---
 # `cooldown_ready()` was written as

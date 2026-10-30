@@ -3,16 +3,16 @@
 # (verbatim: [...]
 # ). The live instance was run-implement.sh's old
 # fail_attempt() body: [...]
-#  — a maintainer-facing email handing back engineering
+#  — a founder-facing email handing back engineering
 # work (go look at a diff, decide whether to fix it or merge it by hand)
 # instead of the pipeline doing it or reaching a terminal on its own. See
 # lessons/RULES.md V111.
 #
 # Static scan, same shape as run-implement.test.sh's literal-email-address
 # guard: no gh/network/DRY_RUN plumbing, just grep every notify_email()/
-# notify_email_everyone()/notify_maintainer()/notify_email_verbatim() call
+# notify_email_everyone()/notify_founder()/notify_email_verbatim() call
 # site's own argument text; routine changes go through the digest, while only
-# maintainer-only decisions or production outages go out immediately.
+# founder-only decisions or production outages go out immediately.
 # notify_reporter_question() deliberately never includes him, see notify.sh.
 # Scan for a fixed list of banned asks: looking at something, debugging, rerunning, merging
 # by hand, or a "which/where/how" confirmation that is really a diagnosis
@@ -64,7 +64,7 @@ assert_not_contains() {
 
 # scan_file <path> — prints one "BAD <call-number> <pattern>" line per
 # banned match found in that file's notify_email()/notify_email_everyone()/
-# notify_maintainer()/notify_email_verbatim() call sites, nothing if the file
+# notify_founder()/notify_email_verbatim() call sites, nothing if the file
 # is clean. Exit
 # status is always 0 (this is a scanner, not the pass/fail judgement --
 # callers decide that from the presence/absence of output, same as
@@ -78,7 +78,7 @@ fn = sys.argv[1]
 with open(fn, encoding="utf-8") as f:
     lines = f.readlines()
 
-# Banned asks: engineering work a maintainer-facing email must never hand
+# Banned asks: engineering work a founder-facing email must never hand
 # back. Deliberately narrow phrases (not a bare "需要你", which also covers
 # legitimate asks this suite keeps, like authorizing a production redeploy)
 # -- see this file's header for the exact categories this mirrors.
@@ -290,7 +290,7 @@ EOF
 CLEAN_FIXTURE="$TMP_DIR/clean.sh"
 cat > "$CLEAN_FIXTURE" <<'EOF'
 pause_for_backoff() {
-  notify_maintainer "[example] 流水线暂停了" \
+  notify_founder "[example] 流水线暂停了" \
 "调用失败了一次，先自动停了大概一小时。
 
 想现在就恢复：删掉这个文件 -- $PAUSE_FILE"
@@ -324,9 +324,9 @@ assert_eq "meta-test: a literal English report field is rejected by the whitelis
   "1" "$([ -n "$ENGLISH_HITS" ] && echo 1 || echo 0)"
 
 # --- the real regression guard: every notify_email()/notify_email_everyone()/
-# notify_maintainer()/notify_email_verbatim() call site in engine,
+# notify_founder()/notify_email_verbatim() call site in engine,
 # whichever file it lives in. Not a fixed file list: a new leg script that
-# starts sending maintainer-facing mail is covered automatically, the same way
+# starts sending founder-facing mail is covered automatically, the same way
 # run-implement.test.sh's email-address guard covers a re-edit of that one
 # file without anyone remembering to update the test.
 ANY_REAL_HIT=0
@@ -343,7 +343,7 @@ for f in "$SCRIPT_DIR"/*.sh; do
   fi
 done
 if [ "$ANY_REAL_HIT" -eq 0 ]; then
-  echo "ok - no notify_email()/notify_maintainer()/notify_email_verbatim() call site in engine/*.sh asks the maintainer to do engineering work"
+  echo "ok - no notify_email()/notify_founder()/notify_email_verbatim() call site in engine/*.sh asks the maintainer to do engineering work"
 fi
 
 # --- #1256 regression: internal diagnostics must not survive
@@ -477,7 +477,7 @@ GMAIL_CONFIRMATION_OUTPUT="$(AGENT_HOME="$TMP_DIR/gmail-confirmation" bash -c '
   state_read() { printf "%s\n" "$CRED_STATE_JSON"; }
   state_merge() { CRED_STATE_JSON="$status_json"; }
   gmail_credential_probe() { printf "%s\n" "$FAKE_PROBE_STATUS"; }
-  notify_maintainer() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; }
+  notify_founder() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; }
   FAKE_PROBE_STATUS=invalid_grant
   check_gmail_credential
   first_status="$(jq -r .status <<< "$CRED_STATE_JSON")"
@@ -645,7 +645,7 @@ send_email() {
   LAST_SEND_BODY="$2"
   local _marker="$3"; shift 3
   LAST_SEND_KIND="${1:-} ${2:-}"
-  if [[ "$LAST_SEND_KIND" == "--maintainer-kind "* ]]; then shift 2; fi
+  if [[ "$LAST_SEND_KIND" == "--founder-kind "* ]]; then shift 2; fi
   LAST_SEND_RECIPIENTS=("$@")
   echo "fixture-thread"
 }
@@ -663,7 +663,7 @@ VERBATIM_CAPTURE="$LAST_SEND_BODY"
 assert_eq "decision wrapper returns Gmail thread id" "fixture-thread" "$VERBATIM_THREAD"
 assert_eq "decision wrapper uses the reporter as the only recipient" \
   "reporter@notify-fixture.invalid" "$(printf '%s\n' "${LAST_SEND_RECIPIENTS[@]}")"
-assert_eq "decision wrapper marks the structured mail kind" "--maintainer-kind decision" "$LAST_SEND_KIND"
+assert_eq "decision wrapper marks the structured mail kind" "--founder-kind decision" "$LAST_SEND_KIND"
 assert_eq "decision wrapper keeps exact reply instruction last" "请回复“A”" "$(printf '%s\n' "$VERBATIM_CAPTURE" | sed '/^[[:space:]]*$/d' | tail -n1)"
 assert_contains "decision wrapper puts issue link inside message" \
   "$VERBATIM_CAPTURE" "https://github.com/example-maintainer/example-repo/issues/1254"
@@ -672,7 +672,7 @@ assert_contains "decision wrapper puts issue link inside message" \
 # pre-send gate rejects it and emits no machine-log fallback template.
 source "$SCRIPT_DIR/notify.sh"
 _maintainer_email() { echo "maintainer@notify-fixture.invalid"; }
-MAINTAINER_REJECTION="$(notify_maintainer "普通运行提醒" "运行状态已记录。" 2>&1)"
+MAINTAINER_REJECTION="$(notify_founder "普通运行提醒" "运行状态已记录。" 2>&1)"
 assert_contains "generic maintainer notices are rejected by the mail contract" \
   "$MAINTAINER_REJECTION" "rejected by contract"
 assert_not_contains "generic rejection contains no machine-log fallback text" \
@@ -695,7 +695,7 @@ scrub_closing_keywords() { cat; }
 AUDIENCE_ROSTER="$TMP_DIR/audience-recipients.json"
 cat > "$AUDIENCE_ROSTER" <<'JSON'
 {
-  "maintainer_login": "fixture-maintainer",
+  "founder_login": "fixture-maintainer",
   "recipients": {
     "fixture-maintainer": "maintainer@notify-fixture.invalid",
     "fixture-reporter": "reporter@notify-fixture.invalid",
@@ -731,7 +731,7 @@ send_email() {
   LAST_SEND_SUBJECT="$_subject"
   LAST_SEND_BODY="$_body"
   LAST_SEND_KIND=""
-  if [[ "${1:-}" == "--maintainer-kind" ]]; then
+  if [[ "${1:-}" == "--founder-kind" ]]; then
     LAST_SEND_KIND="${1:-} ${2:-}"
     shift 2
   fi
@@ -784,19 +784,19 @@ LAST_SEND_KIND=""
 LAST_SEND_RECIPIENTS=()
 notify_reporter_question "9004" "[example] #9004 需要确认产品预期" "产品预期还需要补充。" > "$TMP_DIR/maintainer-thread"
 MAINTAINER_THREAD="$(cat "$TMP_DIR/maintainer-thread")"
-assert_eq "maintainer-authored product question returns no email thread" "" "$MAINTAINER_THREAD"
-assert_eq "maintainer-authored product question sends no direct mail" "" "$LAST_SEND_SUBJECT"
-assert_eq "maintainer-authored product question has no recipients" "" \
+assert_eq "founder-authored product question returns no email thread" "" "$MAINTAINER_THREAD"
+assert_eq "founder-authored product question sends no direct mail" "" "$LAST_SEND_SUBJECT"
+assert_eq "founder-authored product question has no recipients" "" \
   "$(printf '%s\n' "${LAST_SEND_RECIPIENTS[@]}")"
 
 LAST_SEND_RECIPIENTS=()
 LAST_SEND_KIND=""
 gh() { echo '{"author":{"login":"fixture-maintainer"}}'; }
 notify_email_verbatim 9006 '是否保留次日送达' '客户事实与两个选项。' >/dev/null
-assert_eq 'maintainer-only decision sends immediately to maintainer' \
+assert_eq 'founder-only decision sends immediately to maintainer' \
   'maintainer@notify-fixture.invalid' "$(printf '%s\n' "${LAST_SEND_RECIPIENTS[@]}")"
-assert_eq 'maintainer-only decision keeps decision mail kind' '--maintainer-kind decision' "$LAST_SEND_KIND"
-assert_eq 'maintainer-only decision enters four-hour reminder ledger' '1' \
+assert_eq 'founder-only decision keeps decision mail kind' '--founder-kind decision' "$LAST_SEND_KIND"
+assert_eq 'founder-only decision enters four-hour reminder ledger' '1' \
   "$(jq '[.important_items[] | select(.kind == "decision" and .issue == "9006" and .status == "open")] | length' \
     "$AGENT_HOME/night/founder-health-mail.json")"
 
@@ -839,7 +839,7 @@ assert_not_contains "conclusion notice never includes maintainer" \
   "$CONCLUSION_MAIL" 'maintainer@notify-fixture.invalid'
 assert_contains "conclusion audit records reporter only" \
   "$(cat "$NOTIFY_LOG_FILE" 2>/dev/null || true)" $'recipients=reporter@notify-fixture.invalid\tsubject=[example] 这一轮未能完成\tissue=9004\tmode=best-effort\treason=none\tresult=attempted'
-assert_eq "maintainer-authored conclusion has no reporter recipient" '' \
+assert_eq "founder-authored conclusion has no reporter recipient" '' \
   "$(resolve_recipients_reporter maintainer "$AUDIENCE_ROSTER")"
 assert_eq "unmapped conclusion reporter has no fallback recipient" '' \
   "$(resolve_recipients_reporter unknown-login "$AUDIENCE_ROSTER")"
@@ -855,11 +855,11 @@ assert_not_contains "unmapped reporter conclusion never names maintainer" \
 assert_contains "conclude_run uses reporter-only notification path" \
   "$(sed -n '/notify_email_reporter "\$n"/,/|| true/p' "$SCRIPT_DIR/lib.sh")" \
   'notify_email_reporter "$n"'
-INCIDENT_MAIL="$(notify_maintainer '[example] 模型调用暂不可用' \
+INCIDENT_MAIL="$(notify_founder '[example] 模型调用暂不可用' \
   $'用户目前看到：相关处理暂缓约一小时。\n我们正在：自动等待并重新尝试。\n下次更新：2026-09-27 12:00 UTC 后如再次失败会提醒。' incident 2>&1)"
 assert_contains "backoff notice reaches maintainer only" \
   "$INCIDENT_MAIL" 'to maintainer@notify-fixture.invalid:'
-assert_contains "backoff notice keeps maintainer-only notification audit" \
+assert_contains "backoff notice keeps founder-only notification audit" \
   "$(cat "$NOTIFY_LOG_FILE")" $'recipients=maintainer@notify-fixture.invalid\tsubject=[example] 模型调用暂不可用\tissue=none\tmode=best-effort\treason=none\tresult=attempted'
 DRY_RUN=0
 
@@ -1193,7 +1193,7 @@ assert_contains "#1608: notify.log records subjects" "$NOTIFY_LOG_CONTENT" "subj
 assert_not_contains "#1608: notify.log never records an access token" "$NOTIFY_LOG_CONTENT" "fake-access-token"
 FAKE_CURL_HTTP_CODE="" FAKE_CURL_BODY=""
 
-# --- maintainer-mail pre-send contract --------------------------------------
+# --- founder-mail pre-send contract --------------------------------------
 DECISION_SUBJECT='订单发货方式需要确认'
 DECISION_BODY='客户/公司：客户甲
 问题：是否应保留次日送达？
@@ -1227,25 +1227,25 @@ RECIPIENTS_FILE="$AUDIENCE_ROSTER"
 HEALTH_MAINTAINER_ADDRESS="$(_maintainer_email)"
 
 assert_eq 'maintainer mail accepts a complete decision' '' \
-  "$(maintainer_mail_rejection_reason decision "$DECISION_SUBJECT" "$DECISION_BODY")"
+  "$(founder_mail_rejection_reason decision "$DECISION_SUBJECT" "$DECISION_BODY")"
 assert_eq 'maintainer mail accepts a linked production outcome' '' \
-  "$(maintainer_mail_rejection_reason outcome "$OUTCOME_SUBJECT" "$OUTCOME_BODY")"
+  "$(founder_mail_rejection_reason outcome "$OUTCOME_SUBJECT" "$OUTCOME_BODY")"
 assert_eq 'maintainer mail rejects an outcome without a named user change' 'outcome-content' \
-  "$(maintainer_mail_rejection_reason outcome "$OUTCOME_SUBJECT" '生产环境现已上线，用户现在可以查看结果。https://github.com/example-maintainer/example-repo/issues/9001')"
+  "$(founder_mail_rejection_reason outcome "$OUTCOME_SUBJECT" '生产环境现已上线，用户现在可以查看结果。https://github.com/example-maintainer/example-repo/issues/9001')"
 assert_eq 'maintainer mail accepts an active incident with next-update time' '' \
-  "$(maintainer_mail_rejection_reason incident "$INCIDENT_SUBJECT" "$INCIDENT_BODY")"
+  "$(founder_mail_rejection_reason incident "$INCIDENT_SUBJECT" "$INCIDENT_BODY")"
 RESOLUTION_SUBJECT='线上服务已恢复'
 RESOLUTION_BODY='问题：线上服务
 发生了什么：此前告警来自已修复的验收步骤问题。
 用户影响：这是误报，不是用户可见的服务中断，生产服务一直正常。
 处理结果：恢复确认已完成，无需处理。'
 assert_eq 'maintainer mail accepts an incident resolution with no next-update promise' '' \
-  "$(maintainer_mail_rejection_reason resolution "$RESOLUTION_SUBJECT" "$RESOLUTION_BODY")"
+  "$(founder_mail_rejection_reason resolution "$RESOLUTION_SUBJECT" "$RESOLUTION_BODY")"
 assert_eq 'maintainer mail rejects a resolution that promises another update' 'resolution-next-update' \
-  "$(maintainer_mail_rejection_reason resolution "$RESOLUTION_SUBJECT" "$RESOLUTION_BODY
+  "$(founder_mail_rejection_reason resolution "$RESOLUTION_SUBJECT" "$RESOLUTION_BODY
 下次更新：2026-09-28 12:00 UTC")"
 capture_incident_mail() {
-  local capture_path="$TMP_DIR/maintainer-mail-capture.json" kind="$1"
+  local capture_path="$TMP_DIR/founder-mail-capture.json" kind="$1"
   (
     _send_email_logged() {
       jq -cn --arg mode "$1" --arg subject "$2" --arg body "$3" --arg issue "$4" \
@@ -1254,58 +1254,58 @@ capture_incident_mail() {
       return 0
     }
     if [ "$kind" = incident ]; then
-      notify_maintainer_incident 9001 "$INCIDENT_SUBJECT" '发布检查没有通过。' \
+      notify_founder_incident 9001 "$INCIDENT_SUBJECT" '发布检查没有通过。' \
         '部分线上功能恢复情况尚未确认。' '继续确认生产服务状态。' 1790582400
     else
-      notify_maintainer_resolution 9001 "$RESOLUTION_SUBJECT" '这是误报。' \
+      notify_founder_resolution 9001 "$RESOLUTION_SUBJECT" '这是误报。' \
         '这是误报，不是用户可见的服务中断，生产服务一直正常。' '恢复确认已完成，无需处理。'
     fi
   )
   cat "$capture_path"
 }
 INCIDENT_SEND="$(capture_incident_mail incident)"
-assert_eq 'incident sender uses strict maintainer-only incident contract' 'strict|incident|9001' \
+assert_eq 'incident sender uses strict founder-only incident contract' 'strict|incident|9001' \
   "$(jq -r '[.mode,.kind,.issue] | join("|")' <<< "$INCIDENT_SEND")"
 assert_eq 'incident sender output passes the next-update contract' '' \
-  "$(maintainer_mail_rejection_reason incident "$(jq -r '.subject' <<< "$INCIDENT_SEND")" "$(jq -r '.body' <<< "$INCIDENT_SEND")")"
+  "$(founder_mail_rejection_reason incident "$(jq -r '.subject' <<< "$INCIDENT_SEND")" "$(jq -r '.body' <<< "$INCIDENT_SEND")")"
 RESOLUTION_SEND="$(capture_incident_mail resolution)"
-assert_eq 'resolution sender uses strict maintainer-only resolution contract' 'strict|resolution|9001' \
+assert_eq 'resolution sender uses strict founder-only resolution contract' 'strict|resolution|9001' \
   "$(jq -r '[.mode,.kind,.issue] | join("|")' <<< "$RESOLUTION_SEND")"
 assert_eq 'resolution sender output passes contract without next-update promise' '' \
-  "$(maintainer_mail_rejection_reason resolution "$(jq -r '.subject' <<< "$RESOLUTION_SEND")" "$(jq -r '.body' <<< "$RESOLUTION_SEND")")"
+  "$(founder_mail_rejection_reason resolution "$(jq -r '.subject' <<< "$RESOLUTION_SEND")" "$(jq -r '.body' <<< "$RESOLUTION_SEND")")"
 assert_contains 'resolution sender states false alarm caused no user-facing outage' \
   "$(jq -r '.body' <<< "$RESOLUTION_SEND")" '不是用户可见的服务中断'
 assert_eq 'maintainer mail accepts a complete health digest with pipeline subject' '' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY")"
+  "$(founder_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY")"
 HEALTH_BODY_WITH_PIPELINE="$HEALTH_BODY
 
 **流水线效率**
 - 最慢环节：排队到开始开发，均值 1小时；前一日缩短50%。"
 assert_eq 'maintainer health mail accepts the requested efficiency section' '' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY_WITH_PIPELINE")"
+  "$(founder_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY_WITH_PIPELINE")"
 HEALTH_BODY_WITH_CHANGE="${HEALTH_BODY/发布进度/处理变化}"
 assert_eq 'maintainer health mail accepts a change section' '' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY_WITH_CHANGE")"
+  "$(founder_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY_WITH_CHANGE")"
 assert_eq 'maintainer health mail rejects an empty digest' 'health-sections' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" '**结论：** 本次有 0 项新变化。')"
+  "$(founder_mail_rejection_reason health "$HEALTH_SUBJECT" '**结论：** 本次有 0 项新变化。')"
 assert_eq 'maintainer health mail rejects a missing change section' 'health-sections' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" '**结论：** 本次有 1 项新变化。')"
+  "$(founder_mail_rejection_reason health "$HEALTH_SUBJECT" '**结论：** 本次有 1 项新变化。')"
 assert_eq 'maintainer health mail rejects missing required sections' 'health-sections' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" '一句话结论：运行正常')"
+  "$(founder_mail_rejection_reason health "$HEALTH_SUBJECT" '一句话结论：运行正常')"
 assert_eq 'maintainer health mail rejects environment names' 'body-internal' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
+  "$(founder_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
 ZF_HOME")"
 assert_eq 'maintainer health mail rejects file paths' 'body-internal' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
+  "$(founder_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
 $HOME/private.log")"
 assert_eq 'maintainer health mail rejects long SHAs' 'body-internal' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
+  "$(founder_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
 版本：b454fd00fa")"
 assert_eq 'maintainer health mail rejects raw log rows' 'body-internal' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
+  "$(founder_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
 2026-09-26T03:00:00Z deploy STUCK detail=x=y")"
 assert_eq 'maintainer health mail rejects raw node status rows' 'body-internal' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
+  "$(founder_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
 deploy STUCK 2 pending")"
 assert_eq 'maintainer health mail rejects a roster recipient' 'health-recipient' \
   "$(_pre_send_mail_rejection_for_recipients health "$HEALTH_SUBJECT" "$HEALTH_BODY" reporter@fixture.invalid)"
@@ -1318,7 +1318,7 @@ FAKE_GCLOUD_FAIL=1
 FAKE_GCLOUD_STDERR='proxy failure access_token=health-proxy-secret'
 : > "$NOTIFY_LOG_FILE"
 NOTIFY_LAST_SEND_RETRY_SAFE=0
-if notify_maintainer_health "$HEALTH_SUBJECT" "$HEALTH_BODY"; then
+if notify_founder_health "$HEALTH_SUBJECT" "$HEALTH_BODY"; then
   health_send_status=0
 else
   health_send_status=$?
@@ -1337,63 +1337,63 @@ assert_eq 'health send does not call Gmail after token-mint failure' \
 FAKE_GCLOUD_FAIL=""
 FAKE_GCLOUD_STDERR=""
 assert_eq 'maintainer mail rejects unknown kind' 'kind' \
-  "$(maintainer_mail_rejection_reason operational "$DECISION_SUBJECT" "$DECISION_BODY")"
+  "$(founder_mail_rejection_reason operational "$DECISION_SUBJECT" "$DECISION_BODY")"
 assert_eq 'maintainer mail rejects retired conclusion kind' 'kind' \
-  "$(maintainer_mail_rejection_reason conclusion '[example] 这一轮未能完成' '这一轮已经结束。')"
+  "$(founder_mail_rejection_reason conclusion '[example] 这一轮未能完成' '这一轮已经结束。')"
 assert_eq 'maintainer mail rejects English subject' 'subject-language' \
-  "$(maintainer_mail_rejection_reason decision 'Production issue' "$DECISION_BODY")"
+  "$(founder_mail_rejection_reason decision 'Production issue' "$DECISION_BODY")"
 assert_eq 'maintainer mail accepts a Chinese subject that names the product' '' \
-  "$(maintainer_mail_rejection_reason decision '需要你确认：the product 的发布节奏' "$DECISION_BODY")"
+  "$(founder_mail_rejection_reason decision '需要你确认：the product 的发布节奏' "$DECISION_BODY")"
 assert_eq 'maintainer mail rejects subject over 40 characters' 'subject-length' \
-  "$(maintainer_mail_rejection_reason decision "$(printf '中%.0s' {1..41})" "$DECISION_BODY")"
+  "$(founder_mail_rejection_reason decision "$(printf '中%.0s' {1..41})" "$DECISION_BODY")"
 assert_eq 'maintainer mail rejects issue-number subject' 'subject-issue-number' \
-  "$(maintainer_mail_rejection_reason decision '订单处理需要确认 #1678' "$DECISION_BODY")"
+  "$(founder_mail_rejection_reason decision '订单处理需要确认 #1678' "$DECISION_BODY")"
 assert_eq 'maintainer mail rejects machine-log pointers' 'body-internal' \
-  "$(maintainer_mail_rejection_reason incident "$INCIDENT_SUBJECT" $'用户目前看到：付款失败。\n我们正在：排查问题，详情在机器上的日志里。\n下次更新：2026-09-23 18:30（协调世界时）')"
+  "$(founder_mail_rejection_reason incident "$INCIDENT_SUBJECT" $'用户目前看到：付款失败。\n我们正在：排查问题，详情在机器上的日志里。\n下次更新：2026-09-23 18:30（协调世界时）')"
 assert_eq 'maintainer mail rejects internal terminology' 'body-internal' \
-  "$(maintainer_mail_rejection_reason decision "$DECISION_SUBJECT" $'客户/公司：客户甲\n用户动作：选择次日送达\n结果：lot master-data candidate 未通过 advisor 判断\nA）继续；影响：无。\nB）停止；影响：延迟。\n建议：A\n请回复“A”')"
+  "$(founder_mail_rejection_reason decision "$DECISION_SUBJECT" $'客户/公司：客户甲\n用户动作：选择次日送达\n结果：lot master-data candidate 未通过 advisor 判断\nA）继续；影响：无。\nB）停止；影响：延迟。\n建议：A\n请回复“A”')"
 assert_eq 'maintainer mail rejects untranslated English prose' 'body-language' \
-  "$(maintainer_mail_rejection_reason decision "$DECISION_SUBJECT" $'客户/公司：客户甲\n用户动作：客户昨天付了款\n结果：The customer paid yesterday and has not received the order.\nA）继续；影响：延迟。\nB）停止；影响：安全。\n建议：A\n请回复“A”')"
+  "$(founder_mail_rejection_reason decision "$DECISION_SUBJECT" $'客户/公司：客户甲\n用户动作：客户昨天付了款\n结果：The customer paid yesterday and has not received the order.\nA）继续；影响：延迟。\nB）停止；影响：安全。\n建议：A\n请回复“A”')"
 assert_eq 'maintainer mail rejects decision without concrete customer facts' 'decision-situation' \
-  "$(maintainer_mail_rejection_reason decision "$DECISION_SUBJECT" $'A）选项；影响：无。\nB）选项；影响：无。\n建议：A\n请回复“A”')"
+  "$(founder_mail_rejection_reason decision "$DECISION_SUBJECT" $'A）选项；影响：无。\nB）选项；影响：无。\n建议：A\n请回复“A”')"
 assert_eq 'maintainer mail rejects decision with one option' 'decision-options' \
-  "$(maintainer_mail_rejection_reason decision "$DECISION_SUBJECT" $'客户/公司：客户甲\n用户动作：选择送达\n结果：无法承诺\nA）普通配送；影响：晚一天。\n建议：A\n请回复“A”')"
+  "$(founder_mail_rejection_reason decision "$DECISION_SUBJECT" $'客户/公司：客户甲\n用户动作：选择送达\n结果：无法承诺\nA）普通配送；影响：晚一天。\n建议：A\n请回复“A”')"
 assert_eq 'maintainer mail rejects decision missing consequences' 'decision-consequence' \
-  "$(maintainer_mail_rejection_reason decision "$DECISION_SUBJECT" $'客户/公司：客户甲\n用户动作：选择送达\n结果：无法承诺\nA）普通配送\nB）加急配送；影响：增加成本。\n建议：A\n请回复“A”')"
+  "$(founder_mail_rejection_reason decision "$DECISION_SUBJECT" $'客户/公司：客户甲\n用户动作：选择送达\n结果：无法承诺\nA）普通配送\nB）加急配送；影响：增加成本。\n建议：A\n请回复“A”')"
 assert_eq 'maintainer mail rejects empty option consequence' 'decision-consequence' \
-  "$(maintainer_mail_rejection_reason decision "$DECISION_SUBJECT" $'客户/公司：客户甲\n用户动作：选择送达\n结果：无法承诺\nA）普通配送；影响：。\nB）加急配送；影响：增加成本。\n建议：A\n请回复“A”')"
+  "$(founder_mail_rejection_reason decision "$DECISION_SUBJECT" $'客户/公司：客户甲\n用户动作：选择送达\n结果：无法承诺\nA）普通配送；影响：。\nB）加急配送；影响：增加成本。\n建议：A\n请回复“A”')"
 assert_eq 'maintainer mail rejects decision without exact reply instruction' 'decision-reply' \
-  "$(maintainer_mail_rejection_reason decision "$DECISION_SUBJECT" "${DECISION_BODY%请回复*}请告诉我选择")"
+  "$(founder_mail_rejection_reason decision "$DECISION_SUBJECT" "${DECISION_BODY%请回复*}请告诉我选择")"
 assert_eq 'maintainer mail rejects a decision that omits the actual question' 'decision-question' \
-  "$(maintainer_mail_rejection_reason decision "$DECISION_SUBJECT" "${DECISION_BODY/问题：是否应保留次日送达？$'\n'/}")"
+  "$(founder_mail_rejection_reason decision "$DECISION_SUBJECT" "${DECISION_BODY/问题：是否应保留次日送达？$'\n'/}")"
 assert_contains 'single-ticket advisor prompt requires the real decision question' \
   "$(cat "$SCRIPT_DIR/prompts/advisor.md")" 'unanswered product/business question as a direct question'
 assert_contains 'advisor schema requires the real decision question' \
   "$(cat "$SCRIPT_DIR/prompts/advisor.schema.json")" 'actual unanswered product/business question from the issue'
 assert_eq 'maintainer mail rejects outcome without production list link' 'outcome-content' \
-  "$(maintainer_mail_rejection_reason outcome "$OUTCOME_SUBJECT" '用户现在可以下载库存表格。')"
+  "$(founder_mail_rejection_reason outcome "$OUTCOME_SUBJECT" '用户现在可以下载库存表格。')"
 assert_eq 'maintainer mail rejects incident without an exact next-update time' 'incident-next-update' \
-  "$(maintainer_mail_rejection_reason incident "$INCIDENT_SUBJECT" $'用户目前看到：付款失败。\n我们正在：恢复服务。\n下次更新：稍后')"
+  "$(founder_mail_rejection_reason incident "$INCIDENT_SUBJECT" $'用户目前看到：付款失败。\n我们正在：恢复服务。\n下次更新：稍后')"
 
 # --- maintainer health-mail schedule and incident state ---------------------
-source "$SCRIPT_DIR/night/maintainer-health-mail.sh"
+source "$SCRIPT_DIR/night/founder-health-mail.sh"
 assert_eq 'health digest uses six-hour UTC slots' \
-  '20260926T00Z' "$(maintainer_health_mail_slot_key 1790391000)"
+  '20260926T00Z' "$(founder_health_mail_slot_key 1790391000)"
 assert_eq 'health digest advances at the next UTC interval' \
-  '20260926T06Z' "$(maintainer_health_mail_slot_key 1790402400)"
+  '20260926T06Z' "$(founder_health_mail_slot_key 1790402400)"
 HEALTH_MAIL_LEDGER="$TMP_DIR/founder-health-mail.json"
-maintainer_health_mail_ensure_ledger "$HEALTH_MAIL_LEDGER" 1000
+founder_health_mail_ensure_ledger "$HEALTH_MAIL_LEDGER" 1000
 HEALTH_MAIL_CLAIM_EVENTS='[{"key":"fixture:1","created_at":1000}]'
 assert_eq 'health digest slot can be reserved once' 'reserved' \
-  "$(maintainer_health_mail_claim_digest "$HEALTH_MAIL_LEDGER" 20260926T00Z 1000 "$HEALTH_MAIL_CLAIM_EVENTS")"
+  "$(founder_health_mail_claim_digest "$HEALTH_MAIL_LEDGER" 20260926T00Z 1000 "$HEALTH_MAIL_CLAIM_EVENTS")"
 assert_eq 'health digest reservation survives restart' 'duplicate' \
-  "$(maintainer_health_mail_claim_digest "$HEALTH_MAIL_LEDGER" 20260926T00Z 1001 "$HEALTH_MAIL_CLAIM_EVENTS")"
+  "$(founder_health_mail_claim_digest "$HEALTH_MAIL_LEDGER" 20260926T00Z 1001 "$HEALTH_MAIL_CLAIM_EVENTS")"
 assert_eq 'health-mail node stays OK before cadence grace expires' 'OK' \
-  "$(maintainer_health_mail_node_status "$HEALTH_MAIL_LEDGER" 22899)"
+  "$(founder_health_mail_node_status "$HEALTH_MAIL_LEDGER" 22899)"
 assert_eq 'health-mail node goes SLOW at cadence plus five-minute grace' 'SLOW' \
-  "$(maintainer_health_mail_node_status "$HEALTH_MAIL_LEDGER" 22900)"
+  "$(founder_health_mail_node_status "$HEALTH_MAIL_LEDGER" 22900)"
 assert_eq 'health-mail node goes STUCK after cadence plus two hours' 'STUCK' \
-  "$(maintainer_health_mail_node_status "$HEALTH_MAIL_LEDGER" 29800)"
+  "$(founder_health_mail_node_status "$HEALTH_MAIL_LEDGER" 29800)"
 HEALTH_MAIL_FIXTURE="$TMP_DIR/health-mail-fixture"
 export HEALTH_MAIL_FIXTURE
 mkdir -p "$HEALTH_MAIL_FIXTURE/night" "$HEALTH_MAIL_FIXTURE/state" \
@@ -1428,7 +1428,7 @@ jq -n --arg at '2026-09-26T00:30:00Z' \
   '{state:"concluded",run:{outcome:"not-completed",concluded_at:$at}}' \
   > "$HEALTH_MAIL_FIXTURE/state/59.json"
 printf '%s\n' '73ed7da83abcdef01234567890123456789012345' > "$HEALTH_MAIL_FIXTURE/last-deployed-sha"
-jq -n '{maintainer_login:"maintainer",recipients:{maintainer:"maintainer@example.invalid",tester_a:"a@example.invalid",tester_b:"b@example.invalid",tester_c:"c@example.invalid"}}' \
+jq -n '{founder_login:"maintainer",recipients:{maintainer:"maintainer@example.invalid",tester_a:"a@example.invalid",tester_b:"b@example.invalid",tester_c:"c@example.invalid"}}' \
   > "$HEALTH_MAIL_FIXTURE/recipients.json"
 jq -n '[
   {number:1831,author:{login:"tester_a"},assignees:[],labels:[]},
@@ -1440,7 +1440,7 @@ jq -n '[
   {number:58,author:{login:"fixture-reporter"},assignees:[],labels:[]}
 ]' > "$HEALTH_MAIL_FIXTURE/open-issues.json"
 jq -n '{incidents:[
-  {id:"recurrence-one",date:"2026-09-22",class:"mail-credential-health",recurs_of:"maintainer-digest-refused-internal-ids"},
+  {id:"recurrence-one",date:"2026-09-22",class:"mail-credential-health",recurs_of:"founder-digest-refused-internal-ids"},
   {id:"recurrence-old",date:"2026-09-18",class:"过期类别",recurs_of:"original-old"}
 ]}' > "$HEALTH_MAIL_FIXTURE/repo/engine/state/incident-guards.json"
 cat > "$HEALTH_MAIL_FIXTURE/logs/supervisor-wakes.log" <<'EOF'
@@ -1475,7 +1475,7 @@ HEALTH_MAIL_EVENTS='[
   {"key":"node:build:1","section":"处理变化","text":"构建环节持续异常，后续由负责人继续处理。","kind":"node","highlight":false,"created_at":1790395700},
   {"key":"daily:2026-09-26","section":"今日汇总","text":"今日发布 2 次。","kind":"daily","highlight":false,"created_at":1790395800}
 ]'
-HEALTH_MAIL_BUILT="$(maintainer_health_mail_build_body "$HEALTH_MAIL_EVENTS")"
+HEALTH_MAIL_BUILT="$(founder_health_mail_build_body "$HEALTH_MAIL_EVENTS")"
 assert_contains 'incremental digest lists user-visible release outcome' "$HEALTH_MAIL_BUILT" '员工可批量下载订单清单'
 assert_contains 'incremental digest counts closed tickets and highlights focus tickets' "$HEALTH_MAIL_BUILT" '**事项完成：** 1 项'
 assert_contains 'incremental digest keeps the focus ticket headline without ID' "$HEALTH_MAIL_BUILT" '- 修好了：订单查询'
@@ -1486,15 +1486,15 @@ assert_eq 'incremental digest passes maintainer mail contract' '' \
 
 HEALTH_MAIL_NO_WAKE_LOG="$TMP_DIR/health-mail-no-wake-log"
 mkdir -p "$HEALTH_MAIL_NO_WAKE_LOG"
-HEALTH_MAIL_NO_WAKE_LINES="$(maintainer_health_mail_metric_lines "$HEALTH_MAIL_NO_WAKE_LOG" "$HEALTH_MAIL_NOW")"
+HEALTH_MAIL_NO_WAKE_LINES="$(founder_health_mail_metric_lines "$HEALTH_MAIL_NO_WAKE_LOG" "$HEALTH_MAIL_NOW")"
 assert_contains 'health metrics mark an absent wake log as pending' "$HEALTH_MAIL_NO_WAKE_LINES" \
   '过去24小时自动唤醒监督程序：待统计'
 assert_contains 'health metrics average daily tokens per released issue' \
-  "$(maintainer_health_mail_metric_lines "$HEALTH_MAIL_FIXTURE" "$HEALTH_MAIL_NOW")" '今日每张交付票平均消耗模型令牌：3000'
+  "$(founder_health_mail_metric_lines "$HEALTH_MAIL_FIXTURE" "$HEALTH_MAIL_NOW")" '今日每张交付票平均消耗模型令牌：3000'
 jq -n '{incidents:[{id:"untracked",date:"2026-09-26",class:"尚未登记复发字段"}]}' \
   > "$HEALTH_MAIL_FIXTURE/repo/engine/state/incident-guards-untracked.json"
 HEALTH_MAIL_UNTRACKED="$(AGENT_INCIDENT_GUARDS_FILE="$HEALTH_MAIL_FIXTURE/repo/engine/state/incident-guards-untracked.json" \
-  maintainer_health_mail_metric_lines "$HEALTH_MAIL_FIXTURE" "$HEALTH_MAIL_NOW")"
+  founder_health_mail_metric_lines "$HEALTH_MAIL_FIXTURE" "$HEALTH_MAIL_NOW")"
 assert_contains 'health metrics mark recurrence tracking as pending before tracking exists' "$HEALTH_MAIL_UNTRACKED" \
   '本周同类问题复发：待统计'
 
@@ -1518,7 +1518,7 @@ FAKE_CURL_CALLS_FILE="$TMP_DIR/fake-curl-calls.log"
 export FAKE_CURL_CALLS_FILE
 : > "$FAKE_CURL_CALLS_FILE"
 FAKE_CURL_BODY='{"id":"msg-contract-1","threadId":"thread-contract-1"}'
-SEND_EMAIL_OUT="$(send_email "$DECISION_SUBJECT" "$DECISION_BODY" 9001 --maintainer-kind decision maintainer@notify-fixture.invalid 2>"$TMP_DIR/maintainer-contract.stderr")"
+SEND_EMAIL_OUT="$(send_email "$DECISION_SUBJECT" "$DECISION_BODY" 9001 --founder-kind decision maintainer@notify-fixture.invalid 2>"$TMP_DIR/maintainer-contract.stderr")"
 assert_eq 'send boundary sends valid classified maintainer mail' 'thread-contract-1' "$SEND_EMAIL_OUT"
 : > "$FAKE_CURL_CALLS_FILE"
 SEND_EMAIL_OUT="$(send_email "$INCIDENT_SUBJECT" "$INCIDENT_BODY" '' maintainer@notify-fixture.invalid 2>"$TMP_DIR/maintainer-contract.stderr")"
@@ -1528,13 +1528,13 @@ assert_contains 'send boundary audit records exact safe contract reason' "$(cat 
   $'reason=contract-rejected\tresult=failed\tcontract_reason=kind'
 assert_not_contains 'send boundary log does not contain rejected body' "$(cat "$NOTIFY_LOG_FILE")" '用户目前看到'
 assert_eq 'send boundary does not transmit rejected maintainer mail' '' "$(cat "$FAKE_CURL_CALLS_FILE")"
-SEND_EMAIL_OUT="$(send_email "$DECISION_SUBJECT" '选项 A 或 B？' 9001 --maintainer-kind decision reporter@notify-fixture.invalid 2>"$TMP_DIR/reporter-contract.stderr")"
+SEND_EMAIL_OUT="$(send_email "$DECISION_SUBJECT" '选项 A 或 B？' 9001 --founder-kind decision reporter@notify-fixture.invalid 2>"$TMP_DIR/reporter-contract.stderr")"
 assert_eq 'send boundary rejects malformed reporter-routed decision mail' '' "$SEND_EMAIL_OUT"
 assert_contains 'reporter-routed decision rejection is audited' "$(cat "$NOTIFY_LOG_FILE")" $'reason=contract-rejected\tresult=failed'
-SEND_EMAIL_OUT="$(send_email "$DECISION_SUBJECT" "$DECISION_BODY" 9001 --maintainer-kind decision reporter@notify-fixture.invalid 2>"$TMP_DIR/reporter-contract.stderr")"
+SEND_EMAIL_OUT="$(send_email "$DECISION_SUBJECT" "$DECISION_BODY" 9001 --founder-kind decision reporter@notify-fixture.invalid 2>"$TMP_DIR/reporter-contract.stderr")"
 assert_eq 'send boundary accepts valid reporter-routed decision mail' 'thread-contract-1' "$SEND_EMAIL_OUT"
 : > "$FAKE_CURL_CALLS_FILE"
-run_strict "$INCIDENT_SUBJECT" "$INCIDENT_BODY" --maintainer-kind operational maintainer@notify-fixture.invalid
+run_strict "$INCIDENT_SUBJECT" "$INCIDENT_BODY" --founder-kind operational maintainer@notify-fixture.invalid
 assert_eq 'strict send boundary rejects unclassified maintainer mail' '1' "$STRICT_STATUS"
 assert_contains 'strict send boundary reports contract rejection' "$STRICT_ERR" 'rejected maintainer mail by contract (kind)'
 assert_contains 'strict send boundary audits rejected maintainer mail' "$(cat "$NOTIFY_LOG_FILE")" $'reason=contract-rejected\tresult=failed'
@@ -1549,7 +1549,7 @@ REPO='example-maintainer/example-repo'
 RECIPIENTS_FILE="$OUTCOME_HOME/recipients.json"
 OUTCOME_SEND_LOG="$OUTCOME_HOME/sends.log"
 cat > "$RECIPIENTS_FILE" <<'JSON'
-{"maintainer_login":"maintainer","recipients":{"maintainer":"maintainer@fixture.invalid","reporter":"reporter@fixture.invalid"}}
+{"founder_login":"maintainer","recipients":{"maintainer":"maintainer@fixture.invalid","reporter":"reporter@fixture.invalid"}}
 JSON
 : > "$OUTCOME_SEND_LOG"
 OUTCOME_COMMENT_DIR="$OUTCOME_HOME/generated-comments"
@@ -1625,13 +1625,13 @@ gh() {
 send_email_strict() {
   local subject="$1" body="$2" kind='' rejection
   shift 2
-  if [ "${1:-}" = '--maintainer-kind' ]; then
+  if [ "${1:-}" = '--founder-kind' ]; then
     shift
     kind="$1"
     shift
   fi
   [ "$kind" = 'outcome' ] || return 1
-  rejection="$(maintainer_mail_rejection_reason "$kind" "$subject" "$body")"
+  rejection="$(founder_mail_rejection_reason "$kind" "$subject" "$body")"
   [ -z "$rejection" ] || return 1
   printf 'subject=%s\nbody=%s\nrecipients=%s\n' "$subject" "$body" "$*" >> "$OUTCOME_SEND_LOG"
   [ "${FAKE_OUTCOME_SEND_FAIL:-0}" != '1' ] || return 1
@@ -1644,14 +1644,14 @@ assert_eq 'outcome queue deduplicates the same delivered revision' '2' \
   "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 
 FAKE_OUTCOME_SEND_FAIL=1
-flush_maintainer_outcome_digest 1000 || true
+flush_founder_outcome_digest 1000 || true
 assert_eq 'failed outcome digest remains queued for retry' '2' \
   "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_eq 'failed send does not advance the hourly window' '0' \
   "$(jq -r '.last_sent_at' "$OUTCOME_HOME/night/founder-outcomes.json")"
 
 FAKE_OUTCOME_SEND_FAIL=0
-flush_maintainer_outcome_digest 1001
+flush_founder_outcome_digest 1001
 assert_eq 'successful digest clears pending outcomes' '0' \
   "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_eq 'successful digest records its send time' '1001' \
@@ -1669,8 +1669,8 @@ assert_eq 'digest subject cuts at a clause boundary' '工作区管理员可在�
 assert_eq 'digest subject drops issue refs' '修复报表导出' "$(maintainer_digest_subject_title '修复报表导出 #1588' 34)"
 assert_eq 'digest subject falls back to the count when the outcome is mostly Latin' '3项改进已上线' \
   "$(maintainer_digest_subject 'Feature X 用户现在可在 WebUI `/chat/` 按需生成报表' 3)"
-assert_eq 'fallback digest subject passes the maintainer-mail subject contract' '' \
-  "$(maintainer_mail_rejection_reason outcome "$(maintainer_digest_subject 'Feature X 用户现在可在 WebUI `/chat/` 按需生成报表' 3)" x | grep -E '^subject-' || true)"
+assert_eq 'fallback digest subject passes the founder-mail subject contract' '' \
+  "$(founder_mail_rejection_reason outcome "$(maintainer_digest_subject 'Feature X 用户现在可在 WebUI `/chat/` 按需生成报表' 3)" x | grep -E '^subject-' || true)"
 assert_eq 'digest subject keeps a Chinese outcome title' '员工可以批量下载订单清单等2项改进已上线' \
   "$(maintainer_digest_subject '员工可以批量下载订单清单。' 2)"
 assert_not_contains 'digest subject omits issue numbers' "$(sed -n 's/^subject=//p' "$OUTCOME_SEND_LOG")" '9001'
@@ -1688,10 +1688,10 @@ assert_eq 'an outcome already mailed for the same deploy is not queued again' '0
   "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 
 queue_maintainer_outcome 9003 sha-9003
-flush_maintainer_outcome_digest 4600
+flush_founder_outcome_digest 4600
 assert_eq 'digest is not resent before one hour' '2' \
   "$(grep -c '^subject=' "$OUTCOME_SEND_LOG")"
-flush_maintainer_outcome_digest 4601
+flush_founder_outcome_digest 4601
 assert_eq 'digest sends at the one-hour boundary' '3' \
   "$(grep -c '^subject=' "$OUTCOME_SEND_LOG")"
 
@@ -1701,7 +1701,7 @@ queue_maintainer_outcome 9006 sha-9006
 queue_maintainer_outcome 9007 sha-9007
 queue_maintainer_outcome 9008 sha-9008
 queue_maintainer_outcome 9009 sha-9009
-flush_maintainer_outcome_digest 29801
+flush_founder_outcome_digest 29801
 assert_eq 'missing outcomes are generated instead of dropped' '0' \
   "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_eq 'digest sends user outcomes despite engineering titles' '4' \
@@ -1730,12 +1730,12 @@ cat > "$OUTCOME_HOME/state/9011.json" <<'JSON'
 {"released":true,"deployed_sha":"sha-9011","run":{"evidence":{"pr_number":"19011"}}}
 JSON
 FAKE_CLOSED_ISSUES_JSON='[{"number":9011,"closedAt":"1970-01-01T08:16:42Z","labels":[{"name":"priority:top"},{"name":"released"}]},{"number":9012,"closedAt":"1970-01-01T08:16:43Z","labels":[{"name":"priority:top"}]}]'
-flush_maintainer_outcome_digest 33400
+flush_founder_outcome_digest 33400
 assert_eq 'close sweep queues deployed issue before hourly send window' '1' \
   "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_eq 'close sweep does not send before hourly boundary' '4' \
   "$(grep -c '^subject=' "$OUTCOME_SEND_LOG")"
-flush_maintainer_outcome_digest 33401
+flush_founder_outcome_digest 33401
 assert_eq 'close sweep sends at hourly boundary' '5' \
   "$(grep -c '^subject=' "$OUTCOME_SEND_LOG")"
 assert_contains 'close sweep includes shipped closed issue' "$(cat "$OUTCOME_SEND_LOG")" '/issues/9011'
@@ -1743,16 +1743,16 @@ assert_not_contains 'close sweep excludes closed issue without release evidence'
 FAKE_CLOSED_ISSUES_JSON='[]'
 OUTCOME_MODEL_REPLY='NONE'
 queue_maintainer_outcome 9013 sha-9013
-flush_maintainer_outcome_digest 37001
+flush_founder_outcome_digest 37001
 assert_eq 'model refusal keeps deployed issue queued' '1' \
   "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 assert_eq 'model refusal does not send an incomplete digest' '5' \
   "$(grep -c '^subject=' "$OUTCOME_SEND_LOG")"
 assert_contains 'model refusal alerts supervisor once' \
-  "$(cat "$OUTCOME_HOME/supervisor-inbox")" 'maintainer-outcome-missing issue=#9013'
-flush_maintainer_outcome_digest 37002
+  "$(cat "$OUTCOME_HOME/supervisor-inbox")" 'founder-outcome-missing issue=#9013'
+flush_founder_outcome_digest 37002
 assert_eq 'repeated model refusal does not duplicate supervisor inbox alert' '1' \
-  "$(grep -c 'maintainer-outcome-missing issue=#9013' "$OUTCOME_HOME/supervisor-inbox")"
+  "$(grep -c 'founder-outcome-missing issue=#9013' "$OUTCOME_HOME/supervisor-inbox")"
 assert_eq 'repeated model refusal retains the deployed issue' '1' \
   "$(jq -r '.pending | length' "$OUTCOME_HOME/night/founder-outcomes.json")"
 OUTCOME_MODEL_REPLY=''
@@ -1772,7 +1772,7 @@ OUTCOME_MODEL_PROMPTS="$FILTER_HOME/model-prompts"
 mkdir -p "$OUTCOME_COMMENT_DIR"
 : > "$OUTCOME_MODEL_PROMPTS"
 cat > "$RECIPIENTS_FILE" <<'JSON'
-{"maintainer_login":"maintainer","recipients":{"maintainer":"maintainer@fixture.invalid","reporter":"reporter@fixture.invalid"}}
+{"founder_login":"maintainer","recipients":{"maintainer":"maintainer@fixture.invalid","reporter":"reporter@fixture.invalid"}}
 JSON
 : > "$OUTCOME_SEND_LOG"
 : > "$OUTCOME_PR_VIEW_LOG"
@@ -1800,7 +1800,7 @@ for ops_outcome in \
     FAILED=1
   fi
 done
-flush_maintainer_outcome_digest 1000
+flush_founder_outcome_digest 1000
 FILTER_SEND="$(cat "$OUTCOME_SEND_LOG")"
 assert_eq 'digest subject starts with first user-facing outcome' \
   'subject=客户可以在订单页面查询订单状态已上线' \
@@ -1890,8 +1890,8 @@ run_model_json() {
 record_premium_spend() { :; }
 model_cost_usd() { echo 0; }
 guarded_issue_comment() { RELEASE_ISSUE_COMMENT="$2"; }
-if declare -F ensure_maintainer_user_outcome >/dev/null 2>&1; then
-  ensure_maintainer_user_outcome 9008 HEAD
+if declare -F ensure_founder_user_outcome >/dev/null 2>&1; then
+  ensure_founder_user_outcome 9008 HEAD
   assert_eq 'release fallback uses work model once' '1' "$(wc -l < "$RELEASE_MODEL_CALLS_FILE" | tr -d '[:space:]')"
   assert_eq 'release fallback resolves work role through model policy' \
     "$MODEL_POLICY_TEST_WORK_IDENTITY" "$(cat "$RELEASE_MODEL_CALLS_FILE")"
@@ -1900,7 +1900,7 @@ if declare -F ensure_maintainer_user_outcome >/dev/null 2>&1; then
 
   RELEASE_ISSUE_JSON='{"title":"聊天成果文件权限查看","body":"","comments":[{"body":"**User outcome:** 员工可以在聊天里查看有权限的成果文件。"}],"labels":[]}'
   RELEASE_ISSUE_COMMENT=''
-  ensure_maintainer_user_outcome 9009 HEAD
+  ensure_founder_user_outcome 9009 HEAD
   assert_eq 'release preserves existing brief outcome without another model call' '1' \
     "$(wc -l < "$RELEASE_MODEL_CALLS_FILE" | tr -d '[:space:]')"
   assert_eq 'release does not write a duplicate outcome comment' '' "$RELEASE_ISSUE_COMMENT"
@@ -1908,14 +1908,14 @@ if declare -F ensure_maintainer_user_outcome >/dev/null 2>&1; then
   RELEASE_ISSUE_JSON='{"title":"工作台处理状态查看","body":"工作台现在显示处理状态。","comments":[],"labels":[]}'
   RELEASE_MODEL_OUTCOME='NONE'
   RELEASE_ISSUE_COMMENT=''
-  ensure_maintainer_user_outcome 9010 HEAD
+  ensure_founder_user_outcome 9010 HEAD
   assert_eq 'release asks model to classify an outcome-free ticket' '2' \
     "$(wc -l < "$RELEASE_MODEL_CALLS_FILE" | tr -d '[:space:]')"
   assert_eq 'release does not persist NONE as a user outcome' '' "$RELEASE_ISSUE_COMMENT"
 
   RELEASE_ISSUE_JSON='{"title":"工作台处理状态查看","body":"工作台现在显示处理状态。","comments":[{"body":"**User outcome:** None"}],"labels":[]}'
   RELEASE_ISSUE_COMMENT=''
-  ensure_maintainer_user_outcome 9010 HEAD-retry
+  ensure_founder_user_outcome 9010 HEAD-retry
   assert_eq 'release retries an unreadable None outcome' '3' \
     "$(wc -l < "$RELEASE_MODEL_CALLS_FILE" | tr -d '[:space:]')"
   assert_eq 'retry still does not persist NONE' '' "$RELEASE_ISSUE_COMMENT"
@@ -1926,7 +1926,7 @@ if declare -F ensure_maintainer_user_outcome >/dev/null 2>&1; then
   RELEASE_MODEL_CALLS=0
   : > "$RELEASE_MODEL_CALLS_FILE"
   RELEASE_ISSUE_COMMENT=''
-  ensure_maintainer_user_outcome 9010 HEAD-mismatch
+  ensure_founder_user_outcome 9010 HEAD-mismatch
   assert_eq 'mismatched stored outcome is rejected and regenerated once' '2' \
     "$(wc -l < "$RELEASE_MODEL_CALLS_FILE" | tr -d '[:space:]')"
   assert_eq 'regenerated outcome shares Feature X issue subject' \
@@ -1969,7 +1969,7 @@ if declare -F ensure_maintainer_user_outcome >/dev/null 2>&1; then
   RELEASE_MODEL_OUTCOME='员工导出报表后，手机上的确认卡有排版、有重点，一眼能看清。'
   : > "$RELEASE_MODEL_CALLS_FILE"
   RELEASE_ISSUE_COMMENT=''
-  ensure_maintainer_user_outcome 9029 sha-9029
+  ensure_founder_user_outcome 9029 sha-9029
   assert_eq 'English-title issue accepts the first Chinese generation' '1' \
     "$(wc -l < "$RELEASE_MODEL_CALLS_FILE" | tr -d '[:space:]')"
   assert_contains 'English-title issue stores the Chinese outcome' \
@@ -1978,12 +1978,12 @@ if declare -F ensure_maintainer_user_outcome >/dev/null 2>&1; then
   : > "$RELEASE_MODEL_CALLS_FILE"
   RELEASE_ISSUE_COMMENT=''
   for tick in 1 2 3 4 5; do
-    ensure_maintainer_user_outcome 9030 sha-9030
+    ensure_founder_user_outcome 9030 sha-9030
   done
   assert_eq 'a rejected outcome costs at most two model calls per issue/SHA across five ticks' '2' \
     "$(wc -l < "$RELEASE_MODEL_CALLS_FILE" | tr -d '[:space:]')"
   assert_eq 'a rejected off-topic outcome is never stored' '' "$RELEASE_ISSUE_COMMENT"
-  ensure_maintainer_user_outcome 9030 sha-9030-next
+  ensure_founder_user_outcome 9030 sha-9030-next
   assert_eq 'a new deployed SHA gets its own generation' '4' \
     "$(wc -l < "$RELEASE_MODEL_CALLS_FILE" | tr -d '[:space:]')"
 
@@ -1993,7 +1993,7 @@ if declare -F ensure_maintainer_user_outcome >/dev/null 2>&1; then
   RELEASE_ISSUE_JSON='{"title":"聊天成果文件权限查看","body":"聊天中可以查看有权限的成果文件。","comments":[],"labels":[]}'
   : > "$RELEASE_MODEL_CALLS_FILE"
   set +e
-  OUTCOME_BUDGET_OUTPUT="$(ensure_maintainer_user_outcome 9031 sha-budget 2>&1)"
+  OUTCOME_BUDGET_OUTPUT="$(ensure_founder_user_outcome 9031 sha-budget 2>&1)"
   OUTCOME_BUDGET_STATUS=$?
   set -e
   assert_eq 'budget-refused release outcome exits cleanly' 0 "$OUTCOME_BUDGET_STATUS"
@@ -2004,7 +2004,7 @@ if declare -F ensure_maintainer_user_outcome >/dev/null 2>&1; then
     "$(grep -F '9031 sha-budget' "$AGENT_HOME/night/founder-outcome-generated" 2>/dev/null || true)"
   unset FAKE_OUTCOME_CODEX FAKE_OUTCOME_BUDGET_REFUSE
 else
-  assert_eq 'release fallback helper exists' 'function' "$(type -t ensure_maintainer_user_outcome || true)"
+  assert_eq 'release fallback helper exists' 'function' "$(type -t ensure_founder_user_outcome || true)"
 fi
 
 if [ "$FAILED" -ne 0 ]; then

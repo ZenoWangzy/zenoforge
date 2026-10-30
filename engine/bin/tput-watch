@@ -427,14 +427,14 @@ def landing_rate_alert(queued: set[str], now_wall: float) -> tuple[str, str] | N
 def release_is_running(units: list[dict[str, str]]) -> bool:
     return any(
         unit.get("ActiveState") == "active"
-        and (unit.get("Id") == "zf-release-batch.service" or unit.get("Id", "").startswith("release-loop"))
+        and (unit.get("Id") == "vecta-release-batch.service" or unit.get("Id", "").startswith("release-loop"))
         for unit in units
     )
 
 
 def deployed_marker() -> tuple[str, float] | None:
     result = command(
-        ["journalctl", "--user", "-u", "zf-release-batch", "--no-pager", "-o", "short-unix", "--grep=deployed="],
+        ["journalctl", "--user", "-u", "vecta-release-batch", "--no-pager", "-o", "short-unix", "--grep=deployed="],
         timeout=25,
     )
     if not result or result.returncode != 0:
@@ -591,8 +591,10 @@ def load_alert(state: dict[str, Any], now_mono: float, has_work: bool = False) -
 
 
 def maintainer_mail_stale_alert(now_wall: float) -> tuple[str, str] | None:
-    live_checkout = Path.home() / ".zenoforge" / "checkout"
-    status_script = live_checkout / "engine" / "night" / "maintainer-health-mail.sh"
+    # State root lever (AGENT_HOME / ZF_HOME): the exported engine defaults to a different home.
+    agent_home = os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME")
+    live_checkout = (Path(agent_home) if agent_home else Path.home() / ".zenoforge") / "checkout"
+    status_script = live_checkout / "engine" / "night" / "founder-health-mail.sh"
     result = command(["bash", str(status_script), "status", str(int(now_wall))], cwd=live_checkout, timeout=10)
     if result is None or result.returncode != 0:
         return None
@@ -601,12 +603,12 @@ def maintainer_mail_stale_alert(now_wall: float) -> tuple[str, str] | None:
         return None
     age = next((field.split("=", 1)[1] for field in fields[1:] if field.startswith("no-successful-mail-age-minutes=")), "unknown")
     line = alert_line(
-        "maintainer_health_mail_stale",
+        "founder_health_mail_stale",
         f"{age}m_without_successful_send",
         ">7h",
-        "inspect_maintainer_health_mail_tick_and_restore_email_delivery",
+        "inspect_founder_health_mail_tick_and_restore_email_delivery",
     )
-    return ("maintainer_health_mail_stale:maintainer", line)
+    return ("founder_health_mail_stale:maintainer", line)
 
 
 def train_outcomes() -> list[tuple[str, str]]:

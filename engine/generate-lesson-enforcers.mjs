@@ -5,9 +5,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-export const DEFAULT_ROOT = path.resolve(path.dirname(SCRIPT_PATH), '..');
+export const DEFAULT_ROOT = process.env.ZF_REPO_DIR || path.resolve(path.dirname(SCRIPT_PATH), '..');
 const RULES_PATH = 'lessons/RULES.md';
-const REGISTRY_PATH = 'engine/state/incident-guards.json';
+const REGISTRY_PATH = `${process.env.ZF_PACK_REL || 'engine'}/state/incident-guards.json`;
 const OUTPUT_PATH = 'lessons/enforcers.json';
 const SOURCE_FILE = /\.(?:cjs|js|jsx|mjs|ts|tsx|py|sh|sql|ya?ml)$/i;
 const TEST_FILE = /(?:^|\/)(?:tests?\/|[^/]*\.test\.[^/]+$|test_[^/]+\.py$)/i;

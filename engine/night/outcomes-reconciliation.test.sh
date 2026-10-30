@@ -131,20 +131,20 @@ preview
 check 'match issue=#3013 pr=#3020'
 [[ "$result" != *'ambiguous issue=#3013'* ]]
 printf 'ok - supervisor decision resolves competing merged PRs without awaiting-release label\n'
-rewrite '.[0] = [{user:{login:"test"},body:"<!-- zf-merged-outcome issue=3013 pr=3019 -->"}] + .[0]' "$tmp/comments.json"
+rewrite '.[0] = [{user:{login:"test"},body:"<!-- vecta-merged-outcome issue=3013 pr=3019 -->"}] + .[0]' "$tmp/comments.json"
 preview
 check 'match issue=#3013 pr=#3020'
 [[ "$result" != *'ambiguous issue=#3013'* ]]
 printf 'ok - explicit supervisor decision wins over older merge marker\n'
 cat > "$tmp/comments.json" <<'JSON'
-[[{"user":{"login":"test"},"body":"<!-- zf-merged-outcome issue=3013 pr=3019 -->"}]]
+[[{"user":{"login":"test"},"body":"<!-- vecta-merged-outcome issue=3013 pr=3019 -->"}]]
 JSON
 preview
 check 'match issue=#3013 pr=#3019'
 rewrite '.[0][0].user.login="intruder"' "$tmp/comments.json"
 preview
 check 'ambiguous issue=#3013'
-rewrite '.[0][0].user.login="test" | .[0][0].body="<!-- zf-merged-outcome issue=3013 pr=99999 -->"' "$tmp/comments.json"
+rewrite '.[0][0].user.login="test" | .[0][0].body="<!-- vecta-merged-outcome issue=3013 pr=99999 -->"' "$tmp/comments.json"
 preview
 check 'ambiguous issue=#3013'
 printf 'ok - existing marker supported; untrusted and unrelated decisions ignored\n'

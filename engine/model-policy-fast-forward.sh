@@ -22,7 +22,7 @@ sync_model_policy_default_after_fast_forward() {
   local repo_dir="$1" agent_home="$2" old_head="$3" new_head="$4"
   local diff_status apply_status apply_output reason
 
-  if git -C "$repo_dir" diff --quiet "$old_head" "$new_head" -- engine/model-policy.default.json; then
+  if git -C "$repo_dir" diff --quiet "$old_head" "$new_head" -- "${ZF_PACK_REL:-engine}/model-policy.default.json"; then
     return 0
   else
     diff_status=$?
@@ -36,7 +36,7 @@ sync_model_policy_default_after_fast_forward() {
   fi
 
   if apply_output="$(AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo_dir" \
-    bash "$repo_dir/engine/apply-model-policy-default.sh" 2>&1)"; then
+    bash "${ZF_ENGINE_LIVE:-$repo_dir/engine}/apply-model-policy-default.sh" 2>&1)"; then
     echo 'model-policy-sync: synchronized live model policy from deployed default' >&2
     return 0
   else

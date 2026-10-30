@@ -75,7 +75,16 @@ def _baseline(worker):
     values = [start.get(name) for name in ("input_tokens", "cached_input_tokens", "output_tokens")]
     if any(type(v) is not int or v < 0 for v in values):
         return None
-    return Usage(*values)
+    reasoning = start.get("reasoning_tokens")
+    cache_write = start.get("cache_write_input_tokens")
+    return Usage(*values, reasoning=reasoning if type(reasoning) is int and reasoning >= 0 else None,
+                 cache_write=cache_write if type(cache_write) is int and cache_write >= 0 else None)
+
+
+def _counter_delta(value, baseline):
+    if value is None or baseline is None or value < baseline:
+        return None
+    return value - baseline
 
 
 def measure(path, worker):
@@ -143,7 +152,9 @@ def measure(path, worker):
                     cached = None if last.cached is None or baseline.cached is None \
                         else last.cached - baseline.cached
                     usage = Usage(last.input - baseline.input, cached,
-                                  last.output - baseline.output)
+                                  last.output - baseline.output,
+                                  reasoning=_counter_delta(last.reasoning, baseline.reasoning),
+                                  cache_write=_counter_delta(last.cache_write, baseline.cache_write))
             else:
                 usage = last  # fresh session: its counters start at zero
     elif text and '"type":"assistant"' in text:
@@ -159,18 +170,24 @@ def measure(path, worker):
     return {"log": os.path.basename(path), "path": path, "unit": unit, "phase": phase,
             "self_fix": self_fix, "backend": backend, "model": model,
             "start": start, "end": end, "minutes": max(0.0, (end - start).total_seconds() / 60),
+            "finished_at": _parse_ts(worker.get("finished_at")) if worker else None,
             "usage": usage, "footer_tokens": footer, "json_stream": json_stream,
             "failover": bool(marker and marker.get("reason") in FAILOVER_REASONS),
             "harvested": worker.get("harvested") is True}
 
 
-def run_rows(sup):
+def run_rows(sup, finished_only=False):
     """Cost rows of every worker log in the supervisor dir, oldest first. Stateless: reading
-    the same files again yields the same rows, so a re-scan cannot double-count."""
+    the same files again yields the same rows, so a re-scan cannot double-count. In finished-only
+    mode, a present unharvested worker row is still running; an absent row has been trimmed from
+    the harvested tail and the durable worker log remains the source."""
     by_log = _read_workers(sup)
     rows = []
     for path in glob.glob(os.path.join(sup, "*.worker.log")):
-        row = measure(path, by_log.get(os.path.basename(path)))
+        worker = by_log.get(os.path.basename(path))
+        if finished_only and worker is not None and worker.get("harvested") is not True:
+            continue
+        row = measure(path, worker)
         if row is not None:
             rows.append(row)
     rows.sort(key=lambda r: r["start"])

@@ -29,7 +29,7 @@
     },
     "founder_question_md": {
       "type": "string",
-      "description": "Required for verdict=maintainer: a structured business decision for the reporter to read by email and on the issue, in exactly the layout the notification gate (maintainer_mail_rejection_reason in engine/notify.sh) accepts, written in Chinese. Include a 问题 line stating the actual unanswered product/business question from the issue as a direct question ending with ？; separate 客户/公司, 用户动作, and 结果 lines; two or three A）/B）/C） choices, each with an 影响 consequence; a 建议 line selecting one option; and end with 请回复“A”. Keep technical internals out. Empty string when not applicable."
+      "description": "Required for verdict=maintainer: a structured business decision for the reporter to read by email and on the issue, in exactly the layout the notification gate (founder_mail_rejection_reason in engine/notify.sh) accepts, written in Chinese. Include a 问题 line stating the actual unanswered product/business question from the issue as a direct question ending with ？; separate 客户/公司, 用户动作, and 结果 lines; two or three A）/B）/C） choices, each with an 影响 consequence; a 建议 line selecting one option; and end with 请回复“A”. Keep technical internals out. Empty string when not applicable."
     },
     "founder_subject": {
       "type": "string",

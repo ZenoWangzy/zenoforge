@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const REGISTRY_PATH = 'engine/state/incident-guards.json';
+const REGISTRY_PATH = `${process.env.ZF_PACK_REL || 'engine'}/state/incident-guards.json`;
 const HISTORY_PREFIX = 'rulings-progress-';
 
 function parseArgs(args) {

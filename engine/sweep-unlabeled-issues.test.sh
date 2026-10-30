@@ -15,7 +15,7 @@ mkdir -p "$AGENT_HOME/state" "$TEST_HOME/bin"
 # Stage-routing fixture; roadmap admission is covered by roadmap-order.test.sh.
 jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$SCRIPT_DIR/model-policy.default.json" > "$AGENT_HOME/model-policy.json"
 : >"$AGENT_HOME/supervisor-inbox"
-printf '%s\n' '{"maintainer_login":"maintainer"}' >"$AGENT_HOME/recipients.json"
+printf '%s\n' '{"founder_login":"maintainer"}' >"$AGENT_HOME/recipients.json"
 printf '%s\n' bug enhancement >"$TEST_HOME/labels.txt"
 export FAKE_LABELS_FILE="$TEST_HOME/labels.txt"
 cat >"$FAKE_ISSUES_FILE" <<'JSON'
@@ -227,7 +227,7 @@ cat >"$FAKE_ISSUES_FILE" <<'JSON'
   {"number":7107,"state":"OPEN","labels":[{"name":"bug"}]},
   {"number":7109,"state":"OPEN","labels":[{"name":"bug"}]},
   {"number":7113,"state":"OPEN","labels":[{"name":"bug"}],"author":{"login":"maintainer"},"title":"Mac demo repro","body":"Maintainer repro fixture"},
-  {"number":7114,"state":"OPEN","labels":[{"name":"bug"}],"author":{"login":"maintainer"},"title":"Recut child","body":"Generated child","comments":[{"body":"<!-- zenoforge-agent-comment -->"}]},
+  {"number":7114,"state":"OPEN","labels":[{"name":"bug"}],"author":{"login":"maintainer"},"title":"Recut child","body":"Generated child","comments":[{"body":"<!-- vecta-agent-comment -->"}]},
   {"number":7115,"state":"OPEN","labels":[{"name":"bug"}],"author":{"login":"maintainer"},"title":"前置能力 [concluded-root-prerequisite-7101]: generated prerequisite","body":"Generated prerequisite"},
   {"number":7116,"state":"OPEN","labels":[{"name":"bug"}],"author":{"login":"maintainer"},"title":"Recut child before bot comment","body":"由 #7101 拆分而来的可独立交付子任务之一，会走正常的分诊流程判定风险等级和处理方式。"},
   {"number":7117,"state":"OPEN","labels":[{"name":"bug"}],"author":{"login":"maintainer"},"title":"[supervisor] HEALTH node owner brief","body":"Generated supervisor work"},
@@ -241,7 +241,7 @@ labels_7101="$(jq -r '.[] | select(.number == 7101) | [.labels[].name] | sort | 
 labels_7109="$(jq -r '.[] | select(.number == 7109) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
 assert_eq "ordinary open issue gets only needs-triage state" bug,needs-triage "$labels_7101"
 assert_eq "second ordinary issue gets only needs-triage after stale-label race" bug,needs-triage "$labels_7109"
-assert_eq "maintainer-filed issue gets founder-test during rescue" bug,founder-test,needs-triage "$(jq -r '.[] | select(.number == 7113) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "founder-filed issue gets founder-test during rescue" bug,founder-test,needs-triage "$(jq -r '.[] | select(.number == 7113) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
 assert_contains "maintainer rescue fetches issue number for the shared label helper" "$(grep -F 'issue view 7113 ' "$FAKE_GH_LOG")" '--json number,state,labels,title,body,author,comments'
 assert_eq "pipeline bot marker excludes generated issue from founder-test" bug,needs-triage "$(jq -r '.[] | select(.number == 7114) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
 assert_eq "prerequisite title marker excludes generated issue from founder-test" bug,needs-triage "$(jq -r '.[] | select(.number == 7115) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
@@ -354,21 +354,21 @@ labelled="$(PATH="$TEST_HOME/failing-gh:$PATH" label_maintainer_test_candidates 
 assert_eq "founder-test re-read failure does not fail the candidate list" 0 "$read_rc"
 assert_eq "unreadable maintainer candidate is kept unlabelled for the next tick" 2 "$(jq 'length' <<< "$labelled")"
 
-# 2026-09-27: every maintainer-authored open issue was re-read with comments on every
+# 2026-09-27: every founder-authored open issue was re-read with comments on every
 # tick (203 issues, 17+ min per tick). Only issues inside the intake window are
 # candidates, and an issue already judged is not re-read.
 now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 jq --arg now "$now_iso" '. + [
   {"number":7120,"state":"OPEN","labels":[{"name":"ready-for-agent"}],"author":{"login":"maintainer"},"title":"Old pipeline ticket","body":"old","createdAt":"2026-01-01T00:00:00Z"},
-  {"number":7121,"state":"OPEN","labels":[{"name":"ready-for-agent"}],"author":{"login":"maintainer"},"title":"New generated ticket","body":"generated <!-- zenoforge-agent-comment -->","createdAt":$now}
+  {"number":7121,"state":"OPEN","labels":[{"name":"ready-for-agent"}],"author":{"login":"maintainer"},"title":"New generated ticket","body":"generated <!-- vecta-agent-comment -->","createdAt":$now}
 ]' "$FAKE_ISSUES_FILE" > "$FAKE_ISSUES_FILE.tmp" && mv "$FAKE_ISSUES_FILE.tmp" "$FAKE_ISSUES_FILE"
 : > "$FAKE_GH_LOG"
 run_sweep >/dev/null
-assert_eq "old maintainer-authored issue outside the intake window is not re-read" 0 "$(grep -c 'issue view 7120 ' "$FAKE_GH_LOG" || true)"
-assert_eq "new maintainer-authored issue inside the window is judged once" 1 "$(grep -c 'issue view 7121 ' "$FAKE_GH_LOG" || true)"
+assert_eq "old founder-authored issue outside the intake window is not re-read" 0 "$(grep -c 'issue view 7120 ' "$FAKE_GH_LOG" || true)"
+assert_eq "new founder-authored issue inside the window is judged once" 1 "$(grep -c 'issue view 7121 ' "$FAKE_GH_LOG" || true)"
 : > "$FAKE_GH_LOG"
 run_sweep >/dev/null
-assert_eq "an already judged maintainer-authored issue is not re-read" 0 "$(grep -c 'issue view 7121 ' "$FAKE_GH_LOG" || true)"
+assert_eq "an already judged founder-authored issue is not re-read" 0 "$(grep -c 'issue view 7121 ' "$FAKE_GH_LOG" || true)"
 
 # 2026-09-28: the same re-read ran in triage, measure and implement through
 # label_maintainer_test_candidates, for every maintainer-account issue the pipeline

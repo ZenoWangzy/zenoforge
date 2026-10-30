@@ -21,7 +21,7 @@
 # admit_guarded() also call in-line -- so these scenarios now exercise
 # loop_break_check() through detect-label-churn.sh's entry point rather than
 # logic local to this file. The marker/message text changed
-# (zenoforge-agent-churn-alert -> zf-loop-escalation) but the invariant these
+# (zenoforge-agent-churn-alert -> vecta-loop-escalation) but the invariant these
 # scenarios pin did not. Scenario 1 also asserts no maintainer email goes out
 # any more for this class (removed in favor of loop_break_check()'s own
 # issue-comment escalation plus a passive count folded into the daily
@@ -245,7 +245,7 @@ assert_contains "over-threshold, recent, never-alerted issue gets flagged" \
   "$RUN_OUTPUT" "#101 crossed"
 assert_eq "dry-run churn detection performs no GitHub writes" '' "$(cat "$FAKE_GH_WRITE_LOG")"
 assert_contains "flagging posts the loop-escalation marker (dry-run gh issue comment)" \
-  "$RUN_OUTPUT" "zf-loop-escalation"
+  "$RUN_OUTPUT" "vecta-loop-escalation"
 assert_not_contains "no maintainer email goes out for a churning ticket any more" \
   "$RUN_OUTPUT" "[dry-run] send_email"
 unset FAKE_TIMELINE_101 FAKE_COMMENTS_101
@@ -277,13 +277,13 @@ export FAKE_ISSUES_A=""
 export FAKE_ISSUES_B="103"
 export FAKE_TIMELINE_103="$(alternating_timeline ready-for-agent needs-advisor "$(ago 60)" "$(ago 50)" "$(ago 40)" "$(ago 30)" "$(ago 20)")"
 export FAKE_COMMENTS_103="some earlier bot comment
-<!-- zf-loop-escalation -->
+<!-- vecta-loop-escalation -->
 already flagged this once"
 run_once
 assert_contains "legacy alert still freezes an actively churning issue" \
   "$RUN_OUTPUT" "--add-label on-hold"
 assert_contains "legacy alert gets an episode-specific freeze comment" \
-  "$RUN_OUTPUT" "zf-loop-episode="
+  "$RUN_OUTPUT" "vecta-loop-episode="
 unset FAKE_TIMELINE_103 FAKE_COMMENTS_103
 
 # --- scenario 5: churn past threshold, but the burst has SETTLED -> no flag
@@ -337,7 +337,7 @@ assert_contains "supervisor line names writers from observed transition receipts
 assert_eq "active churn returns to the scheduler" ready-for-agent \
   "$(jq -r '.state' "$LAST_AGENT_HOME/state/105.json")"
 assert_eq "active churn records one scheduler handoff comment" '1' \
-  "$(grep -F -c 'zf-scheduler-handoff issue=105' "$FAKE_GH_WRITE_LOG" || true)"
+  "$(grep -F -c 'vecta-scheduler-handoff issue=105' "$FAKE_GH_WRITE_LOG" || true)"
 WRITE_COUNT_BEFORE="$(wc -l < "$FAKE_GH_WRITE_LOG" | tr -d '[:space:]')"
 AGENT_HOME="$LAST_AGENT_HOME" bash "$DETECTOR_SRC" >/dev/null 2>&1
 assert_eq "same churn episode does not repeat writes" "$WRITE_COUNT_BEFORE" \
@@ -363,7 +363,7 @@ CHURN_PID_B=$!
 wait "$CHURN_PID_A" || FAILED=1
 wait "$CHURN_PID_B" || FAILED=1
 assert_eq "overlapping churn checks post one episode comment" '1' \
-  "$(grep -cF 'zf-loop-episode=' "$FAKE_GH_WRITE_LOG" || true)"
+  "$(grep -cF 'vecta-loop-episode=' "$FAKE_GH_WRITE_LOG" || true)"
 assert_eq "overlapping churn checks apply one on-hold edit" '1' \
   "$(grep -F -c -- '--add-label on-hold' "$FAKE_GH_WRITE_LOG" || true)"
 assert_eq "overlapping churn checks write one supervisor line" '1' \

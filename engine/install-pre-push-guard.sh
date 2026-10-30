@@ -33,15 +33,22 @@ disable_drifted_hook() {
   fi
 }
 
+pack_rel="${ZF_PACK_REL:-engine}"
+# A published engine copy is transformed and cannot match the target repository blob byte for byte.
+# The target copy still has to match origin/main before it may install that repository's hook.
+if [[ -n "${ZF_ENGINE_DIR:-}" && "$script" != "$repo/$pack_rel/install-pre-push-guard.sh" \
+    && "$script" == "$(realpath -m -- "$ZF_ENGINE_DIR/install-pre-push-guard.sh")" ]]; then
+  script="$repo/$pack_rel/install-pre-push-guard.sh"
+fi
 main_installer="$tmp/main-installer.sh"
 main_guard="$tmp/main-pre-push-guard.sh"
-if ! git -C "$repo" show origin/main:engine/install-pre-push-guard.sh > "$main_installer" 2>/dev/null \
+if ! git -C "$repo" show "origin/main:$pack_rel/install-pre-push-guard.sh" > "$main_installer" 2>/dev/null \
   || ! cmp -s -- "$script" "$main_installer"; then
   disable_drifted_hook installer-not-on-origin-main
   exit 0
 fi
-if ! git -C "$repo" show origin/main:engine/pre-push-guard.sh > "$main_guard" 2>/dev/null \
-  || ! cmp -s -- "$repo/engine/pre-push-guard.sh" "$main_guard"; then
+if ! git -C "$repo" show "origin/main:$pack_rel/pre-push-guard.sh" > "$main_guard" 2>/dev/null \
+  || ! cmp -s -- "$repo/$pack_rel/pre-push-guard.sh" "$main_guard"; then
   disable_drifted_hook guard-not-on-origin-main
   exit 0
 fi

@@ -1,0 +1,10 @@
+[Unit]
+Description=Collect the product unit-loop worker costs every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

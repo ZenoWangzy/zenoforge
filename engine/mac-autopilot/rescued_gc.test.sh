@@ -37,5 +37,5 @@ out="$(PATH="$f/bin:$PATH" NOW_EPOCH=$now bash "$script_dir/rescued_gc.sh" "$f/r
 grep -q 'deleted rescued/issue-10-x .* reason=closed-issue-10' "$f/gc.log" || fail 'closed-issue deletion not logged'
 grep -q 'deleted rescued/advisor-old .* reason=no-issue-older-14d' "$f/gc.log" || fail 'aged deletion not logged'
 [[ "$out" == *'deleted 2 of 4'* ]] || fail "summary wrong: $out"
-git -C "$f/origin.git" rev-parse -q --verify refs/zf-rescue/archived/issue-10-x >/dev/null || fail 'deleted branch missing from the archive ref'
+git -C "$f/origin.git" rev-parse -q --verify refs/vecta-rescue/archived/issue-10-x >/dev/null || fail 'deleted branch missing from the archive ref'
 echo 'rescued_gc.test.sh: PASS'

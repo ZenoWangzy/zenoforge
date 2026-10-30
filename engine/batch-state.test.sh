@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# batch-state.test.sh -- 批次 STATE（#4363）：父票正文里的 zf-batch-state 块
+# batch-state.test.sh -- 批次 STATE（#4363）：父票正文里的 vecta-batch-state 块
 # 解析成延迟成本带宽，sweep 把它同步成 critical-path / legacy 标签；队列排序按
 # 生产事故 > 关键路径 > 功能 > 遗留消费这些标签（排序契约在 queue-order.test.sh）。
 set -euo pipefail
@@ -36,9 +36,9 @@ assert_contains() {
 # critical_path 成员与 delay_cost=critical 进关键路径；feature/legacy 按值；
 # 标记存在但解析不出 JSON 的父票以 invalid-parent 行上报，不产出带宽。
 bands="$(batch_state_band_map '[
-  {"number":500,"body":"spec\n<!-- zf-batch-state\n{\"completion\":\"all merged\",\"critical_path\":[501,502],\"delay_cost\":{\"503\":\"feature\",\"504\":\"legacy\"}}\n-->","labels":[]},
+  {"number":500,"body":"spec\n<!-- vecta-batch-state\n{\"completion\":\"all merged\",\"critical_path\":[501,502],\"delay_cost\":{\"503\":\"feature\",\"504\":\"legacy\"}}\n-->","labels":[]},
   {"number":501,"body":"child","labels":[]},
-  {"number":505,"body":"<!-- zf-batch-state\n{no closing brace\n-->","labels":[]},
+  {"number":505,"body":"<!-- vecta-batch-state\n{no closing brace\n-->","labels":[]},
   {"number":9099,"body":"PR row","pull_request":{"url":"x"},"labels":[]}
 ]')"
 assert_eq "band map derives delay-cost bands from the parent STATE" \
@@ -51,12 +51,12 @@ export FAKE_GH_ROOT FAKE_GH_LOG
 : > "$FAKE_GH_LOG"
 mkdir -p "$FAKE_GH_ROOT/issues" "$AGENT_HOME/state"
 issue_file() { printf '%s\n' "$1" > "$FAKE_GH_ROOT/issues/$2.json"; }
-issue_file '{"number":500,"state":"open","body":"spec\n<!-- zf-batch-state\n{\"completion\":\"all merged\",\"critical_path\":[501,502],\"delay_cost\":{\"503\":\"feature\",\"506\":\"legacy\"}}\n-->","labels":[]}' 500
+issue_file '{"number":500,"state":"open","body":"spec\n<!-- vecta-batch-state\n{\"completion\":\"all merged\",\"critical_path\":[501,502],\"delay_cost\":{\"503\":\"feature\",\"506\":\"legacy\"}}\n-->","labels":[]}' 500
 issue_file '{"number":501,"state":"open","body":"needs both labels fixed","labels":[]}' 501
 issue_file '{"number":502,"state":"open","body":"stale legacy band","labels":[{"name":"legacy"}]}' 502
 issue_file '{"number":503,"state":"open","body":"downgraded to feature","labels":[{"name":"critical-path"}]}' 503
 issue_file '{"number":504,"state":"open","body":"not in any STATE","labels":[{"name":"legacy"}]}' 504
-issue_file '{"number":505,"state":"open","body":"<!-- zf-batch-state\n{no closing brace\n-->","labels":[]}' 505
+issue_file '{"number":505,"state":"open","body":"<!-- vecta-batch-state\n{no closing brace\n-->","labels":[]}' 505
 # 506 is graded legacy by the STATE but closed; the sweep only reads open issues.
 issue_file '{"number":506,"state":"closed","body":"done long ago","labels":[]}' 506
 

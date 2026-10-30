@@ -9,19 +9,21 @@ WT="$1"; BRIEF="$2"; NAME="$3"; ROLE="${4:-work}"
 REPORT="${5:-}"; ATTEMPT="${6:-0}"
 RESUME_NOTE="${7:-}"
 PROVIDER_RETRY="${8:-0}"; PROVIDER_EPISODE="${9:-}"
-HAND_UNIT="zf-hand-$NAME-$$"
 [[ "$NAME" =~ ^[[:alnum:]_.-]+$ ]] || { echo "invalid hand-agent name: $NAME" >&2; exit 2; }
 [[ "$ATTEMPT" =~ ^[0-9]+$ ]] || { echo "invalid hand-agent attempt: $ATTEMPT" >&2; exit 2; }
 [[ "$PROVIDER_RETRY" =~ ^[0-2]$ ]] || { echo "invalid hand-agent provider retry stage: $PROVIDER_RETRY" >&2; exit 2; }
 case "$RESUME_NOTE" in *$'\t'*|*$'\n'*) echo "resume note cannot contain tabs or newlines" >&2; exit 2 ;; esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKTREE_LIFECYCLE="$SCRIPT_DIR/worktree-lifecycle.sh"
+source "$SCRIPT_DIR/config.sh" # AGENT_HOME, ZF_ENGINE_DIR, ZF_REPO_DIR
+# Same setting lib.sh resolves (lib.sh is sourced further down); read after config.sh so deploy.env is in effect.
+UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
+HAND_UNIT="${UNIT_PREFIX_TRANSIENT}-hand-$NAME-$$"
 REPO_DIR="${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/../.." && pwd -P)}"
-if [[ -f "$REPO_DIR/engine/install-pre-push-guard.sh" ]]; then
-  bash "$REPO_DIR/engine/install-pre-push-guard.sh" "$REPO_DIR"
+if [[ -f "$ZF_ENGINE_DIR/install-pre-push-guard.sh" ]]; then
+  bash "$ZF_ENGINE_DIR/install-pre-push-guard.sh" "$REPO_DIR"
 fi
 INDEX_ROOT="${ZF_CODE_INTELLIGENCE_ROOT:-${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/../.." && pwd -P)}}"
-AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
 WORKTREE_ROOT="${ZF_WORKTREE_ROOT:-$HOME/wt}"
 source "$SCRIPT_DIR/lib.sh"
@@ -40,7 +42,7 @@ source "$SCRIPT_DIR/night/hand-crash-recovery.sh"
 [[ -r "$SCRIPT_DIR/night/hand-exit-handoff.sh" ]] && source "$SCRIPT_DIR/night/hand-exit-handoff.sh"
 PATH="$SCRIPT_DIR/gh-shim:$HOME/.local/bin:$PATH"
 export PATH
-export BROWSER="$HOME/.local/bin/zf-browser" ZF_AUTOMATION=1
+export BROWSER="$HOME/.local/bin/vecta-browser" ZF_AUTOMATION=1
 unset DISPLAY WAYLAND_DISPLAY
 if [ "$#" -gt 9 ]; then echo "usage: $0 WT BRIEF NAME [ROLE] [REPORT] [ATTEMPT] [RESUME_NOTE] [PROVIDER_RETRY] [PROVIDER_EPISODE]" >&2; exit 2; fi
 case "$WT" in "~/"*) WT="$HOME/${WT:2}" ;; esac
@@ -124,6 +126,14 @@ HAND_ISSUE_IDS="$(hand_agent_issue_ids_from_brief "$NAME" "$BRIEF" "${HAND_ISSUE
   echo "invalid hand-owned issue list in $BRIEF" >&2
   exit 2
 }
+if [[ "$TIER" == optimization && "$ROLE" =~ ^(work|hard)$ && -n "$HAND_ISSUE_IDS" ]] \
+  && ! grep -Fq '## 车道判定（launch' "$BRIEF"; then
+  # Decide the direct-main vs PR lane before the worker starts. Keep the
+  # verdict in the durable brief so supervisor recovery sees the same route.
+  lane_issue="${HAND_ISSUE_IDS%% *}"
+  lane_verdict="$(brief_lane_verdict "$lane_issue" "$BRIEF")"
+  printf '\n%s\n' "$lane_verdict" >> "$BRIEF"
+fi
 HAND_NON_PRODUCT_UNIT=0
 if [[ -n "$HAND_ISSUE_IDS" ]]; then
   HAND_NON_PRODUCT_UNIT=1
@@ -213,7 +223,9 @@ rendered="$NIGHT/.rendered-$NAME.md"
   echo "Report file for this run: $REPORT. Write your report there, STATUS line first; this path overrides any report path the brief names."
   echo "GitNexus index for this run: --repo $INDEX_ROOT (name no other checkout)"
   echo 'Before finishing, re-read your brief file for new ## Addendum sections and address them.'
-  cat <<'PRE'
+  # @AGENT_HOME@ in the brief blocks below becomes this deployment's state root at render time; the
+  # worker's own shell never sees the variable.
+  cat <<'PRE' | sed -e "s|@AGENT_HOME@|$AGENT_HOME|g"
 ## Required incremental landing
 
 Publish each independently complete unit before beginning the next:
@@ -242,7 +254,7 @@ and the old head from `gh pr view <PR> --json headRefOid --jq .headRefOid`.
 After committing the repaired head, run:
 
 ```bash
-node "$HOME/.zenoforge/checkout/scripts/branch-delivery-preflight.mjs" --mode push --target main \
+node "@AGENT_HOME@/checkout/scripts/branch-delivery-preflight.mjs" --mode push --target main \
   --repair-ci-failure-link "$FAILED_CHECK_LINK" --repair-ci-check "$FAILED_CHECK_NAME" \
   --repair-ci-failed-head "$FAILED_HEAD_SHA" --repair-ci-failed-at "$FAILED_CHECK_COMPLETED_AT" \
   --repair-ci-failing-path "$FAILING_TEST_FILE" --repair-ci-command "$EXACT_FAILED_COMMAND"
@@ -276,7 +288,7 @@ worktree when it lands. Do not poll or idle-wait. SPINNING token threshold:
 
 ## Delivery lane (maintainer rulings 2026-09-23 / 2026-09-24: pipeline changes land directly and fast)
 
-- **Pipeline-system changes** — anything under `engine/`, `.agents/skills/`, `docs/agents/`, `lessons/`, and the operator scripts — do NOT go through PR / CI queue / Postsubmit / release. Run focused local tests, then `node scripts/branch-delivery-preflight.mjs --mode commit` before committing. Write issue references as `issue NNNN`, never `Fixes #NNNN`. Commit on your own branch with `[skip ci]` in every subject. Add a `Plan-Package` trailer, then run `bash engine/land-direct-main.sh --enqueue`. It records the request and returns immediately; the detached unit serializes rebase, fast local preflight, and push. Exit with `STATUS: LANDING-QUEUED`; the unit updates your report to `DONE` with `LANDED <sha>`. If landing fails, it writes `BLOCKED-ON landing-failed <ticket>` and night tick resumes you in the same worktree. Never wait for the unit or CI. Never check out `main` in any worktree; never touch `$HOME/src/target-repo` or `~/.zenoforge/checkout`. Keep pipeline-only and docs-only commits separate. The pipeline runs from `~/.zenoforge/checkout`, which fast-forwards to main on its next tick — that is the deploy.
+- **Pipeline-system changes** — anything under `engine/`, `.agents/skills/`, `docs/agents/`, `lessons/`, and the operator scripts — do NOT go through PR / CI queue / Postsubmit / release. Run focused local tests, then `node scripts/branch-delivery-preflight.mjs --mode commit` before committing. Write issue references as `issue NNNN`, never `Fixes #NNNN`. Commit on your own branch with `[skip ci]` in every subject. Add a `Plan-Package` trailer, then run `bash engine/land-direct-main.sh --enqueue`. It records the request and returns immediately; the detached unit serializes rebase, fast local preflight, and push. Exit with `STATUS: LANDING-QUEUED`; the unit updates your report to `DONE` with `LANDED <sha>`. If landing fails, it writes `BLOCKED-ON landing-failed <ticket>` and night tick resumes you in the same worktree. Never wait for the unit or CI. Never check out `main` in any worktree; never touch `$HOME/src/target-repo` or `@AGENT_HOME@/checkout`. Keep pipeline-only and docs-only commits separate. The pipeline runs from `@AGENT_HOME@/checkout`, which fast-forwards to main on its next tick — that is the deploy.
 - **the product product code** (`packages/`, `apps/`, anything that ships in a production image) keeps the full flow: topic branch → PR → CI → merge → release leg → production acceptance.
 - **This dev box has no container runtime.** Testcontainers integration suites and image builds cannot run here. Run unit tests and typecheck locally, then commit, push and open the PR; PR CI ("Run touched Postsubmit integration gates" and the image jobs) is where those gates run. A missing local Docker is never a reason to hold back a commit, a push or a PR, and never a `BLOCKED-ON`.
 - `.github/workflows/*` other than the agent-workflow-contract file are not in the direct lane; they still need a PR.
@@ -286,7 +298,7 @@ worktree when it lands. Do not poll or idle-wait. SPINNING token threshold:
 - A hand's observation about a ticket it owns stays on that ticket: comment with evidence and acceptance; do not open a follow-up issue for that observation. File a new issue only for a distinct, independently actionable defect, with observed evidence and testable acceptance criteria. Product work gets `needs-triage`; pipeline-system work gets `pipeline-system` and `needs-triage`.
 - A fix for a stuck pipeline stage stays out of band through node-auto-owner. Do not enqueue that fix behind the stage it repairs.
 - End your final report with exactly one line: `STATUS: DONE`, `STATUS: FOLLOWUP(123, 456)`, `STATUS: NEEDS-DECISION`, `STATUS: FAILED`, or (after accepted pipeline enqueue) `STATUS: LANDING-QUEUED`.
-- Write to `~/.zenoforge/supervisor-inbox` only for `NEEDS-DECISION`, `FAILED`, or a guard breach. `DONE` and `FOLLOWUP(...)` never write there.
+- Write to `@AGENT_HOME@/supervisor-inbox` only for `NEEDS-DECISION`, `FAILED`, or a guard breach. `DONE` and `FOLLOWUP(...)` never write there.
 
 ## Code graph tools
 
@@ -295,11 +307,11 @@ GitNexus indexes TypeScript and JavaScript symbols only. Use `impact` or `contex
 ## Operator brief
 
 PRE
-  cat <<'PRE'
+  cat <<'PRE' | sed -e "s|@AGENT_HOME@|$AGENT_HOME|g"
 
 ## Live checkout and resource rules
 
-Never edit the live pipeline checkout: `~/.zenoforge/checkout` is what the pipeline executes. Read it only; work in your own worktree.
+Never edit the live pipeline checkout: `@AGENT_HOME@/checkout` is what the pipeline executes. Read it only; work in your own worktree.
 Do not run `gitnexus analyze` on any path, including temporary clones. Query the existing index with the `gitnexus` CLI and explicit `--repo`. Skip whole-repository suites when a package-scoped suite covers the change.
 Keep MAX_AGENTS configurable. The default cap is 10 hand agents; existing memory and load guards still apply.
 For cihost source tests, commit the candidate, then call scripts/ops/sync-cihost-candidate.sh through with-credentials.sh with exact candidate and base SHAs. Run tests in the returned candidate= path; record bytes_sent, cache, and exact tree receipt. First call sends only compressed delta; same-SHA cache hit sends zero source-payload bytes. Never send a whole-source bundle or tar for cihost source tests; dedicated GitNexus bundle flows stay separate.
@@ -505,7 +517,7 @@ watcher="not-started"
 # jq; the systemd user manager's own PATH (/usr/local/sbin:...:/usr/bin) has
 # neither -- both live in the dispatching session's PATH (gh-shim, ~/.local/bin).
 if [[ "$start_ticks" =~ ^[0-9]+$ ]] && systemd-run --user \
-  --unit="zf-worktree-cleanup-$pid" --collect \
+  --unit="${UNIT_PREFIX_TRANSIENT}-worktree-cleanup-$pid" --collect \
   --description="worktree cleanup for $NAME pid $pid" \
   -E "AGENT_HOME=$AGENT_HOME" -E "ZF_NIGHT_DIR=$NIGHT" \
   -E "ZF_REPO_DIR=$REPO_DIR" -E "ZF_GH_REPO=${ZF_GH_REPO:-$REPO}" \
@@ -513,7 +525,7 @@ if [[ "$start_ticks" =~ ^[0-9]+$ ]] && systemd-run --user \
   -E "PATH=$PATH" \
   -- bash "$WORKTREE_LIFECYCLE" watch "$REPO_DIR" "$WT" "$pid" "$start_ticks" \
   >/dev/null 2>&1; then
-  watcher="zf-worktree-cleanup-$pid"
+  watcher="${UNIT_PREFIX_TRANSIENT}-worktree-cleanup-$pid"
 else
   echo "could not start cleanup watcher for $NAME pid=$pid; night reaper will retry" >> "$LOG"
 fi

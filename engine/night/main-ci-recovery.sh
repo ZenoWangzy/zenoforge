@@ -779,7 +779,7 @@ main_ci_attribute_red() {
     judge_input="$(jq -cn --arg event_id "main-red:$red_run:$red_attempt" --arg current "$culprit" \
       --arg failedSuite "$suite" --arg failedTests "$failed_tests" --argjson candidates "$candidate_json" \
       '{event_id:$event_id,currentDecision:$current,failedSuite:$failedSuite,failedTests:$failedTests,candidates:$candidates}')"
-    judge_output="$(printf '%s\n' "$judge_input" | bash "$REPO_DIR/engine/ts-judge.sh" main-red 2>/dev/null || true)"
+    judge_output="$(printf '%s\n' "$judge_input" | bash "${ZF_ENGINE_DIR:-$REPO_DIR/engine}/ts-judge.sh" main-red 2>/dev/null || true)"
   fi
   judged_culprit="$(jq -r 'select(.status=="answered" and .adopted==true) | .decision // empty' <<<"$judge_output" 2>/dev/null || true)"
   if [[ "$judged_culprit" =~ ^[0-9a-f]{40}$ ]] \

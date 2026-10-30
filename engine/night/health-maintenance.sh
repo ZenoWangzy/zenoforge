@@ -3,6 +3,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/../.." && pwd -P)}"
+ENGINE_DIR="${ZF_ENGINE_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 H="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
 NIGHT="${ZF_NIGHT_DIR:-$H/night}"
 mkdir -p -- "$NIGHT" || exit 1
@@ -37,7 +38,7 @@ run_worktrees() {
     return $?
   }
   if timeout -k 5 "${ZF_WORKTREE_REAP_TIMEOUT_SECONDS:-180}" \
-    bash "$REPO_DIR/engine/worktree-lifecycle.sh" reap "$REPO_DIR" >"$output" 2>&1; then
+    bash "$ENGINE_DIR/worktree-lifecycle.sh" reap "$REPO_DIR" >"$output" 2>&1; then
     status=0
   else
     status=$?
@@ -121,7 +122,7 @@ run_worktrees() {
     return $?
   }
   if timeout -k 5 "${ZF_WORKTREE_STATS_TIMEOUT_SECONDS:-45}" \
-    bash "$REPO_DIR/engine/worktree-lifecycle.sh" stats "$REPO_DIR" >"$output" 2>&1; then
+    bash "$ENGINE_DIR/worktree-lifecycle.sh" stats "$REPO_DIR" >"$output" 2>&1; then
     stats="$(sed -n '1p' "$output")"
     if [[ "$stats" =~ ^worktrees=[0-9]+[[:space:]]local_branches=[0-9]+[[:space:]]remote_branches=[0-9]+[[:space:]]stale_over_24h=[0-9]+$ ]]; then
       write_result "$NIGHT/worktree-inventory-last-result.json" OK "$stats" || failed=1
@@ -140,11 +141,11 @@ run_worktrees() {
 
 run_maintainer_mail() {
   local output status detail partial_detail
-  output="$(mktemp "$NIGHT/.maintainer-health-mail-output.XXXXXX")" || return 1
+  output="$(mktemp "$NIGHT/.founder-health-mail-output.XXXXXX")" || return 1
   timeout -k 5 "${ZF_MAINTAINER_HEALTH_MAIL_TIMEOUT_SECONDS:-120}" \
-    bash "$REPO_DIR/engine/night/maintainer-health-mail.sh" tick 2>&1 | tail -c 65536 > "$output"
+    bash "$ENGINE_DIR/night/founder-health-mail.sh" tick 2>&1 | tail -c 65536 > "$output"
   status=${PIPESTATUS[0]}
-  if ! retain_output maintainer-health-mail "$output"; then
+  if ! retain_output founder-health-mail "$output"; then
     rm -f -- "$output"
     return 1
   fi
@@ -169,8 +170,8 @@ run_gh_spikes() {
   now="$(date +%s)"
   [ "$(( now - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) ))" -ge 3600 ] || return 0
   : > "$stamp" || return 1
-  python3 "$REPO_DIR/engine/gh-measure/summary.py" spikes "$file" | while IFS=$'\t' read -r site rate; do
-    ( export AGENT_HOME="$H"; source "$REPO_DIR/engine/lib.sh"
+  python3 "$ENGINE_DIR/gh-measure/summary.py" spikes "$file" | while IFS=$'\t' read -r site rate; do
+    ( export AGENT_HOME="$H"; source "$ENGINE_DIR/lib.sh"
       supervisor_inbox_append_once "gh-callsite-spike:$site" "gh-callsite-spike site=$site failed=$rate in the last hour" )
   done
 }
@@ -184,6 +185,6 @@ run_maintenance() {
 
 case "${1:-}" in
   maintenance) run_maintenance ;;
-  maintainer-mail) run_maintainer_mail ;;
-  *) printf 'usage: %s maintenance|maintainer-mail\n' "$0" >&2; exit 2 ;;
+  founder-mail) run_maintainer_mail ;;
+  *) printf 'usage: %s maintenance|founder-mail\n' "$0" >&2; exit 2 ;;
 esac
