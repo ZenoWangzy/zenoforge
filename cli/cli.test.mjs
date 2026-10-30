@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import * as cmd from './commands.mjs';
+import { readEnvFile } from './state.mjs';
 import { run, which } from './util.mjs';
 
 const FAKE_GH = `#!/usr/bin/env bash
@@ -14,9 +15,9 @@ case "$1 $2" in
   "auth status") echo "github.com"; echo "  ✓ Logged in to github.com account octo (keyring)"; echo "  - Token scopes: 'repo'" ;;
   "auth token") echo "ghp_FAKESECRETVALUE" ;;
   "repo view") echo '{"defaultBranchRef":{"name":"main"},"viewerPermission":"ADMIN"}' ;;
-  "repo clone") git clone -q "$ZF_FAKE_ORIGIN" "$4" && git -C "$4" remote set-url origin "https://github.com/$3.git" ;;
+  "repo clone") git clone -q "$ZF_FAKE_ORIGIN" "$4" && { [ -n "$ZF_FAKE_KEEP_ORIGIN" ] || git -C "$4" remote set-url origin "https://github.com/$3.git"; } ;;
   "label list") echo needs-triage ;;
-  "variable get") echo triage ;;
+  "variable get") echo "\${ZF_FAKE_PIPELINE:-triage}" ;;
   *) case "$1" in api) echo '{"contexts":["ci / test"],"checks":[]}' ;; esac ;;
 esac
 `;
@@ -258,4 +259,20 @@ test('start after init --no-scheduler is the first enable: it needs the confirma
   assert.match(s.calls(), /variable set AGENT_PIPELINE --repo \S+ --body triage/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(s.agent, 'cli.json'), 'utf8')).scheduler, 'systemd');
   assert.ok(fs.existsSync(path.join(s.unitDir, 'zenoforge-agent.service')));
+});
+
+test('a real run-tick completes through the linked engine (write guard, timer check, kill switch)', async () => {
+  const s = sandbox();
+  s.env.ZF_FAKE_KEEP_ORIGIN = '1'; // the tick fetches origin; keep the local bare repo as the remote
+  s.env.ZF_FAKE_PIPELINE = 'off';
+  await cmd.init({ repo: REPO, yes: true }, s.io);
+  const unit = readEnvFile(path.join(s.agent, 'env')); // what EnvironmentFile= gives the real unit
+  const tick = run('bash', [path.join(s.checkout, 'engine/run-tick.sh')], {
+    env: { ...s.env, ...unit, ZF_REPO_DIR: s.checkout, GIT_TERMINAL_PROMPT: '0' }, timeout: 120000,
+  });
+  assert.equal(tick.code, 0, tick.stderr);
+  assert.match(tick.stderr, /handing off to issue-pipeline\.sh/);
+  assert.match(s.calls().trim().split('\n').at(-1), /^gh variable get AGENT_PIPELINE/, 'the slices read the kill switch last, and stop at off');
+  assert.match(s.calls(), /systemctl --user is-active --quiet zenoforge-agent\.timer/);
+  assert.equal(fs.existsSync(path.join(s.agent, 'tick-failure-count')), false);
 });
