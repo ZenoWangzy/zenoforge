@@ -233,6 +233,7 @@ fi
 {
   echo "AGENT_PHASE for this run: $PHASE"
   echo "GitNexus repo argument for this run: $REPO_DIR"
+  matt_skills_note "$REPO_DIR" ask-matt triage
   echo "GitNexus index freshness for this run: $INDEX_FRESHNESS_NOTE"
   echo "This is one triage pass for independent issues. Apply the triage rules below separately to every issue. Never let one issue's missing or uncertain evidence change another issue's result."
   cat "$SCRIPT_DIR/prompts/triage.md"

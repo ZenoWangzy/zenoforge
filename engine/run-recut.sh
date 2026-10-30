@@ -267,6 +267,7 @@ PROMPT_FILE="$(mktemp)"
   echo "This run's child cap: $CHILD_CAP -- do not propose more children than this."
   [ -z "$MODEL_POLICY_RETRY_NOTE" ] || echo "Retry note: $MODEL_POLICY_RETRY_NOTE"
   echo "GitNexus repo argument for this run: $REPO_DIR"
+  matt_skills_note "$WT" to-tickets to-spec
   cat "$SCRIPT_DIR/prompts/recut.md"
   echo
   echo '```json'

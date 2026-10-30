@@ -13,6 +13,7 @@ source "$_AGENT_LIB_DIR/closing-keywords.sh"
 [[ -r "$_AGENT_LIB_DIR/land-queue-state.sh" ]] && source "$_AGENT_LIB_DIR/land-queue-state.sh"
 [[ -r "$_AGENT_LIB_DIR/hand-codex-liveness.sh" ]] && source "$_AGENT_LIB_DIR/hand-codex-liveness.sh"
 [[ -r "$_AGENT_LIB_DIR/runtime-reload.sh" ]] && source "$_AGENT_LIB_DIR/runtime-reload.sh"
+[[ -r "$_AGENT_LIB_DIR/matt-skills.sh" ]] && source "$_AGENT_LIB_DIR/matt-skills.sh"
 source "${ZF_EXECUTION_MODULE_DIR:-$_AGENT_LIB_DIR}/execution-admission.sh"
 
 AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"

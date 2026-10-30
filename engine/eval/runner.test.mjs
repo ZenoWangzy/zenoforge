@@ -97,7 +97,7 @@ test('the real lower stage seam uses policy and records usage without a model ca
   try {
     const bin = join(dir, 'bin'), home = join(dir, 'home'), artifact = join(dir, 'artifacts');
     for (const path of [bin, home, artifact]) mkdirSync(path);
-    const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], external_deliverable: { required: false, location: '', reason: '' } };
+    const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], estimated_changed_lines: 1, external_deliverable: { required: false, location: '', reason: '' } };
     const outputFile = join(dir, 'fake-output.json'); writeFileSync(outputFile, JSON.stringify(output));
     const fake = join(bin, 'codex');
     writeFileSync(fake, '#!/usr/bin/env bash\nset -euo pipefail\noutput=""\nwhile (($#)); do if [[ "$1" == --output-last-message ]]; then output=$2; shift; fi; shift; done\ncat > /dev/null\ncp "$EVAL_FAKE_OUTPUT_FILE" "$output"\nprintf "tokens used\\n1,234\\n"\n', { mode: 0o755 });
@@ -238,7 +238,7 @@ function cliFixture() {
   const bin = join(dir, 'bin'), home = join(dir, 'home');
   mkdirSync(bin); mkdirSync(home);
   const events = join(dir, 'codex-events.log');
-  const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], external_deliverable: { required: false, location: '', reason: '' } };
+  const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], estimated_changed_lines: 1, external_deliverable: { required: false, location: '', reason: '' } };
   const outputFile = join(dir, 'triage-output.json');
   writeFileSync(outputFile, JSON.stringify(output));
   writeFileSync(join(bin, 'codex'), `#!/usr/bin/env bash
@@ -402,7 +402,7 @@ function pairedFixture({ identity = 'codex:fixture:high', session = 'fixture-ses
   git('add', '.'); git('commit', '-qm', 'base'); const baseSha = git('rev-parse', 'HEAD');
   const stub = join(dir, 'stage-call.sh'), script = join(dir, 'stage-call.mjs');
   writeFileSync(stub, '#!/usr/bin/env bash\nexec node "$(dirname "$0")/stage-call.mjs" "$@"\n');
-  const triage = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], external_deliverable: { required: false, location: '', reason: '' } };
+  const triage = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], estimated_changed_lines: 1, external_deliverable: { required: false, location: '', reason: '' } };
   const readyReview = 'VERDICT: READY\n\n```review-findings\n{"findings":[],"dispositions":[]}\n```';
   const rejectedReview = 'VERDICT: NOT_READY\n\n```review-findings\n{"findings":[{"id":"F1","severity":"P1","file":"value.mjs","line":1,"rule":"Defect","status":"open","summary":"The known value defect remains.","introduced_by":"candidate","base_evidence":"The base value at value.mjs:1 is zero."}],"dispositions":[]}\n```';
   writeFileSync(script, `
@@ -450,7 +450,7 @@ if (stage === 'implement') {
   return { dir, out, c, options: { repairArms, sourceRepo: fixture, stageCall: stub } };
 }
 
-test('paired repair starts both arms at the implement snapshot and keeps the chain on cold', { skip: 'the review stage reads .agents/skills/zf-code-review/SKILL.md, a the product skill, not exported' }, async () => {
+test('paired repair starts both arms at the implement snapshot and keeps the chain on cold', async () => {
   const { execute } = await import('./run-eval.mjs');
   for (const [coldValue, resumeValue] of [[1, 2], [2, 1]]) {
     const f = pairedFixture({ coldValue, resumeValue });
@@ -474,7 +474,7 @@ test('paired repair starts both arms at the implement snapshot and keeps the cha
   }
 });
 
-test('--from-implement starts the chain at implement with no triage or advisor call', { skip: 'the review stage reads .agents/skills/zf-code-review/SKILL.md, a the product skill, not exported' }, async () => {
+test('--from-implement starts the chain at implement with no triage or advisor call', async () => {
   const { execute, parseEvalArgs } = await import('./run-eval.mjs');
   assert.equal(parseEvalArgs(['--stage', 'end-to-end', '--from-implement', '--label', 'x']).values['from-implement'], true);
   assert.throws(() => parseEvalArgs(['--stage', 'implement', '--from-implement']), /--from-implement needs --stage end-to-end/);
@@ -487,7 +487,7 @@ test('--from-implement starts the chain at implement with no triage or advisor c
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test('resume is skipped without a session or provider support and never calls cold as fallback', { skip: 'the review stage reads .agents/skills/zf-code-review/SKILL.md, a the product skill, not exported' }, async () => {
+test('resume is skipped without a session or provider support and never calls cold as fallback', async () => {
   const { execute } = await import('./run-eval.mjs');
   for (const config of [{ session: null }, { identity: 'zcode:fixture:high' }]) {
     const f = pairedFixture(config);
@@ -505,7 +505,7 @@ test('resume is skipped without a session or provider support and never calls co
   }
 });
 
-test('a cold repair execution failure still records the resume result', { skip: 'the review stage reads .agents/skills/zf-code-review/SKILL.md, a the product skill, not exported' }, async () => {
+test('a cold repair execution failure still records the resume result', async () => {
   const { execute } = await import('./run-eval.mjs');
   const f = pairedFixture({ failCold: true, resumeValue: 1 });
   try {
@@ -518,7 +518,7 @@ test('a cold repair execution failure still records the resume result', { skip: 
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test('unpaired runs retain one cold repair and accepted reviews do not create arms', { skip: 'the review stage reads .agents/skills/zf-code-review/SKILL.md, a the product skill, not exported' }, async () => {
+test('unpaired runs retain one cold repair and accepted reviews do not create arms', async () => {
   const { execute } = await import('./run-eval.mjs');
   for (const config of [{ repairArms: null }, { reviewReady: true }]) {
     const f = pairedFixture(config);
@@ -531,7 +531,7 @@ test('unpaired runs retain one cold repair and accepted reviews do not create ar
   }
 });
 
-test('a deferred stage (exit 75) is rerun instead of failing the chain', { skip: 'the review stage reads .agents/skills/zf-code-review/SKILL.md, a the product skill, not exported' }, async () => {
+test('a deferred stage (exit 75) is rerun instead of failing the chain', async () => {
   const { execute } = await import('./run-eval.mjs');
   const f = pairedFixture({ deferReview: true, reviewReady: true });
   process.env.EVAL_DEFER_WAIT_MS = '0';
