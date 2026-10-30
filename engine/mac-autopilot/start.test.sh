@@ -93,6 +93,7 @@ source "$script_dir/runtime-env.sh"
 [[ "$(ap_iso_epoch 2026-10-18T00:00:00Z)" == 1792281600 ]] || fail 'ap_iso_epoch wrong for a Z timestamp'
 [[ -z "$(ap_iso_epoch not-a-time)" ]] || fail 'ap_iso_epoch must return empty on garbage'
 [[ "$(ap_oom_command 5)" == journalctl* ]] || fail 'Linux OOM probe not journalctl'
+declare -F platform_require pid_live pid_start_id >/dev/null || fail 'runtime-env.sh did not load the platform layer and the process helpers'
 
 # worker 继承本机测试库地址；显式给出的 PGTEST_URL 优先。
 [[ "$(env -u PGTEST_URL bash -c 'source "$1/runtime-env.sh"; printf %s "$PGTEST_URL"' _ "$script_dir")" == postgresql://example@127.0.0.1:5432/postgres ]] || fail 'runtime env does not give workers the local test Postgres'

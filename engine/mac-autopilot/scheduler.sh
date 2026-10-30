@@ -1395,7 +1395,7 @@ self_check_run() (
   return "$rc"
 )
 
-pid_start() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | awk '{print $20}'; } # start ticks: tells a reused pid from the gate
+pid_start() { pid_start_id "$1"; } # start ticks: tells a reused pid from the gate
 self_check_before_review() { # unit sha clone; false means wait for the gate/self-fix
   local id="$1" sha="$2" dir="$3" out result pid rc lane pr_base=""
   lane="$(unit_field "$id" '.lane // empty')"

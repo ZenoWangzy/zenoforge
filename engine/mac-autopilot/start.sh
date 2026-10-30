@@ -60,6 +60,7 @@ for loop in loop.sh bell-loop.sh zombie-loop.sh; do
 done
 sleep 1
 for loop in loop.sh bell-loop.sh zombie-loop.sh; do
+  [[ -f "$LIVE/$loop" ]] || { echo "$loop not in $LIVE: not started" >&2; continue; } # zombie-loop.sh is not in every tree
   nohup bash "$LIVE/$loop" >/dev/null 2>&1 </dev/null &
   echo "$!" > "$A/${loop%.sh}.pid"
   echo "$loop pid $!"

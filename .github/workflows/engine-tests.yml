@@ -62,13 +62,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # The engine needs bash 5 and the GNU userland; macOS ships bash 3.2 and BSD tools.
+      # The engine needs bash 5 and the GNU userland; macOS ships bash 3.2 and BSD tools. engine/Brewfile is the list (also what a user installs).
       - name: GNU userland from Homebrew
         run: |
-          brew install bash coreutils findutils gnu-sed grep gnu-tar flock util-linux gawk jq
+          brew bundle --file=engine/Brewfile
           prefix=$(brew --prefix)
           for f in coreutils findutils gnu-sed grep gnu-tar gawk; do echo "$prefix/opt/$f/libexec/gnubin" >> "$GITHUB_PATH"; done
       - run: git config --global user.name ci && git config --global user.email ci@example.com
+      # The system bash is 3.2: platform-env.sh must still load there, and platform_require must refuse it with exit 78.
+      - run: |
+          rc=0; /bin/bash -c 'source engine/platform-env.sh && platform_require' || rc=$?
+          [ "$rc" = 78 ]
       - run: npm install --no-save @typesafe-ai/sdk@0.7.0
       - name: Run suites
         run: |

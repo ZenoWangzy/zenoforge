@@ -30,6 +30,8 @@ fi
 # Each one-shot command loads the whole graph. On 2026-09-29 a hand agent
 # started 24 `gitnexus impact` calls at once; they peaked at 7.6G and froze WSL.
 # One-shot commands queue on one host-wide lock; long-running servers do not.
+# Homebrew flock (macOS) rejects -w 0; -n is the same.
+lock_fd() { if [[ $2 == 0 ]]; then flock -n "$1"; else flock -w "$2" "$1"; fi; }
 if [[ "${1:-}" != analyze ]]; then
   case "${1:-}" in
     ''|mcp|serve|help|--help|-h|--version|-V) exec "$real_cli" "$@" ;;
@@ -41,7 +43,7 @@ if [[ "${1:-}" != analyze ]]; then
   query_wait="${GITNEXUS_QUERY_LOCK_WAIT_SECONDS:-600}"
   mkdir -p -- "$(dirname -- "$query_lock")"
   exec 8>"$query_lock"
-  if ! flock -w "$query_wait" 8; then
+  if ! lock_fd 8 "$query_wait"; then
     echo "gitnexus $1 refused: query lock busy after ${query_wait}s" >&2
     exit 3
   fi
@@ -64,7 +66,7 @@ lock_file="${GITNEXUS_ANALYZE_LOCK_FILE:-${AGENT_HOME:-${HOME:?HOME is not set}/
 if [[ "${ZF_GITNEXUS_REFRESH_LOCK_HELD:-0}" != 1 ]]; then
   mkdir -p -- "$(dirname -- "$lock_file")"
   exec 9>"$lock_file"
-  if ! flock -w "$lock_wait_seconds" 9; then
+  if ! lock_fd 9 "$lock_wait_seconds"; then
     echo "gitnexus analyze refused: shared lock busy after ${lock_wait_seconds}s" >&2
     exit 3
   fi
