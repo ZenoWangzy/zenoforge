@@ -6090,7 +6090,7 @@ QUARANTINE_FLAP_OUT="$(
     set -uo pipefail
     source "$0/lib.sh"
     : > "$AGENT_HOME/mails"
-    notify_founder() { printf "%s\\n" "$1" >> "$AGENT_HOME/mails"; }
+    notify_maintainer() { printf "%s\\n" "$1" >> "$AGENT_HOME/mails"; }
     quarantine_open implement env:test-gate:docker "docker unavailable" 2 1000
     qfile="$(quarantine_file implement)"
     echo "QUARANTINE-OPEN:$([ -f "$qfile" ] && echo yes || echo no)"
@@ -6682,7 +6682,7 @@ run_rci_failure_case() {
       log="$3"
       mkdir -p "$STATE_DIR"
       printf "{\"attempts\":1}\n" > "$STATE_DIR/$N.json"
-      notify_founder() { :; }
+      notify_maintainer() { :; }
       run_codex_implement /tmp/some-worktree "$POLICY_WORK_MODEL" "$POLICY_WORK_EFFORT" "$prompt" "$log" 120 run-implement:implement
       status=$?
       pause_for_backoff "$N" "$(tail -c 4000 "$log")" "$status" 1 codex "$POLICY_WORK_IDENTITY" run-implement:implement \
@@ -6886,7 +6886,7 @@ assert_eq "implement_model_for_attempt: ...and stays escalated on the next attem
 assert_eq "implement_model_for_attempt: attempt 4 still escalates unconditionally (the old rule, still a backstop)" "$AGENT_MODEL_RETRY" "$(imfa attempt4_no_streak)"
 assert_eq "implement_model_for_attempt: streak defaults to 0 when the caller omits it" "$AGENT_MODEL" "$(imfa attempt1_default_streak)"
 
-# --- #1257: notify_founder()'s stdout stays clean even if the notifier --
+# --- #1257: notify_maintainer()'s stdout stays clean even if the notifier --
 # --- (send_email) itself leaks something onto stdout, exactly like a ----
 # --- real Gmail threadId does on a genuine successful send --------------
 NF_HOME="$(mktemp -d)"
@@ -6904,12 +6904,12 @@ NF_OUT="$(
     # something on stdout, per ITS OWN documented contract (a Gmail
     # threadId) -- so this test actually exercises the leak path.
     send_email() { echo "18abc0000000leak"; return 0; }
-    echo "notify_stdout=[$(notify_founder "subject" "body")]"
+    echo "notify_stdout=[$(notify_maintainer "subject" "body")]"
   ' "$SCRIPT_DIR" 2>/dev/null
 )"
 rm -rf "$NF_HOME"
 nf() { printf '%s\n' "$NF_OUT" | grep -m1 "^$1=" | cut -d= -f2-; }
-assert_eq "#1257: notify_founder's own stdout stays empty even when the notifier (send_email) leaks a threadId" "[]" "$(nf notify_stdout)"
+assert_eq "#1257: notify_maintainer's own stdout stays empty even when the notifier (send_email) leaks a threadId" "[]" "$(nf notify_stdout)"
 
 # --- every leg is executable, in git and on disk (zf-advisor-1131, ------
 # --- 203/EXEC: run-advisor.sh was committed 644) ---------------------------
@@ -7462,7 +7462,7 @@ CQE_OUT="$(
     set -uo pipefail
     source "$0/lib.sh"
     mkdir -p "$STATE_DIR"
-    notify_founder() { :; }
+    notify_maintainer() { :; }
 
     codex_quota_exhausted && echo "MARKER-ABSENT:exhausted" || echo "MARKER-ABSENT:open"
 
@@ -7692,7 +7692,7 @@ QUOTA_ALERT_OUT="$(
     source "$0/lib.sh"
     mkdir -p "$STATE_DIR"
     : > "$AGENT_HOME/mails"
-    notify_founder() { printf "%s\n%s\n---\n" "$1" "$2" >> "$AGENT_HOME/mails"; }
+    notify_maintainer() { printf "%s\n%s\n---\n" "$1" "$2" >> "$AGENT_HOME/mails"; }
 
     echo "{\"attempts\":1}" > "$STATE_DIR/700004.json"
     echo "{\"attempts\":1}" > "$STATE_DIR/700005.json"
@@ -7778,7 +7778,7 @@ assert_contains "a non-quota model-call backoff sends no maintainer mail" \
 NONQUOTA_HOME="$(mktemp -d)"
 NO_MAIL_OUT="$(SCRIPT_DIR="$SCRIPT_DIR" AGENT_HOME="$NONQUOTA_HOME" bash -c '
   source "$SCRIPT_DIR/lib.sh"
-  notify_founder() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; }
+  notify_maintainer() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; }
   pause_for_backoff 710009 "invalid triage.schema.json record" 1 1 codex codex:gpt-6-luna:max \
     run-triage-batch:triage-result "" "" "" "" 0 triage 2>/dev/null
   printf "MAILS:%s BACKOFF:%s\n" "$(cat "$AGENT_HOME/mails" 2>/dev/null | wc -l | tr -d "[:space:]")" \
@@ -7899,7 +7899,7 @@ TIMEOUT_OUT="$({
     printf "%s\n" "{\"attempts\":2,\"last_failure_kind\":\"timeout\"}" > "$STATE_DIR/700099.json"
     echo "BUDGET-AFTER:$(model_timeout_for_attempt 30 700099)"
     : > "$AGENT_HOME/mails"
-    notify_founder() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; }
+    notify_maintainer() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; }
     GH_ENV_FAULT_STAGE=implement
     pause_for_backoff 700099 "codex exec timed out after 1s (elapsed 1s)" 124 1
     echo "TIMEOUT-PAUSE:$([ -f "$PAUSE_FILE" ] && echo present || echo missing)"
@@ -7929,7 +7929,7 @@ QUOTA_CONCURRENT_OUT="$(
     source "$0/lib.sh"
     mkdir -p "$STATE_DIR"
     : > "$AGENT_HOME/mails"
-    notify_founder() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; sleep 0.05; }
+    notify_maintainer() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; sleep 0.05; }
     refusal="{\"api_error_status\":429,\"result\":\"weekly usage limit reached\"}"
     pids=()
     for n in 700011 700012 700013 700014; do

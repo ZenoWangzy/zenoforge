@@ -16875,7 +16875,7 @@ fi
 # shellcheck source=./comms-format.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/comms-format.sh"
 
-# notify_email()/notify_founder()/resolve_recipients(): see notify.sh. Sourced
+# notify_email()/notify_maintainer()/resolve_recipients(): see notify.sh. Sourced
 # last (not first) purely so every function/variable above already exists by
 # the time a script that sources lib.sh runs anything — notify.sh itself only
 # depends on REPO and AGENT_HOME, both set at the top of this file, so load

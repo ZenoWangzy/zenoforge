@@ -1114,7 +1114,7 @@ run_post_dispatch_maintenance() {
         ;;
       founder-outcome-recovery)
         if reconcile_maintainer_outcomes; then
-          flush_founder_outcome_digest || true
+          flush_maintainer_outcome_digest || true
         else
           echo "issue-pipeline: maintainer outcome recovery failed; digest send deferred" >&2
         fi

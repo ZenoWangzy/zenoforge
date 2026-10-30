@@ -4,7 +4,7 @@
 # commit named by a later fix commit, measure culprit landing -> first red
 # run whose tested head contains the culprit (CI on main = Postsubmit, or
 # Pipeline suites) -> the first fix naming that culprit after the red was
-# seen. Sourced by founder-health-mail.sh; the `summary` CLI is the same
+# seen. Sourced by maintainer-health-mail.sh; the `summary` CLI is the same
 # computation for reports and incident accounting.
 
 # Every number has a standard (node_health.py pattern): healthy bound,

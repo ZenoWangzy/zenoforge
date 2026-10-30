@@ -430,16 +430,16 @@ test('keeps release concurrency default regression selected when runner changes'
 
 test('maps maintainer health mail runner to notify contract coverage', () => {
   assert.deepEqual(focusedTestPaths([
-    'engine/night/founder-health-mail.sh',
+    'engine/night/maintainer-health-mail.sh',
   ], new Set([
-    'engine/night/founder-health-mail.test.sh',
+    'engine/night/maintainer-health-mail.test.sh',
     'engine/notify.test.sh',
     'engine/night/daily-perf-report.test.sh',
-    'engine/night/founder-health-mail-incident.test.sh',
+    'engine/night/maintainer-health-mail-incident.test.sh',
   ])), [
     'engine/night/daily-perf-report.test.sh',
-    'engine/night/founder-health-mail-incident.test.sh',
-    'engine/night/founder-health-mail.test.sh',
+    'engine/night/maintainer-health-mail-incident.test.sh',
+    'engine/night/maintainer-health-mail.test.sh',
     'engine/notify.test.sh',
   ]);
 });
@@ -479,9 +479,9 @@ test('historical ranges use current focused-test mappings', () => {
 test('mail lifecycle changes always select the release integration regression', () => {
   const release = 'engine/run-release.test.sh';
   for (const path of [
-    'engine/night/founder-health-mail.sh',
-    'engine/night/founder-health-mail.test.sh',
-    'engine/night/founder-health-mail-incident.test.sh',
+    'engine/night/maintainer-health-mail.sh',
+    'engine/night/maintainer-health-mail.test.sh',
+    'engine/night/maintainer-health-mail-incident.test.sh',
     'engine/notify.sh',
     'engine/notify.test.sh',
   ]) {
@@ -494,9 +494,9 @@ test('maps release acceptance to both release regression and incident follow-up 
     'engine/run-release.sh',
   ], new Set([
     'engine/run-release.test.sh',
-    'engine/night/founder-health-mail-incident.test.sh',
+    'engine/night/maintainer-health-mail-incident.test.sh',
   ])), [
-    'engine/night/founder-health-mail-incident.test.sh',
+    'engine/night/maintainer-health-mail-incident.test.sh',
     'engine/run-release.test.sh',
   ]);
 });
@@ -662,8 +662,8 @@ function withFilenameFixture(callback) {
     'engine/filename-only.test.sh': '# lib.sh is copied into a fixture\n',
     'engine/uncovered-helper.sh': '#!/usr/bin/env bash\n',
     'engine/indirect-loader.test.mjs': '// fixture loads uncovered-helper.sh\n',
-    'engine/night/founder-health-mail.sh': 'claim_digest() { printf old; }\n',
-    'engine/night/founder-health-mail.test.sh': 'source "$SCRIPT_DIR/founder-health-mail.sh"\nclaim_digest\n',
+    'engine/night/maintainer-health-mail.sh': 'claim_digest() { printf old; }\n',
+    'engine/night/maintainer-health-mail.test.sh': 'source "$SCRIPT_DIR/maintainer-health-mail.sh"\nclaim_digest\n',
     'engine/run-release.test.sh': '# fixture runs run-release.sh, which loads mail indirectly\n',
   };
 
@@ -725,13 +725,13 @@ test('shared JSON default mutations select referencing shell and Node fixtures',
 test('function caller selection retains the indirect release mail regression', () => {
   withFilenameFixture(({ root, tracked }) => {
     const baseRef = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-    writeFileSync(join(root, 'engine/night/founder-health-mail.sh'), 'claim_digest() { printf new; }\n');
+    writeFileSync(join(root, 'engine/night/maintainer-health-mail.sh'), 'claim_digest() { printf new; }\n');
     execFileSync('git', ['add', '.'], { cwd: root });
     execFileSync('git', ['commit', '-qm', 'change digest helper'], { cwd: root });
-    const selected = focusedTestPaths(['engine/night/founder-health-mail.sh'], tracked, {
+    const selected = focusedTestPaths(['engine/night/maintainer-health-mail.sh'], tracked, {
       baseRef, headRef: 'HEAD', cwd: root,
     });
-    assert.ok(selected.includes('engine/night/founder-health-mail.test.sh'));
+    assert.ok(selected.includes('engine/night/maintainer-health-mail.test.sh'));
     assert.ok(selected.includes('engine/run-release.test.sh'));
   });
 });

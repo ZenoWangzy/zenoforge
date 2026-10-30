@@ -141,11 +141,11 @@ run_worktrees() {
 
 run_maintainer_mail() {
   local output status detail partial_detail
-  output="$(mktemp "$NIGHT/.founder-health-mail-output.XXXXXX")" || return 1
+  output="$(mktemp "$NIGHT/.maintainer-health-mail-output.XXXXXX")" || return 1
   timeout -k 5 "${ZF_MAINTAINER_HEALTH_MAIL_TIMEOUT_SECONDS:-120}" \
-    bash "$ENGINE_DIR/night/founder-health-mail.sh" tick 2>&1 | tail -c 65536 > "$output"
+    bash "$ENGINE_DIR/night/maintainer-health-mail.sh" tick 2>&1 | tail -c 65536 > "$output"
   status=${PIPESTATUS[0]}
-  if ! retain_output founder-health-mail "$output"; then
+  if ! retain_output maintainer-health-mail "$output"; then
     rm -f -- "$output"
     return 1
   fi
