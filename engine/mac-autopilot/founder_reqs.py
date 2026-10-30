@@ -16,20 +16,34 @@ def _epoch(iso):
     except Exception: return None
 
 
-def stage_of(unit, labels, accepted_at):
+def _hotfix_live(path):
+    """{issue: at} from the hotfix lane's event file ($AGENT_HOME/hotfix-live.jsonl, one JSON per line);
+    latest `at` per issue wins, bad lines and a missing file change nothing."""
+    live = {}
+    try: lines = open(path).read().splitlines()
+    except OSError: return live
+    for ln in lines:
+        try:
+            o = json.loads(ln); n = int(o["issue"]); live[n] = max(live.get(n, ""), str(o["at"]))
+        except Exception: pass
+    return live
+
+
+def stage_of(unit, labels, accepted_at, hotfix_live_at=None):
     """(stage index, ISO time of the event that set it). Acceptance = release-closer event; 上线 = the issue's `released` label;
-    进 main = unit merged; 热修生效 = a `hotfix-live` history event (shortcut: no producer yet, hotfix items skip it until the hotfix lane records one)."""
+    进 main = unit merged; 热修生效 = a `hotfix-live` history event or the issue's line in hotfix-live.jsonl."""
     hist = (unit or {}).get("history") or []
     at_of = lambda names: next((h.get("at") for h in reversed(hist) if h.get("stage") in names), None)
     merged_at = at_of({"merged", "pr-merged"})
     if accepted_at: return 4, accepted_at
     if "released" in labels: return 3, None
     if unit and (unit.get("stage") in MERGED or merged_at): return 2, merged_at
-    if at_of({"hotfix-live"}): return 1, at_of({"hotfix-live"})
+    live_at = max(filter(None, (at_of({"hotfix-live"}), hotfix_live_at)), default=None)
+    if live_at: return 1, live_at
     return 0, None
 
 
-def build(units, issues, rulings, accepted, now):
+def build(units, issues, rulings, accepted, now, hotfix_live=None):
     """Pure core. issues: gh rows {number,title,state,labels:[{name}]} or None when GitHub was unreachable (units only)."""
     words = {}
     for r in rulings or []:
@@ -54,7 +68,7 @@ def build(units, issues, rulings, accepted, now):
     items = []
     for n, (title, labels) in cand.items():
         u = by_issue.get(n)
-        stage, at = stage_of(u, labels, done.get(n))
+        stage, at = stage_of(u, labels, done.get(n), (hotfix_live or {}).get(n))
         blocked = (u or {}).get("blocked_on")
         items.append({"issue": n, "title": title[:120], "text": (words.get(n) or title)[:300], "from_ruling": n in words,
                       "labels": sorted(labels & set(LABELS)), "stage": stage,
@@ -109,6 +123,7 @@ def collect(units, repo, rulings_path, runtime, agent_home, lib):
     import node_health
     try: rulings = json.load(open(rulings_path)).get("rulings") or []
     except (OSError, ValueError): rulings = []
-    out = build(units, _fetch_issues(repo, os.path.join(runtime, "founder-reqs.cache.json")), rulings, node_health.release_acceptances(runtime), time.time())
+    out = build(units, _fetch_issues(repo, os.path.join(runtime, "founder-reqs.cache.json")), rulings, node_health.release_acceptances(runtime), time.time(),
+                _hotfix_live(os.path.join(agent_home, "hotfix-live.jsonl")))
     push_changes(out["items"], os.path.join(agent_home, "founder-req-stage.json"), lib, agent_home)
     return out

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # founder_reqs.py: words come from ruling references else the issue title; a stage advances only on unit history,
-# the `released` label or a release-closer event; the first run is silent, later stage changes append one inbox line each.
+# the `released` label, a release-closer event or the hotfix lane's hotfix-live.jsonl; the first run is silent,
+# later stage changes append one inbox line each.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -23,6 +24,14 @@ got = {i["issue"]: (i["stage"], i["text"], i["owner"], i["blocker"]) for i in r[
 assert got == {1: (2, "founder words", "vecta-29", ""), 2: (3, "t2", "热修值班", ""), 3: (4, "t3", "未接单", ""), 7: (0, "unit only", "pipeline", "等 #9")}, got
 assert [i["issue"] for i in r["items"]] == [7, 2, 1, 3] and not r["partial"]  # accepted last, newest issue first
 assert F.build(units, None, rulings, acc, now)["partial"]
+# hotfix-live.jsonl: the hotfix lane's event file moves a hotfix item to 热修生效; garbage lines skip, a missing file changes nothing
+tmp = tempfile.mkdtemp(); hl = tmp + "/hotfix-live.jsonl"
+issues6 = [{"number": 6, "title": "t6", "state": "OPEN", "labels": lab("hotfix")}]
+st6 = lambda live: next(i for i in F.build(units, issues6, [], [], now, live)["items"] if i["issue"] == 6)
+assert st6(F._hotfix_live(hl))["stage"] == 0  # missing file changes nothing
+open(hl, "w").write('{"kind":"hotfix-live","issue":6,"pr":79,"sha":"7b2f7828c4c5","at":"%s","accepted_by":"oncall"}\nnot-json\n' % iso(600))
+six = st6(F._hotfix_live(hl))
+assert (six["stage"], six["verified_epoch"], six["owner"]) == (1, F._epoch(iso(600)), "热修值班"), six
 # push: first run silent, later changes append once each
 home = tempfile.mkdtemp(); lib = home + "/lib.sh"; st = home + "/state.json"
 open(lib, "w").write('supervisor_inbox_append_once() { printf "%s\\t%s\\n" "$1" "$2" >> "$AGENT_HOME/inbox"; }\n')
