@@ -96,7 +96,7 @@ printf '2026-09-26T00:00:00Z\trecipients=maintainer@example.test\tsubject=一\ti
   > "$AGENT_HOME/logs/notify.log"
 source "$REPORT_SCRIPT"
 # Keep display assertions independent of live systemd units and GitHub queue state.
-founder_health_mail_work_counts() { printf '{"active":2,"queued":7}\n'; }
+maintainer_health_mail_work_counts() { printf '{"active":2,"queued":7}\n'; }
 REPORT="$(daily_perf_report_build "$AGENT_HOME" "$REPO_DIR" "$REPORT_DAY" '{}')"
 
 run_mail_audit() {
@@ -158,10 +158,10 @@ echo 'ok - daily summary hides IDs, hashes, and internal metrics'
 cat > "$AGENT_HOME/state/3007.json" <<'JSON'
 {"deploy_state":"deployed","deployed_sha":"fedcba9876543210"}
 JSON
-INCOMPLETE_EFFICIENCY="$(founder_health_mail_efficiency_block "$AGENT_HOME" daily "$REPORT_DAY" "$NOW")"
+INCOMPLETE_EFFICIENCY="$(maintainer_health_mail_efficiency_block "$AGENT_HOME" daily "$REPORT_DAY" "$NOW")"
 assert_contains 'release event still counts when another production timestamp is missing' \
   "$INCOMPLETE_EFFICIENCY" '| 上线的改进项数 | 1项 |'
-INCOMPLETE_RELEASES="$(founder_health_mail_release_lines "$AGENT_HOME" \
+INCOMPLETE_RELEASES="$(maintainer_health_mail_release_lines "$AGENT_HOME" \
   "$(date -u -d "$REPORT_DAY 00:00:00" +%s)" "$(date -u -d "$REPORT_DAY +1 day 00:00:00" +%s)")"
 assert_contains 'missing production timestamp is explicit in launch summary' \
   "$INCOMPLETE_RELEASES" '上线时间待核实，无法确认本期上线内容'

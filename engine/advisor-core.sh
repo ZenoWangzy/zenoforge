@@ -290,12 +290,12 @@ apply_gh_write() {
 # Apply new repository-owner ruling comments before either advisor path can
 # poll or dispatch. A comment is the decision source; its URL is the durable
 # cursor and marker, so partial retries do not repost or apply stale verdicts.
-ADVISOR_FOUNDER_RULING_APPLIED=0
-advisor_apply_founder_ruling() {
+ADVISOR_MAINTAINER_RULING_APPLIED=0
+advisor_apply_maintainer_ruling() {
   local n="$1" issue_json="$2" prior_state="$3"
   local N="$n" owner after rulings count latest_at latest_url marker body_file patch episode filter
   local ADVISOR_APPLY_SOFT_FAILURE=1
-  ADVISOR_FOUNDER_RULING_APPLIED=0
+  ADVISOR_MAINTAINER_RULING_APPLIED=0
 
   if ! jq -e 'any(.labels[]?; .name == "needs-advisor")' >/dev/null 2>&1 <<< "$issue_json"; then
     return 0
@@ -310,7 +310,7 @@ advisor_apply_founder_ruling() {
       | select((.createdAt // "") > $after)]
     | sort_by(.createdAt)
   ' <<< "$issue_json")"; then
-    echo "advisor_apply_founder_ruling: #$n -- could not read maintainer ruling comments; skipping advisor dispatch" >&2
+    echo "advisor_apply_maintainer_ruling: #$n -- could not read maintainer ruling comments; skipping advisor dispatch" >&2
     return 1
   fi
   count="$(jq 'length' <<< "$rulings")"
@@ -319,7 +319,7 @@ advisor_apply_founder_ruling() {
   latest_at="$(jq -r '.[-1].createdAt // empty' <<< "$rulings")"
   latest_url="$(jq -r '.[-1].url // empty' <<< "$rulings")"
   if [ -z "$latest_at" ] || [ -z "$latest_url" ]; then
-    echo "advisor_apply_founder_ruling: #$n -- newest maintainer ruling has no timestamp or source URL; skipping advisor dispatch" >&2
+    echo "advisor_apply_maintainer_ruling: #$n -- newest maintainer ruling has no timestamp or source URL; skipping advisor dispatch" >&2
     return 1
   fi
   marker="<!-- advisor-maintainer-rulings-through:$latest_url -->"
@@ -331,7 +331,7 @@ advisor_apply_founder_ruling() {
     "\n\n" + $marker
   ' <<< "$rulings" > "$body_file"; then
     rm -f "$body_file"
-    echo "advisor_apply_founder_ruling: #$n -- could not build the ruling summary; skipping advisor dispatch" >&2
+    echo "advisor_apply_maintainer_ruling: #$n -- could not build the ruling summary; skipping advisor dispatch" >&2
     return 1
   fi
   if ! jq -e --arg marker "$marker" 'any(.comments[]?; ((.body // "") | contains($marker)))' \
@@ -348,13 +348,13 @@ advisor_apply_founder_ruling() {
     '{founder_ruling_comment_at:$at, maintainer_ruling_comment_url:$url, maintainer_ruling_source:"github-comment"}')"
   filter="if (.advisor_episode_seq // 0) != $episode then error(\"new advisor episode while applying maintainer ruling\") else del(.pending_advisor_verdict, .advisor_decision, .web_advisor_provider_job_id, .web_advisor_provider_job_started_at, .web_advisor_provider_job_episode_seq) | . + $patch | .advisor_episode_seq = ((.advisor_episode_seq // 0) + 1) | .maintainer_ruling_applied_episode_seq = .advisor_episode_seq end"
   if ! issue_transition "$n" ready-for-agent founder-ruling-applied "$filter"; then
-    echo "advisor_apply_founder_ruling: #$n -- state/label transition failed after applying the public ruling" >&2
+    echo "advisor_apply_maintainer_ruling: #$n -- state/label transition failed after applying the public ruling" >&2
     return 1
   fi
   issue_label_cache_invalidate
 
-  ADVISOR_FOUNDER_RULING_APPLIED=1
-  echo "advisor_apply_founder_ruling: #$n -- applied $count newer maintainer ruling comment(s); advisor dispatch bypassed" >&2
+  ADVISOR_MAINTAINER_RULING_APPLIED=1
+  echo "advisor_apply_maintainer_ruling: #$n -- applied $count newer maintainer ruling comment(s); advisor dispatch bypassed" >&2
 }
 
 # advisor_comment_id_from_url <url-or-text> -- the numeric comment id

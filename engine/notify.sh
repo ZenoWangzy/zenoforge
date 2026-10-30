@@ -107,7 +107,7 @@ notify_log_send() {
 
 # Reads $roster's maintainer address, or prints nothing (never errors) if the
 # roster is missing, unreadable, or has no founder_login/no matching entry.
-# Shared by resolve_recipients() and notify_founder() so there is exactly one
+# Shared by resolve_recipients() and notify_maintainer() so there is exactly one
 # place that knows how "maintainer" is encoded in the roster file.
 _maintainer_email() {
   local roster="${1:-$RECIPIENTS_FILE}" founder_login
@@ -117,18 +117,18 @@ _maintainer_email() {
   jq -r --arg l "$founder_login" '.recipients[$l] // empty' "$roster" 2>/dev/null
 }
 
-_founder_health_mail_queue_event() {
+_maintainer_health_mail_queue_event() {
   local key="$1" section="$2" text="$3" script_dir
   script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
   AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}" \
-    bash "$script_dir/night/founder-health-mail.sh" queue-event "$key" "$section" "$text" >/dev/null
+    bash "$script_dir/night/maintainer-health-mail.sh" queue-event "$key" "$section" "$text" >/dev/null
 }
 
-_founder_health_mail_track_decision() {
+_maintainer_health_mail_track_decision() {
   local issue="$1" subject="$2" script_dir
   script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
   AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}" \
-    bash "$script_dir/night/founder-health-mail.sh" track-decision "$issue" "$subject" >/dev/null
+    bash "$script_dir/night/maintainer-health-mail.sh" track-decision "$issue" "$subject" >/dev/null
 }
 
 # Pure function, no gh call and no network: given a reporter's GitHub login
@@ -619,7 +619,7 @@ $body" >&2
 send_email() {
   local subject="$1" body="$2" issue_marker="$3" maintainer_kind=unclassified
   shift 3
-  if [ "${1:-}" = "--founder-kind" ]; then
+  if [ "${1:-}" = "--maintainer-kind" ]; then
     shift
     maintainer_kind="${1:-}"
     [ "$#" -eq 0 ] || shift
@@ -631,7 +631,7 @@ send_email() {
 send_email_strict() {
   local subject="$1" body="$2" maintainer_kind=unclassified
   shift 2
-  if [ "${1:-}" = "--founder-kind" ]; then
+  if [ "${1:-}" = "--maintainer-kind" ]; then
     shift
     maintainer_kind="${1:-}"
     [ "$#" -eq 0 ] || shift
@@ -658,7 +658,7 @@ MAINTAINER_BODY_INTERNAL_PATTERN='详情在.{0,12}日志|机器.{0,12}日志|流
 INTERNAL_DIAGNOSTIC_TERMS='missing capability|control-surface|P2/L4|advisor round-trip|risk[_-]class|expected_packages|touched paths|escalation ladder'
 MAINTAINER_READABLE_MAX_CHARS=400
 
-# founder_mail_rejection_reason <kind> <subject> <body> — pure pre-send
+# maintainer_mail_rejection_reason <kind> <subject> <body> — pure pre-send
 # contract check. Keep accepted mail shapes structural so callers cannot
 # turn internal status into maintainer mail by choosing a friendly subject.
 # maintainer_digest_subject <first-outcome> <count> -- a digest subject the
@@ -672,13 +672,13 @@ maintainer_digest_subject() {
   title="$(maintainer_digest_subject_title "$outcome" "$((40 - $(printf '%s' "$suffix" | wc -m)))")"
   [ -n "$title" ] || return 1
   subject="${title}${suffix}"
-  if [ "$(founder_mail_rejection_reason outcome "$subject" x)" = subject-language ]; then
+  if [ "$(maintainer_mail_rejection_reason outcome "$subject" x)" = subject-language ]; then
     subject="${count}项改进已上线"
   fi
   printf '%s\n' "$subject"
 }
 
-founder_mail_rejection_reason() {
+maintainer_mail_rejection_reason() {
   local kind="$1" subject="$2" body="$3" subject_chars option_count option_line consequence letter recommended last_line line readable_body internal_body
   local -a options=()
 
@@ -830,7 +830,7 @@ $body")"
       echo health-recipient
       return 0
     fi
-    founder_mail_rejection_reason "$kind" "$subject" "$body"
+    maintainer_mail_rejection_reason "$kind" "$subject" "$body"
     return 0
   fi
   case "$kind" in decision|outcome|incident|resolution) check_kind=1 ;; esac
@@ -842,7 +842,7 @@ $body")"
     fi
   done
   [ "$check_kind" = "1" ] || return 0
-  founder_mail_rejection_reason "$kind" "$subject" "$body"
+  maintainer_mail_rejection_reason "$kind" "$subject" "$body"
 }
 
 # A field reaches a human only after it passes this positive test. The CJK
@@ -966,7 +966,7 @@ https://github.com/$REPO/pull/$pr_num"
 
 （没能把提交人的 GitHub 账号对应到邮箱：$note —— 去 $RECIPIENTS_FILE 里补一下）"
   if [ -n "$maintainer_kind" ]; then
-    send_email "$subject" "$full_body" "$issue_num" --founder-kind "$maintainer_kind" "${recipients[@]}" || send_status=$?
+    send_email "$subject" "$full_body" "$issue_num" --maintainer-kind "$maintainer_kind" "${recipients[@]}" || send_status=$?
   else
     send_email "$subject" "$full_body" "$issue_num" "${recipients[@]}" || send_status=$?
   fi
@@ -979,7 +979,7 @@ https://github.com/$REPO/pull/$pr_num"
       impact="$(_maintainer_readable_or_fallback "$impact" '问题仍在处理。')"
       action="$(_maintainer_readable_or_fallback "$action" '继续处理并确认结果。')"
       event_text="${title}：$impact 下一步：$action"
-      if ! _founder_health_mail_queue_event "report:$issue_num:$subject" '待跟进事项' "$event_text"; then
+      if ! _maintainer_health_mail_queue_event "report:$issue_num:$subject" '待跟进事项' "$event_text"; then
         echo "notify: could not queue maintainer digest item for issue $issue_num" >&2
       fi
     fi
@@ -1123,7 +1123,7 @@ maintainer_issue_pr_numbers() {
 # deferred digest item cannot buy a fresh model call every tick (2313 and 2378
 # made 22 each in 6 hours, 2026-10-07). After that the digest keeps the item
 # deferred and the supervisor inbox carries one founder-outcome-missing line.
-ensure_founder_user_outcome() {
+ensure_maintainer_user_outcome() {
   local issue_num="$1" sha_key="${2:-}" issue_json existing issue_context issue_title issue_body pr_context='' pr_json pr_diff
   local prompt_file transcript_file response outcome scripts_dir pr_number attempt attempts_ledger attempt_key budget_role budget_id
   local repo_dir work_model repo="$REPO" bot_disclaimer="${BOT_DISCLAIMER:-}"
@@ -1393,7 +1393,7 @@ sweep_closed_maintainer_outcomes() {
 
 # Flush a due production digest. Optional epoch argument keeps the one-hour
 # boundary deterministic in tests; normal callers use the system clock.
-flush_founder_outcome_digest() (
+flush_maintainer_outcome_digest() (
   umask 077
   local now="${1:-$(date +%s)}" queue_file lock_file lock_fd queue_tmp pending_count last_sent_at
   local internal_ledger internal_key
@@ -1446,7 +1446,7 @@ flush_founder_outcome_digest() (
     if [ -z "$outcome" ] || [ "${outcome,,}" = "none" ] || \
       ! maintainer_user_outcome_is_readable "$outcome" || \
       ! maintainer_user_outcome_matches_title "$issue_title" "$outcome" "$issue_body"; then
-      ensure_founder_user_outcome "$issue_num" "$(jq -r '.deployed_sha // empty' <<< "$line")"
+      ensure_maintainer_user_outcome "$issue_num" "$(jq -r '.deployed_sha // empty' <<< "$line")"
       if issue_json="$(gh issue view "$issue_num" --repo "$repo" --json title,body,comments,labels 2>/dev/null)"; then
         issue_title="$(jq -r '.title // empty' <<< "$issue_json")"
         issue_body="$(jq -r '.body // empty' <<< "$issue_json")"
@@ -1487,7 +1487,7 @@ flush_founder_outcome_digest() (
     ready_pending+=("$line")
     ready_outcomes+=("$outcome")
     deployed_sha="$(jq -r '.deployed_sha // empty' <<< "$line")"
-    if ! _founder_health_mail_queue_event "deploy:$issue_num:$deployed_sha" '发布进度' "$outcome"; then
+    if ! _maintainer_health_mail_queue_event "deploy:$issue_num:$deployed_sha" '发布进度' "$outcome"; then
       echo "notify: could not queue maintainer digest outcome for issue $issue_num" >&2
     fi
     body+=$'\n\n- '"$outcome"$'\n  https://github.com/'"$repo"'/issues/'"$issue_num"
@@ -1505,7 +1505,7 @@ flush_founder_outcome_digest() (
     while IFS= read -r line; do
       [ -n "$line" ] && recipients+=("$line")
     done < <(resolve_recipients_everyone_nonmaintainer "")
-    if ((${#recipients[@]} == 0)) || send_email_strict "$subject" "$body" --founder-kind outcome "${recipients[@]}" >/dev/null; then
+    if ((${#recipients[@]} == 0)) || send_email_strict "$subject" "$body" --maintainer-kind outcome "${recipients[@]}" >/dev/null; then
       sent=1
       activity_file="$AGENT_HOME/night/founder-health-outcomes.jsonl"
       activity_at="$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)"
@@ -1570,24 +1570,24 @@ notify_email_verbatim() {
   full_body="相关事项：https://github.com/$REPO/issues/$issue_num
 
 $body"
-  send_email "$subject" "$full_body" "$issue_num" --founder-kind decision "$email" || return 1
+  send_email "$subject" "$full_body" "$issue_num" --maintainer-kind decision "$email" || return 1
   maintainer="$(_maintainer_email)"
   if [ -n "$maintainer" ] && [ "${email,,}" = "${maintainer,,}" ]; then
-    if ! _founder_health_mail_track_decision "$issue_num" "$subject"; then
+    if ! _maintainer_health_mail_track_decision "$issue_num" "$subject"; then
       echo "notify: could not track maintainer decision for issue $issue_num" >&2
     fi
   fi
 }
 
 # Legacy generic maintainer mail stays fail-closed at the shared pre-send gate.
-notify_founder() {
+notify_maintainer() {
   notify_test_write_guard || return 1
   local subject="${1:-}" body="${2:-}" kind="${3:-}" maintainer
   local -a recipients=()
   maintainer="$(_maintainer_email)"
   [ -z "$maintainer" ] || recipients+=("$maintainer")
   if [ -n "$kind" ]; then
-    send_email "$subject" "$body" "" --founder-kind "$kind" "${recipients[@]}" >/dev/null
+    send_email "$subject" "$body" "" --maintainer-kind "$kind" "${recipients[@]}" >/dev/null
   else
     send_email "$subject" "$body" "" "${recipients[@]}" >/dev/null
   fi
@@ -1595,7 +1595,7 @@ notify_founder() {
 
 # Incident mail is strict and founder-only. The health-mail ledger reserves
 # each send before calling these helpers, so retries cannot duplicate mail.
-notify_founder_incident() {
+notify_maintainer_incident() {
   notify_test_write_guard || return 1
   local issue="$1" subject="$2" what="$3" impact="$4" action="$5" next_update="$6"
   local maintainer repo body next_line
@@ -1619,7 +1619,7 @@ https://github.com/$repo/issues/$issue"
   _send_email_logged strict "$subject" "$body" "$issue" incident "$maintainer" >/dev/null
 }
 
-notify_founder_resolution() {
+notify_maintainer_resolution() {
   notify_test_write_guard || return 1
   local issue="$1" subject="$2" what="$3" impact="$4" result="$5"
   local maintainer repo body
@@ -1643,7 +1643,7 @@ https://github.com/$repo/issues/$issue"
 
 # Health mail is strict and founder-only. The shared sender records its final
 # result after Gmail returns.
-notify_founder_health() {
+notify_maintainer_health() {
   local subject="$1" body="$2" maintainer
   NOTIFY_LAST_SEND_RETRY_SAFE=1
   maintainer="$(_maintainer_email)"
@@ -1652,7 +1652,7 @@ notify_founder_health() {
     notify_log_send "" "$subject" failed no-recipients
     return 1
   fi
-  if send_email_strict "$subject" "$body" --founder-kind health "$maintainer" >/dev/null 2>/dev/null; then
+  if send_email_strict "$subject" "$body" --maintainer-kind health "$maintainer" >/dev/null 2>/dev/null; then
     return 0
   fi
   return 1

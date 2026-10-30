@@ -166,11 +166,11 @@ esac
 # to assume otherwise) case of no prior state at all.
 PRIOR_STATE="${PRIOR_STATE:-$(state_read "$N")}"
 
-if ! advisor_apply_founder_ruling "$N" "$ISSUE_JSON" "$PRIOR_STATE"; then
+if ! advisor_apply_maintainer_ruling "$N" "$ISSUE_JSON" "$PRIOR_STATE"; then
   echo "run-advisor: #$N -- maintainer ruling could not be safely applied; skipping advisor poll/dispatch this tick" >&2
   exit 0
 fi
-if [ "$ADVISOR_FOUNDER_RULING_APPLIED" = "1" ]; then
+if [ "$ADVISOR_MAINTAINER_RULING_APPLIED" = "1" ]; then
   echo "run-advisor: #$N -- newer maintainer ruling applied; skipping advisor poll/dispatch" >&2
   exit 0
 fi

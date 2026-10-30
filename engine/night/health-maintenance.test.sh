@@ -11,13 +11,13 @@ fixture_repo="$tmp/repo"
 fixture_agent="$tmp/agent"
 mkdir -p -- "$fixture_repo/engine/night" "$fixture_agent/night" "$tmp/bin"
 cp -- "$SCRIPT_DIR/health-maintenance.sh" "$fixture_repo/engine/night/health-maintenance.sh"
-cat > "$fixture_repo/engine/night/founder-health-mail.sh" <<'EOF'
+cat > "$fixture_repo/engine/night/maintainer-health-mail.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$@" > "$MAINTAINER_MAIL_ARGS"
 printf 'maintainer health mail: sent\n'
 EOF
-chmod +x "$fixture_repo/engine/night/founder-health-mail.sh"
+chmod +x "$fixture_repo/engine/night/maintainer-health-mail.sh"
 cat > "$tmp/bin/timeout" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail

@@ -6,7 +6,7 @@ ZF_COMMS_PROFILE="$TMPDIR/comms-profile-la.json"
 printf '%s\n' '{"maintainer":{"language":"zh-CN","timezone":"America/Los_Angeles","timezone_label":"洛杉矶时间"}}' > "$ZF_COMMS_PROFILE"
 export ZF_COMMS_PROFILE
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-source "$SCRIPT_DIR/founder-health-mail.sh"
+source "$SCRIPT_DIR/maintainer-health-mail.sh"
 
 assert_contains() {
   local label="$1" value="$2" expected="$3"
@@ -26,7 +26,7 @@ assert_eq() {
 
 now="$(date -u -d '2026-10-12T14:00:00Z' +%s)"
 mkdir -p "$AGENT_HOME/night" "$AGENT_HOME/metrics"
-founder_health_mail_active_implements() { printf '0\n'; }
+maintainer_health_mail_active_implements() { printf '0\n'; }
 cat > "$AGENT_HOME/metrics/efficiency-2026-10.jsonl" <<'METRICS'
 {"record_type":"event","event_type":"ticket-created","issue":101,"ts":"2026-10-12T13:00:00Z"}
 {"record_type":"event","event_type":"ticket-released","issue":101,"ts":"2026-10-12T13:30:00Z"}
@@ -53,7 +53,7 @@ cat > "$ledger" <<'LEDGER'
 }}
 LEDGER
 
-work_data="$(founder_health_mail_work_counts "$AGENT_HOME" "$now")"
+work_data="$(maintainer_health_mail_work_counts "$AGENT_HOME" "$now")"
 efficiency='**效率（最近六小时）**
 | 指标 | 当前六小时 | 前六小时 | 昨日同时段 |
 | --- | ---: | ---: | ---: |
@@ -66,17 +66,17 @@ efficiency='**效率（最近六小时）**
 | 提交失败次数 | 0 次 | 1 次 | 0 次 |
 | 系统自动开单 / 关单 | 2 / 1 次 | 3 / 2 次 | 2 / 2 次 |
 - 自动检查浪费占比较前六小时下降38%。'
-pipeline_efficiency="$(founder_health_mail_pipeline_efficiency_block "$AGENT_HOME" hourly "$now")"
+pipeline_efficiency="$(maintainer_health_mail_pipeline_efficiency_block "$AGENT_HOME" hourly "$now")"
 assert_contains 'missing lifecycle history renders unknown hours and coverage' "$pipeline_efficiency" \
   '实现 数据待补 覆盖待补'
-founder_health_mail_work_counts() { printf '{"active":0,"queued":227}\n'; }
-work_data="$(founder_health_mail_work_counts "$AGENT_HOME" "$now")"
-work_reason="$(founder_health_mail_no_work_reason "$(jq -r '.active' <<< "$work_data")" "$(jq -r '.queued' <<< "$work_data")")"
+maintainer_health_mail_work_counts() { printf '{"active":0,"queued":227}\n'; }
+work_data="$(maintainer_health_mail_work_counts "$AGENT_HOME" "$now")"
+work_reason="$(maintainer_health_mail_no_work_reason "$(jq -r '.active' <<< "$work_data")" "$(jq -r '.queued' <<< "$work_data")")"
 assert_contains 'live queue count explains that work remains available' "$work_reason" '仍有待领取事项在队列中'
 events="$(jq -c '[.pending_events[]]' "$ledger")"
-body="$(founder_health_mail_build_body "$events" "$efficiency" '没有新版本通过上线验证' "$work_reason" "$pipeline_efficiency" "$now")"
+body="$(maintainer_health_mail_build_body "$events" "$efficiency" '没有新版本通过上线验证' "$work_reason" "$pipeline_efficiency" "$now")"
 
-founder_health_mail_output_contract "$body" "$now"
+maintainer_health_mail_output_contract "$body" "$now"
 source "$SCRIPT_DIR/../notify.sh"
 raw_mail="$(build_gmail_raw_message 'maintainer@fixture.invalid' '工作进展简报' "$body" '' '100-200-301')"
 python3 - "$raw_mail" <<'PY'
@@ -103,13 +103,13 @@ assert_not_contains 'no commit hash survives' "$body" 'ABCDEF1234567890'
 assert_not_contains 'no doubled section prefix survives' "$body" '仍在处理：仍在处理'
 assert_eq 'one near-duplicate merge condition renders once' '1' "$(grep -o '变更合入暂停' <<< "$body" | wc -l | tr -d '[:space:]')"
 reminder_only='[{"key":"reminder:node-important:merge:0:1791810000","section":"仍在处理","text":"仍在处理：变更合入暂停，自1月1日 08:00起约497719小时；预计恢复时间暂无数据。","kind":"reminder","reminder_for":"node-important:merge:0","created_at":1791810000}]'
-reminder_normalized="$(founder_health_mail_normalize_events "$reminder_only" "$now")"
+reminder_normalized="$(maintainer_health_mail_normalize_events "$reminder_only" "$now")"
 assert_eq 'legacy reminder-only node events collapse to one condition' '1' "$(jq 'length' <<< "$reminder_normalized")"
 assert_contains 'legacy reminder-only node event gets a safe start time' "$reminder_normalized" '开始时间暂无数据'
 assert_not_contains 'legacy reminder-only node event drops epoch date' "$reminder_normalized" '1月1日'
 assert_not_contains 'legacy reminder-only node event drops unknown ETA fragment' "$reminder_normalized" '预计恢复时间暂无数据'
 legacy_epoch_alert='[{"key":"node:deploy:alert:0","section":"处理变化","text":"版本上线暂停，自1月1日 08:00起约497705小时：生产验证未完成，检查通过后继续；预计恢复时间暂无数据。","kind":"node","created_at":0}]'
-epoch_alert_normalized="$(founder_health_mail_normalize_events "$legacy_epoch_alert" "$now")"
+epoch_alert_normalized="$(maintainer_health_mail_normalize_events "$legacy_epoch_alert" "$now")"
 assert_contains 'legacy epoch-zero alert is rewritten with unknown start and next action' \
   "$epoch_alert_normalized" '版本上线暂停，开始时间暂无数据：生产验证未完成，检查通过后继续。'
 assert_not_contains 'legacy epoch-zero alert drops false start date' "$epoch_alert_normalized" '1月1日'
@@ -121,14 +121,14 @@ fi
 echo 'ok - rendered golden has no unapproved ASCII runs'
 
 bad_duration="${body/约23小时/约1小时}"
-if duration_error="$(founder_health_mail_output_contract "$bad_duration" "$now")"; then
+if duration_error="$(maintainer_health_mail_output_contract "$bad_duration" "$now")"; then
   echo 'not ok - duration mismatch passed contract' >&2
   exit 1
 fi
 assert_contains 'contract rejects contradictory duration' "$duration_error" 'duration-mismatch'
 
 bad_metric="${body/| 调度一轮耗时 | 900 秒 | 1000 秒 | 1100 秒 |/| 调度一轮耗时 | 暂无数据 | 1000 秒 | 1100 秒 |}"
-if metric_error="$(founder_health_mail_output_contract "$bad_metric" "$now")"; then
+if metric_error="$(maintainer_health_mail_output_contract "$bad_metric" "$now")"; then
   echo 'not ok - metric cell with unavailable data passed contract' >&2
   exit 1
 fi
@@ -136,46 +136,46 @@ assert_contains 'contract still rejects unavailable metric cells' "$metric_error
 
 sent=0
 export DRY_RUN=0
-notify_founder_health() {
+notify_maintainer_health() {
   sent=$((sent + 1))
   printf '%s\n' "$2" > "$AGENT_HOME/sent-body"
 }
-founder_health_mail_record_event "$ledger" 'poison:pending' '发布进度' \
+maintainer_health_mail_record_event "$ledger" 'poison:pending' '发布进度' \
   '待上线：No preflight for the。' "$now" release >/dev/null
-founder_health_mail_record_event "$ledger" 'safe:pending' '事项变化' \
+maintainer_health_mail_record_event "$ledger" 'safe:pending' '事项变化' \
   '订单查询已恢复。' "$now" event >/dev/null
-events="$(founder_health_mail_filter_events "$(jq -c '[.pending_events[]]' "$ledger")" "$AGENT_HOME" "$now")"
-founder_health_mail_deliver "$ledger" "$now" '20261012T14Z' '工作进展简报' \
+events="$(maintainer_health_mail_filter_events "$(jq -c '[.pending_events[]]' "$ledger")" "$AGENT_HOME" "$now")"
+maintainer_health_mail_deliver "$ledger" "$now" '20261012T14Z' '工作进展简报' \
   "$body"$'\n- Channel Gateway 审批与飞\n订单查询已恢复。' "$events"
 assert_eq 'one English title and bad pending event still permit transport' '1' "$sent"
 assert_not_contains 'English title never reaches transport' "$(cat "$AGENT_HOME/sent-body")" 'Channel Gateway'
 assert_contains 'valid sibling remains in delivered mail' "$(cat "$AGENT_HOME/sent-body")" '订单查询已恢复。'
-founder_health_mail_output_contract "$(cat "$AGENT_HOME/sent-body")" "$now"
+maintainer_health_mail_output_contract "$(cat "$AGENT_HOME/sent-body")" "$now"
 assert_eq 'rejected pending event exits pending ledger' 'false' "$(jq '.pending_events | has("poison:pending")' "$ledger")"
 assert_eq 'rejected event is archived with original evidence' '待上线：No preflight for the。' \
   "$(jq -r '.rejected_events["poison:pending"].event.text' "$ledger")"
 assert_eq 'same rejected key cannot requeue' 'reported' \
-  "$(founder_health_mail_record_event "$ledger" 'poison:pending' '发布进度' '待上线：No preflight for the。' "$now" release)"
+  "$(maintainer_health_mail_record_event "$ledger" 'poison:pending' '发布进度' '待上线：No preflight for the。' "$now" release)"
 # Even after the inbox is consumed and the normal 24-hour once window expires,
 # the ledger remembers each rejected line and event.
 rm -f "$AGENT_HOME/supervisor-inbox" "$AGENT_HOME/supervisor-inbox.once"
 later_body="$(grep -v '自.*起约' <<< "$body")"
-founder_health_mail_deliver "$ledger" "$((now + 90000))" '20261013T15Z' '工作进展简报' \
+maintainer_health_mail_deliver "$ledger" "$((now + 90000))" '20261013T15Z' '工作进展简报' \
   "$later_body"$'\n- Channel Gateway 审批与飞' '[{"key":"later:safe","created_at":1791900000}]'
 assert_eq 'rejected lines do not alert again after inbox consumption' 'false' \
   "$([ -e "$AGENT_HOME/supervisor-inbox" ] && printf true || printf false)"
 assert_eq 'mixed Chinese and English title is rendered in Chinese' '渠道网关 审批与飞书通知' \
-  "$(founder_health_mail_plain_title 'Channel Gateway 审批与飞书通知')"
+  "$(maintainer_health_mail_plain_title 'Channel Gateway 审批与飞书通知')"
 assert_eq 'unknown English in title uses readable fallback' '功能改进' \
-  "$(founder_health_mail_plain_title 'UntranslatedFeature 中文标题')"
+  "$(maintainer_health_mail_plain_title 'UntranslatedFeature 中文标题')"
 # A rejected heading cannot take its readable child lines with it; a bad
 # metric row becomes an explained unknown instead of erasing the required table.
 damaged_body="$later_body"$'\n**English heading**\n库存查询已恢复。'
 damaged_body="${damaged_body/900 秒/raw English}"
 damaged_body="${damaged_body/| 指标 | 当前六小时 | 前六小时 | 昨日同时段 |/| 指标 | 当前六小时 | English | 昨日同时段 |}"
-isolated="$(founder_health_mail_output_contract "$damaged_body" "$now" isolate-lines)"
+isolated="$(maintainer_health_mail_output_contract "$damaged_body" "$now" isolate-lines)"
 cleaned="$(jq -r '.body' <<< "$isolated")"
-founder_health_mail_output_contract "$cleaned" "$now"
+maintainer_health_mail_output_contract "$cleaned" "$now"
 assert_contains 'bad heading preserves readable child' "$cleaned" '库存查询已恢复。'
 assert_contains 'bad metric row becomes explained unknown' "$cleaned" '| 统计项目 | 数据待核实 | 数据待核实 | 数据待核实 |'
 echo 'ALL PASS'

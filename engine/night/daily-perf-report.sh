@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-source "$SCRIPT_DIR/founder-health-mail.sh"
+source "$SCRIPT_DIR/maintainer-health-mail.sh"
 source "$SCRIPT_DIR/../lib.sh"
 
 daily_perf_report_logged_send_count() {
@@ -53,7 +53,7 @@ daily_perf_report_window() {
   for offset in 6 5 4 3 2 1 0; do
     sample_day="$(date -u -d "$day -$offset day" +%Y-%m-%d)" || return 1
     end_epoch="$(date -u -d "$sample_day 23:59:59" +%s)" || return 1
-    measure="$(founder_health_mail_measure "$agent_home" "$sample_day" "$end_epoch" "$repo_root")" || return 1
+    measure="$(maintainer_health_mail_measure "$agent_home" "$sample_day" "$end_epoch" "$repo_root")" || return 1
     printf '%s\n' "$measure"
   done | jq -cs .
 }
@@ -239,19 +239,19 @@ daily_perf_report_build() {
   end_epoch="$(date -u -d "$day +1 day 00:00:00" +%s)" || return 1
   now="$(date +%s)" || return 1
   label="$(maintainer_local_time "$(date -u -d "$day 00:00:00" +%s)" '%-m月%-d日')" || return 1
-  releases="$(founder_health_mail_release_lines "$agent_home" "$start_epoch" "$end_epoch")" || return 1
-  work_data="$(founder_health_mail_work_counts "$agent_home" "$now")" || work_data='{"active":null,"queued":null}'
+  releases="$(maintainer_health_mail_release_lines "$agent_home" "$start_epoch" "$end_epoch")" || return 1
+  work_data="$(maintainer_health_mail_work_counts "$agent_home" "$now")" || work_data='{"active":null,"queued":null}'
   active="$(jq -r '.active // "null"' <<< "$work_data")" || return 1
   queued="$(jq -r '.queued // "null"' <<< "$work_data")" || return 1
-  efficiency="$(founder_health_mail_efficiency_block "$agent_home" daily "$day" "$now" "$work_data" 2>/dev/null || true)"
+  efficiency="$(maintainer_health_mail_efficiency_block "$agent_home" daily "$day" "$now" "$work_data" 2>/dev/null || true)"
   timing="$(daily_perf_report_timing_section "$agent_home" "$day" "$repo_root" "$dry_run")" || return 1
   if [ -z "$efficiency" ]; then
-    efficiency="$(founder_health_mail_render_efficiency '{"current":{"launched":null,"closed":null,"created":null,"backlog":null,"average_hours":null},"previous":{"launched":null,"closed":null,"created":null,"backlog":null,"average_hours":null},"week":{"launched":null,"closed":null,"created":null,"backlog":null,"average_hours":null},"work":{"active":null,"queued":null}}' daily)" || return 1
+    efficiency="$(maintainer_health_mail_render_efficiency '{"current":{"launched":null,"closed":null,"created":null,"backlog":null,"average_hours":null},"previous":{"launched":null,"closed":null,"created":null,"backlog":null,"average_hours":null},"week":{"launched":null,"closed":null,"created":null,"backlog":null,"average_hours":null},"work":{"active":null,"queued":null}}' daily)" || return 1
   fi
-  anomalies="$(founder_health_mail_current_anomalies "$agent_home" "$now")" || return 1
-  reason="$(founder_health_mail_no_launch_reason)"
-  work_reason="$(founder_health_mail_no_work_reason "$active" "$queued")"
-  pipeline_efficiency="$(founder_health_mail_pipeline_efficiency_block "$agent_home" daily "$day")" || return 1
+  anomalies="$(maintainer_health_mail_current_anomalies "$agent_home" "$now")" || return 1
+  reason="$(maintainer_health_mail_no_launch_reason)"
+  work_reason="$(maintainer_health_mail_no_work_reason "$active" "$queued")"
+  pipeline_efficiency="$(maintainer_health_mail_pipeline_efficiency_block "$agent_home" daily "$day")" || return 1
   report="$( {
     printf '**今日汇总（%s）**\n\n**上线情况**\n' "$label"
     if [ -n "$releases" ]; then printf '%s' "$releases"
@@ -260,10 +260,10 @@ daily_perf_report_build() {
     [ -z "$work_reason" ] || printf '\n%s\n' "$work_reason"
     printf '\n**异常**\n%s\n' "$anomalies"
   } )" || return 1
-  if ! contract_errors="$(founder_health_mail_output_contract "$report" "$now")"; then
+  if ! contract_errors="$(maintainer_health_mail_output_contract "$report" "$now")"; then
     contract_errors="${contract_errors:-validator-failed}"
     if [ "$dry_run" != 1 ]; then
-      founder_health_mail_contract_inbox "$agent_home" "$contract_errors" || return 1
+      maintainer_health_mail_contract_inbox "$agent_home" "$contract_errors" || return 1
     fi
     printf 'daily-perf-report: output contract failed: %s\n' "$contract_errors" >&2
     return 1
@@ -302,6 +302,6 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   tmp="$(mktemp "${report_file}.XXXXXX")"
   printf '%s\n' "$report" > "$tmp"
   mv -f "$tmp" "$report_file"
-  founder_health_mail_record_event "$AGENT_HOME/night/founder-health-mail.json" \
+  maintainer_health_mail_record_event "$AGENT_HOME/night/founder-health-mail.json" \
     "daily:$report_day" '今日汇总' "$report" "$(date +%s)" daily >/dev/null
 fi

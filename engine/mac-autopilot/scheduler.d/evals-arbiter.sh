@@ -10,9 +10,11 @@ budget_alert_if_needed() { # 信息性告警：新鲜 token（Codex+worker Claud
   fi
 }
 
+# The review skill's directory name under .agents/skills: a deployment setting (ZF_REVIEW_SKILL), also read by eval/run-eval.mjs.
+REVIEW_SKILL="${ZF_REVIEW_SKILL:-code-review}"
 review_contract_rule() { # resolve from the pinned engine checkout, never from the code under review
   printf '`%s` 是唯一评审契约，定义评审标准、verdict 与 review-findings schema。' \
-    "$(matt_engine_skill_md zf-code-review)"
+    "$(matt_engine_skill_md "$REVIEW_SKILL")"
 }
 
 decision_eval_stages_for_paths() { # newline-delimited paths → affected eval stages
@@ -24,7 +26,7 @@ decision_eval_stages_for_paths() { # newline-delimited paths → affected eval s
       engine/prompts/triage.*) affected[triage]=1; affected[end-to-end]=1 ;;
       engine/prompts/advisor*) affected[advisor]=1; affected[end-to-end]=1 ;;
       engine/prompts/implement-contract.md) affected[implement]=1; affected[end-to-end]=1 ;;
-      engine/prompts/review-contract.md|.agents/skills/zf-code-review/*|engine/mac-autopilot/review-contract.sh)
+      engine/prompts/review-contract.md|".agents/skills/$REVIEW_SKILL"/*|engine/mac-autopilot/review-contract.sh)
         affected[review]=1; affected[end-to-end]=1 ;;
       engine/prompts/recut.*|engine/prompts/guarded-recut-hand.md)
         affected[end-to-end]=1 ;;
