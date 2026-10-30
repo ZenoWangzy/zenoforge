@@ -241,7 +241,8 @@ Lessons are stored in the target repository, under `lessons/`, and not in this e
 
 | Path | Default | What it holds |
 |---|---|---|
-| `$AGENT_HOME` | `~/.zenoforge` (`AGENT_HOME`, else `ZF_HOME`) | Root for issue-loop state (`engine/lib.sh`, top of file) |
+| `$AGENT_HOME` | `~/.zenoforge` (`AGENT_HOME`, else `ZF_HOME`) | Root for issue-loop state (resolved in `engine/config.sh`, which `engine/lib.sh` sources first) |
+| `$AGENT_HOME/host-id` | | Logical host name, written once, and only when `ZF_COORD=on` (`zf_host_id_resolve`, `engine/config.sh`) |
 | `$AGENT_HOME/state/<issue>.json` | | One JSON snapshot per issue: attempts, stage history, review fallback, label snapshot. `state_file`, `engine/lib.sh` |
 | `$AGENT_HOME/model-policy.json` | | Live model policy, copied from `engine/model-policy.default.json` (`MODEL_POLICY_DEFAULT` in `engine/lib.sh`) |
 | `$AGENT_HOME/capacity.env` | | Host capacity settings (`AGENT_*` keys). Sourced by `lib.sh` |
