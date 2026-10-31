@@ -15,6 +15,10 @@ Ticket state lives in GitHub labels and comments. The engine also keeps a per-is
 
 About 50 of the 230 non-test files under `engine/` and `tools/` contain Chinese text (comments, strings, prompts and state files), so expect to read some of it.
 
+## Config files
+
+`engine/config.sh` sets `ZF_ENGINE_DIR`, `ZF_REPO_DIR`, `ZF_CONFIG_ROOT`, and optional `ZF_PACK_DIR`; caller-set values take precedence. `ZF_CONFIG_ROOT` defaults to `$ZF_REPO_DIR/.zenoforge`, an optional directory in the target repository for its own overrides. `ZF_PACK_DIR` may be empty when there is no pack. `zf_config_file <relative path>` checks the target repo's `.zenoforge/` file first, then `ZF_PACK_DIR`, then the engine's shipped default.
+
 ## 1. The two loops
 
 ### 1.1 Issue loop

@@ -5,6 +5,7 @@
 #   ZF_ENGINE_DIR  the engine's own files (lib.sh, run-*.sh, night/, ...): default = the directory this file lives in.
 #   ZF_REPO_DIR    the target repository the engine works on: default = two levels above the engine (the engine
 #                     lives inside it today).
+#   ZF_CONFIG_ROOT target-repository config overrides: default = $ZF_REPO_DIR/.zenoforge; a caller-set value wins.
 #   ZF_PACK_DIR    the deployment's optional modules and data (lib-migration-gate.sh, supervise-browser-check.sh,
 #                     state/risk-paths.json, ...), looked up by relative path. Default = ZF_ENGINE_DIR, where the
 #                     the product pack lives today. Empty = no pack: every seam falls back to its generic default.
@@ -15,6 +16,7 @@
 #   ZF_ENGINE_LIVE the engine the running pipeline executes: the landing queue defaults to its own directory; the
 #                     lander and delivery-request default to the live checkout. Not set here.
 # In a checkout these are plain shell variables; deployment settings and ZF_PACK_REL are exported, and caller overrides win.
+# ZF_CONFIG_ROOT is exported so Node readers use the same config root.
 #   deploy.env        beside this file, written into an immutable engine version directory when it is built (Line B): the
 #                     deployment's layout and host settings, so a process with a clean environment (systemd-run) still
 #                     sees them. Sourced first, before anything below reads a setting. Its lines export a variable only when
@@ -36,6 +38,11 @@ if [[ -z "${ZF_REPO_DIR-}" ]]; then
   ZF_REPO_DIR="$(cd -- "$ZF_ENGINE_DIR/.." && pwd -P)"
   _AGENT_REPO_DIR_DERIVED="$ZF_REPO_DIR"
 fi
+if [[ -z "${ZF_CONFIG_ROOT+x}" || ( -n "${_AGENT_CONFIG_ROOT_DERIVED+x}" && "$ZF_CONFIG_ROOT" == "$_AGENT_CONFIG_ROOT_DERIVED" ) ]]; then
+  ZF_CONFIG_ROOT="$ZF_REPO_DIR/.zenoforge"
+  _AGENT_CONFIG_ROOT_DERIVED="$ZF_CONFIG_ROOT"
+fi
+export ZF_CONFIG_ROOT
 # Set (even empty) by the caller = explicit; unset, or still the value this file derived earlier = derive again.
 if [[ -z "${ZF_PACK_DIR+x}" || ( -n "${_AGENT_PACK_DIR_DERIVED+x}" && "$ZF_PACK_DIR" == "$_AGENT_PACK_DIR_DERIVED" ) ]]; then
   ZF_PACK_DIR="" # PACK_DIR_DEFAULT: the public export rewrites this default to empty
@@ -92,4 +99,30 @@ fi
 pack_file() {
   [[ -n "${ZF_PACK_DIR-}" && -f "$ZF_PACK_DIR/$1" ]] || return 1
   printf '%s\n' "$ZF_PACK_DIR/$1"
+}
+
+# Target overrides win, then pack values retained during migration, then the engine's shipped defaults.
+zf_config_file() {
+  [[ $# -eq 1 ]] || return 2
+  local relative_path="$1" candidate
+  [[ "$relative_path" != /* ]] || return 2
+  case "/$relative_path/" in
+    */../*) return 2 ;;
+  esac
+
+  candidate="$ZF_CONFIG_ROOT/$relative_path"
+  if [[ -n "${ZF_CONFIG_ROOT-}" && -f "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  if candidate="$(pack_file "$relative_path")"; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  candidate="$ZF_ENGINE_DIR/$relative_path"
+  if [[ -f "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  return 1
 }
