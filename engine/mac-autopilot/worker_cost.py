@@ -164,7 +164,9 @@ def measure(path, worker):
             usage, backend = zcode_stream_usage(path), "zcode"
         except Exception:
             usage, backend = None, None
-    model = worker.get("model") or ""
+    # workers.json trims old harvested rows; the dispatch marker is durable in the log and
+    # carries the selected model for those rows. Prefer the live worker record when present.
+    model = worker.get("model") or (marker or {}).get("model") or ""
     if model.startswith("claude-"):
         backend = "claude"
     return {"log": os.path.basename(path), "path": path, "unit": unit, "phase": phase,
