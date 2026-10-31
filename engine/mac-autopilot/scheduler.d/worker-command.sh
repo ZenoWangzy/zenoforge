@@ -1,3 +1,5 @@
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)/codex-mcp.sh"
+
 product_boundary_rule() { # 整块取得才输出；CLAUDE.md 缺失或被改写到某组关键词消失，就什么都不输出并返回 1
   local kws lines block=""
   (( ${#PRODUCT_BOUNDARY_SELECTORS[@]} )) || return 1
@@ -31,8 +33,8 @@ worker_rules() { # unit-json type provider
 
 # models.<role> = [model, effort, service_tier?]；model 以 claude- 开头走 claude CLI，否则走 codex。
 build_codex_command() { # type model effort unit cold-prompt [new-failure]
-  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" session_id="" usage prompt_arg role tier self_fix prior
-  local -a tier_args=()
+  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" session_id="" usage prompt_arg role tier self_fix prior config_arg
+  local -a tier_args=() codex_config_args=()
   CODEX_MODE=fresh
   CODEX_SESSION_ID=""
   CODEX_PATH_REASON=initial
@@ -57,9 +59,11 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure]
   fi
   tier="$(jqf -r --arg m "$model" '[.models[] | select(.[0]==$m) | .[2] // empty][0] // empty' <<<"$CFG")"
   [[ -n "$tier" ]] && tier_args=(--config "service_tier=\"$tier\"")
+  while IFS= read -r config_arg; do codex_config_args+=("$config_arg"); done < <(codex_mcp_disable_args)
+  [[ "$type" != implement ]] || codex_config_args+=(-c tool_output_token_limit=8000)
   # Persistent implementer sessions: never add --ephemeral here.
   CODEX_FRESH_COMMAND=(codex exec -m "$model" -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
-    -s danger-full-access --json "$prompt_arg")
+    ${codex_config_args[@]+"${codex_config_args[@]}"} -s danger-full-access --json "$prompt_arg")
   if [[ "$type" == repair ]]; then
     prior="$(unit_field "$unit" '.sessions.repair // {}')"
     session_id="$(jqf -r '.id // empty' <<<"$prior")"
@@ -82,7 +86,8 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure]
         CODEX_SESSION_ID="$session_id"
         CODEX_USAGE_START="$(session_usage_for_id "$session_id")"
         CODEX_COMMAND=(codex exec -s danger-full-access resume "$session_id" -m "$model" \
-          -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" --json "$failure")
+          -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
+          ${codex_config_args[@]+"${codex_config_args[@]}"} --json "$failure")
         return 0
       fi
     fi
@@ -101,7 +106,8 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure]
         CODEX_USAGE_START="$snapshot"
         prompt_arg="继续沿用本会话已有上下文，仅处理本次增量任务，不重读未变化背景：$prompt"
         CODEX_COMMAND=(codex exec -s danger-full-access resume "$session_id" -m "$model" \
-          -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" --json "$prompt_arg")
+          -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
+          ${codex_config_args[@]+"${codex_config_args[@]}"} --json "$prompt_arg")
         return 0
       fi
     fi
