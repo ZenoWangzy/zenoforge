@@ -32,11 +32,11 @@ if grep -nF "$unsafe_update_pattern" "$scheduler"; then
   echo 'not ok - scheduler.test.sh: jq select update can delete unmatched units' >&2
   exit 1
 fi
-grep -Fq 'gh pr merge "$pr" --squash' "$scheduler"
-grep -Fq 'resume "$session_id" -m "$model"' "$scheduler"
+grep -Fq 'gh pr merge "$pr" --squash' "$script_dir/scheduler.d/merge-lane.sh"
+grep -Fq 'resume "$session_id" -m "$model"' "$script_dir/scheduler.d/worker-command.sh"
 grep -Fq 'focus_mode' "$scheduler"
-grep -Fq 'session id: ' "$scheduler"
-grep -Fq 'dispatch mode=$CODEX_MODE' "$scheduler"
+grep -Fq 'session id: ' "$script_dir/scheduler.d/harvest-workers.sh"
+grep -Fq 'mode=$CODEX_MODE' "$script_dir/scheduler.d/dispatch.sh"
 if grep -Fq 'spent()' "$scheduler"; then
   echo 'not ok - scheduler.test.sh: the old worker-log spend heuristic must stay removed' >&2
   exit 1
@@ -51,7 +51,7 @@ if grep -Eq 'gh pr merge .*--auto' "$scheduler"; then
 fi
 jq -e '.focus_mode == "all" and .budget_meter == "sessions_dir"' "$template" >/dev/null
 jq -e '.max_workers == 10 and .auto_merge == true and .implement_cap == 8
-  and .release_train.enabled == true and .supervisor_arbiter.enabled == true
+  and .release_train.enabled == false and .supervisor_arbiter.enabled == true
   and .models.review == ["claude-haiku-5-5", "high"]
   and .models.implement == ["gpt-6-luna", "max", "fast"]
   and .models.triage == ["gpt-6-luna", "max", "fast"]
@@ -2391,7 +2391,11 @@ sched_case_footprint_mutex() {
   ROOT="$(mktemp -d)"
   # The active-footprint snapshot is cached for the length of a tick; this case rewrites the workers between checks, so each check
   # starts from a fresh snapshot.
-  footprint_room() { TICK_ACTIVE_FOOTPRINTS_VALID=false; TICK_FOOTPRINT_CONFLICT_VALID=false; _footprint_room "$@"; }
+  footprint_room_each_tick() {
+    TICK_ACTIVE_FOOTPRINTS_VALID=false
+    TICK_FOOTPRINT_CONFLICT_VALID=false
+    footprint_room "$@"
+  }
   UNITS="$fixture_supervisor/autopi/footprint-units.json"
   WORKERS="$fixture_supervisor/autopi/footprint-workers.json"
   cat > "$UNITS" <<'JSON'
@@ -2399,23 +2403,52 @@ sched_case_footprint_mutex() {
  {"id":"a","stage":"implement","footprint":["packages/example/hooks/__init__.py"]},
  {"id":"b","stage":"implement-pending","footprint":["packages/example/hooks/__init__.py"]},
  {"id":"c","stage":"implement-pending","footprint":["packages/example/hooks/other.py"]},
- {"id":"d","stage":"repair-pending","footprint":["packages/example/hooks"]}]}
+ {"id":"d","stage":"implement-pending","footprint":["packages/example/hooks"]},
+ {"id":"repair-active","stage":"repair","footprint":["packages/example/hooks/__init__.py"]},
+ {"id":"repair-candidate","stage":"repair-pending","footprint":["packages/example/hooks/__init__.py"],"footprint_wait_owner":"repair-active"},
+ {"id":"rereview-candidate","stage":"rereview-pending","footprint":["packages/example/hooks/__init__.py"],"footprint_wait_owner":"repair-active"},
+ {"id":"implement-candidate","stage":"implement-pending","footprint":["packages/example/hooks/__init__.py"],"footprint_wait_owner":"repair-active"}]}
 JSON
   echo '{"workers":[{"pid":123,"unit":"a","type":"implement"}]}' > "$WORKERS"
-  if footprint_room b; then echo 'same-file implement admitted' >&2; exit 1; fi
-  footprint_room c
-  if footprint_room d; then echo 'directory/file repair overlap admitted' >&2; exit 1; fi
+  if footprint_room_each_tick b; then echo 'same-file implement admitted' >&2; exit 1; fi
+  footprint_room_each_tick c
+  if footprint_room_each_tick d; then echo 'directory/file implement overlap admitted' >&2; exit 1; fi
+  # A PR candidate rebases at land, so overlapping an active repair unit does not delay repair/rereview.
+  echo '{"workers":[{"pid":124,"unit":"repair-active","type":"repair"}]}' > "$WORKERS"
+  footprint_failures=0
+  for candidate in repair-candidate rereview-candidate; do
+    candidate_unit="$(jqf -c --arg id "$candidate" '.units[] | select(.id==$id)' "$UNITS")"
+    if ! footprint_room_each_tick "$candidate" "$candidate_unit" true; then
+      echo "$candidate should bypass the active repair footprint" >&2
+      footprint_failures=$((footprint_failures + 1))
+    fi
+    if jqf -e --arg id "$candidate" '.units[] | select(.id==$id) | has("footprint_wait_owner")' "$UNITS" >/dev/null; then
+      echo "$candidate kept its footprint_wait_owner after admission" >&2
+      footprint_failures=$((footprint_failures + 1))
+    fi
+  done
+  candidate_unit="$(jqf -c '.units[] | select(.id=="implement-candidate")' "$UNITS")"
+  if footprint_room_each_tick implement-candidate "$candidate_unit" true; then
+    echo 'overlapping implement-pending candidate admitted' >&2
+    footprint_failures=$((footprint_failures + 1))
+  fi
+  [[ "$(jqf -r '.units[] | select(.id=="implement-candidate") | .footprint_wait_owner' "$UNITS")" == repair-active ]] || {
+    echo 'overlapping implement-pending candidate did not retain the active repair owner' >&2
+    footprint_failures=$((footprint_failures + 1))
+  }
+  (( footprint_failures == 0 )) || exit 1
+  echo '{"workers":[{"pid":123,"unit":"a","type":"implement"}]}' > "$WORKERS"
   # Completed workers release ownership; a review never reserves write scope.
   echo '{"workers":[{"pid":123,"unit":"a","type":"implement","harvested":true},{"pid":124,"unit":"a","type":"review"}]}' > "$WORKERS"
-  footprint_room b
+  footprint_room_each_tick b
   # M2 故障注入接缝（#4498）：config footprint_mutex.enabled=false 跳过互斥——冲突单元放行，不再记 footprint wait
   echo '{"workers":[{"pid":123,"unit":"a","type":"implement"}]}' > "$WORKERS"
   : >> "$LOG"; before_lines="$(wc -l < "$LOG")"
   CFG='{"footprint_mutex":{"enabled":false}}'
-  footprint_room b
+  footprint_room_each_tick b
   [[ "$(wc -l < "$LOG")" == "$before_lines" ]] || { echo 'kill switch still logged a footprint wait' >&2; exit 1; }
   CFG='{}'
-  if footprint_room b; then echo 'same-file implement admitted without the kill switch' >&2; exit 1; fi
+  if footprint_room_each_tick b; then echo 'same-file implement admitted without the kill switch' >&2; exit 1; fi
   # #4488: 在跑 unit 实际改过（预测之外）的文件挡住新派发；workdir 不可读时退回预测足迹。
   wdir="$(mktemp -d)"
   git -C "$wdir" init -q -b main
@@ -2431,21 +2464,21 @@ JSON
  {"id":"e","stage":"implement-pending","footprint":["tests/contract/v4-mcp-tools.test.ts"]}]}
 JSON
   echo "{\"workers\":[{\"pid\":125,\"unit\":\"a\",\"type\":\"implement\",\"workdir\":\"$wdir\"}]}" > "$WORKERS"
-  if footprint_room e; then echo 'committed live write beyond prediction admitted' >&2; exit 1; fi
+  if footprint_room_each_tick e; then echo 'committed live write beyond prediction admitted' >&2; exit 1; fi
   printf 'y\n' > "$wdir/tests/contract/untracked-yet.test.ts"
   cat > "$UNITS" <<'JSON'
 {"units":[
  {"id":"a","stage":"implement","footprint":["packages/example/hooks/__init__.py"]},
  {"id":"f","stage":"implement-pending","footprint":["tests/contract/untracked-yet.test.ts"]}]}
 JSON
-  if footprint_room f; then echo 'untracked live write beyond prediction admitted' >&2; exit 1; fi
+  if footprint_room_each_tick f; then echo 'untracked live write beyond prediction admitted' >&2; exit 1; fi
   cat > "$UNITS" <<'JSON'
 {"units":[
  {"id":"a","stage":"implement","footprint":["packages/example/hooks/__init__.py"]},
  {"id":"g","stage":"implement-pending","footprint":["packages/example/hooks/other.py"]}]}
 JSON
   echo '{"workers":[{"pid":125,"unit":"a","type":"implement","workdir":"/nonexistent/live-writes"}]}' > "$WORKERS"
-  footprint_room g
+  footprint_room_each_tick g
   rm -rf -- "$wdir"
   # #4488 二轮：与预测文件在 git log 里反复共同修改的热点文件并入待派发 unit
   # 的检查范围，预测范围不相交但历史耦合的候选先排队；扩展不写回 .footprint。
@@ -2473,11 +2506,11 @@ JSON
  {"id":"i","stage":"implement-pending","footprint":["packages/nobody/touched-this.ts"]}]}
 JSON
   echo '{"workers":[{"pid":126,"unit":"a","type":"implement"}]}' > "$WORKERS"
-  if footprint_room h; then echo 'co-modification hotspot beyond prediction admitted' >&2; exit 1; fi
+  if footprint_room_each_tick h; then echo 'co-modification hotspot beyond prediction admitted' >&2; exit 1; fi
   [[ "$(jqf -r '.units[] | select(.id=="h") | (.footprint // []) | join(",")' "$UNITS")" == "$qrt" ]]
-  footprint_room i
+  footprint_room_each_tick i
   echo '{"workers":[{"pid":126,"unit":"a","type":"implement","harvested":true}]}' > "$WORKERS"
-  footprint_room h
+  footprint_room_each_tick h
   rm -rf -- "$hdir"
   ROOT="$(cd "$script_dir/../.." && pwd -P)"
   mkdir -p "$AGENT_HOME/state"
@@ -2488,6 +2521,91 @@ JSON
 )
 }
 sched_run_case footprint_mutex
+
+sched_case_live_writes_union() {
+# A clean worktree keeps existing behavior; a stopped merge excludes incoming main files.
+(
+  local merge_dir expected actual file merge_output
+  merge_dir="$test_env_root/live-writes-merge"
+  mkdir -p "$merge_dir"
+  git -C "$merge_dir" init -q -b main
+  git -C "$merge_dir" config user.name test
+  git -C "$merge_dir" config user.email t@example.invalid
+  printf 'base\n' > "$merge_dir/conflict.txt"
+  git -C "$merge_dir" add conflict.txt
+  git -C "$merge_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m base
+  git -C "$merge_dir" update-ref refs/remotes/origin/main HEAD
+  git -C "$merge_dir" checkout -q -b worker
+  printf 'branch\n' > "$merge_dir/branch.txt"
+  git -C "$merge_dir" add branch.txt
+  git -C "$merge_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'branch file'
+  expected='["branch.txt"]'
+  actual="$(live_writes_union "$merge_dir" '[]')"
+  [[ "$actual" == "$expected" ]] || { echo "live-writes clean worktree: expected $expected, got $actual" >&2; exit 1; }
+
+  git -C "$merge_dir" checkout -q main
+  for file in main-1.txt main-2.txt main-3.txt main-4.txt main-5.txt; do
+    printf 'incoming\n' > "$merge_dir/$file"
+  done
+  printf 'main\n' > "$merge_dir/conflict.txt"
+  git -C "$merge_dir" add -A
+  git -C "$merge_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'main files'
+  git -C "$merge_dir" update-ref refs/remotes/origin/main HEAD
+  git -C "$merge_dir" checkout -q worker
+  printf 'branch conflict\n' > "$merge_dir/conflict.txt"
+  git -C "$merge_dir" add conflict.txt
+  git -C "$merge_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'branch conflict'
+  merge_output="$(git -C "$merge_dir" merge --no-ff -q main 2>&1)" || :
+  if ! git -C "$merge_dir" rev-parse -q --verify MERGE_HEAD >/dev/null; then
+    printf '%s\n' "$merge_output" >&2
+    echo 'live-writes merge fixture did not stop on a conflict' >&2; exit 1
+  fi
+  expected='["branch.txt","conflict.txt"]'
+  actual="$(live_writes_union "$merge_dir" '[]')"
+  [[ "$actual" == "$expected" ]] || { echo "live-writes merge conflict: expected $expected, got $actual" >&2; exit 1; }
+)
+}
+sched_run_case live_writes_union
+
+sched_case_live_writes_rebase() {
+# A stopped rebase diffs from its recorded onto commit, even with a stale origin/main ref.
+(
+  local rebase_dir expected actual file
+  rebase_dir="$test_env_root/live-writes-rebase"
+  mkdir -p "$rebase_dir"
+  git -C "$rebase_dir" init -q -b main
+  git -C "$rebase_dir" config user.name test
+  git -C "$rebase_dir" config user.email t@example.invalid
+  printf 'base\n' > "$rebase_dir/conflict.txt"
+  git -C "$rebase_dir" add conflict.txt
+  git -C "$rebase_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m base
+  git -C "$rebase_dir" update-ref refs/remotes/origin/main HEAD
+  git -C "$rebase_dir" checkout -q -b worker
+  printf 'branch\n' > "$rebase_dir/branch.txt"
+  git -C "$rebase_dir" add branch.txt
+  git -C "$rebase_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'branch file'
+  printf 'branch conflict\n' > "$rebase_dir/conflict.txt"
+  git -C "$rebase_dir" add conflict.txt
+  git -C "$rebase_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'branch conflict'
+  git -C "$rebase_dir" checkout -q main
+  for file in main-1.txt main-2.txt main-3.txt main-4.txt main-5.txt; do
+    printf 'incoming\n' > "$rebase_dir/$file"
+  done
+  printf 'main\n' > "$rebase_dir/conflict.txt"
+  git -C "$rebase_dir" add -A
+  git -C "$rebase_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'main files'
+  git -C "$rebase_dir" checkout -q worker
+  if git -C "$rebase_dir" rebase -q main >/dev/null 2>&1; then
+    echo 'live-writes rebase fixture did not stop on a conflict' >&2; exit 1
+  fi
+  git -C "$rebase_dir" rev-parse -q --verify REBASE_HEAD >/dev/null \
+    || { echo 'live-writes rebase fixture has no stopped rebase' >&2; exit 1; }
+  expected='["branch.txt","conflict.txt"]'
+  actual="$(live_writes_union "$rebase_dir" '[]')"
+  [[ "$actual" == "$expected" ]] || { echo "live-writes rebase conflict: expected $expected, got $actual" >&2; exit 1; }
+)
+}
+sched_run_case live_writes_rebase
 
 sched_case_footprint_hog_alert() {
 # A worker past footprint_mutex.hog_alert_minutes that blocks >hog_alert_blocked pending units gets one inbox line, however many ticks run; a 1h-old worker with the same blockers stays silent.

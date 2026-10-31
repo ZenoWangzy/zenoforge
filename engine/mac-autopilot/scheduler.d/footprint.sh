@@ -1,9 +1,23 @@
 # #4488: 预测足迹挡不住在跑 worker 越界写共享文件（collisions_per_day=97，全是真实并发写）。
 # 派发检查把在跑 unit 的 worktree 里已发生的改动（已提交 + 未提交 + 未跟踪）并进它的足迹。
 live_writes_union() { # workdir scope_json -> scope ∪ 实际已写路径；workdir 不可读时退回预测
-  local wd="$1" scope="$2" live base
+  local wd="$1" scope="$2" live base='' merge_head rebase_state onto_path
   if [[ -n "$wd" && -d "$wd" ]]; then
-    base="$(git -C "$wd" merge-base origin/main HEAD 2>/dev/null || true)"
+    # An in-progress merge or rebase leaves incoming main changes in the worktree.
+    if merge_head="$(git -C "$wd" rev-parse -q --verify MERGE_HEAD 2>/dev/null)" && [[ -n "$merge_head" ]]; then
+      base="$merge_head"
+    else
+      for rebase_state in rebase-merge rebase-apply; do
+        onto_path="$(git -C "$wd" rev-parse --git-path "$rebase_state/onto" 2>/dev/null || true)"
+        [[ -n "$onto_path" ]] || continue
+        [[ "$onto_path" == /* ]] || onto_path="$wd/$onto_path"
+        if [[ -f "$onto_path" ]]; then
+          base="$(<"$onto_path")"
+          break
+        fi
+      done
+      [[ -n "$base" ]] || base="$(git -C "$wd" merge-base origin/main HEAD 2>/dev/null || true)"
+    fi
     live="$(
       {
         {
@@ -243,11 +257,14 @@ footprint_wait_mark() { # unit owner unit_json：记等待方到 unit（值没�
   [[ "$(jqf -r '.footprint_wait_owner // empty' <<<"$3")" == "$2" ]] || set_unit "$1" ".footprint_wait_owner=\"$2\""
 }
 _footprint_room() {
-  local id="$1" u="${2:-}" scope active conflict check_scope refreshed=false require_fresh="${3:-true}"
+  local id="$1" u="${2:-}" scope active conflict check_scope refreshed=false require_fresh="${3:-true}" stage
   # f9 kill switch（M2 故障注入 #4498）：footprint_mutex.enabled=false 跳过互斥。
   # 关掉后不再产生 "footprint wait" 事件，mechanism.silent 会在登记的沉默上限内报出。
   [[ "$(jqf -r 'if .footprint_mutex.enabled == false then "false" else "true" end' <<<"$CFG")" == true ]] || return 0
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$id" '.units[] | select(.id==$id)' "$UNITS")"
+  # Candidates with their own PR rebase at land, so another unit's footprint adds no value.
+  stage="$(jqf -r '.stage // empty' <<<"$u")"
+  [[ "$stage" != repair-pending && "$stage" != rereview-pending ]] || return 0
   if [[ "$require_fresh" != true ]] && footprint_preflight_snapshot; then
     conflict="${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[$id]:-}"
     if [[ -n "$conflict" ]]; then
