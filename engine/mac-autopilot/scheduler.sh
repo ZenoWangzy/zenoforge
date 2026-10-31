@@ -3,6 +3,7 @@
 # 每 tick：回收完成 worker → 状态机推进 → 派发下一环节 → 门禁内自动 merge → 生成 dashboard 数据。
 set -u
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$HERE/../merge-result-check.sh"
 source "$HERE/../closing-keywords.sh"
 source "$HERE/runtime-env.sh"
 source "$HERE/../verification-plan-runtime.sh"

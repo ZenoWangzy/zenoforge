@@ -109,7 +109,7 @@ merge_census_watch() { # missed=1/0：本拍 merge lane 是否出现 check censu
 }
 
 run_merge_lane() {
-  local merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false
+  local merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false
   local -A merge_head_ref=()
   local -a merge_head_refspecs=() merge_head_refs=()
   # 所有 PR（含流水线 PR）都只由自己 head 上的必需检查把关，合并后由 main CI 验证；没有待验证批、没有合并后等裁决的 merging 态。
@@ -453,6 +453,12 @@ run_merge_lane() {
       else
         say "merge skipped PR#$pr (rule lane failed)"
       fi
+      continue
+    fi
+    if ! merge_result_errors="$(merge_result_node_check "$ROOT" refs/remotes/origin/main "$approved" 2>&1)"; then
+      merge_result_hint="Squash merge result failed Node syntax checking. Repair the reported syntax errors, push the fix, and request review:"$'\n'"$merge_result_errors"
+      set_unit "$id" "$(hist merge-result-syntax "$merge_result_errors") | .approved_sha=null | .repair_hint=$(js "$merge_result_hint") | .stage=\"repair-pending\""
+      say "merge skipped PR#$pr (merge result Node syntax check failed) -> repair-pending"
       continue
     fi
     pre_merge_sha="$(git -C "$ROOT" ls-remote origin refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}')"
