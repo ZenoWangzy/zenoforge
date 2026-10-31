@@ -16,7 +16,7 @@ Reading the counts: "lines/files" counts non-comment lines in production scripts
 4. **Timers**: systemd timers on Linux and WSL2, launchd LaunchAgents on macOS (generated from the same `engine/systemd/*.service|*.timer` files), and a foreground loop as the universal fallback.
 5. **Fleet**: GitHub stays the source of truth and the coordination protocol is the one in `docs/design/DISTRIBUTED.md` (per-ticket claim refs, leases, no global lock, no database). This document adds only what the portability layer must guarantee to a mixed-OS fleet, and settles the places where the two documents differ (section 8).
 6. **Windows**: WSL2 only. Native Windows would rewrite at least 362 production lines in 55 files (section 9).
-7. **Verification**: one CI matrix (ubuntu, ubuntu with the pidfile runner, macOS arm64, macOS Intel, WSL2 with and without systemd), and `engine/doctor.sh` so a user finds out what is missing before a tick fails silently.
+7. **Verification**: CI runs on ubuntu only, as most plugin repos do. macOS and WSL2 have no CI job; `engine/doctor.sh` tells a user what is missing before a tick fails silently, and `tools/quarantine-*.txt` still apply to local runs.
 
 ## 2. Supported platforms
 
