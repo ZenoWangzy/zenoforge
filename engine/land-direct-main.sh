@@ -1167,6 +1167,24 @@ revalidate_missing_postsubmit() {
   fi
 }
 
+# 2026-10-31 ruling: known non-product config ranges need only a JSON syntax check.
+syntax_only_landing() {
+  local base="$1" head="$2" pack_rel="${ZF_PACK_REL:-engine}" path found=0
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    found=1
+    case "$path" in
+      packages/*|infra/*|deploy/*|migrations/*) return 1 ;;
+    esac
+    case "$path" in
+      *.md|docs/*|lessons/*|"$pack_rel"/state/*.json|"$pack_rel"/prompts/*|\
+        "$pack_rel"/mac-autopilot/config.template.json|.agents/skills/*) ;;
+      *) return 1 ;;
+    esac
+  done < <(git diff --name-only --no-renames "$base...$head")
+  (( found == 1 ))
+}
+
 # Only the focused post-land verdict is needed here. A green focused run itself
 # dispatches the exact-SHA full run into #4719's batched main group.
 pipeline_suites_main_focused_run_covers_sha() {
@@ -1431,10 +1449,17 @@ if ! drop_stale_fold_commits || ! land_rebase_record_shared_append "$tested_base
   echo "land-direct-main: rebase conflict; resolve it, then rerun this script" >&2
   exit 1
 fi
-# M3 传感器/执行器分离（#4499）：规则文件清单内的 diff 只放行 supervisor 规则通道
-# （Rule-Replay trailer 引用误杀为 0 的回测报告）；unit 一律拒绝。每次落地输出一条
-# rule-lane 判定行。
+# M3 传感器/执行器分离（#4499）：规则文件清单内的 diff 只放行 supervisor 语法检查通道；
+# unit 一律拒绝。每次落地输出一条 rule-lane 判定行。
 bash "$land_script_dir/rule-lane.sh" "$tested_base" "$(git rev-parse HEAD)"
+# 非产品配置落地只做 JSON 语法检查，在推送前做（2026-10-31 裁决）。
+if syntax_only_landing "$tested_base" HEAD; then
+  while IFS= read -r landed_path; do
+    [[ "$landed_path" == *.json ]] && git cat-file -e "HEAD:$landed_path" 2>/dev/null || continue
+    git show "HEAD:$landed_path" | jq empty >/dev/null 2>&1 \
+      || { printf 'land-direct-main: non-product config syntax check failed path=%s\n' "$landed_path" >&2; exit 1; }
+  done < <(git diff --name-only --no-renames "$tested_base...HEAD")
+fi
 prepare_lesson_metadata_for_landing
 assign_plan_package_trailer
 if ! land_append_owner_issue_references "$tested_base"; then
@@ -1560,7 +1585,9 @@ fi
 # keeps dispatch failures recoverable without changing the successful landing result.
 main_sha="$(git rev-parse HEAD)"
 dispatch_status=0
-if dispatch_pipeline_suites_after_landing "$main_sha" "$base_before_push"; then :; else dispatch_status=$?; fi
+if syntax_only_landing "$base_before_push" "$candidate_head"; then
+  echo 'land-direct-main: non-product config landing; post-land Pipeline suites skipped (2026-10-31 ruling)'
+elif dispatch_pipeline_suites_after_landing "$main_sha" "$base_before_push"; then :; else dispatch_status=$?; fi
 if landed_range_changes_postsubmit_input "$base_before_push" "$candidate_head"; then
   if revalidate_missing_postsubmit "$main_sha"; then :; else
     postsubmit_status=$?
