@@ -23,6 +23,12 @@ printf pack > "$pack/shared.json"
 printf engine > "$engine/shared.json"
 check 'config root wins over pack and engine' "$(zf_config_file shared.json)" "$target/.zenoforge/shared.json"
 
+mkdir -p "$target/.zenoforge/prompts" "$pack/prompts" "$engine/prompts"
+printf 'target prompt\n' > "$target/.zenoforge/prompts/advisor.md"
+printf 'pack prompt\n' > "$pack/prompts/advisor.md"
+printf 'engine prompt\n' > "$engine/prompts/advisor.md"
+check 'a nested prompt read uses the target config override' "$(cat "$(zf_config_file prompts/advisor.md)")" 'target prompt'
+
 override="$test_env_root/config-override"
 mkdir -p "$override"
 printf override > "$override/override.json"

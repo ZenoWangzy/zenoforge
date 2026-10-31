@@ -268,7 +268,7 @@ PROMPT_FILE="$(mktemp)"
   [ -z "$MODEL_POLICY_RETRY_NOTE" ] || echo "Retry note: $MODEL_POLICY_RETRY_NOTE"
   echo "GitNexus repo argument for this run: $REPO_DIR"
   matt_skills_note "$WT" to-tickets to-spec
-  cat "$SCRIPT_DIR/prompts/recut.md"
+  cat "$(zf_config_file prompts/recut.md)"
   echo
   echo '```json'
   if [ -n "$SIZE_ADMISSION" ]; then
@@ -290,8 +290,8 @@ PROMPT_FILE="$(mktemp)"
 set +e
 model_policy_mark_started "$N" recut
 OUTPUT="$(run_model_json "$WT" "$MODEL_POLICY_IDENTITY" 45 \
-  "$SCRIPT_DIR/prompts/recut.schema.json" "$PROMPT_FILE" \
-  "$SCRIPT_DIR/prompts/agent-settings.json" work)"
+  "$(zf_config_file prompts/recut.schema.json)" "$PROMPT_FILE" \
+  "$(zf_config_file prompts/agent-settings.json)" work)"
 STATUS=$?
 set -e
 RECUT_TOKENS="$(jq -r '.tokens_used // empty' <<< "$OUTPUT" 2>/dev/null || true)"
