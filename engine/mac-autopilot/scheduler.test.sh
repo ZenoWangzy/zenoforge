@@ -816,6 +816,7 @@ tick_git() {
     clone) local destination="${!#}"; mkdir -p "$destination/.git" ;;
     rev-parse)
       case "$*" in
+        *--show-toplevel*) echo "$TF/repo" ;;
         *FETCH_HEAD*|*refs/autopi/merge-candidates/*)
           if [[ -f "$TF/real-rule-git" ]]; then command git -C "$TF/repo" "$@"
           elif [[ -f "$TF/fetched-head" ]]; then cat "$TF/fetched-head"
@@ -2502,6 +2503,8 @@ JSON
   hcommit "$qrt" "$hooks"
   hcommit "$qrt" docs/only-once.md
   ROOT="$hdir"
+  # hotspot_log is cached per scheduler process; this fixture changed ROOT above.
+  HOTSPOT_LOG_LOADED=false
   [[ "$(hotspot_expand "[\"$qrt\"]")" == "[\"$hooks\",\"$qrt\"]" ]]
   [[ "$(hotspot_expand '["packages/example-pack/src/v4"]')" == "[\"$hooks\",\"packages/example-pack/src/v4\"]" ]]
   cat > "$UNITS" <<'JSON'
