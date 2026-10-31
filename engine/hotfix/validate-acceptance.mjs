@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
+import { zfConfigFile } from '../pack-dir.mjs';
 
 const START = '<!-- vecta-hotfix-acceptance:start -->';
 const END = '<!-- vecta-hotfix-acceptance:end -->';
@@ -40,7 +41,9 @@ function validateAcceptance(body, headSha, changedFiles = '') {
     // Only PRs the release owner names in release-deferred.json (read from main in CI) qualify (head 10-29, #4687).
     if (record?.reason !== 'needs-unreleased-migration') throw new Error('deferred-to-release needs reason needs-unreleased-migration');
     const pr = process.env.PR_NUMBER || /^refs\/pull\/(\d+)\//.exec(process.env.GITHUB_REF ?? '')?.[1];
-    const named = JSON.parse(readFileSync(new URL('./release-deferred.json', import.meta.url), 'utf8'));
+    const deferredFile = zfConfigFile('hotfix/release-deferred.json');
+    if (!deferredFile) throw new Error('release-deferred.json is not configured');
+    const named = JSON.parse(readFileSync(deferredFile, 'utf8'));
     if (!pr || !Object.hasOwn(named, pr)) throw new Error(`deferred-to-release is only valid for PRs named in release-deferred.json (PR ${pr ?? 'unknown'})`);
   } else {
     if (record?.status !== 'passed') throw new Error(`${ACCEPTANCE_USER} acceptance status must be passed`);
