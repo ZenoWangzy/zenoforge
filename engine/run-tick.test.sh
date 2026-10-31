@@ -192,6 +192,16 @@ JSON
   echo "$f"
 }
 
+policy_active_file() {
+  local repo="$1" agent_home="$2"
+  AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo" MODEL_POLICY_SOURCE_CHECK_ONLY=1 \
+    bash -c '
+      set -euo pipefail
+      source "$ZF_REPO_DIR/engine/lib.sh"
+      printf "%s\\n" "$MODEL_POLICY_FILE"
+    '
+}
+
 # run_launcher <repo> [agent_home] [roster] — runs run-tick.sh with an
 # ISOLATED AGENT_HOME/roster, defaulting to a fresh throwaway pair per call
 # when the caller doesn't need to reuse one
@@ -553,6 +563,8 @@ else
 fi
 assert_eq "source-check rejects a missing persisted policy" "1" "$missing_source_check_status"
 assert_eq "source-check does not seed a missing persisted policy" "0" "$([[ ! -e "$missing_policy_home/model-policy.json" ]] && echo 0 || echo 1)"
+stale_policy_file="$(policy_active_file "$repo" "$agent_home")"
+cp "$stale_policy_file" "$agent_home/old-active-model-policy.json"
 
 if stale_policy_identity="$(AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo" bash -c '
   source "$ZF_REPO_DIR/engine/lib.sh"
@@ -564,23 +576,23 @@ else
 fi
 assert_eq "new code resolves the old live policy before post-fast-forward sync" "$MODEL_POLICY_TEST_WORK_IDENTITY" "$stale_policy_identity"
 assert_eq "new code loads successfully against the old live policy" "0" "$stale_policy_resolution_status"
-schema_migration_backups=("$agent_home"/model-policy.json.bak.schema-v0.*)
+mapfile -t schema_migration_backups < <(find "$agent_home" -maxdepth 1 -type f -name '*.bak.schema-v0.*' -print)
 assert_eq "startup migration keeps one recoverable copy of the schema-less policy" \
   "1" "${#schema_migration_backups[@]}"
-if cmp -s "$agent_home/old-model-policy.json" "${schema_migration_backups[0]}"; then
+if cmp -s "$agent_home/old-active-model-policy.json" "${schema_migration_backups[0]}"; then
   migration_backup_status=0
 else
   migration_backup_status=$?
 fi
 assert_eq "the migration backup retains the original policy bytes" "0" "$migration_backup_status"
+jq -e --slurpfile default "$repo/engine/model-policy.default.json" \
+  '. == $default[0]' "$stale_policy_file" >/dev/null
 stale_policy_check="$(AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo" bash -c '
   MODEL_POLICY_SOURCE_CHECK_ONLY=1
   source "$ZF_REPO_DIR/engine/lib.sh"
   model_policy source-check
 ')"
-assert_eq "migrated persistent policy passes source-check" clean "$stale_policy_check"
-jq -e --slurpfile default "$repo/engine/model-policy.default.json" \
-  '. == $default[0]' "$agent_home/model-policy.json" >/dev/null
+assert_eq "the legacy source policy remains clean after active-view migration" clean "$stale_policy_check"
 stale_review_identity="$(AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo" bash -c '
   source "$ZF_REPO_DIR/engine/lib.sh"
   model_policy identity review

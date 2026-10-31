@@ -3592,6 +3592,13 @@ POLICY_SEED_IDENTITY="$(AGENT_HOME="$POLICY_SEED_HOME" MODEL_POLICY_TEST_SCRIPT_
 assert_eq "missing persistent policy seeds from the versioned default" \
   "$POLICY_WORK_IDENTITY" "$POLICY_SEED_IDENTITY"
 assert_eq "seeded persistent policy is private" 600 "$(stat -c '%a' "$POLICY_SEED_HOME/model-policy.json")"
+policy_active_file() {
+  AGENT_HOME="$1" MODEL_POLICY_SOURCE_CHECK_ONLY=1 MODEL_POLICY_TEST_SCRIPT_DIR="$SCRIPT_DIR" bash -c '
+    set -euo pipefail
+    source "$MODEL_POLICY_TEST_SCRIPT_DIR/lib.sh"
+    printf "%s\\n" "$MODEL_POLICY_FILE"
+  '
+}
 POLICY_V1_MIGRATION_HOME="$(mktemp -d)"
 POLICY_V1_MIGRATION_MODEL="gpt-6-legacy"
 jq --arg model "$POLICY_V1_MIGRATION_MODEL" '
@@ -3612,6 +3619,9 @@ POLICY_V1_SOURCE_CHECK="$(AGENT_HOME="$POLICY_V1_MIGRATION_HOME" MODEL_POLICY_SO
 assert_eq "read-only source-check accepts a safe v1 custom fallback" clean "$POLICY_V1_SOURCE_CHECK"
 assert_true "read-only source-check leaves the v1 policy unchanged" \
   cmp -s "$POLICY_V1_MIGRATION_HOME/before.json" "$POLICY_V1_MIGRATION_HOME/model-policy.json"
+POLICY_V1_MIGRATION_FILE="$(policy_active_file "$POLICY_V1_MIGRATION_HOME")"
+cp -- "$POLICY_V1_MIGRATION_FILE" "$POLICY_V1_MIGRATION_HOME/active-before.json"
+POLICY_V1_MIGRATION_MODE="$(stat -c '%a' "$POLICY_V1_MIGRATION_FILE")"
 # The quoted inner script reads these variables from its child environment.
 # shellcheck disable=SC2016
 POLICY_V1_MIGRATION_IDENTITY="$(AGENT_HOME="$POLICY_V1_MIGRATION_HOME" MODEL_POLICY_TEST_SCRIPT_DIR="$SCRIPT_DIR" bash -c '
@@ -3623,13 +3633,20 @@ assert_eq "ordinary model-policy initialization migrates a valid v1 custom fallb
   "$POLICY_WORK_IDENTITY" "$POLICY_V1_MIGRATION_IDENTITY"
 assert_true "ordinary v1 migration installs the complete current default" \
   jq -e --slurpfile default "$SCRIPT_DIR/model-policy.default.json" '. == $default[0]' \
-    "$POLICY_V1_MIGRATION_HOME/model-policy.json"
-POLICY_V1_MIGRATION_BACKUPS=("$POLICY_V1_MIGRATION_HOME"/model-policy.json.bak.*)
+    "$POLICY_V1_MIGRATION_FILE"
+mapfile -t POLICY_V1_MIGRATION_BACKUPS < <(find "$POLICY_V1_MIGRATION_HOME" -maxdepth 1 -type f \
+  -name "$(basename "$POLICY_V1_MIGRATION_FILE").bak.schema-v*" -print)
 assert_eq "ordinary v1 migration preserves the original bytes in one backup" \
   1 "${#POLICY_V1_MIGRATION_BACKUPS[@]}"
 assert_true "ordinary v1 migration backup retains the original bytes and mode" \
-  bash -c 'cmp -s "$1" "$2" && [[ "$(stat -c %a "$2")" == 640 ]]' _ \
-    "$POLICY_V1_MIGRATION_HOME/before.json" "${POLICY_V1_MIGRATION_BACKUPS[0]}"
+  bash -c 'cmp -s "$1" "$2" && [[ "$(stat -c %a "$2")" == "$3" ]]' _ \
+    "$POLICY_V1_MIGRATION_HOME/active-before.json" "${POLICY_V1_MIGRATION_BACKUPS[0]}" "$POLICY_V1_MIGRATION_MODE"
+if model_policy_validate_file "$POLICY_V1_MIGRATION_FILE"; then
+  POLICY_V1_MIGRATED_CHECK=clean
+else
+  POLICY_V1_MIGRATED_CHECK=invalid
+fi
+assert_eq "migrated active policy view passes current validation" clean "$POLICY_V1_MIGRATED_CHECK"
 rm -rf "$POLICY_V1_MIGRATION_HOME"
 
 # The v1 contract predates the current "sol" ban. The active-role fallback is
@@ -3646,6 +3663,7 @@ jq --arg model "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_MODEL" '
   "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME/model-policy.json"
 cp -- "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME/model-policy.json" \
   "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME/before.json"
+POLICY_V1_CURRENTLY_FORBIDDEN_FILE="$(policy_active_file "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME")"
 set +e
 POLICY_V1_CURRENTLY_FORBIDDEN_SOURCE_CHECK="$(AGENT_HOME="$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME" \
   MODEL_POLICY_SOURCE_CHECK_ONLY=1 MODEL_POLICY_TEST_SCRIPT_DIR="$SCRIPT_DIR" bash -c '
@@ -3675,12 +3693,13 @@ assert_eq "migration discards a v1 fallback forbidden only by current policy" \
   0 "$POLICY_V1_CURRENTLY_FORBIDDEN_IDENTITY_STATUS"
 assert_eq "migration resolves work identity after discarding a v1 fallback forbidden only by current policy" \
   "$POLICY_WORK_IDENTITY" "$POLICY_V1_CURRENTLY_FORBIDDEN_IDENTITY"
-POLICY_V1_CURRENTLY_FORBIDDEN_BACKUPS=("$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME"/model-policy.json.bak.*)
-assert_eq "v1 fallback migration still preserves the original policy in one backup" \
-  1 "${#POLICY_V1_CURRENTLY_FORBIDDEN_BACKUPS[@]}"
+mapfile -t POLICY_V1_CURRENTLY_FORBIDDEN_BACKUPS < <(find "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME" -maxdepth 1 -type f \
+  -name "$(basename "$POLICY_V1_CURRENTLY_FORBIDDEN_FILE").bak.schema-v*" -print)
+assert_eq "v1 fallback migration still preserves the original policy in one backup" 1 \
+  "${#POLICY_V1_CURRENTLY_FORBIDDEN_BACKUPS[@]}"
 assert_true "v1 fallback migration installs the complete current default" \
   jq -e --slurpfile default "$SCRIPT_DIR/model-policy.default.json" '. == $default[0]' \
-    "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME/model-policy.json"
+    "$POLICY_V1_CURRENTLY_FORBIDDEN_FILE"
 rm -rf "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME"
 
 POLICY_V1_RETAINED_INVALID_HOME="$(mktemp -d)"
@@ -5605,7 +5624,7 @@ BARE_NEEDS_ADVISOR_SITES="$(grep -rn -- '--add-label needs-advisor' "$SCRIPT_DIR
   | grep -v '\.test\.sh:' | grep -v "^$SCRIPT_DIR/lib.sh:" | grep -v "^$SCRIPT_DIR/lib.d/issue-state.sh:" || true)"
 assert_eq "no direct needs-advisor label writes remain outside lib.sh" \
   "" "$BARE_NEEDS_ADVISOR_SITES"
-LIB_NEEDS_ADVISOR_COUNT="$(grep -h -- '--add-label needs-advisor' "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR"/lib.d/*.sh | wc -l | tr -d ' ')"
+LIB_NEEDS_ADVISOR_COUNT="$({ grep -h -- '--add-label needs-advisor' "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR"/lib.d/*.sh || true; } | wc -l | tr -d ' ')"
 assert_eq "lib.sh has no direct needs-advisor label writes outside issue_transition" \
   "0" "$LIB_NEEDS_ADVISOR_COUNT"
 # 2026-09-19: the filter this asserts against grew a third clause
@@ -5728,7 +5747,7 @@ BARE_NEEDS_RECUT_SITES="$(grep -rn -- '--add-label needs-recut' "$SCRIPT_DIR"/*.
   | grep -v '\.test\.sh:' | grep -v "^$SCRIPT_DIR/lib.sh:" | grep -v "^$SCRIPT_DIR/lib.d/issue-state.sh:" || true)"
 assert_eq "no direct needs-recut label writes remain outside lib.sh" \
   "" "$BARE_NEEDS_RECUT_SITES"
-LIB_NEEDS_RECUT_COUNT="$(grep -h -- '--add-label needs-recut' "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR"/lib.d/*.sh | wc -l | tr -d ' ')"
+LIB_NEEDS_RECUT_COUNT="$({ grep -h -- '--add-label needs-recut' "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR"/lib.d/*.sh || true; } | wc -l | tr -d ' ')"
 assert_eq "lib.sh has no direct needs-recut label writes outside issue_transition" \
   "0" "$LIB_NEEDS_RECUT_COUNT"
 assert_eq "route_to_recut() clears a stale recut_refused_at before its own needs-recut add" \
@@ -6055,16 +6074,31 @@ MAIN_CI_QUARANTINE_OUT="$(AGENT_HOME="$MAIN_CI_QUARANTINE_HOME" bash -c '
   set -euo pipefail
   source "$0/lib.sh"
   REPO=test/repo
-  gh() {
-    [ "$MAIN_CI_CASE" != lookup-failed ] || return 1
-    if [ "$MAIN_CI_CASE" = green ]; then
-      echo "{\"workflow_runs\":[{\"event\":\"push\",\"status\":\"completed\",\"conclusion\":\"success\",\"created_at\":\"2026-10-05T01:00:00Z\"}]}"
-    else
-      echo "{\"workflow_runs\":[{\"event\":\"push\",\"status\":\"completed\",\"conclusion\":\"failure\",\"created_at\":\"2026-10-05T01:00:00Z\"}]}"
-    fi
-  }
+  mkdir -p "$AGENT_HOME/bin"
+  cat > "$AGENT_HOME/bin/gh" <<\GH
+#!/usr/bin/env bash
+[[ "${MAIN_CI_CASE:-}" != lookup-failed ]] || exit 1
+case "${1:-} ${2:-}" in
+  "api repos/test/repo/git/ref/heads/main")
+    echo "{\"object\":{\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}" ;;
+  "api repos/test/repo/actions/runs?head_sha="*)
+    if [[ "$MAIN_CI_CASE" == green ]]; then conclusion=success; else conclusion=failure; fi
+    printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":1,\"event\":\"push\",\"head_branch\":\"main\",\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"path\":\".github/workflows/ci.yml\",\"status\":\"completed\",\"conclusion\":\"%s\",\"created_at\":\"2026-10-05T01:00:00Z\"}]}\\n" "$conclusion" ;;
+  "api repos/test/repo/actions/runs/7/jobs?per_page=100&page=1")
+    echo "{\"jobs\":[{\"name\":\"Postsubmit validate\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"name\":\"NUL bytes & lone negative assertions\",\"status\":\"completed\",\"conclusion\":\"success\"}]}" ;;
+  *) exit 98 ;;
+esac
+GH
+  chmod +x "$AGENT_HOME/bin/gh"
+  PATH="$AGENT_HOME/bin:$PATH"; export PATH
+  ZF_ENGINE_DIR="$AGENT_HOME/engine"; export ZF_ENGINE_DIR
+  mkdir -p "$ZF_ENGINE_DIR/night"
+  printf "%s\n" "#!/usr/bin/env bash" "exit 0" > "$ZF_ENGINE_DIR/night/main-ci-recovery.sh"
+  chmod +x "$ZF_ENGINE_DIR/night/main-ci-recovery.sh"
+  gh() { command gh "$@"; }
   for scenario in red green lookup-failed; do
     MAIN_CI_CASE="$scenario"
+    export MAIN_CI_CASE
     QUARANTINE_DIR="$AGENT_HOME/quarantine-$scenario"
     ENV_FAULT_DIR="$AGENT_HOME/faults-$scenario"
     record_env_fault env:main-ci-red implement 991001 "main push failed" "" 1800000000 0

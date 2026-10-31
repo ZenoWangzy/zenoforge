@@ -1191,7 +1191,7 @@ test_cli_records_and_applies_hold() {
 test_out_of_tick_cli_hold_fetches_and_cleans_roadmap_cache() {
   local original status=0 output labels
   reset_fixture
-  jq '.switches["roadmap-order"] = true | .roles.advisor.disabled = false' "$SCRIPT_DIR/model-policy.default.json" > "$AGENT_HOME/model-policy.json"
+  jq '.switches["roadmap-order"] = true | .roles.advisor.disabled = false' "$SCRIPT_DIR/model-policy.default.json" > "$MODEL_POLICY_FILE"
   write_issue 4110 '[{"name":"ready-for-agent"}]' '[]' 'out-of-tick hold'
   write_state 4110 '{"state":"ready-for-agent"}'
   unset ZF_ROADMAP_TREE_CACHE_FILE
@@ -1208,7 +1208,7 @@ JSON
     status=$?
   fi
   eval "$original"
-  jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$SCRIPT_DIR/model-policy.default.json" > "$AGENT_HOME/model-policy.json"
+  jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$SCRIPT_DIR/model-policy.default.json" > "$MODEL_POLICY_FILE"
   assert_eq "out-of-tick --hold succeeds without a cache env" 0 "$status"
   assert_not_contains "out-of-tick hold avoids the old cache refusal" "$output" 'roadmap: no per-tick tree cache'
   assert_eq "out-of-tick hold fetches one roadmap tree" 'test/repo' "$(cat "$AGENT_HOME/night/roadmap-fetch.log" 2>/dev/null || true)"
