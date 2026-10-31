@@ -10,6 +10,9 @@ stale=$(gh pr list --label hotfix --state open --json number,title,updatedAt,isD
   | jq -r --argjson now "$now" --argjson limit "$limit" \
     '.[] | select(.isDraft | not) | (($now - (.updatedAt | fromdateiso8601)) / 60 | floor) as $m
          | select($m >= $limit) | "#\(.number) idle \($m) min: \(.title)"')
-[[ -z $stale ]] && exit 0
-printf 'hf-stale: open hotfix PRs with no push for %s+ min:\n%s\n' "$limit" "$stale"
+# 10-31 audit: the worker stall check sees output, not progress; also list workers past their budget with no commit and no change.
+stuck=$(bash "$(dirname "$0")/hf-worker-stuck.sh") || true
+[[ -z $stale && -z $stuck ]] && exit 0
+[[ -z $stale ]] || printf 'hf-stale: open hotfix PRs with no push for %s+ min:\n%s\n' "$limit" "$stale"
+[[ -z $stuck ]] || printf '%s\n' "$stuck"
 exit 1
