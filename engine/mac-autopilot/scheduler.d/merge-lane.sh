@@ -20,7 +20,8 @@ repair_check_rows() { # PR number → latest normalized check rows from the tick
     jqf -c --arg pr "$pr" '.[$pr].checks // []' <<<"$census"
     return
   fi
-  checks="$(unset GH_TOKEN; gh pr checks "$pr" --json name,bucket,link 2>/dev/null || true)"
+  # gh exits nonzero when a check failed but still prints the rows; only empty output is a real gh failure.
+  checks="$(unset GH_TOKEN; gh pr checks "$pr" --json name,bucket,link 2>/dev/null)"; [[ -n "$checks" ]] || return 1
   node "$HERE/../ci/pr-required-aggregate.mjs" --latest-checks <<<"$checks" 2>/dev/null
 }
 
