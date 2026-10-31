@@ -28,6 +28,7 @@ reconcile_orphan_prs() {
   last="$(cat "$A/orphan-check.epoch" 2>/dev/null)"
   [[ "$last" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - last < ${ORPHAN_CHECK_SECONDS:-1800} )) && return 0
   echo "$NOW_EPOCH" > "$A/orphan-check.epoch"
+  tick_prs_prime
   prs="$(tick_prs)" || return 0
   blocked="$(jqf -c '[.units[] | select(.stage=="blocked-external" and .blocked_on != null) | .blocked_on]' "$UNITS")"
   orphan_issue_numbers="$(jqf -c --slurpfile u "$UNITS" '
@@ -132,6 +133,7 @@ aged_pr_close() { # prn branch age behind class reason [new-issue] → 0 关闭�
 - 分类：${class}
 - 理由：${reason}
 - 触发：年龄 $((age / 86400)) 天、落后 main ${behind} 个提交（阈值 7 天 / 300 提交）"
+  tick_prs_changed
   if ! gh pr close "$prn" --comment "$comment" >/dev/null 2>&1; then
     say "aged PR#$prn: close failed; retry next round"
     return 1
@@ -148,6 +150,7 @@ aged_pr_lifecycle() {
   last="$(cat "$A/aged-pr-check.epoch" 2>/dev/null || true)"
   [[ "$last" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - last < ${AGED_PR_CHECK_SECONDS:-3600} )) && return 0
   echo "$NOW_EPOCH" > "$A/aged-pr-check.epoch"
+  tick_prs_prime
   pr_json="$(tick_prs 2>/dev/null)" || return 0
   rows="$(jqf -r 'map(select(.baseRefName == "main" and (.headRefName | test("^(agent|hand)/"))))
       | sort_by(.createdAt) | .[]
@@ -214,7 +217,8 @@ aged_pr_lifecycle() {
     if [[ -n "$n" ]]; then
       intent_title="$(jqf -r .title <<<"$issue_json")"; intent_body="$(jqf -r .body <<<"$issue_json")"
     else
-      pr_json_meta="$(gh pr view "$prn" --json title,body 2>/dev/null)" || { say "aged PR#$prn: pr view failed; retry next round"; continue; }
+      pr_json_meta="$(jqf -c --argjson pr "$prn" '[.[] | select(.number == $pr) | {title,body}][0] // empty' <<<"$pr_json")"
+      [[ -n "$pr_json_meta" ]] || pr_json_meta="$(gh pr view "$prn" --json title,body 2>/dev/null)" || { say "aged PR#$prn: pr view failed; retry next round"; continue; }
       intent_title="$(jqf -r .title <<<"$pr_json_meta")"; intent_body="$(jqf -r .body <<<"$pr_json_meta")"
     fi
     m_url="$(gh issue create --title "重做（旧 PR #${prn}）：${intent_title}" \

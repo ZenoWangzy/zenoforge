@@ -136,6 +136,7 @@ register_new_issues() {
     [[ -n "$handoff_rows" ]] || return 0
     if [[ "${2:-}" != reuse ]]; then
       HANDOFF_CENSUS_PARTIAL=0; HANDOFF_WAIT_PRS='[]'; HANDOFF_WAIT_BRANCHES='[]'
+      tick_prs_prime
       cached_prs="$(tick_prs 2>/dev/null || true)"
       if [[ -n "$cached_prs" ]] && jqf -e 'type=="array" and length < 300' <<<"$cached_prs" >/dev/null; then
         HANDOFF_PR_CENSUS="$(jqf -c '[.[] | {number,headRefName,title,body,labels}]' <<<"$cached_prs")"
@@ -173,6 +174,7 @@ register_new_issues() {
   if [[ -n "${HANDOFF_PR_CENSUS:-}" && "${HANDOFF_CENSUS_PARTIAL:-0}" != 1 ]]; then
     busy="$(jqf -r '.[] | "\(.headRefName) \(.title) \(.body // "")"' <<<"$HANDOFF_PR_CENSUS")"
   else
+    tick_prs_prime
     busy_prs="$(tick_prs 2>/dev/null)" || busy_prs=""
     if [[ -n "$busy_prs" ]]; then
       busy="$(jqf -r '.[] | "\(.headRefName) \(.title) \(.body // "")"' <<<"$busy_prs")"
@@ -303,7 +305,7 @@ register_new_issues() {
       if [[ "$handoff_pr" =~ ^[0-9]+$ ]]; then existing_pr="$handoff_pr"; fi
       pr_state=""
       if [[ "$existing_pr" =~ ^[0-9]+$ ]]; then
-        pr_state="$(pr_view "$existing_pr" state)" || continue
+        pr_state="$(tick_pr_state "$existing_pr")" || continue
       fi
       if [[ "$pr_state" == OPEN ]]; then
         lane="$(classify_lane "$existing_pr")" || { say "hold handoff issue #$n: cannot classify PR#$existing_pr; retry next tick"; continue; }
@@ -319,7 +321,7 @@ register_new_issues() {
       fi
       (( existing_only )) && continue
       if [[ -n "$episode" && "$handoff_pr" =~ ^[0-9]+$ && -n "$handoff_branch" ]]; then
-        pr_state="$(pr_view "$handoff_pr" state)" || continue
+        pr_state="$(tick_pr_state "$handoff_pr")" || continue
         if [[ "$pr_state" == OPEN ]]; then
           lane="$(classify_lane "$handoff_pr")" || { say "hold handoff issue #$n: cannot classify PR#$handoff_pr; retry next tick"; continue; }
           lane_policy="$(lane_policy_blob)"

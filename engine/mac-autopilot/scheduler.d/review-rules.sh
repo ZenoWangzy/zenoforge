@@ -73,6 +73,20 @@ tick_pr_branch() { # PR → head branch from this tick's open-PR census, with a 
   [[ -n "$branch" ]] || return 1
   printf '%s\n' "$branch"
 }
+tick_pr_state() { # An open-census hit is OPEN; closed or missing PRs still need a direct lookup.
+  local prs state=""
+  prs="$(tick_prs 2>/dev/null || true)"
+  [[ -z "$prs" ]] || state="$(jqf -r --argjson p "$1" 'if any(.[]; .number == $p) then "OPEN" else empty end' <<<"$prs")"
+  [[ -n "$state" ]] || state="$(pr_view "$1" state)" || return 1
+  printf '%s\n' "$state"
+}
+tick_pr_mergeable() { # Missing mergeability and PRs outside the census use the direct lookup.
+  local prs state=""
+  prs="$(tick_prs 2>/dev/null || true)"
+  [[ -z "$prs" ]] || state="$(jqf -r --argjson p "$1" '[.[] | select(.number == $p) | .mergeable][0] // empty' <<<"$prs")"
+  [[ -n "$state" ]] || state="$(pr_view "$1" mergeable)" || return 1
+  printf '%s\n' "$state"
+}
 classify_lane() { # pr → direct-main|pr（取不到文件列表返回 1）
   local files json verdict
   # The REST file list includes previous_filename for renames; both sides must be classified.

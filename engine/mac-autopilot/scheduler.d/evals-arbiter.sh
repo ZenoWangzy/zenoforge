@@ -411,6 +411,7 @@ supervisor_apply_action() { # id action report-path —— 六动作落地，决
     close)
       pr="$(unit_field "$id" '.pr // empty')"
       if [[ "$pr" =~ ^[0-9]+$ ]]; then
+        tick_prs_changed
         gh pr close "$pr" --comment "Autopilot supervisor arbitration: ${reason:-the unit outcome is resolved elsewhere}" >/dev/null 2>&1 \
           || say "supervisor arbitration unit=$id: could not close PR #$pr"
       fi

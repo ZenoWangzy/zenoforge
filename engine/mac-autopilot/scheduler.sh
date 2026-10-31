@@ -403,6 +403,7 @@ main() {
     return 2
   fi
   tick_gh_calls_begin
+  tick_prs_prime
   rotate_logs
   if update_budget >/dev/null; then
     budget_alert_if_needed
@@ -438,6 +439,7 @@ main() {
     phase dispatch_supervisor_arbiters
     phase dispatch_prompt_evals
     phase fast_land_lane
+    tick_prs_changed # Dispatched workers can push while earlier phases run.
     phase_yield_lock ci_admission
     phase_yield_lock run_merge_lane
     phase register_new_prs

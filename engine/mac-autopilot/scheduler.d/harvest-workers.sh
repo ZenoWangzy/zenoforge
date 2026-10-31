@@ -20,11 +20,13 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
     fi
     if [[ "$wtype" == eval ]]; then
       alive "$pid" && continue
+      tick_prs_prime
       harvest_prompt_eval "$w"
       continue
     fi
     if [[ "$wtype" == supervise ]]; then
       alive "$pid" && continue
+      tick_prs_prime
       harvest_supervisor_arbiter "$w"
       continue
     fi
@@ -48,6 +50,8 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
       continue
     fi
 
+    case "$wtype" in implement|repair|land) tick_prs_changed ;; esac # Finished workers may have pushed.
+    tick_prs_prime
     # --json 日志先取事件流自身的 session id（thread.started）；legacy 日志退回页脚 grep，再退回台账（resume 派发时已知）
     local execution
     execution="$(jq -Rsc '[split("\n")[] | fromjson? | select(.type=="pipeline.execution")] | last // {}' "$lg" 2>/dev/null)"

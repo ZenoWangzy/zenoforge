@@ -16,12 +16,13 @@ ci_unit_facts() { # id head → 早期测试红路径已为同一 head 解析过
 
 # 所有 update-branch 都走这一个封装：expected_head_sha 钉住观察到的 head，GitHub 在 head 已变时返回 422，不会更新陌生提交。
 ci_update_branch() { # pr head
+  tick_prs_changed
   gh api -X PUT "repos/{owner}/{repo}/pulls/$1/update-branch" -f "expected_head_sha=$2" >/dev/null 2>&1
 }
 
 ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（多为 runner 抖动），重跑后仍红才派 repair
   local r n=0
-  if [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]] && pr_behind_main "$2" "$3" && [[ "$(pr_view "$2" mergeable)" == MERGEABLE ]]; then
+  if [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]] && pr_behind_main "$2" "$3" && [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]]; then
     # 落后 main 的红多半是旧 base 的红（2026-10-19：main 自身 suites 红，5 个就绪 PR 跟着红）：服务端合入 main 再跑，
     # 不在旧 base 上重跑、不派 LLM 修复；干净合并的新 head 沿用原批准（approval_carries）。
     if ci_update_branch "$2" "$3"; then
@@ -160,7 +161,7 @@ ci_stale_base_hop() { # id pr head facts
   local suites; suites="$(jq -sc '[.[] | ((.pipelineSuites // [])[])] | unique' <<<"$4" 2>/dev/null)"
   [[ -n "$suites" && "$suites" != "[]" ]] || return 1
   jq -e --argjson s "$suites" --arg id "$1" '[.units[] | select(.id == $id) | (.stale_hops // [])[]] as $h | all($s[]; . as $x | $h | index($x) | not)' "$UNITS" >/dev/null 2>&1 || return 1
-  [[ "$(pr_view "$2" mergeable)" == MERGEABLE ]] || return 1
+  [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]] || return 1
   ci_update_branch "$2" "$3" || return 1
   set_unit "$1" "$(hist ci-stale-base-update "suites $suites") | .stale_hops = ((.stale_hops // []) + $suites | unique) | .ci_rerun_sha=$(js "$3")"
   say "merge skipped PR#$2 (stale-base failure in $suites) -> update-branch at $3, no repair"
@@ -207,6 +208,7 @@ ensure_gated_label() { # 首次使用前建一次标签；已存在时 GitHub �
   GATED_LABEL_READY=1
 }
 gated_status() { # sha state context description：按 head 绑定的共享状态
+  tick_prs_changed # Status writes alter the cached check rollup.
   gh api "repos/{owner}/{repo}/statuses/$1" -f state="$2" -f context="$3" -f description="$4" >/dev/null 2>&1
 }
 approved_status_on() { # head → 该 head 上有 agent/ci-approved success
@@ -224,7 +226,7 @@ merge_ref_converts() { # pr → PR 合并引用里的 workflow 已含 converted_
     | base64 -d 2>/dev/null | grep -q converted_to_draft
 }
 gated_demote_pr() { # pr branch reason：退回 draft；只有合并引用还没有 converted_to_draft 时才补一次带审计的取消
-  gh pr ready "$1" --undo >/dev/null 2>&1 || return 1
+  gh pr ready "$1" --undo >/dev/null 2>&1 || { tick_prs_changed; return 1; }
   tick_prs_set_draft "$1" true
   if [[ -n "${GATED_OF[$2]:-}" ]]; then
     local gated_pr gated_draft gated_head
@@ -236,7 +238,7 @@ gated_demote_pr() { # pr branch reason：退回 draft；只有合并引用还没
 }
 gated_flag_pr() { # pr → 给 PR 加门控标签
   ensure_gated_label
-  gh pr edit "$1" --add-label "$GATED_LABEL" >/dev/null 2>&1 || return 1
+  gh pr edit "$1" --add-label "$GATED_LABEL" >/dev/null 2>&1 || { tick_prs_changed; return 1; }
   tick_prs_add_label "$1" "$GATED_LABEL"
 }
 repair_demote() { # unit pr branch：repair 派出成功后，门控 PR 和符合条件的旧 agent PR 退回 draft，其余保持原来的审计取消
@@ -255,8 +257,11 @@ scheduler_pr_open() { # branch title body [base] → SCHED_PR_NUM / SCHED_PR_OUT
   row="$(gh pr list --head "$1" --state open --json number,isDraft --jq '.[0] | select(. != null) | "\(.number) \(.isDraft)"' 2>/dev/null)"
   read -r pr draft <<<"$row"
   if [[ "$pr" =~ ^[0-9]+$ ]]; then
-    if [[ "$base" != main ]] && ! SCHED_PR_OUT="$(gh pr edit "$pr" --base "$base" 2>&1)"; then
-      SCHED_PR_NUM=""; return 0
+    if [[ "$base" != main ]]; then
+      tick_prs_changed
+      if ! SCHED_PR_OUT="$(gh pr edit "$pr" --base "$base" 2>&1)"; then
+        SCHED_PR_NUM=""; return 0
+      fi
     fi
     if (( gate )) && [[ "$draft" == false ]] && gated_flag_pr "$pr"; then gated_demote_pr "$pr" "$1" "ci deferred; PR adopted as draft" || true; fi
     SCHED_PR_NUM="$pr"; return 0
@@ -305,7 +310,7 @@ gated_ready() { # id branch approved_head：批准的 head 占到名额（或属
   fi
   approved_status_on "$3" || gated_status "$3" success agent/ci-approved "approved by the reviewer" || return 0
   ready_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  gh pr ready "$pr" >/dev/null 2>&1 || return 0
+  gh pr ready "$pr" >/dev/null 2>&1 || { tick_prs_changed; return 0; }
   tick_prs_set_draft "$pr" false
   GATED_OF["$2"]="$pr false $ghead"
   READIED_PRS["$pr"]=1
@@ -361,17 +366,19 @@ tick_prs() {
   jqf -e 'type == "array"' <<<"$TICK_PRS" >/dev/null || { TICK_PRS=""; return 1; }
   printf '%s' "$TICK_PRS"
 }
-tick_prs_changed() { TICK_PRS=""; TICK_PR_CHECK_CENSUS=""; }
+tick_prs_prime() { [[ -n "$TICK_PRS" ]] || tick_prs >/dev/null 2>&1 || true; }
+tick_prs_changed() { TICK_PRS=""; TICK_PR_CHECK_CENSUS=""; TICK_PR_STATE=(); }
 tick_prs_set_draft() { # PR ready/draft writes do not change its census identity or checks
   [[ -n "$TICK_PRS" ]] || return 0
   local updated
-  updated="$(jqf --argjson pr "$1" --argjson draft "$2" 'map(if .number==$pr then .isDraft=$draft else . end)' <<<"$TICK_PRS")" || { TICK_PRS=""; return 0; }
+  updated="$(jqf --argjson pr "$1" --argjson draft "$2" 'map(if .number==$pr then .isDraft=$draft else . end)' <<<"$TICK_PRS")" || { tick_prs_changed; return 0; }
   TICK_PRS="$updated"
+  TICK_PR_CHECK_CENSUS=""
 }
 tick_prs_add_label() { # mirror a successful label write in the current tick's PR census
   [[ -n "$TICK_PRS" ]] || return 0
   local updated
-  updated="$(jqf --argjson pr "$1" --arg label "$2" 'map(if .number==$pr then .labels=((.labels // []) + [{name:$label}] | unique_by(.name)) else . end)' <<<"$TICK_PRS")" || { TICK_PRS=""; return 0; }
+  updated="$(jqf --argjson pr "$1" --arg label "$2" 'map(if .number==$pr then .labels=((.labels // []) + [{name:$label}] | unique_by(.name)) else . end)' <<<"$TICK_PRS")" || { tick_prs_changed; return 0; }
   TICK_PRS="$updated"
 }
 ci_hotfix_branches() { # → 当前 open PR 中由 #4615 分类器识别的热修分支
