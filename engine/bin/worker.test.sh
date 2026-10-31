@@ -122,6 +122,9 @@ BACKEND
   ln -sf fake-backend "$bin/zc"
   ln -sf fake-backend "$bin/luna"
 }
+# The worker finds its backends beside itself; the scratch root has no bin/ (10-30 rc=127 on every dispatch).
+make_fake_backends "$test_root/bin"
+cp "$worker_script" "$test_root/bin/worker"; worker_script="$test_root/bin/worker"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_file_contains() { grep -Fq -- "$2" "$1" || fail "expected '$2' in $1"; }
@@ -140,7 +143,6 @@ run_case() {
     schema="$test_root/$name/schema.json"
     printf '{"type":"object"}\n' > "$schema"
   fi
-  make_fake_backends "$root/bin"
   d="$root/luna/$key"
   mkdir -p "$d"
   [[ -z $history ]] || printf '%s\n' "$history" > "$root/luna/rounds.log"
@@ -299,7 +301,6 @@ printf 'PASS open zc breaker routes to luna\n'
 # Simulate lw stop: the worker and backend have different sessions/process groups.
 root="$test_root/term/.scratch"; wt="$test_root/term/worktree"; prompt="$test_root/term/brief.md"; key=test-term
 mkdir -p "$root/tmp" "$root/luna/$key" "$wt"
-make_fake_backends "$root/bin"
 printf 'stop this backend\n' > "$prompt"
 d="$root/luna/$key"
 setsid env WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND=luna CODEX_MODEL=gpt-6.1-terra \
