@@ -399,7 +399,7 @@ run_merge_lane() {
     fi
     # 先取当前 PR ref 并确认它仍是刚才审核/批准的 head，再对这个固定 SHA 执行同一规则判定（#4548 CTO 裁决
     # 2026-10-29）：原样复用 rule-lane.sh，actor 与 direct-main 同源取合并身份——supervisor 起拍
-    # （ZF_AGENT_NAME=supervisor）时非 unit 分支的 PR 走规则通道，按 Rule-Replay 回放报告放行；
+    # （ZF_AGENT_NAME=supervisor）时非 unit 分支的 PR 走规则通道，按 2026-10-31 裁决做语法检查；
     # unit worker 的分支（agent/issue-*、agent/auto-issue-*、factory/*、hand/*）无论环境一律按 unit 判定，
     # 改到规则文件即拒、PR 留修复说明并转 supervisor 队列。
     candidate_ref="${merge_head_ref[$pr]:-}"
@@ -446,7 +446,7 @@ run_merge_lane() {
         fi
         to_supervisor "$id" "PR#$pr 改到规则文件（${rule_event#*files=}）：unit 不能合入规则改动，转 supervisor 规则通道处理"
       elif [[ "$rule_event" == *decision=rule-reject* ]]; then
-        say "merge skipped PR#$pr (rule lane rejected the replay report)"
+        say "merge skipped PR#$pr (rule lane rejected the syntax check)"
       else
         say "merge skipped PR#$pr (rule lane failed)"
       fi

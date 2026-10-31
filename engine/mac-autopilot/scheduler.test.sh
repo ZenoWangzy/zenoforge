@@ -1131,10 +1131,9 @@ export REQUIRED_PR_CHECKS_FILE="$test_env_root/required-pr-checks.json"
 sched_run_case pipeline_ci_adoption
 
 sched_case_rule_lane() {
-# One supervisor tick (#4548): the same rule-file diff with a
-# valid replay trailer merges on a supervisor branch, is refused and moved to the
-# supervisor queue on unit branches, and stays unmerged when the trailer or report is
-# missing or invalid. Unavailable diffs and failed repair comments keep holding.
+# One supervisor tick: unit rule-file diffs remain blocked, while supervisor rule-file
+# diffs pass on syntax alone regardless of Rule-Replay trailers or report contents.
+# Unavailable diffs and failed repair comments keep holding.
 new_tick_fixture rule-lane
 enable_rule_lane_fixture
 touch "$TF/supervisor/test-evidence.jsonl"
@@ -1236,12 +1235,12 @@ command jq -e --arg bad "$rule_head" --arg clean "$clean_head" --arg no_report "
   and ([.units[] | select(.pr==53)][0] | .stage=="supervisor-review" and (.rule_lane_commented_sha // null)==null)
   and ([.units[] | select(.pr==54)][0] | .stage=="merged" and .approved_sha==$clean)
   and ([.units[] | select(.pr==55)][0] | .stage=="merged" and .approved_sha==$bad)
-  and ([.units[] | select(.pr==56)][0] | .stage=="ready-to-merge" and .approved_sha==$no_report)
-  and ([.units[] | select(.pr==57)][0] | .stage=="ready-to-merge" and .approved_sha==$bad_report)
-  and ([.units[] | select(.pr==58)][0] | .stage=="ready-to-merge" and .approved_sha==$newstop)
+  and ([.units[] | select(.pr==56)][0] | .stage=="merged" and .approved_sha==$no_report)
+  and ([.units[] | select(.pr==57)][0] | .stage=="merged" and .approved_sha==$bad_report)
+  and ([.units[] | select(.pr==58)][0] | .stage=="merged" and .approved_sha==$newstop)
 ' "$TF/supervisor/autopi/units.json" >/dev/null \
   || { echo 'scheduler.test.sh: rule-lane did not route each PR per the CTO ruling' >&2; exit 1; }
-for rejected_pr in 51 52 53 56 57 58; do
+for rejected_pr in 51 52 53; do
   if grep -q "^merge $rejected_pr$" "$TF/actions"; then
     echo "scheduler.test.sh: scheduler merged blocked PR $rejected_pr" >&2; exit 1
   fi
@@ -1250,7 +1249,11 @@ grep -q '^merge 54$' "$TF/actions" \
   || { echo 'scheduler.test.sh: scheduler did not merge the rule-free PR' >&2; exit 1; }
 grep -q '^merge 55$' "$TF/actions" \
   || { echo 'scheduler.test.sh: scheduler did not merge the supervisor rule PR with a valid report' >&2; exit 1; }
-grep -Fq 'pr comment 51 --body 规则改动由 supervisor 落地：direct-main 规则通道，或 supervisor 合入的 PR 带 Rule-Replay 回放报告；unit PR 即使带回放报告也会拒绝。' "$TF/actions" \
+for accepted_pr in 56 57 58; do
+  grep -q "^merge $accepted_pr$" "$TF/actions" \
+    || { echo "scheduler.test.sh: syntax-valid supervisor rule PR $accepted_pr did not merge without report validation" >&2; exit 1; }
+done
+grep -Fq 'pr comment 51 --body 规则改动由 supervisor 落地并通过语法检查；unit PR 即使带回放报告也会拒绝。' "$TF/actions" \
   || { echo 'scheduler.test.sh: rejected rule PR did not receive the direct-main repair explanation' >&2; exit 1; }
 grep -Fq 'rule-lane: repair comment failed PR#53' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: failed repair comment was not logged while the PR stayed held' >&2; exit 1; }
@@ -1276,16 +1279,8 @@ grep -Fq 'rule-lane: decision=unit-reject refused=rule-files actor=unit:agent/is
   || { echo 'scheduler.test.sh: scheduler log omitted the comment-failure rejection event' >&2; exit 1; }
 grep -Fq 'rule-lane: decision=pass actor=unit touched=0' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: a unit branch did not keep its unit actor under the supervisor tick' >&2; exit 1; }
-grep -Fq 'rule-lane: decision=rule-lane actor=supervisor touched=1 reports=1 false-stops=0' "$TF/supervisor/autopi/scheduler.log" \
-  || { echo 'scheduler.test.sh: supervisor rule PR with a valid report did not pass the rule lane' >&2; exit 1; }
-grep -Fq 'reason=missing-trailer touched=engine/mac-autopilot/config.template.json' "$TF/supervisor/autopi/scheduler.log" \
-  || { echo 'scheduler.test.sh: rule change without a Rule-Replay trailer was not refused' >&2; exit 1; }
-grep -Fq 'reason=invalid-report path=docs/agents/rule-replays/bad.json' "$TF/supervisor/autopi/scheduler.log" \
-  || { echo 'scheduler.test.sh: rule change with an invalid replay report was not refused' >&2; exit 1; }
-grep -Fq 'reason=new-false-stops count=1 path=docs/agents/rule-replays/newstop.json' "$TF/supervisor/autopi/scheduler.log" \
-  || { echo 'scheduler.test.sh: rule change introducing a new false stop was not refused' >&2; exit 1; }
-grep -Fq 'merge skipped PR#56 (rule lane rejected the replay report)' "$TF/supervisor/autopi/scheduler.log" \
-  || { echo 'scheduler.test.sh: an invalid report did not hold the supervisor PR out of merge' >&2; exit 1; }
+grep -Fq 'rule-lane: decision=rule-lane actor=supervisor touched=1 check=syntax' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: supervisor rule PR did not pass the syntax-only rule lane' >&2; exit 1; }
 }
 sched_run_case rule_lane
 
