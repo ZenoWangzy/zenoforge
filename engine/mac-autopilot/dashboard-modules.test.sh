@@ -183,11 +183,15 @@ const fr = renderAll("founder-roi", {founder_reqs: {stages: ["提出","热修生
   {issue: 4519, title: "t", text: "founder words here", from_ruling: true, labels: ["hotfix"], stage: 2, owner: "热修值班", blocker: "", verified_epoch: Math.floor(Date.now()/1000) - 600},
   {issue: 7, title: "unit only", text: "unit only", from_ruling: false, labels: ["focus"], stage: 0, owner: "pipeline", blocker: "等 #9", verified_epoch: null}]},
   factory: {trend: {days: ["2026-10-28","2026-10-29","2026-10-30"], milestones: [], series: [], retro: ["2026-10-30"], daily: [
-    {id: "spend", label: "花费（token，未折美元）", better: "down", fmt: "tok", values: [100, 200, 300]},
-    {id: "per_accepted", label: "每张合入单花费", better: "down", fmt: "tok", values: [100, 200, 300]},
+    {id: "spend", label: "花费（美元）", better: "down", fmt: "usd", values: [0.0001, 0.0002, 0.0003]},
+    {id: "estimated_usd", label: "估算花费（美元）", better: "down", fmt: "usd", values: [0.00001, 0.00002, 0.00003]},
+    {id: "unpriced", label: "未定价模型记录", better: "down", fmt: "n", values: [1, 0, 0]},
+    {id: "accepted", label: "已验收需求", better: "up", fmt: "n", values: [1, 1, 1]},
+    {id: "per_accepted", label: "每条已验收需求花费", better: "down", fmt: "usd", values: [0.0001, 0.0002, 0.0003]},
     {id: "idle", label: "worker 空闲 %", better: "down", fmt: "pct", values: [null, null, null]}]}}}).out.overview;
 if ((fr.match(/class="frq"/g)||[]).length !== 2 || !fr.includes("founder words here") || !fr.includes("等 #9") || !fr.includes("未确认") || !fr.includes("10 分前") || !fr.includes("进 main")
-    || !fr.includes("每张合入单花费") || !fr.includes("触发复盘") || !fr.includes("最近触发 10-30") || (fr.match(/class="tcard /g)||[]).length !== 3)
+    || !fr.includes("每条已验收需求花费") || !fr.includes("未定价模型记录") || !fr.includes("$0.000100") || !fr.includes("美元")
+    || !fr.includes("触发复盘") || !fr.includes("最近触发 10-30") || (fr.match(/class="tcard /g)||[]).length !== 6)
   throw new Error("overview lacks the founder requirement rows or the daily ROI line");
 const frBad = renderAll("founder-roi-bad", {founder_reqs: {error: "x"}, factory: {error: "y"}}).out.overview;
 if (!frBad.includes("需求台账不可用") || !frBad.includes("ROI 数据不可用")) throw new Error("founder ledger / ROI line error state missing");

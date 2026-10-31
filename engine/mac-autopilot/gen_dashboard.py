@@ -796,7 +796,8 @@ except Exception as e:
 
 try:
     factory_data = factory_trend.collect(AGENT_HOME, units, {w["unit"] for w in wl if w["alive"]},
-        os.path.join(AGENT_HOME, "engine-versions"), os.path.join(A, "factory-trend.cache.json"), traffic=worker_traffic, max_workers=cfg["max_workers"])
+        os.path.join(AGENT_HOME, "engine-versions"), os.path.join(A, "factory-trend.cache.json"), traffic=worker_traffic,
+        max_workers=cfg["max_workers"], runtime=A, worktree_root=wt_root, repo_root=ROOT)
 except Exception as e:
     factory_data = {"error": str(e)[:200]}
 

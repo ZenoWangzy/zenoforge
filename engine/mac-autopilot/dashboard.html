@@ -1091,7 +1091,8 @@ function livePanel(D) {
   return panel("workers", "员工", `<div class="lwbar"><span class="lwlg">${legend}${uleg}</span><span class="lwgs">${gauges}</span></div>${cards}`);
 }
 const FMT = {n: v => String(Math.round(v)), h: v => (v < 10 ? v.toFixed(1) : Math.round(v)) + " 时", pct: v => Math.round(v) + "%",
-  tok: v => v >= 1e6 ? (v/1e6).toFixed(1) + "M" : v >= 1e3 ? Math.round(v/1e3) + "K" : String(Math.round(v))};
+  tok: v => v >= 1e6 ? (v/1e6).toFixed(1) + "M" : v >= 1e3 ? Math.round(v/1e3) + "K" : String(Math.round(v)),
+  usd: v => "$" + (Math.abs(v) < 0.01 ? Number(v).toFixed(6) : Number(v).toFixed(2))};
 const OUTC = {ok:["合入","ok"], bad:["搁置 / 失败","bad"], none:["关闭","none"], run:["流转中","run"]};
 function archivePanel(D) {
   const F = D.factory;
@@ -1156,7 +1157,7 @@ function roiLinePanel(D) {
   if (!T || !Array.isArray(T.daily)) return panel("arrow", "每日 ROI", emptyMsg("ROI 数据不可用"));
   const hit = (T.retro || []).slice(-1)[0];
   return panel("arrow", "每日 ROI", `<div class="tgrid">${T.daily.map(s => trendCard(s, T.days, T.milestones)).join("")}</div>
-    <div class="lg"><span>规则：每张合入单花费连续 3 天上升 → 开复盘；${hit ? `最近触发 ${esc(hit.slice(5))}` : "窗口内未触发"}。花费按 token（多数记录无价格），合入单代替验收数。</span></div>`,
+    <div class="lg"><span>规则：每条已验收需求花费连续 3 天上升 → 开复盘；${hit ? `最近触发 ${esc(hit.slice(5))}` : "窗口内未触发"}。花费按模型 API 标价计美元；估算项与未定价记录单独列出。</span></div>`,
     hit === T.days[T.days.length - 1] ? stChip("bad", "触发复盘") : "");
 }
 function vOverview(D) {

@@ -9,10 +9,65 @@
       "per_million": {
         "input": 0.1,
         "cached": 0.01,
-        "cache_write": null,
+        "cache_write": 0.125,
         "output": 0.5
       },
-      "source_url": "https://openai.com/api/pricing/",
+      "source_url": "https://developers.openai.com/api/docs/pricing",
+      "retrieved": "2026-10-30"
+    },
+    "gpt-6.1-sol": {
+      "provider": "openai",
+      "per_million": {
+        "input": 2.0,
+        "cached": 0.1,
+        "cache_write": 2.5,
+        "output": 10.0
+      },
+      "source_url": "https://developers.openai.com/api/docs/pricing",
+      "retrieved": "2026-10-30"
+    },
+    "claude-haiku-5-5": {
+      "provider": "anthropic",
+      "per_million": {
+        "input": 0.1,
+        "cached": 0.01,
+        "cache_write": 0.125,
+        "output": 0.5
+      },
+      "source_url": "https://www.anthropic.com/claude-haiku-5-5",
+      "retrieved": "2026-10-30"
+    },
+    "claude-sonnet-5-5": {
+      "provider": "anthropic",
+      "per_million": {
+        "input": 2.0,
+        "cached": 0.1,
+        "cache_write": 2.5,
+        "output": 10.0
+      },
+      "source_url": "https://www.anthropic.com/claude-sonnet-5-5",
+      "retrieved": "2026-10-30"
+    },
+    "claude-opus-5-5": {
+      "provider": "anthropic",
+      "per_million": {
+        "input": 4.0,
+        "cached": 0.2,
+        "cache_write": 5.0,
+        "output": 20.0
+      },
+      "source_url": "https://www.anthropic.com/claude-opus-5-5",
+      "retrieved": "2026-10-30"
+    },
+    "glm-5.3": {
+      "provider": "z.ai",
+      "per_million": {
+        "input": 1.4,
+        "cached": 0.26,
+        "cache_write": 1.4,
+        "output": 4.4
+      },
+      "source_url": "https://docs.z.ai/guides/overview/pricing",
       "retrieved": "2026-10-30"
     },
     "gpt-5.6-terra": {
@@ -20,10 +75,10 @@
       "per_million": {
         "input": 2.0,
         "cached": 0.2,
-        "cache_write": null,
+        "cache_write": 2.5,
         "output": 12.0
       },
-      "source_url": "https://openai.com/api/pricing/",
+      "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
       "retrieved": "2026-10-30"
     }
   }
