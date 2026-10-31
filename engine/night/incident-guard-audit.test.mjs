@@ -215,7 +215,7 @@ test('with a pack, the registry comes from the engine build and targets resolve 
 });
 
 test('guard targets resolve through the target repo after the repo and build miss', () => {
-  const root = mkdtempSync(path.join(repoRoot, '.git', 'incident-guard-audit-target-repo-'));
+  const root = mkdtempSync(path.join(os.tmpdir(), 'incident-guard-audit-target-repo-'));
   const repo = path.join(root, 'repo');
   const buildRoot = path.join(root, 'build');
   const targetRepo = path.join(root, 'target-repo');
