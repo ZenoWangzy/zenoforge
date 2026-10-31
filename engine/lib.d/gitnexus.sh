@@ -6,7 +6,7 @@ gitnexus_refresh_minimum_available_kb() {
 
 
 gitnexus_cihost_index_refresh() {
-  local helper="${GITNEXUS_CIHOST_INDEX_SCRIPT:-${_AGENT_LIB_DIR}/gitnexus-cihost-index.sh}"
+  local helper="${GITNEXUS_CIHOST_INDEX_SCRIPT:-$(zf_host_ops_file "scripts/agent/gitnexus-${ZF_CIHOST_FILE_STEM:-cihost}-index.sh" "${_AGENT_LIB_DIR}/gitnexus-cihost-index.sh")}"
   timeout 40m bash "$helper" refresh "$@"
 }
 

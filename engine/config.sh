@@ -126,3 +126,10 @@ zf_config_file() {
   fi
   return 1
 }
+
+# Resolve host-owned files, preserving the caller's existing fallback path.
+zf_host_ops_file() {
+  local relative_path="$1" fallback="${2:-$ZF_ENGINE_DIR/${1#scripts/agent/}}"
+  local candidate="${ZF_HOST_OPS_DIR:-$AGENT_HOME/host-ops}/$relative_path"
+  if [[ -f "$candidate" ]]; then printf '%s\n' "$candidate"; else printf '%s\n' "$fallback"; fi
+}

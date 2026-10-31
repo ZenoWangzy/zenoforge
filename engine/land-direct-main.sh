@@ -1590,8 +1590,9 @@ if [[ -d "$live_checkout/.git" || -f "$live_checkout/.git" ]] \
     && git -C "$live_checkout" merge -q --ff-only origin/main; then
     live_new_head="$(git -C "$live_checkout" rev-parse HEAD)"
     echo "land-direct-main: live checkout fast-forwarded to origin/main" >&2
-    if [[ -f "${ZF_ENGINE_LIVE:-$live_checkout/engine}/check-host-daemons.py" ]] && ! python3 -B \
-      "${ZF_ENGINE_LIVE:-$live_checkout/engine}/check-host-daemons.py" "$live_checkout" --sync "$live_old_head" "$live_new_head"; then
+    host_daemon_check="$(zf_host_ops_file scripts/agent/check-host-daemons.py "${ZF_ENGINE_LIVE:-$live_checkout/engine}/check-host-daemons.py")"
+    if [[ -f "$host_daemon_check" ]] && ! python3 -B \
+      "$host_daemon_check" "$live_checkout" --sync "$live_old_head" "$live_new_head"; then
       supervisor_inbox_append_once "host-daemon-sync-failed:$live_new_head" \
         "host-daemon-sync-failed main=$live_new_head; run check-host-daemons.py against live checkout and restart affected units" || true
     fi

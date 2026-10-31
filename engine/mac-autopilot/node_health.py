@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import worker_cost
 import workorder_cost
-from config_paths import zf_config_file
+from config_paths import zf_config_file, zf_host_ops_file
 
 
 def is_test_path(path):
@@ -611,7 +611,10 @@ def stale_worktrees(now, root=None):
 
 def host_prereqs_missing(path=None):
     """Names of host-prereqs.json entries that do not answer (TCP connect, or HTTP 200 without any proxy)."""
-    path = path or os.environ.get("HOST_PREREQS_FILE") or os.path.join(os.path.dirname(os.path.realpath(__file__)), "host-prereqs.json")
+    path = path or os.environ.get("HOST_PREREQS_FILE") or zf_host_ops_file(
+        "scripts/agent/mac-autopilot/host-prereqs.json",
+        os.path.join(os.path.dirname(os.path.realpath(__file__)), "host-prereqs.json"),
+    )
     try:
         prereqs = json.load(open(path))["prereqs"]
     except (OSError, ValueError, KeyError):

@@ -390,8 +390,10 @@ run_tick() {
     fi
   fi
 
-  if [[ -f "$ZF_ENGINE_DIR/check-host-daemons.py" ]] && ! python3 -B \
-    "$ZF_ENGINE_DIR/check-host-daemons.py" "$repo_dir" --sync "$fast_forward_old_head" "$fast_forward_new_head"; then
+  local host_daemon_check
+  host_daemon_check="$(zf_host_ops_file scripts/agent/check-host-daemons.py "$ZF_ENGINE_DIR/check-host-daemons.py")"
+  if [[ -f "$host_daemon_check" ]] && ! python3 -B \
+    "$host_daemon_check" "$repo_dir" --sync "$fast_forward_old_head" "$fast_forward_new_head"; then
     refuse "host-daemon-sync-failed" "could not synchronize running host daemons after fast-forward"
   fi
 

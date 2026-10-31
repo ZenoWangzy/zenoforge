@@ -1,7 +1,8 @@
 self_check_run() (
   set -o pipefail
   local dir="$1" sha="$2" lane="${3:-}" pr_base="${4:-}" base paths pkg targets test_targets cached_tests tree selection selection_dir selection_log manifest part changed_helpers=0 rc=0 marker target
-  local entry="${ZF_CIHOST_EXEC:-${ZF_ENGINE_DIR:-$ROOT/engine}/cihost-exec.py}"
+  local entry_fallback="${ZF_ENGINE_DIR:-$ROOT/engine}/cihost-exec.py"
+  local entry="${ZF_CIHOST_EXEC:-$(source "$HERE/../config.sh" && zf_host_ops_file "scripts/agent/${ZF_CIHOST_FILE_STEM:-cihost}-exec.py" "$entry_fallback")}"
   local step_s="${SELF_CHECK_STEP_TIMEOUT:-900}" srg
   local delegate_tests=0
   local -a builds=()

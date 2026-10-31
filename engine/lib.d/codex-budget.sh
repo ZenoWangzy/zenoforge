@@ -171,7 +171,7 @@ codex_budget_reserve() {
     echo "codex budget: model capacity hold active for $model_identity" >&2
     return 75
   fi
-  traffic_monitor="$(dirname -- "$_AGENT_LIB_DIR/lib.sh")/network-traffic.py"
+  traffic_monitor="$(zf_host_ops_file scripts/agent/network-traffic.py "$(dirname -- "$_AGENT_LIB_DIR/lib.sh")/network-traffic.py")"
   if [[ "$role" == work && -r "$traffic_monitor" ]]; then
     python3 -B "$traffic_monitor" admit --home "$AGENT_HOME" || return $?
   fi
