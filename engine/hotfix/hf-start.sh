@@ -3,6 +3,7 @@ set -euo pipefail
 unset GH_TOKEN
 [[ $# == 3 && $1 =~ ^[0-9]+$ && $2 =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && -f $3 ]] || { echo 'usage: hf-start.sh <issue-number> <slug> <brief-file>' >&2; exit 2; }
 issue=$1; slug=$2; brief=$3
+"$(dirname "$0")/hf-brief-lint.sh" "$brief"
 root=${HF_ROOT:-${HOME:-/tmp}/.zenoforge/scratch/hotfix}
 bin=${WORKER_BIN:-${HOME:-/tmp}/.zenoforge/scratch/bin}
 mkdir -p "$root"
