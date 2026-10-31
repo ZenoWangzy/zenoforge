@@ -63,6 +63,16 @@ tick_pr_base() { # PR → base branch from this tick's open-PR census, with a di
   [[ -n "$base" ]] || return 1
   printf '%s\n' "$base"
 }
+tick_pr_branch() { # PR → head branch from this tick's open-PR census, with a direct fallback for a census miss
+  local pr="$1" prs="" branch=""
+  prs="$(tick_prs 2>/dev/null || true)"
+  if [[ -n "$prs" ]]; then
+    branch="$(jqf -r --argjson p "$pr" '[.[] | select(.number == $p) | .headRefName][0] // empty' <<<"$prs")"
+  fi
+  [[ -n "$branch" ]] || branch="$(pr_view "$pr" headRefName)" || return 1
+  [[ -n "$branch" ]] || return 1
+  printf '%s\n' "$branch"
+}
 classify_lane() { # pr → direct-main|pr（取不到文件列表返回 1）
   local files json verdict
   # The REST file list includes previous_filename for renames; both sides must be classified.

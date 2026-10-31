@@ -2,6 +2,8 @@
 dispatch_pending() {
   local local_refill="${1:-false}" u id stage rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed
   local TICK_DISPATCH_PENDING_ACTIVE=true
+  # Load the open-PR census in this shell: $(tick_prs) in a subshell cannot cache it, so every lookup re-ran the 300-PR list.
+  tick_prs >/dev/null 2>&1 || true
   TICK_DISPATCH_LOCAL_REFILL="$local_refill"
   if [[ "$local_refill" != true ]] && declare -F advisor_harvest >/dev/null; then
     step_started=$SECONDS
@@ -106,7 +108,7 @@ dispatch_pending() {
         pick implement "$u" || continue
         branch="$(jqf -r '.branch // empty' <<<"$u")"
         if [[ -z "$branch" && -n "$pr_num" ]]; then
-          branch="$(pr_view "$pr_num" headRefName)"
+          branch="$(tick_pr_branch "$pr_num")"
           [[ -n "$branch" ]] && set_unit "$id" ".branch=$(js "$branch")"
         fi
         [[ -n "$branch" ]] || { say "repair-pending unit=$id: PR branch unavailable"; continue; }
@@ -120,7 +122,7 @@ dispatch_pending() {
         [[ -n "$prev_report" || -n "$(jqf -r '.repair_hint // empty' <<<"$u")" ]] || { to_supervisor "$id" "repair-pending without a review report"; continue; }
         handoff_original=""
         if [[ -n "$pr_num" ]] && { [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]] || [[ -n "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; }; then
-          handoff_original="$(pr_view "$pr_num" headRefOid)" || continue
+          handoff_original="$(tick_pr_head "$pr_num")" || continue
           [[ "$handoff_original" =~ $SHA_RE ]] || continue
         fi
         if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]]; then
@@ -141,7 +143,7 @@ dispatch_pending() {
           record_handoff_integration "$id" "$wt" "$handoff_original" || continue
         else
           if [[ -z "$wt" ]]; then
-            wt="$(ensure_clone "$id" "$branch" "$((1 - prless))" "$([[ -n "$pr_num" ]] && pr_view "$pr_num" headRefOid)")" || { say "repair-pending unit=$id: clone/branch $branch unavailable"; continue; }
+            wt="$(ensure_clone "$id" "$branch" "$((1 - prless))" "$([[ -n "$pr_num" ]] && tick_pr_head "$pr_num")")" || { say "repair-pending unit=$id: clone/branch $branch unavailable"; continue; }
           fi
         fi
         resume_handoff_integration "$id" "$wt" || continue
