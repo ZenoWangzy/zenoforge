@@ -27,5 +27,6 @@ merge_result_node_check() { # repo-dir base-rev head-rev
   done <<< "$changed_paths"
 
   rm -rf -- "$temp_dir"
+  (( failed )) || printf 'merge_result_node_check: ok %s file(s) base=%s head=%s\n' "$(grep -c . <<<"$changed_paths")" "${base_rev:0:12}" "${head_rev:0:12}" >&2
   return "$failed"
 }
