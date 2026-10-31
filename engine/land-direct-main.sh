@@ -227,6 +227,7 @@ land_register_post_push_range() {
 # land-direct-main.sh against older agent worktrees, whose lib.sh lacked agent_owned_issue_ids on
 # 2026-10-11 and refused every landing with "could not resolve owner issues".
 land_script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$land_script_dir/merge-result-check.sh"
 source "$land_script_dir/lib.sh"
 source "$land_script_dir/model-policy-fast-forward.sh"
 ZF_AGENT_ISSUES="$(agent_owned_issue_ids "${ZF_AGENT_NAME:-direct-main}" "${ZF_AGENT_ISSUES:-${HAND_ISSUES:-}}")" || {
@@ -1479,6 +1480,10 @@ if [[ "$reconcile_only" == 1 && "$(git rev-parse HEAD)" == "$(git rev-parse orig
   echo "land-direct-main: no lesson ID repair needed for merged PR"
   exit 0
 fi
+if ! merge_result_node_check "$repo_root" "$tested_base" "$(git rev-parse HEAD)"; then
+  echo 'land-direct-main: refusing push because merge result Node syntax check failed' >&2
+  exit 1
+fi
 land_phase preflight-start
 preflight
 land_phase preflight-passed
@@ -1497,6 +1502,10 @@ while :; do
     if land_main_rebase_after_advance "$main_after_fetch"; then :; else
       result=$?
       exit "$result"
+    fi
+    if ! merge_result_node_check "$repo_root" "$tested_base" "$(git rev-parse HEAD)"; then
+      echo 'land-direct-main: refusing push because merge result Node syntax check failed after rebasing onto newer main' >&2
+      exit 1
     fi
   else
     printf 'land-direct-main: verified-base fast path base=%s head=%s\n' "$tested_base" "$(git rev-parse HEAD)" >&2
