@@ -9,6 +9,7 @@ set -uo pipefail
 {
 key="$1" cwd="$2" prompt="$3" schema="${4:-}"
 S=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}; d="$S/luna/$key"
+B=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) # backends ship beside this script, not in the scratch root
 mkdir -p "$S/tmp" "$d"
 model=${CODEX_MODEL:-gpt-6-luna}
 round_model=$model
@@ -145,10 +146,10 @@ run_backend() {
       cat "$prompt"
       [[ -n $schema ]] && printf '\n\nYour final message must be exactly one JSON object that matches this JSON Schema, with no prose and no code fence:\n%s\n' "$(cat "$schema")"
     } > "$zc_prompt"
-    backend_cmd=(env ZC_OUT_ROOT="$S/luna" "$S/bin/zc" "$key" "$cwd" "$zc_prompt")
+    backend_cmd=(env ZC_OUT_ROOT="$S/luna" "$B/zc" "$key" "$cwd" "$zc_prompt")
   else
     round_model=$model
-    backend_cmd=(env CODEX_MODEL="$model" "$S/bin/luna" "$key" "$cwd" "$prompt" "$schema")
+    backend_cmd=(env CODEX_MODEL="$model" "$B/luna" "$key" "$cwd" "$prompt" "$schema")
   fi
   setsid --wait bash -c 'pid_file=$1; shift; printf "%s\n" "$$" > "$pid_file"; exec "$@"' \
     worker-session "$d/backend-run.pid" "${backend_cmd[@]}" \
