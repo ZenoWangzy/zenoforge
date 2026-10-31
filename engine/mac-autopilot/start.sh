@@ -121,6 +121,11 @@ echo "synced autopilot runtime: $LIVE ($head)"
 echo "dashboard: $A/dashboard.html"
 (( SYNC_ONLY )) && exit 0
 
+if autopilot_manual_pause_is_valid; then
+  echo "paused, not restarting"
+  exit 0
+fi
+
 UNITS=(${UNIT_PREFIX}-autopilot-scheduler.service ${UNIT_PREFIX}-autopilot-bell.service ${UNIT_PREFIX}-autopilot-zombie.service)
 if command -v systemctl >/dev/null 2>&1 && systemctl --user cat "${UNITS[0]}" >/dev/null 2>&1; then
   systemctl --user restart "${UNITS[@]}"
