@@ -15,11 +15,12 @@ case "$1 $2" in
    else
      jq -cn --arg label "${LABEL:-hotfix}" --arg gate "${GATE:-SUCCESS}" \
        --arg head 0123456789abcdef0123456789abcdef01234567 \
+       --arg acc "${ACC_HEAD:-0123456789abcdef0123456789abcdef01234567}" \
        --argjson required "$(jq -c '.required' "$REQ")" '
        def row(name; concl): {name:name,status:"COMPLETED",conclusion:concl,startedAt:"2026-10-30T00:00:00Z",detailsUrl:"https://github.com/example-maintainer/example-repo/actions/runs/100/job/101"};
        {title:"Fix",state:"OPEN",labels:[{name:$label}],headRefOid:$head,
-        body:("<!-- vecta-hotfix-acceptance:start -->" + ({schema:"example.hotfix-acceptance/v1",status:"passed",accepted_by:"验收用户",accepted_head_sha:$head,evidence:"验收用户 verified the fix in production"}|tojson) + "<!-- vecta-hotfix-acceptance:end -->"),
-        statusCheckRollup:(($required|map(row(.;$gate))) + [row("Hotfix acceptance evidence";"SUCCESS")])}'
+        body:("<!-- vecta-hotfix-acceptance:start -->" + ({schema:"example.hotfix-acceptance/v1",status:"passed",accepted_by:"验收用户",accepted_head_sha:$acc,evidence:"验收用户 verified the fix in production"}|tojson) + "<!-- vecta-hotfix-acceptance:end -->"),
+        statusCheckRollup:($required|map(row(.;$gate)))}'
    fi ;;
  'pr merge') printf '%s\n' "$@" > "$LOG" ;;
 esac
@@ -30,4 +31,6 @@ LABEL=hotfix GATE=FAILURE "$p/hf-merge.sh" 12 && exit 1
 LABEL=hotfix "$p/hf-merge.sh" 12
 grep -Fxq 'Fix [hotfix] (#12)' "$LOG"
 LABEL=hotfix GATE=IN_PROGRESS "$p/hf-merge.sh" 12 && exit 1
+# Acceptance is checked from the PR body, with no separate CI check: a stale accepted head refuses.
+LABEL=hotfix ACC_HEAD=fedcba9876543210fedcba9876543210fedcba98 "$p/hf-merge.sh" 12 && exit 1
 true

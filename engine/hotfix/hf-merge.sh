@@ -36,8 +36,8 @@ checks=$(node "$here/../ci/pr-required-aggregate.mjs" --latest-checks \
   || { echo 'hf-merge: cannot select current required check results' >&2; exit 1; }
 
 # Required PR checks are the source of truth for both lanes. The container-patch
-# fallback additionally requires the dedicated acceptance check, which refreshes
-# when the PR body is edited; the image lane proves acceptance after the deploy.
+# lane's acceptance is validated above from the current PR body (validate-acceptance.mjs);
+# the image lane proves acceptance after the deploy.
 while IFS= read -r check; do
   conclusion=$(jq -r --arg name "$check" \
     '[.statusCheckRollup[]? | select(.name == $name)] | last | .conclusion // empty' <<<"$checks")
@@ -46,13 +46,6 @@ while IFS= read -r check; do
     exit 1
   }
 done < <(jq -r '.required[]' "$here/../mac-autopilot/required-pr-checks.json")
-
-if [[ "$image_lane" != 1 ]]; then
-  acceptance_check=$(jq -r \
-    '[.statusCheckRollup[]? | select(.name == "Hotfix acceptance evidence")] | last | .conclusion // empty' <<<"$checks")
-  [[ "$acceptance_check" == SUCCESS ]] \
-    || { echo 'hf-merge: "Hotfix acceptance evidence" has not passed on the current head' >&2; exit 1; }
-fi
 
 title=$(jq -r '.title' <<<"$info")
 gh pr merge "$pr" --squash --subject "$title [hotfix] (#$pr)" --match-head-commit "$head_sha"
