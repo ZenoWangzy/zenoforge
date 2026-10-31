@@ -343,6 +343,8 @@ if ! FASTLANE_OUTPUT="$(AGENT_HOME="$FASTLANE_HOME" FASTLANE_LOG="$FASTLANE_LOG"
       fi
     }
     hand_agent_issue_is_live_owned() { return 1; }
+    # No scheduler runtime ledgers exist in this fixture; the census sees no live worker.
+    coord_issue_live_worker() { return 1; }
     supervisor_hold_owner_state() {
       if [[ "$1" == 991018 || "$1" == 991019 ]]; then
         supervisor_hold_owner_state_real "$@"
@@ -373,6 +375,8 @@ if ! FASTLANE_OUTPUT="$(AGENT_HOME="$FASTLANE_HOME" FASTLANE_LOG="$FASTLANE_LOG"
       elif [ "$1 $2" = "issue list" ] && [[ " $* " == *" --label needs-triage "* ]]; then
         printf "%s\n" '\''[{"number":991009,"title":"Path-only infrastructure","body":"Fix paths:\n- engine/lib.sh","comments":[{"body":"Keep direct lane."}],"labels":[{"name":"needs-triage"}],"state":"OPEN"},{"number":991010,"title":"Mixed product change","body":"Fix paths:\n- engine/lib.sh\n- packages/example-service/src/app.ts","comments":[],"labels":[{"name":"needs-triage"}],"state":"OPEN"},{"number":991011,"title":"Parent tracker","body":"Fix paths:\n- engine/lib.sh","comments":[],"labels":[{"name":"needs-triage"}],"state":"OPEN","blockedBy":{"nodes":[{"number":2911,"state":"OPEN"}]}}]'\''
       elif [ "$1 $2" = "issue list" ]; then
+        printf "%s\n" "[]"
+      elif [ "$1 $2" = "pr list" ]; then
         printf "%s\n" "[]"
       elif [ "$1" = "api" ] && [[ "$2" == repos/test/repo/issues/*/sub_issues\?per_page=100 ]]; then
         printf "%s\n" "[]"
@@ -1266,7 +1270,10 @@ assert_contains "repeat and cap notes read the failure recorded on model-policy 
 DISPATCH_FN="$(sed -n '/^dispatch() {/,/^}/p' "$PIPELINE_SRC")"
 run_memory_capped_dispatch() (
   local stage="$1" oom_count="$2" retry_cap="$3"
-  AGENT_UNIT_MEMORY_RETRY_MAX="$retry_cap" OOM_COUNT="$oom_count" TEST_STAGE="$stage" \
+  # dispatch builds "$ZF_ENGINE_DIR/run-$stage.sh" argv and lib.sh's unit-name
+  # prefix; the hermetic runner sources neither, so take their defaults.
+  ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf \
+    AGENT_UNIT_MEMORY_RETRY_MAX="$retry_cap" OOM_COUNT="$oom_count" TEST_STAGE="$stage" \
     REPO_DIR="$(git rev-parse --show-toplevel)" \
     bash -c '
       set -euo pipefail
@@ -1276,6 +1283,12 @@ run_memory_capped_dispatch() (
       IMPLEMENT_RUNTIME_MAX_SEC=3600 TRIAGE_RUNTIME_MAX_SEC=3600 RECUT_RUNTIME_MAX_SEC=3600
       state_read() { printf "{\"unit_memory_ooms\":{\"%s\":%s}}\\n" "$TEST_STAGE" "$OOM_COUNT"; }
       consume_unit_memory_oom() { return 1; }
+      coord_issue_key() { printf "issue:%s\n" "$1"; }
+      PIPELINE_CLAIM_KEY=""
+      pipeline_claim_begin() { PIPELINE_CLAIM_KEY="$(coord_issue_key "$1")"; PIPELINE_CLAIM_STAGE="$2"; PIPELINE_CLAIM_UNIT="$3"; PIPELINE_CLAIM_OWNER=fixture; }
+      coord_assert_owned() { return 0; }
+      pipeline_claim_drop() { :; }
+      pipeline_claim_keep() { return 0; }
       guarded_write() { printf "%s\\n" "$*"; }
       record_env_fault() { :; }
       dispatch "$TEST_STAGE" 990102
@@ -1293,7 +1306,8 @@ assert_contains "recut first attempt stays capped at 4G" "$RECUT_MEMORY_FIRST" '
 TRIAGE_BATCH_DISPATCH_FN="$(sed -n '/^dispatch_triage_batch() {/,/^}/p' "$PIPELINE_SRC")"
 run_fake_triage_batch_dispatch() (
   local oom_count="$1" retry_cap="$2"
-  AGENT_UNIT_MEMORY_RETRY_MAX="$retry_cap" TRIAGE_OOM_COUNT="$oom_count" \
+  ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf \
+    AGENT_UNIT_MEMORY_RETRY_MAX="$retry_cap" TRIAGE_OOM_COUNT="$oom_count" \
     REPO_DIR="$(git rev-parse --show-toplevel)" AGENT_HOME="$AGENT_HOME" \
     bash -c '
       set -euo pipefail
@@ -1305,6 +1319,12 @@ run_fake_triage_batch_dispatch() (
       issue_spend_budget_status() { printf "clear\t0\t0\n"; }
       consume_unit_memory_oom() { return 1; }
       state_read() { printf "{\"unit_memory_ooms\":{\"triage\":%s}}\\n" "$TRIAGE_OOM_COUNT"; }
+      model_policy() { echo fixture; }
+      model_config_fault_blocked() { return 1; }
+      coord_new_owner() { printf "fixture-owner"; }
+      pipeline_batch_claim_acquire() { return 0; }
+      pipeline_batch_claim_drop() { :; }
+      pipeline_batch_claim_keep() { :; }
       guarded_write() { printf "%s\\n" "$*"; }
       record_env_fault() { :; }
       dispatch_triage_batch 990104
@@ -1537,6 +1557,11 @@ PROVIDER_DISPATCH_OUT="$(
   eval "$(sed -n '/^recover_stale_policy_unit() {/,/^}/p' "$PIPELINE_SRC")"
   eval "$(sed -n '/^dispatch_policy_unit() {/,/^}/p' "$PIPELINE_SRC")"
   eval "$(sed -n '/^dispatch_triage_batch() {/,/^}/p' "$PIPELINE_SRC")"
+  # Real claim helpers (filesystem claims under the isolated AGENT_HOME); only the
+  # scheduler-runtime census is IO to mock -- this fixture has no runtime ledgers.
+  eval "$(sed -n '/^pipeline_claim_clear() {/,/^}/p; /^pipeline_live_worker_check() {/,/^}/p; /^pipeline_claim_begin() {/,/^}/p; /^pipeline_claim_drop() {/,/^}/p; /^pipeline_claim_keep() {/,/^}/p' "$PIPELINE_SRC")"
+  source "$SCRIPT_DIR/coord.sh"
+  coord_issue_live_worker() { return 1; }
   state_read() { echo '{}'; }
   state_merge() { :; }
   state_bump_attempts() { :; }
@@ -1569,6 +1594,8 @@ run_batch_admission_case() (
   AGENT_HOME="$(mktemp -d)"
   trap 'rm -rf -- "$AGENT_HOME"' EXIT
   REPO_DIR="$SCRIPT_DIR/.."
+  # dispatch builds "$ZF_ENGINE_DIR/run-$stage.sh" argv; config.sh normally provides it.
+  ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf
   DRY_RUN=0
   NEEDS_ADVISOR_IDS=910101
   RELEASE_RUNTIME_MAX_SEC=60
@@ -1579,6 +1606,10 @@ run_batch_admission_case() (
   systemctl() { return 3; }
   hand_agent_issue_is_live_owned() { return 1; }
   issue_spend_budget_status() { printf 'clear\t0\t0\n'; }
+  coord_new_owner() { printf "fixture-owner"; }
+  pipeline_batch_claim_acquire() { return 0; }
+  pipeline_batch_claim_drop() { :; }
+  pipeline_batch_claim_keep() { :; }
   agent_memory_floor_allows() { return 0; }
   model_policy() { echo fixture; }
   model_config_fault_blocked() { return 1; }
@@ -1760,14 +1791,14 @@ run_release_selection() (
 )
 
 assert_eq 'awaiting-release state dispatches its recorded PR without a body reference' \
-  $'dispatch:release-batch:910101:candidate-sha\nrelease-decision issue=#910101 outcome=dispatched gate=release-batch object=vecta-release-batch reason=sha=candidate-sha' \
+  $'dispatch:release-batch:910101:candidate-sha\nrelease-decision issue=#910101 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha' \
   "$(run_release_selection '[{"number":910101}]' 910101)"
 timing_wait_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 assert_eq 'release timing debt reads the deployed SHA from GitHub Deployments' \
   'release-decision issue=#910102 outcome=skipped gate=timing-debt object=#1449 reason=already-deployed-waiting-next-deploy' \
   "$(FAKE_DEPLOYMENT_SHA="$timing_wait_sha" run_release_selection '[{"number":910102}]' 910102 '' 1 '' 1 910202 '' '' 10 '' '' 0 0 '' merged pending '' "$timing_wait_sha")"
 assert_eq 'release batch deferral logs pending candidates without dispatched or batched claims' \
-  $'release-decision issue=#910101 outcome=skipped gate=execution-admission object=vecta-release-batch reason=temporarily-unavailable\nrelease-decision issue=#910102 outcome=skipped gate=execution-admission object=vecta-release-batch reason=temporarily-unavailable' \
+  $'release-decision issue=#910101 outcome=skipped gate=execution-admission object=zf-release-batch reason=temporarily-unavailable\nrelease-decision issue=#910102 outcome=skipped gate=execution-admission object=zf-release-batch reason=temporarily-unavailable' \
   "$(RELEASE_BATCH_LAUNCH_STATUS=75 run_release_selection '[{"number":910101},{"number":910102}]' all)"
 RELEASE_SELECTION_FAILURE_STATUS=0
 RELEASE_SELECTION_FAILURE_OUT="$(RELEASE_BATCH_LAUNCH_STATUS=1 run_release_selection '[{"number":910101}]' 910101)" || RELEASE_SELECTION_FAILURE_STATUS=$?
@@ -1788,7 +1819,7 @@ assert_eq 'invalid deploy state logs its release skip' \
   'release-decision issue=#910122 outcome=skipped gate=deploy-state object=state reason=not-pending-or-deployed' \
   "$(run_release_selection '[{"number":910122}]' 910122 '' 1 '' 1 910201 '' '' 10 '' '' 0 0 '' merged failed)"
 assert_eq 'on-hold does not block release dispatch for merged code' \
-  $'dispatch:release-batch:910103:candidate-sha\nrelease-decision issue=#910103 outcome=dispatched gate=release-batch object=vecta-release-batch reason=sha=candidate-sha' \
+  $'dispatch:release-batch:910103:candidate-sha\nrelease-decision issue=#910103 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha' \
   "$(run_release_selection '[{"number":910103}]' 910103 910103)"
 assert_eq 'an unreadable ready-for-human label remains fail-closed' \
   'release-decision issue=#910104 outcome=skipped gate=ready-for-human-label object=label reason=label-unavailable' \
@@ -1808,7 +1839,7 @@ assert_cond 'infrastructure block recheck runs before release candidate selectio
   "$([[ "${RECHECK_DEPLOY_BLOCK_LINE:-0}" -gt 0 && "${RECHECK_DEPLOY_BLOCK_LINE:-0}" -lt "${RELEASE_CANDIDATE_LIST_LINE:-0}" ]] && echo 1 || echo 0)"
 PENDING_FLEET_SELECTION="$(run_release_selection '[{"number":910107}]' 910107 '' 1 '' 1 910107 910107)"
 assert_eq 'fleet-roll-pending ticket remains eligible for its persisted rollout retry' \
-  $'dispatch:release-batch:910107:candidate-sha\nrelease-decision issue=#910107 outcome=dispatched gate=fleet-roll object=vecta-release-batch reason=retry-persisted-rollout\nselector-side-effects:none\npending-marker:pending' \
+  $'dispatch:release-batch:910107:candidate-sha\nrelease-decision issue=#910107 outcome=dispatched gate=fleet-roll object=zf-release-batch reason=retry-persisted-rollout\nselector-side-effects:none\npending-marker:pending' \
   "$PENDING_FLEET_SELECTION"
 # Two pending rolls: the newer image carries the older change and the older pin is
 # shadowed, so the newest roll anchors the batch (2026-10-22, #1145 behind #4061).
@@ -1816,7 +1847,7 @@ TWO_PENDING_FLEET_SELECTION="$(run_release_selection '[{"number":910107},{"numbe
 assert_eq 'two pending fleet rolls anchor the newest image' \
   'dispatch:release-batch:910109:candidate-sha' "$(grep '^dispatch:' <<< "$TWO_PENDING_FLEET_SELECTION")"
 assert_eq 'the newest pending roll records the persisted rollout retry' \
-  'release-decision issue=#910109 outcome=dispatched gate=fleet-roll object=vecta-release-batch reason=retry-persisted-rollout' \
+  'release-decision issue=#910109 outcome=dispatched gate=fleet-roll object=zf-release-batch reason=retry-persisted-rollout' \
   "$(grep '^release-decision issue=#910109 ' <<< "$TWO_PENDING_FLEET_SELECTION")"
 assert_eq 'pending release makes no advisor, blocked-notification, or state-write attempt' \
   'selector-side-effects:none' "$(sed -n 's/^selector-side-effects:/selector-side-effects:/p' <<< "$PENDING_FLEET_SELECTION")"
@@ -1832,16 +1863,16 @@ assert_eq 'a merge commit absent from main is skipped' \
   'release-decision issue=#910112 outcome=skipped gate=main-ancestry object=#910201 reason=merge-not-ancestor-of-origin-main' \
   "$(run_release_selection '[{"number":910112}]' 910112 '' 1 '' 1 910201 '' '' 10 '' 910112)"
 assert_eq 'one release capacity slot batches all eligible tickets at one SHA' \
-  $'dispatch:release-batch:910109:candidate-sha\nrelease-decision issue=#910109 outcome=dispatched gate=release-batch object=vecta-release-batch reason=sha=candidate-sha\nrelease-decision issue=#910110 outcome=batched gate=release-batch object=vecta-release-batch reason=shared-sha=candidate-sha anchor=#910109' \
+  $'dispatch:release-batch:910109:candidate-sha\nrelease-decision issue=#910109 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha\nrelease-decision issue=#910110 outcome=batched gate=release-batch object=zf-release-batch reason=shared-sha=candidate-sha anchor=#910109' \
   "$(run_release_selection '[{"number":910110},{"number":910109}]' all '' 1 '' 1 910201 '' '' 1)"
 assert_eq 'duplicate candidate IDs produce one decision per ticket per tick' \
-  $'dispatch:release-batch:910113:candidate-sha\nrelease-decision issue=#910113 outcome=dispatched gate=release-batch object=vecta-release-batch reason=sha=candidate-sha' \
+  $'dispatch:release-batch:910113:candidate-sha\nrelease-decision issue=#910113 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha' \
   "$(run_release_selection '[{"number":910113},{"number":910113}]' 910113)"
 assert_eq 'three awaiting tickets dispatch exactly one batch and get individual verdicts' \
-  $'dispatch:release-batch:910131:candidate-sha\nrelease-decision issue=#910131 outcome=dispatched gate=release-batch object=vecta-release-batch reason=sha=candidate-sha\nrelease-decision issue=#910132 outcome=batched gate=release-batch object=vecta-release-batch reason=shared-sha=candidate-sha anchor=#910131\nrelease-decision issue=#910133 outcome=batched gate=release-batch object=vecta-release-batch reason=shared-sha=candidate-sha anchor=#910131' \
+  $'dispatch:release-batch:910131:candidate-sha\nrelease-decision issue=#910131 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha\nrelease-decision issue=#910132 outcome=batched gate=release-batch object=zf-release-batch reason=shared-sha=candidate-sha anchor=#910131\nrelease-decision issue=#910133 outcome=batched gate=release-batch object=zf-release-batch reason=shared-sha=candidate-sha anchor=#910131' \
   "$(run_release_selection '[{"number":910131},{"number":910132},{"number":910133}]' all '' 1 '' 1 910201 '' '' 1)"
 assert_eq 'ticket merged after captured batch SHA waits for next batch' \
-  $'release-decision issue=#910142 outcome=skipped gate=main-ancestry object=#910201 reason=merge-not-ancestor-of-origin-main\ndispatch:release-batch:910141:candidate-sha\nrelease-decision issue=#910141 outcome=dispatched gate=release-batch object=vecta-release-batch reason=sha=candidate-sha' \
+  $'release-decision issue=#910142 outcome=skipped gate=main-ancestry object=#910201 reason=merge-not-ancestor-of-origin-main\ndispatch:release-batch:910141:candidate-sha\nrelease-decision issue=#910141 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha' \
   "$(run_release_selection '[{"number":910141},{"number":910142}]' all '' 1 '' 1 910201 '' '' 1 '' 910142)"
 assert_eq 'stage gate logs each eligible ticket it blocks' \
   $'release-decision issue=#910114 outcome=skipped gate=stage-dispatch object=release reason=quarantine-or-policy-block\nrelease-decision issue=#910115 outcome=skipped gate=stage-dispatch object=release reason=release-dispatch-blocked' \
@@ -1870,7 +1901,7 @@ assert_eq 'memory gate logs each eligible ticket it blocks' \
   $'release-decision issue=#910116 outcome=skipped gate=memory-floor object=release reason=minimum-memory-unavailable\nrelease-decision issue=#910117 outcome=skipped gate=memory-floor object=release reason=release-dispatch-blocked' \
   "$(run_release_selection '[{"number":910116},{"number":910117}]' all '' 1 '' 1 910201 '' '' 10 '' '' 0 1)"
 assert_eq 'active release unit is logged as a per-ticket skip' \
-  'release-decision issue=#910118 outcome=skipped gate=active-unit object=vecta-release-batch reason=already-running' \
+  'release-decision issue=#910118 outcome=skipped gate=active-unit object=zf-release-batch reason=already-running' \
   "$(run_release_selection '[{"number":910118}]' 910118 '' 1 '' 1 910201 '' '' 10 '' '' 0 0 910118)"
 assert_eq 'zero release capacity logs each unique pending ticket' \
   $'release-decision issue=#910119 outcome=skipped gate=capacity object=RELEASE_CAP reason=slots-exhausted\nrelease-decision issue=#910120 outcome=skipped gate=capacity object=RELEASE_CAP reason=slots-exhausted' \
@@ -1884,16 +1915,16 @@ RELEASE_CADENCE_FILE="$ISSUE_PIPELINE_TEST_AGENT_HOME/release-batch-last-dispatc
 RELEASE_CADENCE_TEST_NOW=1800000000
 printf '%s\n' "$(( RELEASE_CADENCE_TEST_NOW - 7199 ))" > "$RELEASE_CADENCE_FILE"
 assert_eq 'tickets merged inside one window trigger no second release' \
-  $'release-decision issue=#910151 outcome=skipped gate=release-cadence object=vecta-release-batch reason=window-not-elapsed\nrelease-decision issue=#910152 outcome=skipped gate=release-cadence object=vecta-release-batch reason=window-not-elapsed' \
+  $'release-decision issue=#910151 outcome=skipped gate=release-cadence object=zf-release-batch reason=window-not-elapsed\nrelease-decision issue=#910152 outcome=skipped gate=release-cadence object=zf-release-batch reason=window-not-elapsed' \
   "$(run_release_selection '[{"number":910151},{"number":910152}]' all)"
 printf '%s\n' "$(( RELEASE_CADENCE_TEST_NOW - 7200 ))" > "$RELEASE_CADENCE_FILE"
 assert_eq 'an elapsed window dispatches the whole batch once' \
-  $'dispatch:release-batch:910151:candidate-sha\nrelease-decision issue=#910151 outcome=dispatched gate=release-batch object=vecta-release-batch reason=sha=candidate-sha\nrelease-decision issue=#910152 outcome=batched gate=release-batch object=vecta-release-batch reason=shared-sha=candidate-sha anchor=#910151' \
+  $'dispatch:release-batch:910151:candidate-sha\nrelease-decision issue=#910151 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha\nrelease-decision issue=#910152 outcome=batched gate=release-batch object=zf-release-batch reason=shared-sha=candidate-sha anchor=#910151' \
   "$(run_release_selection '[{"number":910151},{"number":910152}]' all)"
 unset RELEASE_CADENCE_TEST_NOW
 printf '%s\n' "$(date +%s)" > "$RELEASE_CADENCE_FILE"
 assert_eq 'a persisted fleet roll resumes without waiting for a window' \
-  $'dispatch:release-batch:910107:candidate-sha\nrelease-decision issue=#910107 outcome=dispatched gate=fleet-roll object=vecta-release-batch reason=retry-persisted-rollout\nselector-side-effects:none\npending-marker:pending' \
+  $'dispatch:release-batch:910107:candidate-sha\nrelease-decision issue=#910107 outcome=dispatched gate=fleet-roll object=zf-release-batch reason=retry-persisted-rollout\nselector-side-effects:none\npending-marker:pending' \
   "$(run_release_selection '[{"number":910107}]' 910107 '' 1 '' 1 910107 910107)"
 rm -f "$RELEASE_CADENCE_FILE"
 
@@ -1967,6 +1998,9 @@ BUDGET_DISPATCH_OUT="$(
   issue_model_failure_backoff_remaining() { echo 0; }
   agent_implement_dispatch_resources_allow() { return 0; }
   recover_stale_policy_unit() { return 1; }
+  pipeline_claim_begin() { PIPELINE_CLAIM_KEY="issue:$1"; PIPELINE_CLAIM_STAGE="$2"; PIPELINE_CLAIM_UNIT="$3"; PIPELINE_CLAIM_OWNER=budget-fixture; }
+  coord_assert_owned() { return 0; }
+  pipeline_claim_drop() { :; }
   model_config_fault_blocked() { return 1; }
   codex_probe_ok() { return 0; }
   codex_provider_recovery_probe_if_due() { return 0; }

@@ -83,6 +83,12 @@ $(mk_issue 903 OPEN "让导入每行有交代" "导入的每一行都要有下�
 $(mk_issue 905 CLOSED "已完成的票" "done")]
 JSON
 echo 9000 > "$NEXT"; : > "$ACTIONS"
+
+source "$script_dir/scheduler.sh"
+unset AUTOPI_TEST_LIBRARY_ONLY
+A="$MAC_AUTOPILOT_RUNTIME_DIR"
+# The stub must load after the scheduler: core.sh's own gh() wrapper (call counting
+# around `command gh`) would otherwise shadow it and every census would hit real gh.
 gh() {
   local n c num t b
   case "$1 $2" in
@@ -114,10 +120,6 @@ gh() {
       printf 'unexpected-gh\t%s\n' "$*" >> "$ACTIONS"; return 1 ;;
   esac
 }
-
-source "$script_dir/scheduler.sh"
-unset AUTOPI_TEST_LIBRARY_ONLY
-A="$MAC_AUTOPILOT_RUNTIME_DIR"
 
 fail() { echo "aged-pr-lifecycle.test.sh: $*" >&2; exit 1; }
 actions_of() { grep -F "$(printf '%s\t' "$1")" "$ACTIONS" || true; }
