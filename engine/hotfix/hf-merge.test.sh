@@ -4,7 +4,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/../test-env.sh"
 p=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 # hf-merge reads the required names from required-pr-checks.json; the stub builds its
 # rollup from the same file so the canned answer cannot drift from the merge bar again.
-export REQ="$p/../mac-autopilot/required-pr-checks.json"
+mkdir -p "$t/repo/.zenoforge/mac-autopilot"
+printf '{"required":["Config required check"]}\n' \
+  > "$t/repo/.zenoforge/mac-autopilot/required-pr-checks.json"
+export ZF_REPO_DIR="$t/repo" ZF_ENGINE_DIR="$(cd -- "$p/.." && pwd -P)"
+export REQ="$t/repo/.zenoforge/mac-autopilot/required-pr-checks.json"
 cat > "$t/gh" <<'STUB'
 #!/usr/bin/env bash
 [[ -z ${GH_TOKEN+x} ]]

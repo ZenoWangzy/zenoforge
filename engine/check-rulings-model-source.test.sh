@@ -6,6 +6,8 @@ scripts="$MODEL_POLICY_TEST_REPO/engine"
 candidate="$TMPDIR/candidate"
 mkdir -p "$candidate/engine/nested"
 copy_agent_library "$candidate/engine"
+mkdir -p "$candidate/.zenoforge/state"
+cp "$scripts/model-policy.default.json" "$candidate/.zenoforge/model-policy.default.json"
 # lesson-guard-schema validates machine_checks test files for registry
 # records dated on/after its schema start; suite files are the one class the
 # closure helper excludes on purpose, so follow the register here (empty
@@ -33,8 +35,27 @@ check_source() {
     bash "$scripts/check-rulings.sh" "$@"
 }
 
+check_config_model_sources() {
+  ZF_REPO_DIR="$candidate" ZF_ENGINE_DIR="$candidate/engine" \
+    ZF_CONFIG_ROOT="$candidate/.zenoforge" ZF_PACK_DIR='' \
+    MODEL_POLICY_SOURCE_CHECK_ONLY=1 AGENT_HOME="$TMPDIR/config-model-scan-agent" \
+    bash -c 'set -euo pipefail; source "$1/lib.sh"; model_policy_scan_sources' _ "$candidate/engine"
+}
+
 check_source > "$TMPDIR/source-clean.log" 2>&1 || { cat "$TMPDIR/source-clean.log" >&2; exit 1; }
 grep -q 'check-rulings: source checks passed' "$TMPDIR/source-clean.log"
+printf '%s\n' '{"rulings":[{"switches":[{"kind":"command","scope":"repository","expected":"exit:0","target":["bash","-c","MODEL = \\\"claude\\\""]}]}]}' \
+  > "$candidate/.zenoforge/state/rulings.json"
+if check_config_model_sources > "$TMPDIR/config-ruling.log" 2>&1; then
+  echo 'not ok - model source scan ignored target config rulings' >&2
+  exit 1
+else
+  status=$?
+fi
+[[ "$status" == 1 ]]
+grep -Fq "forbidden model name 'claude' appears in $candidate/.zenoforge/state/rulings.json" \
+  "$TMPDIR/config-ruling.log"
+rm "$candidate/.zenoforge/state/rulings.json"
 traffic="$candidate/engine/network-traffic.py"
 cat >> "$traffic" <<'PY'
 

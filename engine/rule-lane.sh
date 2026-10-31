@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M3 传感器/执行器分离（#4499，spec #4495）：规则文件清单（engine/state/rule-files.json）
+# M3 传感器/执行器分离（#4499，spec #4495）：规则文件清单（state/rule-files.json）
 # 内的文件是 pipeline 的控制信号。unit 的 diff 碰到清单内文件，落地被拒；supervisor
 # （ZF_AGENT_NAME=supervisor）走规则通道：按 2026-10-31 裁决，对触碰文件做语法检查。
 # 每次调用都输出一条 rule-lane 判定行（M5 生产事件：落地日志里核对这条线）。
@@ -9,7 +9,19 @@ set -euo pipefail
 base="$1"
 head="$2"
 
-manifest_path="${ZF_PACK_REL:-engine}/state/rule-files.json"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_dir="$(git rev-parse --show-toplevel)"
+export ZF_REPO_DIR="${ZF_REPO_DIR:-$repo_dir}"
+source "$script_dir/config.sh"
+manifest_file="$(zf_config_file state/rule-files.json)" || {
+  echo 'rule-lane: rule manifest is unavailable' >&2
+  exit 2
+}
+if [[ "$manifest_file" == "$repo_dir/"* ]]; then
+  manifest_path="${manifest_file#"$repo_dir"/}"
+else
+  manifest_path="${ZF_PACK_REL:-engine}/state/rule-files.json"
+fi
 rule_fix_hint='规则改动由 supervisor 落地并通过语法检查；unit PR 即使带回放报告也会拒绝。健康告警请修行为，并挂到根因票下。'
 
 # 清单优先取被落地 head 的树；head 删除清单时退回 base，使删除本身仍算触碰清单内路径。
@@ -26,7 +38,20 @@ if git cat-file -e "$manifest_ref:$manifest_path" 2>/dev/null; then
     exit 2
   }
   while IFS= read -r rule_file; do
-    [[ -n "$rule_file" ]] && rule_set["$rule_file"]=1
+    [[ -n "$rule_file" ]] || continue
+    rule_set["$rule_file"]=1
+    config_relative=""
+    case "$rule_file" in
+      "${ZF_PACK_REL:-engine}/"*) config_relative="${rule_file#"${ZF_PACK_REL:-engine}/"}" ;;
+      engine/*) config_relative="${rule_file#engine/}" ;;
+    esac
+    if [[ -n "$config_relative" ]]; then
+      config_candidate="$(zf_config_file "$config_relative" 2>/dev/null || true)"
+      if [[ -n "$ZF_CONFIG_ROOT" && -n "$config_candidate" && "$config_candidate" == "$ZF_CONFIG_ROOT/"* \
+        && "$config_candidate" == "$repo_dir/"* ]]; then
+        rule_set["${config_candidate#"$repo_dir"/}"]=1
+      fi
+    fi
   done <<< "$manifest_list"
 fi
 

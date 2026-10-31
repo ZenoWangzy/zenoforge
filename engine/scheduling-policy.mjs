@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // #4655：统一调度策略与单元状态机的消费者/校验器。
-// 契约（engine/state/scheduling-policy.json，schema zf-scheduling-policy/v1）：
+// 契约（state/scheduling-policy.json，schema zf-scheduling-policy/v1）：
 //   1. 状态机自洽：transitions/initial/escalation 引用的状态都在 states 里；
 //   2. 链接真实：每个 area 的 enforced_by 路径存在，引用的 ruling id 存在于 rulings.json，
 //      且该 ruling 的 enforced_by 反向包含策略文件（策略与裁决登记的双向锁，防单边漂移）；
@@ -16,10 +16,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { zfConfigFile } from './pack-dir.mjs';
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const POLICY_PATH = join(REPO_ROOT, 'engine/state/scheduling-policy.json');
-const RULINGS_PATH = join(REPO_ROOT, 'engine/state/rulings.json');
+const REPO_ROOT = resolve(process.env.ZF_REPO_DIR || join(dirname(fileURLToPath(import.meta.url)), '..'));
+const POLICY_PATH = zfConfigFile('state/scheduling-policy.json', REPO_ROOT);
+const RULINGS_PATH = zfConfigFile('state/rulings.json', REPO_ROOT);
 const LEDGER_PATH = `${process.env.AGENT_HOME ?? `${process.env.HOME}/.zenoforge`}/checkout/.scratch-supervisor/autopi/units.json`;
 
 const errors = [];
@@ -38,6 +39,12 @@ function resolveRepoPath(label, path) {
     return null;
   }
   return absolute;
+}
+
+if (!POLICY_PATH || !RULINGS_PATH) {
+  fail('scheduling policy or rulings config file is unavailable');
+  process.stderr.write(`ERROR scheduling-policy: ${errors.join('; ')}\n`);
+  process.exit(1);
 }
 
 const policy = JSON.parse(readFileSync(POLICY_PATH, 'utf8'));

@@ -354,6 +354,22 @@ function pathWithoutBackendCli(dir) {
   return bin;
 }
 
+test('eval default model policy uses the target .zenoforge override', () => {
+  const f = cliFixture();
+  try {
+    const configRoot = join(f.dir, 'target', '.zenoforge'); mkdirSync(configRoot, { recursive: true });
+    const policy = JSON.parse(readFileSync(resolve('engine/model-policy.default.json'), 'utf8'));
+    policy.switches['roadmap-order'] = !policy.switches['roadmap-order'];
+    writeFileSync(join(configRoot, 'model-policy.default.json'), JSON.stringify(policy));
+    const r = f.run(['--stage', 'triage', '--cases', f.caseFile, '--runs', '1', '--label', 'config-policy'], {
+      ZF_CONFIG_ROOT: configRoot,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const results = JSON.parse(readFileSync(join(f.home, '.zenoforge/eval/config-policy/results.json'), 'utf8'));
+    assert.equal(results.policy.switches['roadmap-order'], policy.switches['roadmap-order']);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
 test('--concurrency 3 keeps at most 3 attempts running and records every row', () => {
   const f = cliFixture();
   try {

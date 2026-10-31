@@ -4,11 +4,24 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { zfConfigFile } from './pack-dir.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepo = process.env.ZF_REPO_DIR || path.resolve(scriptDir, '..');
-const registryPath = `${process.env.ZF_PACK_REL || 'engine'}/state/incident-guards.json`;
+const REGISTRY_RELATIVE_PATH = 'state/incident-guards.json';
+const legacyRegistryPath = `${process.env.ZF_PACK_REL || 'engine'}/${REGISTRY_RELATIVE_PATH}`;
 const outputPath = 'lessons/recurrence-ranking.json';
+
+function configRegistryPath(repo) {
+  const file = zfConfigFile(REGISTRY_RELATIVE_PATH, repo);
+  if (!file) return legacyRegistryPath;
+  const relative = path.relative(repo, file);
+  return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+    ? legacyRegistryPath
+    : relative.split(path.sep).join('/');
+}
+
+const defaultRegistryPath = configRegistryPath(defaultRepo);
 
 function textValues(value) {
   if (typeof value === 'string') return [value];
@@ -94,7 +107,7 @@ export function parseRecordCommitHistory(history) {
   return parseIncidentHistory(history).recordCommits;
 }
 
-export function buildLessonRecurrenceRanking(registry, history = {}) {
+export function buildLessonRecurrenceRanking(registry, history = {}, sourcePath = defaultRegistryPath) {
   if (!registry || !Array.isArray(registry.incidents)) {
     throw new Error('incident registry must contain an incidents array');
   }
@@ -226,7 +239,7 @@ export function buildLessonRecurrenceRanking(registry, history = {}) {
   }
   return {
     schema: 'zf-lesson-recurrence-ranking/v1',
-    source: registryPath,
+    source: sourcePath,
     count_rule: 'One incident registry record with recurs_of resolving to this lesson class is one recurrence.',
     recurrent_class_count: rows.filter((row) => row.recurrence_count > 0).length,
     recurrence_event_count: rows.reduce((total, row) => total + row.recurrence_count, 0),
@@ -320,7 +333,7 @@ function recordFootprintLessonHits(runtimeDir, brief) {
   }
 }
 
-function collectRecordCommits(repo) {
+function collectRecordCommits(repo, registryPath) {
   const history = execFileSync('git', [
     '-C', repo,
     'log', '--all', '--format=%H%x09%s', '--unified=0', '-p', '--', registryPath,
@@ -385,8 +398,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const options = parseArgs(process.argv.slice(2));
     const repo = path.resolve(options.repo);
-    const registry = JSON.parse(readFileSync(path.join(repo, registryPath), 'utf8'));
-    const ranking = buildLessonRecurrenceRanking(registry, collectRecordCommits(repo));
+    const registryPath = configRegistryPath(repo);
+    const registryFile = zfConfigFile(REGISTRY_RELATIVE_PATH, repo) ?? path.join(repo, registryPath);
+    const registry = JSON.parse(readFileSync(registryFile, 'utf8'));
+    const ranking = buildLessonRecurrenceRanking(registry, collectRecordCommits(repo, registryPath), registryPath);
     if (options.footprintJson !== null) {
       const footprint = JSON.parse(options.footprintJson);
       if (!Array.isArray(footprint)) throw new Error('--footprint-json must contain an array');

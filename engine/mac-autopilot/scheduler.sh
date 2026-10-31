@@ -10,7 +10,6 @@ source "$HERE/../verification-plan-runtime.sh"
 source "$HERE/config-reconcile.sh"
 source "$HERE/../matt-skills.sh"
 ENGINE_ROOT="$(cd -- "$HERE/../.." && pwd -P)" # holds .agents/skills and engine/prompts, which read-only Claude reviewers get via --add-dir
-REQUIRED_PR_CHECKS_FILE="${REQUIRED_PR_CHECKS_FILE:-$HERE/required-pr-checks.json}"
 # config.sh's pack_file, run in a subshell: config.sh also fills AGENT_HOME, ZF_ENGINE_DIR and ZF_REPO_DIR, and this script
 # resolves the engine and the target repo its own way (${ZF_ENGINE_DIR:-$ROOT/engine}), so those must stay unset here.
 ROOT="$MAC_AUTOPILOT_ROOT"
@@ -49,6 +48,11 @@ declare -F jq_arg_file >/dev/null 2>&1 || jq_arg_file() {
 # does not run is an allowed skip inside the aggregate row, so this guard can no longer sit
 # in a permanent "required checks skipped" wait for PRs whose heavy jobs did not start.
 source "$HERE/scheduler.d/core.sh"
+if [[ -z "${REQUIRED_PR_CHECKS_FILE:-}" ]]; then
+  REQUIRED_PR_CHECKS_FILE="$(ZF_REPO_DIR="${ZF_REPO_DIR:-$MAC_AUTOPILOT_ROOT}" \
+    ZF_ENGINE_DIR="${ZF_ENGINE_DIR:-$ENGINE_ROOT}" sched_config_file mac-autopilot/required-pr-checks.json)" \
+    || REQUIRED_PR_CHECKS_FILE="$HERE/required-pr-checks.json"
+fi
 source "$HERE/scheduler.d/reports.sh"
 source "$HERE/scheduler.d/units.sh"
 source "$HERE/scheduler.d/usage-sessions.sh"

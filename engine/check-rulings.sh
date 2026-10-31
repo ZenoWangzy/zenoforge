@@ -26,7 +26,7 @@ check_model_policy_source() {
   }
 }
 
-# #4655：统一调度策略与单元状态机（engine/state/scheduling-policy.json）的自洽、
+# #4655：统一调度策略与单元状态机（state/scheduling-policy.json）的自洽、
 # 源码封闭与（有 live 台账时）台账封闭检查；live ledger 不存在（CI/隔离 fixture）则跳过台账部分。
 check_scheduling_policy() {
   command -v node >/dev/null 2>&1 || { echo 'ERROR check-rulings: node is required to verify scheduling-policy' >&2; return 1; }

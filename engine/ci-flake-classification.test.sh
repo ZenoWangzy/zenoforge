@@ -9,6 +9,22 @@ cat > "$ZF_ROADMAP_TREE_CACHE_FILE" <<'JSON'
 JSON
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib.sh"
 
+# The first-run signature seed comes from target config ahead of engine policy defaults.
+flake_config_root="$test_env_root/config/.zenoforge"
+flake_seed_dir="$test_env_root/config-seed/state"
+mkdir -p "$flake_config_root/state"
+printf '[{"issue":99,"signature":"config-only fixture"}]\n' \
+  > "$flake_config_root/state/ci-known-flakes.json"
+saved_config_root="$ZF_CONFIG_ROOT"
+saved_state_dir="$STATE_DIR"
+export ZF_CONFIG_ROOT="$flake_config_root"
+STATE_DIR="$flake_seed_dir"
+ci_flake_state_ensure_unlocked
+[[ "$(jq -r '.signatures[0].signature' "$STATE_DIR/ci-flake-signatures.json")" == 'config-only fixture' ]] \
+  || { echo 'ci-flake-classification.test.sh: target config flake seed did not win' >&2; exit 1; }
+ZF_CONFIG_ROOT="$saved_config_root"
+STATE_DIR="$saved_state_dir"
+
 # The shipped policy lists no known flakes; the signature state file carries the two this suite exercises.
 mkdir -p "$STATE_DIR"
 jq -n '{version:1,occurrences:[],signatures:[

@@ -19,10 +19,16 @@ model_policy_fast_forward_alert() {
 }
 
 sync_model_policy_default_after_fast_forward() {
-  local repo_dir="$1" agent_home="$2" old_head="$3" new_head="$4"
+  local repo_dir="$1" agent_home="$2" old_head="$3" new_head="$4" policy_file policy_path
   local diff_status apply_status apply_output reason
 
-  if git -C "$repo_dir" diff --quiet "$old_head" "$new_head" -- "${ZF_PACK_REL:-engine}/model-policy.default.json"; then
+  policy_file="$(zf_config_file model-policy.default.json)" || return 0
+  if [[ "$policy_file" == "$repo_dir/"* ]]; then
+    policy_path="${policy_file#"$repo_dir"/}"
+  else
+    policy_path="${ZF_PACK_REL:-engine}/model-policy.default.json"
+  fi
+  if git -C "$repo_dir" diff --quiet "$old_head" "$new_head" -- "$policy_path"; then
     return 0
   else
     diff_status=$?

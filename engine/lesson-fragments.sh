@@ -139,18 +139,21 @@ mode="${1:-}"
 shift
 repo="${1:-$DEFAULT_REPO}"
 [[ $# -eq 0 ]] || shift
-registry="$repo/${ZF_PACK_REL:-engine}/state/incident-guards.json"
+repo="$(cd -- "$repo" 2>/dev/null && pwd -P)" || { echo "ERROR lesson-fragments: repo unavailable: $repo" >&2; exit 2; }
+export ZF_REPO_DIR="$repo"
+source "$SCRIPT_DIR/config.sh"
+registry="$(zf_config_file state/incident-guards.json)" || registry=''
 if [[ $# -gt 0 && "$1" != --files ]]; then
   registry="$1"
   shift
 fi
+[[ -n "$registry" ]] || { echo 'ERROR lesson-fragments: incident guard registry is unavailable' >&2; exit 2; }
 selected_fragments=()
 if [[ $# -gt 0 ]]; then
   [[ "$1" == --files ]] || { usage; exit 2; }
   shift
   selected_fragments=("$@")
 fi
-repo="$(cd -- "$repo" 2>/dev/null && pwd -P)" || { echo "ERROR lesson-fragments: repo unavailable: $repo" >&2; exit 2; }
 
 case "$mode" in
   --check)

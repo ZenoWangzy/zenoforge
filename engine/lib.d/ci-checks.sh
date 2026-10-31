@@ -152,11 +152,11 @@ ci_flake_state_ensure_unlocked() {
       "$CI_FLAKE_STATE_FILE" >/dev/null 2>&1
     return $?
   fi
-  # One-time seed; active lookups use this state file. The pack's state/ci-known-flakes.json (a JSON array) is the seed when the
+  # One-time seed; active lookups use this state file. state/ci-known-flakes.json (a JSON array) is the seed when the
   # deployment ships one; otherwise the old model-policy list, which the generic default leaves empty.
-  local seed tmp pack_flakes
-  if pack_flakes="$(pack_file state/ci-known-flakes.json)"; then
-    seed="$(jq -c . "$pack_flakes")" || return 1
+  local seed tmp known_flakes
+  if known_flakes="$(zf_config_file state/ci-known-flakes.json)"; then
+    seed="$(jq -c . "$known_flakes")" || return 1
   else
     seed="$(jq -c '.hand_loop_breaker.known_flakes // []' "$MODEL_POLICY_DEFAULT")" || return 1
   fi

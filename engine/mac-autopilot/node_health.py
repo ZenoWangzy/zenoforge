@@ -19,6 +19,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import worker_cost
 import workorder_cost
+from config_paths import zf_config_file
 
 
 def is_test_path(path):
@@ -223,12 +224,12 @@ SOURCE = {
     "delivery.issue_to_accept_p50_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
     "delivery.issue_to_accept_p95_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
     "delivery.revert_rate_30d_pct": "units.json 接受单元的 merge SHA，与 origin/main Git revert commit 的 This reverts commit marker",
-    "delivery.incident_rate_30d_pct": "engine/state/incident-guards.json dated incidents ÷ unique issue IDs in release-closer acceptance events; downstream joins are not required",
+    "delivery.incident_rate_30d_pct": ".zenoforge/state/incident-guards.json dated incidents ÷ unique issue IDs in release-closer acceptance events; downstream joins are not required",
     "delivery.cycles_to_pass_30d": "units.json review-approve / review-request-changes / review-block events before merged / landed",
     "delivery.approvals_per_merge_30d": "units.json review-approve events on merged / landed units",
     "delivery.human_actions_per_merge_30d": "GitHub merged PR review records, matched against units.json history, PR body bot marker and commit trailers",
     "delivery.unlinked_units_30d": "release-closer output in alerts/events.md joined by exact issue, unit, PR and merge IDs",
-    "delivery.unlinked_incidents_30d": "engine/state/incident-guards.json explicit issue fields joined to accepted issue IDs",
+    "delivery.unlinked_incidents_30d": ".zenoforge/state/incident-guards.json explicit issue fields joined to accepted issue IDs",
     "delivery.human_actions_unattributed_30d": "GitHub PR reviews joined to scheduler history and PR/commit bot markers; no reliable actor attribution means unknown",
 }
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
@@ -795,6 +796,13 @@ def read_json(path):
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def load_incident_guards():
+    incidents_file = zf_config_file("state/incident-guards.json")
+    incidents_doc = read_json(incidents_file) if incidents_file else {}
+    incidents = incidents_doc.get("incidents")
+    return incidents if isinstance(incidents, list) else None
 
 
 def read_cancel_audit(path, repo):
@@ -1406,8 +1414,7 @@ def main():
     repo = os.environ.get("ZF_REPO", "")
     release_events = release_acceptances(a)
     issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events)
-    incidents_doc = read_json(os.path.join(here, "..", "state", "incident-guards.json"))
-    incidents = incidents_doc.get("incidents") if isinstance(incidents_doc.get("incidents"), list) else None
+    incidents = load_incident_guards()
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)

@@ -3007,6 +3007,14 @@ PR_MERGE_BODY_LOG="$(mktemp)"
 PR_MERGE_BODY_HOME="$(mktemp -d)"
 PR_MERGE_STATE_FILE="$PR_MERGE_BODY_HOME/merged"
 PR_MERGE_RECONCILE_COUNT="$PR_MERGE_BODY_HOME/reconcile-count"
+PR_MERGE_REPO="$PR_MERGE_BODY_HOME/repo"
+mkdir -p "$PR_MERGE_REPO/.zenoforge/state"
+printf '{"incidents":[]}\n' > "$PR_MERGE_REPO/.zenoforge/state/incident-guards.json"
+git -C "$PR_MERGE_REPO" init -q -b main
+git -C "$PR_MERGE_REPO" config user.name 'Merge lane test'
+git -C "$PR_MERGE_REPO" config user.email merge-lane@example.invalid
+git -C "$PR_MERGE_REPO" add .zenoforge/state/incident-guards.json
+git -C "$PR_MERGE_REPO" commit -qm 'fixture incident registry'
 REAL_BASH="$(command -v bash)"
 PR_MERGE_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 PR_MERGE_COMMIT_SHA=1234567890abcdef1234567890abcdef12345678
@@ -3022,7 +3030,9 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     fi
   elif [[ " $* " == *' --json headRefName,headRefOid,files,state,mergeCommit '* ]]; then
     if [ -f "$PR_MERGE_STATE_FILE" ]; then state=MERGED; merge="$PR_MERGE_COMMIT_SHA"; else state=OPEN; merge=""; fi
-    printf 'agent/issue-42\t%s\ttrue\t%s\t%s\n' "$PR_MERGE_HEAD_SHA" "$state" "$merge"
+    if [[ "$*" == *'.zenoforge/state/incident-guards.json'* ]]; then touches=true; else touches=false; fi
+    printf 'guard-path=%s\n' "$touches" >> "$PR_MERGE_BODY_LOG"
+    printf 'agent/issue-42\t%s\t%s\t%s\t%s\n' "$PR_MERGE_HEAD_SHA" "$touches" "$state" "$merge"
   else
     echo "unexpected fake gh view: $*" >&2
     exit 2
@@ -3059,6 +3069,8 @@ EOF
 chmod +x "$PR_MERGE_BODY_BIN/bash"
 PR_MERGE_RESULT="$(PATH="$PR_MERGE_BODY_BIN:$PATH" PR_MERGE_BODY_LOG="$PR_MERGE_BODY_LOG" \
   AGENT_HOME="$PR_MERGE_BODY_HOME" AGENT_DRY_RUN=0 REPO="test/repo" \
+  ZF_REPO_DIR="$PR_MERGE_REPO" ZF_CONFIG_ROOT="$PR_MERGE_REPO/.zenoforge" \
+  ZF_ENGINE_DIR="$SCRIPT_DIR" ZF_PACK_DIR='' \
   PR_MERGE_HEAD_SHA="$PR_MERGE_HEAD_SHA" PR_MERGE_COMMIT_SHA="$PR_MERGE_COMMIT_SHA" \
   PR_MERGE_STATE_FILE="$PR_MERGE_STATE_FILE" PR_MERGE_RECONCILE_COUNT="$PR_MERGE_RECONCILE_COUNT" bash -c '
     set -euo pipefail
@@ -3074,6 +3086,8 @@ rm -f "$PR_MERGE_BODY_LOG"
 assert_contains "guarded_pr_merge passes a body file" "$PR_MERGE_BODY_CONTENT" "--body-file"
 assert_not_contains "guarded_pr_merge never passes literal --body" "$PR_MERGE_BODY_CONTENT" "--body body"
 assert_contains "guarded_pr_merge preserves body text through the file" "$PR_MERGE_BODY_CONTENT" "body=body from file"
+assert_eq "guarded_pr_merge detects the target config incident registry" 2 \
+  "$(grep -c '^guard-path=true$' <<< "$PR_MERGE_BODY_CONTENT")"
 assert_contains "post-merge failure is retryable" "$PR_MERGE_RESULT" 'statuses=23,0'
 assert_contains "already-merged retry skips gh pr merge" "$PR_MERGE_RESULT" 'already merged as 1234567890abcdef1234567890abcdef12345678; merge skipped'
 assert_eq "the merged PR is never merged twice" 1 "$(grep -c '^gh-pr-merge$' <<< "$PR_MERGE_BODY_CONTENT")"

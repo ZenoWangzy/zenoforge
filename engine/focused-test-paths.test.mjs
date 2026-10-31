@@ -93,6 +93,21 @@ test('maps shared merge-policy changes to aggregate-check consumer suites', () =
   }
 });
 
+test('maps target config data to its reader suites', () => {
+  for (const [source, suite] of [
+    ['.zenoforge/model-policy.default.json', 'engine/apply-model-policy-default-view.test.sh'],
+    ['.zenoforge/mac-autopilot/required-pr-checks.json', 'engine/mac-autopilot/scheduler-gates.test.sh'],
+    ['.zenoforge/state/ci-known-flakes.json', 'engine/ci-flake-classification.test.sh'],
+    ['.zenoforge/state/risk-paths.json', 'engine/risk-class.test.mjs'],
+    ['.zenoforge/state/rule-files.json', 'engine/rule-lane.test.sh'],
+    ['.zenoforge/state/rulings.json', 'engine/pipeline-system-close-evidence.test.sh'],
+    ['.zenoforge/state/scheduling-policy.json', 'engine/check-rulings.test.sh'],
+    ['.zenoforge/state/incident-guards.json', 'engine/night/incident-guard-audit.test.mjs'],
+  ]) {
+    assert.deepEqual(focusedTestPaths([source], new Set([suite])), [suite], source);
+  }
+});
+
 test('maps Nexus retention code and unit tests to the tracked owner-classification suite', () => {
   const suite = 'engine/nexus-retention-reference-owners.test.sh';
   const tracked = new Set([suite]);

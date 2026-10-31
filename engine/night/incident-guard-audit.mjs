@@ -5,10 +5,10 @@ import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { zfConfigFile } from '../pack-dir.mjs';
 
-const REGISTRY_PATH = `${process.env.ZF_PACK_REL || 'engine'}/state/incident-guards.json`;
-// With a pack (ZF_PACK_REL), the registry lives in the engine build's version root, not in the target repo;
-// guard targets resolve against --repo first, then against that build.
+const REGISTRY_PATH = 'state/incident-guards.json';
+// Guard targets resolve against --repo first, then against the engine build.
 const PACK_ROOT = process.env.ZF_PACK_REL
   ? path.resolve(process.env.ZF_PACK_ROOT || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..'))
   : null;
@@ -373,7 +373,9 @@ async function readGuardHistory(historyDir) {
 export async function auditIncidentGuards(repoInput, historyDirInput) {
   const repo = path.resolve(repoInput);
   const historyDir = path.resolve(historyDirInput);
-  const registry = JSON.parse(await readFile(path.join(PACK_ROOT ?? repo, REGISTRY_PATH), 'utf8'));
+  const registryPath = zfConfigFile(REGISTRY_PATH, repo)
+    ?? path.join(PACK_ROOT ?? repo, `${process.env.ZF_PACK_REL || 'engine'}/${REGISTRY_PATH}`);
+  const registry = JSON.parse(await readFile(registryPath, 'utf8'));
   if (!Array.isArray(registry.incidents)) throw new Error(`invalid incident guard registry: ${REGISTRY_PATH}`);
   const incidents = registry.incidents;
   const history = await readGuardHistory(historyDir);

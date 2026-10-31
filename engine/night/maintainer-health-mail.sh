@@ -1245,7 +1245,11 @@ maintainer_health_mail_measure() {
     repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)" || return 1
   fi
   spend_file="$agent_dir/spend/$day.log"
-  incident_file="${AGENT_INCIDENT_GUARDS_FILE:-$repo_root/${ZF_PACK_REL:-engine}/state/incident-guards.json}"
+  incident_file="${AGENT_INCIDENT_GUARDS_FILE:-}"
+  if [[ -z "$incident_file" ]]; then
+    incident_file="$(zf_config_file state/incident-guards.json 2>/dev/null || true)"
+    [[ -n "$incident_file" ]] || incident_file="$repo_root/${ZF_PACK_REL:-engine}/state/incident-guards.json"
+  fi
   wake_file="$agent_dir/logs/supervisor-wakes.log"
   if [ -r "$spend_file" ]; then
     spend_facts="$(awk -F '\t' -v start="$start_epoch" -v end="$end_epoch" \

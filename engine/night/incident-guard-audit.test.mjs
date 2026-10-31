@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -119,6 +119,13 @@ test('guard audit reports historical drift, missing targets, and duplicate check
   const outputPath = path.join(root, 'audit.json');
   const result = spawnSync(process.execPath, [auditScript, '--repo', repo, '--history-dir', history, '--output', outputPath], {
     encoding: 'utf8',
+    env: {
+      ...process.env,
+      ZF_REPO_DIR: repo,
+      ZF_ENGINE_DIR: path.join(repo, 'engine'),
+      ZF_CONFIG_ROOT: path.join(repo, '.zenoforge'),
+      ZF_PACK_DIR: '',
+    },
   });
   assert.equal(result.status, 0, result.stderr);
   const audit = JSON.parse(result.stdout);
@@ -155,6 +162,7 @@ test('with a pack, the registry comes from the engine build and targets resolve 
   // The target repo has no scripts/agent (the pipeline moved out); the engine build's version root has it.
   mkdirSync(path.join(packRoot, 'scripts/agent/state'), { recursive: true });
   mkdirSync(path.join(repo, 'engine/state'), { recursive: true });
+  mkdirSync(path.join(repo, '.zenoforge/state'), { recursive: true });
   mkdirSync(history, { recursive: true });
   writeFileSync(path.join(packRoot, 'scripts/agent/fixture.test.sh'), '');
   mkdirSync(path.join(packRoot, 'engine'), { recursive: true });
@@ -169,10 +177,31 @@ test('with a pack, the registry comes from the engine build and targets resolve 
   ] });
   writeFileSync(path.join(packRoot, 'scripts/agent/state/incident-guards.json'), registry);
   writeFileSync(path.join(repo, 'engine/state/incident-guards.json'), registry);
+  writeFileSync(path.join(repo, '.zenoforge/state/incident-guards.json'), JSON.stringify({ incidents: [
+    { id: 'config-only-file', machine_checks: [{ test_file: 'config/missing.test.sh' }] },
+  ] }));
   const run = (env) => spawnSync(process.execPath, [auditScript, '--repo', repo, '--history-dir', history],
-    { encoding: 'utf8', env: { ...process.env, ZF_PACK_REL: '', ZF_PACK_ROOT: '', ...env } });
+    { encoding: 'utf8', env: {
+      ...process.env,
+      ZF_REPO_DIR: repo,
+      ZF_ENGINE_DIR: path.join(repo, 'engine'),
+      ZF_CONFIG_ROOT: path.join(repo, '.zenoforge'),
+      ZF_PACK_DIR: '',
+      ZF_PACK_REL: '',
+      ZF_PACK_ROOT: '',
+      ...env,
+    } });
 
-  const pack = run({ ZF_PACK_REL: 'scripts/agent', ZF_PACK_ROOT: packRoot });
+  const config = run({ ZF_PACK_REL: 'scripts/agent', ZF_PACK_ROOT: packRoot,
+    ZF_PACK_DIR: path.join(packRoot, 'scripts/agent') });
+  assert.equal(config.status, 0, config.stderr);
+  assert.deepEqual(JSON.parse(config.stdout).missingTargets, [
+    { id: 'config-only-file', targets: [{ kind: 'file', target: 'config/missing.test.sh' }] },
+  ]);
+  unlinkSync(path.join(repo, '.zenoforge/state/incident-guards.json'));
+
+  const pack = run({ ZF_PACK_REL: 'scripts/agent', ZF_PACK_ROOT: packRoot,
+    ZF_PACK_DIR: path.join(packRoot, 'scripts/agent') });
   assert.equal(pack.status, 0, pack.stderr);
   assert.deepEqual(JSON.parse(pack.stdout).missingTargets, [
     { id: 'pack-missing-file', targets: [{ kind: 'file', target: 'scripts/agent/missing.test.sh' }] },

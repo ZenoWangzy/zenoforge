@@ -573,17 +573,23 @@ model_policy() {
 
 model_policy_scan_sources() {
   local script_dir file source process_name target_text selection word model scan_detail
-  local expected_id blocked_family approved_filter approved_sanitized_filter approved_policy_input expanded_approved_policy_input assertion
+  local expected_id blocked_family approved_filter approved_sanitized_filter approved_policy_input legacy_policy_input expanded_approved_policy_input assertion incident_guards_file rulings_file
   local -a forbidden_words role_models forbidden_patterns role_patterns
   if [[ "${ZF_CHECK_RULINGS_POLICY_SOURCE_SCAN_VERIFIED:-0}" == 1 ]]; then return 0; fi
   script_dir="$(dirname -- "$MODEL_POLICY_DEFAULT")"
+  if [[ -n "$ZF_CONFIG_ROOT" && "$MODEL_POLICY_DEFAULT" == "$ZF_CONFIG_ROOT/"* ]]; then
+    # Config is data-only; keep scanning executable sources from the engine.
+    script_dir="$_AGENT_LIB_DIR"
+  fi
+  incident_guards_file="$(zf_config_file state/incident-guards.json 2>/dev/null || true)"
+  rulings_file="$(zf_config_file state/rulings.json 2>/dev/null || true)"
   mapfile -t forbidden_words < <(jq -r '.forbidden[]' "$MODEL_POLICY_DEFAULT")
   mapfile -t role_models < <(jq -r '.roles[].model' "$MODEL_POLICY_DEFAULT")
   for word in "${forbidden_words[@]}"; do forbidden_patterns+=( -e "$word" ); done
   for model in "${role_models[@]}"; do role_patterns+=( -e "$model" ); done
   while IFS= read -r -d '' file; do
     [[ "$file" == "$MODEL_POLICY_DEFAULT" || "$file" == "$script_dir/model-policy.default.json" || "$file" == *.test.* || "${file##*/}" == test-* || "$file" == *-test.* ]] && continue
-    if [[ "$file" == "$script_dir/state/rulings.json" ]]; then
+    if [[ "$file" == "$rulings_file" || "$file" == "$script_dir/state/rulings.json" ]]; then
       # Keep each switch and argv intact. Only the one exact repository jq assertion is eligible for masking.
       source=""
       expected_id='gpt-6-luna'
@@ -601,12 +607,17 @@ model_policy_scan_sources() {
       # This file has hundreds of switches. Extract all command strings in one jq
       # pass instead of starting multiple jq processes for every switch on each
       # HEALTH sample. Preserve the exact approved assertion exception.
-      approved_policy_input="\${REPO_DIR}/$ZF_PACK_REL/model-policy.default.json"
+      if [[ "$MODEL_POLICY_DEFAULT" == "$REPO_DIR/"* ]]; then
+        approved_policy_input="\${REPO_DIR}/${MODEL_POLICY_DEFAULT#"$REPO_DIR"/}"
+      else
+        approved_policy_input="\${REPO_DIR}/$ZF_PACK_REL/model-policy.default.json"
+      fi
+      legacy_policy_input="\${REPO_DIR}/$ZF_PACK_REL/model-policy.default.json"
       expanded_approved_policy_input="${approved_policy_input//'${REPO_DIR}'/$REPO_DIR}"
       [[ "$expanded_approved_policy_input" == "$MODEL_POLICY_DEFAULT" ]] || approved_policy_input=""
       while IFS= read -r -d '' target_text; do
         source+="$target_text"$'\n'
-      done < <(jq -j --arg filter "$approved_filter" --arg input "$approved_policy_input" \
+      done < <(jq -j --arg filter "$approved_filter" --arg input "$approved_policy_input" --arg legacy_input "$legacy_policy_input" \
         --arg sanitized_filter "$approved_sanitized_filter" '
         def emit: if type == "string" then ., "\u0000" else empty end;
         .rulings[]? | .switches[]? as $switch
@@ -615,7 +626,8 @@ model_policy_scan_sources() {
              and ($switch | (has("per_tick_target") | not) and (has("per_tick_scope") | not))
              and ($switch.target | type == "array" and length == 4 and all(.[]; type == "string"))
              and $switch.target[0] == "jq" and $switch.target[1] == "-e"
-             and $switch.target[2] == $filter and $switch.target[3] == $input
+             and $switch.target[2] == $filter
+             and ($switch.target[3] == $input or $switch.target[3] == $legacy_input)
           then [$switch.target[0], $switch.target[1], $sanitized_filter, $switch.target[3]][]
           else [$switch.target?, $switch.per_tick_target?][]
             | if type == "array" then .[]? else . end
@@ -633,7 +645,7 @@ model_policy_scan_sources() {
         process_name+=ude
         source="$(sed -E "s/(comm[[:space:]]+in[[:space:]]*\\([^)]*)([^[:alnum:]_])${process_name}([^[:alnum:]_][^)]*\\))/\\1\\2process-name\\3/g" <<< "$source")"
       fi
-      if [[ "$file" == "$script_dir/state/incident-guards.json" \
+      if [[ "$file" == "$incident_guards_file" || "$file" == "$script_dir/state/incident-guards.json" \
         || "$file" == "$script_dir"/fragment-text--*.txt ]]; then
         selection="$source"
       else
@@ -659,7 +671,12 @@ model_policy_scan_sources() {
       return 1
     fi
   # bin/ (the worker launchers luna, terra, worker in a packaged engine) names concrete models on purpose.
-  done < <(find "$script_dir" -type f ! -name '*.test.*' ! -path "$script_dir/bin/*" -print0)
+  done < <(
+    find "$script_dir" -type f ! -name '*.test.*' ! -path "$script_dir/bin/*" -print0
+    for file in "$rulings_file" "$incident_guards_file"; do
+      [[ -n "$file" && "$file" != "$script_dir/"* && -f "$file" ]] && printf '%s\0' "$file"
+    done
+  )
 }
 
 model_policy_identity_allowed() {
