@@ -1,0 +1,10 @@
+# function<TAB>engine-relative caller<TAB>reason
+cancel_runs	bin/drive-train.sh	The legacy reviewed-PR train queue is retired.
+lower_pending	bin/drive-train.sh	The legacy reviewed-PR train queue is retired.
+publish_train	bin/drive-train.sh	The legacy reviewed-PR train queue is retired.
+red_train	bin/drive-train.sh	The legacy reviewed-PR train queue is retired.
+refresh_runs	bin/drive-train.sh	The legacy reviewed-PR train queue is retired.
+set_state	bin/drive-train.sh	The legacy reviewed-PR train queue is retired.
+train_expected_runs	bin/drive-train.sh	The legacy reviewed-PR train queue is retired.
+train_runs	bin/drive-train.sh	The legacy reviewed-PR train queue is retired.
+hand_agent_role_for_identity	night/hand-exit-handoff.sh	Pre-existing in the live engine (adfb989, bc5cb2f), not a pack function; tracked in #97.
