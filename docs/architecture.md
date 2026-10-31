@@ -287,3 +287,8 @@ Workers run with broad permissions by default. Codex runs in `danger-full-access
 - How the implement and release legs run in full. Their scripts are not in this checkout. See [install.md](install.md#not-generic-yet).
 - The eval harness (`engine/eval/README.md`). It has no case files in this checkout.
 - The `mechanism-registry.json` and `rule-files.json` seeds.
+
+A target may configure `.zenoforge/build.json` with `hook` (a path relative to
+its checkout) and `engine` (the pinned engine revision). `engine/engine-sync.sh`
+executes that hook with its build, check, or converge arguments and exports the
+pin as `ZF_BUILD_ENGINE`.
