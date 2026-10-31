@@ -54,3 +54,11 @@ coord_release "$(jq -r .claim_key <<<"$w2")" "$(jq -r .claim_owner <<<"$w2")"
 echo '[]' > "$GH_PRS"; echo '{"workers":[]}' > "$WORKERS"
 coord_acquire issue-99 other-owner scheduler-worker 99 other implement
 result claim-guard "$(try true)"
+# Pretty-printed workers.json (jq default output): the live-worker loop must read one compact worker per line.
+sleep 60 & live_pid=$!
+jq -n --argjson pid "$live_pid" '{workers:[{unit:"issue-98",issue:98,type:"implement",pid:$pid}]}' > "$WORKERS"
+: > "$LOG"
+live98="$(coord_scheduler_live_worker issue-98 "" && echo LIVE || echo IDLE)"
+result coord-live-worker-pretty "$live98"
+[[ "$live98" == LIVE ]] || { echo "coord_scheduler_live_worker missed a live worker in pretty-printed workers.json" >&2; exit 1; }
+! grep -Fq 'jqf error' "$LOG" || { echo "coord_scheduler_live_worker logged a jqf error" >&2; exit 1; }

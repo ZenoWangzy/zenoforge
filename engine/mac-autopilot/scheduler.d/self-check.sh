@@ -336,8 +336,8 @@ $(tail -80 "$check_output" 2>/dev/null)"
     # at the fresh admission check after that work was already done (05:10:42Z
     # tick: 6 of 8 clone_preparations were wasted on footprint-blocked units).
     if [[ "$TICK_ACTIVE_FOOTPRINTS_VALID" == true ]]; then
-      TICK_ACTIVE_FOOTPRINTS="$(jqf -c --arg id "$1" --argjson entry "{id:$(js "$1"),footprint:$footprint}" \
-        'map(select(.id != $id)) + [$entry]' <<<"$TICK_ACTIVE_FOOTPRINTS")" \
+      TICK_ACTIVE_FOOTPRINTS="$(jqf -c --arg id "$1" --argjson footprint "$footprint" \
+        'map(select(.id != $id)) + [{id:$id,footprint:$footprint}]' <<<"$TICK_ACTIVE_FOOTPRINTS")" \
         && footprint_refresh_conflicts cached || :
     fi
   fi

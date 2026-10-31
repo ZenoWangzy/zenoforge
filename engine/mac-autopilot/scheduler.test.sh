@@ -215,6 +215,38 @@ budget_alert_if_needed
 [[ "$(grep -c 'BUDGET-ALERT' "$A/alerts/waste.md")" == 1 ]]
 dispatch_if_room pr-budget review review budget.log budget.md model max prompt
 [[ "${dispatched[1]}" == "pr-budget" ]]
+# Regression (size_admission_write_start): a multi-line issue state must parse as one JSON value; the old ${state:-{}} default left a stray "}" after any non-empty state.
+(
+  set -u
+  LOG="$(mktemp)"; STAMP=size-test
+  SIZE_ADMISSION_LINES=800; TICK_DISPATCH_LOCAL_REFILL=false
+  scheduler_issue_state() { printf '{\n  "issue": 7,\n  "estimated_changed_lines": 900\n}\n'; }
+  size_admission_reject() { echo "rejected $2"; return 1; }
+  out="$(size_admission_write_start unit-7 "" '{"id":"unit-7","issue":7}')" && rc=0 || rc=$?
+  # set -e is off inside a subshell tested by ||, so every assertion ends in an explicit exit.
+  [[ "$rc" == 1 && "$out" == 'rejected 900' ]] || exit 1
+  [[ "$(grep -c 'jqf error' "$LOG")" == 0 ]] || exit 1
+  rm -f "$LOG"
+) || { echo 'not ok - scheduler.test.sh: size admission misread a multi-line issue state' >&2; exit 1; }
+# Regression (dispatch_if_room): the same-tick footprint fold passes a JSON object to --argjson; the old unquoted {id:...} literal failed with rc=2 on every implement dispatch.
+(
+  set -u
+  LOG="$(mktemp)"; STAMP=fold-test
+  room_for() { return 0; }
+  size_admission_write_start() { return 0; }
+  footprint_recurrence_brief() { :; }
+  dispatch() { :; }
+  set_unit() { :; }
+  footprint_refresh_conflicts() { echo refreshed; }
+  declare -A TICK_FOOTPRINT_CACHE=([unit-9]='["src/x.ts"]')
+  TICK_ACTIVE_FOOTPRINTS_VALID=true
+  TICK_ACTIVE_FOOTPRINTS='[{"id":"other","footprint":["a.ts"]}]'
+  dispatch_if_room unit-9 implement implement log.log report.md model max prompt "" "" "" "" '{"id":"unit-9"}' || exit 1
+  [[ "$(jq -c 'map(.id)' <<<"$TICK_ACTIVE_FOOTPRINTS")" == '["other","unit-9"]' ]] || exit 1
+  [[ "$(jq -c '.[] | select(.id=="unit-9") | .footprint' <<<"$TICK_ACTIVE_FOOTPRINTS")" == '["src/x.ts"]' ]] || exit 1
+  [[ "$(grep -c 'jqf error' "$LOG")" == 0 ]] || exit 1
+  rm -f "$LOG"
+) || { echo 'not ok - scheduler.test.sh: footprint fold failed on implement dispatch' >&2; exit 1; }
 BUDGET=30000000
 has_critical_label '["bug","CRITICAL"]'
 if has_critical_label '["critical-ish"]'; then

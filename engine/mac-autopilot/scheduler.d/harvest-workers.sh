@@ -355,7 +355,7 @@ coord_scheduler_live_worker() { # unit issue -> true if an unharvested worker fo
       [[ "$current_start" == "$expected_start" ]] || continue
     fi
     alive "$pid" && return 0
-  done < <(jqf -r '.workers[] | select(.harvested != true and .lease_expired != true)' "$WORKERS")
+  done < <(jqf -cr '.workers[] | select(.harvested != true and .lease_expired != true)' "$WORKERS")
   return 1
 }
 

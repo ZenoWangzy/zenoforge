@@ -85,7 +85,7 @@ size_admission_write_start() { # unit workdir unit-json → block before worker 
   estimate="$(jqf -r '.estimated_changed_lines // empty' <<<"$3")"
   if [[ ! "$estimate" =~ ^[0-9]+$ && "$issue" =~ ^[1-9][0-9]*$ ]]; then
     state="$(scheduler_issue_state "$issue" 2>/dev/null || true)"
-    estimate="$(jqf -r '.estimated_changed_lines // empty' <<<"${state:-{}}")"
+    estimate="$(jqf -r '.estimated_changed_lines // empty' <<<"$state")"
   fi
   branch="$(jqf -r '.branch // empty' <<<"$3")"
   base_branch="$(jqf -r 'if .stacked_on_released == true then "main" else .stacked_on_branch // "main" end' <<<"$3")"
