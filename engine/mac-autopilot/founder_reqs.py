@@ -85,6 +85,7 @@ def push_changes(items, state_path, lib, agent_home, repo=None):
     try: old = json.load(open(state_path))
     except (OSError, ValueError): old = None
     new = dict(old or {})
+    changes = []
     for it in items:
         k = str(it["issue"])
         if old is not None and old.get(k) != it["stage"]:
@@ -95,26 +96,34 @@ def push_changes(items, state_path, lib, agent_home, repo=None):
                                     capture_output=True, timeout=30, env={**os.environ, "AGENT_HOME": agent_home}).returncode == 0
             except Exception: ok = False
             if not ok: continue
-            if repo:
-                subject = f"需求进展：{STAGES[it['stage']]}"
-                progress = f"进展：{was} 到 {STAGES[it['stage']]}"
-                title = it.get("text") or it.get("title") or ""
-                body = f"{progress}\n- {title}\nhttps://github.com/{repo}/issues/{k}"
-                without_title = f"{progress}\nhttps://github.com/{repo}/issues/{k}"
-                script = (
-                    'subject="$2"; body="$3"; without_title="$4"; '
-                    'source "$1" && send_email_strict "$subject" "$body" --maintainer-kind progress "$(_maintainer_email)"; '
-                    'send_status=$?; [ "$send_status" -eq 0 ] && exit 0; '
-                    'reason="$(maintainer_mail_rejection_reason progress "$subject" "$body")"; '
-                    'case "$reason" in body-internal|body-language) '
-                    'source "$1" && send_email_strict "$subject" "$without_title" --maintainer-kind progress "$(_maintainer_email)" ;; '
-                    '*) exit "$send_status" ;; esac'
-                )
-                try:
-                    subprocess.run(["bash", "-c", script, "bash", lib, subject, body, without_title],
-                                   capture_output=True, timeout=30, env={**os.environ, "AGENT_HOME": agent_home})
-                except Exception: pass
+            changes.append((was, it))
         new[k] = it["stage"]
+    if changes and repo:
+        subject = f"需求进展：{STAGES[changes[0][1]['stage']]}" if len(changes) == 1 else f"需求进展：{len(changes)}项有变化"
+        blocks, titleless_blocks = [], []
+        for was, it in changes[:20]:
+            progress = f"进展：{was} 到 {STAGES[it['stage']]}"
+            title = " ".join((it.get("text") or it.get("title") or "").split())
+            url = f"https://github.com/{repo}/issues/{it['issue']}"
+            blocks.append(f"{progress}\n- {title}\n{url}")
+            titleless_blocks.append(f"{progress}\n{url}")
+        if len(changes) > 20:
+            remaining = f"另有 {len(changes) - 20} 项变化，见首页。"
+            blocks.append(remaining); titleless_blocks.append(remaining)
+        body, without_title = "\n\n".join(blocks), "\n\n".join(titleless_blocks)
+        script = (
+            'subject="$2"; body="$3"; without_title="$4"; '
+            'source "$1" && send_email_strict "$subject" "$body" --maintainer-kind progress "$(_maintainer_email)"; '
+            'send_status=$?; [ "$send_status" -eq 0 ] && exit 0; '
+            'reason="$(maintainer_mail_rejection_reason progress "$subject" "$body")"; '
+            'case "$reason" in body-internal|body-language) '
+            'source "$1" && send_email_strict "$subject" "$without_title" --maintainer-kind progress "$(_maintainer_email)" ;; '
+            '*) exit "$send_status" ;; esac'
+        )
+        try:
+            subprocess.run(["bash", "-c", script, "bash", lib, subject, body, without_title],
+                           capture_output=True, timeout=30, env={**os.environ, "AGENT_HOME": agent_home})
+        except Exception: pass
     if new != old:
         with open(state_path + ".tmp", "w") as f: json.dump(new, f)
         os.replace(state_path + ".tmp", state_path)
