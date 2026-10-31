@@ -20,6 +20,11 @@ from pathlib import Path
 import worker_cost
 import workorder_cost
 
+
+def is_test_path(path):
+    return re.search(r'(^|/)(tests?|__tests__|fixtures?|__snapshots__|eval[-_a-z]*)/|\.(test|spec)\.|\.snap$', path) is not None
+
+
 # metric id: (node, description, healthy bound, unhealthy bound, higher_is_better)
 CRITERIA = {
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
@@ -59,7 +64,7 @@ CRITERIA = {
     "ci.gated_pr_pct":          ("ci+merge", "active agent PRs with the agent/ci-gated label %", 80, 50, True),
     "ci.priority_hold_runs_48h": ("ci+merge", "unique PR runs cancelled for priority hold in 48 h", 0, 1, False),
     "ci.shared_append_rebase_conflict_pct": ("ci+merge", "shared-append landings whose rebase conflicted on a shared-append file %, rolling 24 h", 25, 50, False),
-    "review.large_pr_pct":     ("review-loop", "ledger PRs over 800 changed lines %, rolling 30 d", 10, 25, False),
+    "review.large_pr_pct":     ("review-loop", "ledger PRs over 800 non-test added lines %, rolling 30 d", 10, 25, False),
     "workers.local_test_db":   ("workers", "local test Postgres (PGTEST_URL) reachable, 1 = yes", 1, 0, True),
     "loop.advisor_fail_pct":   ("review-loop", "advisor asks that got no ruling %", 10, 50, False),
     "advisor.last_answer_age_hours": ("review-loop", "hours since the newest successful advisor answer while needs-advisor > 0", 2, 6, False),
@@ -129,7 +134,7 @@ MEANING = {
     "release.hours_waiting": "当前有待发布改动时，本批次已等待的小时数；无待发布工作时为 0。",
     "release.hotpatch_blockers": "生产上跑着、但源 PR 还没进 main 的热修数：每个都会挡住发布。",
     "pipeline.orphan_prs": "流水线台账之外的 agent PR：没人推进的工作。",
-    "review.large_pr_pct": "改动超过 800 行的 PR 占比，只统计最近 30 天有台账活动的 PR：全量口径下旧的大 PR 永久计入，异常只会靠新 PR 稀释而不会随时间自然恢复（#4482）。PR 越大返工越多：<300 行中位 1 轮返工，>2000 行中位 9 轮（10-22 台账 170 个 PR）。高 = 票太大，要在分诊时拆小。",
+    "review.large_pr_pct": "非测试新增行超过 800 行的 PR 占比，只统计最近 30 天有台账活动的 PR；测试路径包括名为 test、tests、__tests__、fixture、fixtures、__snapshots__ 的目录，以及名称以 eval 开头且后续只含小写字母、连字符或下划线的目录；文件名含 .test.、.spec. 或以 .snap 结尾也算测试路径。全量口径下旧的大 PR 永久计入，异常只会靠新 PR 稀释而不会随时间自然恢复（#4482）。PR 越大返工越多：<300 行中位 1 轮返工，>2000 行中位 9 轮（10-22 台账 170 个 PR）。高 = 票太大，要在分诊时拆小。",
     "ci.held_ready_pct": "已批准待合并、但 CI 被热修优先挡住的工作单比例：高 = 优先级变成了饥饿，整条合并车道停摆（L75：10-21 一度 100/101）。",
     "workorders.over_standard": "超过单项花费 bug 线的在途工作单数（见下方工作单标准）：每一单都按缺陷处理，查根因。",
     "workorders.ticket_tokens_p90": "每张 ticket 生命周期 worker 累计 token（输入+输出）的 p90，取最近 7 天关闭的票；阈值来自之前 30 天已关票的 p50×1.5（健康）与 p90×2（异常）。升高 = 现在这批票比历史更烧钱，去单元表里找是哪张。",
@@ -198,7 +203,7 @@ SOURCE = {
     "ci.gated_pr_pct": "GitHub pull request API：带 agent/ci-gated 标签的 open agent/issue-* PR ÷ 所有 open agent/issue-* PR。",
     "ci.priority_hold_runs_48h": "共享 actions-run-cancellations.jsonl：最近 48 小时不同 run_id 的最后一个非空 reason=ci hold。",
     "ci.shared_append_rebase_conflict_pct": "logs/shared-append-rebases.jsonl（land-direct-main 记录每次改动范围带 shared-append 文件的落地 rebase）：固定滚动 24h 内 conflict_files 非空的比例；无记录不计值。",
-    "review.large_pr_pct": "pr-sizes.json（ci_spend.py 取 PR 增删行数）对照最近 30 天有台账活动的 PR；无历史的在途单也计入，缺尺寸时显示无数据",
+    "review.large_pr_pct": "pr-sizes.json（ci_spend.py 取 PR 非测试新增行；测试路径包括名为 test、tests、__tests__、fixture、fixtures、__snapshots__ 的目录，以及名称以 eval 开头且后续只含小写字母、连字符或下划线的目录；文件名含 .test.、.spec. 或以 .snap 结尾也排除）对照最近 30 天有台账活动的 PR；无历史的在途单也计入，缺尺寸时显示无数据",
     "loop.advisor_fail_pct": "units.json：advisor-unavailable ÷（advisor-ruling + advisor-unavailable），窗口内",
     "advisor.last_answer_age_hours": "web-advisor-provider-jobs/*/answer.err 中不含 FAIL: 的最新 mtime；needs-advisor 数来自 gh issue list",
     "review.findings_missing_pct": "units.json 每单的 review_findings：窗口内 block=missing 的打回 ÷ 全部打回（调度器收割打回报告时写入）",
@@ -458,24 +463,28 @@ def size_window_units(units, since, now):
             yield u
 
 
-def rework_by_size(units, sizes, since, now):
-    """Repairs per ledger PR by changed-line band: bigger tickets do not converge.
+def rework_by_size(units, sizes, nontest_added, since, now):
+    """Repairs per ledger PR by changed-line band; large share uses non-test additions.
 
     Only PRs with a ledger event in the 30-day window (#4482): the all-ledger share could
     only fall by dilution, so one-off oversized PRs kept it unhealthy indefinitely."""
-    per, missing = [], False
+    per, large_sizes, missing = [], [], False
     for u in size_window_units(units, since, now):
-        lines = sizes.get(str(u.get("pr")))
-        if lines is None:
+        number = str(u.get("pr"))
+        lines = sizes.get(number)
+        if lines is not None:
+            per.append((lines, sum(1 for h in u.get("history") or [] if h.get("stage") == "repair-delivered")))
+        nontest = nontest_added.get(number)
+        if nontest is None:
             missing = True
-            continue
-        per.append((lines, sum(1 for h in u.get("history") or [] if h.get("stage") == "repair-delivered")))
+        else:
+            large_sizes.append(nontest)
     rows = []
     for lo, hi in SIZE_BANDS:
         reps = sorted(r for n, r in per if n >= lo and (hi is None or n < hi))
         rows.append({"band": f"{lo}–{hi}" if hi else f"≥{lo}", "units": len(reps), "median_repairs": pct(reps, .5),
                      "share_4plus": round(100 * sum(1 for r in reps if r >= 4) / len(reps)) if reps else None})
-    large = 100 * sum(1 for n, _ in per if n > LARGE_PR_LINES) / len(per) if per and not missing else None
+    large = 100 * sum(1 for n in large_sizes if n > LARGE_PR_LINES) / len(large_sizes) if large_sizes and not missing else None
     return rows, large
 
 
@@ -1443,11 +1452,11 @@ def main():
             node, desc, _, _, higher = criteria[mid]
             criteria[mid] = (node, desc, ticket_bounds[key]["healthy"],
                              ticket_bounds[key]["unhealthy"], higher)
-    sizes = read_json(os.path.join(a, "pr-sizes.json")).get("lines") or {}
+    size_doc = read_json(os.path.join(a, "pr-sizes.json"))
+    sizes = size_doc.get("lines") or {}
+    nontest_added = size_doc.get("nontest_added") or {}
     by_size, metrics["review.large_pr_pct"] = rework_by_size(
-        units, sizes, now - timedelta(days=LARGE_PR_WINDOW_DAYS), now)
-    if not sizes:
-        metrics["review.large_pr_pct"] = None
+        units, sizes, nontest_added, now - timedelta(days=LARGE_PR_WINDOW_DAYS), now)
     sinks, queue_waits = time_sinks(units, os.path.join(a, "scheduler.log"),
                                     now - timedelta(hours=TIME_SINK_HOURS), now)
     merge_rate, entered, merged = merge_flow(units, since, now)

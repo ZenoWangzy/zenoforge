@@ -219,7 +219,7 @@ jq '.units += [{"id":"pr-15","pr":15,"stage":"review-pending","history":[{"stage
                {"id":"pr-16","pr":16,"stage":"merged","history":[{"stage":"pr-opened","at":"2026-09-01T00:00:00Z"},{"stage":"merged","at":"2026-09-02T00:00:00Z"}]}]' "$a/units.json" > "$a/u.tmp" && mv "$a/u.tmp" "$a/units.json"
 # 时间都花在哪：返工触发→派出（排队）、返工干活、交付→复检派出、复检干活、批准→CI 判红，取自台账事件 + dispatch 行
 printf '[2026-10-19T10:40:00Z] dispatch mode=fresh pid=1 type=repair unit=pr-11\n[2026-10-19T11:00:00Z] dispatch mode=resume pid=2 type=rereview unit=pr-11\n' >> "$a/scheduler.log"
-echo '{"lines":{"15":900,"16":2000}}' > "$a/pr-sizes.json"
+echo '{"lines":{"15":900,"16":2000},"nontest_added":{"15":900,"16":2000}}' > "$a/pr-sizes.json"
 out="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z --json "$a/node-health.json")"
 [[ "$(jq -c '[.time_sinks[] | [.id, (.value | if . == null then null else round end)]]' "$a/node-health.json")" == '[["repair_queue",4],["repair_work",12],["rereview_queue",8],["rereview_work",4],["approve_to_ci_red",10],["approve_to_merge",null]]' ]] \
   || fail "time sinks wrong: $(jq -c '[.time_sinks[] | [.id, .value]]' "$a/node-health.json")"
@@ -287,7 +287,7 @@ rows = {r["id"]: r for r in n.time_sinks([u], sys.argv[2] + "/sinks.log", dt.dat
 sys.exit(0 if (rows["repair_queue"]["n"], rows["repair_queue"]["value"]) == (1, 5) else print(rows["repair_queue"]) or 1)
 CHECK
 jq -e '.time_sinks[] | select(.id == "approve_to_ci_red") | .status == "OK" and .source != "" and .meaning != ""' "$a/node-health.json" >/dev/null || fail 'time sink lacks a standard, meaning or source'
-grep -Eq ' 100 .*UNHEALTHY$' <<<"$(row 'over 800 changed lines')" || fail "large-PR share wrong: $(row 'over 800 changed lines')"
+grep -Eq ' 100 .*UNHEALTHY$' <<<"$(row 'over 800 non-test added lines')" || fail "large-PR share wrong: $(row 'over 800 non-test added lines')"
 # #4482：窗口只保留最近 30 天有台账活动的 PR——pr-16（2000 行，9 月已合并）不计入；全量口径下一次性的大 PR 永久计入
 [[ "$(jq -c '[.rework_by_size[] | .units]' "$a/node-health.json")" == '[0,0,1,0]' ]] || fail "rework by size wrong: $(jq -c .rework_by_size "$a/node-health.json")"
 # Check the public scorecard at both window boundaries, including future and missing dates.
@@ -302,7 +302,7 @@ cat > "$window/units.json" <<'JSON'
  {"id":"recent-and-future","pr":6,"history":[{"stage":"pr-opened","at":"2026-10-18T12:00:00Z"},{"stage":"merged","at":"2026-10-19T12:00:01Z"}]}
 ]}
 JSON
-echo '{"lines":{"1":2000,"2":801,"3":800,"4":2000,"5":2000,"6":100}}' > "$window/pr-sizes.json"
+echo '{"lines":{"1":2000,"2":801,"3":800,"4":2000,"5":2000,"6":100},"nontest_added":{"1":2000,"2":900,"3":800,"4":2000,"5":900,"6":100}}' > "$window/pr-sizes.json"
 python3 "$script_dir/node_health.py" --runtime "$window" --audit "$audit" --now 2026-10-19T12:00:00Z --json "$window/result.json" >/dev/null
 jq -e '[.metrics[] | select(.id == "review.large_pr_pct")][0] | .value == 50 and .healthy == 10 and .unhealthy == 25 and .status == "UNHEALTHY"' "$window/result.json" >/dev/null \
   || fail 'large-PR share did not honor the 30-day window and 800-line boundary'
@@ -310,18 +310,18 @@ jq -e '[.metrics[] | select(.id == "review.large_pr_pct")][0] | .value == 50 and
 export FAKE_ISSUE_LIST='[]' FAKE_ISSUE_TITLE='pipeline health: review.large_pr_pct unhealthy'
 size_alert() { python3 "$script_dir/node_health.py" --runtime "$window" --audit "$audit" --now "$1" --file-issues >/dev/null; }
 size_alert 2026-10-19T12:00:00Z
-jq 'del(.lines["5"])' "$window/pr-sizes.json" > "$window/sizes.tmp"; mv "$window/sizes.tmp" "$window/pr-sizes.json"
+jq 'del(.nontest_added["5"])' "$window/pr-sizes.json" > "$window/sizes.tmp"; mv "$window/sizes.tmp" "$window/pr-sizes.json"
 python3 "$script_dir/node_health.py" --runtime "$window" --audit "$audit" --now 2026-10-19T12:00:00Z --json "$window/result.json" >/dev/null
 jq -e '[.metrics[] | select(.id == "review.large_pr_pct")][0] | .value == null and .status == "NO-DATA"' "$window/result.json" >/dev/null \
-  || fail 'missing size for an active PR must not produce a partial percentage'
+  || fail 'missing non-test addition count for an active PR must not produce a partial percentage'
 size_alert 2026-10-19T13:00:00Z
 jq -e '.["review.large_pr_pct"].since == "2026-10-19T12:00:00Z"' "$window/node-health-state.json" >/dev/null \
   || fail 'missing size reset the unhealthy episode'
-jq '.lines["5"] = 2000' "$window/pr-sizes.json" > "$window/sizes.tmp"; mv "$window/sizes.tmp" "$window/pr-sizes.json"
+jq '.nontest_added["5"] = 900' "$window/pr-sizes.json" > "$window/sizes.tmp"; mv "$window/sizes.tmp" "$window/pr-sizes.json"
 size_alert 2026-10-19T15:10:00Z
 grep -q 'issue create.*pipeline health: review.large_pr_pct unhealthy' "$test_env_root/gh.calls" \
   || fail 'persistent large-PR episode was not filed after data returned'
-jq '.lines |= with_entries(.value = 100)' "$window/pr-sizes.json" > "$window/sizes.tmp"; mv "$window/sizes.tmp" "$window/pr-sizes.json"
+jq '.nontest_added |= with_entries(.value = 100)' "$window/pr-sizes.json" > "$window/sizes.tmp"; mv "$window/sizes.tmp" "$window/pr-sizes.json"
 size_alert 2026-10-19T15:20:00Z
 ! jq -e 'has("review.large_pr_pct")' "$window/node-health-state.json" >/dev/null || fail 'healthy large-PR sample did not clear the episode'
 jq '(.units[] | select(.id == "no-date").stage) = "closed"' "$window/units.json" > "$window/units.tmp"; mv "$window/units.tmp" "$window/units.json"

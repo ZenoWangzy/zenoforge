@@ -8,7 +8,7 @@ fail() { echo "ci_spend.test.sh: $*" >&2; exit 1; }
 a="$test_env_root/ci-spend"; mkdir -p "$a"
 A1=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; A2=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 B1=cccccccccccccccccccccccccccccccccccccccc; B2=dddddddddddddddddddddddddddddddddddddddd
-echo "{\"units\":[{\"id\":\"pr-2\",\"history\":[{\"stage\":\"review-approve\",\"result\":\"$B1\"}]}]}" > "$a/units.json"
+echo "{\"units\":[{\"id\":\"pr-2\",\"pr\":2,\"stage\":\"review-pending\",\"history\":[{\"stage\":\"review-approve\",\"result\":\"$B1\"}]},{\"id\":\"pr-3\",\"pr\":3,\"stage\":\"review-pending\",\"history\":[]}]}" > "$a/units.json"
 job() { printf '{"conclusion":"%s","started_at":"2026-10-21T10:00:00Z","completed_at":"2026-10-21T10:%s:00Z","runner_name":"%s"}' "$1" "$2" "${3-r1}"; }
 run() { printf '{"id":%s,"name":"%s","event":"%s","head_branch":"%s","head_sha":"%s","status":"completed","created_at":"2026-10-21T%s:00Z","head_commit":{"message":"%s"}}' "$@"; }
 cat > "$a/fixture.json" <<JSON
@@ -19,7 +19,13 @@ cat > "$a/fixture.json" <<JSON
  $(run 4 CI pull_request agent/b "$B2" 11:00 "fix: b"),
  $(run 5 CI workflow_dispatch main "$A2" 11:30 "[skip ci] fix(agent): x"),
  $(run 6 CI push main "$B2" 11:40 "feat: merged")],
- "prs":[{"number":2,"additions":700,"deletions":200},{"number":3,"additions":10,"deletions":5}],
+ "prs":[
+  {"number":2,"additions":900,"deletions":200,"files":[
+   {"path":"tests/parser.py","additions":300},
+   {"path":"src/parser.test.ts","additions":300},
+   {"path":"src/parser.ts","additions":300}]},
+  {"number":3,"additions":900,"deletions":0,"files":[{"path":"src/product.py","additions":900}]}
+ ],
  "jobs":{
   "1":[$(job success 10)],
   "2":[$(job success 20),$(job cancelled 05),$(job cancelled 30 "")],
@@ -39,7 +45,30 @@ jq -e 'has("1") and has("6")' "$a/ci-spend-cache.json" >/dev/null || fail 'compl
 jq '.jobs = {}' "$a/fixture.json" > "$a/fixture2.json"
 python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-21T12:00:00Z --fixture "$a/fixture2.json" >/dev/null
 [[ "$(jq -r .total_min "$a/ci-spend.json")" == 127 ]] || fail 'cached job minutes not reused'
-jq -e '.lines == {"2":900,"3":15}' "$a/pr-sizes.json" >/dev/null || fail "PR sizes not written: $(cat "$a/pr-sizes.json" 2>/dev/null)"
+jq -e '.lines == {"2":1100,"3":900} and .nontest_added == {"2":300,"3":900}' "$a/pr-sizes.json" >/dev/null \
+  || fail "fixture PR sizes or non-test additions wrong: $(cat "$a/pr-sizes.json" 2>/dev/null)"
+python3 - "$script_dir" <<'CHECK' || fail 'test-path classification changed'
+import sys
+sys.path.insert(0, sys.argv[1])
+import node_health as n
+tests = ["test/a", "tests/a", "__tests__/a", "fixture/a", "fixtures/a", "__snapshots__/a",
+         "eval/a", "eval-ci/a", "eval_data/a", "src/a.test.py", "src/a.spec.ts", "src/a.snap"]
+products = ["contest/a", "src/mytests/a", "src/a.snapshot", "src/test_a.py"]
+assert all(n.is_test_path(path) for path in tests), tests
+assert not any(n.is_test_path(path) for path in products), products
+CHECK
+python3 - "$script_dir" "$a" <<'CHECK' || fail 'fixture non-test added-line share or size bands wrong'
+import datetime as dt, json, sys
+sys.path.insert(0, sys.argv[1])
+import node_health as n
+root = sys.argv[2]
+units = json.load(open(root + "/units.json"))["units"]
+sizes = json.load(open(root + "/pr-sizes.json"))
+now = dt.datetime(2026, 10, 21, 12, tzinfo=dt.timezone.utc)
+rows, large = n.rework_by_size(units, sizes["lines"], sizes["nontest_added"], now-dt.timedelta(days=30), now)
+assert large == 50.0, large
+assert [row["units"] for row in rows] == [0, 0, 2, 0], rows
+CHECK
 
 # The previous 500-PR census omitted 41 active-window ledger PRs in #4482.
 # A real sampling run queries ledger PRs, refreshes open heads, and reuses
@@ -53,7 +82,19 @@ cat > "$a/units.json" <<'JSON'
 ]}
 JSON
 echo '{"lines":{"201":400},"states":{"201":"MERGED"}}' > "$a/pr-sizes.json"
-echo '{"202":{"additions":400,"deletions":401,"state":"OPEN"},"203":{"additions":200,"deletions":300,"state":"MERGED"}}' > "$a/pr-data.json"
+python3 - "$a/pr-data.json" <<'DATA'
+import json, sys
+nodes = [{"path":f"tests/test-{i}.py", "additions":6} for i in range(100)]
+json.dump({
+    "201":{"additions":400,"deletions":0,"state":"MERGED",
+          "files":{"totalCount":1,"nodes":[{"path":"src/old.py","additions":400}]}},
+    "202":{"additions":900,"deletions":0,"state":"OPEN",
+          "files":{"totalCount":101,"nodes":nodes}},
+    "203":{"additions":200,"deletions":300,"state":"MERGED",
+          "files":{"totalCount":2,"nodes":[{"path":"src/a.py","additions":120},
+                                                {"path":"src/b.py","additions":80}]}},
+}, open(sys.argv[1], "w"))
+DATA
 cat > "$a/gh-real" <<'PY'
 #!/usr/bin/env python3
 import json, os, re, sys
@@ -66,6 +107,8 @@ elif args[:2] == ["api", "graphql"]:
     numbers = re.findall(r"p(\d+):pullRequest\(number:\d+\)", " ".join(args))
     with (root / "queries.log").open("a") as out:
         out.write(",".join(numbers) + "\n")
+    with (root / "fields.log").open("a") as out:
+        out.write(" ".join(args) + "\n")
     if (root / "query-failed").exists():
         sys.exit(1)
     data = json.loads((root / "pr-data.json").read_text())
@@ -77,16 +120,20 @@ chmod +x "$a/gh-real"
 export SIZE_TEST_ROOT="$a" ZF_GH_REAL_CLI="$a/gh-real"
 export PATH="$script_dir/../gh-shim:$PATH"
 python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-21T12:00:00Z >/dev/null
-jq -e '.lines == {"201":400,"202":801,"203":500} and .states == {"201":"MERGED","202":"OPEN","203":"MERGED"}' "$a/pr-sizes.json" >/dev/null \
-  || fail 'ledger PR batch omitted sizes, deletions, or the undated active PR'
-[[ "$(cat "$a/queries.log")" == '202,203' ]] || fail 'merged PR cache was not reused or stale PR was fetched'
-echo '{"202":{"additions":50,"deletions":50,"state":"OPEN"},"203":{"additions":999,"deletions":999,"state":"MERGED"}}' > "$a/pr-data.json"
+jq -e '.lines == {"201":400,"202":900,"203":500} and .states == {"201":"MERGED","202":"OPEN","203":"MERGED"} and .nontest_added == {"201":400,"202":300,"203":200}' "$a/pr-sizes.json" >/dev/null \
+  || fail 'ledger PR batch omitted sizes, non-test additions, or the undated active PR'
+[[ "$(cat "$a/queries.log")" == '201,202,203' ]] || fail 'old cache migration or closed-PR reuse is wrong'
+grep -q 'files(first:100)' "$a/fields.log" || fail 'GitHub query omitted the first 100 changed files'
+cat > "$a/pr-data.json" <<'JSON'
+{"202":{"additions":50,"deletions":50,"state":"OPEN","files":{"totalCount":1,"nodes":[{"path":"src/new.py","additions":50}]}},
+ "203":{"additions":999,"deletions":999,"state":"MERGED","files":{"totalCount":1,"nodes":[{"path":"src/old.py","additions":999}]}}}
+JSON
 python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-21T12:30:00Z >/dev/null
-jq -e '.lines == {"201":400,"202":100,"203":500}' "$a/pr-sizes.json" >/dev/null \
+jq -e '.lines == {"201":400,"202":100,"203":500} and .nontest_added == {"201":400,"202":50,"203":200}' "$a/pr-sizes.json" >/dev/null \
   || fail 'open PR size was not refreshed or merged size was not reused'
 [[ "$(tail -1 "$a/queries.log")" == '202' ]] || fail 'the second sample fetched immutable PR sizes again'
 touch "$a/query-failed"
 python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-21T13:00:00Z >/dev/null
-jq -e '(.lines | has("202") | not) and .lines["201"] == 400 and .lines["203"] == 500' "$a/pr-sizes.json" >/dev/null \
+jq -e '(.lines | has("202") | not) and (.nontest_added | has("202") | not) and .lines["201"] == 400 and .lines["203"] == 500' "$a/pr-sizes.json" >/dev/null \
   || fail 'a failed size query reused an unverified open PR size'
 echo 'ci_spend.test.sh: PASS'
