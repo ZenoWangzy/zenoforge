@@ -853,7 +853,7 @@ assert_contains "unmapped reporter conclusion does not fall back to maintainer" 
 assert_not_contains "unmapped reporter conclusion never names maintainer" \
   "$UNMAPPED_CONCLUSION_MAIL" 'maintainer@notify-fixture.invalid'
 assert_contains "conclude_run uses reporter-only notification path" \
-  "$(sed -n '/notify_email_reporter "\$n"/,/|| true/p' "$SCRIPT_DIR/lib.sh")" \
+  "$(sed -n '/notify_email_reporter "\$n"/,/|| true/p' "$SCRIPT_DIR/lib.d/conclude-run.sh")" \
   'notify_email_reporter "$n"'
 INCIDENT_MAIL="$(notify_maintainer '[example] 模型调用暂不可用' \
   $'用户目前看到：相关处理暂缓约一小时。\n我们正在：自动等待并重新尝试。\n下次更新：2026-09-27 12:00 UTC 后如再次失败会提醒。' incident 2>&1)"
@@ -1230,6 +1230,15 @@ assert_eq 'maintainer mail accepts a complete decision' '' \
   "$(maintainer_mail_rejection_reason decision "$DECISION_SUBJECT" "$DECISION_BODY")"
 assert_eq 'maintainer mail accepts a linked production outcome' '' \
   "$(maintainer_mail_rejection_reason outcome "$OUTCOME_SUBJECT" "$OUTCOME_BODY")"
+PROGRESS_SUBJECT='需求进展：热修生效'
+PROGRESS_BODY='进展：提出 到 热修生效
+- 用户现在可以开始使用
+https://github.com/example-maintainer/example-repo/issues/9001'
+assert_eq 'maintainer mail accepts a linked requirement progress update' '' \
+  "$(maintainer_mail_rejection_reason progress "$PROGRESS_SUBJECT" "$PROGRESS_BODY")"
+assert_eq 'maintainer mail rejects requirement progress without its issue link' 'progress-content' \
+  "$(maintainer_mail_rejection_reason progress "$PROGRESS_SUBJECT" '进展：提出 到 热修生效
+- 用户现在可以开始使用')"
 assert_eq 'maintainer mail rejects an outcome without a named user change' 'outcome-content' \
   "$(maintainer_mail_rejection_reason outcome "$OUTCOME_SUBJECT" '生产环境现已上线，用户现在可以查看结果。https://github.com/example-maintainer/example-repo/issues/9001')"
 assert_eq 'maintainer mail accepts an active incident with next-update time' '' \

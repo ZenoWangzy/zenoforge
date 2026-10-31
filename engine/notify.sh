@@ -682,7 +682,7 @@ maintainer_mail_rejection_reason() {
   local kind="$1" subject="$2" body="$3" subject_chars option_count option_line consequence letter recommended last_line line readable_body internal_body
   local -a options=()
 
-  case "$kind" in decision|outcome|incident|resolution|health) ;; *) echo kind; return 0 ;; esac
+  case "$kind" in decision|outcome|incident|resolution|progress|health) ;; *) echo kind; return 0 ;; esac
   if ! grep -q '[一-龥]' <<< "$subject"; then
     echo subject-language
     return 0
@@ -770,6 +770,13 @@ maintainer_mail_rejection_reason() {
         return 0
       fi
       ;;
+    progress)
+      if ! grep -Eq '^进展：[^[:space:]].*' <<< "$body" \
+        || ! grep -Eq 'https://github\.com/[^/[:space:]]+/[^/[:space:]]+/issues/[0-9]+' <<< "$body"; then
+        echo progress-content
+        return 0
+      fi
+      ;;
     incident)
       if ! grep -Eq '^用户目前看到：[^[:space:]].*' <<< "$body"; then
         echo incident-impact
@@ -833,7 +840,7 @@ $body")"
     maintainer_mail_rejection_reason "$kind" "$subject" "$body"
     return 0
   fi
-  case "$kind" in decision|outcome|incident|resolution) check_kind=1 ;; esac
+  case "$kind" in decision|outcome|incident|resolution|progress) check_kind=1 ;; esac
   maintainer_email="$(_maintainer_email)"
   for recipient in "$@"; do
     if [ -n "$maintainer_email" ] && [ "${recipient,,}" = "${maintainer_email,,}" ]; then

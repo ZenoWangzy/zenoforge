@@ -79,8 +79,8 @@ def build(units, issues, rulings, accepted, now, hotfix_live=None):
     return {"stages": STAGES, "items": items, "partial": issues is None}
 
 
-def push_changes(items, state_path, lib, agent_home):
-    """First run records the stages silently; afterwards each stage change appends one inbox line (key freq-<issue>-<stage>).
+def push_changes(items, state_path, lib, agent_home, repo=None):
+    """First run records stages silently; later changes append an inbox line and send best-effort founder mail.
     A failed append leaves the old stage recorded so the next beat retries it."""
     try: old = json.load(open(state_path))
     except (OSError, ValueError): old = None
@@ -95,6 +95,25 @@ def push_changes(items, state_path, lib, agent_home):
                                     capture_output=True, timeout=30, env={**os.environ, "AGENT_HOME": agent_home}).returncode == 0
             except Exception: ok = False
             if not ok: continue
+            if repo:
+                subject = f"需求进展：{STAGES[it['stage']]}"
+                progress = f"进展：{was} 到 {STAGES[it['stage']]}"
+                title = it.get("text") or it.get("title") or ""
+                body = f"{progress}\n- {title}\nhttps://github.com/{repo}/issues/{k}"
+                without_title = f"{progress}\nhttps://github.com/{repo}/issues/{k}"
+                script = (
+                    'subject="$2"; body="$3"; without_title="$4"; '
+                    'source "$1" && send_email_strict "$subject" "$body" --maintainer-kind progress "$(_maintainer_email)"; '
+                    'send_status=$?; [ "$send_status" -eq 0 ] && exit 0; '
+                    'reason="$(maintainer_mail_rejection_reason progress "$subject" "$body")"; '
+                    'case "$reason" in body-internal|body-language) '
+                    'source "$1" && send_email_strict "$subject" "$without_title" --maintainer-kind progress "$(_maintainer_email)" ;; '
+                    '*) exit "$send_status" ;; esac'
+                )
+                try:
+                    subprocess.run(["bash", "-c", script, "bash", lib, subject, body, without_title],
+                                   capture_output=True, timeout=30, env={**os.environ, "AGENT_HOME": agent_home})
+                except Exception: pass
         new[k] = it["stage"]
     if new != old:
         with open(state_path + ".tmp", "w") as f: json.dump(new, f)
@@ -125,5 +144,5 @@ def collect(units, repo, rulings_path, runtime, agent_home, lib):
     except (OSError, ValueError): rulings = []
     out = build(units, _fetch_issues(repo, os.path.join(runtime, "founder-reqs.cache.json")), rulings, node_health.release_acceptances(runtime), time.time(),
                 _hotfix_live(os.path.join(agent_home, "hotfix-live.jsonl")))
-    push_changes(out["items"], os.path.join(agent_home, "founder-req-stage.json"), lib, agent_home)
+    push_changes(out["items"], os.path.join(agent_home, "founder-req-stage.json"), lib, agent_home, repo)
     return out
