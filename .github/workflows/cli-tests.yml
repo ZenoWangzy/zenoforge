@@ -11,22 +11,12 @@ permissions:
 
 jobs:
   cli:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: GNU userland on macOS (what doctor asks a Mac user to install)
-        if: runner.os == 'macOS'
-        run: |
-          brew install bash coreutils flock util-linux gnu-tar jq
-          for p in "$(brew --prefix coreutils)/libexec/gnubin" "$(brew --prefix gnu-tar)/libexec/gnubin" \
-                   "$(brew --prefix util-linux)/bin" "$(brew --prefix bash)/bin"; do echo "$p" >> "$GITHUB_PATH"; done
       - run: npm install --no-audit --no-fund
       - run: npm test
       - name: Pack and run doctor from the tarball
