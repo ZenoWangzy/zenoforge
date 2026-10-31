@@ -6,6 +6,7 @@ import { PACK_DIR, zfConfigFile } from './pack-dir.mjs';
 const scripts = {
   roleCheck: 'check-fruit-migration-role.mjs',
   numberCheck: 'check-migration-numbers.mjs',
+  renumber: 'fruit-migration-renumber.mjs',
 };
 
 export function migrationScript(key, root = process.cwd()) {
