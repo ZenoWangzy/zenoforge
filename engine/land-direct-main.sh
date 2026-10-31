@@ -1452,6 +1452,14 @@ fi
 # M3 传感器/执行器分离（#4499）：规则文件清单内的 diff 只放行 supervisor 语法检查通道；
 # unit 一律拒绝。每次落地输出一条 rule-lane 判定行。
 bash "$land_script_dir/rule-lane.sh" "$tested_base" "$(git rev-parse HEAD)"
+# 非产品配置落地只做 JSON 语法检查，在推送前做（2026-10-31 裁决）。
+if syntax_only_landing "$tested_base" HEAD; then
+  while IFS= read -r landed_path; do
+    [[ "$landed_path" == *.json ]] && git cat-file -e "HEAD:$landed_path" 2>/dev/null || continue
+    git show "HEAD:$landed_path" | jq empty >/dev/null 2>&1 \
+      || { printf 'land-direct-main: non-product config syntax check failed path=%s\n' "$landed_path" >&2; exit 1; }
+  done < <(git diff --name-only --no-renames "$tested_base...HEAD")
+fi
 prepare_lesson_metadata_for_landing
 assign_plan_package_trailer
 if ! land_append_owner_issue_references "$tested_base"; then
@@ -1577,25 +1585,13 @@ fi
 # keeps dispatch failures recoverable without changing the successful landing result.
 main_sha="$(git rev-parse HEAD)"
 dispatch_status=0
-landing_syntax_status=0
 if syntax_only_landing "$base_before_push" "$candidate_head"; then
-  while IFS= read -r landed_path; do
-    [[ "$landed_path" == *.json ]] || continue
-    git cat-file -e "$candidate_head:$landed_path" 2>/dev/null || continue
-    if ! git show "$candidate_head:$landed_path" | jq empty >/dev/null 2>&1; then
-      printf 'land-direct-main: non-product config syntax check failed path=%s\n' "$landed_path" >&2
-      landing_syntax_status=1
-    fi
-  done < <(git diff --name-only --no-renames "$base_before_push...$candidate_head")
   echo 'land-direct-main: non-product config landing; post-land Pipeline suites skipped (2026-10-31 ruling)'
-else
-  if dispatch_pipeline_suites_after_landing "$main_sha" "$base_before_push"; then :; else dispatch_status=$?; fi
-fi
+elif dispatch_pipeline_suites_after_landing "$main_sha" "$base_before_push"; then :; else dispatch_status=$?; fi
 if landed_range_changes_postsubmit_input "$base_before_push" "$candidate_head"; then
   if revalidate_missing_postsubmit "$main_sha"; then :; else
     postsubmit_status=$?
     echo "land-direct-main: Postsubmit revalidation request failed for landed range ${base_before_push:0:12}..${candidate_head:0:12} exit=$postsubmit_status; landing remains successful" >&2
   fi
 fi
-if (( landing_syntax_status != 0 )); then exit "$landing_syntax_status"; fi
 if ((dispatch_status != 0)); then exit "$dispatch_status"; fi

@@ -60,9 +60,7 @@ for path in "${touched[@]}"; do
       if ! git show "$head:$path" | jq empty >/dev/null 2>&1; then syntax_status=1; fi
       ;;
     *.sh|*.py|*.mjs|*.js)
-      syntax_parent="${path%/*}"
-      [[ "$syntax_parent" != "$path" ]] || syntax_parent=.
-      if ! syntax_dir="$(mktemp -d "$syntax_parent/.rule-lane-syntax.XXXXXX")"; then
+      if ! syntax_dir="$(mktemp -d)"; then
         syntax_status=1
       else
         syntax_file="$syntax_dir/rule.${path##*.}"
