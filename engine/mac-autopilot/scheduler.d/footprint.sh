@@ -257,11 +257,14 @@ footprint_wait_mark() { # unit owner unit_json：记等待方到 unit（值没�
   [[ "$(jqf -r '.footprint_wait_owner // empty' <<<"$3")" == "$2" ]] || set_unit "$1" ".footprint_wait_owner=\"$2\""
 }
 _footprint_room() {
-  local id="$1" u="${2:-}" scope active conflict check_scope refreshed=false require_fresh="${3:-true}"
+  local id="$1" u="${2:-}" scope active conflict check_scope refreshed=false require_fresh="${3:-true}" stage
   # f9 kill switch（M2 故障注入 #4498）：footprint_mutex.enabled=false 跳过互斥。
   # 关掉后不再产生 "footprint wait" 事件，mechanism.silent 会在登记的沉默上限内报出。
   [[ "$(jqf -r 'if .footprint_mutex.enabled == false then "false" else "true" end' <<<"$CFG")" == true ]] || return 0
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$id" '.units[] | select(.id==$id)' "$UNITS")"
+  # Candidates with their own PR rebase at land, so another unit's footprint adds no value.
+  stage="$(jqf -r '.stage // empty' <<<"$u")"
+  [[ "$stage" != repair-pending && "$stage" != rereview-pending ]] || return 0
   if [[ "$require_fresh" != true ]] && footprint_preflight_snapshot; then
     conflict="${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[$id]:-}"
     if [[ -n "$conflict" ]]; then

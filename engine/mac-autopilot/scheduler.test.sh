@@ -2391,7 +2391,11 @@ sched_case_footprint_mutex() {
   ROOT="$(mktemp -d)"
   # The active-footprint snapshot is cached for the length of a tick; this case rewrites the workers between checks, so each check
   # starts from a fresh snapshot.
-  footprint_room() { TICK_ACTIVE_FOOTPRINTS_VALID=false; TICK_FOOTPRINT_CONFLICT_VALID=false; _footprint_room "$@"; }
+  footprint_room_each_tick() {
+    TICK_ACTIVE_FOOTPRINTS_VALID=false
+    TICK_FOOTPRINT_CONFLICT_VALID=false
+    footprint_room "$@"
+  }
   UNITS="$fixture_supervisor/autopi/footprint-units.json"
   WORKERS="$fixture_supervisor/autopi/footprint-workers.json"
   cat > "$UNITS" <<'JSON'
@@ -2399,23 +2403,52 @@ sched_case_footprint_mutex() {
  {"id":"a","stage":"implement","footprint":["packages/example/hooks/__init__.py"]},
  {"id":"b","stage":"implement-pending","footprint":["packages/example/hooks/__init__.py"]},
  {"id":"c","stage":"implement-pending","footprint":["packages/example/hooks/other.py"]},
- {"id":"d","stage":"repair-pending","footprint":["packages/example/hooks"]}]}
+ {"id":"d","stage":"implement-pending","footprint":["packages/example/hooks"]},
+ {"id":"repair-active","stage":"repair","footprint":["packages/example/hooks/__init__.py"]},
+ {"id":"repair-candidate","stage":"repair-pending","footprint":["packages/example/hooks/__init__.py"],"footprint_wait_owner":"repair-active"},
+ {"id":"rereview-candidate","stage":"rereview-pending","footprint":["packages/example/hooks/__init__.py"],"footprint_wait_owner":"repair-active"},
+ {"id":"implement-candidate","stage":"implement-pending","footprint":["packages/example/hooks/__init__.py"],"footprint_wait_owner":"repair-active"}]}
 JSON
   echo '{"workers":[{"pid":123,"unit":"a","type":"implement"}]}' > "$WORKERS"
-  if footprint_room b; then echo 'same-file implement admitted' >&2; exit 1; fi
-  footprint_room c
-  if footprint_room d; then echo 'directory/file repair overlap admitted' >&2; exit 1; fi
+  if footprint_room_each_tick b; then echo 'same-file implement admitted' >&2; exit 1; fi
+  footprint_room_each_tick c
+  if footprint_room_each_tick d; then echo 'directory/file implement overlap admitted' >&2; exit 1; fi
+  # A PR candidate rebases at land, so overlapping an active repair unit does not delay repair/rereview.
+  echo '{"workers":[{"pid":124,"unit":"repair-active","type":"repair"}]}' > "$WORKERS"
+  footprint_failures=0
+  for candidate in repair-candidate rereview-candidate; do
+    candidate_unit="$(jqf -c --arg id "$candidate" '.units[] | select(.id==$id)' "$UNITS")"
+    if ! footprint_room_each_tick "$candidate" "$candidate_unit" true; then
+      echo "$candidate should bypass the active repair footprint" >&2
+      footprint_failures=$((footprint_failures + 1))
+    fi
+    if jqf -e --arg id "$candidate" '.units[] | select(.id==$id) | has("footprint_wait_owner")' "$UNITS" >/dev/null; then
+      echo "$candidate kept its footprint_wait_owner after admission" >&2
+      footprint_failures=$((footprint_failures + 1))
+    fi
+  done
+  candidate_unit="$(jqf -c '.units[] | select(.id=="implement-candidate")' "$UNITS")"
+  if footprint_room_each_tick implement-candidate "$candidate_unit" true; then
+    echo 'overlapping implement-pending candidate admitted' >&2
+    footprint_failures=$((footprint_failures + 1))
+  fi
+  [[ "$(jqf -r '.units[] | select(.id=="implement-candidate") | .footprint_wait_owner' "$UNITS")" == repair-active ]] || {
+    echo 'overlapping implement-pending candidate did not retain the active repair owner' >&2
+    footprint_failures=$((footprint_failures + 1))
+  }
+  (( footprint_failures == 0 )) || exit 1
+  echo '{"workers":[{"pid":123,"unit":"a","type":"implement"}]}' > "$WORKERS"
   # Completed workers release ownership; a review never reserves write scope.
   echo '{"workers":[{"pid":123,"unit":"a","type":"implement","harvested":true},{"pid":124,"unit":"a","type":"review"}]}' > "$WORKERS"
-  footprint_room b
+  footprint_room_each_tick b
   # M2 故障注入接缝（#4498）：config footprint_mutex.enabled=false 跳过互斥——冲突单元放行，不再记 footprint wait
   echo '{"workers":[{"pid":123,"unit":"a","type":"implement"}]}' > "$WORKERS"
   : >> "$LOG"; before_lines="$(wc -l < "$LOG")"
   CFG='{"footprint_mutex":{"enabled":false}}'
-  footprint_room b
+  footprint_room_each_tick b
   [[ "$(wc -l < "$LOG")" == "$before_lines" ]] || { echo 'kill switch still logged a footprint wait' >&2; exit 1; }
   CFG='{}'
-  if footprint_room b; then echo 'same-file implement admitted without the kill switch' >&2; exit 1; fi
+  if footprint_room_each_tick b; then echo 'same-file implement admitted without the kill switch' >&2; exit 1; fi
   # #4488: 在跑 unit 实际改过（预测之外）的文件挡住新派发；workdir 不可读时退回预测足迹。
   wdir="$(mktemp -d)"
   git -C "$wdir" init -q -b main
@@ -2431,21 +2464,21 @@ JSON
  {"id":"e","stage":"implement-pending","footprint":["tests/contract/v4-mcp-tools.test.ts"]}]}
 JSON
   echo "{\"workers\":[{\"pid\":125,\"unit\":\"a\",\"type\":\"implement\",\"workdir\":\"$wdir\"}]}" > "$WORKERS"
-  if footprint_room e; then echo 'committed live write beyond prediction admitted' >&2; exit 1; fi
+  if footprint_room_each_tick e; then echo 'committed live write beyond prediction admitted' >&2; exit 1; fi
   printf 'y\n' > "$wdir/tests/contract/untracked-yet.test.ts"
   cat > "$UNITS" <<'JSON'
 {"units":[
  {"id":"a","stage":"implement","footprint":["packages/example/hooks/__init__.py"]},
  {"id":"f","stage":"implement-pending","footprint":["tests/contract/untracked-yet.test.ts"]}]}
 JSON
-  if footprint_room f; then echo 'untracked live write beyond prediction admitted' >&2; exit 1; fi
+  if footprint_room_each_tick f; then echo 'untracked live write beyond prediction admitted' >&2; exit 1; fi
   cat > "$UNITS" <<'JSON'
 {"units":[
  {"id":"a","stage":"implement","footprint":["packages/example/hooks/__init__.py"]},
  {"id":"g","stage":"implement-pending","footprint":["packages/example/hooks/other.py"]}]}
 JSON
   echo '{"workers":[{"pid":125,"unit":"a","type":"implement","workdir":"/nonexistent/live-writes"}]}' > "$WORKERS"
-  footprint_room g
+  footprint_room_each_tick g
   rm -rf -- "$wdir"
   # #4488 二轮：与预测文件在 git log 里反复共同修改的热点文件并入待派发 unit
   # 的检查范围，预测范围不相交但历史耦合的候选先排队；扩展不写回 .footprint。
@@ -2473,11 +2506,11 @@ JSON
  {"id":"i","stage":"implement-pending","footprint":["packages/nobody/touched-this.ts"]}]}
 JSON
   echo '{"workers":[{"pid":126,"unit":"a","type":"implement"}]}' > "$WORKERS"
-  if footprint_room h; then echo 'co-modification hotspot beyond prediction admitted' >&2; exit 1; fi
+  if footprint_room_each_tick h; then echo 'co-modification hotspot beyond prediction admitted' >&2; exit 1; fi
   [[ "$(jqf -r '.units[] | select(.id=="h") | (.footprint // []) | join(",")' "$UNITS")" == "$qrt" ]]
-  footprint_room i
+  footprint_room_each_tick i
   echo '{"workers":[{"pid":126,"unit":"a","type":"implement","harvested":true}]}' > "$WORKERS"
-  footprint_room h
+  footprint_room_each_tick h
   rm -rf -- "$hdir"
   ROOT="$(cd "$script_dir/../.." && pwd -P)"
   mkdir -p "$AGENT_HOME/state"
