@@ -7,7 +7,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 python3 -I - "$script_dir" <<'PY'
 import sys, datetime; sys.path.insert(0, sys.argv[1]); import factory_trend as F
 prices = F.roi_ledger.load_prices(F.roi_rollup.PRICE_FILE)
-required_models = {"gpt-6-luna": "openai", "gpt-5.6-terra": "openai", "gpt-6.1-sol": "openai", "claude-haiku-5-5": "anthropic",
+required_models = {"gpt-6-luna": "openai", "gpt-6.1-terra": "openai", "gpt-6.1-sol": "openai", "claude-haiku-5-5": "anthropic",
     "claude-sonnet-5-5": "anthropic", "claude-opus-5-5": "anthropic", "glm-5.3": "z.ai"}
 for model, provider in required_models.items():
     price = prices["models"][model]
