@@ -11,7 +11,8 @@ cat > "$t/lw" <<'STUB'
 [[ -z ${GH_TOKEN+x} ]]; printf '%s\n' "$@" > "$LAUNCH"
 STUB
 chmod +x "$t/git" "$t/lw"; export PATH="$t:$PATH" WORKER_BIN="$t" HF_ROOT="$t/root" LOG="$t/gitlog" LAUNCH="$t/launch" GH_TOKEN=secret
-echo brief > "$t/brief"
+{ for i in $(seq 1 12); do echo "context $i"; done; echo "Change engine/hotfix/x.sh"; echo "Run bash engine/hotfix/x.test.sh"; echo "Done when green"; } > "$t/brief"
+echo vague > "$t/vague"; ! "$p/hf-start.sh" 123 slug "$t/vague" 2>/dev/null
 "$p/hf-start.sh" nope slug "$t/brief" && exit 1
 "$p/hf-start.sh" 123 slug "$t/brief"
 grep -q 'worktree add --lock -b hotfix/123-slug' "$LOG"
