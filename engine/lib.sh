@@ -929,9 +929,12 @@ TRIAGE_FRESHNESS_MAX_DEFER_SECONDS="${TRIAGE_FRESHNESS_MAX_DEFER_SECONDS:-$((2 *
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/gitnexus.sh"
 
-# Pack module: the PR migration-number and migration-order merge gates (the product's migration layout). Sourced only when the pack
-# ships it; every call site below checks the function exists, so a deployment without the module simply has no such gate.
-[[ -n "${ZF_PACK_DIR-}" && -r "$ZF_PACK_DIR/lib-migration-gate.sh" ]] && source "$ZF_PACK_DIR/lib-migration-gate.sh"
+# A target migration configuration activates the engine gate; otherwise retain the pack gate.
+if [[ -f "$ZF_CONFIG_ROOT/release.json" ]] && ! jq -e 'has("migration") | not' "$ZF_CONFIG_ROOT/release.json" >/dev/null 2>&1; then
+  source "$ZF_ENGINE_DIR/lib-migration-gate.sh"
+elif [[ -n "${ZF_PACK_DIR-}" && -r "$ZF_PACK_DIR/lib-migration-gate.sh" ]]; then
+  source "$ZF_PACK_DIR/lib-migration-gate.sh"
+fi
 
 # 2026-09-12 review, item 4: notify.sh's send_email() returns 0 on every
 # failure BY DESIGN (a notification must never fail the pipeline run it's
