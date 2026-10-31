@@ -111,6 +111,9 @@ SIZE_ADMISSION_LINES="$(jqf -r '.size_admission_lines // 800' <<<"$CFG")"
 # 止损预算（#4363）：每张 ticket 自最近一次 supervisor 裁决起最多 N 轮（implement 加 repair，含自修复重派，
 # 每次 write-start 记一轮）或 4h 墙钟；第 4 轮不再派发——原票自动 on-hold 附原因，单元转 supervisor（#4369 terra 裁决）。
 TICKET_ROUND_BUDGET="$(jqf -r '.ticket_round_budget // 3' <<<"$CFG")"
+# 230: above every landed implement session in the 7 days to 2026-10-31 (max 218); discarded ones ran 281-336.
+IMPLEMENT_COMMAND_CAP="$(jqf -r '.implement_command_cap // 230' <<<"$CFG")"
+[[ "$IMPLEMENT_COMMAND_CAP" =~ ^[0-9]+$ ]] || IMPLEMENT_COMMAND_CAP=230
 TICKET_WALL_BUDGET_SECONDS="$(( $(jqf -r '.ticket_wall_budget_minutes // 240' <<<"$CFG") * 60 ))"
 # 工单 token/分钟/轮数是仪表盘指标（workorder_cost.py，node_health 用），不是停单开关（#4486：
 # #4053 把 raw-token bug 线当硬停，96% 是缓存读取、按生命周期累计、事后才停，36 次误停正常单）。
