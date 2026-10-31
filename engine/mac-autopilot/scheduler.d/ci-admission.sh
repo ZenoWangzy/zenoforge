@@ -55,7 +55,7 @@ slot_sync() { # id head
   pr="$(unit_field "$1" .pr)"; [[ "$pr" =~ ^[0-9]+$ && "$2" =~ $SHA_RE ]] || return 1
   [[ "$(unit_field "$1" '.slot_sync_sha // empty')" != "$2" ]] || return 1
   pr_behind_main "$pr" "$2" || return 1
-  state="$(pr_view "$pr" mergeable)"
+  state="$(tick_pr_mergeable "$pr")"
   case "$state" in
     MERGEABLE)
       set_unit "$1" ".slot_sync_sha=$(js "$2")" || :
@@ -96,6 +96,7 @@ ci_assign_wip() {
   fi
   while IFS=$'\t' read -r id br head; do
     [[ -n "$id" ]] || continue
+    tick_prs_prime
     gated=0; gdraft=false
     if [[ -n "${GATED_OF[$br]:-}" ]]; then
       gated=1; read -r _ gdraft ghead <<<"${GATED_OF[$br]}"
@@ -178,6 +179,7 @@ ci_admission() {
   local CI_HOTFIX_BRANCHES
   local detail_started detail_elapsed
   local -A CI_ADMISSION_CANCELLED=()
+  tick_prs_prime
   detail_started=$SECONDS
   CI_HOTFIX_BRANCHES="$(ci_hotfix_branches)" || { say "ci admission paused: open PR census unavailable for hotfix classification"; return 0; }
   detail_elapsed=$((SECONDS - detail_started))

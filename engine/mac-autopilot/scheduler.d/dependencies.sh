@@ -103,6 +103,7 @@ stack_approved_dependency() { # dependent unit-id issue-number unit-json; 0 when
     and .reviewed_pr_head==.approved_sha)' "$UNITS")"
   [[ -n "$predecessor" ]] || return 1
   pr_number="$(jqf -r .pr <<<"$predecessor")"; approved="$(jqf -r .approved_sha <<<"$predecessor")"
+  tick_prs_prime
   prs="$(tick_prs 2>/dev/null)" || prs='[]'
   snapshot="$(jqf -c --argjson pr_number "$pr_number" '[.[] | select(.number==$pr_number) | {headRefOid}] | .[0] // empty' <<<"$prs")"
   if [[ -n "$snapshot" ]]; then
@@ -144,6 +145,7 @@ release_dependency_blocks() {
   local blocker_issue pair_key
   local -a deps=() unique_deps=()
   local -A DEP_BLOCKED_PAIR_COUNTS=()
+  tick_prs_prime
   DEP_DELIVERED_CACHE=()
   while IFS= read -r dep; do
     [[ "$dep" =~ ^[0-9]+$ ]] && DEP_DELIVERED_CACHE["$dep"]=1
@@ -280,13 +282,15 @@ stack_initial_branch() { # unit base-branch base-sha; rebase existing implementa
   child_head="$(git -C "$wt" rev-parse "refs/heads/$branch^{commit}")" || return 1
   if [[ "$remote_head" =~ $SHA_RE ]]; then
     if [[ "$child_head" != "$remote_head" ]]; then
+      tick_prs_changed
       git -C "$wt" push -q --force-with-lease="refs/heads/$branch:$remote_head" origin "$branch" || return 1
     fi
   elif [[ "$child_head" != "$base_sha" ]]; then
+    tick_prs_changed
     git -C "$wt" push -q -u origin "$branch" || return 1
   fi
   pr="$(unit_field "$id" '.pr // empty')"
-  if [[ "$pr" =~ ^[0-9]+$ ]]; then gh pr edit "$pr" --base "$2" >/dev/null 2>&1 || return 1; fi
+  if [[ "$pr" =~ ^[0-9]+$ ]]; then tick_prs_changed; gh pr edit "$pr" --base "$2" >/dev/null 2>&1 || return 1; fi
 }
 
 restack_branch() { # unit base-branch base-sha; rebase only this unit's commits and publish against the observed child head
@@ -315,6 +319,7 @@ restack_branch() { # unit base-branch base-sha; rebase only this unit's commits 
   elif ! git -C "$wt" merge-base --is-ancestor "$base_ref" "$child_head" 2>/dev/null; then
     return 1
   fi
+  tick_prs_changed
   if [[ "$remote_head" =~ $SHA_RE ]]; then
     git -C "$wt" push -q --force-with-lease="refs/heads/$branch:$remote_head" origin "$branch" || return 1
   else
@@ -326,8 +331,10 @@ restack_branch() { # unit base-branch base-sha; rebase only this unit's commits 
 reconcile_stacked_units() {
   local child id dep parent parent_id parent_pr parent_branch parent_stage parent_approved parent_reviewed parent_state parent_head parent_snapshot dep_info prs
   local child_stage old_stack issue_state
+  tick_prs_prime
   prs="$(tick_prs 2>/dev/null)" || prs='[]'
   while IFS= read -r child; do
+    if [[ -z "$TICK_PRS" ]]; then tick_prs_prime; prs="${TICK_PRS:-[]}"; fi
     id="$(jqf -r .id <<<"$child")"; dep="$(jqf -r '.blocked_on // empty' <<<"$child")"
     parent_id="$(jqf -r '.stacked_on_unit // empty' <<<"$child")"
     parent="$(jqf -c --arg id "$parent_id" '.units[] | select(.id==$id)' "$UNITS")"

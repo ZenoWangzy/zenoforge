@@ -25,6 +25,7 @@ phase_yield_lock() { # slow operation; let the local refill controller take the 
   release_scheduler_lock
   phase "$@" || rc=$?
   acquire_scheduler_lock_wait
+  tick_prs_changed # Refill can change PRs while the scheduler lock is released.
   LIVE_WORKER_CACHE_UNTIL=0
   TICK_ACTIVE_FOOTPRINTS_VALID=false
   TICK_FOOTPRINT_CONFLICT_VALID=false

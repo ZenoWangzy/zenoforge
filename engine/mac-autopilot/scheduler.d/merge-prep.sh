@@ -63,6 +63,7 @@ revert_squash_merge() { # pr merge_sha [branch]; main 写入仅由 supervisor �
     return 1
   fi
   # Push runs only when this function is executed by the live supervisor.
+  tick_prs_changed
   if ! git -C "$revert_repo" push origin "HEAD:refs/heads/$target"; then
     say "merge revert push failed PR#$pr merge=$merge_sha"
     rm -rf -- "${revert_repo%/r}"
@@ -241,9 +242,10 @@ gate_note() { # 门禁状态只在变化时写 alerts/gate.md，避免每拍刷�
 
 retry_blocked_units() { # BLOCK 只在 head 变了，或 main 已推进且该单元尚未因此重评过时重派
   local id pr head reviewed blocked_main retries
+  tick_prs_prime
   while IFS=$'\t' read -r id pr reviewed blocked_main retries; do
     [[ -n "$id" && -n "$pr" ]] || continue
-    head="$(pr_view "$pr" headRefOid)"
+    head="$(tick_pr_head "$pr")"
     [[ "$head" =~ $SHA_RE ]] || continue
     if [[ "$head" != "$reviewed" ]]; then
       set_unit "$id" "$(hist block-retry "head moved to $head") | .stage=\"rereview-pending\""

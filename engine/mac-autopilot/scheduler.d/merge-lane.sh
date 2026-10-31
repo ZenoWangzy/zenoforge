@@ -190,6 +190,7 @@ run_merge_lane() {
   fi
 
   # 候选的检查行取自 merge_candidates 那一次批量 gh pr list（census），不再逐个 gh pr checks；合并仍用 --match-head-commit 钉住 head。
+  tick_prs_prime
   detail_started=$SECONDS
   cands="$(merge_candidates "$((merge_max * 3))")"
   candidate_ids="$(jqf -cs '[.[] | select(type=="object") | .id] | unique' <<<"$cands")"
@@ -222,6 +223,7 @@ run_merge_lane() {
   detail_started=$SECONDS
   while IFS= read -r ready; do
     [[ -z "$ready" || "$ready" == "null" ]] && break
+    tick_prs_prime
     id="$(jqf -r .id <<<"$ready")"; pr="$(jqf -r .pr <<<"$ready")"
     checks="$(jqf -c '.pr_open_checks // null' <<<"$ready")"
     if [[ "$checks" == null && "${TICK_PR_STATE[$pr]:-}" != MERGED && "${TICK_PR_STATE[$pr]:-}" != CLOSED ]]; then
@@ -321,7 +323,7 @@ run_merge_lane() {
         [[ "$candidate_head" == "$head" ]] || { say "merge skipped PR#$pr (head moved after census)"; continue; }
         state="$(jqf -r '.pr_open_mergeable // empty' <<<"$ready")"
       else
-        state="$(pr_view "$pr" mergeable)"
+        state="$(tick_pr_mergeable "$pr")"
       fi
       if [[ "$state" == CONFLICTING ]]; then
         merge_conflict_to_repair "$id" "$pr" "conflicts with main; CI cannot start" "PR 与最新 main 冲突，GitHub 不会跑 CI 也拒绝合并。git merge --no-edit origin/main，按两边意图解决冲突（热修回迁以生产已验证行为为准），跑受影响测试，推送。" "$head"
@@ -371,7 +373,7 @@ run_merge_lane() {
         state="$(jqf -r '.pr_open_mergeable // empty' <<<"$ready")"
       elif pr_behind_main "$pr" "$head"; then
         behind_main=true
-        state="$(pr_view "$pr" mergeable)"
+        state="$(tick_pr_mergeable "$pr")"
       fi
       if [[ "$(unit_field "$id" '.ci_sync_head // empty')" != "$head" && "$behind_main" == true ]]; then
         if [[ "$state" == MERGEABLE ]] && ci_update_branch "$pr" "$head"; then

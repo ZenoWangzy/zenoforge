@@ -133,7 +133,7 @@ cancel_unit_runs() { # id reason
   local pr branch
   [[ "$(unit_field "$1" '.hotpatch // false')" == true ]] && return 0
   pr="$(unit_field "$1" '.pr // empty')"; [[ "$pr" =~ ^[0-9]+$ ]] || return 0
-  branch="$(pr_view "$pr" headRefName)"
+  branch="$(tick_pr_branch "$pr")"
   cancel_branch_runs "$branch" "$2"
 }
 refresh_live_worker_cache() {

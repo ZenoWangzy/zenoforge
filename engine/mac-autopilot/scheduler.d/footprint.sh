@@ -160,8 +160,10 @@ footprint_preflight_snapshot() {
   if [[ -n "$clear_scope_rows" ]]; then
     scope_candidates="$(jqf -Rn '[inputs | split("\t") | select(length == 2) | {id:.[0],scope:(.[1] | fromjson)}]' <<<"$clear_scope_rows")" \
       || { footprint_drop_check_scope_cache; return 1; }
+    hotspot_log >/dev/null # Subshell expansions must inherit the same history.
     expanded_scopes="$(hotspot_expand_batch "$scope_candidates")" \
       || { footprint_drop_check_scope_cache; return 1; }
+    [[ "${HOTSPOT_LOG_OK:-false}" == true ]] || HOTSPOT_LOG_LOADED=false
     while IFS= read -r row; do
       id="$(jqf -r '.id' <<<"$row")"
       check_scope="$(jqf -c '.scope' <<<"$row")"
@@ -185,8 +187,10 @@ footprint_preflight_snapshot() {
 # 待派发 unit 的检查范围；命中在跑 worker 就先排队。扩展只在检查时计算，
 # 不写进 .footprint——活跃足迹仍是 #4510 的预测 ∪ 实际写入，避免逐 tick 累积。
 hotspot_log() { # 窗口内提交的文件分组清单，每 scheduler 进程取一次
-  if [[ -z "${HOTSPOT_LOG:-}" ]]; then
-    HOTSPOT_LOG="$(timeout --kill-after=1s 4s git -C "$ROOT" log --since=30.days --no-merges --no-renames --name-only --format=%x01 2>/dev/null || true)"
+  if [[ "${HOTSPOT_LOG_LOADED:-false}" != true ]]; then
+    HOTSPOT_LOG_OK=true
+    HOTSPOT_LOG="$(timeout --kill-after=1s 4s git -C "$ROOT" log --since=30.days --no-merges --no-renames --name-only --format=%x01 2>/dev/null)" || HOTSPOT_LOG_OK=false
+    HOTSPOT_LOG_LOADED=true
   fi
   printf '%s' "$HOTSPOT_LOG"
 }
@@ -262,7 +266,9 @@ _footprint_room() {
   if [[ "${TICK_CHECK_SCOPE_SOURCE[$id]:-}" == "$scope" ]]; then
     check_scope="${TICK_CHECK_SCOPE[$id]}"
   else
+    hotspot_log >/dev/null
     check_scope="$(hotspot_expand "$scope")"
+    [[ "${HOTSPOT_LOG_OK:-false}" == true ]] || HOTSPOT_LOG_LOADED=false
     TICK_CHECK_SCOPE_SOURCE["$id"]="$scope"
     TICK_CHECK_SCOPE["$id"]="$check_scope"
   fi

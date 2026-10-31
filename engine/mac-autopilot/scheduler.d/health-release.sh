@@ -14,7 +14,8 @@ run_node_health() {
     echo $! > "$A/.ci-spend.pid"
   fi
 }
-phase() { local t0=$SECONDS rc=0; "$@" || rc=$?; (( SECONDS - t0 >= 5 )) && TICK_PHASES+=" $1=$((SECONDS - t0))s"; return $rc; }
+# Dispatch refreshes itself because running workers may have pushed.
+phase() { local t0=$SECONDS rc=0; [[ "$1" == dispatch_pending ]] || tick_prs_prime; "$@" || rc=$?; (( SECONDS - t0 >= 5 )) && TICK_PHASES+=" $1=$((SECONDS - t0))s"; return $rc; }
 
 stage_slo_watch() {
   local budgets row id stage since key
@@ -214,14 +215,16 @@ label_hotfix_pr() { # PR number, currently known label names
   local pr="$1" labels="$2" label
   label="$(hotfix_lane_label)"
   jqf -e --arg label "$label" 'index($label) != null' <<<"$labels" >/dev/null && return 0
-  gh pr edit "$pr" --add-label "$label" >/dev/null 2>&1 || { say "hotfix PR#$pr: could not add configured label $label"; return 1; }
   tick_prs_changed
+  gh pr edit "$pr" --add-label "$label" >/dev/null 2>&1 || { say "hotfix PR#$pr: could not add configured label $label"; return 1; }
   say "hotfix PR#$pr: added configured label $label"
 }
 register_new_prs() {
   [[ "$(jqf -r .auto_dispatch_new_prs <<<"$CFG")" == "true" ]] || return 0
   local CAP="${MAX_PENDING_REVIEWS:-12}" n_registered=0 pr sha pr_head target branch draft title labels pr_num critical u wt rep lane body64 body body_file pr_json
+  tick_prs_prime
   while IFS=$'\t' read -r pr sha branch draft title labels body64; do
+    tick_prs_prime
     [[ -z "$sha" ]] && continue
     [[ "$pr" =~ ^[0-9]{1,9}$ ]] || { say "skip malformed PR number from gh pr list"; continue; }
     pr_num="$((10#$pr))"
@@ -274,6 +277,7 @@ register_new_prs() {
 # 不再各自列 run。每个分区读失败就写 null，读的人把它当"不可用"。快照是这台主机本拍的读缓存，不是权威，别的主机自己重建。
 publish_pr_run_snapshot() {
   local prs unfinished ci suites infra query_started query_elapsed ci_file ci_pid
+  tick_prs_prime
   prs="$(tick_prs 2>/dev/null | jqf -c 'map({number, headRefOid, headRefName, isDraft, title, labels: [.labels[]?.name]})')" || prs=""
   unfinished="$(unfinished_runs)"
   main_suites_load; suites="$MAIN_SUITES_RUNS"
