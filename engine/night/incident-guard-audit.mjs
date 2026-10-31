@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REGISTRY_PATH = `${process.env.ZF_PACK_REL || 'engine'}/state/incident-guards.json`;
+// With a pack (ZF_PACK_REL), the registry lives in the engine build's version root, not in the target repo;
+// guard targets resolve against --repo first, then against that build.
+const PACK_ROOT = process.env.ZF_PACK_REL
+  ? path.resolve(process.env.ZF_PACK_ROOT || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..'))
+  : null;
 const HISTORY_PREFIX = 'rulings-progress-';
 
 function parseArgs(args) {
@@ -38,6 +43,11 @@ function resolveRepoPath(raw, repo) {
   if (!value || value.startsWith('-') || /^[<>]/.test(value) || /[*?\[\]]/.test(value) || /^\$/.test(value)) return null;
   const absolute = path.resolve(repo, value);
   if (absolute !== repo && !absolute.startsWith(`${repo}${path.sep}`)) return null;
+  if (PACK_ROOT && !existsSync(absolute)) {
+    // Pipeline files are in the engine build, not the product repo; a target is missing only if neither has it.
+    const built = path.resolve(PACK_ROOT, value);
+    if (built.startsWith(`${PACK_ROOT}${path.sep}`) && existsSync(built)) return { absolute: built, relative: value };
+  }
   return { absolute, relative: path.relative(repo, absolute).split(path.sep).join('/') };
 }
 
@@ -363,7 +373,7 @@ async function readGuardHistory(historyDir) {
 export async function auditIncidentGuards(repoInput, historyDirInput) {
   const repo = path.resolve(repoInput);
   const historyDir = path.resolve(historyDirInput);
-  const registry = JSON.parse(await readFile(path.join(repo, REGISTRY_PATH), 'utf8'));
+  const registry = JSON.parse(await readFile(path.join(PACK_ROOT ?? repo, REGISTRY_PATH), 'utf8'));
   if (!Array.isArray(registry.incidents)) throw new Error(`invalid incident guard registry: ${REGISTRY_PATH}`);
   const incidents = registry.incidents;
   const history = await readGuardHistory(historyDir);

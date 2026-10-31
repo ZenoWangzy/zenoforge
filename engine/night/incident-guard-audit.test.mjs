@@ -145,3 +145,42 @@ test('guard audit reports historical drift, missing targets, and duplicate check
   ]);
   assert.deepEqual(JSON.parse(readFileSync(outputPath, 'utf8')), audit);
 });
+
+test('with a pack, the registry comes from the engine build and targets resolve against --repo, then the build', (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'incident-guard-audit-pack-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = path.join(root, 'repo');
+  const packRoot = path.join(root, 'version');
+  const history = path.join(root, 'history');
+  // The target repo has no scripts/agent (the pipeline moved out); the engine build's version root has it.
+  mkdirSync(path.join(packRoot, 'scripts/agent/state'), { recursive: true });
+  mkdirSync(path.join(repo, 'engine/state'), { recursive: true });
+  mkdirSync(history, { recursive: true });
+  writeFileSync(path.join(packRoot, 'scripts/agent/fixture.test.sh'), '');
+  mkdirSync(path.join(packRoot, 'engine'), { recursive: true });
+  writeFileSync(path.join(packRoot, 'engine/built.test.sh'), '');
+  writeFileSync(path.join(repo, 'plain.test.sh'), '');
+  const registry = JSON.stringify({ incidents: [
+    { id: 'pack-test-file', machine_checks: [{ test_file: 'scripts/agent/fixture.test.sh' }] },
+    { id: 'pack-command-file', machine_checks: [{ command: ['bash', '${REPO_DIR}/scripts/agent/fixture.test.sh'] }] },
+    { id: 'pack-missing-file', machine_checks: [{ test_file: 'scripts/agent/missing.test.sh' }] },
+    { id: 'repo-test-file', machine_checks: [{ test_file: 'plain.test.sh' }] },
+    { id: 'built-command-file', machine_checks: [{ command: ['bash', '${REPO_DIR}/engine/built.test.sh'] }] },
+  ] });
+  writeFileSync(path.join(packRoot, 'scripts/agent/state/incident-guards.json'), registry);
+  writeFileSync(path.join(repo, 'engine/state/incident-guards.json'), registry);
+  const run = (env) => spawnSync(process.execPath, [auditScript, '--repo', repo, '--history-dir', history],
+    { encoding: 'utf8', env: { ...process.env, ZF_PACK_REL: '', ZF_PACK_ROOT: '', ...env } });
+
+  const pack = run({ ZF_PACK_REL: 'scripts/agent', ZF_PACK_ROOT: packRoot });
+  assert.equal(pack.status, 0, pack.stderr);
+  assert.deepEqual(JSON.parse(pack.stdout).missingTargets, [
+    { id: 'pack-missing-file', targets: [{ kind: 'file', target: 'scripts/agent/missing.test.sh' }] },
+  ]);
+
+  // Without a pack nothing changes: the registry is read from the repo and pack-prefixed targets are missing there.
+  const plain = run({});
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.deepEqual(JSON.parse(plain.stdout).missingTargets.map((entry) => entry.id).sort(),
+    ['built-command-file', 'pack-command-file', 'pack-missing-file', 'pack-test-file']);
+});
