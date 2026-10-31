@@ -1588,6 +1588,79 @@ assert_contains "failed work role blocks recut dispatch" "$PROVIDER_DISPATCH_OUT
 assert_contains "failed work role blocks triage batch dispatch" "$PROVIDER_DISPATCH_OUT" 'FAILED-TRIAGE:no'
 rm -f "$AGENT_HOME/model-config-advisor.json" "$AGENT_HOME/model-config-work.json" "$WEB_ADVISOR_PROVIDER_EXHAUSTED_MARKER_FILE" "$AGENT_HOME/dispatched-implement"
 
+# Exercise the real policy and launch boundary with admission refused.
+run_issue_admission_case() (
+  local stage="$1" launch_status="$2" status=0 attempts=0 active=no claim=none
+  ZF_ENGINE_DIR="$AGENT_HOME/admission-legs" UNIT_PREFIX_TRANSIENT=zf
+  mkdir -p "$ZF_ENGINE_DIR"
+  : > "$ZF_ENGINE_DIR/run-$stage.sh"
+  chmod +x "$ZF_ENGINE_DIR/run-$stage.sh"
+  IMPLEMENT_RUNTIME_MAX_SEC=60 RECUT_RUNTIME_MAX_SEC=60
+  PIPELINE_CLAIM_KEY='' PIPELINE_CLAIM_UNIT='' PIPELINE_CLAIM_STAGE='' PIPELINE_CLAIM_OWNER=''
+  eval "$(sed -n '/^dispatch() {/,/^}/p; /^dispatch_policy_unit() {/,/^}/p' "$PIPELINE_SRC")"
+  state_read() { printf '{"attempts":%s,"unit_memory_ooms":{}}\n' "$attempts"; }
+  state_merge() { [[ "$2" != *'del(.model_policy.active)'* ]] || active=no; [[ "$2" != *'"active"'* ]] || active=yes; return 0; }
+  state_bump_attempts() { attempts=$((attempts + 1)); }
+  refund_implement_attempt() { attempts=$((attempts - 1)); }
+  state_merge_attempt_transition() { attempts=$((attempts - 1)); active=no; }
+  issue_spend_budget_status() { printf 'clear\t0\t0\n'; }
+  recover_stale_policy_unit() { return 1; }
+  agent_implement_dispatch_resources_allow() { return 0; }
+  model_policy_begin_unit() { :; }
+  model_policy() { case "$1" in initial-step) echo work ;; step-role) echo work ;; dispatch-identity) echo codex:fixture ;; esac; }
+  issue_model_failure_backoff_remaining() { echo 0; }
+  model_config_fault_blocked() { return 1; }
+  codex_probe_ok() { return 0; }
+  codex_provider_recovery_probe_if_due() { return 0; }
+  codex_quota_exhausted() { return 1; }
+  codex_model_capacity_held() { return 1; }
+  ensure_issue_roadmap_parent_for_dispatch() { return 0; }
+  pipeline_claim_begin() { PIPELINE_CLAIM_KEY="issue:$1"; PIPELINE_CLAIM_STAGE="$2"; PIPELINE_CLAIM_UNIT="$3"; PIPELINE_CLAIM_OWNER=fixture; claim=held; }
+  coord_issue_key() { printf 'issue:%s' "$1"; }
+  coord_assert_owned() { return 0; }
+  pipeline_claim_drop() { claim=dropped; }
+  consume_unit_memory_oom() { return 1; }
+  guarded_write() { return "$launch_status"; }
+  record_env_fault() { printf 'fault:%s\n' "$1"; [ "$2" != implement ] || refund_implement_attempt "$3"; }
+  dispatch_policy_unit "$stage" 910101 queued "$([ "$stage" = implement ] && echo 1 || echo 0)" 2>/dev/null || status=$?
+  printf 'status:%s attempts:%s active:%s claim:%s queue:queued\n' "$status" "$attempts" "$active" "$claim"
+)
+assert_eq 'recut admission leaves queued work without a fault or active claim' \
+  'status:75 attempts:0 active:no claim:dropped queue:queued' "$(run_issue_admission_case recut 75)"
+assert_eq 'implement admission refunds the attempt and leaves queued work without a fault' \
+  'status:75 attempts:0 active:no claim:dropped queue:queued' "$(run_issue_admission_case implement 75)"
+assert_eq 'ordinary per-issue launch failure still records its fault' \
+  $'fault:env:systemd-run-dispatch-failed:recut\nstatus:1 attempts:0 active:no claim:dropped queue:queued' "$(run_issue_admission_case recut 1)"
+# Execute the scheduler's real recut status branch as well as the dispatch.
+# Supply the refusal through the real caller branch.
+run_recut_admission_caller() (
+  local dispatch_status=0 next_recut=910101 recut_slots=1
+  dispatch_policy_unit() { return 75; }
+  record_env_fault() { printf 'fault:%s\n' "$1"; }
+  record_implement_decision() { :; }
+  for candidate in one; do
+    eval "$(sed -n '/    if dispatch_policy_unit recut "\$next_recut" needs-recut; then/,/      esac/p' "$PIPELINE_SRC")
+    fi"
+  done
+  printf 'slots:%s\n' "$recut_slots"
+)
+assert_eq 'recut scheduler leaves a deferred candidate queued without a policy fault' \
+  'slots:1' "$(run_recut_admission_caller)"
+run_refresh_admission_case() (
+  local launch_status="$1" status=0
+  REPO_DIR="$SCRIPT_DIR/.." ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf
+  eval "$(sed -n '/^dispatch_gitnexus_refresh() {/,/^}/p' "$PIPELINE_SRC")"
+  gitnexus_index_matches_origin_main() { return 1; }
+  systemctl() { return 1; }
+  guarded_write() { return "$launch_status"; }
+  record_env_fault() { printf 'fault:%s\n' "$1"; }
+  dispatch_gitnexus_refresh 2>/dev/null || status=$?
+  printf 'status:%s\n' "$status"
+)
+assert_eq 'refresh admission deferral records no fault' 'status:0' "$(run_refresh_admission_case 75)"
+assert_eq 'refresh launch failure still records its fault' \
+  $'fault:env:systemd-run-dispatch-failed:gitnexus-refresh\nstatus:1' "$(run_refresh_admission_case 1)"
+
 # Execution admission's typed 75 is pending work, not a failed systemd launch.
 run_batch_admission_case() (
   local kind="$1" launch_status="$2" status=0

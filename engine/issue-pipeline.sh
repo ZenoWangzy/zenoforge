@@ -498,7 +498,7 @@ ensure_issue_roadmap_parent_for_dispatch() {
 }
 
 dispatch() {
-  local stage="$1" n="$2" runtime_max script memory_max oom_count consume_status claim_status claim_unit claim_key
+  local stage="$1" n="$2" runtime_max script memory_max oom_count consume_status claim_status claim_unit claim_key dispatch_status
   shift 2
   # Belt and braces with legs_executable_check() (lib.sh) at the top of the
   # tick: never hand systemd a script it cannot spawn -- that ends as a
@@ -537,25 +537,8 @@ dispatch() {
       result_args=(-p "ExecStopPost=$SCRIPT_DIR/record-unit-result.sh $stage $n")
       ;;
   esac
-  # 2026-09-16 fix (the class this whole review pass targets): this used to
-  # be `... || echo "dispatch failed" >&2`, which swallows systemd-run's own
-  # exit code -- `echo` exits 0, so dispatch() always returned success even
-  # when NO unit was ever created. Every caller below is a bare statement in
-  # a `for` loop body (never the condition of an if/while/&&/||), so a
-  # dispatch() that honestly returns non-zero aborts this tick via
-  # `set -euo pipefail` BEFORE the caller's own `slots=$((slots - 1))` line
-  # -- the exact "counted as dispatched, no unit exists, nothing recorded"
-  # gap this closes, for free, at every call site, because the caller never
-  # reaches the decrement. run-tick.sh (the systemd-timer launcher) already
-  # treats a non-zero issue-pipeline.sh exit as "scheduler-failed", counts
-  # it toward its consecutive-failure alert, and retries next tick -- so
-  # this is not a crash into the void, it is the existing refusal path.
-  # record_env_fault() (same call legs_executable_check()/the not-executable
-  # branch above already makes) both logs the fault for a human and, for
-  # stage=implement, refunds the .attempts bump issue-pipeline.sh's own
-  # candidate loop already made at dispatch time (lessons/RULES.md V79) --
-  # without it, a systemd-run hiccup would burn a real attempt for zero
-  # actual work.
+  # A launch error records a fault and stops the scheduler tick. Admission's
+  # status 75 instead leaves the work queued without treating it as a fault.
   # No EnvironmentFile for the agent env file: every line in it is shell `export X=...`, which systemd rejects
   # and logs value-included into the user journal (25k lines on 2026-10-22, a GitHub token among them) while
   # loading nothing. Stages read credentials through with-credentials.sh, which sources the file as shell.
@@ -585,12 +568,20 @@ dispatch() {
       return 0
     fi
   fi
-  if ! guarded_write systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-$stage-$n" --collect \
+  if guarded_write systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-$stage-$n" --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE \
     -p "RuntimeMaxSec=$runtime_max" \
     "${memory_args[@]}" "${result_args[@]}" \
     "$@" \
     "$ZF_ENGINE_DIR/run-$stage.sh" "$n"; then
+    :
+  else
+    dispatch_status=$?
+    if [ "$dispatch_status" -eq 75 ]; then
+      echo "issue-pipeline: $stage #$n admission deferred; leaving it queued" >&2
+      pipeline_claim_drop
+      return 75
+    fi
     echo "issue-pipeline: systemd-run dispatch failed for ${UNIT_PREFIX_TRANSIENT}-$stage-$n -- no unit was created; refusing to count #$n as dispatched" >&2
     record_env_fault "env:systemd-run-dispatch-failed:$stage" "$stage" "$n" "systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-$stage-$n failed; see stderr above"
     pipeline_claim_drop
@@ -900,7 +891,17 @@ dispatch_policy_unit() {
   state_merge "$n" ".model_policy = (.model_policy // {}) + $active_patch" || { pipeline_claim_drop; return 1; }
   if [ "$bump" != 0 ]; then state_bump_attempts "$n" || { pipeline_claim_drop; return 1; }; fi
   echo "issue-pipeline: #$n dispatching $unit with model policy step=$step role=$role" >&2
-  if dispatch "$unit" "$n" "$@"; then return 0; else dispatch_status=$?; state_merge "$n" 'del(.model_policy.active)' || true; return "$dispatch_status"; fi
+  if dispatch "$unit" "$n" "$@"; then
+    return 0
+  else
+    dispatch_status=$?
+    if [ "$dispatch_status" -eq 75 ] && [ "$bump" != 0 ]; then
+      state_merge_attempt_transition "$n" 'del(.model_policy.active) | .attempts = (if (.attempts // 0) > 0 then .attempts - 1 else 0 end)' || return 1
+    else
+      state_merge "$n" 'del(.model_policy.active)' || true
+    fi
+    return "$dispatch_status"
+  fi
 }
 
 
@@ -910,12 +911,20 @@ dispatch_policy_unit() {
 dispatch_gitnexus_refresh() {
   gitnexus_index_matches_origin_main "$REPO_DIR" && return 0
   systemctl --user is-active --quiet ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh && return 0
-  if ! guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh --collect \
+  local dispatch_status
+  if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY \
     -p RuntimeMaxSec=2700 \
     bash -c 'source "$2/lib.sh" || exit 1
       gitnexus_refresh_index_once "$1" "$(git -C "$1" rev-parse origin/main)" gitnexus_index_matches_origin_main
       rc=$?; printf "%s\n" "$GITNEXUS_REFRESH_OUTPUT" | tail -20; exit "$rc"' _ "$REPO_DIR" "$ZF_ENGINE_DIR"; then
+    :
+  else
+    dispatch_status=$?
+    if [ "$dispatch_status" -eq 75 ]; then
+      echo "issue-pipeline: gitnexus refresh admission deferred; leaving it pending" >&2
+      return 0
+    fi
     echo "issue-pipeline: systemd-run dispatch failed for ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh -- no unit was created" >&2
     record_env_fault "env:systemd-run-dispatch-failed:gitnexus-refresh" "gitnexus-refresh" "refresh" "systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh failed; see stderr above"
     return 1
@@ -2243,7 +2252,13 @@ advisor_dispatch_pending_job_pool() {
     stage_unit_active advisor "$next_poll" && continue
     ensure_issue_roadmap_parent_for_dispatch "$next_poll" needs-advisor || continue
     agent_memory_floor_allows advisor || break
-    dispatch advisor "$next_poll"
+    if dispatch advisor "$next_poll"; then
+      :
+    else
+      dispatch_status=$?
+      if [ "$dispatch_status" -eq 75 ]; then advisor_slots=0; break; fi
+      return "$dispatch_status"
+    fi
     advisor_slots=$((advisor_slots - 1))
   done
 }
@@ -2270,7 +2285,13 @@ advisor_dispatch_orphan_pool() {
     fi
     ensure_issue_roadmap_parent_for_dispatch "$next_orphan" needs-advisor || continue
     agent_memory_floor_allows advisor || break
-    dispatch advisor "$next_orphan" -E ADVISOR_RESUME_ONLY=1
+    if dispatch advisor "$next_orphan" -E ADVISOR_RESUME_ONLY=1; then
+      :
+    else
+      dispatch_status=$?
+      if [ "$dispatch_status" -eq 75 ]; then advisor_slots=0; break; fi
+      return "$dispatch_status"
+    fi
     advisor_slots=$((advisor_slots - 1))
   done
 }
@@ -2299,7 +2320,13 @@ advisor_dispatch_roadmap_parent_pending_pool() {
       break
     fi
     agent_memory_floor_allows advisor || break
-    dispatch advisor "$next_parent" -E ADVISOR_RESUME_ONLY=1
+    if dispatch advisor "$next_parent" -E ADVISOR_RESUME_ONLY=1; then
+      :
+    else
+      dispatch_status=$?
+      if [ "$dispatch_status" -eq 75 ]; then advisor_slots=0; break; fi
+      return "$dispatch_status"
+    fi
     advisor_slots=$((advisor_slots - 1))
   done
 }
@@ -2380,6 +2407,7 @@ if [ "$recut_slots" -gt 0 ]; then
     else
       dispatch_status=$?
       case "$dispatch_status" in
+        75) break ;;
         78) continue ;;
         79)
           record_implement_decision "$next_recut" skipped roadmap-parent \
