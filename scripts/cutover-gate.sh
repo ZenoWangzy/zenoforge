@@ -2,40 +2,78 @@
 set -euo pipefail
 
 usage() {
-  printf 'usage: cutover-gate.sh <engine-dir> <target-dir> [--baseline-red <file>] [--suites <file>]\n' >&2
+  printf 'usage: cutover-gate.sh --baseline <version-dir> --out <file> [--suites <file>] | <engine-dir> <target-dir> [--baseline <file>] [--suites <file>] [--allow-undefined <file>]\n' >&2
   exit 2
 }
-
-[[ $# -ge 2 ]] || usage
-engine_dir="$1"
-target_dir="$2"
-shift 2
-baseline_red=''
-suites=''
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+mode=gate baseline='' suites='' out='' allow_undefined='' results_out=''
+if [[ ${1:-} == --baseline ]]; then
+  [[ $# -ge 2 ]] || usage
+  mode=baseline; version_dir=$2; shift 2
+else
+  [[ $# -ge 2 ]] || usage
+  engine_dir=$1; target_dir=$2; shift 2
+fi
 while (($#)); do
   case "$1" in
-    --baseline-red) (($# >= 2)) || usage; baseline_red="$2"; shift 2 ;;
-    --suites) (($# >= 2)) || usage; suites="$2"; shift 2 ;;
+    --baseline) (($# >= 2)) || usage; baseline=$2; shift 2 ;;
+    --out) (($# >= 2)) || usage; out=$2; shift 2 ;;
+    --suites) (($# >= 2)) || usage; suites=$2; shift 2 ;;
+    --results) (($# >= 2)) || usage; results_out=$2; shift 2 ;;
+    --allow-undefined) (($# >= 2)) || usage; allow_undefined=$2; shift 2 ;;
     *) usage ;;
   esac
 done
-
 failures=0
-fail() {
-  printf 'cutover-gate: %s\n' "$1"
-  failures=$((failures + 1))
-}
+fail() { printf 'cutover-gate: %s\n' "$1"; failures=$((failures + 1)); }
+[[ -z $suites || -f $suites ]] || { fail "suite list is missing: $suites"; exit 1; }
+[[ -z $allow_undefined || -f $allow_undefined ]] || { fail "undefined function allow-list is missing: $allow_undefined"; exit 1; }
 
-if [[ ! -d "$engine_dir" ]]; then fail "engine directory is missing: $engine_dir"; exit 1; fi
-if [[ ! -d "$target_dir" ]]; then fail "target directory is missing: $target_dir"; exit 1; fi
+run_suites() {
+  local root=$1 results=$2 command_line suite_path status reason
+  declare -A quarantine=()
+  while IFS=$'\t' read -r suite_path reason; do
+    [[ -n $suite_path && $suite_path != \#* ]] && quarantine["$suite_path"]=$reason
+  done < "$repo_root/tools/quarantine.txt"
+  : > "$results"
+  if [[ -n $suites ]]; then
+    suite_commands=$suites
+  else
+    suite_commands="$results.commands"
+    (cd "$root" && find engine -type f \( -name '*.test.sh' -o -name '*.test.mjs' \) | sort) | while IFS= read -r suite_path; do
+      case $suite_path in *.mjs) printf 'timeout -s KILL 600 node --test --test-concurrency=1 %s\n' "$suite_path" ;; *) printf 'timeout -s KILL 600 bash %s\n' "$suite_path" ;; esac
+    done > "$suite_commands"
+  fi
+  while IFS= read -r command_line || [[ -n $command_line ]]; do
+    command_line=${command_line%%#*}
+    [[ -n ${command_line//[$'\t\r ']/} ]] || continue
+    if [[ $command_line =~ (engine/[A-Za-z0-9_./-]+) ]]; then suite_path=${BASH_REMATCH[1]}; else fail "invalid suite command: $command_line"; continue; fi
+    [[ -z ${quarantine[$suite_path]+x} ]] || continue
+    status=PASS
+    { (cd "$root" && bash -euo pipefail -c "$command_line") >/dev/null 2>&1; } 2>/dev/null || status=FAIL
+    printf '%s\t%s\n' "$status" "$suite_path" >> "$results"
+    printf 'cutover-gate: %s %s\n' "$status" "$suite_path" >&2
+  done < "$suite_commands"
+}
+if [[ $mode == baseline ]]; then
+  [[ -d $version_dir/engine ]] || { [[ -d $version_dir && ${version_dir##*/} == engine ]] && version_dir=$(dirname "$version_dir"); }
+  [[ -n $out && -d $version_dir/engine ]] || usage
+  scratch="$(mktemp -d "$repo_root/.git/cutover-baseline.XXXXXXXX")"
+  # Copy the version, excluding deployment settings; never run tests in the live version.
+  tar -C "$version_dir" --exclude='*.env' -cf - . | tar -C "$scratch" -xf -
+  chmod -R u+w "$scratch"
+  run_suites "$scratch" "$out"
+  ((failures == 0)) || exit 1
+  exit 0
+fi
+[[ -d $engine_dir ]] || { fail "engine directory is missing: $engine_dir"; exit 1; }
+[[ -d $target_dir ]] || { fail "target directory is missing: $target_dir"; exit 1; }
 engine_dir="$(cd -- "$engine_dir" && pwd -P)"
 target_dir="$(cd -- "$target_dir" && pwd -P)"
-
-if [[ -n "$baseline_red" && ! -f "$baseline_red" ]]; then fail "baseline red list is missing: $baseline_red"; fi
-if [[ -n "$suites" && ! -f "$suites" ]]; then fail "suite list is missing: $suites"; fi
+[[ -z $baseline || -f $baseline ]] || { fail "baseline is missing: $baseline"; exit 1; }
 
 scan_output=''
-if ! scan_output="$(python3 - "$engine_dir" "$target_dir" 2>&1 <<'PY'
+if ! scan_output="$(python3 - "$engine_dir" "$target_dir" "$allow_undefined" 2>&1 <<'PY'
 import os
 import re
 import shlex
@@ -46,7 +84,16 @@ from pathlib import Path
 
 engine = Path(sys.argv[1])
 target = Path(sys.argv[2])
-deploy_env = engine / 'deploy.env'
+allow_path = sys.argv[3]
+allowed = {}
+if allow_path:
+    for line in Path(allow_path).read_text().splitlines():
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        parts = line.split('\t', 2)
+        if len(parts) != 3 or not parts[2].strip() or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', parts[0]) or not parts[1].strip():
+            raise ValueError('invalid undefined function allow-list entry')
+        allowed[(parts[0], parts[1])] = parts[2]
 source_suffixes = {'.sh', '.bash', '.mjs', '.cjs', '.js', '.py'}
 ignored_parts = {'vendor', 'node_modules', 'test', 'tests', 'fixtures'}
 files = []
@@ -155,8 +202,7 @@ for path, text in sources.items():
 
 # Environment reads without a code default or a deployment assignment are
 # informational: operators can review this list without blocking a cutover.
-deploy_text = source(deploy_env)
-deploy_names = set(re.findall(r'(?m)^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=', deploy_text))
+deploy_names = set()
 reads = set()
 defaults = set()
 shell_files = []
@@ -394,10 +440,14 @@ for path, text in shell_files:
                 continue
             if name in definitions or name in shell_variables or name in shell_builtins or name in jq_builtins or shutil.which(name):
                 continue
-            undefined_functions.setdefault(name, relative_file + ':' + str(line_number))
+            undefined_functions.setdefault((name, relative_file), []).append(line_number)
 
-for name, location in undefined_functions.items():
-    emit_failure(f'undefined shell function: {name} (called in {location})')
+for (name, relative_file), lines in undefined_functions.items():
+    location = relative_file + ':' + ','.join(map(str, lines))
+    if (name, relative_file) in allowed:
+        emit_report(f'allowed undefined shell function: {name} (called in {location}): {allowed[name, relative_file]}')
+    else:
+        emit_failure(f'undefined shell function: {name} (called in {location})')
 
 reads.difference_update(shell_variables)
 for name in sorted(reads - defaults - deploy_names):
@@ -456,28 +506,52 @@ else
   fi
 fi
 
-if [[ -n "$suites" && -f "$suites" ]]; then
-  declare -A baseline=()
-  if [[ -n "$baseline_red" && -f "$baseline_red" ]]; then
-    while IFS= read -r suite || [[ -n "$suite" ]]; do
-      suite="${suite%%#*}"
-      suite="${suite//[$'\t\r ']/}"
-      [[ -n "$suite" ]] || continue
-      if [[ "$suite" == engine/* ]]; then baseline["$suite"]=1; else fail "invalid baseline suite path: $suite"; fi
-    done < "$baseline_red"
+if [[ -n $suites || -n $baseline ]]; then
+  results=${results_out:-$(mktemp "$repo_root/.git/cutover-results.XXXXXXXX")}
+  run_suites "$(dirname "$engine_dir")" "$results"
+  declare -A previous=()
+  if [[ -n $baseline ]]; then
+    while IFS=$'\t' read -r status suite extra; do
+      [[ ($status == PASS || $status == FAIL) && $suite == engine/* && -z ${extra:-} && -z ${previous[$suite]+x} ]] || { fail "invalid baseline entry: $status $suite"; continue; }
+      previous[$suite]=$status
+    done < "$baseline"
   fi
-  while IFS= read -r command_line || [[ -n "$command_line" ]]; do
-    command_line="${command_line%%#*}"
-    [[ -n "${command_line//[$'\t\r ']/}" ]] || continue
-    if [[ "$command_line" =~ (engine/[A-Za-z0-9_./-]+) ]]; then suite_path="${BASH_REMATCH[1]}"; else
-      fail "suite command has no engine/<file> path: $command_line"
-      continue
-    fi
-    [[ -n "${baseline[$suite_path]:-}" ]] && continue
-    if ! { (cd -- "$(dirname -- "$engine_dir")" && bash -euo pipefail -c "$command_line") >/dev/null 2>&1; } 2>/dev/null; then
-      fail "suite failed: $suite_path"
-    fi
-  done < "$suites"
+  declare -A seen=()
+  while IFS=$'\t' read -r status suite; do
+    seen[$suite]=1
+    if [[ -n $baseline && -z ${previous[$suite]+x} ]]; then fail "suite missing from baseline: $suite"; continue; fi
+    [[ $status != FAIL || ${previous[$suite]:-PASS} != PASS ]] || fail "suite failed: $suite"
+  done < "$results"
+  for suite in "${!previous[@]}"; do [[ -n ${seen[$suite]+x} ]] || fail "baseline suite missing from results: $suite"; done
 fi
 
+host_ops=${ZF_HOST_OPS_DIR:-$HOME/.vecta-agent/host-ops}
+if [[ ! -f $host_ops/run-tests.sh ]]; then
+  fail "host-ops runner is missing: $host_ops/run-tests.sh"
+else
+  host_scratch="$(mktemp -d "$repo_root/.git/cutover-host-ops.XXXXXXXX")"
+  tar -C "$host_ops" --exclude='*.env' --exclude='./.tmp' -cf - . | tar -C "$host_scratch" -xf -
+  host_output="$host_scratch/results.tsv"
+  host_status=0
+  ZF_ENGINE_DIR="$engine_dir" bash "$host_scratch/run-tests.sh" > "$host_output" 2>&1 || host_status=$?
+  if [[ ! -f $host_scratch/BASELINE.tsv ]]; then fail 'host-ops baseline is missing'; else
+    declare -A host_baseline=() host_seen=()
+    host_failed=0
+    while IFS=$'\t' read -r status suite extra; do
+      [[ $status == result && $suite == test ]] && continue
+      [[ ($status == PASS || $status == FAIL) && -n $suite && -z ${extra:-} && -z ${host_baseline[$suite]+x} ]] || { fail "invalid host-ops baseline entry: $status $suite"; continue; }
+      host_baseline[$suite]=$status
+    done < "$host_scratch/BASELINE.tsv"
+    while IFS=$'\t' read -r status suite extra; do
+      [[ $status == PASS || $status == FAIL ]] || continue
+      host_seen[$suite]=1
+      [[ $status != FAIL ]] || host_failed=1
+      [[ $status != FAIL || ${host_baseline[$suite]:-PASS} != PASS ]] || fail "host-ops test failed: $suite"
+    done < "$host_output"
+    for suite in "${!host_baseline[@]}"; do [[ -n ${host_seen[$suite]+x} ]] || fail "host-ops test missing from results: $suite"; done
+    [[ $host_status == 0 || $host_status == 1 ]] || fail "host-ops runner exited $host_status"
+    [[ $host_status != 1 || $host_failed == 1 ]] || fail "host-ops runner failed without a failing test result"
+    [[ $host_status != 0 || $host_failed == 0 ]] || fail "host-ops runner reported failures but exited 0"
+  fi
+fi
 ((failures == 0)) || exit 1
