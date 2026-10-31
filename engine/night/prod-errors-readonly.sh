@@ -3,8 +3,17 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-source "$script_dir/../config.sh"
-night_config="$(zf_config_file night.json || true)"
+night_config=""
+night_config_tmp=""
+if [[ -n "${ZF_NIGHT_CONFIG_JSON:-}" ]]; then
+  night_config_tmp="$(mktemp)" || exit 1
+  printf '%s\n' "$ZF_NIGHT_CONFIG_JSON" > "$night_config_tmp"
+  night_config="$night_config_tmp"
+  trap 'rm -f -- "$night_config_tmp"' EXIT
+else
+  source "$script_dir/../config.sh"
+  night_config="$(zf_config_file night.json || true)"
+fi
 if [[ -z "$night_config" ]]; then
   echo 'skip: night log monitor has no night.json configuration'
   exit 0
