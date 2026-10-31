@@ -1,9 +1,23 @@
 # #4488: 预测足迹挡不住在跑 worker 越界写共享文件（collisions_per_day=97，全是真实并发写）。
 # 派发检查把在跑 unit 的 worktree 里已发生的改动（已提交 + 未提交 + 未跟踪）并进它的足迹。
 live_writes_union() { # workdir scope_json -> scope ∪ 实际已写路径；workdir 不可读时退回预测
-  local wd="$1" scope="$2" live base
+  local wd="$1" scope="$2" live base='' merge_head rebase_state onto_path
   if [[ -n "$wd" && -d "$wd" ]]; then
-    base="$(git -C "$wd" merge-base origin/main HEAD 2>/dev/null || true)"
+    # An in-progress merge or rebase leaves incoming main changes in the worktree.
+    if merge_head="$(git -C "$wd" rev-parse -q --verify MERGE_HEAD 2>/dev/null)" && [[ -n "$merge_head" ]]; then
+      base="$merge_head"
+    else
+      for rebase_state in rebase-merge rebase-apply; do
+        onto_path="$(git -C "$wd" rev-parse --git-path "$rebase_state/onto" 2>/dev/null || true)"
+        [[ -n "$onto_path" ]] || continue
+        [[ "$onto_path" == /* ]] || onto_path="$wd/$onto_path"
+        if [[ -f "$onto_path" ]]; then
+          base="$(<"$onto_path")"
+          break
+        fi
+      done
+      [[ -n "$base" ]] || base="$(git -C "$wd" merge-base origin/main HEAD 2>/dev/null || true)"
+    fi
     live="$(
       {
         {

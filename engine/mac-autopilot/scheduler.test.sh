@@ -32,11 +32,11 @@ if grep -nF "$unsafe_update_pattern" "$scheduler"; then
   echo 'not ok - scheduler.test.sh: jq select update can delete unmatched units' >&2
   exit 1
 fi
-grep -Fq 'gh pr merge "$pr" --squash' "$scheduler"
-grep -Fq 'resume "$session_id" -m "$model"' "$scheduler"
+grep -Fq 'gh pr merge "$pr" --squash' "$script_dir/scheduler.d/merge-lane.sh"
+grep -Fq 'resume "$session_id" -m "$model"' "$script_dir/scheduler.d/worker-command.sh"
 grep -Fq 'focus_mode' "$scheduler"
-grep -Fq 'session id: ' "$scheduler"
-grep -Fq 'dispatch mode=$CODEX_MODE' "$scheduler"
+grep -Fq 'session id: ' "$script_dir/scheduler.d/harvest-workers.sh"
+grep -Fq 'mode=$CODEX_MODE' "$script_dir/scheduler.d/dispatch.sh"
 if grep -Fq 'spent()' "$scheduler"; then
   echo 'not ok - scheduler.test.sh: the old worker-log spend heuristic must stay removed' >&2
   exit 1
@@ -51,7 +51,7 @@ if grep -Eq 'gh pr merge .*--auto' "$scheduler"; then
 fi
 jq -e '.focus_mode == "all" and .budget_meter == "sessions_dir"' "$template" >/dev/null
 jq -e '.max_workers == 10 and .auto_merge == true and .implement_cap == 8
-  and .release_train.enabled == true and .supervisor_arbiter.enabled == true
+  and .release_train.enabled == false and .supervisor_arbiter.enabled == true
   and .models.review == ["claude-haiku-5-5", "high"]
   and .models.implement == ["gpt-6-luna", "max", "fast"]
   and .models.triage == ["gpt-6-luna", "max", "fast"]
@@ -2488,6 +2488,91 @@ JSON
 )
 }
 sched_run_case footprint_mutex
+
+sched_case_live_writes_union() {
+# A clean worktree keeps existing behavior; a stopped merge excludes incoming main files.
+(
+  local merge_dir expected actual file merge_output
+  merge_dir="$test_env_root/live-writes-merge"
+  mkdir -p "$merge_dir"
+  git -C "$merge_dir" init -q -b main
+  git -C "$merge_dir" config user.name test
+  git -C "$merge_dir" config user.email t@example.invalid
+  printf 'base\n' > "$merge_dir/conflict.txt"
+  git -C "$merge_dir" add conflict.txt
+  git -C "$merge_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m base
+  git -C "$merge_dir" update-ref refs/remotes/origin/main HEAD
+  git -C "$merge_dir" checkout -q -b worker
+  printf 'branch\n' > "$merge_dir/branch.txt"
+  git -C "$merge_dir" add branch.txt
+  git -C "$merge_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'branch file'
+  expected='["branch.txt"]'
+  actual="$(live_writes_union "$merge_dir" '[]')"
+  [[ "$actual" == "$expected" ]] || { echo "live-writes clean worktree: expected $expected, got $actual" >&2; exit 1; }
+
+  git -C "$merge_dir" checkout -q main
+  for file in main-1.txt main-2.txt main-3.txt main-4.txt main-5.txt; do
+    printf 'incoming\n' > "$merge_dir/$file"
+  done
+  printf 'main\n' > "$merge_dir/conflict.txt"
+  git -C "$merge_dir" add -A
+  git -C "$merge_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'main files'
+  git -C "$merge_dir" update-ref refs/remotes/origin/main HEAD
+  git -C "$merge_dir" checkout -q worker
+  printf 'branch conflict\n' > "$merge_dir/conflict.txt"
+  git -C "$merge_dir" add conflict.txt
+  git -C "$merge_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'branch conflict'
+  merge_output="$(git -C "$merge_dir" merge --no-ff -q main 2>&1)" || :
+  if ! git -C "$merge_dir" rev-parse -q --verify MERGE_HEAD >/dev/null; then
+    printf '%s\n' "$merge_output" >&2
+    echo 'live-writes merge fixture did not stop on a conflict' >&2; exit 1
+  fi
+  expected='["branch.txt","conflict.txt"]'
+  actual="$(live_writes_union "$merge_dir" '[]')"
+  [[ "$actual" == "$expected" ]] || { echo "live-writes merge conflict: expected $expected, got $actual" >&2; exit 1; }
+)
+}
+sched_run_case live_writes_union
+
+sched_case_live_writes_rebase() {
+# A stopped rebase diffs from its recorded onto commit, even with a stale origin/main ref.
+(
+  local rebase_dir expected actual file
+  rebase_dir="$test_env_root/live-writes-rebase"
+  mkdir -p "$rebase_dir"
+  git -C "$rebase_dir" init -q -b main
+  git -C "$rebase_dir" config user.name test
+  git -C "$rebase_dir" config user.email t@example.invalid
+  printf 'base\n' > "$rebase_dir/conflict.txt"
+  git -C "$rebase_dir" add conflict.txt
+  git -C "$rebase_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m base
+  git -C "$rebase_dir" update-ref refs/remotes/origin/main HEAD
+  git -C "$rebase_dir" checkout -q -b worker
+  printf 'branch\n' > "$rebase_dir/branch.txt"
+  git -C "$rebase_dir" add branch.txt
+  git -C "$rebase_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'branch file'
+  printf 'branch conflict\n' > "$rebase_dir/conflict.txt"
+  git -C "$rebase_dir" add conflict.txt
+  git -C "$rebase_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'branch conflict'
+  git -C "$rebase_dir" checkout -q main
+  for file in main-1.txt main-2.txt main-3.txt main-4.txt main-5.txt; do
+    printf 'incoming\n' > "$rebase_dir/$file"
+  done
+  printf 'main\n' > "$rebase_dir/conflict.txt"
+  git -C "$rebase_dir" add -A
+  git -C "$rebase_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'main files'
+  git -C "$rebase_dir" checkout -q worker
+  if git -C "$rebase_dir" rebase -q main >/dev/null 2>&1; then
+    echo 'live-writes rebase fixture did not stop on a conflict' >&2; exit 1
+  fi
+  git -C "$rebase_dir" rev-parse -q --verify REBASE_HEAD >/dev/null \
+    || { echo 'live-writes rebase fixture has no stopped rebase' >&2; exit 1; }
+  expected='["branch.txt","conflict.txt"]'
+  actual="$(live_writes_union "$rebase_dir" '[]')"
+  [[ "$actual" == "$expected" ]] || { echo "live-writes rebase conflict: expected $expected, got $actual" >&2; exit 1; }
+)
+}
+sched_run_case live_writes_rebase
 
 sched_case_footprint_hog_alert() {
 # A worker past footprint_mutex.hog_alert_minutes that blocks >hog_alert_blocked pending units gets one inbox line, however many ticks run; a 1h-old worker with the same blockers stays silent.
