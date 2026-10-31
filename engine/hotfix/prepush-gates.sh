@@ -24,15 +24,39 @@ cd "$tmp/tree"
 export PREPUSH_BASE="$base" PREPUSH_HEAD="$sha"
 rc=0
 run() { printf '=='; printf ' %q' "$@"; printf '\n'; if "$@"; then :; else rc=1; fi; }
-# The deployment's gates: hotfix/prepush-gates.d/*.sh from the pack, sourced in file-name order.
+# Resolve configuration against the original target, not the candidate worktree.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ZF_REPO_DIR=${ZF_REPO_DIR:-$root}
+source "$here/config.sh"
+config=$(zf_config_file hotfix.json || true)
+legacy_name=
+if [[ -n $config ]]; then
+  legacy_name=$(node "$here/hotfix/prepush-config.mjs" "$config" --legacy-name) || exit 1
+fi
 pack_dir=${ZF_PACK_DIR-} # PACK_DIR_DEFAULT: the public export rewrites this default to empty
+gates=()
 if [[ -n $pack_dir ]]; then
   for gate_file in "$pack_dir"/hotfix/prepush-gates.d/*.sh; do
-    [[ -f $gate_file ]] || continue
-    # shellcheck source=/dev/null
-    source "$gate_file"
+    [[ -f $gate_file ]] && gates+=("${gate_file##*/}")
   done
+fi
+if [[ -n $legacy_name ]]; then gates+=("$legacy_name"); fi
+if ((${#gates[@]})); then
+  while IFS= read -r gate_name; do
+    if [[ -n $legacy_name && $gate_name == "$legacy_name" ]]; then
+      if node "$here/hotfix/prepush-config.mjs" "$config"; then :; else
+        status=$?
+        [[ $status == 1 ]] || exit 1
+        rc=1
+      fi
+      while IFS= read -r -d "" name && IFS= read -r -d "" value; do
+        export "$name=$value"
+      done < <(node "$here/hotfix/prepush-config.mjs" "$config" --exports)
+    else
+      # shellcheck source=/dev/null
+      source "$pack_dir/hotfix/prepush-gates.d/$gate_name"
+    fi
+  done < <(printf '%s\n' "${gates[@]}" | LC_ALL=C sort -u)
 fi
 # The target repo lists its own gates, one shell command per line, in .zenoforge/prepush-gates (blank lines and # comments are skipped).
 if [[ -f .zenoforge/prepush-gates ]]; then
