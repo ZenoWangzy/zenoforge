@@ -451,12 +451,19 @@ replace_added_lesson_id() {
   rm -f -- "$temp_file"
 }
 
+# The pack can live outside the target repo (VectA since 10-31): no registry at that ref, so the pack's copy holds the used ids.
+landed_incident_guards() {
+  local p="$ZF_PACK_REL/state/incident-guards.json" f
+  if git cat-file -e "$1:$p" 2>/dev/null; then git show "$1:$p"; return; fi
+  f="$(pack_file state/incident-guards.json)" && cat "$f" || echo '{}'
+}
+
 added_guard_id_for_lesson_occurrence() {
   local base="$1" candidate="$2" occurrence="$3" guard_id count=0
   local -A base_guard_ids=()
   while IFS= read -r guard_id; do
     [[ -n "$guard_id" ]] && base_guard_ids["$guard_id"]=1
-  done < <(git show "$base:$ZF_PACK_REL/state/incident-guards.json" | jq -r '.incidents[]?.id // empty')
+  done < <(landed_incident_guards "$base" | jq -r '.incidents[]?.id // empty')
   while IFS= read -r guard_id; do
     [[ -n "$guard_id" && -z "${base_guard_ids[$guard_id]:-}" ]] || continue
     count=$((count + 1))
@@ -689,7 +696,7 @@ assign_lesson_ids() {
   ((${#candidates[@]} > 0)) || return 0
 
   rules_ids="$(git show "$base:lessons/RULES.md" | sed -nE 's/^\*\*V([0-9]+)\*\*.*/\1/p')"
-  incident_ids="$(git show "$base:$ZF_PACK_REL/state/incident-guards.json" | jq -r '.incidents[]?.lesson_id // empty' | sed -nE 's/^V([0-9]+)$/\1/p')"
+  incident_ids="$(landed_incident_guards "$base" | jq -r '.incidents[]?.lesson_id // empty' | sed -nE 's/^V([0-9]+)$/\1/p')"
   while IFS= read -r id; do
     [[ "$id" =~ ^[0-9]+$ ]] || continue
     base_rule_ids["$id"]=1
@@ -699,7 +706,7 @@ assign_lesson_ids() {
     base_incident_ids["$id"]=1
   done <<< "$incident_ids"
   rules_ids="$(git show "$occupied_base:lessons/RULES.md" | sed -nE 's/^\*\*V([0-9]+)\*\*.*/\1/p')"
-  incident_ids="$(git show "$occupied_base:$ZF_PACK_REL/state/incident-guards.json" | jq -r '.incidents[]?.lesson_id // empty' | sed -nE 's/^V([0-9]+)$/\1/p')"
+  incident_ids="$(landed_incident_guards "$occupied_base" | jq -r '.incidents[]?.lesson_id // empty' | sed -nE 's/^V([0-9]+)$/\1/p')"
   while IFS= read -r id; do
     [[ "$id" =~ ^[0-9]+$ ]] || continue
     used_ids["$id"]=1
