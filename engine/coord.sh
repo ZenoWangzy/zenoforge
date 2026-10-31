@@ -4,6 +4,8 @@
 
 COORD_DIR="${AGENT_HOME:?AGENT_HOME must be set before loading coord.sh}/coord/claims"
 COORD_LEASE_SECONDS="${ZF_COORD_LEASE_SECONDS:-900}"
+# Keep released claims briefly for inspection; readers treat them as absent and sweeps scan every claim file.
+COORD_RELEASED_RETAIN_SECONDS="${ZF_COORD_RELEASED_RETAIN_SECONDS:-3600}"
 COORD_OWNER_SEQ=0
 
 coord_issue_key() {
@@ -82,8 +84,8 @@ _coord_read_locked() {
     and ((has("pid") | not) or (.pid | type == "number" and floor == . and . > 0))
     and ((has("pid_start") | not) or (.pid_start | type == "number" and floor == . and . >= 0))
   ' <<<"$record" >/dev/null 2>&1 || { echo "coord_read: malformed or unsupported claim key=$key" >&2; return 3; }
-  [[ "$(jq -r '.owner // empty' <<<"$record")" ]] || return 1
   COORD_RECORD="$record"
+  [[ "$(jq -r '.owner // empty' <<<"$record")" ]] || return 1
   return 0
 }
 
@@ -348,6 +350,8 @@ coord_assert_owned() { # key owner; only a fresh, current owner passes
 
 coord_reap_expired() { # sweep expired claims; per-ticket locks keep reads and reaps atomic
   local file key lock_fd rc now
+  [[ "$COORD_RELEASED_RETAIN_SECONDS" =~ ^[0-9]+$ ]] \
+    || { echo "coord_reap: invalid released claim retention duration" >&2; return 3; }
   mkdir -p -- "$COORD_DIR" || return 3
   for file in "$COORD_DIR"/*.json; do
     [[ -e "$file" ]] || continue
@@ -360,6 +364,14 @@ coord_reap_expired() { # sweep expired claims; per-ticket locks keep reads and r
       now="$(date +%s)"
       if (( $(jq -r '.expires_at' <<<"$COORD_RECORD") <= now )); then
         _coord_expire_locked "$key" || rc=$?
+      fi
+    elif (( rc == 1 )) && [[ -e "$COORD_FILE" ]]; then
+      now="$(date +%s)"
+      if jq -e --arg key "$key" --argjson now "$now" --argjson retain "$COORD_RELEASED_RETAIN_SECONDS" \
+          '.key == $key and has("owner") and .owner == null
+           and (.released_at | type == "number" and floor == . and . < ($now - $retain))' \
+          <<<"$COORD_RECORD" >/dev/null 2>&1; then
+        rm -f -- "$COORD_FILE" || { echo "coord_reap: could not prune released claim key=$key" >&2; rc=3; }
       fi
     fi
     flock -u "$lock_fd" || :
