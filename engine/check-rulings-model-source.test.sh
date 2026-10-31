@@ -25,7 +25,11 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/test-env.sh"
 EOF
 
 check_source() {
-  ZF_REPO_DIR="$candidate" AGENT_RULINGS_MODE=source \
+  # ZF_ENGINE_DIR must follow ZF_REPO_DIR into the candidate: left unset it
+  # derives from this repo's engine, so suite discovery scans the real engine
+  # (whose self-contained suites skip test-env.sh) and the model scan reads the
+  # real sources, never the candidate under test.
+  ZF_REPO_DIR="$candidate" ZF_ENGINE_DIR="$candidate/engine" AGENT_RULINGS_MODE=source \
     bash "$scripts/check-rulings.sh" "$@"
 }
 

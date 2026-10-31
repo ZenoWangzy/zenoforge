@@ -471,7 +471,7 @@ try:sys.exit"""))
         (harness / "execution-shim/systemd-run").chmod(0o755)
         (harness / "execution-admission.py").write_text(self.driver.read_text())
         shim = str(harness / "execution-shim/systemd-run")
-        result = subprocess.run([shim, "--user", "--unit=vecta-release-batch", "--", "/bin/true"],
+        result = subprocess.run([shim, "--user", "--unit=zf-release-batch", "--", "/bin/true"],
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         launched = called.read_text().splitlines()
@@ -751,6 +751,8 @@ try:sys.exit"""))
         script.write_text(source[:start] + f'  printf "%s:%s" "${{RELEASE_TEST_JOBS:-unset}}" "${{NIGHT_TEST_JOBS:-unset}}" > "{receipt}"\n}}\n' + source[end:])
         (self.home / 'hand-completion-refill.sh').write_text((ROOT / 'hand-completion-refill.sh').read_text())
         (self.home / 'config.sh').write_text((ROOT / 'config.sh').read_text())
+        # worktree-lifecycle.sh sources proc.sh from its own directory (line 14).
+        (self.home / 'proc.sh').write_text((ROOT / 'proc.sh').read_text())
         resource_proc = self.home / 'resource-proc'
         resource_proc.mkdir()
         (resource_proc / 'meminfo').write_text('MemAvailable: 99999999 kB\n')
