@@ -20,6 +20,18 @@ const prompt = (name) => {
   if (!promptFile) throw new Error(`missing prompt ${name}`);
   return readFileSync(promptFile, 'utf8');
 };
+export function loadEvalCaseSet(stage) {
+  if (!stages.includes(stage)) throw new Error(`unknown eval stage: ${stage}`);
+  const configFile = zfConfigFile('eval/config.json');
+  const config = configFile ? json(configFile) : {};
+  const caseDir = config.case_dir ?? 'eval/cases';
+  if (typeof caseDir !== 'string' || !caseDir.trim()) throw new Error('eval config case_dir must be a relative path');
+  const caseFile = zfConfigFile(join(caseDir, `${stage}.json`));
+  if (!caseFile) return null;
+  const set = json(caseFile);
+  if (set.stage !== stage) throw new Error(`case file stage ${set.stage} differs from ${stage}`);
+  return set;
+}
 function command(argv, cwd = repo, options = {}) {
   const child = spawnSync(argv[0], argv.slice(1), { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
     env: { ...process.env, GH_TOKEN: '', GITHUB_TOKEN: '', ...options.env }, ...options });
@@ -560,8 +572,13 @@ export async function main(args = process.argv.slice(2)) {
   const wanted = caseArg != null && !caseArg.endsWith('.json') ? new Set(caseArg.split(',').filter(Boolean)) : null;
   const selected = [];
   for (const stage of values.stage ? [values.stage] : stages) {
-    const path = caseArg?.endsWith('.json') ? resolve(caseArg) : join(here, 'cases', `${stage}.json`);
-    const set = json(path);
+    const set = caseArg?.endsWith('.json')
+      ? json(resolve(caseArg))
+      : loadEvalCaseSet(stage);
+    if (!set) {
+      if (values.stage) throw new Error(`no eval case set configured for stage ${stage}`);
+      continue;
+    }
     if (set.stage !== stage) throw new Error(`case file stage ${set.stage} differs from ${stage}`);
     for (const c of set.cases) if (!wanted || wanted.has(c.id)) selected.push({ stage, c });
   }

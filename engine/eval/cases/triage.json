@@ -1,0 +1,74 @@
+{
+  "stage": "triage",
+  "cases": [
+    {
+      "id": "sample-retry-delay",
+      "baseSha": "146e7087bc5353b92261a1c496f286893bc26b2b",
+      "issue": {
+        "number": 900001,
+        "title": "The retry button ignores the selected delay",
+        "body": "Invented example: choose a longer retry delay, save the settings, and trigger a retry. The next attempt still starts after the shortest delay."
+      },
+      "expected": {
+        "category": "bug",
+        "state": "ready-for-agent",
+        "risk_class": "P2",
+        "level": "L2",
+        "entry_surface": "Other",
+        "acceptor": "none",
+        "brief_md": "Make the configured retry delay apply to the next attempt.",
+        "notes_md": "",
+        "expected_packages": ["engine"],
+        "expected_paths": [],
+        "estimated_changed_lines": 30,
+        "external_deliverable": { "required": false, "location": "", "reason": "" }
+      }
+    },
+    {
+      "id": "sample-status-label-wrap",
+      "baseSha": "146e7087bc5353b92261a1c496f286893bc26b2b",
+      "issue": {
+        "number": 900002,
+        "title": "Long status labels overflow on narrow screens",
+        "body": "Invented example: on a narrow window, a long status label extends past its card instead of wrapping."
+      },
+      "expected": {
+        "category": "bug",
+        "state": "ready-for-agent",
+        "risk_class": "P2",
+        "level": "L2",
+        "entry_surface": "Web /chat/",
+        "acceptor": "none",
+        "brief_md": "Keep long status labels inside their card on narrow screens.",
+        "notes_md": "",
+        "expected_packages": ["web"],
+        "expected_paths": [],
+        "estimated_changed_lines": 24,
+        "external_deliverable": { "required": false, "location": "", "reason": "" }
+      }
+    },
+    {
+      "id": "sample-validation-message",
+      "baseSha": "146e7087bc5353b92261a1c496f286893bc26b2b",
+      "issue": {
+        "number": 900003,
+        "title": "A corrected form keeps the old validation message",
+        "body": "Invented example: submit an invalid value, correct it, and submit again. The form succeeds but leaves the earlier error message visible."
+      },
+      "expected": {
+        "category": "bug",
+        "state": "ready-for-agent",
+        "risk_class": "P2",
+        "level": "L2",
+        "entry_surface": "Other",
+        "acceptor": "none",
+        "brief_md": "Clear stale validation feedback after a corrected form submission succeeds.",
+        "notes_md": "",
+        "expected_packages": ["web"],
+        "expected_paths": [],
+        "estimated_changed_lines": 18,
+        "external_deliverable": { "required": false, "location": "", "reason": "" }
+      }
+    }
+  ]
+}

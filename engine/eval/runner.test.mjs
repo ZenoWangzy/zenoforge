@@ -232,6 +232,70 @@ test('case selection and resume flags parse; --case and --cases are one option',
   assert.throws(() => parseEvalArgs(['--case', 'a', '--cases', 'b']), /same option/);
 });
 
+test('eval case sets and their expected labels prefer target configuration over the retained pack', () => {
+  const dir = mkdtempSync(join(scratch, 'eval-config-test-'));
+  const configRoot = join(dir, '.zenoforge');
+  const packDir = join(dir, 'pack');
+  const configCase = (id, label) => ({ stage: 'triage', cases: [{ id, expected: { label } }] });
+  const writeJson = (path, value) => {
+    mkdirSync(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+    writeFileSync(path, JSON.stringify(value));
+  };
+  try {
+    writeJson(join(configRoot, 'eval/config.json'), { case_dir: 'eval/custom-cases' });
+    writeJson(join(configRoot, 'eval/custom-cases/triage.json'), configCase('target-case', 'target-label'));
+    writeJson(join(packDir, 'eval/config.json'), { case_dir: 'eval/custom-cases' });
+    writeJson(join(packDir, 'eval/custom-cases/triage.json'), configCase('pack-case', 'pack-label'));
+    const script = "import { loadEvalCaseSet } from './engine/eval/run-eval.mjs'; console.log(JSON.stringify(loadEvalCaseSet('triage')));";
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: resolve('.'), encoding: 'utf8',
+      env: { ...process.env, ZF_CONFIG_ROOT: configRoot, ZF_PACK_DIR: packDir },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const loaded = JSON.parse(child.stdout);
+    assert.equal(loaded.cases[0].id, 'target-case');
+    assert.equal(loaded.cases[0].expected.label, 'target-label');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('eval output schemas prefer the target schema over the retained pack', () => {
+  const dir = mkdtempSync(join(scratch, 'eval-schema-config-test-'));
+  const configRoot = join(dir, '.zenoforge');
+  const packDir = join(dir, 'pack');
+  const schema = (field) => ({ type: 'object', required: [field], properties: { [field]: { type: 'string' } } });
+  const writeJson = (path, value) => {
+    mkdirSync(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+    writeFileSync(path, JSON.stringify(value));
+  };
+  try {
+    writeJson(join(configRoot, 'prompts/triage.schema.json'), schema('targetOnly'));
+    writeJson(join(packDir, 'prompts/triage.schema.json'), schema('packOnly'));
+    const script = "import { validateStageOutput } from './engine/eval/graders.mjs'; console.log(JSON.stringify(validateStageOutput('triage', { targetOnly: 'ok' })));";
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: resolve('.'), encoding: 'utf8',
+      env: { ...process.env, ZF_CONFIG_ROOT: configRoot, ZF_PACK_DIR: packDir },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    assert.deepEqual(JSON.parse(child.stdout), []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('engine eval defaults to invented public cases when no target config or pack exists', () => {
+  const dir = mkdtempSync(join(scratch, 'eval-default-cases-test-'));
+  const configRoot = join(dir, '.zenoforge'); mkdirSync(configRoot, { recursive: true });
+  try {
+    const script = "import { loadEvalCaseSet } from './engine/eval/run-eval.mjs'; console.log(JSON.stringify(loadEvalCaseSet('triage')));";
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: resolve('.'), encoding: 'utf8',
+      env: { ...process.env, ZF_CONFIG_ROOT: configRoot, ZF_PACK_DIR: '' },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const loaded = JSON.parse(child.stdout);
+    assert.equal(loaded.cases.length, 3);
+    assert.ok(loaded.cases.every((item) => item.issue?.title && item.issue?.body));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('runPool caps in-flight jobs at the requested concurrency and runs every job', async () => {
   const { runPool } = await import('./run-eval.mjs');
   let active = 0, max = 0;
