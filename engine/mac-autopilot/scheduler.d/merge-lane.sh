@@ -461,6 +461,7 @@ run_merge_lane() {
       say "merge skipped PR#$pr (merge result Node syntax check failed) -> repair-pending"
       continue
     fi
+    [[ -z "$merge_result_errors" ]] || say "PR#$pr $merge_result_errors"
     pre_merge_sha="$(git -C "$ROOT" ls-remote origin refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}')"
     # main may advance while PR checks run or another lane lands; exact-head PR checks gate the merge,
     # and post-merge exact-SHA CI verifies the resulting main commit without a stable-main barrier.
