@@ -32,17 +32,53 @@ assert st6(F._hotfix_live(hl))["stage"] == 0  # missing file changes nothing
 open(hl, "w").write('{"kind":"hotfix-live","issue":6,"pr":79,"sha":"7b2f7828c4c5","at":"%s","accepted_by":"oncall"}\nnot-json\n' % iso(600))
 six = st6(F._hotfix_live(hl))
 assert (six["stage"], six["verified_epoch"], six["owner"]) == (1, F._epoch(iso(600)), "热修值班"), six
-# push: first run silent, later changes append once each
+# push: first run silent, later changes append and mail once each
 home = tempfile.mkdtemp(); lib = home + "/lib.sh"; st = home + "/state.json"
-open(lib, "w").write('supervisor_inbox_append_once() { printf "%s\\t%s\\n" "$1" "$2" >> "$AGENT_HOME/inbox"; }\n')
+open(lib, "w").write(r'''_maintainer_email() { printf 'founder@example.invalid\n'; }
+supervisor_inbox_append_once() { printf "%s\t%s\n" "$1" "$2" >> "$AGENT_HOME/inbox"; }
+maintainer_mail_rejection_reason() {
+  case "$3" in *pipeline*) echo body-internal ;; *"The customer has not received their order"*) echo body-language ;; *) echo ;; esac
+}
+send_email_strict() {
+  subject="$1"; body="$2"; shift 2
+  printf '%s\0%s\0%s\0' "$subject" "$body" "$*" >> "$AGENT_HOME/mail-attempts"
+  if [ "$(maintainer_mail_rejection_reason progress "$subject" "$body")" != "" ] || [ "$FAKE_MAIL_FAIL" = 1 ]; then return 1; fi
+  printf '%s\0%s\0' "$subject" "$body" >> "$AGENT_HOME/mail-sent"
+}
+''')
 items = r["items"]
-F.push_changes(items, st, lib, home); assert not os.path.exists(home + "/inbox") and json.load(open(st))["1"] == 2
-F.push_changes(items, st, lib, home); assert not os.path.exists(home + "/inbox")
+repo = "example-maintainer/example-repo"
+F.push_changes(items, st, lib, home); assert not os.path.exists(home + "/inbox") and not os.path.exists(home + "/mail-sent") and json.load(open(st))["1"] == 2
+F.push_changes(items, st, lib, home); assert not os.path.exists(home + "/inbox") and not os.path.exists(home + "/mail-sent")
 items[2]["stage"] = 3; items.append({"issue": 9, "title": "new", "stage": 0})
-F.push_changes(items, st, lib, home)
+F.push_changes(items, st, lib, home, repo)
 lines = open(home + "/inbox").read().splitlines()
 assert [l.split("\t")[0] for l in lines] == ["freq-1-3", "freq-9-0"] and "进 main → 上线" in lines[0] and "新增 → 提出" in lines[1], lines
-F.push_changes(items, st, lib, home); assert len(open(home + "/inbox").read().splitlines()) == 2
+def mail_records(path, fields):
+    if not os.path.exists(path): return []
+    parts = open(path, "rb").read().decode().split("\0")
+    return [tuple(parts[i:i + fields]) for i in range(0, len(parts) - 1, fields)]
+sent = mail_records(home + "/mail-sent", 2)
+attempts = mail_records(home + "/mail-attempts", 3)
+assert sent == [
+    ("需求进展：上线", "进展：进 main 到 上线\n- founder words\nhttps://github.com/example-maintainer/example-repo/issues/1"),
+    ("需求进展：提出", "进展：新增 到 提出\n- new\nhttps://github.com/example-maintainer/example-repo/issues/9")
+], sent
+assert len(attempts) == 2 and all(a[2] == "--maintainer-kind progress founder@example.invalid" for a in attempts), attempts
+F.push_changes(items, st, lib, home, repo); assert len(open(home + "/inbox").read().splitlines()) == 2 and len(mail_records(home + "/mail-sent", 2)) == 2
+# A title rejected by the readable-content gate is retried once without its bullet.
+items[-1]["title"] = "pipeline details"; items[-1]["stage"] = 1
+F.push_changes(items, st, lib, home, repo)
+sent = mail_records(home + "/mail-sent", 2); attempts = mail_records(home + "/mail-attempts", 3)
+assert len(sent) == 3 and sent[-1] == ("需求进展：热修生效", "进展：提出 到 热修生效\nhttps://github.com/example-maintainer/example-repo/issues/9"), sent
+assert len(attempts) == 4 and attempts[-2][1].endswith("- pipeline details\nhttps://github.com/example-maintainer/example-repo/issues/9") and attempts[-1][1] == sent[-1][1], attempts
+# A transport failure does not block the inbox append or stage-state update.
+items[-1]["title"] = "new"; items[-1]["stage"] = 2
+os.environ["FAKE_MAIL_FAIL"] = "1"
+F.push_changes(items, st, lib, home, repo)
+os.environ.pop("FAKE_MAIL_FAIL")
+assert json.load(open(st))["9"] == 2 and len(open(home + "/inbox").read().splitlines()) == 4
+assert len(mail_records(home + "/mail-attempts", 3)) == 5 and len(mail_records(home + "/mail-sent", 2)) == 3
 open(lib, "w").write("supervisor_inbox_append_once() { return 1; }\n")
 items[2]["stage"] = 4; F.push_changes(items, st, lib, home); assert json.load(open(st))["1"] == 3  # failed append is retried next beat
 PY
