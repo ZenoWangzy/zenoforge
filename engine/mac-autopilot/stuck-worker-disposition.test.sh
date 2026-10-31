@@ -309,7 +309,7 @@ jq -e '.units[] | select(.id=="cmdcap-fail") | .stage == "supervisor-review" and
 jq -e '.units[] | select(.id=="cmdcap-at") | .stage != "supervisor-review" and (all(.history[]?; .stage != "implement-command-cap"))' "$UNITS" >/dev/null \
   || fail "worker exactly at the cap must not be parked"
 [[ "$(wc -l < "$FIXTURE_RECUT_LOG" | tr -d ' ')" == 2 ]] || fail "only over-cap workers must route to recut"
-jq -e -s 'any(.[]; .issue=="4371" and .evidence.kind=="implement-command-cap" and .evidence.commands==231 and .evidence.limit==230 and .evidence.unit=="cmdcap-over" and .evidence.branch=="command-cap-worker")' "$FIXTURE_RECUT_LOG" >/dev/null \
+jq -e -s 'any(.[]; .issue=="4371" and .evidence.kind=="implement-command-cap" and .evidence.commands==231 and .evidence.limit==230 and .evidence.unit=="cmdcap-over" and .evidence.branch=="command-cap-worker" and (.evidence.stash | test("^[0-9a-f]{40}$")) and (.evidence.workdir | length > 0))' "$FIXTURE_RECUT_LOG" >/dev/null \
   || fail "successful recut route must receive implement-cap evidence and the unit branch"
 jq -e -s 'any(.[]; .issue=="4372" and .evidence.kind=="implement-command-cap" and .evidence.commands==231 and .evidence.limit==230 and .evidence.unit=="cmdcap-fail" and .evidence.branch=="command-cap-failure")' "$FIXTURE_RECUT_LOG" >/dev/null \
   || fail "failed recut route must receive implement-cap evidence and the unit branch"

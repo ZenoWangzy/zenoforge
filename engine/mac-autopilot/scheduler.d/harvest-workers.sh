@@ -443,7 +443,7 @@ stuck_worker_disposition() {
   local scorecard="$A/node-health.json" bound offenders id w pid wtype probe fp held kills next issue hold_cli hold_ok
   local signal_active=0 named_count=0 live_count=0 killed_count=0
   local first_seen=0 progress=0 unchanged_window=0 unchanged_confirmed=0 no_live_worker=0 action
-  local cap_worker cap_pid cap_unit cap_log cap_count cap_commands cap_summary cap_workdir cap_issue cap_branch cap_evidence cap_recut_ok
+  local cap_worker cap_pid cap_unit cap_log cap_count cap_commands cap_summary cap_workdir cap_issue cap_branch cap_evidence cap_recut_ok cap_stash
   if [[ "$IMPLEMENT_COMMAND_CAP" =~ ^[0-9]+$ ]] && (( IMPLEMENT_COMMAND_CAP > 0 )); then
     while IFS= read -r cap_worker; do
       cap_unit="$(jqf -r '.unit // empty' <<<"$cap_worker")"
@@ -456,9 +456,11 @@ stuck_worker_disposition() {
       stuck_worker_stop "$cap_pid"
       cap_workdir="$(jqf -r '.workdir // empty' <<<"$cap_worker")"
       cap_summary="command count: $cap_count; cap: $IMPLEMENT_COMMAND_CAP"
+      cap_stash=""
       if [[ -n "$cap_workdir" && -n "$(git -C "$cap_workdir" status --porcelain 2>/dev/null)" ]]; then
         if git -C "$cap_workdir" stash push -u -q -m "autopilot: kept before redispatch $STAMP"; then
-          cap_summary+=$'\nworktree: uncommitted changes kept in stash'
+          cap_stash="$(git -C "$cap_workdir" rev-parse -q --verify refs/stash 2>/dev/null || true)"
+          cap_summary+=$'\nworktree: uncommitted changes kept in stash '"$cap_stash"
         else
           cap_summary+=$'\nworktree: stash failed; dirty clone remains in place'
           say "IMPLEMENT-COMMAND-CAP stash failed unit=$cap_unit pid=$cap_pid workdir=$cap_workdir"
@@ -474,8 +476,8 @@ stuck_worker_disposition() {
       cap_recut_ok=0
       if [[ -n "$cap_issue" ]]; then
         cap_evidence="$(jq -cn --argjson commands "$cap_count" --argjson limit "$IMPLEMENT_COMMAND_CAP" \
-          --arg unit "$cap_unit" --arg branch "$cap_branch" \
-          '{kind:"implement-command-cap",commands:$commands,limit:$limit,unit:$unit,branch:$branch}')"
+          --arg unit "$cap_unit" --arg branch "$cap_branch" --arg stash "$cap_stash" --arg workdir "$cap_workdir" \
+          '{kind:"implement-command-cap",commands:$commands,limit:$limit,unit:$unit,branch:$branch,stash:$stash,workdir:$workdir}')"
         if scheduler_recut_route "$cap_issue" "$cap_evidence"; then
           if scheduler_issue_state "$cap_issue" | jq -e '.state == "needs-recut"' >/dev/null; then
             cap_recut_ok=1
