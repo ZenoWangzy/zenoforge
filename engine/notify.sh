@@ -1211,8 +1211,8 @@ PROMPT
     } > "$prompt_file"
 
     if ! response="$(run_model_json "$repo_dir" "$work_model" 10 \
-      "$scripts_dir/prompts/founder-outcome.schema.json" "$prompt_file" \
-      "$scripts_dir/prompts/agent-settings.json" 2>"$transcript_file")"; then
+      "$(zf_config_file prompts/founder-outcome.schema.json)" "$prompt_file" \
+      "$(zf_config_file prompts/agent-settings.json)" 2>"$transcript_file")"; then
       codex_budget_release "$budget_id" || true
       budget_id=""
       echo "notify: release-time user outcome generation failed for issue #$issue_num" >&2

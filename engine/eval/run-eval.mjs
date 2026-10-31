@@ -8,13 +8,18 @@ import { parseArgs } from 'node:util';
 import { isMainThread, parentPort, workerData, Worker } from 'node:worker_threads';
 import { gradeTriage, gradeAdvisor, gradeReview, gradeSupervisor, gradeTests, gradeImplementDecision, validateStageOutput } from './graders.mjs';
 import { compareResults, formatComparison, compareArms, formatArmComparison, summarizeSupervisor } from './compare.mjs';
+import { zfConfigFile } from '../pack-dir.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '../..');
 const evalHome = join(process.env.AGENT_HOME || process.env.ZF_HOME || join(homedir(), '.zenoforge'), 'eval');
 const stages = ['triage', 'advisor', 'implement', 'review', 'supervisor', 'end-to-end'];
 const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
-const prompt = (name) => readFileSync(join(repo, 'engine/prompts', `${name}.md`), 'utf8');
+const prompt = (name) => {
+  const promptFile = zfConfigFile(`prompts/${name}.md`);
+  if (!promptFile) throw new Error(`missing prompt ${name}`);
+  return readFileSync(promptFile, 'utf8');
+};
 function command(argv, cwd = repo, options = {}) {
   const child = spawnSync(argv[0], argv.slice(1), { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
     env: { ...process.env, GH_TOKEN: '', GITHUB_TOKEN: '', ...options.env }, ...options });

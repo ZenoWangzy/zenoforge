@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { zfConfigFile } from '../pack-dir.mjs';
 
 // Case expectations are independent historical evidence, never model scores.
 const result = (failures) => ({ pass: failures.length === 0, failures });
@@ -130,7 +131,9 @@ export function gradeImplementDecision(report, changedPaths, expected) {
 
 // The pipeline schemas use these JSON Schema primitives; the files own the fields.
 export function validateStageOutput(stage, value) {
-  const schema = JSON.parse(readFileSync(new URL(`../prompts/${stage}.schema.json`, import.meta.url)));
+  const schemaFile = zfConfigFile(`prompts/${stage}.schema.json`);
+  if (!schemaFile) throw new Error(`missing schema for stage ${stage}`);
+  const schema = JSON.parse(readFileSync(schemaFile, 'utf8'));
   const failures = [];
   function visit(v, s, path) {
     const type = Array.isArray(v) ? 'array' : v === null ? 'null' : typeof v;

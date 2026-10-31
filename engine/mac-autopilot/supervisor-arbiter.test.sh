@@ -16,6 +16,11 @@ jq '.auto_merge = false | .advisor = false | .precheck = false | .supervisor_arb
 echo '{"units":[]}' > "$sup/autopi/units.json"
 echo '{"workers":[]}' > "$sup/autopi/workers.json"
 export MAC_AUTOPILOT_ROOT="$fixture/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$sup/autopi"
+export ZF_CONFIG_ROOT="$fixture/repo/.zenoforge"
+mkdir -p "$ZF_CONFIG_ROOT/prompts"
+cp "$script_dir/../prompts/supervisor-arbiter.md" "$ZF_CONFIG_ROOT/prompts/supervisor-arbiter.md"
+printf '\nCONFIG_SUPERVISOR_PROMPT_OVERRIDE\n' >> "$ZF_CONFIG_ROOT/prompts/supervisor-arbiter.md"
+cp "$script_dir/../prompts/review-contract.md" "$ZF_CONFIG_ROOT/prompts/review-contract.md"
 export CODEX_SESSIONS_DIR="$fixture/sessions"
 export REQUIRED_PR_CHECKS_FILE="$fixture/required-pr-checks.json"
 printf '%s\n' '{"required":[],"current_regression":"","legacy_regression":[]}' > "$REQUIRED_PR_CHECKS_FILE"
@@ -23,6 +28,8 @@ export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$script_dir/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
 decision_eval_stages() { printf '\n'; }
+[[ "$(review_contract_rule)" == *"$ZF_CONFIG_ROOT/prompts/review-contract.md"* ]] \
+  || { echo 'supervisor-arbiter.test.sh: review contract must use target config override' >&2; exit 1; }
 
 fail() { echo "supervisor-arbiter.test.sh: $*" >&2; exit 1; }
 units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
@@ -86,6 +93,7 @@ jq -e --arg unit pr-601 'any(.workers[]; .unit == $unit and .type == "supervise"
 [[ "$(field pr-601 '.history[-1].stage')" == supervisor-arbiter ]] || fail "dispatch must consume one arbitration budget slot in history"
 q_file="$(ls -t "$sup"/supervise-pr-601-*.q.md | head -1)"
 grep -q 'six actions' "$q_file" || fail "arbitration prompt must carry the six-action prompt"
+grep -q 'CONFIG_SUPERVISOR_PROMPT_OVERRIDE' "$q_file" || fail "arbitration prompt must use target config override"
 frozen="$(sed -n '/^```json$/,/^```$/p' "$q_file" | sed '1d;$d' | grep -v '^#')"
 [[ "$(jq -r '.unitId' <<<"$frozen")" == pr-601 ]] || fail "arbitration prompt must embed the unit id in the frozen record"
 jq -e '.escalationReason.reason == "review report has no single VERDICT line" and (.unitHistory | length == 2) and .reviewFindings.available == true and (.ciEvidence | type == "array")' <<<"$frozen" >/dev/null \

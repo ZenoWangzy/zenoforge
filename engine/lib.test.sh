@@ -9175,4 +9175,19 @@ assert_eq "no receipt (hand or pre-receipt PR) does not block success" 1 "$(sed 
 assert_eq "readiness check writes no receipt of its own" null "$(sed -n 's/^missing_status=//p' <<< "$RECEIPT_MATRIX_OUT")"
 rm -rf "$RECEIPT_TEST_HOME"
 
+TRIAGE_CONFIG_OVERRIDE_DIR="$(mktemp -d)"
+LIB_TEST_TMP_DIRS+=("$TRIAGE_CONFIG_OVERRIDE_DIR")
+mkdir -p "$TRIAGE_CONFIG_OVERRIDE_DIR/prompts"
+printf '%s\n' '{"type":"object","required":["config_marker"],"properties":{"config_marker":{"type":"boolean"}}}' \
+  > "$TRIAGE_CONFIG_OVERRIDE_DIR/prompts/triage.schema.json"
+TRIAGE_CONFIG_OVERRIDE_RESULT="$TRIAGE_CONFIG_OVERRIDE_DIR/result.json"
+jq -nc '{category:"bug",state:"ready-for-agent",risk_class:"P1",level:"L1",entry_surface:"API",acceptor:"none",brief_md:"fix",notes_md:"",expected_packages:[],expected_paths:[],estimated_changed_lines:0,external_deliverable:{required:false,location:"",reason:""}}' \
+  > "$TRIAGE_CONFIG_OVERRIDE_RESULT"
+if ZF_CONFIG_ROOT="$TRIAGE_CONFIG_OVERRIDE_DIR" triage_result_matches_schema "$TRIAGE_CONFIG_OVERRIDE_RESULT"; then
+  TRIAGE_CONFIG_OVERRIDE_STATUS=accepted
+else
+  TRIAGE_CONFIG_OVERRIDE_STATUS=rejected
+fi
+assert_eq "triage schema validation reads target config override" rejected "$TRIAGE_CONFIG_OVERRIDE_STATUS"
+
 lib_case_exit

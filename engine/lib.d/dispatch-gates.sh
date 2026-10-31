@@ -258,7 +258,7 @@ triage_batch_issue_active() {
 # an otherwise valid ticket outside the implement lane. jq remains the only
 # runtime dependency.
 triage_result_matches_schema() {
-  local result_file="$1" schema_file="${2:-$(dirname -- "$_AGENT_LIB_DIR/lib.sh")/prompts/triage.schema.json}"
+  local result_file="$1" schema_file="${2:-$(zf_config_file prompts/triage.schema.json)}"
   jq -e --slurpfile schema "$schema_file" '
     def has_external_judgment:
       (.external_deliverable | type) == "object"

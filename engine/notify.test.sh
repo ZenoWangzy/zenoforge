@@ -31,6 +31,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FAILED=0
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
+ZF_CONFIG_ROOT="$TMP_DIR/.zenoforge"
+mkdir -p "$ZF_CONFIG_ROOT/prompts"
+cp "$SCRIPT_DIR/prompts/founder-outcome.schema.json" "$ZF_CONFIG_ROOT/prompts/founder-outcome.schema.json"
+cp "$SCRIPT_DIR/prompts/agent-settings.json" "$ZF_CONFIG_ROOT/prompts/agent-settings.json"
+export ZF_CONFIG_ROOT
 
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
@@ -1563,12 +1568,15 @@ JSON
 : > "$OUTCOME_SEND_LOG"
 OUTCOME_COMMENT_DIR="$OUTCOME_HOME/generated-comments"
 OUTCOME_MODEL_PROMPTS="$OUTCOME_HOME/model-prompts"
+OUTCOME_MODEL_ARGS="$OUTCOME_HOME/model-args"
 OUTCOME_PR_VIEW_LOG="$OUTCOME_HOME/pr-views.log"
 mkdir -p "$OUTCOME_COMMENT_DIR"
+: > "$OUTCOME_MODEL_ARGS"
 FAKE_CLOSED_ISSUES_JSON='[]'
 OUTCOME_MODEL_REPLY=''
 model_policy() { printf '%s\n' 'fixture:work-model'; }
 run_model_json() {
+  printf '%s\n' "$4 $6" >> "$OUTCOME_MODEL_ARGS"
   cat "$5" >> "$OUTCOME_MODEL_PROMPTS"
   if [ "$OUTCOME_MODEL_REPLY" = 'NONE' ]; then
     printf '{"is_error":false,"structured_output":{"user_outcome":"NONE"},"tokens_used":"1"}\n'
@@ -1902,6 +1910,8 @@ guarded_issue_comment() { RELEASE_ISSUE_COMMENT="$2"; }
 if declare -F ensure_maintainer_user_outcome >/dev/null 2>&1; then
   ensure_maintainer_user_outcome 9008 HEAD
   assert_eq 'release fallback uses work model once' '1' "$(wc -l < "$RELEASE_MODEL_CALLS_FILE" | tr -d '[:space:]')"
+  assert_contains 'outcome schema uses the target config override' "$(cat "$OUTCOME_MODEL_ARGS")" "$ZF_CONFIG_ROOT/prompts/founder-outcome.schema.json"
+  assert_contains 'outcome settings use the target config override' "$(cat "$OUTCOME_MODEL_ARGS")" "$ZF_CONFIG_ROOT/prompts/agent-settings.json"
   assert_eq 'release fallback resolves work role through model policy' \
     "$MODEL_POLICY_TEST_WORK_IDENTITY" "$(cat "$RELEASE_MODEL_CALLS_FILE")"
   assert_contains 'release fallback stores model outcome on ticket' \

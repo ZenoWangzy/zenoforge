@@ -235,7 +235,7 @@ fi
   echo "GitNexus repo argument for this run: $REPO_DIR"
   echo "GitNexus index freshness for this run: $INDEX_FRESHNESS_NOTE"
   echo "This is one triage pass for independent issues. Apply the triage rules below separately to every issue. Never let one issue's missing or uncertain evidence change another issue's result."
-  cat "$SCRIPT_DIR/prompts/triage.md"
+  cat "$(zf_config_file prompts/triage.md)"
   echo
   echo "Batch output contract: output only NDJSON, exactly one object per issue you can classify. Each line must have shape {\"issue\": 123, \"result\": {<one complete object matching triage.schema.json>}}. Use the exact issue number. No Markdown fences or prose. Never omit an issue silently: omit its line only when that issue cannot be classified from its own evidence."
 } > "$PROMPT_FILE"
@@ -341,7 +341,7 @@ mv "$ACTIVE_TMP" "$ACTIVE_FILE"
 
 set +e
 OUTPUT="$(run_model_text "$WT" "$WORK_ROLE" 50 "$PROMPT_FILE" "$TRANSCRIPT_FILE" \
-  "$SCRIPT_DIR/prompts/agent-settings.json")"
+  "$(zf_config_file prompts/agent-settings.json)")"
 STATUS=$?
 set -e
 TOKENS_USED="$(codex_tokens_used "$TRANSCRIPT_FILE")"
@@ -376,7 +376,7 @@ while IFS= read -r line; do
   SEEN_ISSUES["$n"]=1
   RESULT_FILE="$RESULT_DIR/$n.json"
   if ! jq -ce '.result | select(type == "object")' <<< "$line" > "$RESULT_FILE" \
-    || ! triage_result_matches_schema "$RESULT_FILE" "$SCRIPT_DIR/prompts/triage.schema.json"; then
+    || ! triage_result_matches_schema "$RESULT_FILE" "$(zf_config_file prompts/triage.schema.json)"; then
     BAD_ISSUES["$n"]="invalid triage.schema.json record"
     rm -f "$RESULT_FILE"
     echo "run-triage-batch: #$n record failed triage.schema.json; other issues continue" >&2

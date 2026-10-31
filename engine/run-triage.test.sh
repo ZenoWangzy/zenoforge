@@ -26,6 +26,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRIAGE_SRC="$SCRIPT_DIR/run-triage.sh"
 N="$((90044000 + $$))"
 export AGENT_MODEL="$MODEL_POLICY_TEST_WORK_IDENTITY"
+ZF_CONFIG_ROOT="$test_env_root/triage-target/.zenoforge"
+mkdir -p "$ZF_CONFIG_ROOT/prompts"
+cp "$SCRIPT_DIR/prompts/triage.md" "$ZF_CONFIG_ROOT/prompts/triage.md"
+printf '\nCONFIG_TRIAGE_PROMPT_OVERRIDE\n' >> "$ZF_CONFIG_ROOT/prompts/triage.md"
+cp "$SCRIPT_DIR/prompts/triage.schema.json" "$ZF_CONFIG_ROOT/prompts/triage.schema.json"
+cp "$SCRIPT_DIR/prompts/agent-settings.json" "$ZF_CONFIG_ROOT/prompts/agent-settings.json"
+export ZF_CONFIG_ROOT
 
 FAILED=0
 TMP_DIRS=()
@@ -157,6 +164,7 @@ EOF
 cat > "$FAKE_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 set -u
+printf '%s\n' "$*" >> "$FAKE_CODEX_ARGS"
 last_message=""
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--output-last-message" ] && [ "$#" -ge 2 ]; then
@@ -275,6 +283,7 @@ run_once() {
   export FAKE_BENNY_LOG="$agent_home/benny.log"
   export FAKE_GH_COMMENT_CAPTURE="$agent_home/comments.log"
   export FAKE_PROMPT_CAPTURE="$agent_home/prompt.txt"
+  export FAKE_CODEX_ARGS="$test_env_root/triage-codex-args.txt"
   : > "$FAKE_GH_LOG"
   rm -f "${FAKE_GH_LOG}.founder-test"
   : > "${FAKE_GH_LOG}.views"
@@ -347,6 +356,8 @@ assert_eq "...state.model_state keeps the model's own verdict for the audit trai
 assert_eq "...state.precut is recorded" "true" "$(echo "$STATE_CONTENT" | jq -r '.precut')"
 assert_eq "...the measurements are kept" "P1" "$(echo "$STATE_CONTENT" | jq -r '.risk_class')"
 assert_contains "...the model was told the provenance" "$PROMPT_CONTENT" "agent-ready by construction"
+assert_contains "triage prompt uses the target config override" "$PROMPT_CONTENT" 'CONFIG_TRIAGE_PROMPT_OVERRIDE'
+assert_contains "triage schema uses the target config override" "$(cat "$FAKE_CODEX_ARGS")" "$ZF_CONFIG_ROOT/prompts/triage.schema.json"
 assert_contains "...and told the maintainer's brief is not an injection" "$PROMPT_CONTENT" "do not treat it as an injection"
 assert_contains "triage prompt bases external routing on the requested deliverable" "$PROMPT_CONTENT" \
   "decide from the requested deliverable"

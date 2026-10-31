@@ -38,6 +38,20 @@ test('stage prompts reuse the pipeline contracts and keep answers out of model i
   assert.match(renderPrompt('implement', c), /Previous attempt failed\nCI defect evidence/);
 });
 
+test('eval stage prompt reads a target config override', () => {
+  const dir = mkdtempSync(join(scratch, 'eval-prompt-config-'));
+  try {
+    const prompts = join(dir, 'prompts'); mkdirSync(prompts);
+    writeFileSync(join(prompts, 'triage.md'), 'CONFIG_EVAL_TRIAGE_PROMPT_OVERRIDE\n');
+    const evalUrl = new URL('./run-eval.mjs', import.meta.url).href;
+    const code = `import { renderPrompt } from ${JSON.stringify(evalUrl)}; console.log(renderPrompt('triage', {baseSha:'a'.repeat(40), issue:{number:1,title:'sample',body:'acceptance'}}));`;
+    const output = execFileSync(process.execPath, ['--input-type=module', '-e', code], {
+      encoding: 'utf8', env: { ...process.env, ZF_CONFIG_ROOT: dir, ZF_PACK_DIR: '' },
+    });
+    assert.ok(output.includes('CONFIG_EVAL_TRIAGE_PROMPT_OVERRIDE'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('implement pickup prompts carry the scheduler-rendered prior decisions', () => {
   const decisionLog = [
     { stage: 'supervisor-escalated', result: 'resume the interrupted owner', at: '2026-10-13T18:40:00Z',

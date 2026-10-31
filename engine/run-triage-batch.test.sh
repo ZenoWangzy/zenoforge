@@ -5,6 +5,13 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BATCH_SRC="$SCRIPT_DIR/run-triage-batch.sh"
 TEST_ROOT="$(mktemp -d)"
+ZF_CONFIG_ROOT="$TEST_ROOT/repo/.zenoforge"
+mkdir -p "$ZF_CONFIG_ROOT/prompts"
+cp "$SCRIPT_DIR/prompts/triage.md" "$ZF_CONFIG_ROOT/prompts/triage.md"
+printf '\nCONFIG_TRIAGE_BATCH_PROMPT_OVERRIDE\n' >> "$ZF_CONFIG_ROOT/prompts/triage.md"
+cp "$SCRIPT_DIR/prompts/triage.schema.json" "$ZF_CONFIG_ROOT/prompts/triage.schema.json"
+cp "$SCRIPT_DIR/prompts/agent-settings.json" "$ZF_CONFIG_ROOT/prompts/agent-settings.json"
+export ZF_CONFIG_ROOT
 export AGENT_HOME="$TEST_ROOT/agent"
 export ZF_REPO_DIR="$TEST_ROOT/repo"
 export REPO="test/repo"
@@ -273,6 +280,7 @@ assert_contains "Codex uses policy work role and effort" "$(cat "$FAKE_CODEX_ARG
 assert_contains "Codex forwards policy work service tier" "$(cat "$FAKE_CODEX_ARGS")" \
   "service_tier=\"$MODEL_POLICY_TEST_WORK_TIER\""
 assert_contains "one prompt includes every admitted issue" "$(cat "$FAKE_PROMPT_CAPTURE")" '## Issue #910303'
+assert_contains "batch triage prompt uses the target config override" "$(cat "$FAKE_PROMPT_CAPTURE")" 'CONFIG_TRIAGE_BATCH_PROMPT_OVERRIDE'
 assert_not_contains "skill path is decided from the agent worktree, not the repo checkout" "$(cat "$FAKE_PROMPT_CAPTURE")" 'triage=.agents/skills/triage/SKILL.md'
 assert_contains "skills note is in the prompt" "$(cat "$FAKE_PROMPT_CAPTURE")" 'Matt skill files for this run'
 assert_not_contains "deferred issue is absent from prompt" "$(cat "$FAKE_PROMPT_CAPTURE")" '## Issue #910304'

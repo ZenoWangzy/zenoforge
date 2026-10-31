@@ -18,6 +18,13 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RECUT_SRC="$SCRIPT_DIR/run-recut.sh"
 N=90043
+ZF_CONFIG_ROOT="$test_env_root/recut-target/.zenoforge"
+mkdir -p "$ZF_CONFIG_ROOT/prompts"
+cp "$SCRIPT_DIR/prompts/recut.md" "$ZF_CONFIG_ROOT/prompts/recut.md"
+printf '\nCONFIG_RECUT_PROMPT_OVERRIDE\n' >> "$ZF_CONFIG_ROOT/prompts/recut.md"
+cp "$SCRIPT_DIR/prompts/recut.schema.json" "$ZF_CONFIG_ROOT/prompts/recut.schema.json"
+cp "$SCRIPT_DIR/prompts/agent-settings.json" "$ZF_CONFIG_ROOT/prompts/agent-settings.json"
+export ZF_CONFIG_ROOT
 
 FAILED=0
 TMP_DIRS=()
@@ -197,6 +204,7 @@ EOF
 cat > "$FAKE_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 set -u
+printf '%s\n' "$*" >> "$FAKE_RECUIT_ARGS_FILE"
 out="" previous=""
 schema=""
 for arg in "$@"; do
@@ -307,6 +315,7 @@ PY
   export FAKE_RECUIT_PRODUCTION_ACCESS="${6:-__omit__}"
   export FAKE_GH_LOG="$agent_home/gh.log"
   export FAKE_RECUIT_SCHEMA_FILE="$agent_home/recut-schema.json"
+  export FAKE_RECUIT_ARGS_FILE="$agent_home/recut-args.txt"
   export FAKE_RECUIT_INPUT="$agent_home/recut-input.txt"
   export FAKE_HAND_ENQUEUE_LOG="$agent_home/hand-enqueue.log"
   mkdir -p "$agent_home/night" "$hand_root"
@@ -363,6 +372,8 @@ OWNER
   STATE_CONTENT="$(cat "$agent_home/state/$hand_issue.json" 2>/dev/null || true)"
   INBOX_CONTENT="$(cat "$agent_home/supervisor-inbox" 2>/dev/null || true)"
   SCHEMA_CONTENT="$(cat "$FAKE_RECUIT_SCHEMA_FILE" 2>/dev/null || true)"
+  RECUIT_INPUT_CONTENT="$(cat "$FAKE_RECUIT_INPUT" 2>/dev/null || true)"
+  RECUIT_ARGS_CONTENT="$(cat "$FAKE_RECUIT_ARGS_FILE" 2>/dev/null || true)"
   SPEND_CONTENT="$(cat "$agent_home"/spend/*.log 2>/dev/null || true)"
   HAND_ENQUEUE_CONTENT="$(cat "$FAKE_HAND_ENQUEUE_LOG" 2>/dev/null || true)"
   local brief_path
@@ -421,6 +432,8 @@ assert_contains "...records the recut model call" "$SPEND_CONTENT" $'\trecut\t'
 assert_eq "recut spend row records tokens used" 1 "$(awk -F '\t' '$2 == "recut" {print $6}' <<< "$SPEND_CONTENT")"
 assert_contains "schema string sent to model includes production access flag" \
   "$SCHEMA_CONTENT" '"needs_production_access"'
+assert_contains "recut schema uses the target config override" "$RECUIT_ARGS_CONTENT" "$ZF_CONFIG_ROOT/prompts/recut.schema.json"
+assert_contains "recut prompt uses the target config override" "$RECUIT_INPUT_CONTENT" 'CONFIG_RECUT_PROMPT_OVERRIDE'
 assert_contains "schema describes work outside repository checkout" \
   "$SCHEMA_CONTENT" "outside this repository checkout"
 assert_contains "...removes needs-recut" "$GH_LOG_CONTENT" "--remove-label needs-recut"

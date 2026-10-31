@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { gradeTriage, gradeAdvisor, gradeReview, gradeSupervisor, gradeTests, gradeImplementDecision } from './graders.mjs';
 
 test('triage compares routing fields and treats package order as a set', () => {
@@ -95,4 +99,18 @@ test('the current pipeline schema rejects malformed routing output', async () =>
   assert.ok(validateStageOutput('triage', { ...valid, surprise: true }).length);
   const { brief_md, ...missing } = valid;
   assert.ok(validateStageOutput('triage', missing).length);
+});
+
+test('stage output validation reads a target config schema override', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'grader-config-'));
+  try {
+    const prompts = join(dir, 'prompts'); mkdirSync(prompts);
+    writeFileSync(join(prompts, 'triage.schema.json'), '{"type":"object","required":["config_marker"],"properties":{"config_marker":{"type":"boolean"}}}\n');
+    const graderUrl = new URL('./graders.mjs', import.meta.url).href;
+    const code = `import { validateStageOutput } from ${JSON.stringify(graderUrl)}; console.log(JSON.stringify(validateStageOutput('triage', {})));`;
+    const output = execFileSync(process.execPath, ['--input-type=module', '-e', code], {
+      encoding: 'utf8', env: { ...process.env, ZF_CONFIG_ROOT: dir, ZF_PACK_DIR: '' },
+    }).trim();
+    assert.deepEqual(JSON.parse(output), ['triage.config_marker: required']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

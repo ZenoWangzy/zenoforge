@@ -5,7 +5,14 @@
 set -uo pipefail
 _ms="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../matt-skills.sh"
 [[ -r "$_ms" ]] && source "$_ms" # a copied install has no sibling engine tree
-declare -F matt_skill_md >/dev/null || matt_skill_md() { printf '.agents/skills/%s/SKILL.md\n' "$1"; }
+declare -F matt_skill_md >/dev/null || matt_skill_md() {
+  local name="$1" checkout="${2:-.}"
+  if [[ -f "$checkout/.zenoforge/skills/$name/SKILL.md" ]]; then
+    printf '.zenoforge/skills/%s/SKILL.md\n' "$name"
+  else
+    printf '.agents/skills/%s/SKILL.md\n' "$name"
+  fi
+}
 key="$1" wt="$2" ticket="$3" spec="$4" notes="$5" mode="${6:-}"
 root=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}
 L="$root/luna"; dir="$L/ticket-$key"; mkdir -p "$dir"

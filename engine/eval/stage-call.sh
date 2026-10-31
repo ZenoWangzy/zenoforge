@@ -3,7 +3,7 @@
 set -euo pipefail
 unset GH_TOKEN GITHUB_TOKEN
 stage=$1; repo=$2; wt=$3; prompt=$4; artifact=$5; input=$6
-export REPO_DIR="$repo" TMPDIR="$artifact/tmp" AGENT_HOME="$artifact/agent-home"
+export REPO_DIR="$repo" ZF_REPO_DIR="${ZF_REPO_DIR:-$repo}" TMPDIR="$artifact/tmp" AGENT_HOME="$artifact/agent-home"
 mkdir -p "$TMPDIR" "$AGENT_HOME"
 # Seed an isolated persistent policy with the caller's selected pipeline policy.
 cp "$EVAL_POLICY_FILE" "$AGENT_HOME/model-policy.json"
@@ -17,7 +17,7 @@ N=$(jq -r '.issue.number' "$input")
 export N
 mkdir -p "$STATE_DIR"
 jq '.priorState + {last_failure_reason:.failure, last_failure_tail:.failure}' "$input" > "$STATE_DIR/$N.json"
-settings="$repo/engine/prompts/agent-settings.json"
+settings="$(zf_config_file prompts/agent-settings.json)"
 save_usage() {
   if [[ -f "$artifact/worker.log" ]]; then
     tokens=$(codex_tokens_used "$artifact/worker.log")
@@ -32,12 +32,12 @@ case "$stage" in
   triage|recut)
     identity=$(model_policy dispatch-state-identity "$N" "$stage"); record_identity "$identity"
     run_model_json "$wt" "$identity" 45 \
-      "$repo/engine/prompts/$stage.schema.json" "$prompt" "$settings" work
+      "$(zf_config_file "prompts/$stage.schema.json")" "$prompt" "$settings" work
     ;;
   advisor)
     identity=$(model_policy identity advisor); record_identity "$identity"
     run_model_json "$wt" "$identity" 45 \
-      "$repo/engine/prompts/advisor.schema.json" "$prompt" "$settings" advisor
+      "$(zf_config_file prompts/advisor.schema.json)" "$prompt" "$settings" advisor
     ;;
   advisor-batch)
     identity=$(model_policy identity advisor); record_identity "$identity"
