@@ -11,14 +11,14 @@ self_check_run() (
   # CI preserves candidate edits and backfills the remaining helpers from main.
   # Never execute a candidate helper on the controller: use the isolated cihost
   # checkout, where the full candidate module environment is available.
-  for part in scripts/ci/touched-package-selection.mjs engine/authenticated-origin-contract-packages.mjs; do
+  for part in scripts/ci/touched-package-selection.mjs scripts/checks/authenticated-origin-contract-packages.mjs; do
     if [[ -f "$dir/$part" ]] && ! git diff --quiet "$base" "$sha" -- "$part"; then changed_helpers=1; fi
   done
   if (( changed_helpers )); then
     selection_log="$(mktemp "${TMPDIR:-/tmp}/self-check-selection.XXXXXX")" || return 1
     if "$entry" "$dir" -- bash -c '
       set -e
-      for part in scripts/ci/touched-package-selection.mjs engine/authenticated-origin-contract-packages.mjs; do
+      for part in scripts/ci/touched-package-selection.mjs scripts/checks/authenticated-origin-contract-packages.mjs; do
         if [[ ! -f "$part" ]] || git diff --quiet "$1" "$2" -- "$part"; then
           mkdir -p "$(dirname "$part")"
           git show "refs/remotes/origin/main:$part" > "$part"
@@ -39,8 +39,8 @@ self_check_run() (
     fi
   else
     selection_dir="$(mktemp -d "${TMPDIR:-/tmp}/self-check-selector.XXXXXX")" || return 1
-    mkdir -p "$selection_dir/scripts/ci" "$selection_dir/engine" || { rm -rf "$selection_dir"; return 1; }
-    for part in scripts/ci/touched-package-selection.mjs engine/authenticated-origin-contract-packages.mjs; do
+    mkdir -p "$selection_dir/scripts/ci" "$selection_dir/scripts/checks" || { rm -rf "$selection_dir"; return 1; }
+    for part in scripts/ci/touched-package-selection.mjs scripts/checks/authenticated-origin-contract-packages.mjs; do
       command git -C "$ROOT" show "refs/remotes/origin/main:$part" > "$selection_dir/$part" \
         || { rm -rf "$selection_dir"; return 1; }
     done
