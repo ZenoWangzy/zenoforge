@@ -98,6 +98,23 @@ if PATH="$fixture/gh-fail:$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" bash "$
   fail 'a failed open-PR read passed the pin self-check'
 fi
 
+# An operator pause must preserve the pin and config work without restarting units.
+cat > "$fixture/bin/systemctl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$START_SYSTEMCTL_CALLS"
+exit 0
+SH
+export START_SYSTEMCTL_CALLS="$fixture/systemctl-calls"
+mkdir -p "$AGENT_HOME"
+printf '%s\n' '{"caller":"operator","reason":"maintenance","issue":"1","provider":"manual","model":"manual","timestamp":"2026-10-01T00:00:00Z"}' > "$AGENT_HOME/PAUSE"
+PATH="$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" bash "$script_dir/start.sh" > "$fixture/paused-out"
+! grep -Eq '^--user (restart|start) ' "$START_SYSTEMCTL_CALLS" || fail 'restarted units during operator pause'
+grep -Fq 'paused, not restarting' "$fixture/paused-out" || fail 'missing pause message'
+mv "$AGENT_HOME/PAUSE" "$AGENT_HOME/PAUSE.saved"
+PATH="$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" bash "$script_dir/start.sh" > "$fixture/unpaused-out"
+grep -Fq -- '--user restart zenoforge-autopilot-scheduler.service zenoforge-autopilot-bell.service zenoforge-autopilot-zombie.service' "$START_SYSTEMCTL_CALLS" || fail 'unpaused units were not restarted'
+printf '#!/usr/bin/env bash\necho "systemctl $*" >> "%s/started"\nexit 1\n' "$fixture" > "$fixture/bin/systemctl"
+
 # nohup fallback (no systemd units): stop legacy autopi/ loops as well as autopi-live/ ones before starting new ones.
 rm -f "$fixture/started"
 PATH="$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" bash "$script_dir/start.sh" >/dev/null 2>&1 || true

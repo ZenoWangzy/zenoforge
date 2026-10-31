@@ -28,6 +28,13 @@ UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 # 状态根（PAUSE、计量开关）：与 lib.sh/config.sh 同一优先级，部署环境（导出后 ZF_HOME）不改代码即可移走。
 AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:-}/.zenoforge}}"
 export PATH="$PATH:${HOME:-}/.local/bin:${HOME:-}/.npm-global/bin:/usr/local/bin"
+# Use the engine's operator-pause validation without loading the full pipeline library.
+autopilot_manual_pause_is_valid() (
+  PAUSE_FILE="$AGENT_HOME/PAUSE"
+  source "$_ap_here/../lib.d/worktree.sh"
+  source "$_ap_here/../lib.d/model-calls.sh"
+  manual_pause_is_valid
+)
 # gh 调用计量窗口：$AGENT_HOME/measure/gh.on 存在时，调度器与它派出的单元经计量 shim 调 gh（engine/gh-measure）。
 if [[ -f "$AGENT_HOME/measure/gh.on" && -x "${ZF_ENGINE_DIR:-$MAC_AUTOPILOT_ROOT/engine}/gh-measure/bin/gh" ]]; then
   export PATH="${ZF_ENGINE_DIR:-$MAC_AUTOPILOT_ROOT/engine}/gh-measure/bin:$PATH"

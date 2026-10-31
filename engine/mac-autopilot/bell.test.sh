@@ -136,6 +136,25 @@ export BELL_TEST_NETWORK=green
 export BELL_STALE_CI_DISABLE=1
 export PATH="$bin:$PATH"
 
+# A stalled scheduler must not restart the systemd loop during an operator pause.
+pause_autopi="$tmp/pause-autopi"
+pause_agent="$tmp/pause-agent"
+mkdir -p "$pause_autopi/alerts" "$pause_agent"
+printf '%s\n' '{"bell":{"enabled":true,"notify":false,"auto_supervisor":false}}' > "$pause_autopi/config.json"
+printf '%s\n' '{"units":[]}' > "$pause_autopi/units.json"
+printf '%s\n' '{"caller":"operator","reason":"maintenance","issue":"1","provider":"manual","model":"manual","timestamp":"2026-10-01T00:00:00Z"}' > "$pause_agent/PAUSE"
+BELL_AUTOPI_DIR="$pause_autopi" AGENT_HOME="$pause_agent" AUTOPILOT_LOOP_UNIT=fixture-loop.service bash "$bell"
+if [[ -e "$BELL_TEST_SYSTEMCTL_CALLS" ]] && grep -Eq '^--user (restart|start) ' "$BELL_TEST_SYSTEMCTL_CALLS"; then
+  echo 'bell.test.sh: restarted loop during operator pause' >&2; exit 1
+fi
+grep -Fq 'paused, not restarting' "$pause_autopi/BELL-QUEUE.md" || { echo 'bell.test.sh: missing pause message' >&2; exit 1; }
+mv "$pause_agent/PAUSE" "$pause_agent/PAUSE.saved"
+# Use a fresh event state to ensure the unpaused observation is recorded.
+mv "$pause_autopi/bell-state.json" "$pause_autopi/bell-state.saved"
+BELL_AUTOPI_DIR="$pause_autopi" AGENT_HOME="$pause_agent" AUTOPILOT_LOOP_UNIT=fixture-loop.service bash "$bell"
+grep -Fxq -- '--user restart fixture-loop.service' "$BELL_TEST_SYSTEMCTL_CALLS" || { echo 'bell.test.sh: unpaused loop was not restarted' >&2; exit 1; }
+mv "$BELL_TEST_SYSTEMCTL_CALLS" "$tmp/pause-systemctl-calls"
+
 bash "$bell"
 for _ in $(seq 1 50); do
   [[ ! -d "$autopi/.bell-supervisor.lock" ]] && break

@@ -283,7 +283,9 @@ fi
 if [[ "$stale" == 1 ]]; then
   restart="not attempted in check-only mode"
   sev=high
-  if [[ "$CHECK_ONLY" != 1 && -n "${AUTOPILOT_LOOP_UNIT:-}" ]]; then
+  if [[ "$CHECK_ONLY" != 1 ]] && autopilot_manual_pause_is_valid; then
+    restart="paused, not restarting"
+  elif [[ "$CHECK_ONLY" != 1 && -n "${AUTOPILOT_LOOP_UNIT:-}" ]]; then
     # systemd 托管时由 systemd 重启，避免与 Restart=always 叠出第二个 loop。
     if systemctl --user restart "$AUTOPILOT_LOOP_UNIT" 2>/dev/null; then restart="loop restarted via systemd unit $AUTOPILOT_LOOP_UNIT"; else restart="systemd restart of $AUTOPILOT_LOOP_UNIT failed"; sev=critical; fi
   elif [[ "$CHECK_ONLY" != 1 ]]; then
