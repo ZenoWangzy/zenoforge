@@ -90,5 +90,6 @@
   "release_train": {
     "enabled": false
   },
-  "precheck": false
+  "precheck": false,
+  "implement_command_cap": 230
 }

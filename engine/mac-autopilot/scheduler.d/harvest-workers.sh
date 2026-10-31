@@ -443,6 +443,62 @@ stuck_worker_disposition() {
   local scorecard="$A/node-health.json" bound offenders id w pid wtype probe fp held kills next issue hold_cli hold_ok
   local signal_active=0 named_count=0 live_count=0 killed_count=0
   local first_seen=0 progress=0 unchanged_window=0 unchanged_confirmed=0 no_live_worker=0 action
+  local cap_worker cap_pid cap_unit cap_log cap_count cap_commands cap_summary cap_workdir cap_issue cap_hold_cli cap_hold_ok
+  if [[ "$IMPLEMENT_COMMAND_CAP" =~ ^[0-9]+$ ]] && (( IMPLEMENT_COMMAND_CAP > 0 )); then
+    while IFS= read -r cap_worker; do
+      cap_unit="$(jqf -r '.unit // empty' <<<"$cap_worker")"
+      cap_pid="$(jqf -r '.pid // empty' <<<"$cap_worker")"
+      [[ "$(jqf -r '.type // empty' <<<"$cap_worker")" == implement ]] || continue
+      [[ "$cap_pid" =~ ^[0-9]+$ ]] && alive "$cap_pid" || continue
+      cap_log="$SUP/$(jqf -r '.log // empty' <<<"$cap_worker")"
+      cap_count="$(awk 'index($0, "\"item.completed\"") && index($0, "\"command_execution\"") { count++ } END { print count+0 }' "$cap_log" 2>/dev/null || printf '0')"
+      [[ "$cap_count" =~ ^[0-9]+$ ]] && (( cap_count > IMPLEMENT_COMMAND_CAP )) || continue
+      stuck_worker_stop "$cap_pid"
+      cap_workdir="$(jqf -r '.workdir // empty' <<<"$cap_worker")"
+      cap_summary="command count: $cap_count; cap: $IMPLEMENT_COMMAND_CAP"
+      if [[ -n "$cap_workdir" && -n "$(git -C "$cap_workdir" status --porcelain 2>/dev/null)" ]]; then
+        if git -C "$cap_workdir" stash push -u -q -m "autopilot: kept before redispatch $STAMP"; then
+          cap_summary+=$'\nworktree: uncommitted changes kept in stash'
+        else
+          cap_summary+=$'\nworktree: stash failed; dirty clone remains in place'
+          say "IMPLEMENT-COMMAND-CAP stash failed unit=$cap_unit pid=$cap_pid workdir=$cap_workdir"
+        fi
+      fi
+      cap_commands="$(jq -Rr 'fromjson? | select(.type=="item.completed" and .item.type=="command_execution") | .item.command // empty | gsub("[\\r\\n]+"; " ") | .[0:200]' "$cap_log" 2>/dev/null | tail -n 20 || true)"
+      cap_summary+=$'\nlast 20 commands:\n'"${cap_commands:-none}"
+      jqf --argjson pid "$cap_pid" --arg unit "$cap_unit" --arg finished "$STAMP" \
+        --argjson count "$cap_count" --argjson cap "$IMPLEMENT_COMMAND_CAP" \
+        '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (.harvested=true | .finished_at=$finished | .implement_command_capped={count:$count,cap:$cap}) else . end))' \
+        "$WORKERS" | write_state "$WORKERS"
+      cap_issue="$(unit_field "$cap_unit" '.issue // empty')"
+      cap_hold_ok=1
+      if [[ -n "$cap_issue" ]]; then
+        cap_hold_cli="${ZF_ENGINE_DIR:-$ROOT/engine}/hold.sh"
+        [[ -r "$cap_hold_cli" ]] || cap_hold_cli="$HERE/../hold.sh"
+        if ! bash "$cap_hold_cli" --hold "$cap_issue" --holder scheduler-implement-command-cap \
+          --release 'implement-command-cap: split; supervisor must split the unit before resuming' \
+          --expires 24h --kind stop-loss >/dev/null 2>&1; then
+          cap_hold_ok=0
+          echo "[$STAMP] IMPLEMENT-COMMAND-CAP-HOLD-FAILED unit=$cap_unit issue=$cap_issue count=$cap_count cap=$IMPLEMENT_COMMAND_CAP" >> "$A/alerts/events.md"
+          say "IMPLEMENT-COMMAND-CAP-HOLD-FAILED unit=$cap_unit issue=$cap_issue"
+        else
+          gh issue comment "$cap_issue" --body "Implement command cap: worker for unit $cap_unit ran $cap_count commands (cap $IMPLEMENT_COMMAND_CAP) and was stopped; the unit is held for supervisor triage to split." >/dev/null 2>&1 || true
+        fi
+      else
+        cap_hold_ok=0
+        echo "[$STAMP] IMPLEMENT-COMMAND-CAP-HOLD-FAILED unit=$cap_unit issue=missing count=$cap_count cap=$IMPLEMENT_COMMAND_CAP" >> "$A/alerts/events.md"
+      fi
+      if (( ! cap_hold_ok )); then cap_summary+=$'\nissue hold: could not be applied'; fi
+      to_supervisor "$cap_unit" 'implement-command-cap: split' \
+        'Split the implement unit before dispatching another worker' \
+        "The implement worker ran $cap_count shell commands, above the $IMPLEMENT_COMMAND_CAP command cap." \
+        "$cap_summary" \
+        '["Split the implement unit into smaller units before resuming"]'
+      set_unit "$cap_unit" "$(hist implement-command-cap "$cap_count/$IMPLEMENT_COMMAND_CAP") | del(.stuck_probe)"
+      echo "[$STAMP] IMPLEMENT-COMMAND-CAP unit=$cap_unit pid=$cap_pid commands=$cap_count cap=$IMPLEMENT_COMMAND_CAP" >> "$A/alerts/events.md"
+      say "IMPLEMENT-COMMAND-CAP unit=$cap_unit pid=$cap_pid commands=$cap_count cap=$IMPLEMENT_COMMAND_CAP"
+    done < <(jqf -c '.workers[] | select(.harvested != true)' "$WORKERS")
+  fi
   offenders=""
   # 消费 f8 的信号：只有 UNHEALTHY 的越阈值信号才点名单元；信号健康/未跑时名单为空，
   # 本拍只做残留探针清理，不碰任何 worker。

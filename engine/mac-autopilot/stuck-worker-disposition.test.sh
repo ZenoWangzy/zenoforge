@@ -95,6 +95,10 @@ mk_worker() { # unit pid [workdir] → worker json
   jq -cn --argjson pid "$2" --arg unit "$1" --arg log "worker-$1.log" --arg workdir "${3:-$fixture/notrepo}" --arg at "$(iso_ago 90)" \
     '{pid:$pid, unit:$unit, type:"review", log:$log, report:"r.md", started:$at, workdir:$workdir, model:"gpt-test"}'
 }
+mk_implement_worker() { # unit pid workdir → implement worker json
+  jq -cn --argjson pid "$2" --arg unit "$1" --arg log "worker-$1.log" --arg workdir "$3" --arg at "$(iso_ago 1)" \
+    '{pid:$pid, unit:$unit, type:"implement", log:$log, report:"r.md", started:$at, workdir:$workdir, model:"gpt-test"}'
+}
 write_units() { jq -cn --argjson a "$1" --argjson b "$2" --argjson c "$3" '{units:[$a,$b,$c]}' > "$sup/autopi/units.json"; }
 write_workers() { jq -cn --argjson w "$1" '{workers:$w}' > "$sup/autopi/workers.json"; }
 # worker 日志在 $SUP/<log>（dispatch 的落盘位置），不在 $SUP/autopi 下
@@ -237,5 +241,65 @@ write_workers "[$(mk_worker pr-55 "$pid8")]"
 write_units "$(mk_unit pr-55 "$(probe_update 90 "$(fp_of pr-55 "$pid8")")")" "$(mk_unit pr-88)" "$(mk_unit pr-99)"
 STUCK_CONFIRM_MINUTES=$CONFIRM stuck_worker_disposition
 wait_dead "$pid8" || fail "unnamed worker with a log silent past slow_worker_minutes must be stopped"
+
+# ---- 8. Implement command cap: above the cap parks for triage and keeps the worker's clone ----
+test_cap="$(jqf -r '.implement_command_cap // 230' "$sup/autopi/config.json")"
+[[ "$test_cap" == 230 ]] || fail "template command cap should default to 230, got $test_cap"
+rm -f "$A/node-health.json"
+cap_worktree="$fixture/command-cap-repo"
+mkdir -p "$cap_worktree"
+git -C "$cap_worktree" init -q
+git -C "$cap_worktree" checkout -qb command-cap-worker
+git -C "$cap_worktree" config user.name test
+git -C "$cap_worktree" config user.email test@example.invalid
+printf 'baseline\n' > "$cap_worktree/kept.txt"
+git -C "$cap_worktree" add kept.txt
+git -C "$cap_worktree" commit -qm baseline
+printf 'uncommitted implementation\n' > "$cap_worktree/kept.txt"
+cap_pid="$(spawn_worker implement-over-cap)"; exact_pid="$(spawn_worker implement-at-cap)"
+cap_log="$sup/worker-cmdcap-over.log"; exact_log="$sup/worker-cmdcap-at.log"
+over_cap=$((test_cap + 1))
+: > "$cap_log"; : > "$exact_log"
+for ((n=1; n<=over_cap; n++)); do
+  printf -v command 'echo command-%03d' "$n"
+  if (( n == over_cap )); then command+=" $(printf '%220s' '' | tr ' ' x)"; fi
+  jq -cn --arg command "$command" '{type:"item.completed",item:{type:"command_execution",command:$command}}' >> "$cap_log"
+done
+for ((n=1; n<=test_cap; n++)); do
+  printf -v command 'echo exact-command-%03d' "$n"
+  jq -cn --arg command "$command" '{type:"item.completed",item:{type:"command_execution",command:$command}}' >> "$exact_log"
+done
+: > "$FIXTURE_HOLD_LOG"; : > "$FIXTURE_GH_LOG"
+write_workers "[$(mk_implement_worker cmdcap-over "$cap_pid" "$cap_worktree"), $(mk_implement_worker cmdcap-at "$exact_pid" "$fixture/notrepo")]"
+write_units "$(mk_unit cmdcap-over)" "$(mk_unit cmdcap-at)" "$(mk_unit pr-99)"
+stuck_worker_disposition
+wait_dead "$cap_pid" || fail "implement worker above the command cap must be stopped"
+kill -0 "$exact_pid" 2>/dev/null || fail "implement worker exactly at the command cap must keep running"
+jq -e --argjson pid "$cap_pid" '.workers[] | select(.pid==$pid) | .harvested == true and .implement_command_capped.count == 231 and .implement_command_capped.cap == 230' "$WORKERS" >/dev/null \
+  || fail "over-cap worker must be harvested with its command count and cap"
+jq -e --argjson pid "$exact_pid" '.workers[] | select(.pid==$pid) | .harvested != true' "$WORKERS" >/dev/null \
+  || fail "worker exactly at the cap must stay unharvested"
+jq -e '.units[] | select(.id=="cmdcap-over") | .stage == "supervisor-review" and .note == "implement-command-cap: split" and any(.history[]; .stage=="implement-command-cap" and .result=="231/230")' "$UNITS" >/dev/null \
+  || fail "over-cap unit must be parked with the command-cap reason and history"
+jq -e '.units[] | select(.id=="cmdcap-at") | .stage != "supervisor-review" and (all(.history[]?; .stage != "implement-command-cap"))' "$UNITS" >/dev/null \
+  || fail "worker exactly at the cap must not be parked"
+grep -Fq -- '--hold 4371 --holder scheduler-implement-command-cap' "$FIXTURE_HOLD_LOG" \
+  || fail "over-cap unit must use the existing issue hold path"
+grep -Fq -- '--release implement-command-cap: split' "$FIXTURE_HOLD_LOG" \
+  || fail "issue hold must explain the command-cap split reason"
+[[ "$(grep -c -- '--hold ' "$FIXTURE_HOLD_LOG")" -eq 1 ]] || fail "exact-cap worker must not trigger an issue hold"
+[[ "$(git -C "$cap_worktree" branch --show-current)" == command-cap-worker ]] || fail "command-cap stop must preserve the worker branch"
+[[ "$(cat "$cap_worktree/kept.txt")" == baseline ]] || fail "command-cap stop must stash the uncommitted file"
+git -C "$cap_worktree" stash list --format='%s' | head -n1 | grep -Fq 'autopilot: kept before redispatch' \
+  || fail "command-cap stop must use the redispatch stash message"
+git -C "$cap_worktree" stash show --format= --name-only 'stash@{0}' | grep -Fxq kept.txt \
+  || fail "command-cap stash must contain the worker's uncommitted file"
+cap_summary="$(jqf -r --arg id cmdcap-over '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage=="supervisor-escalated") | .decision.evidence] | last // ""' "$UNITS")"
+summary_commands="$(sed -n '/^last 20 commands:$/,$p' <<<"$cap_summary" | tail -n +2)"
+[[ "$(wc -l <<<"$summary_commands" | tr -d ' ')" -eq 20 ]] || fail "triage summary must attach the last 20 command fields"
+grep -Fq 'echo command-212' <<<"$summary_commands" || fail "triage summary must begin with command 212"
+grep -Fq 'echo command-231' <<<"$summary_commands" || fail "triage summary must include command 231"
+[[ "$(tail -n1 <<<"$summary_commands" | wc -c | tr -d ' ')" -eq 201 ]] || fail "triage summary must cut each command field to 200 characters"
+kill -TERM -- "-$exact_pid" 2>/dev/null || true
 
 echo "stuck-worker-disposition.test.sh: all assertions passed"
