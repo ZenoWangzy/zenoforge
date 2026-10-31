@@ -361,6 +361,8 @@ $(decision_scope "$u")
 Feature verification plan (advisory, from ticket-declared paths): $feature_brief
 After implementation, refresh IDs from the actual changed paths with node engine/verification-plan.mjs --root . --base origin/main --head HEAD. Run node scripts/e2e/yangfeng-regression/verify-feature.mjs --feature <IDs> --target <base-url> --json only when a candidate target already serves this build. Record the JSON output path. If no candidate target exists, say so; do not build a local stack. This is worker evidence, not a merge gate.
 
+优先用有界读取：用 rg -l 或 rg -m 20 缩小搜索结果，再用 sed -n '起,止p' 读取指定行区间；大文件不要整份 cat。
+
 $deliver"
         dispatch_if_room "$id" "implement" "implement" "${rep%.md}.worker.log" "$rep" \
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "" "$wt" "" "$prompt" "$u" false || true ;;

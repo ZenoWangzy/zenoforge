@@ -54,8 +54,8 @@ while :; do
   flock -u "$mx"; sleep 30
 done
 # Workers need no MCP servers; each codex run otherwise spawns chrome-devtools, gbrain and gitnexus (~360 MB).
-mcp_off=(); for n in $(grep -oE '^\[mcp_servers\.[A-Za-z0-9_-]+\]' ~/.codex/config.toml | sed -E 's/^\[mcp_servers\.([^]]+)\]/\1/' | sort -u); do
-  mcp_off+=(-c "mcp_servers.$n.enabled=false"); done
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d" && pwd -P)/codex-mcp.sh"
+mcp_off=(); while IFS= read -r arg; do mcp_off+=("$arg"); done < <(codex_mcp_disable_args)
 args=(exec -C "$cwd" "${mcp_off[@]}" -m "${CODEX_MODEL:-gpt-6-luna}" -c "model_reasoning_effort=\"${CODEX_EFFORT:-max}\"" -c shell_environment_policy.inherit=all
   -s danger-full-access --skip-git-repo-check -o "$out/last.md" --json)
 [[ -n "$schema" ]] && args+=(--output-schema "$schema")
