@@ -33,6 +33,10 @@ cp -- "$LIVE_FILE" "$validation_home/model-policy.json"
     [[ "$variable" == AGENT_MODEL* ]] && unset "$variable"
   done < <(compgen -e)
   source "$SCRIPT_DIR/lib.sh"
+  # This command validates and publishes the durable policy itself. Do not let
+  # lib.sh redirect migration into its compatibility view; that would leave
+  # the raw file schema-less while the caller later copies it back unchanged.
+  MODEL_POLICY_FILE="$AGENT_HOME/model-policy.json"
   model_policy_migrate_live 1
   model_policy source-check
   model_policy_validate_file "$MODEL_POLICY_FILE"

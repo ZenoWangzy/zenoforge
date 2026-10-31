@@ -1113,7 +1113,7 @@ assert_cond "path-only ticket routing reuses shared delivery classifier" \
 assert_cond "configured non-product tickets are excluded from recut and release dispatch snapshots" \
   "$(grep -A3 -F 'for next_recut in $(gh issue list' "$PIPELINE_SRC" | grep -qF '$lane_labels' && grep -A4 -F 'if ! release_issue_numbers=' "$PIPELINE_SRC" | grep -qF '$lane_labels' && echo 1 || echo 0)"
 assert_cond "pipeline-system triage uses lightweight classification before model prompt" \
-  "$(classify_line="$(grep -nF 'prepare_pipeline_system_issue "$N" "$ISSUE_JSON"' "$SCRIPT_DIR/run-triage.sh" | cut -d: -f1)"; prompt_line="$(grep -nF 'cat "$SCRIPT_DIR/prompts/triage.md"' "$SCRIPT_DIR/run-triage.sh" | cut -d: -f1)"; [ -n "$classify_line" ] && [ -n "$prompt_line" ] && [ "$classify_line" -lt "$prompt_line" ] && echo 1 || echo 0)"
+  "$(classify_line="$(grep -nF 'prepare_pipeline_system_issue "$N" "$ISSUE_JSON"' "$SCRIPT_DIR/run-triage.sh" | cut -d: -f1)"; prompt_line="$(grep -nF 'cat "$(zf_config_file prompts/triage.md)"' "$SCRIPT_DIR/run-triage.sh" | cut -d: -f1)"; [ -n "$classify_line" ] && [ -n "$prompt_line" ] && [ "$classify_line" -lt "$prompt_line" ] && echo 1 || echo 0)"
 assert_cond "technical advisor routes return pipeline-system tickets to implementation" \
   "$(grep -qF '.pipeline_system.enabled // false' "$SCRIPT_DIR"/lib.d/*.sh && grep -qF 'pipeline_system_return_to_implement' "$SCRIPT_DIR"/lib.d/*.sh && echo 1 || echo 0)"
 assert_cond "advisor entry points skip and reconcile pipeline-system tickets" \

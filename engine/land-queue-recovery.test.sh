@@ -68,10 +68,18 @@ printf 'zf-land-direct-main-%020d\n' 1002 1001 > "$test_env_root/expected"
 : > "$RECOVERY_START_LOG"
 export QUEUE_SCRIPT="$queue_script"
 export RECOVERY_SLOW_FIFO="$test_env_root/slow-maintenance"
+slow_queue_source="$test_env_root/land-queue-functions.sh"
+sed \
+  -e 's|^SCRIPT_DIR=.*|SCRIPT_DIR="${QUEUE_SCRIPT%/*}"|' \
+  -e 's|^QUEUE_ENGINE_DIR=.*|QUEUE_ENGINE_DIR="$SCRIPT_DIR"|' \
+  -e '/^case "${1:-}" in/,$d' \
+  "$queue_script" > "$slow_queue_source"
+export QUEUE_SCRIPT_SOURCE="$slow_queue_source"
 mkfifo "$RECOVERY_SLOW_FIFO"
 if timeout 10 bash -c '
-  source <(sed '\''/^case "${1:-}" in/,$d'\'' "$QUEUE_SCRIPT")
+  source "$QUEUE_SCRIPT_SOURCE"
   SCRIPT_DIR="$(dirname -- "$QUEUE_SCRIPT")"
+  QUEUE_ENGINE_DIR="$SCRIPT_DIR"
   queue_recover_direct_pending() { read -r unused < "$RECOVERY_SLOW_FIFO"; }
   queue_recover
 ' > "$test_env_root/slow.log" 2>&1; then
