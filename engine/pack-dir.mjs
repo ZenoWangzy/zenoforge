@@ -3,6 +3,7 @@
 // uses its generic default. Default here = this directory, where the the product pack is laid over the engine today.
 import { readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const DEFAULT_PACK_DIR = ''; // PACK_DIR_DEFAULT: the public export rewrites this default to empty
@@ -46,4 +47,11 @@ export function zfConfigFile(relativePath, repoRoot = process.env.ZF_REPO_DIR ||
     }
   }
   return null;
+}
+
+export function zfHostOpsFile(relativePath, fallback = join(ENGINE_DIR, relativePath.replace(/^scripts\/agent\//, ''))) {
+  const agentHome = process.env.AGENT_HOME || process.env.ZF_HOME || join(homedir(), '.zenoforge');
+  const candidate = join(process.env.ZF_HOST_OPS_DIR || join(agentHome, 'host-ops'), relativePath);
+  try { if (statSync(candidate).isFile()) return candidate; } catch { /* use the existing path */ }
+  return fallback;
 }

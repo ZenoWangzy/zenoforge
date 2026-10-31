@@ -91,7 +91,8 @@ finding() {
 }
 
 # Pack module: INV-9, the shared-browser tab check (the product's signed-in browser). Sourced only when the pack ships it.
-[[ -n "${ZF_PACK_DIR-}" && -r "$ZF_PACK_DIR/supervise-browser-check.sh" ]] && source "$ZF_PACK_DIR/supervise-browser-check.sh"
+browser_check="$(zf_host_ops_file scripts/agent/supervise-browser-check.sh "${ZF_PACK_DIR:-$ZF_ENGINE_DIR}/supervise-browser-check.sh")"
+[[ ( -n "${ZF_PACK_DIR-}" || "$browser_check" == "${ZF_HOST_OPS_DIR:-$AGENT_HOME/host-ops}/scripts/agent/supervise-browser-check.sh" ) && -r "$browser_check" ]] && source "$browser_check"
 
 # --- cooldown bookkeeping for system-level checks with no single GitHub
 # object to comment on -- a marker FILE under AGENT_HOME, sibling to
