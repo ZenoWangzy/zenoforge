@@ -28,3 +28,5 @@ function exercise(key, fallback) {
 }
 
 test('role checker selects target, pack, or fails closed', () => exercise('roleCheck', 'check-fruit-migration-role.mjs'));
+
+test('number checker selects target, pack, or fails closed', () => exercise('numberCheck', 'check-migration-numbers.mjs'));
