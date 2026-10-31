@@ -43,10 +43,11 @@ cp -- "$LIVE_FILE" "$validation_home/model-policy.json"
     }
     printf '%s\t%s\t%s\n' "$role" "$actual_identity" "$actual_tier"
   done
-  printf '%s\n' "$MODEL_POLICY_FILE" > "$tmp_dir/active-policy-path"
 )
-validation_policy_file="$(cat "$tmp_dir/active-policy-path")"
-cp -- "$validation_policy_file" "$tmp_dir/migrated-policy.json"
+# Forced migration selects the landed default, which was compared with the
+# pack file and validated above. lib.sh may migrate a derived policy view, so
+# validation-home/model-policy.json is not necessarily the migrated file.
+cp -- "$tmp_dir/landed-policy.json" "$tmp_dir/migrated-policy.json"
 
 backup="$LIVE_FILE.bak.$(date -u +%Y%m%dT%H%M%SZ).$$"
 cp -p -- "$LIVE_FILE" "$backup"
