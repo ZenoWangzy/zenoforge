@@ -114,7 +114,7 @@ git -C "$cli_root" -c user.name=t -c user.email=t@e commit -qm base --allow-empt
 cp -a "$root/engine/." "$fixture/cli-engine/0.1.0/"
 ln -s ../cli-engine/0.1.0 "$cli_root/engine"
 printf '/engine\n/.scratch-supervisor\n' >> "$cli_root/.git/info/exclude"
-PATH="$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$cli_root" bash "$script_dir/start.sh" --sync-only > "$fixture/cli-out" || fail 'sync-only failed for a symlinked engine'
+PATH="$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$cli_root" bash "$cli_root/engine/mac-autopilot/start.sh" --sync-only > "$fixture/cli-out" || fail 'sync-only failed for a symlinked engine'
 [[ "$(readlink "$cli_root/.scratch-supervisor/autopi-live")" == 'autopi-versions/0.1.0/engine/mac-autopilot' ]] || fail 'live pointer not pinned to the engine version'
 diff -r "$fixture/cli-engine/0.1.0/mac-autopilot" "$cli_root/.scratch-supervisor/autopi-live" || fail 'symlinked engine not materialized'
 [[ -z "$(git -C "$cli_root" status --porcelain)" ]] || fail 'engine link or runtime state shows up as untracked'

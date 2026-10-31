@@ -71,12 +71,12 @@ test('service unit: paths, PATH, env file, no inherited proxy', () => {
   const inHome = renderService(shipped, { home, checkout: '/home/alice/.zenoforge/checkout', pathValue });
   assert.doesNotMatch(inHome, /proxy/i);
   assert.match(inHome, /^Environment=PATH=%h\/\.local\/bin:\/usr\/bin$/m);
-  assert.match(inHome, /^ExecStart=%h\/\.zenoforge\/checkout\/engine\/night\/health-maintenance\.sh maintenance$/m);
+  assert.ok(inHome.includes('exec "${e:-%h/.zenoforge/checkout/engine}/night/health-maintenance.sh" maintenance'));
   assert.match(inHome, /^Environment=ZF_WORKTREE_ROOT=%h\/\.zenoforge\/wt$/m);
   assert.equal(inHome.match(/^EnvironmentFile=/gm).length, 1);
   const elsewhere = renderService(shipped, { home, checkout: '/srv/zf/co', pathValue });
   assert.match(elsewhere, /^WorkingDirectory=\/srv\/zf\/co$/m);
-  assert.match(elsewhere, /^ExecStart=\/srv\/zf\/co\/engine\/night\//m);
+  assert.ok(elsewhere.includes('exec "${e:-/srv/zf/co/engine}/night/health-maintenance.sh" maintenance'));
   assert.doesNotMatch(elsewhere, /\.zenoforge\/checkout/);
 });
 
@@ -118,7 +118,7 @@ test('launchd plist from the shipped agent service and timer', () => {
   const plist = renderPlist({ name: 'zenoforge-agent.service', serviceText: svc, timerText: read('systemd/zenoforge-agent.timer'), home, logDir: '/home/alice/.zenoforge/logs' });
   assert.match(plist, /<key>Label<\/key>\s*<string>com\.zenoforge\.agent<\/string>/);
   assert.match(plist, /<key>StartInterval<\/key>\s*<integer>300<\/integer>/);
-  assert.match(plist, /<string>\/home\/alice\/\.zenoforge\/checkout\/engine\/run-tick\.sh<\/string>/);
+  assert.match(plist, /<string>\$\{e:-\/home\/alice\/\.zenoforge\/checkout\/engine\}\/run-tick\.sh<\/string>/);
   assert.match(plist, /<key>ZF_REPO_DIR<\/key><string>\/home\/alice\/\.zenoforge\/checkout<\/string>/);
   assert.match(plist, /\. '\/home\/alice\/\.zenoforge\/env'/, 'env file is sourced by the wrapper');
   assert.doesNotMatch(plist, /%h/);
