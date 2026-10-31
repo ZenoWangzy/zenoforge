@@ -213,3 +213,60 @@ test('with a pack, the registry comes from the engine build and targets resolve 
   assert.deepEqual(JSON.parse(plain.stdout).missingTargets.map((entry) => entry.id).sort(),
     ['built-command-file', 'pack-command-file', 'pack-missing-file', 'pack-test-file']);
 });
+
+test('guard targets resolve through the target repo after the repo and build miss', () => {
+  const root = mkdtempSync(path.join(repoRoot, '.git', 'incident-guard-audit-target-repo-'));
+  const repo = path.join(root, 'repo');
+  const buildRoot = path.join(root, 'build');
+  const targetRepo = path.join(root, 'target-repo');
+  const history = path.join(root, 'history');
+  const state = path.join(buildRoot, 'engine/state');
+  mkdirSync(state, { recursive: true });
+  mkdirSync(history, { recursive: true });
+  mkdirSync(path.join(buildRoot, 'engine'), { recursive: true });
+  mkdirSync(path.join(targetRepo, 'ops/host-units'), { recursive: true });
+  mkdirSync(path.join(targetRepo, 'engine'), { recursive: true });
+  writeFileSync(path.join(targetRepo, 'ops/host-units/target-only.test.py'), '');
+  writeFileSync(path.join(targetRepo, 'ops/host-units/symbol-only.sh'), 'targetRepoSymbol\n');
+  writeFileSync(path.join(buildRoot, 'engine/source.mjs'), 'differentBuildSymbol\n');
+  writeFileSync(path.join(targetRepo, 'engine/source.mjs'), 'buildSymbol\n');
+  writeFileSync(path.join(state, 'incident-guards.json'), JSON.stringify({ incidents: [
+    { id: 'target-repo-file', machine_checks: [{ test_file: '${REPO_DIR}/ops/host-units/target-only.test.py' }] },
+    { id: 'missing-in-both', machine_checks: [{ test_file: '${REPO_DIR}/ops/host-units/missing.test.sh' }] },
+    { id: 'target-repo-symbol', machine_checks: [{
+      command: ['bash', '-c', "grep -Fq 'targetRepoSymbol' \"${REPO_DIR}/ops/host-units/symbol-only.sh\""],
+    }] },
+    { id: 'build-symbol-is-checked', machine_checks: [{
+      command: ['bash', '-c', "grep -Fq 'buildSymbol' \"${REPO_DIR}/engine/source.mjs\""],
+    }] },
+  ] }));
+
+  const baseEnv = {
+    ...process.env,
+    ZF_REPO_DIR: targetRepo,
+    ZF_ENGINE_DIR: path.join(buildRoot, 'engine'),
+    ZF_CONFIG_ROOT: path.join(repo, '.zenoforge'),
+    ZF_PACK_DIR: '',
+    ZF_PACK_REL: 'engine',
+    ZF_PACK_ROOT: buildRoot,
+  };
+  const run = (args, env = {}) => spawnSync(process.execPath, [auditScript, '--repo', repo,
+    '--history-dir', history, ...args], { encoding: 'utf8', env: { ...baseEnv, ...env } });
+  const expectedMissing = [
+    { id: 'build-symbol-is-checked', targets: [{ kind: 'symbol', target: 'engine/source.mjs#buildSymbol' }] },
+    { id: 'missing-in-both', targets: [{ kind: 'file', target: 'ops/host-units/missing.test.sh' }] },
+  ];
+  const assertMissingTargets = (result, expected = expectedMissing) => {
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout).missingTargets, expected);
+  };
+
+  assertMissingTargets(run([]));
+  assertMissingTargets(run(['--target-repo', targetRepo], { ZF_REPO_DIR: repo }));
+
+  writeFileSync(path.join(targetRepo, 'ops/host-units/symbol-only.sh'), 'differentTargetRepoSymbol\n');
+  assertMissingTargets(run([]), [
+    ...expectedMissing,
+    { id: 'target-repo-symbol', targets: [{ kind: 'symbol', target: 'ops/host-units/symbol-only.sh#targetRepoSymbol' }] },
+  ]);
+});
