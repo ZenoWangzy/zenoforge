@@ -13,7 +13,7 @@ instead of calling gh (tests); its optional "prs" list stands in for the PR size
 """
 import argparse, importlib.util, json, os, subprocess
 from datetime import datetime, timezone, timedelta
-from node_health import LARGE_PR_WINDOW_DAYS, size_window_units
+from node_health import LARGE_PR_WINDOW_DAYS, is_test_path, size_window_units
 
 PR_EVENTS = ("pull_request", "pull_request_target")
 
@@ -32,23 +32,49 @@ def gh_json(path):
     return json.loads(done.stdout)
 
 
+def _nontest_added(total_additions, total_count, nodes):
+    if (type(total_count) is not int or total_count < 0 or not isinstance(nodes, list)
+            or len(nodes) != min(total_count, 100)):
+        return None
+    test_additions, product_additions = 0, 0
+    for file in nodes:
+        if (not isinstance(file, dict) or not isinstance(file.get("path"), str)
+                or type(file.get("additions")) is not int):
+            return None
+        if is_test_path(file["path"]):
+            test_additions += file["additions"]
+        else:
+            product_additions += file["additions"]
+    if total_count > 100:
+        if type(total_additions) is not int:
+            return None
+        # shortcut: test additions after the first 100 files are unknown, so this can only overcount.
+        return total_additions - test_additions
+    return product_additions
+
+
 def gh_pr_sizes(units, now, previous):
     """Fetch the window's ledger PRs in batches; completed PR sizes are reusable."""
     selected = list(size_window_units(units, now - timedelta(days=LARGE_PR_WINDOW_DAYS), now))
     ids = {str(u["pr"]) for u in selected if str(u.get("pr", "")).isdigit()}
     lines = {k: v for k, v in (previous.get("lines") or {}).items() if k in ids}
     states = {k: v for k, v in (previous.get("states") or {}).items() if k in ids}
+    nontest_added = {k: v for k, v in (previous.get("nontest_added") or {}).items()
+                     if k in ids and type(v) is int}
     # Open PRs can grow; unknown states include the old 500-entry cache. Closed
-    # PRs are refreshed if their unit is active again.
+    # PRs are refreshed if active, and old cache entries need one non-test count.
     active = {str(u["pr"]) for u in selected if u.get("stage") not in ("closed", "merged", "landed", "done")}
-    needed = sorted((n for n in ids if n not in lines or states.get(n) not in ("MERGED", "CLOSED") or n in active), key=int)
+    needed = sorted((n for n in ids if n not in lines or states.get(n) not in ("MERGED", "CLOSED")
+                     or n in active or n not in nontest_added), key=int)
     spec = importlib.util.spec_from_file_location("open_pr_snapshot", os.path.join(os.path.dirname(__file__), "..", "open-pr-snapshot.py"))
     snapshot = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(snapshot)
     client = snapshot.Snapshot(os.environ.get("ZF_REPO", ""))
-    for start in range(0, len(needed), 100):
-        batch = needed[start:start + 100]
-        fields = " ".join(f"p{n}:pullRequest(number:{n}) {{ additions deletions state }}" for n in batch)
+    for start in range(0, len(needed), 25):
+        batch = needed[start:start + 25]
+        fields = " ".join(
+            f"p{n}:pullRequest(number:{n}) {{ additions deletions state files(first:100)"
+            "{ totalCount nodes { path additions } } }" for n in batch)
         try:
             response = client.github(fields)
         except (OSError, ValueError, subprocess.TimeoutExpired):
@@ -58,11 +84,21 @@ def gh_pr_sizes(units, now, previous):
             if type(pr.get("additions")) is int and type(pr.get("deletions")) is int and pr.get("state") in ("OPEN", "CLOSED", "MERGED"):
                 lines[n] = pr["additions"] + pr["deletions"]
                 states[n] = pr["state"]
+                files = pr.get("files")
+                count = files.get("totalCount") if isinstance(files, dict) else None
+                nodes = files.get("nodes") if isinstance(files, dict) else None
+                value = _nontest_added(pr["additions"], count, nodes)
+                if value is None:
+                    nontest_added.pop(n, None)
+                else:
+                    nontest_added[n] = value
             else:
                 # Missing or failed data must not masquerade as a complete sample.
-                lines.pop(n, None)
-                states.pop(n, None)
-    return {"lines": lines, "states": states}
+                if n in active or states.get(n) not in ("MERGED", "CLOSED") or n not in lines:
+                    lines.pop(n, None)
+                    states.pop(n, None)
+                    nontest_added.pop(n, None)
+    return {"lines": lines, "states": states, "nontest_added": nontest_added}
 
 
 def job_minutes(jobs):
@@ -159,7 +195,20 @@ def main():
     size_path = os.path.join(a, "pr-sizes.json")
     if fixture:
         prs = fixture.get("prs")
-        sizes = {"lines": {str(p["number"]): p.get("additions", 0) + p.get("deletions", 0) for p in prs}} if prs is not None else None
+        if prs is not None:
+            sizes = {"lines": {}, "nontest_added": {}}
+            for p in prs:
+                number = str(p["number"])
+                additions, deletions = p.get("additions"), p.get("deletions")
+                if type(additions) is int and type(deletions) is int:
+                    sizes["lines"][number] = additions + deletions
+                files = p.get("files")
+                if isinstance(files, list):
+                    value = _nontest_added(additions, len(files), files[:100])
+                    if value is not None:
+                        sizes["nontest_added"][number] = value
+        else:
+            sizes = None
     else:
         try:
             previous = json.load(open(size_path))
