@@ -1212,6 +1212,8 @@ pipeline_suites_main_focused_run_covers_sha() {
 dispatch_pipeline_suites_after_landing() {
   local main_sha="$1" base_sha="${2:-}" status=0 census_status=0 ticket="${direct_landing_ticket:-${ZF_LAND_QUEUE_TICKET:-unknown}}"
   local focused_covered=false
+  # A target repo without the workflow (VectA since 10-31) has its pipeline suites in the engine's own CI.
+  git cat-file -e "$main_sha:.github/workflows/pipeline-suites.yml" 2>/dev/null || return 0
   if pipeline_suites_main_focused_run_covers_sha "$main_sha"; then
     focused_covered=true
   else
