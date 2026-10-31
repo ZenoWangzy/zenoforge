@@ -72,14 +72,20 @@ scheduler_size_recut_active() (
   source "$SCHEDULER_AGENT_LIB" || return 0
   stage_unit_active recut "$1"
 )
-scheduler_size_recut() ( # issue lines limit unit branch head → one durable recut route
-  local preserved_gh="" evidence
+scheduler_recut_route() ( # issue evidence-json → one durable recut route with caller gh preserved
+  local preserved_gh="" evidence="$2"
   declare -F gh >/dev/null 2>&1 && preserved_gh="$(declare -f gh)"
   REPO_DIR="$ROOT"
   source "$SCHEDULER_AGENT_LIB" || return 1
   [[ -z "$preserved_gh" ]] || eval "$preserved_gh"
+  route_to_recut "$1" "" "$evidence"
+)
+scheduler_size_recut() ( # issue lines limit unit branch head → one durable recut route
+  local evidence
   evidence="$(jq -cn --argjson lines "$2" --argjson limit "$3" --arg unit "$4" --arg branch "$5" --arg head "$6" '{kind:"size-admission",lines:$lines,limit:$limit,unit:$unit,branch:$branch,head:$head}')"
-  route_to_recut "$1" "" "$evidence" || return 1
+  scheduler_recut_route "$1" "$evidence" || return 1
+  REPO_DIR="$ROOT"
+  source "$SCHEDULER_AGENT_LIB" || return 1
   state_read "$1" | jq -e '.state == "needs-recut" and .size_admission.lines > .size_admission.limit' >/dev/null
 )
 scheduler_footprint() (

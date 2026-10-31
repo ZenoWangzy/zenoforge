@@ -108,6 +108,20 @@ seed_log() { mkdir -p "$fixture/notrepo"; printf 'event line 1\n' > "$sup/worker
 fail() { echo "stuck-worker-disposition.test.sh: $*" >&2; exit 1; }
 source "$script_dir/scheduler.sh"
 
+FIXTURE_RECUT_LOG="$fixture/recut.calls"
+FIXTURE_RECUT_FAIL_ISSUE=4372
+export FIXTURE_RECUT_LOG FIXTURE_RECUT_FAIL_ISSUE
+scheduler_recut_route() {
+  local issue="$1" evidence="$2"
+  jq -cn --arg issue "$issue" --argjson evidence "$evidence" '{issue:$issue,evidence:$evidence}' >> "$FIXTURE_RECUT_LOG"
+  [[ "$issue" != "$FIXTURE_RECUT_FAIL_ISSUE" ]] || return 1
+  printf '{"state":"needs-recut"}\n' > "$fixture/issue-state-$issue.json"
+}
+scheduler_issue_state() {
+  local state_file="$fixture/issue-state-$1.json"
+  [[ -f "$state_file" ]] && cat "$state_file" || printf '{}\n'
+}
+
 A="$MAC_AUTOPILOT_RUNTIME_DIR"
 : > "$A/alerts/events.md"
 CONFIRM=60  # 确认窗口 1 分钟：探针时间戳据此区分“窗口内”与“已过期”
@@ -242,7 +256,7 @@ write_units "$(mk_unit pr-55 "$(probe_update 90 "$(fp_of pr-55 "$pid8")")")" "$(
 STUCK_CONFIRM_MINUTES=$CONFIRM stuck_worker_disposition
 wait_dead "$pid8" || fail "unnamed worker with a log silent past slow_worker_minutes must be stopped"
 
-# ---- 8. Implement command cap: above the cap parks for triage and keeps the worker's clone ----
+# ---- 8. Implement command cap: over-cap workers route to recut, with supervisor fallback ----
 test_cap="$(jqf -r '.implement_command_cap // 230' "$sup/autopi/config.json")"
 [[ "$test_cap" == 230 ]] || fail "template command cap should default to 230, got $test_cap"
 rm -f "$A/node-health.json"
@@ -256,49 +270,64 @@ printf 'baseline\n' > "$cap_worktree/kept.txt"
 git -C "$cap_worktree" add kept.txt
 git -C "$cap_worktree" commit -qm baseline
 printf 'uncommitted implementation\n' > "$cap_worktree/kept.txt"
-cap_pid="$(spawn_worker implement-over-cap)"; exact_pid="$(spawn_worker implement-at-cap)"
-cap_log="$sup/worker-cmdcap-over.log"; exact_log="$sup/worker-cmdcap-at.log"
+cap_pid="$(spawn_worker implement-over-cap)"; fail_pid="$(spawn_worker implement-route-fails)"; exact_pid="$(spawn_worker implement-at-cap)"
+cap_log="$sup/worker-cmdcap-over.log"; fail_log="$sup/worker-cmdcap-fail.log"; exact_log="$sup/worker-cmdcap-at.log"
 over_cap=$((test_cap + 1))
-: > "$cap_log"; : > "$exact_log"
+: > "$cap_log"; : > "$fail_log"; : > "$exact_log"
 for ((n=1; n<=over_cap; n++)); do
   printf -v command 'echo command-%03d' "$n"
   if (( n == over_cap )); then command+=" $(printf '%220s' '' | tr ' ' x)"; fi
   jq -cn --arg command "$command" '{type:"item.completed",item:{type:"command_execution",command:$command}}' >> "$cap_log"
+  printf -v command 'echo failed-command-%03d' "$n"
+  if (( n == over_cap )); then command+=" $(printf '%220s' '' | tr ' ' x)"; fi
+  jq -cn --arg command "$command" '{type:"item.completed",item:{type:"command_execution",command:$command}}' >> "$fail_log"
 done
 for ((n=1; n<=test_cap; n++)); do
   printf -v command 'echo exact-command-%03d' "$n"
   jq -cn --arg command "$command" '{type:"item.completed",item:{type:"command_execution",command:$command}}' >> "$exact_log"
 done
-: > "$FIXTURE_HOLD_LOG"; : > "$FIXTURE_GH_LOG"
-write_workers "[$(mk_implement_worker cmdcap-over "$cap_pid" "$cap_worktree"), $(mk_implement_worker cmdcap-at "$exact_pid" "$fixture/notrepo")]"
-write_units "$(mk_unit cmdcap-over)" "$(mk_unit cmdcap-at)" "$(mk_unit pr-99)"
+: > "$FIXTURE_HOLD_LOG"; : > "$FIXTURE_GH_LOG"; : > "$FIXTURE_RECUT_LOG"
+write_workers "[$(mk_implement_worker cmdcap-over "$cap_pid" "$cap_worktree"), $(mk_implement_worker cmdcap-fail "$fail_pid" "$fixture/notrepo"), $(mk_implement_worker cmdcap-at "$exact_pid" "$fixture/notrepo")]"
+write_units \
+  "$(mk_unit cmdcap-over '.branch="command-cap-worker"')" \
+  "$(mk_unit cmdcap-fail '.issue=4372 | .branch="command-cap-failure"')" \
+  "$(mk_unit cmdcap-at)"
 stuck_worker_disposition
 wait_dead "$cap_pid" || fail "implement worker above the command cap must be stopped"
+wait_dead "$fail_pid" || fail "implement worker whose recut route fails must be stopped"
 kill -0 "$exact_pid" 2>/dev/null || fail "implement worker exactly at the command cap must keep running"
 jq -e --argjson pid "$cap_pid" '.workers[] | select(.pid==$pid) | .harvested == true and .implement_command_capped.count == 231 and .implement_command_capped.cap == 230' "$WORKERS" >/dev/null \
   || fail "over-cap worker must be harvested with its command count and cap"
+jq -e --argjson pid "$fail_pid" '.workers[] | select(.pid==$pid) | .harvested == true and .implement_command_capped.count == 231 and .implement_command_capped.cap == 230' "$WORKERS" >/dev/null \
+  || fail "worker whose recut route fails must be harvested with its command count and cap"
 jq -e --argjson pid "$exact_pid" '.workers[] | select(.pid==$pid) | .harvested != true' "$WORKERS" >/dev/null \
   || fail "worker exactly at the cap must stay unharvested"
-jq -e '.units[] | select(.id=="cmdcap-over") | .stage == "supervisor-review" and .note == "implement-command-cap: split" and any(.history[]; .stage=="implement-command-cap" and .result=="231/230")' "$UNITS" >/dev/null \
-  || fail "over-cap unit must be parked with the command-cap reason and history"
+jq -e '.units[] | select(.id=="cmdcap-over") | .stage == "blocked-external" and .size_recut_pending == true and .branch == "command-cap-worker" and any(.history[]; .stage=="implement-command-cap" and .result=="231/230 -> needs-recut") and (has("stuck_probe") | not)' "$UNITS" >/dev/null \
+  || fail "over-cap unit must be blocked for recut with its branch and history"
+jq -e '.units[] | select(.id=="cmdcap-fail") | .stage == "supervisor-review" and .note == "implement-command-cap: split" and any(.history[]; .stage=="implement-command-cap" and .result=="231/230")' "$UNITS" >/dev/null \
+  || fail "failed recut route must fall back to supervisor review"
 jq -e '.units[] | select(.id=="cmdcap-at") | .stage != "supervisor-review" and (all(.history[]?; .stage != "implement-command-cap"))' "$UNITS" >/dev/null \
   || fail "worker exactly at the cap must not be parked"
-grep -Fq -- '--hold 4371 --holder scheduler-implement-command-cap' "$FIXTURE_HOLD_LOG" \
-  || fail "over-cap unit must use the existing issue hold path"
-grep -Fq -- '--release implement-command-cap: split' "$FIXTURE_HOLD_LOG" \
-  || fail "issue hold must explain the command-cap split reason"
-[[ "$(grep -c -- '--hold ' "$FIXTURE_HOLD_LOG")" -eq 1 ]] || fail "exact-cap worker must not trigger an issue hold"
+[[ "$(wc -l < "$FIXTURE_RECUT_LOG" | tr -d ' ')" == 2 ]] || fail "only over-cap workers must route to recut"
+jq -e -s 'any(.[]; .issue=="4371" and .evidence.kind=="implement-command-cap" and .evidence.commands==231 and .evidence.limit==230 and .evidence.unit=="cmdcap-over" and .evidence.branch=="command-cap-worker")' "$FIXTURE_RECUT_LOG" >/dev/null \
+  || fail "successful recut route must receive implement-cap evidence and the unit branch"
+jq -e -s 'any(.[]; .issue=="4372" and .evidence.kind=="implement-command-cap" and .evidence.commands==231 and .evidence.limit==230 and .evidence.unit=="cmdcap-fail" and .evidence.branch=="command-cap-failure")' "$FIXTURE_RECUT_LOG" >/dev/null \
+  || fail "failed recut route must receive implement-cap evidence and the unit branch"
+[[ ! -s "$FIXTURE_HOLD_LOG" ]] || fail "implement command cap must not create an issue hold"
+! grep -Eq 'gh issue comment (4371|4372)' "$FIXTURE_GH_LOG" || fail "implement command cap must not comment on the issue"
+grep -Fq 'IMPLEMENT-COMMAND-CAP unit=cmdcap-over' "$A/alerts/events.md" || fail "over-cap worker must keep its command-cap event line"
 [[ "$(git -C "$cap_worktree" branch --show-current)" == command-cap-worker ]] || fail "command-cap stop must preserve the worker branch"
 [[ "$(cat "$cap_worktree/kept.txt")" == baseline ]] || fail "command-cap stop must stash the uncommitted file"
 git -C "$cap_worktree" stash list --format='%s' | head -n1 | grep -Fq 'autopilot: kept before redispatch' \
   || fail "command-cap stop must use the redispatch stash message"
 git -C "$cap_worktree" stash show --format= --name-only 'stash@{0}' | grep -Fxq kept.txt \
   || fail "command-cap stash must contain the worker's uncommitted file"
-cap_summary="$(jqf -r --arg id cmdcap-over '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage=="supervisor-escalated") | .decision.evidence] | last // ""' "$UNITS")"
+cap_summary="$(jqf -r --arg id cmdcap-fail '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage=="supervisor-escalated") | .decision.evidence] | last // ""' "$UNITS")"
+grep -Fq 'recut route failed' <<<"$cap_summary" || fail "supervisor summary must explain the failed recut route"
 summary_commands="$(sed -n '/^last 20 commands:$/,$p' <<<"$cap_summary" | tail -n +2)"
 [[ "$(wc -l <<<"$summary_commands" | tr -d ' ')" -eq 20 ]] || fail "triage summary must attach the last 20 command fields"
-grep -Fq 'echo command-212' <<<"$summary_commands" || fail "triage summary must begin with command 212"
-grep -Fq 'echo command-231' <<<"$summary_commands" || fail "triage summary must include command 231"
+grep -Fq 'echo failed-command-212' <<<"$summary_commands" || fail "triage summary must begin with failed-command 212"
+grep -Fq 'echo failed-command-231' <<<"$summary_commands" || fail "triage summary must include failed-command 231"
 [[ "$(tail -n1 <<<"$summary_commands" | wc -c | tr -d ' ')" -eq 201 ]] || fail "triage summary must cut each command field to 200 characters"
 kill -TERM -- "-$exact_pid" 2>/dev/null || true
 

@@ -443,7 +443,7 @@ stuck_worker_disposition() {
   local scorecard="$A/node-health.json" bound offenders id w pid wtype probe fp held kills next issue hold_cli hold_ok
   local signal_active=0 named_count=0 live_count=0 killed_count=0
   local first_seen=0 progress=0 unchanged_window=0 unchanged_confirmed=0 no_live_worker=0 action
-  local cap_worker cap_pid cap_unit cap_log cap_count cap_commands cap_summary cap_workdir cap_issue cap_hold_cli cap_hold_ok
+  local cap_worker cap_pid cap_unit cap_log cap_count cap_commands cap_summary cap_workdir cap_issue cap_branch cap_evidence cap_recut_ok
   if [[ "$IMPLEMENT_COMMAND_CAP" =~ ^[0-9]+$ ]] && (( IMPLEMENT_COMMAND_CAP > 0 )); then
     while IFS= read -r cap_worker; do
       cap_unit="$(jqf -r '.unit // empty' <<<"$cap_worker")"
@@ -465,36 +465,35 @@ stuck_worker_disposition() {
         fi
       fi
       cap_commands="$(jq -Rr 'fromjson? | select(.type=="item.completed" and .item.type=="command_execution") | .item.command // empty | gsub("[\\r\\n]+"; " ") | .[0:200]' "$cap_log" 2>/dev/null | tail -n 20 || true)"
-      cap_summary+=$'\nlast 20 commands:\n'"${cap_commands:-none}"
       jqf --argjson pid "$cap_pid" --arg unit "$cap_unit" --arg finished "$STAMP" \
         --argjson count "$cap_count" --argjson cap "$IMPLEMENT_COMMAND_CAP" \
         '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (.harvested=true | .finished_at=$finished | .implement_command_capped={count:$count,cap:$cap}) else . end))' \
         "$WORKERS" | write_state "$WORKERS"
       cap_issue="$(unit_field "$cap_unit" '.issue // empty')"
-      cap_hold_ok=1
+      cap_branch="$(unit_field "$cap_unit" '.branch // empty')"
+      cap_recut_ok=0
       if [[ -n "$cap_issue" ]]; then
-        cap_hold_cli="${ZF_ENGINE_DIR:-$ROOT/engine}/hold.sh"
-        [[ -r "$cap_hold_cli" ]] || cap_hold_cli="$HERE/../hold.sh"
-        if ! bash "$cap_hold_cli" --hold "$cap_issue" --holder scheduler-implement-command-cap \
-          --release 'implement-command-cap: split; supervisor must split the unit before resuming' \
-          --expires 24h --kind stop-loss >/dev/null 2>&1; then
-          cap_hold_ok=0
-          echo "[$STAMP] IMPLEMENT-COMMAND-CAP-HOLD-FAILED unit=$cap_unit issue=$cap_issue count=$cap_count cap=$IMPLEMENT_COMMAND_CAP" >> "$A/alerts/events.md"
-          say "IMPLEMENT-COMMAND-CAP-HOLD-FAILED unit=$cap_unit issue=$cap_issue"
-        else
-          gh issue comment "$cap_issue" --body "Implement command cap: worker for unit $cap_unit ran $cap_count commands (cap $IMPLEMENT_COMMAND_CAP) and was stopped; the unit is held for supervisor triage to split." >/dev/null 2>&1 || true
+        cap_evidence="$(jq -cn --argjson commands "$cap_count" --argjson limit "$IMPLEMENT_COMMAND_CAP" \
+          --arg unit "$cap_unit" --arg branch "$cap_branch" \
+          '{kind:"implement-command-cap",commands:$commands,limit:$limit,unit:$unit,branch:$branch}')"
+        if scheduler_recut_route "$cap_issue" "$cap_evidence"; then
+          if scheduler_issue_state "$cap_issue" | jq -e '.state == "needs-recut"' >/dev/null; then
+            cap_recut_ok=1
+          fi
         fi
-      else
-        cap_hold_ok=0
-        echo "[$STAMP] IMPLEMENT-COMMAND-CAP-HOLD-FAILED unit=$cap_unit issue=missing count=$cap_count cap=$IMPLEMENT_COMMAND_CAP" >> "$A/alerts/events.md"
       fi
-      if (( ! cap_hold_ok )); then cap_summary+=$'\nissue hold: could not be applied'; fi
-      to_supervisor "$cap_unit" 'implement-command-cap: split' \
-        'Split the implement unit before dispatching another worker' \
-        "The implement worker ran $cap_count shell commands, above the $IMPLEMENT_COMMAND_CAP command cap." \
-        "$cap_summary" \
-        '["Split the implement unit into smaller units before resuming"]'
-      set_unit "$cap_unit" "$(hist implement-command-cap "$cap_count/$IMPLEMENT_COMMAND_CAP") | del(.stuck_probe)"
+      if (( cap_recut_ok )); then
+        set_unit "$cap_unit" "$(hist implement-command-cap "$cap_count/$IMPLEMENT_COMMAND_CAP -> needs-recut") | .stage=\"blocked-external\" | .size_recut_pending=true | del(.stuck_probe)"
+      else
+        cap_summary+=$'\nrecut route failed'
+        cap_summary+=$'\nlast 20 commands:\n'"${cap_commands:-none}"
+        to_supervisor "$cap_unit" 'implement-command-cap: split' \
+          'Split the implement unit before dispatching another worker' \
+          "The implement worker ran $cap_count shell commands, above the $IMPLEMENT_COMMAND_CAP command cap." \
+          "$cap_summary" \
+          '["Split the implement unit into smaller units before resuming"]'
+        set_unit "$cap_unit" "$(hist implement-command-cap "$cap_count/$IMPLEMENT_COMMAND_CAP") | del(.stuck_probe)"
+      fi
       echo "[$STAMP] IMPLEMENT-COMMAND-CAP unit=$cap_unit pid=$cap_pid commands=$cap_count cap=$IMPLEMENT_COMMAND_CAP" >> "$A/alerts/events.md"
       say "IMPLEMENT-COMMAND-CAP unit=$cap_unit pid=$cap_pid commands=$cap_count cap=$IMPLEMENT_COMMAND_CAP"
     done < <(jqf -c '.workers[] | select(.harvested != true)' "$WORKERS")
