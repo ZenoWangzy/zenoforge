@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import worker_cost as wc  # noqa: E402
+import roi_collect  # noqa: E402
 
 
 def write(path, lines, end="2026-10-20T12:30:00Z"):
@@ -216,6 +217,18 @@ class Ledger(unittest.TestCase):
                           rows["impl-11-fix-20261020T120000Z.worker.log"]["unit"]),
                          ("repair", "11"))  # repair from the -fix suffix, PR key from the name
         self.assertEqual(rows["review-11-r-20261020T121000Z.worker.log"]["phase"], "rereview")
+
+    def test_trimmed_implement_row_uses_dispatched_model_from_log(self):
+        name = "impl-issue-4355-20261020T120000Z.worker.log"
+        self.log(name,
+                 [json.dumps({"type": "pipeline.execution", "mode": "fresh",
+                              "reason": "initial", "model": "gpt-6-luna"})]
+                 + codex_json_stream("aaaaaaaa-0000-0000-0000-000000000001",
+                                     [{"input_tokens": 10_000, "cached_input_tokens": 4_000,
+                                       "output_tokens": 1_000}]))
+        row = wc.run_rows(self.sup)[0]  # workers.json no longer has this harvested row
+        event = roi_collect._worker_event(row, {}, "test-host")
+        self.assertEqual(event["models"][0]["model"], "gpt-6-luna")
 
     def test_ticket_spend_closes_tickets_on_merged_history_and_bounds_from_history(self):
         self.log("impl-issue-5-20261020T120000Z.worker.log",
