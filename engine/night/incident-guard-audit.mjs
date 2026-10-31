@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { zfConfigFile } from '../pack-dir.mjs';
 
 const REGISTRY_PATH = 'state/incident-guards.json';
-// Guard targets resolve against --repo first, then against the engine build.
+// Guard targets resolve against --repo, then the engine build, and then the target repo.
 const PACK_ROOT = process.env.ZF_PACK_REL
   ? path.resolve(process.env.ZF_PACK_ROOT || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..'))
   : null;
@@ -19,13 +19,13 @@ function parseArgs(args) {
   for (let index = 0; index < args.length; index += 2) {
     const option = args[index];
     const value = args[index + 1];
-    if (!['--repo', '--history-dir', '--output'].includes(option) || !value || options[option]) {
-      throw new Error('usage: incident-guard-audit.mjs --repo <path> --history-dir <path> [--output <path>]');
+    if (!['--repo', '--history-dir', '--target-repo', '--output'].includes(option) || !value || options[option]) {
+      throw new Error('usage: incident-guard-audit.mjs --repo <path> --history-dir <path> [--target-repo <dir>] [--output <path>]');
     }
     options[option] = value;
   }
   if (!options['--repo'] || !options['--history-dir']) {
-    throw new Error('usage: incident-guard-audit.mjs --repo <path> --history-dir <path> [--output <path>]');
+    throw new Error('usage: incident-guard-audit.mjs --repo <path> --history-dir <path> [--target-repo <dir>] [--output <path>]');
   }
   return options;
 }
@@ -44,7 +44,7 @@ function resolveRepoPath(raw, repo) {
   const absolute = path.resolve(repo, value);
   if (absolute !== repo && !absolute.startsWith(`${repo}${path.sep}`)) return null;
   if (PACK_ROOT && !existsSync(absolute)) {
-    // Pipeline files are in the engine build, not the product repo; a target is missing only if neither has it.
+    // Pipeline files can be in the engine build rather than the product repo.
     const built = path.resolve(PACK_ROOT, value);
     if (built.startsWith(`${PACK_ROOT}${path.sep}`) && existsSync(built)) return { absolute: built, relative: value };
   }
@@ -370,9 +370,10 @@ async function readGuardHistory(historyDir) {
   };
 }
 
-export async function auditIncidentGuards(repoInput, historyDirInput) {
+export async function auditIncidentGuards(repoInput, historyDirInput, targetRepoInput = process.env.ZF_REPO_DIR) {
   const repo = path.resolve(repoInput);
   const historyDir = path.resolve(historyDirInput);
+  const targetRepo = targetRepoInput ? path.resolve(targetRepoInput) : null;
   const registryPath = zfConfigFile(REGISTRY_PATH, repo)
     ?? path.join(PACK_ROOT ?? repo, `${process.env.ZF_PACK_REL || 'engine'}/${REGISTRY_PATH}`);
   const registry = JSON.parse(await readFile(registryPath, 'utf8'));
@@ -390,28 +391,34 @@ export async function auditIncidentGuards(repoInput, historyDirInput) {
     items.push(target);
     missingByGuard.set(id, items);
   };
+  const targetIsFile = async (absolute) => {
+    try {
+      return (await stat(absolute)).isFile();
+    } catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+      throw error;
+    }
+  };
+  const existingTargetFile = async (target) => {
+    if (await targetIsFile(target.absolute)) return target.absolute;
+    // The build root links ops to the target's scripts/ops, so ${REPO_DIR}/ops/... targets live only in the target repo root, while ${REPO_DIR}/engine/... targets live only in the build root.
+    const relativeTarget = target.kind === 'symbol' ? target.target.split('#', 1)[0] : target.target;
+    const targetRepoPath = targetRepo && path.resolve(targetRepo, relativeTarget);
+    return targetRepoPath && await targetIsFile(targetRepoPath) ? targetRepoPath : null;
+  };
   for (const guard of incidents) {
     for (const target of guardTargets(guard, repo)) {
+      const absolute = await existingTargetFile(target);
       if (target.kind === 'file') {
-        let isFile = false;
-        try {
-          isFile = (await stat(target.absolute)).isFile();
-        } catch (error) {
-          if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
-        }
-        if (!isFile) {
+        if (!absolute) {
           markMissing(guard.id, { kind: 'file', target: target.target });
         }
       } else {
-        let contents;
-        try {
-          if (!(await stat(target.absolute)).isFile()) throw Object.assign(new Error('not a file'), { code: 'ENOENT' });
-          contents = await readFile(target.absolute, 'utf8');
-        } catch (error) {
-          if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+        if (!absolute) {
           markMissing(guard.id, { kind: 'file', target: target.target.split('#', 1)[0] });
           continue;
         }
+        const contents = await readFile(absolute, 'utf8');
         if (!contents.includes(target.symbol)) {
           markMissing(guard.id, { kind: 'symbol', target: target.target });
         }
@@ -443,7 +450,9 @@ export async function auditIncidentGuards(repoInput, historyDirInput) {
 
 async function main(args) {
   const options = parseArgs(args);
-  const audit = await auditIncidentGuards(options['--repo'], options['--history-dir']);
+  const audit = await auditIncidentGuards(
+    options['--repo'], options['--history-dir'], options['--target-repo'],
+  );
   const output = `${JSON.stringify(audit, null, 2)}\n`;
   if (options['--output']) {
     const outputPath = path.resolve(options['--output']);
