@@ -4,6 +4,7 @@ import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import worker_cost, live_workers, factory_trend, founder_reqs
+from config_paths import zf_config_file
 
 _HERE = os.path.dirname(os.path.realpath(__file__))
 _DEFAULT_ROOT = (_HERE.split("/.scratch-supervisor/autopi-versions/", 1)[0] if "/.scratch-supervisor/autopi-versions/" in _HERE else
@@ -802,7 +803,8 @@ except Exception as e:
     factory_data = {"error": str(e)[:200]}
 
 try:
-    founder_data = founder_reqs.collect(units, os.environ.get("ZF_REPO", ""), os.path.join(_HERE, "..", "state", "rulings.json"), A,
+    rulings_file = zf_config_file("state/rulings.json") or os.path.join(_HERE, "..", "state", "rulings.json")
+    founder_data = founder_reqs.collect(units, os.environ.get("ZF_REPO", ""), str(rulings_file), A,
                                         AGENT_HOME, os.path.join(_HERE, "..", "lib.sh"))
 except Exception as e:
     founder_data = {"error": str(e)[:200]}

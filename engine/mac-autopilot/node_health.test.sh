@@ -7,6 +7,12 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "$script_dir/../.." && pwd -P)"
 fail() { echo "node_health.test.sh: $*" >&2; exit 1; }
+config_root="$test_env_root/config/.zenoforge"
+mkdir -p "$config_root/state"
+printf '{"incidents":[{"id":"config-only-incident"}]}\n' > "$config_root/state/incident-guards.json"
+config_incidents="$(PYTHONPATH="$script_dir" ZF_CONFIG_ROOT="$config_root" ZF_PACK_DIR='' \
+  python3 -c 'import node_health; print(node_health.load_incident_guards()[0]["id"])')"
+[[ "$config_incidents" == config-only-incident ]] || fail 'incident metrics did not read target config'
 sup="$test_env_root/sup"; a="$sup/autopi"; mkdir -p "$a/alerts"
 audit="$test_env_root/actions-run-cancellations.jsonl"
 cat > "$audit" <<'JSON'

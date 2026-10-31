@@ -20,7 +20,7 @@ main_pr_merge_failure_reason() {
 # guard value is deliberately omitted so dry-run only exercises decisions.
 guarded_pr_merge() {
   local pr="$1" subject="$2" body="$3" match_head_commit="$4" body_file rc status
-  local head_ref identity touches_lessons pr_state reconcile_script agent_home manifest_failed=0
+  local head_ref identity touches_lessons pr_state reconcile_script agent_home manifest_failed=0 incident_guards_file incident_guards_path
   PR_MERGE_LOCK_FAILED=0
   if [ "$DRY_RUN" = "1" ]; then
     echo "[dry-run] gh pr merge $pr --repo $REPO --squash --delete-branch --subject <scrubbed-title> --body-file <fixed-body> --match-head-commit <omitted>" >&2
@@ -31,8 +31,14 @@ guarded_pr_merge() {
     rm -f "$body_file"
     return 1
   fi
+  incident_guards_file="$(zf_config_file state/incident-guards.json 2>/dev/null || true)"
+  if [[ "$incident_guards_file" == "$ZF_REPO_DIR/"* ]]; then
+    incident_guards_path="${incident_guards_file#"$ZF_REPO_DIR"/}"
+  else
+    incident_guards_path="${ZF_PACK_REL:-engine}/state/incident-guards.json"
+  fi
   if ! identity="$(gh pr view "$pr" --repo "$REPO" --json headRefName,headRefOid,files,state,mergeCommit \
-    -q '[.headRefName, .headRefOid, any(.files[]; (.path | startswith("lessons/")) or .path == "'"$ZF_PACK_REL"'/state/incident-guards.json"), .state, (.mergeCommit.oid // "")] | @tsv')"; then
+    -q '[.headRefName, .headRefOid, any(.files[]; (.path | startswith("lessons/")) or .path == "'"$incident_guards_path"'"), .state, (.mergeCommit.oid // "")] | @tsv')"; then
     rm -f "$body_file"
     return 1
   fi

@@ -75,4 +75,26 @@ fi
 grep -Fq 'rule-lane: decision=rule-reject refused=syntax path=engine/state/rulings.json' "$log" \
   || fail 'invalid JSON rejection did not identify the syntax failure'
 
+# The copied manifest keeps legacy paths but protects target-config copies too.
+git -C "$repo" reset --hard -q "$base"
+mkdir -p "$repo/.zenoforge/state"
+cp "$repo/engine/state/rule-files.json" "$repo/.zenoforge/state/rule-files.json"
+cp "$repo/engine/state/rulings.json" "$repo/.zenoforge/state/rulings.json"
+git -C "$repo" add .zenoforge
+git -C "$repo" commit -q -m 'fixture: add target config overrides'
+config_base="$(git -C "$repo" rev-parse HEAD)"
+printf '{"rulings":["config-unit"]}\n' > "$repo/.zenoforge/state/rulings.json"
+git -C "$repo" add .zenoforge/state/rulings.json
+git -C "$repo" commit -q -m 'fixture: change target config ruling'
+config_head="$(git -C "$repo" rev-parse HEAD)"
+if (cd -- "$repo" && ZF_AGENT_NAME=unit ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$script_dir" \
+  bash "$rule_lane" "$config_base" "$config_head") > "$log" 2>&1; then
+  fail 'unit change to a target-config rule file was accepted'
+else
+  status=$?
+fi
+[[ "$status" == 1 ]] || fail "target-config rule rejection exited $status instead of 1"
+grep -Fq 'rule-lane: decision=unit-reject refused=rule-files actor=unit touched=1 files=.zenoforge/state/rulings.json' "$log" \
+  || fail 'legacy manifest path was not mapped to the target-config copy'
+
 printf 'rule-lane tests passed\n'

@@ -575,3 +575,18 @@ fi
 jq -e '.date == "2026-09-29" and (.demoted_classes | index("quiet-test")) != null and (.demoted_classes | index("node-stuck-30min")) == null' \
   "$metric_home/night/supervisor-alert-policy.json" >/dev/null
 echo 'ok - low-action class policy is persisted without demoting node-stuck'
+
+# The incident metrics use the target config registry ahead of an engine copy.
+incident_config="$tmp/config/.zenoforge/state/incident-guards.json"
+mkdir -p "$(dirname -- "$incident_config")"
+printf '{"incidents":[{"id":"config-recurrence","date":"2026-09-29","recurs_of":"root","class":"config-class"}]}\n' \
+  > "$incident_config"
+config_metric="$(ZF_REPO_DIR="$tmp/config" ZF_CONFIG_ROOT="$tmp/config/.zenoforge" \
+  ZF_ENGINE_DIR="$SCRIPT_DIR/.." maintainer_health_mail_measure \
+    "$metric_home" '2026-09-29' "$metric_now" "$action_repo")"
+jq -e '.recurrences_day == 1 and .recurrence_categories == ["config-class"]' \
+  <<< "$config_metric" >/dev/null || {
+    echo 'not ok - health measure did not read the target incident registry' >&2
+    exit 1
+  }
+echo 'ok - health measure reads target incident config'

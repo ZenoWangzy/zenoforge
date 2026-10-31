@@ -3,11 +3,12 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { zfConfigFile } from './pack-dir.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 export const DEFAULT_ROOT = process.env.ZF_REPO_DIR || path.resolve(path.dirname(SCRIPT_PATH), '..');
 const RULES_PATH = 'lessons/RULES.md';
-const REGISTRY_PATH = `${process.env.ZF_PACK_REL || 'engine'}/state/incident-guards.json`;
+const REGISTRY_PATH = 'state/incident-guards.json';
 const OUTPUT_PATH = 'lessons/enforcers.json';
 const SOURCE_FILE = /\.(?:cjs|js|jsx|mjs|ts|tsx|py|sh|sql|ya?ml)$/i;
 const TEST_FILE = /(?:^|\/)(?:tests?\/|[^/]*\.test\.[^/]+$|test_[^/]+\.py$)/i;
@@ -105,7 +106,9 @@ export function buildLessonEnforcers(root = DEFAULT_ROOT) {
     }
   }
 
-  const registry = JSON.parse(readFileSync(path.join(absoluteRoot, REGISTRY_PATH), 'utf8'));
+  const registryPath = zfConfigFile(REGISTRY_PATH, absoluteRoot);
+  if (!registryPath) throw new Error(`incident guard registry is unavailable: ${REGISTRY_PATH}`);
+  const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
   for (const incident of registry.incidents ?? []) {
     const rule = state.get(incident.lesson_id);
     if (!rule) continue;

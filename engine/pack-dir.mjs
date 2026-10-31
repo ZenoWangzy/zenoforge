@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 const DEFAULT_PACK_DIR = ''; // PACK_DIR_DEFAULT: the public export rewrites this default to empty
 export const PACK_DIR = process.env.ZF_PACK_DIR ?? DEFAULT_PACK_DIR;
 const ENGINE_DIR = process.env.ZF_ENGINE_DIR || dirname(fileURLToPath(import.meta.url));
-const CONFIG_ROOT = process.env.ZF_CONFIG_ROOT ?? join(process.env.ZF_REPO_DIR || dirname(ENGINE_DIR), '.zenoforge');
 
 // readPackJson('state/x.json') -> parsed JSON, or null when there is no pack or the pack has no such file.
 // A file that exists but does not parse throws: a damaged pack must not read as "no pack".
@@ -23,7 +22,7 @@ export function readPackJson(relativePath) {
 }
 
 // Resolve target overrides first, then pack values retained during migration, then engine defaults.
-export function zfConfigFile(relativePath) {
+export function zfConfigFile(relativePath, repoRoot = process.env.ZF_REPO_DIR || dirname(ENGINE_DIR)) {
   if (typeof relativePath !== 'string'
       || isAbsolute(relativePath)
       || relativePath.startsWith('\\')
@@ -32,8 +31,9 @@ export function zfConfigFile(relativePath) {
     throw new TypeError('config path must be relative and cannot contain a .. segment');
   }
 
+  const configRoot = process.env.ZF_CONFIG_ROOT ?? join(repoRoot, '.zenoforge');
   const candidates = [
-    CONFIG_ROOT && join(CONFIG_ROOT, relativePath),
+    configRoot && join(configRoot, relativePath),
     PACK_DIR && join(PACK_DIR, relativePath),
     join(ENGINE_DIR, relativePath),
   ];

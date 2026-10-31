@@ -4,8 +4,8 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 tmp="$(mktemp -d)"
 trap 'rm -r -- "$tmp"' EXIT
-mkdir -p "$tmp/repo/lessons/pending" "$tmp/repo/lessons/full" "$tmp/repo/engine"
-cp "$REPO_DIR/engine/lesson-fragments.sh" "$tmp/repo/engine/"
+mkdir -p "$tmp/repo/lessons/pending" "$tmp/repo/lessons/full" "$tmp/repo/engine/state" "$tmp/repo/.zenoforge/state"
+cp "$REPO_DIR/engine/lesson-fragments.sh" "$REPO_DIR/engine/config.sh" "$tmp/repo/engine/"
 printf '{"incidents":[]}\n' > "$tmp/registry.json"
 printf 'Rule: [V-NEXT](../RULES.md#v-next).\n' > "$tmp/repo/lessons/full/registry-parity.md"
 cat > "$tmp/valid-fragment.json" <<'JSON'
@@ -29,10 +29,18 @@ JSON
 # Documentation fragments have no enforcement or root-cause-field requirements.
 jq 'del(.guard, .enforcement)' "$tmp/valid-fragment.json" > "$tmp/repo/lessons/pending/registry-parity.json"
 cp "$tmp/registry.json" "$tmp/registry-before.json"
+printf '{"incidents":[]}\n' > "$tmp/repo/engine/state/incident-guards.json"
+printf '{"incidents":[{"id":"config-only"}]}\n' > "$tmp/repo/.zenoforge/state/incident-guards.json"
+printf 'already folded\n' > "$tmp/repo/lessons/full/override-stale.md"
+printf '{"guard":{"id":"config-only"},"full_lesson_path":"lessons/full/override-stale.md"}\n' \
+  > "$tmp/repo/lessons/pending/override-stale.json"
+ZF_REPO_DIR="$tmp/repo" ZF_ENGINE_DIR="$tmp/repo/engine" \
+  bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo"
+rm "$tmp/repo/lessons/pending/override-stale.json"
 printf '{"id":"unselected-invalid"}\n' > "$tmp/repo/lessons/pending/unselected-invalid.json"
-bash "$REPO_DIR/engine/lesson-fragments.sh" --check "$tmp/repo" "$tmp/registry.json" --files "$tmp/repo/lessons/pending/registry-parity.json"
+bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo" "$tmp/registry.json" --files "$tmp/repo/lessons/pending/registry-parity.json"
 rm "$tmp/repo/lessons/pending/unselected-invalid.json"
-bash "$REPO_DIR/engine/lesson-fragments.sh" --check "$tmp/repo" "$tmp/registry.json"
+bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo" "$tmp/registry.json"
 jq 'del(.guard, .enforcement)' "$tmp/valid-fragment.json" > "$tmp/expected-fragment.json"
 cmp "$tmp/expected-fragment.json" "$tmp/repo/lessons/pending/registry-parity.json"
 cmp "$tmp/registry-before.json" "$tmp/registry.json"
@@ -44,7 +52,7 @@ git -C "$tmp/repo" config user.name 'Lesson docs fixture'
 git -C "$tmp/repo" config user.email 'lesson@example.invalid'
 git -C "$tmp/repo" add lessons
 git -C "$tmp/repo" commit -qm 'documentation fragment'
-bash "$REPO_DIR/engine/lesson-fragments.sh" --fold "$tmp/repo" "$tmp/registry.json"
+bash "$tmp/repo/engine/lesson-fragments.sh" --fold "$tmp/repo" "$tmp/registry.json"
 grep -Fq '**V-NEXT-registry-parity**' "$tmp/repo/lessons/RULES.md"
 grep -Fq '#v-next-registry-parity' "$tmp/repo/lessons/CATALOG.md"
 grep -Fq 'V-NEXT-registry-parity' "$tmp/repo/lessons/full/registry-parity.md"

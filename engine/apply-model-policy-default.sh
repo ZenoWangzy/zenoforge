@@ -4,14 +4,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/config.sh"
 REPO_DIR="$(git -C "$ZF_REPO_DIR" rev-parse --show-toplevel)"
-POLICY_PATH="$ZF_PACK_REL/model-policy.default.json"
+policy_file="$(zf_config_file model-policy.default.json)" \
+  || { echo 'apply-model-policy-default: model policy default is unavailable' >&2; exit 1; }
+if [[ "$policy_file" == "$REPO_DIR/"* ]]; then
+  POLICY_PATH="${policy_file#"$REPO_DIR"/}"
+else
+  POLICY_PATH="${ZF_PACK_REL:-engine}/model-policy.default.json"
+fi
 LIVE_FILE="$AGENT_HOME/model-policy.json"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/apply-model-policy.XXXXXX")"
 install_tmp=""
 trap 'rm -rf -- "$tmp_dir"; [[ -z "$install_tmp" ]] || rm -f -- "$install_tmp"' EXIT
 
-# Keep the pack policy in sync when present; without a pack, lib.sh resolves the engine's generic default.
-policy_file="$(pack_file model-policy.default.json)" || policy_file="$SCRIPT_DIR/model-policy.default.json"
 git -C "$REPO_DIR" fetch origin main
 git -C "$REPO_DIR" show "origin/main:$POLICY_PATH" > "$tmp_dir/landed-policy.json"
 if ! cmp -s "$policy_file" "$tmp_dir/landed-policy.json"; then
@@ -45,7 +49,7 @@ cp -- "$LIVE_FILE" "$validation_home/model-policy.json"
   done
 )
 # Forced migration selects the landed default, which was compared with the
-# pack file and validated above. lib.sh may migrate a derived policy view, so
+# resolved config file and validated above. lib.sh may migrate a derived policy view, so
 # validation-home/model-policy.json is not necessarily the migrated file.
 cp -- "$tmp_dir/landed-policy.json" "$tmp_dir/migrated-policy.json"
 

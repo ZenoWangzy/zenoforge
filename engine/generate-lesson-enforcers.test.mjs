@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -116,11 +116,16 @@ test('maps rules to behavioral, existence, weak, and prose enforcement from a sm
         }],
       },
     ] }, null, 2)}\n`);
+    write(root, '.zenoforge/state/incident-guards.json',
+      readFileSync(path.join(root, 'engine/state/incident-guards.json')));
 
     execFileSync('git', ['init', '-q', root]);
     execFileSync('git', ['-C', root, 'add', '.']);
 
-    const map = buildLessonEnforcers(root);
+    const previousConfigRoot = process.env.ZF_CONFIG_ROOT;
+    process.env.ZF_CONFIG_ROOT = path.join(root, '.zenoforge');
+    try {
+      const map = buildLessonEnforcers(root);
 
     assert.deepEqual(map.counts, {
       enforced: 6,
@@ -136,6 +141,7 @@ test('maps rules to behavioral, existence, weak, and prose enforcement from a sm
     assert.equal(map.rules.V90001.classification, 'weak');
     assert.deepEqual(map.rules.V90002.enforcer, ['scripts/behavior.test.mjs']);
     assert.equal(map.rules.V90002.classification, 'enforced');
+    assert.deepEqual(map.rules.V90002.incident_refs, ['behavior-incident']);
     assert.deepEqual(map.rules.V90006.enforcer, ['scripts/night-guard.test.sh']);
     assert.equal(map.rules.V90006.classification, 'enforced');
     assert.deepEqual(map.rules.V90006.incident_refs, ['heading-incident']);
@@ -152,6 +158,14 @@ test('maps rules to behavioral, existence, weak, and prose enforcement from a sm
     assert.equal(map.rules.V90004.enforcer, 'prose');
     assert.equal(map.rules.V90011.classification, 'weak');
     assert.equal(map.rules.V90011.enforcer, 'prose');
+
+      write(root, '.zenoforge/state/incident-guards.json', '{"incidents":[]}\n');
+      const overridden = buildLessonEnforcers(root);
+      assert.deepEqual(overridden.rules.V90002.incident_refs, []);
+    } finally {
+      if (previousConfigRoot === undefined) delete process.env.ZF_CONFIG_ROOT;
+      else process.env.ZF_CONFIG_ROOT = previousConfigRoot;
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

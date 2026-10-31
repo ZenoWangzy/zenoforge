@@ -79,9 +79,8 @@ export ZF_REPO="$REPO"
 # Model choice has one persistent source: the operator file, seeded from this
 # versioned policy. Launchers pass role names; this helper owns validation,
 # identity formatting, and escalation transitions.
-# The default is the pack's model-policy.default.json when the deployment has one (the product: advisor enabled, CI known flakes seeded);
-# with no pack it is the engine's own generic model-policy.default.json (advisor disabled, no known flakes).
-MODEL_POLICY_DEFAULT="$(pack_file model-policy.default.json)" || MODEL_POLICY_DEFAULT="$_AGENT_LIB_DIR/model-policy.default.json"
+# A target-repo policy override wins, followed by the migration pack and then the engine default.
+MODEL_POLICY_DEFAULT="$(zf_config_file model-policy.default.json)" || MODEL_POLICY_DEFAULT="$_AGENT_LIB_DIR/model-policy.default.json"
 MODEL_POLICY_FILE="$AGENT_HOME/model-policy.json"
 # Line B (2026-10-30 flip): the live policy names the advisor provider web-advisor-provider, the Zenoforge engine's id, and
 # this tree's validator only knows web-advisor-provider. Scripts still run from this tree read the policy through a view mapped back to
@@ -770,10 +769,14 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/ci-checks.sh"
 #
 # REQUIRED_PR_CHECKS pins the aggregate gates (alls-green rows, #4484); a future rename
 # without updating the definition still fails CLOSED.
+if [[ -z "${REQUIRED_PR_CHECKS_FILE:-}" ]]; then
+  REQUIRED_PR_CHECKS_FILE="$(zf_config_file mac-autopilot/required-pr-checks.json)" \
+    || REQUIRED_PR_CHECKS_FILE="$_AGENT_LIB_DIR/mac-autopilot/required-pr-checks.json"
+fi
 REQUIRED_PR_CHECKS=("required-pr-checks.json unreadable")
 if _agent_required_pr_checks="$(jq -ce '
   select((.required | type) == "array" and (.required | length) > 0)
-' "$_AGENT_LIB_DIR/mac-autopilot/required-pr-checks.json" 2>/dev/null)"; then
+' "$REQUIRED_PR_CHECKS_FILE" 2>/dev/null)"; then
   mapfile -t REQUIRED_PR_CHECKS < <(jq -r '.required[]' <<< "$_agent_required_pr_checks")
 fi
 unset _agent_required_pr_checks _AGENT_LIB_DIR

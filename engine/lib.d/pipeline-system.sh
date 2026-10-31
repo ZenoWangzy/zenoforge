@@ -2,7 +2,7 @@ _AGENT_LIB_DIR="${_AGENT_LIB_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
 pipeline_system_issue_labels_json() {
   local rulings_file
-  rulings_file="$(cd -- "$(dirname -- "$_AGENT_LIB_DIR/lib.sh")" && pwd -P)/state/rulings.json"
+  rulings_file="$(zf_config_file state/rulings.json)" || return 1
   jq -ce '[.rulings[] | select(.id == "nonproduct-lane-routing") | .membership.labels[]?] | unique | select(length > 0 and all(.[]; type == "string" and length > 0))' "$rulings_file"
 }
 

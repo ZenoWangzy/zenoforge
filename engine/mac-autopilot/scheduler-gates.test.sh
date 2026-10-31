@@ -46,11 +46,17 @@ export MAC_AUTOPILOT_ROOT="$fixture/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MA
 export LUNA_SLOTS="$fixture/luna-slots"; mkdir -p "$LUNA_SLOTS"
 export CODEX_SESSIONS_DIR="$fixture/sessions"
 export ZF_TEST_EVIDENCE_LEDGER="$sup/test-evidence.jsonl"
-# Existing state-machine fixtures intentionally use synthetic check names.
-export REQUIRED_PR_CHECKS_FILE="$fixture/required-pr-checks.json"
+# Existing state-machine fixtures intentionally use synthetic check names. The scheduler must select this target override.
+mkdir -p "$fixture/repo/.zenoforge/mac-autopilot"
+export REQUIRED_PR_CHECKS_FILE="$fixture/repo/.zenoforge/mac-autopilot/required-pr-checks.json"
 printf '%s\n' '{"required":[],"current_regression":"","legacy_regression":[]}' > "$REQUIRED_PR_CHECKS_FILE"
+unset REQUIRED_PR_CHECKS_FILE
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$script_dir/scheduler.sh"
+[[ "$REQUIRED_PR_CHECKS_FILE" == "$fixture/repo/.zenoforge/mac-autopilot/required-pr-checks.json" ]] || {
+  echo 'scheduler-gates.test.sh: target required checks override did not win' >&2
+  exit 1
+}
 ensure_clone_source="$(declare -f ensure_clone)"
 checkout_pr_head_source="$(declare -f checkout_pr_head)"
 unset AUTOPI_TEST_LIBRARY_ONLY

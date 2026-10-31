@@ -30,7 +30,13 @@ git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -q --allow-
   -m 'issue 1989; accepted production evidence: issuecomment-6015295341; release=4b7c032e0e5b5a7a554ede29da42f7e81d761eba'
 linked_sha="$(git -C "$repo" rev-parse HEAD)"
 git -C "$repo" update-ref refs/remotes/origin/main "$linked_sha"
+mkdir -p "$repo/.zenoforge/state"
+printf '{"rulings":[{"id":"nonproduct-lane-routing","membership":{"labels":["config-lane"]}}]}\n' \
+  > "$repo/.zenoforge/state/rulings.json"
+export ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$SCRIPT_DIR"
 source "$SCRIPT_DIR/lib.sh"
+[[ "$(pipeline_system_issue_labels_json)" == '["config-lane"]' ]] \
+  || { echo 'pipeline-system-close-evidence.test.sh: target rulings config did not win' >&2; exit 1; }
 
 source_close_at="$(date -u -d '2026-09-18T22:12:34Z' +%s)"
 mkdir -p "$repo/docs/intent"

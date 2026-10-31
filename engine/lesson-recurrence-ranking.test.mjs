@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   buildLessonRecurrenceRanking,
   parseIncidentHistory,
@@ -11,6 +16,8 @@ import {
   holdLintPaths,
   inspectSupervisorHoldSource,
 } from './supervisor-hold-lesson-lint.mjs';
+
+const rankingScript = fileURLToPath(new URL('./lesson-recurrence-ranking.mjs', import.meta.url));
 
 const holdSource = `
 supervisor_holds_snapshot() {
@@ -112,6 +119,38 @@ test('ranking rejects duplicate incident ids because their recurrence evidence w
     { id: 'duplicate', lesson_id: 'V1' },
     { id: 'duplicate', lesson_id: 'V2' },
   ] }), /duplicate incident id/);
+});
+
+test('ranking CLI reads the target incident registry before engine defaults', (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'lesson-ranking-config-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(path.join(root, '.zenoforge/state'), { recursive: true });
+  mkdirSync(path.join(root, 'engine/state'), { recursive: true });
+  mkdirSync(path.join(root, 'lessons'), { recursive: true });
+  writeFileSync(path.join(root, 'lessons/RULES.md'), '**V900** config lesson\n');
+  writeFileSync(path.join(root, '.zenoforge/state/incident-guards.json'),
+    '{"incidents":[{"id":"config-root","lesson_id":"V900","class":"config root"}]}\n');
+  writeFileSync(path.join(root, 'engine/state/incident-guards.json'),
+    '{"incidents":[{"id":"engine-only","lesson_id":"V901","class":"engine default"}]}\n');
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['-C', root, 'config', 'user.name', 'ranking fixture']);
+  execFileSync('git', ['-C', root, 'config', 'user.email', 'ranking@example.invalid']);
+  execFileSync('git', ['-C', root, 'add', '.']);
+  execFileSync('git', ['-C', root, 'commit', '-q', '-m', 'fixture']);
+
+  const result = spawnSync(process.execPath, [rankingScript, '--repo', root], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      ZF_REPO_DIR: root,
+      ZF_CONFIG_ROOT: path.join(root, '.zenoforge'),
+      ZF_PACK_DIR: '',
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const ranking = JSON.parse(result.stdout);
+  assert.equal(ranking.source, '.zenoforge/state/incident-guards.json');
+  assert.deepEqual(ranking.ranking.map((row) => row.incident_id), ['config-root']);
 });
 
 test('commit-history parser associates added incident records with their recording commit', () => {

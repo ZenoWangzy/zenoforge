@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Problem-record schema gate (issue #4657, rulings every-fix-ships-a-lesson,
 // root-cause-then-classic-research, never-twice-enforced).
-// engine/state/incident-guards.json is the durable problem register;
+// state/incident-guards.json is the durable problem register;
 // a record is only acceptable when it carries the verifiable chain
 // root cause -> classic problem -> research sources -> compared options ->
 // chosen mechanism -> runnable regression check.
@@ -11,9 +11,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { zfConfigFile } from './pack-dir.mjs';
 
 const DEFAULT_ROOT = process.env.ZF_REPO_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const REGISTRY_PATH = `${process.env.ZF_PACK_REL || 'engine'}/state/incident-guards.json`;
+const REGISTRY_PATH = 'state/incident-guards.json';
 const SCHEMA_START = '2026-10-30';
 const DATE_FORMAT = /^\d{4}-\d{2}-\d{2}$/;
 // Evidence must point at something checkable: a URL, an issue/PR/run number,
@@ -99,8 +100,8 @@ function recordErrors(record, root) {
 }
 
 export function validateRegistry(root = DEFAULT_ROOT) {
-  const registryFile = path.join(root, REGISTRY_PATH);
-  if (!existsSync(registryFile)) {
+  const registryFile = zfConfigFile(REGISTRY_PATH, root);
+  if (!registryFile || !existsSync(registryFile)) {
     return { checked: 0, errors: [`${REGISTRY_PATH} is missing`] };
   }
   let registry;

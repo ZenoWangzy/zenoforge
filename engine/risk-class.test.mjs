@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { classify, classifyWithKind } from './risk-class.mjs';
@@ -88,4 +91,23 @@ test('CLI --json prints classifyWithKind() as JSON on stdout and exits 0', () =>
   // HEAD...HEAD is an empty range, so this proves flag parsing, exit code and JSON shape without needing a real diff.
   const out = execFileSync('node', [RISK_CLASS_MJS, '--json', 'HEAD...HEAD'], { encoding: 'utf8' });
   assert.deepEqual(JSON.parse(out), []);
+});
+
+test('target config risk rules override engine defaults', (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'risk-class-config-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const configRoot = path.join(root, '.zenoforge');
+  mkdirSync(path.join(configRoot, 'state'), { recursive: true });
+  writeFileSync(path.join(configRoot, 'state/risk-paths.json'), JSON.stringify({
+    rules: [{ kind: 'control-surface', pattern: '^config-only\\.ts$' }],
+    inert: [],
+  }));
+  const code = `import(${JSON.stringify(new URL('./risk-class.mjs', import.meta.url).href)})
+    .then(({ classify }) => console.log(JSON.stringify(classify(['config-only.ts', 'migrations/engine-default.sql']))));`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+    encoding: 'utf8',
+    env: { ...process.env, ZF_CONFIG_ROOT: configRoot, ZF_PACK_DIR: '' },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), ['config-only.ts']);
 });

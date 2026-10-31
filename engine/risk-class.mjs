@@ -27,7 +27,8 @@
 // These patterns are layout conventions of a typical repository. Adjust them to
 // the target repository's own schema, auth and deployment directories.
 import { execFileSync } from 'node:child_process';
-import { readPackJson } from './pack-dir.mjs';
+import { readFileSync } from 'node:fs';
+import { zfConfigFile } from './pack-dir.mjs';
 
 const isTestPath = (path) =>
   /(?:^|\/)(?:__tests__|tests)\//.test(path) || /\.(?:test|spec)\.[^/]+$/.test(path);
@@ -58,12 +59,12 @@ const DEFAULT_RISK_RULES = [
   { kind: 'control-surface', pattern: /(?:^|\/)\.dockerignore$/ },
 ];
 
-// A pack's state/risk-paths.json ({ rules: [{ kind, pattern, flags?, keepTests? }], inert: [{ pattern, flags? }] }) replaces both
-// default lists wholesale: it states the target repository's own schema, auth and deployment directories. No pack, no file: defaults.
-const pack = readPackJson('state/risk-paths.json');
+// A config file replaces both default lists wholesale. No config file: use generic rules.
+const configPath = zfConfigFile('state/risk-paths.json');
+const config = configPath ? JSON.parse(readFileSync(configPath, 'utf8')) : null;
 const toRegExp = (entry) => new RegExp(entry.pattern, entry.flags ?? '');
-const RISK_RULES = pack ? pack.rules.map((rule) => ({ ...rule, pattern: toRegExp(rule) })) : DEFAULT_RISK_RULES;
-const INERT_PATTERNS = pack ? pack.inert.map(toRegExp) : DEFAULT_INERT_PATTERNS;
+const RISK_RULES = config ? config.rules.map((rule) => ({ ...rule, pattern: toRegExp(rule) })) : DEFAULT_RISK_RULES;
+const INERT_PATTERNS = config ? config.inert.map(toRegExp) : DEFAULT_INERT_PATTERNS;
 const isInertPath = (path) => INERT_PATTERNS.some((pattern) => pattern.test(path));
 
 // classifyWithKind(changedPaths) -> [{path, kind}], one entry per matched

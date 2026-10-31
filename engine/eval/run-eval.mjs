@@ -560,7 +560,7 @@ export async function main(args = process.argv.slice(2)) {
     if (!existsSync(resultsPath)) throw new Error(`--resume needs an existing label with results.json: ${out}`);
     prior = json(resultsPath);
   }
-  let policyFile = resolve(values.policy ?? join(repo, 'engine/model-policy.default.json'));
+  let policyFile = resolve(values.policy ?? zfConfigFile('model-policy.default.json', repo) ?? join(repo, 'engine/model-policy.default.json'));
   let policy = json(policyFile);
   if (values.override?.length) {
     policy = applyOverrides(policy, values.override);

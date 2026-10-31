@@ -38,6 +38,8 @@ checks=$(node "$here/../ci/pr-required-aggregate.mjs" --latest-checks \
 # Required PR checks are the source of truth for both lanes. The container-patch
 # lane's acceptance is validated above from the current PR body (validate-acceptance.mjs);
 # the image lane proves acceptance after the deploy.
+required_checks_file="$(zf_config_file mac-autopilot/required-pr-checks.json)" \
+  || { echo 'hf-merge: required checks configuration is unavailable' >&2; exit 1; }
 while IFS= read -r check; do
   conclusion=$(jq -r --arg name "$check" \
     '[.statusCheckRollup[]? | select(.name == $name)] | last | .conclusion // empty' <<<"$checks")
@@ -45,7 +47,7 @@ while IFS= read -r check; do
     echo "hf-merge: required check '$check' has not passed on the current head" >&2
     exit 1
   }
-done < <(jq -r '.required[]' "$here/../mac-autopilot/required-pr-checks.json")
+done < <(jq -r '.required[]' "$required_checks_file")
 
 title=$(jq -r '.title' <<<"$info")
 gh pr merge "$pr" --squash --subject "$title [hotfix] (#$pr)" --match-head-commit "$head_sha"

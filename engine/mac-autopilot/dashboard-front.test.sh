@@ -7,7 +7,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fail() { echo "dashboard-front.test.sh: $*" >&2; exit 1; }
 f="$test_env_root/front"; root="$f/repo"; sup="$root/.scratch-supervisor"; a="$sup/autopi"
-mkdir -p "$f/bin" "$a/alerts" "$AGENT_HOME/logs" "$AGENT_HOME/metrics" "$f/sessions" "$root/engine"
+mkdir -p "$f/bin" "$a/alerts" "$AGENT_HOME/logs" "$AGENT_HOME/metrics" "$f/sessions" "$root/engine/state" "$root/.zenoforge/state"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 git init -q -b main "$root"
 echo 1 > "$root/a"; git -C "$root" add a; GIT_COMMITTER_DATE="$(date -u -d '-5 hours' +%FT%TZ)" git -C "$root" commit -qm deployed --date "$(date -u -d '-5 hours' +%FT%TZ)"
@@ -20,7 +20,7 @@ stamp() { date -u -d "$1" +%Y%m%dT%H%M%SZ; }
 utc_hour=$((10#$(date -u +%H))); off=$((12 - utc_hour))
 if (( off > 0 )); then tz="Etc/GMT-$off"; elif (( off < 0 )); then tz="Etc/GMT+$((-off))"; else tz="Etc/GMT"; fi
 export SESSION_TZ="$tz" CODEX_SESSIONS_DIR="$f/sessions" MAC_AUTOPILOT_ROOT="$root" \
-  MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$a"
+  MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$a" ZF_REPO_DIR="$root"
 export MAC_AUTOPILOT_COST_CACHE="$f/cost.json" MAC_AUTOPILOT_DASHBOARD_OUTPUT="$f/out.js"
 export FAKE_DEPLOYMENTS="$f/deployments.json" FAKE_DEPLOYMENT_WRITES="$f/deployment-writes"
 export FAKE_SSH_LOG="$f/ssh.log"
@@ -34,11 +34,15 @@ jq -n --arg today "$(date -u +%Y-%m-%d)" --arg sid "$partial_session_id" \
   '{date:$today,status:"partial",total:3600,fresh:1500,incomplete_sessions:[$sid]}' > "$a/budget.json"
 echo '{"workers":[]}' > "$a/workers.json"
 cat > "$a/units.json" <<JSON
-{"units":[{"id":"pr-1","stage":"repair-pending","history":[
+{"units":[{"id":"pr-1","issue":555,"title":"fixture title","labels":["focus"],"stage":"repair-pending","history":[
   {"stage":"advisor-ruling","at":"$(iso '-3 hours')"},{"stage":"advisor-unavailable","at":"$(iso '-2 hours')"},
   {"stage":"advisor-unavailable","at":"$(iso '-40 hours')"}]},
  {"id":"pr-2","stage":"repair-pending","history":[{"stage":"advisor-ruling","at":"$(iso '-1 hours')"}]}]}
 JSON
+printf '{"rulings":[{"references":["#555"],"verbatim":"config override wording"}]}\n' \
+  > "$root/.zenoforge/state/rulings.json"
+printf '{"rulings":[{"references":["#555"],"verbatim":"engine fallback wording"}]}\n' \
+  > "$root/engine/state/rulings.json"
 jq -n --arg c "$(git -C "$root" rev-parse HEAD)" --arg s "$(iso '-5 hours')" '{status:"held",candidate:$c,started_at:$s,reason:"x"}' > "$a/release-train.json"
 cand9="$(git -C "$root" rev-parse --short=9 HEAD)"
 {
@@ -130,6 +134,9 @@ jq -n --arg timestamp "$pause_since" \
 # 1. 全部可用：阶段计数 / 滞留 / 顾问 / triage / 发布；每个数字都有标准和状态
 run
 out="$(front)"
+sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | \
+  jq -e '.founder_reqs.items | any(.[]; .issue == 555 and .text == "config override wording" and .from_ruling == true)' \
+  >/dev/null || fail 'dashboard rulings reader did not use target config'
 jq -e --arg sha "$deployed" '.[0].sha == $sha and .[0].payload.images["example-admin"] == "sha256:observed"' "$FAKE_DEPLOYMENTS" >/dev/null \
   || fail 'dashboard fixture has no production Deployment record'
 sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e --arg sid "$partial_session_id" \
