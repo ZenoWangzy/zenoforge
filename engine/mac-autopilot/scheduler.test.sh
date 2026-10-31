@@ -11,6 +11,11 @@ trap 'printf "not ok - scheduler.test.sh line %s: %s\n" "$LINENO" "$BASH_COMMAND
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/../.." && pwd -P)"
 scheduler="$script_dir/scheduler.sh"
+merge_lane="$script_dir/scheduler.d/merge-lane.sh"
+worker_command="$script_dir/scheduler.d/worker-command.sh"
+worker_harvest="$script_dir/scheduler.d/harvest-workers.sh"
+dispatch_lane="$script_dir/scheduler.d/dispatch.sh"
+scheduler_sources=("$scheduler" "$script_dir"/scheduler.d/*.sh)
 template="$script_dir/config.template.json"
 # Tick fixtures use synthetic ci/Pipeline suites rows; the adopted-PR case below
 # runs the real aggregate check policy through gh-shim and the unit ledger.
@@ -32,20 +37,20 @@ if grep -nF "$unsafe_update_pattern" "$scheduler"; then
   echo 'not ok - scheduler.test.sh: jq select update can delete unmatched units' >&2
   exit 1
 fi
-grep -Fq 'gh pr merge "$pr" --squash' "$script_dir/scheduler.d/merge-lane.sh"
-grep -Fq 'resume "$session_id" -m "$model"' "$script_dir/scheduler.d/worker-command.sh"
+grep -Fq 'gh pr merge "$pr" --squash' "$merge_lane"
+grep -Fq 'resume "$session_id" -m "$model"' "$worker_command"
 grep -Fq 'focus_mode' "$scheduler"
-grep -Fq 'session id: ' "$script_dir/scheduler.d/harvest-workers.sh"
-grep -Fq 'mode=$CODEX_MODE' "$script_dir/scheduler.d/dispatch.sh"
-if grep -Fq 'spent()' "$scheduler"; then
+grep -Fq 'session id: ' "$worker_harvest"
+grep -Fq 'mode=$CODEX_MODE' "$dispatch_lane"
+if grep -Fq 'spent()' "${scheduler_sources[@]}"; then
   echo 'not ok - scheduler.test.sh: the old worker-log spend heuristic must stay removed' >&2
   exit 1
 fi
-if grep -Fq 'BUDGET-STOP' "$scheduler" || grep -Fq 'workorder_spend_runner' "$scheduler" || grep -Fq 'workorder_budget' "$scheduler"; then
+if grep -Fq 'BUDGET-STOP' "${scheduler_sources[@]}" || grep -Fq 'workorder_spend_runner' "${scheduler_sources[@]}" || grep -Fq 'workorder_budget' "${scheduler_sources[@]}"; then
   echo 'not ok - scheduler.test.sh: token hard stops must stay removed; the stop-loss is rounds+wall only (#4486)' >&2
   exit 1
 fi
-if grep -Eq 'gh pr merge .*--auto' "$scheduler"; then
+if grep -Eq 'gh pr merge .*--auto' "${scheduler_sources[@]}"; then
   echo 'not ok - scheduler.test.sh: native auto-merge must stay disabled' >&2
   exit 1
 fi
@@ -1137,7 +1142,7 @@ sched_case_rule_lane() {
 new_tick_fixture rule-lane
 enable_rule_lane_fixture
 touch "$TF/supervisor/test-evidence.jsonl"
-command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+command jq '.auto_merge=true | .batch_max=5' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
 mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
 command git -C "$TF/repo" checkout -qb pr-rule-report
 command jq '.auto_merge=true' "$TF/repo/engine/mac-autopilot/config.template.json" > "$TF/config.tmp"
@@ -3257,7 +3262,7 @@ sched_case_hold_handoff_hotfix_pr() {
     fi
     ! grep -Eq '^gh pr (ready|edit|merge|close) |^gh run cancel ' "$TF/calls" \
       || { echo "not ok - $mode hotfix PR was modified" >&2; exit 1; }
-    grep -q '^gh api --paginate .*actions/runs?status=queued' "$TF/calls" \
+    grep -q '^gh api -i .*actions/runs?status=queued&per_page=100' "$TF/calls" \
       || { echo "not ok - $mode did not inspect the queued hotfix run" >&2; exit 1; }
     ! grep -q '^cancel-run ' "$TF/actions" \
       || { echo "not ok - $mode hotfix run was cancelled" >&2; exit 1; }
@@ -3423,7 +3428,7 @@ sched_case_hold_handoff_orphan_and_aged_pr() {
     if [[ "$mode" == ambiguous ]]; then
       grep -Fq 'handoff-pr-ambiguous issue=#779' "$TF/agent-home/supervisor-inbox" \
         || { echo 'not ok - orphan ambiguity was not sent to supervisor' >&2; exit 1; }
-      grep -Fq 'gh pr list --state open --limit 300 --json number,headRefName,headRefOid,createdAt,baseRefName' "$TF/calls" \
+      grep -Fq 'gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,body,statusCheckRollup,mergeable,createdAt' "$TF/calls" \
         || { echo 'not ok - aged PR fixture did not run' >&2; exit 1; }
     elif [[ "$mode" == incomplete ]]; then
       grep -Fq 'aged PR lifecycle deferred: handoff PR census unavailable' "$TF/supervisor/autopi/scheduler.log" \
@@ -3431,7 +3436,7 @@ sched_case_hold_handoff_orphan_and_aged_pr() {
     else
       command jq -e '.units[0].hold_handoff_waiting==true' "$TF/supervisor/autopi/units.json" >/dev/null \
         || { echo 'not ok - live owner did not hold the handoff' >&2; exit 1; }
-      grep -Fq 'gh pr list --state open --limit 300 --json number,headRefName,headRefOid,createdAt,baseRefName' "$TF/calls" \
+      grep -Fq 'gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,body,statusCheckRollup,mergeable,createdAt' "$TF/calls" \
         || { echo 'not ok - aged PR fixture did not run while waiting for the live owner' >&2; exit 1; }
     fi
   done

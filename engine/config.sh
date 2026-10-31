@@ -31,7 +31,7 @@ AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"
 [[ "${ZF_REPO_DIR-}" == "${_AGENT_REPO_DIR_DERIVED-}" ]] && ZF_REPO_DIR=
 if [[ -z "${ZF_ENGINE_DIR-}" ]]; then
   # Logical path (no -P): the parent of a symlinked engine is the link's parent, as lib.sh always derived it.
-  ZF_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+  ZF_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -L)"
   _AGENT_ENGINE_DIR_DERIVED="$ZF_ENGINE_DIR"
 fi
 if [[ -z "${ZF_REPO_DIR-}" ]]; then

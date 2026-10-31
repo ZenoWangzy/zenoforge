@@ -109,7 +109,8 @@ test('closed and merged PRs cancel running and queued CI only; main evidence and
   const audit = readFileSync(auditPath, 'utf8').trim().split('\n').map(JSON.parse);
   assert.deepEqual(audit.map((entry) => Number(entry.run_id)), cancelled);
   for (const entry of audit) {
-    assert.deepEqual(Object.keys(entry).sort(), ['repo', 'run_id', 'when']);
+    assert.deepEqual(Object.keys(entry).sort(), ['reason', 'repo', 'run_id', 'when']);
+    assert.equal(entry.reason, 'closed pr');
     assert.equal(entry.repo, 'test/repo');
     assert.match(entry.when, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   }

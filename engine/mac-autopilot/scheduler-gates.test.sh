@@ -1142,7 +1142,7 @@ SH
   export RG_SLOW_PID=0; : > "$RG_CALLS"; : > "$RG_DURING"
   true & dead=$!; wait "$dead"
   jq -n --argjson d "$dead" '{workers:[{pid:$d}]}' > "$A/workers.json"
-  sleep() { SECONDS=$((SECONDS + ${1:-0})); }
+  sleep() { SECONDS=$((SECONDS + 5)); }
   refill_window 6 ) || fail 'refill window failed with an exited worker'
 [[ "$(cat "$rg/calls")" == '--refill' ]] || fail "an exited worker did not trigger exactly one immediate refill tick ($(cat "$rg/calls" 2>/dev/null))"
 : > "$rg/calls"
@@ -1151,7 +1151,7 @@ SH
   export RG_SLOW_PID=0; : > "$RG_CALLS"
   export AUTOPI_REFILL_SECONDS=0
   jq -n --argjson l "$$" '{workers:[{pid:$l}]}' > "$A/workers.json"
-  sleep() { SECONDS=$((SECONDS + ${1:-0})); }
+  sleep() { SECONDS=$((SECONDS + 5)); }
   refill_window 6 ) || fail 'refill window failed on its cadence'
 grep -qx -- '--refill' "$rg/calls" || fail "the cadence did not run a refill tick with every worker alive ($(cat "$rg/calls" 2>/dev/null))"
 : > "$rg/calls"
@@ -1159,7 +1159,7 @@ grep -qx -- '--refill' "$rg/calls" || fail "the cadence did not run a refill tic
   A="$rg/state"; LIVE="$rg/live"; export RG_CALLS="$rg/calls" RG_STATE="$rg/state" RG_LOCK="$rg/lock" RG_DURING="$rg/during"
   export RG_SLOW_PID=0; : > "$RG_CALLS"
   jq -n --argjson l "$$" '{workers:[{pid:$l}]}' > "$A/workers.json"
-  sleep() { SECONDS=$((SECONDS + ${1:-0})); }
+  sleep() { SECONDS=$((SECONDS + 5)); }
   refill_window 6 ) || fail 'refill window failed while idle'
 [[ ! -s "$rg/calls" ]] || fail "refill tick ran before its cadence with every worker alive ($(cat "$rg/calls"))"
 # A slow tick holding the mutex yields it during a long phase; the refill retries contention
@@ -1572,6 +1572,9 @@ SH
   pr_view() { case "$2" in state) echo OPEN ;; headRefOid) echo "$GH_HEAD" ;; mergeable) echo "${GH_MERGEABLE_STATE:-MERGEABLE}" ;; mergeCommit) echo "$GH_MERGE_SHA" ;; *) echo "" ;; esac; }
   GH_HEAD="$H1"; GH_MERGEABLE_STATE=MERGEABLE
   GH_CHECKS='[{"name":"Enforce branch delivery policy","bucket":"pass"}]'
+  GH_PR_TABLE="$fixture/pr-stale-wf.json"; echo '[]' > "$GH_PR_TABLE"
+  stale_wf_checks="$(jq -cn '[{__typename:"CheckRun",name:"Enforce branch delivery policy",status:"COMPLETED",conclusion:"SUCCESS"}]')"
+  gh_pr_open 11 "$H1" false MERGEABLE agent/issue-11 "$stale_wf_checks"
   units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-stale-wf",pr:11,branch:"agent/issue-11",stage:"ready-to-merge",approved_sha:$sha,history:[]}]}')"
   GH_MERGES=(); : > "$LOG"; run_merge_lane || :
   [[ "$(cat "$UPDATE_BRANCH_CALLS")" == "11 $H1" && ${#GH_MERGES[@]} == 0 ]] || fail 'a missing aggregate row on a stale branch did not request update-branch'
@@ -1582,11 +1585,12 @@ SH
   run_merge_lane || :
   [[ -s "$UPDATE_BRANCH_CALLS" ]] && fail 'update-branch was requested twice for the same head'
   GH_MERGEABLE_STATE=CONFLICTING
+  jq -c 'map(.mergeable = "CONFLICTING")' "$GH_PR_TABLE" > "$GH_PR_TABLE.tmp" && mv "$GH_PR_TABLE.tmp" "$GH_PR_TABLE"
   units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-stale-wf2",pr:11,branch:"agent/issue-11",stage:"ready-to-merge",approved_sha:$sha,history:[]}]}')"
   run_merge_lane || :
   [[ "$(field pr-stale-wf2 .stage)" == repair-pending ]] || fail 'a conflicting stale branch was not routed to repair'
   eval "$pr_view_saved"; eval "$ci_update_branch_saved"; eval "$pr_behind_saved"
-  unset GH_MERGEABLE_STATE
+  unset GH_MERGEABLE_STATE GH_PR_TABLE
   GH_CHECKS="$passing_checks"
   REQUIRED_PR_CHECKS_FILE="$fixture/absent-required-pr-checks.json"
   units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-required",pr:11,stage:"ready-to-merge",approved_sha:$sha,history:[]}]}')"
@@ -1837,6 +1841,7 @@ eval "$gh_hol_saved"
     "api repos/{owner}/{repo}/statuses/"*) echo "$*" >> "$GS" ;;
     *) eval "${gh_gs_saved/gh ()/gh_g ()}"; gh_g "$@" ;;
   esac; }
+  pr_behind_main() { return 1; } # Slot admission here does not exercise main-branch synchronization.
   CFG="$(jq '.precheck=false' <<<"$CFG_SAVED")"; TICK_UNFINISHED=""; ROOT="$wr"
   units "{\"units\":[$(gated_unit pr-51 51 agent/issue-51 "$H1" | jq -c '.ready_since=1'),$(gated_unit pr-52 52 agent/issue-52 "$H1" | jq -c '.ready_since=2'),$(gated_unit pr-53 53 agent/issue-53 "$H1" | jq -c '.ready_since=3'),$(jq -cn --arg sha "$H1" '{id:"pr-54",pr:54,branch:"agent/issue-54",stage:"review-pending",gated:true,reviewed_sha:$sha,history:[]}')]}"
   ci_wip_gate_test
@@ -1874,6 +1879,12 @@ gh() { case "$*" in
   "run rerun"*) GH_RERUNS+=("$*") ;;
   *) eval "${gh_def_saved/gh ()/gh_d ()}"; gh_d "$@" ;;
 esac; }
+GH_RUNS="$(jq -cn --arg sha "$H2" '[
+  {databaseId:61,status:"queued",event:"pull_request",headBranch:"rv",headSha:$sha},
+  {databaseId:62,status:"in_progress",event:"pull_request",headBranch:"rv",headSha:$sha},
+  {databaseId:63,status:"queued",event:"pull_request",headBranch:"hp",headSha:$sha},
+  {databaseId:64,status:"queued",event:"pull_request",headBranch:"unrelated",headSha:$sha}
+]')"
 units "{\"units\":[{\"id\":\"pr-41\",\"pr\":41,\"stage\":\"rereview-pending\",\"branch\":\"rv\",\"history\":[]},{\"id\":\"pr-42\",\"pr\":42,\"stage\":\"review\",\"hotpatch\":true,\"branch\":\"hp\",\"history\":[]}]}"
 TICK_UNFINISHED=""; ( ROOT="$dr"; ci_defer_ci_test ) || fail 'ci_defer_ci_test errored'
 [[ "$(cat "$dr/cancelled" 2>/dev/null)" == 61 && "$(field pr-41 .ci_deferred_sha)" == "$H2" ]] || fail "CI on a head in review was not deferred, or a running/hot-patch run was cancelled ($(tr '\n' ' ' < "$dr/cancelled" 2>/dev/null))"
@@ -1939,6 +1950,19 @@ gh_pr_open 64 "$H1" true MERGEABLE agent/issue-64
 jq -c 'map(.labels = [{name: "agent/ci-gated"}])' "$GH_PR_TABLE" > "$GH_PR_TABLE.tmp" && mv "$GH_PR_TABLE.tmp" "$GH_PR_TABLE"
 gh_rank_saved="$(declare -f gh)"
 gh() { case "$1 $2" in
+  "api -i")
+    local rest=() skip_next=0 arg body
+    for arg in "$@"; do
+      (( skip_next )) && { skip_next=0; continue; }
+      case "$arg" in
+        -i) ;;
+        -H) skip_next=1 ;;
+        *) rest+=("$arg") ;;
+      esac
+    done
+    body="$(gh "${rest[@]}")" || return $?
+    printf 'HTTP/2.0 200 OK\nEtag: "stub"\n\n%s\n' "$body"
+    return 0 ;;
   "pr list") cat "$GH_PR_TABLE" ;;
   "pr ready") if [[ "${4:-}" == "--undo" ]]; then gh_pr_ready "$3" --undo; else gh_pr_ready "$3"; fi ;;
   "api repos/{owner}/{repo}/commits/"*"/status"*) echo 0 ;;
@@ -1949,9 +1973,14 @@ gh() { case "$1 $2" in
       # 一个在线 PR runner → 一个空槽；名额来自 runner 而不是配置（60ba960cf）
       "repos/{owner}/{repo}/actions/runners?per_page=100") echo 1 ;;
     esac ;;
-  "api -i") eval "${gh_rank_saved/gh ()/gh_rank ()}"; gh_rank "$@" ;;
-  "api repos/{owner}/{repo}/actions/runners?per_page=100"*) echo false ;;
-  "api "*) echo '[]' ;;
+  "api "*)
+    if [[ "$*" == *'actions/runners?per_page=100'* ]]; then
+      local runners_jq="" runners_prev="" arg
+      for arg in "$@"; do [[ "$runners_prev" == --jq ]] && runners_jq="$arg"; runners_prev="$arg"; done
+      jq -r "${runners_jq:-.runners[].id}" <<<"$GH_RUNNERS"
+    else
+      echo '[]'
+    fi ;;
   *) echo "unexpected gh in admission fixture: $*" >&2; return 97 ;;
 esac; }
 pr_behind_rank_saved="$(declare -f pr_behind_main)"
@@ -1977,6 +2006,8 @@ units "$(jq -cn --arg h "$H1" '{units:[
   || fail "opt did not outrank normal or preserve same-level ready order ($(gh_pr_is_draft 62):$(gh_pr_is_draft 63):$(gh_pr_is_draft 64))"
 # 关联 issue 分类为 hotfix 的门控 PR 不占产品 WIP 名额，满额时仍立即 ready；它进入 review 后也不能被 demote 取消。
 GH_PR_TABLE="$fixture/ci-admission-hotfix-gated.json"; echo '[]' > "$GH_PR_TABLE"; : > "$GH_PR_CALLS"
+pr_behind_hotfix_saved="$(declare -f pr_behind_main)"
+pr_behind_main() { return 1; } # Hotfix slot admission does not exercise main-branch synchronization.
 gh_pr_open 65 "$H1" true MERGEABLE agent/issue-65
 gh_pr_open 66 "$H1" true MERGEABLE agent/issue-66
 CFG_RANK_SAVED="$CFG"
@@ -2005,6 +2036,7 @@ units "$(jq -cn --arg h "$H1" '{units:[
 [[ "$(gh_pr_is_draft 65):$(gh_pr_is_draft 67)" == "false:false" ]] \
   && ! grep -Eq 'pr ready (65|67) --undo' "$GH_PR_CALLS" \
   || fail "linked or configured-prefix hotfix was demoted and its CI cancelled ($(cat "$GH_PR_CALLS" 2>/dev/null | tr '\n' '|'))"
+eval "$pr_behind_hotfix_saved"
 CFG="$CFG_RANK_SAVED"
 TICK_HOTFIX_ISSUES="$hotfix_issues_saved"; TICK_HOTFIX_ISSUES_LOADED="$hotfix_issues_loaded_saved"
 eval "$pr_behind_rank_saved"
@@ -2066,6 +2098,9 @@ eval "$gh_merge_stub"
 gh() { if [[ "$1 $2 $5" == "pr view mergeable" ]]; then echo CONFLICTING; return 0; fi; eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; }
 GH_CHECKS='[{"name":"CI","bucket":"pending"}]'
 GH_MERGEABLE_STATE=CONFLICTING
+GH_PR_TABLE="$fixture/pr-18-pending.json"; echo '[]' > "$GH_PR_TABLE"
+pending_pr18_checks="$(jq -cn '[{__typename:"CheckRun",name:"CI",status:"IN_PROGRESS",conclusion:null}]')"
+gh_pr_open 18 "$H1" false CONFLICTING agent/issue-18 "$pending_pr18_checks"
 units "{\"units\":[{\"id\":\"pr-18\",\"pr\":18,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
 run_merge_lane || :
 [[ "$(field pr-18 .stage)" == repair-pending && "$(field pr-18 .repair_hint)" == *"不会跑 CI"* ]] || fail "conflicting PR with pending checks waited instead of going to repair ($(field pr-18 .stage))"
@@ -2073,6 +2108,7 @@ run_merge_lane || :
   || fail "conflict found while checks were pending lost its history entry or repair hint ($(field pr-18 '.history[-1] | "\(.stage) \(.result)"'))"
 grep -qF 'merge skipped PR#18 (conflicts with main; CI cannot start) -> repair-pending' "$LOG" || fail 'conflict found while checks were pending lost its log line'
 unset GH_CHECKS GH_MERGEABLE_STATE; eval "$gh_merge_stub"
+unset GH_CHECKS GH_PR_TABLE; eval "$gh_merge_stub"
 # 冲突送修复前再问一次 GitHub：已无冲突就 update-branch 一次（带 expected_head_sha，按 unit/head 记账），批准保留；
 # 仍冲突、锁文件/迁移 PR、更新失败都照旧派修复。
 GH_HEAD_SAVED="${GH_HEAD:-}"; GH_HEAD="$H1"
@@ -2087,6 +2123,9 @@ gh() {
 }
 GH_CHECKS='[{"name":"CI","bucket":"pending"}]'
 GH_MERGEABLE_STATE=CONFLICTING
+GH_PR_TABLE="$fixture/pr-19-conflict.json"; echo '[]' > "$GH_PR_TABLE"
+pending_pr19_checks="$(jq -cn '[{__typename:"CheckRun",name:"CI",status:"IN_PROGRESS",conclusion:null}]')"
+gh_pr_open 19 "$H1" false CONFLICTING agent/issue-19 "$pending_pr19_checks"
 for cc_case in cleared still-conflicted lockfile update-fails; do
   GH_API_CALLS=(); GH_FRESH=""; GH_PR_FILES=""; GH_API_FAIL=0
   case "$cc_case" in
@@ -2108,6 +2147,7 @@ for cc_case in cleared still-conflicted lockfile update-fails; do
   fi
 done
 GH_HEAD="$GH_HEAD_SAVED"; unset GH_CHECKS GH_MERGEABLE_STATE GH_FRESH GH_PR_FILES GH_API_FAIL; eval "$gh_merge_stub"
+GH_HEAD="$GH_HEAD_SAVED"; unset GH_CHECKS GH_PR_TABLE GH_FRESH GH_PR_FILES GH_API_FAIL; eval "$gh_merge_stub"
 
 # ---------- 非产品快车道：分类、批准后派 land worker、不进合并车道 ----------
 GH_FILES_RESPONSE='[[{"filename":"engine/lib.sh"},{"filename":"docs/x.md"}]]'
@@ -2499,7 +2539,7 @@ DEP_CHECK_SECONDS=600 release_dependency_blocks || :
 [[ "$(wc -l < "$fixture/dep-views"):$(field issue-95 .stage)" == "1:implement-pending" ]] || fail "throttled tick queried GitHub or missed a ledger-delivered predecessor ($(wc -l < "$fixture/dep-views") $(field issue-95 .stage))"
 # 前置是已合并的 PR 号：一样算交付（gh issue view 对 PR 号失败，单元永远放不开）
 units '{"units":[{"id":"issue-97","issue":97,"stage":"blocked-external","blocked_on":3808,"history":[]}]}'
-gh() { case "$1 $2" in "api graphql") printf '97\tOPEN\t\tOPEN\n3808\tMERGED\t\t\n' ;; *) eval "${gh_issue_stub/gh ()/gh_i ()}"; gh_i "$@" ;; esac; }
+gh() { case "$1 $2" in "api graphql") printf '97\tOPEN\t\tOPEN\n3808\tMERGED\t\tOPEN\n' ;; *) eval "${gh_issue_stub/gh ()/gh_i ()}"; gh_i "$@" ;; esac; }
 rm -f "$A/dep-check.epoch"; release_dependency_blocks || :
 [[ "$(field issue-97 .stage)" == implement-pending ]] || fail "unit parked on a merged PR was not released ($(field issue-97 .stage))"
 # 前置 issue 仍 open（发布后才关），但它的 agent/issue-N PR 已合并：算交付（10-22 #3122/#3431 已合并，后继仍停着）

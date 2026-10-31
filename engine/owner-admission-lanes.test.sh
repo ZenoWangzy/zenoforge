@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-env.sh"
 trap 'rm -rf -- "$test_env_root"' EXIT
-src="$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+src="$(dirname -- "${BASH_SOURCE[0]}")/lib.d/gitnexus.sh"
 eval "$(sed -n '/^hand_agent_process_count() {/,/^}/p' "$src")"
 root="$AGENT_HOME/worktrees/"
 mkdir -p "$AGENT_HOME/night/hand-registry"

@@ -27,6 +27,14 @@ done < <(compgen -e)
 
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
+policy_file_for_home() {
+  AGENT_HOME="$1" MODEL_POLICY_SOURCE_CHECK_ONLY=1 MODEL_POLICY_TEST_SCRIPT_DIR="$SCRIPT_DIR" bash -c '
+    set -euo pipefail
+    unset MODEL_POLICY_FILE MODEL_POLICY_DEFAULT
+    source "$MODEL_POLICY_TEST_SCRIPT_DIR/lib.sh"
+    printf "%s\n" "$MODEL_POLICY_FILE"
+  '
+}
 POLICY_WORK_MODEL="$(jq -r '.roles.work.model' "$MODEL_POLICY_DEFAULT")"
 POLICY_WORK_EFFORT="$(jq -r '.roles.work.effort' "$MODEL_POLICY_DEFAULT")"
 POLICY_WORK_TIER="$(jq -r '.roles.work.service_tier // empty' "$MODEL_POLICY_DEFAULT")"
@@ -3623,6 +3631,9 @@ jq --arg model "$POLICY_V1_MIGRATION_MODEL" '
 ' "$SCRIPT_DIR/model-policy.default.json" > "$POLICY_V1_MIGRATION_HOME/model-policy.json"
 chmod 640 "$POLICY_V1_MIGRATION_HOME/model-policy.json"
 cp -- "$POLICY_V1_MIGRATION_HOME/model-policy.json" "$POLICY_V1_MIGRATION_HOME/before.json"
+POLICY_V1_MIGRATION_FILE="$(policy_file_for_home "$POLICY_V1_MIGRATION_HOME")"
+POLICY_V1_MIGRATION_CANONICAL_BEFORE="$(sha256sum "$POLICY_V1_MIGRATION_HOME/model-policy.json" | cut -d' ' -f1)"
+POLICY_V1_MIGRATION_FILE_MODE="$(stat -c '%a' "$POLICY_V1_MIGRATION_FILE")"
 # The quoted inner script reads these variables from its child environment.
 # shellcheck disable=SC2016
 POLICY_V1_SOURCE_CHECK="$(AGENT_HOME="$POLICY_V1_MIGRATION_HOME" MODEL_POLICY_SOURCE_CHECK_ONLY=1 MODEL_POLICY_TEST_SCRIPT_DIR="$SCRIPT_DIR" bash -c '
@@ -3661,6 +3672,9 @@ else
   POLICY_V1_MIGRATED_CHECK=invalid
 fi
 assert_eq "migrated active policy view passes current validation" clean "$POLICY_V1_MIGRATED_CHECK"
+assert_eq "v1 migration leaves the Zenoforge-owned policy bytes unchanged" \
+  "$POLICY_V1_MIGRATION_CANONICAL_BEFORE" \
+  "$(sha256sum "$POLICY_V1_MIGRATION_HOME/model-policy.json" | cut -d' ' -f1)"
 rm -rf "$POLICY_V1_MIGRATION_HOME"
 
 # The v1 contract predates the current "sol" ban. The active-role fallback is
@@ -3693,7 +3707,7 @@ assert_eq "read-only source-check reports the v1 fallback policy as clean" \
   clean "$POLICY_V1_CURRENTLY_FORBIDDEN_SOURCE_CHECK"
 assert_true "read-only source-check leaves the v1 fallback policy unchanged" \
   cmp -s "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME/before.json" \
-    "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME/model-policy.json"
+    "$POLICY_V1_CURRENTLY_FORBIDDEN_FILE"
 set +e
 POLICY_V1_CURRENTLY_FORBIDDEN_IDENTITY="$(AGENT_HOME="$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME" \
   MODEL_POLICY_TEST_SCRIPT_DIR="$SCRIPT_DIR" bash -c '
@@ -3714,6 +3728,15 @@ assert_eq "v1 fallback migration still preserves the original policy in one back
 assert_true "v1 fallback migration installs the complete current default" \
   jq -e --slurpfile default "$SCRIPT_DIR/model-policy.default.json" '. == $default[0]' \
     "$POLICY_V1_CURRENTLY_FORBIDDEN_FILE"
+POLICY_V1_CURRENTLY_FORBIDDEN_BACKUPS=("$POLICY_V1_CURRENTLY_FORBIDDEN_FILE".bak.*)
+assert_eq "v1 fallback migration still preserves the original policy in one backup" \
+  1 "${#POLICY_V1_CURRENTLY_FORBIDDEN_BACKUPS[@]}"
+assert_true "v1 fallback migration installs the complete current default" \
+  jq -e --slurpfile default "$SCRIPT_DIR/model-policy.default.json" '. == $default[0]' \
+    "$POLICY_V1_CURRENTLY_FORBIDDEN_FILE"
+assert_true "migration leaves the Zenoforge-owned v1 policy unchanged" \
+  cmp -s "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME/before.json" \
+    "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME/model-policy.json"
 rm -rf "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME"
 
 POLICY_V1_RETAINED_INVALID_HOME="$(mktemp -d)"
@@ -3726,6 +3749,7 @@ jq '
 ' "$SCRIPT_DIR/model-policy.default.json" > "$POLICY_V1_RETAINED_INVALID_HOME/model-policy.json"
 cp -- "$POLICY_V1_RETAINED_INVALID_HOME/model-policy.json" \
   "$POLICY_V1_RETAINED_INVALID_HOME/before.json"
+POLICY_V1_RETAINED_INVALID_FILE="$(policy_file_for_home "$POLICY_V1_RETAINED_INVALID_HOME")"
 set +e
 POLICY_V1_RETAINED_INVALID_STATUS=0
 AGENT_HOME="$POLICY_V1_RETAINED_INVALID_HOME" MODEL_POLICY_TEST_SCRIPT_DIR="$SCRIPT_DIR" bash -c '
@@ -3738,10 +3762,10 @@ assert_eq "migration rejects a current-forbidden model in retained v1 settings" 
   1 "$POLICY_V1_RETAINED_INVALID_STATUS"
 assert_true "rejected v1 policy is not backed up or replaced before validation" \
   cmp -s "$POLICY_V1_RETAINED_INVALID_HOME/before.json" \
-    "$POLICY_V1_RETAINED_INVALID_HOME/model-policy.json"
+    "$POLICY_V1_RETAINED_INVALID_FILE"
 assert_eq "rejected v1 policy creates no migration backup" 0 \
   "$(find "$POLICY_V1_RETAINED_INVALID_HOME" -maxdepth 1 -type f \
-    -name 'model-policy.json.bak.schema-v*' -print | wc -l | tr -d '[:space:]')"
+    -path "$POLICY_V1_RETAINED_INVALID_FILE.bak.schema-v*" -print | wc -l | tr -d '[:space:]')"
 rm -rf "$POLICY_V1_RETAINED_INVALID_HOME"
 
 POLICY_READ_ONLY_MISSING_HOME="$(mktemp -d)"
@@ -3771,6 +3795,7 @@ jq 'del(.schema_version, .roles.work.fallback_model, .roles.production.fallback_
   "$SCRIPT_DIR/model-policy.default.json" > "$POLICY_READ_ONLY_LEGACY_HOME/model-policy.json"
 cp -- "$POLICY_READ_ONLY_LEGACY_HOME/model-policy.json" \
   "$POLICY_READ_ONLY_LEGACY_HOME/model-policy.expected.json"
+POLICY_READ_ONLY_LEGACY_FILE="$(policy_file_for_home "$POLICY_READ_ONLY_LEGACY_HOME")"
 POLICY_READ_ONLY_LEGACY_IDENTITY="$(AGENT_HOME="$POLICY_READ_ONLY_LEGACY_HOME" \
   MODEL_POLICY_READ_ONLY=1 MODEL_POLICY_SOURCE_CHECK_ONLY=1 \
   MODEL_POLICY_TEST_SCRIPT_DIR="$SCRIPT_DIR" bash -c '
@@ -3781,11 +3806,11 @@ POLICY_READ_ONLY_LEGACY_IDENTITY="$(AGENT_HOME="$POLICY_READ_ONLY_LEGACY_HOME" \
 assert_eq "read-only lookup resolves an existing legacy policy" \
   "$POLICY_WORK_IDENTITY" "$POLICY_READ_ONLY_LEGACY_IDENTITY"
 assert_eq "read-only lookup leaves legacy policy bytes unchanged" \
-  0 "$(cmp -s "$POLICY_READ_ONLY_LEGACY_HOME/model-policy.json" \
-    "$POLICY_READ_ONLY_LEGACY_HOME/model-policy.expected.json" && echo 0 || echo 1)"
+  0 "$(cmp -s "$POLICY_READ_ONLY_LEGACY_HOME/model-policy.expected.json" \
+    "$POLICY_READ_ONLY_LEGACY_FILE" && echo 0 || echo 1)"
 assert_eq "read-only lookup does not create a migration backup" \
   0 "$(find "$POLICY_READ_ONLY_LEGACY_HOME" -maxdepth 1 -type f \
-    -name 'model-policy.json.bak.schema-v*' -print | wc -l | tr -d '[:space:]')"
+    -path "$POLICY_READ_ONLY_LEGACY_FILE.bak.schema-v*" -print | wc -l | tr -d '[:space:]')"
 rm -rf "$POLICY_READ_ONLY_LEGACY_HOME"
 
 FORBIDDEN_TEST_MODEL="$(jq -r '.forbidden[0]' "$SCRIPT_DIR/model-policy.default.json")"
@@ -7361,7 +7386,7 @@ case "$SYSTEMCTL_MODE" in
   inactive) exit 4 ;;
   empty-list) exit 0 ;;
   two-units) printf 'zf-implement-1.service loaded active running\nzf-implement-2.service loaded active running\n'; exit 0 ;;
-  train-and-release) printf 'zf-release-train.service loaded active running\nvecta-release-batch.service loaded active running\n'; exit 0 ;;
+  train-and-release) printf 'zf-release-train.service loaded active running\nzf-release-batch.service loaded active running\n'; exit 0 ;;
   train-only) printf 'zf-release-train.service loaded active running\n'; exit 0 ;;
   fail-list) echo "Failed to connect to user scope bus via local transport: No such file or directory" >&2; exit 1 ;;
 esac

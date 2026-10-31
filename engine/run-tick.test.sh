@@ -224,12 +224,23 @@ run_launcher() {
   local agent_home="${2:-$(fresh_agent_home)}"
   local roster="${3:-$(fresh_roster)}"
   set +e
-  RUN_OUTPUT="$(AGENT_HOME="$agent_home" AGENT_DRY_RUN=1 \
+  RUN_OUTPUT="$(AGENT_HOME="$agent_home" ZF_PACK_DIR="$repo/engine" \
+    ZF_PACK_REL=engine AGENT_DRY_RUN=1 \
     ZF_AGENT_RECIPIENTS_FILE="$roster" \
     PATH="${TICK_GIT_SHIM_BIN:+$TICK_GIT_SHIM_BIN:}$TICK_FAKE_BIN:$PATH" \
     bash "$repo/engine/run-tick.sh" 2>&1)"
   RUN_STATUS=$?
   set -e
+}
+
+policy_file_for_repo() {
+  local repo="$1" agent_home="$2"
+  AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo" \
+    ZF_PACK_DIR="$repo/engine" ZF_PACK_REL=engine bash -c '
+    MODEL_POLICY_SOURCE_CHECK_ONLY=1
+    source "$ZF_REPO_DIR/engine/lib.sh"
+    printf "%s\n" "$MODEL_POLICY_FILE"
+  '
 }
 
 inbox_events() {
@@ -526,6 +537,8 @@ jq 'del(.schema_version, .roles.work.fallback_model, .roles.production.fallback_
   | .fixture_live_marker = "old-policy"' \
   "$repo/engine/model-policy.default.json" >"$agent_home/model-policy.json"
 cp "$agent_home/model-policy.json" "$agent_home/old-model-policy.json"
+policy_file="$(policy_file_for_repo "$repo" "$agent_home")"
+cp "$policy_file" "$agent_home/old-model-policy-view.json"
 if AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo" bash -c '
   MODEL_POLICY_SOURCE_CHECK_ONLY=1
   source "$ZF_REPO_DIR/engine/lib.sh"
@@ -542,13 +555,15 @@ stale_policy_check="$(AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo" bash -c '
   model_policy source-check
 ')"
 assert_eq "source-check can validate a legacy policy without migrating it" clean "$stale_policy_check"
-if cmp -s "$agent_home/old-model-policy.json" "$agent_home/model-policy.json"; then
+if cmp -s "$agent_home/old-model-policy-view.json" "$policy_file"; then
   source_check_write_status=0
 else
   source_check_write_status=$?
 fi
-assert_eq "source-check leaves the original legacy policy bytes untouched" "0" "$source_check_write_status"
-source_check_backup_count="$(find "$agent_home" -maxdepth 1 -type f -name 'model-policy.json.bak.schema-v0.*' -print | wc -l | tr -d '[:space:]')"
+assert_eq "source-check leaves its legacy policy view bytes untouched" "0" "$source_check_write_status"
+assert_eq "source-check leaves the Zenoforge-owned policy bytes untouched" "0" \
+  "$(cmp -s "$agent_home/old-model-policy.json" "$agent_home/model-policy.json" && echo 0 || echo 1)"
+source_check_backup_count="$(find "$agent_home" -maxdepth 1 -type f -path "$policy_file.bak.schema-v0.*" -print | wc -l | tr -d '[:space:]')"
 assert_eq "source-check does not create a migration backup" "0" "$source_check_backup_count"
 
 missing_policy_home="$(fresh_agent_home)"
@@ -566,17 +581,25 @@ assert_eq "source-check does not seed a missing persisted policy" "0" "$([[ ! -e
 stale_policy_file="$(policy_active_file "$repo" "$agent_home")"
 cp "$stale_policy_file" "$agent_home/old-active-model-policy.json"
 
-if stale_policy_identity="$(AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo" bash -c '
+if stale_policy_session="$(AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo" bash -c '
+  set -euo pipefail
   source "$ZF_REPO_DIR/engine/lib.sh"
-  model_policy identity work
+  printf "%s\n%s\n%s\n" \
+    "$(model_policy identity work)" \
+    "$(model_policy source-check)" \
+    "$(model_policy identity review)"
 ' 2>&1)"; then
   stale_policy_resolution_status=0
 else
   stale_policy_resolution_status=$?
 fi
+stale_policy_identity="$(sed -n '1p' <<< "$stale_policy_session")"
+stale_policy_check="$(sed -n '2p' <<< "$stale_policy_session")"
+stale_review_identity="$(sed -n '3p' <<< "$stale_policy_session")"
 assert_eq "new code resolves the old live policy before post-fast-forward sync" "$MODEL_POLICY_TEST_WORK_IDENTITY" "$stale_policy_identity"
 assert_eq "new code loads successfully against the old live policy" "0" "$stale_policy_resolution_status"
 mapfile -t schema_migration_backups < <(find "$agent_home" -maxdepth 1 -type f -name '*.bak.schema-v0.*' -print)
+assert_eq "migrated policy passes source-check in the same view" clean "$stale_policy_check"
 assert_eq "startup migration keeps one recoverable copy of the schema-less policy" \
   "1" "${#schema_migration_backups[@]}"
 if cmp -s "$agent_home/old-active-model-policy.json" "${schema_migration_backups[0]}"; then
@@ -597,6 +620,9 @@ stale_review_identity="$(AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo" bash -c '
   source "$ZF_REPO_DIR/engine/lib.sh"
   model_policy identity review
 ')"
+assert_eq "ordinary migration leaves the Zenoforge-owned policy bytes unchanged" \
+  "$(sha256sum "$agent_home/old-model-policy.json" | cut -d' ' -f1)" \
+  "$(sha256sum "$agent_home/model-policy.json" | cut -d' ' -f1)"
 assert_eq "whole-default migration resolves a role from the deployed default" "$MODEL_POLICY_TEST_REVIEW_IDENTITY" "$stale_review_identity"
 jq '.roles.work.model = .forbidden[0]' "$agent_home/old-model-policy.json" >"$agent_home/model-policy.json"
 if AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo" bash -c '

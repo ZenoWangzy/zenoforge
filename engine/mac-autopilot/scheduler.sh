@@ -376,6 +376,7 @@ VIEWS_LOCK="$A/.views.lock"
 # 慢阶段只在等待 GitHub 时让出同一 SCHED_LOCK；补派本地收割 direct-main 实现结果，另每次最多收割 2 个已结束的 PR 车道实现 worker（释放足迹，开 PR 有少量 GitHub 调用）、回收孤儿记录，
 # 再派发 implement-pending；不做 GitHub 查询/写入或远端 fetch。其他报告与 PR 注册仍由慢 tick 处理。
 refill_tick() {
+  local TICK_LOCAL_REFILL=true
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
   acquire_scheduler_lock || return 75
   if ! state_schema_ok; then
