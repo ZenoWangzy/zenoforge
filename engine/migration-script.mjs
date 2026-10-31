@@ -1,6 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { PACK_DIR, zfConfigFile } from './pack-dir.mjs';
 
 const scripts = {
@@ -29,7 +30,7 @@ export function migrationScript(key, root = process.cwd()) {
   throw new Error(`migration script unavailable: ${key}`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === new URL(import.meta.url).pathname) {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const script = migrationScript(process.argv[2]);
     const result = spawnSync(process.execPath, [script, ...process.argv.slice(3)], { stdio: 'inherit' });
@@ -37,6 +38,6 @@ if (process.argv[1] && resolve(process.argv[1]) === new URL(import.meta.url).pat
     process.exitCode = result.status ?? 1;
   } catch (error) {
     console.error(error.message);
-    process.exitCode = 1;
+    process.exitCode = 2;
   }
 }

@@ -98,7 +98,7 @@ test('merge gate reports both the stale when and the blocking PRs', () => {
   const reasons = mergeGate({ repo: 'o/r', prNumber: 9, head: 'deadbeef', run });
   assert.equal(reasons.length, 2);
   assert.match(reasons[0], /0067_c has journal when 50/);
-  assert.match(reasons[1], /must merge first: #7 \(0065_x\)/);
+  assert.match(reasons[1], /configured blockers: #7 \(0065_x\)/);
   assert.ok(calls.some((call) => call.includes('_journal.json?ref=deadbeef')), 'reads the journal at the merge head');
 });
 
