@@ -105,14 +105,14 @@ test('init: files, modes, checkout, engine link, labels, variables and units', a
   assert.match(calls, /variable set AGENT_SUPERVISOR --repo \S+ --body observe/);
   assert.match(calls, /variable set AGENT_PIPELINE --repo \S+ --body triage/);
 
-  // scheduler: units copied, timers from the rendered list plus both loops enabled, health mail not enabled
+  // scheduler: units copied, shipped timers plus both loops enabled
   const agentUnit = fs.readFileSync(path.join(s.unitDir, 'zenoforge-agent.service'), 'utf8');
-  assert.match(agentUnit, /^ExecStart=%h\/\.zenoforge\/checkout\/engine\/run-tick\.sh$/m);
+  assert.match(agentUnit, /exec "\$\{e:-%h\/\.zenoforge\/checkout\/engine\}\/run-tick\.sh"/);
   assert.ok(fs.existsSync(path.join(s.unitDir, 'zenoforge-autopilot-scheduler.service')));
   const enable = calls.split('\n').find((l) => l.startsWith('systemctl --user enable'));
   assert.match(enable, /zenoforge-agent\.timer/);
   assert.match(enable, /zenoforge-autopilot-bell\.service/);
-  assert.doesNotMatch(enable, /health-mail|local-rescue|disk-reclaim|prod-anomaly/);
+  assert.doesNotMatch(enable, /local-rescue|disk-reclaim|prod-anomaly/);
   // run-tick copies engine/systemd/*.service on every tick; the copy must already match what we installed
   for (const f of fs.readdirSync(path.join(s.agent, 'engine/current/systemd')).filter((x) => x.endsWith('.service'))) {
     assert.equal(fs.readFileSync(path.join(s.unitDir, f), 'utf8'), fs.readFileSync(path.join(s.agent, 'engine/current/systemd', f), 'utf8'), f);

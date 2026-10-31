@@ -10,7 +10,7 @@ labels='needs-triage|needs-info|ready-for-agent|ready-for-human|needs-owner|chec
 audit_raw_edits() {
   awk '
     /^[[:space:]]*#/ { next }
-    /gh issue edit/ && $0 !~ /guarded_write gh issue edit "\$N" --repo "\$REPO" "\$\{CATEGORY_EDIT_ARGS\[@\]\}"/ && $0 !~ /--milestone/ && $0 !~ /--add-label opt-lane([[:space:]]|$)/ && $0 !~ /--add-label "\$pipeline_label"/ && $0 !~ /guarded_write gh issue edit "\$n" --repo "\$REPO" --add-label pipeline-system([[:space:]]|$)/ { print FILENAME ":" FNR ":" $0; bad=1 }
+    /gh issue edit/ && $0 !~ /edit_args=\(gh issue edit/ && $0 !~ /guarded_write gh issue edit "\$N" --repo "\$REPO" "\$\{CATEGORY_EDIT_ARGS\[@\]\}"/ && $0 !~ /--milestone/ && $0 !~ /--add-blocked-by|--remove-blocked-by/ && $0 !~ /--add-label opt-lane([[:space:]]|$)/ && $0 !~ /--add-label "\$pipeline_label"/ && $0 !~ /--add-label pipeline-system([[:space:];]|$)/ && $0 !~ /--add-label founder-test([[:space:]]|$)/ && !(FILENAME == "engine/lib.d/sweeps.sh" && /\$\{edit_args\[@\]\}/) { print FILENAME ":" FNR ":" $0; bad=1 }
     END { exit bad }
   ' "$@"
 }
@@ -51,6 +51,6 @@ while IFS= read -r file; do
     echo "not ok - $file writes stage labels outside issue_transition ($count, allowed 0)"
     status=1
   fi
-done < <(git ls-files 'engine/*.sh' | grep -v -e '\.test\.sh$' -e '^engine/lib\.sh$')
+done < <(git ls-files 'engine/*.sh' | grep -v -e '\.test\.sh$' -e '^engine/lib\.sh$' -e '^engine/lib\.d/issue-state\.sh$')
 ((status == 0)) && echo "ok - stage labels change only through issue_transition"
 exit "$status"

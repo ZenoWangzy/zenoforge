@@ -3,7 +3,7 @@
 Property: one ticket never has two implement units at once (a live worker, or an open PR from an earlier one).
 Harm: duplicate PRs and wasted workers. Real incident: 2026-10-24, ledger behind GitHub, one ticket dispatched three times (3 duplicate PRs).
 
-Run: `engine/formal/dispatch-claim/verify.test.sh` (about 12 s). Exit 0 = every result equals the expectation recorded in `verify.test.sh`; 1 = a result changed; 2 = TLC not installed. `VERIFY_TRACE=1` also prints each counterexample's action list. Read counterexamples with the vendored `statechart` skill (`pstack_skill_md statechart`). How to use the result: `SKILL.md`.
+CI runs `bash engine/formal/dispatch-claim/verify.test.sh`, which checks the real-code replay and needs no TLC. For the full TLA+ model and replay check, run `bash engine/formal/dispatch-claim/verify-model.sh` (about 12 s); exit 0 means every result matches, 1 means a result changed, and 2 means TLC is not installed. `VERIFY_TRACE=1` prints each counterexample's action list. Read counterexamples with the vendored `statechart` skill (`pstack_skill_md statechart`). How to use the result: `SKILL.md`.
 
 ## TLC install (user-local, no sudo, no system packages)
 
@@ -43,7 +43,7 @@ Used on 2026-10-30: Temurin JRE 21.0.13+9, tla2tools.jar v1.8.0 (sha256 011267fc
 
 `dispatch()` skips the open-PR guard when `TICK_DISPATCH_LOCAL_REFILL=true` (refill, #4628: no GitHub calls). A worker that opens a PR and then dies without a report is requeued to `implement-pending` by `recover_orphans` in the refill tick, and the same refill tick dispatches it again with no PR comparison. That is the 10-24 shape, in the path added after it. Same unit id reuses its branch, so the result may be one PR pushed twice or a second PR from another unit; the invariant counts both as a duplicate.
 
-Fix the model passes with: take the claim, then read the open-PR census at dispatch time on every tick (`CheckAfterClaim`, `FreshCheck`). Cost: refill makes one `gh pr list` call per dispatch, which #4628 removed on purpose. The maintainer decides; when the code changes, set `refill-gap` to PASS in `verify.test.sh` and update `replay.test.sh` expectations.
+Fix the model passes with: take the claim, then read the open-PR census at dispatch time on every tick (`CheckAfterClaim`, `FreshCheck`). Cost: refill makes one `gh pr list` call per dispatch, which #4628 removed on purpose. The maintainer decides; when the code changes, set `refill-gap` to PASS in `verify-model.sh` and update `replay.test.sh` expectations.
 
 ## Scope
 

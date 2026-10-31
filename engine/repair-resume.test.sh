@@ -43,6 +43,11 @@ chmod +x "$test_env_bin/codex"
 counters() { # input cached output -> one cumulative Codex token_count line
   printf '{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%s,"cached_input_tokens":%s,"output_tokens":%s}}}}\n' "$1" "$2" "$3"
 }
+alive() { return 1; }
+harvest_completed() {
+  harvest_workers || fail "harvest failed"
+  coord_reconcile_scheduler_workers || fail "claim reconciliation failed"
+}
 seed() {
   jq -n --arg sid "$sid" '{units:[{id:"u",stage:"repair-pending",lane:"pr",history:[],
     session_ids:{repair:$sid,review:"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"},
@@ -63,6 +68,7 @@ assert calls[0][-1]=='NEW REVIEW FAILURE', calls
 assert '--last' not in calls[0] and '--ephemeral' not in calls[0], calls
 PY
 echo 'PASS repair resumes with only new failure'
+harvest_completed
 
 assert_call() { # expected mode, prompt, optional session id
   python3 - "$CALLS" "$1" "$2" "${3:-}" <<'PY'
@@ -91,6 +97,7 @@ for reason in no-recorded-session provider-changed model-changed session-files-m
   assert_call fresh 'FULL ORIGINAL BRIEF'
   jq -Rse --arg reason "$reason" 'split("\n") | any(.[] | fromjson?; .type=="pipeline.execution" and .mode=="fresh" and .reason==$reason)' "$SUP/run.log" >/dev/null
   echo "PASS cold fallback: $reason"
+  harvest_completed
 done
 
 seed
@@ -106,8 +113,7 @@ PY
 jq -Rse 'split("\n") | any(.[] | fromjson?; .type=="pipeline.execution" and .mode=="fresh" and .reason=="resume-startup-failed" and .resume_exit==2)' "$SUP/run.log" >/dev/null
 # Harvest uses the cold run's identity, mode and counters; the aborted turn
 # must not poison completion or accidentally restore the old session.
-alive() { return 1; }
-harvest_workers || fail "harvest failed"
+harvest_completed
 jq -e --arg sid "$new_sid" --arg old "$sid" '.workers[0] | .session_id==$sid and .resume_session_id==$old and .mode=="fresh" and .execution_reason=="resume-startup-failed" and .harvested==true' "$WORKERS" >/dev/null
 jq -e --arg sid "$new_sid" '.units[0].sessions.repair == {id:$sid,provider:"codex",model:"model"}' "$UNITS" >/dev/null
 echo 'PASS startup fallback and durable session metadata'
@@ -119,6 +125,7 @@ run_repair || status=$?
 [[ "$status" == 3 ]] || fail "resume work failure status=$status"
 assert_call resume 'NEW REVIEW FAILURE' "$sid"
 echo 'PASS no cold replay after resume does work'
+harvest_completed
 
 # A fresh implementer emits a session id even if it fails before a final
 # report. It must still be recorded with the model that actually ran.
@@ -126,7 +133,7 @@ seed
 export FAKE_MODE=empty
 dispatch implement model high u initial.log initial.md 'FULL ORIGINAL BRIEF' '' "$fixture/repo"
 wait "$!" || true
-harvest_workers || fail "harvest failed"
+harvest_completed
 jq -e --arg sid "$new_sid" '.units[0] | .sessions.repair=={id:$sid,provider:"codex",model:"model"} and .session_ids.repair==$sid and .session_ids.review=="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"' "$UNITS" >/dev/null
 jq -e --arg sid "$new_sid" '.workers[0].session_id==$sid' "$WORKERS" >/dev/null
 echo 'PASS fresh implementer records id independently of review and final report'
@@ -137,6 +144,7 @@ export FAKE_MODE=ok
 run_repair
 assert_call resume 'NEW REVIEW FAILURE' "$new_sid"
 echo 'PASS next repair reads the recorded implementer session'
+harvest_completed
 
 
 seed
@@ -146,6 +154,7 @@ failure="$(repair_failure_prompt '{"review_report":"prior.md"}' prior.md)"
 dispatch repair model max u review.log review.md 'FULL ORIGINAL BRIEF' '' "$fixture/repo" '' "$failure"
 wait "$!"
 assert_call resume 'NEW REVIEW FINDINGS' "$sid"
+harvest_completed
 # CI repair sends the failed step and tail, without the previous review.
 cat > "$test_env_bin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -169,6 +178,7 @@ assert 'Run affected regression tests' in prompt, prompt
 assert 'FULL ORIGINAL BRIEF' not in prompt and 'NEW REVIEW FINDINGS' not in prompt, prompt
 PY
 echo 'PASS review and CI prompts contain only new failure evidence'
+harvest_completed
 
 # A hint-carrying unit (hotpatch) that then gets REQUEST-CHANGES: the findings travel with the hint.
 printf 'HOTPATCH FINDINGS\n' > "$SUP/hot.md"

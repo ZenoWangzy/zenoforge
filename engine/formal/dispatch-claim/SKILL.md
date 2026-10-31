@@ -22,11 +22,11 @@ Sync commit: c6a585513b317c5aa0b5902bc145703486923316 (verify.test.sh and replay
 ## Steps
 
 1. If the diff touches no covered file, stop: not affected.
-2. Run `engine/formal/dispatch-claim/verify.test.sh`. Exit 2 means TLC is missing: install per README, or report blocked.
+2. Run `engine/formal/dispatch-claim/verify.test.sh` for the CI-safe real-code replay, then `engine/formal/dispatch-claim/verify-model.sh` for TLC plus replay. CI does not install TLC; the model command is for a local environment with TLC installed as described in the README.
 3. Exit 0: the result equals the recorded expectations (this includes the open finding F1, `refill-pr-guard: LAUNCHED`). If the diff changed what the model describes (new check, new claim step, new requeue path) but results still match, update `DispatchClaim.tla` and `replay.test.sh` first, then re-run.
 4. Exit 1: read the printed line.
    - `TLC ...: FAIL (expected PASS)` or a `REPLAY ... CHANGED` line where a guard went HELD to LAUNCHED: the code now breaks the property. That is a bug: report it with the replay output as the reproduction. Do not edit the expectations to make it pass.
-   - A guard went LAUNCHED to HELD, or `refill-gap` became PASS: the code was fixed or hardened. Confirm with `VERIFY_TRACE=1` and the replay, then update `EXPECTED_TLC` / `EXPECTED_REPLAY` in `verify.test.sh` and the README table in the same change.
+   - A guard went LAUNCHED to HELD, or `refill-gap` became PASS: the code was fixed or hardened. Confirm with `VERIFY_TRACE=1` and the replay, then update `EXPECTED_TLC` in `verify-model.sh`, `EXPECTED_REPLAY` in both verification scripts, and the README table in the same change.
    - Replay prints `setup failed`: the stubs in `replay.test.sh` no longer match `dispatch()`; fix the replay.
 5. Report one of: in sync (no relevant change, checks pass), updated (model/replay changed with the code, checks pass), bug (code violates the property), blocked (TLC missing or model cannot be synced).
 6. Move the sync commit above to the commit you verified only after step 3 or 4 confirms the model describes that code.
