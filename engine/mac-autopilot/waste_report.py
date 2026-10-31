@@ -520,7 +520,9 @@ def lesson_rule_hits_section(scheduler_rows, until, zero_hit_days):
     retained = [(parse_ts(stamp), message) for stamp, message in scheduler_rows
                 if parse_ts(stamp) <= end]
     observations = [at for at, message in retained if LESSON_OBSERVED_RE.search(message)]
-    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    repo_root = os.environ.get("ZF_REPO_DIR") or os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
     rules_path = os.path.join(repo_root, "lessons", "RULES.md")
     with open(rules_path, encoding="utf-8", errors="replace") as source:
         rule_ids = sorted(set(RULE_ID_RE.findall(source.read())))

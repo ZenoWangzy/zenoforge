@@ -8,6 +8,10 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fail() { echo "waste_report.test.sh: $*" >&2; exit 1; }
 a="$test_env_root/waste/autopi"; mkdir -p "$a/alerts"
 audit="$test_env_root/waste/actions-run-cancellations.jsonl"
+lesson_repo="$test_env_root/waste/repo"
+mkdir -p "$lesson_repo/lessons"
+printf '# Rules\n**V1** fixture rule\n' > "$lesson_repo/lessons/RULES.md"
+export ZF_REPO_DIR="$lesson_repo"
 
 # Shared scheduler logs set the default window; only the token report's common input sources remain here.
 cat > "$a/scheduler.log.1" <<'LOG'
@@ -65,7 +69,7 @@ cat > "$a/units.json" <<'JSON'
  {"id":"issue-30","stage":"implement-pending","branch":"agent/issue-30","history":[]}]}
 JSON
 
-section() { awk -v h="$1" '$0 ~ "^" h " " {p=1; print; next} /^[^ ]/ {p=0} p'; }
+section() { awk -v h="$1" 'index($0,h)==1 && substr($0,length(h)+1,1) ~ /[ :]/ {p=1; print; next} /^[^ ]/ {p=0} p'; }
 report() { python3 "$script_dir/waste_report.py" --runtime "$a" --audit "$audit" "$@"; }
 expect_section() { # name metric-header expected-text [report args]: only that metric block must equal it
   local got; got="$(report "${@:4}" | section "$2")" || fail "$1: report failed"
@@ -169,7 +173,7 @@ T7 observed CI and review events (2026-10-19T06:00:00Z .. 2026-10-23T00:00:00Z)
   third rejections: 3; advisor rulings 1, unavailable 1, arbiter fallbacks 1
 EXPECTED
 )" --since 2026-10-19T06:00:00Z --until 2026-10-23T00:00:00Z
-expect_section 'Codex CI repair turns split patch calls from shell writes and no writes' T8 "$(cat <<'EXPECTED'
+expect_section 'Codex CI repair turns split patch calls from shell writes and no writes' 'T8 linked Codex CI-repair turns' "$(cat <<'EXPECTED'
 T8 linked Codex CI-repair turns: 3 turns, 6,100 raw, 2,100 fresh (the ledger keeps one repair session per unit; an earlier session replaced by a fresh retry is not linked)
   no patch call: 2 turns, 5,000 raw, 1,600 fresh
   no write call observed: 1 turn, 3,000 raw, 900 fresh; shell writes among no-patch turns: 1

@@ -10,8 +10,8 @@ tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/apply-model-policy.XXXXXX")"
 install_tmp=""
 trap 'rm -rf -- "$tmp_dir"; [[ -z "$install_tmp" ]] || rm -f -- "$install_tmp"' EXIT
 
-# The policy applied is the pack's, the same file lib.sh resolves as MODEL_POLICY_DEFAULT; a deployment with no pack ships none.
-policy_file="$(pack_file model-policy.default.json)" || { echo "apply-model-policy-default: this deployment has no pack policy to apply" >&2; exit 1; }
+# Keep the pack policy in sync when present; without a pack, lib.sh resolves the engine's generic default.
+policy_file="$(pack_file model-policy.default.json)" || policy_file="$SCRIPT_DIR/model-policy.default.json"
 git -C "$REPO_DIR" fetch origin main
 git -C "$REPO_DIR" show "origin/main:$POLICY_PATH" > "$tmp_dir/landed-policy.json"
 if ! cmp -s "$policy_file" "$tmp_dir/landed-policy.json"; then
@@ -31,7 +31,7 @@ cp -- "$LIVE_FILE" "$validation_home/model-policy.json"
   source "$SCRIPT_DIR/lib.sh"
   model_policy_migrate_live 1
   model_policy source-check
-  model_policy_validate_file "$AGENT_HOME/model-policy.json"
+  model_policy_validate_file "$MODEL_POLICY_FILE"
   for role in work production; do
     expected_identity="$(jq -er --arg role "$role" '.roles[$role] as $r | "codex:" + $r.model + ":" + $r.effort' "$tmp_dir/landed-policy.json")"
     expected_tier="$(jq -r --arg role "$role" '.roles[$role].service_tier // empty' "$tmp_dir/landed-policy.json")"
@@ -43,8 +43,10 @@ cp -- "$LIVE_FILE" "$validation_home/model-policy.json"
     }
     printf '%s\t%s\t%s\n' "$role" "$actual_identity" "$actual_tier"
   done
+  printf '%s\n' "$MODEL_POLICY_FILE" > "$tmp_dir/active-policy-path"
 )
-cp -- "$validation_home/model-policy.json" "$tmp_dir/migrated-policy.json"
+validation_policy_file="$(cat "$tmp_dir/active-policy-path")"
+cp -- "$validation_policy_file" "$tmp_dir/migrated-policy.json"
 
 backup="$LIVE_FILE.bak.$(date -u +%Y%m%dT%H%M%SZ).$$"
 cp -p -- "$LIVE_FILE" "$backup"
