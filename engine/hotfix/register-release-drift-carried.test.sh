@@ -47,4 +47,57 @@ expect_registry 'main and PR carriers coexist'
 register "$sha2" /main-new
 printf 'image\tsvc\tsha256:test\t42\nc1\t/app/other.js\t7\t/other\nc1\t/app/x.js\t4859\t/a-new\nc1\t/app/x.js\t4874\t/b-new\nc1\t/app/x.js\tinstalled_from=%s\t/main-new\n' "$sha2" > "$tmp/expected"
 expect_registry 'new main replaces only old main'
+# Image upsert preserves retained rows byte-for-byte, including a CRLF file row,
+# keeps other services' images, and appends the new image row.
+printf 'c1\t/app/one.js\tinstalled_from=%s\t/copy-one\r\nimage\tservice-a\tsha256:a\t124\nc2\t/app/two.js\tinstalled_from=%s\t/copy-two\nimage\tother-service\tsha256:other\t125\n' "$sha" "$sha" > "$tmp/reg"
+printf 'c1\t/app/one.js\tinstalled_from=%s\t/copy-one\r\nc2\t/app/two.js\tinstalled_from=%s\t/copy-two\nimage\tother-service\tsha256:other\t125\nimage\tservice-a\tsha256:a\t123\n' "$sha" "$sha" > "$tmp/expected"
+if (cd -- "$tmp" && bash "$here/register-release-drift-carried.sh" --image "$tmp/reg" service-a sha256:a 123) 2>"$tmp/err"; then
+  :
+else
+  rc=$?
+  echo "not ok - image upsert: rc $rc, want 0"
+  failed=1
+fi
+if ! cmp -s "$tmp/expected" "$tmp/reg"; then
+  echo 'not ok - image upsert: retained bytes or appended row differ'
+  failed=1
+else
+  echo 'ok - image upsert preserves file rows and other image services'
+fi
+if ! awk -F '\t' '$1 == "image" && $2 == "service-a" { n++; good = ($3 == "sha256:a" && $4 == "123") } END { exit !(n == 1 && good) }' "$tmp/reg"; then
+  echo 'not ok - image upsert: service-a does not have exactly one PR 123 row'
+  failed=1
+fi
+if ! awk -F '\t' '$1 == "image" && $2 == "other-service" && $3 == "sha256:other" && $4 == "125" { found = 1 } END { exit !found }' "$tmp/reg"; then
+  echo 'not ok - image upsert: another service image row was not kept'
+  failed=1
+fi
+printf 'future-format\tunknown\r\nimage\tservice-a\tsha256:old\t124\n' > "$tmp/unknown-reg"
+printf 'future-format\tunknown\r\nimage\tservice-a\tsha256:new\t123\n' > "$tmp/unknown-expected"
+if (cd -- "$tmp" && bash "$here/register-release-drift-carried.sh" --image "$tmp/unknown-reg" service-a sha256:new 123) 2>"$tmp/err" \
+  && cmp -s "$tmp/unknown-expected" "$tmp/unknown-reg"; then
+  echo 'ok - image upsert preserves unknown rows byte-for-byte'
+else
+  echo 'not ok - image upsert changed an unknown row'
+  failed=1
+fi
+
+cp "$tmp/reg" "$tmp/reg.snapshot"
+check_bad_image() { # name service image-id PR
+  local name="$1" service="$2" image_id="$3" pr="$4" rc
+  if (cd -- "$tmp" && bash "$here/register-release-drift-carried.sh" --image "$tmp/reg" "$service" "$image_id" "$pr") 2>"$tmp/err"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [[ "$rc" != 2 ]]; then echo "not ok - $name: rc $rc, want 2"; failed=1; return; fi
+  if ! cmp -s "$tmp/reg.snapshot" "$tmp/reg"; then echo "not ok - $name: registry changed"; failed=1; return; fi
+  if ! grep -q '^usage: .*--image' "$tmp/err"; then echo "not ok - $name: no image usage line"; failed=1; return; fi
+  if ! grep -q 'main SHA is not accepted' "$tmp/err"; then echo "not ok - $name: usage does not reject main SHA"; failed=1; return; fi
+  echo "ok - $name"
+}
+check_bad_image 'bad image id is rejected without mutation' service-a sha256: 123
+check_bad_image 'image main SHA is rejected without mutation' service-a sha256:a "$sha"
+check_bad_image 'bad image service is rejected without mutation' 'bad/service' sha256:a 123
+
 exit "$failed"
