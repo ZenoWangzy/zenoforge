@@ -127,6 +127,18 @@ zf_config_file() {
   return 1
 }
 
+# Resolve the target's release runner, retaining the engine runner as fallback.
+zf_release_runner() {
+  local config runner
+  if config="$(zf_config_file release.json)" &&
+     runner="$(jq -r '.release.runner // empty | select(type == "string")' "$config" 2>/dev/null)" &&
+     [[ -n "$runner" && -f "$ZF_REPO_DIR/$runner" ]]; then
+    printf '%s\n' "$ZF_REPO_DIR/$runner"
+  else
+    printf '%s\n' "$ZF_ENGINE_DIR/run-release.sh"
+  fi
+}
+
 # Resolve host-owned files, preserving the caller's existing fallback path.
 zf_host_ops_file() {
   local relative_path="$1" fallback="${2:-$ZF_ENGINE_DIR/${1#scripts/agent/}}"

@@ -606,7 +606,7 @@ dispatch() {
 }
 
 dispatch_release_batch() {
-  local anchor="$1" batch_sha="$2" script="$ZF_ENGINE_DIR/run-release.sh"
+  local anchor="$1" batch_sha="$2" script="$(zf_release_runner)"
   local -a runtime_env=()
   [ -z "${MAC_AUTOPILOT_RUNTIME_DIR:-}" ] || runtime_env=(-E "MAC_AUTOPILOT_RUNTIME_DIR=$MAC_AUTOPILOT_RUNTIME_DIR")
   if [ ! -x "$script" ]; then
@@ -2463,7 +2463,7 @@ fi
 # the candidate selector applies deploy_is_blocked(). The wrapper only runs a
 # registered read-only preflight; unknown block kinds remain fail-closed.
 if [ -s "$DEPLOY_BLOCKED_FILE" ] && [ "$DRY_RUN" != 1 ]; then
-  if ! bash "$SCRIPT_DIR/run-release.sh" --recheck-deploy-block; then
+  if ! bash "$(zf_release_runner)" --recheck-deploy-block; then
     echo "issue-pipeline: infrastructure deploy-block recheck failed; release remains gated" >&2
   fi
 fi
