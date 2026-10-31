@@ -61,6 +61,15 @@ assert_fails_with 'suite failed: engine/comparison.test.sh' --baseline "$test_ro
 printf 'FAIL\tengine/comparison.test.sh\n' > "$test_root/baseline.tsv"
 assert_passes --baseline "$test_root/baseline.tsv" --suites "$test_root/compare-suites.txt"
 
+# The candidate runs like the baseline: in a writable copy without deployment settings.
+printf '#!/usr/bin/env bash\n[[ ! -e engine/deploy.env ]] && touch engine/written\n' > "$engine/comparison.test.sh"
+printf 'PASS\tengine/comparison.test.sh\n' > "$test_root/baseline.tsv"
+: > "$engine/deploy.env"
+chmod a-w "$engine"
+assert_passes --baseline "$test_root/baseline.tsv" --suites "$test_root/compare-suites.txt"
+chmod u+w "$engine"
+rm "$engine/deploy.env"
+
 # Host-ops failures follow its per-test baseline, even when the runner exits 1.
 printf '#!/usr/bin/env bash\nprintf "FAIL\\tfixture\\n"\nexit 1\n' > "$ZF_HOST_OPS_DIR/run-tests.sh"
 assert_fails_with 'host-ops test failed: fixture'

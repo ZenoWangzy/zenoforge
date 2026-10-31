@@ -29,6 +29,15 @@ fail() { printf 'cutover-gate: %s\n' "$1"; failures=$((failures + 1)); }
 [[ -z $suites || -f $suites ]] || { fail "suite list is missing: $suites"; exit 1; }
 [[ -z $allow_undefined || -f $allow_undefined ]] || { fail "undefined function allow-list is missing: $allow_undefined"; exit 1; }
 
+# Copy a version, excluding deployment settings; never run tests in the live version. Both sides use it, so they run alike.
+copy_version() {
+  local scratch
+  scratch="$(mktemp -d "$repo_root/.git/cutover-$2.XXXXXXXX")"
+  tar -C "$1" --exclude='*.env' -cf - . | tar -C "$scratch" -xf -
+  chmod -R u+w "$scratch"
+  printf '%s\n' "$scratch"
+}
+
 run_suites() {
   local root=$1 results=$2 command_line suite_path status reason
   declare -A quarantine=()
@@ -58,11 +67,7 @@ run_suites() {
 if [[ $mode == baseline ]]; then
   [[ -d $version_dir/engine ]] || { [[ -d $version_dir && ${version_dir##*/} == engine ]] && version_dir=$(dirname "$version_dir"); }
   [[ -n $out && -d $version_dir/engine ]] || usage
-  scratch="$(mktemp -d "$repo_root/.git/cutover-baseline.XXXXXXXX")"
-  # Copy the version, excluding deployment settings; never run tests in the live version.
-  tar -C "$version_dir" --exclude='*.env' -cf - . | tar -C "$scratch" -xf -
-  chmod -R u+w "$scratch"
-  run_suites "$scratch" "$out"
+  run_suites "$(copy_version "$version_dir" baseline)" "$out"
   ((failures == 0)) || exit 1
   exit 0
 fi
@@ -508,7 +513,7 @@ fi
 
 if [[ -n $suites || -n $baseline ]]; then
   results=${results_out:-$(mktemp "$repo_root/.git/cutover-results.XXXXXXXX")}
-  run_suites "$(dirname "$engine_dir")" "$results"
+  run_suites "$(copy_version "$(dirname "$engine_dir")" candidate)" "$results"
   declare -A previous=()
   if [[ -n $baseline ]]; then
     while IFS=$'\t' read -r status suite extra; do
