@@ -270,3 +270,60 @@ test('guard targets resolve through the target repo after the repo and build mis
     { id: 'target-repo-symbol', targets: [{ kind: 'symbol', target: 'ops/host-units/symbol-only.sh#targetRepoSymbol' }] },
   ]);
 });
+
+test('guard targets resolve through the configured host-ops manifest after the repo and build miss', (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'incident-guard-audit-host-ops-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const buildRoot = path.join(root, 'build');
+  const targetRepo = path.join(root, 'target-repo');
+  const history = path.join(root, 'history');
+  const home = path.join(root, 'home');
+  const hostOpsRoot = path.join(home, 'agent-home/host-ops');
+  mkdirSync(path.join(buildRoot, 'engine/state'), { recursive: true });
+  mkdirSync(path.join(targetRepo, '.zenoforge'), { recursive: true });
+  mkdirSync(path.join(hostOpsRoot, 'scripts/agent'), { recursive: true });
+  mkdirSync(history, { recursive: true });
+  writeFileSync(path.join(hostOpsRoot, 'scripts/agent/host-only.sh'), 'hostOnlySymbol\n');
+  writeFileSync(path.join(hostOpsRoot, 'MANIFEST.tsv'), [
+    'pack path\tsha256\tmode',
+    'scripts/agent/host-only.sh\tfixture\t0644',
+  ].join('\n') + '\n');
+  writeFileSync(path.join(targetRepo, '.zenoforge/build.json'), JSON.stringify({
+    incident_guard_host_ops_manifest: '~/agent-home/host-ops/MANIFEST.tsv',
+  }));
+  writeFileSync(path.join(buildRoot, 'engine/state/incident-guards.json'), JSON.stringify({ incidents: [
+    { id: 'host-only-target', machine_checks: [
+      { test_file: '${REPO_DIR}/engine/host-only.sh' },
+      { command: ['bash', '-c', 'grep -Fq hostOnlySymbol "${REPO_DIR}/engine/host-only.sh"'] },
+    ] },
+    { id: 'unlisted-host-target', machine_checks: [
+      { test_file: '${REPO_DIR}/engine/unlisted.sh' },
+    ] },
+  ] }));
+
+  const result = spawnSync(process.execPath, [auditScript, '--repo', buildRoot,
+    '--history-dir', history, '--target-repo', targetRepo], { encoding: 'utf8', env: {
+      ...process.env,
+      HOME: home,
+      ZF_REPO_DIR: targetRepo,
+      ZF_ENGINE_DIR: path.join(buildRoot, 'engine'),
+      ZF_CONFIG_ROOT: path.join(targetRepo, '.zenoforge'),
+      ZF_PACK_DIR: '',
+      ZF_PACK_REL: '',
+      ZF_PACK_ROOT: '',
+    } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).missingTargets, [
+    { id: 'unlisted-host-target', targets: [{ kind: 'file', target: 'engine/unlisted.sh' }] },
+  ]);
+
+  rmSync(path.join(hostOpsRoot, 'MANIFEST.tsv'));
+  const noManifest = spawnSync(process.execPath, [auditScript, '--repo', buildRoot,
+    '--history-dir', history, '--target-repo', targetRepo], { encoding: 'utf8', env: {
+      ...process.env, HOME: home, ZF_REPO_DIR: targetRepo, ZF_ENGINE_DIR: path.join(buildRoot, 'engine'),
+      ZF_CONFIG_ROOT: path.join(targetRepo, '.zenoforge'), ZF_PACK_DIR: '', ZF_PACK_REL: '', ZF_PACK_ROOT: '',
+    } });
+  assert.equal(noManifest.status, 0, noManifest.stderr);
+  assert.deepEqual(JSON.parse(noManifest.stdout).missingTargets.map((m) => m.id),
+    ['host-only-target', 'unlisted-host-target']);
+});
