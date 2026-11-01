@@ -158,6 +158,19 @@ test('lessons fixture selects mapped suite', () => {
   assert.deepEqual(scope.testPaths, ['engine/land-direct-main.test.sh']);
 });
 
+test('lessons select a same-named suite under a configured pipeline root', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pipeline-scope-configured-suite-'));
+  const suite = 'project-tests/land-direct-main.test.sh';
+  try {
+    mkdirSync(join(root, '.zenoforge'), { recursive: true });
+    writeFileSync(join(root, '.zenoforge/ci.json'), JSON.stringify({ pipeline_suite_roots: ['project-tests'] }));
+    const scope = pipelineSuiteScope(['lessons/x.md'], new Set([suite]), { cwd: root });
+    assert.deepEqual(scope, { full: false, testPaths: [suite] });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('mapped Agent source retains explicit and reference-selected suites', { skip: 'needs the the product CI workflows or the product commit history, not exported' }, () => {
   const sourcePath = 'engine/run-release.sh';
   const trackedPaths = new Set(execFileSync('git', ['ls-files', '-z'], {

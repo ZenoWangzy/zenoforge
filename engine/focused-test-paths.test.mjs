@@ -464,6 +464,18 @@ test('maps lesson document changes to lesson ID allocation coverage', () => {
   ]);
 });
 
+test('maps lesson changes to a same-named suite under configured pipeline roots', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'focused-configured-suite-'));
+  const suite = 'project-tests/land-direct-main.test.sh';
+  try {
+    mkdirSync(join(repo, '.zenoforge'), { recursive: true });
+    writeFileSync(join(repo, '.zenoforge/ci.json'), JSON.stringify({ pipeline_suite_roots: ['project-tests'] }));
+    assert.deepEqual(focusedTestPaths(['lessons/x.md'], new Set([suite]), { cwd: repo }), [suite]);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test('intersects selected suites when main changes a shared landing helper', () => {
   assert.deepEqual(intersectingFocusedTestPaths(
     ['engine/land-direct-main.sh'],
