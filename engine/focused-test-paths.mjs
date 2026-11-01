@@ -34,6 +34,7 @@ const CI_TREE_TESTS = Object.freeze([
 ].map(packPath));
 
 export const RELATED_TESTS = new Map([
+  ['engine/supervisor/**', ['engine/supervisor.test.sh']],
   ['engine/eval/graders.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['engine/eval/compare.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['engine/eval/run-eval.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
