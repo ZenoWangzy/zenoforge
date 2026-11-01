@@ -135,7 +135,11 @@ export const RELATED_TESTS = new Map([
   ['.github/workflows/migration-sql-gate.yml', ['scripts/deploy-regression-contract.test.mjs']],
   ['engine/git-merge-state-json.sh', ['engine/state-json-merge.test.sh', 'engine/land-direct-main.test.sh']],
   ['engine/land-direct-main-bootstrap.sh', ['engine/land-direct-main.test.sh', 'engine/pipeline-system-deliver.test.mjs']],
-  ['engine/land-direct-main.sh', ['engine/land-direct-main.test.sh', 'engine/pipeline-system-deliver.test.mjs']],
+  ['engine/land-direct-main.sh', [
+    'engine/land-direct-main.test.sh',
+    'engine/land-agent-home.test.sh',
+    'engine/pipeline-system-deliver.test.mjs',
+  ]],
   ['engine/rule-lane.sh', ['engine/land-direct-main.test.sh']],
   ['engine/state/rule-files.json', ['engine/land-direct-main.test.sh']],
   ['engine/state/rulings.json', ['engine/state/rulings.test.mjs']],
