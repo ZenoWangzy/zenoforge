@@ -10,8 +10,7 @@ budget_alert_if_needed() { # 信息性告警：新鲜 token（Codex+worker Claud
   fi
 }
 
-# 评审方法 = 评审技能（缺省 Matt 的 code-review：Standards / Spec 两轴）；verdict 行与 review-findings schema 只认 review-contract.md。
-# 技能目录名是部署设置 ZF_REVIEW_SKILL（部署的 deploy.env 可改成自己的评审技能）；契约文件从引擎目录解析（同 prompts/ 里其它文件），仓库布局与版本目录布局都成立。
+# Review method follows the configured contract path: target config, pack data, then engine default.
 REVIEW_SKILL="${ZF_REVIEW_SKILL:-code-review}"
 REVIEW_CONTRACT_MD="$(sched_config_file prompts/review-contract.md)"
 review_contract_rule() { # 评审、复审 prompt 的契约句；方法文件只取引擎自带的，不跟被评审代码里的同名文件走
@@ -30,19 +29,19 @@ decision_eval_stages_for_paths() { # newline-delimited paths → affected eval s
   while IFS= read -r path; do
     [[ -n "$path" ]] || continue
     case "$path" in
-      engine/prompts/triage.*) affected[triage]=1; affected[end-to-end]=1 ;;
-      engine/prompts/advisor*) affected[advisor]=1; affected[end-to-end]=1 ;;
-      engine/prompts/implement-contract.md) affected[implement]=1; affected[end-to-end]=1 ;;
-      engine/prompts/review-contract.md|".agents/skills/$REVIEW_SKILL"/*|engine/mac-autopilot/review-contract.sh)
+      engine/prompts/triage.*|.zenoforge/prompts/triage.*) affected[triage]=1; affected[end-to-end]=1 ;;
+      engine/prompts/advisor*|.zenoforge/prompts/advisor*) affected[advisor]=1; affected[end-to-end]=1 ;;
+      engine/prompts/implement-contract.md|.zenoforge/prompts/implement-contract.md) affected[implement]=1; affected[end-to-end]=1 ;;
+      engine/prompts/review-contract.md|.zenoforge/prompts/review-contract.md|".agents/skills/$REVIEW_SKILL"/*|engine/mac-autopilot/review-contract.sh)
         affected[review]=1; affected[end-to-end]=1 ;;
       .agents/skills/triage/*|.agents/skills/ask-matt/*) affected[triage]=1; affected[end-to-end]=1 ;;
       .agents/skills/implement/*|.agents/skills/tdd/*|.agents/skills/diagnosing-bugs/*) affected[implement]=1; affected[end-to-end]=1 ;;
       .agents/skills/to-tickets/*|.agents/skills/to-spec/*) affected[end-to-end]=1 ;;
-      engine/prompts/recut.*|engine/prompts/guarded-recut-hand.md)
+      engine/prompts/recut.*|engine/prompts/guarded-recut-hand.md|.zenoforge/prompts/recut.*|.zenoforge/prompts/guarded-recut-hand.md)
         affected[end-to-end]=1 ;;
-      engine/prompts/supervisor-arbiter.md)
+      engine/prompts/supervisor-arbiter.md|.zenoforge/prompts/supervisor-arbiter.md)
         affected[supervisor]=1 ;;
-      engine/prompts/*|engine/model-policy.default.json)
+      engine/prompts/*|engine/model-policy.default.json|.zenoforge/prompts/*|.zenoforge/model-policy.default.json)
         affected[triage]=1; affected[advisor]=1; affected[implement]=1; affected[review]=1; affected[end-to-end]=1 ;;
     esac
   done <<<"$1"

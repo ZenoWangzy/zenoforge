@@ -1897,6 +1897,12 @@ sched_run_case stuck_worker_disposition
 [[ "$(decision_eval_stages_for_paths 'engine/model-policy.default.json')" == 'triage advisor implement review end-to-end ' ]] || {
   echo 'not ok - scheduler.test.sh: model policy did not select every eval stage' >&2; exit 1;
 }
+[[ "$(decision_eval_stages_for_paths '.zenoforge/prompts/triage.md')" == 'triage end-to-end ' ]] || {
+  echo 'not ok - scheduler.test.sh: target triage prompt did not select triage and end-to-end evals' >&2; exit 1;
+}
+[[ "$(decision_eval_stages_for_paths '.zenoforge/model-policy.default.json')" == 'triage advisor implement review end-to-end ' ]] || {
+  echo 'not ok - scheduler.test.sh: target model policy did not select every eval stage' >&2; exit 1;
+}
 
 sched_case_gate_network() {
 new_tick_fixture gate-network

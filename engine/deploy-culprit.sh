@@ -36,7 +36,7 @@ deploy_culprit() {
       changed="$(git -C "$repo" diff --name-only "$sha^1" "$sha" -- "$path")" || return 1
       [ "$changed" = "$path" ] || continue
     else
-      changed="$(cd "$repo" && node "$SCRIPT_DIR/changed-images.mjs" "$sha^" "$sha")" || return 1
+      changed="$(cd "$repo" && node "$repo/scripts/release/changed-images.mjs" "$sha^" "$sha")" || return 1
       grep -Fxq "$image" <<< "$changed" || continue
     fi
     [[ "$subject" =~ ^fix\(\#([0-9]+)\): ]] || return 1
