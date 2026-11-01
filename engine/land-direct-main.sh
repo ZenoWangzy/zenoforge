@@ -5,6 +5,16 @@ set -euo pipefail
 unset ZF_NON_PRODUCT_UNIT
 
 self="$(realpath -- "$0")"
+land_script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+land_agent_home="${AGENT_HOME:-${ZF_HOME:-}}"
+if [[ -z "$land_agent_home" ]]; then
+  land_agent_home="$(
+    if [[ -f "$land_script_dir/deploy.env" ]]; then
+      source "$land_script_dir/deploy.env" >/dev/null 2>&1 || true
+    fi
+    printf '%s' "${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+  )"
+fi
 orig_args=("$@")
 land_snapshot_marker="${ZF_LAND_CODE_SNAPSHOT:-}"
 # $self is realpath-normalized while the marker arrives verbatim from mktemp; macOS TMPDIR
@@ -39,7 +49,6 @@ if [[ "$self" != "$land_snapshot_entry" && -n "$land_engine_dir" \
   [[ "$self" == "$land_entry_top/engine/land-direct-main.sh" ]] || land_engine_entry=1
 fi
 if [[ "$land_engine_entry" == 1 ]]; then
-  land_agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
   land_target_repo="$(git rev-parse --show-toplevel)"
   land_guard_source_root="$land_target_repo"
   if [[ -e "$land_agent_home/checkout" ]]; then
@@ -77,7 +86,6 @@ elif [[ "$self" != "$land_snapshot_entry" ]]; then
   # Shared state belongs to the runtime checkout, even when this landing starts
   # from an isolated owner worktree. The code snapshot is not a pipeline install.
   land_guard_source_root="$land_source_root"
-  land_agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
   if [[ -e "$land_agent_home/checkout" ]]; then
     land_guard_source_root="$land_agent_home/checkout"
   fi
@@ -175,7 +183,7 @@ if [[ "$revalidate_only" != 1 && -z "$reconcile_pr" && "$reconcile_only" != 1 ]]
   echo "land-direct-main: direct-main safety path bypasses preflight slot; focused suites run post-land" >&2
 fi
 
-agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+agent_home="$land_agent_home"
 export AGENT_HOME="$agent_home"
 RELEASE_RECOVERY_DIR="$agent_home/release-recovery"
 if [[ "$enqueue_only" == 1 ]]; then
@@ -226,7 +234,6 @@ land_register_post_push_range() {
 # Source helpers beside this script, not from the landing worktree: the queue runs the checkout's
 # land-direct-main.sh against older agent worktrees, whose lib.sh lacked agent_owned_issue_ids on
 # 2026-10-11 and refused every landing with "could not resolve owner issues".
-land_script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$land_script_dir/merge-result-check.sh"
 export ZF_REPO_DIR="${ZF_REPO_DIR:-$repo_root}"
 source "$land_script_dir/lib.sh"
