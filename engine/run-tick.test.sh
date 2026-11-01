@@ -159,10 +159,10 @@ make_fixture() {
   # The launcher's own copy is part of the seed commit, not left
   # untracked on top of it — an untracked file would itself trip the
   # dirty-tree guard this fixture exists to test against.
-  mkdir -p "$repo/engine/systemd"
+  mkdir -p "$repo/engine/systemd" "$repo/.zenoforge/systemd"
   copy_agent_library "$repo/engine"
   rm -f "$repo/engine/issue-pipeline.sh"
-  cp "$TIMER_LIST_SRC" "$repo/engine/systemd/pipeline-timers.list"
+  cp "$TIMER_LIST_SRC" "$repo/.zenoforge/systemd/pipeline-timers.list"
   chmod +x "$repo/engine/run-tick.sh"
   git -C "$repo" add -A
   git -C "$repo" commit -q -m seed
@@ -1105,6 +1105,14 @@ Description=throwaway fixture unit -- never installed for real, run-tick.test.sh
 Type=oneshot
 ExecStart=/bin/true
 EOF
+mkdir -p "$repo/.zenoforge/systemd"
+cat >"$repo/.zenoforge/systemd/zf-config-selftest-unit.service" <<'EOF'
+[Unit]
+Description=config-owned fixture unit -- config takes precedence over host-ops
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+EOF
 git -C "$repo" add -A
 git -C "$repo" commit -q -m "add fixture unit"
 git -C "$repo" push -q origin main
@@ -1125,6 +1133,34 @@ EOF
 chmod +x "$fake_bin/systemctl"
 
 agent_home="$(fresh_agent_home)"
+mkdir -p "$agent_home/host-ops/scripts/agent/systemd"
+cat >"$agent_home/host-ops/scripts/agent/systemd/zf-config-selftest-unit.service" <<'EOF'
+[Unit]
+Description=host-ops duplicate fixture unit -- config should win
+[Service]
+Type=oneshot
+ExecStart=/bin/false
+EOF
+cat >"$agent_home/host-ops/scripts/agent/systemd/zf-hostops-selftest-unit.timer" <<'EOF'
+[Unit]
+Description=host-ops fixture timer
+[Timer]
+OnBootSec=1h
+EOF
+cat >"$agent_home/host-ops/scripts/agent/systemd/zf-hostops-existing-selftest-unit.service" <<'EOF'
+[Unit]
+Description=host-ops replacement that must not overwrite an installed unit
+[Service]
+Type=oneshot
+ExecStart=/bin/false
+EOF
+cat >"$unit_dest_dir/zf-hostops-existing-selftest-unit.service" <<'EOF'
+[Unit]
+Description=installed unit kept until its unit moves
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+EOF
 roster="$(fresh_roster)"
 set +e
 RUN_OUTPUT="$(AGENT_HOME="$agent_home" AGENT_DRY_RUN=1 \
@@ -1141,6 +1177,11 @@ else
   echo "not ok - a unit missing from the dest dir gets installed"
   FAILED=1
 fi
+grep -Fq 'Description=config-owned fixture unit' "$unit_dest_dir/zf-config-selftest-unit.service"
+! grep -Fq 'Description=host-ops duplicate fixture unit' "$unit_dest_dir/zf-config-selftest-unit.service"
+grep -Fq 'Description=host-ops fixture timer' "$unit_dest_dir/zf-hostops-selftest-unit.timer"
+grep -Fq 'Description=installed unit kept until its unit moves' "$unit_dest_dir/zf-hostops-existing-selftest-unit.service"
+! grep -Fq 'Description=host-ops replacement' "$unit_dest_dir/zf-hostops-existing-selftest-unit.service"
 assert_contains "...and the launcher logs which unit it installed" \
   "$RUN_OUTPUT" "installed updated unit: zf-selftest-unit.service"
 assert_contains "...then reloads systemd exactly because something changed" \

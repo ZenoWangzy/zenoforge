@@ -170,7 +170,7 @@ run_tick() {
   repo_dir="$ZF_REPO_DIR"
   # Load before this checkout self-updates; the shared function is then held in this shell.
   source "$script_dir/model-policy-fast-forward.sh"
-  timer_list="$ZF_ENGINE_DIR/systemd/pipeline-timers.list"
+  timer_list="$(zf_config_file systemd/pipeline-timers.list || true)"
   # The target repository, as lib.sh derives it: ZF_REPO, else the checkout's origin remote.
   timer_repo="${ZF_REPO:-$(git -C "$repo_dir" remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##' || true)}"
 
@@ -364,24 +364,37 @@ run_tick() {
   # TimeoutStartSec is a degraded outer safety net, retried automatically
   # next tick -- not the same class of unsafe as running the pipeline
   # against a dirty or diverged checkout.
-  local unit_src_dir="$ZF_ENGINE_DIR/systemd"
+  local unit_src_dir unit_candidate
+  local host_unit_src_dir="$(zf_host_ops_dir)/scripts/agent/systemd"
   local unit_dest_dir="${SYSTEMD_USER_UNIT_DIR:-$HOME/.config/systemd/user}"
   local unit_src unit_name unit_dest units_changed=0
-  if [ -d "$unit_src_dir" ]; then
-    for unit_src in "$unit_src_dir"/*.service "$unit_src_dir"/*.timer; do
-      [ -f "$unit_src" ] || continue
-      unit_name="$(basename "$unit_src")"
-      unit_dest="$unit_dest_dir/$unit_name"
-      if [ ! -f "$unit_dest" ] || ! diff -q "$unit_src" "$unit_dest" >/dev/null 2>&1; then
-        if mkdir -p "$unit_dest_dir" 2>/dev/null && cp "$unit_src" "$unit_dest" 2>/dev/null; then
-          echo "run-tick: installed updated unit: $unit_name -> $unit_dest_dir" >&2
-          units_changed=1
-        else
-          echo "run-tick: failed to install unit $unit_name into $unit_dest_dir -- live unit stays stale until this succeeds" >&2
-        fi
-      fi
+  local -A unit_names=()
+  for unit_src_dir in "$ZF_ENGINE_DIR/systemd" "$ZF_CONFIG_ROOT/systemd" "$host_unit_src_dir"; do
+    for unit_candidate in "$unit_src_dir"/*.service "$unit_src_dir"/*.timer; do
+      [ -f "$unit_candidate" ] || continue
+      unit_names["$(basename "$unit_candidate")"]=1
     done
-  fi
+  done
+  for unit_name in "${!unit_names[@]}"; do
+    unit_dest="$unit_dest_dir/$unit_name"
+    if ! unit_src="$(zf_config_file "systemd/$unit_name")"; then
+      # Host-ops is only a fallback for units that have not been installed yet.
+      # Existing live units keep their current definition until their unit moves.
+      if [[ -f "$unit_dest" && -f "$host_unit_src_dir/$unit_name" ]]; then
+        continue
+      fi
+      unit_src="$(zf_host_ops_file "scripts/agent/systemd/$unit_name" "$ZF_ENGINE_DIR/systemd/$unit_name")"
+    fi
+    [ -f "$unit_src" ] || continue
+    if [ ! -f "$unit_dest" ] || ! diff -q "$unit_src" "$unit_dest" >/dev/null 2>&1; then
+      if mkdir -p "$unit_dest_dir" 2>/dev/null && cp "$unit_src" "$unit_dest" 2>/dev/null; then
+        echo "run-tick: installed updated unit: $unit_name -> $unit_dest_dir" >&2
+        units_changed=1
+      else
+        echo "run-tick: failed to install unit $unit_name into $unit_dest_dir -- live unit stays stale until this succeeds" >&2
+      fi
+    fi
+  done
   if [ "$units_changed" = "1" ]; then
     if systemctl --user daemon-reload; then
       echo "run-tick: systemctl --user daemon-reload applied the unit change(s) above" >&2

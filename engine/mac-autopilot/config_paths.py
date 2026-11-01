@@ -36,7 +36,16 @@ def zf_host_ops_file(relative_path, fallback=None):
     engine_dir = Path(os.environ.get("ZF_ENGINE_DIR") or Path(__file__).resolve().parent.parent)
     agent_home = Path(os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or Path.home() / ".zenoforge")
     host_ops = Path(os.environ.get("ZF_HOST_OPS_DIR") or agent_home / "host-ops")
-    candidate = host_ops / relative_path
+    built_alias = relative_path.startswith("engine/")
+    host_ops_relative = f"scripts/agent/{relative_path.removeprefix('engine/')}" if built_alias else relative_path
+    candidate = host_ops / host_ops_relative
+    if fallback is not None:
+        fallback_path = Path(fallback)
+    elif built_alias:
+        fallback_path = engine_dir / relative_path.removeprefix("engine/")
+    else:
+        fallback_path = engine_dir / relative_path.removeprefix("scripts/agent/")
     if candidate.is_file():
-        return candidate
-    return Path(fallback) if fallback is not None else engine_dir / relative_path.removeprefix("scripts/agent/")
+        if not built_alias or not fallback_path.is_file() or candidate.read_bytes() == fallback_path.read_bytes():
+            return candidate
+    return fallback_path
