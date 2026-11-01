@@ -139,6 +139,75 @@ zf_release_runner() {
   fi
 }
 
+# Resolve the optional advisor batch runner from advisor.json. A configured path is
+# target-repository code; an absent setting keeps the generic engine runner.
+zf_advisor_batch_runner() {
+  local config runner candidate
+  if ! config="$(zf_config_file advisor.json)"; then
+    printf '%s\n' "$ZF_ENGINE_DIR/run-advisor-batch.sh"
+    return 0
+  fi
+  jq -e . "$config" >/dev/null 2>&1 || return 2
+  if ! jq -e 'type == "object" and has("batchRunner")' "$config" >/dev/null 2>&1; then
+    printf '%s\n' "$ZF_ENGINE_DIR/run-advisor-batch.sh"
+    return 0
+  fi
+  runner="$(jq -er '.batchRunner | select(type == "string" and length > 0)' "$config" 2>/dev/null)" || return 2
+  [[ "$runner" != /* && "$runner" != *\\* ]] || return 2
+  case "/$runner/" in */../*) return 2 ;; esac
+  candidate="$ZF_REPO_DIR/$runner"
+  [[ -x "$candidate" ]] || return 2
+  printf '%s\n' "$candidate"
+}
+
+# Resolve the target's optional comment prefix while keeping a neutral default.
+# Advisor pruning and comment-origin checks use this exact prefix.
+zf_advisor_comment_disclaimer() {
+  [[ $# -eq 1 ]] || return 2
+  local default="$1" config value
+  if ! config="$(zf_config_file advisor.json)"; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  jq -e . "$config" >/dev/null 2>&1 || return 2
+  if ! jq -e 'type == "object" and has("commentDisclaimer")' "$config" >/dev/null 2>&1; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  value="$(jq -er '.commentDisclaimer | select(type == "string" and length > 0)' "$config" 2>/dev/null)" || return 2
+  printf '%s\n' "$value"
+}
+
+# Resolve the migration gate module. Products can keep their gate implementation
+# beside their release code; otherwise a configured migration uses the generic
+# engine gate and a legacy pack gate remains available during migration.
+zf_migration_gate_file() {
+  local config gate candidate
+  # Only the target's own release.json selects a gate, as before: an engine default config must not activate one.
+  config="${ZF_CONFIG_ROOT:-}/release.json"
+  if [[ -n "${ZF_CONFIG_ROOT:-}" && -f "$config" ]]; then
+    jq -e . "$config" >/dev/null 2>&1 || return 2
+    if jq -e 'type == "object" and has("migration")' "$config" >/dev/null 2>&1; then
+      if jq -e '.migration | type == "object" and has("gate")' "$config" >/dev/null 2>&1; then
+        gate="$(jq -er '.migration.gate | select(type == "string" and length > 0)' "$config" 2>/dev/null)" || return 2
+        [[ "$gate" != /* && "$gate" != *\\* ]] || return 2
+        case "/$gate/" in */../*) return 2 ;; esac
+        candidate="$ZF_REPO_DIR/$gate"
+      else
+        candidate="$ZF_ENGINE_DIR/lib-migration-gate.sh"
+      fi
+      [[ -r "$candidate" ]] || return 2
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+  if [[ -n "${ZF_PACK_DIR-}" && -r "$ZF_PACK_DIR/lib-migration-gate.sh" ]]; then
+    printf '%s\n' "$ZF_PACK_DIR/lib-migration-gate.sh"
+    return 0
+  fi
+  return 1
+}
+
 # Resolve host-owned files, preserving the caller's existing fallback path.
 zf_host_ops_file() {
   local relative_path="$1" fallback="${2:-$ZF_ENGINE_DIR/${1#scripts/agent/}}"

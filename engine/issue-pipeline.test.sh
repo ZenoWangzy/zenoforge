@@ -57,6 +57,44 @@ assert_cond() {
   fi
 }
 
+if [[ "${1:-}" == "--advisor-runner-only" ]]; then
+  runner_target="$AGENT_HOME/runner-target"
+  mkdir -p "$runner_target/.zenoforge" "$runner_target/scripts/ops" "$runner_target/scripts/release"
+  printf '#!/usr/bin/env bash\n' > "$runner_target/scripts/ops/advisor-batch.sh"
+  chmod +x "$runner_target/scripts/ops/advisor-batch.sh"
+  printf '{"batchRunner":"scripts/ops/advisor-batch.sh"}\n' > "$runner_target/.zenoforge/advisor.json"
+  printf '#!/usr/bin/env bash\n' > "$runner_target/scripts/release/run-release.sh"
+  chmod +x "$runner_target/scripts/release/run-release.sh"
+  printf '{"release":{"runner":"scripts/release/run-release.sh"}}\n' > "$runner_target/.zenoforge/release.json"
+  ZF_REPO_DIR="$runner_target"
+  ZF_CONFIG_ROOT="$runner_target/.zenoforge"
+  export ZF_REPO_DIR ZF_CONFIG_ROOT
+  NEEDS_ADVISOR_IDS=""
+  UNIT_PREFIX_TRANSIENT=zf
+  ADVISOR_RUNTIME_MAX_SEC=60
+  agent_memory_floor_allows() { return 0; }
+  guarded_write() { printf '<%s>\n' "$@" >> "$AGENT_HOME/advisor-runner-dispatch.args"; }
+  eval "$(sed -n '/^dispatch_advisor_batch() {/,/^}/p' "$PIPELINE_SRC")"
+  dispatch_advisor_batch 1
+  assert_eq 'advisor dispatch uses the configured product runner' yes \
+    "$(grep -Fx "<$runner_target/scripts/ops/advisor-batch.sh>" "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
+  assert_eq 'advisor dispatch carries the config root into its transient unit' yes \
+    "$(grep -Fx "<ZF_CONFIG_ROOT=$runner_target/.zenoforge>" "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
+  : > "$AGENT_HOME/advisor-runner-dispatch.args"
+  guarded_write() { printf '<%s>\n' "$@" >> "$AGENT_HOME/advisor-runner-dispatch.args"; }
+  release_batch_cadence_mark() { :; }
+  eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p' "$PIPELINE_SRC")"
+  RELEASE_RUNTIME_MAX_SEC=60
+  dispatch_release_batch 4928 deadbeef
+  assert_eq 'release dispatch uses the configured product runner' yes \
+    "$(grep -Fx "<$runner_target/scripts/release/run-release.sh>" "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
+  assert_eq 'release dispatch carries the config root into its transient unit' yes \
+    "$(grep -Fx "<ZF_CONFIG_ROOT=$runner_target/.zenoforge>" "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
+  [ "$FAILED" -eq 0 ] || exit 1
+  echo 'issue-pipeline.test.sh: configured runners PASS'
+  exit 0
+fi
+
 ROADMAP_ORDER_ENABLED=false
 ROADMAP_PARENT_CALL=''
 roadmap_ensure_issue_parent() {
