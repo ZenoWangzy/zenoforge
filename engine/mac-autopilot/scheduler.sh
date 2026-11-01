@@ -84,7 +84,7 @@ source "$HERE/scheduler.d/locks-views.sh"
 mkdir -p "$A/alerts"
 
 if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --rule ]]; then
-  if ! reconcile_event="$(reconcile_runtime_config "$HERE/config.template.json" "$A/config.json" "${ZF_ENGINE_DIR:-$ROOT/engine}/lib.sh")"; then
+  if ! reconcile_event="$(reconcile_runtime_config "$(sched_config_file mac-autopilot/config.template.json)" "$A/config.json" "${ZF_ENGINE_DIR:-$ROOT/engine}/lib.sh")"; then
     say "config-reconcile failed; tick stopped before reading config"
     exit 1
   fi
@@ -200,7 +200,7 @@ WORKER_READ_SCOPE_RULE="
 # 不按标题（标题会被重构改名）：租户隔离/RBAC/可信确认/事务/幂等/审计/不伪造未知金额、不弹桌面窗口（xdg-open）、不做过度防御。
 # worker-rules-lanes.test.sh 读真实的 CLAUDE.md，核对每组关键词恰好命中一行。
 mapfile -t PRODUCT_BOUNDARY_SELECTORS < <(jqf -r '.boundary_selectors[]?' "$WORKER_DOCS_FILE") # 同一份 worker-docs.json
-PRODUCT_LANE_SKILLS="$(sched_pack_file mac-autopilot/product-lane-skills.txt)" || PRODUCT_LANE_SKILLS="$HERE/product-lane-skills.txt"
+PRODUCT_LANE_SKILLS="$(sched_config_file mac-autopilot/product-lane-skills.txt)" || PRODUCT_LANE_SKILLS="$HERE/product-lane-skills.txt"
 
 # #4190/#4192/#4193 wrote the same 8k-line hook concurrently. Triage already
 # persists expected_paths; use its existing selector and overlap predicate, not

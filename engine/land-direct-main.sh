@@ -293,6 +293,14 @@ land_configure_git_identity() {
   fi
 }
 
+land_state_json_attribute_lines() {
+  local pack_rel="${ZF_PACK_REL:-engine}" incident_path="${INCIDENT_GUARDS_REPO_PATH:-${ZF_PACK_REL:-engine}/state/incident-guards.json}"
+  printf '%s\n' "$pack_rel/state/*.json merge=statejson"
+  if [[ "$incident_path" != "$pack_rel/state/incident-guards.json" ]]; then
+    printf '%s\n' "${incident_path%/*}/*.json merge=statejson"
+  fi
+}
+
 land_git_rebase() {
   local source_driver="${ZF_LAND_STATE_JSON_MERGE_DRIVER:-$land_script_dir/git-merge-state-json.sh}" driver attributes quoted_driver status
   [[ -x "$source_driver" ]] || { echo "land-direct-main: missing state JSON merge driver: $source_driver" >&2; return 1; }
@@ -302,7 +310,7 @@ land_git_rebase() {
     rm -f -- "$driver" "$attributes"
     return 1
   fi
-  printf '%s\n' "$ZF_PACK_REL/state/*.json merge=statejson" > "$attributes"
+  land_state_json_attribute_lines > "$attributes"
   printf -v quoted_driver '%q' "$driver"
   if git -c "core.attributesFile=$attributes" \
       -c "merge.statejson.driver=bash $quoted_driver %O %A %B" rebase "$@"; then
@@ -318,11 +326,12 @@ land_git_rebase() {
 # rebase 处解决。这里把改动范围带 shared-append 文件的落地 rebase 记进共享日志
 # （node_health 的 ci.shared_append_rebase_conflict_pct 读它）；遥测失败不阻断落地。
 land_shared_append_range_files() { # base -> 落地范围与 shared-append 名单的交集（JSON 数组；无需记录时输出空）
-  local base="$1" range
+  local base="$1" range template
   git merge-base --is-ancestor "$base" HEAD 2>/dev/null && return 0 # up-to-date 的 rebase 不重放提交
   range="$(git diff --name-only --no-renames "$base...HEAD" 2>/dev/null)" || return 0
   [[ -n "$range" ]] || return 0
-  printf '%s' "$range" | jq -Rsc --slurpfile cfg "$land_script_dir/mac-autopilot/config.template.json" '
+  template="$(zf_config_file mac-autopilot/config.template.json)" || template="$land_script_dir/mac-autopilot/config.template.json"
+  printf '%s' "$range" | jq -Rsc --slurpfile cfg "$template" '
     (($cfg[0].footprint_mutex.shared_append // []) | map(select(type == "string"))) as $sa
     | split("\n") | [.[] | select(length > 0) | select(. as $x | any($sa[]; . == $x))]' 2>/dev/null || return 0
 }
@@ -1217,8 +1226,9 @@ syntax_only_landing() {
       packages/*|infra/*|deploy/*|migrations/*) return 1 ;;
     esac
     case "$path" in
-      *.md|docs/*|lessons/*|"$pack_rel"/state/*.json|"$pack_rel"/prompts/*|\
-        "$pack_rel"/mac-autopilot/config.template.json|.agents/skills/*) ;;
+      *.md|docs/*|lessons/*|"$pack_rel"/state/*.json|.zenoforge/state/hand-priority.json|.zenoforge/state/incident-guards.json|\
+        "$pack_rel"/prompts/*|.zenoforge/prompts/*|\
+        "$pack_rel"/mac-autopilot/config.template.json|.zenoforge/mac-autopilot/config.template.json|.agents/skills/*) ;;
       *) return 1 ;;
     esac
   done < <(git diff --name-only --no-renames "$base...$head")

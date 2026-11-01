@@ -8,6 +8,7 @@ printf '{"incidents":[{"id":"in-engine"}]}\n' > "$t/engine/state/incident-guards
 export ZF_REPO_DIR="$t/r" ZF_ENGINE_DIR="$t/engine" ZF_CONFIG_ROOT="$t/r/.zenoforge"
 source "$p/config.sh"
 eval "$(sed -n '/^landed_incident_guards() {/,/^}/p' "$p/land-direct-main.sh")"
+eval "$(sed -n '/^land_state_json_attribute_lines() {/,/^}/p' "$p/land-direct-main.sh")"
 git init -q "$t/r"; cd "$t/r"; g() { git -c user.name=t -c user.email=t@t "$@"; }
 mkdir -p pk/state; echo '{"incidents":[{"id":"in-repo"}]}' > pk/state/incident-guards.json; g add -A; g commit -qm a
 export ZF_PACK_REL=pk ZF_PACK_DIR="$t/pack"; mkdir -p "$t/pack/state"; echo '{"incidents":[{"id":"in-pack"}]}' > "$t/pack/state/incident-guards.json"
@@ -21,4 +22,6 @@ echo '{"incidents":[{"id":"in-config"}]}' > .zenoforge/state/incident-guards.jso
 g add .zenoforge/state/incident-guards.json; g commit -qm c
 INCIDENT_GUARDS_REPO_PATH=.zenoforge/state/incident-guards.json
 [[ $(landed_incident_guards HEAD | jq -r '.incidents[0].id') == in-config ]]
+ZF_PACK_REL=scripts/agent
+[[ "$(land_state_json_attribute_lines)" == $'scripts/agent/state/*.json merge=statejson\n.zenoforge/state/*.json merge=statejson' ]]
 echo ok
