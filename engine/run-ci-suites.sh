@@ -51,7 +51,7 @@ fi
 mapfile -t shell_suites < <(
   for suite_root in "${suite_roots[@]}"; do
     [[ -d "$suite_root" ]] || continue
-    find "$suite_root" -type f \( -name '*.test.sh' -o \( -name 'test-*.sh' ! -name 'test-env.sh' \) \) ! -path 'engine/run-release.test.sh' -print
+    find "$suite_root" -type f \( -name '*.test.sh' -o \( -name 'test-*.sh' ! -name 'test-env.sh' \) \) ! -path 'scripts/release/run-release.test.sh' -print
   done | LC_ALL=C sort -u
 )
 mapfile -t node_suites < <(
@@ -176,10 +176,10 @@ suite_weight_seconds() {
     */reclaim-disk.test.sh) echo 145 ;;
     engine/run-advisor.test.sh) echo 533 ;;
     engine/run-recut.test.sh) echo 94 ;;
-    engine/run-release-suite-release-entry.test.sh) echo 420 ;;
-    engine/run-release-suite-rollback.test.sh) echo 410 ;;
-    engine/run-release-suite-postdeploy.test.sh) echo 500 ;;
-    engine/run-release-suite-reconcile.test.sh) echo 400 ;;
+    scripts/release/run-release-suite-release-entry.test.sh) echo 420 ;;
+    scripts/release/run-release-suite-rollback.test.sh) echo 410 ;;
+    scripts/release/run-release-suite-postdeploy.test.sh) echo 500 ;;
+    scripts/release/run-release-suite-reconcile.test.sh) echo 400 ;;
     engine/run-triage-batch.test.sh) echo 76 ;;
     engine/run-triage.test.sh) echo 116 ;;
     engine/supervise-pipeline.test.sh) echo 35 ;;

@@ -267,8 +267,8 @@ test('maps direct-main files to tracked local tests', () => {
     'engine/issue-pipeline.test.sh',
     'engine/pipeline-system-deliver.test.mjs',
     'engine/check-rulings.test.sh',
-    'engine/release-hotfix-snapshot.test.sh',
-    'engine/run-release.test.sh',
+    'scripts/release/release-hotfix-snapshot.test.sh',
+    'engine/tests/release-runner.test.sh',
     capacityTest,
   ]))), new Set([
     'engine/check-rulings.test.sh',
@@ -279,8 +279,8 @@ test('maps direct-main files to tracked local tests', () => {
     'engine/night/node-health-rules.test.sh',
     'engine/night/health-maintenance.test.sh',
     'engine/pipeline-system-deliver.test.mjs',
-    'engine/release-hotfix-snapshot.test.sh',
-    'engine/run-release.test.sh',
+    'scripts/release/release-hotfix-snapshot.test.sh',
+    'engine/tests/release-runner.test.sh',
     capacityTest,
   ]));
 });
@@ -510,20 +510,27 @@ test('returns no focused suites for a disjoint main advance', () => {
 test('maps deploy culprit helper to release regression', () => {
   assert.deepEqual(focusedTestPaths([
     'engine/deploy-culprit.sh',
-  ], new Set(['engine/run-release.test.sh'])), [
-    'engine/run-release.test.sh',
+  ], new Set(['scripts/release/run-release.test.sh'])), [
+    'scripts/release/run-release.test.sh',
   ]);
+});
+
+test('maps the Engine release dispatcher to its dispatch contract', () => {
+  assert.deepEqual(focusedTestPaths(
+    ['engine/run-release.sh'],
+    new Set(['engine/tests/release-runner.test.sh']),
+  ), ['engine/tests/release-runner.test.sh']);
 });
 
 test('keeps release concurrency default regression selected when runner changes', () => {
   assert.deepEqual(focusedTestPaths([
-    'engine/run-release.test.sh',
+    'scripts/release/run-release.test.sh',
   ], new Set([
-    'engine/run-release.test.sh',
-    'engine/run-release-group-summary.test.sh',
+    'scripts/release/run-release.test.sh',
+    'scripts/release/run-release-group-summary.test.sh',
   ])), [
-    'engine/run-release-group-summary.test.sh',
-    'engine/run-release.test.sh',
+    'scripts/release/run-release-group-summary.test.sh',
+    'scripts/release/run-release.test.sh',
   ]);
 });
 
@@ -576,7 +583,7 @@ test('historical ranges use current focused-test mappings', () => {
 });
 
 test('mail lifecycle changes always select the release integration regression', () => {
-  const release = 'engine/run-release.test.sh';
+  const release = 'scripts/release/run-release.test.sh';
   for (const path of [
     'engine/night/maintainer-health-mail.sh',
     'engine/night/maintainer-health-mail.test.sh',
@@ -588,15 +595,15 @@ test('mail lifecycle changes always select the release integration regression', 
   }
 });
 
-test('maps release acceptance to both release regression and incident follow-up coverage', () => {
+test('maps the Product release runner to release and incident follow-up coverage', () => {
   assert.deepEqual(focusedTestPaths([
-    'engine/run-release.sh',
+    'scripts/release/run-release.sh',
   ], new Set([
-    'engine/run-release.test.sh',
+    'scripts/release/run-release.test.sh',
     'engine/night/maintainer-health-mail-incident.test.sh',
   ])), [
     'engine/night/maintainer-health-mail-incident.test.sh',
-    'engine/run-release.test.sh',
+    'scripts/release/run-release.test.sh',
   ]);
 });
 
@@ -764,7 +771,7 @@ function withFilenameFixture(callback) {
     'engine/indirect-loader.test.mjs': '// fixture loads uncovered-helper.sh\n',
     'engine/night/maintainer-health-mail.sh': 'claim_digest() { printf old; }\n',
     'engine/night/maintainer-health-mail.test.sh': 'source "$SCRIPT_DIR/maintainer-health-mail.sh"\nclaim_digest\n',
-    'engine/run-release.test.sh': '# fixture runs run-release.sh, which loads mail indirectly\n',
+    'scripts/release/run-release.test.sh': '# fixture runs run-release.sh, which loads mail indirectly\n',
   };
 
   try {
@@ -832,7 +839,7 @@ test('function caller selection retains the indirect release mail regression', (
       baseRef, headRef: 'HEAD', cwd: root,
     });
     assert.ok(selected.includes('engine/night/maintainer-health-mail.test.sh'));
-    assert.ok(selected.includes('engine/run-release.test.sh'));
+    assert.ok(selected.includes('scripts/release/run-release.test.sh'));
   });
 });
 
