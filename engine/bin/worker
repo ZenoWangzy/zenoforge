@@ -8,8 +8,12 @@ set -uo pipefail
 # Keep the complete body in one block so a live invocation has parsed it before this file is atomically replaced.
 {
 key="$1" cwd="$2" prompt="$3" schema="${4:-}"
-S=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}; d="$S/luna/$key"
 B=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) # backends ship beside this script, not in the scratch root
+# Quota markers live in the agent home. Read it from deploy.env in a subshell: its other exports must not reach the agents.
+hold_home=${AGENT_HOME:-${ZF_HOME:-$( [[ -f $B/../deploy.env ]] && (source "$B/../deploy.env" >/dev/null 2>&1; printf '%s' "${AGENT_HOME:-${ZF_HOME:-}}") )}}
+hold_home=${hold_home:-$HOME/.zenoforge}
+[[ -f $prompt ]] || { echo "worker: prompt file not found: ${prompt:0:80}" >&2; exit 2; }  # 10-31: brief text passed as a path; workers exited silently
+S=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}; d="$S/luna/$key"
 mkdir -p "$S/tmp" "$d"
 model=${CODEX_MODEL:-gpt-6-luna}
 round_model=$model
@@ -33,7 +37,8 @@ breaker_path() { [[ $1 == zc ]] && echo "$S/tmp/zc-breaker" || echo "$S/tmp/luna
 breaker_open_for() {
   local file now touched
   # 10-30 maintainer: bin/zc-quota holds ZCode before the 5h window runs out; same marker lib.sh's provider_quota_exhausted reads.
-  [[ $1 == zc ]] && (( $(cat "$HOME/.zenoforge/zcode-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
+  [[ $1 == zc ]] && (( $(cat "$hold_home/zcode-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
+  [[ $1 == luna ]] && (( $(cat "$hold_home/codex-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
   file=$(breaker_path "$1"); [[ -f $file ]] || return 1
   now=$(date +%s); touched=$(stat -c %Y "$file" 2>/dev/null) || return 1
   (( now - touched < ${WORKER_BREAKER_SECONDS:-1800} ))
@@ -53,6 +58,10 @@ if [[ -z $b ]]; then
     echo "$b" > "$S/tmp/worker-last"
     flock -u "$lk"; exec {lk}>&-
   fi
+fi
+if [[ $b == zc ]] && breaker_open_for zc; then
+  b=luna
+  printf 'worker: zcode quota hold active; using luna instead of zc\n' >&2
 fi
 if [[ $b != luna && $b != zc ]]; then
   printf 'worker: unsupported backend %s\n' "$b" >&2; echo 2 > "$d/rc"; exit 2
@@ -223,6 +232,14 @@ if [[ -n $run_reason ]]; then
   resume="$S/tmp/$key.resume.md"
   { cat "$prompt"; printf '\n## Resume after backend failover\nAnother agent already worked in this worktree and stopped (%s). Before doing anything else, read `git status`, `git log origin/main..HEAD` and `gh pr list --head "$(git branch --show-current)" --state open`. Continue from that state: reuse the existing commits and PR, and push to the same branch.\n' "$first_reason"; } > "$resume"
   prompt=$resume
+  if [[ $next_backend == zc ]] && breaker_open_for zc; then
+    second_reason='zcode quota hold active'
+    printf '[%s] backend=zc skipped; reason=%s\n' "$(date -u +%FT%TZ)" "$second_reason" >> "$d/failover"
+    final_reason="both backends failed: $failed_backend: $first_reason; zc: $second_reason"
+    printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
+    printf '%s\n' "$final_reason" >&2
+    echo 75 > "$d/rc"; exit 75
+  fi
   run_with_model_fallback "$next_backend"
   final_backend=$next_backend
   if [[ -n $run_reason ]]; then
