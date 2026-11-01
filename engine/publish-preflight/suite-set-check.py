@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Ensure selectable target suites are the suites moved from the engine.
 
-Selectable paths under configured roots must share lineage with a same-named baseline engine suite. A baseline suite
+Selectable paths under configured roots must share lineage with a same-named baseline suite that the new engine drops
+(a name the engine keeps belongs to its own suite). A baseline suite
 must remain in the engine, or reappear with lineage where the pipeline runs suites: under a configured root or in the
 target's .zenoforge/systemd directory. This guards against unrelated same-name suites being
 selected and baseline suites disappearing during a move.
@@ -40,9 +41,11 @@ def main(argv):
     roots = [r.rstrip('/') for r in json.loads(git('show', f'{ref}:.zenoforge/ci.json')).get('pipeline_suite_roots', [])]
     tracked = [p for p in git('ls-tree', '-r', '--name-only', ref).split('\n') if p]
     base, new = suites(bver), suites(nver)
+    # Only suites leaving the engine in this transition can be moved ones; a name the engine keeps is its own suite.
     by_name = {}
     for rel, path in base.items():
-        by_name.setdefault(os.path.basename(rel), []).append(path)
+        if rel not in new:
+            by_name.setdefault(os.path.basename(rel), []).append(path)
     resolvable = sorted(p for p in tracked
                         if SELECTABLE.search(p) and not p.startswith(('packages/', 'apps/'))
                         and any(r == '.' or p.startswith(r + '/') for r in roots) and os.path.basename(p) in by_name)
