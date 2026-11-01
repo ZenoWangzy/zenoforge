@@ -686,13 +686,14 @@ def assess(raw, state_path, window="10m", min_requests=10, non_2xx_percent=20, n
     model_gateway_label = summary_names.get("model_gateway", settings["model_gateway_label"])
     gateway_label = summary_names.get("service_gateway", settings["service_gateway_label"])
     ux_label = summary_names.get("ux", settings["ux_detail_label"])
+    ux_turns_label = summary_names.get("ux_turns", settings["ux_detail_label"])
     detail = (
         f"window={window} reasons={','.join(reasons) or 'none'} log-errors={signature_count} alerts={len(alerts)} "
         f"containers={len(current_containers)} {model_gateway_label} requests={total_requests} non2xx={total_non2xx} ratio={ratio:.0f}% groups={group_summary} "
         f"{gateway_label} span_failed={gateway_span_failed} statuses={statuses} 5xx={gateway_5xx} database-errors={gateway_database_errors} "
         f"coverage={'partial' if incomplete or not container_state_ok else 'complete'} "
         f"trace-join={'unavailable' if trace_read_failed else 'available'} "
-        f"{ux_label}-turns={len(ux_turns)} {ux_label}={'unavailable' if ux_read_failed else 'available'}"
+        f"{ux_turns_label}-turns={len(ux_turns)} {ux_label}={'unavailable' if ux_read_failed else 'available'}"
     )
     try:
         write_state(Path(state_path), state)

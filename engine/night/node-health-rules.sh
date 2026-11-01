@@ -11,6 +11,8 @@ PROD_ERRORS_SSH_TIMEOUT_SECONDS=""
 PROD_ERRORS_REMOTE_TIMEOUT_SECONDS=""
 PROD_ERRORS_BASE_LOG_LINE_CAP=""
 PROD_ERRORS_SHARD_LOG_LINE_CAP=""
+PROD_ERRORS_STATE_FILE_NAME="production-errors-seen-signatures.json"
+PROD_ERRORS_LOCK_FILE_NAME="production-errors-monitor.lock"
 PROD_ERRORS_CREDENTIALS_WRAPPER=""
 PROD_ERRORS_CREDENTIALS_ENV=""
 PROD_ERRORS_SSH_HOST=""
@@ -27,6 +29,10 @@ PROD_ERRORS_ISSUE_TITLE_PREFIX="Production anomaly "
 PROD_ERRORS_MISSING_TRACE_TITLE_PREFIX="Production error has no trace: "
 PROD_ERRORS_MISSING_TRACE_MARKER_PREFIX="<!-- production-missing-trace service="
 PROD_ERRORS_MISSING_TRACE_BODY="An error log had no trace or request identifier."
+PROD_ERRORS_MISSING_TRACE_HEADING_SERVICE="Service: "
+PROD_ERRORS_MISSING_TRACE_HEADING_ROUTE="Route: "
+PROD_ERRORS_MISSING_TRACE_HEADING_FIRST="First: "
+PROD_ERRORS_MISSING_TRACE_HEADING_EVIDENCE="Evidence: "
 PROD_ERRORS_ROLLUP_THRESHOLD=5
 PROD_ERRORS_ROLLUP_WINDOW_SECONDS=3600
 PROD_ANOMALY_LABEL_READY=0
@@ -46,6 +52,10 @@ prod_errors_config_ready() {
     and (.anomaly_rules.production_logs.shard_log_line_cap | type == "number")
     and (.anomaly_rules.production_logs.ssh_timeout_seconds | type == "number")
     and (.anomaly_rules.production_logs.remote_timeout_seconds | type == "number")
+    and ((.anomaly_rules.production_logs.state_file_name // "production-errors-seen-signatures.json")
+      | (type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")))
+    and ((.anomaly_rules.production_logs.lock_file_name // "production-errors-monitor.lock")
+      | (type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")))
   ' "$PROD_ERRORS_CONFIG_FILE" >/dev/null 2>&1
 }
 
@@ -59,6 +69,8 @@ prod_errors_load_config() {
         database: .production.container_names.database},
       database_user_env: .production.database_user_env,
       database_name_env: .production.database_name_env,
+      database_user: .production.database_user,
+      database_name: .production.database_name,
       log_sources: {trace_table: .production.log_sources.trace_table,
         ux_span: .production.log_sources.ux_span, ux_channel: .production.log_sources.ux_channel}
     },
@@ -77,12 +89,20 @@ prod_errors_load_config() {
   PROD_ERRORS_SSH_HOST="$(jq -r '.production.ssh_hosts.production_errors' "$PROD_ERRORS_CONFIG_FILE")"
   PROD_ERRORS_REMOTE_ROOT="$(jq -r '.production.remote_root // empty' "$PROD_ERRORS_CONFIG_FILE")"
   PROD_ERRORS_TRACE_SCRIPT_PATH="$(jq -r '.production.log_sources.trace_diagnose_script // empty' "$PROD_ERRORS_CONFIG_FILE")"
-  local wrapper_env_name environment_home_env_name environment_file_name environment_home
+  local wrapper_env_name environment_home_env_name environment_file_name environment_home wrapper_script
   wrapper_env_name="$(jq -r '.credentials.wrapper_env_name' "$PROD_ERRORS_CONFIG_FILE")"
   environment_home_env_name="$(jq -r '.credentials.environment_home_env_name' "$PROD_ERRORS_CONFIG_FILE")"
   environment_file_name="$(jq -r '.credentials.environment_file_name' "$PROD_ERRORS_CONFIG_FILE")"
   environment_home="$(printenv "$environment_home_env_name" || true)"
   PROD_ERRORS_CREDENTIALS_WRAPPER="${PROD_ERRORS_CREDENTIALS_WRAPPER:-$(printenv "$wrapper_env_name" || true)}"
+  # A deployment whose wrapper is a repo script (credentials.wrapper_script, relative to
+  # ZF_REPO_DIR) needs no environment export; the env name still wins when both exist.
+  if [[ -z "$PROD_ERRORS_CREDENTIALS_WRAPPER" ]]; then
+    wrapper_script="$(jq -r '.credentials.wrapper_script // empty' "$PROD_ERRORS_CONFIG_FILE")"
+    if [[ "$wrapper_script" =~ ^[A-Za-z0-9._/-]+$ && "$wrapper_script" != /* && "$wrapper_script" != */../* && "$wrapper_script" != ../* && "$wrapper_script" != */.. && "$wrapper_script" != ./* && "$wrapper_script" != . ]]; then
+      PROD_ERRORS_CREDENTIALS_WRAPPER="$ZF_REPO_DIR/$wrapper_script"
+    fi
+  fi
   PROD_ERRORS_CREDENTIALS_ENV="${PROD_ERRORS_CREDENTIALS_ENV:-${environment_home%/}/$environment_file_name}"
   PROD_ERRORS_ISSUE_LABEL="$(jq -r '.anomaly_rules.production_logs.issue_label // "production-anomaly"' "$PROD_ERRORS_CONFIG_FILE")"
   PROD_ERRORS_ISSUE_LABEL_COLOR="$(jq -r '.anomaly_rules.production_logs.issue_label_color // "ededed"' "$PROD_ERRORS_CONFIG_FILE")"
@@ -95,6 +115,12 @@ prod_errors_load_config() {
   PROD_ERRORS_MISSING_TRACE_TITLE_PREFIX="$(jq -r '.anomaly_rules.production_logs.missing_trace_title_prefix // "Production error has no trace: "' "$PROD_ERRORS_CONFIG_FILE")"
   PROD_ERRORS_MISSING_TRACE_MARKER_PREFIX="$(jq -r '.anomaly_rules.production_logs.missing_trace_marker_prefix // "<!-- production-missing-trace service="' "$PROD_ERRORS_CONFIG_FILE")"
   PROD_ERRORS_MISSING_TRACE_BODY="$(jq -r '.anomaly_rules.production_logs.missing_trace_body // "An error log had no trace or request identifier."' "$PROD_ERRORS_CONFIG_FILE")"
+  PROD_ERRORS_STATE_FILE_NAME="$(jq -r '.anomaly_rules.production_logs.state_file_name // "production-errors-seen-signatures.json"' "$PROD_ERRORS_CONFIG_FILE")"
+  PROD_ERRORS_LOCK_FILE_NAME="$(jq -r '.anomaly_rules.production_logs.lock_file_name // "production-errors-monitor.lock"' "$PROD_ERRORS_CONFIG_FILE")"
+  PROD_ERRORS_MISSING_TRACE_HEADING_SERVICE="$(jq -r '.anomaly_rules.production_logs.missing_trace_body_headings.service // "Service: "' "$PROD_ERRORS_CONFIG_FILE")"
+  PROD_ERRORS_MISSING_TRACE_HEADING_ROUTE="$(jq -r '.anomaly_rules.production_logs.missing_trace_body_headings.route // "Route: "' "$PROD_ERRORS_CONFIG_FILE")"
+  PROD_ERRORS_MISSING_TRACE_HEADING_FIRST="$(jq -r '.anomaly_rules.production_logs.missing_trace_body_headings.first // "First: "' "$PROD_ERRORS_CONFIG_FILE")"
+  PROD_ERRORS_MISSING_TRACE_HEADING_EVIDENCE="$(jq -r '.anomaly_rules.production_logs.missing_trace_body_headings.evidence // "Evidence: "' "$PROD_ERRORS_CONFIG_FILE")"
   PROD_ERRORS_ROLLUP_THRESHOLD="$(jq -r '.anomaly_rules.production_logs.rollup_threshold // 5' "$PROD_ERRORS_CONFIG_FILE")"
   PROD_ERRORS_ROLLUP_WINDOW_SECONDS="$(jq -r '.anomaly_rules.production_logs.rollup_window_seconds // 3600' "$PROD_ERRORS_CONFIG_FILE")"
 }
@@ -338,8 +364,8 @@ health_prod_errors_route() {
     route="$(jq -r '.route // "unknown"' <<< "$alert" | tr -d '\r\n\t' | cut -c1-120)"
     evidence="$anomaly_dir/$key.md"
     if ! health_prod_errors_write_evidence "$alert" "$evidence"; then failed=1; continue; fi
-    if ! supervisor_inbox_append_once "production-anomaly:$key:$event_id" \
-      "production-anomaly sig=$key container=$container count=$count first=$first route=${route:-unknown} request_id=${request_id:-none} trace=${trace_id:-none} evidence=$evidence"; then
+    if ! supervisor_inbox_append_once "$PROD_ERRORS_ISSUE_LABEL:$key:$event_id" \
+      "$PROD_ERRORS_ISSUE_LABEL sig=$key container=$container count=$count first=$first route=${route:-unknown} request_id=${request_id:-none} trace=${trace_id:-none} evidence=$evidence"; then
       failed=1
     else
       inbox_ok["$event_id"]=1
@@ -376,14 +402,18 @@ health_prod_errors_route() {
       missing_marker="$PROD_ERRORS_MISSING_TRACE_MARKER_PREFIX$service_hash -->"
       missing_title="$PROD_ERRORS_MISSING_TRACE_TITLE_PREFIX$service"
       missing_body="$(mktemp "$anomaly_dir/.missing-trace.XXXXXX")" || { failed=1; continue; }
-      printf '%s\n%s\n\n%s\n\nService: %s\nRoute: %s\nFirst: %s\nEvidence: %s\n' \
+      printf '%s\n%s\n\n%s\n\n%s%s\n%s%s\n%s%s\n%s%s\n' \
         "$BOT_DISCLAIMER" "$missing_marker" "$PROD_ERRORS_MISSING_TRACE_BODY" \
-        "$service" "$route" "$first" "$evidence" > "$missing_body"
+        "$PROD_ERRORS_MISSING_TRACE_HEADING_SERVICE" "$service" \
+        "$PROD_ERRORS_MISSING_TRACE_HEADING_ROUTE" "$route" \
+        "$PROD_ERRORS_MISSING_TRACE_HEADING_FIRST" "$first" \
+        "$PROD_ERRORS_MISSING_TRACE_HEADING_EVIDENCE" "$evidence" > "$missing_body"
       if ! health_prod_errors_upsert_issue "$missing_marker" "$missing_title" "$missing_body"; then failed=1; event_failed=1; fi
       rm -f -- "$missing_body"
     fi
     if [[ "$event_failed" == 0 && "${inbox_ok[$event_id]:-}" == 1 ]]; then
-      exec 7>"$NIGHT/prod-errors-monitor.lock"
+      # Same lock file as the node-health monitor run: an ack must not interleave with a fresh probe writing state.
+      exec 7>"$NIGHT/$PROD_ERRORS_LOCK_FILE_NAME"
       if flock -n 7; then
         prod_errors_ack_alert "$state_file" "$event_id" || failed=1
         flock -u 7

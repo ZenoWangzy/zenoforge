@@ -19,7 +19,7 @@ supervisor_alert_daily_budget() {
     founder-req) printf '%s\n' -1 ;;
     # Uncapped: one line per exited hand owner and unresolved step (hand-exit-handoff.sh ledger), never a loop.
     hand-exit-handoff) printf '%s\n' -1 ;;
-    prod-anomaly) printf '%s\n' -1 ;; # Every new signature, rate spike, restart, or OOM wakes the supervisor.
+    prod-anomaly|production-anomaly) printf '%s\n' -1 ;; # Every new signature, rate spike, restart, or OOM wakes the supervisor; the kind is the configured anomaly issue label.
     efficiency-regression) printf '%s\n' -1 ;; # The metric evaluator owns the six-hour per-metric cadence.
     efficiency-anomaly|efficiency-inbox-unread) printf '%s\n' -1 ;; # Durable per-day markers own duplicate suppression.
     *) printf '20\n' ;;

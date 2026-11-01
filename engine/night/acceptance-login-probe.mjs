@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { readFile, readFileSync, mkdir, rename, writeFile } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { readFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zfConfigFile } from '../pack-dir.mjs';
@@ -8,7 +9,8 @@ import { zfConfigFile } from '../pack-dir.mjs';
 export const PROBE_INTERVAL_MS = 60 * 60 * 1000;
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const EMAIL_PATTERN = /^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+$/;
-const CURL_WRITE_OUT = '%{http_code}\n%{time_namelookup}\n%{time_connect}\n%{time_appconnect}\n%{time_pretransfer}\n%{time_starttransfer}\n%{size_upload}\n%{size_download}';
+// Pipe separators: curlFailurePhase and requestLogin split the write-out on "|".
+const CURL_WRITE_OUT = '%{http_code}|%{time_namelookup}|%{time_connect}|%{time_appconnect}|%{time_pretransfer}|%{time_starttransfer}|%{size_upload}|%{size_download}';
 
 export function loadAcceptanceSettings() {
   const configFile = zfConfigFile('night.json');
@@ -31,9 +33,24 @@ export function loadAcceptanceSettings() {
     childAccountRefEnvName: acceptance.child_account_ref_env_name ?? 'NIGHT_ACCEPTANCE_ACCOUNT_REF',
     childPasswordEnvName: acceptance.child_password_env_name ?? 'NIGHT_ACCEPTANCE_PASSWORD',
     wrapperEnvName: credentials.wrapper_env_name ?? 'NIGHT_CREDENTIALS_WRAPPER',
+    stateFileName: acceptance.state_file_name ?? 'acceptance-login.json',
   };
   if (Object.entries(settings).some(([key, value]) => key.endsWith('EnvName')
       && (typeof value !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(value)))) return null;
+  if (typeof settings.stateFileName !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*\.json$/.test(settings.stateFileName)) return null;
+  // A deployment whose wrapper is a repository script (credentials.wrapper_script) needs no
+  // environment export: resolve it against the target repository, or against the repository
+  // whose .zenoforge supplied this night.json. The wrapper environment name still wins.
+  const wrapperScript = credentials.wrapper_script;
+  if (wrapperScript !== undefined
+      && (typeof wrapperScript !== 'string' || wrapperScript === ''
+          || !/^[A-Za-z0-9._/-]+$/.test(wrapperScript)
+          || wrapperScript.startsWith('/') || wrapperScript.split('/').includes('..'))) return null;
+  if (typeof wrapperScript === 'string' && wrapperScript !== '') {
+    let repoRoot = process.env.ZF_REPO_DIR || '';
+    if (!repoRoot && configFile.endsWith(join('.zenoforge', 'night.json'))) repoRoot = resolve(dirname(configFile), '..');
+    if (repoRoot) settings.wrapperScript = resolve(repoRoot, wrapperScript);
+  }
   return settings;
 }
 export function isProbeDue(state, now = Date.now()) {
@@ -180,7 +197,7 @@ async function writeStates(file, states) {
 
 export function loginDemoAccount(email, request = spawnSync, settings = loadAcceptanceSettings()) {
   if (!settings) return { verdict: 'UNKNOWN', detail: 'acceptance-settings-unavailable' };
-  const wrapper = process.env[settings.wrapperEnvName];
+  const wrapper = process.env[settings.wrapperEnvName] || settings.wrapperScript;
   if (!wrapper) return { verdict: 'UNKNOWN', detail: 'credential-wrapper-unavailable' };
   const result = request('bash', [wrapper, '--demo-account', email, '--', process.execPath, SCRIPT_PATH, '--login-child'], {
     encoding: 'utf8', maxBuffer: 2048, timeout: 70_000,
@@ -219,7 +236,7 @@ async function main() {
   }
   const emails = readAcceptanceAccountRefs(settings);
   const agentHome = process.env.AGENT_HOME || join(process.env.HOME || process.cwd(), '.zenoforge');
-  const stateFile = join(agentHome, 'night', 'acceptance-login.json');
+  const stateFile = join(agentHome, 'state', settings.stateFileName);
   const now = Date.now();
   const email = process.env[settings.accountRefEnvName] || '';
   const password = process.env[settings.passwordEnvName] || '';
@@ -250,7 +267,7 @@ if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {
   const settings = loadAcceptanceSettings();
   if (process.argv[2] === '--login-child') loginChild(settings);
   else main().catch(() => {
-    console.log('FAIL: acceptance login monitor failed');
+    console.log('UNKNOWN acceptance-login monitor failed');
     process.exitCode = 1;
   });
 }

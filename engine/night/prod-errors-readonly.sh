@@ -74,10 +74,14 @@ if [[ ! "$window" =~ ^[1-9][0-9]*m$ || ! "$base_cap" =~ ^[1-9][0-9]*$ || ! "$sha
 fi
 database_user="$(printenv "$database_user_env" || true)"
 database_name="$(printenv "$database_name_env" || true)"
-if [[ -z "$database_user" || -z "$database_name" ]]; then
+# Deployments whose database identity is not secret keep it in night.json
+# (.production.database_user/.production.database_name); the environment names win when set.
+[[ -n "$database_user" ]] || database_user="$(jq -r '.production.database_user // empty' "$night_config")"
+[[ -n "$database_name" ]] || database_name="$(jq -r '.production.database_name // empty' "$night_config")"
+if [[ ! "$database_user" =~ ^[A-Za-z0-9_.-]+$ || ! "$database_name" =~ ^[A-Za-z0-9_.-]+$ ]]; then
   missing_env=()
-  [[ -n "$database_user" ]] || missing_env+=("$database_user_env")
-  [[ -n "$database_name" ]] || missing_env+=("$database_name_env")
+  [[ "$database_user" =~ ^[A-Za-z0-9_.-]+$ ]] || missing_env+=("$database_user_env")
+  [[ "$database_name" =~ ^[A-Za-z0-9_.-]+$ ]] || missing_env+=("$database_name_env")
   printf 'skip: night log monitor host environment is missing %s\n' "${missing_env[*]}"
   exit 0
 fi
