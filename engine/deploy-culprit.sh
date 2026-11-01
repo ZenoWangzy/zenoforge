@@ -2,11 +2,12 @@
 # Release failure attribution. Print "issue commit" only when one tracked
 # merge touched the exact failed migration or production image.
 
-# Target-repo specifics come from the pack's state/deploy-culprit.json ({ migration_path: "dir/%s.sql", infrastructure_signatures: [...] });
-# without a pack file the generic defaults apply (migrations at migrations/<stage>.sql, only the built-in infrastructure signatures).
+# Target-repo specifics come from state/deploy-culprit.json through the config seam ({ migration_path: "dir/%s.sql",
+# infrastructure_signatures: [...] }): the target's config root first, then pack values retained during migration;
+# without either the generic defaults apply (migrations at migrations/<stage>.sql, only the built-in infrastructure signatures).
 deploy_culprit_pack_value() {
   local file
-  file="$(pack_file state/deploy-culprit.json 2>/dev/null)" || file=/dev/null
+  file="$(zf_config_file state/deploy-culprit.json 2>/dev/null)" || file=/dev/null
   jq -r -n --slurpfile pack "$file" "(\$pack[0] // {}) | $1"
 }
 # shellcheck disable=SC2153 # REPO is set by lib.sh before this file is sourced.

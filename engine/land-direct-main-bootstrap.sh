@@ -173,7 +173,7 @@ land_git_rebase() {
     rm -f -- "$driver" "$attributes"
     return 1
   fi
-  printf '%s\n' 'engine/state/*.json merge=statejson' > "$attributes"
+  printf '%s\n' "${ZF_PACK_REL:-engine}/state/*.json merge=statejson" > "$attributes"
   printf -v quoted_driver '%q' "$driver"
   if git -C "$repo_root" -c "core.attributesFile=$attributes" \
       -c "merge.statejson.driver=bash $quoted_driver %O %A %B" rebase "$@"; then

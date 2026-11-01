@@ -56,7 +56,7 @@ const bash = ['/opt/homebrew/bin/bash', '/usr/local/bin/bash', 'bash'].find(comm
 });
 assert.ok(bash, 'Pipeline suite discovery requires Bash 4+');
 
-function runFixture({ runner = runnerSource, shellExit = 0, nodeExit = 0, emptySuites = false, shard, tier, includeNightlySuites = false, includeNightlyViaEnv = false, includeNightTest = false, includeLoadFixtures = false, includeConfiguredSuites = false, includeProductSystemdSuite = false, emptyProductSystemd = false, shellFailures = [], slowSuite, leakSuite = false } = {}) {
+function runFixture({ runner = runnerSource, shellExit = 0, nodeExit = 0, emptySuites = false, shard, tier, includeNightlySuites = false, includeNightlyViaEnv = false, includeMovedNightlySuite = false, includeNightTest = false, includeLoadFixtures = false, includeConfiguredSuites = false, includeProductSystemdSuite = false, emptyProductSystemd = false, shellFailures = [], slowSuite, leakSuite = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'pipeline-runner-fixture-'));
   const log = join(root, 'executed.log');
   const preflightLog = join(root, 'preflights.log');
@@ -95,6 +95,11 @@ function runFixture({ runner = runnerSource, shellExit = 0, nodeExit = 0, emptyS
       for (const [path, name] of nightlySuites) {
         put(path, `#!/bin/sh\nprintf "%s\\n" "${name}" >> "$PIPELINE_FIXTURE_LOG"\n`);
       }
+    }
+    if (includeMovedNightlySuite) {
+      put('engine/run-advisor.test.sh', '#!/bin/sh\nprintf "nightly-advisor\\n" >> "$PIPELINE_FIXTURE_LOG"\n');
+      put('scripts/ci/land-direct-main.test.sh', '#!/bin/sh\nprintf "nightly-land-direct\\n" >> "$PIPELINE_FIXTURE_LOG"\n');
+      put('.zenoforge/ci.json', JSON.stringify({ pipeline_suite_roots: ['scripts/ci'] }));
     }
     if (includeNightTest) {
       put('engine/night/night.test.sh', '#!/bin/sh\nprintf "night-test\\n" >> "$PIPELINE_FIXTURE_LOG"\n');
@@ -244,6 +249,13 @@ test('--nightly runs every migrated suite and excludes the PR tier', () => {
   const result = runFixture({ tier: 'nightly', includeNightlySuites: true });
   assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual([...result.executed].sort(), [...expectedNightly].sort());
+});
+
+test('--nightly finds a moved suite under a configured root by its basename', () => {
+  const result = runFixture({ tier: 'nightly', includeMovedNightlySuite: true });
+  assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+  assert.deepEqual([...result.executed].sort(), [...expectedNightly].sort());
+  assert.ok(result.stdout.includes('scripts/ci/land-direct-main.test.sh timeout=471s'), result.stdout);
 });
 
 test('--nightly fails closed if a migrated suite is missing', () => {

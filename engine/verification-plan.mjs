@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readPackJson } from './pack-dir.mjs';
+import { zfConfigJson } from './pack-dir.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 export const DEFAULT_ROOT = path.resolve(path.dirname(SCRIPT_PATH), '..');
@@ -12,10 +12,11 @@ const PROOF_PATH_STAGES = ['owner', 'wrapper', 'ci', 'release'];
 
 // The catalog owns feature IDs. A catalog entry may carry a `verification`
 // object ({ paths, owner, release, surfaces, invariants }) that associates its
-// code surfaces and proofs. A pack may add the same for features whose catalog
-// entry says nothing: state/feature-map.json ({ release, surfaces, features }),
-// which wins over the catalog entry. With neither, a feature has no proofs.
-const PACK_FEATURE_MAP = readPackJson('state/feature-map.json') ?? {};
+// code surfaces and proofs. The target config (or, during migration, the pack)
+// may add the same for features whose catalog entry says nothing:
+// state/feature-map.json ({ release, surfaces, features }), which wins over the
+// catalog entry. With neither, a feature has no proofs.
+const PACK_FEATURE_MAP = zfConfigJson('state/feature-map.json') ?? {};
 const packSurfaces = (caseFeature) => (PACK_FEATURE_MAP.surfaces ?? []).find((rule) =>
   (!rule.kind || rule.kind === caseFeature.kind) && (!rule.pathPrefix || caseFeature.path?.startsWith(rule.pathPrefix)))?.surfaces;
 

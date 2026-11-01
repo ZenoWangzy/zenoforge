@@ -4,12 +4,13 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { readPackJson } from './pack-dir.mjs';
+import { zfConfigJson } from './pack-dir.mjs';
 import { buildVerificationPlan, DEFAULT_MAP, DEFAULT_ROOT, loadFeatureMap } from './verification-plan.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-// Extra path prefixes a pack counts as user surface: state/user-surface-paths.json ({ prefixes: [...] }); none without a pack.
-const PACK_SURFACE_PREFIXES = readPackJson('state/user-surface-paths.json')?.prefixes ?? [];
+// Extra path prefixes the target config (or, during migration, the pack) counts as user
+// surface: state/user-surface-paths.json ({ prefixes: [...] }); none without either.
+const PACK_SURFACE_PREFIXES = zfConfigJson('state/user-surface-paths.json')?.prefixes ?? [];
 
 function gitChangedPaths(root, base, head) {
   if (!base || !head) return [];
