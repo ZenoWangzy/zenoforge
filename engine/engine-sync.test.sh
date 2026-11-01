@@ -20,6 +20,11 @@ ln -s "$test_env_root/agent/engine-versions/live/engine" "$test_env_root/agent/e
 echo '{"pipeline_suite_roots":[]}' > "$target/.zenoforge/ci.json"
 git -C "$target" init -q && git -C "$target" config user.email test && git -C "$target" config user.name test
 git -C "$target" add -A && git -C "$target" commit -qm initial
-result=$(ZF_REPO_DIR="$target" AGENT_HOME="$test_env_root/agent" "$here/engine-sync.sh" --preflight "$test_env_root/new-version")
+preflight() { ZF_REPO_DIR="$target" AGENT_HOME="$test_env_root/agent" "$here/engine-sync.sh" --preflight "$test_env_root/new-version"; }
+# Without BUILD-INFO the live target commit is unknown: preflight refuses instead of comparing HEAD with itself.
+if preflight >/dev/null 2>&1; then echo 'FAIL: preflight ran without the live target commit' >&2; exit 1; fi
+printf 'pack_sha=%s:.zenoforge/build/pack\n' "$(git -C "$target" rev-parse HEAD)" > "$test_env_root/agent/engine-versions/live/BUILD-INFO"
+printf 'product_sha=%s\n' "$(git -C "$target" rev-parse HEAD)" > "$test_env_root/new-version/BUILD-INFO"
+result=$(preflight)
 grep -q 'publish-preflight: OK' <<<"$result"
 echo 'engine-sync.test.sh: PASS'
