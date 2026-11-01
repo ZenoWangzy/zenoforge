@@ -20,15 +20,44 @@ repo=$ZF_REPO_DIR
 [[ -z $repo_env ]] || repo=${!repo_env:-$repo}
 [[ -z $target_env ]] || target=${!target_env:-$target}
 log=${HF_ACCEPT_LOG:-$AGENT_HOME/logs/hf-accept-$(date -u +%Y%m%dT%H%M%SZ).log}
-(cd "$repo" && "${command[@]}" --target "$target") > "$log" 2>&1
+resolved_repo=$repo
+if physical_repo=$(cd -- "$repo" 2>/dev/null && pwd -P); then resolved_repo=$physical_repo; fi
+live_checkout=
+if physical_checkout=$(cd -- "$AGENT_HOME/checkout" 2>/dev/null && pwd -P); then live_checkout=$physical_checkout; fi
+if ! harness_head=$(git -C "$repo" rev-parse HEAD 2>/dev/null); then harness_head=; fi
+printf 'harness_path=%s\nharness_head=%s\n' "$resolved_repo" "$harness_head" > "$log"
+record_attempt() {
+  local rc=$1
+  jq -cn --arg at "$(date -u +%FT%TZ)" --argjson rc "$rc" --arg set "${HF_ACCEPT_SET:-full}" --arg log "$log" \
+    --arg harness_path "$resolved_repo" --arg harness_head "$harness_head" \
+    '{at:$at,rc:$rc,set:$set,log:$log,harness_path:$harness_path,harness_head:$harness_head}' \
+    >> "$AGENT_HOME/hf-demo-accept.jsonl"
+}
+refuse_acceptance() {
+  local message=$1
+  echo "hf-accept: $message" >&2
+  printf 'hf-accept: %s\n' "$message" >> "$log"
+  record_attempt 3
+  exit 3
+}
+if [[ ${HF_ACCEPT_SET:-full} == demo && -n $live_checkout && $resolved_repo == "$live_checkout" ]]; then
+  refuse_acceptance "refusing demo acceptance from the live checkout: $resolved_repo"
+fi
+if [[ -n ${HF_HARNESS_SHA+x} && ( -z $harness_head || $harness_head != "$HF_HARNESS_SHA" ) ]]; then
+  refuse_acceptance "refusing harness SHA mismatch at $resolved_repo (expected '$HF_HARNESS_SHA', found '${harness_head:-unavailable}')"
+fi
+(cd "$repo" && "${command[@]}" --target "$target") >> "$log" 2>&1
 rc=$?
 tail -n 1 "$log"; echo "hf-accept: rc=$rc (0 accept, 1 regression, 2 hold) log=$log"
-jq -cn --arg at "$(date -u +%FT%TZ)" --argjson rc "$rc" --arg set "${HF_ACCEPT_SET:-full}" --arg log "$log" '{at:$at,rc:$rc,set:$set,log:$log}' >> "$AGENT_HOME/hf-demo-accept.jsonl"
+record_attempt "$rc"
 if ((rc == 0)) && [[ -n ${HF_ISSUE:-} ]]; then
   pr=${HF_PR:-null}; [[ $pr =~ ^[0-9]+$ ]] || pr=null; at=$(date -u +%FT%TZ)
   for issue in $HF_ISSUE; do
     [[ $issue =~ ^[0-9]+$ ]] || continue
-    jq -cn --argjson issue "$issue" --argjson pr "$pr" --arg sha "${HF_SHA:-}" --arg at "$at" --arg person "$person" '{kind:"hotfix-live",issue:$issue,pr:$pr,sha:$sha,at:$at,accepted_by:$person}' >> "$AGENT_HOME/hotfix-live.jsonl"
+    jq -cn --argjson issue "$issue" --argjson pr "$pr" --arg sha "${HF_SHA:-}" --arg at "$at" --arg person "$person" \
+      --arg harness_path "$resolved_repo" --arg harness_head "$harness_head" \
+      '{kind:"hotfix-live",issue:$issue,pr:$pr,sha:$sha,at:$at,accepted_by:$person,harness_path:$harness_path,harness_head:$harness_head}' \
+      >> "$AGENT_HOME/hotfix-live.jsonl"
   done
 fi
 exit "$rc"
