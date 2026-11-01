@@ -1068,6 +1068,8 @@ grep -q 'reconcile_runtime_config "$(sched_config_file mac-autopilot/config.temp
   || fail 'tick reconcile must resolve config.template.json through sched_config_file'
 grep -q 'PRODUCT_LANE_SKILLS="$(sched_config_file mac-autopilot/product-lane-skills.txt)"' "$script_dir/scheduler.sh" \
   || fail 'product lane skills must resolve through sched_config_file'
+grep -q 'MECH_REGISTRY_FILE="$(sched_config_file state/mechanism-registry.json)" || MECH_REGISTRY_FILE=""' "$script_dir/scheduler.sh" \
+  || fail 'mechanism registry must resolve through sched_config_file'
 hotfix_list_calls="$fixture/hotfix-issue-list.calls"; : > "$hotfix_list_calls"
 hotfix_label_edits=()
 gh() {

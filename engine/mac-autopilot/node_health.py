@@ -1518,7 +1518,8 @@ def main():
         )
     blockers = read_json(os.path.join(a, "release-blockers.json"))
     metrics["release.hotpatch_blockers"] = len(blockers["blockers"]) if isinstance(blockers.get("blockers"), list) else None
-    registry = read_json(os.path.join(here, "..", "state", "mechanism-registry.json")).get("mechanisms")
+    registry_file = zf_config_file("state/mechanism-registry.json")
+    registry = read_json(registry_file).get("mechanisms") if registry_file else None
     if isinstance(registry, list) and registry:
         mechanism_rows, metrics["mechanism.silent"] = mechanism_heartbeat(registry, a, agent_home, now)
     else:
