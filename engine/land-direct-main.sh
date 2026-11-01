@@ -5,12 +5,16 @@ set -euo pipefail
 unset ZF_NON_PRODUCT_UNIT
 
 self="$(realpath -- "$0")"
-# Match config.sh: load deployment settings from beside the entrypoint before resolving its state home.
 land_script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-if [[ -f "$land_script_dir/deploy.env" ]]; then
-  source "$land_script_dir/deploy.env"
+land_agent_home="${AGENT_HOME:-${ZF_HOME:-}}"
+if [[ -z "$land_agent_home" ]]; then
+  land_agent_home="$(
+    if [[ -f "$land_script_dir/deploy.env" ]]; then
+      source "$land_script_dir/deploy.env" >/dev/null 2>&1 || true
+    fi
+    printf '%s' "${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+  )"
 fi
-land_agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
 orig_args=("$@")
 land_snapshot_marker="${ZF_LAND_CODE_SNAPSHOT:-}"
 # $self is realpath-normalized while the marker arrives verbatim from mktemp; macOS TMPDIR
@@ -159,6 +163,7 @@ done
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd -- "$repo_root"
+export ZF_REPO_DIR="${ZF_REPO_DIR:-$repo_root}"
 branch="$(git branch --show-current)"
 [[ -n "$branch" ]] || { echo "land-direct-main: run from a named branch" >&2; exit 2; }
 if [[ "$branch" == main && "$revalidate_only" != 1 && -z "$reconcile_pr" ]]; then
@@ -231,7 +236,6 @@ land_register_post_push_range() {
 # land-direct-main.sh against older agent worktrees, whose lib.sh lacked agent_owned_issue_ids on
 # 2026-10-11 and refused every landing with "could not resolve owner issues".
 source "$land_script_dir/merge-result-check.sh"
-export ZF_REPO_DIR="${ZF_REPO_DIR:-$repo_root}"
 source "$land_script_dir/lib.sh"
 source "$land_script_dir/model-policy-fast-forward.sh"
 incident_guards_file="$(zf_config_file state/incident-guards.json 2>/dev/null || true)"
