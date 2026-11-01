@@ -77,6 +77,15 @@ export function readPackJson(relativePath) {
   }
 }
 
+// Data read through the config seam: the target's config root wins, then pack values retained
+// during migration, then nothing (the caller keeps its generic default). Same parse discipline
+// as readPackJson: a file that exists but does not parse throws instead of reading as absent.
+export function zfConfigJson(relativePath, repoRoot = process.env.ZF_REPO_DIR || dirname(ENGINE_DIR)) {
+  const file = zfConfigFile(relativePath, repoRoot);
+  if (!file) return null;
+  return JSON.parse(readFileSync(file, 'utf8'));
+}
+
 // Resolve target overrides first, then pack values retained during migration, then engine defaults.
 export function zfConfigFile(relativePath, repoRoot = zfEnv('REPO_DIR') || dirname(ENGINE_DIR)) {
   return resolveConfigFile(relativePath, repoRoot, process.env);

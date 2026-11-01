@@ -189,9 +189,9 @@ WORKER_LARGE_FILE_RULE='
 # 堵的失败：被跳过的文档里独有的规则，成了评审打回理由。豁免只覆盖项目指令的路由表，硬性边界原文随规则附上。
 # 唯一维护的文档清单（用途|仓库相对路径）：重构搬文件只改这里；worker-rules-lanes.test.sh 逐条核对它们存在且被 git 跟踪。
 # 提示按用途称呼文档，不写项目指令的标题（标题会被重构改名）。
-# 清单现在是 pack 数据 mac-autopilot/worker-docs.json（skipped_docs、on_demand_docs、boundary_selectors）；没有这个 pack 文件，
-# 三个清单都为空，也不附读取范围规则。文件损坏时 jqf 把原因记进 scheduler.log。
-WORKER_DOCS_FILE="$(sched_pack_file mac-autopilot/worker-docs.json)" || WORKER_DOCS_FILE=/dev/null
+# 清单现在经配置缝读取：目标配置根（或迁移期的 pack）的 mac-autopilot/worker-docs.json（skipped_docs、on_demand_docs、boundary_selectors）；
+# 两处都没有时三个清单都为空，也不附读取范围规则。文件损坏时 jqf 把原因记进 scheduler.log。
+WORKER_DOCS_FILE="$(sched_config_file mac-autopilot/worker-docs.json)" || WORKER_DOCS_FILE=/dev/null
 mapfile -t WORKER_SKIPPED_DOCS < <(jqf -r '.skipped_docs[]?' "$WORKER_DOCS_FILE")
 mapfile -t WORKER_ON_DEMAND_DOCS < <(jqf -r '.on_demand_docs[]?' "$WORKER_DOCS_FILE")
 WORKER_READ_SCOPE_RULE="

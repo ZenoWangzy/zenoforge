@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import { buildMaintenanceReport } from './verification-map-audit.mjs';
 
@@ -81,4 +83,29 @@ test('aggregates exact-head planner evidence from existing issue state', () => {
   assert.equal(report.state_evidence.unavailable, 1);
   assert.equal(report.state_evidence.with_unmapped_paths, 1);
   assert.equal(report.state_evidence.feature_counts.login, 1);
+});
+
+test('the config root surface prefixes win over a retained pack copy', () => {
+  const root = fixture();
+  const configRoot = path.join(root, '.zenoforge');
+  const packDir = path.join(root, 'pack');
+  mkdirSync(path.join(configRoot, 'state'), { recursive: true });
+  mkdirSync(path.join(packDir, 'state'), { recursive: true });
+  writeFileSync(path.join(configRoot, 'state/user-surface-paths.json'), JSON.stringify({
+    prefixes: ['docs/config-surface'],
+  }));
+  writeFileSync(path.join(packDir, 'state/user-surface-paths.json'), JSON.stringify({
+    prefixes: ['docs/pack-surface'],
+  }));
+  const script = fileURLToPath(new URL('./verification-map-audit.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [
+    script, '--root', root, '--map', 'docs/verification/features.json',
+    '--changed-path', 'docs/config-surface/guide.md', '--changed-path', 'docs/pack-surface/notes.md',
+  ], {
+    encoding: 'utf8',
+    env: { ...process.env, ZF_CONFIG_ROOT: configRoot, ZF_PACK_DIR: packDir },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual(report.unmapped_candidate_paths, ['docs/config-surface/guide.md']);
 });

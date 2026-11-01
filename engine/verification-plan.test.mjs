@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import { buildVerificationPlan, DEFAULT_MAP, DEFAULT_ROOT, loadFeatureMap, validateFeatureMap } from './verification-plan.mjs';
 
@@ -109,4 +110,49 @@ test('rejects broken proof references', () => {
 test('rejects malformed maps', () => {
   const { root } = fixture();
   assert.throws(() => validateFeatureMap({ version: 2, features: [] }, root), /version 1/);
+});
+
+test('the config root feature map wins over a retained pack copy', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'zf-verification-plan-config-'));
+  const put = (ref) => {
+    mkdirSync(path.dirname(path.join(root, ref)), { recursive: true });
+    writeFileSync(path.join(root, ref), '');
+  };
+  for (const ref of ['src/login.ts', 'tests/login.test.ts', 'release.mjs', 'tests/owner-config.ts', 'tests/owner-pack.ts']) put(ref);
+  put('scripts/e2e/yangfeng-regression/catalog.json');
+  writeFileSync(path.join(root, 'scripts/e2e/yangfeng-regression/catalog.json'), JSON.stringify({
+    features: [{
+      id: 'login',
+      name: 'Login',
+      verification: {
+        surfaces: ['Admin Console'],
+        paths: ['src/login.ts'],
+        owner: ['tests/login.test.ts'],
+        release: ['release.mjs'],
+      },
+    }],
+  }));
+  const configRoot = path.join(root, '.zenoforge');
+  const packDir = path.join(root, 'pack');
+  mkdirSync(path.join(configRoot, 'state'), { recursive: true });
+  mkdirSync(path.join(packDir, 'state'), { recursive: true });
+  writeFileSync(path.join(configRoot, 'state/feature-map.json'), JSON.stringify({
+    features: { login: { owner: ['tests/owner-config.ts'] } },
+  }));
+  writeFileSync(path.join(packDir, 'state/feature-map.json'), JSON.stringify({
+    features: { login: { owner: ['tests/owner-pack.ts'] } },
+  }));
+  const code = `import(${JSON.stringify(new URL('./verification-plan.mjs', import.meta.url).href)})
+    .then(({ loadFeatureMap, buildVerificationPlan }) => {
+      const plan = buildVerificationPlan(loadFeatureMap(${JSON.stringify(root)}), {
+        root: ${JSON.stringify(root)}, changedPaths: ['src/login.ts'],
+      });
+      console.log(JSON.stringify(plan.owner_proofs));
+    })`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+    encoding: 'utf8',
+    env: { ...process.env, ZF_CONFIG_ROOT: configRoot, ZF_PACK_DIR: packDir },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), ['tests/owner-config.ts']);
 });

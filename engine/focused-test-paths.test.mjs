@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -131,9 +131,41 @@ test('maps target config data to its reader suites', () => {
     ['.zenoforge/state/rulings.json', ['engine/check-rulings.test.sh', 'engine/pipeline-system-close-evidence.test.sh']],
     ['.zenoforge/state/scheduling-policy.json', ['engine/check-rulings.test.sh']],
     ['.zenoforge/state/incident-guards.json', ['engine/night/incident-guard-audit.test.mjs']],
+    ['.zenoforge/state/deploy-culprit.json', ['engine/deploy-culprit.test.sh']],
+    ['.zenoforge/state/feature-map.json', ['engine/verification-plan.test.mjs']],
+    ['.zenoforge/state/focused-test-map.json', ['engine/focused-test-paths.test.mjs']],
+    ['.zenoforge/state/user-surface-paths.json', ['engine/verification-map-audit.test.mjs']],
+    ['.zenoforge/state/production-tenant-marker-exceptions.json', ['engine/night/production-tenant-marker-readonly.test.sh']],
+    ['.zenoforge/mac-autopilot/worker-docs.json', ['engine/mac-autopilot/sched-pack-file.test.sh']],
+    ['.zenoforge/fixtures/advisor-batch-broken-from-journal.ndjson', ['engine/run-advisor-batch.test.sh']],
   ]) {
     assert.deepEqual(focusedTestPaths([source], new Set(suites)), [...suites].sort(), source);
   }
+});
+
+test('the config root focused-test map wins over a retained pack copy', () => {
+  const root = mkdtempSync(join(tmpdir(), 'zf-focused-map-config-'));
+  const configRoot = join(root, '.zenoforge');
+  const packDir = join(root, 'pack');
+  mkdirSync(join(configRoot, 'state'), { recursive: true });
+  mkdirSync(join(packDir, 'state'), { recursive: true });
+  writeFileSync(join(configRoot, 'state/focused-test-map.json'), JSON.stringify({
+    pack_root: 'scripts/agent',
+    related_tests: { 'docs/config-only.md': ['scripts/agent/config-suite.test.sh'] },
+  }));
+  writeFileSync(join(packDir, 'state/focused-test-map.json'), JSON.stringify({
+    pack_root: 'scripts/agent',
+    related_tests: { 'docs/config-only.md': ['scripts/agent/pack-suite.test.sh'] },
+  }));
+  const code = `import(${JSON.stringify(new URL('./focused-test-paths.mjs', import.meta.url).href)})
+    .then(({ focusedTestPaths }) => console.log(JSON.stringify(
+      focusedTestPaths(['docs/config-only.md'], new Set(['engine/config-suite.test.sh', 'engine/pack-suite.test.sh'])))))`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+    encoding: 'utf8',
+    env: { ...process.env, ZF_CONFIG_ROOT: configRoot, ZF_PACK_DIR: packDir },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), ['engine/config-suite.test.sh']);
 });
 
 test('maps Nexus retention code and unit tests to the tracked owner-classification suite', () => {

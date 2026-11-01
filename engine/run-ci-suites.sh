@@ -68,6 +68,32 @@ if [[ -n "$product_timers_policy" ]]; then
   if ((${#product_systemd_shell_suites[@]})); then shell_suites+=("${product_systemd_shell_suites[@]}"); fi
   if ((${#product_systemd_node_suites[@]})); then node_suites+=("${product_systemd_node_suites[@]}"); fi
 fi
+# A configured product root may own a suite that used to live under engine/.
+# Keep named scheduled suites in the same tier after that move, preferring the
+# engine path whenever it still exists.
+mapfile -t nightly_suite_paths < <(
+  for requested in "${nightly_suite_paths[@]}"; do
+    found=0
+    for suite in "${shell_suites[@]}" "${node_suites[@]}"; do
+      if [[ "$suite" == "$requested" ]]; then
+        printf '%s\n' "$suite"
+        found=1
+        break
+      fi
+    done
+    if ((found == 0)); then
+      basename="${requested##*/}"
+      for suite in "${shell_suites[@]}" "${node_suites[@]}"; do
+        if [[ "${suite##*/}" == "$basename" ]]; then
+          printf '%s\n' "$suite"
+          found=1
+          break
+        fi
+      done
+    fi
+    ((found == 1)) || printf '%s\n' "$requested"
+  done
+)
 suite_count=${#node_suites[@]}
 for suite in "${shell_suites[@]}"; do
   [[ "$suite" == engine/sweep-brief-banners.test.sh ]] || suite_count=$((suite_count + 1))
@@ -142,7 +168,7 @@ suite_weight_seconds() {
     engine/dispatch-codex.test.sh) echo 37 ;;
     engine/hand-blocked-on-dependency.test.sh) echo 60 ;;
     engine/issue-pipeline.test.sh) echo 47 ;;
-    engine/land-direct-main.test.sh) echo 157 ;;
+    */land-direct-main.test.sh) echo 157 ;;
     engine/land-queue.test.sh) echo 101 ;;
     engine/lib.test.sh) echo 399 ;;
     engine/night/night.test.sh) echo 1092 ;;

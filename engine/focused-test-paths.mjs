@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readPackJson } from './pack-dir.mjs';
+import { zfConfigJson } from './pack-dir.mjs';
 
 // Where the pack sits in the target repository (ZF_PACK_REL, config.sh). The tables and rules below name pack paths as
 // engine/...; packPath re-roots one onto PACK_PREFIX. Same string unless the deployment moved the pack.
@@ -133,6 +133,13 @@ export const RELATED_TESTS = new Map([
   ['.zenoforge/state/ci-known-flakes.json', ['engine/ci-flake-classification.test.sh']],
   ['.zenoforge/state/hand-priority.json', ['engine/dispatch-load-guard.test.sh']],
   ['.zenoforge/state/risk-paths.json', ['engine/risk-class.test.mjs']],
+  ['.zenoforge/state/deploy-culprit.json', ['engine/deploy-culprit.test.sh']],
+  ['.zenoforge/state/feature-map.json', ['engine/verification-plan.test.mjs']],
+  ['.zenoforge/state/focused-test-map.json', ['engine/focused-test-paths.test.mjs']],
+  ['.zenoforge/state/user-surface-paths.json', ['engine/verification-map-audit.test.mjs']],
+  ['.zenoforge/state/production-tenant-marker-exceptions.json', ['engine/night/production-tenant-marker-readonly.test.sh']],
+  ['.zenoforge/mac-autopilot/worker-docs.json', ['engine/mac-autopilot/sched-pack-file.test.sh']],
+  ['.zenoforge/fixtures/advisor-batch-broken-from-journal.ndjson', ['engine/run-advisor-batch.test.sh']],
   ['.zenoforge/state/rule-files.json', ['engine/rule-lane.test.sh', 'engine/landed-incident-guards.test.sh']],
   ['.zenoforge/state/rulings.json', [
     'engine/check-rulings.test.sh',
@@ -368,9 +375,9 @@ export const RELATED_TESTS = new Map([
   ['engine/pack-dir.mjs', ['engine/risk-class.test.mjs', 'engine/verification-plan.test.mjs']],
 ].map(([key, tests]) => [packPath(key), tests.map(packPath)]));
 
-// A pack's state/focused-test-map.json adds or replaces entries; its pack_root lets the same data follow a relocated pack.
-// No pack, no file: the generic map stands.
-const packTestMap = readPackJson('state/focused-test-map.json') ?? {};
+// The target config's (or, during migration, the pack's) state/focused-test-map.json adds or replaces
+// entries; its pack_root lets the same data follow a relocated pack. With neither, the generic map stands.
+const packTestMap = zfConfigJson('state/focused-test-map.json') ?? {};
 const packDataPrefix = packTestMap.pack_root ? `${packTestMap.pack_root}/` : '';
 const packDataPath = (path) => packDataPrefix && path.startsWith(packDataPrefix) ? PACK_PREFIX + path.slice(packDataPrefix.length) : path;
 for (const [path, tests] of Object.entries(packTestMap.related_tests ?? {})) RELATED_TESTS.set(packDataPath(path), tests.map(packDataPath));
