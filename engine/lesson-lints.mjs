@@ -59,14 +59,14 @@ export const lessonLints = [
     lesson: 'V915',
     classTag: 'ci-runner-label-pool',
     files: {
-      'engine/provision-cihost-ci-runner.sh': {
+      'scripts/ops/provision-cihost-ci-runner.sh': {
         require: [
           /runner_labels="cihost-ci,cihost-ci-testcontainers,cihost-ci-light,vecta-suites"/,
           /install -d -o "\$runner_user" -g "\$runner_user" -m 0700 "\$runner_home\/\.config"/,
         ],
       },
     },
-    guidance: 'Keep the corrected PR-runner label pool (cihost-ci,cihost-ci-testcontainers,cihost-ci-light,vecta-suites) in provision-cihost-ci-runner.sh and keep ~/.config owned by the runner user at creation time; a root-owned ~/.config breaks rootless setup.',
+    guidance: 'Keep the corrected PR-runner label pool (cihost-ci,cihost-ci-testcontainers,cihost-ci-light,vecta-suites) in scripts/ops/provision-cihost-ci-runner.sh and keep ~/.config owned by the runner user at creation time; a root-owned ~/.config breaks rootless setup.',
   },
   {
     lesson: 'V975',
