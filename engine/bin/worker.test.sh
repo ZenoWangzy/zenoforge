@@ -15,6 +15,8 @@ cleanup() {
   rm -rf "$test_root"
 }
 trap cleanup EXIT
+mkdir -p "$test_root/home" "$test_root/agent-home"
+export HOME="$test_root/home" AGENT_HOME="$test_root/agent-home"
 
 worker_script=$worker_source
 if ! grep -q 'WORKER_SCRATCH_ROOT' "$worker_source"; then
@@ -131,11 +133,15 @@ assert_file_contains() { grep -Fq -- "$2" "$1" || fail "expected '$2' in $1"; }
 
 run_case() {
   local name=$1 expected_rc=$2 zc_mode=$3 luna_mode=$4 stall_seconds=$5 timeout_seconds=$6
-  local initial_backend=${7:-zc}
+  local initial_backend=${7-zc}
   local initial_model=${8:-gpt-6-luna} history=${10:-}
   local root="$test_root/$name/.scratch" wt="$test_root/$name/worktree" prompt="$test_root/$name/brief.md"
+  local agent_home="$test_root/$name/agent-home" home="$test_root/$name/home" hold=${11:-}
   local key=${9:-test-$name} d rc schema=''
-  mkdir -p "$root/tmp" "$root/luna" "$wt"
+  mkdir -p "$root/tmp" "$root/luna" "$wt" "$agent_home" "$home"
+  if [[ $hold == active ]]; then
+    printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$agent_home/zcode-exhausted-until"
+  fi
   git -C "$wt" init -q
   git -C "$wt" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
   printf 'same brief for both backends\n' > "$prompt"
@@ -148,7 +154,7 @@ run_case() {
   [[ -z $history ]] || printf '%s\n' "$history" > "$root/luna/rounds.log"
 
   if timeout --signal=TERM --kill-after=1 "${WORKER_TEST_RUN_TIMEOUT:-$timeout_seconds}" \
-    env CODEX_MODEL="$initial_model" WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND="$initial_backend" \
+    env HOME="$home" AGENT_HOME="$agent_home" CODEX_MODEL="$initial_model" WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND="$initial_backend" \
       WORKER_STALL_SECONDS="$stall_seconds" WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
       FAKE_ZC_MODE="$zc_mode" FAKE_LUNA_MODE="$luna_mode" \
       bash "$worker_script" "$key" "$wt" "$prompt" "$schema" > "$test_root/$name.stdout" 2> "$test_root/$name.stderr"; then
@@ -161,6 +167,35 @@ run_case() {
   fi
   CASE_DIR=$d
 }
+
+run_case explicit-zc-hold 0 success success 8 4 zc gpt-6-luna '' '' active
+[[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'explicit zc ignored the active quota hold'
+[[ $(wc -l < "$test_root/explicit-zc-hold.stderr") == 1 ]] || fail 'explicit zc hold did not write exactly one stderr line'
+[[ $(cat "$test_root/explicit-zc-hold.stderr") == 'worker: zcode quota hold active; using luna instead of zc' ]] || fail 'explicit zc hold wrote the wrong stderr line'
+printf 'PASS explicit zc uses luna during the quota hold\n'
+
+run_case luna-hold 75 success fatal 8 4 luna gpt-6-luna '' '' active
+[[ $(cat "$CASE_DIR/rc") == 75 ]] || fail 'luna failure during quota hold did not write rc=75'
+[[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'luna failure during quota hold started zc'
+assert_file_contains "$CASE_DIR/failover" 'backend=zc skipped; reason=zcode quota hold active'
+assert_file_contains "$CASE_DIR/failover" 'rc=75 reason=both backends failed: luna:'
+printf 'PASS luna failure during quota hold exhausts both backends without starting zc\n'
+
+run_case explicit-zc-no-hold 0 success success 8 4 zc
+[[ $(cat "$CASE_DIR/backend") == zc && $(cat "$CASE_DIR/attempt-backend") == zc ]] || fail 'explicit zc changed backend without a quota hold'
+printf 'PASS explicit zc stays on zc without a quota hold\n'
+
+run_case agent-home-marker 0 success success 8 4 '' gpt-6-luna '' '' active
+[[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'worker did not find the quota marker under AGENT_HOME'
+[[ ! -e "$test_root/agent-home-marker/home/.zenoforge/zcode-exhausted-until" ]] || fail 'AGENT_HOME marker fixture also had a HOME marker'
+printf 'PASS quota marker is resolved under AGENT_HOME\n'
+
+missing_rc=0
+env HOME="$test_root/missing-home" WORKER_SCRATCH_ROOT="$test_root/missing/.scratch" WORKER_BACKEND=luna \
+  bash "$worker_script" test-missing "$test_root" 'brief text, not a path' > /dev/null 2> "$test_root/missing.stderr" || missing_rc=$?
+[[ $missing_rc == 2 ]] || fail "missing prompt file returned rc=$missing_rc, expected 2"
+assert_file_contains "$test_root/missing.stderr" 'worker: prompt file not found: brief text, not a path'
+printf 'PASS a prompt that is not a file fails with rc=2\n'
 
 run_case capacity 0 success capacity 8 4 luna gpt-6.1-terra
 [[ $(cat "$CASE_DIR/models") == $'gpt-6.1-terra\ngpt-6-luna' ]] || fail 'terra capacity did not retry on default exactly once'
