@@ -73,9 +73,10 @@ printf '%s\n' "$deployment_output"
 grep -Fqx "resolved_agent_home=$fixture_home" <<< "$deployment_output" \
   || fail "expected deploy.env ZF_HOME=$fixture_home; got ${deployment_output#resolved_agent_home=}"
 printf 'PASS: deploy.env ZF_HOME resolved without AGENT_HOME\n'
-grep -Fqx "repo_dir=$fixture_repo" <<< "$deployment_output" \
-  || fail "expected landing repo $fixture_repo; got $(grep '^repo_dir=' <<< "$deployment_output" || true)"
-printf 'PASS: deployment ZF_REPO_DIR did not replace the landing repo\n'
+# The queue handoff gets no repo dir from deploy.env; the live queue resolves its own.
+grep -Fqx "repo_dir=" <<< "$deployment_output" \
+  || fail "deploy.env ZF_REPO_DIR leaked into the queue handoff: $(grep '^repo_dir=' <<< "$deployment_output" || true)"
+printf 'PASS: deployment ZF_REPO_DIR did not leak into the queue handoff\n'
 grep -Fqx "engine_dir=$fixture_engine" <<< "$deployment_output" \
   || fail "expected entrypoint engine $fixture_engine; got $(grep '^engine_dir=' <<< "$deployment_output" || true)"
 printf 'PASS: deployment ZF_ENGINE_DIR did not replace the entrypoint engine\n'

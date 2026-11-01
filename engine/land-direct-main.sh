@@ -163,7 +163,6 @@ done
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd -- "$repo_root"
-export ZF_REPO_DIR="${ZF_REPO_DIR:-$repo_root}"
 branch="$(git branch --show-current)"
 [[ -n "$branch" ]] || { echo "land-direct-main: run from a named branch" >&2; exit 2; }
 if [[ "$branch" == main && "$revalidate_only" != 1 && -z "$reconcile_pr" ]]; then
@@ -236,6 +235,7 @@ land_register_post_push_range() {
 # land-direct-main.sh against older agent worktrees, whose lib.sh lacked agent_owned_issue_ids on
 # 2026-10-11 and refused every landing with "could not resolve owner issues".
 source "$land_script_dir/merge-result-check.sh"
+export ZF_REPO_DIR="${ZF_REPO_DIR:-$repo_root}"
 source "$land_script_dir/lib.sh"
 source "$land_script_dir/model-policy-fast-forward.sh"
 incident_guards_file="$(zf_config_file state/incident-guards.json 2>/dev/null || true)"
