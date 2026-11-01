@@ -21,6 +21,7 @@ import argparse, json, math, os, re, sys
 from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import usage_reader
+from env_config import zf_env
 from datetime import datetime, timedelta, timezone
 
 LINE_RE = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\] (.*)$")
@@ -520,7 +521,7 @@ def lesson_rule_hits_section(scheduler_rows, until, zero_hit_days):
     retained = [(parse_ts(stamp), message) for stamp, message in scheduler_rows
                 if parse_ts(stamp) <= end]
     observations = [at for at, message in retained if LESSON_OBSERVED_RE.search(message)]
-    repo_root = os.environ.get("ZF_REPO_DIR") or os.path.dirname(
+    repo_root = zf_env("REPO_DIR") or os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
     rules_path = os.path.join(repo_root, "lessons", "RULES.md")

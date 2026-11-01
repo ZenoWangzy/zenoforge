@@ -32,6 +32,32 @@ check "AGENT_HOME beats ZF_HOME" \
 check "ZF_HOME beats the default" \
   "$(resolve "$target/engine" "${unset_all[@]}" ZF_HOME=/b | cut -d'|' -f3)" "/b"
 
+lookup_env() {
+  local dir="$1"; shift
+  env -i HOME="$HOME" PATH="$PATH" "$@" bash -c \
+    'source "$1/config.sh"; if value="$(zf_env_get SAMPLE)"; then printf "set:%s" "$value"; else printf unset; fi' \
+    _ "$dir"
+}
+mkdir -p "$target/.zenoforge"
+check "env lookup without config uses the public spelling" \
+  "$(lookup_env "$other/engine" ZF_SAMPLE=public)" "set:public"
+check "env lookup with no config has no deployment alias" \
+  "$(lookup_env "$other/engine")" "unset"
+check "no config uses the supplied engine default" \
+  "$(env -i HOME="$HOME" PATH="$PATH" bash -c \
+    'source "$1/config.sh"; zf_env_get SAMPLE engine-default' _ "$other/engine")" "engine-default"
+printf '%s\n' '{"env_prefix":"DEPLOY_"}' > "$target/.zenoforge/config.json"
+check "configured prefix wins over the public spelling" \
+  "$(lookup_env "$target/engine" DEPLOY_SAMPLE=deployment ZF_SAMPLE=public)" "set:deployment"
+check "configured prefix falls back to the public spelling" \
+  "$(lookup_env "$target/engine" ZF_SAMPLE=public)" "set:public"
+check "a configured empty value stays empty" \
+  "$(lookup_env "$target/engine" DEPLOY_SAMPLE= ZF_SAMPLE=public)" "set:"
+check "the configured repo key resolves before the engine default" \
+  "$(env -i HOME="$HOME" PATH="$PATH" DEPLOY_REPO_DIR="$test_env_root/deployed" bash -c \
+    'source "$1/config.sh"; printf "%s" "$ZF_REPO_DIR"' _ "$target/engine")" \
+  "$test_env_root/deployed"
+
 # A script that loads another checkout's lib.sh must get that checkout's directories, not the first one's.
 check "sourcing a second checkout's config.sh re-derives" \
   "$(env "${unset_all[@]}" bash -c 'source "$1/config.sh"; source "$2/config.sh"; printf "%s|%s" "$ZF_ENGINE_DIR" "$ZF_REPO_DIR"' _ "$target/engine" "$other/engine")" \
@@ -55,4 +81,10 @@ check "acceptance user defaults to 验收用户" "$(setting ZF_ACCEPTANCE_USER)"
 check "an exported value wins" "$(setting ZF_INFRA_REPO ZF_INFRA_REPO=o/r)" "o/r"
 check "an empty host sync path list stays empty" "$(setting ZF_CIHOST_SYNC_PATHS ZF_CIHOST_SYNC_PATHS=)" ""
 check "host sync roots default to the lib, systemd and ops sources" "$(setting ZF_CIHOST_SYNC_ROOTS | cut -d' ' -f1-3)" "engine/lib.sh engine/closing-keywords.sh engine/systemd"
+check "prefixed identity is exported under the public shell name" \
+  "$(setting ZF_AGENT_GIT_USER_NAME DEPLOY_AGENT_GIT_USER_NAME=deployment)" "deployment"
+check "prefixed identity wins over the public spelling" \
+  "$(setting ZF_AGENT_GIT_USER_NAME DEPLOY_AGENT_GIT_USER_NAME=deployment ZF_AGENT_GIT_USER_NAME=public)" "deployment"
+check "an empty prefixed identity stays empty" \
+  "$(setting ZF_AGENT_GIT_USER_NAME DEPLOY_AGENT_GIT_USER_NAME= ZF_AGENT_GIT_USER_NAME=public)" ""
 echo "config.test.sh: PASS"

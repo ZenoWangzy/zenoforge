@@ -2,6 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$script_dir/config.sh"
 repo_dir="${ZF_REPO_DIR:-$(git -C "$script_dir/.." rev-parse --show-toplevel)}"
 npm_bin="${ZF_NPM_GLOBAL_BIN_DIR:-${HOME:?HOME is not set}/.npm-global/bin}"
 agent_home="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"

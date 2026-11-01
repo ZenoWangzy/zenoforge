@@ -4,7 +4,34 @@ set -euo pipefail
 land_entry="$(realpath -- "${1:-}")"
 shift
 land_args=("$@")
+land_script_dir="${land_entry%/*}"
+if [[ -f "$land_script_dir/config.sh" ]]; then
+  source "$land_script_dir/config.sh"
+else
+  # Published lander entrypoints omit config.sh; resolve their engine directory and agent home locally.
+  ZF_ENGINE_DIR="${ZF_ENGINE_DIR:-$land_script_dir}"
+  land_agent_home="${AGENT_HOME:-${ZF_HOME:-}}"
+  if [[ -z "$land_agent_home" ]]; then
+    land_agent_home="$(
+      if [[ -f "$land_script_dir/deploy.env" ]]; then
+        source "$land_script_dir/deploy.env" >/dev/null 2>&1 || true
+      fi
+      printf '%s' "${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
+    )"
+  fi
+  AGENT_HOME="$land_agent_home"
+  export ZF_ENGINE_DIR AGENT_HOME
+fi
 repo_root="$(git rev-parse --show-toplevel)"
+if [[ "${_AGENT_REPO_DIR_DERIVED-}" == "${ZF_REPO_DIR-}" ]]; then
+  ZF_REPO_DIR="$repo_root"
+  unset _AGENT_REPO_DIR_DERIVED
+  if [[ "${_AGENT_CONFIG_ROOT_DERIVED-}" == "${ZF_CONFIG_ROOT-}" ]]; then
+    ZF_CONFIG_ROOT="$ZF_REPO_DIR/.zenoforge"
+    unset _AGENT_CONFIG_ROOT_DERIVED
+    export ZF_CONFIG_ROOT
+  fi
+fi
 
 # Engine layout (Line B A2): the entry sits in the engine directory ZF_ENGINE_DIR outside the target repository, a
 # published immutable version, so there is no entry commit to compare and no snapshot to take. An entry at

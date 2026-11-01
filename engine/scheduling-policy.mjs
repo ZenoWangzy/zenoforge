@@ -16,9 +16,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { zfConfigFile } from './pack-dir.mjs';
+import { zfConfigFile, zfEnv } from './pack-dir.mjs';
 
-const REPO_ROOT = resolve(process.env.ZF_REPO_DIR || join(dirname(fileURLToPath(import.meta.url)), '..'));
+const REPO_ROOT = resolve(zfEnv('REPO_DIR') || join(dirname(fileURLToPath(import.meta.url)), '..'));
 const POLICY_PATH = zfConfigFile('state/scheduling-policy.json', REPO_ROOT);
 const RULINGS_PATH = zfConfigFile('state/rulings.json', REPO_ROOT);
 const LEDGER_PATH = `${process.env.AGENT_HOME ?? `${process.env.HOME}/.zenoforge`}/checkout/.scratch-supervisor/autopi/units.json`;

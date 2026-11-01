@@ -6,6 +6,13 @@ unset ZF_NON_PRODUCT_UNIT
 
 self="$(realpath -- "$0")"
 land_script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+if [[ -f "$land_script_dir/config.sh" ]]; then
+  source "$land_script_dir/config.sh"
+else
+  # Published lander entrypoints omit config.sh; resolve their engine directory locally.
+  ZF_ENGINE_DIR="${ZF_ENGINE_DIR:-$land_script_dir}"
+  export ZF_ENGINE_DIR
+fi
 land_agent_home="${AGENT_HOME:-${ZF_HOME:-}}"
 if [[ -z "$land_agent_home" ]]; then
   land_agent_home="$(
@@ -15,6 +22,8 @@ if [[ -z "$land_agent_home" ]]; then
     printf '%s' "${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
   )"
 fi
+AGENT_HOME="$land_agent_home"
+export AGENT_HOME
 orig_args=("$@")
 land_snapshot_marker="${ZF_LAND_CODE_SNAPSHOT:-}"
 # $self is realpath-normalized while the marker arrives verbatim from mktemp; macOS TMPDIR
@@ -55,6 +64,15 @@ if [[ "$land_engine_entry" == 1 ]]; then
     land_guard_source_root="$land_agent_home/checkout"
   fi
   printf 'land-direct-main: engine=%s (published engine directory, no snapshot)\n' "${self%/*}" >&2
+  if [[ "${_AGENT_REPO_DIR_DERIVED-}" == "${ZF_REPO_DIR-}" ]]; then
+    ZF_REPO_DIR="$land_target_repo"
+    unset _AGENT_REPO_DIR_DERIVED
+    if [[ "${_AGENT_CONFIG_ROOT_DERIVED-}" == "${ZF_CONFIG_ROOT-}" ]]; then
+      ZF_CONFIG_ROOT="$ZF_REPO_DIR/.zenoforge"
+      unset _AGENT_CONFIG_ROOT_DERIVED
+      export ZF_CONFIG_ROOT
+    fi
+  fi
   export _AGENT_WRITE_GUARD_SOURCE_ROOT="$land_guard_source_root" ZF_LAND_CODE_SNAPSHOT="${self%/*}" \
     ZF_REPO_DIR="${ZF_REPO_DIR:-$land_target_repo}" ZF_EXECUTION_MODULE_DIR="${self%/*}" ZF_SYSTEMD_RUN_REAL=""
 elif [[ "$self" != "$land_snapshot_entry" ]]; then

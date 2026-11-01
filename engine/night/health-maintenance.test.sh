@@ -10,6 +10,7 @@ trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 fixture_repo="$tmp/repo"
 fixture_agent="$tmp/agent"
 mkdir -p -- "$fixture_repo/engine/night" "$fixture_agent/night" "$tmp/bin"
+cp -- "$REPO_DIR/engine/config.sh" "$fixture_repo/engine/config.sh"
 cp -- "$SCRIPT_DIR/health-maintenance.sh" "$fixture_repo/engine/night/health-maintenance.sh"
 cat > "$fixture_repo/engine/night/maintainer-health-mail.sh" <<'EOF'
 #!/usr/bin/env bash

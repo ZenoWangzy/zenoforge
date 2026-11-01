@@ -4,10 +4,10 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { zfConfigFile } from './pack-dir.mjs';
+import { zfConfigFile, zfEnv } from './pack-dir.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const defaultRepo = process.env.ZF_REPO_DIR || path.resolve(scriptDir, '..');
+const defaultRepo = zfEnv('REPO_DIR') || path.resolve(scriptDir, '..');
 const REGISTRY_RELATIVE_PATH = 'state/incident-guards.json';
 const legacyRegistryPath = `${process.env.ZF_PACK_REL || 'engine'}/${REGISTRY_RELATIVE_PATH}`;
 const outputPath = 'lessons/recurrence-ranking.json';

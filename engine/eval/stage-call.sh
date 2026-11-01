@@ -3,7 +3,10 @@
 set -euo pipefail
 unset GH_TOKEN GITHUB_TOKEN
 stage=$1; repo=$2; wt=$3; prompt=$4; artifact=$5; input=$6
-export REPO_DIR="$repo" ZF_REPO_DIR="${ZF_REPO_DIR:-$repo}" TMPDIR="$artifact/tmp" AGENT_HOME="$artifact/agent-home"
+export ZF_REPO_DIR="${ZF_REPO_DIR:-$repo}"
+source "$repo/engine/config.sh"
+resolved_repo="$(zf_env_get REPO_DIR "$repo")"
+export REPO_DIR="$resolved_repo" ZF_REPO_DIR="$resolved_repo" TMPDIR="$artifact/tmp" AGENT_HOME="$artifact/agent-home"
 mkdir -p "$TMPDIR" "$AGENT_HOME"
 # Seed an isolated persistent policy with the caller's selected pipeline policy.
 cp "$EVAL_POLICY_FILE" "$AGENT_HOME/model-policy.json"
