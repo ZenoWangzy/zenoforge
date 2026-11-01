@@ -95,20 +95,44 @@ test('maps shared merge-policy changes to aggregate-check consumer suites', () =
 });
 
 test('maps target config data to its reader suites', () => {
-  for (const [source, suite] of [
-    ['.zenoforge/model-policy.default.json', 'engine/apply-model-policy-default-view.test.sh'],
-    ['.zenoforge/prompts/advisor-batch.md', 'engine/run-advisor-batch.test.sh'],
-    ['.zenoforge/prompts/triage.md', 'engine/run-triage.test.sh'],
-    ['.zenoforge/prompts/supervisor-arbiter.md', 'engine/mac-autopilot/supervisor-arbiter.test.sh'],
-    ['.zenoforge/mac-autopilot/required-pr-checks.json', 'engine/mac-autopilot/scheduler-gates.test.sh'],
-    ['.zenoforge/state/ci-known-flakes.json', 'engine/ci-flake-classification.test.sh'],
-    ['.zenoforge/state/risk-paths.json', 'engine/risk-class.test.mjs'],
-    ['.zenoforge/state/rule-files.json', 'engine/rule-lane.test.sh'],
-    ['.zenoforge/state/rulings.json', 'engine/pipeline-system-close-evidence.test.sh'],
-    ['.zenoforge/state/scheduling-policy.json', 'engine/check-rulings.test.sh'],
-    ['.zenoforge/state/incident-guards.json', 'engine/night/incident-guard-audit.test.mjs'],
+  for (const [source, suites] of [
+    ['.zenoforge/model-policy.default.json', ['engine/lib.test.sh', 'engine/apply-model-policy-default-view.test.sh']],
+    ['.zenoforge/mac-autopilot/NODE-HEALTH.md', ['engine/mac-autopilot/dashboard-front.test.sh', 'engine/mac-autopilot/node_health.test.sh']],
+    ['.zenoforge/mac-autopilot/config.template.json', ['engine/mac-autopilot/scheduler-gates.test.sh', 'engine/mac-autopilot/start.test.sh']],
+    ['.zenoforge/mac-autopilot/product-lane-skills.txt', ['engine/mac-autopilot/scheduler-gates.test.sh']],
+    ['.zenoforge/prompts/advisor-batch.md', ['engine/run-advisor-batch.test.sh']],
+    ['.zenoforge/prompts/advisor.md', ['engine/run-advisor.test.sh', 'engine/run-advisor-batch.test.sh']],
+    ['.zenoforge/prompts/advisor.schema.json', ['engine/run-advisor.test.sh', 'engine/run-advisor-batch.test.sh']],
+    ['.zenoforge/prompts/agent-settings.json', [
+      'engine/eval/runner.test.mjs',
+      'engine/run-advisor.test.sh',
+      'engine/run-advisor-batch.test.sh',
+      'engine/run-recut.test.sh',
+      'engine/run-triage.test.sh',
+      'engine/run-triage-batch.test.sh',
+    ]],
+    ['.zenoforge/prompts/founder-outcome.schema.json', ['engine/notify.test.sh']],
+    ['.zenoforge/prompts/implement-contract.md', ['engine/eval/runner.test.mjs']],
+    ['.zenoforge/prompts/recut.md', ['engine/run-recut.test.sh']],
+    ['.zenoforge/prompts/recut.schema.json', ['engine/run-recut.test.sh']],
+    ['.zenoforge/prompts/review-contract.md', ['engine/mac-autopilot/scheduler.test.sh', 'engine/mac-autopilot/supervisor-arbiter.test.sh']],
+    ['.zenoforge/prompts/supervisor-arbiter.md', [
+      'engine/eval/runner.test.mjs',
+      'engine/mac-autopilot/scheduler.test.sh',
+      'engine/mac-autopilot/supervisor-arbiter.test.sh',
+    ]],
+    ['.zenoforge/prompts/triage.md', ['engine/run-triage.test.sh', 'engine/run-triage-batch.test.sh']],
+    ['.zenoforge/prompts/triage.schema.json', ['engine/run-triage.test.sh', 'engine/run-triage-batch.test.sh']],
+    ['.zenoforge/mac-autopilot/required-pr-checks.json', ['engine/lib.test.sh', 'engine/mac-autopilot/scheduler-gates.test.sh', 'engine/hotfix/hf-merge.test.sh']],
+    ['.zenoforge/state/ci-known-flakes.json', ['engine/ci-flake-classification.test.sh']],
+    ['.zenoforge/state/hand-priority.json', ['engine/dispatch-load-guard.test.sh']],
+    ['.zenoforge/state/risk-paths.json', ['engine/risk-class.test.mjs']],
+    ['.zenoforge/state/rule-files.json', ['engine/rule-lane.test.sh', 'engine/landed-incident-guards.test.sh']],
+    ['.zenoforge/state/rulings.json', ['engine/check-rulings.test.sh', 'engine/pipeline-system-close-evidence.test.sh']],
+    ['.zenoforge/state/scheduling-policy.json', ['engine/check-rulings.test.sh']],
+    ['.zenoforge/state/incident-guards.json', ['engine/night/incident-guard-audit.test.mjs']],
   ]) {
-    assert.deepEqual(focusedTestPaths([source], new Set([suite])), [suite], source);
+    assert.deepEqual(focusedTestPaths([source], new Set(suites)), [...suites].sort(), source);
   }
 });
 

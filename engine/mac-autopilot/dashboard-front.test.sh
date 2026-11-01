@@ -24,6 +24,11 @@ export SESSION_TZ="$tz" CODEX_SESSIONS_DIR="$f/sessions" MAC_AUTOPILOT_ROOT="$ro
 export MAC_AUTOPILOT_COST_CACHE="$f/cost.json" MAC_AUTOPILOT_DASHBOARD_OUTPUT="$f/out.js"
 export FAKE_DEPLOYMENTS="$f/deployments.json" FAKE_DEPLOYMENT_WRITES="$f/deployment-writes"
 export FAKE_SSH_LOG="$f/ssh.log"
+mkdir -p "$root/.zenoforge/mac-autopilot"
+cp "$script_dir/NODE-HEALTH.md" "$root/.zenoforge/mac-autopilot/NODE-HEALTH.md"
+health_doc_ref="$(PYTHONPATH="$script_dir" python3 -c 'import node_health; print(node_health.health_doc_reference())')"
+[[ "$health_doc_ref" == .zenoforge/mac-autopilot/NODE-HEALTH.md ]] || fail 'dashboard standards did not resolve the target health document'
+health_doc="$root/$health_doc_ref"
 jq -n --arg sha "$deployed" '[{id:7,sha:$sha,created_at:"2026-10-24T00:00:00Z",payload:{sha:$sha,images:{"example-admin":"sha256:observed"},image_shas:{"example-admin":$sha}}}]' > "$FAKE_DEPLOYMENTS"
 : > "$FAKE_DEPLOYMENT_WRITES"
 : > "$FAKE_SSH_LOG"
@@ -176,7 +181,7 @@ jq -e '[.standards[] | select((.healthy|type) != "number" or (.unhealthy|type) !
   and (.standards | keys) == (.status | keys) and (.elapsed_s < 5)' <<<"$out" >/dev/null || fail "standards incomplete: $(jq -c '.standards | keys' <<<"$out")"
 while IFS= read -r id; do
   key="${id%.count}"; key="${key%.idle_hours}"
-  grep -Fq "\`$key" "$script_dir/NODE-HEALTH.md" || fail "NODE-HEALTH.md lacks front standard $id"
+  grep -Fq "\`$key" "$health_doc" || fail "NODE-HEALTH.md lacks front standard $id"
 done < <(jq -r '.standards | keys[]' <<<"$out")
 # 整个看板数据仍是完整的
 sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e '.units | length == 2' >/dev/null || fail "dashboard lost its units"

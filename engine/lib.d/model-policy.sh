@@ -475,7 +475,7 @@ model_policy() {
       fi
       ;;
     live)
-      local forbidden_words allowed_identities pipeline_worktrees pipeline_settings policy_age
+      local forbidden_words allowed_identities pipeline_worktrees pipeline_settings legacy_settings policy_age
       forbidden_words="$(jq -r '.forbidden | join(",")' <<< "$effective_policy")"
       allowed_identities="$(jq -nr --argjson live "$effective_policy" --slurpfile defaults "$MODEL_POLICY_DEFAULT" '
         [$live.roles[], $defaults[0].roles[]]
@@ -485,14 +485,17 @@ model_policy() {
           | flatten | unique | join(",")
       ')"
       pipeline_worktrees="${ZF_WORKTREE_ROOT:-${HOME:?HOME is not set}/wt}/"
-      pipeline_settings="${ZF_ENGINE_LIVE:-$AGENT_HOME/checkout/engine}/prompts/agent-settings.json"
+      # Dispatchers pass the resolved settings file; runs started from the legacy engine path still count.
+      legacy_settings="${ZF_ENGINE_LIVE:-$AGENT_HOME/checkout/engine}/prompts/agent-settings.json"
+      pipeline_settings="$(zf_config_file prompts/agent-settings.json 2>/dev/null || true)"
+      [[ -n "$pipeline_settings" ]] || pipeline_settings="$legacy_settings"
       # A Codex run older than the live policy file was dispatched under an earlier policy; judging it
       # by today's roles turned 4 in-flight agents BROKEN for hours after a role change (2026-09-30).
       # Forbidden names still apply to it.
       policy_age=$(( $(date +%s) - $(stat -c %Y "$MODEL_POLICY_FILE") ))
       ps -ww -eo etimes=,comm=,args= | awk -v forbidden_words="$forbidden_words" \
         -v allowed_identities="$allowed_identities" -v policy_age="$policy_age" \
-        -v worktrees="$pipeline_worktrees" -v settings="$pipeline_settings" '
+        -v worktrees="$pipeline_worktrees" -v settings="$pipeline_settings" -v legacy_settings="$legacy_settings" '
         BEGIN {
           bad = 0
           forbidden_count = split(forbidden_words, forbidden, ",")
@@ -535,7 +538,7 @@ model_policy() {
           if (prohibited(process) || prohibited(argv0)) has_forbidden_executable = 1
           if ((process == "codex" || argv0 == "codex") && $3 == "exec") has_codex_exec = 1
           for (i = 1; i < NF; i++) {
-            if ($i == "--settings" && index($(i + 1), settings) == 1) uses_pipeline_settings = 1
+            if ($i == "--settings" && (index($(i + 1), settings) == 1 || index($(i + 1), legacy_settings) == 1)) uses_pipeline_settings = 1
             if ($i == "--cd" && index($(i + 1), worktrees) == 1) in_pipeline_worktree = 1
             if (index($i, "--cd=") == 1 && index(substr($i, 6), worktrees) == 1) in_pipeline_worktree = 1
             if (index($i, worktrees) == 1) in_pipeline_worktree = 1

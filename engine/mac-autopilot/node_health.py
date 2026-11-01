@@ -26,6 +26,18 @@ def is_test_path(path):
     return re.search(r'(^|/)(tests?|__tests__|fixtures?|__snapshots__|eval[-_a-z]*)/|\.(test|spec)\.|\.snap$', path) is not None
 
 
+def health_doc_reference():
+    doc = zf_config_file("mac-autopilot/NODE-HEALTH.md")
+    if doc is None:
+        doc = Path(__file__).resolve().parent / "NODE-HEALTH.md"
+    engine_dir = Path(os.environ.get("ZF_ENGINE_DIR") or Path(__file__).resolve().parent.parent)
+    repo_dir = Path(os.environ.get("ZF_REPO_DIR") or engine_dir.parent).resolve()
+    try:
+        return Path(doc).resolve().relative_to(repo_dir).as_posix()
+    except ValueError:
+        return os.fspath(doc)
+
+
 # metric id: (node, description, healthy bound, unhealthy bound, higher_is_better)
 CRITERIA = {
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
@@ -1263,7 +1275,7 @@ def file_issues(a, rows, now):
         body = (f"<!-- vecta-agent-comment -->\nnode_health.py at {now:%Y-%m-%dT%H:%MZ}: **{desc}** = {v:.0f} "
                 f"(healthy {'>=' if higher else '<='} {healthy}, unhealthy {'<=' if higher else '>='} {unhealthy}), "
                 f"unhealthy since {entry['since']}.\n\nNode: {node}. Criteria and human baseline: "
-                "engine/mac-autopilot/NODE-HEALTH.md. Fix the behaviour, not the metric (#4487): "
+                f"{health_doc_reference()}. Fix the behaviour, not the metric (#4487): "
                 "first find the behavioural root cause that keeps this metric unhealthy and fix that with "
                 "a regression test. If a root-cause ticket already covers it, link this issue there and "
                 "close it here instead of repairing per metric. Changing this metric's definition or bounds "
@@ -1318,7 +1330,7 @@ def flow_inbox(a, rows, now, agent_home, repo_root):
         if mid in state:
             continue
         text = (f"flow metric={mid} status=UNHEALTHY value={v:.1f} bound={unhealthy:g} "
-                f"{desc}; thresholds and sources: engine/mac-autopilot/NODE-HEALTH.md")
+                f"{desc}; thresholds and sources: {health_doc_reference()}")
         done = subprocess.run(["bash", "-c", 'source "$1" && supervisor_inbox_append flow-metric "$2"',
                                "bash", lib, text],
                               capture_output=True, env={**os.environ, "AGENT_HOME": agent_home})
@@ -1566,7 +1578,7 @@ def main():
                 if f"[{hour}" in seen and f"NODE-UNHEALTHY metric={mid} " in seen.split(f"[{hour}", 1)[1]:
                     continue
                 out.write(f"[{now:%Y-%m-%dT%H:%M:%SZ}] NODE-UNHEALTHY metric={mid} node={node} value={v:.0f} "
-                          f"unhealthy-bound={unhealthy} ({desc}; see NODE-HEALTH.md)\n")
+                          f"unhealthy-bound={unhealthy} ({desc}; see {health_doc_reference()})\n")
 
 
 if __name__ == "__main__":

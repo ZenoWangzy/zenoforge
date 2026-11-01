@@ -56,3 +56,28 @@ rm -f "$capacity_home/capacity.env"
 }
 rm -rf -- "$capacity_home"
 echo 'ok - host capacity.env overrides the inherited load multiplier'
+
+# The shared admission state resolves target-config first (state/hand-priority.json is deployment
+# data): with config.sh sourced, the .zenoforge copy wins over this engine's own default.
+config_target="$(mktemp -d)"
+mkdir -p "$config_target/.zenoforge/state"
+printf '{"order":["normal","opt","hotfix"],"default":"normal"}\n' > "$config_target/.zenoforge/state/hand-priority.json"
+resolved_state="$(ZF_REPO_DIR="$config_target" bash -c '
+  source "$1/config.sh"
+  source "$1/dispatch-load-guard.sh"
+  hand_priority_state
+' _ "$SCRIPT_DIR")"
+[[ "$resolved_state" == "$config_target/.zenoforge/state/hand-priority.json" ]] || {
+  echo "not ok - config-root hand-priority copy must win (got $resolved_state)"
+  exit 1
+}
+[[ "$(HAND_PRIORITY_STATE=/live/state.json ZF_REPO_DIR="$config_target" bash -c '
+  source "$1/config.sh"
+  source "$1/dispatch-load-guard.sh"
+  hand_priority_state
+' _ "$SCRIPT_DIR")" == /live/state.json ]] || {
+  echo 'not ok - HAND_PRIORITY_STATE must keep winning over the config copy'
+  exit 1
+}
+rm -rf -- "$config_target"
+echo 'ok - hand-priority state resolves the target config copy first'

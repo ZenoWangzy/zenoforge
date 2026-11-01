@@ -8,11 +8,14 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "$script_dir/../.." && pwd -P)"
 fail() { echo "node_health.test.sh: $*" >&2; exit 1; }
 config_root="$test_env_root/config/.zenoforge"
-mkdir -p "$config_root/state"
+mkdir -p "$config_root/state" "$config_root/mac-autopilot"
 printf '{"incidents":[{"id":"config-only-incident"}]}\n' > "$config_root/state/incident-guards.json"
 config_incidents="$(PYTHONPATH="$script_dir" ZF_CONFIG_ROOT="$config_root" ZF_PACK_DIR='' \
   python3 -c 'import node_health; print(node_health.load_incident_guards()[0]["id"])')"
 [[ "$config_incidents" == config-only-incident ]] || fail 'incident metrics did not read target config'
+cp "$script_dir/NODE-HEALTH.md" "$config_root/mac-autopilot/NODE-HEALTH.md"
+health_doc="$(PYTHONPATH="$script_dir" ZF_CONFIG_ROOT="$config_root" python3 -c 'import node_health; print(node_health.health_doc_reference())')"
+[[ "$health_doc" == "$config_root/mac-autopilot/NODE-HEALTH.md" ]] || fail 'health documentation did not resolve from target config'
 sup="$test_env_root/sup"; a="$sup/autopi"; mkdir -p "$a/alerts"
 audit="$test_env_root/actions-run-cancellations.jsonl"
 cat > "$audit" <<'JSON'
@@ -210,9 +213,9 @@ export FAKE_ISSUE_LIST='[{"number":99001,"title":"pipeline health: release.hotpa
 nh 2026-10-20T03:40:00Z   # refile window open again, but the issue was closed inside this episode (triaged) -> no re-file
 [[ "$(grep -c 'issue create.*release.hotpatch_blockers' "$test_env_root/gh.calls")" == 2 ]] || fail "closed (triaged) health issue was re-filed in the same unhealthy episode"
 # 每个数字都有标准：指标、含义、NODE-HEALTH.md 一一对应（看板与体检读同一份）
-python3 - "$script_dir" <<'CHECK' || fail 'metric standards out of alignment'
+python3 - "$script_dir" "$health_doc" <<'CHECK' || fail 'metric standards out of alignment'
 import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
-doc = open(sys.argv[1] + "/NODE-HEALTH.md").read()
+doc = open(sys.argv[2]).read()
 gaps = [m for m in n.CRITERIA if m not in n.MEANING or f"`{m}`" not in doc] + [m for m in n.MEANING if m not in n.CRITERIA]
 gaps += [k for k in n.UNIT_STANDARDS if f"`unit.{k}`" not in doc]
 gaps += [f"source:{m}" for m in n.CRITERIA if not n.SOURCE.get(m)] + [f"source:{m}" for m in n.SOURCE if m not in n.CRITERIA]

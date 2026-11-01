@@ -3920,6 +3920,21 @@ MODEL_POLICY_LIVE_STATUS=$?
 set -e
 assert_eq "live scan rejects pipeline Claude even with a custom model" "1" "$MODEL_POLICY_LIVE_STATUS"
 assert_contains "live scan names forbidden runtime status" "$MODEL_POLICY_LIVE_OUTPUT" forbidden
+MODEL_POLICY_SETTINGS_CONFIG="$test_env_root/model-policy-settings/.zenoforge"
+mkdir -p "$MODEL_POLICY_SETTINGS_CONFIG/prompts"
+printf '{}\n' > "$MODEL_POLICY_SETTINGS_CONFIG/prompts/agent-settings.json"
+MODEL_POLICY_PREVIOUS_CONFIG_ROOT="${ZF_CONFIG_ROOT-}"
+MODEL_POLICY_CONFIG_ROOT_WAS_SET=0
+[[ -n "${ZF_CONFIG_ROOT+x}" ]] && MODEL_POLICY_CONFIG_ROOT_WAS_SET=1
+ZF_CONFIG_ROOT="$MODEL_POLICY_SETTINGS_CONFIG"
+MODEL_POLICY_TEST_PROCESSES="0 claude claude --model custom --settings $MODEL_POLICY_SETTINGS_CONFIG/prompts/agent-settings.json"
+set +e
+MODEL_POLICY_LIVE_OUTPUT="$(model_policy live 2>&1)"
+MODEL_POLICY_LIVE_STATUS=$?
+set -e
+assert_eq "live scan recognizes target-config agent settings" "1" "$MODEL_POLICY_LIVE_STATUS"
+assert_contains "target-config settings mark a pipeline Claude process" "$MODEL_POLICY_LIVE_OUTPUT" forbidden
+if (( MODEL_POLICY_CONFIG_ROOT_WAS_SET )); then ZF_CONFIG_ROOT="$MODEL_POLICY_PREVIOUS_CONFIG_ROOT"; else unset ZF_CONFIG_ROOT; fi
 MODEL_POLICY_TEST_PROCESSES="0 claude claude --model custom --cd $HOME/wt/issue-42"
 set +e
 MODEL_POLICY_LIVE_OUTPUT="$(model_policy live 2>&1)"

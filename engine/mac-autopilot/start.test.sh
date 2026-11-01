@@ -155,4 +155,13 @@ declare -F platform_require pid_live pid_start_id >/dev/null || fail 'runtime-en
 [[ "$(env -u PGTEST_URL bash -c 'source "$1/runtime-env.sh"; printf %s "$PGTEST_URL"' _ "$script_dir")" == postgresql://example@127.0.0.1:5432/postgres ]] || fail 'runtime env does not give workers the local test Postgres'
 [[ "$(PGTEST_URL=postgresql://x@h:1/postgres bash -c 'source "$1/runtime-env.sh"; printf %s "$PGTEST_URL"' _ "$script_dir")" == postgresql://x@h:1/postgres ]] || fail 'runtime env overrode an explicit PGTEST_URL'
 
+# The target .zenoforge template takes precedence over the copy shipped beside the engine.
+mkdir -p "$root/.zenoforge/mac-autopilot"
+jq '.max_workers = 3' "$live/config.template.json" > "$root/.zenoforge/mac-autopilot/config.template.json"
+PATH="$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" \
+  MAC_AUTOPILOT_SUPERVISOR_DIR="$root/.scratch-supervisor" MAC_AUTOPILOT_RUNTIME_DIR="$state" \
+  ZF_REPO_DIR="$root" bash "$script_dir/start.sh" --sync-only >/dev/null
+jq -e '.max_workers == 3' "$state/config.json" >/dev/null || fail 'install reconcile did not follow the target config template'
+rm -rf -- "$root/.zenoforge"
+
 echo 'start.test.sh: PASS'

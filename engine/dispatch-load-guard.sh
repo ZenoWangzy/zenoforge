@@ -17,8 +17,15 @@ dispatch_load_exceeded() {
 }
 
 # One scheduling policy for enqueue, resume and both admission gates.
+# An explicit HAND_PRIORITY_STATE wins; otherwise the target config copy of state/hand-priority.json,
+# then the pack, then this engine's own default.
 hand_priority_state() {
-  printf '%s\n' "${HAND_PRIORITY_STATE:-$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/state/hand-priority.json}"
+  local candidate
+  [[ -n "${HAND_PRIORITY_STATE:-}" ]] && { printf '%s\n' "$HAND_PRIORITY_STATE"; return 0; }
+  if declare -F zf_config_file >/dev/null 2>&1 && candidate="$(zf_config_file state/hand-priority.json)"; then
+    printf '%s\n' "$candidate"; return 0
+  fi
+  printf '%s\n' "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/state/hand-priority.json"
 }
 
 hand_dispatch_tier() {

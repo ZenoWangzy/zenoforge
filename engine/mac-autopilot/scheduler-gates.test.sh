@@ -1062,6 +1062,12 @@ TICK_PRS=""; units '{"units":[]}'; register_new_prs || :
 # #4615: configured prefixes, PR labels, linked issue labels and automatic PR labels share is_hotfix_pr.
 [[ "$(jq -c '.hotfix_lane' "$script_dir/config.template.json")" == '{"branch_prefixes":["hotfix/","agent/issue-hf-"],"label":"hotfix"}' ]] \
   || fail 'config.template.json does not define the hotfix lane'
+# config.template.json and product-lane-skills.txt are deployment data: both resolve target config
+# first (sched_config_file), so a .zenoforge copy wins over the engine's own default.
+grep -q 'reconcile_runtime_config "$(sched_config_file mac-autopilot/config.template.json)"' "$script_dir/scheduler.sh" \
+  || fail 'tick reconcile must resolve config.template.json through sched_config_file'
+grep -q 'PRODUCT_LANE_SKILLS="$(sched_config_file mac-autopilot/product-lane-skills.txt)"' "$script_dir/scheduler.sh" \
+  || fail 'product lane skills must resolve through sched_config_file'
 hotfix_list_calls="$fixture/hotfix-issue-list.calls"; : > "$hotfix_list_calls"
 hotfix_label_edits=()
 gh() {

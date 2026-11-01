@@ -63,7 +63,11 @@ if (( ! IMMUTABLE )) && [[ ! -d "$version" ]]; then
 fi
 code="$version/$ENGINE_REL/mac-autopilot"
 source "$code/config-reconcile.sh"
-reconcile_event="$(reconcile_runtime_config "$code/config.template.json" "$A/config.json" "${ZF_ENGINE_DIR:-$MAC_AUTOPILOT_ROOT/engine}/lib.sh")"
+# The runtime template is deployment data: target config first, then the pack, then the copy shipped
+# beside this script. config.sh resolves it the same way the scheduler's tick reconcile does.
+template="$( ( source "$SRC/../config.sh" && zf_config_file mac-autopilot/config.template.json ) 2>/dev/null || true)"
+[[ -n "$template" ]] || template="$code/config.template.json"
+reconcile_event="$(reconcile_runtime_config "$template" "$A/config.json" "${ZF_ENGINE_DIR:-$MAC_AUTOPILOT_ROOT/engine}/lib.sh")"
 if [[ -n "$reconcile_event" ]]; then
   printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reconcile_event" | tee -a "$A/scheduler.log"
 fi
