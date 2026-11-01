@@ -3,6 +3,7 @@
 import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zfConfigFile } from '../pack-dir.mjs';
@@ -230,6 +231,28 @@ function guardTargets(guard, repo) {
   return [...targets.values()];
 }
 
+async function readHostOpsManifest(targetRepo) {
+  if (!targetRepo) return null;
+  const configPath = zfConfigFile('build.json', targetRepo);
+  if (!configPath) return null;
+  const config = JSON.parse(await readFile(configPath, 'utf8'));
+  const configuredPath = config.incident_guard_host_ops_manifest;
+  if (typeof configuredPath !== 'string' || !configuredPath.trim()) return null;
+
+  const setting = configuredPath.trim().replace(/^~(?=$|[\\/])/, homedir());
+  const manifestPath = path.isAbsolute(setting) ? setting : path.resolve(targetRepo, setting);
+  // A host without host-ops (CI, another machine) audits without the fallback instead of failing.
+  const contents = await readFile(manifestPath, 'utf8').catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (contents === null) return null;
+  const entries = new Set(contents.split(/\r?\n/).slice(1)
+    .map((line) => line.split('\t', 1)[0])
+    .filter(Boolean));
+  return { root: path.dirname(manifestPath), entries };
+}
+
 function normalizedCommand(command) {
   return Array.isArray(command) ? command.map((part) => String(part)
     .replaceAll('${REPO_DIR}', '$REPO_DIR').replace(/\s+/g, ' ').trim()) : [];
@@ -386,6 +409,7 @@ export async function auditIncidentGuards(repoInput, historyDirInput, targetRepo
   }).map((guard) => guard.id).sort();
 
   const missingByGuard = new Map();
+  const hostOpsManifest = await readHostOpsManifest(targetRepo);
   const markMissing = (id, target) => {
     const items = missingByGuard.get(id) ?? [];
     items.push(target);
@@ -404,7 +428,14 @@ export async function auditIncidentGuards(repoInput, historyDirInput, targetRepo
     // The build root links ops to the target's scripts/ops, so ${REPO_DIR}/ops/... targets live only in the target repo root, while ${REPO_DIR}/engine/... targets live only in the build root.
     const relativeTarget = target.kind === 'symbol' ? target.target.split('#', 1)[0] : target.target;
     const targetRepoPath = targetRepo && path.resolve(targetRepo, relativeTarget);
-    return targetRepoPath && await targetIsFile(targetRepoPath) ? targetRepoPath : null;
+    if (targetRepoPath && await targetIsFile(targetRepoPath)) return targetRepoPath;
+    if (!hostOpsManifest || !relativeTarget.startsWith('engine/')) return null;
+    const hostOpsRelative = `scripts/agent/${relativeTarget.slice('engine/'.length)}`;
+    if (!hostOpsManifest.entries.has(hostOpsRelative)) return null;
+    const hostOpsPath = path.resolve(hostOpsManifest.root, hostOpsRelative);
+    const manifestRelative = path.relative(hostOpsManifest.root, hostOpsPath);
+    if (manifestRelative === '..' || manifestRelative.startsWith(`..${path.sep}`) || path.isAbsolute(manifestRelative)) return null;
+    return await targetIsFile(hostOpsPath) ? hostOpsPath : null;
   };
   for (const guard of incidents) {
     for (const target of guardTargets(guard, repo)) {
