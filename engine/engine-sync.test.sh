@@ -15,4 +15,11 @@ for mode in --build --check --converge; do
   result=$(ZF_REPO_DIR="$target" "$here/engine-sync.sh" "$mode" 'argument with spaces')
   [[ $result == "$(printf 'abc123\n%s\nargument with spaces' "$mode")" ]]
 done
+mkdir -p "$test_env_root/agent/engine-versions/live/engine" "$test_env_root/new-version/engine"
+ln -s "$test_env_root/agent/engine-versions/live/engine" "$test_env_root/agent/engine-live"
+echo '{"pipeline_suite_roots":[]}' > "$target/.zenoforge/ci.json"
+git -C "$target" init -q && git -C "$target" config user.email test && git -C "$target" config user.name test
+git -C "$target" add -A && git -C "$target" commit -qm initial
+result=$(ZF_REPO_DIR="$target" AGENT_HOME="$test_env_root/agent" "$here/engine-sync.sh" --preflight "$test_env_root/new-version")
+grep -q 'publish-preflight: OK' <<<"$result"
 echo 'engine-sync.test.sh: PASS'
