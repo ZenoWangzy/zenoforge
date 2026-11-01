@@ -28,7 +28,9 @@ recut_parent_has_open_child() { return 1; }
 issue_transition() { return 0; }
 ZF_AGENT_NAME=hand-test state_requeue 42 release-hold
 
-node - "$AGENT_HOME/metrics/efficiency-2026-10.jsonl" <<'NODE'
+# Events use their own timestamps, so they can span monthly files; read all of them.
+cat "$AGENT_HOME"/metrics/efficiency-*.jsonl > "$tmp/efficiency-all.jsonl"
+node - "$tmp/efficiency-all.jsonl" <<'NODE'
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const rows = fs.readFileSync(process.argv[2], 'utf8').trim().split('\n').map(JSON.parse);
