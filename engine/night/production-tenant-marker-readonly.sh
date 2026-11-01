@@ -63,10 +63,12 @@ demo_service_id="$(jq -r '.customer.service_ids.demo' "$night_config")"
 marker_pattern="$(jq -r '.anomaly_rules.tenant_markers.pattern' "$night_config")"
 capture_pattern="$(jq -r '.anomaly_rules.tenant_markers.capture_pattern' "$night_config")"
 invalid_email_pattern="$(jq -r '.anomaly_rules.tenant_markers.invalid_email_pattern' "$night_config")"
+annotation_fallback_pattern="$(jq -r '.anomaly_rules.tenant_markers.annotation_fallback_pattern // "([A-Za-z0-9_-]+)"' "$night_config")"
 if [[ ! "$ssh_host" =~ ^[A-Za-z0-9_.-]+$ || ! "$database_container" =~ ^[A-Za-z0-9_.-]+$ \
   || ! "$tenant_id" =~ ^[A-Za-z0-9_-]+$ || ! "$database_user_env" =~ ^[A-Z_][A-Z0-9_]*$ \
   || ! "$database_name_env" =~ ^[A-Z_][A-Z0-9_]*$ || ! "$production_service_id" =~ ^[A-Fa-f0-9-]{36}$ \
-  || ! "$demo_service_id" =~ ^[A-Fa-f0-9-]{36}$ || "$marker_pattern$capture_pattern$invalid_email_pattern" == *"'"* ]]; then
+  || ! "$demo_service_id" =~ ^[A-Fa-f0-9-]{36}$ \
+  || "$marker_pattern$capture_pattern$invalid_email_pattern$annotation_fallback_pattern" == *"'"* ]]; then
   echo 'FAIL: invalid tenant marker configuration values' >&2
   exit 2
 fi
@@ -90,6 +92,14 @@ environment_file_name="$(jq -r '.credentials.environment_file_name' "$night_conf
   exit 2
 }
 with_credentials="$(printenv "$wrapper_env_name" || true)"
+# A deployment whose wrapper is a repo script (credentials.wrapper_script, relative to
+# ZF_REPO_DIR) needs no environment export; the env name still wins when both exist.
+if [[ -z "$with_credentials" ]]; then
+  with_credentials_script="$(jq -r '.credentials.wrapper_script // empty' "$night_config")"
+  if [[ "$with_credentials_script" =~ ^[A-Za-z0-9._/-]+$ && "$with_credentials_script" != /* && "$with_credentials_script" != */../* && "$with_credentials_script" != ../* && "$with_credentials_script" != */.. && "$with_credentials_script" != ./* && "$with_credentials_script" != . ]]; then
+    with_credentials="$ZF_REPO_DIR/$with_credentials_script"
+  fi
+fi
 environment_home="$(printenv "$environment_home_env_name" || true)"
 environment_file="${environment_home%/}/$environment_file_name"
 missing_env=()
@@ -100,6 +110,13 @@ if ((${#missing_env[@]})); then
   exit 0
 fi
 
+marker_output_text_json="$(jq -c '.anomaly_rules.tenant_markers.output_text // {}' "$night_config")"
+exceptions_invalid_output="$(jq -r '.anomaly_rules.tenant_markers.output_text.exceptions_invalid // "FAIL: tenant marker member-key exceptions are invalid"' "$night_config")"
+read_failed_output="$(jq -r '.anomaly_rules.tenant_markers.output_text.read_failed // "FAIL: tenant marker read failed"' "$night_config")"
+result_invalid_output="$(jq -r '.anomaly_rules.tenant_markers.output_text.result_invalid // "FAIL: tenant marker result could not be parsed"' "$night_config")"
+ledger_violation_output="$(jq -r '.anomaly_rules.tenant_markers.output_text.ledger_violation // "FAIL: {count} ledger member violation(s)"' "$night_config")"
+marker_findings_output="$(jq -r '.anomaly_rules.tenant_markers.output_text.marker_findings // "FAIL: {count} tenant marker row(s) outside member exceptions; tenant ids: {tenant_ids}"' "$night_config")"
+clean_output="$(jq -r '.anomaly_rules.tenant_markers.output_text.clean // "PASS: no tenant or member marker findings outside member exceptions"' "$night_config")"
 exceptions_json="$(jq -ce '
   def epoch: if type == "string" then try fromdateiso8601 catch null else null end;
   def valid_exception:
@@ -118,19 +135,21 @@ exceptions_json="$(jq -ce '
     else error("invalid member exception list")
     end
 ' "$night_config")" || {
-  echo 'FAIL: tenant marker member-key exceptions are invalid' >&2
+  printf '%s\n' "$exceptions_invalid_output" >&2
   exit 2
 }
 
 marker_pattern_sql="$marker_pattern"
 capture_pattern_sql="$capture_pattern"
 invalid_email_pattern_sql="$invalid_email_pattern"
+annotation_fallback_pattern_sql="$annotation_fallback_pattern"
 sql="$(cat <<SQL
 WITH marker_pattern AS (
   SELECT
     '$marker_pattern_sql'::text AS pattern,
     '$capture_pattern_sql'::text AS capture_pattern,
-    '$invalid_email_pattern_sql'::text AS invalid_email_pattern
+    '$invalid_email_pattern_sql'::text AS invalid_email_pattern,
+    '$annotation_fallback_pattern_sql'::text AS annotation_fallback_pattern
 ), account_markers AS (
   SELECT wm.tenant_id,
          wm.employee_id,
@@ -138,7 +157,7 @@ WITH marker_pattern AS (
            ORDER BY lower(split_part(pa.primary_email, '@', 2)))
            FILTER (WHERE position('@' IN pa.primary_email) > 0) AS email_domain,
          string_agg(DISTINCT COALESCE(substring(pa.primary_email FROM p.capture_pattern),
-           substring(pa.primary_email FROM p.invalid_email_pattern)), ', ')
+           substring(pa.primary_email FROM p.annotation_fallback_pattern)), ', ')
            FILTER (WHERE pa.primary_email ~* p.pattern) AS email_markers,
          string_agg(DISTINCT substring(lower(pa.primary_email) FROM p.invalid_email_pattern), ', ')
            FILTER (WHERE pa.primary_email ~* p.invalid_email_pattern) AS email_domain_markers
@@ -150,7 +169,8 @@ WITH marker_pattern AS (
   SELECT 'tenant'::text AS kind, '$tenants_table'::text AS table_name, t.id AS tenant_id,
          NULL::text AS member_id, t.name AS tenant_name, t.name AS member_name,
          NULL::text AS email_domain,
-         ARRAY['tenant_name:' || substring(t.name FROM p.capture_pattern)] AS matched_markers,
+         ARRAY['tenant_name:' || COALESCE(substring(t.name FROM p.capture_pattern),
+           substring(t.name FROM p.annotation_fallback_pattern))] AS matched_markers,
          NULL::jsonb AS history, false AS running_process
     FROM $tenants_table t CROSS JOIN marker_pattern p
    WHERE t.name ~* p.pattern
@@ -159,9 +179,9 @@ WITH marker_pattern AS (
          e.employee_id AS member_id, COALESCE(t.name, '[missing tenant]') AS tenant_name,
          e.name AS member_name, am.email_domain,
          array_remove(ARRAY[
-           CASE WHEN COALESCE(e.name, '') ~* p.pattern THEN 'name:' || substring(e.name FROM p.capture_pattern) END,
-           CASE WHEN COALESCE(e.employee_id, '') ~* p.pattern THEN 'member_key:' || substring(e.employee_id FROM p.capture_pattern) END,
-           CASE WHEN COALESCE(e.department, '') ~* p.pattern THEN 'department:' || substring(e.department FROM p.capture_pattern) END,
+           CASE WHEN COALESCE(e.name, '') ~* p.pattern THEN 'name:' || COALESCE(substring(e.name FROM p.capture_pattern), substring(e.name FROM p.annotation_fallback_pattern)) END,
+           CASE WHEN COALESCE(e.employee_id, '') ~* p.pattern THEN 'member_key:' || COALESCE(substring(e.employee_id FROM p.capture_pattern), substring(e.employee_id FROM p.annotation_fallback_pattern)) END,
+           CASE WHEN COALESCE(e.department, '') ~* p.pattern THEN 'department:' || COALESCE(substring(e.department FROM p.capture_pattern), substring(e.department FROM p.annotation_fallback_pattern)) END,
            CASE WHEN am.email_markers IS NOT NULL THEN 'email:' || am.email_markers END,
            CASE WHEN am.email_domain_markers IS NOT NULL THEN 'email_domain:' || am.email_domain_markers END
          ], NULL) AS matched_markers,
@@ -199,19 +219,31 @@ SELECT jsonb_build_object('markers', COALESCE(jsonb_agg(jsonb_build_object(
 SQL
 )"
 
+# The database identity comes from the configured environment names inside the credential
+# wrapper's environment; deployments whose identity is not secret keep it in night.json
+# (.production.database_user/.production.database_name) and the environment names win when set.
+database_user_fallback="$(jq -r '.production.database_user // empty' "$night_config")"
+database_name_fallback="$(jq -r '.production.database_name // empty' "$night_config")"
+[[ "$database_user_fallback" =~ ^[A-Za-z0-9_.-]*$ && "$database_name_fallback" =~ ^[A-Za-z0-9_.-]*$ ]] || {
+  echo 'FAIL: invalid tenant marker database configuration values' >&2
+  exit 2
+}
 if ! markers="$(printf '%s\n' "$sql" | bash "$with_credentials" --env "$environment_file" -- \
   bash -c '
     set -euo pipefail
     user_name="${!1-}"; database_name="${!2-}"; shift 2
+    [[ -n "$user_name" ]] || user_name="$1"
+    [[ -n "$database_name" ]] || database_name="$2"
+    shift 2
     if [[ -z "$user_name" || -z "$database_name" ]]; then
       echo __NIGHT_ENV_MISSING__
       exit 0
     fi
     exec "$@" -U "$user_name" -d "$database_name"
-  ' _ "$database_user_env" "$database_name_env" \
+  ' _ "$database_user_env" "$database_name_env" "$database_user_fallback" "$database_name_fallback" \
   timeout 15s ssh -o BatchMode=yes -o ConnectTimeout=5 "$ssh_host" \
   docker exec -i "$database_container" psql -v ON_ERROR_STOP=1 -A -t)"; then
-  echo 'FAIL: tenant marker read failed' >&2
+  printf '%s\n' "$read_failed_output" >&2
   exit 2
 fi
 if [[ "$markers" == '__NIGHT_ENV_MISSING__' ]]; then
@@ -221,12 +253,14 @@ fi
 
 customer_json="$(jq -c --arg tenant_id "$tenant_id" '{tenant_id:$tenant_id, customer:.customer}' "$night_config")"
 if ! summary="$(printf '%s' "$markers" | MARKER_CONFIG_JSON="$customer_json" \
+  MARKER_OUTPUT_TEXT_JSON="$marker_output_text_json" \
   MARKER_MEMBER_EXCEPTIONS_JSON="$exceptions_json" MARKER_LIST_MODE="$list_mode" node -e '
 const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
 try {
   const config = JSON.parse(process.env.MARKER_CONFIG_JSON);
   const { customer, tenant_id: targetTenantId } = config;
+  const output = JSON.parse(process.env.MARKER_OUTPUT_TEXT_JSON);
   const { markers: rows, ledgerMembers } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   const serviceIds = customer.service_ids;
   const allowed = new Map(customer.allowed_members.map(({ id, service }) => [id, serviceIds[service]]));
@@ -259,7 +293,7 @@ try {
     };
     const history = (row, name) => row.history?.[name] === true ? "yes" : row.history?.[name] === false ? "no" : "n/a";
     const columns = ["Tenant", "Table", "Member key", "Display name", "Email domain only", "Marker matched", "Approvals", "Files", "Ledger events", "Roll targets", "Running process"];
-    const lines = [`Customer: ${cell(customer.name)}`, `UNMATCHED=${findings.length}`, `LEDGER_VIOLATIONS=${ledgerViolations.length + missingMembers.length}`,
+    const lines = [`UNMATCHED=${findings.length}`, `LEDGER_VIOLATIONS=${ledgerViolations.length + missingMembers.length}`,
       `| ${columns.join(" | ")} |`, `| ${columns.map(() => "---").join(" | ")} |`];
     for (const row of findings) lines.push(`| ${[
       cell(row.tenantName), cell(row.table), cell(key(row)), cell(row.memberName), cell(row.emailDomain),
@@ -268,8 +302,8 @@ try {
       row.runningProcess === true ? "yes" : row.runningProcess === false ? "no" : "unknown",
     ].join(" | ")} |`);
     const redact = id => String(id).replace(/@.*/, "@[redacted]");
-    for (const row of ledgerViolations) lines.push(`member binding violation: ${redact(row.memberId)} service=${row.ledgerSubjectId ?? "unbound"}`);
-    for (const id of missingMembers) lines.push(`configured member missing: ${redact(id)}`);
+    for (const row of ledgerViolations) lines.push(`${output.list_ledger_violation ?? "ledger member violation"}: ${redact(row.memberId)} ${output.list_ledger_field ?? "ledger"}=${row.ledgerSubjectId ?? "unbound"}`);
+    for (const id of missingMembers) lines.push(`${output.list_member_missing ?? "ledger member missing"}: ${redact(id)}`);
     process.stdout.write(`${lines.join("\n")}\n`);
     process.exit(0);
   }
@@ -282,7 +316,7 @@ try {
   process.exit(2);
 }
 ')"; then
-  echo 'FAIL: tenant marker result could not be parsed' >&2
+  printf '%s\n' "$result_invalid_output" >&2
   exit 2
 fi
 
@@ -295,12 +329,15 @@ count="$(jq -r '.count' <<< "$summary")"
 tenant_ids="$(jq -r '.tenantIds | join(",")' <<< "$summary")"
 ledger_violations="$(jq -r '.ledgerViolations' <<< "$summary")"
 if ((ledger_violations > 0)); then
-  printf 'FAIL: %s configured member binding violation(s)\n' "$ledger_violations" >&2
+  ledger_message="${ledger_violation_output//\{count\}/$ledger_violations}"
+  printf '%s\n' "$ledger_message" >&2
   exit 1
 fi
 if ((count > 0)); then
-  printf 'FAIL: %s tenant marker row(s) for %s; tenant ids: %s\n' "$count" "$customer_name" "$tenant_ids" >&2
+  marker_message="${marker_findings_output//\{count\}/$count}"
+  marker_message="${marker_message//\{tenant_ids\}/$tenant_ids}"
+  printf '%s\n' "$marker_message" >&2
   exit 1
 fi
 
-printf 'PASS: no tenant or member marker findings for %s\n' "$customer_name"
+printf '%s\n' "$clean_output"

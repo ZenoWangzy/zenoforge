@@ -51,7 +51,7 @@ NIGHT_CREDENTIALS_WRAPPER="$tmp/with-credentials" NIGHT_CREDENTIALS_HOME="$tmp/c
   ZF_CONFIG_ROOT="$config_root" ZF_PACK_DIR="$pack_dir" \
   bash "$script_dir/production-tenant-marker-readonly.sh" --list > "$tmp/result"
 
-grep -Fq 'Customer: Target Customer' "$tmp/result"
+! grep -Fq 'Customer:' "$tmp/result"
 grep -Fq 'target-tenant' "$tmp/result"
 grep -Fq 'UNMATCHED=1' "$tmp/result"
 grep -Fq "WHERE wm.tenant_id = 'target-tenant'" "$tmp/query.sql"
@@ -65,4 +65,33 @@ grep -Fq 'target-db' "$tmp/wrapper.calls"
 ZF_CONFIG_ROOT="$tmp/empty-config" ZF_PACK_DIR='' \
   bash "$script_dir/production-tenant-marker-readonly.sh" > "$tmp/skipped"
 grep -Fq 'skip: tenant marker monitor needs topology, tenant, customer and anomaly-rule values' "$tmp/skipped"
+
+# Without the wrapper environment and the database environment, credentials.wrapper_script
+# (relative to ZF_REPO_DIR) and .production.database_user/.database_name carry the probe.
+mkdir -p "$tmp/repo/ops" "$tmp/fallback-config/.zenoforge" "$tmp/shim"
+cat > "$tmp/repo/ops/with-credentials.sh" <<'WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+shift 3
+exec "$@"
+WRAPPER
+cat > "$tmp/shim/timeout" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$PROBE_PSQL_ARGS"
+jq -c -n --slurpfile markers "$PROBE_MARKERS" --slurpfile members "$PROBE_MEMBERS" \
+  '{markers:$markers[0],ledgerMembers:$members[0]}'
+SH
+chmod +x "$tmp/repo/ops/with-credentials.sh" "$tmp/shim/timeout"
+jq '.credentials.wrapper_script = "ops/with-credentials.sh"
+  | .production.database_user = "configured-user"
+  | .production.database_name = "configured-db"' "$config_root/night.json" > "$tmp/fallback-config/.zenoforge/night.json"
+
+env -u NIGHT_CREDENTIALS_WRAPPER -u TEST_DB_USER -u TEST_DB_NAME \
+  NIGHT_CREDENTIALS_HOME="$tmp/credentials" PROBE_PSQL_ARGS="$tmp/psql.args" \
+  PROBE_MARKERS="$tmp/markers.json" PROBE_MEMBERS="$tmp/members.json" \
+  ZF_CONFIG_ROOT="$tmp/fallback-config/.zenoforge" ZF_PACK_DIR='' ZF_REPO_DIR="$tmp/repo" \
+  PATH="$tmp/shim:$PATH" \
+  bash "$script_dir/production-tenant-marker-readonly.sh" --list > "$tmp/fallback-result"
+! grep -Fq 'Customer:' "$tmp/fallback-result"
+grep -Fq -- '-U configured-user -d configured-db' "$tmp/psql.args"
 echo 'ok - tenant marker topology, identities and rules use the target night.json override'

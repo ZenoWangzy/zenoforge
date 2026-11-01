@@ -20,6 +20,8 @@ cat > "$config_root/night.json" <<'JSON'
     "container_names": {"production": ["target-service"], "shard_pattern": "target-*", "database": "target-db"},
     "database_user_env": "TEST_DB_USER",
     "database_name_env": "TEST_DB_NAME",
+    "database_user": "target-user",
+    "database_name": "target-name",
     "remote_root": "/srv/target",
     "log_sources": {
       "trace_table": "public.target_traces",
@@ -60,7 +62,10 @@ cat > "$config_root/night.json" <<'JSON'
       "rollup_window_seconds": 3600,
       "missing_trace_marker_prefix": "<!-- target-missing-trace service=",
       "missing_trace_title_prefix": "Target trace gap: ",
-      "missing_trace_body": "Target trace guidance"
+      "missing_trace_body": "Target trace guidance",
+      "missing_trace_body_headings": {"service": "Target Service: ", "route": "Target Route: ", "first": "Target First: ", "evidence": "Target Evidence: "},
+      "state_file_name": "target-state.json",
+      "lock_file_name": "target-monitor.lock"
     }
   }
 }
@@ -73,6 +78,11 @@ jq '.production.ssh_hosts.production_errors = "pack-host"
 ZF_CONFIG_ROOT="$config_root" ZF_PACK_DIR="$pack_dir" source "$script_dir/node-health-rules.sh"
 [[ "$PROD_ERRORS_SSH_HOST" == target-host ]]
 [[ "$PROD_ERRORS_ISSUE_LABEL" == target-anomaly ]]
+[[ "$PROD_ERRORS_STATE_FILE_NAME" == target-state.json ]]
+[[ "$PROD_ERRORS_LOCK_FILE_NAME" == target-monitor.lock ]]
+[[ "$PROD_ERRORS_MISSING_TRACE_HEADING_SERVICE" == 'Target Service: ' ]]
+[[ "$(jq -r '.production.database_user' <<< "$PROD_ERRORS_REMOTE_CONFIG_JSON")" == target-user ]]
+[[ "$(jq -r '.production.database_name' <<< "$PROD_ERRORS_REMOTE_CONFIG_JSON")" == target-name ]]
 
 calls="$tmp/writes"
 gh() { printf 'gh %s\n' "$*" >> "$calls"; }
@@ -87,14 +97,38 @@ mkdir -p "$NIGHT"
 inbox="$tmp/inbox"
 issue_calls="$tmp/issues"
 supervisor_inbox_append_once() { printf '%s\n' "$2" >> "$inbox"; }
-health_prod_errors_upsert_issue() { printf '%s\t%s\n' "$1" "$2" >> "$issue_calls"; }
+health_prod_errors_upsert_issue() {
+  printf '%s\t%s\n' "$1" "$2" >> "$issue_calls"
+  if [[ -n "${3:-}" && -f "$3" ]]; then cp "$3" "$tmp/last-issue-body"; fi
+}
 prod_errors_ack_alert() { return 0; }
 fixture_key="$(printf 'fixture-redaction-marker' | sha256sum | cut -c1-20)"
-alert="$(jq -cn --arg key "$fixture_key" '{alerts:[{key:$key,event_id:"first-seen-1",source:"log",reason:"first-seen",container:"service",service:"service",count:1,first:"2026-10-12T02:13:14Z",route:"/items",sample_request_id:"request-1",trace_id:"",deduplicated_lines:["route=GET /items status=500"]}]}')"
+alert="$(jq -cn --arg key "$fixture_key" '{alerts:[{key:$key,event_id:"first-seen-1",source:"log",reason:"first-seen",container:"service",service:"service",count:1,first:"2026-10-12T02:13:14Z",route:"/items",sample_request_id:"",trace_id:"",deduplicated_lines:["route=GET /items status=500"]}]}')"
 health_prod_errors_route "$alert" BROKEN '' "$tmp/state.json"
 grep -Fq "target-signature sig=$fixture_key" "$issue_calls"
 grep -Fq "Target anomaly $fixture_key" "$issue_calls"
-grep -Fq 'route=/items request_id=request-1' "$inbox"
+grep -Fq 'route=/items request_id=none' "$inbox"
+# The supervisor inbox alert kind follows the configured anomaly issue label.
+grep -Fq "target-anomaly sig=$fixture_key container=service" "$inbox"
+! grep -Fq 'production-anomaly sig=' "$inbox"
+[[ -f "$NIGHT/target-monitor.lock" ]]
+grep -Fq 'Target Service: service' "$tmp/last-issue-body"
+grep -Fq 'Target Route: /items' "$tmp/last-issue-body"
+grep -Fq 'Target First: 2026-10-12T02:13:14Z' "$tmp/last-issue-body"
+grep -Fq 'Target Evidence: ' "$tmp/last-issue-body"
+
+wrapper_repo="$tmp/repo"
+wrapper_root="$tmp/wrapper-config/.zenoforge"
+mkdir -p "$wrapper_repo/ops" "$wrapper_root"
+: > "$wrapper_repo/ops/with-credentials.sh"
+chmod +x "$wrapper_repo/ops/with-credentials.sh"
+jq '.credentials.wrapper_script = "ops/with-credentials.sh"' "$config_root/night.json" > "$wrapper_root/night.json"
+resolved="$(unset TEST_CREDENTIAL_WRAPPER; ZF_CONFIG_ROOT="$wrapper_root" ZF_PACK_DIR='' ZF_REPO_DIR="$wrapper_repo" \
+  bash -c 'source "$1/node-health-rules.sh" >/dev/null 2>&1; printf "%s\n" "$PROD_ERRORS_CREDENTIALS_WRAPPER"' _ "$script_dir")"
+[[ "$resolved" == "$wrapper_repo/ops/with-credentials.sh" ]]
+env_wins="$(ZF_CONFIG_ROOT="$wrapper_root" ZF_PACK_DIR='' ZF_REPO_DIR="$wrapper_repo" \
+  bash -c 'source "$1/node-health-rules.sh" >/dev/null 2>&1; printf "%s\n" "$PROD_ERRORS_CREDENTIALS_WRAPPER"' _ "$script_dir")"
+[[ "$env_wins" == "$TEST_CREDENTIAL_WRAPPER" ]]
 
 disabled_root="$tmp/disabled/.zenoforge"
 mkdir -p "$disabled_root"

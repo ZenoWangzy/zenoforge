@@ -85,4 +85,21 @@ grep -Fxq target-shard-1 "$tmp/docker-logs"
 
 ZF_CONFIG_ROOT="$tmp/empty-config" ZF_PACK_DIR='' bash "$script_dir/prod-errors-readonly.sh" > "$tmp/skipped"
 grep -Fq 'skip: night log monitor needs container, log-source and anomaly-rule values' "$tmp/skipped"
+
+# Without the database environment the identity comes from night.json values.
+mkdir -p "$tmp/db-config/.zenoforge" "$tmp/no-db-config/.zenoforge"
+jq '.production.database_user = "configured-user" | .production.database_name = "configured-db"' \
+  "$config_root/night.json" > "$tmp/db-config/.zenoforge/night.json"
+: > "$tmp/config-logs"
+PROD_ERRORS_DOCKER_LOGS="$tmp/config-logs" ZF_CONFIG_ROOT="$tmp/db-config/.zenoforge" ZF_PACK_DIR='' PATH="$tmp/bin:$PATH" \
+  bash "$script_dir/prod-errors-readonly.sh" > "$tmp/config-result"
+grep -Fxq '__PROD_ERRORS_OK__' "$tmp/config-result"
+
+# Neither environment names nor configured values: the probe skips instead of guessing.
+jq 'del(.production.database_user, .production.database_name)' "$tmp/db-config/.zenoforge/night.json" \
+  > "$tmp/no-db-config/.zenoforge/night.json"
+env -u TEST_DB_USER -u TEST_DB_NAME PROD_ERRORS_DOCKER_LOGS="$tmp/config-logs" \
+  ZF_CONFIG_ROOT="$tmp/no-db-config/.zenoforge" ZF_PACK_DIR='' PATH="$tmp/bin:$PATH" \
+  bash "$script_dir/prod-errors-readonly.sh" > "$tmp/no-db-result"
+grep -Fq 'skip: night log monitor host environment is missing TEST_DB_USER TEST_DB_NAME' "$tmp/no-db-result"
 echo 'ok - configured log sources and containers use the target night.json override'

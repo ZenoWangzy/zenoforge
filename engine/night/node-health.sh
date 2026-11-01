@@ -32,11 +32,15 @@ else
 fi
 unset model_policy_source_check_only_was_set model_policy_source_check_only_before
 
-agent_pipeline_write_guard production-health "$H" "$NIGHT" || exit 1
+agent_pipeline_write_guard node-health "$H" "$NIGHT" || exit 1
 source "$script_dir/hand-agent-watchdog.sh"
 source "$script_dir/hand-exit-handoff.sh"
 source "$script_dir/node-health-rules.sh"
 prod_errors_config_ready || {
+  echo 'skip: production anomaly monitor settings are incomplete in night.json'
+  exit 0
+}
+prod_errors_load_config || {
   echo 'skip: production anomaly monitor settings are incomplete in night.json'
   exit 0
 }
@@ -51,9 +55,9 @@ if [[ -z "${ZF_OPEN_ISSUES_CACHE_FILE:-}" ]]; then
   export ZF_OPEN_ISSUES_CACHE_FILE ZF_ROADMAP_TREE_CACHE_FILE
   prod_roadmap_cache_owned=1
 fi
-exec 9>"$NIGHT/production-errors-monitor.lock"
+exec 9>"$NIGHT/$PROD_ERRORS_LOCK_FILE_NAME"
 flock -n 9 || exit 0
-prod_state_file="$NIGHT/production-errors-seen-signatures.json"
+prod_state_file="$NIGHT/$PROD_ERRORS_STATE_FILE_NAME"
 prod_result="$(prod_errors_probe "$prod_state_file")"
 flock -u 9
 exec 9>&-
