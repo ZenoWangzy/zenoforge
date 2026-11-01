@@ -720,7 +720,7 @@ fi
 # the reporter's issue text stays inside the local verification input.
 BENNY_ISSUE_FILE="$(jq_arg_file "$ISSUE_JSON")"
 BENNY_TRIAGE_FILE="$(jq_arg_file "$RESULT")"
-if ! node "$SCRIPT_DIR/benny-repro.mjs" \
+if ! node "$ZF_REPO_DIR/scripts/release/benny-repro.mjs" \
   --issue-file "$BENNY_ISSUE_FILE" --triage-file "$BENNY_TRIAGE_FILE" --repo "$REPO"; then
   echo "run-triage: Benny reproduction did not complete; continuing triage without reproduction evidence" >&2
 fi

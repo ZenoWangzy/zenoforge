@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
+import { zfConfigFile } from '../pack-dir.mjs';
 import { applyOverrides, execute, hiddenChecks, renderPrompt, worktree } from './run-eval.mjs';
 const scratch = resolve('.scratch'); mkdirSync(scratch, { recursive: true });
 test('hidden grader applies the patch to base and replaces worker-forged tests', () => {
@@ -197,7 +198,7 @@ test('supervisor execution uses an isolated historical context and the six-actio
     assert.equal(outcome.expectedAction, 'requeue');
     assert.ok(outcome.calls[0]);
     const prompt = readFileSync(join(dir, 'attempt/1-supervisor/prompt.md'), 'utf8');
-    const arbiterPrompt = readFileSync(resolve('engine/prompts/supervisor-arbiter.md'), 'utf8');
+    const arbiterPrompt = readFileSync(zfConfigFile('prompts/supervisor-arbiter.md'), 'utf8');
     assert.ok(prompt.includes(arbiterPrompt), 'supervisor prompt must ship the six-action arbitration prompt verbatim');
     assert.ok(prompt.includes(JSON.stringify(c.input, null, 2)));
     assert.equal(existsSync(join(dir, 'attempt/historical-context')), false);

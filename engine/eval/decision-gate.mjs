@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compareResults, summarizeSupervisor } from './compare.mjs';
+import { zfConfigFile } from '../pack-dir.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // The full-coverage universe for gate labels. 'supervisor' is a selectable extra stage (the
@@ -14,6 +15,11 @@ const stages = ['triage', 'advisor', 'implement', 'review', 'end-to-end'];
 const selectableStages = [...stages, 'supervisor'];
 const evalHome = join(process.env.AGENT_HOME || process.env.ZF_HOME || join(homedir(), '.zenoforge'), 'eval');
 const json = (path) => JSON.parse(readFileSync(path, 'utf8'));
+function loadCases(repo, stage) {
+  const path = zfConfigFile(`eval/cases/${stage}.json`, repo);
+  if (!path) throw new Error(`eval cases are unavailable for stage ${stage}`);
+  return json(path).cases;
+}
 
 function parseArgs(args) {
   const values = {};
@@ -45,7 +51,7 @@ function runEval(repo, args) {
 function requireFullCandidate(candidate, repo) {
   const expected = [];
   for (const stage of stages) {
-    const cases = json(join(repo, 'engine/eval/cases', `${stage}.json`)).cases;
+    const cases = loadCases(repo, stage);
     for (const c of cases) for (let run = 1; run <= 2; run++) expected.push(`${stage}/${c.id}/${run}`);
   }
   const actual = new Set(candidate.results.map((row) => `${row.stage}/${row.caseId}/${row.run}`));
@@ -56,7 +62,7 @@ function requireFullCandidate(candidate, repo) {
 function requireComparableBaseline(baseline, repo) {
   const expected = new Set();
   for (const stage of stages) {
-    const cases = json(join(repo, 'engine/eval/cases', `${stage}.json`)).cases;
+    const cases = loadCases(repo, stage);
     for (const c of cases) for (let run = 1; run <= 2; run++) expected.add(`${stage}/${c.id}/${run}`);
   }
   const actual = new Set(baseline.results.map((row) => `${row.stage}/${row.caseId}/${row.run}`));
@@ -101,7 +107,7 @@ async function main() {
   const candidatePath = join(evalHome, values.label, 'results.json');
   let resuming = existsSync(candidatePath);
   for (const stage of selectedStages) {
-    const cases = json(join(repo, 'engine/eval/cases', `${stage}.json`)).cases;
+    const cases = loadCases(repo, stage);
     if (!cases.length) throw new Error(`no evaluation cases for affected stage ${stage}`);
     const args = ['--stage', stage, '--case', cases.map((c) => c.id).join(','), '--runs', '1',
       '--concurrency', String(concurrency), '--label', values.label];
@@ -118,7 +124,7 @@ async function main() {
   requireFullCandidate(candidate, repo);
   const compareOutput = runEval(repo, ['--compare', values.baseline, values.label]).trim();
   const comparison = compareResults(baseline, candidate);
-  const criticalIds = new Set(json(join(repo, 'engine/eval/cases/review.json')).cases
+  const criticalIds = new Set(loadCases(repo, 'review')
     .filter((c) => c.kind === 'introduced-incident').map((c) => c.id));
   const criticalFailures = candidate.results
     .filter((row) => row.stage === 'review' && criticalIds.has(row.caseId) && row.pass !== true)

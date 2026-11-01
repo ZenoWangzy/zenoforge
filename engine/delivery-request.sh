@@ -133,7 +133,7 @@ case "$action" in
     [[ "$OLD_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
       echo 'delivery-request: production baseline is invalid; refusing candidate binding' >&2; exit 65;
     }
-    source "$engine/release-candidate.sh"
+    source "$ZF_REPO_DIR/scripts/release/release-candidate.sh"
     release_candidate_bind || exit $?
     # An existing release owns its candidate. A new request cannot advance it.
     [[ "$RELEASE_BATCH_SHA" == "$2" || "$(state_read "$N" | jq -r '.release_candidate.head_sha')" == "$2" ]] || {

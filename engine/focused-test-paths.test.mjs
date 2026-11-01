@@ -96,6 +96,9 @@ test('maps shared merge-policy changes to aggregate-check consumer suites', () =
 test('maps target config data to its reader suites', () => {
   for (const [source, suite] of [
     ['.zenoforge/model-policy.default.json', 'engine/apply-model-policy-default-view.test.sh'],
+    ['.zenoforge/prompts/advisor-batch.md', 'engine/run-advisor-batch.test.sh'],
+    ['.zenoforge/prompts/triage.md', 'engine/run-triage.test.sh'],
+    ['.zenoforge/prompts/supervisor-arbiter.md', 'engine/mac-autopilot/supervisor-arbiter.test.sh'],
     ['.zenoforge/mac-autopilot/required-pr-checks.json', 'engine/mac-autopilot/scheduler-gates.test.sh'],
     ['.zenoforge/state/ci-known-flakes.json', 'engine/ci-flake-classification.test.sh'],
     ['.zenoforge/state/risk-paths.json', 'engine/risk-class.test.mjs'],
