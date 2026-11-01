@@ -712,13 +712,14 @@ CODEX_BUDGET_RESERVATIONS_FILE="$CODEX_BUDGET_DIR/reservations.tsv"
 # persisted transition policy; there is no model-switch fallback.
 #
 # The advisor's transport (config variables, the sync/async call machinery,
-# health checks, fault classification) is an optional provider module,
-# sourced only when present. This distribution ships none.
-_AGENT_WEB_ADVISOR_PROVIDER="$_AGENT_LIB_DIR/providers/web-advisor-provider.sh"
-[[ -r "$_AGENT_WEB_ADVISOR_PROVIDER" ]] && source "$_AGENT_WEB_ADVISOR_PROVIDER"
+# health checks, fault classification) is a provider module resolved from
+# target config first, then the pack, then the engine default.
+_AGENT_WEB_ADVISOR_PROVIDER="$(zf_config_file providers/web-advisor-provider.sh 2>/dev/null || true)"
+if [[ -n "$_AGENT_WEB_ADVISOR_PROVIDER" && -r "$_AGENT_WEB_ADVISOR_PROVIDER" && -r "${ZF_WEB_ADVISOR_PROVIDER_SCRIPT:-}" ]]; then
+  source "$_AGENT_WEB_ADVISOR_PROVIDER"
+fi
 if ! declare -F web_advisor_provider_usable >/dev/null; then
-  # No provider module is installed (a distribution dropped
-  # providers/web-advisor-provider.sh). Every entry point the pipeline calls fails closed
+  # No provider module is installed. Every entry point the pipeline calls fails closed
   # instead of dying on "command not found", which under set -e would kill
   # the whole tick: nothing is dispatched or polled, model calls report an
   # unsupported provider (exit 64, which callers already classify as a

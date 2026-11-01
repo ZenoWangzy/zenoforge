@@ -10,6 +10,15 @@
 #                     state/risk-paths.json, ...), looked up by relative path. Default = ZF_ENGINE_DIR, where the
 #                     the product pack lives today. Empty = no pack: every seam falls back to its generic default.
 #   ZF_HOST_OPS_DIR root of host-owned files. Default = $AGENT_HOME/host-ops; use zf_host_ops_file to resolve a file.
+#   ZF_CDP_BROWSER_LEASE_SCRIPT  the host-provided CDP lease executable; default = cdp-browser-lease.sh beside this engine.
+#   ZF_WEB_ADVISOR_PROVIDER_SCRIPT  the advisor request executable in the bundled skill.
+#   ZF_WEB_ADVISOR_PROVIDER_CDP_PORT  local CDP endpoint port; default = 9224.
+#   ZF_WEB_ADVISOR_PROVIDER_JOB_DIR  advisor job state directory under AGENT_HOME.
+#   ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX  prefix for detached advisor job units; default = ZF_UNIT_PREFIX or zf.
+#   ZF_WEB_ADVISOR_PROVIDER_TOPIC  shared topic used for advisor requests; default = pipeline-advisor.
+#   ZF_WEB_ADVISOR_PROVIDER_CALL_TIMEOUT_SECONDS  bound for one synchronous request; default = 900.
+#   ZF_WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS  deadline for a detached request; default = 2400.
+#   ZF_WEB_ADVISOR_PROVIDER_POLL_INTERVAL_SECONDS  detached request poll interval; default = 30.
 #   ZF_PACK_REL    where the pack's files sit inside the target repository (git show / git diff / ls-tree pathspecs, repo-relative
 #                     reads such as state/incident-guards.json): default = engine. The export rewrites that default to the
 #                     public engine location; a deployment whose repo keeps the pack elsewhere sets it. Node and python readers
@@ -95,6 +104,38 @@ for _zf_env_name in AGENT_GIT_USER_NAME AGENT_GIT_USER_EMAIL; do
 done
 unset _zf_env_name _zf_env_value _zf_repo_dir_default _zf_repo_dir_resolved
 
+if [[ -z "${ZF_CDP_BROWSER_LEASE_SCRIPT+x}" ]]; then
+  ZF_CDP_BROWSER_LEASE_SCRIPT="$ZF_ENGINE_DIR/cdp-browser-lease.sh"
+fi
+export ZF_CDP_BROWSER_LEASE_SCRIPT
+if [[ -z "${ZF_WEB_ADVISOR_PROVIDER_SCRIPT+x}" ]]; then
+  ZF_WEB_ADVISOR_PROVIDER_SCRIPT="$ZF_ENGINE_DIR/../.agents/skills/web-advisor-provider/ask.cjs"
+fi
+if [[ -z "${ZF_WEB_ADVISOR_PROVIDER_CDP_PORT+x}" ]]; then
+  ZF_WEB_ADVISOR_PROVIDER_CDP_PORT=9224
+fi
+if [[ -z "${ZF_WEB_ADVISOR_PROVIDER_JOB_DIR+x}" ]]; then
+  ZF_WEB_ADVISOR_PROVIDER_JOB_DIR="$AGENT_HOME/web-advisor-provider-jobs"
+fi
+if [[ -z "${ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX+x}" ]]; then
+  ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX="${ZF_UNIT_PREFIX:-zf}"
+fi
+if [[ -z "${ZF_WEB_ADVISOR_PROVIDER_TOPIC+x}" ]]; then
+  ZF_WEB_ADVISOR_PROVIDER_TOPIC=pipeline-advisor
+fi
+if [[ -z "${ZF_WEB_ADVISOR_PROVIDER_CALL_TIMEOUT_SECONDS+x}" ]]; then
+  ZF_WEB_ADVISOR_PROVIDER_CALL_TIMEOUT_SECONDS=900
+fi
+if [[ -z "${ZF_WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS+x}" ]]; then
+  ZF_WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS=2400
+fi
+if [[ -z "${ZF_WEB_ADVISOR_PROVIDER_POLL_INTERVAL_SECONDS+x}" ]]; then
+  ZF_WEB_ADVISOR_PROVIDER_POLL_INTERVAL_SECONDS=30
+fi
+export ZF_WEB_ADVISOR_PROVIDER_SCRIPT ZF_WEB_ADVISOR_PROVIDER_CDP_PORT ZF_WEB_ADVISOR_PROVIDER_JOB_DIR \
+  ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX ZF_WEB_ADVISOR_PROVIDER_TOPIC \
+  ZF_WEB_ADVISOR_PROVIDER_CALL_TIMEOUT_SECONDS ZF_WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS \
+  ZF_WEB_ADVISOR_PROVIDER_POLL_INTERVAL_SECONDS
 # Set (even empty) by the caller = explicit; unset, or still the value this file derived earlier = derive again.
 if [[ -z "${ZF_PACK_DIR+x}" || ( -n "${_AGENT_PACK_DIR_DERIVED+x}" && "$ZF_PACK_DIR" == "$_AGENT_PACK_DIR_DERIVED" ) ]]; then
   ZF_PACK_DIR="" # PACK_DIR_DEFAULT: the public export rewrites this default to empty

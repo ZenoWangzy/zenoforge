@@ -247,9 +247,8 @@ declare -A DEP_DELIVERED_CACHE=()
 # supervisor 裁决）。指纹一直在变的长任务不会被停（取代旧的 90 分钟盲杀）。
 STUCK_CONFIRM_MINUTES="$(jqf -r '.waste.stuck_confirm_minutes // 10' <<<"$CFG")"
 ADVISOR_ROUNDS="$(jqf -r '.advisor_rounds // 3' <<<"$CFG")"
-# 顾问介入评审循环（提问、收割、瞬态 wedge 的原位重试）是 pack 模块 advisor-unit-loop.sh：advisor_ask_wedge、advisor_harvest、advisor_launch，说明见该文件开头。
-# 没有这个模块，第 ADVISOR_ROUNDS 次打回直接转一次仲裁评审（arbiter-review），不回返工、不进人工队列。
-_advisor_unit_loop="$(sched_pack_file mac-autopilot/advisor-unit-loop.sh)" && source "$_advisor_unit_loop"
+# The advisor loop is an optional target-config module, then pack fallback. Without it, the final rejection routes to arbiter review.
+_advisor_unit_loop="$(sched_config_file mac-autopilot/advisor-unit-loop.sh)" && source "$_advisor_unit_loop"
 declare -F advisor_launch >/dev/null || advisor_launch() { # unit-json total-rounds
   local id decision
   id="$(jqf -r .id <<<"$1")"

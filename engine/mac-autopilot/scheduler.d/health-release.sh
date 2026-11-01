@@ -37,6 +37,9 @@ stage_slo_watch() {
 # ---------- 4c. 发布列车：每 15 分钟触发 issue-pipeline 的 release 选择器（单实例） ----------
 run_release_train() {
   local train_script="${ZF_RELEASE_TRAIN_SCRIPT:-$HERE/release_train.sh}"
+  local engine_dir="${ZF_ENGINE_DIR:-$HERE/..}" repo_dir="${ZF_REPO_DIR:-$ROOT}"
+  local config_root="${ZF_CONFIG_ROOT:-$repo_dir/.zenoforge}"
+  local lease_script="${ZF_CDP_BROWSER_LEASE_SCRIPT:-$engine_dir/cdp-browser-lease.sh}"
   [[ "$(jqf -r 'if .release_train.enabled == false then "false" else "true" end' <<<"$CFG")" == true ]] || return 0
   [[ -f "$train_script" ]] || return 0
   [[ ! -f "$A/.release-train" || -n "$(find "$A/.release-train" -mmin +15 2>/dev/null)" ]] || return 0
@@ -49,6 +52,8 @@ run_release_train() {
       -E PATH -E HOME -E HTTP_PROXY -E HTTPS_PROXY -E ALL_PROXY -E NO_PROXY \
       -E http_proxy -E https_proxy -E no_proxy -E NODE_USE_ENV_PROXY \
       -E MAC_AUTOPILOT_RUNTIME_DIR="$A" -E MAC_AUTOPILOT_ROOT="$ROOT" \
+      -E ZF_ENGINE_DIR="$engine_dir" -E ZF_REPO_DIR="$repo_dir" -E ZF_CONFIG_ROOT="$config_root" \
+      -E ZF_CDP_BROWSER_LEASE_SCRIPT="$lease_script" \
       /bin/bash -c "exec /bin/bash '$train_script' >> '$A/release-train.log' 2>&1" >/dev/null 2>&1; then
     say "release train started"
   else

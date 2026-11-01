@@ -140,9 +140,21 @@ for loop in loop.sh bell-loop.sh zombie-loop.sh; do
   pkill -f "autopi(-live)?/${loop//./[.]}" 2>/dev/null || true  # legacy autopi/ copies too, until they are removed
 done
 sleep 1
-for loop in loop.sh bell-loop.sh zombie-loop.sh; do
-  [[ -f "$LIVE/$loop" ]] || { echo "$loop not in $LIVE: not started" >&2; continue; } # zombie-loop.sh is not in every tree
+for loop in loop.sh bell-loop.sh; do
+  [[ -f "$LIVE/$loop" ]] || { echo "$loop not in $LIVE: not started" >&2; continue; }
   nohup bash "$LIVE/$loop" >/dev/null 2>&1 </dev/null &
   echo "$!" > "$A/${loop%.sh}.pid"
   echo "$loop pid $!"
 done
+zombie_loop=""
+if declare -F zf_config_file >/dev/null; then
+  zombie_loop="$(zf_config_file mac-autopilot/zombie-loop.sh 2>/dev/null || true)"
+fi
+[[ -n "$zombie_loop" ]] || zombie_loop="$LIVE/zombie-loop.sh"
+if [[ -f "$zombie_loop" ]]; then
+  nohup bash "$zombie_loop" >/dev/null 2>&1 </dev/null &
+  echo "$!" > "$A/zombie-loop.pid"
+  echo "zombie-loop.sh pid $!"
+else
+  echo "zombie-loop.sh not found: not started" >&2
+fi
