@@ -300,7 +300,7 @@ export const lessonLints = [
     lesson: 'V1044',
     classTag: 'release-chain-gate-blames-preexisting-owner-content',
     files: {
-      'engine/run-release.sh': {
+      'scripts/release/run-release.sh': {
         require: [/record_preexisting_timing_miss\(\)/, /record_preexisting_e2e_failure\(\)/],
       },
     },

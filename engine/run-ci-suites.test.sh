@@ -22,7 +22,7 @@ grep -qF 'if [[ ! "$suite_jobs" =~ ^[1-4]$ ]]' "$runner"
 grep -qF 'if ((suite_count == 0)); then' "$runner"
 grep -qF 'xargs -0 -r -n1 -P "$suite_jobs"' "$runner"
 grep -qF 'duration=' "$runner"
-grep -qF "! -path 'engine/run-release.test.sh'" "$runner"
+grep -qF "! -path 'scripts/release/run-release.test.sh'" "$runner"
 
 # Execution belongs to the runner's own lane, not deploy-regression-contract.
 # Only synthetic suites run below. The real discovery/execution loop must run
@@ -38,10 +38,10 @@ import test from 'node:test';
 const runnerSource = readFileSync(process.argv[2], 'utf8');
 const configSource = readFileSync(join(dirname(process.argv[2]), 'config.sh'), 'utf8');
 const releaseSuites = [
-  ['engine/run-release-suite-postdeploy.test.sh', 'release-postdeploy'],
-  ['engine/run-release-suite-reconcile.test.sh', 'release-reconcile'],
-  ['engine/run-release-suite-release-entry.test.sh', 'release-entry'],
-  ['engine/run-release-suite-rollback.test.sh', 'release-rollback'],
+  ['scripts/release/run-release-suite-postdeploy.test.sh', 'release-postdeploy'],
+  ['scripts/release/run-release-suite-reconcile.test.sh', 'release-reconcile'],
+  ['scripts/release/run-release-suite-release-entry.test.sh', 'release-entry'],
+  ['scripts/release/run-release-suite-rollback.test.sh', 'release-rollback'],
 ];
 const lastReleaseSuite = releaseSuites.at(-1)[0];
 const expected = ['nested-node', 'nested-shell', ...releaseSuites.map(([, name]) => name)].sort();
@@ -73,9 +73,9 @@ function runFixture({ runner = runnerSource, shellExit = 0, nodeExit = 0, emptyS
     put('scripts/ops/ops-only.test.sh', '#!/bin/sh\nprintf "ops-only\\n" >> "$PIPELINE_FIXTURE_LOG"\n');
     put('scripts/ops/reclaim-disk.test.sh', '#!/bin/sh\nprintf "reclaim-weight\\n" >> "$PIPELINE_FIXTURE_LOG"\n');
     put('scripts/checks/check-only.test.mjs', 'import {appendFileSync} from "node:fs"; appendFileSync(process.env.PIPELINE_FIXTURE_LOG, "check-only\\n");\n');
-    if (includeConfiguredSuites) {
-      put('.zenoforge/ci.json', JSON.stringify({ pipeline_suite_roots: ['scripts/ops', 'scripts/checks'] }));
-    }
+    put('.zenoforge/ci.json', JSON.stringify({
+      pipeline_suite_roots: ['scripts/release', ...(includeConfiguredSuites ? ['scripts/ops', 'scripts/checks'] : [])],
+    }));
     if (includeProductSystemdSuite || emptyProductSystemd) {
       mkdirSync(join(root, '.zenoforge/systemd'), { recursive: true });
       put('.zenoforge/systemd/pipeline-timers.list', '# product timer policy fixture\n');
@@ -84,7 +84,7 @@ function runFixture({ runner = runnerSource, shellExit = 0, nodeExit = 0, emptyS
       put('.zenoforge/systemd/product-suite.test.sh', '#!/bin/sh\nprintf "product-systemd\\n" >> "$PIPELINE_FIXTURE_LOG"\n');
     }
     if (!emptySuites) {
-      put('engine/run-release.test.sh', '#!/bin/sh\nprintf "release\\n" >> "$PIPELINE_FIXTURE_LOG"\nprintf "%s\\n" "$TMPDIR" >> "$PIPELINE_FIXTURE_TMP_LOG"\n');
+      put('scripts/release/run-release.test.sh', '#!/bin/sh\nprintf "release\\n" >> "$PIPELINE_FIXTURE_LOG"\nprintf "%s\\n" "$TMPDIR" >> "$PIPELINE_FIXTURE_TMP_LOG"\n');
       for (const [path, name] of releaseSuites) {
         put(path, `#!/bin/sh\nprintf "%s\\n" "${name}" >> "$PIPELINE_FIXTURE_LOG"\nprintf "%s\\n" "$TMPDIR" >> "$PIPELINE_FIXTURE_TMP_LOG"\n`);
       }
@@ -174,11 +174,11 @@ function requireCompleteExecution(result) {
 test('runner executes split release suites and omits the unsplit runner, not test-env', () => {
   const result = runFixture();
   requireCompleteExecution(result);
-  assert.ok(result.stdout.includes('engine/run-release-suite-release-entry.test.sh timeout=1260s'), result.stdout);
-  assert.ok(result.stdout.includes('engine/run-release-suite-rollback.test.sh timeout=1230s'), result.stdout);
-  assert.ok(result.stdout.includes('engine/run-release-suite-postdeploy.test.sh timeout=1500s'), result.stdout);
-  assert.ok(result.stdout.includes('engine/run-release-suite-reconcile.test.sh timeout=1200s'), result.stdout);
-  assert.doesNotMatch(result.stdout, /done suite=engine\/run-release\.test\.sh/);
+  assert.ok(result.stdout.includes('scripts/release/run-release-suite-release-entry.test.sh timeout=1260s'), result.stdout);
+  assert.ok(result.stdout.includes('scripts/release/run-release-suite-rollback.test.sh timeout=1230s'), result.stdout);
+  assert.ok(result.stdout.includes('scripts/release/run-release-suite-postdeploy.test.sh timeout=1500s'), result.stdout);
+  assert.ok(result.stdout.includes('scripts/release/run-release-suite-reconcile.test.sh timeout=1200s'), result.stdout);
+  assert.doesNotMatch(result.stdout, /done suite=scripts\/release\/run-release\.test\.sh/);
   assert.ok(result.stdout.includes('engine/nested/test-child.sh timeout=300s'), result.stdout);
 });
 

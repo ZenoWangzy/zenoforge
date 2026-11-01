@@ -296,13 +296,15 @@ main_fix_forward_carried_capacity_check() {
 
 
 main_fix_forward_carried_pr_registered() {
-  local pr_number="$1" registry_path remote_command registry result script_dir
+  local pr_number="$1" registry_path remote_command registry result release_runner helper
   [[ "$pr_number" =~ ^[1-9][0-9]*$ && -n "${DEPLOY_HOST:-}" ]] || return 2
+  release_runner="$(zf_release_runner)" || return 2
+  helper="$(dirname -- "$release_runner")/release-drift-carried.sh"
+  [[ -r "$helper" ]] || return 2
   registry_path="${DEPLOY_DIR:-$ZF_DEPLOY_DIR}/release-drift-carried.tsv"
   printf -v remote_command 'path=%q; if [ ! -e "$path" ] && [ ! -L "$path" ]; then exit 0; fi; [ -r "$path" ] || exit 44; cat -- "$path"' "$registry_path"
   registry="$(ssh -o BatchMode=yes -o ConnectTimeout=15 "$DEPLOY_HOST" "$remote_command")" || return 2
-  script_dir="$(cd "$(dirname "$_AGENT_LIB_DIR/lib.sh")" && pwd)"
-  result="$(bash "$script_dir/release-drift-carried.sh" --contains-pr "$pr_number" <<< "$registry")" || return 2
+  result="$(bash "$helper" --contains-pr "$pr_number" <<< "$registry")" || return 2
   jq -e '.unknown == false and .approved == true' <<< "$result" >/dev/null 2>&1
 }
 
