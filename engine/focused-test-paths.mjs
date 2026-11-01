@@ -338,7 +338,6 @@ export const RELATED_TESTS = new Map([
     'engine/ticket-progress.test.sh',
     'engine/night/night.test.sh',
   ]],
-  ['engine/test-advisor-convergence.sh', ['engine/advisor-convergence.test.mjs']],
   ['scripts/branch-delivery-policy.mjs', ['scripts/branch-delivery-policy.test.mjs']],
   ['engine/ci-repair-receipt.mjs', ['engine/ci-repair-receipt.test.mjs', 'scripts/branch-delivery-preflight.test.mjs', 'engine/pre-push-guard.test.sh']],
   ['scripts/branch-delivery-preflight.mjs', ['scripts/branch-delivery-preflight.test.mjs', 'engine/landing-fast-path.test.mjs']],

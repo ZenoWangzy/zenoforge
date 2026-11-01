@@ -2344,6 +2344,10 @@ train_dir="$(mktemp -d)"
 for v in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy NO_PROXY no_proxy ALL_PROXY NODE_USE_ENV_PROXY; do
   command grep -qxF "$v" "$train_dir/args"
 done
+command grep -qxF "ZF_ENGINE_DIR=$train_dir/code/.." "$train_dir/args"
+command grep -qxF 'ZF_REPO_DIR=/fixture/root' "$train_dir/args"
+command grep -qxF 'ZF_CONFIG_ROOT=/fixture/root/.zenoforge' "$train_dir/args"
+command grep -qxF "ZF_CDP_BROWSER_LEASE_SCRIPT=$train_dir/code/../cdp-browser-lease.sh" "$train_dir/args"
 # 空的小写 https_proxy 让 git 直连被墙的 GitHub：只有大写时，列车拿到的小写必须是大写的值
 command grep -qxF 'lower=http://bridge:1|http://bridge:1|localhost' "$train_dir/args" || { echo 'train gets empty lowercase proxy vars' >&2; exit 1; }
 rm -rf "$train_dir"

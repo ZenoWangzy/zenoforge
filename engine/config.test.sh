@@ -76,6 +76,18 @@ resolve "$target/engine" "${unset_all[@]}" PATH="$test_env_root/shims:$PATH" >/d
 check "sourcing runs no git or gh" "$(find "$test_env_root" -maxdepth 1 -name 'called-*' | wc -l | tr -d ' ')" "0"
 # Deployment identity settings: each default is the literal it replaced; a variable the caller sets wins, even when empty.
 setting() { env "${unset_all[@]}" -u "$1" "${@:2}" bash -c 'source "$1/config.sh"; printf "%s" "${!2}"' _ "$target/engine" "$1"; }
+check "host CDP lease defaults beside the engine" \
+  "$(setting ZF_CDP_BROWSER_LEASE_SCRIPT)" "$target/engine/cdp-browser-lease.sh"
+check "an exported CDP lease path wins" \
+  "$(setting ZF_CDP_BROWSER_LEASE_SCRIPT ZF_CDP_BROWSER_LEASE_SCRIPT=/host/lease.sh)" "/host/lease.sh"
+check "advisor endpoint defaults are neutral config values" \
+  "$(setting ZF_WEB_ADVISOR_PROVIDER_CDP_PORT)" "9224"
+check "advisor request timeout defaults to 900 seconds" \
+  "$(setting ZF_WEB_ADVISOR_PROVIDER_CALL_TIMEOUT_SECONDS)" "900"
+check "advisor job deadline defaults to 2400 seconds" \
+  "$(setting ZF_WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS)" "2400"
+check "advisor job poll interval defaults to 30 seconds" \
+  "$(setting ZF_WEB_ADVISOR_PROVIDER_POLL_INTERVAL_SECONDS)" "30"
 check "CI host defaults to cihost" "$(setting ZF_CIHOST_HOST)" "cihost"
 check "acceptance user defaults to 验收用户" "$(setting ZF_ACCEPTANCE_USER)" "验收用户"
 check "an exported value wins" "$(setting ZF_INFRA_REPO ZF_INFRA_REPO=o/r)" "o/r"
