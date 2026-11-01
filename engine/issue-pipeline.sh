@@ -2470,7 +2470,7 @@ fi
 # the candidate selector applies deploy_is_blocked(). The wrapper only runs a
 # registered read-only preflight; unknown block kinds remain fail-closed.
 if [ -s "$DEPLOY_BLOCKED_FILE" ] && [ "$DRY_RUN" != 1 ]; then
-  if ! bash "$(zf_release_runner)" --recheck-deploy-block; then
+  if ! ZF_ENGINE_DIR="$ZF_ENGINE_DIR" bash "$(zf_release_runner)" --recheck-deploy-block; then
     echo "issue-pipeline: infrastructure deploy-block recheck failed; release remains gated" >&2
   fi
 fi
