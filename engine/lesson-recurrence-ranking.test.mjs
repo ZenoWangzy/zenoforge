@@ -206,6 +206,8 @@ test('V930 lint refuses removal of an explicit wait and prints actionable fix gu
   assert.match(verdict.missing.join('\n'), /explicit evidence wait kinds/);
   assert.match(verdict.fix_guidance, /owner_state=waiting/);
   assert.match(fixGuidance, /hold.test.sh/);
+  assert.match(fixGuidance, /direct-main/);
+  assert.doesNotMatch(fixGuidance, /engine\/land-direct-main\.test\.sh/);
 });
 
 test('V930 lint refuses an awaiting-PR classification that ignores failed checks', () => {

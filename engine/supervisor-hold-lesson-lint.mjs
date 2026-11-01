@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { zfConfigJson } from './pack-dir.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepo = path.resolve(scriptDir, '..');
@@ -12,7 +13,12 @@ const rankingPath = 'lessons/recurrence-ranking.json';
 const holdPath = 'engine/supervisor-holds.sh';
 const lessonId = 'V930';
 const classTag = 'supervisor-hold-without-owner';
-export const fixGuidance = 'Update engine/hold.test.sh and engine/land-direct-main.test.sh with the hold contract. In supervisor_holds_snapshot, classify valid, unexpired evidence waits (including manual and no-reachable-path) as owner_state=waiting; keep expired, invalid, failed, and unreadable holds alertable.';
+const focusedTestMap = zfConfigJson('state/focused-test-map.json', process.env.ZF_REPO_DIR || defaultRepo);
+const mappedDirectMainSuite = Object.values(focusedTestMap?.related_tests ?? {})
+  .flat()
+  .find((candidate) => typeof candidate === 'string' && candidate.split('/').at(-1) === 'land-direct-main.test.sh');
+const directMainSuiteGuidance = mappedDirectMainSuite ?? 'the direct-main landing suite';
+export const fixGuidance = `Update engine/hold.test.sh and ${directMainSuiteGuidance} with the hold contract. In supervisor_holds_snapshot, classify valid, unexpired evidence waits (including manual and no-reachable-path) as owner_state=waiting; keep expired, invalid, failed, and unreadable holds alertable.`;
 
 export function holdLintPaths(paths) {
   const exact = new Set([

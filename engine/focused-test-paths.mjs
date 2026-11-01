@@ -591,6 +591,27 @@ function isSelectableTestPath(path) {
     && (/\.test\.(?:sh|mjs)$/.test(path) || /(^|\/)test-[^/]+\.sh$/.test(path));
 }
 
+// Generic mappings keep the suite's default path. If a target moved that suite,
+// resolve its basename only inside the suite roots declared by that target.
+export function resolveTrackedSuitePaths(candidates, trackedPaths, repoRoot = process.cwd()) {
+  const tracked = trackedPaths instanceof Set ? trackedPaths : new Set(trackedPaths);
+  const resolved = new Set(candidates.filter((candidate) => tracked.has(candidate)));
+  const roots = zfConfigJson('ci.json', repoRoot)?.pipeline_suite_roots;
+  if (!Array.isArray(roots)) return [...resolved].sort();
+
+  const configuredRoots = roots.filter((root) => typeof root === 'string' && root.length > 0)
+    .map((root) => root.replace(/\/+$/, ''));
+  for (const candidate of candidates) {
+    if (tracked.has(candidate)) continue;
+    const basename = candidate.split('/').at(-1);
+    for (const path of tracked) {
+      if (!isSelectableTestPath(path) || path.split('/').at(-1) !== basename) continue;
+      if (configuredRoots.some((root) => root === '.' || path.startsWith(`${root}/`))) resolved.add(path);
+    }
+  }
+  return [...resolved].sort();
+}
+
 // A script that pins another file carries its own same-named suite into the
 // selection when the pinned file changes (#4599: lesson-lints.mjs anchors
 // lib.sh and supervisor-holds.sh, so lesson-lints.test.mjs must run too).
@@ -643,7 +664,7 @@ function filenameReferencedTests(changedPaths, tracked, { headRef, mappingRef, c
       for (const owner of sameNameOwnerTests(reference, tracked)) tests.add(owner);
     }
 
-    testsByScript.set(changedPath, [...tests].filter((path) => tracked.has(path)));
+    testsByScript.set(changedPath, resolveTrackedSuitePaths([...tests], tracked, cwd));
   }
 
   return testsByScript;
@@ -692,7 +713,7 @@ function helperCallerTests(changedPaths, tracked, { baseRef, headRef, mappingRef
 
         const candidatesForOwner = RELATED_TESTS.get(ownerPath)
           ?? [ownerPath.replace(/\.sh$/, '.test.sh')];
-        const matched = candidatesForOwner.filter((candidate) => tracked.has(candidate));
+        const matched = resolveTrackedSuitePaths(candidatesForOwner, tracked, cwd);
         if (matched.length === 0) throw new Error(`No focused test exists for changed helper caller ${ownerPath}.`);
         for (const candidate of matched) tests.add(candidate);
         coveredFunctions.add(name);
@@ -740,16 +761,12 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
   for (const path of changedPaths) {
     if (path.startsWith(`${PACK_PREFIX}vendor/`)) continue; // vendored upstream text has no pipeline test of ours
     if (path.startsWith(PACK_PREFIX) && /\.(?:sh|[cm]?js|ts|py)$/.test(path)) {
-      for (const candidate of CROSS_SCRIPT_TESTS) {
-        if (tracked.has(candidate)) tests.add(candidate);
-      }
+      for (const candidate of resolveTrackedSuitePaths(CROSS_SCRIPT_TESTS, tracked, refs.cwd ?? process.cwd())) tests.add(candidate);
     }
 
     if (/\.test\.(?:sh|mjs)$/.test(path)) {
       if (tracked.has(path) && !isPackageVitestFile(path, refs.cwd ?? process.cwd())) tests.add(path);
-      for (const candidate of RELATED_TESTS.get(path) ?? []) {
-        if (tracked.has(candidate)) tests.add(candidate);
-      }
+      for (const candidate of resolveTrackedSuitePaths(RELATED_TESTS.get(path) ?? [], tracked, refs.cwd ?? process.cwd())) tests.add(candidate);
       continue;
     }
 
@@ -782,7 +799,7 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
     }
 
     if (!candidates) continue;
-    const matched = candidates.filter((candidate) => tracked.has(candidate));
+    const matched = resolveTrackedSuitePaths(candidates, tracked, refs.cwd ?? process.cwd());
     if (
       path.startsWith(PACK_PREFIX)
       && /\.(?:sh|[cm]?js|ts|py)$/.test(path)

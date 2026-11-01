@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { focusedTestPaths, RELATED_TESTS } from './focused-test-paths.mjs';
+import { focusedTestPaths, RELATED_TESTS, resolveTrackedSuitePaths } from './focused-test-paths.mjs';
 
 export const FULL_SUITE_PATHS = Object.freeze([
   '.github/workflows/ci.yml',
@@ -37,9 +37,17 @@ function isSelectableSuitePath(path) {
     || (/(^|\/)test-[^/]+\.sh$/.test(path) && !path.endsWith('/test-env.sh'));
 }
 
-function suiteCoverageFor(trackedPaths) {
+function suiteCoverageFor(trackedPaths, repoRoot) {
   const tracked = trackedPaths instanceof Set ? trackedPaths : new Set(trackedPaths);
   const coverage = new Map([...SUITE_PATH_COVERAGE].map(([suite, paths]) => [suite, new Set(paths)]));
+  for (const [suite, paths] of coverage) {
+    for (const resolvedSuite of resolveTrackedSuitePaths([suite], tracked, repoRoot)) {
+      if (resolvedSuite === suite) continue;
+      const resolvedPaths = coverage.get(resolvedSuite) ?? new Set();
+      for (const path of paths) resolvedPaths.add(path);
+      coverage.set(resolvedSuite, resolvedPaths);
+    }
+  }
   for (const suite of tracked) {
     if (!isSelectableSuitePath(suite)) continue;
     const paths = coverage.get(suite) ?? new Set();
@@ -58,7 +66,7 @@ function coversPath(coveragePath, changedPath) {
 }
 
 export function pipelineSuiteScope(changedPaths, trackedPaths, refs = {}) {
-  const { tracked, coverage } = suiteCoverageFor(trackedPaths);
+  const { tracked, coverage } = suiteCoverageFor(trackedPaths, refs.cwd ?? process.cwd());
   const selected = new Set(focusedTestPaths(changedPaths, tracked, refs));
   const full = changedPaths.length === 0 || changedPaths.some((path) => FULL_SUITE_PATHS.includes(path)
     || FULL_SUITE_PATH_PREFIXES.some((prefix) => path.startsWith(prefix)));
