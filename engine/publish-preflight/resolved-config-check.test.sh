@@ -34,4 +34,11 @@ run "$t/intended.tsv" >/dev/null || { echo "FAIL: fixed tree flagged"; exit 1; }
 printf 'prompts/guide.md\t\n' > "$t/bad.tsv"
 rc=0; run "$t/bad.tsv" >/dev/null 2>&1 || rc=$?
 [[ $rc == 2 ]] || { echo "FAIL: entry without reason accepted (rc=$rc)"; exit 1; }
+# An unreadable engine file fails the check instead of being skipped.
+if [[ $EUID != 0 ]]; then
+  chmod 000 "$t/new/engine/reader.sh"
+  rc=0; run "$t/intended.tsv" >/dev/null 2>&1 || rc=$?
+  chmod 644 "$t/new/engine/reader.sh"
+  [[ $rc == 2 ]] || { echo "FAIL: unreadable engine file skipped (rc=$rc)"; exit 1; }
+fi
 echo "resolved-config-check.test.sh: PASS"

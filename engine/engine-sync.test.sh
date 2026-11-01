@@ -23,6 +23,12 @@ git -C "$target" add -A && git -C "$target" commit -qm initial
 preflight() { ZF_REPO_DIR="$target" AGENT_HOME="$test_env_root/agent" "$here/engine-sync.sh" --preflight "$test_env_root/new-version"; }
 # Without BUILD-INFO the live target commit is unknown: preflight refuses instead of comparing HEAD with itself.
 if preflight >/dev/null 2>&1; then echo 'FAIL: preflight ran without the live target commit' >&2; exit 1; fi
+# The new version may lack BUILD-INFO (falls back to HEAD). product_sha wins over pack_sha in any order: the pack
+# commit here does not exist, so reading it would fail the preflight.
+printf 'pack_sha=%s:.zenoforge/build/pack\nproduct_sha=%s\n' "$(printf '0%.0s' {1..40})" "$(git -C "$target" rev-parse HEAD)" \
+  > "$test_env_root/agent/engine-versions/live/BUILD-INFO"
+result=$(preflight)
+grep -q 'publish-preflight: OK' <<<"$result"
 printf 'pack_sha=%s:.zenoforge/build/pack\n' "$(git -C "$target" rev-parse HEAD)" > "$test_env_root/agent/engine-versions/live/BUILD-INFO"
 printf 'product_sha=%s\n' "$(git -C "$target" rev-parse HEAD)" > "$test_env_root/new-version/BUILD-INFO"
 result=$(preflight)

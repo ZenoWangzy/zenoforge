@@ -35,17 +35,19 @@ def resolve(version, repo, ref, have, rel):
     return None, None
 
 
+def _raise(err):
+    raise err
+
+
 def engine_rels(version, candidates):
     """Literal and dynamic paths the engine passes to its config resolvers."""
     rels, globs = set(), set()
-    for root, _, files in os.walk(os.path.join(version, 'engine')):
+    for root, _, files in os.walk(os.path.join(version, 'engine'), onerror=_raise):
         for name in files:
             if '.test.' in name or name.startswith('test-') or name.endswith('.env'):
                 continue
-            try:
-                text = open(os.path.join(root, name), encoding='utf-8', errors='ignore').read()
-            except OSError:
-                continue
+            # An unreadable file raises: a partial scan must not pass as "unchanged".
+            text = open(os.path.join(root, name), encoding='utf-8', errors='ignore').read()
             for _, arg in CALL.findall(text):
                 if arg.startswith(('$', '/', '-')) or '/' not in arg and '.' not in arg:
                     continue
@@ -75,7 +77,7 @@ def main(argv):
     bhave, nhave = target_files(brepo, bref), target_files(nrepo, nref)
     candidates = bhave | nhave
     for v in (bver, nver):
-        for root, _, files in os.walk(os.path.join(v, 'engine')):
+        for root, _, files in os.walk(os.path.join(v, 'engine'), onerror=_raise):
             candidates |= {os.path.relpath(os.path.join(root, f), os.path.join(v, 'engine')) for f in files if not f.endswith('.env')}
     bad, allowed = [], []
     for rel in sorted(r for r in engine_rels(nver, candidates) if not r.endswith('.env')):
@@ -97,4 +99,8 @@ def main(argv):
 
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv))
+    try:
+        sys.exit(main(sys.argv))
+    except OSError as err:
+        print(f'resolved-config-check: cannot read: {err}', file=sys.stderr)
+        sys.exit(2)

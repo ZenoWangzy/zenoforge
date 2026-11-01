@@ -28,7 +28,13 @@ if [[ "${1:-}" == --preflight ]]; then
   }
   # Compare against the target commit each version was built from: at converge time HEAD is already the new commit.
   # A hook that knows the commit the live checkout ran can pass it in ZF_PREFLIGHT_LIVE_REF.
-  build_ref() { sed -n -e 's/^product_sha=//p' -e 's/^pack_sha=\([0-9a-f]*\):.*/\1/p' "$1/BUILD-INFO" 2>/dev/null | head -n 1; }
+  build_ref() { # product_sha, else the commit in pack_sha; empty when the version has no BUILD-INFO
+    local info="$1/BUILD-INFO" ref
+    [[ -r "$info" ]] || return 0
+    ref=$(sed -n 's/^product_sha=//p' "$info")
+    [[ -n "$ref" ]] || ref=$(sed -n 's/^pack_sha=\([0-9a-f]*\):.*/\1/p' "$info")
+    printf '%s' "${ref%%$'\n'*}"
+  }
   live_ref=${ZF_PREFLIGHT_LIVE_REF:-$(build_ref "$live_version_dir")}
   new_ref=$(build_ref "$new_version_dir")
   [[ -n "$live_ref" ]] || { echo "engine-sync: cannot tell which target commit the live version ran; set ZF_PREFLIGHT_LIVE_REF" >&2; exit 1; }

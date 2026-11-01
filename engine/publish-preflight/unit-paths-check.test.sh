@@ -24,4 +24,13 @@ grep -q 'unit path: launcher.sh' <<<"$out" && grep -q 'unit path: bridge.mjs' <<
 grep -qE 'kept.sh|local-fallback.sh' <<<"$out" && { echo "FAIL: false positive: $out"; exit 1; }
 touch "$t/new/engine/launcher.sh" "$t/new/engine/index-helper.sh" "$t/new/engine/bridge.mjs" "$t/new/engine/local-exec.py"
 bash "$here/unit-paths-check.sh" "$t/base" "$t/new" "$t/units" >/dev/null || { echo "FAIL: restored build flagged"; exit 1; }
+# A scan that cannot read its input fails instead of reporting nothing missing.
+rc=0; bash "$here/unit-paths-check.sh" "$t/base" "$t/new" "$t/no-such-units" >/dev/null 2>&1 || rc=$?
+[[ $rc == 2 ]] || { echo "FAIL: missing unit dir accepted (rc=$rc)"; exit 1; }
+if [[ $EUID != 0 ]]; then
+  chmod 000 "$t/units/a.service"
+  rc=0; bash "$here/unit-paths-check.sh" "$t/base" "$t/new" "$t/units" >/dev/null 2>&1 || rc=$?
+  chmod 644 "$t/units/a.service"
+  [[ $rc == 2 ]] || { echo "FAIL: unreadable unit accepted (rc=$rc)"; exit 1; }
+fi
 echo "unit-paths-check.test.sh: PASS"
