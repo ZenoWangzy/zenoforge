@@ -15,9 +15,12 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import roi_ledger
+from config_paths import zf_config_file
 
 
-PRICE_FILE = Path(__file__).resolve().parents[1] / "state" / "roi-prices.json"
+PRICE_FILE = zf_config_file("state/roi-prices.json") or (
+    Path(__file__).resolve().parents[1] / "state" / "roi-prices.json"
+)
 DEFAULT_REPO = "example-maintainer/example-repo"
 
 

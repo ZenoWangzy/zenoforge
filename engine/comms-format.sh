@@ -22,8 +22,18 @@
 
 _COMMS_FORMAT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
+# notify.sh can load this module without lib.sh, so make the shared config
+# resolver available in both load paths.
+if ! declare -F zf_config_file >/dev/null 2>&1; then
+  source "$_COMMS_FORMAT_DIR/config.sh"
+fi
+
 comms_profile_file() {
-  printf '%s\n' "${ZF_COMMS_PROFILE:-$_COMMS_FORMAT_DIR/state/comms-profile.json}"
+  if [[ -n "${ZF_COMMS_PROFILE:-}" ]]; then
+    printf '%s\n' "$ZF_COMMS_PROFILE"
+  else
+    zf_config_file state/comms-profile.json
+  fi
 }
 
 # comms_profile_get <jq-path> — one value from the persistent profile.

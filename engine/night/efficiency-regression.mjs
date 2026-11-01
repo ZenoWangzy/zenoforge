@@ -15,9 +15,11 @@ import { execFile, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { zfConfigFile } from '../pack-dir.mjs';
 
 const execFileAsync = promisify(execFile);
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const FOUNDER_HEALTH_MAIL_FILE = zfConfigFile('state/founder-health-mail.json');
 const LIB_PATH = path.resolve(SCRIPT_DIR, '../lib.sh');
 // Same setting lib.sh resolves.
 const UNIT_PREFIX = process.env.ZF_UNIT_PREFIX || 'zenoforge';
@@ -1664,7 +1666,7 @@ function maintainerPipelineIssueSamples(home, windows) {
 export function maintainerMailEfficiencySummary(home, now = new Date().toISOString(), { journalFile } = {}) {
   const nowMs = parseTime(now);
   if (nowMs === null) throw new Error('--now must be an ISO timestamp');
-  const policy = readJson(path.join(SCRIPT_DIR, '../state/founder-health-mail.json'), null);
+  const policy = readJson(FOUNDER_HEALTH_MAIL_FILE, null);
   const intervalMs = Number(policy?.digest_interval_seconds) * 1000;
   if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) throw new Error('maintainer mail digest interval is invalid');
   const windows = maintainerMailWindows(nowMs, intervalMs);

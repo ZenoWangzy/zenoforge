@@ -688,9 +688,18 @@ flowrun "$fa" --inbox >/dev/null
 # --- 机制心跳（#4495 M2/#4498 登记接缝；#4500 STPA 全量登记）：登记表机制超过沉默上限计入
 # mechanism.silent，expected_idle 不计。fixture 覆盖全量登记：非 idle 项每项一条新鲜事件
 # （11:55，两小时内的上限都过），只有 f3 过期（26h > 6h）；f1 过期（35h > 24h）但 expected_idle 不计。 ---
-python3 - "$script_dir" <<'REGCHK' || fail 'mechanism-registry.json schema invalid'
+registry_file="$(python3 - "$script_dir" <<'REGPATH'
+import sys
+sys.path.insert(0, sys.argv[1])
+from config_paths import zf_config_file
+path = zf_config_file("state/mechanism-registry.json")
+if path:
+    print(path)
+REGPATH
+)"
+python3 - "$registry_file" <<'REGCHK' || fail 'mechanism-registry.json schema invalid'
 import json, re, sys
-reg = json.load(open(sys.argv[1] + "/../state/mechanism-registry.json"))
+reg = json.load(open(sys.argv[1]))
 ids = [m["id"] for m in reg["mechanisms"]]
 assert len(ids) == len(set(ids)), "duplicate ids: %s" % ids
 for m in reg["mechanisms"]:
@@ -738,7 +747,7 @@ out="$(PATH="$test_env_root/bin:$PATH" python3 "$script_dir/node_health.py" --ru
 row() { grep -F "$1" <<<"$out" | head -1; }
 grep -Eq ' 1 .*UNHEALTHY$' <<<"$(row 'registered mechanisms past their silence bound')" \
   || fail "mechanism.silent wrong (only f3 over bound, f1 expected_idle): $(row 'past their silence bound')"
-reg_n="$(jq '.mechanisms | length' "$script_dir/../state/mechanism-registry.json")"
+reg_n="$(jq '.mechanisms | length' "$registry_file")"
 jq -e --argjson n "$reg_n" '(.mechanisms | length) == $n' "$ma/node-health.json" >/dev/null \
   || fail "scorecard mechanisms block does not cover the full registry: $(jq '.mechanisms | length' "$ma/node-health.json") of $reg_n"
 jq -e '[.mechanisms[] | select(.silent) | .id] | length == 1 and .[0] == "factory-f3-release-train"' \
