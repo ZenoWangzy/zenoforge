@@ -10,6 +10,7 @@ import { createNightProgressContext, NIGHT_PROGRESS_CONTEXT_ENV, nightProgressPo
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELPER = join(HERE, 'night-test-progress.mjs');
+const PACK_DIR_MODULE = join(HERE, '../pack-dir.mjs');
 const NIGHT_SOURCE = readFileSync(join(HERE, 'night.test.sh'), 'utf8');
 const NIGHT_PREFIX = NIGHT_SOURCE.slice(0, NIGHT_SOURCE.indexOf('night_test_group() {'));
 assert.ok(NIGHT_PREFIX.includes('night_test_groups+=(hand-dispatch)'), 'fixture executes the real all-group coordinator');
@@ -40,6 +41,7 @@ function fixture(t) {
   mkdirSync(dir, { recursive: true });
   mkdirSync(agentDir, { recursive: true });
   copyFileSync(HELPER, join(dir, 'night-test-progress.mjs'));
+  copyFileSync(PACK_DIR_MODULE, join(agentDir, 'pack-dir.mjs'));
   writeFileSync(join(repo, 'engine/test-env.sh'), [
     // Match the real bootstrap purge; the owner context must survive without a whitelist.
     'printf "%s\\t%s\\t%s\\n" "${NIGHT_TEST_GROUP:-all}" "${NIGHT_TEST_PROGRESS_CONTEXT-absent}" "${ZF_NIGHT_TEST_PROGRESS_CONTEXT-absent}" >> "$TEST_BOOTSTRAP_LOG"',
@@ -89,7 +91,7 @@ function fixture(t) {
   git(repo, 'commit', '-qm', 'fixture');
   const head = git(repo, 'rev-parse', 'HEAD');
   const env = { ...process.env, TEST_ROOT: root, TEST_CALLS: join(root, 'calls'), TEST_SEEDS: join(root, 'seeds'), TEST_BOOTSTRAP_LOG: join(root, 'bootstrap.tsv'), TEST_FAIL_FILE: join(root, 'red'), TEST_STORAGE_FILE: join(root, 'storage-exhausted'), TEST_FIFO: join(root, 'hold'), TEST_BLOCK_PID: join(root, 'blocked.pid'), NIGHT_TEST_JOBS: '1' };
-  for (const name of ['NIGHT_TEST_GROUP', 'NIGHT_TEST_CASE', 'NIGHT_TEST_SEED_FIXTURE', NIGHT_PROGRESS_CONTEXT_ENV, 'ZF_NIGHT_TEST_PROGRESS_CONTEXT', 'night_test_progress_context', 'NODE_TEST_CONTEXT', 'NODE_OPTIONS']) delete env[name];
+  for (const name of ['NIGHT_TEST_GROUP', 'NIGHT_TEST_CASE', 'NIGHT_TEST_SEED_FIXTURE', NIGHT_PROGRESS_CONTEXT_ENV, 'ZF_NIGHT_TEST_PROGRESS_CONTEXT', 'ZF_CONFIG_ROOT', 'ZF_PACK_DIR', 'ZF_REPO_DIR', 'night_test_progress_context', 'NODE_TEST_CONTEXT', 'NODE_OPTIONS']) delete env[name];
   assert.equal(execute('mkfifo', [env.TEST_FIFO]).status, 0);
   const progress = join(root, 'progress');
   const options = { root: progress, repoRoot: repo, head, baseline: head, verifierKey: VERIFIER, policy: nightProgressPolicy(env) };

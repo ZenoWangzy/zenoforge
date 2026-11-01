@@ -31,6 +31,7 @@ git -C "$fixture_repo" add README.md
 git -C "$fixture_repo" commit -q -m 'fixture: seed repo'
 
 cp "$script_dir/land-direct-main.sh" "$fixture_engine/land-direct-main.sh"
+cp "$script_dir/land-direct-main-bootstrap.sh" "$fixture_engine/land-direct-main-bootstrap.sh"
 {
   printf 'export ZF_HOME=%q\n' "$fixture_home"
   printf 'export ZF_REPO_DIR=%q\n' "$deploy_repo"
@@ -99,3 +100,20 @@ printf '%s\n' "$failed_source_output"
 grep -Fqx "resolved_agent_home=$HOME/.zenoforge" <<< "$failed_source_output" \
   || fail "failing deploy.env source should fall back to HOME; got $(grep '^resolved_agent_home=' <<< "$failed_source_output" || true)"
 printf 'PASS: failing deploy.env source falls back without aborting\n'
+
+set +e
+bootstrap_output="$(
+  cd "$fixture_repo"
+  env -u ZF_HOME -u AGENT_HOME -u ZF_REPO_DIR -u ZF_CONFIG_ROOT HOME="$HOME" \
+    ZF_ENGINE_DIR="$fixture_engine" ZF_LAND_GIT_TIMEOUT_SECONDS=1 \
+    bash "$fixture_engine/land-direct-main-bootstrap.sh" "$fixture_engine/land-direct-main.sh" --preflight-only 2>&1
+)"
+bootstrap_status=$?
+set -e
+[[ "$bootstrap_status" -ne 0 ]] || fail 'bootstrap should stop when the fixture has no origin remote'
+grep -Fq 'could not fetch origin/main during startup sync' <<< "$bootstrap_output" \
+  || fail "standalone bootstrap did not reach startup sync: $bootstrap_output"
+if grep -Fq '/config.sh' <<< "$bootstrap_output"; then
+  fail "standalone bootstrap attempted to source unpublished config.sh: $bootstrap_output"
+fi
+printf 'PASS: standalone bootstrap resolves its bundle without config.sh\n'

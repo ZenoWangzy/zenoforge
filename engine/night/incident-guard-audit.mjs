@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { zfConfigFile } from '../pack-dir.mjs';
+import { zfConfigFile, zfEnv } from '../pack-dir.mjs';
 
 const REGISTRY_PATH = 'state/incident-guards.json';
 // Guard targets resolve against --repo, then the engine build, and then the target repo.
@@ -393,7 +393,7 @@ async function readGuardHistory(historyDir) {
   };
 }
 
-export async function auditIncidentGuards(repoInput, historyDirInput, targetRepoInput = process.env.ZF_REPO_DIR) {
+export async function auditIncidentGuards(repoInput, historyDirInput, targetRepoInput = zfEnv('REPO_DIR')) {
   const repo = path.resolve(repoInput);
   const historyDir = path.resolve(historyDirInput);
   const targetRepo = targetRepoInput ? path.resolve(targetRepoInput) : null;

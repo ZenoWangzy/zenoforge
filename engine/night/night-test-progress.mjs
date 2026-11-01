@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { zfEnv } from '../pack-dir.mjs';
 
 export const NIGHT_SUITE_PATH = 'engine/night/night.test.sh';
 export const NIGHT_PROGRESS_CONTEXT_ENV = 'NIGHT_TEST_PROGRESS_CONTEXT';
@@ -36,7 +37,7 @@ export function nightProgressPolicy(env = process.env) {
     night_jobs: env.NIGHT_TEST_JOBS || '8',
     stage_timeout_seconds: env.ZF_PREFLIGHT_STAGE_TIMEOUT_SECONDS || null,
     post_land_suite_timeout_seconds: env.ZF_POST_LAND_SUITE_TIMEOUT_SECONDS || '1800',
-    post_land_slot_timeout_seconds: env.ZF_POST_LAND_SLOT_TIMEOUT_SECONDS || '1800',
+    post_land_slot_timeout_seconds: zfEnv('POST_LAND_SLOT_TIMEOUT_SECONDS', undefined, env) || '1800',
     post_land_slots: env.ZF_POST_LAND_SLOTS || '1',
   };
 }

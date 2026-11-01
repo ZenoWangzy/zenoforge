@@ -76,7 +76,7 @@ grep -Fq 'NEEDS PRODUCT DECISION' <<<"$out" || fail 'escalated unit not listed'
 grep -Fq "drift check: STRATEGY.md 'Maintainer intents'" <<<"$out" || fail 'drift check line missing'
 grep -Fq 'unhealthy nodes:' <<<"$out" || fail "node health scorecard not appended: $out"
 # 体检打分与 scheduler 同环境：runtime-env.sh 给的 PGTEST_URL 要传到打分进程（否则测试库误报不可达）
-hr="$test_env_root/hr"; mkdir -p "$hr"; cp "$script_dir/health_report.py" "$script_dir/node_health.py" "$script_dir/config_paths.py" "$script_dir/usage_reader.py" "$script_dir/worker_cost.py" "$script_dir/workorder_cost.py" "$hr/"
+hr="$test_env_root/hr"; mkdir -p "$hr"; cp "$script_dir/health_report.py" "$script_dir/node_health.py" "$script_dir/config_paths.py" "$script_dir/env_config.py" "$script_dir/usage_reader.py" "$script_dir/worker_cost.py" "$script_dir/workorder_cost.py" "$hr/"
 scored="$(env -u PGTEST_URL python3 -c 'import socket,subprocess,sys; s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen()
 open(sys.argv[1] + "/runtime-env.sh", "w").write("export PGTEST_URL=postgresql://example@127.0.0.1:%d/postgres\n" % s.getsockname()[1])
 sys.exit(subprocess.run(sys.argv[2:]).returncode)' "$hr" python3 "$hr/health_report.py" --runtime "$a" --hours 5 --now 2026-10-19T12:00:00Z | grep -F 'PGTEST_URL')"

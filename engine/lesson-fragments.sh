@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$SCRIPT_DIR/config.sh"
 DEFAULT_REPO="${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 
 usage() {
@@ -141,7 +142,12 @@ repo="${1:-$DEFAULT_REPO}"
 [[ $# -eq 0 ]] || shift
 repo="$(cd -- "$repo" 2>/dev/null && pwd -P)" || { echo "ERROR lesson-fragments: repo unavailable: $repo" >&2; exit 2; }
 export ZF_REPO_DIR="$repo"
-source "$SCRIPT_DIR/config.sh"
+unset _AGENT_REPO_DIR_DERIVED
+if [[ "${_AGENT_CONFIG_ROOT_DERIVED-}" == "${ZF_CONFIG_ROOT-}" ]]; then
+  ZF_CONFIG_ROOT="$repo/.zenoforge"
+  unset _AGENT_CONFIG_ROOT_DERIVED
+  export ZF_CONFIG_ROOT
+fi
 registry="$(zf_config_file state/incident-guards.json)" || registry=''
 if [[ $# -gt 0 && "$1" != --files ]]; then
   registry="$1"

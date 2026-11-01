@@ -11,9 +11,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { zfConfigFile } from './pack-dir.mjs';
+import { zfConfigFile, zfEnv } from './pack-dir.mjs';
 
-const DEFAULT_ROOT = process.env.ZF_REPO_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const DEFAULT_ROOT = zfEnv('REPO_DIR') || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REGISTRY_PATH = 'state/incident-guards.json';
 const SCHEMA_START = '2026-10-30';
 const DATE_FORMAT = /^\d{4}-\d{2}-\d{2}$/;

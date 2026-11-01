@@ -3,10 +3,10 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { zfConfigFile } from './pack-dir.mjs';
+import { zfConfigFile, zfEnv } from './pack-dir.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-export const DEFAULT_ROOT = process.env.ZF_REPO_DIR || path.resolve(path.dirname(SCRIPT_PATH), '..');
+export const DEFAULT_ROOT = zfEnv('REPO_DIR') || path.resolve(path.dirname(SCRIPT_PATH), '..');
 const RULES_PATH = 'lessons/RULES.md';
 const REGISTRY_PATH = 'state/incident-guards.json';
 const OUTPUT_PATH = 'lessons/enforcers.json';

@@ -2,6 +2,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$SCRIPT_DIR/../config.sh"
 REPO_DIR="${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/../.." && pwd -P)}"
 ENGINE_DIR="${ZF_ENGINE_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 H="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"

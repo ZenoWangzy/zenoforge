@@ -1,6 +1,10 @@
 """Resolve shared config data in target, pack, then engine order."""
 import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from env_config import zf_env
 
 
 def zf_config_file(relative_path):
@@ -9,7 +13,7 @@ def zf_config_file(relative_path):
         raise ValueError("config path must be relative and cannot contain a .. segment")
 
     engine_dir = Path(os.environ.get("ZF_ENGINE_DIR") or Path(__file__).resolve().parent.parent)
-    repo_dir = Path(os.environ.get("ZF_REPO_DIR") or engine_dir.parent)
+    repo_dir = Path(zf_env("REPO_DIR") or engine_dir.parent)
     if "ZF_CONFIG_ROOT" in os.environ:
         configured_root = os.environ["ZF_CONFIG_ROOT"]
         config_root = Path(configured_root) if configured_root else None

@@ -16,7 +16,8 @@
 #   ZF_ENGINE_LIVE the engine the running pipeline executes: the landing queue defaults to its own directory; the
 #                     lander and delivery-request default to the live checkout. Not set here.
 # In a checkout these are plain shell variables; deployment settings and ZF_PACK_REL are exported, and caller overrides win.
-# ZF_CONFIG_ROOT is exported so Node readers use the same config root.
+# ZF_CONFIG_ROOT is exported so Node readers use the same config root. `env_prefix` in config.json selects the deployment
+# spelling for settings that otherwise use the public ZF_ name.
 #   deploy.env        beside this file, written into an immutable engine version directory when it is built (Line B): the
 #                     deployment's layout and host settings, so a process with a clean environment (systemd-run) still
 #                     sees them. Sourced first, before anything below reads a setting. Its lines export a variable only when
@@ -34,15 +35,65 @@ if [[ -z "${ZF_ENGINE_DIR-}" ]]; then
   ZF_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -L)"
   _AGENT_ENGINE_DIR_DERIVED="$ZF_ENGINE_DIR"
 fi
+_zf_repo_dir_default="${ZF_REPO_DIR:-$(cd -- "$ZF_ENGINE_DIR/.." && pwd -P)}"
+if [[ -z "${ZF_CONFIG_ROOT+x}" || ( -n "${_AGENT_CONFIG_ROOT_DERIVED+x}" && "$ZF_CONFIG_ROOT" == "$_AGENT_CONFIG_ROOT_DERIVED" ) ]]; then
+  ZF_CONFIG_ROOT="${ZF_REPO_DIR:-$_zf_repo_dir_default}/.zenoforge"
+  _AGENT_CONFIG_ROOT_DERIVED="$ZF_CONFIG_ROOT"
+fi
+
+# zf_env_get <name> [default] -> the prefixed value, the public ZF_ value, or the supplied default.
+# A set empty value is returned unchanged, so callers keep their existing empty-value fallback rules.
+zf_env_get() {
+  [[ $# -ge 1 && $# -le 2 && "$1" =~ ^[A-Z][A-Z0-9_]*$ ]] || return 2
+  local name="$1" prefix="" key config_file
+  config_file="${ZF_CONFIG_ROOT:+$ZF_CONFIG_ROOT/config.json}"
+  if [[ -n "$config_file" && -f "$config_file" ]]; then
+    prefix="$(jq -r 'if type == "object" and (.env_prefix | type) == "string" then .env_prefix else "" end' \
+      "$config_file" 2>/dev/null)" || prefix=""
+  fi
+  if [[ -n "$prefix" ]]; then
+    key="${prefix}${name}"
+    if [[ -n "${!key+x}" ]]; then
+      printf '%s' "${!key}"
+      return 0
+    fi
+  fi
+  key="ZF_${name}"
+  if [[ -n "${!key+x}" ]]; then
+    printf '%s' "${!key}"
+    return 0
+  fi
+  if [[ $# -eq 2 ]]; then
+    printf '%s' "$2"
+    return 0
+  fi
+  return 1
+}
+
+if _zf_repo_dir_resolved="$(zf_env_get REPO_DIR 2>/dev/null)"; then
+  ZF_REPO_DIR="$_zf_repo_dir_resolved"
+fi
 if [[ -z "${ZF_REPO_DIR-}" ]]; then
   ZF_REPO_DIR="$(cd -- "$ZF_ENGINE_DIR/.." && pwd -P)"
   _AGENT_REPO_DIR_DERIVED="$ZF_REPO_DIR"
+else
+  unset _AGENT_REPO_DIR_DERIVED
 fi
 if [[ -z "${ZF_CONFIG_ROOT+x}" || ( -n "${_AGENT_CONFIG_ROOT_DERIVED+x}" && "$ZF_CONFIG_ROOT" == "$_AGENT_CONFIG_ROOT_DERIVED" ) ]]; then
   ZF_CONFIG_ROOT="$ZF_REPO_DIR/.zenoforge"
   _AGENT_CONFIG_ROOT_DERIVED="$ZF_CONFIG_ROOT"
 fi
 export ZF_CONFIG_ROOT
+
+# Normalize deployment spellings for shell consumers that use the public variable names.
+for _zf_env_name in AGENT_GIT_USER_NAME AGENT_GIT_USER_EMAIL; do
+  if _zf_env_value="$(zf_env_get "$_zf_env_name" 2>/dev/null)"; then
+    printf -v "ZF_${_zf_env_name}" '%s' "$_zf_env_value"
+    export "ZF_${_zf_env_name}"
+  fi
+done
+unset _zf_env_name _zf_env_value _zf_repo_dir_default _zf_repo_dir_resolved
+
 # Set (even empty) by the caller = explicit; unset, or still the value this file derived earlier = derive again.
 if [[ -z "${ZF_PACK_DIR+x}" || ( -n "${_AGENT_PACK_DIR_DERIVED+x}" && "$ZF_PACK_DIR" == "$_AGENT_PACK_DIR_DERIVED" ) ]]; then
   ZF_PACK_DIR="" # PACK_DIR_DEFAULT: the public export rewrites this default to empty
