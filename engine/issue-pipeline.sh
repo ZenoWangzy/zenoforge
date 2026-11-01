@@ -616,6 +616,7 @@ dispatch_release_batch() {
   fi
   if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-batch --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY \
+    -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" \
     -p "RuntimeMaxSec=$RELEASE_RUNTIME_MAX_SEC" \
     "${runtime_env[@]}" \
     "$script" "$anchor" "$batch_sha"; then
@@ -637,8 +638,13 @@ dispatch_release_batch() {
 # batch keeps its persisted member list. Unit name still shares the advisor
 # capacity ledger.
 dispatch_advisor_batch() {
-  local script="$ZF_ENGINE_DIR/run-advisor-batch.sh" poll_only="${1:-0}" n budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status
+  local script="" poll_only="${1:-0}" n budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status
   local -a issue_ids=()
+  if ! script="$(zf_advisor_batch_runner)"; then
+    echo "issue-pipeline: advisor batch runner is invalid in advisor.json -- not dispatching" >&2
+    record_env_fault "env:invalid-advisor-batch-runner" advisor-batch batch "advisor.json batchRunner must name an executable repository-relative script"
+    return 0
+  fi
   if [ "$poll_only" != "1" ]; then
     for n in $NEEDS_ADVISOR_IDS; do
       if hand_agent_issue_is_live_owned "$n"; then
@@ -677,6 +683,7 @@ dispatch_advisor_batch() {
   fi
   if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE \
+    -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" \
     -p "RuntimeMaxSec=$ADVISOR_RUNTIME_MAX_SEC" \
     "$script" --scheduled "${issue_ids[@]}"; then
     if [ "${#issue_ids[@]}" -gt 0 ]; then
