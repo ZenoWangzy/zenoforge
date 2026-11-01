@@ -9,6 +9,7 @@
 #   ZF_PACK_DIR    the deployment's optional modules and data (lib-migration-gate.sh, supervise-browser-check.sh,
 #                     state/risk-paths.json, ...), looked up by relative path. Default = ZF_ENGINE_DIR, where the
 #                     the product pack lives today. Empty = no pack: every seam falls back to its generic default.
+#   ZF_HOST_OPS_DIR root of host-owned files. Default = $AGENT_HOME/host-ops; use zf_host_ops_file to resolve a file.
 #   ZF_PACK_REL    where the pack's files sit inside the target repository (git show / git diff / ls-tree pathspecs, repo-relative
 #                     reads such as state/incident-guards.json): default = engine. The export rewrites that default to the
 #                     public engine location; a deployment whose repo keeps the pack elsewhere sets it. Node and python readers
@@ -146,6 +147,12 @@ fi
 [[ -n "${ZF_SECRET_CONFIG_NAMES+x}" ]] || ZF_SECRET_CONFIG_NAMES=agent-runtime
 [[ -n "${ZF_REVIEW_SKILL+x}" ]] || ZF_REVIEW_SKILL=code-review
 
+# zf_host_ops_dir -- print the root of host-only files; ZF_HOST_OPS_DIR overrides AGENT_HOME/host-ops.
+zf_host_ops_dir() {
+  [[ $# -eq 0 ]] || return 2
+  printf '%s\n' "${ZF_HOST_OPS_DIR:-$AGENT_HOME/host-ops}"
+}
+
 # pack_file <relative path> -- print the pack's copy of that file and succeed, or fail when there is no pack or no such file.
 pack_file() {
   [[ -n "${ZF_PACK_DIR-}" && -f "$ZF_PACK_DIR/$1" ]] || return 1
@@ -261,7 +268,25 @@ zf_migration_gate_file() {
 
 # Resolve host-owned files, preserving the caller's existing fallback path.
 zf_host_ops_file() {
-  local relative_path="$1" fallback="${2:-$ZF_ENGINE_DIR/${1#scripts/agent/}}"
-  local candidate="${ZF_HOST_OPS_DIR:-$AGENT_HOME/host-ops}/$relative_path"
-  if [[ -f "$candidate" ]]; then printf '%s\n' "$candidate"; else printf '%s\n' "$fallback"; fi
+  local relative_path="$1" fallback="${2:-}" host_ops_dir host_ops_path="$1" built_alias=0
+  if [[ -z "$fallback" ]]; then
+    case "$relative_path" in
+      engine/*) fallback="$ZF_ENGINE_DIR/${relative_path#engine/}" ;;
+      scripts/agent/*) fallback="$ZF_ENGINE_DIR/${relative_path#scripts/agent/}" ;;
+      *) fallback="$ZF_ENGINE_DIR/$relative_path" ;;
+    esac
+  fi
+  if [[ "$relative_path" == engine/* ]]; then
+    host_ops_path="scripts/agent/${relative_path#engine/}"
+    built_alias=1
+  fi
+  host_ops_dir="$(zf_host_ops_dir)" || return
+  local candidate="$host_ops_dir/$host_ops_path"
+  if [[ -f "$candidate" ]]; then
+    if (( ! built_alias )) || [[ ! -f "$fallback" ]] || cmp -s -- "$candidate" "$fallback"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  fi
+  printf '%s\n' "$fallback"
 }

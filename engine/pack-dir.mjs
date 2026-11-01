@@ -82,9 +82,21 @@ export function zfConfigFile(relativePath, repoRoot = zfEnv('REPO_DIR') || dirna
   return resolveConfigFile(relativePath, repoRoot, process.env);
 }
 
-export function zfHostOpsFile(relativePath, fallback = join(ENGINE_DIR, relativePath.replace(/^scripts\/agent\//, ''))) {
+export function zfHostOpsFile(relativePath, fallback = join(
+  ENGINE_DIR,
+  relativePath.startsWith('engine/') ? relativePath.slice('engine/'.length) : relativePath.replace(/^scripts\/agent\//, ''),
+)) {
   const agentHome = process.env.AGENT_HOME || process.env.ZF_HOME || join(homedir(), '.zenoforge');
-  const candidate = join(process.env.ZF_HOST_OPS_DIR || join(agentHome, 'host-ops'), relativePath);
-  try { if (statSync(candidate).isFile()) return candidate; } catch { /* use the existing path */ }
+  const builtAlias = relativePath.startsWith('engine/');
+  const hostOpsPath = builtAlias ? join('scripts', 'agent', relativePath.slice('engine/'.length)) : relativePath;
+  const candidate = join(process.env.ZF_HOST_OPS_DIR || join(agentHome, 'host-ops'), hostOpsPath);
+  try {
+    if (statSync(candidate).isFile()) {
+      if (!builtAlias) return candidate;
+      let fallbackExists = false;
+      try { fallbackExists = statSync(fallback).isFile(); } catch { /* a missing fallback uses the host-ops copy */ }
+      if (!fallbackExists || readFileSync(candidate).equals(readFileSync(fallback))) return candidate;
+    }
+  } catch { /* use the existing fallback path */ }
   return fallback;
 }

@@ -10,6 +10,7 @@ extra_suite_roots=()
 if [[ -n "$ci_config" ]]; then
   mapfile -t extra_suite_roots < <(jq -r '.pipeline_suite_roots[]? | strings' "$ci_config")
 fi
+export ZF_ENGINE_DIR ZF_REPO_DIR
 suite_roots=(engine "${extra_suite_roots[@]}")
 
 shard_index=0
@@ -59,6 +60,14 @@ mapfile -t node_suites < <(
     find "$suite_root" -type f -name '*.test.mjs' -print
   done | LC_ALL=C sort -u
 )
+product_timers_policy="$(zf_config_file systemd/pipeline-timers.list || true)"
+if [[ -n "$product_timers_policy" ]]; then
+  product_systemd_dir="$(dirname -- "$product_timers_policy")"
+  mapfile -t product_systemd_shell_suites < <(find "$product_systemd_dir" -maxdepth 1 -type f -name '*.test.sh' -print | LC_ALL=C sort)
+  mapfile -t product_systemd_node_suites < <(find "$product_systemd_dir" -maxdepth 1 -type f -name '*.test.mjs' -print | LC_ALL=C sort)
+  if ((${#product_systemd_shell_suites[@]})); then shell_suites+=("${product_systemd_shell_suites[@]}"); fi
+  if ((${#product_systemd_node_suites[@]})); then node_suites+=("${product_systemd_node_suites[@]}"); fi
+fi
 suite_count=${#node_suites[@]}
 for suite in "${shell_suites[@]}"; do
   [[ "$suite" == engine/sweep-brief-banners.test.sh ]] || suite_count=$((suite_count + 1))

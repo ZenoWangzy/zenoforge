@@ -252,6 +252,13 @@ export const RELATED_TESTS = new Map([
     'engine/night/node-health-rules.test.sh',
     'engine/rescue-local-writes.test.sh',
   ]],
+  ['.zenoforge/systemd/pipeline-timers.list', [
+    'engine/run-tick.test.sh',
+    'engine/night/daily-perf-report.test.sh',
+    'engine/night/night.test.sh',
+    'engine/night/node-health-rules.test.sh',
+    'engine/rescue-local-writes.test.sh',
+  ]],
   ['engine/rescue-local-writes.sh', ['engine/rescue-local-writes.test.sh']],
   ['engine/night/node-health.sh', [
     'engine/night/node-health-rules.test.sh',

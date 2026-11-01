@@ -15,6 +15,8 @@ grep -qF 'find "$suite_root"' "$runner"
 grep -qF 'suite_jobs="${RUN_CI_SUITES_JOBS:-1}"' "$runner"
 grep -qF 'nightly_suite_paths=(' "$runner"
 grep -qF 'engine/land-direct-main.test.sh' "$runner"
+grep -qF 'product_timers_policy="$(zf_config_file systemd/pipeline-timers.list || true)"' "$runner"
+grep -qF 'find "$product_systemd_dir" -maxdepth 1 -type f' "$runner"
 grep -qF 'run-ci-suites.sh [--shard INDEX/COUNT | --nightly]' "$runner"
 grep -qF 'if [[ ! "$suite_jobs" =~ ^[1-4]$ ]]' "$runner"
 grep -qF 'if ((suite_count == 0)); then' "$runner"
@@ -54,7 +56,7 @@ const bash = ['/opt/homebrew/bin/bash', '/usr/local/bin/bash', 'bash'].find(comm
 });
 assert.ok(bash, 'Pipeline suite discovery requires Bash 4+');
 
-function runFixture({ runner = runnerSource, shellExit = 0, nodeExit = 0, emptySuites = false, shard, tier, includeNightlySuites = false, includeNightlyViaEnv = false, includeNightTest = false, includeLoadFixtures = false, includeConfiguredSuites = false, shellFailures = [], slowSuite, leakSuite = false } = {}) {
+function runFixture({ runner = runnerSource, shellExit = 0, nodeExit = 0, emptySuites = false, shard, tier, includeNightlySuites = false, includeNightlyViaEnv = false, includeNightTest = false, includeLoadFixtures = false, includeConfiguredSuites = false, includeProductSystemdSuite = false, emptyProductSystemd = false, shellFailures = [], slowSuite, leakSuite = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'pipeline-runner-fixture-'));
   const log = join(root, 'executed.log');
   const preflightLog = join(root, 'preflights.log');
@@ -73,6 +75,13 @@ function runFixture({ runner = runnerSource, shellExit = 0, nodeExit = 0, emptyS
     put('scripts/checks/check-only.test.mjs', 'import {appendFileSync} from "node:fs"; appendFileSync(process.env.PIPELINE_FIXTURE_LOG, "check-only\\n");\n');
     if (includeConfiguredSuites) {
       put('.zenoforge/ci.json', JSON.stringify({ pipeline_suite_roots: ['scripts/ops', 'scripts/checks'] }));
+    }
+    if (includeProductSystemdSuite || emptyProductSystemd) {
+      mkdirSync(join(root, '.zenoforge/systemd'), { recursive: true });
+      put('.zenoforge/systemd/pipeline-timers.list', '# product timer policy fixture\n');
+    }
+    if (includeProductSystemdSuite) {
+      put('.zenoforge/systemd/product-suite.test.sh', '#!/bin/sh\nprintf "product-systemd\\n" >> "$PIPELINE_FIXTURE_LOG"\n');
     }
     if (!emptySuites) {
       put('engine/run-release.test.sh', '#!/bin/sh\nprintf "release\\n" >> "$PIPELINE_FIXTURE_LOG"\nprintf "%s\\n" "$TMPDIR" >> "$PIPELINE_FIXTURE_TMP_LOG"\n');
@@ -173,6 +182,16 @@ test('configured repository suite roots join the pipeline lane', () => {
   assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual([...result.executed].sort(), [...expected, 'ops-only', 'reclaim-weight', 'check-only'].sort());
   assert.ok(result.stdout.includes('scripts/ops/reclaim-disk.test.sh timeout=435s'), result.stdout);
+});
+
+test('runner discovers systemd tests from config and tolerates an empty config directory', () => {
+  const included = runFixture({ includeProductSystemdSuite: true });
+  assert.equal(included.status, 0, `${included.stderr}\n${included.stdout}`);
+  assert.deepEqual([...included.executed].sort(), [...expected, 'product-systemd'].sort());
+
+  const empty = runFixture({ emptyProductSystemd: true });
+  assert.equal(empty.status, 0, `${empty.stderr}\n${empty.stdout}`);
+  assert.deepEqual([...empty.executed].sort(), expected);
 });
 
 test('night suite timeout matches the measured full-run weight', () => {

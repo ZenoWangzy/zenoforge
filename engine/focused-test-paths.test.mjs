@@ -535,6 +535,7 @@ test('maps release acceptance to both release regression and incident follow-up 
 test('maps daily performance timer files and timer registry to their checks', () => {
   assert.deepEqual(focusedTestPaths([
     'engine/systemd/pipeline-timers.list',
+    '.zenoforge/systemd/pipeline-timers.list',
     'engine/systemd/zenoforge-daily-perf-report.service',
     'engine/systemd/zenoforge-daily-perf-report.timer',
     'engine/systemd/zenoforge-health-maintenance.service',
