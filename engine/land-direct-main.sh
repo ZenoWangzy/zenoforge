@@ -1359,6 +1359,15 @@ install_landed_host_artifacts() {
   # the others or abort post-land steps; the supervisor hears which ones to rerun.
   if ((sync_cihost)); then
     local -a failed_syncs=()
+    local -a sync_script_dirs=()
+    local ci_config
+    ci_config="$(zf_config_file ci.json 2>/dev/null || true)"
+    if [[ -n "$ci_config" ]]; then
+      mapfile -t sync_script_dirs < <(jq -r '.post_land_sync_script_dirs[]? | strings' "$ci_config")
+    fi
+    if ((${#sync_script_dirs[@]} == 0)); then
+      sync_script_dirs=("$ZF_PACK_REL/systemd")
+    fi
     while IFS= read -r sync_path; do
       if ! cihost_sync_archive origin/main | ssh -o BatchMode=yes -o ConnectTimeout=15 "$ZF_CIHOST_HOST" \
         "t=\$(mktemp -d) && tar -x -C \"\$t\" && bash \"\$t/$sync_path\"; s=\$?; rm -rf -- \"\$t\"; exit \$s"; then
@@ -1367,7 +1376,7 @@ install_landed_host_artifacts() {
         continue
       fi
       echo "land-direct-main: ran origin/main $sync_path on cihost" >&2
-    done < <(git ls-tree -r --name-only origin/main -- "$ZF_PACK_REL/systemd" | grep "/sync-$ZF_CIHOST_FILE_STEM-[^/]*\.sh\$" | grep -v '\.test\.sh$')
+    done < <(git ls-tree -r --name-only origin/main -- "${sync_script_dirs[@]}" | LC_ALL=C sort -u | grep "/sync-$ZF_CIHOST_FILE_STEM-[^/]*\.sh\$" | grep -v '\.test\.sh$')
     if ((${#failed_syncs[@]})); then
       local sync_archive_cmd="git archive origin/main $ZF_CIHOST_SYNC_ROOTS"
       supervisor_inbox_append_once "cihost-sync-failed:$(git rev-parse --short origin/main)" \

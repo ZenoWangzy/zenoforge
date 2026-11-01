@@ -9,7 +9,9 @@ grep -qF -- "-name 'test-*.sh'" "$runner"
 grep -qF -- "! -name 'test-env.sh'" "$runner"
 grep -qF -- "-name '*.test.mjs'" "$runner"
 grep -qF 'node --test --test-concurrency=1 "$suite"' "$runner"
-grep -qF 'find engine -type f' "$runner"
+grep -qF 'source "$SCRIPT_DIR/config.sh"' "$runner"
+grep -qF 'zf_config_file ci.json' "$runner"
+grep -qF 'find "$suite_root"' "$runner"
 grep -qF 'suite_jobs="${RUN_CI_SUITES_JOBS:-1}"' "$runner"
 grep -qF 'nightly_suite_paths=(' "$runner"
 grep -qF 'engine/land-direct-main.test.sh' "$runner"
@@ -32,6 +34,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 const runnerSource = readFileSync(process.argv[2], 'utf8');
+const configSource = readFileSync(join(dirname(process.argv[2]), 'config.sh'), 'utf8');
 const releaseSuites = [
   ['engine/run-release-suite-postdeploy.test.sh', 'release-postdeploy'],
   ['engine/run-release-suite-reconcile.test.sh', 'release-reconcile'],
@@ -51,7 +54,7 @@ const bash = ['/opt/homebrew/bin/bash', '/usr/local/bin/bash', 'bash'].find(comm
 });
 assert.ok(bash, 'Pipeline suite discovery requires Bash 4+');
 
-function runFixture({ runner = runnerSource, shellExit = 0, nodeExit = 0, emptySuites = false, shard, tier, includeNightlySuites = false, includeNightlyViaEnv = false, includeNightTest = false, includeLoadFixtures = false, shellFailures = [], slowSuite, leakSuite = false } = {}) {
+function runFixture({ runner = runnerSource, shellExit = 0, nodeExit = 0, emptySuites = false, shard, tier, includeNightlySuites = false, includeNightlyViaEnv = false, includeNightTest = false, includeLoadFixtures = false, includeConfiguredSuites = false, shellFailures = [], slowSuite, leakSuite = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'pipeline-runner-fixture-'));
   const log = join(root, 'executed.log');
   const preflightLog = join(root, 'preflights.log');
@@ -62,8 +65,15 @@ function runFixture({ runner = runnerSource, shellExit = 0, nodeExit = 0, emptyS
   };
   try {
     put('engine/run-ci-suites.sh', runner);
+    put('engine/config.sh', configSource);
     put('engine/check-rulings.sh', `#!/bin/sh\nprintf 'rulings\n' >> '${preflightLog}'\n`);
     put('engine/test-env.sh', '#!/bin/sh\nexit 91\n');
+    put('scripts/ops/ops-only.test.sh', '#!/bin/sh\nprintf "ops-only\\n" >> "$PIPELINE_FIXTURE_LOG"\n');
+    put('scripts/ops/reclaim-disk.test.sh', '#!/bin/sh\nprintf "reclaim-weight\\n" >> "$PIPELINE_FIXTURE_LOG"\n');
+    put('scripts/checks/check-only.test.mjs', 'import {appendFileSync} from "node:fs"; appendFileSync(process.env.PIPELINE_FIXTURE_LOG, "check-only\\n");\n');
+    if (includeConfiguredSuites) {
+      put('.zenoforge/ci.json', JSON.stringify({ pipeline_suite_roots: ['scripts/ops', 'scripts/checks'] }));
+    }
     if (!emptySuites) {
       put('engine/run-release.test.sh', '#!/bin/sh\nprintf "release\\n" >> "$PIPELINE_FIXTURE_LOG"\nprintf "%s\\n" "$TMPDIR" >> "$PIPELINE_FIXTURE_TMP_LOG"\n');
       for (const [path, name] of releaseSuites) {
@@ -156,6 +166,13 @@ test('runner executes split release suites and omits the unsplit runner, not tes
   assert.ok(result.stdout.includes('engine/run-release-suite-reconcile.test.sh timeout=1200s'), result.stdout);
   assert.doesNotMatch(result.stdout, /done suite=engine\/run-release\.test\.sh/);
   assert.ok(result.stdout.includes('engine/nested/test-child.sh timeout=300s'), result.stdout);
+});
+
+test('configured repository suite roots join the pipeline lane', () => {
+  const result = runFixture({ includeConfiguredSuites: true });
+  assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+  assert.deepEqual([...result.executed].sort(), [...expected, 'ops-only', 'reclaim-weight', 'check-only'].sort());
+  assert.ok(result.stdout.includes('scripts/ops/reclaim-disk.test.sh timeout=435s'), result.stdout);
 });
 
 test('night suite timeout matches the measured full-run weight', () => {

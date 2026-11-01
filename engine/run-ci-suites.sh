@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$SCRIPT_DIR/config.sh"
+cd "$ZF_REPO_DIR"
+
+ci_config="$(zf_config_file ci.json 2>/dev/null || true)"
+extra_suite_roots=()
+if [[ -n "$ci_config" ]]; then
+  mapfile -t extra_suite_roots < <(jq -r '.pipeline_suite_roots[]? | strings' "$ci_config")
+fi
+suite_roots=(engine "${extra_suite_roots[@]}")
 
 shard_index=0
 shard_count=1
@@ -38,8 +47,18 @@ if ((shard_index == 0)); then
   AGENT_RULINGS_MODE=static bash engine/check-rulings.sh
 fi
 
-mapfile -t shell_suites < <(find engine -type f \( -name '*.test.sh' -o \( -name 'test-*.sh' ! -name 'test-env.sh' \) \) ! -path 'engine/run-release.test.sh' -print | LC_ALL=C sort)
-mapfile -t node_suites < <(find engine -type f -name '*.test.mjs' -print | LC_ALL=C sort)
+mapfile -t shell_suites < <(
+  for suite_root in "${suite_roots[@]}"; do
+    [[ -d "$suite_root" ]] || continue
+    find "$suite_root" -type f \( -name '*.test.sh' -o \( -name 'test-*.sh' ! -name 'test-env.sh' \) \) ! -path 'engine/run-release.test.sh' -print
+  done | LC_ALL=C sort -u
+)
+mapfile -t node_suites < <(
+  for suite_root in "${suite_roots[@]}"; do
+    [[ -d "$suite_root" ]] || continue
+    find "$suite_root" -type f -name '*.test.mjs' -print
+  done | LC_ALL=C sort -u
+)
 suite_count=${#node_suites[@]}
 for suite in "${shell_suites[@]}"; do
   [[ "$suite" == engine/sweep-brief-banners.test.sh ]] || suite_count=$((suite_count + 1))
@@ -119,7 +138,7 @@ suite_weight_seconds() {
     engine/lib.test.sh) echo 399 ;;
     engine/night/night.test.sh) echo 1092 ;;
     engine/night/outcomes-audit.test.sh) echo 68 ;;
-    engine/reclaim-disk.test.sh) echo 145 ;;
+    */reclaim-disk.test.sh) echo 145 ;;
     engine/run-advisor.test.sh) echo 533 ;;
     engine/run-recut.test.sh) echo 94 ;;
     engine/run-release-suite-release-entry.test.sh) echo 420 ;;

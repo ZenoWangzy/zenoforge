@@ -11,6 +11,7 @@ import {
   orderFocusedTestPaths,
   RELATED_TESTS,
 } from './focused-test-paths.mjs';
+import { readPackJson } from './pack-dir.mjs';
 
 test('maps the traffic installer to its executable owner contract', () => {
   const suites = ['engine/network-traffic.test.sh'];
@@ -177,6 +178,12 @@ test('maps shared test write guard to its refusal regression', () => {
 });
 
 test('maps direct-main files to tracked local tests', () => {
+  const productTests = Object.values(readPackJson('state/focused-test-map.json')?.related_tests ?? {}).flat();
+  const capacityTest = productTests.find((path) => (
+    path.startsWith('scripts/ops/') && path.endsWith('build-capacity-reclaim.test.sh')
+  )) ?? 'engine/systemd/cihost-build-capacity-reclaim.test.sh';
+  const capacitySource = [...RELATED_TESTS.entries()].find(([, tests]) => tests.includes(capacityTest))?.[0]
+    ?? 'engine/systemd/cihost-build-capacity-reclaim.sh';
   assert.deepEqual(new Set(focusedTestPaths([
     'engine/land-direct-main.sh',
     'engine/night/health-maintenance.sh',
@@ -187,7 +194,7 @@ test('maps direct-main files to tracked local tests', () => {
     'engine/record-unit-result.sh',
     'engine/hotfix-loss-probe.sh',
     'engine/run-release.sh',
-    'engine/systemd/cihost-build-capacity-reclaim.sh',
+    capacitySource,
     'engine/state/rulings.json',
     'engine/systemd/zenoforge-health-maintenance.service',
     'engine/systemd/zenoforge-health-maintenance.timer',
@@ -206,7 +213,7 @@ test('maps direct-main files to tracked local tests', () => {
     'engine/check-rulings.test.sh',
     'engine/release-hotfix-snapshot.test.sh',
     'engine/run-release.test.sh',
-    'engine/systemd/cihost-build-capacity-reclaim.test.sh',
+    capacityTest,
   ]))), new Set([
     'engine/check-rulings.test.sh',
     'engine/issue-pipeline.test.sh',
@@ -218,7 +225,7 @@ test('maps direct-main files to tracked local tests', () => {
     'engine/pipeline-system-deliver.test.mjs',
     'engine/release-hotfix-snapshot.test.sh',
     'engine/run-release.test.sh',
-    'engine/systemd/cihost-build-capacity-reclaim.test.sh',
+    capacityTest,
   ]));
 });
 
@@ -231,12 +238,18 @@ test('maps the maintainer rulings registry to its metadata contract test', () =>
 });
 
 test('routes the remote GitNexus index publisher to its fake-host test', () => {
+  const productTests = Object.values(readPackJson('state/focused-test-map.json')?.related_tests ?? {}).flat();
+  const indexTest = productTests.find((path) => (
+    path.startsWith('scripts/ops/') && path.includes('gitnexus') && path.endsWith('index.test.sh')
+  )) ?? 'engine/gitnexus-cihost-index.test.sh';
+  const indexSource = [...RELATED_TESTS.entries()].find(([, tests]) => tests.includes(indexTest))?.[0]
+    ?? 'engine/gitnexus-cihost-index.sh';
   assert.deepEqual(
     focusedTestPaths(
-      ['engine/gitnexus-cihost-index.sh'],
-      new Set(['engine/gitnexus-cihost-index.test.sh']),
+      [indexSource],
+      new Set([indexTest]),
     ),
-    ['engine/gitnexus-cihost-index.test.sh'],
+    [indexTest],
   );
 });
 
