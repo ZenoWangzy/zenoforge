@@ -134,6 +134,15 @@ if metric_error="$(maintainer_health_mail_output_contract "$bad_metric" "$now")"
 fi
 assert_contains 'contract still rejects unavailable metric cells' "$metric_error" 'metric-cell-empty'
 
+maintainer_health_mail_output_contract "${body/变更合入暂停/11月1日变更合入暂停}" "$now" \
+  || { echo 'not ok - 11月1日 tripped the epoch-date check' >&2; exit 1; }
+echo 'ok - 11月1日 is not an epoch date'
+if epoch_error="$(maintainer_health_mail_output_contract "${body/变更合入暂停/1月1日变更合入暂停}" "$now")"; then
+  echo 'not ok - 1月1日 passed contract' >&2
+  exit 1
+fi
+assert_contains 'contract still rejects 1月1日' "$epoch_error" 'epoch-date'
+
 sent=0
 export DRY_RUN=0
 notify_maintainer_health() {
