@@ -1696,7 +1696,7 @@ except (IndexError, ValueError):
     raise SystemExit(1)
 def validate(text):
     errors = set()
-    if "1月1日" in text or "1970" in text:
+    if re.search(r"(?<![0-9])1月1日", text) or "1970" in text:
         errors.add("epoch-date")
     if re.search(r"#[0-9]+", text):
         errors.add("issue-id")
