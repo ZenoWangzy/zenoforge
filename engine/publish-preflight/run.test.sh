@@ -16,7 +16,7 @@ git -C "$t/repo" add -A && git -C "$t/repo" commit -qm initial
 base_ref=$(git -C "$t/repo" rev-parse HEAD)
 out=$(bash "$here/run.sh" "$t/live" "$t/new" "$t/repo" "$base_ref" "$base_ref" 2>&1) || { echo "FAIL: clean preflight: $out"; exit 1; }
 grep -q 'unit-paths-check: OK' <<<"$out" && grep -q 'resolved-config-check: OK' <<<"$out" \
-  && grep -q 'suite-set-check: OK' <<<"$out" || { echo "FAIL: missing successful check: $out"; exit 1; }
+  && grep -q 'suite-set-check: OK' <<<"$out" && grep -q 'dropped-file-refs-check: OK' <<<"$out" || { echo "FAIL: missing successful check: $out"; exit 1; }
 
 # A live unit path failure stops the runner before resolved-config or suite checks.
 mkdir -p "$t/live/engine" "$HOME/.config/systemd/user"

@@ -32,4 +32,10 @@ if ! python3 -I "$here/suite-set-check.py" "$live_version" "$new_version" "$targ
   exit 1
 fi
 
+echo "publish-preflight: checking dropped file references"
+if ! python3 -I "$here/dropped-file-refs-check.py" "$live_version" "$new_version" "${intended[@]}"; then
+  echo "publish-preflight: dropped-file-refs check failed" >&2
+  exit 1
+fi
+
 echo "publish-preflight: OK"
