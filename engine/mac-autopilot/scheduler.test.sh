@@ -1084,6 +1084,104 @@ grep -Fq 'ci wip: 1 free PR runner slot(s)' "$TF/supervisor/autopi/scheduler.log
 }
 sched_run_case ci_admission_priority
 
+sched_ci_slot_sync_case() (
+  local carry_valid="$1" test_name="$2" test_dir old_head new_head branch
+  local update_calls=0 carry_calls=0 ready_calls=0
+  test_dir="$test_env_root/$test_name"
+  mkdir -p "$test_dir"
+  old_head="$(printf '%040x' 880)"; new_head="$(printf '%040x' 881)"
+  branch=agent/issue-880
+  UNITS="$test_dir/units.json"; WORKERS="$test_dir/workers.json"
+  A="$test_dir"; LOG="$test_dir/scheduler.log"; : > "$LOG"
+  CFG='{"precheck":false}'; STAMP=ci-admission-test; SCHED_LOCK_HELD=true
+  GATED_LABEL=agent/ci-gated; CI_HOTFIX_BRANCHES='[]'; GATED_CENSUS_LOADED=true
+  TICK_PRS=''; TICK_PR_CHECK_CENSUS=''
+  GATED_OF=(); GATED_OF["$branch"]="80 true $old_head"; GATED_SLOT=(); READIED_PRS=()
+  SLOT_SYNC_CARRIED_HEAD=""
+  command jq -cn --arg old "$old_head" --arg branch "$branch" '{units:[{
+    id:"slot-gated",pr:80,branch:$branch,lane:"pr",stage:"ready-to-merge",
+    approved_sha:$old,product_paths:true,ready_since:1,history:[]} ]}' > "$UNITS"
+  echo '{"workers":[]}' > "$WORKERS"
+  pr_behind_main() { [[ "$1" == 80 && "$2" == "$old_head" ]]; }
+  tick_pr_mergeable() { echo MERGEABLE; }
+  ci_update_branch() {
+    [[ "$1" == 80 && "$2" == "$old_head" ]] || return 1
+    update_calls=$((update_calls + 1))
+  }
+  pr_view() { [[ "$1" == 80 && "$2" == headRefOid ]] && echo "$new_head"; }
+  approval_carries() {
+    carry_calls=$((carry_calls + 1))
+    [[ "$update_calls" == 1 && "$1" == 80 && "$2" == "$old_head" && "$3" == "$new_head" && "$carry_valid" == true ]]
+  }
+  post_approved_status() { :; }
+  ci_pr_free_slots() { echo 1; }
+  tick_prs_prime() { :; }
+  approved_status_on() { return 0; }
+  gated_status() { :; }
+  unfinished_runs() { echo '[]'; }
+  ci_jobs_prefetch() { :; }
+  gh() {
+    [[ "$*" == 'pr ready 80' ]] || { echo "unexpected slot-sync gh call: $*" >&2; return 97; }
+    ready_calls=$((ready_calls + 1))
+  }
+  ci_assign_wip
+  if [[ "$carry_valid" == true ]]; then
+    command jq -e --arg new "$new_head" '
+      .units[0].approved_sha == $new
+      and .units[0].ci_ready_sha == $new
+      and .units[0].ci_wip_wait == null
+      and any(.units[0].history[]; .stage == "approval-carried")
+    ' "$UNITS" >/dev/null && [[ "$ready_calls" == 1 && "$carry_calls" == 1 ]]
+  else
+    command jq -e --arg old "$old_head" '
+      .units[0].approved_sha == $old
+      and .units[0].ci_ready_sha == null
+      and .units[0].ci_wip_wait == null
+    ' "$UNITS" >/dev/null && [[ "$ready_calls" == 0 && "$carry_calls" == 1 ]]
+  fi
+)
+
+sched_case_ci_slot_sync_clean_carry() {
+  sched_ci_slot_sync_case true ci-slot-sync-clean-carry || {
+    echo 'scheduler.test.sh: a gated draft with a clean update-branch carry was not readied in the same pass' >&2; exit 1;
+  }
+}
+sched_run_case ci_slot_sync_clean_carry
+
+sched_case_ci_slot_sync_unclean_carry() {
+  sched_ci_slot_sync_case false ci-slot-sync-unclean-carry || {
+    echo 'scheduler.test.sh: an unclean carry did not run the carry check and defer the gated draft' >&2; exit 1;
+  }
+}
+sched_run_case ci_slot_sync_unclean_carry
+
+sched_case_ci_admission_census_retry() (
+  local test_dir calls_file sleeps_file n
+  test_dir="$test_env_root/ci-admission-census-retry"
+  mkdir -p "$test_dir"
+  calls_file="$test_dir/census-calls"; sleeps_file="$test_dir/sleeps"
+  echo 0 > "$calls_file"; : > "$sleeps_file"
+  CFG='{"hotfix_lane":{"label":"hotfix","branch_prefixes":[]}}'
+  LOG="$test_dir/scheduler.log"; : > "$LOG"; STAMP=ci-census-test
+  TICK_PRS=''; TICK_PR_CHECK_CENSUS=''; TICK_HOTFIX_ISSUES_LOADED=true; TICK_HOTFIX_ISSUES='[]'
+  tick_prs_prime() { :; }
+  sleep() { printf '%s\n' "$*" >> "$sleeps_file"; }
+  gh() {
+    [[ "$1" == pr && "$2" == list ]] || { echo "unexpected census gh call: $*" >&2; return 97; }
+    n="$(cat "$calls_file")"; n=$((n + 1)); echo "$n" > "$calls_file"
+    if (( n == 1 )); then return 1; fi
+    echo '[{"number":99,"headRefName":"agent/issue-99","headRefOid":"9999999999999999999999999999999999999999","isDraft":true,"body":"","labels":[]}]'
+  }
+  hotfix_issue_numbers() { TICK_HOTFIX_ISSUES='[]'; return 0; }
+  ci_ready_hotfix_gated() { [[ "$CI_HOTFIX_BRANCHES" == '[]' ]]; }
+  ci_defer_unapproved() { :; }
+  admission_runs=0
+  ci_assign_wip() { admission_runs=$((admission_runs + 1)); }
+  ci_admission
+  [[ "$(cat "$calls_file")" == 2 && "$(cat "$sleeps_file")" == 1 && "$admission_runs" == 1 ]]
+)
+sched_run_case ci_admission_census_retry
+
 sched_case_pipeline_ci_adoption() {
 # A full scheduler tick adopts a ready-to-merge non-agent branch, rejects checks
 # older than the label event, then merges only after fresh aggregate passes.

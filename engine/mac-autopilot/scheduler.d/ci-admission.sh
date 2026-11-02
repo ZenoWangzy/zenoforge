@@ -47,11 +47,13 @@ precheck_launch() { # id pr head
   set_unit "$1" ".precheck_pid=$pid | .precheck_head=$(js "$3")"
   say "precheck pid=$pid unit=$1 PR#$2 head=${3:0:9}"
 }
-# 占到名额之前先同步：落后 main 且 mergeable 干净的 head 走已有的 update-branch（批准随后由 approval_carries 沿用），
+# 占到名额之前先同步落后 main 的 head；门控草稿的 update-branch 若干净沿用批准，可在本拍继续领取名额。
 # 每个 head 只试一次；真冲突转 repair，不消耗 CI 运行，名额让给下一个就绪单元。mergeability 或 head 数据未知不做任何转移。
-# 返回 0 = 单元已转移（调用方不占名额），1 = 照常占名额。
-slot_sync() { # id head
-  local pr state
+# 返回 0 = 已请求 update-branch 或处理冲突（除携带批准的门控草稿外调用方延后），1 = 照常占名额。
+SLOT_SYNC_CARRIED_HEAD=""
+slot_sync() { # id head gated
+  local pr state updated_head
+  SLOT_SYNC_CARRIED_HEAD=""
   pr="$(unit_field "$1" .pr)"; [[ "$pr" =~ ^[0-9]+$ && "$2" =~ $SHA_RE ]] || return 1
   [[ "$(unit_field "$1" '.slot_sync_sha // empty')" != "$2" ]] || return 1
   pr_behind_main "$pr" "$2" || return 1
@@ -62,6 +64,15 @@ slot_sync() { # id head
       ci_update_branch "$pr" "$2" || return 1
       set_unit "$1" "$(hist slot-sync "PR#$pr behind main; update-branch at $2 before the CI slot")"
       say "slot sync PR#$pr: behind main, update-branch requested before CI starts"
+      if [[ "${3:-0}" == 1 ]]; then
+        updated_head="$(pr_view "$pr" headRefOid)"
+        if [[ "$updated_head" =~ $SHA_RE && "$updated_head" != "$2" ]] && approval_carries "$pr" "$2" "$updated_head"; then
+          set_unit "$1" "$(hist approval-carried "clean main merge $updated_head on approved $2") | .approved_sha=$(js "$updated_head")" || return 0
+          say "approval carried PR#$pr $2 -> $updated_head (clean update-branch merge)"
+          post_approved_status "$1" "$updated_head"
+          SLOT_SYNC_CARRIED_HEAD="$updated_head"
+        fi
+      fi
       return 0 ;;
     CONFLICTING)
       set_unit "$1" ".slot_sync_sha=$(js "$2")" || :
@@ -72,7 +83,7 @@ slot_sync() { # id head
 }
 
 ci_assign_wip() {
-  local wip k=0 id br head r st jobs n=0 started=0 pre_id="" precheck_on gated gdraft ghead
+  local wip k=0 id br head r st jobs n=0 started=0 pre_id="" precheck_on gated gdraft ghead synced_pr
   local detail_started detail_elapsed
   local -a jobs_to_load=()
   precheck_on="$(jqf -r 'if .precheck == false then 0 else 1 end' <<<"$CFG")"
@@ -109,7 +120,15 @@ ci_assign_wip() {
     fi
     k=$((k + 1))
     if (( k <= wip )); then
-      if [[ "$gated:$gdraft" != "1:false" ]] && slot_sync "$id" "$head"; then k=$((k - 1)); continue; fi
+      if [[ "$gated:$gdraft" != "1:false" ]] && slot_sync "$id" "$head" "$gated"; then
+        if (( gated )) && [[ -n "$SLOT_SYNC_CARRIED_HEAD" ]]; then
+          head="$SLOT_SYNC_CARRIED_HEAD"
+          read -r synced_pr _ <<<"${GATED_OF[$br]}"
+          GATED_OF["$br"]="$synced_pr true $head"
+        else
+          k=$((k - 1)); continue
+        fi
+      fi
       if (( precheck_on )) && [[ "$gated:$gdraft" != "1:false" ]] && [[ "$(unit_field "$id" '.precheck_sha // empty')" != "$head" ]]; then
         # 没有本机预检结论的不占名额：排给预检，名额留给下一个已预检的单元（已 ready 在跑的门控 PR 不再预检）
         [[ -n "$pre_id" || -n "$(unit_field "$id" '.precheck_pid // empty')" ]] || pre_id="$id"

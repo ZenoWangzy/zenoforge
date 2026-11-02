@@ -387,7 +387,7 @@ tick_prs_add_label() { # mirror a successful label write in the current tick's P
 }
 ci_hotfix_branches() { # → 当前 open PR 中由 #4615 分类器识别的热修分支
   local prs label prefixes hot
-  prs="$(tick_prs)" || return 1
+  prs="$(tick_prs)" || { sleep 1; prs="$(tick_prs)" || return 1; }
   label="$(hotfix_lane_label)"
   prefixes="$(hotfix_lane_branch_prefixes | jqf -Rsc 'split("\n") | map(select(length > 0))')"
   hot='[]'
