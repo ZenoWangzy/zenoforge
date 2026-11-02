@@ -1207,6 +1207,83 @@ fi
 }
 sched_run_case supervisor_owned_dispatch
 
+sched_case_supervisor_owned_deferred() {
+# ci_hotfix_branches fails (open-PR census unavailable): the deferred branch still marks
+# .hotpatch units (they need no classification), the branch-classified hotfix-lane unit
+# stays unmarked, and the tick holds every acting phase — no worker is dispatched on a
+# unit it could not classify. The next tick, census back, marks the remaining unit.
+# Without the fail-closed hold this exact fixture dispatches (the high-cache case proves
+# the dispatch path through these mocks).
+new_tick_fixture supervisor-owned-deferred
+command jq '.max_workers=1 | .hotfix_lane.supervisor_owned=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+write_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf 'VERDICT: REQUEST-CHANGES\nF1 fixture repair\n' > "$TF/supervisor/prior.md"
+hot_sha="$(printf '%040x' 4894)"
+command jq -cn --arg at "$write_started" '{units:[
+  {id:"pr-4894",pr:4894,lane:"pr",title:"carried hot patch",branch:"hotfix/4894",
+   stage:"repair-pending",review_report:"prior.md",hotpatch:true,history:[{stage:"write-start",at:$at}]},
+  {id:"pr-4895",pr:4895,lane:"pr",title:"branch hotfix",branch:"agent/issue-hf-4900",
+   stage:"review-pending",history:[]}]} ' > "$TF/supervisor/autopi/units.json"
+touch "$TF/allow-dispatch" "$TF/worker-alive" "$TF/handoff-lookup-fail"
+tick
+command jq -e '
+  ([.units[] | select(.id=="pr-4894")][0].supervisor_owned == true)
+  and ([.units[] | select(.id=="pr-4895")][0].supervisor_owned == null)
+  and ([.units[] | select(.id=="pr-4894")][0].stage == "repair-pending")
+  and ([.units[] | select(.id=="pr-4895")][0].stage == "review-pending")
+' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo "scheduler.test.sh: deferred marking marked the wrong units ($(command jq -c '.units[] | {id,supervisor_owned,stage}' "$TF/supervisor/autopi/units.json"))" >&2; exit 1; }
+grep -Fq 'supervisor-owned marking deferred: hotfix classification unavailable' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: deferred marking was not announced in the log' >&2; exit 1; }
+grep -Fq 'unit=pr-4894 supervisor-owned: counted for census only' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: the hotpatch unit was not marked in the deferred branch' >&2; exit 1; }
+command jq -e '(.workers | length) == 0' "$TF/supervisor/autopi/workers.json" >/dev/null \
+  || { echo 'scheduler.test.sh: a worker was dispatched on a tick that deferred supervisor-owned marking' >&2; exit 1; }
+if grep -q 'dispatch mode=' "$TF/supervisor/autopi/scheduler.log"; then
+  echo 'scheduler.test.sh: an acting phase dispatched while marking was deferred' >&2; exit 1
+fi
+# 分类恢复的下一拍：branch 分类的热修车道单元补上标记；两个单元都 supervisor-owned，仍不派发。
+rm "$TF/handoff-lookup-fail"
+command jq -n --arg sha "$hot_sha" '[
+  {number:4894,headRefName:"hotfix/4894",headRefOid:$sha,isDraft:false,title:"carried hot patch",labels:[],statusCheckRollup:[]},
+  {number:4895,headRefName:"agent/issue-hf-4900",headRefOid:$sha,isDraft:false,title:"branch hotfix",labels:[],statusCheckRollup:[]}]' > "$TF/pr-census.json"
+tick
+command jq -e '
+  ([.units[] | select(.id=="pr-4895")][0].supervisor_owned == true)
+  and ([.units[] | select(.id=="pr-4894")][0].stage == "repair-pending")
+  and ([.units[] | select(.id=="pr-4895")][0].stage == "review-pending")
+' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo "scheduler.test.sh: recovered census did not complete marking ($(command jq -c '.units[] | {id,supervisor_owned}' "$TF/supervisor/autopi/units.json"))" >&2; exit 1; }
+command jq -e '(.workers | length) == 0' "$TF/supervisor/autopi/workers.json" >/dev/null \
+  || { echo 'scheduler.test.sh: a worker was dispatched for a supervisor-owned unit after recovery' >&2; exit 1; }
+}
+sched_run_case supervisor_owned_deferred
+
+sched_case_supervisor_owned_deferred_refill() {
+# The refill controller cannot see the slow tick's marking result: it runs the marking
+# phase itself before dispatch, and when classification fails it dispatches nothing —
+# an unmarked hotfix-lane implement unit must not be taken by a refill worker. Without
+# the refill hold this exact fixture dispatches the unit (refill-entry proves the path).
+new_tick_fixture supervisor-owned-refill
+command jq '.max_workers=1 | .implement_cap=1 | .hotfix_lane.supervisor_owned=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+command jq -n '{units:[
+  {id:"issue-hf-8901",lane:"direct-main",branch:"agent/issue-hf-8901",task:"deferred refill fixture task",footprint:[],stage:"implement-pending",history:[]}]}' \
+  > "$TF/supervisor/autopi/units.json"
+touch "$TF/allow-dispatch" "$TF/handoff-lookup-fail"
+TF_REAL_PS=1 tick --refill
+command jq -e '.units[0].stage=="implement-pending" and .units[0].supervisor_owned==null' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo "scheduler.test.sh: deferred refill moved or marked the unit ($(command jq -c '.units[0] | {stage,supervisor_owned}' "$TF/supervisor/autopi/units.json"))" >&2; exit 1; }
+command jq -e '(.workers | length) == 0' "$TF/supervisor/autopi/workers.json" >/dev/null \
+  || { echo 'scheduler.test.sh: refill dispatched a hotfix-lane unit it could not classify' >&2; exit 1; }
+grep -Fq 'supervisor-owned marking deferred: hotfix classification unavailable' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: refill did not run the supervisor-owned marking phase' >&2; exit 1; }
+grep -Fq 'refill dispatch held: supervisor-owned marking deferred' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: refill did not announce holding dispatch' >&2; exit 1; }
+}
+sched_run_case supervisor_owned_deferred_refill
+
 sched_case_supervisor_owned_update_branch() {
 # ci_update_branch is the single choke point every server-side update-branch goes
 # through (merge-lane conflict clear and workflow refresh, CI-red stale base,
@@ -2357,10 +2434,11 @@ sched_run_case dispatch_mode
 
 sched_case_refill_entry() {
 # #4628：worker 退出后 --refill 本地收割 direct-main 实现结果并派发等待中的实现；其他报告 harvest 留给慢 tick。
-# 补派不跑登记/门禁/合并车道、不查询 GitHub 或远端。
+# 补派不跑登记/门禁/合并车道、不查询 GitHub 或远端（hotfix_lane.supervisor_owned 关时成立；开着时补派
+# 先跑 supervisor-owned 标记，见 supervisor_owned_deferred 的补派用例）。
 # 共享台账锁被慢 tick 占住时返回 75、状态不动；PAUSE 下不派发。
 new_tick_fixture refill-entry
-command jq '.max_workers=1 | .implement_cap=1' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+command jq '.max_workers=1 | .implement_cap=1 | .hotfix_lane.supervisor_owned=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
 mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
 true & refill_dead_pid=$!; wait "$refill_dead_pid"
 command jq -n '{units:[

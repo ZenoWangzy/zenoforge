@@ -412,21 +412,34 @@ hotfix_lane_supervisor_owned() { [[ "$(jqf -r '.hotfix_lane.supervisor_owned // 
 # 单元 .hotpatch（孤儿登记的「携带生产热修」路径）或分支命中 ci_hotfix_branches（#4615：标签/前缀/关联 issue）。
 # 每拍为本拍尚未标记的命中单元补标，已登记的单元（如停在 ready-to-merge 的热修回迁）无需手改 units.json；
 # 标记只增不减——开关关掉后已标记单元仍按 supervisor-owned 跳过，避免与热修会话抢同一个 PR。
+# 分类（ci_hotfix_branches）读不到时不得放行（fail-closed，2026-11-02：标记推迟的那拍照样派了 4 个评审 worker）：
+# .hotpatch 不依赖分类，照常补标；其余可能的热修车道单元本拍无法排除，置 TICK_SUPERVISOR_MARKING_DEFERRED，
+# 慢拍与补派据此整拍跳过动手阶段，分类恢复的下一拍补标记后恢复。
 mark_supervisor_owned_units() {
+  TICK_SUPERVISOR_MARKING_DEFERRED=false
   hotfix_lane_supervisor_owned || return 0
-  local branches ids id
+  local branches ids
   if ! branches="$(ci_hotfix_branches)"; then
     say "supervisor-owned marking deferred: hotfix classification unavailable"
+    ids="$(jqf -r '[.units[] | select((.supervisor_owned // false) != true and (.hotpatch // false) == true) | .id] | join(" ")' "$UNITS")"
+    mark_supervisor_owned_ids $ids || :
+    TICK_SUPERVISOR_MARKING_DEFERRED=true
     return 0
   fi
   ids="$(jqf -r --argjson hot "$branches" '[.units[] | select((.supervisor_owned // false) != true
       and ((.hotpatch // false) == true or ((.branch // "") as $br | $hot | index($br) != null))) | .id] | join(" ")' "$UNITS")"
-  [[ -n "$ids" ]] || return 0
-  units_update --argjson ids "$(jqf -Rsc 'gsub("\\s+";" ") | split(" ") | map(select(length > 0))' <<<"$ids")" \
-    '.units |= map(if (.id as $id | $ids | index($id)) != null then .supervisor_owned = true else . end)' \
-    || { say "supervisor-owned marking: ledger write failed; retried next tick"; return 0; }
-  for id in $ids; do say "unit=$id supervisor-owned: counted for census only; review and merge stay with the hotfix supervisor"; done
+  mark_supervisor_owned_ids $ids || :
 }
+mark_supervisor_owned_ids() { # id…：补标 supervisor_owned（只增不减）；台账写失败下一拍重试
+  (( $# > 0 )) || return 0
+  local id
+  units_update --argjson ids "$(jqf -Rsc 'gsub("\\s+";" ") | split(" ") | map(select(length > 0))' <<<"$*")" \
+    '.units |= map(if (.id as $id | $ids | index($id)) != null then .supervisor_owned = true else . end)' \
+    || { say "supervisor-owned marking: ledger write failed; retried next tick"; return 1; }
+  for id in "$@"; do say "unit=$id supervisor-owned: counted for census only; review and merge stay with the hotfix supervisor"; done
+  return 0
+}
+supervisor_marking_deferred() { [[ "${TICK_SUPERVISOR_MARKING_DEFERRED:-false}" == true ]]; }
 hotfix_issue_numbers() {
   local label rows
   if [[ "$TICK_HOTFIX_ISSUES_LOADED" != true ]]; then

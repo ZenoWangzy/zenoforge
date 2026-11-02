@@ -295,6 +295,10 @@ declare -gA TICK_PR_STATE=()
 TICK_HOTFIX_ISSUES='[]'
 TICK_HOTFIX_ISSUES_LOADED=false
 
+# supervisor-owned 标记本拍是否被推迟（ci_hotfix_branches 读不到）：可能有热修车道单元无法标记，
+# 一切会动手的阶段（派发、快车道、CI 准入、合并车道、supervisor 裁决）整拍跳过（fail-closed）。
+TICK_SUPERVISOR_MARKING_DEFERRED=false
+
 # 未完成的 run 要按状态取：gh run list 只回最近创建的 300 个，而重跑保留原创建时间——10:43 创建、第 3 次重跑
 # 排队的 run 不在窗口里，准入看不见它，它照样排在热修前面（L71）。
 # 优先挡板（热修排队时取消普通 PR run）已退役（#4625）：它取消的只是排队 job，换不来 runner；
@@ -373,7 +377,8 @@ VIEWS_LOCK="$A/.views.lock"
 
 # 补派循环入口（#4628）：loop.sh 与慢 tick 并行检查本地台账，30 秒一次或发现新退出的 worker 时触发。
 # 慢阶段只在等待 GitHub 时让出同一 SCHED_LOCK；补派本地收割 direct-main 实现结果，另每次最多收割 2 个已结束的 PR 车道实现 worker（释放足迹，开 PR 有少量 GitHub 调用）、回收孤儿记录，
-# 再派发 implement-pending；不做 GitHub 查询/写入或远端 fetch。其他报告与 PR 注册仍由慢 tick 处理。
+# 再派发 implement-pending；除 supervisor-owned 标记（开关开时读一次 PR census，分类不可用则不派发）外
+# 不做 GitHub 查询/写入或远端 fetch。其他报告与 PR 注册仍由慢 tick 处理。
 refill_tick() {
   local TICK_LOCAL_REFILL=true
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
@@ -393,7 +398,14 @@ refill_tick() {
   if [[ -e "$PAUSE_FILE" ]]; then
     say "refill paused by $PAUSE_FILE: no dispatch"
   else
-    phase dispatch_pending true
+    # 补派进程看不到慢拍的标记结果：自己先跑 supervisor-owned 标记（开关关时不发任何 GitHub 请求），
+    # 分类不可用就本拍不派发——未标记的热修车道单元不能由补派抢走。
+    phase mark_supervisor_owned_units
+    if supervisor_marking_deferred; then
+      say "refill dispatch held: supervisor-owned marking deferred"
+    else
+      phase dispatch_pending true
+    fi
   fi
   local gh_calls; gh_calls="$(tick_gh_calls_count)"
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
@@ -445,19 +457,25 @@ main() {
     phase supersede_resolved_main_red_units
     # supervisor-owned 标记必须先于任何会动手的阶段（派发、快车道、CI 准入、合并车道）落进台账。
     phase mark_supervisor_owned_units
-    phase dispatch_pending
-    phase dispatch_supervisor_arbiters
-    phase dispatch_prompt_evals
-    phase fast_land_lane
-    tick_prs_changed # Dispatched workers can push while earlier phases run.
-    phase_yield_lock ci_admission
-    phase_yield_lock run_merge_lane
+    if supervisor_marking_deferred; then
+      # 分类不可用：可能有热修车道单元本拍无法标记，派发、快车道、CI 准入、合并车道与 supervisor
+      # 裁决整拍跳过；登记与生命周期照常，分类恢复的下一拍补标记后恢复推进。
+      say "acting phases held: supervisor-owned marking deferred"
+    else
+      phase dispatch_pending
+      phase dispatch_supervisor_arbiters
+      phase dispatch_prompt_evals
+      phase fast_land_lane
+      tick_prs_changed # Dispatched workers can push while earlier phases run.
+      phase_yield_lock ci_admission
+      phase_yield_lock run_merge_lane
+    fi
     phase register_new_prs
     phase reconcile_orphan_prs
     phase aged_pr_lifecycle
     phase run_release_train
     phase stage_slo_watch
-    phase dispatch_pending
+    supervisor_marking_deferred || phase dispatch_pending
     phase footprint_hog_alert
     views_mode=full
   fi
