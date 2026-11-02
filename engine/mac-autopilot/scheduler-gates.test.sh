@@ -1060,7 +1060,8 @@ gh() { if [[ "$1 $2" == "pr list" ]]; then printf '[{"number":9,"headRefOid":"%s
 TICK_PRS=""; units '{"units":[]}'; register_new_prs || :
 [[ "$(jq '.units | length' "$UNITS")" == 0 ]] || fail 'hotfix PR was registered as a pipeline unit'
 # #4615: configured prefixes, PR labels, linked issue labels and automatic PR labels share is_hotfix_pr.
-[[ "$(jq -c '.hotfix_lane' "$script_dir/config.template.json")" == '{"branch_prefixes":["hotfix/","agent/issue-hf-"],"label":"hotfix"}' ]] \
+# supervisor_owned marks this pack's hotfix lane as owned by the hotfix supervisor session (default off when absent).
+[[ "$(jq -c '.hotfix_lane' "$script_dir/config.template.json")" == '{"branch_prefixes":["hotfix/","agent/issue-hf-"],"label":"hotfix","supervisor_owned":true}' ]] \
   || fail 'config.template.json does not define the hotfix lane'
 # config.template.json and product-lane-skills.txt are deployment data: both resolve target config
 # first (sched_config_file), so a .zenoforge copy wins over the engine's own default.

@@ -16,6 +16,10 @@ ci_unit_facts() { # id head → 早期测试红路径已为同一 head 解析过
 
 # 所有 update-branch 都走这一个封装：expected_head_sha 钉住观察到的 head，GitHub 在 head 已变时返回 422，不会更新陌生提交。
 ci_update_branch() { # pr head
+  if jqf -e --argjson pr "$1" 'any(.units[]; .pr == $pr and .supervisor_owned == true)' "$UNITS" >/dev/null 2>&1; then
+    say "update-branch refused PR#$1: supervisor-owned hotfix lane; the hotfix supervisor maintains the branch"
+    return 1
+  fi
   tick_prs_changed
   gh api -X PUT "repos/{owner}/{repo}/pulls/$1/update-branch" -f "expected_head_sha=$2" >/dev/null 2>&1
 }
@@ -333,7 +337,7 @@ gated_ready_exempt() { # 热修（含关联 issue 分类）与非产品 PR 不�
   while IFS=$'\t' read -r id br head; do
     [[ -n "$id" ]] || continue
     gated_ready "$id" "$br" "$head"
-  done < <(jqf -r --argjson hotfix "${CI_HOTFIX_BRANCHES:-[]}" '.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.pr // null) != null and (.lane // "") != "direct-main"
+  done < <(jqf -r --argjson hotfix "${CI_HOTFIX_BRANCHES:-[]}" '.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main"
       and ((.hotpatch // false) == true or .product_paths == false or ((.branch // "") as $br | $hotfix | index($br) != null))
       and (.branch // "") != "" and (.approved_sha // "") != "") | [.id, .branch, .approved_sha] | @tsv' "$UNITS")
 }
@@ -344,7 +348,7 @@ ci_ready_hotfix_gated() { # 先触发门控热修的 ready 事件，让它先进
   while IFS=$'\t' read -r id br head; do
     [[ -n "$id" ]] || continue
     gated_ready "$id" "$br" "$head"
-  done < <(jqf -r --argjson hotfix "${CI_HOTFIX_BRANCHES:-[]}" '.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.pr // null) != null
+  done < <(jqf -r --argjson hotfix "${CI_HOTFIX_BRANCHES:-[]}" '.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null
       and (.lane // "") != "direct-main" and ((.branch // "") as $br | $hotfix | index($br) != null)
       and (.branch // "") != "" and (.approved_sha // "") != "") | [.id, .branch, .approved_sha] | @tsv' "$UNITS")
 }
@@ -401,6 +405,28 @@ ci_hotfix_branches() { # → 当前 open PR 中由 #4615 分类器识别的热�
 }
 hotfix_lane_label() { jqf -r '.hotfix_lane.label // "hotfix"' <<<"$CFG"; }
 hotfix_lane_branch_prefixes() { jqf -r '.hotfix_lane.branch_prefixes[]? // empty' <<<"$CFG"; }
+hotfix_lane_supervisor_owned() { [[ "$(jqf -r '.hotfix_lane.supervisor_owned // false' <<<"$CFG")" == true ]]; }
+
+# supervisor-owned 热修车道（hotfix_lane.supervisor_owned，缺省 false）：热修 supervisor 会话自己评审、测试、
+# 落地热修 PR；调度器只把它们记进台账计数（census 与发布阻断），一切推进动作都跳过。判定复用现有热修分类：
+# 单元 .hotpatch（孤儿登记的「携带生产热修」路径）或分支命中 ci_hotfix_branches（#4615：标签/前缀/关联 issue）。
+# 每拍为本拍尚未标记的命中单元补标，已登记的单元（如停在 ready-to-merge 的热修回迁）无需手改 units.json；
+# 标记只增不减——开关关掉后已标记单元仍按 supervisor-owned 跳过，避免与热修会话抢同一个 PR。
+mark_supervisor_owned_units() {
+  hotfix_lane_supervisor_owned || return 0
+  local branches ids id
+  if ! branches="$(ci_hotfix_branches)"; then
+    say "supervisor-owned marking deferred: hotfix classification unavailable"
+    return 0
+  fi
+  ids="$(jqf -r --argjson hot "$branches" '[.units[] | select((.supervisor_owned // false) != true
+      and ((.hotpatch // false) == true or ((.branch // "") as $br | $hot | index($br) != null))) | .id] | join(" ")' "$UNITS")"
+  [[ -n "$ids" ]] || return 0
+  units_update --argjson ids "$(jqf -Rsc 'gsub("\\s+";" ") | split(" ") | map(select(length > 0))' <<<"$ids")" \
+    '.units |= map(if (.id as $id | $ids | index($id)) != null then .supervisor_owned = true else . end)' \
+    || { say "supervisor-owned marking: ledger write failed; retried next tick"; return 0; }
+  for id in $ids; do say "unit=$id supervisor-owned: counted for census only; review and merge stay with the hotfix supervisor"; done
+}
 hotfix_issue_numbers() {
   local label rows
   if [[ "$TICK_HOTFIX_ISSUES_LOADED" != true ]]; then

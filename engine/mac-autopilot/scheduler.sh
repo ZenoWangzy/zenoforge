@@ -443,6 +443,8 @@ main() {
     phase register_new_issues
     phase retire_landed_pr_units
     phase supersede_resolved_main_red_units
+    # supervisor-owned 标记必须先于任何会动手的阶段（派发、快车道、CI 准入、合并车道）落进台账。
+    phase mark_supervisor_owned_units
     phase dispatch_pending
     phase dispatch_supervisor_arbiters
     phase dispatch_prompt_evals

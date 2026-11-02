@@ -23,6 +23,8 @@ dispatch_pending() {
     # Repair, review, rerun, and supervisor transitions need GitHub or a slower gate and stay on the slow tick.
     [[ "$local_refill" != true || "$stage" == implement-pending ]] || continue
     [[ "$(jqf -r '.hold_handoff_waiting // false' <<<"$u")" != false ]] && continue
+    # supervisor-owned 热修单元只计数：评审/修复/复审都由热修 supervisor 会话自己派，这里不派任何 worker。
+    [[ "$(jqf -r '.supervisor_owned // false' <<<"$u")" != true ]] || continue
     [[ -n "$(jqf -r '.advisor_pid // empty' <<<"$u")" ]] && continue
     if [[ "$(jqf -r '.self_fix_pending // false' <<<"$u")" == true ]]; then
       [[ "$local_refill" != true ]] || continue

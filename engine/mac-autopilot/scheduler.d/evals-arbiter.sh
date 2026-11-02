@@ -296,7 +296,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     say "supervisor arbitration dispatched pid=$pid unit=$id profile=$SUPERVISOR_ARBITER_PROFILE"
     in_flight=$((in_flight + 1))
     (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
-  done < <(jqf -c '.units[] | select(.stage=="supervisor-review" and (.hold_handoff_waiting // false) == false)' "$UNITS")
+  done < <(jqf -c '.units[] | select(.stage=="supervisor-review" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false)' "$UNITS")
 }
 
 supervisor_action_of() { # report-path → 唯一 ACTION 行的动作名；无法判定返回 1

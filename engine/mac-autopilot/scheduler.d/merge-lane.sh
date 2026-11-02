@@ -28,17 +28,19 @@ repair_check_rows() { # PR number → latest normalized check rows from the tick
 # 队头阻塞（2026-10-21 06:42）：车道每拍只看排序后的前 BATCH_MAX*3 个就绪单元（热修、critical、最老），82 个就绪里
 # 前 12 个全在等 CI 或被挡，排在 21–60 位的绿单元从来轮不到看。对 ready-to-merge PR 子集批量取检查汇总再排序：
 # 还没占到 CI 名额的（本拍不可能合）排到最后；其余同档内 CI 已出结论（绿/红）的先看，还在跑的其次。
+# supervisor-owned 热修单元不进合并车道（update-branch、接管 pipeline-ci、gh pr merge 都不碰），
+# 热修 supervisor 会话自己合；台账里留着它们做 census 与发布阻断计数。
 merge_candidates() { # window → 就绪单元（每行一个 JSON）
   local rf prs; rf="$(mktemp)" || return 0
   # Use the same open-PR census, but normalize checks only for ready-to-merge PRs before sorting all candidates.
-  prs="$(jqf -c '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.pr // null) != null and (.lane // "") != "direct-main") | .pr | tostring] | unique' "$UNITS")"
+  prs="$(jqf -c '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main") | .pr | tostring] | unique' "$UNITS")"
   if [[ "$prs" == '[]' ]]; then
     printf '{}\n' > "$rf"
   else
     tick_prs | jqf --argjson prs "$prs" '[.[] | select((.number | tostring) as $n | $prs | index($n) != null)]' | pr_census_by_number > "$rf"
   fi
   jqf -e 'type == "object"' "$rf" >/dev/null 2>&1 || echo '{}' > "$rf"
-  jqf -c --slurpfile r "$rf" '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.pr // null) != null and (.lane // "") != "direct-main")]
+  jqf -c --slurpfile r "$rf" '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main")]
     | sort_by([(if (.ci_wip_wait != null and .ci_wip_wait == .approved_sha) then 1 else 0 end),
         (if .hotpatch == true then 0 elif .critical == true then 1 else 2 end),
         ($r[0][(.pr | tostring)].ci // 2), (.merge_checked_epoch // 0), (.ready_since // 0)])
@@ -277,7 +279,7 @@ run_merge_lane() {
     branch="$(jqf -r '.branch // empty' <<<"$ready")"
     adopted_head="$(unit_field "$id" '.ci_adopt_head // empty')"
     adopt_at="$(unit_field "$id" '.ci_adopt_at // empty')"
-    if [[ -n "$branch" && ! "$branch" =~ $GATED_BRANCH_RE && "$adopted_head" != "$head" ]]; then
+    if [[ -n "$branch" && ! "$branch" =~ $GATED_BRANCH_RE && "$adopted_head" != "$head" && "$(jqf -r '.supervisor_owned // false' <<<"$ready")" != true ]]; then
       if [[ -n "$adopt_at" ]]; then
         # The label already triggered CI for the prior head; synchronize/update-branch started
         # fresh checks for this head. Keep the original floor rather than resetting it after
@@ -462,6 +464,11 @@ run_merge_lane() {
       continue
     fi
     [[ -z "$merge_result_errors" ]] || say "PR#$pr $merge_result_errors"
+    if [[ "$(jqf -r '.supervisor_owned // false' <<<"$ready")" == true ]]; then
+      # merge_candidates 已滤掉 supervisor-owned 单元；此处是最后防线：热修 supervisor 会话自己合并。
+      say "merge skipped PR#$pr (supervisor-owned hotfix lane; the hotfix supervisor merges it)"
+      continue
+    fi
     pre_merge_sha="$(git -C "$ROOT" ls-remote origin refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}')"
     # main may advance while PR checks run or another lane lands; exact-head PR checks gate the merge,
     # and post-merge exact-SHA CI verifies the resulting main commit without a stable-main barrier.

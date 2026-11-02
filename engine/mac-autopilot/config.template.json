@@ -6,7 +6,8 @@
   "auto_dispatch_new_prs": true,
   "hotfix_lane": {
     "branch_prefixes": ["hotfix/", "agent/issue-hf-"],
-    "label": "hotfix"
+    "label": "hotfix",
+    "supervisor_owned": true
   },
   "auto_triage_new_issues": false,
   "focus_mode": "all",

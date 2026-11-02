@@ -63,9 +63,11 @@ reconcile_orphan_prs() {
     jqf -e --argjson p "$prn" 'any(.[]; .number == $p)' <<<"$prs" >/dev/null || continue
     jqf --argjson prn "$prn" --arg b "$(jqf -r --argjson p "$prn" '.[] | select(.number == $p) | .headRefName' <<<"$prs")" \
       --arg t "$(jqf -r --argjson p "$prn" '.[] | select(.number == $p) | .title' <<<"$prs")" --arg now "$now" --arg h "$HOTPATCH_HINT" \
-      '.units += [{id:("pr-"+($prn|tostring)), title:$t, stage:"review-pending", pr:$prn, branch:$b, critical:true, hotpatch:true, repair_hint:$h,
+      --argjson owned "$(hotfix_lane_supervisor_owned && echo true || echo false)" \
+      '.units += [({id:("pr-"+($prn|tostring)), title:$t, stage:"review-pending", pr:$prn, branch:$b, critical:true, hotpatch:true, repair_hint:$h,
         note:"release blocker: production hot patch not on main; forward-port and merge first",
-        history:[{stage:"orphan-registered", result:"release blocker (carried production hot patch)", at:$now}]}]' "$UNITS" | write_state "$UNITS"
+        history:[{stage:"orphan-registered", result:"release blocker (carried production hot patch)", at:$now}]}
+        + (if $owned then {supervisor_owned:true} else {} end))]' "$UNITS" | write_state "$UNITS"
     say "release-blocker PR#$prn registered (carried production hot patch)"
   done
   while IFS=$'\t' read -r prn branch draft n title issue_state; do
@@ -158,9 +160,10 @@ aged_pr_lifecycle() {
   # 一次批量取回所有候选分支的对象，之后 patch-id/merge-tree/落后计数全是本地判定。
   git -C "$ROOT" fetch -q origin $(jqf -r 'map(select(.baseRefName == "main" and (.headRefName | test("^(agent|hand)/"))) | .headRefName) | unique | .[]' <<<"$pr_json") 2>/dev/null || true
   # 超龄指无人推进：台账单元在年龄窗口内还有历史记录的 PR 是在途工作，不分类（10-29 同一拍关掉了刚复审 READY 的 #4004 和刚交付全绿的 #4022）。
+  # supervisor-owned 热修单元同样视为在途：推进者是热修 supervisor 会话，台账里没有它的节拍，不能据此分类关 PR。
   live_prs="$(jqf -c --argjson cut "$((NOW_EPOCH - AGED_PR_AGE_SECONDS))" '[.units[]
       | select(.pr != null and (.stage | IN("merged","closed") | not))
-      | select(([.history[]?.at // empty | try fromdateiso8601 catch 0] | max // 0) > $cut) | .pr]' "$UNITS")"
+      | select(((.supervisor_owned // false) == true) or (([.history[]?.at // empty | try fromdateiso8601 catch 0] | max // 0) > $cut)) | .pr]' "$UNITS")"
   while IFS=$'\t' read -r prn branch head created; do
     [[ "$prn" =~ ^[0-9]+$ && "$head" =~ $SHA_RE ]] || continue
     jq -e --argjson p "$prn" 'index($p) != null' <<<"$live_prs" >/dev/null && continue

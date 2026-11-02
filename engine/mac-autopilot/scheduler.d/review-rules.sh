@@ -103,7 +103,9 @@ lane_policy_blob() { git -C "$ROOT" rev-parse "HEAD:${POLICY_SCRIPT#"$ROOT"/}" 2
 fast_land_candidates() { # → 快车道要看的 ready-to-merge 单元（每行一个 JSON）
   # 记成 pr 车道但分类策略已变的单元也要进来，让 ensure_lane 重分；只取 lane != pr 时它们永远留在产品车道
   # （10-22：94 个待合并单元里 35 个策略过期，其中 4 个非产品 PR 一直排 CI 名额）。
+  # supervisor-owned 热修单元不经快车道重分或直落：直落会推 main，归热修 supervisor 会话。
   jqf -c --arg p "$(lane_policy_blob)" '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false
+      and (.supervisor_owned // false) == false
       and ((.pr // null) != null or (.lane // "") == "direct-main")
       and ((.lane // "") != "pr" or (.lane_policy // "") != $p))] | sort_by(.ready_since // 0) | .[]' "$UNITS"
 }

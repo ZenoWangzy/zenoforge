@@ -1136,6 +1136,187 @@ export REQUIRED_PR_CHECKS_FILE="$test_env_root/required-pr-checks.json"
 }
 sched_run_case pipeline_ci_adoption
 
+sched_case_supervisor_owned_marking() {
+# hotfix_lane.supervisor_owned on: one tick marks already-registered hotfix-lane
+# units (branch classifier or the orphan hotpatch marker) with no hand edit to
+# units.json; a non-hotfix unit is untouched; the switch off marks nothing new
+# while existing marks stay.
+new_tick_fixture supervisor-owned-marking
+command jq '.hotfix_lane.supervisor_owned=true | .max_workers=0' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+hot_sha="$(printf '%040x' 4894)"
+command jq -n --arg sha "$hot_sha" '{units:[
+  {id:"pr-4894",pr:4894,branch:"hotfix/4894",stage:"ready-to-merge",approved_sha:$sha,history:[]},
+  {id:"pr-4895",pr:4895,branch:"agent/issue-4900-fix",stage:"review-pending",hotpatch:true,history:[]},
+  {id:"pr-ctrl",pr:6,branch:"fix/plain",stage:"review-pending",history:[]}
+]}' > "$TF/supervisor/autopi/units.json"
+command jq -n --arg sha "$hot_sha" '[
+  {number:4894,headRefName:"hotfix/4894",headRefOid:$sha,isDraft:false,title:"hotfix lane",labels:[],statusCheckRollup:[]},
+  {number:4895,headRefName:"agent/issue-4900-fix",headRefOid:$sha,isDraft:false,title:"carried hot patch",labels:[],statusCheckRollup:[]},
+  {number:4896,headRefName:"hotfix/4896",headRefOid:$sha,isDraft:false,title:"later",labels:[],statusCheckRollup:[]},
+  {number:6,headRefName:"fix/plain",headRefOid:$sha,isDraft:false,title:"plain",labels:[],statusCheckRollup:[]}
+]' > "$TF/pr-census.json"
+tick
+command jq -e '
+  ([.units[] | select(.id=="pr-4894")][0].supervisor_owned == true)
+  and ([.units[] | select(.id=="pr-4895")][0].supervisor_owned == true)
+  and ([.units[] | select(.id=="pr-ctrl")][0].supervisor_owned == null)
+  and ([.units[] | select(.id=="pr-4894")][0].stage == "ready-to-merge")
+' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo "scheduler.test.sh: supervisor-owned marking missed a hotfix-lane unit ($(command jq -c '.units[] | {id,supervisor_owned}' "$TF/supervisor/autopi/units.json"))" >&2; exit 1; }
+grep -Fq 'unit=pr-4894 supervisor-owned: counted for census only' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: supervisor-owned marking logged nothing' >&2; exit 1; }
+# The switch off must not mark new hotfix-lane units; marks already written stay.
+command jq '.hotfix_lane.supervisor_owned=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+command jq '.units += [{id:"pr-4896",pr:4896,branch:"hotfix/4896",stage:"review-pending",history:[]}]' \
+  "$TF/supervisor/autopi/units.json" > "$TF/units.tmp"
+mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+tick
+command jq -e '
+  ([.units[] | select(.id=="pr-4896")][0].supervisor_owned == null)
+  and ([.units[] | select(.id=="pr-4894")][0].supervisor_owned == true)
+' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo "scheduler.test.sh: supervisor-owned marking did not follow the switch ($(command jq -c '.units[] | {id,supervisor_owned}' "$TF/supervisor/autopi/units.json"))" >&2; exit 1; }
+}
+sched_run_case supervisor_owned_marking
+
+sched_case_supervisor_owned_dispatch() {
+# A supervisor-owned hotfix-lane unit never gets a review/repair/rereview worker:
+# the hotfix supervisor session reviews and repairs it. Same fixture shape as the
+# high-cache repair case, which proves a worker is dispatched without the skip.
+new_tick_fixture supervisor-owned-dispatch
+command jq '.max_workers=1 | .hotfix_lane.supervisor_owned=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+write_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf 'VERDICT: REQUEST-CHANGES\nF1 fixture repair\n' > "$TF/supervisor/prior.md"
+command jq -cn --arg at "$write_started" '{units:[{
+  id:"pr-4894",pr:4894,lane:"pr",title:"supervisor hotfix",branch:"hotfix/4894",
+  stage:"repair-pending",review_report:"prior.md",hotpatch:true,
+  history:[{stage:"write-start",at:$at}]}]}' > "$TF/supervisor/autopi/units.json"
+touch "$TF/allow-dispatch" "$TF/worker-alive"
+tick
+command jq -e '.units[0].supervisor_owned == true and .units[0].stage == "repair-pending"
+  and (.units[0].history | length) == 1' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo "scheduler.test.sh: the supervisor-owned unit left repair-pending or was not marked" >&2; exit 1; }
+command jq -e '(.workers | length) == 0' "$TF/supervisor/autopi/workers.json" >/dev/null \
+  || { echo "scheduler.test.sh: a worker was dispatched for a supervisor-owned hotfix unit" >&2; exit 1; }
+if grep -q 'dispatch mode=.*unit=pr-4894' "$TF/supervisor/autopi/scheduler.log"; then
+  echo 'scheduler.test.sh: a supervisor-owned hotfix unit was dispatched' >&2; exit 1
+fi
+}
+sched_run_case supervisor_owned_dispatch
+
+sched_case_supervisor_owned_update_branch() {
+# ci_update_branch is the single choke point every server-side update-branch goes
+# through (merge-lane conflict clear and workflow refresh, CI-red stale base,
+# stale-base hop, admission slot sync): a supervisor-owned PR is refused there.
+local saved_units="$UNITS" owned_rc plain_rc
+printf '%s\n' '{"units":[
+  {"id":"pr-4894","pr":4894,"branch":"hotfix/4894","stage":"ready-to-merge","supervisor_owned":true,"history":[]},
+  {"id":"pr-9","pr":9,"branch":"fix/plain","stage":"ready-to-merge","history":[]}]}' > "$fixture/ub-units.test.json"
+UNITS="$fixture/ub-units.test.json"
+: > "$fixture/update-branch.calls"
+gh() {
+  if [[ "$1" == "api" && "$*" == *'/update-branch'* ]]; then
+    printf '%s\n' "$*" >> "$fixture/update-branch.calls"
+    return 0
+  fi
+  echo "unexpected gh call: $*" >&2
+  return 97
+}
+owned_rc=0; ci_update_branch 4894 0000000000000000000000000000000000000001 || owned_rc=$?
+plain_rc=0; ci_update_branch 9 0000000000000000000000000000000000000002 || plain_rc=$?
+unset -f gh
+UNITS="$saved_units"
+[[ "$(grep -c update-branch "$fixture/update-branch.calls")" == 1 && "$(cat "$fixture/update-branch.calls")" == *'pulls/9/update-branch'* ]] \
+  || { echo "scheduler.test.sh: update-branch calls were $(tr '\n' '|' < "$fixture/update-branch.calls")" >&2; exit 1; }
+(( owned_rc != 0 )) || { echo 'scheduler.test.sh: update-branch refusal returned success' >&2; exit 1; }
+(( plain_rc == 0 )) || { echo 'scheduler.test.sh: an ordinary update-branch failed' >&2; exit 1; }
+grep -Fq 'update-branch refused PR#4894: supervisor-owned hotfix lane' "$LOG" \
+  || { echo 'scheduler.test.sh: update-branch refusal was not logged' >&2; exit 1; }
+}
+sched_run_case supervisor_owned_update_branch
+
+sched_case_supervisor_owned_adopt() {
+# A supervisor-owned ready-to-merge hotfix PR on a non-agent branch is never
+# adopted: no pipeline-ci label event, no ci_adopt_head, approval kept. Without
+# the skip this exact fixture adopts (see pipeline-ci-adoption).
+new_tick_fixture supervisor-owned-adopt
+enable_rule_lane_fixture
+command git -C "$TF/repo" checkout -qb pr-hotfix-adopt
+mkdir -p "$TF/repo/packages/fixture/src"
+printf 'export const hotfixAdopted = true\n' > "$TF/repo/packages/fixture/src/index.ts"
+command git -C "$TF/repo" add packages/fixture/src/index.ts
+command git -C "$TF/repo" commit -qm 'hotfix lane source change'
+adopt_head="$(command git -C "$TF/repo" rev-parse HEAD)"
+command git -C "$TF/repo" push -q origin "$adopt_head:refs/pull/60/head"
+printf '%s\n' "$adopt_head" > "$TF/pr-head-60"
+command git -C "$TF/repo" checkout -q main
+printf '%s\n' '{"databaseId":701,"attempt":1,"status":"completed","conclusion":"success","createdAt":"2026-10-29T00:00:00Z"}' > "$TF/run.json"
+printf '%s\n' '{"required":["Enforce branch delivery policy","Required CI gates","Required contract gates"]}' > "$TF/required-pr-checks.json"
+export REQUIRED_PR_CHECKS_FILE="$TF/required-pr-checks.json"
+command jq '.auto_merge=true | .hotfix_lane.supervisor_owned=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+command jq --arg sha "$adopt_head" \
+  '.units=[{id:"pr-4894",pr:60,lane:"pr",branch:"hotfix/4894",stage:"ready-to-merge",approved_sha:$sha,hotpatch:true,ready_since:1,history:[]}]' \
+  "$TF/supervisor/autopi/units.json" > "$TF/units.tmp"
+mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+tick
+if grep -Fq 'gh pr edit 60' "$TF/calls"; then
+  echo 'scheduler.test.sh: the scheduler adopted a supervisor-owned hotfix PR' >&2; exit 1
+fi
+if grep -Fq 'update-branch' "$TF/calls"; then
+  echo 'scheduler.test.sh: the scheduler updated the branch of a supervisor-owned hotfix PR' >&2; exit 1
+fi
+command jq -e --arg sha "$adopt_head" '
+  .units[0].supervisor_owned == true and .units[0].ci_adopt_head == null
+  and .units[0].stage == "ready-to-merge" and .units[0].approved_sha == $sha' \
+  "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo "scheduler.test.sh: the supervisor-owned unit was modified by the merge lane ($(command jq -c '.units[0]' "$TF/supervisor/autopi/units.json"))" >&2; exit 1; }
+export REQUIRED_PR_CHECKS_FILE="$test_env_root/required-pr-checks.json"
+}
+sched_run_case supervisor_owned_adopt
+
+sched_case_supervisor_owned_merge() {
+# Fresh post-adoption aggregate passes never release a supervisor-owned hotfix PR:
+# the hotfix supervisor session merges it. Without the skip this exact fixture
+# merges (see pipeline-ci-adoption's final tick).
+new_tick_fixture supervisor-owned-merge
+enable_rule_lane_fixture
+command git -C "$TF/repo" checkout -qb pr-hotfix-merge
+mkdir -p "$TF/repo/packages/fixture/src"
+printf 'export const hotfixMerged = true\n' > "$TF/repo/packages/fixture/src/index.ts"
+command git -C "$TF/repo" add packages/fixture/src/index.ts
+command git -C "$TF/repo" commit -qm 'hotfix lane merge candidate'
+merge_head="$(command git -C "$TF/repo" rev-parse HEAD)"
+command git -C "$TF/repo" push -q origin "$merge_head:refs/pull/61/head"
+printf '%s\n' "$merge_head" > "$TF/pr-head-61"
+command git -C "$TF/repo" checkout -q main
+printf '%s\n' '{"databaseId":701,"attempt":1,"status":"completed","conclusion":"success","createdAt":"2026-10-29T00:00:00Z"}' > "$TF/run.json"
+printf '%s\n' '{"required":["Enforce branch delivery policy","Required CI gates","Required contract gates"]}' > "$TF/required-pr-checks.json"
+export REQUIRED_PR_CHECKS_FILE="$TF/required-pr-checks.json"
+printf 'fresh\n' > "$TF/pipeline-ci-adoption"
+command jq '.auto_merge=true | .hotfix_lane.supervisor_owned=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+command jq --arg sha "$merge_head" \
+  '.units=[{id:"pr-4894",pr:61,lane:"pr",branch:"hotfix/4894",stage:"ready-to-merge",approved_sha:$sha,hotpatch:true,ci_adopt_head:$sha,ci_adopt_at:"2026-10-29T00:00:00Z",ready_since:1,history:[]}]' \
+  "$TF/supervisor/autopi/units.json" > "$TF/units.tmp"
+mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+tick
+if grep -q '^merge 61$' "$TF/actions"; then
+  echo 'scheduler.test.sh: the scheduler merged a supervisor-owned hotfix PR' >&2; exit 1
+fi
+if grep -Fq 'gh pr merge 61' "$TF/calls"; then
+  echo 'scheduler.test.sh: a merge was attempted for a supervisor-owned hotfix PR' >&2; exit 1
+fi
+command jq -e --arg sha "$merge_head" '.units[0].supervisor_owned == true and .units[0].stage == "ready-to-merge" and .units[0].approved_sha == $sha' \
+  "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo "scheduler.test.sh: the supervisor-owned unit left ready-to-merge ($(command jq -c '.units[0]' "$TF/supervisor/autopi/units.json"))" >&2; exit 1; }
+export REQUIRED_PR_CHECKS_FILE="$test_env_root/required-pr-checks.json"
+}
+sched_run_case supervisor_owned_merge
+
 sched_case_rule_lane() {
 # One supervisor tick: unit rule-file diffs remain blocked, while supervisor rule-file
 # diffs pass on syntax alone regardless of Rule-Replay trailers or report contents.
