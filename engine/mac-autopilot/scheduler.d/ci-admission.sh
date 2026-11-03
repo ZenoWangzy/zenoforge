@@ -174,7 +174,7 @@ ci_assign_wip() {
       and ((.branch as $br | $hotfix[0] | index($br)) == null)
       and .product_paths != false)]
       | sort_by([(if .main_red == true then 0 elif .ci_priority == true then 1 else 2 end),
-                 (.ready_since // 0), (if .critical == true then 0 else 1 end),
+                 '"$(ready_since_epoch)"', (if .critical == true then 0 else 1 end),
                  (if (.issue as $i | $deps | index($i)) or (.branch as $b | any($deps[]; $b == "agent/issue-\(.)")) then 0 else 1 end)])
       | .[] | [.id, .branch, (.approved_sha // "")] | @tsv' "$UNITS")
   while IFS=$'\t' read -r r st br; do

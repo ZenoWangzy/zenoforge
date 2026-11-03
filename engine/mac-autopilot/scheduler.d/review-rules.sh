@@ -4,7 +4,7 @@ supervisor_rule() {
   [[ "$note" == CTO* ]] && printf '\n【supervisor 裁决（必须遵守，不得据此 BLOCK 或打回）】%s' "$note"
   while IFS= read -r r; do
     [[ -n "$r" && "$r" != "$note" ]] && printf '\n【supervisor 裁决（必须遵守，不得据此 BLOCK 或打回）】%s' "$r"
-  done < <(jqf -r '(.cto_rulings // [])[]' <<<"$1")
+  done < <(jqf -r "$(cto_rulings_norm)[]" <<<"$1")
   return 0
 }
 decision_scope() { # unit-json -> prior decisions in history, for the next implementation worker
@@ -167,7 +167,7 @@ fast_land_candidates() { # → 快车道要看的 ready-to-merge 单元（每行
   jqf -c --arg p "$(lane_policy_blob)" '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false
       and (.supervisor_owned // false) == false
       and ((.pr // null) != null or (.lane // "") == "direct-main")
-      and ((.lane // "") != "pr" or (.lane_policy // "") != $p))] | sort_by(.ready_since // 0) | .[]' "$UNITS"
+      and ((.lane // "") != "pr" or (.lane_policy // "") != $p))] | sort_by('"$(ready_since_epoch)"') | .[]' "$UNITS"
 }
 ensure_lane() { # id pr → 打印并记录 lane
   # 分类随策略文件变：pr 车道的单元在 branch-delivery-policy.mjs 改动后重分一次（10-22 R1 把 workflow 划进直落 main，

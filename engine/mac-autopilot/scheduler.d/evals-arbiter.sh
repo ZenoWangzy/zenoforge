@@ -222,7 +222,7 @@ supervisor_arbiter_input() { # unit-json [cap-triage] → frozen record JSON
       asOf: $asof,
       unitId: .id,
       capTriage: $cap_triage,
-      unitContext: {issue: .issue, pr: .pr, title: .title, task: .task, note: .note, rulings: (.cto_rulings // [])},
+      unitContext: {issue: .issue, pr: .pr, title: .title, task: .task, note: .note, rulings: '"$(cto_rulings_norm)"'},
       escalationReason: (
         ([(.history // [])[] | select(.stage == "supervisor-escalated" or .stage == "supervisor-review")] | last) as $e
         | {at: ($e.at // $asof), stage: ($e.stage // "supervisor-escalated"),
@@ -548,8 +548,8 @@ supervisor_cap_founder() { # id reason evidence [report-path] → one owner ques
     say "supervisor cap triage unit=$id: founder question not posted; retained for retry"
     return 0
   fi
-  set_unit "$id" "$(hist supervisor-cap-founder "$question" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-founder\" | .note=$(js "founder decision required: $reason") | .supervisor_cap_question=$(js "$question")"
-  say "supervisor cap triage unit=$id: FOUNDER question posted"
+  cap_set_unit "$id" FOUNDER "founder decision required: $reason; question: $question" "$rep" "$(hist supervisor-cap-founder "$question" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-founder\" | .note=$(js "founder decision required: $reason") | .supervisor_cap_question=$(js "$question")" \
+    && say "supervisor cap triage unit=$id: FOUNDER question posted"
 }
 
 supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
@@ -571,8 +571,8 @@ supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
           gh pr close "$pr" --comment "$comment" >/dev/null 2>&1 || say "supervisor cap triage unit=$id: could not close PR #$pr"
         fi
       fi
-      set_unit "$id" "$(hist supervisor-cap-close "$reason" "$decision") | .stage=\"closed\" | .note=$(js "$reason") | del(.parked_reason)"
-      say "supervisor cap triage unit=$id: CLOSE" ;;
+      cap_set_unit "$id" CLOSE "Cap triage closed this unit: $reason Evidence: $evidence" "$rep" "$(hist supervisor-cap-close "$reason" "$decision") | .stage=\"closed\" | .note=$(js "$reason") | del(.parked_reason)" \
+        && say "supervisor cap triage unit=$id: CLOSE" ;;
     RECUT)
       supervisor_budget_recut "$id" "cap triage: $reason; evidence: $evidence" "$decision" \
         "cap triage could not complete the recut route" "supervisor cap triage recut: $reason" \
@@ -587,8 +587,8 @@ supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
       return_stage="$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")"
       [[ -n "$return_stage" ]] || return_stage="$(supervisor_return_stage "$u")"
       ruling="Supervisor cap ruling: $reason Evidence: $evidence"
-      set_unit "$id" "$(hist supervisor-cap-rule "$reason" "$decision") | $(hist supervisor-arbiter-round "cap triage ruling applied: $reason" "$decision") | .cto_rulings=((.cto_rulings // []) + [$(js "$ruling")]) | .stage=$(js "$return_stage") | .supervisor_cap_return_stage=$(js "$return_stage") | del(.parked_reason,.note,.supervisor_cap_from_parked)"
-      say "supervisor cap triage unit=$id: RULE -> $return_stage" ;;
+      cap_set_unit "$id" RULE "$ruling" "$rep" "$(hist supervisor-cap-rule "$reason" "$decision") | $(hist supervisor-arbiter-round "cap triage ruling applied: $reason" "$decision") | .cto_rulings=($(cto_rulings_norm) + [$(js "$ruling")]) | .stage=$(js "$return_stage") | .supervisor_cap_return_stage=$(js "$return_stage") | del(.parked_reason,.note,.supervisor_cap_from_parked)" \
+        && say "supervisor cap triage unit=$id: RULE -> $return_stage" ;;
     FOUNDER)
       supervisor_cap_founder "$id" "$reason" "$evidence" "$rep" ;;
     *) return 1 ;;
@@ -598,7 +598,7 @@ supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
 supervisor_cap_triage_failed() { # id detail → retryable cap park
   local id="$1" detail="$2" decision
   decision="$(decision_entry 'Retry supervisor cap triage' "$detail" "$detail" '[]' scheduler)"
-  set_unit "$id" "$(hist supervisor-cap-triage-invalid "$detail" "$decision")"
+  cap_set_unit "$id" park "$detail" "" "$(hist supervisor-cap-triage-invalid "$detail" "$decision")" || :
   supervisor_cap_triage_park "$id" "$detail" "$decision"
 }
 
@@ -616,14 +616,14 @@ supervisor_cap_triage_reask_or_park() { # id report-path → 一次复问；第�
   detail="invalid final cap triage report $(basename "$rep"): $excerpt"
   if (( reasks < 1 )); then
     decision="$(decision_entry 'Re-ask one invalid cap triage answer' 'the answer was not one of the four allowed verdicts CLOSE/RECUT/RULE/FOUNDER; the re-ask restates them' "$detail" '[]' scheduler)"
-    set_unit "$id" "$(hist supervisor-cap-triage-reask "$detail" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-triage-reask\" | .supervisor_cap_reask=1 | .supervisor_cap_invalid_answers=[$(js "$excerpt")] | .note=$(js "cap triage answer invalid once; one re-ask restates the allowed verdicts")"
-    say "supervisor cap triage unit=$id: invalid answer; one re-ask will restate the allowed verdicts"
+    cap_set_unit "$id" reask "$detail" "$rep" "$(hist supervisor-cap-triage-reask "$detail" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-triage-reask\" | .supervisor_cap_reask=1 | .supervisor_cap_invalid_answers=[$(js "$excerpt")] | .note=$(js "cap triage answer invalid once; one re-ask restates the allowed verdicts")" \
+      && say "supervisor cap triage unit=$id: invalid answer; one re-ask will restate the allowed verdicts"
   else
     first="$(jqf -r '.supervisor_cap_invalid_answers[0] // empty' <<<"$u")"
     note="two invalid cap triage answers, neither ended in one of CLOSE/RECUT/RULE/FOUNDER; first answer: ${first:-unknown}; re-ask answer: $excerpt"
     decision="$(decision_entry 'Park after two invalid cap triage answers' "$note" "$detail" '[]' scheduler)"
-    set_unit "$id" "$(hist supervisor-cap-triage-invalid-final "$note" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-triage-invalid\" | .note=$(js "$note") | del(.supervisor_cap_reask, .supervisor_cap_invalid_answers)"
-    say "supervisor cap triage unit=$id: parked after two invalid answers"
+    cap_set_unit "$id" park "$note" "$rep" "$(hist supervisor-cap-triage-invalid-final "$note" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-triage-invalid\" | .note=$(js "$note") | del(.supervisor_cap_reask, .supervisor_cap_invalid_answers)" \
+      && say "supervisor cap triage unit=$id: parked after two invalid answers"
   fi
 }
 

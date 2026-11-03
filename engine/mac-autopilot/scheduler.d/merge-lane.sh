@@ -45,7 +45,7 @@ merge_candidates() { # window → 就绪单元（每行一个 JSON）
   jqf -c --slurpfile r "$rf" '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main")]
     | sort_by([(if (.ci_wip_wait != null and .ci_wip_wait == .approved_sha) then 1 else 0 end),
         (if .hotpatch == true then 0 elif .critical == true then 1 else 2 end),
-        ($r[0][(.pr | tostring)].ci // 2), (.merge_checked_epoch // 0), (.ready_since // 0)])
+        ($r[0][(.pr | tostring)].ci // 2), (.merge_checked_epoch // 0), '"$(ready_since_epoch)"'])
     | .[0:'"$1"'] | map(. + {pr_open_head: ($r[0][(.pr | tostring)].head // null), pr_open_draft: $r[0][(.pr | tostring)].draft, pr_open_mergeable: $r[0][(.pr | tostring)].mergeable, pr_open_checks: ($r[0][(.pr | tostring)].checks // null)}) | .[]' "$UNITS"
   rm -f -- "$rf" "$prs_file"
 }

@@ -20,6 +20,24 @@ set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）
   fi
   return "$rc"
 }
+# 终局裁决（cap triage）的落地统一走这里：set_unit 失败时绝不照旧记成功日志（11-03 pr-3575：RULE 的
+# jqf rc=5 让整笔更新被丢，没有 history、没有裁决，下一行却仍打 "RULE -> repair-pending"，付费裁决丢失）。
+# 失败记 NOT applied，决策文本追加进该单元的报告文件（显式路径或 .supervise_report；都没有时落 alerts），
+# 单元留在原 stage，由 cap-triage 的重试标记（supervisor-arbitration-cap）下一拍重试。
+cap_set_unit() { # id verb decision-text report-path jq_update_expression
+  local id="$1" verb="$2" text="$3" rep="$4" keep
+  if set_unit "$id" "$5"; then return 0; fi
+  say "cap triage unit=$id: $verb NOT applied (set_unit failed)"
+  keep="$rep"
+  [[ -n "$keep" ]] || keep="$SUP/$(unit_field "$id" '.supervise_report // empty')"
+  if [[ -n "$keep" && "$keep" != "$SUP/" && -d "${keep%/*}" ]]; then
+    printf '\n[%s] cap triage unit=%s: %s NOT applied (set_unit failed); decision text kept:\n%s\n' \
+      "$STAMP" "$id" "$verb" "$text" >> "$keep"
+  else
+    echo "[$STAMP] CAP-TRIAGE-DECISION-KEPT unit=$id verb=$verb: $text" >> "$A/alerts/state.md"
+  fi
+  return 1
+}
 units_update() { # jq args; transactionally update the unit ledger under the shared scheduler lock
   local own_lock=false rc=0
   if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then
@@ -107,8 +125,8 @@ supervisor_needs_info_question() { # unit-json → 没有裁决报告时的模�
 supervisor_budget_park() { # id evidence → parked，留给 supervisor，不发评论
   local id="$1" evidence="$2" decision="${3:-null}" reason="${4:-supervisor budget exhausted}" stage="${5:-supervisor-budget-park}" note
   note="$(js "$reason: $evidence")"
-  set_unit "$id" "$(hist "$stage" "$evidence" "$decision") | .stage=\"parked\" | .note=$note"
-  say "supervisor budget-park unit=$1: $2"
+  cap_set_unit "$id" park "$reason: $evidence" "" "$(hist "$stage" "$evidence" "$decision") | .stage=\"parked\" | .note=$note" \
+    && say "supervisor budget-park unit=$1: $2"
 }
 
 SUPERVISOR_CAP_PARK_RESULT_RE='^(third entry into supervisor-review; arbitration cap is 2|arbitration budget exhausted for )'
@@ -131,8 +149,8 @@ supervisor_cap_triage_park() { # id evidence → durable retry marker swept by t
   return_stage="$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")"
   [[ -n "$return_stage" ]] || return_stage="$(supervisor_return_stage "$u")"
   note="supervisor arbitration cap triage pending: $evidence"
-  set_unit "$id" "$(hist supervisor-cap-triage-park "$evidence" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-arbitration-cap\" | .supervisor_cap_return_stage=$(js "$return_stage") | .note=$(js "$note")"
-  say "supervisor cap-triage parked unit=$id: $evidence"
+  cap_set_unit "$id" park "$note" "" "$(hist supervisor-cap-triage-park "$evidence" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-arbitration-cap\" | .supervisor_cap_return_stage=$(js "$return_stage") | .note=$(js "$note")" \
+    && say "supervisor cap-triage parked unit=$id: $evidence"
 }
 
 # 轮数或墙钟止损已用尽且仍没有 PR：交给 recut 拆成可交付的子票。
@@ -173,8 +191,8 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
   else
     note="$(js "$recut_reason without a PR; issue #$issue sent to recut: $evidence")"
   fi
-  set_unit "$id" "$(hist "$recut_stage" "$evidence" "$decision") | .stage=\"closed\" | .note=$note"
-  say "supervisor budget-recut unit=$id issue=#$issue: $evidence"
+  cap_set_unit "$id" recut "$recut_reason: $evidence" "" "$(hist "$recut_stage" "$evidence" "$decision") | .stage=\"closed\" | .note=$note" \
+    && say "supervisor budget-recut unit=$id issue=#$issue: $evidence"
 }
 
 supervisor_needs_info() { # id question evidence —— needs-info：给提需求的人发一个澄清问题并打标签（唯一回到人的出口）
