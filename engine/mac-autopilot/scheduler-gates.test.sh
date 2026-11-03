@@ -1167,7 +1167,6 @@ hist_json="$(jq -cn --arg h "$H2" '[{stage:"review-request-changes"},{stage:"rep
 units "{\"units\":[{\"id\":\"pr-5b\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"r.md\",\"history\":$hist_json}]}"
 dispatch_pending || :
 [[ "$(field pr-5b .stage)" == repair-pending ]] || fail "no-push repairs on another head spent this head's retries ($(field pr-5b .stage))"
-eval "$repair_no_push_selector_real"; eval "$repair_no_push_target_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 # A CI failure after approval followed by an unchanged repair returns to native CI within the existing unit-row bound.
 gh_head_saved="$GH_HEAD"; gh_runs_saved="$GH_RUNS"; cancel_unit_runs_saved="$(declare -f cancel_unit_runs)"
 GH_HEAD="$H1"; GH_RUNS=777; GH_RERUNS=(); DISPATCHED=(); cancel_unit_runs() { :; }
@@ -1229,6 +1228,7 @@ dispatch_pending || :
 GH_RUN_JSON=
 GH_RUNS=777; GH_RERUN_FAIL_ID=
 eval "$cancel_unit_runs_saved"; GH_HEAD="$gh_head_saved"; GH_RUNS="$gh_runs_saved"; GH_RERUNS=()
+eval "$repair_no_push_selector_real"; eval "$repair_no_push_target_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 DISPATCHED=()
 units '{"units":[{"id":"pr-6","pr":6,"stage":"rereview-pending","history":[]}]}'
 dispatch_pending || :
