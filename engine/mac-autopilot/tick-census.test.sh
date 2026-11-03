@@ -146,6 +146,7 @@ test_census() {
   advisor_harvest() { :; }
   room_for() { return 0; }
   pick() { return 0; }
+  pick_review_for_unit() { PICK_MODEL=gpt-6-luna; PICK_EFFORT=max; return 0; }
   verify_handoff_delivery() {
     [[ "$4" == 2222222222222222222222222222222222222222 ]] || fail 'dispatch used a head cached before the phase'
     DISPATCH_HOOK_N=$((DISPATCH_HOOK_N + 1))

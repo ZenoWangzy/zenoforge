@@ -221,7 +221,7 @@ $(decision_scope "$u")"
                 if gh run rerun "$r" --failed >/dev/null 2>&1; then n=$((n+1)); else rerun_failed=1; fi
               done
               (( n > 0 && rerun_failed == 0 )) || { to_supervisor "$id" "GitHub rejected a failed-run rerun for unchanged approved head $sha"; continue; }
-              set_unit "$id" "$(hist ci-repair-rerun "unchanged approved head $sha; rerun $((k+1))/$CI_INFRA_RERUNS") | .ci_infra_reruns=$((k+1)) | .ci_rerun_sha=$(js "$sha") | .approved_sha=$(js "$sha") | .stage=\"ready-to-merge\""
+              set_unit "$id" "$(hist ci-repair-rerun "unchanged approved head $sha; rerun $((k+1))/$CI_INFRA_RERUNS") | .ci_infra_reruns=$((k+1)) | .ci_rerun_sha=$(js "$sha") | .approved_sha=$(js "$sha") | .ci_gate_required=true | .ci_wait_sha=$(js "$sha") | .stage=\"ci-pending\" | del(.ci_green_sha)"
               say "repair-no-push unit=$id: approved head $sha unchanged after CI failure -> reran $n failed run(s), retry $((k+1))/$CI_INFRA_RERUNS"
             else
               to_supervisor "$id" "approved head $sha remained unchanged after $k bounded CI reruns"

@@ -1,5 +1,5 @@
 mark_product_paths() { # 就绪单元第一次见到时查一次 PR 文件，记 .product_paths（true/false）
-  local id pr i files product updates='{}' query_timeout limit remote repo_path owner repo_name owner_json repo_json query raw
+  local id pr i files product updates='{}' query_timeout limit remote repo_path owner repo_name owner_json repo_json query raw updates_file rc
   local -a ids=() prs=()
   query_timeout="${CI_PRODUCT_PATH_LOOKUP_TIMEOUT_SECONDS:-10}"
   [[ "$query_timeout" =~ ^[1-9][0-9]*$ ]] || query_timeout=10
@@ -9,7 +9,7 @@ mark_product_paths() { # 就绪单元第一次见到时查一次 PR 文件，记
     [[ -n "$id" && "$pr" =~ ^[0-9]+$ ]] || continue
     ids+=("$id")
     prs+=("$pr")
-  done < <(jqf -r '.units[] | select(.stage == "ready-to-merge" and (.pr // null) != null and .product_paths == null) | [.id, .pr] | @tsv' "$UNITS" | head -"$limit")
+  done < <(jqf -r '.units[] | select((.stage | IN("ready-to-merge","ci-pending")) and (.pr // null) != null and .product_paths == null) | [.id, .pr] | @tsv' "$UNITS" | head -"$limit")
   (( ${#ids[@]} > 0 )) || return 0
 
   # Files are the path-classification read missing from the regular PR census.
@@ -46,8 +46,16 @@ mark_product_paths() { # 就绪单元第一次见到时查一次 PR 文件，记
     if grep -vqE "$NONPRODUCT_PATHS_RE" <<<"$files"; then product=true; else product=false; fi
     updates="$(jqf --arg id "$id" --argjson product "$product" '. + {($id):$product}' <<<"$updates")"
   done
-  [[ "$updates" == '{}' ]] || units_update --slurpfile paths <(printf '%s' "$updates") \
-    '.units |= map(.id as $id | if .stage == "ready-to-merge" and .product_paths == null and $paths[0][$id] != null then .product_paths=$paths[0][$id] else . end)'
+  [[ "$updates" == '{}' ]] && return 0
+  updates_file="$(scheduler_jq_arg_file "$updates")" || return 0
+  if units_update --rawfile paths "$updates_file" \
+    '($paths|fromjson) as $path_map | .units |= map(.id as $id | if (.stage | IN("ready-to-merge","ci-pending")) and .product_paths == null and $path_map[$id] != null then .product_paths=$path_map[$id] else . end)'; then
+    rc=0
+  else
+    rc=$?
+  fi
+  rm -f -- "$updates_file"
+  return "$rc"
 }
 # 本机预检（precheck.sh）：等名额的单元先在本机跑 PR 自己改动的测试，PASS/SKIP 才给 CI 名额，FAIL 直接返工。
 # 10-22：批准后 CI 红 14/14 是 PR 自己改动的测试文件；12 小时 CI 判红 69 次、合并 12 次，每次红白等名额 + 45–60 分钟。
@@ -100,7 +108,7 @@ slot_sync() { # id head gated
       if [[ "${3:-0}" == 1 ]]; then
         updated_head="$(pr_view "$pr" headRefOid)"
         if [[ "$updated_head" =~ $SHA_RE && "$updated_head" != "$2" ]] && approval_carries "$pr" "$2" "$updated_head"; then
-          set_unit "$1" "$(hist approval-carried "clean main merge $updated_head on approved $2") | .approved_sha=$(js "$updated_head")" || return 0
+          set_unit "$1" "$(hist approval-carried "clean main merge $updated_head on approved $2") | .approved_sha=$(js "$updated_head") | .ci_gate_required=true | .ci_wait_sha=$(js "$updated_head") | .stage=\"ci-pending\" | del(.ci_green_sha)" || return 0
           say "approval carried PR#$pr $2 -> $updated_head (clean update-branch merge)"
           post_approved_status "$1" "$updated_head"
           SLOT_SYNC_CARRIED_HEAD="$updated_head"
@@ -129,7 +137,7 @@ ci_assign_wip() {
   wip="$(ci_pr_free_slots)" || { say "ci wip: PR runner capacity unavailable; admission skipped"; return 0; }
   local -A wait_of=() gwait_of=()
   GATED_SLOT=()
-  if jqf -e 'any(.units[]; .stage == "ready-to-merge" and (.pr // null) != null)' "$UNITS" >/dev/null; then
+  if jqf -e 'any(.units[]; (.stage | IN("ready-to-merge","ci-pending")) and (.pr // null) != null)' "$UNITS" >/dev/null; then
     if [[ "$GATED_CENSUS_LOADED" != true ]]; then
       gated_load || say "ci wip: gated PR listing unavailable; no draft/ready flips this pass"
     fi
@@ -193,10 +201,10 @@ ci_assign_wip() {
       fi
     fi
   # 同一优先级按 ready_since 先后；critical 与可解锁依赖只在 readiness 相同时作 tie-break。
-  done < <(jqf -r --slurpfile hotfix <(printf '%s' "${CI_HOTFIX_BRANCHES:-[]}") '[.units[] | select(.stage == "blocked-external") | .blocked_on | numbers] as $deps
-      | [.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.pr // null) != null and (.lane // "") != "direct-main"
+  done < <(jqf -r --argjson hotfix "${CI_HOTFIX_BRANCHES:-[]}" '[.units[] | select(.stage == "blocked-external") | .blocked_on | numbers] as $deps
+      | [.units[] | select((.stage | IN("ready-to-merge","ci-pending")) and (.hold_handoff_waiting // false) == false and (.pr // null) != null and (.lane // "") != "direct-main"
       and (.hotpatch // false) != true and (.branch // "") != ""
-      and ((.branch as $br | $hotfix[0] | index($br)) == null)
+      and ((.branch as $br | $hotfix | index($br)) == null)
       and .product_paths != false)]
       | sort_by([(if .main_red == true then 0 elif .ci_priority == true then 1 else 2 end),
                  '"$(ready_since_epoch)"', (if .critical == true then 0 else 1 end),
@@ -250,7 +258,7 @@ ci_slot_starve_watch() {
   rows_file="$tmpdir/starved-drafts.tsv"
   tick_prs > "$prs_file" || { rm -rf -- "$tmpdir"; return 0; }
   jqf -r --slurpfile prs "$prs_file" '.units[]
-      | select(.stage == "ready-to-merge" and (.pr // null) != null and (.hold_handoff_waiting // false) == false
+      | select((.stage | IN("ready-to-merge","ci-pending")) and (.pr // null) != null and (.hold_handoff_waiting // false) == false
           and (.lane // "") != "direct-main" and (.approved_sha // "") != "")
       | . as $u | ($prs[0][] | select(.number == $u.pr) | select(.isDraft == true)) | [$u.id, ($u.pr | tostring), ($u.ci_slot_wait_since // "")] | @tsv' "$UNITS" > "$rows_file" \
     || { rm -rf -- "$tmpdir"; return 0; }

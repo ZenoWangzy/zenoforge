@@ -1,6 +1,62 @@
 {
   "incidents": [
     {
+      "id": "approved-candidate-ci-green-barrier-and-test-identity-quarantine",
+      "date": "2026-11-03",
+      "class": "stale-candidate-validation-and-test-identity-aliasing",
+      "what_happened": "A review approval moved a unit to ready-to-merge before the required gates on that exact candidate SHA had completed. A later red candidate was routed to repair. Separately, main-red quarantine compared check names, so the same failing test was missed when the main and PR workflows reported it under different check names.",
+      "root_cause_evidence": "Original log: [2026-11-02T22:54:48Z] gated unit=issue-3237 PR#4994 readied on fc53c3cfc; [2026-11-02T23:04:32Z] merge skipped PR#4994 (tests failed in: Touched packages PR gate) -> repair-pending without waiting for the other checks or a rerun. Before the fix, engine/mac-autopilot/scheduler.d/harvest-workers.sh:168 recorded review approval and ready-to-merge before required candidate CI completed; engine/mac-autopilot/scheduler.d/merge-lane.sh:307-317 handled the red candidate later. Before the fix, engine/mac-autopilot/scheduler.d/ci-status.sh:32-63 matched failed check names, while a shared test can be reported under different names in the main and PR checks.",
+      "classic_pattern": "This is a time-of-check/time-of-use race: downstream merge eligibility consumes review approval before required CI has validated the same candidate revision, and a later head change can make any earlier green result stale. Google SRE frames safe release around the exact revision whose tests passed and recommends rerunning tests on the release branch. GitHub merge queues and GitLab merge trains apply the same mature pattern by testing a merge group or merged result against the current target and earlier queued changes. The quarantine half is a keying error: check display names are labels, while test file plus test name is the stable identity of the failure.",
+      "best_known_solution": "Keep review approval as durable evidence, store required-gates green as .ci_green_sha bound to the exact current PR head, and enter ready-to-merge only while that bound SHA matches. Clear green evidence on a head change and return the carried approval to ci-pending for fresh checks. For main-red quarantine, parse failing test file and test name on both sides and quarantine only when every candidate identity appears on main; fail closed when a failed job cannot be identified completely.",
+      "lesson_id": "V1279",
+      "research_sources": [
+        "https://sre.google/sre-book/release-engineering/",
+        "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue",
+        "https://docs.gitlab.com/ci/pipelines/merge_trains/"
+      ],
+      "options_considered": [
+        "Keep the existing review-approve transition and let merge-lane discover red checks later; this exposes an unverified candidate as merge-ready and may send shared main failures to repair.",
+        "Persist a generic green flag on the unit; it can survive a head change and authorize a different SHA.",
+        "Keep review approval recorded, require every configured required gate to pass on the current approved SHA before ready-to-merge, and clear green evidence whenever that SHA changes; selected, matching exact-revision release validation.",
+        "Continue comparing failed check names; names differ across workflows even when the underlying test failure is the same.",
+        "Compare parsed failing test file and test name across candidate and main logs, and fail closed when a complete identity is unavailable; selected."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/mac-autopilot/scheduler.d/approve-after-green.test.sh",
+        "expected_result": "Approval remains in ci-pending while candidate checks are red and requests the existing same-SHA retry without repair dispatch; only same-SHA required-gate success reaches ready-to-merge; a head change clears green evidence; no-PR direct-main approval keeps its focused-gate delivery path; a shared test identity is quarantined across different check names; and any unidentifiable failure prevents quarantine."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.d/approve-after-green.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Replays review approval followed by a red required gate on the same candidate SHA, verifies the approval is retained and a bounded same-SHA retry starts without repair dispatch, checks that only same-SHA required-gate success enables ready-to-merge, verifies head changes invalidate green evidence, quarantines one shared failing test reported under differently named checks, rejects quarantine when a mixed-log Node TAP or raw assertion failure lacks identity, and preserves the existing repair escalation after a repeated red.",
+          "test_file": "engine/mac-autopilot/scheduler.d/approve-after-green.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.d/approve-after-green.test.sh",
+            "--plant-old"
+          ],
+          "expected": "exit:1",
+          "why": "Plants the pre-fix approval transition and check-name comparison; the replay fails because approval reaches ready-to-merge before candidate CI, and the shared test is not quarantined across different check names.",
+          "test_file": "engine/mac-autopilot/scheduler.d/approve-after-green.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "test",
+        "enforced_by": [
+          "engine/mac-autopilot/scheduler.d/harvest-workers.sh",
+          "engine/mac-autopilot/scheduler.d/merge-lane.sh",
+          "engine/mac-autopilot/scheduler.d/ci-status.sh",
+          "engine/mac-autopilot/scheduler.d/approve-after-green.test.sh"
+        ]
+      }
+    },
+    {
       "id": "maintenance-tail-step-starvation",
       "date": "2026-11-03",
       "class": "optional-maintenance-work-consumes-required-recovery-budget",
@@ -693,23 +749,23 @@
       "id": "reviewer-family-matched-author",
       "date": "2026-11-03",
       "class": "reviewer-same-family-as-head-author",
-      "what_happened": "A review was configured on gpt-6-luna max, matching the Codex/Luna family that wrote the head. The old resolver returned the implementer's identity whenever its different-provider review role was unavailable, so the verifier could be the same family as the worker it reviewed.",
-      "root_cause_evidence": "Original journal line: 'run-tick: <agent-state> fast-forwarded to origin/main, now at: [skip ci] config(models): review runs on gpt-6-luna max, matching the model policy; handing off to issue-pipeline.sh'. The pre-fix engine/lib.d/model-policy.sh:761 printed implement_identity after the cross-provider role was unavailable, making the configured matching family an accepted verifier.",
+      "what_happened": "A review was configured on the same Codex model family as the implementation that wrote the head. The old resolver returned the implementer's identity whenever its different-provider review role was unavailable, so the verifier could be the same family as the worker it reviewed.",
+      "root_cause_evidence": "Original journal line: 'run-tick: <agent-state> fast-forwarded to origin/main, now at: [skip ci] config(models): review runs on the work model at max effort, matching the model policy; handing off to issue-pipeline.sh'. The pre-fix engine/lib.d/model-policy.sh:761 printed implement_identity after the cross-provider role was unavailable, making the configured matching family an accepted verifier.",
       "classic_pattern": "A fail-open availability fallback reuses the identity being checked, so a verification control loses independence exactly when its preferred verifier is unavailable. Shared model-family failures then affect both the change and its review.",
-      "best_known_solution": "Classify identities in one model-family table and select a reviewer using the model/backend recorded on the unit or its latest implement/repair worker. Codex heads try GLM, then a policy-authorized Sonnet review_fallback; GLM heads try Codex, then Sonnet. Reject same-family candidates and keep the review pending with one #166 bell intake line when all independent reviewers are unavailable.",
+      "best_known_solution": "Classify identities in one model-family table and select a reviewer using the model/backend recorded on the unit or its latest implement/repair worker. Codex heads try GLM, then a policy-authorized cross-family fallback; GLM heads try Codex, then an approved fallback. Reject same-family candidates and keep the review pending with one #166 bell intake line when all independent reviewers are unavailable.",
       "lesson_id": "V1276",
       "research_sources": [
         "vendor/pstack/skills/poteto-mode/playbooks/multi-phase-plan.md",
         "https://sre.google/sre-book/monitoring-distributed-systems/"
       ],
       "options_considered": [
-        "Use a different Codex model such as Terra when Luna is the author; rejected because model changes inside Codex remain the same model family.",
+        "Use a different model from the Codex family when Luna is the author; rejected because model changes inside one provider remain the same model family.",
         "Return to the author's identity when GLM is unavailable; rejected because the reviewer loses independence during the exact outage this fallback handles.",
-        "Use the cross-family reviewer first, allow Sonnet only for the named review_fallback role, then wait and alert; selected because no unavailable-provider path can dispatch the author's family."
+        "Use the cross-family reviewer first, allow an approved fallback only for its named role, then wait and alert; selected because no unavailable-provider path can dispatch the author's family."
       ],
       "siblings": {
         "discovery_command": "bash engine/mac-autopilot/review-family.test.sh",
-        "expected_result": "The planted pre-fix resolver exits 1 after dispatching gpt-6-luna for its same-family bad config; the fixed dispatcher refuses that config and the full focused guard exits 0."
+        "expected_result": "The planted pre-fix resolver exits 1 after dispatching the same work model family for its bad config; the fixed dispatcher refuses that config and the full focused guard exits 0."
       },
       "machine_checks": [
         {
@@ -718,7 +774,7 @@
             "engine/mac-autopilot/review-family.test.sh"
           ],
           "expected": "exit:0",
-          "why": "Routes Luna-authored work to GLM and GLM-authored work to Luna, refuses a planted same-family config, tests Sonnet fallback and both-held wait/alert, checks Claude remains forbidden for implement, and requires the planted historical fail-open selector to fail with same-family dispatch evidence.",
+          "why": "Routes Luna-authored work to GLM and GLM-authored work to Luna, refuses a planted same-family config, tests the approved fallback and both-held wait/alert, rejects a disabled family for implementation, and requires the planted historical fail-open selector to fail with same-family dispatch evidence.",
           "test_file": "engine/mac-autopilot/review-family.test.sh"
         }
       ],

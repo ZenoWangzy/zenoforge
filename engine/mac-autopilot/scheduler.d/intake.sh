@@ -302,7 +302,7 @@ register_new_issues() {
     (( want > 0 )) || { say "intake held: startable pending $pending meets target $target_pending (live $live max $MAX)"; return 0; }
   fi
   upstream="$(jqf '[.units[] | select(.stage | test("^(implement|review|rereview|repair)(-pending)?$"))] | length' "$UNITS")"
-  ready_q="$(jqf '[.units[] | select(.stage=="ready-to-merge" or .stage=="landing")] | length' "$UNITS")"
+  ready_q="$(jqf '[.units[] | select(.stage=="ci-pending" or .stage=="ready-to-merge" or .stage=="landing")] | length' "$UNITS")"
   upstream_room=$(( max_up - upstream ))
   # 合并车道约束时仍只收阻塞在前置上的 issue；与旧路径相同，这种解阻候选不受 max_upstream 限制。
   if (( ready_q >= max_ready )); then
@@ -583,7 +583,7 @@ register_new_issues() {
           else . end
         else
           .issue = $n | .labels = $labels | .body_blocked_by = $body_blocked_by | .hold_handoff_episode = $episode | .approved_sha = null | .reviewed_sha = null | .reviewed_pr_head = null | del(.blocked_on, .self_fix_pending)
-          | if $pr_changed then del(.ci_adopt_head, .ci_adopt_at, .ci_sync_head, .ci_ready_sha, .ci_ready_at, .ci_held_sha, .ci_wip_wait, .gated, .lane_policy, .product_paths) else . end
+          | if $pr_changed then del(.ci_adopt_head, .ci_adopt_at, .ci_sync_head, .ci_ready_sha, .ci_ready_at, .ci_held_sha, .ci_wip_wait, .ci_green_sha, .ci_wait_sha, .gated, .lane_policy, .product_paths) else . end
           | .history = ((.history // []) + [{stage:"supervisor-requeue",result:"ownerless hold handoff; read issue comments",at:$at}])
           | if $pr_state == "OPEN" then
               .stage = "repair-pending" | .pr = ($existing_pr | tonumber) | .lane = $lane | .lane_policy = $lane_policy | del(.product_paths)

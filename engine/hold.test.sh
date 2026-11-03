@@ -53,10 +53,23 @@ case "$command:$subcommand" in
         echo "fixture issue snapshot failure" >&2
         exit 1
       fi
+      snapshot="$(
       for file in "$FAKE_GH_ROOT"/issues/*.json; do
         [ -f "$file" ] || continue
+        number="$(jq -r '.number' "$file")"
+        [[ " ${FAKE_HOLD_SNAPSHOT_OMIT:-} " == *" $number "* ]] && continue
         jq -c 'select(any(.labels[]?; .name == "on-hold"))' "$file"
       done | jq -s '.'
+      )"
+      for replacement in "$FAKE_GH_ROOT"/replacement-*.json; do
+        [ -f "$replacement" ] || continue
+        number="${replacement##*/}"
+        number="${number#replacement-}"
+        number="${number%.json}"
+        cp "$replacement" "$AGENT_HOME/state/$number.json"
+        rm "$replacement"
+      done
+      printf '%s\n' "$snapshot"
     fi
     ;;
   issue:view)
@@ -162,7 +175,7 @@ reset_fixture() {
   mkdir -p "$FAKE_GH_ROOT/issues" "$AGENT_HOME/state" "$AGENT_HOME/locks" "$AGENT_HOME/night" "$ZF_WORKTREE_ROOT"
   : > "$AGENT_HOME/supervisor-inbox"
   FAKE_PR_LIST_RESPONSE='[]'
-  unset FAKE_HOLD_OPEN_PRS FAKE_HOLD_MERGED_PRS FAKE_HOLD_PR_CHECKS FAKE_HOLD_PR_CHECKS_STATUS FAKE_HOLD_ISSUE_LIST_FAILURE FAKE_HOLD_VIEW_FAILURES FAKE_GH_VIEW_FAILURES FAKE_HOLD_EDIT_FAILURE FAKE_HOLD_COMMENT_FAILURE
+  unset FAKE_HOLD_OPEN_PRS FAKE_HOLD_MERGED_PRS FAKE_HOLD_PR_CHECKS FAKE_HOLD_PR_CHECKS_STATUS FAKE_HOLD_ISSUE_LIST_FAILURE FAKE_HOLD_SNAPSHOT_OMIT FAKE_HOLD_VIEW_FAILURES FAKE_GH_VIEW_FAILURES FAKE_HOLD_EDIT_FAILURE FAKE_HOLD_COMMENT_FAILURE
   : > "$FAKE_GH_LOG"
 }
 write_issue() {
@@ -682,7 +695,7 @@ test_expired_unknown_backfill_stays_ownerless() {
   run_sweep
   assert_eq "ownerless hold remains held on later tick" 0 "$LAST_STATUS"
   assert_eq "later tick preserves its state and attempt budget" "$after_state" "$(jq -S '.' "$(state_file 4120)")"
-  assert_contains "ownerless hold is reread for a later durable record" "$(cat "$FAKE_GH_LOG")" 'view 4120'
+  assert_contains "ownerless hold is included in the shared detail snapshot" "$(cat "$FAKE_GH_LOG")" 'list'
   assert_eq "ownerless inbox message is recorded once" 1 "$(grep -Fc 'ownerless-hold issue=#4120' "$AGENT_HOME/supervisor-inbox" || true)"
   assert_eq "ownerless idempotency key is recorded once" 1 "$(grep -Fc $'\townerless-hold:#4120' "$AGENT_HOME/supervisor-inbox.once" || true)"
 }
@@ -810,7 +823,7 @@ test_closed_hold_read_failure_preserves_evidence() {
   write_state 4197 '{"state":"on-hold","hold":{"holder":"manual","release_condition":"review","expires_at":"2026-10-12T00:00:00Z","stage_before":"ready-for-human"}}'
   before_issue="$(jq -S '.' "$FAKE_GH_ROOT/issues/4197.json")"
   before_state="$(jq -S '.' "$AGENT_HOME/state/4197.json")"
-  FAKE_GH_VIEW_FAILURES=4197 run_sweep
+  FAKE_HOLD_SNAPSHOT_OMIT=4197 FAKE_GH_VIEW_FAILURES=4197 run_sweep
   assert_eq "failed GitHub read fails the sweep" 1 "$LAST_STATUS"
   assert_eq "failed GitHub read leaves closed issue untouched" "$before_issue" "$(jq -S '.' "$FAKE_GH_ROOT/issues/4197.json")"
   assert_eq "failed GitHub read preserves local hold evidence" "$before_state" "$(jq -S '.' "$AGENT_HOME/state/4197.json")"
@@ -1021,7 +1034,7 @@ test_replaced_hold_is_not_released_or_notified() {
     jq '.hold={holder:"supervisor",kind:"manual",release_condition:"new decision",created_at:(now|todate),expires_at:(now+86400|todate),stage_before:"ready-for-agent",durable_record:true}' \
       "$AGENT_HOME/state/4117.json" > "$FAKE_GH_ROOT/replacement-4117.json"
     run_sweep
-    assert_eq "$kind replaced hold causes a safe retry" 1 "$LAST_STATUS"
+    assert_eq "$kind replacement is observed before the batch action" 0 "$LAST_STATUS"
     state="$(state_read 4117)"
     assert_eq "$kind leaves replacement on hold" on-hold "$(jq -r .state <<< "$state")"
     assert_eq "$kind retains new hold" 'new decision' "$(jq -r .hold.release_condition <<< "$state")"
@@ -1357,11 +1370,13 @@ test_settled_holds_skip_issue_reads() {
   run_sweep
   assert_eq "first sweep succeeds" 0 "$LAST_STATUS"
   assert_not_contains "an unexpired owned hold is not read from GitHub" "$(cat "$FAKE_GH_LOG")" 'view 4107'
-  assert_contains "ownerless record is read to find durable source" "$(cat "$FAKE_GH_LOG")" 'view 4108'
+  assert_contains "ownerless record is read from the shared detail snapshot" "$(cat "$FAKE_GH_LOG")" 'list'
+  assert_not_contains "ownerless record avoids a per-issue GitHub read" "$(cat "$FAKE_GH_LOG")" 'view 4108'
   : > "$FAKE_GH_LOG"
   run_sweep
   assert_eq "second sweep succeeds" 0 "$LAST_STATUS"
-  assert_contains "ownerless record is rechecked for later durable source" "$(cat "$FAKE_GH_LOG")" 'view 4108'
+  assert_contains "ownerless record is rechecked in a later detail snapshot" "$(cat "$FAKE_GH_LOG")" 'list'
+  assert_not_contains "later ownerless snapshot avoids a per-issue GitHub read" "$(cat "$FAKE_GH_LOG")" 'view 4108'
 }
 
 test_supervisor_holds_scans_live_worktrees_once() {

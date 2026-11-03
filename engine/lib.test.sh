@@ -11,7 +11,7 @@
 # LIB_TEST_RELEASE_CLOSE_ONLY, LIB_TEST_OPS_TRANSITION_ONLY, and
 # LIB_TEST_MODEL_POLICY_ONLY; each stops after its section, so preceding
 # sections still run.
-set -euo pipefail
+set -Eeuo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
 LIB_TEST_AGENT_HOME="$AGENT_HOME"
 INBOX_HELPER_HOME="$(mktemp -d)"
@@ -58,6 +58,7 @@ ok() { ASSERTIONS=$((ASSERTIONS + 1)); }
 # tests are unaffected.
 LIB_TEST_STDERR_LOG="$(mktemp)"
 exec 3>&1 4>&2 >/dev/null 2>"$LIB_TEST_STDERR_LOG"
+trap 'lib_err_status=$?; printf "engine/lib.test.sh: unhandled command failed at line %s (status %s): %s\\n" "${BASH_LINENO[0]:-$LINENO}" "$lib_err_status" "$BASH_COMMAND" >&4' ERR
 
 # Single-case switches exit through here so they print the same one-line summary.
 lib_case_exit() {
@@ -528,6 +529,9 @@ AGENT_HOME="$BLOCKED_CHECKS_HOME" AGENT_DRY_RUN=0 DRY_RUN=0 REPO=test/repo \
   bash -c '
     source "$0/lib.sh"
     ensure_state_labels() { :; }
+    # This case is about repeat escalation, not a live GitHub label read.
+    # Keep the issue unheld so CI without GH_TOKEN exercises the intended path.
+    gh() { [[ "${1:-} ${2:-}" == "issue list" ]] || return 99; return 0; }
     for transition_state in "${ALL_STATE_LABELS[@]}" on-hold tracker untracked; do
       issue_transition_state_is_valid "$transition_state" || exit 13
     done
@@ -812,9 +816,11 @@ MERGED_PR_GUARD_OUT="$(AGENT_HOME="$MERGED_PR_GUARD_HOME" REPO=test/repo bash -c
   set -euo pipefail
   source "$1/lib.sh"
   gh() { printf "%s\n" '\''{"number":796,"state":"MERGED","baseRefName":"agent/issue-795","mergeCommit":{"oid":"feature-sha"}}'\''; }
-  if conclude_merged_run 510008 796; then echo accepted; else echo rejected; fi
+  conclude_status=0
+  conclude_merged_run 510008 796 || conclude_status=$?
+  if [ "$conclude_status" -eq 0 ]; then echo accepted; else echo rejected; fi
   jq -c . "$STATE_DIR/510008.json"
-' _ "$SCRIPT_DIR")"
+' _ "$SCRIPT_DIR")" || :
 assert_eq 'feature-branch merge leaves ticket state untouched' \
   $'rejected\n{"state":"implement","attempts":1}' "$MERGED_PR_GUARD_OUT"
 rm -rf "$MERGED_PR_GUARD_HOME"
@@ -1542,7 +1548,7 @@ HOLD_DEAD_RUN="$(AGENT_HOME="$HOLD_DEAD_HOME" ZF_NIGHT_DIR="$HOLD_DEAD_HOME/nigh
       "$$" "$owner_ticks" > "$ZF_NIGHT_DIR/agents.txt"
     gh() {
       if [[ "$1 ${2:-}" == "issue list" ]]; then
-        jq -cn '\''[{number:740040},{number:740041},{number:740046},{number:740048}]'\''
+        jq -cn '\''[740040,740041,740046,740048] | map({number:.,state:"OPEN",labels:[{name:"on-hold"}],comments:[],title:"hold fixture"})'\''
       else
         jq -cn '\''{state:"OPEN",labels:[{name:"on-hold"}],comments:[],title:"hold fixture"}'\''
       fi
@@ -1592,7 +1598,7 @@ HOLD_AGE_RUN="$(AGENT_HOME="$HOLD_AGE_HOME" ZF_NIGHT_DIR="$HOLD_AGE_HOME/night" 
     source "$1/lib.sh"
     gh() {
       if [[ "$1 ${2:-}" == "issue list" ]]; then
-        jq -cn '\''[{number:740042},{number:740043},{number:740049}]'\''
+        jq -cn '\''[740042,740043,740049] | map({number:.,state:"OPEN",labels:[{name:"on-hold"}],comments:[],title:"hold fixture"})'\''
       else
         jq -cn '\''{state:"OPEN",labels:[{name:"on-hold"}],comments:[],title:"hold fixture"}'\''
       fi
@@ -3186,9 +3192,9 @@ assert_true "untrusted title/reporter text passes through as literal plain text"
 # --- persistent model policy: shared roles and one escalation ladder -------
 assert_eq "work role identity resolves from policy model and effort" "$POLICY_WORK_IDENTITY" "$(model_policy identity work)"
 assert_eq "production role identity resolves from policy model and effort" "$POLICY_PRODUCTION_IDENTITY" "$(model_policy identity production)"
-assert_true "default work, review, and production roles preserve Luna primaries and have no fallbacks" jq -e '
+assert_true "default work and production roles use Luna while review uses the cross-family GLM primary" jq -e '
   .roles.work.provider == "codex" and .roles.work.model == "gpt-6-luna" and .roles.work.effort == "max"
-  and .roles.review.provider == "codex" and .roles.review.model == "gpt-6-luna" and .roles.review.effort == "max"
+  and .roles.review.provider == "zcode" and .roles.review.model == "GLM-5.3" and .roles.review.effort == "max"
   and .roles.production.provider == "codex" and .roles.production.model == "gpt-6-luna" and .roles.production.effort == "high"
   and ([.roles.work, .roles.review, .roles.production] | all((has("fallback_model") | not) and (has("fallback_identity") | not)))
   and (.forbidden | index("sol") != null)
@@ -3569,7 +3575,7 @@ HOLD_EXPIRY_STATE="$(AGENT_HOME="$HOLD_EXPIRY_HOME" REPO=test/repo bash -c '
   roadmap_ensure_issue_parent() { :; }
   gh() {
     if [ "$1 ${2:-}" = "issue list" ]; then
-      printf "%s\\n" '\''[{"number":509988}]'\''
+      printf "%s\\n" '\''[{"number":509988,"state":"OPEN","labels":[{"name":"on-hold"}],"comments":[],"title":"fixture"}]'\''
     elif [ "$1 ${2:-}" = "issue view" ]; then
       printf "%s\\n" '\''{"state":"OPEN","labels":[{"name":"on-hold"}],"comments":[],"title":"fixture"}'\''
     elif [ "$1 ${2:-}" = "pr list" ]; then
@@ -4144,13 +4150,17 @@ assert_true "read_needs_info_email_replies() keeps applied-default threads eligi
   bash -c 'echo "$1" | grep -qF -- "needs_info_default_applied.thread_id"' _ "$READ_SIDE_FN_BODY"
 
 POST_DISPATCH_MAINTENANCE_BODY="$(sed -n '/^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+MAINTENANCE_OPTIONAL_STEP_BODY="$(sed -n '/^maintenance_run_optional_step() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 NEEDS_INFO_RECONCILE_BODY="$(sed -n '/^reconcile_needs_info_issues() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 assert_true "post-dispatch maintenance reads needs-info mail before reply reconciliation" \
   bash -c '
     read_side_line=$(grep -nF "read_needs_info_email_replies" <<< "$1" | head -n1 | cut -d: -f1)
-    reconcile_line=$(grep -nF "reconcile_needs_info_issues" <<< "$1" | head -n1 | cut -d: -f1)
-    [ -n "$read_side_line" ] && [ -n "$reconcile_line" ] && [ "$read_side_line" -lt "$reconcile_line" ]
-  ' _ "$POST_DISPATCH_MAINTENANCE_BODY"
+    suffix_loop_line=$(grep -nF "for ((i = suffix_start;" <<< "$1" | head -n1 | cut -d: -f1)
+    reconcile_case_line=$(grep -nF "needs-info-loop)" <<< "$2" | head -n1 | cut -d: -f1)
+    reconcile_line=$(grep -nF "reconcile_needs_info_issues" <<< "$2" | head -n1 | cut -d: -f1)
+    [ -n "$read_side_line" ] && [ -n "$suffix_loop_line" ] && [ "$read_side_line" -lt "$suffix_loop_line" ] \
+      && [ -n "$reconcile_case_line" ] && [ -n "$reconcile_line" ] && [ "$reconcile_case_line" -lt "$reconcile_line" ]
+  ' _ "$POST_DISPATCH_MAINTENANCE_BODY" "$MAINTENANCE_OPTIONAL_STEP_BODY"
 
 # 2026-09-15 (restored maintainer verdict): needs-info reconciliation must route an
 # advisor-origin needs-info answer back to needs-advisor (route_to_advisor,

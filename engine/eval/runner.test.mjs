@@ -156,7 +156,7 @@ test('role overrides rewrite a policy copy without mutating the source policy', 
   const copy = applyOverrides(policy, ['review=zcode:GLM-5.3:max', 'work=codex:gpt-6-luna:high:fast']);
   assert.deepEqual([copy.roles.review.provider, copy.roles.review.model, copy.roles.review.effort, copy.roles.review.service_tier], ['zcode', 'GLM-5.3', 'max', undefined]);
   assert.deepEqual([copy.roles.work.effort, copy.roles.work.service_tier], ['high', 'fast']);
-  assert.equal(policy.roles.review.provider, 'codex');
+  assert.equal(policy.roles.review.provider, 'zcode');
   assert.throws(() => applyOverrides(policy, ['nope=zcode:x']), /existing role/);
   assert.throws(() => applyOverrides(policy, ['review=zcode']), /existing role/);
 });

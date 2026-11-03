@@ -37,6 +37,8 @@ ZF_CONFIG_ROOT="$target" ZF_PACK_DIR="$pack" bash -c '
   ! grep -Fq "pack batch prompt" "$(advisor_prompt_file batch)"
 ' _ "$script_dir"
 
+# This result-shape test isolates poll parsing; incident persistence is covered by advisor-incident.test.sh.
+advisor_batch_capture_provider_diagnostics() { :; }
 eval "$(sed -n '/^advisor_batch_poll_provider_job() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
 web_advisor_provider_poll() {
   [[ "$1" == fixture-job ]]

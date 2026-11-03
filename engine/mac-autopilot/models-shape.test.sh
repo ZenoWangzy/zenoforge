@@ -29,7 +29,7 @@ export MAC_AUTOPILOT_RUNTIME_DIR="$runtime" MAC_AUTOPILOT_DASHBOARD_OUTPUT="$fix
 export MAC_AUTOPILOT_COST_CACHE="$fixture/cost-cache.json" CODEX_SESSIONS_DIR="$fixture/sessions"
 export PATH="$fixture/bin:$PATH"
 printf '{"units":[]}\n' > "$runtime/units.json"
-printf '{"workers":[{"pid":0,"unit":"synthetic","type":"review","log":"missing.log"}]}\n' > "$runtime/workers.json"
+printf '{"workers":[{"pid":%s,"unit":"synthetic","type":"review","log":"missing.log"}]}\n' "$$" > "$runtime/workers.json"
 printf '{"date":"2026-11-03","total":0}\n' > "$runtime/budget.json"
 cp "$script_dir/config.template.json" "$runtime/config.json"
 touch "$runtime/scheduler.log"
@@ -104,7 +104,7 @@ vm.runInContext(inline[0], ctx, {filename: "dashboard.html"});
 const workers = ctx.__dash.MODULES.find(module => module.id === "workers");
 if (!workers) throw new Error("workers dashboard module is missing");
 const rendered = workers.render(D);
-if (!rendered.includes("review") || rendered.includes("implement_share") || rendered.includes("[object Object]"))
+if (!rendered.includes("质检员") || rendered.includes("implement_share") || rendered.includes("[object Object]"))
   throw new Error("dashboard model tags did not skip the object-shaped model setting");
 console.log("models-shape.test.sh: dashboard JS model rendering PASS");
 JS

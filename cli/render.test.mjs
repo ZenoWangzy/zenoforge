@@ -28,8 +28,9 @@ test('capacity env and recipients stay safe by default', () => {
   assert.deepEqual(JSON.parse(renderRecipients()), { maintainer_login: '', recipients: {} });
 });
 
-test('config template: caps, kill switches for unshipped parts, review provider', () => {
+test('config template: caps, kill switches for unshipped parts, review family defaults', () => {
   const tpl = read('mac-autopilot/config.template.json');
+  const templateModels = JSON.parse(tpl).models;
   const base = { maxWorkers: 2, dailyTokenBudget: 1000, autoMerge: false };
   const claude = JSON.parse(renderConfigTemplate(tpl, { ...base, reviewProvider: 'claude' }));
   assert.equal(claude.max_workers, 2);
@@ -38,7 +39,9 @@ test('config template: caps, kill switches for unshipped parts, review provider'
   assert.equal(claude.auto_merge, false);
   assert.equal(claude.release_train.enabled, false);
   assert.equal(claude.supervisor_arbiter.enabled, false);
-  assert.match(claude.models.review[0], /^claude-/);
+  assert.deepEqual(claude.models.review, templateModels.review);
+  assert.deepEqual(claude.models.review_cross, templateModels.review_cross);
+  assert.deepEqual(claude.models.review_fallback, templateModels.review_fallback);
   const codex = JSON.parse(renderConfigTemplate(tpl, { ...base, reviewProvider: 'codex', autoMerge: true }));
   assert.deepEqual(codex.models.review, codex.models.implement);
   assert.equal(codex.auto_merge, true);

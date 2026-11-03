@@ -30,7 +30,7 @@ phase() {
 
 stage_slo_watch() {
   local budgets row id stage since key
-  budgets="$(jqf -c '.stage_slo_minutes // {"pending":30,"ready-to-merge":120,"landing":60,"supervisor-review":60,"blocked-external":240}' <<<"$CFG")"
+  budgets="$(jqf -c '(.stage_slo_minutes // {"pending":30,"ready-to-merge":120,"landing":60,"supervisor-review":60,"blocked-external":240}) as $b | $b + {"ci-pending": ($b["ci-pending"] // 120)}' <<<"$CFG")"
   while IFS=$'\t' read -r id stage since key; do
     [[ -n "$id" ]] || continue
     set_unit "$id" ".slo_alerted=$(js "$key")"
@@ -39,7 +39,7 @@ stage_slo_watch() {
       .units[] | select(.stage | test("^(closed|landed|merged|done)$") | not)
       | ((.history // []) | map(select(.at != null)) | last | .at // empty) as $at | select($at != null)
       | ($at | sub("\\.[0-9]+"; "") | fromdateiso8601) as $t
-      | (if (.stage | endswith("-pending")) then "pending" else .stage end) as $class
+      | (if .stage=="ci-pending" then "ci-pending" elif (.stage | endswith("-pending")) then "pending" else .stage end) as $class
       | select($b[$class] != null and ($now - $t) > ($b[$class] * 60))
       | (.stage + "@" + $at) as $key | select((.slo_alerted // "") != $key)
       | "\(.id)\t\(.stage)\t\((($now - $t) / 60) | floor)\t\($key)"' "$UNITS" 2>/dev/null)
@@ -187,10 +187,10 @@ unpark_resolved_main_red_units() {
       first(.units[] | select(.main_red==true and .ci_sha==$red and .stage=="closed"
         and ((.resolved_main_sha // "") | test("^[0-9a-f]{40}$"))) | .resolved_main_sha // empty)
     ' "$UNITS")"
-    [[ "$resolved_sha" =~ $SHA_RE && "$prior_stage" == ready-to-merge ]] || continue
+    [[ "$resolved_sha" =~ $SHA_RE && ( "$prior_stage" == ready-to-merge || "$prior_stage" == ci-pending ) ]] || continue
     history_update="$(hist main-red-unpark "main red SHA $red_sha resolved by green descendant $resolved_sha")"
-    set_unit "$id" "$history_update | .stage=\"ready-to-merge\" | del(.parked_reason,.parked_main_red_sha,.parked_from_stage,.parked_head_sha,.parked_check_names,.ci_rerun_sha,.ci_test_checked,.ci_facts_head,.ci_facts)"
-    say "main-red CI park unit=$id resumed at ready-to-merge after main green $resolved_sha"
+    set_unit "$id" "$history_update | .stage=\"ci-pending\" | .ci_gate_required=true | .ci_wait_sha=(.approved_sha // .parked_head_sha) | del(.parked_reason,.parked_main_red_sha,.parked_from_stage,.parked_head_sha,.parked_check_names,.parked_test_ids,.ci_green_sha,.ci_rerun_sha,.ci_test_checked,.ci_facts_head,.ci_facts)"
+    say "main-red CI park unit=$id resumed at ci-pending after main green $resolved_sha (prior=$prior_stage)"
     unparked=$((unparked + 1))
   done < <(jqf -r '
     .units[] | select(.stage=="parked" and .parked_reason=="main-red"

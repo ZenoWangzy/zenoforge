@@ -615,6 +615,10 @@ tick_gh() {
         cat "$TF/ci-admission-runs.json"
         return 0
       fi
+      if [[ -f "$TF/main-red-run-list.json" && "$*" == *'--json databaseId,conclusion,event,headBranch'* ]]; then
+        cat "$TF/main-red-run-list.json"
+        return 0
+      fi
       if [[ "$*" == *'--jq'* ]]; then
         [[ "$*" == *'.[0].databaseId'* ]] && echo 701
         return 0
@@ -680,6 +684,10 @@ tick_gh() {
           {name:"Touched packages PR gate",bucket:"pass",started_at:$started_at},
           {name:"Repo-path regression PR gate",bucket:"pass",started_at:$started_at}
         ]'
+        return
+      fi
+      if [[ -f "$TF/rule-lane-checks" ]]; then
+        command jq -cn '[{name:"ci",bucket:"pass",started_at:"2026-10-30T00:00:00Z"}]'
         return
       fi
       local check_name=ci
@@ -764,7 +772,7 @@ tick_gh() {
         # The census: check rows come from the per-PR `pr checks` fixture above, heads from the `pr view` fixture.
         local query="." rows='[]' n c previous="" arg
         for arg in "$@"; do [[ "$previous" == --jq ]] && query="$arg"; previous="$arg"; done
-        for n in $(command jq -r '.units[] | select(.stage == "ready-to-merge" and .pr != null) | .pr' "$TF/supervisor/autopi/units.json"); do
+        for n in $(command jq -r '.units[] | select((.stage | IN("ready-to-merge","ci-pending")) and .pr != null) | .pr' "$TF/supervisor/autopi/units.json"); do
           c="$(tick_gh pr checks "$n" --json name,bucket,link)"
           rows="$(command jq -c --argjson n "$n" --arg head "$(tick_gh pr view "$n" --json headRefOid --jq .headRefOid)" --argjson c "${c:-[]}" 'if any(.[]; .number == $n) then . else . + [{number: $n, headRefOid: $head, isDraft: false, title: "", labels: [], statusCheckRollup: ($c | map({__typename: "CheckRun", name: .name, detailsUrl: (.link // ""), startedAt: (.started_at // null), status: (if .bucket == "pending" then "IN_PROGRESS" else "COMPLETED" end), conclusion: ({pass: "SUCCESS", fail: "FAILURE", skipping: "SKIPPED", cancel: "CANCELLED"}[.bucket] // null)}))}] end' <<<"$rows")"
         done
@@ -817,7 +825,13 @@ tick_gh() {
         echo '{}'
       fi ;;
     'api '*)
-      if [[ "$*" == *'/commits/'*'/check-runs?per_page=100'* && -f "$TF/main-check-runs.json" ]]; then
+      if [[ "$*" =~ actions/runs/([0-9]+)/jobs ]] && [[ -f "$TF/main-red-jobs-${BASH_REMATCH[1]}.json" ]]; then
+        local main_red_run_id="${BASH_REMATCH[1]}"
+        cat "$TF/main-red-jobs-${main_red_run_id}.json"
+      elif [[ "$*" =~ actions/jobs/([0-9]+)/logs ]] && [[ -f "$TF/job-log-${BASH_REMATCH[1]}.txt" ]]; then
+        local main_red_job_id="${BASH_REMATCH[1]}"
+        cat "$TF/job-log-${main_red_job_id}.txt"
+      elif [[ "$*" == *'/commits/'*'/check-runs?per_page=100'* && -f "$TF/main-check-runs.json" ]]; then
         cat "$TF/main-check-runs.json"
       elif [[ "$*" == *'actions/runners?per_page=100'* ]]; then
         # PR CI 名额按在线 PR runner 算（60ba960cf）；无夹具时默认一个在线 PR runner
@@ -1315,9 +1329,9 @@ tick
 grep -Fq 'gh pr edit 50 --add-label pipeline-ci' "$TF/calls" \
   || { echo 'scheduler.test.sh: tick did not label the adopted non-agent PR' >&2; exit 1; }
 command jq -e --arg sha "$adopted_head" \
-  '.units[0].ci_adopt_head == $sha and (.units[0].ci_adopt_at | type == "string") and .units[0].stage == "ready-to-merge"' \
+  '.units[0].ci_adopt_head == $sha and (.units[0].ci_adopt_at | type == "string") and .units[0].stage == "ci-pending" and .units[0].ci_gate_required == true and (.units[0].ci_green_sha // "") == ""' \
   "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: adoption was not recorded or merged before CI ran' >&2; exit 1; }
+  || { echo 'scheduler.test.sh: adoption was not recorded or the approved candidate did not wait for fresh CI' >&2; exit 1; }
 if grep -q '^merge 50$' "$TF/actions"; then
   echo 'scheduler.test.sh: tick merged before the adopted branch had post-label checks' >&2; exit 1
 fi
@@ -1326,12 +1340,22 @@ tick
 if grep -q '^merge 50$' "$TF/actions"; then
   echo 'scheduler.test.sh: tick reused pre-adoption aggregate passes' >&2; exit 1
 fi
-grep -Fq 'required checks without a real pass:' "$TF/supervisor/autopi/scheduler.log" \
-  || { echo "scheduler.test.sh: stale adopted checks did not hold the merge" >&2; echo "--- scheduler.log ---" >&2; tail -20 "$TF/supervisor/autopi/scheduler.log" >&2; echo "--- actions ---" >&2; cat "$TF/actions" >&2; exit 1; }
+command jq -e --arg sha "$adopted_head" \
+  '.units[0].stage == "ci-pending" and .units[0].ci_wait_sha == $sha and (.units[0].ci_green_sha // "") == ""' \
+  "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo "scheduler.test.sh: pre-adoption checks satisfied or bypassed the candidate SHA gate" >&2; echo "--- scheduler.log ---" >&2; tail -20 "$TF/supervisor/autopi/scheduler.log" >&2; echo "--- actions ---" >&2; cat "$TF/actions" >&2; exit 1; }
 printf 'fresh\n' > "$TF/pipeline-ci-adoption"
 tick
+fresh_stage="$(command jq -r '.units[0].stage' "$TF/supervisor/autopi/units.json")"
+if [[ "$fresh_stage" == ready-to-merge ]]; then
+  command jq -e --arg sha "$adopted_head" \
+    '.units[0].ci_gate_required == true and .units[0].ci_green_sha == $sha' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'scheduler.test.sh: fresh aggregate passes readied the candidate without exact-SHA green evidence' >&2; exit 1; }
+  tick # A newly admitted candidate may merge on the next scheduler pass.
+fi
 [[ "$(command jq -r '.units[0].stage' "$TF/supervisor/autopi/units.json")" == merged ]] \
-  || { echo 'scheduler.test.sh: fresh aggregate passes did not release the adopted PR' >&2; exit 1; }
+  || { echo "scheduler.test.sh: fresh aggregate passes did not release the adopted PR (stage=$fresh_stage)" >&2; exit 1; }
 grep -q '^merge 50$' "$TF/actions" \
   || { echo 'scheduler.test.sh: merge action for the adopted PR was not observed' >&2; exit 1; }
 [[ "$(grep -c '^gh pr edit 50 --add-label pipeline-ci$' "$TF/calls")" == 1 ]] \
@@ -1604,6 +1628,9 @@ sched_case_rule_lane() {
 # Unavailable diffs and failed repair comments keep holding.
 new_tick_fixture rule-lane
 enable_rule_lane_fixture
+printf '%s\n' '{"required":["ci"],"current_regression":"","legacy_regression":[]}' > "$TF/required-pr-checks.json"
+export REQUIRED_PR_CHECKS_FILE="$TF/required-pr-checks.json"
+touch "$TF/rule-lane-checks"
 touch "$TF/supervisor/test-evidence.jsonl"
 command jq '.auto_merge=true | .batch_max=5' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
 mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
@@ -1685,10 +1712,10 @@ command git -C "$TF/repo" diff --name-only "$advanced_main_sha" "$clean_head" \
 
 command jq -cn --arg bad "$rule_head" --arg clean "$clean_head" --arg missing "$(printf '%040x' 52)" \
   --arg no_report "$missing_head" --arg bad_report "$invalid_head" --arg newstop "$newstop_head" '{units:[
-  {id:"pr-4548",issue:4548,pr:51,lane:"pr",branch:"agent/issue-4548",stage:"ready-to-merge",approved_sha:$bad,ready_since:1,history:[]},
-  {id:"pr-4550",issue:4550,pr:52,lane:"pr",branch:"agent/issue-4550",stage:"ready-to-merge",approved_sha:$missing,ready_since:2,history:[]},
-  {id:"pr-4551",issue:4551,pr:53,lane:"pr",branch:"agent/issue-4551",stage:"ready-to-merge",approved_sha:$bad,ready_since:3,history:[]},
-  {id:"pr-4552",issue:4552,pr:54,lane:"pr",branch:"agent/issue-4552",stage:"ready-to-merge",approved_sha:$clean,ready_since:4,history:[]},
+  {id:"pr-4548",issue:4548,pr:51,lane:"pr",branch:"agent/issue-4548",stage:"ready-to-merge",approved_sha:$bad,ci_ready_sha:$bad,ci_ready_at:"2026-10-29T00:00:00Z",ready_since:1,history:[]},
+  {id:"pr-4550",issue:4550,pr:52,lane:"pr",branch:"agent/issue-4550",stage:"ready-to-merge",approved_sha:$missing,ci_ready_sha:$missing,ci_ready_at:"2026-10-29T00:00:00Z",ready_since:2,history:[]},
+  {id:"pr-4551",issue:4551,pr:53,lane:"pr",branch:"agent/issue-4551",stage:"ready-to-merge",approved_sha:$bad,ci_ready_sha:$bad,ci_ready_at:"2026-10-29T00:00:00Z",ready_since:3,history:[]},
+  {id:"pr-4552",issue:4552,pr:54,lane:"pr",branch:"agent/issue-4552",stage:"ready-to-merge",approved_sha:$clean,ci_ready_sha:$clean,ci_ready_at:"2026-10-29T00:00:00Z",ready_since:4,history:[]},
   {id:"pr-4553",issue:4553,pr:55,lane:"pr",branch:"supervisor/rule-4484",stage:"ready-to-merge",approved_sha:$bad,ready_since:5,history:[],ci_adopt_head:$bad,ci_adopt_at:"2026-10-29T00:00:00Z"},
   {id:"pr-4554",issue:4554,pr:56,lane:"pr",branch:"supervisor/miss-4548",stage:"ready-to-merge",approved_sha:$no_report,ready_since:6,history:[],ci_adopt_head:$no_report,ci_adopt_at:"2026-10-29T00:00:00Z"},
   {id:"pr-4555",issue:4555,pr:57,lane:"pr",branch:"supervisor/bad-4548",stage:"ready-to-merge",approved_sha:$bad_report,ready_since:7,history:[],ci_adopt_head:$bad_report,ci_adopt_at:"2026-10-29T00:00:00Z"},
@@ -1707,7 +1734,14 @@ command jq -e --arg bad "$rule_head" --arg clean "$clean_head" --arg no_report "
   and ([.units[] | select(.pr==57)][0] | .stage=="merged" and .approved_sha==$bad_report)
   and ([.units[] | select(.pr==58)][0] | .stage=="merged" and .approved_sha==$newstop)
 ' "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: rule-lane did not route each PR per the CTO ruling' >&2; exit 1; }
+  || {
+    echo 'scheduler.test.sh: rule-lane did not route each PR per the CTO ruling' >&2
+    command jq -c '.units[] | {pr,stage,approved_sha,ci_gate_required,ci_green_sha,ci_wait_sha,rule_lane_commented_sha}' \
+      "$TF/supervisor/autopi/units.json" >&2
+    echo '--- actions ---' >&2; cat "$TF/actions" >&2
+    echo '--- scheduler log ---' >&2; tail -50 "$TF/supervisor/autopi/scheduler.log" >&2
+    exit 1
+  }
 for rejected_pr in 51 52 53; do
   if grep -q "^merge $rejected_pr$" "$TF/actions"; then
     echo "scheduler.test.sh: scheduler merged blocked PR $rejected_pr" >&2; exit 1
@@ -1739,6 +1773,7 @@ grep -Fq 'gh pr merge 54 --squash --match-head-commit' "$TF/calls" \
   || { echo 'scheduler.test.sh: ordinary merge did not pass through gh-shim' >&2; exit 1; }
 grep -Fq 'gh pr merge 55 --squash --match-head-commit' "$TF/calls" \
   || { echo 'scheduler.test.sh: supervisor rule merge did not pass through gh-shim' >&2; exit 1; }
+export REQUIRED_PR_CHECKS_FILE="$test_env_root/required-pr-checks.json"
 grep -Fq 'rule-lane: decision=unit-reject refused=rule-files actor=unit:agent/issue-4548 touched=1 files=engine/mac-autopilot/config.template.json' \
   "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: scheduler log omitted the unit rule rejection event' >&2; exit 1; }
@@ -1935,8 +1970,8 @@ command jq -e --arg id "$main_red_id" '
 sched_run_case main_red_superseded
 
 sched_case_main_red_ci_unpark() {
-# A PR red on check names that also failed on main is held without invalidating
-# its approval, then resumed with a fresh update-branch request after main is fixed.
+# A PR red whose test identity also failed on main is held without invalidating
+# its approval, even under different check names, then resumed after main is fixed.
 new_tick_fixture main-red-ci-unpark
 command jq '.auto_merge=true | .batch_max=1' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
 main_red_failed_sha="$(printf '%040x' 99)"
@@ -1946,7 +1981,19 @@ main_red_id="main-red-${main_red_failed_sha:0:9}"
 printf '%s\n' "$main_red_failed_sha" > "$TF/main-sha"
 printf '%s\n' "$main_red_pr_head" > "$TF/pr-head-77"
 printf '%s\n' "$main_red_pr_head" > "$TF/fetched-head"
-printf '{"check_runs":[{"name":"Touched packages PR gate","conclusion":"failure"},{"name":"Repo-path regression PR gate","conclusion":"failure"}]}' > "$TF/main-check-runs.json"
+printf '{"check_runs":[{"name":"Postsubmit validate","conclusion":"failure"}]}' > "$TF/main-check-runs.json"
+printf '%s\n' '[{"databaseId":700,"conclusion":"failure","event":"push","headBranch":"main"}]' > "$TF/main-red-run-list.json"
+printf '%s\n' '{"jobs":[{"id":7001,"name":"Postsubmit validate","conclusion":"failure"}]}' > "$TF/main-red-jobs-700.json"
+cat > "$TF/job-log-7001.txt" <<'LOG'
+ FAIL  tests/shared-membership.test.ts > rejects removed membership
+AssertionError: expected false to be true
+ ❯ tests/shared-membership.test.ts:14:5
+LOG
+cat > "$TF/job-log-7011.txt" <<'LOG'
+ FAIL  tests/shared-membership.test.ts > rejects removed membership
+AssertionError: expected false to be true
+ ❯ tests/shared-membership.test.ts:14:5
+LOG
 printf '%s\n' '{"databaseId":701,"attempt":1,"status":"completed","conclusion":"failure","createdAt":"2026-11-02T11:17:00Z"}' > "$TF/run.json"
 command jq -n --arg sha "$main_red_failed_sha" \
   '[{headSha:$sha,status:"completed",conclusion:"failure",createdAt:"2026-11-02T11:17:00Z",databaseId:700,attempt:1}]' \
@@ -1954,13 +2001,13 @@ command jq -n --arg sha "$main_red_failed_sha" \
 printf '%s %s\n%s %s\n' "$main_red_failed_sha" "$main_red_green_sha" "$main_red_green_sha" "$main_red_green_sha" > "$TF/ancestry.tsv"
 command jq -n --arg head "$main_red_pr_head" \
   '[{number:77,headRefName:"feature/77",headRefOid:$head,isDraft:false,mergeable:"MERGEABLE",title:"fixture",body:"",labels:[],statusCheckRollup:[
-    {__typename:"CheckRun",name:"Touched packages PR gate",detailsUrl:"",startedAt:"2026-11-02T11:17:00Z",status:"COMPLETED",conclusion:"FAILURE"},
-    {__typename:"CheckRun",name:"Repo-path regression PR gate",detailsUrl:"",startedAt:"2026-11-02T11:17:00Z",status:"COMPLETED",conclusion:"FAILURE"}
+    {__typename:"CheckRun",name:"Touched packages PR gate",detailsUrl:"https://github.com/example/repo/actions/runs/701/job/7011",startedAt:"2026-11-02T11:17:00Z",status:"COMPLETED",conclusion:"FAILURE"},
+    {__typename:"CheckRun",name:"Repo-path regression PR gate",detailsUrl:"https://github.com/example/repo/actions/runs/701/job/7011",startedAt:"2026-11-02T11:17:00Z",status:"COMPLETED",conclusion:"FAILURE"}
   ]}]' > "$TF/pr-census.json"
 command jq -n --arg redid "$main_red_id" --arg red "$main_red_failed_sha" --arg head "$main_red_pr_head" \
   '{units:[
     {id:$redid,main_red:true,ci_sha:$red,lane:"direct-main",task:"fix the red main checks",stage:"implement-pending",history:[]},
-    {id:"pr-77",pr:77,branch:"agent/issue-77",lane:"pr",lane_policy:"unknown",stage:"ready-to-merge",approved_sha:$head,ready_since:1,history:[]}
+    {id:"pr-77",pr:77,branch:"agent/issue-77",lane:"pr",lane_policy:"unknown",gated:true,ci_ready_sha:$head,ci_ready_at:"2026-11-02T11:00:00Z",stage:"ready-to-merge",approved_sha:$head,ready_since:1,history:[]}
   ]}' > "$TF/supervisor/autopi/units.json"
 tick
 command jq -e --arg red "$main_red_failed_sha" --arg head "$main_red_pr_head" '
@@ -1974,8 +2021,8 @@ if grep -Fq 'rerun 701' "$TF/actions"; then
   echo 'scheduler.test.sh: PR CI was rerun while its matching main check was still red' >&2; exit 1
 fi
 
-# Only a newer green descendant resolves main red. The unit returns to its prior
-# stage and the merge lane asks GitHub to update the branch, which starts fresh CI.
+# Only a newer green descendant resolves main red. The carried approval returns
+# to CI waiting, and the merge lane asks GitHub to update the branch for fresh CI.
 printf '%s\n' "$main_red_green_sha" > "$TF/main-sha"
 command jq -n --arg sha "$main_red_green_sha" \
   '[{headSha:$sha,status:"completed",conclusion:"success",createdAt:"2026-11-02T12:00:00Z",databaseId:702,attempt:1}]' \
@@ -1984,8 +2031,9 @@ tick
 command jq -e --arg id "$main_red_id" --arg sha "$main_red_green_sha" --arg head "$main_red_pr_head" '
   any(.units[]; .id==$id and .stage=="closed" and .resolved_main_sha==$sha)
   and ([.units[] | select(.id=="pr-77")][0]
-    | .stage=="ready-to-merge" and .approved_sha==$head and .parked_reason==null
-      and .parked_main_red_sha==null and .ci_rerun_sha==$head
+    | .stage=="ci-pending" and .approved_sha==$head and .parked_reason==null
+      and .parked_main_red_sha==null and .ci_wait_sha==$head and .ci_green_sha==null
+      and .ci_rerun_sha==$head
       and any(.history[]; .stage=="main-red-unpark"))
 ' "$TF/supervisor/autopi/units.json" >/dev/null \
   || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: green main did not resume the parked PR at its prior stage' >&2; exit 1; }
@@ -2036,7 +2084,7 @@ printf '%s %s\n%s %s\n' "$late_red_sha" "$late_green_sha" "$late_green_sha" "$la
 printf '%s\n' '{"databaseId":701,"attempt":1,"status":"completed","conclusion":"failure","createdAt":"2026-11-02T12:20:00Z"}' > "$TF/run.json"
 command jq -n --arg id "$late_red_id" --arg red "$late_red_sha" --arg green "$late_green_sha" --arg head "$late_pr_head" --arg checked "$late_checked" \
   '{units:[{id:$id,main_red:true,ci_sha:$red,resolved_main_sha:$green,resolved_main_at:"2026-11-02T12:00:00Z",lane:"direct-main",stage:"closed",history:[]},
-    {id:"pr-late-red",pr:77,branch:"agent/issue-77",lane:"pr",lane_policy:"unknown",stage:"ready-to-merge",approved_sha:$head,ci_rerun_sha:$head,ci_test_checked:$checked,ready_since:1,history:[]}]}' \
+    {id:"pr-late-red",pr:77,branch:"agent/issue-77",lane:"pr",lane_policy:"unknown",gated:true,ci_ready_sha:$head,ci_ready_at:"2026-11-02T11:00:00Z",stage:"ready-to-merge",approved_sha:$head,ci_rerun_sha:$head,ci_test_checked:$checked,ready_since:1,history:[]}]}' \
   > "$TF/supervisor/autopi/units.json"
 command jq -n --arg head "$late_pr_head" \
   '[{number:77,headRefName:"feature/77",headRefOid:$head,isDraft:false,mergeable:"MERGEABLE",title:"fixture",body:"",labels:[],statusCheckRollup:[
@@ -2088,13 +2136,13 @@ command jq -n --arg id "$cap_red_id" --arg red "$cap_red_sha" --arg green "$cap_
     + [range(1;5) as $n | {id:("pr-cap-"+($n|tostring)),pr:$n,stage:"parked",parked_reason:"main-red",parked_main_red_sha:$red,parked_from_stage:"ready-to-merge",history:[]}])}' \
   > "$TF/supervisor/autopi/units.json"
 tick
-command jq -e '[.units[] | select(.stage=="ready-to-merge" and (.id|startswith("pr-cap-")))] | length==3' \
+command jq -e '[.units[] | select(.stage=="ci-pending" and .parked_reason==null and (.id|startswith("pr-cap-")))] | length==3' \
   "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: main-red recovery exceeded or missed the merge lane per-tick cap' >&2; exit 1; }
+  || { echo 'scheduler.test.sh: main-red recovery exceeded or missed the CI-wait per-tick cap' >&2; exit 1; }
 tick
-command jq -e '[.units[] | select(.parked_reason==null and .stage=="ready-to-merge" and (.id|startswith("pr-cap-")))] | length==4' \
+command jq -e '[.units[] | select(.parked_reason==null and .stage=="ci-pending" and (.id|startswith("pr-cap-")))] | length==4' \
   "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: remaining main-red units did not resume on the next bounded tick' >&2; exit 1; }
+  || { echo 'scheduler.test.sh: remaining main-red units did not resume to CI waiting on the next bounded tick' >&2; exit 1; }
 }
 sched_run_case main_red_ci_unpark
 
@@ -2572,29 +2620,43 @@ sched_run_case stuck_worker_disposition
 sched_case_gate_network() {
 new_tick_fixture gate-network
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+command jq -cn '{units:[{id:"pr-gate-network",pr:9001,lane:"pr",stage:"ready-to-merge",history:[]}]}' \
+  > "$TF/supervisor/autopi/units.json"
 echo 'fatal: gnutls_handshake() failed: connection reset' > "$TF/failed.log"
 tick; tick
-[[ "$(command grep -c '^rerun ' "$TF/actions")" == 1 ]]
+gate_network_reruns="$(command grep -c '^rerun ' "$TF/actions" || true)"
+[[ "$gate_network_reruns" == 1 ]] || {
+  cat "$TF/tick.out" >&2
+  tail -n 100 "$TF/supervisor/autopi/scheduler.log" >&2
+  tail -n 100 "$TF/calls" >&2
+  echo "scheduler.test.sh: network failure expected one rerun reservation, got $gate_network_reruns; retry=$(cat "$TF/supervisor/autopi/gate-net-rerun.json" 2>/dev/null || echo missing)" >&2
+  exit 1
+}
 [[ ! -s "$TF/reverted" ]]
-command jq -e '.units | length==0' "$TF/supervisor/autopi/units.json" >/dev/null
+command jq -e '.units | length==1 and .[0].stage=="rereview-pending"' "$TF/supervisor/autopi/units.json" >/dev/null
 }
 sched_run_case gate_network
 
 sched_case_gate_suite_timeout() {
 new_tick_fixture gate-suite-timeout
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+command jq -cn '{units:[{id:"pr-gate-timeout",pr:9002,lane:"pr",stage:"ready-to-merge",history:[]}]}' \
+  > "$TF/supervisor/autopi/units.json"
 echo '[pipeline suites] FAILED suite=engine/land-queue.test.sh exit_code=137 first_error=suite engine/land-queue.test.sh timed out after 492s' > "$TF/failed.log"
 tick; tick
 [[ "$(command grep -c '^rerun ' "$TF/actions")" == 1 ]]
 [[ ! -s "$TF/reverted" ]]
-command jq -e '.units | length==0' "$TF/supervisor/autopi/units.json" >/dev/null
+command jq -e '.units | length==1 and .[0].stage=="rereview-pending"' "$TF/supervisor/autopi/units.json" >/dev/null
 }
 sched_run_case gate_suite_timeout
 
 sched_case_ready_starvation() {
-local pr starve_sha
+local pr starve_sha saved_required_pr_checks="$REQUIRED_PR_CHECKS_FILE"
 new_tick_fixture ready-starvation
 enable_rule_lane_fixture
+printf '%s\n' '{"required":["Pipeline suites"],"current_regression":"","legacy_regression":[]}' \
+  > "$TF/required-pr-checks.json"
+export REQUIRED_PR_CHECKS_FILE="$TF/required-pr-checks.json"
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
 command jq '.conclusion="success"' "$TF/run.json" > "$TF/run.tmp"; mv "$TF/run.tmp" "$TF/run.json"
 command jq -n '{units:[range(1;18) | {id:("pr-"+tostring),pr:.,stage:"ready-to-merge",lane:"pr",ready_since:.,history:[]}]}' > "$TF/supervisor/autopi/units.json"
@@ -2616,31 +2678,41 @@ printf '%s\n' 13 14 15 16 17 > "$TF/pipeline-prs"
 tick; tick
 [[ "$(command grep -c '^merge ' "$TF/actions")" == 5 ]]
 command jq -e '[.units[] | select(.stage=="merged")] | length==5' "$TF/supervisor/autopi/units.json" >/dev/null
+export REQUIRED_PR_CHECKS_FILE="$saved_required_pr_checks"
 }
 sched_run_case ready_starvation
 
 sched_case_pipeline_conflict_before_hold() {
+local saved_required_pr_checks="$REQUIRED_PR_CHECKS_FILE" pipeline_gate_stamp='2026-10-01T00:00:00Z'
 new_tick_fixture pipeline-conflict-before-hold
+printf '%s\n' '{"required":["Pipeline suites"],"current_regression":"","legacy_regression":[]}' \
+  > "$TF/required-pr-checks.json"
+export REQUIRED_PR_CHECKS_FILE="$TF/required-pr-checks.json"
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
 mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
 conflict_sha="$(printf '%040x' 57001)"
 clean_sha="$(printf '%040x' 57002)"
-command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" '{units:[
-  {id:"pr-pipeline-conflict",pr:57001,lane:"pr",branch:"agent/issue-57001",stage:"ready-to-merge",approved_sha:$conflict,ready_since:1,history:[]},
-  {id:"pr-pipeline-clean",pr:57002,lane:"pr",branch:"agent/issue-57002",stage:"ready-to-merge",approved_sha:$clean,ready_since:2,history:[]}
+command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" --arg stamp "$pipeline_gate_stamp" '{units:[
+  {id:"pr-pipeline-conflict",pr:57001,lane:"pr",branch:"agent/issue-57001",stage:"ready-to-merge",approved_sha:$conflict,ci_adopt_head:$conflict,ci_adopt_at:$stamp,ci_ready_sha:$conflict,ci_ready_at:$stamp,ci_gate_required:true,ready_since:1,history:[]},
+  {id:"pr-pipeline-clean",pr:57002,lane:"pr",branch:"agent/issue-57002",stage:"ready-to-merge",approved_sha:$clean,ci_adopt_head:$clean,ci_adopt_at:$stamp,ci_ready_sha:$clean,ci_ready_at:$stamp,ci_gate_required:true,ready_since:2,history:[]}
 ]}' > "$TF/supervisor/autopi/units.json"
-command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" '[
-  {number:57001,headRefName:"agent/issue-57001",headRefOid:$conflict,isDraft:false,mergeable:"CONFLICTING",title:"conflicting pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",status:"COMPLETED",conclusion:"SUCCESS"}]},
-  {number:57002,headRefName:"agent/issue-57002",headRefOid:$clean,isDraft:false,mergeable:"MERGEABLE",title:"clean pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",status:"COMPLETED",conclusion:"SUCCESS"}]}
+command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" --arg stamp "$pipeline_gate_stamp" '[
+  {number:57001,headRefName:"agent/issue-57001",headRefOid:$conflict,isDraft:false,mergeable:"CONFLICTING",title:"conflicting pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",startedAt:$stamp,status:"COMPLETED",conclusion:"SUCCESS"}]},
+  {number:57002,headRefName:"agent/issue-57002",headRefOid:$clean,isDraft:false,mergeable:"MERGEABLE",title:"clean pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",startedAt:$stamp,status:"COMPLETED",conclusion:"SUCCESS"}]}
 ]' > "$TF/pr-census.json"
 tick
-command jq -e '
+if ! command jq -e '
   ([.units[] | select(.pr==57001)][0] | .stage=="repair-pending" and .approved_sha==null
     and any(.history[]; .stage=="merge-conflict")
     and (.repair_hint | contains("git merge --no-edit origin/main") and contains("main 已删除") and contains("保留其余改动")))
   and ([.units[] | select(.pr==57002)][0] | .stage=="ready-to-merge" and .approved_sha!=null)
-' "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: conflicting pipeline PR was not routed to repair while the clean pipeline PR stayed ready' >&2; exit 1; }
+' "$TF/supervisor/autopi/units.json" >/dev/null; then
+  echo 'scheduler.test.sh: conflicting pipeline PR was not routed to repair while the clean pipeline PR stayed ready' >&2
+  command jq '[.units[] | {id,stage,approved_sha,ci_gate_required,ci_green_sha,ci_wait_sha,history}]' "$TF/supervisor/autopi/units.json" >&2
+  tail -n 80 "$TF/supervisor/autopi/scheduler.log" >&2
+  cat "$TF/actions" >&2
+  exit 1
+fi
 grep -Fq 'merge skipped PR#57001 (conflicts with main; pipeline-path changes include files deleted from main) -> repair-pending' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: conflicting pipeline PR repair was not logged' >&2; exit 1; }
 grep -Fq 'merge skipped PR#57002 (touches pipeline paths; pipeline merges held)' "$TF/supervisor/autopi/scheduler.log" \
@@ -2648,6 +2720,7 @@ grep -Fq 'merge skipped PR#57002 (touches pipeline paths; pipeline merges held)'
 if grep -Eq '^merge (57001|57002)$' "$TF/actions"; then
   echo 'scheduler.test.sh: a pipeline-dependent PR merged while main suites were red' >&2; exit 1
 fi
+export REQUIRED_PR_CHECKS_FILE="$saved_required_pr_checks"
 }
 sched_run_case pipeline_conflict_before_hold
 

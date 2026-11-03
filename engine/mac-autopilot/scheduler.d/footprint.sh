@@ -13,7 +13,7 @@
 # 新 stage 必须先在下面三个集合里完成决策：footprint-holder-stages 测试会强制全表登记。
 FOOTPRINT_LIVE_WRITER_STAGES='["implement","repair"]'
 FOOTPRINT_QUEUED_WRITER_STAGES='["implement-pending","repair-pending","landing"]'
-FOOTPRINT_RELEASED_STAGES='["supervisor-review","parked","needs-human","blocked-external","review","rereview","review-pending","rereview-pending","ready-to-merge","merged","landed","closed","awaiting-live-event","done","wontfix","duplicate"]'
+FOOTPRINT_RELEASED_STAGES='["supervisor-review","parked","needs-human","blocked-external","review","rereview","review-pending","rereview-pending","ci-pending","ready-to-merge","merged","landed","closed","awaiting-live-event","done","wontfix","duplicate"]'
 
 footprint_owner_stage_active() { # stage -> unit reserves write scope in the shared holder model
   jqf -e --arg stage "$1" --argjson live "$FOOTPRINT_LIVE_WRITER_STAGES" \
@@ -419,7 +419,7 @@ footprint_room() { # unit type; report checks that materially delay dispatch
 # Old wait-age markers are released only after their owner leaves the writer set. Do not weaken
 # the footprint lock: this alert asks the supervisor to recut a convoy rather than admit conflicts.
 footprint_convoy_alert() {
-  local min_waiters wait_minutes owners owner waiters row id since since_epoch age waited_seconds aged_count aged_ids ids
+  local min_waiters wait_minutes owners owner waiters row id since since_epoch age waited_seconds aged_count aged_id_lines id_json ids
   local max_age episode_epoch line key
   min_waiters="$(jqf -r '.footprint_mutex.convoy_min_waiters // 4' <<<"$CFG")"
   [[ "$min_waiters" =~ ^[1-9][0-9]*$ ]] || min_waiters=4
@@ -432,7 +432,7 @@ footprint_convoy_alert() {
     [[ -n "$owner" ]] || continue
     waiters="$(jqf -c --arg owner "$owner" '[.units[] | select((.stage // "") | test("-pending$"))
       | select(.footprint_wait_owner==$owner) | {id,since:(.footprint_wait_since // "")}]' "$UNITS")" || return 1
-    aged_ids='[]'; aged_count=0; max_age=0; episode_epoch=0
+    aged_id_lines=''; aged_count=0; max_age=0; episode_epoch=0
     while IFS= read -r row; do
       [[ -n "$row" ]] || continue
       id="$(jqf -r .id <<<"$row")"
@@ -445,10 +445,11 @@ footprint_convoy_alert() {
       aged_count=$((aged_count + 1))
       (( age <= max_age )) || max_age=$age
       if (( episode_epoch == 0 || since_epoch < episode_epoch )); then episode_epoch=$since_epoch; fi
-      aged_ids="$(jqf -cn --argjson ids "$aged_ids" --arg id "$id" '$ids + [$id]')" || return 1
+      id_json="$(jqf -cn --arg id "$id" '$id')" || return 1
+      aged_id_lines+="$id_json"$'\n'
     done < <(jqf -c '.[]' <<<"$waiters")
     (( aged_count >= min_waiters )) || continue
-    ids="$(jqf -r 'join(",")' <<<"$aged_ids")"
+    ids="$(jqf -Rsr 'split("\n") | map(select(length > 0) | fromjson) | join(",")' <<<"$aged_id_lines")" || return 1
     line="footprint-convoy owner=$owner waiters=$ids oldest_wait_min=$max_age min_waiters=$min_waiters wait_minutes=$wait_minutes action=recut-overlapping-scopes"
     key="footprint-convoy:$owner:$episode_epoch"
     say "$line"

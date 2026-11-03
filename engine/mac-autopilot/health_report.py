@@ -12,7 +12,7 @@ LINE_RE = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\] (.*)$")
 HARVEST_RE = re.compile(r"harvest unit=(\S+) type=(\S+) verdict=(\S+) .*?tokens=(\d+)")
 WORK_STAGES = ("review", "rereview", "repair", "implement")
 STUCK_MINUTES = {"review-pending": 60, "rereview-pending": 60, "repair-pending": 60, "implement-pending": 120,
-                 "ready-to-merge": 120, "supervisor-review": 0, "blocked-external": 0}
+                 "ci-pending": 120, "ready-to-merge": 120, "supervisor-review": 0, "blocked-external": 0}
 
 
 def ts(value):

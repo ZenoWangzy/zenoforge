@@ -76,6 +76,12 @@ function text(f, relative) {
   return existsSync(p) ? readFileSync(p, 'utf8') : '';
 }
 
+const validAdvisorPlan = {
+  changes: [{ file: 'packages/fixture/src/index.ts', symbol: 'fixture', change: 'apply the requested correction' }],
+  tests_fail_first: ['pnpm vitest run packages/fixture/src/index.test.ts'],
+  non_goals: ['leave unrelated packages unchanged'],
+};
+
 test('fixture keeps jq usable after HOME isolation', () => {
   const f = fixture();
   try {
@@ -334,9 +340,12 @@ test('a finished job with a valid answer produces RESULT without charging an att
   const f = fixture();
   try {
     const priorState = JSON.stringify({ attempts: 2, web_advisor_provider_job_id: 'advisor-90042-1' });
-    const r = runDispatch(f, { priorState, POLL_STATUS: '0', POLL_OUTPUT: '{"is_error":false,"structured_output":{"verdict":"advised"}}' });
+    const r = runDispatch(f, { priorState, POLL_STATUS: '0', POLL_OUTPUT: JSON.stringify({
+      is_error: false,
+      structured_output: { verdict: 'advised', plan: validAdvisorPlan },
+    }) });
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /RESULT=\{"verdict":"advised"\} DEGRADED=0/);
+    assert.match(r.stdout, /RESULT=.*"verdict":"advised".*DEGRADED=0/);
     const state = JSON.parse(text(f, 'agent/state/90042.json'));
     assert.equal(state.web_advisor_provider_job_id, undefined);
     assert.equal(state.attempts, 2);
@@ -350,7 +359,7 @@ test('resuming an existing pending verdict skips dispatch entirely and reuses th
     const priorState = JSON.stringify({
       attempts: 2,
       pending_advisor_verdict: {
-        result: { verdict: 'advised' },
+        result: { verdict: 'advised', plan: validAdvisorPlan },
         input: { title: 't', body: 'b', comments: [] },
         computed_at: 'an earlier tick',
         episode_seq: 0,
@@ -359,7 +368,7 @@ test('resuming an existing pending verdict skips dispatch entirely and reuses th
     });
     const r = runDispatch(f, { issueJson, priorState });
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /RESULT=\{"verdict":"advised"\} DEGRADED=0/);
+    assert.match(r.stdout, /RESULT=.*"verdict":"advised".*DEGRADED=0/);
     assert.equal(text(f, 'calls'), '', 'a resumed verdict must never touch usable()/poll()/dispatch_async()');
     assert.equal(JSON.parse(text(f, 'agent/state/90042.json')).attempts, 2);
   } finally { f.close(); }

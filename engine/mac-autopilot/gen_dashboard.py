@@ -436,6 +436,7 @@ def run_count(status):
 queued_runs, running_runs = run_count("queued"), run_count("in_progress")
 pr_pools = [pools["PR"]] if "PR" in pools else []
 pr_online = sum(p["online"] for p in pr_pools)
+merge_units = [u for u in units if u.get("stage") in ("ci-pending", "ready-to-merge")]
 ready_units = [u for u in units if u.get("stage") == "ready-to-merge"]
 ci_live = {
     "pools": pools,
@@ -443,7 +444,7 @@ ci_live = {
         "runners_online": sum(p["online"] for p in pools.values()) if runners else None,
         "pr_runner_busy_pct": round(100 * sum(p["busy"] for p in pr_pools) / pr_online) if pr_online and queued_runs else None,
         "queued_runs": queued_runs,
-        "wip_waiting": sum(1 for u in ready_units if u.get("ci_wip_wait")),
+        "wip_waiting": sum(1 for u in merge_units if u.get("ci_wip_wait")),
     },
     "running_runs": running_runs,
     "ready": len(ready_units),
@@ -704,7 +705,7 @@ def journey(u, now):
         status = "parked"       # supervisor 裁决搁置（#4369）：不等人，也不派工
     elif stage == "supervisor-review" or stage == "needs-human":
         status = "waiting"
-    elif stage in ("ready-to-merge", "landing"):
+    elif stage in ("ci-pending", "ready-to-merge", "landing"):
         status = "merge"
     elif stage.startswith(("review", "rereview", "repair")):
         status = "check"

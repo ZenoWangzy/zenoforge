@@ -68,7 +68,11 @@ if ((execution)); then
     execution_env+=(-E LUNA_PRIORITY=release)
   fi
   if ((${#execution_env[@]})); then
-    args=("${args[@]:0:command_at}" "${execution_env[@]}" "${args[@]:command_at}")
+    insertion_at=$command_at
+    if ((command_at > 0)) && [[ "${args[command_at-1]}" == -- ]]; then
+      insertion_at=$((command_at - 1))
+    fi
+    args=("${args[@]:0:insertion_at}" "${execution_env[@]}" "${args[@]:insertion_at}")
     command_at=$((command_at+${#execution_env[@]}))
   fi
   guard="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/execution-admission.py"

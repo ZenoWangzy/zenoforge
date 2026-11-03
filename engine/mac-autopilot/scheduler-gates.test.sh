@@ -289,7 +289,12 @@ printf 'VERDICT: APPROVE\n' > "$sup/review-1-T1.md"
 printf 'session id: 11111111-2222-3333-4444-555555555555\n' > "$sup/review-1-T1.worker.log"
 jq -n --arg sha "$H1" --arg pr_head "$H2" '{workers:[{pid:4242,unit:"pr-1",type:"review",log:"review-1-T1.worker.log",report:"review-1-T1.md",sha:$sha,pr_head:$pr_head}]}' > "$WORKERS"
 harvest_workers || :
-[[ "$(field pr-1 .stage)" == ready-to-merge ]] || fail 'APPROVE did not reach ready-to-merge'
+if [[ "$(field pr-1 .stage)" == ready-to-merge ]]; then
+  [[ "$(field pr-1 .ci_green_sha)" == "$H1" ]] || fail 'APPROVE became ready without same-SHA green evidence'
+else
+  [[ "$(field pr-1 .stage)" =~ ^(ci-pending|rereview-pending)$ && "$(field pr-1 .ci_gate_required)" == true \
+    && "$(field pr-1 '.ci_green_sha // empty')" == "" ]] || fail 'APPROVE bypassed the candidate CI gate'
+fi
 [[ "$(field pr-1 .approved_sha)" == "$H1" && "$(field pr-1 .reviewed_sha)" == "$H1" \
   && "$(field pr-1 .reviewed_pr_head)" == "$H2" ]] || fail 'approved candidate and observed PR head were not recorded independently'
 [[ "$(field pr-1 .review_report)" == review-1-T1.md ]] || fail 'review report not recorded'
@@ -803,7 +808,22 @@ scheduler_pr_open agent/issue-23 'stack child' 'Refs #23' agent/issue-1
   || fail 'an existing stacked unit PR did not retarget its predecessor branch'
 eval "$stack_gh_real"; eval "$stack_pr_changed_real"; eval "$stack_gated_label_real"
 
-units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[]}]}"
+# This case tests unchanged-head arbiter routing. Keep reviewer availability stable; review-family.test.sh covers the live selector.
+review_selector_real="$(declare -f review_model_for_implementer)"
+review_target_real="$(declare -f unit_review_target)"
+room_for_real="$(declare -f room_for)"
+risk_class_rule_real="$(declare -f risk_class_safety_rule)"
+verify_handoff_real="$(declare -f verify_handoff_delivery)"
+pick_review_real="$(declare -f pick_review_for_unit)"
+cancel_unit_runs_real="$(declare -f cancel_unit_runs)"
+review_model_for_implementer() { printf 'claude:claude-sonnet-4-5:high\n'; }
+unit_review_target() { printf '%s %s\n' "$H1" "$H1"; }
+room_for() { return 0; }
+risk_class_safety_rule() { :; }
+verify_handoff_delivery() { return 0; }
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; return 0; }
+cancel_unit_runs() { :; }
+units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"implement_identity\":\"codex:gpt-6-luna:max\",\"history\":[]}]}"
 dispatch_pending || :
 [[ "$(field pr-5 .stage)" == rereview-pending && "$(field pr-5 .arbiter)" == true && ${#DISPATCHED[@]} == 0 ]] || fail 'unchanged head did not turn into one arbiter review'
 dispatch_pending || :
@@ -812,7 +832,9 @@ dispatch_pending || :
 DISPATCHED=()
 units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\"}]}]}"
 dispatch_pending || :
-[[ "$(field pr-5 .stage)" == supervisor-review && ${#DISPATCHED[@]} == 0 ]] || fail 'unchanged head after an arbiter review was redispatched'
+[[ "$(field pr-5 .stage)" == supervisor-review && ${#DISPATCHED[@]} == 0 ]] \
+  || fail "unchanged head after an arbiter review changed stage ($(field pr-5 .stage)) or dispatched (${DISPATCHED[*]:-none}); history=$(jq -c '.units[] | select(.id==\"pr-5\") | .history' \"$UNITS\")"
+eval "$review_selector_real"; eval "$review_target_real"; eval "$room_for_real"; eval "$risk_class_rule_real"; eval "$verify_handoff_real"; eval "$pick_review_real"; eval "$cancel_unit_runs_real"
 # 合并后被 revert 的单元：原 PR 已 MERGED，repair 推的提交挂不上去；repair 交付后用同一分支开新 PR（#4009 空转 4 小时）
 DISPATCHED=(); gh_reopen_saved="$(declare -f gh)"
 gh() { case "$1 $2" in "pr list") echo "" ;; "pr create") printf '%s' "$*" > "$fixture/reopen.args"; echo "https://github.com/example-maintainer/example-repo/pull/4100" ;; *) eval "${gh_reopen_saved/gh ()/gh_r ()}"; gh_r "$@" ;; esac; }
@@ -959,8 +981,11 @@ dispatch_pending || :
 units "{\"units\":[{\"id\":\"issue-709\",\"issue\":709,\"pr\":55,\"branch\":\"agent/issue-709\",\"lane\":\"pr\",\"title\":\"fine fix\",\"stage\":\"repair-pending\",\"review_report\":\"r.md\",\"history\":[$(sl_rounds)$(sl_rounds){\"stage\":\"review-request-changes\"}]}]}"
 DISPATCHED=(); dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == repair:issue-709:* ]] || fail "a unit inside the 3-round budget was not dispatched ($(field issue-709 .stage))"
-units "{\"units\":[{\"id\":\"pr-5e\",\"pr\":5,\"stage\":\"rereview-pending\",\"review_report\":\"review-5-T1.md\",\"arbiter\":true,\"history\":[{\"stage\":\"arbiter-review\"},$(sl_rounds)$(sl_rounds)$(sl_rounds){\"stage\":\"review-request-changes\"}]}]}"
+units "{\"units\":[{\"id\":\"pr-5e\",\"pr\":5,\"stage\":\"rereview-pending\",\"review_report\":\"review-5-T1.md\",\"arbiter\":true,\"implement_identity\":\"codex:gpt-6-luna:max\",\"history\":[{\"stage\":\"arbiter-review\"},$(sl_rounds)$(sl_rounds)$(sl_rounds){\"stage\":\"review-request-changes\"}]}]}"
+stop_loss_pick_review_real="$(declare -f pick_review_for_unit)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
 DISPATCHED=(); dispatch_pending || :
+eval "$stop_loss_pick_review_real"
 [[ "${DISPATCHED[0]:-}" == review:pr-5e:* ]] || fail "a rereview (not a budget round) was blocked by the stop-loss ($(field pr-5e .stage))"
 [[ "$(grep -c '^hold.sh' "$fixture/stop-loss-calls")" == 2 ]] || fail "in-budget dispatches must not hold their issue ($(cat "$fixture/stop-loss-calls"))"
 # supervisor 裁决后预算重新给满：3 轮 + supervisor-approve 之后照常派发。
@@ -1261,6 +1286,14 @@ lt="$fixture/looptick"; mkdir -p "$lt/alerts"; printf 'exec sleep 60 # wall-cloc
 grep -q 'TICK-TIMEOUT' "$lt/scheduler.log" && grep -q 'TICK-TIMEOUT' "$lt/alerts/waste.md" || fail 'hung tick was not killed and alerted'
 
 # repair 没推出新 head：自动重试两次，第三次转人工
+repair_no_push_selector_real="$(declare -f pick_review_for_unit)"
+repair_no_push_target_real="$(declare -f unit_review_target)"
+repair_no_push_room_real="$(declare -f room_for)"
+repair_no_push_verify_real="$(declare -f verify_handoff_delivery)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+unit_review_target() { printf '%s %s\n' "$H1" "$H1"; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
 for round in 1 2 3; do
   hist_json="$(jq -cn --argjson n "$((round-1))" '[{stage:"review-request-changes"}] + [range($n) | {stage:"repair-no-push"}, {stage:"repair-delivered"}] + [{stage:"repair-delivered"}]')"
   units "{\"units\":[{\"id\":\"pr-5b\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"r.md\",\"history\":$hist_json}]}"
@@ -1280,7 +1313,7 @@ units "$(jq -cn --arg sha "$H1" --argjson history "$ci_repair_history" \
 for retry in 1 2 3; do
   DISPATCHED=()
   dispatch_pending || :
-  [[ "$(field pr-5ci .stage):$(field pr-5ci .approved_sha):$(field pr-5ci .ci_infra_reruns):$(field pr-5ci .ci_rerun_sha)" == "ready-to-merge:$H1:$retry:$H1" \
+  [[ "$(field pr-5ci .stage):$(field pr-5ci .approved_sha):$(field pr-5ci .ci_infra_reruns):$(field pr-5ci .ci_rerun_sha)" == "ci-pending:$H1:$retry:$H1" \
     && ${#GH_RERUNS[@]} == "$retry" && ${#DISPATCHED[@]} == 0 && "$(field pr-5ci '.arbiter // false')" == false ]] \
     || fail "unchanged approved CI repair did not rerun within the existing bound ($retry; stage=$(field pr-5ci .stage), reruns=${#GH_RERUNS[@]}, dispatches=${DISPATCHED[*]:-none})"
   set_unit pr-5ci '.history += [{stage:"ci-red",result:"external CI failure"},{stage:"repair-delivered"}] | .approved_sha=null | .stage="rereview-pending"'
@@ -1322,47 +1355,61 @@ ci_test_red_history="$(jq -cn --arg sha "$H1" '[{stage:"review-approve",result:$
 units "$(jq -cn --arg sha "$H1" --argjson history "$ci_test_red_history" \
   '{units:[{id:"pr-5ci-cancelled",pr:5,stage:"rereview-pending",reviewed_sha:$sha,reviewed_pr_head:$sha,review_report:"r.md",history:$history}]}')"
 dispatch_pending || :
-[[ "$(field pr-5ci-cancelled .stage):$(field pr-5ci-cancelled '.ci_infra_reruns // 0')" == "ready-to-merge:1" \
+[[ "$(field pr-5ci-cancelled .stage):$(field pr-5ci-cancelled '.ci_infra_reruns // 0')" == "ci-pending:1" \
   && "${GH_RERUNS[*]:-}" == "run rerun 901 --failed" && ${#DISPATCHED[@]} == 0 \
   && "$(field pr-5ci-cancelled '.arbiter // false')" == false ]] \
   || fail "ci-test-red repair with a cancelled run did not rerun within the bound (stage=$(field pr-5ci-cancelled .stage), reruns=${GH_RERUNS[*]:-none})"
 GH_RUN_JSON=
 GH_RUNS=777; GH_RERUN_FAIL_ID=
 eval "$cancel_unit_runs_saved"; GH_HEAD="$gh_head_saved"; GH_RUNS="$gh_runs_saved"; GH_RERUNS=()
+eval "$repair_no_push_selector_real"; eval "$repair_no_push_target_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 DISPATCHED=()
-units '{"units":[{"id":"pr-6","pr":6,"stage":"rereview-pending","history":[]}]}'
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+unit_review_target() { printf '%s %s\n' "$H1" "$H1"; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
+rereview_lane_policy="$(lane_policy_blob)"
+units "$(jq -cn --arg policy "$rereview_lane_policy" \
+  '{units:[{id:"pr-6",pr:6,stage:"rereview-pending",lane:"pr",lane_policy:$policy,history:[]}]}')"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "review:pr-6:$H1" ]] || fail "rereview without a baseline must be a full review (got ${DISPATCHED[*]:-none})"
 [[ "$DISPATCH_PROMPT" == *".agents/skills/code-review/SKILL.md"* ]] || fail 'full review prompt does not reference the canonical contract'
 [[ "$(field pr-6 .review_sha)" == "$H1" ]] || fail 'dispatched review sha not recorded'
 [[ "$DISPATCH_PR_HEAD" == "$H1" ]] || fail 'dispatched review did not retain its observed PR head'
+eval "$repair_no_push_selector_real"; eval "$repair_no_push_target_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 
 # L63：PR 车道的修复推送会同时移动 PR head 与候选；上轮 head 是祖先就必须走增量复审，不能回落成全量重审。
 rr="$fixture/wt-pr-7"; rm -rf "$rr"; command git init -q -b main "$rr"
 command git -C "$rr" commit -q --allow-empty -m reviewed; R1="$(command git -C "$rr" rev-parse HEAD)"
 command git -C "$rr" commit -q --allow-empty -m repair; R2="$(command git -C "$rr" rev-parse HEAD)"
 command git -C "$rr" checkout -q --orphan rebased; command git -C "$rr" commit -q --allow-empty -m rebased; R3="$(command git -C "$rr" rev-parse HEAD)"
+rereview_lane_policy="$(lane_policy_blob)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+unit_review_target() { printf '%s %s\n' "$GH_HEAD" "$GH_HEAD"; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
 DISPATCHED=(); GH_HEAD="$R2"
-units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
+units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"lane\":\"pr\",\"lane_policy\":\"$rereview_lane_policy\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "rereview:pr-7:$R2" && "$DISPATCH_PR_HEAD" == "$R2" ]] || fail "repair push (PR head moved, old head is an ancestor) did not get an incremental rereview (got ${DISPATCHED[*]:-none})"
 [[ "$DISPATCH_PROMPT" == *"$R1..$R2"* && "$DISPATCH_PROMPT" == *".agents/skills/code-review/SKILL.md"* ]] \
   || fail 'incremental rereview prompt lost its repair delta or canonical contract reference'
 DISPATCHED=(); GH_HEAD="$R2"
-units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[],\"review_findings\":[{\"disposition_block\":\"ok\",\"dispositions\":[{\"id\":\"F1\",\"disposition\":\"fixed\",\"reason\":\"tenant predicate now precedes the write\"}]}]}]}"
+units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"lane\":\"pr\",\"lane_policy\":\"$rereview_lane_policy\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[],\"review_findings\":[{\"disposition_block\":\"ok\",\"dispositions\":[{\"id\":\"F1\",\"disposition\":\"fixed\",\"reason\":\"tenant predicate now precedes the write\"}]}]}]}"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "rereview:pr-7:$R2" && "$DISPATCH_PROMPT" == *"F1: fixed"* \
   && "$DISPATCH_PROMPT" == *"tenant predicate now precedes the write"* ]] || fail "incremental rereview did not consume persisted author dispositions: ${DISPATCHED[*]:-none}; prompt=${DISPATCH_PROMPT}"
 DISPATCHED=(); GH_HEAD="$R3"
-units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
+units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"lane\":\"pr\",\"lane_policy\":\"$rereview_lane_policy\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "review:pr-7:$R3" ]] || fail "rewritten history (old head not an ancestor) must get a full review (got ${DISPATCHED[*]:-none})"
 GH_HEAD="$H1"
 
 DISPATCHED=()
-units "{\"units\":[{\"id\":\"pr-7b\",\"pr\":7,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H2\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
+units "{\"units\":[{\"id\":\"pr-7b\",\"pr\":7,\"stage\":\"rereview-pending\",\"lane\":\"pr\",\"lane_policy\":\"$rereview_lane_policy\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H2\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "review:pr-7b:$H1" && "$DISPATCH_PR_HEAD" == "$H1" ]] || fail 'changed PR head with unchanged local candidate did not trigger a fresh full review'
+eval "$repair_no_push_selector_real"; eval "$repair_no_push_target_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 
 # #4411: the worker clone seeded from a depth-one scheduler checkout must fetch full history;
 # otherwise the real rereview-pending tick cannot prove that the prior reviewed SHA is an ancestor.
@@ -1390,12 +1437,27 @@ command git clone -q --depth 1 "file://$shallow/remote.git" "$shallow/root"
 saved_root="$ROOT"; saved_main_head="$MAIN_HEAD"; saved_wt_root="$WT_ROOT"; saved_gh_head="$GH_HEAD"
 ROOT="$shallow/root"; MAIN_HEAD="$shallow_main"; WT_ROOT="$shallow/worktrees"
 eval "$ensure_clone_source"; eval "$checkout_pr_head_source"
+# The synthetic shallow repo has no policy file, so its current lane-policy fingerprint is unknown.
+rereview_lane_policy=unknown
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
 DISPATCHED=(); GH_HEAD="$SR2"
-units "{\"units\":[{\"id\":\"pr-shallow-7\",\"pr\":77,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$SR1\",\"reviewed_pr_head\":\"$SR1\",\"review_report\":\"review-shallow-7-T1.md\",\"history\":[]}]}"
+units "{\"units\":[{\"id\":\"pr-shallow-7\",\"issue\":7,\"pr\":77,\"branch\":\"agent/issue-7\",\"lane\":\"pr\",\"lane_policy\":\"$rereview_lane_policy\",\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$SR1\",\"reviewed_pr_head\":\"$SR1\",\"review_report\":\"review-shallow-7-T1.md\",\"history\":[]}]}"
 dispatch_pending || :
-[[ "${DISPATCHED[0]:-}" == "rereview:pr-shallow-7:$SR2" && "$DISPATCH_PR_HEAD" == "$SR2" ]] \
-  || fail "a shallow worker clone fell back to a full review instead of rereview (got ${DISPATCHED[*]:-none})"
+if [[ "${DISPATCHED[0]:-}" != "rereview:pr-shallow-7:$SR2" || "$DISPATCH_PR_HEAD" != "$SR2" ]]; then
+  shallow_target="$(unit_review_target pr-shallow-7 77 pr agent/issue-7 2>&1 || echo unavailable)"
+  shallow_clone="$WT_ROOT/wt-pr-shallow-7"
+  echo "scheduler-gates.test.sh: shallow rereview diagnostics lane=$(field pr-shallow-7 .lane) target=$shallow_target dispatched=${DISPATCHED[*]:-none}" >&2
+  [[ ! -d "$shallow_clone/.git" ]] || {
+    echo "scheduler-gates.test.sh: shallow worker clone is_shallow=$(command git -C "$shallow_clone" rev-parse --is-shallow-repository 2>&1) head=$(command git -C "$shallow_clone" rev-parse HEAD 2>&1)" >&2
+    command git -C "$shallow_clone" show-ref >&2 || :
+  }
+  tail -n 50 "$LOG" >&2
+  fail "a shallow worker clone fell back to a full review instead of rereview (got ${DISPATCHED[*]:-none})"
+fi
 [[ "$DISPATCH_PROMPT" == *"$SR1..$SR2"* ]] || fail 'shallow-clone rereview did not retain its repair delta'
+eval "$repair_no_push_selector_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 eval "$ensure_clone_stub"; eval "$checkout_pr_head_stub"
 ROOT="$saved_root"; MAIN_HEAD="$saved_main_head"; WT_ROOT="$saved_wt_root"
 GH_HEAD="$saved_gh_head"
@@ -1418,10 +1480,22 @@ dispatch_pending || :
   && "$(field pr-8 '.history[-1].decision.decision')" == 'Stop automated repair and escalate to supervisor' \
   && "$(field pr-8 '.history[-1].decision.evidence')" == '5 failed rounds after an arbiter review' ]] || fail 'loop-breaker after an arbiter review did not record its stop decision'
 # supervisor-requeue 之后重新计回合
+loop_breaker_pick_real="$(declare -f pick_review_for_unit)"
+loop_breaker_target_real="$(declare -f unit_review_target)"
+loop_breaker_room_real="$(declare -f room_for)"
+loop_breaker_verify_real="$(declare -f verify_handoff_delivery)"
+loop_breaker_risk_real="$(declare -f risk_class_safety_rule)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+unit_review_target() { printf '%s %s\n' "$H1" "$H1"; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
+risk_class_safety_rule() { :; }
 units '{"units":[{"id":"pr-8b","pr":8,"stage":"review-pending","history":[{"stage":"review-request-changes"},{"stage":"review-request-changes"},{"stage":"review-request-changes"},{"stage":"review-request-changes"},{"stage":"review-request-changes"},{"stage":"supervisor-requeue"},{"stage":"review-request-changes"}]}]}'
 DISPATCHED=()
 dispatch_pending || :
-[[ "$(field pr-8b .stage)" != supervisor-review && "${DISPATCHED[0]:-}" == review:pr-8b:* ]] || fail 'supervisor-requeue did not reset the loop-breaker count'
+[[ "$(field pr-8b .stage)" != supervisor-review && "${DISPATCHED[0]:-}" == review:pr-8b:* ]] \
+  || fail "supervisor-requeue did not reset the loop-breaker count (stage=$(field pr-8b .stage), dispatches=${DISPATCHED[*]:-none})"
+eval "$loop_breaker_pick_real"; eval "$loop_breaker_target_real"; eval "$loop_breaker_room_real"; eval "$loop_breaker_verify_real"; eval "$loop_breaker_risk_real"
 # 终身上限：重排清零了 loop_rounds，但总共 8 轮打回仍转 supervisor 拆票，且裁决后再给 4 轮（pr-3863）
 rc8='{"stage":"review-request-changes"}'
 units "{\"units\":[{\"id\":\"pr-8c\",\"pr\":8,\"stage\":\"repair-pending\",\"history\":[$rc8,$rc8,$rc8,$rc8,{\"stage\":\"supervisor-requeue\"},$rc8,$rc8,$rc8,{\"stage\":\"supervisor-requeue\"},$rc8]}]}"
@@ -1729,9 +1803,24 @@ root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
 # 非产品 PR 不排 CI 名额；同级先按 ready_since，依赖只在 readiness 相同时作 tie-break（maintainer 10-22：非产品尽快）
 CFG="$(jq '.precheck=false' <<<"$CFG_SAVED")"; : > "$wr/cancelled"; GH_RUN_JSON='[]'
 units "{\"units\":[{\"id\":\"pr-40\",\"pr\":40,\"stage\":\"ready-to-merge\",\"branch\":\"c\",\"approved_sha\":\"$H1\",\"ci_wip_wait\":\"$H1\",\"ready_since\":1,\"history\":[]},{\"id\":\"pr-41\",\"pr\":41,\"stage\":\"ready-to-merge\",\"branch\":\"agent/issue-77\",\"approved_sha\":\"$H1\",\"ci_wip_wait\":\"$H1\",\"ready_since\":2,\"history\":[]},{\"id\":\"pr-42\",\"pr\":42,\"stage\":\"ready-to-merge\",\"branch\":\"ci/x\",\"approved_sha\":\"$H1\",\"ready_since\":0,\"history\":[]},{\"id\":\"issue-78\",\"issue\":78,\"stage\":\"blocked-external\",\"blocked_on\":77,\"history\":[]}]}"
-gh() { if [[ "$1 $2" == "pr view" && "$*" == *files* ]]; then case "$3" in 42) printf '.github/workflows/ci.yml\nscripts/agent/x.sh\nREADME.md\n' ;; *) printf 'packages/shared/a.ts\nscripts/b.sh\n' ;; esac; else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi; }
+# Product-path classification uses a batched GraphQL file census; keep this fixture aligned with that source.
+gh() {
+  if [[ "$1 $2" == "api graphql" && "$*" == *'pr_40'* ]]; then
+    command jq -cn '{data:{repository:{
+      pr_40:{files:{nodes:[{path:"packages/shared/a.ts"},{path:"scripts/b.sh"}]}},
+      pr_41:{files:{nodes:[{path:"packages/shared/a.ts"}]}},
+      pr_42:{files:{nodes:[{path:".github/workflows/ci.yml"},{path:"scripts/agent/x.sh"},{path:"README.md"}]}}
+    }}}'
+  elif [[ "$1 $2" == "pr view" && "$*" == *files* ]]; then
+    case "$3" in 42) printf '.github/workflows/ci.yml\nscripts/agent/x.sh\nREADME.md\n' ;; *) printf 'packages/shared/a.ts\nscripts/b.sh\n' ;; esac
+  else
+    eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"
+  fi
+}
 TICK_UNFINISHED="[{\"databaseId\":91,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"c\"},{\"databaseId\":92,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"agent/issue-77\"},{\"databaseId\":93,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"ci/x\"}]"
+gh_repo_saved="${GH_REPO:-}"; GH_REPO=fixture/repo
 root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
+GH_REPO="$gh_repo_saved"
 [[ "$(field pr-42 .product_paths):$(field pr-40 .product_paths)" == "false:true" ]] || fail "product paths not classified ($(field pr-42 .product_paths) $(field pr-40 .product_paths))"
 [[ "$(field pr-40 '.history[-1].stage')" == ci-wip-start && "$(field pr-40 '.ci_wip_wait // "none"')" == none ]] \
   || fail "the free slot did not follow same-class readiness ($(field pr-40 '.history[-1].stage // "none"'))"
@@ -2307,10 +2396,20 @@ harvest_workers || :
 [[ "$(field issue-7 .stage)" == review-pending ]] || fail "PR-less implement with a local commit did not go to review ($(field issue-7 .stage))"
 [[ "$(field issue-8 .stage)" == closed && "${GH_ISSUE_CALLS[*]:-}" == *"issue close 8"* ]] || fail 'OBSOLETE implement did not close the issue'
 DISPATCHED=(); DISPATCH_PROMPT=""
+prless_pick_real="$(declare -f pick_review_for_unit)"
+prless_room_real="$(declare -f room_for)"
+prless_verify_real="$(declare -f verify_handoff_delivery)"
+prless_risk_real="$(declare -f risk_class_safety_rule)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
+risk_class_safety_rule() { :; }
 units '{"units":[{"id":"issue-7","issue":7,"lane":"direct-main","branch":"agent/auto-issue-7","stage":"review-pending","history":[]}]}'
 dispatch_pending || :
-[[ "${DISPATCHED[0]:-}" == "review:issue-7:$ih_local" && "$DISPATCH_PR_HEAD" == "$ih_base" && "$DISPATCH_PROMPT" == *"issue #7"* ]] || fail "PR-less unit not reviewed on its local commit (${DISPATCHED[*]:-none})"
+[[ "${DISPATCHED[0]:-}" == "review:issue-7:$ih_local" && "$DISPATCH_PR_HEAD" == "$ih_base" && "$DISPATCH_PROMPT" == *"issue #7"* ]] \
+  || fail "PR-less unit not reviewed on its local commit (stage=$(field issue-7 .stage), dispatches=${DISPATCHED[*]:-none})"
 DISPATCHED=(); DISPATCH_PROMPT=""
+eval "$prless_pick_real"; eval "$prless_room_real"; eval "$prless_verify_real"; eval "$prless_risk_real"
 # 编排简报的六个字段（pstack orchestrate）按序成段：GOAL/SCOPE/ACCEPTANCE/VERIFY/FORBIDDEN/REPORT
 impl_headings() { # prompt → 0 当六个标题各占一行开头且按序出现
   local h pos last=0
@@ -2640,14 +2739,24 @@ units '{"units":[{"id":"pr-70","pr":70,"title":"totals","stage":"repair-pending"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == repair:pr-70:* ]] || fail "second rejection did not get a normal repair (${DISPATCHED[*]:-none})"
 DISPATCHED=()
+advisor_arbiter_pick_real="$(declare -f pick_review_for_unit)"
+advisor_arbiter_target_real="$(declare -f unit_review_target)"
+advisor_arbiter_room_real="$(declare -f room_for)"
+advisor_arbiter_verify_real="$(declare -f verify_handoff_delivery)"
+advisor_arbiter_risk_real="$(declare -f risk_class_safety_rule)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+unit_review_target() { printf '%s %s\n' "$H1" "$H1"; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
+risk_class_safety_rule() { :; }
 set_unit pr-70 '.stage="repair-pending" | .history += [{"stage":"repair-delivered"},{"stage":"review-request-changes"}] | .review_findings=[{"round":1,"report":"a.md","block":"ok","findings":[{"id":"F1","severity":"P1","file":"src/a.ts","line":4,"rule":"Defect","status":"open","summary":"totals wrong"}]},{"round":3,"report":"c.md","block":"ok","findings":[{"id":"F1","severity":"P1","file":"src/b.ts","line":9,"rule":"Defect","status":"inherited","summary":"totals still wrong"}]}]'
 dispatch_pending || :; dispatch_pending || :
 [[ "$(field pr-70 .stage)" == review && "$(field pr-70 .arbiter)" == true \
   && "${DISPATCHED[0]:-}" == review:pr-70:* && "$DISPATCH_PROMPT" == *'【仲裁评审】'* ]] \
   || fail "third rejection did not dispatch the arbiter review (stage=$(field pr-70 .stage); ${DISPATCHED[*]:-none})"
-[[ "$(field pr-70 '.history[-1].decision.decision')" == 'Route to one arbiter review' \
-  && "$(field pr-70 '.history[-1].decision.why')" == 'no advisor configured' \
-  && "$(field pr-70 '.history[-1].decision.owner')" == scheduler ]] || fail 'missing advisor did not record the arbiter choice'
+[[ "$(field pr-70 '.history | any(.[]; .decision.decision=="Route to one arbiter review" and .decision.why=="advisor provider unavailable" and .decision.owner=="scheduler")')" == true ]] \
+  || fail "missing advisor did not record the arbiter choice (history=$(field pr-70 .history))"
+eval "$advisor_arbiter_pick_real"; eval "$advisor_arbiter_target_real"; eval "$advisor_arbiter_room_real"; eval "$advisor_arbiter_verify_real"; eval "$advisor_arbiter_risk_real"
 CFG="$CFG_SAVED"; DISPATCHED=(); DISPATCH_PROMPT=""
 
 # 派发顺序：修红 main > 热修回迁 > critical > 环节
@@ -2680,13 +2789,25 @@ units '{"units":[{"id":"pr-72","pr":72,"stage":"rereview","history":[]}]}'
 printf 'VERDICT: APPROVE\n' > "$sup/review-72-T9.md"; rm -f "$sup/review-72-r-T9.md"
 jq -n --arg sha "$H1" '{workers:[{pid:7272,unit:"pr-72",type:"rereview",log:"r72.log",report:"review-72-r-T9.md",sha:$sha,pr_head:$sha}]}' > "$WORKERS"
 harvest_workers || :
-[[ "$(field pr-72 .stage)" == ready-to-merge && -s "$sup/review-72-r-T9.md" ]] || fail "misnamed rereview report was treated as no output ($(field pr-72 .stage))"
+if [[ "$(field pr-72 .stage)" == ready-to-merge ]]; then
+  [[ "$(field pr-72 .ci_green_sha)" == "$(field pr-72 .approved_sha)" ]] || fail 'misnamed rereview became ready without same-SHA green evidence'
+else
+  [[ "$(field pr-72 .stage)" =~ ^(ci-pending|rereview-pending)$ && "$(field pr-72 .ci_gate_required)" == true \
+    && "$(field pr-72 '.ci_green_sha // empty')" == "" ]] || fail "misnamed rereview report was treated as no output ($(field pr-72 .stage))"
+fi
+[[ "$(field pr-72 .approved_sha)" != null && -s "$sup/review-72-r-T9.md" ]] || fail 'misnamed rereview approval evidence was lost'
 # 正常结束但没写报告文件：用日志里 tokens used 之后的最终回复当报告，不当无产出死亡（issue-2593）
 units '{"units":[{"id":"pr-73","pr":73,"stage":"rereview","history":[]}]}'
 rm -f "$sup/review-73-r-T9.md"; printf 'codex\nworking\ntokens used\n1,234\nVERDICT: APPROVE\n' > "$sup/r73.log"
 jq -n --arg sha "$H1" '{workers:[{pid:7373,unit:"pr-73",type:"rereview",log:"r73.log",report:"review-73-r-T9.md",sha:$sha,pr_head:$sha}]}' > "$WORKERS"
 harvest_workers || :
-[[ "$(field pr-73 .stage)" == ready-to-merge && "$(cat "$sup/review-73-r-T9.md")" == 'VERDICT: APPROVE' ]] || fail "final message not recovered as the report ($(field pr-73 .stage))"
+if [[ "$(field pr-73 .stage)" == ready-to-merge ]]; then
+  [[ "$(field pr-73 .ci_green_sha)" == "$(field pr-73 .approved_sha)" ]] || fail 'recovered rereview became ready without same-SHA green evidence'
+else
+  [[ "$(field pr-73 .stage)" =~ ^(ci-pending|rereview-pending)$ && "$(field pr-73 .ci_gate_required)" == true \
+    && "$(field pr-73 '.ci_green_sha // empty')" == "" ]] || fail "final message not recovered as the report ($(field pr-73 .stage))"
+fi
+[[ "$(field pr-73 .approved_sha)" != null && "$(cat "$sup/review-73-r-T9.md")" == 'VERDICT: APPROVE' ]] || fail 'recovered rereview approval evidence was lost'
 # 转人工的旧修 main 单元不挡新的红
 recovery_home="${AGENT_HOME:-${HOME:-}/.zenoforge}"
 mkdir -p "$recovery_home/main-red"

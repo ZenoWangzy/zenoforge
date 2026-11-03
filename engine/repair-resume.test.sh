@@ -51,13 +51,13 @@ harvest_completed() {
 seed() {
   jq -n --arg sid "$sid" '{units:[{id:"u",stage:"repair-pending",lane:"pr",history:[],
     session_ids:{repair:$sid,review:"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"},
-    sessions:{repair:{id:$sid,provider:"codex",model:"model"}}}]}' > "$UNITS"
+    sessions:{repair:{id:$sid,provider:"codex",model:"gpt-6-luna"}}}]}' > "$UNITS"
   echo '{"workers":[]}' > "$WORKERS"
   counters 1000 0 100 > "$fixture/sessions/2026/10/24/rollout-$sid.jsonl"
   : > "$CALLS"
 }
 seed
-dispatch repair model max u run.log run.md 'FULL ORIGINAL BRIEF' '' "$fixture/repo" '' 'NEW REVIEW FAILURE'
+dispatch repair gpt-6-luna max u run.log run.md 'FULL ORIGINAL BRIEF' '' "$fixture/repo" '' 'NEW REVIEW FAILURE'
 wait "$!"
 python3 - "$CALLS" "$sid" <<'PY'
 import json, sys
@@ -82,7 +82,7 @@ assert '--last' not in calls[0] and '--ephemeral' not in calls[0], calls
 PY
 }
 run_repair() {
-  dispatch repair model max u run.log run.md 'FULL ORIGINAL BRIEF' '' "$fixture/repo" '' 'NEW REVIEW FAILURE'
+  dispatch repair gpt-6-luna max u run.log run.md 'FULL ORIGINAL BRIEF' '' "$fixture/repo" '' 'NEW REVIEW FAILURE'
   wait "$!"
 }
 for reason in no-recorded-session provider-changed model-changed session-files-missing; do
@@ -115,7 +115,7 @@ jq -Rse 'split("\n") | any(.[] | fromjson?; .type=="pipeline.execution" and .mod
 # must not poison completion or accidentally restore the old session.
 harvest_completed
 jq -e --arg sid "$new_sid" --arg old "$sid" '.workers[0] | .session_id==$sid and .resume_session_id==$old and .mode=="fresh" and .execution_reason=="resume-startup-failed" and .harvested==true' "$WORKERS" >/dev/null
-jq -e --arg sid "$new_sid" '.units[0].sessions.repair == {id:$sid,provider:"codex",model:"model"}' "$UNITS" >/dev/null
+jq -e --arg sid "$new_sid" '.units[0].sessions.repair == {id:$sid,provider:"codex",model:"gpt-6-luna"}' "$UNITS" >/dev/null
 echo 'PASS startup fallback and durable session metadata'
 
 seed
@@ -131,10 +131,10 @@ harvest_completed
 # report. It must still be recorded with the model that actually ran.
 seed
 export FAKE_MODE=empty
-dispatch implement model high u initial.log initial.md 'FULL ORIGINAL BRIEF' '' "$fixture/repo"
+dispatch implement gpt-6-luna high u initial.log initial.md 'FULL ORIGINAL BRIEF' '' "$fixture/repo"
 wait "$!" || true
 harvest_completed
-jq -e --arg sid "$new_sid" '.units[0] | .sessions.repair=={id:$sid,provider:"codex",model:"model"} and .session_ids.repair==$sid and .session_ids.review=="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"' "$UNITS" >/dev/null
+jq -e --arg sid "$new_sid" '.units[0] | .sessions.repair=={id:$sid,provider:"codex",model:"gpt-6-luna"} and .session_ids.repair==$sid and .session_ids.review=="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"' "$UNITS" >/dev/null
 jq -e --arg sid "$new_sid" '.workers[0].session_id==$sid' "$WORKERS" >/dev/null
 echo 'PASS fresh implementer records id independently of review and final report'
 # The next dispatch reads the id just harvested, never the unrelated review id.
@@ -151,7 +151,7 @@ seed
 export FAKE_MODE=ok
 printf 'NEW REVIEW FINDINGS\n' > "$SUP/prior.md"
 failure="$(repair_failure_prompt '{"review_report":"prior.md"}' prior.md)"
-dispatch repair model max u review.log review.md 'FULL ORIGINAL BRIEF' '' "$fixture/repo" '' "$failure"
+dispatch repair gpt-6-luna max u review.log review.md 'FULL ORIGINAL BRIEF' '' "$fixture/repo" '' "$failure"
 wait "$!"
 assert_call resume 'NEW REVIEW FINDINGS' "$sid"
 harvest_completed
@@ -168,7 +168,7 @@ SH
 chmod +x "$test_env_bin/gh"
 : > "$CALLS"
 failure="$(repair_failure_prompt '{"pr":1,"repair_hint":"NEW CI FAILURE","history":[{"stage":"ci-test-red"}]}' prior.md)"
-dispatch repair model max u ci.log ci.md 'FULL ORIGINAL BRIEF' '' "$fixture/repo" '' "$failure"
+dispatch repair gpt-6-luna max u ci.log ci.md 'FULL ORIGINAL BRIEF' '' "$fixture/repo" '' "$failure"
 wait "$!"
 python3 - "$CALLS" <<'PY'
 import json, sys
@@ -194,17 +194,17 @@ echo 'PASS hint plus review, hint only, missing report'
 # Cumulative-raw cutoff applies to repair; a self-fix is exempt and never goes cold.
 seed
 counters 8950000 8700000 50000 > "$fixture/sessions/2026/10/24/rollout-$sid.jsonl"
-build_codex_command repair model max u 'COLD BRIEF' 'NEW REVIEW FAILURE'
+build_codex_command repair gpt-6-luna max u 'COLD BRIEF' 'NEW REVIEW FAILURE'
 [[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == session-too-large ]] || fail "9M raw repair resumed (mode=$CODEX_MODE reason=$CODEX_PATH_REASON)"
 counters 7800000 7500000 100000 > "$fixture/sessions/2026/10/24/rollout-$sid.jsonl"
-build_codex_command repair model max u 'COLD BRIEF' 'NEW REVIEW FAILURE'
+build_codex_command repair gpt-6-luna max u 'COLD BRIEF' 'NEW REVIEW FAILURE'
 [[ "$CODEX_MODE" == resume ]] || fail "7.9M raw repair did not resume (reason=$CODEX_PATH_REASON)"
 counters 8950000 8700000 50000 > "$fixture/sessions/2026/10/24/rollout-$sid.jsonl"
 set_unit u '.self_fix_active=true'
-build_codex_command repair model max u 'COLD BRIEF' 'SELF FIX FAILURE'
+build_codex_command repair gpt-6-luna max u 'COLD BRIEF' 'SELF FIX FAILURE'
 [[ "$CODEX_MODE" == resume ]] || fail "self-fix over the cutoff did not resume"
 set_unit u '.sessions.repair.model="other-model"'
-if build_codex_command repair model max u 'COLD BRIEF' 'SELF FIX FAILURE'; then fail "self-fix without a resumable session went cold"; fi
+if build_codex_command repair gpt-6-luna max u 'COLD BRIEF' 'SELF FIX FAILURE'; then fail "self-fix without a resumable session went cold"; fi
 set_unit u '.sessions={}'
-if build_codex_command repair model max u 'COLD BRIEF' 'SELF FIX FAILURE'; then fail "self-fix with no recorded session went cold"; fi
+if build_codex_command repair gpt-6-luna max u 'COLD BRIEF' 'SELF FIX FAILURE'; then fail "self-fix with no recorded session went cold"; fi
 echo 'PASS repair cutoff and self-fix guard'

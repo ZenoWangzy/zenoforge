@@ -544,6 +544,8 @@ try:sys.exit"""))
         self.assertLess(launched.index("LUNA_PRIORITY=release"), launched.index("run-unit"),
                         "the unit env must carry the priority into the in-unit run-unit stage")
         self.assertEqual(launched[launched.index("LUNA_PRIORITY=release") - 1], "-E")
+        self.assertLess(launched.index("LUNA_PRIORITY=release"), launched.index("--"),
+                        "injected environment options must stay before systemd-run's command separator")
         called.unlink()
         result = subprocess.run([shim, "--user", "--unit=zf-implement-1", "--", "/bin/true"],
                                 env=self.env, capture_output=True, text=True)

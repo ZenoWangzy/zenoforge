@@ -60,6 +60,7 @@ gh() {
     'label create') return 0 ;;
     'pr comment') return 0 ;;
     'pr close') return 0 ;;
+    'pr list') printf '[{"number":613,"headRefOid":"%s","headRefName":"agent/issue-613","baseRefName":"main","isDraft":false,"labels":[],"body":"","statusCheckRollup":[],"mergeable":"MERGEABLE"}]\n' "$SHA1" ;;
     'pr view') case "$*" in *headRefName*) echo fix/token-fixture ;; esac; return 0 ;;
     *) echo "supervisor-arbiter.test.sh: unexpected gh call: $*" >&2; return 97 ;;
   esac
@@ -186,8 +187,9 @@ harvest_with_reply pr-613 'ACTION: approve
 REASON: 批准后 CI 基建反复失败，head 本身已评审通过
 EVIDENCE: review-approve 后仅 ci 基建失败
 REJECTED: requeue（无代码问题）'
-[[ "$(field pr-613 .stage)" == ready-to-merge ]] || fail "approve must return the unit to the merge lane"
-[[ "$(field pr-613 .approved_sha)" == "$SHA1" ]] || fail "approve must bind the reviewed head"
+[[ "$(field pr-613 .stage)" == ci-pending && "$(field pr-613 .ci_gate_required)" == true \
+  && "$(field pr-613 '.ci_green_sha // empty')" == "" ]] || fail "approve must wait for required gates before entering the merge lane"
+[[ "$(field pr-613 .approved_sha)" == "$SHA1" ]] || fail "approve must retain the reviewed head while candidate CI waits"
 
 # 危险 approve 挡板：main_red 单元与批准后回滚过的单元不允许 approve（f11 基线实测 2 次危险 approve）。
 units "$(jq -cn --argjson sha "$SHA1" '{units:[{id:"pr-614",pr:614,lane:"pr",stage:"supervisor-review",main_red:true,reviewed_sha:$sha,reviewed_pr_head:$sha,

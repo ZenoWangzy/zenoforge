@@ -128,9 +128,20 @@ export const RELATED_TESTS = new Map([
     'engine/lib.test.sh',
     'engine/apply-model-policy-default-view.test.sh',
   ]],
-  ['.zenoforge/prompts/advisor-batch.md', ['engine/run-advisor-batch.test.sh']],
-  ['.zenoforge/prompts/advisor.md', ['engine/run-advisor.test.sh', 'engine/run-advisor-batch.test.sh']],
-  ['.zenoforge/prompts/advisor.schema.json', ['engine/run-advisor.test.sh', 'engine/run-advisor-batch.test.sh']],
+  ['.zenoforge/prompts/advisor-batch.md', [
+    'engine/run-advisor-batch.test.sh',
+    'engine/advisor-plan.test.mjs',
+    'engine/advisor-plan-brief.test.sh',
+    'engine/advisor-plan-batch.test.sh',
+  ]],
+  ['.zenoforge/prompts/advisor.md', [
+    'engine/run-advisor.test.sh', 'engine/run-advisor-batch.test.sh',
+    'engine/advisor-plan.test.mjs', 'engine/advisor-plan-brief.test.sh', 'engine/advisor-plan-batch.test.sh',
+  ]],
+  ['.zenoforge/prompts/advisor.schema.json', [
+    'engine/run-advisor.test.sh', 'engine/run-advisor-batch.test.sh',
+    'engine/advisor-plan.test.mjs', 'engine/advisor-plan-brief.test.sh', 'engine/advisor-plan-batch.test.sh',
+  ]],
   ['.zenoforge/prompts/agent-settings.json', [
     'engine/eval/runner.test.mjs',
     'engine/run-advisor.test.sh',

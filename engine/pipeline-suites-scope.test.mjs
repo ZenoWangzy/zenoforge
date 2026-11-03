@@ -307,6 +307,7 @@ test('an incident-guard registry edit selects its readers suites, not every suit
     'engine/check-rulings.test.sh',
     'engine/land-direct-main.test.sh',
     'engine/lesson-fragments.test.sh',
+    'engine/mac-autopilot/noop-repair-rounds.test.sh',
     'engine/night/incident-guard-audit.test.mjs',
     'engine/night/maintainer-health-mail.test.sh',
     'engine/pipeline-system-deliver.test.mjs',
