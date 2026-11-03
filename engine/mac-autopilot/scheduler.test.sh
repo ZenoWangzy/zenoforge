@@ -950,6 +950,16 @@ if [[ "$*" == *"--output-last-message"* && "$*" == *" -p "* ]]; then
   input="$(cat)"
   if grep -q '"capTriage":true' <<<"$input"; then
     unit="$(sed -n 's/^.*"unitId":"\([^"]*\)".*$/\1/p' <<<"$input" | tail -n 1)"
+    printf '%s\n' "$input" > "$TF/cap-q-$unit.md"
+    # 复问轮（prompt 带 Re-ask 段）可配独立答案 cap-report-reask-<unit>；缺省沿用原答案（继续无效）。
+    rep="$TF/cap-report-$unit"
+    if grep -q '^## Re-ask:' <<<"$input" && [[ -s "$TF/cap-report-reask-$unit" ]]; then
+      rep="$TF/cap-report-reask-$unit"
+    fi
+    if [[ -s "$rep" ]]; then
+      # 事件复刻（incident-pstack-root-cause-2026-11-03）：按普通仲裁六动作作答的终局裁决报告原样落盘。
+      cat "$rep" > "$out"
+    else
     verdict="$(cat "$TF/cap-verdict-$unit" 2>/dev/null || echo RULE)"
     case "$verdict" in
       CLOSE) printf 'REASON: the requested outcome is already delivered\nEVIDENCE: unit history records a completed delivery\n' > "$out" ;;
@@ -960,6 +970,7 @@ if [[ "$*" == *"--output-last-message"* && "$*" == *" -p "* ]]; then
     esac
     [[ "$verdict" != FOUNDER ]] || printf 'QUESTION: Which product behavior should this unit follow?\n' >> "$out"
     printf 'VERDICT: %s\n' "$verdict" >> "$out"
+    fi
   else
     action="$(cat "$TF/supervise-action" 2>/dev/null || echo requeue)"
     printf 'ACTION: %s\n' "$action" > "$out"
@@ -4693,6 +4704,9 @@ sched_run_case supervisor_arbiter
 cap_triage_fixture_prompt() {
   mkdir -p "$TF/repo/engine/prompts"
   cp "$repo_root/engine/prompts/supervisor-arbiter.md" "$TF/repo/engine/prompts/supervisor-arbiter.md"
+  # 引擎契约文件缺失时不在这里崩（main 上复跑本守卫要有可读的失败信息，而不是 cp 报错）。
+  [[ -f "$repo_root/engine/prompts/supervisor-cap-triage.md" ]] \
+    && cp "$repo_root/engine/prompts/supervisor-cap-triage.md" "$TF/repo/engine/prompts/supervisor-cap-triage.md"
   export ZF_EXECUTION_MODULE_DIR="$TF/repo/engine"
   touch "$TF/allow-dispatch"
 }
@@ -4858,6 +4872,182 @@ sched_case_supervisor_cap_triage_disabled() {
 }
 sched_run_case supervisor_cap_triage_disabled
 
+# incident-pstack-root-cause-2026-11-03：普通仲裁动词（requeue 等）答进终局裁决，格式 miss 直接 park。
+# 契约改为：第一次无效答案 → 一次引用允许动词的复问；复问有效即落地；第二次无效才 park，原因点出两次答案。
+sched_case_supervisor_cap_triage_normal_verb_reask() {
+  local ZF_EXECUTION_MODULE_DIR="${ZF_EXECUTION_MODULE_DIR:-}" ZF_ROADMAP_TREE_CACHE_FILE="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
+  new_tick_fixture supervisor-cap-triage-normal-verb-reask
+  command jq '.max_workers=8 | .supervisor_arbiter.enabled=true | .supervisor_arbiter.max_in_flight=8
+    | .supervisor_arbiter.cap_triage=true | .supervisor_arbiter.cap_triage_per_tick=8' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp" && mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  cap_triage_fixture_prompt
+  # 六个普通仲裁动词按事件形态（ACTION 行）作答，外加一个 VERDICT 行携带普通动词的漂移形态。
+  printf 'ACTION: requeue\nREASON: fixture normal-arbitration verb answered a cap triage\nEVIDENCE: fixture\n' > "$TF/cap-report-verb-requeue"
+  printf 'ACTION: approve\nREASON: fixture normal-arbitration verb answered a cap triage\nEVIDENCE: fixture\n' > "$TF/cap-report-verb-approve"
+  printf 'ACTION: park\nREASON: fixture normal-arbitration verb answered a cap triage\nEVIDENCE: fixture\n' > "$TF/cap-report-verb-park"
+  printf 'ACTION: close\nREASON: fixture normal-arbitration verb answered a cap triage\nEVIDENCE: fixture\n' > "$TF/cap-report-verb-close"
+  printf 'ACTION: reroute\nREASON: fixture normal-arbitration verb answered a cap triage\nEVIDENCE: fixture\n' > "$TF/cap-report-verb-reroute"
+  printf 'ACTION: needs-info\nREASON: fixture normal-arbitration verb answered a cap triage\nEVIDENCE: fixture\n' > "$TF/cap-report-verb-needs-info"
+  printf 'REASON: fixture verdict line carries a normal verb\nEVIDENCE: fixture\nVERDICT: requeue\n' > "$TF/cap-report-verdline"
+  # 复问轮答案：verb-requeue 复问改答有效 CLOSE；verb-approve 复问仍无效（换一个动词，验两次点名）。
+  printf 'REASON: fixture re-ask returns a valid verdict\nEVIDENCE: unit history records a completed delivery\nVERDICT: CLOSE\n' > "$TF/cap-report-reask-verb-requeue"
+  printf 'ACTION: reroute\nREASON: fixture second invalid answer\nEVIDENCE: fixture\n' > "$TF/cap-report-reask-verb-approve"
+  command jq -n --argjson h "$(cap_triage_history)" '{units:[
+    {id:"verb-requeue",issue:791,stage:"supervisor-review",history:$h},
+    {id:"verb-approve",issue:792,stage:"supervisor-review",history:$h},
+    {id:"verb-park",issue:793,stage:"supervisor-review",history:$h},
+    {id:"verb-close",issue:794,stage:"supervisor-review",history:$h},
+    {id:"verb-reroute",issue:795,stage:"supervisor-review",history:$h},
+    {id:"verb-needs-info",issue:796,stage:"supervisor-review",history:$h},
+    {id:"verdline",issue:797,stage:"supervisor-review",history:$h}
+  ]}' > "$TF/supervisor/autopi/units.json"
+  # 跑到两类终态：verb-requeue 复问答 CLOSE 关单；verb-approve 两次无效最终 park。
+  local attempt
+  for attempt in $(seq 1 15); do
+    tick
+    command jq -e '([.units[] | select(.id=="verb-requeue")][0].stage=="closed")
+      and ([.units[] | select(.id=="verb-approve")][0].parked_reason=="supervisor-cap-triage-invalid")' \
+      "$TF/supervisor/autopi/units.json" >/dev/null && break
+  done
+  # 一次无效答案 = 一次复问，不是 park 收尾，也不是按六动作落地（复问历史先于终态，全程无 invalid-final 之外的 park）。
+  command jq -e '[.units[] | select(.id=="verb-requeue")][0]
+    | .stage=="closed"
+    and any(.history[]?; .stage=="supervisor-cap-triage-reask")
+    and any(.history[]?; .stage=="supervisor-cap-close")
+    and ([.history[]? | select(.stage=="supervisor-cap-triage-invalid-final")] | length)==0
+    and ([.history[]? | select(.stage=="supervisor-requeue" or .stage=="supervisor-approve" or .stage=="supervisor-reroute" or .stage=="supervisor-close")] | length)==0' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: ACTION: requeue from cap triage did not trigger one re-ask instead of a park' >&2; exit 1; }
+  # 复问答出有效裁决即落地。
+  command jq -e '[.units[] | select(.id=="verb-requeue")][0] | .stage=="closed"
+    and (has("supervisor_cap_reask") | not)
+    and (has("supervisor_cap_invalid_answers") | not)' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: a valid verdict on the re-ask was not applied' >&2; exit 1; }
+  # 复问 prompt 必须引用四个允许动词，并点出上一次无效答案。
+  local q verb
+  q="$TF/cap-q-verb-requeue.md"
+  grep -Fq '## Re-ask:' "$q" \
+    || { echo 'not ok - scheduler.test.sh: the re-ask round did not carry a re-ask notice' >&2; exit 1; }
+  for verb in CLOSE RECUT RULE FOUNDER; do
+    grep -Fq "VERDICT: $verb" "$q" || { echo "not ok - scheduler.test.sh: re-ask prompt does not quote allowed verdict $verb" >&2; exit 1; }
+  done
+  grep -Fq 'ACTION: requeue' "$q" \
+    || { echo 'not ok - scheduler.test.sh: re-ask prompt does not name the previous invalid answer' >&2; exit 1; }
+  # 第二次无效答案才 park，原因点名两次答案；其余单元同样先复问再终局 park。
+  command jq -e '[.units[] | select(.id=="verb-approve")][0] | .stage=="parked"
+    and .parked_reason=="supervisor-cap-triage-invalid"
+    and (.note | contains("two invalid cap triage answers"))
+    and (.note | contains("ACTION: approve"))
+    and (.note | contains("ACTION: reroute"))
+    and any(.history[]?; .stage=="supervisor-cap-triage-invalid-final")' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: two invalid answers did not park with a reason naming both' >&2; exit 1; }
+  command jq -e '(.units | map(select(.id=="verb-park" or .id=="verb-close" or .id=="verb-reroute" or .id=="verb-needs-info" or .id=="verdline"))
+    | all(.stage=="parked" and .parked_reason=="supervisor-cap-triage-invalid"
+      and any(.history[]?; .stage=="supervisor-cap-triage-reask")
+      and any(.history[]?; .stage=="supervisor-cap-triage-invalid-final")))' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: every normal-arbitration verb must re-ask once before the final park' >&2; exit 1; }
+  # park 收尾是终局：后续 tick 不再为该单元派终局裁决 worker。
+  local parked_workers
+  parked_workers="$(command jq '[.workers[] | select(.unit=="verb-approve" and .type=="supervise")] | length' "$TF/supervisor/autopi/workers.json")"
+  tick; tick
+  command jq -e --argjson before "$parked_workers" '[.workers[] | select(.unit=="verb-approve" and .type=="supervise")] | length==$before' \
+    "$TF/supervisor/autopi/workers.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: the final cap-triage park kept dispatching arbitration workers' >&2; exit 1; }
+}
+sched_run_case supervisor_cap_triage_normal_verb_reask
+
+# 复发防线：目标配置把 supervisor-arbiter prompt 覆盖成没有终局裁决段的旧版（本次事件的形态），
+# 引擎仍必须把四动词契约带进终局裁决 prompt——两个 prompt 之间的动词漂移在这里 fail CI。
+sched_case_supervisor_cap_triage_contract_binding() {
+  local ZF_EXECUTION_MODULE_DIR="${ZF_EXECUTION_MODULE_DIR:-}" ZF_ROADMAP_TREE_CACHE_FILE="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
+  new_tick_fixture supervisor-cap-triage-contract-binding
+  command jq '.max_workers=1 | .supervisor_arbiter.enabled=true | .supervisor_arbiter.max_in_flight=1
+    | .supervisor_arbiter.cap_triage=true | .supervisor_arbiter.cap_triage_per_tick=1' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp" && mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  cap_triage_fixture_prompt
+  mkdir -p "$TF/repo/.zenoforge/prompts"
+  cat > "$TF/repo/.zenoforge/prompts/supervisor-arbiter.md" <<'DRIFT'
+# 工厂 supervisor 裁决（六动作）
+
+DRIFTED- SIX-ACTION-ONLY 配置覆盖，没有任何终局裁决段。
+
+## 输出格式（严格遵守，第一行必须是 ACTION 行）
+
+ACTION: requeue|approve|park|close|reroute|needs-info
+REASON: …
+DRIFT
+  command jq -n --argjson h "$(cap_triage_history)" \
+    '{units:[{id:"bind-check",issue:798,task:"one bounded fixture task",branch:"bind-check",stage:"supervisor-review",history:$h}]}' \
+    > "$TF/supervisor/autopi/units.json"
+  printf 'RULE\n' > "$TF/cap-verdict-bind-check"
+  local attempt
+  for attempt in $(seq 1 10); do
+    tick
+    command jq -e 'any(.units[] | select(.id=="bind-check") | .history[]; .stage=="supervisor-cap-rule")' \
+      "$TF/supervisor/autopi/units.json" >/dev/null && break
+  done
+  command jq -e 'any(.units[] | select(.id=="bind-check") | .history[]; .stage=="supervisor-cap-rule")' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: drifted prompt fixture never completed its cap triage round' >&2; exit 1; }
+  local q verb
+  q="$TF/cap-q-bind-check.md"
+  [[ -s "$q" ]] || { echo 'not ok - scheduler.test.sh: cap triage prompt capture missing' >&2; exit 1; }
+  # 覆盖生效（q 以漂移版开头）且引擎契约仍随后追加：四动词 + VERDICT 行一个都不能少。
+  grep -Fq 'DRIFTED- SIX-ACTION-ONLY' "$q" \
+    || { echo 'not ok - scheduler.test.sh: target-config override did not win the prompt; fixture is not exercising the drift' >&2; exit 1; }
+  grep -Fq 'VERDICT: CLOSE|RECUT|RULE|FOUNDER' "$q" \
+    || { echo 'not ok - scheduler.test.sh: engine cap-triage contract missing from the dispatched prompt (verb drift recurrence)' >&2; exit 1; }
+  for verb in CLOSE RECUT RULE FOUNDER; do
+    grep -Fq "$verb" "$q" || { echo "not ok - scheduler.test.sh: allowed verdict $verb missing from the cap-triage prompt" >&2; exit 1; }
+  done
+  grep -Fq 'capTriage' "$q" \
+    || { echo 'not ok - scheduler.test.sh: cap-triage mode marker missing from the dispatched prompt' >&2; exit 1; }
+  # 契约文件与解析器的动词集一致：文件里的 VERDICT 行就是解析器唯一接受的四个动词。
+  grep -Fq 'VERDICT: CLOSE|RECUT|RULE|FOUNDER' "$repo_root/engine/prompts/supervisor-cap-triage.md" \
+    || { echo 'not ok - scheduler.test.sh: engine contract file and parser verdict set drifted apart' >&2; exit 1; }
+  # 解析器契约直测：收下四个允许动词；拒绝全部六个普通动词（ACTION 行形态与 VERDICT 行形态都要拒）。
+  (
+    export MAC_AUTOPILOT_ROOT="$TF/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$TF/supervisor" MAC_AUTOPILOT_RUNTIME_DIR="$TF/supervisor/autopi" CODEX_SESSIONS_DIR="$TF/sessions"
+    export AGENT_HOME="$TF/agent-home" AUTOPILOT_PAUSE_FILE="$TF/pause" AUTOPILOT_POLICY_SCRIPT="$POLICY_FIXTURE"
+    export AP_SYSTEM_TMP="$TF/tmp" AP_SYSTEM_TMP_FS=fixture
+    export ZF_GH_REAL_CLI="$TF/bin/gh-real" ZF_TEST_EVIDENCE_LEDGER="$TF/supervisor/test-evidence.jsonl"
+    export PATH="$repo_root/engine/gh-shim:$TF/bin:$PATH" AUTOPI_VIEWS_INLINE=true
+    export ZF_EXECUTION_MODULE_DIR="$TF/repo/engine"
+    export AUTOPI_TEST_LIBRARY_ONLY=true
+    source "$TF/repo/engine/mac-autopilot/scheduler.sh"
+    verb_report() { # lines of a cap report, the verdict line last
+      printf 'REASON: r\nEVIDENCE: e\n'
+      local line
+      for line in "$@"; do printf '%s\n' "$line"; done
+    }
+    for verb in CLOSE RECUT RULE FOUNDER; do
+      if [[ "$verb" == FOUNDER ]]; then
+        verb_report 'QUESTION: one owner question?' "VERDICT: $verb" > "$TF/parse-ok.md"
+      else
+        verb_report "VERDICT: $verb" > "$TF/parse-ok.md"
+      fi
+      [[ "$(supervisor_cap_verdict_of "$TF/parse-ok.md")" == "$verb" ]] \
+        || { echo "not ok - scheduler.test.sh: parser rejected allowed verdict $verb" >&2; exit 1; }
+    done
+    for verb in requeue approve park close reroute needs-info; do
+      verb_report "ACTION: $verb" > "$TF/parse-bad.md"
+      if supervisor_cap_verdict_of "$TF/parse-bad.md" >/dev/null 2>&1; then
+        echo "not ok - scheduler.test.sh: parser accepted normal-arbitration verb $verb as a cap verdict" >&2
+        exit 1
+      fi
+      verb_report "VERDICT: $verb" > "$TF/parse-bad.md"
+      if supervisor_cap_verdict_of "$TF/parse-bad.md" >/dev/null 2>&1; then
+        echo "not ok - scheduler.test.sh: parser accepted VERDICT-line verb $verb from normal arbitration" >&2
+        exit 1
+      fi
+    done
+  ) || exit 1
+}
+sched_run_case supervisor_cap_triage_contract_binding
+
 prepare_jev_f12_fixture() {
   command jq '.max_workers=2 | .supervisor_arbiter.enabled=true | .supervisor_arbiter.max_in_flight=1' \
     "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
@@ -4867,6 +5057,8 @@ prepare_jev_f12_fixture() {
     > "$ZF_ROADMAP_TREE_CACHE_FILE"
   mkdir -p "$TF/repo/engine/prompts" "$TF/agent-home/logs"
   cp "$repo_root/engine/prompts/supervisor-arbiter.md" "$TF/repo/engine/prompts/supervisor-arbiter.md"
+  [[ -f "$repo_root/engine/prompts/supervisor-cap-triage.md" ]] \
+    && cp "$repo_root/engine/prompts/supervisor-cap-triage.md" "$TF/repo/engine/prompts/supervisor-cap-triage.md"
   export ZF_EXECUTION_MODULE_DIR="$TF/repo/engine"
   # The scheduler reaches the judge through ts-judge.sh (548de8056), which execs the real node, so the node() wrapper below never
   # sees it; the fixture copy of the wrapper runs the mock driver instead.

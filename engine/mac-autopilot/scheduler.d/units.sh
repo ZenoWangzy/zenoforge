@@ -111,6 +111,7 @@ supervisor_cap_parked_unit() { # unit-json → whether this is a retryable arbit
   jqf -e --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '
     .stage == "parked" and (
       .parked_reason == "supervisor-arbitration-cap" or
+      .parked_reason == "supervisor-cap-triage-reask" or
       any((.history // [])[]?; .stage == "supervisor-budget-park" and
         ((.result // "") | test($cap_park_result_re))) or
       any((.history // [])[]?; .stage == "supervisor-cap-triage-park")
