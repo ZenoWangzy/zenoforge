@@ -18,6 +18,18 @@ env -u ZF_PIPELINE_CALL_PROFILE_FILE bash -euo pipefail -c '
   ! declare -F _call_profile_record >/dev/null
 ' _ "$isolated_scripts"
 
+# The preferred spelling must initialize the very same profiler as the legacy one.
+env -u ZF_PIPELINE_CALL_PROFILE_FILE ZF_CALL_PROFILE_FILE="$AGENT_HOME/new-name.tsv" \
+  bash -euo pipefail -c '
+    source "$1/lib.sh"
+    [[ "${ZF_CALL_PROFILE_ENABLED:-0}" == 1 && "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" == 1 ]] || {
+      echo "not ok - preferred profile file does not enable both state names" >&2; exit 1;
+    }
+    declare -F _call_profile_record >/dev/null
+    [[ -f "$ZF_CALL_PROFILE_FILE" ]]
+  ' _ "$isolated_scripts"
+bash "$SCRIPT_DIR/rename-e1-profile.test.sh"
+
 fake_bin="$AGENT_HOME/fake-bin"
 mkdir -p "$fake_bin"
 export CALL_PROFILE_TEST_COMMAND_LOG="$AGENT_HOME/commands.log"
@@ -98,8 +110,13 @@ run_same_input > "$AGENT_HOME/after.out"
 cp "$CALL_PROFILE_TEST_COMMAND_LOG" "$AGENT_HOME/after.calls"
 cmp "$AGENT_HOME/before.out" "$AGENT_HOME/after.out"
 cmp "$AGENT_HOME/before.calls" "$AGENT_HOME/after.calls"
-cmp "$AGENT_HOME/dispatch.before" "$AGENT_HOME/dispatch.after"
-cmp "$AGENT_HOME/record.before" "$AGENT_HOME/record.after"
+for kind in dispatch record; do
+  for state in before after; do
+    grep -Ev '^issue-pipeline: legacy ZF_PIPELINE_CALL_PROFILE_(FILE|ENABLED) read by [a-z-]+$' \
+      "$AGENT_HOME/$kind.$state" > "$AGENT_HOME/$kind.$state.filtered"
+  done
+  cmp "$AGENT_HOME/$kind.before.filtered" "$AGENT_HOME/$kind.after.filtered"
+done
 
 DRY_RUN=0 dispatch_unit_fixture
 graphql_query_fixture > /dev/null

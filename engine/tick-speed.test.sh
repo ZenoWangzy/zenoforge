@@ -51,7 +51,7 @@ if [ "$2" = fastlane ]; then
   read -r _ < "$AGENT_HOME/overrun-fifo"
 fi
 CHILD
-gh() { printf 'release\n'; }
+gh() { if [[ "$2" == get ]]; then echo release; else printf '%s\n' '[{"name":"AGENT_PIPELINE","value":"release"}]'; fi; }
 check_gmail_credential() { :; }
 roadmap_switch_value() { printf 'true\n'; }
 roadmap_fetch_for_admission() {

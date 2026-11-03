@@ -76,6 +76,8 @@ REPO_DIR="$ZF_REPO_DIR"
 REPO="${ZF_REPO:-$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##' || true)}"
 export ZF_REPO="$REPO"
 
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/compat-inputs.sh"
+
 # Model choice has one persistent source: the operator file, seeded from this
 # versioned policy. Launchers pass role names; this helper owns validation,
 # identity formatting, and escalation transitions.
@@ -1021,7 +1023,8 @@ IMPLEMENT_FAILURE_STREAK=0
 
 # Every pipeline child sources lib.sh; disabled profiling needs no helper file.
 ZF_PIPELINE_CALL_PROFILE_ENABLED=0
-if [ -n "${ZF_PIPELINE_CALL_PROFILE_FILE:-}" ]; then
+ZF_CALL_PROFILE_ENABLED=0
+if [[ -v ZF_CALL_PROFILE_FILE || -v ZF_PIPELINE_CALL_PROFILE_FILE ]]; then
   # shellcheck source=./call-profile.sh
   source "${BASH_SOURCE[0]%/*}/call-profile.sh"
 fi

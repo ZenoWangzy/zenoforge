@@ -86,6 +86,96 @@ function must(r, what) {
   if (r && !r.ok) throw new UserError(`${what} failed: ${firstLine(r)}`);
 }
 
+// A successful listing proves absence; a failed read cannot distinguish a
+// missing variable from an inaccessible repository and must stay off.
+function readMode(repo, io, consumer, verify = true) {
+  const r = io.exec('gh', ['variable', 'list', '--repo', repo, '--json', 'name,value', '--jq',
+    '[.[] | select(.name == "AGENT_ZENOFORGE" or .name == "AGENT_PIPELINE")]']);
+  if (!r.ok) return { error: 'repository mode read failed' };
+  let rows;
+  try { rows = JSON.parse(r.stdout); } catch { return { error: 'invalid repository mode data' }; }
+  if (!Array.isArray(rows) || rows.some((v) => !v || !['AGENT_ZENOFORGE', 'AGENT_PIPELINE'].includes(v.name) || typeof v.value !== 'string') || new Set(rows.map((v) => v.name)).size !== rows.length) {
+    return { error: 'invalid repository mode data' };
+  }
+  const normalize = (v) => {
+    if (v === undefined) return null;
+    const s = v.replace(/[\x09-\x0d\x20]/g, '');
+    return s === 'off' ? 'off' : ['triage', 'implement', 'release'].includes(s) ? 'triage' : 'invalid';
+  };
+  const old = normalize(rows.find((v) => v.name === 'AGENT_PIPELINE')?.value);
+  const current = normalize(rows.find((v) => v.name === 'AGENT_ZENOFORGE')?.value);
+  if (old !== null) io.log(`legacy AGENT_PIPELINE read by ${consumer}`);
+  const conflict = old === 'invalid' || current === 'invalid' || (old !== null && current !== null && old !== current);
+  const state = { old, current, conflict, effective: conflict ? 'off' : current ?? old ?? 'off' };
+  if (verify && state.effective === 'triage') {
+    const check = io.exec('gh', ['variable', 'get', 'AGENT_PIPELINE', '--repo', repo]);
+    if (check.ok) {
+      io.log(`legacy AGENT_PIPELINE read by ${consumer}`);
+      const observed = normalize(check.stdout);
+      if (observed !== old) return { ...state, old: observed, conflict: true, changed: true, effective: 'off' };
+    } else {
+      const notFound = check.stderr.split('\n').some((line) => line.trim() === 'variable AGENT_PIPELINE was not found');
+      if (old !== null || !notFound) return { error: 'legacy mode recheck failed' };
+      const checked = readMode(repo, io, consumer, false);
+      if (checked.error) return { error: 'repository mode recheck failed' };
+      if (checked.old !== null || checked.current !== current) return { ...checked, conflict: true, changed: true, effective: 'off' };
+    }
+  }
+  return state;
+}
+
+function stopMode(act, repo, io) {
+  const old = gh.setVariable(act, repo, 'AGENT_PIPELINE', 'off');
+  const current = gh.setVariable(act, repo, 'AGENT_ZENOFORGE', 'off');
+  if (!old.ok || !current.ok) {
+    return `stop unconfirmed: ${!old.ok ? 'AGENT_PIPELINE off failed' : 'AGENT_ZENOFORGE off failed'}${!old.ok && !current.ok ? '; AGENT_ZENOFORGE off also failed' : ''}`;
+  }
+  if (!act.dryRun) {
+    const state = readMode(repo, io, 'stop');
+    if (state.error || state.old !== 'off' || state.current !== 'off') return 'stop unconfirmed: unable to verify both mode variables are off';
+  }
+  return null;
+}
+
+function startMode(act, repo, io) {
+  let state = act.dryRun ? {} : readMode(repo, io, 'start');
+  if (state.old === 'triage' && state.current === 'triage' && !state.conflict) return null;
+  if (state.error || state.conflict) {
+    const error = stopMode(act, repo, io);
+    if (error) return `start refused: ${error}`;
+  }
+  if (!gh.setVariable(act, repo, 'AGENT_PIPELINE', 'off').ok) return 'start refused: could not establish AGENT_PIPELINE off';
+  if (!act.dryRun) {
+    state = readMode(repo, io, 'start verification');
+    if (state.error || state.old !== 'off') return 'start refused: could not verify AGENT_PIPELINE off';
+  }
+  if (!gh.setVariable(act, repo, 'AGENT_ZENOFORGE', 'triage').ok) {
+    const rollback = stopMode(act, repo, io);
+    return `start incomplete: AGENT_ZENOFORGE write failed; ${rollback ?? 'both switches verified off'}`;
+  }
+  if (!gh.setVariable(act, repo, 'AGENT_PIPELINE', 'triage').ok) {
+    const rollback = stopMode(act, repo, io);
+    return `start incomplete: AGENT_PIPELINE write failed; ${rollback ?? 'both switches verified off'}`;
+  }
+  if (!act.dryRun) {
+    state = readMode(repo, io, 'start verification');
+    if (state.error || state.conflict || state.old !== 'triage' || state.current !== 'triage') {
+      const rollback = stopMode(act, repo, io);
+      return `start unconfirmed: unable to verify both mode variables; ${rollback ?? 'both switches verified off'}`;
+    }
+  }
+  return null;
+}
+
+function schedulerOrStop(act, repo, io, what, operation) {
+  try {
+    must(operation(), what);
+  } catch (error) {
+    const rollback = stopMode(act, repo, io);
+    throw new UserError(`${error.message}; ${rollback ?? 'both switches verified off'}`);
+  }
+}
+
 function assertNoTrackedEngine(repo, dir) {
   // shortcut: the engine is linked in as <checkout>/engine, so a repository that tracks its own top-level engine/ cannot be used; upgrade to a ZF_ENGINE_DIR seam in the engine.
   if (fs.existsSync(path.join(dir, '.git')) && trackedEngine(dir, 'HEAD')) {
@@ -290,26 +380,20 @@ export async function init(opts, io) {
   const made = gh.ensureLabels(act, repo, labels, view.ok ? gh.existingLabels(repo, io.exec) : null);
   if (!act.dryRun) log(`labels: ${made.length} created, ${labels.length - made.length} already present`);
 
-  let varsOk = true;
-  for (const [k, v] of [['AGENT_SUPERVISOR', 'observe'], ['AGENT_PIPELINE', enable ? 'triage' : 'off']]) {
-    if (!gh.setVariable(act, repo, k, v).ok) varsOk = false;
-  }
-  if (!varsOk) {
-    log(`WARN  could not set repository variables (needs admin access). Set them yourself:
-      gh variable set AGENT_SUPERVISOR --repo ${repo} --body observe
-      gh variable set AGENT_PIPELINE --repo ${repo} --body ${enable ? 'triage' : 'off'}`);
-  }
-
   // the state goes first: if the scheduler step fails, uninstall still knows what to remove
   const state = { version: pkgVersion(), engine: name, ...settings, installedAt: new Date().toISOString() };
   act.write(statePath(agentHome), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
 
+  if (!gh.setVariable(act, repo, 'AGENT_SUPERVISOR', 'observe').ok) log('WARN  could not set AGENT_SUPERVISOR (needs admin access)');
+  const modeError = enable ? startMode(act, repo, io) : stopMode(act, repo, io);
+  if (modeError) throw new UserError(`installation incomplete: ${modeError}`);
+
   const ctx = { ...buildCtx({ home: io.home, checkout, env: io.env }), units: unitsFromOverlay(overlay, PKG_ENGINE) };
   if (enable) {
-    must(backends[scheduler].install(act, ctx), 'installing the scheduler units');
-    must(backends[scheduler].enable(act, ctx), 'switching the scheduler on');
+    schedulerOrStop(act, repo, io, 'installing the scheduler units', () => backends[scheduler].install(act, ctx));
+    schedulerOrStop(act, repo, io, 'switching the scheduler on', () => backends[scheduler].enable(act, ctx));
     // a re-run with changed settings flips to a new engine version; the resident loops only pick it up on restart
-    if (hadEngine && hadEngine !== name) must(backends[scheduler].restartLoops(act, ctx), 'restarting the loops');
+    if (hadEngine && hadEngine !== name) schedulerOrStop(act, repo, io, 'restarting the loops', () => backends[scheduler].restartLoops(act, ctx));
   }
 
   // 7. next steps
@@ -343,21 +427,23 @@ export async function start(opts, io) {
   if (firstEnable) {
     io.log(RISK_WARNING);
     if (!opts.dryRun) await confirmRisk(opts, io, 'I understand. Install the scheduler and switch the factory on now?');
-    backend.install(act, ctx);
+    schedulerOrStop(act, state.repo, io, 'installing the scheduler units', () => backend.install(act, ctx));
+    schedulerOrStop(act, state.repo, io, 'writing scheduler state', () =>
+      act.write(statePath(ctx.agentHome), `${JSON.stringify({ ...state, scheduler: backend.name }, null, 2)}\n`, { mode: 0o600 }));
   }
-  const r = backend.enable(act, ctx);
-  if (!r.ok) throw new UserError(`could not start: ${(r.stderr || '').trim().split('\n')[0] || 'see the command output above'}`);
-  if (firstEnable) {
-    act.write(statePath(ctx.agentHome), `${JSON.stringify({ ...state, scheduler: backend.name }, null, 2)}\n`, { mode: 0o600 });
-    const v = gh.setVariable(act, state.repo, 'AGENT_PIPELINE', 'triage');
-    if (!v.ok) throw new UserError(`started, but could not set AGENT_PIPELINE (needs admin access): ${firstLine(v)}\nSet it yourself:\n  gh variable set AGENT_PIPELINE --repo ${state.repo} --body triage`);
-  }
+  const modeError = startMode(act, state.repo, io);
+  if (modeError) throw new UserError(modeError);
+  schedulerOrStop(act, state.repo, io, 'starting the scheduler', () => backend.enable(act, ctx));
   io.log('started');
 }
 
 export function stop(opts, io) {
-  const { ctx, backend } = requireState(io);
-  backend.disable(new Actions({ dryRun: opts.dryRun, log: io.log, runner: io.runner }), ctx);
+  const { ctx, backend, state } = requireState(io);
+  const act = new Actions({ dryRun: opts.dryRun, log: io.log, runner: io.runner });
+  const modeError = stopMode(act, state.repo, io);
+  const disabled = backend.disable(act, ctx);
+  if (modeError) throw new UserError(modeError);
+  must(disabled, 'stopping the scheduler');
   io.log('stopped');
 }
 
@@ -368,10 +454,15 @@ export function status(opts, io) {
   if (trackedEngine(state.checkout, 'origin/main')) {
     io.log(`WARN  origin/main of ${state.repo} now tracks a top-level engine/ directory. The next checkout reset replaces Zenoforge's engine link with it. Run: zenoforge stop`);
   }
-  for (const v of ['AGENT_PIPELINE', 'AGENT_SUPERVISOR']) {
-    const r = io.exec('gh', ['variable', 'get', v, '--repo', state.repo]);
-    io.log(`${v.padEnd(18)} ${r.ok ? r.stdout.trim() : '(unreadable)'}`);
+  const mode = readMode(state.repo, io, 'status');
+  if (mode.error) io.log(`AGENT_ZENOFORGE    (unreadable: ${mode.error}; effective off)`);
+  else {
+    io.log(`AGENT_ZENOFORGE    ${mode.current ?? '(missing)'}`);
+    io.log(`AGENT_PIPELINE     ${mode.old ?? '(missing)'}`);
+    io.log(`effective mode     ${mode.effective}${mode.changed ? ' (changed during read)' : mode.conflict ? ' (conflicting or malformed values)' : ''}`);
   }
+  const supervisor = io.exec('gh', ['variable', 'get', 'AGENT_SUPERVISOR', '--repo', state.repo]);
+  io.log(`AGENT_SUPERVISOR   ${supervisor.ok ? supervisor.stdout.trim() : '(unreadable)'}`);
 }
 
 export function logs(opts, io) {

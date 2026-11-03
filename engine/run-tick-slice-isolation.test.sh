@@ -12,6 +12,7 @@ FAKE_BIN="$FIXTURE/bin"
 STAGE_LOG="$FIXTURE/stages.log"
 SYSTEMCTL_LOG="$FIXTURE/systemctl.log"
 RUN_OUTPUT="$FIXTURE/run-tick.out"
+VARIABLE_FILE="$FIXTURE/variables.json"
 RUN_STATUS=0
 mkdir -p "$FIXTURE" "$FAKE_BIN"
 
@@ -51,12 +52,19 @@ cat > "$REPO/engine/issue-pipeline.sh" <<'PIPELINE'
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-source "$SCRIPT_DIR/config.sh"
+source "$SCRIPT_DIR/lib.sh"
 source "$ZF_ENGINE_DIR/issue-pipeline-slices.sh"
 REPO="${ZF_REPO:-example-maintainer/example-repo}"
-gh() { printf 'triage\n'; }
+gh() {
+  if [[ "$1 $2" == 'variable get' ]]; then
+    [[ " $* " != *' --json '* ]] || { echo 'unsupported get option' >&2; return 1; }
+    local found
+    found="$(jq -re '[.[] | select(.name == "AGENT_PIPELINE")][0].value // empty' "$VARIABLE_FILE")" \
+      || { echo 'variable AGENT_PIPELINE was not found' >&2; return 1; }
+    printf '%s\n' "$found"
+  else cat "$VARIABLE_FILE"; fi
+}
 check_gmail_credential() { :; }
-manual_pause_is_valid() { return 1; }
 roadmap_switch_value() { printf 'false\n'; }
 roadmap_cache_path() { printf '%s.tree.json\n' "$1"; }
 LOCK_FILE="$AGENT_HOME/slice.lock"
@@ -78,7 +86,7 @@ run_launcher() {
     ZF_PACK_DIR="$REPO/engine" ZF_PACK_REL=engine ZF_REPO=example-maintainer/example-repo \
     ZF_AGENT_RECIPIENTS_FILE="$FIXTURE/recipients.json" \
     ZF_HOST_OPS_DIR="$FIXTURE/hostops" ZF_ENGINE_SYNC="$FIXTURE/no-engine-sync" \
-    SYSTEMD_USER_UNIT_DIR="$FIXTURE/user-units" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" STAGE_LOG="$STAGE_LOG" \
+    SYSTEMD_USER_UNIT_DIR="$FIXTURE/user-units" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" STAGE_LOG="$STAGE_LOG" VARIABLE_FILE="$VARIABLE_FILE" \
     AGENT_DRY_RUN=1 GIT_FETCH_TIMEOUT_SEC=5 PATH="$FAKE_BIN:$PATH" \
     bash "$REPO/engine/run-tick.sh" > "$RUN_OUTPUT" 2>&1
   RUN_STATUS=$?
@@ -89,6 +97,7 @@ printf '%s\n' '{"founder_login":"testmaintainer","recipients":{"testmaintainer":
   > "$FIXTURE/recipients.json"
 : > "$STAGE_LOG"
 : > "$SYSTEMCTL_LOG"
+printf '%s\n' '[{"name":"AGENT_PIPELINE","value":"triage"}]' > "$VARIABLE_FILE"
 run_launcher
 [[ "$RUN_STATUS" == 0 ]] || { tail -n 40 "$RUN_OUTPUT" >&2; echo "not ok - isolated slice failure returned $RUN_STATUS" >&2; exit 1; }
 grep -q 'issue-pipeline: slice failed stage=recut status=1; isolating this slice and continuing other stages' "$RUN_OUTPUT" \
@@ -98,6 +107,35 @@ grep -qx maintenance "$STAGE_LOG" \
 grep -Fq -- '--user is-active --quiet zenoforge-agent.timer' "$SYSTEMCTL_LOG" \
   || { cat "$SYSTEMCTL_LOG" >&2; echo 'not ok - run-tick post-handoff timer checks did not run' >&2; exit 1; }
 echo 'ok - one failed slice is isolated and run-tick post-steps complete'
+
+first_stages="$(cat "$STAGE_LOG")"
+: > "$STAGE_LOG"
+printf '%s\n' '[{"name":"AGENT_ZENOFORGE","value":"triage"}]' > "$VARIABLE_FILE"
+run_launcher
+[[ "$RUN_STATUS" == 0 && "$(cat "$STAGE_LOG")" == "$first_stages" ]] \
+  || { tail -n 40 "$RUN_OUTPUT" >&2; echo 'not ok - preferred mode changed slice dispatch' >&2; exit 1; }
+echo 'ok - both mode names dispatch the same slices through run-tick'
+
+for variables in \
+  '[{"name":"AGENT_PIPELINE","value":"off"}]' \
+  '[{"name":"AGENT_ZENOFORGE","value":"off"}]' \
+  '[{"name":"AGENT_PIPELINE","value":"off"},{"name":"AGENT_ZENOFORGE","value":"triage"}]'; do
+  printf '%s\n' "$variables" > "$VARIABLE_FILE"
+  : > "$STAGE_LOG"
+  run_launcher
+  [[ "$RUN_STATUS" == 0 && ! -s "$STAGE_LOG" ]] \
+    || { tail -n 40 "$RUN_OUTPUT" >&2; echo 'not ok - an off switch failed to stop slices' >&2; exit 1; }
+done
+echo 'ok - each off switch and a conflicting old off stop run-tick slices'
+
+printf '%s\n' '[{"name":"AGENT_ZENOFORGE","value":"triage"}]' > "$VARIABLE_FILE"
+printf '%s\n' '{"caller":"operator","reason":"fixture","issue":"1","provider":"test","model":"test","timestamp":"2026-01-01T00:00:00Z"}' > "$FIXTURE/agent-home/PAUSE"
+: > "$STAGE_LOG"
+run_launcher
+[[ "$RUN_STATUS" == 0 && ! -s "$STAGE_LOG" ]] \
+  || { tail -n 40 "$RUN_OUTPUT" >&2; echo 'not ok - PAUSE failed to stop slices' >&2; exit 1; }
+rm -f "$FIXTURE/agent-home/PAUSE"
+echo 'ok - PAUSE stops preferred-name slices through run-tick'
 
 before="$(wc -l < "$STAGE_LOG")"
 git -C "$REPO" switch -q -c wrong-branch

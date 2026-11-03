@@ -24,6 +24,7 @@ command="${1:-}"
 subcommand="${2:-}"
 shift 2 || true
 case "$command:$subcommand" in
+  variable:list) printf '%s\n' '[{"name":"AGENT_PIPELINE","value":"triage"}]' ;;
   variable:get)
     case "${1:-}" in AGENT_PIPELINE) printf 'triage\n' ;; AGENT_PHASE) printf 'implement\n' ;; *) exit 1 ;; esac
     ;;
