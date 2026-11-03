@@ -153,12 +153,14 @@ incident_class() {
 }
 
 scheduler_signature_class() {
-  local line="$1" rc fn var
-  if [[ "$line" =~ jqf[[:space:]]error[[:space:]]\(rc=([0-9]+)\)[[:space:]]in[[:space:]]([^[:space:]:]+) ]]; then
-    rc="${BASH_REMATCH[1]}"; fn="${BASH_REMATCH[2]}"
+  local line="$1" fn var
+  if [[ "$line" =~ jqf[[:space:]]error[[:space:]]\(rc=[0-9]+\)[[:space:]]in[[:space:]]([^[:space:]:]+) ]]; then
+    # 2026-11-03: rc stays in the log line but out of the class id -- a repeat
+    # with a different rc is the same failure and must upsert one issue.
+    fn="${BASH_REMATCH[1]}"
     fn="$(printf '%s' "$fn" | LC_ALL=C tr '[:upper:]_' '[:lower:]-' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-|-$//g')"
     [[ -n "$fn" ]] || fn=unknown
-    printf 'sched-jqf-%s-rc%s\n' "$fn" "$rc"
+    printf 'sched-jqf-error-%s\n' "$fn"
   elif [[ "$line" == *'unbound variable'* ]]; then
     if [[ "$line" =~ ([[:alnum:]_]+):[[:space:]]unbound[[:space:]]variable ]]; then
       var="$(printf '%s' "${BASH_REMATCH[1]}" | LC_ALL=C tr '[:upper:]_' '[:lower:]-' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-|-$//g')"
@@ -177,11 +179,11 @@ scheduler_signature_class() {
     # which this scanner never reads, so a down pipeline filed no incident.
     # run-tick's refuse() now also appends the line to scheduler.log.
     printf 'sched-run-tick-refused\n'
-  elif [[ "$line" =~ issue-pipeline:[[:space:]]slice-failed[[:space:]]tick=[^[:space:]]+[[:space:]]stage=([a-z0-9-]+)[[:space:]]status=([0-9]+) ]]; then
-    # #166 files a stable incident for each failed slice+status. Repeated
-    # occurrences dedupe in pipeline-issue-upsert; distinct stages/statuses
-    # remain independently actionable.
-    printf 'sched-slice-failed-%s-%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  elif [[ "$line" =~ issue-pipeline:[[:space:]]slice-failed[[:space:]]tick=[^[:space:]]+[[:space:]]stage=([a-z0-9-]+)[[:space:]]status=[0-9]+ ]]; then
+    # #166 files a stable incident per failed slice stage; the status code and
+    # tick id stay evidence, not identity (class ids carry no numbers, or each
+    # retry with a new status would fork a fresh issue).
+    printf 'sched-slice-failed-%s\n' "${BASH_REMATCH[1]}"
   elif [[ "$line" == *'advisor provider missing: '* ]]; then
     # The scheduler refuses a unit-advisor launch before Node can emit a
     # MODULE_NOT_FOUND stack; #166 files this stable signature as an incident.
@@ -194,6 +196,34 @@ scheduler_signature_class() {
     # Repeated budget deferral means a maintenance section is starving across
     # ticks; keep the warning on the normal #166 incident intake path.
     printf 'sched-maintenance-deferral-%s\n' "${BASH_REMATCH[1]}"
+  fi
+}
+
+# 2026-11-03: the previous fallback matched any line containing the substrings
+# SLOW|KILL|BLOCK|orphan-recover|budget|merge-revert|verdict=BLOCK|error, so routine
+# progress -- "blocked on predecessor", "unblocked", "budget-park",
+# "blocked_pr_recheck", sub-threshold "slow:" notices -- filed incidents, and the
+# class key was the whole cleaned line, so every repeat with different numbers
+# opened a new issue (165 open scheduler incidents). Real failures are now this
+# explicit, anchored list with stable class ids that carry no numbers, SHAs or
+# unit ids; every other line is routine progress and files nothing.
+scheduler_failure_class() {
+  local line="$1"
+  if [[ "$line" =~ (^|[^A-Za-z0-9_])KILL([^A-Za-z0-9_]|$) ]]; then
+    printf 'sched-kill\n'
+  elif [[ "$line" == *'verdict=BLOCK'* ]]; then
+    printf 'sched-verdict-block\n'
+  elif [[ "$line" == *'merge-reverted'* ]]; then
+    printf 'sched-merge-reverted\n'
+  elif [[ "$line" == *'orphan-recover'* ]]; then
+    printf 'sched-orphan-recover\n'
+  elif [[ "$line" =~ (^|[^A-Za-z0-9_])ERROR([^A-Za-z0-9_]|$) || "$line" =~ (^|[^A-Za-z0-9_])error: ]]; then
+    printf 'sched-error\n'
+  elif [[ "$line" == *'BUDGET-STOP'* ]]; then
+    # The stop-loss gate refusing an over-budget unit is a real spend event, not
+    # routine progress like budget-park/budget-recut (bell.test.sh keeps this
+    # signature on the event dedup path, not the 24h signature window).
+    printf 'sched-budget-stop\n'
   fi
 }
 
@@ -634,24 +664,29 @@ if [[ "$MONITOR_INITIALIZED" == true ]]; then
         fi
         if [[ "$seen_epoch" =~ ^[0-9]+$ ]] && (( now - seen_epoch < 86400 )); then
           STATE_JSON="$(jq -c --arg c "$event_class" --argjson seen "$seen_epoch" '.scheduler_signature_seen[$c]=$seen' <<<"$STATE_JSON")"
+          # A repeat inside the 24h window is no new event, but it must bump the
+          # existing issue's occurrence count: the upsert comments on the open
+          # issue for this class instead of silently dropping the occurrence.
+          queue_incident_filing high "$event_class" \
+            "scheduler signature $event_class: $(clean "$line")" "scheduler.log: $line"
           continue
         fi
         add_event high "$event_class" "scheduler signature $event_class: $(clean "$line")" "scheduler.log: $line"
         STATE_JSON="$(jq -c --arg c "$event_class" --argjson seen "$now" '.scheduler_signature_seen[$c]=$seen' <<<"$STATE_JSON")"
         continue
       fi
-      printf '%s\n' "$line" | grep -Eiq 'SLOW|KILL|BLOCK|orphan-recover|budget|merge-revert|verdict=BLOCK|error' || continue
-      clean_line="$(printf '%s\n' "$line" | sed -E 's/^\[[^]]+\][[:space:]]*//' | tr '\t\r\n' '   ')"
-      sev=medium
-      printf '%s\n' "$clean_line" | grep -Eiq 'KILL|BLOCK|verdict=BLOCK|merge-revert|error' && sev=high
-      if printf '%s\n' "$clean_line" | grep -Eiq 'merge-reverted'; then
-        unit="$(printf '%s\n' "$clean_line" | sed -nE 's/.*merge-reverted unit=([^ ]+).*/\1/p')"
-        [[ -n "$unit" ]] || unit=unknown
-        raw="merge-reverted unit=$unit"; sev=high
-      else
-        raw="scheduler:$clean_line"
+      event_class="$(scheduler_failure_class "$line")"
+      if [[ -n "$event_class" ]]; then
+        clean_line="$(printf '%s\n' "$line" | sed -E 's/^\[[^]]+\][[:space:]]*//' | tr '\t\r\n' '   ')"
+        sev=medium
+        case "$event_class" in sched-kill|sched-verdict-block|sched-merge-reverted|sched-error) sev=high ;; esac
+        # The raw id is the stable class itself, so repeats flow through the
+        # dedup_minutes event window and the class-based issue upsert.
+        add_event "$sev" "$event_class" "scheduler.log: $clean_line" "tail -n 120 '$A/scheduler.log'"
+        continue
       fi
-      add_event "$sev" "$raw" "scheduler.log: $clean_line" "tail -n 120 '$A/scheduler.log'"
+      # Anything else is routine progress (blocked/unblocked/budget-park/
+      # blocked_pr_recheck, sub-threshold slow:) and files nothing.
     done < <(sed -n "$((old_lines+1)),${lines}p" "$A/scheduler.log" 2>/dev/null)
     if (( slow_ticks_dirty )); then
       STATE_JSON="$(jq -c --argjson u "$SLOW_TICKS" '.slow_phase_ticks=$u' <<<"$STATE_JSON")"

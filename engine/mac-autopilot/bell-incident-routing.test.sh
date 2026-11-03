@@ -164,7 +164,7 @@ if grep -q '^issue create --repo test/product ' "$INCIDENT_GH_CALLS"; then
   echo 'bell-incident-routing.test.sh: engine evidence filed on the product repo' >&2
   exit 1
 fi
-jq -e '.[0].body | contains("<!-- vecta-incident-class:scheduler-orphan-recover-reclaimed-unit-unit-route -->")
+jq -e '.[0].body | contains("<!-- vecta-incident-class:sched-orphan-recover -->")
   and contains("Occurrence count: 1")' "$INCIDENT_ISSUES" >/dev/null
 jq -e '.[0].labels | any(.name == "auto-filed") and any(.name == "incident")' "$INCIDENT_ISSUES" >/dev/null
 grep -Fxq incident "$INCIDENT_LABELS"
