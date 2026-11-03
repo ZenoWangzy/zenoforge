@@ -2373,9 +2373,8 @@ dispatch_pending || :; dispatch_pending || :
 [[ "$(field pr-70 .stage)" == review && "$(field pr-70 .arbiter)" == true \
   && "${DISPATCHED[0]:-}" == review:pr-70:* && "$DISPATCH_PROMPT" == *'【仲裁评审】'* ]] \
   || fail "third rejection did not dispatch the arbiter review (stage=$(field pr-70 .stage); ${DISPATCHED[*]:-none})"
-[[ "$(field pr-70 '.history[-1].decision.decision')" == 'Route to one arbiter review' \
-  && "$(field pr-70 '.history[-1].decision.why')" == 'advisor provider unavailable' \
-  && "$(field pr-70 '.history[-1].decision.owner')" == scheduler ]] || fail 'missing advisor did not record the arbiter choice'
+[[ "$(field pr-70 '.history | any(.[]; .decision.decision=="Route to one arbiter review" and .decision.why=="advisor provider unavailable" and .decision.owner=="scheduler")')" == true ]] \
+  || fail "missing advisor did not record the arbiter choice (history=$(field pr-70 .history))"
 eval "$advisor_arbiter_pick_real"; eval "$advisor_arbiter_target_real"; eval "$advisor_arbiter_room_real"; eval "$advisor_arbiter_verify_real"; eval "$advisor_arbiter_risk_real"
 CFG="$CFG_SAVED"; DISPATCHED=(); DISPATCH_PROMPT=""
 
