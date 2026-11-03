@@ -618,10 +618,6 @@ tick_gh() {
         cat "$TF/ci-admission-runs.json"
         return 0
       fi
-      if [[ -f "$TF/main-red-run-list.json" && "$*" == *'--json databaseId,conclusion,event,headBranch'* ]]; then
-        cat "$TF/main-red-run-list.json"
-        return 0
-      fi
       if [[ "$*" == *'--jq'* ]]; then
         [[ "$*" == *'.[0].databaseId'* ]] && echo 701
         return 0
@@ -830,13 +826,7 @@ tick_gh() {
         echo '{}'
       fi ;;
     'api '*)
-      if [[ "$*" =~ actions/runs/([0-9]+)/jobs ]] && [[ -f "$TF/main-red-jobs-${BASH_REMATCH[1]}.json" ]]; then
-        local main_red_run_id="${BASH_REMATCH[1]}"
-        cat "$TF/main-red-jobs-${main_red_run_id}.json"
-      elif [[ "$*" =~ actions/jobs/([0-9]+)/logs ]] && [[ -f "$TF/job-log-${BASH_REMATCH[1]}.txt" ]]; then
-        local main_red_job_id="${BASH_REMATCH[1]}"
-        cat "$TF/job-log-${main_red_job_id}.txt"
-      elif [[ "$*" == *'/commits/'*'/check-runs?per_page=100'* && -f "$TF/main-check-runs.json" ]]; then
+      if [[ "$*" == *'/commits/'*'/check-runs?per_page=100'* && -f "$TF/main-check-runs.json" ]]; then
         cat "$TF/main-check-runs.json"
       elif [[ "$*" == *'actions/runners?per_page=100'* ]]; then
         # PR CI 名额按在线 PR runner 算（60ba960cf）；无夹具时默认一个在线 PR runner
@@ -1992,18 +1982,6 @@ printf '%s\n' "$main_red_failed_sha" > "$TF/main-sha"
 printf '%s\n' "$main_red_pr_head" > "$TF/pr-head-77"
 printf '%s\n' "$main_red_pr_head" > "$TF/fetched-head"
 printf '{"check_runs":[{"name":"Postsubmit validate","conclusion":"failure"}]}' > "$TF/main-check-runs.json"
-printf '%s\n' '[{"databaseId":700,"conclusion":"failure","event":"push","headBranch":"main"}]' > "$TF/main-red-run-list.json"
-printf '%s\n' '{"jobs":[{"id":7001,"name":"Postsubmit validate","conclusion":"failure"}]}' > "$TF/main-red-jobs-700.json"
-cat > "$TF/job-log-7001.txt" <<'LOG'
- FAIL  tests/shared-membership.test.ts > rejects removed membership
-AssertionError: expected false to be true
- ❯ tests/shared-membership.test.ts:14:5
-LOG
-cat > "$TF/job-log-7011.txt" <<'LOG'
- FAIL  tests/shared-membership.test.ts > rejects removed membership
-AssertionError: expected false to be true
- ❯ tests/shared-membership.test.ts:14:5
-LOG
 printf '%s\n' '{"databaseId":701,"attempt":1,"status":"completed","conclusion":"failure","createdAt":"2026-11-02T11:17:00Z"}' > "$TF/run.json"
 command jq -n --arg sha "$main_red_failed_sha" \
   '[{headSha:$sha,status:"completed",conclusion:"failure",createdAt:"2026-11-02T11:17:00Z",databaseId:700,attempt:1}]' \
@@ -2153,7 +2131,18 @@ command jq -e '[.units[] | select(.parked_reason==null and .stage=="ready-to-mer
   "$TF/supervisor/autopi/units.json" >/dev/null \
   || { echo 'scheduler.test.sh: remaining main-red units did not resume on the next bounded tick' >&2; exit 1; }
 }
+main_red_failed_test_ids_real="$(declare -f main_red_failed_test_ids)"
+ci_candidate_failed_test_reports_real="$(declare -f ci_candidate_failed_test_reports)"
+main_red_failed_test_ids() {
+  printf '%s\n' '[{"file":"tests/shared-membership.test.ts","name":"rejects removed membership"}]'
+}
+ci_candidate_failed_test_reports() {
+  jqf -c '[.[] | select(.bucket=="fail") | {check:.name,started_at:(.started_at // ""),identity_complete:true,
+    tests:[{file:"tests/shared-membership.test.ts",name:"rejects removed membership"}]}]' <<<"$1"
+}
 sched_run_case main_red_ci_unpark
+eval "$main_red_failed_test_ids_real"
+eval "$ci_candidate_failed_test_reports_real"
 
 sched_case_body_blocked() {
 # A real scheduler tick reads the issue's Blocked by section, parks an open

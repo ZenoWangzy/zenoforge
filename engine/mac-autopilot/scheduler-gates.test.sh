@@ -660,11 +660,15 @@ review_target_real="$(declare -f unit_review_target)"
 room_for_real="$(declare -f room_for)"
 risk_class_rule_real="$(declare -f risk_class_safety_rule)"
 verify_handoff_real="$(declare -f verify_handoff_delivery)"
+pick_review_real="$(declare -f pick_review_for_unit)"
+cancel_unit_runs_real="$(declare -f cancel_unit_runs)"
 review_model_for_implementer() { printf 'claude:claude-sonnet-4-5:high\n'; }
 unit_review_target() { printf '%s %s\n' "$H1" "$H1"; }
 room_for() { return 0; }
 risk_class_safety_rule() { :; }
 verify_handoff_delivery() { return 0; }
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; return 0; }
+cancel_unit_runs() { :; }
 units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"implement_identity\":\"codex:gpt-6-luna:max\",\"history\":[]}]}"
 dispatch_pending || :
 [[ "$(field pr-5 .stage)" == rereview-pending && "$(field pr-5 .arbiter)" == true && ${#DISPATCHED[@]} == 0 ]] || fail 'unchanged head did not turn into one arbiter review'
@@ -674,7 +678,8 @@ dispatch_pending || :
 DISPATCHED=()
 units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\",\"result\":\"head $H1 unchanged since last review\"}]}]}"
 dispatch_pending || :
-[[ "$(field pr-5 .stage)" == supervisor-review && ${#DISPATCHED[@]} == 0 ]] || fail 'unchanged head after an arbiter review was redispatched'
+[[ "$(field pr-5 .stage)" == supervisor-review && ${#DISPATCHED[@]} == 0 ]] \
+  || fail "unchanged head after an arbiter review changed stage ($(field pr-5 .stage)) or dispatched (${DISPATCHED[*]:-none}); history=$(jq -c '.units[] | select(.id==\"pr-5\") | .history' \"$UNITS\")"
 # A supervisor requeue on the same head does not give it a fresh arbiter review: only a moved head does.
 units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\",\"result\":\"head $H1 unchanged since last review\"},{\"stage\":\"supervisor-requeue\",\"decision\":{\"owner\":\"supervisor\"}}]}]}"
 dispatch_pending || :
@@ -683,7 +688,7 @@ dispatch_pending || :
 units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\",\"result\":\"head $H2 unchanged since last review\"}]}]}"
 dispatch_pending || :
 [[ "$(field pr-5 .stage)" == rereview-pending && "$(field pr-5 .arbiter)" == true && ${#DISPATCHED[@]} == 0 ]] || fail 'an arbiter review of an earlier head escalated a later no-push repair'
-eval "$review_selector_real"; eval "$review_target_real"; eval "$room_for_real"; eval "$risk_class_rule_real"; eval "$verify_handoff_real"
+eval "$review_selector_real"; eval "$review_target_real"; eval "$room_for_real"; eval "$risk_class_rule_real"; eval "$verify_handoff_real"; eval "$pick_review_real"; eval "$cancel_unit_runs_real"
 # 合并后被 revert 的单元：原 PR 已 MERGED，repair 推的提交挂不上去；repair 交付后用同一分支开新 PR（#4009 空转 4 小时）
 DISPATCHED=(); gh_reopen_saved="$(declare -f gh)"
 gh() { case "$1 $2" in "pr list") echo "" ;; "pr create") printf '%s' "$*" > "$fixture/reopen.args"; echo "https://github.com/example-maintainer/example-repo/pull/4100" ;; *) eval "${gh_reopen_saved/gh ()/gh_r ()}"; gh_r "$@" ;; esac; }
