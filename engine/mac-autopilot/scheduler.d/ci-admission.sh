@@ -1,5 +1,5 @@
 mark_product_paths() { # 就绪单元第一次见到时查一次 PR 文件，记 .product_paths（true/false）
-  local id pr i files product updates='{}' query_timeout limit remote repo_path owner repo_name owner_json repo_json query raw
+  local id pr i files product updates='{}' query_timeout limit remote repo_path owner repo_name owner_json repo_json query raw updates_file rc
   local -a ids=() prs=()
   query_timeout="${CI_PRODUCT_PATH_LOOKUP_TIMEOUT_SECONDS:-10}"
   [[ "$query_timeout" =~ ^[1-9][0-9]*$ ]] || query_timeout=10
@@ -46,8 +46,16 @@ mark_product_paths() { # 就绪单元第一次见到时查一次 PR 文件，记
     if grep -vqE "$NONPRODUCT_PATHS_RE" <<<"$files"; then product=true; else product=false; fi
     updates="$(jqf --arg id "$id" --argjson product "$product" '. + {($id):$product}' <<<"$updates")"
   done
-  [[ "$updates" == '{}' ]] || units_update --slurpfile paths <(printf '%s' "$updates") \
-    '.units |= map(.id as $id | if (.stage | IN("ready-to-merge","ci-pending")) and .product_paths == null and $paths[0][$id] != null then .product_paths=$paths[0][$id] else . end)'
+  [[ "$updates" == '{}' ]] && return 0
+  updates_file="$(scheduler_jq_arg_file "$updates")" || return 0
+  if units_update --rawfile paths "$updates_file" \
+    '($paths|fromjson) as $path_map | .units |= map(.id as $id | if (.stage | IN("ready-to-merge","ci-pending")) and .product_paths == null and $path_map[$id] != null then .product_paths=$path_map[$id] else . end)'; then
+    rc=0
+  else
+    rc=$?
+  fi
+  rm -f -- "$updates_file"
+  return "$rc"
 }
 # 本机预检（precheck.sh）：等名额的单元先在本机跑 PR 自己改动的测试，PASS/SKIP 才给 CI 名额，FAIL 直接返工。
 # 10-22：批准后 CI 红 14/14 是 PR 自己改动的测试文件；12 小时 CI 判红 69 次、合并 12 次，每次红白等名额 + 45–60 分钟。

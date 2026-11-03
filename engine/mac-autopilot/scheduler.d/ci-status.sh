@@ -172,6 +172,8 @@ ci_candidate_failed_test_reports() { # failed check rows -> one identity report 
 
 park_ci_red_for_main_red() { # id PR head check-rows-json -> quarantine only when every candidate test identity also failed on main
   local red_rows red_sha red_stage resolved_at main_tests prior_stage candidate_reports candidate_tests complete failed_names
+  local candidate_tests_file candidate_reports_file main_tests_file identity_match result=1
+  local -a identity_files=()
   red_rows="$(jqf -c '[.units[] | select(.main_red==true and ((.ci_sha // "") | test("^[0-9a-f]{40}$")))
     | select((.stage // "") as $stage | ($stage | IN("closed","landed","merged","done") | not)
       or ($stage=="closed" and (.resolved_main_at // "") != "")) | {sha:.ci_sha,stage:.stage,resolved_at:(.resolved_main_at // "")}] | unique_by(.sha)' "$UNITS")" || return 1
@@ -182,32 +184,54 @@ park_ci_red_for_main_red() { # id PR head check-rows-json -> quarantine only whe
   [[ "$complete" == true ]] || return 1
   candidate_tests="$(jqf -c '[.[].tests[]] | unique_by([.file,.name]) | sort_by(.file,.name)' <<<"$candidate_reports")" || return 1
   [[ "$(jqf 'length' <<<"$candidate_tests")" =~ ^[1-9][0-9]*$ ]] || return 1
+  candidate_tests_file="$(scheduler_jq_arg_file "$candidate_tests")" || return 1
+  identity_files+=("$candidate_tests_file")
+  candidate_reports_file="$(scheduler_jq_arg_file "$candidate_reports")" || { rm -f -- "${identity_files[@]}"; return 1; }
+  identity_files+=("$candidate_reports_file")
   while IFS=$'\t' read -r red_sha red_stage resolved_at; do
     [[ "$red_sha" =~ $SHA_RE ]] || continue
     main_tests="$(main_red_failed_test_ids "$red_sha")" || continue
+    main_tests_file="$(scheduler_jq_arg_file "$main_tests")" || continue
+    identity_files+=("$main_tests_file")
     if [[ "$red_stage" == closed ]]; then
       [[ -n "$resolved_at" ]] || continue
-      jqf -en --argjson candidate "$candidate_tests" --argjson main "$main_tests" --argjson reports "$candidate_reports" --arg green_at "$resolved_at" \
-        '($candidate|length)>0 and all($candidate[]; . as $test | ($main|index($test))!=null)
-          and all($reports[]; (.started_at // "")!="" and .started_at < $green_at)' >/dev/null 2>&1 || continue
+      if jqf -en --rawfile candidate "$candidate_tests_file" --rawfile main "$main_tests_file" \
+        --rawfile reports "$candidate_reports_file" --arg green_at "$resolved_at" \
+        '($candidate|fromjson) as $candidate_tests | ($main|fromjson) as $main_tests | ($reports|fromjson) as $candidate_reports
+          | ($candidate_tests|length)>0 and all($candidate_tests[]; . as $test | ($main_tests|index($test))!=null)
+          and all($candidate_reports[]; (.started_at // "")!="" and .started_at < $green_at)' >/dev/null 2>&1; then
+        identity_match=true
+      else
+        identity_match=false
+      fi
+      [[ "$identity_match" == true ]] || continue
       prior_stage="$(unit_field "$1" .stage)"
-      [[ "$prior_stage" == ready-to-merge || "$prior_stage" == ci-pending ]] || return 1
+      [[ "$prior_stage" == ready-to-merge || "$prior_stage" == ci-pending ]] || break
       if [[ "$(unit_field "$1" .ci_main_red_sha)" != "$red_sha" ]]; then
         set_unit "$1" "$(hist ci-main-red-resolved "shared failing tests on main $red_sha recovered at $resolved_at") | .ci_main_red_sha=$(js "$red_sha")"
       fi
       say "CI-red unit=$1 PR#$2: the same failing test identities appeared on resolved main red $red_sha; continuing through CI refresh path"
-      return 1
+      result=1
+      break
     fi
-    jqf -en --argjson candidate "$candidate_tests" --argjson main "$main_tests" \
-      '($candidate|length)>0 and all($candidate[]; . as $test | ($main|index($test))!=null)' >/dev/null 2>&1 || continue
+    if jqf -en --rawfile candidate "$candidate_tests_file" --rawfile main "$main_tests_file" \
+      '($candidate|fromjson) as $candidate_tests | ($main|fromjson) as $main_tests
+        | ($candidate_tests|length)>0 and all($candidate_tests[]; . as $test | ($main_tests|index($test))!=null)' >/dev/null 2>&1; then
+      identity_match=true
+    else
+      identity_match=false
+    fi
+    [[ "$identity_match" == true ]] || continue
     prior_stage="$(unit_field "$1" .stage)"
-    [[ "$prior_stage" == ready-to-merge || "$prior_stage" == ci-pending ]] || return 1
+    [[ "$prior_stage" == ready-to-merge || "$prior_stage" == ci-pending ]] || break
     failed_names="$(jqf -r '[.[] | .tests[] | "\(.file) > \(.name)"] | unique | join(", ")' <<<"$candidate_reports")"
     set_unit "$1" "$(hist ci-main-red-park "test identities $failed_names also failed on main $red_sha") | .stage=\"parked\" | .parked_reason=\"main-red\" | .parked_main_red_sha=$(js "$red_sha") | .parked_from_stage=$(js "$prior_stage") | .parked_head_sha=$(js "$3") | .parked_test_ids=$candidate_tests | del(.ci_green_sha)"
     say "CI-red unit=$1 PR#$2: failing test identities $failed_names also failed on main $red_sha -> parked until main recovers"
-    return 0
+    result=0
+    break
   done < <(jqf -r '.[] | [.sha,.stage,.resolved_at] | @tsv' <<<"$red_rows")
-  return 1
+  rm -f -- "${identity_files[@]}"
+  return "$result"
 }
 
 # 所有 update-branch 都走这一个封装：expected_head_sha 钉住观察到的 head，GitHub 在 head 已变时返回 422，不会更新陌生提交。

@@ -3,22 +3,23 @@
     {
       "id": "approved-candidate-ci-green-barrier-and-test-identity-quarantine",
       "date": "2026-11-03",
-      "class": "asynchronous-candidate-state-transition-and-check-label-aliasing",
+      "class": "stale-candidate-validation-and-test-identity-aliasing",
       "what_happened": "A review approval moved a unit to ready-to-merge before the required gates on that exact candidate SHA had completed. A later red candidate was routed to repair. Separately, main-red quarantine compared check names, so the same failing test was missed when the main and PR workflows reported it under different check names.",
       "root_cause_evidence": "Original log: [2026-11-02T22:54:48Z] gated unit=issue-3237 PR#4994 readied on fc53c3cfc; [2026-11-02T23:04:32Z] merge skipped PR#4994 (tests failed in: Touched packages PR gate) -> repair-pending without waiting for the other checks or a rerun. Before the fix, engine/mac-autopilot/scheduler.d/harvest-workers.sh:168 recorded review approval and ready-to-merge before required candidate CI completed; engine/mac-autopilot/scheduler.d/merge-lane.sh:307-317 handled the red candidate later. Before the fix, engine/mac-autopilot/scheduler.d/ci-status.sh:32-63 matched failed check names, while a shared test can be reported under different names in the main and PR checks.",
-      "classic_pattern": "An asynchronous prerequisite is checked after a state transition has already granted downstream eligibility; a second control compares presentation labels instead of the underlying failing test identity.",
-      "best_known_solution": "Keep approval as durable evidence, store required-gates green bound to the exact PR head SHA, and admit a unit to ready-to-merge only while that bound SHA still matches. Invalidate the evidence on a head change and return a carried approval to CI waiting. For main-red quarantine, parse failed test file and test name from both sides and quarantine only when every candidate test identity is present on main; fail closed when a failed check cannot be identified.",
-      "lesson_id": "V1277",
+      "classic_pattern": "This is a time-of-check/time-of-use race: downstream merge eligibility consumes review approval before required CI has validated the same candidate revision, and a later head change can make any earlier green result stale. Google SRE frames safe release around the exact revision whose tests passed and recommends rerunning tests on the release branch. GitHub merge queues and GitLab merge trains apply the same mature pattern by testing a merge group or merged result against the current target and earlier queued changes. The quarantine half is a keying error: check display names are labels, while test file plus test name is the stable identity of the failure.",
+      "best_known_solution": "Keep review approval as durable evidence, store required-gates green as .ci_green_sha bound to the exact current PR head, and enter ready-to-merge only while that bound SHA matches. Clear green evidence on a head change and return the carried approval to ci-pending for fresh checks. For main-red quarantine, parse failing test file and test name on both sides and quarantine only when every candidate identity appears on main; fail closed when a failed job cannot be identified completely.",
+      "lesson_id": "V1279",
       "research_sources": [
-        "https://docs.github.com/en/rest/actions/workflow-jobs?apiVersion=2022-11-28",
-        "https://sre.google/sre-book/release-engineering/"
+        "https://sre.google/sre-book/release-engineering/",
+        "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue",
+        "https://docs.gitlab.com/ci/pipelines/merge_trains/"
       ],
       "options_considered": [
-        "Keep the existing review-approve transition and let merge-lane discover a red check later; this still makes the unverified candidate merge-eligible and can send a shared main failure to repair.",
-        "Persist a generic green flag on the unit; this can survive a candidate head change and incorrectly authorize a different SHA.",
-        "Keep reviewer approval recorded, require all configured required gates to pass on the current approved SHA before ready-to-merge, and clear green evidence whenever that SHA changes; selected.",
-        "Continue comparing failed check names; this cannot detect shared test failures reported by differently named checks.",
-        "Compare parsed failing test file and test name across candidate and main job logs, and fail closed when a complete identity is unavailable; selected."
+        "Keep the existing review-approve transition and let merge-lane discover red checks later; this exposes an unverified candidate as merge-ready and may send shared main failures to repair.",
+        "Persist a generic green flag on the unit; it can survive a head change and authorize a different SHA.",
+        "Keep review approval recorded, require every configured required gate to pass on the current approved SHA before ready-to-merge, and clear green evidence whenever that SHA changes; selected, matching exact-revision release validation.",
+        "Continue comparing failed check names; names differ across workflows even when the underlying test failure is the same.",
+        "Compare parsed failing test file and test name across candidate and main logs, and fail closed when a complete identity is unavailable; selected."
       ],
       "siblings": {
         "discovery_command": "bash engine/mac-autopilot/scheduler.d/approve-after-green.test.sh",
