@@ -66,8 +66,8 @@ jq -e '.max_workers == 10 and .auto_merge == true and .implement_cap == 8
   and .models.implement_hotfix == ["gpt-6.1-terra", "high"]' "$template" >/dev/null
 jq -e '.size_admission.exempt_hotpatch == true' "$template" >/dev/null
 jq -e '.issue_intake.ready_buffer == null and .issue_intake.refill_max == 2' "$template" >/dev/null
-jq -e '.incident.labels == ["bug", "incident", "production-anomaly"]' "$template" >/dev/null \
-  || { echo 'not ok - scheduler.test.sh: incident labels default must include bug, incident and production-anomaly' >&2; exit 1; }
+jq -e '.incident.labels == ["bug", "incident", "production-anomaly"] and .incident.file_min_severity == "medium"' "$template" >/dev/null \
+  || { echo 'not ok - scheduler.test.sh: incident labels defaults or auto-filed anomaly severity were lost' >&2; exit 1; }
 
 sample='{"units":[{"id":"pr-1","stage":"ready-to-merge"},{"id":"pr-2","stage":"ready-to-merge"},{"id":"pr-3","stage":"merged"}]}'
 updated="$(jq --arg id pr-2 \
