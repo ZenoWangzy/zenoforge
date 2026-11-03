@@ -680,6 +680,15 @@ if [[ "$stale" == 1 ]]; then
   add_event "$sev" "scheduler-stale:last_tick=${tick:-missing}" "scheduler tick stale (${tick:-no readable tick}); $restart" "tail -n 120 '$A/scheduler.log'; ps -Ao pid,command"
 fi
 
+worker_turn_completed() {
+  local log="$1" path facts
+  [[ "$log" =~ ^[A-Za-z0-9._/-]+$ && "$log" != *".."* ]] || return 1
+  path="$SUPERVISOR_DIR/$log"
+  [[ -s "$path" ]] || return 1
+  facts="$(python3 "$HERE/usage_reader.py" codex-stream "$path" 2>/dev/null)" || return 1
+  jq -e '.complete == true and (.fresh | type == "number")' <<<"$facts" >/dev/null 2>&1
+}
+
 if [[ -r "$A/workers.json" && -r "$A/units.json" ]]; then
   while IFS=$'\t' read -r pid unit harvested log report; do
     [[ "$pid" =~ ^[0-9]+$ && -n "$unit" ]] || continue
@@ -687,6 +696,8 @@ if [[ -r "$A/workers.json" && -r "$A/units.json" ]]; then
     kill -0 "$pid" 2>/dev/null && continue
     # 已交付报告的 worker 是正常结束、等下一拍回收，不是死亡（每次误报都会拉起一次付费调查）。
     [[ "$report" =~ ^[A-Za-z0-9._/-]+$ && "$report" != *".."* && -s "$SUPERVISOR_DIR/$report" ]] && continue
+    # Codex can finish its turn before harvest materializes the report file.
+    worker_turn_completed "$log" && continue
     stage="$(jq -r --arg id "$unit" '.units[]?|select(.id==$id)|.stage//empty' "$A/units.json" 2>/dev/null | head -n 1)"
     [[ -n "$stage" ]] || continue
     case "$stage" in merged|landed|done|wontfix|duplicate) continue ;; esac

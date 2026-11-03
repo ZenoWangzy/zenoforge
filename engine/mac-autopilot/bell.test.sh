@@ -300,6 +300,24 @@ jq -n '{monitor_initialized:true,scheduler_lines:1,alert_mtimes:{},merge_events:
 BELL_AUTOPI_DIR="$done_autopi" BELL_SUPERVISOR_DIR="$done_sup" bash "$bell"
 ! grep -Fq 'worker-died' "$done_autopi/BELL-QUEUE.md" 2>/dev/null || { echo 'bell.test.sh: finished worker with a report reported as died' >&2; exit 1; }
 
+# A completed worker turn can precede report finalization; it is not a death.
+completed_autopi="$tmp/completed-autopi"; completed_sup="$tmp/completed-supervisor"
+mkdir -p "$completed_autopi/alerts" "$completed_sup"
+printf 'window.DASH={};\n' > "$completed_autopi/dashboard.data.js"
+cp "$trunc_autopi/config.json" "$completed_autopi/config.json"
+printf '[%s] scheduler tick\n' "$old_tick" > "$completed_autopi/scheduler.log"
+printf '%s\n' '{"type":"turn.started"}' \
+  '{"type":"turn.completed","usage":{"input_tokens":10898440,"cached_input_tokens":10585600,"cache_write_input_tokens":0,"output_tokens":78873,"reasoning_output_tokens":57516}}' \
+  > "$completed_sup/codex-worker.log"
+jq -n --argjson pid "$dead_pid" '{units:[{id:"repair-unit",stage:"repair",history:[]}],workers:[{pid:$pid,unit:"repair-unit",type:"repair",log:"codex-worker.log",report:"codex-worker.md",harvested:false}]}' > "$completed_autopi/units.json"
+jq -n --argjson pid "$dead_pid" '{workers:[{pid:$pid,unit:"repair-unit",type:"repair",log:"codex-worker.log",report:"codex-worker.md",harvested:false}]}' > "$completed_autopi/workers.json"
+jq -n '{monitor_initialized:true,scheduler_lines:1,alert_mtimes:{},merge_events:{},signatures:{},pending:[],network_down:false}' > "$completed_autopi/bell-state.json"
+BELL_AUTOPI_DIR="$completed_autopi" BELL_SUPERVISOR_DIR="$completed_sup" bash "$bell"
+! grep -Fq 'worker-died unit=repair-unit' "$completed_autopi/BELL-QUEUE.md" 2>/dev/null \
+  || { echo 'bell.test.sh: completed worker without a finalized report reported as died' >&2; exit 1; }
+[[ ! -e "$completed_sup/codex-worker.md" ]] \
+  || { echo 'bell.test.sh: completed-worker fixture unexpectedly has a finalized report' >&2; exit 1; }
+
 # S12 uses complete, isolated GitHub and cancellation fixtures. Check-only must
 # not cancel runs or modify any runtime file, even when the scheduler is stale.
 unset AGENT_HOME

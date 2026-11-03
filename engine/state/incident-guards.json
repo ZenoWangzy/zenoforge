@@ -862,6 +862,42 @@
           "engine/land-pin-preflight.test.sh"
         ]
       }
+    },
+    {
+      "id": "worker-died-before-report-finalization",
+      "date": "2026-11-03",
+      "class": "worker-completed-turn-reported-dead-before-report-finalization",
+      "what_happened": "A repair worker emitted a complete Codex turn and exited, but the bell scan ran before the report file was materialized. It filed worker-died on every scan during that gap even though the worker had completed normally.",
+      "root_cause_evidence": "The original Codex JSONL ended with a turn.completed record and the log file mtime is 2026-11-03T04:19:52Z; the report file mtime is 04:37:25Z. Before the fix, engine/mac-autopilot/bell.sh suppressed worker-died only when the report file already existed and never inspected the worker log's terminal turn state. bash engine/mac-autopilot/bell.test.sh reproduces the false event with the captured terminal event and an absent report.",
+      "classic_pattern": "A failure detector treats an asynchronous downstream artifact as proof of upstream process failure before the completion protocol has finished materializing that artifact.",
+      "best_known_solution": "When the process is gone and its report is still absent, use the existing Codex stream reader to suppress worker-died only if it finds a valid usage snapshot and every started turn completed. Keep missing, malformed, failed, and interrupted streams on the existing alert path; report finalization remains owned by harvest.",
+      "lesson_id": "V1280",
+      "research_sources": [
+        "https://doi.org/10.1145/226643.226647",
+        "https://github.com/openai/codex/blob/main/sdk/typescript/src/events.ts"
+      ],
+      "options_considered": [
+        "Keep checking only whether the report exists; rejected because the report is a downstream artifact that can lag a completed turn.",
+        "Infer success from PID exit status; rejected because process disappearance does not distinguish normal turn completion from an interrupted or failed turn.",
+        "Reuse usage_reader.py and require a non-null usage snapshot plus complete=true; selected because it consumes the same terminal-event contract used by worker harvest and leaves failed or incomplete logs visible."
+      ],
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/bell.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Plays a completed Codex turn against a dead worker record with no finalized report and asserts that bell does not file worker-died; the existing missing-log case still files it.",
+          "test_file": "engine/mac-autopilot/bell.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "static-test",
+        "enforced_by": [
+          "engine/mac-autopilot/bell.test.sh"
+        ]
+      }
     }
   ]
 }
