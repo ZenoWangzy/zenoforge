@@ -28,24 +28,35 @@ incident_worker_prompt() { # worker type unit JSON prompt → prompt with the sh
   printf '%s' "$prompt"
 }
 incident_report_gate_reason() { # incident unit [implementation report path] → missing report requirement or empty
-  local unit_json="$1" report="${2:-}" kind_line kind guard_section missing=()
+  local unit_json="$1" report="${2:-}" kind_line kind guard_section prior_art_section missing=()
   incident_labels_match_json "$unit_json" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}" || return 0
   if [[ -z "$report" ]]; then
     report="$(jqf -r '.implementation_report // .report // empty' <<<"$unit_json")"
   fi
   if [[ -z "$report" ]]; then
-    printf 'missing ## root-cause and ## recurrence-guard (incident implementation report is unavailable)'
+    printf 'missing ## root-cause, ## recurrence-guard, and ## prior-art (incident implementation report is unavailable)'
     return 0
   fi
   [[ "$report" == /* ]] || report="$SUP/$report"
   if [[ ! -s "$report" ]]; then
-    printf 'missing ## root-cause and ## recurrence-guard (incident implementation report is unavailable: %s)' "${report##*/}"
+    printf 'missing ## root-cause, ## recurrence-guard, and ## prior-art (incident implementation report is unavailable: %s)' "${report##*/}"
     return 0
   fi
   grep -qE '^## root-cause[[:space:]]*$' "$report" || missing+=("## root-cause")
   grep -qE '^## recurrence-guard[[:space:]]*$' "$report" || missing+=("## recurrence-guard")
+  grep -qE '^## prior-art[[:space:]]*$' "$report" || missing+=("## prior-art")
   if (( ${#missing[@]} > 0 )); then
     printf 'missing %s' "$(IFS=' and '; echo "${missing[*]}")"
+    return 0
+  fi
+  prior_art_section="$(awk '/^## prior-art[[:space:]]*$/{inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
+  if ! grep -Eiq 'https?://[^[:space:]<>)]+' <<<"$prior_art_section"; then
+    printf 'missing an http(s) source URL in ## prior-art'
+    return 0
+  fi
+  if grep -Eiq '(^|[^[:alpha:]])escalat(e|ed|ion|ing)([^[:alpha:]]|$)' <<<"$prior_art_section" \
+    && ! grep -Eiq '^[[:space:]]*([-*][[:space:]]+)?escalation reference:[[:space:]]*(https?://[^[:space:]]+|#[0-9]+|PR[[:space:]]*#[0-9]+|issue[[:space:]]*#[0-9]+)[[:space:]]*$' <<<"$prior_art_section"; then
+    printf 'escalation note in ## prior-art lacks an escalation reference'
     return 0
   fi
   guard_section="$(awk '/^## recurrence-guard[[:space:]]*$/{inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"

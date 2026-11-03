@@ -503,6 +503,57 @@
           "engine/mac-autopilot/review-family.test.sh"
         ]
       }
+    },
+    {
+      "id": "incident-fix-without-researched-prior-art",
+      "date": "2026-11-03",
+      "class": "incident-remediation-omits-established-problem-solutions",
+      "what_happened": "Incident reports required root-cause and recurrence-guard sections but did not require a researched prior-art section, so a local fix could be approved without identifying the established problem class, expert framing, or mature solutions.",
+      "root_cause_evidence": "Before the fix, engine/incident-rule.sh:28-30 required root-cause and recurrence-guard but no prior-art; engine/mac-autopilot/scheduler.d/review-rules.sh:45-46 checked only those two headings, allowing READY without prior-art sources.",
+      "classic_pattern": "Incident learning stops at a local corrective action instead of comparing the failure with the known problem class and prior solutions; this is a postmortem and lessons-learned process gap.",
+      "best_known_solution": "Use an evidence-based, blameless postmortem to map the incident to a classic problem, compare mature solutions and community practice, and select a preventive action with a verifiable recurrence guard. When evidence is uncertain or conflicting, escalate with a recorded reference rather than guessing.",
+      "lesson_id": "V1277",
+      "research_sources": [
+        "https://sre.google/workbook/postmortem-culture/",
+        "https://google.github.io/building-secure-and-reliable-systems/raw/ch18.html",
+        "https://doi.org/10.6028/NIST.IR.8428"
+      ],
+      "options_considered": [
+        "Add only a prompt requirement; this leaves omissions and citation-free claims invisible to the review gate.",
+        "Require the prior-art heading but do not inspect its content; an empty section or bare assertion could pass.",
+        "Require the section and a source URL in the existing incident report gate, and require a specific escalation reference when an escalation is stated; selected because it makes the evidence checkable without introducing another gate."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/mac-autopilot/incident-prior-art-gate.test.sh",
+        "expected_result": "Incident reports without prior-art or source URLs are rejected; referenced sources are accepted; non-incident reports are unaffected. The planted prior gate accepts the old-shape report and makes the recurrence assertion fail."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/incident-prior-art-gate.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Checks prompt instructions, rejection without prior-art, rejection without a source URL, acceptance with source URLs, escalation-reference enforcement, and the non-incident exemption.",
+          "test_file": "engine/mac-autopilot/incident-prior-art-gate.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/incident-prior-art-gate.test.sh",
+            "--plant-old"
+          ],
+          "expected": "exit:1",
+          "why": "Replays the pre-fix gate behavior against the historical report shape that contains root-cause and recurrence-guard but no prior-art; the recurrence assertion fails because the old gate returns READY.",
+          "test_file": "engine/mac-autopilot/incident-prior-art-gate.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "regression-test",
+        "enforced_by": [
+          "engine/mac-autopilot/incident-prior-art-gate.test.sh"
+        ]
+      }
     }
   ]
 }
