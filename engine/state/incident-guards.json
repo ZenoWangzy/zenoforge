@@ -242,6 +242,43 @@
           "engine/mac-autopilot/intake-missing-state.test.sh"
         ]
       }
+    },
+    {
+      "id": "refill-pr-census-waits-for-admission",
+      "date": "2026-11-03",
+      "class": "refill fetches the open-PR census before capacity admission",
+      "what_happened": "Issue #5147 recorded refill done live=8 secs=25 gh_calls=1 slow: dispatch_pending=14s. The same refill logged issue-4974 taking 12s, then skipped issue-4974 and the next candidates because capacity was 8/8.",
+      "root_cause_evidence": "Issue #5147 runtime evidence, together with the baseline call at engine/mac-autopilot/scheduler.d/dispatch-queue.sh:34-39 and the census command at engine/mac-autopilot/scheduler.d/ci-status.sh:442-446, shows local refill called tick_prs_prime before room_for could reject a full queue.",
+      "classic_pattern": "Expensive remote work runs before local admission proves the candidate can be used, so overload rejection still pays the remote cost.",
+      "research_sources": [
+        "https://sre.google/sre-book/handling-overload/",
+        "https://cli.github.com/manual/gh_pr_list"
+      ],
+      "options_considered": [
+        "Raise the scheduler timeout; rejected because it leaves the unnecessary remote call in the full-capacity path.",
+        "Reuse an open-PR census across refill ticks; rejected because that would make the census stale across ticks.",
+        "Load one shared census only after a local refill candidate passes room_for and pick; chosen because rejected candidates make no census request while accepted candidates still share one per tick."
+      ],
+      "best_known_solution": "During local refill, defer tick_prs_prime until the first pending PR candidate passes room_for and pick, then reuse that tick-local census for remaining candidates. Preserve the existing slow-tick census behavior.",
+      "lesson_id": "V-NEXT-refill-census-after-admission",
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "-c",
+            "SCHED_TEST_CASE=refill_pending_stages bash engine/mac-autopilot/scheduler.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "The case proves a full 8/8 refill makes zero gh pr list requests and preserves one shared census when candidates are admitted.",
+          "test_file": "engine/mac-autopilot/scheduler.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "regression-test",
+        "enforced_by": [
+          "engine/mac-autopilot/scheduler.test.sh"
+        ]
+      }
     }
   ]
 }

@@ -33,10 +33,6 @@ dispatch_pending() {
     fi
     if [[ "$local_refill" != true ]]; then
       tick_prs_prime
-    elif [[ "$stage" == repair-pending || "$stage" == review-pending || "$stage" == rereview-pending ]] \
-      && [[ "$local_refill_prs_primed" != true ]]; then
-      tick_prs_prime
-      local_refill_prs_primed=true
     fi
     # 止损预算（#4363）：第 4 轮（implement 加 repair）或超 4h 墙钟不再派发——
     # 原票经 hold.sh（on-hold 的唯一写入口，带 24h 过期的 durable hold 记录）自动搁置并评论附原因，
@@ -123,6 +119,10 @@ dispatch_pending() {
         fi
         room_for "$id" repair "$u" false || continue
         pick implement "$u" || continue
+        if [[ "$local_refill" == true && "$local_refill_prs_primed" != true ]]; then
+          tick_prs_prime
+          local_refill_prs_primed=true
+        fi
         branch="$(jqf -r '.branch // empty' <<<"$u")"
         if [[ -z "$branch" && -n "$pr_num" ]]; then
           branch="$(tick_pr_branch "$pr_num")"
@@ -194,6 +194,10 @@ $(decision_scope "$u")"
         if [[ "$(jqf -r '.reopen_pr // false' <<<"$u")" == true ]]; then reopen_reverted_pr "$id" "$pr_num"; continue; fi
         room_for "$id" rereview "$u" || continue
         pick review || continue
+        if [[ "$local_refill" == true && "$local_refill_prs_primed" != true ]]; then
+          tick_prs_prime
+          local_refill_prs_primed=true
+        fi
         target="$(unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")")" || continue
         read -r pr_head sha <<<"$target"
         [[ "$sha" =~ $SHA_RE ]] || continue
@@ -264,6 +268,10 @@ $(decision_scope "$u")"
         [[ -n "$pr_num" || "$prless" == 1 ]] || continue
         room_for "$id" review "$u" || continue
         pick review || continue
+        if [[ "$local_refill" == true && "$local_refill_prs_primed" != true ]]; then
+          tick_prs_prime
+          local_refill_prs_primed=true
+        fi
         target="$(unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")")" || continue
         read -r pr_head sha <<<"$target"
         [[ "$sha" =~ $SHA_RE ]] || continue

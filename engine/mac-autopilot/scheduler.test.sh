@@ -2967,7 +2967,7 @@ command jq -n '{units:[
 echo '{"workers":[]}' > "$WORKERS"
 printf 'VERDICT: NOT_READY\n' > "$SUP/review-8811-fixture.md"
 printf 'VERDICT: NOT_READY\n' > "$SUP/prior-rereview.md"
-dispatched=(); census_primes=0
+dispatched=(); TICK_PRS=""; : > "$TF/gh-requests"
 live_workers() { echo "${#dispatched[@]}"; }
 live_by_type() {
   local n=0 item
@@ -2980,7 +2980,11 @@ git() {
   command git "$@"
 }
 dispatch() { dispatched+=("$1:$4"); }
-tick_prs_prime() { census_primes=$((census_primes + 1)); }
+gh() {
+  printf '%s\n' "$*" >> "$TF/gh-requests"
+  [[ "${1:-} ${2:-}" == "pr list" ]] || { echo "unexpected refill GH request: $*" >&2; return 97; }
+  printf '[]\n'
+}
 pick() { PICK_MODEL=fixture-model; PICK_EFFORT=high; }
 footprint_room() { return 0; }
 unit_review_target() { printf '%s %s' 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567; }
@@ -3033,8 +3037,25 @@ command jq -e '
   || { echo "scheduler.test.sh: refill stage dispatch or admission result was wrong ($(command jq -c '.units | map({id,stage})' "$UNITS"))" >&2; cat "$LOG" >&2; exit 1; }
 [[ "${dispatched[*]}" == 'repair:repair-one rereview:rereview-one review:review-one' ]] \
   || { echo "scheduler.test.sh: refill dispatched unexpected stages (${dispatched[*]})" >&2; exit 1; }
-[[ "$census_primes" == 1 ]] \
-  || { echo "scheduler.test.sh: refill did not share one PR census ($census_primes)" >&2; exit 1; }
+[[ "$(grep -c '^pr list --state open --limit 300 --json ' "$TF/gh-requests")" == 1 ]] \
+  || { echo "scheduler.test.sh: refill did not share one PR census ($(cat "$TF/gh-requests"))" >&2; exit 1; }
+
+# Regression for the 2026-11-03 incident: the refill log showed a 12s `gh pr`
+# call for issue-4974, then skipped it and the next two units at capacity 8/8.
+# A full refill must reject the candidate before loading the open-PR census.
+MAX=8; IMPLEMENT_CAP=8
+dispatched=(occupied-1 occupied-2 occupied-3 occupied-4 occupied-5 occupied-6 occupied-7 occupied-8)
+TICK_PRS=""
+command jq -n '{units:[{id:"issue-4974",issue:4974,pr:4974,lane:"pr",branch:"agent/issue-4974",stage:"review-pending",footprint:[],history:[]}]}' > "$UNITS"
+echo '{"workers":[]}' > "$WORKERS"
+: > "$TF/gh-requests"
+refill_tick
+[[ ! -s "$TF/gh-requests" ]] \
+  || { echo "scheduler.test.sh: refill fetched a PR census at capacity 8/8: $(cat "$TF/gh-requests")" >&2; exit 1; }
+[[ "${#dispatched[@]}" == 8 ]] \
+  || { echo 'scheduler.test.sh: full refill dispatched another worker' >&2; exit 1; }
+grep -Fq 'skip dispatch unit=issue-4974 (capacity 8/8)' "$LOG" \
+  || { cat "$LOG" >&2; echo 'scheduler.test.sh: full refill did not retain the real capacity skip' >&2; exit 1; }
 )
 sched_run_case refill_pending_stages
 
