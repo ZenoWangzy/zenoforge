@@ -1230,6 +1230,10 @@ GH_RUNS=777; GH_RERUN_FAIL_ID=
 eval "$cancel_unit_runs_saved"; GH_HEAD="$gh_head_saved"; GH_RUNS="$gh_runs_saved"; GH_RERUNS=()
 eval "$repair_no_push_selector_real"; eval "$repair_no_push_target_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 DISPATCHED=()
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+unit_review_target() { printf '%s %s\n' "$H1" "$H1"; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
 rereview_lane_policy="$(lane_policy_blob)"
 units "$(jq -cn --arg policy "$rereview_lane_policy" \
   '{units:[{id:"pr-6",pr:6,stage:"rereview-pending",lane:"pr",lane_policy:$policy,history:[]}]}')"
@@ -1238,6 +1242,7 @@ dispatch_pending || :
 [[ "$DISPATCH_PROMPT" == *".agents/skills/code-review/SKILL.md"* ]] || fail 'full review prompt does not reference the canonical contract'
 [[ "$(field pr-6 .review_sha)" == "$H1" ]] || fail 'dispatched review sha not recorded'
 [[ "$DISPATCH_PR_HEAD" == "$H1" ]] || fail 'dispatched review did not retain its observed PR head'
+eval "$repair_no_push_selector_real"; eval "$repair_no_push_target_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 
 # L63：PR 车道的修复推送会同时移动 PR head 与候选；上轮 head 是祖先就必须走增量复审，不能回落成全量重审。
 rr="$fixture/wt-pr-7"; rm -rf "$rr"; command git init -q -b main "$rr"
