@@ -181,6 +181,10 @@ scheduler_signature_class() {
     # A queued PR cannot obtain an independent verifier. Keep it pending and
     # let the normal bell incident intake own the alert and escalation.
     printf 'sched-review-family-wait\n'
+  elif [[ "$line" =~ issue-pipeline:[[:space:]]maintenance[[:space:]]deferred[[:space:]]streak[[:space:]]section=([a-z0-9-]+)[[:space:]]consecutive=([0-9]+) ]]; then
+    # Repeated budget deferral means a maintenance section is starving across
+    # ticks; keep the warning on the normal #166 incident intake path.
+    printf 'sched-maintenance-deferral-%s\n' "${BASH_REMATCH[1]}"
   fi
 }
 

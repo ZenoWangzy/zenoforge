@@ -55,7 +55,7 @@ case "$command:$subcommand" in
       fi
       for file in "$FAKE_GH_ROOT"/issues/*.json; do
         [ -f "$file" ] || continue
-        jq -c 'select(.state == "OPEN" and any(.labels[]?; .name == "on-hold"))' "$file"
+        jq -c 'select(any(.labels[]?; .name == "on-hold"))' "$file"
       done | jq -s '.'
     fi
     ;;
@@ -858,6 +858,25 @@ test_missing_hold_record_stays_ownerless() {
   assert_eq "ownerless recovery alert stays single" 1 "$(grep -Fc 'ownerless-hold issue=#4103' "$AGENT_HOME/supervisor-inbox" || true)"
 }
 
+test_hold_sweep_batches_ownerless_issue_details() {
+  local issue views
+  reset_fixture
+  : > "$FAKE_GH_LOG"
+  for issue in 4210 4211 4212 4213; do
+    write_issue "$issue" '[{"name":"on-hold"}]' '[]' "ownerless hold $issue"
+    write_state "$issue" '{"state":"on-hold","state_changed_from":"ready-for-agent"}'
+  done
+
+  run_sweep
+  assert_eq "batched ownerless hold sweep succeeds" 0 "$LAST_STATUS"
+  assert_eq "ownerless holds use one detail list call" 1 "$(grep -c '^list$' "$FAKE_GH_LOG" || true)"
+  views="$(grep -c '^view ' "$FAKE_GH_LOG" || true)"
+  assert_eq "ownerless hold details need no per-issue views" 0 "$views"
+  for issue in 4210 4211 4212 4213; do
+    assert_eq "ownerless hold #$issue stays held" on-hold "$(state_read "$issue" | jq -r '.state')"
+  done
+}
+
 test_marked_hold_without_record_stays_ownerless() {
   local state comments
   reset_fixture
@@ -1569,6 +1588,12 @@ test_maintenance_tick_requeues_ownerless_hold() {
   assert_eq "maintenance tick makes issue ready" ready-for-agent "$(state_read 4171 | jq -r '.state')"
   assert_contains "maintenance tick publishes the external brief" "$(jq -r '[.comments[].body]|join("\n")' "$FAKE_GH_ROOT/issues/4171.json")" 'fixture report'
 }
+
+if [[ "${1:-}" == --hold-sweep-batch-only ]]; then
+  run_case "ownerless holds reuse one detail snapshot" test_hold_sweep_batches_ownerless_issue_details
+  [ "$FAILURES" -eq 0 ] || exit 1
+  exit 0
+fi
 
 run_case "scheduler handoff retries comment and label failures" test_scheduler_handoff_retries_failed_writes
 run_case "stale handoff preserves a replacement hold" test_scheduler_handoff_does_not_release_replacement_hold

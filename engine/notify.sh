@@ -404,10 +404,65 @@ PYEOF
 # gmail_curl <token> <curl args...> -- the bearer token goes to curl as a config line on stdin,
 # never on argv: every local agent can read process arguments (2026-10-10 a process listing
 # exposed a Gmail access token).
+gmail_now_epoch_ms() {
+  local realtime="${EPOCHREALTIME/./}"
+  if [[ "$realtime" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$((realtime / 1000))"
+  else
+    printf '%s000\n' "$(date +%s)"
+  fi
+}
+
+gmail_deadline_timeout_seconds() {
+  local deadline="${ZF_GMAIL_CALL_DEADLINE_EPOCH_MS:-}" now_ms remaining_ms allowed_ms timeout_sec max_timeout
+  max_timeout="${GMAIL_TIMEOUT_SECONDS:-15}"
+  [[ "$max_timeout" =~ ^[1-9][0-9]*$ ]] || max_timeout=15
+  [ -z "$deadline" ] && { printf '%s\n' "$max_timeout"; return 0; }
+  [[ "$deadline" =~ ^[0-9]+$ ]] || return 1
+  now_ms="$(gmail_now_epoch_ms)" || return 1
+  remaining_ms=$((deadline - now_ms))
+  # Leave one second for process setup and the shell's handoff at the deadline.
+  allowed_ms=$((remaining_ms - 1000))
+  (( allowed_ms >= 1000 )) || return 1
+  timeout_sec=$((allowed_ms / 1000))
+  (( timeout_sec > max_timeout )) && timeout_sec="$max_timeout"
+  printf '%s\n' "$timeout_sec"
+}
+
+gmail_access_token() {
+  local gcloud_bin="$1" allowed_sec
+  if [ -n "${ZF_GMAIL_CALL_DEADLINE_EPOCH_MS:-}" ]; then
+    allowed_sec="$(gmail_deadline_timeout_seconds)" || return 1
+    timeout --kill-after=1s "${allowed_sec}s" "$gcloud_bin" auth application-default print-access-token
+  else
+    "$gcloud_bin" auth application-default print-access-token
+  fi
+}
+
 gmail_curl() {
-  local token="$1"
+  local token="$1" max_time requested_max_time i
+  local -a curl_args=() args=()
   shift
-  curl --config - "$@" <<< "header = \"Authorization: Bearer $token\""
+  args=("$@")
+  if [ -n "${ZF_GMAIL_CALL_DEADLINE_EPOCH_MS:-}" ]; then
+    max_time="$(gmail_deadline_timeout_seconds)" || return 28
+    for ((i = 0; i < ${#args[@]}; i++)); do
+      if [ "${args[$i]}" = --max-time ] && (( i + 1 < ${#args[@]} )); then
+        requested_max_time="${args[$((i + 1))]}"
+        if [[ "$requested_max_time" =~ ^[1-9][0-9]*$ ]] && (( requested_max_time < max_time )); then
+          max_time="$requested_max_time"
+        fi
+        curl_args+=(--max-time "$max_time")
+        i=$((i + 1))
+      else
+        curl_args+=("${args[$i]}")
+      fi
+    done
+    if [[ " ${args[*]} " != *' --max-time '* ]]; then curl_args+=(--max-time "$max_time"); fi
+  else
+    curl_args=("${args[@]}")
+  fi
+  curl --config - "${curl_args[@]}" <<< "header = \"Authorization: Bearer $token\""
 }
 
 # markdown_to_html_email <body> — pure function, no gh/gcloud/curl/network:
@@ -537,7 +592,7 @@ $body" >&2
     [ "$mode" != strict ] || return 1
     return 0
   }
-  if token="$("$gcloud_bin" auth application-default print-access-token 2>"$gcloud_stderr_file")"; then
+  if token="$(gmail_access_token "$gcloud_bin" 2>"$gcloud_stderr_file")"; then
     curl_status=0
   else
     curl_status=$?
@@ -1881,7 +1936,7 @@ gmail_sent_message_count() {
   [ "$DRY_RUN" = "1" ] && return 1
   gcloud_bin="${ZF_GCLOUD_BIN:-$GCLOUD_BIN_DEFAULT}"
   [ -x "$gcloud_bin" ] || return 1
-  token="$("$gcloud_bin" auth application-default print-access-token 2>/dev/null)" || return 1
+  token="$(gmail_access_token "$gcloud_bin" 2>/dev/null)" || return 1
   [ -n "$token" ] || return 1
 
   while :; do
@@ -1920,7 +1975,7 @@ fetch_gmail_thread_message_ids() {
   [ "$DRY_RUN" = "1" ] && return 0
   gcloud_bin="${ZF_GCLOUD_BIN:-$GCLOUD_BIN_DEFAULT}"
   [ -x "$gcloud_bin" ] || return 0
-  token="$("$gcloud_bin" auth application-default print-access-token 2>/dev/null)"
+  token="$(gmail_access_token "$gcloud_bin" 2>/dev/null)" || return 0
   [ -n "$token" ] || return 0
   gmail_curl "$token" -sS --max-time "$GMAIL_TIMEOUT_SECONDS" \
     "https://gmail.googleapis.com/gmail/v1/users/me/threads/$thread_id?format=minimal" 2>/dev/null \
@@ -1935,7 +1990,7 @@ fetch_gmail_message_resource_raw() {
   [ "$DRY_RUN" = "1" ] && return 0
   gcloud_bin="${ZF_GCLOUD_BIN:-$GCLOUD_BIN_DEFAULT}"
   [ -x "$gcloud_bin" ] || return 0
-  token="$("$gcloud_bin" auth application-default print-access-token 2>/dev/null)"
+  token="$(gmail_access_token "$gcloud_bin" 2>/dev/null)" || return 0
   [ -n "$token" ] || return 0
   gmail_curl "$token" -sS --max-time "$GMAIL_TIMEOUT_SECONDS" \
     "https://gmail.googleapis.com/gmail/v1/users/me/messages/$message_id?format=raw" 2>/dev/null \
@@ -2032,7 +2087,7 @@ gmail_credential_probe() {
     return 0
   fi
   stderr_file="$(mktemp)" || { echo unknown; return 0; }
-  if token="$("$gcloud_bin" auth application-default print-access-token 2>"$stderr_file")"; then
+  if token="$(gmail_access_token "$gcloud_bin" 2>"$stderr_file")"; then
     gcloud_status=0
   else
     gcloud_status=$?

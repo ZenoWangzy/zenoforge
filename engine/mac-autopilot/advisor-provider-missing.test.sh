@@ -96,4 +96,17 @@ bash "$script_dir/bell.sh" > "$test_env_root/bell-second.out" 2>&1 \
   || fail 'bell failed on the repeated diagnostic scan'
 check 'repeated scan does not file a second incident' "$(wc -l < "$upsert_calls" | tr -d ' ')" 1
 
+printf '[%s] issue-pipeline: maintenance deferred streak section=needs-info-recovery consecutive=3 tick=20261103T000003Z\n' \
+  "$STAMP" >> "$autopi/scheduler.log"
+bash "$script_dir/bell.sh" > "$test_env_root/bell-maintenance.out" 2>&1 \
+  || fail 'bell failed to process the repeated maintenance deferral'
+check 'maintenance deferral uses the #166 incident intake class' \
+  "$(tail -n 1 "$upsert_calls")" sched-maintenance-deferral-needs-info-recovery
+grep -Fq 'consecutive=3' "$upsert_body" || fail 'maintenance incident body omitted the deferral streak evidence'
+printf '[%s] issue-pipeline: maintenance deferred streak section=needs-info-recovery consecutive=4 tick=20261103T000004Z\n' \
+  "$STAMP" >> "$autopi/scheduler.log"
+bash "$script_dir/bell.sh" > "$test_env_root/bell-maintenance-repeat.out" 2>&1 \
+  || fail 'bell failed on a repeated maintenance signature'
+check 'repeated maintenance signature stays deduplicated' "$(wc -l < "$upsert_calls" | tr -d ' ')" 2
+
 echo 'advisor-provider-missing.test.sh: PASS'

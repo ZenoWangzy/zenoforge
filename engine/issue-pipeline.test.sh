@@ -229,8 +229,10 @@ assert_eq 'same head is not auto-requeued twice' checks-blocked \
   "$(state_read "$CHECKS_BLOCKED_REPEAT" | jq -r '.state')"
 
 POST_DISPATCH_MAINTENANCE_FN="$(sed -n '/^run_post_dispatch_maintenance() {/,/^}/p' "$PIPELINE_SRC")"
+POST_DISPATCH_MAINTENANCE_STEP_FN="$(sed -n '/^maintenance_run_optional_step() {/,/^}/p' "$PIPELINE_SRC")"
 assert_cond 'checks-blocked owner sweep is routed through post-dispatch maintenance' \
-  "$(grep -qF 'checks_blocked_sweep' <<< "$POST_DISPATCH_MAINTENANCE_FN" && echo 1 || echo 0)"
+  "$(grep -qF 'maintenance_run_optional_step "$step"' <<< "$POST_DISPATCH_MAINTENANCE_FN" \
+    && grep -qF 'checks_blocked_sweep' <<< "$POST_DISPATCH_MAINTENANCE_STEP_FN" && echo 1 || echo 0)"
 run_checks_blocked_sweep "$CHECKS_BLOCKED_HELD" danger-full-access "$CHECKS_BLOCKED_HELD"
 assert_eq 'held checks-blocked ticket stays parked' checks-blocked \
   "$(state_read "$CHECKS_BLOCKED_HELD" | jq -r '.state')"
@@ -1179,7 +1181,7 @@ assert_cond "maintainer outcome recovery precedes digest send in post-dispatch m
   /^[[:space:]]*if reconcile_maintainer_outcomes; then$/ { recover=NR }
   /^[[:space:]]*flush_maintainer_outcome_digest \\|\\| true$/ { flush=NR }
   END { print recover && flush && recover < flush ? 1 : 0 }
-' <<< "$POST_DISPATCH_MAINTENANCE_FN")"
+' <<< "$POST_DISPATCH_MAINTENANCE_STEP_FN")"
 
 LOW_MEMORY_OUT="$(bash -c '
   source "$1/lib.sh"

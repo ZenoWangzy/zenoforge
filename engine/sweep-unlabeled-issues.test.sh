@@ -338,7 +338,8 @@ assert_eq "earlier successful rescue remains applied" "bug,needs-triage" "$(jq -
 assert_eq "failed issue edit leaves later issue unchanged" bug "$(jq -r '.[] | select(.number == 7111) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
 assert_eq "earlier rescue reported before later issue edit failure" 1 "$(grep -c 'unlabeled-issue-sweep appear rescued=1' "$AGENT_HOME/supervisor-inbox" || true)"
 
-maintenance_fn="$(sed -n '/^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+maintenance_fn="$(sed -n '/^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh"; \
+  sed -n '/^maintenance_run_optional_step() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 reopen_line="$(grep -nF 'sweep_reopened_issues' <<< "$maintenance_fn" | head -1 | cut -d: -f1)"
 unlabeled_line="$(grep -nF 'sweep_unlabeled_issues' <<< "$maintenance_fn" | head -1 | cut -d: -f1)"
 assert_eq "post-dispatch maintenance recovers reopened issues before unlabeled sweep" true \

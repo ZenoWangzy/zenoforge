@@ -1,6 +1,78 @@
 {
   "incidents": [
     {
+      "id": "maintenance-tail-step-starvation",
+      "date": "2026-11-03",
+      "class": "optional-maintenance-work-consumes-required-recovery-budget",
+      "what_happened": "The 120-second maintenance slice repeatedly timed out or hit its optional-work cutoff before needs-info email polling and reopened-issue recovery could run. The 24-hour timing sample showed hold-sweep at 26 seconds p50 / 35 p90, needs-info-email at 27 / 37, needs-info-recovery at 12 / 16, and blocker-root recovery at 2 / 77.",
+      "root_cause_evidence": "Journal line: issue-pipeline: slice tick=20261103T091050Z stage=maintenance elapsed_sec=120 status=124. Before the fix, engine/issue-pipeline.sh:1177-1189 applied a single cutoff before each step, while the step order placed needs-info-email and needs-info-recovery after the repeated hold and founder-outcome sweeps; ownerless held issues also caused one issue view per item in engine/lib.d/holds.sh:404-531.",
+      "classic_pattern": "Deadline-budget starvation: optional work consumes a shared work-conserving budget before required recovery has an admitted runtime slot. The maintenance loop resembles a soft real-time scheduler with a deadline but no admission control for its critical jobs.",
+      "best_known_solution": "Use deadline-aware admission control: reserve the measured runtime for required work, split the email/reopen slot so the email poll's GH, Gmail, and token reads yield at its subdeadline, run reopen recovery with its own remaining slot before the optional suffix, and batch repeated reads. Linux SCHED_DEADLINE documents admitted runtime within a deadline; Google SRE overload guidance recommends rejecting or shedding noncritical work early to protect critical paths.",
+      "lesson_id": "maintenance-tail-step-starvation",
+      "research_sources": [
+        "https://docs.kernel.org/scheduler/sched-deadline.html",
+        "https://sre.google/sre-book/addressing-cascading-failures/"
+      ],
+      "options_considered": [
+        "Increase the 120-second slice limit; this hides the overrun and still permits optional work to consume the entire enlarged budget.",
+        "Increase the generic step reserve while keeping required recovery behind the same optional sequence; an in-flight optional read can still cross the reserve boundary.",
+        "Reserve 55 seconds from measured email and reopen p90s, split it into a bounded 37-second email slot and an 18-second reopen slot, bound prefix optional GitHub reads at the earlier cutoff, run required recovery before the optional suffix, and keep the existing 15-second hard-timeout reserve; selected.",
+        "Batch the hold sweep's issue detail reads so ownerless holds no longer add one point query per issue; selected as a direct reduction of measured recurring work."
+      ],
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/issue-pipeline-maintenance-budget.test.sh",
+            "--plant-old"
+          ],
+          "expected": "exit:1",
+          "why": "Plants the pre-fix cutoff and ordering with an earlier maintenance section that consumes the remaining budget; the required email and reopen calls are absent.",
+          "test_file": "engine/issue-pipeline-maintenance-budget.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/issue-pipeline-maintenance-budget.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "The email subslot is bounded by the absolute GH/Gmail deadline and yields at the cutoff; stubs simulate the measured 37s + 16s p90 pair, confirm reopen keeps its 18s slot before the 105s cutoff, then check the three-tick warning and #166 scheduler signature.",
+          "test_file": "engine/issue-pipeline-maintenance-budget.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/hold.test.sh",
+            "--hold-sweep-batch-only"
+          ],
+          "expected": "exit:0",
+          "why": "Four ownerless holds reuse the detailed batch snapshot with no per-issue GitHub views.",
+          "test_file": "engine/hold.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/advisor-provider-missing.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "A threshold maintenance deferral is filed through the normal bell #166 issue-upsert path and duplicate signatures are suppressed.",
+          "test_file": "engine/mac-autopilot/advisor-provider-missing.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "test",
+        "enforced_by": [
+          "engine/issue-pipeline.sh",
+          "engine/issue-pipeline-maintenance-budget.test.sh",
+          "engine/notify.sh",
+          "engine/lib.d/holds.sh",
+          "engine/hold.test.sh",
+          "engine/mac-autopilot/bell.sh",
+          "engine/mac-autopilot/advisor-provider-missing.test.sh"
+        ]
+      }
+    },
+    {
       "id": "ci-admission-unlabeled-draft-starvation",
       "date": "2026-11-03",
       "class": "membership-gate-silent-noop-starvation",

@@ -173,7 +173,7 @@ source "$SCRIPT_DIR/lib.sh"
 
 # Run the tick-owned maintenance loop from its durable resume point. The
 # other maintenance owners are quiet fixtures; main-red is the real sweep.
-eval "$(sed -n '/^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+eval "$(sed -n '/^maintenance_record_deferred_step() {/,/^}/p; /^maintenance_clear_deferred_step() {/,/^}/p; /^maintenance_now_epoch_ms() {/,/^}/p; /^maintenance_set_optional_deadline() {/,/^}/p; /^maintenance_restore_slice_deadline() {/,/^}/p; /^maintenance_defer_optional_step() {/,/^}/p; /^maintenance_run_optional_step() {/,/^}/p; /^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 profile_mark() { :; }
 checks_blocked_sweep() { :; }
 hold_sweep() { :; }

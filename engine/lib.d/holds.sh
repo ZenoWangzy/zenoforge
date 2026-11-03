@@ -398,19 +398,24 @@ hold_sweep_age_notice() {
 hold_sweep() {
   local NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
   local held_numbers live_hold_numbers numbers n issue_json state_json hold_json holder release_condition expires_at kind hand_owner owner_status dead_owner
+  local held_issue_snapshot
   local stage now_epoch expiry_epoch marker body record_json expiry_at renewal_expiry hold_created_at state_path state_label_json live_stage_labels durable_record
   local routing_stage inbox_key github_state handoff_patch
   local failure=0
-  if ! held_numbers="$(gh issue list --repo "$REPO" --state open --label on-hold --limit 1000 --json number)"; then
+  # Keep the live issue details from this batch query. The old number-only
+  # snapshot caused one `gh issue view` per ownerless on-hold issue every tick.
+  if ! held_issue_snapshot="$(gh issue list --repo "$REPO" --state all --label on-hold --limit 1000 \
+    --json number,state,stateReason,closedAt,labels,comments,title)"; then
     echo "hold_sweep: could not list open on-hold issues" >&2
     return 1
   fi
-  if ! jq -e 'type == "array" and all(.[]; (.number | type) == "number")' \
-      <<< "$held_numbers" >/dev/null 2>&1; then
+  if ! jq -e 'type == "array" and all(.[]; (.number | type) == "number" and (.state | type) == "string"
+      and (.labels | type) == "array" and (.comments | type) == "array")' \
+      <<< "$held_issue_snapshot" >/dev/null 2>&1; then
     echo "hold_sweep: invalid issue list response" >&2
     return 1
   fi
-  live_hold_numbers="$(jq -r '.[].number' <<< "$held_numbers")" || return 1
+  live_hold_numbers="$(jq -r '.[] | select(.state | ascii_downcase == "open") | .number' <<< "$held_issue_snapshot")" || return 1
   numbers="$live_hold_numbers"
   for state_path in "$STATE_DIR"/*.json; do
     [ -f "$state_path" ] || continue
@@ -428,12 +433,16 @@ hold_sweep() {
     state_json="$(state_read "$n")" || { failure=1; continue; }
     hold_json="$(jq -c '.hold // {}' <<< "$state_json" 2>/dev/null)"
     kind="$(jq -r '.kind // empty' <<< "$hold_json")"
+    issue_json="$(jq -c --argjson number "$n" '[.[] | select(.number == $number)][0] // empty' \
+      <<< "$held_issue_snapshot")" || { failure=1; continue; }
     if ! grep -Fxq "$n" <<< "$live_hold_numbers"; then
       [ "$(jq -r '.state // empty' <<< "$state_json")" = on-hold ] || continue
-      if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json state,stateReason,closedAt,labels,comments,title 2>/dev/null)"; then
-        echo "hold_sweep: could not inspect state-only held #$n; leaving state untouched" >&2
-        failure=1
-        continue
+      if [ -z "$issue_json" ]; then
+        if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json state,stateReason,closedAt,labels,comments,title 2>/dev/null)"; then
+          echo "hold_sweep: could not inspect state-only held #$n; leaving state untouched" >&2
+          failure=1
+          continue
+        fi
       fi
       if ! jq -e '(.state | type) == "string" and (.labels | type) == "array" and all(.labels[]; (.name | type) == "string")
           and ((.stateReason == null) or (.stateReason | type == "string"))
@@ -507,10 +516,12 @@ hold_sweep() {
         continue
       fi
     fi
-    if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json state,labels,comments,title 2>/dev/null)"; then
-      echo "hold_sweep: could not inspect #$n; leaving hold untouched" >&2
-      failure=1
-      continue
+    if [ -z "$issue_json" ]; then
+      if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json state,labels,comments,title 2>/dev/null)"; then
+        echo "hold_sweep: could not inspect #$n; leaving hold untouched" >&2
+        failure=1
+        continue
+      fi
     fi
     if ! jq -e '(.state // "" | ascii_downcase) == "open" and (.labels | type == "array") and (.comments | type == "array") and any(.labels[]?; .name == "on-hold")' \
         <<< "$issue_json" >/dev/null 2>&1; then

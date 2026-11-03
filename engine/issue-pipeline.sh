@@ -1045,10 +1045,19 @@ dispatch_gitnexus_refresh() {
 read_needs_info_email_replies() {
   local issue_rows issue_row n state needs_info applied_thread thread_id message_ids processed processed_file mid raw parsed \
     from_email auto_submitted issue_marker body login trimmed comment_body question_thread sent_at \
-    first_mid first_resource first_sent_at_ms first_raw first_parsed first_body default_option metadata_patch
+    first_mid first_resource first_sent_at_ms first_raw first_parsed first_body default_option metadata_patch \
+    email_stop_at="${ZF_NEEDS_INFO_EMAIL_STOP_AT_SECONDS:-}"
 
+  if [[ "$email_stop_at" =~ ^[0-9]+$ ]] && (( SECONDS >= email_stop_at )); then
+    echo "issue-pipeline: needs-info email poll yielded at its reserved cutoff elapsed_sec=$SECONDS stop_at=$email_stop_at" >&2
+    return 0
+  fi
   issue_rows="$(gh issue list --repo "$REPO" --limit 1000 --state open --json number,labels)" || return 0
   while IFS= read -r issue_row; do
+    if [[ "$email_stop_at" =~ ^[0-9]+$ ]] && (( SECONDS >= email_stop_at )); then
+      echo "issue-pipeline: needs-info email poll yielded at its reserved cutoff elapsed_sec=$SECONDS stop_at=$email_stop_at" >&2
+      return 0
+    fi
     n="$(jq -r '.number // empty' <<< "$issue_row")"
     [[ "$n" =~ ^[0-9]+$ ]] || continue
     state="$(state_read "$n")"
@@ -1095,6 +1104,9 @@ read_needs_info_email_replies() {
 
     processed="$(state_read "$n" | jq -c '.processed_gmail_message_ids // []')"
     for mid in $message_ids; do
+      if [[ "$email_stop_at" =~ ^[0-9]+$ ]] && (( SECONDS >= email_stop_at )); then
+        break
+      fi
       gmail_message_id_processed "$mid" "$processed" && continue
 
       if [ "$mid" = "$first_mid" ] && [ -n "$first_raw" ]; then
@@ -1167,101 +1179,249 @@ reconcile_needs_info_issues() {
   done
 }
 
-run_post_dispatch_maintenance() {
-  # Findings here stay queued for the next tick, after triage can run first.
-  # zenoforge-agent.service stops the tick at TimeoutStartSec=20min. Tick
-  # 20261008T035843Z was killed inside needs-info-unlabeled once maintenance
-  # ran last. A sweep starts only while its measured worst case (~210 s) still
-  # fits; a deferred sweep is where the next tick resumes, so the cycle keeps
-  # its order across ticks and no tail sweep is skipped every tick.
-  local stop_at=$(( ${TICK_UNIT_TIMEOUT_SECONDS:-1200} - ${MAINTENANCE_STEP_RESERVE_SECONDS:-240} ))
-  local resume_file="$AGENT_HOME/night/maintenance-resume" resume="" step i start=0
-  local -a steps=(checks-blocked-sweep hold-sweep supervisor-hold-sweep hand-completion-events founder-outcome-recovery needs-info-email
-    needs-info-recovery needs-info-blocker-roots needs-info-unlabeled needs-info-loop main-red-bisect batch-state)
-  IFS= read -r resume 2>/dev/null < "$resume_file" || resume=""
-  for i in "${!steps[@]}"; do
-    [ "${steps[$i]}" != "$resume" ] || start="$i"
-  done
-  for ((i = 0; i < ${#steps[@]}; i++)); do
-    step="${steps[$(((start + i) % ${#steps[@]}))]}"
-    if [ "$SECONDS" -ge "$stop_at" ]; then
-      [ "$DRY_RUN" = "1" ] || printf '%s\n' "$step" > "$resume_file" || true
-      echo "issue-pipeline: maintenance deferred tick=$IMPLEMENT_TICK_ID from=$step elapsed_sec=$SECONDS stop_at=$stop_at" >&2
-      return 0
+maintenance_record_deferred_step() { # section tick; emit one bell signature at the consecutive-tick threshold
+  local section="$1" tick="$2" threshold="${MAINTENANCE_DEFERRAL_ALERT_AFTER:-3}"
+  local state_file="$AGENT_HOME/night/maintenance-deferral-state.json" previous_tick="" previous_section="" previous_count=0 count runtime_dir stamp signature_written=0
+  [[ "$threshold" =~ ^[1-9][0-9]*$ ]] || threshold=3
+  mkdir -p -- "${state_file%/*}" || return 0
+  if jq -e 'type == "object" and (.consecutive | type) == "number"' "$state_file" >/dev/null 2>&1; then
+    previous_tick="$(jq -r '.last_tick // empty' "$state_file")"
+    previous_section="$(jq -r '.section // empty' "$state_file")"
+    previous_count="$(jq -r '.consecutive // 0' "$state_file")"
+  fi
+  if [[ "$previous_tick" == "$tick" && "$previous_section" == "$section" ]]; then
+    return 0
+  fi
+  [[ "$previous_count" =~ ^[0-9]+$ ]] || previous_count=0
+  if [[ "$previous_section" == "$section" ]]; then
+    count=$((previous_count + 1))
+  else
+    count=1
+  fi
+  local next_file="$state_file.tmp.$$"
+  jq -cn --arg tick "$tick" --arg section "$section" --argjson count "$count" \
+    '{last_tick:$tick,section:$section,consecutive:$count}' > "$next_file" \
+    && mv -f -- "$next_file" "$state_file" || { rm -f -- "$next_file"; return 0; }
+  if (( count == threshold )); then
+    stamp="$(date -u +%FT%TZ)"
+    runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${REPO_DIR:+$REPO_DIR/.scratch-supervisor/autopi}}"
+    if [[ -n "$runtime_dir" && -d "$runtime_dir" ]]; then
+      if printf '[%s] issue-pipeline: maintenance deferred streak section=%s consecutive=%s tick=%s\n' \
+        "$stamp" "$section" "$count" "$tick" >> "$runtime_dir/scheduler.log" 2>/dev/null; then
+        signature_written=1
+      fi
     fi
-    profile_mark "$step"
-    case "$step" in
-      checks-blocked-sweep)
-        if [ "$DRY_RUN" != "1" ] && ! checks_blocked_sweep; then
-          echo "issue-pipeline: checks-blocked owner sweep failed; parked tickets remain for the next tick" >&2
-        fi
-        ;;
-      hold-sweep)
-        if [ "$DRY_RUN" != "1" ] && ! hold_sweep; then
-          echo "issue-pipeline: hold expiry sweep failed; leaving failed holds untouched for next tick" >&2
-        fi
-        ;;
-      supervisor-hold-sweep)
-        if [ "$DRY_RUN" != "1" ] && ! supervisor_hold_sweep; then
-          echo "issue-pipeline: supervisor hold sweep failed; ownerless tickets remain for next tick" >&2
-        fi
-        ;;
-      hand-completion-events)
-        if [ "$DRY_RUN" != "1" ] && ! hand_completion_events_run_once "$REPO_DIR"; then
-          echo "issue-pipeline: hand completion recovery deferred until next tick" >&2
-        fi
-        ;;
-      founder-outcome-recovery)
-        if reconcile_maintainer_outcomes; then
-          flush_maintainer_outcome_digest || true
-        else
-          echo "issue-pipeline: maintainer outcome recovery failed; digest send deferred" >&2
-        fi
-        ;;
-      needs-info-email)
-        if ! read_needs_info_email_replies; then
-          echo "issue-pipeline: needs-info email poll failed; replies will be retried next tick" >&2
-        fi
-        ;;
-      needs-info-recovery)
-        if ! sweep_reopened_issues; then
-          echo "issue-pipeline: reopened-issue recovery failed; issues remain queued for the next tick" >&2
-        fi
-        ;;
-      needs-info-blocker-roots)
-        if ! sweep_blocking_issue_roots; then
-          echo "issue-pipeline: blocker-root recovery failed; current roots unavailable" >&2
-        fi
-        ;;
-      needs-info-unlabeled)
-        if ! sweep_unlabeled_issues; then
-          echo "issue-pipeline: unlabeled-issue recovery failed; issues remain queued for the next tick" >&2
-        fi
-        ;;
-      needs-info-loop)
-        if ! reconcile_needs_info_issues; then
-          echo "issue-pipeline: needs-info recovery failed; answers will be retried next tick" >&2
-        fi
-        ;;
-      main-red-bisect)
-        # One bounded step of main-red recovery (#4356): flaky rerun,
-        # midpoint probes, culprit attribution, revert PR, ticket reopen.
-        # Session writes are pipeline state, so this never runs under DRY_RUN.
-        # A valid manual PAUSE still permits red discovery at the tick gate,
-        # but stops this recovery step (including the delegated release slice).
-        if [ "$DRY_RUN" != "1" ] && ! manual_pause_is_valid && ! main_red_bisect_sweep; then
-          echo "issue-pipeline: main-red bisect step failed; the red session retries next tick" >&2
-        fi
-        ;;
-      batch-state)
-        # 批次 STATE（#4363）→ critical-path / legacy 标签的周期同步；自带每小时节流。
-        if [ "$DRY_RUN" != "1" ] && ! sweep_batch_state; then
-          echo "issue-pipeline: batch STATE sweep failed; label sync retries next tick" >&2
-        fi
-        ;;
-    esac
+    if [ "$signature_written" = 1 ]; then
+      echo "issue-pipeline: maintenance deferred streak section=$section consecutive=$count tick=$tick; bell incident signature queued" >&2
+    else
+      echo "issue-pipeline: maintenance deferred streak section=$section consecutive=$count tick=$tick; bell incident signature write failed" >&2
+    fi
+  fi
+}
+
+maintenance_clear_deferred_step() {
+  rm -f -- "$AGENT_HOME/night/maintenance-deferral-state.json" 2>/dev/null || true
+}
+
+maintenance_now_epoch_ms() {
+  local realtime="${EPOCHREALTIME/./}"
+  if [[ "$realtime" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$((realtime / 1000))"
+  else
+    printf '%s000\n' "$(date +%s)"
+  fi
+}
+
+maintenance_set_optional_deadline() { # section cutoff, original GitHub and Gmail deadlines
+  local stop_at="$1" original_gh_deadline="$2" original_gmail_deadline="$3" remaining now_ms deadline gmail_deadline
+  remaining=$((stop_at - SECONDS))
+  (( remaining >= 0 )) || remaining=0
+  now_ms="$(maintenance_now_epoch_ms)"
+  deadline=$((now_ms + remaining * 1000))
+  if [[ "$original_gh_deadline" =~ ^[0-9]+$ ]] && (( original_gh_deadline < deadline )); then
+    deadline="$original_gh_deadline"
+  fi
+  gmail_deadline="$deadline"
+  if [[ "$original_gmail_deadline" =~ ^[0-9]+$ ]] && (( original_gmail_deadline < gmail_deadline )); then
+    gmail_deadline="$original_gmail_deadline"
+  fi
+  export ZF_GH_CALL_DEADLINE_EPOCH_MS="$deadline"
+  export ZF_GMAIL_CALL_DEADLINE_EPOCH_MS="$gmail_deadline"
+}
+
+maintenance_restore_slice_deadline() { # original GitHub and Gmail deadlines
+  if [[ -n "$1" ]]; then
+    export ZF_GH_CALL_DEADLINE_EPOCH_MS="$1"
+  else
+    unset ZF_GH_CALL_DEADLINE_EPOCH_MS
+  fi
+  if [[ -n "$2" ]]; then
+    export ZF_GMAIL_CALL_DEADLINE_EPOCH_MS="$2"
+  else
+    unset ZF_GMAIL_CALL_DEADLINE_EPOCH_MS
+  fi
+}
+
+maintenance_defer_optional_step() { # section tick resume file cutoff
+  local step="$1" tick="$2" resume_file="$3" stop_at="$4"
+  [ "$DRY_RUN" = "1" ] || printf '%s\n' "$step" > "$resume_file" || true
+  echo "issue-pipeline: maintenance deferred tick=$tick from=$step elapsed_sec=$SECONDS stop_at=$stop_at" >&2
+  [ "$DRY_RUN" = "1" ] || maintenance_record_deferred_step "$step" "$tick"
+}
+
+maintenance_run_optional_step() { # bounded maintenance work that can yield to required recovery
+  case "$1" in
+    checks-blocked-sweep)
+      if [ "$DRY_RUN" != "1" ] && ! checks_blocked_sweep; then
+        echo "issue-pipeline: checks-blocked owner sweep failed; parked tickets remain for the next tick" >&2
+      fi
+      ;;
+    hold-sweep)
+      if [ "$DRY_RUN" != "1" ] && ! hold_sweep; then
+        echo "issue-pipeline: hold expiry sweep failed; leaving failed holds untouched for next tick" >&2
+      fi
+      ;;
+    supervisor-hold-sweep)
+      if [ "$DRY_RUN" != "1" ] && ! supervisor_hold_sweep; then
+        echo "issue-pipeline: supervisor hold sweep failed; ownerless tickets remain for next tick" >&2
+      fi
+      ;;
+    hand-completion-events)
+      if [ "$DRY_RUN" != "1" ] && ! hand_completion_events_run_once "$REPO_DIR"; then
+        echo "issue-pipeline: hand completion recovery deferred until next tick" >&2
+      fi
+      ;;
+    founder-outcome-recovery)
+      if reconcile_maintainer_outcomes; then
+        flush_maintainer_outcome_digest || true
+      else
+        echo "issue-pipeline: maintainer outcome recovery failed; digest send deferred" >&2
+      fi
+      ;;
+    needs-info-blocker-roots)
+      if ! sweep_blocking_issue_roots; then
+        echo "issue-pipeline: blocker-root recovery failed; current roots unavailable" >&2
+      fi
+      ;;
+    needs-info-unlabeled)
+      if ! sweep_unlabeled_issues; then
+        echo "issue-pipeline: unlabeled-issue recovery failed; issues remain queued for the next tick" >&2
+      fi
+      ;;
+    needs-info-loop)
+      if ! reconcile_needs_info_issues; then
+        echo "issue-pipeline: needs-info recovery failed; answers will be retried next tick" >&2
+      fi
+      ;;
+    main-red-bisect)
+      # One bounded step of main-red recovery (#4356): flaky rerun,
+      # midpoint probes, culprit attribution, revert PR, ticket reopen.
+      # Session writes are pipeline state, so this never runs under DRY_RUN.
+      # A valid manual PAUSE still permits red discovery at the tick gate,
+      # but stops this recovery step (including the delegated release slice).
+      if [ "$DRY_RUN" != "1" ] && ! manual_pause_is_valid && ! main_red_bisect_sweep; then
+        echo "issue-pipeline: main-red bisect step failed; the red session retries next tick" >&2
+      fi
+      ;;
+    batch-state)
+      # 批次 STATE（#4363）→ critical-path / legacy 标签的周期同步；自带每小时节流。
+      if [ "$DRY_RUN" != "1" ] && ! sweep_batch_state; then
+        echo "issue-pipeline: batch STATE sweep failed; label sync retries next tick" >&2
+      fi
+      ;;
+  esac
+}
+
+run_post_dispatch_maintenance() {
+  # The 24-hour timing sample measured needs-info-email at 37s p90 and
+  # needs-info-recovery at 16s p90. Split a 55s slot into 37s for bounded mail
+  # polling and 18s for reopen recovery, plus the existing 15s hard-timeout reserve.
+  local budget="${TICK_UNIT_TIMEOUT_SECONDS:-1200}" timeout_reserve="${MAINTENANCE_STEP_RESERVE_SECONDS:-240}"
+  local required_slot="${MAINTENANCE_REQUIRED_SLOT_SECONDS:-55}"
+  local reopen_slot="${MAINTENANCE_REOPEN_SLOT_SECONDS:-18}" email_slot email_stop_at max_email_stop_at
+  local prefix_stop_at suffix_stop_at
+  local resume_file="$AGENT_HOME/night/maintenance-resume" resume="" step i prefix_start=0 suffix_start=0 deferred_step=""
+  local resume_suffix=0 original_gh_deadline="${ZF_GH_CALL_DEADLINE_EPOCH_MS:-}"
+  local original_gmail_deadline="${ZF_GMAIL_CALL_DEADLINE_EPOCH_MS:-}" original_email_stop_at="${ZF_NEEDS_INFO_EMAIL_STOP_AT_SECONDS:-}"
+  local -a prefix_steps=(checks-blocked-sweep hold-sweep supervisor-hold-sweep hand-completion-events founder-outcome-recovery)
+  local -a suffix_steps=(needs-info-blocker-roots needs-info-unlabeled needs-info-loop main-red-bisect batch-state)
+  [[ "$required_slot" =~ ^[1-9][0-9]*$ ]] || required_slot=55
+  [[ "$reopen_slot" =~ ^[1-9][0-9]*$ ]] || reopen_slot=18
+  (( required_slot >= 55 )) || required_slot=55
+  (( reopen_slot >= 18 )) || reopen_slot=18
+  (( reopen_slot < required_slot )) || { required_slot=55; reopen_slot=18; }
+  (( required_slot - reopen_slot >= 37 )) || required_slot=$((reopen_slot + 37))
+  email_slot=$((required_slot - reopen_slot))
+  prefix_stop_at=$((budget - timeout_reserve - required_slot))
+  suffix_stop_at=$((budget - timeout_reserve))
+  (( prefix_stop_at >= 0 )) || prefix_stop_at=0
+  (( suffix_stop_at >= 0 )) || suffix_stop_at=0
+  IFS= read -r resume 2>/dev/null < "$resume_file" || resume=""
+  for i in "${!prefix_steps[@]}"; do
+    if [ "${prefix_steps[$i]}" = "$resume" ]; then prefix_start="$i"; fi
   done
-  [ "$DRY_RUN" = "1" ] || rm -f -- "$resume_file"
+  for i in "${!suffix_steps[@]}"; do
+    if [ "${suffix_steps[$i]}" = "$resume" ]; then suffix_start="$i"; resume_suffix=1; fi
+  done
+
+  # A prior suffix cursor means the prefix has already run; still run the
+  # required recovery pair before resuming the expensive suffix work.
+  if [ "$resume_suffix" != 1 ]; then
+    maintenance_set_optional_deadline "$prefix_stop_at" "$original_gh_deadline" "$original_gmail_deadline"
+    for ((i = prefix_start; i < ${#prefix_steps[@]}; i++)); do
+      step="${prefix_steps[$i]}"
+      if [ "$SECONDS" -ge "$prefix_stop_at" ]; then
+        maintenance_defer_optional_step "$step" "$IMPLEMENT_TICK_ID" "$resume_file" "$prefix_stop_at"
+        deferred_step="$step"
+        break
+      fi
+      profile_mark "$step"
+      maintenance_run_optional_step "$step"
+    done
+  fi
+
+  email_stop_at=$((SECONDS + email_slot))
+  max_email_stop_at=$((suffix_stop_at - reopen_slot))
+  (( email_stop_at <= max_email_stop_at )) || email_stop_at="$max_email_stop_at"
+  (( email_stop_at >= SECONDS )) || email_stop_at="$SECONDS"
+  maintenance_set_optional_deadline "$email_stop_at" "$original_gh_deadline" "$original_gmail_deadline"
+  export ZF_NEEDS_INFO_EMAIL_STOP_AT_SECONDS="$email_stop_at"
+  profile_mark needs-info-email
+  if ! read_needs_info_email_replies; then
+    echo "issue-pipeline: needs-info email poll failed; replies will be retried next tick" >&2
+  fi
+  if [ -n "$original_email_stop_at" ]; then
+    export ZF_NEEDS_INFO_EMAIL_STOP_AT_SECONDS="$original_email_stop_at"
+  else
+    unset ZF_NEEDS_INFO_EMAIL_STOP_AT_SECONDS
+  fi
+  # Bound the reopened-issue pass to its reserved remainder. Restore the
+  # caller's wider deadlines only after this required work has yielded.
+  maintenance_set_optional_deadline "$suffix_stop_at" "$original_gh_deadline" "$original_gmail_deadline"
+  unset ZF_GMAIL_CALL_DEADLINE_EPOCH_MS
+  profile_mark needs-info-recovery
+  if ! sweep_reopened_issues; then
+    echo "issue-pipeline: reopened-issue recovery failed; issues remain queued for the next tick" >&2
+  fi
+  maintenance_restore_slice_deadline "$original_gh_deadline" "$original_gmail_deadline"
+
+  if [ -z "$deferred_step" ]; then
+    maintenance_set_optional_deadline "$suffix_stop_at" "$original_gh_deadline" "$original_gmail_deadline"
+    for ((i = suffix_start; i < ${#suffix_steps[@]}; i++)); do
+      step="${suffix_steps[$i]}"
+      if [ "$SECONDS" -ge "$suffix_stop_at" ]; then
+        maintenance_defer_optional_step "$step" "$IMPLEMENT_TICK_ID" "$resume_file" "$suffix_stop_at"
+        deferred_step="$step"
+        break
+      fi
+      profile_mark "$step"
+      maintenance_run_optional_step "$step"
+    done
+    maintenance_restore_slice_deadline "$original_gh_deadline" "$original_gmail_deadline"
+  fi
+  if [ -z "$deferred_step" ]; then
+    [ "$DRY_RUN" = "1" ] || { rm -f -- "$resume_file"; maintenance_clear_deferred_step; }
+  fi
 }
 
 # Kill switch: concurrency 1 on the tick's own DECISION section, not on the
