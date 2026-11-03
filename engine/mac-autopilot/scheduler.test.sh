@@ -1336,8 +1336,10 @@ tick
 if grep -q '^merge 50$' "$TF/actions"; then
   echo 'scheduler.test.sh: tick reused pre-adoption aggregate passes' >&2; exit 1
 fi
-grep -Fq 'required checks without a real pass:' "$TF/supervisor/autopi/scheduler.log" \
-  || { echo "scheduler.test.sh: stale adopted checks did not hold the merge" >&2; echo "--- scheduler.log ---" >&2; tail -20 "$TF/supervisor/autopi/scheduler.log" >&2; echo "--- actions ---" >&2; cat "$TF/actions" >&2; exit 1; }
+command jq -e --arg sha "$adopted_head" \
+  '.units[0].stage == "ci-pending" and .units[0].ci_wait_sha == $sha and (.units[0].ci_green_sha // "") == ""' \
+  "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo "scheduler.test.sh: pre-adoption checks satisfied or bypassed the candidate SHA gate" >&2; echo "--- scheduler.log ---" >&2; tail -20 "$TF/supervisor/autopi/scheduler.log" >&2; echo "--- actions ---" >&2; cat "$TF/actions" >&2; exit 1; }
 printf 'fresh\n' > "$TF/pipeline-ci-adoption"
 tick
 [[ "$(command jq -r '.units[0].stage' "$TF/supervisor/autopi/units.json")" == merged ]] \
