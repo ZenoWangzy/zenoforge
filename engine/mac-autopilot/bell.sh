@@ -65,9 +65,9 @@ SCAN_LOCK="$A/.bell.lock"
 SUPERVISOR_LOCK="$A/.bell-supervisor.lock"
 SCAN_PID=""
 if [[ -s "$STATE" ]] && jq -e 'type=="object"' "$STATE" >/dev/null 2>&1; then
-  STATE_JSON="$(jq -c '. + {monitor_initialized:(.monitor_initialized//false),scheduler_lines:(.scheduler_lines//0),alert_mtimes:(.alert_mtimes//{}),merge_events:(.merge_events//{}),signatures:(.signatures//{}),pending:(.pending//[]),incident_stats:(.incident_stats//{}),incident_filing:(.incident_filing//{}),scheduler_signature_seen:(.scheduler_signature_seen//{}),main_ci_runs_seen:(.main_ci_runs_seen//{}),network_down:(.network_down//false)}' "$STATE")"
+  STATE_JSON="$(jq -c '. + {monitor_initialized:(.monitor_initialized//false),scheduler_lines:(.scheduler_lines//0),alert_mtimes:(.alert_mtimes//{}),merge_events:(.merge_events//{}),signatures:(.signatures//{}),pending:(.pending//[]),incident_stats:(.incident_stats//{}),incident_filing:(.incident_filing//{}),scheduler_signature_seen:(.scheduler_signature_seen//{}),main_ci_runs_seen:(.main_ci_runs_seen//{}),slow_phase_ticks:(.slow_phase_ticks//{}),network_down:(.network_down//false)}' "$STATE")"
 else
-  STATE_JSON='{"monitor_initialized":false,"scheduler_lines":0,"alert_mtimes":{},"merge_events":{},"signatures":{},"pending":[],"incident_stats":{},"incident_filing":{},"scheduler_signature_seen":{},"main_ci_runs_seen":{},"network_down":false}'
+  STATE_JSON='{"monitor_initialized":false,"scheduler_lines":0,"alert_mtimes":{},"merge_events":{},"signatures":{},"pending":[],"incident_stats":{},"incident_filing":{},"scheduler_signature_seen":{},"main_ci_runs_seen":{},"slow_phase_ticks":{},"network_down":false}'
 fi
 MONITOR_INITIALIZED="$(jq -r '.monitor_initialized' <<<"$STATE_JSON")"
 
@@ -236,6 +236,62 @@ if [[ -z "$INCIDENT_REPO" ]]; then
   incident_remote="$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)"
   INCIDENT_REPO="$(printf '%s' "$incident_remote" | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##')"
 fi
+# 2026-11-03: an incident whose evidence is engine-owned (scheduler.log lines, engine
+# file paths) was filed on the product repo, where a product worker "fixed" it by
+# forking an engine file into the product tree. Engine-owned evidence now files on
+# the engine repo; the product repo keeps product evidence.
+ENGINE_INCIDENT_REPO="${ZF_ENGINE_REPO:-$(cfg '.incident.engine_repo')}"
+[[ "$ENGINE_INCIDENT_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || ENGINE_INCIDENT_REPO='ZenoWangzy/zenoforge'
+# A single slow-phase notice is a timing metric, not an incident; the same phase
+# must be slow in N of the last M tick summaries before an incident is filed.
+SLOW_PHASE_MIN_TICKS="$(cfg '.incident.slow_phase_min_ticks')"
+SLOW_PHASE_WINDOW_TICKS="$(cfg '.incident.slow_phase_window_ticks')"
+[[ "$SLOW_PHASE_MIN_TICKS" =~ ^[0-9]+$ ]] || SLOW_PHASE_MIN_TICKS=5
+[[ "$SLOW_PHASE_WINDOW_TICKS" =~ ^[0-9]+$ ]] || SLOW_PHASE_WINDOW_TICKS=10
+(( SLOW_PHASE_WINDOW_TICKS >= 1 )) || SLOW_PHASE_WINDOW_TICKS=10
+(( SLOW_PHASE_MIN_TICKS >= 1 && SLOW_PHASE_MIN_TICKS <= SLOW_PHASE_WINDOW_TICKS )) || SLOW_PHASE_MIN_TICKS=5
+
+incident_target_repo() {
+  local text="$1"
+  if printf '%s' "$text" | grep -Fq -- 'scheduler.log' \
+    || printf '%s' "$text" | grep -Fq -- "$ENGINE_DIR" \
+    || printf '%s' "$text" | grep -Eq -- '(^|[^A-Za-z0-9_.-])engine/[A-Za-z0-9_]'; then
+    printf '%s\n' "$ENGINE_INCIDENT_REPO"
+  else
+    printf '%s\n' "$INCIDENT_REPO"
+  fi
+}
+
+# One tick-summary line (tick done / refill done) carries that tick's per-phase
+# timing. Each summary appends one bit per tracked phase (slow or not) to a
+# capped window in bell-state; an event fires only when this tick's slow bit
+# raises the window to the configured N-of-M threshold.
+record_slow_phase_tick() {
+  local line="$1" slow_part="" update phase
+  [[ "$line" =~ slow:[[:space:]](.*)$ ]] && slow_part="${BASH_REMATCH[1]}"
+  update="$(jq -cn --arg state "$STATE_JSON" --arg slow "$slow_part" \
+    --argjson n "$SLOW_PHASE_MIN_TICKS" --argjson m "$SLOW_PHASE_WINDOW_TICKS" '
+    def ones($s): [$s | scan("1")] | length;
+    ($state | fromjson | .slow_phase_ticks // {}) as $old
+    | ($slow | [splits(" +") | select(test("^[A-Za-z0-9_-]+=[0-9]+s$")) | sub("=.*$"; "")] | unique) as $slowphases
+    | (($old | keys) + $slowphases | unique) as $phases
+    | reduce $phases[] as $p ({ticks: {}, fired: []};
+        ($old[$p] // "") as $w
+        | (if ($slowphases | index($p)) != null then "1" else "0" end) as $bit
+        | (($w + $bit) | if length > $m then .[-$m:] else . end) as $nw
+        | .ticks[$p] = $nw
+        | if $bit == "1" and ones($nw) >= $n and ones($w) == ($n - 1)
+          then .fired += [$p] else . end)
+  ' 2>/dev/null)" || return 0
+  [[ "$update" == *'"ticks"'* ]] || return 0
+  STATE_JSON="$(jq -c --argjson u "$update" '.slow_phase_ticks=$u.ticks' <<<"$STATE_JSON")"
+  while IFS= read -r phase; do
+    [[ -n "$phase" ]] || continue
+    add_event medium "slow-phase:$phase" \
+      "scheduler.log: phase $phase was slow in $SLOW_PHASE_MIN_TICKS of the last $SLOW_PHASE_WINDOW_TICKS tick summaries: $(clean "$line")" \
+      "tail -n 120 '$A/scheduler.log'"
+  done < <(jq -r '.fired[]' <<<"$update" 2>/dev/null)
+}
 advisor_incident_scan() {
   local result_file result recorded cutoff job_id answer_err outcome exit_code code fallback_signature
   local fail_streak=0 saw_consecutive_failure=0
@@ -363,10 +419,11 @@ PY
 
 file_incident_issue() {
   local class="$1" severity="$2" summary="$3" evidence="$4" first_seen="$5" count="$6"
-  local engine_dir upsert body_file title
+  local engine_dir upsert body_file title target
   engine_dir="${ZF_ENGINE_DIR:-$ROOT/engine}"
   upsert="$engine_dir/pipeline-issue-upsert.sh"
   [[ -r "$upsert" ]] || { echo "bell.sh: incident upsert helper is missing: $upsert" >&2; return 1; }
+  target="$(incident_target_repo "$summary $evidence")"
   body_file="$(mktemp "$A/.bell-incident.XXXXXX")" || return 1
   title="Incident: ${summary:0:180}"
   {
@@ -378,7 +435,7 @@ file_incident_issue() {
   local output status
   if output="$(ZF_GH_REPO="$INCIDENT_REPO" ZF_REPO="$INCIDENT_REPO" ZF_REPO_DIR="$ROOT" ZF_ENGINE_DIR="$engine_dir" \
     bash "$upsert" --class "$class" --title "$title" --body-file "$body_file" --lane pipeline-system \
-      --label incident 2>&1)"; then
+    --label incident --repo "$target" 2>&1)"; then
     [[ -z "$output" ]] || printf '%s\n' "$output" >> "$LOG"
     rm -f -- "$body_file"
     return 0
@@ -512,8 +569,13 @@ if [[ "$MONITOR_INITIALIZED" == true ]]; then
     while IFS= read -r line; do
       line_num=$((line_num + 1))
       [[ -n "$line" ]] || continue
-      # tick done 行只是每拍汇总；它的阶段计时含 release_dependency_blocks，会被 BLOCK 误判成 high（2026-10-20 32 条）。
-      [[ "$line" == *"] tick done "* ]] && continue
+      # tick/refill done 行只是每拍汇总；它的阶段计时含 release_dependency_blocks，会被 BLOCK 误判成 high（2026-10-20 32 条）。
+      # 单次 slow: 阶段也只是计时指标，不排队不立项（2026-11-03 一次 slow 就开了事故单）；
+      # 只有同一阶段在最近 M 拍汇总里慢了 N 次才升级为 slow-phase 事件。
+      if [[ "$line" == *"] tick done "* || "$line" == *"] refill done "* ]]; then
+        record_slow_phase_tick "$line"
+        continue
+      fi
       event_class="$(scheduler_signature_class "$line")"
       if [[ -n "$event_class" ]]; then
         event_stamp=""
