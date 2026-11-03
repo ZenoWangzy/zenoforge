@@ -372,7 +372,7 @@ supervisor_section_of() { # report-path section（如 GUIDANCE）→ 冒号后�
 }
 
 supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute 落地：选一个工作环节放回去
-  local id="$1" action="$2" guidance="$3" decision="$4" u target extra=""
+  local id="$1" action="$2" guidance="$3" decision="$4" u target extra="" issue issue_json issue_state issue_reason issue_repo="${REPO:-${ZF_REPO:-}}"
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
   if jqf -e 'any((.history // [])[]?; (.stage | test("^review")) or .stage == "repair-delivered" or .stage == "delivered")' <<<"$u" >/dev/null \
      && { [[ "$(jqf -r '.pr // empty' <<<"$u")" =~ ^[0-9]+$ ]] \
@@ -391,6 +391,25 @@ supervisor 裁决（${action}）后重排：$guidance"))"
     return 0
   fi
   [[ "$action" == reroute ]] && extra=" | del(.blocked_on) | .reviewed_sha=null | .reviewed_pr_head=null$extra"
+  issue="$(jqf -r '.issue // empty' <<<"$u")"
+  if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+    [[ -n "$issue_repo" ]] || { say "supervisor arbitration unit=$id: repository is unavailable for issue #$issue requeue"; return 1; }
+    issue_json="$(gh issue view "$issue" --repo "$issue_repo" --json number,title,body,state,labels 2>/dev/null)" \
+      || { say "supervisor arbitration unit=$id: issue #$issue could not be refreshed for requeue; leaving the unit at supervisor-review"; return 1; }
+    issue_state="$(scheduler_issue_state "$issue")" \
+      || { say "supervisor arbitration unit=$id: issue #$issue state is unreadable for requeue; leaving the unit at supervisor-review"; return 1; }
+    if [[ "$(jqf -r '.state // empty' <<<"$issue_state")" == on-hold ]]; then
+      [[ "$(jqf -r '.hold.holder // empty' <<<"$issue_state")" == scheduler-stop-loss ]] \
+        || { say "supervisor arbitration unit=$id: issue #$issue has a non-stop-loss hold; leaving the unit at supervisor-review"; return 1; }
+      issue_reason=hold-requeue
+    else
+      issue_reason=supervisor-requeue
+    fi
+    if ! scheduler_issue_transition "$issue" ready-for-agent "$issue_reason" . 0 "$issue_json"; then
+      say "supervisor arbitration unit=$id: issue #$issue could not be requeued to ready-for-agent; leaving the unit at supervisor-review"
+      return 1
+    fi
+  fi
   set_unit "$id" "$(hist "supervisor-$action" "$guidance" "$decision") | .stage=\"$target\"$extra"
   say "supervisor arbitration unit=$id: $action -> $target"
 }

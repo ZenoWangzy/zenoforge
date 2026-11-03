@@ -169,10 +169,11 @@ scheduler_signature_class() {
     # which this scanner never reads, so a down pipeline filed no incident.
     # run-tick's refuse() now also appends the line to scheduler.log.
     printf 'sched-run-tick-refused\n'
-  elif [[ "$line" == *"issue-pipeline: slice-failed"* ]]; then
-    # A decision slice exited outside the stage contract (issue-pipeline-
-    # slices.sh): 0 / 75 defer / 124-137 overrun are the only non-failures.
-    printf 'sched-slice-failed\n'
+  elif [[ "$line" =~ issue-pipeline:[[:space:]]slice-failed[[:space:]]tick=[^[:space:]]+[[:space:]]stage=([a-z0-9-]+)[[:space:]]status=([0-9]+) ]]; then
+    # #166 files a stable incident for each failed slice+status. Repeated
+    # occurrences dedupe in pipeline-issue-upsert; distinct stages/statuses
+    # remain independently actionable.
+    printf 'sched-slice-failed-%s-%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
   elif [[ "$line" == *'advisor provider missing: '* ]]; then
     # The scheduler refuses a unit-advisor launch before Node can emit a
     # MODULE_NOT_FOUND stack; #166 files this stable signature as an incident.

@@ -54,6 +54,11 @@ pipeline_live_worker_check() {
   local runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-$REPO_DIR/.scratch-supervisor/autopi}"
   coord_issue_live_worker "$1" "$runtime_dir"
 }
+pipeline_scheduler_unit_inflight() { # issue -> 0 in flight / 1 none / 3 unknown
+  local runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-$REPO_DIR/.scratch-supervisor/autopi}"
+  [ -d "$runtime_dir" ] || return 1
+  scheduler_issue_unit_inflight "$1" "$runtime_dir/units.json"
+}
 # 2026-11-03: an issue with a live worker OR a non-terminal scheduler unit
 # (scheduler_issue_unit_inflight, lib.d/dispatch-gates.sh) belongs to the
 # autopilot scheduler for now -- its labels are that unit's state. Triage
@@ -69,7 +74,7 @@ pipeline_triage_skip_inflight() { # issue -> 0 skip / 1 proceed
     # so neither check below has anything to report -- proceed, like main.
     return 1
   fi
-  if scheduler_issue_unit_inflight "$1"; then
+  if pipeline_scheduler_unit_inflight "$1"; then
     echo "issue-pipeline: triage #$1 has an in-flight scheduler unit; leaving it to the scheduler" >&2
     return 0
   else
@@ -90,6 +95,18 @@ pipeline_triage_skip_inflight() { # issue -> 0 skip / 1 proceed
     fi
   fi
   return 1
+}
+pipeline_advisor_issue_skip_inflight() { # issue -> 0 skip / 1 proceed; unknown ledger fails closed
+  local status
+  if pipeline_scheduler_unit_inflight "$1"; then
+    echo "issue-pipeline: advisor #$1 has an in-flight scheduler unit; leaving it to the scheduler" >&2
+    return 0
+  else
+    status=$?
+    [ "$status" -eq 1 ] && return 1
+  fi
+  echo "issue-pipeline: advisor #$1 scheduler unit ledger unreadable (status=$status); holding advisor selection this tick" >&2
+  return 0
 }
 pipeline_claim_begin() { # issue stage systemd-unit -> 0 acquired / 1 held / 3 unknown
   local issue="$1" stage="$2" unit="$3" key owner status
@@ -133,34 +150,43 @@ pipeline_claim_keep() { # launched unit owns the lease until a later tick sees i
   pipeline_claim_clear
 }
 pipeline_batch_claim_acquire() { # owner stage unit issue_ids_var; reserves the claimable members before launch
-  # 2026-11-03: a member with a live scheduler worker used to refuse the WHOLE
-  # batch (return 1 -> defer 75), starving every other needs-advisor issue
-  # behind it. Busy members are dropped and logged instead; the rest is
-  # claimed atomically. An empty remainder is a no-op (the caller sees an
-  # empty list), never an error. The loop terminates: every retry drops at
-  # least the member whose worker appeared between the pre-check and the
-  # acquire. A worker-ledger status other than live/none stays fail-closed
-  # (return 3 -> defer): an unreadable ledger must not launch a batch.
+  # 2026-11-03: a member with an in-flight scheduler unit or live worker used
+  # to refuse the WHOLE batch (return 1 -> defer 75), starving every other
+  # needs-advisor issue behind it. Busy members are dropped and logged
+  # instead; the rest is claimed atomically. An empty remainder is a no-op
+  # (the caller sees an empty list), never an error. The loop terminates:
+  # every retry drops at least the member whose unit/worker appeared between
+  # the pre-check and the acquire. An unreadable unit/worker ledger stays
+  # fail-closed (return 3 -> defer): it must not launch a batch.
   local owner="$1" stage="$2" unit="$3" issues_var="$4" issue key status other
   local -n batch_claim_issues="$issues_var"
   local -a pending=("${batch_claim_issues[@]}") checked=() confirmed=() next_pending=()
   while :; do
     checked=()
     for issue in "${pending[@]}"; do
-      if pipeline_live_worker_check "$issue"; then
-        echo "issue-pipeline: batch claim dropping #$issue (live scheduler worker); it stays queued for a later batch" >&2
+      if pipeline_scheduler_unit_inflight "$issue"; then
+        echo "issue-pipeline: batch claim dropping #$issue (in-flight scheduler unit); it stays queued for a later batch" >&2
       else
         status=$?
         if [ "$status" -ne 1 ]; then
-          echo "issue-pipeline: batch claim worker census unknown for #$issue (status=$status); deferring the batch" >&2
+          echo "issue-pipeline: batch claim scheduler unit ledger unknown for #$issue (status=$status); deferring the batch" >&2
           return 3
         fi
-        checked+=("$issue")
+        if pipeline_live_worker_check "$issue"; then
+          echo "issue-pipeline: batch claim dropping #$issue (live scheduler worker); it stays queued for a later batch" >&2
+        else
+          status=$?
+          if [ "$status" -ne 1 ]; then
+            echo "issue-pipeline: batch claim worker census unknown for #$issue (status=$status); deferring the batch" >&2
+            return 3
+          fi
+          checked+=("$issue")
+        fi
       fi
     done
     if [ "${#checked[@]}" -eq 0 ]; then
       batch_claim_issues=()
-      echo "issue-pipeline: batch claim empty after live-worker drops; no members to claim this tick" >&2
+      echo "issue-pipeline: batch claim empty after in-flight/live-worker drops; no members to claim this tick" >&2
       return 0
     fi
     if ! coord_acquire_many "$owner" systemd-worker "$unit" "$stage" "${checked[@]}"; then
@@ -173,6 +199,21 @@ pipeline_batch_claim_acquire() { # owner stage unit issue_ids_var; reserves the 
       if ! coord_assert_owned "$key" "$owner" >/dev/null; then
         coord_release_many "$owner" "${checked[@]}" >/dev/null 2>&1 || :
         return 3
+      fi
+      if pipeline_scheduler_unit_inflight "$issue"; then
+        echo "issue-pipeline: batch claim dropping #$issue (scheduler unit appeared during acquire); it stays queued for a later batch" >&2
+        coord_release_many "$owner" "${checked[@]}" >/dev/null 2>&1 || :
+        next_pending=()
+        for other in "${checked[@]}"; do [ "$other" = "$issue" ] || next_pending+=("$other"); done
+        pending=("${next_pending[@]}")
+        continue 2
+      else
+        status=$?
+        if [ "$status" -ne 1 ]; then
+          coord_release_many "$owner" "${checked[@]}" >/dev/null 2>&1 || :
+          echo "issue-pipeline: batch claim scheduler unit ledger unknown after acquire for #$issue (status=$status); deferring the batch" >&2
+          return 3
+        fi
       fi
       if pipeline_live_worker_check "$issue"; then
         echo "issue-pipeline: batch claim dropping #$issue (worker appeared during acquire); it stays queued for a later batch" >&2
@@ -201,16 +242,21 @@ pipeline_batch_claim_drop() {
 }
 pipeline_batch_claim_keep() { # renew every member after the batch transient unit starts
   local owner="$1" unit="$2" issue key; shift 2
+  local -a renewed=()
   for issue in "$@"; do
     key="$(coord_issue_key "$issue")" || return 2
     if ! coord_renew "$key" "$owner"; then
-      echo "issue-pipeline: batch claim renewal failed; stopping $unit" >&2
-      systemctl --user stop "$unit" >/dev/null 2>&1 || :
-      pipeline_batch_claim_drop "$owner" "$@"
-      return 1
+      echo "issue-pipeline: batch claim renewal failed for #$issue; dropping only that member and continuing $unit" >&2
+      pipeline_batch_claim_drop "$owner" "$issue"
+      continue
     fi
+    renewed+=("$issue")
   done
-  echo "issue-pipeline: batch claim=owned unit=$unit issues=${*}" >&2
+  if ((${#renewed[@]})); then
+    echo "issue-pipeline: batch claim=owned unit=$unit issues=${renewed[*]}" >&2
+  else
+    echo "issue-pipeline: batch claim renewal kept no member claims; leaving $unit running" >&2
+  fi
   return 0
 }
 PIPELINE_STAGE=""
@@ -720,6 +766,9 @@ dispatch_advisor_batch() {
   fi
   if [ "$poll_only" != "1" ]; then
     for n in $NEEDS_ADVISOR_IDS; do
+      if pipeline_advisor_issue_skip_inflight "$n"; then
+        continue
+      fi
       if hand_agent_issue_is_live_owned "$n"; then
         record_hand_owned_decision advisor "$n"
       else
