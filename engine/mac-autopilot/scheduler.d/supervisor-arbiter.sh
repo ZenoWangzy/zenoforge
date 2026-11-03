@@ -386,7 +386,7 @@ reconcile_size_recuts() {
 }
 
 supervisor_apply_action() { # id action report-path —— 六动作落地，决定/理由/证据/否掉选项写进单元
-  local id="$1" action="$2" rep="$3" reason rejected evidence decision guidance question u reviewed_sha reviewed_pr_head pr
+  local id="$1" action="$2" rep="$3" reason rejected evidence decision guidance question u reviewed_sha reviewed_pr_head pr approval_stage
   reason="$(supervisor_section_of "$rep" REASON | head -c 2000)"
   rejected="$(jqf -cn --arg text "$(supervisor_section_of "$rep" REJECTED | head -c 1000)" '[$text]')"
   evidence="supervisor arbitration report $(basename "$rep")"
@@ -409,9 +409,15 @@ supervisor_apply_action() { # id action report-path —— 六动作落地，决
       else
         reviewed_sha="$(jqf -r '.reviewed_sha // empty' <<<"$u")"; reviewed_pr_head="$(jqf -r '.reviewed_pr_head // empty' <<<"$u")"
         if [[ "$reviewed_sha" =~ $SHA_RE && "$reviewed_pr_head" =~ $SHA_RE ]]; then
-          set_unit "$id" "$(hist supervisor-approve "$reviewed_sha" "$decision") | .approved_sha=$(js "$reviewed_sha") | .ready_since=(.ready_since // $NOW_EPOCH) | .stage=\"ready-to-merge\""
-          post_approved_status "$id" "$reviewed_pr_head"
-          say "supervisor arbitration unit=$id: approve -> ready-to-merge at $reviewed_sha"
+          approval_stage="$(ci_approval_stage_for_unit "$id")"
+          if [[ "$approval_stage" == ci-pending ]]; then
+            set_unit "$id" "$(hist supervisor-approve "$reviewed_sha" "$decision") | .approved_sha=$(js "$reviewed_sha") | .ci_gate_required=true | del(.ci_green_sha,.ci_wait_sha) | .stage=\"ci-pending\""
+            ci_approved_gate "$id"
+          else
+            set_unit "$id" "$(hist supervisor-approve "$reviewed_sha" "$decision") | .approved_sha=$(js "$reviewed_sha") | del(.ci_gate_required,.ci_green_sha,.ci_wait_sha) | .stage=\"ready-to-merge\" | .ready_since=(.ready_since // $NOW_EPOCH)"
+          fi
+          post_approved_status "$id" "$(unit_field "$id" '.approved_sha // empty')"
+          say "supervisor arbitration unit=$id: approval recorded at $reviewed_sha; $(if [[ "$approval_stage" == ci-pending ]]; then echo candidate CI gates decide readiness; else echo direct-main delivery resumes; fi)"
         else
           # 没有已评审的 head 对：不盲批，交给一次完整评审绑定 head 后再合并。
           set_unit "$id" "$(hist supervisor-approve "no reviewed head pair; routed to a fresh review" "$decision") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""

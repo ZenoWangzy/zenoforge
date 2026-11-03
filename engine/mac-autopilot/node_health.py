@@ -847,7 +847,7 @@ def ledger_metrics(units, since, now):
                     ship = next((x for x in window if x[0] in ("merged", "landed")), None)
                     if ship:
                         approve_to_ship.append((ship[1] - t).total_seconds() / 60)
-                    elif not nxt and u.get("stage") in ("ready-to-merge", "landing"):
+                    elif not nxt and u.get("stage") in ("ci-pending", "ready-to-merge", "landing"):
                         # Still waiting: count the age so far, or only the fast ones would be measured.
                         approve_to_ship.append((now - t).total_seconds() / 60)
                 n = 0

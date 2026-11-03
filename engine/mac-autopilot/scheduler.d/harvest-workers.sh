@@ -51,7 +51,7 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
 }
 
 harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers; pid:unit limits the pass to that one worker (harvest station)
-  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage
+  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage approval_stage
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"; [[ -z "$only" || "$pid:$unit" == "$only" ]] || continue
@@ -281,6 +281,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
             READY)
               # 同时保留审核候选与当时观察到的 GitHub PR head；旧 worker 缺失 PR head 时拒绝批准。
               if [[ "$wprhead" =~ $SHA_RE ]]; then
+                approval_stage="$(ci_approval_stage_for_unit "$unit")"
                 local eval_stages eval_reason eval_workdir eval_tree eval_label eval_report eval_safe_id eval_stages_json eval_gate
                 eval_workdir="$(jqf -r '.workdir // empty' <<<"$w")"
                 eval_reason=""
@@ -305,29 +306,39 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
                     --arg label "$eval_label" --arg workdir "$eval_workdir" --arg report "$eval_report" \
                     --arg reason "$eval_reason" --argjson stages "$eval_stages_json" \
                     '{status:"pending",sha:$sha,pr_head:$pr_head,tree:$tree,label:$label,workdir:$workdir,report:$report,stages:$stages} + (if $reason=="" then {} else {reason:$reason} end)')"
-                  # #4656（裁决 architecture-ships-evals-alongside）：架构面改动照常批准进 ready-to-merge，
-                  # eval_gate 只是并行报告任务的派发凭据，不是交付前置。
-                  set_unit "$unit" "$(hist review-approve "$wsha") | $reviewed | .approved_sha=$(js "$wsha") | .ready_since=(.ready_since // $NOW_EPOCH) | .eval_gate=$eval_gate | .stage=\"ready-to-merge\""
-                  post_approved_status "$unit" "$wprhead"
-                  say "review approved unit=$unit sha=$wsha; eval reporting stages=$(tr ' ' ',' <<<"${eval_stages% }") runs alongside delivery"
+                  if [[ "$approval_stage" == ci-pending ]]; then
+                    # Approval is durable now, but PR delivery readiness belongs to the exact candidate's required gates.
+                    set_unit "$unit" "$(hist review-approve "$wsha") | $reviewed | .approved_sha=$(js "$wsha") | .ci_gate_required=true | .eval_gate=$eval_gate | .stage=\"ci-pending\" | del(.ci_green_sha,.ci_wait_sha)"
+                    ci_approved_gate "$unit"
+                  else
+                    # The no-PR direct-main lane already ran its focused local gate; it has no PR candidate census.
+                    set_unit "$unit" "$(hist review-approve "$wsha") | $reviewed | .approved_sha=$(js "$wsha") | .eval_gate=$eval_gate | .stage=\"ready-to-merge\" | .ready_since=(.ready_since // $NOW_EPOCH) | del(.ci_gate_required,.ci_green_sha,.ci_wait_sha)"
+                  fi
+                  post_approved_status "$unit" "$(unit_field "$unit" '.approved_sha // empty')"
+                  say "review approved unit=$unit sha=$wsha; eval reporting stages=$(tr ' ' ',' <<<"${eval_stages% }") run alongside $(if [[ "$approval_stage" == ci-pending ]]; then echo candidate CI; else echo direct-main delivery; fi)"
                 else
-                  set_unit "$unit" "$(hist review-approve "$wsha") | $reviewed | .approved_sha=$(js "$wsha") | .ready_since=(.ready_since // $NOW_EPOCH) | del(.eval_gate) | .stage=\"ready-to-merge\""
-                  post_approved_status "$unit" "$wprhead"
+                  if [[ "$approval_stage" == ci-pending ]]; then
+                    set_unit "$unit" "$(hist review-approve "$wsha") | $reviewed | .approved_sha=$(js "$wsha") | .ci_gate_required=true | del(.eval_gate,.ci_green_sha,.ci_wait_sha) | .stage=\"ci-pending\""
+                    ci_approved_gate "$unit"
+                  else
+                    set_unit "$unit" "$(hist review-approve "$wsha") | $reviewed | .approved_sha=$(js "$wsha") | del(.eval_gate,.ci_gate_required,.ci_green_sha,.ci_wait_sha) | .stage=\"ready-to-merge\" | .ready_since=(.ready_since // $NOW_EPOCH)"
+                  fi
+                  post_approved_status "$unit" "$(unit_field "$unit" '.approved_sha // empty')"
                 fi
               else
-                set_unit "$unit" "$reviewed | .approved_sha=null"
+                set_unit "$unit" "$reviewed | .approved_sha=null | del(.ci_green_sha,.ci_wait_sha)"
                 to_supervisor "$unit" "review worker $report did not record the observed PR head"
               fi ;;
             NOT_READY)
               if findings_block_of "$rep" >/dev/null 2>&1; then
-                set_unit "$unit" "$(hist review-request-changes "$wsha") | $reviewed | .approved_sha=null | .stage=\"repair-pending\"$(review_findings_update "$rep" "$report")$(review_findings_hint_update "$rep") | .author_dispositions_pending=true"
+                set_unit "$unit" "$(hist review-request-changes "$wsha") | $reviewed | .approved_sha=null | del(.ci_green_sha,.ci_wait_sha) | .stage=\"repair-pending\"$(review_findings_update "$rep" "$report")$(review_findings_hint_update "$rep") | .author_dispositions_pending=true"
                 cancel_unit_runs "$unit" "review requested changes; head will change"
               else
                 # 打回但发现块缺失/畸形（11-03：一个 line:0 的文件级发现废掉整块，修复拿到零发现）。
                 # 照记 block=missing（node_health 看得见），但绝不带着零发现进修复：同 head 重问一次
                 # （review-pending + history 标记，派发时附契约要点），再失败按评审失败转 supervisor，
                 # 不把「无发现」当成一次有效的打回结论。
-                set_unit "$unit" "$reviewed | .approved_sha=null$(review_findings_update "$rep" "$report")"
+                set_unit "$unit" "$reviewed | .approved_sha=null | del(.ci_green_sha,.ci_wait_sha)$(review_findings_update "$rep" "$report")"
                 if [[ "$(unit_retries "$unit" review-findings-missing)" == 0 ]]; then
                   set_unit "$unit" "$(hist review-findings-missing "$report") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
                   say "review-findings-missing unit=$unit report=$report: re-asking once with the findings contract"
@@ -337,7 +348,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
               fi ;;
             INPUT_INCOMPLETE) harvest_input_incomplete "$unit" "$rep" "$report" "$wsha" "$reviewed" ;;
             *)
-              set_unit "$unit" "$reviewed | .approved_sha=null"
+              set_unit "$unit" "$reviewed | .approved_sha=null | del(.ci_green_sha,.ci_wait_sha)"
               if [[ "$(unit_retries "$unit" verdict-missing)" == 0 ]]; then
                 set_unit "$unit" "$(hist verdict-missing "$report") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
               else

@@ -13,7 +13,7 @@
 # 新 stage 必须先在下面三个集合里完成决策：footprint-holder-stages 测试会强制全表登记。
 FOOTPRINT_LIVE_WRITER_STAGES='["implement","repair"]'
 FOOTPRINT_QUEUED_WRITER_STAGES='["implement-pending","repair-pending","landing"]'
-FOOTPRINT_RELEASED_STAGES='["supervisor-review","parked","needs-human","blocked-external","review","rereview","review-pending","rereview-pending","ready-to-merge","merged","landed","closed","awaiting-live-event","done","wontfix","duplicate"]'
+FOOTPRINT_RELEASED_STAGES='["supervisor-review","parked","needs-human","blocked-external","review","rereview","review-pending","rereview-pending","ci-pending","ready-to-merge","merged","landed","closed","awaiting-live-event","done","wontfix","duplicate"]'
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/footprint-memo.sh"
 footprint_owner_stage_active() { # stage -> unit reserves write scope in the shared holder model

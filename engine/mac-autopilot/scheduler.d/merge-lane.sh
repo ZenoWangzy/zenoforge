@@ -25,6 +25,155 @@ repair_check_rows() { # PR number → latest normalized check rows from the tick
   node "$HERE/../ci/pr-required-aggregate.mjs" --latest-checks <<<"$checks" 2>/dev/null
 }
 
+CI_CANDIDATE_HEAD=""
+CI_CANDIDATE_CHECKS=""
+CI_CANDIDATE_REASON=""
+ci_approval_stage_for_unit() { # id → CI waiting for PR candidates; no-PR direct-main keeps its focused gate
+  local pr lane
+  pr="$(unit_field "$1" '.pr // empty')"
+  lane="$(unit_field "$1" '.lane // "pr"')"
+  if [[ "$pr" =~ ^[1-9][0-9]*$ && "$lane" != direct-main ]]; then
+    printf 'ci-pending\n'
+  else
+    printf 'ready-to-merge\n'
+  fi
+}
+
+ci_candidate_required_green() { # id PR expected-head → 0 only when every required gate passed on the current PR head
+  local prs row head checks required_count gated branch since missing adopted_head adopted_label
+  CI_CANDIDATE_HEAD=""; CI_CANDIDATE_CHECKS=""; CI_CANDIDATE_REASON="check census unavailable"
+  prs="$(tick_prs)" || return 1
+  row="$(jqf -c --argjson pr "$2" '[.[] | select(.number==$pr)][0] // {}' <<<"$prs")" || return 1
+  head="$(jqf -r '.headRefOid // empty' <<<"$row")"
+  [[ "$head" =~ $SHA_RE ]] || { CI_CANDIDATE_REASON="PR head unavailable"; return 1; }
+  CI_CANDIDATE_HEAD="$head"
+  [[ "$head" == "$3" ]] || { CI_CANDIDATE_REASON="PR head moved to $head"; return 2; }
+  gated="$(unit_field "$1" '.gated // false')"
+  branch="$(unit_field "$1" '.branch // empty')"
+  if [[ "$gated" == true || "$branch" =~ $GATED_BRANCH_RE ]]; then
+    [[ "$(unit_field "$1" '.ci_ready_sha // empty')" == "$head" ]] \
+      && since="$(unit_field "$1" '.ci_ready_at // empty')" \
+      && [[ -n "$since" ]] || { CI_CANDIDATE_REASON="ready event missing for $head"; return 1; }
+  elif [[ -n "$branch" && ! "$branch" =~ $GATED_BRANCH_RE ]]; then
+    adopted_head="$(unit_field "$1" '.ci_adopt_head // empty')"
+    since="$(unit_field "$1" '.ci_adopt_at // empty')"
+    if [[ "$adopted_head" != "$head" || -z "$since" ]]; then
+      if [[ -n "$since" ]]; then
+        # A cleanly carried approval has a new commit SHA; the synchronize event starts fresh CI.
+        set_unit "$1" ".ci_adopt_head=$(js "$head")"
+        CI_CANDIDATE_REASON="synchronize CI started for $head after the approved head changed"
+      else
+        ensure_pipeline_ci_label
+        adopted_label="$(jqf -r --arg label "$PIPELINE_CI_LABEL" '[.labels[]?.name] | any(.[]; . == $label)' <<<"$row")"
+        if tick_prs_changed \
+            && { [[ "$adopted_label" != true ]] || gh pr edit "$2" --remove-label "$PIPELINE_CI_LABEL" >/dev/null 2>&1; } \
+            && gh pr edit "$2" --add-label "$PIPELINE_CI_LABEL" >/dev/null 2>&1; then
+          set_unit "$1" "$(hist ci-adopt "non-agent branch gets a fresh $PIPELINE_CI_LABEL labeled event; heavy PR gates start") | .ci_adopt_head=$(js "$head") | .ci_adopt_at=$(js "$STAMP")"
+          CI_CANDIDATE_REASON="$PIPELINE_CI_LABEL event started required CI for $head"
+        else
+          CI_CANDIDATE_REASON="$PIPELINE_CI_LABEL event setup failed for $head"
+        fi
+      fi
+      return 3
+    fi
+  else
+    since=""
+  fi
+  checks="$(repair_check_rows "$2")" || return 1
+  jqf -e 'type=="array"' <<<"$checks" >/dev/null 2>&1 || return 1
+  CI_CANDIDATE_CHECKS="$checks"
+  required_count="$(jqf -r '(.required // []) | length' "$REQUIRED_PR_CHECKS_FILE" 2>/dev/null || echo 0)"
+  [[ "$required_count" =~ ^[1-9][0-9]*$ ]] || { CI_CANDIDATE_REASON="required gate policy unavailable"; return 1; }
+  missing="$(required_checks_without_pass "$checks" "$since")"
+  [[ -z "$missing" ]] || { CI_CANDIDATE_REASON="required gates pending or red: $missing"; return 1; }
+  CI_CANDIDATE_REASON="required gates green on $head"
+}
+
+ci_approved_red_recovery() { # id PR head checks → existing bounded retry/cancellation path for completed red checks
+  local checks="$4" names
+  jqf -e 'type=="array" and length>0 and all(.[]; .bucket!="pending")
+    and any(.[]; .bucket=="fail" or .bucket=="cancel")' <<<"$checks" >/dev/null 2>&1 || return 1
+  names="$(jqf -r '[.[] | select(.bucket=="fail" or .bucket=="cancel") | .name] | unique | join(", ")' <<<"$checks")"
+  if jqf -e 'any(.[]; .bucket=="fail")' <<<"$checks" >/dev/null 2>&1; then
+    if ci_cancelled_upstream "$checks"; then
+      ci_cancelled "$1" "$2" "$3" "$names" upstream
+    else
+      ci_red "$1" "$2" "$3" "$names"
+    fi
+  else
+    ci_cancelled "$1" "$2" "$3" "$names"
+  fi
+}
+
+ci_approved_gate() { # id → advance a recorded approval only after required gates pass on its exact PR head
+  local id="$1" pr approved stage branch rc head
+  pr="$(unit_field "$id" '.pr // empty')"
+  approved="$(unit_field "$id" '.approved_sha // empty')"
+  stage="$(unit_field "$id" .stage)"
+  branch="$(unit_field "$id" '.branch // empty')"
+  [[ "$pr" =~ ^[1-9][0-9]*$ && "$branch" != direct-main && "$approved" =~ $SHA_RE ]] || return 0
+  [[ "$(unit_field "$id" '.ci_gate_required // false')" == true ]] || set_unit "$id" '.ci_gate_required=true'
+  if ci_candidate_required_green "$id" "$pr" "$approved"; then rc=0; else rc=$?; fi
+  if (( rc == 3 )); then
+    if [[ "$stage" != ci-pending || "$(unit_field "$id" '.ci_wait_sha // empty')" != "$approved" \
+        || -n "$(unit_field "$id" '.ci_green_sha // empty')" ]]; then
+      set_unit "$id" "$(hist ci-wait "$CI_CANDIDATE_REASON on $approved") | .ci_gate_required=true | .stage=\"ci-pending\" | .ci_wait_sha=$(js "$approved") | del(.ci_green_sha)"
+      say "unit=$id PR#$pr remains ci-pending on ${approved:0:9}: $CI_CANDIDATE_REASON"
+    fi
+    return 0
+  fi
+  if (( rc == 2 )); then
+    head="$CI_CANDIDATE_HEAD"
+    if [[ "$head" =~ $SHA_RE ]] && approval_carries "$pr" "$approved" "$head"; then
+      set_unit "$id" "$(hist approval-carried "clean main merge $head on approved $approved before CI green") | .approved_sha=$(js "$head") | .ci_gate_required=true | .ci_wait_sha=$(js "$head") | del(.ci_green_sha) | .stage=\"ci-pending\""
+      post_approved_status "$id" "$head"
+      say "unit=$id PR#$pr candidate moved to ${head:0:9}; approval kept and CI green rechecked"
+    else
+      set_unit "$id" "$(hist approval-stale "approved=$approved head=$head before required CI passed") | .stage=\"rereview-pending\" | del(.ci_green_sha,.ci_wait_sha)"
+      say "unit=$id PR#$pr candidate moved before required CI passed -> rereview-pending"
+    fi
+    return 0
+  fi
+  if (( rc == 0 )); then
+    if [[ "$stage" != ready-to-merge || "$(unit_field "$id" '.ci_green_sha // empty')" != "$approved" ]]; then
+      set_unit "$id" "$(hist ci-green "$approved required gates passed") | .ci_gate_required=true | .ci_green_sha=$(js "$approved") | .stage=\"ready-to-merge\" | .ready_since=(.ready_since // $NOW_EPOCH) | del(.ci_wait_sha)"
+      say "unit=$id PR#$pr ready-to-merge: required gates green on ${approved:0:9}"
+    fi
+    return 0
+  fi
+  if [[ "$stage" == ready-to-merge || "$stage" == ci-pending ]] && [[ -n "$CI_CANDIDATE_CHECKS" ]] \
+      && jqf -e 'any(.[]; .bucket=="fail")' <<<"$CI_CANDIDATE_CHECKS" >/dev/null 2>&1 \
+      && declare -F park_ci_red_for_main_red >/dev/null \
+      && park_ci_red_for_main_red "$id" "$pr" "${CI_CANDIDATE_HEAD:-$approved}" "$CI_CANDIDATE_CHECKS"; then
+    return 0
+  fi
+  if [[ "$stage" == ready-to-merge || "$stage" == ci-pending ]] && [[ -n "$CI_CANDIDATE_CHECKS" ]] \
+      && ci_approved_red_recovery "$id" "$pr" "${CI_CANDIDATE_HEAD:-$approved}" "$CI_CANDIDATE_CHECKS"; then
+    say "unit=$id PR#$pr remains ci-pending on ${approved:0:9}: started existing bounded CI recovery for red candidate"
+    stage="$(unit_field "$id" .stage)"
+    if [[ "$stage" != ready-to-merge && "$stage" != ci-pending ]] \
+        || [[ "$(unit_field "$id" '.approved_sha // empty')" != "$approved" ]]; then
+      return 0
+    fi
+  fi
+  if [[ "$stage" != ci-pending || "$(unit_field "$id" '.ci_wait_sha // empty')" != "$approved" \
+      || "$(unit_field "$id" '.ci_green_sha // empty')" != "" ]]; then
+    set_unit "$id" "$(hist ci-wait "${CI_CANDIDATE_REASON:-required gates unavailable} on $approved") | .ci_gate_required=true | .stage=\"ci-pending\" | .ci_wait_sha=$(js "$approved") | del(.ci_green_sha)"
+    say "unit=$id PR#$pr remains ci-pending on ${approved:0:9}: ${CI_CANDIDATE_REASON:-required gates unavailable}"
+  fi
+  return 0
+}
+
+ci_approved_watch() { # refresh persisted green evidence and demote changed/red candidates to CI waiting
+  local id
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    ci_approved_gate "$id"
+  done < <(jqf -r '.units[] | select((.stage=="ci-pending" or .stage=="ready-to-merge")
+      and (.pr // null) != null and (.lane // "") != "direct-main" and (.supervisor_owned // false) != true
+      and (.approved_sha // "") != "") | .id' "$UNITS")
+}
+
 # 队头阻塞（2026-10-21 06:42）：车道每拍只看排序后的前 BATCH_MAX*3 个就绪单元（热修、critical、最老），82 个就绪里
 # 前 12 个全在等 CI 或被挡，排在 21–60 位的绿单元从来轮不到看。对 ready-to-merge PR 子集批量取检查汇总再排序：
 # 还没占到 CI 名额的（本拍不可能合）排到最后；其余同档内 CI 已出结论（绿/红）的先看，还在跑的其次。
@@ -313,7 +462,7 @@ pr_body_refresh() { # unit-json → one gh pr edit --body-file when the current 
   rm -f -- "$file"
 }
 run_merge_lane_pass() {
-  local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry
+  local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha green_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry
   local -A merge_head_ref=()
   local -a merge_head_refspecs=() merge_head_refs=()
   # 所有 PR（含流水线 PR）都只由自己 head 上的必需检查把关，合并后由 main CI 验证；没有待验证批、没有合并后等裁决的 merging 态。
@@ -510,7 +659,7 @@ run_merge_lane_pass() {
       # 门控单元的 ready 证据跟批准换到同一 head：update-branch 的新 head 晚于原 ready 事件才存在，新 head 的检查必然
       # 晚于旧 ci_ready_at 启动，旧时间下限对新 head 依然成立，不重开 ready 也不重跑检查。不换的话 ready 门永远在等
       # 旧 head 的证据（2026-11-03：批准沿用后每拍 merge skipped ready_for_review evidence missing，PR 卡 40+ 分钟）。
-      carry="$(hist approval-carried "clean main merge $head on approved $approved") | .approved_sha=$(js "$head")"
+      carry="$(hist approval-carried "clean main merge $head on approved $approved") | .approved_sha=$(js "$head") | .ci_gate_required=true | del(.ci_green_sha,.ci_wait_sha)"
       if [[ "$(jqf -r '.gated // false' <<<"$ready")" == true && -n "$(jqf -r '.ci_ready_at // empty' <<<"$ready")" ]]; then
         carry="$carry | .ci_ready_sha=$(js "$head")"
         ready="$(jqf --arg sha "$head" '.ci_ready_sha=$sha' <<<"$ready")"
@@ -525,9 +674,15 @@ run_merge_lane_pass() {
     if [[ ! "$head" =~ $SHA_RE ]]; then say "merge skipped PR#$pr (head unreadable; unit left unchanged)"; pass_step_end skipped-head-unreadable "$pr"; continue; fi
     if [[ ! "$approved" =~ $SHA_RE || "$head" != "$approved" ]]; then
       # 批准绑定的 head 已变（或旧台账无绑定）：新提交必须先评审，不能带着旧批准合并。
-      set_unit "$id" "$(hist approval-stale "approved=${approved:-none} head=${head:-unknown}") | .stage=\"rereview-pending\""
+      set_unit "$id" "$(hist approval-stale "approved=${approved:-none} head=${head:-unknown}") | .stage=\"rereview-pending\" | del(.ci_green_sha,.ci_wait_sha)"
       say "merge skipped PR#$pr (head ${head:-unknown} != approved ${approved:-none}) -> rereview-pending"
       pass_step_end rereview "$pr"; continue
+    fi
+    green_sha="$(unit_field "$id" '.ci_green_sha // empty')"
+    if [[ "$green_sha" != "$head" && "$(unit_field "$id" '.ci_gate_required // false')" == true ]]; then
+      set_unit "$id" "$(hist ci-green-invalidated "ready candidate $head has no required-gates green bound to that SHA") | .stage=\"ci-pending\" | .ci_wait_sha=$(js "$head") | del(.ci_green_sha)"
+      say "merge skipped PR#$pr (candidate ${head:0:9} lacks SHA-bound required-gates green) -> ci-pending"
+      continue
     fi
     # #4484：非 agent 分支的接管 PR，重活 job 的 if 只认 agent/issue- 前缀或 pipeline-ci 标签，不打标签
     # 就永远拿不到必需检查。首次接管确保产生 labeled 事件并记录时间下限；已有同名标签时先移除再加回，

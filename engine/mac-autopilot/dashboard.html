@@ -760,6 +760,7 @@ const PIPE = [
   {key:["review-pending","review"],        nm:"质检"},
   {key:["repair-pending","repair"],        nm:"返工"},
   {key:["rereview-pending","rereview"],    nm:"复检"},
+  {key:["ci-pending"],                      nm:"等 CI"},
   {key:["ready-to-merge"],                 nm:"待合并"},
   {key:["landing"],              nm:"合并中"},
   {key:["merged","landed"],                nm:"已合并"},
@@ -1160,7 +1161,7 @@ const PCOLS = [
   {k:"split", nm:"拆票", gh:"needs-recut", mod:"intake"}, {k:"queue", nm:"待实施", gh:"ready-for-agent", mod:"intake"},
   {k:"implement", nm:"实施", st:["implement-pending","implement"], mod:"workers"}, {k:"review", nm:"评审", st:["review-pending","review"], mod:"workers"},
   {k:"repair", nm:"重修", st:["repair-pending","repair"], mod:"workers"}, {k:"rereview", nm:"复审", st:["rereview-pending","rereview"], mod:"workers"},
-  {k:"land", nm:"CI 与合并", st:["ready-to-merge","landing"], mod:"ci"}, {k:"release", nm:"发布", gh:"awaiting-release", mod:"release"}];
+  {k:"land", nm:"CI 与合并", st:["ci-pending","ready-to-merge","landing"], mod:"ci"}, {k:"release", nm:"发布", gh:"awaiting-release", mod:"release"}];
 function pipeCol(D, c) {
   const F = FR(D), now = Date.now(), L = (D.live_workers||{}).items || [];
   const runN = liveWorkers(D).filter(w => w.type === c.k).length + L.filter(w => w.kind === c.k && (w.owner === "advisor" || w.owner === "release")).length;

@@ -621,6 +621,7 @@ main() {
         phase fast_land_lane
         tick_prs_changed # Dispatched workers can push while earlier phases run.
         ci_station_fresh || phase_yield_lock ci_admission # a live station admits; an older loop.sh without it leaves this to the tick
+        phase_yield_lock ci_approved_watch
         merge_station_fresh || phase_yield_lock run_merge_lane # a live merge station merges; an older loop.sh without it leaves this to the tick
       fi
     fi

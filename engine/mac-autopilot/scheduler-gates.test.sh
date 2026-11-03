@@ -224,7 +224,12 @@ printf 'VERDICT: APPROVE\n' > "$sup/review-1-T1.md"
 printf 'session id: 11111111-2222-3333-4444-555555555555\n' > "$sup/review-1-T1.worker.log"
 jq -n --arg sha "$H1" --arg pr_head "$H2" '{workers:[{pid:4242,unit:"pr-1",type:"review",log:"review-1-T1.worker.log",report:"review-1-T1.md",sha:$sha,pr_head:$pr_head}]}' > "$WORKERS"
 harvest_workers || :
-[[ "$(field pr-1 .stage)" == ready-to-merge ]] || fail 'APPROVE did not reach ready-to-merge'
+if [[ "$(field pr-1 .stage)" == ready-to-merge ]]; then
+  [[ "$(field pr-1 .ci_green_sha)" == "$H1" ]] || fail 'APPROVE became ready without same-SHA green evidence'
+else
+  [[ "$(field pr-1 .stage)" =~ ^(ci-pending|rereview-pending)$ && "$(field pr-1 .ci_gate_required)" == true \
+    && "$(field pr-1 '.ci_green_sha // empty')" == "" ]] || fail 'APPROVE bypassed the candidate CI gate'
+fi
 [[ "$(field pr-1 .approved_sha)" == "$H1" && "$(field pr-1 .reviewed_sha)" == "$H1" \
   && "$(field pr-1 .reviewed_pr_head)" == "$H2" ]] || fail 'approved candidate and observed PR head were not recorded independently'
 [[ "$(field pr-1 .review_report)" == review-1-T1.md ]] || fail 'review report not recorded'
@@ -1143,7 +1148,7 @@ units "$(jq -cn --arg sha "$H1" --argjson history "$ci_repair_history" \
 for retry in 1 2 3; do
   DISPATCHED=()
   dispatch_pending || :
-  [[ "$(field pr-5ci .stage):$(field pr-5ci .approved_sha):$(field pr-5ci .ci_infra_reruns):$(field pr-5ci .ci_rerun_sha)" == "ready-to-merge:$H1:$retry:$H1" \
+  [[ "$(field pr-5ci .stage):$(field pr-5ci .approved_sha):$(field pr-5ci .ci_infra_reruns):$(field pr-5ci .ci_rerun_sha)" == "ci-pending:$H1:$retry:$H1" \
     && ${#GH_RERUNS[@]} == "$retry" && ${#DISPATCHED[@]} == 0 && "$(field pr-5ci '.arbiter // false')" == false ]] \
     || fail "unchanged approved CI repair did not rerun within the existing bound ($retry; stage=$(field pr-5ci .stage), reruns=${#GH_RERUNS[@]}, dispatches=${DISPATCHED[*]:-none})"
   set_unit pr-5ci '.history += [{stage:"ci-red",result:"external CI failure"},{stage:"repair-delivered"}] | .approved_sha=null | .stage="rereview-pending"'
@@ -1185,7 +1190,7 @@ ci_test_red_history="$(jq -cn --arg sha "$H1" '[{stage:"review-approve",result:$
 units "$(jq -cn --arg sha "$H1" --argjson history "$ci_test_red_history" \
   '{units:[{id:"pr-5ci-cancelled",pr:5,stage:"rereview-pending",reviewed_sha:$sha,reviewed_pr_head:$sha,review_report:"r.md",history:$history}]}')"
 dispatch_pending || :
-[[ "$(field pr-5ci-cancelled .stage):$(field pr-5ci-cancelled '.ci_infra_reruns // 0')" == "ready-to-merge:1" \
+[[ "$(field pr-5ci-cancelled .stage):$(field pr-5ci-cancelled '.ci_infra_reruns // 0')" == "ci-pending:1" \
   && "${GH_RERUNS[*]:-}" == "run rerun 901 --failed" && ${#DISPATCHED[@]} == 0 \
   && "$(field pr-5ci-cancelled '.arbiter // false')" == false ]] \
   || fail "ci-test-red repair with a cancelled run did not rerun within the bound (stage=$(field pr-5ci-cancelled .stage), reruns=${GH_RERUNS[*]:-none})"
@@ -2323,13 +2328,25 @@ units '{"units":[{"id":"pr-72","pr":72,"stage":"rereview","history":[]}]}'
 printf 'VERDICT: APPROVE\n' > "$sup/review-72-T9.md"; rm -f "$sup/review-72-r-T9.md"
 jq -n --arg sha "$H1" '{workers:[{pid:7272,unit:"pr-72",type:"rereview",log:"r72.log",report:"review-72-r-T9.md",sha:$sha,pr_head:$sha}]}' > "$WORKERS"
 harvest_workers || :
-[[ "$(field pr-72 .stage)" == ready-to-merge && -s "$sup/review-72-r-T9.md" ]] || fail "misnamed rereview report was treated as no output ($(field pr-72 .stage))"
+if [[ "$(field pr-72 .stage)" == ready-to-merge ]]; then
+  [[ "$(field pr-72 .ci_green_sha)" == "$(field pr-72 .approved_sha)" ]] || fail 'misnamed rereview became ready without same-SHA green evidence'
+else
+  [[ "$(field pr-72 .stage)" =~ ^(ci-pending|rereview-pending)$ && "$(field pr-72 .ci_gate_required)" == true \
+    && "$(field pr-72 '.ci_green_sha // empty')" == "" ]] || fail "misnamed rereview report was treated as no output ($(field pr-72 .stage))"
+fi
+[[ "$(field pr-72 .approved_sha)" != null && -s "$sup/review-72-r-T9.md" ]] || fail 'misnamed rereview approval evidence was lost'
 # 正常结束但没写报告文件：用日志里 tokens used 之后的最终回复当报告，不当无产出死亡（issue-2593）
 units '{"units":[{"id":"pr-73","pr":73,"stage":"rereview","history":[]}]}'
 rm -f "$sup/review-73-r-T9.md"; printf 'codex\nworking\ntokens used\n1,234\nVERDICT: APPROVE\n' > "$sup/r73.log"
 jq -n --arg sha "$H1" '{workers:[{pid:7373,unit:"pr-73",type:"rereview",log:"r73.log",report:"review-73-r-T9.md",sha:$sha,pr_head:$sha}]}' > "$WORKERS"
 harvest_workers || :
-[[ "$(field pr-73 .stage)" == ready-to-merge && "$(cat "$sup/review-73-r-T9.md")" == 'VERDICT: APPROVE' ]] || fail "final message not recovered as the report ($(field pr-73 .stage))"
+if [[ "$(field pr-73 .stage)" == ready-to-merge ]]; then
+  [[ "$(field pr-73 .ci_green_sha)" == "$(field pr-73 .approved_sha)" ]] || fail 'recovered rereview became ready without same-SHA green evidence'
+else
+  [[ "$(field pr-73 .stage)" =~ ^(ci-pending|rereview-pending)$ && "$(field pr-73 .ci_gate_required)" == true \
+    && "$(field pr-73 '.ci_green_sha // empty')" == "" ]] || fail "final message not recovered as the report ($(field pr-73 .stage))"
+fi
+[[ "$(field pr-73 .approved_sha)" != null && "$(cat "$sup/review-73-r-T9.md")" == 'VERDICT: APPROVE' ]] || fail 'recovered rereview approval evidence was lost'
 # 转人工的旧修 main 单元不挡新的红
 recovery_home="${AGENT_HOME:-${HOME:-}/.zenoforge}"
 mkdir -p "$recovery_home/main-red"
