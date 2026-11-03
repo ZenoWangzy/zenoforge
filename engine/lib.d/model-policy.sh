@@ -29,9 +29,28 @@ model_policy_validate_json() {
     and ([.roles[] | select(.provider == "codex" or .provider == "zcode") | .effort] | all(type == "string" and length > 0 and test("^[A-Za-z0-9_-]+$")))
     and ([.roles[] | select(has("service_tier")) | .service_tier] | all(.[]; type == "string"))
     and (.forbidden | type == "array" and length > 0 and all(.[]; type == "string" and test("^[A-Za-z0-9-]+$")))
+    and (.model_families | type == "object"
+      and (keys | sort) == ["claude", "codex", "glm"]
+      and ([.[] | type == "array" and length > 0 and all(.[]; type == "string" and test("^[A-Za-z0-9*._:-]+$"))] | all))
+    and (if has("allow_roles") then
+      (.allow_roles | type == "object")
+      and ([.allow_roles | to_entries[] | .key as $family | .value as $roles
+        | (($family != "claude")
+          and (($policy.forbidden + $canonical[0].forbidden + ["sonnet"] | index($family)) != null))
+          and ($roles | type == "array" and length > 0
+            and all(.[]; type == "string" and test("^[A-Za-z0-9_-]+$")
+              and . != "work" and . != "production" and . != "implement"))
+          and (if $family == "sonnet"
+            then ($roles == ["review_fallback"])
+            else true end)] | all)
+    else true end)
     and ((.forbidden + $canonical[0].forbidden | unique) as $forbidden
-      | [.roles[] as $role | $forbidden[] as $word | (($role.model + " " + ($role.effort // "") + " " + ($role.fallback_model // "")) | ascii_downcase | contains($word | ascii_downcase))]
-      | any | not)
+      | [.roles | to_entries[] as $entry | $forbidden[] as $word
+          | select((($entry.value.model + " " + ($entry.value.effort // "") + " " + ($entry.value.fallback_model // "")) | ascii_downcase | contains($word | ascii_downcase))
+            and (if $word == "claude" and (($entry.value.model | ascii_downcase) | startswith("claude-sonnet-"))
+              then ((($policy.allow_roles.sonnet // []) | index($entry.key)) == null)
+              else ((($policy.allow_roles[$word] // []) | index($entry.key)) == null) end))]
+      | length == 0)
     and (.escalation.initial_step | type == "string" and length > 0)
     and (.escalation.steps | type == "array" and length > 0 and all(.[]; (.name | type == "string" and length > 0)))
     and (.escalation as $e | ([$e.steps[].name] | unique | length) == ($e.steps | length))
@@ -96,6 +115,7 @@ model_policy_effective_live_json() {
     | ["work", "review", "production"] as $active_codex_roles
     | ($default * $live)
     | .schema_version = $default.schema_version
+    | .model_families = $default.model_families
     | .roles = reduce ((($default.roles // {}) + ($live.roles // {})) | keys[]) as $role
         ({}; .[$role] = (
           ($default.roles[$role] // {}) as $default_role
@@ -298,16 +318,44 @@ model_policy_require_implementer_identity() {
 
 # Stages that run on the work role (implement, review, triage, recut) also
 # run on the ladder's production step (V346); other roles must match exactly.
-# The review stage (maintainer ruling 2026-10-07, pipeline-node-execution-model)
-# runs on the cross-provider review role when the other provider is available
-# and on the implementer's own work/production identity as its documented
-# same-provider fallback -- both are legitimate reviewer identities.
+# The review stage uses only an identity from another model family. Availability
+# failure is a wait; the implementer identity is never a legal review fallback.
 model_policy_require_stage_identity() {
   case "$1" in
     work) model_policy_require_implementer_identity "$2" ;;
     review)
-      [ "$2" = "$(model_policy identity review 2>/dev/null || true)" ] && return 0
-      model_policy_require_implementer_identity "$2"
+      local review_identity work_identity review_family work_family
+      review_identity="$(model_policy identity review 2>/dev/null || true)"
+      work_identity="$(model_policy identity work 2>/dev/null || true)"
+      review_family="$(review_identity_family "$review_identity" 2>/dev/null || true)"
+      work_family="$(review_identity_family "$work_identity" 2>/dev/null || true)"
+      if [[ -n "$review_identity" && "$2" == "$review_identity" ]]; then
+        [[ -n "$review_family" ]] || return 64
+        # The scheduler has the unit's writer identity and makes the strict
+        # per-head family decision before dispatch. This shared stage gate
+        # admits either configured reviewer role for that checked selection.
+        return 0
+      fi
+      if [[ -n "$work_identity" && "$2" == "$work_identity" ]]; then
+        [[ -n "$work_family" ]] || return 64
+        return 0
+      fi
+      if [ "$2" = "$(model_policy identity review_fallback 2>/dev/null || true)" ]; then
+        local fallback_model="${2#*:}"
+        fallback_model="${fallback_model%:*}"
+        local fallback_family
+        fallback_family="$(review_identity_family "$2" 2>/dev/null || true)"
+        [[ -n "$fallback_family" && "$fallback_family" != "$work_family" ]] \
+          && model_policy_model_allowed_for_role "$fallback_model" review_fallback && return 0
+      fi
+      if [[ "$2" == claude:* ]]; then
+        local sonnet_model="${2#*:}"
+        sonnet_model="${sonnet_model%:*}"
+        [[ "$(review_identity_family "$2" 2>/dev/null || true)" == claude ]] \
+          && model_policy_model_allowed_for_role "$sonnet_model" review_fallback && return 0
+      fi
+      echo 'model_policy: identity does not match a cross-family reviewer role' >&2
+      return 64
       ;;
     *) model_policy_require_role_identity "$1" "$2" ;;
   esac
@@ -701,27 +749,83 @@ zcode_provider_config_model_matches() {
   [ -n "$config_model" ] && [ "$config_model" = "$model" ]
 }
 
-review_cross_identity_for() {
-  local implement_provider="$1" cross
-  cross="$(model_policy identity review 2>/dev/null || true)"
-  if [ -n "$cross" ] && [ "${cross%%:*}" != "$implement_provider" ]; then
-    printf '%s\n' "$cross"
-    return 0
+model_policy_model_allowed_for_role() {
+  local model="$1" role="$2" policy_json
+  if [[ -s "${MODEL_POLICY_FILE:-}" ]]; then
+    policy_json="$(model_policy_effective_live_json "$MODEL_POLICY_FILE" 2>/dev/null)" || return 1
+  else
+    policy_json="$(cat "$MODEL_POLICY_DEFAULT" 2>/dev/null)" || return 1
   fi
-  # A zcode implementer's other provider is codex: the work role. A codex
-  # implementer has no zcode reviewer left to try when the review role is
-  # unresolvable or same-provider -- the caller falls back.
-  if [ "$implement_provider" = zcode ]; then
-    model_policy identity work 2>/dev/null && return 0
+  model_policy_validate_json <<< "$policy_json" || return 1
+  jq -e --arg model "$model" --arg role "$role" '
+    . as $policy
+    | [.forbidden[] as $word | select(($model | ascii_downcase | contains($word | ascii_downcase))) | $word] as $matches
+    | all($matches[];
+        if . == "claude" and (($model | ascii_downcase) | startswith("claude-sonnet-"))
+        then (($policy.allow_roles.sonnet // []) | index($role)) != null
+        else (($policy.allow_roles[.] // []) | index($role)) != null
+        end)
+  ' <<< "$policy_json" >/dev/null 2>&1
+}
+
+# This is the single family table reader used by both identity selection and
+# scheduler dispatch. Adding a model family is one row in model-policy.default.json.
+REVIEW_IDENTITY_FAMILY_TABLE_SOURCE=""
+REVIEW_IDENTITY_FAMILY_TABLE=""
+review_identity_family() {
+  local identity="$1" family pattern
+  if [[ "$REVIEW_IDENTITY_FAMILY_TABLE_SOURCE" != "$MODEL_POLICY_DEFAULT" ]]; then
+    REVIEW_IDENTITY_FAMILY_TABLE="$(jq -r '.model_families | to_entries[] as $entry | $entry.value[] | "\($entry.key)\t\(.)"' "$MODEL_POLICY_DEFAULT" 2>/dev/null)" || return 1
+    REVIEW_IDENTITY_FAMILY_TABLE_SOURCE="$MODEL_POLICY_DEFAULT"
   fi
+  while IFS=$'\t' read -r family pattern; do
+    [[ -n "$family" && -n "$pattern" ]] || continue
+    case "$identity" in
+      $pattern) printf '%s\n' "$family"; return 0 ;;
+    esac
+  done <<< "$REVIEW_IDENTITY_FAMILY_TABLE"
   return 1
 }
 
-review_identity_available() {
-  local identity="$1"
-  case "${identity%%:*}" in
+review_identity_unavailable_reason() {
+  local identity="$1" role="${2:-review}" provider model effort family
+  provider="${identity%%:*}"; model="${identity#*:}"; model="${model%:*}"
+  effort="${identity##*:}"
+  family="$(review_identity_family "$identity" 2>/dev/null || echo unknown)"
+  model_policy_model_allowed_for_role "$model" "$role" || { echo 'policy refused'; return 0; }
+  if declare -F cooling >/dev/null 2>&1 && cooling "$provider"; then echo "$family hold"; return 0; fi
+  case "$provider" in
     codex)
-      codex_quota_exhausted && return 1
+      if codex_quota_exhausted "$identity"; then echo 'codex hold'
+      elif ! codex_probe_ok; then echo 'codex probe missing'
+      elif ! command -v codex >/dev/null 2>&1; then echo 'codex cli missing'
+      else echo 'codex unavailable'; fi
+      ;;
+    zcode)
+      if provider_quota_exhausted zcode; then echo 'glm hold'
+      elif ! command -v zcode >/dev/null 2>&1; then echo 'glm cli missing'
+      elif ! zcode_provider_config_model_matches "$identity"; then echo 'glm config mismatch'
+      else echo 'glm unavailable'; fi
+      ;;
+    claude)
+      if ! command -v claude >/dev/null 2>&1; then echo 'sonnet cli missing'
+      else echo 'sonnet unavailable'; fi
+      ;;
+    *) echo 'unknown provider' ;;
+  esac
+}
+
+review_identity_available() {
+  local identity="$1" role="${2:-review}" provider family model
+  provider="${identity%%:*}"
+  family="$(review_identity_family "$identity" 2>/dev/null || true)"
+  [[ -n "$family" ]] || return 1
+  model="${identity#*:}"; model="${model%:*}"
+  model_policy_model_allowed_for_role "$model" "$role" || return 1
+  if declare -F cooling >/dev/null 2>&1 && cooling "$provider"; then return 1; fi
+  case "$provider" in
+    codex)
+      codex_quota_exhausted "$identity" && return 1
       codex_probe_ok || return 1
       command -v codex >/dev/null 2>&1
       ;;
@@ -729,6 +833,27 @@ review_identity_available() {
       provider_quota_exhausted zcode && return 1
       command -v zcode >/dev/null 2>&1 || return 1
       zcode_provider_config_model_matches "$identity"
+      ;;
+    claude) command -v claude >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+review_cross_identity_for() {
+  local author_identity="$1" codex_identity glm_identity author_family
+  if (( $# >= 3 )); then
+    codex_identity="$2"; glm_identity="$3"
+  else
+    codex_identity="$(model_policy identity work 2>/dev/null || true)"
+    glm_identity="$(model_policy identity review 2>/dev/null || true)"
+  fi
+  author_family="$(review_identity_family "$author_identity" 2>/dev/null || true)"
+  case "$author_family" in
+    codex) [[ -n "$glm_identity" ]] && printf '%s\n' "$glm_identity" ;;
+    glm) [[ -n "$codex_identity" ]] && printf '%s\n' "$codex_identity" ;;
+    claude)
+      if [[ -n "$glm_identity" ]]; then printf '%s\n' "$glm_identity"
+      elif [[ -n "$codex_identity" ]]; then printf '%s\n' "$codex_identity"; fi
       ;;
     *) return 1 ;;
   esac
@@ -744,21 +869,59 @@ record_review_provider_fallback() {
   state_merge "$issue" ".review_provider_fallback = {at:(now|todate),wanted:$wanted_json,used:$used_json,reason:$reason_json} | .review_provider_fallback_history = ((.review_provider_fallback_history // []) + [.review_provider_fallback]) | .review_provider_fallback_history |= .[-5:]" >/dev/null
 }
 
+review_family_log() {
+  if declare -F say >/dev/null 2>&1; then say "$1"; else echo "$1" >&2; fi
+}
+
 review_model_for_implementer() {
-  local issue="$1" implement_identity="$2" cross
-  cross="$(review_cross_identity_for "${implement_identity%%:*}" || true)"
-  if [ -n "$cross" ]; then
-    if review_identity_available "$cross"; then
-      printf '%s\n' "$cross"
+  local issue="$1" author_identity="$2" codex_identity="${3-}" glm_identity="${4-}" sonnet_identity="${5-}" unit="${6:-unknown}"
+  local author_family cross candidate candidate_family candidate_role unavailable_reason candidate_model primary_reason=""
+  local -a candidates=()
+  author_family="$(review_identity_family "$author_identity" 2>/dev/null || true)"
+  if (( $# >= 5 )); then
+    cross="$(review_cross_identity_for "$author_identity" "$codex_identity" "$glm_identity" 2>/dev/null || true)"
+  else
+    cross="$(review_cross_identity_for "$author_identity" 2>/dev/null || true)"
+  fi
+  [[ -z "$cross" ]] || candidates+=("$cross")
+  # A Claude-authored head is unusual and cannot use Sonnet. Try the other
+  # configured independent family after the preferred family for resilience.
+  if [[ "$author_family" == claude ]]; then
+    local second=""
+    [[ "$(review_identity_family "$cross" 2>/dev/null || true)" == glm ]] && second="$codex_identity"
+    [[ "$(review_identity_family "$cross" 2>/dev/null || true)" == codex ]] && second="$glm_identity"
+    [[ -z "$second" || "$second" == "$cross" ]] || candidates+=("$second")
+  fi
+  [[ -z "$sonnet_identity" ]] || candidates+=("$sonnet_identity")
+
+  for candidate in "${candidates[@]}"; do
+    [[ -n "$candidate" ]] || continue
+    candidate_family="$(review_identity_family "$candidate" 2>/dev/null || true)"
+    if [[ -z "$candidate_family" || "$candidate_family" == "$author_family" ]]; then
+      review_family_log "review-family refused unit=$unit author=${author_family:-unknown} reviewer=${candidate_family:-unknown} reason=same-family-or-unknown"
+      continue
+    fi
+    candidate_role=review
+    if [[ "$candidate_family" == claude ]]; then
+      candidate_role=review_fallback
+      candidate_model="${candidate#*:}"; candidate_model="${candidate_model%:*}"
+      if [[ "$author_family" == claude || ! "$candidate_model" =~ ^claude-sonnet- ]]; then
+        review_family_log "review-family refused unit=$unit author=$author_family reviewer=claude reason=fallback-must-be-sonnet-and-cross-family"
+        continue
+      fi
+    fi
+    if review_identity_available "$candidate" "$candidate_role"; then
+      if [[ "$candidate_role" == review_fallback ]]; then
+        review_family_log "review-family fallback unit=$unit author=$author_family reviewer=sonnet reason=${primary_reason:-cross reviewer unavailable}"
+        record_review_provider_fallback "$issue" "cross-family-reviewer" "$candidate" "${primary_reason:-cross reviewer unavailable}" 2>/dev/null || true
+      fi
+      printf '%s\n' "$candidate"
       return 0
     fi
-    record_review_provider_fallback "$issue" "$cross" "$implement_identity" \
-      "cross-provider reviewer unavailable (quota hold, outage, or missing runtime/config); reviewing on the implementer's own provider" || true
-  else
-    record_review_provider_fallback "$issue" "review-role-unresolvable" "$implement_identity" \
-      "cross-provider review role could not be resolved from the live policy; reviewing on the implementer's own provider" || true
-  fi
-  printf '%s\n' "$implement_identity"
+    unavailable_reason="$(review_identity_unavailable_reason "$candidate" "$candidate_role")"
+    [[ "$candidate_role" == review_fallback ]] || primary_reason="$unavailable_reason"
+  done
+  return 75
 }
 
 

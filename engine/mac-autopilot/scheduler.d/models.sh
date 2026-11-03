@@ -32,7 +32,14 @@ flush_focus_alert() {
 
 # 会话按角色分开复用（L18 + 评审独立性）：rereview 只续评审会话，repair 只续修复会话。
 session_role() { case "$1" in review|rereview) echo review ;; *) echo repair ;; esac; }
-provider_of() { [[ "$1" == claude-* ]] && echo claude || echo codex; }
+provider_of() {
+  case "$(review_identity_family "$1" 2>/dev/null || true)" in
+    codex) echo codex ;;
+    glm) echo zcode ;;
+    claude) echo claude ;;
+    *) echo unknown ;;
+  esac
+}
 cooling() { # provider → 成功(0) 表示仍在冷却
   local until read_status
   if until="$(jqf_optional_file "$COOLDOWN" -r --arg p "$1" '.[$p] // 0' 2>/dev/null)"; then :
@@ -66,8 +73,12 @@ model_policy_forbidden_words() { # → 0；首次调用把禁用词读进 MODEL_
   mapfile -t MODEL_POLICY_FORBIDDEN_WORDS < <(jq -r '.forbidden[]?' "$f" 2>/dev/null || true)
   return 0
 }
-model_forbidden_by_policy() { # model → 0 = 禁用族；1 = 允许
-  local word
+model_forbidden_by_policy() { # model [role] → 0 = 禁用族；1 = 允许
+  local word role="${2:-}"
+  if [[ -n "$role" ]]; then
+    model_policy_model_allowed_for_role "$1" "$role" && return 1
+    return 0
+  fi
   model_policy_forbidden_words
   for word in ${MODEL_POLICY_FORBIDDEN_WORDS[@]+"${MODEL_POLICY_FORBIDDEN_WORDS[@]}"}; do
     [[ "$word" =~ ^[A-Za-z0-9.-]+$ ]] || continue
@@ -84,7 +95,7 @@ warn_forbidden_model_config() { # → say 一行点名全部违规键；无违�
   printf '%s' "$sig" > "$A/.models-policy-warned"
   while IFS=$'\t' read -r key m; do
     [[ -n "$m" ]] || continue
-    if model_forbidden_by_policy "$m"; then bad+="models.$key=$m "; skipped=1; fi
+    if model_forbidden_by_policy "$m" "$key"; then bad+="models.$key=$m "; skipped=1; fi
   done < <(jqf -r '.models // {} | to_entries[] | "\(.key)\t\(.value[0] // "")"' <<<"$CFG")
   (( skipped )) || return 0
   say "config models name forbidden model families (pick() skips these keys per model policy): ${bad%, }"
@@ -97,7 +108,9 @@ pick() { # role [unit-json] → PICK_MODEL/PICK_EFFORT；主模型不可用（�
   for key in "${keys[@]}"; do
     m="$(jqf -r --arg k "$key" '.models[$k][0] // empty' <<<"$CFG")"
     [[ -n "$m" ]] || continue
-    if model_forbidden_by_policy "$m"; then
+    local policy_role="$1"
+    [[ "$key" != "${1}_fallback" ]] || policy_role="$key"
+    if model_forbidden_by_policy "$m" "$policy_role"; then
       say "models.$key=$m is a forbidden family per model policy; skipping to the next key"
       forbidden_hit="$key=$m"
       continue
@@ -110,6 +123,80 @@ pick() { # role [unit-json] → PICK_MODEL/PICK_EFFORT；主模型不可用（�
     say "no $1 model available ($forbidden_hit is forbidden and no allowed key is configured)"
   else
     say "no $1 model available (provider cooldown)"
+  fi
+  return 1
+}
+
+review_identity_for_model() { # model effort → backend:model:effort, or empty for an unclassified model
+  local model="$1" effort="$2" family provider
+  family="$(review_identity_family "$model" 2>/dev/null || true)"
+  case "$family" in
+    codex) provider=codex ;;
+    glm) provider=zcode ;;
+    claude) provider=claude ;;
+    *) return 1 ;;
+  esac
+  [[ -n "$model" && -n "$effort" ]] || return 1
+  printf '%s:%s:%s\n' "$provider" "$model" "$effort"
+}
+
+unit_review_author_identity() { # unit JSON → the model/backend that last wrote its current head
+  local unit_json="$1" identity backend model effort unit_id worker
+  identity="$(jqf -r '.implement_identity // empty' <<<"$unit_json")"
+  [[ -n "$identity" ]] && { review_identity_family "$identity" >/dev/null 2>&1 && { printf '%s\n' "$identity"; return 0; }; }
+  backend="$(jqf -r '.implement_backend // empty' <<<"$unit_json")"
+  model="$(jqf -r '.implement_model // empty' <<<"$unit_json")"
+  effort="$(jqf -r '.implement_effort // empty' <<<"$unit_json")"
+  if [[ -n "$model" && -n "$effort" ]]; then
+    if [[ "$backend" == codex || "$backend" == zcode || "$backend" == claude ]]; then
+      printf '%s:%s:%s\n' "$backend" "$model" "$effort"
+      return 0
+    fi
+    review_identity_for_model "$model" "$effort" && return 0
+  fi
+  unit_id="$(jqf -r '.id // empty' <<<"$unit_json")"
+  [[ -n "$unit_id" && -r "${WORKERS:-}" ]] || return 1
+  worker="$(jqf -c --arg id "$unit_id" '[.workers[]? | select(.unit==$id and (.type=="implement" or .type=="repair"))] | sort_by(.started // .finished_at // "") | last // {}' "$WORKERS")"
+  model="$(jqf -r '.model // empty' <<<"$worker")"
+  effort="$(jqf -r '.effort // empty' <<<"$worker")"
+  backend="$(jqf -r '.provider // empty' <<<"$worker")"
+  [[ -n "$effort" ]] || effort="$(jqf -r '.implement_effort // "max"' <<<"$unit_json")"
+  if [[ -n "$backend" && -n "$model" ]]; then
+    printf '%s:%s:%s\n' "$backend" "$model" "$effort"
+  else
+    review_identity_for_model "$model" "$effort"
+  fi
+}
+
+pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves the review pending and alerts once
+  local unit_json="$1" id issue author author_family codex_identity glm_identity sonnet_identity selected status
+  id="$(jqf -r '.id // "unknown"' <<<"$unit_json")"
+  issue="$(jqf -r '.issue // empty' <<<"$unit_json")"
+  if ! author="$(unit_review_author_identity "$unit_json")"; then
+    author_family=unknown
+    status=75
+  else
+    author_family="$(review_identity_family "$author" 2>/dev/null || echo unknown)"
+    codex_identity="$(review_identity_for_model "$(jqf -r '.models.review[0] // empty' <<<"$CFG")" "$(jqf -r '.models.review[1] // empty' <<<"$CFG")" 2>/dev/null || true)"
+    glm_identity="$(review_identity_for_model "$(jqf -r '.models.review_cross[0] // empty' <<<"$CFG")" "$(jqf -r '.models.review_cross[1] // empty' <<<"$CFG")" 2>/dev/null || true)"
+    sonnet_identity="$(review_identity_for_model "$(jqf -r '.models.review_fallback[0] // empty' <<<"$CFG")" "$(jqf -r '.models.review_fallback[1] // empty' <<<"$CFG")" 2>/dev/null || true)"
+    status=0
+    selected="$(review_model_for_implementer "$issue" "$author" "$codex_identity" "$glm_identity" "$sonnet_identity" "$id")" || status=$?
+  fi
+  if (( status == 0 )) && [[ -n "$selected" ]]; then
+    PICK_MODEL="${selected#*:}"; PICK_EFFORT="${PICK_MODEL##*:}"; PICK_MODEL="${PICK_MODEL%:*}"
+    if [[ "$(jqf -r '.review_family_wait_alerted // false' <<<"$unit_json")" == true ]]; then
+      set_unit "$id" 'del(.review_family_wait_alerted)'
+    fi
+    return 0
+  fi
+  if (( status != 75 )); then
+    say "review-family refused unit=$id author=$author_family reviewer=unknown reason=identity-resolution-failed"
+    return 1
+  fi
+  if [[ "$(jqf -r '.review_family_wait_alerted // false' <<<"$unit_json")" != true ]]; then
+    say "review-family wait unit=$id author=$author_family reason=no available different-family reviewer"
+    set_unit "$id" '.review_family_wait_alerted=true'
   fi
   return 1
 }

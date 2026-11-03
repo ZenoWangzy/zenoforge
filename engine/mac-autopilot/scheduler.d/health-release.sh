@@ -333,7 +333,7 @@ register_new_prs() {
     lane="$(ensure_lane "pr-$pr_num" "$pr_num")" || { say "new PR unit=pr-$pr_num: lane unavailable"; continue; }
     if [[ "$lane" == direct-main ]]; then cancel_branch_runs "$branch" "direct-main lane; does not use PR CI" || :; fi
     room_for "pr-$pr_num" review || continue
-    pick review || continue
+    pick_review_for_unit "$u" || continue
     wt="$(ensure_clone "pr-$pr_num")" || { say "new PR unit=pr-$pr_num: clone unavailable; stays review-pending"; continue; }
     target="$(unit_review_target "pr-$pr_num" "$pr_num" "$lane" "$branch")" || { say "new PR unit=pr-$pr_num: PR head unavailable; stays review-pending"; continue; }
     read -r pr_head sha <<<"$target"

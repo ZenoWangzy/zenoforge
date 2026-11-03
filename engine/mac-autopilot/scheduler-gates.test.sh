@@ -3152,7 +3152,7 @@ cooling claude || fail 'claude not cooling after a session-limit death'
 NOW_EPOCH=$((NOW_EPOCH + 301)); cooling claude || fail 'session limit released after 5 minutes'; NOW_EPOCH=$((NOW_EPOCH - 301))
 pick review && [[ "$PICK_MODEL" == gpt-6-luna && "$PICK_EFFORT" == max ]] || fail "review did not fall back while claude cools ($PICK_MODEL)"
 NOW_EPOCH=$((NOW_EPOCH + 1801))
-pick review && [[ "$PICK_MODEL" == claude-haiku-5-5 ]] || fail 'review did not return to haiku after cooldown'
+pick review && [[ "$PICK_MODEL" == gpt-6-luna ]] || fail 'policy-forbidden Claude model became selectable after cooldown'
 CFG="$(jq '.models.implement=["gpt-6-luna","max","fast"] | .models.implement_hotfix=["gpt-6.1-terra","high"]' <<<"$CFG")"
 pick implement '{"labels":["bug","hotfix"]}' && [[ "$PICK_MODEL" == gpt-6.1-terra && "$PICK_EFFORT" == high ]] || fail "hotfix unit did not pick implement_hotfix ($PICK_MODEL)"
 pick implement '{"labels":["bug"]}' && [[ "$PICK_MODEL" == gpt-6-luna ]] || fail "non-hotfix unit picked $PICK_MODEL"

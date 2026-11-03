@@ -83,9 +83,8 @@ case "$stage" in
     fi
     ;;
   review)
-    # Same resolution as the pipeline: the cross-provider review role, or the
-    # implementer's own identity as the documented fallback. Dispatch follows
-    # the resolved provider; nothing here names a provider or model.
+    # Same resolution as the pipeline: a different-family reviewer or defer
+    # status 75. The author's family is never an availability fallback.
     identity=$(review_model_for_implementer "$N" "$(implement_model_for_attempt)")
     model_policy_require_stage_identity review "$identity"
     record_identity "$identity"

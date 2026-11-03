@@ -24,10 +24,9 @@
       "disabled": true
     },
     "review": {
-      "provider": "codex",
-      "model": "gpt-6-luna",
-      "effort": "max",
-      "service_tier": "fast"
+      "provider": "zcode",
+      "model": "GLM-5.3",
+      "effort": "max"
     }
   },
   "escalation": {
@@ -70,5 +69,10 @@
     "sonnet",
     "opus",
     "fable"
-  ]
+  ],
+  "model_families": {
+    "codex": ["codex:gpt-*:*", "codex:luna:*", "codex:terra:*", "gpt-*", "luna", "terra"],
+    "glm": ["zcode:*", "GLM-*", "glm-*"],
+    "claude": ["claude:*", "claude-*"]
+  }
 }

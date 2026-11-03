@@ -56,6 +56,18 @@ declare -F gh_timeout >/dev/null 2>&1 || source "$HERE/../lib.d/transport.sh"
 declare -F gh_timeout >/dev/null 2>&1 || source "$HERE/../lib.d/transport.sh"
 source "$HERE/scheduler.d/core.sh"
 ADVISOR_PROVIDER_SCRIPT="$(source "$HERE/../config.sh" && printf '%s' "$ZF_WEB_ADVISOR_PROVIDER_SCRIPT")"
+if [[ -z "${MODEL_POLICY_DEFAULT:-}" ]]; then
+  MODEL_POLICY_DEFAULT="$(sched_config_file model-policy.default.json 2>/dev/null)" || MODEL_POLICY_DEFAULT="$HERE/../model-policy.default.json"
+fi
+MODEL_POLICY_FILE="${MODEL_POLICY_FILE:-$AGENT_HOME/model-policy.json}"
+CODEX_EXHAUSTED_MARKER_FILE="${CODEX_EXHAUSTED_MARKER_FILE:-$AGENT_HOME/codex-exhausted-until}"
+CODEX_PROVIDER_PROBE_REQUIRED_FILE="${CODEX_PROVIDER_PROBE_REQUIRED_FILE:-$CODEX_EXHAUSTED_MARKER_FILE.probe-required}"
+CODEX_PROBE_MARKER="${CODEX_PROBE_MARKER:-$AGENT_HOME/codex-probe-passed}"
+ZCODE_EXHAUSTED_MARKER_FILE="${ZCODE_EXHAUSTED_MARKER_FILE:-$AGENT_HOME/zcode-exhausted-until}"
+ZCODE_PROVIDER_CONFIG_FILE="${ZCODE_PROVIDER_CONFIG_FILE:-$HOME/.zcode/v2/provider_config.json}"
+source "$HERE/../lib.d/codex-budget.sh"
+source "$HERE/../lib.d/model-policy.sh"
+declare -F codex_probe_ok >/dev/null 2>&1 || codex_probe_ok() { [[ -f "$CODEX_PROBE_MARKER" ]]; }
 if [[ -z "${REQUIRED_PR_CHECKS_FILE:-}" ]]; then
   REQUIRED_PR_CHECKS_FILE="$(ZF_REPO_DIR="${ZF_REPO_DIR:-$MAC_AUTOPILOT_ROOT}" \
     ZF_ENGINE_DIR="${ZF_ENGINE_DIR:-$ENGINE_ROOT}" sched_config_file mac-autopilot/required-pr-checks.json)" \

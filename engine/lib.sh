@@ -121,15 +121,11 @@ if [[ "${MODEL_POLICY_SOURCE_CHECK_ONLY:-0}" != 1 ]]; then
   AGENT_MODEL_ADVISOR_FLOOR="$(model_policy resolve work AGENT_MODEL_ADVISOR_FLOOR)"
 fi
 
-# Cross-provider review (maintainer ruling 2026-10-07, pipeline-node-execution-
-# model): the independent review of a diff runs on the model provider that did
-# NOT implement it -- a codex implementer is reviewed through the policy's
-# zcode review role, a zcode implementer by the codex work role. When the
-# other provider is unavailable (quota hold, missing runtime or provider
-# config, or a live policy that predates the review role), fall back to the
-# implementer's own provider and record .review_provider_fallback in the
-# issue state so the bell can see it. Every identity stays policy-resolved;
-# these helpers name roles, never models.
+# Cross-family review (ruling reviewer-different-model-family-2026-11-03): a
+# codex author is checked by the policy's zcode review role, a GLM/zcode author
+# by the codex work role. A Sonnet fallback is role-gated; if all independent
+# reviewers are unavailable, dispatch waits rather than reviewing the same
+# family. Every identity stays policy-resolved; these helpers name roles, not models.
 ZCODE_PROVIDER_CONFIG_FILE="$HOME/.zcode/v2/provider_config.json"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/implement-gates.sh"

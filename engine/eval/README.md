@@ -72,8 +72,9 @@ model verdict. Labels cannot overwrite prior results.
 Every call and row records the `provider:model:effort` identity that actually ran
 (`calls[].identity`, `identities`), resolved the way the pipeline resolves it:
 triage/recut and implement by dispatch state, advisor by its role, review by
-`review_model_for_implementer` (cross-provider review role, or the documented
-same-provider fallback). Review dispatches by that provider (codex or zcode).
+`review_model_for_implementer` (a different-family reviewer, or defer status
+75 when every independent reviewer is unavailable). Review dispatches by the
+selected provider; same-family review is never a fallback.
 
 Outputs are `~/.zenoforge/eval/<label>/results.json`, with one row per
 stage/case/run: pass/fail and reasons, individual call usage/time, summed usage

@@ -193,7 +193,7 @@ $(decision_scope "$u")"
         [[ -n "$pr_num" || "$prless" == 1 ]] || { to_supervisor "$id" "rereview-pending without a PR"; continue; }
         if [[ "$(jqf -r '.reopen_pr // false' <<<"$u")" == true ]]; then reopen_reverted_pr "$id" "$pr_num"; continue; fi
         room_for "$id" rereview "$u" || continue
-        pick review || continue
+        pick_review_for_unit "$u" || continue
         target="$(unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")")" || continue
         read -r pr_head sha <<<"$target"
         [[ "$sha" =~ $SHA_RE ]] || continue
@@ -263,7 +263,7 @@ $(decision_scope "$u")"
       review-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || continue
         room_for "$id" review "$u" || continue
-        pick review || continue
+        pick_review_for_unit "$u" || continue
         target="$(unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")")" || continue
         read -r pr_head sha <<<"$target"
         [[ "$sha" =~ $SHA_RE ]] || continue

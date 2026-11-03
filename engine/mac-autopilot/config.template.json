@@ -73,8 +73,13 @@
   },
   "models": {
     "review": [
-      "claude-haiku-5-5",
-      "high"
+      "gpt-6-luna",
+      "max",
+      "fast"
+    ],
+    "review_cross": [
+      "GLM-5.3",
+      "max"
     ],
     "implement": [
       "gpt-6-luna",
@@ -87,9 +92,8 @@
       "fast"
     ],
     "review_fallback": [
-      "gpt-6-luna",
-      "max",
-      "fast"
+      "claude-sonnet-4-5",
+      "high"
     ],
     "implement_hotfix": [
       "gpt-6.1-terra",

@@ -8950,9 +8950,9 @@ assert_contains "the two-strike comment states the rule" "$TWO_STRIKE_COMMENT_OU
 assert_contains "the two-strike comment names the first failure" "$TWO_STRIKE_COMMENT_OUT" "Failure 1: scope conflict: diff outside the declared blast radius"
 assert_contains "the two-strike comment names the second failure" "$TWO_STRIKE_COMMENT_OUT" "Failure 2: scope conflict: diff outside the declared blast radius"
 
-# --- cross-provider review (ruling pipeline-node-execution-model) -----------
-# The default policy reviews on the work role (maintainer 2026-10-08: GLM is opt-in), so these
-# cases pin a zcode review role to keep testing the cross-provider path.
+# --- cross-family review (ruling reviewer-different-model-family-2026-11-03) -
+# The policy review role is GLM by default. A GLM-authored unit uses the Codex
+# work identity; an unavailable different-family reviewer returns defer status 75.
 CROSS_REVIEW_MODEL=cross-review-fixture
 CROSS_REVIEW_IDENTITY="zcode:$CROSS_REVIEW_MODEL:max"
 CROSS_REVIEW_POLICY="$(mktemp)"
@@ -8962,8 +8962,7 @@ REVIEW_HELPERS_HOME="$(mktemp -d)"
 mkdir -p "$REVIEW_HELPERS_HOME/state" "$REVIEW_HELPERS_HOME/bin" "$REVIEW_HELPERS_HOME/home"
 cp "$CROSS_REVIEW_POLICY" "$REVIEW_HELPERS_HOME/model-policy.json"
 # The fake zcode binary plus its provider config make the cross reviewer
-# "available"; without either one review_model_for_implementer must fall back.
-# The codex probe marker admits the codex reviewer for the reverse direction.
+# "available". The Codex probe marker admits the reviewer for the reverse direction.
 cat > "$REVIEW_HELPERS_HOME/bin/zcode" <<'EOF'
 #!/usr/bin/env bash
 printf 'zcode called\n' >&2
@@ -9002,7 +9001,7 @@ assert_contains "run_model_json dispatches a zcode review and parses the verdict
 assert_contains "the zcode review verdict reaches the shared envelope unchanged" "$REVIEW_RUNNER_OUT" '"verdict":"NOT_READY"'
 rm -rf -- "$REVIEW_HELPERS_HOME"
 
-# No zcode runtime at all: same-provider fallback, recorded in state.
+# No zcode runtime at all: review waits instead of using the author's family.
 REVIEW_FALLBACK_HOME="$(mktemp -d)"
 mkdir -p "$REVIEW_FALLBACK_HOME/state"
 cp "$CROSS_REVIEW_POLICY" "$REVIEW_FALLBACK_HOME/model-policy.json"
@@ -9010,13 +9009,11 @@ printf '%s\n' '{"attempts":2}' > "$REVIEW_FALLBACK_HOME/state/4294.json"
 REVIEW_FALLBACK_OUT="$(AGENT_HOME="$REVIEW_FALLBACK_HOME" bash -c '
   source "$0/lib.sh"
   work="$(model_policy identity work)"
-  echo "fallback-identity: $(review_model_for_implementer 4294 "$work")"
-  jq -c "{wanted:.review_provider_fallback.wanted,used:.review_provider_fallback.used}" "$AGENT_HOME/state/4294.json"
+  if review_model_for_implementer 4294 "$work"; then echo "unexpected-review-dispatch"; else echo "review-waits:$?"; fi
 ' "$SCRIPT_DIR" 2>/dev/null)"
 rm -rf -- "$REVIEW_FALLBACK_HOME"
-assert_contains "missing cross runtime falls back to the implementer's provider" "$REVIEW_FALLBACK_OUT" "fallback-identity: $MODEL_POLICY_TEST_WORK_IDENTITY"
-assert_contains "the fallback is recorded in state for the bell" "$REVIEW_FALLBACK_OUT" "\"wanted\":\"$CROSS_REVIEW_IDENTITY\""
-assert_contains "the fallback records the identity actually used" "$REVIEW_FALLBACK_OUT" "\"used\":\"$MODEL_POLICY_TEST_WORK_IDENTITY\""
+assert_contains "missing cross runtime leaves the review pending" "$REVIEW_FALLBACK_OUT" "review-waits:75"
+assert_not_contains "missing cross runtime never dispatches a same-family reviewer" "$REVIEW_FALLBACK_OUT" "unexpected-review-dispatch"
 
 # A zcode quota hold blocks the cross reviewer even with the runtime present.
 REVIEW_QUOTA_HOME="$(mktemp -d)"
@@ -9035,14 +9032,15 @@ REVIEW_QUOTA_OUT="$(HOME="$REVIEW_QUOTA_HOME/home" AGENT_HOME="$REVIEW_QUOTA_HOM
   source "$0/lib.sh"
   work="$(model_policy identity work)"
   provider_quota_exhausted zcode && echo "zcode quota hold read"
-  echo "quota-fallback: $(review_model_for_implementer 4295 "$work")"
+  if review_model_for_implementer 4295 "$work"; then echo "unexpected-review-dispatch"; else echo "quota-review-waits:$?"; fi
 ' "$SCRIPT_DIR" 2>/dev/null)"
 rm -rf -- "$REVIEW_QUOTA_HOME"
 assert_contains "a zcode quota hold is visible through the shared marker lookup" "$REVIEW_QUOTA_OUT" "zcode quota hold read"
-assert_contains "a held cross provider falls back to the same provider" "$REVIEW_QUOTA_OUT" "quota-fallback: $MODEL_POLICY_TEST_WORK_IDENTITY"
+assert_contains "a held cross provider waits instead of reusing the author family" "$REVIEW_QUOTA_OUT" "quota-review-waits:75"
+assert_not_contains "a quota hold never dispatches a same-family reviewer" "$REVIEW_QUOTA_OUT" "unexpected-review-dispatch"
 
 # A live policy that predates the review role resolves no cross reviewer and
-# records that, instead of failing the run.
+# waits instead of dispatching a same-family reviewer.
 REVIEW_OLDPOLICY_HOME="$(mktemp -d)"
 mkdir -p "$REVIEW_OLDPOLICY_HOME/state"
 jq 'del(.roles.review)' "$MODEL_POLICY_TEST_DEFAULT_FILE" > "$REVIEW_OLDPOLICY_HOME/model-policy.json"
@@ -9050,12 +9048,11 @@ printf '%s\n' '{"attempts":1}' > "$REVIEW_OLDPOLICY_HOME/state/4296.json"
 REVIEW_OLDPOLICY_OUT="$(AGENT_HOME="$REVIEW_OLDPOLICY_HOME" bash -c '
   source "$0/lib.sh"
   work="$(model_policy identity work)"
-  echo "old-policy-fallback: $(review_model_for_implementer 4296 "$work")"
-  jq -r .review_provider_fallback.wanted "$AGENT_HOME/state/4296.json"
+  if review_model_for_implementer 4296 "$work"; then echo "unexpected-review-dispatch"; else echo "old-policy-waits:$?"; fi
 ' "$SCRIPT_DIR" 2>/dev/null)"
 rm -rf -- "$REVIEW_OLDPOLICY_HOME"
-assert_contains "a policy without the review role falls back to the same provider" "$REVIEW_OLDPOLICY_OUT" "old-policy-fallback: $MODEL_POLICY_TEST_WORK_IDENTITY"
-assert_contains "the unresolvable cross role is recorded as the fallback reason" "$REVIEW_OLDPOLICY_OUT" "review-role-unresolvable"
+assert_contains "a policy without the review role waits" "$REVIEW_OLDPOLICY_OUT" "old-policy-waits:75"
+assert_not_contains "an unresolvable review role never dispatches the author's family" "$REVIEW_OLDPOLICY_OUT" "unexpected-review-dispatch"
 
 # A reply without a valid JSON object fails closed as an exec failure.
 REVIEW_MALFORMED_HOME="$(mktemp -d)"

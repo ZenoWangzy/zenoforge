@@ -177,6 +177,10 @@ scheduler_signature_class() {
     # The scheduler refuses a unit-advisor launch before Node can emit a
     # MODULE_NOT_FOUND stack; #166 files this stable signature as an incident.
     printf 'sched-advisor-provider-missing\n'
+  elif [[ "$line" == *"review-family wait unit="* ]]; then
+    # A queued PR cannot obtain an independent verifier. Keep it pending and
+    # let the normal bell incident intake own the alert and escalation.
+    printf 'sched-review-family-wait\n'
   fi
 }
 

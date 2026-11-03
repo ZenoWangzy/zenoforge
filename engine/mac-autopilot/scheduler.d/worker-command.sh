@@ -32,8 +32,8 @@ worker_rules() { # unit-json type provider
 }
 
 # models.<role> = [model, effort, service_tier?]；model 以 claude- 开头走 claude CLI，否则走 codex。
-build_codex_command() { # type model effort unit cold-prompt [new-failure]
-  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" session_id="" usage prompt_arg role tier self_fix prior config_arg
+build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir]
+  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-$ROOT}" session_id="" usage prompt_arg role tier self_fix prior config_arg provider
   local -a tier_args=() codex_config_args=()
   CODEX_MODE=fresh
   CODEX_SESSION_ID=""
@@ -42,8 +42,17 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure]
   CODEX_USAGE_START='{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}'
   prompt+="$(worker_rules "$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")" "$type" "$(provider_of "$model")")"
   prompt_arg="$prompt"
+  provider="$(provider_of "$model")"
   self_fix="$(unit_field "$unit" '.self_fix_active // false')"
-  if [[ "$model" == claude-* ]]; then
+  if [[ "$provider" == zcode ]]; then
+    [[ "$type" == review || "$type" == rereview ]] || return 1
+    WORKER_STDOUT_REPORT=1
+    CODEX_USAGE_START=null
+    CODEX_COMMAND=(env NODE_USE_ENV_PROXY=1 zcode -p "$prompt_arg" --cwd "$workdir" --mode yolo)
+    return 0
+  fi
+  if [[ "$provider" == claude ]]; then
+    [[ "$type" == review || "$type" == rereview ]] || return 1
     # Claude 评审只读：报告作为最终回答输出，由 dispatch 成功后落盘（不给写文件权限）。
     # --strict-mcp-config：不加载用户级 MCP 服务器（4 个评审曾拉起 426 个进程、2.5 GB 内存，且 chrome-devtools 会碰用户浏览器）。
     WORKER_STDOUT_REPORT=1

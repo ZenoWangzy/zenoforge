@@ -463,6 +463,46 @@
           "engine/mac-autopilot/advisor-provider-missing.test.sh"
         ]
       }
+    },
+    {
+      "id": "reviewer-family-matched-author",
+      "date": "2026-11-03",
+      "class": "reviewer-same-family-as-head-author",
+      "what_happened": "A review was configured on gpt-6-luna max, matching the Codex/Luna family that wrote the head. The old resolver returned the implementer's identity whenever its different-provider review role was unavailable, so the verifier could be the same family as the worker it reviewed.",
+      "root_cause_evidence": "Original journal line: 'run-tick: <agent-state> fast-forwarded to origin/main, now at: [skip ci] config(models): review runs on gpt-6-luna max, matching the model policy; handing off to issue-pipeline.sh'. The pre-fix engine/lib.d/model-policy.sh:761 printed implement_identity after the cross-provider role was unavailable, making the configured matching family an accepted verifier.",
+      "classic_pattern": "A fail-open availability fallback reuses the identity being checked, so a verification control loses independence exactly when its preferred verifier is unavailable. Shared model-family failures then affect both the change and its review.",
+      "best_known_solution": "Classify identities in one model-family table and select a reviewer using the model/backend recorded on the unit or its latest implement/repair worker. Codex heads try GLM, then a policy-authorized Sonnet review_fallback; GLM heads try Codex, then Sonnet. Reject same-family candidates and keep the review pending with one #166 bell intake line when all independent reviewers are unavailable.",
+      "lesson_id": "V1276",
+      "research_sources": [
+        "vendor/pstack/skills/poteto-mode/playbooks/multi-phase-plan.md",
+        "https://sre.google/sre-book/monitoring-distributed-systems/"
+      ],
+      "options_considered": [
+        "Use a different Codex model such as Terra when Luna is the author; rejected because model changes inside Codex remain the same model family.",
+        "Return to the author's identity when GLM is unavailable; rejected because the reviewer loses independence during the exact outage this fallback handles.",
+        "Use the cross-family reviewer first, allow Sonnet only for the named review_fallback role, then wait and alert; selected because no unavailable-provider path can dispatch the author's family."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/mac-autopilot/review-family.test.sh",
+        "expected_result": "The planted pre-fix resolver exits 1 after dispatching gpt-6-luna for its same-family bad config; the fixed dispatcher refuses that config and the full focused guard exits 0."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/review-family.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Routes Luna-authored work to GLM and GLM-authored work to Luna, refuses a planted same-family config, tests Sonnet fallback and both-held wait/alert, checks Claude remains forbidden for implement, and requires the planted historical fail-open selector to fail with same-family dispatch evidence.",
+          "test_file": "engine/mac-autopilot/review-family.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "static-test",
+        "enforced_by": [
+          "engine/mac-autopilot/review-family.test.sh"
+        ]
+      }
     }
   ]
 }

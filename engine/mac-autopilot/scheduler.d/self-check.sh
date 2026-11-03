@@ -301,7 +301,7 @@ footprint_recurrence_brief() { # unit JSON → up to 3 ranked CATALOG rules, bou
 }
 
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json]
-  local unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter check_footprint="${14:-true}"
+  local unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter writer_provider check_footprint="${14:-true}"
   [[ -n "$unit_json" ]] || unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   prompt="$(incident_worker_prompt "$3" "$unit_json" "$prompt")"
   room_for "$1" "$3" "$unit_json" true "$check_footprint" || return 1
@@ -331,7 +331,8 @@ $(tail -80 "$check_output" 2>/dev/null)"
     fi
     write_start_filter="$(STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" hist write-start "$footprint")"
     write_start_filter+=" | .history[-1].work_type=$(js "$3")"
-    set_unit "$1" "$write_start_filter | .implement_model=$(js "$6") | .implement_effort=$(js "$7")"
+    writer_provider="$(provider_of "$6")"
+    set_unit "$1" "$write_start_filter | .implement_backend=$(js "$writer_provider") | .implement_model=$(js "$6") | .implement_effort=$(js "$7") | .implement_identity=$(js "$writer_provider:$6:$7")"
     # Same-tick admission widens the active footprint set (write-start just landed).
     # Fold the dispatched unit into the tick snapshot and recompute the preflight
     # conflict map from cached data, so later candidates hit "footprint wait" at
