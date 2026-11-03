@@ -1339,8 +1339,9 @@ land_engine_pin_preflight() { # <base> <head>; no-op unless the range changes th
   done < <(git diff --name-only --no-renames "$base...$head")
   ((touched == 1)) || return 0
   if [[ -z "$pin_json" ]]; then
-    echo "land-direct-main: $pin_rel changed but is absent at $head; no engine build contract to verify" >&2
-    return 0
+    echo "land-direct-main: refusing push: $pin_rel changed but is absent at $head; the target's engine-sync dispatch has no build hook to run after landing" >&2
+    echo "land-direct-main: next step: restore a valid build.json with hook and engine fields, or remove the engine-sync dispatch before rerunning the landing" >&2
+    return 1
   fi
   if [[ -z "$hook" || -z "$engine" ]]; then
     echo "land-direct-main: refusing push: $pin_rel at $head has no readable hook/engine field; the target's engine-sync dispatch would fail the same way after landing. Fix the pin file." >&2
@@ -1350,7 +1351,7 @@ land_engine_pin_preflight() { # <base> <head>; no-op unless the range changes th
     echo "land-direct-main: refusing push: engine build hook $hook (named by $pin_rel) is missing at $head" >&2
     return 1
   fi
-  local timeout_seconds="${ZF_LAND_PIN_PREFLIGHT_TIMEOUT_SECONDS:-600}" out_root started_ms elapsed_ms status
+  local timeout_seconds="${ZF_LAND_PIN_PREFLIGHT_TIMEOUT_SECONDS:-600}" out_root started_ms elapsed_ms status runner_cmd
   [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || {
     echo "land-direct-main: ZF_LAND_PIN_PREFLIGHT_TIMEOUT_SECONDS must be a positive integer" >&2
     return 2
@@ -1358,20 +1359,31 @@ land_engine_pin_preflight() { # <base> <head>; no-op unless the range changes th
   out_root="$(mktemp -d "${TMPDIR:-/tmp}/zf-land-pin.XXXXXX")" || return 1
   started_ms="$(date +%s%3N)"
   echo "land-direct-main: engine pin preflight start pin=$engine product=$head hook=$hook deadline_seconds=$timeout_seconds" >&2
+  # Keep build, directory discovery, and check under one deadline in the shared preflight slot.
+  # This uses the same slot and timeout path as the lander's normal preflight.
+  runner_cmd='
+set -euo pipefail
+repo_root="$1"
+hook="$2"
+engine="$3"
+head="$4"
+out_root="$5"
+bash "$repo_root/$hook" --build "$engine" "$head" --out "$out_root" >&2
+listing="$(find "$out_root" -mindepth 1 -maxdepth 1 -type d ! -name ".*" | LC_ALL=C sort)"
+version_dirs=()
+if [[ -n "$listing" ]]; then mapfile -t version_dirs <<< "$listing"; fi
+if ((${#version_dirs[@]} != 1)); then
+  echo "land-direct-main: build hook $hook left ${#version_dirs[@]} version directories under the scratch root (expected exactly 1); cannot --check pin $engine" >&2
+  exit 1
+fi
+bash "$repo_root/$hook" --check "${version_dirs[0]}" >&2
+'
   status=0
-  timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" bash "$repo_root/$hook" --build "$engine" "$head" --out "$out_root" 1>&2 || status=$?
-  local -a version_dirs=()
-  if ((status == 0)); then
-    mapfile -t version_dirs < <(find "$out_root" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | LC_ALL=C sort)
-    if ((${#version_dirs[@]} == 1)); then
-      # One shared deadline for build+check: the check gets what the build left, never more.
-      local check_deadline=$(( timeout_seconds - ( ($(date +%s%3N) - started_ms) / 1000 ) - 1 ))
-      ((check_deadline > 0)) || check_deadline=1
-      timeout --signal=TERM --kill-after=5s "${check_deadline}s" bash "$repo_root/$hook" --check "${version_dirs[0]}" 1>&2 || status=$?
-    else
-      echo "land-direct-main: build hook $hook left ${#version_dirs[@]} version directories under the scratch root (expected exactly 1); cannot --check pin $engine" >&2
-      status=1
-    fi
+  if with_preflight_slot timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" \
+      bash -c "$runner_cmd" pin-preflight "$repo_root" "$hook" "$engine" "$head" "$out_root" 1>&2; then
+    status=0
+  else
+    status=$?
   fi
   elapsed_ms="$(($(date +%s%3N) - started_ms))"
   # The hook marks built trees read-only; restore directory write permission before removal.

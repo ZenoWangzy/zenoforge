@@ -18,6 +18,8 @@ sed -n '/^land_engine_pin_preflight() {/,/^}$/p' "$land_script" > "$function_fil
 # shellcheck source=/dev/null
 source "$function_file"
 land_pin_preflight_verified_key=""
+# Exercise the focused function without taking the suite's real resource slot.
+with_preflight_slot() { "$@"; }
 
 # Engine fixture: the file the product overrides (hotfix/hf-start.sh) changes between v1 and v2
 # and is back to the v1 content at v3, so only the v2 pin trips the override guard.
@@ -114,6 +116,18 @@ grep -Fq 'override changed: hotfix/hf-start.sh; adopt the engine version, re-ove
 grep -Fq 'engine-sync: override guard failed' "$out" || fail 'refusal is missing the guard-failed line'
 grep -Fq 'refusing push' "$out" || fail 'refusal lacks the refusing-push line'
 grep -Fq 'next step: adopt the engine version, re-override' "$out" || fail 'refusal lacks the next-step line'
+
+# Removing the pin file is also a touched pin range: there is no configured engine contract
+# left to build or check, so landing must fail closed instead of allowing the target dispatch to break.
+git -C "$repo" checkout -q -b removed-pin "$base"
+git -C "$repo" rm -q .zenoforge/build.json
+git -C "$repo" commit -qm 'fixture: remove the engine pin file'
+head="$(git -C "$repo" rev-parse HEAD)"
+status=0
+run_preflight "$base" "$head" "$tmp/calls-removed.log" || status=$?
+[[ "$status" -eq 1 ]] || fail "removed pin file was not refused (exit $status): $(tail -5 "$out")"
+grep -Fq 'refusing push' "$out" || fail 'removed-pin refusal lacks the refusing-push line'
+grep -Fq 'next step: restore a valid build.json' "$out" || fail 'removed-pin refusal lacks a recovery step'
 
 # 2. A landing range whose pin builds and checks lands (the overridden file is unchanged at v3).
 git -C "$repo" checkout -q -b bump-clean "$base"
