@@ -767,7 +767,7 @@ tick_gh() {
         # The census: check rows come from the per-PR `pr checks` fixture above, heads from the `pr view` fixture.
         local query="." rows='[]' n c previous="" arg
         for arg in "$@"; do [[ "$previous" == --jq ]] && query="$arg"; previous="$arg"; done
-        for n in $(command jq -r '.units[] | select(.stage == "ready-to-merge" and .pr != null) | .pr' "$TF/supervisor/autopi/units.json"); do
+        for n in $(command jq -r '.units[] | select((.stage | IN("ready-to-merge","ci-pending")) and .pr != null) | .pr' "$TF/supervisor/autopi/units.json"); do
           c="$(tick_gh pr checks "$n" --json name,bucket,link)"
           rows="$(command jq -c --argjson n "$n" --arg head "$(tick_gh pr view "$n" --json headRefOid --jq .headRefOid)" --argjson c "${c:-[]}" 'if any(.[]; .number == $n) then . else . + [{number: $n, headRefOid: $head, isDraft: false, title: "", labels: [], statusCheckRollup: ($c | map({__typename: "CheckRun", name: .name, detailsUrl: (.link // ""), startedAt: (.started_at // null), status: (if .bucket == "pending" then "IN_PROGRESS" else "COMPLETED" end), conclusion: ({pass: "SUCCESS", fail: "FAILURE", skipping: "SKIPPED", cancel: "CANCELLED"}[.bucket] // null)}))}] end' <<<"$rows")"
         done
