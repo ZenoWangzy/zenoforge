@@ -11,10 +11,16 @@ jqf() {
   _rc=$?
   if (( _rc != 0 )) && [[ -s "$_err" && -n "${LOG:-}" ]]; then
     _first="$(head -n1 "$_err")"
-    _who="${FUNCNAME[1]:-top}"
-    [[ "$_who" != jqf_optional_file ]] || _who="${FUNCNAME[2]:-top}"
-    if ! grep -Fq "[$STAMP] jqf error (rc=$_rc) in $_who: $_first" "$LOG" 2>/dev/null; then
-      say "jqf error (rc=$_rc) in $_who: $_first"
+    # 11-03 Broken pipe 误报：调用方提前停止读流（收单收满 want 后 break、`jqf | head -n` 截断、
+    # 循环内 return）时 jq 写 stdout 得 EPIPE；SIGPIPE 被忽略的上下文（systemd 服务、命令替换）里
+    # jq 以 rc=2 + "writing output failed: Broken pipe" 报出来。EPIPE 只能是下游读者关闭，不是 jq
+    # 的错，不记；只放行这一条消息——ENOSPC 等其它写失败与解析/运行错误首行不同，照记。返回码不变。
+    if [[ "$_first" != *"writing output failed: Broken pipe" ]]; then
+      _who="${FUNCNAME[1]:-top}"
+      [[ "$_who" != jqf_optional_file ]] || _who="${FUNCNAME[2]:-top}"
+      if ! grep -Fq "[$STAMP] jqf error (rc=$_rc) in $_who: $_first" "$LOG" 2>/dev/null; then
+        say "jqf error (rc=$_rc) in $_who: $_first"
+      fi
     fi
   fi
   rm -f "$_err"

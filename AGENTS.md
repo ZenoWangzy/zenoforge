@@ -44,5 +44,6 @@ Single-context. See `docs/agents/domain.md`.
 | Rule | Enforcer |
 |---|---|
 | Optional scheduler JSON reads go through `jqf_optional_file`; only a truly absent path is quiet, while an existing unreadable or malformed file still goes through `jqf`. | `engine/mac-autopilot/scheduler.d/core.sh`; `engine/mac-autopilot/intake-missing-state.test.sh` |
+| `jqf` stays quiet only for the exact closed-consumer EPIPE (`writing output failed: Broken pipe`): a consumer that stops reading a jqf stream early (loop `break`/`return`, `head -n`) is not an error, while parse/runtime errors and other write failures (ENOSPC etc.) still log. | `engine/mac-autopilot/scheduler.d/core.sh`; `engine/mac-autopilot/jqf-epipe.test.sh` |
 | A REQUEST-CHANGES whose `review-findings` block does not parse never reaches repair: the scheduler records `block=missing`, re-asks the same head once with the findings contract, and escalates to the supervisor if the re-ask fails too. | `engine/mac-autopilot/scheduler.d/harvest-workers.sh`; `engine/mac-autopilot/scheduler-gates.test.sh` |
 | A `models.*` config key naming a model-policy-forbidden family is skipped at `pick()` (fixed key order, logged) and named in a config-load warning; it is never dispatched silently. | `engine/mac-autopilot/scheduler.d/models.sh`; `engine/mac-autopilot/scheduler-gates.test.sh` |

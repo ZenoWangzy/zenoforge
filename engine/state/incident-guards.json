@@ -310,6 +310,56 @@
           "engine/tick-refuse-guard.test.sh"
         ]
       }
+    },
+    {
+      "id": "jqf-epipe-from-early-exiting-consumer",
+      "date": "2026-11-03",
+      "class": "epipe-from-closed-consumer-logged-as-jq-error",
+      "what_happened": "Most intake ticks logged 'jqf error (rc=2) in intake_candidates: jq: error: writing output failed: Broken pipe' (69 lines in the live scheduler.log, 2026-10-30 through 2026-11-03, latest 04:01:33Z) and dispatch_supervisor_arbiters the same (16 lines). Consumers stop reading jqf streams early by design - register_new_issues breaks at 'added < want', arbiter dispatch returns at capacity, 'jqf | head -n' bounds rows - and under systemd (SIGPIPE ignored) jq reports the closed pipe as rc=2 with that message, so jqf logged a healthy truncation as an error and buried real ones in scheduler.log, the incident intake and the canary signature baseline (extract_signatures normalizes every jqf error line).",
+      "root_cause_evidence": "engine/mac-autopilot/scheduler.d/core.sh jqf() logged every non-zero jq exit whose stderr was non-empty; intake.sh:289 '(( added < want )) || break' closes the candidate stream fed at intake.sh:574 while the producer's jqf is still writing; evals-arbiter.sh dispatch_supervisor_arbiters returns 0 from inside a loop fed by 'done < <(jqf ... \"$UNITS\")' (evals-arbiter.sh:355). With SIGPIPE ignored (systemd service, command substitution) jq exits 2 with 'jq: error: writing output failed: Broken pipe'; with SIGPIPE default it dies silently with rc=141 and empty stderr, which jqf already did not log.",
+      "classic_pattern": "A producer wrapper reports every downstream failure as its own error, so a consumer that stops reading by design (break, return, head) is indistinguishable from a real processing failure in the logs, and the noise hides genuine errors from humans and signature scanners.",
+      "best_known_solution": "jqf treats exactly 'writing output failed: Broken pipe' (EPIPE on jq's stdout, only possible when the downstream reader closed) as not an error and skips the log line; every other first-line message - parse and runtime errors, and write failures such as ENOSPC - is still logged. jq's exit code is returned unchanged. One fix in the shared wrapper covers all ~50 'done < <(jqf ...)' consumers; no per-consumer draining.",
+      "lesson_id": "V1274",
+      "research_sources": [
+        "https://www.man7.org/linux/man-pages/man7/signal.7.html",
+        "https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#Signal%20Handlers"
+      ],
+      "options_considered": [
+        "Suppress every rc=2 write failure; rejected because ENOSPC and other real output failures share the exit code.",
+        "Drain or bound the candidate stream in intake instead; rejected because it fixes one consumer of ~50 with the same shape and keeps the wrapper lying about the class.",
+        "Skip the log line only for the exact EPIPE message; selected: EPIPE on stdout can only mean the consumer closed the pipe, so the carve-out cannot hide a real jq failure."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/mac-autopilot/jqf-epipe.test.sh",
+        "expected_result": "Early-stopping consumers log no jqf error and real failures still do; every case fails on the pre-fix wrapper (exit 1 on origin/main)."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/jqf-epipe.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Runs the real jqf wrapper with a bounded 'jqf | head' consumer, a read loop that breaks early, a malformed-JSON parse error and an ENOSPC write to /dev/full; the first two must stay silent, the last two must log.",
+          "test_file": "engine/mac-autopilot/jqf-epipe.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/intake-missing-state.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Adjacent contract on the same wrapper: real malformed-state jq failures through register_new_issues keep their jqf diagnostics.",
+          "test_file": "engine/mac-autopilot/intake-missing-state.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "static-test",
+        "enforced_by": [
+          "engine/mac-autopilot/jqf-epipe.test.sh",
+          "engine/mac-autopilot/intake-missing-state.test.sh"
+        ]
+      }
     }
   ]
 }
