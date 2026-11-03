@@ -30,7 +30,7 @@ main_red_failed_checks() { # main SHA -> check names that failed on that SHA
 }
 
 park_ci_red_for_main_red() { # id PR head check-rows-json -> parked when every failed check also failed on an active main-red SHA
-  local failed_checks red_sha red_stage resolved_at main_checks prior_stage failed_names
+  local failed_checks red_sha red_stage resolved_at main_checks prior_stage failed_names branch
   failed_checks="$(jqf -c '[.[] | select(.bucket=="fail") | .name | select(type=="string" and length>0)] | unique' <<<"$4" 2>/dev/null)" || return 1
   [[ "$failed_checks" != '[]' ]] || return 1
   while IFS=$'\t' read -r red_sha red_stage resolved_at; do
@@ -61,6 +61,8 @@ park_ci_red_for_main_red() { # id PR head check-rows-json -> parked when every f
     [[ "$prior_stage" == ready-to-merge ]] || return 1
     failed_names="$(jqf -r 'join(", ")' <<<"$failed_checks")"
     set_unit "$1" "$(hist ci-main-red-park "checks $failed_names also failed on main $red_sha") | .stage=\"parked\" | .parked_reason=\"main-red\" | .unpark_condition=\"the same checks pass on main\" | .parked_main_red_sha=$(js "$red_sha") | .parked_from_stage=$(js "$prior_stage") | .parked_head_sha=$(js "$3") | .parked_check_names=$failed_checks"
+    branch="$(unit_field "$1" '.branch // empty')"
+    cancel_branch_runs "$branch" "parked for main recovery; current head cannot change the blocked verdict" || :
     say "CI-red unit=$1 PR#$2: checks $failed_names also failed on main $red_sha -> parked until main recovers"
     return 0
   done < <(jqf -r '
@@ -140,6 +142,7 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     (( infra_rc != 2 )) || { say "CI red unit=$1: could not classify failed runs for head $3"; return 1; }
   fi
   set_unit "$1" "$(hist ci-red "$4") | .approved_sha=null | .repair_hint=$(js "PR head $3 的必需检查重跑后仍失败：$4。用 gh pr checks $2 与 gh run view <run-id> --log-failed 定位；失败的是集成测试就先在本机测试库复现（RUN_INTEGRATION=1 npx vitest run <文件>，PGTEST_URL 已配好），修到本地绿再 push；本 PR 引起的就修并补回归测试；确属与本 PR 无关的环境故障就不改代码，在报告里写明证据。$(ci_fact_hint "$3" "$(ci_unit_facts "$1" "$3")")") | .stage=\"repair-pending\""
+  cancel_branch_runs "$(unit_field "$1" '.branch // empty')" "repair dispatched; head will change" || :
   say "merge skipped PR#$2 (checks still red after rerun: $4) -> repair-pending"
 }
 ci_cancelled_upstream() { # checks_json
@@ -282,10 +285,10 @@ ci_fact_hint() { # head facts
 
 # 12 个 runner 被 PR CI 占满时 main 验证 run 要排队 50 分钟（2026-10-20）。马上会被新 head 取代的 PR run
 # （修复已派出）和快车道根本不用的 PR run 先取消，把 runner 让给 main 验证和就绪 PR。
-cancel_branch_runs() { # branch reason：reason 里第一个 ';' 之前的部分是写进审计日志的稳定原因
+cancel_branch_runs() { # branch reason：PR 与 PR-target run 一并取消；reason 第一个 ';' 前写入审计
   local r n=0 runs
   [[ -n "$1" ]] || return 0
-  runs="$(gh run list --branch "$1" --limit 20 --json databaseId,status,event --jq '.[] | select(.status != "completed" and .event == "pull_request") | .databaseId' 2>/dev/null)" \
+  runs="$(gh run list --branch "$1" --limit 100 --json databaseId,status,event --jq '.[] | select(.status != "completed" and (.event == "pull_request" or .event == "pull_request_target")) | .databaseId' 2>/dev/null)" \
     || { say "could not list PR runs on $1 for cancellation"; return 1; }
   for r in $runs; do
     ZF_CANCEL_REASON="${2%%;*}" bash "${ZF_ENGINE_DIR:-$ROOT/engine}/night/main-ci-recovery.sh" cancel-run "$r" >/dev/null 2>&1 && n=$((n+1))
@@ -695,28 +698,52 @@ ci_cancel_run_once() { # run-id reason：一个 tick 中同一个 run 只接受�
 
 ci_defer_unapproved() {
   # 一次批量取未结束的 PR run 再按分支对上单元：逐分支 gh run list 让这一步占了一拍 44–97 秒（10-21 09:10）。
-  local id br sha r st jobs n=0
+  # 评审中的单元沿用保守规则：没 job 在跑才取消——同 head 获批时已跑完的绿检查还能复用。
+  # 返工（repair/implement）与搁置中的 PR 取消其 PR/PR-target run，包括在跑的 job：
+  # 返工 head 必被交付 push 取代；搁置 head 要等 main 恢复后再跑，这两类旧 run 都改不了当前结论。
+  # 直接转换处先取消；这里也扫一次作准入后备，避免遗漏或取消失败后仍占 runner。
+  local id br sha r st ev jobs n=0 m=0 p=0
   local -a jobs_to_load=()
-  local -A unit_of=()
+  local -A unit_of=() rework_of=() parked_of=()
   while IFS=$'\t' read -r id br; do [[ -n "$br" ]] && unit_of["$br"]="$id"; done \
     < <(jqf -r --slurpfile hot <(printf '%s' "${CI_HOTFIX_BRANCHES:-[]}") '.units[] | select((.hold_handoff_waiting // false) == false and (.hotpatch // false) != true
       and ((.branch // "") as $br | $hot[0] | index($br) == null)
       and (.stage | IN("review","review-pending","rereview","rereview-pending")) and (.branch // "") != "") | [.id, .branch] | @tsv' "$UNITS")
-  (( ${#unit_of[@]} > 0 )) || return 0
+  while IFS=$'\t' read -r id br; do [[ -n "$br" ]] && rework_of["$br"]="$id"; done \
+    < <(jqf -r --argjson hot "${CI_HOTFIX_BRANCHES:-[]}" '.units[] | select((.hold_handoff_waiting // false) == false and (.hotpatch // false) != true
+      and ((.branch // "") as $br | $hot | index($br) == null)
+      and (.stage | IN("repair","repair-pending","implement","implement-pending")) and (.branch // "") != "") | [.id, .branch] | @tsv' "$UNITS")
+  while IFS=$'\t' read -r id br; do [[ -n "$br" ]] && parked_of["$br"]="$id"; done \
+    < <(jqf -r --argjson hot "${CI_HOTFIX_BRANCHES:-[]}" '.units[] | select((.hold_handoff_waiting // false) == false and (.hotpatch // false) != true
+      and ((.branch // "") as $br | $hot | index($br) == null)
+      and .stage == "parked" and (.pr // null) != null and (.branch // "") != "") | [.id, .branch] | @tsv' "$UNITS")
+  (( ${#unit_of[@]} + ${#rework_of[@]} + ${#parked_of[@]} > 0 )) || return 0
   while IFS=$'\t' read -r r sha st br; do
     [[ "$st" != queued && -n "${unit_of[$br]:-}" ]] && jobs_to_load+=("$r")
   done < <(unfinished_runs | jqf -r '.[] | select(.event == "pull_request") | [.databaseId, .headSha, .status, .headBranch] | @tsv' 2>/dev/null)
   ci_jobs_prefetch "${jobs_to_load[@]}" || :
-  while IFS=$'\t' read -r r sha st br; do
-    [[ -n "$r" && -n "${unit_of[$br]:-}" ]] || continue
+  while IFS=$'\t' read -r r sha st br ev; do
+    if [[ -n "${parked_of[$br]:-}" ]]; then
+      ci_cancel_run_once "$r" "parked for main recovery" || continue
+      p=$((p+1))
+      continue
+    fi
+    if [[ -n "${rework_of[$br]:-}" ]]; then
+      ci_cancel_run_once "$r" "repair dispatched; head will change" || continue
+      m=$((m+1)); set_unit "${rework_of[$br]}" ".ci_deferred_sha=$(js "$sha")"
+      continue
+    fi
+    [[ -n "$r" && -n "${unit_of[$br]:-}" && "$ev" == pull_request ]] || continue
     if [[ "$st" != queued ]]; then
       jobs="$(ci_jobs_status "$r")" || continue
       jqf -e 'all(.[]; . != "in_progress")' <<<"$jobs" >/dev/null 2>&1 || continue
     fi
     ci_cancel_run_once "$r" "ci deferred" || continue
     n=$((n+1)); set_unit "${unit_of[$br]}" ".ci_deferred_sha=$(js "$sha")"
-  done < <(unfinished_runs | jqf -r '.[] | select(.event == "pull_request") | [.databaseId, .headSha, .status, .headBranch] | @tsv' 2>/dev/null)
+  done < <(unfinished_runs | jqf -r '.[] | select(.event == "pull_request" or .event == "pull_request_target") | [.databaseId, .headSha, .status, .headBranch, .event] | @tsv' 2>/dev/null)
   (( n > 0 )) && say "ci deferred: cancelled $n PR run(s) on heads still in review (CI starts on approval)"
+  (( m > 0 )) && say "ci deferred: cancelled $m PR run(s) at once on heads under repair (the delivery push will replace the head)"
+  (( p > 0 )) && say "ci deferred: cancelled $p PR run(s) at once on parked heads (main verdict must recover first)"
   return 0
 }
 unfinished_runs() { # → 状态为 queued/in_progress/pending/waiting 的 run（与 gh run list 同字段）；一拍只取一次

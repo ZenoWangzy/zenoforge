@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CI runner minutes, and the share that could not change a verdict (writes ci-spend.json for node_health).
 
-Usage: ci_spend.py [--runtime DIR] [--hours N] [--fixture FILE] [--repo OWNER/NAME]
+Usage: ci_spend.py [--runtime DIR] [--hours N] [--audit FILE] [--fixture FILE] [--repo OWNER/NAME]
 
 Waste is runner time on work whose result nobody can use:
   cancelled            a job that held a runner and was then cancelled (L64: mostly our own cancellations)
@@ -10,16 +10,57 @@ Waste is runner time on work whose result nobody can use:
 Completed runs never change, so their job minutes are cached (ci-spend-cache.json); each sample only
 fetches jobs of runs that completed since the last one. --fixture reads {"runs": [...], "jobs": {id: [...]}}
 instead of calling gh (tests); its optional "prs" list stands in for the PR sizes (pr-sizes.json).
+When the shared cancel audit is present, the sample also reports runner minutes by its stable reason.
 """
 import argparse, importlib.util, json, os, re, subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 import ledger_history
-from node_health import LARGE_PR_WINDOW_DAYS, is_test_path, size_window_units
+from node_health import LARGE_PR_WINDOW_DAYS, cancel_reason, is_test_path, read_cancel_audit, size_window_units
 
 PR_EVENTS = ("pull_request", "pull_request_target")
 JOB_WORKERS = 8  # bounded: a serial job fetch per run took longer than the 300 s sampler limit on a cold cache
 BREAKDOWN_ROWS = 15
+SHA_RE = re.compile(r"\b[0-9a-f]{40}\b")
+CANCEL_AUDIT_REASON_KEYS = (
+    "deferred", "slot_wait", "repair_dispatched", "superseded_main_head",
+    "review_blocked", "parked", "other",
+)
+
+
+def cancel_audit_minutes(runs, minutes, records, since, until, repo):
+    """Runner minutes in cancelled jobs, grouped by the shared audit's stable cancel cause."""
+    by_run = {}
+    for index, row in enumerate(records):
+        at = ts(row.get("when"))
+        if not at or not since <= at <= until:
+            continue
+        if row.get("repo") and row["repo"] != repo:
+            continue
+        key = (row.get("repo") or "", str(row["run_id"]))
+        previous = by_run.get(key)
+        reason = row.get("reason") or (previous[2] if previous else "")
+        if previous is None or (at, index) >= (previous[0], previous[1]):
+            by_run[key] = (at, index, reason)
+
+    buckets = {key: 0.0 for key in CANCEL_AUDIT_REASON_KEYS}
+    run_ids = {str(run["id"]) for run in runs}
+    labels = {
+        "deferred": "deferred",
+        "slot_wait": "slot_wait",
+        "repair": "repair_dispatched",
+        "superseded": "superseded_main_head",
+        "review_blocked": "review_blocked",
+        "parked": "parked",
+    }
+    for (_, run_id), (_, _, reason) in by_run.items():
+        if run_id not in run_ids:
+            continue
+        cause = cancel_reason(reason)
+        key = labels.get(cause, "other")
+        buckets[key] += sum(value for conclusion, value in minutes.get(run_id, []) if conclusion == "cancelled")
+    return {key: round(value) for key, value in buckets.items()}
+
 
 
 def ts(value):
@@ -142,13 +183,24 @@ def job_minutes(jobs):
 
 
 def approved_heads(units):
+    """Heads the ledger approved at ANY time, not just now: a run on them could change a verdict.
+
+    ci_red and the review rejections scrub .approved_sha when they dispatch a repair, but the CI
+    that ran on that head is exactly what produced the red verdict the repair acted on — counting
+    it as waste inflated the 2026-11-03 sample: 436 of 440 waste-minutes were classified as
+    superseded_unapproved. The approval-carried entries name both the carried head and its approved
+    base in the result text ("clean main merge <sha> on approved <sha>"), so both stay visible after
+    the scrub."""
     heads = set()
     for u in units:
         if u.get("approved_sha"):
             heads.add(u["approved_sha"])
         for h in u.get("history") or []:
-            if h.get("stage") in ("review-approve", "supervisor-approve", "merged") and len(str(h.get("result", ""))) == 40:
-                heads.add(h["result"])
+            stage, result = h.get("stage"), str(h.get("result") or "")
+            if stage in ("review-approve", "supervisor-approve", "merged") and len(result) == 40:
+                heads.add(result)
+            elif stage == "approval-carried":
+                heads.update(SHA_RE.findall(result))
     return heads
 
 
@@ -179,11 +231,13 @@ def classify(runs, minutes, approved):
 
 def main():
     here = os.path.dirname(os.path.realpath(__file__))
+    agent_home = os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or os.path.expanduser("~/.zenoforge")
     ap = argparse.ArgumentParser()
     ap.add_argument("--runtime", default=os.environ.get("MAC_AUTOPILOT_RUNTIME_DIR") or (
         os.path.join(here.split("/autopi-versions/", 1)[0], "autopi") if "/autopi-versions/" in here else here))
     ap.add_argument("--hours", type=float, default=5)
     ap.add_argument("--fixture")
+    ap.add_argument("--audit", default=os.path.join(agent_home, "logs", "actions-run-cancellations.jsonl"))
     ap.add_argument("--now")
     ap.add_argument("--repo", help="OWNER/NAME; default: the repo of the current directory")
     args = ap.parse_args()
@@ -224,6 +278,10 @@ def main():
     units = ledger_history.load_units(a)
     minutes = {k: v["jobs"] for k, v in cache.items()}
     doc = classify(runs, minutes, approved_heads(units))
+    audit = read_cancel_audit(args.audit, os.environ.get("ZF_REPO", ""))
+    if audit is not None:
+        doc["cancel_audit_min_by_reason"] = cancel_audit_minutes(
+            runs, minutes, audit, since, now, os.environ.get("ZF_REPO", ""))
     doc.update({"sampled_at": f"{now:%Y-%m-%dT%H:%M:%SZ}", "window_hours": args.hours, "runs": len(runs)})
     outputs = [(cache_path, cache), (os.path.join(a, "ci-spend.json"), doc)]
     # PR sizes for node_health's rework-by-size table (bigger PRs need more repair rounds).
