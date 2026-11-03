@@ -61,6 +61,9 @@ export const RELATED_TESTS = new Map([
     'engine/mac-autopilot/usage_reader.test.sh',
     'engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh',
   ]],
+  ['engine/mac-autopilot/scheduler.d/models.sh', ['engine/mac-autopilot/models-shape.test.sh']],
+  ['engine/mac-autopilot/gen_dashboard.py', ['engine/mac-autopilot/models-shape.test.sh']],
+  ['engine/mac-autopilot/dashboard.html', ['engine/mac-autopilot/models-shape.test.sh']],
   ['engine/incident-rule.sh', ['engine/mac-autopilot/incident-prior-art-gate.test.sh']],
   ['engine/mac-autopilot/bell.sh', ['engine/mac-autopilot/advisor-provider-missing.test.sh']],
   ['engine/issue-pipeline.sh', [

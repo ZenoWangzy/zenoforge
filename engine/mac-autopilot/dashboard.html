@@ -672,7 +672,7 @@ function vWorkers(D) {
       <div class="lg"><span class="sub">柱高 = 返工轮数中位；颜色 = 返工 ≥4 轮的占比</span><span><i style="background:var(--ok)"></i>≤ 15%</span><span><i style="background:var(--warn)"></i>15–35%</span><span><i style="background:var(--bad)"></i>≥ 35%</span></div>`
     : emptyMsg("尚无 PR 大小数据");
   const SKs = ((D.standards||{}).time_sinks||[]).filter(r => /^(repair|rereview|review|implement)/.test(r.id));
-  const models = Object.entries(c.models||{}).map(([k,v]) => `<span class="tag" data-tip="${esc(k+"："+(v||[]).join(" · "))}">${esc(ROLE[k]||k)} · ${esc((v||[])[0]||"—")} · ${esc((v||[])[1]||"")}</span>`).join(" ");
+  const models = Object.entries(c.models||{}).filter(([,v]) => Array.isArray(v)).map(([k,v]) => `<span class="tag" data-tip="${esc(k+"："+v.join(" · "))}">${esc(ROLE[k]||k)} · ${esc(v[0]||"—")} · ${esc(v[1]||"")}</span>`).join(" ");
   const e = D.efficiency || {};
   return `<div class="stack16">
     <div class="grid g2">

@@ -236,9 +236,14 @@ cost_data = {
     "budget_tokens_match": day_cost(today_text)["tokens"] == real_daily_tokens if budget.get("date") == today_text else False,
 }
 
-TYPE_MODEL = {"review": cfg["models"]["review"][0], "rereview": cfg["models"]["review"][0],
-              "implement": cfg["models"]["implement"][0], "repair": cfg["models"]["implement"][0],
-              "triage": cfg["models"]["triage"][0]}
+model_config = cfg.get("models", {})
+if not isinstance(model_config, dict):
+    model_config = {}
+model_tuples = {key: value for key, value in model_config.items() if isinstance(value, list)}
+TYPE_MODEL = {stage: model_tuples[role][0] for stage, role in (
+    ("review", "review"), ("rereview", "review"),
+    ("implement", "implement"), ("repair", "implement"), ("triage", "triage"),
+) if model_tuples.get(role)}
 
 def alive(pid):
     try:

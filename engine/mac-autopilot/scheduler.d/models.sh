@@ -101,9 +101,12 @@ warn_forbidden_model_config() { # → say 一行点名全部违规键；无违�
   while IFS=$'\t' read -r key m; do
     [[ -n "$m" ]] || continue
     if model_forbidden_by_policy "$m" "$key"; then bad+="models.$key=$m "; skipped=1; fi
-  done < <(jqf -r '.models // {} | to_entries[] | "\(.key)\t\(.value[0] // "")"' <<<"$CFG")
+  done < <(jqf -r '.models // {} | to_entries[] | select(.value | type == "array") | "\(.key)\t\(.value[0] // "")"' <<<"$CFG")
   (( skipped )) || return 0
   say "config models name forbidden model families (pick() skips these keys per model policy): ${bad%, }"
+}
+model_tuple_field() { # models key + tuple index → field; non-array model settings are skipped
+  jqf -r --arg k "$1" --argjson index "$2" '(.models[$k] | select(type == "array"))[$index] // empty' <<<"$CFG"
 }
 pick_configured_model() { # role [unit-json] → PICK_MODEL/PICK_EFFORT；主模型不可用（禁用族或提供方冷却）时按序用下一个键；都不可用返回 1
   # 带 hotfix 标签的单元先用 models.<role>_hotfix（维护者 2026-10-29：生产热修单都给 terra high 做）。
@@ -111,7 +114,7 @@ pick_configured_model() { # role [unit-json] → PICK_MODEL/PICK_EFFORT；主模
   local key m keys=("$1" "$1_fallback") forbidden_hit=""
   jqf -e 'any(.labels[]?; . == "hotfix")' <<<"${2:-"{}"}" >/dev/null 2>&1 && keys=("$1_hotfix" "${keys[@]}")
   for key in "${keys[@]}"; do
-    m="$(jqf -r --arg k "$key" '.models[$k][0] // empty' <<<"$CFG")"
+    m="$(model_tuple_field "$key" 0)"
     [[ -n "$m" ]] || continue
     local policy_role="$1"
     [[ "$key" != "${1}_fallback" ]] || policy_role="$key"
@@ -121,9 +124,9 @@ pick_configured_model() { # role [unit-json] → PICK_MODEL/PICK_EFFORT；主模
       continue
     fi
     cooling "$(provider_of "$m")" && continue
-    PICK_MODEL="$m"; PICK_EFFORT="$(jqf -r --arg k "$key" '.models[$k][1] // empty' <<<"$CFG")"
+    PICK_MODEL="$m"; PICK_EFFORT="$(model_tuple_field "$key" 1)"
     PICK_PROVIDER="$(provider_of "$m")"; PICK_HARD=false; PICK_REASON="configured-$key"
-    PICK_SERVICE_TIER="$(jqf -r --arg k "$key" '.models[$k][2] // empty' <<<"$CFG")"
+    PICK_SERVICE_TIER="$(model_tuple_field "$key" 2)"
     return 0
   done
   if [[ -n "$forbidden_hit" ]]; then
@@ -400,9 +403,9 @@ pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves 
     status=75
   else
     author_family="$(review_identity_family "$author" 2>/dev/null || echo unknown)"
-    codex_identity="$(review_identity_for_model "$(jqf -r '.models.review[0] // empty' <<<"$CFG")" "$(jqf -r '.models.review[1] // empty' <<<"$CFG")" 2>/dev/null || true)"
-    glm_identity="$(review_identity_for_model "$(jqf -r '.models.review_cross[0] // empty' <<<"$CFG")" "$(jqf -r '.models.review_cross[1] // empty' <<<"$CFG")" 2>/dev/null || true)"
-    sonnet_identity="$(review_identity_for_model "$(jqf -r '.models.review_fallback[0] // empty' <<<"$CFG")" "$(jqf -r '.models.review_fallback[1] // empty' <<<"$CFG")" 2>/dev/null || true)"
+    codex_identity="$(review_identity_for_model "$(model_tuple_field review 0)" "$(model_tuple_field review 1)" 2>/dev/null || true)"
+    glm_identity="$(review_identity_for_model "$(model_tuple_field review_cross 0)" "$(model_tuple_field review_cross 1)" 2>/dev/null || true)"
+    sonnet_identity="$(review_identity_for_model "$(model_tuple_field review_fallback 0)" "$(model_tuple_field review_fallback 1)" 2>/dev/null || true)"
     status=0
     selected="$(review_model_for_implementer "$issue" "$author" "$codex_identity" "$glm_identity" "$sonnet_identity" "$id")" || status=$?
   fi
