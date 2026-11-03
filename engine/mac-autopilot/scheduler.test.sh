@@ -1734,7 +1734,14 @@ command jq -e --arg bad "$rule_head" --arg clean "$clean_head" --arg no_report "
   and ([.units[] | select(.pr==57)][0] | .stage=="merged" and .approved_sha==$bad_report)
   and ([.units[] | select(.pr==58)][0] | .stage=="merged" and .approved_sha==$newstop)
 ' "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: rule-lane did not route each PR per the CTO ruling' >&2; exit 1; }
+  || {
+    echo 'scheduler.test.sh: rule-lane did not route each PR per the CTO ruling' >&2
+    command jq -c '.units[] | {pr,stage,approved_sha,ci_gate_required,ci_green_sha,ci_wait_sha,rule_lane_commented_sha}' \
+      "$TF/supervisor/autopi/units.json" >&2
+    echo '--- actions ---' >&2; cat "$TF/actions" >&2
+    echo '--- scheduler log ---' >&2; tail -50 "$TF/supervisor/autopi/scheduler.log" >&2
+    exit 1
+  }
 for rejected_pr in 51 52 53; do
   if grep -q "^merge $rejected_pr$" "$TF/actions"; then
     echo "scheduler.test.sh: scheduler merged blocked PR $rejected_pr" >&2; exit 1
