@@ -654,6 +654,9 @@ scheduler_pr_open agent/issue-23 'stack child' 'Refs #23' agent/issue-1
   || fail 'an existing stacked unit PR did not retarget its predecessor branch'
 eval "$stack_gh_real"; eval "$stack_pr_changed_real"; eval "$stack_gated_label_real"
 
+# This case tests unchanged-head arbiter routing. Keep reviewer availability stable; review-family.test.sh covers the live selector.
+review_selector_real="$(declare -f review_model_for_implementer)"
+review_model_for_implementer() { printf 'claude:claude-sonnet-4-5:high\n'; }
 units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"implement_identity\":\"codex:gpt-6-luna:max\",\"history\":[]}]}"
 dispatch_pending || :
 [[ "$(field pr-5 .stage)" == rereview-pending && "$(field pr-5 .arbiter)" == true && ${#DISPATCHED[@]} == 0 ]] || fail 'unchanged head did not turn into one arbiter review'
@@ -672,6 +675,7 @@ dispatch_pending || :
 units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\",\"result\":\"head $H2 unchanged since last review\"}]}]}"
 dispatch_pending || :
 [[ "$(field pr-5 .stage)" == rereview-pending && "$(field pr-5 .arbiter)" == true && ${#DISPATCHED[@]} == 0 ]] || fail 'an arbiter review of an earlier head escalated a later no-push repair'
+eval "$review_selector_real"
 # 合并后被 revert 的单元：原 PR 已 MERGED，repair 推的提交挂不上去；repair 交付后用同一分支开新 PR（#4009 空转 4 小时）
 DISPATCHED=(); gh_reopen_saved="$(declare -f gh)"
 gh() { case "$1 $2" in "pr list") echo "" ;; "pr create") printf '%s' "$*" > "$fixture/reopen.args"; echo "https://github.com/example-maintainer/example-repo/pull/4100" ;; *) eval "${gh_reopen_saved/gh ()/gh_r ()}"; gh_r "$@" ;; esac; }

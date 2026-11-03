@@ -1712,10 +1712,10 @@ command git -C "$TF/repo" diff --name-only "$advanced_main_sha" "$clean_head" \
 
 command jq -cn --arg bad "$rule_head" --arg clean "$clean_head" --arg missing "$(printf '%040x' 52)" \
   --arg no_report "$missing_head" --arg bad_report "$invalid_head" --arg newstop "$newstop_head" '{units:[
-  {id:"pr-4548",issue:4548,pr:51,lane:"pr",branch:"agent/issue-4548",stage:"ready-to-merge",approved_sha:$bad,ready_since:1,history:[]},
-  {id:"pr-4550",issue:4550,pr:52,lane:"pr",branch:"agent/issue-4550",stage:"ready-to-merge",approved_sha:$missing,ready_since:2,history:[]},
-  {id:"pr-4551",issue:4551,pr:53,lane:"pr",branch:"agent/issue-4551",stage:"ready-to-merge",approved_sha:$bad,ready_since:3,history:[]},
-  {id:"pr-4552",issue:4552,pr:54,lane:"pr",branch:"agent/issue-4552",stage:"ready-to-merge",approved_sha:$clean,ready_since:4,history:[]},
+  {id:"pr-4548",issue:4548,pr:51,lane:"pr",branch:"agent/issue-4548",stage:"ready-to-merge",approved_sha:$bad,ci_ready_sha:$bad,ci_ready_at:"2026-10-29T00:00:00Z",ready_since:1,history:[]},
+  {id:"pr-4550",issue:4550,pr:52,lane:"pr",branch:"agent/issue-4550",stage:"ready-to-merge",approved_sha:$missing,ci_ready_sha:$missing,ci_ready_at:"2026-10-29T00:00:00Z",ready_since:2,history:[]},
+  {id:"pr-4551",issue:4551,pr:53,lane:"pr",branch:"agent/issue-4551",stage:"ready-to-merge",approved_sha:$bad,ci_ready_sha:$bad,ci_ready_at:"2026-10-29T00:00:00Z",ready_since:3,history:[]},
+  {id:"pr-4552",issue:4552,pr:54,lane:"pr",branch:"agent/issue-4552",stage:"ready-to-merge",approved_sha:$clean,ci_ready_sha:$clean,ci_ready_at:"2026-10-29T00:00:00Z",ready_since:4,history:[]},
   {id:"pr-4553",issue:4553,pr:55,lane:"pr",branch:"supervisor/rule-4484",stage:"ready-to-merge",approved_sha:$bad,ready_since:5,history:[],ci_adopt_head:$bad,ci_adopt_at:"2026-10-29T00:00:00Z"},
   {id:"pr-4554",issue:4554,pr:56,lane:"pr",branch:"supervisor/miss-4548",stage:"ready-to-merge",approved_sha:$no_report,ready_since:6,history:[],ci_adopt_head:$no_report,ci_adopt_at:"2026-10-29T00:00:00Z"},
   {id:"pr-4555",issue:4555,pr:57,lane:"pr",branch:"supervisor/bad-4548",stage:"ready-to-merge",approved_sha:$bad_report,ready_since:7,history:[],ci_adopt_head:$bad_report,ci_adopt_at:"2026-10-29T00:00:00Z"},
