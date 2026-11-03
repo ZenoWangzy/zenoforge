@@ -2707,9 +2707,12 @@ command jq -e '.units | length==1 and .[0].id=="pr-pipeline-probe" and .[0].stag
 sched_run_case gate_suite_timeout
 
 sched_case_ready_starvation() {
-local pr starve_sha
+local pr starve_sha saved_required_pr_checks="$REQUIRED_PR_CHECKS_FILE"
 new_tick_fixture ready-starvation
 enable_rule_lane_fixture
+printf '%s\n' '{"required":["Pipeline suites"],"current_regression":"","legacy_regression":[]}' \
+  > "$TF/required-pr-checks.json"
+export REQUIRED_PR_CHECKS_FILE="$TF/required-pr-checks.json"
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
 command jq '.conclusion="success"' "$TF/run.json" > "$TF/run.tmp"; mv "$TF/run.tmp" "$TF/run.json"
 command jq -n '{units:[range(1;18) | {id:("pr-"+tostring),pr:.,stage:"ready-to-merge",lane:"pr",ready_since:.,history:[]}]}' > "$TF/supervisor/autopi/units.json"
@@ -2731,6 +2734,7 @@ printf '%s\n' 13 14 15 16 17 > "$TF/pipeline-prs"
 tick; tick
 [[ "$(command grep -c '^merge ' "$TF/actions")" == 5 ]]
 command jq -e '[.units[] | select(.stage=="merged")] | length==5' "$TF/supervisor/autopi/units.json" >/dev/null
+export REQUIRED_PR_CHECKS_FILE="$saved_required_pr_checks"
 }
 sched_run_case ready_starvation
 

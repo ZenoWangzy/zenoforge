@@ -1249,27 +1249,33 @@ rr="$fixture/wt-pr-7"; rm -rf "$rr"; command git init -q -b main "$rr"
 command git -C "$rr" commit -q --allow-empty -m reviewed; R1="$(command git -C "$rr" rev-parse HEAD)"
 command git -C "$rr" commit -q --allow-empty -m repair; R2="$(command git -C "$rr" rev-parse HEAD)"
 command git -C "$rr" checkout -q --orphan rebased; command git -C "$rr" commit -q --allow-empty -m rebased; R3="$(command git -C "$rr" rev-parse HEAD)"
+rereview_lane_policy="$(lane_policy_blob)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+unit_review_target() { printf '%s %s\n' "$GH_HEAD" "$GH_HEAD"; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
 DISPATCHED=(); GH_HEAD="$R2"
-units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
+units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"lane\":\"pr\",\"lane_policy\":\"$rereview_lane_policy\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "rereview:pr-7:$R2" && "$DISPATCH_PR_HEAD" == "$R2" ]] || fail "repair push (PR head moved, old head is an ancestor) did not get an incremental rereview (got ${DISPATCHED[*]:-none})"
 [[ "$DISPATCH_PROMPT" == *"$R1..$R2"* && "$DISPATCH_PROMPT" == *".agents/skills/code-review/SKILL.md"* ]] \
   || fail 'incremental rereview prompt lost its repair delta or canonical contract reference'
 DISPATCHED=(); GH_HEAD="$R2"
-units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[],\"review_findings\":[{\"disposition_block\":\"ok\",\"dispositions\":[{\"id\":\"F1\",\"disposition\":\"fixed\",\"reason\":\"tenant predicate now precedes the write\"}]}]}]}"
+units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"lane\":\"pr\",\"lane_policy\":\"$rereview_lane_policy\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[],\"review_findings\":[{\"disposition_block\":\"ok\",\"dispositions\":[{\"id\":\"F1\",\"disposition\":\"fixed\",\"reason\":\"tenant predicate now precedes the write\"}]}]}]}"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "rereview:pr-7:$R2" && "$DISPATCH_PROMPT" == *"F1: fixed"* \
   && "$DISPATCH_PROMPT" == *"tenant predicate now precedes the write"* ]] || fail "incremental rereview did not consume persisted author dispositions: ${DISPATCHED[*]:-none}; prompt=${DISPATCH_PROMPT}"
 DISPATCHED=(); GH_HEAD="$R3"
-units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
+units "{\"units\":[{\"id\":\"pr-7\",\"pr\":7,\"stage\":\"rereview-pending\",\"lane\":\"pr\",\"lane_policy\":\"$rereview_lane_policy\",\"reviewed_sha\":\"$R1\",\"reviewed_pr_head\":\"$R1\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "review:pr-7:$R3" ]] || fail "rewritten history (old head not an ancestor) must get a full review (got ${DISPATCHED[*]:-none})"
 GH_HEAD="$H1"
 
 DISPATCHED=()
-units "{\"units\":[{\"id\":\"pr-7b\",\"pr\":7,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H2\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
+units "{\"units\":[{\"id\":\"pr-7b\",\"pr\":7,\"stage\":\"rereview-pending\",\"lane\":\"pr\",\"lane_policy\":\"$rereview_lane_policy\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H2\",\"review_report\":\"review-7-T1.md\",\"history\":[]}]}"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "review:pr-7b:$H1" && "$DISPATCH_PR_HEAD" == "$H1" ]] || fail 'changed PR head with unchanged local candidate did not trigger a fresh full review'
+eval "$repair_no_push_selector_real"; eval "$repair_no_push_target_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 
 # #4411: the worker clone seeded from a depth-one scheduler checkout must fetch full history;
 # otherwise the real rereview-pending tick cannot prove that the prior reviewed SHA is an ancestor.
