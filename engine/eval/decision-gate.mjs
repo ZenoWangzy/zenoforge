@@ -65,7 +65,10 @@ function requireFullCandidate(candidate, repo) {
 
 function requireComparableBaseline(baseline, repo) {
   const expected = new Set();
-  for (const stage of stages) {
+  const baselineStages = baseline.results.some((row) => row.stage === 'supervisor')
+    ? [...stages, 'supervisor']
+    : stages;
+  for (const stage of baselineStages) {
     const cases = loadCases(repo, stage);
     for (const c of cases) for (let run = 1; run <= 2; run++) expected.add(`${stage}/${c.id}/${run}`);
   }
