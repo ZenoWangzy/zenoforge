@@ -1164,14 +1164,20 @@ function vOverview(D) {
   const tiles = MODULES.filter(m => ["health","cost","host"].includes(m.id)).map(m => { const s = safeSum(m, D);
     return `<button class="tile s-${sk(s.s)}" data-m="${m.id}" type="button"><div class="tile-h">${ic(m.icon)}${esc(m.nm)}<span class="si" data-tip="${esc(SL[sk(s.s)])}">${ic(sk(s.s))}</span></div>
       <div class="tile-v"><b>${s.v}</b>${s.u?`<span>${esc(s.u)}</span>`:""}</div><div class="sub">${esc(s.l)}</div>${tally(s.st)}</button>`; });
-  return `<div class="stack16">${founderPanel(D)}${roiLinePanel(D)}${panel("arrow","流水线", pipeStrip(D), (FR(D).errors||{}).stages ? stChip("bad","阶段计数不可用") : "")}${livePanel(D)}<div class="tiles" style="--cols:${tiles.length}">${tiles.join("")}</div></div>`;
+  return `<div class="stack16">${roiLinePanel(D)}${panel("arrow","流水线", pipeStrip(D), (FR(D).errors||{}).stages ? stChip("bad","阶段计数不可用") : "")}${livePanel(D)}<div class="tiles" style="--cols:${tiles.length}">${tiles.join("")}</div></div>`;
 }
+function vReqs(D) { return `<div class="stack16">${founderPanel(D)}</div>`; }
+function sumReqs(D) { const R = D.founder_reqs;
+  if (!R || R.error || !Array.isArray(R.items)) return {s:"bad", v:"—", l:"需求台账不可用"};
+  const blocked = R.items.filter(x => x.blocker).length;
+  return {s: blocked ? "warn" : "ok", v: R.items.length, l: blocked ? `未完成 · ${blocked} 条有卡点` : "未完成需求"}; }
 function vRoi(D) { return `<div class="stack16">${archivePanel(D)}${trendPanel(D)}</div>`; }
 function sumRoi(D) { const F = D.factory, n = F && Array.isArray(F.archive) ? F.archive.length : null; return {s:"none", v: n==null ? "—" : n, l:"最近完成"}; }
 function sumOverview(D) { const f = freshness(D); return {s: f.s, v: f.age==null ? "—" : fDur(Math.round(f.age)), l: "数据新鲜度"}; }
 
 const MODULES = [
   {id:"overview", nm:"总览", en:"Overview", icon:"overview", render:vOverview, sum:sumOverview},
+  {id:"reqs",     nm:"需求", en:"Founder requirements", icon:"layers", render:vReqs, sum:sumReqs},
   {id:"intake",   nm:"入口 · 分诊", en:"Intake & triage", icon:"intake", render:vIntake, sum:sumIntake},
   {id:"advisor",  nm:"顾问", en:"Advisor", icon:"advisor", render:vAdvisor, sum:sumAdvisor},
   {id:"workers",  nm:"开发 · 评审", en:"Workers & review", icon:"workers", render:vWorkers, sum:sumWorkers},

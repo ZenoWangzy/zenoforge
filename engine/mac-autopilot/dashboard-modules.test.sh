@@ -91,7 +91,7 @@ if (raw.length) {
   const D = JSON.parse(raw.replace(/^window\.DASH=/, "").replace(/;\s*$/, ""));
   const {out, MODULES} = renderAll("live", D);
   if (MODULES.length < 7 || MODULES[0].id !== "overview") throw new Error("overview must be the first of at least 7 modules");
-  for (const m of MODULES.slice(1)) if (m.id !== "roi" && m.id !== "orders" && !out.overview.includes(`data-m="${m.id}"`)) throw new Error(`overview has no tile for ${m.id}`);
+  for (const m of MODULES.slice(1)) if (m.id !== "roi" && m.id !== "orders" && m.id !== "reqs" && !out.overview.includes(`data-m="${m.id}"`)) throw new Error(`overview has no tile for ${m.id}`);
   // 每个有标准的 node_health 指标都以子弹条（含健康线与不健康线）出现在健康模块
   for (const m of ((D.standards||{}).metrics||[]))
     if (!out.health.includes(`${m.id}`)) throw new Error(`health module lacks metric ${m.id}`);
@@ -179,7 +179,7 @@ const ch = renderAll("chips", {units: [{id: "u1", title: "unit in repair", stage
 if ((ch.match(/class="uc s-/g)||[]).length < 5 || !ch.includes("+3") || !ch.includes("pcol") || ch.includes("done ticket") || !ch.includes("uc s-bad") || !ch.includes("unit in repair") || ch.includes("NaN") || !/--cols:3/.test(ch))
   throw new Error("overview tiles lack unit chips, the +N overflow, or age colouring");
 // 总览最上面：创始人需求台账（原话 / 阶段 / 负责人 / 卡点 / 确认时间）+ 每日 ROI 一行（含复盘规则）；两块都能在数据缺失时给空态
-const fr = renderAll("founder-roi", {founder_reqs: {stages: ["提出","热修生效","进 main","上线","真人验收"], partial: false, items: [
+const frAll = renderAll("founder-roi", {founder_reqs: {stages: ["提出","热修生效","进 main","上线","真人验收"], partial: false, items: [
   {issue: 4519, title: "t", text: "founder words here", from_ruling: true, labels: ["hotfix"], stage: 2, owner: "热修值班", blocker: "", verified_epoch: Math.floor(Date.now()/1000) - 600},
   {issue: 7, title: "unit only", text: "unit only", from_ruling: false, labels: ["focus"], stage: 0, owner: "pipeline", blocker: "等 #9", verified_epoch: null}]},
   factory: {trend: {days: ["2026-10-28","2026-10-29","2026-10-30"], milestones: [], series: [], retro: ["2026-10-30"], daily: [
@@ -188,13 +188,14 @@ const fr = renderAll("founder-roi", {founder_reqs: {stages: ["提出","热修生
     {id: "unpriced", label: "未定价模型记录", better: "down", fmt: "n", values: [1, 0, 0]},
     {id: "accepted", label: "已验收需求", better: "up", fmt: "n", values: [1, 1, 1]},
     {id: "per_accepted", label: "每条已验收需求花费", better: "down", fmt: "usd", values: [0.0001, 0.0002, 0.0003]},
-    {id: "idle", label: "worker 空闲 %", better: "down", fmt: "pct", values: [null, null, null]}]}}}).out.overview;
-if ((fr.match(/class="frq"/g)||[]).length !== 2 || !fr.includes("founder words here") || !fr.includes("等 #9") || !fr.includes("未确认") || !fr.includes("10 分前") || !fr.includes("进 main")
+    {id: "idle", label: "worker 空闲 %", better: "down", fmt: "pct", values: [null, null, null]}]}}}).out;
+const fr = frAll.overview, rq = frAll.reqs;
+if ((rq.match(/class="frq"/g)||[]).length !== 2 || !rq.includes("founder words here") || !rq.includes("等 #9") || !rq.includes("未确认") || !rq.includes("10 分前") || !rq.includes("进 main") || fr.includes("class=\"frq\"")
     || !fr.includes("每条已验收需求花费") || !fr.includes("未定价模型记录") || !fr.includes("$0.000100") || !fr.includes("美元")
     || !fr.includes("触发复盘") || !fr.includes("最近触发 10-30") || (fr.match(/class="tcard /g)||[]).length !== 6)
-  throw new Error("overview lacks the founder requirement rows or the daily ROI line");
-const frBad = renderAll("founder-roi-bad", {founder_reqs: {error: "x"}, factory: {error: "y"}}).out.overview;
-if (!frBad.includes("需求台账不可用") || !frBad.includes("ROI 数据不可用")) throw new Error("founder ledger / ROI line error state missing");
+  throw new Error("requirements module lacks the founder rows, or overview still has them, or the daily ROI line is missing");
+const frBadAll = renderAll("founder-roi-bad", {founder_reqs: {error: "x"}, factory: {error: "y"}}).out;
+if (!frBadAll.reqs.includes("需求台账不可用") || !frBadAll.overview.includes("ROI 数据不可用")) throw new Error("founder ledger / ROI line error state missing");
 console.log("modules ok");
 JS
 
