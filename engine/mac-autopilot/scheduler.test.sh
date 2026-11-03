@@ -2140,7 +2140,9 @@ ci_candidate_failed_test_reports() {
   jqf -c '[.[] | select(.bucket=="fail") | {check:.name,started_at:(.started_at // ""),identity_complete:true,
     tests:[{file:"tests/shared-membership.test.ts",name:"rejects removed membership"}]}]' <<<"$1"
 }
+export -f main_red_failed_test_ids ci_candidate_failed_test_reports
 sched_run_case main_red_ci_unpark
+export -nf main_red_failed_test_ids ci_candidate_failed_test_reports
 eval "$main_red_failed_test_ids_real"
 eval "$ci_candidate_failed_test_reports_real"
 
