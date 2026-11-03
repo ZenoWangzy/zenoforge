@@ -355,7 +355,9 @@ ci_admission() {
   local -A CI_ADMISSION_CANCELLED=()
   tick_prs_prime
   detail_started=$SECONDS
-  CI_HOTFIX_BRANCHES="$(ci_hotfix_branches)" || { say "ci admission paused: open PR census unavailable for hotfix classification"; return 0; }
+  # 普查读失败时 tick_prs 已重试一次并尝试回退最近好普查（见 ci-status.sh）；走到这里说明连回退都超龄，
+  # 一行日志说清超龄多少，整拍停摆（fail-closed：热修分类错判比晚一拍准入更贵）。
+  CI_HOTFIX_BRANCHES="$(ci_hotfix_branches)" || { say "ci admission paused: open PR census unavailable for hotfix classification$(open_pr_census_stale_note)"; return 0; }
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "ci admission detail hotfix_classification=${detail_elapsed}s"
   detail_started=$SECONDS

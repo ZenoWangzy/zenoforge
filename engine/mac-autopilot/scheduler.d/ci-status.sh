@@ -494,8 +494,60 @@ gated_demote_unapproved() { # 门控 PR 已 ready 但单元不在 ready-to-merge
       and ((.branch // "") as $br | $hotfix[0] | index($br) == null) and (.branch // "") != ""
       and (.stage | IN("review-pending", "review", "rereview-pending", "rereview", "repair-pending", "repair", "blocked-external"))) | [.id, .branch, .stage] | @tsv' "$UNITS")
 }
+# 普查回退（2026-11-03 门控草稿饿死事故）：完整准入拍约 22 分钟一次，14:39 一次 `gh pr list` 失败就让
+# 整拍准入停摆、15:01 runner 读失败又跳过 wip 派发，两个带 agent/ci-gated 标签的草稿在 7 个空闲 runner
+# 旁饿了一小时。好普查落盘；读失败（tick_prs 内重试一次后）在 CI_CENSUS_FALLBACK_MAX_AGE_SECONDS
+# 秒内回退到最近一次好普查继续本拍，超龄才停摆。回退只补读，不回写缓存时间戳。
+census_fallback_max_age() { # → 允许回退的缓存年龄上限（秒）
+  local max_age="${CI_CENSUS_FALLBACK_MAX_AGE_SECONDS:-1800}"
+  [[ "$max_age" =~ ^[1-9][0-9]*$ ]] || max_age=1800
+  printf '%s' "$max_age"
+}
+census_cache_age() { # file → 缓存距今秒数；文件缺失/无 cached_at 时 rc 1
+  local cached_at
+  [[ -s "$1" ]] || return 1
+  cached_at="$(jqf -r '.cached_at // 0' "$1" 2>/dev/null)" || return 1
+  [[ "$cached_at" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s' "$(( $(date -u +%s) - cached_at ))"
+}
+open_pr_census_cache_write() { # stdin: 好普查 JSON → 原子落盘；失败只丢缓存不影响本拍
+  local cache="$A/open-pr-census-cache.json" tmp
+  tmp="$(mktemp "$A/.census-cache.XXXXXX" 2>/dev/null)" || return 1
+  cat >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  jq -cn --argjson now "$(date -u +%s)" --slurpfile prs "$tmp" '{cached_at:$now, prs:$prs[0]}' >"$cache.tmp" 2>/dev/null \
+    && mv -f "$cache.tmp" "$cache" || rm -f "$cache.tmp"
+  rm -f "$tmp"
+}
+open_pr_census_fallback() { # → rc 0 且 TICK_PRS 填入最近一次好普查；缺失/超龄/坏格式 rc 1。使用时一拍只记一行
+  local cache="$A/open-pr-census-cache.json" age prs line
+  age="$(census_cache_age "$cache")" || return 1
+  (( age <= $(census_fallback_max_age) )) || return 1
+  prs="$(jqf -r '.prs // empty' "$cache" 2>/dev/null)" || return 1
+  jqf -e 'type == "array"' <<<"$prs" >/dev/null 2>&1 || return 1
+  TICK_PRS="$prs"
+  line="open PR census unavailable; continuing on the cached census from ${age}s ago (bound $(census_fallback_max_age)s)"
+  grep -Fq "[$STAMP] $line" "$LOG" 2>/dev/null || say "$line"
+  return 0
+}
+open_pr_census_stale_note() { # → "" 或 "; last good census Ns old exceeds the Ns fallback bound"，拼进停摆日志
+  local age
+  age="$(census_cache_age "$A/open-pr-census-cache.json")" || return 0
+  printf '; last good census %ss old exceeds the %ss fallback bound' "$age" "$(census_fallback_max_age)"
+}
 tick_prs() {
-  [[ -n "$TICK_PRS" ]] || TICK_PRS="$(gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,body,statusCheckRollup,mergeable,createdAt 2>/dev/null)" || { TICK_PRS=""; return 1; }
+  if [[ -z "$TICK_PRS" ]]; then
+    TICK_PRS="$(gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,body,statusCheckRollup,mergeable,createdAt 2>/dev/null)" || TICK_PRS=""
+    jqf -e 'type == "array"' <<<"$TICK_PRS" >/dev/null 2>&1 || {
+      TICK_PRS=""
+      sleep 1
+      TICK_PRS="$(gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,body,statusCheckRollup,mergeable,createdAt 2>/dev/null)" || TICK_PRS=""
+      if ! jqf -e 'type == "array"' <<<"$TICK_PRS" >/dev/null 2>&1; then
+        open_pr_census_fallback && { printf '%s' "$TICK_PRS"; return 0; }
+        TICK_PRS=""; return 1
+      fi
+    }
+    open_pr_census_cache_write <<<"$TICK_PRS"
+  fi
   jqf -e 'type == "array"' <<<"$TICK_PRS" >/dev/null || { TICK_PRS=""; return 1; }
   printf '%s' "$TICK_PRS"
 }
@@ -514,9 +566,9 @@ tick_prs_add_label() { # mirror a successful label write in the current tick's P
   updated="$(jqf --argjson pr "$1" --arg label "$2" 'map(if .number==$pr then .labels=((.labels // []) + [{name:$label}] | unique_by(.name)) else . end)' <<<"$TICK_PRS")" || { tick_prs_changed; return 0; }
   TICK_PRS="$updated"
 }
-ci_hotfix_branches() { # → 当前 open PR 中由 #4615 分类器识别的热修分支
+ci_hotfix_branches() { # → 当前 open PR 中由 #4615 分类器识别的热修分支；普查重试与回退在 tick_prs 内
   local prs label prefixes hot
-  prs="$(tick_prs)" || { sleep 1; prs="$(tick_prs)" || return 1; }
+  prs="$(tick_prs)" || return 1
   label="$(hotfix_lane_label)"
   prefixes="$(hotfix_lane_branch_prefixes | jqf -Rsc 'split("\n") | map(select(length > 0))')"
   hot='[]'
@@ -774,23 +826,53 @@ ci_jobs_data() { # run id → one tick's full job snapshot, or a fresh read if i
 }
 ci_jobs_status() { ci_jobs_data "$1" | jqf '[.[] | .status]'; }
 ci_jobs_active_runner_ids() { ci_jobs_data "$1" | jqf -r '.[] | select(.status == "in_progress") | .runner_id // empty'; }
+ci_runner_slot_cache_write() { # free_slots → 原子落盘；失败只丢缓存不影响本拍
+  local cache="$A/ci-runner-slots-cache.json"
+  jq -cn --argjson now "$(date -u +%s)" --argjson slots "$1" '{cached_at:$now, free_slots:$slots}' >"$cache.tmp" 2>/dev/null \
+    && mv -f "$cache.tmp" "$cache" || rm -f "$cache.tmp"
+}
 ci_pr_free_slots() { # → online PR-capable runners minus runners with a job already assigned
-  local runner_busy runner_busy_json runner_count active
+  local runner_busy runner_busy_json runner_count active cache age slots line read_ok=0
   local ci_label="${ZF_CI_RUNNER_PREFIX-cihost-ci}" # default mirrors config.sh, which the scheduler does not source
-  runner_busy="$(gh_api_cached -p runners "repos/{owner}/{repo}/actions/runners?per_page=100" \
-    --jq ".runners[] | select(.status == \"online\" and any(.labels[]; .name | IN(\"$ci_label\",\"$ci_label-light\",\"$ci_label-priority\",\"vecta-suites\"))) | .busy")" || return 1
-  runner_busy_json="$(jqf -s '.' <<<"$runner_busy")" || return 1
-  runner_count="$(jqf -r 'length' <<<"$runner_busy_json")"
-  if (( runner_count == 0 )); then
-    # 前缀配错或 runner 全下线时名额静默算 0（不派 CI 也不告警）：一行日志让它可发现
-    say "ci runners: ZF_CI_RUNNER_PREFIX='${ZF_CI_RUNNER_PREFIX-cihost-ci}' matches no online runner; PR slots counted as 0"
-    printf '0\n'
+  runner_busy=""
+  if runner_busy="$(gh_api_cached -p runners "repos/{owner}/{repo}/actions/runners?per_page=100" \
+    --jq ".runners[] | select(.status == \"online\" and any(.labels[]; .name | IN(\"$ci_label\",\"$ci_label-light\",\"$ci_label-priority\",\"vecta-suites\"))) | .busy")"; then
+    read_ok=1
+  else
+    # 2026-11-03 15:01：一次 runner 读失败让整拍 wip 派发停跳（两个草稿又饿一拍）；先在本拍重试一次
+    sleep 1
+    runner_busy="$(gh_api_cached -p runners "repos/{owner}/{repo}/actions/runners?per_page=100" \
+      --jq ".runners[] | select(.status == \"online\" and any(.labels[]; .name | IN(\"$ci_label\",\"$ci_label-light\",\"$ci_label-priority\",\"vecta-suites\"))) | .busy")" && read_ok=1
+  fi
+  runner_busy_json=""
+  (( read_ok )) && runner_busy_json="$(jqf -s '.' <<<"$runner_busy" 2>/dev/null)" || runner_busy_json=""
+  if [[ -n "$runner_busy_json" ]] && jqf -e 'type == "array"' <<<"$runner_busy_json" >/dev/null 2>&1; then
+    runner_count="$(jqf -r 'length' <<<"$runner_busy_json")"
+    if (( runner_count == 0 )); then
+      # 前缀配错或 runner 全下线时名额静默算 0（不派 CI 也不告警）：一行日志让它可发现
+      say "ci runners: ZF_CI_RUNNER_PREFIX='${ZF_CI_RUNNER_PREFIX-cihost-ci}' matches no online runner; PR slots counted as 0"
+      ci_runner_slot_cache_write 0
+      printf '0\n'
+      return 0
+    fi
+    active="$(jqf '[.[] | select(. == true)] | length' <<<"$runner_busy_json")"
+    if (( runner_count > active )); then
+      slots=$((runner_count - active))
+    else
+      slots=0
+    fi
+    ci_runner_slot_cache_write "$slots"
+    printf '%s\n' "$slots"
     return 0
   fi
-  active="$(jqf '[.[] | select(. == true)] | length' <<<"$runner_busy_json")"
-  if (( runner_count > active )); then
-    printf '%s\n' "$((runner_count - active))"
-  else
-    printf '0\n'
+  # 两次读都失败：回退到未超龄的最近一次名额快照（与 open PR 普查同一上限），超龄 rc 1 交给调用方停跳
+  cache="$A/ci-runner-slots-cache.json"
+  if age="$(census_cache_age "$cache")" && slots="$(jqf -r '.free_slots // ""' "$cache" 2>/dev/null)" \
+    && [[ "$slots" =~ ^[0-9]+$ ]] && (( age <= $(census_fallback_max_age) )); then
+    line="PR runner census unavailable; continuing on the cached slot count $slots from ${age}s ago (bound $(census_fallback_max_age)s)"
+    grep -Fq "[$STAMP] $line" "$LOG" 2>/dev/null || say "$line"
+    printf '%s\n' "$slots"
+    return 0
   fi
+  return 1
 }
