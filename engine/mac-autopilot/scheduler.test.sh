@@ -2757,13 +2757,18 @@ command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" --arg sta
   {number:57002,headRefName:"agent/issue-57002",headRefOid:$clean,isDraft:false,mergeable:"MERGEABLE",title:"clean pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",startedAt:$stamp,status:"COMPLETED",conclusion:"SUCCESS"}]}
 ]' > "$TF/pr-census.json"
 tick
-command jq -e '
+if ! command jq -e '
   ([.units[] | select(.pr==57001)][0] | .stage=="repair-pending" and .approved_sha==null
     and any(.history[]; .stage=="merge-conflict")
     and (.repair_hint | contains("git merge --no-edit origin/main") and contains("main 已删除") and contains("保留其余改动")))
   and ([.units[] | select(.pr==57002)][0] | .stage=="ready-to-merge" and .approved_sha!=null)
-' "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: conflicting pipeline PR was not routed to repair while the clean pipeline PR stayed ready' >&2; exit 1; }
+' "$TF/supervisor/autopi/units.json" >/dev/null; then
+  echo 'scheduler.test.sh: conflicting pipeline PR was not routed to repair while the clean pipeline PR stayed ready' >&2
+  command jq '[.units[] | {id,stage,approved_sha,ci_gate_required,ci_green_sha,ci_wait_sha,history}]' "$TF/supervisor/autopi/units.json" >&2
+  tail -n 80 "$TF/supervisor/autopi/scheduler.log" >&2
+  cat "$TF/actions" >&2
+  exit 1
+fi
 grep -Fq 'merge skipped PR#57001 (conflicts with main; pipeline-path changes include files deleted from main) -> repair-pending' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: conflicting pipeline PR repair was not logged' >&2; exit 1; }
 grep -Fq 'merge skipped PR#57002 (touches pipeline paths; pipeline merges held)' "$TF/supervisor/autopi/scheduler.log" \

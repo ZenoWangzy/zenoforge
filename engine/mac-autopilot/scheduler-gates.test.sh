@@ -1303,7 +1303,8 @@ command git clone -q --depth 1 "file://$shallow/remote.git" "$shallow/root"
 saved_root="$ROOT"; saved_main_head="$MAIN_HEAD"; saved_wt_root="$WT_ROOT"; saved_gh_head="$GH_HEAD"
 ROOT="$shallow/root"; MAIN_HEAD="$shallow_main"; WT_ROOT="$shallow/worktrees"
 eval "$ensure_clone_source"; eval "$checkout_pr_head_source"
-rereview_lane_policy="$(lane_policy_blob)"
+# The synthetic shallow repo has no policy file, so its current lane-policy fingerprint is unknown.
+rereview_lane_policy=unknown
 pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
 room_for() { return 0; }
 verify_handoff_delivery() { return 0; }
