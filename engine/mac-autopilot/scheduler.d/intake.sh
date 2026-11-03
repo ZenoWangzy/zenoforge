@@ -165,7 +165,7 @@ handoff_include_pr() { # fallback after a failed census: inspect only a known PR
     HANDOFF_PR_CENSUS="$(jqf -c --slurpfile row <(printf '%s' "$row") '. + [$row[0]]' <<<"${HANDOFF_PR_CENSUS:-[]}")"
   fi
 }
-intake_footprint_snapshot() { # live writers plus dispatchable pending implement units
+intake_footprint_snapshot() { # footprint holders under the shared stage rule: live writers plus queued writers
   local owners unit id scope entry
   owners="$(active_footprint_snapshot)" || return 1
   while IFS= read -r unit; do
@@ -175,8 +175,10 @@ intake_footprint_snapshot() { # live writers plus dispatchable pending implement
     scope="$(scheduler_footprint "$unit")" || return 1
     entry="$(jqf -cn --argjson unit "$unit" --argjson scope "$scope" '$unit + {footprint:$scope}')" || return 1
     owners="$(jqf -cn --argjson owners "$owners" --argjson entry "$entry" '$owners + [$entry]')" || return 1
-  done < <(jqf -c '.units[]
-    | select(.stage=="implement-pending" and (.supervisor_owned // false) != true and (.task // "") != "")
+  done < <(jqf -c --argjson queued "$FOOTPRINT_QUEUED_WRITER_STAGES" '.units[]
+    | select(.stage as $s | $queued | index($s) != null)
+    | select((.supervisor_owned // false) != true)
+    | select(.stage != "implement-pending" or (.task // "") != "")
     | select(((.history // [] | last // {}) as $last
         | $last.stage == "supervisor-escalated"
           and (($last.result // "") | startswith("size admission:"))) | not)' "$UNITS")

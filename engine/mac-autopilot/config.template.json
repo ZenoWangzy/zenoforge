@@ -17,7 +17,8 @@
     "refill_max": 2
   },
   "incident": {
-    "labels": ["bug", "incident", "production-anomaly"]
+    "labels": ["bug", "incident", "production-anomaly"],
+    "file_min_severity": "medium"
   },
   "hotfix_lane": {
     "branch_prefixes": ["hotfix/", "agent/issue-hf-"],
@@ -98,9 +99,6 @@
   "bell": {
     "notify": false,
     "auto_supervisor": false
-  },
-  "incident": {
-    "file_min_severity": "medium"
   },
   "supervisor_arbiter": {
     "enabled": true,

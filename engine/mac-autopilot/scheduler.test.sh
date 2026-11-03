@@ -3277,20 +3277,28 @@ JSON
   if footprint_room_each_tick b; then echo 'same-file implement admitted' >&2; exit 1; fi
   footprint_room_each_tick c
   if footprint_room_each_tick d; then echo 'directory/file implement overlap admitted' >&2; exit 1; fi
-  # A PR candidate rebases at land, so overlapping an active repair unit does not delay repair/rereview.
+  # 写候选（implement/repair）派发前一律对照活单元重查——释放过足迹又恢复的单元不能越界
+  # 踩掉等待裁决期间启动的 worker；只读复审不写文件，仍放行。
   echo '{"workers":[{"pid":124,"unit":"repair-active","type":"repair"}]}' > "$WORKERS"
   footprint_failures=0
-  for candidate in repair-candidate rereview-candidate; do
-    candidate_unit="$(jqf -c --arg id "$candidate" '.units[] | select(.id==$id)' "$UNITS")"
-    if ! footprint_room_each_tick "$candidate" "$candidate_unit" true; then
-      echo "$candidate should bypass the active repair footprint" >&2
-      footprint_failures=$((footprint_failures + 1))
-    fi
-    if jqf -e --arg id "$candidate" '.units[] | select(.id==$id) | has("footprint_wait_owner")' "$UNITS" >/dev/null; then
-      echo "$candidate kept its footprint_wait_owner after admission" >&2
-      footprint_failures=$((footprint_failures + 1))
-    fi
-  done
+  candidate_unit="$(jqf -c --arg id "repair-candidate" '.units[] | select(.id==$id)' "$UNITS")"
+  if footprint_room_each_tick repair-candidate "$candidate_unit" true; then
+    echo 'repair candidate overran the active repair footprint' >&2
+    footprint_failures=$((footprint_failures + 1))
+  fi
+  [[ "$(jqf -r '.units[] | select(.id=="repair-candidate") | .footprint_wait_owner' "$UNITS")" == repair-active ]] || {
+    echo 'repair candidate did not record the active repair owner while waiting' >&2
+    footprint_failures=$((footprint_failures + 1))
+  }
+  candidate_unit="$(jqf -c --arg id "rereview-candidate" '.units[] | select(.id==$id)' "$UNITS")"
+  if ! footprint_room_each_tick rereview-candidate "$candidate_unit" true; then
+    echo "rereview candidate should bypass the active repair footprint" >&2
+    footprint_failures=$((footprint_failures + 1))
+  fi
+  if jqf -e --arg id "rereview-candidate" '.units[] | select(.id==$id) | has("footprint_wait_owner")' "$UNITS" >/dev/null; then
+    echo "rereview candidate kept its footprint_wait_owner after admission" >&2
+    footprint_failures=$((footprint_failures + 1))
+  fi
   candidate_unit="$(jqf -c '.units[] | select(.id=="implement-candidate")' "$UNITS")"
   if footprint_room_each_tick implement-candidate "$candidate_unit" true; then
     echo 'overlapping implement-pending candidate admitted' >&2
@@ -3767,6 +3775,157 @@ sched_case_intake_footprint_selection() {
     || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake did not skip a collision with pending work' >&2; exit 1; }
 }
 sched_run_case intake_footprint_selection
+
+sched_case_footprint_holder_stages() (
+  # recurrence guard（incident 2026-11-03）：每个 unit stage 的足迹持有决策只有这一张表。
+  # scheduler.d 里新写一个 stage（.stage="X" 或 dispatch_if_room 的 stage 参数）而没在
+  # FOOTPRINT_LIVE_WRITER_STAGES / FOOTPRINT_QUEUED_WRITER_STAGES / FOOTPRINT_RELEASED_STAGES
+  # 三选一登记的，本用例直接失败——新状态不决策就不能上线。
+  local -A expected_decision=(
+    [implement]=live [repair]=live
+    [implement-pending]=queued [repair-pending]=queued [landing]=queued
+    [supervisor-review]=released [parked]=released [needs-human]=released [blocked-external]=released
+    [review]=released [rereview]=released [review-pending]=released [rereview-pending]=released [ready-to-merge]=released
+    [merged]=released [landed]=released [closed]=released [awaiting-live-event]=released
+    [done]=released [wontfix]=released [duplicate]=released
+  )
+  all_stages="$(jqf -cn --argjson live "$FOOTPRINT_LIVE_WRITER_STAGES" --argjson queued "$FOOTPRINT_QUEUED_WRITER_STAGES" \
+    --argjson released "$FOOTPRINT_RELEASED_STAGES" '$live + $queued + $released')"
+  holds() { jqf -e --arg s "$1" 'index($s) != null' <<<"$all_stages" >/dev/null; }
+  guard_failures=0
+  for stage in $(jqf -r '.[]' <<<"$all_stages"); do
+    [[ -n "${expected_decision[$stage]+decided}" ]] || {
+      echo "stage $stage is classified in footprint.sh but absent from the test's decision table" >&2
+      guard_failures=$((guard_failures + 1)); continue; }
+    case "${expected_decision[$stage]}" in
+      live) set_name=FOOTPRINT_LIVE_WRITER_STAGES ;;
+      queued) set_name=FOOTPRINT_QUEUED_WRITER_STAGES ;;
+      released) set_name=FOOTPRINT_RELEASED_STAGES ;;
+    esac
+    jqf -e --arg s "$stage" 'index($s) != null' <<<"${!set_name}" >/dev/null \
+      || { echo "stage $stage sits in the wrong footprint set (expected ${expected_decision[$stage]})" >&2; guard_failures=$((guard_failures + 1)); }
+  done
+  for stage in "${!expected_decision[@]}"; do
+    holds "$stage" \
+      || { echo "stage $stage has a decision in the test table but is registered in no footprint set" >&2; guard_failures=$((guard_failures + 1)); }
+  done
+  # 台账上能写进 .stage 的每个字面量（含 dispatch_if_room 的阶段参数）都必须已登记。
+  while IFS= read -r stage; do
+    [[ -n "$stage" ]] || continue
+    holds "$stage" \
+      || { echo "unregistered unit stage written by the scheduler: $stage" >&2; guard_failures=$((guard_failures + 1)); }
+  done < <( { grep -hoE '\.stage=\\?"[a-z-]+' "${scheduler_sources[@]}"; \
+               grep -hoE 'dispatch_if_room "\$id" "[a-z]+"' "$script_dir/scheduler.d/dispatch-queue.sh" | grep -oE '"[a-z]+"' | tr -d '"'; } \
+             | grep -oE '[a-z-]+$' | sort -u )
+  (( guard_failures == 0 )) || exit 1
+)
+sched_run_case footprint_holder_stages
+
+sched_case_footprint_verdict_wait_release() (
+  # 2026-11-03 事故根因：足迹持有判定看 worker 台账不看 stage——supervisor-review/parked
+  # 单元凭未收割的 implement/repair 记录一直挡住 intake，没有 supervisor 可推进时无关工作
+  # 全部被跳过。判定必须是共享的 stage 规则：等裁决的单元不是足迹持有者。
+  # 该窗口只在并发 tick 之间出现（慢拍 intake 读到补派拍刚写入的 worker 记录），单拍
+  # 夹具里 harvest 先清台账造不出来，所以直接对 intake 的两个判定函数断言。
+  UNITS="$fixture_supervisor/autopi/verdict-units.json"
+  WORKERS="$fixture_supervisor/autopi/verdict-workers.json"
+  cat > "$UNITS" <<'JSON'
+{"units":[
+ {"id":"issue-2628","stage":"supervisor-review","footprint":["packages/example/hooks/__init__.py"],
+  "history":[{"stage":"supervisor-escalated","result":"size admission: 956 changed lines after repair exceed the 800-line limit","at":"2026-11-03T03:31:37Z"}]},
+ {"id":"issue-8600","stage":"parked","footprint":["packages/example/hooks/parked.py"]},
+ {"id":"issue-8602","stage":"implement","footprint":["packages/example/hooks/live.py"]},
+ {"id":"issue-8601","stage":"implement-pending","task":"queued writer","footprint":["packages/example/hooks/queued.py"]}]}
+JSON
+  cat > "$WORKERS" <<'JSON'
+{"workers":[
+ {"pid":123,"unit":"issue-2628","type":"implement"},
+ {"pid":125,"unit":"issue-8602","type":"implement"}]}
+JSON
+  owners="$(intake_footprint_snapshot)" || { echo 'not ok - intake footprint snapshot failed' >&2; exit 1; }
+  release_failures=0
+  for holder in issue-2628 issue-8600; do
+    jqf -e --arg id "$holder" 'any(.[]; .id==$id)' <<<"$owners" >/dev/null \
+      && { echo "not ok - verdict-waiting unit $holder still holds its footprint in the intake snapshot" >&2; release_failures=$((release_failures + 1)); }
+  done
+  for holder in issue-8601 issue-8602; do
+    jqf -e --arg id "$holder" 'any(.[]; .id==$id)' <<<"$owners" >/dev/null \
+      || { echo "not ok - writer unit $holder is missing from the intake footprint snapshot" >&2; release_failures=$((release_failures + 1)); }
+  done
+  (( release_failures == 0 )) || exit 1
+)
+sched_run_case footprint_verdict_wait_release
+
+sched_case_intake_verdict_wait_admission() {
+  # 端到端：等待裁决单元（supervisor-review，还有 open 分支）的足迹不再挡住重叠 issue 的收单；
+  # 升级瞬间 worker 记录还没被收割时也一样（判定在 stage，不在台账）。
+  new_tick_fixture intake-verdict-wait-admission
+  mkdir -p "$TF/agent-home/state" "$TF/repo/packages/fixture"
+  command jq '.max_workers=5 | .implement_cap=0 | .supervisor_arbiter.enabled=false
+    | .issue_intake={enabled:true,max_upstream:10,max_ready:30,labels:[],product_labels:["ready-for-agent"]}' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+  mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  printf 'export const held = true\n' > "$TF/repo/packages/fixture/held.ts"
+  command git -C "$TF/repo" init -q -b main
+  command git -C "$TF/repo" config user.name test
+  command git -C "$TF/repo" config user.email t@example.invalid
+  command git -C "$TF/repo" add packages/fixture/held.ts
+  command git -C "$TF/repo" commit -q -m 'verdict footprint fixture'
+  command git -C "$TF/repo" update-ref refs/remotes/origin/main HEAD
+  touch "$TF/real-rule-git"
+  command jq -n '{units:[
+    {id:"issue-700",issue:700,stage:"supervisor-review",branch:"agent/issue-700",task:"escalated fixture",
+     footprint:["packages/fixture/held.ts"],
+     history:[{stage:"supervisor-escalated",result:"size admission: 956 changed lines on agent/issue-700 after repair exceed the 800-line limit",at:"2026-11-03T03:31:37Z"}]}
+  ]}' > "$TF/supervisor/autopi/units.json"
+  command jq -n '{workers:[{pid:123,unit:"issue-700",type:"implement",started:"2026-11-03T03:31:00Z"}]}' \
+    > "$TF/supervisor/autopi/workers.json"
+  touch "$TF/worker-alive"
+  command jq -n '[{number:777,title:"colliding candidate","body":"fix held surface",state:"OPEN",labels:[{name:"ready-for-agent"}]}]' \
+    > "$TF/intake-issues.json"
+  command jq -n '{expected_paths:["packages/fixture/held.ts"]}' > "$TF/agent-home/state/777.json"
+  printf '[]\n' > "$TF/sub-issues-777.json"
+  seed_roadmap_tree 777
+  tick
+  command jq -e 'any(.units[]; .issue==777 and .stage=="implement-pending")' "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { cat "$TF/tick.out" >&2; cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: a supervisor-review unit still blocked intake with its footprint' >&2; exit 1; }
+  if grep -Fq 'intake skip issue #777: footprint overlaps unit=issue-700' "$TF/supervisor/autopi/scheduler.log"; then
+    cat "$TF/supervisor/autopi/scheduler.log" >&2
+    echo 'not ok - scheduler.test.sh: intake still skipped a candidate for overlapping only a verdict-waiting unit' >&2
+    exit 1
+  fi
+}
+sched_run_case intake_verdict_wait_admission
+
+sched_case_footprint_resume_recheck() (
+  # 释放过足迹的单元恢复（裁决 requeue → repair-pending）后，派发前必须对照活单元重查：
+  # 等待裁决期间在其足迹内启动的 implement worker 不能被恢复派发越界覆盖。
+  UNITS="$fixture_supervisor/autopi/resume-units.json"
+  WORKERS="$fixture_supervisor/autopi/resume-workers.json"
+  cat > "$UNITS" <<'JSON'
+{"units":[
+ {"id":"live-writer","stage":"implement","footprint":["packages/example/hooks/__init__.py"]},
+ {"id":"resumed","stage":"supervisor-review","footprint":["packages/example/hooks/__init__.py"],
+  "supervisor_cap_return_stage":"repair-pending"}]}
+JSON
+  echo '{"workers":[{"pid":123,"unit":"live-writer","type":"implement"}]}' > "$WORKERS"
+  owners="$(active_footprint_snapshot)" || { echo 'not ok - active footprint snapshot failed' >&2; exit 1; }
+  jqf -e --arg id "live-writer" 'any(.[]; .id==$id)' <<<"$owners" >/dev/null \
+    || { echo 'not ok - live implement writer is not an active footprint holder' >&2; exit 1; }
+  # 裁决 requeue（evals-arbiter 的 supervisor-requeue 路径）把单元放回 repair-pending。
+  command jq '(.units[] | select(.id=="resumed") | .stage) = "repair-pending"' "$UNITS" > "$UNITS.tmp"
+  mv "$UNITS.tmp" "$UNITS"
+  TICK_ACTIVE_FOOTPRINTS_VALID=false
+  TICK_FOOTPRINT_CONFLICT_VALID=false
+  resumed_unit="$(jqf -c --arg id "resumed" '.units[] | select(.id==$id)' "$UNITS")"
+  if footprint_room resumed "$resumed_unit" true; then
+    echo 'not ok - resumed repair candidate overran the live writer started while it waited for a verdict' >&2
+    exit 1
+  fi
+  [[ "$(jqf -r '.units[] | select(.id=="resumed") | .footprint_wait_owner // empty' "$UNITS")" == live-writer ]] \
+    || { echo 'not ok - resumed candidate did not record the live-writer owner while waiting' >&2; exit 1; }
+)
+sched_run_case footprint_resume_recheck
 
 sched_case_hold_handoff_resume() {
   new_tick_fixture hold-handoff-resume

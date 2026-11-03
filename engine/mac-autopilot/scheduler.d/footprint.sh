@@ -1,3 +1,20 @@
+# ---------- 足迹持有 stage 判定（intake 与 dispatch 共用的唯一规则） ----------
+# 足迹的意义是阻止两个正在写文件的单元同时改同一批文件（#4488）。持有哪些 stage 由
+# 单元 stage 决定，不由 worker 台账决定：等待裁决的单元（supervisor-review/parked/
+# needs-human）没有任何进程在写它的文件——台账里残留未收割的 implement/repair 记录也不算
+# （2026-11-03 事故：supervisor-review 单元凭 worker 记录挡住 intake，没有 supervisor 可推进时
+# 无关工作全部被跳过）。释放过足迹的单元恢复（裁决 requeue → *-pending）时在 _footprint_room
+# 对照活单元重查后再派发，不会越界踩掉期间启动的单元。持有 = 有人正在或本拍即将写这批文件：
+#   implement/repair   活实现/修复 worker（还需 workers.json 未收割记录，见 active_footprint_snapshot）
+#   implement-pending/repair-pending/landing  本拍可派发的写手；repair-pending 的 open PR 分支
+#                                             马上会被修复 worker 编辑，landing 的已批准分支
+#                                             正由落地作业合入 main——分支仍在被流水线改动
+# 只读评审（review/rereview 及其 pending）、等裁决、等外部依赖与终态不占。scheduler.d 出现
+# 新 stage 必须先在下面三个集合里完成决策：footprint-holder-stages 测试会强制全表登记。
+FOOTPRINT_LIVE_WRITER_STAGES='["implement","repair"]'
+FOOTPRINT_QUEUED_WRITER_STAGES='["implement-pending","repair-pending","landing"]'
+FOOTPRINT_RELEASED_STAGES='["supervisor-review","parked","needs-human","blocked-external","review","rereview","review-pending","rereview-pending","ready-to-merge","merged","landed","closed","awaiting-live-event","done","wontfix","duplicate"]'
+
 # #4488: 预测足迹挡不住在跑 worker 越界写共享文件（collisions_per_day=97，全是真实并发写）。
 # 派发检查把在跑 unit 的 worktree 里已发生的改动（已提交 + 未提交 + 未跟踪）并进它的足迹。
 live_writes_union() { # workdir scope_json -> scope ∪ 实际已写路径；workdir 不可读时退回预测
@@ -76,8 +93,9 @@ footprint_drop_check_scope_cache() {
 }
 active_footprint_snapshot() { # refresh live writes for all active implementation workers
   local active
-  active="$(jqf -c --slurpfile w "$WORKERS" '
+  active="$(jqf -c --slurpfile w "$WORKERS" --argjson live "$FOOTPRINT_LIVE_WRITER_STAGES" '
     [.units[] | . as $u
+      | select(.stage as $s | $live | index($s) != null)
       | select(any($w[0].workers[]; .unit==$u.id and .harvested!=true and .lease_expired!=true and (.type | IN("implement","repair"))))
       | . + {live_workdir: ([$w[0].workers[] | select(.unit==$u.id and .harvested!=true and .lease_expired!=true and (.type | IN("implement","repair"))) | .workdir] | first)}]' "$UNITS")"
   [[ "$active" == '[]' ]] || active="$(resolve_active_footprints "$active")" || return 1
@@ -267,9 +285,12 @@ _footprint_room() {
   # 关掉后不再产生 "footprint wait" 事件，mechanism.silent 会在登记的沉默上限内报出。
   [[ "$(jqf -r 'if .footprint_mutex.enabled == false then "false" else "true" end' <<<"$CFG")" == true ]] || return 0
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$id" '.units[] | select(.id==$id)' "$UNITS")"
-  # Candidates with their own PR rebase at land, so another unit's footprint adds no value.
+  # 只读评审不写文件，不占互斥。implement/repair 候选一律对照活单元重查——尤其是释放过
+  # 足迹又恢复的单元（supervisor-review/parked 裁决 requeue）：等待期间别的单元可能已在其
+  # 足迹内启动，恢复派发必须先让位；自己的 PR 落地时才 rebase，救不了两个活 worker
+  # 同时改同一批文件（#4488）。
   stage="$(jqf -r '.stage // empty' <<<"$u")"
-  [[ "$stage" != repair-pending && "$stage" != rereview-pending ]] || return 0
+  [[ "$stage" != review-pending && "$stage" != rereview-pending ]] || return 0
   if [[ "$require_fresh" != true ]] && footprint_preflight_snapshot; then
     conflict="${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[$id]:-}"
     if [[ -n "$conflict" ]]; then
