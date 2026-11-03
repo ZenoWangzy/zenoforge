@@ -2739,7 +2739,7 @@ export REQUIRED_PR_CHECKS_FILE="$saved_required_pr_checks"
 sched_run_case ready_starvation
 
 sched_case_pipeline_conflict_before_hold() {
-local saved_required_pr_checks="$REQUIRED_PR_CHECKS_FILE"
+local saved_required_pr_checks="$REQUIRED_PR_CHECKS_FILE" pipeline_gate_stamp='2026-10-01T00:00:00Z'
 new_tick_fixture pipeline-conflict-before-hold
 printf '%s\n' '{"required":["Pipeline suites"],"current_regression":"","legacy_regression":[]}' \
   > "$TF/required-pr-checks.json"
@@ -2748,11 +2748,11 @@ command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.
 mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
 conflict_sha="$(printf '%040x' 57001)"
 clean_sha="$(printf '%040x' 57002)"
-command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" --arg stamp "$STAMP" '{units:[
+command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" --arg stamp "$pipeline_gate_stamp" '{units:[
   {id:"pr-pipeline-conflict",pr:57001,lane:"pr",branch:"agent/issue-57001",stage:"ready-to-merge",approved_sha:$conflict,ci_adopt_head:$conflict,ci_adopt_at:$stamp,ci_ready_sha:$conflict,ci_ready_at:$stamp,ci_gate_required:true,ready_since:1,history:[]},
   {id:"pr-pipeline-clean",pr:57002,lane:"pr",branch:"agent/issue-57002",stage:"ready-to-merge",approved_sha:$clean,ci_adopt_head:$clean,ci_adopt_at:$stamp,ci_ready_sha:$clean,ci_ready_at:$stamp,ci_gate_required:true,ready_since:2,history:[]}
 ]}' > "$TF/supervisor/autopi/units.json"
-command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" --arg stamp "$STAMP" '[
+command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" --arg stamp "$pipeline_gate_stamp" '[
   {number:57001,headRefName:"agent/issue-57001",headRefOid:$conflict,isDraft:false,mergeable:"CONFLICTING",title:"conflicting pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",startedAt:$stamp,status:"COMPLETED",conclusion:"SUCCESS"}]},
   {number:57002,headRefName:"agent/issue-57002",headRefOid:$clean,isDraft:false,mergeable:"MERGEABLE",title:"clean pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",startedAt:$stamp,status:"COMPLETED",conclusion:"SUCCESS"}]}
 ]' > "$TF/pr-census.json"

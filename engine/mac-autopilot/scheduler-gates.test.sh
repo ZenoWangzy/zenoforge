@@ -1346,10 +1346,22 @@ dispatch_pending || :
   && "$(field pr-8 '.history[-1].decision.decision')" == 'Stop automated repair and escalate to supervisor' \
   && "$(field pr-8 '.history[-1].decision.evidence')" == '5 failed rounds after an arbiter review' ]] || fail 'loop-breaker after an arbiter review did not record its stop decision'
 # supervisor-requeue 之后重新计回合
+loop_breaker_pick_real="$(declare -f pick_review_for_unit)"
+loop_breaker_target_real="$(declare -f unit_review_target)"
+loop_breaker_room_real="$(declare -f room_for)"
+loop_breaker_verify_real="$(declare -f verify_handoff_delivery)"
+loop_breaker_risk_real="$(declare -f risk_class_safety_rule)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+unit_review_target() { printf '%s %s\n' "$H1" "$H1"; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
+risk_class_safety_rule() { :; }
 units '{"units":[{"id":"pr-8b","pr":8,"stage":"review-pending","history":[{"stage":"review-request-changes"},{"stage":"review-request-changes"},{"stage":"review-request-changes"},{"stage":"review-request-changes"},{"stage":"review-request-changes"},{"stage":"supervisor-requeue"},{"stage":"review-request-changes"}]}]}'
 DISPATCHED=()
 dispatch_pending || :
-[[ "$(field pr-8b .stage)" != supervisor-review && "${DISPATCHED[0]:-}" == review:pr-8b:* ]] || fail 'supervisor-requeue did not reset the loop-breaker count'
+[[ "$(field pr-8b .stage)" != supervisor-review && "${DISPATCHED[0]:-}" == review:pr-8b:* ]] \
+  || fail "supervisor-requeue did not reset the loop-breaker count (stage=$(field pr-8b .stage), dispatches=${DISPATCHED[*]:-none})"
+eval "$loop_breaker_pick_real"; eval "$loop_breaker_target_real"; eval "$loop_breaker_room_real"; eval "$loop_breaker_verify_real"; eval "$loop_breaker_risk_real"
 # 终身上限：重排清零了 loop_rounds，但总共 8 轮打回仍转 supervisor 拆票，且裁决后再给 4 轮（pr-3863）
 rc8='{"stage":"review-request-changes"}'
 units "{\"units\":[{\"id\":\"pr-8c\",\"pr\":8,\"stage\":\"repair-pending\",\"history\":[$rc8,$rc8,$rc8,$rc8,{\"stage\":\"supervisor-requeue\"},$rc8,$rc8,$rc8,{\"stage\":\"supervisor-requeue\"},$rc8]}]}"
