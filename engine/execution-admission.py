@@ -22,7 +22,10 @@ OPT_LOAD_FACTOR = 4 / 3
 
 # Same setting lib.sh resolves.
 UNIT_PREFIX_TRANSIENT = os.environ.get("ZF_UNIT_PREFIX") or "zf"
-WORKER_UNIT = re.compile(rf"^{UNIT_PREFIX_TRANSIENT}-(?:implement-|triage-|recut-|advisor-|web-advisor-provider-|release-|node-owner-|hand-|land-direct-main-|merge-|worktree-cleanup-|maintenance-|gitnexus-)")
+WORKER_UNIT = re.compile(rf"^{UNIT_PREFIX_TRANSIENT}-(?:implement-|repair-|review-|rereview-|triage-|recut-|advisor-|web-advisor-provider-|release-|node-owner-|hand-|land-direct-main-|merge-|worktree-cleanup-|maintenance-|gitnexus-)")
+MEMORY_ADMISSION_CLASSES = ("implement", "repair", "review", "advisor")
+MEMORY_ADMISSION_SAMPLE_LIMIT = 200
+MEMORY_ADMISSION_FLOOR_MB = 512
 
 
 def append_scheduler_event(home, message):
@@ -213,6 +216,138 @@ def configuration(home):
     except ValueError as exc:
         raise Deferred("invalid global execution capacity") from exc
     return cap, memory, load, target, per_worker, load_per_worker
+
+
+def memory_admission_settings(home, default_per_worker):
+    """Load optional autopilot class estimates; old deployments keep their flat setting."""
+    runtime = os.environ.get("MAC_AUTOPILOT_RUNTIME_DIR")
+    if not runtime:
+        root = Path(os.environ.get("MAC_AUTOPILOT_ROOT", str(home / "checkout")))
+        supervisor = Path(os.environ.get("MAC_AUTOPILOT_SUPERVISOR_DIR", str(root / ".scratch-supervisor")))
+        runtime = str(supervisor / "autopi")
+    config_path = Path(runtime) / "config.json"
+    settings = {"calibrate": False,
+                "estimates_mb": {name: default_per_worker for name in MEMORY_ADMISSION_CLASSES}}
+    try:
+        config = json.loads(config_path.read_text())
+    except FileNotFoundError:
+        return settings
+    except (OSError, ValueError) as exc:
+        raise Deferred("invalid memory admission configuration") from exc
+    if not isinstance(config, dict):
+        raise Deferred("invalid memory admission configuration")
+    engine = config.get("engine", {})
+    if engine is None:
+        engine = {}
+    if not isinstance(engine, dict):
+        raise Deferred("invalid memory admission configuration")
+    memory_config = engine.get("mem_admission", {})
+    if memory_config is None:
+        memory_config = {}
+    if not isinstance(memory_config, dict):
+        raise Deferred("invalid memory admission configuration")
+    calibrate = memory_config.get("calibrate", False)
+    estimates = memory_config.get("estimates_mb", {})
+    if not isinstance(calibrate, bool) or not isinstance(estimates, dict):
+        raise Deferred("invalid memory admission configuration")
+    for name in MEMORY_ADMISSION_CLASSES:
+        if name not in estimates:
+            continue
+        value = estimates[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise Deferred("invalid memory admission configuration")
+        settings["estimates_mb"][name] = value
+    settings["calibrate"] = calibrate
+    return settings
+
+
+def execution_class():
+    value = os.environ.get("ZF_EXECUTION_CLASS", "")
+    return value if value in MEMORY_ADMISSION_CLASSES else ""
+
+
+def memory_peak_samples(home, worker_class):
+    """Read valid rows independently so a damaged line cannot hide later samples."""
+    path = home / "locks" / "execution-memory-peaks.jsonl"
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
+    samples = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+            peak = row.get("memory_peak_mb") if isinstance(row, dict) else None
+            if (row.get("class") == worker_class and isinstance(peak, int)
+                    and not isinstance(peak, bool) and peak > 0):
+                samples.append(peak)
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return samples[-MEMORY_ADMISSION_SAMPLE_LIMIT:]
+
+
+def memory_peak_p90(samples):
+    if not samples:
+        return None
+    ordered = sorted(samples)
+    # Nearest-rank p90 is stable for small rolling samples and never interpolates
+    # below an observed peak.
+    rank = math.ceil(0.90 * len(ordered))
+    return ordered[max(0, rank - 1)]
+
+
+def worker_memory_estimate(home, worker_class, default_per_worker, settings=None):
+    settings = settings or memory_admission_settings(home, default_per_worker)
+    estimate = settings["estimates_mb"].get(worker_class, default_per_worker)
+    if settings["calibrate"] and worker_class in MEMORY_ADMISSION_CLASSES:
+        peak = memory_peak_p90(memory_peak_samples(home, worker_class))
+        if peak is not None:
+            return max(MEMORY_ADMISSION_FLOOR_MB, peak)
+    return estimate
+
+
+def record_scope_memory_peak(home, worker_class, cgroup):
+    """Best-effort append of one exited worker's cgroup peak, keeping a small tail."""
+    if worker_class not in MEMORY_ADMISSION_CLASSES or not isinstance(cgroup, str):
+        return False
+    relative = Path(cgroup.lstrip("/"))
+    if not cgroup.startswith("/") or ".." in relative.parts:
+        return False
+    root = Path(os.environ.get("ZF_EXECUTION_CGROUP_ROOT", "/sys/fs/cgroup"))
+    try:
+        peak_bytes = int((root / relative / "memory.peak").read_text().strip())
+        if peak_bytes < 1:
+            return False
+        peak_mb = math.ceil(peak_bytes / (1024 * 1024))
+        locks = home / "locks"
+        locks.mkdir(parents=True, exist_ok=True)
+        sample_path = locks / "execution-memory-peaks.jsonl"
+        lock_path = locks / "execution-memory-peaks.lock"
+        with lock_path.open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                existing = sample_path.read_text().splitlines()
+            except OSError:
+                existing = []
+            rows = []
+            for line in existing:
+                try:
+                    row = json.loads(line)
+                    value = row.get("memory_peak_mb") if isinstance(row, dict) else None
+                    if (row.get("class") in MEMORY_ADMISSION_CLASSES and isinstance(value, int)
+                            and not isinstance(value, bool) and value > 0):
+                        rows.append(json.dumps(row, separators=(",", ":")))
+                except (ValueError, TypeError, AttributeError):
+                    continue
+            rows.append(json.dumps({"class": worker_class, "memory_peak_mb": peak_mb},
+                                   separators=(",", ":")))
+            temporary = sample_path.with_suffix(f".{os.getpid()}.tmp")
+            temporary.write_text("\n".join(rows[-MEMORY_ADMISSION_SAMPLE_LIMIT:]) + "\n")
+            temporary.chmod(0o600)
+            temporary.replace(sample_path)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def admission_cap(ceiling, memory_floor, max_load, per_worker, load_per_worker, sample, held, priority=""):
@@ -467,6 +602,9 @@ def admission_inner(mode, command, attempt=None):
         return 0
     if paused(home):
         raise Deferred("operator PAUSE")
+    worker_class = execution_class()
+    memory_settings = memory_admission_settings(home, per_worker)
+    per_worker = worker_memory_estimate(home, worker_class, per_worker, memory_settings)
     cpu_target = None if priority in ("hotfix", "release") else target
     if mode not in ("check", "resources") and inherited(home, proc):
         # This is the same admitted worker, not a new start. Keep live memory and
@@ -599,6 +737,12 @@ def admission_inner(mode, command, attempt=None):
     try:
         if paused(home):
             raise Deferred("operator PAUSE")
+        worker_cgroup = ""
+        if mode == "run-unit":
+            try:
+                worker_cgroup = identity(os.getpid(), proc)["cgroup"]
+            except (OSError, ValueError, KeyError, StopIteration, IndexError):
+                pass
         if mode == "run-unit" and Path(command[0]).name == "setsid" and not any(arg in ("-w", "--wait") for arg in command[1:]):
             command = [command[0], "--wait", *command[1:]]
         child = subprocess.Popen(command, env=os.environ, start_new_session=(mode == "run-unit"))
@@ -611,6 +755,8 @@ def admission_inner(mode, command, attempt=None):
                 attempt.fields["execution_started"] = True
                 attempt.decision("admit", "capacity-and-resources-approved")
             status = child.wait()
+            if worker_cgroup:
+                record_scope_memory_peak(home, worker_class, worker_cgroup)
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)

@@ -54,6 +54,25 @@ class ExecutionAdmission(unittest.TestCase):
     def run_guard(self, mode, *command):
         return subprocess.run([sys.executable, str(self.driver), mode, *command], env=self.env, capture_output=True, text=True)
 
+    def configure_mem_admission(self, calibrate, estimates=None):
+        runtime = self.home / "autopi"
+        runtime.mkdir(parents=True, exist_ok=True)
+        config = {"engine": {"mem_admission": {"calibrate": calibrate,
+                                                   "estimates_mb": estimates or {}}}}
+        (runtime / "config.json").write_text(json.dumps(config))
+        (self.home / "capacity.env").write_text(
+            "AGENT_GLOBAL_EXECUTION_CAP=8\nAGENT_EXECUTION_MIN_MEM_MB=2048\n"
+            "AGENT_EXECUTION_MAX_LOAD=8\n")
+        return runtime
+
+    def memory_check(self, available_mb, runtime):
+        env = {"AGENT_HOME": str(self.home), "MAC_AUTOPILOT_RUNTIME_DIR": str(runtime),
+               "ZF_EXECUTION_CLASS": "review"}
+        with patch.dict(os.environ, env), \
+             patch.object(guard, "resources", return_value={"available_mb": available_mb, "load1": 0.0}), \
+             patch.object(guard, "occupied", return_value=set()):
+            return guard.admission_inner("check", [])
+
     def pause(self):
         (self.home / "PAUSE").write_text(json.dumps({"caller": "operator", "reason": "host pressure", "issue": "3765", "provider": "all", "model": "all", "timestamp": "2026-10-14T08:15:00Z"}))
 
@@ -359,6 +378,52 @@ try:sys.exit"""))
                     (self.home / "capacity.env").write_text(f"{key}={value}\n")
                     with self.assertRaises(guard.Deferred):
                         guard.configuration(self.home)
+
+    def test_review_calibrated_p90_600_admits_below_flat_1024(self):
+        runtime = self.configure_mem_admission(True, {"review": 1024})
+        sample_path = self.home / "locks" / "execution-memory-peaks.jsonl"
+        sample_path.parent.mkdir(parents=True, exist_ok=True)
+        rows = [{"class": "review", "memory_peak_mb": 600} for _ in range(9)]
+        rows.append({"class": "review", "memory_peak_mb": 700})
+        sample_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        sample = {"available_mb": 2648, "load1": 0.0}
+        self.assertEqual(guard.admission_cap(8, 2048, 8, 1024, 1, sample, 0), 0,
+                         "the old flat estimate refuses at this headroom")
+        self.assertEqual(self.memory_check(2648, runtime), 0,
+                         "the calibrated review p90 is 600 MiB and should fit")
+
+    def test_calibration_without_class_samples_uses_configured_estimate(self):
+        runtime = self.configure_mem_admission(True, {"review": 700})
+        self.assertEqual(self.memory_check(2750, runtime), 0,
+                         "the configured 700 MiB review estimate should fit")
+
+    def test_garbage_calibration_lines_are_ignored(self):
+        runtime = self.configure_mem_admission(True, {"review": 1024})
+        sample_path = self.home / "locks" / "execution-memory-peaks.jsonl"
+        sample_path.parent.mkdir(parents=True, exist_ok=True)
+        sample_path.write_text(
+            "not-json\n[]\n" + json.dumps({"class": "review", "memory_peak_mb": 600}) +
+            "\n" + json.dumps({"class": "review", "memory_peak_mb": "bad"}) + "\n")
+        self.assertEqual(self.memory_check(2648, runtime), 0)
+
+    def test_run_unit_records_its_scope_memory_peak_on_exit(self):
+        runtime = self.configure_mem_admission(False, {"review": 1024})
+        cgroups = self.home / "cgroups"
+        scope = cgroups / "worker.scope"
+        scope.mkdir(parents=True)
+        (scope / "memory.peak").write_text(str(640 * 1024 * 1024))
+        env = {"AGENT_HOME": str(self.home), "MAC_AUTOPILOT_RUNTIME_DIR": str(runtime),
+               "ZF_EXECUTION_CLASS": "review", "ZF_EXECUTION_CGROUP_ROOT": str(cgroups)}
+        fixture_identity = lambda pid, _proc: {"pid": int(pid), "start_ticks": "test", "ppid": 1,
+                                                "cgroup": "/worker.scope"}
+        with patch.dict(os.environ, env), \
+             patch.object(guard, "resources", return_value={"available_mb": 9999999, "load1": 0.0}), \
+             patch.object(guard, "occupied", return_value=set()), \
+             patch.object(guard, "inherited", return_value=False), \
+             patch.object(guard, "identity", side_effect=fixture_identity):
+            self.assertEqual(guard.admission_inner("run-unit", ["true"]), 0)
+        rows = [json.loads(line) for line in (self.home / "locks" / "execution-memory-peaks.jsonl").read_text().splitlines()]
+        self.assertEqual(rows, [{"class": "review", "memory_peak_mb": 640}])
 
     def test_dynamic_cap_follows_live_memory_and_load_readings(self):
         sample = lambda available, load1: {"available_mb": available, "load1": load1}

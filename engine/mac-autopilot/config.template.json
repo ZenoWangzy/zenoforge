@@ -3,7 +3,16 @@
   "dispatch_priority_order": ["hotfix", "opt", "normal"],
   "tick_seconds": 120,
   "engine": {
-    "canary_ticks": 2
+    "canary_ticks": 2,
+    "mem_admission": {
+      "calibrate": false,
+      "estimates_mb": {
+        "implement": 1024,
+        "repair": 1024,
+        "review": 1024,
+        "advisor": 1024
+      }
+    }
   },
   "auto_merge": true,
   "auto_dispatch_new_prs": true,

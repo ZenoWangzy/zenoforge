@@ -188,7 +188,8 @@ Capacity is enforced in two layers.
 1. **Shared admission** (`engine/execution-admission.py`). `engine/execution-shim/` shadows `systemd-run` on the PATH, so unit starts pass through the check. Shell callers use `engine/execution-admission.sh`, which runs the Python check and run commands. The admission uses OS file locks, so the count holds across processes. Each check computes how many more workers fit, from:
    - the global cap `AGENT_GLOBAL_EXECUTION_CAP` (1 to 16, default 10),
    - a memory floor `AGENT_EXECUTION_MIN_MEM_MB` (default 6144),
-   - available memory divided by `AGENT_EXECUTION_MEM_PER_WORKER_MB` (default 1024),
+   - available memory divided by the worker class estimate in `engine.mem_admission.estimates_mb` (implement, repair, review, advisor; each defaults to 1024 MiB),
+   - when `engine.mem_admission.calibrate` is true and samples exist, that class's rolling cgroup `memory.peak` p90 with a 512 MiB floor; otherwise its configured estimate (or the legacy `AGENT_EXECUTION_MEM_PER_WORKER_MB` fallback),
    - load average headroom from `AGENT_EXECUTION_MAX_LOAD` (default: CPU count) and `AGENT_EXECUTION_LOAD_PER_WORKER`,
    - an optional CPU target `AGENT_EXECUTION_CPU_TARGET_PERCENT` (1 to 95).
 

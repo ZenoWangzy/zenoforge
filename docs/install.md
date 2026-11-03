@@ -130,12 +130,14 @@ These are the keys the admission check reads (`configuration()` in `engine/execu
 |---|---|---|
 | `AGENT_GLOBAL_EXECUTION_CAP` | 10 (allowed 1 to 16) | Most workers admitted at once |
 | `AGENT_EXECUTION_MIN_MEM_MB` | 6144 | Memory that must stay free |
-| `AGENT_EXECUTION_MEM_PER_WORKER_MB` | 1024 | Memory budgeted for each extra worker |
+| `AGENT_EXECUTION_MEM_PER_WORKER_MB` | 1024 | Legacy fallback memory budget for an unclassified worker or when the class config is absent |
 | `AGENT_EXECUTION_MAX_LOAD` | CPU count | Load average the gate allows |
 | `AGENT_EXECUTION_LOAD_PER_WORKER` | 1 | Load budgeted for each extra worker |
 | `AGENT_EXECUTION_CPU_TARGET_PERCENT` | unset (1 to 95 if set) | Optional CPU busy target |
 
 Bad values make the admission check defer. They do not fall back to defaults.
+
+The unit-loop class estimates live in `$AGENT_HOME/checkout/.scratch-supervisor/autopi/config.json` under `engine.mem_admission`. Defaults are `calibrate: false` and `estimates_mb.implement`, `.repair`, `.review`, and `.advisor` at 1024 MiB each. Set `engine.mem_admission.calibrate` to `true` to use the class p90 from `locks/execution-memory-peaks.jsonl` when samples exist; the estimate has a 512 MiB floor. The file keeps the latest 200 valid worker peaks. Missing class samples use that class's configured estimate.
 
 ## 6. Environment variables
 

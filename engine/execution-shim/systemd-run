@@ -22,7 +22,7 @@ for ((i=0; i<${#args[@]}; i++)); do
 done
 execution=0
 case "$unit" in
-  ${UNIT_PREFIX_TRANSIENT}-implement-*|${UNIT_PREFIX_TRANSIENT}-triage-*|${UNIT_PREFIX_TRANSIENT}-recut-*|${UNIT_PREFIX_TRANSIENT}-advisor-*|${UNIT_PREFIX_TRANSIENT}-web-advisor-provider-*|${UNIT_PREFIX_TRANSIENT}-release-*|${UNIT_PREFIX_TRANSIENT}-node-owner-*|${UNIT_PREFIX_TRANSIENT}-hand-*|${UNIT_PREFIX_TRANSIENT}-land-direct-main-*|${UNIT_PREFIX_TRANSIENT}-post-land-*|${UNIT_PREFIX_TRANSIENT}-merge-*|${UNIT_PREFIX_TRANSIENT}-worktree-cleanup-*|${UNIT_PREFIX_TRANSIENT}-maintenance-*|${UNIT_PREFIX_TRANSIENT}-gitnexus-*) execution=1 ;;
+  ${UNIT_PREFIX_TRANSIENT}-implement-*|${UNIT_PREFIX_TRANSIENT}-repair-*|${UNIT_PREFIX_TRANSIENT}-review-*|${UNIT_PREFIX_TRANSIENT}-rereview-*|${UNIT_PREFIX_TRANSIENT}-triage-*|${UNIT_PREFIX_TRANSIENT}-recut-*|${UNIT_PREFIX_TRANSIENT}-advisor-*|${UNIT_PREFIX_TRANSIENT}-web-advisor-provider-*|${UNIT_PREFIX_TRANSIENT}-release-*|${UNIT_PREFIX_TRANSIENT}-node-owner-*|${UNIT_PREFIX_TRANSIENT}-hand-*|${UNIT_PREFIX_TRANSIENT}-land-direct-main-*|${UNIT_PREFIX_TRANSIENT}-post-land-*|${UNIT_PREFIX_TRANSIENT}-merge-*|${UNIT_PREFIX_TRANSIENT}-worktree-cleanup-*|${UNIT_PREFIX_TRANSIENT}-maintenance-*|${UNIT_PREFIX_TRANSIENT}-gitnexus-*) execution=1 ;;
 esac
 if ((command_at>=0 && command_at<${#args[@]})); then
   # Index refresh scopes have generated unit names. Ordinary graph reads stay reads.
@@ -41,14 +41,35 @@ if [[ -z "$real" ]]; then
 fi
 if ((execution)); then
   ((command_at>=0 && command_at<${#args[@]})) || { echo 'execution admission deferred: worker command unresolved' >&2; exit 75; }
+  worker_class="${ZF_EXECUTION_CLASS:-}"
+  case "$unit" in
+    ${UNIT_PREFIX_TRANSIENT}-implement-*) worker_class=implement ;;
+    ${UNIT_PREFIX_TRANSIENT}-repair-*) worker_class=repair ;;
+    ${UNIT_PREFIX_TRANSIENT}-review-*|${UNIT_PREFIX_TRANSIENT}-rereview-*) worker_class=review ;;
+    ${UNIT_PREFIX_TRANSIENT}-advisor-*|${UNIT_PREFIX_TRANSIENT}-web-advisor-provider-*) worker_class=advisor ;;
+  esac
+  case "$worker_class" in
+    implement|repair|review|advisor) export ZF_EXECUTION_CLASS="$worker_class" ;;
+    *) worker_class=; unset ZF_EXECUTION_CLASS ;;
+  esac
+  execution_env=()
+  agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:-/tmp}/.zenoforge}}"
+  autopilot_root="${MAC_AUTOPILOT_ROOT:-$agent_home/checkout}"
+  supervisor_dir="${MAC_AUTOPILOT_SUPERVISOR_DIR:-$autopilot_root/.scratch-supervisor}"
+  autopi_runtime="${MAC_AUTOPILOT_RUNTIME_DIR:-$supervisor_dir/autopi}"
+  execution_env+=(-E "MAC_AUTOPILOT_RUNTIME_DIR=$autopi_runtime")
+  [[ -n "$worker_class" ]] && execution_env+=(-E "ZF_EXECUTION_CLASS=$worker_class")
   if [[ "$unit" == ${UNIT_PREFIX_TRANSIENT}-release-* ]]; then
     # A release must not queue behind pipeline load (2026-10-29: load 46.5 over a
     # maximum of 12 deferred vecta-release-batch while opt workers filled the box).
     # The unit name marks both admission stages: the check below and run-unit
     # inside the unit.
     export LUNA_PRIORITY=release
-    args=("${args[@]:0:command_at}" -E LUNA_PRIORITY=release "${args[@]:command_at}")
-    command_at=$((command_at+2))
+    execution_env+=(-E LUNA_PRIORITY=release)
+  fi
+  if ((${#execution_env[@]})); then
+    args=("${args[@]:0:command_at}" "${execution_env[@]}" "${args[@]:command_at}")
+    command_at=$((command_at+${#execution_env[@]}))
   fi
   guard="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/execution-admission.py"
   if [[ "$unit" == ${UNIT_PREFIX_TRANSIENT}-worktree-cleanup-* ]] && python3 "$guard" waiting -- "${args[@]:command_at}"; then
