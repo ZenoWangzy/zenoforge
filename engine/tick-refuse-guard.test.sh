@@ -50,15 +50,22 @@ assert_eq 'rereview unit is in flight' 0 "$(scheduler_issue_unit_inflight 5040 >
 assert_eq 'ready-to-merge unit is in flight' 0 "$(scheduler_issue_unit_inflight 5041 >/dev/null 2>&1; echo $?)"
 assert_eq 'merged unit is not in flight' 1 "$(scheduler_issue_unit_inflight 5042 >/dev/null 2>&1; echo $?)"
 assert_eq 'issue without a unit is not in flight' 1 "$(scheduler_issue_unit_inflight 5043 >/dev/null 2>&1; echo $?)"
-assert_eq 'missing ledger is unknown (fail-closed)' 3 "$(scheduler_issue_unit_inflight 5040 "$FIXTURES/absent/units.json" >/dev/null 2>&1; echo $?)"
+assert_eq 'missing ledger inside a live runtime is unknown (fail-closed)' 3 "$(scheduler_issue_unit_inflight 5040 "$RUNTIME/no-units.json" >/dev/null 2>&1; echo $?)"
 printf '{"units":"not-an-array"}\n' > "$FIXTURES/bad-units.json"
 assert_eq 'malformed ledger is unknown (fail-closed)' 3 "$(scheduler_issue_unit_inflight 5040 "$FIXTURES/bad-units.json" >/dev/null 2>&1; echo $?)"
+assert_eq 'host without the scheduler runtime proceeds' 1 "$(scheduler_issue_unit_inflight 5040 "$FIXTURES/nohost/units.json" >/dev/null 2>&1; echo $?)"
 
 # --- 1b. triage selection skips in-flight units ------------------------------
 eval "$(sed -n '/^pipeline_live_worker_check() {/,/^}/p; /^pipeline_triage_skip_inflight() {/,/^}/p' "$PIPELINE_SRC")"
 assert_eq 'triage selection skips a rereview unit' 0 "$(pipeline_triage_skip_inflight 5040 >/dev/null 2>&1; echo $?)"
 assert_eq 'triage selection skips a ready-to-merge unit' 0 "$(pipeline_triage_skip_inflight 5041 >/dev/null 2>&1; echo $?)"
 assert_eq 'triage selection proceeds past a merged unit' 1 "$(pipeline_triage_skip_inflight 5042 >/dev/null 2>&1; echo $?)"
+saved_runtime="$MAC_AUTOPILOT_RUNTIME_DIR"
+saved_repo_dir="${REPO_DIR:-}"
+engine_only_rc="$(MAC_AUTOPILOT_RUNTIME_DIR= REPO_DIR="$FIXTURES/engine-only" pipeline_triage_skip_inflight 5040 >/dev/null 2>&1; echo $?)"
+MAC_AUTOPILOT_RUNTIME_DIR="$saved_runtime"
+REPO_DIR="$saved_repo_dir"
+assert_eq 'engine-only host (no scheduler runtime) still triages' 1 "$engine_only_rc"
 
 # --- 1c. run-triage.sh leaves an in-flight issue's labels unchanged ----------
 GH_LOG="$FIXTURES/gh-calls"

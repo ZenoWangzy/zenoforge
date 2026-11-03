@@ -262,10 +262,20 @@ triage_batch_issue_active() {
 # in-flight units back to needs-advisor and stripped ready-for-agent mid-unit.
 SCHEDULER_UNIT_TERMINAL_STAGES='merged landed closed done wontfix duplicate'
 scheduler_issue_unit_inflight() { # issue [units.json] -> 0 in-flight unit / 1 none / 3 unknown
-  local issue="${1:-}" units="${2:-}" status
+  local issue="${1:-}" units="${2:-}" runtime_dir status
   [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 2
-  if [ -z "$units" ]; then
-    units="${MAC_AUTOPILOT_RUNTIME_DIR:-${REPO_DIR:?scheduler_issue_unit_inflight needs REPO_DIR}/.scratch-supervisor/autopi}/units.json"
+  if [ -n "$units" ]; then
+    runtime_dir="$(dirname -- "$units")"
+  else
+    runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${REPO_DIR:?scheduler_issue_unit_inflight needs REPO_DIR}/.scratch-supervisor/autopi}"
+    units="$runtime_dir/units.json"
+  fi
+  if [ ! -d "$runtime_dir" ]; then
+    # No autopilot runtime directory at all (engine-only host, CI): the
+    # scheduler that would own units is not deployed here, so nothing can be
+    # in flight -- same reasoning as stage_unit_active() on a host without
+    # systemd below. Only a PRESENT-but-unreadable ledger is unknown.
+    return 1
   fi
   if [ ! -r "$units" ]; then
     echo "scheduler_issue_unit_inflight: scheduler unit ledger unavailable issue=$issue" >&2

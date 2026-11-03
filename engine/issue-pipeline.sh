@@ -62,7 +62,13 @@ pipeline_live_worker_check() {
 # An unreadable ledger skips too (fail-closed): one held ticket costs a tick,
 # one wrong relabel costs the unit.
 pipeline_triage_skip_inflight() { # issue -> 0 skip / 1 proceed
-  local status
+  local status runtime_dir
+  runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-$REPO_DIR/.scratch-supervisor/autopi}"
+  if [ ! -d "$runtime_dir" ]; then
+    # Engine-only host (no autopilot runtime): no scheduler units exist here,
+    # so neither check below has anything to report -- proceed, like main.
+    return 1
+  fi
   if scheduler_issue_unit_inflight "$1"; then
     echo "issue-pipeline: triage #$1 has an in-flight scheduler unit; leaving it to the scheduler" >&2
     return 0
