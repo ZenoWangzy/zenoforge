@@ -69,7 +69,7 @@ CODEX_PROVIDER_PROBE_REQUIRED_FILE="${CODEX_PROVIDER_PROBE_REQUIRED_FILE:-$CODEX
 CODEX_PROBE_MARKER="${CODEX_PROBE_MARKER:-$AGENT_HOME/codex-probe-passed}"
 ZCODE_EXHAUSTED_MARKER_FILE="${ZCODE_EXHAUSTED_MARKER_FILE:-$AGENT_HOME/zcode-exhausted-until}"
 CLAUDE_EXHAUSTED_MARKER_FILE="${CLAUDE_EXHAUSTED_MARKER_FILE:-$AGENT_HOME/claude-exhausted-until}"
-ZCODE_PROVIDER_CONFIG_FILE="${ZCODE_PROVIDER_CONFIG_FILE:-$HOME/.zcode/v2/provider_config.json}"
+ZCODE_PROVIDER_CONFIG_FILE="${ZCODE_PROVIDER_CONFIG_FILE:-${HOME:-}/.zcode/v2/provider_config.json}"
 source "$HERE/../lib.d/codex-budget.sh"
 source "$HERE/../lib.d/model-policy.sh"
 source "$HERE/../lib.d/model-policy-fallback.sh"; model_policy_default_fallback "$HERE/../model-policy.default.json"

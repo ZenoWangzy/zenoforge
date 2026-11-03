@@ -8,7 +8,7 @@
       "root_cause_evidence": "Original log: [2026-11-02T22:54:48Z] gated unit=issue-3237 PR#4994 readied on fc53c3cfc; [2026-11-02T23:04:32Z] merge skipped PR#4994 (tests failed in: Touched packages PR gate) -> repair-pending without waiting for the other checks or a rerun. Before the fix, engine/mac-autopilot/scheduler.d/harvest-workers.sh:168 recorded review approval and ready-to-merge before required candidate CI completed; engine/mac-autopilot/scheduler.d/merge-lane.sh:307-317 handled the red candidate later. Before the fix, engine/mac-autopilot/scheduler.d/ci-status.sh:32-63 matched failed check names, while a shared test can be reported under different names in the main and PR checks.",
       "classic_pattern": "An asynchronous prerequisite is checked after a state transition has already granted downstream eligibility; a second control compares presentation labels instead of the underlying failing test identity.",
       "best_known_solution": "Keep approval as durable evidence, store required-gates green bound to the exact PR head SHA, and admit a unit to ready-to-merge only while that bound SHA still matches. Invalidate the evidence on a head change and return a carried approval to CI waiting. For main-red quarantine, parse failed test file and test name from both sides and quarantine only when every candidate test identity is present on main; fail closed when a failed check cannot be identified.",
-      "lesson_id": "V1275",
+      "lesson_id": "V1277",
       "research_sources": [
         "https://docs.github.com/en/rest/actions/workflow-jobs?apiVersion=2022-11-28",
         "https://sre.google/sre-book/release-engineering/"

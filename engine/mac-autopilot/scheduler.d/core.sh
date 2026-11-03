@@ -205,7 +205,9 @@ gh_api_cached() { # [-p] key url [gh api 参数…]；--jq 的输出即缓存正
   local etag="" first out body next pages=0
   mkdir -p "$GH_ETAG_DIR" 2>/dev/null || return 1
   local -a cond=()
-  IFS= read -r etag <"$GH_ETAG_DIR/$key.etag" 2>/dev/null || etag=""
+  if [[ -f "$GH_ETAG_DIR/$key.etag" ]]; then
+    IFS= read -r etag <"$GH_ETAG_DIR/$key.etag" 2>/dev/null || etag=""
+  fi
   [[ -n "$etag" ]] && cond=(-H "If-None-Match: $etag")
   out="$(gh api -i "${cond[@]}" "$url" "$@" 2>/dev/null)" || :  # 304 时 gh 退出码 1 但 stdout 有头部，内容要保留
   out="${out//$'\r'/}"  # 头部行以 CRLF 结尾：先去掉 \r，空行分隔与 ETag/Link 值才干净

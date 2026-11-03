@@ -1325,9 +1325,9 @@ tick
 grep -Fq 'gh pr edit 50 --add-label pipeline-ci' "$TF/calls" \
   || { echo 'scheduler.test.sh: tick did not label the adopted non-agent PR' >&2; exit 1; }
 command jq -e --arg sha "$adopted_head" \
-  '.units[0].ci_adopt_head == $sha and (.units[0].ci_adopt_at | type == "string") and .units[0].stage == "ready-to-merge"' \
+  '.units[0].ci_adopt_head == $sha and (.units[0].ci_adopt_at | type == "string") and .units[0].stage == "ci-pending" and .units[0].ci_gate_required == true and (.units[0].ci_green_sha // "") == ""' \
   "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: adoption was not recorded or merged before CI ran' >&2; exit 1; }
+  || { echo 'scheduler.test.sh: adoption was not recorded or the approved candidate did not wait for fresh CI' >&2; exit 1; }
 if grep -q '^merge 50$' "$TF/actions"; then
   echo 'scheduler.test.sh: tick merged before the adopted branch had post-label checks' >&2; exit 1
 fi

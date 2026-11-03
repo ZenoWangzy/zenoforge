@@ -83,9 +83,10 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
 
 # models.<role> = [model, effort, service_tier?]；provider selects codex, claude, or zcode CLI.
 build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider] [report-only-resume] [expected-session-id]
-  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" usage prompt_arg role tier self_fix prior config_arg
+  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" usage prompt_arg role tier self_fix prior config_arg
   local -a tier_args=() codex_config_args=()
   local output_tokens
+  workdir="${7:-${ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)}}"
   CODEX_MODE=fresh
   CODEX_SESSION_ID=""
   CODEX_PATH_REASON=initial
