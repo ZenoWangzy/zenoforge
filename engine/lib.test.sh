@@ -428,6 +428,9 @@ AGENT_HOME="$BLOCKED_CHECKS_HOME" AGENT_DRY_RUN=0 DRY_RUN=0 REPO=test/repo \
   bash -c '
     source "$0/lib.sh"
     ensure_state_labels() { :; }
+    # This case is about repeat escalation, not a live GitHub label read.
+    # Keep the issue unheld so CI without GH_TOKEN exercises the intended path.
+    gh() { [[ "${1:-} ${2:-}" == "issue list" ]] || return 99; return 0; }
     for transition_state in "${ALL_STATE_LABELS[@]}" on-hold tracker untracked; do
       issue_transition_state_is_valid "$transition_state" || exit 13
     done
