@@ -2146,13 +2146,13 @@ command jq -n --arg id "$cap_red_id" --arg red "$cap_red_sha" --arg green "$cap_
     + [range(1;5) as $n | {id:("pr-cap-"+($n|tostring)),pr:$n,stage:"parked",parked_reason:"main-red",parked_main_red_sha:$red,parked_from_stage:"ready-to-merge",history:[]}])}' \
   > "$TF/supervisor/autopi/units.json"
 tick
-command jq -e '[.units[] | select(.stage=="ready-to-merge" and (.id|startswith("pr-cap-")))] | length==3' \
+command jq -e '[.units[] | select(.stage=="ci-pending" and .parked_reason==null and (.id|startswith("pr-cap-")))] | length==3' \
   "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: main-red recovery exceeded or missed the merge lane per-tick cap' >&2; exit 1; }
+  || { echo 'scheduler.test.sh: main-red recovery exceeded or missed the CI-wait per-tick cap' >&2; exit 1; }
 tick
-command jq -e '[.units[] | select(.parked_reason==null and .stage=="ready-to-merge" and (.id|startswith("pr-cap-")))] | length==4' \
+command jq -e '[.units[] | select(.parked_reason==null and .stage=="ci-pending" and (.id|startswith("pr-cap-")))] | length==4' \
   "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: remaining main-red units did not resume on the next bounded tick' >&2; exit 1; }
+  || { echo 'scheduler.test.sh: remaining main-red units did not resume to CI waiting on the next bounded tick' >&2; exit 1; }
 }
 sched_run_case main_red_ci_unpark
 

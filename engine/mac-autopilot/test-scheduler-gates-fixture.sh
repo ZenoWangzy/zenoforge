@@ -27,13 +27,6 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fixture="$test_env_root/gates"
 sup="$fixture/supervisor"
 mkdir -p "$sup/autopi/alerts" "$fixture/repo"
-# Scheduler helpers may inspect the configured checkout against origin/main.
-# GitHub's shallow test checkout may not have that remote-tracking ref, so give
-# the isolated fixture a stable base instead of letting unrelated lane checks
-# read the host checkout's incomplete refs.
-command git -C "$fixture/repo" init -q -b main
-command git -C "$fixture/repo" -c user.name=fixture -c user.email=fixture@example.invalid commit --allow-empty -qm base
-command git -C "$fixture/repo" update-ref refs/remotes/origin/main "$(command git -C "$fixture/repo" rev-parse HEAD)"
 # Repair now reads the failure itself, rather than sending just its path.
 printf 'VERDICT: REQUEST-CHANGES\nNew review failure\n' > "$sup/r.md"
 printf 'VERDICT: REQUEST-CHANGES\nNew review failure\n' > "$sup/review-14.md"

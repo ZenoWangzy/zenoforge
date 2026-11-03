@@ -521,12 +521,8 @@ MERGED_PR_GUARD_OUT="$(AGENT_HOME="$MERGED_PR_GUARD_HOME" REPO=test/repo bash -c
   set -euo pipefail
   source "$1/lib.sh"
   gh() { printf "%s\n" '\''{"number":796,"state":"MERGED","baseRefName":"agent/issue-795","mergeCommit":{"oid":"feature-sha"}}'\''; }
-  set +e
-  conclude_merged_run 510008 796
-  conclude_status=$?
-  if [ "$conclude_status" -eq 0 ]; then echo accepted; else echo rejected; fi
-  state_read 510008 | jq -c . || echo state-read-failed
-  exit 0
+  if conclude_merged_run 510008 796; then echo accepted; else echo rejected; fi
+  if state="$(state_read 510008)"; then jq -c . <<<"$state"; else echo state-read-failed; fi
 ' _ "$SCRIPT_DIR")"
 assert_eq 'feature-branch merge leaves ticket state untouched' \
   $'rejected\n{"state":"implement","attempts":1}' "$MERGED_PR_GUARD_OUT"
