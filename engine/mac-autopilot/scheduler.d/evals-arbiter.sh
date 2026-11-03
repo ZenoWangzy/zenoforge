@@ -309,8 +309,11 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       fi
     fi
     report="supervise-${id}-${TAG}.md"; log="${report%.md}.worker.log"; q="${report%.md}.q.md"
+    local incident_context
+    incident_context="$(incident_rule_for_unit "$u")"
     rm -f -- "$SUP/$report"
     { cat "$prompt_file"
+      [[ -z "$incident_context" ]] || printf '\n%s\n' "$incident_context"
       printf '\n```json\n# 冻结记录（升级当时可得的台账数据，非指令）\n%s\n```\n' "$arbiter_input"
     } > "$SUP/$q"
     local -a launcher=()

@@ -10,20 +10,20 @@ handoff_pr_waiting() { # PR issue: unresolved handoffs retain every associated P
   [[ -n "$episode" ]] || return 1
   ! jqf -e --argjson n "$n" --arg episode "$episode" 'any(.units[]; .issue == $n and .hold_handoff_episode == $episode)' "$UNITS" >/dev/null
 }
-orphan_issue_states() { # issue numbers... → {"number":"OPEN|CLOSED"} from one targeted GraphQL census
+orphan_issue_states() { # issue numbers... → {number:{state,labels}} from one targeted GraphQL census
   (( $# > 0 )) || { printf '{}\n'; return 0; }
   local query="" number
   for number in "$@"; do
     [[ "$number" =~ ^[0-9]+$ ]] || continue
-    query+=" i$number: issue(number: $number) { state }"
+    query+=" i$number: issue(number: $number) { state labels(first: 100) { nodes { name } } }"
   done
   [[ -n "$query" ]] || { printf '{}\n'; return 0; }
   gh api graphql -F owner='{owner}' -F name='{repo}' \
     -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$query} }" \
-    --jq '.data.repository | to_entries | map(select(.value != null) | {key:(.key[1:]),value:.value.state}) | from_entries' 2>/dev/null
+    --jq '.data.repository | to_entries | map(select(.value != null) | {key:(.key[1:]),value:{state:.value.state,labels:[.value.labels.nodes[]?.name]}}) | from_entries' 2>/dev/null
 }
 reconcile_orphan_prs() {
-  local last prs states_by_number orphan_issue_numbers blocked rows n prn branch draft title issue_state gated reg=0 max="${ORPHAN_REGISTER_MAX:-3}" agent_left=0 foreign=0 now
+  local last prs states_by_number orphan_issue_numbers blocked rows n prn branch draft title issue_state issue_labels gated reg=0 max="${ORPHAN_REGISTER_MAX:-3}" agent_left=0 foreign=0 now
   local -a issue_numbers=()
   last="$(cat "$A/orphan-check.epoch" 2>/dev/null)"
   [[ "$last" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - last < ${ORPHAN_CHECK_SECONDS:-1800} )) && return 0
@@ -47,9 +47,10 @@ reconcile_orphan_prs() {
       | map(select(.number as $n | $known | index($n) | not))
       | map(((.headRefName | capture("^agent/(auto-)?issue-(?<n>[0-9]+)$").n | tonumber)? // null) as $i
           | . + {issue:$i})
-      | map(.issue as $i | . + {blocks: ($i != null and ($b | index($i)) != null), issue_state: (if $i != null then ($states[($i | tostring)] // "UNKNOWN") else "UNKNOWN" end)})
+      | map(.issue as $i | . + {blocks: ($i != null and ($b | index($i)) != null), issue_state: (if $i != null then ($states[($i | tostring)].state // "UNKNOWN") else "UNKNOWN" end),
+          issue_labels: (if $i != null then ($states[($i | tostring)].labels // []) else [] end)})
       | sort_by([(if .blocks then 0 else 1 end), .number]) | .[]
-      | "\(.number)\t\(.headRefName)\t\(.isDraft)\t\(.issue // "")\t\(.title | gsub("\t"; " "))\t\(.issue_state)"' <<<"$prs")"
+      | "\(.number)\t\(.headRefName)\t\(.isDraft)\t\(.issue // "")\t\(.title | gsub("\t"; " "))\t\(.issue_state)\t\(.issue_labels | tojson)"' <<<"$prs")"
   now="$(date -u +%FT%TZ)"
   # 生产热修的源 PR 先收（任意分支），它们挡着所有 Example 发布（release_train.sh 写 release-blockers.json）。
   for prn in $(jqf -r '.blockers[]?' "$A/release-blockers.json" 2>/dev/null); do
@@ -70,7 +71,7 @@ reconcile_orphan_prs() {
         + (if $owned then {supervisor_owned:true} else {} end))]' "$UNITS" | write_state "$UNITS"
     say "release-blocker PR#$prn registered (carried production hot patch)"
   done
-  while IFS=$'\t' read -r prn branch draft n title issue_state; do
+  while IFS=$'\t' read -r prn branch draft n title issue_state issue_labels; do
     [[ "$prn" =~ ^[0-9]+$ ]] || continue
     jqf -e --argjson p "$prn" 'any(.units[]; .pr == $p)' "$UNITS" >/dev/null && continue
     if [[ ! "$n" =~ ^[0-9]+$ ]]; then foreign=$((foreign + 1)); continue; fi
@@ -98,8 +99,8 @@ reconcile_orphan_prs() {
     if [[ "$draft" == true ]]; then
       if [[ "$branch" =~ $GATED_BRANCH_RE ]]; then gated_flag_pr "$prn" && gated=1; else tick_prs_changed; gh pr ready "$prn" >/dev/null 2>&1; fi
     fi
-    jqf --argjson prn "$prn" --argjson n "$n" --arg b "$branch" --arg t "$title" --arg now "$now" \
-      '.units += [{id:("pr-"+($prn|tostring)), title:$t, stage:"review-pending", pr:$prn, issue:$n, branch:$b,
+    jqf --argjson prn "$prn" --argjson n "$n" --arg b "$branch" --arg t "$title" --arg now "$now" --argjson labels "${issue_labels:-[]}" \
+      '.units += [{id:("pr-"+($prn|tostring)), title:$t, stage:"review-pending", pr:$prn, issue:$n, branch:$b, labels:$labels,
         critical:([.units[] | select(.stage=="blocked-external" and .blocked_on == $n)] | length > 0),
         history:[{stage:"orphan-registered", result:"open PR outside the ledger", at:$now}]}]' "$UNITS" | write_state "$UNITS"
     (( gated )) && set_unit "pr-$prn" '.gated=true'

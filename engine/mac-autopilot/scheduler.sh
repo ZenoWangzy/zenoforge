@@ -13,6 +13,7 @@ fi
 source "$HERE/../verification-plan-runtime.sh"
 source "$HERE/config-reconcile.sh"
 source "$HERE/../matt-skills.sh"
+source "$HERE/../incident-rule.sh"
 ENGINE_ROOT="$(cd -- "$HERE/../.." && pwd -P)" # holds .agents/skills and engine/prompts, which read-only Claude reviewers get via --add-dir
 # config.sh's pack_file, run in a subshell: config.sh also fills AGENT_HOME, ZF_ENGINE_DIR and ZF_REPO_DIR, and this script
 # resolves the engine and the target repo its own way (${ZF_ENGINE_DIR:-$ROOT/engine}), so those must stay unset here.
@@ -97,6 +98,8 @@ if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${
   [[ -z "$reconcile_event" ]] || say "$reconcile_event"
 fi
 CFG="$(cat "$A/config.json")"
+INCIDENT_LABELS="$(incident_labels_from_config "$CFG")"
+INCIDENT_RULE="$(incident_rule_text)"
 UNITS="$A/units.json"; WORKERS="$A/workers.json"
 [[ -f "$WORKERS" ]] || echo '{"workers":[]}' > "$WORKERS"
 MAX="$(jqf -r .max_workers <<<"$CFG")"

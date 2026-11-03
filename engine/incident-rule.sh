@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# One prompt contract shared by autopilot and the hotfix worker lane.
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/matt-skills.sh"
+
+INCIDENT_DEFAULT_LABELS_JSON='["bug","incident","production-anomaly"]'
+
+incident_labels_from_config() { # JSON config → configured incident label names
+  jq -c --argjson defaults "$INCIDENT_DEFAULT_LABELS_JSON" '
+    if (.incident.labels | type) == "array"
+      and all(.incident.labels[]; type == "string" and length > 0)
+    then .incident.labels else $defaults end
+  ' <<<"$1"
+}
+
+incident_labels_match_json() { # issue/unit JSON, configured labels JSON → success if any label matches
+  jq -e --argjson configured "$2" '
+    ([.labels[]? | if type == "string" then . else (.name // empty) end]) as $labels
+    | any($labels[]; . as $label | ($configured | index($label)) != null)
+  ' <<<"$1" >/dev/null 2>&1
+}
+
+incident_rule_text() { # canonical requirements shared across implementation, review, arbiter and hotfix prompts
+  cat <<EOF
+INCIDENT_RULE
+For an incident unit (its issue has a label in the configured incident.labels set), use $(pstack_skill_md principle-fix-root-causes) to find the first place the system went wrong, and $(pstack_skill_md correct) to make the recurrence structurally impossible.
+
+The implementation or repair report must contain:
+- A section headed exactly \`## root-cause\`, giving the first place the system went wrong, backed by the actual original log line and a repository file:line.
+- A section headed exactly \`## recurrence-guard\` with a \`kind:\` line set to architecture, state, script, lint, or test; the guard's file:line; and the exact command with captured output showing it FAILS against a planted copy of the real past bad input/code and PASSES after the fix. Prose is not a guard.
+- A complete lesson entry for engine/state/incident-guards.json, conforming to engine/lesson-guard-schema.mjs: include the required root-cause and classic-problem record fields, research sources, compared options, lesson_id, and a runnable machine check or mechanism link. Set enforcement.enforced_by to an array containing the repo-relative path of this same recurrence guard.
+
+Reviewers must verify this report before READY. Missing either required heading, or a recurrence guard whose kind is prose or is absent/invalid, requires NOT_READY/request-changes with a reason naming the missing or invalid part. Also verify the planted reproduction, before/after command output, file:line and lesson enforcer are concrete.
+EOF
+}

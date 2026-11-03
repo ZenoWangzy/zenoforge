@@ -303,6 +303,7 @@ footprint_recurrence_brief() { # unit JSON → up to 3 ranked CATALOG rules, bou
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json]
   local unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter check_footprint="${14:-true}"
   [[ -n "$unit_json" ]] || unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  prompt="$(incident_worker_prompt "$3" "$unit_json" "$prompt")"
   room_for "$1" "$3" "$unit_json" true "$check_footprint" || return 1
   if [[ "$3" == implement || "$3" == repair ]]; then
     size_admission_write_start "$1" "${10:-}" "$unit_json" || return 1
@@ -320,6 +321,7 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
 $(tail -80 "$check_output" 2>/dev/null)"
   fi
   dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "${12-$prompt}" || return 1
+  if [[ "$3" == implement || "$3" == repair ]]; then set_unit "$1" ".implementation_report=$(js "$5")"; fi
   if [[ "$3" == review || "$3" == rereview ]]; then set_unit "$1" '.self_check_fixes=0'; fi
   if [[ "$3" == implement || "$3" == repair ]]; then
     if [[ -n "${TICK_FOOTPRINT_CACHE[$1]+cached}" ]]; then

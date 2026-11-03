@@ -16,6 +16,55 @@ decision_scope() { # unit-json -> prior decisions in history, for the next imple
 }
 hotpatch_rule() { [[ "$(jqf -r '.hotpatch // false' <<<"$1")" == true ]] && printf '%s' "$HOTPATCH_REVIEW_RULE"; return 0; }
 arbiter_rule() { [[ "$(jqf -r '.arbiter // false' <<<"$1")" == true ]] && printf '%s' "$ARBITER_RULE"; return 0; }
+incident_rule_for_unit() {
+  incident_labels_match_json "$1" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}" || return 0
+  printf '\n%s' "${INCIDENT_RULE:-$(incident_rule_text)}"
+}
+incident_worker_prompt() { # worker type unit JSON prompt → prompt with the shared incident rule when applicable
+  local type="$1" unit_json="$2" prompt="$3"
+  case "$type" in
+    implement|repair|review|rereview) prompt+="$(incident_rule_for_unit "$unit_json")" ;;
+  esac
+  printf '%s' "$prompt"
+}
+incident_report_gate_reason() { # incident unit [implementation report path] → missing report requirement or empty
+  local unit_json="$1" report="${2:-}" kind_line kind guard_section missing=()
+  incident_labels_match_json "$unit_json" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}" || return 0
+  if [[ -z "$report" ]]; then
+    report="$(jqf -r '.implementation_report // .report // empty' <<<"$unit_json")"
+  fi
+  if [[ -z "$report" ]]; then
+    printf 'missing ## root-cause and ## recurrence-guard (incident implementation report is unavailable)'
+    return 0
+  fi
+  [[ "$report" == /* ]] || report="$SUP/$report"
+  if [[ ! -s "$report" ]]; then
+    printf 'missing ## root-cause and ## recurrence-guard (incident implementation report is unavailable: %s)' "${report##*/}"
+    return 0
+  fi
+  grep -qE '^## root-cause[[:space:]]*$' "$report" || missing+=("## root-cause")
+  grep -qE '^## recurrence-guard[[:space:]]*$' "$report" || missing+=("## recurrence-guard")
+  if (( ${#missing[@]} > 0 )); then
+    printf 'missing %s' "$(IFS=' and '; echo "${missing[*]}")"
+    return 0
+  fi
+  guard_section="$(awk '/^## recurrence-guard[[:space:]]*$/{inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
+  kind_line="$(grep -iE '^[[:space:]]*([-*][[:space:]]+|[0-9]+[.)][[:space:]]+)?(guard[[:space:]]+)?kind:[[:space:]]*' <<<"$guard_section" | head -n1 | tr '[:upper:]' '[:lower:]' || true)"
+  kind="$(sed -nE 's/^[[:space:]]*([-*][[:space:]]+|[0-9]+[.)][[:space:]]+)?(guard[[:space:]]+)?kind:[[:space:]]*`?([[:alnum:]-]+)`?.*$/\3/p' <<<"$kind_line" | head -n1)"
+  case "$kind" in
+    architecture|state|script|lint|test) ;;
+    prose) printf 'guard kind prose is not allowed'; return 0 ;;
+    "") printf 'missing recurrence-guard kind (expected architecture, state, script, lint, or test)'; return 0 ;;
+    *) printf 'guard kind %s is not allowed (expected architecture, state, script, lint, or test)' "$kind"; return 0 ;;
+  esac
+  return 0
+}
+incident_review_verdict() { # incident unit READY|other [implementation report] → READY or forced NOT_READY
+  local unit_json="$1" verdict="$2" report="${3:-}" reason
+  [[ "$verdict" == READY ]] || { printf '%s' "$verdict"; return 0; }
+  reason="$(incident_report_gate_reason "$unit_json" "$report")"
+  [[ -z "$reason" ]] && printf 'READY' || printf 'NOT_READY'
+}
 risk_class_safety_rule() { # checkout → safety prompt for risk classes found by the repository classifier
   local checkout="$1" hits classes paths
   [[ -n "$checkout" && -d "$checkout" ]] || return 0

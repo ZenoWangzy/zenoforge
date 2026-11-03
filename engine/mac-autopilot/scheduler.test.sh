@@ -66,6 +66,8 @@ jq -e '.max_workers == 10 and .auto_merge == true and .implement_cap == 8
   and .models.implement_hotfix == ["gpt-6.1-terra", "high"]' "$template" >/dev/null
 jq -e '.size_admission.exempt_hotpatch == true' "$template" >/dev/null
 jq -e '.issue_intake.ready_buffer == null and .issue_intake.refill_max == 2' "$template" >/dev/null
+jq -e '.incident.labels == ["bug", "incident", "production-anomaly"]' "$template" >/dev/null \
+  || { echo 'not ok - scheduler.test.sh: incident labels default must include bug, incident and production-anomaly' >&2; exit 1; }
 
 sample='{"units":[{"id":"pr-1","stage":"ready-to-merge"},{"id":"pr-2","stage":"ready-to-merge"},{"id":"pr-3","stage":"merged"}]}'
 updated="$(jq --arg id pr-2 \
@@ -110,6 +112,33 @@ export TZ=Etc/GMT+12
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$scheduler"
 unset AUTOPI_TEST_LIBRARY_ONLY
+
+bug_unit_json='{"id":"incident-bug","issue":71001,"labels":["bug"]}'
+unlabelled_unit_json='{"id":"ordinary","issue":71002,"labels":[]}'
+grep -Fq 'incident_worker_prompt "$3" "$unit_json" "$prompt"' "$script_dir/scheduler.d/self-check.sh" \
+  || { echo 'not ok - scheduler.test.sh: incident prompt rule is not injected by the shared dispatch path' >&2; exit 1; }
+bug_implement_prompt="$(incident_worker_prompt implement "$bug_unit_json" 'base implement prompt')"
+[[ "$bug_implement_prompt" == *'INCIDENT_RULE'* && "$bug_implement_prompt" == *'## root-cause'* \
+  && "$bug_implement_prompt" == *"$(pstack_skill_md principle-fix-root-causes)"* \
+  && "$bug_implement_prompt" == *"$(pstack_skill_md correct)"* ]] \
+  || { echo 'not ok - scheduler.test.sh: bug-labelled issue implement prompt lacks INCIDENT_RULE and pstack skills' >&2; exit 1; }
+unlabelled_implement_prompt="$(incident_worker_prompt implement "$unlabelled_unit_json" 'base implement prompt')"
+[[ "$unlabelled_implement_prompt" == 'base implement prompt' ]] \
+  || { echo 'not ok - scheduler.test.sh: unlabelled issue received INCIDENT_RULE' >&2; exit 1; }
+missing_guard_report="$test_env_root/incident-missing-guard.md"
+printf '## root-cause\nworker input selected the wrong state\n' > "$missing_guard_report"
+gate_reason="$(incident_report_gate_reason "$bug_unit_json" "$missing_guard_report")"
+gate_verdict="$(incident_review_verdict "$bug_unit_json" READY "$missing_guard_report")"
+[[ "$gate_verdict" == NOT_READY && "$gate_reason" == *'missing ## recurrence-guard'* ]] \
+  || { echo "not ok - scheduler.test.sh: missing recurrence-guard did not request changes (verdict=$gate_verdict reason=$gate_reason)" >&2; exit 1; }
+prose_guard_report="$test_env_root/incident-prose-guard.md"
+printf '## root-cause\nworker input selected the wrong state\n## recurrence-guard\nkind: prose\n' > "$prose_guard_report"
+gate_reason="$(incident_report_gate_reason "$bug_unit_json" "$prose_guard_report")"
+gate_verdict="$(incident_review_verdict "$bug_unit_json" READY "$prose_guard_report")"
+[[ "$gate_verdict" == NOT_READY && "$gate_reason" == *'guard kind prose is not allowed'* ]] \
+  || { echo "not ok - scheduler.test.sh: prose recurrence guard did not request changes (verdict=$gate_verdict reason=$gate_reason)" >&2; exit 1; }
+grep -Fq 'incident_rule_for_unit "$u"' "$script_dir/scheduler.d/evals-arbiter.sh" \
+  || { echo 'not ok - scheduler.test.sh: supervisor arbiter prompt does not reuse INCIDENT_RULE' >&2; exit 1; }
 
 # Parent admission signals: ADR/spec pilots, open child links in task lists,
 # and GitHub's native sub-issue relation. An ordinary related-issue mention is

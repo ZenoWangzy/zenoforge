@@ -4,6 +4,13 @@ unset GH_TOKEN
 [[ $# == 3 && $1 =~ ^[0-9]+$ && $2 =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && -f $3 ]] || { echo 'usage: hf-start.sh <issue-number> <slug> <brief-file>' >&2; exit 2; }
 issue=$1; slug=$2; brief=$3
 "$(dirname "$0")/hf-brief-lint.sh" "$brief"
+engine_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "$engine_dir/config.sh"
+source "$engine_dir/incident-rule.sh"
+incident_config_file="$(zf_config_file mac-autopilot/config.template.json)" || { echo 'hf-start: incident config is unavailable' >&2; exit 2; }
+incident_config="$(cat "$incident_config_file")" || { echo 'hf-start: incident config is unreadable' >&2; exit 2; }
+incident_labels="$(incident_labels_from_config "$incident_config")" || { echo 'hf-start: incident labels are invalid' >&2; exit 2; }
+issue_json="$(gh issue view "$issue" --json labels 2>/dev/null)" || { echo "hf-start: cannot classify issue #$issue labels" >&2; exit 2; }
 root=${HF_ROOT:-${HOME:-/tmp}/.zenoforge/scratch/hotfix}
 bin=${WORKER_BIN:-${HOME:-/tmp}/.zenoforge/scratch/bin}
 mkdir -p "$root"
@@ -12,6 +19,9 @@ worktree="$root/wt-$issue-$slug"
 git worktree add --lock -b "hotfix/$issue-$slug" "$worktree" origin/main
 worker_brief="$root/hf-$issue-$slug-brief.md"
 cat "$brief" > "$worker_brief"
+if incident_labels_match_json "$issue_json" "$incident_labels"; then
+  printf '\n%s\n' "$(incident_rule_text)" >> "$worker_brief"
+fi
 cat >> "$worker_brief" <<'FOOTER'
 
 Run engine/hotfix/prepush-gates.sh before pushing. Open the PR with engine/hotfix/hf-pr.sh. Do not merge or deploy.

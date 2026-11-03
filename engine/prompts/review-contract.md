@@ -32,6 +32,7 @@ preference.
   decide the verdict; acceptance on production happens after release. If the
   issue names an undelivered prerequisite, write `BLOCKED-ON: #<number>` and
   report `INPUT_INCOMPLETE`.
+- When the prompt includes `INCIDENT_RULE`, apply its report requirements before `READY`; the incident report gate requires `NOT_READY` and a reason naming any missing section or invalid recurrence-guard kind.
 
 ## Review in this order
 

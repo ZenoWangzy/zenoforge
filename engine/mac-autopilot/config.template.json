@@ -16,6 +16,9 @@
     "ready_buffer": null,
     "refill_max": 2
   },
+  "incident": {
+    "labels": ["bug", "incident", "production-anomaly"]
+  },
   "hotfix_lane": {
     "branch_prefixes": ["hotfix/", "agent/issue-hf-"],
     "label": "hotfix",

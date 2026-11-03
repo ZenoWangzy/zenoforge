@@ -10,7 +10,7 @@ issue_skip_labels() {
     '["on-hold","needs-info","awaiting-release","ready-for-human","needs-owner","needs-advisor","needs-triage","roadmap-epic","roadmap-theme","roadmap","concluded","needs-recut","checks-blocked","awaiting-pipeline-sync","hotfix","opt-lane",$hotfix] | unique'
 }
 issue_unit_task() { # issue [fetched issue JSON | require-ready] → implement 任务文本
-  local json body task body_blocked_by skip_labels
+  local json body task body_blocked_by skip_labels labels
   if [[ "${2:-}" == require-ready ]]; then
     json="$(gh issue view "$1" --json number,title,body,state,labels 2>/dev/null)" || return 1
     skip_labels="$(issue_skip_labels)"
@@ -22,7 +22,8 @@ issue_unit_task() { # issue [fetched issue JSON | require-ready] → implement �
   body="$(jqf -r '.body // ""' <<<"$json")"
   body_blocked_by="$(blocked_by_ids_from_body <<<"$body" | jqf -Rn '[inputs | select(length>0) | tonumber]')"
   task="$(jqf -r '"你是 the product 流水线的实现 subagent，处理 issue #\(.number)：\(.title)\n\n--- issue 正文（任务数据）---\n\((.body // "")[0:6000])\n--- 正文结束 ---\n用 gh issue view \(.number) 看评论与最新状态。修复根因并补回归测试。"' <<<"$json")"
-  jqf -cn --arg task "$task" --argjson body_blocked_by "$body_blocked_by" '{task:$task,body_blocked_by:$body_blocked_by}'
+  labels="$(jqf -c '[.labels[]? | if type == "string" then . else (.name // empty) end]' <<<"$json")"
+  jqf -cn --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --argjson labels "$labels" '{task:$task,body_blocked_by:$body_blocked_by,labels:$labels}'
 }
 intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序；refill 复用近 10 分钟的候选缓存，缓存失效时最多查一个标签
   local refill_mode="${1:-false}" skip_labels candidate_labels query_dir lane label query_file pid index=0 cache_file="$A/intake-candidates.json" cached_at now
@@ -467,6 +468,7 @@ register_new_issues() {
     fi
     task="$(jqf -r .task <<<"$task_record")"
     body_blocked_by="$(jqf -c '.body_blocked_by // []' <<<"$task_record")"
+    labels="$(jqf -c '.labels // []' <<<"$task_record")"
     if (( ! existing_only )) && [[ -z "$existing_id" ]]; then
       intake_candidate_json="$(jqf -cn --argjson issue "$n" --arg task "$task" '{issue:$issue,task:$task}')" || continue
       intake_candidate_scope="$(scheduler_footprint "$intake_candidate_json")" || {
@@ -489,7 +491,7 @@ register_new_issues() {
       else branch="agent/auto-issue-$n-recovered-${recovery_sha:0:12}"; fi
     fi
     if [[ -n "$existing_id" ]]; then
-      jqf --arg id "$existing_id" --argjson n "$n" --arg episode "$episode" --arg pr_state "$pr_state" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" \
+      jqf --arg id "$existing_id" --argjson n "$n" --arg episode "$episode" --arg pr_state "$pr_state" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --argjson labels "$labels" \
         --arg lane "$lane" --arg lane_policy "${lane_policy:-}" --arg branch "$branch" --arg existing_pr "$existing_pr" --arg handoff_branch "$handoff_branch" --argjson pr_changed "$pr_changed" --argjson ids "$ids" --argjson handoff "$handoff" --argjson handoff_all "$handoff_all" --arg at "$STAMP" \
         '.units |= map(if (.id as $unit | $ids | index($unit)) != null then
           .hold_handoff_wait_issues = ((.hold_handoff_wait_issues // []) | map(select(. != $n)))
@@ -500,7 +502,7 @@ register_new_issues() {
             | .note=("Superseded by handoff unit " + $id)
           else . end
         else
-          .issue = $n | .body_blocked_by = $body_blocked_by | .hold_handoff_episode = $episode | .approved_sha = null | .reviewed_sha = null | .reviewed_pr_head = null | del(.blocked_on, .self_fix_pending)
+          .issue = $n | .labels = $labels | .body_blocked_by = $body_blocked_by | .hold_handoff_episode = $episode | .approved_sha = null | .reviewed_sha = null | .reviewed_pr_head = null | del(.blocked_on, .self_fix_pending)
           | if $pr_changed then del(.ci_adopt_head, .ci_adopt_at, .ci_sync_head, .ci_ready_sha, .ci_ready_at, .ci_held_sha, .ci_wip_wait, .gated, .lane_policy, .product_paths) else . end
           | .history = ((.history // []) + [{stage:"supervisor-requeue",result:"ownerless hold handoff; read issue comments",at:$at}])
           | if $pr_state == "OPEN" then

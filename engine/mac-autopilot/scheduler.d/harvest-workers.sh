@@ -1,7 +1,7 @@
 
 # ---------- 1. 回收（按 worker.type 分类推进） ----------
 harvest_workers() { # [local-only]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement workers
-  local pr_harvested=0 local_only="${1:-false}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream decision
+  local pr_harvested=0 local_only="${1:-false}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream decision incident_unit_json incident_gate_reason original_report gate_id
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"
@@ -128,6 +128,24 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
     fi
     if [[ -s "$rep" ]]; then
       v="$(verdict_of "$rep")"
+      if [[ "$wtype" == review || "$wtype" == rereview ]] && [[ "$v" == READY ]]; then
+        incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+        incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json")"
+        v="$(incident_review_verdict "$incident_unit_json" "$v")"
+        if [[ "$v" == NOT_READY ]]; then
+          original_report="$report"
+          gate_id="$(tr -c 'A-Za-z0-9._-' '-' <<<"$unit" | sed 's/-$//')"
+          report="incident-gate-${gate_id}-${TAG}.md"
+          rep="$SUP/$report"
+          {
+            printf '# Incident report gate\n\n'
+            printf 'The reviewer returned READY in %s, but the incident implementation report failed the required structural check.\n\n' "$original_report"
+            printf 'REQUEST-CHANGES: %s\n\n' "$incident_gate_reason"
+            printf 'VERDICT: NOT_READY\n\n```review-findings\n{"findings":[],"dispositions":[]}\n```\n'
+          } > "$rep"
+          say "incident report gate requested changes unit=$unit reason=$incident_gate_reason"
+        fi
+      fi
       wmode="$(jqf -r '.mode // "fresh"' <<<"$w")"
       wsha="$(jqf -r '.sha // empty' <<<"$w")"; [[ "$wsha" =~ $SHA_RE ]] || wsha=""
       wprhead="$(jqf -r '.pr_head // empty' <<<"$w")"; [[ "$wprhead" =~ $SHA_RE ]] || wprhead=""
