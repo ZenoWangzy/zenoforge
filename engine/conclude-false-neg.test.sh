@@ -161,6 +161,7 @@ eval "$(sed -n '/^pipeline_claim_begin() {/,/^}/p' "$PIPELINE_SRC")"
 eval "$(sed -n '/^recover_stale_policy_unit() {/,/^}/p' "$PIPELINE_SRC")"
 eval "$(sed -n '/^dispatch_policy_unit() {/,/^}/p' "$PIPELINE_SRC")"
 eval "$(sed -n '/^ensure_issue_roadmap_parent_for_dispatch() {/,/^}/p' "$PIPELINE_SRC")"
+roadmap_parent_tree_ready_for_tick() { return 0; }
 agent_implement_dispatch_resources_allow() { return 0; }
 stage_unit_active() { return 1; }
 # This test isolates stalled-unit recovery; OOM accounting lives in issue-pipeline.test.sh.

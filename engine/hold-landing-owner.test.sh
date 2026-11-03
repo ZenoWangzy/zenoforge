@@ -7,6 +7,7 @@ export ZF_REPO=test/repo ZF_REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 export ZF_WORKTREE_ROOT="$test_env_root/worktrees"
 source "$SCRIPT_DIR/lib.sh"
 eval "$(sed -n '/^ensure_issue_roadmap_parent_for_dispatch() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+roadmap_parent_tree_ready_for_tick() { return 0; }
 eval "$(sed -n '/^route_pipeline_fastlane_issue() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 trap 'rm -rf -- "$test_env_root"' EXIT
 mkdir -p "$AGENT_HOME/night" "$AGENT_HOME/land-queue/requests" "$AGENT_HOME/state"
