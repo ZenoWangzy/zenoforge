@@ -2679,7 +2679,8 @@ command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.
 set_pipeline_gate_probe
 echo 'fatal: gnutls_handshake() failed: connection reset' > "$TF/failed.log"
 tick; tick
-[[ "$(command grep -c '^rerun ' "$TF/actions")" == 1 ]]
+gate_network_reruns="$(command grep -c '^rerun ' "$TF/actions" || true)"
+[[ "$gate_network_reruns" == 1 ]] || { cat "$TF/tick.out" >&2; echo "scheduler.test.sh: network failure expected one rerun reservation, got $gate_network_reruns; retry=$(cat "$TF/supervisor/autopi/gate-net-rerun.json" 2>/dev/null || echo missing)" >&2; exit 1; }
 [[ ! -s "$TF/reverted" ]]
 command jq -e '.units | length==1 and .[0].id=="pr-pipeline-probe" and .[0].stage=="ready-to-merge"' \
   "$TF/supervisor/autopi/units.json" >/dev/null

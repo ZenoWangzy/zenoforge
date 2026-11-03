@@ -1144,6 +1144,14 @@ grep -q 'in phase run_merge_lane after done: harvest_workers:3s/0gh,dispatch_pen
 )
 
 # repair 没推出新 head：自动重试两次，第三次转人工
+repair_no_push_selector_real="$(declare -f pick_review_for_unit)"
+repair_no_push_target_real="$(declare -f unit_review_target)"
+repair_no_push_room_real="$(declare -f room_for)"
+repair_no_push_verify_real="$(declare -f verify_handoff_delivery)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+unit_review_target() { printf '%s %s\n' "$H1" "$H1"; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
 for round in 1 2 3; do
   hist_json="$(jq -cn --arg h "$H1" --argjson n "$((round-1))" '[{stage:"review-request-changes"}] + [range($n) | {stage:"repair-no-push",result:("head "+$h+" unchanged after repair")}, {stage:"repair-delivered"}] + [{stage:"repair-delivered"}]')"
   units "{\"units\":[{\"id\":\"pr-5b\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"r.md\",\"history\":$hist_json}]}"
@@ -1159,6 +1167,7 @@ hist_json="$(jq -cn --arg h "$H2" '[{stage:"review-request-changes"},{stage:"rep
 units "{\"units\":[{\"id\":\"pr-5b\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"r.md\",\"history\":$hist_json}]}"
 dispatch_pending || :
 [[ "$(field pr-5b .stage)" == repair-pending ]] || fail "no-push repairs on another head spent this head's retries ($(field pr-5b .stage))"
+eval "$repair_no_push_selector_real"; eval "$repair_no_push_target_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 # A CI failure after approval followed by an unchanged repair returns to native CI within the existing unit-row bound.
 gh_head_saved="$GH_HEAD"; gh_runs_saved="$GH_RUNS"; cancel_unit_runs_saved="$(declare -f cancel_unit_runs)"
 GH_HEAD="$H1"; GH_RUNS=777; GH_RERUNS=(); DISPATCHED=(); cancel_unit_runs() { :; }
