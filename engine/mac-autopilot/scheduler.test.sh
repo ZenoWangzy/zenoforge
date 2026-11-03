@@ -2567,6 +2567,32 @@ sched_run_case stuck_worker_disposition
 [[ "$(decision_eval_stages_for_paths '.zenoforge/model-policy.default.json')" == 'triage advisor implement review end-to-end ' ]] || {
   echo 'not ok - scheduler.test.sh: target model policy did not select every eval stage' >&2; exit 1;
 }
+[[ "$(decision_eval_stages_for_paths 'engine/prompts/supervisor-arbiter.md')" == 'supervisor ' ]] || {
+  echo 'not ok - scheduler.test.sh: supervisor arbiter prompt did not select only supervisor' >&2; exit 1;
+}
+[[ "$(decision_eval_stages_for_paths 'engine/prompts/supervisor-cap-triage.md')" == 'supervisor ' ]] || {
+  echo 'not ok - scheduler.test.sh: supervisor cap-triage prompt did not select only supervisor' >&2; exit 1;
+}
+[[ "$(decision_eval_stages_for_paths 'engine/lib.d/model-calls.sh')" == '' ]] || {
+  echo 'not ok - scheduler.test.sh: stage execution code selected eval stages for prompt dispatch' >&2; exit 1;
+}
+# The shared mapping also feeds the engine-pin eval gate (engine-sync.sh): stage execution
+# code gates the product set there, while a diff with no decision surface still selects none.
+[[ "$(bash "$repo_root/engine/eval/decision-stages.sh" --pin <<<'engine/lib.d/model-calls.sh')" == 'triage advisor implement review end-to-end ' ]] || {
+  echo 'not ok - scheduler.test.sh: pin mapping did not gate stage code on the product stages' >&2; exit 1;
+}
+[[ "$(bash "$repo_root/engine/eval/decision-stages.sh" --pin <<<'engine/eval/stage-call.sh')" == 'triage advisor implement review end-to-end ' ]] || {
+  echo 'not ok - scheduler.test.sh: pin mapping did not gate the stage seam on the product stages' >&2; exit 1;
+}
+[[ "$(bash "$repo_root/engine/eval/decision-stages.sh" --pin <<<$'docs/note.md\nengine/engine-sync.test.sh')" == '' ]] || {
+  echo 'not ok - scheduler.test.sh: pin mapping selected stages for a doc/test-only diff' >&2; exit 1;
+}
+[[ "$(bash "$repo_root/engine/eval/decision-stages.sh" --pin <<<'engine/prompts/supervisor-arbiter.md')" == 'supervisor ' ]] || {
+  echo 'not ok - scheduler.test.sh: pin mapping spent supervisor on more than its own prompt' >&2; exit 1;
+}
+[[ "$(bash "$repo_root/engine/eval/decision-stages.sh" --pin <<<'engine/mac-autopilot/scheduler.d/evals-arbiter.sh')" == 'supervisor ' ]] || {
+  echo 'not ok - scheduler.test.sh: pin mapping missed supervisor arbiter decision code' >&2; exit 1;
+}
 
 sched_case_gate_network() {
 new_tick_fixture gate-network

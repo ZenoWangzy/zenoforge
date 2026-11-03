@@ -24,31 +24,10 @@ matt_method_rule() { # checkout → METHOD 段
 }
 
 decision_eval_stages_for_paths() { # newline-delimited paths → affected eval stages
-  local path stage
-  local -A affected=()
-  while IFS= read -r path; do
-    [[ -n "$path" ]] || continue
-    case "$path" in
-      engine/prompts/triage.*|.zenoforge/prompts/triage.*) affected[triage]=1; affected[end-to-end]=1 ;;
-      engine/prompts/advisor*|.zenoforge/prompts/advisor*) affected[advisor]=1; affected[end-to-end]=1 ;;
-      engine/prompts/implement-contract.md|.zenoforge/prompts/implement-contract.md) affected[implement]=1; affected[end-to-end]=1 ;;
-      engine/prompts/review-contract.md|.zenoforge/prompts/review-contract.md|".agents/skills/$REVIEW_SKILL"/*|engine/mac-autopilot/review-contract.sh)
-        affected[review]=1; affected[end-to-end]=1 ;;
-      .agents/skills/triage/*|.agents/skills/ask-matt/*) affected[triage]=1; affected[end-to-end]=1 ;;
-      .agents/skills/implement/*|.agents/skills/tdd/*|.agents/skills/diagnosing-bugs/*) affected[implement]=1; affected[end-to-end]=1 ;;
-      .agents/skills/to-tickets/*|.agents/skills/to-spec/*) affected[end-to-end]=1 ;;
-      engine/prompts/recut.*|engine/prompts/guarded-recut-hand.md|.zenoforge/prompts/recut.*|.zenoforge/prompts/guarded-recut-hand.md)
-        affected[end-to-end]=1 ;;
-      engine/prompts/supervisor-arbiter.md|.zenoforge/prompts/supervisor-arbiter.md|engine/prompts/supervisor-cap-triage.md|.zenoforge/prompts/supervisor-cap-triage.md)
-        affected[supervisor]=1 ;;
-      engine/prompts/*|engine/model-policy.default.json|.zenoforge/prompts/*|.zenoforge/model-policy.default.json)
-        affected[triage]=1; affected[advisor]=1; affected[implement]=1; affected[review]=1; affected[end-to-end]=1 ;;
-    esac
-  done <<<"$1"
-  for stage in triage advisor implement review supervisor end-to-end; do
-    [[ -n "${affected[$stage]:-}" ]] && printf '%s ' "$stage"
-  done
-  printf '\n'
+  # The mapping lives in eval/decision-stages.sh, shared with the engine-pin eval gate
+  # (engine-sync.sh), so prompt-eval dispatch and pin gating read one decision surface.
+  local engine_root="${ZF_ENGINE_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)}"
+  bash "$engine_root/eval/decision-stages.sh" <<<"$1"
 }
 
 decision_eval_stages() { # repo candidate-sha → affected stages; failure means the diff could not be read

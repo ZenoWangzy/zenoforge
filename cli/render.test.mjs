@@ -38,7 +38,7 @@ test('config template: caps, kill switches for unshipped parts, review provider'
   assert.equal(claude.auto_merge, false);
   assert.equal(claude.release_train.enabled, false);
   assert.equal(claude.supervisor_arbiter.enabled, false);
-  assert.match(claude.models.review[0], /^claude-/);
+  assert.deepEqual(claude.models.review, JSON.parse(tpl).models.review);
   const codex = JSON.parse(renderConfigTemplate(tpl, { ...base, reviewProvider: 'codex', autoMerge: true }));
   assert.deepEqual(codex.models.review, codex.models.implement);
   assert.equal(codex.auto_merge, true);

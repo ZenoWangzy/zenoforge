@@ -55,7 +55,7 @@ export function renderConfigTemplate(templateText, { maxWorkers, dailyTokenBudge
   cfg.release_train = { ...(cfg.release_train ?? {}), enabled: false };
   cfg.supervisor_arbiter = { ...(cfg.supervisor_arbiter ?? {}), enabled: false };
   if (reviewProvider === 'codex') cfg.models.review = [...cfg.models.implement];
-  // claude keeps the template's own claude review entry
+  // Claude keeps the template's primary review configuration.
   return `${JSON.stringify(cfg, null, 2)}\n`;
 }
 

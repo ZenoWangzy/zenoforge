@@ -103,6 +103,33 @@ the YAML workflow case declare offline pnpm setup commands; warm the pnpm
 cache first if required. Missing dependencies fail the run and remain visible
 in hidden logs. No Docker, database, production or host operation is required.
 
+## Pin gate
+
+`engine-sync.sh --converge` marks its build hook's `--preflight` call after building a
+new engine version and before flipping engine-live. That preflight runs the same decision
+gate on every new pin; a manual `--preflight` remains a build-integrity check. The diff
+between the live and new engine versions selects the stages through
+`engine/eval/decision-stages.sh` — the one mapping the scheduler's prompt-eval dispatch
+also uses — and `decision-gate.mjs --subset` runs only those stages' cases once
+(`--runs 1`) from inside the built version directory, comparing against the accepted
+baseline label of the currently live version id. The eval runs in the background, so a
+converge tick never waits for it; a later converge flips on the verdict.
+
+A pass stores the pin label as the new id's accepted baseline (`.eval-baselines.json`
+beside the engine versions; the pipeline's `eval-accepted-label` and then the `baseline`
+label are the fallbacks). The passing label retains accepted rows for stages this pin did
+not run, so a later pin can compare a different stage against the live engine. If the
+selected baseline result is unavailable, the pin is held until it is available; a missing
+comparison never skips the gate. A fail writes the `.failed-<id>` marker the way a canary
+rollback does and logs `EVAL-REJECT`. No verdict within `engine.eval_on_pin.timeout_minutes`
+(default 45) is an `EVAL-TIMEOUT` hold — logged and inboxed like a reject, but with no
+marker, so a later pin is not blocked. Diffs that touch no stage prompt or stage code
+(pure test, doc or lesson changes), returns to a previously live version (#162 rollback
+path), and `engine.eval_on_pin.enabled=false` are logged `EVAL-SKIP` and flip without an
+eval. `engine.eval_on_pin.stages` pins the stage set explicitly as a nonempty JSON array
+or comma-separated string; `null` derives it from the diff. The template defaults are
+`enabled: true`, `stages: null`, and `timeout_minutes: 45`.
+
 ## Inner loop
 
 Iterating on a prompt or contract change does not re-run the whole serial
