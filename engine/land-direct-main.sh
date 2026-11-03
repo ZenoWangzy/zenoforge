@@ -1303,6 +1303,92 @@ landed_range_changes_postsubmit_input() {
   return 1
 }
 
+# 2026-11-03 incident (27 min of failed converge ticks): the product's engine pin landed on main
+# while the pinned engine had changed a file the product overrides (hotfix/hf-start.sh, engine #164);
+# the build hook's override guard ran only at converge, after the pin was live, and the only fix was a
+# manual re-override. Root cause: the lander verified the range against the engine's own checks but never
+# against the target's engine-build contract. This preflight runs that contract before the push --
+# hook --build into a scratch versions root, then --check -- only when the range touches the pin file or
+# the override table, so a pin that cannot converge is refused at landing time with the hook's own guard
+# lines. The pin file is the target config root's build.json (the same resolution engine-sync.sh uses;
+# today .zenoforge/build.json). The hook path comes from the pin file's hook field (repo-relative), and
+# the override table is the overrides.tsv beside that hook, the layout the build contract reads.
+land_pin_preflight_verified_key=""
+land_engine_pin_preflight() { # <base> <head>; no-op unless the range changes the pin file or override table
+  local base="$1" head="$2"
+  local key="$base:$head"
+  # Once per (base, head): the push loop retries after a rebase, where both change; an unchanged
+  # retry (lost push acknowledgment) reuses the verification instead of rebuilding the engine.
+  [[ "$key" != "$land_pin_preflight_verified_key" ]] || return 0
+  land_pin_preflight_verified_key="$key"
+  local config_root="${ZF_CONFIG_ROOT:-$repo_root/.zenoforge}"
+  [[ "$config_root" == "$repo_root/"* ]] || config_root="$repo_root/.zenoforge"
+  local pin_rel="${config_root#"$repo_root/"}/build.json"
+  local pin_json="" hook="" engine="" overrides_rel="" changed_path touched=0
+  if pin_json="$(git show "$head:$pin_rel" 2>/dev/null)"; then
+    hook="$(jq -r '.hook // empty | select(type == "string" and length > 0)' <<<"$pin_json" 2>/dev/null || true)"
+    engine="$(jq -r '.engine // empty | select(type == "string" and length > 0)' <<<"$pin_json" 2>/dev/null || true)"
+    [[ -z "$hook" ]] || overrides_rel="$(dirname -- "$hook")/overrides.tsv"
+  fi
+  while IFS= read -r changed_path; do
+    [[ -n "$changed_path" ]] || continue
+    if [[ "$changed_path" == "$pin_rel" || ( -n "$overrides_rel" && "$changed_path" == "$overrides_rel" ) ]]; then
+      touched=1
+      break
+    fi
+  done < <(git diff --name-only --no-renames "$base...$head")
+  ((touched == 1)) || return 0
+  if [[ -z "$pin_json" ]]; then
+    echo "land-direct-main: $pin_rel changed but is absent at $head; no engine build contract to verify" >&2
+    return 0
+  fi
+  if [[ -z "$hook" || -z "$engine" ]]; then
+    echo "land-direct-main: refusing push: $pin_rel at $head has no readable hook/engine field; the target's engine-sync dispatch would fail the same way after landing. Fix the pin file." >&2
+    return 1
+  fi
+  if [[ ! -f "$repo_root/$hook" ]]; then
+    echo "land-direct-main: refusing push: engine build hook $hook (named by $pin_rel) is missing at $head" >&2
+    return 1
+  fi
+  local timeout_seconds="${ZF_LAND_PIN_PREFLIGHT_TIMEOUT_SECONDS:-600}" out_root started_ms elapsed_ms status
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || {
+    echo "land-direct-main: ZF_LAND_PIN_PREFLIGHT_TIMEOUT_SECONDS must be a positive integer" >&2
+    return 2
+  }
+  out_root="$(mktemp -d "${TMPDIR:-/tmp}/zf-land-pin.XXXXXX")" || return 1
+  started_ms="$(date +%s%3N)"
+  echo "land-direct-main: engine pin preflight start pin=$engine product=$head hook=$hook deadline_seconds=$timeout_seconds" >&2
+  status=0
+  timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" bash "$repo_root/$hook" --build "$engine" "$head" --out "$out_root" 1>&2 || status=$?
+  local -a version_dirs=()
+  if ((status == 0)); then
+    mapfile -t version_dirs < <(find "$out_root" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | LC_ALL=C sort)
+    if ((${#version_dirs[@]} == 1)); then
+      # One shared deadline for build+check: the check gets what the build left, never more.
+      local check_deadline=$(( timeout_seconds - ( ($(date +%s%3N) - started_ms) / 1000 ) - 1 ))
+      ((check_deadline > 0)) || check_deadline=1
+      timeout --signal=TERM --kill-after=5s "${check_deadline}s" bash "$repo_root/$hook" --check "${version_dirs[0]}" 1>&2 || status=$?
+    else
+      echo "land-direct-main: build hook $hook left ${#version_dirs[@]} version directories under the scratch root (expected exactly 1); cannot --check pin $engine" >&2
+      status=1
+    fi
+  fi
+  elapsed_ms="$(($(date +%s%3N) - started_ms))"
+  # The hook marks built trees read-only; restore directory write permission before removal.
+  find "$out_root" -depth -type d -exec chmod u+w -- {} + 2>/dev/null || true
+  rm -rf -- "$out_root"
+  if ((status != 0)); then
+    if [[ "$status" == 124 || "$status" == 137 ]]; then
+      echo "land-direct-main: engine pin preflight timed out pin=$engine duration_ms=$elapsed_ms deadline_seconds=$timeout_seconds; refusing push" >&2
+    else
+      echo "land-direct-main: engine pin preflight failed pin=$engine product=$head status=$status duration_ms=$elapsed_ms; refusing push (guard lines above)" >&2
+      echo "land-direct-main: next step: adopt the engine version, re-override the changed file, or add a seam, then update the overrides.tsv row and rerun the landing" >&2
+    fi
+    return 1
+  fi
+  echo "land-direct-main: engine pin preflight passed pin=$engine product=$head duration_ms=$elapsed_ms" >&2
+}
+
 # Paths whose landing runs engine/systemd/sync-cihost-*.sh on cihost after the push.
 cihost_sync_path() {
   local -a globs=() # ZF_CIHOST_SYNC_PATHS (config.sh); read -a splits without pathname expansion
@@ -1538,6 +1624,10 @@ fi
 land_phase preflight-start
 preflight
 land_phase preflight-passed
+# The engine pin preflight refuses the push before it happens, so a pin that cannot build or
+# check at the target never reaches main (2026-11-03 incident; runs only when the range touches
+# the pin file or the override table).
+land_engine_pin_preflight "$tested_base" "$(git rev-parse HEAD)" || exit $?
 if [[ "$preflight_only" == 1 ]]; then
   echo "land-direct-main: preflight-only passed for $tested_base; not pushing"
   exit 0
@@ -1564,6 +1654,8 @@ while :; do
 
   base_before_push="$tested_base"
   candidate_head="$(git rev-parse HEAD)"
+  # Re-verify after any rebase (the memo inside skips an unchanged base+head).
+  land_engine_pin_preflight "$tested_base" "$candidate_head" || exit $?
   land_register_post_push_range "$base_before_push" "$candidate_head"
   if land_git_transport_retry land_git_network push origin HEAD:main; then
     echo "land-direct-main: pushed $branch to main"
