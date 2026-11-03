@@ -140,6 +140,19 @@ run_tick() {
     observed="${detail//$'\n'/ }"
     observed="${observed//$'\r'/ }"
 
+    # The autopilot bell (engine/mac-autopilot/bell.sh) scans the scheduler's
+    # own scheduler.log, never this unit's journal -- and before 2026-11-03 no
+    # signature matched a tick refusal, so a down pipeline filed no incident.
+    # Best effort by design: this write must never change refuse()'s own exit.
+    (
+      runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${repo_dir:-}/.scratch-supervisor/autopi}"
+      if [ -n "$repo_dir" ] && [ -d "$runtime_dir" ]; then
+        printf '[%s] run-tick: refusing to run this tick — cause=%s observed=%s\n' \
+          "$(date -u +%FT%TZ)" "$tag" "$observed" \
+          >> "$runtime_dir/scheduler.log" 2>/dev/null || true
+      fi
+    ) || true
+
     if [ -n "$fail_count_file" ]; then
       count=$(( $(cat "$fail_count_file" 2>/dev/null || echo 0) + 1 ))
       echo "$count" >"$fail_count_file" 2>/dev/null || true

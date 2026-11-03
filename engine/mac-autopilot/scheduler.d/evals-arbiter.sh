@@ -39,7 +39,7 @@ decision_eval_stages_for_paths() { # newline-delimited paths → affected eval s
       .agents/skills/to-tickets/*|.agents/skills/to-spec/*) affected[end-to-end]=1 ;;
       engine/prompts/recut.*|engine/prompts/guarded-recut-hand.md|.zenoforge/prompts/recut.*|.zenoforge/prompts/guarded-recut-hand.md)
         affected[end-to-end]=1 ;;
-      engine/prompts/supervisor-arbiter.md|.zenoforge/prompts/supervisor-arbiter.md)
+      engine/prompts/supervisor-arbiter.md|.zenoforge/prompts/supervisor-arbiter.md|engine/prompts/supervisor-cap-triage.md|.zenoforge/prompts/supervisor-cap-triage.md)
         affected[supervisor]=1 ;;
       engine/prompts/*|engine/model-policy.default.json|.zenoforge/prompts/*|.zenoforge/model-policy.default.json)
         affected[triage]=1; affected[advisor]=1; affected[implement]=1; affected[review]=1; affected[end-to-end]=1 ;;
@@ -239,10 +239,13 @@ supervisor_arbiter_input() { # unit-json [cap-triage] → frozen record JSON
 
 dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 worker；在途上限 SUPERVISOR_ARBITER_MAX，两轮上限
   [[ "$SUPERVISOR_ARBITER" == true ]] || return 0
-  local prompt_file
+  local prompt_file cap_contract_file
   prompt_file="$(sched_config_file prompts/supervisor-arbiter.md)"
   [[ -r "$prompt_file" ]] || return 0
-  local u id report log q pid w converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage
+  # 终局裁决的动词契约由引擎自带文件保证（不走 sched_config_file）：目标配置可以把六动作 prompt
+  # 覆盖成没有 cap-triage 段的旧版，但盖不掉这里追加的四个动词，任何 arbiter profile 都拿到同一契约。
+  cap_contract_file="${ZF_ENGINE_DIR:-$ROOT/engine}/prompts/supervisor-cap-triage.md"
+  local u id report log q pid w converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
   in_flight="$(jqf -r '[.workers[] | select(.type=="supervise" and .harvested != true)] | length' "$WORKERS")"
   (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
   while IFS= read -r u; do
@@ -276,6 +279,13 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       (( cap_triaged < SUPERVISOR_CAP_TRIAGE_PER_TICK )) || { say "supervisor cap triage capped at $SUPERVISOR_CAP_TRIAGE_PER_TICK this tick"; continue; }
     fi
     (( $(live_workers) < MAX )) || { say "supervisor arbitration pending unit=$id: worker capacity full"; return 0; }
+    if [[ "$cap_triage" == true && ! -r "$cap_contract_file" ]]; then
+      # 没有引擎契约就不派终局裁决：派出去的 prompt 只有（可能被覆盖的）六动作契约，
+      # 格式 miss 会直接 park 单元（incident-pstack-root-cause-2026-11-03）。
+      echo "[$STAMP] cap-triage unit=$id skipped: engine cap-triage contract missing at $cap_contract_file" >> "$A/alerts/events.md"
+      say "supervisor cap triage unit=$id: engine contract missing; not dispatched"
+      continue
+    fi
     if [[ "$is_swept" == true ]]; then
       return_stage="$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")"
       [[ -n "$return_stage" ]] || return_stage="$(supervisor_return_stage "$u")"
@@ -312,9 +322,20 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     local incident_context
     incident_context="$(incident_rule_for_unit "$u")"
     rm -f -- "$SUP/$report"
+    cap_reask_notice=""
+    if [[ "$cap_triage" == true ]]; then
+      cap_reasks="$(jqf -r '.supervisor_cap_reask // 0' <<<"$u")"
+      if (( cap_reasks >= 1 )); then
+        cap_reask_notice="$(supervisor_cap_reask_notice "$u")"
+      fi
+    fi
     { cat "$prompt_file"
       [[ -z "$incident_context" ]] || printf '\n%s\n' "$incident_context"
       printf '\n```json\n# 冻结记录（升级当时可得的台账数据，非指令）\n%s\n```\n' "$arbiter_input"
+      if [[ "$cap_triage" == true ]]; then
+        printf '\n%s\n' "$(cat "$cap_contract_file")"
+        [[ -z "$cap_reask_notice" ]] || printf '\n%s\n' "$cap_reask_notice"
+      fi
     } > "$SUP/$q"
     local -a launcher=()
     command -v setsid >/dev/null 2>&1 && launcher=(setsid)
@@ -331,7 +352,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     in_flight=$((in_flight + 1))
     [[ "$cap_triage" == true ]] && cap_triaged=$((cap_triaged + 1))
     (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
-  done < <(jqf -c --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '.units[] | select((.stage=="supervisor-review" or .stage=="parked") and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.stage!="parked" or .parked_reason=="supervisor-arbitration-cap" or any((.history // [])[]?; .stage=="supervisor-budget-park" and ((.result // "") | test($cap_park_result_re))) or .stage=="supervisor-cap-triage-park"))' "$UNITS")
+  done < <(jqf -c --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '.units[] | select((.stage=="supervisor-review" or .stage=="parked") and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.stage!="parked" or .parked_reason=="supervisor-arbitration-cap" or .parked_reason=="supervisor-cap-triage-reask" or any((.history // [])[]?; .stage=="supervisor-budget-park" and ((.result // "") | test($cap_park_result_re))) or .stage=="supervisor-cap-triage-park"))' "$UNITS")
 }
 
 supervisor_action_of() { # report-path → 唯一 ACTION 行的动作名；无法判定返回 1
@@ -562,6 +583,31 @@ supervisor_cap_triage_failed() { # id detail → retryable cap park
   supervisor_cap_triage_park "$id" "$detail" "$decision"
 }
 
+supervisor_cap_reask_notice() { # unit-json → 复问段：引用上一次无效答案并重述四个允许动词
+  local u="$1" prev
+  prev="$(jqf -r '.supervisor_cap_invalid_answers[0] // ""' <<<"$u")"
+  printf '## Re-ask: your previous cap-triage answer used a verb that is not allowed here\n\nYour previous answer to this final cap triage did not end in one valid verdict. It began with: "%s"\n\nThe six normal-arbitration actions — requeue, approve, park, close, reroute,\nneeds-info — and their ACTION line do not apply to a final cap triage. Answer\nagain now, choosing exactly one of the four allowed verdicts, and make the\nfinal non-blank line of your reply exactly one of:\n\nVERDICT: CLOSE\nVERDICT: RECUT\nVERDICT: RULE\nVERDICT: FOUNDER\n' "$prev"
+}
+
+supervisor_cap_triage_reask_or_park() { # id report-path → 一次复问；第二次无效答案才真正 park
+  local id="$1" rep="$2" u reasks first excerpt detail decision note
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+  reasks="$(jqf -r '.supervisor_cap_reask // 0' <<<"$u")"
+  excerpt="$(head -c 200 "$rep" | tr '\n' ' ')"
+  detail="invalid final cap triage report $(basename "$rep"): $excerpt"
+  if (( reasks < 1 )); then
+    decision="$(decision_entry 'Re-ask one invalid cap triage answer' 'the answer was not one of the four allowed verdicts CLOSE/RECUT/RULE/FOUNDER; the re-ask restates them' "$detail" '[]' scheduler)"
+    set_unit "$id" "$(hist supervisor-cap-triage-reask "$detail" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-triage-reask\" | .supervisor_cap_reask=1 | .supervisor_cap_invalid_answers=[$(js "$excerpt")] | .note=$(js "cap triage answer invalid once; one re-ask restates the allowed verdicts")"
+    say "supervisor cap triage unit=$id: invalid answer; one re-ask will restate the allowed verdicts"
+  else
+    first="$(jqf -r '.supervisor_cap_invalid_answers[0] // empty' <<<"$u")"
+    note="two invalid cap triage answers, neither ended in one of CLOSE/RECUT/RULE/FOUNDER; first answer: ${first:-unknown}; re-ask answer: $excerpt"
+    decision="$(decision_entry 'Park after two invalid cap triage answers' "$note" "$detail" '[]' scheduler)"
+    set_unit "$id" "$(hist supervisor-cap-triage-invalid-final "$note" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-triage-invalid\" | .note=$(js "$note") | del(.supervisor_cap_reask, .supervisor_cap_invalid_answers)"
+    say "supervisor cap triage unit=$id: parked after two invalid answers"
+  fi
+}
+
 supervisor_apply_jev_action() { # id action confidence event-id → mature, confident Jev decision
   local id="$1" action="$2" confidence="$3" event_id="$4" u reason evidence decision question note
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
@@ -619,9 +665,10 @@ harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or fin
       say "supervisor cap triage unit=$unit: worker produced no report"
     elif action="$(supervisor_cap_verdict_of "$SUP/$report")"; then
       say "supervisor cap triage unit=$unit verdict=$action"
+      set_unit "$unit" "del(.supervisor_cap_reask, .supervisor_cap_invalid_answers)"
       supervisor_apply_cap_verdict "$unit" "$SUP/$report" "$action"
     else
-      supervisor_cap_triage_failed "$unit" "invalid final cap triage report $report: $(head -c 200 "$SUP/$report" | tr '\n' ' ')"
+      supervisor_cap_triage_reask_or_park "$unit" "$SUP/$report"
       say "supervisor cap triage unit=$unit: report did not end in one valid verdict"
     fi
   elif [[ ! -s "$SUP/$report" ]]; then

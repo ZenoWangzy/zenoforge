@@ -45,6 +45,23 @@ if [ -n "$BATCH_RESULT_FILE" ] && ! triage_result_matches_schema "$BATCH_RESULT_
   echo "run-triage: batch result for issue #$N does not match triage.schema.json" >&2
   exit 2
 fi
+# 2026-11-03: an issue the autopilot scheduler owns as a unit (any non-terminal
+# stage -- rereview, ready-to-merge, ...) is in flight; its labels are that
+# unit's state, not triage's. Selection now skips these, and this guard covers
+# every other entry path (batch apply, manual dispatch) before any label edit
+# or model call: two units at rereview/ready-to-merge were re-triaged to
+# needs-advisor mid-unit and lost ready-for-agent. Exit 0, like the backoff
+# skip below: no attempt charged, labels untouched.
+if scheduler_issue_unit_inflight "$N"; then
+  echo "run-triage: #$N has an in-flight scheduler unit; leaving its labels unchanged" >&2
+  exit 0
+else
+  inflight_status=$?
+  if [ "$inflight_status" -eq 3 ]; then
+    echo "run-triage: #$N scheduler unit ledger unreadable; refusing to triage this run, labels untouched" >&2
+    exit 0
+  fi
+fi
 MODEL_BACKOFF_REMAINING="$(issue_model_failure_backoff_remaining "$N")"
 if [ "$MODEL_BACKOFF_REMAINING" -gt 0 ]; then
   echo "run-triage: issue #$N is in scoped model-failure backoff for ${MODEL_BACKOFF_REMAINING}s" >&2

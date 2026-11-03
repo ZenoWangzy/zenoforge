@@ -163,6 +163,16 @@ scheduler_signature_class() {
     printf 'sched-tick-timeout\n'
   elif [[ "$line" == *REFILL-TIMEOUT* ]]; then
     printf 'sched-refill-timeout\n'
+  elif [[ "$line" == *"run-tick: refusing to run this tick"* ]]; then
+    # 2026-11-03: a refused tick (issue-pipeline exit != 0) used to match no
+    # signature anywhere -- the refusal went to the agent unit's journal,
+    # which this scanner never reads, so a down pipeline filed no incident.
+    # run-tick's refuse() now also appends the line to scheduler.log.
+    printf 'sched-run-tick-refused\n'
+  elif [[ "$line" == *"issue-pipeline: slice-failed"* ]]; then
+    # A decision slice exited outside the stage contract (issue-pipeline-
+    # slices.sh): 0 / 75 defer / 124-137 overrun are the only non-failures.
+    printf 'sched-slice-failed\n'
   fi
 }
 
