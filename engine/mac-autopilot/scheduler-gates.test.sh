@@ -757,7 +757,10 @@ units "{\"units\":[{\"id\":\"issue-709\",\"issue\":709,\"pr\":55,\"branch\":\"ag
 DISPATCHED=(); dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == repair:issue-709:* ]] || fail "a unit inside the 3-round budget was not dispatched ($(field issue-709 .stage))"
 units "{\"units\":[{\"id\":\"pr-5e\",\"pr\":5,\"stage\":\"rereview-pending\",\"review_report\":\"review-5-T1.md\",\"arbiter\":true,\"implement_identity\":\"codex:gpt-6-luna:max\",\"history\":[{\"stage\":\"arbiter-review\"},$(sl_rounds)$(sl_rounds)$(sl_rounds){\"stage\":\"review-request-changes\"}]}]}"
+stop_loss_pick_review_real="$(declare -f pick_review_for_unit)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
 DISPATCHED=(); dispatch_pending || :
+eval "$stop_loss_pick_review_real"
 [[ "${DISPATCHED[0]:-}" == review:pr-5e:* ]] || fail "a rereview (not a budget round) was blocked by the stop-loss ($(field pr-5e .stage))"
 [[ "$(grep -c '^hold.sh' "$fixture/stop-loss-calls")" == 2 ]] || fail "in-budget dispatches must not hold their issue ($(cat "$fixture/stop-loss-calls"))"
 # supervisor 裁决后预算重新给满：3 轮 + supervisor-approve 之后照常派发。
