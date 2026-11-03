@@ -45,7 +45,7 @@ The root object must have this exact shape:
   "requested_issues": [1234, 1235],
   "cross_ticket_findings": {"ordering": []},
   "rulings": [
-    {"kind":"ruling","issue":1234,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"...","decision_md":"","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"...","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
+    {"kind":"ruling","issue":1234,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"...","decision_md":"","plan":{"changes":[{"file":"engine/path.sh","symbol":"target_function","change":"..."}],"tests_fail_first":["bash engine/path.test.sh — reproduces the missing behavior before the fix"],"non_goals":["..."]},"recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"...","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
   ]
 }
 ```
@@ -56,6 +56,22 @@ issue, no extras and no omissions. Keep `rulings` in the same order. Put
 cross-ticket ordering notes in `cross_ticket_findings.ordering`; use an empty
 array when none are needed. Apply the same fields and per-verdict empty vs
 non-empty rules as `prompts/advisor.schema.json`; never omit a field.
+
+Every ruling other than the terminal close verdicts `tracker` and `duplicate`
+MUST include a concrete `plan` object with all three fields:
+
+- `changes`: one or more objects with `file`, `symbol`, and `change`; each
+  names a repository-relative file and the exact function, class, or other
+  symbol to change.
+- `tests_fail_first`: one or more exact focused test paths or runnable commands
+  that reproduce the defect and must fail before the fix.
+- `non_goals`: one or more specific adjacent changes this plan excludes.
+
+This includes `misclassified`, `recut`, `advised`, and `maintainer` rulings.
+The wrapper rejects a non-close ruling with a missing or malformed plan,
+re-asks once, then records an advisor failure if the re-ask is still invalid.
+Do not omit the plan because `decision_md` or another narrative field sounds
+actionable. Terminal close verdicts have no downstream worker and omit `plan`.
 
 Keep the combined contents of `reasoning_md`, `decision_md`, `recut_md`,
 `founder_question_md`, `founder_subject`, and `merge_conditions_md` at or below

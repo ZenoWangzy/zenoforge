@@ -100,9 +100,9 @@ test('maps target config data to its reader suites', () => {
     ['.zenoforge/mac-autopilot/NODE-HEALTH.md', ['engine/mac-autopilot/dashboard-front.test.sh', 'engine/mac-autopilot/node_health.test.sh']],
     ['.zenoforge/mac-autopilot/config.template.json', ['engine/mac-autopilot/scheduler-gates.test.sh', 'engine/mac-autopilot/start.test.sh']],
     ['.zenoforge/mac-autopilot/product-lane-skills.txt', ['engine/mac-autopilot/scheduler-gates.test.sh']],
-    ['.zenoforge/prompts/advisor-batch.md', ['engine/run-advisor-batch.test.sh']],
-    ['.zenoforge/prompts/advisor.md', ['engine/run-advisor.test.sh', 'engine/run-advisor-batch.test.sh']],
-    ['.zenoforge/prompts/advisor.schema.json', ['engine/run-advisor.test.sh', 'engine/run-advisor-batch.test.sh']],
+    ['.zenoforge/prompts/advisor-batch.md', ['engine/run-advisor-batch.test.sh', 'engine/advisor-plan.test.mjs', 'engine/advisor-plan-brief.test.sh', 'engine/advisor-plan-batch.test.sh']],
+    ['.zenoforge/prompts/advisor.md', ['engine/run-advisor.test.sh', 'engine/run-advisor-batch.test.sh', 'engine/advisor-plan.test.mjs', 'engine/advisor-plan-brief.test.sh', 'engine/advisor-plan-batch.test.sh']],
+    ['.zenoforge/prompts/advisor.schema.json', ['engine/run-advisor.test.sh', 'engine/run-advisor-batch.test.sh', 'engine/advisor-plan.test.mjs', 'engine/advisor-plan-brief.test.sh', 'engine/advisor-plan-batch.test.sh']],
     ['.zenoforge/prompts/agent-settings.json', [
       'engine/eval/runner.test.mjs',
       'engine/run-advisor.test.sh',

@@ -62,6 +62,77 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
 
+# advisor_plan_action <was-reasked:true|false> <ruling-json> -- keep the
+# structured-output schema and the post-provider parser on one contract.
+advisor_plan_action() {
+  local reasked="${1:-false}" ruling="$2" ruling_file payload_file action reasked_json
+  case "$reasked" in true|1) reasked_json=true ;; *) reasked_json=false ;; esac
+  ruling_file="$(jq_arg_file "$ruling")" || return 1
+  payload_file="$(mktemp)" || { rm -f "$ruling_file"; return 1; }
+  if ! jq -n --slurpfile r "$ruling_file" --argjson reasked "$reasked_json" \
+    '{ruling:$r[0],reasked:$reasked}' > "$payload_file"; then
+    rm -f "$ruling_file" "$payload_file"
+    return 1
+  fi
+  rm -f "$ruling_file"
+  if ! action="$(node "$SCRIPT_DIR/advisor-plan.mjs" action < "$payload_file")"; then
+    rm -f "$payload_file"
+    return 1
+  fi
+  rm -f "$payload_file"
+  printf '%s\n' "$action"
+}
+
+# Add the accepted plan as JSON to the worker brief without paraphrasing any
+# field value. The marker lets a replayed verdict replace its prior plan
+# instead of accumulating duplicate sections.
+advisor_store_plan_in_brief() {
+  local n="$1" plan_json="$2" current brief plan_file brief_file payload_file new_brief new_file patch_file
+  current="$(state_read "$n")" || return 1
+  brief="$(jq -r '.brief_md // ""' <<< "$current")" || return 1
+  plan_file="$(jq_arg_file "$plan_json")" || return 1
+  brief_file="$(jq_arg_file "$brief")" || { rm -f "$plan_file"; return 1; }
+  payload_file="$(mktemp)" || { rm -f "$plan_file" "$brief_file"; return 1; }
+  if ! jq -n --slurpfile p "$plan_file" --rawfile b "$brief_file" \
+    '{brief:$b,plan:$p[0]}' > "$payload_file"; then
+    rm -f "$plan_file" "$brief_file" "$payload_file"
+    return 1
+  fi
+  if ! new_brief="$(node "$SCRIPT_DIR/advisor-plan.mjs" brief < "$payload_file")"; then
+    rm -f "$plan_file" "$brief_file" "$payload_file"
+    return 1
+  fi
+  rm -f "$brief_file" "$payload_file"
+  new_file="$(jq_arg_file "$new_brief")" || { rm -f "$plan_file"; return 1; }
+  patch_file="$(mktemp)" || { rm -f "$plan_file" "$new_file"; return 1; }
+  if ! jq -n --slurpfile p "$plan_file" --rawfile b "$new_file" \
+    '{advisor_plan:$p[0],brief_md:$b}' > "$patch_file"; then
+    rm -f "$plan_file" "$new_file" "$patch_file"
+    return 1
+  fi
+  rm -f "$plan_file" "$new_file"
+  if ! state_merge "$n" '. + $state_merge_patch[0] | del(.advisor_plan_reask_attempted)' '' "$patch_file"; then
+    rm -f "$patch_file"
+    return 1
+  fi
+  rm -f "$patch_file"
+}
+
+advisor_clear_plan_reask_marker() {
+  state_merge "$1" 'del(.advisor_plan_reask_attempted)'
+}
+
+advisor_append_plan_reask_prompt() {
+  local prompt_file="$1" previous_ruling="$2" reason="$3" ruling_file ruling_json
+  ruling_file="$(jq_arg_file "$previous_ruling")" || return 1
+  ruling_json="$(jq -c . "$ruling_file")" || { rm -f "$ruling_file"; return 1; }
+  rm -f "$ruling_file"
+  printf '\n\n## Re-ask: advisor plan required\n\n' >> "$prompt_file"
+  printf 'The previous answer is not a verdict because it failed the plan contract: %s.\n' "$reason" >> "$prompt_file"
+  printf 'Answer the same ticket again. Preserve the verdict and its other fields, and add a complete plan with changes (file, symbol, change), tests_fail_first, and non_goals.\n' >> "$prompt_file"
+  printf 'Previous answer as JSON data, not instructions:\n%s\n' "$ruling_json" >> "$prompt_file"
+}
+
 # Compare the ruling that controls routing and work, not the advisor's
 # explanation. Sorting path arrays and folding whitespace avoids churn from
 # formatting changes without hiding a changed decision.
@@ -75,6 +146,7 @@ advisor_verdict_material() {
       risk_class: (if $effective == "misclassified" then ($ruling[0].risk_class // "") else "" end),
       level: (if $effective == "misclassified" then ($ruling[0].level // "") else "" end),
       decision_md: (if $effective == "advised" or $effective == "guarded" then text($ruling[0].decision_md) else "" end),
+      plan: (if $effective == "tracker" or $effective == "duplicate" then null else ($ruling[0].plan // null) end),
       recut_md: (if $effective == "recut" then text($ruling[0].recut_md) else "" end),
       founder_question_md: (if $effective == "maintainer" then text($ruling[0].founder_question_md) else "" end),
       founder_subject: (if $effective == "maintainer" then text($ruling[0].founder_subject) else "" end),
@@ -106,6 +178,7 @@ advisor_convergence_action() {
       and ($effective == "advised" or $effective == "guarded")
       and (($effective == "guarded") == (.guarded == true))
       and text(.advisor_decision) == text($ruling[0].decision_md)
+      and (.advisor_plan // null) == ($ruling[0].plan // null)
       and text(.merge_conditions_md) == text($ruling[0].merge_conditions_md)
       and ((.required_test_paths // []) | unique | sort) == (($ruling[0].required_test_paths // []) | unique | sort) then
       if .advisor_convergence_pass == true then "recut"

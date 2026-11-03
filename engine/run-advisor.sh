@@ -501,6 +501,9 @@ elif [ -n "$WEB_ADVISOR_PROVIDER_JOB_ID" ]; then
         record_web_advisor_provider_fault "$N" "job $WEB_ADVISOR_PROVIDER_JOB_ID still had no result after ${AGE}s (ceiling ${WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS}s) -- treating as a stuck/dead transport session, will dispatch a fresh job next tick"
       fi
       web_advisor_provider_clear_job_state "$N"
+      if [ "$(echo "$PRIOR_STATE" | jq -r '.advisor_plan_reask_attempted // false')" = true ]; then
+        advisor_clear_plan_reask_marker "$N" || exit 1
+      fi
       echo "run-advisor: #$N -- web-advisor-provider job $WEB_ADVISOR_PROVIDER_JOB_ID exceeded its own ceiling; recorded as an environment fault, no attempt charged" >&2
       exit 0
     fi
@@ -512,9 +515,15 @@ elif [ -n "$WEB_ADVISOR_PROVIDER_JOB_ID" ]; then
   web_advisor_provider_clear_job_state "$N"
   if echo "$OUTPUT" | jq -e '.subtype == "web_advisor_provider_busy"' >/dev/null 2>&1; then
     record_advisor_lease_decision busy
+    if [ "$(echo "$PRIOR_STATE" | jq -r '.advisor_plan_reask_attempted // false')" = true ]; then
+      advisor_clear_plan_reask_marker "$N" || exit 1
+    fi
     echo "run-advisor: #$N -- web session lease busy; no environment fault recorded, will retry next tick" >&2
     exit 0
   elif echo "$OUTPUT" | jq -e '.subtype == "web_advisor_provider_call_failed"' >/dev/null 2>&1; then
+    if [ "$(echo "$PRIOR_STATE" | jq -r '.advisor_plan_reask_attempted // false')" = true ]; then
+      advisor_clear_plan_reask_marker "$N" || exit 1
+    fi
     if model_call_is_configuration_error "$OUTPUT" 1; then
       record_model_config_fault "$N" advisor advisor "$ADVISOR_MODEL" "$(echo "$OUTPUT" | jq -r '.result // "the provider script failed"' | tail -c 2000)" 0
     else
@@ -561,7 +570,9 @@ else
   echo "run-advisor: #$N -- dispatched web-advisor-provider job $NEW_JOB_ID, exiting to free the advisor slot; will poll next tick" >&2
   exit 0
 fi
-rm -f "$PROMPT_FILE"
+if [ "$DRY_RUN" != "1" ] && [ -z "$WEB_ADVISOR_PROVIDER_JOB_ID" ]; then
+  rm -f "$PROMPT_FILE"
+fi
 
 # Always false: with no ladder left, the only way execution reaches this
 # point at all is web-advisor-provider having actually answered (a call failure
@@ -581,6 +592,10 @@ ADVISOR_DEGRADED=0
 # conclude_run(not-completed) after CONCLUDE_RUN_ATTEMPT_CAP attempts, the
 # same accounting every other leg's genuine failures already use.
 if [ "$(model_call_failure_kind "$OUTPUT" "$STATUS")" != "none" ]; then
+  if [ "$(echo "$PRIOR_STATE" | jq -r '.advisor_plan_reask_attempted // false')" = true ]; then
+    advisor_clear_plan_reask_marker "$N" || exit 1
+  fi
+  rm -f "${PROMPT_FILE:-}"
   LOG_FILE="$(log_model_failure "advisor-$N" "$OUTPUT" "$STATUS")"
   echo "run-advisor: worktree kept for inspection: $WT" >&2
   fail_attempt "Advisor run failed on $ADVISOR_MODEL (exit $STATUS); full output in $LOG_FILE, worktree kept at $WT" 0 "$(echo "$OUTPUT" | tail -c 500)"
@@ -604,6 +619,77 @@ else
   ADVISOR_MODEL="unknown"
 fi
 fi # -- end of "$PENDING_VERDICT_RESULT was empty, actually dispatch" --------
+
+# The web provider can return a parseable verdict outside the requested plan
+# contract. Re-ask once on that same advisor role; never persist or apply the
+# first answer as a verdict. A second contract miss is a charged advisor
+# failure through fail_attempt(), matching other malformed advisor results.
+PLAN_REASKED="$(echo "$PRIOR_STATE" | jq -r '.advisor_plan_reask_attempted // false')"
+PLAN_ACTION="$(advisor_plan_action "$PLAN_REASKED" "$RESULT")" || exit 1
+case "$PLAN_ACTION" in
+  reask)
+    if [ -z "${PROMPT_FILE:-}" ] || [ ! -f "$PROMPT_FILE" ]; then
+      state_merge "$N" 'del(.pending_advisor_verdict, .advisor_plan_reask_attempted)' || exit 1
+      fail_attempt "Advisor output for issue #$N lacked a plan, but its source prompt is unavailable; refusing the verdict and retrying fresh" 0
+    fi
+    advisor_append_plan_reask_prompt "$PROMPT_FILE" "$RESULT" "a non-close verdict did not include a complete plan" || exit 1
+    if [ "$DRY_RUN" = "1" ]; then
+      # Dry-run already owns a synchronous provider call; make its one retry
+      # synchronously too, so it exercises the same parser contract without
+      # leaving an async job behind.
+      set +e
+      OUTPUT="$(run_web_advisor_provider_json "$ADVISOR_SCHEMA_PATH" "$PROMPT_FILE")"
+      STATUS=$?
+      set -e
+      if echo "$OUTPUT" | jq -e '.subtype == "web_advisor_provider_busy"' >/dev/null 2>&1; then
+        rm -f "$PROMPT_FILE"
+        echo "run-advisor: [dry-run] web session lease busy during plan re-ask; no environment fault recorded" >&2
+        exit 0
+      fi
+      if [ "$(model_call_failure_kind "$OUTPUT" "$STATUS")" != "none" ]; then
+        LOG_FILE="$(log_model_failure "advisor-$N-plan" "$OUTPUT" "$STATUS")"
+        rm -f "$PROMPT_FILE"
+        fail_attempt "Advisor plan re-ask failed on $ADVISOR_MODEL (exit $STATUS); full output in $LOG_FILE" 0 "$(echo "$OUTPUT" | tail -c 500)"
+      fi
+      RESULT="$(echo "$OUTPUT" | jq -c '.structured_output // {}')"
+      WEB_ADVISOR_PROVIDER_MODEL_USED="$(echo "$OUTPUT" | jq -r '.model_used // empty' 2>/dev/null || true)"
+      if [ -n "$WEB_ADVISOR_PROVIDER_MODEL_USED" ]; then
+        ADVISOR_MODEL="web:$WEB_ADVISOR_PROVIDER_MODEL_USED"
+      fi
+      PLAN_REASKED=true
+      PLAN_ACTION="$(advisor_plan_action true "$RESULT")" || exit 1
+      if [ "$PLAN_ACTION" != "valid" ]; then
+        LOG_FILE="$(log_model_failure "advisor-$N-plan" "$OUTPUT" "$STATUS")"
+        rm -f "$PROMPT_FILE"
+        fail_attempt "Advisor output for issue #$N still violated the verdict/plan contract after one corrective re-ask; full output in $LOG_FILE; no verdict applied" 0 "$(echo "$RESULT" | tail -c 500)"
+      fi
+      rm -f "$PROMPT_FILE"
+      echo "run-advisor: #$N -- dry-run re-asked once for a complete non-close plan" >&2
+    else
+      NEW_JOB_ID="advisor-$N-plan-reask-$(date +%s%N)"
+      web_advisor_provider_dispatch_async "$NEW_JOB_ID" "$ADVISOR_SCHEMA_PATH" "$PROMPT_FILE"
+      state_merge "$N" "if (.advisor_episode_seq // 0) != $WEB_ADVISOR_PROVIDER_JOB_EPISODE_SEQ then error(\"new advisor episode while dispatching plan re-ask\") else . + $(jq -n --arg j "$NEW_JOB_ID" --argjson t "$(date +%s)" '{web_advisor_provider_job_id:$j,web_advisor_provider_job_started_at:$t,advisor_plan_reask_attempted:true}') + {web_advisor_provider_job_episode_seq:(.advisor_episode_seq // 0)} end" || exit 1
+      rm -f "$PROMPT_FILE"
+      echo "run-advisor: #$N -- non-close verdict omitted its plan; dispatched exactly one corrective advisor re-ask $NEW_JOB_ID" >&2
+      exit 0
+    fi
+    ;;
+  failure|not-applicable)
+    if [ "$PLAN_REASKED" = true ]; then
+      advisor_clear_plan_reask_marker "$N" || exit 1
+      LOG_FILE="$(log_model_failure "advisor-$N-plan" "$OUTPUT" "$STATUS")"
+      rm -f "${PROMPT_FILE:-}"
+      fail_attempt "Advisor output for issue #$N still violated the verdict/plan contract after one corrective re-ask; full output in $LOG_FILE; no verdict applied" 0 "$(echo "$RESULT" | tail -c 500)"
+    fi
+    rm -f "${PROMPT_FILE:-}"
+    ;;
+  valid)
+    rm -f "${PROMPT_FILE:-}"
+    if [ "$PLAN_REASKED" = true ]; then
+      advisor_clear_plan_reask_marker "$N" || exit 1
+    fi
+    ;;
+esac
 
 # the project hash ban/ same seam run-triage.sh and run-recut.sh use:
 # scrub every field that can reach a comment or email before anything else
@@ -630,6 +716,7 @@ MERGE_CONDITIONS="$(echo "$RESULT" | jq -r '.merge_conditions_md // empty' | scr
 # never freeform prose that could carry a git object id.
 REQUIRED_TEST_PATHS="$(echo "$RESULT" | jq -c '.required_test_paths // []')"
 EXPECTED_PACKAGES_ADDENDUM="$(echo "$RESULT" | jq -c '.expected_packages_addendum // []')"
+PLAN_JSON="$(echo "$RESULT" | jq -c '.plan // null')"
 
 EXPECTED_PACKAGES="$(echo "$PRIOR_STATE" | jq -c '.expected_packages // []')"
 STORED_RISK="$(echo "$PRIOR_STATE" | jq -r '.risk_class // empty')"
@@ -913,6 +1000,9 @@ $DECISION" "$ISSUE_JSON"
     DECISION_FILE="$(jq_arg_file "$DECISION")"
     state_merge "$N" ". + $(jq -n --rawfile d "$DECISION_FILE" '{advisor_decision: $d}')"
     rm -f "$DECISION_FILE"
+    # Persist the plan before admit_guarded() transitions to ready-for-agent;
+    # that transition can dispatch the implement worker immediately.
+    advisor_store_plan_in_brief "$N" "$PLAN_JSON" || exit 1
     admit_guarded "$N" "$STORED_RISK" "$STORED_LEVEL" "$ROUTE_NOTE" "$MERGE_CONDITIONS" "$REQUIRED_TEST_PATHS"
     ;;
   recut)
@@ -931,6 +1021,8 @@ ${ROUTE_NOTE:+$ROUTE_NOTE
     # to make duplicate children; retire the active advisor label instead.
     # This is intentionally only this observed recut-parent path, not a
     # generic wrapper around other route_to_* refusals.
+    # route_to_recut() can wake its worker, so write the plan first.
+    advisor_store_plan_in_brief "$N" "$PLAN_JSON" || exit 1
     if state_read "$N" | jq -e 'has("recut_children")' >/dev/null 2>&1; then
       echo "run-advisor: #$N already has recut_children; retiring needs-advisor and retaining the completed parent as an unlabeled umbrella" >&2
       retire_recut_parent "$N" needs-advisor
@@ -961,6 +1053,12 @@ $MAINTAINER_QUESTION" "$ISSUE_JSON"
     MAINTAINER_PATCH="$(jq -cn --arg t "$MAINTAINER_THREAD_ID" \
       '{needs_info_origin:"advisor"} + (if $t == "" then {} else {needs_info_thread_id:$t} end)')" || exit 1
     issue_transition "$N" needs-info advisor-decision-needed "$MAINTAINER_PATCH" || exit 1
+    ;;
+esac
+
+case "$EFFECTIVE_VERDICT" in
+  misclassified|advised|maintainer)
+    advisor_store_plan_in_brief "$N" "$PLAN_JSON" || exit 1
     ;;
 esac
 
