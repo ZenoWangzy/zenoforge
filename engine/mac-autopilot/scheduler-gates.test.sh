@@ -756,7 +756,7 @@ dispatch_pending || :
 units "{\"units\":[{\"id\":\"issue-709\",\"issue\":709,\"pr\":55,\"branch\":\"agent/issue-709\",\"lane\":\"pr\",\"title\":\"fine fix\",\"stage\":\"repair-pending\",\"review_report\":\"r.md\",\"history\":[$(sl_rounds)$(sl_rounds){\"stage\":\"review-request-changes\"}]}]}"
 DISPATCHED=(); dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == repair:issue-709:* ]] || fail "a unit inside the 3-round budget was not dispatched ($(field issue-709 .stage))"
-units "{\"units\":[{\"id\":\"pr-5e\",\"pr\":5,\"stage\":\"rereview-pending\",\"review_report\":\"review-5-T1.md\",\"arbiter\":true,\"history\":[{\"stage\":\"arbiter-review\"},$(sl_rounds)$(sl_rounds)$(sl_rounds){\"stage\":\"review-request-changes\"}]}]}"
+units "{\"units\":[{\"id\":\"pr-5e\",\"pr\":5,\"stage\":\"rereview-pending\",\"review_report\":\"review-5-T1.md\",\"arbiter\":true,\"implement_identity\":\"codex:gpt-6-luna:max\",\"history\":[{\"stage\":\"arbiter-review\"},$(sl_rounds)$(sl_rounds)$(sl_rounds){\"stage\":\"review-request-changes\"}]}]}"
 DISPATCHED=(); dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == review:pr-5e:* ]] || fail "a rereview (not a budget round) was blocked by the stop-loss ($(field pr-5e .stage))"
 [[ "$(grep -c '^hold.sh' "$fixture/stop-loss-calls")" == 2 ]] || fail "in-budget dispatches must not hold their issue ($(cat "$fixture/stop-loss-calls"))"
