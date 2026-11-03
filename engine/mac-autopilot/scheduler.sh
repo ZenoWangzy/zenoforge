@@ -386,6 +386,8 @@ VIEWS_LOCK="$A/.views.lock"
 
 # 补派循环入口（#4628）：loop.sh 与慢 tick 并行检查本地台账，30 秒一次或发现新退出的 worker 时触发。
 # 慢阶段只在等待 GitHub 时让出同一 SCHED_LOCK；补派本地收割 direct-main 实现结果，另每次最多收割 2 个已结束的 PR 车道实现 worker（释放足迹，开 PR 有少量 GitHub 调用）、回收孤儿记录，
+# 并收已结束的后台门（self_check_harvest / precheck_harvest，纯本地读写，不占 gh 配额）——否则自检早已
+# 结束的单元要空等下一次慢拍才派评审（2026-11-03 03:12Z 起空槽 0-2/8 干等 20 分钟）；
 # 当可启动 pending 少于空槽时先收 issue，再派发 implement/repair/review/rereview-pending。新候选优先复用慢拍缓存，
 # 缓存失效时最多查询一个标签；实现派发只读本地台账，PR 修复、评审或复审按需读取一次共享 PR census。
 # 报告收割与 PR 注册仍由慢 tick 处理。
@@ -404,6 +406,10 @@ refill_tick() {
   coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
   coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
   coord_reconcile_scheduler_workers
+  # 与慢拍同序：门收割先于 dispatch_pending，本拍收完本拍就派评审；harvest 类阶段要求补派同跑
+  # （scheduler.test.sh refill_harvest_coverage），缺一个就是又一类「空等慢拍」回归。
+  phase self_check_harvest
+  phase precheck_harvest
   phase recover_orphans
   if [[ -e "$PAUSE_FILE" ]]; then
     say "refill paused by $PAUSE_FILE: no dispatch"

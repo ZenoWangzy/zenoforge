@@ -2980,7 +2980,7 @@ acquire_scheduler_lock() { return 0; }
 state_schema_ok() { return 0; }
 phase() {
   case "$1" in
-    harvest_workers|recover_orphans|mark_supervisor_owned_units) return 0 ;;
+    harvest_workers|self_check_harvest|precheck_harvest|recover_orphans|mark_supervisor_owned_units) return 0 ;;
     register_new_issues) shift; register_new_issues "$@" ;;
     dispatch_pending) shift; dispatch_pending "$@" ;;
     *) return 1 ;;
@@ -3008,6 +3008,177 @@ command jq -e '
   || { echo "scheduler.test.sh: refill did not share one PR census ($census_primes)" >&2; exit 1; }
 )
 sched_run_case refill_pending_stages
+
+sched_case_refill_self_check_harvest() (
+# 2026-11-03 03:12Z：5 个单元的自检先后结束，补派每分钟都在跑却派不出评审——refill_tick 不跑
+# self_check_harvest，self_check_pid 一直压着 room_for，空槽干等下一次慢拍（20 分钟）。补派必须
+# 在 dispatch_pending 之前收割已结束的自检，同一拍就派出评审；收割本身不占 gh 配额。
+new_tick_fixture refill-self-check
+ROOT="$TF/repo"; SUP="$TF/supervisor"; A="$SUP/autopi"
+UNITS="$A/units.json"; WORKERS="$A/workers.json"; LOG="$A/scheduler.log"
+WT_ROOT="$TF/clones"; LUNA_SLOTS="$TF/luna-slots"
+mkdir -p "$WT_ROOT" "$TF/luna-slots" "$A/alerts"
+touch "$LOG"
+SCHED_LOCK_HELD=true
+CFG='{"advisor":false,"max_workers":4,"implement_cap":2,"issue_intake":{"enabled":false}}'
+MAX=4; IMPLEMENT_CAP=2; FOCUS_MODE=all
+LOOP_TOTAL_ROUNDS=4; LOOP_BREAKER_ROUNDS=4; ADVISOR_ROUNDS=4
+NOW_EPOCH=1793577600; STAMP=refill-self-check; TAG=refill-test
+TICK_DISPATCH_LOCAL_REFILL=true; TICK_FOOTPRINT_CACHE=(); TICK_ACTIVE_FOOTPRINTS_VALID=false; TICK_ACTIVE_FOOTPRINTS='[]'
+DISPATCH_PRIORITY_ORDER='["hotfix","opt","normal"]'
+declare -A TICK_FOOTPRINT_CACHE=()
+true & harvest_dead_pid=$!; wait "$harvest_dead_pid"
+self_check_out="$SUP/self-check-pr-8821.log"
+printf 'self-check head=0123456789abcdef0123456789abcdef01234567\n' > "$self_check_out"
+printf 'pass\n' > "$self_check_out.result"
+command jq -n --argjson pid "$harvest_dead_pid" --arg out "$self_check_out" '{units:[
+  {id:"pr-8821",pr:8821,lane:"pr",branch:"agent/issue-8821",stage:"review-pending",footprint:[],history:[],
+   self_check_pid:$pid,self_check_start:1,self_check_sha:"0123456789abcdef0123456789abcdef01234567",
+   self_check_lane:"pr",self_check_base:"main",self_check_status:null,self_check_output:$out,
+   self_check_workdir:"$TF/clones/wt-pr-8821",self_check_return_stage:"review-pending"}]}' > "$UNITS"
+echo '{"workers":[]}' > "$WORKERS"
+dispatched=()
+live_workers() { echo "${#dispatched[@]}"; }
+live_by_type() { echo 0; }
+tick_prs_prime() { :; }
+tick_pr_base() { printf 'main\n'; }
+dispatch() { dispatched+=("$1:$4"); }
+pick() { PICK_MODEL=fixture-model; PICK_EFFORT=high; }
+unit_review_target() { printf '%s %s' 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567; }
+verify_handoff_delivery() { return 0; }
+ensure_clone() { printf '%s' "$TF/clone"; }
+checkout_pr_head() { return 0; }
+review_prompt() { printf 'fixture review prompt'; }
+subject_of() { printf 'fixture PR %s' "$1"; }
+matt_method_rule() { :; }
+decision_scope() { :; }
+sweep_rule() { :; }
+arbiter_rule() { :; }
+hotpatch_rule() { :; }
+supervisor_rule() { :; }
+risk_class_safety_rule() { :; }
+lane_rule() { :; }
+review_contract_rule() { :; }
+gh() { echo "refill self-check path made a gh call: $*" >&2; exit 97; }
+git() {
+  [[ "$*" != *'rev-parse'*'refs/remotes/origin/main'* ]] || { printf '%s\n' 0123456789abcdef0123456789abcdef01234567; return 0; }
+  return 0
+}
+acquire_scheduler_lock() { return 0; }
+state_schema_ok() { return 0; }
+phase() {
+  case "$1" in
+    harvest_workers|precheck_harvest|recover_orphans|mark_supervisor_owned_units) return 0 ;;
+    self_check_harvest) self_check_harvest ;;
+    register_new_issues) return 0 ;;
+    dispatch_pending) shift; dispatch_pending "$@" ;;
+    *) return 1 ;;
+  esac
+}
+coord_reap_expired() { return 0; }
+coord_reconcile_systemd_workers() { return 0; }
+coord_reconcile_scheduler_workers() { return 0; }
+supervisor_marking_deferred() { return 1; }
+tick_gh_calls_begin() { GH_TICK_CALLS_FILE="$TF/gh-calls"; : > "$GH_TICK_CALLS_FILE"; }
+tick_gh_calls_count() { echo 0; }
+PAUSE_FILE="$TF/pause"
+refill_tick
+command jq -e '.units[0] | .stage=="review" and .self_check_pid==null and .self_check_status=="pass"
+  and any(.history[]; .stage=="self-check-pass")' "$UNITS" >/dev/null \
+  || { echo "scheduler.test.sh: refill did not harvest the finished self-check ($(command jq -c '.units[0]' "$UNITS"))" >&2; cat "$LOG" >&2; exit 1; }
+[[ "${dispatched[*]}" == 'review:pr-8821' ]] \
+  || { echo "scheduler.test.sh: refill did not dispatch the review in the same pass (${dispatched[*]:-none})" >&2; cat "$LOG" >&2; exit 1; }
+)
+sched_run_case refill_self_check_harvest
+
+sched_case_refill_precheck_harvest() (
+# precheck 同一类缺口：预检进程已退出、结论已写盘，补派不收割的话 red 单元要等慢拍才转
+# repair-pending。补派在 dispatch_pending 之前收割：FAIL 转修复，PASS 记 precheck_sha；MAX=0
+# 证明收割与派发解耦（修复派发走 refill_pending_stages 已覆盖的共享路径）。
+new_tick_fixture refill-precheck
+ROOT="$TF/repo"; SUP="$TF/supervisor"; A="$SUP/autopi"
+UNITS="$A/units.json"; WORKERS="$A/workers.json"; LOG="$A/scheduler.log"
+LUNA_SLOTS="$TF/luna-slots"
+mkdir -p "$TF/luna-slots" "$A/alerts"
+touch "$LOG"
+SCHED_LOCK_HELD=true
+CFG='{"advisor":false,"max_workers":4,"implement_cap":2,"issue_intake":{"enabled":false}}'
+MAX=0; IMPLEMENT_CAP=2; FOCUS_MODE=all
+NOW_EPOCH=1793577600; STAMP=refill-precheck; TAG=refill-test
+TICK_DISPATCH_LOCAL_REFILL=true; TICK_FOOTPRINT_CACHE=(); TICK_ACTIVE_FOOTPRINTS_VALID=false; TICK_ACTIVE_FOOTPRINTS='[]'
+DISPATCH_PRIORITY_ORDER='["hotfix","opt","normal"]'
+declare -A TICK_FOOTPRINT_CACHE=()
+true & precheck_dead_pid=$!; wait "$precheck_dead_pid"
+printf 'PRECHECK: FAIL fixture failing test\nfixture detail\n' > "$SUP/precheck-pr-8831.out"
+printf 'PRECHECK: PASS\n' > "$SUP/precheck-pr-8832.out"
+command jq -n --argjson pid "$precheck_dead_pid" '{units:[
+  {id:"pr-8831",pr:8831,lane:"pr",branch:"agent/issue-8831",stage:"ready-to-merge",approved_sha:"0123456789abcdef0123456789abcdef01234567",footprint:[],history:[],precheck_pid:$pid,precheck_head:"0123456789abcdef0123456789abcdef01234567"},
+  {id:"pr-8832",pr:8832,lane:"pr",branch:"agent/issue-8832",stage:"ready-to-merge",approved_sha:"abcdef0123456789abcdef0123456789abcdef01234501",footprint:[],history:[],precheck_pid:$pid,precheck_head:"abcdef0123456789abcdef0123456789abcdef01234501"}]}' > "$UNITS"
+echo '{"workers":[]}' > "$WORKERS"
+live_workers() { echo 0; }
+live_by_type() { echo 0; }
+tick_prs_prime() { :; }
+git() {
+  [[ "$*" != *'rev-parse'*'refs/remotes/origin/main'* ]] || { printf '%s\n' 0123456789abcdef0123456789abcdef01234567; return 0; }
+  return 0
+}
+gh() { echo "refill precheck path made a gh call: $*" >&2; exit 97; }
+acquire_scheduler_lock() { return 0; }
+state_schema_ok() { return 0; }
+phase() {
+  case "$1" in
+    harvest_workers|self_check_harvest|recover_orphans|mark_supervisor_owned_units) return 0 ;;
+    precheck_harvest) precheck_harvest ;;
+    register_new_issues) return 0 ;;
+    dispatch_pending) shift; dispatch_pending "$@" ;;
+    *) return 1 ;;
+  esac
+}
+coord_reap_expired() { return 0; }
+coord_reconcile_systemd_workers() { return 0; }
+coord_reconcile_scheduler_workers() { return 0; }
+supervisor_marking_deferred() { return 1; }
+tick_gh_calls_begin() { GH_TICK_CALLS_FILE="$TF/gh-calls"; : > "$GH_TICK_CALLS_FILE"; }
+tick_gh_calls_count() { echo 0; }
+PAUSE_FILE="$TF/pause"
+refill_tick
+command jq -e '([.units[] | select(.id=="pr-8831")][0] | .stage=="repair-pending" and .precheck_pid==null
+  and (.repair_hint | contains("fixture detail")) and any(.history[]; .stage=="precheck-red"))
+  and ([.units[] | select(.id=="pr-8832")][0] | .stage=="ready-to-merge" and .precheck_pid==null
+  and .precheck_sha=="abcdef0123456789abcdef0123456789abcdef01234501")' "$UNITS" >/dev/null \
+  || { echo "scheduler.test.sh: refill did not harvest finished prechecks ($(command jq -c '.units | map({id,stage,precheck_pid})' "$UNITS"))" >&2; cat "$LOG" >&2; exit 1; }
+)
+sched_run_case refill_precheck_harvest
+
+sched_case_refill_harvest_coverage() (
+# 复发守卫：慢拍里每个收割后台进程结论的 phase（名字含 harvest：worker、self-check、precheck）
+# 都必须同样在补派里运行，否则进程结束到慢拍之间的整段空窗都是「空等慢拍」（2026-11-03 自检
+# 事故的类别）。确属慢拍专属的，须在下面逐名给出理由；无理由条目视为未裁决。
+slow_only_harvest=''
+coverage_failures() { # scheduler-file → 未覆盖且无理由的 harvest phase 列表
+  local f="$1" p entry
+  local main_phases refill_phases
+  main_phases="$(command sed -n '/^main() {/,/^}/p' "$f" | command grep -oE 'phase [a-z_0-9]+' | awk '{print $2}' | sort -u)"
+  refill_phases="$(command sed -n '/^refill_tick() {/,/^}/p' "$f" | command grep -oE 'phase [a-z_0-9]+' | awk '{print $2}' | sort -u)"
+  for p in $main_phases; do
+    [[ "$p" == *harvest* ]] || continue
+    command grep -Fxq "$p" <<<"$refill_phases" && continue
+    entry="$(command grep -E "^$p\|" <<<"$slow_only_harvest" || true)"
+    [[ -n "$entry" && -n "${entry#*|}" ]] || printf '%s\n' "$p"
+  done
+}
+missing="$(coverage_failures "$scheduler")"
+[[ -z "$missing" ]] \
+  || { echo "scheduler.test.sh: slow-tick harvest phase(s) missing from refill_tick with no slow-only reason: $(echo $missing)" >&2; exit 1; }
+# 守卫自身要有牙齿：往 main() 塞一个只在慢拍跑的假 harvest phase，必须被抓到（stuck_worker_disposition 只在 main 出现）。
+guard_dir="$(mktemp -d)"
+command sed 's/^    phase stuck_worker_disposition$/    phase example_harvest\n    phase stuck_worker_disposition/' "$scheduler" > "$guard_dir/scheduler.sh"
+missing="$(coverage_failures "$guard_dir/scheduler.sh")"
+command grep -Fxq example_harvest <<<"$missing" \
+  || { echo 'scheduler.test.sh: refill harvest coverage guard cannot detect a slow-only harvest phase' >&2; exit 1; }
+rm -rf "$guard_dir"
+)
+sched_run_case refill_harvest_coverage
 
 sched_case_refill_yields_shared_lock() {
 # A slow GitHub phase gives the independent refill entry a chance to acquire the existing ledger lock.
