@@ -862,6 +862,43 @@
           "engine/land-pin-preflight.test.sh"
         ]
       }
+    },
+    {
+      "id": "dispatch-repair-footprint-before-census",
+      "date": "2026-11-03",
+      "class": "repair-footprint-rejection-after-pr-census",
+      "what_happened": "From the live engine build at 2026-11-03T08:35:13Z through scheduler.log's last line at 10:40:28Z, 61 refills had a dispatch_pending field (mean 39.3s, median 31s, p95 90s, max 117s); 40 logged gh_calls=1 and 10 ran at live=5. The exact `live=5 secs=34 gh_calls=1 slow: dispatch_pending=24s` pattern recurred at 09:44:15Z and 10:10:09Z. At 09:44, the repair spent 11 seconds reading the open-PR census, then failed its fresh footprint check because issue-5149 still owned the conflicting footprint.",
+      "root_cause_evidence": "Original scheduler.log lines 45789-45801: '[2026-11-03T09:44:15Z] dispatch detail gh_pr unit=issue-4969 secs=11s', '[2026-11-03T09:44:15Z] footprint wait unit=issue-4969 owner=issue-5149', and '[2026-11-03T09:44:15Z] refill done live=5 secs=34 gh_calls=1 slow: dispatch_pending=24s'. The loaded engine build was 27305cba672295afb4abf38c988b3891d3bc6bfc, whose engine/mac-autopilot/scheduler.d/dispatch-queue.sh:36-39 primed the local-refill census before room_for. Zenoforge PR #199 later moved the prime behind room_for, but current main still primes at engine/mac-autopilot/scheduler.d/dispatch-queue.sh:128 before the fresh footprint_room check at :138. The incident repair passed the cached footprint check inside room_for and failed the fresh check.",
+      "classic_pattern": "A controller performs an expensive shared remote read after an early admission check but before the final freshness check, so a candidate rejected by the final check still consumes the remote-read latency and blocks other dispatch work.",
+      "best_known_solution": "For local refill repair dispatch, run room_for, refresh the unit after repair-cap admission, select the implementer, and pass the fresh footprint_room check before priming the shared PR census. Prime exactly once for an admitted repair, before branch lookup, so subsequent PR state reads reuse the same census.",
+      "lesson_id": "dispatch-repair-footprint-before-census",
+      "research_sources": [
+        "https://github.com/ZenoWangzy/zenoforge/pull/199",
+        "engine/mac-autopilot/scheduler.d/dispatch-queue.sh",
+        "engine/mac-autopilot/scheduler.d/footprint.sh"
+      ],
+      "options_considered": [
+        "Keep the census immediately after room_for; rejected because room_for's cached footprint view can pass while the later fresh footprint check rejects the candidate.",
+        "Move the fresh footprint check before room_for; rejected because it spends footprint refresh work on candidates that capacity or priority already rejects.",
+        "Prime after fresh footprint admission and before branch lookup; selected because rejected candidates make no GitHub census call and admitted repairs retain one reusable census."
+      ],
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.d/dispatch-census-capacity.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Uses the real dispatch_pending and room_for functions with a cached footprint pass followed by a fresh footprint veto; asserts the rejected repair makes no PR census call, then asserts an admitted repair makes exactly one census call and dispatches.",
+          "test_file": "engine/mac-autopilot/scheduler.d/dispatch-census-capacity.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "regression-test",
+        "enforced_by": [
+          "engine/mac-autopilot/scheduler.d/dispatch-census-capacity.test.sh"
+        ]
+      }
     }
   ]
 }

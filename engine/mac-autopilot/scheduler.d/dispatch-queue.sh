@@ -124,18 +124,18 @@ dispatch_pending() {
           continue
         fi
         room_for "$id" repair "$u" false || continue
-        # refill 首个通过 room_for 的 PR 车道候选才取一次 census；满载时上面的 room_for 已跳过，一次都不取。
-        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }
         # repair_cap_admission may have just moved this unit onto the hard tier.
         u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
         pick implement "$u" || continue
+        footprint_room "$id" "$u" true || continue
+        # A refill pays for the PR census only after the repair clears the fresh-footprint gate.
+        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }
         branch="$(jqf -r '.branch // empty' <<<"$u")"
         if [[ -z "$branch" && -n "$pr_num" ]]; then
           branch="$(tick_pr_branch "$pr_num")"
           [[ -n "$branch" ]] && set_unit "$id" ".branch=$(js "$branch")"
         fi
         [[ -n "$branch" ]] || { say "repair-pending unit=$id: PR branch unavailable"; continue; }
-        footprint_room "$id" "$u" true || continue
         wt=""
         if [[ "$pr_num" =~ ^[0-9]+$ && "$lane" != direct-main ]]; then
           wt="$(pre_dispatch_pr_admission "$id" "$branch" "$pr_num" "repair-pending before dispatch")" || continue

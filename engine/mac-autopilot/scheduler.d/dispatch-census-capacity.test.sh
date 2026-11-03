@@ -17,6 +17,9 @@ printf '%s\n' '{"workers":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$engine_dir/mac-autopilot/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
+if [[ -n "${DISPATCH_QUEUE_SOURCE:-}" ]]; then
+  source "$DISPATCH_QUEUE_SOURCE"
+fi
 
 LOG="$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"
 UNITS="$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
@@ -92,4 +95,47 @@ dispatch_pending true
 [[ "$(cat "$GH_CALLS")" == 'pr list' ]] || fail "expected exactly one census read at 7/8, got: $(tr '\n' ';' < "$GH_CALLS")"
 [[ "$dispatch_calls" == 1 ]] || fail "admitted review candidate was not dispatched (calls=$dispatch_calls)"
 
-echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8)'
+# A repair can pass room_for's cached footprint check, then lose the fresh check because a
+# conflicting live worktree appeared. That candidate must not pay for a PR census.
+pick() {
+  [[ "$1" == implement ]] || return 1
+  PICK_MODEL=fixture; PICK_EFFORT=high; PICK_PROVIDER=codex; PICK_HARD=false
+  PICK_REASON=fixture; PICK_ROUTE_PROVIDER=codex
+}
+footprint_calls=0
+footprint_deny_call=2
+footprint_room() {
+  footprint_calls=$((footprint_calls + 1))
+  (( footprint_calls != footprint_deny_call ))
+}
+pre_dispatch_pr_admission() { printf '%s\n' "$ROOT"; }
+repair_failure_prompt() { printf 'fixture repair hint\n'; }
+resume_handoff_integration() { return 0; }
+repair_demote() { :; }
+ticket_budget_reason() { :; }
+dispatch_calls=0
+printf '%s\n' 'fixture review report' > "$MAC_AUTOPILOT_SUPERVISOR_DIR/review-501-fixture.md"
+jq -n '{units:[{id:"issue-4901",stage:"repair-pending",pr:501,branch:"agent/issue-4901",lane:"pr",title:"fixture repair",repair_hint:"fix hint",history:[]}]}' > "$UNITS"
+write_workers 7
+: > "$GH_CALLS"; : > "$LOG"
+TICK_PRS=''
+dispatch_pending true
+[[ "$footprint_calls" == 2 ]] || fail "repair did not pass cached and reach fresh footprint admission (calls=$footprint_calls)"
+[[ -z "$(cat "$GH_CALLS")" ]] || fail "footprint-blocked repair fetched the PR census before fresh footprint admission ($(tr '\n' ';' < "$GH_CALLS"))"
+[[ "$dispatch_calls" == 0 ]] || fail "footprint-blocked repair dispatched (calls=$dispatch_calls)"
+
+# Once fresh footprint admission succeeds, a repair still primes exactly one current census
+# and reaches dispatch. This guards the admitted path as well as the rejection path.
+footprint_calls=0
+footprint_deny_call=0
+dispatch_calls=0
+jq -n '{units:[{id:"issue-4901",stage:"repair-pending",pr:501,branch:"agent/issue-4901",lane:"pr",title:"fixture repair",repair_hint:"fix hint",history:[]}]}' > "$UNITS"
+write_workers 7
+: > "$GH_CALLS"; : > "$LOG"
+TICK_PRS=''
+dispatch_pending true
+[[ "$(cat "$GH_CALLS")" == 'pr list' ]] || fail "admitted repair did not make exactly one PR census read, got: $(tr '\n' ';' < "$GH_CALLS")"
+[[ "$footprint_calls" == 2 ]] || fail "admitted repair did not pass both footprint checks (calls=$footprint_calls)"
+[[ "$dispatch_calls" == 1 ]] || fail "admitted repair was not dispatched (calls=$dispatch_calls)"
+
+echo 'dispatch-census-capacity.test.sh: pass (no census after fresh-footprint rejection; one census for admitted repair and review; zero at 8/8)'
