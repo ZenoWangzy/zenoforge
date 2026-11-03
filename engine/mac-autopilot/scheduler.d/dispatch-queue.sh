@@ -272,6 +272,8 @@ $(decision_scope "$u")"
         checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "review-pending unit=$id: PR head $sha unavailable"; continue; }
         rep="review-${key}-${TAG}.md"
         prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+        # 打回报告缺可解析发现块后的同 head 重问：history 尾事件就是重问标记（重交合规报告后即被新事件取代）。
+        [[ "$(jqf -r '(.history // [])[-1].stage // empty' <<<"$u")" == review-findings-missing ]] && prompt+="$(findings_reask_rule "$u")"
         dispatch_if_room "$id" "review" "review" "${rep%.md}.worker.log" "$rep" \
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true ;;
       implement-pending)

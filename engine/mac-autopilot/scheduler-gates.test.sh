@@ -312,7 +312,10 @@ cancel_stub="$(declare -f cancel_branch_runs)"; CANCELS=()
 cancel_branch_runs() { CANCELS+=("$1|$2"); }
 pr_view_stub="$(declare -f pr_view)"; pr_view() { [[ "$2" == headRefName ]] && echo fix/branch; }
 units '{"units":[{"id":"pr-3","pr":3,"stage":"review","history":[]},{"id":"pr-4","pr":4,"stage":"review","hotpatch":true,"history":[]}]}'
-printf 'VERDICT: REQUEST-CHANGES\n' > "$sup/review-3-T1.md"; printf 'VERDICT: REQUEST-CHANGES\n' > "$sup/review-4-T1.md"
+# 带合规发现块的打回才进修复（无块的打回走 review-findings-missing 重问，不取消 CI）。
+reject_block='{"findings":[{"id":"F1","severity":"P1","file":"src/a.ts","line":4,"rule":"Defect","status":"open","summary":"x","introduced_by":"candidate","base_evidence":"absent in base","rerun_command":"pnpm vitest run a","rerun_output":"FAIL a"}],"dispositions":[]}'
+printf 'VERDICT: REQUEST-CHANGES\n\n```review-findings\n%s\n```\n' "$reject_block" > "$sup/review-3-T1.md"
+printf 'VERDICT: REQUEST-CHANGES\n\n```review-findings\n%s\n```\n' "$reject_block" > "$sup/review-4-T1.md"
 jq -n --arg sha "$H1" '{workers:[{pid:4244,unit:"pr-3",type:"review",log:"x.log",report:"review-3-T1.md",sha:$sha},{pid:4245,unit:"pr-4",type:"review",log:"x.log",report:"review-4-T1.md",sha:$sha}]}' > "$WORKERS"
 harvest_workers || :
 [[ "$(field pr-3 .stage)" == repair-pending && "${CANCELS[*]:-}" == "fix/branch|review requested changes; head will change" ]] || fail "request-changes did not cancel the PR's queued CI, or a hot patch was cancelled (${CANCELS[*]:-none})"
@@ -324,8 +327,8 @@ CANCELS=(); to_supervisor pr-3 "x" >/dev/null
   && "$(field pr-3 '.history[-1].decision.rejected[0]')" == 'Continue automated handling' \
   && "$(field pr-3 '.history[-1].decision.owner')" == scheduler ]] || fail 'supervisor handoff did not record its structured decision'
 
-# 打回时把结构化发现记进台账（.review_findings，每次打回一条）：只记 P0/P1 及其状态；块缺失或畸形记为 missing，
-# 打回照常进入 repair-pending（81% 的 Claude 打回报告没有块，缺失必须看得见，不能当成零发现）。
+# 打回时把结构化发现记进台账（.review_findings，每次打回一条）：只记 P0/P1 及其状态；块缺失或畸形记为 missing。
+# 缺块/畸形块的打回不再进修复：先同 head 重问一次（history 记 review-findings-missing），重问再失败转 supervisor。
 fence='```'
 findings_report() { # 文件 块内容（空串 = 不写块）
   printf 'VERDICT: REQUEST-CHANGES\n\n## 阻断\nF1 总额算错\n' > "$sup/$1"
@@ -432,15 +435,26 @@ findings_report rf-legacy-T1.md '[{"id":"F1","severity":"P1","file":"src/old.ts"
 harvest_rc pr-legacy rf-legacy-T1.md
 [[ "$(field pr-legacy '.review_findings[0] | [.block, .findings[0].introduced_by, .findings[0].base_evidence] | tojson')" == '["ok",null,null]' ]] \
   || fail 'a legacy findings array was not preserved as unattributed history'
-# 缺失、畸形一律记 missing（findings 为空），打回不受影响
+# 缺失、畸形一律记 missing（findings 为空），且绝不带着零发现进修复：第一次重问（review-pending + 契约重问标记）
 findings_report rf-4-T1.md ''
 harvest_rc pr-f4 rf-4-T1.md
-[[ "$(field pr-f4 '.review_findings[0] | [.block, (.findings | length)] | tojson')" == '["missing",0]' && "$(field pr-f4 .stage)" == repair-pending ]] || fail 'a rejection without a findings block was not recorded as missing'
+[[ "$(field pr-f4 '.review_findings[0] | [.block, (.findings | length)] | tojson')" == '["missing",0]' \
+  && "$(field pr-f4 .stage)" == review-pending \
+  && "$(field pr-f4 '.history[-1].stage')" == review-findings-missing \
+  && -z "$(field pr-f4 '.repair_hint // empty')" ]] \
+  || fail 'a rejection without a findings block entered repair instead of one re-ask'
+# 重问再失败：按评审失败转 supervisor，不当成本轮结论
+findings_report rf-4b-T1.md ''
+units '{"units":[{"id":"pr-f4b","stage":"review","history":[{"stage":"review-findings-missing","result":"rf-4a.md"}]}]}'
+jq -n --arg u pr-f4b --arg r rf-4b-T1.md --arg sha "$H1" '{workers:[{pid:4301,unit:$u,type:"review",log:"x.log",report:$r,sha:$sha}]}' > "$WORKERS"
+harvest_workers || :
+[[ "$(field pr-f4b '.history[-1].stage')" == supervisor-escalated && "$(field pr-f4b .stage)" == supervisor-review ]] \
+  || fail "a second unparseable rejection was not treated as a review failure (stage=$(field pr-f4b .stage))"
 n=0
 for bad in 'not json' '{"id":"F1"}' '[{"id":"F1","severity":"P1","line":42,"status":"open"}]' '[{"id":"F1","severity":"P9","file":"a.ts","line":1,"status":"open"}]' \
   '[{"id":"F1","severity":"P1","file":"a.ts","line":"42","status":"open"}]' '[{"id":"F1","severity":"P1","file":"a.ts","line":1,"status":"maybe"}]'; do
   n=$((n+1)); findings_report "rf-bad-$n-T1.md" "$bad"; harvest_rc "pr-fb$n" "rf-bad-$n-T1.md"
-  [[ "$(field "pr-fb$n" '.review_findings[0].block')" == missing && "$(field "pr-fb$n" .stage)" == repair-pending ]] || fail "malformed findings block not counted as missing: $bad"
+  [[ "$(field "pr-fb$n" '.review_findings[0].block')" == missing && "$(field "pr-fb$n" .stage)" == review-pending ]] || fail "malformed findings block not counted as missing or not re-asked: $bad"
 done
 bad_canonical='{"findings":[{"id":"F1","severity":"P1","file":"a.ts","line":1,"rule":"Defect","status":"open","summary":"x","introduced_by":"candidate"}],"dispositions":[]}'
 findings_report rf-bad-canonical-T1.md "$bad_canonical"
@@ -462,12 +476,36 @@ harvest_rc pr-precontract rf-precontract-T1.md
 { printf 'VERDICT: REQUEST-CHANGES\n\n%sreview-findings\n[{"id":"F1","severity":"P1","file":"a.ts","line":1,"status":"open"}]\n' "$fence"; } > "$sup/rf-open-T1.md"
 harvest_rc pr-fopen rf-open-T1.md
 [[ "$(field pr-fopen '.review_findings[0].block')" == missing ]] || fail 'a findings block that is never closed was accepted'
-# 有块与无块的单元阶段流转完全一致：只多出 review_findings
-findings_report rf-5-T1.md "$good_block"; harvest_rc pr-same rf-5-T1.md; with_block="$(field pr-same 'del(.review_findings,.repair_hint) | tojson')"
-[[ "$(field pr-same '.repair_hint // empty')" == 'F1 src/a.ts:42 — x' ]] || fail 'open P1 finding was not copied into the repair hint'
-findings_report rf-5-T1.md ''; harvest_rc pr-same rf-5-T1.md; without_block="$(field pr-same 'del(.review_findings,.repair_hint) | tojson')"
-[[ "$with_block" == "$without_block" && "$(field pr-same .stage)" == repair-pending \
-  && -z "$(field pr-same '.repair_hint // empty')" ]] || fail "findings block changed more than repair evidence: $with_block vs $without_block"
+# 有块：进修复并带修复提示；无块：同 head 重问，绝不进修复、不带提示
+findings_report rf-5-T1.md "$good_block"; harvest_rc pr-same rf-5-T1.md
+[[ "$(field pr-same .stage)" == repair-pending && "$(field pr-same '.repair_hint // empty')" == 'F1 src/a.ts:42 — x' ]] \
+  || fail "a rejection with findings did not reach repair with its hint (stage=$(field pr-same .stage))"
+findings_report rf-5-T1.md ''; harvest_rc pr-same rf-5-T1.md
+[[ "$(field pr-same .stage)" == review-pending \
+  && "$(field pr-same '.history[-1].stage')" == review-findings-missing \
+  && -z "$(field pr-same '.repair_hint // empty')" ]] \
+  || fail "a rejection without findings reached repair instead of a re-ask (stage=$(field pr-same .stage))"
+
+# ---- 契约测试：两个评审后端（codex 文件报告、claude stdout 报告）的真实报告形状都过同一个解析器 ----
+# claude 后端 11-03 观测形状（review-5027）：文件级发现写成 line:0，一个不合 schema 的 finding 废掉整块。
+claude_line0_block='{"findings":[{"id":"F1","severity":"P1","file":"packages/fleet-gateway/src/openai-compat/chat-completions.ts","line":1198,"rule":"Defect","status":"open","summary":"流式 Run 被浏览器会话启动阻塞。","introduced_by":"candidate","base_evidence":"origin/main 无此调用。","rerun_command":"rg -n startComputerSessionForRun","rerun_output":"chat-completions.ts:1198"},{"id":"F5","severity":"P2","file":"packages/employee-runtime/Dockerfile","line":0,"rule":"Standards","status":"open","summary":"PR 正文 blast-radius 段不完整。","introduced_by":"candidate","base_evidence":"契约要求 level-4 证明。","rerun_command":"gh pr view 5027 --json body","rerun_output":"正文无该段"}],"dispositions":[]}'
+findings_report rf-claude-line0-T1.md "$claude_line0_block"
+harvest_rc pr-claude-line0 rf-claude-line0-T1.md
+[[ "$(field pr-claude-line0 '.review_findings[0].block')" == missing && "$(field pr-claude-line0 .stage)" == review-pending ]] \
+  || fail 'claude shape with a file-level line:0 finding was not rejected as missing and re-asked'
+# 同一形状把文件级发现改 line:1 即合规：打回照常进修复
+claude_line1_block="$(jq -c '.findings[1].line = 1' <<<"$claude_line0_block")"
+findings_report rf-claude-line1-T1.md "$claude_line1_block"
+harvest_rc pr-claude-line1 rf-claude-line1-T1.md
+[[ "$(field pr-claude-line1 '.review_findings[0].block')" == ok && "$(field pr-claude-line1 .stage)" == repair-pending ]] \
+  || fail 'claude shape with line:1 file-level findings was not accepted'
+# codex 后端形状：canonical 块缺 base_evidence 仍拒（已有 bad_canonical 用例），此处断言同一解析器两条路径共用
+[[ -z "$(findings_block_of "$sup/rf-bad-canonical-T1.md" 2>/dev/null)" ]] || fail 'codex canonical shape without base_evidence was accepted'
+
+# 重问 prompt 段：点名上一份报告与契约要点（正整数 line），供 review-pending 派发附加
+reask="$(findings_reask_rule '{"review_report":"rf-4-T1.md"}')"
+[[ "$reask" == *rf-4-T1.md* && "$reask" == *"$REVIEW_CONTRACT_MD"* && "$reask" == *'正整数'* ]] \
+  || fail "findings re-ask rule lost the report, the contract path or the positive-line requirement: $reask"
 # Author dispositions are attached to the existing unit finding history and included in rereview context.
 disposition_report="$sup/repair-dispositions-T1.md"
 printf 'Repair delivered.\n\n%sreview-findings\n{"findings":[],"dispositions":[{"id":"F1","disposition":"fixed","reason":"The query now binds the authenticated tenant before returning records."}]}\n%s\n' "$fence" "$fence" > "$disposition_report"
@@ -1040,7 +1078,7 @@ units "{\"units\":[{\"id\":\"pr-5d\",\"pr\":5,\"stage\":\"repair-pending\",\"rev
 DISPATCHED=(); dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == repair:pr-5d:* && "$(reasons_of)" == "repair dispatched" ]] || fail "repair dispatch cancel did not carry its reason (${DISPATCHED[*]:-none})"
 units '{"units":[{"id":"pr-3v","pr":3,"stage":"review","history":[]}]}'
-printf 'VERDICT: REQUEST-CHANGES\n' > "$sup/review-3v-T1.md"
+printf 'VERDICT: REQUEST-CHANGES\n\n```review-findings\n%s\n```\n' "$reject_block" > "$sup/review-3v-T1.md"
 jq -n --arg sha "$H1" '{workers:[{pid:4246,unit:"pr-3v",type:"review",log:"x.log",report:"review-3v-T1.md",sha:$sha}]}' > "$WORKERS"
 harvest_workers || :
 [[ "$(reasons_of)" == "review requested changes" ]] || fail 'send-back cancel did not carry its reason'
@@ -3096,6 +3134,9 @@ wait "$(jq -r '.workers[-1].pid' "$WORKERS")" || :
 [[ ! -e "$SUP/r51.md" ]] || fail 'failed claude run left a harvestable report'
 
 # ---------- 提供方上限：冷却+回退，不计无产出、不转人工 ----------
+# 本段只测冷却机械：给一个不禁用任何在用族的 policy fixture，让 claude/terra 可选（禁用族行为下方专测）
+printf '{"forbidden":["nonexistent-family"]}\n' > "$fixture/permissive-policy.json"
+MODEL_POLICY_FORBIDDEN_FILE="$fixture/permissive-policy.json"; MODEL_POLICY_FORBIDDEN_WORDS=()
 printf 'tokens used\n617,176 20026092214463990\n' > "$fixture/tok.log"
 [[ "$(tokens_of "$fixture/tok.log")" == 617176 ]] || fail 'tokens_of must take only the first number'
 NOW_EPOCH=200000; rm -f "$A/cooldown.json"
@@ -3117,6 +3158,31 @@ pick implement '{"labels":["bug","hotfix"]}' && [[ "$PICK_MODEL" == gpt-6.1-terr
 pick implement '{"labels":["bug"]}' && [[ "$PICK_MODEL" == gpt-6-luna ]] || fail "non-hotfix unit picked $PICK_MODEL"
 build_codex_command review gpt-6-luna max pr-60 'p'
 [[ " ${CODEX_COMMAND[*]} " == *' --config service_tier="fast" '* ]] || fail 'fallback codex review lost its service tier'
+
+# ---------- 模型解析：配置点名 model policy 禁用族 → 确定性跳过 + 日志告警（11-03：models.review=claude-haiku-5-5） ----------
+MODEL_POLICY_FORBIDDEN_FILE=""; MODEL_POLICY_FORBIDDEN_WORDS=()   # 回到引擎默认 policy（禁 claude/terra/...）
+CFG="$(jq '.models.review=["claude-haiku-5-5","high"] | .models.review_fallback=["gpt-6-luna","max","fast"] | .models.implement_hotfix=["gpt-6.1-terra","high"] | .models.implement=["gpt-6-luna","max","fast"]' <<<"$CFG")"
+rm -f "$A/.models-policy-warned"
+pick review && [[ "$PICK_MODEL" == gpt-6-luna && "$PICK_EFFORT" == max ]] \
+  || fail "forbidden review family was not skipped to the deterministic fallback ($PICK_MODEL)"
+grep -q 'models.review=claude-haiku-5-5 is a forbidden family per model policy; skipping to the next key' "$LOG" \
+  || fail 'skipping a forbidden family at pick() was not logged'
+pick review && [[ "$PICK_MODEL" == gpt-6-luna ]] || fail 'forbidden-family resolution is not deterministic across calls'
+# 配置加载检查：坏组合一次性点名；同一配置状态不重复告警
+warn_forbidden_model_config
+grep -Eq 'config models name forbidden model families.*models.review=claude-haiku-5-5.*models.implement_hotfix=gpt-6.1-terra' "$LOG" \
+  || fail 'config-load warning did not name every forbidden models.* key'
+warns_before="$(grep -c 'config models name forbidden model families' "$LOG")"
+warn_forbidden_model_config
+[[ "$(grep -c 'config models name forbidden model families' "$LOG")" == "$warns_before" ]] \
+  || fail 'config-load warning repeated for an unchanged config state'
+# 全部键都被禁且无可用回退：拒绝派发并说明原因（不是谎报 provider cooldown）
+CFG="$(jq '.models.implement=["claude-haiku-5-5","high"] | del(.models.implement_fallback, .models.implement_hotfix)' <<<"$CFG")"
+if pick implement '{"labels":["bug"]}'; then fail "pick did not refuse a config where every key names a forbidden family ($PICK_MODEL)"; fi
+grep -q 'no implement model available (implement=claude-haiku-5-5 is forbidden and no allowed key is configured)' "$LOG" \
+  || fail 'pick refusal reason did not name the forbidden key'
+MODEL_POLICY_FORBIDDEN_FILE="$fixture/permissive-policy.json"; MODEL_POLICY_FORBIDDEN_WORDS=()   # 还给冷却段语义
+CFG="$(jq '.models.review=["claude-haiku-5-5","xhigh"] | .models.review_fallback=["gpt-6-luna","max","fast"] | .models.implement=["gpt-6-luna","max","fast"] | .models.implement_hotfix=["gpt-6.1-terra","high"]' <<<"$CFG")"
 
 # 日志里的普通文字（技能说明 "an overloaded word"）不能触发冷却；真实的 codex 错误行可以
 rm -f "$A/cooldown.json"; NOW_EPOCH=300000

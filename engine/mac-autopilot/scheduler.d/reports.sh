@@ -121,6 +121,16 @@ review_findings_hint_update() { # report → jq update fragment for open P0/P1 f
   [[ -n "$hint" ]] || return 0
   printf ' | .repair_hint=%s' "$(js "$hint")"
 }
+
+# 打回但发现块不可解析时的同 head 重问段（harvest 的 review-findings-missing 路径派发时附带）。
+# 11-03 根因：Claude 评审员把文件级发现写成 line:0，一个不合 schema 的 finding 废掉整块，
+# REQUEST-CHANGES 带零发现进了修复。重问点名上一份报告与契约要点，评审员据此重交合规报告。
+findings_reask_rule() { # unit-json → prompt 片段
+  local prev
+  prev="$(jqf -r '.review_report // empty' <<<"$1")"
+  printf '\n【发现块重问】上一份评审报告 %s 的结论是打回，但其 review-findings 块缺失或不符合 schema，流水线无法把发现交给修复，请重做这次评审并重新交付完整报告。机器可读块是报告最后一个 fence、恰好一个，正文与块所述一致；每个 finding 的字段与取值以 %s 为准：line 必须是正整数（文件级发现写 1，不是 0），file 用仓库相对路径，severity 取 P0-P3，introduced_by 与 base_evidence 必填非空；发现 ID 沿用上一份报告的编号。\n' \
+    "${prev:-上一份报告}" "$REVIEW_CONTRACT_MD"
+}
 # 一次打回在 .review_findings 里追加一条：round 是它在 history 里的第几次打回，findings 只含阻断级（P0/P1，
 # 含 resolved 状态，由复发规则排除）；块缺失或畸形记 block=missing（node_health 的 review.findings_missing_pct 数它）。
 # 不写 history：顾问触发读 history 的最后一条是否为 review-request-changes。

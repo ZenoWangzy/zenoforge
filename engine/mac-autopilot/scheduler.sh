@@ -98,6 +98,7 @@ if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${
   [[ -z "$reconcile_event" ]] || say "$reconcile_event"
 fi
 CFG="$(cat "$A/config.json")"
+warn_forbidden_model_config
 INCIDENT_LABELS="$(incident_labels_from_config "$CFG")"
 INCIDENT_RULE="$(incident_rule_text)"
 UNITS="$A/units.json"; WORKERS="$A/workers.json"
