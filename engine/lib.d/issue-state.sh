@@ -474,6 +474,33 @@ issue_transition_state_is_valid() {
 }
 
 
+# The state file is a cache of the issue's live GitHub stage label. A writer
+# that edits labels out of band (2026-11-03: a founder-authorized head-proxy
+# arbiter applied ADMIT verdicts with raw `gh issue edit --add-label
+# ready-for-agent --remove-label needs-advisor`) moves the label without this
+# cache, and the next transition then refuses on the stale cached "from" --
+# #4737/#4775/#4885/#4974/#5039/#5040/#5102/#5103 stuck refusing
+# needs-advisor -> awaiting-release (reason=merged-pr) while their live label
+# was already ready-for-agent, a row the table allows. GitHub labels are the
+# one surface every actor (pipeline, arbiter, human) reads and writes, so on
+# disagreement the live label is the authority. Prints the live stage label
+# only when the read succeeds and the issue carries exactly one state label;
+# otherwise prints nothing so the caller's refusal stands.
+issue_transition_live_label_state() {
+  local n="$1" label
+  local -a state_labels=()
+  declare -F issue_label_read_live >/dev/null || return 1
+  issue_label_read_live "$n" || return 1
+  while IFS= read -r label; do
+    [ -n "$label" ] || continue
+    ticket_stage_is_label "$label" || continue
+    state_labels+=("$label")
+  done <<< "${ISSUE_LABEL_VIEW_LABELS[$n]:-}"
+  ((${#state_labels[@]} == 1)) || return 1
+  printf '%s\n' "${state_labels[0]}"
+}
+
+
 issue_transition_allowed() {
   local from="$1" to="$2" reason="$3"
   issue_transition_state_is_valid "$from" && issue_transition_state_is_valid "$to" || return 1
@@ -552,7 +579,7 @@ issue_transition_allowed() {
 # the local snapshot back, and HEALTH reports any remote drift it cannot undo.
 # skip-label-write is for callers that already know the destination label is set.
 issue_transition() (
-  local n="${1:-}" to="${2:-}" reason="${3:-}" patch="${4:-.}" skip_label_write="${5:-0}" intake_json="${6:-}" source_issue="${7:-}" open_issue="${8:-0}" expected_hold="${9:-}" lock_mode="${10:-}" f before from add_label label restore_status=0 transition_lock_fd release_hold_overlay=0
+  local n="${1:-}" to="${2:-}" reason="${3:-}" patch="${4:-.}" skip_label_write="${5:-0}" intake_json="${6:-}" source_issue="${7:-}" open_issue="${8:-0}" expected_hold="${9:-}" lock_mode="${10:-}" f before from live_from add_label label restore_status=0 transition_lock_fd release_hold_overlay=0
   local had_state=0 requeue_epoch started_epoch merged_epoch merged_at reason_file requeue_transition=0 hold_json write_kind="label write"
   local -a add_labels=() edit_args=() api_args=() issue_labels=()
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "issue_transition: valid issue number required" >&2; return 64; }
@@ -613,8 +640,21 @@ issue_transition() (
     esac
   fi
   if ! issue_transition_allowed "$from" "$to" "$reason"; then
-    echo "issue_transition: refused #$n $from -> $to (reason=$reason)" >&2
-    return 1
+    # Cache/label drift reconcile, only on the refusal path so the common
+    # path pays nothing: if the LIVE stage label differs from the cached
+    # "from" and the live origin is allowed, continue from the label (the
+    # state write and label write below then leave cache and label equal
+    # again). A refused transition whose live label agrees, is missing, or is
+    # itself not allowed for this reason stays refused.
+    live_from="$(issue_transition_live_label_state "$n" || true)"
+    if [ -n "$live_from" ] && [ "$live_from" != "$from" ] \
+      && issue_transition_allowed "$live_from" "$to" "$reason"; then
+      echo "issue_transition: state drift #$n cached=$from label=$live_from" >&2
+      from="$live_from"
+    else
+      echo "issue_transition: refused #$n $from -> $to (reason=$reason)" >&2
+      return 1
+    fi
   fi
   if [ "$to" != on-hold ] && [ "$from" != on-hold ]; then
     case "$to:$reason" in
