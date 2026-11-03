@@ -5924,7 +5924,7 @@ sched_case_glm_share_unknown_quota_fails_to_codex() {
   done
   [[ "$found_zcode" == true ]] || { echo 'not ok - scheduler.test.sh: no zcode-share unit was checked for unknown quota' >&2; exit 1; }
   command jq -n --argjson now "$((NOW_EPOCH - 901))" '{five_h_pct:1,week_pct:1,cap_5h:85,max_age_seconds:900,freshness:"fresh",read_at:$now}' > "$ZCODE_QUOTA_SNAPSHOT_FILE"
-  unit='{"id":"issue-stale-quota","issue":6251,"stage":"implement-pending"}'
+  unit="$(command jq -cn --arg id issue-stale-quota --argjson issue "$issue" '{id:$id,issue:$issue,stage:"implement-pending"}')"
   pick implement "$unit" || { echo 'not ok - scheduler.test.sh: stale quota fallback had no provider' >&2; exit 1; }
   [[ "$PICK_PROVIDER" == codex && "$PICK_REASON" == quota-unknown-zcode-to-codex ]] \
     || { echo 'not ok - scheduler.test.sh: stale quota snapshot was not treated as unknown' >&2; exit 1; }
