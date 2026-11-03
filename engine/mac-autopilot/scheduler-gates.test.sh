@@ -1912,10 +1912,20 @@ harvest_workers || :
 [[ "$(field issue-7 .stage)" == review-pending ]] || fail "PR-less implement with a local commit did not go to review ($(field issue-7 .stage))"
 [[ "$(field issue-8 .stage)" == closed && "${GH_ISSUE_CALLS[*]:-}" == *"issue close 8"* ]] || fail 'OBSOLETE implement did not close the issue'
 DISPATCHED=(); DISPATCH_PROMPT=""
+prless_pick_real="$(declare -f pick_review_for_unit)"
+prless_room_real="$(declare -f room_for)"
+prless_verify_real="$(declare -f verify_handoff_delivery)"
+prless_risk_real="$(declare -f risk_class_safety_rule)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
+risk_class_safety_rule() { :; }
 units '{"units":[{"id":"issue-7","issue":7,"lane":"direct-main","branch":"agent/auto-issue-7","stage":"review-pending","history":[]}]}'
 dispatch_pending || :
-[[ "${DISPATCHED[0]:-}" == "review:issue-7:$ih_local" && "$DISPATCH_PR_HEAD" == "$ih_base" && "$DISPATCH_PROMPT" == *"issue #7"* ]] || fail "PR-less unit not reviewed on its local commit (${DISPATCHED[*]:-none})"
+[[ "${DISPATCHED[0]:-}" == "review:issue-7:$ih_local" && "$DISPATCH_PR_HEAD" == "$ih_base" && "$DISPATCH_PROMPT" == *"issue #7"* ]] \
+  || fail "PR-less unit not reviewed on its local commit (stage=$(field issue-7 .stage), dispatches=${DISPATCHED[*]:-none})"
 DISPATCHED=(); DISPATCH_PROMPT=""
+eval "$prless_pick_real"; eval "$prless_room_real"; eval "$prless_verify_real"; eval "$prless_risk_real"
 # 编排简报的六个字段（pstack orchestrate）按序成段：GOAL/SCOPE/ACCEPTANCE/VERIFY/FORBIDDEN/REPORT
 impl_headings() { # prompt → 0 当六个标题各占一行开头且按序出现
   local h pos last=0
