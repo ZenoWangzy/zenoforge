@@ -525,7 +525,7 @@ MERGED_PR_GUARD_OUT="$(AGENT_HOME="$MERGED_PR_GUARD_HOME" REPO=test/repo bash -c
   conclude_merged_run 510008 796 || conclude_status=$?
   if [ "$conclude_status" -eq 0 ]; then echo accepted; else echo rejected; fi
   jq -c . "$STATE_DIR/510008.json"
-' _ "$SCRIPT_DIR")"
+' _ "$SCRIPT_DIR")" || :
 assert_eq 'feature-branch merge leaves ticket state untouched' \
   $'rejected\n{"state":"implement","attempts":1}' "$MERGED_PR_GUARD_OUT"
 rm -rf "$MERGED_PR_GUARD_HOME"

@@ -1230,7 +1230,9 @@ GH_RUNS=777; GH_RERUN_FAIL_ID=
 eval "$cancel_unit_runs_saved"; GH_HEAD="$gh_head_saved"; GH_RUNS="$gh_runs_saved"; GH_RERUNS=()
 eval "$repair_no_push_selector_real"; eval "$repair_no_push_target_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 DISPATCHED=()
-units '{"units":[{"id":"pr-6","pr":6,"stage":"rereview-pending","history":[]}]}'
+rereview_lane_policy="$(lane_policy_blob)"
+units "$(jq -cn --arg policy "$rereview_lane_policy" \
+  '{units:[{id:"pr-6",pr:6,stage:"rereview-pending",lane:"pr",lane_policy:$policy,history:[]}]}')"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "review:pr-6:$H1" ]] || fail "rereview without a baseline must be a full review (got ${DISPATCHED[*]:-none})"
 [[ "$DISPATCH_PROMPT" == *".agents/skills/code-review/SKILL.md"* ]] || fail 'full review prompt does not reference the canonical contract'
