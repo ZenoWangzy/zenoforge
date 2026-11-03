@@ -264,8 +264,12 @@ higher_priority_waiting() { # priority → higher-priority live waiter (stdout);
   return 1
 }
 
+dispatch_capacity_free() { # worker slot available; the same predicate room_for enforces per unit
+  local cur; cur="$(live_workers)"
+  (( cur < MAX ))
+}
 room_for() { # unit-id type [unit-json] [fresh-footprint=true]：焦点与并发检查
-  local u="${3:-}" priority waiter cur impl_cap n_impl fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false
+  local u="${3:-}" priority waiter impl_cap n_impl fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"
   if [[ "$2" == repair ]]; then repair_cap_admission "$1" "$u" || return 1; fi
   if [[ "$2" == review || "$2" == rereview ]]; then
@@ -285,8 +289,7 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true]：焦点与并发
     say "skip dispatch unit=$1 priority=$priority (higher-priority run waiting at luna/zc gate: $waiter)"
     return 1
   fi
-  cur="$(live_workers)"
-  if (( cur >= MAX )); then say "skip dispatch unit=$1 (capacity $cur/$MAX)"; return 1; fi
+  if ! dispatch_capacity_free; then say "skip dispatch unit=$1 (capacity $(live_workers)/$MAX)"; return 1; fi
   impl_cap="$IMPLEMENT_CAP"
   if [[ ( "$2" == "implement" || "$2" == "repair" ) && "$check_footprint" == true ]]; then
     footprint_room "$1" "$u" "$fresh_footprint" || return 1

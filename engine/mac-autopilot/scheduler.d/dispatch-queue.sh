@@ -6,7 +6,9 @@ dispatch_pending() {
   if [[ "$local_refill" != true ]]; then
     tick_prs_changed # Running workers may have pushed since the previous phase.
     # Load the open-PR census in this shell: $(tick_prs) in a subshell cannot cache it, so every lookup re-ran the 300-PR list.
-    tick_prs_prime
+    # Capacity-gated (incident #5147, #5200 上游化): live 已满时每个候选都会在 room_for 的容量检查处跳过，
+    # census（gh pr list --limit 300，实测 9–15s）此时是纯浪费；满载的 12h 里 51/387 次 refill 白付了这笔。
+    dispatch_capacity_free && tick_prs_prime
   fi
   TICK_DISPATCH_LOCAL_REFILL="$local_refill"
   if [[ "$local_refill" != true ]] && declare -F advisor_harvest >/dev/null; then
@@ -32,12 +34,11 @@ dispatch_pending() {
       self_fix_dispatch "$u" || true
       continue
     fi
+    # 慢拍：容量空出（如拍内有 worker 退出）时逐单元补一次 census；满载时不取。
+    # refill 不在这里取 census：PR 车道候选先过 room_for（容量、足迹、优先级），
+    # 第一个真正通过 room_for 的候选才在 stage handler 里取一次（#5200 的容量门控，上游化）。
     if [[ "$local_refill" != true ]]; then
-      tick_prs_prime
-    elif [[ "$stage" == repair-pending || "$stage" == review-pending || "$stage" == rereview-pending ]] \
-      && [[ "$local_refill_prs_primed" != true ]]; then
-      tick_prs_prime
-      local_refill_prs_primed=true
+      dispatch_capacity_free && tick_prs_prime
     fi
     # 止损预算（#4363）：第 4 轮（implement 加 repair）或超 4h 墙钟不再派发——
     # 原票经 hold.sh（on-hold 的唯一写入口，带 24h 过期的 durable hold 记录）自动搁置并评论附原因，
@@ -123,6 +124,8 @@ dispatch_pending() {
           continue
         fi
         room_for "$id" repair "$u" false || continue
+        # refill 首个通过 room_for 的 PR 车道候选才取一次 census；满载时上面的 room_for 已跳过，一次都不取。
+        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }
         # repair_cap_admission may have just moved this unit onto the hard tier.
         u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
         pick implement "$u" || continue
@@ -196,6 +199,7 @@ $(decision_scope "$u")"
         [[ -n "$pr_num" || "$prless" == 1 ]] || { to_supervisor "$id" "rereview-pending without a PR"; continue; }
         if [[ "$(jqf -r '.reopen_pr // false' <<<"$u")" == true ]]; then reopen_reverted_pr "$id" "$pr_num"; continue; fi
         room_for "$id" rereview "$u" || continue
+        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }
         pick_review_for_unit "$u" || continue
         target="$(unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")")" || continue
         read -r pr_head sha <<<"$target"
@@ -266,6 +270,7 @@ $(decision_scope "$u")"
       review-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || continue
         room_for "$id" review "$u" || continue
+        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }
         pick_review_for_unit "$u" || continue
         target="$(unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")")" || continue
         read -r pr_head sha <<<"$target"
