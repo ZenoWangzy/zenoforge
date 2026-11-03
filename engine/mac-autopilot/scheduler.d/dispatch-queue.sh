@@ -123,6 +123,8 @@ dispatch_pending() {
           continue
         fi
         room_for "$id" repair "$u" false || continue
+        # repair_cap_admission may have just moved this unit onto the hard tier.
+        u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
         pick implement "$u" || continue
         branch="$(jqf -r '.branch // empty' <<<"$u")"
         if [[ -z "$branch" && -n "$pr_num" ]]; then
@@ -188,7 +190,7 @@ $(matt_method_rule "$wt")
 5. 修复说明（改动、验证输出摘要、push SHA 或本地提交 SHA）写到 $SUP/${rep}，交付完即结束。
 $(decision_scope "$u")"
         dispatch_if_room "$id" "repair" "repair" "${rep%.md}.worker.log" "$rep" \
-          "$PICK_MODEL" "$PICK_EFFORT" "$prompt$(sweep_rule "$u")$(supervisor_rule "$u")" "" "$wt" "" "$failure" "$u" false && [[ -n "$pr_num" ]] && repair_demote "$id" "$pr_num" "$branch"
+          "$PICK_MODEL" "$PICK_EFFORT" "$prompt$(sweep_rule "$u")$(supervisor_rule "$u")" "" "$wt" "" "$failure" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" && [[ -n "$pr_num" ]] && repair_demote "$id" "$pr_num" "$branch"
         true ;;
       rereview-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || { to_supervisor "$id" "rereview-pending without a PR"; continue; }
@@ -381,7 +383,7 @@ After implementation, refresh IDs from the actual changed paths with node engine
 
 $deliver"
         dispatch_if_room "$id" "implement" "implement" "${rep%.md}.worker.log" "$rep" \
-          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "" "$wt" "" "$prompt" "$u" false || true ;;
+          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "" "$wt" "" "$prompt" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" || true ;;
     esac
   done <<<"$ordered"
   footprint_convoy_alert || say 'footprint-convoy alert check failed'

@@ -351,6 +351,30 @@ web_advisor_provider_model_fallback() {
   sed -n 's/^MODEL_FALLBACK: //p' "$1" 2>/dev/null | tail -n 1
 }
 
+# web_advisor_provider_model_fallback_signature <fallback reason> -> stable diagnostic class.
+web_advisor_provider_model_fallback_signature() {
+  local reason="${1,,}"
+  case "$reason" in
+    *picker*not*found*|*picker*missing*|*not*found*picker*) printf 'picker-not-found\n' ;;
+  esac
+}
+
+web_advisor_provider_model_fallback_signature_from_log() {
+  local log_file="$1" reason signature
+  reason="$(web_advisor_provider_model_fallback "$log_file")"
+  signature="$(web_advisor_provider_model_fallback_signature "$reason")"
+  if [[ -n "$signature" ]]; then
+    printf '%s\n' "$signature"
+  elif grep -Eiq 'picker[^[:cntrl:]]*not[[:space:]_-]*found|not[[:space:]_-]*found[^[:cntrl:]]*picker' "$log_file" 2>/dev/null; then
+    printf 'picker-not-found\n'
+  fi
+}
+
+web_advisor_provider_error_codes() {
+  { grep -Eo 'ADVISOR_(MODEL_UNVERIFIED|ANSWER_TIMEOUT|SEND_NOT_CONFIRMED)' "$1" 2>/dev/null || true; } \
+    | sort -u | jq -Rsc 'split("\n") | map(select(length > 0))'
+}
+
 # web_advisor_provider_normalize_batch_json < raw reply -> stdout
 # The browser UI occasionally inserts a citation token into JSON string content,
 # and may emit a bare quoted control attribute inside a string. Repair only
@@ -623,7 +647,7 @@ web_advisor_provider_forget_job() {
 # {is_error, structured_output} envelope after a terminal result. Cleans up
 # the job directory only once a terminal result is consumed.
 web_advisor_provider_poll() {
-  local job_id="$1" job_dir="$WEB_ADVISOR_PROVIDER_JOB_DIR/$1" node_status answer err_tail model_used
+  local job_id="$1" job_dir="$WEB_ADVISOR_PROVIDER_JOB_DIR/$1" node_status answer err_tail model_used fallback_signature error_codes
   if [ ! -f "$job_dir/done" ]; then
     web_advisor_provider_resume_job_if_stopped "$job_id" || true
     return 2
@@ -637,15 +661,25 @@ web_advisor_provider_poll() {
   fi
   if [ "$node_status" != "0" ]; then
     err_tail="$(tail -c 2000 "$job_dir/answer.err" 2>/dev/null)"
+    fallback_signature="$(web_advisor_provider_model_fallback_signature_from_log "$job_dir/answer.err")"
+    error_codes="$(web_advisor_provider_error_codes "$job_dir/answer.err")"
     rm -rf "$job_dir"
     jq -nc --arg result "$err_tail" --arg status "$node_status" \
-      '{is_error: true, subtype: "web_advisor_provider_call_failed", result: $result, web_advisor_provider_exit_status: ($status|tonumber)}'
+      --arg fallback "$fallback_signature" --argjson codes "$error_codes" \
+      '{is_error: true, subtype: "web_advisor_provider_call_failed", result: $result, web_advisor_provider_exit_status: ($status|tonumber)}
+       + {advisor_error_codes:$codes}
+       + (if $fallback == "" then {} else {model_fallback_signature:$fallback} end)'
     return 0
   fi
   answer="$(cat "$job_dir/answer.out" 2>/dev/null)"
   model_used="$(web_advisor_provider_model_used "$job_dir/answer.err")"
+  fallback_signature="$(web_advisor_provider_model_fallback_signature_from_log "$job_dir/answer.err")"
+  error_codes="$(web_advisor_provider_error_codes "$job_dir/answer.err")"
   rm -rf "$job_dir"
-  web_advisor_provider_parse_answer "$answer" "$model_used"
+  web_advisor_provider_parse_answer "$answer" "$model_used" \
+    | jq -c --arg fallback "$fallback_signature" --argjson codes "$error_codes" \
+      '. + {advisor_error_codes:$codes}
+       + (if $fallback == "" then {} else {model_fallback_signature:$fallback} end)'
 }
 
 reconcile_stale_web_advisor_provider_jobs() {

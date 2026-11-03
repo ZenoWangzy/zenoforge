@@ -3,7 +3,8 @@
   "properties": {
     "verdict": {
       "type": "string",
-      "enum": ["misclassified", "recut", "advised", "maintainer", "tracker"]
+      "enum": ["misclassified", "recut", "advised", "maintainer", "tracker", "duplicate"],
+      "description": "tracker and duplicate are terminal close verdicts and need no implementation plan. Every other verdict requires plan."
     },
     "risk_class": {
       "type": "string",
@@ -22,6 +23,41 @@
     "decision_md": {
       "type": "string",
       "description": "Required for verdict=advised: the actual engineering ruling, stored in the issue's state file under advisor_decision so the implement leg can inject it into its own prompt. Empty string when not applicable."
+    },
+    "plan": {
+      "type": "object",
+      "properties": {
+        "changes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "file": {"type": "string", "minLength": 1, "pattern": "\\S"},
+              "symbol": {"type": "string", "minLength": 1, "pattern": "\\S"},
+              "change": {"type": "string", "minLength": 1, "pattern": "\\S"}
+            },
+            "required": ["file", "symbol", "change"],
+            "additionalProperties": false
+          },
+          "description": "Concrete changes. Every item names a repository file, a symbol in it, and what to change."
+        },
+        "tests_fail_first": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1, "pattern": "\\S"},
+          "description": "Exact focused tests or commands that reproduce the defect and must fail before the fix."
+        },
+        "non_goals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1, "pattern": "\\S"},
+          "description": "Specific adjacent work excluded from this change."
+        }
+      },
+      "required": ["changes", "tests_fail_first", "non_goals"],
+      "additionalProperties": false,
+      "description": "Required for every verdict except terminal close verdicts tracker and duplicate."
     },
     "recut_md": {
       "type": "string",
@@ -51,5 +87,15 @@
     }
   },
   "required": ["verdict", "risk_class", "level", "reasoning_md", "decision_md", "recut_md", "founder_question_md", "founder_subject", "merge_conditions_md", "required_test_paths", "expected_packages_addendum"],
+  "allOf": [
+    {
+      "if": {
+        "properties": {"verdict": {"enum": ["tracker", "duplicate"]}},
+        "required": ["verdict"]
+      },
+      "then": {},
+      "else": {"required": ["plan"]}
+    }
+  ],
   "additionalProperties": false
 }

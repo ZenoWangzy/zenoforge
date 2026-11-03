@@ -197,12 +197,14 @@ self_check_harvest() {
     fi
   done < <(jqf -r '.units[] | select(.self_check_pid!=null) | [.id,.self_check_pid,.self_check_output,(.self_check_start // "")] | @tsv' "$UNITS")
 }
-self_fix_dispatch() { # unit JSON; same session, model, branch and workdir
-  local u="$1" id dir branch out rep prompt model effort deliver key failure
+self_fix_dispatch() { # unit JSON; keep its selected provider/session unless quota or hard-tier routing changes it
+  local u="$1" id dir branch out rep prompt model effort provider hard_escalation route_reason route_provider deliver key failure
   id="$(jqf -r .id <<<"$u")"
   room_for "$id" repair "$u" false || return 1
-  model="$(jqf -r .implement_model <<<"$u")"; effort="$(jqf -r .implement_effort <<<"$u")"
-  cooling "$(provider_of "$model")" && return 1
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+  pick implement "$u" || return 1
+  model="$PICK_MODEL"; effort="$PICK_EFFORT"; provider="$PICK_PROVIDER"
+  hard_escalation="$PICK_HARD"; route_reason="$PICK_REASON"; route_provider="$PICK_ROUTE_PROVIDER"
   dir="$(jqf -r .self_check_workdir <<<"$u")"; branch="$(jqf -r .branch <<<"$u")"
   git -C "$dir" checkout -q "$branch" || return 1
   out="$(jqf -r .self_check_output <<<"$u")"; key="$(jqf -r '.pr // .id' <<<"$u")"
@@ -217,8 +219,14 @@ $(tail -100 "$out")"
   prompt="实现后的确定性自检失败，尚未派出评审。这是原实现会话的自修复，保持原任务范围，修复下列失败，不弱化断言。$failure
 在当前隔离 clone ${dir}、原分支 $branch 修复；$deliver 禁止 merge PR、部署或修改 GitHub 状态。把修复和验证证据写到 $SUP/${rep}，然后结束，流水线会重跑同一自检。
 $(matt_method_rule "$dir")"
-  set_unit "$id" '.self_fix_active=true'
-  if dispatch_if_room "$id" repair repair "${rep%.md}.worker.log" "$rep" "$model" "$effort" "$prompt" "" "$dir" "" "$failure" "$u"; then
+  if [[ "$(jqf -r '.implement_model // empty' <<<"$u")" == "$model" \
+      && "$(jqf -r '.implement_effort // empty' <<<"$u")" == "$effort" \
+      && "$(jqf -r '.implement_provider // empty' <<<"$u")" == "$provider" ]]; then
+    set_unit "$id" '.self_fix_active=true'
+  else
+    set_unit "$id" '.self_fix_active=false'
+  fi
+  if dispatch_if_room "$id" repair repair "${rep%.md}.worker.log" "$rep" "$model" "$effort" "$prompt" "" "$dir" "" "$failure" "$u" true "$provider" "$hard_escalation" "$route_reason" "$route_provider"; then
     set_unit "$id" "$(hist self-fix-dispatched) | .self_fix_pending=false | .self_check_fixes=((.self_check_fixes // 0)+1)"
   else
     set_unit "$id" '.self_fix_active=false'
@@ -300,8 +308,10 @@ footprint_recurrence_brief() { # unit JSON → up to 3 ranked CATALOG rules, bou
   return 0
 }
 
-dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json]
-  local unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter writer_provider check_footprint="${14:-true}"
+dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider]
+  local unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter \
+    check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider
+  provider="${15:-$(provider_of "$6")}"; route_provider="${18:-$provider}"
   [[ -n "$unit_json" ]] || unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   prompt="$(incident_worker_prompt "$3" "$unit_json" "$prompt")"
   room_for "$1" "$3" "$unit_json" true "$check_footprint" || return 1
@@ -320,7 +330,7 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
 流水线确定性自检（当前 head $9）：${check_status}。完整输出 $check_output
 $(tail -80 "$check_output" 2>/dev/null)"
   fi
-  dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "${12-$prompt}" || return 1
+  dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "${12-$prompt}" "$provider" "$hard_escalation" "$route_reason" || return 1
   if [[ "$3" == implement || "$3" == repair ]]; then set_unit "$1" ".implementation_report=$(js "$5")"; fi
   if [[ "$3" == review || "$3" == rereview ]]; then set_unit "$1" '.self_check_fixes=0'; fi
   if [[ "$3" == implement || "$3" == repair ]]; then
@@ -330,9 +340,9 @@ $(tail -80 "$check_output" 2>/dev/null)"
       footprint="$(unit_field "$1" '.footprint // []')"
     fi
     write_start_filter="$(STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" hist write-start "$footprint")"
-    write_start_filter+=" | .history[-1].work_type=$(js "$3")"
-    writer_provider="$(provider_of "$6")"
-    set_unit "$1" "$write_start_filter | .implement_backend=$(js "$writer_provider") | .implement_model=$(js "$6") | .implement_effort=$(js "$7") | .implement_identity=$(js "$writer_provider:$6:$7")"
+    write_start_filter+=" | .history[-1].work_type=$(js "$3") | .history[-1].provider=$(js "$provider") | .history[-1].hard_escalation=$hard_escalation"
+    set_unit "$1" "$write_start_filter | .implement_route_provider=(.implement_route_provider // $(js "$route_provider")) | .implement_provider=$(js "$provider") | .implement_backend=$(js "$provider") | .implement_model=$(js "$6") | .implement_effort=$(js "$7") | .implement_identity=$(js "$provider:$6:$7")"
+    [[ "$hard_escalation" != true ]] || set_unit "$1" '.hard_escalated=true'
     # Same-tick admission widens the active footprint set (write-start just landed).
     # Fold the dispatched unit into the tick snapshot and recompute the preflight
     # conflict map from cached data, so later candidates hit "footprint wait" at

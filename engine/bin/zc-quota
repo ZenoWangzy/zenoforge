@@ -9,15 +9,36 @@ import fs from 'node:fs';
 const HOME = process.env.HOME;
 const STATE = `${HOME}/.zenoforge/zc-quota.json`;
 const MARKER = `${HOME}/.zenoforge/zcode-exhausted-until`;
+const QUOTA_MAX_AGE_SECONDS = Number(process.env.ZC_QUOTA_MAX_AGE_SECONDS || 900);
 const CAP_5H = Number(process.env.ZC_5H_CAP || 85);              // stop starting ZCode at this 5h percentage
 const RESET_WEEK_AT = Number(process.env.ZC_WEEK_RESET_AT || 98); // spend a weekly reset at this weekly percentage
 const PAGE = 'https://bigmodel.cn/coding-plan/personal/usage';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
-const pages = await (await fetch('http://127.0.0.1:9222/json/list')).json();
+function markSnapshotUnknown() {
+  try {
+    let previous = {};
+    try { previous = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
+    fs.writeFileSync(STATE, JSON.stringify({ ...previous, freshness: 'unknown' }) + '\n');
+  } catch (stateError) {
+    log('could not mark quota snapshot unknown:', stateError.message);
+  }
+}
+
+let pages;
+try { pages = await (await fetch('http://127.0.0.1:9222/json/list')).json(); }
+catch (e) {
+  markSnapshotUnknown();
+  log('zc-quota failed:', e.message);
+  process.exit(3);
+}
 const page = pages.find(p => p.type === 'page' && p.url.startsWith(PAGE));
-if (!page) { log('usage tab not open in the shared Chrome; nothing read'); process.exit(3); }
+if (!page) {
+  markSnapshotUnknown();
+  log('usage tab not open in the shared Chrome; nothing read');
+  process.exit(3);
+}
 const ws = new WebSocket(page.webSocketDebuggerUrl);
 let id = 0; const waits = new Map(); let hits = [];
 const call = (method, params = {}) => new Promise(r => { const i = ++id; waits.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
@@ -94,9 +115,10 @@ try {
     fs.rmSync(MARKER, { force: true });  // only clear a hold this script wrote; a provider refusal's marker stays
     log(`release ZCode hold: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
   }
-  fs.writeFileSync(STATE, JSON.stringify({ ...q, read_at: now, cap_5h: CAP_5H }) + '\n');
+  fs.writeFileSync(STATE, JSON.stringify({ ...q, read_at: now, cap_5h: CAP_5H, max_age_seconds: QUOTA_MAX_AGE_SECONDS, freshness: 'fresh' }) + '\n');
   const iso = t => t ? new Date(t * 1000).toISOString() : 'not started';
   log(`5h ${q.five_h_pct}% (reset ${iso(q.five_h_reset)}) weekly ${q.week_pct}% (reset ${iso(q.week_reset)})`);
 } catch (e) {
+  markSnapshotUnknown();
   log('zc-quota failed:', e.message); process.exitCode = 1;
 } finally { ws.close(); }

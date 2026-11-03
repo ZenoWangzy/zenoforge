@@ -10,7 +10,7 @@ sup="$fixture/supervisor"
 mkdir -p "$sup/autopi/alerts" "$fixture/repo" "$fixture/bin"
 # Stage-transition fixtures are already roadmap leaves; this suite covers arbitration effects.
 export ZF_ROADMAP_TREE_CACHE_FILE="$fixture/roadmap-tree.json"
-jq -cn '{roots:[618,622,623] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
+jq -cn '{roots:[611,615,618,622,623] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
   > "$ZF_ROADMAP_TREE_CACHE_FILE"
 jq '.auto_merge = false | .advisor = false | .precheck = false | .supervisor_arbiter.enabled = true | .supervisor_arbiter.cap_triage = false' "$script_dir/config.template.json" > "$sup/autopi/config.json"
 echo '{"units":[]}' > "$sup/autopi/units.json"
@@ -40,15 +40,23 @@ gh() {
   printf 'gh %s\n' "$*" >> "$GH_CALLS"
   case "$1 $2" in
     'issue view')
-      [[ "$*" == *'--json labels -q .labels[].name'* ]] || {
+      if [[ "$*" == *'issue view 615'* && "$*" == *'--json number,title,body,state,labels'* ]]; then
+        printf '%s\n' '{"number":615,"title":"fixture issue 615","body":"","state":"OPEN","labels":[{"name":"needs-advisor"},{"name":"on-hold"}]}'
+        return 0
+      fi
+      if [[ "$*" == *'--json number,title,body,state,labels'* ]]; then
+        printf '%s\n' '{"number":611,"title":"fixture issue 611","body":"","state":"OPEN","labels":[{"name":"needs-advisor"}]}'
+      elif [[ "$*" == *'--json labels -q .labels[].name'* ]]; then
+        if [[ "$*" == *'issue view 615'* ]]; then printf '%s\n' needs-advisor on-hold; else printf '%s\n' needs-advisor; fi
+      else
         echo "supervisor-arbiter.test.sh: unexpected gh call: $*" >&2
         return 97
-      }
+      fi
       return 0
       ;;
     'issue comment') return 0 ;;
     'issue edit') return 0 ;;
-    'label list') printf '%s\n' needs-triage needs-info ready-for-agent ready-for-human needs-owner checks-blocked duplicate finish-first wontfix needs-advisor needs-recut awaiting-release awaiting-pipeline-sync awaiting-pipeline-health released concluded ;;
+    'label list') printf '%s\n' needs-triage needs-info ready-for-agent ready-for-human needs-owner checks-blocked duplicate finish-first wontfix needs-advisor needs-recut awaiting-release awaiting-pipeline-sync awaiting-pipeline-health released concluded on-hold ;;
     'label create') return 0 ;;
     'pr comment') return 0 ;;
     'pr close') return 0 ;;
@@ -124,6 +132,9 @@ harvest_with_reply() { # unit report-body → 用一个已死 worker 回收
 
 units "$(jq -cn --argjson sha "$SHA1" '{units:[{id:"pr-611",issue:611,pr:611,lane:"pr",branch:"agent/issue-611",stage:"supervisor-review",
   history:[{stage:"review-request-changes",result:"F1",at:"2026-10-27T00:00:00Z"},{stage:"supervisor-escalated",result:"no VERDICT",at:"2026-10-27T00:01:00Z"}]}]}')"
+mkdir -p "$AGENT_HOME/state"
+jq -n '{state:"needs-advisor",recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/611.json"
+export OPEN_ISSUE_BLOCKER_GRAPH_JSON='[]'
 harvest_with_reply pr-611 'ACTION: requeue
 REASON: 评审报告缺结论行，可重跑
 EVIDENCE: supervisor-escalated no VERDICT
@@ -131,8 +142,32 @@ REJECTED: close（产出仍需要）；approve（无已评审 head）
 GUIDANCE: 先 git merge origin/main 再按类别修复'
 [[ "$(field pr-611 .stage)" == repair-pending ]] || fail "requeue must return the unit to repair-pending"
 [[ "$(field pr-611 .repair_hint)" == *'git merge origin/main'* ]] || fail "requeue guidance must reach the repair worker hint"
+grep -Fq 'gh issue edit 611 ' "$GH_CALLS" \
+  && grep -Fq -- '--remove-label needs-advisor' "$GH_CALLS" \
+  && grep -Fq -- '--add-label ready-for-agent' "$GH_CALLS" \
+  || fail "requeue must clear the stale needs-advisor label and return the issue to ready-for-agent"
 jq -e --arg id pr-611 'any(.units[] | select(.id==$id) | .history[]; .stage == "supervisor-requeue" and (.decision.decision == "Supervisor arbitration: requeue") and (.decision.rejected | length == 1) and (.decision.evidence | test("supervise-pr-611")))' "$UNITS" >/dev/null \
   || fail "requeue must record decision/reason/evidence/rejected in the unit"
+
+# Stop-loss adds an on-hold overlay and can leave the previous needs-advisor
+# label underneath it. A supervisor requeue must clear both through the shared
+# hold-requeue transition before returning the unit to its pending work stage.
+units "$(jq -cn '{units:[{id:"pr-615",issue:615,pr:615,lane:"pr",branch:"agent/issue-615",stage:"supervisor-review",
+  history:[{stage:"review-request-changes",result:"F1",at:"2026-10-27T00:00:00Z"},{stage:"supervisor-escalated",result:"stop-loss",at:"2026-10-27T00:01:00Z"}]}]}')"
+jq -n '{state:"on-hold",hold:{kind:"stop-loss",holder:"scheduler-stop-loss"},recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/615.json"
+harvest_with_reply pr-615 'ACTION: requeue
+REASON: stop-loss hold reviewed, resume the approved repair
+EVIDENCE: supervisor-escalated stop-loss
+REJECTED: park（仍有可重试的修复）
+GUIDANCE: 恢复修复并提交'
+[[ "$(field pr-615 .stage)" == repair-pending ]] || fail "stop-loss requeue must return the unit to repair-pending"
+jq -e '.state == "ready-for-agent" and .hold == null' "$AGENT_HOME/state/615.json" >/dev/null \
+  || fail "stop-loss requeue must release the stop-loss hold and reset the issue stage"
+grep -Fq 'gh issue edit 615 ' "$GH_CALLS" \
+  && grep -Fq -- '--remove-label needs-advisor' "$GH_CALLS" \
+  && grep -Fq -- '--remove-label on-hold' "$GH_CALLS" \
+  && grep -Fq -- '--add-label ready-for-agent' "$GH_CALLS" \
+  || fail "stop-loss requeue must clear stale needs-advisor/on-hold labels and add ready-for-agent"
 
 units "$(jq -cn '{units:[{id:"pr-612",pr:612,lane:"pr",branch:"agent/issue-612",stage:"supervisor-review",blocked_on:700,reviewed_sha:"aaaa",reviewed_pr_head:"aaaa",
   history:[{stage:"review-block",result:"BLOCKED-ON #700",at:"2026-10-27T00:00:00Z"},{stage:"supervisor-review",result:"blocked-external without a predecessor",at:"2026-10-27T00:01:00Z"}]}]}')"

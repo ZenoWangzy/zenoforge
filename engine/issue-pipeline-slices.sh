@@ -14,24 +14,37 @@
 #   124 / 137              the slice budget's own timeout killed the stage
 #                          (overrun); dispatched units are outside this
 #                          process group and survive it
-#   anything else          a real failure: failed=1, the tick is refused, and
-#                          run-tick's refuse() reports it
+#   anything else          only this slice failed: write a bell-visible note,
+#                          file one incident per stage+status through #166,
+#                          then keep the other slices and tick post-steps running
 # 2026-11-03: 75 used to fall into "anything else", so one advisor claim miss
 # refused the whole tick, every tick, while the queue starved behind it.
 ZF_SLICE_DEFER_STATUS=75
 
+# run-tick's refusal gate must stay ahead of the scheduler handoff when the
+# dedicated checkout cannot be trusted. These are the exact checkout-integrity
+# refusal tags used by run-tick.sh; slice failures never enter this set.
+ZF_TICK_CHECKOUT_INTEGRITY_REFUSAL_TAGS='checkout-restore-failed wrong-branch fetch-starved fetch-timeout fetch-failed diverged'
+tick_checkout_integrity_refusal_tag() { # run-tick refusal tag -> 0 only for checkout-integrity gates
+  case " $ZF_TICK_CHECKOUT_INTEGRITY_REFUSAL_TAGS " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Best-effort durable note for the bell scanner (mac-autopilot/bell.sh reads
 # this log; the slice's own stderr goes only to the unit journal, which bell
-# never scans). Never fatal: a slice failure must still reach refuse().
+# never scans). Never fatal: a slice failure must not prevent later work.
 pipeline_slice_failure_note() { # tick stage status
   local runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${REPO_DIR:+$REPO_DIR/.scratch-supervisor/autopi}}"
-  [ -n "$runtime_dir" ] && [ -d "$runtime_dir" ] || return 0
+  [ -n "$runtime_dir" ] || return 0
+  mkdir -p -- "$runtime_dir" 2>/dev/null || return 0
   printf '[%s] issue-pipeline: slice-failed tick=%s stage=%s status=%s\n' \
     "$(date -u +%FT%TZ)" "$1" "$2" "$3" >> "$runtime_dir/scheduler.log" 2>/dev/null || true
 }
 
 run_pipeline_slices() {
-  local scheduler="$1" mode stage budget status=0 failed=0 started tick="" deadline night
+  local scheduler="$1" mode stage budget status=0 started tick="" deadline night
   exec 9>"$LOCK_FILE"
   flock -n 9 || return 0
   if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
@@ -90,12 +103,11 @@ run_pipeline_slices() {
       "$ZF_SLICE_DEFER_STATUS") echo "issue-pipeline: slice deferred stage=$stage status=$status (claim/admission said not-now); continuing other stages" >&2 ;;
       124|137) echo "issue-pipeline: slice overrun stage=$stage; continuing other stages" >&2 ;;
       *)
-        failed=1
-        echo "issue-pipeline: slice failed stage=$stage status=$status; refusing this tick" >&2
+        echo "issue-pipeline: slice failed stage=$stage status=$status; isolating this slice and continuing other stages" >&2
         pipeline_slice_failure_note "$tick" "$stage" "$status"
         ;;
     esac
   done
-  echo "issue-pipeline: slice-summary tick=$tick status=$failed completed=1" >&2
-  return "$failed"
+  echo "issue-pipeline: slice-summary tick=$tick status=0 completed=1" >&2
+  return 0
 }

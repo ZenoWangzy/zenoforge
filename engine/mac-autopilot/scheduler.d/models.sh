@@ -32,6 +32,11 @@ flush_focus_alert() {
 
 # 会话按角色分开复用（L18 + 评审独立性）：rereview 只续评审会话，repair 只续修复会话。
 session_role() { case "$1" in review|rereview) echo review ;; *) echo repair ;; esac; }
+PICK_PROVIDER="${PICK_PROVIDER:-}"
+PICK_ROUTE_PROVIDER="${PICK_ROUTE_PROVIDER:-}"
+PICK_HARD="${PICK_HARD:-false}"
+PICK_REASON="${PICK_REASON:-configured}"
+PICK_SERVICE_TIER="${PICK_SERVICE_TIER:-}"
 provider_of() {
   case "$(review_identity_family "$1" 2>/dev/null || true)" in
     codex) echo codex ;;
@@ -100,7 +105,7 @@ warn_forbidden_model_config() { # → say 一行点名全部违规键；无违�
   (( skipped )) || return 0
   say "config models name forbidden model families (pick() skips these keys per model policy): ${bad%, }"
 }
-pick() { # role [unit-json] → PICK_MODEL/PICK_EFFORT；主模型不可用（禁用族或提供方冷却）时按序用下一个键；都不可用返回 1
+pick_configured_model() { # role [unit-json] → PICK_MODEL/PICK_EFFORT；主模型不可用（禁用族或提供方冷却）时按序用下一个键；都不可用返回 1
   # 带 hotfix 标签的单元先用 models.<role>_hotfix（维护者 2026-10-29：生产热修单都给 terra high 做）。
   # 键序固定（hotfix → role → role_fallback），禁用族键永远跳过并记日志：同一配置每次解析到同一个模型。
   local key m keys=("$1" "$1_fallback") forbidden_hit=""
@@ -117,6 +122,8 @@ pick() { # role [unit-json] → PICK_MODEL/PICK_EFFORT；主模型不可用（�
     fi
     cooling "$(provider_of "$m")" && continue
     PICK_MODEL="$m"; PICK_EFFORT="$(jqf -r --arg k "$key" '.models[$k][1] // empty' <<<"$CFG")"
+    PICK_PROVIDER="$(provider_of "$m")"; PICK_HARD=false; PICK_REASON="configured-$key"
+    PICK_SERVICE_TIER="$(jqf -r --arg k "$key" '.models[$k][2] // empty' <<<"$CFG")"
     return 0
   done
   if [[ -n "$forbidden_hit" ]]; then
@@ -125,6 +132,222 @@ pick() { # role [unit-json] → PICK_MODEL/PICK_EFFORT；主模型不可用（�
     say "no $1 model available (provider cooldown)"
   fi
   return 1
+}
+
+model_policy_role_fields() { # role -> provider, model, effort, service tier for an enabled policy role
+  command jq -er --arg role "$1" '
+    .roles[$role] as $r
+    | select(($r | type) == "object" and $r.disabled != true
+        and ($r.provider | type) == "string" and ($r.model | type) == "string"
+        and ($r.effort | type) == "string")
+    | [$r.provider, $r.model, $r.effort, ($r.service_tier // "")] | @tsv
+  ' <<<"${SCHED_MODEL_POLICY_JSON:-{}}"
+}
+
+zcode_quota_status() { # fresh snapshot and active marker -> available|exhausted|unknown
+  local file="${ZCODE_QUOTA_SNAPSHOT_FILE:-${HOME:-}/.zenoforge/zc-quota.json}"
+  local max_age="${ZCODE_QUOTA_MAX_AGE_SECONDS:-${ZC_QUOTA_MAX_AGE_SECONDS:-}}" now read_at freshness
+  [[ -r "$file" ]] || { printf 'unknown\n'; return 0; }
+  freshness="$(command jq -r '.freshness // empty' "$file" 2>/dev/null || true)"
+  read_at="$(command jq -r '.read_at // empty' "$file" 2>/dev/null || true)"
+  [[ -n "$max_age" ]] || max_age="$(command jq -r '.max_age_seconds // 900' "$file" 2>/dev/null || true)"
+  now="${NOW_EPOCH:-$(date +%s)}"
+  if [[ "$freshness" != fresh || ! "$read_at" =~ ^[0-9]+$ || ! "$now" =~ ^[0-9]+$ \
+      || ! "$max_age" =~ ^[0-9]+$ ]] || (( read_at > now || now - read_at > max_age )); then
+    printf 'unknown\n'
+    return 0
+  fi
+  if provider_quota_exhausted zcode; then
+    printf 'exhausted\n'
+    return 0
+  fi
+  command jq -er '
+    if ((.five_h_pct | type) != "number" or (.week_pct | type) != "number") then "unknown"
+    elif .five_h_pct >= (.cap_5h // 85) or .week_pct >= 100 then "exhausted"
+    else "available" end
+  ' "$file" 2>/dev/null || printf 'unknown\n'
+}
+
+pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with a fresh, available quota
+  local fields provider model effort tier status
+  fields="$(model_policy_role_fields hand-zcode 2>/dev/null || true)"
+  [[ -n "$fields" ]] || return 1
+  IFS=$'\t' read -r provider model effort tier <<<"$fields"
+  [[ "$provider" == zcode ]] || return 1
+  model_policy_model_allowed_for_role "$model" hand-zcode || return 1
+  command -v zcode >/dev/null 2>&1 || return 1
+  zcode_provider_config_model_matches "zcode:$model:$effort" || return 1
+  status="$(zcode_quota_status)"
+  [[ "$status" == available ]] || return 1
+  cooling zcode && return 1
+  PICK_PROVIDER=zcode; PICK_MODEL="$model"; PICK_EFFORT="$effort"; PICK_HARD=false; PICK_SERVICE_TIER="$tier"
+  return 0
+}
+
+pick_codex_work_identity() { # work policy role, with legacy models.implement as an install-compatible fallback
+  local fields provider model effort tier
+  if jqf -e 'any(.labels[]?; . == "hotfix")' <<<"$1" >/dev/null 2>&1; then
+    if pick_configured_model implement "$1" && [[ "$PICK_PROVIDER" == codex ]]; then
+      command -v codex >/dev/null 2>&1 || return 1
+      provider_quota_exhausted codex && return 1
+      cooling codex && return 1
+      return 0
+    fi
+  fi
+  fields="$(model_policy_role_fields work 2>/dev/null || true)"
+  if [[ -n "$fields" ]]; then
+    IFS=$'\t' read -r provider model effort tier <<<"$fields"
+    [[ "$provider" == codex ]] || return 1
+    model_policy_model_allowed_for_role "$model" work || return 1
+    PICK_PROVIDER=codex; PICK_MODEL="$model"; PICK_EFFORT="$effort"; PICK_HARD=false; PICK_SERVICE_TIER="$tier"
+  else
+    pick_configured_model implement "$1" || return 1
+    [[ "$PICK_PROVIDER" == codex ]] || return 1
+  fi
+  command -v codex >/dev/null 2>&1 || return 1
+  provider_quota_exhausted codex && return 1
+  cooling codex && return 1
+  return 0
+}
+
+hard_implementer_fields() { # optional models.hard; otherwise use the production policy role
+  local hard model effort provider tier fields
+  hard="$(jqf -c '.models.hard // empty' <<<"$CFG")"
+  if [[ -n "$hard" ]]; then
+    case "$(command jq -r 'type' <<<"$hard")" in
+      array)
+        model="$(command jq -r '.[0] // empty' <<<"$hard")"
+        effort="$(command jq -r '.[1] // empty' <<<"$hard")"
+        tier="$(command jq -r '.[2] // empty' <<<"$hard")"
+        ;;
+      object)
+        model="$(command jq -r '.model // empty' <<<"$hard")"
+        effort="$(command jq -r '.effort // empty' <<<"$hard")"
+        tier="$(command jq -r '.service_tier // empty' <<<"$hard")"
+        provider="$(command jq -r '.provider // empty' <<<"$hard")"
+        ;;
+      *) return 1 ;;
+    esac
+    if [[ "$model" == codex:* || "$model" == zcode:* ]]; then
+      provider="${model%%:*}"; model="${model#*:}"
+    fi
+    [[ -n "${provider:-}" ]] || provider="$(provider_of "$model")"
+    [[ -n "$model" && -n "$effort" ]] || return 1
+  else
+    fields="$(model_policy_role_fields production 2>/dev/null || true)"
+    [[ -n "$fields" ]] || return 1
+    IFS=$'\t' read -r provider model effort tier <<<"$fields"
+  fi
+  [[ "$provider" == codex || "$provider" == zcode || "$provider" == claude ]] || return 1
+  PICK_PROVIDER="$provider"; PICK_MODEL="$model"; PICK_EFFORT="$effort"; PICK_SERVICE_TIER="${tier:-}"
+}
+
+provider_runtime_ready() { # provider model -> runnable, policy-authorized and not held
+  local provider="$1" model="$2" role="${3:-work}"
+  # production is the explicitly configured hard tier; its family can differ
+  # from work's allowed families (for example Terra), by design.
+  [[ "$role" == production ]] || model_policy_model_allowed_for_role "$model" "$role" || return 1
+  cooling "$provider" && return 1
+  case "$provider" in
+    codex) provider_quota_exhausted codex && return 1; command -v codex >/dev/null 2>&1 ;;
+    zcode)
+      [[ "$(zcode_quota_status)" == available ]] || return 1
+      command -v zcode >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"
+      ;;
+    claude) command -v claude >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+unit_hard_escalated() { # unit JSON -> true after the two-repair cap or supervisor arbiter
+  command jq -e '(.hard_escalated // false) == true
+    or any((.history // [])[]?; .stage == "hard-escalation" or .stage == "supervisor-arbiter" or .stage == "supervisor-arbiter-round")' \
+    <<<"$1" >/dev/null 2>&1
+}
+
+pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota failover
+  local u="$1" assigned actual preferred reason issue hash bucket zcode_share codex_share sum status arbiter=false
+  if unit_hard_escalated "$u"; then
+    hard_implementer_fields || { say "no hard implementation identity available"; return 1; }
+    actual="$PICK_PROVIDER"
+    [[ "$(command jq -r '.hard_escalated // false' <<<"$u")" == true ]] || arbiter=true
+    provider_runtime_ready "$actual" "$PICK_MODEL" production || {
+      say "hard implementation provider unavailable provider=$actual unit=$(jqf -r '.id // empty' <<<"$u")"
+      return 1
+    }
+    PICK_ROUTE_PROVIDER="$actual"; PICK_HARD=true
+    if [[ "$arbiter" == true ]]; then PICK_REASON=supervisor-arbiter-hard; else PICK_REASON=hard-production; fi
+    return 0
+  fi
+
+  assigned="$(jqf -r '.implement_route_provider // empty' <<<"$u")"
+  actual="$(jqf -r '.implement_provider // empty' <<<"$u")"
+  if [[ "$assigned" != codex && "$assigned" != zcode ]]; then
+    if [[ "$actual" == codex || "$actual" == zcode ]]; then
+      assigned="$actual"
+      reason="sticky-$actual"
+    else
+      zcode_share="$(jqf -r '.models.implement_share.zcode // 0' <<<"$CFG")"
+      codex_share="$(jqf -r '.models.implement_share.codex // 100' <<<"$CFG")"
+      if [[ "$zcode_share" =~ ^[0-9]+$ && "$codex_share" =~ ^[0-9]+$ ]] \
+          && (( zcode_share <= 100 && codex_share <= 100 )); then
+        sum=$((zcode_share + codex_share))
+      else
+        sum=0
+      fi
+      if (( sum == 100 )); then
+        issue="$(jqf -r '.issue // .id // empty' <<<"$u")"
+        hash="$(printf '%s' "$issue" | cksum | awk '{print $1 % 100}')"
+        if (( hash < zcode_share )); then assigned=zcode; else assigned=codex; fi
+      else
+        assigned=codex
+      fi
+      reason="share-$assigned"
+    fi
+  else
+    reason="sticky-$assigned"
+  fi
+  preferred="$assigned"
+  if [[ "$actual" == codex || "$actual" == zcode ]]; then
+    preferred="$actual"
+    reason="sticky-$actual"
+  fi
+  PICK_ROUTE_PROVIDER="$assigned"; PICK_HARD=false
+
+  if [[ "$preferred" == zcode ]]; then
+    status="$(zcode_quota_status)"
+    if pick_zcode_implementer; then PICK_REASON="$reason"; return 0; fi
+    if [[ "$status" == exhausted ]]; then reason=quota-fallback-zcode-to-codex
+    elif [[ "$status" == unknown ]]; then reason=quota-unknown-zcode-to-codex
+    else reason=zcode-unavailable-fallback-to-codex; fi
+    if pick_codex_work_identity "$u"; then PICK_REASON="$reason"; return 0; fi
+  else
+    if pick_codex_work_identity "$u"; then PICK_REASON="$reason"; return 0; fi
+    status="$(zcode_quota_status)"
+    if pick_zcode_implementer; then
+      if provider_quota_exhausted codex; then reason=quota-fallback-codex-to-zcode
+      else reason=codex-unavailable-fallback-to-zcode; fi
+      PICK_REASON="$reason"; return 0
+    fi
+    [[ "$status" == exhausted ]] || say "zcode implement route unavailable status=$status"
+  fi
+  say "no implementation provider available (quota, snapshot freshness, or runtime/config unavailable)"
+  return 1
+}
+
+pick() { # role [unit-json] -> implementation role, otherwise preserve configured model selection
+  if [[ "$1" == implement ]]; then
+    local unit_json="${2:-}"
+    [[ -n "$unit_json" ]] || unit_json='{}'
+    pick_implementer "$unit_json"
+    return $?
+  fi
+  # Keep the configured hotfix model path while normal implementation follows the work policy role.
+  if [[ "$1" == implement_hotfix ]]; then
+    pick_configured_model "$@"
+    return $?
+  fi
+  pick_configured_model "$@"
 }
 
 review_identity_for_model() { # model effort → backend:model:effort, or empty for an unclassified model
@@ -185,6 +408,8 @@ pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves 
   fi
   if (( status == 0 )) && [[ -n "$selected" ]]; then
     PICK_MODEL="${selected#*:}"; PICK_EFFORT="${PICK_MODEL##*:}"; PICK_MODEL="${PICK_MODEL%:*}"
+    PICK_PROVIDER="${selected%%:*}"
+    PICK_SERVICE_TIER="$(jqf -r --arg m "$PICK_MODEL" '[.models[] | select(type=="array") | select(.[0]==$m) | .[2] // empty][0] // empty' <<<"$CFG")"
     if [[ "$(jqf -r '.review_family_wait_alerted // false' <<<"$unit_json")" == true ]]; then
       set_unit "$id" 'del(.review_family_wait_alerted)'
     fi

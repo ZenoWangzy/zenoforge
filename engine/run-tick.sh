@@ -177,6 +177,14 @@ run_tick() {
 
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
   source "$script_dir/config.sh" # AGENT_HOME, ZF_ENGINE_DIR, ZF_REPO_DIR
+  source "$script_dir/issue-pipeline-slices.sh" # shares the explicit pre-handoff checkout-integrity refusal set
+  refuse_checkout_integrity() {
+    local tag="$1" detail="$2"
+    if ! tick_checkout_integrity_refusal_tag "$tag"; then
+      refuse "unexpected" "internal error: refusal tag $tag is not a checkout-integrity gate"
+    fi
+    refuse "$tag" "$detail"
+  }
   # Same setting lib.sh resolves; this launcher deliberately does not source lib.sh. Read after config.sh so deploy.env is in effect.
   local UNIT_PREFIX="${ZF_UNIT_PREFIX:-zenoforge}"
   # The target checkout: ZF_REPO_DIR, else two levels up from engine (the engine lives inside it).
@@ -221,32 +229,32 @@ run_tick() {
     quarantine_entry="$quarantine_root/checkout-dirty-$snapshot_stamp"
     untracked_paths="$quarantine_entry/untracked.paths"
     if ! mkdir -p "$quarantine_root" || ! mkdir -m 700 "$quarantine_entry"; then
-      refuse "checkout-restore-failed" "could not create dirty-checkout quarantine at $quarantine_entry"
+      refuse_checkout_integrity "checkout-restore-failed" "could not create dirty-checkout quarantine at $quarantine_entry"
     fi
     if ! git -C "$repo_dir" diff --binary HEAD >"$quarantine_entry/tracked.patch" \
       || ! git -C "$repo_dir" ls-files --others --exclude-standard -z >"$untracked_paths"; then
-      refuse "checkout-restore-failed" "could not save tracked diff and untracked path list to $quarantine_entry"
+      refuse_checkout_integrity "checkout-restore-failed" "could not save tracked diff and untracked path list to $quarantine_entry"
     fi
     if [ -s "$untracked_paths" ] && ! (
       cd "$repo_dir" && tar --null --verbatim-files-from -cf "$quarantine_entry/untracked.tar" -T "$untracked_paths"
     ); then
-      refuse "checkout-restore-failed" "could not archive untracked files to $quarantine_entry"
+      refuse_checkout_integrity "checkout-restore-failed" "could not archive untracked files to $quarantine_entry"
     fi
     chmod 600 "$quarantine_entry"/* 2>/dev/null || true
     if ! git -C "$repo_dir" reset --hard HEAD >/dev/null 2>&1 \
       || ! git -C "$repo_dir" clean -fd -- >/dev/null 2>&1; then
-      refuse "checkout-restore-failed" "could not restore dirty checkout to HEAD after quarantining it at $quarantine_entry"
+      refuse_checkout_integrity "checkout-restore-failed" "could not restore dirty checkout to HEAD after quarantining it at $quarantine_entry"
     fi
     dirty_status="$(git -C "$repo_dir" status --porcelain --untracked-files=all)"
     if [ -n "$dirty_status" ]; then
-      refuse "checkout-restore-failed" "checkout still has changes after restore; quarantine saved at $quarantine_entry"
+      refuse_checkout_integrity "checkout-restore-failed" "checkout still has changes after restore; quarantine saved at $quarantine_entry"
     fi
     echo "run-tick: dirty checkout quarantined at $quarantine_entry; restored to HEAD and continuing" >&2
   fi
 
   branch="$(git -C "$repo_dir" symbolic-ref --quiet --short HEAD || true)"
   if [ "$branch" != "main" ]; then
-    refuse "wrong-branch" "$repo_dir is on '${branch:-detached HEAD}', not main"
+    refuse_checkout_integrity "wrong-branch" "$repo_dir is on '${branch:-detached HEAD}', not main"
   fi
 
   while :; do
@@ -270,16 +278,16 @@ run_tick() {
       load_1m="$(awk 'NR == 1 { print $1 }' /proc/loadavg 2>/dev/null || true)"
       processors="$(nproc 2>/dev/null || true)"
       if dispatch_load_exceeded "$load_1m" "$processors" "${AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER:-2}"; then
-        refuse "fetch-starved" "git fetch timed out after ${git_fetch_timeout_sec}s while host 1m load $load_1m exceeded ${AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER:-2}x processors ($processors)"
+        refuse_checkout_integrity "fetch-starved" "git fetch timed out after ${git_fetch_timeout_sec}s while host 1m load $load_1m exceeded ${AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER:-2}x processors ($processors)"
       fi
-      refuse "fetch-timeout" "git fetch origin main timed out after ${git_fetch_timeout_sec}s on attempt $git_fetch_attempt; host 1m load was $load_1m on $processors processors"
+      refuse_checkout_integrity "fetch-timeout" "git fetch origin main timed out after ${git_fetch_timeout_sec}s on attempt $git_fetch_attempt; host 1m load was $load_1m on $processors processors"
     fi
-    refuse "fetch-failed" "git fetch origin main failed on attempt $git_fetch_attempt (status $git_fetch_status) in $repo_dir"
+    refuse_checkout_integrity "fetch-failed" "git fetch origin main failed on attempt $git_fetch_attempt (status $git_fetch_status) in $repo_dir"
   done
 
   fast_forward_old_head="$(git -C "$repo_dir" rev-parse HEAD)"
   if ! git -C "$repo_dir" merge --quiet --ff-only origin/main; then
-    refuse "diverged" "$repo_dir has diverged from origin/main, fast-forward not possible"
+    refuse_checkout_integrity "diverged" "$repo_dir has diverged from origin/main, fast-forward not possible"
   fi
   fast_forward_new_head="$(git -C "$repo_dir" rev-parse HEAD)"
   if ! sync_model_policy_default_after_fast_forward \

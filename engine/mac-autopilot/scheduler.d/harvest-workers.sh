@@ -70,7 +70,8 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
       role="$(session_role "$wtype")"
       local session_model session_provider session_record
       session_model="$(jqf -r '.model // empty' <<<"$w")"
-      session_provider="$(provider_of "$session_model")"
+      session_provider="$(jqf -r '.provider // empty' <<<"$w")"
+      [[ -n "$session_provider" ]] || session_provider="$(provider_of "$session_model")"
       session_record="$(jqf -cn --arg id "$session_id" --arg provider "$session_provider" --arg model "$session_model" '{id:$id,provider:$provider,model:$model}')"
       set_unit "$unit" ".session_id=$(js "$session_id") | .session_ids[\"$role\"]=$(js "$session_id") | .sessions[\"$role\"]=$session_record"
     fi
@@ -298,7 +299,10 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
       rm -f -- "$rep.partial"
       if [[ -n "$limit_hit" ]]; then
         # 提供方上限：冷却该提供方，不计入无产出、不算失败回合；单元留在原 stage 由孤儿自愈回到 pending。
-        start_cooldown "$(provider_of "$(jqf -r '.model // ""' <<<"$w")")" "$limit_hit (unit=$unit)"
+        local worker_provider
+        worker_provider="$(jqf -r '.provider // empty' <<<"$w")"
+        [[ -n "$worker_provider" ]] || worker_provider="$(provider_of "$(jqf -r '.model // ""' <<<"$w")")"
+        start_cooldown "$worker_provider" "$limit_hit (unit=$unit)"
         set_unit "$unit" "$(hist worker-provider-limit "$limit_hit")"
         jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
         continue

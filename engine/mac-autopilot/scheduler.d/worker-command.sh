@@ -31,9 +31,9 @@ worker_rules() { # unit-json type provider
   fi
 }
 
-# models.<role> = [model, effort, service_tier?]；model 以 claude- 开头走 claude CLI，否则走 codex。
-build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir]
-  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-$ROOT}" session_id="" usage prompt_arg role tier self_fix prior config_arg provider
+# models.<role> = [model, effort, service_tier?]；provider selects codex, claude, or zcode CLI.
+build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider]
+  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-$ROOT}" provider="${8:-$(provider_of "$2")}" session_id="" usage prompt_arg role tier self_fix prior config_arg
   local -a tier_args=() codex_config_args=()
   CODEX_MODE=fresh
   CODEX_SESSION_ID=""
@@ -42,10 +42,9 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   CODEX_USAGE_START='{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}'
   prompt+="$(worker_rules "$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")" "$type" "$(provider_of "$model")")"
   prompt_arg="$prompt"
-  provider="$(provider_of "$model")"
   self_fix="$(unit_field "$unit" '.self_fix_active // false')"
   if [[ "$provider" == zcode ]]; then
-    [[ "$type" == review || "$type" == rereview ]] || return 1
+    [[ "$type" == implement || "$type" == repair || "$type" == review || "$type" == rereview ]] || return 1
     WORKER_STDOUT_REPORT=1
     CODEX_USAGE_START=null
     CODEX_COMMAND=(env NODE_USE_ENV_PROXY=1 zcode -p "$prompt_arg" --cwd "$workdir" --mode yolo)
@@ -66,7 +65,8 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
       --tools "Read,Grep,Glob,Bash" --allowedTools "$CLAUDE_REVIEW_TOOLS")
     return 0
   fi
-  tier="$(jqf -r --arg m "$model" '[.models[] | select(.[0]==$m) | .[2] // empty][0] // empty' <<<"$CFG")"
+  tier="$(jqf -r --arg m "$model" '[.models[] | select(type=="array") | select(.[0]==$m) | .[2] // empty][0] // empty' <<<"$CFG")"
+  [[ -n "$tier" ]] || tier="${PICK_SERVICE_TIER:-}"
   [[ -n "$tier" ]] && tier_args=(--config "service_tier=\"$tier\"")
   while IFS= read -r config_arg; do codex_config_args+=("$config_arg"); done < <(codex_mcp_disable_args)
   [[ "$type" != implement ]] || codex_config_args+=(-c tool_output_token_limit=8000)

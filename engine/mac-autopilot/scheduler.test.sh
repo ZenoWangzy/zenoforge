@@ -60,6 +60,7 @@ jq -e '.max_workers == 10 and .auto_merge == true and .implement_cap == 8
   and .models.review == ["gpt-6-luna", "max", "fast"]
   and .models.review_cross == ["GLM-5.3", "max"]
   and .models.implement == ["gpt-6-luna", "max", "fast"]
+  and .models.implement_share == {"codex":100}
   and .models.triage == ["gpt-6-luna", "max", "fast"]
   and .models.review_fallback == ["claude-sonnet-4-5", "high"]
   and .supervisor_arbiter.cap_triage == true
@@ -133,7 +134,7 @@ gate_verdict="$(incident_review_verdict "$bug_unit_json" READY "$missing_guard_r
 [[ "$gate_verdict" == NOT_READY && "$gate_reason" == *'missing ## recurrence-guard'* ]] \
   || { echo "not ok - scheduler.test.sh: missing recurrence-guard did not request changes (verdict=$gate_verdict reason=$gate_reason)" >&2; exit 1; }
 prose_guard_report="$test_env_root/incident-prose-guard.md"
-printf '## root-cause\nworker input selected the wrong state\n## recurrence-guard\nkind: prose\n' > "$prose_guard_report"
+printf '## root-cause\nworker input selected the wrong state\n## recurrence-guard\nkind: prose\n## prior-art\nSource: https://example.invalid/reference\n' > "$prose_guard_report"
 gate_reason="$(incident_report_gate_reason "$bug_unit_json" "$prose_guard_report")"
 gate_verdict="$(incident_review_verdict "$bug_unit_json" READY "$prose_guard_report")"
 [[ "$gate_verdict" == NOT_READY && "$gate_reason" == *'guard kind prose is not allowed'* ]] \
@@ -2962,7 +2963,7 @@ WT_ROOT="$TF/clones"; LUNA_SLOTS="$TF/luna-slots"
 mkdir -p "$WT_ROOT/wt-repair" "$TF/clone" "$A/alerts" "$LUNA_SLOTS"
 touch "$LOG"
 SCHED_LOCK_HELD=true
-CFG='{"advisor":false,"max_workers":4,"implement_cap":2,"size_admission_lines":800,"issue_intake":{"enabled":false}}'
+CFG='{"advisor":false,"max_workers":4,"implement_cap":2,"size_admission_lines":800,"issue_intake":{"enabled":false},"models":{"review":["gpt-6-luna","max","fast"],"review_cross":["GLM-5.3","max"],"review_fallback":["claude-sonnet-4-5","high"]}}'
 MAX=4; IMPLEMENT_CAP=2; SIZE_ADMISSION_LINES=800; FOCUS_MODE=all
 LOOP_TOTAL_ROUNDS=4; LOOP_BREAKER_ROUNDS=4; ADVISOR_ROUNDS=4
 NOW_EPOCH=1793577600; STAMP=refill-pending-stages; TAG=refill-test
@@ -2971,8 +2972,8 @@ DISPATCH_PRIORITY_ORDER='["hotfix","opt","normal"]'
 declare -A TICK_FOOTPRINT_CACHE=()
 command jq -n '{units:[
   {id:"repair-one",pr:8811,lane:"pr",branch:"agent/issue-8811",stage:"repair-pending",repair_hint:"fixture repair",footprint:[],history:[]},
-  {id:"review-one",pr:8812,lane:"pr",branch:"agent/issue-8812",stage:"review-pending",footprint:[],history:[]},
-  {id:"rereview-one",pr:8813,lane:"pr",branch:"agent/issue-8813",stage:"rereview-pending",reviewed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",review_report:"prior-rereview.md",footprint:[],history:[]},
+  {id:"review-one",pr:8812,lane:"pr",branch:"agent/issue-8812",stage:"review-pending",implement_identity:"codex:gpt-6-luna:max",footprint:[],history:[]},
+  {id:"rereview-one",pr:8813,lane:"pr",branch:"agent/issue-8813",stage:"rereview-pending",implement_identity:"codex:gpt-6-luna:max",reviewed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",review_report:"prior-rereview.md",footprint:[],history:[]},
   {id:"owned-review",pr:8814,lane:"pr",branch:"agent/issue-8814",stage:"review-pending",supervisor_owned:true,footprint:[],history:[]},
   {id:"size-refused",lane:"direct-main",branch:"agent/issue-8815",task:"fixture implementation",estimated_changed_lines:801,stage:"implement-pending",footprint:[],history:[]}
 ]}' > "$UNITS"
@@ -5802,6 +5803,155 @@ grep -Fq 'live-event close issue=97' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'not ok - scheduler.test.sh: the pre-landing fixture event line was consumed as new evidence' >&2; exit 1; }
 }
 sched_run_case m5_live_event_timeout
+
+glm_share_fixture() {
+  CFG="$(command jq '.models.implement_share={zcode:50,codex:50} | .models.hard=["gpt-6.1-terra","high"]' "$template")"
+  A="$TF/supervisor/autopi"
+  SUP="$A"
+  UNITS="$A/units.json"
+  COOLDOWN="$A/cooldown.json"
+  AGENT_HOME="$TF/agent-home"
+  CODEX_EXHAUSTED_MARKER_FILE="$AGENT_HOME/codex-exhausted-until"
+  ZCODE_EXHAUSTED_MARKER_FILE="$AGENT_HOME/zcode-exhausted-until"
+  ZCODE_QUOTA_SNAPSHOT_FILE="$TF/zc-quota.json"
+  ZCODE_PROVIDER_CONFIG_FILE="$TF/provider-config.json"
+  CODEX_PROBE_MARKER="$AGENT_HOME/codex-probe-passed"
+  NOW_EPOCH="$(date +%s)"
+  STAMP='2026-11-03T00:00:00Z'
+  SCHED_LOCK_HELD=true
+  mkdir -p "$AGENT_HOME" "$TF/bin"
+  touch "$CODEX_PROBE_MARKER"
+  printf '%s\n' '{}' > "$COOLDOWN"
+  command jq -n '{config:{defaultModelSelection:{modelId:"GLM-5.3"}}}' > "$ZCODE_PROVIDER_CONFIG_FILE"
+  command jq -n --argjson now "$NOW_EPOCH" '{five_h_pct:1,week_pct:1,cap_5h:85,max_age_seconds:900,freshness:"fresh",read_at:$now}' > "$ZCODE_QUOTA_SNAPSHOT_FILE"
+  cat > "$TF/bin/codex" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  cat > "$TF/bin/zcode" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$TF/bin/codex" "$TF/bin/zcode"
+  export PATH="$TF/bin:$PATH" ZCODE_PROVIDER_CONFIG_FILE ZCODE_QUOTA_SNAPSHOT_FILE CODEX_PROBE_MARKER
+  SCHED_MODEL_POLICY_JSON="$(command jq '.roles["hand-zcode"].disabled=false | .roles["hand-zcode"].model="GLM-5.3" | .roles.production.model="gpt-6.1-terra" | .roles.production.effort="high"' "$repo_root/engine/model-policy.default.json")"
+}
+
+sched_case_glm_share_split_and_repair_stability() {
+  new_tick_fixture glm-share-split
+  glm_share_fixture
+  local issue unit provider expected bucket codex_count=0 zcode_count=0 stored route
+  for issue in $(seq 6100 6199); do
+    unit="$(command jq -cn --arg id "issue-$issue" --argjson issue "$issue" '{id:$id,issue:$issue,stage:"implement-pending"}')"
+    pick implement "$unit" || { echo 'not ok - scheduler.test.sh: share routing found no provider' >&2; exit 1; }
+    provider="$PICK_PROVIDER"; route="$PICK_ROUTE_PROVIDER"
+    bucket="$(printf '%s' "$issue" | cksum | awk '{print $1 % 100}')"
+    expected=codex; (( bucket < 50 )) && expected=zcode
+    [[ "$provider" == "$expected" && "$route" == "$expected" ]] \
+      || { echo "not ok - scheduler.test.sh: issue #$issue did not follow its share hash ($provider/$route != $expected)" >&2; exit 1; }
+    case "$provider" in codex) codex_count=$((codex_count+1)) ;; zcode) zcode_count=$((zcode_count+1)) ;; esac
+    stored="$(command jq -cn --arg id "issue-$issue" --argjson issue "$issue" --arg provider "$provider" \
+      --arg model "$PICK_MODEL" --arg effort "$PICK_EFFORT" '{id:$id,issue:$issue,stage:"repair-pending",implement_provider:$provider,implement_route_provider:$provider,implement_model:$model,implement_effort:$effort}')"
+    if [[ "$provider" == zcode ]]; then
+      pick_review_for_unit "$(command jq -c '. + {implement_identity:("zcode:" + .implement_model + ":" + .implement_effort)}' <<<"$stored")" \
+        || { echo 'not ok - scheduler.test.sh: zcode implementation has no cross-provider reviewer' >&2; exit 1; }
+      [[ "$(provider_of "$PICK_MODEL")" == codex ]] \
+        || { echo "not ok - scheduler.test.sh: zcode implementation was not reviewed by Codex ($PICK_MODEL)" >&2; exit 1; }
+    fi
+    pick implement "$stored" || { echo 'not ok - scheduler.test.sh: repair routing found no provider' >&2; exit 1; }
+    [[ "$PICK_PROVIDER" == "$provider" && "$PICK_ROUTE_PROVIDER" == "$provider" ]] \
+      || { echo "not ok - scheduler.test.sh: provider changed across repair for issue #$issue ($provider -> $PICK_PROVIDER)" >&2; exit 1; }
+  done
+  (( codex_count > 0 && zcode_count > 0 )) \
+    || { echo "not ok - scheduler.test.sh: 50/50 hash split did not use both providers (codex=$codex_count zcode=$zcode_count)" >&2; exit 1; }
+
+  for issue in $(seq 6190 6200); do
+    if (( $(printf '%s' "$issue" | cksum | awk '{print $1 % 100}') < 50 )); then break; fi
+  done
+  printf '%s\n' "$((NOW_EPOCH + 3600))" > "$ZCODE_EXHAUSTED_MARKER_FILE"
+  unit="$(command jq -cn --arg id "issue-$issue" --argjson issue "$issue" '{id:$id,issue:$issue,stage:"implement-pending"}')"
+  pick implement "$unit" || { echo 'not ok - scheduler.test.sh: quota fallback had no implementation provider' >&2; exit 1; }
+  [[ "$PICK_PROVIDER" == codex && "$PICK_ROUTE_PROVIDER" == zcode ]] \
+    || { echo 'not ok - scheduler.test.sh: exhausted ZCode route did not fall back to Codex' >&2; exit 1; }
+  stored="$(command jq -cn --arg id "issue-$issue" --argjson issue "$issue" --arg model "$PICK_MODEL" --arg effort "$PICK_EFFORT" \
+    '{id:$id,issue:$issue,stage:"repair-pending",implement_provider:"codex",implement_route_provider:"zcode",implement_model:$model,implement_effort:$effort}')"
+  rm -f "$ZCODE_EXHAUSTED_MARKER_FILE"
+  pick implement "$stored" || { echo 'not ok - scheduler.test.sh: sticky repair after quota recovery had no provider' >&2; exit 1; }
+  [[ "$PICK_PROVIDER" == codex && "$PICK_ROUTE_PROVIDER" == zcode && "$PICK_REASON" == sticky-codex ]] \
+    || { echo 'not ok - scheduler.test.sh: repair switched from its fallback provider after quota recovery' >&2; exit 1; }
+}
+sched_run_case glm_share_split_and_repair_stability
+
+sched_case_glm_share_zcode_quota_exhausted() {
+  new_tick_fixture glm-share-quota-exhausted
+  glm_share_fixture
+  local issue unit found_zcode=false
+  for issue in $(seq 6200 6299); do
+    if (( $(printf '%s' "$issue" | cksum | awk '{print $1 % 100}') < 50 )); then
+      unit="$(command jq -cn --arg id "issue-$issue" --argjson issue "$issue" '{id:$id,issue:$issue,stage:"implement-pending"}')"
+      pick implement "$unit" || { echo "not ok - scheduler.test.sh: available ZCode route had no provider for issue #$issue" >&2; exit 1; }
+      [[ "$PICK_PROVIDER" == zcode ]] \
+        || { echo "not ok - scheduler.test.sh: available 50% ZCode share did not route issue #$issue to ZCode" >&2; exit 1; }
+      found_zcode=true
+      break
+    fi
+  done
+  [[ "$found_zcode" == true ]] || { echo 'not ok - scheduler.test.sh: no ZCode-share unit was checked before quota exhaustion' >&2; exit 1; }
+  printf '%s\n' "$((NOW_EPOCH + 3600))" > "$ZCODE_EXHAUSTED_MARKER_FILE"
+  for issue in $(seq 6200 6249); do
+    unit="$(command jq -cn --arg id "issue-$issue" --argjson issue "$issue" '{id:$id,issue:$issue,stage:"implement-pending"}')"
+    pick implement "$unit" || { echo "not ok - scheduler.test.sh: exhausted-quota fallback had no provider for issue #$issue" >&2; exit 1; }
+    [[ "$PICK_PROVIDER" == codex ]] \
+      || { echo "not ok - scheduler.test.sh: exhausted ZCode quota did not route issue #$issue to Codex" >&2; exit 1; }
+  done
+}
+sched_run_case glm_share_zcode_quota_exhausted
+
+sched_case_glm_share_unknown_quota_fails_to_codex() {
+  new_tick_fixture glm-share-unknown-quota
+  glm_share_fixture
+  rm -f "$ZCODE_QUOTA_SNAPSHOT_FILE"
+  local issue unit found_zcode=false
+  for issue in $(seq 6251 6350); do
+    unit="$(command jq -cn --arg id "issue-$issue" --argjson issue "$issue" '{id:$id,issue:$issue,stage:"implement-pending"}')"
+    pick implement "$unit" || { echo "not ok - scheduler.test.sh: unknown quota fallback had no provider for issue #$issue" >&2; exit 1; }
+    if (( $(printf '%s' "$issue" | cksum | awk '{print $1 % 100}') < 50 )); then
+      [[ "$PICK_PROVIDER" == codex && "$PICK_REASON" == quota-unknown-zcode-to-codex ]] \
+        || { echo "not ok - scheduler.test.sh: missing quota snapshot was not treated as unknown for issue #$issue" >&2; exit 1; }
+      found_zcode=true
+      break
+    fi
+  done
+  [[ "$found_zcode" == true ]] || { echo 'not ok - scheduler.test.sh: no zcode-share unit was checked for unknown quota' >&2; exit 1; }
+  command jq -n --argjson now "$((NOW_EPOCH - 901))" '{five_h_pct:1,week_pct:1,cap_5h:85,max_age_seconds:900,freshness:"fresh",read_at:$now}' > "$ZCODE_QUOTA_SNAPSHOT_FILE"
+  unit="$(command jq -cn --arg id issue-stale-quota --argjson issue "$issue" '{id:$id,issue:$issue,stage:"implement-pending"}')"
+  pick implement "$unit" || { echo 'not ok - scheduler.test.sh: stale quota fallback had no provider' >&2; exit 1; }
+  [[ "$PICK_PROVIDER" == codex && "$PICK_REASON" == quota-unknown-zcode-to-codex ]] \
+    || { echo 'not ok - scheduler.test.sh: stale quota snapshot was not treated as unknown' >&2; exit 1; }
+}
+sched_run_case glm_share_unknown_quota_fails_to_codex
+
+sched_case_glm_share_hard_after_two_failed_repairs() {
+  new_tick_fixture glm-share-hard-tier
+  glm_share_fixture
+  local unit u selected
+  unit='issue-6351'
+  command jq -n --arg id "$unit" '{units:[{id:$id,issue:6351,stage:"repair-pending",history:[
+    {stage:"write-start",work_type:"repair",provider:"codex",hard_escalation:false},
+    {stage:"repair-delivered"},{stage:"review-request-changes"},
+    {stage:"write-start",work_type:"repair",provider:"codex",hard_escalation:false},
+    {stage:"repair-delivered"},{stage:"review-request-changes"}
+  ]}]}' > "$UNITS"
+  u="$(command jq -c '.units[0]' "$UNITS")"
+  repair_cap_admission "$unit" "$u" \
+    || { echo 'not ok - scheduler.test.sh: two failed repairs blocked the hard-tier attempt' >&2; exit 1; }
+  u="$(command jq -c '.units[0]' "$UNITS")"
+  pick implement "$u" || { echo 'not ok - scheduler.test.sh: hard-tier identity was unavailable' >&2; exit 1; }
+  selected="$(printf '%s:%s:%s:%s' "$PICK_PROVIDER" "$PICK_MODEL" "$PICK_EFFORT" "$PICK_HARD")"
+  [[ "$selected" == 'codex:gpt-6.1-terra:high:true' ]] \
+    || { echo "not ok - scheduler.test.sh: next repair did not use the hard identity ($selected)" >&2; exit 1; }
+}
+sched_run_case glm_share_hard_after_two_failed_repairs
 
 if [ -n "${SCHED_TEST_CASE:-}" ]; then
   echo "not ok - scheduler.test.sh: no case matches SCHED_TEST_CASE='$SCHED_TEST_CASE'; known:$sched_case_names" >&2
