@@ -1,1 +1,213 @@
-{"incidents":[]}
+{
+  "incidents": [
+    {
+      "id": "supervisor-cap-triage-unbalanced-jq-regex",
+      "date": "2026-11-03",
+      "class": "literal-jq-regex-not-compiled-before-fixture-execution",
+      "what_happened": "Issue #156 used an unbalanced pattern in a jq test() filter. Fixtures reached it only when one specific history entry existed, so ordinary coverage missed the syntax error.",
+      "root_cause_evidence": "Issue #156 was fixed in commit 22e253d with a scheduler regression case; the pattern can be compiled directly with jq.",
+      "classic_pattern": "A data-dependent fixture leaves a literal regular expression uncompiled until one exact branch is selected.",
+      "best_known_solution": "Compile every literal jq test(), match(), capture(), sub() and gsub() pattern in engine shell files with jq before relying on fixture execution.",
+      "lesson_id": "V1268",
+      "research_sources": [
+        "https://jqlang.org/manual/#regular-expressions"
+      ],
+      "options_considered": [
+        "Add a fixture for the known history entry; this would cover one branch but leave other literal patterns dependent on fixture data.",
+        "Compile every literal regex with jq itself; this covers syntax independently of runtime data and was selected."
+      ],
+      "siblings": {
+        "discovery_command": "node engine/jq-regex-safety.mjs",
+        "expected_result": "Every literal jq regex in engine shell files compiles successfully."
+      },
+      "machine_checks": [
+        {
+          "command": ["bash", "engine/jq-regex-safety.test.sh"],
+          "expected": "exit:0",
+          "why": "Compiles engine literals and proves an unbalanced planted pattern is rejected.",
+          "test_file": "engine/jq-regex-safety.test.sh"
+        },
+        {
+          "command": ["bash", "engine/mac-autopilot/scheduler.test.sh"],
+          "expected": "exit:0",
+          "why": "Retains the original scheduler regression case.",
+          "test_file": "engine/mac-autopilot/scheduler.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "static-test",
+        "enforced_by": [
+          "engine/jq-regex-safety.mjs",
+          "engine/jq-regex-safety.test.sh",
+          "engine/mac-autopilot/scheduler.test.sh"
+        ]
+      }
+    },
+    {
+      "id": "intake-cache-unbounded-rows-argv",
+      "date": "2026-11-03",
+      "class": "unbounded-data-passed-to-jq-through-argv",
+      "what_happened": "Issue #157 cached candidate rows containing issue bodies by passing the complete string to jq through --arg. A large intake exceeded the OS argument limit and failed with Argument list too long.",
+      "root_cause_evidence": "Issue #157 was fixed in commit e4a748c by streaming the cache rows; scheduler.test.sh adds a fixture over 2 MiB.",
+      "classic_pattern": "A growing list or body is bound as one jq argv value; per-argument limits can be exceeded before the program starts.",
+      "best_known_solution": "Stream large JSON or prose through stdin or a file, and lint known-unbounded variable names passed to --arg or --argjson.",
+      "lesson_id": "V1269",
+      "research_sources": [
+        "https://man7.org/linux/man-pages/man2/execve.2.html",
+        "https://jqlang.org/manual/#invoking-jq"
+      ],
+      "options_considered": [
+        "Truncate issue bodies; this loses cache data and does not bound row counts.",
+        "Split the cache into multiple argv chunks; this keeps the same fragile transport contract.",
+        "Stream the serialized value to jq and flag --arg/--argjson bindings of known unbounded variables; this avoids argv limits and follows the existing lint style, so it was selected."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/jq-arg-safety.test.sh",
+        "expected_result": "A rows variable passed through --arg is flagged; fixed stdin streaming passes."
+      },
+      "machine_checks": [
+        {
+          "command": ["bash", "engine/jq-arg-safety.test.sh"],
+          "expected": "exit:0",
+          "why": "Proves a planted --arg rows \"$rows\" binding is flagged and scans production shell files.",
+          "test_file": "engine/jq-arg-safety.test.sh"
+        },
+        {
+          "command": ["bash", "engine/mac-autopilot/scheduler.test.sh"],
+          "expected": "exit:0",
+          "why": "Exercises the #159 large-row cache regression above 2 MiB.",
+          "test_file": "engine/mac-autopilot/scheduler.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "static-lint-and-regression-test",
+        "enforced_by": [
+          "engine/jq-arg-safety.test.sh",
+          "engine/mac-autopilot/scheduler.test.sh"
+        ]
+      }
+    },
+    {
+      "id": "refill-census-unset-under-nounset",
+      "date": "2026-11-03",
+      "class": "refill-path-reads-uninitialized-handoff-census",
+      "what_happened": "Issue #157's refill path read HANDOFF_PR_CENSUS before assignment under set -u, aborting a tick before existing startable work was dispatched.",
+      "root_cause_evidence": "The fix from branch fix/refill-census-unbound merged in pull request #160 as commit c9cb023.",
+      "classic_pattern": "A fallback path skips a path-local assignment and later reads an unset variable under nounset.",
+      "best_known_solution": "Initialize the census before refill or fallback reads and keep nounset enabled.",
+      "lesson_id": "V1270",
+      "research_sources": [
+        "https://www.gnu.org/software/bash/manual/html_node/The-Set-Builtin.html"
+      ],
+      "options_considered": [
+        "Disable nounset for the fallback; this suppresses the useful error and lets missing state flow onward.",
+        "Initialize the census before every path can read it; this preserves nounset and gives fallback logic a defined empty state, so it was selected."
+      ],
+      "siblings": {
+        "discovery_command": "SCHED_TEST_CASE=refill_handoff_lookup_dispatch bash engine/mac-autopilot/scheduler.test.sh",
+        "expected_result": "Refill completes and existing startable work dispatches despite the handoff lookup path."
+      },
+      "machine_checks": [
+        {
+          "command": ["bash", "engine/mac-autopilot/scheduler.test.sh"],
+          "expected": "exit:0",
+          "why": "Regression case reaches the refill fallback with set -u and checks dispatch continues.",
+          "test_file": "engine/mac-autopilot/scheduler.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "regression-test",
+        "enforced_by": [
+          "engine/mac-autopilot/scheduler.test.sh"
+        ]
+      }
+    },
+    {
+      "id": "scheduler-gh-call-without-timeout",
+      "date": "2026-11-03",
+      "class": "scheduler-network-call-holds-tick-lock-without-deadline",
+      "what_happened": "One gh pr list call hung for 44 minutes until TICK-TIMEOUT; refill remained locked out for 28 minutes.",
+      "root_cause_evidence": "The scheduler wrapper called command gh without a timeout; the bounded-wrapper fix is on branch fix/scheduler-gh-timeout.",
+      "classic_pattern": "An unbounded network CLI call can keep a scheduler lock longer than the useful work window.",
+      "best_known_solution": "Route scheduler gh() through gh_timeout with a validated per-call limit, log timed-out calls, and statically reject direct command gh calls in scheduler and library sources.",
+      "lesson_id": "V1271",
+      "research_sources": [
+        "https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html"
+      ],
+      "options_considered": [
+        "Raise TICK-TIMEOUT; this lengthens the maximum lockout rather than bounding each network call.",
+        "Retry a stalled command; without a deadline this repeats the same unbounded wait.",
+        "Use one bounded timeout wrapper for scheduler GitHub calls and fail static checks on direct command gh bypasses; this constrains each call and prevents callsite drift, so it was selected."
+      ],
+      "siblings": {
+        "discovery_command": "node engine/scheduler-gh-timeout-safety.mjs",
+        "expected_result": "No production scheduler/lib shell source calls command gh directly."
+      },
+      "machine_checks": [
+        {
+          "command": ["bash", "engine/scheduler-gh-timeout-safety.test.sh"],
+          "expected": "exit:0",
+          "why": "Checks all scheduler/lib shell sources and proves a planted command gh bypass is rejected.",
+          "test_file": "engine/scheduler-gh-timeout-safety.test.sh"
+        },
+        {
+          "command": ["bash", "engine/mac-autopilot/scheduler.test.sh"],
+          "expected": "exit:0",
+          "why": "Times out a stalled gh CLI call, verifies the child is stopped, and checks timeout logging.",
+          "test_file": "engine/mac-autopilot/scheduler.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "static-test",
+        "enforced_by": [
+          "engine/scheduler-gh-timeout-safety.mjs",
+          "engine/scheduler-gh-timeout-safety.test.sh",
+          "engine/mac-autopilot/scheduler.test.sh"
+        ]
+      }
+    },
+    {
+      "id": "product-pin-rollback-blocked-by-preflight",
+      "date": "2026-11-03",
+      "class": "rollback-preflight-rejects-explicit-engine-pin-recovery",
+      "what_happened": "A product-pin rollback was refused by publish preflight with resolved-config-check: CHANGED, leaving a broken engine live.",
+      "root_cause_evidence": "The preflight did not recognize the explicit rollback path; the engine-swap canary fix is on branch feat/engine-swap-canary.",
+      "classic_pattern": "A broad safety preflight blocks a narrowly authorized recovery change because the recovery path is not modeled as an allowed transition.",
+      "best_known_solution": "Keep ordinary changed-config checks, while allowing only an explicit verified engine-swap/canary path to carry the product pin change.",
+      "lesson_id": "V1272",
+      "research_sources": [
+        "https://sre.google/workbook/canarying-releases/"
+      ],
+      "options_considered": [
+        "Skip preflight for every rollback; this would permit unrelated resolved-config drift.",
+        "Leave the old engine live until a fresh forward release is ready; this prolongs a known-broken state.",
+        "Require a verified engine-swap path for the pin change while preserving ordinary refusal behavior; this keeps the gate and supports controlled recovery, so it was selected."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/engine-sync.test.sh and bash engine/publish-preflight/run.test.sh",
+        "expected_result": "The verified swap/rollback case passes while unlisted resolved-config changes remain blocked."
+      },
+      "machine_checks": [
+        {
+          "command": ["bash", "engine/engine-sync.test.sh"],
+          "expected": "exit:0",
+          "why": "Exercises engine version selection and publish preflight behavior.",
+          "test_file": "engine/engine-sync.test.sh"
+        },
+        {
+          "command": ["bash", "engine/publish-preflight/run.test.sh"],
+          "expected": "exit:0",
+          "why": "Keeps the default refusal for unlisted resolved-config changes and accepts listed changes with a reason.",
+          "test_file": "engine/publish-preflight/run.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "regression-tests",
+        "enforced_by": [
+          "engine/engine-sync.test.sh",
+          "engine/publish-preflight/run.test.sh"
+        ]
+      }
+    }
+  ]
+}

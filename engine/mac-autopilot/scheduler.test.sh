@@ -1042,6 +1042,45 @@ sched_run_case() {
   fi
 }
 
+sched_case_gh_timeout() (
+  local timeout_fixture="$test_env_root/gh-timeout" start_ns end_ns elapsed_ms rc stub_pid
+  source "$script_dir/scheduler.d/core.sh"
+  mkdir -p "$timeout_fixture/bin"
+  cat > "$timeout_fixture/bin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$BASHPID" > "$GH_TIMEOUT_STUB_PID_FILE"
+exec sleep 5
+SH
+  chmod +x "$timeout_fixture/bin/gh"
+  export GH_TIMEOUT_STUB_PID_FILE="$timeout_fixture/stub.pid"
+  export PATH="$timeout_fixture/bin:$PATH"
+  AUTOPI_GH_TIMEOUT_SECONDS=2
+  GH_TICK_CALLS_FILE="$timeout_fixture/gh-calls"
+  LOG="$timeout_fixture/scheduler.log"; STAMP=GH-TIMEOUT-TEST; id=unit-timeout
+  start_ns="$(python3 -c 'import time; print(time.monotonic_ns())')"
+  if gh pr list --state open; then
+    echo 'not ok - scheduler.test.sh: timed-out gh call returned success' >&2
+    exit 1
+  else
+    rc=$?
+  fi
+  end_ns="$(python3 -c 'import time; print(time.monotonic_ns())')"
+  elapsed_ms=$(((end_ns - start_ns) / 1000000))
+  [[ "$rc" != 0 ]] || { echo 'not ok - scheduler.test.sh: timed-out gh call returned zero' >&2; exit 1; }
+  (( elapsed_ms <= 4500 )) || { echo "not ok - scheduler.test.sh: gh timeout took ${elapsed_ms}ms" >&2; exit 1; }
+  [[ -s "$GH_TIMEOUT_STUB_PID_FILE" ]] || { echo 'not ok - scheduler.test.sh: gh stub did not start' >&2; exit 1; }
+  stub_pid="$(cat "$GH_TIMEOUT_STUB_PID_FILE")"
+  if kill -0 "$stub_pid" 2>/dev/null; then
+    echo 'not ok - scheduler.test.sh: timed-out gh stub process is still alive' >&2
+    exit 1
+  fi
+  [[ "$(grep -Fc 'gh timeout op=pr list unit=unit-timeout after=2s' "$LOG")" == 1 ]] \
+    || { echo 'not ok - scheduler.test.sh: timeout was not logged exactly once with op and unit' >&2; exit 1; }
+  [[ "$(wc -l < "$GH_TICK_CALLS_FILE" | tr -d ' ')" == 1 ]] \
+    || { echo 'not ok - scheduler.test.sh: gh call counter changed for a timeout' >&2; exit 1; }
+)
+sched_run_case gh_timeout
+
 sched_case_ci_admission_priority() {
 new_tick_fixture ci-admission-priority
 command jq '.precheck=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"

@@ -89,7 +89,7 @@ BANNED_EXACT = {
     # Closed-tracker dependency resolution also consumes unbounded GitHub payloads.
     "native_json", "open_issues_json", "closing_body",
     # Fastlane stage snapshots contain every issue body and comment.
-    "all_rows", "issue_rows",
+    "all_rows", "issue_rows", "rows",
 }
 
 def is_banned(name):
@@ -205,8 +205,18 @@ merge_census() {
 }
 EOF
 BAD_CENSUS_HITS="$(scan_file "$BAD_CENSUS_FIXTURE")"
+BAD_ROWS_FIXTURE="$TMP_DIR/bad_rows.sh"
+cat > "$BAD_ROWS_FIXTURE" <<'EOF'
+cache_rows() {
+  local rows patch
+  patch="$(jq -cn --arg rows "$rows" '{rows:$rows}')"
+}
+EOF
+BAD_ROWS_HITS="$(scan_file "$BAD_ROWS_FIXTURE")"
 assert_eq "meta-test: both unbounded fastlane census snapshots are caught" \
   "2" "$(printf '%s\n' "$BAD_CENSUS_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
+assert_eq "meta-test: an unbounded rows value passed through --arg is caught" \
+  "1" "$(printf '%s\n' "$BAD_ROWS_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 assert_eq "meta-test: all closed-tracker dependency payloads are caught" \
   "3" "$(printf '%s\n' "$BAD_CHILDREN_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 assert_eq "meta-test: --arg binding a known-unbounded exact name (new_brief) is caught" \

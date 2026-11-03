@@ -1,0 +1,55 @@
+{
+  "schema": "zf-lesson-recurrence-ranking/v1",
+  "source": "engine/state/incident-guards.json",
+  "count_rule": "One incident registry record with recurs_of resolving to this lesson class is one recurrence.",
+  "recurrent_class_count": 0,
+  "recurrence_event_count": 0,
+  "unresolved_recurrences": [],
+  "ranking": [
+    {
+      "lesson_id": "V1268",
+      "incident_id": "supervisor-cap-triage-unbalanced-jq-regex",
+      "historical_root": false,
+      "incident_class_tag": "supervisor-cap-triage-unbalanced-jq-regex",
+      "incident_class": "literal-jq-regex-not-compiled-before-fixture-execution",
+      "recurrence_count": 0,
+      "rank": null
+    },
+    {
+      "lesson_id": "V1269",
+      "incident_id": "intake-cache-unbounded-rows-argv",
+      "historical_root": false,
+      "incident_class_tag": "intake-cache-unbounded-rows-argv",
+      "incident_class": "unbounded-data-passed-to-jq-through-argv",
+      "recurrence_count": 0,
+      "rank": null
+    },
+    {
+      "lesson_id": "V1270",
+      "incident_id": "refill-census-unset-under-nounset",
+      "historical_root": false,
+      "incident_class_tag": "refill-census-unset-under-nounset",
+      "incident_class": "refill-path-reads-uninitialized-handoff-census",
+      "recurrence_count": 0,
+      "rank": null
+    },
+    {
+      "lesson_id": "V1271",
+      "incident_id": "scheduler-gh-call-without-timeout",
+      "historical_root": false,
+      "incident_class_tag": "scheduler-gh-call-without-timeout",
+      "incident_class": "scheduler-network-call-holds-tick-lock-without-deadline",
+      "recurrence_count": 0,
+      "rank": null
+    },
+    {
+      "lesson_id": "V1272",
+      "incident_id": "product-pin-rollback-blocked-by-preflight",
+      "historical_root": false,
+      "incident_class_tag": "product-pin-rollback-blocked-by-preflight",
+      "incident_class": "rollback-preflight-rejects-explicit-engine-pin-recovery",
+      "recurrence_count": 0,
+      "rank": null
+    }
+  ]
+}

@@ -43,6 +43,7 @@ declare -F jq_arg_file >/dev/null 2>&1 || jq_arg_file() {
   printf '%s' "$1" > "$f"
   echo "$f"
 }
+declare -F gh_timeout >/dev/null 2>&1 || source "$HERE/../lib.d/transport.sh"
 # Only a real pass satisfies a required name; skipped/neutral/absent rows do not.
 # The required names are the always-concluding aggregates (#4484): a gate that legitimately
 # does not run is an allowed skip inside the aggregate row, so this guard can no longer sit

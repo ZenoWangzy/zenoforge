@@ -1451,8 +1451,8 @@ gate_note "GATE main=$M1 suites=success — merge lane open"
 # Required checks use the deployed shared definition; missing/skipping/neutral
 # rows cannot merge and must not change stage, cancel, or rerun anything.
 (
-  # required_checks_without_pass deliberately uses `command gh --version`, so
-  # pin the external CLI used by this synthetic merge fixture instead of
+  # required_checks_without_pass uses gh_timeout, so pin the external CLI used
+  # by this synthetic merge fixture instead of
   # inheriting the cihost runner's installed version.
   gh_cli_stub="$fixture/gh-cli"
   mkdir -p "$gh_cli_stub"

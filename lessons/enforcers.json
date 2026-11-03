@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "generated_by": "engine/generate-lesson-enforcers.mjs",
+  "generated_from": [
+    "lessons/RULES.md",
+    "state/incident-guards.json",
+    "tracked code and test files containing V-IDs"
+  ],
+  "rule_entries": 5,
+  "unique_rule_ids": 5,
+  "duplicate_rule_ids": {},
+  "classification_legend": {
+    "enforced": "A machine check or enforcement.enforced_by entry resolves to an existing test path.",
+    "weak": "A source/test reference, machine check, or guard script is linked, but no test path is linked.",
+    "existence-check": "Every linked machine check only checks that a file or string is present, and no test path is linked.",
+    "prose": "No tracked code/test reference or incident guard is linked."
+  },
+  "counts": {
+    "enforced": 5,
+    "weak": 0,
+    "existence-check": 0,
+    "prose": 0
+  },
+  "rules": {
+    "V1268": {
+      "classification": "enforced",
+      "enforcer": [
+        "engine/jq-regex-safety.mjs",
+        "engine/jq-regex-safety.test.sh",
+        "engine/mac-autopilot/scheduler.test.sh"
+      ],
+      "source_refs": [],
+      "incident_refs": [
+        "supervisor-cap-triage-unbalanced-jq-regex"
+      ]
+    },
+    "V1269": {
+      "classification": "enforced",
+      "enforcer": [
+        "engine/jq-arg-safety.test.sh",
+        "engine/mac-autopilot/scheduler.test.sh"
+      ],
+      "source_refs": [],
+      "incident_refs": [
+        "intake-cache-unbounded-rows-argv"
+      ]
+    },
+    "V1270": {
+      "classification": "enforced",
+      "enforcer": [
+        "engine/mac-autopilot/scheduler.test.sh"
+      ],
+      "source_refs": [],
+      "incident_refs": [
+        "refill-census-unset-under-nounset"
+      ]
+    },
+    "V1271": {
+      "classification": "enforced",
+      "enforcer": [
+        "engine/mac-autopilot/scheduler.test.sh",
+        "engine/scheduler-gh-timeout-safety.mjs",
+        "engine/scheduler-gh-timeout-safety.test.sh"
+      ],
+      "source_refs": [],
+      "incident_refs": [
+        "scheduler-gh-call-without-timeout"
+      ]
+    },
+    "V1272": {
+      "classification": "enforced",
+      "enforcer": [
+        "engine/engine-sync.test.sh",
+        "engine/publish-preflight/run.test.sh"
+      ],
+      "source_refs": [],
+      "incident_refs": [
+        "product-pin-rollback-blocked-by-preflight"
+      ]
+    }
+  }
+}
