@@ -195,6 +195,13 @@ fi
 # 会话/用量上限、模型满载是提供方的暂时状态，不是 worker 缺陷：该提供方冷却 30 分钟，
 # 期间该角色改用 models.<role>_fallback（若配置且其提供方未冷却），都不可用则不派发。
 COOLDOWN="$A/cooldown.json"
+CODEX_EXHAUSTED_MARKER_FILE="${CODEX_EXHAUSTED_MARKER_FILE:-$AGENT_HOME/codex-exhausted-until}"
+ZCODE_EXHAUSTED_MARKER_FILE="${ZCODE_EXHAUSTED_MARKER_FILE:-$AGENT_HOME/zcode-exhausted-until}"
+WEB_ADVISOR_PROVIDER_EXHAUSTED_MARKER_FILE="${WEB_ADVISOR_PROVIDER_EXHAUSTED_MARKER_FILE:-$AGENT_HOME/web-advisor-provider-exhausted-until}"
+source "$HERE/../lib.d/codex-budget.sh"
+SCHED_MODEL_POLICY_FILE="$(sched_config_file model-policy.default.json 2>/dev/null || true)"
+[[ -r "$SCHED_MODEL_POLICY_FILE" ]] || SCHED_MODEL_POLICY_FILE="$ENGINE_ROOT/engine/model-policy.default.json"
+SCHED_MODEL_POLICY_JSON="$(cat "$SCHED_MODEL_POLICY_FILE" 2>/dev/null || echo '{}')"
 # 只认提供方错误行的措辞，且只看日志尾部：worker 日志里满是代码/文档/测试输出（曾因技能说明里的
 # "an overloaded word" 误判整个 codex 冷却 30 分钟）。
 PROVIDER_LIMIT_RE='hit your (session|usage) limit|^ERROR: .*(at capacity|rate limit|usage limit|overloaded|quota)|overloaded_error|rate_limit_error|429 Too Many Requests'

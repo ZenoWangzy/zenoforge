@@ -1,6 +1,6 @@
 
 # PID 存活且确为 codex 进程（防 PID 复用把无关进程当活 worker）。
-alive() { ps -p "$1" -o args= 2>/dev/null | grep -Eq 'codex|claude|land-pr\.sh|precheck\.sh|cdp-browser-lease\.sh|decision-gate\.mjs'; }
+alive() { ps -p "$1" -o args= 2>/dev/null | grep -Eq 'codex|claude|zcode|zcode-cli|land-pr\.sh|precheck\.sh|cdp-browser-lease\.sh|decision-gate\.mjs'; }
 
 set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）
   local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage=""

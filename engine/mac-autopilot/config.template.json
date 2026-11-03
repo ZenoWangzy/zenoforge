@@ -98,6 +98,9 @@
       "max",
       "fast"
     ],
+    "implement_share": {
+      "codex": 100
+    },
     "triage": [
       "gpt-6-luna",
       "max",

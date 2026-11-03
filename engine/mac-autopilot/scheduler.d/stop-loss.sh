@@ -46,18 +46,36 @@ repair_rounds_since_ruling() { # unit-json → repair starts since the last succ
     | $legacy + $tagged' <<<"$1"
 }
 repair_cap_admission() { # unit-id unit-json → two failed repair rounds escalate before another worker is prepared
-  local rounds
+  local rounds hard_attempts
   rounds="$(repair_rounds_since_ruling "$2")"
   [[ "$rounds" =~ ^[0-9]+$ ]] && (( rounds >= 2 )) || return 0
-  to_supervisor "$1" "repair cap: $rounds failed repair rounds; escalate to the configured Terra/Sol arbiter" \
-    'Escalate to supervisor arbitration after two failed repair rounds' \
-    'two repair write-starts have failed since the last approval or arbitration' \
-    "$rounds failed repair rounds; configured supervisor arbitration profile=${SUPERVISOR_ARBITER_PROFILE}" \
-    '["Dispatch a third repair without arbitration"]'
-  say "repair cap unit=$1 rounds=$rounds limit=2 -> supervisor-review"
+  hard_attempts="$(jqf -r '
+    (.history // []) as $h
+    | ([$h | to_entries[] | select(.value.stage | IN("supervisor-arbiter","supervisor-arbiter-round","supervisor-requeue","supervisor-approve","advisor-ruling","review-approve")) | .key] | max // -1) as $ruling
+    | [$h[($ruling + 1):][] | select(.stage == "write-start" and .work_type == "repair" and .hard_escalation == true)] | length
+  ' <<<"$2")"
+  if [[ "$(jqf -r '.hard_escalated // false' <<<"$2")" != true || "$hard_attempts" == 0 ]]; then
+    if ! hard_implementer_fields || ! provider_runtime_ready "$PICK_PROVIDER" "$PICK_MODEL" production; then
+      to_supervisor "$1" "repair cap: two failed repair rounds and no configured hard implementation identity is available" \
+        'Escalate to supervisor arbitration because the hard implementation identity is unavailable' \
+        'two repair write-starts have failed and the configured production identity cannot run' \
+        "$rounds failed repair rounds; hard identity unavailable under the current provider quota/runtime state" \
+        '["Dispatch another repair on the failed work identity"]'
+      say "repair cap unit=$1 rounds=$rounds hard identity unavailable -> supervisor-review"
+      return 1
+    fi
+    set_unit "$1" "$(hist hard-escalation "two failed repair rounds; next implementation uses the production identity") | .hard_escalated=true"
+    say "repair cap unit=$1 rounds=$rounds limit=2 -> hard implementation identity"
+    return 0
+  fi
+  to_supervisor "$1" "repair cap: the hard-tier repair failed; escalate to the configured supervisor arbiter" \
+    'Escalate to supervisor arbitration after the hard-tier repair fails' \
+    'a repair write-start on the hard identity failed after the two-round escalation' \
+    "$rounds failed repair rounds; configured supervisor arbitration profile=$SUPERVISOR_ARBITER_PROFILE" \
+    '["Dispatch another repair on the same hard identity"]'
+  say "repair cap unit=$1 rounds=$rounds hard-tier repair failed -> supervisor-review"
   return 1
 }
-
 # ---------- 2. 派发（焦点与并发；预算只告警） ----------
 # 新 worker slot 按 main-red、热修回迁、critical 的现有紧急度排序；其后按配置 tier，再按环节。
 # 2026-10-20 三个热修回迁在 review-pending 等了 56 分钟，名额被新收的孤儿 PR 先拿走（L62）。

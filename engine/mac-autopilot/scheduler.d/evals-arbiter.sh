@@ -347,7 +347,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       --argjson jev "$judge_metadata" \
       '{pid:$pid,unit:$unit,type:"supervise",log:$log,report:$report,started:$at,model:("profile:"+$profile),cap_triage:$cap_triage,jev:$jev}')"
     jqf --argjson w "$w" '.workers += [$w]' "$WORKERS" | write_state "$WORKERS"
-    set_unit "$id" "$(hist supervisor-arbiter "dispatched to profile $SUPERVISOR_ARBITER_PROFILE") | .supervise_report=$(js "$report")"
+    set_unit "$id" "$(hist supervisor-arbiter "dispatched to profile $SUPERVISOR_ARBITER_PROFILE") | .supervise_report=$(js "$report") | .hard_escalated=true"
     say "supervisor arbitration dispatched pid=$pid unit=$id profile=$SUPERVISOR_ARBITER_PROFILE"
     in_flight=$((in_flight + 1))
     [[ "$cap_triage" == true ]] && cap_triaged=$((cap_triaged + 1))
