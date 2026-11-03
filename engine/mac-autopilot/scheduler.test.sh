@@ -1342,8 +1342,16 @@ command jq -e --arg sha "$adopted_head" \
   || { echo "scheduler.test.sh: pre-adoption checks satisfied or bypassed the candidate SHA gate" >&2; echo "--- scheduler.log ---" >&2; tail -20 "$TF/supervisor/autopi/scheduler.log" >&2; echo "--- actions ---" >&2; cat "$TF/actions" >&2; exit 1; }
 printf 'fresh\n' > "$TF/pipeline-ci-adoption"
 tick
+fresh_stage="$(command jq -r '.units[0].stage' "$TF/supervisor/autopi/units.json")"
+if [[ "$fresh_stage" == ready-to-merge ]]; then
+  command jq -e --arg sha "$adopted_head" \
+    '.units[0].ci_gate_required == true and .units[0].ci_green_sha == $sha' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'scheduler.test.sh: fresh aggregate passes readied the candidate without exact-SHA green evidence' >&2; exit 1; }
+  tick # A newly admitted candidate may merge on the next scheduler pass.
+fi
 [[ "$(command jq -r '.units[0].stage' "$TF/supervisor/autopi/units.json")" == merged ]] \
-  || { echo 'scheduler.test.sh: fresh aggregate passes did not release the adopted PR' >&2; exit 1; }
+  || { echo "scheduler.test.sh: fresh aggregate passes did not release the adopted PR (stage=$fresh_stage)" >&2; exit 1; }
 grep -q '^merge 50$' "$TF/actions" \
   || { echo 'scheduler.test.sh: merge action for the adopted PR was not observed' >&2; exit 1; }
 [[ "$(grep -c '^gh pr edit 50 --add-label pipeline-ci$' "$TF/calls")" == 1 ]] \
