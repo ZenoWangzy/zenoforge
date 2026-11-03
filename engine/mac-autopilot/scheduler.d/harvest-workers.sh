@@ -147,6 +147,32 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
           say "incident report gate requested changes unit=$unit reason=$incident_gate_reason"
         fi
       fi
+      if [[ "$wtype" == review || "$wtype" == rereview ]] && [[ "$v" == READY ]]; then
+        # 引擎覆盖守卫：评审 READY 也不得放行「覆盖引擎文件」的 diff（无 supervisor 标签时强制 NOT_READY）。
+        local override_pr override_wt override_label override_reason override_sha
+        override_pr="$(unit_field "$unit" .pr)"
+        override_wt="$(jqf -r '.workdir // empty' <<<"$w")"
+        override_sha="$(jqf -r '.sha // empty' <<<"$w")"
+        override_label="$(engine_override_approved_label "$CFG")"
+        override_reason=""
+        if [[ "$override_sha" =~ $SHA_RE && -n "$override_wt" ]]; then
+          override_reason="$(engine_override_gate_reason "$override_pr" "$override_label" "$override_wt" "$override_sha" || true)"
+        fi
+        v="$(engine_override_review_verdict "$override_pr" "$override_label" "$override_wt" "$override_sha" "$v")"
+        if [[ "$v" == NOT_READY && -n "$override_reason" ]]; then
+          original_report="$report"
+          gate_id="$(tr -c 'A-Za-z0-9._-' '-' <<<"$unit" | sed 's/-$//')"
+          report="engine-override-gate-${gate_id}-${TAG}.md"
+          rep="$SUP/$report"
+          {
+            printf '# Engine override guard\n\n'
+            printf 'The reviewer returned READY in %s, but the diff overrides engine-owned files without the %s PR label.\n\n' "$original_report" "$override_label"
+            printf 'REQUEST-CHANGES: %s\n\n' "$override_reason"
+            printf 'VERDICT: NOT_READY\n\n```review-findings\n%s\n```\n' "$(engine_override_findings_json "$override_wt" "$override_sha")"
+          } > "$rep"
+          say "engine override guard requested changes unit=$unit"
+        fi
+      fi
       wmode="$(jqf -r '.mode // "fresh"' <<<"$w")"
       wsha="$(jqf -r '.sha // empty' <<<"$w")"; [[ "$wsha" =~ $SHA_RE ]] || wsha=""
       wprhead="$(jqf -r '.pr_head // empty' <<<"$w")"; [[ "$wprhead" =~ $SHA_RE ]] || wprhead=""

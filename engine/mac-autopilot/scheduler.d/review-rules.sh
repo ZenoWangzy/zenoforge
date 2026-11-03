@@ -76,6 +76,128 @@ incident_review_verdict() { # incident unit READY|other [implementation report] 
   reason="$(incident_report_gate_reason "$unit_json" "$report")"
   [[ -z "$reason" ]] && printf 'READY' || printf 'NOT_READY'
 }
+# 引擎覆盖守卫（2026-11-03：产品 PR 通过 .zenoforge/build/overrides.tsv fork 引擎文件，评审时无人拒绝，只有 converge
+# 的 override guard 在合并后才拦截并卡死全部 pin）。评审时用与 converge override guard 相同的引擎文件分类——
+# build.json pin 所指引擎树里存在的路径，不维护第二份清单——拒绝「新增/变更 overrides.tsv 行」或「新增 pack 文件遮蔽
+# 引擎文件」的 diff；唯一逃生口是 supervisor 的 PR 标签（config engine_override.approved_label）。
+engine_override_approved_label() { # config JSON → PR label that skips the engine override guard
+  local label
+  label="$(jq -r '.engine_override.approved_label // "engine-override-approved"' <<<"$1" 2>/dev/null || true)"
+  [[ -n "$label" && "$label" != null ]] || label='engine-override-approved'
+  printf '%s' "$label"
+}
+engine_override_engine_dir() { # → directory of the engine whose tree classifies engine-owned files
+  if [[ -n "${ZF_ENGINE_DIR:-}" && -d "${ZF_ENGINE_DIR:-}" ]]; then
+    printf '%s' "$ZF_ENGINE_DIR"
+  elif [[ -n "${ENGINE_ROOT:-}" && -d "${ENGINE_ROOT:-}" ]]; then
+    printf '%s' "$ENGINE_ROOT"
+  else
+    (cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+  fi
+}
+engine_override_engine_ships() { # pin rel-path → success when the pinned engine ships the file
+  local pin="$1" rel="$2" dir sha_re='^[0-9a-f]{40}$'
+  dir="$(engine_override_engine_dir)"
+  # The converge override guard verifies each overrides row against the pinned engine's tree; resolve the same
+  # pin in a git checkout first, then fall back to the running engine's files when it has no git directory.
+  if [[ "$pin" =~ $sha_re ]] \
+     && git -C "$dir" cat-file -e "$pin:${ZF_PACK_REL:-engine}/$rel" >/dev/null 2>&1; then
+    return 0
+  fi
+  [[ -f "$dir/$rel" ]]
+}
+engine_override_pr_has_label() { # pr label → success when the PR carries the label
+  local pr="$1" want="$2" prs labels
+  [[ "$pr" =~ ^[0-9]+$ ]] || return 1
+  if prs="$(tick_prs 2>/dev/null)" \
+     && labels="$(jq -r --argjson p "$pr" 'if any(.[]; .number == $p) then ([.[] | select(.number == $p)][0].labels // []) | .[] | .name // empty else "absent" end' <<<"$prs" 2>/dev/null)"; then
+    [[ "$labels" == absent ]] && return 1
+    grep -Fxq -- "$want" <<<"$labels" && return 0
+    return 1
+  fi
+  labels="$(pr_view "$pr" labels 2>/dev/null | jq -r '.[]? | .name // empty' 2>/dev/null || true)"
+  grep -Fxq -- "$want" <<<"$labels"
+}
+engine_override_scan() { # checkout head → offending rows: kind, file, line, engine path, path, blob, base blob
+  local checkout="$1" head="$2" base pin_json hook engine overrides_rel pack_rel line path blob base_blob rel f hook_dir sha_re='^[0-9a-f]{40}$'
+  [[ -n "$checkout" && -d "$checkout" ]] || return 0
+  base="$(git -C "$checkout" merge-base origin/main "$head" 2>/dev/null)" || return 0
+  [[ "$base" =~ $sha_re ]] || return 0
+  pin_json="$(git -C "$checkout" show "$head:.zenoforge/build.json" 2>/dev/null)" || return 0
+  hook="$(jq -r '.hook // empty | select(type == "string" and length > 0)' <<<"$pin_json" 2>/dev/null || true)"
+  engine="$(jq -r '.engine // empty | select(type == "string" and length > 0)' <<<"$pin_json" 2>/dev/null || true)"
+  [[ -n "$hook" && -n "$engine" ]] || return 0
+  case "$hook" in */*) hook_dir="${hook%/*}" ;; *) hook_dir="" ;; esac
+  overrides_rel="${hook_dir:+$hook_dir/}overrides.tsv"
+  pack_rel="${hook_dir:+$hook_dir/}pack"
+  if git -C "$checkout" cat-file -e "$head:$overrides_rel" 2>/dev/null; then
+    while IFS=$'\t' read -r line path blob; do
+      [[ -n "${path:-}" ]] || continue
+      base_blob="$( { git -C "$checkout" show "$base:$overrides_rel" 2>/dev/null || true; } \
+        | awk -F'\t' -v p="$path" '$1 == p {print $2; exit}')"
+      [[ "$base_blob" == "${blob:-}" ]] && continue
+      engine_override_engine_ships "$engine" "$path" || continue
+      printf 'override-row\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$overrides_rel" "$line" "${ZF_PACK_REL:-engine}/$path" "$path" "${blob:-}" "${base_blob:-absent}"
+    done < <(git -C "$checkout" show "$head:$overrides_rel" 2>/dev/null \
+      | awk -F'\t' 'NF >= 2 && $1 !~ /^[[:space:]]*#/ {print NR "\t" $1 "\t" $2}')
+  fi
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    rel="${f#"$pack_rel"/}"
+    [[ "$rel" != "$f" ]] || continue
+    engine_override_engine_ships "$engine" "$rel" || continue
+    printf 'pack-file\t%s\t1\t%s\t%s\t\t\n' "$f" "${ZF_PACK_REL:-engine}/$rel" "$rel"
+  done < <(git -C "$checkout" diff --no-renames --diff-filter=A --name-only "$base" "$head" -- "$pack_rel" 2>/dev/null)
+  return 0
+}
+engine_override_gate_reason() { # pr approved-label checkout head → blocking finding lines, or empty when admitted
+  local pr="$1" label="$2" checkout="$3" head="$4" rows kind file line engine_path path blob base_blob
+  rows="$(engine_override_scan "$checkout" "$head" 2>/dev/null || true)"
+  [[ -n "$rows" ]] || return 0
+  engine_override_pr_has_label "$pr" "$label" && return 0
+  while IFS=$'\t' read -r kind file line engine_path path blob base_blob; do
+    [[ -n "${file:-}" ]] || continue
+    if [[ "$kind" == pack-file ]]; then
+      printf '%s:%s shadows the engine-owned file %s with a pack copy; engine change: file it on ZenoWangzy/zenoforge\n' \
+        "$file" "$line" "$engine_path"
+    else
+      printf '%s:%s overrides the engine-owned file %s (base row blob: %s); engine change: file it on ZenoWangzy/zenoforge\n' \
+        "$file" "$line" "$engine_path" "${base_blob:-absent}"
+    fi
+  done <<<"$rows"
+}
+engine_override_findings_json() { # checkout head → review-findings object, one P1 Standards finding per offending row
+  local checkout="$1" head="$2" rows kind file line engine_path path blob base_blob id=0 findings='[]' summary evidence
+  rows="$(engine_override_scan "$checkout" "$head" 2>/dev/null || true)"
+  while IFS=$'\t' read -r kind file line engine_path path blob base_blob; do
+    [[ -n "${file:-}" ]] || continue
+    [[ "$line" =~ ^[0-9]+$ ]] || line=1
+    id=$((id + 1))
+    if [[ "$kind" == pack-file ]]; then
+      summary="A new pack file shadows the engine-owned $engine_path; engine change: file it on ZenoWangzy/zenoforge."
+      evidence="The base has no pack file for $path; the candidate adds one over the engine-owned $engine_path."
+    else
+      summary="An overrides.tsv row overrides the engine-owned $engine_path; engine change: file it on ZenoWangzy/zenoforge."
+      evidence="The base overrides row for $path pins ${base_blob:-nothing}; the candidate pins ${blob:-empty}, and the pinned engine ships $engine_path."
+    fi
+    findings="$(jq -cn --argjson findings "$findings" --arg id "F$id" --arg file "$file" --argjson line "$line" \
+      --arg engine_path "$engine_path" --arg summary "$summary" --arg evidence "$evidence" \
+      --arg checkout "$checkout" --arg head "$head" \
+      --arg rerun_output "line $line: $(git -C "$checkout" show "$head:$file" 2>/dev/null | sed -n "${line}p" | head -c 200)" \
+      '$findings + [{id:$id,severity:"P1",file:$file,line:$line,rule:"Standards",status:"open",summary:$summary,
+        introduced_by:"candidate",base_evidence:$evidence,
+        rerun_command:("git -C '"'"'" + $checkout + "'"'"' show '"'"'" + $head + ":" + $file + "'"'"'"),rerun_output:$rerun_output}]')"
+  done <<<"$rows"
+  printf '{"findings":%s,"dispositions":[]}' "$findings"
+}
+engine_override_review_verdict() { # pr approved-label checkout head READY|other → READY or forced NOT_READY
+  local pr="$1" label="$2" checkout="$3" head="$4" verdict="$5" reason
+  [[ "$verdict" == READY ]] || { printf '%s' "$verdict"; return 0; }
+  reason="$(engine_override_gate_reason "$pr" "$label" "$checkout" "$head" 2>/dev/null || true)"
+  if [[ -n "$reason" ]]; then printf 'NOT_READY'; else printf 'READY'; fi
+  return 0
+}
 risk_class_safety_rule() { # checkout → safety prompt for risk classes found by the repository classifier
   local checkout="$1" hits classes paths
   [[ -n "$checkout" && -d "$checkout" ]] || return 0
