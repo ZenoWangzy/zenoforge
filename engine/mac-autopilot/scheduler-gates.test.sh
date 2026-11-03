@@ -1303,12 +1303,17 @@ command git clone -q --depth 1 "file://$shallow/remote.git" "$shallow/root"
 saved_root="$ROOT"; saved_main_head="$MAIN_HEAD"; saved_wt_root="$WT_ROOT"; saved_gh_head="$GH_HEAD"
 ROOT="$shallow/root"; MAIN_HEAD="$shallow_main"; WT_ROOT="$shallow/worktrees"
 eval "$ensure_clone_source"; eval "$checkout_pr_head_source"
+rereview_lane_policy="$(lane_policy_blob)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
 DISPATCHED=(); GH_HEAD="$SR2"
-units "{\"units\":[{\"id\":\"pr-shallow-7\",\"pr\":77,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$SR1\",\"reviewed_pr_head\":\"$SR1\",\"review_report\":\"review-shallow-7-T1.md\",\"history\":[]}]}"
+units "{\"units\":[{\"id\":\"pr-shallow-7\",\"pr\":77,\"lane\":\"pr\",\"lane_policy\":\"$rereview_lane_policy\",\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$SR1\",\"reviewed_pr_head\":\"$SR1\",\"review_report\":\"review-shallow-7-T1.md\",\"history\":[]}]}"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == "rereview:pr-shallow-7:$SR2" && "$DISPATCH_PR_HEAD" == "$SR2" ]] \
   || fail "a shallow worker clone fell back to a full review instead of rereview (got ${DISPATCHED[*]:-none})"
 [[ "$DISPATCH_PROMPT" == *"$SR1..$SR2"* ]] || fail 'shallow-clone rereview did not retain its repair delta'
+eval "$repair_no_push_selector_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 eval "$ensure_clone_stub"; eval "$checkout_pr_head_stub"
 ROOT="$saved_root"; MAIN_HEAD="$saved_main_head"; WT_ROOT="$saved_wt_root"
 GH_HEAD="$saved_gh_head"

@@ -2739,18 +2739,22 @@ export REQUIRED_PR_CHECKS_FILE="$saved_required_pr_checks"
 sched_run_case ready_starvation
 
 sched_case_pipeline_conflict_before_hold() {
+local saved_required_pr_checks="$REQUIRED_PR_CHECKS_FILE"
 new_tick_fixture pipeline-conflict-before-hold
+printf '%s\n' '{"required":["Pipeline suites"],"current_regression":"","legacy_regression":[]}' \
+  > "$TF/required-pr-checks.json"
+export REQUIRED_PR_CHECKS_FILE="$TF/required-pr-checks.json"
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
 mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
 conflict_sha="$(printf '%040x' 57001)"
 clean_sha="$(printf '%040x' 57002)"
-command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" '{units:[
-  {id:"pr-pipeline-conflict",pr:57001,lane:"pr",branch:"agent/issue-57001",stage:"ready-to-merge",approved_sha:$conflict,ready_since:1,history:[]},
-  {id:"pr-pipeline-clean",pr:57002,lane:"pr",branch:"agent/issue-57002",stage:"ready-to-merge",approved_sha:$clean,ready_since:2,history:[]}
+command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" --arg stamp "$STAMP" '{units:[
+  {id:"pr-pipeline-conflict",pr:57001,lane:"pr",branch:"agent/issue-57001",stage:"ready-to-merge",approved_sha:$conflict,ci_adopt_head:$conflict,ci_adopt_at:$stamp,ci_gate_required:true,ready_since:1,history:[]},
+  {id:"pr-pipeline-clean",pr:57002,lane:"pr",branch:"agent/issue-57002",stage:"ready-to-merge",approved_sha:$clean,ci_adopt_head:$clean,ci_adopt_at:$stamp,ci_gate_required:true,ready_since:2,history:[]}
 ]}' > "$TF/supervisor/autopi/units.json"
-command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" '[
-  {number:57001,headRefName:"agent/issue-57001",headRefOid:$conflict,isDraft:false,mergeable:"CONFLICTING",title:"conflicting pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",status:"COMPLETED",conclusion:"SUCCESS"}]},
-  {number:57002,headRefName:"agent/issue-57002",headRefOid:$clean,isDraft:false,mergeable:"MERGEABLE",title:"clean pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",status:"COMPLETED",conclusion:"SUCCESS"}]}
+command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" --arg stamp "$STAMP" '[
+  {number:57001,headRefName:"agent/issue-57001",headRefOid:$conflict,isDraft:false,mergeable:"CONFLICTING",title:"conflicting pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",startedAt:$stamp,status:"COMPLETED",conclusion:"SUCCESS"}]},
+  {number:57002,headRefName:"agent/issue-57002",headRefOid:$clean,isDraft:false,mergeable:"MERGEABLE",title:"clean pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",startedAt:$stamp,status:"COMPLETED",conclusion:"SUCCESS"}]}
 ]' > "$TF/pr-census.json"
 tick
 command jq -e '
@@ -2767,6 +2771,7 @@ grep -Fq 'merge skipped PR#57002 (touches pipeline paths; pipeline merges held)'
 if grep -Eq '^merge (57001|57002)$' "$TF/actions"; then
   echo 'scheduler.test.sh: a pipeline-dependent PR merged while main suites were red' >&2; exit 1
 fi
+export REQUIRED_PR_CHECKS_FILE="$saved_required_pr_checks"
 }
 sched_run_case pipeline_conflict_before_hold
 
