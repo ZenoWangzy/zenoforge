@@ -1,6 +1,32 @@
 sched_pack_file() { ( source "$HERE/../config.sh" && pack_file "$1" ); } # relative path -> the pack's copy; fails without a pack or file
 sched_config_file() { ( source "$HERE/../config.sh" && zf_config_file "$1" ); } # target config, then pack, then engine default
 say() { echo "[$STAMP] $*" >> "$LOG"; }
+# Refuse a unit advisor launch before Node sees a bad provider path. The bell
+# recognizes this stable line and files one incident through pipeline issue upsert.
+ADVISOR_PROVIDER_MISSING_LOGGED=false
+ADVISOR_PROVIDER_MISSING_LOGGED_PATH=""
+advisor_provider_script_available() {
+  local script="${1:-}"
+  [[ -f "$script" && -r "$script" ]] && return 0
+  if [[ "$ADVISOR_PROVIDER_MISSING_LOGGED" != true || "$ADVISOR_PROVIDER_MISSING_LOGGED_PATH" != "$script" ]]; then
+    say "advisor provider missing: $script"
+    ADVISOR_PROVIDER_MISSING_LOGGED=true
+    ADVISOR_PROVIDER_MISSING_LOGGED_PATH="$script"
+  fi
+  return 1
+}
+advisor_dispatch_or_route() { # unit-json total-review-rejections
+  local unit="$1" total="$2" id decision
+  id="$(jqf -r .id <<<"$unit")" || return 1
+  if advisor_provider_script_available "$ADVISOR_PROVIDER_SCRIPT"; then
+    advisor_launch "$unit" "$total"
+    return $?
+  fi
+  decision="$(decision_entry 'Route to one arbiter review' 'advisor provider unavailable' \
+    "the configured provider script is not readable: $ADVISOR_PROVIDER_SCRIPT" \
+    '["Retry the convergence review after restoring the provider script"]' scheduler)"
+  set_unit "$id" "$(hist arbiter-review "advisor provider missing at round $total" "$decision") | .advisor_round=$total | .arbiter=true | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
+}
 # jq 的静默包装。坏输入曾在这里变成静默 "{}" 持续约 2 小时（10-29 census 事故），现在把 jq 的
 # 解析/运行错误按「调用方 + stderr 首行」记进 scheduler.log；返回码不变。去重靠本 tick 固定的
 # STAMP 前缀查日志同款行，命令替换子 shell 也能共享一份去重。

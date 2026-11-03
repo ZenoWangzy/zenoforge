@@ -41,11 +41,19 @@ AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"
 [[ "${ZF_ENGINE_DIR-}" == "${_AGENT_ENGINE_DIR_DERIVED-}" ]] && ZF_ENGINE_DIR=
 [[ "${ZF_REPO_DIR-}" == "${_AGENT_REPO_DIR_DERIVED-}" ]] && ZF_REPO_DIR=
 if [[ -z "${ZF_ENGINE_DIR-}" ]]; then
-  # Logical path (no -P): the parent of a symlinked engine is the link's parent, as lib.sh always derived it.
+  # Preserve the logical path so engine-live remains visible to code opening files through ZF_ENGINE_DIR.
   ZF_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -L)"
   _AGENT_ENGINE_DIR_DERIVED="$ZF_ENGINE_DIR"
 fi
-_zf_repo_dir_default="${ZF_REPO_DIR:-$(cd -- "$ZF_ENGINE_DIR/.." && pwd -P)}"
+# Keep ZF_ENGINE_DIR logical so long-running loops can follow engine-live after a swap. Anything derived from the
+# engine's parent belongs beside the immutable version, so resolve the engine itself physically before deriving its parent.
+if _zf_engine_dir_physical="$(cd -- "$ZF_ENGINE_DIR" 2>/dev/null && pwd -P)"; then
+  _zf_engine_parent_dir="$(cd -- "$_zf_engine_dir_physical/.." && pwd -P)"
+else
+  # Preserve the existing caller-set path behavior when an explicit engine directory cannot be resolved.
+  _zf_engine_parent_dir="$(dirname -- "$ZF_ENGINE_DIR")"
+fi
+_zf_repo_dir_default="${ZF_REPO_DIR:-$(cd -- "$_zf_engine_parent_dir" && pwd -P)}"
 if [[ -z "${ZF_CONFIG_ROOT+x}" || ( -n "${_AGENT_CONFIG_ROOT_DERIVED+x}" && "$ZF_CONFIG_ROOT" == "$_AGENT_CONFIG_ROOT_DERIVED" ) ]]; then
   ZF_CONFIG_ROOT="${ZF_REPO_DIR:-$_zf_repo_dir_default}/.zenoforge"
   _AGENT_CONFIG_ROOT_DERIVED="$ZF_CONFIG_ROOT"
@@ -84,7 +92,7 @@ if _zf_repo_dir_resolved="$(zf_env_get REPO_DIR 2>/dev/null)"; then
   ZF_REPO_DIR="$_zf_repo_dir_resolved"
 fi
 if [[ -z "${ZF_REPO_DIR-}" ]]; then
-  ZF_REPO_DIR="$(cd -- "$ZF_ENGINE_DIR/.." && pwd -P)"
+  ZF_REPO_DIR="$(cd -- "$_zf_engine_parent_dir" && pwd -P)"
   _AGENT_REPO_DIR_DERIVED="$ZF_REPO_DIR"
 else
   unset _AGENT_REPO_DIR_DERIVED
@@ -109,7 +117,7 @@ if [[ -z "${ZF_CDP_BROWSER_LEASE_SCRIPT+x}" ]]; then
 fi
 export ZF_CDP_BROWSER_LEASE_SCRIPT
 if [[ -z "${ZF_WEB_ADVISOR_PROVIDER_SCRIPT+x}" ]]; then
-  ZF_WEB_ADVISOR_PROVIDER_SCRIPT="$ZF_ENGINE_DIR/../.agents/skills/web-advisor-provider/ask.cjs"
+  ZF_WEB_ADVISOR_PROVIDER_SCRIPT="$_zf_engine_parent_dir/.agents/skills/web-advisor-provider/ask.cjs"
 fi
 if [[ -z "${ZF_WEB_ADVISOR_PROVIDER_CDP_PORT+x}" ]]; then
   ZF_WEB_ADVISOR_PROVIDER_CDP_PORT=9224
@@ -136,6 +144,7 @@ export ZF_WEB_ADVISOR_PROVIDER_SCRIPT ZF_WEB_ADVISOR_PROVIDER_CDP_PORT ZF_WEB_AD
   ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX ZF_WEB_ADVISOR_PROVIDER_TOPIC \
   ZF_WEB_ADVISOR_PROVIDER_CALL_TIMEOUT_SECONDS ZF_WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS \
   ZF_WEB_ADVISOR_PROVIDER_POLL_INTERVAL_SECONDS
+unset _zf_engine_dir_physical _zf_engine_parent_dir
 # Set (even empty) by the caller = explicit; unset, or still the value this file derived earlier = derive again.
 if [[ -z "${ZF_PACK_DIR+x}" || ( -n "${_AGENT_PACK_DIR_DERIVED+x}" && "$ZF_PACK_DIR" == "$_AGENT_PACK_DIR_DERIVED" ) ]]; then
   ZF_PACK_DIR="" # PACK_DIR_DEFAULT: the public export rewrites this default to empty

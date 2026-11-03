@@ -81,7 +81,7 @@ dispatch_pending() {
       if [[ "$stage" == repair-pending ]] && (( since >= ADVISOR_ROUNDS )) && (( total > $(jqf -r '.advisor_round // 0' <<<"$u") )) \
         && [[ "$(jqf -r 'if .advisor == false then "off" else "on" end' <<<"$CFG")" == on ]] && [[ "$(jqf -r '.history[-1].stage // ""' <<<"$u")" =~ ^(review-request-changes|advisor-retry)$ ]]; then
         if [[ "$local_refill" != true ]]; then
-          jqf -e 'any(.units[]; .advisor_pid != null)' "$UNITS" >/dev/null || advisor_launch "$u" "$total"
+          jqf -e 'any(.units[]; .advisor_pid != null)' "$UNITS" >/dev/null || advisor_dispatch_or_route "$u" "$total"
         fi
         continue
       fi

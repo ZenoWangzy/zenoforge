@@ -173,6 +173,10 @@ scheduler_signature_class() {
     # A decision slice exited outside the stage contract (issue-pipeline-
     # slices.sh): 0 / 75 defer / 124-137 overrun are the only non-failures.
     printf 'sched-slice-failed\n'
+  elif [[ "$line" == *'advisor provider missing: '* ]]; then
+    # The scheduler refuses a unit-advisor launch before Node can emit a
+    # MODULE_NOT_FOUND stack; #166 files this stable signature as an incident.
+    printf 'sched-advisor-provider-missing\n'
   fi
 }
 

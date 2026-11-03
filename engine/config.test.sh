@@ -63,11 +63,18 @@ check "sourcing a second checkout's config.sh re-derives" \
   "$(env "${unset_all[@]}" bash -c 'source "$1/config.sh"; source "$2/config.sh"; printf "%s|%s" "$ZF_ENGINE_DIR" "$ZF_REPO_DIR"' _ "$target/engine" "$other/engine")" \
   "$other/engine|$other"
 
-# The logical path of a symlinked engine is kept, and its parent is the link's parent (lib.sh's old cd .. behaviour).
+# The engine path stays logical for live-link behavior; paths beside the version use its physical directory.
 linked="$test_env_root/linked"; mkdir -p "$linked/scripts"; ln -s "$target/engine" "$linked/engine"
 linked="$(cd -- "$linked" && pwd -P)"
-check "symlinked engine: logical engine path, link parent as target" \
-  "$(resolve "$linked/engine" "${unset_all[@]}")" "$linked/engine|$linked|$HOME/.zenoforge"
+mkdir -p "$target/.agents/skills/web-advisor-provider"
+: > "$target/.agents/skills/web-advisor-provider/ask.cjs"
+check "symlinked engine resolves advisor provider inside the physical version root" \
+  "$(env "${unset_all[@]}" -u ZF_WEB_ADVISOR_PROVIDER_SCRIPT bash -c \
+    'source "$1/config.sh"; printf "%s|%s|%s\n" "$ZF_ENGINE_DIR" "$ZF_REPO_DIR" "$ZF_WEB_ADVISOR_PROVIDER_SCRIPT"; test -r "$ZF_WEB_ADVISOR_PROVIDER_SCRIPT"' \
+    _ "$linked/engine")" \
+  "$linked/engine|$target|$target/.agents/skills/web-advisor-provider/ask.cjs"
+check "symlinked engine keeps its logical live path and derives the physical version root" \
+  "$(resolve "$linked/engine" "${unset_all[@]}")" "$linked/engine|$target|$HOME/.zenoforge"
 
 # Sourcing resolves paths only: no git, gh or network call.
 mkdir -p "$test_env_root/shims"

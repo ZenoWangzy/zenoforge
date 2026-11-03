@@ -413,6 +413,56 @@
           "engine/mac-autopilot/intake-missing-state.test.sh"
         ]
       }
+    },
+    {
+      "id": "advisor-provider-path-from-engine-live-symlink",
+      "date": "2026-11-03",
+      "class": "version-relative-path-derived-from-logical-symlink-location",
+      "what_happened": "The per-unit advisor launched Node with a bundled provider path based on the engine-live symlink's parent. Node returned MODULE_NOT_FOUND and the unit fell back to arbiter review.",
+      "root_cause_evidence": "Original log: Error: Cannot find module '<engine-live>/../.agents/skills/web-advisor-provider/ask.cjs' (MODULE_NOT_FOUND). engine/config.sh:45 kept ZF_ENGINE_DIR logical for live-link behavior, while :112 derived the provider path by appending ../ to that logical path. The planted case in engine/config.test.sh fails on the old derivation.",
+      "classic_pattern": "A logical symlink path is used to find a sibling resource with .., so lookup follows the symlink's parent instead of the directory containing the target version.",
+      "best_known_solution": "Keep ZF_ENGINE_DIR logical for live-link reload behavior, resolve its physical directory once in engine/config.sh, and derive every parent-relative path from that physical parent. Before launching a unit advisor, require a readable provider; log one stable scheduler line, route to arbiter review, and let the bell file the incident through issue upsert.",
+      "lesson_id": "V1275",
+      "research_sources": [
+        "https://www.gnu.org/software/bash/manual/bash.html",
+        "https://www.gnu.org/software/coreutils/manual/html_node/pwd-invocation.html"
+      ],
+      "options_considered": [
+        "Make ZF_ENGINE_DIR physical everywhere; this fixes sibling lookup but changes the logical live-link path used by long-running loops after a swap.",
+        "Resolve only the provider script at its caller; this leaves ZF_REPO_DIR and any other parent-relative engine defaults exposed to the same symlink error.",
+        "Keep ZF_ENGINE_DIR logical and derive one physical parent in config.sh for all parent-relative defaults; selected because it fixes the whole path family while preserving live-link behavior."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/config.test.sh",
+        "expected_result": "The planted engine-live symlink resolves the provider script into the physical version root; the old derivation exits 1 with a path mismatch."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/config.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Sources config.sh through a symlinked engine with ZF_ENGINE_DIR unset and asserts the provider script resolves inside the physical version root.",
+          "test_file": "engine/config.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/advisor-provider-missing.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Proves an absent provider is routed to arbiter review without launching the advisor, logs one diagnostic, and files one bell incident through the issue-upsert entry point.",
+          "test_file": "engine/mac-autopilot/advisor-provider-missing.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "regression-test",
+        "enforced_by": [
+          "engine/config.test.sh",
+          "engine/mac-autopilot/advisor-provider-missing.test.sh"
+        ]
+      }
     }
   ]
 }
