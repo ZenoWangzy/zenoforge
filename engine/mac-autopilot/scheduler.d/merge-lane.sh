@@ -121,6 +121,21 @@ run_merge_lane() {
   local pipe_open=1 pipe_dep merged_count=0 mstate i
   MERGE_CENSUS_MISSED=0
   [[ "$(jqf -r .auto_merge <<<"$CFG")" == "true" ]] || return 0
+  if ! jqf -e 'any(.units[]; .stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false
+      and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main")' "$UNITS" >/dev/null; then
+    # The merge gate and PR census cannot change any outcome when the local queue
+    # has no candidates. Keep the separate blocked-PR recovery path current.
+    if jqf -e 'any(.units[]; .stage == "blocked-external" and .blocked_on == null
+        and .size_recut_pending != true and ((.note // "") | contains("CONFLICTED") | not)
+        and (.pr // null) != null)' "$UNITS" >/dev/null; then
+      if git -C "$ROOT" fetch -q origin main 2>/dev/null; then
+        MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
+      fi
+      retry_blocked_units
+    fi
+    merge_census_watch 0
+    return 0
+  fi
   # fast_land_lane may advance main earlier in this tick; refresh the rule-lane and suite-gate base here.
   detail_started=$SECONDS
   if git -C "$ROOT" fetch -q origin main 2>/dev/null; then

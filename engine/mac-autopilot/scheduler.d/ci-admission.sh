@@ -1,26 +1,51 @@
 mark_product_paths() { # 就绪单元第一次见到时查一次 PR 文件，记 .product_paths（true/false）
-  local id pr files query_dir pid product updates='{}' query_timeout
-  local -a ids=() pids=()
+  local id pr i files product updates='{}' query_timeout limit remote repo_path owner repo_name owner_json repo_json query raw
+  local -a ids=() prs=()
   query_timeout="${CI_PRODUCT_PATH_LOOKUP_TIMEOUT_SECONDS:-10}"
   [[ "$query_timeout" =~ ^[1-9][0-9]*$ ]] || query_timeout=10
-  query_dir="$(mktemp -d)" || return 0
-  # 每拍至多 20 个、GH_PARALLEL 并行；每次查询 10 秒超时，失败/超时的部分输出不可用于分类。
+  limit="${PRODUCT_PATHS_PER_TICK:-20}"
+  [[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=20
   while IFS=$'\t' read -r id pr; do
     [[ -n "$id" && "$pr" =~ ^[0-9]+$ ]] || continue
     ids+=("$id")
-    { AUTOPI_GH_TIMEOUT_SECONDS="$query_timeout" gh pr view "$pr" --json files --jq '.files[].path' >"$query_dir/$id" \
-        && : >"$query_dir/$id.ok" || :; } &
-    pids+=("$!"); gh_par_throttle pids
-  done < <(jqf -r '.units[] | select(.stage == "ready-to-merge" and (.pr // null) != null and .product_paths == null) | [.id, .pr] | @tsv' "$UNITS" | head -"${PRODUCT_PATHS_PER_TICK:-20}")
-  for pid in "${pids[@]}"; do wait "$pid" || :; done
-  for id in "${ids[@]}"; do
-    [[ -f "$query_dir/$id.ok" ]] || continue
-    files="$(cat "$query_dir/$id" 2>/dev/null)"
+    prs+=("$pr")
+  done < <(jqf -r '.units[] | select(.stage == "ready-to-merge" and (.pr // null) != null and .product_paths == null) | [.id, .pr] | @tsv' "$UNITS" | head -"$limit")
+  (( ${#ids[@]} > 0 )) || return 0
+
+  # Files are the path-classification read missing from the regular PR census.
+  # Query every bounded candidate in one GraphQL request instead of one `gh pr view`
+  # per PR; this still classifies non-product exemptions when product runner slots are full.
+  repo_path="${GH_REPO:-}"
+  if [[ "$repo_path" != */* ]]; then
+    remote="$(git -C "$ROOT" config --get remote.origin.url 2>/dev/null)" || return 0
+    remote="${remote%.git}"
+    remote="${remote/:/\/}"
+    remote="${remote%/}"
+    repo_name="${remote##*/}"
+    owner="${remote%/*}"
+    owner="${owner##*/}"
+    repo_path="$owner/$repo_name"
+  fi
+  owner="${repo_path%%/*}"
+  repo_name="${repo_path#*/}"
+  [[ -n "$owner" && -n "$repo_name" && "$repo_name" != */* ]] || return 0
+  owner_json="$(jqf -Rn --arg value "$owner" '$value')" || return 0
+  repo_json="$(jqf -Rn --arg value "$repo_name" '$value')" || return 0
+  query="query { repository(owner:$owner_json, name:$repo_json) {"
+  for pr in "${prs[@]}"; do
+    query+=" pr_$pr: pullRequest(number:$pr) { files(first:100) { nodes { path } } }"
+  done
+  query+=" } }"
+  raw="$(cd "$ROOT" && AUTOPI_GH_TIMEOUT_SECONDS="$query_timeout" gh api graphql -f query="$query" 2>/dev/null)" || return 0
+  jqf -e '.data.repository | type == "object"' <<<"$raw" >/dev/null 2>&1 || return 0
+
+  for i in "${!ids[@]}"; do
+    id="${ids[$i]}"; pr="${prs[$i]}"
+    files="$(jqf -r --arg alias "pr_$pr" '.data.repository[$alias].files.nodes[]?.path // empty' <<<"$raw")"
     [[ -n "$files" ]] || continue
     if grep -vqE "$NONPRODUCT_PATHS_RE" <<<"$files"; then product=true; else product=false; fi
     updates="$(jqf --arg id "$id" --argjson product "$product" '. + {($id):$product}' <<<"$updates")"
   done
-  rm -rf -- "$query_dir"
   [[ "$updates" == '{}' ]] || units_update --slurpfile paths <(printf '%s' "$updates") \
     '.units |= map(.id as $id | if .stage == "ready-to-merge" and .product_paths == null and $paths[0][$id] != null then .product_paths=$paths[0][$id] else . end)'
 }

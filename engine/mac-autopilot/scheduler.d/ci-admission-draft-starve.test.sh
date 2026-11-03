@@ -188,7 +188,7 @@ ci_assign_wip
 command jq -e '([.units[] | select(.id == "sync-3")][0].slot_sync_sha == null)' "$UNITS" >/dev/null \
   || { echo 'ci-admission-draft-starve.test.sh: third behind-main unit synced past the per-pass budget' >&2; exit 1; }
 
-# --- case 4: per-PR path lookups are time-bounded; partial output from a timed-out query is ignored. ---
+# --- case 4: path classification is one bounded GraphQL batch; missing partial data stays unknown. ---
 starve_fixture product-path-budget
 command jq -cn '{units:[
   {id:"path-1",pr:3001,stage:"ready-to-merge"},
@@ -196,22 +196,25 @@ command jq -cn '{units:[
   {id:"path-3",pr:3003,stage:"ready-to-merge"},
   {id:"path-4",pr:3004,stage:"ready-to-merge"}]}' > "$UNITS"
 GH_PARALLEL=2 PRODUCT_PATHS_PER_TICK=3 CI_PRODUCT_PATH_LOOKUP_TIMEOUT_SECONDS=7
+GH_REPO=fixture-org/fixture-repo
+export GH_REPO
 QUERY_LOG="$A/query-timeouts"; : > "$QUERY_LOG"
 gh() {
-  [[ "$1" == pr && "$2" == view ]] || return 97
-  printf '%s\t%s\n' "$3" "${AUTOPI_GH_TIMEOUT_SECONDS:-unset}" >> "$QUERY_LOG"
-  if [[ "$3" == 3002 ]]; then printf 'README.md\n'; return 1; fi # simulate timed out partial output
-  printf 'src/app.ts\n'
+  [[ "$1" == api && "$2" == graphql ]] || return 97
+  printf '%s\t%s\n' "$2" "${AUTOPI_GH_TIMEOUT_SECONDS:-unset}" >> "$QUERY_LOG"
+  cat <<'JSON'
+{"data":{"repository":{"pr_3001":{"files":{"nodes":[{"path":"src/app.ts"}]}},"pr_3002":null,"pr_3003":{"files":{"nodes":[{"path":"src/other.ts"}]}}}}}
+JSON
 }
 mark_product_paths
-[[ "$(wc -l < "$QUERY_LOG")" == 3 ]] || { echo 'ci-admission-draft-starve.test.sh: path lookups exceeded the per-tick cap' >&2; exit 1; }
+[[ "$(wc -l < "$QUERY_LOG")" == 1 ]] || { echo 'ci-admission-draft-starve.test.sh: path classification was not one GraphQL batch' >&2; exit 1; }
 awk -F '\t' 'NF != 2 || $2 != 7 { exit 1 }' "$QUERY_LOG" \
-  || { echo 'ci-admission-draft-starve.test.sh: per-PR product-path timeout was not applied' >&2; exit 1; }
+  || { echo 'ci-admission-draft-starve.test.sh: GraphQL product-path timeout was not applied' >&2; exit 1; }
 command jq -e '
   ([.units[] | select(.pr == 3001)][0].product_paths == true)
   and ([.units[] | select(.pr == 3002)][0].product_paths == null)
   and ([.units[] | select(.pr == 3003)][0].product_paths == true)
   and ([.units[] | select(.pr == 3004)][0].product_paths == null)' "$UNITS" >/dev/null \
-  || { echo 'ci-admission-draft-starve.test.sh: failed/over-budget product-path query was incorrectly classified' >&2; exit 1; }
+  || { echo 'ci-admission-draft-starve.test.sh: missing GraphQL path data was incorrectly classified' >&2; exit 1; }
 
 echo 'ci-admission-draft-starve.test.sh: pass (one-pass draft admission, 3-tick starvation alert, slot_sync and path lookup bounds verified)'
