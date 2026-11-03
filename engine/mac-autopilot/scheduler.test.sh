@@ -685,6 +685,10 @@ tick_gh() {
         ]'
         return
       fi
+      if [[ -f "$TF/rule-lane-checks" ]]; then
+        command jq -cn '[{name:"ci",bucket:"pass",started_at:"2026-10-30T00:00:00Z"}]'
+        return
+      fi
       local check_name=ci
       if [[ -f "$TF/pipeline-prs" ]] && command grep -Fxq "$3" "$TF/pipeline-prs"; then check_name='Pipeline suites'; fi
       if [[ "$3" -gt "$(cat "$TF/dead-through")" ]]; then
@@ -1624,6 +1628,9 @@ sched_case_rule_lane() {
 # Unavailable diffs and failed repair comments keep holding.
 new_tick_fixture rule-lane
 enable_rule_lane_fixture
+printf '%s\n' '{"required":["ci"],"current_regression":"","legacy_regression":[]}' > "$TF/required-pr-checks.json"
+export REQUIRED_PR_CHECKS_FILE="$TF/required-pr-checks.json"
+touch "$TF/rule-lane-checks"
 touch "$TF/supervisor/test-evidence.jsonl"
 command jq '.auto_merge=true | .batch_max=5' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
 mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
@@ -1759,6 +1766,7 @@ grep -Fq 'gh pr merge 54 --squash --match-head-commit' "$TF/calls" \
   || { echo 'scheduler.test.sh: ordinary merge did not pass through gh-shim' >&2; exit 1; }
 grep -Fq 'gh pr merge 55 --squash --match-head-commit' "$TF/calls" \
   || { echo 'scheduler.test.sh: supervisor rule merge did not pass through gh-shim' >&2; exit 1; }
+export REQUIRED_PR_CHECKS_FILE="$test_env_root/required-pr-checks.json"
 grep -Fq 'rule-lane: decision=unit-reject refused=rule-files actor=unit:agent/issue-4548 touched=1 files=engine/mac-autopilot/config.template.json' \
   "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: scheduler log omitted the unit rule rejection event' >&2; exit 1; }
