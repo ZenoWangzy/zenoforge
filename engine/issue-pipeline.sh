@@ -54,6 +54,37 @@ pipeline_live_worker_check() {
   local runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-$REPO_DIR/.scratch-supervisor/autopi}"
   coord_issue_live_worker "$1" "$runtime_dir"
 }
+# 2026-11-03: an issue with a live worker OR a non-terminal scheduler unit
+# (scheduler_issue_unit_inflight, lib.d/dispatch-gates.sh) belongs to the
+# autopilot scheduler for now -- its labels are that unit's state. Triage
+# selection must skip it; re-triaging in-flight tickets moved two units at
+# rereview/ready-to-merge back to needs-advisor and stripped ready-for-agent.
+# An unreadable ledger skips too (fail-closed): one held ticket costs a tick,
+# one wrong relabel costs the unit.
+pipeline_triage_skip_inflight() { # issue -> 0 skip / 1 proceed
+  local status
+  if scheduler_issue_unit_inflight "$1"; then
+    echo "issue-pipeline: triage #$1 has an in-flight scheduler unit; leaving it to the scheduler" >&2
+    return 0
+  else
+    status=$?
+    if [ "$status" -ne 1 ]; then
+      echo "issue-pipeline: triage #$1 scheduler unit ledger unreadable (status=$status); holding triage selection this tick" >&2
+      return 0
+    fi
+  fi
+  if pipeline_live_worker_check "$1"; then
+    echo "issue-pipeline: triage #$1 has a live scheduler worker; leaving it to the scheduler" >&2
+    return 0
+  else
+    status=$?
+    if [ "$status" -ne 1 ]; then
+      echo "issue-pipeline: triage #$1 live-worker census unreadable (status=$status); holding triage selection this tick" >&2
+      return 0
+    fi
+  fi
+  return 1
+}
 pipeline_claim_begin() { # issue stage systemd-unit -> 0 acquired / 1 held / 3 unknown
   local issue="$1" stage="$2" unit="$3" key owner status
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
@@ -95,32 +126,68 @@ pipeline_claim_keep() { # launched unit owns the lease until a later tick sees i
   echo "issue-pipeline: dispatch claim=owned unit=$unit" >&2
   pipeline_claim_clear
 }
-pipeline_batch_claim_acquire() { # owner stage unit issue...; atomically reserve every member before launch
-  local owner="$1" stage="$2" unit="$3" issue key status
-  shift 3
-  for issue in "$@"; do
-    if pipeline_live_worker_check "$issue"; then return 1; else status=$?; (( status == 1 )) || return 3; fi
-  done
-  if coord_acquire_many "$owner" systemd-worker "$unit" "$stage" "$@"; then
-    for issue in "$@"; do
-      key="$(coord_issue_key "$issue")" || { coord_release_many "$owner" "$@" >/dev/null 2>&1 || :; return 2; }
+pipeline_batch_claim_acquire() { # owner stage unit issue_ids_var; reserves the claimable members before launch
+  # 2026-11-03: a member with a live scheduler worker used to refuse the WHOLE
+  # batch (return 1 -> defer 75), starving every other needs-advisor issue
+  # behind it. Busy members are dropped and logged instead; the rest is
+  # claimed atomically. An empty remainder is a no-op (the caller sees an
+  # empty list), never an error. The loop terminates: every retry drops at
+  # least the member whose worker appeared between the pre-check and the
+  # acquire. A worker-ledger status other than live/none stays fail-closed
+  # (return 3 -> defer): an unreadable ledger must not launch a batch.
+  local owner="$1" stage="$2" unit="$3" issues_var="$4" issue key status other
+  local -n batch_claim_issues="$issues_var"
+  local -a pending=("${batch_claim_issues[@]}") checked=() confirmed=() next_pending=()
+  while :; do
+    checked=()
+    for issue in "${pending[@]}"; do
+      if pipeline_live_worker_check "$issue"; then
+        echo "issue-pipeline: batch claim dropping #$issue (live scheduler worker); it stays queued for a later batch" >&2
+      else
+        status=$?
+        if [ "$status" -ne 1 ]; then
+          echo "issue-pipeline: batch claim worker census unknown for #$issue (status=$status); deferring the batch" >&2
+          return 3
+        fi
+        checked+=("$issue")
+      fi
+    done
+    if [ "${#checked[@]}" -eq 0 ]; then
+      batch_claim_issues=()
+      echo "issue-pipeline: batch claim empty after live-worker drops; no members to claim this tick" >&2
+      return 0
+    fi
+    if ! coord_acquire_many "$owner" systemd-worker "$unit" "$stage" "${checked[@]}"; then
+      status=$?
+      return "$status"
+    fi
+    confirmed=()
+    for issue in "${checked[@]}"; do
+      key="$(coord_issue_key "$issue")" || { coord_release_many "$owner" "${checked[@]}" >/dev/null 2>&1 || :; return 2; }
       if ! coord_assert_owned "$key" "$owner" >/dev/null; then
-        coord_release_many "$owner" "$@" >/dev/null 2>&1 || :
+        coord_release_many "$owner" "${checked[@]}" >/dev/null 2>&1 || :
         return 3
       fi
       if pipeline_live_worker_check "$issue"; then
-        coord_release_many "$owner" "$@" >/dev/null 2>&1 || :
-        return 1
+        echo "issue-pipeline: batch claim dropping #$issue (worker appeared during acquire); it stays queued for a later batch" >&2
+        coord_release_many "$owner" "${checked[@]}" >/dev/null 2>&1 || :
+        next_pending=()
+        for other in "${checked[@]}"; do [ "$other" = "$issue" ] || next_pending+=("$other"); done
+        pending=("${next_pending[@]}")
+        continue 2
       else
         status=$?
-        if (( status != 1 )); then coord_release_many "$owner" "$@" >/dev/null 2>&1 || :; return 3; fi
+        if [ "$status" -ne 1 ]; then
+          coord_release_many "$owner" "${checked[@]}" >/dev/null 2>&1 || :
+          echo "issue-pipeline: batch claim worker census unknown after acquire for #$issue (status=$status); deferring the batch" >&2
+          return 3
+        fi
+        confirmed+=("$issue")
       fi
     done
+    batch_claim_issues=("${confirmed[@]}")
     return 0
-  else
-    status=$?
-    return "$status"
-  fi
+  done
 }
 pipeline_batch_claim_drop() {
   local owner="$1"; shift
@@ -673,8 +740,11 @@ dispatch_advisor_batch() {
   if [ "${#issue_ids[@]}" -gt 0 ]; then
     claim_unit="${UNIT_PREFIX_TRANSIENT}-advisor-batch"
     claim_owner="$(coord_new_owner)"
-    if pipeline_batch_claim_acquire "$claim_owner" advisor-batch "$claim_unit" "${issue_ids[@]}"; then
-      :
+    if pipeline_batch_claim_acquire "$claim_owner" advisor-batch "$claim_unit" issue_ids; then
+      if [ "${#issue_ids[@]}" -eq 0 ]; then
+        echo "issue-pipeline: advisor batch has no members left after live-worker drops; nothing dispatched this tick" >&2
+        return 0
+      fi
     else
       claim_status=$?
       echo "issue-pipeline: advisor batch claim unavailable status=$claim_status; leaving issues queued" >&2
@@ -733,8 +803,11 @@ dispatch_triage_batch() {
   fi
   claim_unit="${UNIT_PREFIX_TRANSIENT}-triage-batch"
   claim_owner="$(coord_new_owner)"
-  if pipeline_batch_claim_acquire "$claim_owner" triage-batch "$claim_unit" "${issue_ids[@]}"; then
-    :
+  if pipeline_batch_claim_acquire "$claim_owner" triage-batch "$claim_unit" issue_ids; then
+    if [ "${#issue_ids[@]}" -eq 0 ]; then
+      echo "issue-pipeline: triage batch has no members left after live-worker drops; nothing dispatched this tick" >&2
+      return 0
+    fi
   else
     claim_status=$?
     echo "issue-pipeline: triage batch claim unavailable status=$claim_status; leaving issues queued" >&2
@@ -2008,6 +2081,7 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" 
     # until late in run-triage.sh, so a still-running triage for this same
     # issue would otherwise look selectable to a later tick.
     stage_unit_active triage "$next_triage" && continue
+    pipeline_triage_skip_inflight "$next_triage" && continue
     stage_dispatch_allowed triage || break
     ensure_issue_roadmap_parent_for_dispatch "$next_triage" needs-triage || continue
     if [ "$(state_read "$next_triage" | jq -r '.triage_batch_retry_alone // false')" = "true" ]; then
@@ -2099,6 +2173,7 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_RETRY_ALONE" = "0" ] && [ "$RE
       continue
     fi
     stage_unit_active triage "$next_measure" && continue
+    pipeline_triage_skip_inflight "$next_measure" && continue
     stage_dispatch_allowed triage || break
     ensure_issue_roadmap_parent_for_dispatch "$next_measure" ready-for-agent || continue
     if [ "$(state_read "$next_measure" | jq -r '.triage_batch_retry_alone // false')" = "true" ]; then

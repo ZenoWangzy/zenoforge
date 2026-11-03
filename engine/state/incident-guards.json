@@ -22,13 +22,19 @@
       },
       "machine_checks": [
         {
-          "command": ["bash", "engine/jq-regex-safety.test.sh"],
+          "command": [
+            "bash",
+            "engine/jq-regex-safety.test.sh"
+          ],
           "expected": "exit:0",
           "why": "Compiles engine literals and proves an unbalanced planted pattern is rejected.",
           "test_file": "engine/jq-regex-safety.test.sh"
         },
         {
-          "command": ["bash", "engine/mac-autopilot/scheduler.test.sh"],
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.test.sh"
+          ],
           "expected": "exit:0",
           "why": "Retains the original scheduler regression case.",
           "test_file": "engine/mac-autopilot/scheduler.test.sh"
@@ -67,13 +73,19 @@
       },
       "machine_checks": [
         {
-          "command": ["bash", "engine/jq-arg-safety.test.sh"],
+          "command": [
+            "bash",
+            "engine/jq-arg-safety.test.sh"
+          ],
           "expected": "exit:0",
           "why": "Proves a planted --arg rows \"$rows\" binding is flagged and scans production shell files.",
           "test_file": "engine/jq-arg-safety.test.sh"
         },
         {
-          "command": ["bash", "engine/mac-autopilot/scheduler.test.sh"],
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.test.sh"
+          ],
           "expected": "exit:0",
           "why": "Exercises the #159 large-row cache regression above 2 MiB.",
           "test_file": "engine/mac-autopilot/scheduler.test.sh"
@@ -109,7 +121,10 @@
       },
       "machine_checks": [
         {
-          "command": ["bash", "engine/mac-autopilot/scheduler.test.sh"],
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.test.sh"
+          ],
           "expected": "exit:0",
           "why": "Regression case reaches the refill fallback with set -u and checks dispatch continues.",
           "test_file": "engine/mac-autopilot/scheduler.test.sh"
@@ -145,13 +160,19 @@
       },
       "machine_checks": [
         {
-          "command": ["bash", "engine/scheduler-gh-timeout-safety.test.sh"],
+          "command": [
+            "bash",
+            "engine/scheduler-gh-timeout-safety.test.sh"
+          ],
           "expected": "exit:0",
           "why": "Checks all scheduler/lib shell sources and proves a planted command gh bypass is rejected.",
           "test_file": "engine/scheduler-gh-timeout-safety.test.sh"
         },
         {
-          "command": ["bash", "engine/mac-autopilot/scheduler.test.sh"],
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.test.sh"
+          ],
           "expected": "exit:0",
           "why": "Times out a stalled gh CLI call, verifies the child is stopped, and checks timeout logging.",
           "test_file": "engine/mac-autopilot/scheduler.test.sh"
@@ -189,13 +210,19 @@
       },
       "machine_checks": [
         {
-          "command": ["bash", "engine/engine-sync.test.sh"],
+          "command": [
+            "bash",
+            "engine/engine-sync.test.sh"
+          ],
           "expected": "exit:0",
           "why": "Exercises engine version selection and publish preflight behavior.",
           "test_file": "engine/engine-sync.test.sh"
         },
         {
-          "command": ["bash", "engine/publish-preflight/run.test.sh"],
+          "command": [
+            "bash",
+            "engine/publish-preflight/run.test.sh"
+          ],
           "expected": "exit:0",
           "why": "Keeps the default refusal for unlisted resolved-config changes and accepts listed changes with a reason.",
           "test_file": "engine/publish-preflight/run.test.sh"
@@ -240,6 +267,47 @@
         "enforced_by": [
           "engine/mac-autopilot/scheduler.d/core.sh",
           "engine/mac-autopilot/intake-missing-state.test.sh"
+        ]
+      }
+    },
+    {
+      "id": "tick-refused-by-defer-status",
+      "date": "2026-11-03",
+      "class": "defer-exit-status-treated-as-stage-failure",
+      "what_happened": "Every pipeline tick since 2026-11-03 05:23Z was refused: one advisor batch member had a live scheduler worker, pipeline_batch_claim_acquire returned 1, the advisor stage translated it to exit 75, and issue-pipeline-slices.sh counted only 0/124/137 as non-failures, so failed=1 and run-tick refused the tick. The same batch re-triaged two tickets whose scheduler units were in flight, which is what made a member busy in the first place.",
+      "root_cause_evidence": "engine/issue-pipeline-slices.sh slice case (pre-fix: '0) ;; 124|137) ... *) failed=1') had no defer arm; engine/issue-pipeline.sh dispatch_advisor_batch claim-unavailable 'return 75'; live journal shows repeated 'run-tick: refusing to run this tick — issue-pipeline.sh exited with status 1' and the live autopilot scheduler.log shows the incident signature matched nothing in engine/mac-autopilot/bell.sh scheduler_signature_class().",
+      "classic_pattern": "A component communicates 'temporary, retry later' through a non-zero exit code that an aggregator treats as failure, so a single soft miss is escalated to a whole-system outage; paired with a monitor that only recognizes hard-crash signatures, the outage also files no incident.",
+      "best_known_solution": "Make the defer contract explicit in one place (ZF_SLICE_DEFER_STATUS in engine/issue-pipeline-slices.sh): slices treat 75 (EX_TEMPFAIL) as defer-and-continue like an overrun; batch claims drop busy members instead of refusing the batch; selection never re-triages an issue with an in-flight scheduler unit; the refusal and the failing slice append a stable signature line to the scheduler log the bell scans.",
+      "lesson_id": "V1273",
+      "research_sources": [
+        "https://datatracker.ietf.org/doc/html/rfc5198#section-2.1",
+        "https://www.gnu.org/software/bash/manual/html_node/Exit-Status.html",
+        "https://sre.google/sre-book/monitoring-distributed-systems/"
+      ],
+      "options_considered": [
+        "Map every non-zero slice status to success; rejected because real stage failures (exit 1) must still refuse the tick.",
+        "Catch 75 at each dispatch call site only; rejected because the stage-exit contract stays implicit and the next defer-producing path re-triggers the outage.",
+        "One named defer status honored by the slice runner, with busy batch members dropped instead of refusing the batch; selected: the contract is declared once and every producer of 75 is covered."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/tick-refuse-guard.test.sh",
+        "expected_result": "Slice-contract, batch-claim and in-flight-triage guards all pass; each case fails on the pre-fix engine."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/tick-refuse-guard.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Exercises the real slice runner with exit 75/1, the real batch claim with one busy member, and the in-flight triage skip against rereview/ready-to-merge unit fixtures.",
+          "test_file": "engine/tick-refuse-guard.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "static-test",
+        "enforced_by": [
+          "engine/tick-refuse-guard.test.sh"
         ]
       }
     }

@@ -252,6 +252,39 @@ triage_batch_issue_active() {
 }
 
 
+# The autopilot scheduler's own unit ledger (units.json) is the source of truth
+# for "another scheduler owns this issue right now". The terminal stage set is
+# the scheduler's own vocabulary (scheduler.d/intake.sh, scheduler.d/cleanup.sh);
+# a unit in ANY other stage -- implement, review, rereview, ready-to-merge,
+# parked, supervisor-review, ... -- still owns the ticket, whether or not a
+# worker PID happens to be alive at this instant (ready-to-merge can wait for a
+# CI slot with no live worker). 2026-11-03: re-triaging such tickets moved two
+# in-flight units back to needs-advisor and stripped ready-for-agent mid-unit.
+SCHEDULER_UNIT_TERMINAL_STAGES='merged landed closed done wontfix duplicate'
+scheduler_issue_unit_inflight() { # issue [units.json] -> 0 in-flight unit / 1 none / 3 unknown
+  local issue="${1:-}" units="${2:-}" status
+  [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 2
+  if [ -z "$units" ]; then
+    units="${MAC_AUTOPILOT_RUNTIME_DIR:-${REPO_DIR:?scheduler_issue_unit_inflight needs REPO_DIR}/.scratch-supervisor/autopi}/units.json"
+  fi
+  if [ ! -r "$units" ]; then
+    echo "scheduler_issue_unit_inflight: scheduler unit ledger unavailable issue=$issue" >&2
+    return 3
+  fi
+  if ! jq -e 'type == "object" and (.units | type) == "array"' "$units" >/dev/null 2>&1; then
+    echo "scheduler_issue_unit_inflight: scheduler unit ledger malformed issue=$issue" >&2
+    return 3
+  fi
+  jq -e --argjson issue "$issue" --arg terminal "$SCHEDULER_UNIT_TERMINAL_STAGES" '
+    any(.units[]; (.issue // null) == $issue and ((.stage // "") | IN($terminal | split(" ")[]) | not))
+  ' "$units" >/dev/null 2>&1 && return 0
+  status=$?
+  if [ "$status" -eq 1 ]; then return 1; fi
+  echo "scheduler_issue_unit_inflight: scheduler unit ledger read failed issue=$issue status=$status" >&2
+  return 3
+}
+
+
 # Validate one triage result against the checked-in schema using the schema's
 # current required/types/enums/items rules. Missing or malformed external
 # judgment is normalized to false on the validation copy, so it cannot strand
