@@ -1,6 +1,56 @@
 {
   "incidents": [
     {
+      "id": "advisor-and-main-ci-outcomes-missing-from-bell-intake",
+      "date": "2026-11-03",
+      "class": "terminal-advisor-and-main-ci-failures-bypass-incident-intake",
+      "what_happened": "Advisor jobs had terminal failures recorded in answer.err, but the incident intake watched only node_health's six-hour successful-answer-age threshold. A red post-merge main CI run likewise had no incident path. The result was a many-hour gap between advisor failures and an issue being filed.",
+      "root_cause_evidence": "A redacted captured answer.err line has the shape '[redacted-provider] ADVISOR_ANSWER_TIMEOUT: <redacted diagnostic>' (engine/mac-autopilot/fixtures/advisor-timeout-prefixed.answer.err). On origin/main, engine/providers/web-advisor-provider.sh:638-648 deleted terminal job data after returning only a raw error tail or parsed answer; engine/run-advisor-batch.sh:433-446 recorded outcome and job identity without diagnostic codes; engine/mac-autopilot/bell.sh:378-426 consumed incremental scheduler.log lines and changed alert files but never scanned advisor-batch result records. engine/mac-autopilot/node_health.py:83 marked advisor answer age unhealthy only at six hours. The same bell had a main CI run snapshot for queue handling but did not turn completed red runs into incidents.",
+      "classic_pattern": "A producer discards machine-readable failure meaning before cleanup, while a downstream health aggregate observes only delayed absence of success; durable terminal events have no incident owner.",
+      "best_known_solution": "Extract the three required ADVISOR_* codes and the safe picker-not-found class before provider job cleanup, persist them with each advisor batch result, and scan those results from the existing bell tick using stable #166 signatures. Use the same bell tick's main CI snapshot plus the existing bounded gh wrapper and CI test-log parser to file red-run incidents keyed by check and first test. Keep recovery quiet when a later success breaks a consecutive-failure streak.",
+      "lesson_id": "V1277",
+      "research_sources": [
+        "https://sre.google/sre-book/monitoring-distributed-systems/",
+        "https://docs.github.com/en/actions/how-tos/monitor-workflows/use-workflow-run-logs"
+      ],
+      "options_considered": [
+        "Lower the six-hour node-health threshold; rejected because it still waits on an aggregate symptom and cannot identify a terminal error or red CI check.",
+        "Add another polling daemon; rejected because it adds a second schedule and incident owner while the bell already owns #166 upsert and dedupe.",
+        "Capture durable advisor diagnostics and inspect advisor results plus the existing CI snapshot in one bell scan; selected because failure detection uses the event already emitted and reuses #166 hashing, severity and upsert."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/mac-autopilot/advisor-incident.test.sh",
+        "expected_result": "Three redacted answer.err shapes yield one issue per required signature in one scan; the planted pre-fix bell misses a timeout; isolated fail-then-success is quiet; picker fallback and red/green main CI fixtures follow the same intake."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/advisor-incident.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Replays three redacted real answer.err shapes, checks pending-job diagnostics survive, verifies fail streak and recovery behavior, and exercises picker fallback plus red/green main CI incident intake.",
+          "test_file": "engine/mac-autopilot/advisor-incident.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/advisor-incident.test.sh",
+            "--plant-old"
+          ],
+          "expected": "exit:1",
+          "why": "Removes the new bell scan calls to plant the pre-fix behavior; a real redacted timeout result is missed and the guard reports the expected failure.",
+          "test_file": "engine/mac-autopilot/advisor-incident.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "regression-test",
+        "enforced_by": [
+          "engine/mac-autopilot/advisor-incident.test.sh"
+        ]
+      }
+    },
+    {
       "id": "ci-admission-unlabeled-draft-starvation",
       "date": "2026-11-03",
       "class": "membership-gate-silent-noop-starvation",

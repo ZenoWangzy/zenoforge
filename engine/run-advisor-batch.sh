@@ -27,6 +27,7 @@ if [[ ! "$ADVISOR_QUEUE_LABEL" =~ ^[A-Za-z0-9._:-]+$ || ! "$ADVISOR_PRIORITY_LAB
   exit 0
 fi
 ADVISOR_TICK_ID="advisor-batch-$(date -u +%Y%m%dT%H%M%SZ)"
+BATCH_DIAGNOSTICS_FILE=""
 
 advisor_batch_hand_agent_issue_is_live_owned() {
   declare -F hand_agent_issue_is_live_owned >/dev/null 2>&1 || return 1
@@ -38,9 +39,38 @@ advisor_batch_forget_provider_job() {
   web_advisor_provider_forget_job "$1"
 }
 
+advisor_batch_capture_provider_diagnostics() {
+  local response="$1" fallback_signature="" codes_json tmp code answer_err
+  local -a codes=()
+  fallback_signature="$(jq -r '.model_fallback_signature // empty' <<<"$response" 2>/dev/null || true)"
+  answer_err="$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/answer.err"
+  if [[ -r "$answer_err" ]]; then
+    [[ -n "$fallback_signature" ]] || fallback_signature="$(web_advisor_provider_model_fallback_signature_from_log "$answer_err")"
+  fi
+  case "$fallback_signature" in picker-not-found) ;; *) fallback_signature="" ;; esac
+  for code in ADVISOR_MODEL_UNVERIFIED ADVISOR_ANSWER_TIMEOUT ADVISOR_SEND_NOT_CONFIRMED; do
+    if jq -e --arg code "$code" '(.advisor_error_codes // []) | index($code) != null' \
+      <<<"$response" >/dev/null 2>&1 \
+      || { jq -e '.is_error == true' <<<"$response" >/dev/null 2>&1 && [[ "$response" == *"$code"* ]]; } \
+      || { [[ -r "$answer_err" ]] && grep -Fq -- "$code" "$answer_err"; }; then
+      codes+=("$code")
+    fi
+  done
+  codes_json="$(printf '%s\n' "${codes[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
+  BATCH_DIAGNOSTICS_FILE="$LOG_DIR/$ADVISOR_TICK_ID.advisor-diagnostics.json"
+  tmp="$(mktemp "${BATCH_DIAGNOSTICS_FILE}.XXXXXX")" || return 1
+  jq -cn --argjson codes "$codes_json" --arg fallback "$fallback_signature" \
+    '{error_codes:$codes,model_fallback_signature:(if $fallback=="" then null else $fallback end)}' > "$tmp" \
+    && mv -f -- "$tmp" "$BATCH_DIAGNOSTICS_FILE" || { rm -f -- "$tmp"; return 1; }
+}
+
 advisor_batch_poll_provider_job() {
   local job_id="$1" response status structured
   if response="$(web_advisor_provider_poll "$job_id")"; then status=0; else status=$?; fi
+  if ! advisor_batch_capture_provider_diagnostics "$response"; then
+    echo 'run-advisor-batch: could not persist provider incident diagnostics' >&2
+    return 1
+  fi
   case "$status" in
     2|75) return "$status" ;;
     0) ;;
@@ -414,8 +444,12 @@ BATCH_OUTCOME=selection-incomplete
 BATCH_JOB_ID=""
 INCLUDED=0
 record_batch_result() {
-  local status="$1" result_file="$LOG_DIR/$ADVISOR_TICK_ID.result.json" gates_file tmp n
+  local status="$1" result_file="$LOG_DIR/$ADVISOR_TICK_ID.result.json" gates_file tmp n diagnostics='{}' fallback_signature
   local job_artifact="" ruling_artifact="" eligible
+  if [[ -r "$LOG_DIR/$ADVISOR_TICK_ID.advisor-diagnostics.json" ]]; then
+    diagnostics="$(jq -c 'if type=="object" then . else {} end' "$LOG_DIR/$ADVISOR_TICK_ID.advisor-diagnostics.json" 2>/dev/null || echo '{}')"
+  fi
+  fallback_signature="$(jq -r '.model_fallback_signature // empty' <<<"$diagnostics")"
   eligible=$((${#CANDIDATE_ISSUES[@]} > INCLUDED ? ${#CANDIDATE_ISSUES[@]} : INCLUDED))
   if [ -n "$BATCH_JOB_ID" ]; then
     job_artifact="$LOG_DIR/$ADVISOR_TICK_ID.job.json"
@@ -433,7 +467,7 @@ record_batch_result() {
   jq -Rn --arg tick "$ADVISOR_TICK_ID" --arg outcome "$BATCH_OUTCOME" \
     --arg job "$BATCH_JOB_ID" --arg job_artifact "$job_artifact" --arg ruling_artifact "$ruling_artifact" \
     --argjson status "$status" --argjson eligible "$eligible" \
-    --argjson included "$INCLUDED" --argjson applied "${APPLIED:-0}" '
+    --argjson included "$INCLUDED" --argjson applied "${APPLIED:-0}" --argjson diagnostics "$diagnostics" '
     [inputs | split("\t") | {issue:(.[0] | tonumber), gate:.[1]}] as $selection
     | {tick:$tick, recorded_at:(now | todateiso8601), exit_code:$status,
        eligible_count:$eligible, requested_count:$included, applied_count:$applied,
@@ -443,10 +477,18 @@ record_batch_result() {
          else null end),
        job_id:(if $job == "" then null else $job end),
        job_artifact:(if $job_artifact == "" then null else $job_artifact end),
-       ruling_artifact:(if $ruling_artifact == "" then null else $ruling_artifact end)}' \
+       ruling_artifact:(if $ruling_artifact == "" then null else $ruling_artifact end),
+       advisor_error_codes:($diagnostics.error_codes // []),
+       model_fallback_signature:($diagnostics.model_fallback_signature // null),
+       advisor_signal:(if $diagnostics.model_fallback_signature == "picker-not-found" then
+         "ADVISOR_MODEL_FALLBACK picker-not-found" else null end)}' \
     < "$gates_file" > "$tmp" || { rm -f "$gates_file" "$tmp"; return 1; }
   mv "$tmp" "$result_file" || { rm -f "$gates_file" "$tmp"; return 1; }
   rm -f "$gates_file" "$tmp"
+  rm -f -- "$LOG_DIR/$ADVISOR_TICK_ID.advisor-diagnostics.json"
+  if [[ "$fallback_signature" == picker-not-found ]]; then
+    echo 'ADVISOR_MODEL_FALLBACK picker-not-found' >&2
+  fi
   echo "run-advisor-batch: result=$result_file outcome=$BATCH_OUTCOME eligible=$eligible requested=$INCLUDED" >&2
 }
 cleanup() {

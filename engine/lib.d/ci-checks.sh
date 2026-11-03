@@ -515,8 +515,10 @@ ci_run_is_retryable_infra_failure() {
 }
 
 
-# ci_failed_test_ids <failed-log> -> stable identifiers for supported test runners.
-ci_failed_test_ids() {
+# ci_failed_test_ids_ordered <failed-log> -> runner-qualified identifiers in log order.
+# Keep this parser shared so incident intake can name the first failure while
+# flake matching can continue to consume a sorted, unique set.
+ci_failed_test_ids_ordered() {
   awk '
     function clean(value) {
       gsub(/\r/, "", value)
@@ -544,7 +546,17 @@ ci_failed_test_ids() {
         print "pytest\t" clean(id)
       }
     }
-  ' <<< "$1" | sort -u
+  ' <<< "$1"
+}
+
+# ci_first_failed_test_id <failed-log> -> the first recognized test in runner order.
+ci_first_failed_test_id() {
+  ci_failed_test_ids_ordered "$1" | sed -n '1{s/^[^[:space:]]*[[:space:]]//;p;}'
+}
+
+# ci_failed_test_ids <failed-log> -> stable identifiers for supported test runners.
+ci_failed_test_ids() {
+  ci_failed_test_ids_ordered "$1" | sort -u
 }
 
 

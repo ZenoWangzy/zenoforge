@@ -9,6 +9,9 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 EXPLICIT_AGENT_HOME="${AGENT_HOME:-}"
 source "$HERE/runtime-env.sh"
 ROOT="$MAC_AUTOPILOT_ROOT"
+ENGINE_DIR="${ZF_ENGINE_DIR:-$ROOT/engine}"
+source "$ENGINE_DIR/lib.d/transport.sh"
+source "$ENGINE_DIR/lib.d/ci-checks.sh"
 A="${BELL_AUTOPI_DIR:-$MAC_AUTOPILOT_RUNTIME_DIR}"
 CHECK_ONLY=0
 TEST_NOTIFICATION=0
@@ -62,9 +65,9 @@ SCAN_LOCK="$A/.bell.lock"
 SUPERVISOR_LOCK="$A/.bell-supervisor.lock"
 SCAN_PID=""
 if [[ -s "$STATE" ]] && jq -e 'type=="object"' "$STATE" >/dev/null 2>&1; then
-  STATE_JSON="$(jq -c '. + {monitor_initialized:(.monitor_initialized//false),scheduler_lines:(.scheduler_lines//0),alert_mtimes:(.alert_mtimes//{}),merge_events:(.merge_events//{}),signatures:(.signatures//{}),pending:(.pending//[]),incident_stats:(.incident_stats//{}),incident_filing:(.incident_filing//{}),scheduler_signature_seen:(.scheduler_signature_seen//{}),network_down:(.network_down//false)}' "$STATE")"
+  STATE_JSON="$(jq -c '. + {monitor_initialized:(.monitor_initialized//false),scheduler_lines:(.scheduler_lines//0),alert_mtimes:(.alert_mtimes//{}),merge_events:(.merge_events//{}),signatures:(.signatures//{}),pending:(.pending//[]),incident_stats:(.incident_stats//{}),incident_filing:(.incident_filing//{}),scheduler_signature_seen:(.scheduler_signature_seen//{}),main_ci_runs_seen:(.main_ci_runs_seen//{}),network_down:(.network_down//false)}' "$STATE")"
 else
-  STATE_JSON='{"monitor_initialized":false,"scheduler_lines":0,"alert_mtimes":{},"merge_events":{},"signatures":{},"pending":[],"incident_stats":{},"incident_filing":{},"scheduler_signature_seen":{},"network_down":false}'
+  STATE_JSON='{"monitor_initialized":false,"scheduler_lines":0,"alert_mtimes":{},"merge_events":{},"signatures":{},"pending":[],"incident_stats":{},"incident_filing":{},"scheduler_signature_seen":{},"main_ci_runs_seen":{},"network_down":false}'
 fi
 MONITOR_INITIALIZED="$(jq -r '.monitor_initialized' <<<"$STATE_JSON")"
 
@@ -232,6 +235,131 @@ if [[ -z "$INCIDENT_REPO" ]]; then
   incident_remote="$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)"
   INCIDENT_REPO="$(printf '%s' "$incident_remote" | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##')"
 fi
+advisor_incident_scan() {
+  local result_file result recorded cutoff job_id answer_err outcome exit_code code fallback_signature
+  local fail_streak=0 saw_consecutive_failure=0
+  local advisor_job_dir="${ZF_WEB_ADVISOR_PROVIDER_JOB_DIR:-$AGENT_HOME/web-advisor-provider-jobs}"
+  cutoff="$(python3 - "$((now - 86400))" <<'PY'
+from datetime import datetime, timezone
+import sys
+print(datetime.fromtimestamp(int(sys.argv[1]), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+)"
+  for result_file in "$AGENT_HOME"/logs/advisor-batch-*.result.json; do
+    [[ -r "$result_file" ]] || continue
+    result="$(jq -ce 'select(type == "object")' "$result_file" 2>/dev/null || true)"
+    [[ -n "$result" ]] || continue
+    recorded="$(jq -r '.recorded_at // empty' <<<"$result")"
+    [[ "$recorded" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ \
+      && "$recorded" > "$cutoff" && ( "$recorded" < "$stamp" || "$recorded" == "$stamp" ) ]] || continue
+    job_id="$(jq -r '.job_id // empty' <<<"$result")"
+    [[ "$job_id" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || job_id=""
+    answer_err=""
+    [[ -z "$job_id" ]] || answer_err="$advisor_job_dir/$job_id/answer.err"
+    for code in ADVISOR_MODEL_UNVERIFIED ADVISOR_ANSWER_TIMEOUT ADVISOR_SEND_NOT_CONFIRMED; do
+      if jq -e --arg code "$code" '(.advisor_error_codes // []) | index($code) != null' \
+        <<<"$result" >/dev/null 2>&1 || { [[ -n "$answer_err" && -r "$answer_err" ]] \
+          && grep -Fq -- "$code" "$answer_err"; }; then
+        add_event high "advisor-error:$code" "advisor batch error signature $code" \
+          "redacted advisor diagnostic marker: $code"
+      fi
+    done
+    fallback_signature="$(jq -r '.model_fallback_signature // empty' <<<"$result")"
+    if [[ "$fallback_signature" == picker-not-found ]] \
+      || [[ "$(jq -r '.advisor_signal // empty' <<<"$result")" == 'ADVISOR_MODEL_FALLBACK picker-not-found' ]]; then
+      add_event high "advisor-model-fallback:picker-not-found" \
+        'advisor model picker was not found; the batch used its configured fallback' \
+        'ADVISOR_MODEL_FALLBACK picker-not-found'
+    fi
+
+    outcome="$(jq -r '.outcome // empty' <<<"$result")"
+    exit_code="$(jq -r '.exit_code // 0' <<<"$result")"
+    [[ "$exit_code" =~ ^-?[0-9]+$ ]] || exit_code=1
+    if [[ -n "$job_id" && ( "$outcome" == job-failed || "$outcome" == job-timeout \
+        || ( "$exit_code" != 0 && "$outcome" != pending && "$outcome" != dispatched ) ) ]]; then
+      if (( fail_streak > 0 )); then saw_consecutive_failure=1; fi
+      fail_streak=$((fail_streak + 1))
+    elif [[ -n "$job_id" && "$outcome" == completed && "$exit_code" == 0 ]]; then
+      fail_streak=0
+    fi
+  done
+  if (( saw_consecutive_failure == 1 )); then
+    add_event high advisor-batch-consecutive-failures \
+      'two consecutive advisor batch jobs failed' \
+      'two consecutive terminal advisor-batch result records failed within 24 hours'
+  fi
+}
+
+main_ci_incident_scan() {
+  local wf runs seen key run run_id sha created conclusion status jobs_json failed_jobs failed_count
+  local job job_id check_name failed_log first_failure failed_step run_ok processed snapshot_cutoff
+  snapshot_cutoff="$(python3 - "$((now - 86400))" <<'PY'
+from datetime import datetime, timezone
+import sys
+print(datetime.fromtimestamp(int(sys.argv[1]), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+)"
+  for wf in CI 'Pipeline suites'; do
+    runs="$(pr_run_snapshot_section "$A" ".main_runs[\"$wf\"]" 2>/dev/null || true)"
+    jq -e 'type == "array"' <<<"$runs" >/dev/null 2>&1 || continue
+    seen="$(jq -c '.main_ci_runs_seen // {}' <<<"$STATE_JSON")"
+    while IFS= read -r run; do
+      [[ -n "$run" ]] || continue
+      run_id="$(jq -r '.databaseId // empty' <<<"$run")"
+      sha="$(jq -r '.headSha // empty' <<<"$run")"
+      created="$(jq -r '.createdAt // empty' <<<"$run")"
+      status="$(jq -r '.status // empty' <<<"$run")"
+      conclusion="$(jq -r '.conclusion // empty' <<<"$run")"
+      [[ "$run_id" =~ ^[1-9][0-9]*$ && "$sha" =~ ^[0-9a-f]{40}$ \
+        && "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ \
+        && "$status" == completed && "$conclusion" == failure && "$created" > "$snapshot_cutoff" ]] || continue
+      key="$wf:$run_id"
+      [[ "$(jq -r --arg k "$key" '.main_ci_runs_seen[$k] // false' <<<"$STATE_JSON")" != true ]] || continue
+      jobs_json="$(gh_timeout -k 1 8 run view "$run_id" --repo "$INCIDENT_REPO" --json jobs -q '.jobs' 2>/dev/null)" || continue
+      jq -e 'type == "array" and all(.[]; type == "object")' <<<"$jobs_json" >/dev/null 2>&1 || continue
+      failed_jobs="$(jq -c '[.[] | select(.conclusion == "failure")]' <<<"$jobs_json")"
+      failed_count="$(jq 'length' <<<"$failed_jobs")"
+      if (( failed_count == 0 )); then
+        add_event high "main-ci:$wf:workflow:unreported" \
+          "main CI red commit=$sha check=$wf first_failure=unreported" \
+          "commit=$sha workflow=$wf failed without a failed job record"
+        STATE_JSON="$(jq -c --arg k "$key" --argjson now "$now" '.main_ci_runs_seen[$k]=$now' <<<"$STATE_JSON")"
+        continue
+      fi
+      run_ok=1
+      processed=0
+      while IFS= read -r job; do
+        [[ -n "$job" ]] || continue
+        job_id="$(jq -r '.databaseId // .id // empty' <<<"$job")"
+        check_name="$(jq -r '.name // .displayTitle // "unnamed check"' <<<"$job")"
+        [[ "$job_id" =~ ^[1-9][0-9]*$ ]] || { run_ok=0; continue; }
+        if ! failed_log="$(gh_timeout -k 1 8 run view "$run_id" --job "$job_id" --repo "$INCIDENT_REPO" --log-failed 2>/dev/null)"; then
+          run_ok=0
+          continue
+        fi
+        first_failure="$(ci_first_failed_test_id "$failed_log" 2>/dev/null || true)"
+        if [[ -z "$first_failure" ]]; then
+          failed_step="$(jq -r '[.steps[]? | select(.conclusion == "failure") | .name][0] // empty' <<<"$job")"
+          first_failure="${failed_step:-unreported-test-output}"
+        fi
+        add_event high "main-ci:$check_name:$first_failure" \
+          "main CI red commit=$sha check=$check_name first_failure=$first_failure" \
+          "commit=$sha workflow=$wf check=$check_name first_failure=$first_failure"
+        processed=$((processed + 1))
+      done < <(jq -c '.[] | select(.conclusion == "failure")' <<<"$failed_jobs")
+      if (( run_ok == 1 && processed == failed_count )); then
+        STATE_JSON="$(jq -c --arg k "$key" --argjson now "$now" '.main_ci_runs_seen[$k]=$now' <<<"$STATE_JSON")"
+      fi
+    done < <(jq -c --arg cutoff "$snapshot_cutoff" --arg wf "$wf" --argjson seen "$seen" '
+      [.[] | select(.status == "completed" and .conclusion == "failure"
+        and (.createdAt // "") >= $cutoff and (.createdAt // "") <= (now | todateiso8601)
+        and (.databaseId | type == "number") and (.headSha // "" | test("^[0-9a-f]{40}$"))
+        and ($seen[($wf + ":" + (.databaseId | tostring))] // false) != true)]
+      | sort_by([.createdAt, .databaseId]) | reverse | .[:5][]' <<<"$runs")
+  done
+  STATE_JSON="$(jq -c --argjson now "$now" '.main_ci_runs_seen |= with_entries(select((.value // 0) > ($now - 604800)))' <<<"$STATE_JSON")"
+}
+
 file_incident_issue() {
   local class="$1" severity="$2" summary="$3" evidence="$4" first_seen="$5" count="$6"
   local engine_dir upsert body_file title
@@ -629,6 +757,9 @@ if [[ "${BELL_STALE_CI_DISABLE:-0}" != "1" ]]; then
   done
   [[ -n "$cancelled" ]] && add_event medium "stale-main-ci-canceled${cancelled}" "stale-main-ci: 取消被更新等待 run 取代、未被候选引用的祖先 run(在跑的不动):${cancelled}" "audited CI/Pipeline suites queue dedupe after candidate and ancestry checks: ${cancelled}"
 fi
+
+advisor_incident_scan
+main_ci_incident_scan
 
 if [[ "$CHECK_ONLY" == 1 ]]; then
   echo "bell check-only: ${#events[@]} candidate event(s); runtime state and files were not changed"
