@@ -53,10 +53,23 @@ case "$command:$subcommand" in
         echo "fixture issue snapshot failure" >&2
         exit 1
       fi
+      snapshot="$(
       for file in "$FAKE_GH_ROOT"/issues/*.json; do
         [ -f "$file" ] || continue
+        number="$(jq -r '.number' "$file")"
+        [[ " ${FAKE_HOLD_SNAPSHOT_OMIT:-} " == *" $number "* ]] && continue
         jq -c 'select(any(.labels[]?; .name == "on-hold"))' "$file"
       done | jq -s '.'
+      )"
+      for replacement in "$FAKE_GH_ROOT"/replacement-*.json; do
+        [ -f "$replacement" ] || continue
+        number="${replacement##*/}"
+        number="${number#replacement-}"
+        number="${number%.json}"
+        cp "$replacement" "$AGENT_HOME/state/$number.json"
+        rm "$replacement"
+      done
+      printf '%s\n' "$snapshot"
     fi
     ;;
   issue:view)
@@ -162,7 +175,7 @@ reset_fixture() {
   mkdir -p "$FAKE_GH_ROOT/issues" "$AGENT_HOME/state" "$AGENT_HOME/locks" "$AGENT_HOME/night" "$ZF_WORKTREE_ROOT"
   : > "$AGENT_HOME/supervisor-inbox"
   FAKE_PR_LIST_RESPONSE='[]'
-  unset FAKE_HOLD_OPEN_PRS FAKE_HOLD_MERGED_PRS FAKE_HOLD_PR_CHECKS FAKE_HOLD_PR_CHECKS_STATUS FAKE_HOLD_ISSUE_LIST_FAILURE FAKE_HOLD_VIEW_FAILURES FAKE_GH_VIEW_FAILURES FAKE_HOLD_EDIT_FAILURE FAKE_HOLD_COMMENT_FAILURE
+  unset FAKE_HOLD_OPEN_PRS FAKE_HOLD_MERGED_PRS FAKE_HOLD_PR_CHECKS FAKE_HOLD_PR_CHECKS_STATUS FAKE_HOLD_ISSUE_LIST_FAILURE FAKE_HOLD_SNAPSHOT_OMIT FAKE_HOLD_VIEW_FAILURES FAKE_GH_VIEW_FAILURES FAKE_HOLD_EDIT_FAILURE FAKE_HOLD_COMMENT_FAILURE
   : > "$FAKE_GH_LOG"
 }
 write_issue() {
@@ -846,7 +859,7 @@ test_closed_hold_read_failure_preserves_evidence() {
   write_state 4197 '{"state":"on-hold","hold":{"holder":"manual","release_condition":"review","expires_at":"2026-10-12T00:00:00Z","stage_before":"ready-for-human"}}'
   before_issue="$(jq -S '.' "$FAKE_GH_ROOT/issues/4197.json")"
   before_state="$(jq -S '.' "$AGENT_HOME/state/4197.json")"
-  FAKE_GH_VIEW_FAILURES=4197 run_sweep
+  FAKE_HOLD_SNAPSHOT_OMIT=4197 FAKE_GH_VIEW_FAILURES=4197 run_sweep
   assert_eq "failed GitHub read fails the sweep" 1 "$LAST_STATUS"
   assert_eq "failed GitHub read leaves closed issue untouched" "$before_issue" "$(jq -S '.' "$FAKE_GH_ROOT/issues/4197.json")"
   assert_eq "failed GitHub read preserves local hold evidence" "$before_state" "$(jq -S '.' "$AGENT_HOME/state/4197.json")"
