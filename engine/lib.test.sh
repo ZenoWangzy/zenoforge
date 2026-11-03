@@ -522,7 +522,7 @@ MERGED_PR_GUARD_OUT="$(AGENT_HOME="$MERGED_PR_GUARD_HOME" REPO=test/repo bash -c
   source "$1/lib.sh"
   gh() { printf "%s\n" '\''{"number":796,"state":"MERGED","baseRefName":"agent/issue-795","mergeCommit":{"oid":"feature-sha"}}'\''; }
   if conclude_merged_run 510008 796; then echo accepted; else echo rejected; fi
-  jq -c . "$STATE_DIR/510008.json"
+  state_read 510008 | jq -c .
 ' _ "$SCRIPT_DIR")"
 assert_eq 'feature-branch merge leaves ticket state untouched' \
   $'rejected\n{"state":"implement","attempts":1}' "$MERGED_PR_GUARD_OUT"

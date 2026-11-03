@@ -618,6 +618,10 @@ tick_gh() {
         cat "$TF/ci-admission-runs.json"
         return 0
       fi
+      if [[ -f "$TF/main-red-run-list.json" && "$*" == *'--json databaseId,conclusion,event,headBranch'* ]]; then
+        cat "$TF/main-red-run-list.json"
+        return 0
+      fi
       if [[ "$*" == *'--jq'* ]]; then
         [[ "$*" == *'.[0].databaseId'* ]] && echo 701
         return 0
@@ -826,7 +830,13 @@ tick_gh() {
         echo '{}'
       fi ;;
     'api '*)
-      if [[ "$*" == *'/commits/'*'/check-runs?per_page=100'* && -f "$TF/main-check-runs.json" ]]; then
+      if [[ "$*" =~ actions/runs/([0-9]+)/jobs ]] && [[ -f "$TF/main-red-jobs-${BASH_REMATCH[1]}.json" ]]; then
+        local main_red_run_id="${BASH_REMATCH[1]}"
+        cat "$TF/main-red-jobs-${main_red_run_id}.json"
+      elif [[ "$*" =~ actions/jobs/([0-9]+)/logs ]] && [[ -f "$TF/job-log-${BASH_REMATCH[1]}.txt" ]]; then
+        local main_red_job_id="${BASH_REMATCH[1]}"
+        cat "$TF/job-log-${main_red_job_id}.txt"
+      elif [[ "$*" == *'/commits/'*'/check-runs?per_page=100'* && -f "$TF/main-check-runs.json" ]]; then
         cat "$TF/main-check-runs.json"
       elif [[ "$*" == *'actions/runners?per_page=100'* ]]; then
         # PR CI 名额按在线 PR runner 算（60ba960cf）；无夹具时默认一个在线 PR runner
@@ -1970,8 +1980,8 @@ command jq -e --arg id "$main_red_id" '
 sched_run_case main_red_superseded
 
 sched_case_main_red_ci_unpark() {
-# A PR red on check names that also failed on main is held without invalidating
-# its approval, then resumed with a fresh update-branch request after main is fixed.
+# A PR red whose test identity also failed on main is held without invalidating
+# its approval, even under different check names, then resumed after main is fixed.
 new_tick_fixture main-red-ci-unpark
 command jq '.auto_merge=true | .batch_max=1' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
 main_red_failed_sha="$(printf '%040x' 99)"
@@ -1981,7 +1991,19 @@ main_red_id="main-red-${main_red_failed_sha:0:9}"
 printf '%s\n' "$main_red_failed_sha" > "$TF/main-sha"
 printf '%s\n' "$main_red_pr_head" > "$TF/pr-head-77"
 printf '%s\n' "$main_red_pr_head" > "$TF/fetched-head"
-printf '{"check_runs":[{"name":"Touched packages PR gate","conclusion":"failure"},{"name":"Repo-path regression PR gate","conclusion":"failure"}]}' > "$TF/main-check-runs.json"
+printf '{"check_runs":[{"name":"Postsubmit validate","conclusion":"failure"}]}' > "$TF/main-check-runs.json"
+printf '%s\n' '[{"databaseId":700,"conclusion":"failure","event":"push","headBranch":"main"}]' > "$TF/main-red-run-list.json"
+printf '%s\n' '{"jobs":[{"id":7001,"name":"Postsubmit validate","conclusion":"failure"}]}' > "$TF/main-red-jobs-700.json"
+cat > "$TF/job-log-7001.txt" <<'LOG'
+ FAIL  tests/shared-membership.test.ts > rejects removed membership
+AssertionError: expected false to be true
+ ❯ tests/shared-membership.test.ts:14:5
+LOG
+cat > "$TF/job-log-7011.txt" <<'LOG'
+ FAIL  tests/shared-membership.test.ts > rejects removed membership
+AssertionError: expected false to be true
+ ❯ tests/shared-membership.test.ts:14:5
+LOG
 printf '%s\n' '{"databaseId":701,"attempt":1,"status":"completed","conclusion":"failure","createdAt":"2026-11-02T11:17:00Z"}' > "$TF/run.json"
 command jq -n --arg sha "$main_red_failed_sha" \
   '[{headSha:$sha,status:"completed",conclusion:"failure",createdAt:"2026-11-02T11:17:00Z",databaseId:700,attempt:1}]' \
@@ -1989,8 +2011,8 @@ command jq -n --arg sha "$main_red_failed_sha" \
 printf '%s %s\n%s %s\n' "$main_red_failed_sha" "$main_red_green_sha" "$main_red_green_sha" "$main_red_green_sha" > "$TF/ancestry.tsv"
 command jq -n --arg head "$main_red_pr_head" \
   '[{number:77,headRefName:"feature/77",headRefOid:$head,isDraft:false,mergeable:"MERGEABLE",title:"fixture",body:"",labels:[],statusCheckRollup:[
-    {__typename:"CheckRun",name:"Touched packages PR gate",detailsUrl:"",startedAt:"2026-11-02T11:17:00Z",status:"COMPLETED",conclusion:"FAILURE"},
-    {__typename:"CheckRun",name:"Repo-path regression PR gate",detailsUrl:"",startedAt:"2026-11-02T11:17:00Z",status:"COMPLETED",conclusion:"FAILURE"}
+    {__typename:"CheckRun",name:"Touched packages PR gate",detailsUrl:"https://github.com/example/repo/actions/runs/701/job/7011",startedAt:"2026-11-02T11:17:00Z",status:"COMPLETED",conclusion:"FAILURE"},
+    {__typename:"CheckRun",name:"Repo-path regression PR gate",detailsUrl:"https://github.com/example/repo/actions/runs/701/job/7011",startedAt:"2026-11-02T11:17:00Z",status:"COMPLETED",conclusion:"FAILURE"}
   ]}]' > "$TF/pr-census.json"
 command jq -n --arg redid "$main_red_id" --arg red "$main_red_failed_sha" --arg head "$main_red_pr_head" \
   '{units:[
