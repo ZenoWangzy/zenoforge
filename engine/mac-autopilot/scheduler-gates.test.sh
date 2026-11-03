@@ -2358,6 +2358,16 @@ units '{"units":[{"id":"pr-70","pr":70,"title":"totals","stage":"repair-pending"
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == repair:pr-70:* ]] || fail "second rejection did not get a normal repair (${DISPATCHED[*]:-none})"
 DISPATCHED=()
+advisor_arbiter_pick_real="$(declare -f pick_review_for_unit)"
+advisor_arbiter_target_real="$(declare -f unit_review_target)"
+advisor_arbiter_room_real="$(declare -f room_for)"
+advisor_arbiter_verify_real="$(declare -f verify_handoff_delivery)"
+advisor_arbiter_risk_real="$(declare -f risk_class_safety_rule)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+unit_review_target() { printf '%s %s\n' "$H1" "$H1"; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
+risk_class_safety_rule() { :; }
 set_unit pr-70 '.stage="repair-pending" | .history += [{"stage":"repair-delivered"},{"stage":"review-request-changes"}] | .review_findings=[{"round":1,"report":"a.md","block":"ok","findings":[{"id":"F1","severity":"P1","file":"src/a.ts","line":4,"rule":"Defect","status":"open","summary":"totals wrong"}]},{"round":3,"report":"c.md","block":"ok","findings":[{"id":"F1","severity":"P1","file":"src/b.ts","line":9,"rule":"Defect","status":"inherited","summary":"totals still wrong"}]}]'
 dispatch_pending || :; dispatch_pending || :
 [[ "$(field pr-70 .stage)" == review && "$(field pr-70 .arbiter)" == true \
@@ -2366,6 +2376,7 @@ dispatch_pending || :; dispatch_pending || :
 [[ "$(field pr-70 '.history[-1].decision.decision')" == 'Route to one arbiter review' \
   && "$(field pr-70 '.history[-1].decision.why')" == 'advisor provider unavailable' \
   && "$(field pr-70 '.history[-1].decision.owner')" == scheduler ]] || fail 'missing advisor did not record the arbiter choice'
+eval "$advisor_arbiter_pick_real"; eval "$advisor_arbiter_target_real"; eval "$advisor_arbiter_room_real"; eval "$advisor_arbiter_verify_real"; eval "$advisor_arbiter_risk_real"
 CFG="$CFG_SAVED"; DISPATCHED=(); DISPATCH_PROMPT=""
 
 # 派发顺序：修红 main > 热修回迁 > critical > 环节
