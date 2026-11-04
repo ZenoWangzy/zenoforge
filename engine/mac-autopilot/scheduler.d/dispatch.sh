@@ -101,7 +101,7 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   if [[ "$type" == implement || "$type" == repair ]]; then
     say "implement-route unit=$unit provider=$provider reason=$route_reason"
   fi
-  if [[ "$cache_fresh" == true ]] && (( SECONDS < cache_until )) && alive "$pid"; then
+  if [[ "$cache_fresh" == true ]] && (( SECONDS < cache_until )) && harvest_worker_alive "$w"; then
     LIVE_WORKER_CACHE_TOTAL=$((LIVE_WORKER_CACHE_TOTAL + 1))
     LIVE_WORKER_CACHE_TYPES["$type"]=$((${LIVE_WORKER_CACHE_TYPES[$type]:-0} + 1))
     LIVE_WORKER_CACHE_UNTIL=$((SECONDS + 10))

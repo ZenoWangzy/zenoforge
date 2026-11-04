@@ -231,13 +231,14 @@ cancel_unit_runs() { # id reason
   cancel_branch_runs "$branch" "$2" || : # Run cancellation is best-effort; listing failures are logged.
 }
 refresh_live_worker_cache() {
-  local pid type
+  local w type
   LIVE_WORKER_CACHE_TOTAL=0; LIVE_WORKER_CACHE_TYPES=()
-  while IFS=$'\t' read -r pid type; do
-    [[ "$pid" =~ ^[0-9]+$ ]] && alive "$pid" || continue
+  while IFS= read -r w; do
+    harvest_worker_alive "$w" || harvest_worker_in_grace "$w" || continue
+    type="$(jqf -r '.type' <<<"$w")"
     LIVE_WORKER_CACHE_TOTAL=$((LIVE_WORKER_CACHE_TOTAL + 1))
     LIVE_WORKER_CACHE_TYPES["$type"]=$((${LIVE_WORKER_CACHE_TYPES[$type]:-0} + 1))
-  done < <(jqf -r '.workers[] | select(.harvested != true) | "\(.pid)\t\(.type)"' "$WORKERS")
+  done < <(jqf -c '.workers[] | select(.harvested != true)' "$WORKERS")
   LIVE_WORKER_CACHE_UNTIL=$((SECONDS + 10))
 }
 live_by_type() {

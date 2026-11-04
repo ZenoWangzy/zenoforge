@@ -27,6 +27,8 @@ touch "$sup/worker.log"
 harvest_workers
 jq -e '.workers[0].harvested == false' "$WORKERS" >/dev/null || { echo 'live backend harvested as dead' >&2; exit 1; }
 coord_scheduler_live_worker issue-1 '' || { echo 'live backend missed by dispatch guard' >&2; exit 1; }
+refresh_live_worker_cache
+[[ "$LIVE_WORKER_CACHE_TOTAL" == 1 ]] || { echo 'live backend missed by capacity cache' >&2; exit 1; }
 claim="$(jq -cn --argjson pid "$pid" '{owner_kind:"scheduler-worker",owner:"test-owner",unit:"issue-1",stage:"review",pid:$pid,pid_start:1}')"
 if coord_on_expire "$claim"; then echo 'live backend claim expired' >&2; exit 1; fi
 jq -e '.units[0].history | all(.stage != "worker-no-output" and .stage != "fresh-session-retry")' "$UNITS" >/dev/null
@@ -52,7 +54,9 @@ kill "$legacy_pid"
 wait "$legacy_pid" 2>/dev/null || :
 backend=''
 printf '{"units":[{"id":"issue-2","stage":"review","history":[]}]}' > "$UNITS"
-jq -n --argjson pid "$legacy_pid" --argjson start "$legacy_start" '{workers:[{pid:$pid,pid_start:$start,unit:"issue-2",type:"review",provider:"zcode",log:"worker.log",report:"legacy.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+jq -n --argjson pid "$legacy_pid" --argjson start "$legacy_start" '{workers:[{pid:$pid,pid_start:$start,claim_owner:"legacy-owner",unit:"issue-2",type:"review",provider:"zcode",log:"worker.log",report:"legacy.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+claim="$(jq -cn --argjson pid "$legacy_pid" --argjson start "$legacy_start" '{owner_kind:"scheduler-worker",owner:"legacy-owner",unit:"issue-2",stage:"review",pid:$pid,pid_start:$start}')"
+if coord_on_expire "$claim"; then echo 'legacy claim expired before recheck' >&2; exit 1; fi
 harvest_workers
 jq -e '.workers[0] | .harvested == false and .no_output_check_after > 0' "$WORKERS" >/dev/null
 coord_scheduler_live_worker issue-2 '' || { echo 'legacy grace missed by dispatch guard' >&2; exit 1; }
