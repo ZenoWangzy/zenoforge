@@ -205,6 +205,15 @@ SCHED_MODEL_POLICY_JSON="$(cat "$SCHED_MODEL_POLICY_FILE" 2>/dev/null || echo '{
 # 只认提供方错误行的措辞，且只看日志尾部：worker 日志里满是代码/文档/测试输出（曾因技能说明里的
 # "an overloaded word" 误判整个 codex 冷却 30 分钟）。
 PROVIDER_LIMIT_RE='hit your (session|usage) limit|^ERROR: .*(at capacity|rate limit|usage limit|overloaded|quota)|overloaded_error|rate_limit_error|429 Too Many Requests'
+# 无产出死亡的死因辨认（11-03：两个评审单元 3 次死亡只留下 "died without a report"，死因——claude CLI
+# 的 Bun 运行时 SIGABRT、主机线程上限 EAGAIN——全在 worker 日志里没人读，supervisor 拿到的是零信息理由）。
+# 同样只认措辞、只扫日志尾部：start-limit 是 worker 根本没跑起来（主机瞬时容量，不是单元失败）；
+# oom 是内存打尽/整组被杀（单元太胖，按尺寸止损重切而不是继续压死 worker）。
+WORKER_START_LIMIT_RE='(thread: EAGAIN|process or thread limit|pids limit)'
+WORKER_OOM_RE='(out of memory|cannot allocate memory|oom-kill|memory cgroup)'
+# 末条错误行匹配：退出码/信号之外再留一行人类可读死因（截 200 字符入库）。只认错误措辞，
+# 不收 Aborted/Killed 这类 bash 作业消息——信号已有 signal= 字段，别让作业消息盖掉真正的错误行。
+WORKER_DEATH_ERROR_RE='error:|panic\(|has crashed|fatal|EAGAIN|out of memory|cannot allocate'
 
 # Claude 评审 worker 的只读工具白名单（--permission-mode dontAsk：白名单外一律拒绝）。
 CLAUDE_REVIEW_TOOLS="Read,Grep,Glob,Bash(cd:*),Bash(pwd),Bash(git fetch:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git ls-remote:*),Bash(git status:*),Bash(git ls-files:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(cat:*),Bash(ls:*),Bash(grep:*),Bash(rg:*),Bash(jq:*),Bash(sort:*),Bash(uniq:*),Bash(pnpm:*),Bash(npx vitest:*),Bash(node --test:*),Bash(bash *.test.sh)"

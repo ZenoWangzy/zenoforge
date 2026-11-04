@@ -1,4 +1,10 @@
 
+# 退出足迹包装（bash -c 脚本原文内联在下面两个启动路径里，不依赖文件级变量：formal 用 fn 只抽
+# 函数体源走 dispatch）：worker 退出后把退出码以 pipeline.exit 追加进 worker 日志，harvest 的死因
+# 诊断读它（rc>128 即被信号杀死，rc-128 为信号号；无 footer 的旧日志/整组被杀由 harvest 退回文本
+# 辨认）。包装 bash 的 argv 带着后面的完整命令（codex/claude/runner 字样），alive() 照常判活；
+# exec 链保住 pid/进程组语义（包装层就是 setsid 会话首进程，组终止仍然覆盖后端 CLI）。
+
 dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason]
   local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census
   local -a launcher=() worker_env=()
@@ -46,14 +52,15 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   fi
   if [[ "${WORKER_STDOUT_REPORT:-0}" == 1 ]]; then
     # stdout 即报告：只有成功退出且非空才落盘，失败/中断不会留下可被回收的半截报告。
-    (cd "$workdir" && GIT_PAGER=cat PAGER=cat exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} bash -c 'out="$1"; shift; "$@" > "$out.partial" && [ -s "$out.partial" ] && mv -f "$out.partial" "$out"' \
+    # 尾部追加 pipeline.exit 退出码（诊断死因用）；失败/中断时 partial 留给回收方读提供方上限。
+    (cd "$workdir" && GIT_PAGER=cat PAGER=cat exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} bash -c 'out="$1"; shift; rc=0; "$@" > "$out.partial" && [ -s "$out.partial" ] && mv -f "$out.partial" "$out" || rc=$?; printf "{\"type\":\"pipeline.exit\",\"rc\":%s}\n" "$rc" >&2; exit "$rc"' \
       autopilot-worker "$SUP/$report" "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
   elif [[ "$type" == repair && "$CODEX_MODE" == resume ]]; then
-    (cd "$workdir" && exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} bash "$CODEX_REPAIR_RUNNER" "$SUP/$log" "$CODEX_SESSION_ID" \
+    (cd "$workdir" && exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} bash -c 'rc=0; "$@" || rc=$?; printf "{\"type\":\"pipeline.exit\",\"rc\":%s}\n" "$rc" >&2; exit "$rc"' autopilot-worker bash "$CODEX_REPAIR_RUNNER" "$SUP/$log" "$CODEX_SESSION_ID" \
       "${#CODEX_FRESH_COMMAND[@]}" "${CODEX_FRESH_COMMAND[@]}" "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
   else
     (cd "$workdir" && jq -cn --arg mode "$CODEX_MODE" --arg reason "$CODEX_PATH_REASON" --arg model "$model" \
-      '{type:"pipeline.execution",mode:$mode,reason:$reason,model:$model}' && exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
+      '{type:"pipeline.execution",mode:$mode,reason:$reason,model:$model}' && exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} bash -c 'rc=0; "$@" || rc=$?; printf "{\"type\":\"pipeline.exit\",\"rc\":%s}\n" "$rc" >&2; exit "$rc"' autopilot-worker "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
   fi
   pid=$!
   local pid_started

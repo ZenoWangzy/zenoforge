@@ -1,7 +1,35 @@
 
 # ---------- 1. 回收（按 worker.type 分类推进） ----------
+# 无产出死亡诊断：退出码/信号/末条错误行。退出码来自 dispatch 包装层落在日志尾部的
+# pipeline.exit（rc>128 即信号，rc-128 为信号号）；无 footer 的旧日志退回 bash 的作业
+# 消息（Aborted/Segmentation fault/…）辨认信号；错误行只在日志尾部按措辞匹配，防评审
+# 正文里的同词误判（与 PROVIDER_LIMIT_RE 同一教训）。
+worker_death_of() { # log-path → compact JSON {rc,signal,error,at}（字段可缺省）
+  local lg="$1" rc="" sig="" err=""
+  rc="$(jq -Rsc '[split("\n")[] | fromjson? | select(.type=="pipeline.exit") | .rc] | last // empty' "$lg" 2>/dev/null || true)"
+  if ! [[ "$rc" =~ ^[0-9]+$ ]]; then
+    case "$(tail -n 80 "$lg" 2>/dev/null | grep -aoE 'Aborted|Segmentation fault|Killed|Terminated' | tail -1 || true)" in
+      Aborted) rc=134 ;;
+      'Segmentation fault') rc=139 ;;
+      Killed) rc=137 ;;
+      Terminated) rc=143 ;;
+    esac
+  fi
+  if [[ "$rc" =~ ^[0-9]+$ ]] && (( rc > 128 )); then sig="$(kill -l "$((rc - 128))" 2>/dev/null || true)"; fi
+  err="$(tail -n 80 "$lg" 2>/dev/null | grep -aiE "$WORKER_DEATH_ERROR_RE" | tail -1 | tr -d '\r' | cut -c1-200 || true)"
+  jq -cn --argjson rc "${rc:-null}" --arg signal "${sig:-}" --arg error "${err:-}" --arg at "$STAMP" \
+    '(if $rc == null then {} else {rc:$rc} end) + (if $signal == "" then {} else {signal:$signal} end) + (if $error == "" then {} else {error:$error} end) + {at:$at}'
+}
+worker_death_summary() { # death-json → "rc=N signal=X error: <line>"（供历史与 supervisor 理由）
+  local d="$1" rc sig err out
+  rc="$(jqf -r '.rc // "unknown"' <<<"$d")"; sig="$(jqf -r '.signal // empty' <<<"$d")"; err="$(jqf -r '.error // empty' <<<"$d")"
+  out="rc=$rc"
+  if [[ -n "$sig" ]]; then out+=" signal=$sig"; fi
+  if [[ -n "$err" ]]; then out+=" error: $err"; fi
+  printf '%s' "$out"
+}
 harvest_workers() { # [local-only]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement workers
-  local pr_harvested=0 local_only="${1:-false}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream decision incident_unit_json incident_gate_reason original_report gate_id
+  local pr_harvested=0 local_only="${1:-false}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream decision incident_unit_json incident_gate_reason original_report gate_id death death_summary death_sig death_class death_tail worker_provider
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"
@@ -333,18 +361,52 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
         jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
         continue
       fi
-      echo "[$STAMP] WASTE zero-output worker pid=$pid unit=$unit log=$(basename "$lg")" >> "$A/alerts/waste.md"
-      say "WASTE zero-output pid=$pid unit=$unit"
-      # L9：无产出死亡计数；到上限转人工，不再无限重派。
-      set_unit "$unit" "$(hist worker-no-output "$wtype")"
+      # 死因诊断：退出码/信号/末条错误行入库（.worker_death），supervisor 理由与可恢复路由都读它。
+      # 分类只看日志尾部的措辞（herestring 而非管道：pipefail 下 grep -q 提前退出会让 tail 带 SIGPIPE）。
+      death="$(worker_death_of "$lg")"
+      death_summary="$(worker_death_summary "$death")"
+      death_sig="$(jqf -r '.signal // empty' <<<"$death")"
+      death_tail="$(tail -n 80 "$lg" 2>/dev/null || true)"
+      death_class=""
+      if grep -aqE "$WORKER_START_LIMIT_RE" <<<"$death_tail"; then
+        death_class=start-limit
+      elif [[ "$death_sig" == KILL ]] || grep -aqiE "$WORKER_OOM_RE" <<<"$death_tail"; then
+        death_class=oom-kill
+      fi
+      if [[ "$death_class" == start-limit ]]; then
+        # 主机线程/进程上限（11-03 两个评审单元的第一死）：worker 根本没跑起来，不是单元的产出失败，
+        # 不计无产出死亡。有界恢复：提供方 5 分钟短冷却，单元由孤儿自愈回 pending、按冷却节奏重派；
+        # 连续 MAX_NO_OUTPUT 次仍起不来才带死因转 supervisor。
+        worker_provider="$(jqf -r '.provider // empty' <<<"$w")"
+        [[ -n "$worker_provider" ]] || worker_provider="$(provider_of "$(jqf -r '.model // ""' <<<"$w")")"
+        start_cooldown "$worker_provider" "worker start failed (host thread/process limit) unit=$unit $death_summary"
+        set_unit "$unit" "$(hist worker-start-failed "$death_summary") | .worker_death=$death"
+        say "worker start failed unit=$unit provider=$worker_provider $death_summary"
+        if [[ "$(unit_retries "$unit" worker-start-failed)" =~ ^[0-9]+$ ]] \
+          && (( $(unit_retries "$unit" worker-start-failed) >= MAX_NO_OUTPUT )); then
+          to_supervisor "$unit" "$(unit_retries "$unit" worker-start-failed) workers in a row could not even start (host thread/process limit), last log $(basename "$lg"); $death_summary"
+        fi
+        jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
+        continue
+      fi
+      echo "[$STAMP] WASTE zero-output worker pid=$pid unit=$unit log=$(basename "$lg") $death_summary" >> "$A/alerts/waste.md"
+      say "WASTE zero-output pid=$pid unit=$unit $death_summary"
+      # L9：无产出死亡计数；到上限不再无限重派：可恢复死因走既有路由（冷却/重切），其余带死因转人工。
+      set_unit "$unit" "$(hist worker-no-output "$wtype $death_summary") | .worker_death=$death"
       no_output="$(jqf -r --arg id "$unit" '[.units[] | select(.id==$id) | (.history // []) | map(select(.stage=="worker-no-output")) | length][0] // 0' "$UNITS")"
       if [[ "$(unit_field "$unit" '.self_fix_active // false')" != true && "$no_output" =~ ^[0-9]+$ ]] && (( no_output >= MAX_NO_OUTPUT )); then
-        if [[ "$wtype" =~ ^(review|rereview|repair|implement)$ && "$(unit_retries "$unit" fresh-session-retry)" == 0 ]]; then
+        if [[ "$death_class" == oom-kill ]] && [[ "$(unit_field "$unit" '.issue // empty')" =~ ^[1-9][0-9]*$ ]] \
+          && scheduler_recut_route "$(unit_field "$unit" '.issue')" "$(jq -cn --arg unit "$unit" --arg log "$(basename "$lg")" --argjson death "$death" '{kind:"worker-oom-death",unit:$unit,log:$log,death:$death}')" \
+          && scheduler_issue_state "$(unit_field "$unit" '.issue')" | jq -e '.state == "needs-recut"' >/dev/null; then
+          # OOM/整组被杀：单元把 worker 压死是尺寸问题，走既有尺寸止损重切（同 implement-command-cap 路由）。
+          set_unit "$unit" "$(hist worker-oom-recut "$death_summary") | .stage=\"blocked-external\" | .size_recut_pending=true"
+          say "unit=$unit worker died $death_summary -> needs-recut"
+        elif [[ "$wtype" =~ ^(review|rereview|repair|implement)$ && "$(unit_retries "$unit" fresh-session-retry)" == 0 ]]; then
           # 续接的会话可能已坏（上下文爆、提供方会话失效）：丢掉会话 ID 再试一次全新会话。
           set_unit "$unit" "$(hist fresh-session-retry "$no_output deaths") | .session_ids={} | .sessions={} | .session_id=null | .stage=\"${wtype}-pending\""
           say "unit=$unit: $no_output workers died -> one fresh-session retry"
         else
-          to_supervisor "$unit" "$no_output workers died without a report, fresh session too (last log $(basename "$lg"))"
+          to_supervisor "$unit" "$no_output workers died without a report, fresh session too (last log $(basename "$lg")); $death_summary"
         fi
       fi
     fi
