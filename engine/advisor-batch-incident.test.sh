@@ -152,10 +152,12 @@ web_advisor_provider_ndjson_request_bytes() {
   } | LC_ALL=C wc -c | tr -d '[:space:]'
 }
 web_advisor_provider_dispatch_ndjson_async() {
-  local job_id="$1" prompt_file="$2" job_dir="$WEB_ADVISOR_PROVIDER_JOB_DIR/$job_id"
+  local job_id="$1" prompt_file="$2"
+  local job_dir="$WEB_ADVISOR_PROVIDER_JOB_DIR/$job_id"
   [ -n "${FAKE_FD_CAPTURE:-}" ] && ls -la /proc/self/fd > "$FAKE_FD_CAPTURE" 2>&1
   mkdir -p "$job_dir"
   cp "$prompt_file" "${FAKE_WEB_ADVISOR_PROVIDER_PROMPT_LOG:-/dev/null}"
+  cp "$prompt_file" "$job_dir/question.txt"
   printf '%s' "${FAKE_BATCH_NDJSON:-}" > "$job_dir/answer.out"
   printf '%s\n' "${FAKE_BATCH_ANSWER_ERR:-本次实际使用：fake-web / max}" > "$job_dir/answer.err"
   if [ "${FAKE_BATCH_STILL_RUNNING:-0}" != "1" ]; then
@@ -163,6 +165,11 @@ web_advisor_provider_dispatch_ndjson_async() {
   fi
   printf 'dispatch:%s topic:%s\n' "$job_id" "${WEB_ADVISOR_PROVIDER_TOPIC:-}" >> "${FAKE_WEB_ADVISOR_PROVIDER_LOG:-/dev/null}"
 }
+web_advisor_provider_dispatch_question_async() {
+  local FAKE_BATCH_NDJSON="${FAKE_REASK_ANSWER:-$FAKE_BATCH_NDJSON}"
+  web_advisor_provider_dispatch_ndjson_async "$1" "$2"
+}
+web_advisor_provider_model_fallback_signature_from_log() { return 0; }
 web_advisor_provider_poll_ndjson() {
   local job_dir="$WEB_ADVISOR_PROVIDER_JOB_DIR/$1"
   [ "${FAKE_BATCH_POLL_STATUS:-0}" = "0" ] || return "$FAKE_BATCH_POLL_STATUS"
@@ -519,16 +526,19 @@ run_batch_complete() {
   status=$?
   set -e
   printf '%s\n%s\n' "$first" "$second"
+  if [ "$status" -eq 0 ] && [ -n "${FAKE_REASK_ANSWER:-}" ] && jq -e '.job.plan_reask_attempted == true' "$AGENT_HOME/advisor-batch.json" >/dev/null 2>&1; then
+    bash "$BATCH_SRC" "$@" 2>&1 || return $?
+  fi
   return "$status"
 }
 
 # --- A: happy path -- a mixed batch through the Codex branch ---------------
 NDJSON_HAPPY='{"kind":"cross_ticket_findings","ordering":[]}
-{"kind":"ruling","issue":2001,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"triage over-classified this; read-only admin-console tweak.","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
-{"kind":"ruling","issue":2002,"verdict":"advised","risk_class":"","level":"","reasoning_md":"stored classification is already admissible.","decision_md":"reuse the existing snapshot-store precedent.","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
-{"kind":"ruling","issue":2003,"verdict":"recut","risk_class":"","level":"","reasoning_md":"","decision_md":"","recut_md":"split the write path from the read path.","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
-{"kind":"ruling","issue":2004,"verdict":"founder","risk_class":"","level":"","reasoning_md":"","decision_md":"","recut_md":"","founder_subject":"海棠商店配送时效需要确认","founder_question_md":"问题：是否应保留次日送达？\n客户/公司：海棠商店\n用户动作：下单时选择次日送达。\n结果：当前仓库排期无法保证次日发货。\nA）承诺次日送达；影响：需要承担加急配送成本。\nB）改为普通配送；影响：预计晚一天到货。\n建议：B\n请回复“B”","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
-{"kind":"ruling","issue":2005,"verdict":"founder","risk_class":"","level":"","reasoning_md":"","decision_md":"","recut_md":"","founder_subject":"是否按时向欠款客户发出提醒","founder_question_md":"问题：是否应今天提醒客户逾期款项？\n客户/公司：青禾贸易\n用户动作：客户的两笔货款已超过约定付款日。\n结果：目前尚未收到款项。\nA）今天发出付款提醒；影响：可能尽快收回货款，也会提醒客户已逾期。\nB）再等一周；影响：维持现有关系，但回款会更晚。\n建议：A\n请回复“A”","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
+{"kind":"ruling","issue":2001,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"triage over-classified this; read-only admin-console tweak.","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
+{"kind":"ruling","issue":2002,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"advised","risk_class":"","level":"","reasoning_md":"stored classification is already admissible.","decision_md":"reuse the existing snapshot-store precedent.","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
+{"kind":"ruling","issue":2003,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"recut","risk_class":"","level":"","reasoning_md":"","decision_md":"","recut_md":"split the write path from the read path.","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
+{"kind":"ruling","issue":2004,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"maintainer","risk_class":"","level":"","reasoning_md":"","decision_md":"","recut_md":"","founder_subject":"海棠商店配送时效需要确认","founder_question_md":"问题：是否应保留次日送达？\n客户/公司：海棠商店\n用户动作：下单时选择次日送达。\n结果：当前仓库排期无法保证次日发货。\nA）承诺次日送达；影响：需要承担加急配送成本。\nB）改为普通配送；影响：预计晚一天到货。\n建议：B\n请回复“B”","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
+{"kind":"ruling","issue":2005,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"maintainer","risk_class":"","level":"","reasoning_md":"","decision_md":"","recut_md":"","founder_subject":"是否按时向欠款客户发出提醒","founder_question_md":"问题：是否应今天提醒客户逾期款项？\n客户/公司：青禾贸易\n用户动作：客户的两笔货款已超过约定付款日。\n结果：目前尚未收到款项。\nA）今天发出付款提醒；影响：可能尽快收回货款，也会提醒客户已逾期。\nB）再等一周；影响：维持现有关系，但回款会更晚。\n建议：A\n请回复“A”","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}
 {"kind":"ruling","issue":2006,"verdict":"duplicate","risk_class":"","level":"","reasoning_md":"完全重复 #2001 的范围。","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":2001}
 {"kind":"ruling","issue":2007,"verdict":"something_not_in_the_enum","risk_class":"","level":"","reasoning_md":"","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
 
@@ -615,7 +625,7 @@ run_oversize_regression() {
   export FAKE_COMMENTS_ISSUE=2601
   export FAKE_COMMENTS_JSON="$(jq -nc --arg body "comment-log-start:$LONG_COMMENT_MIDDLE:comment-log-end" \
     '[{author:{login:"testuser"},createdAt:"2026-01-02T00:00:00Z",body:$body}]')"
-  export FAKE_BATCH_NDJSON='{"kind":"advisor_batch_result","requested_issues":[2601,2602,2603],"cross_ticket_findings":{"ordering":[]},"rulings":[{"kind":"ruling","issue":2601,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"body preserved.","decision_md":"","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null},{"kind":"ruling","issue":2602,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"large issue body retained.","decision_md":"","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null},{"kind":"ruling","issue":2603,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"batch continued.","decision_md":"","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}]}'
+  export FAKE_BATCH_NDJSON='{"kind":"advisor_batch_result","requested_issues":[2601,2602,2603],"cross_ticket_findings":{"ordering":[]},"rulings":[{"kind":"ruling","issue":2601,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"body preserved.","decision_md":"","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null},{"kind":"ruling","issue":2602,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"large issue body retained.","decision_md":"","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null},{"kind":"ruling","issue":2603,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"batch continued.","decision_md":"","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}]}'
   export FAKE_REAL_ISSUES=""
   set +e
   OVERSIZE_OUTPUT="$(run_batch_complete 2601 2602 2603)"
@@ -656,7 +666,7 @@ run_manifest_mismatch_regression() {
   export AGENT_HOME="$manifest_home"
   export FAKE_GH_LOG="$manifest_home/gh.log"; : > "$FAKE_GH_LOG"
   export FAKE_WEB_ADVISOR_PROVIDER_LOG="$manifest_home/web-advisor-provider.log"
-  export FAKE_BATCH_NDJSON='{"kind":"advisor_batch_result","requested_issues":[9999],"cross_ticket_findings":{"ordering":[]},"rulings":[{"kind":"ruling","issue":2604,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"must not apply against a different manifest.","decision_md":"","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}]}'
+  export FAKE_BATCH_NDJSON='{"kind":"advisor_batch_result","requested_issues":[9999],"cross_ticket_findings":{"ordering":[]},"rulings":[{"kind":"ruling","issue":2604,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"must not apply against a different manifest.","decision_md":"","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}]}'
   export FAKE_REAL_ISSUES=""
   set +e
   output="$(run_batch_complete 2604)"
@@ -679,7 +689,7 @@ run_manifest_superset_regression() {
   export AGENT_HOME="$superset_home"
   export FAKE_GH_LOG="$superset_home/gh.log"; : > "$FAKE_GH_LOG"
   export FAKE_WEB_ADVISOR_PROVIDER_LOG="$superset_home/web-advisor-provider.log"
-  export FAKE_BATCH_NDJSON='{"kind":"advisor_batch_result","requested_issues":[2606,7777],"cross_ticket_findings":{"ordering":[]},"rulings":[{"kind":"ruling","issue":2606,"verdict":"advised","risk_class":"","level":"","reasoning_md":"frozen member ruling.","decision_md":"Apply the frozen member ruling.","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null},{"kind":"ruling","issue":7777,"verdict":"advised","risk_class":"","level":"","reasoning_md":"context ticket.","decision_md":"Must not apply.","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}]}'
+  export FAKE_BATCH_NDJSON='{"kind":"advisor_batch_result","requested_issues":[2606,7777],"cross_ticket_findings":{"ordering":[]},"rulings":[{"kind":"ruling","issue":2606,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"advised","risk_class":"","level":"","reasoning_md":"frozen member ruling.","decision_md":"Apply the frozen member ruling.","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null},{"kind":"ruling","issue":7777,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"advised","risk_class":"","level":"","reasoning_md":"context ticket.","decision_md":"Must not apply.","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}]}'
   export FAKE_REAL_ISSUES=""
   set +e
   output="$(run_batch_complete 2606)"
@@ -702,7 +712,7 @@ run_ordering_shape_regression() {
   export AGENT_HOME="$ordering_home"
   export FAKE_GH_LOG="$ordering_home/gh.log"; : > "$FAKE_GH_LOG"
   export FAKE_WEB_ADVISOR_PROVIDER_LOG="$ordering_home/web-advisor-provider.log"
-  export FAKE_BATCH_NDJSON='{"kind":"advisor_batch_result","requested_issues":[2607],"cross_ticket_findings":{"ordering":["2607 after 2398",{"before":2398,"after":2607,"reasoning_md":"shared receipt path."}]},"rulings":[{"kind":"ruling","issue":2607,"verdict":"advised","risk_class":"","level":"","reasoning_md":"ordering shape.","decision_md":"Apply despite a string ordering entry.","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}]}'
+  export FAKE_BATCH_NDJSON='{"kind":"advisor_batch_result","requested_issues":[2607],"cross_ticket_findings":{"ordering":["2607 after 2398",{"before":2398,"after":2607,"reasoning_md":"shared receipt path."}]},"rulings":[{"kind":"ruling","issue":2607,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"advised","risk_class":"","level":"","reasoning_md":"ordering shape.","decision_md":"Apply despite a string ordering entry.","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}]}'
   export FAKE_REAL_ISSUES=""
   set +e
   output="$(run_batch_complete 2607)"
@@ -728,7 +738,10 @@ run_json_normalization_regression() {
   export FAKE_BATCH_NDJSON='{"kind":"advisor_batch_result","requested_issues":[2605],"cross_ticket_findings":{"ordering":[]},"rulings":[{"kind":"ruling","issue":2605,"verdict":"advised","risk_class":"","level":"","reasoning_md":"citation :chatgpt-content-reference{index="0"} should be removed","decision_md":"Preserve service_tier="fast" literally.","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}]}'
   export FAKE_REAL_ISSUES=""
   set +e
+  # The original malformed response above is untouched; the corrective reply is a separate model answer.
+  export FAKE_REASK_ANSWER='{"kind":"advisor_batch_result","requested_issues":[2605],"cross_ticket_findings":{"ordering":[]},"rulings":[{"kind":"ruling","issue":2605,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"advised","risk_class":"","level":"","reasoning_md":"citation :chatgpt-content-reference{index="0"} should be removed","decision_md":"Preserve service_tier=\"fast\" literally.","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}]}'
   output="$(run_batch_complete 2605)"
+  unset FAKE_REASK_ANSWER
   status=$?
   set -e
   gh_log="$(cat "$FAKE_GH_LOG" 2>/dev/null || true)"
@@ -741,6 +754,21 @@ run_json_normalization_regression() {
   assert_eq "normalized ruling is recorded as applied" "true" "$(state_field "$normalize_home" 2605 'has("advisor_ruled_at")')"
   unset FAKE_GH_CAPTURE_BODY
 }
+
+# An unmodified VectA-shaped non-close reply must trigger a plan re-ask.
+NO_PLAN_HOME="$(mktemp -d)"
+TMP_DIRS+=("$NO_PLAN_HOME")
+mkdir -p "$NO_PLAN_HOME/state"
+seed_ticket "$NO_PLAN_HOME" 2002
+export AGENT_HOME="$NO_PLAN_HOME"
+export FAKE_GH_LOG="$NO_PLAN_HOME/gh.log"; : > "$FAKE_GH_LOG"
+export FAKE_WEB_ADVISOR_PROVIDER_LOG="$NO_PLAN_HOME/web-advisor-provider.log"; : > "$FAKE_WEB_ADVISOR_PROVIDER_LOG"
+export FAKE_BATCH_NDJSON='{"kind":"ruling","issue":2002,"verdict":"advised","risk_class":"","level":"","reasoning_md":"stored classification is already admissible.","decision_md":"reuse the existing snapshot-store precedent.","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
+NO_PLAN_OUTPUT="$(run_batch_complete 2002 2>&1)"
+assert_contains "no-plan VectA reply dispatches corrective re-ask" "$NO_PLAN_OUTPUT" "dispatched exactly one corrective re-ask"
+assert_eq "no-plan VectA reply remains unapplied" "needs-advisor" "$(state_field "$NO_PLAN_HOME" 2002 '.state')"
+assert_eq "no-plan re-ask is recorded" "true" "$(jq -r '.job.plan_reask_attempted' "$NO_PLAN_HOME/advisor-batch.json")"
+assert_not_contains "no-plan reply makes no issue writes" "$(cat "$FAKE_GH_LOG")" "gh issue edit 2002"
 
 happy_home="$(mktemp -d)"
 TMP_DIRS+=("$happy_home")
@@ -847,7 +875,7 @@ JSON
 seed_ticket "$FOUNDER_FAIL_HOME" 2008
 export AGENT_HOME="$FOUNDER_FAIL_HOME"
 export FAKE_GH_LOG="$FOUNDER_FAIL_HOME/gh.log"; : > "$FAKE_GH_LOG"
-export FAKE_BATCH_NDJSON='{"kind":"advisor_batch_result","requested_issues":[2008],"cross_ticket_findings":{"ordering":[]},"rulings":[{"kind":"ruling","issue":2008,"verdict":"founder","risk_class":"","level":"","reasoning_md":"","decision_md":"","recut_md":"","founder_subject":"海棠商店配送时效需要确认","founder_question_md":"问题：是否应保留次日送达？\n客户/公司：海棠商店\n用户动作：下单时选择次日送达。\n结果：当前仓库排期无法保证次日发货。\nA）承诺次日送达；影响：需要承担加急配送成本。\nB）改为普通配送；影响：预计晚一天到货。\n建议：B\n请回复“B”","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}]}'
+export FAKE_BATCH_NDJSON='{"kind":"advisor_batch_result","requested_issues":[2008],"cross_ticket_findings":{"ordering":[]},"rulings":[{"kind":"ruling","issue":2008,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"maintainer","risk_class":"","level":"","reasoning_md":"","decision_md":"","recut_md":"","founder_subject":"海棠商店配送时效需要确认","founder_question_md":"问题：是否应保留次日送达？\n客户/公司：海棠商店\n用户动作：下单时选择次日送达。\n结果：当前仓库排期无法保证次日发货。\nA）承诺次日送达；影响：需要承担加急配送成本。\nB）改为普通配送；影响：预计晚一天到货。\n建议：B\n请回复“B”","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}]}'
 export FAKE_GH_APPLY_FAIL_ISSUE=2008
 export FAKE_GH_APPLY_FAIL_SUBCOMMAND='issue edit'
 export FAKE_GH_APPLY_FAIL_MATCH='--add-label needs-info'
@@ -893,7 +921,11 @@ export AGENT_HOME="$WRAPPED_HOME"
 export FAKE_GH_LOG="$WRAPPED_HOME/gh.log"; : > "$FAKE_GH_LOG"
 export FAKE_WEB_ADVISOR_PROVIDER_LOG="$WRAPPED_HOME/web-advisor-provider.log"
 export FAKE_BATCH_NDJSON="$NDJSON_WRAPPED"
+# Keep the original pasted-chip sample intact and supply a separate re-ask reply.
+export FAKE_REASK_ANSWER='{"kind":"cross_ticket_findings","ordering":[]}
+{"kind":"ruling","issue":3101,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"wrapped ruling survived chip cleanup","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
 WRAPPED_OUTPUT="$(run_batch_complete 3101)"
+unset FAKE_REASK_ANSWER
 assert_contains "multiline ruling: one requested ticket is parsed" "$WRAPPED_OUTPUT" "1 usable ruling(s)"
 assert_contains "...the complete ruling applies" "$(grep -F 'gh issue edit 3101 ' "$FAKE_GH_LOG" || true)" "--add-label ready-for-agent"
 assert_eq "...no failed attempt is charged" "0" "$(state_field "$WRAPPED_HOME" 3101 '.attempts')"
@@ -908,7 +940,7 @@ seed_ticket "$CONCAT_HOME" 3202
 export AGENT_HOME="$CONCAT_HOME"
 export FAKE_GH_LOG="$CONCAT_HOME/gh.log"; : > "$FAKE_GH_LOG"
 export FAKE_WEB_ADVISOR_PROVIDER_LOG="$CONCAT_HOME/web-advisor-provider.log"
-export FAKE_BATCH_NDJSON='{"kind":"cross_ticket_findings","ordering":[]}{"kind":"ruling","issue":3201,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"joined line one.","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}{"kind":"ruling","issue":3202,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"joined line two.","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
+export FAKE_BATCH_NDJSON='{"kind":"cross_ticket_findings","ordering":[]}{"kind":"ruling","issue":3201,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"joined line one.","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}{"kind":"ruling","issue":3202,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"joined line two.","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
 CONCAT_OUTPUT="$(run_batch_complete 3201 3202)"
 assert_contains "back-to-back NDJSON objects: both rulings parse" "$CONCAT_OUTPUT" "2 usable ruling(s)"
 assert_contains "...the first joined ruling applies" "$(grep -F 'gh issue edit 3201 ' "$FAKE_GH_LOG" || true)" "--add-label ready-for-agent"
@@ -921,7 +953,7 @@ seed_ticket "$ADMISSION_FAIL_HOME" 8202
 export AGENT_HOME="$ADMISSION_FAIL_HOME"
 export FAKE_GH_LOG="$ADMISSION_FAIL_HOME/gh.log"; : > "$FAKE_GH_LOG"
 export FAKE_BATCH_NDJSON='{"kind":"cross_ticket_findings","ordering":[]}
-{"kind":"ruling","issue":8202,"verdict":"advised","risk_class":"P1","level":"L0","reasoning_md":"safe read-only admission","decision_md":"Reuse existing helper","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
+{"kind":"ruling","issue":8202,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"advised","risk_class":"P1","level":"L0","reasoning_md":"safe read-only admission","decision_md":"Reuse existing helper","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
 export FAKE_GH_APPLY_FAIL_ISSUE=8202 FAKE_GH_APPLY_FAIL_SUBCOMMAND='issue edit'
 export FAKE_GH_APPLY_FAIL_MATCH='--add-label ready-for-agent'
 export FAKE_GH_APPLY_FAIL_TEXT='simulated admission label failure'
@@ -937,7 +969,7 @@ TMP_DIRS+=("$STALE_HOME")
 mkdir -p "$STALE_HOME/state"
 seed_ticket "$STALE_HOME" 11801
 NDJSON_STALE='{"kind":"cross_ticket_findings","ordering":[]}
-{"kind":"ruling","issue":11801,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"must not apply after a human edit.","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
+{"kind":"ruling","issue":11801,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"must not apply after a human edit.","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
 export AGENT_HOME="$STALE_HOME"
 export FAKE_GH_LOG="$STALE_HOME/gh.log"; : > "$FAKE_GH_LOG"
 export FAKE_BATCH_NDJSON="$NDJSON_STALE"
@@ -972,7 +1004,7 @@ seed_ticket "$EPISODE_HOME" 11803
 export AGENT_HOME="$EPISODE_HOME"
 export FAKE_GH_LOG="$EPISODE_HOME/gh.log"; : > "$FAKE_GH_LOG"
 export FAKE_BATCH_NDJSON='{"kind":"cross_ticket_findings","ordering":[]}
-{"kind":"ruling","issue":11803,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"stale episode.","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
+{"kind":"ruling","issue":11803,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"stale episode.","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
 export FAKE_REAL_ISSUES=""
 set +e
 bash "$BATCH_SRC" 11803 >/dev/null 2>&1
@@ -999,7 +1031,7 @@ export AGENT_HOME="$RACE_SUCCESS_HOME"
 export FAKE_GH_LOG="$RACE_SUCCESS_HOME/gh.log"; : > "$FAKE_GH_LOG"
 export FAKE_WEB_ADVISOR_PROVIDER_LOG="$RACE_SUCCESS_HOME/web-advisor-provider.log"
 export FAKE_BATCH_NDJSON='{"kind":"cross_ticket_findings","ordering":[]}
-{"kind":"ruling","issue":11804,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"stale after merge.","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
+{"kind":"ruling","issue":11804,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"stale after merge.","decision_md":"","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
 export FAKE_REAL_ISSUES=""
 set +e
 bash "$BATCH_SRC" 11804 >/dev/null 2>&1
@@ -1266,6 +1298,7 @@ batch_result_for() {
     {kind:"advisor_batch_result", requested_issues:$ids,
      cross_ticket_findings:{ordering:[]},
      rulings:[$ids[] | {kind:"ruling", issue:., verdict:"misclassified",
+       plan:{changes:[{file:"engine/example.sh",symbol:"fixture",change:"Apply the ruling."}], tests_fail_first:["bash engine/example.test.sh"], non_goals:["Other behavior"]},
        risk_class:"P1", level:"L0", reasoning_md:"size-split fixture",
        decision_md:"", recut_md:"", founder_question_md:"", founder_subject:"",
        merge_conditions_md:"", required_test_paths:[], expected_packages_addendum:[],
@@ -1379,7 +1412,7 @@ export AGENT_HOME="$CONVERGENCE_HOME"
 export FAKE_GH_LOG="$CONVERGENCE_HOME/gh.log"; : > "$FAKE_GH_LOG"
 export FAKE_WEB_ADVISOR_PROVIDER_LOG="$CONVERGENCE_HOME/web-advisor-provider.log"; : > "$FAKE_WEB_ADVISOR_PROVIDER_LOG"
 export FAKE_BATCH_NDJSON='{"kind":"cross_ticket_findings","ordering":[]}
-{"kind":"ruling","issue":2051,"verdict":"advised","risk_class":"P1","level":"L1","reasoning_md":"same engineering judgment","decision_md":"Fix the stale retry route in the shared admission seam.","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
+{"kind":"ruling","issue":2051,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"advised","risk_class":"P1","level":"L1","reasoning_md":"same engineering judgment","decision_md":"Fix the stale retry route in the shared admission seam.","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
 run_batch_complete 2051 >/dev/null
 set +e
 CONVERGENCE_SECOND_OUTPUT="$(run_batch_complete 2051 2>&1)"
@@ -1395,7 +1428,7 @@ ZF_ROADMAP_TREE_CACHE_FILE="$CONVERGENCE_HOME/roadmap-tree.json"
 printf '{"roots":[]}' > "$ZF_ROADMAP_TREE_CACHE_FILE"
 printf '2051\n' > "$ZF_ROADMAP_TREE_CACHE_FILE.placed"
 export ZF_ROADMAP_TREE_CACHE_FILE
-CONVERGENCE_PENDING_OUTPUT="$(bash -c 'source "$1/lib.sh"; route_to_advisor 2051 ready-for-agent' _ "$SCRIPT_DIR" 2>&1)"
+CONVERGENCE_PENDING_OUTPUT="$(bash -c 'source "$1/lib.sh"; route_to_advisor 2051 ready-for-agent' _ "$FAKE_SCRIPT_DIR" 2>&1)" || { echo "convergence route failed: $CONVERGENCE_PENDING_OUTPUT"; FAILED=1; }
 assert_contains "convergence marker preserves implement route until an attempt runs" \
   "$CONVERGENCE_PENDING_OUTPUT" "still awaits its one implement pass"
 assert_eq "convergence marker remains armed before implement attempt" "true" \
@@ -1403,7 +1436,7 @@ assert_eq "convergence marker remains armed before implement attempt" "true" \
 jq '.attempts += 1' "$CONVERGENCE_HOME/state/2051.json" \
   > "$CONVERGENCE_HOME/state/2051.json.tmp" \
   && mv "$CONVERGENCE_HOME/state/2051.json.tmp" "$CONVERGENCE_HOME/state/2051.json"
-bash -c 'source "$1/lib.sh"; route_to_advisor 2051 ready-for-agent' _ "$SCRIPT_DIR"
+bash -c 'source "$1/lib.sh"; route_to_advisor 2051 ready-for-agent' _ "$FAKE_SCRIPT_DIR"
 assert_eq "failed convergence pass reaches terminal needs-recut" "needs-recut" \
   "$(state_field "$CONVERGENCE_HOME" 2051 '.state')"
 CONVERGENCE_GH_LOG="$(cat "$FAKE_GH_LOG")"
@@ -1426,7 +1459,7 @@ export AGENT_HOME="$CONVERGENCE_LEGACY_HOME"
 export FAKE_GH_LOG="$CONVERGENCE_LEGACY_HOME/gh.log"; : > "$FAKE_GH_LOG"
 export FAKE_WEB_ADVISOR_PROVIDER_LOG="$CONVERGENCE_LEGACY_HOME/web-advisor-provider.log"; : > "$FAKE_WEB_ADVISOR_PROVIDER_LOG"
 export FAKE_BATCH_NDJSON='{"kind":"cross_ticket_findings","ordering":[]}
-{"kind":"ruling","issue":2053,"verdict":"advised","risk_class":"P1","level":"L1","reasoning_md":"same legacy judgment","decision_md":"Fix the stale retry route in the shared admission seam.","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
+{"kind":"ruling","issue":2053,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"advised","risk_class":"P1","level":"L1","reasoning_md":"same legacy judgment","decision_md":"Fix the stale retry route in the shared admission seam.","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
 run_batch_complete 2053 >/dev/null
 assert_eq "legacy guarded verdict arms one implement pass without a stored material record" "true" \
   "$(state_field "$CONVERGENCE_LEGACY_HOME" 2053 '.advisor_convergence_pass == true')"
@@ -1490,7 +1523,7 @@ export FAKE_GH_LOG="$PARTIAL_HOME/gh.log"
 export FAKE_REAL_ISSUES=20731
 : > "$FAKE_GH_LOG"
 export FAKE_BATCH_NDJSON='{"kind":"cross_ticket_findings","ordering":[]}
-{"kind":"ruling","issue":20731,"verdict":"advised","risk_class":"","level":"","reasoning_md":"keep guarded admission.","decision_md":"admit under guard.","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
+{"kind":"ruling","issue":20731,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"advised","risk_class":"","level":"","reasoning_md":"keep guarded admission.","decision_md":"admit under guard.","recut_md":"","founder_question_md":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
 export FAKE_GH_APPLY_FAIL_ISSUE=20731
 export FAKE_GH_APPLY_FAIL_SUBCOMMAND='issue edit'
 export FAKE_GH_APPLY_FAIL_MATCH='--add-label ready-for-agent'
@@ -1526,7 +1559,7 @@ export AGENT_HOME="$NATIVE_PARENT_HOME"
 export FAKE_GH_LOG="$NATIVE_PARENT_HOME/gh.log"; : > "$FAKE_GH_LOG"
 export FAKE_NATIVE_SUB_ISSUES_JSON='[{"number":20462,"state":"open","closed_at":null,"labels":[]}]'
 export FAKE_BATCH_NDJSON='{"kind":"cross_ticket_findings","ordering":[]}
-{"kind":"ruling","issue":20461,"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"parent classification","decision_md":"","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
+{"kind":"ruling","issue":20461,"plan":{"changes":[{"file":"engine/example.sh","symbol":"fixture","change":"Apply the ruling."}],"tests_fail_first":["bash engine/example.test.sh"],"non_goals":["Other behavior"]},"verdict":"misclassified","risk_class":"P1","level":"L0","reasoning_md":"parent classification","decision_md":"","recut_md":"","founder_question_md":"","founder_subject":"","merge_conditions_md":"","required_test_paths":[],"expected_packages_addendum":[],"duplicate_of":null}'
 set +e
 NATIVE_PARENT_OUTPUT="$(run_batch_complete 20461 2>&1)"
 NATIVE_PARENT_STATUS=$?
