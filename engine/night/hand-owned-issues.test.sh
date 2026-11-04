@@ -108,6 +108,7 @@ for gate in \
   'hand_agent_issue_is_live_owned "$next_measure"' \
   'hand_agent_issue_is_live_owned "$advisor_id"' \
   'hand_agent_issue_is_live_owned "$next_poll"' \
+  'hand_agent_issue_is_live_owned "$next_verdict"' \
   'hand_agent_issue_is_live_owned "$n"' \
   'record_hand_owned_decision triage "$next_triage"' \
   'record_hand_owned_decision advisor "$advisor_id"'; do
