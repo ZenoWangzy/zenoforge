@@ -59,6 +59,7 @@
   "pricing_note": "默认参考 OpenAI API 标准文本 token 公价作等值估算（美元/百万 token；GPT-6 Luna 输入/缓存/输出 $0.10/$0.01/$0.50，GPT-5.6 Terra $2/$0.20/$12）；不是 Codex/ChatGPT 订阅账单。config.pricing 可覆盖单价。输入价按扣除缓存后的 token 计算；未计大上下文加价、处理档位、缓存写入或工具调用费用。",
   "loop_breaker_rounds": 5,
   "size_admission_lines": 800,
+  "pr_create_retry_limit": 3,
   "size_admission": {
     "exempt_hotpatch": true
   },

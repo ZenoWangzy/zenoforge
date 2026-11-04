@@ -124,8 +124,13 @@ pre_dispatch_pr_admission() { # unit branch PR context → prepared clone; nonze
 }
 
 # 产品 issue 的实现：worker 推分支，流水线开 PR（Refs #N）→ 进评审；OBSOLETE 直接结案。
+pr_create_failure_transient() { # gh output rc → true for retryable server/transport failures
+  local output="${1:-}" rc="${2:-0}"
+  [[ "$rc" == 124 ]] && return 0
+  grep -Eiq 'HTTP([[:space:]]|/[0-9.]+[[:space:]])5[0-9]{2}|GraphQL:[[:space:]]*Something went wrong|ECONNRESET|timeout|timed[[:space:]]+out|deadline exceeded' <<<"$output"
+}
 harvest_pr_implement() { # unit report-path
-  local first issue branch dir head title pr out base local_head ahead dirty push_out
+  local first issue branch dir head title pr out base local_head ahead dirty push_out create_error create_rc retry_limit retry_count adopt_rc
   first="$(grep -m1 -v '^[[:space:]]*$' "$2" 2>/dev/null)"
   issue="$(unit_field "$1" .issue)"; branch="$(unit_field "$1" .branch)"; dir="$WT_ROOT/wt-$1"
   local dep; dep="$(blocked_on_of "$2")"
@@ -190,7 +195,38 @@ harvest_pr_implement() { # unit report-path
 $(head -40 "$2")" "$base"
   pr="$SCHED_PR_NUM"; out="$SCHED_PR_OUT"
   if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
-    to_supervisor "$1" "could not open a PR for $branch: ${out:0:200}"; return 0
+    create_rc="${SCHED_PR_RC:-0}"
+    if [[ "${SCHED_PR_CREATE_ATTEMPTED:-false}" == true ]] && pr_create_failure_transient "$out" "$create_rc"; then
+      create_error="$out"
+      [[ -n "$create_error" ]] || create_error="gh pr create exited with rc=$create_rc"
+      if scheduler_pr_adopt_open "$branch" "$base" true; then
+        pr="$SCHED_PR_NUM"
+        say "unit $1 adopted PR#$pr after transient create failure on $branch"
+      else
+        adopt_rc=$?
+        if (( adopt_rc == 2 )); then
+          to_supervisor "$1" "could not adopt the open PR for $branch after a transient create failure: ${SCHED_PR_OUT:0:200}"
+          return 0
+        fi
+      fi
+      if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
+        retry_count="$(unit_retries "$1" pr-create-retry)"
+        [[ "$retry_count" =~ ^[0-9]+$ ]] || retry_count=0
+        retry_count=$((retry_count + 1))
+        retry_limit="$(jqf -r '.pr_create_retry_limit // 3' <<<"$CFG")"
+        [[ "$retry_limit" =~ ^[1-9][0-9]*$ ]] || retry_limit=3
+        set_unit "$1" "$(hist pr-create-retry "$retry_count/$retry_limit: $create_error")"
+        if (( retry_count >= retry_limit )); then
+          to_supervisor "$1" "could not open a PR for $branch after $retry_count transient failures: ${create_error:0:200}"
+        else
+          say "unit $1 transient PR create failure ($retry_count/$retry_limit) on $branch; retry next tick"
+        fi
+        return 0
+      fi
+    else
+      to_supervisor "$1" "could not open a PR for $branch: ${out:0:200}"
+      return 0
+    fi
   fi
   set_unit "$1" "$(hist pr-opened "PR#$pr $head") | .pr=$pr | .lane=\"pr\" | .stage=\"review-pending\"$([[ "$branch" =~ $GATED_BRANCH_RE ]] && printf ' | .gated=true')"
   say "unit $1 implemented on $branch -> PR#$pr review-pending"

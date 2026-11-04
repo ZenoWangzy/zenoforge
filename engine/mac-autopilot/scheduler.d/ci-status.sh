@@ -337,31 +337,40 @@ repair_demote() { # unit pr branch：repair 派出成功后，门控 PR 和符�
   fi
   cancel_branch_runs "$3" "$reason" || :
 }
-scheduler_pr_open() { # branch title body [base] → SCHED_PR_NUM / SCHED_PR_OUT；agent/issue-* 以 draft + 门控标签创建，已有 open 的非 draft PR 就退回 draft 并加标签
-  local row pr draft gate=0 title body base="${4:-main}"
-  SCHED_PR_NUM=""; SCHED_PR_OUT=""
+scheduler_pr_adopt_open() { # branch [base] [skip-base-update] → adopt an open PR; 1=no PR, 2=base update failed
+  local row pr draft gate=0 base="${2:-main}" skip_base_update="${3:-false}"
+  SCHED_PR_NUM=""
   [[ "$1" =~ $GATED_BRANCH_RE ]] && gate=1
   row="$(gh pr list --head "$1" --state open --json number,isDraft --jq '.[0] | select(. != null) | "\(.number) \(.isDraft)"' 2>/dev/null)"
   read -r pr draft <<<"$row"
-  if [[ "$pr" =~ ^[0-9]+$ ]]; then
-    if [[ "$base" != main ]]; then
-      tick_prs_changed
-      if ! SCHED_PR_OUT="$(gh pr edit "$pr" --base "$base" 2>&1)"; then
-        SCHED_PR_NUM=""; return 0
-      fi
+  [[ "$pr" =~ ^[0-9]+$ ]] || return 1
+  if [[ "$base" != main && "$skip_base_update" != true ]]; then
+    tick_prs_changed
+    if ! SCHED_PR_OUT="$(gh pr edit "$pr" --base "$base" 2>&1)"; then
+      SCHED_PR_NUM=""; return 2
     fi
-    if (( gate )) && [[ "$draft" == false ]] && gated_flag_pr "$pr"; then gated_demote_pr "$pr" "$1" "ci deferred; PR adopted as draft" || true; fi
-    SCHED_PR_NUM="$pr"; return 0
   fi
+  if (( gate )) && [[ "$draft" == false ]] && gated_flag_pr "$pr"; then gated_demote_pr "$pr" "$1" "ci deferred; PR adopted as draft" || true; fi
+  SCHED_PR_NUM="$pr"
+  return 0
+}
+scheduler_pr_open() { # branch title body [base] → SCHED_PR_NUM / SCHED_PR_OUT / SCHED_PR_RC
+  local adopt_rc gate=0 title body base="${4:-main}" create_args=()
+  SCHED_PR_NUM=""; SCHED_PR_OUT=""; SCHED_PR_RC=0; SCHED_PR_CREATE_ATTEMPTED=false
+  [[ "$1" =~ $GATED_BRANCH_RE ]] && gate=1
+  if scheduler_pr_adopt_open "$1" "$base"; then return 0; else adopt_rc=$?; fi
+  (( adopt_rc == 1 )) || return 0
   title="$(scrub_closing_keywords <<<"$2")"
   body="$(scrub_closing_keywords <<<"$3")"
   tick_prs_changed
+  create_args=(pr create)
   if (( gate )); then
     ensure_gated_label
-    SCHED_PR_OUT="$(gh pr create --draft --label "$GATED_LABEL" --base "$base" --head "$1" --title "$title" --body "$body" 2>&1)"
-  else
-    SCHED_PR_OUT="$(gh pr create --base "$base" --head "$1" --title "$title" --body "$body" 2>&1)"
+    create_args+=(--draft --label "$GATED_LABEL")
   fi
+  create_args+=(--base "$base" --head "$1" --title "$title" --body "$body")
+  SCHED_PR_CREATE_ATTEMPTED=true
+  if SCHED_PR_OUT="$(gh "${create_args[@]}" 2>&1)"; then SCHED_PR_RC=0; else SCHED_PR_RC=$?; fi
   SCHED_PR_NUM="$(grep -oE '/pull/[0-9]+' <<<"$SCHED_PR_OUT" | grep -oE '[0-9]+$' | tail -1)"
 }
 gated_load() { # 一次 open PR 列表读出带门控标签的 PR；读失败或格式错就保持为空，本拍不翻任何 PR
