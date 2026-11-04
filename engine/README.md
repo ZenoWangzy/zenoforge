@@ -7,3 +7,7 @@ Any agent session that sees a problem must file it through `bash engine/pipeline
 - [Architecture](../docs/architecture.md)
 - [Installing on one host](../docs/install.md)
 - [Security](../SECURITY.md)
+
+## For supervisors
+
+Change an issue's stage labels only through `bash engine/bin/zf-issue-transition [--dry-run] <issue> <to-state> <reason>`; a raw `gh issue edit` leaves the engine's state cache stale, and later transitions refuse.

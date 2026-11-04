@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# zf-issue-transition [--dry-run] <issue> <to-state> <reason>: the supervisor
+# CLI for changing an issue's pipeline stage. Sources the engine's lib.sh --
+# the same AGENT_HOME / ZF_CONFIG_ROOT / ZF_REPO resolution every engine
+# script uses -- and calls issue_transition, so the transition table, guards,
+# per-issue state lock, state cache write, and label write are the pipeline's
+# own; there is no second transition implementation here. 2026-11-03, advisor
+# outage: a supervisor applied arbiter ADMIT verdicts with raw
+# `gh issue edit --add-label ready-for-agent --remove-label needs-advisor`,
+# the state cache ($STATE_DIR/<n>.json) never learned of it, and conclude
+# refused 8 merged issues for hours (#205 reconciles such drift only on the
+# refusal path). Change stage labels only through this command.
+#
+# Success prints one line on stdout, "transition #<n> <from> -> <to>
+# (reason=<r>)", and exits 0. A refusal prints issue_transition's own refusal
+# line on stderr and exits non-zero. --dry-run answers whether the transition
+# table allows the move from the cached state; it makes no gh call and writes
+# nothing.
+set -euo pipefail
+
+ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "$ENGINE_DIR/lib.sh"
+
+zf_issue_transition_main() {
+  local dry_run=0 n to reason before from
+  if [ "${1:-}" = --dry-run ]; then
+    dry_run=1
+    shift
+  fi
+  if [ "$#" -ne 3 ]; then
+    echo "usage: zf-issue-transition [--dry-run] <issue> <to-state> <reason>" >&2
+    return 64
+  fi
+  n="$1" to="$2" reason="$3"
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "zf-issue-transition: valid issue number required" >&2; return 64; }
+  issue_transition_state_is_valid "$to" || { echo "zf-issue-transition: unknown target state '$to' for #$n" >&2; return 64; }
+  [ -n "$reason" ] || { echo "zf-issue-transition: reason required for #$n -> $to" >&2; return 64; }
+  before="$(state_read "$n")" || return 1
+  from="$(jq -r '.state // "untracked"' <<< "$before" 2>/dev/null)" || return 1
+  if [ "$dry_run" = 1 ]; then
+    if issue_transition_allowed "$from" "$to" "$reason"; then
+      echo "dry-run: table allows #$n $from -> $to (reason=$reason)"
+      return 0
+    fi
+    echo "dry-run: table refuses #$n $from -> $to (reason=$reason)" >&2
+    return 1
+  fi
+  issue_transition "$n" "$to" "$reason" || return $?
+  echo "transition #$n $from -> $to (reason=$reason)"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  zf_issue_transition_main "$@"
+fi
