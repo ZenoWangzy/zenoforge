@@ -68,4 +68,11 @@ merge_pr_gate 17 "$sha" "$repo" >/dev/null
 [[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nmerge:pr merge 17 --squash' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
+set +e
+refusal=$(env -u ZF_ALLOW_FULL_GATE bash "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh" 17 2>&1)
+refusal_status=$?
+set -e
+[[ $refusal_status == 2 && $refusal == *'do not use the local full gate'* ]] \
+  || fail "direct run did not refuse the full gate: $refusal_status $refusal"
+
 echo 'PASS merge helper refuses missing, red, and stale results; matching green result squash merges'

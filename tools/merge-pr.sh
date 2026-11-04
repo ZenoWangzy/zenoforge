@@ -185,5 +185,10 @@ merge_pr_main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  if [[ "${ZF_ALLOW_FULL_GATE:-}" != 1 ]]; then
+    # Ruling zenoforge-no-local-gate-2026-11-04: briefs written before it kept starting this gate.
+    echo 'merge-pr: engine PRs do not use the local full gate. Run the focused tests, then gh pr merge --squash. ZF_ALLOW_FULL_GATE=1 overrides.' >&2
+    exit 2
+  fi
   merge_pr_main "$@"
 fi
