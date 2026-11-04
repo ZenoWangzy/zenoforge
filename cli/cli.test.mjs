@@ -4,7 +4,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as cmd from './commands.mjs';
 import { buildCtx, foreground } from './scheduler.mjs';
@@ -27,8 +27,34 @@ esac
 `;
 const FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "systemctl $*" >> "$ZF_FAKE_LOG"\n';
 
+const cliFixtureRoots = new Set();
+const cliFixtureCleanupChecks = [];
+
+function cleanupCliFixtures() {
+  for (const root of cliFixtureRoots) fs.rmSync(root, { recursive: true, force: true });
+  cliFixtureRoots.clear();
+}
+
+function cliFixtureDirs() {
+  return fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('zf-cli-')).sort();
+}
+
+afterEach(() => {
+  cleanupCliFixtures();
+  for (const check of cliFixtureCleanupChecks.splice(0)) check();
+});
+
+for (const [signal, exitCode] of [['SIGHUP', 129], ['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.on(signal, () => {
+    cleanupCliFixtures();
+    process.exit(exitCode);
+  });
+}
+process.on('exit', cleanupCliFixtures);
+
 function sandbox({ originFiles = { 'README.md': 'hello\n' } } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zf-cli-'));
+  cliFixtureRoots.add(root);
   const home = path.join(root, 'home');
   const bin = path.join(root, 'bin');
   const origin = path.join(root, 'origin.git');
@@ -65,6 +91,13 @@ function sandbox({ originFiles = { 'README.md': 'hello\n' } } = {}) {
 
 const REPO = 'example-maintainer/example-repo';
 const mode = (p) => fs.statSync(p).mode & 0o777;
+
+test('CLI sandbox fixture directories are removed after a fixture-backed command', async () => {
+  const s = sandbox();
+  await cmd.init({ repo: REPO, yes: true, noScheduler: true }, s.io);
+  const fixtureName = path.basename(s.root);
+  cliFixtureCleanupChecks.push(() => assert.equal(cliFixtureDirs().includes(fixtureName), false, `${fixtureName} remains in ${os.tmpdir()}`));
+});
 
 test('init refuses to proceed without --yes when there is no terminal, and writes nothing', async () => {
   const s = sandbox();
