@@ -90,19 +90,20 @@ gh_tick_attempt_timeout_sec() {
 
 
 gh_tick_retry_fits() {
-  local deadline="${ZF_GH_CALL_DEADLINE_EPOCH_MS:-}" now remaining_ms
+  local backoff_seconds="${1:-2}" deadline="${ZF_GH_CALL_DEADLINE_EPOCH_MS:-}" now remaining_ms
   [ -z "$deadline" ] && return 0
   [[ "$deadline" =~ ^[0-9]+$ ]] || return 1
   now="$(gh_call_now_ms)" || return 1
   remaining_ms=$((deadline - now))
-  # The existing retry delay is 2s. After it, the next attempt needs a
-  # one-second timeout, five-second kill grace, and one-second setup slack.
-  (( remaining_ms >= 9000 ))
+  # After backoff, the next attempt needs a one-second timeout, five-second
+  # kill grace, and one-second setup slack.
+  (( remaining_ms >= backoff_seconds * 1000 + 7000 ))
 }
 
 
 gh() {
   local status attempt retry_read=0 stderr_file stderr i api_method="" api_fields=0 arg attempt_timeout
+  local max_attempts="${ZF_GH_RETRY_MAX_ATTEMPTS:-3}" base_backoff="${ZF_GH_RETRY_BACKOFF_SECONDS:-2}" retry_delay
   local profile_source="" profile_function="" profile_line=0 profile_started_us="" profile_ended_us
   local args=("$@")
   if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
@@ -144,6 +145,11 @@ gh() {
       ;;
   esac
 
+  [[ "$max_attempts" =~ ^[1-9][0-9]*$ ]] || max_attempts=3
+  (( max_attempts > 5 )) && max_attempts=5
+  [[ "$base_backoff" =~ ^[0-9]+$ ]] || base_backoff=2
+  (( base_backoff > 30 )) && base_backoff=30
+
   if [ "$retry_read" != 1 ]; then
     attempt_timeout="$(gh_tick_attempt_timeout_sec)" || {
       echo 'gh: refusing call because the owner-admission deadline cannot fit one bounded attempt' >&2
@@ -154,13 +160,16 @@ gh() {
       fi
       return 124
     }
+    stderr_file="$(mktemp)" || return 1
     [ -z "$profile_started_us" ] || profile_started_us="${EPOCHREALTIME/./}"
-    if command timeout --kill-after=5s "${attempt_timeout}s" gh "$@"; then
+    if command timeout --kill-after=5s "${attempt_timeout}s" gh "$@" 2>"$stderr_file"; then
       if [ -n "$profile_started_us" ]; then
         profile_ended_us="${EPOCHREALTIME/./}"
         _call_profile_record gh "$profile_started_us" "$profile_ended_us" 0 \
           "$profile_source" "$profile_function" "$profile_line" "${args[@]}"
       fi
+      cat "$stderr_file" >&2
+      rm -f -- "$stderr_file"
       if ! ticket_stage_record_gh_write "$@"; then
         echo "gh: issue #${3:-?} changed stage but transition could not be recorded" >&2
         return 1
@@ -174,13 +183,16 @@ gh() {
           "$profile_source" "$profile_function" "$profile_line" "${args[@]}"
       fi
     fi
+    stderr="$(cat "$stderr_file")"
+    gh_failure_log "$stderr" >&2
+    rm -f -- "$stderr_file"
     [ "$status" -eq 124 ] && _bounded_call_timed_out \
       "gh: call timed out after ${attempt_timeout}s: gh $*"
     return "$status"
   fi
 
   stderr_file="$(mktemp)" || return 1
-  for attempt in 1 2; do
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     [ -z "$profile_started_us" ] || profile_started_us="${EPOCHREALTIME/./}"
     attempt_timeout="$(gh_tick_attempt_timeout_sec)" || {
       rm -f -- "$stderr_file"
@@ -212,25 +224,27 @@ gh() {
       fi
     fi
     stderr="$(cat "$stderr_file")"
-    if [ "$attempt" -eq 1 ] && { [ "$status" -eq 124 ] || gh_failure_is_transient "$stderr"; }; then
-      if ! gh_tick_retry_fits; then
-        cat "$stderr_file" >&2
+    if [ "$attempt" -lt "$max_attempts" ] && { [ "$status" -eq 124 ] || gh_failure_is_transient "$stderr"; }; then
+      retry_delay=$((base_backoff * (1 << (attempt - 1))))
+      (( retry_delay > 30 )) && retry_delay=30
+      if ! gh_tick_retry_fits "$retry_delay"; then
+        gh_failure_log "$stderr" >&2
         rm -f -- "$stderr_file"
         echo 'gh: skipping read retry because its backoff and bounded attempt would cross the owner-admission deadline' >&2
-        echo "gh: transient read failed after bounded retry: gh $*" >&2
+        echo "gh: transient read failed after $attempt bounded attempt(s): gh $*" >&2
         return "$status"
       fi
-      echo "gh: transient read failed; retrying once after 2s backoff: gh $*" >&2
-      sleep 2
+      echo "gh: transient read failed; retrying after ${retry_delay}s backoff (attempt $((attempt + 1))/$max_attempts): gh $*" >&2
+      sleep "$retry_delay"
       continue
     fi
     if [ "$status" -eq 124 ] || gh_failure_is_transient "$stderr"; then
-      echo "gh: transient read failed after bounded retry: gh $*" >&2
+      echo "gh: transient read failed after $attempt bounded attempt(s): gh $*" >&2
     fi
-    cat "$stderr_file" >&2
+    gh_failure_log "$stderr" >&2
     rm -f "$stderr_file"
     [ "$status" -eq 124 ] && _bounded_call_timed_out \
-      "gh: read timed out twice after ${attempt_timeout}s per attempt: gh $*"
+      "gh: read timed out after $attempt attempt(s) at ${attempt_timeout}s per attempt: gh $*"
     return "$status"
   done
 }
@@ -478,9 +492,10 @@ git_fetch_hand_bounded() {
 # and just died. Matches on the error TEXT, not on which `gh` subcommand or
 # which stage called it, because the identical subcommand (gh issue
 # comment/edit) can fail either way and only the text says which -- a 404 or
-# a permissions error must stay a real failure (this pattern deliberately
-# does NOT match any 4xx), never get treated as an environment fault that
-# quietly drops a verdict a real `model call` call already paid for.
+# a permissions error must stay a real failure, never get treated as an
+# environment fault that quietly drops a verdict a real `model call` already
+# paid for. The classifier below leaves deterministic 4xx and GraphQL
+# validation failures non-retryable; 429 remains the retryable 4xx exception.
 #
 # `timed out after [0-9]+s` (2026-09-15, the #1204 incident): gh()'s own
 # bounded-timeout message, added alongside it -- a caller like
@@ -491,7 +506,33 @@ git_fetch_hand_bounded() {
 # an already-computed verdict) would be misclassified as "a real failure"
 # specifically because it was CAUGHT rather than left to hang.
 gh_failure_is_transient() {
-  grep -qiE 'TLS handshake timeout|i/o timeout|connection reset|connection refused|dial tcp|context deadline exceeded|Temporary failure in name resolution|Could not resolve host|net/http: |HTTP 5[0-9][0-9]|HTTP 429|too many requests|Gateway Timeout|Service Unavailable|Bad Gateway|unexpected EOF|timed out after [0-9]+s' <<< "$1"
+  gh_failure_is_non_retryable_graphql "$1" && return 1
+  # net/http also appears in deterministic HTTP 4xx responses, so reject
+  # those before the broad transport matcher. Rate limiting (429) is the
+  # retryable 4xx exception.
+  grep -qiE 'HTTP (400|401|403|404|409|410|422)([^0-9]|$)|HTTP/1\.[01] (400|401|403|404|409|410|422)([^0-9]|$)' <<< "$1" && return 1
+  grep -qiE 'TLS handshake timeout|i/o timeout|connection reset|connection refused|dial tcp|context deadline exceeded|Temporary failure in name resolution|Could not resolve host|net/http: |HTTP 5[0-9][0-9]|HTTP/1\.[01] 5[0-9][0-9]|HTTP 429|HTTP/1\.[01] 429|too many requests|Gateway Timeout|Service Unavailable|Bad Gateway|unexpected EOF|timed out after [0-9]+s' <<< "$1"
+}
+
+
+gh_failure_is_non_retryable_graphql() {
+  grep -qiE 'Resource limits for this query exceeded|MAX_NODE_LIMIT_EXCEEDED|GraphQL (validation|syntax|parse) error|Unknown (argument|type|directive) .+|Cannot query field .+ on type|Selections can.t be made on scalars|Expected value of type .+|Variable .+(was provided invalid value|is never used|but not used)|Field .+doesn.t (exist|accept)|Field .+ of type .+ must have a selection|Argument .+ (has an )?invalid value|Fragment .+(was defined, but not used|cannot be spread)|Could not resolve to a (Repository|node|Issue|PullRequest)' <<< "$1"
+}
+
+
+gh_failure_log() {
+  local message="$1" line
+  if gh_failure_is_non_retryable_graphql "$message"; then
+    if grep -qiF 'Resource limits for this query exceeded' <<< "$message"; then
+      echo 'gh: non-retryable GraphQL error: Resource limits for this query exceeded' >&2
+      return 0
+    fi
+    line="$(sed -n '/[^[:space:]]/{s/^[[:space:]]*//;p;q;}' <<< "$message")"
+    line="${line#gh: }"
+    printf 'gh: non-retryable GraphQL error: %s\n' "${line:-request rejected}" >&2
+    return 0
+  fi
+  printf '%s\n' "$message" >&2
 }
 
 

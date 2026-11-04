@@ -19,6 +19,8 @@
 #   ZF_WEB_ADVISOR_PROVIDER_CALL_TIMEOUT_SECONDS  bound for one synchronous request; default = 900.
 #   ZF_WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS  deadline for a detached request; default = 2400.
 #   ZF_WEB_ADVISOR_PROVIDER_POLL_INTERVAL_SECONDS  detached request poll interval; default = 30.
+#   ZF_GH_RETRY_MAX_ATTEMPTS  maximum attempts for retryable gh reads; default = 3 (maximum = 5).
+#   ZF_GH_RETRY_BACKOFF_SECONDS  base delay between retryable gh read attempts; default = 2, doubles per retry.
 #   ZF_PACK_REL    where the pack's files sit inside the target repository (git show / git diff / ls-tree pathspecs, repo-relative
 #                     reads such as state/incident-guards.json): default = engine. The export rewrites that default to the
 #                     public engine location; a deployment whose repo keeps the pack elsewhere sets it. Node and python readers
@@ -144,6 +146,9 @@ export ZF_WEB_ADVISOR_PROVIDER_SCRIPT ZF_WEB_ADVISOR_PROVIDER_CDP_PORT ZF_WEB_AD
   ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX ZF_WEB_ADVISOR_PROVIDER_TOPIC \
   ZF_WEB_ADVISOR_PROVIDER_CALL_TIMEOUT_SECONDS ZF_WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS \
   ZF_WEB_ADVISOR_PROVIDER_POLL_INTERVAL_SECONDS
+ZF_GH_RETRY_MAX_ATTEMPTS="$(zf_env_get GH_RETRY_MAX_ATTEMPTS 3)"
+ZF_GH_RETRY_BACKOFF_SECONDS="$(zf_env_get GH_RETRY_BACKOFF_SECONDS 2)"
+export ZF_GH_RETRY_MAX_ATTEMPTS ZF_GH_RETRY_BACKOFF_SECONDS
 unset _zf_engine_dir_physical _zf_engine_parent_dir
 # Set (even empty) by the caller = explicit; unset, or still the value this file derived earlier = derive again.
 if [[ -z "${ZF_PACK_DIR+x}" || ( -n "${_AGENT_PACK_DIR_DERIVED+x}" && "$ZF_PACK_DIR" == "$_AGENT_PACK_DIR_DERIVED" ) ]]; then

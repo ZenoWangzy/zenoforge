@@ -573,6 +573,77 @@ issue_transition_allowed() {
 }
 
 
+issue_transition_rest_label_write() {
+  local n="$1" remove_hold="$2" remove_evidence="$3" labels_raw current_labels desired_labels state_labels next_labels
+  local input_file request_body status label has_ready=0 child_status=1
+  local -a add_labels=()
+  shift 3
+  add_labels=("$@")
+
+  # REST PUT replaces the full label set, so preserve unrelated labels from
+  # the REST read and change only pipeline-owned labels here.
+  labels_raw="$(gh api --paginate --slurp --method GET "repos/$REPO/issues/$n/labels" -F per_page=100)" || {
+    echo "issue_transition: REST label read failed for #$n; no label write attempted" >&2
+    return 1
+  }
+  jq -e 'type == "array"' <<< "$labels_raw" >/dev/null 2>&1 || {
+    echo "issue_transition: invalid REST label response for #$n; no label write attempted" >&2
+    return 1
+  }
+  current_labels="$(jq -ce '[.[]? | (if type == "array" then .[]? else . end) | select(type == "object") | .name? | select(type == "string")] | unique' <<< "$labels_raw")" || {
+    echo "issue_transition: invalid REST label response for #$n; no label write attempted" >&2
+    return 1
+  }
+  ISSUE_LABEL_VIEW_STATE[$n]=loaded
+  ISSUE_LABEL_VIEW_LABELS[$n]="$(jq -r '.[]' <<< "$current_labels")"
+  ISSUE_LABEL_VIEW_AT[$n]="$SECONDS"
+  ISSUE_LABEL_VIEW_ERROR[$n]=""
+
+  for label in "${add_labels[@]}"; do [ "$label" != ready-for-agent ] || has_ready=1; done
+  if [ "$has_ready" = 1 ]; then
+    if grep -Fqx on-hold <<< "${ISSUE_LABEL_VIEW_LABELS[$n]}" && [ "$remove_hold" != 1 ]; then
+      echo "guarded_write: refusing partial stage transition for held #$n" >&2
+      return 1
+    fi
+    if recut_parent_has_open_child "$n" "${OPEN_ISSUE_BLOCKER_GRAPH_JSON:-[]}" "" 0; then child_status=0; else child_status=$?; fi
+    if [ "$child_status" -eq 0 ] || [ "$child_status" -eq 2 ]; then
+      if [ "$child_status" -eq 0 ]; then
+        printf 'guarded_write: refusing ready-for-agent on parent #%s with open children by issue_transition\n' "$n" >&2
+      else
+        printf 'guarded_write: refusing ready-for-agent on parent #%s; child state is unverified by issue_transition\n' "$n" >&2
+      fi
+      return 1
+    fi
+  fi
+
+  if ((${#add_labels[@]})); then
+    desired_labels="$(printf '%s\n' "${add_labels[@]}" | jq -R . | jq -s .)" || return 1
+  else
+    desired_labels='[]'
+  fi
+  state_labels="$(printf '%s\n' "${ALL_STATE_LABELS[@]}" | jq -R . | jq -s .)" || return 1
+  next_labels="$(jq -cn --argjson current "$current_labels" --argjson desired "$desired_labels" \
+    --argjson state_labels "$state_labels" --argjson remove_hold "$remove_hold" \
+    --argjson remove_evidence "$remove_evidence" '
+      ($current | map(. as $label | select(
+        $label != "in-progress" and
+        (if $remove_hold then $label != "on-hold" else true end) and
+        (if $remove_evidence then $label != "evidence-gate" else true end) and
+        (($state_labels | index($label)) == null or ($desired | index($label)) != null)
+      ))) + $desired | unique
+    ')" || return 1
+  request_body="$(jq -cn --argjson labels "$next_labels" '{labels:$labels}')" || return 1
+  input_file="$(mktemp)" || return 1
+  if ! printf '%s\n' "$request_body" > "$input_file"; then
+    rm -f -- "$input_file"
+    return 1
+  fi
+  if guarded_write gh api --method PUT "repos/$REPO/issues/$n/labels" --input "$input_file" >/dev/null; then status=0; else status=$?; fi
+  rm -f -- "$input_file"
+  return "$status"
+}
+
+
 # issue_transition <issue> <state-label> <reason> [state-merge-filter] [skip-label-write] [issue-json] [source-issue] [open-issue]
 # Keep state JSON and GitHub stage labels serialized by state_merge's lock.
 # GitHub and local disk cannot share a transaction; a failed label write rolls
