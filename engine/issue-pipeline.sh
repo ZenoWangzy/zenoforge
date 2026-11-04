@@ -2248,6 +2248,14 @@ TRIAGE_BATCH_ACTIVE=0
 stage_unit_active triage batch && TRIAGE_BATCH_ACTIVE=1
 [ "$TRIAGE_BATCH_ACTIVE" = "1" ] && triage_slots=0
 TRIAGE_CANDIDATE_QUERY_FAILED=0
+# (a, #349) The query below selects only the needs-triage label; an open
+# issue with no stage label is invisible to it. Admit unlabeled, unheld
+# issues past the grace bound BEFORE the query so this same tick's
+# selection sees them; a partial admission leaves the rest for the next
+# tick and never blocks labelled work.
+if ! intake_admit_unlabeled_issues; then
+  echo "issue-pipeline: unlabeled-issue intake admission incomplete; selection continues with labelled issues" >&2
+fi
 if ! NEEDS_TRIAGE_JSON="$(gh issue list --repo "$REPO" --limit 1000 --label needs-triage --state open \
     --json number,createdAt,labels,author,title,body)"; then
   TRIAGE_CANDIDATE_QUERY_FAILED=1

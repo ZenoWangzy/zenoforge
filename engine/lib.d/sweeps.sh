@@ -525,6 +525,80 @@ sweep_unlabeled_issues() {
 }
 
 
+# intake_admit_unlabeled_issues -- the intake half of unlabeled-issue rescue
+# (#349). Triage selection queries only the needs-triage label, and the
+# maintenance slice's sweep_unlabeled_issues shares its suffix budget with
+# four other steps, so an open issue with no stage label can sit invisible
+# to every lane for hours (2026-11-04: 73 such issues, the oldest founder
+# blockers 40 minutes). Intake runs every tick: admit an unlabeled open
+# issue straight to needs-triage once it is older than a grace bound, so a
+# two-step creator (create, then label) never races the admission. Same
+# scope and discipline as sweep_unlabeled_issues: only issues with NO stage
+# label (ALL_STATE_LABELS) and no hold/tracker/non-product-lane label at
+# all; each candidate is re-read before the single label write; issue_transition's
+# own hold/tracker guards stay in force. Any failure defers that issue to
+# the next tick without failing the tick.
+intake_admit_unlabeled_issues() {
+  local issues n issue_json state_labels_json lane_labels_json min_age admitted=0 failed=0
+  min_age="${ZF_INTAKE_UNLABELED_MIN_AGE_SECONDS:-600}"
+  [[ "$min_age" =~ ^[1-9][0-9]*$ ]] || min_age=600
+  state_labels_json="$(printf '%s\n' "${ALL_STATE_LABELS[@]}" | jq -R . | jq -cs .)" || return 1
+  if ! lane_labels_json="$(pipeline_system_issue_labels_json)"; then
+    echo "intake_admit_unlabeled_issues: non-product lane labels unavailable; holding unlabeled intake this tick" >&2
+    return 1
+  fi
+  if ! issues="$(gh issue list --repo "$REPO" --limit 1000 --state open --json number,createdAt,labels)"; then
+    echo "intake_admit_unlabeled_issues: could not list open issues; leaving unlabeled issues for the next tick" >&2
+    return 1
+  fi
+  if ! jq -e 'type == "array" and all(.[]; (.createdAt // "" | type) == "string")' <<< "$issues" >/dev/null; then
+    echo "intake_admit_unlabeled_issues: invalid open-issue snapshot; leaving unlabeled issues for the next tick" >&2
+    return 1
+  fi
+  while IFS= read -r n; do
+    [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
+    if ! gh_tick_attempt_timeout_sec >/dev/null; then
+      echo "intake_admit_unlabeled_issues: tick deadline reached; remaining unlabeled issues deferred to the next tick" >&2
+      break
+    fi
+    is_on_hold "$n" && continue
+    if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json number,state,labels,title,body 2>/dev/null)"; then
+      echo "intake_admit_unlabeled_issues: cannot re-read #$n; skipping it this tick" >&2
+      continue
+    fi
+    # The list snapshot can lag a label or hold applied moments ago; the
+    # fresh read is the authority, exactly as in sweep_unlabeled_issues.
+    if ! jq -e --argjson states "$state_labels_json" --argjson lane_labels "$lane_labels_json" '
+      .state == "OPEN"
+      and ([.labels[]?.name] as $names
+        | (all($states[]; . as $state | ($names | index($state)) == null)
+          and ($names | index("on-hold")) == null
+          and ($names | index("tracker")) == null
+          and all($lane_labels[]; . as $lane | ($names | index($lane)) == null)))
+    ' <<< "$issue_json" >/dev/null 2>&1; then
+      continue
+    fi
+    if issue_transition "$n" needs-triage intake-unlabeled . 0 "$issue_json"; then
+      admitted=$((admitted + 1))
+    else
+      echo "intake_admit_unlabeled_issues: could not admit #$n to needs-triage; retrying next tick" >&2
+      failed=1
+    fi
+  done < <(jq -r --argjson states "$state_labels_json" --argjson lane_labels "$lane_labels_json" --argjson min_age "$min_age" '
+    .[]
+    | select((((.createdAt // "") | try fromdateiso8601 catch 0) <= (now - $min_age)))
+    | [.labels[]?.name] as $names
+    | select(all($states[]; . as $state | ($names | index($state)) == null))
+    | select(($names | index("on-hold")) == null)
+    | select(($names | index("tracker")) == null)
+    | select(all($lane_labels[]; . as $lane | ($names | index($lane)) == null))
+    | .number
+  ' <<< "$issues")
+  [ "$admitted" -gt 0 ] && echo "issue-pipeline: intake admitted $admitted unlabeled issue(s) to needs-triage" >&2
+  [ "$failed" -eq 0 ] || return 1
+}
+
+
 # Keep quarantined terminal work in an owned parked state, not `concluded`.
 conclusion_hold() {
   local n="$1" owner="$2" label

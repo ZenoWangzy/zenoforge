@@ -307,17 +307,24 @@ health_prod_errors_upsert_issue() {
     return 0
   fi
   if [[ -z "$issue" ]]; then
+    # Missing-trace issues are this filer's work too: carry its own label from
+    # creation (#349), so they are never filed label-less and identifiable
+    # regardless of the stage label applied alongside.
+    health_prod_errors_ensure_anomaly_label || return 1
     if [[ "$(roadmap_switch_value)" == true ]]; then
       health_prod_errors_ensure_roadmap_cache || return 1
-      issue_url="$(guarded_write gh issue create --repo "$REPO" --title "$title" --body-file "$body_file")" || return 1
+      issue_url="$(guarded_write gh issue create --repo "$REPO" --title "$title" \
+        --label "$PROD_ERRORS_ISSUE_LABEL" --body-file "$body_file")" || return 1
       issue="${issue_url##*/}"
       [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
       issue_json="$(jq -cn --argjson number "$issue" --arg title "$title" --rawfile body "$body_file" \
-        '{number:$number,title:$title,body:$body,state:"OPEN",labels:[]}')" || return 1
+        --arg label "$PROD_ERRORS_ISSUE_LABEL" \
+        '{number:$number,title:$title,body:$body,state:"OPEN",labels:[{name:$label}]}')" || return 1
       issue_transition "$issue" needs-triage prod-anomaly-created . 0 "$issue_json"
       return $?
     fi
-    guarded_write gh issue create --repo "$REPO" --title "$title" --label needs-triage --body-file "$body_file" >/dev/null
+    guarded_write gh issue create --repo "$REPO" --title "$title" --label needs-triage \
+      --label "$PROD_ERRORS_ISSUE_LABEL" --body-file "$body_file" >/dev/null
     return $?
   fi
   issue_json="$(jq -c --argjson issue "$issue" '[.[] | select(.number == $issue)][0]' <<< "$lookup_results")" || return 1

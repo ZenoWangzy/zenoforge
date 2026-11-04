@@ -43,16 +43,30 @@ if [[ "$1" == api ]]; then
   exit 0
 fi
 if [[ "$1 $2" == 'issue list' ]]; then
-  label="" search="" state="open" limit=1000
+  label="" search="" state="open" limit=1000 json_fields="" query=""
   while (($#)); do
     case "$1" in
       --label) label="$2"; shift 2 ;;
       --search) search="$2"; shift 2 ;;
       --state) state="$2"; shift 2 ;;
       --limit) limit="$2"; shift 2 ;;
+      --json) json_fields="$2"; shift 2 ;;
+      -q) query="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
+  # Intake admission reads a JSON snapshot (number,createdAt,labels) instead
+  # of the number list the sweep helpers use.
+  if [[ -n "$json_fields" && "$query" != '.[].number' ]]; then
+    jq -c --arg state "$state" --arg label "$label" --argjson limit "$limit" '
+      [.[] | select(has("pull_request") | not)
+      | select(($state == "all") or ($state == "open" and .state == "OPEN") or ($state == "closed" and .state == "CLOSED"))
+      | select($label == "" or any(.labels[]?; .name == $label))]
+      | .[:$limit]
+      | map({number, state, createdAt:(.createdAt // ""), labels, title:(.title // ""), body:(.body // "")})
+    ' "$FAKE_ISSUES_FILE"
+    exit 0
+  fi
   if [[ -n "$label" ]]; then
     jq -r --arg want_label "$label" --arg state "$state" --argjson limit "$limit" '
       [.[] | select(has("pull_request") | not)
@@ -388,5 +402,43 @@ candidates='[{"number":7301,"state":"OPEN","labels":[{"name":"ready-for-agent"}]
 PATH="$TEST_HOME/bot-comment-gh:$PATH" label_maintainer_test_candidates "$candidates" >/dev/null
 PATH="$TEST_HOME/bot-comment-gh:$PATH" label_maintainer_test_candidates "$candidates" >/dev/null
 assert_eq "maintainer-account issue with pipeline comments is re-read once, not every tick" 1 "$(grep -c 'issue view 7301 ' "$BOT_COMMENT_GH_LOG" || true)"
+
+# (a, #349) intake admission: a fresh unlabeled issue is skipped, an old one
+# is admitted to needs-triage, a labelled one is unchanged, and an old
+# on-hold issue is skipped. Tracker and non-product-lane issues stay put too.
+old_unlabeled_iso="$(date -u -d '-30 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+fresh_unlabeled_iso="$(date -u -d '-5 seconds' +%Y-%m-%dT%H:%M:%SZ)"
+cat >"$FAKE_ISSUES_FILE" <<JSON
+[
+  {"number":7151,"state":"OPEN","createdAt":"$old_unlabeled_iso","labels":[]},
+  {"number":7152,"state":"OPEN","createdAt":"$fresh_unlabeled_iso","labels":[]},
+  {"number":7153,"state":"OPEN","createdAt":"$old_unlabeled_iso","labels":[{"name":"needs-info"}]},
+  {"number":7154,"state":"OPEN","createdAt":"$old_unlabeled_iso","labels":[{"name":"on-hold"}]},
+  {"number":7155,"state":"OPEN","createdAt":"$old_unlabeled_iso","labels":[{"name":"tracker"}]},
+  {"number":7156,"state":"OPEN","createdAt":"$old_unlabeled_iso","labels":[{"name":"pipeline-system"}]}
+]
+JSON
+: > "$FAKE_GH_LOG"
+intake_admit_unlabeled_issues >/dev/null 2>&1
+assert_eq "old unlabeled issue is admitted to needs-triage" "needs-triage" \
+  "$(jq -r '.[] | select(.number == 7151) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "fresh unlabeled issue is skipped by the grace bound" "" \
+  "$(jq -r '.[] | select(.number == 7152) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "labelled issue is unchanged" "needs-info" \
+  "$(jq -r '.[] | select(.number == 7153) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "old on-hold issue is skipped" "on-hold" \
+  "$(jq -r '.[] | select(.number == 7154) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "tracker issue is left alone" "tracker" \
+  "$(jq -r '.[] | select(.number == 7155) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "non-product lane issue is left for its own lane" "pipeline-system" \
+  "$(jq -r '.[] | select(.number == 7156) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "only the old unlabeled issue is edited" "7151" \
+  "$(grep -E '^issue edit 715[0-9] ' "$FAKE_GH_LOG" | awk '{print $3}' | sort -u | tr '\n' ' ' | sed 's/ *$//')"
+
+# The grace bound is a knob: the fresh issue becomes eligible under a shorter
+# bound without any other change.
+ZF_INTAKE_UNLABELED_MIN_AGE_SECONDS=1 intake_admit_unlabeled_issues >/dev/null 2>&1
+assert_eq "age bound is configurable and the fresh issue is then admitted" "needs-triage" \
+  "$(jq -r '.[] | select(.number == 7152) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
 
 if [ "$FAILED" -eq 0 ]; then echo "ALL PASSED"; else echo "FAILURES"; exit 1; fi

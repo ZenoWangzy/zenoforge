@@ -157,4 +157,55 @@ grep -Fq 'trace_id: 0123456789abcdef0123456789abcdef' <<< "$summary"
 grep -Fq 'path_type: generic-api' <<< "$summary"
 ! grep -Eq 'employee_id|slowest_span|sensitive-user-id|prompt leak' <<< "$summary"
 
+# (b, #349) Missing-trace issues carry the filer's own label at creation in
+# both roadmap and non-roadmap modes, instead of being filed label-less. The
+# harness stub above replaced health_prod_errors_upsert_issue, so re-source
+# the filer inside a subshell with recorder stubs for its collaborators.
+missing_calls="$tmp/missing-trace-calls"
+: >"$missing_calls"
+missing_body="$tmp/missing-body"
+printf 'Automated test\n<!-- target-missing-trace service=fixture -->\n' >"$missing_body"
+run_missing_trace_create() { # roadmap-flag -> call the real upsert once
+  local roadmap_mode="$1"
+  (
+    # `timeout 20 gh ...` must reach the stubs, not the host gh.
+    timeout() { shift; "$@"; }
+    roadmap_switch_value() { printf '%s\n' "$roadmap_mode"; }
+    roadmap_tree_is_valid() { return 0; }
+    issue_transition() { printf 'issue_transition %s %s %s\n' "$1" "$2" "$3" >>"$missing_calls"; }
+    guarded_write() {
+      printf 'guarded_write %s\n' "$*" >>"$missing_calls"
+      if [[ "$1 $2 $3" == 'gh issue create' ]]; then
+        printf 'https://github.com/example/repository/issues/7701\n'
+      fi
+    }
+    gh() {
+      printf 'gh %s\n' "$*" >>"$missing_calls"
+      if [[ "$1 $2" == 'issue list' ]]; then printf '[]\n'; fi
+    }
+    ZF_CONFIG_ROOT="$config_root" ZF_PACK_DIR="$pack_dir" source "$script_dir/node-health-rules.sh"
+    if [[ "$roadmap_mode" == true ]]; then
+      : >"$tmp/roadmap-tree.json"
+      ZF_ROADMAP_TREE_CACHE_FILE="$tmp/roadmap-tree.json" \
+        health_prod_errors_upsert_issue '<!-- target-missing-trace service=fixture' \
+        'Target trace gap: service' "$missing_body"
+    else
+      health_prod_errors_upsert_issue '<!-- target-missing-trace service=fixture' \
+        'Target trace gap: service' "$missing_body"
+    fi
+  )
+}
+run_missing_trace_create false
+grep -Fq 'gh label list --repo example/repository --limit 200' "$missing_calls"
+grep -Fq 'gh label create target-anomaly' "$missing_calls"
+grep -Eq 'gh issue create [^#]*--label needs-triage --label target-anomaly' "$missing_calls"
+! grep -Fq 'issue_transition' "$missing_calls"
+
+: >"$missing_calls"
+run_missing_trace_create true
+grep -Fq 'gh label create target-anomaly' "$missing_calls"
+grep -Eq 'gh issue create [^#]*--label target-anomaly' "$missing_calls"
+! grep -Eq 'gh issue create [^#]*--label needs-triage --label' "$missing_calls"
+grep -Fq 'issue_transition 7701 needs-triage prod-anomaly-created' "$missing_calls"
+
 echo 'ok - production monitor uses .zenoforge overrides and skips when unset'
