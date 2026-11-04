@@ -454,20 +454,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
         jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
         continue
       fi
-      echo "[$STAMP] WASTE zero-output worker pid=$pid unit=$unit log=$(basename "$lg")" >> "$A/alerts/waste.md"
-      say "WASTE zero-output pid=$pid unit=$unit"
-      # L9：无产出死亡计数；到上限转人工，不再无限重派。
-      set_unit "$unit" "$(hist worker-no-output "$wtype")"
-      no_output="$(jqf -r --arg id "$unit" '[.units[] | select(.id==$id) | (.history // []) | map(select(.stage=="worker-no-output")) | length][0] // 0' "$UNITS")"
-      if [[ "$(unit_field "$unit" '.self_fix_active // false')" != true && "$no_output" =~ ^[0-9]+$ ]] && (( no_output >= MAX_NO_OUTPUT )); then
-        if [[ "$wtype" =~ ^(review|rereview|repair|implement)$ && "$(unit_retries "$unit" fresh-session-retry)" == 0 ]]; then
-          # 续接的会话可能已坏（上下文爆、提供方会话失效）：丢掉会话 ID 再试一次全新会话。
-          set_unit "$unit" "$(hist fresh-session-retry "$no_output deaths") | .session_ids={} | .sessions={} | .session_id=null | .stage=\"${wtype}-pending\""
-          say "unit=$unit: $no_output workers died -> one fresh-session retry"
-        else
-          to_supervisor "$unit" "$no_output workers died without a report, fresh session too (last log $(basename "$lg"))"
-        fi
-      fi
+      handle_worker_death "$w" "$unit" "$wtype" "$lg"
     fi
     jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
   done < <(jqf -c '.workers[]' "$WORKERS")

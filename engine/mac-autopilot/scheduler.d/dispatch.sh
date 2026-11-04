@@ -89,6 +89,8 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
       && shift 4 && exec "$@"' autopilot-worker "$CODEX_MODE" "$CODEX_PATH_REASON" "$model" \
       '{type:"pipeline.execution",mode:$mode,reason:$reason,model:$model}' "${CODEX_COMMAND[@]}")
   fi
+  # Every launch path shares this footer so harvest can diagnose a worker that exits without a report.
+  launch_command=(bash -c 'rc=0; "$@" || rc=$?; printf "{\"type\":\"pipeline.exit\",\"rc\":%s}\\n" "$rc" >&2; exit "$rc"' autopilot-worker "${launch_command[@]}")
   local worker_pid_file WORKER_PIDFILE WORKER_COST_TAG # not exported: the worker must not inherit them; worker_scope_launch reads them
   WORKER_PIDFILE="$(worker_pidfile "$unit")"
   WORKER_COST_TAG="type=$type unit=$unit"
