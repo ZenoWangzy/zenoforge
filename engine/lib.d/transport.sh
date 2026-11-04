@@ -145,6 +145,9 @@ gh() {
       ;;
   esac
 
+  if [[ "$max_attempts" =~ ^[0-9]+$ ]]; then
+    max_attempts="${max_attempts#"${max_attempts%%[!0]*}"}"
+  fi
   if [[ ! "$max_attempts" =~ ^[1-9][0-9]*$ ]]; then
     max_attempts=3
   elif (( ${#max_attempts} > 1 )) || (( max_attempts > 5 )); then

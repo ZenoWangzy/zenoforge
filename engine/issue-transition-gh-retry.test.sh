@@ -115,6 +115,18 @@ fi
 [[ "$(cat "$GH_SLEEP_LOG")" == $'2\n4' ]]
 echo 'ok - HTTP 502 retries stop at the configured three attempts with backoff'
 
+# Leading zeroes are decimal configuration, so 01 must still mean one try.
+export ZF_GH_RETRY_MAX_ATTEMPTS=01
+: > "$GH_CALL_LOG"
+: > "$GH_SLEEP_LOG"
+if gh issue view 5314 --repo "$REPO" --json labels > "$AGENT_HOME/one.out" 2> "$AGENT_HOME/one.err"; then
+  echo 'not ok - repeated 502 unexpectedly succeeded with one configured attempt' >&2
+  exit 1
+fi
+[[ "$(wc -l < "$GH_CALL_LOG" | tr -d ' ')" == 1 ]] || { echo 'not ok - leading-zero attempt limit was not honored' >&2; exit 1; }
+[[ ! -s "$GH_SLEEP_LOG" ]]
+echo 'ok - leading-zero retry limit is honored'
+
 # Decimal configuration stays bounded even with leading zeroes or very large
 # values; neither may cause a read to be skipped or an arithmetic error.
 export ZF_GH_RETRY_MAX_ATTEMPTS=999999999999999999999999999999
