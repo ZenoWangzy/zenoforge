@@ -129,7 +129,7 @@ ADVISOR_BATCH_QUARANTINE_DIR="$AGENT_HOME/quarantine/advisor-batch"
 ADVISOR_BATCH_QUARANTINE_TTL_SECONDS=900
 
 advisor_batch_is_wedge_failure() {
-  [[ "$1" =~ (ADVISOR_RESPONSE_NOT_STARTED|ADVISOR_ANSWER_TIMEOUT|ADVISOR_ANSWER_LOAD_FAILED|ADVISOR_CONVERSATION_BUSY|ADVISOR_TAB_(UNRESPONSIVE|RELOAD_FAILED)|Terminated|SIGTERM) ]]
+  [[ "$1" =~ (ADVISOR_RESPONSE_NOT_STARTED|ADVISOR_ANSWER_TIMEOUT|ADVISOR_ANSWER_LOAD_FAILED|ADVISOR_CONVERSATION_BUSY|ADVISOR_TAB_(UNRESPONSIVE|RELOAD_FAILED)|CDP[[:space:]]Runtime\.evaluate[[:space:]]timed[[:space:]]out|未从当前会话的.composer.找到模型/推理.picker|Terminated|SIGTERM) ]]
 }
 
 # 2026-11-04: ADVISOR_MODEL_UNVERIFIED (observed at selector stage
@@ -1667,8 +1667,8 @@ apply_one_ruling() {
   reasoning="$(echo "$ruling" | jq -r '.reasoning_md // empty' | scrub_git_object_ids)"
   decision="$(echo "$ruling" | jq -r '.decision_md // empty' | scrub_git_object_ids)"
   recut_md="$(echo "$ruling" | jq -r '.recut_md // empty' | scrub_git_object_ids)"
-  maintainer_question="$(echo "$ruling" | jq -r '.maintainer_question_md // empty' | scrub_git_object_ids)"
-  maintainer_subject="$(echo "$ruling" | jq -r '.maintainer_subject // empty' | scrub_git_object_ids)"
+  maintainer_question="$(echo "$ruling" | jq -r '.founder_question_md // empty' | scrub_git_object_ids)"
+  maintainer_subject="$(echo "$ruling" | jq -r '.founder_subject // empty' | scrub_git_object_ids)"
   merge_conditions="$(echo "$ruling" | jq -r '.merge_conditions_md // empty' | scrub_git_object_ids)"
   required_test_paths="$(echo "$ruling" | jq -c '.required_test_paths // []')"
   expected_packages_addendum="$(echo "$ruling" | jq -c '.expected_packages_addendum // []')"

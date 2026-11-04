@@ -149,7 +149,7 @@ advisor_batch_quarantine_contains "$wedge_prompt_sig" ""
 
 mkdir -p "$tmp/disabled/.zenoforge"
 printf '{"advisor":{"provider":""}}\n' > "$tmp/disabled/.zenoforge/night.json"
-unconfigured_output="$(ZF_CONFIG_ROOT="$tmp/disabled/.zenoforge" ZF_PACK_DIR='' ZF_REPO_DIR="$PWD" \
+unconfigured_output="$(ZF_CONFIG_ROOT="$tmp/disabled/.zenoforge" ZF_PACK_DIR='' ZF_REPO_DIR="$tmp/disabled" \
   bash "$script_dir/run-advisor-batch.sh" 2>&1)"
 grep -Fq 'skip: advisor provider is not configured' <<< "$unconfigured_output"
 

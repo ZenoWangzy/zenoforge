@@ -15,6 +15,9 @@ import { zfConfigFile, zfEnv } from './pack-dir.mjs';
 
 const DEFAULT_ROOT = zfEnv('REPO_DIR') || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REGISTRY_PATH = 'state/incident-guards.json';
+const PACK_ROOT = process.env.ZF_PACK_REL
+  ? path.resolve(process.env.ZF_PACK_ROOT || path.join(path.dirname(fileURLToPath(import.meta.url)), '..'))
+  : null;
 const SCHEMA_START = '2026-10-30';
 const DATE_FORMAT = /^\d{4}-\d{2}-\d{2}$/;
 // Evidence must point at something checkable: a URL, an issue/PR/run number,
@@ -35,6 +38,10 @@ function resolveRepoPath(raw, root) {
   const absolute = path.resolve(root, relative);
   const fromRoot = path.relative(root, absolute);
   if (fromRoot === '..' || fromRoot.startsWith(`..${path.sep}`) || path.isAbsolute(fromRoot)) return null;
+  if (PACK_ROOT && !existsSync(absolute) && relative.startsWith('engine/')) {
+    const built = path.resolve(PACK_ROOT, relative);
+    if (built.startsWith(`${PACK_ROOT}${path.sep}`) && existsSync(built)) return built;
+  }
   return absolute;
 }
 

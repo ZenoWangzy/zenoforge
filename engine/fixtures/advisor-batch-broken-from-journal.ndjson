@@ -1,0 +1,2 @@
+{"kind":"ruling","issue":1158,"verdict":"advised","risk_class":"P2","level":"L3","reasoning_md":"本轮 WSL 仅确认选中工作树仍在 docs/ux-p0-real-user-path-acceptance-20260921；本次可调用工具中没有 shell，指定共享 checkout 又被允许目录限制
+粘贴的 markdown (1)。md +1

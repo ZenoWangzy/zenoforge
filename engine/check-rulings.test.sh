@@ -54,4 +54,19 @@ status=0
 output="$(check static 2>&1)" || status=$?
 [[ "$status" == 2 ]]
 grep -qF 'config-only-incident' <<< "$output"
+# Installed engine paths resolve against the build root when absent in the target.
+mkdir -p "$tmp/build/engine" "$tmp/target/.zenoforge/state"
+printf 'fixture\n' > "$tmp/build/engine/guard.test.sh"
+cat > "$tmp/target/.zenoforge/state/incident-guards.json" <<'JSON'
+{"incidents":[{"id":"installed","date":"2026-11-04","class":"fixture","what_happened":"fixture","classic_pattern":"fixture","best_known_solution":"fixture","lesson_id":"fixture","root_cause_evidence":"engine/guard.test.sh","research_sources":["fixture"],"options_considered":["fixture"],"machine_checks":[{"command":["bash","engine/guard.test.sh"],"test_file":"${REPO_DIR}/engine/guard.test.sh"}],"enforcement":{"enforced_by":["engine/guard.test.sh"]}}]}
+JSON
+ZF_PACK_REL=scripts/agent ZF_PACK_ROOT="$tmp/build" ZF_PACK_DIR='' ZF_ENGINE_DIR="$tmp/repo/engine" \
+  node "$tmp/repo/engine/lesson-guard-schema.mjs" "$tmp/target" > /dev/null
+rm "$tmp/build/engine/guard.test.sh"
+status=0
+output="$(ZF_PACK_REL=scripts/agent ZF_PACK_ROOT="$tmp/build" ZF_PACK_DIR='' ZF_ENGINE_DIR="$tmp/repo/engine" \
+  node "$tmp/repo/engine/lesson-guard-schema.mjs" "$tmp/target" 2>&1)" || status=$?
+[[ "$status" == 1 ]]
+grep -qF 'regression test file does not exist' <<< "$output"
+grep -qF 'mechanism link does not exist' <<< "$output"
 printf 'check-rulings.test.sh: PASS\n'

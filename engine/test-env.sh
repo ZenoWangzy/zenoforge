@@ -53,11 +53,12 @@ if [[ -x "$test_host_home/.local/lib/jq.bin" ]]; then
   done
 fi
 
-MODEL_POLICY_TEST_REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-export ZF_EXECUTION_MODULE_DIR="$MODEL_POLICY_TEST_REPO/engine"
+MODEL_POLICY_TEST_ENGINE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+MODEL_POLICY_TEST_REPO="$(cd -- "$MODEL_POLICY_TEST_ENGINE/.." && pwd -P)"
+export ZF_EXECUTION_MODULE_DIR="$MODEL_POLICY_TEST_ENGINE"
 # Fake-model fixtures exercise admission without ambient host load flakiness.
 export AGENT_EXECUTION_MIN_MEM_MB=1 AGENT_EXECUTION_MAX_LOAD=1000000
-MODEL_POLICY_TEST_DEFAULT_FILE="$MODEL_POLICY_TEST_REPO/engine/model-policy.default.json"
+MODEL_POLICY_TEST_DEFAULT_FILE="$MODEL_POLICY_TEST_ENGINE/model-policy.default.json"
 MODEL_POLICY_TEST_WORK_MODEL="$(jq -r '.roles.work.model' "$MODEL_POLICY_TEST_DEFAULT_FILE")"
 MODEL_POLICY_TEST_WORK_EFFORT="$(jq -r '.roles.work.effort' "$MODEL_POLICY_TEST_DEFAULT_FILE")"
 MODEL_POLICY_TEST_WORK_IDENTITY="codex:$MODEL_POLICY_TEST_WORK_MODEL:$MODEL_POLICY_TEST_WORK_EFFORT"
@@ -93,7 +94,7 @@ export MODEL_POLICY_TEST_REVIEW_IDENTITY
 # helper so a new dependency travels with lib.sh automatically.
 copy_agent_library() {
   local dest="$1"; shift
-  local src="$MODEL_POLICY_TEST_REPO/engine"
+  local src="$MODEL_POLICY_TEST_ENGINE"
   local -a queue=("lib.sh" "proc.sh" "$@") closure=() # proc.sh: runtime-env.sh sources it, lib.sh does not
   local -A queued=()
   local file token rel
