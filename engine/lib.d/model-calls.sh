@@ -684,6 +684,7 @@ process.stdin.on("end", () => {
 run_zcode_json() {
   local cwd="$1" identity="$2" timeout_minutes="$3" schema_file="$4" prompt_file="$5"
   local zcode_id model effort status=0 started_at elapsed timeout_detail out_file transcript reply verdict_json
+  local -a zcode_cmd=()
   model_policy_require_role_identity review "$identity" || {
     jq -nc '{is_error: true, subtype: "unsupported_model_identity", result: "identity does not match the review role"}'
     return 64
@@ -692,6 +693,11 @@ run_zcode_json() {
   if [[ "$zcode_id" != *:* ]]; then
     jq -nc --arg identity "$identity" '{is_error: true, subtype: "unsupported_model_identity", result: ("zcode identity needs model:effort: " + $identity)}'
     return 64
+  fi
+  mapfile -t zcode_cmd < <(zf_zcode_bin_argv)
+  if (( ${#zcode_cmd[@]} == 0 )); then
+    jq -nc '{is_error: true, subtype: "zcode_exec_failure", result: "zcode CLI not found by the engine resolver (config engine.zcode_bin, env ZF_ZCODE_BIN, worker bundle, PATH)", zcode_exit_status: 127, zcode_elapsed_seconds: 0}'
+    return 127
   fi
   model="${zcode_id%:*}"
   effort="${zcode_id#*:}"
@@ -710,7 +716,7 @@ run_zcode_json() {
     cat "$prompt_file"
   } > "$transcript"
   started_at="$(date +%s)"
-  NODE_USE_ENV_PROXY=1 timeout "${timeout_minutes}m" zcode -p "$(cat "$transcript")" \
+  NODE_USE_ENV_PROXY=1 timeout "${timeout_minutes}m" "${zcode_cmd[@]}" -p "$(cat "$transcript")" \
     --cwd "$cwd" --mode yolo > "$out_file" 2>&1 || status=$?
   elapsed=$(( $(date +%s) - started_at ))
   if [ "$status" -eq 124 ]; then

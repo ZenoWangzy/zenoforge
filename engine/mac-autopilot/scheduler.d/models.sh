@@ -178,7 +178,7 @@ pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with 
   IFS=$'\t' read -r provider model effort tier <<<"$fields"
   [[ "$provider" == zcode ]] || return 1
   model_policy_model_allowed_for_role "$model" hand-zcode || return 1
-  command -v zcode >/dev/null 2>&1 || return 1
+  zf_zcode_bin_argv >/dev/null 2>&1 || return 1
   zcode_provider_config_model_matches "zcode:$model:$effort" || return 1
   status="$(zcode_quota_status)"
   [[ "$status" == available ]] || return 1
@@ -255,7 +255,7 @@ provider_runtime_ready() { # provider model -> runnable, policy-authorized and n
     codex) provider_quota_exhausted codex && return 1; command -v codex >/dev/null 2>&1 ;;
     zcode)
       [[ "$(zcode_quota_status)" == available ]] || return 1
-      command -v zcode >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"
+      zf_zcode_bin_argv >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"
       ;;
     claude) command -v claude >/dev/null 2>&1 ;;
     *) return 1 ;;

@@ -34,7 +34,7 @@ worker_rules() { # unit-json type provider
 # models.<role> = [model, effort, service_tier?]；provider selects codex, claude, or zcode CLI.
 build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider]
   local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-$ROOT}" provider="${8:-$(provider_of "$2")}" session_id="" usage prompt_arg role tier self_fix prior config_arg
-  local -a tier_args=() codex_config_args=()
+  local -a tier_args=() codex_config_args=() zcode_cmd=()
   CODEX_MODE=fresh
   CODEX_SESSION_ID=""
   CODEX_PATH_REASON=initial
@@ -47,7 +47,11 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     [[ "$type" == implement || "$type" == repair || "$type" == review || "$type" == rereview ]] || return 1
     WORKER_STDOUT_REPORT=1
     CODEX_USAGE_START=null
-    CODEX_COMMAND=(env NODE_USE_ENV_PROXY=1 zcode -p "$prompt_arg" --cwd "$workdir" --mode yolo)
+    # The GLM CLI comes from the shared resolver (config engine.zcode_bin / bundle / PATH),
+    # never a bare `zcode` on PATH: the host may only carry the worker bundle.
+    mapfile -t zcode_cmd < <(zf_zcode_bin_argv 2>/dev/null)
+    (( ${#zcode_cmd[@]} > 0 )) || return 1
+    CODEX_COMMAND=(env NODE_USE_ENV_PROXY=1 "${zcode_cmd[@]}" -p "$prompt_arg" --cwd "$workdir" --mode yolo)
     return 0
   fi
   if [[ "$provider" == claude ]]; then

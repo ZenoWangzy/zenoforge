@@ -99,9 +99,12 @@ case "$stage" in
           --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1
         ;;
       zcode)
-        # Same invocation as run_zcode_json (prompt via -p, --cwd, yolo mode, proxied egress),
-        # but a text report: the eval review prompt asks for a verdict line, not JSON.
-        NODE_USE_ENV_PROXY=1 pipeline_execution_run timeout 45m zcode -p "$(cat "$prompt")" \
+        # Same invocation as run_zcode_json (prompt via -p, --cwd, yolo mode, proxied egress,
+        # GLM CLI through the shared resolver), but a text report: the eval review
+        # prompt asks for a verdict line, not JSON.
+        mapfile -t zcode_cmd < <(zf_zcode_bin_argv)
+        (( ${#zcode_cmd[@]} > 0 )) || { echo "eval review: GLM CLI not found by the engine resolver" >&2; exit 127; }
+        NODE_USE_ENV_PROXY=1 pipeline_execution_run timeout 45m "${zcode_cmd[@]}" -p "$(cat "$prompt")" \
           --cwd "$wt" --mode yolo > "$artifact/report.md" 2> "$artifact/worker.log"
         ;;
       *) echo "eval review: unsupported review provider: $provider" >&2; exit 64 ;;
