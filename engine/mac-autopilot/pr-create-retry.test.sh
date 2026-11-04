@@ -119,4 +119,7 @@ harvest_pr_implement base-edit-1 "$sup/impl-base-edit-1.md" || :
 [[ "$(grep -c '^pr create$' "$GH_CALLS" || true)" == 0 ]] \
   || fail 'a failed base edit retried create or advanced the PR with the wrong base'
 
+pr_create_failure_transient 'connect ETIMEDOUT' 1 || fail 'ETIMEDOUT was not classified as transient'
+pr_create_failure_transient '' 124 || fail 'exit code 124 was not classified as transient'
+
 echo 'pr-create-retry.test.sh: PASS'

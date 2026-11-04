@@ -127,7 +127,7 @@ pre_dispatch_pr_admission() { # unit branch PR context → prepared clone; nonze
 pr_create_failure_transient() { # gh output rc → true for retryable server/transport failures
   local output="${1:-}" rc="${2:-0}"
   [[ "$rc" == 124 ]] && return 0
-  grep -Eiq 'HTTP([[:space:]]|/[0-9.]+[[:space:]])5[0-9]{2}|GraphQL:[[:space:]]*Something went wrong|ECONNRESET|timeout|timed[[:space:]]+out|deadline exceeded' <<<"$output"
+  grep -Eiq 'HTTP([[:space:]]|/[0-9.]+[[:space:]])5[0-9]{2}|GraphQL:[[:space:]]*Something went wrong|ECONNRESET|ETIMEDOUT|timeout|timed[[:space:]]+out|deadline exceeded' <<<"$output"
 }
 harvest_pr_implement() { # unit report-path
   local first issue branch dir head title pr out base local_head ahead dirty push_out create_error create_rc retry_limit retry_count adopt_rc
