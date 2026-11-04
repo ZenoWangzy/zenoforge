@@ -2393,6 +2393,43 @@ sched_case_size_admission_hotpatch() {
 }
 sched_run_case size_admission_hotpatch
 
+sched_case_size_admission_waiver() {
+  (
+    TF="$test_env_root/size-admission-waiver"
+    mkdir -p "$TF"
+    UNITS="$TF/units.json"
+    CFG='{}'
+    SIZE_ADMISSION_LINES=800
+    TICK_DISPATCH_LOCAL_REFILL=false
+    command jq -n '{units:[{id:"waived",size_waiver:{max_lines:1000,by:"supervisor",at:"2026-11-04T00:00:00Z",reason:"recut and arbitration cap exhausted"}}]}' > "$UNITS"
+    unit_json='{"id":"waived","size_waiver":{"max_lines":1000,"by":"supervisor","at":"2026-11-04T00:00:00Z","reason":"recut and arbitration cap exhausted"},"estimated_changed_lines":1000}'
+    rejects=0 rejected_lines='' rejected_limit=''
+    counted=1000
+    changed_lines_of() { echo "$counted"; }
+    changed_files_of() { echo '[]'; }
+    set_unit() { :; }
+    size_admission_reject() { rejects=$((rejects + 1)); rejected_lines="$2"; rejected_limit="${9:-}"; return 1; }
+
+    # At the waived max_lines both admission paths pass without a reject.
+    write_status=0
+    size_admission_write_start waived "" "$unit_json" || write_status=$?
+    recheck_status=0
+    size_admission_recheck_impl waived "$TF" waived "fixture" "" || recheck_status=$?
+    [[ "$write_status" == 0 && "$recheck_status" == 0 && "$rejects" == 0 ]] || exit 1
+
+    # One more line on the same head and both paths reject at the waived limit, not the configured floor.
+    counted=1001
+    unit_json="$(command jq '.estimated_changed_lines=1001' <<<"$unit_json")"
+    write_status=0
+    size_admission_write_start waived "" "$unit_json" || write_status=$?
+    recheck_status=0
+    size_admission_recheck_impl waived "$TF" waived "fixture" "" || recheck_status=$?
+    [[ "$write_status" == 1 && "$recheck_status" == 1 && "$rejects" == 2 ]] || exit 1
+    [[ "$rejected_lines" == 1001 && "$rejected_limit" == 1000 ]] || exit 1
+  ) || { echo 'not ok - scheduler.test.sh: supervisor size waiver not honoured at the counted-lines check' >&2; exit 1; }
+}
+sched_run_case size_admission_waiver
+
 sched_case_oversized_repair_pre_dispatch_recut() {
   new_tick_fixture oversized-repair-pre-dispatch
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid

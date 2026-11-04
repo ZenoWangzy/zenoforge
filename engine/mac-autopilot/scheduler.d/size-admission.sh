@@ -32,34 +32,46 @@ size_admission_exempt_unit() { # unit-json → true when the configured hotpatch
       and (if ($sa | has("exempt_hotpatch")) then $sa.exempt_hotpatch == true else true end)' <<<"$1" >/dev/null
 }
 
+# 监督者手工写入的 .size_waiver = {max_lines, by, at, reason}（scheduler 锁内，无工具）：只抬高该
+# unit 的上限，不是豁免——复查仍计数，改动行数超过 max_lines 的 head 照样拒绝。字段缺失或非数值时回落默认上限。
+size_admission_limit_for() { # unit-json → effective limit: a supervisor size_waiver.max_lines raises the configured floor
+  local waived
+  waived="$(jqf -r '.size_waiver.max_lines | select(type == "number") // empty' <<<"$1")"
+  if [[ "$waived" =~ ^[0-9]+$ ]] && (( waived > SIZE_ADMISSION_LINES )); then
+    printf '%s\n' "$waived"
+  else
+    printf '%s\n' "$SIZE_ADMISSION_LINES"
+  fi
+}
+
 # 尺寸准入在 write-start、开 PR、派已有 PR 的 implement/repair 前和每次 repair/self-fix 交付后复查。
 # repair-pending 的超线 PR 先走现有 needs-recut 通道，不占 worker；同一 head 已拒过或不能路由时转 supervisor。
 # repair/self-fix 仍需复查新 head（#4482：PR #4396 从 611 增到 1090、#4403 从 796 增到 1063）。返回 1 = 已升级。
-size_admission_reject() { # unit lines branch context head estimate actual checkpoint
-  local issue
+size_admission_reject() { # unit lines branch context head estimate actual checkpoint [limit]
+  local issue limit="${9:-$SIZE_ADMISSION_LINES}"
   issue="$(unit_field "$1" '.issue // empty')"
   if [[ "$5" =~ $SHA_RE && "$issue" =~ ^[0-9]+$ ]] \
     && ! jqf -e --arg id "$1" --arg head "$5" 'any(.units[] | select(.id==$id) | .history[]?; .stage=="size-recut" and (.result | contains("head="+$head)))' "$UNITS" >/dev/null \
-    && scheduler_size_recut "$issue" "$2" "$SIZE_ADMISSION_LINES" "$1" "$3" "$5"; then
-    set_unit "$1" "$(hist size-recut "issue #$issue: $2 lines exceed $SIZE_ADMISSION_LINES; head=$5") | .stage=\"blocked-external\" | .size_recut_pending=true"
+    && scheduler_size_recut "$issue" "$2" "$limit" "$1" "$3" "$5"; then
+    set_unit "$1" "$(hist size-recut "issue #$issue: $2 lines exceed $limit; head=$5") | .stage=\"blocked-external\" | .size_recut_pending=true"
     if [[ "$8" == write-start ]]; then
-      say "size admission write-start unit=$1 issue=#$issue estimate=${6:-unknown} actual=${7:-unknown} limit=$SIZE_ADMISSION_LINES -> needs-recut"
+      say "size admission write-start unit=$1 issue=#$issue estimate=${6:-unknown} actual=${7:-unknown} limit=$limit -> needs-recut"
     else
       say "unit $1 size admission routed issue #$issue to recut"
     fi
     return 1
   fi
-  to_supervisor "$1" "size admission: ${2} changed lines $4 exceed the ${SIZE_ADMISSION_LINES}-line limit (documentation, generated files, lockfiles, and snapshots excluded): re-scope or split before review" \
+  to_supervisor "$1" "size admission: ${2} changed lines $4 exceed the ${limit}-line limit (documentation, generated files, lockfiles, and snapshots excluded): re-scope or split before review" \
     'Request recut or split before review' 'changed lines exceed the size admission limit' \
-    "${2} changed lines $4 exceed ${SIZE_ADMISSION_LINES}-line limit" \
+    "${2} changed lines $4 exceed ${limit}-line limit" \
     '["Open PR for review without recutting"]'
   if [[ "$8" == write-start ]]; then
-    say "size admission write-start unit=$1 issue=${issue:-none} estimate=${6:-unknown} actual=${7:-unknown} limit=$SIZE_ADMISSION_LINES -> supervisor-review"
+    say "size admission write-start unit=$1 issue=${issue:-none} estimate=${6:-unknown} actual=${7:-unknown} limit=$limit -> supervisor-review"
   fi
   return 1
 }
 size_admission_recheck_impl() { # unit dir branch context [initial-head] [refs-current]
-  local lines base_branch head="${5:-}" files pr unit_json
+  local lines base_branch head="${5:-}" files pr unit_json limit
   unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   size_admission_exempt_unit "$unit_json" && return 0
   [[ -n "$2" && -n "$3" ]] || return 0
@@ -77,8 +89,9 @@ size_admission_recheck_impl() { # unit dir branch context [initial-head] [refs-c
   if jqf -e 'type == "array"' <<<"$files" >/dev/null 2>&1; then
     set_unit "$1" ".footprint=$files | .footprint_source=\"pr-diff\""
   fi
-  (( lines > SIZE_ADMISSION_LINES )) || return 0
-  size_admission_reject "$1" "$lines" "$3" "$4" "$head" "" "$lines" admission
+  limit="$(size_admission_limit_for "$unit_json")"
+  (( lines > limit )) || return 0
+  size_admission_reject "$1" "$lines" "$3" "$4" "$head" "" "$lines" admission "$limit"
 }
 size_admission_recheck() { # Keep the per-candidate diff+fetch visible inside dispatch_pending's phase total.
   local started=$SECONDS rc=0 elapsed
@@ -88,7 +101,7 @@ size_admission_recheck() { # Keep the per-candidate diff+fetch visible inside di
   return "$rc"
 }
 size_admission_write_start() { # unit workdir unit-json → block before worker launch when estimate or current diff is oversized
-  local issue estimate actual="" lines="" source="" branch base_branch head state
+  local issue estimate actual="" lines="" source="" branch base_branch head state limit
   size_admission_exempt_unit "$3" && return 0
   issue="$(jqf -r '.issue // empty' <<<"$3")"
   estimate="$(jqf -r '.estimated_changed_lines // empty' <<<"$3")"
@@ -102,10 +115,11 @@ size_admission_write_start() { # unit workdir unit-json → block before worker 
     actual="$(changed_lines_in_checkout "$2" "$base_branch")"
   fi
   head="$(git -C "$2" rev-parse -q --verify HEAD 2>/dev/null || true)"
-  if [[ "$estimate" =~ ^[0-9]+$ ]] && (( estimate > SIZE_ADMISSION_LINES )); then
+  limit="$(size_admission_limit_for "$3")"
+  if [[ "$estimate" =~ ^[0-9]+$ ]] && (( estimate > limit )); then
     lines="$estimate"; source=estimate
   fi
-  if [[ "$actual" =~ ^[0-9]+$ ]] && (( actual > SIZE_ADMISSION_LINES )) && (( actual > ${lines:-0} )); then
+  if [[ "$actual" =~ ^[0-9]+$ ]] && (( actual > limit )) && (( actual > ${lines:-0} )); then
     lines="$actual"; source=diff
   fi
   [[ -n "$lines" ]] || return 0
@@ -113,7 +127,7 @@ size_admission_write_start() { # unit workdir unit-json → block before worker 
   # defers an oversized ticket for the slow tick, which owns the existing recut
   # issue transition and records the decision once.
   [[ "${TICK_DISPATCH_LOCAL_REFILL:-false}" != true ]] || return 1
-  size_admission_reject "$1" "$lines" "$branch" "write-start ($source)" "$head" "${estimate:-unknown}" "${actual:-unknown}" write-start
+  size_admission_reject "$1" "$lines" "$branch" "write-start ($source)" "$head" "${estimate:-unknown}" "${actual:-unknown}" write-start "$limit"
 }
 pre_dispatch_pr_admission() { # unit branch PR context → prepared clone; nonzero means defer or recut
   local id="$1" branch="$2" pr="$3" context="$4" head dir
