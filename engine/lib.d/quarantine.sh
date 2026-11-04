@@ -106,6 +106,34 @@ quarantine_lift() {
 }
 
 
+# quarantine_canary_engine_deferred -- 0 when a due canary must wait: this
+# process's engine (ZF_ENGINE_DIR, pinned by the units to one immutable
+# version directory for the whole run) is no longer what engine-live selects,
+# so a dispatch now would test the retired engine's recovery and burn the
+# canary slot. 2026-11-04 21:43Z: the advisor canary advisor-batch-1793828604924428167
+# ran from dbfe584-3b86 after engine-live had already moved to c5e34384e4e2.
+# Returns 1 -- today's behaviour -- whenever either side cannot be resolved:
+# a host with no engine-live must keep taking canaries.
+quarantine_canary_engine_deferred() {
+  local live tick
+  # readlink -f alone canonicalizes a missing leaf path instead of failing,
+  # so an absent or dangling engine-live must be caught by existence too.
+  live="$(readlink -f -- "$AGENT_HOME/engine-live" 2>/dev/null)" || live=""
+  if [ -z "$live" ] || [ ! -e "$live" ]; then
+    echo "quarantine: $AGENT_HOME/engine-live cannot be resolved; canary is not deferred by engine pinning" >&2
+    return 1
+  fi
+  tick="$(readlink -f -- "${ZF_ENGINE_DIR:-}" 2>/dev/null)" || tick=""
+  if [ -z "$tick" ] || [ ! -e "$tick" ]; then
+    echo "quarantine: this tick's engine directory ${ZF_ENGINE_DIR:-<unset>} cannot be resolved; canary is not deferred by engine pinning" >&2
+    return 1
+  fi
+  [ "$tick" = "$live" ] && return 1
+  echo "quarantine: canary deferred -- this tick runs engine $(zf_engine_version_id "$tick" || printf '%s' "$tick"), engine-live is $(zf_engine_version_id "$live" || printf '%s' "$live"); the next tick, on the live engine, takes it" >&2
+  return 0
+}
+
+
 # quarantine_decision <scope> [now] -> "clear" (no quarantine), "canary"
 # (quarantined, but a probe dispatch is due now), "open" (blocked).
 quarantine_decision() {
@@ -120,7 +148,13 @@ quarantine_decision() {
     env:ci-runner-capacity|env:build-capacity|env:main-ci-red|ops:*) echo open; return 0 ;;
   esac
   next="$(jq -r '.next_canary_at // 0' "$f" 2>/dev/null || echo 0)"
-  if [ "$now" -ge "$next" ]; then echo canary; else echo open; fi
+  # A deferred canary stays "open" without touching canaries/next_canary_at,
+  # so the schedule is intact when the next tick, on the live engine, arrives.
+  if [ "$now" -ge "$next" ] && ! quarantine_canary_engine_deferred; then
+    echo canary
+  else
+    echo open
+  fi
 }
 
 

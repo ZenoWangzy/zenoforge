@@ -14,7 +14,8 @@ BATCH_JOB_ID=
 INCLUDED=0
 record_batch_result 0
 jq -e '.eligible_count == 0 and .outcome == "no-candidates" and
-  .zero_candidate_reason == "advisor queue empty" and .job_artifact == null' \
+  .zero_candidate_reason == "advisor queue empty" and .job_artifact == null and
+  .engine_version == null' \
   "$LOG_DIR/$ADVISOR_TICK_ID.result.json" >/dev/null
 printf 'ok - empty queue outcome is recorded\n'
 
@@ -35,3 +36,26 @@ jq -e '.members[0].issue == 930001' \
 jq -e '.requested_issues == [930001]' \
   "$(jq -r '.ruling_artifact' "$LOG_DIR/$ADVISOR_TICK_ID.result.json")" >/dev/null
 printf 'ok - completed batch artifacts survive provider cleanup\n'
+
+# engine_version records the engine version directory this job runs from,
+# resolved once at start (2026-11-04: which engine advisor-batch-1793828604924428167
+# tested was only recoverable from the journal).
+source "$script_dir/config.sh"
+mkdir -p "$AGENT_HOME/engine-versions/ver-abc123/engine" "$AGENT_HOME/engine-versions/ver-def456/engine"
+ln -sfn -- "$AGENT_HOME/engine-versions/ver-def456/engine" "$AGENT_HOME/engine-live"
+ZF_ENGINE_DIR="$AGENT_HOME/engine-versions/ver-abc123/engine"
+ADVISOR_BATCH_ENGINE_VERSION="$(zf_engine_version_id)"
+ADVISOR_TICK_ID=advisor-batch-engine-version-pinned
+BATCH_OUTCOME=dispatched
+record_batch_result 0
+jq -e '.engine_version == "ver-abc123"' \
+  "$LOG_DIR/$ADVISOR_TICK_ID.result.json" >/dev/null
+printf 'ok - engine_version records the pinned engine version directory\n'
+
+ZF_ENGINE_DIR="$AGENT_HOME/engine-live"
+ADVISOR_BATCH_ENGINE_VERSION="$(zf_engine_version_id)"
+ADVISOR_TICK_ID=advisor-batch-engine-version-live
+record_batch_result 0
+jq -e '.engine_version == "ver-def456"' \
+  "$LOG_DIR/$ADVISOR_TICK_ID.result.json" >/dev/null
+printf 'ok - engine_version follows a logical engine-live path to its version\n'

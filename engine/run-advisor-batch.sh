@@ -27,6 +27,13 @@ if [[ ! "$ADVISOR_QUEUE_LABEL" =~ ^[A-Za-z0-9._:-]+$ || ! "$ADVISOR_PRIORITY_LAB
   exit 0
 fi
 ADVISOR_TICK_ID="advisor-batch-$(date -u +%Y%m%dT%H%M%SZ)"
+# Resolved once, at start: the dispatching tick pins ZF_ENGINE_DIR to one
+# immutable version directory for this job's whole run, and a mid-run
+# engine-live swap must not change what the result records (2026-11-04:
+# advisor-batch-1793828604924428167 ran from dbfe584-3b86 after engine-live
+# had already moved to c5e34384e4e2, and which engine it tested was only
+# recoverable from the journal).
+ADVISOR_BATCH_ENGINE_VERSION="$(zf_engine_version_id || true)"
 BATCH_DIAGNOSTICS_FILE=""
 
 advisor_batch_hand_agent_issue_is_live_owned() {
@@ -485,10 +492,12 @@ record_batch_result() {
   tmp="$(mktemp "${result_file}.XXXXXX")"
   jq -Rn --arg tick "$ADVISOR_TICK_ID" --arg outcome "$BATCH_OUTCOME" \
     --arg job "$BATCH_JOB_ID" --arg job_artifact "$job_artifact" --arg ruling_artifact "$ruling_artifact" \
+    --arg engine_version "${ADVISOR_BATCH_ENGINE_VERSION:-}" \
     --argjson status "$status" --argjson eligible "$eligible" \
     --argjson included "$INCLUDED" --argjson applied "${APPLIED:-0}" --argjson diagnostics "$diagnostics" '
     [inputs | split("\t") | {issue:(.[0] | tonumber), gate:.[1]}] as $selection
     | {tick:$tick, recorded_at:(now | todateiso8601), exit_code:$status,
+       engine_version:(if $engine_version == "" then null else $engine_version end),
        eligible_count:$eligible, requested_count:$included, applied_count:$applied,
        outcome:$outcome, selection:($selection | sort_by(.issue)),
        zero_candidate_reason:(if $eligible == 0 and $included == 0 then

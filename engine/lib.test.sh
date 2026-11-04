@@ -3775,6 +3775,42 @@ OPS_PAUSE_OUT="$(AGENT_HOME="$OPS_PAUSE_HOME" AGENT_DRY_RUN=0 OPS_LIB_DIR="$SCRI
 rm -rf "$OPS_PAUSE_HOME"
 assert_contains "operator pause quarantine never admits a timed canary" "$OPS_PAUSE_OUT" 'ops_pause_decision=open'
 
+# 2026-11-04: a tick runs the engine it started from for its whole run (the
+# units pin ZF_ENGINE_DIR to one immutable version directory), so a canary
+# dispatched after an engine-live swap tests the retired engine. A due canary
+# defers -- stays open, canaries/next_canary_at untouched -- until a tick on
+# the engine engine-live now selects; with no engine-live at all, canaries
+# keep today's behaviour.
+CANARY_PIN_HOME="$(mktemp -d)"
+mkdir -p "$CANARY_PIN_HOME/engine-versions/dbfe584-3b86/engine" \
+  "$CANARY_PIN_HOME/engine-versions/c5e34384e4e2/engine" "$CANARY_PIN_HOME/repo/engine"
+ln -sfn -- "$CANARY_PIN_HOME/engine-versions/c5e34384e4e2/engine" "$CANARY_PIN_HOME/engine-live"
+CANARY_PIN_OUT="$(AGENT_HOME="$CANARY_PIN_HOME" ZF_REPO_DIR="$CANARY_PIN_HOME/repo" \
+  ZF_ENGINE_DIR="$CANARY_PIN_HOME/engine-versions/dbfe584-3b86/engine" \
+  CANARY_PIN_NEW_ENGINE="$CANARY_PIN_HOME/engine-versions/c5e34384e4e2/engine" \
+  CANARY_PIN_LIB_DIR="$SCRIPT_DIR" bash -c '
+  set +e
+  set -uo pipefail
+  source "$CANARY_PIN_LIB_DIR/lib.sh"
+  t0=1800000000
+  quarantine_open advisor env:test-gate:advisor "advisor gate down" 2 "$t0" 2>/dev/null
+  echo "old_engine_decision=$(quarantine_decision advisor $((t0 + 16 * 60)))"
+  echo "old_engine_canaries=$(jq -r .canaries "$(quarantine_file advisor)")"
+  echo "old_engine_next_canary_at=$(jq -r .next_canary_at "$(quarantine_file advisor)")"
+  ZF_ENGINE_DIR="$CANARY_PIN_NEW_ENGINE"
+  echo "new_engine_decision=$(quarantine_decision advisor $((t0 + 16 * 60)) 2>/dev/null)"
+  rm -f -- "$AGENT_HOME/engine-live"
+  echo "no_live_decision=$(quarantine_decision advisor $((t0 + 17 * 60)))"
+' 2>&1)"
+rm -rf "$CANARY_PIN_HOME"
+assert_contains "engine pin: a due canary defers while this tick's engine is not engine-live" "$CANARY_PIN_OUT" "old_engine_decision=open"
+assert_contains "engine pin: a deferred canary advances neither canaries nor next_canary_at" "$CANARY_PIN_OUT" "old_engine_canaries=0"
+assert_contains "engine pin: next_canary_at keeps the original schedule" "$CANARY_PIN_OUT" "old_engine_next_canary_at=$((1800000000 + 15 * 60))"
+assert_contains "engine pin: the deferral log names both engine versions" "$CANARY_PIN_OUT" "this tick runs engine dbfe584-3b86, engine-live is c5e34384e4e2"
+assert_contains "engine pin: the next tick, on the live engine, takes the canary" "$CANARY_PIN_OUT" "new_engine_decision=canary"
+assert_contains "engine pin: no engine-live keeps today's canary behaviour" "$CANARY_PIN_OUT" "no_live_decision=canary"
+assert_contains "engine pin: an unresolvable engine-live is logged, not fatal" "$CANARY_PIN_OUT" "engine-live cannot be resolved"
+
 CAPACITY_PROBE_HOME="$(mktemp -d)"
 CAPACITY_PROBE_OUT="$(AGENT_HOME="$CAPACITY_PROBE_HOME" AGENT_DRY_RUN=0 CAPACITY_LIB_DIR="$SCRIPT_DIR" bash -c '
   set +e

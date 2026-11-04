@@ -202,6 +202,19 @@ fi
 [[ -n "${ZF_SECRET_CONFIG_NAMES+x}" ]] || ZF_SECRET_CONFIG_NAMES=agent-runtime
 [[ -n "${ZF_REVIEW_SKILL+x}" ]] || ZF_REVIEW_SKILL=code-review
 
+# zf_engine_version_id [engine_dir] -- the immutable version-directory name the
+# engine at engine_dir (default: this engine, ZF_ENGINE_DIR) runs from:
+# engine-versions/<id>/engine -> <id>; any other layout -> the engine directory's
+# parent name, the same id engine-sync.sh and mac-autopilot/engine-canary.sh
+# derive from their own resolved paths. Empty (rc 1) when the directory cannot
+# be resolved, so callers can record that instead of guessing.
+zf_engine_version_id() {
+  local resolved
+  resolved="$(cd -- "${1:-${ZF_ENGINE_DIR:-}}" 2>/dev/null && pwd -P)" || return 1
+  [ -n "$resolved" ] || return 1
+  printf '%s' "$(basename -- "$(dirname -- "$resolved")")"
+}
+
 # zf_host_ops_dir -- print the root of host-only files; ZF_HOST_OPS_DIR overrides AGENT_HOME/host-ops.
 zf_host_ops_dir() {
   [[ $# -eq 0 ]] || return 2
