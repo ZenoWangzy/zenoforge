@@ -16,6 +16,9 @@ import { Actions, run, which } from './util.mjs';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const PKG_ENGINE = path.join(PKG_ROOT, 'engine');
+const ENGINE_RUNTIME_DEPENDENCIES = [
+  { name: '@typesafe-ai/sdk', source: path.join(PKG_ROOT, 'node_modules', '@typesafe-ai', 'sdk') },
+];
 export const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).version;
 
 // Which agent CLIs can do which job in the engine today (see docs/install.md, "Agents and roles"). Default first.
@@ -276,7 +279,7 @@ export async function init(opts, io) {
   const engineRoot = path.join(agentHome, 'engine');
   const hadEngine = currentVersion(engineRoot);
   const overlay = buildOverlay(settings, { home: io.home, checkout, pathValue });
-  const name = installEngine(act, { srcEngine: PKG_ENGINE, engineRoot, version: pkgVersion(), settings, overlay });
+  const name = installEngine(act, { srcEngine: PKG_ENGINE, engineRoot, version: pkgVersion(), settings, overlay, runtimeDependencies: ENGINE_RUNTIME_DEPENDENCIES });
 
   const excludeFile = path.join(checkout, '.git', 'info', 'exclude');
   const exclude = excludeContent(fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf8') : '');
@@ -385,7 +388,7 @@ export function upgrade(opts, io) {
   const { version: _v, engine: _e, installedAt: _i, ...kept } = state;
   const settings = { ...kept, pathValue };
   const overlay = buildOverlay(settings, { home: io.home, checkout: state.checkout, pathValue });
-  const name = installEngine(act, { srcEngine: PKG_ENGINE, engineRoot: ctx.engineRoot, version: pkgVersion(), settings, overlay });
+  const name = installEngine(act, { srcEngine: PKG_ENGINE, engineRoot: ctx.engineRoot, version: pkgVersion(), settings, overlay, runtimeDependencies: ENGINE_RUNTIME_DEPENDENCIES });
   if (name === before) { io.log(`engine ${name} is already current`); return; }
   act.write(statePath(ctx.agentHome), `${JSON.stringify({ ...settings, version: pkgVersion(), engine: name, installedAt: state.installedAt }, null, 2)}\n`, { mode: 0o600 });
   if (state.scheduler !== 'none') {

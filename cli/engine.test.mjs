@@ -32,6 +32,22 @@ test('install copies, applies the overlay, restores shim links and flips current
   assert.deepEqual(fs.readdirSync(root).filter((e) => e.includes('stage')), [], 'no staging dir left behind');
 });
 
+test('install stages declared runtime dependencies beside the copied engine', () => {
+  const src = tmp(); const root = path.join(tmp(), 'engine'); const sdk = tmp(); fakeEngine(src);
+  fs.writeFileSync(path.join(sdk, 'package.json'), '{"name":"@typesafe-ai/sdk"}\n');
+  fs.writeFileSync(path.join(sdk, 'index.js'), 'export {};\n');
+  install(quiet(), {
+    srcEngine: src,
+    engineRoot: root,
+    version: '0.1.0',
+    settings: {},
+    runtimeDependencies: [{ name: '@typesafe-ai/sdk', source: sdk }],
+  });
+  const installedSdk = path.join(root, '0.1.0', 'node_modules', '@typesafe-ai', 'sdk');
+  assert.equal(fs.readFileSync(path.join(installedSdk, 'package.json'), 'utf8'), '{"name":"@typesafe-ai/sdk"}\n');
+  assert.equal(fs.readFileSync(path.join(installedSdk, 'index.js'), 'utf8'), 'export {};\n');
+});
+
 test('same settings reuse the version dir; changed settings get a +N dir', () => {
   const src = tmp(); const root = path.join(tmp(), 'engine'); fakeEngine(src);
   install(quiet(), { srcEngine: src, engineRoot: root, version: '0.1.0', settings: { a: 1 } });

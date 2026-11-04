@@ -35,13 +35,18 @@ export function pickName(engineRoot, version, settings) {
  * Copy the packaged engine into a new immutable version dir and flip `current` to it.
  * `overlay` maps engine-relative paths to rendered text that replaces the packaged file.
  */
-export function installEngine(act, { srcEngine, engineRoot, version, settings, overlay }) {
+export function installEngine(act, { srcEngine, engineRoot, version, settings, overlay, runtimeDependencies = [] }) {
   const { name, reuse } = pickName(engineRoot, version, settings);
   const dest = path.join(engineRoot, name);
   if (!reuse) {
     const stage = `${dest}.stage-${process.pid}`;
     act.mkdir(engineRoot);
     act.copyTree(srcEngine, stage);
+    for (const { name: packageName, source } of runtimeDependencies) {
+      const packageDir = path.join(stage, 'node_modules', packageName);
+      act.mkdir(path.dirname(packageDir));
+      act.copyTree(source, packageDir);
+    }
     for (const n of SHIM_NAMES) act.symlink(SHIM_TARGET, path.join(stage, SHIM_DIR, n));
     for (const [rel, text] of Object.entries(overlay)) act.write(path.join(stage, rel), text, { mode: modeOf(srcEngine, rel) });
     act.write(path.join(stage, INSTALL_META), `${JSON.stringify({ version, settings }, null, 2)}\n`);
