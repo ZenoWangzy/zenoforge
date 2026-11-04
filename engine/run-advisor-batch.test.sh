@@ -43,24 +43,68 @@ ZF_CONFIG_ROOT="$target" ZF_PACK_DIR="$pack" bash -c '
 # and give the capture step the tick globals production sets.
 eval "$(sed -n '/^advisor_batch_capture_provider_diagnostics() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
 eval "$(sed -n '/^advisor_batch_poll_provider_job() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+source "$script_dir/lib.sh"
+source "$script_dir/providers/web-advisor-provider.sh"
 LOG_DIR="$tmp/logs"
 ADVISOR_TICK_ID="fixture-tick"
 WEB_ADVISOR_PROVIDER_JOB_DIR="$tmp/jobs"
 BATCH_JOB_ID="fixture-job"
 mkdir -p "$LOG_DIR" "$WEB_ADVISOR_PROVIDER_JOB_DIR"
-web_advisor_provider_poll() {
-  [[ "$1" == fixture-job ]]
-  printf '%s\n' '{"is_error":false,"structured_output":"{\"kind\":\"advisor_batch_result\"}"}'
-}
-[[ "$(advisor_batch_poll_provider_job fixture-job)" == '{"kind":"advisor_batch_result"}' ]]
-[[ -f "$LOG_DIR/$ADVISOR_TICK_ID.advisor-diagnostics.json" ]]
-[[ "$(jq -c '.error_codes' "$LOG_DIR/$ADVISOR_TICK_ID.advisor-diagnostics.json")" == '[]' ]]
-web_advisor_provider_poll() { return 2; }
+# Exercise the real batch poller through the runner adapter, including pending
+# evidence retention and recovery of only complete records on timeout.
+web_advisor_provider_resume_job_if_stopped() { :; }
+mkdir -p "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID"
+printf 'frozen question\n' > "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/question.txt"
+printf 'ADVISOR_ANSWER_TIMEOUT picker-not-found\n' > "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/answer.err"
 set +e
 advisor_batch_poll_provider_job fixture-job >/dev/null 2>&1
 poll_status=$?
 set -e
 [[ "$poll_status" == 2 ]]
+[[ -d "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID" && -f "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/question.txt" && -f "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/answer.err" ]]
+printf '1\n' > "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/done"
+printf '%s\n%s' '{"kind":"ruling","issue":1}' '{"kind":"ruling","issue":2' > "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/answer.out"
+[[ "$(advisor_batch_poll_provider_job fixture-job)" == '{"kind":"ruling","issue":1}' ]]
+[[ -f "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/question.txt" && -f "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/answer.err" ]]
+jq -e '.error_codes | index("ADVISOR_ANSWER_TIMEOUT") != null' "$LOG_DIR/$ADVISOR_TICK_ID.advisor-diagnostics.json" >/dev/null
+jq -e '.model_fallback_signature == "picker-not-found"' "$LOG_DIR/$ADVISOR_TICK_ID.advisor-diagnostics.json" >/dev/null
+printf '0\n' > "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/done"
+printf '%s\n' '{"kind":"ruling","issue":1}' '{"kind":"ruling","issue":2}' > "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/answer.out"
+[[ "$(advisor_batch_poll_provider_job fixture-job)" == "$(cat "$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/answer.out")" ]]
+(
+  web_advisor_provider_poll_ndjson() { printf '%s\n' '{"structured_output":{"kind":"ruling","issue":1}}'; }
+  [[ "$(advisor_batch_poll_provider_job fixture-job)" == '{"kind":"ruling","issue":1}' ]]
+)
+
+# Load the same startup fragment as the runner, with a real live roster row.
+sed -n '/^NIGHT="${ZF_NIGHT_DIR:-\$AGENT_HOME\/night}"/,/^source "\$SCRIPT_DIR\/night\/hand-agent-watchdog.sh"/p' "$script_dir/run-advisor-batch.sh" > "$tmp/ownership-startup"
+[[ -s "$tmp/ownership-startup" ]]
+SCRIPT_DIR="$script_dir"
+ZF_NIGHT_DIR="$tmp/hand-night"
+mkdir -p "$ZF_NIGHT_DIR"
+source "$tmp/ownership-startup"
+owner_ticks="$(hand_agent_process_start_ticks "$$")"
+printf '%s\thand-930001\tmodel\teffort\tworktree\tbrief\treport\tlog\t0\t0\twork\t%s\t930001\t\n' "$$" "$owner_ticks" > "$NIGHT/agents.txt"
+hand_agent_issue_is_live_owned 930001
+! hand_agent_issue_is_live_owned 930002
+
+# Run the actual pre-dispatch guard with the provider's fault classifier.
+sed -n '/^  if ! ADVISOR_UNAVAILABLE_REASON=.*web_advisor_provider_usable/,/^  fi/p' "$script_dir/run-advisor-batch.sh" > "$tmp/unavailable-guard"
+[[ -s "$tmp/unavailable-guard" ]]
+for reason in 'advisor CDP port unreachable: 9222' 'other failure'; do
+  result="$(
+    web_advisor_provider_usable() { printf '%s\n' "$reason" >&2; return 1; }
+    record_web_advisor_provider_fault() { web_advisor_provider_fault_signature "$2"; }
+    PROMPT_FILE="$tmp/prompt"
+    : > "$PROMPT_FILE"
+    source "$tmp/unavailable-guard"
+  )"
+  if [[ "$reason" == *'CDP port unreachable'* ]]; then
+    [[ "$result" == env:web-advisor-provider:cdp-unreachable ]]
+  else
+    [[ "$result" == env:web-advisor-provider:call-failed ]]
+  fi
+done
 
 # 2026-11-04: ADVISOR_MODEL_UNVERIFIED at selector stage open-picker is a
 # browser/page fault, not a payload fault. It must not quarantine the batch

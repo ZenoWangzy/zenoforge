@@ -147,7 +147,7 @@ web_advisor_provider_fault_signature() {
   case "$normalized" in
     *'advisor_tab_unresponsive'*|*'tab-unresponsive'*|*'tab unresponsive'*)
       echo env:web-advisor-provider:tab-unresponsive ;;
-    *'cdp unreachable'*)
+    *'cdp unreachable'*|*'cdp port unreachable'*)
       echo env:web-advisor-provider:cdp-unreachable ;;
     *'still had no result after '*)
       echo env:web-advisor-provider:job-timeout ;;

@@ -20,6 +20,8 @@ source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/advisor-config.sh"
 advisor_provider_ready || exit 0
 source "$SCRIPT_DIR/advisor-core.sh"
+NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
+source "$SCRIPT_DIR/night/hand-agent-watchdog.sh"
 ADVISOR_QUEUE_LABEL="$(advisor_queue_label)"
 ADVISOR_PRIORITY_LABEL="$(advisor_priority_label)"
 if [[ ! "$ADVISOR_QUEUE_LABEL" =~ ^[A-Za-z0-9._:-]+$ || ! "$ADVISOR_PRIORITY_LABEL" =~ ^[A-Za-z0-9._:-]+$ ]]; then
@@ -73,7 +75,7 @@ advisor_batch_capture_provider_diagnostics() {
 
 advisor_batch_poll_provider_job() {
   local job_id="$1" response status structured
-  if response="$(web_advisor_provider_poll "$job_id")"; then status=0; else status=$?; fi
+  if response="$(web_advisor_provider_poll_ndjson "$job_id")"; then status=0; else status=$?; fi
   if ! advisor_batch_capture_provider_diagnostics "$response"; then
     echo 'run-advisor-batch: could not persist provider incident diagnostics' >&2
     return 1
@@ -89,7 +91,7 @@ advisor_batch_poll_provider_job() {
   fi
   if structured="$(jq -er '.structured_output | select(type == "string")' <<< "$response" 2>/dev/null)"; then
     printf '%s\n' "$structured"
-  elif structured="$(jq -c '.structured_output | select(type == "object" or type == "array")' <<< "$response" 2>/dev/null)"; then
+  elif structured="$(jq -ec '.structured_output | select(type == "object" or type == "array")' <<< "$response" 2>/dev/null)"; then
     printf '%s\n' "$structured"
   elif structured="$(jq -er '.result | select(type == "string")' <<< "$response" 2>/dev/null)"; then
     printf '%s\n' "$structured"
@@ -1215,9 +1217,10 @@ else
     rm -f "$PROMPT_FILE"
     exit 0
   fi
-  if ! web_advisor_provider_usable; then
+  if ! ADVISOR_UNAVAILABLE_REASON="$(web_advisor_provider_usable 2>&1)"; then
     BATCH_OUTCOME=browser-unavailable
-    record_web_advisor_provider_fault batch "web-advisor-provider unreachable before batch dispatch"
+    record_web_advisor_provider_fault batch "web-advisor-provider unreachable before batch dispatch: ${ADVISOR_UNAVAILABLE_REASON:-unknown reason}"
+    echo "run-advisor-batch: ${ADVISOR_UNAVAILABLE_REASON:-advisor unavailable}" >&2
     rm -f "$PROMPT_FILE"
     exit 0
   fi
