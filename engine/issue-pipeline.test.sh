@@ -2271,6 +2271,9 @@ run_env_proxy_site() (
 )
 assert_eq "all four issue-pipeline systemd-run sites carry NO_PROXY and the Node env-proxy opt-in" 4 \
   "$(grep -c -- '-E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY' "$PIPELINE_SRC")"
+assert_eq 'batch and single-ticket advisor dispatches pass the provider job directory' 2 \
+  "$(sed -n '/^dispatch() {/,/^}/p; /^dispatch_advisor_batch() {/,/^}/p' "$PIPELINE_SRC" \
+    | grep -Fc 'ZF_WEB_ADVISOR_PROVIDER_JOB_DIR')"
 assert_contains "issue-pipeline defaults the Node env-proxy opt-in before any dispatch" "$(cat "$PIPELINE_SRC")" \
   'export NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"'
 # 2026-10-09: with triage paused, nothing refreshed the GitNexus index that

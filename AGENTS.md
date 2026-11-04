@@ -25,6 +25,10 @@ This repository is public. Keep customer names, home-directory paths, hostnames,
 - A shell suite starts with `set -euo pipefail` and then sources `test-env.sh`, which isolates `HOME` and `AGENT_HOME`.
 - CI skips the suites listed in `tools/quarantine.txt` and prints each reason.
 
+## Engine PR merges
+
+Use `bash tools/merge-pr.sh <pr-number>` to merge an engine PR. It reads check buckets, allows pending checks, and refuses failed checks unless each failed check name is listed in `ZF_MERGE_OVERRIDE=<check-name>[,<check-name>]`. `ZF_ALLOW_FULL_GATE=1` retains the local full-gate path.
+
 ## Agent skills
 
 ### Issue tracker
@@ -52,3 +56,5 @@ Single-context. See `docs/agents/domain.md`.
 | A repair with no findings and a confirmed unchanged-head `repair-no-push` spends no stop-loss or repair-cap round; requeueing an unchanged head with no actionable findings or a confirmed no-push repair sends it to rereview. | `engine/mac-autopilot/scheduler.d/stop-loss.sh`; `engine/mac-autopilot/scheduler.d/evals-arbiter.sh`; `engine/mac-autopilot/noop-repair-rounds.test.sh` |
 | Triage routes already-delivered work to `awaiting-release` only through `conclude_merged_run` with a PR verified merged into main; `wontfix` remains for genuinely declined work. | `engine/run-triage.sh`; `engine/run-triage.test.sh` |
 | Sonnet fallback commands retain `Read,Grep,Glob,Bash` and `dontAsk`, permit the configured test runners, and do not grant git push or GitHub write commands. | `engine/mac-autopilot/scheduler.sh`; `engine/mac-autopilot/scheduler.d/worker-command.sh`; `engine/mac-autopilot/worker-command.test.sh` |
+| Engine PRs use `tools/merge-pr.sh`; pending checks are allowed, while failed checks require their exact names in `ZF_MERGE_OVERRIDE`. | `tools/merge-pr.sh`; `engine/merge-pr-helper.test.sh` |
+| Issue-pipeline advisor units receive the configured provider job directory through `systemd-run` environment forwarding. | `engine/issue-pipeline.sh`; `engine/issue-pipeline.test.sh` |

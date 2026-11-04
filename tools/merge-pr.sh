@@ -31,6 +31,14 @@ merge_pr_refuse() {
   return 1
 }
 
+merge_pr_join_checks() {
+  local separator='' check_name
+  for check_name in "$@"; do
+    printf '%s%s' "$separator" "$check_name"
+    separator=', '
+  done
+}
+
 merge_pr_result_is_green() {
   local result_file="$1" sha="$2"
   jq -e --arg sha "$sha" '
@@ -42,6 +50,73 @@ merge_pr_result_is_green() {
       and ([.[].shard] | sort == [0,1,2,3,4,5,6,7])
       and all(.[]; .exit_code == 0))
   ' "$result_file" >/dev/null 2>&1
+}
+
+merge_pr_checks_and_merge() {
+  local pr="${1:-}" checks_json check_name override_name matched
+  local -a override_names=() failed_names=() blocked_names=() overridden_names=()
+  if [[ $# -ne 1 || ! "$pr" =~ ^[0-9]+$ ]]; then
+    printf 'usage: tools/merge-pr.sh <pr-number>\n' >&2
+    return 2
+  fi
+
+  # gh pr checks exits non-zero when checks are failed or pending. The JSON
+  # buckets distinguish those valid results from a command/API error.
+  checks_json="$(gh pr checks "$pr" --json bucket,name 2>/dev/null)" || :
+  if ! jq -e 'type == "array" and all(.[];
+      type == "object" and (.name | type == "string" and length > 0)
+      and (.bucket | type == "string"))' <<<"$checks_json" >/dev/null 2>&1; then
+    merge_pr_refuse "$pr" 'could not read PR checks as JSON'
+    return 1
+  fi
+
+  if [[ -n "${ZF_MERGE_OVERRIDE:-}" ]]; then
+    case "$ZF_MERGE_OVERRIDE" in
+      ,*|*,|*,,*)
+        merge_pr_refuse "$pr" 'ZF_MERGE_OVERRIDE must contain comma-separated check names'
+        return 1
+        ;;
+    esac
+    IFS=, read -r -a override_names <<<"$ZF_MERGE_OVERRIDE"
+    for override_name in "${override_names[@]}"; do
+      if [[ -z "$override_name" ]]; then
+        merge_pr_refuse "$pr" 'ZF_MERGE_OVERRIDE must contain comma-separated check names'
+        return 1
+      fi
+    done
+  fi
+
+  while IFS= read -r check_name; do
+    [[ -n "$check_name" ]] || continue
+    failed_names+=("$check_name")
+    matched=0
+    for override_name in "${override_names[@]}"; do
+      if [[ "$check_name" == "$override_name" ]]; then
+        matched=1
+        break
+      fi
+    done
+    if (( matched )); then
+      overridden_names+=("$check_name")
+    else
+      blocked_names+=("$check_name")
+    fi
+  done < <(jq -r '.[] | select(.bucket == "fail") | .name' <<<"$checks_json")
+
+  if ((${#blocked_names[@]})); then
+    local failed_csv blocked_csv
+    failed_csv="$(merge_pr_join_checks "${failed_names[@]}")"
+    blocked_csv="$(merge_pr_join_checks "${blocked_names[@]}")"
+    merge_pr_refuse "$pr" "failed checks: $failed_csv; checks without a matching ZF_MERGE_OVERRIDE: $blocked_csv"
+    return 1
+  fi
+  if ((${#overridden_names[@]})); then
+    local overridden_csv
+    overridden_csv="$(merge_pr_join_checks "${overridden_names[@]}")"
+    printf 'merge-pr: explicit ZF_MERGE_OVERRIDE allows failed checks: %s\n' "$overridden_csv" >&2
+  fi
+
+  gh pr merge "$pr" --squash --delete-branch
 }
 
 merge_pr_gate() {
@@ -87,8 +162,8 @@ merge_pr_gate() {
     merge_pr_refuse "$pr" "PR head $head_sha does not match tested SHA $sha"
     return 1
   fi
-  printf 'full local suites are green for %s and PR #%s still points to that SHA; merging with squash\n' "$sha" "$pr"
-  gh pr merge "$pr" --squash
+  printf 'full local suites are green for %s and PR #%s still points to that SHA; checking PR checks before merge\n' "$sha" "$pr"
+  merge_pr_checks_and_merge "$pr"
 }
 
 merge_pr_main() {
@@ -185,10 +260,10 @@ merge_pr_main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  if [[ "${ZF_ALLOW_FULL_GATE:-}" != 1 ]]; then
-    # Ruling zenoforge-no-local-gate-2026-11-04: briefs written before it kept starting this gate.
-    echo 'merge-pr: engine PRs do not use the local full gate. Run the focused tests, then gh pr merge --squash. ZF_ALLOW_FULL_GATE=1 overrides.' >&2
-    exit 2
+  if [[ "${ZF_ALLOW_FULL_GATE:-}" == 1 ]]; then
+    merge_pr_main "$@"
+  else
+    # Ruling zenoforge-no-local-gate-2026-11-04: only the focused tests run locally.
+    merge_pr_checks_and_merge "$@"
   fi
-  merge_pr_main "$@"
 fi

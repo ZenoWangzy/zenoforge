@@ -28,11 +28,23 @@ assert_refuses() {
 
 : > "$fixture/gh-calls"
 PR_HEAD="$sha"
+PR_CHECKS='[]'
 gh() {
   case "$1 $2" in
     'pr view')
       printf 'view:%s\n' "$*" >> "$fixture/gh-calls"
       printf '{"headRefOid":"%s"}\n' "$PR_HEAD"
+      ;;
+    'pr checks')
+      printf 'checks:%s\n' "$*" >> "$fixture/gh-calls"
+      if [[ "$PR_CHECKS" == gh-error ]]; then
+        printf 'gh pr checks: API error\n' >&2
+        return 1
+      fi
+      printf '%s\n' "$PR_CHECKS"
+      if jq -e 'any(.[]; .bucket == "fail" or .bucket == "pending")' <<<"$PR_CHECKS" >/dev/null 2>&1; then
+        return 8
+      fi
       ;;
     'pr merge')
       printf 'merge:%s\n' "$*" >> "$fixture/gh-calls"
@@ -65,14 +77,38 @@ assert_refuses "PR head $PR_HEAD does not match tested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nmerge:pr merge 17 --squash' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nmerge:pr merge 17 --squash --delete-branch' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
-set +e
-refusal=$(env -u ZF_ALLOW_FULL_GATE bash "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh" 17 2>&1)
-refusal_status=$?
-set -e
-[[ $refusal_status == 2 && $refusal == *'do not use the local full gate'* ]] \
-  || fail "direct run did not refuse the full gate: $refusal_status $refusal"
+PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"unit","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
+: > "$fixture/gh-calls"
+if ZF_MERGE_OVERRIDE=cla merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then
+  fail 'override for one failed check also allowed an unnamed failed check'
+fi
+check_output="$(cat "$fixture/check-output")"
+[[ "$check_output" == *'failed checks: cla, unit'* && "$check_output" == *'checks without a matching ZF_MERGE_OVERRIDE: unit'* ]] \
+  || fail "failed check names or unmatched override were not reported: $check_output"
+[[ "$(cat "$fixture/gh-calls")" == 'checks:pr checks 17 --json bucket,name' ]] \
+  || fail "an unmatched failed check reached merge: $(cat "$fixture/gh-calls")"
 
-echo 'PASS merge helper refuses missing, red, and stale results; matching green result squash merges'
+PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
+: > "$fixture/gh-calls"
+check_output="$(ZF_MERGE_OVERRIDE=cla merge_pr_checks_and_merge 17 2>&1)" \
+  || fail "named failed-check override did not allow the merge: $check_output"
+[[ "$check_output" == *'explicit ZF_MERGE_OVERRIDE allows failed checks: cla'* ]] \
+  || fail "merge did not print the failed check covered by its override: $check_output"
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nmerge:pr merge 17 --squash --delete-branch' ]] \
+  || fail "pending check or named override did not reach squash merge: $(cat "$fixture/gh-calls")"
+
+PR_CHECKS=gh-error
+: > "$fixture/gh-calls"
+if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then
+  fail 'a gh pr checks API error reached merge'
+fi
+check_output="$(cat "$fixture/check-output")"
+[[ "$check_output" == *'could not read PR checks as JSON'* ]] \
+  || fail "gh pr checks error was not reported: $check_output"
+[[ "$(cat "$fixture/gh-calls")" == 'checks:pr checks 17 --json bucket,name' ]] \
+  || fail "gh pr checks error reached merge: $(cat "$fixture/gh-calls")"
+
+echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, and applies exact named overrides'

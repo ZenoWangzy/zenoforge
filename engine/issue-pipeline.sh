@@ -649,7 +649,10 @@ dispatch() {
   # MemoryPeak 6.5 GB) and pushed the box below 1.6 GB MemAvailable. A cap
   # makes the OOM kill land inside that unit, not on the whole WSL box.
   # Release is exempt: an OOM kill mid-deploy would leave production half-rolled.
-  local -a memory_args=() result_args=()
+  local -a memory_args=() result_args=() advisor_env=()
+  if [[ "$stage" == advisor ]]; then
+    advisor_env=(-E ZF_WEB_ADVISOR_PROVIDER_JOB_DIR)
+  fi
   case "$stage" in
     implement|triage|recut)
       if consume_unit_memory_oom "$n" "$stage"; then
@@ -698,6 +701,7 @@ dispatch() {
   fi
   if guarded_write systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-$stage-$n" --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE \
+    "${advisor_env[@]}" \
     -p "RuntimeMaxSec=$runtime_max" \
     "${memory_args[@]}" "${result_args[@]}" \
     "$@" \
@@ -816,7 +820,7 @@ dispatch_advisor_batch() {
     fi
   fi
   if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect \
-    -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE \
+    -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE -E ZF_WEB_ADVISOR_PROVIDER_JOB_DIR \
     -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" \
     -p "RuntimeMaxSec=$ADVISOR_RUNTIME_MAX_SEC" \
     "$script" --scheduled "${issue_ids[@]}"; then
