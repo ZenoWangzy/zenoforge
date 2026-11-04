@@ -1,3 +1,12 @@
+# The GLM CLI resolver lives in config.sh, which lib.sh sources before this file; the
+# autopilot scheduler sources this file directly without config.sh (its comment at
+# mac-autopilot/scheduler.sh keeps config.sh's directory variables out of its process),
+# so bridge the resolver the same way scheduler.d/core.sh's sched_config_file bridges
+# zf_config_file: a subshell sources config.sh and runs the real function.
+declare -F zf_zcode_bin_argv >/dev/null 2>&1 || zf_zcode_bin_argv() {
+  ( source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/config.sh" && zf_zcode_bin_argv "$@" )
+}
+
 model_policy_validate_json() {
   jq -e --slurpfile canonical "$MODEL_POLICY_DEFAULT" '
     . as $policy
@@ -817,8 +826,8 @@ review_identity_unavailable_reason() {
       else echo 'codex unavailable'; fi
       ;;
     zcode)
-      if ! zcode_review_open; then echo 'glm hold'
-      elif ! command -v zcode >/dev/null 2>&1; then echo 'glm cli missing'
+      if provider_quota_exhausted zcode; then echo 'glm hold'
+      elif ! zf_zcode_bin_argv >/dev/null 2>&1; then echo 'glm cli missing'
       elif ! zcode_provider_config_model_matches "$identity"; then echo 'glm config mismatch'
       else echo 'glm unavailable'; fi
       ;;
@@ -845,8 +854,8 @@ review_identity_available() {
       command -v codex >/dev/null 2>&1
       ;;
     zcode)
-      zcode_review_open || return 1
-      command -v zcode >/dev/null 2>&1 || return 1
+      provider_quota_exhausted zcode && return 1
+      zf_zcode_bin_argv >/dev/null 2>&1 || return 1
       zcode_provider_config_model_matches "$identity"
       ;;
     claude) ! provider_quota_exhausted claude && command -v claude >/dev/null 2>&1 ;;
@@ -886,6 +895,83 @@ record_review_provider_fallback() {
 
 review_family_log() {
   if declare -F say >/dev/null 2>&1; then say "$1"; else echo "$1" >&2; fi
+}
+
+# The GLM runtime bell (2026-11-03: 68 `review-family fallback ... reviewer=sonnet
+# reason=glm cli missing` lines over 8.5h while mode was claude-saving, and nothing
+# paged). N consecutive Sonnet fallbacks whose reason is a GLM runtime problem
+# (`glm cli missing` / `glm config mismatch`) file ONE incident through the shared
+# pipeline-issue-upsert; the streak resets after a filing and any other reason
+# breaks it, so a persistent outage pages once per N fallbacks instead of per review.
+GLM_FALLBACK_STREAK_FILE="${AGENT_HOME}/glm-fallback-streak"
+
+glm_fallback_incident_threshold() {
+  local config="${ZF_CONFIG_ROOT:-}/config.json" threshold
+  if [[ -n "${ZF_CONFIG_ROOT:-}" && -f "$config" ]]; then
+    threshold="$(jq -r '.engine.glm_fallback_incident_threshold | select(type == "number" and . >= 1) | floor' "$config" 2>/dev/null)" || threshold=""
+    if [[ "$threshold" =~ ^[1-9][0-9]*$ ]]; then printf '%s' "$threshold"; return 0; fi
+  fi
+  printf '5'
+}
+
+glm_fallback_streak_set() { # <count> -- best-effort write, never fails the review path
+  (
+    flock -w 5 9
+    printf '%s\n' "$1" > "$GLM_FALLBACK_STREAK_FILE"
+  ) 9>"$GLM_FALLBACK_STREAK_FILE.lock" 2>/dev/null || true
+}
+
+glm_fallback_streak_bump() { # -> the new consecutive count (0 when state is unreadable)
+  (
+    flock -w 5 9
+    count=0
+    read -r count < "$GLM_FALLBACK_STREAK_FILE" 2>/dev/null || count=0
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    count=$(( count + 1 ))
+    printf '%s\n' "$count" > "$GLM_FALLBACK_STREAK_FILE"
+    printf '%s\n' "$count"
+  ) 9>"$GLM_FALLBACK_STREAK_FILE.lock" 2>/dev/null || echo 0
+  return 0
+}
+
+glm_fallback_incident_file() { # <reason> <streak> -- one incident through the shared upsert
+  local reason="$1" streak="$2" body_file engine_dir repo status
+  # The scheduler process sources this file without lib.sh: derive both paths from this
+  # file's own location the way config.sh derives the engine and lib.sh derives ZF_REPO.
+  engine_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+  [[ -f "$engine_dir/pipeline-issue-upsert.sh" ]] || return 1
+  repo="${ZF_REPO:-$(git -C "$engine_dir/.." remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##' || true)}"
+  [[ -n "$repo" ]] || return 1
+  body_file="$(mktemp 2>/dev/null)" || return 1
+  {
+    printf 'The GLM review runtime was unusable for %s consecutive review-family fallbacks (reason: `%s`), so cross-family reviews kept landing on the Sonnet fallback.\n\n' "$streak" "$reason"
+    printf -- '- log signature: `review-family fallback ... reviewer=sonnet reason=%s`\n' "$reason"
+    printf -- '- CLI resolution order: config `engine.zcode_bin` -> env `ZF_ZCODE_BIN` -> the worker bundle zc-src (bin/zcode + the CLI entry script) -> `zcode` on PATH\n'
+    printf -- '- fix the GLM CLI location (or set `engine.zcode_bin`), then close this issue; the streak counter reset when this was filed\n'
+  } > "$body_file"
+  bash "$engine_dir/pipeline-issue-upsert.sh" --lane pipeline-system --class glm-cli-fallback \
+    --title "GLM CLI unavailable: reviews keep falling back to Sonnet (${reason})" \
+    --body-file "$body_file" --repo "$repo" >/dev/null 2>&1
+  status=$?
+  rm -f -- "$body_file"
+  if [ "$status" -eq 0 ]; then
+    review_family_log "glm fallback bell: filed glm-cli-fallback incident after ${streak} consecutive '${reason}' fallbacks"
+  fi
+  return "$status"
+}
+
+glm_fallback_bell() { # <primary fallback reason> -- counts, and files once at the threshold
+  local reason="$1" threshold streak
+  case "$reason" in
+    'glm cli missing'|'glm config mismatch') ;;
+    *) glm_fallback_streak_set 0; return 0 ;;
+  esac
+  threshold="$(glm_fallback_incident_threshold)"
+  streak="$(glm_fallback_streak_bump)"
+  if (( streak >= threshold )) && glm_fallback_incident_file "$reason" "$streak"; then
+    glm_fallback_streak_set 0
+  fi
+  return 0
 }
 
 review_model_for_implementer() {
@@ -929,6 +1015,10 @@ review_model_for_implementer() {
       if [[ "$candidate_role" == review_fallback ]]; then
         review_family_log "review-family fallback unit=$unit author=$author_family reviewer=$candidate_model reason=${primary_reason:-cross reviewer unavailable}"
         record_review_provider_fallback "$issue" "cross-family-reviewer" "$candidate" "${primary_reason:-cross reviewer unavailable}" 2>/dev/null || true
+        glm_fallback_bell "${primary_reason:-}" || true
+      else
+        # A cross-family reviewer dispatched: the run of GLM-runtime fallbacks is broken.
+        glm_fallback_streak_set 0
       fi
       printf '%s\n' "$candidate"
       return 0

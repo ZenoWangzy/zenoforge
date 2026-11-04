@@ -160,7 +160,7 @@ pick_zcode_implementer() { # [unit JSON], configured hand-zcode identity -> PICK
   IFS=$'\t' read -r provider model effort tier <<<"$fields"
   [[ "$provider" == zcode ]] || return 1
   model_policy_model_allowed_for_role "$model" hand-zcode || return 1
-  command -v zcode >/dev/null 2>&1 || return 1
+  zf_zcode_bin_argv >/dev/null 2>&1 || return 1
   zcode_provider_config_model_matches "zcode:$model:$effort" || return 1
   status="$(zcode_paced zcode_quota_status)"
   [[ "$status" == available ]] || return 1
@@ -253,7 +253,7 @@ provider_runtime_ready() { # provider model [role] [unit JSON] -> runnable, poli
     codex) codex_week_stopped && return 1; command -v codex >/dev/null 2>&1 ;;
     zcode)
       [[ "$(zcode_paced zcode_quota_status)" == available ]] || return 1
-      command -v zcode >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"
+      zf_zcode_bin_argv >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"
       ;;
     claude) ! provider_quota_exhausted claude && command -v claude >/dev/null 2>&1 ;;
     *) return 1 ;;

@@ -695,6 +695,7 @@ zcode_reply_valid() { # <role> <schema_file> <object>: zcode enforces no schema,
 run_zcode_json() {
   local cwd="$1" identity="$2" timeout_minutes="$3" schema_file="$4" prompt_file="$5" role="${6:-review}"
   local zcode_id model effort status=0 started_at elapsed timeout_detail out_file transcript reply verdict_json
+  local -a zcode_cmd=()
   model_policy_require_role_identity "$role" "$identity" || {
     jq -nc --arg role "$role" '{is_error: true, subtype: "unsupported_model_identity", result: ("identity does not match the " + $role + " role")}'
     return 64
@@ -703,6 +704,11 @@ run_zcode_json() {
   if [[ "$zcode_id" != *:* ]]; then
     jq -nc --arg identity "$identity" '{is_error: true, subtype: "unsupported_model_identity", result: ("zcode identity needs model:effort: " + $identity)}'
     return 64
+  fi
+  mapfile -t zcode_cmd < <(zf_zcode_bin_argv)
+  if (( ${#zcode_cmd[@]} == 0 )); then
+    jq -nc '{is_error: true, subtype: "zcode_exec_failure", result: "zcode CLI not found by the engine resolver (config engine.zcode_bin, env ZF_ZCODE_BIN, worker bundle, PATH)", zcode_exit_status: 127, zcode_elapsed_seconds: 0}'
+    return 127
   fi
   model="${zcode_id%:*}"
   effort="${zcode_id#*:}"
@@ -726,7 +732,7 @@ run_zcode_json() {
   local proxy_name; local -a empty_proxies=()
   for proxy_name in http_proxy https_proxy no_proxy; do [ -n "${!proxy_name-x}" ] || empty_proxies+=(-u "$proxy_name"); done
   # Same strip as run_codex_json: zcode has no sandbox, and the prompt carries ticket text.
-  NODE_USE_ENV_PROXY=1 timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN "${empty_proxies[@]}" zcode -p "$(cat "$transcript")" \
+  NODE_USE_ENV_PROXY=1 timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN "${empty_proxies[@]}" "${zcode_cmd[@]}" -p "$(cat "$transcript")" \
     --cwd "$cwd" --mode yolo > "$out_file" 2>&1 || status=$?
   elapsed=$(( $(date +%s) - started_at ))
   if [ "$status" -eq 124 ]; then
