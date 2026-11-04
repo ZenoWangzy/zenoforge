@@ -18,8 +18,8 @@ jobs:
         with:
           node-version: 22
       - run: git config --global user.name ci && git config --global user.email ci@example.com
-      # engine/ts-judge.mjs imports @typesafe-ai/sdk at top level; it is the only npm runtime dependency of the engine.
-      - run: npm install --no-save @typesafe-ai/sdk@0.7.0
+      # Installs exactly the lockfile, which includes @typesafe-ai/sdk (engine/ts-judge.mjs's only npm runtime dependency).
+      - run: npm ci
       - run: bash tools/run-engine-tests.sh ${{ matrix.shard }} 8
       - if: always()
         uses: actions/upload-artifact@v4

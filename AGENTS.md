@@ -21,7 +21,7 @@ This repository is public. Keep customer names, home-directory paths, hostnames,
 ## Tests
 
 - All suites: `bash tools/run-engine-tests.sh`, or one shard: `bash tools/run-engine-tests.sh 0 8`.
-- One suite: `bash engine/<name>.test.sh` or `node --test engine/<name>.test.mjs`. Run `npm install --no-save @typesafe-ai/sdk@0.7.0` first, as CI does.
+- One suite: `bash engine/<name>.test.sh` or `node --test engine/<name>.test.mjs`. Run `npm ci` first, as CI does.
 - A shell suite starts with `set -euo pipefail` and then sources `test-env.sh`, which isolates `HOME` and `AGENT_HOME`.
 - CI skips the suites listed in `tools/quarantine.txt` and prints each reason.
 
