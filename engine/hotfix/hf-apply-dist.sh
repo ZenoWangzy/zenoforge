@@ -2,10 +2,18 @@
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$here/../config.sh"
-config=$(zf_config_file hotfix.json) || {
+config=$(zf_config_file hotfix.json) || config=
+# The engine's shipped default hotfix.json carries other seams' keys: without an apply_dist key it is no
+# distribution config and the legacy fallback stays reachable. A config-root or pack file still selects the
+# seam as before (a keyless override stays an error).
+if [[ -n $config && $config == "${ZF_ENGINE_DIR%/}/hotfix.json" ]]; then
+  jq -e . "$config" >/dev/null 2>&1 || { echo 'hf-apply-dist: invalid hotfix.json' >&2; exit 1; }
+  jq -e 'type == "object" and has("apply_dist")' "$config" >/dev/null 2>&1 || config=
+fi
+if [[ -z $config ]]; then
   legacy=$(pack_file hotfix/hf-apply-dist.sh) && exec bash "$legacy" "$@"
   echo 'hf-apply-dist: configure distribution installation in hotfix.json' >&2; exit 1
-}
+fi
 (($# == 3)) && [[ $1 =~ ^[0-9a-f]{7,40}$ && $2 =~ ^[a-z0-9-]+$ && -f $3 ]] || { echo 'usage: hf-apply-dist.sh <main-sha> <tag> <coord.md>' >&2; exit 2; }
 if ! jq -e '.apply_dist | type == "object" and ([.host,.host_env,.repo_env,.release_unit,.backup_root,.coord_root,.registry,.package_dir,.container_path,.repo_home_relative] | all(.[]; type == "string" and test("^[A-Za-z0-9_./@-]+$"))) and ([.host_env,.repo_env] | all(.[]; test("^[A-Za-z_][A-Za-z0-9_]*$"))) and ([.backup_root,.coord_root,.registry,.container_path] | all(.[]; startswith("/"))) and ([.package_dir,.repo_home_relative] | all(.[]; startswith("/") | not)) and (.containers | type == "array" and length > 0 and all(.[]; type == "string" and test("^[A-Za-z0-9_][A-Za-z0-9_.-]*$"))) and ([.install,.build,.restart] | all(.[]; type == "array" and length > 0 and all(.[]; type == "string" and length > 0 and (contains("\n") | not))))' "$config" >/dev/null; then
   echo 'hf-apply-dist: invalid distribution installation configuration' >&2; exit 1

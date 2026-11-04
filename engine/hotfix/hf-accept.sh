@@ -4,6 +4,12 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$here/../config.sh"
 [[ ${HF_SKIP_ACCEPT:-} == 1 ]] && { echo 'hf-accept: skipped (HF_SKIP_ACCEPT=1; the next install runs it)'; exit 0; }
 config=$(zf_config_file hotfix.json) || config=
+# The engine's shipped default hotfix.json carries other seams' keys: without an acceptance key the legacy
+# acceptance path stays reachable. A config-root or pack file still selects the seam as before.
+if [[ -n $config && $config == "${ZF_ENGINE_DIR%/}/hotfix.json" ]]; then
+  jq -e . "$config" >/dev/null 2>&1 || { echo 'hf-accept: invalid hotfix.json' >&2; exit 1; }
+  jq -e 'type == "object" and has("acceptance")' "$config" >/dev/null 2>&1 || config=
+fi
 if [[ -n $config ]]; then
   # The command is an argument vector, never evaluated as shell code.
   if ! jq -e '.acceptance | (.command | type == "array" and length > 0 and all(.[]; type == "string" and length > 0 and (contains("\n") | not))) and (.person | type == "string" and length > 0) and (.target | type == "string" and length > 0) and ((.target_env // "") | type == "string" and (length == 0 or test("^[A-Za-z_][A-Za-z0-9_]*$"))) and ((.repo_env // "") | type == "string" and (length == 0 or test("^[A-Za-z_][A-Za-z0-9_]*$")))' "$config" >/dev/null; then

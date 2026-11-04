@@ -29,6 +29,12 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ZF_REPO_DIR=${ZF_REPO_DIR:-$root}
 source "$here/config.sh"
 config=$(zf_config_file hotfix.json || true)
+# The engine's shipped default hotfix.json carries other seams' keys: without a prepush key it is no prepush
+# config. A config-root or pack file still selects the seam exactly as before (a keyless override fails closed).
+if [[ -n $config && $config == "${ZF_ENGINE_DIR%/}/hotfix.json" ]]; then
+  jq -e . "$config" >/dev/null 2>&1 || { echo 'prepush-gates: invalid hotfix.json' >&2; exit 1; }
+  jq -e 'type == "object" and has("prepush")' "$config" >/dev/null 2>&1 || config=
+fi
 legacy_name=
 if [[ -n $config ]]; then
   legacy_name=$(node "$here/hotfix/prepush-config.mjs" "$config" --legacy-name) || exit 1

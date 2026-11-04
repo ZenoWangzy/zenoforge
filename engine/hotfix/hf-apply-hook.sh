@@ -2,10 +2,17 @@
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$here/../config.sh"
-config=$(zf_config_file hotfix.json) || {
+config=$(zf_config_file hotfix.json) || config=
+# The engine's shipped default hotfix.json carries other seams' keys: without an apply_hook key it is no hook
+# config and the legacy fallback stays reachable. A config-root or pack file still selects the seam as before.
+if [[ -n $config && $config == "${ZF_ENGINE_DIR%/}/hotfix.json" ]]; then
+  jq -e . "$config" >/dev/null 2>&1 || { echo 'hf-apply-hook: invalid hotfix.json' >&2; exit 1; }
+  jq -e 'type == "object" and has("apply_hook")' "$config" >/dev/null 2>&1 || config=
+fi
+if [[ -z $config ]]; then
   legacy=$(pack_file hotfix/hf-apply-hook.sh) && exec bash "$legacy" "$@"
   echo 'hf-apply-hook: configure hook installation in hotfix.json' >&2; exit 1
-}
+fi
 (($# == 3)) && [[ -f $1 && -f $3 && $2 =~ ^[a-z0-9-]+$ ]] || { echo 'usage: hf-apply-hook.sh <hook> <tag> <coord.md>' >&2; exit 2; }
 if ! jq -e '.apply_hook | type == "object" and ([.host,.host_env,.release_unit,.backup_root,.coord_root,.container,.container_path,.profiles_root,.profile_path,.registry] | all(.[]; type == "string" and test("^[A-Za-z0-9_./@-]+$"))) and (.host_env | test("^[A-Za-z_][A-Za-z0-9_]*$")) and ([.backup_root,.coord_root,.container_path,.profiles_root,.registry] | all(.[]; startswith("/"))) and (.profile_path | startswith("/") | not) and (.restart | type == "array" and length > 0 and all(.[]; type == "string" and length > 0 and (contains("\n") | not)))' "$config" >/dev/null; then
   echo 'hf-apply-hook: invalid hook installation configuration' >&2; exit 1

@@ -34,7 +34,16 @@ module.exports = { verdict, compileRules };
 
 async function main() {
   const { zfConfigFile, PACK_DIR } = await import('./pack-dir.mjs');
-  const config = zfConfigFile('hotfix.json');
+  let config = zfConfigFile('hotfix.json');
+  // The engine's shipped hotfix.json default carries other seams' keys: without command_rules it is no gate
+  // config and the legacy gate stays reachable. A config-root or pack file still selects the gate as before.
+  const engineDefault = join(process.env.ZF_ENGINE_DIR || __dirname, 'hotfix.json');
+  if (config && config === engineDefault) {
+    let configured;
+    try { configured = JSON.parse(readFileSync(config, 'utf8')).command_rules; }
+    catch { process.stderr.write('prod-hotfix-gate: invalid command rules\n'); return 2; }
+    if (configured === undefined) config = null;
+  }
   if (!config) {
     if (PACK_DIR) {
       const legacy = join(PACK_DIR, 'prod-hotfix-gate.cjs');

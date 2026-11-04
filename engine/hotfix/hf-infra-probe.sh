@@ -2,10 +2,17 @@
 set -uo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$here/../config.sh"
-config=$(zf_config_file hotfix.json) || {
+config=$(zf_config_file hotfix.json) || config=
+# The engine's shipped default hotfix.json carries other seams' keys: without an infra_probe key it is no probe
+# config and the legacy fallback stays reachable. A config-root or pack file still selects the seam as before.
+if [[ -n $config && $config == "${ZF_ENGINE_DIR%/}/hotfix.json" ]]; then
+  jq -e . "$config" >/dev/null 2>&1 || { echo 'hf-infra-probe: invalid hotfix.json' >&2; exit 1; }
+  jq -e 'type == "object" and has("infra_probe")' "$config" >/dev/null 2>&1 || config=
+fi
+if [[ -z $config ]]; then
   legacy=$(pack_file hotfix/hf-infra-probe.sh) && exec bash "$legacy" "$@"
   echo 'hf-infra-probe: configure infrastructure probe in hotfix.json' >&2; exit 1
-}
+fi
 if ! jq -e '.infra_probe | (.host | type == "string" and test("^[A-Za-z0-9_][A-Za-z0-9_.@-]*$")) and (.container | type == "string" and test("^[A-Za-z0-9_][A-Za-z0-9_.-]*$")) and (.cpu_limit | type == "number" and . > 0 and floor == .) and (.memory_limit | type == "number" and . > 0 and floor == .)' "$config" >/dev/null; then
   echo 'hf-infra-probe: configure host, container and limits in hotfix.json' >&2; exit 1
 fi

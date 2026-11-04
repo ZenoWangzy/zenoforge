@@ -1,0 +1,12 @@
+{
+  "apply_dist": {
+    "host": "mypc",
+    "host_env": "ZF_PROD_SSH",
+    "repo_env": "VECTA_REPO_DIR",
+    "repo_home_relative": ".vecta-agent/checkout",
+    "package_dir": "packages/fruit-industry-pack",
+    "container_path": "/app/packages/fruit-industry-pack/dist",
+    "install": ["pnpm", "install", "--frozen-lockfile"],
+    "build": ["pnpm", "--filter", "@openclaw/fruit-industry-pack...", "--workspace-concurrency=1", "run", "build"]
+  }
+}
