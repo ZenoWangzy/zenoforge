@@ -145,10 +145,17 @@ gh() {
       ;;
   esac
 
-  [[ "$max_attempts" =~ ^[1-9][0-9]*$ ]] || max_attempts=3
-  (( max_attempts > 5 )) && max_attempts=5
+  if [[ ! "$max_attempts" =~ ^[1-9][0-9]*$ ]]; then
+    max_attempts=3
+  elif (( ${#max_attempts} > 1 )) || (( max_attempts > 5 )); then
+    max_attempts=5
+  fi
   [[ "$base_backoff" =~ ^[0-9]+$ ]] || base_backoff=2
-  (( base_backoff > 30 )) && base_backoff=30
+  # Strip leading zeroes before Bash arithmetic (which otherwise parses octal),
+  # and compare length first so oversized values cannot overflow the cap.
+  base_backoff="${base_backoff#"${base_backoff%%[!0]*}"}"
+  [ -n "$base_backoff" ] || base_backoff=0
+  if (( ${#base_backoff} > 2 )) || (( base_backoff > 30 )); then base_backoff=30; fi
 
   if [ "$retry_read" != 1 ]; then
     attempt_timeout="$(gh_tick_attempt_timeout_sec)" || {
@@ -515,19 +522,26 @@ gh_failure_is_transient() {
 }
 
 
+gh_failure_graphql_error_line() {
+  grep -iE -m 1 'Resource limits for this query exceeded|MAX_NODE_LIMIT_EXCEEDED|GraphQL (validation|syntax|parse) error|Unknown (argument|type|directive) .+|Cannot query field .+ on type|Selections can.t be made on scalars|Expected value of type .+|Variable .+(was provided invalid value|is never used|but not used)|Field .+doesn.t (exist|accept)|Field .+ of type .+ must have a selection|Argument .+ (has an )?invalid value|Fragment .+(was defined, but not used|cannot be spread)|Could not resolve to a (Repository|node|Issue|PullRequest)' <<< "$1"
+}
+
+
 gh_failure_is_non_retryable_graphql() {
-  grep -qiE 'Resource limits for this query exceeded|MAX_NODE_LIMIT_EXCEEDED|GraphQL (validation|syntax|parse) error|Unknown (argument|type|directive) .+|Cannot query field .+ on type|Selections can.t be made on scalars|Expected value of type .+|Variable .+(was provided invalid value|is never used|but not used)|Field .+doesn.t (exist|accept)|Field .+ of type .+ must have a selection|Argument .+ (has an )?invalid value|Fragment .+(was defined, but not used|cannot be spread)|Could not resolve to a (Repository|node|Issue|PullRequest)' <<< "$1"
+  gh_failure_graphql_error_line "$1" >/dev/null
 }
 
 
 gh_failure_log() {
   local message="$1" line
-  if gh_failure_is_non_retryable_graphql "$message"; then
+  if line="$(gh_failure_graphql_error_line "$message")"; then
     if grep -qiF 'Resource limits for this query exceeded' <<< "$message"; then
       echo 'gh: non-retryable GraphQL error: Resource limits for this query exceeded' >&2
       return 0
     fi
-    line="$(sed -n '/[^[:space:]]/{s/^[[:space:]]*//;p;q;}' <<< "$message")"
+    # Keep the matching line: guarded_write must be able to recognize the
+    # deterministic error again when deciding whether REST fallback is safe.
+    line="${line#"${line%%[![:space:]]*}"}"
     line="${line#gh: }"
     printf 'gh: non-retryable GraphQL error: %s\n' "${line:-request rejected}" >&2
     return 0
