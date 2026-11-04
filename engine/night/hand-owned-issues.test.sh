@@ -108,10 +108,11 @@ for gate in \
   'hand_agent_issue_is_live_owned "$next_measure"' \
   'hand_agent_issue_is_live_owned "$advisor_id"' \
   'hand_agent_issue_is_live_owned "$next_poll"' \
-  'hand_agent_issue_is_live_owned "$next_orphan"' \
   'hand_agent_issue_is_live_owned "$n"' \
   'record_hand_owned_decision triage "$next_triage"' \
   'record_hand_owned_decision advisor "$advisor_id"'; do
   grep -Fq "$gate" "$PIPELINE" || { echo "not ok - selector gate missing: $gate" >&2; exit 1; }
 done
+grep -Eq 'hand_agent_issue_is_live_owned "\$next_(orphan|verdict)"' "$PIPELINE" \
+  || { echo 'not ok - selector gate missing: hand_agent_issue_is_live_owned on orphan candidate' >&2; exit 1; }
 echo 'ok - triage and advisor selectors retain hand-owned gates'
