@@ -603,6 +603,25 @@ print("node_health unavailable GitHub source stays unknown: PASS")
 print("node_health delivery joins and percentiles: PASS")
 CHECK
 
+# 空接受集：30 天内没有观察到任何发布验收时，具名事故是否未关联是未知（NO-DATA），
+# 不能把每条具名事故都算成未关联。
+python3 - "$script_dir" <<'CHECK' || fail 'empty accepted set must report unlinked incidents as unknown, not a count'
+import sys
+sys.path.insert(0, sys.argv[1]); import node_health as n
+now = n.ts("2026-10-26T12:00:00Z")
+incidents = [{"id":"incident-1", "date":"2026-10-25", "issue":101},
+             {"id":"incident-2", "date":"2026-10-25", "what_happened":"incident named Issues #102"}]
+unknown = n.delivery_metrics([], [], [], [], incidents, now)
+assert unknown["values"]["delivery.unlinked_incidents_30d"] is None, unknown["values"]
+assert unknown["details"]["unlinked_incidents_30d"] is None, unknown["details"]
+assert unknown["details"]["incident_records_30d"] == 2, unknown["details"]
+assert unknown["details"]["incident_unreferenced_30d"] == 0, unknown["details"]
+known = n.delivery_metrics([], [], [], [{"issue":101, "sha":"a"*40, "at":"2026-10-25T00:00:00Z"}],
+                           incidents, now)
+assert known["values"]["delivery.unlinked_incidents_30d"] == 1, known["values"]
+print("node_health empty accepted set reports unknown unlinked incidents: PASS")
+CHECK
+
 # --- 流动指标（#4366）：fixture 账本算数值；阈值内不发事件，越限每个指标只发一次 ---
 fsup="$test_env_root/flow-sup"; fa="$fsup/autopi"; mkdir -p "$fa" "$fsup"
 noaudit="$test_env_root/no-audit.jsonl"
@@ -715,6 +734,30 @@ missing = {p for p in missing if not any(i == p or i.startswith(p + "-") for i i
 assert not missing, "f1-f16 not all registered: %s" % missing
 print("mechanism registry schema: PASS")
 REGCHK
+# f4 登记的 pattern 必须匹配 merge-lane.sh 现在写的门禁行：held 行是
+# "GATE class=$CI_CLASS main=..."（merge-lane.sh），旧的 "GATE main=" 只覆盖另两个状态。
+grep -Fq 'GATE class=$CI_CLASS main=' "$script_dir/scheduler.d/merge-lane.sh" \
+  || fail 'merge-lane.sh no longer writes the GATE class= held line; update the f4 registry pattern here'
+python3 - "$script_dir" "$registry_file" "$test_env_root" <<'CHECK' || fail 'f4 registry pattern does not match the gate lines merge-lane.sh writes'
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1]); import node_health as n
+f4 = [m for m in json.load(open(sys.argv[2]))["mechanisms"] if m["id"] == "factory-f4-main-suites-gate"]
+assert len(f4) == 1, f4
+held = "[2026-11-04T11:00:00Z] GATE class=code main=0123456789abcdef run=2; checks failed; merge lane held for pipeline PRs; product PRs still merge\n"
+runtime = pathlib.Path(sys.argv[3]) / "gate-writer-f4"
+(runtime / "alerts").mkdir(parents=True, exist_ok=True)
+# 全部三种 gate_note 形态都要命中；held-only（合并门被扣住、最需要看到事件的状态）也必须命中
+(runtime / "alerts" / "gate.md").write_text(
+    "[2026-11-04T10:00:00Z] GATE main=0123456789abcdef run=1 status=pending — pipeline PRs merge on their own checks; main CI verifies after merge\n"
+    + held +
+    "[2026-11-04T12:00:00Z] GATE main=0123456789abcdef suites=success — merge lane open\n")
+rows, silent = n.mechanism_heartbeat(f4, str(runtime), str(runtime), n.ts("2026-11-04T12:30:00Z"))
+assert silent == 0 and rows[0]["last_event_at"] == "2026-11-04T12:00:00Z", rows
+(runtime / "alerts" / "gate.md").write_text(held)
+rows, silent = n.mechanism_heartbeat(f4, str(runtime), str(runtime), n.ts("2026-11-04T12:30:00Z"))
+assert silent == 0 and rows[0]["last_event_at"] == "2026-11-04T11:00:00Z", rows
+print("node_health f4 gate pattern matches current merge-lane lines: PASS")
+CHECK
 msup="$test_env_root/mech-sup"; ma="$msup/autopi"; mkdir -p "$ma/alerts" "$AGENT_HOME/logs"
 printf '{"units":[]}' > "$ma/units.json"
 {

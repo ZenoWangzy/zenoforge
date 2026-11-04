@@ -41,6 +41,24 @@ assert open_order["over"] == ["tokens"]
 assert done_order["tokens"] == 28_000_000
 assert done_order["over"] == []
 assert workorder_cost.UNIT_STANDARDS["tokens"][2] == 28_000_000
+
+# Held stages (blocked-external, parked) wait on a predecessor or an external
+# decision: their age is not a defect, so the age bug bound must not count them.
+held_units = [
+    {"id": "issue-3", "issue": 3, "pr": 13, "stage": "parked",
+     "history": [{"stage": "created", "at": "2026-10-15T00:00:00Z"}]},
+    {"id": "issue-4", "issue": 4, "pr": 14, "stage": "blocked-external",
+     "history": [{"stage": "created", "at": "2026-10-15T00:00:00Z"}]},
+]
+held_orders = workorder_cost.work_orders(
+    held_units, {}, datetime(2026, 10, 29, 1, tzinfo=timezone.utc))
+assert [o["over"] for o in held_orders] == [[], []], held_orders
+# The same age on a progressable unit still trips the age bound.
+active_unit = {"id": "issue-5", "issue": 5, "pr": 15, "stage": "review-pending",
+               "history": [{"stage": "created", "at": "2026-10-15T00:00:00Z"}]}
+active_order = workorder_cost.work_orders(
+    [active_unit], {}, datetime(2026, 10, 29, 1, tzinfo=timezone.utc))[0]
+assert active_order["over"] == ["age_hours"], active_order
 PY
 
 echo 'workorder_cost.test.sh: PASS'

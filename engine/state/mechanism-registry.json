@@ -120,7 +120,7 @@
       "id": "factory-f4-main-suites-gate",
       "desc": "[skip ci] 守卫的运行面（#4359）：workflow 路径映射 suites，调度器把 pipeline PR 合并扣在 main suites 判决后面，状态变化写 GATE 行",
       "events": [
-        {"base": "runtime", "file": "alerts/gate.md", "pattern": "GATE main="}
+        {"base": "runtime", "file": "alerts/gate.md", "pattern": "GATE (class=\\S+ )?main="}
       ],
       "silence_hours": 24,
       "supervisor": "head-supervisor",

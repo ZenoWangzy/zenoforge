@@ -47,9 +47,11 @@ def work_orders(units, spend, now):
             "age_hours": round(((done or now) - _ts(hist[0]["at"])).total_seconds() / 3600, 1) if hist else None,
         }
         open_unit = unit.get("stage") not in UNIT_DONE
+        # Held units age by design, not by defect: a stack child waits on its predecessor
+        # (blocked-external) and a parked unit on an external decision (stop-loss, supervisor
+        # hold, main-red). The age bound only judges units the factory could progress.
         over = [key for key, (_, _, bug) in UNIT_STANDARDS.items()
                 if open_unit and value[key] is not None and value[key] >= bug
-                # A unit parked behind a predecessor ages by design; the predecessor carries the cost.
-                and not (key == "age_hours" and unit.get("stage") == "blocked-external")]
+                and not (key == "age_hours" and unit.get("stage") in ("blocked-external", "parked"))]
         out.append({"id": unit.get("id"), "stage": unit.get("stage"), **value, "over": over})
     return out

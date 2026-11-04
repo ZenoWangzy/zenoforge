@@ -1192,11 +1192,14 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
                 return int(found.group(1)) if found else None
             named = [_incident_issue(incident) for incident in incident_rows]
             details["incident_unreferenced_30d"] = sum(issue is None for issue in named)
-            unlinked_incidents = sum(
-                issue is not None and issue not in accepted_release_issues_30d for issue in named)
-            details["unlinked_incidents_30d"] = unlinked_incidents
-            values["delivery.unlinked_incidents_30d"] = unlinked_incidents
+            # An empty accepted set means no release acceptance was observed in 30 d: with no
+            # acceptance baseline, whether a named incident is unlinked is unknown (NO-DATA),
+            # not "every incident is unlinked".
             if accepted_release_issues_30d:
+                unlinked_incidents = sum(
+                    issue is not None and issue not in accepted_release_issues_30d for issue in named)
+                details["unlinked_incidents_30d"] = unlinked_incidents
+                values["delivery.unlinked_incidents_30d"] = unlinked_incidents
                 values["delivery.incident_rate_30d_pct"] = 100 * len(incident_rows) / len(accepted_release_issues_30d)
     if details["unlinked_units_30d"] is not None:
         values["delivery.unlinked_units_30d"] = details["unlinked_units_30d"]

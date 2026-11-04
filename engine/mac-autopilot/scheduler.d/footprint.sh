@@ -509,6 +509,12 @@ test_evidence_has_pass() {
   python3 "$HERE/test-evidence.py" has "$SUP/test-evidence.jsonl" "$1" "$2"
 }
 test_evidence_record_pass() {
-  python3 "$HERE/test-evidence.py" record "$SUP/test-evidence.jsonl" "$1" "$2" "$3" \
-    || say "test evidence not persisted tree=$1 target=$2 source=$3"
+  # Both outcomes reach scheduler.log: the mechanism-registry f5 heartbeat matches
+  # "test evidence" on the recorded line, so a healthy ledger is not indistinguishable
+  # from a dead one.
+  if python3 "$HERE/test-evidence.py" record "$SUP/test-evidence.jsonl" "$1" "$2" "$3"; then
+    say "test evidence recorded tree=$1 target=$2 source=$3"
+  else
+    say "test evidence not persisted tree=$1 target=$2 source=$3"
+  fi
 }

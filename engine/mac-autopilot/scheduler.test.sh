@@ -5994,6 +5994,26 @@ sched_case_glm_share_hard_after_two_failed_repairs() {
 }
 sched_run_case glm_share_hard_after_two_failed_repairs
 
+sched_case_test_evidence_heartbeat() (
+  # mechanism-registry f5（"test evidence"）此前只有失败路径写 scheduler.log：健康运行
+  # 一条都不写，24h 后机制被误报沉默。记录成功也必须落到 scheduler.log。
+  local fx="$test_env_root/test-evidence-heartbeat" log
+  source "$script_dir/scheduler.d/core.sh"
+  HERE="$script_dir"; SUP="$fx/sup"; LOG="$fx/scheduler.log"; STAMP=2026-11-04T12:00:00Z
+  mkdir -p "$SUP"
+  source "$script_dir/scheduler.d/footprint.sh"
+  test_evidence_record_pass 0123456789abcdef test:pkg-a self-check
+  log="$(cat "$LOG")"
+  grep -Fq '[2026-11-04T12:00:00Z] test evidence recorded tree=0123456789abcdef target=test:pkg-a source=self-check' <<<"$log" \
+    || { echo "not ok - scheduler.test.sh: recorded evidence did not reach scheduler.log: $log" >&2; exit 1; }
+  python3 "$HERE/test-evidence.py" has "$SUP/test-evidence.jsonl" 0123456789abcdef test:pkg-a \
+    || { echo 'not ok - scheduler.test.sh: evidence record did not persist' >&2; exit 1; }
+  test_evidence_record_pass 0123456789abcdef test:pkg-b self-check
+  [[ "$(grep -Fc 'test evidence recorded' "$LOG")" == 2 ]] \
+    || { echo "not ok - scheduler.test.sh: each record must log its own heartbeat line: $(cat "$LOG")" >&2; exit 1; }
+)
+sched_run_case test_evidence_heartbeat
+
 if [ -n "${SCHED_TEST_CASE:-}" ]; then
   echo "not ok - scheduler.test.sh: no case matches SCHED_TEST_CASE='$SCHED_TEST_CASE'; known:$sched_case_names" >&2
   exit 2
