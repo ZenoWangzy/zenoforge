@@ -2,11 +2,32 @@
 # scheduler 门禁/状态机回归：批准绑定 head、结论解析、报告不复用、回合断路、批量回退顺序、
 # 非裁决不回退、BLOCK 重派条件、门禁 [skip ci] 评估点、分支清理只删 [gone]、隔离 clone、
 # 正文 Blocked by 派发前拦截。
+# The default run executes partition 0; scheduler-gates-part-*.test.sh execute partitions 1–7.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
+SCHEDULER_GATES_PART="${SCHEDULER_GATES_PART:-0}"
+case "$SCHEDULER_GATES_PART" in 0|1|2|3|4|5|6|7) ;; *) echo "invalid SCHEDULER_GATES_PART=$SCHEDULER_GATES_PART" >&2; exit 2 ;; esac
+fail() { echo "scheduler-gates.test.sh: $*" >&2; exit 1; }
+units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
+field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
+H1=1111111111111111111111111111111111111111
+H2=2222222222222222222222222222222222222222
+M1=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+M2=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+M3=cccccccccccccccccccccccccccccccccccccccc
+if (( SCHEDULER_GATES_PART >= 2 )); then
+  source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-gh-fixture.sh"
+  ensure_clone() { printf '%s' "$fixture/wt-$1"; }
+  checkout_pr_head() { :; }
+  live_workers() { echo 0; }
+  live_by_type() { echo 0; }
+  DISPATCHED=()
+  dispatch() { DISPATCHED+=("$1:$4:$8"); DISPATCH_PR_HEAD="${10:-}"; DISPATCH_PROMPT="$7"; }
+fi
 
+if [[ "$SCHEDULER_GATES_PART" == 0 ]]; then
 # 合并门评估链：越过 [skip ci] 与只改产品路径的提交，停在第一个改流水线路径的非 skip 提交（含）
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 gr="$fixture/gate-repo"; command git init -q -b main "$gr"
@@ -24,10 +45,6 @@ echo b > "$gr/packages/x/b.ts"; command git -C "$gr" add -A; command git -C "$gr
 echo c > "$gr/engine/c.sh"; command git -C "$gr" add -A; command git -C "$gr" commit -qm '[skip ci] direct landing'; g3="$(command git -C "$gr" rev-parse HEAD)"
 command git -C "$gr" update-ref refs/remotes/origin/main "$g3"
 [[ "$(ROOT="$gr" gate_eval_sha | tr '\n' ' ')" == "$g3 $g2 $g1 " ]] || fail "gate chain did not walk past product commits: $(ROOT="$gr" gate_eval_sha | tr '\n' ' ')"
-
-fail() { echo "scheduler-gates.test.sh: $*" >&2; exit 1; }
-units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
-field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 
 # An approved predecessor can release a labelled dependent onto its PR head.
 stack_sha=0123456789012345678901234567890123456789
@@ -174,12 +191,6 @@ command git --git-dir="$pr_fetch_fixture/remote.git" update-ref refs/pull/40/hea
 if ( ROOT="$precheck_clone"; approval_carries 40 "$pr_fetch_head" "$pr_fetch_updated_head" ); then
   fail 'approval was carried after the PR head moved'
 fi
-
-H1=1111111111111111111111111111111111111111
-H2=2222222222222222222222222222222222222222
-M1=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-M2=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-M3=cccccccccccccccccccccccccccccccccccccccc
 
 # ---------- 结论解析：只认唯一的整行 VERDICT；旧报告和统一契约都可读 ----------
 AUTO_POLICY_FIX="$fixture/policy.mjs"
@@ -512,6 +523,9 @@ jq -n '{workers:[{pid:5001,unit:"pr-4",type:"repair",harvested:true}]}' > "$WORK
 recover_orphans || :
 [[ "$(field pr-4 .stage)" == repair-pending ]] || fail 'unit without any unharvested worker record was not recovered'
 
+fi
+
+if [[ "$SCHEDULER_GATES_PART" == 1 ]]; then
 # ---------- 派发：复审基线、回合断路 ----------
 source "$script_dir/test-scheduler-gates-gh-fixture.sh"
 
@@ -990,7 +1004,9 @@ chmod +x "$lt/bin/timeout"
   || fail 'run_tick failed on a timed-out tick'
 grep -q 'TICK-TIMEOUT' "$lt/scheduler.log" && grep -q 'TICK-TIMEOUT' "$lt/alerts/waste.md" || fail 'hung tick was not killed and alerted'
 grep -Fq -- '--foreground -k 30 1 bash ' "$lt/timeout.args" || fail 'run_tick did not pass its bounded command to timeout'
+fi
 
+if [[ "$SCHEDULER_GATES_PART" == 2 ]]; then
 # repair 没推出新 head：自动重试两次，第三次转人工
 for round in 1 2 3; do
   hist_json="$(jq -cn --argjson n "$((round-1))" '[{stage:"review-request-changes"}] + [range($n) | {stage:"repair-no-push"}, {stage:"repair-delivered"}] + [{stage:"repair-delivered"}]')"
@@ -1334,6 +1350,9 @@ run_merge_lane || :
 [[ "$(field pr-13 .stage)" == ready-to-merge && "$(field pr-13 '.ci_rerun_sha // "none"')" == none && ${#GH_MERGES[@]} == 0 ]] || fail 'pending checks treated as red or merged'
 unset GH_CHECKS; eval "$gh_merge_stub"; GH_RERUNS=()
 
+fi
+
+if [[ "$SCHEDULER_GATES_PART" == 3 ]]; then
 # ---------- 队头阻塞：窗口里 CI 已出结论的单元排在还在跑的、被挡的前面 ----------
 gh_hol_saved="$(declare -f gh)"
 gh() { if [[ "$1 $2" == "pr list" && "$*" == *statusCheckRollup* ]]; then
@@ -1713,6 +1732,9 @@ printf 'LANDED %s\n' "$M2" > "$sup/land-issue-7.md"
 jq -n '{workers:[{pid:9702,unit:"issue-7",type:"land",log:"l.log",report:"land-issue-7.md"}]}' > "$WORKERS"
 harvest_workers || :
 [[ "$(field issue-7 .stage)" == landed && "${GH_ISSUE_CALLS[*]}" == *"issue close 7"* ]] || fail 'landed PR-less unit did not close its issue'
+fi
+
+if [[ "$SCHEDULER_GATES_PART" == 4 ]]; then
 # intake：按空闲产能收单（max_workers - 在跑 - 待派）；非产品标签走直落、ready-for-agent 走 PR 车道；跳过搁置标签与已有 PR 的 issue，focus 优先
 MAX_SAVED="$MAX"; MAX=4
 INTAKE_CFG_SAVED="$CFG"; CFG="$(jq '.issue_intake.labels=["pipeline-system"] | .issue_intake.ready_buffer=0' <<<"$CFG")"
@@ -2068,6 +2090,9 @@ units "{\"units\":[{\"id\":\"main-red-old\",\"main_red\":true,\"stage\":\"superv
 open_main_red_unit "$M3" 41 1 || :
 [[ "$(field main-red-old .stage)" == closed && "$(field "main-red-${M3:0:9}" .stage)" == implement-pending ]] || fail 'a parked main-red unit blocked the new red main'
 
+fi
+
+if [[ "$SCHEDULER_GATES_PART" == 5 ]]; then
 # ---------- 门禁：新 [skip ci] 直落提交的 run 还在跑时，用链上最新已完成的裁决 ----------
 gate_candidates_stub() { printf '%s\n%s\n' "$M3" "$M1"; }
 suites_run_for() { case "$1" in "$M3") jq -cn --arg sha "$1" '{headSha:$sha,status:"in_progress",conclusion:null}';; "$M1") jq -cn --arg sha "$1" '{headSha:$sha,status:"completed",conclusion:"success",databaseId:7}';; esac; }
@@ -2455,6 +2480,9 @@ ensure_clone pr-90 >/dev/null || fail 'the retained GitHub fetch did not deliver
 MAIN_HEAD=""
 
 
+fi
+
+if [[ "$SCHEDULER_GATES_PART" == 6 ]]; then
 # ---------- 模型提供方：claude-* 走只读 claude 评审；codex 带 service_tier ----------
 build_codex_command review claude-haiku-5-5 xhigh pr-50 'review prompt'
 [[ "${CODEX_COMMAND[0]}" == claude && "$WORKER_STDOUT_REPORT" == 1 ]] || fail 'claude model not routed to claude CLI'
@@ -2712,6 +2740,9 @@ stack_child_released="$(command git --git-dir="$stack_remote" rev-parse refs/hea
 eval "$stack_pr_view_real"
 eval "$stack_dep_states_real"
 ROOT="$stack_saved_root"; WT_ROOT="$stack_saved_wt_root"; MAIN_HEAD="$stack_saved_main_head"
+fi
+
+if [[ "$SCHEDULER_GATES_PART" == 7 ]]; then
 # ---------- PR 在 GitHub 已合并/关闭：派活前收掉（10-28 #4039/#4040 被重复派活）----------
 retire_saved_tick_prs="$(declare -f tick_prs)"; retire_saved_pr_view="$(declare -f pr_view)"
 tick_prs() { printf '[{"number":9001}]'; }
@@ -2751,4 +2782,9 @@ room_for issue-9 review || fail 'a stale wait file of a dead wrapper blocked dis
 [[ -e "$LUNA_SLOTS/wait-hotfix-$gate_dead" ]] && fail 'a stale wait file was not dropped'
 rm -f "$LUNA_SLOTS"/wait-*
 
-echo 'scheduler-gates.test.sh: PASS'
+fi
+if [[ "$SCHEDULER_GATES_PART" == 0 ]]; then
+  echo 'scheduler-gates.test.sh: PASS'
+else
+  echo "scheduler-gates-part-${SCHEDULER_GATES_PART}.test.sh: PASS"
+fi
