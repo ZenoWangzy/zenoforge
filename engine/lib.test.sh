@@ -889,30 +889,6 @@ case "${1:-}:${2:-}" in
       esac
     done
     ;;
-  api:*)
-    method=""; path=""; input=""; previous=""
-    for arg in "$@"; do
-      case "$previous" in
-        --method) method="$arg" ;;
-        --input) input="$arg" ;;
-      esac
-      case "$arg" in repos/test/repo/issues/*/labels) path="$arg" ;; esac
-      previous="$arg"
-    done
-    case "$method:$path" in
-      GET:repos/test/repo/issues/*/labels)
-        jq '[.labels // []]' "$ISSUE_TRANSITION_ISSUE"
-        ;;
-      PUT:repos/test/repo/issues/*/labels)
-        [[ -r "$input" ]]
-        jq --slurpfile body "$input" '.labels = ($body[0].labels | map({name:.}))' \
-          "$ISSUE_TRANSITION_ISSUE" > "$ISSUE_TRANSITION_ISSUE.tmp"
-        mv "$ISSUE_TRANSITION_ISSUE.tmp" "$ISSUE_TRANSITION_ISSUE"
-        echo '[]'
-        ;;
-      *) echo "unexpected fake REST call: $*" >&2; exit 2 ;;
-    esac
-    ;;
   *) echo "unexpected fake gh call: $*" >&2; exit 2 ;;
 esac
 EOF
@@ -1096,22 +1072,6 @@ HELD_LANE_OUTPUT="$(AGENT_HOME="$HELD_LANE_HOME" SCRIPT_DIR="$SCRIPT_DIR" REPO=t
     roadmap_ensure_issue_parent() { :; }
     issue_label_cache_invalidate() { :; }
     ensure_state_labels() { :; }
-    issue_transition_rest_label_write() {
-      local n="$1" remove_hold="$2" remove_evidence="$3" label desired keep
-      local -a desired_labels=() simulated=(gh issue edit "$1" --repo "$REPO")
-      shift 3
-      desired_labels=("$@")
-      for label in "${ALL_STATE_LABELS[@]}" on-hold; do
-        [ "$label" != on-hold ] || [ "$remove_hold" = 1 ] || continue
-        keep=0
-        for desired in "${desired_labels[@]}"; do [ "$desired" != "$label" ] || keep=1; done
-        [ "$keep" = 1 ] || simulated+=(--remove-label "$label")
-      done
-      simulated+=(--remove-label in-progress)
-      [ "$remove_evidence" != 1 ] || simulated+=(--remove-label evidence-gate)
-      for desired in "${desired_labels[@]}"; do simulated+=(--add-label "$desired"); done
-      printf '%s\n' "${simulated[*]}" >> "$HELD_LANE_COMMAND_LOG"
-    }
     issue_verdict_snapshot_guard() { return 0; }
     pipeline_system_route_status() { return 1; }
     advisor_retry_admission() { return 0; }

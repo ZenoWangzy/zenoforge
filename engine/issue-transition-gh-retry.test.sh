@@ -20,13 +20,29 @@ if [[ "$GH_MODE" == retry502 ]]; then
   echo 'gh: Bad Gateway (HTTP 502)' >&2
   exit 1
 fi
-if [[ "$GH_MODE" == complexity ]] || { [[ "$GH_MODE" == rest && "$1 $2 ${3:-}" == 'issue view 5314' ]]; }; then
+if [[ "$GH_MODE" == complexity ]] || { [[ "$GH_MODE" == rest || "$GH_MODE" == edit404 ]] && [[ "$1 $2 ${3:-}" == 'issue view 5314' ]]; }; then
   for _ in $(seq 1 300); do echo 'Resource limits for this query exceeded.' >&2; done
   exit 1
+fi
+if [[ "$GH_MODE" == edit404 ]]; then
+  if [[ "$1 $2 ${3:-}" == 'issue view 8124' ]]; then
+    echo CLOSED
+    exit 0
+  fi
+  if [[ "$1 $2" == 'issue edit' ]]; then
+    echo 'gh: Not Found (HTTP 404)' >&2
+    exit 1
+  fi
+  echo "unexpected fake gh call: $*" >&2
+  exit 90
 fi
 if [[ "$GH_MODE" == rest && "$1 $2 ${3:-}" == 'issue view 8124' ]]; then
   echo CLOSED
   exit 0
+fi
+if [[ "$GH_MODE" == rest && "$1 $2" == 'issue edit' ]]; then
+  echo 'gh: Resource limits for this query exceeded' >&2
+  exit 1
 fi
 if [[ "$GH_MODE" == rest && "$1" == api ]]; then
   method=""; path=""; input=""; previous=""
@@ -91,8 +107,9 @@ fi
 [[ "$(cat "$GH_SLEEP_LOG")" == $'2\n4' ]]
 echo 'ok - HTTP 502 retries stop at the configured three attempts with backoff'
 
-# The read-side GraphQL failure must not block a transition label write: the
-# guarded transition writes its complete label set through the REST labels API.
+# A deterministic GraphQL refusal of the primary `gh issue edit` falls back to
+# the REST labels API: one edit attempt, then the complete label set written
+# through REST with unrelated labels preserved and the state transition kept.
 export ZF_REPO=fixture/repo
 export GH_MODE=rest
 : > "$GH_CALL_LOG"
@@ -106,11 +123,28 @@ jq -e '.labels | index("ready-for-agent") != null and index("focus") != null and
   "$GH_LABELS_OUT" >/dev/null
 grep -Fq 'api --paginate --slurp --method GET repos/fixture/repo/issues/5314/labels' "$GH_CALL_LOG"
 grep -Fq 'api --method PUT repos/fixture/repo/issues/5314/labels' "$GH_CALL_LOG"
-if grep -Fq 'issue edit 5314' "$GH_CALL_LOG"; then
-  echo 'not ok - transition used the GraphQL issue-edit write' >&2
-  exit 1
-fi
+[[ "$(grep -Fc 'issue edit 5314 ' "$GH_CALL_LOG")" == 1 ]]
 [[ "$(state_read 5314 | jq -r '.state')" == ready-for-agent ]]
 [[ "$(grep -Fc 'issue view 5314 --repo fixture/repo --json labels' "$GH_CALL_LOG")" == 1 ]]
 grep -Fq 'issue view failed for #5314' "$AGENT_HOME/transition.err"
-echo 'ok - REST label replacement succeeds when the GraphQL label guard degrades'
+grep -Fq 'falling back to the REST label write' "$AGENT_HOME/transition.err"
+echo 'ok - GraphQL-refused label edit retries the transition labels through REST'
+
+# Any other write failure keeps the ordinary path: no REST fallback, the
+# transition fails, and the local state rolls back to its pre-write value.
+export GH_MODE=edit404
+: > "$GH_CALL_LOG"
+state_merge 5314 '{"state":"needs-triage","recut_children":[8124]}'
+if OPEN_ISSUE_BLOCKER_GRAPH_JSON='[{"number":8124,"state":"CLOSED"}]' \
+  issue_transition 5314 ready-for-agent focused-rest-label-write 2> "$AGENT_HOME/edit404.err"; then
+  echo 'not ok - HTTP 404 write failure unexpectedly succeeded' >&2
+  exit 1
+fi
+if grep -Eq '^api ' "$GH_CALL_LOG"; then
+  echo 'not ok - non-GraphQL write failure used the REST fallback' >&2
+  exit 1
+fi
+[[ "$(grep -Fc 'issue edit 5314 ' "$GH_CALL_LOG")" == 1 ]]
+[[ "$(state_read 5314 | jq -r '.state')" == needs-triage ]]
+grep -Fq 'label write failed for #5314' "$AGENT_HOME/edit404.err"
+echo 'ok - non-GraphQL write failure never touches the REST fallback'

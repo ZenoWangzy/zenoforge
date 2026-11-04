@@ -580,6 +580,9 @@ issue_transition_rest_label_write() {
   shift 3
   add_labels=("$@")
 
+  # Fallback label writer: guarded_write calls this only after the primary
+  # `gh issue edit` failed with a deterministic GraphQL error (per-query
+  # resource limit, validation), so the transition can still land.
   # REST PUT replaces the full label set, so preserve unrelated labels from
   # the REST read and change only pipeline-owned labels here.
   labels_raw="$(gh api --paginate --slurp --method GET "repos/$REPO/issues/$n/labels" -F per_page=100)" || {

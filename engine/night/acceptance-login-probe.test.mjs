@@ -48,7 +48,10 @@ test('main writes probe state under AGENT_HOME/state using the configured file n
     production: { urls: { acceptance_login: 'https://fixture.invalid/login' } },
   }));
   const curl = join(binDir, 'curl');
-  writeFileSync(curl, '#!/bin/sh\nprintf "%s\\n" "200|0.010|0.020|0.020|0.030|0.500|89|1024"\n');
+  // The stub must drain stdin like the real curl (--data-binary @- reads the
+  // request body); a stub that exits without reading races the parent's stdin
+  // write into an EPIPE that fails the probe nondeterministically.
+  writeFileSync(curl, '#!/bin/sh\ncat > /dev/null\nprintf "%s\\n" "200|0.010|0.020|0.020|0.030|0.500|89|1024"\n');
   chmodSync(curl, 0o755);
   try {
     const child = spawnSync(process.execPath, [resolve('engine/night/acceptance-login-probe.mjs')], {
