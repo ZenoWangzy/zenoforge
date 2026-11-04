@@ -29,6 +29,10 @@ printf '# 结论\n\n**结论：`VERDICT: READY`** — note\n' > "$r"
 [[ "$(verdict_of "$r")" == READY ]] || fail 'inline-code verdict behind a translated label was not parsed'
 printf 'Review complete; report saved, verdict **VERDICT: READY**.\n' > "$r"
 [[ "$(verdict_of "$r")" == READY ]] || fail 'mid-line verdict in a recovered final message was not parsed'
+printf '增量评审完成，**VERDICT: READY**，报告已写入 `<the same path>`。\n' > "$r"
+[[ "$(verdict_of "$r")" == READY ]] || fail 'the exact recovered Zcode final message did not parse as READY'
+printf '增量评审完成，**VERDICT: READY**，但若有阻塞则应为 NOT_READY；报告已写入 `<the same path>`。\n' > "$r"
+[[ -z "$(verdict_of "$r" || true)" ]] || fail 'a recovered final message with two verdict values was not treated as ambiguous'
 printf '## verdict\nnot_ready\n' > "$r"
 [[ "$(verdict_of "$r")" == NOT_READY ]] || fail 'lowercase verdict heading and value were not normalized'
 
@@ -63,4 +67,32 @@ units '{"units":[{"id":"pr-abstain","pr":7,"stage":"review","history":[{"stage":
 jq -n --arg sha "$H1" '{workers:[{pid:4244,unit:"pr-abstain",type:"review",log:"x.log",report:"review-abstain-T1.md",sha:$sha}]}' > "$WORKERS"
 harvest_workers || :
 [[ "$(field pr-abstain .stage)" == supervisor-review ]] || fail 'a second missing verdict did not escalate'
+
+# A Zcode/Claude stdout capture must not replace a report the reviewer wrote at the prompted path.
+units '{"units":[{"id":"pr-report-capture","lane":"pr","history":[]}]}'
+report_capture="$sup/review-preserved.md"
+final_reply='增量评审完成，**VERDICT: READY**，报告已写入 `<the same path>`。'
+printf '# Reviewer report\n\nVERDICT: READY\n' > "$report_capture"
+LIVE_WORKER_CACHE_UNTIL=0
+coord_scheduler_live_worker() { return 1; }
+coord_unit_key() { printf 'unit:%s\n' "$1"; }
+coord_new_owner() { printf 'fixture-owner\n'; }
+coord_acquire() { return 0; }
+coord_assert_owned() { return 0; }
+coord_process_start_ticks() { printf '1\n'; }
+coord_renew() { return 0; }
+build_codex_command() {
+  CODEX_MODE=fresh CODEX_PATH_REASON=initial CODEX_SESSION_ID=""
+  CODEX_USAGE_START='{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}'
+  WORKER_STDOUT_REPORT=1
+  CODEX_COMMAND=(bash -c 'printf "%s\\n" "$1"' _ "$final_reply")
+}
+dispatch review zcode-fixture max pr-report-capture review-preserved.worker.log \
+  review-preserved.md fixture-prompt '' "$fixture/repo" '' fixture-prompt zcode
+capture_pid="$(jq -r '.workers[-1].pid' "$WORKERS")"
+wait "$capture_pid" || fail 'stdout report capture worker failed'
+[[ "$(cat "$report_capture")" == $'# Reviewer report\n\nVERDICT: READY' ]] \
+  || fail 'the final chat message replaced the reviewer-written report'
+[[ "$(cat "$report_capture.final-message")" == "$final_reply" ]] \
+  || fail 'the final chat message was not preserved in its separate capture file'
 echo 'review-verdict.test.sh: PASS (parse, ambiguity, format-only retry, second-failure escalation)'

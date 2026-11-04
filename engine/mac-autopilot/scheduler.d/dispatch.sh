@@ -1,4 +1,21 @@
 
+capture_worker_stdout_report() { # report-path command...
+  local report="$1" partial="${1}.partial" status=0
+  shift
+  "$@" > "$partial" || status=$?
+  if (( status != 0 )); then return "$status"; fi
+  [[ -s "$partial" ]] || return 1
+  if [[ -e "$report" ]]; then
+    mv -f -- "$partial" "${report}.final-message"
+  else
+    # A worker may have written its prompted report while the CLI was running.
+    # Never let this final-message capture replace that report, including a
+    # report that appears between the existence check and the rename.
+    mv -n -- "$partial" "$report" || return 1
+    [[ ! -e "$partial" ]] || mv -f -- "$partial" "${report}.final-message"
+  fi
+}
+
 dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason]
   local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census
   local -a launcher=() worker_env=()
@@ -45,9 +62,9 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
     return 1
   fi
   if [[ "${WORKER_STDOUT_REPORT:-0}" == 1 ]]; then
-    # stdout 即报告：只有成功退出且非空才落盘，失败/中断不会留下可被回收的半截报告。
-    (cd "$workdir" && GIT_PAGER=cat PAGER=cat exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} bash -c 'out="$1"; shift; "$@" > "$out.partial" && [ -s "$out.partial" ] && mv -f "$out.partial" "$out"' \
-      autopilot-worker "$SUP/$report" "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
+    # stdout supplies a missing report, but must not replace a report the worker wrote itself.
+    (cd "$workdir" && GIT_PAGER=cat PAGER=cat capture_worker_stdout_report "$SUP/$report" \
+      env ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
   elif [[ "$type" == repair && "$CODEX_MODE" == resume ]]; then
     (cd "$workdir" && exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} bash "$CODEX_REPAIR_RUNNER" "$SUP/$log" "$CODEX_SESSION_ID" \
       "${#CODEX_FRESH_COMMAND[@]}" "${CODEX_FRESH_COMMAND[@]}" "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
