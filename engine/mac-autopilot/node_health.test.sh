@@ -127,6 +127,62 @@ jq -e '.metrics[] | select(.id == "ci.priority_hold_runs_48h") | .value == 2 and
 ! grep -Fq 'tokens=1649999' <<<"$out" || fail 'run outside the window counted'
 python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:20:00Z --alert >/dev/null
 [[ "$(grep -c 'metric=loop.rework_token_pct' "$a/alerts/node-health.md")" == 1 ]] || fail "unhealthy metric alerted more than once per hour: $(cat "$a/alerts/node-health.md")"
+# A review with no readable usage is unknown, so it must make the rework share N/A.
+unknown_review="$sup/review-99-20261019T112000Z.worker.log"
+printf '{"type":"assistant"}\n' > "$unknown_review"
+touch -d '2026-10-19T11:30:00Z' "$unknown_review"
+python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z \
+  --json "$a/node-health-unknown-review.json" >/dev/null
+jq -e '[.metrics[] | select(.id == "loop.rework_token_pct")][0] | .value == null and .status == "NO-DATA"' \
+  "$a/node-health-unknown-review.json" >/dev/null || fail 'unknown review tokens must make the rework share N/A'
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'measured review usage did not enter the rework metric denominator'
+import json, os, pathlib, re, sys
+from datetime import datetime, timezone
+sys.path.insert(0, sys.argv[1])
+import node_health as n
+import worker_cost
+
+root = pathlib.Path(sys.argv[2]) / "review-token-spend"
+sup = root / "sup"
+projects = root / "claude-projects"
+clone = root / "clone"
+sup.mkdir(parents=True)
+now = n.ts("2026-10-24T12:00:00Z")
+
+def write_worker(name, lines, end):
+    path = sup / name
+    path.write_text("\n".join(lines) + "\n")
+    stamp = datetime.fromisoformat(end.replace("Z", "+00:00")).timestamp()
+    os.utime(path, (stamp, stamp))
+
+write_worker("impl-1-20261024T100000Z.worker.log", ["codex", "tokens used", "100"], "2026-10-24T10:30:00Z")
+write_worker("impl-1-fix-20261024T100500Z.worker.log", ["codex", "tokens used", "20"], "2026-10-24T10:15:00Z")
+write_worker("review-1-20261024T101000Z.worker.log", ['{"type":"assistant"}'], "2026-10-24T10:20:00Z")
+write_worker("review-1-r-20261024T102000Z.worker.log", ['{"type":"assistant"}'], "2026-10-24T10:30:00Z")
+
+def claude_event(message_id, plain, cache_read, cache_creation, output, at):
+    return json.dumps({"type": "assistant", "timestamp": at, "sessionId": message_id,
+        "message": {"id": message_id, "model": "claude-sonnet-5-5", "role": "assistant", "usage": {
+            "input_tokens": plain, "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_creation, "output_tokens": output}}})
+
+project_name = re.sub(r"[^A-Za-z0-9]", "-", str(clone) + "/wt-1")
+project_dir = projects / project_name
+project_dir.mkdir(parents=True)
+(project_dir / "review.jsonl").write_text("\n".join([
+    claude_event("review", 10, 20, 30, 40, "2026-10-24T10:12:00.000Z"),
+    claude_event("rereview", 10, 5, 0, 5, "2026-10-24T10:22:00.000Z"),
+]) + "\n")
+
+rows = worker_cost.run_rows(str(sup))
+n.attach_claude_usage(rows, str(projects), str(clone))
+runs = n.worker_runs(rows, now-n.timedelta(hours=5), now)
+assert {r["node"]: r["tokens"] for r in runs} == {
+    "implement": 100, "repair": 20, "review": 80, "rereview": 15
+}, runs
+assert n.rework_token_pct(runs) == 100 * 35 / 215
+print("node_health measured review usage in denominator: PASS")
+CHECK
 # 发布节点：有当前批次在等时算距批次开始的小时数；热修阻断与孤儿 PR 计数
 echo '{"status":"held","released_at":"2026-10-19T02:00:00Z","started_at":"2026-10-19T02:00:00Z"}' > "$a/release-train.json"
 echo '{"blockers":[3572,3588]}' > "$a/release-blockers.json"; echo 'agent=12 foreign=3' > "$a/orphan-prs.count"

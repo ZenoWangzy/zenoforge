@@ -19,6 +19,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import worker_cost
 import workorder_cost
+import usage_reader
 from config_paths import zf_config_file, zf_host_ops_file
 
 
@@ -526,11 +527,49 @@ def pct(values, q):
     return values[min(len(values) - 1, int(round(q * (len(values) - 1))))] if values else None
 
 
+def claude_worker_usage(row, responses):
+    """Sum Claude responses inside one worker's run interval; no matching response is unknown."""
+    end = row.get("finished_at") or row["end"]
+    total = usage_reader.Usage(0, 0, 0)
+    matched = False
+    for stamp, usage in responses:
+        try:
+            at = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except (AttributeError, ValueError):
+            continue
+        if row["start"] <= at <= end:
+            total += usage
+            matched = True
+    return total if matched else None
+
+
+def attach_claude_usage(rows, projects_root=None, clone_root=None):
+    """Join Claude project transcript usage to worker logs by worktree unit and run interval."""
+    agent_home = os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or os.path.expanduser("~/.zenoforge")
+    projects_root = projects_root or os.environ.get("CLAUDE_PROJECTS_DIR") or os.path.expanduser("~/.claude/projects")
+    clone_root = clone_root or os.environ.get("MAC_AUTOPILOT_WT_ROOT") or os.path.join(agent_home, "autopilot-wt")
+    if not os.path.isdir(projects_root):
+        return
+    by_unit = {}
+    for row in rows:
+        if row["backend"] != "claude" or row["usage"] is not None:
+            continue
+        unit = row["unit"]
+        if unit not in by_unit:
+            try:
+                by_unit[unit] = usage_reader.claude_unit_responses(projects_root, clone_root, unit)
+            except usage_reader.Unavailable:
+                by_unit[unit] = []
+        row["usage"] = claude_worker_usage(row, by_unit[unit])
+        if row["usage"] is not None:
+            row["usage_source"] = "claude-project"
+
+
 def worker_runs(rows, since, now):
     """Windowed view of the shared cost rows (worker_cost.run_rows): wall, tokens, report facts.
 
-    Tokens keep the historical blend: the legacy footer's total, else the fresh delta of a
-    --json stream (uncached input + output past the dispatch baseline)."""
+    Tokens keep the historical blend: the legacy footer's total, else fresh usage from a
+    --json stream or Claude project response inside the run interval."""
     runs = []
     for r in rows:
         if r["start"] < since or r["start"] > now:
@@ -546,15 +585,22 @@ def worker_runs(rows, since, now):
         elif usage is not None:
             tokens = usage.fresh
         else:
-            # A codex --json stream whose baseline is unreadable is unknown (None). A log with
-            # no measurable stream at all (an empty stdout-report log, a claude review log)
-            # stays 0, the historical scorecard semantics: the rework share measures the
-            # measured subset and only reads N/A when nothing was measured.
-            tokens = None if r["json_stream"] else 0
+            tokens = None
         runs.append({"node": r["phase"], "unit": r["unit"], "start": r["start"],
                      "minutes": r["minutes"], "tokens": tokens,
                      "output": output, "running": running, "self_fix": r["self_fix"]})
     return runs
+
+
+def rework_token_pct(runs):
+    """Repair and rereview share of worker tokens; incomplete run usage makes the metric unavailable."""
+    if not runs or any(r["tokens"] is None for r in runs):
+        return None
+    tokens = sum(r["tokens"] for r in runs)
+    if not tokens:
+        return None
+    rework = sum(r["tokens"] for r in runs if r["node"] in ("repair", "rereview"))
+    return 100 * rework / tokens
 
 
 unit_spend = workorder_cost.unit_spend
@@ -1408,6 +1454,7 @@ def main():
             criteria[mid] = (node, desc, bounds[0], bounds[1], higher)
 
     cost_rows = worker_cost.run_rows(sup)
+    attach_claude_usage((r for r in cost_rows if since <= r["start"] <= now))
     runs = worker_runs(cost_rows, since, now)
     metrics = {}
     for node in ("implement", "review", "repair"):
@@ -1416,9 +1463,8 @@ def main():
     impl = [r for r in runs if r["node"] == "implement"]
     impl = [r for r in impl if not r["running"]]
     metrics["implement.no_output_pct"] = 100 * sum(not r["output"] for r in impl) / len(impl) if impl else None
-    tokens = sum(r["tokens"] or 0 for r in runs)
-    rework = sum(r["tokens"] or 0 for r in runs if r["node"] in ("repair", "rereview"))
-    metrics["loop.rework_token_pct"] = 100 * rework / tokens if tokens and all(r["tokens"] is not None for r in runs) else None
+    tokens = sum(r["tokens"] for r in runs) if runs and all(r["tokens"] is not None for r in runs) else None
+    metrics["loop.rework_token_pct"] = rework_token_pct(runs)
     # A repair should be checked against its own delta; a fresh full review per round re-samples the whole diff and never converges (L63).
     # Pair each repair with the next review of the same unit: dividing all rereviews by all repairs read 107 %
     # once arbiter rereviews (no repair before them) counted too.
