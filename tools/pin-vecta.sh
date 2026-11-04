@@ -269,6 +269,8 @@ if ((land == 0)); then
   exit 0
 fi
 
+# Both lanes resolve the repo and branch from the working directory.
+cd -- "$worktree"
 if [[ "$route" == land-direct-main ]]; then
   lander=${ZF_LAND_DIRECT_MAIN:-$agent_home/engine-live/land-direct-main.sh}
   [[ -f "$lander" ]] || { echo "pin-vecta: land-direct-main is missing: $lander" >&2; exit 2; }

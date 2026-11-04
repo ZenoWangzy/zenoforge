@@ -101,6 +101,7 @@ chmod +x "$tmp/bin/node"
 cat > "$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 printf 'gh:%s\n' "$*" >> "${PIN_CALLS:?}"
+printf 'gh-cwd:%s\n' "$PWD" >> "${PIN_CALLS:?}"
 GH
 chmod +x "$tmp/bin/gh"
 export GH="$tmp/bin/gh"
@@ -230,7 +231,28 @@ grep -Fq "delivery:$pr_worktree/scripts/branch-delivery-preflight.mjs --mode pus
 grep -Fq 'gh:pr create --base main' "$pr_calls" || fail 'PR route did not create a PR after push preflight'
 git --git-dir="$tmp/pr-origin.git" show-ref --verify --quiet "refs/heads/$pr_branch" \
   || fail 'successful PR route did not push the preflighted branch'
+grep -Fxq "gh-cwd:$pr_worktree" "$pr_calls" || fail 'PR route did not create the PR from the Vecta worktree'
 ok 'passing PR pin uses the topic publish preflight and creates a PR'
+
+# land-direct-main refuses a detached HEAD, so it must run in the pin worktree,
+# never in the caller's engine checkout.
+land_target=$(setup_target land)
+land_agent=$(setup_agent land)
+land_calls="$tmp/land.calls"
+land_scopes="$tmp/land.scopes"
+: > "$land_calls"
+: > "$land_scopes"
+cat > "$tmp/fake-lander.sh" <<'LANDER'
+#!/usr/bin/env bash
+printf 'lander-cwd:%s\n' "$PWD" >> "${PIN_CALLS:?}"
+LANDER
+if ! ZF_LAND_DIRECT_MAIN="$tmp/fake-lander.sh" run_pin "$land_calls" "$land_scopes" "$land_agent" "$land_target" --land > "$tmp/land.out" 2>&1; then
+  cat "$tmp/land.out" >&2
+  fail 'passing direct pin did not reach land-direct-main'
+fi
+land_worktree=$(sed -n 's/^pin-vecta: worktree=//p' "$tmp/land.out" | tail -1)
+grep -Fxq "lander-cwd:$land_worktree" "$land_calls" || fail 'land-direct-main did not run from the pin worktree'
+ok 'direct pin lands from the pin worktree'
 
 # An override guard failure still attempts check and preflight, then names every
 # stale override and says whether the mapped pack copy contains the changed line.
