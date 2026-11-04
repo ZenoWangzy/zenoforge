@@ -284,6 +284,8 @@ $(decision_scope "$u")"
         prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         # 打回报告缺可解析发现块后的同 head 重问：history 尾事件就是重问标记（重交合规报告后即被新事件取代）。
         [[ "$(jqf -r '(.history // [])[-1].stage // empty' <<<"$u")" == review-findings-missing ]] && prompt+="$(findings_reask_rule "$u")"
+        # 结论行不可解析后的同 head 格式重问：评审员读回自己的报告只补独立 VERDICT 行，不整场重评。
+        [[ "$(jqf -r '(.history // [])[-1].stage // empty' <<<"$u")" == verdict-missing ]] && prompt+="$(verdict_reask_rule "$u")"
         dispatch_if_room "$id" "review" "review" "${rep%.md}.worker.log" "$rep" \
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true ;;
       implement-pending)

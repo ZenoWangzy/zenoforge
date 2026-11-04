@@ -60,7 +60,11 @@ findings are reported with their severity but do not block.
 ## Verdict
 
 Write exactly one standalone line: `VERDICT: READY`, `VERDICT: NOT_READY`, or
-`VERDICT: INPUT_INCOMPLETE`. `READY` means no candidate P0/P1 blocker remains
+`VERDICT: INPUT_INCOMPLETE`. The line must contain only that token and value:
+no bold or code formatting, no heading, no label prefix such as `结论：`, no
+trailing remark or second verdict value on the same line — the parser reads the
+value anchored right after `VERDICT:` and treats a second value on that line as
+a contradiction. `READY` means no candidate P0/P1 blocker remains
 (advisory, pre-existing, and unknown findings stay `READY`); `NOT_READY`
 requires at least one such blocker; `INPUT_INCOMPLETE` means an essential scope
 input or a named prerequisite is unavailable. Older reports may still use
