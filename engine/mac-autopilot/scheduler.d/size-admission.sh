@@ -125,7 +125,7 @@ pre_dispatch_pr_admission() { # unit branch PR context → prepared clone; nonze
 
 # 产品 issue 的实现：worker 推分支，流水线开 PR（Refs #N）→ 进评审；OBSOLETE 直接结案。
 harvest_pr_implement() { # unit report-path
-  local first issue branch dir head title pr out base
+  local first issue branch dir head title pr out base local_head ahead dirty push_out
   first="$(grep -m1 -v '^[[:space:]]*$' "$2" 2>/dev/null)"
   issue="$(unit_field "$1" .issue)"; branch="$(unit_field "$1" .branch)"; dir="$WT_ROOT/wt-$1"
   local dep; dep="$(blocked_on_of "$2")"
@@ -137,14 +137,48 @@ harvest_pr_implement() { # unit report-path
   fi
   head="$(git -C "$dir" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}')"
   if [[ ! "$head" =~ $SHA_RE ]]; then
-    if [[ "$(unit_retries "$1" implement-no-push)" == 0 ]]; then
-      set_unit "$1" "$(hist implement-no-push "$(basename "$2")") | .task += $(js "
+    # 远端没有分支时先诊断 worktree，再决定是否值得再跑一轮 implement（#5180/#5071/#5246）。
+    local_head=""; ahead=""; dirty=""
+    if [[ -d "$dir" ]]; then
+      local_head="$(git -C "$dir" rev-parse -q --verify "refs/heads/$branch" 2>/dev/null)"
+      [[ "$local_head" =~ $SHA_RE ]] && ahead="$(git -C "$dir" rev-list -n1 "refs/remotes/origin/main..$local_head" 2>/dev/null)"
+      dirty="$(git -C "$dir" status --porcelain 2>/dev/null | head -1)"
+    fi
+    if [[ -n "$ahead" ]]; then
+      # 已提交未推送（worker 遵守产品侧 preflight 拒绝、网络故障等，交付提交留在 clone 里）：
+      # 分支本来就要经 scheduler_pr_open 开 PR 再过评审与合并门禁，引擎代推 topic 分支
+      # 不落 main、不绕过任何门禁；推不动才带 push 错误转 supervisor，不盲跑第二轮。
+      if push_out="$(git -C "$dir" push origin "refs/heads/$branch:refs/heads/$branch" 2>&1)"; then
+        head="$local_head"
+        set_unit "$1" "$(hist implement-push-recovered "engine pushed worker commit $local_head to $branch")"
+        say "implement-no-push unit=$1: engine pushed committed work $local_head -> $branch"
+      else
+        push_out="$(grep -am1 -E '(! \[remote rejected\]|^error:|^fatal:|^remote:)' <<<"$push_out" | cut -c1-160)"
+        [[ -n "$push_out" ]] || push_out="$(printf '%s\n' "$push_out" | head -1 | cut -c1-160)"
+        to_supervisor "$1" "implement committed $local_head on $branch but publishing it failed: ${push_out:-git push exited nonzero} (report $(basename "$2"))"
+        return 0
+      fi
+    elif [[ "$local_head" =~ $SHA_RE && -z "$dirty" ]]; then
+      # 空交付是独立的 no changes 类（改动落在了别的 checkout/远端，指定 worktree 既无提交
+      # 也无未提交改动）：提示语点名原因，两次空交付才转 supervisor，消息同样带原因。
+      if [[ "$(unit_retries "$1" implement-no-changes)" == 0 ]]; then
+        set_unit "$1" "$(hist implement-no-changes "$(basename "$2")") | .task += $(js "
+
+上一轮交付了报告，但指定 worktree 的 ${branch} 上既没有本地提交也没有未提交改动（改动可能落在了别的 checkout 或别的远端）。本轮必须在指定 worktree 内完成并提交改动（或按协议写 OBSOLETE:）。") | .stage=\"implement-pending\""
+      else
+        to_supervisor "$1" "implement delivered no changes in the assigned worktree twice: $branch has no local commits and a clean tree, so the work likely landed in another checkout or remote (report $(basename "$2"))"
+      fi
+      return 0
+    else
+      if [[ "$(unit_retries "$1" implement-no-push)" == 0 ]]; then
+        set_unit "$1" "$(hist implement-no-push "$(basename "$2")") | .task += $(js "
 
 上一轮交付了报告但 origin 上没有分支 ${branch}：本轮必须通过 push preflight 并 push 该分支（或按协议写 OBSOLETE:）。") | .stage=\"implement-pending\""
-    else
-      to_supervisor "$1" "implement pushed no branch $branch twice (report $(basename "$2"))"
+      else
+        to_supervisor "$1" "implement pushed no branch $branch twice (report $(basename "$2"))${dirty:+; the worktree holds uncommitted edits but no local commit on the branch}"
+      fi
+      return 0
     fi
-    return 0
   fi
   size_admission_recheck "$1" "$dir" "$branch" "on $branch" "$head" || return 0
   title="$(unit_field "$1" .title)"
