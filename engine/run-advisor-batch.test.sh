@@ -62,6 +62,47 @@ poll_status=$?
 set -e
 [[ "$poll_status" == 2 ]]
 
+# 2026-11-04: ADVISOR_MODEL_UNVERIFIED at selector stage open-picker is a
+# browser/page fault, not a payload fault. It must not quarantine the batch
+# prompt (record_web_advisor_provider_fault already cools the advisor stage
+# and canary-lifts on recovery), or the next canary tick reports
+# prompt-quarantined and sends nothing even after the browser recovers.
+# A real wedge failure still quarantines the exact prompt.
+eval "$(sed -n '/^advisor_batch_is_wedge_failure() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+eval "$(sed -n '/^advisor_batch_is_browser_fault() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+eval "$(sed -n '/^advisor_batch_is_size_failure() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+eval "$(sed -n '/^advisor_batch_is_empty_failure() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+eval "$(sed -n '/^advisor_batch_is_split_failure() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+eval "$(sed -n '/^advisor_batch_should_quarantine_prompt() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+eval "$(sed -n '/^advisor_batch_quarantine_file_active() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+eval "$(sed -n '/^advisor_batch_quarantine_contains() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+eval "$(sed -n '/^advisor_batch_quarantine_inbox_notice() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+eval "$(sed -n '/^advisor_batch_quarantine_wedge() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+ADVISOR_BATCH_QUARANTINE_DIR="$tmp/quarantine/advisor-batch"
+ADVISOR_BATCH_QUARANTINE_TTL_SECONDS=900
+supervisor_inbox_append() { :; }
+
+model_unverified_detail='ADVISOR_MODEL_UNVERIFIED: could not verify the selected model at selector stage open-picker'
+advisor_batch_is_browser_fault "$model_unverified_detail"
+! advisor_batch_should_quarantine_prompt "$model_unverified_detail"
+# The incident's job never wrote done within its ceiling, so its answer.err
+# tail carried the browser fault alongside a termination marker; neither
+# quarantine call site may fire for it.
+timeout_detail="job exceeded 5400s: $model_unverified_detail Terminated"
+advisor_batch_is_browser_fault "$timeout_detail"
+! advisor_batch_should_quarantine_prompt "$timeout_detail"
+[[ -z "$(ls -A "$ADVISOR_BATCH_QUARANTINE_DIR" 2>/dev/null)" ]]
+
+wedge_prompt_sig="$(printf 'a1%.0s' {1..32})"
+wedge_detail='ADVISOR_TAB_UNRESPONSIVE: the batch tab stopped responding to CDP'
+! advisor_batch_is_browser_fault "$wedge_detail"
+advisor_batch_should_quarantine_prompt "$wedge_detail"
+# A measured size failure is a payload fault and stays quarantined.
+advisor_batch_should_quarantine_prompt 'HTTP 413: request entity too large'
+advisor_batch_quarantine_wedge fixture-job "$wedge_prompt_sig" "" "$wedge_detail" '#930002' >/dev/null 2>&1
+[[ -f "$ADVISOR_BATCH_QUARANTINE_DIR/prompt-$wedge_prompt_sig.json" ]]
+advisor_batch_quarantine_contains "$wedge_prompt_sig" ""
+
 mkdir -p "$tmp/disabled/.zenoforge"
 printf '{"advisor":{"provider":""}}\n' > "$tmp/disabled/.zenoforge/night.json"
 unconfigured_output="$(ZF_CONFIG_ROOT="$tmp/disabled/.zenoforge" ZF_PACK_DIR='' ZF_REPO_DIR="$PWD" \

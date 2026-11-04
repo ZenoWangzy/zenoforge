@@ -123,6 +123,25 @@ advisor_batch_is_wedge_failure() {
   [[ "$1" =~ (ADVISOR_RESPONSE_NOT_STARTED|ADVISOR_ANSWER_TIMEOUT|ADVISOR_ANSWER_LOAD_FAILED|ADVISOR_CONVERSATION_BUSY|ADVISOR_TAB_(UNRESPONSIVE|RELOAD_FAILED)|Terminated|SIGTERM) ]]
 }
 
+# 2026-11-04: ADVISOR_MODEL_UNVERIFIED (observed at selector stage
+# open-picker) is a browser/page fault -- the page's model selector refused
+# verification, so the payload was never sent under a verified model. It
+# says nothing about the batch prompt and must not quarantine it:
+# record_web_advisor_provider_fault() already cools the whole advisor stage
+# and canary-lifts it once the browser recovers. Quarantining the prompt
+# too made each post-recovery canary tick report prompt-quarantined and
+# send nothing.
+advisor_batch_is_browser_fault() {
+  [[ "$1" == *ADVISOR_MODEL_UNVERIFIED* ]]
+}
+
+# Quarantine gate for a failed job's detail: keep real payload failures
+# (wedge or split) quarantined, never a browser/page fault.
+advisor_batch_should_quarantine_prompt() {
+  advisor_batch_is_browser_fault "$1" && return 1
+  advisor_batch_is_wedge_failure "$1" || advisor_batch_is_split_failure "$1"
+}
+
 advisor_batch_is_size_failure() {
   local failure="${1,,}"
   [[ "$failure" =~ (^|[^0-9])413([^0-9]|$)|too[[:space:]]large|(payload|attachment|upload|request)[[:space:]].*(limit|maximum|max)|exceeds[[:space:]].*(limit|maximum|max)|(limit|maximum|max).*[[:space:]]exceeded ]]
@@ -1002,7 +1021,9 @@ if [ -n "$ACTIVE_BATCH_JOB" ]; then
           record_model_config_fault batch advisor advisor "$(model_policy identity advisor)" "$ADVISOR_FAILURE_DETAIL"
         else
           record_web_advisor_provider_fault batch "batch job $BATCH_JOB_ID never wrote done after ${WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS}s: $ADVISOR_FAILURE_DETAIL"
-          if ! advisor_batch_quarantine_wedge "$BATCH_JOB_ID" "$BATCH_PAYLOAD_SIGNATURE" "$BATCH_MEMBER_SIGNATURE" \
+          if advisor_batch_is_browser_fault "$ADVISOR_FAILURE_DETAIL"; then
+            echo "run-advisor-batch: browser/page fault failed job $BATCH_JOB_ID; keeping its prompt unquarantined -- the recorded advisor fault already cools the stage" >&2
+          elif ! advisor_batch_quarantine_wedge "$BATCH_JOB_ID" "$BATCH_PAYLOAD_SIGNATURE" "$BATCH_MEMBER_SIGNATURE" \
             "job exceeded ${WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS}s: $ADVISOR_FAILURE_DETAIL" \
             "$(jq -r '[.members[]?.issue | "#" + tostring] | join(", ")' <<< "$ACTIVE_BATCH_JOB")"; then
             exit 1
@@ -1038,7 +1059,7 @@ if [ -n "$ACTIVE_BATCH_JOB" ]; then
     else
       record_web_advisor_provider_fault batch "batch job $BATCH_JOB_ID failed: $ADVISOR_FAILURE_DETAIL"
     fi
-    if advisor_batch_is_wedge_failure "$ADVISOR_FAILURE_DETAIL" || advisor_batch_is_split_failure "$ADVISOR_FAILURE_DETAIL"; then
+    if advisor_batch_should_quarantine_prompt "$ADVISOR_FAILURE_DETAIL"; then
       if ! advisor_batch_quarantine_wedge "$BATCH_JOB_ID" "$BATCH_PAYLOAD_SIGNATURE" "$BATCH_MEMBER_SIGNATURE" \
         "$ADVISOR_FAILURE_DETAIL" "$(jq -r '[.members[]?.issue | "#" + tostring] | join(", ")' <<< "$ACTIVE_BATCH_JOB")"; then
         exit 1
