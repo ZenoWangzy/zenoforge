@@ -1226,6 +1226,42 @@ gate_note "GATE main=$M1 suites=success — merge lane open"
   [[ "$(field pr-draft-merge .approved_sha)" == "$H2" && ${#GH_MERGES[@]} == 0 ]] || fail 'a draft whose head moved by a clean update-branch did not carry its approval'
 )
 
+# ---------- 批准沿用要把 ready 证据换到同一 head（2026-11-03：沿用后每拍 ready_for_review evidence missing，PR 卡 40+ 分钟） ----------
+(
+  GH_PR_TABLE="$fixture/carry-ready.json"; echo '[]' > "$GH_PR_TABLE"
+  carry_green='[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-11-03T11:00:00Z"}]'
+  # 干净 update-branch 换 head、新 head 检查全绿：批准和 ready 证据一起换 head，本拍直接合并
+  gh_pr_open 21 "$H2" false MERGEABLE agent/issue-21 "$carry_green"
+  units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-carry-merge",pr:21,branch:"agent/issue-21",stage:"ready-to-merge",approved_sha:$sha,gated:true,ci_ready_sha:$sha,ci_ready_at:"2026-11-03T10:30:00Z",history:[]}]}')"
+  approval_carries() { [[ "$2" == "$H1" && "$3" == "$H2" ]]; }
+  GH_HEAD="$H2"; GH_MERGE_SHA="$M2"; tick_prs_changed; GH_MERGES=(); : > "$LOG"
+  run_merge_lane || :
+  [[ "$(field pr-carry-merge .stage)" == merged && "${GH_MERGES[0]:-}" == *"--match-head-commit $H2"* ]] \
+    || fail "carried approval with green checks on the new head did not merge (${GH_MERGES[*]:-none})"
+  [[ "$(field pr-carry-merge .ci_ready_sha)" == "$H2" ]] || fail 'approval carry left the ready evidence on the old head'
+  [[ "$(field pr-carry-merge .ci_ready_at)" == "2026-11-03T10:30:00Z" ]] || fail 'approval carry rewrote the ready floor instead of keeping it'
+  # 非干净更新（夹带改动/多亲）：不沿用批准也不沿用 ready 证据，回 rereview
+  echo '[]' > "$GH_PR_TABLE"; gh_pr_open 22 "$H2" false MERGEABLE agent/issue-22 "$carry_green"
+  units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-carry-dirty",pr:22,branch:"agent/issue-22",stage:"ready-to-merge",approved_sha:$sha,gated:true,ci_ready_sha:$sha,ci_ready_at:"2026-11-03T10:30:00Z",history:[]}]}')"
+  approval_carries() { return 1; }
+  tick_prs_changed; GH_MERGES=(); : > "$LOG"
+  run_merge_lane || :
+  [[ "$(field pr-carry-dirty .stage)" == rereview-pending && ${#GH_MERGES[@]} == 0 ]] \
+    || fail 'a head that is not a clean update-branch merge was not sent back to review'
+  [[ "$(field pr-carry-dirty .ci_ready_sha)" == "$H1" ]] || fail 'a non-clean update moved or kept ready evidence for a head that never passed it'
+  # 从未有 ready 证据的门控单元：沿用批准不发明证据，ready 门照旧挡住
+  echo '[]' > "$GH_PR_TABLE"; gh_pr_open 23 "$H2" false MERGEABLE agent/issue-23 "$carry_green"
+  units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-carry-noevidence",pr:23,branch:"agent/issue-23",stage:"ready-to-merge",approved_sha:$sha,gated:true,history:[]}]}')"
+  approval_carries() { [[ "$2" == "$H1" && "$3" == "$H2" ]]; }
+  tick_prs_changed; GH_MERGES=(); : > "$LOG"
+  run_merge_lane || :
+  [[ "$(field pr-carry-noevidence .approved_sha)" == "$H2" && "$(field pr-carry-noevidence .stage)" == ready-to-merge \
+    && "$(field pr-carry-noevidence '.ci_ready_sha // "none"')" == none && ${#GH_MERGES[@]} == 0 ]] \
+    || fail 'the approval carry fabricated ready evidence that was never recorded'
+  grep -Fq 'merge skipped PR#23 (ready_for_review evidence missing for approved head)' "$LOG" \
+    || fail 'a gated unit without ready evidence merged or lost its skip reason'
+)
+
 # L69：候选检查并行预取，只等预取进程——worker 也是本 shell 的后台子进程，合并车道不能等它们
 sleep 30 & bg_worker=$! # wall-clock-allow: proves the merge lane does not wait for an unrelated long-running background child
 t0=$SECONDS # wall-clock-allow: proves the merge lane does not wait for an unrelated long-running background child

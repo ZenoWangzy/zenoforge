@@ -113,7 +113,7 @@ merge_census_watch() { # missed=1/0：本拍 merge lane 是否出现 check censu
 }
 
 run_merge_lane() {
-  local merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false
+  local merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry
   local -A merge_head_ref=()
   local -a merge_head_refspecs=() merge_head_refs=()
   # 所有 PR（含流水线 PR）都只由自己 head 上的必需检查把关，合并后由 main CI 验证；没有待验证批、没有合并后等裁决的 merging 态。
@@ -276,7 +276,15 @@ run_merge_lane() {
     [[ "$head" =~ $SHA_RE ]] || head="$(pr_view "$pr" headRefOid)"
     # 先沿用批准再跳过 draft：slot_sync 的 update-branch 会换 draft 的 head，不沿用的话 gated_ready 永远不 ready 它
     if [[ "$approved" =~ $SHA_RE && "$head" =~ $SHA_RE && "$head" != "$approved" ]] && approval_carries "$pr" "$approved" "$head"; then
-      set_unit "$id" "$(hist approval-carried "clean main merge $head on approved $approved") | .approved_sha=$(js "$head")"
+      # 门控单元的 ready 证据跟批准换到同一 head：update-branch 的新 head 晚于原 ready 事件才存在，新 head 的检查必然
+      # 晚于旧 ci_ready_at 启动，旧时间下限对新 head 依然成立，不重开 ready 也不重跑检查。不换的话 ready 门永远在等
+      # 旧 head 的证据（2026-11-03：批准沿用后每拍 merge skipped ready_for_review evidence missing，PR 卡 40+ 分钟）。
+      carry="$(hist approval-carried "clean main merge $head on approved $approved") | .approved_sha=$(js "$head")"
+      if [[ "$(jqf -r '.gated // false' <<<"$ready")" == true && -n "$(jqf -r '.ci_ready_at // empty' <<<"$ready")" ]]; then
+        carry="$carry | .ci_ready_sha=$(js "$head")"
+        ready="$(jqf --arg sha "$head" '.ci_ready_sha=$sha' <<<"$ready")"
+      fi
+      set_unit "$id" "$carry"
       say "approval carried PR#$pr $approved -> $head (clean update-branch merge)"
       post_approved_status "$id" "$head"
       approved="$head"
