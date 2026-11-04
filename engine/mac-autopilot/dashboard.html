@@ -647,9 +647,12 @@ const scorecardFreshness = (D, STD) => {
   const sampledAt = STD.generated_at || STD.generated;
   const age = sampledAt ? (Date.now() - new Date(sampledAt).getTime())/1000 : null;
   const configured = String((D.config||{}).tick_seconds ?? 120);
-  const interval = /^[0-9]+$/.test(configured) && Number(configured)>=30 ? Number(configured) : 120;
-  // 评分每拍采一次，一拍 = 调度耗时（实测 180–300 秒）+ tick_seconds，比 tick_seconds 长；按看板同一条 900 秒报警线算过期
-  return {sampledAt, age, interval, stale: age!=null && age>=900};
+  const configuredInterval = /^[0-9]+$/.test(configured) && Number(configured)>=30 ? Number(configured) : 120;
+  const tickGap = Number((STD.metrics || []).find(m => m.id === "scheduler.tick_gap_p50")?.value);
+  // node_health runs once per slow scheduler tick; tick_gap_p50 measures the actual gap, including tick work and the configured wait.
+  const interval = Number.isFinite(tickGap) && tickGap >= 30 ? Math.max(configuredInterval, tickGap) : configuredInterval;
+  const staleAfter = Math.max(900, interval * 2);
+  return {sampledAt, age, interval, staleAfter, stale: age!=null && age>=staleAfter};
 };
 
 /* ============ 模块 ============ */
@@ -1269,6 +1272,11 @@ function roiLinePanel(D) {
 const metricMod = m => ID_MOD[m.id] || NODE_MOD[m.node] || "health";
 const PLAIN_NODE = Object.assign({}, NODE_NM, {flow:"整体流转", delivery:"交付质量", host:"服务器"});
 const firstSentence = t => String(t || "").split(/[。；;]/)[0];
+const metricStatusGroups = ms => ({
+  bad: ms.filter(m => sk(m.status)==="bad"),
+  warn: ms.filter(m => sk(m.status)==="warn")
+});
+const metricStatusText = (status, count) => `${count} ${status==="bad" ? "项异常" : "项需留意"}`;
 // 白话名称与原因，按指标 id 手写；没有的回退到指标自带解释的第一句。名称由英文标识推断，改错了在这里改。
 const PLAIN = {
   "dispatch.collisions_per_day": ["多个任务同时改同一个文件", "会互相覆盖，需要返工"],
@@ -1301,9 +1309,9 @@ function anomRow(m) { const lb = LABELS[m.id], st = sk(m.status), hib = !!m.high
       <span class="a-t">${zones.filter(z => pc(z[1]) > pc(z[0])).map(z => `<i class="z-${z[2]}" style="left:${pc(z[0])}%;width:${pc(z[1]) - pc(z[0])}%"></i>`).join("")}${v == null ? "" : `<b style="left:${Math.min(pc(v), 99)}%"></b>`}</span><span class="a-v">${esc(fv)}</span></div>`; }
 function vOverview(D) {
   const f = freshness(D), STD = D.standards || {}, ms = nodeMetrics(D), S = D.summary || {}, T = D.totals || {};
-  const bad = ms.filter(m => sk(m.status)==="bad"), warn = ms.filter(m => sk(m.status)==="warn");
+  const {bad, warn} = metricStatusGroups(ms);
   const vs = f.s==="bad" || STD.paused || bad.length ? "bad" : warn.length ? "warn" : "ok";
-  const aside = [STD.paused ? stChip("bad","已暂停") : "", f.s==="bad" ? stChip("bad","数据过期") : "", bad.length ? stChip("bad", `${bad.length} 项异常`) : "", warn.length ? stChip("warn", `${warn.length} 项需留意`) : ""].join("");
+  const aside = [STD.paused ? stChip("bad","已暂停") : "", f.s==="bad" ? stChip("bad","数据过期") : "", bad.length ? stChip("bad", metricStatusText("bad", bad.length)) : "", warn.length ? stChip("warn", metricStatusText("warn", warn.length)) : ""].join("");
   const LWok = !!(D.live_workers && Array.isArray(D.live_workers.items)), LW = LWok ? D.live_workers.items : [], LWM = lwGrouped(LW);
   const cap = S.max_workers || 8, np = (LWM.pipeline || []).length, rest = LW.length - np;
   const slots = `<div class="sgs"><div class="sg"><span>产线 ${np}/${cap}</span><div class="slots">${Array.from({length: Math.max(cap, np)}, (_, i) => `<i class="${i<np?"on":""}"></i>`).join("")}</div></div>
@@ -1407,10 +1415,12 @@ function renderModule(id) {
     view.innerHTML = `<div class="unavail">${ic("bad")}<div><b style="color:inherit">数据不可用</b>，dashboard.data.js 尚未生成或无法解析<div class="sub">由 gen_dashboard.py 每拍写出；页面每 30 秒重试</div></div></div>`;
     return;
   }
-  // 导航徽标只表示一件事：该模块有几项指标异常（红 = 含不健康，黄 = 只有警告）；没有异常就不显示
-  const abn = id => { const ms = id==="overview"||id==="health" ? nodeMetrics(D) : modMetrics(D, id), b = ms.filter(m => sk(m.status)==="bad").length, w = ms.filter(m => sk(m.status)==="warn").length; return {n: b + w, s: b ? "bad" : "warn"}; };
-  morph(nav, MODULES.map(x => { const a = abn(x.id);
-    return `<button class="nv ${x.id===m.id?"on":""}" type="button" data-m="${x.id}" title="${esc(a.n ? x.nm + "，" + a.n + " 项异常" : x.nm)}">${ic(x.icon)}<span class="nv-t">${esc(x.nm)}</span>${a.n ? `<span class="nv-n s-${a.s}">${a.n}</span>` : ""}</button>`; }).join(""));
+  // 导航分别显示不健康与警告数量，文案和总览状态 chip 保持一致。
+  const navStatusCounts = id => { const ms = id==="overview"||id==="health" ? nodeMetrics(D) : modMetrics(D, id), counts = metricStatusGroups(ms); return {bad: counts.bad.length, warn: counts.warn.length}; };
+  morph(nav, MODULES.map(x => { const a = navStatusCounts(x.id);
+    const labels = [a.bad ? metricStatusText("bad", a.bad) : "", a.warn ? metricStatusText("warn", a.warn) : ""].filter(Boolean);
+    const badges = [["bad", a.bad], ["warn", a.warn]].filter(([, n]) => n).map(([s, n]) => `<span class="nv-n s-${s}">${n}</span>`).join("");
+    return `<button class="nv ${x.id===m.id?"on":""}" type="button" data-m="${x.id}" title="${esc(labels.length ? x.nm + "，" + labels.join("，") : x.nm)}">${ic(x.icon)}<span class="nv-t">${esc(x.nm)}</span>${badges}</button>`; }).join(""));
   morph(document.getElementById("title"), `${ic(m.icon)}${esc(m.nm)}<small>${esc(m.en)}</small>`);
   const f = freshness(D);
   const STD = D.standards || {}, sample = scorecardFreshness(D, STD);

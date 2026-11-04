@@ -68,7 +68,7 @@ function renderAll(name, D) {
 // 1. 空数据：每个模块都给空态而不是抛错
 renderAll("empty", {});
 
-// A paused pipeline must remain visible while its last scorecard sample ages past one configured tick.
+// A paused pipeline must remain visible while its last scorecard sample ages past the stale bound.
 const sampledAt = new Date(Date.now() - 901000).toISOString();
 const pausedStale = {generated: new Date().toISOString(), config: {tick_seconds: 120}, standards: {
   generated_at: sampledAt, source_commit: "a1b2c3d4e5f67890", paused: {since: "2026-10-26T08:15:00Z", reason: "refactor"}, metrics: []
@@ -78,6 +78,37 @@ pausedView.ctx.__dash.renderModule("overview");
 const header = pausedView.els.fresh.innerHTML;
 for (const detail of ["评分已过期", "运行版本", "a1b2c3d4e5f6", "流水线暂停", "10-26 08:15 UTC", "refactor"])
   if (!header.includes(detail)) throw new Error(`paused stale scorecard header lacks ${detail}: ${header}`);
+
+// The health sample cadence follows observed scheduler gaps: 727s p50 supports two gaps before stale.
+const scorecardAtAge = ageSeconds => {
+  const D = {generated: new Date().toISOString(), config: {tick_seconds: 120}, standards: {
+    generated_at: new Date(Date.now() - ageSeconds * 1000).toISOString(),
+    metrics: [{id: "scheduler.tick_gap_p50", value: 727}]
+  }};
+  const view = load(D);
+  view.ctx.__dash.renderModule("overview");
+  return view.els.fresh.innerHTML;
+};
+const withinCadence = scorecardAtAge(1200);
+if (!withinCadence.includes("健康评分 20 分前") || withinCadence.includes("评分已过期"))
+  throw new Error(`scorecard went stale before two observed 727s scheduler gaps: ${withinCadence}`);
+const beyondCadence = scorecardAtAge(1500);
+if (!beyondCadence.includes("评分已过期"))
+  throw new Error(`scorecard did not go stale after two observed scheduler gaps: ${beyondCadence}`);
+
+// Nav badges must keep bad and warn totals separate, with labels matching the overview chips.
+const badgeMetrics = ["UNHEALTHY", "UNHEALTHY", "WARN", "WARN", "WARN"].map((status, i) => ({
+  id: `fixture.nav.${i}`, node: "host", desc: "fixture metric", meaning: "fixture metric",
+  value: i + 1, healthy: 1, unhealthy: 4, higher_is_better: false, status
+}));
+const badgeView = load({generated: new Date().toISOString(), standards: {metrics: badgeMetrics}});
+badgeView.ctx.__dash.renderModule("overview");
+const overviewButton = badgeView.els.nav.innerHTML.match(/<button[^>]*data-m="overview"[^>]*>[\s\S]*?<\/button>/);
+if (!overviewButton || !overviewButton[0].includes('title="总览，2 项异常，3 项需留意"') ||
+    !overviewButton[0].includes('class="nv-n s-bad">2</span>') || !overviewButton[0].includes('class="nv-n s-warn">3</span>'))
+  throw new Error(`overview nav badge must split bad and warn counts: ${overviewButton && overviewButton[0]}`);
+for (const label of ["2 项异常", "3 项需留意"])
+  if (!badgeView.els.view.innerHTML.includes(label)) throw new Error(`overview chip lacks nav count label ${label}`);
 
 // 2. 每一块都"数据不可用"：分支都能画，且带原因
 const broken = {front: {errors: {stages: "HTTP 502", advisor: "lib.sh missing", advisor_loop: "units.json unreadable", triage: "ledger gone", release: "git failed"}}};
