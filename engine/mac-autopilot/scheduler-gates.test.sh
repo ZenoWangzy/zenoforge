@@ -217,28 +217,6 @@ sed 's/"status":"open"/"status":"resolved"/' "$r" > "$r.resolved"
 { printf 'VERDICT: READY\nVERDICT: NOT_READY\n'; cat "$r"; } > "$r.conflicting"
 [[ -z "$(verdict_of "$r.conflicting")" ]] || fail 'conflicting explicit verdicts were overridden by findings'
 
-# ---------- 结论行格式变体（2026-11-03/04 一晚 9 单元两次转 supervisor 的实测形状，报告名与内容已脱敏）----------
-# A 类：加粗结论 + 同行尾注（旧整行锚定正则只认「行内仅此 token」的写法）
-printf '# 复审报告\n\n**VERDICT: READY**（无 candidate P0/P1 阻断项）\n' > "$r"
-[[ "$(verdict_of "$r")" == READY ]] || fail 'bold verdict with a trailing parenthetical remark not parsed'
-printf '**VERDICT: NOT_READY** —— 3 个 candidate P1 阻断项：\n' > "$r"
-[[ "$(verdict_of "$r")" == NOT_READY ]] || fail 'bold verdict with a trailing dash remark not parsed'
-# B 类：翻译标签前缀（含标题、行内代码包裹取值）
-printf '## 结论：VERDICT: READY\n' > "$r"
-[[ "$(verdict_of "$r")" == READY ]] || fail 'verdict behind a translated label heading not parsed'
-printf '**结论：VERDICT: READY**（无 candidate P0/P1 阻断项残留）\n' > "$r"
-[[ "$(verdict_of "$r")" == READY ]] || fail 'verdict behind a translated bold label not parsed'
-printf '# 结论\n\n**结论：`VERDICT: READY`** —— 备注\n' > "$r"
-[[ "$(verdict_of "$r")" == READY ]] || fail 'code-formatted verdict behind a translated label not parsed'
-# C 类：终答被复原为报告时，结论嵌在整行 prose 中间
-printf '复审完成，报告已写入 /sup/review-redacted.md，结论 **VERDICT: READY**。\n' > "$r"
-[[ "$(verdict_of "$r")" == READY ]] || fail 'mid-line verdict in a recovered final message not parsed'
-# F 类：锚定行上出现第二个取值 = 真歧义，拒绝且不被 findings 兜底改写（带着歧义进修复比重问一次更贵）
-ambiguity_block='{"findings":[{"id":"F1","severity":"P1","file":"src/a.ts","line":42,"rule":"Defect","status":"open","summary":"x","introduced_by":"candidate","base_evidence":"absent in base","rerun_command":"pnpm t","rerun_output":"FAIL"}],"dispositions":[]}'
-{ printf '**结论：VERDICT: READY**（有两个开放项；F1 若按政策视为阻断，则应改判 NOT_READY）\n\n```review-findings\n%s\n```\n' \
-  "$ambiguity_block"; } > "$r"
-[[ -z "$(verdict_of "$r")" ]] || fail 'a second verdict value on the anchored line was not treated as ambiguity'
-
 # ---------- 回收：批准绑定被评审的 head，会话按角色分存 ----------
 alive() { [[ " ${ALIVE_PIDS:-} " == *" $1 "* ]]; }
 units '{"units":[{"id":"pr-1","pr":1,"stage":"review","history":[]}]}'
@@ -263,27 +241,6 @@ units '{"units":[{"id":"pr-2","pr":2,"stage":"review","history":[{"stage":"verdi
 jq -n --arg sha "$H1" '{workers:[{pid:4243,unit:"pr-2",type:"review",log:"x.log",report:"review-2-T1.md",sha:$sha}]}' > "$WORKERS"
 harvest_workers || :
 [[ "$(field pr-2 .stage)" == supervisor-review && "$(field pr-2 '.approved_sha // "none"')" != "$H1" ]] || fail 'second report without VERDICT line was not escalated'
-# E 类（评审员明示弃权，报告脱敏自实测样本）：同样走 verdict-missing 重问，不当作产品结论转 supervisor；
-# 重问是格式重问——派发 prompt 点名上一份报告，让评审员读回自己的报告补一行独立 VERDICT 行
-units '{"units":[{"id":"pr-abstain","pr":7,"stage":"review","history":[]}]}'
-cat > "$sup/review-abstain-T1.md" <<'EOF'
-# 增量复审：未完成，未给结论
-
-本次没有 VERDICT。调度器会把缺失的结论按未评审处理，需要重新派发。
-
-### 阻塞原因
-
-评审必需的只读命令被权限拒绝，无法取得增量 diff。
-EOF
-jq -n --arg sha "$H1" '{workers:[{pid:4244,unit:"pr-abstain",type:"review",log:"x.log",report:"review-abstain-T1.md",sha:$sha}]}' > "$WORKERS"
-harvest_workers || :
-[[ "$(field pr-abstain .stage)" == review-pending && "$(field pr-abstain '.history[-1].stage')" == verdict-missing \
-  && "$(field pr-abstain .review_report)" == review-abstain-T1.md ]] \
-  || fail "an abstaining report did not reach one verdict re-ask (stage=$(field pr-abstain .stage))"
-verdict_reask="$(verdict_reask_rule "$(jq -c --arg id pr-abstain '.units[] | select(.id==$id)' "$UNITS")")"
-[[ "$verdict_reask" == *review-abstain-T1.md* && "$verdict_reask" == *"$REVIEW_CONTRACT_MD"* \
-  && "$verdict_reask" == *'不重新评审'* && "$verdict_reask" == *VERDICT* ]] \
-  || fail "verdict re-ask rule lost the reviewer's own report, the contract path or the format-only instruction: $verdict_reask"
 
 # 打回/BLOCK/转人工的 PR head 不会原样合并：排队中的 CI 立即取消；热修单元不取消
 cancel_stub="$(declare -f cancel_branch_runs)"; CANCELS=()

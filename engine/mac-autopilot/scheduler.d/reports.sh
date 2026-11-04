@@ -37,15 +37,19 @@ write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=�
 # 11-04 根因（一晚 9 个单元两次转 supervisor）：结论行写法带加粗/前缀/行内备注——`**VERDICT: READY**（备注）`、
 # `## 结论：VERDICT: READY`、复原终答里的 `结论 **VERDICT: READY**。`——整行锚定正则一概不认。取值只在含
 # VERDICT 的行内计数，且该行必须有一个紧跟 token 的锚定取值（散文里的裸取值不产生结论）；锚定行上
-# 其余裸取值算竞争取值：同行两个不同取值（如 `VERDICT: READY（…否则应改判 NOT_READY）`）是真歧义，仍拒绝。
+# 取值只从 VERDICT 后面开始计数；同行第二个状态词（如 `VERDICT: READY（…否则应改判 NOT_READY）`）仍是真歧义。
 verdict_of() {
   local found findings
   found="$(awk '
-    /VERDICT/ {
-      if ($0 !~ /VERDICT[[:space:]:]*(READY|NOT_READY|INPUT_INCOMPLETE|APPROVE|REQUEST-CHANGES|BLOCK)/) next
-      line = $0
-      while (match(line, /(READY|NOT_READY|INPUT_INCOMPLETE|APPROVE|REQUEST-CHANGES|BLOCK)/)) {
-        print substr(line, RSTART, RLENGTH); line = substr(line, RSTART + RLENGTH)
+    {
+      line = toupper($0)
+      if (!match(line, /VERDICT[[:space:]]*:[[:space:]]*/)) next
+      line = substr(line, RSTART + RLENGTH)
+      if (line !~ /^(READY|NOT_READY|INPUT_INCOMPLETE|APPROVE|REQUEST-CHANGES|BLOCK)([^A-Z0-9_-]|$)/) next
+      while (match(line, /(READY|NOT_READY|INPUT_INCOMPLETE|APPROVE|REQUEST-CHANGES|BLOCK)([^A-Z0-9_-]|$)/)) {
+        value = substr(line, RSTART, RLENGTH)
+        sub(/[^A-Z0-9_-]$/, "", value)
+        print value; line = substr(line, RSTART + RLENGTH)
       }
     }' "$1" 2>/dev/null \
     | sed -e 's/^APPROVE$/READY/' -e 's/^REQUEST-CHANGES$/NOT_READY/' -e 's/^BLOCK$/INPUT_INCOMPLETE/' | sort -u)"
@@ -54,8 +58,8 @@ verdict_of() {
     return 1
   fi
   # 10-28：约 1/5 的评审写「## Verdict」标题、下一行裸写 NOT_READY，缺 `VERDICT:` 前缀，被当成无结论重跑。
-  found="$(awk 'h && NF { gsub(/[*`]/, ""); if ($0 ~ /^[[:space:]]*(READY|NOT_READY|INPUT_INCOMPLETE)[[:space:]]*$/) print $1; exit }
-    /^#+[[:space:]]*Verdict[[:space:]]*$/ { h = 1 }' "$1" 2>/dev/null)"
+  found="$(awk 'h && NF { line=toupper($0); gsub(/[*`]/, "", line); if (line ~ /^[[:space:]]*(READY|NOT_READY|INPUT_INCOMPLETE)[[:space:]]*$/) { gsub(/[[:space:]]/, "", line); print line }; exit }
+    toupper($0) ~ /^#+[[:space:]]*VERDICT[[:space:]]*$/ { h = 1 }' "$1" 2>/dev/null)"
   if [[ -n "$found" ]]; then
     [[ "$(wc -l <<<"$found")" -eq 1 ]] && { printf '%s' "$found"; return 0; }
     return 1
