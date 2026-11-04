@@ -217,6 +217,8 @@ fi
 
 PHASE="$(read_agent_phase)"
 PROMPT_FILE=""
+PRS_JSON="[]"
+PR_QUERY_OK=0
 if [ -z "$BATCH_RESULT_FILE" ]; then
 # 2026-09-13 #1098: ISSUE_JSON above carries the comment thread, which can go
 # stale the moment a mentioned PR's own state changes without a new comment
@@ -228,9 +230,9 @@ if [ -z "$BATCH_RESULT_FILE" ]; then
 # what a stale comment cannot distinguish from "still open".
 PR_QUERY_OK=1
 PRS_BY_BRANCH="$(gh pr list --repo "$REPO" --head "agent/issue-$N" --state all \
-  --json number,state,isDraft,headRefName 2>/dev/null)" || PR_QUERY_OK=0
+  --json number,state,isDraft,headRefName,baseRefName 2>/dev/null)" || PR_QUERY_OK=0
 PRS_BY_MENTION="$(gh pr list --repo "$REPO" --search "#$N in:body,title" --state all \
-  --json number,state,isDraft,headRefName 2>/dev/null)" || PR_QUERY_OK=0
+  --json number,state,isDraft,headRefName,baseRefName 2>/dev/null)" || PR_QUERY_OK=0
 
 PRS_JSON="[]"
 if [ "$PR_QUERY_OK" = "1" ]; then
@@ -257,6 +259,8 @@ if [ "$PR_QUERY_OK" = "1" ] && [ "$(echo "$PRS_JSON" | jq 'length')" -gt 0 ]; th
   done < <(echo "$PRS_JSON" | jq -c '.[]')
   PRS_JSON="$ENRICHED"
 fi
+
+PRS_JSON="$(triage_include_run_evidence_pr "$N" "$PRS_JSON" "$PR_QUERY_OK")" || exit 1
 
 # Read the same way AGENT_PIPELINE is: a repo variable, falling back to the
 # conservative default (2, never 3) when unset, unreadable, or garbage. A
@@ -732,6 +736,27 @@ if ! issue_verdict_snapshot_guard "$N" "$VERDICT_SNAPSHOT_JSON"; then
   exit 0
 fi
 
+TRIAGE_MERGED_PR=""
+if [ "$STATE" = awaiting-release ]; then
+  if [ -n "$BATCH_RESULT_FILE" ]; then
+    # The batch prompt has its own live PR census. Re-read the candidate set
+    # here because only this apply wrapper may write release state.
+    PR_QUERY_OK=1
+    PRS_BY_BRANCH="$(gh pr list --repo "$REPO" --head "agent/issue-$N" --state all \
+      --json number,state,isDraft,headRefName,baseRefName 2>/dev/null)" || PR_QUERY_OK=0
+    PRS_BY_MENTION="$(gh pr list --repo "$REPO" --search "#$N in:body,title" --state all \
+      --json number,state,isDraft,headRefName,baseRefName 2>/dev/null)" || PR_QUERY_OK=0
+    if [ "$PR_QUERY_OK" = 1 ]; then
+      PRS_JSON="$(jq -s -c 'add | unique_by(.number)' \
+        <(echo "$PRS_BY_BRANCH") <(echo "$PRS_BY_MENTION") 2>/dev/null)" || PR_QUERY_OK=0
+    fi
+  fi
+  if ! TRIAGE_MERGED_PR="$(triage_merged_pr_for_issue "$N" "$PRS_JSON" "$PR_QUERY_OK" "$BRIEF")"; then
+    echo "run-triage: #$N was judged already delivered, but no linked PR merged into main could be verified; leaving its stage unchanged" >&2
+    exit 1
+  fi
+fi
+
 # Benny is the user-report follow-up to this existing triage classification.
 # Its comment contains catalog IDs, run statuses, and evidence paths only;
 # the reporter's issue text stays inside the local verification input.
@@ -752,7 +777,12 @@ done
 guarded_write gh issue edit "$N" --repo "$REPO" "${CATEGORY_EDIT_ARGS[@]}"
 # hold_issue below records the prior stage before parking this ticket.
 if [ "$STATE" != on-hold ]; then
-  issue_transition "$N" "$STATE" triage-verdict || exit 1
+  if [ "$STATE" = awaiting-release ]; then
+    conclude_merged_run "$N" "$TRIAGE_MERGED_PR" \
+      "Triage verified that PR #$TRIAGE_MERGED_PR already delivers this issue; waiting for release verification." || exit 1
+  else
+    issue_transition "$N" "$STATE" triage-verdict || exit 1
+  fi
 fi
 
 if [ "$TRIAGE_ESTIMATE_RECUT" = "1" ] && [ -d "$TRIAGE_RUNTIME_DIR" ]; then
@@ -781,6 +811,9 @@ $NOTES"
       guarded_write gh issue comment "$N" --repo "$REPO" --body "$BOT_DISCLAIMER
 $BRIEF"
     fi
+    ;;
+  awaiting-release)
+    # conclude_merged_run above posted the normal merged-delivery handoff.
     ;;
   on-hold)
     HOLD_ARGS=(--holder supervisor \

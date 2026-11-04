@@ -7,7 +7,8 @@
     },
     "state": {
       "type": "string",
-      "enum": ["needs-info", "ready-for-agent", "ready-for-human", "needs-owner", "duplicate", "finish-first", "wontfix"]
+      "enum": ["needs-info", "ready-for-agent", "ready-for-human", "needs-owner", "duplicate", "finish-first", "awaiting-release", "wontfix"],
+      "description": "Use awaiting-release only when live or persisted evidence identifies this issue's PR merged into main; the wrapper verifies the PR and records the existing release handoff. Use wontfix only for work that is genuinely declined."
     },
     "risk_class": {
       "type": "string",
@@ -33,7 +34,7 @@
     },
     "notes_md": {
       "type": "string",
-      "description": "Triage Notes body for needs-info; the pointer-to-original for duplicate; the rationale for wontfix/ready-for-human/needs-owner/finish-first. Empty string when not applicable."
+      "description": "Triage Notes body for needs-info; the pointer-to-original for duplicate; the rationale for awaiting-release/wontfix/ready-for-human/needs-owner/finish-first. Empty string when not applicable."
     },
     "expected_packages": {
       "type": "array",

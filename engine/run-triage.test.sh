@@ -94,6 +94,7 @@ cat > "$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 # Native sub-issue reads (issue 2046): these fixtures have none.
 if [ "${1:-}" = api ] && [[ "${2:-}" == */sub_issues* ]]; then echo '[]'; exit 0; fi
+if [ "${1:-}" = api ] && [[ "${2:-}" == *'/comments?per_page=100'* ]]; then echo '[]'; exit 0; fi
 set -u
 sub="$1 ${2:-}"
 case "$sub" in
@@ -130,7 +131,10 @@ case "$sub" in
     jq -n --arg body "${FAKE_ISSUE_BODY:-}" --arg author "${FAKE_AUTHOR:-testuser}" \
       --arg state "$state" --arg updated_at "${FAKE_ISSUE_UPDATED_AT:-2026-01-01T00:00:00Z}" --argjson labels "$labels" \
       '{number: 1, title: "triage test issue", body: $body, author: {login: $author}, comments: [], createdAt: "2026-01-01T00:00:00Z", updatedAt: $updated_at, state: $state, labels: $labels}' ;;
-  "pr list") echo '[]' ;;
+  "pr list") printf '%s\n' "${FAKE_PR_LIST_JSON:-[]}" ;;
+  "pr view")
+    [ -n "${FAKE_PR_VIEW_JSON:-}" ] || exit 1
+    printf '%s\n' "$FAKE_PR_VIEW_JSON" ;;
   "api") exit 1 ;;
   "issue comment")
     echo "gh $*" >> "$FAKE_GH_LOG"
@@ -431,7 +435,38 @@ export FAKE_TRIAGE_STRUCTURED="$(verdict wontfix P1 L1)"
 run_once "$RAW_BODY" testuser 0 1
 assert_eq "raw + wontfix with an advisor job: exits 0" "0" "$RUN_STATUS"
 assert_contains "raw + wontfix with an advisor job: closes the issue" "$GH_LOG_CONTENT" "issue close $N"
+assert_eq "genuinely declined issue remains wontfix" wontfix "$(echo "$STATE_CONTENT" | jq -r '.state')"
 assert_eq "raw + wontfix with an advisor job: clears job id" "null" "$(echo "$STATE_CONTENT" | jq -r '.web_advisor_provider_job_id // null')"
+
+# A triage judgment that the issue is already delivered must use the existing
+# awaiting-release handoff, with a merged PR found from the live issue links.
+DELIVERY_PR=99001
+export FAKE_PR_LIST_JSON="$(jq -cn --argjson number "$DELIVERY_PR" --arg head "agent/issue-$N" \
+  '[{number:$number,state:"MERGED",isDraft:false,headRefName:$head,baseRefName:"main"},
+    {number:($number + 1),state:"MERGED",isDraft:false,headRefName:"agent/related-work",baseRefName:"main"}]')"
+export FAKE_PR_VIEW_JSON="$(jq -cn --argjson number "$DELIVERY_PR" \
+  '{number:$number,state:"MERGED",baseRefName:"main",mergeCommit:{oid:"0123456789abcdef0123456789abcdef01234567"},mergedAt:"2026-11-04T16:00:00Z"}')"
+export FAKE_TRIAGE_STRUCTURED="$(verdict awaiting-release P1 L1 | jq --arg pr "$DELIVERY_PR" \
+  '.brief_md = ("Already delivered in PR #" + $pr + ".") | .notes_md = "The requested behavior is already available."')"
+SEED_STATE_JSON='{"state":"needs-triage"}' run_once "$RAW_BODY"
+assert_eq "already-delivered triage with merged linked PR exits cleanly" 0 "$RUN_STATUS"
+assert_eq "already-delivered triage enters awaiting-release" awaiting-release "$(echo "$STATE_CONTENT" | jq -r '.state')"
+assert_eq "already-delivered triage records the delivering PR" "$DELIVERY_PR" "$(echo "$STATE_CONTENT" | jq -r '.run.evidence.pr_number')"
+assert_eq "already-delivered triage records merged outcome" merged "$(echo "$STATE_CONTENT" | jq -r '.run.outcome')"
+assert_not_contains "already-delivered triage does not close the issue" "$GH_LOG_CONTENT" "issue close $N"
+assert_contains "already-delivered prompt reports the linked merged PR" "$PROMPT_CONTENT" 'MERGED, base branch `main`'
+unset FAKE_PR_LIST_JSON FAKE_PR_VIEW_JSON
+
+# The persistent run evidence is another source for an issue's known PR link.
+DELIVERY_PR=99002
+export FAKE_PR_VIEW_JSON="$(jq -cn --argjson number "$DELIVERY_PR" \
+  '{number:$number,state:"MERGED",baseRefName:"main",mergeCommit:{oid:"1123456789abcdef0123456789abcdef01234567"},mergedAt:"2026-11-04T16:00:00Z"}')"
+export FAKE_TRIAGE_STRUCTURED="$(verdict awaiting-release P1 L1)"
+SEED_STATE_JSON="$(jq -cn --argjson pr "$DELIVERY_PR" \
+  '{state:"needs-triage",run:{evidence:{pr_number:($pr|tostring)}}}')" run_once "$RAW_BODY"
+assert_eq "already-delivered triage resolves PR from persisted run evidence" awaiting-release "$(echo "$STATE_CONTENT" | jq -r '.state')"
+assert_eq "persisted run evidence retains the delivering PR" "$DELIVERY_PR" "$(echo "$STATE_CONTENT" | jq -r '.run.evidence.pr_number')"
+unset FAKE_PR_VIEW_JSON
 
 export FAKE_TRIAGE_STRUCTURED="$(verdict duplicate P1 L1)"
 run_once "$RAW_BODY" testuser 0 1

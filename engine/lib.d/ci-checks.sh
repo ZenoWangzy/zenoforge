@@ -17,10 +17,12 @@ _AGENT_LIB_DIR="${_AGENT_LIB_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 # This function only renders; run-triage.sh gathers $2 with live `gh pr
 # list`/`gh api .../branches/..` calls (outside the model's sandbox) before
 # ever building the prompt. $2 is a JSON array of {number, state, isDraft,
-# headRefName, branch_exists} -- branch_exists is the one signal a comment
-# cannot carry, because it is derived from the CURRENT remote, not from
-# anything anyone wrote. $3 is "1" when those `gh` queries themselves
-# succeeded, "0" on any failure -- a failure must say so plainly and let
+# headRefName, baseRefName, branch_exists} -- baseRefName makes a merged
+# delivery distinguishable from a PR merged into another branch;
+# branch_exists is the one signal a comment cannot carry, because it is
+# derived from the CURRENT remote, not from anything anyone wrote. $3 is
+# "1" when those `gh` queries themselves succeeded, "0" on any failure -- a
+# failure must say so plainly and let
 # triage proceed on its other evidence (issue thread, code reading), never
 # render an empty block indistinguishable from "confirmed zero PRs".
 render_pr_state_block() {
@@ -39,7 +41,7 @@ render_pr_state_block() {
   echo "$prs_json" | jq -r '
     .[] | "- PR #\(.number): \(.state)" +
       (if .isDraft then " (draft)" else "" end) +
-      ", head branch `\(.headRefName)`, branch " +
+      ", base branch `\(.baseRefName // "unknown")`, head branch `\(.headRefName)`, branch " +
       (if .branch_exists then "still exists on the remote" else "deleted from the remote" end)
   '
 }

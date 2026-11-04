@@ -252,9 +252,9 @@ for n in "${INCLUDED_IDS[@]}"; do
   issue_is_precut "$ISSUE_BODY" && PRECUT=1
   PR_QUERY_OK=1
   PRS_BY_BRANCH="$(gh pr list --repo "$REPO" --head "agent/issue-$n" --state all \
-    --json number,state,isDraft,headRefName 2>/dev/null)" || PR_QUERY_OK=0
+    --json number,state,isDraft,headRefName,baseRefName 2>/dev/null)" || PR_QUERY_OK=0
   PRS_BY_MENTION="$(gh pr list --repo "$REPO" --search "#$n in:body,title" --state all \
-    --json number,state,isDraft,headRefName 2>/dev/null)" || PR_QUERY_OK=0
+    --json number,state,isDraft,headRefName,baseRefName 2>/dev/null)" || PR_QUERY_OK=0
   PRS_JSON="[]"
   if [ "$PR_QUERY_OK" = "1" ]; then
     PRS_JSON="$(jq -s -c 'add | unique_by(.number)' <(echo "$PRS_BY_BRANCH") <(echo "$PRS_BY_MENTION") 2>/dev/null)" || PR_QUERY_OK=0
@@ -271,6 +271,7 @@ for n in "${INCLUDED_IDS[@]}"; do
     done < <(jq -c '.[]' <<< "$PRS_JSON")
     PRS_JSON="$ENRICHED"
   fi
+  PRS_JSON="$(triage_include_run_evidence_pr "$n" "$PRS_JSON" "$PR_QUERY_OK")" || continue
 
   BLOCK_FILE="$SCRATCH_DIR/block-$n.txt"
   {

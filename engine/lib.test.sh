@@ -1676,18 +1676,18 @@ No open, closed, or merged pull request currently references issue #1098 (checke
 
 assert_eq "one open PR with a live branch reads as in-flight work" \
   "## Live pull request state for issue #1098 (queried live via gh by the wrapper, not read from the thread)
-- PR #1099: OPEN, head branch \`agent/issue-1098\`, branch still exists on the remote" \
-  "$(render_pr_state_block 1098 '[{"number":1099,"state":"OPEN","isDraft":false,"headRefName":"agent/issue-1098","branch_exists":true}]' 1)"
+- PR #1099: OPEN, base branch \`main\`, head branch \`agent/issue-1098\`, branch still exists on the remote" \
+  "$(render_pr_state_block 1098 '[{"number":1099,"state":"OPEN","isDraft":false,"headRefName":"agent/issue-1098","baseRefName":"main","branch_exists":true}]' 1)"
 
 assert_eq "the live #1098 fixture: a closed draft PR with its branch deleted reads as abandoned, not in flight" \
   "## Live pull request state for issue #1098 (queried live via gh by the wrapper, not read from the thread)
-- PR #1099: CLOSED (draft), head branch \`agent/issue-1098\`, branch deleted from the remote" \
-  "$(render_pr_state_block 1098 '[{"number":1099,"state":"CLOSED","isDraft":true,"headRefName":"agent/issue-1098","branch_exists":false}]' 1)"
+- PR #1099: CLOSED (draft), base branch \`main\`, head branch \`agent/issue-1098\`, branch deleted from the remote" \
+  "$(render_pr_state_block 1098 '[{"number":1099,"state":"CLOSED","isDraft":true,"headRefName":"agent/issue-1098","baseRefName":"main","branch_exists":false}]' 1)"
 
 assert_eq "a merged PR renders its state as MERGED, not CLOSED" \
   "## Live pull request state for issue #1098 (queried live via gh by the wrapper, not read from the thread)
-- PR #1099: MERGED, head branch \`agent/issue-1098\`, branch deleted from the remote" \
-  "$(render_pr_state_block 1098 '[{"number":1099,"state":"MERGED","isDraft":false,"headRefName":"agent/issue-1098","branch_exists":false}]' 1)"
+- PR #1099: MERGED, base branch \`main\`, head branch \`agent/issue-1098\`, branch deleted from the remote" \
+  "$(render_pr_state_block 1098 '[{"number":1099,"state":"MERGED","isDraft":false,"headRefName":"agent/issue-1098","baseRefName":"main","branch_exists":false}]' 1)"
 
 assert_eq "a query failure says so plainly instead of rendering an empty (indistinguishable from zero-PRs) block" \
   "## Live pull request state for issue #1098 (queried live via gh by the wrapper, not read from the thread)

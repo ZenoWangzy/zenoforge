@@ -60,7 +60,8 @@ you cannot tell what kind of issue this is.
   criteria, explicit out of scope) is step 6. The labels are the skill's
   roles: `bug`/`enhancement` and `needs-triage`, `needs-info`,
   `ready-for-agent`, `ready-for-human`, `wontfix`; the engine adds
-  `needs-owner`, `duplicate` and `finish-first`.
+  `needs-owner`, `duplicate`, `finish-first`, and the existing
+  `awaiting-release` state for verified merged deliveries.
 - **Unattended.** Where the skill says to ask the maintainer, wait for
   direction, grill, post a comment, apply a label, close an issue or write
   `.out-of-scope/`, do not: nobody answers and the wrapper does all of that
@@ -380,14 +381,21 @@ you cannot tell what kind of issue this is.
      a loop with the pipeline's own dispatcher. If the live block reports a
      query failure, fall back to the thread; if it reports zero matching PRs,
      there is nothing to name here.
-   - `wontfix`: already implemented only when the frozen base satisfies every
-     requested behavior and acceptance condition (name the symbol in
-     `brief_md`; in `notes_md`, say in plain words what the reporter can
-     already do — no symbol name there). An adjacent test or producer check
-     does not prove a separately requested workflow trigger or acceptance
-     condition exists. Check each acceptance condition against the code path
-     it names; nearby build/order coverage does not prove a workflow-specific
-     selector or trigger. Otherwise use the appropriate active state. A rejected
+   - `awaiting-release`: the requested behavior is already delivered by a PR
+     that the live block shows as `MERGED` with base branch `main`, or by the
+     issue's persisted run evidence naming that merged PR. Name the PR in
+     the exact PR number in `brief_md` and explain in plain words what the reporter can already do
+     in `notes_md`. The wrapper verifies the PR and routes through the
+     existing merged-run handoff; if no verified delivering PR is available,
+     do not choose this state. Confirm the frozen base satisfies every
+     requested behavior and acceptance condition. An adjacent test or
+     producer check does not prove a separately requested workflow trigger or
+     acceptance condition exists. Check each acceptance condition against the
+     code path it names; nearby build/order coverage does not prove a
+     workflow-specific selector or trigger.
+   - `wontfix`: use only for genuinely declined work that will not be
+     actioned. It is not the route for work already implemented or delivered;
+     use `awaiting-release` for a verified merged delivery. A rejected
      enhancement must say why in `notes_md`, in plain words; the wrapper is
      responsible for `.out-of-scope/` bookkeeping, not you.
 
@@ -409,12 +417,12 @@ you cannot tell what kind of issue this is.
    reproduction supported by the issue or your code-path evidence; do not
    invent input or observed behavior. For an enhancement, describe the current
    behavior as the actual result. For `needs-owner`,
-   `duplicate`, `finish-first`, or `wontfix`, `brief_md` may be a short
+   `duplicate`, `finish-first`, `awaiting-release`, or `wontfix`, `brief_md` may be a short
    rationale instead of the full template.
 
 7. **`notes_md`** carries the Triage Notes body for `needs-info`, the pointer
    to the original issue for `duplicate`, or the rationale for
-   `wontfix`/`ready-for-human`/`needs-owner`/`finish-first`. Leave it `""` when
+   `wontfix`/`ready-for-human`/`needs-owner`/`finish-first`/`awaiting-release`. Leave it `""` when
    the chosen state doesn't need it (e.g. `ready-for-agent`).
 
    **Who reads `notes_md`.** Unlike `brief_md` — which stays the full

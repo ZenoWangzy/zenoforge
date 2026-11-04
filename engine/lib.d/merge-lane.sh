@@ -178,6 +178,64 @@ merged_pr_main_row() {
 }
 
 
+# triage_include_run_evidence_pr <issue> <live-pr-json> <query-ok>
+# The triage prompt normally gets PR links from the live issue search. Include
+# the durable run-evidence PR too when it is absent from that search.
+triage_include_run_evidence_pr() {
+  local n="$1" prs_json="$2" query_ok="${3:-0}" state pr pr_json branch exists=false
+  [ "$query_ok" = 1 ] || { printf '%s\n' "$prs_json"; return 0; }
+  state="$(state_read "$n")" || return 1
+  pr="$(jq -r '.run.evidence.pr_number // empty' <<< "$state")" || return 1
+  if [[ ! "$pr" =~ ^[1-9][0-9]*$ ]] \
+    || jq -e --arg pr "$pr" 'any(.[]; (.number | tostring) == $pr)' <<< "$prs_json" >/dev/null 2>&1; then
+    printf '%s\n' "$prs_json"
+    return 0
+  fi
+  pr_json="$(gh pr view "$pr" --repo "$REPO" --json number,state,isDraft,headRefName,baseRefName 2>/dev/null || true)"
+  if ! jq -e --arg pr "$pr" 'type == "object" and (.number | tostring) == $pr' <<< "$pr_json" >/dev/null 2>&1; then
+    printf '%s\n' "$prs_json"
+    return 0
+  fi
+  branch="$(jq -r '.headRefName // empty' <<< "$pr_json")"
+  if [ -n "$branch" ] && gh api "repos/$REPO/branches/$branch" >/dev/null 2>&1; then
+    exists=true
+  fi
+  jq -c --argjson pr "$pr_json" --argjson exists "$exists" \
+    '. + [$pr + {branch_exists:$exists}] | unique_by(.number)' <<< "$prs_json"
+}
+
+
+# triage_merged_pr_for_issue <issue> <live-pr-json> <query-ok> <brief>
+# Resolve a delivered PR before triage applies an already-delivered verdict.
+# Prefer the issue's durable run evidence, then the live PR links included in
+# the triage prompt. The final handoff still goes through conclude_merged_run,
+# which revalidates the selected PR and owns all release-state writes.
+triage_merged_pr_for_issue() {
+  local n="$1" prs_json="${2:-[]}" query_ok="${3:-0}" brief="${4:-}" state pr candidates named selected
+  state="$(state_read "$n")" || return 1
+  pr="$(jq -r '.run.evidence.pr_number // empty' <<< "$state")" || return 1
+  if [[ "$pr" =~ ^[1-9][0-9]*$ ]] && merged_pr_main_row "$pr" "$n" >/dev/null; then
+    printf '%s\n' "$pr"
+    return 0
+  fi
+  [ "$query_ok" = 1 ] || return 1
+  candidates="$(jq -r '[.[] | select(.state == "MERGED" and .baseRefName == "main")] | sort_by(.number) | reverse | .[].number' \
+    <<< "$prs_json")" || return 1
+  named="$(grep -Eio 'PR[[:space:]]*#[[:space:]]*[0-9]+' <<< "$brief" | grep -Eo '[0-9]+' | sort -u || true)"
+  if [ -n "$named" ]; then
+    [ "$(wc -l <<< "$named" | tr -d ' ')" -eq 1 ] || return 1
+    selected="$named"
+    grep -qx -- "$selected" <<< "$candidates" || return 1
+  else
+    [ "$(wc -l <<< "$candidates" | tr -d ' ')" -eq 1 ] || return 1
+    selected="$candidates"
+  fi
+  [[ "$selected" =~ ^[1-9][0-9]*$ ]] || return 1
+  merged_pr_main_row "$selected" "$n" >/dev/null || return 1
+  printf '%s\n' "$selected"
+}
+
+
 # merged_pr_for_issue <issue-number> -> <pr-number><TAB><merge-sha>
 #
 # conclude_merged_run records the exact PR number before it moves the issue to
