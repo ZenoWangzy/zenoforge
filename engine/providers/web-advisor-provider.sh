@@ -343,7 +343,19 @@ web_advisor_provider_ndjson_request_bytes() {
 # The endpoint does not expose per-reply model identity; accept the old marker only
 # for jobs created before that UI change.
 web_advisor_provider_model_used() {
-  sed -n 's/^VERIFIED_MODEL: //p' "$1" 2>/dev/null | tail -n 1
+  local config_file line marker result=""
+  config_file="$(zf_config_file providers/web-advisor-provider-response-formats.json 2>/dev/null || true)"
+  local -a markers=("VERIFIED_MODEL: ") configured_markers=()
+  if [[ -r "$config_file" ]]; then
+    mapfile -t configured_markers < <(jq -r '.model_markers[]? | select(type == "string" and length > 0)' "$config_file" 2>/dev/null)
+  fi
+  markers+=("${configured_markers[@]}")
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    for marker in "${markers[@]}"; do
+      if [[ "$line" == "$marker"* ]]; then result="${line#"$marker"}"; break; fi
+    done
+  done < "${1:-/dev/null}" 2>/dev/null || true
+  if [[ -n "$result" ]]; then printf '%s\n' "$result"; fi
 }
 
 # web_advisor_provider_model_fallback <provider stderr> -> fallback reason.
@@ -381,16 +393,27 @@ web_advisor_provider_error_codes() {
 # these two observed serialization artifacts; the original answer file stays
 # untouched and callers must still validate the full batch envelope/manifest.
 web_advisor_provider_normalize_batch_json() {
+  local formats
+  formats="$(zf_config_file providers/web-advisor-provider-response-formats.json 2>/dev/null || true)"
   node -e '
     let text = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", chunk => { text += chunk; });
     process.stdin.on("end", () => {
-      text = text.replace(/:web-content-reference\{index=\"\d+\"\}/g, "");
+      let tokens = ["web-content-reference"];
+      try {
+        const configured = require(process.argv[1]).citation_tokens;
+        if (Array.isArray(configured)) tokens.push(...configured);
+      } catch {}
+      for (const token of tokens) {
+        if (typeof token !== "string" || !token) continue;
+        const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        text = text.replace(new RegExp(":" + escaped + "\\{index=\"\\d+\"\\}", "g"), "");
+      }
       text = text.replaceAll("service_tier=\"fast\"", "service_tier=\\\"fast\\\"");
       process.stdout.write(text);
     });
-  '
+  ' "$formats"
 }
 
 # web_advisor_provider_parse_answer <raw answer text> [verified pre-send picker setting] -> the

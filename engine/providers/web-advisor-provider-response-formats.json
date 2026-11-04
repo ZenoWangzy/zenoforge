@@ -1,0 +1,4 @@
+{
+  "model_markers": ["VERIFIED_MODEL: ", "发问前已验证的 picker 设置：", "本次实际使用："],
+  "citation_tokens": ["web-content-reference", "chatgpt-content-reference"]
+}

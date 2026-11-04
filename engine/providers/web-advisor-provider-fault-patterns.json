@@ -1,0 +1,18 @@
+{
+  "model_slug_mismatch": [
+    "model slug",
+    "model-slug",
+    "模型 slug",
+    "模型标识"
+  ],
+  "picker_not_found": [
+    "picker",
+    "模型菜单",
+    "选择模型",
+    "当前模型或推理档位"
+  ],
+  "browser_context_lost": [
+    "browser context",
+    "chatgpt tab"
+  ]
+}
