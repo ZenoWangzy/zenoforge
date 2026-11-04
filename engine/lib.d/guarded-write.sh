@@ -1,3 +1,5 @@
+declare -F zf_call_profile_enabled >/dev/null 2>&1 || source "$(dirname -- "${BASH_SOURCE[0]}")/compat-inputs.sh"
+
 
 # 2026-09-12 review, item 3: issue-pipeline.sh section (a) used to test "does
 # the comment CONTAIN BOT_COMMENT_MARKER anywhere" to decide whether a
@@ -153,12 +155,12 @@ guarded_write() {
   fi
   if [ "$DRY_RUN" = "1" ]; then
     echo "[dry-run] $*" >&2
-    if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
+    if zf_call_profile_enabled guarded-write; then
       _call_profile_guarded_dry_run "${command_args[@]}" || true
     fi
     return 0
   fi
-  if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ] \
+  if zf_call_profile_enabled guarded-write \
     && [ "${command_args[0]:-}" = systemd-run ]; then
     profile_source="${BASH_SOURCE[1]:-}"
     profile_function="${FUNCNAME[1]:-main}"

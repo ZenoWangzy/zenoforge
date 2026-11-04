@@ -1654,14 +1654,7 @@ fi
 # maintainer reaches for from a phone under pressure — it must fail closed on
 # anything it doesn't recognize, validated the same explicit-allowlist way
 # AGENT_PHASE already is in run-triage.sh.
-MODE="$(gh variable get AGENT_PIPELINE --repo "$REPO" 2>/dev/null || echo off)"
-MODE="$(echo "$MODE" | tr -d '[:space:]')"
-case "$MODE" in
-  off|triage) ;;
-  # The scheduler owns implement and release; the retired values behave as triage.
-  implement|release) MODE=triage ;;
-  *) MODE=off ;;
-esac
+MODE="$(read_zenoforge_mode feeder)"
 # The maintainer's standing authorization (2026-10-22) ships migrations and fleet rolls automatically.
 # While the autopilot owns implementation (AGENT_PIPELINE=triage), its release train delegates those
 # releases to this release slice, so the one release path (run-release.sh) keeps running.

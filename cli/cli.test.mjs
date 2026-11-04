@@ -20,12 +20,35 @@ case "$1 $2" in
   "repo clone") [ -z "$ZF_FAKE_CLONE_FAIL" ] || { echo "fatal: unable to access the remote" >&2; exit 1; }
     git clone -q "$ZF_FAKE_ORIGIN" "$4" && { [ -n "$ZF_FAKE_KEEP_ORIGIN" ] || git -C "$4" remote set-url origin "https://github.com/$3.git"; } ;;
   "label list") echo needs-triage ;;
-  "variable get") echo "\${ZF_FAKE_PIPELINE:-triage}" ;;
+  "variable get")
+    if [ "$3" = AGENT_PIPELINE ]; then
+      [[ " $* " != *' --json '* ]] || { echo 'unsupported get option' >&2; exit 1; }
+      [ -z "$ZF_FAKE_GET_FAIL" ] || { echo 'fixture authentication failed' >&2; exit 4; }
+      if [ "$ZF_FAKE_GET_NUL" = 1 ]; then printf 'tri\\000age\\n'; exit 0; fi
+      if [ "$ZF_FAKE_LIST_RACE" = 1 ]; then printf off > "$ZF_FAKE_VAR_DIR/AGENT_PIPELINE"; fi
+      if [ ! -f "$ZF_FAKE_VAR_DIR/AGENT_PIPELINE" ]; then
+        [ -z "$ZF_FAKE_FAIL_MISSING_CONFIRM" ] || : > "$ZF_FAKE_VAR_DIR/fail-confirm"
+        echo 'variable AGENT_PIPELINE was not found' >&2; exit 1
+      fi
+      cat "$ZF_FAKE_VAR_DIR/AGENT_PIPELINE"; printf '\\n'
+    else echo observe; fi ;;
+  "variable list")
+    [ -z "$ZF_FAKE_LIST_FAIL" ] || { echo 'authentication failed' >&2; exit 1; }
+    [ ! -e "$ZF_FAKE_VAR_DIR/fail-confirm" ] || { echo 'fixture confirmation failed' >&2; exit 1; }
+    for key in AGENT_PIPELINE AGENT_ZENOFORGE; do
+      if [ -f "$ZF_FAKE_VAR_DIR/$key" ]; then
+        jq -nc --arg name "$key" --arg value "$(cat "$ZF_FAKE_VAR_DIR/$key")" '{name:$name,value:$value}'
+      fi
+    done | jq -s . ;;
+  "variable set")
+    [ "$ZF_FAKE_FAIL_SET" != "$3:$7" ] || { echo 'injected write failure' >&2; exit 1; }
+    printf '%s' "$7" > "$ZF_FAKE_VAR_DIR/$3"
+    printf '%s=%s old=%s new=%s\n' "$3" "$7" "$(cat "$ZF_FAKE_VAR_DIR/AGENT_PIPELINE" 2>/dev/null || echo missing)" "$(cat "$ZF_FAKE_VAR_DIR/AGENT_ZENOFORGE" 2>/dev/null || echo missing)" >> "$ZF_FAKE_VAR_DIR/transitions" ;;
   "pr list") echo '[]' ;; # the pin self-check reads the open-PR census; a repository with no open PRs is a valid answer
   *) case "$1" in api) echo '{"contexts":["ci / test"],"checks":[]}' ;; esac ;;
 esac
 `;
-const FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "systemctl $*" >> "$ZF_FAKE_LOG"\n';
+const FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "systemctl $*" >> "$ZF_FAKE_LOG"\ncase "$*" in *"enable --now"*) [ -z "$ZF_FAKE_SYSTEMCTL_FAIL_ENABLE" ] || exit 1 ;; esac\n';
 
 function sandbox({ originFiles = { 'README.md': 'hello\n' } } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zf-cli-'));
@@ -48,8 +71,10 @@ function sandbox({ originFiles = { 'README.md': 'hello\n' } } = {}) {
   const log = path.join(root, 'calls.log');
   fs.writeFileSync(log, '');
   const unitDir = path.join(home, '.config/systemd/user');
+  const variableDir = path.join(root, 'variables');
+  fs.mkdirSync(variableDir);
   const env = {
-    ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, ZF_FAKE_LOG: log, ZF_FAKE_ORIGIN: origin,
+    ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, ZF_FAKE_LOG: log, ZF_FAKE_ORIGIN: origin, ZF_FAKE_VAR_DIR: variableDir,
     SYSTEMD_USER_UNIT_DIR: unitDir, GH_TOKEN: '', GITHUB_TOKEN: '', XDG_CONFIG_HOME: path.join(home, '.config'),
   };
   delete env.AGENT_HOME; delete env.ZF_HOME; delete env.ZF_REPO_DIR; delete env.MAC_AUTOPILOT_ROOT;
@@ -60,7 +85,7 @@ function sandbox({ originFiles = { 'README.md': 'hello\n' } } = {}) {
     find: (n) => which(n, env.PATH), exec: runner, runner, scheduler: 'systemd',
   };
   const calls = () => fs.readFileSync(log, 'utf8');
-  return { root, home, io, lines, calls, unitDir, agent: path.join(home, '.zenoforge'), checkout: path.join(home, '.zenoforge/checkout'), env };
+  return { root, home, io, lines, calls, unitDir, variableDir, agent: path.join(home, '.zenoforge'), checkout: path.join(home, '.zenoforge/checkout'), env };
 }
 
 const REPO = 'example-maintainer/example-repo';
@@ -346,18 +371,143 @@ test('start after init --no-scheduler is the first enable: it needs the confirma
   assert.ok(fs.existsSync(path.join(s.unitDir, 'zenoforge-agent.service')));
 });
 
+test('rename E1: setup, start, stop and status preserve both switches through failures', async () => {
+  const s = sandbox();
+  const file = (name) => path.join(s.variableDir, name);
+  const put = (name, value) => value === null ? fs.rmSync(file(name), { force: true }) : fs.writeFileSync(file(name), value);
+  const read = (name) => fs.existsSync(file(name)) ? fs.readFileSync(file(name), 'utf8') : null;
+  const reset = () => { fs.writeFileSync(path.join(s.root, 'calls.log'), ''); fs.writeFileSync(file('transitions'), ''); s.lines.length = 0; };
+  const writes = () => s.calls().split('\n').filter((x) => x.startsWith('gh variable set AGENT_') && !x.includes('AGENT_SUPERVISOR')).map((x) => x.replace(/ --repo \S+ --body /, '='));
+  const transitions = () => fs.readFileSync(file('transitions'), 'utf8').trim().split('\n').filter(Boolean);
+
+  await cmd.init({ repo: REPO, yes: true, noScheduler: true }, s.io);
+  assert.deepEqual(writes(), ['gh variable set AGENT_PIPELINE=off', 'gh variable set AGENT_ZENOFORGE=off']);
+  assert.equal(read('AGENT_PIPELINE'), 'off'); assert.equal(read('AGENT_ZENOFORGE'), 'off');
+
+  put('AGENT_PIPELINE', null); put('AGENT_ZENOFORGE', null); reset();
+  await cmd.start({ yes: true }, s.io);
+  assert.deepEqual(writes(), ['gh variable set AGENT_PIPELINE=off', 'gh variable set AGENT_ZENOFORGE=triage', 'gh variable set AGENT_PIPELINE=triage']);
+  assert.deepEqual(transitions(), [
+    'AGENT_PIPELINE=off old=off new=missing',
+    'AGENT_ZENOFORGE=triage old=off new=triage',
+    'AGENT_PIPELINE=triage old=triage new=triage',
+  ]);
+
+  reset(); await cmd.start({}, s.io);
+  assert.deepEqual(writes(), [], 'an equivalent running pair is a no-op');
+  put('AGENT_PIPELINE', 'release'); put('AGENT_ZENOFORGE', 'implement'); reset();
+  await cmd.start({}, s.io);
+  assert.deepEqual(writes(), [], 'equivalent normalized modes are a no-op');
+
+  for (const whitespace of ['\u0085', '\ufeff']) {
+    put('AGENT_PIPELINE', null); put('AGENT_ZENOFORGE', `tri${whitespace}age`); reset();
+    cmd.status({}, s.io);
+    assert.match(s.lines.join('\n'), /effective mode\s+off \(conflicting or malformed values\)/);
+  }
+  put('AGENT_PIPELINE', 'im ple\tment'); put('AGENT_ZENOFORGE', 'triage'); reset();
+  cmd.status({}, s.io); assert.match(s.lines.join('\n'), /effective mode\s+triage/);
+
+  put('AGENT_PIPELINE', 'triage'); put('AGENT_ZENOFORGE', 'triage'); reset();
+  s.env.ZF_FAKE_LIST_RACE = '1';
+  cmd.status({}, s.io);
+  assert.match(s.lines.join('\n'), /effective mode\s+off \(changed during read\)/, 'a stop after a stale listing is visible');
+  assert.match(s.lines.join('\n'), /AGENT_PIPELINE\s+off/);
+  delete s.env.ZF_FAKE_LIST_RACE;
+
+  put('AGENT_PIPELINE', 'triage'); put('AGENT_ZENOFORGE', 'triage'); reset();
+  s.env.ZF_FAKE_GET_NUL = '1'; cmd.status({}, s.io);
+  assert.match(s.lines.join('\n'), /effective mode\s+off \(changed during read\)/, 'a malformed direct legacy value fails closed');
+  delete s.env.ZF_FAKE_GET_NUL;
+
+  put('AGENT_PIPELINE', 'triage'); put('AGENT_ZENOFORGE', 'triage'); reset();
+  s.env.ZF_FAKE_GET_FAIL = '1'; cmd.status({}, s.io);
+  assert.match(s.lines.join('\n'), /unreadable.*effective off/);
+  delete s.env.ZF_FAKE_GET_FAIL;
+  put('AGENT_PIPELINE', null); put('AGENT_ZENOFORGE', 'triage'); reset();
+  s.env.ZF_FAKE_FAIL_MISSING_CONFIRM = '1'; cmd.status({}, s.io);
+  assert.match(s.lines.join('\n'), /unreadable.*effective off/);
+  delete s.env.ZF_FAKE_FAIL_MISSING_CONFIRM; fs.rmSync(file('fail-confirm'), { force: true });
+
+  put('AGENT_PIPELINE', 'triage'); put('AGENT_ZENOFORGE', 'off'); reset();
+  cmd.status({}, s.io);
+  assert.match(s.lines.join('\n'), /effective mode\s+off \(conflicting or malformed values\)/);
+  reset(); await cmd.start({}, s.io);
+  assert.deepEqual(writes().slice(0, 2), ['gh variable set AGENT_PIPELINE=off', 'gh variable set AGENT_ZENOFORGE=off']);
+  assert.ok(transitions().slice(0, -1).every((x) => x.includes('old=off')), 'reconciliation stays off until the last write');
+
+  reset(); s.env.ZF_FAKE_FAIL_SET = 'AGENT_ZENOFORGE:off';
+  assert.throws(() => cmd.stop({}, s.io), /stop unconfirmed.*AGENT_ZENOFORGE/);
+  assert.deepEqual(writes(), ['gh variable set AGENT_PIPELINE=off', 'gh variable set AGENT_ZENOFORGE=off']);
+  assert.equal(read('AGENT_PIPELINE'), 'off'); assert.match(s.calls(), /systemctl --user disable/);
+  delete s.env.ZF_FAKE_FAIL_SET;
+  cmd.status({}, s.io); assert.match(s.lines.join('\n'), /effective mode\s+off \(conflicting/);
+
+  put('AGENT_PIPELINE', 'triage'); put('AGENT_ZENOFORGE', 'triage'); reset();
+  s.env.ZF_FAKE_FAIL_SET = 'AGENT_PIPELINE:off';
+  assert.throws(() => cmd.stop({}, s.io), /stop unconfirmed.*AGENT_PIPELINE/);
+  assert.deepEqual(writes(), ['gh variable set AGENT_PIPELINE=off', 'gh variable set AGENT_ZENOFORGE=off']);
+  assert.equal(read('AGENT_ZENOFORGE'), 'off');
+  delete s.env.ZF_FAKE_FAIL_SET;
+
+  for (const failed of ['AGENT_ZENOFORGE:triage', 'AGENT_PIPELINE:triage']) {
+    put('AGENT_PIPELINE', 'off'); put('AGENT_ZENOFORGE', 'off'); reset();
+    s.env.ZF_FAKE_FAIL_SET = failed;
+    await assert.rejects(cmd.start({}, s.io), /start incomplete/);
+    assert.equal(read('AGENT_PIPELINE'), 'off'); assert.equal(read('AGENT_ZENOFORGE'), 'off');
+    assert.doesNotMatch(s.lines.join('\n'), /^started$/m);
+    delete s.env.ZF_FAKE_FAIL_SET;
+  }
+  reset(); s.env.ZF_FAKE_LIST_FAIL = '1';
+  cmd.status({}, s.io); assert.match(s.lines.join('\n'), /unreadable.*effective off/);
+  await assert.rejects(cmd.start({}, s.io), /start refused.*stop unconfirmed/);
+  assert.doesNotMatch(s.calls(), /--body triage/);
+
+  const failedSetup = sandbox();
+  failedSetup.env.ZF_FAKE_SYSTEMCTL_FAIL_ENABLE = '1';
+  await assert.rejects(cmd.init({ repo: REPO, yes: true }, failedSetup.io), /switching the scheduler on failed.*both switches verified off/);
+  assert.equal(fs.readFileSync(path.join(failedSetup.variableDir, 'AGENT_PIPELINE'), 'utf8'), 'off');
+  assert.equal(fs.readFileSync(path.join(failedSetup.variableDir, 'AGENT_ZENOFORGE'), 'utf8'), 'off');
+
+  const thrownSetup = sandbox();
+  const originalRunner = thrownSetup.io.runner;
+  thrownSetup.io.runner = (command, args, opts) => {
+    if (command === 'systemctl' && args.includes('enable')) throw new Error('injected scheduler exception');
+    return originalRunner(command, args, opts);
+  };
+  await assert.rejects(cmd.init({ repo: REPO, yes: true }, thrownSetup.io), /injected scheduler exception.*both switches verified off/);
+  assert.equal(fs.readFileSync(path.join(thrownSetup.variableDir, 'AGENT_PIPELINE'), 'utf8'), 'off');
+  assert.equal(fs.readFileSync(path.join(thrownSetup.variableDir, 'AGENT_ZENOFORGE'), 'utf8'), 'off');
+
+  const failedState = sandbox();
+  await cmd.init({ repo: REPO, yes: true, noScheduler: true }, failedState.io);
+  const originalWrite = Actions.prototype.write;
+  try {
+    Actions.prototype.write = function (name, content, options) {
+      if (name === path.join(failedState.agent, 'cli.json')) throw new Error('injected state write failure');
+      return originalWrite.call(this, name, content, options);
+    };
+    await assert.rejects(cmd.start({ yes: true }, failedState.io), /injected state write failure.*both switches verified off/);
+  } finally {
+    Actions.prototype.write = originalWrite;
+  }
+  assert.equal(fs.readFileSync(path.join(failedState.variableDir, 'AGENT_PIPELINE'), 'utf8'), 'off');
+  assert.equal(fs.readFileSync(path.join(failedState.variableDir, 'AGENT_ZENOFORGE'), 'utf8'), 'off');
+  assert.doesNotMatch(failedState.calls(), /systemctl --user enable/);
+});
+
 test('a real run-tick completes through the linked engine (write guard, timer check, kill switch)', async () => {
   const s = sandbox();
   s.env.ZF_FAKE_KEEP_ORIGIN = '1'; // the tick fetches origin; keep the local bare repo as the remote
-  s.env.ZF_FAKE_PIPELINE = 'off';
   await cmd.init({ repo: REPO, yes: true }, s.io);
+  fs.writeFileSync(path.join(s.variableDir, 'AGENT_PIPELINE'), 'off');
+  fs.writeFileSync(path.join(s.variableDir, 'AGENT_ZENOFORGE'), 'off');
   const unit = readEnvFile(path.join(s.agent, 'env')); // what EnvironmentFile= gives the real unit
   const tick = run('bash', [path.join(s.checkout, 'engine/run-tick.sh')], {
     env: { ...s.env, ...unit, ZF_REPO_DIR: s.checkout, GIT_TERMINAL_PROMPT: '0' }, timeout: 120000,
   });
   assert.equal(tick.code, 0, tick.stderr);
   assert.match(tick.stderr, /handing off to issue-pipeline\.sh/);
-  assert.match(s.calls().trim().split('\n').at(-1), /^gh variable get AGENT_PIPELINE/, 'the slices read the kill switch last, and stop at off');
+  assert.match(s.calls(), /gh variable list --repo \S+ --json name,value/, 'the slices read the repository kill switches');
   assert.match(s.calls(), /systemctl --user is-active --quiet zenoforge-agent\.timer/);
   assert.equal(fs.existsSync(path.join(s.agent, 'tick-failure-count')), false);
 });

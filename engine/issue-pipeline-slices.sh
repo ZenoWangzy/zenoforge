@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+declare -F zf_call_profile_enabled >/dev/null 2>&1 || source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/compat-inputs.sh"
+
 # Each serial decision stage owns a hard slice; an overrun cannot eat the tail.
 
 # The stage-exit contract, in ONE place. A stage scheduler
@@ -47,7 +49,7 @@ run_pipeline_slices() {
   local scheduler="$1" mode stage budget status=0 started tick="" deadline night
   exec 9>"$LOCK_FILE"
   flock -n 9 || return 0
-  if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
+  if zf_call_profile_enabled slices; then
     tick="$(date -u +%Y%m%dT%H%M%SZ)"
     ZF_CALL_PROFILE_TICK_ID="$tick"
     ZF_CALL_PROFILE_STAGE=runner
@@ -55,9 +57,8 @@ run_pipeline_slices() {
     export ZF_CALL_PROFILE_TICK_ID ZF_CALL_PROFILE_STAGE ZF_CALL_PROFILE_SECTION
   fi
   check_gmail_credential
-  mode="$(gh variable get AGENT_PIPELINE --repo "$REPO" 2>/dev/null || echo off)"
-  mode="${mode//[[:space:]]/}"
-  case "$mode" in triage|implement|release) mode=triage ;; *) return 0 ;; esac
+  mode="$(read_zenoforge_mode slices)"
+  [ "$mode" = triage ] || return 0
   manual_pause_is_valid && return 0
   [ -n "$tick" ] || tick="$(date -u +%Y%m%dT%H%M%SZ)"
   echo "issue-pipeline: slice-start tick=$tick mode=$mode" >&2
@@ -83,7 +84,7 @@ run_pipeline_slices() {
       fastlane) budget=150 ;; triage) budget=120 ;; advisor) budget=150 ;;
       recut) budget=60 ;; release|maintenance) budget=120 ;;
     esac
-    if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
+    if zf_call_profile_enabled slices; then
       ZF_CALL_PROFILE_STAGE="$stage"
       ZF_CALL_PROFILE_SECTION=preflight
       export ZF_CALL_PROFILE_STAGE ZF_CALL_PROFILE_SECTION

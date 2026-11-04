@@ -182,7 +182,7 @@ fi
 # --- 3b. a stage failure is isolated, later slices run, tick stays successful
 source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 mkdir -p "$AGENT_HOME"
-gh() { printf 'triage\n'; }
+gh() { if [[ "$2" == get ]]; then echo triage; else printf '%s\n' '[{"name":"AGENT_PIPELINE","value":"triage"}]'; fi; }
 check_gmail_credential() { :; }
 manual_pause_is_valid() { return 1; }
 roadmap_switch_value() { printf 'false\n'; }

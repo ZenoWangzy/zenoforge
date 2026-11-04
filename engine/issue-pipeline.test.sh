@@ -2,6 +2,9 @@
 # issue-pipeline.test.sh -- batch-only fresh advisor questions, sent-job
 # polling, and stored-verdict recovery.
 set -euo pipefail
+if [[ "${1:-}" == --rename-e1 ]]; then
+  exec bash "$(dirname "$0")/rename-e1-mode.test.sh"
+fi
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1575,7 +1578,7 @@ for pause_case in triage:0 triage:1 release:0 release:1; do
     PIPELINE_STAGE="${pause_case%:*}" ZF_RELEASE_TRAIN_DELEGATE="${pause_case#*:}"
     PAUSE_FILE="$AGENT_HOME/PAUSE"
     jq -n '{reason:"refactor",caller:"operator",issue:"none",provider:"none",model:"none",timestamp:"2026-10-24T22:10:00Z"}' > "$PAUSE_FILE"
-    gh() { echo triage; }
+    gh() { if [[ "$2" == get ]]; then echo triage; else printf '%s\n' '[{"name":"AGENT_PIPELINE","value":"triage"}]'; fi; }
     read_agent_phase() { echo 1; }
     eval "$PAUSE_MODE_BODY"
     echo "continued:$MODE"

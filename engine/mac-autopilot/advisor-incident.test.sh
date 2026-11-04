@@ -53,7 +53,7 @@ new_case() {
   CASE_CI="$CASE/ci"
   mkdir -p "$CASE_REPO/engine" "$CASE_ENGINE/lib.d" "$CASE_AGENT/logs" "$CASE_AUTOPI/alerts" \
     "$CASE_JOBS" "$CASE_CI" "$CASE/supervisor"
-  cp "$repo_root/engine/lib.d/transport.sh" "$repo_root/engine/lib.d/ci-checks.sh" "$CASE_ENGINE/lib.d/"
+  cp "$repo_root/engine/lib.d/transport.sh" "$repo_root/engine/lib.d/compat-inputs.sh" "$repo_root/engine/lib.d/ci-checks.sh" "$CASE_ENGINE/lib.d/"
   cat > "$CASE_ENGINE/pipeline-issue-upsert.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail

@@ -1,3 +1,5 @@
+declare -F zf_call_profile_enabled >/dev/null 2>&1 || source "$(dirname -- "${BASH_SOURCE[0]}")/compat-inputs.sh"
+
 
 # _bounded_call_timed_out <detail> -- shared by gh()/git_fetch_bounded()
 # below. Always logs loudly to stderr, so a timeout lands in the
@@ -105,7 +107,7 @@ gh() {
   local status attempt retry_read=0 stderr_file stderr i api_method="" api_fields=0 arg attempt_timeout
   local profile_source="" profile_function="" profile_line=0 profile_started_us="" profile_ended_us
   local args=("$@")
-  if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
+  if zf_call_profile_enabled transport; then
     profile_source="${BASH_SOURCE[1]:-}"
     profile_function="${FUNCNAME[1]:-main}"
     profile_line="${BASH_LINENO[0]:-0}"
@@ -250,7 +252,7 @@ gh_timeout() {
   [ "$#" -ge 1 ] || return 2
   timeout_value="$1"
   shift
-  if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
+  if zf_call_profile_enabled transport; then
     profile_source="${BASH_SOURCE[1]:-}"
     profile_function="${FUNCNAME[1]:-main}"
     profile_line="${BASH_LINENO[0]:-0}"
@@ -283,7 +285,7 @@ git_fetch_remove_stale_lock() {
   [[ "$lock_path" == *.lock ]] || return 1
 
   repo_dir="$(cd -- "$dir" 2>/dev/null && pwd -P)" || return 1
-  if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
+  if zf_call_profile_enabled transport; then
     profile_line=$((LINENO + 1))
     profile_started_us="${EPOCHREALTIME/./}"
   fi
@@ -356,7 +358,7 @@ git_fetch_bounded() {
   local dir="$1" status stderr_file trace_file transient_retries=0 retry_delay=1 stale_lock_retried=0 timeout_retried=0
   local profile_source="" profile_function="" profile_line=0 profile_started_us="" profile_ended_us
   local transient_retry_limit="${ZF_GIT_FETCH_TRANSIENT_RETRIES:-2}"
-  if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
+  if zf_call_profile_enabled transport; then
     profile_source="${BASH_SOURCE[1]:-}"
     profile_function="${FUNCNAME[1]:-main}"
     profile_line="${BASH_LINENO[0]:-0}"
@@ -374,7 +376,7 @@ git_fetch_bounded() {
   # transfer, and the timeout line alone cannot say which phase held it.
   trace_file="$(mktemp)" || { rm -f -- "$stderr_file"; return 1; }
   while :; do
-    [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" != 1 ] || profile_started_us="${EPOCHREALTIME/./}"
+    if zf_call_profile_enabled transport; then profile_started_us="${EPOCHREALTIME/./}"; fi
     # A proxy tunnel can stall after CONNECT (2026-10-22: two back-to-back 60s
     # stalls failed the release train). Abort a stalled transfer after 20s so
     # the transient retry below gets a fresh tunnel inside the same budget.

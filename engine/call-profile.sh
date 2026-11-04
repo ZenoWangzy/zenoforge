@@ -1,13 +1,17 @@
 # Optional command-level scheduler profiling. Source after lib.sh; never call
 # it from a hot loop. Records contain fixed metadata only, never argv/output.
+declare -F zf_call_profile_enabled >/dev/null 2>&1 || source "${BASH_SOURCE[0]%/*}/lib.d/compat-inputs.sh"
 ZF_PIPELINE_CALL_PROFILE_ENABLED=0
-[ -n "${ZF_PIPELINE_CALL_PROFILE_FILE:-}" ] || return 0
-if ! { : >> "$ZF_PIPELINE_CALL_PROFILE_FILE"; } 2>/dev/null; then
+ZF_CALL_PROFILE_ENABLED=0
+zf_call_profile_file call-profile || return 0
+_ZF_CALL_PROFILE_FILE="$_ZF_CALL_PROFILE_RESOLVED_FILE"
+if ! { : >> "$_ZF_CALL_PROFILE_FILE"; } 2>/dev/null; then
   echo 'issue-pipeline: call profiling disabled; profile file is not writable' >&2
   return 0
 fi
 
 ZF_PIPELINE_CALL_PROFILE_ENABLED=1
+ZF_CALL_PROFILE_ENABLED=1
 ZF_PIPELINE_CALL_PROFILE_BOUNDARY=section-v2
 
 _call_profile_classify_write() {
@@ -126,7 +130,10 @@ _call_profile_ticket_category() {
 
 _call_profile_record() {
   local tool="$1" started_us="$2" ended_us="$3" result="$4" source="$5" function="$6" line="$7"
-  local tick stage section site elapsed_ms
+  local tick stage section site elapsed_ms profile_file
+  zf_call_profile_enabled call-profile || return 0
+  zf_call_profile_file call-profile || return 0
+  profile_file="$_ZF_CALL_PROFILE_RESOLVED_FILE"
   shift 7
   [[ "$started_us" =~ ^[0-9]+$ && "$ended_us" =~ ^[0-9]+$ ]] || return 0
   tick="${IMPLEMENT_TICK_ID:-${ZF_CALL_PROFILE_TICK_ID:-unknown}}"
@@ -149,7 +156,7 @@ _call_profile_record() {
     printf '1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$ZF_PIPELINE_CALL_PROFILE_BOUNDARY" "$tick" "$stage" "$section" \
       "$_CALL_PROFILE_CATEGORY" "$tool" "$effect" "$site" "$elapsed_ms" "$result"
-  } >> "$ZF_PIPELINE_CALL_PROFILE_FILE" 2>/dev/null || true
+  } 2>/dev/null >> "$profile_file" || true
 }
 
 _call_profile_external() {
