@@ -104,11 +104,11 @@ merge_pr_size_ok() {
 
 # The prelude of scheduler.test.sh holds the text assertions every shard runs, so one stale grep turns all eight red.
 merge_pr_scheduler_prelude() {
-  local pr="$1" root tree rc=0
+  local pr="$1" root tree ref="refs/zf-merge-pr/$1" rc=0
   root="$(merge_pr_root)" || return 0
-  git -C "$root" fetch -q origin "pull/$pr/head" || return
+  git -C "$root" fetch -q origin "+pull/$pr/head:$ref" 2>&1 || return
   tree="$(mktemp -d)"
-  if git -C "$root" archive FETCH_HEAD | tar -x -C "$tree"; then
+  if git -C "$root" archive "$ref" | tar -x -C "$tree"; then
     SCHED_TEST_CASE=prelude timeout 300 bash "$tree/engine/mac-autopilot/scheduler.test.sh" 2>&1 | tail -3
     rc=${PIPESTATUS[0]}
   else
@@ -118,8 +118,13 @@ merge_pr_scheduler_prelude() {
   return "$rc"
 }
 merge_pr_scheduler_prelude_ok() {
-  local pr="$1" out
-  gh pr view "$pr" --json body,files,commits 2>/dev/null | jq -e '[.files[].path | select(test("^engine/mac-autopilot/scheduler(\\.sh|\\.d/|\\.test\\.sh)"))] | length > 0' >/dev/null || return 0
+  local pr="$1" out touched
+  touched="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq '[.files[].path | select(test("^engine/mac-autopilot/(scheduler(\\.sh|\\.d/|\\.test\\.sh)|config\\.template\\.json)"))] | length')" || touched=
+  if [[ -z "$touched" ]]; then
+    merge_pr_refuse "$pr" 'could not read PR files for the scheduler prelude check'
+    return 1
+  fi
+  (( touched > 0 )) || return 0
   out="$(merge_pr_scheduler_prelude "$pr")" && return 0
   merge_pr_refuse "$pr" "scheduler.test.sh prelude failed: $out"
 }

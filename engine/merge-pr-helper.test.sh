@@ -187,6 +187,10 @@ merge_pr_scheduler_prelude() { echo called >> "$fixture/prelude-calls"; echo 'no
 PR_CHECKS='[]' PR_FILES='["tools/merge-pr.sh"]' PR_BODY=$'## prior-art\nno external prior art: test fixture'
 merge_pr_scheduler_prelude_ok 17 || fail 'a non-scheduler PR was refused by the prelude check'
 [[ ! -s "$fixture/prelude-calls" ]] || fail 'a non-scheduler PR ran the prelude'
+PR_BODY=gh-error
+if merge_pr_scheduler_prelude_ok 17 >"$fixture/check-output" 2>&1; then fail 'an unreadable PR skipped the prelude check'; fi
+[[ "$(cat "$fixture/check-output")" == *'could not read PR files'* ]] || fail "unreadable PR refusal lost its reason: $(cat "$fixture/check-output")"
+PR_BODY=$'## prior-art\nno external prior art: test fixture'
 PR_FILES='["engine/mac-autopilot/scheduler.d/models.sh"]'
 : > "$fixture/gh-calls"
 if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail 'a red prelude did not refuse the merge'; fi
