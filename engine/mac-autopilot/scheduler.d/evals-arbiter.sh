@@ -75,14 +75,27 @@ eval_regression_open_revert() ( # issue culprit gate-sha → revert PR URL
   source "${SCHEDULER_AGENT_LIB%/lib.sh}/deploy-culprit.sh" || return 1
   open_deploy_revert_pr "$1" "$2" "$3" eval
 )
-eval_regression_revert() { # unit gate-sha → 0 and the PR URL on stdout when a revert PR was opened; 3 when the change was already reverted
-  local unit="$1" gate_sha="$2" culprit issue out url
+# A regression is blamed on the unit only when it lies in stages the unit's own diff affects and no earlier delivered
+# change with an unproven eval touches them: the eval tree carries every earlier change on main (cf. git bisect).
+eval_regression_attributable() { # unit culprit regressed-stages-json
+  local unit="$1" culprit="$2" stages="$3" other
+  jqf -e --arg id "$unit" --argjson s "$stages" '.units[] | select(.id==$id) | (.eval_gate.stages // []) as $own
+    | ($s|length) > 0 and all($s[]; . as $x | $own | index($x) != null)' "$UNITS" >/dev/null || return 1
+  while IFS= read -r other; do
+    [[ "$other" != "$culprit" ]] && git -C "$ROOT" merge-base --is-ancestor "$other" "$culprit" 2>/dev/null && return 1
+  done < <(jqf -r --arg id "$unit" --argjson s "$stages" '.units[] | select(.id != $id and (.eval_gate.status // "") != "" and ((.eval_gate.status | IN("passed","skipped")) | not)
+    and ([.eval_gate.stages[]?] | any(IN($s[])))) | (.merge_sha // .land_sha // empty)' "$UNITS")
+  return 0
+}
+eval_regression_revert() { # unit gate-sha regressed-stages-json → 0 and the PR URL on stdout when a revert PR was opened; 3 when the change was already reverted; 4 when the regression is not attributable to it
+  local unit="$1" gate_sha="$2" stages="$3" culprit issue out url
   culprit="$(unit_field "$unit" '.merge_sha // .land_sha')"; issue="$(unit_field "$unit" '.issue')"
   [[ "$culprit" =~ $SHA_RE && "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
   [[ -z "$(unit_field "$unit" '.eval_gate.revert_pr')" ]] || return 3
   git -C "$ROOT" merge-base --is-ancestor "$culprit" origin/main 2>/dev/null || return 1
   [[ -z "$(git -C "$ROOT" log origin/main -n 1 --format=%H --fixed-strings --grep="This reverts commit $culprit." 2>/dev/null)" ]] || return 3
   [[ "$(git -C "$ROOT" log -n 1 --format=%s "$culprit" 2>/dev/null)" != Revert\ * ]] || return 3
+  eval_regression_attributable "$unit" "$culprit" "$stages" || return 4
   out="$(eval_regression_open_revert "$issue" "$culprit" "$gate_sha")" || return 1
   url="$(grep -oE 'https://[^[:space:]]+/pull/[0-9]+' <<<"$out" | tail -n 1)" # the helper's stdout also carries git output
   [[ -n "$url" ]] || return 1
@@ -119,6 +132,12 @@ harvest_prompt_eval() { # worker JSON; report status is produced by eval/decisio
       # 这份报告属于已被新一轮评审替换的旧 gate：只按其 SHA 记档，不碰现行 gate。
       set_unit "$unit" "$(hist eval-stale "report $report covers superseded sha $sha; current gate sha ${gate_sha:-none}")"
       say "eval result stale unit=$unit: report $report covers superseded sha $sha"
+    elif [[ "$status" == failed && -z "$(unit_field "$unit" '.eval_gate.confirm')" ]]; then
+      # One fresh run under its own label (the same label would resume the stored results) before a failure counts:
+      # a provider timeout or LLM variance fails a case without the change being at fault (cf. red-main rerun).
+      detail="eval label=$label regressed against $baseline on sha $sha; rerunning once before blaming the change; report=$report"
+      set_unit "$unit" "$(hist eval-regression-unconfirmed "$detail") | .eval_gate.status=\"pending\" | .eval_gate.confirm=true"
+      say "eval regression unconfirmed unit=$unit label=$label; rerun next tick"
     elif [[ "$status" == passed ]]; then
       local accepted_tmp
       accepted_tmp="$A/.eval-accepted-label.$$"
@@ -142,10 +161,13 @@ harvest_prompt_eval() { # worker JSON; report status is produced by eval/decisio
       decision="$(decision_entry 'Escalate the eval regression on a delivered architecture change' 'the eval found a pass-to-fail regression or an introduced-incident review case failed after delivery proceeded' "$evidence" '["Re-gate architecture delivery on the eval"]' scheduler)"
       set_unit "$unit" "$(hist eval-regression "$detail" "$decision") | .eval_gate.status=\"failed\""
       local revert_url="" revert_status=0 revert_note=""
-      revert_url="$(eval_regression_revert "$unit" "$sha")" || revert_status=$?
+      revert_url="$(eval_regression_revert "$unit" "$sha" "$(jqf -c '[(.regressions[] | split("/")[0]), (if (.criticalFailures | length) > 0 then "review" else empty end),
+        (if ((.supervisor.failures // []) | length) > 0 then "supervisor" else empty end)] | unique' <<<"$gate")")" || revert_status=$?
       if (( revert_status == 0 )); then
         set_unit "$unit" "$(hist eval-regression-revert "$revert_url") | .eval_gate.revert_pr=$(js "$revert_url")"
         revert_note=" Revert PR opened: $revert_url"
+      elif (( revert_status == 4 )); then
+        revert_note=" No revert: the regression is outside this change's stages or an earlier delivered change has an unproven eval on them."
       fi
       say "eval failed unit=$unit label=$label baseline=$baseline; delivery unaffected, revert_status=$revert_status ${revert_url}"
       (( revert_status == 3 )) || to_supervisor "$unit" "已交付架构改动的 eval 报告出现回归：$detail$revert_note" \
@@ -164,7 +186,7 @@ harvest_prompt_eval() { # worker JSON; report status is produced by eval/decisio
 
 dispatch_prompt_evals() {
   # #4656：按 .eval_gate.status==pending 派发，不再依赖 eval-pending 阶段（交付可能在 eval 完成前合并/落地）。
-  local u id workdir sha tree label baseline stages report log pid worker active safe_id detail launcher=()
+  local u id workdir sha tree label baseline stages report log pid worker active safe_id detail confirm launcher=()
   active="$(jqf '[.workers[] | select(.type=="eval" and .harvested!=true)] | length' "$WORKERS")"
   (( active == 0 )) || return 0
   while IFS= read -r u; do
@@ -211,11 +233,12 @@ dispatch_prompt_evals() {
       continue
     fi
     (( $(live_workers) < MAX )) || { say "eval pending unit=$id: worker capacity full"; return 0; }
-    label="gate-$tree"
+    confirm=""; [[ -z "$(jqf -r '.eval_gate.confirm // empty' <<<"$u")" ]] || confirm=-confirm
+    label="gate-$tree$confirm"
     baseline="$(accepted_eval_label)"
     safe_id="$(tr -c 'A-Za-z0-9._-' '-' <<<"$id" | sed 's/-$//')"
-    report="eval-gate-${safe_id}-${tree}.json"
-    log="eval-gate-${safe_id}-${tree}.log"
+    report="eval-gate-${safe_id}-${tree}$confirm.json"
+    log="eval-gate-${safe_id}-${tree}$confirm.log"
     rm -f "$SUP/$report"
     set_unit "$id" ".eval_gate.tree=$(js "$tree") | .eval_gate.label=$(js "$label") | .eval_gate.report=$(js "$report")"
     command -v setsid >/dev/null 2>&1 && launcher=(setsid)
