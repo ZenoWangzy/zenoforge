@@ -144,7 +144,8 @@ unit_has_no_worker() { # unit owner -> 0 only when the unit's pidfile proves no 
     say "claim expiry cannot read worker pidfile $f owner=$2; retaining claim"; return 1
   fi
   # kill -0 reaches a non-dumpable worker; /proc/<pid> also covers EPERM from a reused pid of another user (retain).
-  if kill -0 "$pid" 2>/dev/null || [[ -d "/proc/$pid" ]]; then
+  # The worker leads its own session, so a group that outlives its leader still counts, as in harvest_worker_alive.
+  if kill -0 "$pid" 2>/dev/null || [[ -d "/proc/$pid" ]] || kill -0 -- "-$pid" 2>/dev/null; then
     say "claim expiry found a live worker pid=$pid for unit=$1 owner=$2; retaining claim"; return 1
   fi
   rm -f -- "$f"

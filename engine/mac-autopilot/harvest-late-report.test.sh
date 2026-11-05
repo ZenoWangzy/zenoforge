@@ -97,6 +97,16 @@ if coord_on_expire "$claim"; then echo 'claim with a live non-dumpable worker ex
 kill "$undumpable"; wait "$undumpable" 2>/dev/null || :
 coord_on_expire "$claim" || { echo 'claim stayed held after its worker exited' >&2; exit 1; }
 [[ ! -e "$pidfile" ]] || { echo 'dead worker pidfile not removed' >&2; exit 1; }
+# A group that outlives its leader keeps the claim, as harvest_worker_alive does: its children are still writing.
+setsid bash -c 'sleep 60 & exit 0' < /dev/null > /dev/null 2>&1 &
+leader=$!
+wait "$leader" 2>/dev/null || :
+[[ ! -d "/proc/$leader" ]] && kill -0 -- "-$leader" 2>/dev/null || { echo 'test group did not outlive its leader' >&2; exit 1; }
+echo "$leader" > "$pidfile"
+if coord_on_expire "$claim"; then kill -- "-$leader" 2>/dev/null || :; echo 'claim with a live worker group expired' >&2; exit 1; fi
+kill -- "-$leader"
+for _ in $(seq 100); do kill -0 -- "-$leader" 2>/dev/null || break; sleep 0.05; done
+coord_on_expire "$claim" || { echo 'claim stayed held after the worker group exited' >&2; exit 1; }
 for bad in abc '' 0 '12 34x'; do
   printf '%s' "$bad" > "$pidfile"
   if coord_on_expire "$claim"; then echo "malformed pidfile '$bad' freed the claim" >&2; exit 1; fi
