@@ -78,6 +78,11 @@ cleanup_tick() {
   fi
   # 只删一天无写入的超大日志：活 worker 的日志仍在写，不会被删。
   find "$SUP" -maxdepth 1 -name '*.worker.log' -size +4M -mmin +1440 -delete 2>/dev/null
+  # worker-<unit>.pid (worker-scope.sh): drop a file whose worker is gone; a live worker keeps its file however old.
+  local pf pf_pid
+  for pf in "$SUP"/worker-*.pid; do
+    [[ -e "$pf" ]] && read -r pf_pid < "$pf" 2>/dev/null && [[ "$pf_pid" =~ ^[1-9][0-9]*$ && ! -d "/proc/$pf_pid" ]] && rm -f -- "$pf"
+  done
   # worker 临时目录（runtime-env.sh 的 AP_TMPDIR）：一天没动的条目回收。
   local tmp_entry
   if [[ -n "${AP_TMPDIR:-}" && -d "$AP_TMPDIR" ]]; then

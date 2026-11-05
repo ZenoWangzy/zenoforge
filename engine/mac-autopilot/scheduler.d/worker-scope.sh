@@ -70,8 +70,9 @@ worker_scope_exec() { # pid-file output-file launcher... -- command...; executed
   if [[ "$WORKER_SCOPE_MODE" == scope ]]; then
     exec "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet -p "TasksMax=$WORKER_TASKS_MAX" -- \
       setsid bash -c 'pid_file=$1; st=$(</proc/$$/stat); st=(${st##*) }); printf "%s %s\n" "$$" "${st[19]}" > "$pid_file" || exit 125
-        setsid bash -c "$5" worker-scope-watch "$$" "$2" "$3" "$4" & shift 5; exec "$@"' \
-      worker-scope "$pid_file" "$WORKER_TASKS_MAX" "$label" "${LOG:-}" "$WORKER_SCOPE_WATCH" "${worker_command[@]}"
+        [[ -z $6 ]] || printf "%s\n" "$$" > "$6" || exit 125
+        setsid bash -c "$5" worker-scope-watch "$$" "$2" "$3" "$4" & shift 6; exec "$@"' \
+      worker-scope "$pid_file" "$WORKER_TASKS_MAX" "$label" "${LOG:-}" "$WORKER_SCOPE_WATCH" "${WORKER_PIDFILE:-}" "${worker_command[@]}"
   fi
   exec "${launcher[@]}" "${worker_command[@]}"
 }
@@ -121,37 +122,30 @@ worker_scope_launch() { # pid-file workdir output-file launcher... -- command...
     fi
   fi
 
-  (cd "$workdir" && exec "${launcher[@]}" "${worker_command[@]}") >"$output_file" 2>&1 < /dev/null &
+  (cd "$workdir" && { [[ -z "${WORKER_PIDFILE:-}" ]] || printf '%s\n' "$BASHPID" > "$WORKER_PIDFILE"; } \
+    && exec "${launcher[@]}" "${worker_command[@]}") >"$output_file" 2>&1 < /dev/null &
   WORKER_SCOPE_PID=$!
   WORKER_SCOPE_LAUNCHER_PID="$WORKER_SCOPE_PID"
 }
 
-# A launched worker keeps the stdout/stderr redirect to its $SUP/*.worker.log and the cwd of its unit worktree
-# (dispatch.sh: `(cd $workdir && ...) >$SUP/$log`, scope or not). A claim can lack a pid because the tick died between
-# worker_scope_launch and coord_renew, so this finds the worker without the claim.
-# shortcut: a process of ours whose /proc cwd or fd is unreadable (systemd --user, ssh-agent here: ptrace-denied) is skipped,
-# so a worker that drops dumpable or leaves its worktree is not seen; upgrade to a pid or scope recorded on the claim if one does.
-worker_running_for_unit() { # unit -> 0 a launched worker runs / 1 none / 2 cannot tell
-  local unit="$1" wt sup p cwd fd target
-  wt="$(cd "${WT_ROOT:-}" 2>/dev/null && pwd -P)" && sup="$(cd "${SUP:-}" 2>/dev/null && pwd -P)" || return 2 # /proc shows real paths
-  [[ -n "$unit" ]] && readlink /proc/self/cwd >/dev/null 2>&1 || return 2
-  wt="$wt/wt-$unit"
-  for p in /proc/[0-9]*; do
-    [[ -O "$p" ]] || continue
-    cwd="$(readlink "$p/cwd" 2>/dev/null)" || continue
-    [[ "$cwd" == "$wt" || "$cwd" == "$wt"/* ]] || continue
-    for fd in 1 2; do
-      target="$(readlink "$p/fd/$fd" 2>/dev/null || true)"
-      [[ "$target" == "$sup"/*.worker.log || "$target" == "$sup"/*.worker.log' (deleted)' ]] && return 0
-    done
-  done
-  return 1
+# Per-unit file holding the pid of the unit's launched worker. The launch wrapper writes its own $$ before `exec`
+# (exec keeps the pid), so the file exists before dispatch's coord_renew and survives a tick that dies in between.
+worker_pidfile() { # unit -> path
+  local safe; safe="$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-')"
+  printf '%s/worker-%s.pid\n' "$SUP" "$safe"
 }
 
-unit_has_no_worker() { # unit owner -> 0 only when no launched worker exists for the unit; logs why not otherwise
-  local running=0
-  worker_running_for_unit "$1" || running=$?
-  (( running == 1 )) && return 0
-  say "claim expiry $( ((running == 0)) && echo 'found a live worker' || echo 'cannot check workers') for unit=$1 owner=$2; retaining claim"
-  return 1
+unit_has_no_worker() { # unit owner -> 0 only when the unit's pidfile proves no launched worker; logs why not otherwise
+  local f pid
+  if [[ -z "${SUP:-}" || -z "$1" ]]; then say "claim expiry cannot locate worker pidfile for unit=$1 owner=$2; retaining claim"; return 1; fi
+  f="$(worker_pidfile "$1")"
+  [[ -e "$f" ]] || return 0 # nothing was ever launched for this unit (or the file was swept after the worker died)
+  if ! read -r pid < "$f" 2>/dev/null || [[ ! "$pid" =~ ^[1-9][0-9]*$ ]]; then
+    say "claim expiry cannot read worker pidfile $f owner=$2; retaining claim"; return 1
+  fi
+  # kill -0 reaches a non-dumpable worker; /proc/<pid> also covers EPERM from a reused pid of another user (retain).
+  if kill -0 "$pid" 2>/dev/null || [[ -d "/proc/$pid" ]]; then
+    say "claim expiry found a live worker pid=$pid for unit=$1 owner=$2; retaining claim"; return 1
+  fi
+  rm -f -- "$f"
 }

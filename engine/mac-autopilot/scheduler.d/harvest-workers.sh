@@ -578,7 +578,7 @@ coord_on_expire() { # claim JSON; called under that ticket's claim lock
   owner="$(jqf -r '.owner // empty' <<<"$claim")"
   unit="$(jqf -r '.unit // empty' <<<"$claim")"
   type="$(jqf -r '.stage // empty' <<<"$claim")"
-  worker="$(jqf -c --arg owner "$owner" '[.workers[] | select(.claim_owner==$owner and .harvested!=true)][0] // empty' "$WORKERS")"
+  worker="$(jqf -c --arg owner "$owner" '[.workers[] | select(.claim_owner==$owner and .harvested!=true)][0] // empty' "$WORKERS")" || return 1
   if [[ -n "$worker" ]]; then
     pid="$(jqf -r '.pid // empty' <<<"$worker")"
     if [[ "$(jqf -r '.process_group // empty' <<<"$worker")" == "" && "$(jqf -r '.provider // empty' <<<"$worker")" =~ ^(zcode|claude)$ ]]; then
@@ -594,7 +594,7 @@ coord_on_expire() { # claim JSON; called under that ticket's claim lock
       fi
     fi
   else
-    pid="$(jqf -r '.pid // empty' <<<"$claim")"
+    pid="$(jqf -r '.pid // empty' <<<"$claim")" || return 1
   fi
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || { [[ -z "$worker$pid" ]] && unit_has_no_worker "$unit" "$owner"; } || { say "claim expiry cannot find worker pid owner=$owner; retaining claim"; return 1; }
   expected_start="$(jqf -r '.pid_start // empty' <<<"$claim")"

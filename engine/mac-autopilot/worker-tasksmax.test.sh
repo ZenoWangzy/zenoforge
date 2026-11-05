@@ -77,13 +77,17 @@ reset_tick() {
 start_worker() {
   local label="$1" launcher="$2"; shift 2
   local pid_file="$task_root/$label.pid" worker_pid_file="$task_root/$label.actual.pid" child_pid_file="$task_root/$label.child.pid"
-  rm -f "$pid_file" "$worker_pid_file" "$child_pid_file"
+  local unit_pidfile="$task_root/$label.unit.pid"
+  rm -f "$pid_file" "$worker_pid_file" "$child_pid_file" "$unit_pidfile"
+  WORKER_PIDFILE="$unit_pidfile"
   worker_scope_launch "$pid_file" "$task_root" "$task_root/$label.log" "$launcher" -- \
     env "WORKER_ACTUAL_PID_FILE=$worker_pid_file" "WORKER_CHILD_PID_FILE=$child_pid_file" "$task_root/fake-worker"
+  unset WORKER_PIDFILE
   [[ "$WORKER_SCOPE_PID" =~ ^[1-9][0-9]*$ ]] || fail "$label did not return a worker PID: $WORKER_SCOPE_PID"
   for _ in {1..100}; do [[ -s "$child_pid_file" ]] && break; sleep 0.02; done
   [[ -s "$worker_pid_file" && -s "$child_pid_file" ]] || fail "$label worker tree did not start"
   [[ "$(cat "$worker_pid_file")" == "$WORKER_SCOPE_PID" ]] || fail "$label recorded PID is not the worker process"
+  [[ "$(cat "$unit_pidfile")" == "$WORKER_SCOPE_PID" ]] || fail "$label unit pidfile is not the worker process pid"
   TEST_WORKER_PID="$WORKER_SCOPE_PID"
   TEST_LAUNCHER_PID="$WORKER_SCOPE_LAUNCHER_PID"
   TEST_CHILD_PID="$(cat "$child_pid_file")"
@@ -222,6 +226,7 @@ worker_scope_systemd_run_path() { type -P systemd-run; }
 if type -P systemd-run >/dev/null && systemd-run --user --scope --quiet -p TasksMax=100 -- true >/dev/null 2>&1; then
   CFG='{"engine":{"worker_tasks_max":30}}'
   reset_tick
+  WORKER_PIDFILE="$task_root/real.unit.pid"
   worker_scope_launch "$task_root/real.pid" "$task_root" "$task_root/real.log" setsid -- \
     python3 -c 'import subprocess,sys
 n=0
@@ -231,6 +236,9 @@ try:
 except OSError:
     pass
 sys.exit(1 if n < 80 else 0)'
+  unset WORKER_PIDFILE
+  for _ in {1..100}; do [[ -s "$task_root/real.unit.pid" ]] && break; sleep 0.02; done
+  [[ "$(cat "$task_root/real.unit.pid")" == "$WORKER_SCOPE_PID" ]] || fail 'real scope: unit pidfile is not the worker pid'
   real_pid="$WORKER_SCOPE_PID"; ALL_WORKER_PIDS+=("$real_pid"); ALL_LAUNCHER_PIDS+=("$WORKER_SCOPE_LAUNCHER_PID")
   wait_for_line "$task_root/real.log" '[worker-scope] TasksMax=30 reached' || fail 'real scope: no TasksMax hit line in the worker log'
   wait_for_line "$LOG" 'worker-tasksmax-hit' || fail 'real scope: no worker-tasksmax-hit line in the scheduler log'

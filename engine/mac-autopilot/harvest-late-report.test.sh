@@ -79,27 +79,38 @@ jq -e '[.units[0].history[] | select(.stage == "worker-no-output")] | length == 
 echo 'ok - legacy missing output is counted after grace'
 
 # A claim with no pid and no ledger entry: the tick died before launch (free it) or after launch but before coord_renew (keep it).
-mkdir -p "$WT_ROOT/wt-issue-1" "$WT_ROOT/wt-issue-2"
+# The launch wrapper records the worker's own pid in worker-<unit>.pid before exec; expiry reads only that file.
+pidfile="$(worker_pidfile issue-1)"
 printf '{"workers":[]}' > "$WORKERS"
 claim='{"owner_kind":"scheduler-worker","owner":"never-launched","unit":"issue-1","stage":"repair"}'
+rm -f "$pidfile"
 coord_on_expire "$claim" || { echo 'never-launched claim wedged after expiry' >&2; exit 1; }
-# Same launch shape as dispatch.sh: unit worktree as cwd, stdout/stderr on the worker log, own session.
-(cd "$WT_ROOT/wt-issue-1" && exec setsid sleep 60) > "$sup/live.worker.log" 2>&1 < /dev/null &
-detached=$!
-# Look-alikes: right cwd without the log, and the log without the worktree.
-(cd "$WT_ROOT/wt-issue-2" && exec sleep 60) > /dev/null 2>&1 < /dev/null &
-nearby=$!
-(cd "$test_env_root" && exec sleep 60) > "$sup/other.worker.log" 2>&1 < /dev/null &
-elsewhere=$!
-trap 'kill "$detached" "$nearby" "$elsewhere" 2>/dev/null || :; cleanup' EXIT
-for _ in $(seq 100); do [[ "$(readlink "/proc/$detached/cwd" 2>/dev/null)" == "$(cd "$WT_ROOT/wt-issue-1" && pwd -P)" ]] && break; sleep 0.05; done
-if coord_on_expire "$claim"; then echo 'claim with a live detached worker expired' >&2; exit 1; fi
-coord_on_expire '{"owner_kind":"scheduler-worker","owner":"nearby","unit":"issue-2","stage":"repair"}' || { echo 'cwd-only look-alike held the claim' >&2; exit 1; }
-kill "$detached"; wait "$detached" 2>/dev/null || :
+# A non-dumpable worker (as Codex makes itself) hides its /proc cwd and fds from us; kill -0 must still see it.
+python3 -c 'import ctypes,time; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); time.sleep(60)' < /dev/null > /dev/null 2>&1 &
+undumpable=$!
+trap 'kill "$undumpable" 2>/dev/null || :; cleanup' EXIT
+for _ in $(seq 100); do readlink "/proc/$undumpable/cwd" >/dev/null 2>&1 || break; sleep 0.05; done
+! readlink "/proc/$undumpable/cwd" >/dev/null 2>&1 || { echo 'test worker did not become non-dumpable' >&2; exit 1; }
+echo "$undumpable" > "$pidfile"
+if coord_on_expire "$claim"; then echo 'claim with a live non-dumpable worker expired' >&2; exit 1; fi
+[[ -e "$pidfile" ]] || { echo 'live worker pidfile was removed' >&2; exit 1; }
+kill "$undumpable"; wait "$undumpable" 2>/dev/null || :
 coord_on_expire "$claim" || { echo 'claim stayed held after its worker exited' >&2; exit 1; }
-saved_wt="$WT_ROOT"; WT_ROOT="$test_env_root/missing"
-if coord_on_expire "$claim"; then echo 'failed liveness check freed the claim' >&2; exit 1; fi
-WT_ROOT="$saved_wt"
+[[ ! -e "$pidfile" ]] || { echo 'dead worker pidfile not removed' >&2; exit 1; }
+for bad in abc '' 0 '12 34x'; do
+  printf '%s' "$bad" > "$pidfile"
+  if coord_on_expire "$claim"; then echo "malformed pidfile '$bad' freed the claim" >&2; exit 1; fi
+done
+# The sweep drops a dead worker's file and keeps a live one's, however old.
+echo 2147483646 > "$pidfile"; echo $$ > "$(worker_pidfile issue-live)"; touch -d '3 days ago' "$(worker_pidfile issue-live)"
+cleanup_tick > /dev/null 2>&1 || :
+[[ ! -e "$pidfile" && -e "$(worker_pidfile issue-live)" ]] || { echo 'pidfile sweep removed a live file or kept a dead one' >&2; exit 1; }
+rm -f "$(worker_pidfile issue-live)" "$pidfile"
+saved_sup="$SUP"; SUP=''
+if coord_on_expire "$claim"; then echo 'empty SUP freed the claim' >&2; exit 1; fi
+SUP="$saved_sup"
+printf '{bad' > "$WORKERS"
+if coord_on_expire "$claim"; then echo 'unreadable ledger freed the claim' >&2; exit 1; fi
 jq -n '{workers:[{claim_owner:"pidless",unit:"issue-1",type:"review",harvested:false}]}' > "$WORKERS"
 if coord_on_expire '{"owner_kind":"scheduler-worker","owner":"pidless","unit":"issue-1","stage":"review"}'; then echo 'worker without pid expired' >&2; exit 1; fi
-echo 'ok - pidless claim expires only when no worker for the unit is running'
+echo 'ok - pidless claim expires only when the unit pidfile proves no worker'
