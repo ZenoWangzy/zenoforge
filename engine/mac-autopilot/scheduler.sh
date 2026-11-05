@@ -481,8 +481,9 @@ refill_tick() {
     if supervisor_marking_deferred; then
       say "refill dispatch held: supervisor-owned marking deferred"
     else
-      phase_yield_lock_batch run_refill_intake_dispatch_phases
+      # Merge before intake: intake took 181-255s of the 300s limit, so the merge pass ran into the kill.
       paused_midrun "refill merge" || phase_yield_lock refill_merge_pass
+      phase_yield_lock_batch run_refill_intake_dispatch_phases
     fi
   fi
   local gh_calls; gh_calls="$(tick_gh_calls_count)"
