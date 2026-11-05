@@ -150,8 +150,8 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     # Same report file as the Codex path: the prompt carries the frozen record, so the Claude run gets no tools.
     # --safe-mode --setting-sources "" as in build_claude_implement_command: no project CLAUDE.md or settings may reshape the ACTION/VERDICT lines.
     # An empty effort drops --effort (the CLI default applies).
-    [[ "$over_stop" != true ]] || worker_command=(bash -c 'exec timeout -k 30 900 claude -p --model "$1" ${2:+--effort "$2"} \
-      --safe-mode --setting-sources "" --strict-mcp-config --permission-mode dontAsk --tools "" < "$4" > "$3"' \
+    [[ "$over_stop" != true ]] || worker_command=(bash -c 'exec timeout -k 30 900 claude -p \
+      --model "$1" ${2:+--effort "$2"} --safe-mode --setting-sources "" --strict-mcp-config --permission-mode dontAsk --tools "" < "$4" > "$3"' \
       supervisor-arbiter "$arbiter_profile" "$arbiter_effort" "$SUP/$report" "$SUP/$q")
     pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
     rm -f -- "$pid_file"
