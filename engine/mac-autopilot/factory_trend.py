@@ -289,7 +289,6 @@ def collect(home, units, live_units, versions_dir, cache_path, now=None, traffic
             rep = json.load(open(cache_path))
         else: raise OSError
     except (OSError, ValueError):
-        import roi_rollup
         rep = json.loads(json.dumps(roi_rollup.tickets_report(home, days=14), default=str))
         with open(cache_path + ".tmp", "w") as f: json.dump(rep, f)
         os.replace(cache_path + ".tmp", cache_path)

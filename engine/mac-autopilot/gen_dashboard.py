@@ -925,13 +925,15 @@ def front_stage_rows(now):
     return rows, meta
 
 def front_advisor_snapshot():
-    script = ('source engine/lib.sh >/dev/null 2>&1 || { echo "cannot source engine/lib.sh" >&2; exit 3; }\n'
+    # The engine lives outside the target checkout; ROOT/engine exists only in test fixtures.
+    engine_dir = os.environ.get("ZF_ENGINE_DIR") or os.path.join(ROOT, "engine")
+    script = ('source "$1/lib.sh" >/dev/null 2>&1 || { echo "cannot source engine/lib.sh" >&2; exit 3; }\n'
               "set -o pipefail\n"
               "advisor_batch_job_json | jq -c '{job_id, started_at, input_bytes, members: [.members[]? | .issue]}' || exit 4\n"
               "echo ---\n"
               "advisor_batch_state_read | jq -c '[.deferred_issue_ids[]?]' || exit 4\n"
               'echo "${LOG_DIR:-}"\n')
-    job_text, _, rest = front_run(["bash", "-c", script], 30, cwd=ROOT).partition("---\n")
+    job_text, _, rest = front_run(["bash", "-c", script, "bash", engine_dir], 30, cwd=ROOT).partition("---\n")
     deferred_text, _, log_dir = rest.partition("\n")
     job = json.loads(job_text) if job_text.strip() else None
     return job, json.loads(deferred_text or "[]"), log_dir.strip()

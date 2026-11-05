@@ -91,5 +91,11 @@ censused = []
 R._issue_created = lambda repo, cutoff: censused.append(repo) or {7: datetime.datetime(2026, 10, 30, 6, tzinfo=datetime.timezone.utc)}
 rep = R.tickets_report(str(fixture), days=3, repo_root="/nonexistent", now=datetime.datetime(2026, 10, 31, tzinfo=datetime.timezone.utc))
 assert censused == ["example-maintainer/example-live"] and rep["tickets"][0]["lead_hours"] == 4.0, (censused, rep["tickets"])
+# A fresh cache skips the rollup; collect must still reach roi_rollup (a local import once hid it and blanked the factory panel).
+import json
+cache = fixture / "tickets-cache.json"; cache.write_text(json.dumps(rep, default=str))
+out = F.collect(str(fixture), [], set(), str(fixture / "versions"), str(cache), runtime=str(fixture),
+                worktree_root=str(fixture / "wt"), repo_root=str(fixture))
+assert "trend" in out, out.keys()
 PY
 echo "factory_trend.test.sh: PASS"
