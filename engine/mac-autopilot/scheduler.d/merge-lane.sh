@@ -328,7 +328,8 @@ run_merge_lane_pass() {
       post_approved_status "$id" "$head"
       approved="$head"
     fi
-    if [[ "$(jqf -r '.pr_open_draft // false' <<<"$ready")" == true ]]; then say "merge skipped PR#$pr (draft, waiting for its CI slot)"; continue; fi
+    # Only an approved head can win a CI slot, so a draft with no approval goes to review below instead of waiting forever.
+    if [[ "$(jqf -r '.pr_open_draft // false' <<<"$ready")" == true && "$approved" =~ $SHA_RE ]]; then say "merge skipped PR#$pr (draft, waiting for its CI slot)"; continue; fi
     if [[ ! "$head" =~ $SHA_RE ]]; then say "merge skipped PR#$pr (head unreadable; unit left unchanged)"; continue; fi
     if [[ ! "$approved" =~ $SHA_RE || "$head" != "$approved" ]]; then
       # 批准绑定的 head 已变（或旧台账无绑定）：新提交必须先评审，不能带着旧批准合并。

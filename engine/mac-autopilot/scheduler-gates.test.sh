@@ -2171,6 +2171,18 @@ GH_MERGES=(); run_merge_lane || :
   GH_MERGES=(); run_merge_lane || :
   [[ ${#GH_MERGES[@]} == 0 ]] || fail 'pipeline PR merged with no CI observation on any gate candidate'
 ) || exit 1
+# A draft waits for a CI slot only with an approval: no approval can ever win a slot, so it returns to review.
+(
+  suites_run_for() { case "$1" in "$M1") jq -cn --arg sha "$1" '{headSha:$sha,status:"in_progress",conclusion:null,databaseId:10,attempt:1}';; esac; }
+  gate_eval_sha() { printf '%s\n%s\n' "$M3" "$M1"; }
+  tick_prs() { jq -cn --arg h "$H1" '[{number:86,isDraft:true,headRefOid:$h,mergeable:"MERGEABLE",headRefName:"agent/issue-86",statusCheckRollup:[]}]'; }
+  units '{"units":[{"id":"issue-86","issue":86,"pr":86,"stage":"ready-to-merge","lane":"pr","gated":true,"history":[]}]}'
+  GH_MERGES=(); run_merge_lane || :
+  [[ "$(field issue-86 .stage)" == rereview-pending && ${#GH_MERGES[@]} == 0 ]] || fail 'a draft with no approval kept waiting for a CI slot it can never get'
+  units "{\"units\":[{\"id\":\"issue-86\",\"issue\":86,\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"gated\":true,\"approved_sha\":\"$H1\",\"history\":[]}]}"
+  GH_MERGES=(); run_merge_lane || :
+  [[ "$(field issue-86 .stage)" == ready-to-merge && ${#GH_MERGES[@]} == 0 ]] || fail 'an approved draft must keep waiting for its CI slot'
+) || exit 1
 suites_run_for() { [[ "$1" == "$M3" ]] && jq -cn --arg sha "$1" '{headSha:$sha,status:"completed",conclusion:"failure",databaseId:9,attempt:1}'; }
 units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
 echo '{"'"$M3"'":"x"}' > "$A/gate-net-rerun.json"; omr_saved="$(declare -f open_main_red_unit)"; open_main_red_unit() { :; }
