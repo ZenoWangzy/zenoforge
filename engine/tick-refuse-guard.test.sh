@@ -154,6 +154,19 @@ pipeline_batch_claim_acquire "$(coord_new_owner)" advisor-batch zf-advisor-batch
 assert_eq 'all-busy batch is a no-op success, not an error' 0 "$claim_rc"
 assert_eq 'all-busy batch leaves an empty member list' 0 "${#issue_ids[@]}"
 
+other_owner="$(coord_new_owner)"
+coord_acquire "$(coord_issue_key 206)" "$other_owner" systemd-worker 206 zf-recut recut || { echo "not ok - could not hold member 206" >&2; exit 1; }
+issue_ids=(201 206 202)
+claim_owner="$(coord_new_owner)"
+claim_rc=0
+pipeline_batch_claim_acquire "$claim_owner" advisor-batch zf-advisor-batch issue_ids 2> "$FIXTURES/claim-held-log" || claim_rc=$?
+assert_eq 'batch claim survives one member held by another owner' 0 "$claim_rc"
+assert_eq 'held member leaves the batch and the rest stay' '201 202' "${issue_ids[*]}"
+assert_eq 'member after the held one is claimed' 0 "$(coord_assert_owned "$(coord_issue_key 202)" "$claim_owner" >/dev/null 2>&1; echo $?)"
+assert_eq 'held member keeps its own owner' 0 "$(coord_assert_owned "$(coord_issue_key 206)" "$other_owner" >/dev/null 2>&1; echo $?)"
+coord_release_many "$claim_owner" 201 202 >/dev/null 2>&1 || :
+coord_release_many "$other_owner" 206 >/dev/null 2>&1 || :
+
 # --- 3a. one member renewal miss cannot stop the batch -----------------------
 eval "$(sed -n '/^pipeline_batch_claim_drop() {/,/^}/p; /^pipeline_batch_claim_keep() {/,/^}/p' "$PIPELINE_SRC")"
 RENEW_LOG="$FIXTURES/renew-log"

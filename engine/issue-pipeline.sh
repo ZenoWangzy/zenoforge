@@ -189,9 +189,26 @@ pipeline_batch_claim_acquire() { # owner stage unit issue_ids_var; reserves the 
       echo "issue-pipeline: batch claim empty after in-flight/live-worker drops; no members to claim this tick" >&2
       return 0
     fi
-    if ! coord_acquire_many "$owner" systemd-worker "$unit" "$stage" "${checked[@]}"; then
-      status=$?
-      return "$status"
+    next_pending=()
+    for issue in "${checked[@]}"; do
+      key="$(coord_issue_key "$issue")" || { coord_release_many "$owner" "${next_pending[@]}" >/dev/null 2>&1 || :; return 2; }
+      if coord_acquire "$key" "$owner" systemd-worker "$issue" "$unit" "$stage"; then
+        next_pending+=("$issue")
+      else
+        status=$?
+        if [ "$status" -ne 1 ]; then
+          coord_release_many "$owner" "${next_pending[@]}" >/dev/null 2>&1 || :
+          return "$status"
+        fi
+        echo "issue-pipeline: batch claim dropping #$issue (claim held); it stays queued for a later batch" >&2
+      fi
+    done
+    checked=("${next_pending[@]}")
+    pending=("${next_pending[@]}")
+    if [ "${#checked[@]}" -eq 0 ]; then
+      batch_claim_issues=()
+      echo "issue-pipeline: batch claim empty after held-claim drops; no members to claim this tick" >&2
+      return 0
     fi
     confirmed=()
     for issue in "${checked[@]}"; do
