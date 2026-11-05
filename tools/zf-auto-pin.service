@@ -1,0 +1,16 @@
+# systemd user unit template for tools/auto-pin.sh. Install: cp to ~/.config/systemd/user/zf-auto-pin.service, edit the clone path, then
+#   systemctl --user daemon-reload && systemctl --user enable --now zf-auto-pin
+# The daemon checks out new commits in its clone, so it runs a copy under ~/.zenoforge/bin, never the clone's own file.
+# The leading "-" on ExecStartPre keeps the previous copy when the clone sits on a commit older than tools/auto-pin.sh.
+[Unit]
+Description=zf-auto-pin: pin each new zenoforge main commit into the vecta checkout
+
+[Service]
+Environment=ZF_AUTO_PIN_CLONE=%h/.zenoforge/clones/pz-zf-review-verdict-clobber
+ExecStartPre=-/usr/bin/install -D -m 0755 %h/.zenoforge/clones/pz-zf-review-verdict-clobber/tools/auto-pin.sh %h/.zenoforge/bin/zf-auto-pin
+ExecStart=/usr/bin/bash %h/.zenoforge/bin/zf-auto-pin
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
