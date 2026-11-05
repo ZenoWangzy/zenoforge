@@ -389,7 +389,7 @@ PY
         && "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ \
         && "$status" == completed && "$conclusion" == failure && "$created" > "$snapshot_cutoff" ]] || continue
       key="$wf:$run_id"
-      [[ "$(jq -r --arg k "$key" '.main_ci_runs_seen[$k] // false' <<<"$STATE_JSON")" != true ]] || continue
+      [[ "$(jq -r --arg k "$key" '.main_ci_runs_seen[$k] // false' <<<"$STATE_JSON")" == false ]] || continue
       jobs_json="$(gh_timeout -k 1 8 run view "$run_id" --repo "$INCIDENT_REPO" --json jobs -q '.jobs' 2>/dev/null)" || continue
       jq -e 'type == "array" and all(.[]; type == "object")' <<<"$jobs_json" >/dev/null 2>&1 || continue
       failed_jobs="$(jq -c '[.[] | select(.conclusion == "failure")]' <<<"$jobs_json")"
