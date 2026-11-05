@@ -164,7 +164,7 @@ release_dependency_blocks() {
     while IFS= read -r dep; do
       [[ "$dep" =~ ^[0-9]+$ ]] || continue
       dep_delivered_in_ledger "$dep" || deps+=("$dep")
-    done < <(jqf -r '[.units[] | select(.stage=="blocked-external" and .blocked_on != null) | .blocked_on | numbers] | unique | .[]' "$UNITS")
+    done < <(jqf -r '[.units[] | select((.stage=="blocked-external" or (.stage=="parked" and .parked_reason == null)) and .blocked_on != null) | .blocked_on | numbers] | unique | .[]' "$UNITS")
     while IFS= read -r dep; do # 自己的 issue 已关的闲置单元要能被收掉：并入同一次批量查询
       [[ "$dep" =~ ^[0-9]+$ ]] && deps+=("$dep")
     done < <(jqf -r '.units[] | select((.stage=="blocked-external" or .stage=="parked") and .pr == null and (.issue | type)=="number") | .issue' "$UNITS")
@@ -235,6 +235,13 @@ release_dependency_blocks() {
       fi
     fi
   done < <(jqf -c '.units[] | select(.stage=="blocked-external" and .blocked_on != null)' "$UNITS")
+  # supervisor 搁置（park）的单元仍带着 .blocked_on，却没有任何机制在前置交付后放开它；只放有前置号、无 parked_reason 的
+  # （cap/stop-loss/founder 问题的搁置不点名前置，保持搁置）。
+  while IFS=$'\t' read -r id dep; do
+    if dep_delivered_in_ledger "$dep" || [[ "$(jqf -r --arg d "$dep" '.[$d].state // empty' <<<"$dep_cache")" =~ ^(CLOSED|MERGED)$ ]]; then
+      unblock_unit "$id" "parked on #$dep, which is delivered"
+    fi
+  done < <(jqf -r '.units[] | select(.stage=="parked" and .parked_reason == null and .size_recut_pending != true and (.blocked_on | type)=="number") | [.id, .blocked_on] | @tsv' "$UNITS")
   # 停在 blocked-external 却没有前置号的单元没有任何机制会放开它（issue-2536）：交 supervisor。
   for id in $(jqf -r '.units[] | select(.stage=="blocked-external" and .blocked_on == null and .size_recut_pending != true) | .id' "$UNITS"); do
     to_supervisor "$id" "blocked-external without a predecessor: nothing can release it"

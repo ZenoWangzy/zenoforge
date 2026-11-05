@@ -2007,6 +2007,11 @@ units '{"units":[{"id":"issue-97","issue":97,"stage":"blocked-external","blocked
 gh() { case "$1 $2" in "api graphql") printf '97\tOPEN\t\tOPEN\n3808\tMERGED\t\tOPEN\n' ;; *) eval "${gh_issue_stub/gh ()/gh_i ()}"; gh_i "$@" ;; esac; }
 rm -f "$A/dep-check.epoch"; release_dependency_blocks || :
 [[ "$(field issue-97 .stage)" == implement-pending ]] || fail "unit parked on a merged PR was not released ($(field issue-97 .stage))"
+# supervisor 搁置的单元带着 .blocked_on：前置交付后放开；前置未交付、带 parked_reason（cap/founder）、没点名前置的继续搁置
+units '{"units":[{"id":"issue-101","issue":101,"stage":"parked","blocked_on":3808,"history":[]},{"id":"issue-102","issue":102,"stage":"parked","blocked_on":3809,"history":[]},{"id":"issue-103","issue":103,"stage":"parked","blocked_on":3808,"parked_reason":"supervisor-cap-founder","history":[]},{"id":"issue-104","issue":104,"stage":"parked","history":[]}]}'
+gh() { case "$1 $2" in "api graphql") printf '3808\tMERGED\t\tOPEN\n3809\tOPEN\t\tOPEN\n' ;; *) eval "${gh_issue_stub/gh ()/gh_i ()}"; gh_i "$@" ;; esac; }
+rm -f "$A/dep-check.epoch"; release_dependency_blocks || :
+[[ "$(field issue-101 .stage):$(field issue-102 .stage):$(field issue-103 .stage):$(field issue-104 .stage)" == implement-pending:parked:parked:parked ]] || fail "parked unit was not released by its delivered predecessor, or an unnamed/unfinished park was ($(field issue-101 .stage) $(field issue-102 .stage) $(field issue-103 .stage) $(field issue-104 .stage))"
 # 前置 issue 仍 open（发布后才关），但它的 agent/issue-N PR 已合并：算交付（10-22 #3122/#3431 已合并，后继仍停着）
 units '{"units":[{"id":"issue-98","issue":98,"stage":"blocked-external","blocked_on":3122,"history":[]},{"id":"issue-99","issue":99,"stage":"blocked-external","blocked_on":3123,"history":[]}]}'
 : > "$fixture/dep-query"
