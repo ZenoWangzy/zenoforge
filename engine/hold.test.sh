@@ -689,6 +689,25 @@ test_expired_unknown_backfill_stays_ownerless() {
   assert_eq "ownerless idempotency key is recorded once" 1 "$(grep -Fc $'\townerless-hold:#4120' "$AGENT_HOME/supervisor-inbox.once" || true)"
 }
 
+test_ownerless_refusal_is_remembered_until_the_issue_changes() {
+  local expired release
+  reset_fixture
+  expired="$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
+  release='No complete durable hold record existed; inspect or resolve within this 24-hour backfill window.'
+  write_issue 4125 '[{"name":"on-hold"}]' '[{"body":"Backfilled hold record; holder unknown. <!-- vecta-hold-backfill issue=4125 -->"}]' 'unknown held issue'
+  jq '.updatedAt = "2026-11-05T01:00:00Z"' "$FAKE_GH_ROOT/issues/4125.json" > "$FAKE_GH_ROOT/issues/4125.tmp" && mv "$FAKE_GH_ROOT/issues/4125.tmp" "$FAKE_GH_ROOT/issues/4125.json"
+  write_state 4125 "$(jq -cn --arg expires "$expired" --arg release "$release" '{state:"on-hold",hold:{holder:"unknown",release_condition:$release,expires_at:$expires,stage_before:"ready-for-agent",kind:"backfill",explained:true,created_at:(now|todate)}}')"
+  run_sweep
+  assert_eq "first refusal is remembered with the issue's updatedAt" ownerless "$(state_read 4125 | jq -r '.hold_sweep_refusal.reason')"
+  # An emptied dedupe store is refilled only if the sweep re-runs the refusal.
+  : > "$AGENT_HOME/supervisor-inbox"; : > "$AGENT_HOME/supervisor-inbox.once"
+  run_sweep
+  assert_eq "unchanged issue is not re-evaluated" 0 "$(grep -Fc 'ownerless-hold:#4125' "$AGENT_HOME/supervisor-inbox.once" || true)"
+  jq '.updatedAt = "2026-11-05T02:00:00Z"' "$FAKE_GH_ROOT/issues/4125.json" > "$FAKE_GH_ROOT/issues/4125.tmp" && mv "$FAKE_GH_ROOT/issues/4125.tmp" "$FAKE_GH_ROOT/issues/4125.json"
+  run_sweep
+  assert_eq "a changed issue is evaluated again" 1 "$(grep -Fc 'ownerless-hold:#4125' "$AGENT_HOME/supervisor-inbox.once" || true)"
+}
+
 test_manual_hold_release_reconciles_persisted_state() {
   local expiry labels state conflict_before advisor_hold_before
   reset_fixture
@@ -1672,6 +1691,7 @@ run_case "pipeline close completes with the unchanged hold" test_pipeline_close_
 run_case "expired loop hold releases without hand owner or PR" test_expired_loop_hold_releases_without_hand_owner_or_pr
 run_case "spend-budget hold expires and records repeat" test_spend_budget_hold_expires_and_repeats_next_window
 run_case "spend-budget window leaves existing hold unchanged" test_spend_budget_window_leaves_existing_hold_unchanged
+run_case "ownerless refusal is remembered until the issue changes" test_ownerless_refusal_is_remembered_until_the_issue_changes
 run_case "CLI refuses incomplete hold" test_cli_requires_complete_hold_metadata
 run_case "CLI rejects unknown holder" test_cli_rejects_unknown_holder
 run_case "CLI creates owned expiring hold" test_cli_records_and_applies_hold

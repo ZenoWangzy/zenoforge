@@ -395,6 +395,30 @@ hold_sweep_age_notice() {
 }
 
 
+# A refused hold (ownerless, or a release that failed) repeats the same refusal
+# every tick. Remember it keyed on the issue's updatedAt and retry only when the
+# issue changes, or after ZF_HOLD_REFUSAL_RETRY_SECONDS for causes GitHub does
+# not timestamp (hand owner liveness, expiry). No updatedAt, no memory.
+hold_sweep_refusal_active() {
+  local state_json="$1" issue_json="$2" now_epoch="$3" updated ttl="${ZF_HOLD_REFUSAL_RETRY_SECONDS:-21600}"
+  [[ "$ttl" =~ ^[1-9][0-9]*$ ]] || ttl=21600
+  updated="$(jq -r '.updatedAt // empty' <<< "$issue_json" 2>/dev/null)" || return 1
+  [ -n "$updated" ] || return 1
+  jq -e --arg updated "$updated" --argjson now "$now_epoch" --argjson ttl "$ttl" \
+    '.hold_sweep_refusal.updated_at == $updated and ($now - (.hold_sweep_refusal.at // 0)) < $ttl' \
+    <<< "$state_json" >/dev/null 2>&1
+}
+
+
+hold_sweep_refusal_remember() {
+  local n="$1" issue_json="$2" now_epoch="$3" reason="$4" updated
+  updated="$(jq -r '.updatedAt // empty' <<< "$issue_json" 2>/dev/null)" || return 0
+  [ -n "$updated" ] || return 0
+  state_merge "$n" "$(jq -nr --arg updated "$updated" --arg reason "$reason" --argjson at "$now_epoch" \
+    '".hold_sweep_refusal = " + ({updated_at:$updated, reason:$reason, at:$at} | tojson)')" >/dev/null 2>&1 || true
+}
+
+
 hold_sweep() {
   local NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
   local held_numbers live_hold_numbers numbers n issue_json state_json hold_json holder release_condition expires_at kind hand_owner owner_status dead_owner
@@ -405,7 +429,7 @@ hold_sweep() {
   # Keep the live issue details from this batch query. The old number-only
   # snapshot caused one `gh issue view` per ownerless on-hold issue every tick.
   if ! held_issue_snapshot="$(gh issue list --repo "$REPO" --state all --label on-hold --limit 1000 \
-    --json number,state,stateReason,closedAt,labels,comments,title)"; then
+    --json number,state,stateReason,closedAt,labels,comments,title,updatedAt)"; then
     echo "hold_sweep: could not list open on-hold issues" >&2
     return 1
   fi
@@ -499,6 +523,7 @@ hold_sweep() {
       echo "hold_sweep: reconciled manually released hold for #$n at stage=$stage" >&2
       continue
     fi
+    hold_sweep_refusal_active "$state_json" "$issue_json" "$now_epoch" && continue
     # Durable metadata lets the common case avoid a GitHub comments read.
     if hold_durable_record_valid "$hold_json" \
       && jq -e '.durable_record == true' <<< "$hold_json" >/dev/null 2>&1; then
@@ -540,6 +565,7 @@ hold_sweep() {
           failure=1
         fi
         echo "hold_sweep: #$n is ownerless; no exact durable hold record, leaving on-hold unchanged" >&2
+        hold_sweep_refusal_remember "$n" "$issue_json" "$now_epoch" ownerless
         continue
       elif [ "$status" -ne 0 ]; then
         echo "hold_sweep: could not restore durable hold record for #$n" >&2
@@ -692,6 +718,7 @@ $marker"
     fi
     if ! issue_transition "$n" "$stage" hold-expired "$handoff_patch" 0 "" "" 0 "$hold_json"; then
       echo "hold_sweep: could not release expired hold for #$n" >&2
+      hold_sweep_refusal_remember "$n" "$issue_json" "$now_epoch" release-failed
       failure=1
       continue
     fi
