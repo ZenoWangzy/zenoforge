@@ -395,6 +395,7 @@ register_new_issues() {
     [[ -n "$handoff_all" ]] || handoff_all='{}'
     handoff_pr="$(jqf -r '.open_pr // empty' <<<"$handoff_all")"
     handoff_branch="$(jqf -r '.open_branch // empty' <<<"$handoff_all")"
+    (( existing_only )) || ! intake_reopen_refused_recut "$n" "$state_file" || { intake_skip recut_reopen; continue; }
     # A row whose units are all terminal and whose episode (if any) is consumed has nothing to hand off:
     # skip it from the ledger before the handoff path reads PRs (gh pr view per merged PR).
     if (( ! existing_only )) && jqf -e --argjson n "$n" --arg episode "$episode" '
