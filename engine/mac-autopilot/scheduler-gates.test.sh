@@ -2182,6 +2182,7 @@ GH_MERGES=(); run_merge_lane || :
   units "{\"units\":[{\"id\":\"issue-86\",\"issue\":86,\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"gated\":true,\"approved_sha\":\"$H1\",\"history\":[]}]}"
   GH_MERGES=(); run_merge_lane || :
   [[ "$(field issue-86 .stage)" == ready-to-merge && ${#GH_MERGES[@]} == 0 ]] || fail 'an approved draft must keep waiting for its CI slot'
+) || exit 1
 # Killed between gh pr merge and set_unit merged: the next tick retires the unit and still reaches awaiting-release.
 (
   suites_run_for() { case "$1" in "$M1") jq -cn --arg sha "$1" '{headSha:$sha,status:"in_progress",conclusion:null,databaseId:10,attempt:1}';; esac; }
