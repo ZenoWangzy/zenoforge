@@ -2251,6 +2251,60 @@ triage_slice_seconds_left() {
   echo $(( (ZF_GH_CALL_DEADLINE_EPOCH_MS - now_ms) / 1000 ))
 }
 
+# These stay outside run_intake_dispatch: its queue filter calls them before any nested definition below it runs.
+# advisor_pending_verdict_age_seconds <state-json> -- seconds since the stored
+# verdict was computed, or nothing when it carries no parseable computed_at
+# (a legacy verdict predating the field; age checks then tie toward resume).
+advisor_pending_verdict_age_seconds() {
+  local computed_at epoch
+  computed_at="$(jq -r '.pending_advisor_verdict.computed_at // empty' <<< "$1" 2>/dev/null || true)"
+  [ -n "$computed_at" ] || return 1
+  epoch="$(agent_epoch -u "$computed_at" 2>/dev/null)" || return 1
+  echo $(( $(date +%s) - epoch ))
+}
+
+# advisor_stored_verdict_disposition <n> <state-json> -- prints "resume" when
+# the stored verdict is fresh (within ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS)
+# and its Apply has never failed; "discard-age" or "discard-apply-failed" when
+# it must NOT be resumed (past the age bound, or a prior Apply attempt already
+# failed -- .pending_advisor_verdict.apply_failed_at, recorded at the apply
+# sites in run-advisor.sh/run-advisor-batch.sh); "none" when there is no
+# stored verdict at all.
+advisor_stored_verdict_disposition() {
+  local n="$1" state_json="$2" age
+  jq -e '.pending_advisor_verdict != null' <<< "$state_json" >/dev/null 2>&1 || { printf 'none\n'; return 0; }
+  if jq -e '.pending_advisor_verdict.apply_failed_at != null' <<< "$state_json" >/dev/null 2>&1; then
+    printf 'discard-apply-failed\n'
+    return 0
+  fi
+  if age="$(advisor_pending_verdict_age_seconds "$state_json")" \
+    && [ "$age" -gt "$ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS" ]; then
+    printf 'discard-age\n'
+    return 0
+  fi
+  printf 'resume\n'
+}
+
+# advisor_discard_stored_verdict <n> <reason> -- drops the stored verdict from
+# state and emits exactly ONE line naming the issue, the verdict age, and the
+# reason. The ticket then flows through its ordinary advisor routing: a queued
+# non-container is re-asked by the next batch dialogue; a roadmap container is
+# retired to tracker, exactly as a container that never carried a verdict.
+advisor_discard_stored_verdict() {
+  local n="$1" reason="$2" age age_note
+  age="$(advisor_pending_verdict_age_seconds "$(state_read "$n")" 2>/dev/null || true)"
+  if [ -n "$age" ]; then
+    age_note="$((age / 3600))h$(( (age % 3600) / 60 ))m"
+  else
+    age_note=unknown
+  fi
+  if state_merge "$n" 'del(.pending_advisor_verdict)'; then
+    echo "issue-pipeline: advisor stored verdict discarded: issue=#$n age=$age_note reason=$reason; the ticket re-enters its ordinary advisor routing" >&2
+  else
+    echo "issue-pipeline: advisor stored verdict for #$n (age=$age_note reason=$reason) could not be discarded from state; retrying next tick" >&2
+  fi
+}
+
 run_intake_dispatch() {
 if [ "$PIPELINE_STAGE" = triage ]; then
 profile_mark triage
@@ -2691,59 +2745,6 @@ advisor_dispatch_pending_job_pool() {
 # decides queue membership through the disposition helpers, so "in the batch
 # queue" and "carries a resumable stored verdict" are mutually exclusive by
 # construction -- which is what makes the pool's grep dedup sound.
-
-# advisor_pending_verdict_age_seconds <state-json> -- seconds since the stored
-# verdict was computed, or nothing when it carries no parseable computed_at
-# (a legacy verdict predating the field; age checks then tie toward resume).
-advisor_pending_verdict_age_seconds() {
-  local computed_at epoch
-  computed_at="$(jq -r '.pending_advisor_verdict.computed_at // empty' <<< "$1" 2>/dev/null || true)"
-  [ -n "$computed_at" ] || return 1
-  epoch="$(agent_epoch -u "$computed_at" 2>/dev/null)" || return 1
-  echo $(( $(date +%s) - epoch ))
-}
-
-# advisor_stored_verdict_disposition <n> <state-json> -- prints "resume" when
-# the stored verdict is fresh (within ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS)
-# and its Apply has never failed; "discard-age" or "discard-apply-failed" when
-# it must NOT be resumed (past the age bound, or a prior Apply attempt already
-# failed -- .pending_advisor_verdict.apply_failed_at, recorded at the apply
-# sites in run-advisor.sh/run-advisor-batch.sh); "none" when there is no
-# stored verdict at all.
-advisor_stored_verdict_disposition() {
-  local n="$1" state_json="$2" age
-  jq -e '.pending_advisor_verdict != null' <<< "$state_json" >/dev/null 2>&1 || { printf 'none\n'; return 0; }
-  if jq -e '.pending_advisor_verdict.apply_failed_at != null' <<< "$state_json" >/dev/null 2>&1; then
-    printf 'discard-apply-failed\n'
-    return 0
-  fi
-  if age="$(advisor_pending_verdict_age_seconds "$state_json")" \
-    && [ "$age" -gt "$ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS" ]; then
-    printf 'discard-age\n'
-    return 0
-  fi
-  printf 'resume\n'
-}
-
-# advisor_discard_stored_verdict <n> <reason> -- drops the stored verdict from
-# state and emits exactly ONE line naming the issue, the verdict age, and the
-# reason. The ticket then flows through its ordinary advisor routing: a queued
-# non-container is re-asked by the next batch dialogue; a roadmap container is
-# retired to tracker, exactly as a container that never carried a verdict.
-advisor_discard_stored_verdict() {
-  local n="$1" reason="$2" age age_note
-  age="$(advisor_pending_verdict_age_seconds "$(state_read "$n")" 2>/dev/null || true)"
-  if [ -n "$age" ]; then
-    age_note="$((age / 3600))h$(( (age % 3600) / 60 ))m"
-  else
-    age_note=unknown
-  fi
-  if state_merge "$n" 'del(.pending_advisor_verdict)'; then
-    echo "issue-pipeline: advisor stored verdict discarded: issue=#$n age=$age_note reason=$reason; the ticket re-enters its ordinary advisor routing" >&2
-  else
-    echo "issue-pipeline: advisor stored verdict for #$n (age=$age_note reason=$reason) could not be discarded from state; retrying next tick" >&2
-  fi
-}
 
 # advisor_stored_verdict_stuck_sweep -- one DEDUPLICATED line per stored
 # verdict still unresolved past ADVISOR_VERDICT_STUCK_SIGNAL_SECONDS. The

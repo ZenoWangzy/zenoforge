@@ -218,6 +218,13 @@ write_verdict_fixture 6102 $((60 * 60))
 assert_eq "a fresh never-failed verdict is the only resumable disposition" \
   "resume" "$(advisor_stored_verdict_disposition 6102 "$(state_read 6102)")"
 
+# run_intake_dispatch defines functions as it runs, so a call above a nested definition is 'command not found'.
+INTAKE_BODY="$(sed -n '/^run_intake_dispatch() {/,/^if \[\[ "\$PIPELINE_STAGE" == triage/p' "$PIPELINE_SRC")"
+while IFS= read -r nested_fn; do
+  assert_eq "$nested_fn is not called above its nested definition" "" \
+    "$(awk -v fn="$nested_fn" '$0 ~ "^" fn "\\(\\) \\{" { exit } !/^[[:space:]]*#/ && $0 ~ "(^|[^a-z_])" fn "([^a-z_]|$)" { print NR }' <<< "$INTAKE_BODY")"
+done < <(sed -n 's/^\([a-z_][a-z0-9_]*\)() {.*/\1/p' <<< "$INTAKE_BODY" | grep -v '^run_intake_dispatch$')
+
 if [ "$FAILED" -ne 0 ]; then
   echo 'advisor-stored-verdict: FAILED' >&2
   exit 1
