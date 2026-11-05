@@ -2076,6 +2076,9 @@ CFG="$CFG_SAVED"; DISPATCHED=(); DISPATCH_PROMPT=""
 # 派发顺序：修红 main > 热修回迁 > critical > 环节
 units '{"units":[{"id":"a","stage":"repair-pending","history":[]},{"id":"b","stage":"review-pending","critical":true,"history":[]},{"id":"c","stage":"review-pending","hotpatch":true,"critical":true,"history":[]},{"id":"d","stage":"implement-pending","main_red":true,"history":[]},{"id":"e","stage":"review","critical":true,"history":[]}]}'
 [[ "$(dispatch_order | jq -r .id | tr '\n' ' ')" == "d c b a " ]] || fail "dispatch order ignores release priority: $(dispatch_order | jq -r .id | tr '\n' ' ')"
+# Nearest the finish goes first: a fresh direct-main implement does not pass a normal repair.
+units '{"units":[{"id":"a","stage":"implement-pending","lane":"direct-main","history":[]},{"id":"b","stage":"review-pending","history":[]},{"id":"c","stage":"repair-pending","history":[]},{"id":"d","stage":"rereview-pending","history":[]}]}'
+[[ "$(dispatch_order | jq -r .id | tr '\n' ' ')" == "d c b a " ]] || fail "dispatch order is not nearest-the-finish first: $(dispatch_order | jq -r .id | tr '\n' ' ')"
 
 # supervisor 裁决进评审提示；没有前置号的 blocked-external 单元交 supervisor
 [[ "$(supervisor_rule '{"note":"CTO: #2535 is an epic"}')" == *"supervisor 裁决"*"#2535 is an epic"* && -z "$(supervisor_rule '{"note":"waiting"}')" ]] || fail 'supervisor ruling not passed to the worker prompt'

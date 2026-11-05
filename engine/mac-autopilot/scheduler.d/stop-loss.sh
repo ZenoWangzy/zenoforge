@@ -109,7 +109,7 @@ repair_cap_admission() { # unit-id unit-json → two failed repair rounds escala
   return 1
 }
 # ---------- 2. 派发（焦点与并发；预算只告警） ----------
-# 新 worker slot 按 main-red、热修回迁、critical 的现有紧急度排序；其后按配置 tier，再按环节。
+# 新 worker slot 按 main-red、热修回迁、critical 的现有紧急度排序；其后离完成最近的环节优先，再按配置 tier。
 # 2026-10-20 三个热修回迁在 review-pending 等了 56 分钟，名额被新收的孤儿 PR 先拿走（L62）。
 dispatch_order() {
   local started=$SECONDS rc=0 elapsed
@@ -120,9 +120,9 @@ dispatch_order() {
         (if .main_red == true then 0 else 1 end),
         (if .hotpatch == true then 0 else 1 end),
         (if .critical == true then 0 else 1 end),
+        (if .stage == "rereview-pending" then 0 elif .stage == "repair-pending" then 1 elif .stage == "review-pending" then 2 elif .stage == "implement-pending" then 3 else 4 end),
         ((if .hotpatch == true then "hotfix" elif (.lane // "") == "direct-main" then "opt" else "normal" end) as $tier
           | ($priority_order | index($tier) // ($priority_order | length))),
-        (if .stage == "repair-pending" or .stage == "rereview-pending" then 0 elif .stage == "review-pending" then 1 elif .stage == "implement-pending" then 2 else 3 end),
         (.id // "")
       ])[]
   ' "$UNITS" || rc=$?
