@@ -38,6 +38,10 @@ measured numbers and how you computed them.
   the issue with that evidence.
 - The numbers reproduce: implement, and carry the measured numbers in the
   report as the before-baseline that acceptance will compare against.
+- After the baseline, name the limiter mechanism (which step, which
+  operation, what share of the cost) and aim the change at it. Prefer removing
+  unused work, then restructuring, then adding a copy of the data; if you add
+  a copy, say why the first two cannot work.
 
 ## Blast-radius proof on risk-class paths
 

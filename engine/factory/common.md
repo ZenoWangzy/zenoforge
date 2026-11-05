@@ -16,6 +16,8 @@ pipeline（`engine/*` 加 `docs/agents/issue-pipeline.md`）是唯一、持久�
 票里出现性能、耗时、吞吐、成本类结论时（pstack，研究文档 §4.5），开工前读 `$HOME/.zenoforge/engine-live/vendor/pstack/skills/benchmark-checklist/SKILL.md` 与 `$HOME/.zenoforge/engine-live/vendor/pstack/skills/principle-explain-the-number/SKILL.md`，最小要求：
 - 先写下要下的结论（一句话，带单位）、基线数、测量命令；基线不成立（收益为 0 或已修好）就按“不适用”报告，不改代码。
 - 报告里每个数都说明：瓶颈（limiter）是什么、跑了几次、范围、有没有出错、被测的活是否真的发生了。查不全这几项就判 inconclusive，写明缺哪项。
+- 基线后写明 limiter 机制（哪一步、什么操作、占多少）；改法针对该机制，不写"优化一下"。
+- 候选顺序：删掉无用工作 > 改结构 > 新增副本。选新增副本须说明前两项为何不行。
 
 ## 怎么改
 - 做最小的完整改动。复用现有的东西：lib.sh 原语、guarded_pr_merge、deploy-culprit、node_health.py、throughput-metrics、gh-shim、调度器的 footprint 互斥。几行能写完的东西不引入新依赖。

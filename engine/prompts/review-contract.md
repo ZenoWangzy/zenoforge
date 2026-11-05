@@ -57,6 +57,10 @@ compare the base and the candidate and record `introduced_by`: `candidate`
 or `unknown` (say what prevents attribution). `pre_existing` and `unknown`
 findings are reported with their severity but do not block.
 
+If the diff adds a persisted copy of mutable data, the contract must name the
+source of truth, the invalidation trigger, and a drift test. If any is missing,
+report a finding. Immutable keys (for example, SHA pairs) are exempt.
+
 ## Verdict
 
 Write exactly one standalone line: `VERDICT: READY`, `VERDICT: NOT_READY`, or
