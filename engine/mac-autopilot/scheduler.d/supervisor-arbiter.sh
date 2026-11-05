@@ -40,6 +40,8 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
   cap_contract_file="${ZF_ENGINE_DIR:-$ROOT/engine}/prompts/supervisor-cap-triage.md"
   local u id report log q pid w pid_file converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
   local -a launcher=() worker_command=()
+  local over_stop=false arbiter_profile="$SUPERVISOR_ARBITER_PROFILE" arbiter_effort=""
+  codex_week_stopped && over_stop=true
   in_flight="$(jqf -r '[.workers[] | select(.type=="supervise" and .harvested != true)] | length' "$WORKERS")"
   (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
   while IFS= read -r u; do
@@ -73,6 +75,16 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       (( cap_triaged < SUPERVISOR_CAP_TRIAGE_PER_TICK )) || { say "supervisor cap triage capped at $SUPERVISOR_CAP_TRIAGE_PER_TICK this tick"; continue; }
     fi
     (( $(live_workers) < MAX )) || { say "supervisor arbitration pending unit=$id: worker capacity full"; return 0; }
+    arbiter_profile="$SUPERVISOR_ARBITER_PROFILE"
+    if [[ "$over_stop" == true ]]; then
+      # Weekly Codex stop: the arbiter runs on the hand-claude role. No Claude share or a Claude hold defers the unit to a later tick.
+      if [[ "$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")" != 0 ]] && pick_claude_implementer; then
+        arbiter_profile="$PICK_MODEL"; arbiter_effort="$PICK_EFFORT"
+      else
+        say "supervisor arbitration pending unit=$id: weekly Codex stop and Claude unavailable"
+        continue
+      fi
+    fi
     if [[ "$cap_triage" == true && ! -r "$cap_contract_file" ]]; then
       # 没有引擎契约就不派终局裁决：派出去的 prompt 只有（可能被覆盖的）六动作契约，
       # 格式 miss 会直接 park 单元（incident-pstack-root-cause-2026-11-03）。
@@ -135,6 +147,10 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     worker_command=(bash -c 'exec timeout -k 30 900 codex exec -p "$1" \
       --skip-git-repo-check -s read-only --json --output-last-message "$2" - < "$3"' \
       supervisor-arbiter "$SUPERVISOR_ARBITER_PROFILE" "$SUP/$report" "$SUP/$q")
+    # Same report file as the Codex path: the prompt carries the frozen record, so the Claude run gets no tools.
+    [[ "$over_stop" != true ]] || worker_command=(bash -c 'exec timeout -k 30 900 claude -p --model "$1" --effort "$2" \
+      --settings "{\"disableAllHooks\":true}" --strict-mcp-config --permission-mode dontAsk --tools "" < "$4" > "$3"' \
+      supervisor-arbiter "$arbiter_profile" "$arbiter_effort" "$SUP/$report" "$SUP/$q")
     pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
     rm -f -- "$pid_file"
     worker_scope_launch "$pid_file" "$ROOT" "$SUP/$log" "${launcher[@]}" -- "${worker_command[@]}" || {
@@ -142,13 +158,13 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     }
     pid="$WORKER_SCOPE_PID"
     rm -f -- "$pid_file"
-    w="$(jqf -cn --argjson pid "${pid:-0}" --arg unit "$id" --arg log "$log" --arg report "$report" --arg at "$STAMP" --arg profile "$SUPERVISOR_ARBITER_PROFILE" \
+    w="$(jqf -cn --argjson pid "${pid:-0}" --arg unit "$id" --arg log "$log" --arg report "$report" --arg at "$STAMP" --arg profile "$arbiter_profile" \
       --argjson cap_triage "$([[ "$cap_triage" == true ]] && echo true || echo false)" \
       --argjson jev "$judge_metadata" \
       '{pid:$pid,unit:$unit,type:"supervise",log:$log,report:$report,started:$at,model:("profile:"+$profile),cap_triage:$cap_triage,jev:$jev}')"
     jqf --argjson w "$w" '.workers += [$w]' "$WORKERS" | write_state "$WORKERS"
-    set_unit "$id" "$(hist supervisor-arbiter "dispatched to profile $SUPERVISOR_ARBITER_PROFILE") | .supervise_report=$(js "$report") | .hard_escalated=true"
-    say "supervisor arbitration dispatched pid=$pid unit=$id profile=$SUPERVISOR_ARBITER_PROFILE"
+    set_unit "$id" "$(hist supervisor-arbiter "dispatched to profile $arbiter_profile") | .supervise_report=$(js "$report") | .hard_escalated=true"
+    say "supervisor arbitration dispatched pid=$pid unit=$id profile=$arbiter_profile"
     in_flight=$((in_flight + 1))
     [[ "$cap_triage" == true ]] && cap_triaged=$((cap_triaged + 1))
     (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
