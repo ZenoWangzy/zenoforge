@@ -113,7 +113,35 @@ merge_census_watch() { # missed=1/0：本拍 merge lane 是否出现 check censu
     '{streak:$streak,alerted:$alerted,episode:$episode}' | write_state "$f" || say "merge census watch: could not persist state"
 }
 
+# One merge pass at a time across the tick and the refill: the tick yields the ledger lock around its merge pass, so
+# without this a refill pass could merge the same PR concurrently. MERGE_LANE_WAIT is the seconds to wait for the
+# pass in progress (the tick waits; the refill passes 0 and skips).
 run_merge_lane() {
+  local fd rc=0
+  exec {fd}>"$A/.merge-lane.lock" || return 1
+  if ! flock -w "${MERGE_LANE_WAIT:-120}" "$fd"; then
+    exec {fd}>&-
+    say "merge lane busy: pass skipped"
+    return 0
+  fi
+  run_merge_lane_pass || rc=$?
+  exec {fd}>&-
+  return "$rc"
+}
+# A unit that turned ready-to-merge after the tick's merge pass waited for the next full tick (about half a cycle).
+# The refill runs one pass when such a unit exists, at most once per merge_refill_min_seconds.
+refill_merge_pass() {
+  local now last min
+  [[ "$(jqf -r .auto_merge <<<"$CFG")" == "true" ]] || return 0
+  jqf -e 'any(.units[]; .stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false
+    and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main")' "$UNITS" >/dev/null || return 0
+  min="$(jqf -r '.merge_refill_min_seconds // 120' <<<"$CFG")"; [[ "$min" =~ ^[0-9]+$ ]] || min=120
+  now="$(date +%s)"; last="$(cat "$A/.refill-merge-epoch" 2>/dev/null || true)"; [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  (( now - last >= min )) || return 0
+  printf '%s\n' "$now" > "$A/.refill-merge-epoch"
+  MERGE_LANE_WAIT=0 run_merge_lane
+}
+run_merge_lane_pass() {
   local merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry
   local -A merge_head_ref=()
   local -a merge_head_refspecs=() merge_head_refs=()

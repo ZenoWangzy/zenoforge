@@ -467,6 +467,7 @@ refill_tick() {
       say "refill dispatch held: supervisor-owned marking deferred"
     else
       phase_yield_lock_batch run_refill_intake_dispatch_phases
+      phase_yield_lock refill_merge_pass
     fi
   fi
   local gh_calls; gh_calls="$(tick_gh_calls_count)"
