@@ -200,8 +200,11 @@ mv -- "$pin_tmp" "$worktree/$build_rel"
 git -C "$worktree" add -- "$build_rel"
 while IFS=$'\t' read -r ov_path ov_new n ov_base; do
   cat -- "$merge_stage/$n.merged" > "$worktree/$pack_agent_rel/$ov_path"
-  awk -F '\t' -v OFS='\t' -v p="$ov_path" -v b="$ov_new" '$1 == p { $2 = b } { print }' \
-    "$worktree/$overrides_rel" > "$worktree/$overrides_rel.tmp.$$"
+  # ENVIRON, not -v: awk -v would interpret backslash escapes in the path.
+  OV_P="$ov_path" OV_B="$ov_new" awk -F '\t' -v OFS='\t' \
+    '$1 == ENVIRON["OV_P"] { $2 = ENVIRON["OV_B"]; hit = 1 } { print } END { exit !hit }' \
+    "$worktree/$overrides_rel" > "$worktree/$overrides_rel.tmp.$$" \
+    || { echo "pin-vecta: refusing pin: override $ov_path: no row to update in $overrides_rel" >&2; exit 1; }
   mv -- "$worktree/$overrides_rel.tmp.$$" "$worktree/$overrides_rel"
   git -C "$worktree" add -- "$pack_agent_rel/$ov_path" "$overrides_rel"
   printf 'pin-vecta: merged override %s base=%s -> engine=%s (clean three-way merge)\n' \
@@ -410,7 +413,13 @@ cd -- "$worktree"
 if [[ "$route" == land-direct-main ]]; then
   lander=${ZF_LAND_DIRECT_MAIN:-$agent_home/engine-live/land-direct-main.sh}
   [[ -f "$lander" ]] || { echo "pin-vecta: land-direct-main is missing: $lander" >&2; exit 2; }
-  run_bounded_step land bash "$lander"
+  land_rc=0
+  run_bounded_step land bash "$lander" || land_rc=$?
+  if ((land_rc != 0)); then
+    # The lander can push and then fail later (post-land dispatch), so say so instead of guessing.
+    printf 'pin-vecta: result=land-failed route=land-direct-main landed=unknown (lander exit %s; check origin/main before retrying)\n' "$land_rc"
+    exit "$land_rc"
+  fi
   printf 'pin-vecta: result=landed route=land-direct-main landed=yes\n'
 else
   delivery_preflight="$worktree/scripts/branch-delivery-preflight.mjs"
@@ -422,6 +431,7 @@ else
     --title "chore(engine): pin zenoforge $short_sha" \
     --body "Pin the engine to $engine_sha. The build, check, and publish preflight passed before selecting the PR route.")
   printf '%s\n' "$pr_url"
-  # Exit 0 here means a PR was opened, not that the pin is on main. Callers must check this line.
   printf 'pin-vecta: result=pr-open route=PR landed=no pr=%s (NOT landed: the pin is live only after this PR merges)\n' "$pr_url"
+  # Exit 0 means landed. A PR is not landed, and zf-auto-pin records exit 0 as pinned, so fail closed with 75.
+  exit 75
 fi

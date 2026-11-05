@@ -310,9 +310,13 @@ pr_calls="$tmp/pr.calls"
 pr_scopes="$tmp/pr.scopes"
 : > "$pr_calls"
 : > "$pr_scopes"
-if ! run_pin "$pr_calls" "$pr_scopes" "$pr_agent" "$pr_target" --land > "$tmp/pr.out" 2>&1; then
+set +e
+run_pin "$pr_calls" "$pr_scopes" "$pr_agent" "$pr_target" --land > "$tmp/pr.out" 2>&1
+pr_status=$?
+set -e
+if ((pr_status != 75)); then
   cat "$tmp/pr.out" >&2
-  fail 'passing PR pin did not publish through the PR route'
+  fail "PR pin must exit 75 (opened, not landed), got $pr_status"
 fi
 pr_worktree=$(sed -n 's/^pin-vecta: worktree=//p' "$tmp/pr.out" | tail -1)
 pr_branch=$(git -C "$pr_worktree" symbolic-ref --short HEAD)
@@ -350,6 +354,20 @@ grep -Fxq "lander-cwd:$land_worktree" "$land_calls" || fail 'land-direct-main di
 grep -Fq 'pin-vecta: result=landed route=land-direct-main landed=yes' "$tmp/land.out" \
   || fail 'direct route did not report landed'
 ok 'direct pin lands from the pin worktree'
+
+# A lander that fails (it may already have pushed) must not be reported as landed.
+lf_target=$(setup_target landfail)
+lf_agent=$(setup_agent landfail)
+: > "$tmp/landfail.calls"; : > "$tmp/landfail.scopes"
+printf '#!/usr/bin/env bash\nexit 7\n' > "$tmp/failing-lander.sh"
+set +e
+ZF_LAND_DIRECT_MAIN="$tmp/failing-lander.sh" run_pin "$tmp/landfail.calls" "$tmp/landfail.scopes" "$lf_agent" "$lf_target" --land > "$tmp/landfail.out" 2>&1
+lf_status=$?
+set -e
+((lf_status == 7)) || fail "failing lander exit was not passed through: $lf_status"
+grep -Fq 'result=land-failed route=land-direct-main landed=unknown' "$tmp/landfail.out" || fail 'failed lander did not say landed=unknown'
+! grep -q 'result=landed' "$tmp/landfail.out" || fail 'failed lander reported landed'
+ok 'failed lander reports landed=unknown and keeps its exit code'
 
 # A pin plus a pack-only target diff follows the target classifier's direct-main
 # lane, keeps [skip ci], and never tries to create a PR.
@@ -427,10 +445,12 @@ seq_file() { printf 'echo %s\n' "$@"; }
 seq_file a b c d e f > "$mengine/engine/hotfix/m.sh"
 seq_file a b c d e f > "$mengine/engine/hotfix/c.sh"
 seq_file a b c > "$mengine/engine/hotfix/d.sh"
+seq_file k > "$mengine/engine/hotfix/k.sh"
 git -C "$mengine" add -A && git -C "$mengine" commit -qm 'B1'
 blob_m=$(git -C "$mengine" rev-parse HEAD:engine/hotfix/m.sh)
 blob_c=$(git -C "$mengine" rev-parse HEAD:engine/hotfix/c.sh)
 blob_d=$(git -C "$mengine" rev-parse HEAD:engine/hotfix/d.sh)
+blob_k=$(git -C "$mengine" rev-parse HEAD:engine/hotfix/k.sh)
 seq_file TOP a b c d e f > "$mengine/engine/hotfix/m.sh"
 seq_file a b ENGINE d e f > "$mengine/engine/hotfix/c.sh"
 git -C "$mengine" rm -q engine/hotfix/d.sh
@@ -458,16 +478,15 @@ run_merge_pin() { # <name> <target> [args]
 }
 
 # clean: pack copy, row and build.json land in one commit; the unchanged row stays; route is PR.
-mc_target=$(merge_target mclean "hotfix/m.sh\t$blob_m\n")
-if ! run_merge_pin mclean "$mc_target" --land > "$tmp/mclean.out" 2>&1; then
-  cat "$tmp/mclean.out" >&2; fail 'clean override merge failed the pin'
-fi
+mc_target=$(merge_target mclean "hotfix/m.sh\t$blob_m\nhotfix/k.sh\t$blob_k\n")
+set +e; run_merge_pin mclean "$mc_target" --land > "$tmp/mclean.out" 2>&1; mc_status=$?; set -e
+((mc_status == 75)) || { cat "$tmp/mclean.out" >&2; fail "clean override merge: expected PR route exit 75, got $mc_status"; }
 mc_wt=$(sed -n 's/^pin-vecta: worktree=//p' "$tmp/mclean.out" | tail -1)
 grep -Fq "pin-vecta: merged override hotfix/m.sh base=${blob_m:0:12} -> engine=${mnew_m:0:12}" "$tmp/mclean.out" \
   || fail 'clean merge log line missing'
 [[ "$(seq_file TOP a b c d e f LOCAL)" == "$(cat "$mc_wt/.zenoforge/build/pack/scripts/agent/hotfix/m.sh")" ]] \
   || fail 'merged pack copy lost the local or the engine edit'
-[[ "$(cat "$mc_wt/.zenoforge/build/overrides.tsv")" == "$(printf 'hotfix/m.sh\t%s' "$mnew_m")" ]] || fail 'row not updated to the new blob'
+[[ "$(cat "$mc_wt/.zenoforge/build/overrides.tsv")" == "$(printf 'hotfix/m.sh\t%s\nhotfix/k.sh\t%s' "$mnew_m" "$blob_k")" ]] || fail 'row not updated to the new blob'
 [[ "$(git -C "$mc_wt" diff --name-only HEAD~1 HEAD | sort)" == "$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv .zenoforge/build/pack/scripts/agent/hotfix/m.sh)" ]] \
   || fail 'pin, row and pack copy are not one commit'
 grep -Fq 'pin-vecta: result=pr-open route=PR landed=no' "$tmp/mclean.out" || fail 'overrides.tsv change did not report the PR route as not landed'
