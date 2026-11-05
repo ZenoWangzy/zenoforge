@@ -6,7 +6,19 @@ rotate_logs() {
     [[ -f "$f" ]] || continue
     (( $(wc -c < "$f") > 5242880 )) && mv -f "$f" "$f.1"
   done
+  rotate_loop_out
   return 0
+}
+# Copy then truncate in place: the loop holds loop.out open with >> and only a restart would reopen it.
+# Lines written between the copy and the truncate are lost. engine-canary's read_after_offset restarts
+# from 0 when its offset is past the end of the file.
+rotate_loop_out() {
+  local f="$A/loop.out" limit="${AUTOPI_LOOP_OUT_MAX_BYTES:-104857600}"
+  [[ -f "$f" ]] && (( $(wc -c < "$f") > limit )) || return 0
+  gzip -c -- "$f" > "$f.tmp.gz" || { rm -f -- "$f.tmp.gz"; return 0; }
+  [[ ! -e "$f.1.gz" ]] || mv -f -- "$f.1.gz" "$f.2.gz"
+  mv -f -- "$f.tmp.gz" "$f.1.gz"
+  : > "$f"
 }
 
 worktree_cleanup_block_reason() { # dir -> reason when deleting it could lose recoverable Git work

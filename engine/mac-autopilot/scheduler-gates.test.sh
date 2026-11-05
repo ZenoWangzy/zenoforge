@@ -2406,6 +2406,19 @@ mkdir -p "$st/old-on-disk"; touch -d '-8 hours' "$st/old-on-disk"
 AP_SYSTEM_TMP="$st" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || :
 [[ -d "$st/old-on-disk" ]] || fail 'reaped a disk-backed /tmp'
 
+# loop.out rotates by size in place, and the canary's offset survives the truncate.
+lo="$A/loop.out"
+exec 7>> "$lo"; printf 'old-1\n' >&7; AUTOPI_LOOP_OUT_MAX_BYTES=3 rotate_logs
+printf 'old-2\n' >&7; AUTOPI_LOOP_OUT_MAX_BYTES=3 rotate_logs
+printf 'old-3\n' >&7; AUTOPI_LOOP_OUT_MAX_BYTES=3 rotate_logs
+printf 'new\n' >&7; exec 7>&-
+[[ "$(cat "$lo")" == new ]] || fail 'the open append fd did not survive the loop.out truncate'
+[[ "$(gzip -dc "$lo.1.gz")" == old-3 && "$(gzip -dc "$lo.2.gz")" == old-2 ]] || fail 'loop.out did not keep two compressed copies'
+[[ "$(find "$A" -maxdepth 1 -name 'loop.out*' | wc -l)" == 3 ]] || fail 'loop.out rotation kept more than two copies'
+eval "$(sed -n '/^file_bytes()/,/^}/p;/^read_after_offset()/,/^}/p' "$script_dir/engine-canary.sh")"
+[[ "$(read_after_offset "$lo" 2343905611)" == new ]] || fail 'canary lost lines after the loop.out truncate'
+rm -f -- "$lo" "$lo.1.gz" "$lo.2.gz"
+
 # A terminal unit may still own work that cleanup_tick must preserve, in either
 # supported worktree location. A pushed, clean worktree remains reclaimable.
 cleanup_fixture="$fixture/cleanup-preservation"
