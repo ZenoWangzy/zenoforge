@@ -54,6 +54,73 @@ pending_fixture_stubs() {
   live_by_type() { echo 0; }
 }
 
+# Exercise the real expansion and admission path against a small, tracked history.
+git -C "$ROOT" init -q -b main
+git -C "$ROOT" config user.name fixture
+git -C "$ROOT" config user.email fixture@example.invalid
+mkdir -p "$ROOT/src"
+printf 'x\n' > "$ROOT/src/candidate"
+printf 'x\n' > "$ROOT/src/hot"
+printf 'x\n' > "$ROOT/src/once"
+git -C "$ROOT" add .
+git -C "$ROOT" commit -qm base
+git -C "$ROOT" update-ref refs/remotes/origin/main HEAD
+HOTSPOT_LOG=$'\001\nsrc/candidate\nsrc/hot\n\001\nsrc/candidate\nsrc/hot\n\001\nsrc/candidate\nsrc/once'
+HOTSPOT_LOG_LOADED=true HOTSPOT_LOG_OK=true
+unset ZF_FOOTPRINT_HOTSPOT_MIN
+[[ "$(hotspot_expand '["src/candidate"]')" == '["src/candidate"]' ]] || fail 'default minimum admitted weak hotspot'
+saved_hotspot_log="$HOTSPOT_LOG"
+for ((i=0;i<8;i++)); do HOTSPOT_LOG+=$'\001\nsrc/candidate\nsrc/hot\n'; done
+[[ "$(hotspot_expand '["src/candidate"]')" == '["src/candidate","src/hot"]' ]] || fail 'default minimum excluded count 10'
+HOTSPOT_LOG="$saved_hotspot_log"
+ZF_FOOTPRINT_HOTSPOT_MIN=2
+[[ "$(hotspot_expand '["src/candidate"]')" == '["src/candidate","src/hot"]' ]] || fail 'threshold did not include count 2'
+ZF_FOOTPRINT_HOTSPOT_MIN=1
+[[ "$(hotspot_expand '["src/candidate"]')" == '["src/candidate","src/hot"]' ]] || fail 'minimum 1 differs from old two-change floor'
+# Compare against the former grouping, floor, ordering and top-12 algorithm.
+old_result="$(jq -Rsc --argjson scope '["src/candidate"]' '
+  def in_scope: . as $f | any($scope[]; . as $s | $s == $f or ($f | startswith($s + "/")));
+  ([split("\u0001")[] | split("\n") | map(select(length > 0)) | unique
+    | select(length > 1 and length <= 40) | select(any(.[]; in_scope))
+    | .[] | select(in_scope | not)] | group_by(.)
+    | map(select(length >= 2) | {f:.[0],n:length}) | sort_by(-.n) | .[:12] | map(.f)) as $added
+  | ($scope + $added) | unique' <<<"$HOTSPOT_LOG")"
+[[ "$(hotspot_expand '["src/candidate"]')" == "$old_result" ]] || fail 'minimum 1 diverged from the previous algorithm'
+for invalid in 0 nope ""; do
+  ZF_FOOTPRINT_HOTSPOT_MIN="$invalid"
+  [[ "$(hotspot_expand '["src/candidate"]')" == '["src/candidate"]' ]] || fail "invalid minimum $invalid did not use default"
+  grep -Fq "footprint-hotspot-invalid-min value=$invalid default=10" "$LOG" || fail 'invalid minimum was not logged'
+done
+unset ZF_FOOTPRINT_HOTSPOT_MIN
+write_units '{units:[{id:"owner",stage:"implement",footprint:["src/hot"]},
+ {id:"candidate",stage:"implement-pending",footprint:["src/candidate"]},
+ {id:"direct",stage:"implement-pending",footprint:["src/hot"]}]}'
+printf '%s\n' '{"workers":[{"pid":100,"unit":"owner","type":"implement"}]}' > "$WORKERS"
+TICK_ACTIVE_FOOTPRINTS_VALID=false
+TICK_FOOTPRINT_PREFLIGHT_STATUS=not-started
+TICK_FOOTPRINT_CONFLICT_VALID=false
+TICK_DISPATCH_LOCAL_REFILL=false
+footprint_preflight_snapshot || fail 'batch preflight failed'
+[[ -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[candidate]:-}" && "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[direct]:-}" == owner ]] || fail 'batch preflight applied wrong threshold'
+footprint_room candidate "$(jq -c '.units[] | select(.id=="candidate")' "$UNITS")" true || fail 'weak expansion blocked admission'
+grep -Fq 'footprint-shadow-old-rule-would-block unit=candidate owner=owner candidate_path=src/hot owner_path=src/hot source=expansion cochange_count=2' "$LOG" || fail 'shadow attribution missing'
+if footprint_room direct "$(jq -c '.units[] | select(.id=="direct")' "$UNITS")" true; then fail 'direct overlap admitted'; fi
+grep -Fq 'footprint wait unit=direct owner=owner candidate_path=src/hot owner_path=src/hot source=original cochange_count=not-applicable' "$LOG" || fail 'direct attribution missing'
+ZF_FOOTPRINT_HOTSPOT_MIN=1
+TICK_CHECK_SCOPE_SOURCE=()
+if footprint_room candidate "$(jq -c '.units[] | select(.id=="candidate")' "$UNITS")" true; then fail 'old rule did not block weak expansion'; fi
+grep -Fq 'footprint wait unit=candidate owner=owner candidate_path=src/hot owner_path=src/hot source=expansion cochange_count=2' "$LOG" || fail 'expansion attribution missing'
+unset ZF_FOOTPRINT_HOTSPOT_MIN
+
+# The merge skip records the main-side revision even when conflict files are unavailable.
+(
+  set_unit() { :; }
+  hist() { printf '.'; }
+  MAIN_HEAD=fixture-main-sha
+  merge_conflict_to_repair fixture 123 'conflicts with main' hint ''
+)
+grep -Fq 'merge-conflict-attribution unit=fixture pr=123 pr_head=unknown main_sha=fixture-main-sha conflicting_files=unavailable' "$LOG" || fail 'merge attribution missing'
+
 # Stale owner stage must stop suppressing the pending unit from intake and dispatch.
 write_units '{units:[
   {id:"merged-owner",stage:"merged",footprint:["packages/fixture/shared.ts"]},

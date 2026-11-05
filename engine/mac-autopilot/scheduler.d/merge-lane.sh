@@ -72,6 +72,7 @@ merge_conflict_to_repair() { # id pr cause repair_hint head
   fi
   set_unit "$1" "$(hist merge-conflict "PR#$2 $3") | .approved_sha=null | .repair_hint=$(js "$4") | .stage=\"repair-pending\""
   say "merge skipped PR#$2 ($3) -> repair-pending"
+  say "merge-conflict-attribution unit=$1 pr=$2 pr_head=${head:-unknown} main_sha=${MAIN_HEAD:-unknown} conflicting_files=unavailable"
 }
 
 # 合入即写 awaiting-release（#4515 发布状态单一事实源）：unit 台账的 unit→issue 关系驱动，

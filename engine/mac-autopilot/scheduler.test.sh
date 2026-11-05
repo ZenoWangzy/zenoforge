@@ -3601,6 +3601,7 @@ JSON
   echo '{"workers":[{"pid":125,"unit":"a","type":"implement","workdir":"/nonexistent/live-writes"}]}' > "$WORKERS"
   footprint_room_each_tick g
   rm -rf -- "$wdir"
+  local ZF_FOOTPRINT_HOTSPOT_MIN=1
   # #4488 二轮：与预测文件在 git log 里反复共同修改的热点文件并入待派发 unit
   # 的检查范围，预测范围不相交但历史耦合的候选先排队；扩展不写回 .footprint。
   hdir="$(mktemp -d)"

@@ -560,7 +560,9 @@ register_new_issues() {
         continue
       }
       if [[ -n "$intake_conflict" ]]; then
-        say "intake skip issue #$n: footprint overlaps unit=$intake_conflict"
+        intake_match="$(footprint_match_detail "$intake_candidate_scope" "$intake_candidate_scope" \
+          "$(jqf -c --arg id "$intake_conflict" '[.[] | select(.id == $id) | .footprint[]?]' <<<"$intake_footprint_owners")" '{}')"
+        say "intake skip issue #$n: footprint overlaps unit=$intake_conflict candidate_unit=issue-$n owner=$intake_conflict ${intake_match:-candidate_path=unknown owner_path=unknown source=unknown cochange_count=unknown}"
         continue
       fi
     fi

@@ -150,6 +150,8 @@ resolve_active_footprints() { # active-unit JSON array → fresh live scopes; sc
 footprint_drop_check_scope_cache() {
   TICK_CHECK_SCOPE_SOURCE=()
   TICK_CHECK_SCOPE=()
+  TICK_OLD_SCOPE=()
+  TICK_HOTSPOT_COUNTS=()
 }
 active_footprint_snapshot() { # refresh live writes for all active implementation workers
   local active
@@ -236,6 +238,8 @@ footprint_preflight_snapshot() {
     TICK_FOOTPRINT_PREFLIGHT_IDS+=("$id")
     TICK_CHECK_SCOPE_SOURCE["$id"]="$scope"
     TICK_CHECK_SCOPE["$id"]="$scope"
+    TICK_OLD_SCOPE["$id"]="$scope"
+    TICK_HOTSPOT_COUNTS["$id"]='{}'
     scope_rows+="$id"$'\t'"$scope"$'\n'
     candidate_count=$((candidate_count + 1))
   done < <(jqf -c "$candidate_filter" "$UNITS")
@@ -264,6 +268,8 @@ footprint_preflight_snapshot() {
         return 1
       }
       TICK_CHECK_SCOPE["$id"]="$check_scope"
+      TICK_OLD_SCOPE["$id"]="$(scheduler_footprint_filter_main "$(jqf -c '.old_scope' <<<"$row")")" || return 1
+      TICK_HOTSPOT_COUNTS["$id"]="$(jqf -c '.counts' <<<"$row")"
     done < <(jqf -c '.[]' <<<"$expanded_scopes")
     footprint_refresh_conflicts cached || return 1
   fi
@@ -279,7 +285,7 @@ footprint_preflight_snapshot() {
 }
 # #4488 第二轮（spec #4495 的类级解法）：预测足迹本身也看不准，共享测试文件和
 # 运行时热点是和历史共同修改耦合的。派发检查前把窗口内与预测文件同提交
-# 出现过的热点文件（每提交每文件计一次，共同修改 ≥2 次，取次数前 12）并进
+# 出现过的热点文件（每提交每文件计一次，先取共同修改 ≥2 次的前 12，再按配置门槛过滤）并进
 # 待派发 unit 的检查范围；命中在跑 worker 就先排队。扩展只在检查时计算，
 # 不写进 .footprint——活跃足迹仍是 #4510 的预测 ∪ 实际写入，避免逐 tick 累积。
 hotspot_log() { # 窗口内提交的文件分组清单，每 scheduler 进程取一次
@@ -290,40 +296,39 @@ hotspot_log() { # 窗口内提交的文件分组清单，每 scheduler 进程取
   fi
   printf '%s' "$HOTSPOT_LOG"
 }
-hotspot_expand() { # scope_json -> scope ∪ 共同修改热点；历史读不出来时退回原足迹
-  local scope="$1" added
-  added="$(hotspot_log | jq -Rsc --slurpfile scope <(printf '%s' "$scope") '
-    def in_scope: . as $f | any($scope[0][]; . as $s | $s == $f or ($f | startswith($s + "/")));
-    [ split("\u0001")[]
-      | split("\n") | map(select(length > 0)) | unique
-      | select(length > 1 and length <= 40)
-      | select(any(.[]; in_scope))
-      | .[] | select(in_scope | not)
-    ] | group_by(.) | map(select(length >= 2) | {f: .[0], n: length})
-      | sort_by(-.n) | .[:12] | map(.f) | unique
-  ' 2>/dev/null || true)"
-  if [[ -n "$added" && "$added" != '[]' ]]; then
-    scope="$(jq -cn --slurpfile scope <(printf '%s' "$scope") --slurpfile add <(printf '%s' "$added") '($scope[0] + $add[0]) | unique')"
+# The old algorithm requires two co-changes; setting 1 retains that historical floor.
+hotspot_minimum() {
+  local min="${ZF_FOOTPRINT_HOTSPOT_MIN-10}"
+  if [[ ! "$min" =~ ^[0-9]+$ ]] || [[ ! "$min" =~ [1-9] ]]; then
+    say "footprint-hotspot-invalid-min value=$min default=10" >&2
+    min=10
   fi
-  scope="$(scheduler_footprint_filter_main "$scope")" || return 1
-  printf '%s\n' "$scope"
+  # jq handles large numeric inputs without shell arithmetic overflow.
+  printf '%s\n' "$min"
 }
-hotspot_expand_batch() { # [{id,scope}] → 同一份 30 天 git log 上批量扩展候选 check scope
-  local candidates="$1" log
+hotspot_expand() {
+  local scope="$1" result
+  result="$(hotspot_expand_batch "$(jq -cn --argjson scope "$scope" '[{id:"single",scope:$scope}]')")" || return 1
+  scheduler_footprint_filter_main "$(jq -c '.[0].scope' <<<"$result")"
+}
+hotspot_expand_batch() { # Includes old-rule scope and counts for attribution without rereading history.
+  local candidates="$1" log min
   log="$(hotspot_log)"
-  jqf -Rsc --slurpfile candidates <(printf '%s' "$candidates") '
+  min="$(hotspot_minimum)"
+  jqf -Rsc --arg min "$min" --slurpfile candidates <(printf '%s' "$candidates") '
     def in_scope($scope; $path): any($scope[]; . as $s | . == $path or ($path | startswith($s + "/")));
     (split("\u0001") | map(split("\n") | map(select(length > 0)) | unique)) as $commits
     | [$candidates[0][] as $candidate
         | ($candidate.scope) as $scope
-        | ([ $commits[]
-             | select(length > 1 and length <= 40)
+        | ([ $commits[] | select(length > 1 and length <= 40)
              | select(any(.[]; in_scope($scope; .)))
-             | .[] | select(in_scope($scope; .) | not)
-           ]
+             | .[] | select(in_scope($scope; .) | not) ]
           | group_by(.) | map(select(length >= 2) | {f:.[0],n:length})
-          | sort_by(-.n) | .[:12] | map(.f) | unique) as $added
-        | {id:$candidate.id,scope:(($scope + $added) | unique)}]
+          | sort_by(-.n) | .[:12]) as $old
+        | ($old | map(select(.n >= ($min | tonumber)))) as $added
+        | {id:$candidate.id, scope:(($scope + ($added | map(.f))) | unique),
+           old_scope:(($scope + ($old | map(.f))) | unique),
+           counts:($old | map({key:.f,value:.n}) | from_entries)}]
   ' <<<"$log"
 }
 # shared-append 精确路径从足迹里剥离后再做互斥比较：两边只剩 shared-append 文件时不算冲突
@@ -335,8 +340,44 @@ footprint_strip_shared_append() { # scope_json -> 去掉 shared-append 精确路
   [[ "$shared" != '[]' ]] || { printf '%s\n' "$scope"; return; }
   jqf -c --slurpfile sa <(printf '%s' "$shared") 'map(select(. as $x | any($sa[0][]; . == $x) | not))' <<<"$scope"
 }
+footprint_match_detail() ( # candidate scope, original scope, owner scope, count map
+  REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
+  source "$SCHEDULER_AGENT_LIB" || exit 2
+  local candidate owner origin count
+  candidate="$(footprint_strip_shared_append "$1")"
+  owner="$(footprint_strip_shared_append "$3")"
+  if expected_packages_collide "$candidate" "$owner"; then
+    candidate="$EXPECTED_SCOPE_COLLISION_CANDIDATE"
+    origin=expansion
+    if jq -e --arg p "$candidate" 'index($p) != null' <<<"$2" >/dev/null; then origin=original; fi
+    if [[ "$origin" == original ]]; then count=not-applicable; else count="$(jq -r --arg p "$candidate" '.[$p] // 0' <<<"$4")"; fi
+    printf 'candidate_path=%s owner_path=%s source=%s cochange_count=%s' "$candidate" "$EXPECTED_SCOPE_COLLISION_ACTIVE" "$origin" "$count"
+  fi
+)
+footprint_shadow_old_rule() {
+  local id="$1" active="$2" old current detail
+  old="${TICK_OLD_SCOPE[$id]:-[]}"
+  current="${TICK_CHECK_SCOPE[$id]:-[]}"
+  [[ "$old" != "$current" ]] || return 0
+  # One in-memory comparison, only for a candidate whose old scope was wider.
+  detail="$(jq -r --arg id "$id" --argjson old "$old" \
+    --argjson shared "${SHARED_APPEND:-[]}" --argjson counts "${TICK_HOTSPOT_COUNTS[$id]:-\{\}}" '
+    first($old[] as $candidate | select(($shared | index($candidate)) == null)
+      | .[] | select(.id != $id) | .id as $owner | .footprint[]? as $path
+      | select(($shared | index($path)) == null)
+      | select($candidate == $path or ($candidate | startswith($path + "/")) or ($path | startswith($candidate + "/")))
+      | "owner=\($owner) candidate_path=\($candidate) owner_path=\($path) source=expansion cochange_count=\($counts[$candidate] // 0)") // empty
+  ' <<<"$active")" || return 1
+  [[ -z "$detail" ]] || say "footprint-shadow-old-rule-would-block unit=$id $detail"
+}
 footprint_wait_mark() { # unit owner unit_json：记等待方与起始时间，intake 不把它算作占用产能
-  say "footprint wait unit=$1 owner=$2"
+  local detail candidate owner_path origin count original active owner_scope
+  original="${TICK_FOOTPRINT_CACHE[$1]:-[]}"
+  active="${TICK_ACTIVE_FOOTPRINTS:-[]}"
+  owner_scope="$(jq -c --arg id "$2" '[.[] | select(.id == $id) | .footprint[]?]' <<<"$active")"
+  detail="$(footprint_match_detail "$original" "$original" "$owner_scope" "${TICK_HOTSPOT_COUNTS[$1]:-\{\}}")"
+  [[ -n "$detail" ]] || detail="$(footprint_match_detail "${TICK_CHECK_SCOPE[$1]:-$original}" "$original" "$owner_scope" "${TICK_HOTSPOT_COUNTS[$1]:-\{\}}")"
+  say "footprint wait unit=$1 owner=$2 ${detail:-candidate_path=unknown owner_path=unknown source=unknown cochange_count=unknown}"
   local marked_owner marked_since
   marked_owner="$(jqf -r '.footprint_wait_owner // empty' <<<"$3")"
   marked_since="$(jqf -r '.footprint_wait_since // empty' <<<"$3")"
@@ -374,7 +415,11 @@ _footprint_room() {
     check_scope="${TICK_CHECK_SCOPE[$id]}"
   else
     hotspot_log >/dev/null
-    check_scope="$(hotspot_expand "$scope")"
+    local expanded_row
+    expanded_row="$(hotspot_expand_batch "$(jq -cn --arg id "$id" --argjson scope "$scope" '[{id:$id,scope:$scope}]')")" || return 1
+    check_scope="$(scheduler_footprint_filter_main "$(jq -c '.[0].scope' <<<"$expanded_row")")" || return 1
+    TICK_OLD_SCOPE["$id"]="$(scheduler_footprint_filter_main "$(jq -c '.[0].old_scope' <<<"$expanded_row")")" || return 1
+    TICK_HOTSPOT_COUNTS["$id"]="$(jq -c '.[0].counts' <<<"$expanded_row")"
     [[ "${HOTSPOT_LOG_OK:-false}" == true ]] || HOTSPOT_LOG_LOADED=false
     TICK_CHECK_SCOPE_SOURCE["$id"]="$scope"
     TICK_CHECK_SCOPE["$id"]="$check_scope"
@@ -404,6 +449,7 @@ _footprint_room() {
       return 1
     fi
   fi
+  footprint_shadow_old_rule "$id" "$active"
 }
 footprint_room() { # unit type; report checks that materially delay dispatch
   local started=$SECONDS rc=0 elapsed
