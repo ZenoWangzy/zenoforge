@@ -491,9 +491,7 @@ BLOCKER_ROOT_SWEEP_BUDGET_SECONDS="${BLOCKER_ROOT_SWEEP_BUDGET_SECONDS:-150}"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/selection-scope.sh"
 
-# Repo-rooted path mentions, one pattern for the structured-section scan and
-# the whole-text fallback that free-form brief notes need (#4722).
-ISSUE_BODY_PATH_REGEX='(\.github/workflows|\.agents|\.claude|lessons|packages|apps|scripts|engine|docs|infra|deploy|templates|migrations)/[[:alnum:]_.-]+(/[[:alnum:]_.-]+)*|Dockerfile([.][[:alnum:]_-]+)?|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|package-lock\.json'
+# ISSUE_BODY_PATH_REGEX lives in lib.d/selection-scope.sh with the functions that use it.
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/dispatch-gates.sh"
 

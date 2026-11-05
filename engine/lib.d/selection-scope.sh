@@ -1,3 +1,8 @@
+# Repo-rooted path mentions, one pattern for the structured-section scan and
+# the whole-text fallback that free-form brief notes need (#4722).
+ISSUE_BODY_PATH_REGEX='(\.github/workflows|\.agents|\.claude|lessons|packages|apps|scripts|engine|docs|infra|deploy|templates|migrations)/[[:alnum:]_.-]+(/[[:alnum:]_.-]+)*|Dockerfile([.][[:alnum:]_-]+)?|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|package-lock\.json'
+
+
 
 # Gate 4's predicate (run-implement.sh): is $2 (one changed path) inside the
 # JSON array $1 of expected-package prefixes — exact match, or "$item/..."?

@@ -199,8 +199,7 @@ footprint_scopes_collide() { # scope, scope -> collision paths in EXPECTED_SCOPE
   [[ -n "$EXPECTED_SCOPE_COLLISION_CANDIDATE" ]]
 }
 active_footprint_conflict() (
-  REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
-  source "$SCHEDULER_AGENT_LIB" || exit 2
+  scheduler_scope_lib open-pr-collision || exit 2
   local candidate other owner scope original rc
   original="$(footprint_strip_shared_append "${4:-$1}")"
   candidate="$(footprint_strip_shared_append "$1")"
@@ -376,8 +375,7 @@ footprint_strip_shared_append() { # scope_json -> 去掉 shared-append 精确路
   jqf -c --slurpfile sa <(printf '%s' "$shared") 'map(select(test("(^|/)migrations/meta/_journal\\.json$") or (. as $x | any($sa[0][]; . == $x) | not)))' <<<"$scope"
 }
 footprint_match_detail() ( # candidate scope, original scope, owner scope, count map
-  REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
-  source "$SCHEDULER_AGENT_LIB" || exit 2
+  scheduler_scope_lib open-pr-collision || exit 2
   local candidate owner origin count original
   original="$(footprint_strip_shared_append "$2")"
   candidate="$(footprint_strip_shared_append "$1")"

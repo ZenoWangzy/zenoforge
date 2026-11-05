@@ -509,6 +509,7 @@ register_new_issues() {
     fi
     if (( ! existing_only )) && [[ -z "$episode" ]]; then
       [[ -n "$issue_json" ]] || issue_json="$(intake_gh_read issue view "$n" --json number,title,body,state,labels,subIssuesSummary 2>/dev/null)" || continue
+      scheduler_lib_context || true # prime here: the substitution below is a subshell and cannot cache
       if parent_reason="$(scheduler_issue_intake_parent_reason "$n" "$issue_json")"; then
         if scheduler_issue_transition "$n" needs-triage "intake-parent:$parent_reason" . 0 "$issue_json"; then
           say "intake issue #$n -> needs-triage (parent: $parent_reason)"

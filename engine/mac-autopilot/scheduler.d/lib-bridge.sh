@@ -1,3 +1,19 @@
+# Per-item subshells (one per candidate or owner) must not `source lib.sh`: loading it costs about 0.5s.
+# They source the definition-only lib.d modules they call instead; a subshell keeps those
+# names out of the scheduler. Needing another lib.sh function per item means extracting it into such a module.
+scheduler_scope_lib() { # module... -> source lib.d/<module>.sh into the calling subshell
+  local module
+  for module in "$@"; do source "$SCHEDULER_SCOPE_LIB_DIR/$module.sh" || return 1; done
+}
+# The lib.sh values a pure subshell cannot derive (REPO from the origin remote, lib's cwd) are read from one
+# lib.sh load per scheduler process. Call it in the parent shell: a command substitution cannot cache.
+scheduler_lib_context() {
+  local out
+  [[ "${SCHEDULER_LIB_CONTEXT_FOR:-}" == "$SCHEDULER_AGENT_LIB" ]] && return 0
+  out="$(REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1; source "$SCHEDULER_AGENT_LIB" >/dev/null || exit 1; printf '%s\n%s\n' "$REPO" "$REPO_DIR")" || return 1
+  { IFS= read -r SCHEDULER_LIB_REPO; IFS= read -r SCHEDULER_LIB_REPO_DIR; } <<<"$out"
+  SCHEDULER_LIB_CONTEXT_FOR="$SCHEDULER_AGENT_LIB"
+}
 scheduler_jq_arg_file() (
   REPO_DIR="$ROOT"
   source "$SCHEDULER_AGENT_LIB" || return 1
@@ -6,8 +22,10 @@ scheduler_jq_arg_file() (
 scheduler_issue_intake_parent_reason() (
   local preserved_gh=""
   declare -F gh >/dev/null 2>&1 && preserved_gh="$(declare -f gh | sed '1s/^gh ()/scheduler_gh ()/')"
-  REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
-  source "$SCHEDULER_AGENT_LIB" || return 2
+  scheduler_lib_context || return 2
+  REPO="$SCHEDULER_LIB_REPO"
+  cd "$SCHEDULER_LIB_REPO_DIR" || return 2
+  scheduler_scope_lib selection-scope || return 2
   if [[ -n "$preserved_gh" ]]; then
     eval "$preserved_gh"
     TICK_INTAKE_GH_INVOKE=scheduler_gh
@@ -135,10 +153,9 @@ scheduler_footprint() (
     elif jq -e 'has("footprint")' <<<"$u" >/dev/null; then
       scope="$(jq -c '.footprint' <<<"$u")"
     else
-      REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
-      source "$SCHEDULER_AGENT_LIB" || return 1
+      scheduler_scope_lib selection-scope || return 1
       issue="$(jq -r '.issue // empty' <<<"$u")"
-      state="$(cat "$STATE_DIR/$issue.json" 2>/dev/null)"; [[ -n "$state" ]] || state='{}'
+      state="$(cat "$AGENT_HOME/state/$issue.json" 2>/dev/null)"; [[ -n "$state" ]] || state='{}'
       if jq -e '(.footprint // []) | length > 0' <<<"$u" >/dev/null; then
         scope="$(jq -c '.footprint' <<<"$u")"
       elif jq -e '([.expected_paths[]?, .expected_packages[]?] | length) > 0' <<<"$state" >/dev/null; then
