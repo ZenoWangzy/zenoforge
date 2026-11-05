@@ -65,6 +65,7 @@ retire_terminal_units() {
     ([.units[] | select(.stage as $s | $terminal | index($s) != null)
        | select((.eval_gate.status // "") | IN("pending","running") | not)
        | select((.hold_handoff_waiting // false) | not)
+       | select(.awaiting_release_pending == null)
        | select((.main_red == true
            and (((.resolved_main_sha // "") == "") or ((.resolved_main_at // "") == ""))) | not)
        | .id]) as $retirable

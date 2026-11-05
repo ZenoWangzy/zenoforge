@@ -191,4 +191,12 @@ printf '%s\n' '{"units":[]}' > "$UNITS_ARCHIVE"
 retire_terminal_units
 [[ "$(jqf -c '[.units[].id]' "$UNITS")" == '["hw9"]' ]] || fail "a unit waiting on a handoff must not retire"
 
+# A merged unit still owes its issue the awaiting-release write: the retry reads the hot ledger.
+printf '%s\n' '{"units":[{"id":"ap1","issue":401,"pr":41,"stage":"merged","awaiting_release_pending":41,"history":[]}]}' > "$UNITS"
+retire_terminal_units
+[[ "$(jqf -c '[.units[].id]' "$UNITS")" == '["ap1"]' ]] || fail "a unit with a pending awaiting-release write must not retire"
+set_unit ap1 'del(.awaiting_release_pending)'
+retire_terminal_units
+[[ "$(jqf -c '[.units[].id]' "$UNITS")" == '[]' ]] || fail "the unit must retire once the write has landed"
+
 echo "unit-retire.test.sh: all assertions passed"
