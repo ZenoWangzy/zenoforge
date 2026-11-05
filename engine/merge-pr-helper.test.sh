@@ -204,6 +204,8 @@ if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail 'a gate
 [[ "$(cat "$fixture/check-output")" == *'gate file tools/merge-pr.sh waits for PR CI: suites (0)'* ]] || fail "gate refusal lost its reason: $(cat "$fixture/check-output")"
 PR_CHECKS='[{"name":"cla","bucket":"pass"}]'
 if merge_pr_gate_ci_ok 17 "$PR_CHECKS" >"$fixture/check-output" 2>&1; then fail 'a gate file merged before its suites started'; fi
+PR_CHECKS='[{"name":"suites (0)","bucket":"cancel"}]'
+if merge_pr_gate_ci_ok 17 "$PR_CHECKS" >"$fixture/check-output" 2>&1; then fail 'a gate file merged on cancelled suites'; fi
 PR_CHECKS='[{"name":"suites (0)","bucket":"pass"}]'
 merge_pr_gate_ci_ok 17 "$PR_CHECKS" || fail 'a gate file with green suites was refused'
 PR_CHECKS='[{"name":"suites (0)","bucket":"pending"}]' PR_FILES='["tools/quick-land.sh"]'

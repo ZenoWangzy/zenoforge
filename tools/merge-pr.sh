@@ -134,7 +134,7 @@ merge_pr_gate_ci_ok() {
   [[ ",${ZF_MERGE_OVERRIDE:-}," != *,gate-ci,* ]] || return 0
   gate="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq -r '[.files[].path | select(test("^(tools/(merge-pr|pin-vecta|auto-pin)\\.sh|engine/eval/.*|engine/mac-autopilot/(bell|bell-loop|pin-lag)\\.sh|engine/lib\\.d/main-red(-bisect)?\\.sh|engine/deploy-culprit\\.sh)$"))] | .[0] // ""')" || gate=unreadable
   [[ -n "$gate" ]] || return 0
-  waiting="$(jq -r '[.[] | select(.bucket == "pending") | .name] + (if any(.[]; .name | startswith("suites")) then [] else ["suites not started"] end) | join(", ")' <<<"$checks_json")"
+  waiting="$(jq -r '[.[] | select(.bucket == "pending" or ((.name | startswith("suites")) and .bucket != "pass")) | .name] + (if any(.[]; .name | startswith("suites")) then [] else ["suites not started"] end) | join(", ")' <<<"$checks_json")"
   [[ -n "$waiting" ]] || return 0
   merge_pr_refuse "$pr" "gate file $gate waits for PR CI: $waiting"
 }
