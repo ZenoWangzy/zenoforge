@@ -24,6 +24,11 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
     expected_session_id="$(jqf -r '.incident_report_resume_session_id // empty' <<<"$worker_context")"
   fi
   (( SECONDS < LIVE_WORKER_CACHE_UNTIL )) && cache_fresh=true
+  if [[ "$provider" == codex ]] && codex_pacing_should_hold_unit "$unit"; then
+    codex_pacing_log_hold_once
+    say "dispatch held unit=$unit reason=codex-pacing"
+    return 1
+  fi
   if [[ "$(unit_field "$unit" '.lane // empty')" == direct-main ]]; then
     worker_env=(env ZF_NON_PRODUCT_UNIT=1 "ZF_PIPELINE_UNIT=$unit" \
       "PATH=${ZF_ENGINE_DIR:-$ROOT/engine}/non-product-test-shim:$PATH")

@@ -114,6 +114,28 @@ if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${
   [[ -z "$reconcile_event" ]] || say "$reconcile_event"
 fi
 CFG="$(cat "$A/config.json")"
+CODEX_QUOTA_SNAPSHOT_FILE="${CODEX_QUOTA_SNAPSHOT_FILE:-${HOME:-}/.zenoforge/codex-pacing.json}"
+CODEX_PACING_WINDOW_HOURS="$(jqf -r '.codex_pacing.burn_window_hours // 6' <<<"$CFG")"
+CODEX_PACING_MAX_AGE_SECONDS="$(jqf -r '.codex_pacing.max_age_seconds // 900' <<<"$CFG")"
+CODEX_PACING_THRESHOLD_PERCENT="$(jqf -r '.codex_pacing.projection_threshold_percent // 100' <<<"$CFG")"
+[[ "$CODEX_PACING_WINDOW_HOURS" =~ ^[0-9]+([.][0-9]+)?$ ]] || CODEX_PACING_WINDOW_HOURS=6
+[[ "$CODEX_PACING_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]] || CODEX_PACING_MAX_AGE_SECONDS=900
+[[ "$CODEX_PACING_THRESHOLD_PERCENT" =~ ^[0-9]+([.][0-9]+)?$ ]] || CODEX_PACING_THRESHOLD_PERCENT=100
+CODEX_PACING_EVALUATION='{"status":"unknown","hold":false,"projected_percent":null,"used_percent":null,"resets_at":null}'
+if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views \
+    && "${1:-}" != --rule && "${1:-}" != --update-budget-only ]]; then
+  CODEX_PACING_EVALUATION="$(python3 "$HERE/codex_pacing.py" snapshot \
+    --sessions-dir "$SESSIONS_DIR" --output "$CODEX_QUOTA_SNAPSHOT_FILE" \
+    --window-hours "$CODEX_PACING_WINDOW_HOURS" --max-age-seconds "$CODEX_PACING_MAX_AGE_SECONDS" \
+    --threshold-percent "$CODEX_PACING_THRESHOLD_PERCENT" --now "$NOW_EPOCH" 2>/dev/null)" \
+    || CODEX_PACING_EVALUATION='{"status":"unknown","hold":false,"projected_percent":null,"used_percent":null,"resets_at":null}'
+fi
+CODEX_PACING_HOLD="$(jqf -r 'if .hold == true then "true" else "false" end' <<<"$CODEX_PACING_EVALUATION" 2>/dev/null || echo false)"
+CODEX_PACING_PROJECTED="$(jqf -r '.projected_percent // "unknown"' <<<"$CODEX_PACING_EVALUATION" 2>/dev/null || echo unknown)"
+CODEX_PACING_USED="$(jqf -r '.used_percent // "unknown"' <<<"$CODEX_PACING_EVALUATION" 2>/dev/null || echo unknown)"
+CODEX_PACING_RESET="$(jqf -r '.resets_at // "unknown"' <<<"$CODEX_PACING_EVALUATION" 2>/dev/null || echo unknown)"
+CODEX_PACING_HOLD_LOGGED=false
+[[ "$CODEX_PACING_HOLD" != true ]] || codex_pacing_log_hold_once
 ISSUE_INTAKE_REMOTE_READ_CAP="$(jqf -r '.issue_intake.remote_reads_per_tick // 24' <<<"$CFG")"
 [[ "$ISSUE_INTAKE_REMOTE_READ_CAP" =~ ^[0-9]+$ ]] || ISSUE_INTAKE_REMOTE_READ_CAP=24
 warn_forbidden_model_config

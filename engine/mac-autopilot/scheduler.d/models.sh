@@ -171,6 +171,27 @@ zcode_quota_status() { # fresh snapshot and active marker -> available|exhausted
   ' "$file" 2>/dev/null || printf 'unknown\n'
 }
 
+codex_pacing_should_hold_unit_json() { # unit JSON -> 0 when this normal unit must not dispatch to Codex
+  [[ "${CODEX_PACING_HOLD:-false}" == true ]] || return 1
+  jqf -e '(.hotpatch == true) or (.priority == "hotfix")
+    or any(.labels[]?; (type == "string") and ascii_downcase == "hotfix")' \
+    <<<"$1" >/dev/null 2>&1 && return 1
+  return 0
+}
+
+codex_pacing_should_hold_unit() { # unit id -> 0 when this normal unit must not dispatch to Codex
+  local unit_json
+  unit_json="$(jqf -c --arg id "$1" '[.units[]? | select(.id==$id)][0] // {}' "${UNITS:-/dev/null}" 2>/dev/null)" \
+    || unit_json='{}'
+  codex_pacing_should_hold_unit_json "$unit_json"
+}
+
+codex_pacing_log_hold_once() {
+  [[ "${CODEX_PACING_HOLD_LOGGED:-false}" == false ]] || return 0
+  say "codex-pacing hold projected=${CODEX_PACING_PROJECTED:-unknown}% used=${CODEX_PACING_USED:-unknown}% reset=${CODEX_PACING_RESET:-unknown}"
+  CODEX_PACING_HOLD_LOGGED=true
+}
+
 pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with a fresh, available quota
   local fields provider model effort tier status
   fields="$(model_policy_role_fields hand-zcode 2>/dev/null || true)"
@@ -281,6 +302,17 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
     PICK_ROUTE_PROVIDER="$actual"; PICK_HARD=true
     if [[ "$arbiter" == true ]]; then PICK_REASON=supervisor-arbiter-hard; else PICK_REASON=hard-production; fi
     return 0
+  fi
+
+  # Projected weekly exhaustion redirects normal implementation work to the configured Zcode
+  # route when its snapshot and runtime are healthy; dispatch() is the final Codex hold gate.
+  if codex_pacing_should_hold_unit_json "$u"; then
+    if pick_zcode_implementer; then
+      PICK_ROUTE_PROVIDER=zcode; PICK_HARD=false; PICK_REASON=codex-pacing-zcode
+      return 0
+    fi
+    codex_pacing_log_hold_once
+    return 1
   fi
 
   assigned="$(jqf -r '.implement_route_provider // empty' <<<"$u")"

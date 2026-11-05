@@ -42,6 +42,11 @@
   "auto_triage_new_issues": false,
   "focus_mode": "all",
   "budget_meter": "sessions_dir",
+  "codex_pacing": {
+    "burn_window_hours": 6,
+    "max_age_seconds": 900,
+    "projection_threshold_percent": 100
+  },
   "daily_token_budget": 10000000,
   "pricing": {
     "gpt-6-luna": {
