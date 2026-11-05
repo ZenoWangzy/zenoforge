@@ -1004,3 +1004,14 @@ test('leaves changed package vitest files to their package gate', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a grown engine or tools source file selects the size ratchet; tests and vendored code do not', () => {
+  const ratchet = 'engine/size-ratchet.test.sh';
+  const tracked = new Set([ratchet, 'engine/issue-pipeline.test.sh', 'engine/new-helper.test.mjs']);
+  for (const path of ['engine/issue-pipeline.sh', 'engine/new-helper.mjs', 'tools/size-ratchet.sh', 'tools/size-baseline.txt']) {
+    assert.ok(focusedTestPaths([path], tracked).includes(ratchet), path);
+  }
+  for (const path of ['engine/issue-pipeline.test.sh', 'engine/vendor/unlisted-vendored.sh', 'engine/notes.md']) {
+    assert.ok(!focusedTestPaths([path], tracked).includes(ratchet), path);
+  }
+});
