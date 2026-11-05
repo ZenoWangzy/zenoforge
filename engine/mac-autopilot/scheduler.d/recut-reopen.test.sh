@@ -44,13 +44,17 @@ state_file 13 ready-for-agent 2026-01-02T00:10:00Z   # cap-triage recut also reo
 state_file 14 needs-triage 2026-01-02T00:10:00Z      # issue not ready-for-agent
 state_file 15 ready-for-agent 2026-01-01T12:00:00Z   # stale refusal from before the close
 
+set_unit issue-11 '.note = "stale"'
+INTAKE_ADDED=0
 [[ -n "$(ticket_budget_reason "$(unit_json issue-11)")" ]] || fail "fixture must start at the stop-loss budget"
 intake_reopen_refused_recut 11 "$AGENT_HOME/state/11.json" || fail "refused recut on a ready-for-agent issue must reopen"
 u="$(unit_json issue-11)"
 [[ "$(jq -r '.stage' <<<"$u")" == implement-pending ]] || fail "unit not reopened: $u"
 [[ -z "$(ticket_budget_reason "$u")" ]] || fail "budget not refilled"
 [[ "$(jq -r '.history[-1].stage' <<<"$u")" == supervisor-requeue ]] || fail "refill must be a supervisor-requeue entry"
+[[ "$(jq -r '.note' <<<"$u")" == null ]] || fail "reopen must clear the stale note"
 intake_reopen_refused_recut 13 "$AGENT_HOME/state/13.json" || fail "cap-triage recut must reopen"
+[[ "$INTAKE_ADDED" == 2 ]] || fail "each reopen must count as an intake admission, got $INTAKE_ADDED"
 
 for n in 12 14 15; do
   ! intake_reopen_refused_recut "$n" "$AGENT_HOME/state/$n.json" || fail "issue $n must stay closed"
