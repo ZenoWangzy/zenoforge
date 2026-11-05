@@ -168,6 +168,7 @@ minutes), not yet from a month of data. Change the number here and in the code t
 | `advisor.failures_today` | ≤ 2 | ≥ 6 | `logs/advisor-batch-*.result.json` outcome |
 | `advisor.ruling_lag_hours` (only while `needs-advisor` is non-empty) | ≤ 6 | ≥ 24 | same, `applied_count > 0` |
 | `advisor_loop.fail_pct_today` | ≤ 10 | ≥ 50 | `units.json` advisor-unavailable share (same line as `loop.advisor_fail_pct`) |
+| advisor route reasons (measured, no bound) | — | — | `grep ' advisor-route ' scheduler.log`: one line per decision, `issue=#N reason=CODE outcome=routed\|fault`. Codes: `maintainer_needs_info`, `notes_not_mailable`, `precut_ladder`, `autonomy_gate`, `model_verdict_human`, `l2_freshness`, `reporter_undelivered` (`run-triage.sh`), `policy_step` (`run-triage-batch.sh`) |
 | `triage.last_done_age_min` (only with a backlog) | ≤ 30 | ≥ 120 | `metrics/efficiency-*.jsonl`, `run-triage*.sh` stage-exited `needs-triage` |
 | `triage.done_today` (only with a backlog) | ≥ 20 | ≤ 5 | same |
 | `release.hold_hours` | ≤ 2 | ≥ 8 | `release-train.json` status + `alerts/release.md` RELEASE-HELD |

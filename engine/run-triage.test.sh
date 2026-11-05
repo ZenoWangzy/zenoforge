@@ -476,8 +476,12 @@ assert_eq "raw + duplicate with an advisor job: clears job id" "null" "$(echo "$
 
 # --- raw report, model says ready-for-human: the advisor rung, not a human -
 export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-human P1 L1)"
+export MAC_AUTOPILOT_RUNTIME_DIR="$(mktemp -d)"; TMP_DIRS+=("$MAC_AUTOPILOT_RUNTIME_DIR"); echo '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
 run_once "$RAW_BODY"
 assert_eq "raw + model ready-for-human: exits 0" "0" "$RUN_STATUS"
+assert_contains "...scheduler.log records one advisor-route line with a fixed reason code" "$(grep -E ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null)" "advisor-route issue=#$N reason=model_verdict_human outcome=routed"
+assert_eq "...exactly one advisor-route line" "1" "$(grep -c ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null || true)"
+unset MAC_AUTOPILOT_RUNTIME_DIR
 assert_contains "...label is needs-advisor" "$GH_LOG_CONTENT" "--add-label needs-advisor"
 assert_not_contains "...never ready-for-human" "$GH_LOG_CONTENT" "--add-label ready-for-human"
 assert_contains "...the comment says why" "$GH_LOG_CONTENT" "Routed to the advisor instead of a human"

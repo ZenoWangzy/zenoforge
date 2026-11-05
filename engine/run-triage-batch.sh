@@ -174,7 +174,9 @@ for n in "${BATCH_IDS[@]}"; do
   POLICY_QUEUE_LABEL="$(jq -r '[.labels[]?.name | select(. == "needs-triage" or . == "ready-for-agent")][0] // "needs-triage"' <<< "$ISSUE_JSON")"
   case "$POLICY_STEP" in
     advisor)
-      route_to_advisor "$n" "$POLICY_QUEUE_LABEL" true "$ISSUE_JSON" || record_env_fault env:model-policy-route triage-batch "$n" "could not route triage policy step to advisor" || true
+      ADVISOR_ROUTE_OUTCOME=routed
+      route_to_advisor "$n" "$POLICY_QUEUE_LABEL" true "$ISSUE_JSON" || { ADVISOR_ROUTE_OUTCOME=fault; record_env_fault env:model-policy-route triage-batch "$n" "could not route triage policy step to advisor" || true; }
+      advisor_route_log "$n" policy_step "$ADVISOR_ROUTE_OUTCOME"
       continue
       ;;
     production|conclude)

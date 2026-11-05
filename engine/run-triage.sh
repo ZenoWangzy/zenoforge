@@ -516,7 +516,7 @@ elif [ "$STATE" = "needs-info" ]; then
     # which picks them and records the ruling for the implement leg.
     echo "run-triage: #$N was filed by the maintainer; needs-info -> needs-advisor (the advisor picks the defaults), no email sent." >&2
     NEEDS_INFO_DOWNGRADE_REASON="这张票是你自己提的，所以没有第二个人可以问——需要定的事你已经授权出去了。下面是待定的点和各自的默认处理方式，交给顾问按授权定案后继续。"
-    STATE=needs-advisor
+    STATE=needs-advisor ADVISOR_ROUTE_REASON=maintainer_needs_info
   else
     NOTES_GATE_OFFENDING="$(notes_md_offending_matches "$NOTES")"
     if [ -n "$NOTES_GATE_OFFENDING" ]; then
@@ -530,7 +530,7 @@ elif [ "$STATE" = "needs-info" ]; then
       echo "run-triage: #$N notes_md failed the reporter-legibility gate; needs-info -> needs-advisor, no email sent. Offending:
 $NOTES_GATE_OFFENDING" >&2
       NEEDS_INFO_DOWNGRADE_REASON="这张票需要先跟提交人确认下面几个问题，但自动整理出来的问法不适合直接发给提交人（夹带了代码、文件名或内部术语），所以这次没有发邮件，转给顾问处理。"
-      STATE=needs-advisor
+      STATE=needs-advisor ADVISOR_ROUTE_REASON=notes_not_mailable
     fi
   fi
 fi
@@ -592,7 +592,7 @@ ENFORCED_STATE="$(enforce_autonomy_gate "$STATE" "$RISK_CLASS" "$LEVEL" "$PHASE"
 if [ "$PRECUT" = "1" ]; then
   # Measure-only: the state is the ladder's, the comment says so, and the
   # model's own (ignored) verdict is recorded for the audit trail.
-  STATE="$(ladder_state "$RISK_CLASS" "$LEVEL" "$PHASE")"
+  STATE="$(ladder_state "$RISK_CLASS" "$LEVEL" "$PHASE")"; ADVISOR_ROUTE_REASON=precut_ladder
   echo "run-triage: #$N is a precut (/to-tickets) ticket -- measure-only; model said state=$MODEL_STATE (ignored), ladder -> $STATE (risk_class=$RISK_CLASS level=$LEVEL phase=$PHASE)" >&2
   BRIEF="**这张票是切好的执行票（/to-tickets 产出），直接进入无人值守流水线，不重新分诊。** 本条评论只是机器测量——包范围、影响面和风险读数——供实现和评审使用；票的状态由阶梯规则决定（本次：${STATE}），不由这条评论的措辞决定。模型原本给出的分诊意见是 \`$MODEL_STATE\`，已按规则忽略。
 
@@ -608,7 +608,7 @@ elif [ "$ENFORCED_STATE" != "$STATE" ]; then
   BRIEF="**Downgraded from \`ready-for-agent\`, routed to the advisor.** This triage run classified issue #$N as risk_class=$RISK_CLASS, level=$LEVEL under AGENT_PHASE=$PHASE, which is outside this phase's autonomy set — the wrapper did not dispatch it unattended. An advisor pass will look at it next.
 
 $BRIEF"
-  STATE="needs-advisor"
+  STATE="needs-advisor" ADVISOR_ROUTE_REASON=autonomy_gate
 elif [ "$STATE" = "ready-for-human" ] || [ "$STATE" = "needs-owner" ]; then
   # 2026-09-15 (maintainer ruling, verbatim: [...]
   # ): both are abolished human-decision terminals --
@@ -622,7 +622,7 @@ elif [ "$STATE" = "ready-for-human" ] || [ "$STATE" = "needs-owner" ]; then
   BRIEF="**Routed to the advisor instead of a human.** This triage run judged issue #$N to need an implementer's judgment call (or flagged it as an ownership/scope question); under the 2026-09-15 ruling that call is the advisor's first.
 
 $BRIEF"
-  STATE="needs-advisor"
+  STATE="needs-advisor" ADVISOR_ROUTE_REASON=model_verdict_human
 fi
 
 if [ "$TRIAGE_FRESHNESS_BLOCKED" = "1" ] && [ "$ADVISOR_ADMISSION_MEASURE_ONLY" = "1" ]; then
@@ -634,7 +634,7 @@ fi
 
 if [ "$TRIAGE_FRESHNESS_BLOCKED" = "1" ] && [ "$ADVISOR_ADMISSION_MEASURE_ONLY" != "1" ]; then
   echo "run-triage: #$N unconfirmed L2 freshness keeps admission closed; routing to advisor" >&2
-  STATE=needs-advisor
+  STATE=needs-advisor ADVISOR_ROUTE_REASON=l2_freshness
   BRIEF="**L2 impact freshness was not confirmed.** The phase-3 L2 admission gate remains closed; the advisor must resolve the impact gate.
 
 $BRIEF"
@@ -781,7 +781,7 @@ if [ "$STATE" != on-hold ]; then
     conclude_merged_run "$N" "$TRIAGE_MERGED_PR" \
       "Triage verified that PR #$TRIAGE_MERGED_PR already delivers this issue; waiting for release verification." || exit 1
   else
-    issue_transition "$N" "$STATE" triage-verdict || exit 1
+    issue_transition "$N" "$STATE" triage-verdict && { [ "$STATE" != needs-advisor ] || advisor_route_log "$N" "${ADVISOR_ROUTE_REASON:-}" routed; } || exit 1
   fi
 fi
 
@@ -849,7 +849,7 @@ $NOTES"
     else
       echo "run-triage: #$N reporter question was not delivered; routing to advisor." >&2
   route_to_advisor "$N" needs-info true "$ISSUE_JSON" || exit 1
-      STATE=needs-advisor
+      STATE=needs-advisor; advisor_route_log "$N" reporter_undelivered routed
     fi
     ;;
   wontfix|duplicate)

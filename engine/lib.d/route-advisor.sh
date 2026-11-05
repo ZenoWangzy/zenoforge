@@ -324,3 +324,12 @@ advisor_retry_admission() {
   conclude_run "$n" not-completed "$failure_reason" || return 1
   return 10
 }
+
+# One scheduler.log line per advisor routing decision (count: grep -c ' advisor-route ' scheduler.log). Reason is a fixed
+# code, never issue text. Observability only: always returns 0 so a log failure cannot change a routing decision.
+advisor_route_log() {
+  local n="$1" reason="${2:-unknown}" outcome="$3" runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-$REPO_DIR/.scratch-supervisor/autopi}" line
+  line="$(printf '[%s] advisor-route issue=#%s reason=%s outcome=%s' "$(date -u +%FT%TZ)" "$n" "$reason" "$outcome")"
+  if [ -d "$runtime_dir" ]; then printf '%s\n' "$line" >> "$runtime_dir/scheduler.log" || echo "$line" >&2; else echo "$line" >&2; fi
+  return 0
+}
