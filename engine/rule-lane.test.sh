@@ -97,4 +97,47 @@ fi
 grep -Fq 'rule-lane: decision=unit-reject refused=rule-files actor=unit touched=1 files=.zenoforge/state/rulings.json' "$log" \
   || fail 'legacy manifest path was not mapped to the target-config copy'
 
+# A vendored pack (ZF_PACK_REL) is protected under its prefix, a trailing-slash key covers a directory,
+# and the rest of the scheduler stays open to units.
+git -C "$repo" reset --hard -q "$base"
+pack=.zenoforge/build/pack
+mkdir -p "$repo/$pack/state" "$repo/$pack/supervisor/hooks" "$repo/$pack/mac-autopilot"
+cat > "$repo/$pack/state/rule-files.json" <<'JSON'
+{
+  "schema": "zf-rule-files/v1",
+  "files": {
+    "engine/state/rule-files.json": "manifest",
+    "engine/rule-lane.sh": "the check",
+    "engine/supervisor/hooks/": "hooks directory"
+  }
+}
+JSON
+printf 'x\n' > "$repo/$pack/supervisor/hooks/gate.cjs"
+printf 'x\n' > "$repo/$pack/mac-autopilot/scheduler.sh"
+printf 'x\n' > "$repo/$pack/rule-lane.sh"
+git -C "$repo" add .zenoforge
+git -C "$repo" commit -q -m 'fixture: vendored pack'
+pack_base="$(git -C "$repo" rev-parse HEAD)"
+pack_run() { (cd -- "$repo" && ZF_AGENT_NAME=unit ZF_PACK_REL="$pack" bash "$rule_lane" "$pack_base" "$1") > "$log" 2>&1; }
+for changed in supervisor/hooks/gate.cjs rule-lane.sh; do
+  git -C "$repo" reset --hard -q "$pack_base"
+  printf 'y\n' > "$repo/$pack/$changed"
+  git -C "$repo" commit -q -am 'fixture: unit edit'
+  if pack_run "$(git -C "$repo" rev-parse HEAD)"; then fail "unit edit to vendored $changed was accepted"; fi
+  grep -Fq "decision=unit-reject refused=rule-files actor=unit touched=1 files=$pack/$changed" "$log" \
+    || fail "vendored $changed rejection line missing"
+done
+git -C "$repo" reset --hard -q "$pack_base"
+printf 'y\n' > "$repo/$pack/mac-autopilot/scheduler.sh"
+git -C "$repo" commit -q -am 'fixture: unit scheduler edit'
+pack_run "$(git -C "$repo" rev-parse HEAD)" || { cat "$log" >&2; fail 'unit scheduler edit was refused'; }
+
+# The shipped manifest names the check, itself, and at least one file per protected area.
+for key in engine/rule-lane.sh engine/state/rule-files.json tools/merge-pr.sh engine/mac-autopilot/scheduler.d/merge-lane.sh \
+  engine/mac-autopilot/scheduler.d/review-rules.sh engine/mac-autopilot/scheduler.d/evals-arbiter.sh tools/pin-vecta.sh \
+  engine/supervisor/watch/ engine/deploy-culprit.sh engine/redact-secrets.sh; do
+  jq -e --arg key "$key" '.files | has($key)' "$script_dir/state/rule-files.json" >/dev/null \
+    || fail "shipped rule-files.json does not protect $key"
+done
+
 printf 'rule-lane tests passed\n'
