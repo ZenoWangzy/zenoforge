@@ -87,6 +87,15 @@ assert_not_contains "red revert PR stays open" "$(cat "$TEST_ROOT/revert-red.log
 REVERT_GREEN="$(bash "$SWEEP_SRC" 2>&1)"
 assert_contains "green revert PR reaches shared guarded merge" "$REVERT_GREEN" "[dry-run] gh pr merge 1999"
 
+# An eval-regression revert PR (`agent/revert-eval-*`) needs no marker or session: evals never gate, so
+# green checks and the exact git-revert trailer are enough, and a red check keeps it open.
+FAKE_PR_LIST_JSON="$(jq -cn --arg culprit "$FAKE_CULPRIT" '[{number:3001,headRefName:("agent/revert-eval-1704-" + $culprit[0:12]),headRefOid:"0000000000000000000000000000000000000006",mergeable:"MERGEABLE",mergeStateStatus:"CLEAN",isDraft:false}]')"
+export FAKE_PR_LIST_JSON
+FAKE_REVERT_CHECKS="$FAKE_FAILING_CHECKS" bash "$SWEEP_SRC" > "$TEST_ROOT/eval-red.log" 2>&1
+assert_not_contains "red eval revert PR stays open" "$(cat "$TEST_ROOT/eval-red.log")" "gh pr merge 3001"
+EVAL_REVERT_GREEN="$(bash "$SWEEP_SRC" 2>&1)"
+assert_contains "green eval revert PR reaches shared guarded merge" "$EVAL_REVERT_GREEN" "[dry-run] gh pr merge 3001"
+
 # A main-red bisect revert PR (`agent/revert-main-*`, session at status
 # revert-open) merges through the shared path once its checks are green and
 # its exact selected head matches the session, while ordinary merges remain

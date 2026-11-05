@@ -5,6 +5,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { zfConfigFile } from '../pack-dir.mjs';
 import { applyOverrides, execute, hiddenChecks, renderPrompt, worktree } from './run-eval.mjs';
+import { blindingLeaks } from './blinding.mjs';
 const scratch = resolve('.scratch'); mkdirSync(scratch, { recursive: true });
 test('hidden grader applies the patch to base and replaces worker-forged tests', () => {
   const dir = mkdtempSync(join(scratch, 'eval-test-'));
@@ -37,6 +38,18 @@ test('stage prompts reuse the pipeline contracts and keep answers out of model i
     assert.ok(text.includes('acceptance'));
   }
   assert.match(renderPrompt('implement', c), /Previous attempt failed\nCI defect evidence/);
+});
+
+test('text the harness adds to a stage prompt never says the run is measured', () => {
+  const c = { baseSha: 'a'.repeat(40), issue: { number: 1, title: 'sample', body: 'acceptance' }, input: { unit: 'u' } };
+  const pipeline = ['triage', 'advisor', 'advisor-batch', 'supervisor-arbiter', 'recut', 'implement-contract', 'review-contract'].map((n) => readFileSync(resolve('engine/prompts', `${n}.md`), 'utf8'));
+  pipeline.push(readFileSync(resolve('.agents/skills/code-review/SKILL.md'), 'utf8'));
+  for (const [stage, extra] of [['triage'], ['advisor'], ['advisor', { mode: 'batch' }], ['supervisor'], ['recut'], ['implement'], ['review']]) {
+    let text = renderPrompt(stage, { ...c, ...extra });
+    for (const p of pipeline) text = text.split(p).join('');
+    assert.deepEqual(blindingLeaks(text.split(resolve('.')).join('')), [], `${stage} prompt leaks the measurement`);
+  }
+  assert.deepEqual(blindingLeaks('Evaluation checkout only; a judge scores the rubric.'), ['Evaluation', 'judge', 'scores', 'rubric']);
 });
 
 test('eval stage prompt reads a target config override', () => {

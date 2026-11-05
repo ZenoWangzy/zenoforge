@@ -41,7 +41,7 @@ decision_eval_stages_for_paths() { # newline-delimited paths → affected eval s
         affected[end-to-end]=1 ;;
       engine/prompts/supervisor-arbiter.md|.zenoforge/prompts/supervisor-arbiter.md|engine/prompts/supervisor-cap-triage.md|.zenoforge/prompts/supervisor-cap-triage.md)
         affected[supervisor]=1 ;;
-      engine/prompts/*|engine/model-policy.default.json|.zenoforge/prompts/*|.zenoforge/model-policy.default.json)
+      engine/prompts/*|engine/model-policy.default.json|.zenoforge/prompts/*|.zenoforge/model-policy.default.json|AGENTS.md|engine/vendor/*)
         affected[triage]=1; affected[advisor]=1; affected[implement]=1; affected[review]=1; affected[end-to-end]=1 ;;
     esac
   done <<<"$1"
@@ -62,6 +62,31 @@ accepted_eval_label() {
   label="$(cat "$A/eval-accepted-label" 2>/dev/null || true)"
   [[ -n "$label" ]] || label=baseline
   printf '%s\n' "$label"
+}
+
+# #424 (ruling eval-regression-auto-revert-2026-11-05): evals still never gate, but a regression on a delivered change reverts it
+# through the existing revert path (open_deploy_revert_pr, kind eval; sweep-merges.sh merges the PR). One revert per change.
+eval_regression_open_revert() ( # issue culprit gate-sha → revert PR URL
+  local preserved_gh=""
+  declare -F gh >/dev/null 2>&1 && preserved_gh="$(declare -f gh)"
+  source "$SCHEDULER_AGENT_LIB" >/dev/null || return 1
+  REPO_DIR="$ROOT" # lib.sh derives it from the engine location; the revert must act on the scheduler's target repo
+  [[ -z "$preserved_gh" ]] || eval "$preserved_gh"
+  source "${SCHEDULER_AGENT_LIB%/lib.sh}/deploy-culprit.sh" || return 1
+  open_deploy_revert_pr "$1" "$2" "$3" eval
+)
+eval_regression_revert() { # unit gate-sha → 0 and the PR URL on stdout when a revert PR was opened; 3 when the change was already reverted
+  local unit="$1" gate_sha="$2" culprit issue out url
+  culprit="$(unit_field "$unit" '.merge_sha // .land_sha')"; issue="$(unit_field "$unit" '.issue')"
+  [[ "$culprit" =~ $SHA_RE && "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ -z "$(unit_field "$unit" '.eval_gate.revert_pr')" ]] || return 3
+  git -C "$ROOT" merge-base --is-ancestor "$culprit" origin/main 2>/dev/null || return 1
+  [[ -z "$(git -C "$ROOT" log origin/main -n 1 --format=%H --fixed-strings --grep="This reverts commit $culprit." 2>/dev/null)" ]] || return 3
+  [[ "$(git -C "$ROOT" log -n 1 --format=%s "$culprit" 2>/dev/null)" != Revert\ * ]] || return 3
+  out="$(eval_regression_open_revert "$issue" "$culprit" "$gate_sha")" || return 1
+  url="$(grep -oE 'https://[^[:space:]]+/pull/[0-9]+' <<<"$out" | tail -n 1)" # the helper's stdout also carries git output
+  [[ -n "$url" ]] || return 1
+  printf '%s\n' "$url"
 }
 
 harvest_prompt_eval() { # worker JSON; report status is produced by eval/decision-gate.mjs
@@ -116,8 +141,14 @@ harvest_prompt_eval() { # worker JSON; report status is produced by eval/decisio
       evidence="sha=$sha label=$label baseline=$baseline tree=$tree regressions=$regressions critical_failures=$critical report=$report"
       decision="$(decision_entry 'Escalate the eval regression on a delivered architecture change' 'the eval found a pass-to-fail regression or an introduced-incident review case failed after delivery proceeded' "$evidence" '["Re-gate architecture delivery on the eval"]' scheduler)"
       set_unit "$unit" "$(hist eval-regression "$detail" "$decision") | .eval_gate.status=\"failed\""
-      say "eval failed unit=$unit label=$label baseline=$baseline; delivery unaffected, escalated"
-      to_supervisor "$unit" "已交付架构改动的 eval 报告出现回归：$detail" \
+      local revert_url="" revert_status=0 revert_note=""
+      revert_url="$(eval_regression_revert "$unit" "$sha")" || revert_status=$?
+      if (( revert_status == 0 )); then
+        set_unit "$unit" "$(hist eval-regression-revert "$revert_url") | .eval_gate.revert_pr=$(js "$revert_url")"
+        revert_note=" Revert PR opened: $revert_url"
+      fi
+      say "eval failed unit=$unit label=$label baseline=$baseline; delivery unaffected, revert_status=$revert_status ${revert_url}"
+      (( revert_status == 3 )) || to_supervisor "$unit" "已交付架构改动的 eval 报告出现回归：$detail$revert_note" \
         'Escalate the eval regression on a delivered architecture change' \
         'the eval found a regression after the architecture change shipped; evals report alongside and never gate (#4656)' \
         "$evidence" '["Re-gate architecture delivery on the eval"]'

@@ -79,7 +79,10 @@ export const RELATED_TESTS = new Map([
   ['engine/mac-autopilot/advisor-provider-missing.test.sh', ['engine/mac-autopilot/advisor-provider-missing.test.sh']],
   ['engine/mac-autopilot/scheduler.d/review-rules.sh', ['engine/mac-autopilot/incident-prior-art-gate.test.sh']],
   ['engine/mac-autopilot/scheduler.d/stop-loss.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh']],
-  ['engine/mac-autopilot/scheduler.d/evals-arbiter.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh']],
+  ['engine/mac-autopilot/scheduler.d/evals-arbiter.sh', [
+    'engine/mac-autopilot/noop-repair-rounds.test.sh',
+    'engine/mac-autopilot/eval-regression-revert.test.sh',
+  ]],
   ['engine/mac-autopilot/scheduler.d/dispatch-queue.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh']],
   ['engine/mac-autopilot/scheduler.d/footprint.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh']],
   ['engine/mac-autopilot/scheduler.d/intake.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh']],
@@ -336,7 +339,7 @@ export const RELATED_TESTS = new Map([
   ['engine/night/prod-errors-readonly.sh', ['engine/night/prod-errors-readonly.test.sh', 'engine/night/node-health-rules.test.sh']],
   ['engine/night/health-maintenance.sh', ['engine/night/health-maintenance.test.sh']],
   ['engine/probe-codex-sandbox.sh', ['engine/lib.test.sh']],
-  ['engine/deploy-culprit.sh', ['scripts/release/run-release.test.sh']],
+  ['engine/deploy-culprit.sh', ['scripts/release/run-release.test.sh', 'engine/mac-autopilot/eval-regression-revert.test.sh']],
   ['engine/post-deploy-migrations.mjs', ['engine/post-deploy-migrations.test.mjs', 'scripts/release/run-release.test.sh']],
   ['engine/post-deploy-migrations.test.mjs', ['engine/post-deploy-migrations.test.mjs']],
   // git-fetch-bounded.test.sh greps these scripts for network git calls that escalate after 10s.

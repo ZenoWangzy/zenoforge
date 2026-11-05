@@ -103,6 +103,24 @@ the YAML workflow case declare offline pnpm setup commands; warm the pnpm
 cache first if required. Missing dependencies fail the run and remain visible
 in hidden logs. No Docker, database, production or host operation is required.
 
+## Blinding
+
+Adapted from the poteto-mode eval playbook (`engine/vendor/pstack/skills/poteto-mode/playbooks/eval.md`).
+A stage worker must read an ordinary ticket, so a run measures the shipped prompt and not the
+worker's reaction to being measured.
+
+* Text the runner adds to a prompt (constraints, base line, boundary, data labels) never names the
+  measurement: no `eval*`, `judge`, `experiment`, `rubric`, `score`, `benchmark`, `arena`, `frozen`,
+  `historical` or `grader` (`blinding.mjs`; `runner.test.mjs` scans every stage). `test`, `compare` and
+  `candidate` stay allowed because the shipped pipeline prompts use them for real work.
+* Ask for the ordinary report, never for which skills or files the worker applied. Grade from the
+  diff and the hidden checks, not from self-report.
+* Never tell a worker that other runs, other arms or hidden checks exist; gold answers and expected
+  facts stay out of the prompt (already tested).
+* The grader sees outputs by case and run id, never a model name.
+* Known gap: the worker checkout path (also given on the GitNexus line) still sits under the result
+  root `.../eval/<label>/`; renaming that root is a separate change.
+
 ## Inner loop
 
 Iterating on a prompt or contract change does not re-run the whole serial

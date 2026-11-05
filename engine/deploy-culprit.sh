@@ -116,7 +116,8 @@ deploy_supervisor_notice() {
 }
 
 # Prepare a normal product revert PR from a throwaway worktree. `kind` is
-# `deploy` (the release rollback) or `main` (the Postsubmit bisect). Never
+# `deploy` (the release rollback), `main` (the Postsubmit bisect) or `eval`
+# (an eval-gate regression; `failed` is the reviewed head the gate ran). Never
 # mutate the live pipeline checkout. The merge sweeper adds the exact revert
 # trailer to its squash message after required PR checks pass.
 open_deploy_revert_pr() {
@@ -124,7 +125,7 @@ open_deploy_revert_pr() {
   local wt branch body url parents result=0 existing_pr reused_branch=0 title
   [ "$DRY_RUN" != 1 ] || return 1
   [[ "$issue" =~ ^[1-9][0-9]*$ && "$culprit" =~ ^[0-9a-f]{40}$ ]] || return 1
-  case "$kind" in deploy|main) ;; *) return 64 ;; esac
+  case "$kind" in deploy|main|eval) ;; *) return 64 ;; esac
   branch="agent/revert-$kind-$issue-${culprit:0:12}"
   existing_pr="$(gh pr list --repo "$REPO" --head "$branch" --state open --json number \
     -q '.[0].number // empty' 2>/dev/null)" || existing_pr=""
@@ -159,6 +160,19 @@ This reverts commit $culprit.
 
 Issue #$issue returns to implementation with the bisect evidence on its
 timeline. Other merged issues remain queued for release.
+EOF
+      ;;
+    eval)
+      title="Revert fix(#$issue) after eval regression"
+      cat > "$body" <<EOF
+Automated revert after the eval gate reported a pass-to-fail regression for this change.
+
+The eval gate for reviewed head $failed regressed against the accepted baseline.
+Evals never gate a merge; the delivered change is reverted here instead.
+
+This reverts commit $culprit.
+
+Issue #$issue is escalated to the supervisor with the eval evidence on its timeline.
 EOF
       ;;
   esac

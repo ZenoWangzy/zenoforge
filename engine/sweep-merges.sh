@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Merge the dedicated revert PR of a failed production deploy, and the
-# dedicated revert PR of a bisected red main Postsubmit, once their checks
-# are green. The open-agent-PR rescue sweep was removed with the implement
+# Merge the dedicated revert PR of a failed production deploy, the
+# dedicated revert PR of a bisected red main Postsubmit, and the revert PR
+# of an eval regression, once their checks are green. The open-agent-PR rescue sweep was removed with the implement
 # lane; the merge itself lives in lib.sh (guarded_pr_merge).
 set -euo pipefail
 
@@ -26,7 +26,7 @@ merge_green_revert_pr() { # <pr-row-json> <culprit> <subject-reason> [main-red-s
   branch="$(jq -r '.headRefName' <<< "$row")"
   head="$(jq -r '.headRefOid' <<< "$row")"
   [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 0
-  [[ "$branch" =~ ^agent/revert-(deploy|main)-([0-9]+)-([0-9a-f]{12})$ ]] || return 0
+  [[ "$branch" =~ ^agent/revert-(deploy|main|eval)-([0-9]+)-([0-9a-f]{12})$ ]] || return 0
   issue="${BASH_REMATCH[2]}"
   [ "${BASH_REMATCH[3]}" = "${culprit:0:12}" ] || return 0
   [ "$(jq -r '.isDraft' <<< "$row")" = false ] || return 0
@@ -91,5 +91,24 @@ sweep_main_red_reverts() {
     done <<< "$rows"
   done < <(printf '%s\n' "$MAIN_RED_DIR"/*.json)
 }
+
+# Revert PRs the eval gate opened (`agent/revert-eval-<issue>-<sha12>`). Evals never gate a merge, so
+# these wait only for green checks and the exact git-revert trailer; the culprit is read from that trailer.
+sweep_eval_reverts() {
+  local rows row head culprit
+  rows="$(gh pr list --repo "$REPO" --state open --limit 1000 \
+    --json number,headRefName,headRefOid,mergeable,mergeStateStatus,isDraft \
+    -q '.[] | select(.headRefName | startswith("agent/revert-eval-"))' | jq -c '.')" || return 0
+  while IFS= read -r row; do
+    if declare -F agent_reload_checkpoint >/dev/null; then agent_reload_checkpoint; fi
+    [ -n "$row" ] || continue
+    head="$(jq -r '.headRefOid' <<< "$row")"
+    culprit="$(gh api "repos/$REPO/git/commits/$head" --jq .message 2>/dev/null \
+      | sed -n 's/^This reverts commit \([0-9a-f]\{40\}\)\.$/\1/p' | head -n 1)" || continue
+    [[ "$culprit" =~ ^[0-9a-f]{40}$ ]] || continue
+    merge_green_revert_pr "$row" "$culprit" "after eval regression"
+  done <<< "$rows"
+}
 sweep_deploy_reverts
 sweep_main_red_reverts
+sweep_eval_reverts
