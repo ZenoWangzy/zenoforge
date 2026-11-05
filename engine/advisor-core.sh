@@ -165,7 +165,8 @@ advisor_verdict_material() {
 
 # advisor_convergence_action <prior-state-json> <material-json> <effective> <ruling-json>
 # Legacy states keep advisor_decision when route_to_advisor clears advisor_ruled_at.
-# A pre-plan state has no prior plan to compare; a present plan must still match.
+# Only a pre-plan state (no advisor_plan key at all) has no prior plan to
+# compare; an empty, explicit-null, or differing stored plan still must match.
 advisor_convergence_action() {
   local prior="$1" material="$2" effective="$3" ruling="$4" ruling_file material_file result
   ruling_file="$(jq_arg_file "$ruling")" || return 1
@@ -179,7 +180,7 @@ advisor_convergence_action() {
       and ($effective == "advised" or $effective == "guarded")
       and (($effective == "guarded") == (.guarded == true))
       and text(.advisor_decision) == text($ruling[0].decision_md)
-      and (.advisor_plan == null or .advisor_plan == ($ruling[0].plan // null))
+      and ((has("advisor_plan") | not) or .advisor_plan == ($ruling[0].plan // null))
       and text(.merge_conditions_md) == text($ruling[0].merge_conditions_md)
       and ((.required_test_paths // []) | unique | sort) == (($ruling[0].required_test_paths // []) | unique | sort) then
       if .advisor_convergence_pass == true then "recut"

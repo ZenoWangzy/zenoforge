@@ -1472,6 +1472,28 @@ NO_POINTS_ACTION="$(bash -c 'source "$1/advisor-core.sh"; material="$(advisor_ve
   _ "$SCRIPT_DIR" "$NO_POINTS_RULING" "$NO_POINTS_PRIOR")"
 assert_eq "repeated guarded judgment without concrete fix points routes to recut" "recut" "$NO_POINTS_ACTION"
 
+# The legacy-plan convergence boundary: only a prior with no advisor_plan key
+# at all may converge onto a plan-bearing rerun; an empty or differing stored
+# plan keeps the strict comparison and earns no one implement pass.
+PLAN_BOUNDARY_PLAN="$(jq -nc '{changes:[{file:"engine/example.sh",symbol:"fixture",change:"Apply the ruling."}],tests_fail_first:["bash engine/example.test.sh"],non_goals:["Other behavior"]}')"
+PLAN_BOUNDARY_OTHER="$(jq -c '.changes[0].change = "A different change."' <<<"$PLAN_BOUNDARY_PLAN")"
+PLAN_BOUNDARY_RULING="$(jq -nc --argjson plan "$PLAN_BOUNDARY_PLAN" \
+  '{verdict:"advised",plan:$plan,decision_md:"Fix the stale retry route in the shared admission seam.",merge_conditions_md:"",required_test_paths:[]}')"
+plan_boundary_action() {
+  bash -c 'source "$1/advisor-core.sh"; material="$(advisor_verdict_material "$2" advised)"; advisor_convergence_action "$3" "$material" advised "$2"' \
+    _ "$SCRIPT_DIR" "$PLAN_BOUNDARY_RULING" "$1"
+}
+assert_eq "prior without an advisor_plan key converges onto a plan-bearing rerun" "one-pass" \
+  "$(plan_boundary_action "$(jq -nc --arg decision "Fix the stale retry route in the shared admission seam." \
+    '{state:"needs-advisor",advisor_decision:$decision,advisor_ruled_at:"2026-10-01T00:00:00Z",merge_conditions_md:"",required_test_paths:[]}')")"
+assert_eq "empty stored advisor_plan compares strictly instead of converging" "new" \
+  "$(plan_boundary_action "$(jq -nc --arg decision "Fix the stale retry route in the shared admission seam." \
+    '{state:"needs-advisor",advisor_decision:$decision,advisor_ruled_at:"2026-10-01T00:00:00Z",advisor_plan:"",merge_conditions_md:"",required_test_paths:[]}')")"
+assert_eq "differing stored advisor_plan compares strictly instead of converging" "new" \
+  "$(plan_boundary_action "$(jq -nc --arg decision "Fix the stale retry route in the shared admission seam." --argjson plan "$PLAN_BOUNDARY_OTHER" \
+    '{state:"needs-advisor",advisor_decision:$decision,advisor_ruled_at:"2026-10-01T00:00:00Z",advisor_plan:$plan,merge_conditions_md:"",required_test_paths:[]}')")"
+unset PLAN_BOUNDARY_PLAN PLAN_BOUNDARY_OTHER PLAN_BOUNDARY_RULING
+
 # A tracker ruling becomes terminal state and leaves child work in place.
 TRACKER_VERDICT_HOME="$(mktemp -d)"
 TMP_DIRS+=("$TRACKER_VERDICT_HOME")
