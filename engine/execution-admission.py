@@ -724,6 +724,7 @@ def admission_inner(mode, command, attempt=None):
             log_admission_decision(
                 home,
                 dict(kind=mode, available_mb=sample.get("available_mb"), load1=sample.get("load1"),
+                     memory_full_avg60=sample.get("memory_full_avg60"),
                      ceiling=ceiling, occupied=total, cap=decision_cap),
                 "defer" if total >= decision_cap else "admit", "capacity-check")
         if total >= decision_cap:
