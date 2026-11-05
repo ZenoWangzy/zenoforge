@@ -52,6 +52,36 @@ merge_pr_result_is_green() {
   ' "$result_file" >/dev/null 2>&1
 }
 
+# Ruling zenoforge-limited-allow-research-first-2026-11-05: a PR body must cite
+# researched prior art. PRs that touch only test files are exempt.
+merge_pr_prior_art_ok() {
+  local pr="$1" view body section
+  if ! view="$(gh pr view "$pr" --json body,files 2>/dev/null)" || ! jq -e '
+      (.body | type == "string") and (.files | type == "array"
+        and all(.[]; (.path | type) == "string"))' <<<"$view" >/dev/null 2>&1; then
+    merge_pr_refuse "$pr" 'could not read the PR body and file list as JSON'
+    return 1
+  fi
+  # shortcut: test-file naming is a path heuristic, tighten if a non-test file matches it.
+  if jq -e '(.files | length) > 0 and all(.files[].path;
+      test("(^|/)(tests?|__tests__|fixtures)/") or test("\\.(test|spec)\\.[^/]+$"))' \
+      <<<"$view" >/dev/null; then
+    return 0
+  fi
+  body="$(jq -r '.body' <<<"$view" | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
+  section="$(awk '/^##[ \t]+prior-art[ \t]*$/ {on=1; next}
+    on && /^##?[ \t]/ {on=0}
+    on' <<<"$body")"
+  if ! grep -Eq '^##[[:space:]]+prior-art[[:space:]]*$' <<<"$body"; then
+    merge_pr_refuse "$pr" 'PR body has no "## prior-art" section (see ruling zenoforge-limited-allow-research-first-2026-11-05)'
+    return 1
+  fi
+  if ! grep -Eq 'https?://[^[:space:])>]+|^no external prior art:[[:space:]]*[^[:space:]]' <<<"$section"; then
+    merge_pr_refuse "$pr" '"## prior-art" needs a source URL or a line "no external prior art: <reason>"'
+    return 1
+  fi
+}
+
 merge_pr_checks_and_merge() {
   local pr="${1:-}" checks_json check_name override_name matched
   local -a override_names=() failed_names=() blocked_names=() overridden_names=()
@@ -84,6 +114,16 @@ merge_pr_checks_and_merge() {
         return 1
       fi
     done
+  fi
+
+  matched=0
+  for override_name in "${override_names[@]}"; do
+    [[ "$override_name" == prior-art ]] && matched=1
+  done
+  if (( matched )); then
+    printf 'merge-pr: explicit ZF_MERGE_OVERRIDE skips the prior-art check for PR #%s\n' "$pr" >&2
+  else
+    merge_pr_prior_art_ok "$pr" || return 1
   fi
 
   while IFS= read -r check_name; do
