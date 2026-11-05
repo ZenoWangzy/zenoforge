@@ -100,6 +100,19 @@ class ExecutionAdmission(unittest.TestCase):
         with self.assertRaises(guard.Deferred):
             guard.resources(proc, 6144, 12, stale, 90)
 
+    def test_memory_pressure_defers_pipeline_but_not_hotfix(self):
+        proc = self.home / "pressure-proc"
+        (proc / "pressure").mkdir(parents=True)
+        (proc / "meminfo").write_text("MemAvailable: 9999999 kB\n")
+        (proc / "loadavg").write_text("1 0 0 1/2 3\n")
+        self.assertEqual(guard.resources(proc, 6144, 12)["available_mb"], 9999999 // 1024)
+        (proc / "pressure/memory").write_text("some avg10=0 avg60=30 avg300=0 total=1\nfull avg10=0.00 avg60=9.99 avg300=0 total=1\n")
+        self.assertEqual(guard.resources(proc, 6144, 12)["memory_full_avg60"], 9.99)
+        (proc / "pressure/memory").write_text("some avg10=0 avg60=30 avg300=0 total=1\nfull avg10=0.00 avg60=10.00 avg300=0 total=1\n")
+        with self.assertRaises(guard.Deferred):
+            guard.resources(proc, 6144, 12)
+        self.assertEqual(guard.resources(proc, 6144, 12, priority="hotfix")["memory_full_avg60"], 10.0)
+
     def test_cpu_threshold_memory_and_wait_are_not_idle(self):
         proc = self.home / "cpu-resources"
         proc.mkdir()

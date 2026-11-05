@@ -18,6 +18,7 @@ import uuid
 # Maintainer 10-30 CPU band: load above 16 on 12 cores is "too high". opt at 2x the
 # maximum (24) kept WSL at load5 ~20, PSI 37%, 5 GB swap; cap opt at 4/3 of it.
 OPT_LOAD_FACTOR = 4 / 3
+MEMORY_FULL_AVG60_LIMIT = 10.0
 
 
 # Same setting lib.sh resolves.
@@ -493,6 +494,15 @@ def priority_class():
     return value if value in ("hotfix", "opt", "release") else ""
 
 
+def memory_full_avg60(proc):
+    """Share of the last minute all tasks stalled on memory. MemAvailable counts page cache, so it stayed high while the host thrashed."""
+    try:
+        line = next(row for row in (proc / "pressure/memory").read_text().splitlines() if row.startswith("full "))
+        return float(line.split("avg60=")[1].split()[0])
+    except (OSError, StopIteration, IndexError, ValueError):
+        return None
+
+
 def resources(proc, memory, load, cpu=None, target=None, priority=""):
     fields = dict(line.split(":", 1) for line in (proc / "meminfo").read_text().splitlines() if ":" in line)
     available = int(fields["MemAvailable"].split()[0]) // 1024
@@ -503,6 +513,9 @@ def resources(proc, memory, load, cpu=None, target=None, priority=""):
     sampled_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     result = {"available_mb": available, "load1": current_load if current_load is not None and math.isfinite(current_load) else None,
               "resource_sampled_at": sampled_at}
+    pressure = memory_full_avg60(proc)
+    if pressure is not None:
+        result["memory_full_avg60"] = pressure
     fresh = (target is not None and cpu and cpu.get("cpu_state") == "FRESH"
              and 0 <= time.monotonic() - cpu["cpu_sampled_monotonic"] <= 15)
     if target is not None:
@@ -517,6 +530,8 @@ def resources(proc, memory, load, cpu=None, target=None, priority=""):
     load_limit = None if priority_bypass else (load * OPT_LOAD_FACTOR if priority == "opt" and load is not None else load)
     if available < memory or (load_limit is not None and not fresh and (not math.isfinite(current_load) or current_load >= load_limit)):
         raise Deferred(f"resource floor: available_mb={available} load={current_load}", **result)
+    if not priority_bypass and pressure is not None and pressure >= MEMORY_FULL_AVG60_LIMIT:
+        raise Deferred(f"resource floor: memory_full_avg60={pressure}", **result)
     if priority not in ("hotfix", "release") and fresh and cpu["cpu_percent"] >= target:
         raise Deferred(f"CPU admission: percent={cpu['cpu_percent']:.2f} target={target:g}", **result)
     return result
