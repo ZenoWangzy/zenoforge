@@ -80,7 +80,7 @@ export const RELATED_TESTS = new Map([
   ['engine/mac-autopilot/scheduler.d/review-rules.sh', ['engine/mac-autopilot/incident-prior-art-gate.test.sh']],
   ['engine/mac-autopilot/scheduler.d/stop-loss.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh']],
   ['engine/mac-autopilot/scheduler.d/evals-arbiter.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh', 'engine/mac-autopilot/eval-regression-revert.test.sh']],
-  ['engine/mac-autopilot/scheduler.d/supervisor-arbiter.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh']],
+  ['engine/mac-autopilot/scheduler.d/supervisor-arbiter.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh', 'engine/mac-autopilot/scheduler.test.sh']],
   ['engine/mac-autopilot/scheduler.d/dispatch-queue.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh']],
   ['engine/mac-autopilot/scheduler.d/footprint.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh']],
   ['engine/mac-autopilot/scheduler.d/intake.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh']],

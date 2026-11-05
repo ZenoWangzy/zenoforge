@@ -142,7 +142,7 @@ gate_reason="$(incident_report_gate_reason "$bug_unit_json" "$prose_guard_report
 gate_verdict="$(incident_review_verdict "$bug_unit_json" READY "$prose_guard_report")"
 [[ "$gate_verdict" == NOT_READY && "$gate_reason" == *'guard kind prose is not allowed'* ]] \
   || { echo "not ok - scheduler.test.sh: prose recurrence guard did not request changes (verdict=$gate_verdict reason=$gate_reason)" >&2; exit 1; }
-grep -Fq 'incident_rule_for_unit "$u"' "$script_dir/scheduler.d/evals-arbiter.sh" \
+grep -Fq 'incident_rule_for_unit "$u"' "$script_dir/scheduler.d/supervisor-arbiter.sh" \
   || { echo 'not ok - scheduler.test.sh: supervisor arbiter prompt does not reuse INCIDENT_RULE' >&2; exit 1; }
 
 # Parent admission signals: ADR/spec pilots, open child links in task lists,

@@ -6,6 +6,8 @@
 Description=zf-auto-pin: pin each new zenoforge main commit into the vecta checkout
 
 [Service]
+# gh, node and pnpm live here; systemd's default PATH has none of them.
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 Environment=ZF_AUTO_PIN_CLONE=%h/.zenoforge/clones/pz-zf-review-verdict-clobber
 ExecStartPre=-/usr/bin/install -D -m 0755 %h/.zenoforge/clones/pz-zf-review-verdict-clobber/tools/auto-pin.sh %h/.zenoforge/bin/zf-auto-pin
 ExecStart=/usr/bin/bash %h/.zenoforge/bin/zf-auto-pin

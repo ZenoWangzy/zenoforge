@@ -50,7 +50,7 @@ source "$script_dir/scheduler.d/worker-scope.sh"
 source "$script_dir/scheduler.d/harvest-workers.sh"
 
 fail() { printf 'worker-tasksmax.test.sh: %s\n' "$*" >&2; exit 1; }
-for launch_file in dispatch.sh evals-arbiter.sh land-lane.sh; do
+for launch_file in dispatch.sh evals-arbiter.sh supervisor-arbiter.sh land-lane.sh; do
   grep -Fq 'worker_scope_launch' "$script_dir/scheduler.d/$launch_file" \
     || fail "$launch_file bypasses the bounded worker launcher"
 done
