@@ -231,19 +231,21 @@ intake_footprint_snapshot() { # footprint holders under the shared stage rule: l
   if ! cat "$owners_file"; then rm -rf -- "$tmpdir"; return 1; fi
   rm -rf -- "$tmpdir"
 }
-startable_pending_count() { # pending units eligible to start under intake's #153 capacity predicate
-  footprint_waiters_revalidate || return 1
-  jqf '[.units[]
-    | select(.stage | test("-pending$"))
+intake_eligible_filter() { # Shared jq predicate for startable pending and eligible upstream units.
+  cat <<'JQ'
     | select((.footprint_wait_owner // "") == "")
     | select((.supervisor_owned // false) != true)
     | select(((.history // [] | last // {}) as $last
         | $last.stage == "supervisor-escalated"
           and (($last.result // "") | startswith("size admission:"))) | not)
-  ] | length' "$UNITS"
+JQ
+}
+startable_pending_count() { # pending units eligible to start under intake's #153 capacity predicate
+  footprint_waiters_revalidate || return 1
+  jqf "[.units[] | select(.stage | test(\"-pending$\")) $(intake_eligible_filter)] | length" "$UNITS"
 }
 register_new_issues() {
-  local enabled live pending upstream max_up ready_q max_ready want added=0 n lane title labels task_record task body_blocked_by branch busy handoff state_file acceptance
+  local enabled live pending upstream total_upstream total_room max_up ready_q max_ready want added=0 n lane title labels task_record task body_blocked_by branch busy handoff state_file acceptance
   local episode existing_id existing_pr prior_pr pr_changed pr_state lane_policy handoff_all handoff_pr handoff_branch recovery_sha
   local cached_prs busy_prs issue64
   local existing_only="${1:-0}" only_pred=0 ids lookup handoff_rows matches ids_state pr_number known_prs known_failed hotfix_prs prior_worktree prior_reason episode_hash related_id related_hash unsafe_clones
@@ -259,8 +261,9 @@ register_new_issues() {
   [[ "$refill_mode" == true ]] || hotfix_issue_numbers >/dev/null || say "hotfix issue list unavailable; linked issue PRs may not be classified this tick"
   enabled="$(jqf -r 'if .issue_intake.enabled == false then "false" else "true" end' <<<"$CFG")"
   [[ "$enabled" == true || "$existing_only" == 1 ]] || return 0
+  max_up="$(jqf -r ".issue_intake.max_upstream // $((2 * MAX))" <<<"$CFG")"; [[ "$max_up" =~ ^[0-9]+$ ]] || max_up=$((2 * MAX))
   if (( existing_only )); then
-    # Existing units consume their handoff even when new intake is at capacity.
+    # Existing units may consume their handoff at the normal cap, subject to the total ceiling.
     handoff_rows="$(existing_handoff_candidates)"
     [[ -n "$handoff_rows" ]] || return 0
     if [[ "${2:-}" != reuse ]]; then
@@ -286,7 +289,6 @@ register_new_issues() {
   # Keep this predicate in one place: footprint waiters, supervisor-owned units,
   # and the most recently size-refused units do not consume startable capacity.
   pending="$(startable_pending_count)"
-  max_up="$(jqf -r ".issue_intake.max_upstream // $((2 * MAX))" <<<"$CFG")"; [[ "$max_up" =~ ^[0-9]+$ ]] || max_up=$((2 * MAX))
   max_ready="$(jqf -r '.issue_intake.max_ready // 30' <<<"$CFG")"; [[ "$max_ready" =~ ^[0-9]+$ ]] || max_ready=30
   if [[ "$refill_mode" == true ]]; then
     free_slots=$(( MAX - live ))
@@ -301,7 +303,11 @@ register_new_issues() {
     want=$(( target_pending - pending ))
     (( want > 0 )) || { say "intake held: startable pending $pending meets target $target_pending (live $live max $MAX)"; return 0; }
   fi
-  upstream="$(jqf '[.units[] | select(.stage | test("^(implement|review|rereview|repair)(-pending)?$"))] | length' "$UNITS")"
+  upstream="$(jqf "[.units[] | select(.stage | test(\"^(implement|review|rereview|repair)(-pending)?$\")) $(intake_eligible_filter)] | length" "$UNITS")"
+  total_upstream="$(jqf '[.units[] | select(.stage | test("^(implement|review|rereview|repair)(-pending)?$"))] | length' "$UNITS")"
+  total_room=$(( 2 * max_up - total_upstream ))
+  (( total_room > 0 )) || { say "intake held: $total_upstream total units upstream (ceiling $((2 * max_up)))"; return 0; }
+  (( want <= total_room )) || want=$total_room
   ready_q="$(jqf '[.units[] | select(.stage=="ready-to-merge" or .stage=="landing")] | length' "$UNITS")"
   upstream_room=$(( max_up - upstream ))
   # 合并车道约束时仍只收阻塞在前置上的 issue；与旧路径相同，这种解阻候选不受 max_upstream 限制。
@@ -571,6 +577,13 @@ register_new_issues() {
     if [[ "$recovery_sha" =~ $SHA_RE ]]; then
       if [[ "$lane" == pr ]]; then branch="agent/issue-$n-recovered-${recovery_sha:0:12}"
       else branch="agent/auto-issue-$n-recovered-${recovery_sha:0:12}"; fi
+    fi
+    if (( existing_only )) && [[ -n "$existing_id" ]] && ! jqf -e --arg id "$existing_id" 'any(.units[]; .id == $id and (.stage | test("^(implement|review|rereview|repair)(-pending)?$")))' "$UNITS" >/dev/null; then
+      total_upstream="$(jqf '[.units[] | select(.stage | test("^(implement|review|rereview|repair)(-pending)?$"))] | length' "$UNITS")"
+      if (( total_upstream >= 2 * max_up )); then
+        say "intake held: $total_upstream total units upstream (ceiling $((2 * max_up))); handoff issue #$n deferred"
+        continue
+      fi
     fi
     if [[ -n "$existing_id" ]]; then
       units_update --arg id "$existing_id" --argjson n "$n" --arg episode "$episode" --arg pr_state "$pr_state" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --argjson labels "$labels" \
