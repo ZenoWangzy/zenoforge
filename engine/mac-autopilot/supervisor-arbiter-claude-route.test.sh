@@ -30,7 +30,7 @@ export -f gh
 
 # Stubs record argv and write a fixed reply: codex to --output-last-message, claude to stdout.
 printf '#!/usr/bin/env bash\necho "codex $*" >> "$FIXTURE/codex.calls"\nout=""; prev=""\nfor a in "$@"; do [[ "$prev" == --output-last-message ]] && out="$a"; prev="$a"; done\n[[ -z "$out" ]] || cat "$FIXTURE/reply" > "$out"\n' > "$fixture/bin/codex"
-printf '#!/usr/bin/env bash\necho "claude $*" >> "$FIXTURE/claude.calls"\ncat > "$FIXTURE/claude.stdin"\ncat "$FIXTURE/reply"\n' > "$fixture/bin/claude"
+printf '#!/usr/bin/env bash\nprintf "claude " >> "$FIXTURE/claude.calls"; printf "%%q " "$@" >> "$FIXTURE/claude.calls"; echo >> "$FIXTURE/claude.calls"\ncat > "$FIXTURE/claude.stdin"\ncat "$FIXTURE/reply"\n' > "$fixture/bin/claude"
 chmod +x "$fixture/bin/codex" "$fixture/bin/claude"
 export FIXTURE="$fixture" PATH="$fixture/bin:$PATH"
 
@@ -59,13 +59,28 @@ wait_for "$fixture/claude.calls"
 [[ ! -e "$fixture/codex.calls" ]] || fail "over the stop codex must not be called"
 role_model="$(model_policy_role_fields hand-claude 2>/dev/null | cut -f2 || true)"; [[ -n "$role_model" ]] || fail "hand-claude role has no model"
 grep -q -- "--model $role_model " "$fixture/claude.calls" || fail "claude must run the hand-claude role model $role_model"
-grep -q -- '--tools ' "$fixture/claude.calls" || fail "claude arbiter must run with an explicit tool list"
+role_effort="$(model_policy_role_fields hand-claude 2>/dev/null | cut -f3 || true)"
+grep -q -- "--effort $role_effort " "$fixture/claude.calls" || fail "claude must run the hand-claude role effort $role_effort"
+grep -q -- "--tools '' " "$fixture/claude.calls" || fail "claude arbiter must run with no tools"
+grep -q -- "--safe-mode " "$fixture/claude.calls" && grep -q -- "--setting-sources '' " "$fixture/claude.calls" \
+  || fail "claude arbiter must not load project CLAUDE.md or settings (--safe-mode --setting-sources '')"
 jq -e --arg m "profile:$role_model" 'any(.workers[]; .type=="supervise" and .unit=="pr-702" and .model==$m)' "$WORKERS" >/dev/null || fail "worker must record the claude role model"
 [[ "$(field pr-702 '.history[-1].stage')" == supervisor-arbiter ]] || fail "dispatch must consume one arbitration slot"
 grep -q '"unitId":"pr-702"' "$fixture/claude.stdin" || fail "claude prompt must carry the frozen record"
 report="$sup/$(jq -r '.units[0].supervise_report' "$UNITS")"
 for _ in $(seq 50); do [[ -s "$report" ]] && break; sleep 0.1; done
 [[ "$(supervisor_action_of "$report")" == requeue ]] || fail "claude report must parse through supervisor_action_of"
+
+# ---- over the stop, empty role effort: --effort is omitted, the run still dispatches ----
+eval "orig_$(declare -f pick_claude_implementer)"
+pick_claude_implementer() { orig_pick_claude_implementer && PICK_EFFORT=""; }
+stop; reset "$(unit pr-705)"
+dispatch_supervisor_arbiters
+wait_for "$fixture/claude.calls"
+grep -q -- '--model ' "$fixture/claude.calls" || fail "empty effort must still dispatch claude"
+grep -q -- '--effort' "$fixture/claude.calls" && fail "empty effort must omit --effort"
+eval "$(declare -f orig_pick_claude_implementer | sed '1s/orig_//')"
+printf 'ACTION: requeue\nREASON: r\nGUIDANCE: g\n' > "$fixture/reply"
 
 # ---- over the stop, final cap triage: the verdict parses through supervisor_cap_verdict_of ----
 printf 'REASON: one rule settles it\nEVIDENCE: twice\nVERDICT: RULE\n' > "$fixture/reply"
