@@ -68,7 +68,7 @@ def log_admission_decision(home, fields, outcome, reason):
 
     message = (
         f"execution admission decision mode={value('kind')} outcome={outcome} "
-        f"MemAvailable_mb={value('available_mb')} load1={value('load1')} "
+        f"MemAvailable_mb={value('available_mb')} memory_full_avg60={value('memory_full_avg60')} load1={value('load1')} "
         f"ceiling={value('ceiling')} held={value('occupied')} "
         f"decision_cap={value('cap')} reason={reason}"
     )
@@ -503,7 +503,7 @@ def memory_full_avg60(proc):
         return None
 
 
-def resources(proc, memory, load, cpu=None, target=None, priority=""):
+def resources(proc, memory, load, cpu=None, target=None, priority="", admitted=False):
     fields = dict(line.split(":", 1) for line in (proc / "meminfo").read_text().splitlines() if ":" in line)
     available = int(fields["MemAvailable"].split()[0]) // 1024
     # Inherited CPU-mode leases can skip load sampling; priority work still
@@ -530,7 +530,8 @@ def resources(proc, memory, load, cpu=None, target=None, priority=""):
     load_limit = None if priority_bypass else (load * OPT_LOAD_FACTOR if priority == "opt" and load is not None else load)
     if available < memory or (load_limit is not None and not fresh and (not math.isfinite(current_load) or current_load >= load_limit)):
         raise Deferred(f"resource floor: available_mb={available} load={current_load}", **result)
-    if not priority_bypass and pressure is not None and pressure >= MEMORY_FULL_AVG60_LIMIT:
+    # Only a new admission yields: a worker's own model calls must not fail on the pressure that worker adds.
+    if not priority_bypass and not admitted and pressure is not None and pressure >= MEMORY_FULL_AVG60_LIMIT:
         raise Deferred(f"resource floor: memory_full_avg60={pressure}", **result)
     if priority not in ("hotfix", "release") and fresh and cpu["cpu_percent"] >= target:
         raise Deferred(f"CPU admission: percent={cpu['cpu_percent']:.2f} target={target:g}", **result)
@@ -628,7 +629,7 @@ def admission_inner(mode, command, attempt=None):
     if mode not in ("check", "resources") and inherited(home, proc):
         # This is the same admitted worker, not a new start. Keep live memory and
         # PAUSE/identity checks; CPU opt-in must not reintroduce the old load veto.
-        sample = resources(proc, memory, None if target is not None else load, None, None, priority)
+        sample = resources(proc, memory, None if target is not None else load, None, None, priority, True)
         if attempt:
             attempt.fields.update(sample or {}, lease_kind="inherited")
         if mode in ("run", "run-unit"):

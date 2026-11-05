@@ -274,8 +274,12 @@ try:sys.exit"""))
                 start.unlink(missing_ok=True)
                 (proc / "meminfo").write_text("MemAvailable: 99999999 kB\n")
                 (proc / "loadavg").write_text("0 0 0 1/2 3\n")
+                (proc / "pressure").mkdir(exist_ok=True)
+                (proc / "pressure/memory").unlink(missing_ok=True)
+                # The admitted worker sees high memory pressure: its own calls still run (expected 23).
                 code = ("from pathlib import Path;import subprocess,sys;"
                         f"p=Path({str(start)!r});before=p.read_bytes() if p.exists() else None;"
+                        f"Path({str(proc / 'pressure/memory')!r}).write_text('full avg10=50 avg60=50 avg300=0 total=1\\n');"
                         f"Path({str(proc / 'loadavg')!r}).write_text('40 0 0 1/2 3\\n');"
                         f"Path({str(proc / 'meminfo')!r}).write_text('MemAvailable: {memory} kB\\n');"
                         f"status=subprocess.call([sys.executable,{str(self.driver)!r},'run','sh','-c','exit 23']);"
