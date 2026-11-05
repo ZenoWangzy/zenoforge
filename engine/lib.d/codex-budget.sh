@@ -345,6 +345,10 @@ parse_quota_reset_epoch() {
 # an actual non-refused call reports success below.
 provider_quota_exhausted() {
   local provider="$1" marker until now
+  # Claude workers stop at CLAUDE_WEEK_STOP_PCT, so the sessions on the same account keep working to the weekly reset.
+  if [ "$provider" = claude ] && snapshot_week_at "${CLAUDE_WEEK_STOP_PCT:-95}" "${CLAUDE_QUOTA_SNAPSHOT_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/claude-quota.json}"; then
+    return 0
+  fi
   marker="$(_quota_marker_file "$provider")" || return 1
   [ -f "$marker" ] || return 1
   until="$(cat "$marker" 2>/dev/null || true)"
@@ -353,13 +357,17 @@ provider_quota_exhausted() {
   [ "$now" -lt "$until" ]
 }
 
-# Weekly Codex stop. Nothing is reserved for hotfix work, so Codex runs to the weekly wall (CODEX_WEEK_STOP_PCT, default 100).
-# Implementation leaves earlier, at CODEX_IMPLEMENT_STOP_PCT, so the end of the week pays for reviews and the arbiter while ZCode
-# writes the code. The snapshot's week_reset ends both stops.
+# Weekly Codex stop, off by default: Codex credits carry on past the weekly limit, and a real refusal still sets the exhausted
+# marker. Set CODEX_WEEK_STOP_PCT, or CODEX_IMPLEMENT_STOP_PCT for implementation alone, to bring a stop back. The snapshot's
+# week_reset ends it.
 codex_week_stopped() { # [stop percent]
   provider_quota_exhausted codex && return 0
-  command jq -e --argjson stop "${1:-${CODEX_WEEK_STOP_PCT:-100}}" --argjson now "${NOW_EPOCH:-$(date +%s)}" \
-    '(.week_pct // 0) >= $stop and (.week_reset // 0) > $now' "${CODEX_QUOTA_SNAPSHOT_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/codex-quota.json}" >/dev/null 2>&1
+  snapshot_week_at "${1:-${CODEX_WEEK_STOP_PCT:-101}}" "${CODEX_QUOTA_SNAPSHOT_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/codex-quota.json}"
+}
+
+snapshot_week_at() { # stop percent, quota snapshot
+  command jq -e --argjson stop "$1" --argjson now "${NOW_EPOCH:-$(date +%s)}" \
+    '(.week_pct // 0) >= $stop and (.week_reset // 0) > $now' "$2" >/dev/null 2>&1
 }
 
 

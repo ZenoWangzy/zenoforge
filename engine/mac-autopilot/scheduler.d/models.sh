@@ -167,7 +167,7 @@ zcode_quota_status() { # fresh snapshot and active marker -> available|exhausted
   fi
   command jq -er '
     if ((.five_h_pct | type) != "number" or (.week_pct | type) != "number") then "unknown"
-    elif .five_h_pct >= (.cap_5h // 85) or .week_pct >= (.cap_week // 90) then "exhausted"
+    elif .five_h_pct >= (.cap_5h // 85) or .week_pct >= (.cap_week // 100) then "exhausted"
     else "available" end
   ' "$file" 2>/dev/null || printf 'unknown\n'
 }
@@ -209,7 +209,7 @@ pick_codex_work_identity() { # work policy role, with legacy models.implement as
   if jqf -e 'any(.labels[]?; . == "hotfix")' <<<"$1" >/dev/null 2>&1; then
     if pick_configured_model implement "$1" && [[ "$PICK_PROVIDER" == codex ]]; then
       command -v codex >/dev/null 2>&1 || return 1
-      codex_week_stopped "${CODEX_IMPLEMENT_STOP_PCT:-95}" && return 1
+      codex_week_stopped "${CODEX_IMPLEMENT_STOP_PCT:-101}" && return 1
       cooling codex && return 1
       return 0
     fi
@@ -225,7 +225,7 @@ pick_codex_work_identity() { # work policy role, with legacy models.implement as
     [[ "$PICK_PROVIDER" == codex ]] || return 1
   fi
   command -v codex >/dev/null 2>&1 || return 1
-  codex_week_stopped "${CODEX_IMPLEMENT_STOP_PCT:-95}" && return 1
+  codex_week_stopped "${CODEX_IMPLEMENT_STOP_PCT:-101}" && return 1
   cooling codex && return 1
   return 0
 }
@@ -274,7 +274,7 @@ provider_runtime_ready() { # provider model -> runnable, policy-authorized and n
       [[ "$(zcode_quota_status)" == available ]] || return 1
       command -v zcode >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"
       ;;
-    claude) command -v claude >/dev/null 2>&1 ;;
+    claude) ! provider_quota_exhausted claude && command -v claude >/dev/null 2>&1 ;;
     *) return 1 ;;
   esac
 }

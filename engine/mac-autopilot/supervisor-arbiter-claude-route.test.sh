@@ -19,6 +19,7 @@ cp "$script_dir/../prompts/supervisor-arbiter.md" "$ZF_CONFIG_ROOT/prompts/"
 cp "$script_dir/../prompts/supervisor-arbiter.md" "$script_dir/../prompts/supervisor-cap-triage.md" "$fixture/repo/engine/prompts/"
 export CODEX_SESSIONS_DIR="$fixture/sessions"
 export CODEX_QUOTA_SNAPSHOT_FILE="$fixture/codex-quota.json"
+export CODEX_WEEK_STOP_PCT=100
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$script_dir/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY

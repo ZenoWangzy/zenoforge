@@ -107,6 +107,7 @@ VALID="$(jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1"
 printf '%s\n' "$VALID" > "$FAKE_CLAUDE_STRUCTURED"
 for n in 920101 920102 920103 920104; do jq -nc --argjson issue "$n" --argjson result "$VALID" '{issue:$issue,result:$result}'; done > "$FAKE_CODEX_OUTPUT"
 for n in 920101 920103; do jq -nc --argjson issue "$n" --argjson result "$VALID" '{issue:$issue,result:$result}'; done > "$FAKE_CLAUDE_RESULT"
+export CODEX_WEEK_STOP_PCT=100
 week() { jq -n --argjson p "$1" --argjson r "$(( $(date +%s) + 3600 ))" '{week_pct:$p,week_reset:$r}' > "$AGENT_HOME/codex-quota.json"; }
 
 # Over the stop: batch runner. Codex is never called; the haiku result applies through run-triage.sh --batch-result.

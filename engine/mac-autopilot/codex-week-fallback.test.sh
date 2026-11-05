@@ -10,15 +10,22 @@ LOG="$A/scheduler.log"; UNITS="$A/units.json"; COOLDOWN="$A/cooldown.json"; STAM
 NOW_EPOCH=1793836800
 : > "$LOG"; echo '{"units":[]}' > "$UNITS"; echo '{}' > "$COOLDOWN"
 export CODEX_QUOTA_SNAPSHOT_FILE="$A/codex-quota.json"
+export CODEX_WEEK_STOP_PCT=100 CODEX_IMPLEMENT_STOP_PCT=95
 source "$script_dir/scheduler.d/core.sh"
 source "$script_dir/../lib.d/codex-budget.sh"
 source "$script_dir/scheduler.d/models.sh"
 
 fail() { echo "not ok - $*" >&2; cat "$LOG" >&2; exit 1; }
+# Claude workers stop at 95 of the week until its reset; sessions keep the rest.
+export CLAUDE_QUOTA_SNAPSHOT_FILE="$A/claude-quota.json"
+cw() { jq -n --argjson p "$1" --argjson r "$2" '{week_pct:$p,week_reset:$r}' > "$CLAUDE_QUOTA_SNAPSHOT_FILE"; }
+cw 94 $((NOW_EPOCH + 3600)); if provider_quota_exhausted claude; then fail 'Claude stopped at 94%'; fi
+cw 95 $((NOW_EPOCH + 3600)); provider_quota_exhausted claude || fail 'Claude ran at 95%'
+cw 95 $((NOW_EPOCH - 1)); if provider_quota_exhausted claude; then fail 'a past Claude week_reset did not end the stop'; fi
 provider_quota_exhausted() { return 1; }
-# ZCode's weekly hold: workers stop at 90 so the rest of the week stays with production chat.
+# ZCode's weekly hold sits at 100: zc-quota spends a weekly reset at 98.
 zc_status() { jq -n --argjson w "$1" --argjson now "$NOW_EPOCH" '{five_h_pct:1,week_pct:$w,read_at:$now,freshness:"fresh"}' > "$A/zc.json"; ZCODE_QUOTA_SNAPSHOT_FILE="$A/zc.json" zcode_quota_status; }
-[[ "$(zc_status 89)" == available && "$(zc_status 90)" == exhausted ]] || fail "ZCode week hold: 89=$(zc_status 89) 90=$(zc_status 90)"
+[[ "$(zc_status 99)" == available && "$(zc_status 100)" == exhausted ]] || fail "ZCode week hold: 99=$(zc_status 99) 100=$(zc_status 100)"
 provider_of() { case "$1" in gpt-*) echo codex ;; claude-*) echo claude ;; *) echo unknown ;; esac; }
 model_forbidden_by_policy() { return 1; }
 zcode_quota_status() { echo unknown; }

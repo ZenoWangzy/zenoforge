@@ -847,7 +847,7 @@ review_identity_available() {
       command -v zcode >/dev/null 2>&1 || return 1
       zcode_provider_config_model_matches "$identity"
       ;;
-    claude) command -v claude >/dev/null 2>&1 ;;
+    claude) ! provider_quota_exhausted claude && command -v claude >/dev/null 2>&1 ;;
     *) return 1 ;;
   esac
 }
