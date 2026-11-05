@@ -15,9 +15,9 @@
 # for every scenario in this file; risk-class.mjs's own pattern coverage is
 # exercised by run-advisor.test.sh, once, not re-proven here.
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 OPS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ENGINE_DIR="$OPS_DIR"
-source "$ENGINE_DIR/test-env.sh"
 
 TEST_JQ_HOME="$HOME"
 TEST_JQ_BIN="$(command -v jq)"
