@@ -28,19 +28,23 @@ orphan_issue_states() { # issue numbers... → {number:{state,labels}} from one 
     --jq '.data.repository | to_entries | map(select(.value != null) | {key:(.key[1:]),value:{state:.value.state,labels:[.value.labels.nodes[]?.name]}}) | from_entries' 2>/dev/null
 }
 reconcile_orphan_prs() {
-  local last prs states_by_number orphan_issue_numbers blocked rows n prn branch draft title issue_state issue_labels gated reg=0 max="${ORPHAN_REGISTER_MAX:-3}" agent_left=0 foreign=0 now
+  local last prs agent_prs states_by_number orphan_issue_numbers blocked rows n prn branch draft title issue_state issue_labels gated reg=0 max="${ORPHAN_REGISTER_MAX:-3}" agent_left=0 foreign=0 now
   local -a issue_numbers=()
   last="$(cat "$A/orphan-check.epoch" 2>/dev/null)"
   [[ "$last" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - last < ${ORPHAN_CHECK_SECONDS:-1800} )) && return 0
   echo "$NOW_EPOCH" > "$A/orphan-check.epoch"
   tick_prs_prime
   prs="$(tick_prs)" || return 0
+  # Same rule as release_session_pr_units: a PR without the gated label is a session's, so never adopt or close it here.
+  agent_prs="$prs"
+  [[ "$(jqf -r .auto_dispatch_new_prs <<<"$CFG")" != false ]] \
+    || agent_prs="$(jqf -c --arg l "$GATED_LABEL" 'map(select(any(.labels[]?; .name == $l)))' <<<"$prs")"
   blocked="$(jqf -c '[.units[] | select(.stage=="blocked-external" and .blocked_on != null) | .blocked_on]' "$UNITS")"
   orphan_issue_numbers="$(jqf -c --slurpfile u "$UNITS" '
       ($u[0].units | map(.pr) | map(select(. != null))) as $known
       | [.[] | select(.number as $n | $known | index($n) | not)
           | (try (.headRefName | capture("^agent/(auto-)?issue-(?<n>[0-9]+)$").n | tonumber) catch null)
-          | select(. != null)] | unique' <<<"$prs")" || return 0
+          | select(. != null)] | unique' <<<"$agent_prs")" || return 0
   mapfile -t issue_numbers < <(jqf -r '.[]' <<<"$orphan_issue_numbers")
   if (( ${#issue_numbers[@]} > 0 )); then
     states_by_number="$(orphan_issue_states "${issue_numbers[@]}")" || return 0
@@ -55,7 +59,7 @@ reconcile_orphan_prs() {
       | map(.issue as $i | . + {blocks: ($i != null and ($b[0] | index($i)) != null), issue_state: (if $i != null then ($states[0][($i | tostring)].state // "UNKNOWN") else "UNKNOWN" end),
           issue_labels: (if $i != null then ($states[0][($i | tostring)].labels // []) else [] end)})
       | sort_by([(if .blocks then 0 else 1 end), .number]) | .[]
-      | "\(.number)\t\(.headRefName)\t\(.isDraft)\t\(.issue // "")\t\(.title | gsub("\t"; " "))\t\(.issue_state)\t\(.issue_labels | tojson)"' <<<"$prs")"
+      | "\(.number)\t\(.headRefName)\t\(.isDraft)\t\(.issue // "")\t\(.title | gsub("\t"; " "))\t\(.issue_state)\t\(.issue_labels | tojson)"' <<<"$agent_prs")"
   now="$(date -u +%FT%TZ)"
   # 生产热修的源 PR 先收（任意分支），它们挡着所有 Example 发布（release_train.sh 写 release-blockers.json）。
   for prn in $(jqf_optional_file "$A/release-blockers.json" -r '.blockers[]?' 2>/dev/null); do

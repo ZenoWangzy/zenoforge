@@ -2834,4 +2834,17 @@ room_for issue-9 review || fail 'a stale wait file of a dead wrapper blocked dis
 [[ -e "$LUNA_SLOTS/wait-hotfix-$gate_dead" ]] && fail 'a stale wait file was not dropped'
 rm -f "$LUNA_SLOTS"/wait-*
 
+# auto_dispatch_new_prs=false: sessions' PRs leave the ledger before any acting phase, and the orphan pass neither adopts nor closes them.
+cfg_saved="$CFG"; CFG="$(jq '.auto_dispatch_new_prs=false' <<<"$CFG")"
+session_prs='[{"number":31,"labels":[],"headRefName":"agent/s","isDraft":false,"title":"s"},{"number":32,"labels":[{"name":"agent/ci-gated"}],"headRefName":"agent/issue-32","isDraft":true,"title":"f"},{"number":33,"labels":[{"name":"session-owned"}],"headRefName":"agent/issue-33","isDraft":false,"title":"c"},{"number":34,"labels":[],"headRefName":"agent/issue-34","isDraft":false,"title":"o"},{"number":35,"labels":[],"headRefName":"old","isDraft":false,"title":"i"}]'
+tick_prs_saved="$(declare -f tick_prs)"; tick_prs() { printf '%s' "$session_prs"; }; tick_prs_prime() { :; }
+units '{"units":[{"id":"pr-31","stage":"review","pr":31},{"id":"pr-32","stage":"review","pr":32},{"id":"issue-33","issue":33,"stage":"supervisor-review","pr":33},{"id":"issue-35","issue":35,"stage":"repair","pr":35},{"id":"issue-36","issue":34,"stage":"merged","pr":3}]}'
+release_session_pr_units
+[[ "$(jq -c '[.units[] | select(.stage=="parked" and .parked_reason=="session-owned") | .id]' "$UNITS")" == '["pr-31","issue-33"]' ]] \
+  || fail "session-owned release parked $(jq -c '[.units[] | select(.stage=="parked") | .id]' "$UNITS")"
+: > "$fixture/pr-ops"; rm -f "$A/orphan-check.epoch"; reconcile_orphan_prs || :
+[[ ! -s "$fixture/pr-ops" ]] || fail "orphan pass touched a session PR: $(cat "$fixture/pr-ops")"
+jq -e 'any(.units[]; .pr == 34) | not' "$UNITS" >/dev/null || fail 'orphan pass adopted a session PR'
+CFG="$cfg_saved"; eval "$tick_prs_saved"
+
 echo 'scheduler-gates.test.sh: PASS'

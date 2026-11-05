@@ -477,6 +477,7 @@ refill_tick() {
     # 分类不可用就本拍不派发——未标记的热修车道单元不能由补派抢走。可启动 pending 少于空槽时先收 issue，
     # 复用慢拍候选缓存；缓存过期时补派最多查询一个候选标签，并受 issue_intake.refill_max 限制。
     phase mark_supervisor_owned_units
+    phase release_session_pr_units
     if supervisor_marking_deferred; then
       say "refill dispatch held: supervisor-owned marking deferred"
     else
@@ -540,6 +541,7 @@ main() {
     phase supersede_resolved_main_red_units
     # supervisor-owned 标记必须先于任何会动手的阶段（派发、快车道、CI 准入、合并车道）落进台账。
     phase mark_supervisor_owned_units
+    phase release_session_pr_units
     if supervisor_marking_deferred; then
       # 分类不可用：可能有热修车道单元本拍无法标记，派发、快车道、CI 准入、合并车道与 supervisor
       # 裁决整拍跳过；登记与生命周期照常，分类恢复的下一拍补标记后恢复推进。
