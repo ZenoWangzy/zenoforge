@@ -5467,6 +5467,9 @@ DRIFT
 sched_run_case supervisor_cap_triage_contract_binding
 
 prepare_jev_f12_fixture() {
+  # The mock driver imports engine/ts-judge.mjs, which needs @typesafe-ai/sdk; without it every Jev assertion fails misleadingly (#348).
+  (cd "$repo_root" && node --input-type=module -e 'await import("@typesafe-ai/sdk")' >/dev/null 2>&1) \
+    || { echo 'not ok - scheduler.test.sh: @typesafe-ai/sdk is not installed; run "npm ci" in the repo root first' >&2; exit 1; }
   command jq '.max_workers=2 | .supervisor_arbiter.enabled=true | .supervisor_arbiter.max_in_flight=1' \
     "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
   mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
