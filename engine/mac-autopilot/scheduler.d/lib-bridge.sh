@@ -79,8 +79,9 @@ scheduler_conclude_merged_pr() ( # issue pr：合入即写发布状态（#4515 �
 )
 scheduler_issue_state() (
   local f lock_fd
-  REPO_DIR="$ROOT"
-  source "$SCHEDULER_AGENT_LIB" || return 1
+  source "${SCHEDULER_SCOPE_LIB_DIR%/lib.d}/write-guard.sh" && agent_pipeline_write_guard 'scheduler_issue_state' "$AGENT_HOME" || return 1
+  scheduler_scope_lib issue-state || return 1
+  STATE_DIR="$AGENT_HOME/state"
   f="$(state_file "$1")" || return 1
   # issue_transition writes state before the label and rolls back on failure.
   # Defer reconciliation while that transaction is in progress.

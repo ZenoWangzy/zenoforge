@@ -117,6 +117,17 @@ legacy_parent_reason() (
   issue_intake_parent_reason "$@"
 )
 
+legacy_scheduler_issue_state() (
+  local f lock_fd
+  REPO_DIR="$ROOT"
+  source "$SCHEDULER_AGENT_LIB" || return 1
+  f="$(state_file "$1")" || return 1
+  mkdir -p "$STATE_DIR" || return 1
+  exec {lock_fd}>"$f.lock" || return 1
+  flock -sn "$lock_fd" || return 1
+  state_read "$1"
+)
+
 # same_result <label> <old fn> <new fn> args... : identical stdout and exit status.
 same_result() {
   local label="$1" old="$2" new="$3" old_out new_out old_rc=0 new_rc=0
@@ -168,6 +179,13 @@ for unit in \
   same_result "scheduler_footprint $unit" legacy_scheduler_footprint scheduler_footprint "$unit"
 done
 
+# scheduler_issue_state: existing state, default for a missing one, and refusal while a transition holds the lock.
+printf '%s\n' '{"state":"on-hold","attempts":2}' > "$AGENT_HOME/state/9111.json"
+for issue in 9111 9112; do same_result "scheduler_issue_state $issue" legacy_scheduler_issue_state scheduler_issue_state "$issue"; done
+( exec 8>"$AGENT_HOME/state/9111.json.lock"; flock -x 8
+  same_result 'scheduler_issue_state while locked' legacy_scheduler_issue_state scheduler_issue_state 9111 )
+[[ "$(scheduler_issue_state 9111)" == '{"state":"on-hold","attempts":2}' ]] || fail 'scheduler_issue_state did not return the stored state'
+
 # parent reason: same verdicts, same gh arguments (REPO) from the same working directory.
 parent_log="$fixture/parent-gh.log"
 gh() { printf '%s|%s\n' "$PWD" "$*" >> "$parent_log"; case "$*" in
@@ -193,6 +211,7 @@ unset -f gh
 before="$(lib_loads)"
 units_json='[]'; for i in $(seq 1 12); do units_json="$(jq -c --argjson i "$i" '. + [{id:("n-"+($i|tostring)),issue:(9200+$i),task:"Affected files: packages/hot/src/f\($i).ts"}]' <<<"$units_json")"; done
 for n in 4 12; do
+  for ((i = 1; i <= n; i++)); do scheduler_issue_state 9111 >/dev/null; done
   scopes=''; : > "$fixture/scopes"
   for ((i = 1; i <= n; i++)); do
     u="$(jq -c ".[$((i - 1))]" <<<"$units_json")"
