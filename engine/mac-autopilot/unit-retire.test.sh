@@ -122,4 +122,35 @@ assert units == [], units
 print("ok")
 PY
 
+# ---- 6. intake WIP 谓词与交接上限（#371/#372）：退休终态单元不改任何计数、也不改任何非终态阶段计数 ----
+seed_units '{"units":[
+ {"id":"i1","issue":401,"stage":"implement-pending","history":[]},
+ {"id":"i2","issue":402,"stage":"repair-pending","history":[]},
+ {"id":"i3","issue":403,"stage":"review","history":[]},
+ {"id":"i4","issue":404,"stage":"rereview-pending","supervisor_owned":true,"history":[]},
+ {"id":"i5","issue":405,"stage":"implement-pending","footprint_wait_owner":"i1","history":[]},
+ {"id":"q1","issue":406,"stage":"ready-to-merge","pr":41,"history":[]},
+ {"id":"q2","issue":407,"stage":"landing","pr":42,"history":[]},
+ {"id":"p2","issue":408,"stage":"parked","history":[]},
+ {"id":"t1","issue":409,"stage":"merged","history":[]},
+ {"id":"t2","issue":410,"stage":"closed","history":[]},
+ {"id":"t3","issue":411,"stage":"landed","history":[]},
+ {"id":"t4","issue":412,"stage":"done","history":[]}]}'
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+printf '%s\n' '{"units":[]}' > "$UNITS_ARCHIVE"
+intake_counts() { # startable pending | eligible upstream | total upstream (ceiling input) | ready queue | live stage histogram minus terminal
+  jqf -c "{
+    pending: ([.units[] | select(.stage | test(\"-pending\$\")) $(intake_eligible_filter)] | length),
+    upstream: ([.units[] | select(.stage | test(\"^(implement|review|rereview|repair)(-pending)?\$\")) $(intake_eligible_filter)] | length),
+    total_upstream: ([.units[] | select(.stage | test(\"^(implement|review|rereview|repair)(-pending)?\$\"))] | length),
+    ready_q: ([.units[] | select(.stage==\"ready-to-merge\" or .stage==\"landing\")] | length),
+    stages: ([.units[] | select(.stage as \$s | $UNIT_RETIRE_STAGES | index(\$s) | not) | .stage] | group_by(.) | map({(.[0]): length}) | add)
+  }" "$UNITS"
+}
+before="$(intake_counts)"
+retire_terminal_units
+[[ "$(jqf '.units | length' "$UNITS_ARCHIVE")" == 4 ]] || fail "the four terminal units retire"
+[[ "$(intake_counts)" == "$before" ]] || fail "retirement changed an intake count: before=$before after=$(intake_counts)"
+[[ "$(jqf -c '.pending' <<<"$before")" == 2 ]] || fail "fixture sanity: footprint waiters and supervisor-owned units do not count as startable pending; got $before"
+
 echo "unit-retire.test.sh: all assertions passed"
