@@ -163,37 +163,72 @@ active_footprint_snapshot() { # refresh live writes for all active implementatio
   [[ "$active" == '[]' ]] || active="$(resolve_active_footprints "$active")" || return 1
   printf '%s\n' "$active"
 }
+# A tree entry is a directory; missing paths remain file predictions (new files).
+footprint_classify() {
+  local scope="$1" path type specs='' types index=0
+  local -a paths=() objects=()
+  mapfile -t paths < <(jq -r '.[]?' <<<"$scope")
+  for path in "${paths[@]}"; do specs+="refs/remotes/origin/main:$path"$'\n'; done
+  types="$(printf '%s' "$specs" | git -C "$ROOT" cat-file --batch-check='%(objecttype)' 2>/dev/null)" || types=''
+  mapfile -t objects <<<"$types"
+  for path in "${paths[@]}"; do
+    type=file
+    if [[ -d "$ROOT/$path" || "${objects[$index]:-}" == tree ]]; then type=directory; fi
+    jq -cn --arg path "$path" --arg type "$type" '{path:$path,type:$type}'
+    index=$((index + 1))
+  done | jq -sc '.'
+}
+footprint_scopes_collide() { # scope, scope -> collision paths in EXPECTED_SCOPE_COLLISION_*
+  local candidate="$1" owner="$2" original="${3:-$1}" result c o known
+  if [[ "${ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING:-0}" == 1 ]]; then
+    expected_packages_collide "$candidate" "$owner"
+    return $?
+  fi
+  c="$(footprint_classify "$candidate")" || return 2
+  o="$(footprint_classify "$owner")" || return 2
+  known="$(footprint_classify "$original")" || return 2
+  result="$(jq -cn --argjson c "$c" --argjson o "$o" --argjson known "$known" '
+    def overlaps($a; $b): $a == $b or ($a | startswith($b + "/")) or ($b | startswith($a + "/"));
+    (any($known[]; .type == "file")) as $cf | (any($o[]; .type == "file")) as $of
+    | first($c[] as $a | $o[] as $b | select(overlaps($a.path; $b.path))
+      | select(($a.type == "file" and $b.type == "file") or ($cf | not) or ($of | not)
+        or ($a.path | test("(^|/)migrations/meta/_journal\\.json$")) or ($b.path | test("(^|/)migrations/meta/_journal\\.json$")))
+      | [$a.path,$b.path]) // []')" || return 2
+  EXPECTED_SCOPE_COLLISION_CANDIDATE="$(jq -r '.[0] // empty' <<<"$result")"
+  EXPECTED_SCOPE_COLLISION_ACTIVE="$(jq -r '.[1] // empty' <<<"$result")"
+  [[ -n "$EXPECTED_SCOPE_COLLISION_CANDIDATE" ]]
+}
 active_footprint_conflict() (
   REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
   source "$SCHEDULER_AGENT_LIB" || exit 2
-  local candidate active_scope owner
+  local candidate other owner scope original rc
+  original="$(footprint_strip_shared_append "${4:-$1}")"
   candidate="$(footprint_strip_shared_append "$1")"
-  # Flatten active scopes once: the previous candidate × active-unit loop ran
-  # expected_packages_collide (and its jq path parsing) once for every owner.
-  active_scope="$(jq -c --arg id "$3" '[.[] | select(.id != $id) | .footprint[]?]' <<<"$2")"
-  active_scope="$(footprint_strip_shared_append "$active_scope")"
-  if expected_packages_collide "$candidate" "$active_scope"; then
-    owner="$(jq -r --arg id "$3" --arg path "$EXPECTED_SCOPE_COLLISION_ACTIVE" \
-      'first(.[] | select(.id != $id) | select(any(.footprint[]?; . == $path)) | .id) // empty' <<<"$2")"
-    printf '%s\n' "$owner"
-  fi
-)
-active_footprint_conflicts_batch() (
-  REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
-  source "$SCHEDULER_AGENT_LIB" || exit 2
-  local active="$1" candidates="$2" id scope candidate active_scope owner
-  while IFS=$'\t' read -r id scope; do
-    [[ -n "$id" ]] || continue
-    candidate="$(footprint_strip_shared_append "$scope")"
-    active_scope="$(jq -c --arg id "$id" '[.[] | select(.id != $id) | .footprint[]?]' <<<"$active")"
-    active_scope="$(footprint_strip_shared_append "$active_scope")"
-    if expected_packages_collide "$candidate" "$active_scope"; then
-      owner="$(jq -r --arg id "$id" --arg path "$EXPECTED_SCOPE_COLLISION_ACTIVE" \
-        'first(.[] | select(.id != $id) | select(any(.footprint[]?; . == $path)) | .id) // empty' <<<"$active")"
-      printf '%s\t%s\n' "$id" "${owner:-unknown}"
+  while IFS= read -r other; do
+    owner="$(jq -r .id <<<"$other")"
+    [[ "$owner" != "$3" ]] || continue
+    scope="$(footprint_strip_shared_append "$(jq -c '.footprint // []' <<<"$other")")"
+    if footprint_scopes_collide "$candidate" "$scope" "$original"; then
+      printf '%s\n' "$owner"; return 0
+    else
+      rc=$?; (( rc == 1 )) || return "$rc"
     fi
-  done <<<"$candidates"
+  done < <(jq -c '.[]' <<<"$2")
 )
+active_footprint_conflicts_batch() {
+  local active="$1" candidates="$2" id scope original owner
+  while IFS=$'\t' read -r id scope original; do
+    [[ -n "$id" ]] || continue
+    owner="$(active_footprint_conflict "$scope" "$active" "$id" "${original:-$scope}")" || return 1
+    [[ -z "$owner" ]] || printf '%s\t%s\n' "$id" "$owner"
+  done <<<"$candidates"
+}
+footprint_shadow_directory_rule() {
+  [[ "${ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING:-0}" != 1 ]] || return 0
+  local id="$1" active="$2" old_owner
+  old_owner="$(ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING=1 active_footprint_conflict "${TICK_CHECK_SCOPE[$id]:-[]}" "$active" "$id")" || return 1
+  [[ -z "$old_owner" ]] || say "footprint-shadow-old-rule-would-block unit=$id owner=$old_owner source=directory-prefix"
+}
 footprint_refresh_conflicts() {
   local refresh="${1:-true}" started=$SECONDS active candidates='' conflicts id scope owner elapsed
   if [[ "$refresh" == true ]]; then
@@ -207,7 +242,7 @@ footprint_refresh_conflicts() {
   for id in "${TICK_FOOTPRINT_PREFLIGHT_IDS[@]}"; do
     [[ -n "$id" ]] || continue
     scope="${TICK_CHECK_SCOPE[$id]:-[]}"
-    candidates+="$id"$'\t'"$scope"$'\n'
+    candidates+="$id"$'\t'"$scope"$'\t'"${TICK_FOOTPRINT_CACHE[$id]:-$scope}"$'\n'
   done
   conflicts="$(active_footprint_conflicts_batch "$active" "$candidates")" \
     || { footprint_drop_check_scope_cache; return 1; }
@@ -333,20 +368,21 @@ hotspot_expand_batch() { # Includes old-rule scope and counts for attribution wi
 }
 # shared-append 精确路径从足迹里剥离后再做互斥比较：两边只剩 shared-append 文件时不算冲突
 # （不再串行 implement），文本冲突交给落地 rebase 处理，冲突率由 node_health 的
-# ci.shared_append_rebase_conflict_pct 观测。目录条目不剥离：整包范围仍覆盖非共享文件，保持互斥。
+# ci.shared_append_rebase_conflict_pct 观测。目录保留，供无已知文件时保守匹配。
 footprint_strip_shared_append() { # scope_json -> 去掉 shared-append 精确路径后的 scope
   local scope="$1"
   local shared="${SHARED_APPEND:-[]}"
   [[ "$shared" != '[]' ]] || { printf '%s\n' "$scope"; return; }
-  jqf -c --slurpfile sa <(printf '%s' "$shared") 'map(select(. as $x | any($sa[0][]; . == $x) | not))' <<<"$scope"
+  jqf -c --slurpfile sa <(printf '%s' "$shared") 'map(select(test("(^|/)migrations/meta/_journal\\.json$") or (. as $x | any($sa[0][]; . == $x) | not)))' <<<"$scope"
 }
 footprint_match_detail() ( # candidate scope, original scope, owner scope, count map
   REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
   source "$SCHEDULER_AGENT_LIB" || exit 2
-  local candidate owner origin count
+  local candidate owner origin count original
+  original="$(footprint_strip_shared_append "$2")"
   candidate="$(footprint_strip_shared_append "$1")"
   owner="$(footprint_strip_shared_append "$3")"
-  if expected_packages_collide "$candidate" "$owner"; then
+  if footprint_scopes_collide "$candidate" "$owner" "$original"; then
     candidate="$EXPECTED_SCOPE_COLLISION_CANDIDATE"
     origin=expansion
     if jq -e --arg p "$candidate" 'index($p) != null' <<<"$2" >/dev/null; then origin=original; fi
@@ -402,7 +438,10 @@ _footprint_room() {
       footprint_wait_mark "$id" "$conflict" "$u"
       return 1
     fi
-    [[ -n "${TICK_FOOTPRINT_CACHE[$id]+cached}" ]] && return 0
+    if [[ -n "${TICK_FOOTPRINT_CACHE[$id]+cached}" ]]; then
+      footprint_shadow_directory_rule "$id" "$TICK_ACTIVE_FOOTPRINTS"
+      return 0
+    fi
   fi
   scope="$(scheduler_footprint "$u")" || return 1
   if [[ -n "${TICK_FOOTPRINT_CACHE[$id]+cached}" ]]; then
@@ -432,23 +471,27 @@ _footprint_room() {
     TICK_ACTIVE_FOOTPRINTS_VALID=true
     refreshed=true
   fi
-  conflict="$(active_footprint_conflict "$check_scope" "$active" "$id")" || return 1
+  conflict="$(active_footprint_conflict "$check_scope" "$active" "$id" "$scope")" || return 1
   if [[ -n "$conflict" ]]; then
     footprint_wait_mark "$id" "$conflict" "$u"
     return 1
   fi
-  [[ "$require_fresh" == true ]] || return 0
+  if [[ "$require_fresh" != true ]]; then
+    footprint_shadow_directory_rule "$id" "$active"
+    return 0
+  fi
   # A cached conflict can conservatively reject a candidate. A candidate that
   # appears clear must refresh every active worktree before it can be admitted.
   if [[ "$refreshed" != true ]]; then
     active="$(active_footprint_snapshot)" || return 1
     TICK_ACTIVE_FOOTPRINTS="$active"
-    conflict="$(active_footprint_conflict "$check_scope" "$active" "$id")" || return 1
+    conflict="$(active_footprint_conflict "$check_scope" "$active" "$id" "$scope")" || return 1
     if [[ -n "$conflict" ]]; then
       footprint_wait_mark "$id" "$conflict" "$u"
       return 1
     fi
   fi
+  footprint_shadow_directory_rule "$id" "$active"
   footprint_shadow_old_rule "$id" "$active"
 }
 footprint_room() { # unit type; report checks that materially delay dispatch

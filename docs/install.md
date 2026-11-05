@@ -280,3 +280,10 @@ These are the places where the engine is still tied to the environment it was ex
 10. **The installer is new.** `cli/*.test.mjs` runs `init`, `upgrade` and `uninstall` against a throwaway `HOME`, a local bare repository and fake `gh` and `systemctl`. Nothing runs the installed pipeline against a real GitHub repository in CI, and the launchd path is generated and tested as text only. The shell test suites source `engine/test-env.sh`, which isolates `HOME` and `AGENT_HOME`.
 
 11. **Security.** Workers run with broad permissions by default: Codex runs in `danger-full-access`, and ZCode runs in yolo mode. Run the engine under a dedicated OS account on a machine you can rebuild. See the note in `architecture.md`, section 11.
+
+The scheduler normally compares known files when a footprint contains directories.
+If a unit has directory entries but no known files, directory prefix matching remains
+conservative and it waits on overlapping scopes. To restore prefix matching for all
+directory entries, set `ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING=1` in
+`~/.zenoforge/env` and restart the scheduler service. The migration journal remains
+serialized in either mode.

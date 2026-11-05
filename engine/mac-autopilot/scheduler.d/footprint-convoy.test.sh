@@ -112,6 +112,32 @@ if footprint_room candidate "$(jq -c '.units[] | select(.id=="candidate")' "$UNI
 grep -Fq 'footprint wait unit=candidate owner=owner candidate_path=src/hot owner_path=src/hot source=expansion cochange_count=2' "$LOG" || fail 'expansion attribution missing'
 unset ZF_FOOTPRINT_HOTSPOT_MIN
 
+# Directory predictions only conflict on known shared files, unless a side has no known files.
+mkdir -p "$ROOT/packages/fleet-gateway/src/auth" "$ROOT/migrations/meta"
+touch "$ROOT/packages/fleet-gateway/src/auth/browser-session.test.ts" "$ROOT/packages/fleet-gateway/src/other.ts" "$ROOT/migrations/meta/_journal.json"
+git -C "$ROOT" add .
+git -C "$ROOT" commit -qm directories
+git -C "$ROOT" update-ref refs/remotes/origin/main HEAD
+dirs='["packages/fleet-gateway","packages/fleet-gateway/src/other.ts"]'
+owner='[{"id":"owner","footprint":["packages/fleet-gateway/src/auth/browser-session.test.ts"]}]'
+[[ -z "$(active_footprint_conflict "$dirs" "$owner" candidate)" ]] || fail 'directory prefix blocked unrelated file'
+shared='["packages/fleet-gateway","packages/fleet-gateway/src/auth/browser-session.test.ts"]'
+[[ "$(active_footprint_conflict "$shared" "$owner" candidate)" == owner ]] || fail 'shared file admitted'
+[[ "$(active_footprint_conflict '["packages/fleet-gateway"]' "$owner" candidate)" == owner ]] || fail 'unknown directory-only unit admitted'
+[[ "$(active_footprint_conflict '["packages/fleet-gateway/src/other.ts"]' '[{"id":"owner","footprint":["packages/fleet-gateway"]}]' candidate)" == owner ]] || fail 'unknown directory-only owner admitted'
+[[ "$(active_footprint_conflict "$dirs" "$owner" candidate '["packages/fleet-gateway"]')" == owner ]] || fail 'hotspot expansion masked unknown directory-only scope'
+ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING=1
+[[ "$(active_footprint_conflict "$dirs" "$owner" candidate)" == owner ]] || fail 'legacy switch did not restore prefix matching'
+unset ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING
+journal='[{"id":"owner","footprint":["migrations/meta/_journal.json"]}]'
+[[ "$(active_footprint_conflict '["migrations/meta","packages/fleet-gateway/src/other.ts"]' "$journal" candidate)" == owner ]] || fail 'migration journal admitted'
+SHARED_APPEND='["migrations/meta/_journal.json"]'
+[[ "$(active_footprint_conflict '["migrations/meta/_journal.json"]' "$journal" candidate)" == owner ]] || fail 'shared-append removed migration journal lock'
+SHARED_APPEND='[]'
+TICK_OLD_SCOPE[candidate]="$dirs" TICK_CHECK_SCOPE[candidate]="$dirs"
+footprint_shadow_directory_rule candidate "$owner"
+grep -Fq 'footprint-shadow-old-rule-would-block unit=candidate owner=owner' "$LOG" || fail 'directory shadow missing'
+
 # The merge skip records the main-side revision even when conflict files are unavailable.
 (
   set_unit() { :; }
