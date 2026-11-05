@@ -424,6 +424,10 @@ unit_review_author_identity() { # unit JSON → the model/backend that last wrot
   [[ -n "$effort" ]] || effort="$(jqf -r '.implement_effort // "max"' <<<"$unit_json")"
   if [[ -n "$backend" && -n "$model" ]]; then
     printf '%s:%s:%s\n' "$backend" "$model" "$effort"
+  elif [[ -z "$model" && "$unit_id" == pr-* ]]; then
+    # No worker wrote this PR, so only its commits can name the author: all of them must carry Claude's trailer, else the review waits.
+    [[ "$(gh pr view "${unit_id#pr-}" --json commits -q '[.commits[] | any(.authors[]; .email=="noreply@anthropic.com")] | all' 2>/dev/null)" == true ]] \
+      && printf 'claude:unknown:max\n'
   else
     review_identity_for_model "$model" "$effort"
   fi

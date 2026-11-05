@@ -116,6 +116,17 @@ write_units "$(jq -cn --argjson unit "$unit_json" '{units:[$unit]}')"
 write_workers '{workers:[]}'
 dispatch_selected_review "$unit_json" || fail 'Claude-authored review did not dispatch'
 [[ "$DISPATCH_MODEL:$DISPATCH_EFFORT" == 'GLM-5.3:max' ]] || fail "Claude-authored review selected $DISPATCH_MODEL:$DISPATCH_EFFORT"
+# A PR with no worker record: Co-Authored-By on all its commits names the author, and without that it waits.
+outside_pr='{"id":"pr-901","pr":901,"stage":"review-pending"}'
+write_units "$(jq -cn --argjson unit "$outside_pr" '{units:[$unit]}')"
+gh() { printf '%s\n' "$ALL_COMMITS_CLAUDE"; }
+ALL_COMMITS_CLAUDE=true
+dispatch_selected_review "$outside_pr" || fail 'a Claude-authored PR from outside the pipeline never reached a reviewer'
+[[ "$DISPATCH_MODEL:$DISPATCH_EFFORT" == 'GLM-5.3:max' ]] || fail "outside PR review selected $DISPATCH_MODEL:$DISPATCH_EFFORT"
+ALL_COMMITS_CLAUDE=false
+if dispatch_selected_review "$outside_pr"; then fail 'a PR with any commit lacking the Claude trailer must keep waiting'; fi
+unset -f gh
+write_units "$(jq -cn --argjson unit "$unit_json" '{units:[$unit]}')"
 set_cooldowns "$((NOW_EPOCH + 1800))" 0
 dispatch_selected_review "$unit_json" || fail 'Claude-authored review did not fall back to the other family during a GLM hold'
 [[ "$(provider_of "$DISPATCH_MODEL")" == codex ]] || fail "Claude-authored review fell back to $DISPATCH_MODEL, not Codex"
