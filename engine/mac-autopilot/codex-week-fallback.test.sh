@@ -27,20 +27,33 @@ SCHED_MODEL_POLICY_JSON='{}'
 week() { jq -n --argjson p "$1" --argjson r "$2" '{week_pct:$p,week_reset:$r}' > "$CODEX_QUOTA_SNAPSHOT_FILE"; }
 sticky='{"id":"u","implement_provider":"codex","implement_route_provider":"codex"}'
 
-week 98 $((NOW_EPOCH + 3600))
-pick_configured_model review '{}' || fail 'review had no model at 98%'
-[[ "$PICK_PROVIDER" == claude ]] || fail "review stayed on $PICK_PROVIDER at 98%"
-pick_implementer "$sticky" || fail 'sticky Codex repair stopped at 98%'
+week 100 $((NOW_EPOCH + 3600))
+pick_configured_model review '{}' || fail 'review had no model at the wall'
+[[ "$PICK_PROVIDER" == claude ]] || fail "review stayed on $PICK_PROVIDER at the wall"
+pick_implementer "$sticky" || fail 'sticky Codex repair stopped at the wall'
 [[ "$PICK_PROVIDER" == claude && "$PICK_REASON" == quota-fallback-to-claude ]] || fail "repair went to $PICK_PROVIDER/$PICK_REASON"
-pick_implementer '{"id":"h","hard_escalated":true}' || fail 'hard unit stopped at 98%'
+pick_implementer '{"id":"h","hard_escalated":true}' || fail 'hard unit stopped at the wall'
 [[ "$PICK_PROVIDER" == claude && "$PICK_REASON" == hard-fallback-claude && "$PICK_HARD" == true ]] || fail "hard went to $PICK_PROVIDER/$PICK_REASON"
 
 CFG="$(jq '.models.implement_share.claude=0' <<<"$CFG")"
 if pick_implementer "$sticky"; then fail 'claude share 0 still routed to Claude'; fi
 CFG="$(jq '.models.implement_share.claude=50' <<<"$CFG")"
 
-week 98 $((NOW_EPOCH - 1))
+week 100 $((NOW_EPOCH - 1))
 pick_configured_model review '{}' && [[ "$PICK_PROVIDER" == codex ]] || fail 'a past week_reset did not end the stop'
 week 80 $((NOW_EPOCH + 3600))
 pick_configured_model review '{}' && [[ "$PICK_PROVIDER" == codex ]] || fail 'review left Codex at 80%'
+
+# Implementation stops at 95 and moves to ZCode; reviews stay on Codex up to the wall. With Claude off, every path that used it reaches ZCode.
+pick_zcode_implementer() { PICK_PROVIDER=zcode; PICK_MODEL=GLM-5.3; PICK_EFFORT=max; PICK_HARD=false; }
+CFG="$(jq '.models.implement_share.claude=0 | del(.models.review_fallback)' <<<"$CFG")"
+week 98 $((NOW_EPOCH + 3600))
+pick_configured_model review '{}' && [[ "$PICK_PROVIDER" == codex ]] || fail 'review left Codex below the wall'
+pick_implementer "$sticky" && [[ "$PICK_PROVIDER" == zcode ]] || fail "implementation stayed on $PICK_PROVIDER at 98%"
+pick_implementer '{"id":"c","implement_provider":"claude"}' || fail 'sticky Claude unit had no route at share 0'
+[[ "$PICK_PROVIDER" == zcode && "$PICK_REASON" == claude-share-off-zcode ]] || fail "sticky Claude went to $PICK_PROVIDER/$PICK_REASON"
+week 100 $((NOW_EPOCH + 3600))
+pick_implementer '{"id":"h","hard_escalated":true}' || fail 'hard unit had no route at the wall'
+[[ "$PICK_PROVIDER" == zcode && "$PICK_REASON" == hard-fallback-zcode && "$PICK_HARD" == true ]] || fail "hard went to $PICK_PROVIDER/$PICK_REASON"
+if pick_configured_model review '{}'; then fail 'review had a model at the wall with no fallback'; fi
 echo 'ok - over the weekly stop, reviews, repairs and hard units move to Claude; share 0 and a reset are honoured'

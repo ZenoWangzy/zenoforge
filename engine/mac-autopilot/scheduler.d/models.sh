@@ -209,7 +209,7 @@ pick_codex_work_identity() { # work policy role, with legacy models.implement as
   if jqf -e 'any(.labels[]?; . == "hotfix")' <<<"$1" >/dev/null 2>&1; then
     if pick_configured_model implement "$1" && [[ "$PICK_PROVIDER" == codex ]]; then
       command -v codex >/dev/null 2>&1 || return 1
-      codex_week_stopped && return 1
+      codex_week_stopped "${CODEX_IMPLEMENT_STOP_PCT:-95}" && return 1
       cooling codex && return 1
       return 0
     fi
@@ -225,7 +225,7 @@ pick_codex_work_identity() { # work policy role, with legacy models.implement as
     [[ "$PICK_PROVIDER" == codex ]] || return 1
   fi
   command -v codex >/dev/null 2>&1 || return 1
-  codex_week_stopped && return 1
+  codex_week_stopped "${CODEX_IMPLEMENT_STOP_PCT:-95}" && return 1
   cooling codex && return 1
   return 0
 }
@@ -296,6 +296,10 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
         PICK_ROUTE_PROVIDER=claude; PICK_HARD=true; PICK_REASON=hard-fallback-claude
         return 0
       fi
+      if pick_zcode_implementer; then
+        PICK_ROUTE_PROVIDER=zcode; PICK_HARD=true; PICK_REASON=hard-fallback-zcode
+        return 0
+      fi
       say "hard implementation provider unavailable provider=$actual unit=$(jqf -r '.id // empty' <<<"$u")"
       return 1
     }
@@ -348,9 +352,10 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
     else reason=claude-unavailable-fallback-to-codex; fi
     if pick_codex_work_identity "$u"; then PICK_REASON="$reason"; return 0; fi
   elif [[ "$preferred" == claude ]]; then
-    # Share 0 is the kill switch: sticky Claude units go back to Codex too (a fresh session; repair never resumes across providers).
+    # Share 0 is the kill switch: sticky Claude units go to Codex, or ZCode over its stop (a fresh session; repair never resumes across providers).
     reason=claude-share-off-codex
     pick_codex_work_identity "$u" && { PICK_REASON="$reason"; return 0; }
+    pick_zcode_implementer && { PICK_REASON=claude-share-off-zcode; return 0; }
   elif [[ "$preferred" == zcode ]]; then
     status="$(zcode_quota_status)"
     if pick_zcode_implementer; then PICK_REASON="$reason"; return 0; fi

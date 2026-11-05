@@ -110,7 +110,7 @@ for n in 920101 920103; do jq -nc --argjson issue "$n" --argjson result "$VALID"
 week() { jq -n --argjson p "$1" --argjson r "$(( $(date +%s) + 3600 ))" '{week_pct:$p,week_reset:$r}' > "$AGENT_HOME/codex-quota.json"; }
 
 # Over the stop: batch runner. Codex is never called; the haiku result applies through run-triage.sh --batch-result.
-week 98
+week 100
 : > "$FAKE_CODEX_ARGS"; : > "$FAKE_CLAUDE_ARGS"; : > "$FAKE_GH_LOG"
 OUT="$(bash "$SCRIPT_DIR/run-triage-batch.sh" --scheduled 920101 2>&1)" || { echo "not ok - batch over the stop exits 0"; FAILED=1; }
 assert_eq "batch over the stop makes no Codex call" 0 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"

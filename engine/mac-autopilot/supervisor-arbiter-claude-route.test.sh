@@ -34,7 +34,7 @@ printf '#!/usr/bin/env bash\nprintf "claude " >> "$FIXTURE/claude.calls"; printf
 chmod +x "$fixture/bin/codex" "$fixture/bin/claude"
 export FIXTURE="$fixture" PATH="$fixture/bin:$PATH"
 
-stop() { jq -n --argjson r "$(( $(date +%s) + 3600 ))" '{week_pct:98,week_reset:$r}' > "$CODEX_QUOTA_SNAPSHOT_FILE"; }
+stop() { jq -n --argjson r "$(( $(date +%s) + 3600 ))" '{week_pct:100,week_reset:$r}' > "$CODEX_QUOTA_SNAPSHOT_FILE"; }
 nostop() { jq -n '{week_pct:10,week_reset:0}' > "$CODEX_QUOTA_SNAPSHOT_FILE"; }
 reset() { # unit-json
   printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; rm -f "$fixture"/*.calls "$fixture/claude.stdin"

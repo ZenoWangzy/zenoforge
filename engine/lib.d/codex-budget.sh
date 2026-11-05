@@ -353,11 +353,12 @@ provider_quota_exhausted() {
   [ "$now" -lt "$until" ]
 }
 
-# Weekly Codex quota runs out days before it resets: stop new Codex work at CODEX_WEEK_STOP_PCT so reviews and repairs move to
-# Claude and ZCode while the rest stays for what only Codex can do. The snapshot's week_reset ends the stop.
-codex_week_stopped() {
+# Weekly Codex stop. Nothing is reserved for hotfix work, so Codex runs to the weekly wall (CODEX_WEEK_STOP_PCT, default 100).
+# Implementation leaves earlier, at CODEX_IMPLEMENT_STOP_PCT, so the end of the week pays for reviews and the arbiter while ZCode
+# writes the code. The snapshot's week_reset ends both stops.
+codex_week_stopped() { # [stop percent]
   provider_quota_exhausted codex && return 0
-  command jq -e --argjson stop "${CODEX_WEEK_STOP_PCT:-95}" --argjson now "${NOW_EPOCH:-$(date +%s)}" \
+  command jq -e --argjson stop "${1:-${CODEX_WEEK_STOP_PCT:-100}}" --argjson now "${NOW_EPOCH:-$(date +%s)}" \
     '(.week_pct // 0) >= $stop and (.week_reset // 0) > $now' "${CODEX_QUOTA_SNAPSHOT_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/codex-quota.json}" >/dev/null 2>&1
 }
 
