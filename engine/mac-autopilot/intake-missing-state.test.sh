@@ -21,7 +21,9 @@ mkdir -p "$AGENT_HOME/state" "$A/alerts"
 printf '%s\n' '{"units":[{"id":"issue-2826","issue":2826,"branch":"agent/issue-2826","stage":"blocked-external","pr":null}]}' > "$UNITS"
 
 source "$script_dir/scheduler.d/core.sh"
+source "$script_dir/scheduler.d/units.sh"
 source "$script_dir/scheduler.d/intake.sh"
+UNITS_ARCHIVE="$A/units-archive.json"
 
 hotfix_lane_label() { printf 'hotfix-lane\n'; }
 hotfix_issue_numbers() { return 0; }
