@@ -1,6 +1,6 @@
 # Zenoforge
 
-A self-hosted software factory: coding agents take GitHub issues through triage, implementation, review, CI repair and merge. Some tickets are routed to a person, and the maintainer gets mail for decisions.
+A self-hosted software factory: coding agents take GitHub issues through triage, implementation, review, CI repair and merge. The goal is an unattended, self-healing factory. Today some tickets are still routed to a person, a gap to remove, and the maintainer gets mail for decisions.
 
 ## Quickstart
 

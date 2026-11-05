@@ -1,5 +1,7 @@
 # Zenoforge
 
+Goal: an unattended, fully automatic, self-healing software factory. No human in the loop is the target, so do not propose human-intervention metrics or new hand-offs to a person. The `ready-for-human` and `needs-info` exits are gaps to remove, not features to keep.
+
 A self-hosted software factory: coding agents take GitHub issues through triage, recut, implement, review, repair and merge. The engine is Bash, Node and Python under `engine/`; `docs/architecture.md` maps it.
 
 ## Method: Matt skills
