@@ -130,7 +130,7 @@ if [[ "${1:-}" == --plant-old ]]; then
 fi
 
 set +e
-bash "$0" --plant-old > "$tmp/planted-old.out" 2>&1
+test_env_run_clean bash "$0" --plant-old > "$tmp/planted-old.out" 2>&1
 planted_old_status=$?
 set -e
 assert_eq 'planted pre-fix bell reproduces the missing timeout incident' "$planted_old_status" 1

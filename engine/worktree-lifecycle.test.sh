@@ -2222,7 +2222,7 @@ find "$NIGHT/cleanup-archive" -maxdepth 1 -type f -name 'rescued-issue-4242-stal
 
 for regression_case in finish-offline advisor-run-owner release-cleanup backlog-sweep origin-fetch-retry main-patch-progress rescue-patch-archive-timeout rescue-ref-sweep-scale rescue-ref-sweep-diverse-scale rescue-ref-sweep-off-main-scale rescue-patch-equivalent rescue-patch-multi-equivalent rescue-patch-scan-timeout rescue-ref-sweep-batch remote-branch-sweep-scale rescue-query-timeout-phase rescue-issue-query-fallback-budget pr-list-partial rescue-issue-partial rescue-issue-cache locks lock-unit owner-live-hand-lock owner-live-broad-scan cwd-owner-batch stale-registration primary-session-worktrees rescue-retention resume-checkpoint \
   hand-resume-blocked hand-resume-blocked-then-followup hand-resume-no-report hand-resume-done hand-resume-expired dispatch-refused-load pr-rows-cache; do
-  WORKTREE_LIFECYCLE_CASE="$regression_case" bash "$0"
+  WORKTREE_LIFECYCLE_CASE="$regression_case" test_env_run_clean bash "$0"
 done
 
 printf 'ok - both repos reaped; live and open-issue rescues kept; squash/closed rescues archived\n'
