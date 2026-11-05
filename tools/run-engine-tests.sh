@@ -2,6 +2,7 @@
 # Run the engine test suites, optionally one shard of them: run-engine-tests.sh [shard] [shards]
 set -uo pipefail
 cd "$(dirname "$0")/.."
+source tools/run-engine-tests-helpers.sh
 shard=${1:-0} shards=${2:-1} timeout_s=${SUITE_TIMEOUT:-600}
 # *.test.py files are driven by their *.test.sh wrapper (it sources test-env.sh: isolated HOME and AGENT_HOME, test mode); run alone
 # they lack that environment and execution-admission-metrics.test.py drops its metric rows. Upstream discovers only .test.sh and .test.mjs.
@@ -34,10 +35,15 @@ for t in "${suites[@]}"; do
   log="test-logs/${t//\//__}.log"; mkdir -p test-logs
   # Scheduler partitions run real ticks and retain the existing scheduler limit.
   limit=$timeout_s; [[ $t == engine/mac-autopilot/scheduler.test.sh || $t == engine/mac-autopilot/scheduler-part-*.test.sh ]] && limit=${SCHEDULER_SUITE_TIMEOUT:-3000}
+  started=$SECONDS
   if timeout -s KILL "$limit" "${cmd[@]}" > "$log" 2>&1; then
+    elapsed=$((SECONDS - started))
+    engine_test_log_if_slow "$t" "$elapsed" "$limit"
     pass=$((pass + 1)); echo "PASS $t"; rm -f "$log"
   else
-    rc=$?; fail=$((fail + 1)); failed+=("$t rc=$rc"); echo "FAIL $t rc=$rc"; tail -15 "$log" | sed 's/^/    /'
+    rc=$?; elapsed=$((SECONDS - started))
+    engine_test_log_if_slow "$t" "$elapsed" "$limit"
+    fail=$((fail + 1)); failed+=("$t rc=$rc"); echo "FAIL $t rc=$rc"; tail -15 "$log" | sed 's/^/    /'
   fi
 done
 echo "shard $shard/$shards: $pass passed, $fail failed, $skipped quarantined"
