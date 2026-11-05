@@ -118,7 +118,7 @@ merge_census_watch() { # missed=1/0：本拍 merge lane 是否出现 check censu
 # pass in progress (the tick waits; the refill passes 0 and skips).
 run_merge_lane() {
   local fd rc=0
-  exec {fd}>"$A/.merge-lane.lock" || return 1
+  exec {fd}>"${A:-${TMPDIR:-/tmp}}/.merge-lane.lock" || return 1 # the build gate sources this file without the runtime dir
   if ! flock -w "${MERGE_LANE_WAIT:-120}" "$fd"; then
     exec {fd}>&-
     say "merge lane busy: pass skipped"
