@@ -6168,6 +6168,8 @@ sched_case_claude_share_zero_restores_routing() {
 }
 sched_run_case claude_share_zero_restores_routing
 
+# tools/merge-pr.sh runs only the shared prelude.
+[ "${SCHED_TEST_CASE:-}" != prelude ] || exit 0
 if [ -n "${SCHED_TEST_CASE:-}" ]; then
   echo "not ok - scheduler.test.sh: no case matches SCHED_TEST_CASE='$SCHED_TEST_CASE'; known:$sched_case_names" >&2
   exit 2

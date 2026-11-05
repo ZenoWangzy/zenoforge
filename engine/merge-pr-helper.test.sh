@@ -91,7 +91,7 @@ assert_refuses "PR head $PR_HEAD does not match tested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"unit","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -102,7 +102,7 @@ fi
 check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'failed checks: cla, unit'* && "$check_output" == *'checks without a matching ZF_MERGE_OVERRIDE: unit'* ]] \
   || fail "failed check names or unmatched override were not reported: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
   || fail "an unmatched failed check reached merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -111,7 +111,7 @@ check_output="$(ZF_MERGE_OVERRIDE=cla merge_pr_checks_and_merge 17 2>&1)" \
   || fail "named failed-check override did not allow the merge: $check_output"
 [[ "$check_output" == *'explicit ZF_MERGE_OVERRIDE allows failed checks: cla'* ]] \
   || fail "merge did not print the failed check covered by its override: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
   || fail "pending check or named override did not reach squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS=gh-error
@@ -180,5 +180,17 @@ PR_FILES='["tools/merge-pr.sh"]'
 )
 ZF_MERGE_OVERRIDE=prior-art expect_prior_art_merge 'prior-art override'
 [[ "$(cat "$fixture/check-output")" == *'skips the prior-art check for PR #17'* ]] || fail 'override was not logged'
+
+# A scheduler change runs the scheduler.test.sh prelude; a red prelude refuses, other changes skip it.
+merge_pr_scheduler_prelude() { echo called >> "$fixture/prelude-calls"; echo 'not ok - stale grep'; return 1; }
+: > "$fixture/prelude-calls"
+PR_CHECKS='[]' PR_FILES='["tools/merge-pr.sh"]' PR_BODY=$'## prior-art\nno external prior art: test fixture'
+merge_pr_scheduler_prelude_ok 17 || fail 'a non-scheduler PR was refused by the prelude check'
+[[ ! -s "$fixture/prelude-calls" ]] || fail 'a non-scheduler PR ran the prelude'
+PR_FILES='["engine/mac-autopilot/scheduler.d/models.sh"]'
+: > "$fixture/gh-calls"
+if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail 'a red prelude did not refuse the merge'; fi
+[[ "$(cat "$fixture/check-output")" == *'prelude failed: not ok - stale grep'* ]] || fail "prelude refusal lost its reason: $(cat "$fixture/check-output")"
+! grep -q '^merge:' "$fixture/gh-calls" || fail 'a red prelude still merged'
 
 echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, and applies exact named overrides, and requires a prior-art section unless test-only or overridden'

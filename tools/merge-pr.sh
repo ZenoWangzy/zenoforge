@@ -101,6 +101,28 @@ merge_pr_size_ok() {
   merge_pr_refuse "$pr" "$over"
 }
 
+
+# The prelude of scheduler.test.sh holds the text assertions every shard runs, so one stale grep turns all eight red.
+merge_pr_scheduler_prelude() {
+  local pr="$1" root tree rc=0
+  root="$(merge_pr_root)" || return 0
+  git -C "$root" fetch -q origin "pull/$pr/head" || return
+  tree="$(mktemp -d)"
+  if git -C "$root" archive FETCH_HEAD | tar -x -C "$tree"; then
+    SCHED_TEST_CASE=prelude timeout 300 bash "$tree/engine/mac-autopilot/scheduler.test.sh" 2>&1 | tail -3
+    rc=${PIPESTATUS[0]}
+  else
+    rc=1
+  fi
+  rm -rf -- "$tree"
+  return "$rc"
+}
+merge_pr_scheduler_prelude_ok() {
+  local pr="$1" out
+  gh pr view "$pr" --json body,files,commits 2>/dev/null | jq -e '[.files[].path | select(test("^engine/mac-autopilot/scheduler(\\.sh|\\.d/|\\.test\\.sh)"))] | length > 0' >/dev/null || return 0
+  out="$(merge_pr_scheduler_prelude "$pr")" && return 0
+  merge_pr_refuse "$pr" "scheduler.test.sh prelude failed: $out"
+}
 # A merged PR's own CI proves nothing the main run will not, and it holds hosted slots through a merge burst.
 merge_pr_cancel_ci() {
   local pr="$1" sha id
@@ -154,6 +176,7 @@ merge_pr_checks_and_merge() {
     merge_pr_prior_art_ok "$pr" || return 1
   fi
   merge_pr_size_ok "$pr" || return 1
+  merge_pr_scheduler_prelude_ok "$pr" || return 1
 
   while IFS= read -r check_name; do
     [[ -n "$check_name" ]] || continue
