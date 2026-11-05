@@ -121,6 +121,16 @@ read_needs_info_email_replies
 check 'email polling yields at its subslot cutoff before another network call' "$GH_LIST_CALLS" 0
 unset ZF_NEEDS_INFO_EMAIL_STOP_AT_SECONDS
 
+# No state file records a Gmail thread: nothing to poll, so no GitHub listing.
+REPO=test/repo; STATE_DIR="$test_env_root/needs-info-state"; mkdir -p "$STATE_DIR"
+printf '{"attempts":0}\n' > "$STATE_DIR/1.json"
+gh() { printf x >> "$STATE_DIR/gh-calls"; return 1; }
+read_needs_info_email_replies
+check 'needs-info poll skips the issue listing when no state holds a thread id' "$(wc -c < "$STATE_DIR/gh-calls" 2>/dev/null || echo 0)" 0
+printf '{"needs_info_thread_id":"t1"}\n' > "$STATE_DIR/2.json"
+read_needs_info_email_replies
+check 'needs-info poll lists issues once a state holds a thread id' "$(wc -c < "$STATE_DIR/gh-calls")" 1
+
 eval "$(sed -n '/^gmail_now_epoch_ms() {/,/^}/p; /^gmail_deadline_timeout_seconds() {/,/^}/p; /^gmail_access_token() {/,/^}/p; /^gmail_curl() {/,/^}/p' "$SCRIPT_DIR/notify.sh")"
 GMAIL_TIMEOUT_SECONDS=15
 fake_gcloud="$test_env_root/fake-gcloud"

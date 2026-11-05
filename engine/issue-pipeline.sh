@@ -1114,6 +1114,9 @@ read_needs_info_email_replies() {
     echo "issue-pipeline: needs-info email poll yielded at its reserved cutoff elapsed_sec=$SECONDS stop_at=$email_stop_at" >&2
     return 0
   fi
+  # Only an issue whose state records a Gmail thread can have a reply to read,
+  # so the 1000-issue GitHub listing is paid only when such a state file exists.
+  grep -qs '"needs_info_thread_id"' "$STATE_DIR"/*.json || return 0
   issue_rows="$(gh issue list --repo "$REPO" --limit 1000 --state open --json number,labels)" || return 0
   while IFS= read -r issue_row; do
     if [[ "$email_stop_at" =~ ^[0-9]+$ ]] && (( SECONDS >= email_stop_at )); then
