@@ -24,4 +24,13 @@ out=$(run 2>&1) && grep -q 'OK (0 dropped' <<<"$out" || { echo "FAIL: restored f
 rm "$t/new/engine/mac-autopilot/zombie-watch.sh"
 sed -i '3d' "$t/new/engine/mac-autopilot/zombie-loop.sh"
 out=$(run 2>&1) && grep -q 'OK (1 dropped' <<<"$out" || { echo "FAIL: unreferenced drop: $out"; exit 1; }
+# A consumer the build ships beside the engine (an injected skill tree) references the dropped file: must fail too,
+# and an intended-change row must still approve it (2026-11-03: the advisor skill lost cdp-page-registry.cjs this way).
+mkdir -p "$t/new/.agents/skills/web-advisor-provider"
+printf '%s\n' '#!/usr/bin/env node' "require(zfHostOpsFile('engine/mac-autopilot/zombie-watch.sh'))" > "$t/new/.agents/skills/web-advisor-provider/ask.cjs"
+rc=0; out=$(run 2>&1) || rc=$?
+[[ $rc == 1 ]] && grep -q 'zombie-watch.sh.*.agents/skills/web-advisor-provider/ask.cjs:2' <<<"$out" || { echo "FAIL: consumer-referenced drop passed: $out"; exit 1; }
+out=$(run "$t/intended.tsv" 2>&1) || { echo "FAIL: intended drop still flagged for consumer: $out"; exit 1; }
+rm -rf -- "$t/new/.agents"
+out=$(run 2>&1) && grep -q 'OK (1 dropped' <<<"$out" || { echo "FAIL: unreferenced drop after consumer removed: $out"; exit 1; }
 echo "dropped-file-refs-check.test.sh: PASS"
