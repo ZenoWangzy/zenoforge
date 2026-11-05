@@ -39,6 +39,11 @@ worktree_cleanup_block_reason() { # dir -> reason when deleting it could lose re
   return 1
 }
 
+# Engine version trees are read-only, and plain rm -rf cannot empty a read-only directory.
+remove_readonly_tree() {
+  find "$1" -type d ! -perm -u=w -exec chmod u+w -- {} + 2>/dev/null
+  rm -rf -- "$1"
+}
 cleanup_tick() {
   local id wt n_total b track r block_reason
   # eval 在途（pending/running）的单元保留 worktree：#4656 起 eval 并行跑，可能在单元 merged 之后才结束。
@@ -62,13 +67,18 @@ cleanup_tick() {
   # 只删一天无写入的超大日志：活 worker 的日志仍在写，不会被删。
   find "$SUP" -maxdepth 1 -name '*.worker.log' -size +4M -mmin +1440 -delete 2>/dev/null
   # worker 临时目录（runtime-env.sh 的 AP_TMPDIR）：一天没动的条目回收。
-  [[ -n "${AP_TMPDIR:-}" && -d "$AP_TMPDIR" ]] && find "$AP_TMPDIR" -mindepth 1 -maxdepth 1 -mmin +1440 -exec rm -rf -- {} + 2>/dev/null
+  local tmp_entry
+  if [[ -n "${AP_TMPDIR:-}" && -d "$AP_TMPDIR" ]]; then
+    while IFS= read -r -d '' tmp_entry; do
+      remove_readonly_tree "$tmp_entry" 2>/dev/null
+    done < <(find "$AP_TMPDIR" -mindepth 1 -maxdepth 1 -mmin +1440 -print0 2>/dev/null)
+  fi
   # worker 常把日志、构建直接写到 /tmp（不走 TMPDIR）：WSL 的 /tmp 是 3.9G tmpfs，10-21 18:4x 再次写满（L72）。
   # 只收本用户、里外都 6 小时没写过的顶层条目；Claude Code 自己的 claude-* 不动，在跑的构建有新写入不会被收。
   local sys_tmp="${AP_SYSTEM_TMP:-/tmp}" e
   if [[ "${AP_SYSTEM_TMP_FS:-$(stat -f -c %T "$sys_tmp" 2>/dev/null)}" == tmpfs ]]; then
     while IFS= read -r -d '' e; do
-      [[ -z "$(find "$e" -mmin -360 -print -quit 2>/dev/null)" ]] && rm -rf -- "$e"
+      [[ -z "$(find "$e" -mmin -360 -print -quit 2>/dev/null)" ]] && remove_readonly_tree "$e"
     done < <(find "$sys_tmp" -mindepth 1 -maxdepth 1 -user "$(id -u)" -mmin +360 ! -name 'claude-*' -print0 2>/dev/null)
   fi
   # 本地分支只在"曾跟踪的远端分支已删除（[gone]）"时清理；从未 push 的本地分支不动。每小时一次。

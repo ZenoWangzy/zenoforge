@@ -2394,7 +2394,12 @@ unset AP_TMPDIR
 st="$fixture/sys-tmp"; mkdir -p "$st/old-log-dir" "$st/live-build/out" "$st/claude-1000"
 touch -d '-8 hours' "$st/old-log-dir" "$st/live-build" "$st/claude-1000"; touch "$st/live-build/out/fresh.js"
 printf 'x' > "$st/old.zip"; touch -d '-8 hours' "$st/old.zip"
+mkdir -p "$st/old-engine-sync/versions/id/engine/bin"; printf 'x' > "$st/old-engine-sync/versions/id/engine/bin/f"
+touch -d '-8 hours' "$st/old-engine-sync/versions/id/engine/bin/f" "$st/old-engine-sync/versions/id/engine/bin" \
+  "$st/old-engine-sync/versions/id/engine" "$st/old-engine-sync/versions/id" "$st/old-engine-sync/versions" "$st/old-engine-sync"
+chmod -R a-w "$st/old-engine-sync/versions/id"
 AP_SYSTEM_TMP="$st" AP_SYSTEM_TMP_FS=tmpfs cleanup_tick || :
+[[ ! -e "$st/old-engine-sync" ]] || fail 'system /tmp reap left a read-only engine version tree behind'
 [[ ! -e "$st/old-log-dir" && ! -e "$st/old.zip" && -d "$st/live-build" && -d "$st/claude-1000" ]] \
   || fail "system /tmp reap removed live or Claude entries, or kept stale ones ($(ls "$st" | tr '\n' ' '))"
 mkdir -p "$st/old-on-disk"; touch -d '-8 hours' "$st/old-on-disk"
