@@ -92,7 +92,7 @@ if [[ "$NIGHT_TEST_GROUP" == all ]]; then
   seed_pgid_file="$test_env_root/night-seed.pgid"
   test_group_runner_pgid_file="$seed_pgid_file"
   setsid --wait bash -c 'printf "%s\n" "$$" > "$1"; shift; exec "$@"' _ \
-    "$seed_pgid_file" env HOME="$test_host_home" NIGHT_TEST_GROUP=night-seed \
+    "$seed_pgid_file" env -u ZF_AGENT_TEST_MODE -u ZF_AGENT_TEST_ROOT HOME="$TEST_ENV_HOST_HOME" PATH="$TEST_ENV_HOST_PATH" NIGHT_TEST_GROUP=night-seed \
       NIGHT_TEST_SEED_FIXTURE="$seed_fixture" bash "$night_test_script" &
   test_group_runner_pid=$!
   if wait "$test_group_runner_pid"; then seed_status=0; else seed_status=$?; fi
@@ -114,13 +114,13 @@ if [[ "$NIGHT_TEST_GROUP" == all ]]; then
   recovery_log="$test_env_root/main-ci-recovery.log"
   recovery_pgid_file="$test_env_root/main-ci-recovery.pgid"
   setsid --wait bash -c 'printf "%s\n" "$$" > "$1"; shift; exec "$@"' _ \
-    "$recovery_pgid_file" env HOME="$test_host_home" "${recovery_command[@]}" >"$recovery_log" 2>&1 &
+    "$recovery_pgid_file" env -u ZF_AGENT_TEST_MODE -u ZF_AGENT_TEST_ROOT HOME="$TEST_ENV_HOST_HOME" PATH="$TEST_ENV_HOST_PATH" "${recovery_command[@]}" >"$recovery_log" 2>&1 &
   recovery_pid=$!
   groups_file="$test_env_root/night-test-groups"
   printf '%s\n' "${night_test_groups[@]}" > "$groups_file"
   test_group_runner_pgid_file="$test_env_root/night-test-groups.pgid"
   setsid --wait bash -c 'printf "%s\n" "$$" > "$1"; shift; exec "$@"' _ \
-    "$test_group_runner_pgid_file" xargs -P "$NIGHT_TEST_JOBS" -I{} env HOME="$test_host_home" NIGHT_TEST_GROUP="{}" NIGHT_TEST_SEED_FIXTURE="$seed_fixture" "${night_group_command[@]}" \
+    "$test_group_runner_pgid_file" xargs -P "$NIGHT_TEST_JOBS" -I{} env -u ZF_AGENT_TEST_MODE -u ZF_AGENT_TEST_ROOT HOME="$TEST_ENV_HOST_HOME" PATH="$TEST_ENV_HOST_PATH" NIGHT_TEST_GROUP="{}" NIGHT_TEST_SEED_FIXTURE="$seed_fixture" "${night_group_command[@]}" \
     < "$groups_file" &
   test_group_runner_pid=$!
   if wait "$test_group_runner_pid"; then group_status=0; else group_status=$?; fi
@@ -152,14 +152,14 @@ fi
 
 case "$NIGHT_TEST_GROUP" in
   hand-owned-issues)
-    bash "$(dirname -- "${BASH_SOURCE[0]}")/hand-owned-issues.test.sh"
+    test_env_run_clean bash "$(dirname -- "${BASH_SOURCE[0]}")/hand-owned-issues.test.sh"
     ;;
   hand-dispatch)
     script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-    bash "$script_dir/../dispatch-codex.test.sh"
-    bash "$script_dir/../dispatch-load-guard.test.sh"
+    test_env_run_clean bash "$script_dir/../dispatch-codex.test.sh"
+    test_env_run_clean bash "$script_dir/../dispatch-load-guard.test.sh"
     ;;
   merge-handoff)
-    bash "$(dirname -- "${BASH_SOURCE[0]}")/hand-handoff-chain.test.sh"
+    test_env_run_clean bash "$(dirname -- "${BASH_SOURCE[0]}")/hand-handoff-chain.test.sh"
     ;;
 esac

@@ -2138,7 +2138,7 @@ FIX_FORWARD_RESULT="$(main_fix_forward_assess "$FIX_FORWARD_RUN_JSON" "$FIX_FORW
 assert_eq "a second fix-forward cannot consume the same red main run" \
   "false" "$(jq -r '.eligible' <<< "$FIX_FORWARD_RESULT")"
 
-if ! nested_suite_output="$(bash "$SCRIPT_DIR/main-release-ready-cache.test.sh" 2>&1)"; then
+if ! nested_suite_output="$(test_env_run_clean bash "$SCRIPT_DIR/main-release-ready-cache.test.sh" 2>&1)"; then
   printf '%s\n' "$nested_suite_output" >&2
   echo "not ok - main-release-ready-cache.test.sh failed" >&3
   FAILED=1
@@ -2353,7 +2353,7 @@ assert_true "untrusted title/reporter text passes through as literal plain text"
 
 # Preserve the targeted early-exit mode while model-policy cases run separately.
 if [[ "${LIB_TEST_MODEL_POLICY_ONLY:-0}" == 1 ]]; then
-  bash "$SCRIPT_DIR/lib-model-policy.test.sh" || FAILED=1
+  test_env_run_clean bash "$SCRIPT_DIR/lib-model-policy.test.sh" || FAILED=1
   lib_case_exit
 fi
 

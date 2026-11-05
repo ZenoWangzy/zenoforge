@@ -191,7 +191,7 @@ done
 if model_policy_validate_json <<<"$(jq '.roles["hand-claude"].model="claude-opus-5-5"' "$MODEL_POLICY_DEFAULT")"; then fail 'an opus hand-claude role passed the model-policy schema'; fi
 
 set +e
-planted_output="$(bash "$script_dir/review-family.test.sh" --plant-old 2>&1)"
+planted_output="$(test_env_run_clean bash "$script_dir/review-family.test.sh" --plant-old 2>&1)"
 planted_status=$?
 set -e
 [[ "$planted_status" == 1 ]] || fail "planted pre-fix selector exited $planted_status instead of failing"
