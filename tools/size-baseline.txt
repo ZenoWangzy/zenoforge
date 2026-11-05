@@ -7,7 +7,7 @@
 992	engine/lib.d/holds.sh
 1075	engine/lib.d/issue-state.sh
 1052	engine/lib.d/model-calls.sh
-962	engine/lib.d/model-policy.sh
+967	engine/lib.d/model-policy.sh
 1027	engine/lib.sh
 1048	engine/mac-autopilot/bell.sh
 1198	engine/mac-autopilot/gen_dashboard.py
@@ -21,6 +21,6 @@
 2180	engine/notify.sh
 1945	engine/run-advisor-batch.sh
 1140	engine/run-advisor.sh
-888	engine/run-triage.sh
+899	engine/run-triage.sh
 1373	engine/supervise-pipeline.sh
 3043	engine/worktree-lifecycle.sh

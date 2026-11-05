@@ -11,6 +11,7 @@ NOW_EPOCH=1793836800
 : > "$LOG"; echo '{"units":[]}' > "$UNITS"; echo '{}' > "$COOLDOWN"
 export CODEX_QUOTA_SNAPSHOT_FILE="$A/codex-quota.json"
 source "$script_dir/scheduler.d/core.sh"
+source "$script_dir/../lib.d/codex-budget.sh"
 source "$script_dir/scheduler.d/models.sh"
 
 fail() { echo "not ok - $*" >&2; cat "$LOG" >&2; exit 1; }

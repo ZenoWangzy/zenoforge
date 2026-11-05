@@ -321,11 +321,21 @@ for n in "${INCLUDED_IDS[@]}"; do
   fi
 done
 
-CODEX_BUDGET_ROLE=work
-CODEX_BUDGET_RESERVATION_ID="run-triage-batch:$$"
-if ! codex_budget_reserve "$CODEX_BUDGET_ROLE" "$CODEX_BUDGET_RESERVATION_ID" "" 0 "" "$WORK_ROLE"; then
-  echo "run-triage-batch: Codex budget/provider hold; leaving batch queued" >&2
-  exit 0
+# Over the weekly Codex stop the whole batch runs on Claude haiku: no Codex call, no Codex budget reservation.
+BATCH_ON_CLAUDE=0
+BATCH_PROVIDER=codex
+BATCH_IDENTITY="$WORK_ROLE"
+if codex_week_stopped; then
+  BATCH_IDENTITY="$(triage_claude_identity)" || { echo "run-triage-batch: Codex weekly stop and Claude haiku unavailable; leaving batch queued" >&2; exit 0; }
+  BATCH_ON_CLAUDE=1
+  BATCH_PROVIDER=claude
+else
+  CODEX_BUDGET_ROLE=work
+  CODEX_BUDGET_RESERVATION_ID="run-triage-batch:$$"
+  if ! codex_budget_reserve "$CODEX_BUDGET_ROLE" "$CODEX_BUDGET_RESERVATION_ID" "" 0 "" "$WORK_ROLE"; then
+    echo "run-triage-batch: Codex budget/provider hold; leaving batch queued" >&2
+    exit 0
+  fi
 fi
 
 WT="$HOME/wt/triage-batch-run-$$"
@@ -343,13 +353,17 @@ jq -n --argjson issues "$(printf '%s\n' "${INCLUDED_IDS[@]}" | jq -Rsc 'split("\
 mv "$ACTIVE_TMP" "$ACTIVE_FILE"
 
 set +e
-OUTPUT="$(run_model_text "$WT" "$WORK_ROLE" 50 "$PROMPT_FILE" "$TRANSCRIPT_FILE" \
-  "$(zf_config_file prompts/agent-settings.json)")"
+if [ "$BATCH_ON_CLAUDE" = 1 ]; then
+  OUTPUT="$(run_claude_text "$WT" "$BATCH_IDENTITY" 50 "$PROMPT_FILE" "$TRANSCRIPT_FILE" "$(zf_config_file prompts/agent-settings.json)")"
+else
+  OUTPUT="$(run_model_text "$WT" "$WORK_ROLE" 50 "$PROMPT_FILE" "$TRANSCRIPT_FILE" \
+    "$(zf_config_file prompts/agent-settings.json)")"
+fi
 STATUS=$?
 set -e
 TOKENS_USED="$(codex_tokens_used "$TRANSCRIPT_FILE")"
 BATCH_TAG="batch:$(IFS=,; echo "${INCLUDED_IDS[*]}")"
-record_premium_spend triage "$WORK_ROLE" "$BATCH_TAG" "" "" "$TOKENS_USED" \
+record_premium_spend triage "$BATCH_IDENTITY" "$BATCH_TAG" "" "" "$TOKENS_USED" \
   || echo "run-triage-batch: could not persist batch token usage" >&2
 codex_budget_release "$CODEX_BUDGET_RESERVATION_ID" || true
 CODEX_BUDGET_RESERVATION_ID=""
@@ -407,11 +421,11 @@ triage_batch_fail_issue() {
     record_model_config_fault "$n" triage work "$WORK_ROLE" "$(tail -c 4000 "$TRANSCRIPT_FILE")" || return 1
   fi
   if [ "$STATUS" -ne 0 ] && [ "$BATCH_FAILURE_KIND" = transient ]; then
-    pause_for_backoff "$n" "$(tail -c 4000 "$TRANSCRIPT_FILE")" "$status" 0 codex "$WORK_ROLE" \
+    pause_for_backoff "$n" "$(tail -c 4000 "$TRANSCRIPT_FILE")" "$status" 0 "$BATCH_PROVIDER" "$BATCH_IDENTITY" \
       run-triage-batch:triage "" "" "" "" false triage || return 1
   fi
   if [ "$STATUS" -eq 0 ] && [ "${#INCLUDED_IDS[@]}" -gt 1 ]; then
-    if ! pause_for_backoff "$n" "$reason" 1 1 codex "$WORK_ROLE" \
+    if ! pause_for_backoff "$n" "$reason" 1 1 "$BATCH_PROVIDER" "$BATCH_IDENTITY" \
         run-triage-batch:triage-result "" "" "" "" 0 triage; then
       record_env_fault env:triage-result-backoff triage-batch "$n" \
         "could not record scoped backoff for invalid or missing batch result" || true

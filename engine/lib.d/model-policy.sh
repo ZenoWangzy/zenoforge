@@ -36,12 +36,13 @@ model_policy_validate_json() {
       (.allow_roles | type == "object")
       and ([.allow_roles | to_entries[] | .key as $family | .value as $roles
         | (($family != "claude")
-          and (($policy.forbidden + $canonical[0].forbidden + ["sonnet"] | index($family)) != null))
+          and (($policy.forbidden + $canonical[0].forbidden + ["sonnet", "haiku"] | index($family)) != null))
           and ($roles | type == "array" and length > 0
             and all(.[]; type == "string" and test("^[A-Za-z0-9_-]+$")
               and . != "work" and . != "production" and . != "implement"))
           and (if $family == "sonnet"
             then all($roles[]; . == "review_fallback" or . == "hand-claude")
+            elif $family == "haiku" then all($roles[]; . == "triage-haiku")
             else true end)] | all)
     else true end)
     and ((.forbidden + $canonical[0].forbidden | unique) as $forbidden
@@ -49,6 +50,8 @@ model_policy_validate_json() {
           | select((($entry.value.model + " " + ($entry.value.effort // "") + " " + ($entry.value.fallback_model // "")) | ascii_downcase | contains($word | ascii_downcase))
             and (if $word == "claude" and (($entry.value.model | ascii_downcase) | startswith("claude-sonnet-"))
               then ((($policy.allow_roles.sonnet // []) | index($entry.key)) == null)
+              elif $word == "claude" and (($entry.value.model | ascii_downcase) | startswith("claude-haiku-"))
+              then ((($policy.allow_roles.haiku // []) | index($entry.key)) == null)
               else ((($policy.allow_roles[$word] // []) | index($entry.key)) == null) end))]
       | length == 0)
     and (.escalation.initial_step | type == "string" and length > 0)
@@ -771,6 +774,8 @@ model_policy_model_allowed_for_role() {
     | all($matches[];
         if . == "claude" and (($model | ascii_downcase) | startswith("claude-sonnet-"))
         then (($policy.allow_roles.sonnet // []) | index($role)) != null
+        elif . == "claude" and (($model | ascii_downcase) | startswith("claude-haiku-"))
+        then (($policy.allow_roles.haiku // []) | index($role)) != null
         else (($policy.allow_roles[.] // []) | index($role)) != null
         end)
   ' <<< "$policy_json" >/dev/null 2>&1

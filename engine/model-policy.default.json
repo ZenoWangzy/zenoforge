@@ -28,6 +28,11 @@
       "model": "claude-sonnet-5-5",
       "effort": "high"
     },
+    "triage-haiku": {
+      "provider": "claude",
+      "model": "claude-haiku-5-5",
+      "effort": "high"
+    },
     "review": {
       "provider": "zcode",
       "model": "GLM-5.3",
@@ -35,7 +40,8 @@
     }
   },
   "allow_roles": {
-    "sonnet": ["hand-claude"]
+    "sonnet": ["hand-claude"],
+    "haiku": ["triage-haiku"]
   },
   "escalation": {
     "initial_step": "work",

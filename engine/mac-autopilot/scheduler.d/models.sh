@@ -203,14 +203,7 @@ pick_claude_implementer() { # hand-claude policy identity -> PICK_* unless the C
   return 0
 }
 
-# Weekly Codex quota runs out days before it resets: stop new Codex work at CODEX_WEEK_STOP_PCT so reviews and repairs move to
-# Claude and ZCode while the rest stays for what only Codex can do. The snapshot's week_reset ends the stop.
-codex_week_stopped() {
-  provider_quota_exhausted codex && return 0
-  command jq -e --argjson stop "${CODEX_WEEK_STOP_PCT:-95}" --argjson now "${NOW_EPOCH:-$(date +%s)}" \
-    '(.week_pct // 0) >= $stop and (.week_reset // 0) > $now' "${CODEX_QUOTA_SNAPSHOT_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/codex-quota.json}" >/dev/null 2>&1
-}
-
+# codex_week_stopped lives in lib.d/codex-budget.sh (shared with run-triage*.sh); scheduler.sh and the tests source it first.
 pick_codex_work_identity() { # work policy role, with legacy models.implement as an install-compatible fallback
   local fields provider model effort tier
   if jqf -e 'any(.labels[]?; . == "hotfix")' <<<"$1" >/dev/null 2>&1; then

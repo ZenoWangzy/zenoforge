@@ -77,6 +77,12 @@ if model_config_fault_blocked "$(model_policy step-role "$MODEL_POLICY_STEP")" "
   exit 0
 fi
 case "$MODEL_POLICY_IDENTITY" in codex:*) ;; *) echo "run-triage: policy step is not a work role; advisor dispatch belongs to the batch runner" >&2; exit 78 ;; esac
+# Over the weekly Codex stop this issue is triaged on Claude haiku, with no Codex call and no Codex budget reservation.
+TRIAGE_ON_CLAUDE=0
+if [ -z "$BATCH_RESULT_FILE" ] && codex_week_stopped; then
+  MODEL_POLICY_IDENTITY="$(triage_claude_identity)" || { echo "run-triage: Codex weekly stop and Claude haiku unavailable; issue #$N deferred" >&2; exit 0; }
+  TRIAGE_ON_CLAUDE=1
+fi
 
 # Before any label edit below: see ensure_state_labels()'s comment in lib.sh
 # for the 2026-09-15 zf-triage-1203 death this prevents.
@@ -95,7 +101,7 @@ cleanup() {
 }
 trap 'codex_budget_release "${CODEX_BUDGET_RESERVATION_ID:-}" || true; cleanup' EXIT
 
-if [ -z "$BATCH_RESULT_FILE" ]; then
+if [ -z "$BATCH_RESULT_FILE" ] && [ "$TRIAGE_ON_CLAUDE" = 0 ]; then
   CODEX_BUDGET_ROLE="$(model_policy step-role "$MODEL_POLICY_STEP")"
   CODEX_BUDGET_RESERVATION_ID="run-triage:$N:$$"
   if ! codex_budget_reserve "$CODEX_BUDGET_ROLE" "$CODEX_BUDGET_RESERVATION_ID" "" 0 "" "$MODEL_POLICY_IDENTITY"; then
@@ -376,9 +382,14 @@ if [ -n "$BATCH_RESULT_FILE" ]; then
 else
   set +e
   model_policy_mark_started "$N" triage
-  OUTPUT="$(run_model_json "$WT" "$MODEL_POLICY_IDENTITY" 45 \
-    "$(zf_config_file prompts/triage.schema.json)" "$PROMPT_FILE" \
-    "$(zf_config_file prompts/agent-settings.json)" work)"
+  if [ "$TRIAGE_ON_CLAUDE" = 1 ]; then
+    OUTPUT="$(run_claude_json "$WT" "$MODEL_POLICY_IDENTITY" 45 "$(zf_config_file prompts/triage.schema.json)" "$PROMPT_FILE" \
+      "$(zf_config_file prompts/agent-settings.json)")"
+  else
+    OUTPUT="$(run_model_json "$WT" "$MODEL_POLICY_IDENTITY" 45 \
+      "$(zf_config_file prompts/triage.schema.json)" "$PROMPT_FILE" \
+      "$(zf_config_file prompts/agent-settings.json)" work)"
+  fi
   STATUS=$?
   set -e
   record_premium_spend triage "$MODEL_POLICY_IDENTITY" "$N" "$(model_cost_usd "$OUTPUT")" "" "$(jq -r '.tokens_used // empty' <<< "$OUTPUT")"

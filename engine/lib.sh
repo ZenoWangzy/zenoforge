@@ -255,7 +255,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/conclude-run.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/pipeline-system.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/model-calls.sh"
-
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/triage-claude.sh"
 # pause_for_backoff [issue] [call_output] [exit_status] [pause_nonquota=1] [provider=codex] [model] [caller] [log_path] [termination_class] [termination_source] [termination_evidence] [transcript_empty] [stage]
 #
 # Provider transport failures and quota refusals are not issue failures.
