@@ -8,6 +8,8 @@ import test from 'node:test';
 // The map loads <repo>/.zenoforge/state/focused-test-map.json when the module loads, and that data replaces Engine
 // entries such as engine/land-direct-main.sh. These tests assert the Engine's own map, so an engine placed inside a
 // product checkout must not read the checkout's config: point the config root at an empty directory first.
+// An inherited ZF_PACK_DIR would feed the same map in through the pack seam, so clear it too.
+process.env.ZF_PACK_DIR = '';
 process.env.ZF_CONFIG_ROOT = mkdtempSync(join(tmpdir(), 'focused-empty-config-'));
 process.on('exit', () => rmSync(process.env.ZF_CONFIG_ROOT, { recursive: true, force: true }));
 const {
