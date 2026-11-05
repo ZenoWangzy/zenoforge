@@ -232,6 +232,13 @@ tick_complete() {
     | awk 'NF && !seen[$0]++' > "$tmpdir/signatures"
   read_after_offset "$SCHED_LOG" "$tick_scheduler_offset" > "$tmpdir/current-scheduler.log"
   grep -Fq 'tick done' "$tmpdir/current-scheduler.log" && tick_done=1 || :
+  if (( tick_done == 0 )) && grep -Fq 'scheduler tick skipped' "$tmpdir/current-scheduler.log"; then
+    # scheduler.sh main() lost the .scheduler.lock race and exited 0 without running:
+    # not a canary tick (no failure, no pass); the swap stays pending for the next real tick.
+    rm -f -- "$TICK_START"
+    rm -rf -- "$tmpdir"
+    return 0
+  fi
   if (( tick_done == 0 )); then
     # loop.sh waits for the bounded scheduler process to exit before calling
     # tick-complete; an exited slow tick that never wrote its summary cannot

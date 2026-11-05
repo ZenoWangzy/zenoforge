@@ -87,6 +87,7 @@ sync_from_main() {
   fi
 }
 [[ "${AUTOPI_LOOP_LIBRARY_ONLY:-false}" == true ]] && return 0
+bash "$HERE/wait-scheduler-lock.sh" || : # a restart keeps the old tick (KillMode=process); do not start a tick that must skip on its lock
 n=0
 while true; do
   sync_from_main

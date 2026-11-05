@@ -136,6 +136,29 @@ slow_tick "$known"
 [[ ! -e "$CF_AGENT/engine-versions/.failed-candidate" ]] \
   || { echo 'FAIL: repeated pre-existing signature marked the engine failed' >&2; exit 1; }
 
+# A tick skipped on .scheduler.lock never ran: not a failure, not a pass; a real tick that dies without
+# 'tick done' still rolls back.
+make_swap_fixture canary-skipped-tick
+slow_tick
+slow_tick
+ZF_REPO_DIR="$CF_TARGET" AGENT_HOME="$CF_AGENT" MAC_AUTOPILOT_SUPERVISOR_DIR="$CF_SUP" \
+  "$here/engine-sync.sh" --converge >/dev/null
+canary tick-begin
+printf '[2026-11-05T08:01:07Z] scheduler tick skipped: another tick holds .scheduler.lock\n' >> "$CF_RUNTIME/scheduler.log"
+canary tick-complete
+[[ "$(readlink -e "$CF_AGENT/engine-live")" == "$CF_AGENT/engine-versions/candidate/engine" ]] \
+  || { echo 'FAIL: tick skipped on the lock rolled the engine back' >&2; exit 1; }
+[[ "$(jq -r '"\(.status) \(.remaining_ticks)"' "$CF_AGENT/engine-versions/.swap-record.json")" == 'pending 2' ]] \
+  || { echo 'FAIL: tick skipped on the lock changed the canary state' >&2; exit 1; }
+[[ ! -e "$CF_AGENT/engine-versions/.failed-candidate" && ! -e "$CF_RUNTIME/.engine-canary-tick.json" ]] \
+  || { echo 'FAIL: tick skipped on the lock left a failure marker or a tick record' >&2; exit 1; }
+canary tick-begin
+canary tick-complete
+[[ "$(readlink -e "$CF_AGENT/engine-live")" == "$CF_AGENT/engine-versions/old/engine" ]] \
+  || { echo 'FAIL: a real tick without tick done did not roll back' >&2; exit 1; }
+grep -Fq 'ROLLBACK engine candidate -> old: no tick done within tick limit' "$CF_RUNTIME/scheduler.log" \
+  || { echo 'FAIL: no-tick-done rollback event missing' >&2; exit 1; }
+
 # A product pin rollback to a previously-live version skips only config/ref comparisons.
 return_root="$test_env_root/previously-live"
 return_target="$return_root/target"
