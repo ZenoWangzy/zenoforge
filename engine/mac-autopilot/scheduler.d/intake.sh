@@ -49,6 +49,17 @@ issue_unit_task() { # issue [fetched issue JSON | require-ready] → implement �
   labels="$(jqf -c '[.labels[]? | if type == "string" then . else (.name // empty) end]' <<<"$json")"
   jqf -cn --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --argjson labels "$labels" '{task:$task,body_blocked_by:$body_blocked_by,labels:$labels}'
 }
+# The per-row reads below run about 100 times a tick and read none of the bulk fields: history, task and review_findings
+# are most of units.json, and parsing them took more than half of a 1800s tick. Rebuilt whenever units.json changes.
+intake_units_view() {
+  local view="$UNITS.view"
+  if [[ ! "$view" -nt "$UNITS" ]]; then
+    jqf -c '.units |= map(del(.history, .task, .review_findings))' "$UNITS" > "$view.tmp.$$" && mv -f -- "$view.tmp.$$" "$view" || {
+      rm -f -- "$view.tmp.$$"; printf '%s' "$UNITS"; return 0
+    }
+  fi
+  printf '%s' "$view"
+}
 intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序；refill 复用近 10 分钟的候选缓存，缓存失效时最多查一个标签
   local refill_mode="${1:-false}" skip_labels candidate_labels query_dir lane label query_file pid index=0 expected_queries=0 cache_file="$A/intake-candidates.json" cached_at now cache_rows cache_read_status
   local cache_token="$BASHPID.$RANDOM" cache_rows_tmp cache_valid_tmp cache_json_tmp
@@ -174,7 +185,7 @@ existing_handoff_candidates() {
 handoff_open_pr() { # issue → matching PR rows from this tick's single census
   local n="$1"
   [[ -n "${HANDOFF_PR_CENSUS:-}" ]] || return 1
-  jqf -c --slurpfile u "$UNITS" --arg n "$n" '
+  jqf -c --slurpfile u "$(intake_units_view)" --arg n "$n" '
     [.[] | . as $p
       | [($p.body // "") | match("(?i)\\b(?:fix(?:es)?|closes|resolves)[[:space:]:]+#(?<id>[0-9]+)"; "g") | .captures[0].string] as $fixes
       | [($p.body // "") | match("(?im)^[[:space:]]*[-*]?[[:space:]]*refs[[:space:]:]+#(?<id>[0-9]+)"; "g") | .captures[0].string] as $refs
@@ -401,7 +412,7 @@ register_new_issues() {
     if (( ! existing_only )) && jqf -e --argjson n "$n" --arg episode "$episode" '
         [.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))] as $us
         | ($us | length) > 0 and all($us[]; (.stage | IN("merged","landed","closed","done","wontfix","duplicate"))
-          and ($episode == "" or .hold_handoff_episode == $episode))' "$UNITS" >/dev/null 2>&1; then
+          and ($episode == "" or .hold_handoff_episode == $episode))' "$(intake_units_view)" >/dev/null 2>&1; then
       intake_skip terminal; continue
     fi
     if [[ -n "$episode" ]]; then
@@ -414,7 +425,7 @@ register_new_issues() {
       # ownership from an old hold snapshot.
       known_prs="$(jqf -c --argjson n "$n" --arg pr "$handoff_pr" '
         ([.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring))) | .pr | select(type == "number")]
-          + (if ($pr | test("^[0-9]+$")) then [($pr | tonumber)] else [] end)) | unique' "$UNITS")"
+          + (if ($pr | test("^[0-9]+$")) then [($pr | tonumber)] else [] end)) | unique' "$(intake_units_view)")"
       known_failed=0
       while read -r pr_number; do
         if ! jqf -e --argjson pr "$pr_number" 'any(.[]; .number == $pr)' <<<"${HANDOFF_PR_CENSUS:-[]}" >/dev/null; then
@@ -485,12 +496,12 @@ register_new_issues() {
       (( state_read_status == 64 )) || return "$state_read_status"
     fi
     [[ -n "$handoff" ]] || handoff='{}'
-    existing_id="$(jqf -r --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr))] | sort_by([if ($pr != "" and ((.pr // "") | tostring) == $pr) then 0 else 1 end, if (.stage | IN("parked","supervisor-review","blocked-external","done","closed","landed","merged","wontfix","duplicate")) then 1 else 0 end]) | .[0].id // empty' "$UNITS")"
+    existing_id="$(jqf -r --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr))] | sort_by([if ($pr != "" and ((.pr // "") | tostring) == $pr) then 0 else 1 end, if (.stage | IN("parked","supervisor-review","blocked-external","done","closed","landed","merged","wontfix","duplicate")) then 1 else 0 end]) | .[0].id // empty' "$(intake_units_view)")"
     if [[ -n "$existing_id" ]]; then
       (( existing_only )) || { intake_skip existing; continue; }
       [[ -n "$episode" ]] || { intake_skip no_episode; continue; }
-      ids="$(jqf -c --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)) | .id]' "$UNITS")"
-      if jqf -e --argjson n "$n" --arg pr "$handoff_pr" --arg episode "$episode" 'all(.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)); .hold_handoff_episode == $episode) and ($pr == "" or any(.units[]; ((.pr // "") | tostring) == $pr))' "$UNITS" >/dev/null; then
+      ids="$(jqf -c --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)) | .id]' "$(intake_units_view)")"
+      if jqf -e --argjson n "$n" --arg pr "$handoff_pr" --arg episode "$episode" 'all(.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)); .hold_handoff_episode == $episode) and ($pr == "" or any(.units[]; ((.pr // "") | tostring) == $pr))' "$(intake_units_view)" >/dev/null; then
         units_update --slurpfile ids <(printf '%s' "$ids") --argjson n "$n" '.units |= map(if (.id as $id | $ids[0] | index($id)) != null then .hold_handoff_wait_issues = ((.hold_handoff_wait_issues // []) | map(select(. != $n))) | if (.hold_handoff_wait_issues | length) == 0 and .hold_handoff_lookup_pending != true then del(.hold_handoff_wait_issues, .hold_handoff_waiting) else . end else . end)'
         intake_skip consumed; continue
       fi
@@ -501,7 +512,7 @@ register_new_issues() {
       jqf -e --slurpfile ids <(printf '%s' "$ids") 'any(.workers[]; (.unit as $id | $ids[0] | index($id)) != null and .harvested != true)' "$WORKERS" >/dev/null && { intake_skip worker_live; continue; }
       # A worker which has already started may have read the old issue; do not
       # consume the new episode until it exits and the continuation can run.
-      jqf -e --slurpfile ids <(printf '%s' "$ids") 'any(.units[]; (.id as $id | $ids[0] | index($id)) != null and (.stage == "landing" or .self_check_pid != null or .advisor_pid != null or .precheck_pid != null or (.stage == "blocked-external" and .blocked_on != null)))' "$UNITS" >/dev/null && { intake_skip unit_busy; continue; }
+      jqf -e --slurpfile ids <(printf '%s' "$ids") 'any(.units[]; (.id as $id | $ids[0] | index($id)) != null and (.stage == "landing" or .self_check_pid != null or .advisor_pid != null or .precheck_pid != null or (.stage == "blocked-external" and .blocked_on != null)))' "$(intake_units_view)" >/dev/null && { intake_skip unit_busy; continue; }
       # Any related unit may contain work that the chosen unit cannot deliver.
       unsafe_clones=0
       episode_hash="$(printf '%s' "$episode" | sha256sum)"; episode_hash="${episode_hash%% *}"
@@ -632,7 +643,7 @@ register_new_issues() {
       if [[ "$lane" == pr ]]; then branch="agent/issue-$n-recovered-${recovery_sha:0:12}"
       else branch="agent/auto-issue-$n-recovered-${recovery_sha:0:12}"; fi
     fi
-    if (( existing_only )) && [[ -n "$existing_id" ]] && ! jqf -e --arg id "$existing_id" 'any(.units[]; .id == $id and (.stage | test("^(implement|review|rereview|repair)(-pending)?$")))' "$UNITS" >/dev/null; then
+    if (( existing_only )) && [[ -n "$existing_id" ]] && ! jqf -e --arg id "$existing_id" 'any(.units[]; .id == $id and (.stage | test("^(implement|review|rereview|repair)(-pending)?$")))' "$(intake_units_view)" >/dev/null; then
       total_upstream="$(jqf '[.units[] | select(.stage | test("^(implement|review|rereview|repair)(-pending)?$"))] | length' "$UNITS")"
       if (( max_up > 0 && total_upstream >= 2 * max_up )); then # max_up 0 is a paused pool: known units still resume, as they did before the ceiling.
         say "intake held: $total_upstream total units upstream (ceiling $((2 * max_up))); handoff issue #$n deferred"
