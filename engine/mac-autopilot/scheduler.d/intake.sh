@@ -250,6 +250,7 @@ startable_pending_count() { # pending units eligible to start under intake's #15
   footprint_waiters_revalidate || return 1
   jqf "[.units[] | select(.stage | test(\"-pending$\")) $(intake_eligible_filter)] | length" "$UNITS"
 }
+intake_skip() { intake_skip_counts[$1]=$(( ${intake_skip_counts[$1]:-0} + 1 )); } # bumps register_new_issues' local intake_skip_counts (dynamic scope)
 register_new_issues() {
   local enabled live pending upstream total_upstream total_room max_up ready_q max_ready want added=0 n lane title labels task_record task body_blocked_by branch busy handoff state_file acceptance
   local episode existing_id existing_pr prior_pr pr_changed pr_state lane_policy handoff_all handoff_pr handoff_branch recovery_sha
@@ -259,7 +260,8 @@ register_new_issues() {
   local refill_mode="${2:-false}" free_slots ready_buffer target_pending max_refill upstream_room
   local intake_started=$SECONDS step_started=$SECONDS candidate_started full_at now fresh_seconds existing_issue
   local INTAKE_FULL_SCAN_FLAG="$A/.intake-full-scan.$BASHPID.$RANDOM"
-  local -A intake_known_issues=()
+  local -A intake_known_issues=() intake_skip_counts=()
+  local skip_key skip_line
   if [[ "$refill_mode" == true ]]; then
     fresh_seconds="$(jqf -r '.issue_intake.refill_full_tick_fresh_seconds // 600' <<<"$CFG")"
     [[ "$fresh_seconds" =~ ^[0-9]+$ ]] || fresh_seconds=600
@@ -365,7 +367,7 @@ register_new_issues() {
   say "intake detail footprint_snapshot secs=$((SECONDS - step_started))s"
   step_started=$SECONDS
   while IFS=$'\t' read -r n lane title labels issue64; do
-    [[ "$n" =~ ^[0-9]+$ ]] || continue
+    [[ "$n" =~ ^[0-9]+$ ]] || { intake_skip badrow; continue; }
     (( added < want )) || break
     intake_candidate_json=''; intake_candidate_scope=''; intake_conflict=''
     issue_json=""
@@ -374,7 +376,7 @@ register_new_issues() {
     # Existing ordinary issues are already registered. Preserve the handoff path
     # whenever any state file exists, including unreadable or malformed files.
     if (( ! existing_only )) && [[ "${intake_known_issues[$n]:-}" == 1 && ! -e "$state_file" && ! -L "$state_file" ]]; then
-      continue
+      intake_skip known; continue
     fi
     episode=""
     if state_read_value="$(jqf_optional_file "$state_file" -r 'select(.state == "ready-for-agent") | .scheduler_handoff.episode // empty' 2>/dev/null)"; then
@@ -393,6 +395,14 @@ register_new_issues() {
     [[ -n "$handoff_all" ]] || handoff_all='{}'
     handoff_pr="$(jqf -r '.open_pr // empty' <<<"$handoff_all")"
     handoff_branch="$(jqf -r '.open_branch // empty' <<<"$handoff_all")"
+    # A row whose units are all terminal and whose episode (if any) is consumed has nothing to hand off:
+    # skip it from the ledger before the handoff path reads PRs (gh pr view per merged PR).
+    if (( ! existing_only )) && jqf -e --argjson n "$n" --arg episode "$episode" '
+        [.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))] as $us
+        | ($us | length) > 0 and all($us[]; (.stage | IN("merged","landed","closed","done","wontfix","duplicate"))
+          and ($episode == "" or .hold_handoff_episode == $episode))' "$UNITS" >/dev/null 2>&1; then
+      intake_skip terminal; continue
+    fi
     if [[ -n "$episode" ]]; then
       if (( existing_only )); then
         # An unavailable PR lookup must not release an already known unit's old approval.
@@ -414,13 +424,13 @@ register_new_issues() {
         HANDOFF_WAIT_PRS="$(jqf -c --slurpfile add <(printf '%s' "$known_prs") '. + $add[0] | unique' <<<"${HANDOFF_WAIT_PRS:-[]}")"
         HANDOFF_WAIT_BRANCHES="$(jqf -c --arg branch "$handoff_branch" 'if $branch == "" then . else (. + [$branch] | unique) end' <<<"${HANDOFF_WAIT_BRANCHES:-[]}")"
         units_update --argjson n "$n" --slurpfile prs <(printf '%s' "$known_prs") '.units |= map(if .issue == $n or .branch == ("agent/issue-" + ($n | tostring)) or ((.pr // null) as $pr | $prs[0] | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)'
-        continue
+        intake_skip handoff_wait; continue
       fi
       if [[ "$handoff_pr" =~ ^[0-9]+$ ]] && ! jqf -e --argjson pr "$handoff_pr" 'any(.[]; .number == $pr)' <<<"${HANDOFF_PR_CENSUS:-[]}" >/dev/null; then
         handoff_pr=""; handoff_branch=""
       fi
       # A PR can appear after the handoff, or use a non-agent branch.
-      lookup="$(handoff_open_pr "$n")" || { [[ -n "$handoff_pr" ]] && lookup='[]' || continue; }
+      lookup="$(handoff_open_pr "$n")" || { [[ -n "$handoff_pr" ]] && lookup='[]' || { intake_skip handoff_lookup; continue; }; }
       if [[ "$handoff_pr" =~ ^[0-9]+$ ]]; then
         lookup="$(jqf -c --argjson pr "$handoff_pr" --slurpfile census <(printf '%s' "${HANDOFF_PR_CENSUS:-[]}") '
           if any(.[]; .number == $pr) then . else
@@ -434,7 +444,7 @@ register_new_issues() {
         HANDOFF_WAIT_BRANCHES="$(jqf -c --slurpfile prs <(printf '%s' "$ids") --slurpfile census <(printf '%s' "${HANDOFF_PR_CENSUS:-[]}") --arg branch "$handoff_branch" '
           . + [$census[0][] | select(.number as $p | $prs[0] | index($p)) | .headRefName | select(type=="string" and length>0)] + (if $branch == "" then [] else [$branch] end) | unique' <<<"${HANDOFF_WAIT_BRANCHES:-[]}")"
         units_update --argjson n "$n" --slurpfile prs <(printf '%s' "$ids") '.units |= map(if .issue == $n or .branch == ("agent/issue-" + ($n | tostring)) or ((.pr // null) as $pr | $prs[0] | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)'
-        continue
+        intake_skip hotfix_wait; continue
       fi
       # Clear this issue's wait from a PR once its successfully read association
       # no longer points here; other handoffs may still be waiting on the PR.
@@ -450,7 +460,7 @@ register_new_issues() {
       if [[ "${HANDOFF_CENSUS_PARTIAL:-0}" == 1 ]]; then
         HANDOFF_WAIT_PRS="$(jqf -c --slurpfile add <(printf '%s' "$ids") '. + $add[0] | unique' <<<"${HANDOFF_WAIT_PRS:-[]}")"
         units_update --argjson n "$n" --slurpfile prs <(printf '%s' "$ids") '.units |= map(if .issue == $n or ((.pr // null) as $pr | $prs[0] | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)'
-        continue
+        intake_skip census_partial; continue
       fi
       matches="$(jqf 'length' <<<"$lookup")"
       if (( matches > 1 )) || jqf -e 'any(.[]; .ambiguousIssues == true)' <<<"$lookup" >/dev/null; then
@@ -460,7 +470,7 @@ register_new_issues() {
         units_update --argjson n "$n" --slurpfile prs <(printf '%s' "$ids") '.units |= map(if .issue == $n or ((.pr // null) as $pr | $prs[0] | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)'
         (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "handoff-pr-ambiguous:$n:$ids" "handoff-pr-ambiguous issue=#$n status=prs-$ids_state prs=$ids") \
           || say "handoff issue #$n: could not notify supervisor about ambiguous PRs $ids"
-        continue
+        intake_skip pr_ambiguous; continue
       elif (( matches == 1 )); then
         handoff_pr="$(jqf -r '.[0].number' <<<"$lookup")"
         handoff_branch="$(jqf -r '.[0].headRefName' <<<"$lookup")"
@@ -476,21 +486,21 @@ register_new_issues() {
     [[ -n "$handoff" ]] || handoff='{}'
     existing_id="$(jqf -r --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr))] | sort_by([if ($pr != "" and ((.pr // "") | tostring) == $pr) then 0 else 1 end, if (.stage | IN("parked","supervisor-review","blocked-external","done","closed","landed","merged","wontfix","duplicate")) then 1 else 0 end]) | .[0].id // empty' "$UNITS")"
     if [[ -n "$existing_id" ]]; then
-      (( existing_only )) || continue
-      [[ -n "$episode" ]] || continue
+      (( existing_only )) || { intake_skip existing; continue; }
+      [[ -n "$episode" ]] || { intake_skip no_episode; continue; }
       ids="$(jqf -c --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)) | .id]' "$UNITS")"
       if jqf -e --argjson n "$n" --arg pr "$handoff_pr" --arg episode "$episode" 'all(.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)); .hold_handoff_episode == $episode) and ($pr == "" or any(.units[]; ((.pr // "") | tostring) == $pr))' "$UNITS" >/dev/null; then
         units_update --slurpfile ids <(printf '%s' "$ids") --argjson n "$n" '.units |= map(if (.id as $id | $ids[0] | index($id)) != null then .hold_handoff_wait_issues = ((.hold_handoff_wait_issues // []) | map(select(. != $n))) | if (.hold_handoff_wait_issues | length) == 0 and .hold_handoff_lookup_pending != true then del(.hold_handoff_wait_issues, .hold_handoff_waiting) else . end else . end)'
-        continue
+        intake_skip consumed; continue
       fi
       HANDOFF_WAIT_PRS="$(jqf -c --slurpfile add <(jqf -c '[.[].number]' <<<"$lookup") '. + $add[0] | unique' <<<"${HANDOFF_WAIT_PRS:-[]}")"
       lane="$(unit_field "$existing_id" '.lane // empty')"
       # Block the old approval while any matching unit still has a live owner.
       units_update --slurpfile ids <(printf '%s' "$ids") --argjson n "$n" '.units |= map(if (.id as $id | $ids[0] | index($id)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)'
-      jqf -e --slurpfile ids <(printf '%s' "$ids") 'any(.workers[]; (.unit as $id | $ids[0] | index($id)) != null and .harvested != true)' "$WORKERS" >/dev/null && continue
+      jqf -e --slurpfile ids <(printf '%s' "$ids") 'any(.workers[]; (.unit as $id | $ids[0] | index($id)) != null and .harvested != true)' "$WORKERS" >/dev/null && { intake_skip worker_live; continue; }
       # A worker which has already started may have read the old issue; do not
       # consume the new episode until it exits and the continuation can run.
-      jqf -e --slurpfile ids <(printf '%s' "$ids") 'any(.units[]; (.id as $id | $ids[0] | index($id)) != null and (.stage == "landing" or .self_check_pid != null or .advisor_pid != null or .precheck_pid != null or (.stage == "blocked-external" and .blocked_on != null)))' "$UNITS" >/dev/null && continue
+      jqf -e --slurpfile ids <(printf '%s' "$ids") 'any(.units[]; (.id as $id | $ids[0] | index($id)) != null and (.stage == "landing" or .self_check_pid != null or .advisor_pid != null or .precheck_pid != null or (.stage == "blocked-external" and .blocked_on != null)))' "$UNITS" >/dev/null && { intake_skip unit_busy; continue; }
       # Any related unit may contain work that the chosen unit cannot deliver.
       unsafe_clones=0
       episode_hash="$(printf '%s' "$episode" | sha256sum)"; episode_hash="${episode_hash%% *}"
@@ -504,16 +514,16 @@ register_new_issues() {
             || say "handoff issue #$n: could not notify supervisor about the preserved clone"
         fi
       done < <(jqf -r '.[]' <<<"$ids")
-      (( unsafe_clones == 0 )) || continue
+      (( unsafe_clones == 0 )) || { intake_skip preserved_clone; continue; }
       prior_pr="$(unit_field "$existing_id" '.pr // empty')"
       existing_pr="$prior_pr"; pr_changed=false
       if [[ "$handoff_pr" =~ ^[0-9]+$ ]]; then existing_pr="$handoff_pr"; fi
       pr_state=""
       if [[ "$existing_pr" =~ ^[0-9]+$ ]]; then
-        pr_state="$(tick_pr_state "$existing_pr")" || continue
+        pr_state="$(tick_pr_state "$existing_pr")" || { intake_skip pr_state; continue; }
       fi
       if [[ "$pr_state" == OPEN ]]; then
-        lane="$(classify_lane "$existing_pr")" || { say "hold handoff issue #$n: cannot classify PR#$existing_pr; retry next tick"; continue; }
+        lane="$(classify_lane "$existing_pr")" || { say "hold handoff issue #$n: cannot classify PR#$existing_pr; retry next tick"; intake_skip classify; continue; }
         lane_policy="$(lane_policy_blob)"
         [[ "$existing_pr" == "$prior_pr" ]] || pr_changed=true
       else
@@ -524,11 +534,11 @@ register_new_issues() {
       if [[ -n "$episode" ]]; then
         HANDOFF_WAIT_PRS="$(jqf -c --argjson add "$(jqf -c '[.[].number]' <<<"$lookup")" '. + $add | unique' <<<"${HANDOFF_WAIT_PRS:-[]}")"
       fi
-      (( existing_only )) && continue
+      (( existing_only )) && { intake_skip no_unit; continue; }
       if [[ -n "$episode" && "$handoff_pr" =~ ^[0-9]+$ && -n "$handoff_branch" ]]; then
-        pr_state="$(tick_pr_state "$handoff_pr")" || continue
+        pr_state="$(tick_pr_state "$handoff_pr")" || { intake_skip pr_state; continue; }
         if [[ "$pr_state" == OPEN ]]; then
-          lane="$(classify_lane "$handoff_pr")" || { say "hold handoff issue #$n: cannot classify PR#$handoff_pr; retry next tick"; continue; }
+          lane="$(classify_lane "$handoff_pr")" || { say "hold handoff issue #$n: cannot classify PR#$handoff_pr; retry next tick"; intake_skip classify; continue; }
           lane_policy="$(lane_policy_blob)"
         else
           handoff_pr=""
@@ -536,10 +546,10 @@ register_new_issues() {
       else
         handoff_pr=""
       fi
-      [[ -n "$handoff_pr" ]] || ! grep -qE "(#|issue-)${n}([^0-9]|\$)" <<<"$busy" || continue
+      [[ -n "$handoff_pr" ]] || ! grep -qE "(#|issue-)${n}([^0-9]|\$)" <<<"$busy" || { intake_skip open_pr; continue; }
     fi
     if (( ! existing_only )) && [[ -z "$episode" ]]; then
-      [[ -n "$issue_json" ]] || issue_json="$(intake_gh_read issue view "$n" --json number,title,body,state,labels,subIssuesSummary 2>/dev/null)" || continue
+      [[ -n "$issue_json" ]] || issue_json="$(intake_gh_read issue view "$n" --json number,title,body,state,labels,subIssuesSummary 2>/dev/null)" || { intake_skip issue_read; continue; }
       scheduler_lib_context || true # prime here: the substitution below is a subshell and cannot cache
       if parent_reason="$(scheduler_issue_intake_parent_reason "$n" "$issue_json")"; then
         if scheduler_issue_transition "$n" needs-triage "intake-parent:$parent_reason" . 0 "$issue_json"; then
@@ -557,12 +567,12 @@ register_new_issues() {
             say "intake issue #$n held: parent detected but needs-triage label update failed"
           fi
         fi
-        continue
+        intake_skip parent; continue
       else
         parent_status=$?
         if (( parent_status != 1 )); then
           say "intake issue #$n deferred: could not verify parent status"
-          continue
+          intake_skip parent_unverified; continue
         fi
       fi
     fi
@@ -576,36 +586,36 @@ register_new_issues() {
         else
           say "intake issue #$n: M5 live-event relabel failed; retry next tick"
         fi
-        continue
+        intake_skip m5; continue
       fi
     fi
     if (( existing_only )) || [[ -n "$episode" ]]; then
-      task_record="$(issue_unit_task "$n" require-ready)" || continue
+      task_record="$(issue_unit_task "$n" require-ready)" || { intake_skip task; continue; }
     else
-      task_record="$(issue_unit_task "$n" "$issue_json")" || continue
+      task_record="$(issue_unit_task "$n" "$issue_json")" || { intake_skip task; continue; }
     fi
     task="$(jqf -r .task <<<"$task_record")"
     body_blocked_by="$(jqf -c '.body_blocked_by // []' <<<"$task_record")"
     labels="$(jqf -c '.labels // []' <<<"$task_record")"
     if (( ! existing_only )) && [[ -z "$existing_id" ]]; then
-      intake_candidate_json="$(jqf -cn --argjson issue "$n" --arg task "$task" '{issue:$issue,task:$task}')" || continue
+      intake_candidate_json="$(jqf -cn --argjson issue "$n" --arg task "$task" '{issue:$issue,task:$task}')" || { intake_skip candidate; continue; }
       candidate_started=$SECONDS
       intake_candidate_scope="$(scheduler_footprint "$intake_candidate_json")" || {
         say "intake defer issue #$n: predicted footprint unavailable"
-        continue
+        intake_skip footprint_unavailable; continue
       }
       (( SECONDS - candidate_started < 2 )) || say "intake detail footprint_predict issue=$n secs=$((SECONDS - candidate_started))s"
       candidate_started=$SECONDS
       intake_conflict="$(active_footprint_conflict "$intake_candidate_scope" "$intake_footprint_owners" "__intake-$n")" || {
         say "intake defer issue #$n: footprint comparison unavailable"
-        continue
+        intake_skip footprint_unavailable; continue
       }
       (( SECONDS - candidate_started < 2 )) || say "intake detail footprint_conflict issue=$n secs=$((SECONDS - candidate_started))s"
       if [[ -n "$intake_conflict" ]]; then
         intake_match="$(footprint_match_detail "$intake_candidate_scope" "$intake_candidate_scope" \
           "$(jqf -c --arg id "$intake_conflict" '[.[] | select(.id == $id) | .footprint[]?]' <<<"$intake_footprint_owners")" '{}')"
         say "intake skip issue #$n: footprint overlaps unit=$intake_conflict candidate_unit=issue-$n owner=$intake_conflict ${intake_match:-candidate_path=unknown owner_path=unknown source=unknown cochange_count=unknown}"
-        continue
+        intake_skip footprint; continue
       fi
     fi
     if [[ "$lane" == direct-main ]]; then branch="agent/auto-issue-$n"; else branch="agent/issue-$n"; fi
@@ -618,7 +628,7 @@ register_new_issues() {
       total_upstream="$(jqf '[.units[] | select(.stage | test("^(implement|review|rereview|repair)(-pending)?$"))] | length' "$UNITS")"
       if (( max_up > 0 && total_upstream >= 2 * max_up )); then # max_up 0 is a paused pool: known units still resume, as they did before the ceiling.
         say "intake held: $total_upstream total units upstream (ceiling $((2 * max_up))); handoff issue #$n deferred"
-        continue
+        intake_skip ceiling; continue
       fi
     fi
     if [[ -n "$existing_id" ]]; then
@@ -678,6 +688,11 @@ register_new_issues() {
     say "intake issue #$n -> implement-pending ($lane)"
   done < <(if (( existing_only )); then printf '%s\n' "$handoff_rows"; else predecessor_candidates; (( only_pred )) || intake_candidates "$refill_mode"; fi)
   say "intake detail candidates secs=$((SECONDS - step_started))s added=$added total_secs=$((SECONDS - intake_started))s"
+  skip_line="intake skip counts refill=$refill_mode added=$added"
+  if (( ${#intake_skip_counts[@]} )); then
+    while IFS= read -r skip_key; do skip_line+=" $skip_key=${intake_skip_counts[$skip_key]}"; done < <(printf '%s\n' "${!intake_skip_counts[@]}" | sort)
+  fi
+  say "$skip_line"
   if [[ "$refill_mode" != true && "$existing_only" == 0 && -f "$INTAKE_FULL_SCAN_FLAG" ]]; then
     date +%s > "$INTAKE_FULL_SCAN_FLAG" && mv -f -- "$INTAKE_FULL_SCAN_FLAG" "$A/intake-full-tick-at"
   fi
