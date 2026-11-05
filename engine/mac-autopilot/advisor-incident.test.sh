@@ -118,7 +118,7 @@ if [[ "${1:-}" == --plant-old ]]; then
   mkdir -p "$tmp/legacy-bell"
   cp "$script_dir/runtime-env.sh" "$tmp/legacy-bell/runtime-env.sh"
   legacy_bell="$tmp/legacy-bell/bell.sh"
-  sed '/^advisor_incident_scan$/d; /^main_ci_incident_scan$/d' "$bell" > "$legacy_bell"
+  sed '/^advisor_incident_scan; main_ci_incident_scan/d' "$bell" > "$legacy_bell"
   chmod +x "$legacy_bell"
   BELL_SCRIPT_OVERRIDE="$legacy_bell" run_bell
   if grep -Fxq 'advisor-error-advisor-answer-timeout' "$CASE/issues.log"; then
