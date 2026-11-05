@@ -29,6 +29,11 @@ manifest_ref="$head"
 git cat-file -e "$head:$manifest_path" 2>/dev/null || manifest_ref="$base"
 
 declare -A rule_set=()
+rule_prefixes=()
+# An exact path or, with a trailing slash, a directory prefix (CODEOWNERS shape).
+rule_protect() {
+  if [[ "$1" == */ ]]; then rule_prefixes+=("$1"); else rule_set["$1"]=1; fi
+}
 if git cat-file -e "$manifest_ref:$manifest_path" 2>/dev/null; then
   manifest_list="$(git show "$manifest_ref:$manifest_path" | jq -er '
     if .schema == "zf-rule-files/v1" and (.files | type == "object")
@@ -39,17 +44,19 @@ if git cat-file -e "$manifest_ref:$manifest_path" 2>/dev/null; then
   }
   while IFS= read -r rule_file; do
     [[ -n "$rule_file" ]] || continue
-    rule_set["$rule_file"]=1
+    rule_protect "$rule_file"
     config_relative=""
     case "$rule_file" in
       "${ZF_PACK_REL:-engine}/"*) config_relative="${rule_file#"${ZF_PACK_REL:-engine}/"}" ;;
       engine/*) config_relative="${rule_file#engine/}" ;;
     esac
     if [[ -n "$config_relative" ]]; then
+      # A repo that vendors the pack (ZF_PACK_REL=.zenoforge/build/pack) edits the same file under that prefix.
+      rule_protect "${ZF_PACK_REL:-engine}/$config_relative"
       config_candidate="$(zf_config_file "$config_relative" 2>/dev/null || true)"
       if [[ -n "$ZF_CONFIG_ROOT" && -n "$config_candidate" && "$config_candidate" == "$ZF_CONFIG_ROOT/"* \
         && "$config_candidate" == "$repo_dir/"* ]]; then
-        rule_set["${config_candidate#"$repo_dir"/}"]=1
+        rule_protect "${config_candidate#"$repo_dir"/}"
       fi
     fi
   done <<< "$manifest_list"
@@ -58,7 +65,10 @@ fi
 mapfile -t changed < <(git diff --name-only --no-renames "$base...$head")
 touched=()
 for path in "${changed[@]}"; do
-  [[ -n "${rule_set[$path]:-}" ]] && touched+=("$path")
+  if [[ -n "${rule_set[$path]:-}" ]]; then touched+=("$path"); continue; fi
+  for prefix in ${rule_prefixes[@]+"${rule_prefixes[@]}"}; do
+    [[ "$path" == "$prefix"* ]] && { touched+=("$path"); break; }
+  done
 done
 
 actor=unit
