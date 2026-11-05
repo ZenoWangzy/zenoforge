@@ -2259,6 +2259,10 @@ triage_slots="$(cap_slots_remaining "$TRIAGE_CAP" "$(stage_unit_count triage)")"
 declare -a TRIAGE_BATCH_IDS=()
 TRIAGE_RETRY_ALONE=0
 TRIAGE_DEFERRED_COUNT=0
+# Reasons selection left a candidate out, for the "triage batch empty" line.
+declare -A TRIAGE_SKIPS=()
+triage_skip() { TRIAGE_SKIPS[$1]=$(( ${TRIAGE_SKIPS[$1]:-0} + 1 )); }
+TRIAGE_ORDERED_COUNT=0
 TRIAGE_BATCH_ACTIVE=0
 stage_unit_active triage batch && TRIAGE_BATCH_ACTIVE=1
 [ "$TRIAGE_BATCH_ACTIVE" = "1" ] && triage_slots=0
@@ -2305,6 +2309,7 @@ elif ! NEEDS_TRIAGE_IDS="$(jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_
   echo "issue-pipeline: could not order needs-triage candidates; skipping triage dispatch this tick" >&2
 fi
 if [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" ]; then
+  TRIAGE_ORDERED_COUNT="$(wc -w <<< "$NEEDS_TRIAGE_IDS")"
   NEEDS_TRIAGE_IDS="$(while IFS= read -r next_triage; do
     [ -n "$next_triage" ] || continue
     if hand_agent_issue_is_live_owned "$next_triage"; then
@@ -2323,24 +2328,26 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" 
     fi
     if hand_agent_issue_is_live_owned "$next_triage"; then
       record_hand_owned_decision triage "$next_triage"
+      triage_skip hand_owned
       continue
     fi
-    is_on_hold "$next_triage" && continue
-    [ "$(issue_model_failure_backoff_remaining "$next_triage" "$TRIAGE_RETRY_NOW")" -gt 0 ] && continue
+    if is_on_hold "$next_triage"; then triage_skip on_hold; continue; fi
+    if [ "$(issue_model_failure_backoff_remaining "$next_triage" "$TRIAGE_RETRY_NOW")" -gt 0 ]; then triage_skip model_backoff; continue; fi
     if triage_retry_deferred "$next_triage" "$TRIAGE_RETRY_NOW" \
       && ! issue_has_maintainer_test_label "$(jq -c --argjson n "$next_triage" '[.[] | select(.number == $n)][0]' <<< "$NEEDS_TRIAGE_JSON")"; then
+      triage_skip retry_deferred
       continue
     fi
     # See lib.sh's stage_unit_active(): needs-triage stays on the issue
     # until late in run-triage.sh, so a still-running triage for this same
     # issue would otherwise look selectable to a later tick.
-    stage_unit_active triage "$next_triage" && continue
-    pipeline_triage_skip_inflight "$next_triage" && continue
-    stage_dispatch_allowed triage || break
+    if stage_unit_active triage "$next_triage"; then triage_skip unit_active; continue; fi
+    if pipeline_triage_skip_inflight "$next_triage"; then triage_skip scheduler_inflight; continue; fi
+    stage_dispatch_allowed triage || { triage_skip quarantine; break; }
     # The roadmap placement is a GitHub call per issue; a candidate that will
     # only be deferred past the cap does not pay for it.
     if [ "$(state_read "$next_triage" | jq -r '.triage_batch_retry_alone // false')" = "true" ]; then
-      ensure_issue_roadmap_parent_for_dispatch "$next_triage" needs-triage || continue
+      ensure_issue_roadmap_parent_for_dispatch "$next_triage" needs-triage || { triage_skip roadmap_parent; continue; }
       TRIAGE_BATCH_IDS=("$next_triage")
       TRIAGE_RETRY_ALONE=1
       break
@@ -2350,7 +2357,7 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" 
       TRIAGE_DEFERRED_COUNT=$((TRIAGE_DEFERRED_COUNT + 1))
       continue
     fi
-    ensure_issue_roadmap_parent_for_dispatch "$next_triage" needs-triage || continue
+    ensure_issue_roadmap_parent_for_dispatch "$next_triage" needs-triage || { triage_skip roadmap_parent; continue; }
     TRIAGE_BATCH_IDS+=("$next_triage")
     triage_slots=$((triage_slots - 1))
   done
@@ -2430,22 +2437,24 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_RETRY_ALONE" = "0" ] && [ "$RE
       echo "issue-pipeline: triage measurement selection reached the slice deadline with ${#TRIAGE_BATCH_IDS[@]} issue(s) selected" >&2
       break
     fi
-    [ "$(triage_classification_status "$(state_file "$next_measure")")" = "unmeasured" ] || continue
+    if [ "$(triage_classification_status "$(state_file "$next_measure")")" != "unmeasured" ]; then triage_skip already_measured; continue; fi
     if hand_agent_issue_is_live_owned "$next_measure"; then
       record_hand_owned_decision triage "$next_measure"
+      triage_skip hand_owned
       continue
     fi
-    is_on_hold "$next_measure" && continue
-    [ "$(issue_model_failure_backoff_remaining "$next_measure" "$TRIAGE_RETRY_NOW")" -gt 0 ] && continue
+    if is_on_hold "$next_measure"; then triage_skip on_hold; continue; fi
+    if [ "$(issue_model_failure_backoff_remaining "$next_measure" "$TRIAGE_RETRY_NOW")" -gt 0 ]; then triage_skip model_backoff; continue; fi
     if triage_retry_deferred "$next_measure" "$TRIAGE_RETRY_NOW" \
       && ! issue_has_maintainer_test_label "$(jq -c --argjson n "$next_measure" '[.[] | select(.number == $n)][0]' <<< "$READY_MEASURE_JSON")"; then
+      triage_skip retry_deferred
       continue
     fi
-    stage_unit_active triage "$next_measure" && continue
-    pipeline_triage_skip_inflight "$next_measure" && continue
-    stage_dispatch_allowed triage || break
+    if stage_unit_active triage "$next_measure"; then triage_skip unit_active; continue; fi
+    if pipeline_triage_skip_inflight "$next_measure"; then triage_skip scheduler_inflight; continue; fi
+    stage_dispatch_allowed triage || { triage_skip quarantine; break; }
     if [ "$(state_read "$next_measure" | jq -r '.triage_batch_retry_alone // false')" = "true" ]; then
-      ensure_issue_roadmap_parent_for_dispatch "$next_measure" ready-for-agent || continue
+      ensure_issue_roadmap_parent_for_dispatch "$next_measure" ready-for-agent || { triage_skip roadmap_parent; continue; }
       TRIAGE_BATCH_IDS=("$next_measure")
       TRIAGE_RETRY_ALONE=1
       break
@@ -2454,7 +2463,7 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_RETRY_ALONE" = "0" ] && [ "$RE
       TRIAGE_DEFERRED_COUNT=$((TRIAGE_DEFERRED_COUNT + 1))
       continue
     fi
-    ensure_issue_roadmap_parent_for_dispatch "$next_measure" ready-for-agent || continue
+    ensure_issue_roadmap_parent_for_dispatch "$next_measure" ready-for-agent || { triage_skip roadmap_parent; continue; }
     TRIAGE_BATCH_IDS+=("$next_measure")
     triage_slots=$((triage_slots - 1))
   done
@@ -2464,6 +2473,14 @@ if [ "$TRIAGE_DEFERRED_COUNT" -gt 0 ]; then
 fi
 if [ "${#TRIAGE_BATCH_IDS[@]}" -eq 0 ] && [ "$TRIAGE_SELECT_CUT" = 1 ]; then
   echo "issue-pipeline: triage batch could not be built within the slice; no issue selected, retrying next tick" >&2
+fi
+# Permanent: an empty batch names its cause on the first run, not after another round of tracing.
+if [ "${#TRIAGE_BATCH_IDS[@]}" -eq 0 ]; then
+  TRIAGE_SKIP_SUMMARY=""
+  for triage_skip_reason in "${!TRIAGE_SKIPS[@]}"; do
+    TRIAGE_SKIP_SUMMARY+="${TRIAGE_SKIP_SUMMARY:+,}$triage_skip_reason:${TRIAGE_SKIPS[$triage_skip_reason]}"
+  done
+  echo "issue-pipeline: triage batch empty: needs_triage=$(jq 'length' <<< "$NEEDS_TRIAGE_JSON") ordered=$TRIAGE_ORDERED_COUNT selectable=$(wc -w <<< "$NEEDS_TRIAGE_IDS") measure=$(wc -w <<< "${READY_MEASURE_IDS:-}") slots=$triage_slots batch_active=$TRIAGE_BATCH_ACTIVE query_failed=$TRIAGE_CANDIDATE_QUERY_FAILED/$READY_MEASURE_QUERY_FAILED cut=$TRIAGE_SELECT_CUT skips=${TRIAGE_SKIP_SUMMARY:-none}" >&2
 fi
 if [ "${#TRIAGE_BATCH_IDS[@]}" -gt 0 ]; then
   TRIAGE_DISPATCH_IDS=()

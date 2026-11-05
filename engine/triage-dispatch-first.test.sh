@@ -53,4 +53,17 @@ assert_eq "no admit or labelling once the slice deadline is gone" 0 "$(grep -cE 
 run_intake_dispatch 2> "$TMP/err" || true
 assert_eq "only the selected candidate is placed on the roadmap" 1 "$(grep -c '^ensure' "$CALLS" || true)"
 
+# An empty batch states why, with a count per skip reason.
+: > "$CALLS"; cap_slots_remaining() { echo 5; }; is_on_hold() { return 0; }
+run_intake_dispatch 2> "$TMP/err" || true
+is_on_hold() { return 1; }
+assert_eq "empty batch dispatches nothing" 0 "$(grep -c '^dispatch' "$CALLS" || true)"
+grep -q 'triage batch empty: needs_triage=2 ordered=2 selectable=2 .*batch_active=0 .*skips=on_hold:2' "$TMP/err" && ok=1 || ok=0
+assert_eq "empty batch line counts each skip reason" 1 "$ok"
+: > "$CALLS"; stage_dispatch_allowed() { return 1; }
+run_intake_dispatch 2> "$TMP/err" || true
+stage_dispatch_allowed() { return 0; }
+grep -q 'triage batch empty: .*skips=quarantine:1' "$TMP/err" && ok=1 || ok=0
+assert_eq "empty batch line names a quarantine stop" 1 "$ok"
+
 [ "$FAILED" -eq 0 ] && echo "ALL PASSED" || { echo FAILURES; exit 1; }
