@@ -44,6 +44,19 @@ if nested_output="$(bash -c 'source "$1"' _ "$(dirname -- "${BASH_SOURCE[0]}")/t
 fi
 [[ "$nested_output" == *'test-env: refusing nested test environment'* ]] || { echo "$nested_output" >&2; exit 1; }
 
+# Equivalent spellings of the test HOME are still nested entry.
+for home_spelling in "$HOME/" "$HOME/."; do
+  if HOME="$home_spelling" bash -c 'source "$1"' _ "$(dirname -- "${BASH_SOURCE[0]}")/test-env.sh" >/dev/null 2>&1; then
+    echo "test-env: nested bootstrap accepted HOME=$home_spelling" >&2
+    exit 1
+  fi
+done
+
+# The eval grader sets the marker before running a suite from the host HOME; that is not nesting.
+grader_root="$(env -u ZF_AGENT_TEST_ROOT HOME="$TEST_ENV_HOST_HOME" PATH="$TEST_ENV_HOST_PATH" TEST_ENV_PARENT="$TEST_ENV_NESTED_PARENT" \
+  ZF_AGENT_TEST_MODE=1 bash -c 'source "$1" && printf %s "$ZF_AGENT_TEST_ROOT"' _ "$(dirname -- "${BASH_SOURCE[0]}")/test-env.sh")"
+[[ "$grader_root" == "$TEST_ENV_NESTED_PARENT"/zenoforge-agent-test-* ]] || { echo "test-env: marker-only bootstrap refused or misplaced: $grader_root" >&2; exit 1; }
+
 # A shadowed lookup must reject the stub, even through a hard link.
 mkdir -p "$test_env_root/shadow"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$test_env_root/shadow/node"
