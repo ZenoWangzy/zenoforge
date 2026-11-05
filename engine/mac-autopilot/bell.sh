@@ -429,7 +429,7 @@ PY
       [.[] | select(.status == "completed" and .conclusion == "failure"
         and (.createdAt // "") >= $cutoff and (.createdAt // "") <= (now | todateiso8601)
         and (.databaseId | type == "number") and (.headSha // "" | test("^[0-9a-f]{40}$"))
-        and ($seen[($wf + ":" + (.databaseId | tostring))] // false) != true)]
+        and ($seen[($wf + ":" + (.databaseId | tostring))] // false) == false)]
       | sort_by([.createdAt, .databaseId]) | reverse | .[:5][]' <<<"$runs")
   done
   STATE_JSON="$(jq -c --argjson now "$now" '.main_ci_runs_seen |= with_entries(select((.value // 0) > ($now - 604800)))' <<<"$STATE_JSON")"
