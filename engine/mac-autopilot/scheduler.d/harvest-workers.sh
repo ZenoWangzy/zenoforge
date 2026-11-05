@@ -53,7 +53,7 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
 }
 
 harvest_workers() { # [local-only]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement workers
-  local pr_harvested=0 local_only="${1:-false}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage
+  local pr_harvested=0 local_only="${1:-false}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"
@@ -83,7 +83,10 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
       continue
     fi
     # --json 日志：末次累计 turn.completed 的新鲜 token（旧页脚 blended 口径一致）；legacy 日志退回页脚
-    stream="$(python3 "$USAGE_READER" codex-stream "$lg" 2>/dev/null || true)"
+    claude_impl=false
+    [[ "$(jqf -r '.provider // empty' <<<"$w")" == claude && "$wtype" =~ ^(implement|repair)$ ]] && claude_impl=true
+    # Claude implement logs are stream-json: the result line carries the session, the final answer, usage and any provider fault.
+    stream="$(python3 "$USAGE_READER" "$([[ "$claude_impl" == true ]] && echo claude-stream || echo codex-stream)" "$lg" 2>/dev/null || true)"
     tk="$(jqf -r '.fresh // empty' <<<"$stream")"
     [[ "$tk" =~ ^[0-9]+$ ]] || tk="$(tokens_of "$lg")"
     [[ "$tk" =~ ^[0-9]+$ ]] || tk=""  # 读不出来就是 unavailable，不当 0
@@ -156,7 +159,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
         printf '%s\n' "$msg" > "$rep" && say "report for unit=$unit missing; recovered the worker's final message into $report"
       fi
     fi
-    usage_end="$(session_usage_for_id "$session_id")"
+    if [[ "$claude_impl" == true ]]; then usage_end="$(jqf -c '.usage' <<<"$stream")"; else usage_end="$(session_usage_for_id "$session_id")"; fi
     usage_start="$(jqf -c '.token_usage_start // null' <<<"$w")"
     accounting="$(jqf -cn --argjson start "$usage_start" --argjson end "$usage_end" \
       --arg mode "$(jqf -r '.mode // "fresh"' <<<"$w")" --arg before "$(jqf -r '.session_id // empty' <<<"$w")" --arg after "$session_id" '
@@ -435,12 +438,15 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
       fi
       limit_hit="$( { tail -n 40 "$lg"; cat "$rep.partial"; } 2>/dev/null | grep -m1 -oiE "$PROVIDER_LIMIT_RE" || true)"
       rm -f -- "$rep.partial"
+      [[ -n "$limit_hit" ]] || limit_hit="$(jqf -r '.limit // empty' <<<"$stream")"
       if [[ -n "$limit_hit" ]]; then
         # 提供方上限：冷却该提供方，不计入无产出、不算失败回合；单元留在原 stage 由孤儿自愈回到 pending。
         local worker_provider
         worker_provider="$(jqf -r '.provider // empty' <<<"$w")"
         [[ -n "$worker_provider" ]] || worker_provider="$(provider_of "$(jqf -r '.model // ""' <<<"$w")")"
         start_cooldown "$worker_provider" "$limit_hit (unit=$unit)"
+        # The scheduler does not load lib.sh, so note_provider_quota_exhausted (locks, env faults) is unavailable here: write the hold directly.
+        [[ "$worker_provider" != claude ]] || provider_quota_write_until claude "$((NOW_EPOCH + 1800))" || :
         set_unit "$unit" "$(hist worker-provider-limit "$limit_hit")"
         jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
         continue

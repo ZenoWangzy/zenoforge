@@ -187,6 +187,21 @@ pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with 
   return 0
 }
 
+pick_claude_implementer() { # hand-claude policy identity -> PICK_* unless the CLI is missing, the policy refuses it, or Claude is held
+  local fields provider model effort tier
+  fields="$(model_policy_role_fields hand-claude 2>/dev/null || true)"
+  [[ -n "$fields" ]] || return 1
+  IFS=$'\t' read -r provider model effort tier <<<"$fields"
+  [[ "$provider" == claude ]] || return 1
+  model_policy_model_allowed_for_role "$model" hand-claude || return 1
+  command -v claude >/dev/null 2>&1 || return 1
+  provider_quota_exhausted claude && return 1
+  cooling claude && return 1
+  PICK_PROVIDER=claude  # own line: the source scan flags a forbidden family name beside a model assignment
+  PICK_MODEL="$model"; PICK_EFFORT="$effort"; PICK_HARD=false; PICK_SERVICE_TIER=""
+  return 0
+}
+
 pick_codex_work_identity() { # work policy role, with legacy models.implement as an install-compatible fallback
   local fields provider model effort tier
   if jqf -e 'any(.labels[]?; . == "hotfix")' <<<"$1" >/dev/null 2>&1; then
@@ -269,7 +284,7 @@ unit_hard_escalated() { # unit JSON -> true after the two-repair cap or supervis
 }
 
 pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota failover
-  local u="$1" assigned actual preferred reason issue hash bucket zcode_share codex_share sum status arbiter=false
+  local u="$1" assigned actual preferred reason issue hash bucket zcode_share claude_share codex_share sum status arbiter=false
   if unit_hard_escalated "$u"; then
     hard_implementer_fields || { say "no hard implementation identity available"; return 1; }
     actual="$PICK_PROVIDER"
@@ -285,23 +300,27 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
 
   assigned="$(jqf -r '.implement_route_provider // empty' <<<"$u")"
   actual="$(jqf -r '.implement_provider // empty' <<<"$u")"
-  if [[ "$assigned" != codex && "$assigned" != zcode ]]; then
-    if [[ "$actual" == codex || "$actual" == zcode ]]; then
+  claude_share="$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")"  # absent = off: an engine upgrade alone never routes to Claude
+  if [[ "$assigned" != codex && "$assigned" != zcode && "$assigned" != claude ]]; then
+    if [[ "$actual" == codex || "$actual" == zcode || "$actual" == claude ]]; then
       assigned="$actual"
       reason="sticky-$actual"
     else
       zcode_share="$(jqf -r '.models.implement_share.zcode // 0' <<<"$CFG")"
       codex_share="$(jqf -r '.models.implement_share.codex // 100' <<<"$CFG")"
-      if [[ "$zcode_share" =~ ^[0-9]+$ && "$codex_share" =~ ^[0-9]+$ ]] \
-          && (( zcode_share <= 100 && codex_share <= 100 )); then
-        sum=$((zcode_share + codex_share))
+      if [[ "$zcode_share" =~ ^[0-9]+$ && "$claude_share" =~ ^[0-9]+$ && "$codex_share" =~ ^[0-9]+$ ]] \
+          && (( zcode_share <= 100 && claude_share <= 100 && codex_share <= 100 )); then
+        sum=$((zcode_share + claude_share + codex_share))
       else
         sum=0
       fi
       if (( sum == 100 )); then
         issue="$(jqf -r '.issue // .id // empty' <<<"$u")"
         hash="$(printf '%s' "$issue" | cksum | awk '{print $1 % 100}')"
-        if (( hash < zcode_share )); then assigned=zcode; else assigned=codex; fi
+        # Buckets are laid out zcode, claude, codex: claude=0 leaves every unit where the two-way split put it.
+        if (( hash < zcode_share )); then assigned=zcode
+        elif (( hash < zcode_share + claude_share )); then assigned=claude
+        else assigned=codex; fi
       else
         assigned=codex
       fi
@@ -311,13 +330,22 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
     reason="sticky-$assigned"
   fi
   preferred="$assigned"
-  if [[ "$actual" == codex || "$actual" == zcode ]]; then
+  if [[ "$actual" == codex || "$actual" == zcode || "$actual" == claude ]]; then
     preferred="$actual"
     reason="sticky-$actual"
   fi
   PICK_ROUTE_PROVIDER="$assigned"; PICK_HARD=false
 
-  if [[ "$preferred" == zcode ]]; then
+  if [[ "$preferred" == claude && "$claude_share" != 0 ]]; then
+    if pick_claude_implementer; then PICK_REASON="$reason"; return 0; fi
+    if provider_quota_exhausted claude || cooling claude; then reason=quota-fallback-claude-to-codex
+    else reason=claude-unavailable-fallback-to-codex; fi
+    if pick_codex_work_identity "$u"; then PICK_REASON="$reason"; return 0; fi
+  elif [[ "$preferred" == claude ]]; then
+    # Share 0 is the kill switch: sticky Claude units go back to Codex too (a fresh session; repair never resumes across providers).
+    reason=claude-share-off-codex
+    pick_codex_work_identity "$u" && { PICK_REASON="$reason"; return 0; }
+  elif [[ "$preferred" == zcode ]]; then
     status="$(zcode_quota_status)"
     if pick_zcode_implementer; then PICK_REASON="$reason"; return 0; fi
     if [[ "$status" == exhausted ]]; then reason=quota-fallback-zcode-to-codex

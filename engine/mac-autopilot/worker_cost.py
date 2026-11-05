@@ -158,7 +158,11 @@ def measure(path, worker):
             else:
                 usage = last  # fresh session: its counters start at zero
     elif text and '"type":"assistant"' in text:
-        backend = "claude"  # a claude review log; no usage in the worker log itself
+        backend = "claude"  # a claude review log has no usage in the worker log itself; a stream-json implement log ends in a result line
+        try:
+            usage = zcode_stream_usage(path)
+        except Exception:
+            usage = None
     elif text:
         try:
             usage, backend = zcode_stream_usage(path), "zcode"

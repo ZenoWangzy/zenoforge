@@ -31,6 +31,53 @@ worker_rules() { # unit-json type provider
   fi
 }
 
+claude_session_file_for_id() { compgen -G "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/$1.jsonl" | head -n1; }
+
+# Claude 实现 worker 的工具面：只写自己的工作目录，只推单元分支（direct-main 车道完全不推，与 Codex 实现提示一致）。
+# 没有 OS 沙箱：这是权限规则，不是隔离；测试运行器仍会执行 worker 写的代码（Codex 实现同样是 danger-full-access，见 SECURITY.md）。
+claude_implement_tools() { # workdir unit → --allowedTools 值
+  local workdir="$1" unit="$2" branch tools
+  tools="Grep,Glob,Read(/$workdir/**),Edit(/$workdir/**),Write(/$workdir/**),Bash(cd:*),Bash(pwd),Bash(echo:*),Bash(printf:*),Bash(sed:*),Bash(sort:*),Bash(uniq:*),Bash(cat:*),Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(jq:*),Bash(mkdir:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git add:*),Bash(git commit:*),Bash(git stash:*),Bash(git merge:*),Bash(git fetch:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git ls-files:*),Bash(git branch --show-current),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(pnpm:*),Bash(npx vitest:*),Bash(node --test:*),Bash(bash *.test.sh),Bash(node scripts/branch-delivery-preflight.mjs:*),Bash(node engine/verification-plan.mjs:*)"
+  [[ -z "${SUP:-}" ]] || tools+=",Read(/$SUP/**)"
+  branch="$(git -C "$workdir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  if [[ "$(unit_field "$unit" '.lane // empty')" != direct-main && "$branch" =~ ^[A-Za-z0-9._/-]+$ && "$branch" != main ]]; then
+    tools+=",Bash(git push origin $branch),Bash(git push -u origin $branch)"
+  fi
+  printf '%s' "$tools"
+}
+
+# 实现/修复：claude -p stream-json；repair 在同一提供方与模型、会话文件仍在时 --resume（session id 来自上一次 result 流）。
+# 不加载用户设置/钩子/MCP/技能/记忆（--safe-mode --setting-sources "" --strict-mcp-config），权限 dontAsk 只认上面的白名单。
+build_claude_implement_command() { # type model effort unit prompt failure workdir
+  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="$6" workdir="$7" prior session_id
+  local -a resume=()
+  local note="
+（本次运行只能写当前工作目录，无权写其他路径：把完整报告正文作为最终回答输出，调度器会原样落盘为报告。Bash 只认白名单单条命令：git status/diff/log/show/add/commit/stash/merge/fetch、git push origin 本单元分支、pnpm、npx vitest、node --test、bash <file>.test.sh、node scripts/branch-delivery-preflight.mjs、rg/grep/sed/cat/ls/head/tail/wc/jq；一条被拒就拆成白名单单条命令重试，不要换路绕过。）"
+  prompt+="$note"
+  if [[ "$type" == repair ]]; then
+    prior="$(unit_field "$unit" '.sessions.repair // {}')"
+    session_id="$(jqf -r '.id // empty' <<<"$prior")"
+    CODEX_PATH_REASON=no-recorded-session
+    if [[ "$session_id" =~ $SESSION_RE ]]; then
+      if [[ "$(jqf -r '.provider // empty' <<<"$prior")" != claude ]]; then CODEX_PATH_REASON=provider-changed
+      elif [[ "$(jqf -r '.model // empty' <<<"$prior")" != "$model" ]]; then CODEX_PATH_REASON=model-changed
+      elif [[ -z "$(claude_session_file_for_id "$session_id")" ]]; then CODEX_PATH_REASON=session-files-missing
+      elif [[ -z "$failure" ]]; then CODEX_PATH_REASON=no-new-failure
+      else
+        CODEX_MODE=resume; CODEX_PATH_REASON=same-provider-model; CODEX_SESSION_ID="$session_id"
+        resume=(--resume "$session_id"); prompt="$failure$note"
+      fi
+    fi
+  fi
+  [[ "$(unit_field "$unit" '.self_fix_active // false')" != true || "$CODEX_MODE" == resume ]] || return 1
+  WORKER_STDOUT_REPORT=0  # stream-json 不是报告：harvest 从 result 行取最终回答
+  CODEX_USAGE_START='{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}'  # result 行是本次调用自己的用量
+  CODEX_COMMAND=(claude -p "$prompt" ${resume[@]+"${resume[@]}"} \
+    --model "$model" --effort "$effort" --output-format stream-json --verbose \
+    --permission-mode dontAsk --safe-mode --setting-sources "" --strict-mcp-config \
+    --tools "Read,Edit,Write,Grep,Glob,Bash" --allowedTools "$(claude_implement_tools "$workdir" "$unit")")
+}
+
 # models.<role> = [model, effort, service_tier?]；provider selects codex, claude, or zcode CLI.
 build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider] [report-only-resume] [expected-session-id]
   local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" usage prompt_arg role tier self_fix prior config_arg
@@ -54,6 +101,10 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     CODEX_USAGE_START=null
     CODEX_COMMAND=(env NODE_USE_ENV_PROXY=1 zcode -p "$prompt_arg" --cwd "$workdir" --mode yolo)
     return 0
+  fi
+  if [[ "$provider" == claude && ( "$type" == implement || "$type" == repair ) ]]; then
+    build_claude_implement_command "$type" "$model" "$effort" "$unit" "$prompt_arg" "$failure" "$workdir"
+    return $?
   fi
   if [[ "$provider" == claude ]]; then
     [[ "$type" == review || "$type" == rereview ]] || return 1

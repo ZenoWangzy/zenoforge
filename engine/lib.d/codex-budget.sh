@@ -292,7 +292,7 @@ codex_model_capacity_hold() {
   printf '%s\n' "$until" > "$tmp" && mv -f -- "$tmp" "$marker"
 }
 
-# _quota_marker_file <provider> -- codex|web-advisor-provider|zcode -> that provider's
+# _quota_marker_file <provider> -- codex|web-advisor-provider|zcode|claude -> that provider's
 # marker path above. A lookup, not string interpolation (`$AGENT_HOME/$1-...`),
 # so a typo'd or unknown provider name fails loudly (empty stdout, nonzero
 # status) instead of silently minting a THIRD marker path nothing reads.
@@ -301,6 +301,7 @@ _quota_marker_file() {
     codex) printf '%s\n' "$CODEX_EXHAUSTED_MARKER_FILE" ;;
     web-advisor-provider) printf '%s\n' "$WEB_ADVISOR_PROVIDER_EXHAUSTED_MARKER_FILE" ;;
     zcode) printf '%s\n' "$ZCODE_EXHAUSTED_MARKER_FILE" ;;
+    claude) printf '%s\n' "$CLAUDE_EXHAUSTED_MARKER_FILE" ;;
     *) return 1 ;;
   esac
 }
@@ -358,6 +359,7 @@ provider_quota_provider_for_model() {
     codex|codex:*) echo codex ;;
     web:*) echo web-advisor-provider ;;
     zcode|zcode:*) echo zcode ;;
+    claude|claude:*) echo claude ;;
     *) return 1 ;;
   esac
 }
@@ -376,7 +378,7 @@ provider_quota_alert_marker_file() {
 
 provider_quota_lock_file() {
   case "$1" in
-    codex|web-advisor-provider|zcode) printf '%s/locks/provider-quota-%s.lock\n' "$AGENT_HOME" "$1" ;;
+    codex|web-advisor-provider|zcode|claude) printf '%s/locks/provider-quota-%s.lock\n' "$AGENT_HOME" "$1" ;;
     *) return 1 ;;
   esac
 }

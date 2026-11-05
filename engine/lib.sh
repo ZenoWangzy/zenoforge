@@ -966,6 +966,7 @@ CODEX_PROVIDER_PROBE_NOTICE_FILE="$CODEX_EXHAUSTED_MARKER_FILE.probe-notice-sent
 # cannot clear another provider's active hold.
 WEB_ADVISOR_PROVIDER_EXHAUSTED_MARKER_FILE="$AGENT_HOME/web-advisor-provider-exhausted-until"
 ZCODE_EXHAUSTED_MARKER_FILE="$AGENT_HOME/zcode-exhausted-until"
+CLAUDE_EXHAUSTED_MARKER_FILE="$AGENT_HOME/claude-exhausted-until"
 # Provider-wide quota holds are recorded separately from issue-local model
 # failures, so an account outage does not consume an issue's attempts.
 #

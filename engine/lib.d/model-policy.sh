@@ -41,7 +41,7 @@ model_policy_validate_json() {
             and all(.[]; type == "string" and test("^[A-Za-z0-9_-]+$")
               and . != "work" and . != "production" and . != "implement"))
           and (if $family == "sonnet"
-            then ($roles == ["review_fallback"])
+            then all($roles[]; . == "review_fallback" or . == "hand-claude")
             else true end)] | all)
     else true end)
     and ((.forbidden + $canonical[0].forbidden | unique) as $forbidden
@@ -116,6 +116,9 @@ model_policy_effective_live_json() {
     | ($default * $live)
     | .schema_version = $default.schema_version
     | .model_families = $default.model_families
+    # Live allow_roles add to the default ones: an array merge would let a live list drop the default hand-claude grant.
+    | .allow_roles = reduce ((($default.allow_roles // {}) + ($live.allow_roles // {})) | keys[]) as $family
+        ({}; .[$family] = ((($default.allow_roles[$family] // []) + ($live.allow_roles[$family] // [])) | unique))
     | .roles = reduce ((($default.roles // {}) + ($live.roles // {})) | keys[]) as $role
         ({}; .[$role] = (
           ($default.roles[$role] // {}) as $default_role
@@ -429,6 +432,7 @@ model_policy() {
         if $r.disabled == true then error("role disabled")
         elif $r.provider == "codex" then "codex:" + $r.model + ":" + $r.effort
         elif $r.provider == "zcode" then "zcode:" + $r.model + ":" + $r.effort
+        elif $r.provider == "claude" then "claude:" + $r.model + ":" + $r.effort
         elif $r.provider == "web-advisor-provider" then "web:" + $r.model
         else error("unsupported role provider") end
       ' <<< "$effective_policy"

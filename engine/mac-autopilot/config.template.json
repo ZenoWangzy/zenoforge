@@ -104,7 +104,9 @@
       "fast"
     ],
     "implement_share": {
-      "codex": 100
+      "claude": 50,
+      "codex": 50,
+      "zcode": 0
     },
     "triage": [
       "gpt-6-luna",

@@ -174,4 +174,28 @@ update_budget >/dev/null || fail 'a live worker made the daily meter unavailable
 jq -e --arg sid "$active_sid" '.status=="partial" and .total==4650 and .incomplete_sessions==[$sid]' \
   "$A/budget.json" >/dev/null || fail "live worker was not marked partial: $(cat "$A/budget.json")"
 
+# claude -p stream-json implement logs: session from the stream, usage from the result line, errors never become a report.
+claude_sid="eeeeeeee-0000-0000-0000-00000000000e"
+ok_log="$fixture/claude-ok.worker.log"
+cat > "$ok_log" <<JSONL
+{"type":"system","subtype":"init","session_id":"$claude_sid","model":"claude-sonnet-5-5"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]},"session_id":"$claude_sid"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"session_id":"$claude_sid"}
+{"type":"result","subtype":"success","is_error":false,"api_error_status":null,"result":"REPORT BODY","session_id":"$claude_sid","usage":{"input_tokens":3,"cache_creation_input_tokens":100,"cache_read_input_tokens":900,"output_tokens":40}}
+JSONL
+python3 "$USAGE_READER" claude-stream "$ok_log" | jq -e --arg sid "$claude_sid" \
+  '.session_id==$sid and .complete==true and .message=="REPORT BODY" and .limit=="" and .usage.input_tokens==1003 and .usage.cached_input_tokens==900 and .usage.output_tokens==40 and .usage.raw==1043 and .fresh==143' >/dev/null \
+  || fail "claude-stream did not read a successful run: $(python3 "$USAGE_READER" claude-stream "$ok_log")"
+limit_log="$fixture/claude-limit.worker.log"
+cat > "$limit_log" <<JSONL
+{"type":"system","subtype":"init","session_id":"$claude_sid"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1793863800},"session_id":"$claude_sid"}
+{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"You've hit your limit - resets 3pm","session_id":"$claude_sid","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}
+JSONL
+python3 "$USAGE_READER" claude-stream "$limit_log" | jq -e '.complete==false and .message=="" and (.limit | test("hit your limit"))' >/dev/null \
+  || fail "claude-stream did not flag a usage-limit result: $(python3 "$USAGE_READER" claude-stream "$limit_log")"
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"'"$claude_sid"'"}' > "$fixture/claude-cut.worker.log"
+python3 "$USAGE_READER" claude-stream "$fixture/claude-cut.worker.log" | jq -e '.complete==false and .usage==null and .fresh==null and .limit==""' >/dev/null \
+  || fail 'claude-stream treated a killed run as complete or measured'
+
 echo 'usage_reader.test.sh: PASS'

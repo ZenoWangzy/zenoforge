@@ -337,6 +337,44 @@ def zcode_stream_usage(path):
                  cache_write=cache_write if _is_count(cache_write) else None)
 
 
+# ---------- claude -p --output-format stream-json workers: init session, rate-limit events, result line ----------
+
+CLAUDE_LIMIT_RE = re.compile(r"usage limit|hit your .{0,24}limit|limit reached|rate.?limit|overloaded|\b429\b", re.IGNORECASE)
+
+
+def claude_stream_facts(path):
+    """What one Claude implement worker log carries: session id, the result line's own usage, the final answer, and
+    a provider-fault text when the run ended on a usage limit, 429 or overload.
+
+    The result line closes one invocation (a resume reports only its own tokens), so usage is that run's total.
+    complete is true only for a successful result: an error result never becomes the unit's report."""
+    session_id, result, rejected = None, None, None
+    for record in _records(path):
+        kind = record.get("type")
+        if SESSION_RE.match(record.get("session_id") or ""):
+            session_id = record["session_id"]
+        if kind == "result":
+            result = record
+        elif kind == "rate_limit_event":
+            info = record.get("rate_limit_info")
+            if isinstance(info, dict) and info.get("status") == "rejected":
+                rejected = info
+    complete = bool(result) and result.get("is_error") is False and result.get("subtype") == "success"
+    text = result.get("result") if result and isinstance(result.get("result"), str) else ""
+    limit = ""
+    if result and result.get("is_error") is True and (result.get("api_error_status") == 429 or CLAUDE_LIMIT_RE.search(text)):
+        limit = text or "429"
+    elif rejected is not None and not complete:
+        limit = "rate limit rejected (rate_limit_event)"
+    try:
+        usage = zcode_stream_usage(path)
+    except Unavailable:
+        usage = None
+    return {"session_id": session_id, "usage": usage.ledger_fields() if usage else None,
+            "fresh": usage.fresh if usage else None, "complete": complete,
+            "message": text if complete else "", "limit": limit}
+
+
 # ---------- Claude review logs: one record per API response ----------
 
 def _claude_responses(path):
@@ -913,6 +951,9 @@ def main(argv):
         last = facts["snapshots"][-1] if facts["snapshots"] else None
         _print_json({"session_id": facts["session_id"], "fresh": last.fresh if last else None,
                      "complete": facts["complete"], "message": facts["message"]})
+        return 0
+    if command == "claude-stream":
+        _print_json(claude_stream_facts(args[0]))
         return 0
     if command == "codex-ingest":
         log_path, fallback_session_id, started_at, events_path = args[:4]

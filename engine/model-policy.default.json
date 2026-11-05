@@ -23,11 +23,19 @@
       "effort": "max",
       "disabled": true
     },
+    "hand-claude": {
+      "provider": "claude",
+      "model": "claude-sonnet-5-5",
+      "effort": "high"
+    },
     "review": {
       "provider": "zcode",
       "model": "GLM-5.3",
       "effort": "max"
     }
+  },
+  "allow_roles": {
+    "sonnet": ["hand-claude"]
   },
   "escalation": {
     "initial_step": "work",

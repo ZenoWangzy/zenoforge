@@ -61,7 +61,7 @@ jq -e '.max_workers == 10 and .auto_merge == true and .implement_cap == 8
   and .models.review == ["gpt-6-luna", "max", "fast"]
   and .models.review_cross == ["GLM-5.3", "max"]
   and .models.implement == ["gpt-6-luna", "max", "fast"]
-  and .models.implement_share == {"codex":100}
+  and .models.implement_share == {"claude":50,"codex":50,"zcode":0}
   and .models.triage == ["gpt-6-luna", "max", "fast"]
   and .models.review_fallback == ["claude-sonnet-4-5", "high"]
   and .supervisor_arbiter.cap_triage == true
@@ -6051,6 +6051,82 @@ sched_case_test_evidence_heartbeat() (
     || { echo "not ok - scheduler.test.sh: each record must log its own heartbeat line: $(cat "$LOG")" >&2; exit 1; }
 )
 sched_run_case test_evidence_heartbeat
+
+claude_share_fixture() { # $1 = implement_share JSON
+  glm_share_fixture
+  CFG="$(command jq --argjson share "$1" '.models.implement_share=$share' <<<"$CFG")"
+  CLAUDE_EXHAUSTED_MARKER_FILE="$AGENT_HOME/claude-exhausted-until"
+  mkdir -p "$AGENT_HOME/locks"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TF/bin/claude"; chmod +x "$TF/bin/claude"
+}
+claude_bucket() { printf '%s' "$1" | cksum | awk '{print $1 % 100}'; }
+
+sched_case_claude_share_split_fallback_and_off_switch() {
+  new_tick_fixture claude-share
+  claude_share_fixture '{"claude":50,"codex":50,"zcode":0}'
+  local issue unit stored claude_count=0 codex_count=0 expected first_claude=""
+  for issue in $(seq 6400 6499); do
+    unit="$(command jq -cn --arg id "issue-$issue" --argjson issue "$issue" '{id:$id,issue:$issue,stage:"implement-pending"}')"
+    pick implement "$unit" || { echo "not ok - scheduler.test.sh: claude share routing found no provider for #$issue" >&2; exit 1; }
+    expected=codex; (( $(claude_bucket "$issue") < 50 )) && expected=claude
+    [[ "$PICK_PROVIDER" == "$expected" && "$PICK_ROUTE_PROVIDER" == "$expected" && "$PICK_REASON" == "share-$expected" ]] \
+      || { echo "not ok - scheduler.test.sh: #$issue did not follow the claude/codex hash ($PICK_PROVIDER/$PICK_REASON != $expected)" >&2; exit 1; }
+    if [[ "$expected" == claude ]]; then
+      claude_count=$((claude_count+1)); [[ -n "$first_claude" ]] || first_claude="$issue"
+      [[ "$PICK_MODEL:$PICK_EFFORT" == claude-sonnet-5-5:high ]] \
+        || { echo "not ok - scheduler.test.sh: claude implement identity is $PICK_MODEL:$PICK_EFFORT" >&2; exit 1; }
+    else codex_count=$((codex_count+1)); fi
+  done
+  (( claude_count > 0 && codex_count > 0 )) || { echo "not ok - scheduler.test.sh: 50/50 did not use both (claude=$claude_count codex=$codex_count)" >&2; exit 1; }
+
+  # sticky repair keeps Claude; a usage-limit marker or cooldown sends the next pick to Codex without recording a new route
+  stored="$(command jq -cn --arg id "issue-$first_claude" --argjson issue "$first_claude" \
+    '{id:$id,issue:$issue,stage:"repair-pending",implement_provider:"claude",implement_route_provider:"claude",implement_model:"claude-sonnet-5-5",implement_effort:"high"}')"
+  pick implement "$stored" && [[ "$PICK_PROVIDER" == claude && "$PICK_REASON" == sticky-claude ]] \
+    || { echo "not ok - scheduler.test.sh: repair did not stay on claude ($PICK_PROVIDER/$PICK_REASON)" >&2; exit 1; }
+  provider_quota_write_until claude "$((NOW_EPOCH + 1800))"
+  pick implement "$stored" && [[ "$PICK_PROVIDER" == codex && "$PICK_REASON" == quota-fallback-claude-to-codex ]] \
+    || { echo "not ok - scheduler.test.sh: held claude did not fall back to codex ($PICK_PROVIDER/$PICK_REASON)" >&2; exit 1; }
+  rm -f "$CLAUDE_EXHAUSTED_MARKER_FILE"
+  command jq -n --argjson until "$((NOW_EPOCH + 600))" '{claude:$until}' > "$COOLDOWN"
+  pick implement "$stored" && [[ "$PICK_PROVIDER" == codex && "$PICK_REASON" == quota-fallback-claude-to-codex ]] \
+    || { echo "not ok - scheduler.test.sh: cooling claude did not fall back to codex" >&2; exit 1; }
+  printf '{}\n' > "$COOLDOWN"
+}
+sched_run_case claude_share_split_fallback_and_off_switch
+
+sched_case_claude_share_zero_restores_routing() {
+  new_tick_fixture claude-share-off
+  local issue unit share want a b
+  for share in '{"codex":100}' '{"zcode":50,"codex":50}' '{"zcode":20,"codex":80}'; do
+    claude_share_fixture "$share"
+    for issue in $(seq 6500 6599); do
+      unit="$(command jq -cn --arg id "issue-$issue" --argjson issue "$issue" '{id:$id,issue:$issue,stage:"implement-pending"}')"
+      pick implement "$unit" || { echo "not ok - scheduler.test.sh: baseline $share found no provider for #$issue" >&2; exit 1; }
+      a="$PICK_PROVIDER/$PICK_ROUTE_PROVIDER/$PICK_REASON/$PICK_MODEL"
+      CFG="$(command jq '.models.implement_share.claude=0' <<<"$CFG")"
+      pick implement "$unit" || { echo "not ok - scheduler.test.sh: claude=0 $share found no provider for #$issue" >&2; exit 1; }
+      b="$PICK_PROVIDER/$PICK_ROUTE_PROVIDER/$PICK_REASON/$PICK_MODEL"
+      CFG="$(command jq 'del(.models.implement_share.claude)' <<<"$CFG")"
+      [[ "$a" == "$b" ]] || { echo "not ok - scheduler.test.sh: claude=0 changed #$issue routing under $share ($a != $b)" >&2; exit 1; }
+      want=codex
+      (( $(command jq -r '.models.implement_share.zcode // 0' <<<"$CFG") > $(claude_bucket "$issue") )) && want=zcode
+      [[ "$PICK_ROUTE_PROVIDER" == "$want" ]] || { echo "not ok - scheduler.test.sh: #$issue route is $PICK_ROUTE_PROVIDER, the two-way split says $want" >&2; exit 1; }
+      [[ "$PICK_PROVIDER" != claude ]] || { echo "not ok - scheduler.test.sh: claude routed with no claude share" >&2; exit 1; }
+    done
+  done
+  # a unit already on claude goes back to codex when the share is switched off
+  claude_share_fixture '{"claude":0,"codex":100}'
+  unit="$(command jq -cn '{id:"issue-6600",issue:6600,stage:"repair-pending",implement_provider:"claude",implement_route_provider:"claude"}')"
+  pick implement "$unit" && [[ "$PICK_PROVIDER" == codex && "$PICK_REASON" == claude-share-off-codex ]] \
+    || { echo "not ok - scheduler.test.sh: sticky claude ignored claude=0 ($PICK_PROVIDER/$PICK_REASON)" >&2; exit 1; }
+  # the shipped hand-claude role and implement_share add nothing to the forbidden-model warning
+  CFG="$(command jq . "$template")"
+  : > "$LOG"; rm -f "$A/.models-policy-warned"
+  warn_forbidden_model_config
+  ! grep -Eq 'implement_share|hand-claude|claude-sonnet-5-5' "$LOG" || { echo "not ok - scheduler.test.sh: warn_forbidden_model_config named the claude implement config: $(cat "$LOG")" >&2; exit 1; }
+}
+sched_run_case claude_share_zero_restores_routing
 
 if [ -n "${SCHED_TEST_CASE:-}" ]; then
   echo "not ok - scheduler.test.sh: no case matches SCHED_TEST_CASE='$SCHED_TEST_CASE'; known:$sched_case_names" >&2

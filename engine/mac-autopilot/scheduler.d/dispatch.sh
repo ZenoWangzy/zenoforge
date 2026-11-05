@@ -101,7 +101,7 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   local w; w="$(jqf -cn --argjson pid "${pid:-0}" --argjson pid_start "$pid_started" --arg unit "$unit" --arg type "$type" --arg log "$log" --arg report "$report" --arg at "$STAMP" --arg mode "$CODEX_MODE" --arg session_id "$CODEX_SESSION_ID" --arg sha "$sha" --arg pr_head "$pr_head" --arg workdir "$workdir" --arg model "$model" --arg provider "$provider" --arg effort "$effort" --arg route_reason "$route_reason" --argjson hard_escalation "$hard_escalation" --arg issue "$issue" --arg claim_key "$claim_key" --arg claim_owner "$claim_owner" --argjson usage_start "$CODEX_USAGE_START" \
     '{pid:$pid,pid_start:$pid_start,unit:$unit,type:$type,log:$log,report:$report,started:$at,mode:$mode,session_id:$session_id,sha:$sha,pr_head:$pr_head,workdir:$workdir,provider:$provider,model:$model,effort:$effort,hard_escalation:$hard_escalation,route_reason:$route_reason,token_usage_start:$usage_start,issue:$issue,claim_key:$claim_key,claim_owner:$claim_owner}')"
   [[ -z "$worker_context" ]] || w="$(jqf --argjson context "$worker_context" '. + $context' <<<"$w")"
-  if [[ "${WORKER_STDOUT_REPORT:-0}" == 1 && ${#launcher[@]} -gt 0 ]]; then
+  if [[ ( "${WORKER_STDOUT_REPORT:-0}" == 1 || "$provider" == claude ) && ${#launcher[@]} -gt 0 ]]; then
     w="$(jqf --argjson pgid "$pid" '. + {process_group:$pgid}' <<<"$w")"
   fi
   if ! jqf --argjson w "$w" '.workers += [$w]' "$WORKERS" | write_state "$WORKERS"; then

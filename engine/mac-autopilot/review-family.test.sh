@@ -107,6 +107,19 @@ dispatch_selected_review "$unit_json" || fail 'GLM-authored rereview did not dis
 [[ "$DISPATCH_MODEL:$DISPATCH_EFFORT" == 'gpt-6-luna:max' ]] || fail "GLM-authored review selected $DISPATCH_MODEL:$DISPATCH_EFFORT"
 [[ "$(provider_of "$DISPATCH_MODEL")" == codex ]] || fail 'Luna review did not resolve to Codex'
 
+# A Claude-authored head (hand-claude implement) is reviewed by a different family, never by Claude.
+set_config '.models.review=["gpt-6-luna","max","fast"] | .models.review_cross=["GLM-5.3","max"] | .models.review_fallback=["claude-sonnet-5-5","high"]'
+set_policy '.allow_roles.sonnet=["review_fallback"]'
+set_cooldowns 0 0
+unit_json="$(unit_for claude-author 'claude:claude-sonnet-5-5:high')"
+write_units "$(jq -cn --argjson unit "$unit_json" '{units:[$unit]}')"
+write_workers '{workers:[]}'
+dispatch_selected_review "$unit_json" || fail 'Claude-authored review did not dispatch'
+[[ "$DISPATCH_MODEL:$DISPATCH_EFFORT" == 'GLM-5.3:max' ]] || fail "Claude-authored review selected $DISPATCH_MODEL:$DISPATCH_EFFORT"
+set_cooldowns "$((NOW_EPOCH + 1800))" 0
+dispatch_selected_review "$unit_json" || fail 'Claude-authored review did not fall back to the other family during a GLM hold'
+[[ "$(provider_of "$DISPATCH_MODEL")" == codex ]] || fail "Claude-authored review fell back to $DISPATCH_MODEL, not Codex"
+
 # A same-family reviewer setting is logged and never dispatched.
 set_config '.models.review=["gpt-6-luna","max","fast"] | .models.review_cross=["gpt-6-luna","max"] | .models.review_fallback=null'
 set_policy '.'
@@ -150,7 +163,14 @@ if model_policy_model_allowed_for_role claude-sonnet-4-5 implement; then fail 'S
 if model_policy_validate_json <<<"$(jq '.allow_roles.claude=["review_fallback"]' "$MODEL_POLICY_FILE")"; then fail 'a broad Claude exception was accepted by model-policy schema'; fi
 model_policy_require_stage_identity review claude:claude-sonnet-4-5:high || fail 'policy-authorized Sonnet was refused for review'
 if model_policy_require_implementer_identity claude:claude-sonnet-4-5:high >/dev/null 2>&1; then fail 'Claude identity was accepted for implement'; fi
-if build_codex_command implement claude-sonnet-4-5 high claude-impl 'prompt' 'prompt' "$fixture/repo"; then fail 'Claude command was built for implement'; fi
+build_codex_command implement claude-sonnet-5-5 high claude-impl 'prompt' 'prompt' "$fixture/repo" claude || fail 'Claude implement command was refused'
+[[ "${CODEX_COMMAND[0]}" == claude && " ${CODEX_COMMAND[*]} " == *' --output-format stream-json '* ]] || fail 'Claude implement command is not claude -p stream-json'
+# The hand-claude role is the only implement grant; opus and fable stay refused for every role.
+model_policy_model_allowed_for_role claude-sonnet-5-5 hand-claude || fail 'hand-claude was not permitted for Sonnet'
+for refused in claude-opus-5-5 claude-fable-5 claude-haiku-5-5; do
+  if model_policy_model_allowed_for_role "$refused" hand-claude; then fail "$refused was permitted for hand-claude"; fi
+done
+if model_policy_validate_json <<<"$(jq '.roles["hand-claude"].model="claude-opus-5-5"' "$MODEL_POLICY_DEFAULT")"; then fail 'an opus hand-claude role passed the model-policy schema'; fi
 
 set +e
 planted_output="$(bash "$script_dir/review-family.test.sh" --plant-old 2>&1)"

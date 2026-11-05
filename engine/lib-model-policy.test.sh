@@ -444,6 +444,7 @@ POLICY_V1_MIGRATION_HOME="$(mktemp -d)"
 POLICY_V1_MIGRATION_MODEL="gpt-6-legacy"
 jq --arg model "$POLICY_V1_MIGRATION_MODEL" '
   .schema_version = 1
+  | del(.roles["hand-claude"], .allow_roles)
   | .roles |= with_entries(if .value.provider == "codex" then del(.value.fallback_model) else . end)
   | .roles.work.fallback_model = $model
   | .roles["legacy-fallback"] = {provider:"codex", model:$model, effort:"max", disabled:true}
@@ -504,6 +505,7 @@ POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME="$(mktemp -d)"
 POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_MODEL="gpt-6.1-sol"
 jq --arg model "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_MODEL" '
   .schema_version = 1
+  | del(.roles["hand-claude"], .allow_roles)
   | .forbidden |= map(select(. != "sol"))
   | .roles |= with_entries(if .value.provider == "codex" then del(.value.fallback_model) else . end)
   | .roles.work.fallback_model = $model
@@ -562,6 +564,7 @@ rm -rf "$POLICY_V1_CURRENTLY_FORBIDDEN_FALLBACK_HOME"
 POLICY_V1_RETAINED_INVALID_HOME="$(mktemp -d)"
 jq '
   .schema_version = 1
+  | del(.roles["hand-claude"], .allow_roles)
   | .forbidden |= map(select(. != "sol"))
   | .roles |= with_entries(if .value.provider == "codex" then del(.value.fallback_model) else . end)
   | .roles.work.model = "gpt-6.1-sol"
