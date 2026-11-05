@@ -72,9 +72,24 @@ fi
 MONITOR_INITIALIZED="$(jq -r '.monitor_initialized' <<<"$STATE_JSON")"
 
 save_state() {
+  # STATE_JSON 只来自 jq -c 的输出，直接落盘即可；再过一道 jq 会把整个状态重新解析一遍。
   [[ "$CHECK_ONLY" == 1 ]] && return 0
   local tmp="$STATE.tmp.$$"
-  printf '%s\n' "$STATE_JSON" | jq -c . > "$tmp" && mv "$tmp" "$STATE"
+  printf '%s\n' "$STATE_JSON" > "$tmp" && mv "$tmp" "$STATE"
+}
+rotate_log_if_large() {
+  # bell.log 只追加、只有人会 tail；超过上限保留尾部，避免无界增长拖慢宿主与备份。
+  [[ -s "$LOG" ]] || return 0
+  local max="${BELL_LOG_MAX_BYTES:-8388608}" size tmp_log
+  size="$(wc -c < "$LOG" 2>/dev/null | awk '{print $1}')"
+  [[ "$size" =~ ^[0-9]+$ ]] || return 0
+  (( size > max )) || return 0
+  tmp_log="$LOG.rot.$$"
+  # 按字节截断的第一行可能被切一半：不以 [ 开头的行整行丢弃。
+  if tail -c $((max / 2)) "$LOG" 2>/dev/null | sed -e '1{/^\[/d;}' > "$tmp_log" && [[ -s "$tmp_log" ]]; then
+    printf '[%s] bell.log rotated: kept the last %s bytes (was %s)\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$((max / 2))" "$size" | cat - "$tmp_log" > "$tmp_log.2" 2>/dev/null && mv -f "$tmp_log.2" "$LOG" || mv -f "$tmp_log" "$LOG"
+  fi
+  rm -f "$tmp_log" "$tmp_log.2" 2>/dev/null || true
 }
 acquire_lock() {
   if mkdir "$SCAN_LOCK" 2>/dev/null; then
@@ -100,6 +115,7 @@ release_lock() {
 if [[ "$CHECK_ONLY" != 1 ]]; then
   acquire_lock || { echo "bell.sh: scan already active"; exit 0; }
   trap release_lock EXIT
+  rotate_log_if_large
 fi
 
 now="$(date +%s)"
@@ -113,12 +129,6 @@ action_results=()
 event_seq=0
 clean() { printf '%s' "$1" | tr '\t\r\n' '   '; }
 add_event() { events+=("$1"$'\t'"$(clean "$2")"$'\t'"$(clean "$3")"$'\t'"$(clean "$4")"); }
-mtime_ns() {
-  python3 - "$1" <<'PY'
-import os,sys
-print(os.stat(sys.argv[1]).st_mtime_ns)
-PY
-}
 to_epoch() {
   python3 - "$1" <<'PY'
 from datetime import datetime,timezone
@@ -269,14 +279,16 @@ incident_target_repo() {
 # One tick-summary line (tick done / refill done) carries that tick's per-phase
 # timing. Each summary appends one bit per tracked phase (slow or not) to a
 # capped window in bell-state; an event fires only when this tick's slow bit
-# raises the window to the configured N-of-M threshold.
+# raises the window to the configured N-of-M threshold. The window lives in the
+# SLOW_TICKS mirror and is merged into STATE_JSON once after the line loop:
+# 每拍都把整个 2MB 级状态串进 jq 再 fromjson 只为读这一个键，是每拍常数开销的大头。
 record_slow_phase_tick() {
   local line="$1" slow_part="" update phase
   [[ "$line" =~ slow:[[:space:]](.*)$ ]] && slow_part="${BASH_REMATCH[1]}"
-  update="$(jq -cn --arg state "$STATE_JSON" --arg slow "$slow_part" \
+  update="$(jq -cn --arg old "$SLOW_TICKS" --arg slow "$slow_part" \
     --argjson n "$SLOW_PHASE_MIN_TICKS" --argjson m "$SLOW_PHASE_WINDOW_TICKS" '
     def ones($s): [$s | scan("1")] | length;
-    ($state | fromjson | .slow_phase_ticks // {}) as $old
+    $old as $old
     | ($slow | [splits(" +") | select(test("^[A-Za-z0-9_-]+=[0-9]+s$")) | sub("=.*$"; "")] | unique) as $slowphases
     | (($old | keys) + $slowphases | unique) as $phases
     | reduce $phases[] as $p ({ticks: {}, fired: []};
@@ -288,7 +300,9 @@ record_slow_phase_tick() {
           then .fired += [$p] else . end)
   ' 2>/dev/null)" || return 0
   [[ "$update" == *'"ticks"'* ]] || return 0
-  STATE_JSON="$(jq -c --argjson u "$update" '.slow_phase_ticks=$u.ticks' <<<"$STATE_JSON")"
+  SLOW_TICKS="$(jq -c '.ticks' <<<"$update" 2>/dev/null)" || return 0
+  [[ -n "$SLOW_TICKS" ]] || return 0
+  slow_ticks_dirty=1
   while IFS= read -r phase; do
     [[ -n "$phase" ]] || continue
     add_event medium "slow-phase:$phase" \
@@ -453,11 +467,12 @@ file_incident_issue() {
 
 queue_incident_filing() {
   local severity="$1" raw="$2" summary="$3" evidence="$4"
-  local class first_seen occurrence_count
+  local class first_seen occurrence_count stats
   (( $(severity_rank "$severity") >= FILE_MIN_SEVERITY_RANK )) || return 0
   class="$(incident_class "$raw")"
-  first_seen="$(jq -r --arg c "$class" '.incident_stats[$c].first_seen // empty' <<<"$STATE_JSON")"
-  occurrence_count="$(jq -r --arg c "$class" '.incident_stats[$c].count // 0' <<<"$STATE_JSON")"
+  # 一次读取 first_seen/count；逐字段读会把整个（MB 级）状态各解析一遍。
+  stats="$(jq -r --arg c "$class" '(.incident_stats[$c] // {}) as $s | [($s.first_seen // ""), ($s.count // 0 | tostring)] | @tsv' <<<"$STATE_JSON" 2>/dev/null || true)"
+  IFS=$'\t' read -r first_seen occurrence_count <<<"$stats"
   [[ "$occurrence_count" =~ ^[0-9]+$ ]] || occurrence_count=0
   [[ -n "$first_seen" ]] || first_seen="$stamp"
   occurrence_count=$((occurrence_count + 1))
@@ -531,6 +546,13 @@ except (OSError,ValueError,TypeError) as exc:
  sys.exit(1)
 PY
 }
+# 2026-11-04（--argjson 事故复发防护）：heredoc 临时文件创建失败（/tmp 写满）时 python 静默退出 0 且无输出，
+# ci_protection 的"成功"输出成了空串，直接喂给 --argjson 产生 "invalid JSON text"。成功路径同样必须验形状。
+ci_protection_valid() {
+  jq -en --argjson p "$1" \
+    '($p | type) == "object" and (($p.shas // []) | type) == "array" and (($p.run_ids // []) | type) == "array"' \
+    >/dev/null 2>&1
+}
 
 # Probe GitHub's main ref on every beat. Keep the last known outage in state so
 # recovery is emitted once, even when the probe remains green on later beats.
@@ -551,17 +573,30 @@ fi
 
 lines=0
 [[ -s "$A/scheduler.log" ]] && lines="$(wc -l < "$A/scheduler.log" | awk '{print $1}')"
+# 每个告警文件一次 python stat 是 7 次进程创建；一次批量 stat 输出同样的 {rel: mtime_ns} 映射。
 alerts='{}'
-for f in "$A"/alerts/*.md; do
-  [[ -f "$f" ]] || continue
-  rel="alerts/$(basename "$f")"
-  mt="$(mtime_ns "$f" 2>/dev/null || echo 0)"
-  [[ "$mt" =~ ^[0-9]+$ ]] || mt=0
-  alerts="$(jq -c --arg p "$rel" --argjson mt "$mt" '.[$p]=$mt' <<<"$alerts")"
-done
+if [[ -d "$A/alerts" ]]; then
+  alerts="$(python3 - "$A/alerts" <<'PY'
+import json,os,sys
+out={}
+try:
+  for name in sorted(os.listdir(sys.argv[1])):
+    if name.startswith('.') or not name.endswith('.md'): continue
+    path=os.path.join(sys.argv[1],name)
+    if not os.path.isfile(path): continue
+    try: out['alerts/'+name]=os.stat(path).st_mtime_ns
+    except OSError: out['alerts/'+name]=0
+except OSError: pass
+print(json.dumps(out))
+PY
+)"
+  jq -e 'type=="object"' <<<"$alerts" >/dev/null 2>&1 || alerts='{}'
+fi
+# units.json 有 8MB：一次解析出 merge-reverted 行，事件循环与状态合并共用；逐行重读是每拍双倍的解析开销。
 merges='{}'
+merge_rows=""
 if [[ -r "$A/units.json" ]]; then
-  merges="$(jq -c '[.units[]? as $u|($u.history//[])|to_entries[]?|select(.value.stage=="merge-reverted")|"\($u.id):\(.key):\(.value.at//"")"]|reduce .[] as $k ({};.[$k]=true)' "$A/units.json" 2>/dev/null || echo '{}')"
+  merge_rows="$(jq -r '.units[]? as $u|($u.history//[])|to_entries[]?|select(.value.stage=="merge-reverted")|[$u.id,(.key|tostring),(.value.at//""),(.value.result//"")]|@tsv' "$A/units.json" 2>/dev/null || true)"
 fi
 
 if [[ "$MONITOR_INITIALIZED" == true ]]; then
@@ -570,6 +605,8 @@ if [[ "$MONITOR_INITIALIZED" == true ]]; then
   (( lines < old_lines )) && old_lines=0
   if (( lines > old_lines )); then
     line_num="$old_lines"
+    SLOW_TICKS="$(jq -c '.slow_phase_ticks // {}' <<<"$STATE_JSON" 2>/dev/null || echo '{}')"
+    slow_ticks_dirty=0
     while IFS= read -r line; do
       line_num=$((line_num + 1))
       [[ -n "$line" ]] || continue
@@ -609,26 +646,38 @@ if [[ "$MONITOR_INITIALIZED" == true ]]; then
       fi
       add_event "$sev" "$raw" "scheduler.log: $clean_line" "tail -n 120 '$A/scheduler.log'"
     done < <(sed -n "$((old_lines+1)),${lines}p" "$A/scheduler.log" 2>/dev/null)
+    if (( slow_ticks_dirty )); then
+      STATE_JSON="$(jq -c --argjson u "$SLOW_TICKS" '.slow_phase_ticks=$u' <<<"$STATE_JSON")"
+    fi
   fi
 
-  for f in "$A"/alerts/*.md; do
-    [[ -f "$f" ]] || continue
-    rel="alerts/$(basename "$f")"
-    mt="$(jq -r --arg p "$rel" '.[$p]//empty' <<<"$alerts")"
-    old_mt="$(jq -r --arg p "$rel" '.alert_mtimes[$p]//empty' <<<"$STATE_JSON")"
-    [[ -n "$mt" && "$mt" != "$old_mt" ]] || continue
-    last="$(tail -n 1 "$f" 2>/dev/null | tr '\t\r\n' '   ')"
+  declare -A old_alert_mtimes=()
+  while IFS=$'\t' read -r rel mt; do
+    [[ -n "$rel" ]] || continue
+    old_alert_mtimes["$rel"]="$mt"
+  done < <(jq -r '(.alert_mtimes // {}) | to_entries[] | [.key, (.value|tostring)] | @tsv' <<<"$STATE_JSON" 2>/dev/null)
+  while IFS=$'\t' read -r rel mt; do
+    [[ -n "$rel" ]] || continue
+    [[ -n "$mt" && "$mt" != "${old_alert_mtimes[$rel]:-}" ]] || continue
+    last="$(tail -n 1 "$A/$rel" 2>/dev/null | tr '\t\r\n' '   ')"
     add_event medium "alerts-mtime:$rel" "alert changed: $rel $last" "tail -n 120 '$A/$rel'"
-  done
+  done < <(jq -r 'to_entries | sort_by(.key) | .[] | [.key, (.value|tostring)] | @tsv' <<<"$alerts" 2>/dev/null)
 
-  if [[ -r "$A/units.json" ]]; then
+  if [[ -n "$merge_rows" ]]; then
+    declare -A known_merges=()
+    merge_keys=()
+    while IFS=$'\t' read -r k _; do
+      [[ -n "$k" ]] || continue
+      known_merges["$k"]=1
+    done < <(jq -r '(.merge_events // {}) | keys[]' <<<"$STATE_JSON" 2>/dev/null)
     while IFS=$'\t' read -r unit idx at result; do
       [[ -n "$unit" ]] || continue
       key="${unit}:${idx}:${at}"
-      known="$(jq -r --arg k "$key" '.merge_events[$k]//false' <<<"$STATE_JSON")"
-      [[ "$known" == true ]] && continue
+      merge_keys+=("$key")
+      [[ -z "${known_merges[$key]:-}" ]] || continue
       add_event high "merge-reverted unit=$unit" "merge-reverted unit=$unit $(clean "$result")" "tail -n 120 '$A/units.json'; tail -n 120 '$A/alerts/merge.md'"
-    done < <(jq -r '.units[]? as $u|($u.history//[])|to_entries[]?|select(.value.stage=="merge-reverted")|[$u.id,(.key|tostring),(.value.at//""),(.value.result//"")]|@tsv' "$A/units.json" 2>/dev/null)
+    done <<<"$merge_rows"
+    merges="$(printf '%s\n' "${merge_keys[@]}" | jq -Rsc 'split("\n") | map(select(length > 0)) | reduce .[] as $k ({}; .[$k]=true)' 2>/dev/null || echo '{}')"
   fi
 fi
 
@@ -776,7 +825,7 @@ if [[ "${BELL_STALE_CI_DISABLE:-0}" != "1" ]]; then
     fi
     waiting_runs="$(jq -c '[.[] | select(.status=="queued" or .status=="pending" or .status=="waiting")] | sort_by(.createdAt,.databaseId)' <<<"$ci_runs")"
     [[ "$(jq 'length' <<<"$waiting_runs")" -gt 1 ]] || continue
-    if ! protection="$(ci_protection 2>&1)"; then
+    if ! protection="$(ci_protection 2>&1)" || ! ci_protection_valid "$protection"; then
       add_event medium "stale-main-ci-protection-unknown" "stale-main-ci-protection-unknown: 保留所有 CI run; $protection" "candidate identity must be readable before cancellation"
       break
     fi
@@ -811,7 +860,7 @@ if [[ "${BELL_STALE_CI_DISABLE:-0}" != "1" ]]; then
         break
       fi
       jq -e 'any(.jobs[]; .status=="in_progress" or .status=="completed")' <<<"$current_run" >/dev/null && continue
-      if ! protection="$(ci_protection 2>&1)"; then
+      if ! protection="$(ci_protection 2>&1)" || ! ci_protection_valid "$protection"; then
         add_event medium "stale-main-ci-protection-unknown" "stale-main-ci-protection-unknown: 取消前保护信息失效,保留剩余 run; $protection" "candidate protection changed during scan"
         break
       fi
@@ -844,9 +893,9 @@ fi
 for item in "${events[@]}"; do
   IFS=$'\t' read -r sev raw summary evidence <<<"$item"
   h="$(printf '%s' "$raw" | shasum -a 256 | awk '{print $1}')"
-  prev="$(jq -r --arg h "$h" '.signatures[$h].last//0' <<<"$STATE_JSON")"
-  count="$(jq -r --arg h "$h" '.signatures[$h].count//0' <<<"$STATE_JSON")"
-  event_id="$(jq -r --arg h "$h" '.signatures[$h].event_id//empty' <<<"$STATE_JSON")"
+  # prev/count/event_id 一次读出；逐字段读会把整个（MB 级）状态各解析一遍。
+  sig_info="$(jq -r --arg h "$h" '(.signatures[$h] // {}) as $s | [($s.last // 0 | tostring), ($s.count // 0 | tostring), ($s.event_id // "")] | @tsv' <<<"$STATE_JSON" 2>/dev/null || true)"
+  IFS=$'\t' read -r prev count event_id <<<"$sig_info"
   [[ "$prev" =~ ^[0-9]+$ ]] || prev=0
   [[ "$count" =~ ^[0-9]+$ ]] || count=0
   if [[ "$raw" != network-recovered ]] && (( prev > 0 && now - prev < DEDUP_SECONDS )); then
@@ -892,14 +941,24 @@ while IFS=$'\t' read -r incident_key incident_severity incident_summary incident
 done < <(jq -r '.incident_filing // {} | to_entries[] | [.key,.value.severity,.value.summary,.value.evidence,.value.first_seen,(.value.count|tostring)] | @tsv' <<<"$STATE_JSON")
 
 if [[ -r "$A/BELL-RESOLUTION.md" ]]; then
-  while IFS= read -r id; do
-    [[ -n "$id" ]] || continue
-    if grep -Fq "event_id: $id status: complete" "$A/BELL-RESOLUTION.md"; then
-      STATE_JSON="$(jq -c --arg id "$id" '.pending|=map(if .id==$id then .status="done" else . end)' <<<"$STATE_JSON")"
-    elif grep -Fq "event_id: $id status: failed" "$A/BELL-RESOLUTION.md"; then
-      STATE_JSON="$(jq -c --arg id "$id" '.pending|=map(if .id==$id then .status="failed" else . end)' <<<"$STATE_JSON")"
-    fi
-  done < <(jq -r '.pending[]?.id' <<<"$STATE_JSON")
+  # 2026-11-04：pending 积到 3500+ 条后，逐条 grep BELL-RESOLUTION.md 是每拍 7000 个进程、
+  # CPU 的大头。这里改为一次提取全部裁决，再单趟 jq 批量改状态；匹配语义与逐条
+  # grep -F "event_id: <id> status: complete|failed" 相同（complete 优先）。
+  declare -A res_done=() res_failed=()
+  while IFS= read -r entry; do
+    id="${entry#event_id: }"
+    case "$entry" in
+      *" status: complete") res_done["$id"]=1 ;;
+      *" status: failed") res_failed["$id"]=1 ;;
+    esac
+  done < <(grep -oE 'event_id: [^ ]+ status: (complete|failed)' "$A/BELL-RESOLUTION.md" 2>/dev/null)
+  if (( ${#res_done[@]} + ${#res_failed[@]} > 0 )); then
+    res_done_ids="$(printf '%s\n' "${!res_done[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null || echo '[]')"
+    res_failed_ids="$(printf '%s\n' "${!res_failed[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null || echo '[]')"
+    STATE_JSON="$(jq -c --argjson d "$res_done_ids" --argjson f "$res_failed_ids" '
+      .pending |= map(if (.id as $i | $d | index($i)) != null then .status="done"
+                      elif (.id as $i | $f | index($i)) != null then .status="failed" else . end)' <<<"$STATE_JSON")"
+  fi
 fi
 
 lock_live=0
@@ -975,7 +1034,13 @@ for i in "${!action_ids[@]}"; do
   printf '[%s] %s sig=%s event_id=%s action=%s\n' "$stamp" "${action_severities[$i]}" "${action_sigs[$i]}" "${action_ids[$i]}" "${action_results[$i]}" >> "$LOG"
 done
 # 状态瘦身:已完结 pending 只留最近 50 条,7 天未再出现的签名淘汰(防 bell-state 无界增长拖慢每拍)。
-STATE_JSON="$(jq -c --argjson now "$now" '.pending |= ([.[] | select(.status != "done" and .status != "failed")] + ([.[] | select(.status == "done" or .status == "failed")] | .[-50:])) | .signatures |= with_entries(select((.value.last // 0) > ($now - 604800)))' <<<"$STATE_JSON")"
+# 2026-11-04：仅 auto_supervisor 才会清 queued 条目；它关闭时 queued 无限堆积(实测 3500+ 条/1.9MB，
+# 每拍 jq 都在反复解析它)，故未完结条目也只留最近 BELL_PENDING_KEEP 条。去重走 .signatures，不受影响。
+BELL_PENDING_KEEP="${BELL_PENDING_KEEP:-200}"
+STATE_JSON="$(jq -c --argjson now "$now" --argjson keep "$BELL_PENDING_KEEP" '
+  .pending |= (([.[] | select(.status != "done" and .status != "failed")] | if length > $keep then .[-$keep:] else . end)
+             + ([.[] | select(.status == "done" or .status == "failed")] | .[-50:]))
+  | .signatures |= with_entries(select((.value.last // 0) > ($now - 604800)))' <<<"$STATE_JSON")"
 if [[ "$MONITOR_INITIALIZED" != true ]]; then
   STATE_JSON="$(jq -c --argjson lines "$lines" --argjson alerts "$alerts" --argjson merges "$merges" '.monitor_initialized=true|.scheduler_lines=$lines|.alert_mtimes=$alerts|.merge_events=$merges' <<<"$STATE_JSON")"
 else
