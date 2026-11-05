@@ -260,7 +260,7 @@ TIME_SINK_SOURCE = "units.json 事件时间 + scheduler.log 的 dispatch 行（�
 # Live CI numbers on the dashboard (gen_dashboard.py measures them each tick).
 # (description, healthy, unhealthy, higher_is_better, meaning, source)
 CI_STANDARDS = {
-    "runners_online": ("在线 runner", 15, 12, True, "cihost 12 个 + Mac 3 个。少了 = 机器掉线，CI 产能直接下降。", "GitHub API actions/runners"),
+    "runners_online": ("在线 runner", 12, 11, True, "cihost 12 个。少了 = 机器掉线，CI 产能直接下降。", "GitHub API actions/runners"),
     "pr_runner_busy_pct": ("PR runner 忙碌占比（有排队时）", 70, 40, True, "有 run 在排队时还有 PR runner 空着 = 标签错配或调度浪费。", "GitHub API actions/runners 的 busy 字段"),
     "queued_runs": ("排队中的 workflow run", 40, 100, False, "排队越长，每个 PR 等全绿越久（Little 定律）。", "GitHub API actions/runs?status=queued"),
     "wip_waiting": ("等 CI 名额的就绪单元", 30, 60, False, "CI 在制品上限（ci_wip）外排队的已批准单元。长期很高 = CI 产能不够。", "units.json 的 ci_wip_wait"),
@@ -730,7 +730,7 @@ def dispatch_collisions(units, now, shared=frozenset()):
             elif start:
                 intervals.append((unit["id"], start, at, set(paths + scope)))
                 start = None
-        if start:
+        if start and unit.get("stage") in ("implement", "repair"):  # no write-end on a finished unit is a lost record, not a write
             intervals.append((unit["id"], start, now, set(paths)))
     pairs = set()
     for i, (uid, start, end, paths) in enumerate(intervals):

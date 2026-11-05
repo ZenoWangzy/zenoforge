@@ -408,8 +408,8 @@ import sys
 sys.path.insert(0, sys.argv[1])
 import node_health as n
 now = n.ts("2026-10-24T12:00:00Z")
+import json
 def unit(uid, start, end, predicted, actual):
-    import json
     return {"id": uid, "history": [
         {"stage": "write-start", "at": start, "result": json.dumps(predicted)},
         {"stage": "write-end", "at": end, "result": json.dumps(actual)}]}
@@ -417,6 +417,13 @@ a = unit("a", "2026-10-24T10:00:00Z", "2026-10-24T11:00:00Z", ["a.py"], ["shared
 b = unit("b", "2026-10-24T10:30:00Z", "2026-10-24T11:30:00Z", ["b.py"], ["shared.py"])
 c = unit("c", "2026-10-24T11:30:00Z", "2026-10-24T11:40:00Z", ["shared.py"], ["shared.py"])
 assert n.dispatch_collisions([a, b, c], now) == 1
+# A write-start with no write-end only means "still writing" on a unit that can still be writing.
+def open_unit(uid, stage):
+    return {"id": uid, "stage": stage, "history": [
+        {"stage": "write-start", "at": "2026-10-24T10:00:00Z", "result": json.dumps(["shared.py"])}]}
+assert n.dispatch_collisions([open_unit("x", "merged"), open_unit("y", "implement")], now) == 0
+assert n.dispatch_collisions([open_unit("x", "ready-to-merge"), open_unit("y", "repair")], now) == 0
+assert n.dispatch_collisions([open_unit("x", "implement"), open_unit("y", "repair")], now) == 1
 assert n.dispatch_collisions([a, c], now) == 0
 assert n.dispatch_collisions([], now) is None
 assert n.dispatch_collisions([a, b], now + n.timedelta(days=2)) == 0
