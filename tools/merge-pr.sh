@@ -128,6 +128,17 @@ merge_pr_scheduler_prelude_ok() {
   out="$(merge_pr_scheduler_prelude "$pr")" && return 0
   merge_pr_refuse "$pr" "scheduler.test.sh prelude failed: $out"
 }
+# Ruling zenoforge-instant-effect-2026-11-05: gates, evaluators, the pin, the watchdog and rollback keep CI before merge.
+merge_pr_gate_ci_ok() {
+  local pr="$1" checks_json="$2" gate waiting
+  [[ ",${ZF_MERGE_OVERRIDE:-}," != *,gate-ci,* ]] || return 0
+  gate="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq -r '[.files[].path | select(test("^(tools/(merge-pr|pin-vecta|auto-pin)\\.sh|engine/eval/.*|engine/mac-autopilot/(bell|bell-loop|pin-lag)\\.sh|engine/lib\\.d/main-red(-bisect)?\\.sh|engine/deploy-culprit\\.sh)$"))] | .[0] // ""')" || gate=unreadable
+  [[ -n "$gate" ]] || return 0
+  waiting="$(jq -r '[.[] | select(.bucket == "pending") | .name] + (if any(.[]; .name | startswith("suites")) then [] else ["suites not started"] end) | join(", ")' <<<"$checks_json")"
+  [[ -n "$waiting" ]] || return 0
+  merge_pr_refuse "$pr" "gate file $gate waits for PR CI: $waiting"
+}
+
 # A merged PR's own CI proves nothing the main run will not, and it holds hosted slots through a merge burst.
 merge_pr_cancel_ci() {
   local pr="$1" sha id
@@ -181,6 +192,7 @@ merge_pr_checks_and_merge() {
     merge_pr_prior_art_ok "$pr" || return 1
   fi
   merge_pr_size_ok "$pr" || return 1
+  merge_pr_gate_ci_ok "$pr" "$checks_json" || return 1
   merge_pr_scheduler_prelude_ok "$pr" || return 1
 
   while IFS= read -r check_name; do

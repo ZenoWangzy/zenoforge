@@ -30,7 +30,7 @@ assert_refuses() {
 PR_HEAD="$sha"
 PR_CHECKS='[]'
 PR_BODY=$'## prior-art\nFollows required status checks: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches\n'
-PR_FILES='["tools/merge-pr.sh"]'
+PR_FILES='["tools/quick-land.sh"]'
 gh() {
   case "$1 $2" in
     'pr view')
@@ -91,7 +91,7 @@ assert_refuses "PR head $PR_HEAD does not match tested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"unit","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -102,7 +102,7 @@ fi
 check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'failed checks: cla, unit'* && "$check_output" == *'checks without a matching ZF_MERGE_OVERRIDE: unit'* ]] \
   || fail "failed check names or unmatched override were not reported: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
   || fail "an unmatched failed check reached merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -111,7 +111,7 @@ check_output="$(ZF_MERGE_OVERRIDE=cla merge_pr_checks_and_merge 17 2>&1)" \
   || fail "named failed-check override did not allow the merge: $check_output"
 [[ "$check_output" == *'explicit ZF_MERGE_OVERRIDE allows failed checks: cla'* ]] \
   || fail "merge did not print the failed check covered by its override: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
   || fail "pending check or named override did not reach squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS=gh-error
@@ -164,7 +164,7 @@ PR_FILES='["engine/a.test.sh","engine/a.sh"]'
 expect_prior_art_refusal 'mixed test and source PR' 'has no "## prior-art" section'
 PR_FILES='[]'
 expect_prior_art_refusal 'empty file list' 'has no "## prior-art" section'
-PR_FILES='["tools/merge-pr.sh"]'
+PR_FILES='["tools/quick-land.sh"]'
 [[ "$(sort -u "$fixture/cancelled")" == 7 ]] || fail "merged PR's unfinished run was not the one cancelled"
 # A red ratchet refuses only the PR that grew the file (#214 reddened main this way).
 (
@@ -172,11 +172,11 @@ PR_FILES='["tools/merge-pr.sh"]'
   PR_HEAD="$sha"
   PR_BODY=$'## prior-art\nno external prior art: internal gate wiring only\n'
   mkdir -p "$repo/tools"
-  printf "echo 'FAIL tools/merge-pr.sh grew to 900 lines, its baseline in tools/size-baseline.txt is 800'; exit 1\n" > "$repo/tools/size-ratchet.sh"
-  expect_prior_art_refusal 'PR over its size baseline' 'FAIL tools/merge-pr.sh grew'
+  printf "echo 'FAIL tools/quick-land.sh grew to 900 lines, its baseline in tools/size-baseline.txt is 800'; exit 1\n" > "$repo/tools/size-ratchet.sh"
+  expect_prior_art_refusal 'PR over its size baseline' 'FAIL tools/quick-land.sh grew'
   PR_FILES='["other.sh"]' expect_prior_art_merge 'main over baseline, PR not'
   PR_FILES='["tools/size-baseline.txt"]' expect_prior_art_merge 'PR edits the baseline file only'
-  PR_FILES='["merge-pr.sh"]' expect_prior_art_merge 'PR file is a substring of the failing path'
+  PR_FILES='["quick-land.sh"]' expect_prior_art_merge 'PR file is a substring of the failing path'
 )
 ZF_MERGE_OVERRIDE=prior-art expect_prior_art_merge 'prior-art override'
 [[ "$(cat "$fixture/check-output")" == *'skips the prior-art check for PR #17'* ]] || fail 'override was not logged'
@@ -184,7 +184,7 @@ ZF_MERGE_OVERRIDE=prior-art expect_prior_art_merge 'prior-art override'
 # A scheduler change runs the scheduler.test.sh prelude; a red prelude refuses, other changes skip it.
 merge_pr_scheduler_prelude() { echo called >> "$fixture/prelude-calls"; echo 'not ok - stale grep'; return 1; }
 : > "$fixture/prelude-calls"
-PR_CHECKS='[]' PR_FILES='["tools/merge-pr.sh"]' PR_BODY=$'## prior-art\nno external prior art: test fixture'
+PR_CHECKS='[]' PR_FILES='["tools/quick-land.sh"]' PR_BODY=$'## prior-art\nno external prior art: test fixture'
 merge_pr_scheduler_prelude_ok 17 || fail 'a non-scheduler PR was refused by the prelude check'
 [[ ! -s "$fixture/prelude-calls" ]] || fail 'a non-scheduler PR ran the prelude'
 PR_BODY=gh-error
@@ -196,5 +196,19 @@ PR_FILES='["engine/mac-autopilot/scheduler.d/models.sh"]'
 if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail 'a red prelude did not refuse the merge'; fi
 [[ "$(cat "$fixture/check-output")" == *'prelude failed: not ok - stale grep'* ]] || fail "prelude refusal lost its reason: $(cat "$fixture/check-output")"
 ! grep -q '^merge:' "$fixture/gh-calls" || fail 'a red prelude still merged'
+
+# A gate file waits for its suites; other files keep merging on pending checks.
+PR_CHECKS='[{"name":"cla","bucket":"pass"},{"name":"suites (0)","bucket":"pending"}]' PR_FILES='["tools/merge-pr.sh"]'
+: > "$fixture/gh-calls"
+if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail 'a gate file merged with pending suites'; fi
+[[ "$(cat "$fixture/check-output")" == *'gate file tools/merge-pr.sh waits for PR CI: suites (0)'* ]] || fail "gate refusal lost its reason: $(cat "$fixture/check-output")"
+PR_CHECKS='[{"name":"cla","bucket":"pass"}]'
+if merge_pr_gate_ci_ok 17 "$PR_CHECKS" >"$fixture/check-output" 2>&1; then fail 'a gate file merged before its suites started'; fi
+PR_CHECKS='[{"name":"suites (0)","bucket":"pass"}]'
+merge_pr_gate_ci_ok 17 "$PR_CHECKS" || fail 'a gate file with green suites was refused'
+PR_CHECKS='[{"name":"suites (0)","bucket":"pending"}]' PR_FILES='["tools/quick-land.sh"]'
+merge_pr_gate_ci_ok 17 "$PR_CHECKS" || fail 'a non-gate file waited for pending suites'
+PR_FILES='["tools/merge-pr.sh"]'
+ZF_MERGE_OVERRIDE=gate-ci merge_pr_gate_ci_ok 17 "$PR_CHECKS" || fail 'the gate-ci override was ignored'
 
 echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, and applies exact named overrides, and requires a prior-art section unless test-only or overridden'
