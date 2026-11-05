@@ -78,10 +78,28 @@ jq -e '.workers[0].harvested == true' "$WORKERS" >/dev/null
 jq -e '[.units[0].history[] | select(.stage == "worker-no-output")] | length == 1' "$UNITS" >/dev/null
 echo 'ok - legacy missing output is counted after grace'
 
-# A tick that died between claim and launch leaves a claim with no pid and no worker; its expiry must free it.
+# A claim with no pid and no ledger entry: the tick died before launch (free it) or after launch but before coord_renew (keep it).
+mkdir -p "$WT_ROOT/wt-issue-1" "$WT_ROOT/wt-issue-2"
 printf '{"workers":[]}' > "$WORKERS"
 claim='{"owner_kind":"scheduler-worker","owner":"never-launched","unit":"issue-1","stage":"repair"}'
 coord_on_expire "$claim" || { echo 'never-launched claim wedged after expiry' >&2; exit 1; }
+# Same launch shape as dispatch.sh: unit worktree as cwd, stdout/stderr on the worker log, own session.
+(cd "$WT_ROOT/wt-issue-1" && exec setsid sleep 60) > "$sup/live.worker.log" 2>&1 < /dev/null &
+detached=$!
+# Look-alikes: right cwd without the log, and the log without the worktree.
+(cd "$WT_ROOT/wt-issue-2" && exec sleep 60) > /dev/null 2>&1 < /dev/null &
+nearby=$!
+(cd "$test_env_root" && exec sleep 60) > "$sup/other.worker.log" 2>&1 < /dev/null &
+elsewhere=$!
+trap 'kill "$detached" "$nearby" "$elsewhere" 2>/dev/null || :; cleanup' EXIT
+for _ in $(seq 100); do [[ "$(readlink "/proc/$detached/cwd" 2>/dev/null)" == "$(cd "$WT_ROOT/wt-issue-1" && pwd -P)" ]] && break; sleep 0.05; done
+if coord_on_expire "$claim"; then echo 'claim with a live detached worker expired' >&2; exit 1; fi
+coord_on_expire '{"owner_kind":"scheduler-worker","owner":"nearby","unit":"issue-2","stage":"repair"}' || { echo 'cwd-only look-alike held the claim' >&2; exit 1; }
+kill "$detached"; wait "$detached" 2>/dev/null || :
+coord_on_expire "$claim" || { echo 'claim stayed held after its worker exited' >&2; exit 1; }
+saved_wt="$WT_ROOT"; WT_ROOT="$test_env_root/missing"
+if coord_on_expire "$claim"; then echo 'failed liveness check freed the claim' >&2; exit 1; fi
+WT_ROOT="$saved_wt"
 jq -n '{workers:[{claim_owner:"pidless",unit:"issue-1",type:"review",harvested:false}]}' > "$WORKERS"
 if coord_on_expire '{"owner_kind":"scheduler-worker","owner":"pidless","unit":"issue-1","stage":"review"}'; then echo 'worker without pid expired' >&2; exit 1; fi
-echo 'ok - claim with no worker and no pid expires'
+echo 'ok - pidless claim expires only when no worker for the unit is running'

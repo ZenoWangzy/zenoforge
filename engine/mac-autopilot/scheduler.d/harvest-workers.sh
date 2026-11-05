@@ -596,7 +596,7 @@ coord_on_expire() { # claim JSON; called under that ticket's claim lock
   else
     pid="$(jqf -r '.pid // empty' <<<"$claim")"
   fi
-  [[ "$pid" =~ ^[1-9][0-9]*$ || -z "$worker$pid" ]] || { say "claim expiry cannot find worker pid owner=$owner; retaining claim"; return 1; }
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || { [[ -z "$worker$pid" ]] && unit_has_no_worker "$unit" "$owner"; } || { say "claim expiry cannot find worker pid owner=$owner; retaining claim"; return 1; }
   expected_start="$(jqf -r '.pid_start // empty' <<<"$claim")"
   [[ "$expected_start" =~ ^[0-9]+$ ]] || expected_start="$(jqf -r '.pid_start // empty' <<<"$worker")"
   if [[ -n "$worker" ]]; then

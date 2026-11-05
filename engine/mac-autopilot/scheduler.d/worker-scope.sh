@@ -125,3 +125,33 @@ worker_scope_launch() { # pid-file workdir output-file launcher... -- command...
   WORKER_SCOPE_PID=$!
   WORKER_SCOPE_LAUNCHER_PID="$WORKER_SCOPE_PID"
 }
+
+# A launched worker keeps the stdout/stderr redirect to its $SUP/*.worker.log and the cwd of its unit worktree
+# (dispatch.sh: `(cd $workdir && ...) >$SUP/$log`, scope or not). A claim can lack a pid because the tick died between
+# worker_scope_launch and coord_renew, so this finds the worker without the claim.
+# shortcut: a process of ours whose /proc cwd or fd is unreadable (systemd --user, ssh-agent here: ptrace-denied) is skipped,
+# so a worker that drops dumpable or leaves its worktree is not seen; upgrade to a pid or scope recorded on the claim if one does.
+worker_running_for_unit() { # unit -> 0 a launched worker runs / 1 none / 2 cannot tell
+  local unit="$1" wt sup p cwd fd target
+  wt="$(cd "${WT_ROOT:-}" 2>/dev/null && pwd -P)" && sup="$(cd "${SUP:-}" 2>/dev/null && pwd -P)" || return 2 # /proc shows real paths
+  [[ -n "$unit" ]] && readlink /proc/self/cwd >/dev/null 2>&1 || return 2
+  wt="$wt/wt-$unit"
+  for p in /proc/[0-9]*; do
+    [[ -O "$p" ]] || continue
+    cwd="$(readlink "$p/cwd" 2>/dev/null)" || continue
+    [[ "$cwd" == "$wt" || "$cwd" == "$wt"/* ]] || continue
+    for fd in 1 2; do
+      target="$(readlink "$p/fd/$fd" 2>/dev/null || true)"
+      [[ "$target" == "$sup"/*.worker.log || "$target" == "$sup"/*.worker.log' (deleted)' ]] && return 0
+    done
+  done
+  return 1
+}
+
+unit_has_no_worker() { # unit owner -> 0 only when no launched worker exists for the unit; logs why not otherwise
+  local running=0
+  worker_running_for_unit "$1" || running=$?
+  (( running == 1 )) && return 0
+  say "claim expiry $( ((running == 0)) && echo 'found a live worker' || echo 'cannot check workers') for unit=$1 owner=$2; retaining claim"
+  return 1
+}
