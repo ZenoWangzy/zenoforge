@@ -18,7 +18,7 @@ capture_worker_stdout_report() { # report-path command...
 
 dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason] [worker-context-json]
   local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census
-  local -a launcher=() worker_env=()
+  local -a launcher=() worker_env=() launch_command=()
   if [[ -n "$worker_context" ]]; then
     report_only="$(jqf -r '.incident_report_resume // false' <<<"$worker_context")"
     expected_session_id="$(jqf -r '.incident_report_resume_session_id // empty' <<<"$worker_context")"
@@ -67,26 +67,33 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   fi
   if [[ "${WORKER_STDOUT_REPORT:-0}" == 1 ]]; then
     # stdout supplies a missing report, but must not replace a report the worker wrote itself.
-    (cd "$workdir" && export -f capture_worker_stdout_report && GIT_PAGER=cat PAGER=cat \
-      exec ${launcher[@]+"${launcher[@]}"} bash -c 'capture_worker_stdout_report "$@"' _ "$SUP/$report" \
-      env ${worker_env[@]+"${worker_env[@]}"} "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
+    export -f capture_worker_stdout_report
+    launch_command=(env GIT_PAGER=cat PAGER=cat bash -c 'capture_worker_stdout_report "$@"' _ "$SUP/$report" \
+      "${CODEX_COMMAND[@]}")
   elif [[ "$type" == repair && "$CODEX_MODE" == resume && "$report_only" == true ]]; then
     # Do one strict, read-only continuation of the same session. A startup
     # failure stays a failed report completion; it never falls back to a fresh
     # code-writing repair.
-    (cd "$workdir" && jq -cn --arg model "$model" \
-      '{type:"pipeline.execution",mode:"resume",reason:"incident-report-only",model:$model}' \
-      && exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
+    launch_command=(bash -c 'jq -cn --arg model "$1" "$2" && shift 2 && exec "$@"' autopilot-worker "$model" \
+      '{type:"pipeline.execution",mode:"resume",reason:"incident-report-only",model:$model}' "${CODEX_COMMAND[@]}")
   elif [[ "$type" == repair && "$CODEX_MODE" == resume ]]; then
-    (cd "$workdir" && exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} bash "$CODEX_REPAIR_RUNNER" "$SUP/$log" "$CODEX_SESSION_ID" \
-      "${#CODEX_FRESH_COMMAND[@]}" "${CODEX_FRESH_COMMAND[@]}" "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
+    launch_command=(bash "$CODEX_REPAIR_RUNNER" "$SUP/$log" "$CODEX_SESSION_ID" \
+      "${#CODEX_FRESH_COMMAND[@]}" "${CODEX_FRESH_COMMAND[@]}" "${CODEX_COMMAND[@]}")
   else
-    (cd "$workdir" && jq -cn --arg mode "$CODEX_MODE" --arg reason "$CODEX_PATH_REASON" --arg model "$model" \
-      '{type:"pipeline.execution",mode:$mode,reason:$reason,model:$model}' && exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
+    launch_command=(bash -c 'jq -cn --arg mode "$1" --arg reason "$2" --arg model "$3" "$4" \
+      && shift 4 && exec "$@"' autopilot-worker "$CODEX_MODE" "$CODEX_PATH_REASON" "$model" \
+      '{type:"pipeline.execution",mode:$mode,reason:$reason,model:$model}' "${CODEX_COMMAND[@]}")
   fi
-  pid=$!
+  local worker_pid_file
+  worker_pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
+  rm -f -- "$worker_pid_file"
+  worker_scope_launch "$worker_pid_file" "$workdir" "$SUP/$log" "${launcher[@]}" -- \
+    "${worker_env[@]}" "${launch_command[@]}" || { rm -f -- "$worker_pid_file"; return 1; }
+  pid="$WORKER_SCOPE_PID"
+  rm -f -- "$worker_pid_file"
   local pid_started
-  pid_started="$(coord_process_start_ticks "$pid" 2>/dev/null)" || {
+  pid_started="${WORKER_SCOPE_PID_START:-}"
+  [[ "$pid_started" =~ ^[0-9]+$ ]] || pid_started="$(coord_process_start_ticks "$pid" 2>/dev/null)" || {
     stuck_worker_stop "$pid" || :
     if ! kill -0 "$pid" 2>/dev/null; then coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :; fi
     say "dispatch stopped unit=$unit reason=worker-start-identity-unavailable"

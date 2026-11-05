@@ -1,8 +1,16 @@
 
 launch_land() { # id pr sha title report log workdir reviewed-pr-head [issue]
-  local pid w
-  (cd "$7" && exec setsid bash "$HERE/land-pr.sh" "$7" "$2" "$3" "$4" "$SUP/$5" "$8" "${9:-}") > "$SUP/$6" 2>&1 < /dev/null &
-  pid=$!
+  local pid w pid_file
+  local -a launcher=()
+  command -v setsid >/dev/null 2>&1 && launcher=(setsid)
+  pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
+  rm -f -- "$pid_file"
+  worker_scope_launch "$pid_file" "$7" "$SUP/$6" "${launcher[@]}" -- \
+    bash "$HERE/land-pr.sh" "$7" "$2" "$3" "$4" "$SUP/$5" "$8" "${9:-}" || {
+    rm -f -- "$pid_file"; return 1;
+  }
+  pid="$WORKER_SCOPE_PID"
+  rm -f -- "$pid_file"
   w="$(jqf -cn --argjson pid "$pid" --arg unit "$1" --arg log "$6" --arg report "$5" --arg at "$STAMP" --arg sha "$3" --arg pr_head "$8" --arg workdir "$7" \
     '{pid:$pid,unit:$unit,type:"land",log:$log,report:$report,started:$at,sha:$sha,pr_head:$pr_head,workdir:$workdir,model:"none"}')"
   jqf --argjson w "$w" '.workers += [$w]' "$WORKERS" | write_state "$WORKERS"

@@ -186,7 +186,8 @@ harvest_prompt_eval() { # worker JSON; report status is produced by eval/decisio
 
 dispatch_prompt_evals() {
   # #4656：按 .eval_gate.status==pending 派发，不再依赖 eval-pending 阶段（交付可能在 eval 完成前合并/落地）。
-  local u id workdir sha tree label baseline stages report log pid worker active safe_id detail confirm launcher=()
+  local u id workdir sha tree label baseline stages report log pid worker active safe_id detail confirm pid_file
+  local -a launcher=() worker_command=()
   active="$(jqf '[.workers[] | select(.type=="eval" and .harvested!=true)] | length' "$WORKERS")"
   (( active == 0 )) || return 0
   while IFS= read -r u; do
@@ -241,14 +242,17 @@ dispatch_prompt_evals() {
     log="eval-gate-${safe_id}-${tree}$confirm.log"
     rm -f "$SUP/$report"
     set_unit "$id" ".eval_gate.tree=$(js "$tree") | .eval_gate.label=$(js "$label") | .eval_gate.report=$(js "$report")"
-    command -v setsid >/dev/null 2>&1 && launcher=(setsid)
-    (
-      cd "$workdir" || exit 1
-      exec ${launcher[@]+"${launcher[@]}"} timeout -k 30 14400 node "${ZF_ENGINE_DIR:-$ROOT/engine}/eval/decision-gate.mjs" \
-        --repo "$workdir" --sha "$sha" --tree "$tree" --stages "$stages" \
-        --baseline "$baseline" --label "$label" --concurrency 3 --output "$SUP/$report"
-    ) > "$SUP/$log" 2>&1 < /dev/null &
-    pid=$!
+    launcher=(); command -v setsid >/dev/null 2>&1 && launcher=(setsid)
+    worker_command=(timeout -k 30 14400 node "${ZF_ENGINE_DIR:-$ROOT/engine}/eval/decision-gate.mjs" \
+      --repo "$workdir" --sha "$sha" --tree "$tree" --stages "$stages" \
+      --baseline "$baseline" --label "$label" --concurrency 3 --output "$SUP/$report")
+    pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
+    rm -f -- "$pid_file"
+    worker_scope_launch "$pid_file" "$workdir" "$SUP/$log" "${launcher[@]}" -- "${worker_command[@]}" || {
+      rm -f -- "$pid_file"; return 1;
+    }
+    pid="$WORKER_SCOPE_PID"
+    rm -f -- "$pid_file"
     worker="$(jqf -cn --argjson pid "$pid" --arg unit "$id" --arg log "$log" --arg report "$report" \
       --arg at "$STAMP" --arg sha "$sha" --arg workdir "$workdir" --arg label "$label" --arg baseline "$baseline" \
       '{pid:$pid,unit:$unit,type:"eval",log:$log,report:$report,started:$at,sha:$sha,workdir:$workdir,eval_label:$label,eval_baseline:$baseline}')"
@@ -299,7 +303,8 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
   # 终局裁决的动词契约由引擎自带文件保证（不走 sched_config_file）：目标配置可以把六动作 prompt
   # 覆盖成没有 cap-triage 段的旧版，但盖不掉这里追加的四个动词，任何 arbiter profile 都拿到同一契约。
   cap_contract_file="${ZF_ENGINE_DIR:-$ROOT/engine}/prompts/supervisor-cap-triage.md"
-  local u id report log q pid w converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
+  local u id report log q pid w pid_file converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
+  local -a launcher=() worker_command=()
   in_flight="$(jqf -r '[.workers[] | select(.type=="supervise" and .harvested != true)] | length' "$WORKERS")"
   (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
   while IFS= read -r u; do
@@ -391,11 +396,17 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
         [[ -z "$cap_reask_notice" ]] || printf '\n%s\n' "$cap_reask_notice"
       fi
     } > "$SUP/$q"
-    local -a launcher=()
-    command -v setsid >/dev/null 2>&1 && launcher=(setsid)
-    (cd "$ROOT" && exec ${launcher[@]+"${launcher[@]}"} timeout -k 30 900 codex exec -p "$SUPERVISOR_ARBITER_PROFILE" \
-      --skip-git-repo-check -s read-only --json --output-last-message "$SUP/$report" - < "$SUP/$q") > "$SUP/$log" 2>&1 < /dev/null &
-    pid=$!
+    launcher=(); command -v setsid >/dev/null 2>&1 && launcher=(setsid)
+    worker_command=(bash -c 'exec timeout -k 30 900 codex exec -p "$1" \
+      --skip-git-repo-check -s read-only --json --output-last-message "$2" - < "$3"' \
+      supervisor-arbiter "$SUPERVISOR_ARBITER_PROFILE" "$SUP/$report" "$SUP/$q")
+    pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
+    rm -f -- "$pid_file"
+    worker_scope_launch "$pid_file" "$ROOT" "$SUP/$log" "${launcher[@]}" -- "${worker_command[@]}" || {
+      rm -f -- "$pid_file"; return 1;
+    }
+    pid="$WORKER_SCOPE_PID"
+    rm -f -- "$pid_file"
     w="$(jqf -cn --argjson pid "${pid:-0}" --arg unit "$id" --arg log "$log" --arg report "$report" --arg at "$STAMP" --arg profile "$SUPERVISOR_ARBITER_PROFILE" \
       --argjson cap_triage "$([[ "$cap_triage" == true ]] && echo true || echo false)" \
       --argjson jev "$judge_metadata" \

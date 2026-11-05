@@ -18,6 +18,8 @@ worker_harvest="$script_dir/scheduler.d/harvest-workers.sh"
 dispatch_lane="$script_dir/scheduler.d/dispatch.sh"
 scheduler_sources=("$scheduler" "$script_dir"/scheduler.d/*.sh)
 template="$script_dir/config.template.json"
+tick_template="$test_env_root/tick-config.template.json"
+jq '.engine.worker_tasks_max=0' "$template" > "$tick_template"
 # Tick fixtures use synthetic ci/Pipeline suites rows; the adopted-PR case below
 # runs the real aggregate check policy through gh-shim and the unit ledger.
 export REQUIRED_PR_CHECKS_FILE="$test_env_root/required-pr-checks.json"
@@ -935,7 +937,7 @@ seed_roadmap_tree() {
 new_tick_fixture() {
   TF="$test_env_root/tick-$1"; export TF
   mkdir -p "$TF/repo" "$TF/supervisor/autopi/alerts" "$TF/sessions" "$TF/bin"
-  command jq --arg wt "$TF/clones" '.release_train.enabled=false | .max_workers=0 | .auto_merge=false | .auto_dispatch_new_prs=false | .issue_intake.enabled=false | .focus_mode="all" | .worktree_root=$wt' "$template" > "$TF/supervisor/autopi/config.json"
+  command jq --arg wt "$TF/clones" '.engine.worker_tasks_max=0 | .release_train.enabled=false | .max_workers=0 | .auto_merge=false | .auto_dispatch_new_prs=false | .issue_intake.enabled=false | .focus_mode="all" | .worktree_root=$wt' "$tick_template" > "$TF/supervisor/autopi/config.json"
   echo '{"units":[]}' > "$TF/supervisor/autopi/units.json"
   echo '{"workers":[]}' > "$TF/supervisor/autopi/workers.json"
   echo '{"databaseId":701,"attempt":1,"status":"completed","conclusion":"failure","createdAt":"2026-10-18T00:00:00Z"}' > "$TF/run.json"
@@ -5620,7 +5622,7 @@ sched_run_case jev_f12_rollout
 new_tick_fixture tracker-parent-intake
 mkdir -p "$TF/issues"
 command jq '.max_workers=1 | .release_train.enabled=false | .issue_intake={enabled:true,max_upstream:2,max_ready:30,labels:["pipeline-system"],product_labels:["ready-for-agent"]}' \
-  "$template" > "$TF/supervisor/autopi/config.json"
+  "$tick_template" > "$TF/supervisor/autopi/config.json"
 command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-external",blocked_on:4279,history:[]}]}' \
   > "$TF/supervisor/autopi/units.json"
 command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
@@ -5641,7 +5643,7 @@ grep -Fq 'intake issue #4279 -> needs-triage (parent: has GitHub sub-issues)' "$
 new_tick_fixture roadmap-container-parent-intake
 mkdir -p "$TF/issues" "$TF/repo/engine"
 command jq '.max_workers=1 | .release_train.enabled=false | .issue_intake={enabled:true,max_upstream:2,max_ready:30,labels:["pipeline-system"],product_labels:["ready-for-agent"]}' \
-  "$template" > "$TF/supervisor/autopi/config.json"
+  "$tick_template" > "$TF/supervisor/autopi/config.json"
 command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-external",blocked_on:4279,history:[]}]}' \
   > "$TF/supervisor/autopi/units.json"
 command jq -n '{number:4279,title:"Runtime pilot spec, ADR-1",body:"Prepare the pilot",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
@@ -5672,7 +5674,7 @@ sched_case_m5_intake() {
 new_tick_fixture m5-intake
 mkdir -p "$TF/issues" "$TF/repo/engine/state" "$TF/agent-home"
 command jq '.max_workers=1 | .release_train.enabled=false | .supervisor_arbiter.enabled=false | .issue_intake={enabled:true,max_upstream:2,max_ready:30,labels:["pipeline-system"],product_labels:["ready-for-agent"]}' \
-  "$template" > "$TF/supervisor/autopi/config.json"
+  "$tick_template" > "$TF/supervisor/autopi/config.json"
 cp "$repo_root/engine/state/mechanism-registry.json" "$TF/repo/engine/state/mechanism-registry.json"
 missing_body="$(printf '描述正文。\n\n```json\n%s\n```\n' '{"acceptance":[{"id":"tick","desc":"no live event here"}]}')"
 command jq -n --arg body "$missing_body" '{number:4281,title:"pipeline ticket without live-event",body:$body,state:"OPEN",labels:[{name:"pipeline-system"},{name:"ready-for-agent"}]}' \
@@ -5697,7 +5699,7 @@ grep -Fq 'intake issue #4281 -> needs-info (M5 live-event missing)' "$TF/supervi
 new_tick_fixture m5-intake-valid
 mkdir -p "$TF/issues" "$TF/repo/engine/state" "$TF/agent-home"
 command jq '.max_workers=1 | .release_train.enabled=false | .supervisor_arbiter.enabled=false | .issue_intake={enabled:true,max_upstream:2,max_ready:30,labels:["pipeline-system"],product_labels:["ready-for-agent"]}' \
-  "$template" > "$TF/supervisor/autopi/config.json"
+  "$tick_template" > "$TF/supervisor/autopi/config.json"
 cp "$repo_root/engine/state/mechanism-registry.json" "$TF/repo/engine/state/mechanism-registry.json"
 valid_acc="$(command jq -cn '{acceptance:[
   {id:"tick-close",desc:"tick 测试：落地后，事件没出现时不关票；事件出现后关票，并附上证据",passes:false},
@@ -5719,7 +5721,7 @@ command jq -e --argjson acc "$valid_acc" 'any(.units[]; .issue == 4282 and .acce
 new_tick_fixture m5-intake-unbound
 mkdir -p "$TF/issues" "$TF/repo/engine/state" "$TF/agent-home"
 command jq '.max_workers=1 | .release_train.enabled=false | .supervisor_arbiter.enabled=false | .issue_intake={enabled:true,max_upstream:2,max_ready:30,labels:["pipeline-system"],product_labels:["ready-for-agent"]}' \
-  "$template" > "$TF/supervisor/autopi/config.json"
+  "$tick_template" > "$TF/supervisor/autopi/config.json"
 cp "$repo_root/engine/state/mechanism-registry.json" "$TF/repo/engine/state/mechanism-registry.json"
 unbound_acc="$(command jq -cn '{acceptance:[{id:"live-event",desc:"生产事件",event:"missing-mechanism"}]}')"
 unbound_body="$(printf '正文。\n\n```json\n%s\n```\n' "$unbound_acc")"
@@ -5744,7 +5746,7 @@ sched_case_m5_live_event_close() {
 # 关票并附证据行。
 new_tick_fixture m5-live-event-close
 mkdir -p "$TF/issues" "$TF/repo/engine/state" "$TF/agent-home"
-command jq '.release_train.enabled=false | .supervisor_arbiter.enabled=false' "$template" > "$TF/supervisor/autopi/config.json"
+command jq '.release_train.enabled=false | .supervisor_arbiter.enabled=false' "$tick_template" > "$TF/supervisor/autopi/config.json"
 cp "$repo_root/engine/state/mechanism-registry.json" "$TF/repo/engine/state/mechanism-registry.json"
 acc="$(command jq -cn '{acceptance:[
   {id:"tick-close",desc:"tick 测试：落地后，事件没出现时不关票；事件出现后关票，并附上证据",passes:false},
@@ -5838,7 +5840,7 @@ sched_case_m5_live_event_tamper() {
 # M5（#4501）：关票前对比当前验收块与存档；worker 改过验收项就拒绝关票并转 supervisor。
 new_tick_fixture m5-live-event-tamper
 mkdir -p "$TF/issues" "$TF/repo/engine/state" "$TF/agent-home"
-command jq '.release_train.enabled=false | .supervisor_arbiter.enabled=false' "$template" > "$TF/supervisor/autopi/config.json"
+command jq '.release_train.enabled=false | .supervisor_arbiter.enabled=false' "$tick_template" > "$TF/supervisor/autopi/config.json"
 cp "$repo_root/engine/state/mechanism-registry.json" "$TF/repo/engine/state/mechanism-registry.json"
 acc="$(command jq -cn '{acceptance:[{id:"live-event",desc:"生产事件",event:"factory-m5-live-event-close"}]}')"
 # 单元存档的是原始验收块；worker 落地后把 issue 正文里的块改宽了（passes 也翻成 true）
@@ -5866,7 +5868,7 @@ sched_case_m5_live_event_timeout() {
 # M5（#4501）：超过登记机制的沉默上限仍未出现事件，已落地、待生效的单转 supervisor。
 new_tick_fixture m5-live-event-timeout
 mkdir -p "$TF/issues" "$TF/repo/engine/state" "$TF/agent-home"
-command jq '.release_train.enabled=false | .supervisor_arbiter.enabled=false' "$template" > "$TF/supervisor/autopi/config.json"
+command jq '.release_train.enabled=false | .supervisor_arbiter.enabled=false' "$tick_template" > "$TF/supervisor/autopi/config.json"
 cp "$repo_root/engine/state/mechanism-registry.json" "$TF/repo/engine/state/mechanism-registry.json"
 acc="$(command jq -cn '{acceptance:[{id:"live-event",desc:"生产事件",event:"factory-m5-live-event-close"}]}')"
 stale_landed_at="$(date -u -d '25 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
