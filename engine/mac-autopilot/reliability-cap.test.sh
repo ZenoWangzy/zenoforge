@@ -39,7 +39,9 @@ scorecard "$NOW_EPOCH" WARN UNHEALTHY;            expect 'second metric joins' 4
 scorecard "$NOW_EPOCH" OK WARN;                   expect 'revert recovered, main red held' 4
 scorecard "$((NOW_EPOCH - 7201))" OK OK;          expect 'stale scorecard keeps configured cap' 8
 printf '{broken' > "$A/node-health.json";         expect 'unreadable scorecard keeps configured cap' 8
+NOW_EPOCH=$((NOW_EPOCH + 5400))
 scorecard "$NOW_EPOCH" OK OK;                     expect 'full recovery' 8
+grep -Fq 'breached=[] cap=8->8 secs=5400' "$LOG" || fail 'recovery line lacks secs=5400 since the first breach'
 [[ "$(logged)" == 4 ]] || fail "want 4 throttle log lines (breach, add, partial, recover), got $(logged)"
 grep -Fq '"breached":[]' "$A/implement-cap-throttle.json" || fail 'state not cleared after recovery'
 echo 'ok - breach lowers the cap, WARN holds it, recovery restores it, bad scorecard keeps configured'
