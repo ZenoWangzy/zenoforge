@@ -364,8 +364,6 @@
   .lwc { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:6px 8px; padding:10px 12px; background:var(--soft); border:0.5px solid var(--hairline); border-radius:6px; min-width:0; }
   .lw-be { font-family:var(--mono); font-size:12px; font-weight:600; text-transform:uppercase; color:var(--steel); background:var(--sunk); border-radius:4px; padding:2px 4px; }
   .lw-t { color:var(--ink); font-size:14px; font-weight:600; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; line-height:1.3; min-width:0; }
-  .lw-hb { width:10px; height:10px; border-radius:50%; background:var(--s); }
-  .lwc.s-bad .lw-hb {  }
   .lw-tr { display:flex; align-items:center; gap:4px; grid-column:1 / 3; }
   .lw-tr i { width:16px; height:5px; border-radius:2px; border:0.5px solid var(--hairline-strong); }
   .lw-tr i.d { background:var(--hairline-strong); }
@@ -446,6 +444,31 @@
   .anom:hover { background:var(--sunk); } .anom.more { display:block; color:var(--steel); font-size:12px; }
   .anom .ad { width:8px; height:8px; border-radius:50%; background:var(--s); } .ad.s-bad { --s:var(--bad); } .ad.s-warn { --s:var(--warn); } .ad.s-ok { --s:var(--ok); } .ad.s-none { --s:var(--hairline-strong); } .frq .ad { width:8px; height:8px; border-radius:50%; background:var(--s); }
   .a-l small { display:block; font-size:12px; color:var(--steel); } .a-n { font-size:12px; color:var(--steel); } .a-v { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; color:var(--ink); }
+  /* 总览：先结论，再 6 个数，再问题清单，最后员工与流水线。平时只有灰与墨，暖色只给要处理的东西（员工等待 / 超时最暖）。 */
+  .ov-vd { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:12px 18px; border:0.5px solid var(--hairline); border-radius:8px; background:var(--surface); cursor:pointer; }
+  .ov-vd.s-warn, .ov-vd.s-bad { border-color:var(--s); background:var(--sb); }
+  .ov-vd .ic { width:22px; height:22px; color:var(--s); } .ov-vd b { font-size:20px; font-weight:600; color:var(--si); }
+  .ov-vd .aside { margin-left:auto; display:flex; gap:8px; flex-wrap:wrap; }
+  .hks { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .hk { display:flex; flex-direction:column; gap:6px; padding:14px 16px; border:0.5px solid var(--hairline); border-radius:8px; background:var(--surface); min-width:0; text-align:left; font:inherit; color:inherit; cursor:pointer; }
+  .hk:hover { border-color:var(--hairline-strong); } .hk:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+  .hk.s-warn, .hk.s-bad { border-color:var(--s); background:var(--sb); }
+  .hk-l { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--steel); } .hk-l .ic { width:14px; height:14px; }
+  .hk-v, .hk-2 b { font-size:28px; font-weight:600; letter-spacing:-.03em; line-height:1.1; color:var(--ink); font-variant-numeric:tabular-nums; }
+  .hk.s-warn .hk-v, .hk.s-bad .hk-v { color:var(--si); }
+  .hk-v small { font-size:12px; font-weight:500; color:var(--stone); margin-left:4px; letter-spacing:0; }
+  .hk-2 { display:flex; gap:20px; } .hk-2 > span { display:flex; flex-direction:column; } .hk-2 i { font-style:normal; font-size:12px; color:var(--steel); } .hk-2 .s-bad b { color:var(--bad-ink); }
+  .hk-s { display:flex; align-items:center; flex-wrap:wrap; gap:4px 10px; font-size:12px; color:var(--steel); font-variant-numeric:tabular-nums; }
+  .hk-bar { position:relative; height:6px; border-radius:2px; background:var(--sunk); } .hk-bar i { position:absolute; left:0; top:0; bottom:0; border-radius:2px; background:var(--s); } .hk-bar b { position:absolute; top:-2px; bottom:-2px; width:1px; background:var(--hairline-strong); }
+  .pb { display:grid; grid-template-columns:10px 130px minmax(120px,1fr) 110px minmax(140px,1.6fr) 72px; gap:12px; align-items:center; min-height:38px; padding:4px; border-top:0.5px solid var(--hairline); font-size:14px; }
+  .pb:first-of-type { border-top:0; } .pb .ad { width:8px; height:8px; border-radius:50%; background:var(--s); }
+  .pb button.pb-a { background:none; border:0; padding:0; color:var(--link); font:inherit; font-size:12px; cursor:pointer; } .pb button.pb-a:hover { text-decoration:underline; }
+  .pb-w, .pb-r { color:var(--steel); font-size:12px; } .pb-v { text-align:right; font-weight:600; color:var(--si); font-variant-numeric:tabular-nums; } .pb-a { text-align:right; font-size:12px; }
+  .pb.more { display:block; color:var(--steel); font-size:12px; }
+  .lwc.w-warn { background:var(--warn-bg); border-color:var(--warn); }
+  .lwc.w-bad { background:var(--bad-bg); border-color:var(--bad); box-shadow:0 0 0 1px var(--bad); }
+  .lwc.w-bad .lw-t { color:var(--bad-ink); }
+  @media (max-width:900px) { .pb { grid-template-columns:10px minmax(0,1fr) auto auto; row-gap:2px; } .pb .ad { grid-row:1; } .pb-n { grid-row:1; grid-column:2; } .pb-v { grid-row:1; grid-column:3; } .pb-a { grid-row:1; grid-column:4; } .pb-w { grid-row:2; grid-column:2 / -1; } .pb-r { grid-row:3; grid-column:2 / -1; } .hks { grid-template-columns:repeat(2,minmax(0,1fr)); } }
   .a-t { position:relative; height:8px; border-radius:2px; overflow:hidden; background:var(--sunk); } .a-t i { position:absolute; top:0; bottom:0; } .a-t i.z-ok { background:var(--ok-bg); } .a-t i.z-warn { background:var(--warn-bg); } .a-t i.z-bad { background:var(--bad-zone); } .a-t b { position:absolute; top:-1px; bottom:-1px; width:2px; background:var(--ink); }
 </style>
 </head>
@@ -913,7 +936,7 @@ function vCi(D) {
 
 // 6. 合并与发布
 const RT_NM = {released:["已发布","ok"], building:["构建中","none"], deploying:["部署中","none"], delegated:["已交主控发布","none"], held:["待主管发布（含迁移）","warn"],
-  "deferred-busy":["fleet 忙，下一班","warn"], "blocked-credentials":["凭据失效","bad"], failed:["失败已回滚","bad"], "no-image-change":["无镜像变化","ok"]};
+  "deferred-busy":["VectA 忙，下一班","warn"], "blocked-credentials":["凭据失效","bad"], failed:["失败已回滚","bad"], "no-image-change":["无镜像变化","ok"]};
 function sumRelease(D) {
   const F = FR(D);
   const st = [...frontStatus(D, k => k.startsWith("release.") || k.startsWith("stage.awaiting-release.") || k.startsWith("stage.awaiting-pipeline-sync.")), ...modMetrics(D,"release").map(m=>m.status)];
@@ -1163,16 +1186,15 @@ function usageRows(a, mx) {
 }
 function lwCard(w, nowS, mx) {
   const [on, oc] = OWN[w.owner] || [w.owner, "var(--none)"];
-  const el = w.started_epoch ? Math.max(0, nowS - w.started_epoch) : null, typ = w.typical_s || 1800;
-  const es = el == null ? "none" : el <= typ ? "ok" : el <= 2*typ ? "warn" : "bad";
+  const {el, typ, t: es, s: sev} = workerState(w, nowS);
   const cur = (w.steps||[])[w.step], sc = STEPC[cur] || oc;
   const steps = `<span class="lw-st">${esc(STEPN[cur]||cur||"")}</span>` + (w.steps||[]).map((s,i) => `<i class="${i<w.step?"d":i===w.step?"c":""}" title="${esc(STEPN[s]||s)}"></i>`).join("");
   const ref = w.pr ? `<a href="${repoUrl()}/pull/${esc(w.pr)}" target="_blank" rel="noopener">PR ${esc(w.pr)}</a>` : w.issue ? `<a href="${repoUrl()}/issues/${esc(w.issue)}" target="_blank" rel="noopener">#${esc(w.issue)}</a>` : "";
   const hs = {ok:"最近 5 分钟内有输出", warn:"5–30 分钟没有输出", bad:"超过 30 分钟没有输出，可能卡住", none:"无日志可判断"}[w.health] || "";
-  return `<div class="lwc s-${sk(w.health)}" style="--oc:${oc}" title="${esc(on+"，"+(w.tip||"")+(el==null?"":"，已用 "+fDur(el)))}">
-    <span class="lw-be">${esc(w.backend||"")}</span><span class="lw-t">${esc(w.task||"")}</span><i class="lw-hb" title="${esc(hs)}"></i>
+  return `<div class="lwc s-${sk(w.health)} w-${sev}" style="--oc:${oc}" title="${esc(on+"，"+(w.tip||"")+(el==null?"":"，已用 "+fDur(el)))}">
+    <span class="lw-be">${esc(w.backend||"")}</span><span class="lw-t">${esc(w.task||"")}</span><span class="chip s-${sk(w.health)} lw-ws" title="${esc(hs)}">${esc(WAIT_TXT[sk(w.health)])}</span>
     <div class="lw-tr" style="--sc:${sc}">${steps}</div><span class="lw-ref">${ref}</span>
-    <div class="lw-bar s-${es}" title="典型用时 ${esc(fDur(typ))}"><i style="width:${Math.min(100, 50*(el||0)/typ)}%"></i><b style="left:50%"></b></div><span class="lw-el s-${es}">${el==null?"—":fDur(el)}</span>${usageRows(w, mx)}</div>`;
+    <div class="lw-bar s-${es}" title="典型用时（估）${esc(fDur(typ))}"><i style="width:${Math.min(100, 50*(el||0)/typ)}%"></i><b style="left:50%"></b></div><span class="lw-el s-${es}">${el==null?"—":fDur(el)}</span>${usageRows(w, mx)}</div>`;
 }
 function lwGauge(label, frac, st, txt) {
   return `<span class="lwg s-${st}" title="${esc(label)}"><em>${esc(label)}</em><span class="lwg-t"><i style="width:${Math.max(3,Math.min(100,100*frac))}%"></i></span><b>${esc(txt)}</b></span>`;
@@ -1190,8 +1212,10 @@ function livePanel(D) {
     + lwGauge("内存", mem==null?0:mem/16384, mem==null?"none":mem<2048?"bad":mem<4096?"warn":"ok", mem==null?"—":(mem/1024).toFixed(1)+"G");
   const legend = Object.entries(OWN).map(([k,[n,c]]) => `<span class="lwl" style="--oc:${c}"><i></i>${n}</span>`).join("");
   const G = lwGrouped(L.items), mxN = (D.summary || {}).max_workers, mx = maxUse(L.items);
-  const cards = L.items.length ? [...LW_GROUPS, ["other","其他"]].filter(g => (G[g[0]] || []).length).map(g =>
-    `<div class="sub" style="margin:16px 0 6px"><b>${esc(g[1])}</b>，${G[g[0]].length} 位${g[0]==="pipeline" && mxN ? `（上限 ${num(mxN)}）` : ""}</div><div class="lwgrid">${G[g[0]].map(w => lwCard(w, nowS, mx)).join("")}</div>`).join("") : emptyMsg("空闲");
+  // 最暖的在最前：组按组内最热员工排，组内按 严重度、用时 降序
+  const stOf = w => workerState(w, nowS), hot = w => RANK[stOf(w).s], heat = g => Math.max(0, ...(G[g[0]] || []).map(hot));
+  const cards = L.items.length ? [...LW_GROUPS, ["other","其他"]].filter(g => (G[g[0]] || []).length).sort((a, b) => heat(b) - heat(a)).map(g =>
+    `<div class="sub" style="margin:16px 0 6px"><b>${esc(g[1])}</b>，${G[g[0]].length} 位${g[0]==="pipeline" && mxN ? `（上限 ${num(mxN)}）` : ""}</div><div class="lwgrid">${G[g[0]].slice().sort((a, b) => hot(b) - hot(a) || (stOf(b).el || 0) - (stOf(a).el || 0)).map(w => lwCard(w, nowS, mx)).join("")}</div>`).join("") : emptyMsg("空闲");
   const uleg = `<span class="lwl" style="--oc:var(--steel)"><i></i>用时</span><span class="lwl" style="--oc:var(--c7)"><i></i>token</span><span class="lwl" style="--oc:var(--c5)"><i></i>流量 ↓↑</span>`;
   return panel("workers", "员工", `<div class="lwbar"><span class="lwlg"></span><span class="lwgs">${gauges}</span></div>${cards}`);
 }
@@ -1317,30 +1341,130 @@ function anomRow(m) { const lb = LABELS[m.id], st = sk(m.status), hib = !!m.high
     const zones = hib ? [[0,u,"bad"],[u,h,"warn"],[h,top,"ok"]] : [[0,h,"ok"],[h,u,"warn"],[u,top,"bad"]];
     return `<div class="anom" data-m="${metricMod(m)}" data-tip="${esc(m.meaning || "")}"><i class="ad s-${st}"></i><span class="a-n">${esc(PLAIN_NODE[m.node] || m.node)}</span><span class="a-l">${esc(pl[0])}<small>${esc(pl[1])}</small></span>
       <span class="a-t">${zones.filter(z => pc(z[1]) > pc(z[0])).map(z => `<i class="z-${z[2]}" style="left:${pc(z[0])}%;width:${pc(z[1]) - pc(z[0])}%"></i>`).join("")}${v == null ? "" : `<b style="left:${Math.min(pc(v), 99)}%"></b>`}</span><span class="a-v">${esc(fv)}</span></div>`; }
+/* 总览设计（dashboard-design 步骤 1 到 4）
+   屏幕只回答一个问题：「工厂现在正常吗？卡在哪？谁来处理？」
+   6 个数：员工在岗 | 可启动 / 卡住 | 今日完成 | 主线 CI | 负载 | 额度（估）。
+   问题规则（数字）：员工无输出 ≥5 分警告、≥30 分不健康；员工用时 >1× 典型警告、>2× 典型不健康；
+     可启动 >0 且产线有空位 → 警告；非在跑单元停留 > 该环节不健康线、或需人决策 → 卡住；
+     负载 5 分钟均值 >16 不健康；可用内存 <4G 警告、<2G 不健康；主线 CI 或套件最近完成的 run 失败 → 不健康；
+     今日 token ≥ 预算 80% 警告、≥100% 不健康；入口三队列（待分诊 / 待顾问 / 待实施）按 front 标准判；
+     机制沉默超过其绑定时长；流水线暂停；看板数据超过 15 分未刷新。
+   每个问题的动作：一键到对应模块（员工 / 入口 / CI / 主机 / 成本 / 健康）；「谁」取数据里的归属（员工组、机制的 supervisor、模块名）。
+   形式：数 = 数字加一个状态点；问题 = 名词 + 数字 + 线 + 归属 + 动作，不写句子；员工卡暖色填充，最暖的排最前。
+   偏离 skill 的地方：员工用时条沿用既有「典型用时」刻度（live_workers.TYPICAL 为固定估值，工具提示标「估」）；
+     「等待」由日志无新输出推断（live_workers.health 只有 5 / 30 分两条线），不是调度器的显式状态。 */
+const WAIT_TXT = {ok:"工作中", warn:"等待 ≥5 分", bad:"等待 ≥30 分", none:"无日志"};
+const LOAD_BAD = 16, MEM_BAD_MB = 2048, MEM_WARN_MB = 4096;
+// 员工状态的唯一口径：总览卡与问题清单共用。s = 用时状态与日志状态里较差的一个
+function workerState(w, nowS) {
+  const typ = w.typical_s || 1800, el = w.started_epoch ? Math.max(0, nowS - w.started_epoch) : null;
+  const t = el == null ? "none" : el <= typ ? "ok" : el <= 2*typ ? "warn" : "bad";
+  return {el, typ, t, h: sk(w.health), s: worst([t, w.health])};
+}
+// 非在跑单元：等人接（可启动）或停太久（卡住）；在跑的由员工状态负责。单元台账缺失 → null，显示 —
+function workQueue(D) {
+  if (!Array.isArray(D.units)) return null;
+  const live = new Set(liveWorkers(D).map(w => w.unit));
+  let startable = 0, stuck = unitsIn(D, ["needs-human"]).length;
+  for (const c of PCOLS) if (c.st) for (const u of unitsIn(D, c.st)) {
+    if (live.has(u.id)) continue;
+    const age = (u.journey || {}).since_min / 60;
+    if (Number.isFinite(age) && age > STAGE_H[c.k][1]) stuck++; else if (/-pending$/.test(u.stage)) startable++;
+  }
+  return {startable, stuck};
+}
+function ciWord(v) {
+  const s = String(v || "unknown"), b = s.split("（")[0], run = s.includes("进行中");
+  const st = b === "success" ? "ok" : /^(failure|timed_out|startup_failure)$/.test(b) ? "bad" : b === "unknown" ? "none" : "warn";
+  return {st, run, txt: b === "success" ? "通过" : b === "failure" ? "失败" : b === "unknown" ? "—" : b};
+}
+const ovWho = (items, key) => [...new Set(items.map(key))].join("、");
+// 问题清单：纯函数，输入看板数据，输出按严重度排好的行 {s, kind, who, what, val, rule, mod|href, act}
+const PB_ORDER = ["wait", "long", "paused", "stale", "ci", "load", "mem", "mech", "budget", "queue", "slot"];
+function problems(D, nowMs = Date.now()) {
+  const rows = [], nowS = Math.floor(nowMs / 1000), F = FR(D), STD = D.standards || {}, T = D.totals || {}, S = D.summary || {};
+  const add = r => rows.push(r);
+  const L = D.live_workers, LW = L && Array.isArray(L.items) ? L.items : [];
+  const st = LW.map(w => ({w, ...workerState(w, nowS)}));
+  const waiting = st.filter(x => x.h === "bad" || x.h === "warn");
+  if (waiting.length) { const bad = waiting.some(x => x.h === "bad");
+    add({s: bad ? "bad" : "warn", kind: "wait", who: ovWho(waiting, x => (OWN[x.w.owner] || [x.w.owner])[0]), what: "员工等待", val: waiting.length,
+      rule: `无输出 ≥ ${bad ? 30 : 5} 分${waiting.some(x => x.el != null) ? " · 最久用时 " + fDur(Math.max(...waiting.map(x => x.el || 0))) : ""}`, href: "#ov-workers", act: "查看",
+      tip: "日志没有新输出，推断为在等（例如负载门）；5 分起警告，30 分起不健康"}); }
+  const longer = st.filter(x => x.t === "warn" || x.t === "bad").sort((a, b) => b.el - a.el);
+  if (longer.length) { const bad = longer.some(x => x.t === "bad"), top = longer[0];
+    add({s: bad ? "bad" : "warn", kind: "long", who: ovWho(longer, x => (OWN[x.w.owner] || [x.w.owner])[0]), what: "员工用时超标", val: fDur(top.el),
+      rule: `典型 ${fDur(top.typ)}（估）× ${bad ? 2 : 1}`, href: "#ov-workers", act: "查看", tip: `${longer.length} 位超过典型用时；典型用时是固定估值，不是历史中位数`}); }
+  const pause = STD.paused;
+  if (pause) add({s: "bad", kind: "paused", who: "调度", what: "流水线已暂停", val: pause.since ? utc(pause.since) : "—", rule: pause.reason || "原因未知", mod: "health", act: "查看"});
+  const f = freshness(D);
+  if (f.s === "bad") add({s: "bad", kind: "stale", who: "看板", what: "数据过期", val: fDur(Math.round(f.age)), rule: "≥ 15 分", mod: "host", act: "查看"});
+  for (const [nm, v] of [["CI", T.ci], ["套件", T.suites]]) { const c = ciWord(v);
+    if (c.st === "bad" || c.st === "warn") add({s: c.st, kind: "ci", who: "CI", what: `主线 ${nm}`, val: c.txt, rule: c.run ? "新一轮进行中" : "最近完成的 run", mod: "ci", act: "查看"}); }
+  for (const [k, sd] of Object.entries(ciStd(D))) { const v = ((D.ci_live || {}).values || {})[k];
+    if (sk(ciStatus(D, k)) === "bad") add({s: "bad", kind: "ci", who: "CI", what: sd.desc || k, val: num(v), rule: `${sd.higher_is_better ? "≥" : "≤"} ${num(sd.healthy)}`, mod: "ci", act: "查看"}); }
+  const ld = L && L.load5, mem = L && L.mem_avail_mb;
+  if (ld != null && ld > LOAD_BAD) add({s: "bad", kind: "load", who: "服务器", what: "负载 5 分", val: Number(ld).toFixed(1), rule: `> ${LOAD_BAD}`, mod: "host", act: "查看"});
+  if (mem != null && mem < MEM_WARN_MB) add({s: mem < MEM_BAD_MB ? "bad" : "warn", kind: "mem", who: "服务器", what: "可用内存", val: (mem / 1024).toFixed(1) + "G", rule: `< ${mem < MEM_BAD_MB ? 2 : 4}G`, mod: "host", act: "查看"});
+  const silent = ((STD.mechanisms) || []).filter(m => m.silent);
+  if (silent.length) add({s: "bad", kind: "mech", who: ovWho(silent, m => m.supervisor || "—"), what: "机制沉默", val: silent.length, rule: "超过各自静默上限", mod: "health", act: "查看",
+    tip: silent.map(m => `${m.id}，静默 ${fAge(m.silent_hours)}，上限 ${fAge(m.bound_hours)}`).join("\n")});
+  const bd = budgetOf(D);
+  if (bd.pct != null && bd.pct >= 80) add({s: bd.pct >= 100 ? "bad" : "warn", kind: "budget", who: "成本", what: "今日 token（估）", val: Math.round(bd.pct) + "%", rule: `预算 ${FMT.tok(bd.budget)}`, mod: "cost", act: "查看"});
+  for (const l of ["needs-triage", "needs-advisor", "ready-for-agent"]) { const r = stageRow(D, l); if (!r) continue;
+    const cs = (F.status || {})[`stage.${l}.count`], is = (F.status || {})[`stage.${l}.idle_hours`], s = worst([cs, is]);
+    if (s !== "bad" && s !== "warn") continue;
+    const ub = ((F.standards || {})[`stage.${l}.idle_hours`] || {}).unhealthy, idleBad = sk(is) === s;
+    add({s, kind: "queue", who: l === "needs-advisor" ? "顾问" : "入口", what: r.name || l, val: r.count, rule: idleBad ? `最久 ${fAge(r.idle_hours)}${ub != null ? " ≥ " + fAge(ub) : ""}` : `积压 ≥ ${num(((F.standards || {})[`stage.${l}.count`] || {}).unhealthy)}`, mod: l === "needs-advisor" ? "advisor" : "intake", act: "查看"}); }
+  const q = workQueue(D), cap = S.max_workers || 8, np = LW.filter(w => w.owner === "pipeline").length;
+  if (q && q.startable > 0 && LW.length && np < cap) add({s: "warn", kind: "slot", who: "调度", what: "有活没人接", val: q.startable, rule: `产线空位 ${cap - np}`, mod: "workers", act: "查看"});
+  return rows.sort((a, b) => RANK[b.s] - RANK[a.s] || PB_ORDER.indexOf(a.kind) - PB_ORDER.indexOf(b.kind));
+}
+const pbRow = r => `<div class="pb s-${r.s}"${r.tip ? ` data-tip="${esc(r.tip)}"` : ""}><i class="ad"></i><span class="pb-w">${esc(r.who)}</span><span class="pb-n">${esc(r.what)}</span><span class="pb-v">${esc(r.val)}</span><span class="pb-r">${esc(r.rule)}</span>${r.href ? `<a class="pb-a" href="${r.href}">${r.act}</a>` : `<button class="pb-a" type="button" data-m="${r.mod}">${r.act}</button>`}</div>`;
+function hk(icon, label, vis, st, mod, tip, sub = "") {
+  return `<button class="hk s-${st}" type="button" data-m="${mod}"${tip ? ` data-tip="${esc(tip)}"` : ""}><div class="hk-l">${ic(icon)}${esc(label)}</div>${vis}${sub ? `<div class="hk-s">${sub}</div>` : ""}</button>`;
+}
 function vOverview(D) {
-  const f = freshness(D), STD = D.standards || {}, ms = nodeMetrics(D), S = D.summary || {}, T = D.totals || {};
-  const {bad, warn} = metricStatusGroups(ms);
-  const vs = f.s==="bad" || STD.paused || bad.length ? "bad" : warn.length ? "warn" : "ok";
-  const aside = [STD.paused ? stChip("bad","已暂停") : "", f.s==="bad" ? stChip("bad","数据过期") : "", bad.length ? stChip("bad", metricStatusText("bad", bad.length)) : "", warn.length ? stChip("warn", metricStatusText("warn", warn.length)) : ""].join("");
-  const LWok = !!(D.live_workers && Array.isArray(D.live_workers.items)), LW = LWok ? D.live_workers.items : [], LWM = lwGrouped(LW);
-  const cap = S.max_workers || 8, np = (LWM.pipeline || []).length, rest = LW.length - np;
-  const slots = `<div class="sgs"><div class="sg"><span>产线 ${np}/${cap}</span><div class="slots">${Array.from({length: Math.max(cap, np)}, (_, i) => `<i class="${i<np?"on":""}"></i>`).join("")}</div></div>
-    <div class="sg"><span>自进化 ${(LWM.opt || []).length}</span><div class="slots">${Array.from({length: (LWM.opt || []).length}, () => `<i class="alt"></i>`).join("")}</div></div></div>`;
-  const cnt = l => (stageRow(D, l) || {}).count, q = cnt("ready-for-agent"), rel = cnt("awaiting-release");
-  const merged = Array.isArray(T.merged_today) ? T.merged_today.length : null;
-  const cost = D.cost || {}, td = (cost.today || {}).dollars, yd = (cost.yesterday || {}).dollars, cm = Math.max(td || 0, yd || 0, 1e-9);
-  const card = (icon, label, v, vis) => `<div class="kc"><div class="kc-h">${ic(icon)}${esc(label)}</div><div class="kc-v">${v}</div>${vis || ""}</div>`;
-  const cards = `<div class="kcs">
-    ${card("workers", "员工", LWok ? LW.length : "—", LWok ? slots : "")}
-    ${card("git", "今日完成", merged ?? "—")}
-    ${card("layers", "排队", q ?? "—", q == null ? "" : `<div class="split" data-tip="排队 ${q}，等上线 ${rel ?? "—"}"><i style="flex:${q}"></i><i class="b" style="flex:${rel || 0}"></i></div>`)}
-    ${card("cost", "今日花费", td == null ? "—" : "$" + td.toFixed(1), td == null ? "" : `<div class="pair" data-tip="今日 $${td.toFixed(1)}，昨日 $${(yd||0).toFixed(1)}"><i style="width:${100*td/cm}%"></i><i class="y" style="width:${100*(yd||0)/cm}%"></i></div>`)}</div>`;
-  const rows = [...bad, ...warn].slice(0, 6).map(anomRow).join("");
-  const more = bad.length + warn.length - 6;
-  return `<div class="stack16">${cards}
-    ${panel("health", "异常", (rows ? rows + (more > 0 ? `<div class="anom more" data-m="health">另有 ${more} 项</div>` : "") : emptyMsg("全部正常")), aside)}
-    <details class="panel" open><summary class="ph" style="cursor:pointer">详情</summary>
-      <div class="stack16" style="margin-top:14px">${panel("arrow","流水线", pipeStrip(D), (FR(D).errors||{}).stages ? stChip("bad","阶段计数不可用") : "")}${livePanel(D)}</div></details></div>`;
+  const f = freshness(D), STD = D.standards || {}, ms = nodeMetrics(D), S = D.summary || {}, T = D.totals || {}, F = FR(D), nowS = Math.floor(Date.now() / 1000);
+  const {bad, warn} = metricStatusGroups(ms), rows = problems(D);
+  const LWok = !!(D.live_workers && Array.isArray(D.live_workers.items)), LW = LWok ? D.live_workers.items : [], LWM = lwGrouped(LW), L = D.live_workers || {};
+  const metricVs = f.s === "bad" || STD.paused || bad.length ? "bad" : warn.length ? "warn" : "ok";
+  const vs = f.age == null && !ms.length && !LWok ? "none" : worst([metricVs, ...rows.map(r => r.s)]);
+  const nBad = rows.filter(r => r.s === "bad").length, nWarn = rows.length - nBad;
+  const verdict = `<div class="ov-vd s-${vs}" data-m="health">${bigIcon(vs)}<b>${{ok:"正常", warn:"需留意", bad:"异常", none:"无数据"}[vs]}</b><span class="aside">${nBad ? stChip("bad", `${nBad} 项要处理`) : ""}${nWarn ? stChip("warn", `${nWarn} 项需留意`) : ""}${STD.paused ? stChip("bad", "已暂停") : ""}${f.s === "bad" ? stChip("bad", "数据过期") : ""}</span></div>`;
+  // 数 1 员工
+  const cap = S.max_workers || 8, np = (LWM.pipeline || []).length, wst = LW.map(w => workerState(w, nowS)), waitN = wst.filter(x => x.h === "bad" || x.h === "warn").length;
+  const slots = `<div class="slots" data-tip="产线 ${np} / 上限 ${cap}">${Array.from({length: Math.max(cap, np)}, (_, i) => `<i class="${i < np ? "on" : ""}"></i>`).join("")}</div>`;
+  const t1 = hk("workers", "员工在岗", `<div class="hk-v">${LWok ? LW.length : "—"}</div>`, LWok ? worst(wst.map(x => x.s)) : "none", "workers",
+    "在岗员工总数，含产线、自进化、热修、顾问、发布；方块为产线占用 / 上限", LWok ? `${slots}${waitN ? `<span class="chip s-${wst.some(x => x.h === "bad") ? "bad" : "warn"}">等待 ${waitN}</span>` : ""}` : "");
+  // 数 2 可启动 / 卡住
+  const q = workQueue(D);
+  const t2 = hk("layers", "可启动 · 卡住", `<div class="hk-2"><span><b>${q ? q.startable : "—"}</b><i>可启动</i></span><span class="${q && q.stuck ? "s-bad" : ""}"><b>${q ? q.stuck : "—"}</b><i>卡住</i></span></div>`,
+    q && q.stuck ? "bad" : "none", "workers", "可启动：没有员工在跑、在等人接的单元；卡住：没有员工在跑且停留超过该环节不健康线，或需人决策。在跑的单元看员工状态");
+  // 数 3 今日完成
+  const merged = Array.isArray(T.merged_today) ? T.merged_today.length : null, rel = (stageRow(D, "awaiting-release") || {}).count;
+  const t3 = hk("git", "今日完成", `<div class="hk-v">${merged ?? "—"}</div>`, "none", "release", "今日合入主线的 PR 数", rel == null ? "" : `<span class="chip s-${sk((F.status || {})["stage.awaiting-release.count"])}">等上线 ${rel}</span>`);
+  // 数 4 主线 CI
+  const cw = [["CI", ciWord(T.ci)], ["套件", ciWord(T.suites)]], cs = worst(cw.map(x => x[1].st)), cv = cw.some(x => x[1].st === "bad") ? "失败" : cw.every(x => x[1].st === "ok") ? "通过" : "—";
+  const t4 = hk("ci", "主线 CI", `<div class="hk-v">${cv}</div>`, cs, "ci", "主线上 CI 与流水线套件两个工作流，最近一次完成的结果（取消的不算）",
+    cw.map(([n, c]) => `<span>${n} ${esc(c.txt)}${c.run ? " · 进行中" : ""}</span>`).join(""));
+  // 数 5 负载
+  const ld = L.load5, mem = L.mem_avail_mb, ls = ld == null ? "none" : ld > LOAD_BAD ? "bad" : "ok", ms2 = mem == null ? "none" : mem < MEM_BAD_MB ? "bad" : mem < MEM_WARN_MB ? "warn" : "ok";
+  const t5 = hk("host", "负载 5 分", `<div class="hk-v">${ld == null ? "—" : Number(ld).toFixed(1)}</div>`, worst([ls, ms2]), "host", `服务器 5 分钟平均负载，健康线 ≤ ${LOAD_BAD}；可用内存 < 4G 警告、< 2G 不健康`,
+    `${ld == null ? "" : `<span class="hk-bar s-${ls}" style="flex:1 1 60px"><i style="width:${Math.min(100, 100 * ld / (LOAD_BAD * 2))}%"></i><b style="left:50%"></b></span>`}<span>内存 ${mem == null ? "—" : (mem / 1024).toFixed(1) + "G"}</span>`);
+  // 数 6 额度（今日 token 对日预算，估）
+  const bd = budgetOf(D), cost = D.cost || {}, td = (cost.today || {}).dollars, bs = bd.pct == null ? "none" : bd.pct >= 100 ? "bad" : bd.pct >= 80 ? "warn" : "ok";
+  const t6 = hk("cost", "额度", `<div class="hk-v">${bd.pct == null ? "—" : Math.round(bd.pct) + "%"}<small>估</small></div>`, bs, "cost",
+    "今日计费 token 对日预算的占比，估算值；部分会话没有算进来时会偏低。", `<span>${bd.billable == null ? "—" : FMT.tok(Number(bd.billable))} / ${bd.budget ? FMT.tok(bd.budget) : "—"}</span><span>${td == null ? "—" : "$" + td.toFixed(1)}</span>`);
+  const aside = [bad.length ? stChip("bad", metricStatusText("bad", bad.length)) : "", warn.length ? stChip("warn", metricStatusText("warn", warn.length)) : ""].join("");
+  const mrows = [...bad, ...warn].slice(0, 6).map(anomRow).join(""), more = bad.length + warn.length - 6;
+  const CAP = 6, shown = rows.slice(0, CAP);
+  const pbody = rows.length ? `<div>${shown.map(pbRow).join("")}${rows.length > CAP ? `<div class="pb more" data-tip="${esc(rows.slice(CAP).map(r => r.who + " " + r.what + " " + r.val).join("\n"))}">另有 ${rows.length - CAP} 项</div>` : ""}</div>` : emptyMsg(vs === "none" ? "无数据" : "没有要处理的");
+  return `<div class="stack16">${verdict}<div class="hks">${t1}${t2}${t3}${t4}${t5}${t6}</div>
+    ${panel("warn", "要处理", pbody)}
+    <div id="ov-workers">${livePanel(D)}</div>
+    ${panel("arrow", "流水线", pipeStrip(D), (F.errors || {}).stages ? stChip("bad", "阶段计数不可用") : "")}
+    ${panel("health", "健康指标", (mrows ? mrows + (more > 0 ? `<div class="anom more" data-m="health">另有 ${more} 项</div>` : "") : emptyMsg("全部正常")), aside)}</div>`;
 }
 function vReqs(D) { return `<div class="stack16">${founderPanel(D)}</div>`; }
 function sumReqs(D) { const R = D.founder_reqs;
@@ -1490,7 +1614,7 @@ function reloadData() {
 applyTheme();
 renderModule(current);
 setInterval(reloadData, 30000);
-window.__dash = {MODULES, renderModule};
+window.__dash = {MODULES, renderModule, problems, workQueue};
 </script>
 </body>
 </html>
