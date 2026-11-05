@@ -135,7 +135,14 @@ build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$
 mkdir -p "$CLAUDE_CONFIG_DIR/projects/-x" && : > "$CLAUDE_CONFIG_DIR/projects/-x/$claude_sid.jsonl"
 build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$impl_repo" claude || fail 'Claude repair resume was refused'
 [[ "$CODEX_MODE" == resume && "$CODEX_SESSION_ID" == "$claude_sid" && "$(impl_value --resume)" == "$claude_sid" ]] || fail 'Claude repair did not --resume the recorded session'
+unset CODEX_FRESH_COMMAND
+build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$impl_repo" claude || fail 'Claude repair resume was refused'
 [[ "${CODEX_COMMAND[2]}" == 'new failure'* ]] || fail 'Claude resume did not send the new failure'
+[[ "${CODEX_FRESH_COMMAND[2]}" == 'cold'* && " ${CODEX_FRESH_COMMAND[*]} " != *' --resume '* ]] || fail 'Claude resume has no cold fallback for the repair runner'
+# Runner: a Claude resume that dies before any work goes cold; one that already worked does not.
+runner_try() { bash "$script_dir/../codex-repair-run.sh" "$test_env_root/runner.log" "$claude_sid" 2 echo fresh-ran bash -c "echo '$1'; exit 1" > "$test_env_root/runner.out" 2>&1 || true; cat "$test_env_root/runner.out" "$test_env_root/runner.log" 2>/dev/null; rm -f "$test_env_root/runner.log"; }
+[[ "$(runner_try '{"type":"system"}')" == *fresh-ran* ]] || fail 'a Claude resume startup failure did not fall back cold'
+[[ "$(runner_try '{"type":"assistant"}')" != *fresh-ran* ]] || fail 'a Claude resume that had started work went cold'
 unit_json="{\"sessions\":{\"repair\":{\"id\":\"$claude_sid\",\"provider\":\"codex\",\"model\":\"gpt-6-luna\"}}}"
 build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$impl_repo" claude || fail 'Claude repair after a provider change was refused'
 [[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == provider-changed ]] || fail 'Claude resumed another provider session'

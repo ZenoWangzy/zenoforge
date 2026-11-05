@@ -9,7 +9,7 @@ trap 'rm -f -- "$capture"' EXIT
 jq -cn '{type:"pipeline.execution",mode:"resume",reason:"same-provider-model"}'
 "$@" 2>&1 | tee "$capture"
 status="${PIPESTATUS[0]}"
-if (( status != 0 )) && ! jq -e -R 'fromjson? | select(.type == "item.started" or .type == "item.updated" or .type == "item.completed" or .type == "turn.completed")' "$capture" >/dev/null; then
+if (( status != 0 )) && ! jq -e -R 'fromjson? | select(.type == "item.started" or .type == "item.updated" or .type == "item.completed" or .type == "turn.completed" or .type == "assistant")' "$capture" >/dev/null; then
   # Discard the failed startup's incomplete turn events before the existing
   # stream reader ingests the cold run's session and cumulative token counters.
   exec > "$log" 2>&1
