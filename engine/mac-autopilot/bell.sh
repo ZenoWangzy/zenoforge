@@ -285,7 +285,7 @@ incident_target_repo() {
 record_slow_phase_tick() {
   local line="$1" slow_part="" update phase
   [[ "$line" =~ slow:[[:space:]](.*)$ ]] && slow_part="${BASH_REMATCH[1]}"
-  update="$(jq -cn --arg old "$SLOW_TICKS" --arg slow "$slow_part" \
+  update="$(jq -cn --argjson old "$SLOW_TICKS" --arg slow "$slow_part" \
     --argjson n "$SLOW_PHASE_MIN_TICKS" --argjson m "$SLOW_PHASE_WINDOW_TICKS" '
     def ones($s): [$s | scan("1")] | length;
     $old as $old
@@ -948,8 +948,8 @@ if [[ -r "$A/BELL-RESOLUTION.md" ]]; then
   while IFS= read -r entry; do
     id="${entry#event_id: }"
     case "$entry" in
-      *" status: complete") res_done["$id"]=1 ;;
-      *" status: failed") res_failed["$id"]=1 ;;
+      *" status: complete") res_done["${id% status: complete}"]=1 ;;
+      *" status: failed") res_failed["${id% status: failed}"]=1 ;;
     esac
   done < <(grep -oE 'event_id: [^ ]+ status: (complete|failed)' "$A/BELL-RESOLUTION.md" 2>/dev/null)
   if (( ${#res_done[@]} + ${#res_failed[@]} > 0 )); then
