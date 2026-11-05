@@ -39,6 +39,8 @@ log_reliability_breach() {
 phase() {
   local t0=$SECONDS rc=0 gh_before=0 gh_after=0 gh_delta=0 phase_name="$1" elapsed
   gh_before="$(tick_gh_calls_count)"
+  # A killed refill never prints tick-phases: leave the running phase for loop.sh's REFILL-TIMEOUT line.
+  [[ "${TICK_LOCAL_REFILL:-false}" != true ]] || printf '%s\n' "$phase_name" > "$A/.refill-phase" || :
   [[ "${TICK_LOCAL_REFILL:-false}" == true || "$phase_name" == dispatch_pending || "$phase_name" == tick_prs_prime ]] || tick_prs_prime
   "$@" || rc=$?
   elapsed=$((SECONDS - t0))

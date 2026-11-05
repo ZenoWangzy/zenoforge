@@ -23,7 +23,7 @@ run_refill() {
   timeout --foreground -k 30 "${AUTOPI_REFILL_LIMIT_SECONDS:-300}" bash "$LIVE/scheduler.sh" --refill >> "$A/loop.out" 2>&1 || rc=$?
   (( rc != 75 )) || return 75 # shared scheduler lock is busy; keep the refill due and retry on the next poll
   if (( rc == 124 || rc == 137 )); then
-    echo "[$(date -u +%FT%TZ)] REFILL-TIMEOUT refill tick killed after ${AUTOPI_REFILL_LIMIT_SECONDS:-300}s; the next tick clears the stale lock" \
+    echo "[$(date -u +%FT%TZ)] REFILL-TIMEOUT refill tick killed after ${AUTOPI_REFILL_LIMIT_SECONDS:-300}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown); the next tick clears the stale lock" \
       | tee -a "$A/scheduler.log" >> "$A/alerts/waste.md"
   fi
   return 0

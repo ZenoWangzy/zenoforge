@@ -100,20 +100,21 @@ try {
   await call('Network.enable');
   let q = await readQuota();
   const prev = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return {}; } })();
-  q.last_week_reset_at = prev.last_week_reset_at || 0;
+  q.reset_at = prev.reset_at || 0;
   q.week_resets_spent = prev.week_resets_spent || 0;
-  if (q.week_pct >= RESET_WEEK_AT && Date.now() / 1000 - q.last_week_reset_at < RESET_GAP_SECONDS) {
+  if (q.week_pct >= RESET_WEEK_AT && Date.now() / 1000 - q.reset_at < RESET_GAP_SECONDS) {
     log(`weekly ${q.week_pct}% but the last reset was under ${RESET_GAP_SECONDS}s ago: not spending another`);
   } else if (q.week_pct >= RESET_WEEK_AT) {
     log(`weekly ${q.week_pct}% >= ${RESET_WEEK_AT}%: spending one weekly reset`);
+    // Persist before the click: a failed re-read after it must not allow a second reset.
+    fs.writeFileSync(STATE, JSON.stringify({ ...prev, reset_at: Math.floor(Date.now() / 1000) }) + '\n');
     const result = await spendWeeklyReset();
     log(result);
     for (const h of hits.filter(x => x.done && /reset/i.test(x.url))) log('reset response', h.url, (await body(h) || '').slice(0, 300));
-    const spent = { last_week_reset_at: q.last_week_reset_at, week_resets_spent: q.week_resets_spent };
+    const spent = { reset_at: Math.floor(Date.now() / 1000), week_resets_spent: q.week_resets_spent };
     q = { ...(await readQuota()), ...spent };
     log(`after reset: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
     if (/^clicked/.test(result || '')) {
-      q.last_week_reset_at = Math.floor(Date.now() / 1000);
       q.week_resets_spent += 1;
       if (ALERT_FILE) fs.appendFileSync(ALERT_FILE, `[${new Date().toISOString()}] ZCODE-WEEK-RESET spent=${q.week_resets_spent} ${result}; weekly now ${q.week_pct}%\n`);
     }
