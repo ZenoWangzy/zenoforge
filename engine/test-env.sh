@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Pipeline tests must not inherit live AGENT_* or ZF_* settings.
 set -euo pipefail
-# Check before the AGENT_/ZF_ purge so a child cannot silently nest.
-if [[ "${ZF_AGENT_TEST_MODE:-}" == 1 || "${HOME:-}" == */zenoforge-agent-test-*/home ]]; then
-  echo 'test-env: refusing nested test environment' >&2
-  return 1 2>/dev/null || exit 1
-fi
+# Check before the AGENT_/ZF_ purge so a child cannot silently nest. HOME is the signal:
+# the eval grader sets ZF_AGENT_TEST_MODE itself before it runs a suite from a host HOME.
+case "${HOME:-}" in
+  */zenoforge-agent-test-*/home|*/zenoforge-agent-test-*/home/*)
+    echo 'test-env: refusing nested test environment' >&2
+    return 1 2>/dev/null || exit 1
+    ;;
+esac
 TEST_ENV_HOST_HOME="${HOME:-}"
 TEST_ENV_HOST_PATH="$PATH"
 export TEST_ENV_HOST_HOME TEST_ENV_HOST_PATH
 
 # Start an independent suite without carrying fixture executables or the test HOME.
 test_env_run_clean() {
-  env -u ZF_AGENT_TEST_MODE -u ZF_AGENT_TEST_ROOT HOME="$TEST_ENV_HOST_HOME" PATH="$TEST_ENV_HOST_PATH" "$@"
+  env -u ZF_AGENT_TEST_MODE -u ZF_AGENT_TEST_ROOT HOME="$TEST_ENV_HOST_HOME" PATH="$TEST_ENV_HOST_PATH" TEST_ENV_PARENT="$TEST_ENV_NESTED_PARENT" "$@"
 }
 
 # Resolve before shadowing PATH; reject the stub itself, including hard links.
@@ -43,7 +46,9 @@ unset PLAN_PACKAGE REPO_DIR HAND_PRIORITY_STATE
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 
 test_host_home="${HOME:-}"
-test_env_parent="$test_host_home/.cache/zenoforge-agent-test"
+# A clean child keeps its root inside the parent's root so the parent's cleanup removes it.
+test_env_parent="${TEST_ENV_PARENT:-$test_host_home/.cache/zenoforge-agent-test}"
+unset TEST_ENV_PARENT
 case "${TMPDIR:-}" in
   /tmp/zenoforge-agent-suite-*)
     if [[ "$TMPDIR" =~ ^/tmp/zenoforge-agent-suite-[^/]+$ && -d "$TMPDIR" && ! -L "$TMPDIR" && -O "$TMPDIR" ]]; then
@@ -69,6 +74,7 @@ test_env_chain_exit() {
 }
 trap "test_env_chain_exit $(printf %q "$test_env_root") $(printf %q "$test_env_prior_exit")" EXIT
 export TMPDIR="$test_env_root"
+export TEST_ENV_NESTED_PARENT="$test_env_root/children"
 export HOME="$test_env_root/home"
 export AGENT_HOME="$test_env_root/agent"
 export ZF_AGENT_TEST_MODE=1 ZF_AGENT_TEST_ROOT="$test_env_root"
