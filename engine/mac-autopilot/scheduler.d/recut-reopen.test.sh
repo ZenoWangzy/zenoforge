@@ -67,5 +67,14 @@ state_file 11 ready-for-agent 2026-01-03T01:10:00Z
 for _ in 1 2; do ! intake_reopen_refused_recut 11 "$AGENT_HOME/state/11.json" || fail "second stop-loss must not reopen"; done
 [[ "$(jq -r '.stage' <<<"$(unit_json issue-11)")" == closed ]] || fail "second stop-loss reopened the unit"
 [[ "$(grep -c 'issue-11 issue=#11: stop-loss budget already refilled once' "$LOG")" == 1 ]] || fail "expected exactly one log line"
+# A retired closed unit sits in units-archive.json: the reopen must still find it, restore it to the hot ledger, and not
+# leave a second issue-16 row behind.
+closed_unit 16 supervisor-budget-recut 2026-01-02T00:00:00Z | jq -s '{units:.}' > "$UNITS_ARCHIVE"
+state_file 16 ready-for-agent 2026-01-02T00:10:00Z
+[[ -z "$(unit_json issue-16)" ]] || fail "fixture: issue-16 must start archived only"
+intake_reopen_refused_recut 16 "$AGENT_HOME/state/16.json" || fail "archived closed unit must reopen"
+[[ "$(jq -r '.stage' <<<"$(unit_json issue-16)")" == implement-pending ]] || fail "archived unit not reopened"
+[[ "$(jq '[.units[] | select(.id == "issue-16")] | length' "$UNITS")" == 1 ]] || fail "reopen duplicated issue-16 in the ledger"
+echo "$(jq -c . "$UNITS_ARCHIVE")" | jq -e 'any(.units[]; .id == "issue-16")' >/dev/null || fail "archive row must stay (append-only)"
 grep -qF '(( existing_only )) || ! intake_reopen_refused_recut' "$engine_dir/mac-autopilot/scheduler.d/intake.sh" || fail "intake call site missing"
 echo "recut-reopen.test.sh ok"
