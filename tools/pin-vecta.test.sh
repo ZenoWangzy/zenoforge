@@ -34,7 +34,6 @@ printf '{"value":"old"}\n' > "$engine_repo/engine/hotfix.json"
 git -C "$engine_repo" add -A
 git -C "$engine_repo" commit -qm 'fixture: old engine'
 old_engine=$(git -C "$engine_repo" rev-parse HEAD)
-old_one=$(git -C "$engine_repo" rev-parse HEAD:engine/hotfix/one.sh)
 printf 'echo old one\necho shared line\n' > "$engine_repo/engine/hotfix/one.sh"
 printf 'echo engine-only line\n' > "$engine_repo/engine/hotfix/two.sh"
 printf '{"value":"new"}\n' > "$engine_repo/engine/hotfix.json"
@@ -94,7 +93,8 @@ if [[ "$script" == */scripts/branch-delivery-policy.mjs ]]; then
   printf 'classifier:%s %s\n' "$script" "$*" >> "$PIN_CALLS"
   [[ "$*" == '--classify-path-set -' ]] || exit 2
   paths=$(cat)
-  if jq -e 'type == "array" and length > 0 and all(.[]; startswith(".zenoforge/") or startswith("docs/"))' \
+  # Mirrors VectA's BRANCH_DELIVERY_POLICY_PR_PATHS: overrides.tsv is PR-only.
+  if jq -e 'type == "array" and length > 0 and all(.[]; (startswith(".zenoforge/") or startswith("docs/")) and . != ".zenoforge/build/overrides.tsv")' \
       <<<"$paths" >/dev/null; then
     printf 'eligible\n'
   else
@@ -324,6 +324,9 @@ grep -Fq 'gh:pr create --base main' "$pr_calls" || fail 'PR route did not create
 git --git-dir="$tmp/pr-origin.git" show-ref --verify --quiet "refs/heads/$pr_branch" \
   || fail 'successful PR route did not push the preflighted branch'
 grep -Fxq "gh-cwd:$pr_worktree" "$pr_calls" || fail 'PR route did not create the PR from the Vecta worktree'
+grep -Eq '^pin-vecta: result=pr-open route=PR landed=no ' "$tmp/pr.out" \
+  || fail 'PR route did not say the pin is not landed'
+! grep -q 'result=landed' "$tmp/pr.out" || fail 'PR route claimed landed'
 ok 'passing PR pin uses the topic publish preflight and creates a PR'
 
 # land-direct-main refuses a detached HEAD, so it must run in the pin worktree,
@@ -344,6 +347,8 @@ if ! ZF_LAND_DIRECT_MAIN="$tmp/fake-lander.sh" run_pin "$land_calls" "$land_scop
 fi
 land_worktree=$(sed -n 's/^pin-vecta: worktree=//p' "$tmp/land.out" | tail -1)
 grep -Fxq "lander-cwd:$land_worktree" "$land_calls" || fail 'land-direct-main did not run from the pin worktree'
+grep -Fq 'pin-vecta: result=landed route=land-direct-main landed=yes' "$tmp/land.out" \
+  || fail 'direct route did not report landed'
 ok 'direct pin lands from the pin worktree'
 
 # A pin plus a pack-only target diff follows the target classifier's direct-main
@@ -386,7 +391,8 @@ ok 'pack-only target diff selects direct-main, keeps [skip ci], and never create
 # An override guard failure still attempts check and preflight, then names every
 # stale override and says whether the mapped pack copy contains the changed line.
 override_target=$(setup_target override)
-printf 'hotfix/one.sh\t%s\n' "$old_one" > "$override_target/.zenoforge/build/overrides.tsv"
+# No rows: the pin's own merge step skips unlisted files, so the guard failure below reaches the diagnostics.
+: > "$override_target/.zenoforge/build/overrides.tsv"
 printf 'echo old one\necho shared line\n' > "$override_target/.zenoforge/build/pack/scripts/agent/hotfix/one.sh"
 printf 'echo pack-only line\n' > "$override_target/.zenoforge/build/pack/scripts/agent/hotfix/two.sh"
 git -C "$override_target" add -A
@@ -401,7 +407,7 @@ PIN_BUILD_FAIL=override run_pin "$override_calls" "$override_scopes" "$override_
 override_status=$?
 set -e
 ((override_status != 0)) || fail 'override guard failure was ignored'
-grep -Fq 'hotfix/one.sh expected=' "$tmp/override.out" || fail 'first override mismatch was not reported'
+grep -Fq 'hotfix/one.sh expected=missing' "$tmp/override.out" || fail 'first override mismatch was not reported'
 grep -Fq 'hotfix/two.sh expected=missing actual=' "$tmp/override.out" || fail 'missing override row was not reported'
 grep -Fq 'pack copy shares changed lines: yes (1/1 lines; .zenoforge/build/pack/scripts/agent/hotfix/one.sh)' "$tmp/override.out" \
   || fail 'pack copy sharing the changed line was not reported'
@@ -409,5 +415,80 @@ grep -Fq 'pack copy shares changed lines: no (0/2 lines; .zenoforge/build/pack/s
   || fail 'pack copy missing the changed line was not reported'
 grep -Fq 'fallback publish-preflight: attempted' "$tmp/override.out" || fail 'preflight was skipped after an override build failure'
 ok 'override diagnostics report each path and pack-line overlap'
+
+# Override three-way merge: engine B2 changes m.sh (top) and c.sh (line 3) and
+# deletes d.sh. Rows are made from the B1 blobs.
+mengine="$tmp/mengine"
+git init -q --initial-branch=main "$mengine"
+git -C "$mengine" config user.name 'pin-vecta test'
+git -C "$mengine" config user.email 'pin-vecta@example.invalid'
+mkdir -p "$mengine/engine/hotfix"
+seq_file() { printf 'echo %s\n' "$@"; }
+seq_file a b c d e f > "$mengine/engine/hotfix/m.sh"
+seq_file a b c d e f > "$mengine/engine/hotfix/c.sh"
+seq_file a b c > "$mengine/engine/hotfix/d.sh"
+git -C "$mengine" add -A && git -C "$mengine" commit -qm 'B1'
+blob_m=$(git -C "$mengine" rev-parse HEAD:engine/hotfix/m.sh)
+blob_c=$(git -C "$mengine" rev-parse HEAD:engine/hotfix/c.sh)
+blob_d=$(git -C "$mengine" rev-parse HEAD:engine/hotfix/d.sh)
+seq_file TOP a b c d e f > "$mengine/engine/hotfix/m.sh"
+seq_file a b ENGINE d e f > "$mengine/engine/hotfix/c.sh"
+git -C "$mengine" rm -q engine/hotfix/d.sh
+git -C "$mengine" commit -qam 'B2'
+mnew=$(git -C "$mengine" rev-parse HEAD)
+mnew_m=$(git -C "$mengine" rev-parse HEAD:engine/hotfix/m.sh)
+
+merge_target() { # <name> <rows> : pack copies local-edit the bottom (m) / line 3 (c), d untouched
+  local t
+  t=$(setup_target "$1")
+  printf '%b' "$2" > "$t/.zenoforge/build/overrides.tsv"
+  seq_file a b c d e f LOCAL > "$t/.zenoforge/build/pack/scripts/agent/hotfix/m.sh"
+  seq_file a b PACK d e f > "$t/.zenoforge/build/pack/scripts/agent/hotfix/c.sh"
+  seq_file a b c > "$t/.zenoforge/build/pack/scripts/agent/hotfix/d.sh"
+  git -C "$t" add -A && git -C "$t" commit -qm 'fixture: overrides'
+  git -C "$t" push -q origin main
+  printf '%s\n' "$t"
+}
+run_merge_pin() { # <name> <target> [args]
+  local name="$1" t="$2"; shift 2
+  : > "$tmp/$name.calls"; : > "$tmp/$name.scopes"
+  PIN_CALLS="$tmp/$name.calls" PIN_SCOPE_CALLS="$tmp/$name.scopes" \
+    AGENT_HOME="$(setup_agent "$name")" ZF_ENGINE_SYNC="$tmp/bin/engine-sync" ZF_LOCAL_CLONE="$mengine" \
+    bash "$pin_script" "$mnew" "$t" "$@"
+}
+
+# clean: pack copy, row and build.json land in one commit; the unchanged row stays; route is PR.
+mc_target=$(merge_target mclean "hotfix/m.sh\t$blob_m\n")
+if ! run_merge_pin mclean "$mc_target" --land > "$tmp/mclean.out" 2>&1; then
+  cat "$tmp/mclean.out" >&2; fail 'clean override merge failed the pin'
+fi
+mc_wt=$(sed -n 's/^pin-vecta: worktree=//p' "$tmp/mclean.out" | tail -1)
+grep -Fq "pin-vecta: merged override hotfix/m.sh base=${blob_m:0:12} -> engine=${mnew_m:0:12}" "$tmp/mclean.out" \
+  || fail 'clean merge log line missing'
+[[ "$(seq_file TOP a b c d e f LOCAL)" == "$(cat "$mc_wt/.zenoforge/build/pack/scripts/agent/hotfix/m.sh")" ]] \
+  || fail 'merged pack copy lost the local or the engine edit'
+[[ "$(cat "$mc_wt/.zenoforge/build/overrides.tsv")" == "$(printf 'hotfix/m.sh\t%s' "$mnew_m")" ]] || fail 'row not updated to the new blob'
+[[ "$(git -C "$mc_wt" diff --name-only HEAD~1 HEAD | sort)" == "$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv .zenoforge/build/pack/scripts/agent/hotfix/m.sh)" ]] \
+  || fail 'pin, row and pack copy are not one commit'
+grep -Fq 'pin-vecta: result=pr-open route=PR landed=no' "$tmp/mclean.out" || fail 'overrides.tsv change did not report the PR route as not landed'
+ok 'clean override merge lands pack copy and row in the pin commit'
+
+# conflict: refuse, name the file, create no worktree or branch.
+mx_target=$(merge_target mconflict "hotfix/c.sh\t$blob_c\n")
+set +e; run_merge_pin mconflict "$mx_target" --land > "$tmp/mconflict.out" 2>&1; mx_status=$?; set -e
+((mx_status != 0)) || fail 'conflicting override merge was allowed'
+grep -Fq 'override hotfix/c.sh: three-way merge conflicts' "$tmp/mconflict.out" || fail 'conflict did not name the file'
+[[ -z "$(ls -A "$mx_target/.worktrees" 2>/dev/null)" ]] || fail 'conflict left a worktree behind'
+[[ -z "$(git -C "$mx_target" branch --list 'chore/pin-vecta-*')" ]] || fail 'conflict left a branch behind'
+! grep -q '^dispatcher:' "$tmp/mconflict.calls" || fail 'conflict still ran the build'
+ok 'conflicting override merge stops the pin and writes nothing'
+
+# engine deleted file: refuse, name the file.
+md_target=$(merge_target mdeleted "hotfix/d.sh\t$blob_d\n")
+set +e; run_merge_pin mdeleted "$md_target" --land > "$tmp/mdeleted.out" 2>&1; md_status=$?; set -e
+((md_status != 0)) || fail 'override of an engine-deleted file was allowed'
+grep -Fq 'override hotfix/d.sh: the engine' "$tmp/mdeleted.out" || fail 'deleted file was not named'
+[[ -z "$(ls -A "$md_target/.worktrees" 2>/dev/null)" ]] || fail 'deleted-file refusal left a worktree behind'
+ok 'engine-deleted override file stops the pin'
 
 echo 'pin-vecta.test.sh: PASS'
