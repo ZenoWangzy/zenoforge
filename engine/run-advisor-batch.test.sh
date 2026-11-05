@@ -126,6 +126,10 @@ ADVISOR_BATCH_QUARANTINE_DIR="$tmp/quarantine/advisor-batch"
 ADVISOR_BATCH_QUARANTINE_TTL_SECONDS=900
 supervisor_inbox_append() { :; }
 
+for code in ADVISOR_SESSION_SIGNED_OUT ADVISOR_SESSION_UNREADABLE ADVISOR_WRONG_ACCOUNT; do
+  advisor_batch_is_browser_fault "$code: synthetic"
+  ! advisor_batch_should_quarantine_prompt "$code: synthetic"
+done
 model_unverified_detail='ADVISOR_MODEL_UNVERIFIED: could not verify the selected model at selector stage open-picker'
 advisor_batch_is_browser_fault "$model_unverified_detail"
 ! advisor_batch_should_quarantine_prompt "$model_unverified_detail"

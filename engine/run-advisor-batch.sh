@@ -57,7 +57,7 @@ advisor_batch_capture_provider_diagnostics() {
     [[ -n "$fallback_signature" ]] || fallback_signature="$(web_advisor_provider_model_fallback_signature_from_log "$answer_err")"
   fi
   case "$fallback_signature" in picker-not-found) ;; *) fallback_signature="" ;; esac
-  for code in ADVISOR_MODEL_UNVERIFIED ADVISOR_ANSWER_TIMEOUT ADVISOR_SEND_NOT_CONFIRMED; do
+  for code in ADVISOR_MODEL_UNVERIFIED ADVISOR_ANSWER_TIMEOUT ADVISOR_SEND_NOT_CONFIRMED ADVISOR_SESSION_SIGNED_OUT ADVISOR_SESSION_UNREADABLE ADVISOR_WRONG_ACCOUNT; do
     if jq -e --arg code "$code" '(.advisor_error_codes // []) | index($code) != null' \
       <<<"$response" >/dev/null 2>&1 \
       || { jq -e '.is_error == true' <<<"$response" >/dev/null 2>&1 && [[ "$response" == *"$code"* ]]; } \
@@ -129,7 +129,7 @@ ADVISOR_BATCH_QUARANTINE_DIR="$AGENT_HOME/quarantine/advisor-batch"
 ADVISOR_BATCH_QUARANTINE_TTL_SECONDS=900
 
 advisor_batch_is_wedge_failure() {
-  [[ "$1" =~ (ADVISOR_RESPONSE_NOT_STARTED|ADVISOR_ANSWER_TIMEOUT|ADVISOR_ANSWER_LOAD_FAILED|ADVISOR_CONVERSATION_BUSY|ADVISOR_TAB_(UNRESPONSIVE|RELOAD_FAILED)|CDP[[:space:]]Runtime\.evaluate[[:space:]]timed[[:space:]]out|未从当前会话的.composer.找到模型/推理.picker|Terminated|SIGTERM) ]]
+  [[ "$1" =~ (ADVISOR_RESPONSE_NOT_STARTED|ADVISOR_SESSION_UNREADABLE|ADVISOR_ANSWER_TIMEOUT|ADVISOR_ANSWER_LOAD_FAILED|ADVISOR_CONVERSATION_BUSY|ADVISOR_TAB_(UNRESPONSIVE|RELOAD_FAILED)|CDP[[:space:]]Runtime\.evaluate[[:space:]]timed[[:space:]]out|未从当前会话的.composer.找到模型/推理.picker|Terminated|SIGTERM) ]]
 }
 
 # 2026-11-04: ADVISOR_MODEL_UNVERIFIED (observed at selector stage
@@ -140,8 +140,10 @@ advisor_batch_is_wedge_failure() {
 # and canary-lifts it once the browser recovers. Quarantining the prompt
 # too made each post-recovery canary tick report prompt-quarantined and
 # send nothing.
+# The session codes say the same: a signed-out or wrong-account tab, or a
+# session the page cannot read, is not the batch prompt's fault.
 advisor_batch_is_browser_fault() {
-  [[ "$1" == *ADVISOR_MODEL_UNVERIFIED* ]]
+  [[ "$1" =~ (ADVISOR_MODEL_UNVERIFIED|ADVISOR_SESSION_SIGNED_OUT|ADVISOR_SESSION_UNREADABLE|ADVISOR_WRONG_ACCOUNT) ]]
 }
 
 # Quarantine gate for a failed job's detail: keep real payload failures

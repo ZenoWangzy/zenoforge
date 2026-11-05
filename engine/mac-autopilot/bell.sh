@@ -331,7 +331,7 @@ PY
     [[ "$job_id" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || job_id=""
     answer_err=""
     [[ -z "$job_id" ]] || answer_err="$advisor_job_dir/$job_id/answer.err"
-    for code in ADVISOR_MODEL_UNVERIFIED ADVISOR_ANSWER_TIMEOUT ADVISOR_SEND_NOT_CONFIRMED; do
+    for code in ADVISOR_MODEL_UNVERIFIED ADVISOR_ANSWER_TIMEOUT ADVISOR_SEND_NOT_CONFIRMED ADVISOR_SESSION_SIGNED_OUT ADVISOR_SESSION_UNREADABLE ADVISOR_WRONG_ACCOUNT; do
       if jq -e --arg code "$code" '(.advisor_error_codes // []) | index($code) != null' \
         <<<"$result" >/dev/null 2>&1 || { [[ -n "$answer_err" && -r "$answer_err" ]] \
           && grep -Fq -- "$code" "$answer_err"; }; then
