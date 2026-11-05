@@ -45,7 +45,7 @@ grep -Fq 'resume "$session_id" -m "$model"' "$worker_command"
 grep -Fq 'focus_mode' "$scheduler"
 grep -Fq 'session id: ' "$worker_harvest"
 grep -Fq 'mode=$CODEX_MODE' "$dispatch_lane"
-if grep -Fq 'spent()' "${scheduler_sources[@]}"; then
+if grep -Eq '^[[:space:]]*spent\(\)' "${scheduler_sources[@]}"; then
   echo 'not ok - scheduler.test.sh: the old worker-log spend heuristic must stay removed' >&2
   exit 1
 fi

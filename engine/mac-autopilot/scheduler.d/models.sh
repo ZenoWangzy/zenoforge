@@ -124,7 +124,7 @@ pick_configured_model() { # role [unit-json] → PICK_MODEL/PICK_EFFORT；主模
       continue
     fi
     cooling "$(provider_of "$m")" && continue
-    [[ "$(provider_of "$m")" != codex ]] || ! codex_quota_spent || continue
+    [[ "$(provider_of "$m")" != codex ]] || ! codex_week_stopped || continue
     PICK_MODEL="$m"; PICK_EFFORT="$(model_tuple_field "$key" 1)"
     PICK_PROVIDER="$(provider_of "$m")"; PICK_HARD=false; PICK_REASON="configured-$key"
     PICK_SERVICE_TIER="$(model_tuple_field "$key" 2)"
@@ -205,7 +205,7 @@ pick_claude_implementer() { # hand-claude policy identity -> PICK_* unless the C
 
 # Weekly Codex quota runs out days before it resets: stop new Codex work at CODEX_WEEK_STOP_PCT so reviews and repairs move to
 # Claude and ZCode while the rest stays for what only Codex can do. The snapshot's week_reset ends the stop.
-codex_quota_spent() {
+codex_week_stopped() {
   provider_quota_exhausted codex && return 0
   command jq -e --argjson stop "${CODEX_WEEK_STOP_PCT:-95}" --argjson now "${NOW_EPOCH:-$(date +%s)}" \
     '(.week_pct // 0) >= $stop and (.week_reset // 0) > $now' "${CODEX_QUOTA_SNAPSHOT_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/codex-quota.json}" >/dev/null 2>&1
@@ -216,7 +216,7 @@ pick_codex_work_identity() { # work policy role, with legacy models.implement as
   if jqf -e 'any(.labels[]?; . == "hotfix")' <<<"$1" >/dev/null 2>&1; then
     if pick_configured_model implement "$1" && [[ "$PICK_PROVIDER" == codex ]]; then
       command -v codex >/dev/null 2>&1 || return 1
-      codex_quota_spent && return 1
+      codex_week_stopped && return 1
       cooling codex && return 1
       return 0
     fi
@@ -232,7 +232,7 @@ pick_codex_work_identity() { # work policy role, with legacy models.implement as
     [[ "$PICK_PROVIDER" == codex ]] || return 1
   fi
   command -v codex >/dev/null 2>&1 || return 1
-  codex_quota_spent && return 1
+  codex_week_stopped && return 1
   cooling codex && return 1
   return 0
 }
@@ -276,7 +276,7 @@ provider_runtime_ready() { # provider model -> runnable, policy-authorized and n
   [[ "$role" == production ]] || model_policy_model_allowed_for_role "$model" "$role" || return 1
   cooling "$provider" && return 1
   case "$provider" in
-    codex) codex_quota_spent && return 1; command -v codex >/dev/null 2>&1 ;;
+    codex) codex_week_stopped && return 1; command -v codex >/dev/null 2>&1 ;;
     zcode)
       [[ "$(zcode_quota_status)" == available ]] || return 1
       command -v zcode >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"
