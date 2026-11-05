@@ -16,9 +16,13 @@ capture_worker_stdout_report() { # report-path command...
   fi
 }
 
-dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason]
-  local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census
+dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason] [worker-context-json]
+  local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census
   local -a launcher=() worker_env=()
+  if [[ -n "$worker_context" ]]; then
+    report_only="$(jqf -r '.incident_report_resume // false' <<<"$worker_context")"
+    expected_session_id="$(jqf -r '.incident_report_resume_session_id // empty' <<<"$worker_context")"
+  fi
   (( SECONDS < LIVE_WORKER_CACHE_UNTIL )) && cache_fresh=true
   if [[ "$(unit_field "$unit" '.lane // empty')" == direct-main ]]; then
     worker_env=(env ZF_NON_PRODUCT_UNIT=1 "ZF_PIPELINE_UNIT=$unit" \
@@ -26,7 +30,7 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   fi
   # setsid：worker 自成进程组，超时可整组终止（含 codex 子进程）。
   command -v setsid >/dev/null 2>&1 && launcher=(setsid)
-  build_codex_command "$type" "$model" "$effort" "$unit" "$prompt" "${11-$prompt}" "$workdir" "$provider" || return 1
+  build_codex_command "$type" "$model" "$effort" "$unit" "$prompt" "${11-$prompt}" "$workdir" "$provider" "$report_only" "$expected_session_id" || return 1
   issue="$(unit_field "$unit" '.issue // empty')"
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
     claim_key="$(coord_issue_key "$issue")"
@@ -66,6 +70,13 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
     (cd "$workdir" && export -f capture_worker_stdout_report && GIT_PAGER=cat PAGER=cat \
       exec ${launcher[@]+"${launcher[@]}"} bash -c 'capture_worker_stdout_report "$@"' _ "$SUP/$report" \
       env ${worker_env[@]+"${worker_env[@]}"} "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
+  elif [[ "$type" == repair && "$CODEX_MODE" == resume && "$report_only" == true ]]; then
+    # Do one strict, read-only continuation of the same session. A startup
+    # failure stays a failed report completion; it never falls back to a fresh
+    # code-writing repair.
+    (cd "$workdir" && jq -cn --arg model "$model" \
+      '{type:"pipeline.execution",mode:"resume",reason:"incident-report-only",model:$model}' \
+      && exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
   elif [[ "$type" == repair && "$CODEX_MODE" == resume ]]; then
     (cd "$workdir" && exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} bash "$CODEX_REPAIR_RUNNER" "$SUP/$log" "$CODEX_SESSION_ID" \
       "${#CODEX_FRESH_COMMAND[@]}" "${CODEX_FRESH_COMMAND[@]}" "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
@@ -89,6 +100,7 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   fi
   local w; w="$(jqf -cn --argjson pid "${pid:-0}" --argjson pid_start "$pid_started" --arg unit "$unit" --arg type "$type" --arg log "$log" --arg report "$report" --arg at "$STAMP" --arg mode "$CODEX_MODE" --arg session_id "$CODEX_SESSION_ID" --arg sha "$sha" --arg pr_head "$pr_head" --arg workdir "$workdir" --arg model "$model" --arg provider "$provider" --arg effort "$effort" --arg route_reason "$route_reason" --argjson hard_escalation "$hard_escalation" --arg issue "$issue" --arg claim_key "$claim_key" --arg claim_owner "$claim_owner" --argjson usage_start "$CODEX_USAGE_START" \
     '{pid:$pid,pid_start:$pid_start,unit:$unit,type:$type,log:$log,report:$report,started:$at,mode:$mode,session_id:$session_id,sha:$sha,pr_head:$pr_head,workdir:$workdir,provider:$provider,model:$model,effort:$effort,hard_escalation:$hard_escalation,route_reason:$route_reason,token_usage_start:$usage_start,issue:$issue,claim_key:$claim_key,claim_owner:$claim_owner}')"
+  [[ -z "$worker_context" ]] || w="$(jqf --argjson context "$worker_context" '. + $context' <<<"$w")"
   if [[ "${WORKER_STDOUT_REPORT:-0}" == 1 && ${#launcher[@]} -gt 0 ]]; then
     w="$(jqf --argjson pgid "$pid" '. + {process_group:$pgid}' <<<"$w")"
   fi

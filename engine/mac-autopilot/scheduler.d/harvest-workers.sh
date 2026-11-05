@@ -1,7 +1,59 @@
 
 # ---------- 1. 回收（按 worker.type 分类推进） ----------
+incident_report_resume_prompt() { # gate reason source report destination report → read-only replacement-report prompt
+  local reason="$1" source_report="$2" destination_report="$3" body
+  body="$(cat -- "$source_report")" || return 1
+  printf 'Continue the same implementer session only to complete its incident report.\n'
+  printf 'The implementation report failed this structural check: %s\n' "$reason"
+  printf 'Return a complete replacement report for %s. Preserve all existing content and change only the report parts needed to satisfy that check.\n' "$destination_report"
+  printf 'Do not edit source, tests, configuration, Git state, or any other file. Do not run tests, commit, push, or call GitHub write operations. The scheduler saves your final answer as the replacement report.\n\n'
+  printf '%s\n' 'Existing report:' "$body"
+}
+
+dispatch_incident_report_resume() { # worker-json source-report gate-reason → start one report-only continuation when its existing Codex session is resumable
+  local w="$1" source_report="$2" reason="$3" unit provider model effort workdir session_id sha pr_head safe_id output_report output_log prompt context unit_json pending_stage hard route_provider
+  unit="$(jqf -r '.unit // empty' <<<"$w")"
+  provider="$(jqf -r '.provider // empty' <<<"$w")"; model="$(jqf -r '.model // empty' <<<"$w")"
+  effort="$(jqf -r '.effort // empty' <<<"$w")"; workdir="$(jqf -r '.workdir // empty' <<<"$w")"
+  session_id="$(jqf -r '.session_id // empty' <<<"$w")"
+  sha="$(jqf -r '.sha // empty' <<<"$w")"; pr_head="$(jqf -r '.pr_head // empty' <<<"$w")"
+  hard="$(jqf -r '.hard_escalation // false' <<<"$w")"; route_provider="$(jqf -r '.provider // empty' <<<"$w")"
+  [[ -n "$provider" ]] || provider="$(provider_of "$model")"
+  [[ -n "$route_provider" ]] || route_provider="$provider"
+  [[ "$provider" == codex && "$session_id" =~ $SESSION_RE && -n "$model" && -n "$workdir" ]] || return 1
+  [[ "$(unit_field "$unit" '.sessions.repair.id // empty')" == "$session_id" ]] || return 1
+  pending_stage="$(unit_field "$unit" .stage)"
+  [[ "$pending_stage" == review-pending || "$pending_stage" == rereview-pending ]] || return 1
+  unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  safe_id="$(tr -c 'A-Za-z0-9._-' '-' <<<"$unit" | sed 's/-$//')"
+  output_report="incident-report-${safe_id}-${TAG}.md"
+  output_log="incident-report-${safe_id}-${TAG}.worker.log"
+  prompt="$(incident_report_resume_prompt "$reason" "$SUP/$source_report" "$output_report")" || return 1
+  context="$(jqf -cn --arg source_type "$(jqf -r '.type' <<<"$w")" --arg source_report "$source_report" \
+    --arg pending_stage "$pending_stage" --arg session_id "$session_id" \
+    '{incident_report_resume:true,incident_report_resume_source_type:$source_type,incident_report_resume_source_report:$source_report,incident_report_resume_pending_stage:$pending_stage,incident_report_resume_session_id:$session_id}')"
+  dispatch_if_room "$unit" repair repair "$output_log" "$output_report" "$model" "$effort" "$prompt" "$sha" "$workdir" "$pr_head" "$prompt" "$unit_json" false "$provider" "$hard" incident-report-resume "$route_provider" "$context" || return 1
+  say "incident report resume dispatched unit=$unit source=$source_report output=$output_report"
+}
+
+incident_report_pre_review() { # implement/repair worker-json report-name report-path → start one report-only continuation when needed
+  local w="$1" report_name="$2" report_path="$3" unit wtype incident_unit_json reason
+  wtype="$(jqf -r '.type // empty' <<<"$w")"
+  [[ "$wtype" == implement || "$wtype" == repair ]] || return 0
+  [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" != true ]] || return 0
+  unit="$(jqf -r '.unit // empty' <<<"$w")"
+  incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  reason="$(incident_report_gate_reason "$incident_unit_json" "$report_path")"
+  [[ -n "$reason" ]] || return 0
+  if dispatch_incident_report_resume "$w" "$report_name" "$reason"; then
+    return 0
+  else
+    say "incident report resume unavailable unit=$unit; review will use the existing report"
+  fi
+}
+
 harvest_workers() { # [local-only]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement workers
-  local pr_harvested=0 local_only="${1:-false}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream decision incident_unit_json incident_gate_reason original_report gate_id
+  local pr_harvested=0 local_only="${1:-false}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"
@@ -127,7 +179,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
     if [[ "$dispatch_usage_count" =~ ^[0-9]+$ ]]; then
       set_unit "$unit" ".tokens = ((.tokens // 0) + $dispatch_usage_count)"
     fi
-    if [[ "$wtype" == implement || "$wtype" == repair ]]; then
+    if [[ ( "$wtype" == implement || "$wtype" == repair ) && "$(jqf -r '.incident_report_resume // false' <<<"$w")" != true ]]; then
       local actual paths_dir
       paths_dir="$(jqf -r '.workdir // empty' <<<"$w")"
       if [[ "$(jqf -r '.lease_expired // false' <<<"$w")" == true ]]; then
@@ -139,6 +191,32 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
           say "unit $unit footprint refresh failed; keeping existing footprint"
         fi
       fi
+    fi
+    if [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" == true ]]; then
+      report_resume_source="$(jqf -r '.incident_report_resume_source_report // empty' <<<"$w")"
+      report_resume_stage="$(jqf -r '.incident_report_resume_pending_stage // empty' <<<"$w")"
+      [[ "$report_resume_stage" == review-pending || "$report_resume_stage" == rereview-pending ]] || {
+        case "$(jqf -r '.incident_report_resume_source_type // empty' <<<"$w")" in
+          implement) report_resume_stage=review-pending ;;
+          repair) report_resume_stage=rereview-pending ;;
+        esac
+      }
+      incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+      incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json" "$rep")"
+      if [[ -z "$incident_gate_reason" && -s "$rep" ]]; then
+        set_unit "$unit" ".implementation_report=$(js "$report") | .stage=$(js "$report_resume_stage")"
+        say "incident report resume passed unit=$unit report=$report; sending to review"
+      else
+        [[ -n "$incident_gate_reason" ]] || incident_gate_reason='resumed session did not produce a report'
+        [[ -n "$report_resume_source" ]] && set_unit "$unit" ".implementation_report=$(js "$report_resume_source")"
+        set_unit "$unit" ".stage=$(js "$report_resume_stage")"
+        say "incident report resume failed unit=$unit reason=$incident_gate_reason; sending to review with the existing report"
+      fi
+      jqf --argjson accounting "$accounting" --arg finished "$STAMP" \
+        --argjson pid "$pid" --arg unit "$unit" \
+        '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (. += $accounting | .harvested=true | .finished_at=$finished) else . end))' \
+        "$WORKERS" | write_state "$WORKERS"
+      continue
     fi
     if [[ -s "$rep" ]]; then
       v="$(verdict_of "$rep")"
@@ -333,7 +411,28 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
             echo "[$STAMP] IMPL-DELIVERED unit=$unit report=$(basename "$rep")" >> "$A/alerts/events.md"
           fi ;;
       esac
+      if [[ "$wtype" == implement || "$wtype" == repair ]]; then
+        incident_report_pre_review "$w" "$report" "$rep"
+      fi
     else
+      if [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" == true ]]; then
+        report_resume_source="$(jqf -r '.incident_report_resume_source_report // empty' <<<"$w")"
+        report_resume_stage="$(jqf -r '.incident_report_resume_pending_stage // empty' <<<"$w")"
+        [[ "$report_resume_stage" == review-pending || "$report_resume_stage" == rereview-pending ]] || {
+          case "$(jqf -r '.incident_report_resume_source_type // empty' <<<"$w")" in
+            implement) report_resume_stage=review-pending ;;
+            repair) report_resume_stage=rereview-pending ;;
+          esac
+        }
+        [[ -n "$report_resume_source" ]] && set_unit "$unit" ".implementation_report=$(js "$report_resume_source")"
+        set_unit "$unit" ".stage=$(js "$report_resume_stage")"
+        say "incident report resume produced no report unit=$unit; sending to review with the existing report"
+        jqf --argjson accounting "$accounting" --arg finished "$STAMP" \
+          --argjson pid "$pid" --arg unit "$unit" \
+          '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (. += $accounting | .harvested=true | .finished_at=$finished) else . end))' \
+          "$WORKERS" | write_state "$WORKERS"
+        continue
+      fi
       limit_hit="$( { tail -n 40 "$lg"; cat "$rep.partial"; } 2>/dev/null | grep -m1 -oiE "$PROVIDER_LIMIT_RE" || true)"
       rm -f -- "$rep.partial"
       if [[ -n "$limit_hit" ]]; then

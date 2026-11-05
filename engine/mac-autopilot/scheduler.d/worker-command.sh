@@ -32,16 +32,21 @@ worker_rules() { # unit-json type provider
 }
 
 # models.<role> = [model, effort, service_tier?]；provider selects codex, claude, or zcode CLI.
-build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider]
-  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" session_id="" usage prompt_arg role tier self_fix prior config_arg
+build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider] [report-only-resume] [expected-session-id]
+  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" usage prompt_arg role tier self_fix prior config_arg
   local -a tier_args=() codex_config_args=()
   CODEX_MODE=fresh
   CODEX_SESSION_ID=""
   CODEX_PATH_REASON=initial
   WORKER_STDOUT_REPORT=0
   CODEX_USAGE_START='{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}'
+  if [[ "$report_only" == true ]]; then
+    [[ "$type" == repair && "$provider" == codex && -n "$expected_session_id" ]] || return 1
+    sandbox_mode=read-only
+  fi
   prompt+="$(worker_rules "$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")" "$type" "$(provider_of "$model")")"
   prompt_arg="$prompt"
+  [[ "$report_only" != true ]] || failure="$prompt_arg"
   self_fix="$(unit_field "$unit" '.self_fix_active // false')"
   if [[ "$provider" == zcode ]]; then
     [[ "$type" == implement || "$type" == repair || "$type" == review || "$type" == rereview ]] || return 1
@@ -72,7 +77,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   [[ "$type" != implement ]] || codex_config_args+=(-c tool_output_token_limit=8000)
   # Persistent implementer sessions: never add --ephemeral here.
   CODEX_FRESH_COMMAND=(codex exec -m "$model" -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
-    ${codex_config_args[@]+"${codex_config_args[@]}"} -s danger-full-access --json "$prompt_arg")
+    ${codex_config_args[@]+"${codex_config_args[@]}"} -s "$sandbox_mode" --json "$prompt_arg")
   if [[ "$type" == repair ]]; then
     prior="$(unit_field "$unit" '.sessions.repair // {}')"
     session_id="$(jqf -r '.id // empty' <<<"$prior")"
@@ -94,13 +99,17 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
         CODEX_PATH_REASON=same-provider-model
         CODEX_SESSION_ID="$session_id"
         CODEX_USAGE_START="$(session_usage_for_id "$session_id")"
-        CODEX_COMMAND=(codex exec -s danger-full-access resume "$session_id" -m "$model" \
+        if [[ "$report_only" == true && "$session_id" != "$expected_session_id" ]]; then return 1; fi
+        CODEX_COMMAND=(codex exec -s "$sandbox_mode" resume "$session_id" -m "$model" \
           -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
           ${codex_config_args[@]+"${codex_config_args[@]}"} --json "$failure")
         return 0
       fi
     fi
   fi
+  # A report-only continuation must not silently become a fresh repair run when
+  # its existing Codex session is missing, too large, or otherwise unusable.
+  [[ "$report_only" != true ]] || return 1
   if [[ "$type" == "rereview" ]]; then
     role="$(session_role "$type")"
     session_id="$(jqf -r --arg id "$unit" --arg role "$role" '[.units[] | select(.id==$id) | .session_ids[$role] // empty][0] // empty' "$UNITS")"

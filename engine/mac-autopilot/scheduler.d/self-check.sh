@@ -311,14 +311,19 @@ footprint_recurrence_brief() { # unit JSON → up to 3 ranked CATALOG rules, bou
   return 0
 }
 
-dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider]
+dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider] [worker-context-json]
   local unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter \
-    check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider
+    check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
+    worker_context="${19:-}" report_only=false failure_prompt="${12-$8}"
   provider="${15:-$(provider_of "$6")}"; route_provider="${18:-$provider}"
   [[ -n "$unit_json" ]] || unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  if [[ -n "$worker_context" ]]; then
+    report_only="$(jqf -r '.incident_report_resume // false' <<<"$worker_context")"
+  fi
   prompt="$(incident_worker_prompt "$3" "$unit_json" "$prompt")"
+  [[ "$report_only" != true ]] || failure_prompt="$prompt"
   room_for "$1" "$3" "$unit_json" true "$check_footprint" || return 1
-  if [[ "$3" == implement || "$3" == repair ]]; then
+  if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     size_admission_write_start "$1" "${10:-}" "$unit_json" || return 1
   fi
   if [[ "$3" == implement ]]; then
@@ -333,10 +338,10 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
 流水线确定性自检（当前 head $9）：${check_status}。完整输出 $check_output
 $(tail -80 "$check_output" 2>/dev/null)"
   fi
-  dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "${12-$prompt}" "$provider" "$hard_escalation" "$route_reason" || return 1
-  if [[ "$3" == implement || "$3" == repair ]]; then set_unit "$1" ".implementation_report=$(js "$5")"; fi
+  dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || return 1
+  if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then set_unit "$1" ".implementation_report=$(js "$5")"; fi
   if [[ "$3" == review || "$3" == rereview ]]; then set_unit "$1" '.self_check_fixes=0'; fi
-  if [[ "$3" == implement || "$3" == repair ]]; then
+  if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     if [[ -n "${TICK_FOOTPRINT_CACHE[$1]+cached}" ]]; then
       footprint="${TICK_FOOTPRINT_CACHE[$1]}"
     else
@@ -359,11 +364,11 @@ $(tail -80 "$check_output" 2>/dev/null)"
     fi
   fi
   local extra=""
-  [[ "${9:-}" =~ $SHA_RE ]] && extra=" | .review_sha=\"$9\""
-  if [[ ( "$3" == implement || "$3" == repair ) && -n "$(jqf -r '.handoff_start_ref // empty' <<<"$unit_json")" ]]; then
+  [[ "$report_only" != true && "${9:-}" =~ $SHA_RE ]] && extra=" | .review_sha=\"$9\""
+  if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) && -n "$(jqf -r '.handoff_start_ref // empty' <<<"$unit_json")" ]]; then
     extra+=' | .handoff_start_applied=true'
   fi
-  if [[ "$3" == implement || "$3" == repair ]] && [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$unit_json")" ]]; then
+  if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]] && [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$unit_json")" ]]; then
     extra+=' | .handoff_worktree_applied=true'
   fi
   set_unit "$1" ".stage=\"$2\"$extra"
