@@ -37,8 +37,8 @@ gh() {
       printf 'view:%s\n' "$*" >> "$fixture/gh-calls"
       if [[ "$*" == *body,files* ]]; then
         [[ "$PR_BODY" != gh-error ]] || return 1
-        jq -cn --arg body "$PR_BODY" --argjson files "$PR_FILES" \
-          '{body:$body,files:($files | map({path:.}))}'
+        jq -cn --arg body "$PR_BODY" --argjson files "$PR_FILES" --arg at "${PR_HEAD_DATE:-}" \
+          '{body:$body,files:($files | map({path:.})),commits:(if $at == "" then [] else [{committedDate:$at}] end)}'
       else
         printf '{"headRefOid":"%s"}\n' "$PR_HEAD"
       fi
@@ -85,7 +85,7 @@ assert_refuses "PR head $PR_HEAD does not match tested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files\nmerge:pr merge 17 --squash --delete-branch' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"unit","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -96,7 +96,7 @@ fi
 check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'failed checks: cla, unit'* && "$check_output" == *'checks without a matching ZF_MERGE_OVERRIDE: unit'* ]] \
   || fail "failed check names or unmatched override were not reported: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits' ]] \
   || fail "an unmatched failed check reached merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -105,7 +105,7 @@ check_output="$(ZF_MERGE_OVERRIDE=cla merge_pr_checks_and_merge 17 2>&1)" \
   || fail "named failed-check override did not allow the merge: $check_output"
 [[ "$check_output" == *'explicit ZF_MERGE_OVERRIDE allows failed checks: cla'* ]] \
   || fail "merge did not print the failed check covered by its override: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files\nmerge:pr merge 17 --squash --delete-branch' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch' ]] \
   || fail "pending check or named override did not reach squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS=gh-error
@@ -136,6 +136,8 @@ expect_prior_art_merge() {
   merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1 || fail "$label refused: $(cat "$fixture/check-output")"
   [[ "$(cat "$fixture/gh-calls")" == *merge:* ]] || fail "$label did not merge"
 }
+
+PR_HEAD_DATE=2020-01-01T00:00:00Z expect_prior_art_refusal 'stale PR head' 'over 24 hours old'
 
 PR_BODY=$'## summary\nfoo https://example.com/not-in-section\n'
 expect_prior_art_refusal 'missing section' 'has no "## prior-art" section'

@@ -56,10 +56,16 @@ merge_pr_result_is_green() {
 # researched prior art. PRs that touch only test files are exempt.
 merge_pr_prior_art_ok() {
   local pr="$1" view body section
-  if ! view="$(gh pr view "$pr" --json body,files 2>/dev/null)" || ! jq -e '
+  if ! view="$(gh pr view "$pr" --json body,files,commits 2>/dev/null)" || ! jq -e '
       (.body | type == "string") and (.files | type == "array"
         and all(.[]; (.path | type) == "string"))' <<<"$view" >/dev/null 2>&1; then
     merge_pr_refuse "$pr" 'could not read the PR body and file list as JSON'
+    return 1
+  fi
+  # A reused branch name can turn a new PR into someone's old commits (#413).
+  if jq -e '(.commits[-1].committedDate // null) as $at
+      | $at != null and (now - ($at | fromdateiso8601)) > 86400' <<<"$view" >/dev/null 2>&1; then
+    merge_pr_refuse "$pr" 'PR head commit is over 24 hours old: check the branch is yours, then rebase it'
     return 1
   fi
   # shortcut: test-file naming is a path heuristic, tighten if a non-test file matches it.
