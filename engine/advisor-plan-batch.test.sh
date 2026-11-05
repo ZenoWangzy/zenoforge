@@ -36,6 +36,7 @@ web_advisor_provider_dispatch_question_async() {
 advisor_batch_state_set_job() { printf '%s\n' "$1" > "$tmp/active-job.json"; }
 advisor_batch_forget_provider_job() { printf '%s\n' "$1" >> "$tmp/forgotten"; }
 
+source "$script_dir/lib.d/advisor-plan-contract.sh"
 eval "$(sed -n '/^advisor_batch_dispatch_plan_reask() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
 
 previous_ruling='[{"kind":"ruling","issue":930001,"verdict":"advised","decision_md":"keep the shared contract"}]'
@@ -48,6 +49,11 @@ new_job_id="$(cat "$tmp/dispatched")"
 jq -e '.plan_reask_attempted == true and .plan_reask_issues == [930001] and .members[0].issue == 930001' \
   "$tmp/active-job.json" >/dev/null
 grep -Fq 'complete plan with changes (file, symbol, change)' "$WEB_ADVISOR_PROVIDER_JOB_DIR/$new_job_id/question.txt"
+# The first prompt must carry the exact plan wording the re-ask uses.
+manifest="$(advisor_batch_manifest_text '[930001]')"
+grep -Fq "must include $(advisor_plan_contract)." <<< "$manifest"
+grep -Fq "add $(advisor_plan_contract)." "$WEB_ADVISOR_PROVIDER_JOB_DIR/$new_job_id/question.txt"
+grep -Fq 'advisor_batch_manifest_text "$REQUESTED_IDS_JSON" >> "$PROMPT_FILE"' "$script_dir/run-advisor-batch.sh"
 grep -Fq 'keep the shared contract' "$WEB_ADVISOR_PROVIDER_JOB_DIR/$new_job_id/question.txt"
 [[ "$(wc -l < "$tmp/calls" | tr -d '[:space:]')" == 1 ]]
 
