@@ -72,6 +72,8 @@ if [[ -n "$reconcile_event" ]]; then
   printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reconcile_event" | tee -a "$A/scheduler.log"
 fi
 [[ -f "$A/units.json" ]] || echo '{"units":[]}' > "$A/units.json"
+# 终态单元退休归档（与 scheduler.sh 的引导一致）：只增不删，历史读者合并读取。
+[[ -f "$A/units-archive.json" ]] || echo '{"units":[]}' > "$A/units-archive.json"
 previous="$(readlink "$LIVE" || true)"
 # 切 live 指针前先让新 pin 里的 scheduler 自检（10-29 两次事故都是 pin 缺文件）。复用 scheduler
 # 的 library 模式（scheduler suites 同一入口）：完整 source 四个 lib 文件，再核对 scheduler.sh

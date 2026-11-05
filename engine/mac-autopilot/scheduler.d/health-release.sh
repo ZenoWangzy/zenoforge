@@ -105,7 +105,7 @@ run_release_train() {
 # 修 main 单元的共用车道守卫：同 id 幂等；已转人工的旧单元给新的红让位；同一时间只保留一个在途修 main 单元。
 main_red_lane_ready() { # unit-id new-red-sha；rc 0 = 可以开新单元
   local id="$1" sha="$2" stale
-  jqf -e --arg id "$id" 'any(.units[]; .id == $id)' "$UNITS" >/dev/null && return 1
+  jqf -e --arg id "$id" 'any(.units[]; .id == $id)' <(units_history_doc) >/dev/null && return 1
   # 旧 SHA 的修 main 单元已转人工（如只能改 workflow）：新的红不能被它挡住，旧单元作废。
   for stale in $(jqf -r '.units[] | select(.main_red == true and .stage == "supervisor-review") | .id' "$UNITS"); do
     set_unit "$stale" "$(hist superseded "main red again at $sha") | .stage=\"closed\""
@@ -210,7 +210,7 @@ unpark_resolved_main_red_units() {
     resolved_sha="$(jqf -r --arg red "$red_sha" '
       first(.units[] | select(.main_red==true and .ci_sha==$red and .stage=="closed"
         and ((.resolved_main_sha // "") | test("^[0-9a-f]{40}$"))) | .resolved_main_sha // empty)
-    ' "$UNITS")"
+    ' <(units_history_doc))"
     [[ "$resolved_sha" =~ $SHA_RE && "$prior_stage" == ready-to-merge ]] || continue
     history_update="$(hist main-red-unpark "main red SHA $red_sha resolved by green descendant $resolved_sha")"
     set_unit "$id" "$history_update | .stage=\"ready-to-merge\" | del(.parked_reason,.parked_main_red_sha,.parked_from_stage,.parked_head_sha,.parked_check_names,.ci_rerun_sha,.ci_test_checked,.ci_facts_head,.ci_facts)"
@@ -349,7 +349,7 @@ register_new_prs() {
       say "skip pr-$pr_num: configured hotfix lane"
       continue
     fi
-    jqf -e --argjson pr_num "$pr_num" '([.units[].pr] | map(select(. != null)) | index($pr_num)) != null' "$UNITS" >/dev/null 2>&1 && continue
+    jqf -e --argjson pr_num "$pr_num" '([.units[].pr] | map(select(. != null)) | index($pr_num)) != null' <(units_history_doc) >/dev/null 2>&1 && continue
     critical=false
     has_critical_label "$labels" && critical=true
     if [[ "$FOCUS_MODE" == "release" && "$critical" != "true" && "$(critical_pending_count)" -gt 0 ]]; then

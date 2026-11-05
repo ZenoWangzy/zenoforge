@@ -8,6 +8,8 @@
 import argparse, json, os, re, statistics, subprocess, sys
 from datetime import datetime, timezone, timedelta
 
+import ledger_history
+
 LINE_RE = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\] (.*)$")
 HARVEST_RE = re.compile(r"harvest unit=(\S+) type=(\S+) verdict=(\S+) .*?tokens=(\d+)")
 WORK_STAGES = ("review", "rereview", "repair", "implement")
@@ -44,7 +46,7 @@ def main():
     now = ts(args.now) if args.now else datetime.now(timezone.utc)
     since = now - timedelta(hours=args.hours)
 
-    units = json.load(open(os.path.join(a, "units.json")))["units"]
+    units = ledger_history.load_units(a)
     workers = json.load(open(os.path.join(a, "workers.json")))["workers"]
     lines = []
     log = os.path.join(a, "scheduler.log")

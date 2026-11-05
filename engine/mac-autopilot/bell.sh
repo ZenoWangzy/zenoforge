@@ -506,6 +506,10 @@ def sha(value,required=False):
 try:
  units=read(os.path.join(a,"units.json")).get("units")
  if not isinstance(units,list): raise ValueError("units array is missing")
+ try: # 退休进 units-archive.json 的终态单元仍要参与 shape 校验
+  archived=read(os.path.join(a,"units-archive.json")).get("units")
+  if isinstance(archived,list): units=units+archived
+ except OSError: pass
  for unit in units:
   if not isinstance(unit,dict) or not isinstance(unit.get("stage"),str):
    raise ValueError("unit stage is missing or invalid")
@@ -592,11 +596,19 @@ PY
 )"
   jq -e 'type=="object"' <<<"$alerts" >/dev/null 2>&1 || alerts='{}'
 fi
+# 退休进 units-archive.json 的终态单元也是台账历史（merge-reverted 监控按单元 history 扫描）。
+bell_units_history() {
+  if [[ -r "$A/units-archive.json" ]]; then
+    jq -s --slurpfile arch "$A/units-archive.json" '{units: ((.[0].units // []) + ($arch[0].units // []))}' "$A/units.json" 2>/dev/null || cat "$A/units.json"
+  else
+    cat "$A/units.json"
+  fi
+}
 # units.json 有 8MB：一次解析出 merge-reverted 行，事件循环与状态合并共用；逐行重读是每拍双倍的解析开销。
 merges='{}'
 merge_rows=""
 if [[ -r "$A/units.json" ]]; then
-  merge_rows="$(jq -r '.units[]? as $u|($u.history//[])|to_entries[]?|select(.value.stage=="merge-reverted")|[$u.id,(.key|tostring),(.value.at//""),(.value.result//"")]|@tsv' "$A/units.json" 2>/dev/null || true)"
+  merge_rows="$(jq -r '.units[]? as $u|($u.history//[])|to_entries[]?|select(.value.stage=="merge-reverted")|[$u.id,(.key|tostring),(.value.at//""),(.value.result//"")]|@tsv' <(bell_units_history) 2>/dev/null || true)"
 fi
 
 if [[ "$MONITOR_INITIALIZED" == true ]]; then

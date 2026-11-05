@@ -20,6 +20,7 @@ Lesson rule matches and footprint observations are events in that same log; zero
 import argparse, json, math, os, re, sys
 from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger_history
 import usage_reader
 from env_config import zf_env
 from datetime import datetime, timedelta, timezone
@@ -601,7 +602,8 @@ def main():
 
     sched = read_logs("scheduler.log.1", "scheduler.log")
     units_doc = read_json(path("units.json"))
-    units = (units_doc or {}).get("units", [])
+    # 事件历史跨活台账与退休归档（retire_terminal_units 只移动行，不删历史）。
+    units = ledger_history.load_units(args.runtime)
     covered.append(("units.json", f"{len(units):>3} units" if units_doc is not None else "absent"))
     audit = read_audit(args.audit)
     note("audit", audit is not None, len(audit or []), "lines", min((r["when"] for r in audit or []), default=""), max((r["when"] for r in audit or []), default=""))

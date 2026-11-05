@@ -126,7 +126,7 @@ stack_approved_dependency() { # dependent unit-id issue-number unit-json; 0 when
 # 其余 → 升级 supervisor 一次。Airflow upstream_failed / Temporal timeout：每个等待都要有失败传播或超时。返回 0 = 已处理。
 dead_blocker_resolve() { # unit-id blocker-issue dependent-issue
   local id="$1" dep="$2" issue="$3" st children c next=""
-  jqf -e --argjson d "$dep" '[.units[] | select(.issue == $d)] | length > 0 and all(.[]; .stage == "closed")' "$UNITS" >/dev/null || return 1
+  jqf -e --argjson d "$dep" '[.units[] | select(.issue == $d)] | length > 0 and all(.[]; .stage == "closed")' <(units_history_doc) >/dev/null || return 1
   st="$(scheduler_issue_state "$dep")" || return 1 # 子 shell 才载入 lib.sh；读不到就下一拍再试，不能当成无子票而升级
   children="$(jqf -r --argjson i "${issue:-0}" '(.recut_children // [])[] | select(. != $i)' <<<"$st")"
   if [[ -n "$children" ]]; then
@@ -151,7 +151,7 @@ release_dependency_blocks() {
     [[ "$dep" =~ ^[0-9]+$ ]] && DEP_DELIVERED_CACHE["$dep"]=1
   done < <(jqf -r '.units[] | select(.stage | IN("merged","landed","awaiting-live-event"))
     | ((.issue | select(type == "number")),
-       (if ((.branch // "") | test("^agent/issue-[0-9]+$")) then (.branch | sub("^agent/issue-"; "") | tonumber) else empty end))' "$UNITS")
+       (if ((.branch // "") | test("^agent/issue-[0-9]+$")) then (.branch | sub("^agent/issue-"; "") | tonumber) else empty end))' <(units_history_doc))
   while IFS=$'\t' read -r blocker_issue dep; do
     [[ "$blocker_issue" =~ ^[0-9]+$ && "$dep" =~ ^[0-9]+$ ]] || continue
     pair_key="$blocker_issue:$dep"

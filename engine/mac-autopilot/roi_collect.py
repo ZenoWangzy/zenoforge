@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+import ledger_history
 import roi_ledger
 import usage_reader
 import worker_cost
@@ -33,12 +34,8 @@ def _claude_usage(row, responses):
 
 
 def _units(runtime):
-    try:
-        with open(os.path.join(runtime, "units.json"), encoding="utf-8") as source:
-            values = json.load(source).get("units") or []
-    except (OSError, ValueError, AttributeError):
-        values = []
-    return {row.get("id"): row for row in values if isinstance(row, dict) and row.get("id")}
+    # 事件历史跨活台账与退休归档：终态单元的 cost 归因不能因退休丢失。
+    return {row.get("id"): row for row in ledger_history.load_units(runtime)}
 
 
 def _worker_event(row, units_by_id, host):

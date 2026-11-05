@@ -17,6 +17,7 @@ import argparse, glob, json, os, re, socket, subprocess, urllib.parse, urllib.re
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+import ledger_history
 import worker_cost
 import workorder_cost
 import usage_reader
@@ -1481,7 +1482,7 @@ def main():
                 for r in runs if r["node"] == "repair" and r["output"] and not r["self_fix"]]
     followed = [n for n in followed if n]
     metrics["loop.incremental_rereview_pct"] = 100 * followed.count("rereview") / len(followed) if followed else None
-    units = json.load(open(os.path.join(a, "units.json")))["units"]
+    units = ledger_history.load_units(a)
     metrics.update(ledger_metrics(units, since, now))
     repo = os.environ.get("ZF_REPO", "")
     release_events = release_acceptances(a)

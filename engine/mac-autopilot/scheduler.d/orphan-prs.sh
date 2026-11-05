@@ -40,7 +40,7 @@ reconcile_orphan_prs() {
   [[ "$(jqf -r '.factory_prs_only // false' <<<"$CFG")" != true ]] \
     || agent_prs="$(jqf -c --arg l "$GATED_LABEL" 'map(select(any(.labels[]?; .name == $l)))' <<<"$prs")"
   blocked="$(jqf -c '[.units[] | select(.stage=="blocked-external" and .blocked_on != null) | .blocked_on]' "$UNITS")"
-  orphan_issue_numbers="$(jqf -c --slurpfile u "$UNITS" '
+  orphan_issue_numbers="$(jqf -c --slurpfile u <(units_history_doc) '
       ($u[0].units | map(.pr) | map(select(. != null))) as $known
       | [.[] | select(.number as $n | $known | index($n) | not)
           | (try (.headRefName | capture("^agent/(auto-)?issue-(?<n>[0-9]+)$").n | tonumber) catch null)
@@ -51,7 +51,7 @@ reconcile_orphan_prs() {
   else
     states_by_number='{}'
   fi
-  rows="$(jqf -r --slurpfile u "$UNITS" --slurpfile b <(printf '%s' "$blocked") --slurpfile states <(printf '%s' "$states_by_number") '
+  rows="$(jqf -r --slurpfile u <(units_history_doc) --slurpfile b <(printf '%s' "$blocked") --slurpfile states <(printf '%s' "$states_by_number") '
       ($u[0].units | map(.pr) | map(select(. != null))) as $known
       | map(select(.number as $n | $known | index($n) | not))
       | map(((.headRefName | capture("^agent/(auto-)?issue-(?<n>[0-9]+)$").n | tonumber)? // null) as $i
@@ -69,7 +69,7 @@ reconcile_orphan_prs() {
       register_new_issues 1 reuse
     fi
     handoff_pr_waiting "$prn" 0 && continue
-    jqf -e --argjson p "$prn" 'any(.units[]; .pr == $p)' "$UNITS" >/dev/null && continue
+    jqf -e --argjson p "$prn" 'any(.units[]; .pr == $p)' <(units_history_doc) >/dev/null && continue
     jqf -e --argjson p "$prn" 'any(.[]; .number == $p)' <<<"$prs" >/dev/null || continue
     jqf --argjson prn "$prn" --arg b "$(jqf -r --argjson p "$prn" '.[] | select(.number == $p) | .headRefName' <<<"$prs")" \
       --arg t "$(jqf -r --argjson p "$prn" '.[] | select(.number == $p) | .title' <<<"$prs")" --arg now "$now" --arg h "$HOTPATCH_HINT" \
@@ -82,7 +82,7 @@ reconcile_orphan_prs() {
   done
   while IFS=$'\t' read -r prn branch draft n title issue_state issue_labels; do
     [[ "$prn" =~ ^[0-9]+$ ]] || continue
-    jqf -e --argjson p "$prn" 'any(.units[]; .pr == $p)' "$UNITS" >/dev/null && continue
+    jqf -e --argjson p "$prn" 'any(.units[]; .pr == $p)' <(units_history_doc) >/dev/null && continue
     if [[ ! "$n" =~ ^[0-9]+$ ]]; then foreign=$((foreign + 1)); continue; fi
     handoff_pr_waiting "$prn" "$n" && { agent_left=$((agent_left + 1)); continue; }
     if [[ "$issue_state" == CLOSED ]]; then
@@ -91,13 +91,13 @@ reconcile_orphan_prs() {
         && say "orphan PR#$prn closed: issue #$n is closed"
       continue
     fi
-    if jqf -e --argjson n "$n" 'any(.units[]; .issue == $n)' "$UNITS" >/dev/null; then
+    if jqf -e --argjson n "$n" 'any(.units[]; .issue == $n)' <(units_history_doc) >/dev/null; then
       # 台账单元自己没有 PR 又没结束时，这个孤儿 PR 可能就是唯一的实现：不关，也不再收一个单元，留给 supervisor。
-      if ! jqf -e --argjson n "$n" 'any(.units[]; .issue == $n and (.pr != null or (.stage | test("^(merged|landed|closed|done)$"))))' "$UNITS" >/dev/null; then
+      if ! jqf -e --argjson n "$n" 'any(.units[]; .issue == $n and (.pr != null or (.stage | test("^(merged|landed|closed|done)$"))))' <(units_history_doc) >/dev/null; then
         agent_left=$((agent_left + 1)); say "orphan PR#$prn kept: issue #$n has a ledger unit without its own PR"; continue
       fi
       tick_prs_changed
-      gh pr close "$prn" --comment "Autopilot: issue #$n is handled by $(jqf -r --argjson n "$n" '[.units[] | select(.issue == $n)][0].id' "$UNITS") in the pipeline ledger; this older PR is superseded." >/dev/null 2>&1 \
+      gh pr close "$prn" --comment "Autopilot: issue #$n is handled by $(jqf -r --argjson n "$n" '[.units[] | select(.issue == $n)][0].id' <(units_history_doc)) in the pipeline ledger; this older PR is superseded." >/dev/null 2>&1 \
         && say "orphan PR#$prn closed: issue #$n already has a ledger unit"
       continue
     fi

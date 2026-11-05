@@ -2,19 +2,31 @@ final_message_of() { awk '/^tokens used$/{getline; buf=""; f=1; next} f{buf=buf 
 tokens_of() { awk '/tokens used/{getline; if (match($0, /[0-9][0-9,]*/)) { n=substr($0, RSTART, RLENGTH); gsub(/,/, "", n); print n }; exit}' "$1" 2>/dev/null; }
 
 write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=目标文件
-  local dst="$1" _t valid=false; _t="$(mktemp "${dst}.tmp.XXXXXX")" || return 1
+  local dst="$1" _t valid=false _arch_check _arch_args
+  _t="$(mktemp "${dst}.tmp.XXXXXX")" || return 1
   cat > "$_t"
   if [[ "$dst" == "$UNITS" ]]; then
-    # No units are deleted by this scheduler. Clone cleanup and worker-ledger
-    # trimming below remain legitimate; neither may erase registered unit IDs.
+    # No unit leaves the system through this scheduler: a write may only drop ids that
+    # are already persisted in the retirement archive (retire_terminal_units writes the
+    # archive before trimming the ledger, so a crash keeps the row in both places).
+    # Clone cleanup and worker-ledger trimming below remain legitimate; neither may
+    # erase registered unit IDs.
     # -s: a state file must be exactly one document. A top-level comma in a hand edit (10-29 06:32Z) wrote three
     # concatenated copies; per-document -e accepted every later write and each copy drifted apart.
-    jq -e -s --slurpfile old "$dst" 'length==1 and (.[0] |
-      type=="object" and (.units|type)=="array"
-      and all(.units[]; type=="object" and (.id|type)=="string" and (.id|length)>0 and (.stage|type)=="string")
+    _arch_check='and (($old[0].units|map(.id)) - [.units[].id] | length)==0'
+    _arch_args=()
+    if [[ -s "${UNITS_ARCHIVE:-}" ]]; then
+      _arch_args=(--slurpfile arch "$UNITS_ARCHIVE")
+      _arch_check='and ((($old[0].units|map(.id)) - [.units[].id]) as $gone
+        | ($gone | length) == 0
+          or ([($arch[0].units // [])[].id] as $a | [$gone[] | select(. as $g | $a | index($g) | not)] | length) == 0)'
+    fi
+    jq -e -s --slurpfile old "$dst" "${_arch_args[@]}" "length==1 and (.[0] |
+      type==\"object\" and (.units|type)==\"array\"
+      and all(.units[]; type==\"object\" and (.id|type)==\"string\" and (.id|length)>0 and (.stage|type)==\"string\")
       and ([.units[].id]|length)==([.units[].id]|unique|length)
-      and (($old[0].units|map(.id)) - [.units[].id] | length)==0)
-    ' "$_t" >/dev/null 2>&1 && valid=true
+      $_arch_check)
+    " "$_t" >/dev/null 2>&1 && valid=true
   elif [[ "$dst" == "$WORKERS" ]]; then
     jq -e -s 'length==1 and (.[0] | type=="object" and (.workers|type)=="array"
       and all(.workers[]; type=="object" and (.pid|type)=="number" and .pid>0 and (.unit|type)=="string"))' \

@@ -4,6 +4,7 @@ import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import worker_cost, live_workers, factory_trend, founder_reqs
+import ledger_history
 from config_paths import zf_config_file
 
 _HERE = os.path.dirname(os.path.realpath(__file__))
@@ -14,7 +15,7 @@ ROOT = os.environ.get("MAC_AUTOPILOT_ROOT", _DEFAULT_ROOT)
 SUP = os.environ.get("MAC_AUTOPILOT_SUPERVISOR_DIR", os.path.join(ROOT, ".scratch-supervisor"))
 A = os.environ.get("MAC_AUTOPILOT_RUNTIME_DIR", os.path.join(SUP, "autopi"))
 
-units = json.load(open(f"{A}/units.json"))["units"]
+units = ledger_history.load_units(A)
 workers = json.load(open(f"{A}/workers.json"))["workers"]
 cfg = json.load(open(f"{A}/config.json"))
 release = json.load(open(f"{A}/release.json")) if os.path.exists(f"{A}/release.json") else {}

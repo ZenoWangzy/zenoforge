@@ -56,20 +56,33 @@ remove_readonly_tree() {
   find "$1" -type d ! -perm -u=w -exec chmod u+w -- {} + 2>/dev/null
   rm -rf -- "$1"
 }
+
+cleanup_unit_worktrees() { # id：终态单元的两个 worktree 位置；有可恢复 Git 工作时保留并说明
+  local id="$1" wt block_reason
+  for wt in "$WT_ROOT/wt-${id}" "/tmp/wt-${id}"; do
+    [[ -d "$wt" ]] || continue
+    if block_reason="$(worktree_cleanup_block_reason "$wt")"; then
+      say "preserve worktree $wt: $block_reason"
+    else
+      rm -rf -- "$wt"
+      say "cleanup worktree $wt"
+    fi
+  done
+}
+
 cleanup_tick() {
   local id wt n_total b track r block_reason
   # eval 在途（pending/running）的单元保留 worktree：#4656 起 eval 并行跑，可能在单元 merged 之后才结束。
   for id in $(jqf -r '.units[] | select(.stage=="merged" or .stage=="landed" or .stage=="awaiting-live-event" or .stage=="done" or .stage=="wontfix" or .stage=="duplicate" or .stage=="closed") | select((.eval_gate.status // "") | IN("pending","running") | not) | .id' "$UNITS"); do
-    for wt in "$WT_ROOT/wt-${id}" "/tmp/wt-${id}"; do
-      [[ -d "$wt" ]] || continue
-      if block_reason="$(worktree_cleanup_block_reason "$wt")"; then
-        say "preserve worktree $wt: $block_reason"
-      else
-        rm -rf -- "$wt"
-        say "cleanup worktree $wt"
-      fi
-    done
+    cleanup_unit_worktrees "$id"
   done
+  # 退休只移台账行不清磁盘：归档单元的 worktree 沿用同一保留/回收判定，不会因退休而泄漏或误删。
+  if [[ -s "$UNITS_ARCHIVE" ]]; then
+    while IFS= read -r id; do
+      [[ -n "$id" ]] || continue
+      cleanup_unit_worktrees "$id"
+    done < <(jqf -r '.units[] | select((.eval_gate.status // "") | IN("pending","running") | not) | .id' "$UNITS_ARCHIVE" 2>/dev/null)
+  fi
   n_total="$(jqf '.workers | length' "$WORKERS" 2>/dev/null || echo 0)"
   if (( n_total > 60 )); then
     # 未回收的 worker 一律保留，只裁剪已回收的旧记录。

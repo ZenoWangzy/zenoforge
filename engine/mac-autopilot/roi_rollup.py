@@ -5,6 +5,7 @@
 per ticket into lead time, stage wall time, tokens by model and stage, API-list cost,
 the fleet/day/per-ticket output ratios and the waste share (RT-2)."""
 import argparse
+import ledger_history
 import json
 import os
 import re
@@ -187,16 +188,11 @@ def _issue_created(repo, cutoff, timeout=30):
 
 
 def _unit_final_stages(home):
-    """Issue number -> work-order final stage from the scheduler's units.json (read-only)."""
+    """Issue number -> work-order final stage from the scheduler ledger (read-only, retired units included)."""
     supervisor = os.environ.get("MAC_AUTOPILOT_SUPERVISOR_DIR") or os.path.join(home, "checkout", ".scratch-supervisor")
     runtime = os.environ.get("MAC_AUTOPILOT_RUNTIME_DIR") or os.path.join(supervisor, "autopi")
     stages = {}
-    try:
-        with open(os.path.join(runtime, "units.json"), encoding="utf-8") as source:
-            units = json.load(source).get("units") or []
-    except (OSError, ValueError, AttributeError):
-        return stages
-    for unit in units:
+    for unit in ledger_history.load_units(runtime):
         if isinstance(unit, dict) and isinstance(unit.get("issue"), int):
             stages[unit["issue"]] = unit.get("stage")
     return stages

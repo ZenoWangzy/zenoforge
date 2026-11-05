@@ -51,10 +51,11 @@ issue_unit_task() { # issue [fetched issue JSON | require-ready] → implement �
 }
 # The per-row reads below run about 100 times a tick and read none of the bulk fields: history, task and review_findings
 # are most of units.json, and parsing them took more than half of a 1800s tick. Rebuilt whenever units.json changes.
+# It spans live + archived units (units_history_doc): retirement always rewrites units.json after the archive, so the mtime check holds.
 intake_units_view() {
   local view="$UNITS.view"
   if [[ ! "$view" -nt "$UNITS" ]]; then
-    jqf -c '.units |= map(del(.history, .task, .review_findings))' "$UNITS" > "$view.tmp.$$" && mv -f -- "$view.tmp.$$" "$view" || {
+    units_history_doc | jqf -c '.units |= map(del(.history, .task, .review_findings))' > "$view.tmp.$$" && mv -f -- "$view.tmp.$$" "$view" || {
       rm -f -- "$view.tmp.$$"; printf '%s' "$UNITS"; return 0
     }
   fi
@@ -145,7 +146,7 @@ predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批�
   skip_labels="$(issue_skip_labels)"
   mapfile -t deps < <(jqf -r '[.units[] | select(.stage=="blocked-external" and .blocked_on != null) | .blocked_on] | unique | .[]' "$UNITS")
   while IFS= read -r issue; do [[ "$issue" =~ ^[0-9]+$ ]] && issue_in_ledger["$issue"]=1; done \
-    < <(jqf -r '[.units[].issue | numbers] | unique | .[]' "$UNITS")
+    < <(jqf -r '[.units[].issue | numbers] | unique | .[]' <(units_history_doc))
   for dep in "${deps[@]}"; do
     [[ "${issue_in_ledger[$dep]:-}" == 1 ]] || deps_filtered+=("$dep")
   done
@@ -686,8 +687,8 @@ register_new_issues() {
     else
       if [[ "$handoff_pr" =~ ^[0-9]+$ ]]; then branch="$handoff_branch"; fi
       units_update --argjson n "$n" --arg title "$title" --argjson labels "${labels:-[]}" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --arg lane "$lane" --arg lane_policy "${lane_policy:-}" --arg branch "$branch" --arg episode "$episode" --argjson handoff "$handoff" --argjson handoff_all "$handoff_all" \
-        --arg pr "$handoff_pr" --arg acceptance "${acceptance:-}" \
-        'if any(.units[]; .issue == $n) then . else .units += [{id:("issue-"+($n|tostring)), issue:$n, title:$title, labels:$labels, stage:"implement-pending", lane:$lane, branch:$branch, task:$task, body_blocked_by:$body_blocked_by, history:[],hold_handoff_episode:$episode}
+        --arg pr "$handoff_pr" --arg acceptance "${acceptance:-}" --slurpfile history <(units_history_doc) \
+        'if any($history[0].units[]; .issue == $n) then . else .units += [{id:("issue-"+($n|tostring)), issue:$n, title:$title, labels:$labels, stage:"implement-pending", lane:$lane, branch:$branch, task:$task, body_blocked_by:$body_blocked_by, history:[],hold_handoff_episode:$episode}
           + (if $acceptance != "" then {acceptance:($acceptance | fromjson)} else {} end)
           + (if $pr != "" then {pr:($pr | tonumber),stage:"repair-pending",lane_policy:$lane_policy,repair_hint:"Read the issue comments for the ownerless hold handoff and complete the existing PR."} else {} end)
           + (if (($handoff_all.worktree_sha // "") | test("^[0-9a-f]{40}$")) then {handoff_worktree:$handoff_all.worktree,handoff_worktree_sha:$handoff_all.worktree_sha,handoff_worktree_dirty:$handoff_all.worktree_dirty} else {} end)

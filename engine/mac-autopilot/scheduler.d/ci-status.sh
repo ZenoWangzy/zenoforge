@@ -69,7 +69,7 @@ park_ci_red_for_main_red() { # id PR head check-rows-json -> parked when every f
         | ($stage | IN("closed","landed","merged","done") | not)
           or ($stage=="closed" and (.resolved_main_at // "") != ""))
       | [.ci_sha,.stage,(.resolved_main_at // "")] | @tsv
-  ' "$UNITS" | sort -u)
+  ' <(units_history_doc) | sort -u)
   return 1
 }
 

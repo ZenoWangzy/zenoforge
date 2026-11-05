@@ -13,6 +13,7 @@ instead of calling gh (tests); its optional "prs" list stands in for the PR size
 """
 import argparse, importlib.util, json, os, subprocess
 from datetime import datetime, timezone, timedelta
+import ledger_history
 from node_health import LARGE_PR_WINDOW_DAYS, is_test_path, size_window_units
 
 PR_EVENTS = ("pull_request", "pull_request_target")
@@ -187,7 +188,7 @@ def main():
     keep = now - timedelta(hours=max(24, args.hours))
     cache = {k: v for k, v in cache.items() if (ts(v.get("created")) or now) >= keep}
 
-    units = json.load(open(os.path.join(a, "units.json")))["units"]
+    units = ledger_history.load_units(a)
     doc = classify(runs, {k: v["jobs"] for k, v in cache.items()}, approved_heads(units))
     doc.update({"sampled_at": f"{now:%Y-%m-%dT%H:%M:%SZ}", "window_hours": args.hours, "runs": len(runs)})
     outputs = [(cache_path, cache), (os.path.join(a, "ci-spend.json"), doc)]

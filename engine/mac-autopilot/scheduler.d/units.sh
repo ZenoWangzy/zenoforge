@@ -2,6 +2,76 @@
 # PID 存活且确为 codex 进程（防 PID 复用把无关进程当活 worker）。
 alive() { ps -p "$1" -o args= 2>/dev/null | grep -Eq 'codex|claude|zcode|zcode-cli|land-pr\.sh|precheck\.sh|cdp-browser-lease\.sh|decision-gate\.mjs'; }
 
+# 退休可逆：终态单元要再次推进时（如直落提交被 MAIN-RED 回退，merge-prep 按 .land_sha 找回 landed
+# 单元派修复），把归档行移回热台账。归档行保留（只增不删）；同 id 两处时以热台账为准。
+restore_archived_unit() { # id；rc 0 = 该单元现在在热台账里
+  local id="$1" row
+  jqf -e --arg id "$id" 'any(.units[]; .id == $id)' "$UNITS" >/dev/null 2>&1 && return 0
+  row="$(jqf -c --arg id "$id" '[.units[] | select(.id == $id)][0] // empty' "$UNITS_ARCHIVE" 2>/dev/null)" || return 1
+  [[ -n "$row" ]] || return 1
+  units_update --argjson row "$row" --arg id "$id" 'if any(.units[]; .id == $id) then . else .units += [$row] end'
+}
+
+# ---------- 终态单元退休：热台账只留会推进的单元 ----------
+# 词汇表与 lib.d/dispatch-gates.sh 的 SCHEDULER_UNIT_TERMINAL_STAGES 一致：这些 stage 不再拥有
+# 票、没有任何阶段会再推进它们；parked / blocked-external / supervisor-review 等仍可能被裁决、
+# 解阻或重排，必须留在热台账。退休只移动台账行，历史读者经 units_history_doc 继续可见。
+UNIT_RETIRE_STAGES='["merged","landed","closed","done","wontfix","duplicate"]'
+
+# 需要历史（终态）记录的读者用这个合并视图：活台账 + 归档，按 id 去重。同一 id 同时出现在
+# 两处（退休两步写之间崩溃的窗口）时以 units.json 的行较新为准（reduce 后写覆盖，活台账行排在后面）。
+units_history_doc() {
+  if [[ -s "$UNITS_ARCHIVE" ]]; then
+    jqf -s --slurpfile arch "$UNITS_ARCHIVE" '
+      reduce (($arch[0].units // []) + (.[0].units // []))[] as $u ({}; .[$u.id] = $u)
+      | [.[]] | {units: .}' "$UNITS" 2>/dev/null || cat "$UNITS"
+  else
+    cat "$UNITS"
+  fi
+}
+
+# 终态退休（每慢拍一次，持有调度锁）：把 terminal stage 且没有在途本地依赖的单元移进
+# units-archive.json。先归档后删除——两步之间崩溃最多让同一 id 短暂同时存在于两处（合并视图与
+# 归档写都按 id 幂等，重跑收敛），绝不丢行；write_state 对 units.json 的删除守卫也只放行已在
+# 归档里的 id。排除：eval 还在 pending/running（dispatch_prompt_evals 按热台账派发、收割要写回）、
+# main-red 尚未回填 resolved_main_sha/at（supersede 回填写热台账）、还有未收割 worker 记录
+# （eval/supervise worker 会在单元终态后仍收割写账）。
+retire_terminal_units() {
+  local ids_file rows n archive_n
+  [[ -f "$UNITS_ARCHIVE" ]] || printf '{"units":[]}\n' > "$UNITS_ARCHIVE"
+  jqf -e 'type=="object" and (.units|type)=="array"' "$UNITS_ARCHIVE" >/dev/null 2>&1 \
+    || { say "unit retire: archive unreadable; terminal units kept in ledger"; return 0; }
+  ids_file="$(mktemp)" || return 1
+  jqf -c --slurpfile workers "$WORKERS" --argjson terminal "$UNIT_RETIRE_STAGES" '
+    ([.units[] | select(.stage as $s | $terminal | index($s) != null)
+       | select((.eval_gate.status // "") | IN("pending","running") | not)
+       | select((.main_red == true
+           and (((.resolved_main_sha // "") == "") or ((.resolved_main_at // "") == ""))) | not)
+       | .id]) as $retirable
+    | [($workers[0].workers[]? | select(.harvested != true) | .unit)] as $busy
+    | [$retirable[] | select(. as $id | $busy | index($id) | not)] | unique' "$UNITS" > "$ids_file" \
+    || { rm -f -- "$ids_file"; say "unit retire: ledger read failed; nothing retired"; return 0; }
+  n="$(jqf -r 'length' "$ids_file")"
+  if [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )); then
+    if jqf --slurpfile ids "$ids_file" --slurpfile live "$UNITS" '
+        ($live[0].units | map(select(.id as $id | $ids[0] | index($id) != null))) as $incoming
+        | ($incoming | map(.id)) as $in_ids
+        | .units = ((.units | map(select(.id as $id | $in_ids | index($id) == null))) + $incoming)
+      ' "$UNITS_ARCHIVE" | write_state "$UNITS_ARCHIVE"; then
+      if units_update --slurpfile ids "$ids_file" '.units |= map(select(.id as $id | $ids[0] | index($id) | not))'; then
+        archive_n="$(jqf -r '.units | length' "$UNITS_ARCHIVE")"
+        say "unit retire: moved $n terminal unit(s) to the archive; ledger=$(jqf '.units | length' "$UNITS") archive=$archive_n"
+      else
+        say "unit retire: archive updated but ledger trim failed; ids stay duplicated until the next pass"
+      fi
+    else
+      say "unit retire: archive write failed; terminal units kept in ledger"
+    fi
+  fi
+  rm -f -- "$ids_file"
+  return 0
+}
+
 set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）
   local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage=""
   if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then

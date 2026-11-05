@@ -124,6 +124,9 @@ warn_forbidden_model_config
 INCIDENT_LABELS="$(incident_labels_from_config "$CFG")"
 INCIDENT_RULE="$(incident_rule_text)"
 UNITS="$A/units.json"; WORKERS="$A/workers.json"
+# 终态单元的退休归档（retire_terminal_units）：只增不删；历史读者经 units_history_doc 合并读取。
+UNITS_ARCHIVE="${UNITS_ARCHIVE:-$A/units-archive.json}"
+[[ -f "$UNITS_ARCHIVE" ]] || printf '{"units":[]}\n' > "$UNITS_ARCHIVE"
 [[ -f "$WORKERS" ]] || echo '{"workers":[]}' > "$WORKERS"
 MAX="$(jqf -r .max_workers <<<"$CFG")"
 DISPATCH_PRIORITY_ORDER="$(jqf -c '.dispatch_priority_order // ["hotfix", "opt", "normal"]' <<<"$CFG")"
@@ -529,6 +532,9 @@ main() {
   phase precheck_harvest
   phase recover_orphans
   phase recover_orphan_landing
+  # 每慢拍一次终态退休（持锁、纯本地）：先把 600+ 终态单元移出热台账，本拍后续的 intake /
+  # dispatch / CI 准入 / 合并车道就不用再为它们付每笔 2 秒的整文件读写。
+  phase retire_terminal_units
   phase live_event_watch
   if [[ -e "$PAUSE_FILE" ]]; then
     # 用户的后端 Codex 暂停开关：保留回收、验证与发布列车，不派发、不合并。
