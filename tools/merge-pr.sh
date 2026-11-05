@@ -99,6 +99,15 @@ merge_pr_size_ok() {
   merge_pr_refuse "$pr" "$over"
 }
 
+# A merged PR's own CI proves nothing the main run will not, and it holds hosted slots through a merge burst.
+merge_pr_cancel_ci() {
+  local pr="$1" sha id
+  sha="$(gh pr view "$pr" --json headRefOid 2>/dev/null | jq -r .headRefOid)" || return 0
+  gh run list --commit "$sha" --json databaseId,status 2>/dev/null \
+    | jq -r '.[] | select(.status != "completed") | .databaseId' \
+    | while read -r id; do gh run cancel "$id" >/dev/null 2>&1 || true; done
+}
+
 merge_pr_checks_and_merge() {
   local pr="${1:-}" checks_json check_name override_name matched
   local -a override_names=() failed_names=() blocked_names=() overridden_names=()
@@ -174,7 +183,8 @@ merge_pr_checks_and_merge() {
     printf 'merge-pr: explicit ZF_MERGE_OVERRIDE allows failed checks: %s\n' "$overridden_csv" >&2
   fi
 
-  gh pr merge "$pr" --squash --delete-branch
+  gh pr merge "$pr" --squash --delete-branch || return
+  merge_pr_cancel_ci "$pr" || true
 }
 
 merge_pr_gate() {

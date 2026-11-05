@@ -57,6 +57,12 @@ gh() {
     'pr merge')
       printf 'merge:%s\n' "$*" >> "$fixture/gh-calls"
       ;;
+    'run list')
+      printf '[{"databaseId":7,"status":"queued"},{"databaseId":8,"status":"completed"}]\n'
+      ;;
+    'run cancel')
+      printf '%s\n' "$3" >> "$fixture/cancelled"
+      ;;
     *)
       fail "unexpected gh command: $*"
       ;;
@@ -85,7 +91,7 @@ assert_refuses "PR head $PR_HEAD does not match tested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"unit","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -105,7 +111,7 @@ check_output="$(ZF_MERGE_OVERRIDE=cla merge_pr_checks_and_merge 17 2>&1)" \
   || fail "named failed-check override did not allow the merge: $check_output"
 [[ "$check_output" == *'explicit ZF_MERGE_OVERRIDE allows failed checks: cla'* ]] \
   || fail "merge did not print the failed check covered by its override: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
   || fail "pending check or named override did not reach squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS=gh-error
@@ -159,6 +165,7 @@ expect_prior_art_refusal 'mixed test and source PR' 'has no "## prior-art" secti
 PR_FILES='[]'
 expect_prior_art_refusal 'empty file list' 'has no "## prior-art" section'
 PR_FILES='["tools/merge-pr.sh"]'
+[[ "$(sort -u "$fixture/cancelled")" == 7 ]] || fail "merged PR's unfinished run was not the one cancelled"
 # A red ratchet refuses only the PR that grew the file (#214 reddened main this way).
 (
   merge_pr_root() { printf '%s\n' "$repo"; }
