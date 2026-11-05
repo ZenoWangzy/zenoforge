@@ -42,6 +42,21 @@ phase_yield_lock_batch() { # Callback that records its own phases while sharing 
   TICK_FOOTPRINT_CONFLICT_VALID=false
   return "$rc"
 }
+# The end-of-tick dispatch_pending re-reads everything the first one just read (43-52s per tick). It only has
+# new work if a pending unit, a footprint owner, a worker or main changed in between, so a fingerprint taken
+# after the first pass gates the second; the 30s refill and the next tick still sweep everything.
+dispatch_inputs_fingerprint() {
+  { live_workers; printf '%s\n' "${MAIN_HEAD:-}"
+    jqf -r '.units[] | select(.stage | IN("merged","landed","closed","done","wontfix","duplicate","parked") | not)
+      | [.id, .stage, (.footprint_wait_owner // "")] | @tsv' "$UNITS" | sort; } | cksum
+}
+dispatch_pending_if_dirty() {
+  if [[ -n "${TICK_DISPATCH_FP:-}" && "$(dispatch_inputs_fingerprint)" == "$TICK_DISPATCH_FP" ]]; then
+    say "second dispatch_pending skipped: no unit stage, footprint owner, worker or main change since the first"
+    return 0
+  fi
+  phase_yield_lock dispatch_pending
+}
 run_views() { # full = 体检 + 看板；dashboard = 只渲染看板（暂停时）
   [[ "$1" == full ]] && run_node_health
   SESSION_TZ="$SESSION_TZ" python3 "$HERE/gen_dashboard.py" 2>>"$A/autopilot.err"

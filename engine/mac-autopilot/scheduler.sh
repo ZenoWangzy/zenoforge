@@ -502,6 +502,7 @@ main() {
   if git -C "$ROOT" fetch -q origin main 2>/dev/null; then
     MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   fi
+  TICK_DISPATCH_FP=''
   phase harvest_workers
   coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
   coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
@@ -529,7 +530,7 @@ main() {
       # 裁决整拍跳过；登记与生命周期照常，分类恢复的下一拍补标记后恢复推进。
       say "acting phases held: supervisor-owned marking deferred"
     else
-      phase_yield_lock dispatch_pending
+      phase_yield_lock dispatch_pending && TICK_DISPATCH_FP="$(dispatch_inputs_fingerprint)"
       phase dispatch_supervisor_arbiters
       phase dispatch_prompt_evals
       phase fast_land_lane
@@ -542,7 +543,7 @@ main() {
     phase aged_pr_lifecycle
     phase run_release_train
     phase stage_slo_watch
-    supervisor_marking_deferred || phase_yield_lock dispatch_pending
+    supervisor_marking_deferred || dispatch_pending_if_dirty
     phase footprint_hog_alert
     views_mode=full
   fi
