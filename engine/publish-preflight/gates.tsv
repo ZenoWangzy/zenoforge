@@ -3,3 +3,4 @@ unit-paths
 resolved-config
 suite-set
 dropped-file-refs
+advisor-runner

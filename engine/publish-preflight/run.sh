@@ -50,6 +50,15 @@ run_gate() {
       fi
       export ZF_INTENDED_WARNINGS_SUPPRESSED=1
       ;;
+    advisor-runner)
+      echo "publish-preflight: checking advisor runner"
+      if [[ "${ZF_PREFLIGHT_PREVIOUSLY_LIVE:-0}" == 1 ]]; then
+        echo "publish-preflight: skipping advisor-runner check for previously live version"
+      elif git -C "$target_repo" show "$new_ref:.zenoforge/advisor.json" 2>/dev/null | jq -e 'has("batchRunner")' >/dev/null 2>&1; then
+        echo "publish-preflight: advisor.json sets batchRunner, which replaces the engine runner with a product fork; remove the key" >&2
+        return 1
+      fi
+      ;;
     *) echo "publish-preflight: unknown gate in gates.tsv: $gate" >&2; return 2 ;;
   esac
 }

@@ -41,4 +41,17 @@ out=$(bash "$here/run.sh" "$t/live" "$t/new" "$t/repo" "$base_ref" "$new_ref" "$
   || { echo "FAIL: intended config change: $out"; exit 1; }
 grep -q 'changed as intended state/value.json' <<<"$out" && grep -q 'suite-set-check: OK' <<<"$out" \
   || { echo "FAIL: intended change was not accepted: $out"; exit 1; }
+mkdir -p "$t/repo/.zenoforge"
+printf '{"batchRunner":"scripts/ops/run-advisor-batch.sh"}\n' > "$t/repo/.zenoforge/advisor.json"
+git -C "$t/repo" add -A && git -C "$t/repo" commit -qm fork-runner
+fork_ref=$(git -C "$t/repo" rev-parse HEAD)
+if out=$(bash "$here/run.sh" "$t/live" "$t/new" "$t/repo" "$new_ref" "$fork_ref" "$t/intended.tsv" 2>&1); then
+  echo "FAIL: batchRunner passed preflight: $out"; exit 1
+fi
+grep -q 'advisor.json sets batchRunner' <<<"$out" || { echo "FAIL: wrong batchRunner refusal: $out"; exit 1; }
+printf '{"commentDisclaimer":"x"}\n' > "$t/repo/.zenoforge/advisor.json"
+git -C "$t/repo" add -A && git -C "$t/repo" commit -qm no-fork
+clean_ref=$(git -C "$t/repo" rev-parse HEAD)
+out=$(bash "$here/run.sh" "$t/live" "$t/new" "$t/repo" "$new_ref" "$clean_ref" "$t/intended.tsv" 2>&1) \
+  || { echo "FAIL: advisor.json without batchRunner refused: $out"; exit 1; }
 echo "run.test.sh: PASS"
