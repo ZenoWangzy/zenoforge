@@ -2837,6 +2837,8 @@ rm -f "$LUNA_SLOTS"/wait-*
 # auto_dispatch_new_prs=false: sessions' PRs leave the ledger before any acting phase, and the orphan pass neither adopts nor closes them.
 cfg_saved="$CFG"; CFG="$(jq '.auto_dispatch_new_prs=false' <<<"$CFG")"
 session_prs='[{"number":31,"labels":[],"headRefName":"agent/s","isDraft":false,"title":"s"},{"number":32,"labels":[{"name":"agent/ci-gated"}],"headRefName":"agent/issue-32","isDraft":true,"title":"f"},{"number":33,"labels":[{"name":"session-owned"}],"headRefName":"agent/issue-33","isDraft":false,"title":"c"},{"number":34,"labels":[],"headRefName":"agent/issue-34","isDraft":false,"title":"o"},{"number":35,"labels":[],"headRefName":"old","isDraft":false,"title":"i"}]'
+# The live census is over 500 KB, past jqf's argv limit.
+session_prs="$(jq -c --arg pad "$(printf '%70000s' '')" '.[0].body = $pad' <<<"$session_prs")"
 tick_prs_saved="$(declare -f tick_prs)"; tick_prs() { printf '%s' "$session_prs"; }; tick_prs_prime() { :; }
 units '{"units":[{"id":"pr-31","stage":"review","pr":31},{"id":"pr-32","stage":"review","pr":32},{"id":"issue-33","issue":33,"stage":"supervisor-review","pr":33},{"id":"issue-35","issue":35,"stage":"repair","pr":35},{"id":"issue-36","issue":34,"stage":"merged","pr":3}]}'
 release_session_pr_units

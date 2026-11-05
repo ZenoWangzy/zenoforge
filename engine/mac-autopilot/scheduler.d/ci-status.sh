@@ -593,9 +593,9 @@ release_session_pr_units() {
     [[ -n "$id" ]] || continue
     set_unit "$id" "$(hist session-owned-release "open PR is not the factory's; the session that owns it lands it") | .stage=\"parked\" | .parked_reason=\"session-owned\" | .approved_sha=null"
     say "session-owned release unit=$id"
-  done < <(jqf -r --argjson prs "$prs" --arg gated "$GATED_LABEL" --arg owned "$SESSION_OWNED_LABEL" '
-    [$prs[] | select(any(.labels[]?; .name == $owned)) | .number] as $claimed
-    | [$prs[] | select(any(.labels[]?; .name == $gated) | not) | .number] as $ungated
+  done < <(jqf -r --slurpfile census <(printf '%s' "$prs") --arg gated "$GATED_LABEL" --arg owned "$SESSION_OWNED_LABEL" '
+    [$census[0][] | select(any(.labels[]?; .name == $owned)) | .number] as $claimed
+    | [$census[0][] | select(any(.labels[]?; .name == $gated) | not) | .number] as $ungated
     | .units[] | select((.stage | test("^(parked|closed|landed|merged|done|needs-human)$") | not) and (.hotpatch // false) != true
         and (.pr as $p | ($claimed | index($p)) != null or ((.id | startswith("pr-")) and ($ungated | index($p)) != null)))
     | .id' "$UNITS")
