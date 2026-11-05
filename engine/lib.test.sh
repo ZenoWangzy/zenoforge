@@ -49,6 +49,8 @@ if [[ "${1:-}" == --quota-only ]]; then lib_case_exit; fi
 lib_reads_caller_script_dir() { grep -nE '\$\{?SCRIPT_DIR' "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR"/lib.d/*.sh | grep -vE '^[0-9]+:[[:space:]]*#'; }
 assert_false "lib.sh never reads the caller's SCRIPT_DIR" lib_reads_caller_script_dir
 
+fi
+# Defined for every partition: lib-part-2 also calls it.
 test_direct_landing_product_and_revert() {
   local home repo queue issues sha output
   home="$(mktemp -d)"; repo="$home/repo"; queue="$home/land-queue"; issues="$home/issues"
@@ -94,6 +96,7 @@ test_direct_landing_product_and_revert() {
   fi
   rm -rf -- "$home"
 }
+if [[ "$LIB_TEST_PART" == 0 ]]; then
 
 if [[ "${LIB_TEST_POST_LAND_ONLY:-0}" == 1 ]]; then
   test_direct_landing_product_and_revert

@@ -22,13 +22,6 @@ engine/mac-autopilot/scheduler-part-5.test.sh
 engine/mac-autopilot/scheduler-part-6.test.sh
 engine/mac-autopilot/scheduler-part-7.test.sh
 engine/mac-autopilot/scheduler-gates.test.sh
-engine/mac-autopilot/scheduler-gates-part-1.test.sh
-engine/mac-autopilot/scheduler-gates-part-2.test.sh
-engine/mac-autopilot/scheduler-gates-part-3.test.sh
-engine/mac-autopilot/scheduler-gates-part-4.test.sh
-engine/mac-autopilot/scheduler-gates-part-5.test.sh
-engine/mac-autopilot/scheduler-gates-part-6.test.sh
-engine/mac-autopilot/scheduler-gates-part-7.test.sh
 engine/mac-autopilot/scheduler-gates-required-checks.test.sh
 engine/mac-autopilot/scheduler-gates-priority.test.sh
 engine/mac-autopilot/scheduler-gates-git.test.sh
