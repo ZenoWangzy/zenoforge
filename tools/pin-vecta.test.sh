@@ -88,11 +88,23 @@ chmod +x "$tmp/bin/engine-sync"
 cat > "$tmp/bin/node" <<'NODE'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'delivery:%s\n' "$*" >> "${PIN_CALLS:?}"
 script="$1"
 shift
+if [[ "$script" == */scripts/branch-delivery-policy.mjs ]]; then
+  printf 'classifier:%s %s\n' "$script" "$*" >> "$PIN_CALLS"
+  [[ "$*" == '--classify-path-set -' ]] || exit 2
+  paths=$(cat)
+  if jq -e 'type == "array" and length > 0 and all(.[]; startswith(".zenoforge/") or startswith("docs/"))' \
+      <<<"$paths" >/dev/null; then
+    printf 'eligible\n'
+  else
+    printf 'not-eligible\n'
+  fi
+  exit 0
+fi
+printf 'delivery:%s %s\n' "$script" "$*" >> "${PIN_CALLS:?}"
 [[ "$script" == */scripts/branch-delivery-preflight.mjs && "$*" == '--mode push --publish-topic' ]]
-repo=${script%/scripts/branch-delivery-preflight.mjs}
+repo=$(dirname "$(dirname "$script")")
 branch=$(git -C "$repo" symbolic-ref --short HEAD)
 git -C "$repo" push -q --set-upstream origin "$branch"
 NODE
@@ -128,6 +140,7 @@ setup_target() { # <name>
   : > "$target/.zenoforge/build/overrides.tsv"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$target/.zenoforge/build/engine-sync.sh"
   printf '// fixture delivery preflight\n' > "$target/scripts/branch-delivery-preflight.mjs"
+  printf '// fixture branch delivery policy classifier\n' > "$target/scripts/branch-delivery-policy.mjs"
   chmod +x "$target/.zenoforge/build/engine-sync.sh"
   git -C "$target" add -A
   git -C "$target" commit -qm 'fixture: initial Vecta state'
@@ -246,14 +259,17 @@ preflight_line=$(grep -n '^candidate:--preflight ' "$direct_calls" | cut -d: -f1
   || fail 'default mode pushed a direct-main pin'
 ok 'pin-only diff is prepared and stopped before publication'
 
-# A pack-touching pin takes the PR route, but publish preflight still runs. If
-# that preflight rejects a config change, --land cannot push or create a PR.
+# A mixed product pin that also touches the pack uses the PR route, and publish
+# preflight still runs. If it rejects a config change, --land cannot push or create a PR.
 pack_target=$(setup_target pack)
 git -C "$pack_target" checkout -q -b product-pack-change
 printf 'pack line\n' > "$pack_target/.zenoforge/build/pack/scripts/agent/hotfix/pack-touch.sh"
 printf '# pack-touching override table change\n' > "$pack_target/.zenoforge/build/overrides.tsv"
+mkdir -p "$pack_target/packages/fixture"
+printf 'product line\n' > "$pack_target/packages/fixture/product-touch.js"
 git -C "$pack_target" add .zenoforge/build/pack/scripts/agent/hotfix/pack-touch.sh
 git -C "$pack_target" add .zenoforge/build/overrides.tsv
+git -C "$pack_target" add packages/fixture/product-touch.js
 git -C "$pack_target" commit -qm 'fixture: pack changes'
 pack_agent=$(setup_agent pack)
 pack_calls="$tmp/pack.calls"
@@ -277,14 +293,17 @@ grep -Fq "$expected_row" "$tmp/pack.out" || fail 'preflight failure did not prin
 if [[ -e "$pack_calls" ]]; then ! grep -q '^gh:pr create ' "$pack_calls" || fail 'failed preflight still created a PR'; fi
 [[ "$(git --git-dir="$tmp/pack-origin.git" for-each-ref --format='%(refname)' refs/heads | wc -l | tr -d '[:space:]')" == 1 ]] \
   || fail 'failed preflight pushed a topic branch'
-ok 'pack-touching PR pin always runs publish preflight and refuses publication on failure'
+ok 'mixed product and pack pin uses the PR preflight and refuses publication on failure'
 
 # A passing PR pin goes through Vecta's SHA-bound branch preflight before the
 # PR is created. The simulated publisher only pushes to the fixture bare repo.
 pr_target=$(setup_target pr)
 git -C "$pr_target" checkout -q -b product-change
 printf '# existing override row\n' > "$pr_target/.zenoforge/build/overrides.tsv"
+mkdir -p "$pr_target/packages/fixture"
+printf 'product line\n' > "$pr_target/packages/fixture/product-touch.js"
 git -C "$pr_target" add .zenoforge/build/overrides.tsv
+git -C "$pr_target" add packages/fixture/product-touch.js
 git -C "$pr_target" commit -qm 'fixture: reviewed product change'
 pr_agent=$(setup_agent pr)
 pr_calls="$tmp/pr.calls"
@@ -326,6 +345,43 @@ fi
 land_worktree=$(sed -n 's/^pin-vecta: worktree=//p' "$tmp/land.out" | tail -1)
 grep -Fxq "lander-cwd:$land_worktree" "$land_calls" || fail 'land-direct-main did not run from the pin worktree'
 ok 'direct pin lands from the pin worktree'
+
+# A pin plus a pack-only target diff follows the target classifier's direct-main
+# lane, keeps [skip ci], and never tries to create a PR.
+pack_direct_target=$(setup_target pack-direct)
+git -C "$pack_direct_target" checkout -q -b pack-only-change
+printf 'pack direct line\n' > "$pack_direct_target/.zenoforge/build/pack/scripts/agent/hotfix/pack-only.sh"
+git -C "$pack_direct_target" add .zenoforge/build/pack/scripts/agent/hotfix/pack-only.sh
+git -C "$pack_direct_target" commit -qm 'fixture: direct-main pack change'
+pack_direct_agent=$(setup_agent pack-direct)
+pack_direct_calls="$tmp/pack-direct.calls"
+pack_direct_scopes="$tmp/pack-direct.scopes"
+: > "$pack_direct_calls"
+: > "$pack_direct_scopes"
+if ! ZF_LAND_DIRECT_MAIN="$tmp/fake-lander.sh" \
+  run_pin "$pack_direct_calls" "$pack_direct_scopes" "$pack_direct_agent" "$pack_direct_target" --land \
+  > "$tmp/pack-direct.out" 2>&1; then
+  cat "$tmp/pack-direct.out" >&2
+  fail 'pack-only direct-main pin did not publish through land-direct-main'
+fi
+pack_direct_worktree=$(sed -n 's/^pin-vecta: worktree=//p' "$tmp/pack-direct.out" | tail -1)
+pack_direct_subject=$(git -C "$pack_direct_worktree" log -1 --format=%s)
+[[ "$pack_direct_subject" == '[skip ci]'* ]] \
+  || fail "pack-only direct-main commit lacks [skip ci]: $pack_direct_subject"
+grep -Fq 'pin-vecta: prepared route=land-direct-main' "$tmp/pack-direct.out" \
+  || fail 'pack-only pin did not select land-direct-main'
+git -C "$pack_direct_worktree" diff --name-only origin/main...HEAD | grep -Fxq '.zenoforge/build.json' \
+  || fail 'pack-only pin diff omitted .zenoforge/build.json'
+git -C "$pack_direct_worktree" diff --name-only origin/main...HEAD \
+  | grep -Fxq '.zenoforge/build/pack/scripts/agent/hotfix/pack-only.sh' \
+  || fail 'pack-only pin diff omitted its .zenoforge/build/pack/ path'
+grep -Fq "classifier:$pack_direct_worktree/scripts/branch-delivery-policy.mjs --classify-path-set -" "$pack_direct_calls" \
+  || fail 'pack-only pin did not classify through the target worktree policy'
+grep -Fxq "lander-cwd:$pack_direct_worktree" "$pack_direct_calls" \
+  || fail 'pack-only pin did not use the direct-main lander'
+! grep -q '^gh:pr create ' "$pack_direct_calls" \
+  || fail 'pack-only direct-main pin called gh pr create'
+ok 'pack-only target diff selects direct-main, keeps [skip ci], and never creates a PR'
 
 # An override guard failure still attempts check and preflight, then names every
 # stale override and says whether the mapped pack copy contains the changed line.

@@ -163,20 +163,37 @@ if git -C "$worktree" diff --cached --quiet; then
   exit 1
 fi
 
-direct_route=1
-while IFS= read -r -d '' path; do
-  case "$path" in
-    .zenoforge/build.json|.zenoforge/build/intended-changes.tsv) ;;
-    *) direct_route=0 ;;
+classify_delivery_paths() { # <target classifier> <changed path>...
+  local classifier="$1" path_json classification
+  shift
+  [[ -f "$classifier" ]] \
+    || { echo "pin-vecta: target branch delivery classifier is missing: $classifier" >&2; return 1; }
+  (($# > 0)) \
+    || { echo 'pin-vecta: target branch delivery classifier received no changed paths; refusing publication' >&2; return 1; }
+  path_json=$(jq -cn --args '$ARGS.positional' -- "$@") \
+    || { echo 'pin-vecta: could not encode changed paths for the target branch delivery classifier' >&2; return 1; }
+  classification=$(node "$classifier" --classify-path-set - <<<"$path_json") \
+    || { echo 'pin-vecta: target branch delivery classifier failed; refusing publication' >&2; return 1; }
+  case "$classification" in
+    eligible) printf 'land-direct-main\n' ;;
+    not-eligible) printf 'PR\n' ;;
+    *)
+      echo "pin-vecta: target branch delivery classifier returned an unknown lane: $classification" >&2
+      return 1
+      ;;
   esac
-done < <(git -C "$worktree" diff --cached --name-only -z "$merge_base")
+}
 
-if ((direct_route)); then
+staged_paths=()
+while IFS= read -r -d '' path; do
+  staged_paths+=("$path")
+done < <(git -C "$worktree" diff --cached --name-only -z "$merge_base")
+route=$(classify_delivery_paths "$worktree/scripts/branch-delivery-policy.mjs" "${staged_paths[@]}") \
+  || exit 1
+if [[ "$route" == land-direct-main ]]; then
   commit_subject="[skip ci] chore(engine): pin zenoforge $short_sha"
-  route=land-direct-main
 else
   commit_subject="chore(engine): pin zenoforge $short_sha"
-  route=PR
 fi
 git -C "$worktree" commit -m "$commit_subject"
 head_sha=$(git -C "$worktree" rev-parse HEAD)
@@ -318,17 +335,16 @@ fi
 
 # Reclassify the committed diff. A hook that adds paths must not keep the
 # precomputed route or its skip-ci commit subject.
-final_route=direct
+committed_paths=()
 while IFS= read -r -d '' path; do
-  case "$path" in
-    .zenoforge/build.json|.zenoforge/build/intended-changes.tsv) ;;
-    *) final_route=pr ;;
-  esac
+  committed_paths+=("$path")
 done < <(git -C "$worktree" diff --name-only -z "$merge_base" HEAD)
-if { [[ "$final_route" == direct && "$route" != land-direct-main ]]; } \
-  || { [[ "$final_route" == pr && "$route" != PR ]]; } \
-  || { [[ "$final_route" == direct && "$commit_subject" != '[skip ci]'* ]]; } \
-  || { [[ "$final_route" == pr && "$commit_subject" == '[skip ci]'* ]]; }; then
+final_route=$(classify_delivery_paths "$worktree/scripts/branch-delivery-policy.mjs" "${committed_paths[@]}") \
+  || exit 1
+committed_subject=$(git -C "$worktree" show -s --format=%s HEAD)
+if [[ "$final_route" != "$route" ]] \
+  || { [[ "$route" == land-direct-main && "$committed_subject" != '[skip ci]'* ]]; } \
+  || { [[ "$route" == PR && "$committed_subject" == '[skip ci]'* ]]; }; then
   echo 'pin-vecta: committed diff no longer matches the prepared delivery route; refusing publication' >&2
   exit 1
 fi
