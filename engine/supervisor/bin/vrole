@@ -2,9 +2,15 @@
 const {config: c, expand} = require('../lib/config.cjs');
 const cp = require('child_process'), fs = require('fs'), path = require('path');
 const role = process.argv[2];
+if (role === '--list') {
+  for (const [name, s] of Object.entries(c.supervisors)) console.log([name, s.state, s.reports_to || '-', s.ruling || '-', s.scope || '-'].join('\t'));
+  process.exit(0);
+}
 if (!role) { console.error(`usage: vrole <${c.launcher.roles.join('|')}> [claude args]`); process.exit(1); }
 const file = path.join(expand(c.launcher.role_dir), `${role}.md`);
 if (!c.launcher.roles.includes(role) || !fs.existsSync(file)) { console.error(`no role file ${file}`); process.exit(2); }
+const sup = c.supervisors[role];
+if (sup && sup.state !== 'active') { console.error(`role ${role} is ${sup.state}${sup.ruling ? ` (ruling ${sup.ruling})` : ''}`); process.exit(3); }
 process.chdir(expand(c.launcher.cwd));
 const result = cp.spawnSync('claude', ['-n', c.launcher.prefix + role, ...process.argv.slice(3)], {stdio:'inherit', env:{...process.env, [c.role_env]:role}});
 if (result.error) { console.error(result.error.message); process.exit(1); }

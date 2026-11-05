@@ -13,6 +13,15 @@ const apply = process.argv[2] === '1';
 const home = process.env.HOME;
 const backup = path.join(home, '.zenoforge/backups/supervisor-' + new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, ''));
 const entries = [...config.links, {link:'~/.zenoforge/supervisor/config.json', target:process.env.ZF_SUPERVISOR_CONFIG}];
+const conflicts = entries.filter(entry => {
+ const link = expand(entry.link), target = expand(entry.target);
+ const st = fs.lstatSync(link, {throwIfNoEntry:false});
+ if (!st || !st.isFile() || !fs.existsSync(target)) return false;
+ const differs = !fs.readFileSync(link).equals(fs.readFileSync(target));
+ if (differs) console.error(`refuse: ${link} differs from ${target}`);
+ return differs;
+});
+if (conflicts.length) process.exit(1);
 for (const entry of entries) {
  const link = expand(entry.link), target = expand(entry.target);
  if (fs.existsSync(link) || fs.lstatSync(link, {throwIfNoEntry:false})) {

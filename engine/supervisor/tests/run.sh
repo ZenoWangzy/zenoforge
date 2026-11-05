@@ -8,7 +8,7 @@ printf 'policy\n' > "$HOME/policy"
 printf '{"sessionId":"s"}' > "$HOME/claim"
 printf '#!/bin/bash\necho waiting\nexit 1\n' > "$HOME/bin/gate"
 printf '#!/bin/bash\necho ledger\n' > "$HOME/bin/ledger"
-printf 'original\n' > "$HOME/old"
+printf 'target\n' > "$HOME/old"
 printf 'target\n' > "$HOME/target"
 node - "$ZF_SUPERVISOR_CONFIG" <<'NODE'
 const fs=require('fs'); fs.writeFileSync(process.argv[2],JSON.stringify({
@@ -64,6 +64,11 @@ for kind in missing broken invalid; do
   [ "$rc" = 1 ]; grep -q '^zenoforge supervisor: config unavailable: ' "$work/err"; [ "$(wc -l < "$work/err")" = 1 ]
  done
 done
+printf 'newer\n' > "$HOME/old"
+rc=0; bash "$root/install.sh" --apply --config "$ZF_SUPERVISOR_CONFIG" > "$work/out" 2> "$work/err" || rc=$?
+[ "$rc" = 1 ]; grep -q "refuse: $HOME/old differs from $HOME/target" "$work/err"
+[ ! -L "$HOME/old" ]; [ ! -e "$HOME/.zenoforge" ]
+printf 'target\n' > "$HOME/old"
 bash "$root/install.sh" --config "$ZF_SUPERVISOR_CONFIG" > "$work/dry"
 [ ! -L "$HOME/old" ]; [ ! -e "$HOME/.zenoforge" ]
 bash "$root/install.sh" --apply --config "$ZF_SUPERVISOR_CONFIG" > "$work/apply"
@@ -78,4 +83,24 @@ grep -q '^LINK not-a-link ~/old' "$work/watch"
 ln -s "$HOME/other" "$HOME/repoint"; mv -T "$HOME/repoint" "$HOME/old"
 bash "$root/watch/oversight.sh" > "$work/watch" 2>/dev/null
 grep -q '^LINK wrong-target ~/old' "$work/watch"
+# supervisors registry
+cp "$ZF_SUPERVISOR_CONFIG" "$work/base.json"
+printf '#!/bin/sh\nexit 0\n' > "$work/stubs/claude"; chmod +x "$work/stubs/claude"
+printf 'role\n' > "$HOME/roles/head.md"; printf 'role\n' > "$HOME/roles/lead.md"
+# Run a copy outside the repo: its package.json has "type":"module", and the published engine runs vrole as CommonJS.
+cp -r "$root" "$work/published"
+vr() { rc=0; PATH="$work/stubs:$PATH" node "$work/published/bin/vrole" "$@" > "$work/out" 2> "$work/err" || rc=$?; }
+vr lead; [ "$rc" = 0 ]
+vr head; [ "$rc" = 2 ]; grep -q 'no role file' "$work/err"
+vr --list; [ "$rc" = 0 ]; [ "$(wc -l < "$work/out")" = 4 ]; grep -q "^coach	active	founder	-	" "$work/out"
+sup() { node -e 'const f=process.argv[1],c=require(f);c.supervisors=JSON.parse(process.argv[2]);c.launcher.roles.push("head");require("fs").writeFileSync(f,JSON.stringify(c))' "$ZF_SUPERVISOR_CONFIG" "$1"; }
+sup '{"head":{"state":"closed","ruling":"r-1"}}'
+vr head; [ "$rc" = 3 ]; grep -q 'closed.*r-1' "$work/err"
+vr --list; grep -q "^head	closed	founder	r-1	" "$work/out"
+sup '{"head":{"scope":"mine"}}'
+vr head; [ "$rc" = 0 ]
+vr --list; grep -q "^head	active	founder	-	mine$" "$work/out"
+sup '{"head":{"state":"paused"}}'
+vr head; [ "$rc" = 1 ]; grep -q 'state must be active or closed' "$work/err"
+cp "$work/base.json" "$ZF_SUPERVISOR_CONFIG"
 echo 'supervisor tests: all checks passed'

@@ -1,0 +1,6 @@
+{
+  "head": {"state": "active", "scope": "Coordinates the other supervisors and reports to the founder.", "reports_to": "founder"},
+  "hotfix": {"state": "active", "scope": "Handles urgent fixes outside the regular release flow.", "reports_to": "head"},
+  "zenoforge": {"state": "active", "scope": "Maintains the engine pipeline and its configuration.", "reports_to": "head"},
+  "coach": {"state": "active", "scope": "Reviews the operator's own working habits, not pipeline work.", "reports_to": "founder"}
+}
