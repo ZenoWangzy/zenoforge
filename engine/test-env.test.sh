@@ -69,7 +69,7 @@ fi
 [[ "$shadow_output" == *'test-env: refusing node stub as real node'* ]] || { echo "$shadow_output" >&2; exit 1; }
 
 hostile_tmp="$MODEL_POLICY_TEST_REPO"
-hostile_test_root="$(TMPDIR="$hostile_tmp" test_env_run_clean bash -c '
+hostile_test_root="$(TEST_ENV_NESTED_PARENT= TMPDIR="$hostile_tmp" test_env_run_clean bash -c '
   set -euo pipefail
   host_home="$HOME"
   source "$1"
@@ -83,7 +83,7 @@ hostile_test_root="$(TMPDIR="$hostile_tmp" test_env_run_clean bash -c '
 # A repo fixture nested under the runner temp is not the runner's scratch root.
 nested_hostile_tmp="$TMPDIR/nested-suite/repo"
 mkdir -p "$nested_hostile_tmp"
-nested_hostile_root="$(TMPDIR="$nested_hostile_tmp" test_env_run_clean bash -c '
+nested_hostile_root="$(TEST_ENV_NESTED_PARENT= TMPDIR="$nested_hostile_tmp" test_env_run_clean bash -c '
   set -euo pipefail
   host_home="$HOME"
   source "$1"

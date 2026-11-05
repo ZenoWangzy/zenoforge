@@ -22,7 +22,7 @@ for pair in $EXPECTED_TLC; do
   echo "TLC $cfg: $got (expected $want)"; [[ "$got" == "$want" ]] || rc=1
   if [[ "$got" == FAIL && -n "${VERIFY_TRACE:-}" ]]; then grep -E '^State [0-9]+:' <<<"$out" | sed 's/ line.*//'; fi
 done
-full="$("$HERE/replay.test.sh" 2>&1)" || :; got="$(sed -n 's/^RESULT //p' <<<"$full")"
+full="$(test_env_run_clean "$HERE/replay.test.sh" 2>&1)" || :; got="$(sed -n 's/^RESULT //p' <<<"$full")"
 if [[ "$got" == "$EXPECTED_REPLAY" ]]; then echo "REPLAY real dispatch(): as expected"; else
   echo "REPLAY real dispatch(): CHANGED"; grep -v '^RESULT ' <<<"$full"; diff <(echo "$EXPECTED_REPLAY") <(echo "$got"); rc=1; fi
 exit "$rc"
