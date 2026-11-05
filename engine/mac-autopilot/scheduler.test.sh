@@ -1291,6 +1291,7 @@ sched_case_ci_admission_census_retry() (
   hotfix_issue_numbers() { TICK_HOTFIX_ISSUES='[]'; return 0; }
   ci_ready_hotfix_gated() { [[ "$CI_HOTFIX_BRANCHES" == '[]' ]]; }
   ci_defer_unapproved() { :; }
+  ci_pr_free_slots() { return 1; } # the runner read has its own retry (ci-admission-census-fallback.test.sh); fail fast so this case counts only PR census reads and retry sleeps
   admission_runs=0
   ci_assign_wip() { admission_runs=$((admission_runs + 1)); }
   ci_admission

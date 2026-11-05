@@ -520,6 +520,8 @@ open_pr_census_cache_write() { # stdin: 好普查 JSON → 原子落盘；失败
 }
 open_pr_census_fallback() { # → rc 0 且 TICK_PRS 填入最近一次好普查；缺失/超龄/坏格式 rc 1。使用时一拍只记一行
   local cache="$A/open-pr-census-cache.json" age prs line
+  # start.sh 的 pin 自检必须证明"现在读得到"：它设 CI_CENSUS_FALLBACK=off，旧缓存不能让坏读通过
+  [[ "${CI_CENSUS_FALLBACK:-on}" != off ]] || return 1
   age="$(census_cache_age "$cache")" || return 1
   (( age <= $(census_fallback_max_age) )) || return 1
   prs="$(jqf -r '.prs // empty' "$cache" 2>/dev/null)" || return 1
@@ -546,7 +548,7 @@ tick_prs() {
         TICK_PRS=""; return 1
       fi
     }
-    open_pr_census_cache_write <<<"$TICK_PRS"
+    open_pr_census_cache_write <<<"$TICK_PRS" || true # 缓存写失败只丢缓存，不能让本拍的好读失败
   fi
   jqf -e 'type == "array"' <<<"$TICK_PRS" >/dev/null || { TICK_PRS=""; return 1; }
   printf '%s' "$TICK_PRS"
