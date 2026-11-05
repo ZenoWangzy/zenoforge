@@ -2187,10 +2187,10 @@ GH_MERGES=(); run_merge_lane || :
   suites_run_for() { case "$1" in "$M1") jq -cn --arg sha "$1" '{headSha:$sha,status:"in_progress",conclusion:null,databaseId:10,attempt:1}';; esac; }
   gate_eval_sha() { printf '%s\n%s\n' "$M3" "$M1"; }
   eval "$(declare -f gh | sed '1s/^gh /gh_before_kill /')"
-  gh() { [[ "$1 $2" != "pr merge" ]] || kill -KILL "$BASHPID"; gh_before_kill "$@"; }
+  gh() { [[ "$1 $2" != "pr merge" ]] || { touch "$A/killed-at-merge"; kill -KILL "$BASHPID"; }; gh_before_kill "$@"; }
   units "{\"units\":[{\"id\":\"issue-86\",\"issue\":86,\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
-  ( run_merge_lane ) || :
-  [[ "$(field issue-86 .stage)" == ready-to-merge ]] || fail 'the kill did not land between gh pr merge and set_unit merged'
+  rm -f "$A/killed-at-merge"; ( run_merge_lane ) || :
+  [[ -e "$A/killed-at-merge" && "$(field issue-86 .stage)" == ready-to-merge ]] || fail 'the kill did not land between gh pr merge and set_unit merged'
   gh() { gh_before_kill "$@"; }
   tick_prs() { printf '[]'; }; pr_view() { echo MERGED; }; scheduler_issue_state() { printf '{"state":"ready-for-agent"}'; }
   concluded="$A/concluded"; : > "$concluded"
@@ -2211,6 +2211,18 @@ GH_MERGES=(); run_merge_lane || :
   scheduler_conclude_merged_pr() { fail 'an issue already in awaiting-release must not conclude twice'; }
   retire_landed_pr_units
   [[ "$(field issue-88 '.awaiting_release_pending // "none"')" == none ]] || fail 'a concluded issue kept its pending mark'
+  for past in concluded released on-hold; do
+    scheduler_issue_state() { printf '{"state":"%s"}' "$past"; }
+    units "{\"units\":[{\"id\":\"issue-89\",\"issue\":89,\"pr\":89,\"stage\":\"merged\",\"awaiting_release_pending\":89,\"history\":[]}]}"
+    retire_landed_pr_units
+    [[ "$(field issue-89 '.awaiting_release_pending // "none"')" == none ]] || fail "a $past issue kept its pending mark"
+  done
+  grep -q 'not written for on-hold issue #89' "$A/alerts/merge.md" || fail 'an on-hold issue left no alert'
+  scheduler_issue_state() { printf '{"state":"ready-for-agent"}'; }
+  units "{\"units\":[{\"id\":\"issue-90\",\"issue\":90,\"pr\":90,\"stage\":\"parked\",\"approved_sha\":\"$H1\",\"history\":[]},{\"id\":\"issue-91\",\"issue\":91,\"pr\":91,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"supervisor_owned\":true,\"history\":[]}]}"
+  retire_landed_pr_units
+  [[ "$(field issue-90 .stage)" == merged && "$(field issue-90 '.awaiting_release_pending // "none"')" == none \
+    && "$(field issue-91 '.awaiting_release_pending // "none"')" == none ]] || fail 'a unit outside the lane must not get a pending mark'
 ) || exit 1
 suites_run_for() { [[ "$1" == "$M3" ]] && jq -cn --arg sha "$1" '{headSha:$sha,status:"completed",conclusion:"failure",databaseId:9,attempt:1}'; }
 units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"

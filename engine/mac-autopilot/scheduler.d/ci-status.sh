@@ -601,7 +601,7 @@ release_session_pr_units() {
     | .id' "$UNITS")
 }
 retire_landed_pr_units() {
-  local tmpdir open_file rows_file id pr state release_mark n=0
+  local tmpdir open_file rows_file id pr state release_mark merge_sha n=0
   tmpdir="$(mktemp -d)" || return 0
   open_file="$tmpdir/open-pr-numbers.json"
   rows_file="$tmpdir/retired-units.tsv"
@@ -622,7 +622,12 @@ retire_landed_pr_units() {
     [[ "$state" == MERGED || "$state" == CLOSED ]] || continue
     [[ "$state" == MERGED ]] && state=merged || state=closed
     release_mark=.
-    [[ "$state" != merged ]] || release_mark="$(awaiting_release_mark "$pr")"
+    # Only a lane merge that died before recording itself: older, session and hotpatch units own their issue state.
+    if [[ "$state" == merged ]] && jqf -e --arg id "$id" 'any(.units[]; .id == $id and .stage == "ready-to-merge"
+        and ((.approved_sha // "") != "") and (.hotpatch // false) == false and (.supervisor_owned // false) == false)' "$UNITS" >/dev/null; then
+      merge_sha="$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null)"
+      release_mark="$(awaiting_release_mark "$pr") | .merge_sha=$(js "$merge_sha")"
+    fi
     set_unit "$id" "$(hist pr-"$state" "PR $state outside the pipeline") | .stage=\"$state\" | $release_mark"
     say "unit=$id PR#$pr already $state on GitHub; retired before dispatch"
   done < "$rows_file"
@@ -634,22 +639,30 @@ awaiting_release_mark() { # pr -> jq filter
   printf 'if (.issue | type) == "number" then .awaiting_release_pending=%s else . end' "$1"
 }
 retry_awaiting_release() {
-  local id issue pr tries n=0
+  local id issue pr tries issue_state n=0 clear='del(.awaiting_release_pending) | del(.awaiting_release_tries)'
   while IFS=$'\t' read -r id issue pr tries; do
     [[ -n "$id" ]] || continue
     (( n < ${AWAITING_RELEASE_RETRY_MAX:-5} )) || break
     n=$((n + 1))
-    if [[ "$(scheduler_issue_state "$issue" 2>/dev/null | jqf -r '.state // empty')" == awaiting-release ]] \
-      || scheduler_conclude_merged_pr "$issue" "$pr" >>"$LOG" 2>&1; then
-      set_unit "$id" 'del(.awaiting_release_pending) | del(.awaiting_release_tries)'
+    issue_state="$(scheduler_issue_state "$issue" 2>/dev/null | jqf -r '.state // empty')"
+    # Past or beside the merge, a repeat would move the issue backwards or drop a hold.
+    case "$issue_state" in
+      awaiting-release|concluded|released) set_unit "$id" "$clear"; continue ;;
+      on-hold)
+        set_unit "$id" "$clear"
+        echo "[$STAMP] awaiting-release not written for on-hold issue #$issue PR#$pr; rerun conclude_merged_run #$issue $pr if the hold ends" >> "$A/alerts/merge.md"
+        continue ;;
+    esac
+    if [[ -n "$issue_state" ]] && scheduler_conclude_merged_pr "$issue" "$pr" >>"$LOG" 2>&1; then
+      set_unit "$id" "$clear"
       say "issue #$issue reached awaiting-release for PR#$pr on retry"
     elif (( tries + 1 >= ${AWAITING_RELEASE_RETRY_LIMIT:-5} )); then
-      set_unit "$id" 'del(.awaiting_release_pending) | del(.awaiting_release_tries)'
+      set_unit "$id" "$clear"
       echo "[$STAMP] awaiting-release retries exhausted for issue #$issue PR#$pr; rerun conclude_merged_run #$issue $pr" >> "$A/alerts/merge.md"
     else
       set_unit "$id" ".awaiting_release_tries=$((tries + 1))"
     fi
-  done < <(jqf -r '.units[] | select(.awaiting_release_pending != null)
+  done < <(jqf -r '.units[] | select(.awaiting_release_pending != null and (.issue | type) == "number")
     | [.id, .issue, .awaiting_release_pending, (.awaiting_release_tries // 0)] | @tsv' "$UNITS")
 }
 
