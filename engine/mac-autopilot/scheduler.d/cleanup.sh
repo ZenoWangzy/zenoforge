@@ -81,7 +81,7 @@ cleanup_tick() {
     while IFS= read -r id; do
       [[ -n "$id" ]] || continue
       cleanup_unit_worktrees "$id"
-    done < <(jqf -r '.units[] | select((.eval_gate.status // "") | IN("pending","running") | not) | .id' "$UNITS_ARCHIVE" 2>/dev/null)
+    done < <(jqf -r --slurpfile live "$UNITS" '.units[] | select((.eval_gate.status // "") | IN("pending","running") | not) | select(.id as $i | any($live[0].units[]; .id == $i) | not) | .id' "$UNITS_ARCHIVE" 2>/dev/null) # a restored unit is live again: its worktree is not cleanup's
   fi
   n_total="$(jqf '.workers | length' "$WORKERS" 2>/dev/null || echo 0)"
   if (( n_total > 60 )); then

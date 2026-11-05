@@ -153,4 +153,42 @@ retire_terminal_units
 [[ "$(intake_counts)" == "$before" ]] || fail "retirement changed an intake count: before=$before after=$(intake_counts)"
 [[ "$(jqf -c '.pending' <<<"$before")" == 2 ]] || fail "fixture sanity: footprint waiters and supervisor-owned units do not count as startable pending; got $before"
 
+# ---- 7. 审计 BLOCK 修复：restore 大行 / 交接恢复 / 依赖父行 / cleanup 跳过活行 / 视图缓存 ----
+big="$(head -c 100000 /dev/zero | tr '\0' x)"
+seed_units '{"units":[{"id":"live7","issue":701,"stage":"review","history":[]}]}'
+jq -n --arg note "$big" '{units:[{id:"big7",issue:702,stage:"merged",pr:77,note:$note,history:[]}]}' > "$UNITS_ARCHIVE"
+restore_archived_unit big7 || fail "restore must handle a row above the 64KB jqf argv guard"
+[[ "$(jqf '[.units[] | select(.id == "big7")] | length' "$UNITS")" == 1 ]] || fail "big row not restored exactly once"
+# 交接恢复：已归档的 existing_id 必须在 units_update 之前回到热台账，intake 调用点要在
+grep -qF 'restore_archived_unit "$existing_id" || { intake_skip restore; continue; }' "$script_dir/scheduler.d/intake.sh" || fail "intake must restore an archived existing unit before updating it"
+# 依赖：归档的父单元仍能经合并视图读到（stacked 子单元的 MERGED 放行）
+seed_units '{"units":[{"id":"child7","issue":703,"stage":"blocked-external","stacked_on_unit":"par7","history":[]}]}'
+printf '%s\n' '{"units":[{"id":"par7","issue":704,"stage":"merged","pr":78,"history":[]}]}' > "$UNITS_ARCHIVE"
+[[ "$(jqf -r --arg id par7 '.units[] | select(.id==$id) | .stage' <(units_history_doc))" == merged ]] || fail "archived stacked parent must be readable"
+[[ "$(grep -c 'units_history_doc' "$script_dir/scheduler.d/dependencies.sh")" -ge 3 ]] || fail "dependencies parent reads must use the history view"
+# cleanup：归档里与活台账同 id（已复活）的单元不进回收
+seed_units '{"units":[{"id":"rev7","issue":705,"stage":"implement","history":[]}]}'
+printf '%s\n' '{"units":[{"id":"rev7","issue":705,"stage":"merged","history":[]},{"id":"old7","issue":706,"stage":"merged","history":[]}]}' > "$UNITS_ARCHIVE"
+cleaned=""
+cleanup_unit_worktrees() { cleaned+=" $1"; }
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+cleanup_tick >/dev/null 2>&1 || true
+[[ "$cleaned" == *" old7"* ]] || fail "cleanup must still sweep retired units, got:$cleaned"
+[[ "$cleaned" != *rev7* ]] || fail "cleanup must skip an archived id that is live again, got:$cleaned"
+# 视图缓存：同键命中缓存文件，任一文件被写就换键重建；索引只含查找字段
+seed_units '{"units":[{"id":"a8","issue":801,"stage":"review","history":[1,2,3]}]}'
+printf '%s\n' '{"units":[{"id":"b8","issue":802,"stage":"merged","pr":88,"note":"n","history":[]}]}' > "$UNITS_ARCHIVE"
+units_history_doc >/dev/null
+[[ "$(ls "$A"/.units-history-doc.*.json | wc -l)" == 1 ]] || fail "doc cache file missing"
+[[ "$(jqf -c '.units[1] | keys' <(units_history_index))" == '["branch","hold_handoff_episode","id","issue","pr","stage"]' ]] || fail "index must carry only lookup fields"
+sleep 0.05
+seed_units '{"units":[{"id":"a8","issue":801,"stage":"review","history":[1,2,3]},{"id":"c8","issue":803,"stage":"review","history":[]}]}'
+jqf -e 'any(.units[]; .id == "c8")' <(units_history_doc) >/dev/null || fail "cache must rebuild after units.json changes"
+[[ "$(ls "$A"/.units-history-doc.*.json | wc -l)" == 1 ]] || fail "stale doc cache files must be removed"
+# 退休：交接等待中的单元留在热台账（orphan-prs 靠它保住 PR）
+seed_units '{"units":[{"id":"hw9","issue":901,"stage":"closed","hold_handoff_waiting":true,"history":[]},{"id":"t9","issue":902,"stage":"closed","history":[]}]}'
+printf '%s\n' '{"units":[]}' > "$UNITS_ARCHIVE"
+retire_terminal_units
+[[ "$(jqf -c '[.units[].id]' "$UNITS")" == '["hw9"]' ]] || fail "a unit waiting on a handoff must not retire"
+
 echo "unit-retire.test.sh: all assertions passed"

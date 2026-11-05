@@ -146,7 +146,7 @@ predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批�
   skip_labels="$(issue_skip_labels)"
   mapfile -t deps < <(jqf -r '[.units[] | select(.stage=="blocked-external" and .blocked_on != null) | .blocked_on] | unique | .[]' "$UNITS")
   while IFS= read -r issue; do [[ "$issue" =~ ^[0-9]+$ ]] && issue_in_ledger["$issue"]=1; done \
-    < <(jqf -r '[.units[].issue | numbers] | unique | .[]' <(units_history_doc))
+    < <(jqf -r '[.units[].issue | numbers] | unique | .[]' <(units_history_index))
   for dep in "${deps[@]}"; do
     [[ "${issue_in_ledger[$dep]:-}" == 1 ]] || deps_filtered+=("$dep")
   done
@@ -652,6 +652,7 @@ register_new_issues() {
       fi
     fi
     if [[ -n "$existing_id" ]]; then
+      restore_archived_unit "$existing_id" || { intake_skip restore; continue; } # a retired unit must be back in the hot ledger or the update below maps over nothing
       units_update --arg id "$existing_id" --argjson n "$n" --arg episode "$episode" --arg pr_state "$pr_state" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --argjson labels "$labels" \
         --arg lane "$lane" --arg lane_policy "${lane_policy:-}" --arg branch "$branch" --arg existing_pr "$existing_pr" --arg handoff_branch "$handoff_branch" --argjson pr_changed "$pr_changed" --slurpfile ids <(printf '%s' "$ids") --argjson handoff "$handoff" --argjson handoff_all "$handoff_all" --arg at "$STAMP" \
         '.units |= map(if (.id as $unit | $ids[0] | index($unit)) != null then
@@ -687,7 +688,7 @@ register_new_issues() {
     else
       if [[ "$handoff_pr" =~ ^[0-9]+$ ]]; then branch="$handoff_branch"; fi
       units_update --argjson n "$n" --arg title "$title" --argjson labels "${labels:-[]}" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --arg lane "$lane" --arg lane_policy "${lane_policy:-}" --arg branch "$branch" --arg episode "$episode" --argjson handoff "$handoff" --argjson handoff_all "$handoff_all" \
-        --arg pr "$handoff_pr" --arg acceptance "${acceptance:-}" --slurpfile history <(units_history_doc) \
+        --arg pr "$handoff_pr" --arg acceptance "${acceptance:-}" --slurpfile history <(units_history_index) \
         'if any($history[0].units[]; .issue == $n) then . else .units += [{id:("issue-"+($n|tostring)), issue:$n, title:$title, labels:$labels, stage:"implement-pending", lane:$lane, branch:$branch, task:$task, body_blocked_by:$body_blocked_by, history:[],hold_handoff_episode:$episode}
           + (if $acceptance != "" then {acceptance:($acceptance | fromjson)} else {} end)
           + (if $pr != "" then {pr:($pr | tonumber),stage:"repair-pending",lane_policy:$lane_policy,repair_hint:"Read the issue comments for the ownerless hold handoff and complete the existing PR."} else {} end)

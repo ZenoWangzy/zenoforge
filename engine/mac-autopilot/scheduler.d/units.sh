@@ -9,7 +9,7 @@ restore_archived_unit() { # id；rc 0 = 该单元现在在热台账里
   jqf -e --arg id "$id" 'any(.units[]; .id == $id)' "$UNITS" >/dev/null 2>&1 && return 0
   row="$(jqf -c --arg id "$id" '[.units[] | select(.id == $id)][0] // empty' "$UNITS_ARCHIVE" 2>/dev/null)" || return 1
   [[ -n "$row" ]] || return 1
-  units_update --argjson row "$row" --arg id "$id" 'if any(.units[]; .id == $id) then . else .units += [$row] end'
+  units_update --slurpfile row <(printf '%s' "$row") --arg id "$id" 'if any(.units[]; .id == $id) then . else .units += [$row[0]] end' # slurpfile: a row can exceed the 64KB jqf argv guard
 }
 
 # ---------- 终态单元退休：热台账只留会推进的单元 ----------
@@ -20,13 +20,31 @@ UNIT_RETIRE_STAGES='["merged","landed","closed","done","wontfix","duplicate"]'
 
 # 需要历史（终态）记录的读者用这个合并视图：活台账 + 归档，按 id 去重。同一 id 同时出现在
 # 两处（退休两步写之间崩溃的窗口）时以 units.json 的行较新为准（reduce 后写覆盖，活台账行排在后面）。
-units_history_doc() {
-  if [[ -s "$UNITS_ARCHIVE" ]]; then
+units_history_doc() { _units_history_view doc; }
+# 逐候选查找只需 id/issue/branch/pr/stage/episode：读这份小索引，不必每次解析整份合并台账。
+units_history_index() { _units_history_view index; }
+# 合并视图缓存：键为两个文件的 mtime(ns)+大小，任一文件被写就换键重建；所以一拍内的几十次查找只付一次合并。
+_units_history_view() { # doc|index
+  local kind="$1" key dir f g proj='{units: [.units[] | {id, issue, branch, pr, stage, hold_handoff_episode}]}'
+  if [[ ! -s "$UNITS_ARCHIVE" ]]; then
+    if [[ "$kind" == doc ]]; then cat "$UNITS"; else jqf "$proj" "$UNITS"; fi
+    return
+  fi
+  key="$(stat -c '%i %y %s' "$UNITS" "$UNITS_ARCHIVE" 2>/dev/null | tr -c 'A-Za-z0-9\n' _ | tr -d '\n')"
+  dir="${UNITS_ARCHIVE%/*}"; f="$dir/.units-history-$kind.$key.json"
+  if [[ -n "$key" && -s "$f" ]]; then cat "$f" && return; fi
+  if [[ "$kind" == doc ]]; then
     jqf -s --slurpfile arch "$UNITS_ARCHIVE" '
       reduce (($arch[0].units // []) + (.[0].units // []))[] as $u ({}; .[$u.id] = $u)
-      | [.[]] | {units: .}' "$UNITS" 2>/dev/null || cat "$UNITS"
+      | [.[]] | {units: .}' "$UNITS" 2>/dev/null > "$f.$$" || { rm -f "$f.$$"; cat "$UNITS"; return; }
   else
-    cat "$UNITS"
+    _units_history_view doc | jqf "$proj" > "$f.$$" || { rm -f "$f.$$"; _units_history_view doc; return; }
+  fi
+  if [[ -n "$key" ]] && mv -f "$f.$$" "$f"; then
+    for g in "$dir"/.units-history-"$kind".*.json; do [[ "$g" == "$f" ]] || rm -f "$g"; done
+    cat "$f"
+  else
+    cat "$f.$$"; rm -f "$f.$$"
   fi
 }
 
@@ -46,6 +64,7 @@ retire_terminal_units() {
   jqf -c --slurpfile workers "$WORKERS" --argjson terminal "$UNIT_RETIRE_STAGES" '
     ([.units[] | select(.stage as $s | $terminal | index($s) != null)
        | select((.eval_gate.status // "") | IN("pending","running") | not)
+       | select((.hold_handoff_waiting // false) | not)
        | select((.main_red == true
            and (((.resolved_main_sha // "") == "") or ((.resolved_main_at // "") == ""))) | not)
        | .id]) as $retirable

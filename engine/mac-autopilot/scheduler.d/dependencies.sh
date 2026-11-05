@@ -344,7 +344,7 @@ reconcile_stacked_units() {
     if [[ -z "$TICK_PRS" ]]; then tick_prs_prime; prs="${TICK_PRS:-[]}"; fi
     id="$(jqf -r .id <<<"$child")"; dep="$(jqf -r '.blocked_on // empty' <<<"$child")"
     parent_id="$(jqf -r '.stacked_on_unit // empty' <<<"$child")"
-    parent="$(jqf -c --arg id "$parent_id" '.units[] | select(.id==$id)' "$UNITS")"
+    parent="$(jqf -c --arg id "$parent_id" '.units[] | select(.id==$id)' <(units_history_doc))"
     [[ -n "$dep" && -n "$parent" ]] || continue
     parent_pr="$(jqf -r '.pr // empty' <<<"$parent")"; parent_branch="$(jqf -r '.branch // empty' <<<"$parent")"
     parent_stage="$(jqf -r .stage <<<"$parent")"; parent_approved="$(jqf -r '.approved_sha // empty' <<<"$parent")"
@@ -399,7 +399,7 @@ reconcile_stacked_units() {
       child_stage=blocked-external
       say "unit $id restacked on $parent_id@$parent_head"
     fi
-    parent="$(jqf -c --arg id "$parent_id" '.units[] | select(.id==$id)' "$UNITS")"
+    parent="$(jqf -c --arg id "$parent_id" '.units[] | select(.id==$id)' <(units_history_doc))"
     parent_stage="$(jqf -r .stage <<<"$parent")"; parent_approved="$(jqf -r '.approved_sha // empty' <<<"$parent")"
     parent_reviewed="$(jqf -r '.reviewed_pr_head // empty' <<<"$parent")"
     if [[ "$parent_stage" == ready-to-merge && "$parent_approved" == "$parent_head" && "$parent_reviewed" == "$parent_head" ]]; then

@@ -9,7 +9,7 @@ both places), then the archive. Duplicate ids collapse to the live row.
 import json
 import os
 
-LEDGER_FILES = ("units-archive.json", "units.json")
+LEDGER_FILES = ("units.json", "units-archive.json")
 
 
 def load_units(runtime_dir):
@@ -23,5 +23,5 @@ def load_units(runtime_dir):
             continue
         for unit in units:
             if isinstance(unit, dict) and unit.get("id"):
-                by_id[unit["id"]] = unit
+                by_id.setdefault(unit["id"], unit)
     return list(by_id.values())
