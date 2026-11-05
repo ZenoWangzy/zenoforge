@@ -10,9 +10,12 @@
 # LIB_TEST_STALE_HOLD_REQUEUE_ONLY, LIB_TEST_HOLD_REQUEUE_ONLY,
 # LIB_TEST_RELEASE_CLOSE_ONLY, LIB_TEST_OPS_TRANSITION_ONLY, and
 # LIB_TEST_MODEL_POLICY_ONLY; each stops after its section, so preceding
-# sections still run.
+# sections still run. lib-part-1/2.test.sh run the later test blocks separately.
+LIB_TEST_PART="${LIB_TEST_PART:-0}"
+case "$LIB_TEST_PART" in 0|1|2) ;; *) echo "invalid LIB_TEST_PART=$LIB_TEST_PART" >&2; exit 2 ;; esac
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-lib-helpers.sh"
 
+if [[ "$LIB_TEST_PART" == 0 ]]; then
 test_provider_quota_classification() {
   local refusal="ERROR: You’ve hit your usage limit. Try again at Oct 19th, 2099 1:13 AM." event
   assert_false "signal status never classifies even a real refusal" premium_call_is_quota_refused "$refusal" 143
@@ -44,6 +47,8 @@ if [[ "${1:-}" == --quota-only ]]; then lib_case_exit; fi
 lib_reads_caller_script_dir() { grep -nE '\$\{?SCRIPT_DIR' "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR"/lib.d/*.sh | grep -vE '^[0-9]+:[[:space:]]*#'; }
 assert_false "lib.sh never reads the caller's SCRIPT_DIR" lib_reads_caller_script_dir
 
+fi
+# Defined for every partition: lib-part-2 also calls it.
 test_direct_landing_product_and_revert() {
   local home repo queue issues sha output
   home="$(mktemp -d)"; repo="$home/repo"; queue="$home/land-queue"; issues="$home/issues"
@@ -89,6 +94,7 @@ test_direct_landing_product_and_revert() {
   fi
   rm -rf -- "$home"
 }
+if [[ "$LIB_TEST_PART" == 0 ]]; then
 
 if [[ "${LIB_TEST_POST_LAND_ONLY:-0}" == 1 ]]; then
   test_direct_landing_product_and_revert
@@ -1867,10 +1873,6 @@ flock -u 7
 exec 7>&-
 rm -f "$MERGE_LOCK_BOUND_TEST_FILE"
 
-# Keep the library reset that followed the GitNexus fixtures before their
-# extraction; later cases must start with the original functions restored.
-source "$SCRIPT_DIR/lib.sh"
-
 # --- resolve_recipients (notify.sh): email recipient resolution -----------
 # Pure function -- no gh call, no network, no email sent (lib.sh sources
 # notify.sh, so it's already in scope here). Uses a throwaway roster file,
@@ -2347,7 +2349,9 @@ if [[ "${LIB_TEST_MODEL_POLICY_ONLY:-0}" == 1 ]]; then
   bash "$SCRIPT_DIR/lib-model-policy.test.sh" || FAILED=1
   lib_case_exit
 fi
+fi
 
+if [[ "$LIB_TEST_PART" == 1 ]]; then
 # --- give_up_on_issue's attempt threshold ---------------------------------
 # Defect 2, 2026-09-14 (#1179): fail_attempt()'s give-up threshold moved
 # from 3 to 4; every attempt resolves through the configured role policy.
@@ -4171,10 +4175,9 @@ assert_contains "run_codex_json: ...so the quota detector recognizes this shape 
 assert_not_contains "run_codex_json: ...and the kept 2000 bytes no longer include the banner (proves the END was kept, not the START)" \
   "$RCJ_LONG_OUT" "session id: fake-session"
 
-# A local wall-clock kill is its own failure shape: the runner must preserve
-# the limit and observed elapsed time in the normalized failure, so the
-# caller can tell a timeout from a model/provider refusal without reopening
-# the shell's bare timeout default.
+# A simulated command timeout is its own failure shape: the runner must
+# preserve the limit and observed elapsed time in the normalized failure, so
+# the caller can distinguish it from a model/provider refusal.
 cat > "$RCJ_BIN/codex" <<'CODEXEOF'
 #!/usr/bin/env bash
 set -u
@@ -4185,9 +4188,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 cat >/dev/null
-sleep 2
 CODEXEOF
 chmod +x "$RCJ_BIN/codex"
+cat > "$RCJ_BIN/timeout" <<'TIMEOUTEOF'
+#!/usr/bin/env bash
+exit 124
+TIMEOUTEOF
+chmod +x "$RCJ_BIN/timeout"
 RCJ_TIMEOUT_OUT="$([[ -x "$RCJ_BIN/codex" ]] && \
   PATH="$RCJ_BIN:$PATH" CODEX_JSON_TIMEOUT_SECONDS=1 bash -c '
     source "$0/lib.sh"
@@ -4195,7 +4202,7 @@ RCJ_TIMEOUT_OUT="$([[ -x "$RCJ_BIN/codex" ]] && \
     echo "$out"
     echo "status=$?"
   ' "$SCRIPT_DIR" 2>&1)"
-assert_contains "run_codex_json: exit 124 names its configured wall-clock limit" \
+assert_contains "run_codex_json: exit 124 names its configured command limit" \
   "$RCJ_TIMEOUT_OUT" "timed out after 1s"
 assert_contains "run_codex_json: exit 124 names observed elapsed time" \
   "$RCJ_TIMEOUT_OUT" "elapsed "
@@ -4404,8 +4411,8 @@ case "${FAKE_CODEX_IMPLEMENT_MODE:-success}" in
   success) echo "codex implement: wrote the diff"; exit 0 ;;
   quota) echo "ERROR: You’ve hit your usage limit. Try again later." >&2; exit 1 ;;
   genuine) echo "Error: unexpected internal failure" >&2; exit 1 ;;
-  signal) sh -c 'kill -TERM "$PPID"'; sleep 30 ;;
-  timeout) exec sleep 30 ;;
+  signal) sh -c 'kill -TERM "$PPID"'; exit 143 ;;
+  timeout) exit 124 ;;
 esac
 CODEXEOF
 chmod +x "$RCI_BIN/codex"
@@ -4479,11 +4486,9 @@ chmod +x "$RCI_BIN/systemctl"
 RCI_TIMEOUT_BIN="$(mktemp -d)"
 ln -s "$RCI_BIN/codex" "$RCI_TIMEOUT_BIN/codex"
 ln -s "$RCI_BIN/systemctl" "$RCI_TIMEOUT_BIN/systemctl"
-REAL_TIMEOUT="$(command -v timeout)"
 cat > "$RCI_TIMEOUT_BIN/timeout" <<'TIMEOUTEOF'
 #!/usr/bin/env bash
-shift
-exec "$REAL_TIMEOUT" --signal=TERM 0.05s "$@"
+exit 124
 TIMEOUTEOF
 chmod +x "$RCI_TIMEOUT_BIN/timeout"
 
@@ -4495,7 +4500,7 @@ run_rci_failure_case() {
   fi
   [ "$mode" = timeout ] && runner_bin="$RCI_TIMEOUT_BIN"
   out="$(AGENT_HOME="$home" PATH="$runner_bin:$PATH" \
-    FAKE_CODEX_IMPLEMENT_MODE="$codex_mode" FAKE_SYSTEMCTL_MODE="$systemctl_mode" REAL_TIMEOUT="$REAL_TIMEOUT" \
+    FAKE_CODEX_IMPLEMENT_MODE="$codex_mode" FAKE_SYSTEMCTL_MODE="$systemctl_mode" \
     FAKE_SYSTEMCTL_LOG="$home/systemctl.log" bash -c '
       set -uo pipefail
       source "$0/lib.sh"
@@ -4535,7 +4540,7 @@ assert_contains "ordinary model exit is distinguishable in the transcript" \
 RCI_TIMEOUT_HOME="$(mktemp -d)"; RCI_TIMEOUT_LOG="$(mktemp)"
 TMP_DIRS+=("$RCI_TIMEOUT_HOME" "$RCI_TIMEOUT_LOG" "$RCI_TIMEOUT_BIN")
 RCI_TIMEOUT_OUT="$(run_rci_failure_case timeout 700112 "$RCI_TIMEOUT_HOME" "$RCI_TIMEOUT_LOG")"
-assert_contains "real wall-clock timeout keeps exit 124 and timeout classification" \
+assert_contains "simulated command timeout keeps exit 124 and timeout classification" \
   "$RCI_TIMEOUT_OUT" 'CALL-STATUS=124'
 assert_contains "timeout is independently recorded with structured status" \
   "$RCI_TIMEOUT_OUT" '"exit_status":124,"termination_class":"wall_clock_timeout"'
@@ -4775,7 +4780,9 @@ assert_eq "legs_executable_check: ...and only that stage" "yes" "$(lg triage_fre
 assert_eq "legs_executable_check: ...under a signature that names the leg" "env:leg-not-executable:advisor" "$(lg sig)"
 assert_eq "legs_executable_check: ...which blocks that stage's dispatch (an outage, not a verdict)" "yes" "$(lg advisor_blocked)"
 assert_eq "legs_executable_check: the probe lifts it on the tick after the mode bit is fixed" "yes" "$(lg lifted_after_fix)"
+fi
 
+if [[ "$LIB_TEST_PART" == 2 ]]; then
 # --- 2026-09-16 fix (instance 1): dispatch()/dispatch_merge_sweeper() used
 # to swallow a systemd-run failure via `|| echo ... >&2` -- `echo` exits 0,
 # so the function always returned success even when NO unit was created,
@@ -4817,7 +4824,8 @@ if [ "$GH_RETRY_MODE" = gateway ] && [ "$count" -eq 1 ]; then
   echo 'gh: Gateway Timeout (HTTP 504)' >&2
   exit 1
 fi
-if [ "$count" -eq 1 ]; then sleep 2; else echo GH_RETRY_OK; fi
+if [ "$count" -eq 1 ]; then exit 124; fi
+echo GH_RETRY_OK
 FAKE_GH
 chmod +x "$GH_RETRY_BIN/gh"
 GH_RETRY_OUT="$(PATH="$GH_RETRY_BIN:$PATH" GH_CALL_TIMEOUT_SEC=1 GH_RETRY_COUNT_FILE="$GH_RETRY_COUNT_FILE" GH_RETRY_MODE=timeout bash -c '
@@ -5758,7 +5766,7 @@ QUOTA_CONCURRENT_OUT="$(
     source "$0/lib.sh"
     mkdir -p "$STATE_DIR"
     : > "$AGENT_HOME/mails"
-    notify_maintainer() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; sleep 0.05; }
+    notify_maintainer() { printf "%s\n" "$1" >> "$AGENT_HOME/mails"; }
     refusal="{\"api_error_status\":429,\"result\":\"weekly usage limit reached\"}"
     pids=()
     for n in 700011 700012 700013 700014; do
@@ -6980,5 +6988,6 @@ else
   TRIAGE_CONFIG_OVERRIDE_STATUS=rejected
 fi
 assert_eq "triage schema validation reads target config override" rejected "$TRIAGE_CONFIG_OVERRIDE_STATUS"
+fi
 
 lib_case_exit

@@ -936,13 +936,14 @@ grep -qx -- '--refill' "$rg/calls" || fail "the cadence did not run a refill tic
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
   A="$rg/state"; LIVE="$rg/live"; export RG_CALLS="$rg/calls" RG_STATE="$rg/state" RG_LOCK="$rg/lock" RG_DURING="$rg/during"
   : > "$RG_CALLS"; : > "$RG_DURING"
-  command sleep 3 & slow=$!; export RG_SLOW_PID="$slow"
+  tail -f /dev/null >/dev/null & slow=$!; export RG_SLOW_PID="$slow"
   export AUTOPI_REFILL_SECONDS=2147483647
   mkdir "$RG_LOCK"; printf '%s\n' "$$" > "$RG_LOCK/pid"
   true & dead=$!; wait "$dead"
   jq -n --argjson d "$dead" '{workers:[{pid:$d}]}' > "$A/workers.json"
   polls=0
-  sleep() { SECONDS=$((SECONDS + ${1:-0})); polls=$((polls + 1)); (( polls < 2 )) || rm -rf -- "$RG_LOCK"; }
+  # The stand-in slow tick never exits by itself: end it once the lock was freed and the refill had its poll.
+  sleep() { SECONDS=$((SECONDS + ${1:-0})); polls=$((polls + 1)); (( polls < 2 )) || rm -rf -- "$RG_LOCK"; (( polls < 4 )) || kill "$slow" 2>/dev/null || :; }
   refill_window 10 "$slow"
   kill "$slow" 2>/dev/null || :; wait "$slow" 2>/dev/null || : ) || fail 'refill did not retry and dispatch while slow tick was alive'
 grep -qx -- '--refill' "$rg/calls" && grep -qx 'during-slow-tick' "$rg/during" \
@@ -1011,8 +1012,18 @@ ln -s one "$lp/live"
 [[ "$( ( AUTOPI_LOOP_LIBRARY_ONLY=true; MAC_AUTOPILOT_SUPERVISOR_DIR="$lp/sup"; source "$(dirname "$0")/loop.sh"; printf %s "$LIVE" ) )" == "$lp/sup/autopi-live" ]] || fail 'loop.sh live pointer is not <supervisor>/autopi-live'
 
 # L76：卡住的一拍被限时终止并告警，loop 照常进入下一拍
-lt="$fixture/looptick"; mkdir -p "$lt/alerts"; printf 'exec sleep 60 # wall-clock-allow: stands in for a hung tick that the limit must kill\n' > "$lt/scheduler.sh"
-( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"; A="$lt"; LIVE="$lt"; AUTOPI_TICK_LIMIT_SECONDS=1 run_tick ) || fail 'run_tick failed on a hung tick'
+lt="$fixture/looptick"; mkdir -p "$lt/alerts" "$lt/bin"; printf 'exec tail -f /dev/null\n' > "$lt/scheduler.sh"
+cat > "$lt/bin/timeout" <<'TIMEOUT'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$LOOP_TIMEOUT_ARGS"
+exit 124
+TIMEOUT
+chmod +x "$lt/bin/timeout"
+( LOOP_TIMEOUT_ARGS="$lt/timeout.args"; PATH="$lt/bin:$PATH"; export LOOP_TIMEOUT_ARGS PATH
+  AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"; A="$lt"; LIVE="$lt"; AUTOPI_TICK_LIMIT_SECONDS=1 run_tick ) \
+  || fail 'run_tick failed on a timed-out tick'
+grep -q 'TICK-TIMEOUT' "$lt/scheduler.log" && grep -q 'TICK-TIMEOUT' "$lt/alerts/waste.md" || fail 'hung tick was not killed and alerted'
+grep -Fq -- '--foreground -k 30 1 bash ' "$lt/timeout.args" || fail 'run_tick did not pass its bounded command to timeout'
 grep -q 'TICK-TIMEOUT' "$lt/scheduler.log" && grep -q 'TICK-TIMEOUT' "$lt/alerts/waste.md" || fail 'hung tick was not killed and alerted'
 
 # repair 没推出新 head：自动重试两次，第三次转人工
@@ -1296,11 +1307,20 @@ gate_note "GATE main=$M1 suites=success — merge lane open"
 )
 
 # L69：候选检查并行预取，只等预取进程——worker 也是本 shell 的后台子进程，合并车道不能等它们
-sleep 30 & bg_worker=$! # wall-clock-allow: proves the merge lane does not wait for an unrelated long-running background child
-t0=$SECONDS # wall-clock-allow: proves the merge lane does not wait for an unrelated long-running background child
+tail -f /dev/null >/dev/null & bg_worker=$! # deterministic unrelated worker; cleanup below is bounded by an explicit kill
+wait_guard="$fixture/unrelated-worker-waited"
+wait() {
+  local pid
+  if (($# == 0)); then : > "$wait_guard"; return 98; fi
+  for pid in "$@"; do
+    if [[ "$pid" == "$bg_worker" || "$pid" == -n ]]; then : > "$wait_guard"; return 98; fi
+  done
+  builtin wait "$@"
+}
 units "{\"units\":[{\"id\":\"pr-11b\",\"pr\":11,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H2\",\"history\":[]}]}"
 run_merge_lane || :
-(( SECONDS - t0 < 20 )) || fail "merge lane waited for an unrelated background worker" # wall-clock-allow: proves the merge lane does not wait for an unrelated long-running background child
+unset -f wait
+[[ ! -e "$wait_guard" ]] || fail 'merge lane tried to wait for an unrelated background worker'
 kill "$bg_worker" 2>/dev/null; wait "$bg_worker" 2>/dev/null || :
 # ---------- 合并车道：CI 红先重跑一次，同一 head 重跑后仍红才派 repair（不再每拍空转） ----------
 gh_merge_stub="$(declare -f gh)"
@@ -2813,7 +2833,7 @@ rm -f "$LUNA_SLOTS/wait-hotfix-$$"
 room_for issue-9 review || fail 'dispatch did not resume after the wait file went away'
 : > "$LUNA_SLOTS/wait-normal-$$"
 room_for issue-9 review || fail 'a normal waiter must not hold other normal dispatches'
-sleep 0.1 & gate_dead=$!; wait "$gate_dead"
+true & gate_dead=$!; wait "$gate_dead"
 kill -0 "$gate_dead" 2>/dev/null && fail "test setup: pid $gate_dead still alive"
 : > "$LUNA_SLOTS/wait-hotfix-$gate_dead"
 room_for issue-9 review || fail 'a stale wait file of a dead wrapper blocked dispatch'
