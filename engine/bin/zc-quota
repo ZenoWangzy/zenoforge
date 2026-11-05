@@ -11,6 +11,7 @@ const STATE = `${HOME}/.zenoforge/zc-quota.json`;
 const MARKER = `${HOME}/.zenoforge/zcode-exhausted-until`;
 const QUOTA_MAX_AGE_SECONDS = Number(process.env.ZC_QUOTA_MAX_AGE_SECONDS || 900);
 const CAP_5H = Number(process.env.ZC_5H_CAP || 85);              // stop starting ZCode at this 5h percentage
+const CAP_WEEK = Number(process.env.ZC_WEEK_CAP || 90);           // stop starting ZCode here: the rest of the week is production chat's supply
 const RESET_WEEK_AT = Number(process.env.ZC_WEEK_RESET_AT || 98); // spend a weekly reset at this weekly percentage
 const PAGE = 'https://bigmodel.cn/coding-plan/personal/usage';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -106,8 +107,8 @@ try {
   }
   const now = Math.floor(Date.now() / 1000);
   const marker = (() => { try { return Number(fs.readFileSync(MARKER, 'utf8').trim()); } catch { return 0; } })();
-  if (q.five_h_pct >= CAP_5H || q.week_pct >= 100) {
-    const until = q.week_pct >= 100 ? q.week_reset : q.five_h_reset;
+  if (q.five_h_pct >= CAP_5H || q.week_pct >= CAP_WEEK) {
+    const until = q.week_pct >= CAP_WEEK ? q.week_reset : q.five_h_reset;
     if (until > marker) fs.writeFileSync(MARKER, `${until}\n`);
     q.marker_written = Math.max(until, marker);
     log(`hold ZCode until ${new Date(until * 1000).toISOString()}: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
@@ -115,7 +116,7 @@ try {
     fs.rmSync(MARKER, { force: true });  // only clear a hold this script wrote; a provider refusal's marker stays
     log(`release ZCode hold: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
   }
-  fs.writeFileSync(STATE, JSON.stringify({ ...q, read_at: now, cap_5h: CAP_5H, max_age_seconds: QUOTA_MAX_AGE_SECONDS, freshness: 'fresh' }) + '\n');
+  fs.writeFileSync(STATE, JSON.stringify({ ...q, read_at: now, cap_5h: CAP_5H, cap_week: CAP_WEEK, max_age_seconds: QUOTA_MAX_AGE_SECONDS, freshness: 'fresh' }) + '\n');
   const iso = t => t ? new Date(t * 1000).toISOString() : 'not started';
   log(`5h ${q.five_h_pct}% (reset ${iso(q.five_h_reset)}) weekly ${q.week_pct}% (reset ${iso(q.week_reset)})`);
 } catch (e) {

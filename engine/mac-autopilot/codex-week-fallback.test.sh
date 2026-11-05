@@ -16,6 +16,9 @@ source "$script_dir/scheduler.d/models.sh"
 
 fail() { echo "not ok - $*" >&2; cat "$LOG" >&2; exit 1; }
 provider_quota_exhausted() { return 1; }
+# ZCode's weekly hold: workers stop at 90 so the rest of the week stays with production chat.
+zc_status() { jq -n --argjson w "$1" --argjson now "$NOW_EPOCH" '{five_h_pct:1,week_pct:$w,read_at:$now,freshness:"fresh"}' > "$A/zc.json"; ZCODE_QUOTA_SNAPSHOT_FILE="$A/zc.json" zcode_quota_status; }
+[[ "$(zc_status 89)" == available && "$(zc_status 90)" == exhausted ]] || fail "ZCode week hold: 89=$(zc_status 89) 90=$(zc_status 90)"
 provider_of() { case "$1" in gpt-*) echo codex ;; claude-*) echo claude ;; *) echo unknown ;; esac; }
 model_forbidden_by_policy() { return 1; }
 zcode_quota_status() { echo unknown; }

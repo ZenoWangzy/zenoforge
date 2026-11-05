@@ -167,7 +167,7 @@ zcode_quota_status() { # fresh snapshot and active marker -> available|exhausted
   fi
   command jq -er '
     if ((.five_h_pct | type) != "number" or (.week_pct | type) != "number") then "unknown"
-    elif .five_h_pct >= (.cap_5h // 85) or .week_pct >= 100 then "exhausted"
+    elif .five_h_pct >= (.cap_5h // 85) or .week_pct >= (.cap_week // 90) then "exhausted"
     else "available" end
   ' "$file" 2>/dev/null || printf 'unknown\n'
 }
