@@ -5227,7 +5227,7 @@ sched_case_supervisor_cap_triage_rule_twice() {
   command jq -n --argjson h "$(cap_triage_history)" '{units:[{id:"cap-rule-repeat",issue:764,task:"one bounded fixture task",branch:"cap-rule-repeat",
     stage:"supervisor-review",supervisor_cap_return_stage:"repair-pending",history:$h}]}' > "$TF/supervisor/autopi/units.json"
   tick
-  command jq '(.units[0].hold_handoff_waiting=true)' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+  command jq '(.units[0].hold_handoff_waiting=true | .units[0].hold_handoff_lookup_pending=true)' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
   for attempt in $(seq 1 10); do
     tick
     command jq -e 'any(.units[0].history[]; .stage=="supervisor-cap-rule")' "$TF/supervisor/autopi/units.json" >/dev/null && break
