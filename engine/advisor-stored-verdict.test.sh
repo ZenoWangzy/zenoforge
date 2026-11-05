@@ -106,6 +106,8 @@ ADVISOR_DECISION_LOG=""
 # advisor slice's function bodies are eval'd, not the tick's assignments).
 ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS=$((12 * 60 * 60))
 ADVISOR_VERDICT_STUCK_SIGNAL_SECONDS=$((6 * 60 * 60))
+ADVISOR_SELECT_MAX=12
+advisor_selected=0
 
 NOW_S="$(date +%s)"
 iso_utc() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
@@ -132,6 +134,12 @@ write_verdict_fixture 6002 $((13 * 60 * 60))           # past the 12h bound
 write_verdict_fixture 6003 $((20 * 60)) "2026-11-03T19:27:00Z"  # apply failed
 
 FILTER_ERR_FILE="$AGENT_HOME/filter.err"
+# A long queue stops at the select limit, so the advisor slice reaches dispatch inside its budget.
+NEEDS_ADVISOR_IDS=$'7001\n7002\n7003'
+ADVISOR_SELECT_MAX=2 eval "$FILTER_BODY" 2>"$FILTER_ERR_FILE" || true
+assert_eq "selection stops at the limit, in queue order" $'7001\n7002' "$NEEDS_ADVISOR_IDS"
+assert_contains "the stop is logged" "$(cat "$FILTER_ERR_FILE")" "advisor selection stopped at 2 tickets"
+
 NEEDS_ADVISOR_IDS=$'6001\n6002\n6003'
 eval "$FILTER_BODY" 2>"$FILTER_ERR_FILE" || true
 FILTER_ERR="$(cat "$FILTER_ERR_FILE")"

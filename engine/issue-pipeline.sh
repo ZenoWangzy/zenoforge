@@ -382,6 +382,8 @@ ADVISOR_CAP=2
 # Every fresh advisor question uses one batch dialogue, including a one-ticket
 # queue. Existing single jobs are polled separately; no fresh single fallback.
 ADVISOR_BATCH_MIN=1
+# Reading a queued ticket takes seconds and the advisor slice has 150s: at 64 tickets it timed out before any batch started.
+ADVISOR_SELECT_MAX=12
 # A stored (pending, not yet applied) advisor verdict is only resumed while it
 # is younger than this bound; an older one is discarded and re-asked fresh, so
 # a verdict that keeps failing to apply can never park a ticket forever.
@@ -2635,6 +2637,7 @@ if ! NEEDS_ADVISOR_IDS="$(gh issue list --repo "$REPO" --limit 1000 --label need
   echo "issue-pipeline: needs-advisor queue could not be read; queue is unknown, so only advisor dispatch is skipped this tick and retried next tick" >&2
 fi
 NEEDS_ADVISOR_IDS="$(prioritize_advisor_blockers "$NEEDS_ADVISOR_IDS")"
+advisor_selected=0
 NEEDS_ADVISOR_IDS="$(while IFS= read -r advisor_id; do
   [ -n "$advisor_id" ] || continue
   if issue_is_tracker_parent "$advisor_id"; then continue; fi
@@ -2693,6 +2696,7 @@ NEEDS_ADVISOR_IDS="$(while IFS= read -r advisor_id; do
   fi
   [ "$(issue_model_failure_backoff_remaining "$advisor_id")" -gt 0 ] && continue
   printf '%s\n' "$advisor_id"
+  (( ++advisor_selected < ADVISOR_SELECT_MAX )) || { echo "issue-pipeline: advisor selection stopped at $ADVISOR_SELECT_MAX tickets; the rest wait for the next batch" >&2; break; }
 done <<< "$NEEDS_ADVISOR_IDS")"
 advisor_slots="$(cap_slots_remaining "$ADVISOR_CAP" "$(stage_unit_count advisor)")"
 ADVISOR_RAW_JOB_IDS="$(web_advisor_provider_job_ids)"
