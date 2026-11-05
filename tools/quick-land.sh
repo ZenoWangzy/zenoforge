@@ -44,6 +44,8 @@ quick_land_main() {
   url="$(gh pr create --base main --head "$branch" --title "$subject" \
     --body $'Small Markdown change, landed by tools/quick-land.sh.\n\n## prior-art\n\nno external prior art: small text change')"
   bash tools/merge-pr.sh "${url##*/}"
+  git fetch -q origin main
+  git switch -q --detach origin/main # the next run starts from origin/main
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
