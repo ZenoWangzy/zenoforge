@@ -1504,7 +1504,8 @@ def main():
     metrics["workorders.over_standard"] = sum(1 for o in orders if o["over"])
     # Per-ticket spend from the same cost rows; token values and bounds use only complete fresh
     # splits. Bounds use the 30 days of closed tickets before the 7-day window (p50 x 1.5 healthy,
-    # p90 x 2 unhealthy, worker_cost.ticket_bound); no usable history keeps the static criteria.
+    # p90 x 2 unhealthy, worker_cost.ticket_bound); provisional or fewer than 10 samples keep
+    # the static criteria.
     tickets = worker_cost.ticket_spend(cost_rows, units)
     ticket_bounds = {}
     for mid, field, key in (("workorders.ticket_tokens_p90", "fresh", "token"),
@@ -1523,7 +1524,8 @@ def main():
                 history.append(value)
         metrics[mid] = pct(recent, .9)
         ticket_bounds[key] = worker_cost.ticket_bound(history)
-        if ticket_bounds[key] and mid not in overrides:
+        if (ticket_bounds[key] and not ticket_bounds[key]["provisional"]
+                and ticket_bounds[key]["samples"] >= 10 and mid not in overrides):
             node, desc, _, _, higher = criteria[mid]
             criteria[mid] = (node, desc, ticket_bounds[key]["healthy"],
                              ticket_bounds[key]["unhealthy"], higher)
