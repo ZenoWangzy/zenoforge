@@ -38,16 +38,18 @@ clone_head_mismatch_alert() { # id dir head want；每个分叉 head 只升级�
 }
 
 clone_dirty_recovery() { # id dir want → 0 走原有 stash / 2 已恢复（跳过 stash）/ 1 拒绝
-  local id="$1" dir="$2" want="$3" head="" patch="" owner=1
-  # 还开着的 merge/rebase 属于开它的人；绝不在这里 abort。
-  if [[ -e "$dir/.git/MERGE_HEAD" || -d "$dir/.git/rebase-merge" || -d "$dir/.git/rebase-apply" \
+  local id="$1" dir="$2" want="$3" head="" patch="" owner=1 merging=false
+  # 还开着的 rebase 属于开它的人；绝不在这里 abort。开着的 merge 只有确认主人已死才回收：宕机杀掉 worker 后没人收尾。
+  if [[ -d "$dir/.git/rebase-merge" || -d "$dir/.git/rebase-apply" \
      || -e "$dir/.git/CHERRY_PICK_HEAD" || -e "$dir/.git/REVERT_HEAD" ]]; then
     return 1
   fi
-  [[ "$want" =~ $SHA_RE ]] || return 0
-  git -C "$dir" diff --quiet HEAD -- >/dev/null 2>&1 && return 0 # 只有 untracked 的脏树走原 stash 路径
+  [[ -e "$dir/.git/MERGE_HEAD" ]] && merging=true
+  [[ "$want" =~ $SHA_RE ]] || { [[ "$merging" == false ]]; return; }
+  [[ "$merging" == false ]] && git -C "$dir" diff --quiet HEAD -- >/dev/null 2>&1 && return 0 # 只有 untracked 的脏树走原 stash 路径
   head="$(git -C "$dir" rev-parse -q --verify HEAD 2>/dev/null)" || return 1
   if [[ "$head" != "$want" ]]; then
+    [[ "$merging" == false ]] || return 1
     # 领先 origin（已提交未推送）的分支照旧走 stash+保留；reset 会丢未推送的提交。
     [[ -n "$(git -C "$dir" ls-files -u 2>/dev/null)" ]] || return 0
     clone_head_mismatch_alert "$id" "$dir" "$head" "$want"
@@ -55,7 +57,7 @@ clone_dirty_recovery() { # id dir want → 0 走原有 stash / 2 已恢复（跳
   fi
   clone_worktree_owner_live "$id"; owner=$?
   case "$owner" in
-    0) return 0 ;; # 活 worker/claim 还在写这棵树：不 reset（unmerged 树随后 stash 失败即拒绝）
+    0) [[ "$merging" == false ]]; return ;; # 活 worker/claim 还在写这棵树：不 reset（unmerged 树随后 stash 失败即拒绝）
     3) say "clone dirty unit=$id: worker/claim liveness unknown; refusing to reset"; return 1 ;;
   esac
   patch="$A/wt-$id-recovery-$TAG.patch"

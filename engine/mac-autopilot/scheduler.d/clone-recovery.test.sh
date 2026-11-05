@@ -120,13 +120,24 @@ command git -C "$WT_ROOT/wt-issue-901" ls-files -u | grep -q . || fail "the dive
 [[ -z "$(patch_of)" ]] || fail "a divergent head produced a recovery backup"
 [[ "$(field issue-901 .stage)" == repair-pending ]] || fail "mismatch refusal must leave the unit in place ($(field issue-901 .stage))"
 
-# --- 4. 还开着的 merge 绝不自动 abort ---
+# --- 4. 开着的 merge：活 worker 占用时绝不回收；主人已死（宕机）时备份后 reset，否则这棵树永远卡住 ---
 make_zombie yes
-printf '%s\n' '{"workers":[]}' > "$WORKERS"
 : > "$LOG"
-if ensure_clone issue-901 agent/issue-901 1 "$WANT" >/dev/null 2>&1; then fail "an open merge was redispatched"; fi
-[[ -f "$WT_ROOT/wt-issue-901/.git/MERGE_HEAD" ]] || fail "the open merge was aborted instead of refused"
-log_has 'clone recovery' && fail "an open merge produced a recovery record"
+sleep 300 & live_pid=$!
+live_start="$(coord_process_start_ticks "$live_pid")"
+jq -n --argjson pid "$live_pid" --argjson start "$live_start" --arg dir "$WT_ROOT/wt-issue-901" \
+  '{workers:[{pid:$pid,pid_start:$start,unit:"issue-901",type:"repair",log:"x.log",report:"r.md",workdir:$dir}]}' > "$WORKERS"
+if ensure_clone issue-901 agent/issue-901 1 "$WANT" >/dev/null 2>&1; then
+  kill "$live_pid" 2>/dev/null || :; fail "a live worker's open merge was redispatched"
+fi
+kill "$live_pid" 2>/dev/null || :; wait "$live_pid" 2>/dev/null || :
+[[ -f "$WT_ROOT/wt-issue-901/.git/MERGE_HEAD" ]] || fail "a live worker's open merge was aborted instead of refused"
+log_has 'clone recovery' && fail "a live worker's open merge produced a recovery record"
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+ensure_clone issue-901 agent/issue-901 1 "$WANT" >/dev/null || fail "an open merge with a dead owner stayed wedged"
+[[ ! -e "$WT_ROOT/wt-issue-901/.git/MERGE_HEAD" ]] || fail "the abandoned merge was not cleared"
+[[ -n "$(patch_of)" ]] || fail "the abandoned merge was reset without a diff backup"
+[[ "$(grep -c 'clone recovery' "$LOG")" == 1 ]] || fail "the abandoned merge must log exactly one recovery record"
 
 # --- 5. 活性核实不了（worker 台账损坏）：拒绝而不是赌一把 reset ---
 make_zombie
