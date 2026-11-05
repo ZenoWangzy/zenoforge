@@ -2165,6 +2165,11 @@ GH_MERGES=(); run_merge_lane || :
   units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
   GH_MERGES=(); run_merge_lane || :
   [[ "${GH_MERGES[0]:-}" == *"pr merge 86"* ]] || fail 'a [skip ci] head with no run held the lane over a running candidate'
+  # No candidate has a run: there is no CI observation at all, so the lane stays held.
+  suites_run_for() { :; }
+  units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
+  GH_MERGES=(); run_merge_lane || :
+  [[ ${#GH_MERGES[@]} == 0 ]] || fail 'pipeline PR merged with no CI observation on any gate candidate'
 ) || exit 1
 suites_run_for() { [[ "$1" == "$M3" ]] && jq -cn --arg sha "$1" '{headSha:$sha,status:"completed",conclusion:"failure",databaseId:9,attempt:1}'; }
 units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
