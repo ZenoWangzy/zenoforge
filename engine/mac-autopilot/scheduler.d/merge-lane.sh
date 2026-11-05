@@ -185,7 +185,7 @@ run_merge_lane_pass() {
       [[ "$candidate" =~ $SHA_RE ]] || continue
       run="$(suites_run_for "$candidate")"
       [[ -n "$run" ]] || { [[ -z "$first_eval" ]] && first_eval="$candidate"; continue; }
-      [[ -z "$first_eval" ]] && { first_eval="$candidate"; first_run="$run"; }
+      [[ -z "$first_run" ]] && { first_eval="$candidate"; first_run="$run"; }
       # 被取消的 run 不是裁决（去重会取消被取代的排队 run），继续往链上找
       if [[ "$(jqf -r '.status // empty' <<<"$run")" == completed && "$(jqf -r '.conclusion // empty' <<<"$run")" != cancelled ]]; then eval_sha="$candidate"; gate_run="$run"; break; fi
     done

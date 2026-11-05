@@ -2158,6 +2158,14 @@ GH_CHECKS='[{"name":"Pipeline suites","bucket":"pass"}]'
 units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
 GH_MERGES=(); run_merge_lane || :
 [[ "${GH_MERGES[0]:-}" == *"pr merge 86"* ]] || fail 'pipeline PR waited on pending (not red) main suites'
+# A [skip ci] head has no run on a push-triggered gate: the running run behind it is the observation.
+(
+  suites_run_for() { case "$1" in "$M1") jq -cn --arg sha "$1" '{headSha:$sha,status:"in_progress",conclusion:null,databaseId:10,attempt:1}';; esac; }
+  gate_eval_sha() { printf '%s\n%s\n' "$M3" "$M1"; }
+  units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
+  GH_MERGES=(); run_merge_lane || :
+  [[ "${GH_MERGES[0]:-}" == *"pr merge 86"* ]] || fail 'a [skip ci] head with no run held the lane over a running candidate'
+) || exit 1
 suites_run_for() { [[ "$1" == "$M3" ]] && jq -cn --arg sha "$1" '{headSha:$sha,status:"completed",conclusion:"failure",databaseId:9,attempt:1}'; }
 units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
 echo '{"'"$M3"'":"x"}' > "$A/gate-net-rerun.json"; omr_saved="$(declare -f open_main_red_unit)"; open_main_red_unit() { :; }
