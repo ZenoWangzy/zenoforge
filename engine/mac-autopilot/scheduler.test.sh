@@ -1040,6 +1040,7 @@ tick() (
   prepare_tick_config
   export MAC_AUTOPILOT_ROOT="$TF/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$TF/supervisor" MAC_AUTOPILOT_RUNTIME_DIR="$TF/supervisor/autopi" CODEX_SESSIONS_DIR="$TF/sessions"
   export AGENT_HOME="$TF/agent-home" AUTOPILOT_PAUSE_FILE="$TF/pause"
+  export UNIT_RETIRE_DISABLED="${UNIT_RETIRE_DISABLED:-true}"
   export AUTOPILOT_POLICY_SCRIPT="${AUTOPILOT_POLICY_SCRIPT:-$POLICY_FIXTURE}"
   export AP_SYSTEM_TMP="$TF/tmp" AP_SYSTEM_TMP_FS=fixture
   export ZF_GH_REAL_CLI="$TF/bin/gh-real" ZF_TEST_EVIDENCE_LEDGER="$TF/supervisor/test-evidence.jsonl"

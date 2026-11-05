@@ -38,6 +38,7 @@ units_history_doc() {
 # （eval/supervise worker 会在单元终态后仍收割写账）。
 retire_terminal_units() {
   local ids_file rows n archive_n
+  [[ "${UNIT_RETIRE_DISABLED:-}" != true ]] || return 0 # 测试开关：scheduler.test.sh 整拍用例断言终态行留在 units.json；退休由 unit-retire.test.sh 覆盖
   [[ -f "$UNITS_ARCHIVE" ]] || printf '{"units":[]}\n' > "$UNITS_ARCHIVE"
   jqf -e 'type=="object" and (.units|type)=="array"' "$UNITS_ARCHIVE" >/dev/null 2>&1 \
     || { say "unit retire: archive unreadable; terminal units kept in ledger"; return 0; }
