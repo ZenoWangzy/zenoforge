@@ -159,6 +159,7 @@ test_census() {
 
 test_footprint() {
   local blocked='{"id":"blocked","footprint":["pkg/a"]}' clear='{"id":"clear","footprint":["pkg/unrelated"]}'
+  export ZF_FOOTPRINT_HOTSPOT_MIN=1 # this fixture's pkg/a link has a low co-change count; the verdict cache is what is under test.
   local expected actual logs
   TICK_ACTIVE_FOOTPRINTS='[{"id":"running","footprint":["pkg/hot"]}]'
   TICK_ACTIVE_FOOTPRINTS_VALID=true
