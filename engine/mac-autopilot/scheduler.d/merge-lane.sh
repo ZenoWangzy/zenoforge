@@ -83,6 +83,7 @@ merge_lane_awaiting_release() { # ready-unit-json pr
   issue="$(jqf -r '.issue // empty' <<<"$1")"
   [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 0
   if scheduler_conclude_merged_pr "$issue" "$2" >>"$LOG" 2>&1; then
+    set_unit "$(jqf -r .id <<<"$1")" 'del(.awaiting_release_pending) | del(.awaiting_release_tries)'
     say "issue #$issue entered awaiting-release at merge of PR#$2"
   else
     echo "[$STAMP] merged PR#$2 but the awaiting-release write for issue #$issue failed; rerun conclude_merged_run #$issue $2" >> "$A/alerts/merge.md"
@@ -550,14 +551,14 @@ run_merge_lane_pass() {
         merge_sha="$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null)"
         [[ "$merge_sha" =~ $SHA_RE ]] || merge_sha=""
         if [[ -n "$merge_sha" ]]; then
-          set_unit "$id" "$(hist merged "merged on green PR CI; main CI verifies $merge_sha") | (.stage=\"merged\") | .merge_sha=\"$merge_sha\" | .pre_merge_sha=\"$pre_merge_sha\""
+          set_unit "$id" "$(hist merged "merged on green PR CI; main CI verifies $merge_sha") | (.stage=\"merged\") | .merge_sha=\"$merge_sha\" | .pre_merge_sha=\"$pre_merge_sha\" | $(awaiting_release_mark "$pr")"
           merge_lane_awaiting_release "$ready" "$pr"
           merged_count=$((merged_count + 1))
           say "merged PR#$pr merge=$merge_sha (own checks green; main CI verifies)"
           (( merged_count >= merge_max )) && break
           continue
         fi
-        set_unit "$id" "$(hist merged "merged on green PR CI; mergeCommit SHA unavailable") | (.stage=\"merged\")"
+        set_unit "$id" "$(hist merged "merged on green PR CI; mergeCommit SHA unavailable") | (.stage=\"merged\") | $(awaiting_release_mark "$pr")"
         merge_lane_awaiting_release "$ready" "$pr"
         echo "[$STAMP] merged PR#$pr but mergeCommit SHA unavailable; unit=$id marked merged, main CI covers it" >> "$A/alerts/merge.md"
         break

@@ -601,7 +601,7 @@ release_session_pr_units() {
     | .id' "$UNITS")
 }
 retire_landed_pr_units() {
-  local tmpdir open_file rows_file id pr state n=0
+  local tmpdir open_file rows_file id pr state release_mark n=0
   tmpdir="$(mktemp -d)" || return 0
   open_file="$tmpdir/open-pr-numbers.json"
   rows_file="$tmpdir/retired-units.tsv"
@@ -621,10 +621,36 @@ retire_landed_pr_units() {
     [[ -n "$state" ]] && TICK_PR_STATE["$pr"]="$state"
     [[ "$state" == MERGED || "$state" == CLOSED ]] || continue
     [[ "$state" == MERGED ]] && state=merged || state=closed
-    set_unit "$id" "$(hist pr-"$state" "PR $state outside the pipeline") | .stage=\"$state\""
+    release_mark=.
+    [[ "$state" != merged ]] || release_mark="$(awaiting_release_mark "$pr")"
+    set_unit "$id" "$(hist pr-"$state" "PR $state outside the pipeline") | .stage=\"$state\" | $release_mark"
     say "unit=$id PR#$pr already $state on GitHub; retired before dispatch"
   done < "$rows_file"
   rm -rf -- "$tmpdir"
+  retry_awaiting_release
+}
+# A merged unit keeps this mark until its issue reaches awaiting-release, so a killed tick or a refused write is retried.
+awaiting_release_mark() { # pr -> jq filter
+  printf 'if (.issue | type) == "number" then .awaiting_release_pending=%s else . end' "$1"
+}
+retry_awaiting_release() {
+  local id issue pr tries n=0
+  while IFS=$'\t' read -r id issue pr tries; do
+    [[ -n "$id" ]] || continue
+    (( n < ${AWAITING_RELEASE_RETRY_MAX:-5} )) || break
+    n=$((n + 1))
+    if [[ "$(scheduler_issue_state "$issue" 2>/dev/null | jqf -r '.state // empty')" == awaiting-release ]] \
+      || scheduler_conclude_merged_pr "$issue" "$pr" >>"$LOG" 2>&1; then
+      set_unit "$id" 'del(.awaiting_release_pending) | del(.awaiting_release_tries)'
+      say "issue #$issue reached awaiting-release for PR#$pr on retry"
+    elif (( tries + 1 >= ${AWAITING_RELEASE_RETRY_LIMIT:-5} )); then
+      set_unit "$id" 'del(.awaiting_release_pending) | del(.awaiting_release_tries)'
+      echo "[$STAMP] awaiting-release retries exhausted for issue #$issue PR#$pr; rerun conclude_merged_run #$issue $pr" >> "$A/alerts/merge.md"
+    else
+      set_unit "$id" ".awaiting_release_tries=$((tries + 1))"
+    fi
+  done < <(jqf -r '.units[] | select(.awaiting_release_pending != null)
+    | [.id, .issue, .awaiting_release_pending, (.awaiting_release_tries // 0)] | @tsv' "$UNITS")
 }
 
 # CI 只花在会合并的 head 上（约束理论：瓶颈不做无用功）。CI 是交付瓶颈（10-21 一天批准 110、合并 17），而评审

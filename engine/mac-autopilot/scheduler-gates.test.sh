@@ -2182,6 +2182,35 @@ GH_MERGES=(); run_merge_lane || :
   units "{\"units\":[{\"id\":\"issue-86\",\"issue\":86,\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"gated\":true,\"approved_sha\":\"$H1\",\"history\":[]}]}"
   GH_MERGES=(); run_merge_lane || :
   [[ "$(field issue-86 .stage)" == ready-to-merge && ${#GH_MERGES[@]} == 0 ]] || fail 'an approved draft must keep waiting for its CI slot'
+# Killed between gh pr merge and set_unit merged: the next tick retires the unit and still reaches awaiting-release.
+(
+  suites_run_for() { case "$1" in "$M1") jq -cn --arg sha "$1" '{headSha:$sha,status:"in_progress",conclusion:null,databaseId:10,attempt:1}';; esac; }
+  gate_eval_sha() { printf '%s\n%s\n' "$M3" "$M1"; }
+  eval "$(declare -f gh | sed '1s/^gh /gh_before_kill /')"
+  gh() { [[ "$1 $2" != "pr merge" ]] || kill -KILL "$BASHPID"; gh_before_kill "$@"; }
+  units "{\"units\":[{\"id\":\"issue-86\",\"issue\":86,\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
+  ( run_merge_lane ) || :
+  [[ "$(field issue-86 .stage)" == ready-to-merge ]] || fail 'the kill did not land between gh pr merge and set_unit merged'
+  gh() { gh_before_kill "$@"; }
+  tick_prs() { printf '[]'; }; pr_view() { echo MERGED; }; scheduler_issue_state() { printf '{"state":"ready-for-agent"}'; }
+  concluded="$A/concluded"; : > "$concluded"
+  scheduler_conclude_merged_pr() { echo "$1 $2" >> "$concluded"; (( $(wc -l < "$concluded") > 1 )); }
+  retire_landed_pr_units
+  [[ "$(field issue-86 .stage)" == merged && "$(field issue-86 .awaiting_release_pending)" == 86 ]] \
+    || fail 'a refused awaiting-release write lost its pending mark'
+  retire_landed_pr_units
+  [[ "$(field issue-86 '.awaiting_release_pending // "none"')" == none && "$(wc -l < "$concluded")" == 2 ]] \
+    || fail 'the killed merge never reached awaiting-release'
+  units "{\"units\":[{\"id\":\"issue-87\",\"issue\":87,\"pr\":87,\"stage\":\"merged\",\"awaiting_release_pending\":87,\"awaiting_release_tries\":4,\"history\":[]}]}"
+  scheduler_conclude_merged_pr() { return 1; }; : > "$A/alerts/merge.md"
+  retire_landed_pr_units
+  [[ "$(field issue-87 '.awaiting_release_pending // "none"')" == none ]] && grep -q 'retries exhausted for issue #87' "$A/alerts/merge.md" \
+    || fail 'a permanently refused write must stop retrying and alert'
+  scheduler_issue_state() { printf '{"state":"awaiting-release"}'; }
+  units "{\"units\":[{\"id\":\"issue-88\",\"issue\":88,\"pr\":88,\"stage\":\"merged\",\"awaiting_release_pending\":88,\"history\":[]}]}"
+  scheduler_conclude_merged_pr() { fail 'an issue already in awaiting-release must not conclude twice'; }
+  retire_landed_pr_units
+  [[ "$(field issue-88 '.awaiting_release_pending // "none"')" == none ]] || fail 'a concluded issue kept its pending mark'
 ) || exit 1
 suites_run_for() { [[ "$1" == "$M3" ]] && jq -cn --arg sha "$1" '{headSha:$sha,status:"completed",conclusion:"failure",databaseId:9,attempt:1}'; }
 units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
