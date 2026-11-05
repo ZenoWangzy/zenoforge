@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Conclusion and advisor ownership regression cases from the library suite.
+set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-lib-helpers.sh"
 # --- conclude_run: refuses an outcome it cannot produce the artifact for --
 # docs/agents/issue-pipeline.md "Every run concludes with an account of

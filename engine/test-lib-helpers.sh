@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared isolated fixture and assertions for the library suites.
 set -euo pipefail
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
+[[ -n "${ZF_AGENT_TEST_MODE:-}" ]] || { echo 'test-lib-helpers: the suite must source test-env.sh first' >&2; exit 2; }
 LIB_TEST_AGENT_HOME="$AGENT_HOME"
 INBOX_HELPER_HOME="$(mktemp -d)"
 LIB_TEST_TMP_DIRS=()

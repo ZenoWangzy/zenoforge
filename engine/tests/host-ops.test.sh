@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 if [[ $# == 0 ]]; then
   for flavor in shell node python sites; do bash "$0" "$flavor"; done
   exit

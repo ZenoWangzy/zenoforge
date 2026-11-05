@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The writer must only record carriers that the release reader can read back.
-set -uo pipefail
+set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../test-env.sh"
 set +e
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"

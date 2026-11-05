@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # A target repo without .github/workflows/pipeline-suites.yml gets no post-land dispatch and no failure.
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 p=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 eval "$(sed -n '/^dispatch_pipeline_suites_after_landing() {/,/^}/p' "$p/land-direct-main.sh")"
 pipeline_suites_main_focused_run_covers_sha() { return 1; }

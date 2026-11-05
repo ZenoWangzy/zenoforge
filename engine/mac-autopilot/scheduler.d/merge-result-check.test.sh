@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)/mac-autopilot/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 engine_dir="$(cd -- "$script_dir/../.." && pwd -P)"
-source "$engine_dir/mac-autopilot/test-env.sh"
 
 fixture="$test_env_root/merge-result-check"
 supervisor="$fixture/supervisor"

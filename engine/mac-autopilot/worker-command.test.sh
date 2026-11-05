@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-source "$script_dir/test-env.sh"
 ROOT="$MAC_AUTOPILOT_ENV_ROOT"
 source "$script_dir/scheduler.d/worker-command.sh"
 

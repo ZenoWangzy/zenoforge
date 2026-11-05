@@ -9,8 +9,8 @@
 # disallowed transition exits non-zero and writes nothing, and --dry-run
 # writes nothing at all. gh is a PATH stub.
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-source "$ENGINE_DIR/test-env.sh"
 
 CLI="$ENGINE_DIR/bin/zf-issue-transition"
 GH_LOG="$AGENT_HOME/gh-calls.log"

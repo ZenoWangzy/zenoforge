@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Model policy regression cases split from the library suite.
+set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-lib-helpers.sh"
 # --- persistent model policy: shared roles and one escalation ladder -------
 assert_eq "work role identity resolves from policy model and effort" "$POLICY_WORK_IDENTITY" "$(model_policy identity work)"

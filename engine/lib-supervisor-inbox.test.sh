@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Supervisor inbox and wake-budget cases from the library suite.
+set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-lib-helpers.sh"
 # Supervisor events must use the shared append seam so every inbox wake is
 # counted, and each metric row must remain one line.

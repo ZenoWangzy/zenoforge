@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-source "$script_dir/test-env.sh"
 trap 'rm -rf -- "$test_env_root"' EXIT
 [[ "$test_env_root" != "$script_dir/"* ]] || { echo "tick-census.test.sh: scratch must be outside the source tree" >&2; exit 1; }
 

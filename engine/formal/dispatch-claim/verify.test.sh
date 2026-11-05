@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # CI-safe replay of the real dispatch and claim code; the separate model check requires TLC.
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)/test-env.sh"
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 EXPECTED_REPLAY="live-worker-guard: HELD
 slow-pr-guard: HELD

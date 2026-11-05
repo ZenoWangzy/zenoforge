@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 
 worker_source=$(realpath "${1:-$(dirname "$0")/worker}")
 test_root=$(mktemp -d)

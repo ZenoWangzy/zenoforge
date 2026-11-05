@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)/test-env.sh"
 engine=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
-source "$engine/test-env.sh"
 watch_dir="$engine/supervisor/watch"
 fixture="$test_env_root/throughput"
 mkdir -p "$fixture"

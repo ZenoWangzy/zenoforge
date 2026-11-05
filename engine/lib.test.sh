@@ -11,6 +11,8 @@
 # LIB_TEST_RELEASE_CLOSE_ONLY, LIB_TEST_OPS_TRANSITION_ONLY, and
 # LIB_TEST_MODEL_POLICY_ONLY; each stops after its section, so preceding
 # sections still run.
+set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-lib-helpers.sh"
 
 test_provider_quota_classification() {
