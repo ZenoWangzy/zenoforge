@@ -580,7 +580,7 @@ register_new_issues() {
     fi
     if (( existing_only )) && [[ -n "$existing_id" ]] && ! jqf -e --arg id "$existing_id" 'any(.units[]; .id == $id and (.stage | test("^(implement|review|rereview|repair)(-pending)?$")))' "$UNITS" >/dev/null; then
       total_upstream="$(jqf '[.units[] | select(.stage | test("^(implement|review|rereview|repair)(-pending)?$"))] | length' "$UNITS")"
-      if (( total_upstream >= 2 * max_up )); then
+      if (( max_up > 0 && total_upstream >= 2 * max_up )); then # max_up 0 is a paused pool: known units still resume, as they did before the ceiling.
         say "intake held: $total_upstream total units upstream (ceiling $((2 * max_up))); handoff issue #$n deferred"
         continue
       fi
