@@ -38,6 +38,8 @@ if [ "${1:-}" = issue ] && [ "${2:-}" = view ]; then
   exit 0
 fi
 if [ "${1:-}" = issue ] && [ "${2:-}" = list ]; then
+  # A lagging bulk label snapshot: numbers listed here still show as on-hold.
+  case "$*" in *"--label on-hold"*) cat "${ZF_GH_LIVE_LABELS:?}/stale-on-hold" 2>/dev/null || true ;; esac
   exit 0
 fi
 if [ "${1:-}" = label ] && [ "${2:-}" = list ]; then
@@ -125,5 +127,59 @@ grep -Fq 'dry-run: table refuses #5312 needs-advisor -> duplicate (reason=superv
 [ "$(cat "$AGENT_HOME/state/5312.json")" = "$before_state" ] || fail 'dry-run refusal changed the state file'
 [ ! -s "$GH_LOG" ] || fail "dry-run refusal made gh calls: $(cat "$GH_LOG")"
 echo 'ok - dry-run reports the table answer without writing'
+
+# #352: a label-only hold (no state record) cannot be released by an ordinary
+# reason, but `bare-hold-release:<why>` clears the label and moves the issue in
+# one write. A state that records a hold keeps its own release reasons.
+live_labels 5320 on-hold
+printf '5320\n5321\n' > "$LIVE_LABELS_DIR/stale-on-hold"
+: > "$GH_LOG"
+refuse_rc=0
+bash "$CLI" 5320 needs-triage supervisor-batch >/dev/null 2>"$err" || refuse_rc=$?
+[ "$refuse_rc" -ne 0 ] || fail 'ordinary reason moved a bare-held issue'
+grep -Fq 'issue_transition: refused held #5320 untracked -> needs-triage' "$err" \
+  || fail "bare-hold refusal line missing: $(cat "$err")"
+[ "$(edit_count 5320)" -eq 0 ] || fail 'refused bare-hold transition wrote labels'
+if ! out="$(bash "$CLI" 5320 needs-triage bare-hold-release:prod-anomaly-batch 2>"$err")"; then
+  cat "$err" >&2
+  fail 'bare-hold-release failed'
+fi
+[ "$out" = 'transition #5320 untracked -> needs-triage (reason=bare-hold-release:prod-anomaly-batch)' ] \
+  || fail "unexpected bare-hold success line: $out"
+[ "$(edit_count 5320)" -eq 1 ] || fail "expected one label write, got $(edit_count 5320)"
+grep -Fq -- '--remove-label on-hold' "$GH_LOG" || fail 'bare-hold release did not remove the on-hold label'
+grep -Fq -- '--add-label needs-triage' "$GH_LOG" || fail 'bare-hold release did not add needs-triage'
+[ "$(jq -r .state "$AGENT_HOME/state/5320.json")" = needs-triage ] || fail 'bare-hold release left the wrong state'
+refuse_rc=0
+bash "$CLI" 5320 needs-triage 'bare-hold-release:' >/dev/null 2>"$err" || refuse_rc=$?
+[ "$refuse_rc" -ne 0 ] || fail 'bare-hold-release without a reason text was accepted'
+live_labels 5321 on-hold
+seed_state 5321 '{"state":"needs-info","hold":{"kind":"owner"}}'
+refuse_rc=0
+bash "$CLI" 5321 needs-triage bare-hold-release:no-record >/dev/null 2>"$err" || refuse_rc=$?
+[ "$refuse_rc" -ne 0 ] || fail 'bare-hold-release moved a tracked hold'
+grep -Fq 'refused bare-hold-release for #5321' "$err" || fail "tracked-hold refusal line missing: $(cat "$err")"
+rm -f "$LIVE_LABELS_DIR/stale-on-hold"
+echo 'ok - bare on-hold label is released by one reasoned command'
+
+# #352: the bulk on-hold snapshot still lists an issue whose label was just
+# removed; the live read of that one issue decides, so the move is not refused.
+live_labels 5322 needs-info
+seed_state 5322 '{"state":"needs-info","attempts":0}'
+printf '5322\n' > "$LIVE_LABELS_DIR/stale-on-hold"
+: > "$GH_LOG"
+if ! out="$(bash "$CLI" 5322 needs-triage supervisor-batch 2>"$err")"; then
+  cat "$err" >&2
+  fail 'a lagging on-hold snapshot refused a live-unheld issue'
+fi
+[ "$(edit_count 5322)" -eq 1 ] || fail "lagging snapshot: expected one label write, got $(edit_count 5322)"
+live_labels 5323 $'needs-info\non-hold'
+seed_state 5323 '{"state":"needs-info","attempts":0}'
+printf '5323\n' > "$LIVE_LABELS_DIR/stale-on-hold"
+refuse_rc=0
+bash "$CLI" 5323 needs-triage supervisor-batch >/dev/null 2>"$err" || refuse_rc=$?
+[ "$refuse_rc" -ne 0 ] || fail 'a live-held issue was moved'
+rm -f "$LIVE_LABELS_DIR/stale-on-hold"
+echo 'ok - a lagging on-hold snapshot does not refuse a live-unheld issue'
 
 echo 'ok - all zf-issue-transition checks passed'

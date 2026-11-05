@@ -85,6 +85,15 @@ cached_issue_has_label() {
 }
 
 
+# issue_label_snapshot_forget <issue> <label> -- drop a stale snapshot hit once a
+# live read of the issue showed the label gone.
+issue_label_snapshot_forget() {
+  local ids=$'\n'"${ISSUE_LABEL_SNAPSHOT_IDS[$2]:-}"
+  ids="${ids//$'\n'$1$'\n'/$'\n'}"
+  ISSUE_LABEL_SNAPSHOT_IDS[$2]="${ids#$'\n'}"
+}
+
+
 # has_label <n> <label> -- 0 if #n confirmed carries <label>, 1 if gh
 # confirmed it does NOT, 2 if the read itself failed and presence could
 # not be determined. 2026-09-16 fix (same root cause as is_on_hold()

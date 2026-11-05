@@ -1057,6 +1057,11 @@ if [ "${1:-}" = api ]; then
   echo '[]'
   exit 0
 fi
+# The live label read that confirms a snapshot hold (#352) must see the same hold.
+if [ "${1:-} ${2:-}" = "issue view" ] && [ "${HOLD_MODE:-}" = held ]; then
+  echo on-hold
+  exit 0
+fi
 printf '%s\n' "$*" >> "$HELD_LANE_COMMAND_LOG"
 EOF
 chmod +x "$HELD_LANE_HOME/bin/gh"

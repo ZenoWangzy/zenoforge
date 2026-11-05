@@ -748,18 +748,36 @@ issue_transition() (
       wontfix:close-*|wontfix:conclude:*|\
       awaiting-release:merged-pr|\
       ready-for-agent:hold-requeue|\
-      ready-for-agent:revert|ready-for-agent:failed-deploy|ready-for-agent:reopened-by-human|ready-for-agent:main-red-revert)
+      ready-for-agent:revert|ready-for-agent:failed-deploy|ready-for-agent:reopened-by-human|ready-for-agent:main-red-revert|\
+      *:bare-hold-release:?*)
         # A PR merged to main ends the held episode; releasing the hold through
         # state_requeue first stamped requeued_at after the merge (2026-10-09).
         # Explicit hold requeue also clears a stale remote label after local state advanced.
         release_hold_overlay=1
         ;;
     esac
+    # A supervisor release of an on-hold label that has no hold record in the
+    # state file (#352: 43 label-only holds had no release path). A tracked hold
+    # keeps its own release reasons.
+    if [[ "$reason" == bare-hold-release:?* ]] && ! jq -e '(.hold // null) == null' <<< "$before" >/dev/null 2>&1; then
+      echo "issue_transition: refused bare-hold-release for #$n: state records a hold" >&2
+      return 1
+    fi
+    # The bulk on-hold snapshot lags a label removal and refused a transition
+    # made right after it (#352), so a snapshot hit is confirmed with a fresh
+    # point read of this issue. Only a successful read showing no hold clears
+    # it, and it also drops the stale hit that guarded_write would read next;
+    # a failed read keeps the refusal.
     if [ "$DRY_RUN" != 1 ] && is_on_hold "$n" \
       && [ "${ISSUE_LABEL_VIEW_STATE[$n]:-}" != failed ] \
       && [ "$release_hold_overlay" != 1 ]; then
-      echo "issue_transition: refused held #$n $from -> $to (reason=$reason)" >&2
-      return 1
+      ISSUE_LABEL_VIEW_STATE[$n]=""
+      if issue_label_read_live "$n" && ! grep -Fqx on-hold <<< "${ISSUE_LABEL_VIEW_LABELS[$n]:-}"; then
+        issue_label_snapshot_forget "$n" on-hold
+      else
+        echo "issue_transition: refused held #$n $from -> $to (reason=$reason)" >&2
+        return 1
+      fi
     fi
   fi
   if [ "$to" = concluded ] && [[ "$reason" == conclude:* ]]; then

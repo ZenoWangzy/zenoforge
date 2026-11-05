@@ -10,4 +10,4 @@ Any agent session that sees a problem must file it through `bash engine/pipeline
 
 ## For supervisors
 
-Change an issue's stage labels only through `bash engine/bin/zf-issue-transition [--dry-run] <issue> <to-state> <reason>`; a raw `gh issue edit` leaves the engine's state cache stale, and later transitions refuse.
+Change an issue's stage labels only through `bash engine/bin/zf-issue-transition [--dry-run] <issue> <to-state> <reason>`; a raw `gh issue edit` leaves the engine's state cache stale, and later transitions refuse. An issue that carries `on-hold` with no hold record in its state file is released with reason `bare-hold-release:<why>` (any target the table allows); the label comes off in the same write.
