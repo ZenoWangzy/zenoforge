@@ -9,12 +9,36 @@
 #   implement-pending/repair-pending/landing  本拍可派发的写手；repair-pending 的 open PR 分支
 #                                             马上会被修复 worker 编辑，landing 的已批准分支
 #                                             正由落地作业合入 main——分支仍在被流水线改动
+#                                             ——但停滞超过 stale_queued_minutes（默认 120）没有
+#                                             进展的排队写手不再是“即将派发”，不再挡 intake
+#                                             （intake_footprint_snapshot）；派发侧对活写手的
+#                                             互斥不变（2026-11-04 事故：一个从未派发的 pending
+#                                             单元凭排队写手身份丢弃了 25 个可启动 intake 候选）
 # 只读评审（review/rereview 及其 pending）、等裁决、等外部依赖与终态不占。scheduler.d 出现
 # 新 stage 必须先在下面三个集合里完成决策：footprint-holder-stages 测试会强制全表登记。
 FOOTPRINT_LIVE_WRITER_STAGES='["implement","repair"]'
 FOOTPRINT_QUEUED_WRITER_STAGES='["implement-pending","repair-pending","landing"]'
 FOOTPRINT_RELEASED_STAGES='["supervisor-review","parked","needs-human","blocked-external","review","rereview","review-pending","rereview-pending","ready-to-merge","merged","landed","closed","awaiting-live-event","done","wontfix","duplicate"]'
 
+# 排队写手的停滞界限：intake 把 *-pending/landing 当足迹持有者，是给“本拍即将派发”的
+# 单元预留写入范围。一个从未派发、也没有任何台账进展的 pending 单元（handoff 等待标记
+# 卡死、需要重切等）不是即将派发，却无限期挡住重叠 footprint 的新收单（2026-11-04 事故：
+# issue-4879 卡 implement-pending 两天，一次窗口丢弃 16 个候选）。超过界限的排队写手不再
+# 出现在 intake 的持有者快照里；真正在写的活 worker 不经过这条过滤，保护不变。
+# 进展 = 台账尾事件时间与 footprint_wait_since 的较新者；两者都读不出来按“新”处理（保守）。
+footprint_stale_queued_seconds() { # → 排队写手停滞界限（秒）；config footprint_mutex.stale_queued_minutes，默认 120 分钟
+  local minutes
+  minutes="$(jqf -r '.footprint_mutex.stale_queued_minutes // 120' <<<"$CFG")"
+  [[ "$minutes" =~ ^[1-9][0-9]*$ ]] || minutes=120
+  printf '%s\n' $((minutes * 60))
+}
+FOOTPRINT_PROGRESS_DEFS='def iso_epoch($s): if ($s | type) == "string" and ($s | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) then ($s | fromdateiso8601) else null end;'
+footprint_last_progress_epoch() { # unit JSON → 最近进展 epoch；history 尾事件与 footprint_wait_since 的较新者，读不出时无输出
+  jqf -r "$FOOTPRINT_PROGRESS_DEFS
+    [.history[-1].at, .footprint_wait_since]
+    | map(iso_epoch(.) // empty)
+    | if length == 0 then empty else max end" <<<"$1"
+}
 footprint_owner_stage_active() { # stage -> unit reserves write scope in the shared holder model
   jqf -e --arg stage "$1" --argjson live "$FOOTPRINT_LIVE_WRITER_STAGES" \
     --argjson queued "$FOOTPRINT_QUEUED_WRITER_STAGES" '($live + $queued | index($stage)) != null' \
@@ -585,6 +609,39 @@ footprint_hog_alert() {
     (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "footprint-hog:$unit:$started" "$line") \
       || say "footprint-hog alert not delivered unit=$unit"
   done < <(jqf -c '.workers[] | select(.harvested != true)' "$WORKERS")
+}
+
+# 2026-11-04 事故：#183 的 convoy 告警只覆盖单元之间的等待方（footprint_wait_owner），intake
+# 跳过对谁都不可见——一个停滞超过界限、从未派发的排队写手连续挡掉可启动候选时无人知晓。
+# 一次 intake 运行里挡掉 ≥N 个候选（config footprint_mutex.intake_hog_candidates，默认 5）的
+# 停滞单元经 supervisor inbox 报一次事故；key 带停滞起点（最近进展 epoch），同一停滞期不重报，
+# 单元恢复进展后的下一次停滞会再报。活写手挡 intake 是正常保护，不在此列。
+intake_footprint_hog_alert() { # stdin：本次 intake 的 "owner<TAB>issue" 跳过行
+  local min_candidates stale_bound owner issue u last count ids stage line
+  local -A blocked=()
+  min_candidates="$(jqf -r '.footprint_mutex.intake_hog_candidates // 5' <<<"$CFG")"
+  [[ "$min_candidates" =~ ^[1-9][0-9]*$ ]] || min_candidates=5
+  stale_bound="$(footprint_stale_queued_seconds)"
+  while IFS=$'\t' read -r owner issue; do
+    [[ "$owner" =~ ^[[:alnum:]_.-]+$ && "$issue" =~ ^[0-9]+$ ]] || continue
+    [[ " ${blocked[$owner]:-} " == *" $issue "* ]] || blocked["$owner"]="${blocked[$owner]:-} $issue"
+  done
+  for owner in "${!blocked[@]}"; do
+    u="$(jqf -c --arg id "$owner" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")" || continue
+    [[ -n "$u" ]] || continue
+    last="$(footprint_last_progress_epoch "$u")"
+    [[ "$last" =~ ^[0-9]+$ ]] || continue # 进展时间读不出来：不能证明停滞，保持沉默
+    (( NOW_EPOCH - last >= stale_bound )) || continue
+    count=$(wc -w <<<"${blocked[$owner]}")
+    (( count >= min_candidates )) || continue
+    ids="$(printf '%s\n' ${blocked[$owner]} | paste -sd, -)"
+    stage="$(jqf -r '.stage // empty' <<<"$u")"
+    line="intake-footprint-hog unit=$owner stage=$stage stale_min=$(((NOW_EPOCH - last) / 60)) blocked=$count issues=$ids action=inspect-why-the-unit-never-dispatches"
+    say "$line"
+    (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "intake-footprint-hog:$owner:$last" "$line") \
+      || say "intake-footprint-hog alert not delivered unit=$owner"
+  done
+  return 0
 }
 
 # The Stop-hook pattern without an LLM: use the Touched packages job's selector.

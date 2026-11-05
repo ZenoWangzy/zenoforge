@@ -165,6 +165,37 @@ existing_handoff_candidates() {
     fi
   done
 }
+# 2026-11-04 事故（issue #4879）：intake 在消费 episode 前先给相关单元打 hold_handoff_waiting；
+# 通知 supervisor 清理保留 clone 失败后，handoff state 文件又消失（episode 结束）时，没有任何
+# 路径回头清这个标记，dispatch 在排队循环顶部的 handoff 跳过处永久跳过该单元——从未派发却
+# 以排队写手身份挡住 intake。像 footprint_waiters_revalidate 一样重验：issue 的
+# ready-for-agent handoff episode 不在了，等待就不再成立；state 文件读不出来（≠不存在）时
+# 保守继续等。
+hold_handoff_waiters_revalidate() { # 清掉 episode 已消失的 hold_handoff 等待标记
+  local rows row id n episode read_status live_found
+  rows="$(jqf -c '[.units[] | select(.hold_handoff_waiting == true) | {id,issues:(.hold_handoff_wait_issues // [])}]' "$UNITS")" || return 1
+  [[ "$rows" != '[]' ]] || return 0
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    id="$(jqf -r .id <<<"$row")"
+    live_found=0
+    while IFS= read -r n; do
+      [[ "$n" =~ ^[0-9]+$ ]] || continue
+      if episode="$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" \
+        -r 'select(.state == "ready-for-agent") | .scheduler_handoff.episode // empty' 2>/dev/null)"; then
+        [[ -n "$episode" ]] && { live_found=1; break; }
+      else
+        read_status=$?
+        (( read_status == 64 )) || { live_found=1; break; }
+      fi
+    done < <(jqf -r '.issues[] | tostring' <<<"$row")
+    (( live_found == 0 )) || continue
+    units_update --arg id "$id" \
+      '.units |= map(if .id == $id then del(.hold_handoff_wait_issues, .hold_handoff_waiting) else . end)' \
+      || return 1
+    say "hold handoff wait cleared unit=$id stale_issues=$(jqf -r '.issues | join(",")' <<<"$row")"
+  done < <(jqf -c '.[]' <<<"$rows")
+}
 handoff_open_pr() { # issue → matching PR rows from this tick's single census
   local n="$1"
   [[ -n "${HANDOFF_PR_CENSUS:-}" ]] || return 1
@@ -207,7 +238,13 @@ intake_footprint_snapshot() { # footprint holders under the shared stage rule: l
     || { rm -rf -- "$tmpdir"; return 1; }
   # Read units.json once. The streamed full unit is used only to calculate its
   # footprint; the persisted owner census contains id, stage, and footprint.
-  jqf -r --argjson queued "$FOOTPRINT_QUEUED_WRITER_STAGES" --slurpfile owners "$active_file" '.units[]
+  # A queued writer stale beyond footprint_stale_queued_seconds is not "about to be
+  # dispatched" and stops blocking intake here; dispatch still serializes real writes
+  # against live workers (2026-11-04 incident: a never-dispatched pending unit kept
+  # rejecting startable intake candidates through its footprint).
+  jqf -r --argjson queued "$FOOTPRINT_QUEUED_WRITER_STAGES" --argjson stale "$(footprint_stale_queued_seconds)" \
+    --argjson now "$NOW_EPOCH" --slurpfile owners "$active_file" "$FOOTPRINT_PROGRESS_DEFS"'
+    .units[]
     | select(.stage as $s | $queued | index($s) != null)
     | select((.supervisor_owned // false) != true)
     | select(.stage != "implement-pending" or (.task // "") != "")
@@ -215,6 +252,8 @@ intake_footprint_snapshot() { # footprint holders under the shared stage rule: l
     | select(((.history // [] | last // {}) as $last
         | $last.stage == "supervisor-escalated"
           and (($last.result // "") | startswith("size admission:"))) | not)
+    | select(([.history[-1].at, .footprint_wait_since] | map(iso_epoch(.) // empty)) as $progress
+        | ($progress | length) == 0 or ($now - ($progress | max)) < $stale)
     | [.id,.stage,(. | @base64)] | @tsv' "$UNITS" > "$candidates_file" \
     || { rm -rf -- "$tmpdir"; return 1; }
   while IFS=$'\t' read -r id stage encoded; do
@@ -251,6 +290,7 @@ register_new_issues() {
   local existing_only="${1:-0}" only_pred=0 ids lookup handoff_rows matches ids_state pr_number known_prs known_failed hotfix_prs prior_worktree prior_reason episode_hash related_id related_hash unsafe_clones
   local issue_json parent_reason parent_status parent_transition_status intake_footprint_owners='[]' intake_candidate_json intake_candidate_scope intake_candidate_stage intake_conflict state_read_status state_read_value
   local refill_mode="${2:-false}" free_slots ready_buffer target_pending max_refill upstream_room
+  local intake_skip_rows=''
   if [[ "$refill_mode" == true ]]; then
     # Refill has no full handoff census; keep known-PR fallbacks partial and avoid another PR-list request.
     HANDOFF_PR_CENSUS="${HANDOFF_PR_CENSUS:-[]}"
@@ -570,6 +610,7 @@ register_new_issues() {
         intake_match="$(footprint_match_detail "$intake_candidate_scope" "$intake_candidate_scope" \
           "$(jqf -c --arg id "$intake_conflict" '[.[] | select(.id == $id) | .footprint[]?]' <<<"$intake_footprint_owners")" '{}')"
         say "intake skip issue #$n: footprint overlaps unit=$intake_conflict candidate_unit=issue-$n owner=$intake_conflict ${intake_match:-candidate_path=unknown owner_path=unknown source=unknown cochange_count=unknown}"
+        intake_skip_rows+="$intake_conflict"$'\t'"$n"$'\n'
         continue
       fi
     fi
@@ -641,6 +682,9 @@ register_new_issues() {
     added=$((added+1))
     say "intake issue #$n -> implement-pending ($lane)"
   done < <(if (( existing_only )); then printf '%s\n' "$handoff_rows"; else predecessor_candidates; (( only_pred )) || intake_candidates "$refill_mode"; fi)
+  if (( ! existing_only )) && [[ -n "$intake_skip_rows" ]]; then
+    intake_footprint_hog_alert <<<"$intake_skip_rows" || say "intake-footprint-hog alert check failed"
+  fi
   if (( ! existing_only && added == 0 && ! only_pred )) && [[ ! -f "$A/.idle-alert" || -n "$(find "$A/.idle-alert" -mmin +60 2>/dev/null)" ]]; then
     touch "$A/.idle-alert"
     echo "[$STAMP] IDLE-CAPACITY live=$live/$MAX pending=$pending: intake found no eligible issue (labels or skip labels too narrow?)" >> "$A/alerts/slo.md"
