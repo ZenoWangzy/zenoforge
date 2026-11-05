@@ -626,7 +626,8 @@ retire_landed_pr_units() {
     if [[ "$state" == merged ]] && jqf -e --arg id "$id" 'any(.units[]; .id == $id and .stage == "ready-to-merge"
         and ((.approved_sha // "") != "") and (.hotpatch // false) == false and (.supervisor_owned // false) == false)' "$UNITS" >/dev/null; then
       merge_sha="$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null)"
-      release_mark="$(awaiting_release_mark "$pr") | .merge_sha=$(js "$merge_sha")"
+      release_mark="$(awaiting_release_mark "$pr")"
+      [[ ! "$merge_sha" =~ $SHA_RE ]] || release_mark+=" | .merge_sha=$(js "$merge_sha")"
     fi
     set_unit "$id" "$(hist pr-"$state" "PR $state outside the pipeline") | .stage=\"$state\" | $release_mark"
     say "unit=$id PR#$pr already $state on GitHub; retired before dispatch"
@@ -639,12 +640,14 @@ awaiting_release_mark() { # pr -> jq filter
   printf 'if (.issue | type) == "number" then .awaiting_release_pending=%s else . end' "$1"
 }
 retry_awaiting_release() {
-  local id issue pr tries issue_state n=0 clear='del(.awaiting_release_pending) | del(.awaiting_release_tries)'
+  local id issue pr tries state_json issue_state n=0 clear='del(.awaiting_release_pending) | del(.awaiting_release_tries)'
   while IFS=$'\t' read -r id issue pr tries; do
     [[ -n "$id" ]] || continue
     (( n < ${AWAITING_RELEASE_RETRY_MAX:-5} )) || break
     n=$((n + 1))
-    issue_state="$(scheduler_issue_state "$issue" 2>/dev/null | jqf -r '.state // empty')"
+    state_json="$(scheduler_issue_state "$issue" 2>/dev/null)" || continue # a transition is in progress: not a try
+    # A run that opened its PR ends concluded/pr-open, which is what a merge moves on from; any other concluded run is past it.
+    issue_state="$(jqf -r 'if .state == "concluded" and .run.outcome == "pr-open" then "pr-open" else .state // "untracked" end' <<<"$state_json")"
     # Past or beside the merge, a repeat would move the issue backwards or drop a hold.
     case "$issue_state" in
       awaiting-release|concluded|released) set_unit "$id" "$clear"; continue ;;
@@ -653,7 +656,7 @@ retry_awaiting_release() {
         echo "[$STAMP] awaiting-release not written for on-hold issue #$issue PR#$pr; rerun conclude_merged_run #$issue $pr if the hold ends" >> "$A/alerts/merge.md"
         continue ;;
     esac
-    if [[ -n "$issue_state" ]] && scheduler_conclude_merged_pr "$issue" "$pr" >>"$LOG" 2>&1; then
+    if scheduler_conclude_merged_pr "$issue" "$pr" >>"$LOG" 2>&1; then
       set_unit "$id" "$clear"
       say "issue #$issue reached awaiting-release for PR#$pr on retry"
     elif (( tries + 1 >= ${AWAITING_RELEASE_RETRY_LIMIT:-5} )); then
