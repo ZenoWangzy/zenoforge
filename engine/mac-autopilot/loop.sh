@@ -28,6 +28,16 @@ run_refill() {
   fi
   return 0
 }
+# Dashboard data on its own cadence, not the tick's: a full tick takes 730-920s and gen_dashboard runs only at its end, so the page
+# aged past bell.sh's 900s stale line. A detached `--views dashboard` owns VIEWS_LOCK (overlaps skip themselves), so this never blocks the poll.
+launch_dashboard_views() {
+  local every="${AUTOPI_DASHBOARD_SECONDS:-300}"
+  [[ "$every" =~ ^[0-9]+$ ]] && (( every >= 30 )) || every=300
+  DASH_NEXT="${DASH_NEXT:-$((SECONDS + every))}" # first run one cadence after loop start: the tick-end full run covers the start
+  (( SECONDS >= DASH_NEXT )) || return 0
+  DASH_NEXT=$((SECONDS + every))
+  setsid timeout -k 30 900 bash "$LIVE/scheduler.sh" --views dashboard >> "$A/views.log" 2>&1 < /dev/null &
+}
 # #4628: the slow tick runs beside the refill controller. The scheduler yields the same ledger lock
 # around slow GitHub phases; a busy refill returns 75 and is retried five seconds later.
 refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一拍前的补派窗口
@@ -42,6 +52,7 @@ refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一�
       (( SECONDS - started < $1 )) || break
     fi
     sleep 5; REFILL_SINCE=$((REFILL_SINCE + 5))
+    launch_dashboard_views
     signature="$(exited_worker_signature "$A/workers.json")"
     [[ -n "$signature" ]] || REFILL_LAST_EXIT=""
     if [[ -n "$signature" && "$signature" != "$REFILL_LAST_EXIT" ]] || (( REFILL_SINCE >= cadence )); then

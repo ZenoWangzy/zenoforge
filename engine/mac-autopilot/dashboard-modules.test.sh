@@ -154,10 +154,12 @@ const mechanisms = renderAll("mechanism-heartbeat", {standards:{window_hours:5, 
 }], mechanisms:[
   {id:"factory-f1-main-red-bisect", desc:"f1 main-red bisect", supervisor:"head-supervisor", last_event_at:"2026-10-29T09:00:00Z", silent_hours:3, bound_hours:24, expected_idle:true, silent:false},
   {id:"factory-f3-release-train", desc:"f3 release train", supervisor:"head-supervisor", last_event_at:"2026-10-29T10:00:00Z", silent_hours:2, bound_hours:6, expected_idle:false, silent:false},
+  {id:"factory-f10-held", desc:"f10 held", supervisor:"head-supervisor", last_event_at:"2026-10-27T10:00:00Z", silent_hours:38, bound_hours:6, expected_idle:true, held:true, silent:false},
   {id:"factory-f9-footprint-wait", desc:"f9 footprint wait", supervisor:"head-supervisor", last_event_at:"2026-10-29T11:00:00Z", silent_hours:1, bound_hours:12, expected_idle:false, silent:false}
 ]}}).out.health;
 for (const id of ["mechanism.silent", "factory-f1-main-red-bisect", "factory-f3-release-train", "factory-f9-footprint-wait"])
   if (!mechanisms.includes(id)) throw new Error(`health dashboard lacks mechanism ${id}`);
+if (!mechanisms.includes("已暂停")) throw new Error("health dashboard shows a held mechanism as silent, not 已暂停");
 for (const at of ["10-29 09:00 UTC", "10-29 10:00 UTC", "10-29 11:00 UTC"])
   if (!mechanisms.includes(at)) throw new Error(`health dashboard hides mechanism event time ${at}`);
 const longWorker = load({config:{waste:{slow_worker_minutes:60}}, summary:{live_workers:1,max_workers:1}, workers:[{

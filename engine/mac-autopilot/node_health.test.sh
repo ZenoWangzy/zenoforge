@@ -877,7 +877,7 @@ jq -e '.mechanisms[] | select(.id == "factory-f9-footprint-wait") | .silent == t
 grep -Fq '[2026-10-29T14:00:00Z] NODE-UNHEALTHY metric=mechanism.silent node=mechanisms value=4 unhealthy-bound=1' "$ma/alerts/node-health.md" \
   || fail "post-bound f9 health alert missing: $(cat "$ma/alerts/node-health.md")"
 python3 - "$script_dir" "$ma" <<'CHECK' || fail 'mechanism heartbeat semantics wrong'
-import datetime as dt, os, sys
+import datetime as dt, json, os, sys
 sys.path.insert(0, sys.argv[1]); import node_health as n
 now = n.ts("2026-10-29T12:00:00Z")
 rt, ah = sys.argv[2], os.environ.get("AGENT_HOME")
@@ -893,6 +893,13 @@ rows, silent = n.mechanism_heartbeat(reg(False, 12, "footprint wait"), rt, ah, n
 assert silent == 0 and rows[0]["silent_hours"] == 11.0, rows
 rows, silent = n.mechanism_heartbeat(reg(False, 6, "no such event"), rt, ah, now)
 assert silent == 1, rows  # 没有匹配行的机制照样沉默
+# held_when_false：配置键恰为 false = 有意关停，按 expected_idle 不计并标 held；true 或缺失仍查沉默
+held = reg(False, 6, "no such event"); held[0]["held_when_false"] = "release_train.enabled"
+for cfg, want_silent in (({"release_train": {"enabled": False}}, 0), ({"release_train": {"enabled": True}}, 1), ({}, 1)):
+    json.dump(cfg, open(rt + "/config.json", "w"))
+    rows, silent = n.mechanism_heartbeat(held, rt, ah, now)
+    assert silent == want_silent and rows[0]["held"] == (want_silent == 0) and rows[0]["expected_idle"] == (want_silent == 0), (cfg, rows)
+os.remove(rt + "/config.json")
 print("node_health mechanism heartbeat units: PASS")
 CHECK
 

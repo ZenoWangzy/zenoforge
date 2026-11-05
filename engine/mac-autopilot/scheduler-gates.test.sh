@@ -947,6 +947,39 @@ grep -qx -- '--refill' "$rg/calls" || fail "the cadence did not run a refill tic
   kill "$slow" 2>/dev/null || :; wait "$slow" 2>/dev/null || : ) || fail 'refill did not retry and dispatch while slow tick was alive'
 grep -qx -- '--refill' "$rg/calls" && grep -qx 'during-slow-tick' "$rg/during" \
   || fail "refill did not run during a live slow tick ($(cat "$rg/calls" 2>/dev/null); $(cat "$rg/during" 2>/dev/null))"
+# 看板数据独立于 tick：refill_window 的 5 秒轮询按 AUTOPI_DASHBOARD_SECONDS 起分离的 --views dashboard，
+# 不等它跑完（脚本卡住时窗口照常返回），cadence 之前不起。
+dv="$fixture/dash-views"; mkdir -p "$dv/live" "$dv/state"
+cat > "$dv/live/scheduler.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DV_CALLS"
+while [[ ! -e "$DV_RELEASE" ]]; do command sleep 0.1; done
+SH
+( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
+  A="$dv/state"; LIVE="$dv/live"; export DV_CALLS="$dv/calls" DV_RELEASE="$dv/release"; : > "$DV_CALLS"
+  export AUTOPI_DASHBOARD_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647
+  echo '{"workers":[]}' > "$A/workers.json"
+  sleep() { SECONDS=$((SECONDS + 5)); }
+  refill_window 25 ) || fail 'refill window failed before the dashboard cadence'
+[[ ! -s "$dv/calls" ]] || fail "dashboard views started before their cadence ($(cat "$dv/calls"))"
+( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
+  A="$dv/state"; LIVE="$dv/live"; export DV_CALLS="$dv/calls" DV_RELEASE="$dv/release"
+  export AUTOPI_DASHBOARD_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647
+  sleep() { SECONDS=$((SECONDS + 5)); }
+  refill_window 40 ) || fail 'refill window blocked on a running dashboard views process'
+for _ in $(seq 50); do [[ -s "$dv/calls" ]] && break; command sleep 0.1; done
+touch "$dv/release"
+[[ "$(cat "$dv/calls")" == '--views dashboard' ]] || fail "dashboard views were not launched once on cadence ($(cat "$dv/calls" 2>/dev/null))"
+
+# tick 末尾的 full 视图遇到仍在跑的 dashboard 视图时等它放锁（否则体检被跳过）；dashboard 视图照旧直接让位。
+( VIEWS_LOCK="$fixture/views-wait.lock"; run_views() { echo "$1" >> "$fixture/views-ran"; }; : > "$fixture/views-ran"
+  command sleep 30 & holder=$!; mkdir "$VIEWS_LOCK"; echo "$holder" > "$VIEWS_LOCK/pid"
+  views_entry dashboard
+  [[ ! -s "$fixture/views-ran" ]] || fail 'a second dashboard views run did not yield to the lock holder'
+  sleep() { kill "$holder"; wait "$holder" 2>/dev/null || :; }
+  AUTOPI_VIEWS_WAIT_SECONDS=10 views_entry full
+  [[ "$(cat "$fixture/views-ran")" == full ]] ) || fail 'full views run was skipped while a dashboard views run held the lock'
+
 # 源 checkout 的 HEAD 变了，下一拍前把机制文件同步进运行目录；HEAD 没变不重复同步
 sr="$fixture/syncroot"; mkdir -p "$sr/engine/mac-autopilot" "$sr/rt"
 git -C "$sr" init -q; printf 'echo synced >> "$SYNC_LOG"\n' > "$sr/engine/mac-autopilot/start.sh"

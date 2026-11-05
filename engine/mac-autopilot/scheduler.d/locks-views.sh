@@ -47,7 +47,12 @@ run_views() { # full = 体检 + 看板；dashboard = 只渲染看板（暂停时
   SESSION_TZ="$SESSION_TZ" python3 "$HERE/gen_dashboard.py" 2>>"$A/autopilot.err"
 }
 views_entry() { # scheduler.sh --views <mode>：分离进程入口，自己持有视图锁
-  local old
+  local old waited=0
+  # A dashboard-only run (loop.sh cadence) can hold the lock when the tick ends; the full run waits so health scoring is not skipped.
+  while [[ "${1:-}" == full ]] && (( waited < ${AUTOPI_VIEWS_WAIT_SECONDS:-300} )) \
+    && old="$(cat "$VIEWS_LOCK/pid" 2>/dev/null)" && [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" 2>/dev/null; do
+    sleep 2; waited=$((waited + 2))
+  done
   if ! mkdir "$VIEWS_LOCK" 2>/dev/null; then
     old="$(cat "$VIEWS_LOCK/pid" 2>/dev/null || true)"
     if [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" 2>/dev/null; then return 0; fi

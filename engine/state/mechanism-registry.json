@@ -1,5 +1,5 @@
 {
-  "_doc": "M2 机制心跳登记表（#4495/#4498，全量登记 #4500 的 STPA 梳理产出，见 docs/agents/pipeline-stpa.md）。node_health.py 每次体检读这份表：events 列出机制应产生的事件（base=runtime 指向运行目录下的文件，如 scheduler.log、alerts/events.md、alerts/slo.md、bell.log、zombie-watch.log；base=agent_home 指向 $AGENT_HOME 下的文件，如 logs/main-red.log、supervisor-inbox；pattern 是行内正则，行首须带 ISO 时间戳，轮转的 .1 代也会读）；沉默超过 silence_hours 小时的机制计入 mechanism.silent。expected_idle=true 的机制允许长期无事件（触发条件可能 legitimately 不出现），只展示最近事件时间、不报警。supervisor 是机制沉默时要找的负责人：head-supervisor（调度器与传感器）、supervisor-arbiter（#4369 工厂仲裁）、night-supervisor（bell/夜间事件分诊）。沉默上限的依据是 10-28 解停后稳态事件间隔的度量，逐项列在 pipeline-stpa.md。",
+  "_doc": "M2 机制心跳登记表（#4495/#4498，全量登记 #4500 的 STPA 梳理产出，见 docs/agents/pipeline-stpa.md）。node_health.py 每次体检读这份表：events 列出机制应产生的事件（base=runtime 指向运行目录下的文件，如 scheduler.log、alerts/events.md、alerts/slo.md、bell.log、zombie-watch.log；base=agent_home 指向 $AGENT_HOME 下的文件，如 logs/main-red.log、supervisor-inbox；pattern 是行内正则，行首须带 ISO 时间戳，轮转的 .1 代也会读）；沉默超过 silence_hours 小时的机制计入 mechanism.silent。expected_idle=true 的机制允许长期无事件（触发条件可能 legitimately 不出现），只展示最近事件时间、不报警。supervisor 是机制沉默时要找的负责人：head-supervisor（调度器与传感器）、supervisor-arbiter（#4369 工厂仲裁）、night-supervisor（bell/夜间事件分诊）。沉默上限的依据是 10-28 解停后稳态事件间隔的度量，逐项列在 pipeline-stpa.md。held_when_false 是运行配置里的点分键（如 release_train.enabled）：该键恰为 false 时机制是被有意关停的，按 expected_idle 处理并标记 held，看板显示“已暂停”而不是沉默；键为 true 或缺失时照常查沉默。",
   "mechanisms": [
     {
       "id": "scheduler-tick",
@@ -114,7 +114,8 @@
       ],
       "silence_hours": 6,
       "supervisor": "head-supervisor",
-      "expected_idle": false
+      "expected_idle": false,
+      "held_when_false": "release_train.enabled"
     },
     {
       "id": "factory-f4-main-suites-gate",

@@ -640,7 +640,7 @@ const stageRow = (D, label) => ((FR(D).stages||[]).find(x => x.label===label));
 const units = D => D.units || [];
 const unitsIn = (D, stages) => units(D).filter(u => stages.includes(u.stage));
 const liveWorkers = D => (D.workers||[]).filter(w => w.alive);
-// 新鲜度：bell.sh 在 dashboard.data.js 超过 900 秒没刷新时报警；生成器 2 分钟一拍，600 秒内算健康
+// 新鲜度：bell.sh 在 dashboard.data.js 超过 900 秒没刷新时报警；生成器与 tick 无关，600 秒内算健康（loop.sh 每 300 秒起一次 --views dashboard，跑一次约 90 秒，最旧约 400 秒）
 const freshness = D => { const age = D.generated ? (Date.now() - new Date(D.generated).getTime())/1000 : null;
   return {age, s: age==null ? "none" : age<=600 ? "ok" : age<900 ? "warn" : "bad"}; };
 const scorecardFreshness = (D, STD) => {
@@ -977,9 +977,9 @@ function alertList(D, n) {
     return `<div class="al s-${k==="bell"?"none":k}"><span class="si">${ic(k)}</span><span class="t">${when?fAge(hoursAgo(when))+"前":""}</span><span class="x">${esc(body)}</span></div>`; }).join("")}</div>`;
 }
 // 机制心跳（M2 #4495/#4498）：登记表里每个机制的最近事件时间；沉默超限 = 机制落地了但没在跑
-const bMech = m => bullet({id:m.id, label:m.desc, unit:"", value:m.silent_hours, shown:m.silent_hours==null?"从未":fAge(m.silent_hours),
-  healthy:0, unhealthy:m.bound_hours, hib:false, status:m.silent?"bad":m.silent_hours==null?"none":"ok",
-  meaning:`最近事件 ${m.last_event_at?utc(m.last_event_at):"从未"}，负责人 ${m.supervisor}${m.expected_idle?"，允许长期无事件（expected_idle，不报警）":""}\n沉默上限 ${num(m.bound_hours)} 时；事件模式见 engine/state/mechanism-registry.json`,
+const bMech = m => bullet({id:m.id, label:m.desc, unit:"", value:m.silent_hours, shown:m.held?"已暂停":m.silent_hours==null?"从未":fAge(m.silent_hours),
+  healthy:0, unhealthy:m.bound_hours, hib:false, status:m.silent?"bad":m.held||m.silent_hours==null?"none":"ok",
+  meaning:`最近事件 ${m.last_event_at?utc(m.last_event_at):"从未"}，负责人 ${m.supervisor}${m.held?"，已暂停（运行配置里该机制的开关为 false，有意关停，不算沉默）":m.expected_idle?"，允许长期无事件（expected_idle，不报警）":""}\n沉默上限 ${num(m.bound_hours)} 时；事件模式见 engine/state/mechanism-registry.json`,
   source:"机制登记表（state/mechanism-registry.json）的事件模式"});
 function vHealth(D) {
   const STD = D.standards || {}, a = allStatuses(D), ms = nodeMetrics(D);
