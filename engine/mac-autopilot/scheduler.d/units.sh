@@ -48,6 +48,23 @@ units_update() { # jq args; transactionally update the unit ledger under the sha
   if [[ "$own_lock" == true ]]; then release_scheduler_lock; fi
   return "$rc"
 }
+# A refused or failed parent label write for an issue without a unit would otherwise retry on every refill
+# and log each time. Per-issue backoff lives in the ledger's top-level intake_parent_retry map.
+intake_parent_retry_waiting() { # issue -> 0 while its next retry time has not come
+  local now; now="$(date +%s)"
+  jqf -e --arg n "$1" --argjson now "$now" '(.intake_parent_retry[$n].next_at // 0) > $now' "$UNITS" >/dev/null 2>&1
+}
+intake_parent_retry_failed() { # issue -> prints "<attempt> <delay-secs>" after recording the failure
+  local now step; now="$(date +%s)"
+  step="$(jqf -r --arg n "$1" '((.intake_parent_retry[$n].fails // 0) + 1) as $k | "\($k) \([300 * pow(2; ([$k - 1, 6] | min)), 21600] | min)"' "$UNITS")" || return 1
+  units_update --arg n "$1" --argjson now "$now" --argjson k "${step% *}" --argjson d "${step#* }" \
+    '.intake_parent_retry[$n] = {fails: $k, next_at: ($now + $d)}' || return 1
+  printf '%s\n' "$step"
+}
+intake_parent_retry_clear() { # issue
+  jqf -e --arg n "$1" '(.intake_parent_retry // {}) | has($n)' "$UNITS" >/dev/null 2>&1 || return 0
+  units_update --arg n "$1" 'del(.intake_parent_retry[$n])'
+}
 unit_field() { jqf -r --arg id "$1" "[.units[] | select(.id==\$id) | ($2 // empty)][0] // empty" "$UNITS"; }
 unit_retries() { # unit stage → 历史里该 stage 出现次数
   jqf -r --arg id "$1" --arg st "$2" '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage==$st)] | length' "$UNITS"

@@ -5639,6 +5639,38 @@ grep -Eq '^issue edit 4279 --repo [^ ]+ .*--remove-label ready-for-agent .*--add
 grep -Fq 'intake issue #4279 -> needs-triage (parent: has GitHub sub-issues)' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: parent disposition was not recorded in the tick log' >&2; exit 1; }
 
+# A failed parent label write backs off per issue: one log line per step, growing delay, cleared on success.
+new_tick_fixture parent-label-backoff
+mkdir -p "$TF/issues"
+command jq '.max_workers=1 | .release_train.enabled=false | .issue_intake={enabled:true,max_upstream:2,max_ready:30,labels:["pipeline-system"],product_labels:["ready-for-agent"]}' \
+  "$template" > "$TF/supervisor/autopi/config.json"
+command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-external",blocked_on:4279,history:[]}]}' \
+  > "$TF/supervisor/autopi/units.json"
+command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
+  > "$TF/issues/4279.json"
+printf '%s\n' '[{"number":4280,"title":"Runtime migration child","state":"open"}]' > "$TF/sub-issues-4279.json"
+seed_roadmap_tree 4279
+echo 4279 > "$TF/fail-issue-edit"
+parent_held_lines() { grep -c 'intake issue #4279 held: parent detected but needs-triage label update failed' "$TF/supervisor/autopi/scheduler.log" || true; }
+tick; tick
+[[ "$(parent_held_lines)" == 1 ]] \
+  || { echo "scheduler.test.sh: failed parent label write was not logged exactly once across ticks: $(parent_held_lines)" >&2; exit 1; }
+grep -Fq 'attempt 1, retry in 300s' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: first backoff step was not logged' >&2; exit 1; }
+command jq -e '.intake_parent_retry["4279"].fails == 1' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo 'scheduler.test.sh: parent label failure was not recorded in the ledger' >&2; exit 1; }
+command jq '.intake_parent_retry["4279"].next_at = 0' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+tick
+grep -Fq 'attempt 2, retry in 600s' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: second backoff step did not double the delay' >&2; exit 1; }
+rm -f "$TF/fail-issue-edit"
+command jq '.intake_parent_retry["4279"].next_at = 0' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+tick
+command jq -e '(.intake_parent_retry // {}) | has("4279") | not' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo 'scheduler.test.sh: backoff entry survived a successful parent label write' >&2; exit 1; }
+grep -Fq 'intake issue #4279 -> needs-triage (parent: has GitHub sub-issues)' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: parent label write did not succeed after the failure cleared' >&2; exit 1; }
+
 # A roadmap container cannot take an active stage; intake records it as a tracker.
 new_tick_fixture roadmap-container-parent-intake
 mkdir -p "$TF/issues" "$TF/repo/engine"

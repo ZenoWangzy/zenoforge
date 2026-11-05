@@ -549,22 +549,28 @@ register_new_issues() {
       [[ -n "$handoff_pr" ]] || ! grep -qE "(#|issue-)${n}([^0-9]|\$)" <<<"$busy" || { intake_skip open_pr; continue; }
     fi
     if (( ! existing_only )) && [[ -z "$episode" ]]; then
+      ! intake_parent_retry_waiting "$n" || { intake_skip parent_retry; continue; }
       [[ -n "$issue_json" ]] || issue_json="$(intake_gh_read issue view "$n" --json number,title,body,state,labels,subIssuesSummary 2>/dev/null)" || { intake_skip issue_read; continue; }
       scheduler_lib_context || true # prime here: the substitution below is a subshell and cannot cache
       if parent_reason="$(scheduler_issue_intake_parent_reason "$n" "$issue_json")"; then
         if scheduler_issue_transition "$n" needs-triage "intake-parent:$parent_reason" . 0 "$issue_json"; then
           say "intake issue #$n -> needs-triage (parent: $parent_reason)"
+          intake_parent_retry_clear "$n"
         else
           parent_transition_status=$?
+          local retry_step
           # roadmap_ensure_issue_parent returns 3 only for a confirmed roadmap container.
           if (( parent_transition_status == 3 )); then
             if scheduler_issue_transition "$n" tracker "intake-parent:roadmap-container:$parent_reason" '.tracker_parent = true' 0 "$issue_json"; then
               say "intake issue #$n -> tracker (roadmap container parent: $parent_reason)"
+              intake_parent_retry_clear "$n"
             else
-              say "intake issue #$n held: roadmap container parent tracker update failed"
+              retry_step="$(intake_parent_retry_failed "$n")" || retry_step="? ?"
+              say "intake issue #$n held: roadmap container parent tracker update failed (attempt ${retry_step% *}, retry in ${retry_step#* }s)"
             fi
           else
-            say "intake issue #$n held: parent detected but needs-triage label update failed"
+            retry_step="$(intake_parent_retry_failed "$n")" || retry_step="? ?"
+            say "intake issue #$n held: parent detected but needs-triage label update failed (attempt ${retry_step% *}, retry in ${retry_step#* }s)"
           fi
         fi
         intake_skip parent; continue
@@ -574,6 +580,7 @@ register_new_issues() {
           say "intake issue #$n deferred: could not verify parent status"
           intake_skip parent_unverified; continue
         fi
+        intake_parent_retry_clear "$n"
       fi
     fi
     if (( ! existing_only )) && [[ -z "$episode" && -z "${existing_id:-}" && "$lane" == direct-main ]]; then
