@@ -90,6 +90,8 @@ echo '{"node_health":{"review.first_pass_pct":[40,10]}}' > "$a/config.json"
 pause_since="2026-10-19T11:50:00Z"
 mkdir -p "$AGENT_HOME"
 jq -n --arg timestamp "$pause_since" '{reason:"refactor",caller:"operator",issue:"none",provider:"none",model:"none",timestamp:$timestamp}' > "$AGENT_HOME/PAUSE"
+# ci-spend 采样带着 per-reason 分钟：node_health 的输出必须按原因名字拆开，新的浪费源一眼可见（2026-11-03 waste_runner 39）
+echo '{"total_min":100,"waste_min":40,"waste_pct":40.0,"by_reason":{"cancelled":3,"superseded_unapproved":37,"nonproduct_postsubmit":0},"cancel_audit_min_by_reason":{"deferred":1,"slot_wait":2,"repair_dispatched":3,"superseded_main_head":4,"review_blocked":5,"parked":6,"other":19},"sampled_at":"2026-10-19T11:30:00Z","window_hours":5,"runs":9}' > "$a/ci-spend.json"
 out="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z --alert --json "$a/node-health.json")"
 source_commit="$(git -C "$repo_root" rev-parse HEAD)"
 jq -e --arg sampled_at '2026-10-19T12:00:00Z' --arg source_commit "$source_commit" --arg pause_since "$pause_since" \
@@ -115,6 +117,11 @@ grep -Eq ' 300 .*WARN$' <<<"$(row 'between tick starts')" || fail "tick gap wron
 grep -Eq ' 67 .*UNHEALTHY$' <<<"$(row 'without a findings block')" || fail "findings-block gap wrong: $(row 'findings block')"
 quiet="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 0.2 --now 2026-10-19T12:00:00Z)"
 grep -Eq 'findings block % +-  .*NO-DATA' <<<"$quiet" || fail "no rejection records in the window must show no value, not 0: $(grep -F 'findings block' <<<"$quiet")"
+grep -Eq ' 40 .*UNHEALTHY$' <<<"$(row 'could not change a verdict')" || fail "waste runner share did not read the ci-spend sample: $(row 'could not change a verdict')"
+grep -Eq 'ci waste by reason \(min\): cancelled=3 +nonproduct_postsubmit=0 +superseded_unapproved=37' <<<"$out" \
+  || fail "waste minutes are not broken down per reason in the output: $(grep -F 'ci waste by reason' <<<"$out")"
+grep -Eq 'ci waste by cancel reason \(min\): deferred=1 +slot_wait=2 +repair_dispatched=3 +superseded_main_head=4 +review_blocked=5 +parked=6 +other=19' <<<"$out" \
+  || fail "cancel audit runner minutes are not broken down by cause: $(grep -F 'ci waste by cancel reason' <<<"$out")"
 grep -Eq ' 5 .*WARN$' <<<"$(row 'M1 audited cancelled runs/day: ci deferred')" || fail "M1 did not count one unique audited deferred run: $(row 'ci deferred')"
 grep -Eq ' 5 .*OK$' <<<"$(row 'M1 audited cancelled runs/day: repair dispatched')" || fail "M1 did not retain the cause for a duplicate no-reason audit: $(row 'repair dispatched')"
 grep -Eq ' 5 .*OK$' <<<"$(row 'M1 audited cancelled runs/day: superseded main run')" || fail "superseded main run not classed as a known cause: $(row 'superseded main run')"

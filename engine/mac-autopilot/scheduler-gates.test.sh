@@ -1358,7 +1358,9 @@ gh() { case "$*" in
   "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/555/logs") printf ' FAIL  tests/a.test.ts > example > claim\nAssertionError: expected false to be true\n' ;;
   "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/556/logs") printf 'ENOSPC: no space left on device\n' ;;
   "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/557/logs") printf '320 : \xe2\x94\x86 [4m8s] | \x1b[41m\x1b[1m FAIL \x1b[22m\x1b[49m tests/a.test.ts\x1b[2m > \x1b[22mexample\nerror: column "wake_token" does not exist\n' ;;
-  "run list --branch"*) echo 801 ;;
+  "run list --branch"*)
+    [[ "$*" == *"pull_request_target"* ]] || fail 'cancel_branch_runs omitted pull_request_target runs'
+    echo 801 ;;
   *) eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@" ;;
 esac; }
 tr_root="$fixture/testred-root"; mkdir -p "$tr_root/engine/night"
@@ -1488,6 +1490,35 @@ units "{\"units\":[{\"id\":\"pr-41\",\"pr\":41,\"stage\":\"ready-to-merge\",\"ap
 ci_red pr-41 41 "$H2" "CI"
 [[ "${GH_RERUNS[*]:-}" == "run rerun 61 --failed" && "$(field pr-41 '.ci_deferred_sha // "none"')" == none && "$(field pr-41 '.ci_rerun_sha // "none"')" == none ]] || fail "approved deferred head did not start CI without using the rerun budget (${GH_RERUNS[*]:-none})"
 eval "$gh_def_saved"; GH_RERUNS=()
+
+# ---------- 返工或搁置 head 的 run 一出现就取消；可改变结论的 ready head 不受影响 ----------
+# 2026-11-03 cancel audit: cancelled jobs used 78.2 repair-dispatch minutes and 58.9 parked minutes over seven days;
+# normal days had repair=9.7+17.8 and parked=28.2+15.7 minutes; branch cancellation omitted pull_request_target.
+rwr="$fixture/rework-root"; mkdir -p "$rwr/engine/night"
+printf '#!/usr/bin/env bash\necho "$2" >> "%s/cancelled"\necho "${ZF_CANCEL_REASON-unset}" >> "%s/reasons"\n' "$rwr" "$rwr" > "$rwr/engine/night/main-ci-recovery.sh"
+rework_run() { printf '{"databaseId":%s,"status":"%s","event":"%s","headBranch":"%s","headSha":"%s","workflowName":"CI"}' "$@"; }
+rm -f "$rwr/cancelled" "$rwr/reasons"
+units "{\"units\":[{\"id\":\"pr-45\",\"pr\":45,\"stage\":\"repair\",\"branch\":\"rwork\",\"history\":[]},{\"id\":\"pr-47\",\"pr\":47,\"stage\":\"parked\",\"parked_reason\":\"main-red\",\"branch\":\"blocked\",\"history\":[]},{\"id\":\"pr-46\",\"pr\":46,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H2\",\"branch\":\"verdict\",\"history\":[]}]}"
+TICK_UNFINISHED="[$(rework_run 65 in_progress pull_request rwork "$H2"),$(rework_run 66 queued pull_request_target rwork "$H2"),$(rework_run 67 in_progress pull_request verdict "$H2"),$(rework_run 68 in_progress pull_request_target blocked "$H2")]"
+( ROOT="$rwr"; ci_defer_ci_test ) || fail 'ci_defer_ci_test errored on a rework branch'
+[[ "$(sort -n "$rwr/cancelled" 2>/dev/null | tr '\n' ' ')" == "65 66 68 " ]] \
+  || fail "a run that cannot change a verdict was not cancelled on repair/parked heads ($(tr '\n' ' ' < "$rwr/cancelled" 2>/dev/null))"
+[[ "$(sort -u "$rwr/reasons" 2>/dev/null)" == $'parked for main recovery\nrepair dispatched; head will change' ]] \
+  || fail "repair/park cancellation did not carry its cause ($(tr '\n' ',' < "$rwr/reasons" 2>/dev/null))"
+[[ "$(field pr-45 .ci_deferred_sha)" == "$H2" ]] || fail "rework deferral did not mark the deferred head"
+[[ "$(field pr-47 '.ci_deferred_sha // "none"')" == none ]] || fail 'parked head was marked for an approval rerun'
+[[ "$(field pr-46 '.ci_deferred_sha // "none"')" == none ]] || fail "deferral touched a ready unit whose run can change a verdict"
+TICK_UNFINISHED=""
+
+# A known main-red park cancels at the transition; it must not wait for the next admission tick.
+park_cancel="$fixture/main-red-park-cancel"
+units "{\"units\":[{\"id\":\"main-red\",\"main_red\":true,\"ci_sha\":\"$H1\",\"stage\":\"ready-to-merge\"},{\"id\":\"pr-48\",\"pr\":48,\"branch\":\"parked-branch\",\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H2\"}]}"
+( main_red_failed_checks() { echo '["suites"]'; }
+  cancel_branch_runs() { echo "$1|$2" > "$park_cancel"; }
+  park_ci_red_for_main_red pr-48 48 "$H2" '[{"name":"suites","bucket":"fail"}]' ) \
+  || fail 'main-red parking errored'
+[[ "$(field pr-48 .stage)" == parked && "$(cat "$park_cancel" 2>/dev/null)" == 'parked-branch|parked for main recovery; current head cannot change the blocked verdict' ]] \
+  || fail "main-red park left cancellable PR CI running ($(field pr-48 .stage), $(cat "$park_cancel" 2>/dev/null))"
 
 # The generated reviewer prompt points to the formal contract, which owns all verdict and finding policy.
 [[ "$(review_prompt 41 title "$H1" review-41.md pr "$feature_repo")" == *".agents/skills/code-review/SKILL.md"* ]] \

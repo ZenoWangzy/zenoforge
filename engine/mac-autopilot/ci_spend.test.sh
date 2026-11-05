@@ -8,7 +8,9 @@ fail() { echo "ci_spend.test.sh: $*" >&2; exit 1; }
 a="$test_env_root/ci-spend"; mkdir -p "$a"
 A1=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; A2=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 B1=cccccccccccccccccccccccccccccccccccccccc; B2=dddddddddddddddddddddddddddddddddddddddd
-echo "{\"units\":[{\"id\":\"pr-2\",\"pr\":2,\"stage\":\"review-pending\",\"history\":[{\"stage\":\"review-approve\",\"result\":\"$B1\"}]},{\"id\":\"pr-3\",\"pr\":3,\"stage\":\"review-pending\",\"history\":[]}]}" > "$a/units.json"
+C1=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee; C2=ffffffffffffffffffffffffffffffffffffffff
+D1=9999999999999999999999999999999999999999
+echo "{\"units\":[{\"id\":\"pr-2\",\"pr\":2,\"stage\":\"review-pending\",\"history\":[{\"stage\":\"review-approve\",\"result\":\"$B1\"}]},{\"id\":\"pr-3\",\"pr\":3,\"stage\":\"review-pending\",\"history\":[]},{\"id\":\"pr-4\",\"stage\":\"repair-pending\",\"history\":[{\"stage\":\"approval-carried\",\"result\":\"clean main merge $C1 on approved $D1\"}]}]}" > "$a/units.json"
 job() { printf '{"conclusion":"%s","started_at":"2026-10-21T10:00:00Z","completed_at":"2026-10-21T10:%s:00Z","runner_name":"%s"}' "$1" "$2" "${3-r1}"; }
 run() { printf '{"id":%s,"name":"%s","event":"%s","head_branch":"%s","head_sha":"%s","status":"completed","created_at":"2026-10-21T%s:00Z","head_commit":{"message":"%s"}}' "$@"; }
 cat > "$a/fixture.json" <<JSON
@@ -18,7 +20,9 @@ cat > "$a/fixture.json" <<JSON
  $(run 3 CI pull_request agent/b "$B1" 10:00 "feat: b"),
  $(run 4 CI pull_request agent/b "$B2" 11:00 "fix: b"),
  $(run 5 CI workflow_dispatch main "$A2" 11:30 "[skip ci] fix(agent): x"),
- $(run 6 CI push main "$B2" 11:40 "feat: merged")],
+ $(run 6 CI push main "$B2" 11:40 "feat: merged"),
+ $(run 7 CI pull_request agent/c "$C1" 10:00 "feat: c"),
+ $(run 8 CI pull_request agent/c "$C2" 11:00 "fix: c")],
  "prs":[
   {"number":2,"additions":900,"deletions":200,"files":[
    {"path":"tests/parser.py","additions":300},
@@ -32,19 +36,25 @@ cat > "$a/fixture.json" <<JSON
   "3":[$(job failure 08)],
   "4":[$(job success 12)],
   "5":[$(job success 32)],
-  "6":[$(job success 40)]}}
+  "6":[$(job success 40)],
+  "7":[$(job success 15)],
+  "8":[$(job success 10)]}}
 JSON
-out="$(python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-21T12:00:00Z --fixture "$a/fixture.json")"
-# 总计 10+25+8+12+32+40=127（无 runner 的排队取消不计）；浪费：run1 被取代且未获批 10、run2 取消 5、run5 非产品 Postsubmit 32；
-# run3 被取代但获批过（B1），不算浪费。
+printf '%s\n' '{"when":"2026-10-21T11:00:00Z","run_id":"2","repo":"o/r","reason":"ci wip"}' > "$a/audit.jsonl"
+out="$(ZF_REPO=o/r python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-21T12:00:00Z --fixture "$a/fixture.json" --audit "$a/audit.jsonl")"
+# 总计 10+25+8+12+32+40+15+10=152（无 runner 的排队取消不计）；浪费：run1 被取代且从未获批 10、run2 取消 5、run5 非产品 Postsubmit 32；
+# run3 被取代但获批过（B1），run7 被取代但批准曾沿 update-branch 带到 C1（2026-11-03：这类 head 的红 CI 派出了修复，
+# 结论已被消费，算浪费曾把 waste_runner_pct 推到 39），都不算浪费。
 got="$(jq -c '[.total_min, .waste_min, .by_reason.superseded_unapproved, .by_reason.cancelled, .by_reason.nonproduct_postsubmit]' "$a/ci-spend.json")"
-[[ "$got" == '[127,47,10,5,32]' ]] || fail "classification wrong: $got ($out)"
-[[ "$(jq -r .waste_pct "$a/ci-spend.json")" == 37.0 ]] || fail "waste share wrong: $(jq -r .waste_pct "$a/ci-spend.json")"
+[[ "$got" == '[152,47,10,5,32]' ]] || fail "classification wrong: $got ($out)"
+[[ "$(jq -r .waste_pct "$a/ci-spend.json")" == 30.9 ]] || fail "waste share wrong: $(jq -r .waste_pct "$a/ci-spend.json")"
+jq -e '.cancel_audit_min_by_reason.slot_wait == 5 and .cancel_audit_min_by_reason.deferred == 0 and .cancel_audit_min_by_reason.repair_dispatched == 0 and .cancel_audit_min_by_reason.other == 0' "$a/ci-spend.json" >/dev/null \
+  || fail "cancel audit runner minutes not grouped by stable reason: $(jq -c .cancel_audit_min_by_reason "$a/ci-spend.json")"
 # 已完成 run 的 job 分钟进缓存，下一次采样不再取
-jq -e 'has("1") and has("6")' "$a/ci-spend-cache.json" >/dev/null || fail 'completed runs not cached'
+jq -e 'has("1") and has("6") and has("7")' "$a/ci-spend-cache.json" >/dev/null || fail 'completed runs not cached'
 jq '.jobs = {}' "$a/fixture.json" > "$a/fixture2.json"
-python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-21T12:00:00Z --fixture "$a/fixture2.json" >/dev/null
-[[ "$(jq -r .total_min "$a/ci-spend.json")" == 127 ]] || fail 'cached job minutes not reused'
+ZF_REPO=o/r python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-21T12:00:00Z --fixture "$a/fixture2.json" --audit "$a/audit.jsonl" >/dev/null
+[[ "$(jq -r .total_min "$a/ci-spend.json")" == 152 ]] || fail 'cached job minutes not reused'
 jq -e '.lines == {"2":1100,"3":900} and .nontest_added == {"2":300,"3":900}' "$a/pr-sizes.json" >/dev/null \
   || fail "fixture PR sizes or non-test additions wrong: $(cat "$a/pr-sizes.json" 2>/dev/null)"
 python3 - "$script_dir" <<'CHECK' || fail 'test-path classification changed'
