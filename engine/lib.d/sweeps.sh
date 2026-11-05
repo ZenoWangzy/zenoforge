@@ -215,6 +215,7 @@ label_maintainer_test_issue() {
 
 label_maintainer_test_candidates() {
   local issues="$1" live_issue_json n candidates founder_login
+  local budget_sec reserve_sec now_ms stop_ms read_sec
   local roster="${ZF_AGENT_RECIPIENTS_FILE:-$AGENT_HOME/recipients.json}"
   jq -e 'type == "array" and all(.[]; type == "object" and (.labels | type == "array"))' \
     <<< "$issues" >/dev/null || return 1
@@ -235,9 +236,29 @@ for issue in json.load(sys.stdin):
     if not checked:
         print(issue["number"])
 ' "$STATE_DIR")" || return 1
+  # Labelling is cosmetic: its own time budget (bulkhead) keeps the re-reads
+  # from spending the tick deadline dispatch still needs (2026-11-05: 52s of
+  # re-reads left 3s, the label write timed out, triage never dispatched).
+  budget_sec="${ZF_FOUNDER_TEST_LABEL_BUDGET_SECONDS:-20}"
+  [[ "$budget_sec" =~ ^[1-9][0-9]*$ ]] || budget_sec=20
+  reserve_sec="${ZF_FOUNDER_TEST_LABEL_RESERVE_SECONDS:-45}"
+  [[ "$reserve_sec" =~ ^[1-9][0-9]*$ ]] || reserve_sec=45
+  now_ms="$(gh_call_now_ms)" || { printf '%s\n' "$issues"; return 0; }
+  stop_ms=$((now_ms + budget_sec * 1000))
+  if [[ "${ZF_GH_CALL_DEADLINE_EPOCH_MS:-}" =~ ^[0-9]+$ ]] \
+    && (( ZF_GH_CALL_DEADLINE_EPOCH_MS - reserve_sec * 1000 < stop_ms )); then
+    stop_ms=$((ZF_GH_CALL_DEADLINE_EPOCH_MS - reserve_sec * 1000))
+  fi
   while IFS= read -r n; do
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
-    if ! live_issue_json="$(gh_timeout 30s issue view "$n" --repo "$REPO" \
+    now_ms="$(gh_call_now_ms)" || break
+    read_sec=$(( (stop_ms - now_ms) / 1000 ))
+    if (( read_sec < 1 )); then
+      echo "issue-pipeline: founder-test labelling budget or tick deadline reached; remaining candidates deferred to the next tick" >&2
+      break
+    fi
+    (( read_sec > 30 )) && read_sec=30
+    if ! live_issue_json="$(gh_timeout "${read_sec}s" issue view "$n" --repo "$REPO" \
         --json number,title,body,author,comments,labels,state 2>/dev/null)"; then
       # A transient read failure (gateway 504) skips this issue for one tick;
       # failing the whole candidate list aborted the scheduler tick (2026-09-27).
@@ -249,9 +270,11 @@ for issue in json.load(sys.stdin):
       state_merge "$n" '.founder_test_checked = true' >/dev/null 2>&1 || true
       continue
     fi
+    # The label is cosmetic: a failed write must not drop the candidate list.
+    # Rank the issue as founder-test in memory and retry the write next tick
+    # (founder_test_checked stays unset).
     if ! label_maintainer_test_issue "$live_issue_json"; then
-      echo "issue-pipeline: failed to apply founder-test label to #$n" >&2
-      return 1
+      echo "issue-pipeline: failed to apply founder-test label to #$n; ranking it as founder-test now, retrying the label next tick" >&2
     fi
     issues="$(jq -c --argjson n "$n" 'map(if .number == $n then .labels += [{name:"founder-test"}] else . end)' <<< "$issues")" || return 1
   done <<< "$candidates"

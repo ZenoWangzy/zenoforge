@@ -495,4 +495,32 @@ assert_eq "admit loop stopped before the last candidate" "" \
   "$(jq -r '.[] | select(.number == 7199) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
 unset ZF_GH_CALL_DEADLINE_EPOCH_MS
 
+# 2026-11-05: one failed founder-test label write returned 1 from
+# label_maintainer_test_candidates, so triage skipped dispatch for every issue.
+# The label is cosmetic: keep the list, rank the issue as founder-test, retry next tick.
+mkdir -p "$TEST_HOME/label-fail-gh"
+cat > "$TEST_HOME/label-fail-gh/gh" <<'GHEOF'
+#!/usr/bin/env bash
+echo "$*" >> "$LABEL_FAIL_GH_LOG"
+case "$1 $2" in
+  'label list') echo founder-test ;;
+  'issue view') jq -nc '{number:7401,state:"OPEN",labels:[{name:"needs-triage"}],author:{login:"maintainer"},title:"Maintainer repro",body:"x",comments:[]}' ;;
+  *) exit 1 ;;
+esac
+GHEOF
+chmod +x "$TEST_HOME/label-fail-gh/gh"
+export LABEL_FAIL_GH_LOG="$TEST_HOME/label-fail-gh.log"
+: > "$LABEL_FAIL_GH_LOG"
+candidates='[{"number":7401,"state":"OPEN","labels":[{"name":"needs-triage"}],"author":{"login":"maintainer"},"title":"Maintainer repro","body":"x"},{"number":7402,"state":"OPEN","labels":[{"name":"needs-triage"}],"author":{"login":"other"},"title":"Other","body":"x"}]'
+labelled="$(PATH="$TEST_HOME/label-fail-gh:$PATH" label_maintainer_test_candidates "$candidates" 2>/dev/null)" && label_rc=0 || label_rc=$?
+assert_eq "failed founder-test label write does not fail the candidate list" 0 "$label_rc"
+assert_eq "failed label write keeps every candidate" 2 "$(jq 'length' <<< "$labelled")"
+assert_eq "failed label write still ranks the issue as founder-test" true   "$(jq -r '[.[] | select(.number == 7401)][0] | any(.labels[]; .name == "founder-test")' <<< "$labelled")"
+assert_eq "failed label write is retried next tick (not marked checked)" null   "$(jq -r '.founder_test_checked' "$AGENT_HOME/state/7401.json" 2>/dev/null || echo null)"
+# An exhausted labelling budget defers the remaining re-reads instead of spending the tick deadline.
+: > "$LABEL_FAIL_GH_LOG"
+labelled="$(PATH="$TEST_HOME/label-fail-gh:$PATH" ZF_GH_CALL_DEADLINE_EPOCH_MS=$(( $(gh_call_now_ms) + 30000 )) label_maintainer_test_candidates "$candidates" 2>/dev/null)" && label_rc=0 || label_rc=$?
+assert_eq "labelling stops inside the dispatch reserve and still succeeds" 0 "$label_rc"
+assert_eq "labelling inside the dispatch reserve makes no gh call" 0 "$(grep -c 'issue view' "$LABEL_FAIL_GH_LOG" || true)"
+
 if [ "$FAILED" -eq 0 ]; then echo "ALL PASSED"; else echo "FAILURES"; exit 1; fi
