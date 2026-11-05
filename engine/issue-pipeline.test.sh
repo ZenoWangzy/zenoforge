@@ -16,6 +16,8 @@ source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 eval "$(sed -n '/^fastlane_scan_order() {/,/^}/p' "$PIPELINE_SRC")"
 eval "$(sed -n '/^ensure_issue_roadmap_parent_for_dispatch() {/,/^}/p' "$PIPELINE_SRC")"
+# This suite isolates parent-placement decisions; roadmap-release.test.sh covers the tick loader.
+roadmap_parent_tree_ready_for_tick() { return 0; }
 # Most scheduler cases exercise state transitions only; checks-blocked restores the real guard.
 ROADMAP_ENSURE_ISSUE_PARENT_FN="$(declare -f roadmap_ensure_issue_parent)"
 roadmap_ensure_issue_parent() { return 0; }

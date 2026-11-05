@@ -106,4 +106,26 @@ grep -Fq 'issue_transition: refused #5312 needs-advisor -> awaiting-release (rea
 }
 echo 'ok - drift to a disallowed live origin still refuses'
 
+# Roadmap placement is ordering metadata for the release lane. A failed
+# placement must not prevent a merged ticket from recording its release handoff.
+LIVE_LABELS[5313]="ready-for-agent"
+state_merge 5313 '{"state":"ready-for-agent"}'
+ROADMAP_RELEASE_PARENT_CALLS="$AGENT_HOME/roadmap-release-parent-calls"
+roadmap_ensure_issue_parent() {
+  if [ "$2" = awaiting-release ]; then
+    printf '%s\n' "$2" >> "$ROADMAP_RELEASE_PARENT_CALLS"
+    return 1
+  fi
+  return 0
+}
+if ! mark_awaiting_release 5313 5267 2>"$AGENT_HOME/release-handoff.err"; then
+  echo 'not ok - failed roadmap placement blocked the merged release handoff' >&2
+  cat "$AGENT_HOME/release-handoff.err" >&2
+  exit 1
+fi
+[[ "$(state_read 5313 | jq -r .state)" == awaiting-release ]]
+[[ ! -e "$ROADMAP_RELEASE_PARENT_CALLS" ]]
+grep -Fq -- '--add-label awaiting-release' "$GH_WRITES"
+echo 'ok - merged-pr enters awaiting-release without waiting on roadmap placement'
+
 echo 'ok - all issue_transition drift reconcile checks passed'

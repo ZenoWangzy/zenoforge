@@ -295,23 +295,61 @@ export ZF_OPEN_ISSUES_CACHE_FILE ZF_ROADMAP_TREE_CACHE_FILE
 ROADMAP_ORDER_ENABLED="${ZF_PIPELINE_ROADMAP_SWITCH:-$(roadmap_switch_value)}"
 ROADMAP_TREE_READY=0
 ROADMAP_TREE_JSON=""
+ROADMAP_PARENT_TREE_FETCH_ATTEMPTED=0
+ROADMAP_RELEASE_PLACEMENT_FAILURE_LOGGED=0
 ROADMAP_ISSUE_EPICS_JSON='{}'
+roadmap_parent_tree_ready_for_tick() {
+  local cache_file="${ZF_ROADMAP_TREE_CACHE_FILE:-}" tree
+  if [ "${ROADMAP_TREE_READY:-0}" = 1 ] && [ -n "${ROADMAP_TREE_JSON:-}" ] && [ -r "$cache_file" ]; then return 0; fi
+  if [ "${ROADMAP_TREE_READY:-0}" = 1 ] && [ -r "$cache_file" ]; then
+    tree="$(cat -- "$cache_file")" || tree=""
+    if [ -n "$tree" ] && roadmap_tree_is_valid "$tree"; then
+      ROADMAP_TREE_JSON="$tree"
+      return 0
+    fi
+  fi
+  [ "${ROADMAP_PARENT_TREE_FETCH_ATTEMPTED:-0}" != 1 ] || return 1
+  [ -n "$cache_file" ] || return 1
+  ROADMAP_PARENT_TREE_FETCH_ATTEMPTED=1
+  if roadmap_fetch_for_admission "$cache_file" "$REPO"; then
+    ROADMAP_TREE_JSON="$(cat -- "$cache_file")" || ROADMAP_TREE_JSON=""
+    if [ -n "$ROADMAP_TREE_JSON" ] && roadmap_tree_is_valid "$ROADMAP_TREE_JSON"; then
+      ROADMAP_TREE_READY=1
+      return 0
+    fi
+  fi
+  ROADMAP_TREE_READY=0
+  ROADMAP_TREE_JSON=""
+  rm -f -- "$cache_file" "$cache_file.placed" "$cache_file.linked"
+  return 1
+}
+roadmap_release_placement_failure_log_once() {
+  [ "${ROADMAP_RELEASE_PLACEMENT_FAILURE_LOGGED:-0}" != 1 ] || return 0
+  echo "issue-pipeline: roadmap parent placement unavailable for release; continuing merged issues and retrying next tick" >&2
+  ROADMAP_RELEASE_PLACEMENT_FAILURE_LOGGED=1
+}
 if [ "$ROADMAP_ORDER_ENABLED" = true ]; then
   mkdir -p -- "$NIGHT"
   find "$NIGHT" -maxdepth 1 -type f -name '.open-issues-pipeline-*.json*' -mmin +720 -delete 2>/dev/null || true
   if [ "${ZF_PIPELINE_ROADMAP_READY:-}" = 1 ]; then
+    ROADMAP_PARENT_TREE_FETCH_ATTEMPTED=1
     ROADMAP_TREE_JSON="$(cat -- "$ZF_ROADMAP_TREE_CACHE_FILE")"
     ROADMAP_TREE_READY=1
     ROADMAP_TREE_STALE="${ZF_PIPELINE_ROADMAP_STALE:-0}"
     ROADMAP_SNAPSHOT_AGE_SECONDS="${ZF_PIPELINE_ROADMAP_AGE:-0}"
   elif [ "${ZF_PIPELINE_ROADMAP_READY:-}" = 0 ]; then
-    echo "issue-pipeline: roadmap tree read failed; roadmap candidates held this tick" >&2
-  elif roadmap_fetch_for_admission "$ZF_ROADMAP_TREE_CACHE_FILE" "$REPO"; then
-    ROADMAP_TREE_JSON="$(cat -- "$ZF_ROADMAP_TREE_CACHE_FILE")"
-    ROADMAP_TREE_READY=1
-  else
-    rm -f -- "$ZF_ROADMAP_TREE_CACHE_FILE" "$ZF_ROADMAP_TREE_CACHE_FILE.placed"
-    echo "issue-pipeline: roadmap tree read failed; roadmap candidates held this tick" >&2
+    ROADMAP_PARENT_TREE_FETCH_ATTEMPTED=1
+    if [ "${PIPELINE_STAGE:-}" = release ] && [ "${ZF_RELEASE_TRAIN_DELEGATE:-0}" = 1 ]; then
+      roadmap_release_placement_failure_log_once
+    else
+      echo "issue-pipeline: roadmap tree read failed; roadmap candidates held this tick" >&2
+    fi
+  elif ! roadmap_parent_tree_ready_for_tick; then
+    if [ "${PIPELINE_STAGE:-}" = release ] && [ "${ZF_RELEASE_TRAIN_DELEGATE:-0}" = 1 ]; then
+      roadmap_release_placement_failure_log_once
+    else
+      echo "issue-pipeline: roadmap tree read failed; roadmap candidates held this tick" >&2
+    fi
   fi
 fi
 if [ "$ROADMAP_TREE_READY" = 1 ]; then
@@ -611,12 +649,21 @@ ensure_issue_roadmap_parent_for_dispatch() {
   local n="$1" stage="$2" issue_json="${3:-}"
   [[ "${ROADMAP_ORDER_ENABLED:-false}" == true ]] || return 0
   roadmap_stage_requires_parent "$stage" || return 0
+  if [[ "$stage" == awaiting-release ]]; then
+    # Release metadata ordering is best-effort: a failed tree read or placement
+    # must not keep a merged issue out of the release batch. The tick cache
+    # permits one tree read; leaving the issue mark unset retries placement
+    # on the next tick.
+    roadmap_parent_tree_ready_for_tick || return 1
+    roadmap_ensure_issue_parent "$n" "$stage" "$issue_json"
+    return $?
+  fi
   # Negative cache: a placement that failed is not retried for 30 min (a missing
   # 待归类 epic fails identically every tick; SRE book "Addressing Cascading
   # Failures": do not retry deterministic failures every cycle). Success clears it.
   local mark="${AGENT_HOME:-/nonexistent}/night/roadmap-placement-failed-$n"
   if [ -n "$(find "$mark" -mmin -30 2>/dev/null)" ]; then return 1; fi
-  if ! roadmap_ensure_issue_parent "$n" "$stage" "$issue_json"; then
+  if ! roadmap_parent_tree_ready_for_tick || ! roadmap_ensure_issue_parent "$n" "$stage" "$issue_json"; then
     echo "issue-pipeline: roadmap parent placement failed for #$n before $stage dispatch" >&2
     mkdir -p -- "${mark%/*}" 2>/dev/null && : > "$mark" 2>/dev/null
     return 1
@@ -3106,8 +3153,7 @@ select_release_batch() {
       continue
     fi
     if ! ensure_issue_roadmap_parent_for_dispatch "$n" awaiting-release; then
-      record_release_decision "$n" skipped roadmap-parent release parent-placement-failed
-      continue
+      roadmap_release_placement_failure_log_once
     fi
     release_batch_issues+=("$n")
     # Several pending rolls: anchor the newest image. It carries every older

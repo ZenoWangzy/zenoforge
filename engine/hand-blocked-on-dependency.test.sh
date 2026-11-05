@@ -254,6 +254,7 @@ source "$SCRIPT_DIR/night/hand-agent-watchdog.sh"
 source "$SCRIPT_DIR/night/hand-exit-handoff.sh"
 source "$SCRIPT_DIR/supervisor-holds.sh"
 eval "$(sed -n '/^ensure_issue_roadmap_parent_for_dispatch() {/,/^}/p; /^pipeline_system_hand_report_conclusion() {/,/^}/p; /^route_pipeline_fastlane_issue() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+roadmap_parent_tree_ready_for_tick() { return 0; }
 AGENT_HOME="$AGENT_HOME_DIR"
 ZF_NIGHT_DIR="$NIGHT"
 NIGHT="$NIGHT"

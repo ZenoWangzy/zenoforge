@@ -784,7 +784,10 @@ issue_transition() (
   fi
   case "$reason" in *requeue*|revert|failed-deploy|main-red-revert) requeue_transition=1 ;; esac
 
-  if declare -F roadmap_ensure_issue_parent >/dev/null; then
+  # awaiting-release is a completed merge handoff. Parent placement only
+  # affects roadmap ordering and is retried by the release tick, where one
+  # failed placement cannot strand the merged issue or its release batch.
+  if [ "$to" != awaiting-release ] && declare -F roadmap_ensure_issue_parent >/dev/null; then
     roadmap_ensure_issue_parent "$n" "$to" "$intake_json" "$source_issue" || return $?
   fi
 
