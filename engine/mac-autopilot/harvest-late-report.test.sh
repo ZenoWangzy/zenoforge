@@ -77,3 +77,11 @@ harvest_workers
 jq -e '.workers[0].harvested == true' "$WORKERS" >/dev/null
 jq -e '[.units[0].history[] | select(.stage == "worker-no-output")] | length == 1' "$UNITS" >/dev/null
 echo 'ok - legacy missing output is counted after grace'
+
+# A tick that died between claim and launch leaves a claim with no pid and no worker; its expiry must free it.
+printf '{"workers":[]}' > "$WORKERS"
+claim='{"owner_kind":"scheduler-worker","owner":"never-launched","unit":"issue-1","stage":"repair"}'
+coord_on_expire "$claim" || { echo 'never-launched claim wedged after expiry' >&2; exit 1; }
+jq -n '{workers:[{claim_owner:"pidless",unit:"issue-1",type:"review",harvested:false}]}' > "$WORKERS"
+if coord_on_expire '{"owner_kind":"scheduler-worker","owner":"pidless","unit":"issue-1","stage":"review"}'; then echo 'worker without pid expired' >&2; exit 1; fi
+echo 'ok - claim with no worker and no pid expires'
