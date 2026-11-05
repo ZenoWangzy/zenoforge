@@ -10,7 +10,7 @@
       "best_known_solution": "Persist the last good census (open PRs and runner slot count) with a timestamp; on a failed read retry once within the tick, then continue the pass on the cached snapshot while it is younger than CI_CENSUS_FALLBACK_MAX_AGE_SECONDS, logging once; pause only when the fallback itself is beyond the bound, naming the exceeded bound in the one pause line.",
       "lesson_id": "ci-admission-single-read-abort-draft-starvation",
       "research_sources": [
-        "https://kubernetes.io/docs/concepts/architecture/controllers/",
+        "https://kubernetes.io/docs/concepts/architecture/controller/",
         "https://sre.google/sre-book/monitoring-distributed-systems/"
       ],
       "options_considered": [
