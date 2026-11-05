@@ -3109,7 +3109,7 @@ command jq -e '
   and ([.units[] | select(.id=="size-refused")][0].stage == "implement-pending")
 ' "$UNITS" >/dev/null \
   || { echo "scheduler.test.sh: refill stage dispatch or admission result was wrong ($(command jq -c '.units | map({id,stage})' "$UNITS"))" >&2; cat "$LOG" >&2; exit 1; }
-[[ "${dispatched[*]}" == 'repair:repair-one rereview:rereview-one review:review-one' ]] \
+[[ "${dispatched[*]}" == 'rereview:rereview-one repair:repair-one review:review-one' ]] \
   || { echo "scheduler.test.sh: refill dispatched unexpected stages (${dispatched[*]})" >&2; exit 1; }
 [[ "$census_primes" == 1 ]] \
   || { echo "scheduler.test.sh: refill did not share one PR census ($census_primes)" >&2; exit 1; }
