@@ -674,7 +674,7 @@ register_new_issues() {
         '. + [{id:$id,stage:$stage,footprint:$scope[0]}]' <<<"$intake_footprint_owners")"
     fi
     intake_known_issues["$n"]=1
-    added=$((added+1))
+    added=$((added+1)); INTAKE_ADDED=$((${INTAKE_ADDED:-0}+1)) # refill dispatches again only when intake added work
     say "intake issue #$n -> implement-pending ($lane)"
   done < <(if (( existing_only )); then printf '%s\n' "$handoff_rows"; else predecessor_candidates; (( only_pred )) || intake_candidates "$refill_mode"; fi)
   say "intake detail candidates secs=$((SECONDS - step_started))s added=$added total_secs=$((SECONDS - intake_started))s"

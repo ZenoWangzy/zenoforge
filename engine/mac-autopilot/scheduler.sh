@@ -436,8 +436,11 @@ run_issue_intake_phases() {
   return "$rc"
 }
 run_refill_intake_dispatch_phases() {
-  phase register_new_issues 0 true || say "refill intake failed; continuing to dispatch"
+  # Dispatch what is already startable first: refill intake took 60s+ in 43% of refills and held every free slot behind it (2026-11-05 24h census).
   phase dispatch_pending true
+  INTAKE_ADDED=0
+  phase register_new_issues 0 true || say "refill intake failed; continuing to dispatch"
+  (( INTAKE_ADDED == 0 )) || phase dispatch_pending true
 }
 refill_tick() {
   local TICK_LOCAL_REFILL=true refill_log_offset=0 live metrics

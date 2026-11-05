@@ -79,6 +79,14 @@ grep -Fq 'phase_yield_lock dispatch_pending' "$script_dir/scheduler.sh" \
 grep -Fq 'phase_yield_lock_batch run_refill_intake_dispatch_phases' "$script_dir/scheduler.sh" \
   || failures+=('refill issue registration and dispatch do not yield the ledger lock')
 
+# Refill dispatches startable work before intake, and again only when intake added some.
+phase() { order+=("$1"); [[ "$1" != register_new_issues ]] || INTAKE_ADDED=$intake_adds; }
+for intake_adds in 0 1; do
+  order=(); run_refill_intake_dispatch_phases
+  want='dispatch_pending register_new_issues'; (( intake_adds == 0 )) || want+=' dispatch_pending'
+  [[ "${order[*]}" == "$want" ]] || failures+=("refill phase order with $intake_adds new issues was '${order[*]}', want '$want'")
+done
+
 if ((${#failures[@]})); then
   printf 'not ok - %s\n' "${failures[@]}" >&2
   exit 1
