@@ -187,6 +187,12 @@ the metric recovers, so the next crossing emits again). Regular flow samples onl
 in the state machine counts to now, flaky/reverted/unattributed end at their last transition.
 Rework rounds were already covered by `loop.rounds_p90` and `delivery.cycles_to_pass_30d`.
 
+Reliability throttle (#425): `delivery.revert_rate_30d_pct` and `flow.main_red_hours` also drive the scheduler.
+While either is UNHEALTHY on a scorecard under 2 h old, the effective `implement_cap` is half the configured value
+(min 1). A metric clears only when back to OK, so the WARN band holds the throttle and it does not flap; a missing,
+stale or unreadable scorecard keeps the configured cap. The breached set lives in `implement-cap-throttle.json`
+(config.json is never written) and each change logs once.
+
 Measured by hand on 2026-10-20 (not yet scored automatically, needs the GitHub API):
 
 | Node | Metric | Healthy | Measured 24h |

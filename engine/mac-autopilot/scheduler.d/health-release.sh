@@ -14,6 +14,28 @@ run_node_health() {
     echo $! > "$A/.ci-spend.pid"
   fi
 }
+# Reliability throttle (#425): while delivery.revert_rate_30d_pct or flow.main_red_hours is UNHEALTHY on a fresh scorecard, the
+# effective IMPLEMENT_CAP is half the configured one (min 1). A metric leaves the set only when back to OK; WARN, between the
+# two NODE-HEALTH bounds, holds it, so the cap does not flap. config.json is never written; a missing, stale or unreadable
+# scorecard keeps the configured cap. State is the breached set in implement-cap-throttle.json; each change logs once.
+apply_reliability_cap() {
+  local sc="$A/node-health.json" st="$A/implement-cap-throttle.json" prev cur configured="$IMPLEMENT_CAP" eff="$IMPLEMENT_CAP"
+  [[ "$configured" =~ ^[1-9][0-9]*$ ]] || return 0
+  prev="$(jqf_optional_file "$st" -c '.breached // []' 2>/dev/null)" || prev='[]'
+  cur="$(jqf_optional_file "$sc" -c --argjson prev "$prev" --argjson now "$NOW_EPOCH" \
+    '(try (.generated_at | fromdateiso8601) catch 0) as $at
+     | if $at < $now - 7200 then empty else . as $d |
+       [ "delivery.revert_rate_30d_pct", "flow.main_red_hours" | . as $id
+         | ([$d.metrics[]? | select(.id == $id)][0].status // "NO-DATA") as $s
+         | select($s == "UNHEALTHY" or ($s == "WARN" and ($prev | index($id)))) | $id ] end' 2>/dev/null)" || cur=""
+  [[ -n "$cur" ]] || return 0
+  [[ "$cur" == '[]' ]] || eff=$(( configured > 1 ? configured / 2 : 1 ))
+  if [[ "$cur" != "$prev" ]]; then
+    jq -cn --argjson b "$cur" '{breached:$b}' | write_state "$st"
+    say "implement-cap throttle breached=$cur cap=$configured->$eff"
+  fi
+  IMPLEMENT_CAP="$eff"
+}
 # Dispatch refreshes itself because running workers may have pushed.
 phase() {
   local t0=$SECONDS rc=0 gh_before=0 gh_after=0 gh_delta=0 phase_name="$1" elapsed
