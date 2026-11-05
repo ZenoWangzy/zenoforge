@@ -10,11 +10,14 @@
 # LIB_TEST_STALE_HOLD_REQUEUE_ONLY, LIB_TEST_HOLD_REQUEUE_ONLY,
 # LIB_TEST_RELEASE_CLOSE_ONLY, LIB_TEST_OPS_TRANSITION_ONLY, and
 # LIB_TEST_MODEL_POLICY_ONLY; each stops after its section, so preceding
-# sections still run.
+# sections still run. lib-part-1/2.test.sh run the later test blocks separately.
+LIB_TEST_PART="${LIB_TEST_PART:-0}"
+case "$LIB_TEST_PART" in 0|1|2) ;; *) echo "invalid LIB_TEST_PART=$LIB_TEST_PART" >&2; exit 2 ;; esac
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-lib-helpers.sh"
 
+if [[ "$LIB_TEST_PART" == 0 ]]; then
 test_provider_quota_classification() {
   local refusal="ERROR: You’ve hit your usage limit. Try again at Oct 19th, 2099 1:13 AM." event
   assert_false "signal status never classifies even a real refusal" premium_call_is_quota_refused "$refusal" 143
@@ -2354,7 +2357,9 @@ if [[ "${LIB_TEST_MODEL_POLICY_ONLY:-0}" == 1 ]]; then
   bash "$SCRIPT_DIR/lib-model-policy.test.sh" || FAILED=1
   lib_case_exit
 fi
+fi
 
+if [[ "$LIB_TEST_PART" == 1 ]]; then
 # --- give_up_on_issue's attempt threshold ---------------------------------
 # Defect 2, 2026-09-14 (#1179): fail_attempt()'s give-up threshold moved
 # from 3 to 4; every attempt resolves through the configured role policy.
@@ -4809,7 +4814,9 @@ assert_eq "legs_executable_check: ...and only that stage" "yes" "$(lg triage_fre
 assert_eq "legs_executable_check: ...under a signature that names the leg" "env:leg-not-executable:advisor" "$(lg sig)"
 assert_eq "legs_executable_check: ...which blocks that stage's dispatch (an outage, not a verdict)" "yes" "$(lg advisor_blocked)"
 assert_eq "legs_executable_check: the probe lifts it on the tick after the mode bit is fixed" "yes" "$(lg lifted_after_fix)"
+fi
 
+if [[ "$LIB_TEST_PART" == 2 ]]; then
 # --- 2026-09-16 fix (instance 1): dispatch()/dispatch_merge_sweeper() used
 # to swallow a systemd-run failure via `|| echo ... >&2` -- `echo` exits 0,
 # so the function always returned success even when NO unit was created,
@@ -7031,5 +7038,6 @@ else
   TRIAGE_CONFIG_OVERRIDE_STATUS=rejected
 fi
 assert_eq "triage schema validation reads target config override" rejected "$TRIAGE_CONFIG_OVERRIDE_STATUS"
+fi
 
 lib_case_exit
