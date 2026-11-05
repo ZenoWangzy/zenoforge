@@ -66,6 +66,18 @@ intake_parent_retry_clear() { # issue
   units_update --arg n "$1" 'del(.intake_parent_retry[$n])'
 }
 unit_field() { jqf -r --arg id "$1" "[.units[] | select(.id==\$id) | ($2 // empty)][0] // empty" "$UNITS"; }
+# hold_handoff_waiting outlives its hold when the issue leaves ready-for-agent (tracker, closed) with its episode unconsumed:
+# register_new_issues clears the flag only for ready-for-agent rows, so such a unit never dispatches again.
+handoff_wait_stale() { # unit id -> 0 after clearing the flag when no issue it waits on still has a live handoff episode
+  local id="$1" n live rc
+  [[ "$(unit_field "$id" '.hold_handoff_lookup_pending // false')" != true ]] || return 1
+  while read -r n; do
+    live="$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -r 'select(.state == "ready-for-agent" and (.scheduler_handoff.episode // "") != "") | "live"' 2>/dev/null)" && rc=0 || rc=$?
+    (( rc == 0 || rc == 64 )) && [[ -z "$live" ]] || return 1 # a live or unreadable state keeps the wait
+  done < <(jqf -r --arg id "$id" '.units[] | select(.id == $id) | (.hold_handoff_wait_issues // [])[]' "$UNITS")
+  units_update --arg id "$id" '.units |= map(if .id == $id then del(.hold_handoff_wait_issues, .hold_handoff_waiting) else . end)' || return 1
+  say "handoff wait cleared unit=$id: no issue it waited on has a live handoff episode"
+}
 unit_retries() { # unit stage → 历史里该 stage 出现次数
   jqf -r --arg id "$1" --arg st "$2" '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage==$st)] | length' "$UNITS"
 }
