@@ -695,7 +695,7 @@ model_policy_scan_sources() {
       # Incident records mix prose with machine checks. Only machine-check argv
       # is executable; projecting that field masks all prose, including fields
       # added to the record schema later.
-      selection="$(jq -r '.incidents[]?.machine_checks[]?.command[]? | strings' "$file")"
+      selection="$(jq -r '.incidents[]?.machine_checks[]?.command[]? | strings' "$file" | sed -E 's/\.claude([^[:alnum:]_]|$)/ /Ig')"
     else
       source="$(sed -E 's/CLAUDE\.md//Ig; s/\.claude([^[:alnum:]_]|$)/ /Ig; s#/tmp/[[:alpha:]]+-[0-9]+# #g; /source=.*CLAUDE/d' "$file" | tr -d '\000')"
       if [[ "$file" == "$script_dir/network-traffic.py" ]]; then

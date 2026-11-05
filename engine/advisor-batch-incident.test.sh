@@ -26,8 +26,10 @@ export TEST_JQ_HOME TEST_JQ_BIN TEST_DATE_BIN
 
 SCRIPT_DIR="$ENGINE_DIR"
 PRODUCT_REPO="$(cd -- "$OPS_DIR/.." && pwd -P)"
-# Product deployment data resolves from .zenoforge first, then the Engine defaults.
-MODEL_POLICY_DEFAULT_FILE="$(export ZF_REPO_DIR="$PRODUCT_REPO"; source "$ENGINE_DIR/config.sh"; zf_config_file model-policy.default.json)"
+# The suite later points ZF_CONFIG_ROOT at an empty directory, so the library under test resolves the Engine's own
+# default. Fixtures must come from that same file: a checkout's .zenoforge copy (an engine placed at <repo>/engine)
+# can forbid or allow different models and make the persistent-policy migration reject the fixtures.
+MODEL_POLICY_DEFAULT_FILE="$ENGINE_DIR/model-policy.default.json"
 ADVISOR_BATCH_PROMPT_FILE="$(export ZF_REPO_DIR="$PRODUCT_REPO"; source "$ENGINE_DIR/config.sh"; zf_config_file prompts/advisor-batch.md)"
 OVERSIZE_ONLY=0
 if [ "${1:-}" = "--oversize-only" ]; then OVERSIZE_ONLY=1; fi

@@ -65,6 +65,14 @@ if ! check_config_model_sources > "$TMPDIR/config-guard-prose.log" 2>&1; then
   exit 1
 fi
 cat > "$candidate/.zenoforge/state/incident-guards.json" <<'JSON'
+{"incidents":[{"id":"hook-path","machine_checks":[{"command":["bash","-c","node \"${HOME}/.claude/hooks/gate.cjs\""]}]}]}
+JSON
+if ! check_config_model_sources > "$TMPDIR/config-guard-hook-path.log" 2>&1; then
+  cat "$TMPDIR/config-guard-hook-path.log" >&2
+  echo 'not ok - model source scan treated a .claude hook path in an incident machine-check as a model selection' >&2
+  exit 1
+fi
+cat > "$candidate/.zenoforge/state/incident-guards.json" <<'JSON'
 {"incidents":[{"id":"forbidden-command","machine_checks":[{"command":["bash","-c","MODEL=claude"]}]}]}
 JSON
 if check_config_model_sources > "$TMPDIR/config-guard-command.log" 2>&1; then

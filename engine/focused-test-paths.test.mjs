@@ -5,13 +5,18 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 
-import {
+// The map loads <repo>/.zenoforge/state/focused-test-map.json when the module loads, and that data replaces Engine
+// entries such as engine/land-direct-main.sh. These tests assert the Engine's own map, so an engine placed inside a
+// product checkout must not read the checkout's config: point the config root at an empty directory first.
+process.env.ZF_CONFIG_ROOT = mkdtempSync(join(tmpdir(), 'focused-empty-config-'));
+process.on('exit', () => rmSync(process.env.ZF_CONFIG_ROOT, { recursive: true, force: true }));
+const {
   focusedTestPaths,
   intersectingFocusedTestPaths,
   orderFocusedTestPaths,
   RELATED_TESTS,
-} from './focused-test-paths.mjs';
-import { readPackJson } from './pack-dir.mjs';
+} = await import('./focused-test-paths.mjs');
+const { readPackJson } = await import('./pack-dir.mjs');
 
 test('maps the traffic installer to its executable owner contract', () => {
   const suites = ['engine/network-traffic.test.sh'];
@@ -468,10 +473,10 @@ test('maps lesson changes to a same-named suite under configured pipeline roots'
   const repo = mkdtempSync(join(tmpdir(), 'focused-configured-suite-'));
   const suite = 'project-tests/land-direct-main.test.sh';
   try {
-    mkdirSync(join(repo, '.zenoforge'), { recursive: true });
-    writeFileSync(join(repo, '.zenoforge/ci.json'), JSON.stringify({ pipeline_suite_roots: ['project-tests'] }));
+    writeFileSync(join(process.env.ZF_CONFIG_ROOT, 'ci.json'), JSON.stringify({ pipeline_suite_roots: ['project-tests'] }));
     assert.deepEqual(focusedTestPaths(['lessons/x.md'], new Set([suite]), { cwd: repo }), [suite]);
   } finally {
+    rmSync(join(process.env.ZF_CONFIG_ROOT, 'ci.json'), { force: true });
     rmSync(repo, { recursive: true, force: true });
   }
 });
