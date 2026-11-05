@@ -106,4 +106,21 @@ grep -Fq 'issue_transition: refused #5312 needs-advisor -> awaiting-release (rea
 }
 echo 'ok - drift to a disallowed live origin still refuses'
 
+# A refusal that used to return 1 with no output (roadmap parent placement
+# failed; 2026-11-05 two issues ended rc=1 with an empty reason) must name the
+# issue and the reason on stderr.
+roadmap_ensure_issue_parent() { return 1; }
+state_merge 5313 '{"state":"needs-advisor"}'
+silent_err="$(mktemp)"
+if issue_transition 5313 needs-triage supervisor-reconcile 2>"$silent_err"; then
+  echo 'not ok - transition passed although the roadmap parent check failed' >&2
+  exit 1
+fi
+grep -Fq 'issue_transition: roadmap parent check failed for #5313 -> needs-triage (rc=1)' "$silent_err" || {
+  echo 'not ok - silent failure still has no reason line' >&2
+  cat "$silent_err" >&2
+  exit 1
+}
+echo 'ok - a failed roadmap parent check prints the issue and the reason'
+
 echo 'ok - all issue_transition drift reconcile checks passed'

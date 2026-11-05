@@ -441,9 +441,9 @@ state_merge() (
     echo "[dry-run] state_merge $n -> $new" >&2
     return 0
   fi
-  printf '%s\n' "$new" > "$f.tmp" || return 1
+  printf '%s\n' "$new" > "$f.tmp" || { echo "state_merge: could not write $f.tmp for issue #$n -- state file NOT written" >&2; return 1; }
   # Rename alone leaves unflushed state vulnerable to NUL loss on a hard WSL reset.
-  python3 - "$f.tmp" "$f" <<'PY' || return 1
+  python3 - "$f.tmp" "$f" <<'PY' || { echo "state_merge: atomic replace failed for issue #$n -- state file $f NOT written" >&2; return 1; }
 import os, sys
 source, target = sys.argv[1:]
 with open(source, 'rb') as state:
@@ -688,14 +688,14 @@ issue_transition() (
     return 64
   fi
 
-  f="$(state_file "$n")" || return 1
-  mkdir -p -- "$STATE_DIR" || return 1
+  f="$(state_file "$n")" || { echo "issue_transition: no state file path for #$n" >&2; return 1; }
+  mkdir -p -- "$STATE_DIR" || { echo "issue_transition: could not create state directory for #$n" >&2; return 1; }
   if [ "$lock_mode" != __issue_transition_lock_held ]; then
     exec {transition_lock_fd}>"$f.lock" || { echo "issue_transition: could not open state lock for #$n" >&2; return 1; }
     flock -x "$transition_lock_fd" || { echo "issue_transition: could not lock state for #$n" >&2; return 1; }
   fi
   [ -f "$f" ] && had_state=1
-  before="$(state_read "$n")" || return 1
+  before="$(state_read "$n")" || { echo "issue_transition: could not read state for #$n" >&2; return 1; }
   if [ -n "$expected_hold" ] && ! jq -e --argjson expected "$expected_hold" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$before" >/dev/null; then
     echo "issue_transition: hold for #$n changed before release; retry from the current hold" >&2
     return 1
@@ -787,7 +787,7 @@ issue_transition() (
     started_epoch="$(agent_epoch "$(jq -r '.run.implement_started_at // empty' <<< "$before")" 2>/dev/null || echo 0)"
     # Only deployed conclusions may use the exact PR's actual merge evidence.
     # run.merged_at is handoff time and can be newer than a human requeue.
-    reason_file="$(jq_arg_file "$reason")" || return 1
+    reason_file="$(jq_arg_file "$reason")" || { echo "issue_transition: could not stage reason file for #$n" >&2; return 1; }
     merged_at="$(jq -r --rawfile reason "$reason_file" '
       select($reason == "conclude:deployed" and .run.outcome == "merged" and .deploy_state == "deployed"
         and (.run.evidence.merged_pr.number | tostring) == (.run.evidence.pr_number | tostring)
@@ -805,7 +805,7 @@ issue_transition() (
   case "$reason" in *requeue*|revert|failed-deploy|main-red-revert) requeue_transition=1 ;; esac
 
   if declare -F roadmap_ensure_issue_parent >/dev/null; then
-    roadmap_ensure_issue_parent "$n" "$to" "$intake_json" "$source_issue" || return $?
+    roadmap_ensure_issue_parent "$n" "$to" "$intake_json" "$source_issue" || { restore_status=$?; [ "$restore_status" = 3 ] || echo "issue_transition: roadmap parent check failed for #$n -> $to (rc=$restore_status)" >&2; return "$restore_status"; }
   fi
 
   case "$to:$reason" in
@@ -818,7 +818,7 @@ issue_transition() (
   esac
   [ "$DRY_RUN" = 1 ] || ensure_state_labels
   local target_json
-  target_json="$(jq -cn --arg state "$to" '$state')" || return 1
+  target_json="$(jq -cn --arg state "$to" '$state')" || { echo "issue_transition: could not encode target state $to for #$n" >&2; return 1; }
   local filter="$patch | .state = $target_json"
   if { [ "$from" = on-hold ] || [ "$release_hold_overlay" = 1 ]; } \
     && [ "$to" != on-hold ] && ! [[ "$patch" == *".hold ="* ]]; then filter+=" | .hold = null"; fi
@@ -832,7 +832,7 @@ issue_transition() (
     return 1
   fi
   if [ "$to" = on-hold ]; then
-    hold_json="$(state_read "$n" | jq -c '.hold // {}')" || return 1
+    hold_json="$(state_read "$n" | jq -c '.hold // {}')" || { echo "issue_transition: could not read hold record for #$n" >&2; return 1; }
     if hold_durable_record_valid "$hold_json"; then
       if ! jq -e '.durable_record == true' <<< "$hold_json" >/dev/null 2>&1; then
         if ! hold_durable_record_publish "$n" "$hold_json" \
@@ -847,7 +847,7 @@ issue_transition() (
         fi
       fi
     elif jq -e '.durable_record == true' <<< "$hold_json" >/dev/null 2>&1; then
-      state_merge "$n" '.hold.durable_record = false' __issue_transition_lock_held || return 1
+      state_merge "$n" '.hold.durable_record = false' __issue_transition_lock_held || { echo "issue_transition: could not clear durable hold flag for #$n" >&2; return 1; }
     fi
   fi
   [ "$skip_label_write" != 1 ] || return 0

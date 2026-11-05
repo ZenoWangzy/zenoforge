@@ -112,7 +112,7 @@ mark_awaiting_release() {
   local n="$1" pr_number="$2" expected_hold="${3:-}" pr_json transition_filter
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "mark_awaiting_release: invalid issue number '$n'" >&2; return 64; }
   [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || { echo "mark_awaiting_release: invalid PR number '$pr_number' for #$n" >&2; return 64; }
-  pr_json="$(jq -cn --arg pr "$pr_number" '$pr')" || return 1
+  pr_json="$(jq -cn --arg pr "$pr_number" '$pr')" || { echo "mark_awaiting_release: could not encode PR #$pr_number for #$n" >&2; return 1; }
   transition_filter="if .run.outcome == \"merged\" and (.run.evidence.pr_number | tostring) == $pr_json then
     .run.merged_at = (.run.merged_at // .run.evidence.merged_pr.merged_at // (now | todate)) | .deploy_state = (.deploy_state // \"pending\")
     else .run.outcome = \"merged\" | .run.evidence.pr_number = $pr_json
@@ -361,7 +361,7 @@ $needs_md
         echo "conclude_run: refusing outcome=pipeline-system for #$n -- close comment must cite its issue-linked commit reachable from origin/main" >&2
         return 1
       fi
-      issue_state="$(gh issue view "$n" --repo "$REPO" --json state -q .state)" || return 1
+      issue_state="$(gh issue view "$n" --repo "$REPO" --json state -q .state)" || { echo "conclude_run: could not read issue state of #$n" >&2; return 1; }
       ;;
     *)
       echo "conclude_run: unknown outcome '$outcome' for #$n -- refusing" >&2
@@ -383,7 +383,7 @@ $needs_md
     conclusion_json="$(jq -c --arg status "$mandatory_check_status" '.mandatory_checks_status = $status' <<< "$conclusion_json")" || return 1
   fi
 
-  web_advisor_provider_clear_job_state "$n" || return 1
+  web_advisor_provider_clear_job_state "$n" || { echo "conclude_run: could not clear advisor job state for #$n" >&2; return 1; }
   local outcome_json needs_json needs_md_file label
   outcome_json="$(jq -n --arg o "$outcome" '$o')"
   needs_md_file="$(jq_arg_file "$needs_md")"
@@ -393,8 +393,8 @@ $needs_md
   # a completed pipeline run. The replacement keeps that property but makes
   # production evidence, not merge, the mechanical completion condition.
   if [ "$outcome" = "merged" ]; then
-    state_merge "$n" ".run.needs_md = $needs_json" || return 1
-    mark_awaiting_release "$n" "$pr_number" "$expected_hold" || return 1
+    state_merge "$n" ".run.needs_md = $needs_json" || { echo "conclude_run: could not record needs_md for #$n" >&2; return 1; }
+    mark_awaiting_release "$n" "$pr_number" "$expected_hold" || { echo "conclude_run: awaiting-release handoff failed for #$n PR #$pr_number" >&2; return 1; }
     local merged_comment_marker="<!-- vecta-merged-outcome issue=$n pr=$pr_number -->" merged_comments_json
     if [ "${AGENT_DRY_RUN:-0}" != 1 ] && [ "${DRY_RUN:-0}" != 1 ]; then
       merged_comments_json="$(gh api "repos/$REPO/issues/$n/comments?per_page=100" --paginate --slurp)" || {
@@ -415,7 +415,7 @@ $needs_md
     ' <<< "$merged_comments_json" >/dev/null 2>&1; then
       needs_md+=$'\n\n'"$merged_comment_marker"
       guarded_issue_comment "$n" "$BOT_DISCLAIMER
-这张票的实现已合并，正在等待生产部署及同一次真实用户路径的 URL、可见 DOM 和网络交换证据。$needs_md" || return 1
+这张票的实现已合并，正在等待生产部署及同一次真实用户路径的 URL、可见 DOM 和网络交换证据。$needs_md" || { echo "conclude_run: handoff comment failed for #$n" >&2; return 1; }
     fi
     return 0
   fi
@@ -447,21 +447,21 @@ $needs_md
     local comment_posted comment_epoch comment_since comments_json evidence_status
     comment_posted="$(echo "$state" | jq -r '.pipeline_system.close_comment_posted_at // empty')"
     if [ -z "$comment_posted" ]; then
-      guarded_issue_comment "$n" "$pipeline_close_comment" || return 1
-      state_merge "$n" '.pipeline_system.close_comment_posted_at = (now | todate)' || return 1
+      guarded_issue_comment "$n" "$pipeline_close_comment" || { echo "conclude_run: close comment failed for #$n" >&2; return 1; }
+      state_merge "$n" '.pipeline_system.close_comment_posted_at = (now | todate)' || { echo "conclude_run: could not record close comment time for #$n" >&2; return 1; }
     else
       comment_epoch="$(agent_epoch "$comment_posted" 2>/dev/null || true)"
-      [[ "$comment_epoch" =~ ^[0-9]+$ ]] || return 1
-      comment_since="$(date -u -d "@$((comment_epoch - 86400))" +%Y-%m-%dT%H:%M:%SZ)" || return 1
-      comments_json="$(gh api "repos/$REPO/issues/$n/comments?since=$comment_since&per_page=100" --paginate --slurp)" || return 1
+      [[ "$comment_epoch" =~ ^[0-9]+$ ]] || { echo "conclude_run: unreadable close comment time for #$n" >&2; return 1; }
+      comment_since="$(date -u -d "@$((comment_epoch - 86400))" +%Y-%m-%dT%H:%M:%SZ)" || { echo "conclude_run: bad close comment time for #$n" >&2; return 1; }
+      comments_json="$(gh api "repos/$REPO/issues/$n/comments?since=$comment_since&per_page=100" --paginate --slurp)" || { echo "conclude_run: could not read comments of #$n" >&2; return 1; }
       if issue_closure_evidence_valid "$REPO_DIR" "$n" pipeline-system \
         "$comments_json" "${REPO%%/*}" "$comment_epoch" "$(date +%s)"; then
         :
       else
         evidence_status=$?
-        [ "$evidence_status" -eq 1 ] || return 1
-        guarded_issue_comment "$n" "$pipeline_close_comment" || return 1
-        state_merge "$n" '.pipeline_system.close_comment_posted_at = (now | todate)' || return 1
+        [ "$evidence_status" -eq 1 ] || { echo "conclude_run: close evidence check failed for #$n (rc=$evidence_status)" >&2; return 1; }
+        guarded_issue_comment "$n" "$pipeline_close_comment" || { echo "conclude_run: close comment failed for #$n" >&2; return 1; }
+        state_merge "$n" '.pipeline_system.close_comment_posted_at = (now | todate)' || { echo "conclude_run: could not record close comment time for #$n" >&2; return 1; }
       fi
     fi
     local transition_filter=".run.outcome = $outcome_json | .run.needs_md = $needs_json | del(.advisor_admission_measure_only) | .run.previous_concluded_at = (.run.concluded_at // .run.previous_concluded_at) | .run.concluded_at = (now | todate) | .closed_by_pipeline = true | .pipeline_system.delivery_state = \"concluded\" | del(.pipeline_system.health_target, .pipeline_system.health_status, .pipeline_system.health_check_sha, .pipeline_system.health_checked_at, .pipeline_system.health_detail, .web_advisor_provider_job_id, .web_advisor_provider_job_started_at, .web_advisor_provider_job_episode_seq)"
@@ -474,10 +474,10 @@ $needs_md
         jq -e --argjson expected "$expected_hold" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$current" >/dev/null || exit 1
         if [ "$issue_state" != "CLOSED" ]; then guarded_write gh issue close "$n" --repo "$REPO" || exit 1; fi
         issue_transition "$n" concluded conclude:pipeline-system "$transition_filter" 0 "" "" 0 "$expected_hold" __issue_transition_lock_held
-      ) || return 1
+      ) || { echo "conclude_run: pipeline-system close under hold failed for #$n" >&2; return 1; }
     else
-      if [ "$issue_state" != "CLOSED" ]; then guarded_write gh issue close "$n" --repo "$REPO" || return 1; fi
-      issue_transition "$n" concluded conclude:pipeline-system "$transition_filter" || return 1
+      if [ "$issue_state" != "CLOSED" ]; then guarded_write gh issue close "$n" --repo "$REPO" || { echo "conclude_run: issue close failed for #$n" >&2; return 1; }; fi
+      issue_transition "$n" concluded conclude:pipeline-system "$transition_filter" || { echo "conclude_run: pipeline-system transition failed for #$n" >&2; return 1; }
     fi
     return 0
   fi
@@ -585,27 +585,27 @@ reconcile_maintainer_outcomes() {
 conclude_merged_run() {
   local n="$1" pr_number="$2" merge_detail="${3:-}" expected_hold="${4:-}" merged_row merge_sha state pipeline_enabled merge_sha_json close_comment evidence_status
   if [ -n "$expected_hold" ]; then
-    state="$(state_read "$n")" || return 1
-    jq -e --argjson expected "$expected_hold" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$state" >/dev/null || return 1
+    state="$(state_read "$n")" || { echo "conclude_merged_run: could not read state for #$n" >&2; return 1; }
+    jq -e --argjson expected "$expected_hold" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$state" >/dev/null || { echo "conclude_merged_run: hold for #$n changed before the merge was recorded" >&2; return 1; }
   fi
   if ! merged_row="$(merged_pr_main_row "$pr_number" "$n")"; then
     echo "conclude_merged_run: refusing PR #$pr_number for #$n -- only merged PRs targeting main can enter awaiting-release" >&2
     return 1
   fi
   merge_sha="${merged_row#*$'\t'}"
-  state="$(state_read "$n")" || return 1
-  if [ -n "$expected_hold" ] && ! jq -e --argjson expected "$expected_hold" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$state" >/dev/null; then return 1; fi
+  state="$(state_read "$n")" || { echo "conclude_merged_run: could not read state for #$n" >&2; return 1; }
+  if [ -n "$expected_hold" ] && ! jq -e --argjson expected "$expected_hold" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$state" >/dev/null; then echo "conclude_merged_run: hold for #$n changed before the merge was recorded" >&2; return 1; fi
   if jq -e '.tracker_parent == true or .state == "tracker"' <<< "$state" >/dev/null 2>&1; then
     echo "conclude_merged_run: #$n is tracker parent; recorded PR #$pr_number merge $merge_sha without changing aggregate or release state" >&2
     return 0
   fi
   merge_detail="${merge_detail:-PR #$pr_number auto-merged (squash). Waiting on Postsubmit validate before release.}"
   record_run_decision "$n" wrapper "Merged PR #$pr_number (squash)" 0
-  state="$(state_read "$n")" || return 1
-  pipeline_enabled="$(jq -r '.pipeline_system.enabled // false' <<< "$state")" || return 1
+  state="$(state_read "$n")" || { echo "conclude_merged_run: could not read state for #$n" >&2; return 1; }
+  pipeline_enabled="$(jq -r '.pipeline_system.enabled // false' <<< "$state")" || { echo "conclude_merged_run: state of #$n is not valid JSON" >&2; return 1; }
   if [ "$pipeline_enabled" = true ] && git -C "$REPO_DIR" merge-base --is-ancestor "$merge_sha" HEAD; then
-    merge_sha_json="$(jq -n --arg sha "$merge_sha" '$sha')" || return 1
-    state_merge "$n" ".pipeline_system.commit_sha = $merge_sha_json" || return 1
+    merge_sha_json="$(jq -n --arg sha "$merge_sha" '$sha')" || { echo "conclude_merged_run: could not encode merge sha for #$n" >&2; return 1; }
+    state_merge "$n" ".pipeline_system.commit_sha = $merge_sha_json" || { echo "conclude_merged_run: could not record merge sha for #$n" >&2; return 1; }
     close_comment="$BOT_DISCLAIMER
 流水线系统改动已进入 live checkout。
 

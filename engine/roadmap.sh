@@ -442,11 +442,11 @@ roadmap_place_issue() {
   linked_file="$cache_file.linked"
   [[ "$source" =~ ^[1-9][0-9]*$ ]] || source="$(roadmap_source_issue "$issue_json")"
   selected="$(roadmap_choose_epic "$tree" "$issue_json" "$source")" || return 1
-  epic="$(jq -er '.epic | select(type == "number" and . > 0)' <<< "$selected")" || return 1
+  epic="$(jq -er '.epic | select(type == "number" and . > 0)' <<< "$selected")" || { echo "roadmap: no epic number chosen for #$number" >&2; return 1; }
   milestone="$(jq -r '.milestone // empty' <<< "$selected")" || return 1
   if ! grep -Fqx -- "$number" "$linked_file" 2>/dev/null; then
-    sub_issue_id="$(gh api "repos/$REPO/issues/$number" --jq '.id | select(type == "number" and . > 0)')" || return 1
-    [[ "$sub_issue_id" =~ ^[1-9][0-9]*$ ]] || return 1
+    sub_issue_id="$(gh api "repos/$REPO/issues/$number" --jq '.id | select(type == "number" and . > 0)')" || { echo "roadmap: could not read the id of #$number" >&2; return 1; }
+    [[ "$sub_issue_id" =~ ^[1-9][0-9]*$ ]] || { echo "roadmap: invalid id for #$number" >&2; return 1; }
     # "duplicate sub-issues" = already under this epic (stale tree cache): goal met.
     link_out="$(guarded_write gh api "repos/$REPO/issues/$epic/sub_issues" --method POST \
       -F "sub_issue_id=$sub_issue_id" -F replace_parent=true 2>&1)" \
@@ -647,32 +647,32 @@ roadmap_issue_is_container() {
 }
 
 roadmap_ensure_issue_parent() (
-  local number="$1" state="$2" issue_json="${3:-}" source="${4:-}" cache_file tree flat node scratch=""
+  local number="$1" state="$2" issue_json="${3:-}" source="${4:-}" cache_file tree flat node scratch="" rc
   [[ "$(roadmap_switch_value)" == true ]] || return 0
   roadmap_stage_requires_parent "$state" || return 0
   cache_file="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
   if [[ -z "$cache_file" || ! -r "$cache_file" ]]; then
-    mkdir -p -- "$AGENT_HOME/night" || return 1
-    scratch="$(mktemp -d "$AGENT_HOME/night/.roadmap-parent.XXXXXX")" || return 1
+    mkdir -p -- "$AGENT_HOME/night" || { echo "roadmap: could not create scratch dir for #$number" >&2; return 1; }
+    scratch="$(mktemp -d "$AGENT_HOME/night/.roadmap-parent.XXXXXX")" || { echo "roadmap: could not create scratch dir for #$number" >&2; return 1; }
     trap 'rm -rf -- "$scratch"' EXIT
     cache_file="$scratch/tree.json"
-    roadmap_fetch_tree "$cache_file" "$REPO" || return 1
+    roadmap_fetch_tree "$cache_file" "$REPO" || { echo "roadmap: tree fetch failed for #$number (stage $state)" >&2; return 1; }
   fi
-  tree="$(cat -- "$cache_file")" || return 1
-  flat="$(roadmap_flatten "$tree")" || return 1
+  tree="$(cat -- "$cache_file")" || { echo "roadmap: could not read tree cache for #$number" >&2; return 1; }
+  flat="$(roadmap_flatten "$tree")" || { echo "roadmap: tree flatten failed for #$number" >&2; return 1; }
   if node="$(jq -ce --argjson number "$number" '[.[] | select(.number == $number)][0] // empty' <<< "$flat")"; then
     if roadmap_node_is_container "$node"; then
       echo "roadmap: refusing stage $state on container #$number" >&2
       return 3 # A confirmed container lets intake route this parent to tracker.
     fi
-    roadmap_place_issue "$cache_file" "$number" "$issue_json" "$source"
-    return $?
+    roadmap_place_issue "$cache_file" "$number" "$issue_json" "$source" || { rc=$?; echo "roadmap: placing #$number failed (rc=$rc)" >&2; return "$rc"; }
+    return 0
   fi
   if [ -r "$cache_file.placed" ] && grep -Fqx -- "$number" "$cache_file.placed"; then return 0; fi
   if [ -z "$issue_json" ]; then
-    issue_json="$(timeout 20s gh issue view "$number" --repo "$REPO" --json number,title,body 2>/dev/null)" || return 1
+    issue_json="$(timeout 20s gh issue view "$number" --repo "$REPO" --json number,title,body 2>/dev/null)" || { echo "roadmap: could not read #$number to place it" >&2; return 1; }
   fi
-  roadmap_place_issue "$cache_file" "$number" "$issue_json" "$source"
+  roadmap_place_issue "$cache_file" "$number" "$issue_json" "$source" || { rc=$?; echo "roadmap: placing #$number failed (rc=$rc)" >&2; return "$rc"; }
 )
 
 roadmap_health_assess() {
