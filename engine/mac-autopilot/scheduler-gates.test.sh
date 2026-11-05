@@ -816,6 +816,12 @@ CFG="$(jq '.auto_dispatch_new_prs = true' <<<"$CFG")"; ensure_lane() { echo dire
 gh() { if [[ "$1 $2" == "pr list" ]]; then printf '[{"number":9,"headRefOid":"%s","headRefName":"feat/doc","isDraft":false,"title":"title","labels":[]}]\n' "$H1"; else eval "${gh_reg_saved/gh ()/gh_g ()}"; gh_g "$@"; fi; }
 units '{"units":[]}'; register_new_prs || :
 [[ "$(reasons_of)" == "direct-main lane" ]] || fail 'direct-main registration cancel did not carry its reason'
+# One intake pass covers all new PRs in a tick; each pass takes minutes on the live queue.
+intake_saved="$(declare -f register_new_issues)"; intake_passes=0; register_new_issues() { intake_passes=$((intake_passes + 1)); }
+gh() { if [[ "$1 $2" == "pr list" ]]; then printf '[{"number":21,"headRefOid":"%s","headRefName":"feat/a","isDraft":false,"title":"a","labels":[]},{"number":22,"headRefOid":"%s","headRefName":"feat/b","isDraft":false,"title":"b","labels":[]}]\n' "$H1" "$H1"; else eval "$gh_reg_saved"; gh "$@"; fi; }
+TICK_PRS=""; HANDOFF_PR_CENSUS='[]'; units '{"units":[]}'; register_new_prs || :
+[[ "$intake_passes:$(jq '.units | length' "$UNITS")" == 1:2 ]] || fail "two new PRs need one intake pass ($intake_passes passes, $(jq '.units | length' "$UNITS") units)"
+unset HANDOFF_PR_CENSUS; eval "$intake_saved"
 gh() { if [[ "$1 $2" == "pr list" ]]; then printf '[{"number":9,"headRefOid":"%s","headRefName":"agent/issue-hf-9","isDraft":false,"title":"title","labels":[{"name":"hotfix"}]}]\n' "$H1"; else eval "${gh_reg_saved/gh ()/gh_g ()}"; gh_g "$@"; fi; }
 TICK_PRS=""; units '{"units":[]}'; register_new_prs || :
 [[ "$(jq '.units | length' "$UNITS")" == 0 ]] || fail 'hotfix PR was registered as a pipeline unit'

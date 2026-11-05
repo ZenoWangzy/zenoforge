@@ -325,7 +325,8 @@ label_hotfix_pr() { # PR number, currently known label names
 }
 register_new_prs() {
   [[ "$(jqf -r .auto_dispatch_new_prs <<<"$CFG")" == "true" ]] || return 0
-  local CAP="${MAX_PENDING_REVIEWS:-12}" n_registered=0 pr sha pr_head target branch draft title labels pr_num critical u wt rep lane body64 body body_file pr_json
+  local CAP="${MAX_PENDING_REVIEWS:-12}" n_registered=0 pr sha pr_head target branch draft title labels pr_num critical u wt rep lane body64 body body_file pr_json new_row
+  local -a new_rows=()
   tick_prs_prime
   while IFS=$'\t' read -r pr sha branch draft title labels body64; do
     tick_prs_prime
@@ -359,10 +360,18 @@ register_new_prs() {
     n_registered=$((n_registered+1))
     if [[ -n "${HANDOFF_PR_CENSUS:-}" ]]; then
       if [[ "${HANDOFF_CENSUS_PARTIAL:-0}" == 1 ]]; then handoff_include_pr "$pr_num" || continue; fi
-      register_new_issues 1 reuse
+    fi
+    new_rows+=("$pr_num"$'\t'"$branch"$'\t'"$title")
+  done < <(tick_prs | jqf -r 'sort_by(-.number) | .[0:15] | .[] | "\(.number)\t\(.headRefOid)\t\(.headRefName)\t\(.isDraft)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | @json)\t\((.body // "") | @base64)"' 2>/dev/null)
+  # One intake pass sees every new unit. A pass takes minutes, and running one per PR took 531s of a tick with 3 new PRs.
+  (( ${#new_rows[@]} == 0 )) || [[ -z "${HANDOFF_PR_CENSUS:-}" ]] || register_new_issues 1 reuse
+  for new_row in ${new_rows[@]+"${new_rows[@]}"}; do
+    IFS=$'\t' read -r pr_num branch title <<<"$new_row"
+    if [[ -n "${HANDOFF_PR_CENSUS:-}" ]]; then
       jqf -e --arg id "pr-$pr_num" 'any(.units[]; .id == $id and .hold_handoff_waiting == true)' "$UNITS" >/dev/null && continue
       [[ "$(unit_field "pr-$pr_num" '.stage')" == review-pending ]] || continue
     fi
+    u="$(jqf -c --arg id "pr-$pr_num" '[.units[] | select(.id==$id)][0]' "$UNITS")"
     lane="$(ensure_lane "pr-$pr_num" "$pr_num")" || { say "new PR unit=pr-$pr_num: lane unavailable"; continue; }
     if [[ "$lane" == direct-main ]]; then cancel_branch_runs "$branch" "direct-main lane; does not use PR CI" || :; fi
     room_for "pr-$pr_num" review || continue
@@ -374,7 +383,7 @@ register_new_prs() {
     rep="review-${pr_num}-${TAG}.md"
     dispatch_if_room "pr-$pr_num" "review" "review" "${rep%.md}.worker.log" "$rep" \
       "$PICK_MODEL" "$PICK_EFFORT" "$(review_prompt "$pr_num" "$title" "$sha" "$rep" "$lane" "$wt")" "$sha" "$wt" "$pr_head" || true
-  done < <(tick_prs | jqf -r 'sort_by(-.number) | .[0:15] | .[] | "\(.number)\t\(.headRefOid)\t\(.headRefName)\t\(.isDraft)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | @json)\t\((.body // "") | @base64)"' 2>/dev/null)
+  done
 }
 
 # 把本拍已经读到的 PR 与 run 事实发布成一份快照（pr-run-snapshot.json，见 runtime-env.sh）：bell、zombie-watch、dashboard 读它，
