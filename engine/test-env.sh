@@ -1,6 +1,32 @@
 #!/usr/bin/env bash
 # Pipeline tests must not inherit live AGENT_* or ZF_* settings.
 set -euo pipefail
+# Check before the AGENT_/ZF_ purge so a child cannot silently nest.
+if [[ "${ZF_AGENT_TEST_MODE:-}" == 1 || "${HOME:-}" == */zenoforge-agent-test-*/home ]]; then
+  echo 'test-env: refusing nested test environment' >&2
+  return 1 2>/dev/null || exit 1
+fi
+TEST_ENV_HOST_HOME="${HOME:-}"
+TEST_ENV_HOST_PATH="$PATH"
+export TEST_ENV_HOST_HOME TEST_ENV_HOST_PATH
+
+# Start an independent suite without carrying fixture executables or the test HOME.
+test_env_run_clean() {
+  env -u ZF_AGENT_TEST_MODE -u ZF_AGENT_TEST_ROOT HOME="$TEST_ENV_HOST_HOME" PATH="$TEST_ENV_HOST_PATH" "$@"
+}
+
+# Resolve before shadowing PATH; reject the stub itself, including hard links.
+test_env_resolve_node() {
+  local node
+  node="$(type -P node)" || { echo 'test-env: node not found' >&2; return 1; }
+  node="$(cd -- "$(dirname -- "$node")" && pwd -P)/${node##*/}"
+  if [[ -e "$1" && "$node" -ef "$1" ]]; then
+    echo 'test-env: refusing node stub as real node' >&2
+    return 1
+  fi
+  printf '%s\n' "$node"
+}
+
 unset LC_ALL LANGUAGE
 export LANG=en_US.UTF-8
 

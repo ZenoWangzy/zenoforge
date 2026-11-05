@@ -50,6 +50,7 @@ function fixture(t) {
     'done < <(compgen -e)',
     'test_env_root="$(mktemp -d "$TEST_ROOT/runtime.XXXXXX")"',
     'test_host_home="$TEST_ROOT/home"',
+    'TEST_ENV_HOST_HOME="$test_host_home" TEST_ENV_HOST_PATH="$PATH"',
     'mkdir -p "$test_host_home"',
   ].join('\n'));
   const groupBody = [
