@@ -331,6 +331,12 @@ try:sys.exit"""))
             self.assertEqual(result.returncode, 1, (script, result.stderr))
             self.assertFalse(marker.exists())
 
+    def test_plain_text_pause_counts_and_empty_does_not(self):
+        (self.home / "PAUSE").write_text("head: prod import window\n")
+        self.assertTrue(guard.paused(self.home))
+        (self.home / "PAUSE").write_text("")
+        self.assertFalse(guard.paused(self.home))
+
     def test_pause_denies_all_work_without_clearing_marker(self):
         self.pause()
         marker = self.home / "never"

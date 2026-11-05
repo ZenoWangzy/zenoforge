@@ -82,6 +82,8 @@ PYTHON
 manual_pause_is_valid() {
   local timestamp
   [ -s "$PAUSE_FILE" ] || return 1
+  # Plain text is a pause too: the scheduler stops on any PAUSE file, so every reader must agree.
+  jq -e . "$PAUSE_FILE" >/dev/null 2>&1 || return 0
   jq -e '
     type == "object" and .caller == "operator" and
     ([.reason, .issue, .provider, .model, .timestamp] | all(type == "string" and length > 0)) and

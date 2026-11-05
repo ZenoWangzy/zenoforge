@@ -232,7 +232,7 @@ The CLI supplies them: `zenoforge-autopilot-scheduler.service` (runs `start.sh -
 
 - Issue loop, no new work: `gh variable set AGENT_PIPELINE --repo owner/name --body off`. The next tick exits.
 - Timer, no new ticks: `systemctl --user stop zenoforge-agent.timer`.
-- Manual pause: write `$AGENT_HOME/PAUSE` as a JSON object. The engine checks it in `manual_pause_is_valid` (`engine/lib.sh`). It needs `caller` set to `operator`, non-empty `reason`, `issue`, `provider`, and `model` strings, and a `timestamp` in ISO UTC form, such as `2026-01-15T09:30:00Z`.
+- Manual pause: write `$AGENT_HOME/PAUSE` as non-empty plain text or as a JSON object. For a JSON object, the engine checks it in `manual_pause_is_valid` (`engine/lib.sh`). It needs `caller` set to `operator`, non-empty `reason`, `issue`, `provider`, and `model` strings, and a `timestamp` in ISO UTC form, such as `2026-01-15T09:30:00Z`.
 - Unit loop: stop the unit you wrote for it, or stop the processes that run from `autopi-live/`.
 
 ## Not generic yet

@@ -5556,6 +5556,8 @@ QUOTA_ALERT_OUT="$(
     manual_pause_is_valid && echo "EMPTY-PAUSE:valid" || echo "EMPTY-PAUSE:invalid"
     printf "{\"reason\":\"operator stop\",\"caller\":\"operator\",\"issue\":\"none\",\"provider\":\"none\",\"model\":\"none\",\"timestamp\":\"2026-99-99T99:99:99Z\"}\n" > "$PAUSE_FILE"
     manual_pause_is_valid && echo "BAD-TIME-PAUSE:valid" || echo "BAD-TIME-PAUSE:invalid"
+    printf "head: prod import window\n" > "$PAUSE_FILE"
+    manual_pause_is_valid && echo "PLAIN-TEXT-PAUSE:valid" || echo "PLAIN-TEXT-PAUSE:invalid"
     printf "{\"reason\":\"operator stop\",\"caller\":\"operator\",\"issue\":\"none\",\"provider\":\"none\",\"model\":\"none\",\"timestamp\":\"%s\"}\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PAUSE_FILE"
     manual_pause_is_valid && echo "MANUAL-PAUSE:valid" || echo "MANUAL-PAUSE:invalid"
 
@@ -5693,6 +5695,8 @@ assert_contains "empty PAUSE is invalid manual-stop metadata" \
   "$QUOTA_ALERT_OUT" "EMPTY-PAUSE:invalid"
 assert_contains "syntactically invalid timestamp cannot pause the pipeline" \
   "$QUOTA_ALERT_OUT" "BAD-TIME-PAUSE:invalid"
+assert_contains "a plain-text PAUSE is a pause" \
+  "$QUOTA_ALERT_OUT" "PLAIN-TEXT-PAUSE:valid"
 assert_contains "complete operator PAUSE metadata is valid" \
   "$QUOTA_ALERT_OUT" "MANUAL-PAUSE:valid"
 assert_contains "#1457: web model resolves to its own quota provider" \

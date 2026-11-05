@@ -392,7 +392,11 @@ def paused(home):
     if not path.exists():
         return False
     try:
-        data = json.loads(path.read_text())
+        text = path.read_text()
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return bool(text)  # plain text is a pause too, as in manual_pause_is_valid
         if not isinstance(data, dict):
             return False
         required = ("reason", "issue", "provider", "model", "timestamp")

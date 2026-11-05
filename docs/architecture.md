@@ -267,7 +267,7 @@ Lessons are stored in the target repository, under `lessons/`, and not in this e
 | `$AGENT_HOME/state/<issue>.json` | | One JSON snapshot per issue: attempts, stage history, review fallback, label snapshot. `state_file`, `engine/lib.sh` |
 | `$AGENT_HOME/model-policy.json` | | Live model policy, copied from `engine/model-policy.default.json` (`MODEL_POLICY_DEFAULT` in `engine/lib.sh`) |
 | `$AGENT_HOME/capacity.env` | | Host capacity settings (`AGENT_*` keys). Sourced by `lib.sh` |
-| `$AGENT_HOME/PAUSE` | | Manual stop. A JSON object with `caller` set to `operator`, plus `reason`, `issue`, `provider`, `model`, and an ISO UTC `timestamp` (`manual_pause_is_valid`, `engine/lib.sh`) |
+| `$AGENT_HOME/PAUSE` | | Manual stop. Any non-empty plain text, or a JSON object with `caller` set to `operator`, plus `reason`, `issue`, `provider`, `model`, and an ISO UTC `timestamp` (`manual_pause_is_valid`, `engine/lib.sh`) |
 | `$AGENT_HOME/quarantine/` | | Saved dirty-checkout changes from `run-tick.sh` |
 | `$AGENT_HOME/logs`, `night/`, `main-red/`, `locks/`, `land-queue/`, `mails/`, `supervisor-inbox` | | Logs and records for each subsystem |
 | `$WORKER_SCRATCH_ROOT` (default `~/.zenoforge/scratch`) | | `bin/worker` runs: `luna/<key>/` (events, last message, rc), `failover`, `rounds.log`, and `tmp/*-breaker` |
