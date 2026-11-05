@@ -441,4 +441,58 @@ ZF_INTAKE_UNLABELED_MIN_AGE_SECONDS=1 intake_admit_unlabeled_issues >/dev/null 2
 assert_eq "age bound is configurable and the fresh issue is then admitted" "needs-triage" \
   "$(jq -r '.[] | select(.number == 7152) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
 
+# Starvation guard: tracker parents are skipped from local state (no GitHub
+# read, no refused transition), an admissible issue behind them is still
+# admitted, and a confirmed roadmap container is remembered as a tracker so
+# the refusal is not retried on the next tick.
+tracker_rows=""
+for n in $(seq 7160 7169); do
+  tracker_rows+="{\"number\":$n,\"state\":\"OPEN\",\"createdAt\":\"$old_unlabeled_iso\",\"labels\":[]},"
+  printf '%s\n' '{"tracker_parent":true}' >"$AGENT_HOME/state/$n.json"
+done
+cat >"$FAKE_ISSUES_FILE" <<JSON
+[
+  ${tracker_rows}
+  {"number":7172,"state":"OPEN","createdAt":"$old_unlabeled_iso","labels":[]},
+  {"number":7175,"state":"OPEN","createdAt":"$old_unlabeled_iso","labels":[]}
+]
+JSON
+roadmap_ensure_issue_parent() { [ "$1" = 7172 ] && [ "$2" = needs-triage ] && return 3; return 0; }
+: > "$FAKE_GH_LOG"
+intake_admit_unlabeled_issues >/dev/null 2>&1 || true
+assert_eq "tracker parents cost no GitHub read" 0 "$(grep -cE '^issue view 716[0-9] ' "$FAKE_GH_LOG" || true)"
+assert_eq "admissible issue behind trackers is still admitted" "needs-triage" \
+  "$(jq -r '.[] | select(.number == 7175) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "confirmed roadmap container is remembered as tracker" "tracker" "$(state_read 7172 | jq -r '.state')"
+assert_eq "container is not given the needs-triage label" "" \
+  "$(jq -r '.[] | select(.number == 7172) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
+: > "$FAKE_GH_LOG"
+intake_admit_unlabeled_issues >/dev/null 2>&1 || true
+assert_eq "remembered container is not re-read next tick" 0 "$(grep -cE '^issue view 7172 ' "$FAKE_GH_LOG" || true)"
+unset -f roadmap_ensure_issue_parent
+
+# Starvation guard: many slow candidates and a tick deadline. The admit loop
+# must stop at its own budget so the needs-triage snapshot still fits. Fake
+# clock: every gh call costs 10s; the tick deadline is 100s out.
+slow_rows=""
+for n in $(seq 7180 7199); do
+  slow_rows+="{\"number\":$n,\"state\":\"OPEN\",\"createdAt\":\"$old_unlabeled_iso\",\"labels\":[]},"
+done
+cat >"$FAKE_ISSUES_FILE" <<JSON
+[${slow_rows%,}]
+JSON
+: > "$FAKE_GH_LOG"
+FAKE_CLOCK_BASE=5000000
+gh_call_now_ms() { echo $((FAKE_CLOCK_BASE + $(wc -l < "$FAKE_GH_LOG") * 10000)); }
+ZF_GH_CALL_DEADLINE_EPOCH_MS=$((FAKE_CLOCK_BASE + 100000))
+intake_admit_unlabeled_issues >/dev/null 2>&1 || true
+snapshot_status=0
+gh issue list --repo "$REPO" --limit 1000 --label needs-triage --state open --json number >/dev/null 2>&1 || snapshot_status=$?
+assert_eq "needs-triage snapshot still fits after the admit loop" 0 "$snapshot_status"
+assert_eq "admit loop left later candidates for the next tick" "needs-triage" \
+  "$(jq -r '.[] | select(.number == 7180) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "admit loop stopped before the last candidate" "" \
+  "$(jq -r '.[] | select(.number == 7199) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
+unset ZF_GH_CALL_DEADLINE_EPOCH_MS
+
 if [ "$FAILED" -eq 0 ]; then echo "ALL PASSED"; else echo "FAILURES"; exit 1; fi

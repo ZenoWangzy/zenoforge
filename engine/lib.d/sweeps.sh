@@ -540,8 +540,23 @@ sweep_unlabeled_issues() {
 # the next tick without failing the tick.
 intake_admit_unlabeled_issues() {
   local issues n issue_json state_labels_json lane_labels_json min_age admitted=0 failed=0
+  local budget_sec stop_ms reserve_sec transition_status now_ms
   min_age="${ZF_INTAKE_UNLABELED_MIN_AGE_SECONDS:-600}"
   [[ "$min_age" =~ ^[1-9][0-9]*$ ]] || min_age=600
+  # Own time budget (bulkhead): the admit loop never spends the tick deadline
+  # the needs-triage snapshot and dispatch still need (2026-11-04: 25 of 25
+  # ticks lost the snapshot to this loop). It stops at budget_sec, or earlier
+  # so reserve_sec of the caller's deadline stays unspent.
+  budget_sec="${ZF_INTAKE_ADMIT_BUDGET_SECONDS:-30}"
+  [[ "$budget_sec" =~ ^[1-9][0-9]*$ ]] || budget_sec=30
+  reserve_sec="${ZF_INTAKE_ADMIT_RESERVE_SECONDS:-45}"
+  [[ "$reserve_sec" =~ ^[1-9][0-9]*$ ]] || reserve_sec=45
+  now_ms="$(gh_call_now_ms)" || return 1
+  stop_ms=$((now_ms + budget_sec * 1000))
+  if [[ "${ZF_GH_CALL_DEADLINE_EPOCH_MS:-}" =~ ^[0-9]+$ ]] \
+    && (( ZF_GH_CALL_DEADLINE_EPOCH_MS - reserve_sec * 1000 < stop_ms )); then
+    stop_ms=$((ZF_GH_CALL_DEADLINE_EPOCH_MS - reserve_sec * 1000))
+  fi
   state_labels_json="$(printf '%s\n' "${ALL_STATE_LABELS[@]}" | jq -R . | jq -cs .)" || return 1
   if ! lane_labels_json="$(pipeline_system_issue_labels_json)"; then
     echo "intake_admit_unlabeled_issues: non-product lane labels unavailable; holding unlabeled intake this tick" >&2
@@ -557,11 +572,17 @@ intake_admit_unlabeled_issues() {
   fi
   while IFS= read -r n; do
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
-    if ! gh_tick_attempt_timeout_sec >/dev/null; then
-      echo "intake_admit_unlabeled_issues: tick deadline reached; remaining unlabeled issues deferred to the next tick" >&2
+    now_ms="$(gh_call_now_ms)" || break
+    if (( now_ms >= stop_ms )) || ! gh_tick_attempt_timeout_sec >/dev/null; then
+      echo "intake_admit_unlabeled_issues: intake budget or tick deadline reached; remaining unlabeled issues deferred to the next tick" >&2
       break
     fi
     is_on_hold "$n" && continue
+    # A tracker parent is refused by issue_transition on every tick, so skip it
+    # from local state before paying a GitHub read (same check as sweep_unlabeled_issues).
+    if state_read "$n" 2>/dev/null | jq -e '.tracker_parent == true or .state == "tracker"' >/dev/null 2>&1; then
+      continue
+    fi
     if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json number,state,labels,title,body 2>/dev/null)"; then
       echo "intake_admit_unlabeled_issues: cannot re-read #$n; skipping it this tick" >&2
       continue
@@ -581,8 +602,16 @@ intake_admit_unlabeled_issues() {
     if issue_transition "$n" needs-triage intake-unlabeled . 0 "$issue_json"; then
       admitted=$((admitted + 1))
     else
-      echo "intake_admit_unlabeled_issues: could not admit #$n to needs-triage; retrying next tick" >&2
-      failed=1
+      transition_status=$?
+      # Status 3 is a confirmed roadmap container: remember it as a tracker so
+      # the refusal is not retried every tick (scheduler intake does the same).
+      if [ "$transition_status" -eq 3 ] \
+        && issue_transition "$n" tracker "intake-parent:roadmap-container:intake-unlabeled" '.tracker_parent = true' 0 "$issue_json"; then
+        echo "intake_admit_unlabeled_issues: #$n is a roadmap container; routed to tracker" >&2
+      else
+        echo "intake_admit_unlabeled_issues: could not admit #$n to needs-triage; retrying next tick" >&2
+        failed=1
+      fi
     fi
   done < <(jq -r --argjson states "$state_labels_json" --argjson lane_labels "$lane_labels_json" --argjson min_age "$min_age" '
     .[]
