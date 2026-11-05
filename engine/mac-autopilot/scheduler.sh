@@ -481,7 +481,7 @@ refill_tick() {
   live="$(live_workers)"
   metrics="$(refill_dispatch_metrics "$refill_log_offset" "$live")" \
     || metrics='free_slots=unknown pending=unknown skips=footprint:unknown,handoff:unknown,memory:unknown'
-  say "refill done live=$live $metrics secs=$SECONDS gh_calls=$gh_calls${TICK_PHASES:+ slow:$TICK_PHASES}"
+  say "refill done live=$live $metrics secs=$SECONDS ended=$(date -u +%H:%M:%SZ) gh_calls=$gh_calls${TICK_PHASES:+ slow:$TICK_PHASES}"
 }
 
 main() {
@@ -560,7 +560,7 @@ main() {
   rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""
   TICK_INTAKE_READS_FILE=""
-  say "tick done units=$(jqf '.units | length' "$UNITS") live=$(live_workers) secs=$SECONDS gh_calls=$gh_calls${TICK_PHASES:+ slow:$TICK_PHASES}"
+  say "tick done units=$(jqf '.units | length' "$UNITS") live=$(live_workers) secs=$SECONDS ended=$(date -u +%H:%M:%SZ) gh_calls=$gh_calls${TICK_PHASES:+ slow:$TICK_PHASES}"
 }
 
 if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" == "true" ]]; then
