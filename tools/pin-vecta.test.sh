@@ -100,8 +100,17 @@ chmod +x "$tmp/bin/node"
 
 cat > "$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
+set -euo pipefail
 printf 'gh:%s\n' "$*" >> "${PIN_CALLS:?}"
 printf 'gh-cwd:%s\n' "$PWD" >> "${PIN_CALLS:?}"
+if [[ "${1:-}" == api ]]; then
+  [[ "${PIN_GH_API_FAIL:-0}" != 1 ]] || exit 1
+  if [[ -n "${PIN_WORKFLOW_RUNS+x}" ]]; then
+    printf '%s\n' "$PIN_WORKFLOW_RUNS"
+  else
+    printf '%s\n' '[{"workflow_runs":[]}]'
+  fi
+fi
 GH
 chmod +x "$tmp/bin/gh"
 export GH="$tmp/bin/gh"
@@ -143,6 +152,70 @@ run_pin() { # <calls-file> <scope-file> <agent-home> <target> [args...]
     ZF_LOCAL_CLONE="$engine_repo" \
     bash "$pin_script" "$new_engine" "$target" "$@"
 }
+
+# Main CI pin guard: only completed failures for this exact SHA on main block;
+# named workflow overrides are narrow, pending runs are allowed, and API errors fail closed.
+ci_target=$(setup_target ci)
+ci_agent=$(setup_agent ci)
+ci_calls="$tmp/ci.calls"
+ci_scopes="$tmp/ci.scopes"
+: > "$ci_calls"
+: > "$ci_scopes"
+failed_runs=$(jq -cn --arg sha "$new_engine" '{workflow_runs:[
+  {name:"engine-tests",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure"},
+  {name:"engine-tests",head_sha:$sha,head_branch:"feature",status:"completed",conclusion:"failure"},
+  {name:"cli-tests",head_sha:("0" * 40),head_branch:"main",status:"completed",conclusion:"failure"},
+  {name:"unrelated",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure"}
+]} | [. ]')
+set +e
+PIN_WORKFLOW_RUNS="$failed_runs" run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-blocked.out" 2>&1
+ci_blocked_status=$?
+set -e
+((ci_blocked_status != 0)) || fail 'completed engine-tests failure on main was allowed without an override'
+grep -Fq "failed zenoforge main workflows for $new_engine: engine-tests" "$tmp/ci-blocked.out" \
+  || fail 'main CI failure was not named in the refusal'
+! grep -q '^dispatcher:' "$ci_calls" || fail 'failed main CI ran pin build steps before refusing'
+
+if ! PIN_WORKFLOW_RUNS="$failed_runs" ZF_PIN_OVERRIDE=engine-tests \
+  run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-override.out" 2>&1; then
+  cat "$tmp/ci-override.out" >&2
+  fail 'named engine-tests override did not allow the pin'
+fi
+grep -Fq 'explicit ZF_PIN_OVERRIDE allows failed workflows: engine-tests' "$tmp/ci-override.out" \
+  || fail 'allowed workflow override was not printed'
+
+both_failed_runs=$(jq -cn --arg sha "$new_engine" '{workflow_runs:[
+  {name:"engine-tests",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure"},
+  {name:"cli-tests",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure"}
+]} | [. ]')
+set +e
+PIN_WORKFLOW_RUNS="$both_failed_runs" ZF_PIN_OVERRIDE=engine-tests \
+  run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-partial.out" 2>&1
+ci_partial_status=$?
+set -e
+((ci_partial_status != 0)) || fail 'engine-tests override allowed an unlisted cli-tests failure'
+grep -Fq 'failed zenoforge main workflows' "$tmp/ci-partial.out" \
+  && grep -Fq 'cli-tests' "$tmp/ci-partial.out" \
+  || fail 'partial override refusal did not name the unapproved workflow'
+
+pending_runs=$(jq -cn --arg sha "$new_engine" '{workflow_runs:[
+  {name:"engine-tests",head_sha:$sha,head_branch:"main",status:"in_progress",conclusion:null},
+  {name:"cli-tests",head_sha:$sha,head_branch:"main",status:"queued",conclusion:null}
+]} | [. ]')
+if ! PIN_WORKFLOW_RUNS="$pending_runs" run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-pending.out" 2>&1; then
+  cat "$tmp/ci-pending.out" >&2
+  fail 'pending main CI runs were not allowed'
+fi
+grep -Fq 'pin-vecta: prepared route=' "$tmp/ci-pending.out" || fail 'pending CI did not reach pin preparation'
+
+set +e
+PIN_GH_API_FAIL=1 run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-unreadable.out" 2>&1
+ci_unreadable_status=$?
+set -e
+((ci_unreadable_status != 0)) || fail 'pin continued when main CI runs could not be read'
+grep -Fq 'could not read zenoforge main CI runs' "$tmp/ci-unreadable.out" \
+  || fail 'CI API read failure was not explained'
+ok 'main CI pin guard blocks completed failures, permits named overrides and pending runs, and fails closed on unreadable runs'
 
 # A pin-only diff gets a fresh worktree/out root, a skip-ci head commit, and all
 # three engine operations in order. Default mode does not publish.
@@ -201,7 +274,7 @@ grep -Fq 'candidate:--preflight ' "$pack_calls" || fail 'publish preflight was s
 grep -Fq 'resolved-config-check: CHANGED hotfix.json' "$tmp/pack.out" || fail 'fixture did not reach the intended publish-preflight failure'
 expected_row=$(printf 'hotfix.json\tengine pin %s changes resolved config\t%s' "${new_engine:0:12}" "$new_engine")
 grep -Fq "$expected_row" "$tmp/pack.out" || fail 'preflight failure did not print the exact intended-changes row'
-if [[ -e "$pack_calls" ]]; then ! grep -q '^gh:' "$pack_calls" || fail 'failed preflight still created a PR'; fi
+if [[ -e "$pack_calls" ]]; then ! grep -q '^gh:pr create ' "$pack_calls" || fail 'failed preflight still created a PR'; fi
 [[ "$(git --git-dir="$tmp/pack-origin.git" for-each-ref --format='%(refname)' refs/heads | wc -l | tr -d '[:space:]')" == 1 ]] \
   || fail 'failed preflight pushed a topic branch'
 ok 'pack-touching PR pin always runs publish preflight and refuses publication on failure'
