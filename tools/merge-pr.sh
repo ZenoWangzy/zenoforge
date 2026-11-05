@@ -95,7 +95,9 @@ merge_pr_size_ok() {
   over="$({ bash "$root/tools/size-ratchet.sh" 2>&1 || true; } | grep '^FAIL ')" || return 0
   [[ "$(git -C "$root" rev-parse HEAD 2>/dev/null)" == "$(gh pr view "$pr" --json headRefOid 2>/dev/null | jq -r .headRefOid)" ]] || return 0
   files="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq -r '.files[].path')"
-  over="$(grep -F -- "$files" <<<"$over")" || return 0
+  # Exact path match: every FAIL line also names tools/size-baseline.txt.
+  over="$(awk 'NR == FNR { own[$0] = 1; next } $2 in own' <(printf '%s\n' "$files") - <<<"$over")"
+  [[ -n "$over" ]] || return 0
   merge_pr_refuse "$pr" "$over"
 }
 

@@ -172,9 +172,11 @@ PR_FILES='["tools/merge-pr.sh"]'
   PR_HEAD="$sha"
   PR_BODY=$'## prior-art\nno external prior art: internal gate wiring only\n'
   mkdir -p "$repo/tools"
-  printf "echo 'FAIL tools/merge-pr.sh grew to 900 lines'; exit 1\n" > "$repo/tools/size-ratchet.sh"
+  printf "echo 'FAIL tools/merge-pr.sh grew to 900 lines, its baseline in tools/size-baseline.txt is 800'; exit 1\n" > "$repo/tools/size-ratchet.sh"
   expect_prior_art_refusal 'PR over its size baseline' 'FAIL tools/merge-pr.sh grew'
   PR_FILES='["other.sh"]' expect_prior_art_merge 'main over baseline, PR not'
+  PR_FILES='["tools/size-baseline.txt"]' expect_prior_art_merge 'PR edits the baseline file only'
+  PR_FILES='["merge-pr.sh"]' expect_prior_art_merge 'PR file is a substring of the failing path'
 )
 ZF_MERGE_OVERRIDE=prior-art expect_prior_art_merge 'prior-art override'
 [[ "$(cat "$fixture/check-output")" == *'skips the prior-art check for PR #17'* ]] || fail 'override was not logged'
