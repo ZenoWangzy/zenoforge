@@ -24,7 +24,10 @@ intake_remote_read_reserve() { # Reserve one bounded GH read across this tick an
 }
 intake_gh_read() {
   intake_remote_read_reserve || return $?
-  "${TICK_INTAKE_GH_INVOKE:-gh}" "$@"
+  local started=$SECONDS rc=0
+  "${TICK_INTAKE_GH_INVOKE:-gh}" "$@" || rc=$?
+  (( SECONDS - started < 2 )) || say "intake detail gh_${1:-read}_${2:-query} secs=$((SECONDS - started))s"
+  return "$rc"
 }
 issue_skip_labels() {
   jqf -cn --arg hotfix "$(hotfix_lane_label)" \
@@ -113,9 +116,12 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
   if [[ -f "$cache_valid_tmp" ]]; then
     rm -f -- "$cache_valid_tmp"
     now="$(date +%s)"
-    jqf -Rs --argjson created_at "$now" '{schema:2,created_at:$created_at,rows:rtrimstr("\n")}' \
-      <"$cache_rows_tmp" >"$cache_json_tmp" \
-      && mv -f -- "$cache_json_tmp" "$cache_file" || rm -f -- "$cache_json_tmp"
+    if jqf -Rs --argjson created_at "$now" '{schema:2,created_at:$created_at,rows:rtrimstr("\n")}' \
+      <"$cache_rows_tmp" >"$cache_json_tmp" && mv -f -- "$cache_json_tmp" "$cache_file"; then
+      if [[ "$refill_mode" != true && -n "${INTAKE_FULL_SCAN_FLAG:-}" ]]; then : > "$INTAKE_FULL_SCAN_FLAG"; fi
+    else
+      rm -f -- "$cache_json_tmp"
+    fi
   fi
   cat "$cache_rows_tmp" 2>/dev/null || true
   [[ -s "$cache_rows_tmp" ]] || printf '\n'
@@ -251,6 +257,19 @@ register_new_issues() {
   local existing_only="${1:-0}" only_pred=0 ids lookup handoff_rows matches ids_state pr_number known_prs known_failed hotfix_prs prior_worktree prior_reason episode_hash related_id related_hash unsafe_clones
   local issue_json parent_reason parent_status parent_transition_status intake_footprint_owners='[]' intake_candidate_json intake_candidate_scope intake_candidate_stage intake_conflict state_read_status state_read_value
   local refill_mode="${2:-false}" free_slots ready_buffer target_pending max_refill upstream_room
+  local intake_started=$SECONDS step_started=$SECONDS candidate_started full_at now fresh_seconds existing_issue
+  local INTAKE_FULL_SCAN_FLAG="$A/.intake-full-scan.$BASHPID.$RANDOM"
+  local -A intake_known_issues=()
+  if [[ "$refill_mode" == true ]]; then
+    fresh_seconds="$(jqf -r '.issue_intake.refill_full_tick_fresh_seconds // 600' <<<"$CFG")"
+    [[ "$fresh_seconds" =~ ^[0-9]+$ ]] || fresh_seconds=600
+    full_at="$(cat "$A/intake-full-tick-at" 2>/dev/null || true)"
+    now="$(date +%s)"
+    if [[ "$full_at" =~ ^[0-9]+$ ]] && (( fresh_seconds > 0 && now >= full_at && now - full_at <= fresh_seconds )); then
+      say "intake detail refill_skip age=$((now - full_at))s bound=${fresh_seconds}s"
+      return 0
+    fi
+  fi
   if [[ "$refill_mode" == true ]]; then
     # Refill has no full handoff census; keep known-PR fallbacks partial and avoid another PR-list request.
     HANDOFF_PR_CENSUS="${HANDOFF_PR_CENSUS:-[]}"
@@ -333,11 +352,18 @@ register_new_issues() {
   fi
   fi
   if (( ! existing_only )); then
+    say "intake detail capacity_and_census secs=$((SECONDS - step_started))s"
+    step_started=$SECONDS
+    while IFS= read -r existing_issue; do
+      [[ "$existing_issue" =~ ^[0-9]+$ ]] && intake_known_issues["$existing_issue"]=1
+    done < <(jqf -r '.units[].issue | numbers' "$UNITS")
     intake_footprint_owners="$(intake_footprint_snapshot)" || {
       say "intake held: could not refresh footprint owners"
       return 0
     }
   fi
+  say "intake detail footprint_snapshot secs=$((SECONDS - step_started))s"
+  step_started=$SECONDS
   while IFS=$'\t' read -r n lane title labels issue64; do
     [[ "$n" =~ ^[0-9]+$ ]] || continue
     (( added < want )) || break
@@ -345,6 +371,11 @@ register_new_issues() {
     issue_json=""
     [[ -n "$issue64" ]] && issue_json="$(printf '%s' "$issue64" | base64 -d 2>/dev/null)" || true
     state_file="${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json"
+    # Existing ordinary issues are already registered. Preserve the handoff path
+    # whenever any state file exists, including unreadable or malformed files.
+    if (( ! existing_only )) && [[ "${intake_known_issues[$n]:-}" == 1 && ! -e "$state_file" && ! -L "$state_file" ]]; then
+      continue
+    fi
     episode=""
     if state_read_value="$(jqf_optional_file "$state_file" -r 'select(.state == "ready-for-agent") | .scheduler_handoff.episode // empty' 2>/dev/null)"; then
       episode="$state_read_value"
@@ -558,14 +589,18 @@ register_new_issues() {
     labels="$(jqf -c '.labels // []' <<<"$task_record")"
     if (( ! existing_only )) && [[ -z "$existing_id" ]]; then
       intake_candidate_json="$(jqf -cn --argjson issue "$n" --arg task "$task" '{issue:$issue,task:$task}')" || continue
+      candidate_started=$SECONDS
       intake_candidate_scope="$(scheduler_footprint "$intake_candidate_json")" || {
         say "intake defer issue #$n: predicted footprint unavailable"
         continue
       }
+      (( SECONDS - candidate_started < 2 )) || say "intake detail footprint_predict issue=$n secs=$((SECONDS - candidate_started))s"
+      candidate_started=$SECONDS
       intake_conflict="$(active_footprint_conflict "$intake_candidate_scope" "$intake_footprint_owners" "__intake-$n")" || {
         say "intake defer issue #$n: footprint comparison unavailable"
         continue
       }
+      (( SECONDS - candidate_started < 2 )) || say "intake detail footprint_conflict issue=$n secs=$((SECONDS - candidate_started))s"
       if [[ -n "$intake_conflict" ]]; then
         intake_match="$(footprint_match_detail "$intake_candidate_scope" "$intake_candidate_scope" \
           "$(jqf -c --arg id "$intake_conflict" '[.[] | select(.id == $id) | .footprint[]?]' <<<"$intake_footprint_owners")" '{}')"
@@ -638,9 +673,14 @@ register_new_issues() {
         --slurpfile scope <(printf '%s' "$intake_candidate_scope") \
         '. + [{id:$id,stage:$stage,footprint:$scope[0]}]' <<<"$intake_footprint_owners")"
     fi
+    intake_known_issues["$n"]=1
     added=$((added+1))
     say "intake issue #$n -> implement-pending ($lane)"
   done < <(if (( existing_only )); then printf '%s\n' "$handoff_rows"; else predecessor_candidates; (( only_pred )) || intake_candidates "$refill_mode"; fi)
+  say "intake detail candidates secs=$((SECONDS - step_started))s added=$added total_secs=$((SECONDS - intake_started))s"
+  if [[ "$refill_mode" != true && "$existing_only" == 0 && -f "$INTAKE_FULL_SCAN_FLAG" ]]; then
+    date +%s > "$INTAKE_FULL_SCAN_FLAG" && mv -f -- "$INTAKE_FULL_SCAN_FLAG" "$A/intake-full-tick-at"
+  fi
   if (( ! existing_only && added == 0 && ! only_pred )) && [[ ! -f "$A/.idle-alert" || -n "$(find "$A/.idle-alert" -mmin +60 2>/dev/null)" ]]; then
     touch "$A/.idle-alert"
     echo "[$STAMP] IDLE-CAPACITY live=$live/$MAX pending=$pending: intake found no eligible issue (labels or skip labels too narrow?)" >> "$A/alerts/slo.md"
