@@ -34,6 +34,9 @@ cat > "$test_env_bin/gh" <<'STUB'
 set -u
 printf 'gh %s\n' "$*" >> "${ZF_GH_LOG:?}"
 if [ "${1:-}" = issue ] && [ "${2:-}" = view ]; then
+  case "$*" in
+    *"--json comments"*) cat "${ZF_GH_LIVE_LABELS:?}/${3}.comments" 2>/dev/null || printf '{"comments":[]}\n'; exit 0 ;;
+  esac
   cat "${ZF_GH_LIVE_LABELS:?}/${3}.labels" 2>/dev/null || true
   exit 0
 fi
@@ -159,6 +162,20 @@ refuse_rc=0
 bash "$CLI" 5321 needs-triage bare-hold-release:no-record >/dev/null 2>"$err" || refuse_rc=$?
 [ "$refuse_rc" -ne 0 ] || fail 'bare-hold-release moved a tracked hold'
 grep -Fq 'refused bare-hold-release for #5321' "$err" || fail "tracked-hold refusal line missing: $(cat "$err")"
+# A hold whose local state file is missing but whose durable record sits in the
+# issue comments is a tracked hold: hold_restore can bring it back, so the bare
+# release is refused and the label stays.
+live_labels 5324 on-hold
+record='{"holder":"supervisor","release_condition":"owner answers","expires_at":"2099-01-01T00:00:00Z","stage_before":"needs-info","kind":"owner"}'
+jq -n --arg b "<!-- vecta-hold-record-v1 issue=5324 record=$(printf '%s' "$record" | base64 -w0) -->" \
+  '{comments:[{body:$b}]}' > "$LIVE_LABELS_DIR/5324.comments"
+rm -f "$AGENT_HOME/state/5324.json"
+: > "$GH_LOG"
+refuse_rc=0
+bash "$CLI" 5324 needs-triage bare-hold-release:no-state-file >/dev/null 2>"$err" || refuse_rc=$?
+[ "$refuse_rc" -ne 0 ] || fail 'bare-hold-release moved a hold recorded only in issue comments'
+grep -Fq 'refused bare-hold-release for #5324' "$err" || fail "comment-record refusal line missing: $(cat "$err")"
+[ "$(edit_count 5324)" -eq 0 ] || fail 'refused comment-record release wrote labels'
 rm -f "$LIVE_LABELS_DIR/stale-on-hold"
 echo 'ok - bare on-hold label is released by one reasoned command'
 

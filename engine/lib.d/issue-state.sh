@@ -758,9 +758,11 @@ issue_transition() (
     esac
     # A supervisor release of an on-hold label that has no hold record in the
     # state file (#352: 43 label-only holds had no release path). A tracked hold
-    # keeps its own release reasons.
-    if [[ "$reason" == bare-hold-release:?* ]] && ! jq -e '(.hold // null) == null' <<< "$before" >/dev/null 2>&1; then
-      echo "issue_transition: refused bare-hold-release for #$n: state records a hold" >&2
+    # keeps its own release reasons. A missing state file reads as no hold, so
+    # a durable hold record in the issue comments counts as a tracked hold too.
+    if [[ "$reason" == bare-hold-release:?* ]] \
+      && { ! jq -e '(.hold // null) == null' <<< "$before" >/dev/null 2>&1 || hold_has_durable_record "$n"; }; then
+      echo "issue_transition: refused bare-hold-release for #$n: a hold is recorded" >&2
       return 1
     fi
     # The bulk on-hold snapshot lags a label removal and refused a transition

@@ -202,6 +202,15 @@ hold_durable_record_from_issue() {
 }
 
 
+# 0 when the issue comments hold a valid durable hold record, or cannot be read
+# (fail closed): hold_restore can bring such a hold back, so it is not bare.
+hold_has_durable_record() {
+  local n="$1" issue_json
+  issue_json="$(gh issue view "$n" --repo "$REPO" --json comments 2>/dev/null)" || return 0
+  hold_durable_record_from_issue "$n" "$issue_json" >/dev/null 2>&1
+}
+
+
 hold_restore() {
   local n="$1" issue_json="${2:-}" state_json hold_json durable_record record_json status=0 stages stage_labels stage_before local_record_valid=0
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "hold_restore: valid issue number required" >&2; return 64; }
