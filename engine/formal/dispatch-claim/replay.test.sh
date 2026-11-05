@@ -14,13 +14,14 @@ cleanup() {
 trap cleanup EXIT
 export AGENT_HOME="$T/home"; mkdir -p "$AGENT_HOME" "$T/sup"
 UNITS="$T/units.json"; WORKERS="$T/workers.json"; LOG="$T/log"; SUP="$T/sup"; ROOT="$T"; STAMP=replay; GH_PRS="$T/gh-prs.json"
+NOW_EPOCH="$(date +%s)"
 SD="$AGENT_DIR/mac-autopilot/scheduler.d"
 echo '{"units":[{"id":"issue-99","issue":99,"lane":"direct-main","stage":"implement-pending"}]}' > "$UNITS"
 echo '{"workers":[]}' > "$WORKERS"; echo '[]' > "$GH_PRS"
 source "$AGENT_DIR/coord.sh"
 fn() { sed -n "/^$2() {/,/^}/p" "$SD/$1"; }  # the real function text, nothing else from the file
 source <(fn core.sh jqf); source <(fn units.sh unit_field)
-source <(fn harvest-workers.sh coord_scheduler_live_worker); source <(fn dispatch.sh dispatch)
+source "$SD/harvest-workers.sh"; source <(fn dispatch.sh dispatch)
 # Stubs for what dispatch() needs around the claim: the worker command, the GitHub census, state writes, liveness.
 build_codex_command() { CODEX_COMMAND=(sleep 300); CODEX_MODE=fresh; CODEX_PATH_REASON=replay; CODEX_SESSION_ID=""; CODEX_USAGE_START=0; }
 tick_prs() { cat "$GH_PRS"; }
