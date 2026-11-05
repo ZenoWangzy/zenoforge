@@ -86,6 +86,16 @@ jq -cn --arg a "$c79" --arg b "$c80" --arg sha "$sha" '{units:[
 workers_json="$(jq -cn --arg sha "$sha" '{unit:"eval-80",pid:1,type:"eval",report:"report.json",sha:$sha}')"
 harvest_prompt_eval "$workers_json" || true
 [[ "$(wc -l < "$OPENED")" == 1 && -z "$(jq -r '.units[1].eval_gate.revert_pr // empty' "$UNITS")" ]] || fail 'reverted a change while an earlier delivered change has an unproven eval'
+# The earlier unproven change stays a blocker after retirement moves it into the archive.
+jq -cn --arg a "$c79" --arg b "$c80" --arg sha "$sha" '{units:[
+  {id:"eval-79",issue:79,lane:"pr",stage:"merged",merge_sha:$a,history:[],eval_gate:{status:"failed",stages:["triage"],sha:$sha}},
+  {id:"eval-80",issue:80,lane:"pr",stage:"merged",merge_sha:$b,history:[],eval_gate:{status:"running",sha:$sha,report:"report.json",stages:["triage"],confirm:true}}]}' > "$UNITS"
+cp "$UNITS" "$UNITS.keep"
+retire_terminal_units
+[[ "$(jq -r '[.units[].id] | join(",")' "$UNITS")" == eval-80 && "$(jq -r '[.units[].id] | join(",")' "$UNITS_ARCHIVE")" == eval-79 ]] || fail 'retirement did not archive only the finished unproven change'
+harvest_prompt_eval "$workers_json" || true
+[[ "$(wc -l < "$OPENED")" == 1 ]] || fail 'reverted a change while an archived earlier change has an unproven eval'
+cp "$UNITS.keep" "$UNITS"; printf '{"units":[]}\n' > "$UNITS_ARCHIVE"
 jq '.units[0].eval_gate.status="passed"' "$UNITS" > "$UNITS.tmp"; mv "$UNITS.tmp" "$UNITS"
 jq '.units[1].eval_gate.stages=["advisor"]' "$UNITS" > "$UNITS.tmp"; mv "$UNITS.tmp" "$UNITS"
 harvest_prompt_eval "$workers_json" || true

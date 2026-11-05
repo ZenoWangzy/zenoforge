@@ -9,9 +9,9 @@
 1052	engine/lib.d/model-calls.sh
 967	engine/lib.d/model-policy.sh
 1027	engine/lib.sh
-1048	engine/mac-autopilot/bell.sh
-1198	engine/mac-autopilot/gen_dashboard.py
-1649	engine/mac-autopilot/node_health.py
+1060	engine/mac-autopilot/bell.sh
+1199	engine/mac-autopilot/gen_dashboard.py
+1650	engine/mac-autopilot/node_health.py
 839	engine/mac-autopilot/scheduler.d/harvest-workers.sh
 983	engine/mac-autopilot/usage_reader.py
 2628	engine/night/efficiency-regression.mjs

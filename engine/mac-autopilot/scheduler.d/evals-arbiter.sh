@@ -84,7 +84,7 @@ eval_regression_attributable() { # unit culprit regressed-stages-json
   while IFS= read -r other; do
     [[ "$other" != "$culprit" ]] && git -C "$ROOT" merge-base --is-ancestor "$other" "$culprit" 2>/dev/null && return 1
   done < <(jqf -r --arg id "$unit" --argjson s "$stages" '.units[] | select(.id != $id and (.eval_gate.status // "") != "" and ((.eval_gate.status | IN("passed","skipped")) | not)
-    and ([.eval_gate.stages[]?] | any(IN($s[])))) | (.merge_sha // .land_sha // empty)' "$UNITS")
+    and ([.eval_gate.stages[]?] | any(IN($s[])))) | (.merge_sha // .land_sha // empty)' <(units_history_doc))
   return 0
 }
 eval_regression_revert() { # unit gate-sha regressed-stages-json → 0 and the PR URL on stdout when a revert PR was opened; 3 when the change was already reverted; 4 when the regression is not attributable to it
