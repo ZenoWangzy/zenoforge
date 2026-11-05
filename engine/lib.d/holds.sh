@@ -411,11 +411,13 @@ hold_sweep_refusal_active() {
 
 
 hold_sweep_refusal_remember() {
-  local n="$1" issue_json="$2" now_epoch="$3" reason="$4" updated
+  local n="$1" issue_json="$2" now_epoch="$3" reason="$4" updated reason_file
   updated="$(jq -r '.updatedAt // empty' <<< "$issue_json" 2>/dev/null)" || return 0
   [ -n "$updated" ] || return 0
-  state_merge "$n" "$(jq -nr --arg updated "$updated" --arg reason "$reason" --argjson at "$now_epoch" \
+  reason_file="$(jq_arg_file "$reason")" || return 0
+  state_merge "$n" "$(jq -nr --arg updated "$updated" --rawfile reason "$reason_file" --argjson at "$now_epoch" \
     '".hold_sweep_refusal = " + ({updated_at:$updated, reason:$reason, at:$at} | tojson)')" >/dev/null 2>&1 || true
+  rm -f "$reason_file"
 }
 
 
