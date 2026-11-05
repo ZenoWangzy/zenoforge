@@ -1048,6 +1048,9 @@ run_triage_selection() (
   TRIAGE_BATCH_IDS=()
   TRIAGE_RETRY_ALONE=0
   TRIAGE_DEFERRED_COUNT=0
+  TRIAGE_SELECT_CUT=0
+  TRIAGE_SELECT_RESERVE=0
+  triage_slice_seconds_left() { printf '9999\n'; }
   state_read() {
     if [ "$1" = "$deferred_issue" ]; then
       printf '{"triage_retry_after_epoch":%s}\n' "$retry_deadline"

@@ -2243,6 +2243,14 @@ fi
 # ready-for-agent issues. Production bugs keep first rank; founder-test beats
 # ordinary features, including priority:top. The batch STATE's delay-cost bands
 # (#4363) put critical-path ahead of features and legacy last. Cap leftovers stay queued.
+# Seconds left before this slice's GitHub deadline; 9999 when none is set.
+triage_slice_seconds_left() {
+  local now_ms
+  [[ "${ZF_GH_CALL_DEADLINE_EPOCH_MS:-}" =~ ^[0-9]+$ ]] || { echo 9999; return 0; }
+  now_ms="$(gh_call_now_ms)" || { echo 0; return 0; }
+  echo $(( (ZF_GH_CALL_DEADLINE_EPOCH_MS - now_ms) / 1000 ))
+}
+
 run_intake_dispatch() {
 if [ "$PIPELINE_STAGE" = triage ]; then
 profile_mark triage
@@ -2255,21 +2263,19 @@ TRIAGE_BATCH_ACTIVE=0
 stage_unit_active triage batch && TRIAGE_BATCH_ACTIVE=1
 [ "$TRIAGE_BATCH_ACTIVE" = "1" ] && triage_slots=0
 TRIAGE_CANDIDATE_QUERY_FAILED=0
-# (a, #349) The query below selects only the needs-triage label; an open
-# issue with no stage label is invisible to it. Admit unlabeled, unheld
-# issues past the grace bound BEFORE the query so this same tick's
-# selection sees them; a partial admission leaves the rest for the next
-# tick and never blocks labelled work.
-if ! intake_admit_unlabeled_issues; then
-  echo "issue-pipeline: unlabeled-issue intake admission incomplete; selection continues with labelled issues" >&2
-fi
+TRIAGE_SELECT_CUT=0
+TRIAGE_SELECT_RESERVE="${ZF_TRIAGE_SELECT_RESERVE_SECONDS:-20}"
+[[ "$TRIAGE_SELECT_RESERVE" =~ ^[0-9]+$ ]] || TRIAGE_SELECT_RESERVE=20
+NEEDS_TRIAGE_JSON='[]'
+READY_MEASURE_JSON='[]'
+# Dispatch comes first (2026-11-05: admit and founder-test labelling spent the
+# slice and the 120s kill landed before any batch). The snapshot below reads
+# only labels already on the issues; unlabeled-issue admission and founder-test
+# labelling run after dispatch, so their results are picked up next tick.
 if ! NEEDS_TRIAGE_JSON="$(gh issue list --repo "$REPO" --limit 1000 --label needs-triage --state open \
     --json number,createdAt,labels,author,title,body)"; then
   TRIAGE_CANDIDATE_QUERY_FAILED=1
   echo "issue-pipeline: needs-triage candidate snapshot failed; skipping triage dispatch this tick" >&2
-elif ! NEEDS_TRIAGE_JSON="$(label_maintainer_test_candidates "$NEEDS_TRIAGE_JSON")"; then
-  TRIAGE_CANDIDATE_QUERY_FAILED=1
-  echo "issue-pipeline: founder-test intake failed; skipping triage dispatch this tick" >&2
 # `focus` leads legacy queues only; roadmap mode follows tree order with the standing overrides.
 elif [ "$ROADMAP_ORDER_ENABLED" = true ] && [ "$ROADMAP_TREE_READY" != 1 ]; then
   TRIAGE_CANDIDATE_QUERY_FAILED=1
@@ -2310,6 +2316,11 @@ if [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" ]; then
 fi
 if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" ]; then
   for next_triage in $NEEDS_TRIAGE_IDS; do
+    if [ "$(triage_slice_seconds_left)" -lt "$TRIAGE_SELECT_RESERVE" ]; then
+      TRIAGE_SELECT_CUT=1
+      echo "issue-pipeline: triage batch selection reached the slice deadline with ${#TRIAGE_BATCH_IDS[@]} issue(s) selected" >&2
+      break
+    fi
     if hand_agent_issue_is_live_owned "$next_triage"; then
       record_hand_owned_decision triage "$next_triage"
       continue
@@ -2326,8 +2337,10 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" 
     stage_unit_active triage "$next_triage" && continue
     pipeline_triage_skip_inflight "$next_triage" && continue
     stage_dispatch_allowed triage || break
-    ensure_issue_roadmap_parent_for_dispatch "$next_triage" needs-triage || continue
+    # The roadmap placement is a GitHub call per issue; a candidate that will
+    # only be deferred past the cap does not pay for it.
     if [ "$(state_read "$next_triage" | jq -r '.triage_batch_retry_alone // false')" = "true" ]; then
+      ensure_issue_roadmap_parent_for_dispatch "$next_triage" needs-triage || continue
       TRIAGE_BATCH_IDS=("$next_triage")
       TRIAGE_RETRY_ALONE=1
       break
@@ -2337,6 +2350,7 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" 
       TRIAGE_DEFERRED_COUNT=$((TRIAGE_DEFERRED_COUNT + 1))
       continue
     fi
+    ensure_issue_roadmap_parent_for_dispatch "$next_triage" needs-triage || continue
     TRIAGE_BATCH_IDS+=("$next_triage")
     triage_slots=$((triage_slots - 1))
   done
@@ -2358,13 +2372,20 @@ fi
 # single label edit at the end. The unit ledger (stage_unit_active) keeps
 # section (c) from dispatching implement on it mid-measurement.
 READY_MEASURE_QUERY_FAILED=0
-if ! READY_MEASURE_JSON="$(gh issue list --repo "$REPO" --limit 1000 --label ready-for-agent --state open \
+if [ "${#TRIAGE_BATCH_IDS[@]}" -ge 1 ]; then
+  # needs-triage ranks first; its batch dispatches now and measurement waits
+  # for a tick with no needs-triage work.
+  READY_MEASURE_QUERY_FAILED=1
+  READY_MEASURE_IDS=""
+elif [ "$(triage_slice_seconds_left)" -lt "$TRIAGE_SELECT_RESERVE" ]; then
+  READY_MEASURE_QUERY_FAILED=1
+  READY_MEASURE_IDS=""
+  TRIAGE_SELECT_CUT=1
+  echo "issue-pipeline: triage measurement skipped; slice deadline reached before selection" >&2
+elif ! READY_MEASURE_JSON="$(gh issue list --repo "$REPO" --limit 1000 --label ready-for-agent --state open \
     --json number,createdAt,labels,author,title,body)"; then
   READY_MEASURE_QUERY_FAILED=1
   echo "issue-pipeline: ready-for-agent measurement snapshot failed; skipping triage measurement this tick" >&2
-elif ! READY_MEASURE_JSON="$(label_maintainer_test_candidates "$READY_MEASURE_JSON")"; then
-  READY_MEASURE_QUERY_FAILED=1
-  echo "issue-pipeline: founder-test measurement intake failed; skipping triage measurement this tick" >&2
 elif [ "$ROADMAP_ORDER_ENABLED" = true ] && [ "$ROADMAP_TREE_READY" != 1 ]; then
   READY_MEASURE_QUERY_FAILED=1
   echo "issue-pipeline: roadmap tree unavailable; skipping triage measurement this tick" >&2
@@ -2404,6 +2425,11 @@ if [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; then
 fi
 if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_RETRY_ALONE" = "0" ] && [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; then
   for next_measure in $READY_MEASURE_IDS; do
+    if [ "$(triage_slice_seconds_left)" -lt "$TRIAGE_SELECT_RESERVE" ]; then
+      TRIAGE_SELECT_CUT=1
+      echo "issue-pipeline: triage measurement selection reached the slice deadline with ${#TRIAGE_BATCH_IDS[@]} issue(s) selected" >&2
+      break
+    fi
     [ "$(triage_classification_status "$(state_file "$next_measure")")" = "unmeasured" ] || continue
     if hand_agent_issue_is_live_owned "$next_measure"; then
       record_hand_owned_decision triage "$next_measure"
@@ -2418,8 +2444,8 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_RETRY_ALONE" = "0" ] && [ "$RE
     stage_unit_active triage "$next_measure" && continue
     pipeline_triage_skip_inflight "$next_measure" && continue
     stage_dispatch_allowed triage || break
-    ensure_issue_roadmap_parent_for_dispatch "$next_measure" ready-for-agent || continue
     if [ "$(state_read "$next_measure" | jq -r '.triage_batch_retry_alone // false')" = "true" ]; then
+      ensure_issue_roadmap_parent_for_dispatch "$next_measure" ready-for-agent || continue
       TRIAGE_BATCH_IDS=("$next_measure")
       TRIAGE_RETRY_ALONE=1
       break
@@ -2428,12 +2454,16 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_RETRY_ALONE" = "0" ] && [ "$RE
       TRIAGE_DEFERRED_COUNT=$((TRIAGE_DEFERRED_COUNT + 1))
       continue
     fi
+    ensure_issue_roadmap_parent_for_dispatch "$next_measure" ready-for-agent || continue
     TRIAGE_BATCH_IDS+=("$next_measure")
     triage_slots=$((triage_slots - 1))
   done
 fi
 if [ "$TRIAGE_DEFERRED_COUNT" -gt 0 ]; then
   echo "issue-pipeline: triage batch cap deferred $TRIAGE_DEFERRED_COUNT selectable issue(s); they remain queued for a later tick" >&2
+fi
+if [ "${#TRIAGE_BATCH_IDS[@]}" -eq 0 ] && [ "$TRIAGE_SELECT_CUT" = 1 ]; then
+  echo "issue-pipeline: triage batch could not be built within the slice; no issue selected, retrying next tick" >&2
 fi
 if [ "${#TRIAGE_BATCH_IDS[@]}" -gt 0 ]; then
   TRIAGE_DISPATCH_IDS=()
@@ -2457,6 +2487,26 @@ fi
 # Not gated on triage: a retry-alone triage batch still runs under the pause
 # without refreshing, and the stale index then had no trigger at all (2026-10-09).
 dispatch_gitnexus_refresh || true
+# After dispatch, with whatever slice deadline remains: (a, #349) admit
+# unlabeled, unheld issues past the grace bound to needs-triage, and apply
+# founder-test labels for the snapshots read above. Both are bounded by their
+# own budgets and the slice deadline, and never block dispatch; their results
+# are picked up by the next tick's selection.
+if [ "$(triage_slice_seconds_left)" -ge 10 ]; then
+  if ! ZF_INTAKE_ADMIT_RESERVE_SECONDS=5 intake_admit_unlabeled_issues; then
+    echo "issue-pipeline: unlabeled-issue intake admission incomplete; remaining issues retry next tick" >&2
+  fi
+  if [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = 0 ] \
+    && ! ZF_FOUNDER_TEST_LABEL_RESERVE_SECONDS=5 label_maintainer_test_candidates "$NEEDS_TRIAGE_JSON" >/dev/null; then
+    echo "issue-pipeline: founder-test labelling failed after dispatch; retrying next tick" >&2
+  fi
+  if [ "$READY_MEASURE_QUERY_FAILED" = 0 ] \
+    && ! ZF_FOUNDER_TEST_LABEL_RESERVE_SECONDS=5 label_maintainer_test_candidates "$READY_MEASURE_JSON" >/dev/null; then
+    echo "issue-pipeline: founder-test measurement labelling failed after dispatch; retrying next tick" >&2
+  fi
+else
+  echo "issue-pipeline: slice deadline reached after dispatch; admit and founder-test labelling deferred to the next tick" >&2
+fi
 fi
 if [ "$PIPELINE_STAGE" = advisor ]; then
 profile_mark advisor
