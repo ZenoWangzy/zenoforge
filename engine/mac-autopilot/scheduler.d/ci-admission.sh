@@ -69,10 +69,18 @@ precheck_harvest() {
   done < <(jqf -r '.units[] | select(.precheck_pid != null) | [.id, .precheck_pid, (.precheck_head // "")] | @tsv' "$UNITS")
 }
 precheck_launch() { # id pr head
-  local dir pid
+  local dir pid pid_file
+  local -a launcher=()
   dir="$(ensure_clone precheck)" || return 1
-  (cd "$dir" && exec setsid bash "$HERE/precheck.sh" "$dir" "$2" "$3") > "$SUP/precheck-$1.out" 2>&1 < /dev/null &
-  pid=$!
+  command -v setsid >/dev/null 2>&1 && launcher=(setsid)
+  pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
+  rm -f -- "$pid_file"
+  # precheck.sh builds and runs PR-controlled tests: same TasksMax scope as the other workers; WORKER_SCOPE_PID is what harvest polls.
+  worker_scope_launch "$pid_file" "$dir" "$SUP/precheck-$1.out" "${launcher[@]}" -- bash "$HERE/precheck.sh" "$dir" "$2" "$3" || {
+    rm -f -- "$pid_file"; return 1;
+  }
+  pid="$WORKER_SCOPE_PID"
+  rm -f -- "$pid_file"
   set_unit "$1" ".precheck_pid=$pid | .precheck_head=$(js "$3")"
   say "precheck pid=$pid unit=$1 PR#$2 head=${3:0:9}"
 }

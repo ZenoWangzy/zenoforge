@@ -166,6 +166,23 @@ start_worker disabled setsid
 stop_worker "$TEST_WORKER_PID" "$TEST_LAUNCHER_PID" "$TEST_CHILD_PID"
 printf '%s\n' 'PASS worker_tasks_max=0 disables scopes'
 
+# precheck.sh (PR-controlled tests) goes through the scope, and the PID harvest polls is the precheck process itself.
+source "$script_dir/scheduler.d/ci-admission.sh"
+A="$task_root" SUP="$task_root" HERE="$task_root"
+printf '#!/usr/bin/env bash\necho "PRECHECK: PASS $*"\n' > "$task_root/precheck.sh"
+ensure_clone() { echo "$task_root"; }
+js() { jq -Rn --arg v "$1" '$v'; }
+set_unit() { PRECHECK_UNIT_SET="$*"; }
+CFG='{"engine":{"worker_tasks_max":2468}}'
+reset_tick
+precheck_launch u1 214 deadbeef
+grep -Fxq 'TasksMax=2468' "$SCOPE_CALLS" && grep -Fq "$task_root/precheck.sh" "$SCOPE_CALLS" || fail 'precheck.sh bypasses the TasksMax scope'
+[[ "$PRECHECK_UNIT_SET" == *".precheck_pid=$WORKER_SCOPE_PID"* ]] || fail 'precheck_pid is not the launched precheck PID'
+for _ in {1..100}; do [[ "$(head -1 "$task_root/precheck-u1.out" 2>/dev/null)" == 'PRECHECK: PASS'* ]] && break; sleep 0.02; done
+[[ "$(head -1 "$task_root/precheck-u1.out")" == "PRECHECK: PASS $task_root 214 deadbeef" ]] || fail 'scoped precheck did not get its arguments or output file'
+wait "$WORKER_SCOPE_LAUNCHER_PID" 2>/dev/null || true
+printf '%s\n' 'PASS precheck runs inside the worker scope and records its PID'
+
 # A worker that dies right after start still hands back its start identity (read before the worker ran).
 CFG='{"engine":{"worker_tasks_max":2000}}'
 reset_tick
