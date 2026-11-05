@@ -2,6 +2,8 @@
 # PORTABLE_ONLY=1 tools/run-engine-tests.sh runs only these. They run on every OS leg (macos-intel, wsl2, and later the pidfile-runner leg).
 # Later portability tickets append their own suites here (platform-env, proc, hostinfo, doctor, portable-shim/*, unitgen, coord).
 engine/lib.test.sh
+engine/lib-part-1.test.sh
+engine/lib-part-2.test.sh
 engine/run-engine-tests-slow.test.sh
 engine/lib-gitnexus.test.sh
 engine/lib-model-policy.test.sh
@@ -20,6 +22,13 @@ engine/mac-autopilot/scheduler-part-5.test.sh
 engine/mac-autopilot/scheduler-part-6.test.sh
 engine/mac-autopilot/scheduler-part-7.test.sh
 engine/mac-autopilot/scheduler-gates.test.sh
+engine/mac-autopilot/scheduler-gates-part-1.test.sh
+engine/mac-autopilot/scheduler-gates-part-2.test.sh
+engine/mac-autopilot/scheduler-gates-part-3.test.sh
+engine/mac-autopilot/scheduler-gates-part-4.test.sh
+engine/mac-autopilot/scheduler-gates-part-5.test.sh
+engine/mac-autopilot/scheduler-gates-part-6.test.sh
+engine/mac-autopilot/scheduler-gates-part-7.test.sh
 engine/mac-autopilot/scheduler-gates-required-checks.test.sh
 engine/mac-autopilot/scheduler-gates-priority.test.sh
 engine/mac-autopilot/scheduler-gates-git.test.sh
