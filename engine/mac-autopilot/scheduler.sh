@@ -424,6 +424,11 @@ VIEWS_LOCK="$A/.views.lock"
 # 当可启动 pending 少于空槽时先收 issue，再派发 implement/repair/review/rereview-pending。新候选优先复用慢拍缓存，
 # 缓存失效时最多查询一个标签；实现派发只读本地台账，PR 修复、评审或复审按需读取一次共享 PR census。
 # 报告收割与 PR 注册仍由慢 tick 处理。
+# A tick runs for minutes after its one PAUSE check at the start, so acting phases look again.
+paused_midrun() {
+  [[ -e "$PAUSE_FILE" ]] || return 1
+  say "$1 stopped: paused by $PAUSE_FILE"
+}
 run_issue_intake_phases() {
   local rc=0
   phase register_new_issues 1 || rc=$?
@@ -469,7 +474,7 @@ refill_tick() {
       say "refill dispatch held: supervisor-owned marking deferred"
     else
       phase_yield_lock_batch run_refill_intake_dispatch_phases
-      phase_yield_lock refill_merge_pass
+      paused_midrun "refill merge" || phase_yield_lock refill_merge_pass
     fi
   fi
   local gh_calls; gh_calls="$(tick_gh_calls_count)"
@@ -534,12 +539,14 @@ main() {
       say "acting phases held: supervisor-owned marking deferred"
     else
       phase_yield_lock dispatch_pending && TICK_DISPATCH_FP="$(dispatch_inputs_fingerprint)"
-      phase dispatch_supervisor_arbiters
-      phase dispatch_prompt_evals
-      phase fast_land_lane
-      tick_prs_changed # Dispatched workers can push while earlier phases run.
-      phase_yield_lock ci_admission
-      phase_yield_lock run_merge_lane
+      if ! paused_midrun "acting phases"; then
+        phase dispatch_supervisor_arbiters
+        phase dispatch_prompt_evals
+        phase fast_land_lane
+        tick_prs_changed # Dispatched workers can push while earlier phases run.
+        phase_yield_lock ci_admission
+        phase_yield_lock run_merge_lane
+      fi
     fi
     phase register_new_prs
     phase reconcile_orphan_prs

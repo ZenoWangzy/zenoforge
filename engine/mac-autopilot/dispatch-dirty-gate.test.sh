@@ -53,3 +53,17 @@ grep -Fq 'phase_yield_lock dispatch_pending && TICK_DISPATCH_FP="$(dispatch_inpu
 grep -Fq 'supervisor_marking_deferred || dispatch_pending_if_dirty' "$script_dir/scheduler.sh" \
   || fail 'the end-of-tick dispatch_pending is not gated'
 printf 'ok - second dispatch_pending is gated on a ledger/worker/main fingerprint\n'
+
+# PAUSE set while a tick is already running stops dispatch and the merge phases.
+PAUSE_FILE="$fixture/pause"; rm -f "$PAUSE_FILE"; : > "$LOG"
+if paused_midrun probe; then fail 'paused_midrun fired without a PAUSE file'; fi
+touch "$PAUSE_FILE"
+footprint_waiters_revalidate() { return 0; }
+dispatch_order() { printf '%s\n' '{"id":"a","stage":"implement-pending"}'; }
+room_for() { fail 'dispatch reached a candidate after PAUSE'; }
+dispatch_pending true
+grep -q 'dispatch stopped: paused by' "$LOG" || fail 'dispatch did not log the mid-run PAUSE stop'
+rm -f "$PAUSE_FILE"
+grep -Fq 'if ! paused_midrun "acting phases"; then' "$script_dir/scheduler.sh" || fail 'the merge phases are not gated on a mid-run PAUSE'
+grep -Fq 'paused_midrun "refill merge" ||' "$script_dir/scheduler.sh" || fail 'the refill merge is not gated on a mid-run PAUSE'
+printf 'ok - PAUSE set mid-run stops dispatch and the merge phases\n'

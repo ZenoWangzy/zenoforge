@@ -20,6 +20,7 @@ dispatch_pending() {
   ordered="$(dispatch_order)" || true
   while read -r u; do
     [[ -n "$u" ]] || continue
+    paused_midrun dispatch && break
     id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"
     # The local refill path shares every stage handler with the slow tick. PR stages need one current-head census;
     # implementation-only refills continue to use local ledger data without a GitHub query.
