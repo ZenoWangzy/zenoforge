@@ -3086,7 +3086,7 @@ acquire_scheduler_lock() { return 0; }
 state_schema_ok() { return 0; }
 phase() {
   case "$1" in
-    harvest_workers|self_check_harvest|precheck_harvest|recover_orphans|mark_supervisor_owned_units) return 0 ;;
+    harvest_workers|self_check_harvest|precheck_harvest|recover_orphans|mark_supervisor_owned_units|release_session_pr_units) return 0 ;;
     register_new_issues) shift; register_new_issues "$@" ;;
     dispatch_pending) shift; dispatch_pending "$@" ;;
     refill_merge_pass) return 0 ;;
@@ -3176,7 +3176,7 @@ acquire_scheduler_lock() { return 0; }
 state_schema_ok() { return 0; }
 phase() {
   case "$1" in
-    harvest_workers|precheck_harvest|recover_orphans|mark_supervisor_owned_units) return 0 ;;
+    harvest_workers|precheck_harvest|recover_orphans|mark_supervisor_owned_units|release_session_pr_units) return 0 ;;
     self_check_harvest) self_check_harvest ;;
     register_new_issues) return 0 ;;
     dispatch_pending) shift; dispatch_pending "$@" ;;
@@ -3236,7 +3236,7 @@ acquire_scheduler_lock() { return 0; }
 state_schema_ok() { return 0; }
 phase() {
   case "$1" in
-    harvest_workers|self_check_harvest|recover_orphans|mark_supervisor_owned_units) return 0 ;;
+    harvest_workers|self_check_harvest|recover_orphans|mark_supervisor_owned_units|release_session_pr_units) return 0 ;;
     precheck_harvest) precheck_harvest ;;
     register_new_issues) return 0 ;;
     dispatch_pending) shift; dispatch_pending "$@" ;;
