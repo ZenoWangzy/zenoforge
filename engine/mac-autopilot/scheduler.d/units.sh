@@ -162,7 +162,7 @@ SUPERVISOR_CAP_PARK_RESULT_RE='^(third entry into supervisor-review; arbitration
 
 supervisor_cap_parked_unit() { # unit-json → whether this is a retryable arbitration-cap park (including legacy parks)
   jqf -e --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '
-    .stage == "parked" and (
+    .stage == "parked" and .parked_reason != "supervisor-cap-founder" and (
       .parked_reason == "supervisor-arbitration-cap" or
       .parked_reason == "supervisor-cap-triage-reask" or
       any((.history // [])[]?; .stage == "supervisor-budget-park" and

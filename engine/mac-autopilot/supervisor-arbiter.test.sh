@@ -298,4 +298,11 @@ dispatch_supervisor_arbiters
 [[ "$(field pr-624 .stage)" == supervisor-review ]] || fail "gate off must keep the current waiting behavior"
 [[ "$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == "$before" ]] || fail "gate off must not dispatch an arbitration worker"
 
+# A founder question ends cap triage even when old history still shows a budget park; sweeping it again re-asks forever.
+budget_park='{"stage":"supervisor-budget-park","result":"arbitration budget exhausted for x"}'
+supervisor_cap_parked_unit "{\"stage\":\"parked\",\"history\":[$budget_park]}" || fail "a legacy budget park must stay swept"
+if supervisor_cap_parked_unit "{\"stage\":\"parked\",\"parked_reason\":\"supervisor-cap-founder\",\"history\":[$budget_park]}"; then
+  fail "a founder park must not be swept back into cap triage"
+fi
+
 echo 'supervisor-arbiter.test.sh: all assertions passed'
