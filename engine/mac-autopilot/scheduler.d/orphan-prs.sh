@@ -37,7 +37,7 @@ reconcile_orphan_prs() {
   prs="$(tick_prs)" || return 0
   # Same rule as release_session_pr_units: a PR without the gated label is a session's, so never adopt or close it here.
   agent_prs="$prs"
-  [[ "$(jqf -r .auto_dispatch_new_prs <<<"$CFG")" != false ]] \
+  [[ "$(jqf -r '.factory_prs_only // false' <<<"$CFG")" != true ]] \
     || agent_prs="$(jqf -c --arg l "$GATED_LABEL" 'map(select(any(.labels[]?; .name == $l)))' <<<"$prs")"
   blocked="$(jqf -c '[.units[] | select(.stage=="blocked-external" and .blocked_on != null) | .blocked_on]' "$UNITS")"
   orphan_issue_numbers="$(jqf -c --slurpfile u "$UNITS" '

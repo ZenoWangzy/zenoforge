@@ -2834,8 +2834,8 @@ room_for issue-9 review || fail 'a stale wait file of a dead wrapper blocked dis
 [[ -e "$LUNA_SLOTS/wait-hotfix-$gate_dead" ]] && fail 'a stale wait file was not dropped'
 rm -f "$LUNA_SLOTS"/wait-*
 
-# auto_dispatch_new_prs=false: sessions' PRs leave the ledger before any acting phase, and the orphan pass neither adopts nor closes them.
-cfg_saved="$CFG"; CFG="$(jq '.auto_dispatch_new_prs=false' <<<"$CFG")"
+# factory_prs_only: sessions' PRs leave the ledger before any acting phase, and the orphan pass neither adopts nor closes them.
+cfg_saved="$CFG"; CFG="$(jq '.factory_prs_only=true' <<<"$CFG")"
 session_prs='[{"number":31,"labels":[],"headRefName":"agent/s","isDraft":false,"title":"s"},{"number":32,"labels":[{"name":"agent/ci-gated"}],"headRefName":"agent/issue-32","isDraft":true,"title":"f"},{"number":33,"labels":[{"name":"session-owned"}],"headRefName":"agent/issue-33","isDraft":false,"title":"c"},{"number":34,"labels":[],"headRefName":"agent/issue-34","isDraft":false,"title":"o"},{"number":35,"labels":[],"headRefName":"old","isDraft":false,"title":"i"}]'
 # The live census is over 500 KB, past jqf's argv limit.
 session_prs="$(jq -c --arg pad "$(printf '%70000s' '')" '.[0].body = $pad' <<<"$session_prs")"

@@ -581,12 +581,12 @@ hotfix_issue_numbers() {
 
 # PR 已在 GitHub 合并/关闭（如 10-27 手工批量落地），台账却还在工作环节：派活前先收掉。
 # 10-28 #4039/#4040 已合并，仍各被派了两轮 repair 与两次裁决。只查不在本拍 open 列表里的单元，每拍有上限。
-# auto_dispatch_new_prs=false: the factory works only PRs it made, which carry GATED_LABEL. A pr-N unit on an open PR without it is a
+# factory_prs_only: the factory works only PRs it made, which carry GATED_LABEL. A pr-N unit on an open PR without it is a
 # session's, and a session can claim a factory unit's PR with SESSION_OWNED_LABEL: park the unit before dispatch, CI admission and merge.
 # shortcut: an old factory orphan PR with no label parks too; it stays open until aged_pr_lifecycle, upgrade if such PRs return.
 SESSION_OWNED_LABEL="session-owned"
 release_session_pr_units() {
-  [[ "$(jqf -r .auto_dispatch_new_prs <<<"$CFG")" == false ]] || return 0
+  [[ "$(jqf -r '.factory_prs_only // false' <<<"$CFG")" == true ]] || return 0
   local id prs
   prs="$(tick_prs)" || return 0
   while IFS= read -r id; do
