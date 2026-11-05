@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# main: one run plus the newest waiting, so a merge burst still gets a verdict. PRs: the latest push wins.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   cli:
     runs-on: ubuntu-latest

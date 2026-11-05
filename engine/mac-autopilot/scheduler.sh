@@ -126,7 +126,7 @@ UNITS="$A/units.json"; WORKERS="$A/workers.json"
 MAX="$(jqf -r .max_workers <<<"$CFG")"
 DISPATCH_PRIORITY_ORDER="$(jqf -c '.dispatch_priority_order // ["hotfix", "opt", "normal"]' <<<"$CFG")"
 IMPLEMENT_CAP="$(jqf -r '.implement_cap // 99' <<<"$CFG")"
-apply_reliability_cap
+log_reliability_breach
 BUDGET="$(jqf -r .daily_token_budget <<<"$CFG")"
 [[ "$BUDGET" =~ ^[0-9]+$ ]] || BUDGET=0
 FOCUS_MODE="$(jqf -r '.focus_mode // "all"' <<<"$CFG")"

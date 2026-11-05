@@ -187,12 +187,11 @@ the metric recovers, so the next crossing emits again). Regular flow samples onl
 in the state machine counts to now, flaky/reverted/unattributed end at their last transition.
 Rework rounds were already covered by `loop.rounds_p90` and `delivery.cycles_to_pass_30d`.
 
-Reliability throttle (#425): `delivery.revert_rate_30d_pct` and `flow.main_red_hours` also drive the scheduler.
-While either is UNHEALTHY on a scorecard under 2 h old, the effective `implement_cap` is half the configured value
-(min 1). A metric clears only when back to OK, so the WARN band holds the throttle and it does not flap; a missing,
-stale or unreadable scorecard keeps the configured cap. The breached set and its breach-start epoch (`since`) live in
-`implement-cap-throttle.json` (config.json is never written); each change logs once, and the line that restores the cap
-carries `secs=` (recovery minus `since`), the breach-to-recovery time.
+Reliability alert (#425): when `delivery.revert_rate_30d_pct` or `flow.main_red_hours` goes UNHEALTHY on a scorecard
+under 2 h old, the scheduler logs a `reliability breach` line. It changes no limit. A metric clears only when back to OK, so
+the WARN band holds it and the line does not flap; a missing, stale or unreadable scorecard logs nothing. The breached set
+and its breach-start epoch (`since`) live in `reliability-breach.json`; each change logs once, and the line that clears the
+set carries `secs=` (recovery minus `since`), the breach-to-recovery time.
 
 Measured by hand on 2026-10-20 (not yet scored automatically, needs the GitHub API):
 

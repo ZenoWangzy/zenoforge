@@ -88,6 +88,17 @@ merge_pr_prior_art_ok() {
   fi
 }
 
+# Only this PR's own files: a main already over its baseline must not stop other merges.
+merge_pr_size_ok() {
+  local pr="$1" root files over
+  root="$(merge_pr_root)" || return 0
+  over="$({ bash "$root/tools/size-ratchet.sh" 2>&1 || true; } | grep '^FAIL ')" || return 0
+  [[ "$(git -C "$root" rev-parse HEAD 2>/dev/null)" == "$(gh pr view "$pr" --json headRefOid 2>/dev/null | jq -r .headRefOid)" ]] || return 0
+  files="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq -r '.files[].path')"
+  over="$(grep -F -- "$files" <<<"$over")" || return 0
+  merge_pr_refuse "$pr" "$over"
+}
+
 merge_pr_checks_and_merge() {
   local pr="${1:-}" checks_json check_name override_name matched
   local -a override_names=() failed_names=() blocked_names=() overridden_names=()
@@ -131,6 +142,7 @@ merge_pr_checks_and_merge() {
   else
     merge_pr_prior_art_ok "$pr" || return 1
   fi
+  merge_pr_size_ok "$pr" || return 1
 
   while IFS= read -r check_name; do
     [[ -n "$check_name" ]] || continue

@@ -14,14 +14,13 @@ run_node_health() {
     echo $! > "$A/.ci-spend.pid"
   fi
 }
-# Reliability throttle (#425): while delivery.revert_rate_30d_pct or flow.main_red_hours is UNHEALTHY on a fresh scorecard, the
-# effective IMPLEMENT_CAP is half the configured one (min 1). A metric leaves the set only when back to OK; WARN, between the
-# two NODE-HEALTH bounds, holds it, so the cap does not flap. config.json is never written; a missing, stale or unreadable
-# scorecard keeps the configured cap. State is the breached set plus the breach-start epoch (since) in implement-cap-throttle.json;
-# each change logs once, and the line that clears the set carries secs=<recovery - since>, the ticket's breach-to-recovery time.
-apply_reliability_cap() {
-  local sc="$A/node-health.json" st="$A/implement-cap-throttle.json" prev cur since secs="" configured="$IMPLEMENT_CAP" eff="$IMPLEMENT_CAP"
-  [[ "$configured" =~ ^[1-9][0-9]*$ ]] || return 0
+# Reliability alert (#425): logs when delivery.revert_rate_30d_pct or flow.main_red_hours goes UNHEALTHY on a fresh scorecard.
+# Alert only: it never changes a limit (zenoforge-no-defensive-limits-2026-11-05). A metric leaves the set only when back to OK;
+# WARN, between the two NODE-HEALTH bounds, holds it, so the line does not flap. A missing, stale or unreadable scorecard logs
+# nothing. State is the breached set plus the breach-start epoch (since) in reliability-breach.json; each change logs once, and
+# the line that clears the set carries secs=<recovery - since>, the ticket's breach-to-recovery time.
+log_reliability_breach() {
+  local sc="$A/node-health.json" st="$A/reliability-breach.json" prev cur since secs=""
   prev="$(jqf_optional_file "$st" -c '.breached // []' 2>/dev/null)" || prev='[]'
   cur="$(jqf_optional_file "$sc" -c --argjson prev "$prev" --argjson now "$NOW_EPOCH" \
     '(try (.generated_at | fromdateiso8601) catch 0) as $at
@@ -29,16 +28,12 @@ apply_reliability_cap() {
        [ "delivery.revert_rate_30d_pct", "flow.main_red_hours" | . as $id
          | ([$d.metrics[]? | select(.id == $id)][0].status // "NO-DATA") as $s
          | select($s == "UNHEALTHY" or ($s == "WARN" and ($prev | index($id)))) | $id ] end' 2>/dev/null)" || cur=""
-  [[ -n "$cur" ]] || return 0
-  [[ "$cur" == '[]' ]] || eff=$(( configured > 1 ? configured / 2 : 1 ))
-  if [[ "$cur" != "$prev" ]]; then
-    since="$(jqf_optional_file "$st" -r '.since // empty' 2>/dev/null)" || since=""
-    [[ "$prev" != '[]' && "$since" =~ ^[0-9]+$ ]] || since="$NOW_EPOCH"
-    [[ "$cur" != '[]' ]] || secs=" secs=$((NOW_EPOCH - since))"
-    jq -cn --argjson b "$cur" --argjson s "$since" 'if $b == [] then {breached:$b} else {breached:$b, since:$s} end' | write_state "$st"
-    say "implement-cap throttle breached=$cur cap=$configured->$eff$secs"
-  fi
-  IMPLEMENT_CAP="$eff"
+  [[ -n "$cur" && "$cur" != "$prev" ]] || return 0
+  since="$(jqf_optional_file "$st" -r '.since // empty' 2>/dev/null)" || since=""
+  [[ "$prev" != '[]' && "$since" =~ ^[0-9]+$ ]] || since="$NOW_EPOCH"
+  [[ "$cur" != '[]' ]] || secs=" secs=$((NOW_EPOCH - since))"
+  jq -cn --argjson b "$cur" --argjson s "$since" 'if $b == [] then {breached:$b} else {breached:$b, since:$s} end' | write_state "$st"
+  say "reliability breach breached=$cur$secs"
 }
 # Dispatch refreshes itself because running workers may have pushed.
 phase() {

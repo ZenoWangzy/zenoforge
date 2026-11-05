@@ -12,7 +12,7 @@
 1049	engine/mac-autopilot/bell.sh
 1198	engine/mac-autopilot/gen_dashboard.py
 1649	engine/mac-autopilot/node_health.py
-805	engine/mac-autopilot/scheduler.d/evals-arbiter.sh
+816	engine/mac-autopilot/scheduler.d/evals-arbiter.sh
 839	engine/mac-autopilot/scheduler.d/harvest-workers.sh
 983	engine/mac-autopilot/usage_reader.py
 2628	engine/night/efficiency-regression.mjs

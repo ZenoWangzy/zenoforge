@@ -159,6 +159,16 @@ expect_prior_art_refusal 'mixed test and source PR' 'has no "## prior-art" secti
 PR_FILES='[]'
 expect_prior_art_refusal 'empty file list' 'has no "## prior-art" section'
 PR_FILES='["tools/merge-pr.sh"]'
+# A red ratchet refuses only the PR that grew the file (#214 reddened main this way).
+(
+  merge_pr_root() { printf '%s\n' "$repo"; }
+  PR_HEAD="$sha"
+  PR_BODY=$'## prior-art\nno external prior art: internal gate wiring only\n'
+  mkdir -p "$repo/tools"
+  printf "echo 'FAIL tools/merge-pr.sh grew to 900 lines'; exit 1\n" > "$repo/tools/size-ratchet.sh"
+  expect_prior_art_refusal 'PR over its size baseline' 'FAIL tools/merge-pr.sh grew'
+  PR_FILES='["other.sh"]' expect_prior_art_merge 'main over baseline, PR not'
+)
 ZF_MERGE_OVERRIDE=prior-art expect_prior_art_merge 'prior-art override'
 [[ "$(cat "$fixture/check-output")" == *'skips the prior-art check for PR #17'* ]] || fail 'override was not logged'
 
