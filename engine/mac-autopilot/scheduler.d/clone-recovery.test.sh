@@ -84,7 +84,10 @@ status_now="$(command git -C "$WT_ROOT/wt-issue-901" status --porcelain)"
 [[ -f "$WT_ROOT/wt-issue-901/notes.md" ]] || fail "recovery removed an untracked file"
 [[ -z "$(command git -C "$WT_ROOT/wt-issue-901" stash list)" ]] || fail "recovery stashed instead of leaving the reset tree in place"
 [[ "$(grep -c 'clone recovery' "$LOG")" == 1 ]] || fail "recovery must log exactly one record ($(grep -c 'clone recovery' "$LOG"))"
+command git -C "$WT_ROOT/wt-issue-901" config --unset user.name
 ensure_clone issue-901 agent/issue-901 1 "$WANT" >/dev/null || fail "the refill after recovery still failed"
+[[ "$(command git -C "$WT_ROOT/wt-issue-901" config user.name)" == "$(command git -C "$ROOT" config user.name)" ]] \
+  || fail "ensure_clone left the clone without a git identity"
 [[ "$(grep -c 'clone recovery' "$LOG")" == 1 ]] || fail "a later refill logged another recovery record"
 
 # --- 2. 活 worker 占用同一棵树：不备份、不 reset、ensure_clone 照旧拒绝 ---

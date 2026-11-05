@@ -79,6 +79,11 @@ ensure_clone_impl() { # id [branch] [require_remote] [branch-head-sha] [base-bra
       || { rm -rf -- "$dir"; return 1; }
     fresh=1
   fi
+  # Claude workers may not run `git -c`, so an unset identity leaves their work uncommitted.
+  local git_name git_email
+  git_name="$(git -C "$ROOT" config user.name)" || git_name="${ZF_AGENT_GIT_USER_NAME:-zenoforge-agent}"
+  git_email="$(git -C "$ROOT" config user.email)" || git_email="${ZF_AGENT_GIT_USER_EMAIL:-zenoforge-agent@users.noreply.github.com}"
+  git -C "$dir" config user.name "$git_name" && git -C "$dir" config user.email "$git_email" || true
   # A shallow scheduler checkout makes a local worker clone unable to prove that the prior
   # reviewed head is an ancestor of the repaired head; targeted re-review then falls back to a
   # full review. Restore history only for shallow worker clones; if unavailable, full review is safe.
