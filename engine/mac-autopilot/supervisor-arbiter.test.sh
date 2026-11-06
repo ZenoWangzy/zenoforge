@@ -10,7 +10,7 @@ sup="$fixture/supervisor"
 mkdir -p "$sup/autopi/alerts" "$fixture/repo" "$fixture/bin"
 # Stage-transition fixtures are already roadmap leaves; this suite covers arbitration effects.
 export ZF_ROADMAP_TREE_CACHE_FILE="$fixture/roadmap-tree.json"
-jq -cn '{roots:[611,615,618,622,623,699] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
+jq -cn '{roots:[611,615,618,622,623,686,687,688,689,690,699] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
   > "$ZF_ROADMAP_TREE_CACHE_FILE"
 jq '.auto_merge = false | .advisor = false | .precheck = false | .supervisor_arbiter.enabled = true | .supervisor_arbiter.cap_triage = false' "$script_dir/config.template.json" > "$sup/autopi/config.json"
 echo '{"units":[]}' > "$sup/autopi/units.json"
@@ -503,10 +503,54 @@ REASON: 策略性搁置
 REJECTED: close'
 jq -e '.units[0] | (has("arbiter_no_answer") or has("arbiter_retry_after")) | not' "$UNITS" >/dev/null || fail "a decision must clear the streak"
 
+# A cap RULE refills the stop-loss budget once and releases the stop-loss hold: 2295 was sent straight back by a wall counted from before its ruling.
+old_write='{stage:"write-start",at:"2026-10-01T00:00:00Z",work_type:"repair"}'
+budget_of() { TICKET_WALL_BUDGET_SECONDS=14400 NOW_EPOCH="$(date +%s)" TICKET_ROUND_BUDGET=3 ticket_budget_reason "$(jq -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"; }
+stop_loss_hold() { jq -n '{state:"on-hold",hold:{kind:"stop-loss",holder:"scheduler-stop-loss"},recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/$1.json"; }
+refills() { field "$1" '[.history[] | select(.stage=="supervisor-cap-budget-refill")] | length'; }
+units "$(jq -cn "{units:[{id:\"pr-690\",issue:690,pr:690,lane:\"pr\",branch:\"agent/issue-690\",stage:\"supervisor-review\",supervisor_cap_return_stage:\"repair-pending\",history:[$old_write]}]}")"
+stop_loss_hold 690
+[[ -n "$(budget_of pr-690)" ]] || fail "the fixture must trip the wall"
+printf 'REASON: r\nEVIDENCE: e\nVERDICT: RULE\n' > "$report"
+supervisor_apply_cap_verdict pr-690 "$report" RULE
+[[ "$(field pr-690 .stage)" == repair-pending && -z "$(budget_of pr-690)" && "$(refills pr-690)" == 1 ]] || fail "the first cap RULE must return the unit with a refilled budget: $(jq -c '.units[0]' "$UNITS")"
+jq -e '.state == "ready-for-agent" and .hold == null' "$AGENT_HOME/state/690.json" >/dev/null || fail "RULE must release the stop-loss hold: $(cat "$AGENT_HOME/state/690.json")"
+# A later cap RULE, retry or not, gets no second refill: RULE, fail, RULE cannot outrun the budget.
+set_unit pr-690 "$(hist write-start repair) | .history[-1] += {at:\"2026-10-01T00:00:00Z\",work_type:\"repair\"} | .stage=\"supervisor-review\" | .supervisor_cap_retry=\"pending\""
+stop_loss_hold 690
+supervisor_apply_cap_verdict pr-690 "$report" RULE
+[[ "$(refills pr-690)" == 1 && -n "$(budget_of pr-690)" ]] || fail "a second cap RULE must not refill the budget: $(budget_of pr-690)"
+# A RULE that never ran a round did not spend the retry, once: 2295's shape, retry spent, stopped in the tick of its RULE.
+unrun_unit() { units "$(jq -cn --arg id "$1" --argjson n "$2" "{units:[{id:\$id,issue:\$n,pr:\$n,lane:\"pr\",branch:\"agent/issue-\(\$n)\",stage:\"supervisor-review\",supervisor_cap_return_stage:\"repair-pending\",supervisor_cap_retry:\"spent\",history:[$old_write,{stage:\"supervisor-cap-rule\"},{stage:\"supervisor-cap-rule\"}]}]}")"; stop_loss_hold "$2"; }
+unrun_unit pr-689 689
+supervisor_apply_cap_verdict pr-689 "$report" RULE
+[[ "$(field pr-689 .stage)" == repair-pending && "$(refills pr-689)" == 1 && -z "$(budget_of pr-689)" ]] || fail "a RULE stopped before its round must get its refill: $(jq -c '.units[0]' "$UNITS")"
+set_unit pr-689 '.stage="supervisor-review"'
+supervisor_apply_cap_verdict pr-689 "$report" RULE
+[[ "$(field pr-689 .parked_reason)" == supervisor-cap-exhausted ]] || fail "the refill is one per unit: a later RULE with its retry spent must park: $(jq -c '.units[0]' "$UNITS")"
+# Only a RULE releases the hold.
+unrun_unit pr-688 688
+founder_report "Please decide this?"
+supervisor_apply_cap_verdict pr-688 "$report" FOUNDER
+jq -e '.state == "on-hold"' "$AGENT_HOME/state/688.json" >/dev/null || fail "FOUNDER must leave the stop-loss hold"
+printf 'REASON: r\nEVIDENCE: e\nVERDICT: CLOSE\n' > "$report"
+unrun_unit pr-687 687
+supervisor_apply_cap_verdict pr-687 "$report" CLOSE
+jq -e '.state == "on-hold"' "$AGENT_HOME/state/687.json" >/dev/null || fail "CLOSE must leave the stop-loss hold"
+printf 'REASON: r\nEVIDENCE: e\nVERDICT: RULE\n' > "$report"
+# A failed release leaves the unit where it is.
+unrun_unit pr-686 686
+(REPO=""; ZF_REPO=""; supervisor_apply_cap_verdict pr-686 "$report" RULE)
+[[ "$(field pr-686 .stage)" == supervisor-review && "$(refills pr-686)" == 0 ]] || fail "a hold that was not released must not apply the RULE"
+
 # A terminal park unparks only when its mark changes.
 units "$(jq -cn '{units:[{id:"pr-696",lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",supervisor_cap_retry:"spent",unpark_condition:"x",cap_exhausted_mark:"aaa||0",history:[]}]}')"
 SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
 [[ "$(field pr-696 .parked_reason)" == supervisor-cap-exhausted ]] || fail "an unchanged terminal park must stay parked"
+# A terminal park whose last RULE never ran a round gets the run that RULE was owed, though nothing else changed.
+units "$(jq -cn '{units:[{id:"pr-685",lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",supervisor_cap_retry:"spent",unpark_condition:"x",cap_exhausted_mark:"aaa||0",history:[{stage:"supervisor-cap-rule"}]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_CAP_TRIAGE=false dispatch_supervisor_arbiters
+[[ "$(field pr-685 .parked_reason)" == supervisor-arbitration-cap ]] || fail "an unrun RULE must unpark a terminal park: $(jq -c '.units[0]' "$UNITS")"
 # An issue whose state cannot be read keeps the unit parked, though the mark reads as changed.
 units "$(jq -cn '{units:[{id:"pr-693",issue:693,lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",supervisor_cap_retry:"spent",cap_exhausted_mark:"aaa|on-hold|0",history:[]}]}')"
 (scheduler_issue_state() { return 1; }; SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters)
