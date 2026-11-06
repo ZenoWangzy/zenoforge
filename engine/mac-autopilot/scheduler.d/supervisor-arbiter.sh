@@ -571,7 +571,7 @@ harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or fin
     fi
   fi
   # A run with no answer decided nothing: only a decision holds the next run.
-  [[ "$decided" != true ]] || set_unit "$unit" ".arbiter_left_mark=$(js "$(supervisor_arbiter_mark "$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0]' "$UNITS")")")"
+  [[ "$decided" != true ]] || supervisor_arbiter_record_left "$unit"
   jqf --argjson pid "$pid" --arg finished "$STAMP" \
     '(.workers[] |= (if .pid==$pid and .type=="supervise" and .harvested!=true then .harvested=true | .finished_at=$finished else . end))' "$WORKERS" | write_state "$WORKERS"
 }

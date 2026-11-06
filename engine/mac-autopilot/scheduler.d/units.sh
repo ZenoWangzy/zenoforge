@@ -323,6 +323,16 @@ supervisor_arbiter_no_change_hold() { # unit-json → 0 when a past run left it 
   return 0
 }
 
+supervisor_arbiter_record_left() { # unit: only a decision that left it here holds it; a unit a later stop returns here runs again
+  local u
+  u="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+  if [[ "$(jqf -r '.stage // empty' <<<"$u")" == supervisor-review ]]; then
+    set_unit "$1" ".arbiter_left_mark=$(js "$(supervisor_arbiter_mark "$u")")"
+  else
+    set_unit "$1" 'del(.arbiter_left_mark)'
+  fi
+}
+
 supervisor_cap_parked_unit() { # unit-json → whether this is a retryable arbitration-cap park (including legacy parks)
   jqf -e --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '
     .stage == "parked" and .parked_reason != "supervisor-cap-founder" and (

@@ -253,8 +253,19 @@ units "$(jq -cn '{units:[{id:"pr-616",stage:"supervisor-review",history:[{stage:
 harvest_with_reply pr-616 'ACTION: park
 REASON: 策略性搁置，等产品决策
 REJECTED: close'
-[[ -n "$(field pr-616 .arbiter_left_mark)" ]] || fail "a decided run must leave its mark"
 [[ "$(field pr-616 .stage)" == parked ]] || fail "park must land in parked"
+jq -e '.units[]|select(.id=="pr-616")|has("arbiter_left_mark")|not' "$UNITS" >/dev/null || fail "a decision that moved the unit must not hold it"
+
+# The #4879 shape: a stale tracker flag refuses the requeue, so the decision leaves the unit in review.
+units "$(jq -cn '{units:[{id:"pr-698",issue:698,pr:698,lane:"pr",branch:"agent/issue-698",stage:"supervisor-review",history:[{stage:"review-request-changes",result:"F1",at:"2026-10-27T00:00:00Z"},{stage:"supervisor-escalated",result:"stop-loss",at:"2026-10-27T00:01:00Z"}]}]}')"
+jq -n '{state:"on-hold",tracker_parent:true,hold:{kind:"stop-loss",holder:"scheduler-stop-loss"},recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/698.json"
+harvest_with_reply pr-698 'ACTION: requeue
+REASON: stop-loss hold reviewed, resume the approved repair
+EVIDENCE: supervisor-escalated stop-loss
+REJECTED: park（仍有可重试的修复）
+GUIDANCE: 恢复修复并提交' || :  # the scheduler runs without errexit
+[[ "$(field pr-698 .stage)" == supervisor-review ]] || fail "a refused requeue must stay in review"
+[[ -n "$(field pr-698 .arbiter_left_mark)" ]] || fail "a decision that left the unit in review must hold it"
 
 units "$(jq -cn '{units:[{id:"pr-617",issue:617,pr:617,lane:"pr",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"superseded",at:"2026-10-27T00:00:00Z"}]}]}')"
 harvest_with_reply pr-617 'no action line'
