@@ -462,19 +462,29 @@ done
 [[ "$(grep -c '^.*arbiter-no-answer: runs stopped answering' "$AGENT_HOME/supervisor-inbox")" == 1 ]] || fail "an outage of many units must give one alert"
 if grep -q 'cap-exhausted unit=pr-68[12]' "$AGENT_HOME/supervisor-inbox"; then fail "an outage must not alert per unit"; fi
 
-SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_CAP_TRIAGE=false dispatch_supervisor_arbiters
-[[ "$(field pr-681 .parked_reason)" == supervisor-cap-exhausted ]] || fail "no answer yet and no probe due: the unit must wait"
+no_answer_dispatch() {
+  SUPERVISOR_ARBITER=true SUPERVISOR_CAP_TRIAGE="${1:-true}" SUPERVISOR_ARBITER_MAX=99 ZF_ENGINE_DIR="$script_dir/.." dispatch_supervisor_arbiters
+  jq '.workers[].harvested = true' "$WORKERS" > "$fixture/workers.tmp" && mv "$fixture/workers.tmp" "$WORKERS"
+}
+waiting() { jq '[.units[] | select(.cap_exhausted_by=="no-answer")] | length' "$UNITS"; }
+no_answer_dispatch
+[[ "$(waiting)" == 2 ]] || fail "no answer yet and no probe due: the units must wait"
+
+# With cap triage off nothing can run, so the probe is not spent.
+jq '(.units[].cap_exhausted_at) |= (. - 21700)' "$UNITS" > "$fixture/units.tmp" && mv "$fixture/units.tmp" "$UNITS"
+no_answer_dispatch false
+[[ "$(waiting)" == 2 && ! -e "$sup/arbiter-last-probe" ]] || fail "cap triage off must not spend the probe"
 
 # Six hours on, one unit probes; the other stays parked.
-jq '(.units[].cap_exhausted_at) |= (. - 21700)' "$UNITS" > "$fixture/units.tmp" && mv "$fixture/units.tmp" "$UNITS"
-SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_CAP_TRIAGE=false dispatch_supervisor_arbiters
-[[ "$(jq '[.units[] | select(.parked_reason=="supervisor-cap-exhausted")] | length' "$UNITS")" == 1 ]] || fail "one interval gives one probe"
-jq -e '[.units[] | select(.parked_reason=="supervisor-arbitration-cap")][0].arbiter_no_answer == 3' "$UNITS" >/dev/null || fail "a probe with no answer must park again at once"
+no_answer_dispatch
+[[ "$(waiting)" == 1 ]] || fail "one interval gives one probe, got $(waiting) waiting"
+jq -e '[.units[] | select(.cap_exhausted_by==null)][0].arbiter_no_answer == 3' "$UNITS" >/dev/null || fail "a probe with no answer must park again at once"
 
-# A run that answers anywhere lifts the rest.
-touch -d '+5 seconds' "$sup/arbiter-last-answer"
-SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_CAP_TRIAGE=false dispatch_supervisor_arbiters
-[[ "$(jq '[.units[] | select(.cap_exhausted_by=="no-answer")] | length' "$UNITS")" == 0 ]] || fail "an answer must unpark every waiting unit"
+# A run that answers anywhere lifts the rest, even in the same second as the park.
+jq --argjson t "$(supervisor_file_epoch "$sup/arbiter-last-probe")" '(.units[] | select(.cap_exhausted_by=="no-answer") | .cap_exhausted_at) = $t' "$UNITS" > "$fixture/units.tmp" && mv "$fixture/units.tmp" "$UNITS"
+touch -r "$sup/arbiter-last-probe" "$sup/arbiter-last-answer"
+no_answer_dispatch
+[[ "$(waiting)" == 0 ]] || fail "an answer must unpark every waiting unit"
 
 # Others answered during the streak: the fault is this unit's, and it does not wait for a provider.
 units "$(jq -cn --argjson a "$(review_unit pr-683)" '{units:[$a]}')"

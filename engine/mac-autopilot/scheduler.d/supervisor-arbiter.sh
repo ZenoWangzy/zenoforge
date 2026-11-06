@@ -49,6 +49,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     id="$(jqf -r .id <<<"$u")"
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
     if [[ "$(jqf -r '.cap_exhausted_by // empty' <<<"$u")" == no-answer ]]; then
+      [[ "${SUPERVISOR_CAP_TRIAGE:-true}" == true ]] || continue  # a parked unit cannot run: keep the probe for one that can
       supervisor_no_answer_unpark "$u" || continue
       u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
     elif [[ "$(jqf -r '.parked_reason // empty' <<<"$u")" == supervisor-cap-exhausted ]]; then
@@ -547,7 +548,7 @@ supervisor_no_answer_park() { # id count detail decision now → waits for a pro
 supervisor_no_answer_unpark() { # unit-json → 0 after unparking: a run answered, or this unit is the one probe of the interval
   local u="$1" id now at last_probe keep
   id="$(jqf -r .id <<<"$u")"; now="$(date +%s)"; at="$(jqf -r '.cap_exhausted_at // 0' <<<"$u")"
-  if (( "$(supervisor_file_epoch "$SUP/arbiter-last-answer")" > at )); then
+  if (( "$(supervisor_file_epoch "$SUP/arbiter-last-answer")" >= at )); then  # one-second clock: an equal stamp may be the later answer
     keep='del(.arbiter_no_answer)'
   else
     last_probe="$(supervisor_file_epoch "$SUP/arbiter-last-probe")"
