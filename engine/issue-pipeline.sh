@@ -2367,8 +2367,7 @@ elif [ "$ROADMAP_ORDER_ENABLED" = true ] && [ "$ROADMAP_TREE_READY" != 1 ]; then
 elif [ "$ROADMAP_ORDER_ENABLED" = true ]; then
   ROADMAP_TRIAGE_CANDIDATES="$(jq -c --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" \
     '[.[] | select((any(.labels[]?; .name as $name | ($lane_labels | index($name)) != null)) | not)]' <<< "$NEEDS_TRIAGE_JSON")"
-  # Classifying a ticket does not start it: intake holds a declared blocker, so a blocked ticket can be measured now.
-  NEEDS_TRIAGE_IDS="$(roadmap_order_candidates "$ROADMAP_TREE_JSON" "$ROADMAP_TRIAGE_CANDIDATES" '[]' false)" || {
+  NEEDS_TRIAGE_IDS="$(roadmap_order_candidates "$ROADMAP_TREE_JSON" "$ROADMAP_TRIAGE_CANDIDATES" '[]' false)" || { # classifying starts nothing: intake holds a declared blocker
     TRIAGE_CANDIDATE_QUERY_FAILED=1
     echo "issue-pipeline: could not order needs-triage candidates by roadmap; skipping dispatch" >&2
   }

@@ -1808,9 +1808,10 @@ register_new_issues || :
 units '{"units":[{"id":"pr-90","pr":90,"stage":"ready-to-merge","history":[]},{"id":"issue-71","issue":71,"lane":"pr","stage":"blocked-external","blocked_on":70,"history":[]}]}'
 # 8ca4eceaa 起前置由 predecessor_candidates 经 GraphQL 批量拉取：桩按查询里的 number 逐个回 OPEN 前置。
 pred_gh() {
-  local n resp='{}'
+  local n resp='{}' blocked='null'
+  [[ "$*" == *blockedBy* ]] && blocked='{"nodes":[{"number":69,"state":"OPEN"}]}'
   for n in $(grep -oE 'number: [0-9]+' <<<"$*" | grep -oE '[0-9]+' | sort -u); do
-    resp="$(jq -c --argjson n "$n" '. + {("i"+($n|tostring)):{number:$n,title:"pred",body:"b",state:"OPEN",labels:{nodes:[{name:"bug"}]}}}' <<<"$resp")"
+    resp="$(jq -c --argjson n "$n" --argjson b "$blocked" '. + {("i"+($n|tostring)):{number:$n,title:"pred",body:"b",state:"OPEN",labels:{nodes:[{name:"bug"}]},blockedBy:$b}}' <<<"$resp")"
   done
   jq -cn --argjson r "$resp" '{data:{repository:$r}}'
 }
@@ -1979,7 +1980,7 @@ harvest_workers || :
 units '{"units":[{"id":"issue-71","issue":71,"lane":"pr","stage":"blocked-external","blocked_on":70,"history":[]}]}'
 gh() { case "$1 $2" in "api graphql") pred_gh "$@" ;; "issue view") jq -n --argjson n "$3" '{number:$n,title:"pred",state:"OPEN",labels:[{name:"bug"}],body:"b"}' ;; *) eval "${gh_issue_stub/gh ()/gh_i ()}"; gh_i "$@" ;; esac; }
 # 8ca4eceaa 起第五列携带前置 issue 的 base64 快照（intake 免二次 gh issue view）。
-pred_snapshot="$(jq -crn '{number:70,title:"pred",body:"b",state:"OPEN",labels:[{name:"bug"}]} | @base64')"
+pred_snapshot="$(jq -crn '{number:70,title:"pred",body:"b",state:"OPEN",labels:[{name:"bug"}],blockedBy:{nodes:[{number:69,state:"OPEN"}]}} | @base64')"
 [[ "$(predecessor_candidates)" == $'70\tpr\tpred\t["bug"]\t'"$pred_snapshot" ]] || fail "predecessor not offered for intake: $(predecessor_candidates)"
 eval "$gh_issue_stub"
 # 前置状态走一次 GraphQL：桩从 query 里取出各前置号，按给定状态/标签逐行回答

@@ -73,7 +73,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
     cached_at="$(jqf_optional_file "$cache_file" -r '.created_at // empty' 2>/dev/null || true)"
     now="$(date +%s)"
     if [[ "$cached_at" =~ ^[0-9]+$ ]] && (( now >= cached_at && now - cached_at <= 600 )) \
-      && jqf_optional_file "$cache_file" -e '.schema == 2 and (.rows | type == "string")' >/dev/null 2>&1; then
+      && jqf_optional_file "$cache_file" -e '.schema == 3 and (.rows | type == "string")' >/dev/null 2>&1; then
       if cache_rows="$(jqf_optional_file "$cache_file" -r '.rows')"; then
         printf '%s\n' "$cache_rows"
         return 0
@@ -129,7 +129,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
   if [[ -f "$cache_valid_tmp" ]]; then
     rm -f -- "$cache_valid_tmp"
     now="$(date +%s)"
-    if jqf -Rs --argjson created_at "$now" '{schema:2,created_at:$created_at,rows:rtrimstr("\n")}' \
+    if jqf -Rs --argjson created_at "$now" '{schema:3,created_at:$created_at,rows:rtrimstr("\n")}' \
       <"$cache_rows_tmp" >"$cache_json_tmp" && mv -f -- "$cache_json_tmp" "$cache_file"; then
       if [[ "$refill_mode" != true && -n "${INTAKE_FULL_SCAN_FLAG:-}" ]]; then : > "$INTAKE_FULL_SCAN_FLAG"; fi
     else
@@ -155,13 +155,13 @@ predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批�
     chunk=("${deps_filtered[@]:start:20}"); q=""
     for dep in "${chunk[@]}"; do
       [[ "$dep" =~ ^[0-9]+$ ]] || continue
-      q+=" i$dep: issue(number: $dep) { number title body state labels(first: 100) { nodes { name } } }"
+      q+=" i$dep: issue(number: $dep) { number title body state labels(first: 100) { nodes { name } } blockedBy(first: 50) { nodes { number state } } }"
     done
     [[ -n "$q" ]] || continue
     response="$(intake_gh_read api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q} }" 2>/dev/null)" || continue
     jqf -r --argjson skip "$skip_labels" '
       [.data.repository | to_entries[] | .value | select(type=="object")
-        | {number,title,body:(.body // ""),state,labels:[.labels.nodes[]? | {name}]}]
+        | {number,title,body:(.body // ""),state,labels:[.labels.nodes[]? | {name}],blockedBy}]
       | sort_by(.number)[] | select(.state=="OPEN")
       | select(([.labels[].name] - $skip) == [.labels[].name])
       | "\(.number)\t\(if any(.labels[]; .name=="pipeline-system") then "direct-main" else "pr" end)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\(. | @base64)"' <<<"$response"
