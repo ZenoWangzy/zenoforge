@@ -673,7 +673,7 @@ grep -qF '止损预算' "$fixture/stop-loss-calls" || fail "the hold carries no 
 
 # 墙钟：第 2 轮前就超过 4h 同样搁置（原因带 wall 与分钟数）。
 sl_old="$(date -u -d '5 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
-units "{\"units\":[{\"id\":\"issue-708\",\"issue\":708,\"pr\":55,\"branch\":\"agent/issue-708\",\"lane\":\"pr\",\"title\":\"slow fix\",\"stage\":\"repair-pending\",\"review_report\":\"r.md\",\"history\":[{\"stage\":\"write-start\",\"at\":\"$sl_old\"},{\"stage\":\"review-request-changes\"}]}]}"
+units "{\"units\":[{\"id\":\"issue-708\",\"issue\":708,\"pr\":55,\"branch\":\"agent/issue-708\",\"lane\":\"pr\",\"title\":\"slow fix\",\"stage\":\"repair-pending\",\"review_report\":\"r.md\",\"history\":[{\"stage\":\"write-start\",\"at\":\"$sl_old\"},{\"stage\":\"write-end\",\"at\":\"$sl_at\"},{\"stage\":\"review-request-changes\"}]}]}"
 dispatch_pending || :
 [[ "$(field issue-708 .stage)" == supervisor-review && "$(field issue-708 .note)" == *"wall "*"min of 240min after 1 rounds"* ]] \
   || fail "a unit over the 4h wall clock was not held with a wall reason ($(field issue-708 .stage) $(field issue-708 .note))"
