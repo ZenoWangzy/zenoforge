@@ -282,7 +282,7 @@ release_dependency_blocks() {
   for id in $(jqf -r '.units[] | select(.stage=="blocked-external" and .blocked_on == null and .size_recut_pending != true) | .id' "$UNITS"); do
     to_supervisor "$id" "blocked-external without a predecessor: nothing can release it"
   done
-  if (( gh_due )); then reconcile_stacked_units; dep_dead_sweep || :; park_label_sweep || :; fi
+  if (( gh_due )); then reconcile_stacked_units; dep_dead_sweep || :; obsolete_close_retry || :; park_label_sweep || :; fi
 }
 # Fail closed: any fact that cannot be read means not dead. Prints the arbiter's evidence.
 dep_predecessor_dead() { # waiter-unit-json predecessor

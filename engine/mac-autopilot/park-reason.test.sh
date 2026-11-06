@@ -54,6 +54,25 @@ release_dependency_blocks
 [[ "$(field issue-901 .stage)" == parked ]] || fail 'a release must not reach an unrelated park'
 rm -f "$A/dep-check.cache.json" "$A/dep-check.epoch"
 
+# A failed issue close keeps the unit out of closed; a closed unit under an open issue is skipped by intake for good.
+rm -f "$fixture/close-fails"
+gh() { if [[ "$1 $2" == 'issue close' ]]; then printf '%s\n' "$3" >> "$fixture/closes"; [[ ! -f "$fixture/close-fails" ]]; fi; }
+touch "$fixture/close-fails"
+unit 910 'x' | jq -c '.stage="implement"' | ledger
+obsolete_unit_close issue-910 910 'OBSOLETE: nothing to do'
+[[ "$(field issue-910 .stage):$(field issue-910 .parked_reason)" == parked:obsolete-close-failed ]] || fail 'a failed close must park the unit'
+obsolete_close_retry
+[[ "$(field issue-910 .stage)" == parked ]] || fail 'a retry that fails must stay parked'
+rm -f "$fixture/close-fails"
+obsolete_close_retry
+[[ "$(field issue-910 .stage)" == closed && "$(field issue-910 '.parked_reason // "none"')" == none ]] || fail 'a retry that works must close the unit'
+[[ "$(field issue-910 '[.history[] | select(.stage=="obsolete")] | length')" == 1 ]] || fail 'the close must keep the report line'
+[[ "$(wc -l < "$fixture/closes")" == 3 ]] || fail 'expected one first close and two retries'
+unit 911 'x' | jq -c '.stage="implement"' | ledger
+obsolete_unit_close issue-911 911 'OBSOLETE: nothing to do'
+[[ "$(field issue-911 .stage)" == closed ]] || fail 'a close that works must close the unit'
+unset -f gh
+
 # Rulings move one unit per sweep, each once.
 to_supervisor() { set_unit "$1" '.stage="supervisor-review"'; }
 { unit 3015 'supervisor budget exhausted: third entry into supervisor-review; arbitration cap is 2 (#4369)' | jq -c '.pr=4693 | .hold_handoff_waiting=true | .hold_handoff_wait_issues=[3015]'

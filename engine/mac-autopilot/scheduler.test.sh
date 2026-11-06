@@ -4438,7 +4438,8 @@ sched_case_reopened_issue_episode() {
         command jq -e 'any(.units[]; .id == "reopened" and .stage == "implement-pending" and .hold_handoff_episode == "reopen-2026-11-06T17:02:47Z")' "$TF/supervisor/autopi/units.json" >/dev/null || { echo 'not ok - the episode did not restore the closed unit' >&2; exit 1; } ;;
       stayed-open)
         command jq -e 'has("scheduler_handoff") | not' "$TF/agent-home/state/781.json" >/dev/null || { echo 'not ok - an old reopen registered an episode for a later close' >&2; exit 1; }
-        ! grep -q 'intake reopened issue' "$TF/supervisor/autopi/scheduler.log" || { echo 'not ok - no reopen, no line' >&2; exit 1; } ;;
+        ! grep -q 'intake reopened issue' "$TF/supervisor/autopi/scheduler.log" || { echo 'not ok - no reopen, no line' >&2; exit 1; }
+        grep -q 'intake closed units under open issues count=1 ids=781' "$TF/supervisor/autopi/scheduler.log" || { echo 'not ok - the class must log one line' >&2; exit 1; } ;;
       delivered)
         command jq -e 'has("scheduler_handoff") | not' "$TF/agent-home/state/781.json" >/dev/null || { echo 'not ok - a delivered unit took an episode' >&2; exit 1; }
         grep -q 'intake reopened issue #781 at 2026-11-06T17:02:47Z: skipped, its units ended merged' "$TF/supervisor/autopi/scheduler.log" || { echo 'not ok - a skipped reopen must log a line' >&2; exit 1; } ;;

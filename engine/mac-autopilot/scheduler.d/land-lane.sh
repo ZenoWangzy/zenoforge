@@ -42,6 +42,29 @@ fast_land_lane() { # 一次只落一个；与产品合并门禁无关（land-dir
   done < <(fast_land_candidates)
 }
 
+# A closed unit under an open ready-for-agent issue is skipped by intake for good, so the unit closes only after the
+# issue does. A failed close parks the unit, and obsolete_close_retry tries again on each GitHub pass.
+obsolete_issue_close() { # issue first-report-line
+  gh issue close "$1" --comment "Autopilot: no change needed on current main. $2" >/dev/null 2>&1
+}
+obsolete_unit_close() { # unit issue first-report-line
+  if [[ -n "$2" ]] && ! obsolete_issue_close "$2" "$3"; then
+    set_unit "$1" "$(hist obsolete-close-failed "$3") | .stage=\"parked\" | .parked_reason=\"obsolete-close-failed\" | .unpark_condition=\"the issue close succeeds\""
+    say "unit $1 obsolete: closing issue #$2 failed; parked for retry"
+    return 0
+  fi
+  set_unit "$1" "$(hist obsolete "$3") | .stage=\"closed\""
+  say "unit $1 obsolete: $3"
+}
+obsolete_close_retry() {
+  local id issue first
+  while IFS=$'\t' read -r id issue; do
+    first="$(jqf -r --arg id "$id" '.units[] | select(.id == $id) | [(.history // [])[] | select(.stage == "obsolete-close-failed") | .result] | last // ""' "$UNITS")"
+    obsolete_issue_close "$issue" "$first" || continue
+    set_unit "$id" "$(hist obsolete "$first") | .stage=\"closed\" | del(.parked_reason, .unpark_condition)"
+    say "unit $id obsolete: closed issue #$issue on retry"
+  done < <(jqf -r '.units[] | select(.stage == "parked" and .parked_reason == "obsolete-close-failed") | [.id, .issue] | @tsv' "$UNITS")
+}
 # 无 PR 的直落实现：本地提交 → 评审本地提交 → 直落 main；OBSOLETE 直接结案，NEEDS-PR 转人工开 PR。
 harvest_prless_implement() { # unit report-path [local-only]
   local first issue branch dir local_head
@@ -52,9 +75,7 @@ harvest_prless_implement() { # unit report-path [local-only]
   case "$first" in
     OBSOLETE:*)
       [[ "${3:-false}" != true ]] || return 1
-      [[ -n "$issue" ]] && gh issue close "$issue" --comment "Autopilot: no change needed on current main. ${first}" >/dev/null 2>&1
-      set_unit "$1" "$(hist obsolete "$first") | .stage=\"closed\""
-      say "unit $1 obsolete: $first"; return 0 ;;
+      obsolete_unit_close "$1" "$issue" "$first"; return 0 ;;
     NEEDS-PR:*)
       # 要改产品或工作流路径：转 PR 车道重做（PR 车道可以改这些路径，CI 与评审照常把关）。
       set_unit "$1" "$(hist needs-pr "$first") | .lane=\"pr\" | .branch=\"agent/${issue:+issue-}${issue:-$1}\" | .task += ($(js "

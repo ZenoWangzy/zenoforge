@@ -342,6 +342,18 @@ now = dt.datetime(2026, 10, 22, 15, tzinfo=dt.timezone.utc)
 got = (n.stale_worktrees(now, sys.argv[2]), n.stale_worktrees(now, sys.argv[2] + "/missing"), n.CRITERIA["host.stale_worktrees"][2:4])
 sys.exit(0 if got == (2, None, (10, 40)) else print(got) or 1)
 CHECK
+# intake 的 terminal 跳过藏起来的票：单元全部结束且 episode 已消费才算；episode 未消费的还在走交接
+closed_dir="$a/closed-open"; mkdir -p "$closed_dir/state"
+printf '%s\n' '{"rows":"501\tpr\tt\t[]\tx\n502\tpr\tt\t[]\tx\n503\tpr\tt\t[]\tx\n504\tpr\tt\t[]\tx"}' > "$closed_dir/intake-candidates.json"
+printf '%s\n' '{"state":"ready-for-agent","scheduler_handoff":{"episode":"e"}}' > "$closed_dir/state/502.json"
+python3 - "$script_dir" "$closed_dir" <<'CHECK' || fail 'closed units under open issues count wrong'
+import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
+d = sys.argv[2]
+units = [{"issue": 501, "stage": "closed"}, {"issue": 502, "stage": "closed", "hold_handoff_episode": "old"},
+         {"issue": 503, "stage": "closed"}, {"issue": 503, "stage": "implement"}]
+got = (n.closed_units_open_issues(d, d, units), n.closed_units_open_issues(d + "/missing", d, units))
+sys.exit(0 if got == ([501], None) else print(got) or 1)
+CHECK
 # 被后一个触发取代的触发（CI 红→重跑绿→评审要改）不是"等返工 worker"：只配对返工前最后一个触发
 python3 - "$script_dir" "$a" <<'CHECK' || fail 'a superseded trigger was paired with a later repair'
 import sys, datetime as dt; sys.path.insert(0, sys.argv[1]); import node_health as n

@@ -99,6 +99,7 @@ CRITERIA = {
     "host.prereqs_missing":    ("host", "host services from host-prereqs.json that do not answer", 0, 1, False),
     "host.github_net_failures_per_hour": ("host", "GitHub fetch/API network failures per hour (user journal)", 2, 10, False),
     "host.stale_worktrees":    ("host", "worktrees under ~/wt older than 2 h", 10, 40, False),
+    "intake.closed_units_open_issues": ("intake", "open ready-for-agent issues whose units all ended", 0, 10, False),
     "engine.follow_lag_hours": ("host", "hours the live engine has not followed example HEAD:scripts", 0.5, 2, False),
     # Factory flow metrics (#4366): throughput vs the 6.5/h SLO, staged WIP age, dispatch
     # stalls, main-red duration and in/out conservation. Crossing the unhealthy bound sends
@@ -161,6 +162,7 @@ MEANING = {
     "host.github_net_failures_per_hour": "每小时连不上 GitHub 的次数（fetch 最终失败、API TLS 握手超时）。WSL 上 GitHub 只能走 egress 代理，单元缺代理就静默超时：10-22 三个定时单元没有代理 drop-in，6 小时约 1,600 次，没有任何数字显示。",
     "engine.follow_lag_hours": "live 引擎没跟上 example HEAD:scripts 的小时数。converge 导出、构建或自检失败时开始计时，跟上后清零。高 = 落地了但没上线。",
     "host.stale_worktrees": "~/wt 下建立超过 2 小时还没删的工作目录数。分诊、顾问、hand 每轮结束就该删掉；堆积 = 收尾清理坏了（10-21/22 收尾先 fetch，代理一卡就全部保留，26 小时堆到 287 个）。",
+    "intake.closed_units_open_issues": "issue 开着且 ready-for-agent、但单元都已结束的张数。intake 的 terminal 跳过不派 worker，也不逐行报，所以这类票会静默停住；非 0 时看体检输出列出的号（11-06 查出 8 张）。",
     "flow.merge_rate_per_hour": "窗口内 merged/landed 单数 ÷ 小时数，对照 6.5/h 的吞吐目标（#4355）。窗口里没有在制品也没进单（无积压）时不计值；跌破 3.5/h 是升级前串行合并道的上限，工厂没在产出。",
     "flow.wip_age_stage_p90_hours": "每张在途单在当前阶段已停留的小时（按阶段分组取 p90，取最差阶段；分组明细在 scorecard 的 flow.wip_age）。高 = 流动卡在某个阶段，去单元表找是哪几张。",
     "flow.slot_idle_hours": "有单排队等返工/复检 worker、而该阶段一个 worker 都没在跑的小时数：这是派发停摆（槽位空转），不是产能不足（那会表现为 worker 全忙）。",
@@ -226,6 +228,7 @@ SOURCE = {
     "host.github_net_failures_per_hour": "journalctl --user 窗口内的最终失败行（origin fetch failed、git fetch: timed out after、api.github.com TLS handshake timeout）÷ 小时；没有 journal（Mac）为空",
     "engine.follow_lag_hours": "engine-sync converge 失败时写入的 $AGENT_HOME/engine-versions/.lag-since（epoch 秒），成功跟上即删除；没有该文件记 0",
     "host.stale_worktrees": "ZF_WORKTREE_ROOT（默认 ~/wt）下每个工作目录的 .git 链接文件建立时间早于 2 小时的个数；没有该目录（Mac）为空",
+    "intake.closed_units_open_issues": "intake-candidates.json 的候选行里，单元全部处于终态且交接 episode 已消费的 issue 数；没有候选快照时为空",
     "flow.merge_rate_per_hour": "units.json merged/landed 事件 ÷ 窗口小时；无积压判定：窗口内没有任何在途或新进入的单",
     "flow.wip_age_stage_p90_hours": "units.json 在途单（stage 非终态）当前 stage 的最后事件时间 → now，按 stage 分组取 p90",
     "flow.slot_idle_hours": "units.json 触发事件 + scheduler.log dispatch 行给出排队区间（同 time_sinks），worker_cost 运行区间给出同阶段在跑区间，取无人在跑的净空转",
@@ -660,6 +663,25 @@ def engine_follow_lag_hours(agent_home, now):
     except (OSError, ValueError):
         return 0.0
     return round(max(0.0, now.timestamp() - since) / 3600, 2)
+
+
+def closed_units_open_issues(runtime, agent_home, units):
+    """Issue ids intake's terminal skip hides: candidates whose units all ended, handoff consumed; None without a census."""
+    rows = read_json(os.path.join(runtime, "intake-candidates.json")).get("rows")
+    if rows is None:
+        return None
+    ended = ("merged", "landed", "closed", "done", "wontfix", "duplicate")
+    found = []
+    for row in rows.splitlines():
+        n = row.split("\t", 1)[0]
+        if not n.isdigit():
+            continue
+        own = [u for u in units if u.get("issue") == int(n) or u.get("branch") == f"agent/issue-{n}"]
+        state = read_json(os.path.join(agent_home, "state", f"{n}.json"))
+        episode = (state.get("scheduler_handoff") or {}).get("episode") if state.get("state") == "ready-for-agent" else None
+        if own and all(u.get("stage") in ended and (not episode or u.get("hold_handoff_episode") == episode) for u in own):
+            found.append(int(n))
+    return found
 
 
 def stale_worktrees(now, root=None):
@@ -1512,6 +1534,8 @@ def main():
     metrics["host.prereqs_missing"] = None if host_missing is None else len(host_missing)
     metrics["host.github_net_failures_per_hour"] = github_net_failures_per_hour(since, now)
     metrics["host.stale_worktrees"] = stale_worktrees(now)
+    closed_open = closed_units_open_issues(a, agent_home, units)
+    metrics["intake.closed_units_open_issues"] = None if closed_open is None else len(closed_open)
     metrics["engine.follow_lag_hours"] = engine_follow_lag_hours(agent_home, now)
     orders = work_orders(units, unit_spend(cost_rows), now)
     metrics["workorders.over_standard"] = sum(1 for o in orders if o["over"])
@@ -1609,6 +1633,8 @@ def main():
     print("unhealthy nodes: " + (", ".join(sorted({r[0] for r in bad})) or "none"))
     if host_missing:
         print("host missing: " + "; ".join(host_missing))
+    if closed_open:
+        print("closed units under open issues: " + " ".join(f"#{n}" for n in closed_open))
 
     if args.file_issues:
         file_issues(a, rows, now)

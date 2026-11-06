@@ -150,9 +150,7 @@ harvest_pr_implement() { # unit report-path
   local dep; dep="$(blocked_on_of "$2")"
   [[ -n "$dep" ]] && { park_blocked "$1" "$dep"; return 0; }
   if [[ "$first" == OBSOLETE:* ]]; then
-    [[ -n "$issue" ]] && gh issue close "$issue" --comment "Autopilot: no change needed on current main. ${first}" >/dev/null 2>&1
-    set_unit "$1" "$(hist obsolete "$first") | .stage=\"closed\""
-    say "unit $1 obsolete: $first"; return 0
+    obsolete_unit_close "$1" "$issue" "$first"; return 0
   fi
   head="$(git -C "$dir" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}')"
   if [[ ! "$head" =~ $SHA_RE ]]; then
