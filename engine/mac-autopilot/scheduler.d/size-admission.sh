@@ -256,7 +256,7 @@ $(head -40 "$2")" "$base"
 # SPLIT: <剩余范围一句话>。剩余范围需要一张自己的票承载——生而 needs-triage，走正常分诊
 # （含行数估算），不会再被整票派发。创建失败记 supervisor inbox，单元保持评审队列。
 split_followup_issue() { # unit issue pr split-line report-path
-  local unit="$1" issue="$2" pr="$3" first="$4" rep="$5" remainder body url num
+  local unit="$1" issue="$2" pr="$3" first="$4" rep="$5" remainder body url num parent
   remainder="$(printf '%s' "$first" | sed -E 's/^SPLIT:[[:space:]]*//')"
   body="## Parent
 
@@ -269,7 +269,9 @@ $remainder
 ## 切片交付说明（worker 报告）
 
 $(head -n 200 "$rep" 2>/dev/null)"
-  url="$(gh issue create --title "$(unit_field "$unit" .title)（续作自 #${issue}）" --body "$body" --label needs-triage --parent "$issue" 2>/dev/null || true)"
+  # The follow-up is the parent's sibling: an open child makes the parent a roadmap container, which refuses awaiting-release.
+  parent="$(gh api "repos/{owner}/{repo}/issues/$issue/parent" --jq '.number // empty' 2>/dev/null || true)"
+  url="$(gh issue create --title "$(unit_field "$unit" .title)（续作自 #${issue}）" --body "$body" --label needs-triage ${parent:+--parent "$parent"} 2>/dev/null || true)"
   if [[ -n "$url" ]]; then
     num="${url##*/}"
     set_unit "$unit" "$(hist split-followup "issue #$num: $remainder") | .split_followup=$num"
