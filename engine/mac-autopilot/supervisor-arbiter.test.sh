@@ -10,7 +10,7 @@ sup="$fixture/supervisor"
 mkdir -p "$sup/autopi/alerts" "$fixture/repo" "$fixture/bin"
 # Stage-transition fixtures are already roadmap leaves; this suite covers arbitration effects.
 export ZF_ROADMAP_TREE_CACHE_FILE="$fixture/roadmap-tree.json"
-jq -cn '{roots:[611,615,618,622,623,684,686,687,688,689,690,699] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
+jq -cn '{roots:[611,615,618,622,623,683,684,686,687,688,689,690,699] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
   > "$ZF_ROADMAP_TREE_CACHE_FILE"
 jq '.auto_merge = false | .advisor = false | .precheck = false | .supervisor_arbiter.enabled = true | .supervisor_arbiter.cap_triage = false' "$script_dir/config.template.json" > "$sup/autopi/config.json"
 echo '{"units":[]}' > "$sup/autopi/units.json"
@@ -536,6 +536,13 @@ unrun_unit pr-684 684
 set_unit pr-684 '.history += [{stage:"rereview-pending"}]'
 supervisor_apply_cap_verdict pr-684 "$report" RULE
 [[ "$(field pr-684 .parked_reason)" == supervisor-cap-exhausted && "$(refills pr-684)" == 0 ]] || fail "a RULE that returned to rereview used its retry: $(jq -c '.units[0]' "$UNITS")"
+# Another holder's hold stays, and the unit stays at supervisor-review.
+unrun_unit pr-683 683
+jq -n '{state:"on-hold",hold:{kind:"manual",holder:"head-hold"},recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/683.json"
+printf 'REASON: r\nEVIDENCE: e\nVERDICT: RULE\n' > "$report"
+supervisor_apply_cap_verdict pr-683 "$report" RULE
+[[ "$(field pr-683 .stage)" == supervisor-review ]] || fail "a RULE must not send work past another holder's hold"
+jq -e '.hold.holder == "head-hold"' "$AGENT_HOME/state/683.json" >/dev/null || fail "another holder's hold must stay"
 # Only a RULE releases the hold.
 unrun_unit pr-688 688
 founder_report "Please decide this?"
@@ -548,7 +555,7 @@ jq -e '.state == "on-hold"' "$AGENT_HOME/state/687.json" >/dev/null || fail "CLO
 printf 'REASON: r\nEVIDENCE: e\nVERDICT: RULE\n' > "$report"
 # A failed release leaves the unit where it is.
 unrun_unit pr-686 686
-(REPO=""; ZF_REPO=""; supervisor_apply_cap_verdict pr-686 "$report" RULE)
+(REPO=""; ZF_REPO=""; if supervisor_apply_cap_verdict pr-686 "$report" RULE; then fail "a failed release must report failure"; fi)
 [[ "$(field pr-686 .stage)" == supervisor-review && "$(refills pr-686)" == 0 ]] || fail "a hold that was not released must not apply the RULE"
 
 # A terminal park unparks only when its mark changes.
