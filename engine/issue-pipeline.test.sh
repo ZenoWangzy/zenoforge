@@ -80,7 +80,13 @@ if [[ "${1:-}" == "--advisor-runner-only" ]]; then
     "$(grep -Fx "<$runner_target/scripts/ops/advisor-batch.sh>" "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
   assert_eq 'advisor dispatch carries the config root into its transient unit' yes \
     "$(grep -Fx "<ZF_CONFIG_ROOT=$runner_target/.zenoforge>" "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
+  assert_eq 'a poll dispatch asks the runner to poll only, so it cannot select a batch' yes \
+    "$(grep -Fx '<--poll-only>' "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
   : > "$AGENT_HOME/advisor-runner-dispatch.args"
+  stage_unit_active() { [ "$1 $2" = 'advisor batch' ]; }
+  dispatch_advisor_batch 1
+  assert_eq 'a wrapper started by the job wake takes this dispatch' 0 "$(wc -l < "$AGENT_HOME/advisor-runner-dispatch.args")"
+  unset -f stage_unit_active
   guarded_write() { printf '<%s>\n' "$@" >> "$AGENT_HOME/advisor-runner-dispatch.args"; }
   release_batch_cadence_mark() { :; }
   eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p' "$PIPELINE_SRC")"
@@ -1392,7 +1398,7 @@ assert_cond "recovery implement gate precedes attempt bump" "$(awk '
   inside && /state_bump_attempts "\$n"/ { if (gate && gate < NR) found=1; inside=0 }
   END { print found ? 1 : 0 }
 ' "$PIPELINE_SRC")"
-assert_cond "advisor batch and release dispatches have memory gates" "$(grep -qF 'agent_memory_floor_allows advisor || return 0' "$PIPELINE_SRC" \
+assert_cond "advisor batch and release dispatches have memory gates" "$(grep -qF '{ agent_memory_floor_allows advisor && ! stage_unit_active advisor batch; } || return 0' "$PIPELINE_SRC" \
   && grep -qF 'if ! agent_memory_floor_allows release; then' "$PIPELINE_SRC" && echo 1 || echo 0)"
 assert_cond "advisor polls gate before dispatch and slot decrement" "$(awk '
   /^advisor_dispatch_pending_job_pool\(\) \{/ { inside=1 }
@@ -2272,11 +2278,13 @@ run_env_proxy_site() (
   guarded_write() { printf '%s\n' "$*" >> "$ENV_PROXY_CAPTURE"; }
   "$@"
 )
-assert_eq "all four issue-pipeline systemd-run sites carry NO_PROXY and the Node env-proxy opt-in" 4 \
+assert_eq "the three inline issue-pipeline systemd-run sites carry NO_PROXY and the Node env-proxy opt-in" 3 \
   "$(grep -c -- '-E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY' "$PIPELINE_SRC")"
-assert_eq 'batch and single-ticket advisor dispatches pass the provider job directory' 2 \
-  "$(sed -n '/^dispatch() {/,/^}/p; /^dispatch_advisor_batch() {/,/^}/p' "$PIPELINE_SRC" \
-    | grep -Fc 'ZF_WEB_ADVISOR_PROVIDER_JOB_DIR')"
+assert_eq 'the advisor batch site takes the shared unit environment' 1 "$(grep -Fc '"${ZF_ADVISOR_BATCH_UNIT_ENV[@]}"' "$PIPELINE_SRC")"
+assert_eq 'the shared unit environment carries the proxies and the provider job directory' yes \
+  "$(source "$SCRIPT_DIR/config.sh"; grep -q -- '-E NO_PROXY -E NODE_USE_ENV_PROXY .*-E ZF_WEB_ADVISOR_PROVIDER_JOB_DIR' <<< "${ZF_ADVISOR_BATCH_UNIT_ENV[*]}" && echo yes || echo no)"
+assert_eq 'the single-ticket advisor dispatch passes the provider job directory' 1 \
+  "$(sed -n '/^dispatch() {/,/^}/p' "$PIPELINE_SRC" | grep -Fc 'ZF_WEB_ADVISOR_PROVIDER_JOB_DIR')"
 assert_contains "issue-pipeline defaults the Node env-proxy opt-in before any dispatch" "$(cat "$PIPELINE_SRC")" \
   'export NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"'
 # 2026-10-09: with triage paused, nothing refreshed the GitNexus index that

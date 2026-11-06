@@ -130,6 +130,9 @@ fi
 if [[ -z "${ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX+x}" ]]; then
   ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX="${ZF_UNIT_PREFIX:-zf}"
 fi
+# The tick's dispatch and the finished job's wake start one unit, so they pass it one environment.
+ZF_ADVISOR_BATCH_UNIT_ENV=(-E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY
+  -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE -E ZF_WEB_ADVISOR_PROVIDER_JOB_DIR)
 if [[ -z "${ZF_WEB_ADVISOR_PROVIDER_TOPIC+x}" ]]; then
   ZF_WEB_ADVISOR_PROVIDER_TOPIC=pipeline-advisor
 fi

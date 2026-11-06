@@ -22,10 +22,27 @@ poll_seconds="${WEB_ADVISOR_PROVIDER_POLL_INTERVAL_SECONDS:-$ZF_WEB_ADVISOR_PROV
 [[ "$poll_seconds" =~ ^[1-9][0-9]*$ ]] || { echo "web-advisor-provider-job: invalid poll interval" >&2; exit 64; }
 [ -d "$job_dir" ] || { echo "web-advisor-provider-job: missing job directory" >&2; exit 66; }
 
+# Harvest when the batch job ends, not on the next tick. The live engine does it, this job's own
+# build may be old. A stopped timer means a pause; a busy unit or a refused start leaves it to the tick.
+wake_batch_harvest() {
+  local prefix="$ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX" live
+  [[ "$job_id" == advisor-batch-* && -n "${ZF_REPO_DIR:-}" ]] || return 0
+  systemctl --user is-active --quiet "$prefix-agent.timer" || return 0
+  live="$(readlink -e -- "$AGENT_HOME/engine-live")" || live="$SCRIPT_DIR"
+  if systemd-run --user --unit "$prefix-advisor-batch" --collect "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" \
+    -E "ZF_ENGINE_DIR=$live" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" \
+    -p RuntimeMaxSec=3600 "$live/run-advisor-batch.sh" --poll-only --scheduled >/dev/null 2>&1; then
+    echo "web-advisor-provider-job: job $job_id done; harvest woken" >&2
+  else
+    echo "web-advisor-provider-job: job $job_id done; wake not started, the next tick harvests" >&2
+  fi
+}
+
 write_done() {
   local status="$1" tmp="$done_file.$$.tmp"
   printf '%s\n' "$status" > "$tmp"
   mv "$tmp" "$done_file"
+  wake_batch_harvest || :
 }
 
 phase() {

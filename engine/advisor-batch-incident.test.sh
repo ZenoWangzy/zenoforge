@@ -979,6 +979,13 @@ export FAKE_REAL_ISSUES=""
 export FAKE_BODY_ISSUE=11801
 export FAKE_BODY_CONTENT='ORIGINAL_HUMAN_BODY'
 set +e
+POLL_ONLY_HOME="$(mktemp -d)"
+printf '{}\n' > "$POLL_ONLY_HOME/advisor-batch.json"
+AGENT_HOME="$POLL_ONLY_HOME" bash "$BATCH_SRC" --poll-only --scheduled >/dev/null 2>&1
+assert_eq "a poll with no active job selects no batch" "no-active-job" \
+  "$(jq -r .outcome "$(ls -t "$POLL_ONLY_HOME"/logs/*.result.json | head -1)")"
+rm -rf "$POLL_ONLY_HOME"
+
 STALE_FIRST="$(bash "$BATCH_SRC" 11801 2>&1)"
 STALE_FIRST_STATUS=$?
 set -e

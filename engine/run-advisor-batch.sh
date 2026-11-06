@@ -6,14 +6,14 @@
 set -euo pipefail
 
 ARGS=()
+POLL_ONLY=0
 for arg in "$@"; do
-  if [ "$arg" = "--dry-run" ]; then
-    export AGENT_DRY_RUN=1
-  elif [ "$arg" = "--scheduled" ]; then
-    : # accepted scheduler marker; no different execution policy
-  else
-    ARGS+=("$arg")
-  fi
+  case "$arg" in
+    --dry-run) export AGENT_DRY_RUN=1 ;;
+    --poll-only) POLL_ONLY=1 ;;
+    --scheduled) ;; # accepted scheduler marker; no different execution policy
+    *) ARGS+=("$arg") ;;
+  esac
 done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/lib.sh"
@@ -541,7 +541,6 @@ release_ticket_lock() {
 }
 
 ensure_state_labels
-
 if ! try_lock_nonblocking "$(advisor_batch_lock_file)" BATCH_LOCK_FD; then
   BATCH_OUTCOME=batch-busy
   echo "run-advisor-batch: another batch wrapper is already selecting or polling -- exiting cleanly" >&2
@@ -549,6 +548,8 @@ if ! try_lock_nonblocking "$(advisor_batch_lock_file)" BATCH_LOCK_FD; then
 fi
 
 ACTIVE_BATCH_JOB="$(advisor_batch_job_json)"
+# With no job an empty argument list would select a batch past the tick's gates.
+[ "$POLL_ONLY" != 1 ] || [ -n "$ACTIVE_BATCH_JOB" ] || { BATCH_OUTCOME=no-active-job; exit 0; }
 
 gh_write_soft() {
   local n="$1"; shift

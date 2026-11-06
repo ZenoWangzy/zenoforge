@@ -818,7 +818,8 @@ dispatch_advisor_batch() {
     done
     [ "${#issue_ids[@]}" -gt 0 ] || return 0
   fi
-  agent_memory_floor_allows advisor || return 0
+  # stage_unit_active: the finished job's wake may have started the wrapper since this tick read the unit.
+  { agent_memory_floor_allows advisor && ! stage_unit_active advisor batch; } || return 0
   if [ ! -x "$script" ]; then
     echo "issue-pipeline: batch advisor leg cannot execute ($script) -- not dispatching" >&2
     record_env_fault "env:leg-not-executable:advisor-batch" advisor-batch batch "$script is not executable (git mode bit)"
@@ -839,10 +840,9 @@ dispatch_advisor_batch() {
     fi
   fi
   if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect \
-    -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE -E ZF_WEB_ADVISOR_PROVIDER_JOB_DIR \
-    -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" \
+    "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" \
     -p "RuntimeMaxSec=$ADVISOR_RUNTIME_MAX_SEC" \
-    "$script" --scheduled "${issue_ids[@]}"; then
+    "$script" $([ "$poll_only" = 1 ] && echo --poll-only) --scheduled "${issue_ids[@]}"; then
     if [ "${#issue_ids[@]}" -gt 0 ]; then
       pipeline_batch_claim_keep "$claim_owner" "$claim_unit" "${issue_ids[@]}" || return $?
     fi
