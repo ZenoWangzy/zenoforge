@@ -3,6 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh"
 merge_pr_static_scans() { return 0; }
+merge_pr_root() { return 1; } # the enclosing checkout's size state must not reach these fixtures: a PR over its baseline turned this test red too
 
 fixture="$test_env_root/merge-pr"
 repo="$fixture/repo"
