@@ -281,7 +281,7 @@ reconcile_quarantines() {
       # These signatures are opened at the observed gate and lifted by their
       # live probe. Generic history replay would reopen a recovered episode.
       case "$signature" in
-        env:model-config:*|env:ci-runner-capacity|env:build-capacity|env:main-ci-red|env:provider-outage|env:unit-memory-cap|env:ci-checkout|env:docker-hub-dns) continue ;;
+        env:model-config:*|env:ci-runner-capacity|env:build-capacity|env:main-ci-red|env:provider-outage|env:unit-memory-cap|env:ci-checkout|env:docker-hub-dns|env:advisor-yield:*) continue ;;
       esac
       env_fault_is_systemic "$signature" "$now" || continue
       if [ "$signature" = "env:network-timeout" ]; then

@@ -1377,6 +1377,37 @@ assert_eq "timeout leaves no size split" "false" "$(jq 'has("size_split")' "$TIM
 assert_true "timeout still cools the prompt" compgen -G "$TIMEOUT_COHORT_HOME/quarantine/advisor-batch/prompt-*.json"
 unset FAKE_BATCH_POLL_STATUS
 
+# Two sends alike with nothing applied stop the stage; the canary is one ticket and a yield reopens it.
+YIELD_HOME="$(mktemp -d)"
+TMP_DIRS+=("$YIELD_HOME")
+mkdir -p "$YIELD_HOME/state" "$YIELD_HOME/locks"
+: > "$YIELD_HOME/codex-probe-passed"
+for n in 14131 14132 14133; do seed_ticket "$YIELD_HOME" "$n"; done
+export AGENT_HOME="$YIELD_HOME"
+export FAKE_GH_LOG="$YIELD_HOME/gh.log"
+export FAKE_WEB_ADVISOR_PROVIDER_LOG="$YIELD_HOME/web-advisor-provider.log"
+export FAKE_WEB_ADVISOR_PROVIDER_PROMPT_LOG="$YIELD_HOME/prompt.txt"
+export FAKE_BATCH_NDJSON=""
+export FAKE_BATCH_POLL_STATUS=1
+YIELD_QUARANTINE="$YIELD_HOME/quarantine/advisor.json"
+export FAKE_BATCH_ANSWER_ERR='FAIL: ADVISOR_SEND_NOT_CONFIRMED: composer'
+run_batch_complete 14131 14132 14133 >/dev/null 2>&1 || true
+assert_true "one zero-yield send does not stop the stage" test ! -f "$YIELD_QUARANTINE"
+export FAKE_BATCH_ANSWER_ERR='FAIL: ADVISOR_MODEL_UNVERIFIED: picker'
+run_batch_complete 14131 14132 14133 >/dev/null 2>&1 || true
+assert_true "a different failure class restarts the count" test ! -f "$YIELD_QUARANTINE"
+run_batch_complete 14131 14132 14133 >/dev/null 2>&1 || true
+assert_eq "two sends alike open the advisor quarantine" "env:advisor-yield:ADVISOR_MODEL_UNVERIFIED" "$(jq -r '.signature' "$YIELD_QUARANTINE" 2>/dev/null || true)"
+unset FAKE_BATCH_POLL_STATUS
+: > "$YIELD_HOME/prompt.txt"
+export FAKE_BATCH_NDJSON="$(batch_result_for 14131)"
+run_batch_complete 14131 14132 14133 >/dev/null 2>&1 || true
+YIELD_PROMPT="$(cat "$YIELD_HOME/prompt.txt")"
+assert_contains "the canary carries the first ticket" "$YIELD_PROMPT" "# ticket #14131"
+assert_not_contains "the canary carries one ticket" "$YIELD_PROMPT" "# ticket #14132"
+assert_true "an applied ruling lifts the yield quarantine" test ! -f "$YIELD_QUARANTINE"
+assert_eq "an applied ruling clears the count" "false" "$(jq 'has("yield_breaker")' "$YIELD_HOME/advisor-batch.json")"
+
 # A size failure that persists for one ticket becomes a dead letter keyed to
 # its exact input and episode; siblings continue and receive rulings.
 POISON_HOME="$(mktemp -d)"

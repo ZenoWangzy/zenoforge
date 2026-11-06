@@ -522,6 +522,7 @@ record_batch_result() {
 cleanup() {
   local exit_status=$?
   record_batch_result "$exit_status" || echo 'run-advisor-batch: could not persist scheduler result' >&2
+  advisor_batch_yield_note || echo 'run-advisor-batch: could not update the send-yield breaker' >&2
   local n
   for n in "${!ADVISOR_TICKET_LOCK_FDS[@]}"; do
     unlock_fd "${ADVISOR_TICKET_LOCK_FDS[$n]}"
@@ -750,6 +751,8 @@ if [ -z "$ACTIVE_BATCH_JOB" ]; then
     echo "run-advisor-batch: could not read size-split candidate state" >&2
     exit 1
   }
+  # A quarantined stage resumes with one ticket: a canary spends one send, not a full batch.
+  [ ! -f "$(quarantine_file advisor)" ] || CANDIDATES=("${CANDIDATES[@]:0:1}")
 
   for n in "${CANDIDATES[@]}"; do
   if ! [[ "$n" =~ ^[0-9]+$ ]]; then
