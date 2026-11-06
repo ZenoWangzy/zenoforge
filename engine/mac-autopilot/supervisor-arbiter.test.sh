@@ -121,6 +121,38 @@ dispatch_supervisor_arbiters
 [[ "$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == "$before" ]] || fail "no arbitration may dispatch at the in-flight cap"
 SUPERVISOR_ARBITER_MAX="$saved_max"
 
+# RECUT refused for unpushed work: recorded, not triaged again until the head moves.
+WT_ROOT="$fixture/clones"; mkdir -p "$WT_ROOT/wt-pr-650"
+git -C "$WT_ROOT/wt-pr-650" init -q
+git -C "$WT_ROOT/wt-pr-650" -c user.name=t -c user.email=t@t commit -q --allow-empty -m first
+refused_sha="$(git -C "$WT_ROOT/wt-pr-650" rev-parse HEAD)"
+printf '%s\n' "$(jq -cn '{units:[{id:"pr-650",issue:650,pr:650,stage:"parked",history:[{stage:"supervisor-cap-triage-park",result:"x",at:"2026-10-27T00:00:00Z"}]}]}')" > "$UNITS"
+echo '{"workers":[]}' > "$WORKERS"; : > "$GH_CALLS"
+supervisor_budget_recut pr-650 "cap triage: too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
+[[ "$(field pr-650 .parked_reason)" == recut-refused-unpushed && "$(field pr-650 .recut_refused_head)" == "$refused_sha" && "$(field pr-650 .recut_refused_verdict)" == RECUT ]] \
+  || fail "a refused RECUT must record its reason, head and verdict"
+[[ "$(field pr-650 .note)" == *'Unparks when that head changes'* ]] || fail "a refused RECUT must state its unpark condition"
+! grep -Fq 'pr close' "$GH_CALLS" || fail "a refused RECUT must not close the PR"
+saved_cap_triage="$SUPERVISOR_CAP_TRIAGE"; SUPERVISOR_CAP_TRIAGE=true
+dispatch_supervisor_arbiters
+[[ "$(jq '.workers | length' "$WORKERS")" == 0 ]] || fail "the same head must not be triaged again"
+git -C "$WT_ROOT/wt-pr-650" -c user.name=t -c user.email=t@t commit -q --allow-empty -m second
+ZF_ENGINE_DIR="$script_dir/.." dispatch_supervisor_arbiters
+[[ "$(jq '[.workers[] | select(.unit=="pr-650")] | length' "$WORKERS")" == 1 ]] || fail "a moved head must reach cap triage again"
+SUPERVISOR_CAP_TRIAGE="$saved_cap_triage"
+# Daily ceiling: any verdict, one alert.
+now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "$(jq -cn --arg at "$now_iso" '{units:[{id:"pr-651",stage:"supervisor-review",history:[{stage:"supervisor-arbiter",result:"x",at:$at}]},
+  {id:"pr-652",stage:"supervisor-review",history:[{stage:"supervisor-arbiter",result:"x",at:"2026-10-27T00:00:00Z"}]}]}')" > "$UNITS"
+echo '{"workers":[]}' > "$WORKERS"
+saved_daily="$SUPERVISOR_ARBITER_DAILY_MAX"; SUPERVISOR_ARBITER_DAILY_MAX=1
+dispatch_supervisor_arbiters
+SUPERVISOR_ARBITER_DAILY_MAX="$saved_daily"
+! jq -e 'any(.workers[]; .unit=="pr-651")' "$WORKERS" >/dev/null || fail "a unit at the daily ceiling must not dispatch"
+[[ "$(field pr-651 .arbiter_daily_max_alerted)" == "${STAMP%%T*}" ]] || fail "the ceiling must be recorded once"
+jq -e 'any(.workers[]; .unit=="pr-652")' "$WORKERS" >/dev/null || fail "old dispatches must not count against the ceiling"
+echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
+
 # ---- 回收：六个动作逐个断言对外效果 ----
 harvest_with_reply() { # unit report-body → 用一个已死 worker 回收
   local unit="$1" reply="$2"

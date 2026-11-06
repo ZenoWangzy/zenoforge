@@ -262,11 +262,52 @@ supervisor_budget_park() { # id evidence → parked，留给 supervisor，不发
 
 SUPERVISOR_CAP_PARK_RESULT_RE='^(third entry into supervisor-review; arbitration cap is 2|arbitration budget exhausted for )'
 
+# RECUT cannot finish over unpushed work, so triaging the same head again only spends a run: 148 of 625 dispatches on 11-06.
+supervisor_recut_refuse() { # id evidence decision worktree
+  local id="$1" evidence="$2" decision="$3" wt="$4" head note key
+  head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
+  note="RECUT refused: unpushed work at ${head:0:12}. Unparks when that head changes or the worktree is gone."
+  cap_set_unit "$id" park "$note $evidence" "" "$(hist supervisor-recut-refused "$evidence" "$decision") | .stage=\"parked\" | .parked_reason=\"recut-refused-unpushed\" | .recut_refused_head=$(js "$head") | .recut_refused_verdict=\"RECUT\" | .note=$(js "$note $evidence")" \
+    || return 1
+  say "supervisor recut refused unit=$id head=${head:0:12}: unpushed work"
+  key="recut-refused:$id:$head"
+  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "$key" "recut-refused unit=$id: $note") \
+    || say "recut refused unit=$id: escalation not delivered"
+}
+
+supervisor_recut_refused_hold() { # unit-json → 0 while the refused head is still what its worktree holds
+  local id refused d
+  [[ "$(jqf -r '.parked_reason // empty' <<<"$1")" == recut-refused-unpushed ]] || return 1
+  id="$(jqf -r .id <<<"$1")"; refused="$(jqf -r '.recut_refused_head // empty' <<<"$1")"
+  [[ -n "$refused" ]] || return 1
+  for d in "$WT_ROOT/wt-$id" "/tmp/wt-$id"; do
+    [[ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" != "$refused" ]] || return 0
+  done
+  return 1
+}
+
+# A stop for any verdict: no unit may spend more than this many arbitration runs in 24h.
+supervisor_arbiter_over_daily_max() { # unit-json → 0 at the ceiling; one alert per unit and day
+  local id count day
+  count="$(jqf -r --argjson since "$(($(date +%s) - 86400))" '[(.history // [])[] | select(.stage == "supervisor-arbiter")
+    | select((((.at // "") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601?) // 0) >= $since)] | length' <<<"$1")"
+  (( count >= SUPERVISOR_ARBITER_DAILY_MAX )) || return 1
+  id="$(jqf -r .id <<<"$1")"; day="${STAMP%%T*}"
+  [[ "$(jqf -r '.arbiter_daily_max_alerted // empty' <<<"$1")" != "$day" ]] || return 0
+  set_unit "$id" ".arbiter_daily_max_alerted=$(js "$day")"
+  say "supervisor arbitration ceiling unit=$id: $count dispatches in 24h"
+  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "arbiter-daily-max:$id:$day" \
+    "arbiter-daily-max unit=$id: $count dispatches in 24h, ceiling $SUPERVISOR_ARBITER_DAILY_MAX; no more today") \
+    || say "arbitration ceiling unit=$id: escalation not delivered"
+  return 0
+}
+
 supervisor_cap_parked_unit() { # unit-json → whether this is a retryable arbitration-cap park (including legacy parks)
   jqf -e --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '
     .stage == "parked" and .parked_reason != "supervisor-cap-founder" and (
       .parked_reason == "supervisor-arbitration-cap" or
       .parked_reason == "supervisor-cap-triage-reask" or
+      .parked_reason == "recut-refused-unpushed" or
       any((.history // [])[]?; .stage == "supervisor-budget-park" and
         ((.result // "") | test($cap_park_result_re))) or
       any((.history // [])[]?; .stage == "supervisor-cap-triage-park")
@@ -295,6 +336,9 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
   for d in "$WT_ROOT/wt-$id" "/tmp/wt-$id"; do # cleanup_tick 删的两个位置；stash 是 ensure_clone 收起的未提交进度
     if [[ -d "$d" ]] && { [[ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]] || [[ -n "$(git -C "$d" stash list 2>/dev/null)" ]] \
         || [[ -z "$(git -C "$d" branch -r --contains HEAD 2>/dev/null)" ]]; }; then
+      if [[ "$park_stage" == supervisor-cap-triage-park ]]; then
+        supervisor_recut_refuse "$id" "$evidence" "$decision" "$d"; return 0
+      fi
       supervisor_budget_park "$id" "$evidence (worktree has unpushed work; not sent to recut)" "$decision" "$park_reason" "$park_stage"; return 0
     fi
   done

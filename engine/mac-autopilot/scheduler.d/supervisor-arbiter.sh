@@ -48,9 +48,11 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     [[ -n "$u" ]] || continue
     id="$(jqf -r .id <<<"$u")"
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
+    supervisor_arbiter_over_daily_max "$u" && continue
     is_swept=false
     if [[ "$(jqf -r '.stage // empty' <<<"$u")" == parked ]]; then
       [[ "${SUPERVISOR_CAP_TRIAGE:-true}" == true ]] || continue
+      supervisor_recut_refused_hold "$u" && continue
       supervisor_cap_parked_unit "$u" || continue
       is_swept=true
     fi
@@ -170,7 +172,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     in_flight=$((in_flight + 1))
     [[ "$cap_triage" == true ]] && cap_triaged=$((cap_triaged + 1))
     (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
-  done < <(jqf -c --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '.units[] | select((.stage=="supervisor-review" or .stage=="parked") and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.stage!="parked" or .parked_reason=="supervisor-arbitration-cap" or .parked_reason=="supervisor-cap-triage-reask" or any((.history // [])[]?; .stage=="supervisor-budget-park" and ((.result // "") | test($cap_park_result_re))) or .stage=="supervisor-cap-triage-park"))' "$UNITS")
+  done < <(jqf -c --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '.units[] | select((.stage=="supervisor-review" or .stage=="parked") and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.stage!="parked" or .parked_reason=="supervisor-arbitration-cap" or .parked_reason=="supervisor-cap-triage-reask" or .parked_reason=="recut-refused-unpushed" or any((.history // [])[]?; .stage=="supervisor-budget-park" and ((.result // "") | test($cap_park_result_re))) or .stage=="supervisor-cap-triage-park"))' "$UNITS")
 }
 
 supervisor_action_of() { # report-path → 唯一 ACTION 行的动作名；无法判定返回 1
