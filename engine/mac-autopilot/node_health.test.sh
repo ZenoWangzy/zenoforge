@@ -874,6 +874,8 @@ overlay.write_text("not json")  # A broken overlay must leave the engine rows re
 assert c.zf_mechanism_registry()["mechanisms"] == engine_only
 cli = subprocess.run([sys.executable, c.__file__, str(overlay)], capture_output=True, text=True, check=True)
 assert json.loads(cli.stdout)["mechanisms"] == engine_only and "ignored" in cli.stderr, cli
+overlay.write_text(json.dumps({"mechanisms": [{"id": "a", "expected_idle": True}, 5]}))  # Valid row first: no half-applied overlay.
+assert c.zf_mechanism_registry()["mechanisms"] == engine_only
 overlay.unlink()
 assert c.zf_mechanism_registry()["mechanisms"] == engine_only
 print("node_health mechanism registry overlay merges by id: PASS")

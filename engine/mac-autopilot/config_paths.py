@@ -50,14 +50,16 @@ def zf_mechanism_registry(overlay=None):
     except (OSError, ValueError, KeyError, TypeError):
         return None
     if overlay_path is not None and overlay_path != engine_path:
+        overlaid = dict(rows)
         try:
             for row in json.loads(overlay_path.read_text(encoding="utf-8"))["mechanisms"]:
-                merged = {**rows.get(row.get("id"), {}), **row}
+                merged = {**overlaid.get(row.get("id"), {}), **row}
                 # A partial row whose id left the engine has nothing to merge over and would break the scorecard.
                 if all(merged.get(field) for field in MECHANISM_REQUIRED_FIELDS):
-                    rows[merged["id"]] = merged
+                    overlaid[merged["id"]] = merged
+            rows = overlaid
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
-            # Engine rows still report; no rows at all would read as no data and raise nothing.
+            # All or nothing. Engine rows still report; no rows at all would read as no data and raise nothing.
             print(f"mechanism registry overlay {overlay_path} ignored: {error!r}", file=sys.stderr)
     return {**doc, "mechanisms": list(rows.values())} if rows else None
 
