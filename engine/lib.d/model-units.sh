@@ -11,13 +11,15 @@ model_policy_normalize_failure_reason() {
 # model_policy_lane_backoff <issue> <unit> <reason>: two recent failed runs of one unit in a row hold that ticket for an hour, so a
 # lane with one slot moves to the next ticket instead of retrying the head of its queue on every tick.
 model_policy_lane_backoff() {
-  local n="$1" unit="$2" reason="$3" now patch
+  local n="$1" unit="$2" reason="$3" now patch reason_file
   now="$(date +%s)"
   state_read "$n" | jq -e --arg unit "$unit" --argjson since "$((now - ${MODEL_LANE_BACKOFF_WINDOW_SECONDS:-21600}))" '
     [(.model_policy.failures // [])[-2:][] | select(.unit == $unit and ((.recorded_at // "") | fromdateiso8601? // 0) >= $since)] | length == 2
   ' >/dev/null || return 0
-  patch="$(jq -nc --arg unit "$unit" --arg reason "$reason" --argjson until "$((now + ${MODEL_LANE_BACKOFF_SECONDS:-3600}))" \
+  reason_file="$(jq_arg_file "$reason")" || return 1
+  patch="$(jq -nc --arg unit "$unit" --rawfile reason "$reason_file" --argjson until "$((now + ${MODEL_LANE_BACKOFF_SECONDS:-3600}))" \
     '{provider:"lane",model:$unit,caller:"model_policy_lane_backoff",reason:$reason,timestamp:(now|todate),until_epoch:$until}')"
+  rm -f -- "$reason_file"
   state_merge "$n" ".model_failure_backoff = $patch"
   echo "model_policy: #$n $unit backed off after two failed runs; the lane moves on" >&2
 }
