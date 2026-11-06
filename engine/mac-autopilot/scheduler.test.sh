@@ -3705,6 +3705,22 @@ sched_case_live_writes_union() {
   expected='["branch.txt","conflict.txt"]'
   actual="$(live_writes_union "$merge_dir" '[]')"
   [[ "$actual" == "$expected" ]] || { echo "live-writes merge conflict: expected $expected, got $actual" >&2; exit 1; }
+
+  # A merge of the branch's own old tip is not main coming in: main's files must not read as this worker's writes.
+  git -C "$merge_dir" merge --abort
+  git -C "$merge_dir" checkout -q -b old-tip worker~2
+  printf 'old\n' > "$merge_dir/conflict.txt"
+  git -C "$merge_dir" add conflict.txt
+  git -C "$merge_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'old tip'
+  git -C "$merge_dir" checkout -q -B fresh origin/main
+  printf 'fresh\n' > "$merge_dir/conflict.txt"
+  git -C "$merge_dir" add conflict.txt
+  git -C "$merge_dir" -c user.email=t@example.invalid -c user.name=test commit -q -m 'fresh'
+  git -C "$merge_dir" merge --no-ff -q old-tip >/dev/null 2>&1 || :
+  git -C "$merge_dir" rev-parse -q --verify MERGE_HEAD >/dev/null || { echo 'live-writes old-tip fixture did not stop on a conflict' >&2; exit 1; }
+  expected='["conflict.txt"]'
+  actual="$(live_writes_union "$merge_dir" '[]')"
+  [[ "$actual" == "$expected" ]] || { echo "live-writes old tip merge: expected $expected, got $actual" >&2; exit 1; }
 )
 }
 sched_run_case live_writes_union
@@ -4430,6 +4446,17 @@ sched_case_reopened_issue_episode() {
   done
 }
 sched_run_case reopened_issue_episode
+
+sched_case_intake_budget() {
+  new_tick_fixture intake-budget
+  command jq -n '{number:782,title:"waits a tick",body:"do the work",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+  command jq '.max_workers=2 | .implement_cap=0 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+  mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  ISSUE_INTAKE_BUDGET_SECONDS=0 tick
+  grep -q 'intake budget spent after 0s: rows from #782 wait for the next tick' "$TF/supervisor/autopi/scheduler.log" || { echo 'not ok - a spent budget must log a line' >&2; exit 1; }
+  command jq -e '(.units|length)==0' "$TF/supervisor/autopi/units.json" >/dev/null || { echo 'not ok - a spent budget still admitted a row' >&2; exit 1; }
+}
+sched_run_case intake_budget
 
 sched_case_hold_handoff_existing_unit() {
   local mode n

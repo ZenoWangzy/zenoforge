@@ -44,6 +44,20 @@ printf 'printf x >> "%s"\nsource "%s"\n' "$fixture/lib-loads" "$real_lib" > "$fi
 SCHEDULER_AGENT_LIB="$fixture/wrap/lib.sh"
 lib_loads() { wc -c < "$fixture/lib-loads" | tr -d ' '; }
 
+# A scope over the 128KiB argv limit still compares; one such owner once deferred every candidate.
+huge="$(seq 1 3300 | sed 's|.*|"packages/generated/some/deep/directory/of/many/files/number-&.ts"|' | paste -sd, | sed 's/.*/[&]/')"
+footprint_scopes_collide '["packages/generated/some/deep/directory/of/many/files/number-3300.ts"]' "$huge" \
+  || { echo "not ok - a huge owner scope did not collide (rc=$?)" >&2; exit 1; }
+rc=0; footprint_scopes_collide '["packages/cold/src/a.ts"]' "$huge" || rc=$?
+(( rc == 1 )) || { echo "not ok - a huge owner scope must compare clean, got rc=$rc" >&2; exit 1; }
+out="$(footprint_classify "$huge")"
+[[ "$(jq 'length' <<<"$out")" == 3300 && "$(jq -r '.[0].type' <<<"$out")" == file ]] || { echo 'not ok - footprint_classify lost paths' >&2; exit 1; }
+
+# A failed comparison names its step, rc and owner: the defer line alone left the cause in loop.out.
+rc=0; ( footprint_classify() { return 1; }; active_footprint_conflict '["a.ts"]' '[{"id":"owner-1","footprint":["b.ts"]}]' cand-1 ) >/dev/null || rc=$?
+(( rc == 2 )) && grep -q 'footprint comparison failed candidate=cand-1 owner=owner-1 step=classify rc=2' "$LOG" \
+  || { echo "not ok - a failed comparison must log its step (rc=$rc)" >&2; exit 1; }
+
 # ---- Part 1: parity with the lib.sh-sourcing bodies these helpers had before. ----
 legacy_active_footprint_conflict() (
   REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1

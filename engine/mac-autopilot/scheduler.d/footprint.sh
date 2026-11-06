@@ -81,7 +81,10 @@ live_writes_union() { # workdir scope_json -> scope ∪ 实际已写路径；wor
   local wd="$1" scope="$2" live base='' merge_head rebase_state onto_path
   if [[ -n "$wd" && -d "$wd" ]]; then
     # An in-progress merge or rebase leaves incoming main changes in the worktree.
-    if merge_head="$(git -C "$wd" rev-parse -q --verify MERGE_HEAD 2>/dev/null)" && [[ -n "$merge_head" ]]; then
+    # Merging anything else, such as a branch's own old tip, leaves that branch's history as the base: every
+    # change on main since then would read as this worker's write (#2514: 3241 paths, and intake stopped).
+    if merge_head="$(git -C "$wd" rev-parse -q --verify MERGE_HEAD 2>/dev/null)" && [[ -n "$merge_head" ]] \
+      && git -C "$wd" merge-base --is-ancestor "$merge_head" refs/remotes/origin/main 2>/dev/null; then
       base="$merge_head"
     else
       for rebase_state in rebase-merge rebase-apply; do
@@ -165,7 +168,7 @@ active_footprint_snapshot() { # refresh live writes for all active implementatio
 }
 # A tree entry is a directory; missing paths remain file predictions (new files).
 footprint_classify() {
-  local scope="$1" path type specs='' types index=0
+  local scope="$1" path type specs='' types index=0 # one jq for the scope: a live scope can hold thousands of paths
   local -a paths=() objects=()
   mapfile -t paths < <(jq -r '.[]?' <<<"$scope")
   for path in "${paths[@]}"; do specs+="refs/remotes/origin/main:$path"$'\n'; done
@@ -174,9 +177,9 @@ footprint_classify() {
   for path in "${paths[@]}"; do
     type=file
     if [[ -d "$ROOT/$path" || "${objects[$index]:-}" == tree ]]; then type=directory; fi
-    jq -cn --arg path "$path" --arg type "$type" '{path:$path,type:$type}'
+    printf '%s\t%s\n' "$type" "$path"
     index=$((index + 1))
-  done | jq -sc '.'
+  done | jq -Rsc '[split("\n")[] | select(length > 0) | split("\t") | {path: (.[1:] | join("\t")), type: .[0]}]'
 }
 footprint_scopes_collide() { # scope, scope -> collision paths in EXPECTED_SCOPE_COLLISION_*
   local candidate="$1" owner="$2" original="${3:-$1}" result c o known
@@ -184,13 +187,16 @@ footprint_scopes_collide() { # scope, scope -> collision paths in EXPECTED_SCOPE
     expected_packages_collide "$candidate" "$owner"
     return $?
   fi
+  FOOTPRINT_FAILED_STEP=classify
   c="$(footprint_classify "$candidate")" || return 2
   o="$(footprint_classify "$owner")" || return 2
   known="$(footprint_classify "$original")" || return 2
-  result="$(jq -cn --argjson c "$c" --argjson o "$o" --argjson known "$known" '
+  FOOTPRINT_FAILED_STEP=compare
+  # By file: argv holds 128KiB per value, and one owner over that fails every comparison against it.
+  result="$(jq -cn --slurpfile c <(printf '%s' "$c") --slurpfile o <(printf '%s' "$o") --slurpfile known <(printf '%s' "$known") '
     def overlaps($a; $b): $a == $b or ($a | startswith($b + "/")) or ($b | startswith($a + "/"));
-    (any($known[]; .type == "file")) as $cf | (any($o[]; .type == "file")) as $of
-    | first($c[] as $a | $o[] as $b | select(overlaps($a.path; $b.path))
+    (any($known[0][]; .type == "file")) as $cf | (any($o[0][]; .type == "file")) as $of
+    | first($c[0][] as $a | $o[0][] as $b | select(overlaps($a.path; $b.path))
       | select(($a.type == "file" and $b.type == "file") or ($cf | not) or ($of | not)
         or ($a.path | test("(^|/)migrations/meta/_journal\\.json$")) or ($b.path | test("(^|/)migrations/meta/_journal\\.json$")))
       | [$a.path,$b.path]) // []')" || return 2
@@ -199,7 +205,7 @@ footprint_scopes_collide() { # scope, scope -> collision paths in EXPECTED_SCOPE
   [[ -n "$EXPECTED_SCOPE_COLLISION_CANDIDATE" ]]
 }
 active_footprint_conflict() (
-  scheduler_scope_lib open-pr-collision || exit 2
+  scheduler_scope_lib open-pr-collision || { say "footprint comparison failed candidate=$3 step=load-lib rc=2"; exit 2; }
   local candidate other owner scope original rc
   original="$(footprint_strip_shared_append "${4:-$1}")"
   candidate="$(footprint_strip_shared_append "$1")"
@@ -210,7 +216,8 @@ active_footprint_conflict() (
     if footprint_scopes_collide "$candidate" "$scope" "$original"; then
       printf '%s\n' "$owner"; return 0
     else
-      rc=$?; (( rc == 1 )) || return "$rc"
+      rc=$?
+      (( rc == 1 )) || { say "footprint comparison failed candidate=$3 owner=$owner step=${FOOTPRINT_FAILED_STEP:-unknown} rc=$rc"; return "$rc"; }
     fi
   done < <(jq -c '.[]' <<<"$2")
 )
