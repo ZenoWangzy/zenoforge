@@ -38,7 +38,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
   # 终局裁决的动词契约由引擎自带文件保证（不走 sched_config_file）：目标配置可以把六动作 prompt
   # 覆盖成没有 cap-triage 段的旧版，但盖不掉这里追加的四个动词，任何 arbiter profile 都拿到同一契约。
   cap_contract_file="${ZF_ENGINE_DIR:-$ROOT/engine}/prompts/supervisor-cap-triage.md"
-  local u id report log q pid w pid_file converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
+  local mark u id report log q pid w pid_file converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
   local -a launcher=() worker_command=()
   local over_stop=false arbiter_profile="$SUPERVISOR_ARBITER_PROFILE" arbiter_effort=""
   if codex_week_stopped && ! codex_credits_open arbiter; then over_stop=true; fi
@@ -49,7 +49,10 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     id="$(jqf -r .id <<<"$u")"
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
     if [[ "$(jqf -r '.parked_reason // empty' <<<"$u")" == supervisor-cap-exhausted ]]; then
-      [[ "$(supervisor_arbiter_mark "$u")" != "$(jqf -r '.cap_exhausted_mark // empty' <<<"$u")" ]] || continue
+      mark="$(supervisor_arbiter_mark "$u")"
+      [[ "$mark" != "$(jqf -r '.cap_exhausted_mark // empty' <<<"$u")" ]] || continue
+      # An issue state that could not be read is not a change.
+      [[ -z "$(jqf -r '.issue // empty' <<<"$u")" || -n "$(cut -d'|' -f2 <<<"$mark")" ]] || continue
       set_unit "$id" '.parked_reason="supervisor-arbitration-cap" | del(.supervisor_cap_retry, .cap_exhausted_mark, .unpark_condition)'
       u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
     fi
@@ -416,10 +419,10 @@ supervisor_cap_exhausted() { # id reason decision → terminal park with its unp
   local id="$1" reason="$2" decision="$3" u mark condition note
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
   mark="$(supervisor_arbiter_mark "$u")"
-  condition="a new PR head, issue state or supervisor ruling"
+  condition="a new issue state or supervisor ruling"
   note="capped again after its one retry: $reason; unpark on $condition"
-  cap_set_unit "$id" park "$note" "" "$(hist supervisor-cap-exhausted "$reason" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-exhausted\" | .unpark_condition=$(js "$condition") | .cap_exhausted_mark=$(js "$mark") | .note=$(js "$note")" \
-    && say "supervisor cap triage unit=$id: parked, retry spent"
+  cap_set_unit "$id" park "$note" "" "$(hist supervisor-cap-exhausted "$reason" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-exhausted\" | .unpark_condition=$(js "$condition") | .cap_exhausted_mark=$(js "$mark") | .note=$(js "$note")" || return 1
+  say "supervisor cap triage unit=$id: parked, retry spent"
   ( source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "cap-exhausted:$id:$mark" "cap-exhausted unit=$id: $note" ) \
     || say "supervisor cap triage unit=$id: cap-exhausted alert not delivered"
 }
@@ -443,7 +446,7 @@ supervisor_cap_founder() { # id reason evidence report-path → one owner questi
 }
 
 supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
-  local id="$1" rep="$2" verdict="$3" reason evidence decision issue pr state comment u cap_rules return_stage ruling retry
+  local id="$1" rep="$2" verdict="$3" reason evidence decision issue pr state comment u cap_rules return_stage ruling retry spent
   reason="$(supervisor_cap_field_line "$rep" REASON)"
   evidence="$(supervisor_cap_field_line "$rep" EVIDENCE)"
   decision="$(decision_entry "Supervisor cap triage: $verdict" "$reason" "$evidence" '[]' supervisor)"
@@ -475,14 +478,15 @@ supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
         supervisor_cap_second_rule "$id" "$reason" "$evidence" "$decision" "$retry"
         return 0
       fi
-      [[ "$retry" != pending ]] || set_unit "$id" '.supervisor_cap_retry="spent"'
+      spent=""
+      [[ "$retry" != pending ]] || spent='.supervisor_cap_retry="spent" | '
       return_stage="$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")"
       [[ -n "$return_stage" ]] || return_stage="$(supervisor_return_stage "$u")"
       ruling="Supervisor cap ruling: $reason Evidence: $evidence"
-      cap_set_unit "$id" RULE "$ruling" "$rep" "$(hist supervisor-cap-rule "$reason" "$decision") | $(hist supervisor-arbiter-round "cap triage ruling applied: $reason" "$decision") | .cto_rulings=($(cto_rulings_norm) + [$(js "$ruling")]) | .stage=$(js "$return_stage") | .supervisor_cap_return_stage=$(js "$return_stage") | del(.parked_reason,.note,.supervisor_cap_from_parked)" \
+      cap_set_unit "$id" RULE "$ruling" "$rep" "$spent$(hist supervisor-cap-rule "$reason" "$decision") | $(hist supervisor-arbiter-round "cap triage ruling applied: $reason" "$decision") | .cto_rulings=($(cto_rulings_norm) + [$(js "$ruling")]) | .stage=$(js "$return_stage") | .supervisor_cap_return_stage=$(js "$return_stage") | del(.parked_reason,.note,.supervisor_cap_from_parked)" \
         && say "supervisor cap triage unit=$id: RULE -> $return_stage" ;;
     FOUNDER)
-      if [[ "$retry" == spent ]]; then
+      if [[ -n "$retry" ]]; then
         supervisor_cap_exhausted "$id" "$reason" "$decision"
       else
         supervisor_cap_founder "$id" "$reason" "$evidence" "$rep"

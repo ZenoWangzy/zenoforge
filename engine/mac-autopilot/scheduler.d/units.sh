@@ -335,7 +335,7 @@ supervisor_arbiter_record_left() { # unit: only a decision that left it here hol
 
 # A question to the founder must name a fact only the owner has. Text that only
 # reports that the engine could not decide is an engine fault, not a question.
-SUPERVISOR_FOUNDER_GENERIC_RE='could not (be )?(decided?|resolved?)|cannot (be )?decided?|decide automatically|automatically decide|无法(自动)?裁决|多次升级'
+SUPERVISOR_FOUNDER_GENERIC_RE='could not (be )?(decided?|resolved?)|cannot (be )?decided?|decide automatically|automatically decide|无法(自动)?裁决'
 
 supervisor_founder_question_names_fact() { # question text
   [[ -n "${1//[[:space:]]/}" && "$1" == *[?？]* ]] || return 1
