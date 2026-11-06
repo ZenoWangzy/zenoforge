@@ -4522,6 +4522,39 @@ sched_case_hold_handoff_auto_registered_pr() {
 }
 sched_run_case hold_handoff_auto_registered_pr
 
+# A clone with work the remote can take: the work moves to a rescued/ ref and the handoff starts from it.
+sched_case_hold_handoff_rescued_clone() {
+  local clone origin old_sha
+  new_tick_fixture hold-handoff-rescued-clone
+  clone="$TF/clones/wt-issue-780"; origin="$TF/origin-780.git"
+  mkdir -p "$TF/agent-home/state" "$TF/clones"
+  command git init -q --bare "$origin"
+  command git init -q -b main "$clone"
+  command git -C "$clone" config user.name test
+  command git -C "$clone" config user.email test@example.invalid
+  command git -C "$clone" commit -q --allow-empty -m base
+  command git -C "$clone" remote add origin "$origin"
+  command git -C "$clone" push -q origin main
+  command git -C "$clone" fetch -q origin
+  command git -C "$clone" checkout -q -b agent/issue-780
+  command git -C "$clone" commit -q --allow-empty -m 'unpublished hand resolution'
+  old_sha="$(command git -C "$clone" rev-parse HEAD)"
+  touch "$TF/real-clone-git"
+  mkdir -p "$TF/bin"; printf '#!/usr/bin/env bash\nexit 0\n' > "$TF/bin/gitleaks"; chmod +x "$TF/bin/gitleaks"
+  command jq -n '{state:"ready-for-agent",scheduler_handoff:{episode:"hold-780"}}' > "$TF/agent-home/state/780.json"
+  command jq -n '{number:780,title:"resume held work",body:"finish",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+  command jq '.max_workers=1 | .implement_cap=0 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  command jq -n '{units:[{id:"issue-780",issue:780,branch:"agent/issue-780",lane:"pr",stage:"closed",history:[]}]}' > "$TF/supervisor/autopi/units.json"
+  PATH="$TF/bin:$PATH" tick
+  command jq -e --arg ref "rescued/agent-issue-780-$old_sha" --arg sha "$old_sha" '.units[0].stage=="implement-pending" and .units[0].hold_handoff_episode=="hold-780" and .units[0].handoff_start_ref==$ref and .units[0].handoff_start_sha==$sha' \
+    "$TF/supervisor/autopi/units.json" >/dev/null || { echo 'not ok - the handoff did not start from the rescue ref' >&2; exit 1; }
+  [[ "$(command git --git-dir="$origin" rev-parse "refs/heads/rescued/agent-issue-780-$old_sha")" == "$old_sha" ]] \
+    || { echo 'not ok - the rescue ref is not on the remote' >&2; exit 1; }
+  command jq -e --arg sha "$old_sha" '.scheduler_handoff.start_sha==$sha' "$TF/agent-home/state/780.json" >/dev/null \
+    || { echo 'not ok - the rescue ref was not recorded on the issue' >&2; exit 1; }
+}
+sched_run_case hold_handoff_rescued_clone
+
 sched_case_hold_handoff_preserved_clone() {
   local clone owner base_sha old_sha handoff_sha today i
   new_tick_fixture hold-handoff-preserved-clone

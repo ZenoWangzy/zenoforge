@@ -521,6 +521,14 @@ register_new_issues() {
       while IFS= read -r related_id; do
         prior_worktree="$WT_ROOT/wt-$related_id"
         if prior_reason="$(worktree_cleanup_block_reason "$prior_worktree")"; then
+          if [[ "$related_id" == "$existing_id" ]]; then
+            if rescue_handoff_clone "$n" "$prior_worktree"; then
+              say "handoff issue #$n: rescued $prior_worktree ($prior_reason)${RESCUE_START_REF:+ to $RESCUE_START_REF}"
+              [[ -z "$RESCUE_START_REF" ]] || handoff="$(jqf -c --arg ref "$RESCUE_START_REF" --arg sha "$RESCUE_START_SHA" '.start_ref = $ref | .start_sha = $sha' <<<"$handoff")"
+              continue
+            fi
+            prior_reason+="; not rescued: $RESCUE_REFUSED"
+          fi
           unsafe_clones=1
           related_hash="$(printf '%s' "$related_id" | sha256sum)"; related_hash="${related_hash%% *}"
           (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "handoff-preserved-clone:$n:$episode:$related_id" \
