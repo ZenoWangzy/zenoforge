@@ -665,25 +665,6 @@ def engine_follow_lag_hours(agent_home, now):
     return round(max(0.0, now.timestamp() - since) / 3600, 2)
 
 
-def closed_units_open_issues(runtime, agent_home, units):
-    """Issue ids intake's terminal skip hides: candidates whose units all ended, handoff consumed; None without a census."""
-    rows = read_json(os.path.join(runtime, "intake-candidates.json")).get("rows")
-    if rows is None:
-        return None
-    ended = ("merged", "landed", "closed", "done", "wontfix", "duplicate")
-    found = []
-    for row in rows.splitlines():
-        n = row.split("\t", 1)[0]
-        if not n.isdigit():
-            continue
-        own = [u for u in units if u.get("issue") == int(n) or u.get("branch") == f"agent/issue-{n}"]
-        state = read_json(os.path.join(agent_home, "state", f"{n}.json"))
-        episode = (state.get("scheduler_handoff") or {}).get("episode") if state.get("state") == "ready-for-agent" else None
-        if own and all(u.get("stage") in ended and (not episode or u.get("hold_handoff_episode") == episode) for u in own):
-            found.append(int(n))
-    return found
-
-
 def stale_worktrees(now, root=None):
     """Worktrees under ~/wt whose .git link (written once at `git worktree add`) is older than 2 h; None without ~/wt."""
     root = root or os.environ.get("ZF_WORKTREE_ROOT") or os.path.expanduser("~/wt")
@@ -1534,7 +1515,7 @@ def main():
     metrics["host.prereqs_missing"] = None if host_missing is None else len(host_missing)
     metrics["host.github_net_failures_per_hour"] = github_net_failures_per_hour(since, now)
     metrics["host.stale_worktrees"] = stale_worktrees(now)
-    closed_open = closed_units_open_issues(a, agent_home, units)
+    closed_open = ledger_history.closed_units_open_issues(a, agent_home, units)
     metrics["intake.closed_units_open_issues"] = None if closed_open is None else len(closed_open)
     metrics["engine.follow_lag_hours"] = engine_follow_lag_hours(agent_home, now)
     orders = work_orders(units, unit_spend(cost_rows), now)

@@ -347,7 +347,7 @@ closed_dir="$a/closed-open"; mkdir -p "$closed_dir/state"
 printf '%s\n' '{"rows":"501\tpr\tt\t[]\tx\n502\tpr\tt\t[]\tx\n503\tpr\tt\t[]\tx\n504\tpr\tt\t[]\tx"}' > "$closed_dir/intake-candidates.json"
 printf '%s\n' '{"state":"ready-for-agent","scheduler_handoff":{"episode":"e"}}' > "$closed_dir/state/502.json"
 python3 - "$script_dir" "$closed_dir" <<'CHECK' || fail 'closed units under open issues count wrong'
-import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
+import sys; sys.path.insert(0, sys.argv[1]); import ledger_history as n
 d = sys.argv[2]
 units = [{"issue": 501, "stage": "closed"}, {"issue": 502, "stage": "closed", "hold_handoff_episode": "old"},
          {"issue": 503, "stage": "closed"}, {"issue": 503, "stage": "implement"}]
