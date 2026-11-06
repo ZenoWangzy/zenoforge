@@ -46,17 +46,20 @@ def zf_mechanism_registry(overlay=None):
     overlay_path = Path(overlay) if overlay else zf_config_file(MECHANISM_REGISTRY)
     try:
         doc = json.loads(engine_path.read_text(encoding="utf-8")) if engine_path.is_file() else {"mechanisms": []}
-        if overlay_path is None or overlay_path == engine_path:
-            return doc if doc["mechanisms"] else None
         rows = {row["id"]: row for row in doc["mechanisms"]}
-        for row in json.loads(overlay_path.read_text(encoding="utf-8"))["mechanisms"]:
-            merged = {**rows.get(row["id"], {}), **row}
-            # A partial row whose id left the engine has nothing to merge over and would break the scorecard.
-            if all(merged.get(field) for field in MECHANISM_REQUIRED_FIELDS):
-                rows[row["id"]] = merged
     except (OSError, ValueError, KeyError, TypeError):
         return None
-    return {**doc, "mechanisms": list(rows.values())}
+    if overlay_path is not None and overlay_path != engine_path:
+        try:
+            for row in json.loads(overlay_path.read_text(encoding="utf-8"))["mechanisms"]:
+                merged = {**rows.get(row.get("id"), {}), **row}
+                # A partial row whose id left the engine has nothing to merge over and would break the scorecard.
+                if all(merged.get(field) for field in MECHANISM_REQUIRED_FIELDS):
+                    rows[merged["id"]] = merged
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            # Engine rows still report; no rows at all would read as no data and raise nothing.
+            print(f"mechanism registry overlay {overlay_path} ignored: {error!r}", file=sys.stderr)
+    return {**doc, "mechanisms": list(rows.values())} if rows else None
 
 
 def zf_host_ops_file(relative_path, fallback=None):

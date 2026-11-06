@@ -1,9 +1,14 @@
 sched_pack_file() { ( source "$HERE/../config.sh" && pack_file "$1" ); } # relative path -> the pack's copy; fails without a pack or file
 sched_config_file() { ( source "$HERE/../config.sh" && zf_config_file "$1" ); } # target config, then pack, then engine default
 sched_mechanism_registry() { # stdout: path of the engine registry with the target overlay merged over it
-  local overlay out="$A/mechanism-registry.merged.json"
+  local overlay out="$A/mechanism-registry.merged.json" tmp
   overlay="$(sched_config_file state/mechanism-registry.json)" || return 1
-  python3 -B "$HERE/config_paths.py" "$overlay" >"$out.tmp" && mv -f "$out.tmp" "$out" && printf '%s\n' "$out"
+  tmp="$(mktemp "$out.XXXXXX")" || return 1 # refill and slow ticks overlap here, before the scheduler lock
+  if python3 -B "$HERE/config_paths.py" "$overlay" >"$tmp"; then
+    mv -f "$tmp" "$out" && printf '%s\n' "$out"
+  else
+    rm -f "$tmp"; return 1
+  fi
 }
 say() { echo "[$STAMP] $*" >> "$LOG"; }
 # Refuse a unit advisor launch before Node sees a bad provider path. The bell

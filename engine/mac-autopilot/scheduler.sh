@@ -390,7 +390,7 @@ MAIN_SUITES_RUNS_LOADED=false
 # 派发时把验收块存进 unit 记录；direct-main 落地后不立即关票（stage=awaiting-live-event），
 # 观测到该机制晚于落地时间的事件行才关票（评论附证据行），超过该机制的沉默上限转 supervisor；
 # 关票前对比存档的验收块，worker 改过验收项就拒绝关票。
-MECH_REGISTRY_FILE="$(sched_mechanism_registry)" || MECH_REGISTRY_FILE=""
+MECH_REGISTRY_FILE="$(sched_mechanism_registry)" || { MECH_REGISTRY_FILE=""; say "mechanism registry unavailable: live-event acceptance cannot resolve a mechanism this tick"; }
 
 # 孤儿 PR 对账（2026-10-20：159 个 open PR 里 120 个不在台账，其中 100 个是 agent 做出来的）：
 # register_new_prs 只看最新 15 个，register_new_issues 又跳过已有 open PR 的 issue，于是老 PR 永远没人评审、

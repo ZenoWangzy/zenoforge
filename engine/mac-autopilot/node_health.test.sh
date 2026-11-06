@@ -858,6 +858,7 @@ overlay.write_text(json.dumps({"mechanisms": [
     {"id": "a", "expected_idle": True},
     {"id": "b", "events": row("b", "target-b")["events"]},
     {"id": "gone", "expected_idle": True},
+    {"expected_idle": True},
     row("target-only", "target-only"),
 ]}))
 doc = c.zf_mechanism_registry()
@@ -868,13 +869,24 @@ assert rows["b"]["events"][0]["pattern"] == "target-b" and rows["b"]["expected_i
 assert rows["c"]["events"][0]["pattern"] == "engine-c", rows["c"]
 cli = subprocess.run([sys.executable, c.__file__, str(overlay)], capture_output=True, text=True, check=True)
 assert json.loads(cli.stdout) == doc, cli.stdout
-overlay.write_text("not json")
-assert c.zf_mechanism_registry() is None
-assert subprocess.run([sys.executable, c.__file__, str(overlay)], capture_output=True).returncode == 1
+engine_only = [row("a", "engine-a"), row("b", "engine-b"), row("c", "engine-c")]
+overlay.write_text("not json")  # A broken overlay must leave the engine rows reporting, not an empty scorecard.
+assert c.zf_mechanism_registry()["mechanisms"] == engine_only
+cli = subprocess.run([sys.executable, c.__file__, str(overlay)], capture_output=True, text=True, check=True)
+assert json.loads(cli.stdout)["mechanisms"] == engine_only and "ignored" in cli.stderr, cli
 overlay.unlink()
-assert c.zf_mechanism_registry()["mechanisms"] == [row("a", "engine-a"), row("b", "engine-b"), row("c", "engine-c")]
+assert c.zf_mechanism_registry()["mechanisms"] == engine_only
 print("node_health mechanism registry overlay merges by id: PASS")
 CHECK
+overlay_runtime="$overlay_root/runtime"; mkdir -p "$overlay_runtime"
+printf '{"mechanisms":[{"id":"a","expected_idle":true}]}' > "$overlay_root/target/state/mechanism-registry.json"
+merged_file="$(ZF_ENGINE_DIR="$overlay_root/engine" ZF_CONFIG_ROOT="$overlay_root/target" HERE="$script_dir" A="$overlay_runtime" \
+  bash -c 'source "$HERE/scheduler.d/core.sh"; sched_mechanism_registry')" || fail 'sched_mechanism_registry failed'
+[[ "$merged_file" == "$overlay_runtime/mechanism-registry.merged.json" ]] || fail "merged registry path: $merged_file"
+[[ "$(jq -c '[.mechanisms[] | [.id, .expected_idle]]' "$merged_file")" == '[["a",true],["b",false],["c",false]]' ]] \
+  || fail "bash readers did not get the merged registry: $(cat "$merged_file")"
+[[ "$(find "$overlay_runtime" -type f | wc -l)" == 1 ]] || fail 'sched_mechanism_registry left a temp file behind'
+echo "node_health scheduler merged registry path: PASS"
 msup="$test_env_root/mech-sup"; ma="$msup/autopi"; mkdir -p "$ma/alerts" "$AGENT_HOME/logs"
 printf '{"units":[]}' > "$ma/units.json"
 {
