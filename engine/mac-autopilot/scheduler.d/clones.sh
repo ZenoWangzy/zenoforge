@@ -149,6 +149,8 @@ ensure_clone_impl() { # id [branch] [require_remote] [branch-head-sha] [base-bra
     elif git -C "$dir" rev-parse -q --verify "refs/heads/$branch" >/dev/null; then
       # 从未 push 的本地分支（无 PR 的直落单元）：保留它的本地提交，不重置回 main。
       git -C "$dir" checkout -q "$branch" || return 1
+      # With no commits of its own it is only old main: a resumed unit once started 375 commits behind. Own commits refuse the ff.
+      [[ -n "$base_branch" ]] || git -C "$dir" merge -q --ff-only refs/remotes/origin/main >/dev/null 2>&1 || :
     elif [[ -n "$base_branch" ]]; then
       git -C "$dir" checkout -q -B "$branch" "$base_ref" || return 1
     else
