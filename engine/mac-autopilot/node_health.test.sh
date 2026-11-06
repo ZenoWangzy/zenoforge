@@ -344,13 +344,14 @@ sys.exit(0 if got == (2, None, (10, 40)) else print(got) or 1)
 CHECK
 # intake 的 terminal 跳过藏起来的票：单元全部结束且 episode 已消费才算；episode 未消费的还在走交接
 closed_dir="$a/closed-open"; mkdir -p "$closed_dir/state"
-printf '%s\n' '{"rows":"501\tpr\tt\t[]\tx\n502\tpr\tt\t[]\tx\n503\tpr\tt\t[]\tx\n504\tpr\tt\t[]\tx"}' > "$closed_dir/intake-candidates.json"
+printf '%s\n' '{"rows":"501\tpr\tt\t[]\tx\n502\tpr\tt\t[]\tx\n503\tpr\tt\t[]\tx\n504\tpr\tt\t[]\tx\n505\tpr\tt\t[]\tx"}' > "$closed_dir/intake-candidates.json"
 printf '%s\n' '{"state":"ready-for-agent","scheduler_handoff":{"episode":"e"}}' > "$closed_dir/state/502.json"
+printf '%s\n' '{"state":"awaiting-release"}' > "$closed_dir/state/505.json" # merged after the census: not hidden
 python3 - "$script_dir" "$closed_dir" <<'CHECK' || fail 'closed units under open issues count wrong'
 import sys; sys.path.insert(0, sys.argv[1]); import ledger_history as n
 d = sys.argv[2]
 units = [{"issue": 501, "stage": "closed"}, {"issue": 502, "stage": "closed", "hold_handoff_episode": "old"},
-         {"issue": 503, "stage": "closed"}, {"issue": 503, "stage": "implement"}]
+         {"issue": 503, "stage": "closed"}, {"issue": 503, "stage": "implement"}, {"issue": 505, "stage": "merged"}]
 got = (n.closed_units_open_issues(d, d, units), n.closed_units_open_issues(d + "/missing", d, units))
 sys.exit(0 if got == ([501], None) else print(got) or 1)
 CHECK

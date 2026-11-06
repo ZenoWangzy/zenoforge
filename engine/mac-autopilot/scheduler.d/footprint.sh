@@ -500,8 +500,11 @@ _footprint_room() {
   footprint_shadow_old_rule "$id" "$active"
 }
 footprint_room() { # unit type; report checks that materially delay dispatch
-  local started=$SECONDS rc=0 elapsed
+  local started=$SECONDS rc=0 elapsed room_start="${EPOCHREALTIME:-0}" room_end
   _footprint_room "$@" || rc=$?
+  room_end="${EPOCHREALTIME:-0}"
+  TICK_FOOTPRINT_ROOM_USEC=$((${TICK_FOOTPRINT_ROOM_USEC:-0} + 10#${room_end/./} - 10#${room_start/./}))
+  TICK_FOOTPRINT_ROOM_CALLS=$((${TICK_FOOTPRINT_ROOM_CALLS:-0} + 1)); (( rc == 0 )) || TICK_FOOTPRINT_ROOM_WAITS=$((${TICK_FOOTPRINT_ROOM_WAITS:-0} + 1))
   # 放行后清掉等待记录；只在字段真有值时写 units.json
   if (( rc == 0 )) && [[ -n "$(jqf -r '.footprint_wait_owner // empty' <<<"${2:-null}")" ]]; then
     set_unit "$1" 'del(.footprint_wait_owner,.footprint_wait_since)'
