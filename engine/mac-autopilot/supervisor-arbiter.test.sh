@@ -521,7 +521,7 @@ stop_loss_hold 690
 supervisor_apply_cap_verdict pr-690 "$report" RULE
 [[ "$(refills pr-690)" == 1 && -n "$(budget_of pr-690)" ]] || fail "a second cap RULE must not refill the budget: $(budget_of pr-690)"
 # A RULE that never ran a round did not spend the retry, once: 2295's shape, retry spent, stopped in the tick of its RULE.
-unrun_unit() { units "$(jq -cn --arg id "$1" --argjson n "$2" "{units:[{id:\$id,issue:\$n,pr:\$n,lane:\"pr\",branch:\"agent/issue-\(\$n)\",stage:\"supervisor-review\",supervisor_cap_return_stage:\"repair-pending\",supervisor_cap_retry:\"spent\",history:[$old_write,{stage:\"supervisor-cap-rule\"},{stage:\"supervisor-cap-rule\"},{stage:\"supervisor-arbiter-round\"},{stage:\"supervisor-escalated\"}]}]}")"; stop_loss_hold "$2"; }
+unrun_unit() { units "$(jq -cn --arg id "$1" --argjson n "$2" "{units:[{id:\$id,issue:\$n,pr:\$n,lane:\"pr\",branch:\"agent/issue-\(\$n)\",stage:\"supervisor-review\",supervisor_cap_return_stage:\"repair-pending\",supervisor_cap_retry:\"spent\",history:[$old_write,{stage:\"supervisor-cap-rule\"},{stage:\"supervisor-cap-rule\"},{stage:\"supervisor-arbiter-round\"},{stage:\"supervisor-escalated\",result:\"stop-loss: wall 1688min of 240min\"}]}]}")"; stop_loss_hold "$2"; }
 unrun_unit pr-689 689
 supervisor_apply_cap_verdict pr-689 "$report" RULE
 [[ "$(field pr-689 .stage)" == repair-pending && "$(refills pr-689)" == 1 && -z "$(budget_of pr-689)" ]] || fail "a RULE stopped before its round must get its refill: $(jq -c '.units[0]' "$UNITS")"
@@ -529,7 +529,7 @@ set_unit pr-689 '.stage="supervisor-review"'
 supervisor_apply_cap_verdict pr-689 "$report" RULE
 [[ "$(field pr-689 .parked_reason)" == supervisor-cap-exhausted ]] || fail "the refill is one per unit: a later RULE with its retry spent must park: $(jq -c '.units[0]' "$UNITS")"
 # A RULE that returned to review did run, whatever the rows after it: 5464 went supervisor-escalated then review-approve, 4330 was requeued.
-for rows in '[{"stage":"supervisor-arbiter-round"}]' '[{"stage":"supervisor-escalated"},{"stage":"review-approve"}]' '[{"stage":"supervisor-escalated"},{"stage":"supervisor-requeue"}]'; do
+for rows in '[{"stage":"supervisor-arbiter-round"}]' '[{"stage":"supervisor-escalated","result":"stop-loss: wall"},{"stage":"review-approve"}]' '[{"stage":"supervisor-escalated","result":"stop-loss: wall"},{"stage":"supervisor-requeue"}]' '[{"stage":"supervisor-escalated","result":"missing report"}]'; do
   supervisor_cap_rule_unrun "$(jq -cn --argjson rows "$rows" '{history:([{stage:"supervisor-cap-rule"}] + $rows)}')" && fail "this RULE ran: $rows"
 done
 unrun_unit pr-684 684
