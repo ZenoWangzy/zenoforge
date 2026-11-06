@@ -2349,7 +2349,7 @@ reap_one() {
   load_live_state || { say "reap refused; live-owner ledger unreadable"; return 1; }
   printf 'phase=worktree-reap:origin-fetch\n'
   refresh_origin || return 1
-  REAP_REMOTE_HEADS="$(timeout -k "$LIFECYCLE_GIT_KILL_AFTER_SECONDS" "$LIFECYCLE_GIT_TIMEOUT_SECONDS" git -C "$REPO" ls-remote --heads origin 2>/dev/null)" || REAP_REMOTE_HEADS=""
+  REAP_REMOTE_HEADS="$(timeout -k 10 "$LIFECYCLE_GIT_TIMEOUT_SECONDS" git -C "$REPO" ls-remote --heads origin 2>/dev/null)" || REAP_REMOTE_HEADS=""
   printf 'phase=worktree-reap:pr-list-query\n'
   load_pr_rows || { say "reap refused; GitHub PR state unreadable"; return 1; }
   if shared_stash_rows="$(timeout -k "$LIFECYCLE_GIT_KILL_AFTER_SECONDS" "$LIFECYCLE_GIT_TIMEOUT_SECONDS" \
