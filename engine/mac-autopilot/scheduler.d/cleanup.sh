@@ -95,7 +95,7 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
   [[ -z "$other" ]] || { RESCUE_REFUSED="unpushed commits on another branch"; return 1; }
   # What the private index below cannot see: conflicted entries, flagged files, and a staged version later edited in the worktree.
   [[ -z "$(git -C "$wt" ls-files -u)" ]] || { RESCUE_REFUSED="unmerged index"; return 1; }
-  ! git -C "$wt" ls-files -v | grep -q '^[a-zS]' || { RESCUE_REFUSED="assume-unchanged or skip-worktree files"; return 1; }
+  [[ -z "$(git -C "$wt" ls-files -v | grep '^[a-zS]')" ]] || { RESCUE_REFUSED="assume-unchanged or skip-worktree files"; return 1; }
   [[ -z "$(comm -12 <(git -C "$wt" diff --cached --name-only | sort) <(git -C "$wt" diff --name-only | sort))" ]] || { RESCUE_REFUSED="staged content differs from the worktree"; return 1; }
   commit="$head"
   if [[ -n "$status" ]]; then
@@ -120,7 +120,7 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
   # Everything about to leave, stashes and unpushed commits too, not only the uncommitted files.
   objects="$(git -C "$wt" rev-list --objects "$commit" ${stashes[@]+"${stashes[@]}"} --not --remotes 2>/dev/null)" || { RESCUE_REFUSED="could not list outgoing objects"; return 1; }
   sizes="$(awk '{print $1}' <<<"$objects" | git -C "$wt" cat-file --batch-check='%(objecttype) %(objectsize)' 2>/dev/null)" || { RESCUE_REFUSED="could not size outgoing objects"; return 1; }
-  ! awk -v max="$((HANDOFF_RESCUE_MAX_FILE_KB * 1024))" '$1 == "blob" && $2 > max {found = 1} END {exit !found}' <<<"$sizes" || { RESCUE_REFUSED="file over ${HANDOFF_RESCUE_MAX_FILE_KB}KB"; return 1; }
+  [[ "$(awk -v max="$((HANDOFF_RESCUE_MAX_FILE_KB * 1024))" '$1 == "blob" && $2 > max {found = 1} END {print found + 0}' <<<"$sizes")" == 0 ]] || { RESCUE_REFUSED="file over ${HANDOFF_RESCUE_MAX_FILE_KB}KB"; return 1; }
   rescue_secret_scan "$wt" "$commit" ${stashes[@]+"${stashes[@]}"} || scan=$?
   if (( scan == 3 )); then printf '%s\n' "$key" > "$marker"; RESCUE_REFUSED="secret scan found a leak"; return 1; fi
   (( scan == 0 )) || { RESCUE_REFUSED="secret scan could not run"; return 1; }
