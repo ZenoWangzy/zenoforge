@@ -157,7 +157,8 @@ pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with 
   model_policy_model_allowed_for_role "$model" hand-zcode || return 1
   command -v zcode >/dev/null 2>&1 || return 1
   zcode_provider_config_model_matches "zcode:$model:$effort" || return 1
-  status="$(zcode_quota_status)"
+  status="$(ZCODE_PACE_INFLIGHT="$(jqf -r '[.workers[] | select(.harvested != true and ((.model // "") | test("GLM")))] | length' "$WORKERS")" zcode_quota_status)"
+  [[ "$status" != paced ]] || say "glm pace hold: start waits for the 5h window to catch up"
   [[ "$status" == available ]] || return 1
   cooling zcode && return 1
   PICK_PROVIDER=zcode; PICK_MODEL="$model"; PICK_EFFORT="$effort"; PICK_HARD=false; PICK_SERVICE_TIER="$tier"

@@ -405,7 +405,7 @@ snapshot_week_at() { # stop percent, quota snapshot
 }
 
 
-zcode_quota_status() { # fresh snapshot and active marker -> available|exhausted|unknown
+zcode_quota_status() { # fresh snapshot and active marker -> available|paced|exhausted|unknown
   local file="${ZCODE_QUOTA_SNAPSHOT_FILE:-${HOME:-}/.zenoforge/zc-quota.json}"
   local max_age="${ZCODE_QUOTA_MAX_AGE_SECONDS:-${ZC_QUOTA_MAX_AGE_SECONDS:-}}" now read_at freshness
   [[ -r "$file" ]] || { printf 'unknown\n'; return 0; }
@@ -422,10 +422,17 @@ zcode_quota_status() { # fresh snapshot and active marker -> available|exhausted
     printf 'exhausted\n'
     return 0
   fi
-  command jq -er '
+  # paced: under the cap but ahead of an even spend. Allowed = min(cap, cap x elapsed/5h + slack); a window not started is elapsed 0.
+  # The meter lags a run by minutes, so each GLM run in flight counts at ZC_PACE_RUN_PCT (measured 7 to 30 points a run).
+  command jq -er --argjson now "$now" --argjson inflight "${ZCODE_PACE_INFLIGHT:-0}" \
+    --argjson slack "${ZC_PACE_SLACK_PCT:-20}" --argjson run_pct "${ZC_PACE_RUN_PCT:-15}" '
     if ((.five_h_pct | type) != "number" or (.week_pct | type) != "number") then "unknown"
     elif .five_h_pct >= (.cap_5h // 85) or .week_pct >= (.cap_week // 100) then "exhausted"
-    else "available" end
+    else
+      (.cap_5h // 85) as $cap
+      | ((.five_h_reset // 0) as $reset | if ($reset | type) == "number" and $reset > $now then ([18000 - ($reset - $now), 0] | max) else 0 end) as $elapsed
+      | if .five_h_pct + $inflight * $run_pct >= ([$cap, $cap * $elapsed / 18000 + $slack] | min) then "paced" else "available" end
+    end
   ' "$file" 2>/dev/null || printf 'unknown\n'
 }
 
