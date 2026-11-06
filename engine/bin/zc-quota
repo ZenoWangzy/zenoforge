@@ -16,6 +16,9 @@ const RESET_GAP_SECONDS = Number(process.env.ZC_WEEK_RESET_GAP_SECONDS || 21600)
 const ALERT_FILE = process.env.ZC_ALERT_FILE;                     // each spent reset is appended here
 const RESET_WEEK_AT = Number(process.env.ZC_WEEK_RESET_AT || 98); // spend a weekly reset at this weekly percentage
 const PAGE = 'https://bigmodel.cn/coding-plan/personal/usage';
+const CDP = process.env.QUOTA_CDP_URL || 'http://127.0.0.1:9222';
+const CALL_TIMEOUT_MS = Number(process.env.QUOTA_CDP_CALL_TIMEOUT_MS || 30000);
+const TAB_BOOK = `${STATE}.tab`;                                  // target id of the tab this script opened
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -30,21 +33,34 @@ function markSnapshotUnknown() {
 }
 
 let pages;
-try { pages = await (await fetch('http://127.0.0.1:9222/json/list')).json(); }
+try { pages = await (await fetch(`${CDP}/json/list`)).json(); }
 catch (e) {
   markSnapshotUnknown();
   log('zc-quota failed:', e.message);
   process.exit(3);
 }
-const page = pages.find(p => p.type === 'page' && p.url.startsWith(PAGE));
+// The booked id also matches a tab the site redirected: a URL match alone lost it and left no usage tab (11-06 08:48Z).
+// A booked tab that left the site belongs to someone else now, so it is never navigated back.
+const bookedTab = (() => { try { return fs.readFileSync(TAB_BOOK, 'utf8').trim(); } catch { return ''; } })();
+let page = pages.find(p => p.type === 'page' && (p.url.startsWith(PAGE) || (p.id === bookedTab && new URL(p.url).hostname === new URL(PAGE).hostname)));
 if (!page) {
-  markSnapshotUnknown();
-  log('usage tab not open in the shared Chrome; nothing read');
-  process.exit(3);
+  try { page = await (await fetch(`${CDP}/json/new?${PAGE}`, { method: 'PUT' })).json(); }
+  catch (e) {
+    markSnapshotUnknown();
+    log('zc-quota failed: could not open the usage tab:', e.message);
+    process.exit(3);
+  }
+  log('opened usage tab in the shared Chrome');
 }
+if (page.id !== bookedTab) fs.writeFileSync(TAB_BOOK, `${page.id}\n`);
 const ws = new WebSocket(page.webSocketDebuggerUrl);
 let id = 0; const waits = new Map(); let hits = [];
-const call = (method, params = {}) => new Promise(r => { const i = ++id; waits.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+// A renderer that stopped answering held one run open 5h and froze the snapshot.
+const call = (method, params = {}) => new Promise((r, reject) => {
+  const i = ++id, t = setTimeout(() => reject(new Error(`CDP ${method} no reply in ${CALL_TIMEOUT_MS}ms`)), CALL_TIMEOUT_MS);
+  waits.set(i, m => { clearTimeout(t); r(m); });
+  ws.send(JSON.stringify({ id: i, method, params }));
+});
 ws.onmessage = e => {
   const m = JSON.parse(e.data);
   if (m.id) return waits.get(m.id)?.(m);
@@ -57,7 +73,8 @@ const body = async h => (await call('Network.getResponseBody', { requestId: h.re
 
 async function readQuota() {
   hits = [];
-  await call('Page.reload');
+  // navigate, not reload: reload kept the chrome-error page after a network timeout
+  await call('Page.navigate', { url: PAGE });
   // 40 s: at load5 ~20 the page's quota call took longer than 15 s (10-30 15:22Z).
   for (let i = 0; i < 80 && !hits.some(h => h.done && /quota\/limit/.test(h.url)); i++) await sleep(500);
   const h = hits.find(x => x.done && /quota\/limit/.test(x.url));
@@ -97,7 +114,11 @@ async function spendWeeklyReset() {
 
 try {
   await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
-  await call('Network.enable');
+  await call('Network.enable').catch(async e => {
+    await fetch(`${CDP}/json/close/${page.id}`);  // the next run opens a new tab
+    log('closed the unresponsive usage tab');
+    throw e;
+  });
   let q = await readQuota();
   const prev = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return {}; } })();
   q.reset_at = prev.reset_at || 0;
@@ -116,7 +137,8 @@ try {
     log(`after reset: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
     if (/^clicked/.test(result || '')) {
       q.week_resets_spent += 1;
-      if (ALERT_FILE) fs.appendFileSync(ALERT_FILE, `[${new Date().toISOString()}] ZCODE-WEEK-RESET spent=${q.week_resets_spent} ${result}; weekly now ${q.week_pct}%\n`);
+      const left = Number(result.match(/remaining before (\d+)/)?.[1]) - 1;
+      if (ALERT_FILE) fs.appendFileSync(ALERT_FILE, `[${new Date().toISOString()}] ZCODE-WEEK-RESET spent=${q.week_resets_spent} left=${left} ${result}; weekly now ${q.week_pct}%\n`);
     }
   }
   const now = Math.floor(Date.now() / 1000);
@@ -136,4 +158,7 @@ try {
 } catch (e) {
   markSnapshotUnknown();
   log('zc-quota failed:', e.message); process.exitCode = 1;
-} finally { ws.close(); }
+} finally {
+  ws.close();
+  setTimeout(() => process.exit(), 1000);  // a hung peer never finishes the close handshake
+}
