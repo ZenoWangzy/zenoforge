@@ -97,6 +97,8 @@ reset; closed_state CLOSED; printf '{"units":[%s,%s]}\n' "$(jq -c '.stage="wontf
 [[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'a wontfix predecessor is settled: the sweep can never prove it, so it must release'
 reset; closed_state CLOSED; printf '{"units":[%s,%s,%s]}\n' "$dead" "$(jq -c '.stage="done" | .id="pr-10"' <<<"$dead")" "$(marked 20)" > "$UNITS"; release_dependency_blocks
 [[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'one settled row among closed rows must release: the sweep needs all rows closed'
+reset; closed_state CLOSED; printf '{"units":[%s,%s,%s]}\n' "$dead" "$(jq -c '.stage="parked" | .id="pr-10"' <<<"$dead")" "$(marked 20)" > "$UNITS"; release_dependency_blocks
+[[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'a parked row beside a closed one must release: nothing moves it and the sweep needs all rows closed'
 reset; closed_state MERGED; release_dependency_blocks
 [[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'a merged predecessor must release a marked unit'
 reset; closed_state CLOSED; printf '{"units":[%s]}\n' "$(marked 20)" > "$UNITS"; release_dependency_blocks

@@ -96,8 +96,8 @@ dep_marker_open() { # unit-json → the marked predecessor while it is undeliver
   [[ "$state" != CLOSED ]] || dep_has_unit "$dep" || return 1
   printf '%s' "$dep"
 }
-dep_has_unit() { # issue → 0 when the ledger has rows and none is settled: with no delivery, a closed state there is work given up or a stale read, not work done. A wontfix, duplicate or done row is a settled close, and the sweep could never prove it.
-  jqf -e --argjson d "$1" '[.units[] | select(.issue == $d)] | length > 0 and all(.[]; .stage | IN("wontfix", "duplicate", "done") | not)' <(units_history_doc) >/dev/null
+dep_has_unit() { # issue → 0 when the ledger has rows and none is settled: with no delivery, a closed state there is work given up or a stale read, not work done. A wontfix, duplicate, done or parked row will not move on its own, and the sweep could never prove it.
+  jqf -e --argjson d "$1" '[.units[] | select(.issue == $d)] | length > 0 and all(.[]; .stage | IN("wontfix", "duplicate", "done", "parked") | not)' <(units_history_doc) >/dev/null
 }
 park_if_body_blocked() { # unit-json → 0 当按正文前置停住（不派发）
   local id dep
