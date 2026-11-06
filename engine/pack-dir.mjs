@@ -110,11 +110,13 @@ export function zfHostOpsFile(relativePath, fallback = join(
 )) {
   const agentHome = process.env.AGENT_HOME || process.env.ZF_HOME || join(homedir(), '.zenoforge');
   const builtAlias = relativePath.startsWith('engine/');
+  const compareBuilt = builtAlias || relativePath.startsWith('scripts/agent/');
   const hostOpsPath = builtAlias ? join('scripts', 'agent', relativePath.slice('engine/'.length)) : relativePath;
   const candidate = join(process.env.ZF_HOST_OPS_DIR || join(agentHome, 'host-ops'), hostOpsPath);
   try {
     if (statSync(candidate).isFile()) {
-      if (!builtAlias) return candidate;
+      // A copy that differs from the built file is stale: returning it would hide a landed fix.
+      if (!compareBuilt) return candidate;
       let fallbackExists = false;
       try { fallbackExists = statSync(fallback).isFile(); } catch { /* a missing fallback uses the host-ops copy */ }
       if (!fallbackExists || readFileSync(candidate).equals(readFileSync(fallback))) return candidate;

@@ -37,6 +37,7 @@ def zf_host_ops_file(relative_path, fallback=None):
     agent_home = Path(os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or Path.home() / ".zenoforge")
     host_ops = Path(os.environ.get("ZF_HOST_OPS_DIR") or agent_home / "host-ops")
     built_alias = relative_path.startswith("engine/")
+    compare_built = built_alias or relative_path.startswith("scripts/agent/")
     host_ops_relative = f"scripts/agent/{relative_path.removeprefix('engine/')}" if built_alias else relative_path
     candidate = host_ops / host_ops_relative
     if fallback is not None:
@@ -46,6 +47,7 @@ def zf_host_ops_file(relative_path, fallback=None):
     else:
         fallback_path = engine_dir / relative_path.removeprefix("scripts/agent/")
     if candidate.is_file():
-        if not built_alias or not fallback_path.is_file() or candidate.read_bytes() == fallback_path.read_bytes():
+        # A copy that differs from the built file is stale: returning it would hide a landed fix.
+        if not compare_built or not fallback_path.is_file() or candidate.read_bytes() == fallback_path.read_bytes():
             return candidate
     return fallback_path

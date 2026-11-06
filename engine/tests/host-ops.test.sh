@@ -45,10 +45,16 @@ case "$1" in
 esac
 check() { [[ "$1" == "$2" ]] || { printf 'expected %s, got %s\n' "$2" "$1" >&2; exit 1; }; }
 if [[ "$1" == shell ]]; then check "$(zf_host_ops_dir)" "$scratch/custom"; fi
-check "$(resolve)" "$scratch/custom/scripts/agent/tool"
+# A stale host-ops copy loses to the built copy, or a landed fix would not run.
+check "$(resolve)" "$ZF_ENGINE_DIR/tool"
 check "$(resolve_built_alias)" "$ZF_ENGINE_DIR/tool"
 printf engine > "$scratch/custom/scripts/agent/tool"
+check "$(resolve)" "$scratch/custom/scripts/agent/tool"
 check "$(resolve_built_alias)" "$scratch/custom/scripts/agent/tool"
+mv "$ZF_ENGINE_DIR/tool" "$scratch/built-tool"
+printf host-only > "$scratch/custom/scripts/agent/tool"
+check "$(resolve)" "$scratch/custom/scripts/agent/tool"
+mv "$scratch/built-tool" "$ZF_ENGINE_DIR/tool"
 printf moved > "$scratch/custom/scripts/agent/moved-tool"
 ALIAS_TOOL=moved-tool check "$(ALIAS_TOOL=moved-tool resolve_built_alias)" "$scratch/custom/scripts/agent/moved-tool"
 printf engine > "$ZF_ENGINE_DIR/tool"
@@ -57,6 +63,8 @@ if [[ "$1" == shell ]]; then check "$(zf_host_ops_dir)" "$scratch/missing"; fi
 check "$(resolve)" "$ZF_ENGINE_DIR/tool"
 unset ZF_HOST_OPS_DIR
 if [[ "$1" == shell ]]; then check "$(zf_host_ops_dir)" "$AGENT_HOME/host-ops"; fi
+check "$(resolve)" "$ZF_ENGINE_DIR/tool"
+printf engine > "$AGENT_HOME/host-ops/scripts/agent/tool"
 check "$(resolve)" "$AGENT_HOME/host-ops/scripts/agent/tool"
 export TOOL_OVERRIDE="$scratch/override"
 check "$(resolve)" "$scratch/override"

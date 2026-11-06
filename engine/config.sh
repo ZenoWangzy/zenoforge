@@ -336,7 +336,7 @@ zf_migration_gate_file() {
 
 # Resolve host-owned files, preserving the caller's existing fallback path.
 zf_host_ops_file() {
-  local relative_path="$1" fallback="${2:-}" host_ops_dir host_ops_path="$1" built_alias=0
+  local relative_path="$1" fallback="${2:-}" host_ops_dir host_ops_path="$1" compare_built=0
   if [[ -z "$fallback" ]]; then
     case "$relative_path" in
       engine/*) fallback="$ZF_ENGINE_DIR/${relative_path#engine/}" ;;
@@ -346,12 +346,15 @@ zf_host_ops_file() {
   fi
   if [[ "$relative_path" == engine/* ]]; then
     host_ops_path="scripts/agent/${relative_path#engine/}"
-    built_alias=1
+    compare_built=1
+  elif [[ "$relative_path" == scripts/agent/* ]]; then
+    compare_built=1
   fi
   host_ops_dir="$(zf_host_ops_dir)" || return
   local candidate="$host_ops_dir/$host_ops_path"
   if [[ -f "$candidate" ]]; then
-    if (( ! built_alias )) || [[ ! -f "$fallback" ]] || cmp -s -- "$candidate" "$fallback"; then
+    # A copy that differs from the built file is stale: returning it would hide a landed fix.
+    if (( ! compare_built )) || [[ ! -f "$fallback" ]] || cmp -s -- "$candidate" "$fallback"; then
       printf '%s\n' "$candidate"
       return
     fi
