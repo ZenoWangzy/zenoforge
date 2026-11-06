@@ -388,23 +388,24 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
     fi
   done
   [[ "$issue" =~ ^[0-9]+$ ]] || { supervisor_budget_park "$id" "$evidence" "$decision" "$park_reason" "$park_stage"; return 0; }
+  if [[ -n "$pr" && "$allow_pr_close" != true ]]; then
+    supervisor_budget_park "$id" "$evidence (unit already has PR #$pr)" "$decision" "$park_reason" "$park_stage"; return 0
+  fi
+  # Route first: a refused route must leave the PR open, or the slice has no owner (#1167 and #4840 lost theirs this way).
+  if ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
+    supervisor_budget_park "$id" "$evidence (recut route failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
+  fi
   if [[ -n "$pr" ]]; then
-    if [[ "$allow_pr_close" != true ]]; then
-      supervisor_budget_park "$id" "$evidence (unit already has PR #$pr)" "$decision" "$park_reason" "$park_stage"; return 0
-    fi
     pr_comment="Cap triage is sending issue #$issue to recut: $evidence"
     tick_prs_changed
     pr_state="$(tick_pr_state "$pr" 2>/dev/null || true)"
     if [[ "$pr_state" == CLOSED || "$pr_state" == MERGED ]]; then
       if ! gh pr comment "$pr" --body "$pr_comment" >/dev/null 2>&1; then
-        supervisor_budget_park "$id" "$evidence (could not comment on PR #$pr before recut)" "$decision" "$park_reason" "$park_stage"; return 0
+        supervisor_budget_park "$id" "$evidence (could not comment on PR #$pr after recut route)" "$decision" "$park_reason" "$park_stage"; return 0
       fi
     elif ! gh pr close "$pr" --comment "$pr_comment" >/dev/null 2>&1; then
-      supervisor_budget_park "$id" "$evidence (could not close PR #$pr before recut)" "$decision" "$park_reason" "$park_stage"; return 0
+      supervisor_budget_park "$id" "$evidence (could not close PR #$pr after recut route)" "$decision" "$park_reason" "$park_stage"; return 0
     fi
-  fi
-  if ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
-    supervisor_budget_park "$id" "$evidence (recut route failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
   fi
   if [[ -n "$pr" ]]; then
     note="$(js "$recut_reason; PR #$pr closed and issue #$issue sent to recut: $evidence")"

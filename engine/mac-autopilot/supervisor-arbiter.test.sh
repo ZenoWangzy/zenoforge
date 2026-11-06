@@ -571,4 +571,20 @@ SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_CAP_TRIAGE=false di
 jq -e '.units[0] | .parked_reason=="supervisor-arbitration-cap" and (has("supervisor_cap_retry") | not) and (has("unpark_condition") | not)' "$UNITS" >/dev/null \
   || fail "a changed head must unpark a terminal park and reset its retry: $(jq -c '.units[0]' "$UNITS")"
 
+# Route first: a refused recut route must leave the PR open, or the slice is left with no owner.
+route_calls="$fixture/route-calls"; : > "$route_calls"
+scheduler_route_to_recut() { printf 'route ' >> "$route_calls"; [[ "$ROUTE_RC" == 0 ]] || { echo 'refused tracker parent' >&2; return 1; }; }
+tick_prs_changed() { :; }
+tick_pr_state() { printf 'OPEN\n'; }
+gh() { [[ "$1 $2" != 'pr close' ]] || printf 'close ' >> "$route_calls"; return 0; }
+rm -rf "$WT_ROOT/wt-pr-651"
+printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",history:[]}]}')" > "$UNITS"
+ROUTE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
+[[ "$(cat "$route_calls")" == 'route ' && "$(field pr-651 .stage)" == parked ]] || fail "a refused route must park and keep the PR: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
+[[ "$(field pr-651 .note)$(jq -c '.units[0].history' "$UNITS")" == *'recut route failed'* ]] || fail 'the park must name the refused route'
+: > "$route_calls"
+printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",history:[]}]}')" > "$UNITS"
+ROUTE_RC=0 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
+[[ "$(cat "$route_calls")" == 'route close ' && "$(field pr-651 .stage)" == closed ]] || fail "the PR closes only after the route: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
+
 echo 'supervisor-arbiter.test.sh: all assertions passed'
