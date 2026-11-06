@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { zfConfigFile, zfEnv, zfIncidentGuards } from './pack-dir.mjs';
+import { zfConfigFile, zfEnv } from './pack-dir.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepo = zfEnv('REPO_DIR') || path.resolve(scriptDir, '..');
@@ -399,10 +399,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const options = parseArgs(process.argv.slice(2));
     const repo = path.resolve(options.repo);
     const registryPath = configRegistryPath(repo);
-    const targetRegistry = () => JSON.parse(readFileSync(path.join(repo, registryPath), 'utf8'));
-    // The worker brief and the tracked file join on lesson_id, which means another rule in an engine record.
-    const joinsLessonIds = options.footprintJson !== null || options.write;
-    const registry = joinsLessonIds ? targetRegistry() : zfIncidentGuards(repo) ?? targetRegistry();
+    const registryFile = zfConfigFile(REGISTRY_RELATIVE_PATH, repo) ?? path.join(repo, registryPath);
+    const registry = JSON.parse(readFileSync(registryFile, 'utf8'));
     const ranking = buildLessonRecurrenceRanking(registry, collectRecordCommits(repo, registryPath), registryPath);
     if (options.footprintJson !== null) {
       const footprint = JSON.parse(options.footprintJson);
