@@ -134,6 +134,34 @@ open_now="$(jq -cn --arg s "$(day 18000)" '[{stage:"write-start",work_type:"repa
 killed="$(jq -cn --arg s "$(day 864000)" --arg n "$(day 840000)" '[{stage:"write-start",work_type:"repair",at:$s},{stage:"write-start",work_type:"repair",at:$n},{stage:"write-end",at:$n}]')"
 [[ "$(wall_unit "$killed" repair-pending)" == 'wall 400min of 240min after 2 rounds' ]] || fail "a write with no end must close at the next start: $(wall_unit "$killed" repair-pending)"
 
+# The same history through both implementations: the shell stop-loss and the replay must reach the same wall verdict.
+replay_wall() { # history-json -> "wall Nmin" or nothing
+  node --input-type=module -e '
+    const { replayRule } = await import(process.argv[3]);
+    const unit = { id: "agree", issue: 1, stage: "repair-pending", history: JSON.parse(process.argv[1]) };
+    const rule = { id: "wall", predicate: { path: "metrics.workerSeconds", op: "gt", value: 14400 } };
+    const report = replayRule({ units: [unit] }, rule, { asOf: process.argv[2] });
+    const hit = [...report.falseStops, ...report.intercepted, ...report.unresolved][0];
+    if (hit) console.log(`wall ${Math.floor(hit.trigger.metrics.workerSeconds / 60)}min`);
+  ' "$1" "$(day 0)" "$script_dir/rule-replay.mjs"
+}
+check_wall_agreement() { # label expected (stage seconds-ago)...
+  local label="$1" expected="$2" history='[]' budget replay
+  shift 2
+  while (( $# )); do
+    history="$(jq -c --arg stage "$1" --arg at "$(day "$2")" '. + [{stage:$stage,work_type:"implement",at:$at}]' <<<"$history")"
+    shift 2
+  done
+  budget="$(wall_unit "$history" repair-pending)"
+  replay="$(replay_wall "$history")"
+  [[ "${budget%% of *}" == "$expected" && "$replay" == "$expected" ]] \
+    || fail "$label: stop-loss '$budget' and replay '$replay' must both give '$expected'"
+}
+check_wall_agreement 'queue after short work' '' write-start 300000 write-end 299400 unblocked 3600
+check_wall_agreement 'closed work over budget' 'wall 300min' write-start 20000 write-end 2000
+check_wall_agreement 'killed write closes at next start' 'wall 300min' write-start 20000 write-start 9200 write-end 2000
+check_wall_agreement 'ruling resets worker time' '' write-start 30000 write-end 19200 supervisor-requeue 19000 write-start 18000 write-end 7200
+
 node "$script_dir/../lesson-guard-schema.mjs"
 printf 'noop-repair-rounds.test.sh: 3 write-starts -> 2 counted; 3-of-3 stop-loss clear; repair-cap count 1\n'
-printf 'noop-repair-rounds.test.sh: 19 focused assertions passed\n'
+printf 'noop-repair-rounds.test.sh: 23 focused assertions passed\n'
