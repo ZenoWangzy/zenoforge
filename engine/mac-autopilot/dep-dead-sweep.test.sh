@@ -93,6 +93,8 @@ reset; closed_state CLOSED; release_dependency_blocks
 dep_dead_sweep; [[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'the sweep must take a closed undelivered predecessor to the arbiter'
 reset; closed_state CLOSED; printf '{"units":[%s,%s]}\n' "$(jq -c '.stage="implement"' <<<"$dead")" "$(marked 20)" > "$UNITS"; release_dependency_blocks
 [[ "$(field issue-20 .stage)" == blocked-external ]] || fail 'a stale closed state must not release a marked unit while the predecessor still has a live unit'
+reset; closed_state CLOSED; printf '{"units":[%s,%s]}\n' "$(jq -c '.stage="wontfix"' <<<"$dead")" "$(marked 20)" > "$UNITS"; release_dependency_blocks
+[[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'a wontfix predecessor is settled: the sweep can never prove it, so it must release'
 reset; closed_state MERGED; release_dependency_blocks
 [[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'a merged predecessor must release a marked unit'
 reset; closed_state CLOSED; printf '{"units":[%s]}\n' "$(marked 20)" > "$UNITS"; release_dependency_blocks
