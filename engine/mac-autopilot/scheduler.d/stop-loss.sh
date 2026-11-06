@@ -113,10 +113,11 @@ repair_cap_admission() { # unit-id unit-json → two failed repair rounds escala
 # 2026-10-20 三个热修回迁在 review-pending 等了 56 分钟，名额被新收的孤儿 PR 先拿走（L62）。
 dispatch_order() {
   local started=$SECONDS rc=0 elapsed
-  jqf -c --argjson priority_order "$DISPATCH_PRIORITY_ORDER" '
+  jqf -c --argjson priority_order "$DISPATCH_PRIORITY_ORDER" --argjson first_issues "${DISPATCH_FIRST_ISSUES:-[]}" '
     .units
     | map(select(.stage | test("-pending$")))
     | sort_by([
+        (.issue as $issue | if any($first_issues[]; . == $issue) then 0 else 1 end),
         (if .main_red == true then 0 else 1 end),
         (if .hotpatch == true then 0 else 1 end),
         (if .critical == true then 0 else 1 end),

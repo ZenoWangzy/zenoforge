@@ -21,6 +21,9 @@ printf '%s\n' '{"units":[]}' > "$autopi/units.json"
 printf '%s\n' '{"workers":[]}' > "$autopi/workers.json"
 printf '%s\n' '{"zcode":0,"claude":0,"codex":0}' > "$autopi/cooldown.json"
 touch "$AGENT_HOME/codex-probe-passed"
+export ZCODE_QUOTA_SNAPSHOT_FILE="$fixture/zc-quota.json"
+glm_quota() { jq -n --argjson read_at "$(( $(date +%s) - ${2:-0} ))" --argjson pct "$1" '{freshness:"fresh",read_at:$read_at,max_age_seconds:900,five_h_pct:$pct,week_pct:1,cap_5h:60,cap_week:100}' > "$ZCODE_QUOTA_SNAPSHOT_FILE"; }
+glm_quota 0
 jq -n '{config:{defaultModelSelection:{modelId:"GLM-5.3"}}}' > "$ZCODE_PROVIDER_CONFIG_FILE"
 cat > "$test_env_bin/zcode" <<'SH'
 #!/usr/bin/env bash
@@ -224,6 +227,47 @@ rm -f "$(_quota_marker_file codex)"
 pick_review_for_unit "$glm_unit" || fail 'after the reset a ZCode unit must get normal Codex'
 [[ "$PICK_PROVIDER" == codex ]] || fail 'after the reset the reviewer must be Codex'
 CODEX_CREDITS_ROLES=""; CODEX_CREDITS_CAP=""; CODEX_CREDITS_START_BALANCE=""
+
+# A GLM review is a paced start: reviews and implement share one in-flight count, and a bad quota read closes the route.
+set_config '.models.review=["gpt-6-luna","max","fast"] | .models.review_cross=["GLM-5.3","max"] | .models.review_fallback=null'
+set_policy '.'
+set_cooldowns 0 0
+rm -f "$(_quota_marker_file zcode)"
+glm_run='{"type":"implement","model":"GLM-5.3"}'
+glm_review='{"type":"review","model":"GLM-5.3"}'
+glm_done='{"type":"review","model":"GLM-5.3","harvested":true}'
+pace_review() { # workers-array → whether the review started on GLM
+  local unit_json
+  unit_json="$(unit_for paced-review 'codex:gpt-6-luna:max')"
+  write_units "$(jq -cn --argjson unit "$unit_json" '{units:[$unit]}')"
+  write_workers "$(jq -cn --argjson workers "$1" '{workers:$workers}')"
+  dispatch_selected_review "$unit_json" && [[ "$DISPATCH_MODEL" == GLM-5.3 ]]
+}
+glm_quota 0
+pace_review '[]' || fail 'the first start of a window must pass'
+pace_review "[$glm_run]" || fail 'the second start of a window must pass'
+if pace_review "[$glm_run,$glm_review]"; then fail 'a third GLM start at window open must wait'; fi
+if pace_review "[$glm_review,$glm_review]"; then fail 'two reviews must fill the opening gate too'; fi
+pace_review "[$glm_run,$glm_done]" || fail 'a harvested run must not count'
+pick_glm_implementer() { (
+  model_policy_role_fields() { printf 'zcode\tGLM-5.3\tmax\t\n'; }
+  model_policy_model_allowed_for_role() { return 0; }
+  pick_zcode_implementer
+); }
+pick_glm_implementer || fail 'implement must pass an open gate'
+write_workers "$(jq -cn --argjson workers "[$glm_review,$glm_review]" '{workers:$workers}')"
+if pick_glm_implementer; then fail 'running reviews must count against implement'; fi
+glm_quota 21
+if pace_review '[]'; then fail 'a meter past the gate must hold a review'; fi
+glm_quota 0 901
+if pace_review '[]'; then fail 'a stale quota read must hold a review'; fi
+rm -f "$ZCODE_QUOTA_SNAPSHOT_FILE"
+if pace_review '[]'; then fail 'a missing quota read must hold a review'; fi
+glm_quota 0
+marker="$(_quota_marker_file zcode)"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$marker"
+if pace_review '[]'; then fail 'the hold marker must still hold a review'; fi
+rm -f "$marker"
 
 echo 'PASS review family dispatch, fallback, wait, alert, and role policy'
 
