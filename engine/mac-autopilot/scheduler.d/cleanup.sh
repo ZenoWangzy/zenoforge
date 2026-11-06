@@ -79,8 +79,27 @@ rescue_secret_scan() { # clone commit stash... -> 0 clean, 3 leak, else the scan
   rm -f "$stream"
   return "$rc"
 }
+rescue_flagged_files_clean() { # clone -> 0 unless a flagged file hides an edit
+  local wt="$1" entry path index rc=0
+  local -a check=()
+  # Sparse clones flag hundreds of absent files, which is normal: only an S entry that is gone from disk is passed over.
+  while IFS= read -r -d '' entry; do
+    path="${entry:2}"
+    [[ "${entry:0:1}" == S && ! -e "$wt/$path" && ! -L "$wt/$path" ]] || check+=("$path")
+  done < <(git -C "$wt" ls-files -v -z | grep -zE '^[a-zS] ')
+  (( ${#check[@]} > 0 )) || return 0
+  # Git itself compares them on a private index with the flags off, so content, mode, type and deletion all count.
+  index="$(mktemp -u)"
+  cp "$(git -C "$wt" rev-parse --absolute-git-dir)/index" "$index" || return 1
+  printf '%s\0' "${check[@]}" | GIT_INDEX_FILE="$index" git -C "$wt" update-index -z --no-assume-unchanged --stdin 2>/dev/null \
+    && printf '%s\0' "${check[@]}" | GIT_INDEX_FILE="$index" git -C "$wt" update-index -z --no-skip-worktree --stdin 2>/dev/null \
+    && GIT_INDEX_FILE="$index" git -C "$wt" update-index -q --refresh >/dev/null 2>&1 \
+    && GIT_INDEX_FILE="$index" git -C "$wt" diff-files --quiet -- "${check[@]}" || rc=1
+  rm -f "$index" "$index.lock"
+  return "$rc"
+}
 rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescued; else RESCUE_REFUSED says why
-  local n="$1" wt="$2" status head commit tree raw index ref="" stash stash_out stash_list="" scan=0 marker key objects sizes other path
+  local n="$1" wt="$2" status head commit tree raw index leftover ref="" stash stash_out stash_list="" scan=0 marker key objects sizes other path
   local -a stashes=()
   RESCUE_REFUSED=""; RESCUE_START_REF=""; RESCUE_START_SHA=""
   [[ -e "$wt/.git" ]] || { RESCUE_REFUSED="no clone"; return 1; }
@@ -98,11 +117,7 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
   [[ -z "$other" ]] || { RESCUE_REFUSED="unpushed commits on another branch"; return 1; }
   # What the private index below cannot see: conflicted entries, flagged files, and a staged version later edited in the worktree.
   [[ -z "$(git -C "$wt" ls-files -u)" ]] || { RESCUE_REFUSED="unmerged index"; return 1; }
-  # Sparse clones flag hundreds of absent files, which is normal. A flagged file on disk that differs is a hidden edit.
-  while IFS= read -r -d '' path; do
-    [[ -e "$wt/$path" && "$(git -C "$wt" hash-object --path="$path" -- "$path" 2>/dev/null)" != "$(git -C "$wt" rev-parse ":$path" 2>/dev/null)" ]] \
-      && { RESCUE_REFUSED="assume-unchanged or skip-worktree edit"; return 1; }
-  done < <(git -C "$wt" ls-files -v -z | sed -zn 's/^[a-zS] //p')
+  rescue_flagged_files_clean "$wt" || { RESCUE_REFUSED="assume-unchanged or skip-worktree edit"; return 1; }
   [[ -z "$(comm -12 <(git -C "$wt" diff --cached --name-only | sort) <(git -C "$wt" diff --name-only | sort))" ]] || { RESCUE_REFUSED="staged content differs from the worktree"; return 1; }
   commit="$head"
   if [[ -n "$status" ]]; then
@@ -111,11 +126,15 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
     index="$(mktemp -u)"
     tree="$(cp "$(git -C "$wt" rev-parse --absolute-git-dir)/index" "$index" && GIT_INDEX_FILE="$index" git -C "$wt" add -A 2>/dev/null && GIT_INDEX_FILE="$index" git -C "$wt" write-tree)" \
       || { rm -f "$index" "$index.lock"; RESCUE_REFUSED="could not build the rescue tree"; return 1; }
+    leftover="$(GIT_INDEX_FILE="$index" git -C "$wt" status --porcelain=v1 --untracked-files=all 2>/dev/null)" \
+      || { rm -f "$index" "$index.lock"; RESCUE_REFUSED="could not read the rescue tree"; return 1; }
     rm -f "$index"
     raw="$(git -C "$wt" diff-tree -r --no-commit-id --raw --no-abbrev "$head" "$tree")" || { RESCUE_REFUSED="could not read the rescue tree"; return 1; }
     (( $(grep -c . <<<"$raw") <= HANDOFF_RESCUE_MAX_FILES )) || { RESCUE_REFUSED="more than $HANDOFF_RESCUE_MAX_FILES changed files"; return 1; }
     # A nested repo becomes a gitlink: its files would not travel, yet the clone would look clean.
     ! awk '$2 == "160000"' <<<"$raw" | grep -q . || { RESCUE_REFUSED="nested repository or submodule change"; return 1; }
+    # add -A skips paths outside the sparse patterns. Seen only after the push, each tick would leave another ref for a clone that stays blocked.
+    ! grep -q '^.[^ ]' <<<"$leftover" || { RESCUE_REFUSED="files the rescue tree leaves out"; return 1; }
     commit="$(git -C "$wt" -c user.name=zenoforge-agent -c user.email=zenoforge-agent@users.noreply.github.com commit-tree "$tree" -p "$head" -m "rescue: uncommitted work from the clone of #$n")" \
       || { RESCUE_REFUSED="could not build the rescue commit"; return 1; }
   fi

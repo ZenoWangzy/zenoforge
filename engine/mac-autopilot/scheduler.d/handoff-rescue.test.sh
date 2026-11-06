@@ -209,6 +209,22 @@ new_clone
 mkdir -p "$wt/hidden"; printf 'kept\n' > "$wt/hidden/x.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm hidden; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
 git -C "$wt" update-index --skip-worktree hidden/x.txt; printf 'edit\n' >> "$wt/hidden/x.txt"
 refused_intact "a skip-worktree edit" "skip-worktree edit"
+flagged_clone() { # a pushed file, flagged with $1, plus a dirty file so a rescue would commit
+  new_clone
+  mkdir -p "$wt/hidden"; printf 'kept\n' > "$wt/hidden/x.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm hidden; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
+  git -C "$wt" update-index "$1" hidden/x.txt; printf 'dirty\n' >> "$wt/a.txt"
+}
+flagged_clone --skip-worktree; rm "$wt/hidden/x.txt"; ln -s /nonexistent "$wt/hidden/x.txt"
+refused_intact "a flagged file swapped for a dangling symlink" "skip-worktree edit"
+flagged_clone --skip-worktree; chmod +x "$wt/hidden/x.txt"
+refused_intact "a mode change on a flagged file" "skip-worktree edit"
+flagged_clone --assume-unchanged; rm "$wt/hidden/x.txt"
+refused_intact "an assume-unchanged file deleted on purpose" "assume-unchanged"
+# A real sparse clone: git drops the flag on a file that shows up on disk, and add -A will not stage it.
+flagged_clone --no-skip-worktree; git -C "$wt" sparse-checkout set --no-cone '/*' '!/hidden/'
+mkdir -p "$wt/hidden"; printf 'edit\n' > "$wt/hidden/x.txt"
+refused_intact "an edit outside the sparse patterns" "leaves out"
+[[ -z "$(remote_rescues)" ]] || fail "a clone that cannot be rescued still pushed a ref"
 new_clone
 printf 'one\n' > "$wt/é.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm named; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
 git -C "$wt" update-index --skip-worktree "é.txt"; printf 'edit\n' >> "$wt/é.txt"
