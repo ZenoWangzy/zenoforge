@@ -27,12 +27,15 @@ dispatch_pending() {
     [[ "$local_refill" != true || "$stage" == implement-pending || "$stage" == repair-pending \
       || "$stage" == review-pending || "$stage" == rereview-pending ]] || continue
     # Every path that frees a marked unit ends here, so the marker is enforced once, ahead of anything that can change the stage.
-    if [[ "$stage" == *-pending && -n "$(jqf -r '.dep_wait_delivery // empty' <<<"$u")" ]] && marked_dep="$(dep_marker_open "$u")"; then
-      if [[ "$local_refill" != true ]]; then
-        park_blocked "$id" "$marked_dep"
-        [[ "$stage" != repair-pending ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
+    if [[ "$stage" == *-pending && -n "$(jqf -r '.dep_wait_delivery // empty' <<<"$u")" ]]; then
+      if marked_dep="$(dep_marker_open "$u")"; then
+        if [[ "$local_refill" != true ]]; then
+          park_blocked "$id" "$marked_dep"
+          [[ "$stage" != repair-pending ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
+        fi
+        continue
       fi
-      continue
+      set_unit "$id" 'del(.dep_wait_delivery, .unpark_condition)' # satisfied: a later cache read must not park on it again
     fi
     [[ "$(jqf -r '.hold_handoff_waiting // false' <<<"$u")" != false ]] && ! handoff_wait_stale "$id" && continue
     # supervisor-owned 热修单元只计数：评审/修复/复审都由热修 supervisor 会话自己派，这里不派任何 worker。

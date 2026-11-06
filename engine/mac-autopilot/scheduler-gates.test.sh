@@ -2078,6 +2078,11 @@ printf '{"states":{"146":{"state":"CLOSED","labels":""}}}\n' > "$A/dep-check.cac
 release_dependency_blocks
 [[ "$(field issue-597 .stage)" != blocked-external ]] || fail 'a real delivery must still free the unit'
 [[ "$(field issue-597 .dep_wait_delivery)" == null ]] || fail 'a real delivery must clear the marker, or a later cache read parks the unit again'
+units '{"units":[{"id":"issue-63","issue":63,"title":"t","task":"t","stage":"implement-pending","branch":"agent/issue-63","dep_wait_delivery":146,"history":[]}]}'
+printf '{"states":{"146":{"state":"MERGED","labels":""}}}\n' > "$A/dep-check.cache.json"
+DISPATCHED=(); dispatch_pending || :
+[[ "$(field issue-63 .dep_wait_delivery)" == null ]] || fail 'dispatch must clear a satisfied marker'
+printf '{"states":{}}\n' > "$A/dep-check.cache.json"
 # Two closed predecessors: releasing one must not block on the other because the refresh skipped it (issue-1271 flipped every tick).
 dep_states_saved="$(declare -f dep_states)"
 dep_states() { local dep; for dep in "$@"; do printf '%s\tCLOSED\t\tCLOSED\n' "$dep"; done; }
