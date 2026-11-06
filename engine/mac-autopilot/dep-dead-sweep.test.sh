@@ -107,6 +107,7 @@ ruled='[{"stage":"dep-dead-proved"},{"stage":"supervisor-requeue","decision":{"o
 [[ -n "$(dep_marker_open "$(jq -cn '{dep_wait_delivery:10,dep_dead_proved:10,history:[{stage:"dep-dead-proved"},{stage:"supervisor-requeue",result:"ownerless hold handoff"}]}')")" ]] || fail 'a handoff requeue is no ruling: the marker holds'
 [[ -n "$(dep_marker_open "$(jq -cn '{dep_wait_delivery:10,dep_dead_proved:10,history:[{stage:"supervisor-requeue",decision:{owner:"supervisor"}},{stage:"dep-dead-proved"}]}')")" ]] || fail 'a ruling before the proof: the marker holds'
 [[ -z "$(dep_marker_open "$(jq -cn --argjson h "$ruled" '{dep_wait_delivery:10,dep_dead_proved:10,history:$h}')")" ]] || fail 'proof and a ruling: the unit may start'
+[[ -z "$(dep_marker_open "$(jq -cn '{dep_wait_delivery:10,dep_dead_proved:10,history:[{stage:"dep-dead-proved"},{stage:"supervisor-requeue",decision:{owner:"typesafe"}}]}')")" ]] || fail 'a TypeSafe requeue is a ruling too'
 [[ "$(blocking_body_dependency "$(jq -cn '{body_blocked_by:[10]}')")" == 10 ]] || fail 'no proof: the body dependency blocks'
 [[ "$(blocking_body_dependency "$(jq -cn '{body_blocked_by:[10],dep_dead_proved:10,history:[{stage:"dep-dead-proved"}]}')")" == 10 ]] || fail 'no ruling: the body dependency blocks'
 [[ -z "$(blocking_body_dependency "$(jq -cn --argjson h "$ruled" '{body_blocked_by:[10],dep_dead_proved:10,history:$h}')")" ]] || fail 'proof and a ruling: the body dependency does not block'

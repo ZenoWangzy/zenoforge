@@ -83,7 +83,7 @@ blocking_body_dependency() { # unit-json → first predecessor not yet delivered
 }
 dep_dead_ruled() { # unit-json predecessor → 0 only when dep_dead_sweep proved it and the arbiter then ruled; a handoff requeue is no ruling
   jqf -e --argjson d "$2" '.dep_dead_proved == $d and ((.history // []) | (map(.stage) | rindex("dep-dead-proved")) as $p
-    | $p != null and any(.[($p + 1):][]; (.stage | IN("supervisor-requeue","supervisor-reroute","supervisor-cap-rule")) and .decision.owner == "supervisor"))' <<<"$1" >/dev/null 2>&1
+    | $p != null and any(.[($p + 1):][]; (.stage | IN("supervisor-requeue","supervisor-reroute","supervisor-cap-rule")) and (.decision.owner | IN("supervisor","typesafe"))))' <<<"$1" >/dev/null 2>&1
 }
 dep_marker_open() { # unit-json → the marked predecessor while it is undelivered; a roadmap label does not clear a marker, unlike a body dependency
   local dep state
