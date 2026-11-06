@@ -863,6 +863,8 @@ jq -e '.metrics[] | select(.id == "mechanism.silent") | .value == 1 and .status 
   "$ma/node-health.json" >/dev/null || fail 'mechanism.silent missing bounds or source in scorecard JSON'
 jq -e '.mechanisms[] | select(.id == "factory-f1-main-red-bisect") | .silent == false and .expected_idle == true and .silent_hours == 35 and .last_event_at == "2026-10-28T01:00:00Z"' \
   "$ma/node-health.json" >/dev/null || fail "f1 row wrong: $(jq -c '.mechanisms[] | select(.id == "factory-f1-main-red-bisect")' "$ma/node-health.json")"
+jq -e '.mechanisms[] | select(.id == "factory-f13-prompt-eval-gate") | .silent == false and (.not_operating | contains("#531"))' \
+  "$ma/node-health.json" >/dev/null || fail "the parked eval gate must show why it is not operating: $(jq -c '.mechanisms[] | select(.id == "factory-f13-prompt-eval-gate")' "$ma/node-health.json")"
 jq -e '.mechanisms[] | select(.id == "factory-f3-release-train") | .silent == true and .silent_hours == 26' \
   "$ma/node-health.json" >/dev/null || fail "f3 row wrong: $(jq -c '.mechanisms[] | select(.id == "factory-f3-release-train")' "$ma/node-health.json")"
 jq -e '.mechanisms[] | select(.id == "factory-f9-footprint-wait") | .silent == false and .silent_hours == 11' \

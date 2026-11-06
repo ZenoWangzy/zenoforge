@@ -196,6 +196,7 @@
       ],
       "silence_hours": 336,
       "supervisor": "head-supervisor",
+      "not_operating": "no accepted eval baseline, so no gate can complete; parked (#531)",
       "expected_idle": true
     },
     {
@@ -206,6 +207,7 @@
       ],
       "silence_hours": 336,
       "supervisor": "supervisor-arbiter",
+      "not_operating": "no accepted eval baseline, so no gate can complete; parked (#531)",
       "expected_idle": true
     },
     {
@@ -226,6 +228,7 @@
       ],
       "silence_hours": 336,
       "supervisor": "head-supervisor",
+      "not_operating": "no accepted eval baseline, so no gate can complete; parked (#531)",
       "expected_idle": true
     },
     {

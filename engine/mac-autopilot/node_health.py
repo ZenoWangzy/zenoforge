@@ -444,7 +444,9 @@ def mechanism_heartbeat(registry, runtime, agent_home, now):
     entries may sit indefinitely quiet (the mechanism's condition simply did not occur)
     and are reported but never counted. held_when_false names a runtime config key (dotted):
     when that key is the literal false the mechanism is switched off on purpose, so its row is
-    expected_idle and flagged held; a true or missing key keeps the silence check."""
+    expected_idle and flagged held; a true or missing key keeps the silence check. not_operating
+    is a reason string: the mechanism cannot do its job, so its events prove nothing and its row
+    shows that reason instead of a heartbeat."""
     rows, silent = [], 0
     cfg = read_json(os.path.join(runtime, "config.json"))
     for m in registry:
@@ -465,13 +467,15 @@ def mechanism_heartbeat(registry, runtime, agent_home, now):
                 except OSError:
                     continue
         age = (now - last).total_seconds() / 3600 if last else None
-        idle = m.get("expected_idle") is True or held
+        not_operating = m.get("not_operating")
+        idle = m.get("expected_idle") is True or held or bool(not_operating)
         quiet = not idle and (age is None or age > m["silence_hours"])
         silent += quiet
         rows.append({"id": m["id"], "desc": m["desc"], "supervisor": m["supervisor"],
                      "last_event_at": f"{last:%Y-%m-%dT%H:%M:%SZ}" if last else None,
                      "silent_hours": round(age, 1) if age is not None else None,
                      "bound_hours": m["silence_hours"], "expected_idle": idle, "held": held,
+                     "not_operating": not_operating,
                      "silent": quiet})
     return rows, silent
 
