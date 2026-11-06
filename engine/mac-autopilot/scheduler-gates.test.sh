@@ -2062,6 +2062,26 @@ park_blocked pr-596 145
 [[ "$(field pr-596 .stage)" == supervisor-review ]] || fail 'second predecessor block on a hot-patch unit did not escalate'
 [[ "$(hotpatch_rule '{"hotpatch":true}')" == *生产热修回迁* && -z "$(hotpatch_rule '{}')" ]] || fail 'hot-patch review rule not applied only to hot-patch units'
 
+# A worker that blocks again on a released predecessor ends the release: only a delivery frees the unit (issue-1168, issue-4889).
+units '{"units":[{"id":"issue-597","issue":597,"stage":"implement","history":[{"stage":"blocked-on","result":"#146"},{"stage":"unblocked","result":"#146 closed on purpose (tracker/spec parent)"}]},{"id":"issue-146","issue":146,"stage":"closed","history":[]}]}'
+park_blocked issue-597 146
+[[ "$(field issue-597 .stage):$(field issue-597 .dep_wait_delivery):$(field issue-597 '.unpark_condition != null')" == blocked-external:146:true ]] || fail "a second block must wait for delivery: $(field issue-597 .stage)"
+grep -q 'dep-disagreement unit=issue-597' "$AGENT_HOME/supervisor-inbox" || fail 'a second block must reach the supervisor once'
+printf '{"states":{"146":{"state":"OPEN","labels":""}}}\n' > "$A/dep-check.cache.json"
+printf '%s\n' "$(date +%s)" > "$A/dep-check.epoch"
+release_dependency_blocks
+[[ "$(field issue-597 .stage)" == blocked-external ]] || fail "a refused release must not repeat: $(field issue-597 .stage)"
+printf '{"states":{"146":{"state":"OPEN","labels":"roadmap-epic"}}}\n' > "$A/dep-check.cache.json"
+release_dependency_blocks
+[[ "$(field issue-597 .stage)" == blocked-external ]] || fail "a refused release must not go to the epic route: $(field issue-597 .stage)"
+printf '{"states":{"146":{"state":"CLOSED","labels":""}}}\n' > "$A/dep-check.cache.json"
+release_dependency_blocks
+[[ "$(field issue-597 .stage)" != blocked-external ]] || fail 'a real delivery must still free the unit'
+# A refill tick reads the ledger too: issue-2095 flipped delivered, blocked, delivered with no worker.
+units '{"units":[{"id":"issue-148","issue":148,"stage":"merged","history":[]}]}'
+DEP_DELIVERED_CACHE=(); dep_delivered_snapshot
+dep_delivered_in_ledger 148 || fail 'the snapshot must name a merged unit'
+
 # Advisor step: none ships. Rejections one and two repair as usual; the third goes straight to one arbiter review.
 printf 'VERDICT: REQUEST-CHANGES\nF1 totals wrong\nF2 extra edge\n' > "$sup/review-70-T2.md"
 CFG_SAVED="$CFG"; CFG="$(jq '.advisor=true' <<<"$CFG")"; ALIVE_PIDS=""; DISPATCHED=(); DISPATCH_PROMPT=""
@@ -2809,6 +2829,13 @@ stack_parent_active_old="$stack_parent_new"
 stack_parent_new="$(command git -C "$stack_root" rev-parse HEAD)"
 command git -C "$stack_root" push -q origin HEAD:refs/heads/agent/issue-1
 echo '[]' > "$GH_PR_TABLE"; gh_pr_open 101 "$stack_parent_new" false MERGEABLE agent/issue-1
+# A worker refused this release twice, so an approved parent does not free the child: only a delivery does.
+units "$(jq -cn --arg parent "$stack_parent_new" --arg old "$stack_parent_active_old" '{units:[
+  {id:"issue-1",issue:1,pr:101,branch:"agent/issue-1",stage:"ready-to-merge",approved_sha:$parent,reviewed_pr_head:$parent,history:[]},
+  {id:"issue-3",issue:3,pr:103,branch:"agent/issue-3",stage:"blocked-external",blocked_on:1,dep_wait_delivery:1,stacked_on:"issue-1@\($old)",stacked_on_unit:"issue-1",stacked_on_sha:$old,stacked_on_branch:"agent/issue-1",history:[]}
+]}')"
+reconcile_stacked_units
+[[ "$(field issue-3 .stage)" == blocked-external ]] || fail "a refused release must not restack free: $(field issue-3 .stage)"
 units "$(jq -cn --arg parent "$stack_parent_new" --arg old "$stack_parent_active_old" '{units:[
   {id:"issue-1",issue:1,pr:101,branch:"agent/issue-1",stage:"ready-to-merge",approved_sha:$parent,reviewed_pr_head:$parent,history:[]},
   {id:"issue-3",issue:3,pr:103,branch:"agent/issue-3",stage:"implement",blocked_on:1,stacked_on:"issue-1@\($old)",stacked_on_unit:"issue-1",stacked_on_sha:$old,stacked_on_branch:"agent/issue-1",history:[]}
@@ -2861,6 +2888,7 @@ gh() {
   esac
 }
 NOW_EPOCH=$((NOW_EPOCH + 1))
+set_unit issue-2 '.dep_wait_delivery = .blocked_on' # a marked child still frees on a real delivery
 release_dependency_blocks
 stack_child_released="$(command git --git-dir="$stack_remote" rev-parse refs/heads/agent/issue-2)"
 [[ "$(command git --git-dir="$stack_remote" merge-base "$stack_merged_main" "$stack_child_released")" == "$stack_merged_main" \

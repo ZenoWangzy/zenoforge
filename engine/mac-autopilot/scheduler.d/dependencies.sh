@@ -18,7 +18,15 @@ park_blocked() { # unit dep
     fi
     return 0
   fi
-  set_unit "$1" "$(hist blocked-on "#$2") | .blocked_on=$2 | .note=$(js "waiting for predecessor #$2") | .stage=\"blocked-external\""
+  # Blocked again on the same predecessor: the worker disagrees with the release (issue-1168 cost 375k tokens in 90 minutes). Only a delivery ends this wait.
+  local real_wait=""
+  if jqf -e --arg id "$1" --arg r "#$2" 'any(.units[]; .id == $id and any(.history[]?; .stage == "blocked-on" and .result == $r))' "$UNITS" >/dev/null; then
+    real_wait=" | .dep_wait_delivery=$2 | .unpark_condition=$(js "#$2 delivered in the ledger or closed on GitHub")"
+    (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "dep-disagreement:$1:$2" \
+      "dep-disagreement unit=$1: a worker blocked twice on #$2 after a release; it now waits for #$2 to be delivered") \
+      || say "dep-disagreement unit=$1: escalation not delivered"
+  fi
+  set_unit "$1" "$(hist blocked-on "#$2") | .blocked_on=$2 | .note=$(js "waiting for predecessor #$2") | .stage=\"blocked-external\"$real_wait"
   say "unit $1 blocked on predecessor #$2"
 }
 # 正文 `## Blocked by` 只认小节内的 issue 引用；小节外的 #N 不算前置（#4485 正文自己就引用了 #4384/#4486）。
@@ -38,6 +46,15 @@ unit_body_blockers() { # unit-json → stored full-body IDs, or fallback IDs fro
   else
     issue_body_blocked_by <<<"$(jqf -r '.task // ""' <<<"$1")"
   fi
+}
+dep_delivered_snapshot() {
+  local dep
+  DEP_DELIVERED_CACHE=()
+  while IFS= read -r dep; do
+    [[ "$dep" =~ ^[0-9]+$ ]] && DEP_DELIVERED_CACHE["$dep"]=1
+  done < <(jqf -r '.units[] | select(.stage | IN("merged","landed","awaiting-live-event"))
+    | ((.issue | select(type == "number")),
+       (if ((.branch // "") | test("^agent/issue-[0-9]+$")) then (.branch | sub("^agent/issue-"; "") | tonumber) else empty end))' <(units_history_index))
 }
 dep_delivered_in_ledger() { # release_dependency_blocks 从台账建一次快照，避免每个 blocker 重读全文件
   [[ "${DEP_DELIVERED_CACHE[$1]:-}" == 1 ]]
@@ -142,16 +159,11 @@ dead_blocker_resolve() { # unit-id blocker-issue dependent-issue
 }
 release_dependency_blocks() {
   local id dep issue info state labels gh_due=1 last decision dep_results dep_states_json dep_cache_file dep_cache u
-  local blocker_issue pair_key
+  local blocker_issue pair_key real_wait
   local -a deps=() unique_deps=()
   local -A DEP_BLOCKED_PAIR_COUNTS=()
   tick_prs_prime
-  DEP_DELIVERED_CACHE=()
-  while IFS= read -r dep; do
-    [[ "$dep" =~ ^[0-9]+$ ]] && DEP_DELIVERED_CACHE["$dep"]=1
-  done < <(jqf -r '.units[] | select(.stage | IN("merged","landed","awaiting-live-event"))
-    | ((.issue | select(type == "number")),
-       (if ((.branch // "") | test("^agent/issue-[0-9]+$")) then (.branch | sub("^agent/issue-"; "") | tonumber) else empty end))' <(units_history_doc))
+  dep_delivered_snapshot
   while IFS=$'\t' read -r blocker_issue dep; do
     [[ "$blocker_issue" =~ ^[0-9]+$ && "$dep" =~ ^[0-9]+$ ]] || continue
     pair_key="$blocker_issue:$dep"
@@ -203,26 +215,27 @@ release_dependency_blocks() {
       dep_blocker_forget "$issue" "$dep"
       unblock_unit "$id" "#$dep delivered"; continue
     fi
+    real_wait="$(jqf -r --arg dep "$dep" '(.dep_wait_delivery // "" | tostring) == $dep' <<<"$u")" # a worker refused this release twice
     # 两个单元互相等对方（2026-10-20 #2743↔#3330）：放开这一个，另一个继续等它交付。
     pair_key="$dep:$issue"
-    if [[ "$issue" =~ ^[0-9]+$ && "${DEP_BLOCKED_PAIR_COUNTS[$pair_key]:-0}" =~ ^[1-9][0-9]*$ ]]; then
+    if [[ "$real_wait" != true && "$issue" =~ ^[0-9]+$ && "${DEP_BLOCKED_PAIR_COUNTS[$pair_key]:-0}" =~ ^[1-9][0-9]*$ ]]; then
       dep_blocker_forget "$issue" "$dep"
       unblock_unit "$id" "#$dep waits on #$issue: dependency cycle broken here"; continue
     fi
     info="$(jqf -c --arg d "$dep" '.[$d] // empty' <<<"$dep_cache")"; [[ -n "$info" ]] || continue
     state="$(jqf -r '.state // empty' <<<"$info")"; labels="$(jqf -r '.labels // ""' <<<"$info")"
-    if (( gh_due )) && [[ "$state" == OPEN ]] && ! unit_body_declares_dependency "$u" "$dep" \
+    if (( gh_due )) && [[ "$state" == OPEN && "$real_wait" != true ]] && ! unit_body_declares_dependency "$u" "$dep" \
         && stack_approved_dependency "$id" "$dep" "$u"; then continue; fi
     if [[ "$state" == CLOSED || "$state" == MERGED ]]; then
       dep_blocker_forget "$issue" "$dep"
       unblock_unit "$id" "#$dep delivered"; continue
     fi
-    if [[ "$state" == OPEN ]] && dead_blocker_resolve "$id" "$dep" "$issue"; then
+    if [[ "$state" == OPEN && "$real_wait" != true ]] && dead_blocker_resolve "$id" "$dep" "$issue"; then
       dep_blocker_forget "$issue" "$dep"; continue
     fi
     # 路线图 epic/主题是伞形 issue，永远不会"交付"；停在它上面就是永远停（2026-10-20 六个单元）。放开一次，
     # 同一个 epic 第二次停住就交给 supervisor。
-    if [[ ",$labels," =~ ,roadmap(-epic|-theme)?, ]]; then
+    if [[ "$real_wait" != true && ",$labels," =~ ,roadmap(-epic|-theme)?, ]]; then
       if jqf -e --arg id "$id" --arg r "#$dep" 'any(.units[]; .id == $id and any(.history[]?; .stage == "epic-not-predecessor" and .result == $r))' "$UNITS" >/dev/null; then
         dep_blocker_forget "$issue" "$dep"
         decision="$(decision_entry 'Hand off repeated roadmap block to supervisor' 'the same roadmap epic blocked this unit twice' "history contains repeated epic-not-predecessor events for #$dep" '["Keep waiting for the roadmap epic to close"]' scheduler)"
@@ -388,6 +401,8 @@ reconcile_stacked_units() {
         [[ "$child_stage" == blocked-external ]] || set_unit "$id" "$(hist stack-waiting predecessor-PR-$parent_pr-state-$parent_state) | .stage=\"blocked-external\""
         continue ;;
     esac
+    # A worker refused this release twice: an open parent frees nothing here, and the MERGED branch above is the delivery.
+    jqf -e '.stage == "blocked-external" and .dep_wait_delivery != null and .dep_wait_delivery == .blocked_on' <<<"$child" >/dev/null && continue
     [[ "$parent_head" =~ $SHA_RE ]] || parent_head="$(pr_view "$parent_pr" headRefOid)"
     [[ "$parent_head" =~ $SHA_RE ]] || continue
     if [[ "$parent_head" != "$old_stack" ]]; then

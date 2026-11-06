@@ -118,6 +118,21 @@ for (let i = 0; i < 2; i++) {
   assert.ok(!r.seen.includes('CDP Runtime.evaluate'), `no reset may be spent: ${r.seen.join()}`);
 }
 assert.equal(JSON.parse(fs.readFileSync(path.join(heldHome, '.zenoforge/zc-quota.json'))).week_pct, 98);
+
+// A symlinked marker: readers use the target, so a release must clear it and a later hold must reach it. Removing the link read as released with the hold still on.
+const linkHome = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-link-'));
+const target = path.join(linkHome, 'readers-zcode-exhausted-until');
+const link = path.join(linkHome, '.zenoforge/zcode-exhausted-until');
+fs.mkdirSync(path.dirname(link), { recursive: true });
+fs.symlinkSync(target, link);
+const linked = env => run('zc-quota', usageTab, {}, { week: 13, home: linkHome, env });
+await linked({ ZC_WEEK_CAP: '0' });
+assert.ok(Number(fs.readFileSync(target, 'utf8')) > Date.now() / 1000, 'a hold must reach the symlink target');
+await linked({});
+assert.equal(fs.existsSync(target), false, 'a release must clear the symlink target');
+assert.ok(fs.lstatSync(link).isSymbolicLink(), 'a release must keep the symlink');
+await linked({ ZC_WEEK_CAP: '0' });
+assert.ok(fs.existsSync(target), 'a hold after a release must reach the symlink target');
 assert.equal(fs.readFileSync(alerts, 'utf8').match(/ZCODE-WEEK-RESET-HELD/g)?.length, 1);
 
 console.log('ok - quota scripts end on a hung tab, close it, and open a missing one');

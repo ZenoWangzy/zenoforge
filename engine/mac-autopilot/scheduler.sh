@@ -450,6 +450,7 @@ run_issue_intake_phases() {
 }
 run_refill_intake_dispatch_phases() {
   # Dispatch what is already startable first: refill intake took 60s+ in 43% of refills and held every free slot behind it (2026-11-05 24h census).
+  dep_delivered_snapshot # release_dependency_blocks fills this on a full tick; the body gate reads it on both
   phase dispatch_pending true
   INTAKE_ADDED=0
   phase register_new_issues 0 true || say "refill intake failed; continuing to dispatch"

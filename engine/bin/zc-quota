@@ -156,7 +156,8 @@ try {
     q.marker_written = Math.max(until, marker);
     log(`hold ZCode until ${new Date(until * 1000).toISOString()}: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
   } else if (prev.marker_written && marker === prev.marker_written && marker > now) {
-    fs.rmSync(MARKER, { force: true });  // only clear a hold this script wrote; a provider refusal's marker stays
+    // Only clear a hold this script wrote; a provider refusal's marker stays. MARKER may be a symlink: readers see its target.
+    fs.rmSync(fs.realpathSync(MARKER), { force: true });
     log(`release ZCode hold: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
   }
   fs.writeFileSync(STATE, JSON.stringify({ ...q, read_at: now, cap_5h: CAP_5H, cap_week: CAP_WEEK, max_age_seconds: QUOTA_MAX_AGE_SECONDS, freshness: 'fresh' }) + '\n');
