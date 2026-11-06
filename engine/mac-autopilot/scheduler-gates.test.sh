@@ -2085,6 +2085,7 @@ first_units="$(cat "$UNITS")"
 jq -n '{units:[{id:"a",issue:7,stage:"review-pending"},{id:"b",issue:8,stage:"rereview-pending"},{id:"c",stage:"rereview-pending"}]}' > "$UNITS"
 [[ "$(DISPATCH_FIRST_ISSUES='[7]' dispatch_order | jq -r .id | tr '\n' ' ')" == "a b c " ]] || fail "a named issue must dispatch first"
 [[ "$(DISPATCH_FIRST_ISSUES='[]' dispatch_order | jq -r .id | tr '\n' ' ')" == "b c a " ]] || fail "no named issue must keep the stage order"
+[[ "$(DISPATCH_FIRST_ISSUES='[null]' dispatch_order | jq -r .id | tr '\n' ' ')" == "b c a " ]] || fail "a null must not lift units with no issue"
 printf '%s\n' "$first_units" > "$UNITS"
 [[ "$(dispatch_order | jq -r .id | tr '\n' ' ')" == "d c b a " ]] || fail "dispatch order ignores release priority: $(dispatch_order | jq -r .id | tr '\n' ' ')"
 # Nearest the finish goes first: a fresh direct-main implement does not pass a normal repair.

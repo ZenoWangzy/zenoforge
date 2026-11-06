@@ -236,6 +236,7 @@ rm -f "$(_quota_marker_file zcode)"
 glm_run='{"type":"implement","model":"GLM-5.3"}'
 glm_review='{"type":"review","model":"GLM-5.3"}'
 glm_done='{"type":"review","model":"GLM-5.3","harvested":true}'
+glm_lower='{"type":"review","model":"glm-5.3"}'
 pace_review() { # workers-array → whether the review started on GLM
   local unit_json
   unit_json="$(unit_for paced-review 'codex:gpt-6-luna:max')"
@@ -248,6 +249,7 @@ pace_review '[]' || fail 'the first start of a window must pass'
 pace_review "[$glm_run]" || fail 'the second start of a window must pass'
 if pace_review "[$glm_run,$glm_review]"; then fail 'a third GLM start at window open must wait'; fi
 if pace_review "[$glm_review,$glm_review]"; then fail 'two reviews must fill the opening gate too'; fi
+if pace_review "[$glm_run,$glm_lower]"; then fail 'a lowercase GLM model must count'; fi
 pace_review "[$glm_run,$glm_done]" || fail 'a harvested run must not count'
 pick_glm_implementer() { (
   model_policy_role_fields() { printf 'zcode\tGLM-5.3\tmax\t\n'; }

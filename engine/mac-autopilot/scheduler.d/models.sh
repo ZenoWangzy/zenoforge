@@ -150,7 +150,7 @@ model_policy_role_fields() { # role -> provider, model, effort, service tier for
 
 # A tick outlives a quota read, and a read newer than a tick-start NOW_EPOCH reads as unknown: callers pass the current time.
 zcode_pace_inflight() { # GLM runs in flight, any stage: reviews and implement share one count
-  jqf -r '[.workers[] | select(.harvested != true and ((.model // "") | test("GLM")))] | length' "$WORKERS"
+  jqf -r '[.workers[] | select(.harvested != true and ((.model // "") | test("glm"; "i")))] | length' "$WORKERS"
 }
 
 pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with a fresh, available quota

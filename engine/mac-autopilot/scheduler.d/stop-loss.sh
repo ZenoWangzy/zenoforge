@@ -117,7 +117,7 @@ dispatch_order() {
     .units
     | map(select(.stage | test("-pending$")))
     | sort_by([
-        (.issue as $issue | if any($first_issues[]; . == $issue) then 0 else 1 end),
+        (.issue as $issue | if any($first_issues[] | numbers; . == $issue) then 0 else 1 end),
         (if .main_red == true then 0 else 1 end),
         (if .hotpatch == true then 0 else 1 end),
         (if .critical == true then 0 else 1 end),

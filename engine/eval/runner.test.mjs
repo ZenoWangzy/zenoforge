@@ -181,6 +181,8 @@ test('review dispatches on the pipeline-resolved provider and records that ident
     const bin = join(dir, 'bin'), home = join(dir, 'home'), artifact = join(dir, 'artifacts');
     for (const path of [bin, home, artifact, join(home, '.zcode/v2')]) mkdirSync(path, { recursive: true });
     writeFileSync(join(home, '.zcode/v2/provider_config.json'), JSON.stringify({ config: { defaultModelSelection: { modelId: 'GLM-5.3' } } }));
+    mkdirSync(join(home, '.zenoforge'), { recursive: true });
+    writeFileSync(join(home, '.zenoforge/zc-quota.json'), JSON.stringify({ freshness: 'fresh', read_at: Math.floor(Date.now() / 1000), max_age_seconds: 900, five_h_pct: 0, week_pct: 1, cap_5h: 60, cap_week: 100 }));
     writeFileSync(join(bin, 'zcode'), '#!/usr/bin/env bash\ncat > /dev/null || true\nprintf "READY\\nfixture review\\n"\n', { mode: 0o755 });
     writeFileSync(join(bin, 'codex'), '#!/usr/bin/env bash\necho codex must not run >&2\nexit 99\n', { mode: 0o755 });
     const policy = applyOverrides(JSON.parse(readFileSync(resolve('engine/model-policy.default.json'), 'utf8')), ['review=zcode:GLM-5.3:max']);
