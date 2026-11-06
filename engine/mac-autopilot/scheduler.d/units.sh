@@ -36,17 +36,19 @@ _units_history_view() { # doc|index
   if [[ "$kind" == doc ]]; then
     jqf -s --slurpfile arch "$UNITS_ARCHIVE" '
       reduce (($arch[0].units // []) + (.[0].units // []))[] as $u ({}; .[$u.id] = $u)
-      | [.[]] | {units: .}' "$UNITS" 2>/dev/null > "$f.$$" || { rm -f "$f.$$"; cat "$UNITS"; return; }
+      | [.[]] | {units: .}' "$UNITS" 2>/dev/null > "$f.$$" || {
+      rm -f "$f.$$"; say "units history: could not merge $UNITS_ARCHIVE; readers see the hot ledger only"; cat "$UNITS"; return
+    }
   else
     _units_history_view doc | jqf "$proj" > "$f.$$" || { rm -f "$f.$$"; _units_history_view doc; return; }
   fi
+  cat "$f.$$" # before the rename: a concurrent reader's sweep can delete $f, and an empty read looks like an unknown unit
   if [[ -n "$key" ]] && mv -f "$f.$$" "$f"; then
     for g in "$dir"/.units-history-"$kind".*.json "$dir"/.units-history-"$kind".*.json.*; do
       [[ "$g" == "$f" || -n "$(find "$g" -mmin -5 -name '*.json.*' 2>/dev/null)" ]] || rm -f "$g"
     done
-    cat "$f"
   else
-    cat "$f.$$"; rm -f "$f.$$"
+    rm -f "$f.$$"
   fi
 }
 

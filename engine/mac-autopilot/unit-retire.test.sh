@@ -231,4 +231,12 @@ for stage in implement-pending implement review-pending review rereview-pending 
   if printf '%s\n' '{"units":[]}' | write_state "$UNITS"; then fail "a write removed a $stage unit"; fi
 done
 
+# Aged triage still protects a recent PR whose unit has retired.
+grep -qF '| .pr]'"'"' <(units_history_doc))"' "$script_dir/scheduler.d/orphan-prs.sh" || fail "aged triage must read retired units"
+
+# A broken archive leaves a trace, because readers then miss every retired unit.
+printf 'not json' > "$UNITS_ARCHIVE"; printf '%s\n' '{"units":[{"id":"h1","issue":407,"stage":"implement","history":[]}]}' > "$UNITS"
+[[ "$(units_history_doc | jqf -c '[.units[].id]')" == '["h1"]' ]] || fail "a broken archive must still return the hot ledger"
+grep -q 'units history: could not merge' "$LOG" || fail "a broken archive left no log line"
+
 echo "unit-retire.test.sh: all assertions passed"

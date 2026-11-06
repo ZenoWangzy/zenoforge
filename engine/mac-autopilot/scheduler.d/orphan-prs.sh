@@ -173,7 +173,7 @@ aged_pr_lifecycle() {
   # supervisor-owned 热修单元同样视为在途：推进者是热修 supervisor 会话，台账里没有它的节拍，不能据此分类关 PR。
   live_prs="$(jqf -c --argjson cut "$((NOW_EPOCH - AGED_PR_AGE_SECONDS))" '[.units[]
       | select(.pr != null and (.stage | IN("merged","closed") | not))
-      | select(((.supervisor_owned // false) == true) or (([.history[]?.at // empty | try fromdateiso8601 catch 0] | max // 0) > $cut)) | .pr]' "$UNITS")"
+      | select(((.supervisor_owned // false) == true) or (([.history[]?.at // empty | try fromdateiso8601 catch 0] | max // 0) > $cut)) | .pr]' <(units_history_doc))"
   while IFS=$'\t' read -r prn branch head created; do
     [[ "$prn" =~ ^[0-9]+$ && "$head" =~ $SHA_RE ]] || continue
     jq -e --argjson p "$prn" 'index($p) != null' <<<"$live_prs" >/dev/null && continue

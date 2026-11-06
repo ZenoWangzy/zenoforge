@@ -507,6 +507,7 @@ register_new_issues() {
         intake_skip consumed; continue
       fi
       HANDOFF_WAIT_PRS="$(jqf -c --slurpfile add <(jqf -c '[.[].number]' <<<"$lookup") '. + $add[0] | unique' <<<"${HANDOFF_WAIT_PRS:-[]}")"
+      restore_archived_unit "$existing_id" || { intake_skip restore; continue; } # a retired unit must be hot before its lane and PR are read, and for the update below
       lane="$(unit_field "$existing_id" '.lane // empty')"
       # Block the old approval while any matching unit still has a live owner.
       units_update --slurpfile ids <(printf '%s' "$ids") --argjson n "$n" '.units |= map(if (.id as $id | $ids[0] | index($id)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)'
@@ -652,7 +653,6 @@ register_new_issues() {
       fi
     fi
     if [[ -n "$existing_id" ]]; then
-      restore_archived_unit "$existing_id" || { intake_skip restore; continue; } # a retired unit must be back in the hot ledger or the update below maps over nothing
       units_update --arg id "$existing_id" --argjson n "$n" --arg episode "$episode" --arg pr_state "$pr_state" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --argjson labels "$labels" \
         --arg lane "$lane" --arg lane_policy "${lane_policy:-}" --arg branch "$branch" --arg existing_pr "$existing_pr" --arg handoff_branch "$handoff_branch" --argjson pr_changed "$pr_changed" --slurpfile ids <(printf '%s' "$ids") --argjson handoff "$handoff" --argjson handoff_all "$handoff_all" --arg at "$STAMP" \
         '.units |= map(if (.id as $unit | $ids[0] | index($unit)) != null then

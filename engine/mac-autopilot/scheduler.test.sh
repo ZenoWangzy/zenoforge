@@ -4365,6 +4365,22 @@ sched_case_hold_handoff_resume() {
 }
 sched_run_case hold_handoff_resume
 
+# A handoff to a retired unit keeps its lane: read before the unit is hot, it comes back empty and takes the PR lane.
+sched_case_hold_handoff_retired_unit() {
+  new_tick_fixture hold-handoff-retired
+  mkdir -p "$TF/agent-home/state"
+  command jq -n '{state:"ready-for-agent",scheduler_handoff:{episode:"hold-779"}}' > "$TF/agent-home/state/779.json"
+  command jq -n '{number:779,title:"resume retired work",body:"finish the work",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+  command jq '.max_workers=2 | .implement_cap=0 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+  mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  printf '%s\n' '{"units":[]}' > "$TF/supervisor/autopi/units.json"
+  printf '%s\n' '{"units":[{"id":"retired","issue":779,"title":"resume retired work","task":"prior work","lane":"direct-main","branch":"agent/auto-issue-779","history":[],"stage":"closed"}]}' > "$TF/supervisor/autopi/units-archive.json"
+  tick
+  command jq -e '(.units|length)==1 and .units[0].id=="retired" and .units[0].stage=="implement-pending" and .units[0].lane=="direct-main" and .units[0].hold_handoff_episode=="hold-779"' \
+    "$TF/supervisor/autopi/units.json" >/dev/null || { echo 'not ok - a handoff to a retired unit lost its lane or never resumed it' >&2; exit 1; }
+}
+sched_run_case hold_handoff_retired_unit
+
 sched_case_hold_handoff_existing_unit() {
   local mode n
   for mode in implement repair active live; do
