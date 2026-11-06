@@ -77,8 +77,17 @@ blocking_body_dependency() { # unit-json → first predecessor not yet delivered
     labels="$(jqf -r '.labels // ""' <<<"$info")"
     [[ "$state" == OPEN && ",$labels," =~ ,roadmap(-epic|-theme)?, ]] && continue
     printf '%s' "$dep"; return 0
-  done < <(unit_body_blockers "$1"; jqf -r '.dep_wait_delivery // empty' <<<"$1") # every release path ends at dispatch, so the marker is enforced here
+  done < <(unit_body_blockers "$1")
   return 1
+}
+dep_marker_open() { # unit-json → the marked predecessor while it is undelivered; a roadmap label does not clear a marker, unlike a body dependency
+  local dep state
+  dep="$(jqf -r '.dep_wait_delivery // empty' <<<"$1")"
+  [[ "$dep" =~ ^[0-9]+$ ]] || return 1
+  dep_delivered_in_ledger "$dep" && return 1
+  state="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$dep")")"
+  [[ "$state" != CLOSED && "$state" != MERGED ]] || return 1
+  printf '%s' "$dep"
 }
 park_if_body_blocked() { # unit-json → 0 当按正文前置停住（不派发）
   local id dep
@@ -185,7 +194,7 @@ release_dependency_blocks() {
         [[ "$dep" =~ ^[0-9]+$ ]] || continue
         dep_delivered_in_ledger "$dep" || deps+=("$dep")
       done < <(unit_body_blockers "$u")
-    done < <(jqf -c '.units[] | select(.stage=="implement-pending" or (.stage=="repair-pending" and .hold_handoff_episode != null))' "$UNITS")
+    done < <(jqf -c '.units[] | select(.stage=="implement-pending" or .stage=="blocked-external" or (.stage=="repair-pending" and .hold_handoff_episode != null))' "$UNITS") # a blocked unit goes pending this tick: its other predecessors must already be cached, or it blocks on one that is closed
     if (( ${#deps[@]} > 0 )); then
       while IFS= read -r dep; do [[ -n "$dep" ]] && unique_deps+=("$dep"); done \
         < <(printf '%s\n' "${deps[@]}" | sort -n -u)
@@ -271,7 +280,7 @@ dep_blocker_forget() { # dynamic local map: keep mutual-cycle checks current as 
   fi
 }
 unblock_unit() { # unit reason
-  set_unit "$1" "$(hist unblocked "$2") | del(.blocked_on) | .note=null | .stage=(if .blocked_resume_stage == \"repair-pending\" then \"repair-pending\" elif .pr != null then \"review-pending\" else \"implement-pending\" end) | del(.blocked_resume_stage)"
+  set_unit "$1" "$(hist unblocked "$2") | (if .dep_wait_delivery != null and .dep_wait_delivery == .blocked_on then del(.dep_wait_delivery, .unpark_condition) else . end) | del(.blocked_on) | .note=null | .stage=(if .blocked_resume_stage == \"repair-pending\" then \"repair-pending\" elif .pr != null then \"review-pending\" else \"implement-pending\" end) | del(.blocked_resume_stage)"
   say "unit $1 unblocked: $2"
 }
 

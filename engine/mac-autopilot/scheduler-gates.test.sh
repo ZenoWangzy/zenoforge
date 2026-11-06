@@ -2077,18 +2077,32 @@ release_dependency_blocks
 printf '{"states":{"146":{"state":"CLOSED","labels":""}}}\n' > "$A/dep-check.cache.json"
 release_dependency_blocks
 [[ "$(field issue-597 .stage)" != blocked-external ]] || fail 'a real delivery must still free the unit'
+[[ "$(field issue-597 .dep_wait_delivery)" == null ]] || fail 'a real delivery must clear the marker, or a later cache read parks the unit again'
+# Two closed predecessors: releasing one must not block on the other because the refresh skipped it (issue-1271 flipped every tick).
+dep_states_saved="$(declare -f dep_states)"
+dep_states() { local dep; for dep in "$@"; do printf '%s\tCLOSED\t\tCLOSED\n' "$dep"; done; }
+units '{"units":[{"id":"issue-71","issue":71,"title":"t","task":"t","stage":"blocked-external","blocked_on":70,"body_blocked_by":[69,70],"branch":"agent/issue-71","history":[]}]}'
+rm -f "$A/dep-check.epoch"; DEP_DELIVERED_CACHE=(); release_dependency_blocks || :
+DISPATCHED=(); dispatch_pending || :
+[[ "$(field issue-71 .stage)" != blocked-external ]] || fail "a closed second predecessor must not block: $(field issue-71 .blocked_on)"
+eval "$dep_states_saved"
 # A refill tick reads the ledger too: issue-2095 flipped delivered, blocked, delivered with no worker.
 units '{"units":[{"id":"issue-148","issue":148,"stage":"merged","history":[]}]}'
 DEP_DELIVERED_CACHE=(); dep_delivered_snapshot
 dep_delivered_in_ledger 148 || fail 'the snapshot must name a merged unit'
 # Every path that frees a marked unit ends at dispatch: a marked unit starts only after delivery, whatever moved it.
 printf '{"states":{"146":{"state":"OPEN","labels":""}}}\n' > "$A/dep-check.cache.json"
-for marked in '"stage":"implement-pending","branch":"agent/issue-61"' '"stage":"repair-pending","pr":61,"branch":"agent/issue-61"'; do
+for marked in '"stage":"implement-pending","branch":"agent/issue-61"' '"stage":"repair-pending","pr":61,"branch":"agent/issue-61"' '"stage":"review-pending","pr":61,"branch":"agent/issue-61"'; do
   units "{\"units\":[{\"id\":\"issue-61\",\"issue\":61,\"title\":\"t\",\"task\":\"t\",$marked,\"dep_wait_delivery\":146,\"history\":[]}]}"
   DEP_DELIVERED_CACHE=(); DISPATCHED=(); dispatch_pending || :
   [[ "$(field issue-61 .stage)" == blocked-external && -z "${DISPATCHED[*]:-}" ]] \
     || fail "a marked unit must not start before delivery: $marked -> $(field issue-61 .stage) ${DISPATCHED[*]:-}"
 done
+printf '{"states":{"146":{"state":"OPEN","labels":"roadmap"}}}\n' > "$A/dep-check.cache.json"
+set_unit issue-61 '.stage="implement-pending" | del(.blocked_on)'
+DISPATCHED=(); dispatch_pending || :
+[[ "$(field issue-61 .stage)" == blocked-external ]] || fail "a roadmap label must not clear a marker: $(field issue-61 .stage)"
+printf '{"states":{}}\n' > "$A/dep-check.cache.json"
 units '{"units":[{"id":"issue-61","issue":61,"title":"t","task":"t","stage":"implement-pending","branch":"agent/issue-61","dep_wait_delivery":146,"history":[]},{"id":"issue-146","issue":146,"stage":"merged","history":[]}]}'
 dep_delivered_snapshot
 DISPATCHED=(); dispatch_pending || :

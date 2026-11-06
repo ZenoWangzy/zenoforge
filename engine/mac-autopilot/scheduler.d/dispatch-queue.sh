@@ -1,6 +1,6 @@
 
 dispatch_pending() {
-  local local_refill="${1:-false}" local_refill_prs_primed=false u id stage rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
+  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep u id stage rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true
   footprint_waiters_revalidate || { say 'dispatch held: footprint wait owners could not be revalidated'; return 1; }
   if [[ "$local_refill" != true ]]; then
@@ -26,6 +26,14 @@ dispatch_pending() {
     # implementation-only refills continue to use local ledger data without a GitHub query.
     [[ "$local_refill" != true || "$stage" == implement-pending || "$stage" == repair-pending \
       || "$stage" == review-pending || "$stage" == rereview-pending ]] || continue
+    # Every path that frees a marked unit ends here, so the marker is enforced once, ahead of anything that can change the stage.
+    if [[ "$stage" == *-pending && -n "$(jqf -r '.dep_wait_delivery // empty' <<<"$u")" ]] && marked_dep="$(dep_marker_open "$u")"; then
+      if [[ "$local_refill" != true ]]; then
+        park_blocked "$id" "$marked_dep"
+        [[ "$stage" != repair-pending ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
+      fi
+      continue
+    fi
     [[ "$(jqf -r '.hold_handoff_waiting // false' <<<"$u")" != false ]] && ! handoff_wait_stale "$id" && continue
     # supervisor-owned 热修单元只计数：评审/修复/复审都由热修 supervisor 会话自己派，这里不派任何 worker。
     [[ "$(jqf -r '.supervisor_owned // false' <<<"$u")" != true ]] || continue
@@ -120,7 +128,7 @@ dispatch_pending() {
     case "$stage" in
       repair-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || { to_supervisor "$id" "repair-pending without a PR"; continue; }
-        if [[ -n "$(jqf -r '.hold_handoff_episode // .dep_wait_delivery // empty' <<<"$u")" ]] && park_if_body_blocked "$u"; then
+        if [[ -n "$(jqf -r '.hold_handoff_episode // empty' <<<"$u")" ]] && park_if_body_blocked "$u"; then
           [[ "$(unit_field "$id" .stage)" != blocked-external ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
           continue
         fi
