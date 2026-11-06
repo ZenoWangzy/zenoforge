@@ -722,8 +722,12 @@ issue_transition() (
   if jq -e '.tracker_parent == true or .state == "tracker"' <<< "$before" >/dev/null 2>&1; then
     case "$to" in
       needs-triage|needs-info|ready-for-agent|ready-for-human|needs-owner|checks-blocked|needs-advisor|needs-recut|awaiting-release|awaiting-pipeline-sync|awaiting-pipeline-health)
-        echo "issue_transition: refused tracker parent #$n -> active state $to" >&2
-        return 1
+        if tracker_parent_flag_is_stale "$n" "$before"; then
+          patch="del(.tracker_parent) | $patch"
+        else
+          echo "issue_transition: refused tracker parent #$n -> active state $to" >&2
+          return 1
+        fi
         ;;
     esac
   fi

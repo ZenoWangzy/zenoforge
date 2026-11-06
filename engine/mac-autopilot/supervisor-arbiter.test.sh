@@ -10,7 +10,7 @@ sup="$fixture/supervisor"
 mkdir -p "$sup/autopi/alerts" "$fixture/repo" "$fixture/bin"
 # Stage-transition fixtures are already roadmap leaves; this suite covers arbitration effects.
 export ZF_ROADMAP_TREE_CACHE_FILE="$fixture/roadmap-tree.json"
-jq -cn '{roots:[611,615,618,622,623] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
+jq -cn '{roots:[611,615,618,622,623,699] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
   > "$ZF_ROADMAP_TREE_CACHE_FILE"
 jq '.auto_merge = false | .advisor = false | .precheck = false | .supervisor_arbiter.enabled = true | .supervisor_arbiter.cap_triage = false' "$script_dir/config.template.json" > "$sup/autopi/config.json"
 echo '{"units":[]}' > "$sup/autopi/units.json"
@@ -44,6 +44,15 @@ gh() {
         printf '%s\n' '{"number":615,"title":"fixture issue 615","body":"","state":"OPEN","labels":[{"name":"needs-advisor"},{"name":"on-hold"}]}'
         return 0
       fi
+      if [[ "$*" == *'--json title,body,subIssuesSummary'* ]]; then
+        if [[ "$*" == *'issue view 698'* ]]; then
+          printf '%s\n' '{"title":"fixture parent","body":"- [ ] #797","subIssuesSummary":{"total":0}}'
+        else
+          printf '%s\n' '{"title":"fixture issue","body":"","subIssuesSummary":{"total":0}}'
+        fi
+        return 0
+      fi
+      if [[ "$*" == *'--json state --jq .state'* ]]; then echo OPEN; return 0; fi
       if [[ "$*" == *'--json number,title,body,state,labels'* ]]; then
         printf '%s\n' '{"number":611,"title":"fixture issue 611","body":"","state":"OPEN","labels":[{"name":"needs-advisor"}]}'
       elif [[ "$*" == *'--json labels -q .labels[].name'* ]]; then
@@ -256,7 +265,7 @@ REJECTED: close'
 [[ "$(field pr-616 .stage)" == parked ]] || fail "park must land in parked"
 jq -e '.units[]|select(.id=="pr-616")|has("arbiter_left_mark")|not' "$UNITS" >/dev/null || fail "a decision that moved the unit must not hold it"
 
-# The #4879 shape: a stale tracker flag refuses the requeue, so the decision leaves the unit in review.
+# A tracker flag on a ticket that still has an open task-list child refuses the requeue, so the decision leaves the unit in review.
 units "$(jq -cn '{units:[{id:"pr-698",issue:698,pr:698,lane:"pr",branch:"agent/issue-698",stage:"supervisor-review",history:[{stage:"review-request-changes",result:"F1",at:"2026-10-27T00:00:00Z"},{stage:"supervisor-escalated",result:"stop-loss",at:"2026-10-27T00:01:00Z"}]}]}')"
 jq -n '{state:"on-hold",tracker_parent:true,hold:{kind:"stop-loss",holder:"scheduler-stop-loss"},recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/698.json"
 harvest_with_reply pr-698 'ACTION: requeue
@@ -266,6 +275,19 @@ REJECTED: park（仍有可重试的修复）
 GUIDANCE: 恢复修复并提交' || :  # the scheduler runs without errexit
 [[ "$(field pr-698 .stage)" == supervisor-review ]] || fail "a refused requeue must stay in review"
 [[ -n "$(field pr-698 .arbiter_left_mark)" ]] || fail "a decision that left the unit in review must hold it"
+jq -e '.tracker_parent == true and .state == "on-hold"' "$AGENT_HOME/state/698.json" >/dev/null || fail "a real parent must keep its flag"
+
+# The #4879 and #5329 shape: on-hold, flag set, no child of any kind. The requeue clears the flag and goes through.
+units "$(jq -cn '{units:[{id:"pr-699",issue:699,pr:699,lane:"pr",branch:"agent/issue-699",stage:"supervisor-review",history:[{stage:"review-request-changes",result:"F1",at:"2026-10-27T00:00:00Z"},{stage:"supervisor-escalated",result:"stop-loss",at:"2026-10-27T00:00:00Z"}]}]}')"
+jq -n '{state:"on-hold",tracker_parent:true,hold:{kind:"stop-loss",holder:"scheduler-stop-loss"},recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/699.json"
+harvest_with_reply pr-699 'ACTION: requeue
+REASON: stop-loss hold reviewed, resume the approved repair
+EVIDENCE: supervisor-escalated stop-loss
+REJECTED: park（仍有可重试的修复）
+GUIDANCE: 恢复修复并提交' || :
+[[ "$(field pr-699 .stage)" != supervisor-review ]] || fail "a stale flag must not refuse the requeue"
+jq -e '.state == "ready-for-agent" and (has("tracker_parent") | not) and .hold == null' "$AGENT_HOME/state/699.json" >/dev/null \
+  || fail "the requeue must clear the stale flag: $(cat "$AGENT_HOME/state/699.json")"
 
 units "$(jq -cn '{units:[{id:"pr-617",issue:617,pr:617,lane:"pr",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"superseded",at:"2026-10-27T00:00:00Z"}]}]}')"
 harvest_with_reply pr-617 'no action line'
