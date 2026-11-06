@@ -98,13 +98,18 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
   [[ -z "$other" ]] || { RESCUE_REFUSED="unpushed commits on another branch"; return 1; }
   # What the private index below cannot see: conflicted entries, flagged files, and a staged version later edited in the worktree.
   [[ -z "$(git -C "$wt" ls-files -u)" ]] || { RESCUE_REFUSED="unmerged index"; return 1; }
-  [[ -z "$(git -C "$wt" ls-files -v | grep '^[a-zS]')" ]] || { RESCUE_REFUSED="assume-unchanged or skip-worktree files"; return 1; }
+  # Sparse clones flag hundreds of absent files, which is normal. A flagged file on disk that differs is a hidden edit.
+  while IFS= read -r -d '' path; do
+    [[ -e "$wt/$path" && "$(git -C "$wt" hash-object --path="$path" -- "$path" 2>/dev/null)" != "$(git -C "$wt" rev-parse ":$path" 2>/dev/null)" ]] \
+      && { RESCUE_REFUSED="assume-unchanged or skip-worktree edit"; return 1; }
+  done < <(git -C "$wt" ls-files -v -z | sed -zn 's/^[a-zS] //p')
   [[ -z "$(comm -12 <(git -C "$wt" diff --cached --name-only | sort) <(git -C "$wt" diff --name-only | sort))" ]] || { RESCUE_REFUSED="staged content differs from the worktree"; return 1; }
   commit="$head"
   if [[ -n "$status" ]]; then
     # A private index and commit-tree: the clone's index, branch and files stay untouched until the push is proved.
+    # A copy of the real index, not read-tree: only the flags in it stop add -A recording a sparse clone's absent files as deletions.
     index="$(mktemp -u)"
-    tree="$(GIT_INDEX_FILE="$index" git -C "$wt" read-tree HEAD && GIT_INDEX_FILE="$index" git -C "$wt" add -A 2>/dev/null && GIT_INDEX_FILE="$index" git -C "$wt" write-tree)" \
+    tree="$(cp "$(git -C "$wt" rev-parse --absolute-git-dir)/index" "$index" && GIT_INDEX_FILE="$index" git -C "$wt" add -A 2>/dev/null && GIT_INDEX_FILE="$index" git -C "$wt" write-tree)" \
       || { rm -f "$index" "$index.lock"; RESCUE_REFUSED="could not build the rescue tree"; return 1; }
     rm -f "$index"
     raw="$(git -C "$wt" diff-tree -r --no-commit-id --raw --no-abbrev "$head" "$tree")" || { RESCUE_REFUSED="could not read the rescue tree"; return 1; }

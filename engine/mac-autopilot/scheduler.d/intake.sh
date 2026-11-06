@@ -528,6 +528,7 @@ register_new_issues() {
               continue
             fi
             prior_reason+="; not rescued: $RESCUE_REFUSED"
+            say "handoff issue #$n: $prior_reason" # the inbox line is once per episode, so a later refusal shows only here
           fi
           unsafe_clones=1
           related_hash="$(printf '%s' "$related_id" | sha256sum)"; related_hash="${related_hash%% *}"
