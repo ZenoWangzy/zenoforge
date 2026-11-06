@@ -58,10 +58,21 @@ obsolete_evidence_gate() { # first-report-line -> 0 when the claim can be checke
   done < <(grep -oE '[0-9a-f]{7,40}' <<<"$first")
   return 1
 }
+# The report says no change was needed, so a branch holding changes when that same run ended contradicts it.
+obsolete_run_changes() { # unit -> paths at this run's write-end; empty when the run recorded none
+  jqf -r --arg id "$1" '.units[] | select(.id == $id) | [(.history // [])[] | select(.stage == "write-start" or .stage == "write-end")] | last
+    | select(.stage == "write-end") | (.result | fromjson? // []) | join(" ")' "$UNITS"
+}
 obsolete_issue_close() { # issue first-report-line
   gh issue close "$1" --comment "Autopilot: no change needed on current main. $2" >/dev/null 2>&1
 }
 obsolete_unit_close() { # unit issue first-report-line
+  local changed; changed="$(obsolete_run_changes "$1")"
+  if [[ -n "$changed" ]]; then
+    to_supervisor "$1" "OBSOLETE report, but this run's branch holds changes (${changed:0:200}): $3"
+    say "unit $1 obsolete: refused, this run's branch holds changes, sent to review"
+    return 0
+  fi
   if ! obsolete_evidence_gate "$3"; then
     to_supervisor "$1" "OBSOLETE report names nothing checkable on current main: $3"
     say "unit $1 obsolete: refused by obsolete_evidence_gate, sent to review"
@@ -83,6 +94,17 @@ obsolete_close_retry() {
     set_unit "$id" "$(hist obsolete "$first") | .stage=\"closed\" | del(.parked_reason, .unpark_condition)"
     say "unit $id obsolete: closed issue #$issue on retry"
   done < <(jqf -r '.units[] | select(.stage == "parked" and .parked_reason == "obsolete-close-failed") | [.id, .issue] | @tsv' "$UNITS")
+}
+# A PR-lane worker whose diff the push preflight refuses as direct-main has no other route. A worker's word moves the
+# lane once; land-direct-main still refuses product paths, and an opened PR or a second report goes to the supervisor.
+needs_direct_route() { # unit first-report-line
+  if [[ -n "$(unit_field "$1" '.pr // empty')" || "$(unit_retries "$1" needs-direct)" != 0 ]]; then
+    to_supervisor "$1" "$2"; return 0
+  fi
+  set_unit "$1" "$(hist needs-direct "$2") | .lane=\"direct-main\" | .task += ($(js "
+
+上一轮在 PR 车道判断：$2。本轮走直落车道：在本地分支提交，不 push、不开 PR；只能改非产品路径。")) | .stage=\"implement-pending\""
+  say "unit $1 needs direct-main -> direct-main lane"
 }
 # 无 PR 的直落实现：本地提交 → 评审本地提交 → 直落 main；OBSOLETE 直接结案，NEEDS-PR 转人工开 PR。
 harvest_prless_implement() { # unit report-path [local-only]
@@ -109,7 +131,7 @@ harvest_prless_implement() { # unit report-path [local-only]
   elif [[ "$(unit_retries "$1" implement-no-commit)" == 0 ]]; then
     set_unit "$1" "$(hist implement-no-commit "$(basename "$2")") | .task += $(js "
 
-上一轮交付了报告但分支 ${branch} 上没有本地提交：本轮必须在该分支提交改动（或按协议写 OBSOLETE:/NEEDS-PR:）。") | .stage=\"implement-pending\""
+上一轮交付了报告但分支 ${branch} 上没有本地提交：本轮必须在该分支提交改动（或按协议写 NEEDS-PR:）。") | .stage=\"implement-pending\""
   else
     to_supervisor "$1" "implement delivered no local commit on $branch twice (report $(basename "$2"))"
   fi

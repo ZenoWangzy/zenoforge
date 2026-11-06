@@ -91,7 +91,28 @@ obsolete_close_retry
 unit 911 'x' | jq -c '.stage="implement"' | ledger
 obsolete_unit_close issue-911 911 'OBSOLETE: handled at a.ts:1'
 [[ "$(field issue-911 .stage)" == closed ]] || fail 'a close that works must close the unit'
+
+# A branch holding changes at the end of the same run contradicts "no change needed"; an older run's files do not.
+unit 912 'x' | jq -c '.stage="implement" | .history=[{stage:"write-start",result:"[]"},{stage:"write-end",result:"[\"a.ts\"]"}]' | ledger
+obsolete_unit_close issue-912 912 'OBSOLETE: handled at a.ts:1'
+[[ "$(field issue-912 .stage)" == supervisor-review ]] && ! grep -qx 912 "$fixture/closes" || fail 'a run that left changes must not close the issue'
+unit 913 'x' | jq -c '.stage="implement" | .history=[{stage:"write-end",result:"[\"a.ts\"]"},{stage:"write-start",result:"[]"}]' | ledger
+obsolete_unit_close issue-913 913 'OBSOLETE: handled at a.ts:1'
+[[ "$(field issue-913 .stage)" == closed ]] || fail 'an older run must not refuse this close'
+unit 914 'x' | jq -c '.stage="implement" | .history=[{stage:"write-start",result:"[]"},{stage:"write-end",result:"[]"}]' | ledger
+obsolete_unit_close issue-914 914 'OBSOLETE: handled at a.ts:1'
+[[ "$(field issue-914 .stage)" == closed ]] || fail 'an empty write-end must not refuse this close'
 unset -f gh
+
+# NEEDS-DIRECT moves the lane once, and never under an open PR.
+unit 915 'x' | jq -c '.stage="implement" | .lane="pr" | .task="t"' | ledger
+needs_direct_route issue-915 'NEEDS-DIRECT: only docs changed'
+[[ "$(field issue-915 .stage):$(field issue-915 .lane)" == implement-pending:direct-main && "$(field issue-915 .task)" == *'only docs changed'* ]] || fail 'NEEDS-DIRECT must rerun on the direct-main lane'
+set_unit issue-915 '.stage="implement"'; needs_direct_route issue-915 'NEEDS-DIRECT: again'
+[[ "$(field issue-915 .stage)" == supervisor-review ]] || fail 'a second NEEDS-DIRECT must go to the supervisor'
+unit 916 'x' | jq -c '.stage="implement" | .lane="pr" | .pr=77' | ledger
+needs_direct_route issue-916 'NEEDS-DIRECT: only docs changed'
+[[ "$(field issue-916 .stage):$(field issue-916 .lane)" == supervisor-review:pr ]] || fail 'a unit with a PR must not change lane on a report'
 
 # Rulings move one unit per sweep, each once.
 to_supervisor() { set_unit "$1" '.stage="supervisor-review"'; }

@@ -152,6 +152,9 @@ harvest_pr_implement() { # unit report-path
   if [[ "$first" == OBSOLETE:* ]]; then
     obsolete_unit_close "$1" "$issue" "$first"; return 0
   fi
+  if [[ "$first" == NEEDS-DIRECT:* ]]; then
+    needs_direct_route "$1" "$first"; return 0
+  fi
   head="$(git -C "$dir" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}')"
   if [[ ! "$head" =~ $SHA_RE ]]; then
     # 远端没有分支时先诊断 worktree，再决定是否值得再跑一轮 implement（#5180/#5071/#5246）。
@@ -190,7 +193,7 @@ harvest_pr_implement() { # unit report-path
       if [[ "$(unit_retries "$1" implement-no-push)" == 0 ]]; then
         set_unit "$1" "$(hist implement-no-push "$(basename "$2")") | .task += $(js "
 
-上一轮交付了报告但 origin 上没有分支 ${branch}：本轮必须通过 push preflight 并 push 该分支（或按协议写 OBSOLETE:）。") | .stage=\"implement-pending\""
+上一轮交付了报告但 origin 上没有分支 ${branch}：本轮必须通过 push preflight 并 push 该分支。") | .stage=\"implement-pending\""
       else
         to_supervisor "$1" "implement pushed no branch $branch twice (report $(basename "$2"))${dirty:+; the worktree holds uncommitted edits but no local commit on the branch}"
       fi

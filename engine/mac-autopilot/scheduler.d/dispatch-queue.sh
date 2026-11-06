@@ -374,7 +374,7 @@ REPORT：
 VERIFY：
 本地定向验证全绿；${INTEGRATION_RULE}node scripts/branch-delivery-preflight.mjs --mode push --publish-topic 通过后 push 分支 ${branch} 到 origin。
 FORBIDDEN：
-不 push main、不 force、不开 PR——流水线会开 PR 并派评审；禁止 merge PR/部署/改 GitHub 状态。
+不 push main、不 force、不开 PR——流水线会开 PR 并派评审；禁止 merge PR/部署/改 GitHub 状态。push preflight 判定这份改动只能走 direct-main 时不要自己落地，报告第一行写 NEEDS-DIRECT: <原因>。
 REPORT：
 产出说明写到 $SUP/${rep}（根因、改动、验证输出摘要、push SHA；SPLIT 时写清已交付切片的边界和剩余范围）。交付完即结束。"
         fi

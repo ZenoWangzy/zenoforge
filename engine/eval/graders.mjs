@@ -124,7 +124,7 @@ export function gradeImplementDecision(report, changedPaths, expected) {
     const implemented = changedPaths.filter((path) => (expected.implementationPrefixes ?? []).some((prefix) => path.startsWith(prefix)));
     if (implemented.length) failures.push(`a ticket whose premise does not reproduce must not be implemented; changed ${implemented.join(', ')}`);
   } else if (expected.outcome === 'implement') {
-    if (/^\s*(OBSOLETE|BLOCKED-ON|NEEDS-PR):/i.test(firstLine)) failures.push(`the ticket's numbers reproduce; expected implementation, got the refusal ${JSON.stringify(firstLine.slice(0, 60))}`);
+    if (/^\s*(OBSOLETE|BLOCKED-ON|NEEDS-PR|NEEDS-DIRECT):/i.test(firstLine)) failures.push(`the ticket's numbers reproduce; expected implementation, got the refusal ${JSON.stringify(firstLine.slice(0, 60))}`);
   } else failures.push(`unknown implement outcome ${JSON.stringify(expected.outcome)}`);
   return result(failures);
 }
