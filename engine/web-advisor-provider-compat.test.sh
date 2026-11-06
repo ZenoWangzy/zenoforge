@@ -22,6 +22,11 @@ for detail in '模型菜单' '选择模型' '当前模型或推理档位'; do
   [[ "$(web_advisor_provider_fault_signature "$detail")" == env:web-advisor-provider:picker-not-found ]]
 done
 [[ "$(web_advisor_provider_fault_signature 'ChatGPT tab lost')" == env:web-advisor-provider:browser-context-lost ]]
+# The settings line every job logs names the picker; it says nothing about the failure.
+ladder=$'发问设置：GPT-6 / Pro（Pro 优先的 picker ladder）\n'
+[[ "$(web_advisor_provider_fault_signature "${ladder}FAIL: ADVISOR_SEND_NOT_CONFIRMED: send clicked once")" == env:web-advisor-provider:send-not-confirmed ]]
+[[ "$(web_advisor_provider_fault_signature "${ladder}FAIL: ADVISOR_CONVERSATION_MISMATCH: no attachment")" == env:web-advisor-provider:conversation-mismatch ]]
+[[ "$(web_advisor_provider_fault_signature "${ladder}FAIL: something new")" == env:web-advisor-provider:call-failed ]]
 [[ "$(web_advisor_provider_fault_signature 'CDP port unreachable')" == env:web-advisor-provider:cdp-unreachable ]]
 printf '发问前已验证的 picker 设置：first\n本次实际使用：second\n' > "$test_env_root/log"
 [[ "$(web_advisor_provider_model_used "$test_env_root/log")" == second ]]

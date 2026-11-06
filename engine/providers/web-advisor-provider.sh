@@ -144,7 +144,13 @@ web_advisor_provider_fault_pattern_matches() {
 web_advisor_provider_fault_signature() {
   local detail="${1:-}" normalized
   normalized="${detail,,}"
+  # Every job logs its picker ladder line, so the word alone labelled unrelated failures picker-not-found.
+  normalized="${normalized//picker ladder/}"
   case "$normalized" in
+    *'advisor_send_not_confirmed'*)
+      echo env:web-advisor-provider:send-not-confirmed ;;
+    *'advisor_conversation_mismatch'*)
+      echo env:web-advisor-provider:conversation-mismatch ;;
     *'advisor_tab_unresponsive'*|*'tab-unresponsive'*|*'tab unresponsive'*)
       echo env:web-advisor-provider:tab-unresponsive ;;
     *'cdp unreachable'*|*'cdp port unreachable'*)
