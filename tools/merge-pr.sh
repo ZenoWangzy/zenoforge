@@ -103,20 +103,24 @@ merge_pr_size_ok() {
 
 
 # The prelude of scheduler.test.sh holds the text assertions every shard runs, so one stale grep turns all eight red.
-merge_pr_scheduler_prelude() {
-  local pr="$1" root tree ref="refs/zf-merge-pr/$1" rc=0
+merge_pr_with_tree() { # pr function: run function on an export of the PR's head
+  local pr="$1" fn="$2" root tree ref="refs/zf-merge-pr/$1" rc=0
   root="$(merge_pr_root)" || return 0
   git -C "$root" fetch -q origin "+pull/$pr/head:$ref" 2>&1 || return
   tree="$(mktemp -d)"
   if git -C "$root" archive "$ref" | tar -x -C "$tree"; then
-    SCHED_TEST_CASE=prelude timeout 300 bash "$tree/engine/mac-autopilot/scheduler.test.sh" 2>&1 | tail -3
-    rc=${PIPESTATUS[0]}
+    "$fn" "$tree" || rc=$?
   else
     rc=1
   fi
   rm -rf -- "$tree"
   return "$rc"
 }
+merge_pr_prelude_in() {
+  SCHED_TEST_CASE=prelude timeout 300 bash "$1/engine/mac-autopilot/scheduler.test.sh" 2>&1 | tail -3
+  return "${PIPESTATUS[0]}"
+}
+merge_pr_scheduler_prelude() { merge_pr_with_tree "$1" merge_pr_prelude_in; }
 merge_pr_scheduler_prelude_ok() {
   local pr="$1" out touched
   touched="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq '[.files[].path | select(test("^engine/mac-autopilot/(scheduler(\\.sh|\\.d/|\\.test\\.sh)|config\\.template\\.json)"))] | length')" || touched=
@@ -127,6 +131,27 @@ merge_pr_scheduler_prelude_ok() {
   (( touched > 0 )) || return 0
   out="$(merge_pr_scheduler_prelude "$pr")" && return 0
   merge_pr_refuse "$pr" "scheduler.test.sh prelude failed: $out"
+}
+# These scans take seconds, so they run here and hold no merge on CI: #502 reached main past jq-arg-safety.
+merge_pr_static_scans_in() {
+  local scan rc=0
+  for scan in jq-arg-safety jq-regex-safety scheduler-gh-timeout-safety; do
+    timeout 120 bash "$1/engine/$scan.test.sh" 2>&1 | tail -3
+    [[ "${PIPESTATUS[0]}" == 0 ]] || rc=1
+  done
+  return "$rc"
+}
+merge_pr_static_scans() { merge_pr_with_tree "$1" merge_pr_static_scans_in; }
+merge_pr_static_scans_ok() {
+  local pr="$1" out touched
+  touched="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq '[.files[].path | select(test("^engine/.*\\.sh$"))] | length')" || touched=
+  if [[ -z "$touched" ]]; then
+    merge_pr_refuse "$pr" 'could not read PR files for the static scans'
+    return 1
+  fi
+  (( touched > 0 )) || return 0
+  out="$(merge_pr_static_scans "$pr")" && return 0
+  merge_pr_refuse "$pr" "static scan failed: $out"
 }
 # Ruling zenoforge-instant-effect-2026-11-05: gates, evaluators, the pin, the watchdog and rollback keep CI before merge.
 # Code that deletes clones and refs is held the same way: #485 reached main 95s into a CI run that then failed.
@@ -195,6 +220,7 @@ merge_pr_checks_and_merge() {
   merge_pr_size_ok "$pr" || return 1
   merge_pr_gate_ci_ok "$pr" "$checks_json" || return 1
   merge_pr_scheduler_prelude_ok "$pr" || return 1
+  merge_pr_static_scans_ok "$pr" || return 1
 
   while IFS= read -r check_name; do
     [[ -n "$check_name" ]] || continue
