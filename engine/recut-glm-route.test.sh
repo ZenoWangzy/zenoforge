@@ -59,12 +59,17 @@ prompt="$(mktemp)"; schema="$(mktemp)"; echo '{"required":["children"]}' > "$sch
 cat > "$AGENT_HOME/zcode" <<'Z'
 #!/usr/bin/env bash
 printf '%s\n' "${GH_TOKEN:-}${GITHUB_TOKEN:-}" > "$AGENT_HOME/zcode-token-seen"
+printf '%s\n' "${https_proxy-unset}" > "$AGENT_HOME/zcode-proxy-seen"
 printf '%s\n' '```json' "$ZCODE_FAKE_REPLY" '```'
 Z
 chmod +x "$AGENT_HOME/zcode"; PATH="$AGENT_HOME:$PATH"
 assert_eq "a reply with every required key passes" false "$(ZCODE_FAKE_REPLY='{"children":[]}' run_zcode_json . "$GLM" 1 "$schema" "$prompt" hand-zcode | jq -r .is_error)"
 GH_TOKEN=planted GITHUB_TOKEN=planted ZCODE_FAKE_REPLY='{"children":[]}' run_zcode_json . "$GLM" 1 "$schema" "$prompt" hand-zcode >/dev/null
 assert_eq "zcode never inherits the pipeline GitHub token" "" "$(cat "$AGENT_HOME/zcode-token-seen")"
+https_proxy='' ZCODE_FAKE_REPLY='{"children":[]}' run_zcode_json . "$GLM" 1 "$schema" "$prompt" hand-zcode >/dev/null
+assert_eq "an empty proxy from systemd-run -E never reaches zcode" unset "$(cat "$AGENT_HOME/zcode-proxy-seen")"
+https_proxy=http://proxy.test:1 ZCODE_FAKE_REPLY='{"children":[]}' run_zcode_json . "$GLM" 1 "$schema" "$prompt" hand-zcode >/dev/null
+assert_eq "a real proxy still reaches zcode" http://proxy.test:1 "$(cat "$AGENT_HOME/zcode-proxy-seen")"
 assert_eq "a reply missing a required key fails closed" true "$(ZCODE_FAKE_REPLY='{"other":1}' run_zcode_json . "$GLM" 1 "$schema" "$prompt" hand-zcode | jq -r .is_error || true)"
 rm -f "$prompt" "$schema"
 
