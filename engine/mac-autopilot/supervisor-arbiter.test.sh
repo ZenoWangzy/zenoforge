@@ -423,6 +423,19 @@ SUPERVISOR_ARBITER=true SUPERVISOR_CAP_TRIAGE=true SUPERVISOR_ARBITER_MAX=99 ZF_
 jq -e '.units[0] | .stage=="supervisor-review" and .supervisor_cap_retry=="pending" and (has("parked_reason") | not)' "$UNITS" >/dev/null \
   || fail "a generic founder park must sweep once with its retry pending: $(jq -c '.units[0]' "$UNITS")"
 
+# Two invalid answers are a terminal park too, with its unpark condition.
+units "$(jq -cn '{units:[{id:"pr-692",lane:"pr",stage:"supervisor-review",supervisor_cap_reask:1,supervisor_cap_invalid_answers:["x"],history:[]}]}')"
+printf 'no verdict\n' > "$report"
+supervisor_cap_triage_reask_or_park pr-692 "$report"
+jq -e '.units[0] | .parked_reason=="supervisor-cap-exhausted" and (.unpark_condition | length > 0)' "$UNITS" >/dev/null \
+  || fail "two invalid answers must end with an unpark condition: $(jq -c '.units[0]' "$UNITS")"
+
+# An alert that failed once goes out on a later pass; a delivered one does not repeat.
+units "$(jq -cn '{units:[{id:"pr-691",lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",note:"n",cap_exhausted_mark:"aaa||0",history:[]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+[[ "$(grep -c 'cap-exhausted unit=pr-691' "$AGENT_HOME/supervisor-inbox")" == 1 ]] || fail "a held terminal park must alert exactly once"
+
 # A terminal park unparks only when its mark changes.
 units "$(jq -cn '{units:[{id:"pr-696",lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",supervisor_cap_retry:"spent",unpark_condition:"x",cap_exhausted_mark:"aaa||0",history:[]}]}')"
 SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters

@@ -5390,7 +5390,7 @@ sched_case_supervisor_cap_triage_normal_verb_reask() {
   for attempt in $(seq 1 15); do
     tick
     command jq -e '([.units[] | select(.id=="verb-requeue")][0].stage=="closed")
-      and ([.units[] | select(.id=="verb-approve")][0].parked_reason=="supervisor-cap-triage-invalid")' \
+      and ([.units[] | select(.id=="verb-approve")][0].parked_reason=="supervisor-cap-exhausted")' \
       "$TF/supervisor/autopi/units.json" >/dev/null && break
   done
   # 一次无效答案 = 一次复问，不是 park 收尾，也不是按六动作落地（复问历史先于终态，全程无 invalid-final 之外的 park）。
@@ -5398,7 +5398,7 @@ sched_case_supervisor_cap_triage_normal_verb_reask() {
     | .stage=="closed"
     and any(.history[]?; .stage=="supervisor-cap-triage-reask")
     and any(.history[]?; .stage=="supervisor-cap-close")
-    and ([.history[]? | select(.stage=="supervisor-cap-triage-invalid-final")] | length)==0
+    and ([.history[]? | select(.stage=="supervisor-cap-exhausted")] | length)==0
     and ([.history[]? | select(.stage=="supervisor-requeue" or .stage=="supervisor-approve" or .stage=="supervisor-reroute" or .stage=="supervisor-close")] | length)==0' \
     "$TF/supervisor/autopi/units.json" >/dev/null \
     || { echo 'not ok - scheduler.test.sh: ACTION: requeue from cap triage did not trigger one re-ask instead of a park' >&2; exit 1; }
@@ -5420,17 +5420,17 @@ sched_case_supervisor_cap_triage_normal_verb_reask() {
     || { echo 'not ok - scheduler.test.sh: re-ask prompt does not name the previous invalid answer' >&2; exit 1; }
   # 第二次无效答案才 park，原因点名两次答案；其余单元同样先复问再终局 park。
   command jq -e '[.units[] | select(.id=="verb-approve")][0] | .stage=="parked"
-    and .parked_reason=="supervisor-cap-triage-invalid"
+    and .parked_reason=="supervisor-cap-exhausted"
     and (.note | contains("two invalid cap triage answers"))
     and (.note | contains("ACTION: approve"))
     and (.note | contains("ACTION: reroute"))
-    and any(.history[]?; .stage=="supervisor-cap-triage-invalid-final")' \
+    and any(.history[]?; .stage=="supervisor-cap-exhausted")' \
     "$TF/supervisor/autopi/units.json" >/dev/null \
     || { echo 'not ok - scheduler.test.sh: two invalid answers did not park with a reason naming both' >&2; exit 1; }
   command jq -e '(.units | map(select(.id=="verb-park" or .id=="verb-close" or .id=="verb-reroute" or .id=="verb-needs-info" or .id=="verdline"))
-    | all(.stage=="parked" and .parked_reason=="supervisor-cap-triage-invalid"
+    | all(.stage=="parked" and .parked_reason=="supervisor-cap-exhausted"
       and any(.history[]?; .stage=="supervisor-cap-triage-reask")
-      and any(.history[]?; .stage=="supervisor-cap-triage-invalid-final")))' \
+      and any(.history[]?; .stage=="supervisor-cap-exhausted")))' \
     "$TF/supervisor/autopi/units.json" >/dev/null \
     || { echo 'not ok - scheduler.test.sh: every normal-arbitration verb must re-ask once before the final park' >&2; exit 1; }
   # park 收尾是终局：后续 tick 不再为该单元派终局裁决 worker。

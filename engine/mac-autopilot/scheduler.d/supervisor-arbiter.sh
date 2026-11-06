@@ -50,7 +50,10 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
     if [[ "$(jqf -r '.parked_reason // empty' <<<"$u")" == supervisor-cap-exhausted ]]; then
       mark="$(supervisor_arbiter_mark "$u")"
-      [[ "$mark" != "$(jqf -r '.cap_exhausted_mark // empty' <<<"$u")" ]] || continue
+      if [[ "$mark" == "$(jqf -r '.cap_exhausted_mark // empty' <<<"$u")" ]]; then
+        supervisor_cap_exhausted_alert "$id" "$mark" "$(jqf -r '.note // ""' <<<"$u")"  # once per mark: this repeats only a failed delivery
+        continue
+      fi
       # An issue state that could not be read is not a change.
       [[ -z "$(jqf -r '.issue // empty' <<<"$u")" || -n "$(cut -d'|' -f2 <<<"$mark")" ]] || continue
       set_unit "$id" '.parked_reason="supervisor-arbitration-cap" | del(.supervisor_cap_retry, .cap_exhausted_mark, .unpark_condition)'
@@ -423,8 +426,12 @@ supervisor_cap_exhausted() { # id reason decision → terminal park with its unp
   note="capped again after its one retry: $reason; unpark on $condition"
   cap_set_unit "$id" park "$note" "" "$(hist supervisor-cap-exhausted "$reason" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-exhausted\" | .unpark_condition=$(js "$condition") | .cap_exhausted_mark=$(js "$mark") | .note=$(js "$note")" || return 1
   say "supervisor cap triage unit=$id: parked, retry spent"
-  ( source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "cap-exhausted:$id:$mark" "cap-exhausted unit=$id: $note" ) \
-    || say "supervisor cap triage unit=$id: cap-exhausted alert not delivered"
+  supervisor_cap_exhausted_alert "$id" "$mark" "$note"
+}
+
+supervisor_cap_exhausted_alert() { # id mark note → one inbox line per mark
+  ( source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "cap-exhausted:$1:$2" "cap-exhausted unit=$1: $3" ) \
+    || say "supervisor cap triage unit=$1: cap-exhausted alert not delivered"
 }
 
 supervisor_cap_founder() { # id reason evidence report-path → one owner question in the supervisor inbox; the verdict parser proved the QUESTION
@@ -522,8 +529,7 @@ supervisor_cap_triage_reask_or_park() { # id report-path → 一次复问；第�
     first="$(jqf -r '.supervisor_cap_invalid_answers[0] // empty' <<<"$u")"
     note="two invalid cap triage answers, neither ended in one of CLOSE/RECUT/RULE/FOUNDER; first answer: ${first:-unknown}; re-ask answer: $excerpt"
     decision="$(decision_entry 'Park after two invalid cap triage answers' "$note" "$detail" '[]' scheduler)"
-    cap_set_unit "$id" park "$note" "$rep" "$(hist supervisor-cap-triage-invalid-final "$note" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-triage-invalid\" | .note=$(js "$note") | del(.supervisor_cap_reask, .supervisor_cap_invalid_answers)" \
-      && say "supervisor cap triage unit=$id: parked after two invalid answers"
+    supervisor_cap_exhausted "$id" "$note" "$decision"
   fi
 }
 
