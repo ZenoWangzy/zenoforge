@@ -907,6 +907,16 @@ guards_node="$(ZF_ENGINE_DIR="$guards_root/engine" ZF_CONFIG_ROOT="$guards_root/
 printf 'not json' > "$guards_root/engine/state/incident-guards.json"
 [[ "$(ZF_ENGINE_DIR="$guards_root/engine" python3 -B "$script_dir/config_paths.py" --incident-guards "$guards_root/target/state/incident-guards.json" 2>/dev/null | jq -c '.incidents | length')" == 2 ]] \
   || fail 'a broken engine registry must leave the target records'
+# Rows without a usable id: the merge never adds them from the engine, and both languages agree.
+printf '{"incidents":[{"id":null},{},null,{"id":7},{"id":"kept"}]}' > "$guards_root/engine/state/incident-guards.json"
+printf '{"incidents":[{},null,{"id":null},{"id":"target-only"}]}' > "$guards_root/target/state/incident-guards.json"
+guards_py="$(ZF_ENGINE_DIR="$guards_root/engine" python3 -B "$script_dir/config_paths.py" --incident-guards "$guards_root/target/state/incident-guards.json")" \
+  || fail 'python incident merge failed on rows without an id'
+guards_node="$(ZF_ENGINE_DIR="$guards_root/engine" ZF_CONFIG_ROOT="$guards_root/target" node --input-type=module -e \
+  "import {zfIncidentGuards} from '$script_dir/../pack-dir.mjs'; console.log(JSON.stringify(zfIncidentGuards('$guards_root')))")" \
+  || fail 'node incident merge failed on rows without an id'
+[[ "$(jq -c '.incidents' <<<"$guards_py")" == '[{},null,{"id":null},{"id":"target-only"},{"id":"kept"}]' ]] || fail "python merge of rows without an id: $guards_py"
+[[ "$(jq -cS . <<<"$guards_node")" == "$(jq -cS . <<<"$guards_py")" ]] || fail "node and python differ on rows without an id: $guards_node"
 echo "node_health incident records merge by id: PASS"
 overlay_runtime="$overlay_root/runtime"; mkdir -p "$overlay_runtime"
 printf '{"mechanisms":[{"id":"a","expected_idle":true}]}' > "$overlay_root/target/state/mechanism-registry.json"

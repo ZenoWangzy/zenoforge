@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -152,6 +152,51 @@ test('ranking CLI reads target records, then engine records under ids the target
   const ranking = JSON.parse(result.stdout);
   assert.equal(ranking.source, '.zenoforge/state/incident-guards.json');
   assert.deepEqual(ranking.ranking.map((row) => row.incident_id).sort(), ['config-root', 'engine-only']);
+});
+
+test('ranking CLI keeps the worker brief and the tracked file on target records', (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'lesson-ranking-join-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(path.join(root, '.zenoforge/state'), { recursive: true });
+  mkdirSync(path.join(root, 'engine/state'), { recursive: true });
+  mkdirSync(path.join(root, 'lessons'), { recursive: true });
+  writeFileSync(path.join(root, 'lessons/RULES.md'), '**V900** an unrelated target rule\n');
+  writeFileSync(path.join(root, 'lessons/CATALOG.md'),
+    '### entry\n适用规则：V900\nsrc/a.ts\n**核心动作**：an unrelated target rule\n[full](full/entry.md)\n');
+  writeFileSync(path.join(root, '.zenoforge/state/incident-guards.json'), '{"incidents":[]}\n');
+  // Engine records whose lesson_id collides with a target rule, recurring so the brief would pick them.
+  writeFileSync(path.join(root, 'engine/state/incident-guards.json'), JSON.stringify({ incidents: [
+    { id: 'engine-root', lesson_id: 'V900', class: 'engine' },
+    { id: 'engine-again', lesson_id: 'V900', class: 'engine', recurs_of: 'engine-root' },
+  ] }));
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['-C', root, 'config', 'user.name', 'ranking fixture']);
+  execFileSync('git', ['-C', root, 'config', 'user.email', 'ranking@example.invalid']);
+  execFileSync('git', ['-C', root, 'add', '.']);
+  execFileSync('git', ['-C', root, 'commit', '-q', '-m', 'fixture']);
+
+  const run = (...args) => spawnSync(process.execPath, [rankingScript, '--repo', root, ...args], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      ZF_REPO_DIR: root,
+      ZF_CONFIG_ROOT: path.join(root, '.zenoforge'),
+      ZF_ENGINE_DIR: path.join(root, 'engine'),
+      ZF_PACK_DIR: '',
+      MAC_AUTOPILOT_RUNTIME_DIR: '',
+    },
+  });
+  const report = run();
+  assert.equal(report.status, 0, report.stderr);
+  assert.equal(JSON.parse(report.stdout).recurrence_event_count, 1, 'the report sees the engine recurrence');
+
+  const brief = run('--footprint-json', '["src/a.ts"]');
+  assert.equal(brief.status, 0, brief.stderr);
+  assert.equal(brief.stdout, '');
+
+  const written = run('--write', '--output', 'lessons/recurrence-ranking.json');
+  assert.equal(written.status, 0, written.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(root, 'lessons/recurrence-ranking.json'), 'utf8')).ranking, []);
 });
 
 test('commit-history parser associates added incident records with their recording commit', () => {

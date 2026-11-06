@@ -114,9 +114,10 @@ export function zfIncidentGuards(repoRoot = zfEnv('REPO_DIR') || dirname(ENGINE_
   const enginePath = join(process.env.ZF_ENGINE_DIR || ENGINE_DIR, 'state/incident-guards.json');
   if (targetPath === enginePath || !existsSync(enginePath)) return doc;
   try {
-    const seen = new Set(doc.incidents.map((row) => row?.id));
+    const incidentId = (row) => (typeof row?.id === 'string' ? row.id : null);
+    const seen = new Set([null, ...doc.incidents.map(incidentId)]);
     const engineRows = JSON.parse(readFileSync(enginePath, 'utf8')).incidents;
-    return { ...doc, incidents: [...doc.incidents, ...engineRows.filter((row) => !seen.has(row?.id))] };
+    return { ...doc, incidents: [...doc.incidents, ...engineRows.filter((row) => !seen.has(incidentId(row)))] };
   } catch (error) {
     console.error(`engine incident records ignored: ${error.message}`);
     return doc;

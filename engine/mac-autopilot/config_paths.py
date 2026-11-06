@@ -65,6 +65,10 @@ def zf_mechanism_registry(overlay=None):
     return {**doc, "mechanisms": list(rows.values())} if rows else None
 
 
+def _incident_id(row):
+    return row["id"] if isinstance(row, dict) and isinstance(row.get("id"), str) else None
+
+
 def zf_incident_guards(target=None):
     """The target's incident records, then engine records under an id the target lacks.
 
@@ -80,9 +84,9 @@ def zf_incident_guards(target=None):
     if target_path == engine_path or not engine_path.is_file():
         return doc
     try:
-        seen = {row.get("id") for row in doc["incidents"]}
+        seen = {None, *map(_incident_id, doc["incidents"])}
         engine_rows = json.loads(engine_path.read_text(encoding="utf-8"))["incidents"]
-        return {**doc, "incidents": doc["incidents"] + [row for row in engine_rows if row.get("id") not in seen]}
+        return {**doc, "incidents": doc["incidents"] + [row for row in engine_rows if _incident_id(row) not in seen]}
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"engine incident records ignored: {error!r}", file=sys.stderr)
         return doc

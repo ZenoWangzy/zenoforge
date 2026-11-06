@@ -399,7 +399,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const options = parseArgs(process.argv.slice(2));
     const repo = path.resolve(options.repo);
     const registryPath = configRegistryPath(repo);
-    const registry = zfIncidentGuards(repo) ?? JSON.parse(readFileSync(path.join(repo, registryPath), 'utf8'));
+    const targetRegistry = () => JSON.parse(readFileSync(path.join(repo, registryPath), 'utf8'));
+    // The worker brief and the tracked file join on lesson_id, which means another rule in an engine record.
+    const joinsLessonIds = options.footprintJson !== null || options.write;
+    const registry = joinsLessonIds ? targetRegistry() : zfIncidentGuards(repo) ?? targetRegistry();
     const ranking = buildLessonRecurrenceRanking(registry, collectRecordCommits(repo, registryPath), registryPath);
     if (options.footprintJson !== null) {
       const footprint = JSON.parse(options.footprintJson);
