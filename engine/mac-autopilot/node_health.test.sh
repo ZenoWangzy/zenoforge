@@ -842,6 +842,39 @@ rows, silent = n.mechanism_heartbeat(reg, str(runtime), str(runtime), now)
 assert silent == 0 and rows[0]["last_event_at"] == "2026-11-06T20:17:58Z", rows
 print("node_health ci-admission pattern counts a completed pass, not a skip: PASS")
 CHECK
+# A target overlay holds only what it overrides: an engine edit to anything else must stay live, through both readers.
+overlay_root="$test_env_root/registry-overlay"; mkdir -p "$overlay_root/engine/state" "$overlay_root/target/state"
+ZF_ENGINE_DIR="$overlay_root/engine" ZF_CONFIG_ROOT="$overlay_root/target" python3 - "$script_dir" "$overlay_root" <<'CHECK' || fail 'mechanism registry overlay did not merge by id over the engine rows'
+import json, pathlib, subprocess, sys
+sys.path.insert(0, sys.argv[1]); import config_paths as c
+root = pathlib.Path(sys.argv[2])
+def row(mid, pattern, idle=False):
+    return {"id": mid, "desc": mid, "supervisor": "s", "silence_hours": 24, "expected_idle": idle,
+            "events": [{"base": "runtime", "file": "scheduler.log", "pattern": pattern}]}
+(root / "engine/state/mechanism-registry.json").write_text(json.dumps(
+    {"_doc": "engine", "mechanisms": [row("a", "engine-a"), row("b", "engine-b"), row("c", "engine-c")]}))
+overlay = root / "target/state/mechanism-registry.json"
+overlay.write_text(json.dumps({"mechanisms": [
+    {"id": "a", "expected_idle": True},
+    {"id": "b", "events": row("b", "target-b")["events"]},
+    {"id": "gone", "expected_idle": True},
+    row("target-only", "target-only"),
+]}))
+doc = c.zf_mechanism_registry()
+rows = {m["id"]: m for m in doc["mechanisms"]}
+assert [m["id"] for m in doc["mechanisms"]] == ["a", "b", "c", "target-only"], doc
+assert rows["a"]["expected_idle"] is True and rows["a"]["events"][0]["pattern"] == "engine-a", rows["a"]
+assert rows["b"]["events"][0]["pattern"] == "target-b" and rows["b"]["expected_idle"] is False, rows["b"]
+assert rows["c"]["events"][0]["pattern"] == "engine-c", rows["c"]
+cli = subprocess.run([sys.executable, c.__file__, str(overlay)], capture_output=True, text=True, check=True)
+assert json.loads(cli.stdout) == doc, cli.stdout
+overlay.write_text("not json")
+assert c.zf_mechanism_registry() is None
+assert subprocess.run([sys.executable, c.__file__, str(overlay)], capture_output=True).returncode == 1
+overlay.unlink()
+assert c.zf_mechanism_registry()["mechanisms"] == [row("a", "engine-a"), row("b", "engine-b"), row("c", "engine-c")]
+print("node_health mechanism registry overlay merges by id: PASS")
+CHECK
 msup="$test_env_root/mech-sup"; ma="$msup/autopi"; mkdir -p "$ma/alerts" "$AGENT_HOME/logs"
 printf '{"units":[]}' > "$ma/units.json"
 {

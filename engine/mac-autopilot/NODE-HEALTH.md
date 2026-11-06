@@ -92,6 +92,7 @@ line (rotated `.1` generations included), and counts a mechanism as silent when 
 bound, unless `expected_idle`; the scorecard's `mechanisms` block carries each mechanism's last event time. The
 f9 footprint mutex has a kill switch (`footprint_mutex.enabled=false` in `config.json`) so the detection itself
 can be fault-injected: switch it off, and `mechanism.silent` reports f9 within its registered silence bound.
+A target `.zenoforge/state/mechanism-registry.json` holds only the rows and fields it overrides; they merge by id over the engine rows, so an engine edit to anything else reaches the target.
 
 A `not_operating` reason in the registry marks a mechanism that cannot do its job, so its events prove nothing. Its row shows the reason instead of a heartbeat and is not counted as silent. The f10, f11 and f13 eval rows carry one while the prompt eval gate is parked (#531); remove it when the gate can complete a run.
 

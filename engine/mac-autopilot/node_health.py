@@ -21,7 +21,7 @@ import ledger_history
 import worker_cost
 import workorder_cost
 import usage_reader
-from config_paths import zf_config_file, zf_host_ops_file
+from config_paths import zf_config_file, zf_host_ops_file, zf_mechanism_registry
 
 
 def is_test_path(path):
@@ -1586,8 +1586,7 @@ def main():
         )
     blockers = read_json(os.path.join(a, "release-blockers.json"))
     metrics["release.hotpatch_blockers"] = len(blockers["blockers"]) if isinstance(blockers.get("blockers"), list) else None
-    registry_file = zf_config_file("state/mechanism-registry.json")
-    registry = read_json(registry_file).get("mechanisms") if registry_file else None
+    registry = (zf_mechanism_registry() or {}).get("mechanisms")
     if isinstance(registry, list) and registry:
         mechanism_rows, metrics["mechanism.silent"] = mechanism_heartbeat(registry, a, agent_home, now)
     else:
