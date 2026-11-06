@@ -23,4 +23,4 @@
 1140	engine/run-advisor.sh
 899	engine/run-triage.sh
 1373	engine/supervise-pipeline.sh
-3045	engine/worktree-lifecycle.sh
+3062	engine/worktree-lifecycle.sh

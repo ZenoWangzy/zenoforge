@@ -1083,6 +1083,10 @@ if [ "${WORKTREE_LIFECYCLE_CASE:-all}" != all ]; then
       # As in the live checkout, no refspec covers this branch: neither the delete push nor a fetch --prune drops its tracking ref.
       git -C "$REPO" config remote.origin.fetch '+refs/heads/main:refs/remotes/origin/main'
       git -C "$REPO" config --add remote.origin.fetch '+refs/heads/rescued/*:refs/remotes/origin/rescued/*'
+      # Both already gone from the remote. Only the preserved one may lose its tracking ref.
+      git -C "$REPO" update-ref refs/remotes/origin/gone-preserved "$ordinary_head"
+      gone_unmerged_head="$(git -C "$REPO" commit-tree "$ordinary_head^{tree}" -p "$ordinary_head" -m gone-unmerged)"
+      git -C "$REPO" update-ref refs/remotes/origin/gone-unmerged "$gone_unmerged_head"
 
       rescue_wt="$ROOT/wt-rescue-binary-squash"
       git -C "$REPO" worktree add -q -b topic/rescue-binary-squash "$rescue_wt" main
@@ -1142,6 +1146,12 @@ if [ "${WORKTREE_LIFECYCLE_CASE:-all}" != all ]; then
         || fail 'ordinary remote deletion readback was not recorded'
       ! git --git-dir="$REMOTE" show-ref --verify --quiet refs/heads/ordinary-clean \
         || fail "ordinary remote candidate was not deleted/read back before index deferral: $first_output"
+      ! git -C "$REPO" show-ref --verify --quiet refs/remotes/origin/gone-preserved \
+        || fail "a preserved branch gone from the remote kept its tracking ref: $first_output"
+      grep -Fq $'removed-stale-tracking-ref\tgone-preserved\t' "$NIGHT/worktree-cleanup-manifest.txt" \
+        || fail 'dropping a stale tracking ref left no manifest record'
+      [ "$(git -C "$REPO" rev-parse refs/remotes/origin/gone-unmerged)" = "$gone_unmerged_head" ] \
+        || fail "unmerged commits with no rescue lost their tracking ref: $first_output"
       ! git -C "$REPO" show-ref --verify --quiet refs/remotes/origin/ordinary-clean \
         || fail "a deleted remote branch kept its tracking ref, so the next reap rescues it again: $first_output"
       [ "$(git --git-dir="$REMOTE" rev-parse refs/heads/rescued/squash-binary-fixture 2>/dev/null || true)" = "$rescue_head" ] \
@@ -1938,6 +1948,33 @@ git -C "$REPO" show-ref --verify --quiet refs/heads/agent/issue-2012 \
   || fail "conflicting issue rescue did not report the collision"
 grep -Fq $'kept-unrescued\tagent/issue-2012\t'"$issue_conflict_head"$'\trescue-ref-head-mismatch:'"$issue_conflict_ref" "$NIGHT/worktree-cleanup-manifest.txt" \
   || fail "manifest omitted conflicting issue rescue evidence"
+
+# The one ls-remote of a reap: a full SHA match skips the push, anything else goes on as before.
+snapshot_head_a="$issue_conflict_head"
+snapshot_head_b="$(git -C "$REPO" commit-tree "$snapshot_head_a^{tree}" -p "$snapshot_head_a" -m moved)"
+git -C "$REPO" push -q origin "$snapshot_head_a:refs/heads/rescued/held"
+push_log="$ROOT/remote-pushes.log"
+printf '#!/usr/bin/env bash\ncat >> "%s"\n' "$push_log" > "$REMOTE/hooks/pre-receive"; chmod +x "$REMOTE/hooks/pre-receive"
+(
+  source "$SCRIPT"
+  REPO="$ROOT/repo" MANIFEST="$NIGHT/worktree-cleanup-manifest.txt"
+  held=$'%s\trefs/heads/rescued/held'
+  REAP_REMOTE_HEADS="$(printf "$held" "$snapshot_head_a")"
+  push_rescue held "$snapshot_head_a" >/dev/null || fail "a rescue already holding the head was refused"
+  [[ ! -s "$push_log" ]] || fail "a rescue already holding the head was pushed again"
+  [ "$(git -C "$REPO" rev-parse refs/remotes/origin/rescued/held)" = "$snapshot_head_a" ] || fail "the held rescue left no tracking ref"
+  push_rescue held "$snapshot_head_b" >/dev/null 2>&1 || fail "a moved head was refused"
+  [[ -s "$push_log" ]] || fail "a moved head was not pushed"
+  [ "$(git --git-dir="$REMOTE" rev-parse "refs/heads/rescued/held-${snapshot_head_b:0:12}")" = "$snapshot_head_b" ] \
+    || fail "a moved head did not reach the remote"
+  : > "$push_log"
+  REAP_REMOTE_HEADS=""
+  push_rescue held "$snapshot_head_a" >/dev/null 2>&1 || fail "a failed snapshot stopped the rescue"
+)
+rm -f "$REMOTE/hooks/pre-receive"
+git -C "$REPO" push -q origin :refs/heads/rescued/held ":refs/heads/rescued/held-${snapshot_head_b:0:12}"
+git -C "$REPO" update-ref -d refs/remotes/origin/rescued/held 2>/dev/null || :
+git -C "$REPO" update-ref -d "refs/remotes/origin/rescued/held-${snapshot_head_b:0:12}" 2>/dev/null || :
 
 # Dirty work stays intact and keeps its branch.
 DIRTY="$ROOT/wt-dirty"

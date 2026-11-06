@@ -10,6 +10,7 @@ MANIFEST="${ZF_WORKTREE_CLEANUP_MANIFEST:-$NIGHT/worktree-cleanup-manifest.txt}"
 AGENTS_FILE="${ZF_HAND_AGENTS_FILE:-$NIGHT/agents.txt}"
 REPO=""
 REPO_ROOT=""
+REAP_REMOTE_HEADS=""
 _WORKTREE_LIFECYCLE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$_WORKTREE_LIFECYCLE_DIR/proc.sh"
 [[ -r "$_WORKTREE_LIFECYCLE_DIR/night/hand-exit-handoff.sh" ]] && source "$_WORKTREE_LIFECYCLE_DIR/night/hand-exit-handoff.sh"
@@ -382,9 +383,18 @@ rescue_ref_for() {
   printf 'refs/heads/rescued/%s\n' "${slug:-worktree}"
 }
 
+snapshot_head() { # refs/heads/x -> its full SHA in this reap's one ls-remote, or nothing
+  awk -v ref="$1" '$2 == ref {print $1; exit}' <<< "$REAP_REMOTE_HEADS"
+}
+
 push_rescue() {
   local name="$1" head="$2" rescue_ref remote_head base_ref
   rescue_ref="$(rescue_ref_for "$name" "$head")"
+  # Three network calls for a ref that already holds this head spent the 180s budget before the delete batch could run.
+  if [ -n "$REAP_REMOTE_HEADS" ] && [ "$(snapshot_head "$rescue_ref")" = "$head" ]; then
+    git -C "$REPO" update-ref "refs/remotes/origin/${rescue_ref#refs/heads/}" "$head" || return 1
+    return 0
+  fi
   remote_head="$(git -C "$REPO" ls-remote origin "$rescue_ref" 2>/dev/null | awk 'NR==1{print $1}')"
   if [ -n "$remote_head" ] && [ "$remote_head" != "$head" ]; then
     if [[ "$name" =~ ^agent/issue-[0-9]+$ ]]; then
@@ -2339,6 +2349,7 @@ reap_one() {
   load_live_state || { say "reap refused; live-owner ledger unreadable"; return 1; }
   printf 'phase=worktree-reap:origin-fetch\n'
   refresh_origin || return 1
+  REAP_REMOTE_HEADS="$(timeout -k "$LIFECYCLE_GIT_KILL_AFTER_SECONDS" "$LIFECYCLE_GIT_TIMEOUT_SECONDS" git -C "$REPO" ls-remote --heads origin 2>/dev/null)" || REAP_REMOTE_HEADS=""
   printf 'phase=worktree-reap:pr-list-query\n'
   load_pr_rows || { say "reap refused; GitHub PR state unreadable"; return 1; }
   if shared_stash_rows="$(timeout -k "$LIFECYCLE_GIT_KILL_AFTER_SECONDS" "$LIFECYCLE_GIT_TIMEOUT_SECONDS" \
@@ -2455,6 +2466,12 @@ reap_one() {
     [ "$state" != OPEN ] || continue
     if ! head_on_main "$remote_head" && [[ "$state" != MERGED && "$state" != CLOSED ]]; then continue; fi
     if ! preserve_nonmerged_closed_head "$remote_branch" "$remote_head" "$state"; then skipped_safe=$((skipped_safe + 1)); continue; fi
+    # Gone from the remote and preserved: a main-only fetch --prune never drops this ref, and a delete has nothing to do.
+    if [ -n "$REAP_REMOTE_HEADS" ] && [ -z "$(snapshot_head "refs/heads/$remote_branch")" ]; then
+      git -C "$REPO" update-ref -d "$remote_ref" "$remote_head" 2>/dev/null || :
+      manifest_record removed-stale-tracking-ref "$remote_branch" "$remote_head" || return 1
+      continue
+    fi
     manifest_record removing-remote-branch "$remote_branch" "$remote_head" || return 1
     remote_delete_branches+=("$remote_branch")
     remote_delete_heads+=("$remote_head")
