@@ -21,7 +21,7 @@ import ledger_history
 import worker_cost
 import workorder_cost
 import usage_reader
-from config_paths import zf_config_file, zf_host_ops_file, zf_mechanism_registry
+from config_paths import zf_config_file, zf_host_ops_file, zf_incident_guards, zf_mechanism_registry
 
 
 def is_test_path(path):
@@ -876,9 +876,10 @@ def read_json(path):
 
 
 def load_incident_guards():
-    incidents_file = zf_config_file("state/incident-guards.json")
-    incidents_doc = read_json(incidents_file) if incidents_file else {}
-    incidents = incidents_doc.get("incidents")
+    try:
+        incidents = (zf_incident_guards() or {}).get("incidents")
+    except (OSError, ValueError):
+        return None
     return incidents if isinstance(incidents, list) else None
 
 

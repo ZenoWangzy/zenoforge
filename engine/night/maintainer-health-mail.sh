@@ -1328,7 +1328,7 @@ maintainer_health_mail_measure() {
        day_count:([$rows[] | select(has("recurs_of") and .date == $day)] | length),
        week_count:([$rows[] | select(has("recurs_of") and (.date // "") >= $week_start and (.date // "") <= $day)] | length),
        week_categories:([$rows[] | select(has("recurs_of") and (.date // "") >= $week_start and (.date // "") <= $day) | (.class // "未分类")] | unique | sort)}' \
-      "$incident_file")" || return 1
+      < <(if [[ -n "${AGENT_INCIDENT_GUARDS_FILE:-}" ]]; then cat "$incident_file"; else python3 -B "$(dirname -- "${BASH_SOURCE[0]}")/../mac-autopilot/config_paths.py" --incident-guards "$incident_file"; fi))" || return 1
     recurrence_tracking="$(jq -r '.tracking' <<< "$incident_facts")" || return 1
     recurrences_day="$(jq -r '.day_count' <<< "$incident_facts")" || return 1
     recurrences_7d="$(jq -r '.week_count' <<< "$incident_facts")" || return 1

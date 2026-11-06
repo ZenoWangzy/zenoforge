@@ -94,6 +94,7 @@ bound, unless `expected_idle`; the scorecard's `mechanisms` block carries each m
 f9 footprint mutex has a kill switch (`footprint_mutex.enabled=false` in `config.json`) so the detection itself
 can be fault-injected: switch it off, and `mechanism.silent` reports f9 within its registered silence bound.
 A target `.zenoforge/state/mechanism-registry.json` holds only the rows and fields it overrides; they merge by id over the engine rows, so an engine edit to anything else reaches the target.
+Reports on lessons (`node_health.py`, the health mail, the incident guard audit, the recurrence ranking) read the target `state/incident-guards.json` plus engine records under ids the target lacks. Validators, writers and `generate-lesson-enforcers.mjs` keep the target file, because `lesson_id` is not shared between engine and target.
 
 A `not_operating` reason in the registry marks a mechanism that cannot do its job, so its events prove nothing. Its row shows the reason instead of a heartbeat and is not counted as silent. The f10, f11 and f13 eval rows carry one while the prompt eval gate is parked (#531); remove it when the gate can complete a run.
 

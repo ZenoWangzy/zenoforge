@@ -121,7 +121,7 @@ test('ranking rejects duplicate incident ids because their recurrence evidence w
   ] }), /duplicate incident id/);
 });
 
-test('ranking CLI reads the target incident registry before engine defaults', (t) => {
+test('ranking CLI reads target records, then engine records under ids the target lacks', (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'lesson-ranking-config-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(path.join(root, '.zenoforge/state'), { recursive: true });
@@ -144,13 +144,14 @@ test('ranking CLI reads the target incident registry before engine defaults', (t
       ...process.env,
       ZF_REPO_DIR: root,
       ZF_CONFIG_ROOT: path.join(root, '.zenoforge'),
+      ZF_ENGINE_DIR: path.join(root, 'engine'),
       ZF_PACK_DIR: '',
     },
   });
   assert.equal(result.status, 0, result.stderr);
   const ranking = JSON.parse(result.stdout);
   assert.equal(ranking.source, '.zenoforge/state/incident-guards.json');
-  assert.deepEqual(ranking.ranking.map((row) => row.incident_id), ['config-root']);
+  assert.deepEqual(ranking.ranking.map((row) => row.incident_id).sort(), ['config-root', 'engine-only']);
 });
 
 test('commit-history parser associates added incident records with their recording commit', () => {

@@ -195,8 +195,10 @@ test('with a pack, the registry comes from the engine build and targets resolve 
   const config = run({ ZF_PACK_REL: 'scripts/agent', ZF_PACK_ROOT: packRoot,
     ZF_PACK_DIR: path.join(packRoot, 'scripts/agent') });
   assert.equal(config.status, 0, config.stderr);
+  // The audit sees target records and engine records under ids the target lacks.
   assert.deepEqual(JSON.parse(config.stdout).missingTargets, [
     { id: 'config-only-file', targets: [{ kind: 'file', target: 'config/missing.test.sh' }] },
+    { id: 'pack-missing-file', targets: [{ kind: 'file', target: 'scripts/agent/missing.test.sh' }] },
   ]);
   unlinkSync(path.join(repo, '.zenoforge/state/incident-guards.json'));
 

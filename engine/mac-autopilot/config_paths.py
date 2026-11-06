@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from env_config import zf_env
 
+INCIDENT_GUARDS = "state/incident-guards.json"
 MECHANISM_REGISTRY = "state/mechanism-registry.json"
 MECHANISM_REQUIRED_FIELDS = ("id", "desc", "supervisor", "silence_hours", "events")
 
@@ -64,6 +65,29 @@ def zf_mechanism_registry(overlay=None):
     return {**doc, "mechanisms": list(rows.values())} if rows else None
 
 
+def zf_incident_guards(target=None):
+    """The target's incident records, then engine records under an id the target lacks.
+
+    For reports, so a lesson the target never copied is still seen. Validators, writers and the
+    lesson_id join in generate-lesson-enforcers keep the target file: engine lesson ids mean other rules there.
+    """
+    engine_dir = Path(os.environ.get("ZF_ENGINE_DIR") or Path(__file__).resolve().parent.parent)
+    engine_path = engine_dir / INCIDENT_GUARDS
+    target_path = Path(target) if target else zf_config_file(INCIDENT_GUARDS)
+    if target_path is None:
+        return None
+    doc = json.loads(target_path.read_text(encoding="utf-8"))
+    if target_path == engine_path or not engine_path.is_file():
+        return doc
+    try:
+        seen = {row.get("id") for row in doc["incidents"]}
+        engine_rows = json.loads(engine_path.read_text(encoding="utf-8"))["incidents"]
+        return {**doc, "incidents": doc["incidents"] + [row for row in engine_rows if row.get("id") not in seen]}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        print(f"engine incident records ignored: {error!r}", file=sys.stderr)
+        return doc
+
+
 def zf_host_ops_file(relative_path, fallback=None):
     engine_dir = Path(os.environ.get("ZF_ENGINE_DIR") or Path(__file__).resolve().parent.parent)
     agent_home = Path(os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or Path.home() / ".zenoforge")
@@ -86,8 +110,8 @@ def zf_host_ops_file(relative_path, fallback=None):
 
 
 if __name__ == "__main__":
-    # scheduler.sh passes the overlay it resolved, so the bash readers get the merge the scorecard uses.
-    merged_registry = zf_mechanism_registry(sys.argv[1])
-    if merged_registry is None:
+    # Bash readers pass the file they resolved, so they get the merge the python readers use.
+    merged = zf_incident_guards(sys.argv[2]) if sys.argv[1] == "--incident-guards" else zf_mechanism_registry(sys.argv[1])
+    if merged is None:
         sys.exit(1)
-    json.dump(merged_registry, sys.stdout, ensure_ascii=False)
+    json.dump(merged, sys.stdout, ensure_ascii=False)

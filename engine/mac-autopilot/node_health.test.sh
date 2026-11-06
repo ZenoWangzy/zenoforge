@@ -892,6 +892,22 @@ overlay.unlink()
 assert c.zf_mechanism_registry()["mechanisms"] == engine_only
 print("node_health mechanism registry overlay merges by id: PASS")
 CHECK
+# Reports see engine incident records the target lacks, target wins by id, and python and node agree.
+guards_root="$test_env_root/incident-guards"; mkdir -p "$guards_root/engine/state" "$guards_root/target/state"
+printf '{"incidents":[{"id":"both","class":"engine"},{"id":"engine-only","class":"engine"}]}' > "$guards_root/engine/state/incident-guards.json"
+printf '{"schema":"t","incidents":[{"id":"both","class":"target"},{"id":"target-only","class":"target"}]}' > "$guards_root/target/state/incident-guards.json"
+guards_expected='{"schema":"t","incidents":[{"id":"both","class":"target"},{"id":"target-only","class":"target"},{"id":"engine-only","class":"engine"}]}'
+guards_py="$(ZF_ENGINE_DIR="$guards_root/engine" python3 -B "$script_dir/config_paths.py" --incident-guards "$guards_root/target/state/incident-guards.json")" \
+  || fail 'python incident merge failed'
+[[ "$(jq -cS . <<<"$guards_py")" == "$(jq -cS . <<<"$guards_expected")" ]] || fail "python incident merge: $guards_py"
+guards_node="$(ZF_ENGINE_DIR="$guards_root/engine" ZF_CONFIG_ROOT="$guards_root/target" node --input-type=module -e \
+  "import {zfIncidentGuards} from '$script_dir/../pack-dir.mjs'; console.log(JSON.stringify(zfIncidentGuards('$guards_root')))")" \
+  || fail 'node incident merge failed'
+[[ "$(jq -cS . <<<"$guards_node")" == "$(jq -cS . <<<"$guards_py")" ]] || fail "node and python incident merges differ: $guards_node"
+printf 'not json' > "$guards_root/engine/state/incident-guards.json"
+[[ "$(ZF_ENGINE_DIR="$guards_root/engine" python3 -B "$script_dir/config_paths.py" --incident-guards "$guards_root/target/state/incident-guards.json" 2>/dev/null | jq -c '.incidents | length')" == 2 ]] \
+  || fail 'a broken engine registry must leave the target records'
+echo "node_health incident records merge by id: PASS"
 overlay_runtime="$overlay_root/runtime"; mkdir -p "$overlay_runtime"
 printf '{"mechanisms":[{"id":"a","expected_idle":true}]}' > "$overlay_root/target/state/mechanism-registry.json"
 merged_file="$(ZF_ENGINE_DIR="$overlay_root/engine" ZF_CONFIG_ROOT="$overlay_root/target" HERE="$script_dir" A="$overlay_runtime" \

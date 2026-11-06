@@ -1,7 +1,7 @@
 // The deployment's pack directory for node scripts (Line B pack seam; same setting as ZF_PACK_DIR in config.sh).
 // A pack holds optional modules and data the engine reads by relative path. No pack (empty directory) = every caller
 // uses its generic default. Default here = this directory, where the the product pack is laid over the engine today.
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -102,6 +102,25 @@ export function zfConfigJson(relativePath, repoRoot = process.env.ZF_REPO_DIR ||
 // Resolve target overrides first, then pack values retained during migration, then engine defaults.
 export function zfConfigFile(relativePath, repoRoot = zfEnv('REPO_DIR') || dirname(ENGINE_DIR)) {
   return resolveConfigFile(relativePath, repoRoot, process.env);
+}
+
+// The target's incident records, then engine records under an id the target lacks, for reports.
+// Validators, writers and the lesson_id join keep the target file: engine lesson ids mean other rules there.
+// Same merge as zf_incident_guards in mac-autopilot/config_paths.py. Null means no target file resolved.
+export function zfIncidentGuards(repoRoot = zfEnv('REPO_DIR') || dirname(ENGINE_DIR)) {
+  const targetPath = zfConfigFile('state/incident-guards.json', repoRoot);
+  if (!targetPath) return null;
+  const doc = JSON.parse(readFileSync(targetPath, 'utf8'));
+  const enginePath = join(process.env.ZF_ENGINE_DIR || ENGINE_DIR, 'state/incident-guards.json');
+  if (targetPath === enginePath || !existsSync(enginePath)) return doc;
+  try {
+    const seen = new Set(doc.incidents.map((row) => row?.id));
+    const engineRows = JSON.parse(readFileSync(enginePath, 'utf8')).incidents;
+    return { ...doc, incidents: [...doc.incidents, ...engineRows.filter((row) => !seen.has(row?.id))] };
+  } catch (error) {
+    console.error(`engine incident records ignored: ${error.message}`);
+    return doc;
+  }
 }
 
 export function zfHostOpsFile(relativePath, fallback = join(
