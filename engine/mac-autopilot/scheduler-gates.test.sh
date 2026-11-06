@@ -1773,14 +1773,14 @@ harvest_workers || :
 # intake：按空闲产能收单（max_workers - 在跑 - 待派）；非产品标签走直落、ready-for-agent 走 PR 车道；跳过搁置标签与已有 PR 的 issue，focus 优先
 MAX_SAVED="$MAX"; MAX=4
 INTAKE_CFG_SAVED="$CFG"; CFG="$(jq '.issue_intake.labels=["pipeline-system"] | .issue_intake.ready_buffer=0' <<<"$CFG")"
-GH_ISSUE_LIST='[{"number":23,"title":"p","labels":[{"name":"ready-for-agent"},{"name":"bug"},{"name":"stack-pilot"}]},{"number":24,"title":"t","labels":[{"name":"ready-for-agent"},{"name":"needs-triage"}]},{"number":20,"title":"a","labels":[{"name":"pipeline-system"}]},{"number":21,"title":"b","labels":[{"name":"pipeline-system"},{"name":"on-hold"}]},{"number":22,"title":"c","labels":[{"name":"pipeline-system"}]},{"number":19,"title":"d","labels":[{"name":"pipeline-system"},{"name":"focus"}]},{"number":18,"title":"e","labels":[{"name":"pipeline-system"}]},{"number":17,"title":"f","labels":[{"name":"pipeline-system"}]},{"number":16,"title":"g","labels":[{"name":"pipeline-system"}]}]'
+GH_ISSUE_LIST='[{"number":23,"title":"p","labels":[{"name":"ready-for-agent"},{"name":"bug"},{"name":"stack-pilot"}]},{"number":24,"title":"t","labels":[{"name":"ready-for-agent"},{"name":"needs-triage"}]},{"number":20,"blockedBy":{"nodes":[{"number":9002,"state":"OPEN"}]},"title":"a","labels":[{"name":"pipeline-system"}]},{"number":21,"title":"b","labels":[{"name":"pipeline-system"},{"name":"on-hold"}]},{"number":22,"title":"c","labels":[{"name":"pipeline-system"}]},{"number":19,"title":"d","labels":[{"name":"pipeline-system"},{"name":"focus"}]},{"number":18,"title":"e","labels":[{"name":"pipeline-system"}]},{"number":17,"title":"f","labels":[{"name":"pipeline-system"}]},{"number":16,"title":"g","labels":[{"name":"pipeline-system"}]}]'
 GH_PR_BRANCHES='[{"number":22,"headRefName":"agent/issue-22","title":"fix c","body":""},{"number":18,"headRefName":"node-auto/x","title":"implement it","body":"Fixes #18"}]'
 units '{"units":[]}'
 register_new_issues || :
 [[ "$(jq -r '[.units[].id] | join(",")' "$UNITS")" == "issue-19,issue-23,issue-20,issue-17" ]] || fail "issue intake picked the wrong issues: $(jq -c '[.units[].id]' "$UNITS")"
 [[ "$(field issue-23 .lane):$(field issue-23 .branch)" == "pr:agent/issue-23" ]] || fail 'product issue did not enter the PR lane on agent/issue-N'
 [[ "$(field issue-23 '.labels | index("stack-pilot")')" == 2 ]] || fail 'intake did not persist the issue label used by the stacking pilot'
-[[ "$(field issue-20 '.body_blocked_by | join(",")')" == 9001 ]] || fail 'intake did not persist Blocked by IDs separately from the worker prompt'
+[[ "$(field issue-20 '.body_blocked_by | join(",")')" == 9001,9002 ]] || fail 'intake did not persist body and native Blocked by IDs separately from the worker prompt'
 [[ "$(field issue-19 .stage):$(field issue-19 .lane):$(field issue-19 '.pr // "none"')" == "implement-pending:direct-main:none" && "$(field issue-19 .task)" == *"issue body"* ]] || fail 'intake unit is not a PR-less direct-main implement unit'
 register_new_issues || :
 [[ "$(jq '.units | length' "$UNITS")" == 4 ]] || fail 'issue intake admitted more than the idle capacity'
@@ -1954,11 +1954,11 @@ DEP_CHECK_SECONDS=600; printf '%s\n' "$NOW_EPOCH" > "$A/dep-check.epoch"; releas
 DISPATCHED=(); dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == implement:issue-42:* ]] || fail "delivered body prerequisite did not release stacked dependent (${DISPATCHED[*]:-none})"
 long_issue_body="$(awk 'BEGIN { for (i=0; i<6100; i++) printf "x"; print "\n## Blocked by\n- #7001" }')"
-long_issue_json="$(jq -cn --arg body "$long_issue_body" '{number:7000,title:"long issue",body:$body}')"
+long_issue_json="$(jq -cn --arg body "$long_issue_body" '{number:7000,title:"long issue",body:$body,blockedBy:{nodes:[{number:7001,state:"OPEN"},{number:7002,state:"OPEN"},{number:7003,state:"CLOSED"}]}}')"
 gh() { [[ "$1 $2" == "issue view" ]] && printf '%s\n' "$long_issue_json"; }
 long_issue_task="$(issue_unit_task 7000)"
-[[ "$(jq -r '.body_blocked_by | join(",")' <<<"$long_issue_task")" == 7001 ]] \
-  || fail 'complete-body dependency metadata lost a Blocked by section after the prompt truncation'
+[[ "$(jq -r '.body_blocked_by | join(",")' <<<"$long_issue_task")" == 7001,7002 ]] \
+  || fail 'dependency metadata must hold the full-body Blocked by section and open native links, once each'
 eval "$gh_issue_stub"
 # 评审 BLOCK 写明前置 → 停在前置上（不按 main 前进去重评）；前置合并后回到 review-pending
 units '{"units":[{"id":"pr-61","pr":61,"stage":"review","history":[]},{"id":"issue-60","issue":60,"lane":"pr","stage":"implement","history":[]}]}'
