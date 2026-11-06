@@ -60,7 +60,7 @@ park_ci_red_for_main_red() { # id PR head check-rows-json -> parked when every f
     prior_stage="$(unit_field "$1" .stage)"
     [[ "$prior_stage" == ready-to-merge ]] || return 1
     failed_names="$(jqf -r 'join(", ")' <<<"$failed_checks")"
-    set_unit "$1" "$(hist ci-main-red-park "checks $failed_names also failed on main $red_sha") | .stage=\"parked\" | .parked_reason=\"main-red\" | .parked_main_red_sha=$(js "$red_sha") | .parked_from_stage=$(js "$prior_stage") | .parked_head_sha=$(js "$3") | .parked_check_names=$failed_checks"
+    set_unit "$1" "$(hist ci-main-red-park "checks $failed_names also failed on main $red_sha") | .stage=\"parked\" | .parked_reason=\"main-red\" | .unpark_condition=\"the same checks pass on main\" | .parked_main_red_sha=$(js "$red_sha") | .parked_from_stage=$(js "$prior_stage") | .parked_head_sha=$(js "$3") | .parked_check_names=$failed_checks"
     say "CI-red unit=$1 PR#$2: checks $failed_names also failed on main $red_sha -> parked until main recovers"
     return 0
   done < <(jqf -r '
@@ -591,7 +591,7 @@ release_session_pr_units() {
   prs="$(tick_prs)" || return 0
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
-    set_unit "$id" "$(hist session-owned-release "open PR is not the factory's; the session that owns it lands it") | .stage=\"parked\" | .parked_reason=\"session-owned\" | .approved_sha=null"
+    set_unit "$id" "$(hist session-owned-release "open PR is not the factory's; the session that owns it lands it") | .stage=\"parked\" | .parked_reason=\"session-owned\" | .unpark_condition=\"the owning session lands the PR\" | .approved_sha=null"
     say "session-owned release unit=$id"
   done < <(jqf -r --slurpfile census <(printf '%s' "$prs") --arg gated "$GATED_LABEL" --arg owned "$SESSION_OWNED_LABEL" '
     [$census[0][] | select(any(.labels[]?; .name == $owned)) | .number] as $claimed

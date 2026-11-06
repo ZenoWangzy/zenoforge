@@ -264,7 +264,7 @@ supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute
 supervisor 裁决（${action}）后重排：$guidance"))"
   else
     # 没有可放回的工作环节：搁置并留原因，不猜。
-    set_unit "$id" "$(hist supervisor-park "requeue target missing: no review history and no task/branch" "$decision") | .stage=\"parked\" | .note=$(js "requeue had no work stage to return to")"
+    set_unit "$id" "$(hist supervisor-park "requeue target missing: no review history and no task/branch" "$decision") | .stage=\"parked\" | .note=$(js "requeue had no work stage to return to") | $(park_fields requeue-target-missing 'a supervisor decision')"
     say "supervisor arbitration unit=$id: $action has no work stage -> parked"
     return 0
   fi
@@ -306,7 +306,7 @@ reconcile_size_recuts() {
     elif jqf -e '.state == "on-hold" or .hold != null' <<<"$state" >/dev/null; then
       hold_note="issue #$issue recut is on hold"
       if [[ "$(jqf -r '.note // ""' <<<"$u")" != "$hold_note" ]]; then
-        set_unit "$id" "$(hist size-recut-held "$hold_note") | .stage=\"parked\" | .note=$(js "$hold_note")"
+        set_unit "$id" "$(hist size-recut-held "$hold_note") | .stage=\"parked\" | .note=$(js "$hold_note") | $(park_fields on-hold 'the on-hold label lifts')"
       fi
     elif jqf -e '.state == "ready-for-agent"' <<<"$state" >/dev/null; then
       # Refusal, advisor recovery, and release-hold all requeue through the
@@ -319,7 +319,7 @@ reconcile_size_recuts() {
       # would allow the parent to race its already-created children.
       reconcile_note="issue #$issue needs state/label reconciliation before this unit can resume"
       if ! scheduler_size_recut_active "$issue" && [[ "$(jqf -r '.note // ""' <<<"$u")" != "$reconcile_note" ]]; then
-        set_unit "$id" "$(hist size-recut-reconcile "issue #$issue has a completed marker but remains needs-recut") | .stage=\"parked\" | .note=$(js "$reconcile_note")"
+        set_unit "$id" "$(hist size-recut-reconcile "issue #$issue has a completed marker but remains needs-recut") | .stage=\"parked\" | .note=$(js "$reconcile_note") | $(park_fields state-reconcile 'the issue state and labels agree')"
         echo "[$STAMP] size-recut issue=#$issue action=parked reason=state-label-reconciliation-required" >> "$A/alerts/events.md"
         say "unit $id parked for issue #$issue recut state/label reconciliation"
       fi
@@ -342,11 +342,11 @@ supervisor_apply_action() { # id action report-path —— 六动作落地，决
       u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
       # f11 基线实测 2 次危险 approve（记录里有 main-red/回滚证据仍 approve）：确定性挡板，不靠 prompt 自律。
       if jqf -e '(.handoff_worktree_sha != null and .handoff_worktree_applied != true) or (.handoff_start_sha != null and .handoff_start_applied != true) or (.handoff_integration_sha != null and .handoff_delivery_verified_sha == null)' <<<"$u" >/dev/null; then
-        set_unit "$id" "$(hist supervisor-park "approve refused: preserved handoff work has not been transferred" "$decision") | .stage=\"parked\" | .note=$(js "approve refused: preserved handoff work has not been transferred")"
+        set_unit "$id" "$(hist supervisor-park "approve refused: preserved handoff work has not been transferred" "$decision") | .stage=\"parked\" | .note=$(js "approve refused: preserved handoff work has not been transferred") | $(park_fields handoff-not-transferred 'the preserved work is transferred')"
         say "supervisor arbitration unit=$id: approve refused until the handoff is transferred -> parked"
       elif [[ "$(jqf -r '.main_red // false' <<<"$u")" == true ]] \
          || jqf -e '(.history // []) as $h | ([$h | to_entries[] | select(.value.stage=="review-approve") | .key] | max // -1) as $i | any($h[($i + 1):][]; .stage == "merge-reverted")' <<<"$u" >/dev/null; then
-        set_unit "$id" "$(hist supervisor-park "approve refused: record shows main-red or post-approval revert evidence" "$decision") | .stage=\"parked\" | .note=$(js "approve refused by the main-red/revert guard")"
+        set_unit "$id" "$(hist supervisor-park "approve refused: record shows main-red or post-approval revert evidence" "$decision") | .stage=\"parked\" | .note=$(js "approve refused by the main-red/revert guard") | $(park_fields main-red-guard 'a supervisor decision')"
         say "supervisor arbitration unit=$id: approve refused by the main-red/revert guard -> parked"
       else
         reviewed_sha="$(jqf -r '.reviewed_sha // empty' <<<"$u")"; reviewed_pr_head="$(jqf -r '.reviewed_pr_head // empty' <<<"$u")"
@@ -361,7 +361,7 @@ supervisor_apply_action() { # id action report-path —— 六动作落地，决
         fi
       fi ;;
     park)
-      set_unit "$id" "$(hist supervisor-park "$reason" "$decision") | .stage=\"parked\" | .note=$(js "${reason:-parked by supervisor arbitration}")"
+      set_unit "$id" "$(hist supervisor-park "$reason" "$decision") | .stage=\"parked\" | .note=$(js "${reason:-parked by supervisor arbitration}") | $(park_fields supervisor-park 'a supervisor decision')"
       say "supervisor arbitration unit=$id: park" ;;
     close)
       pr="$(unit_field "$id" '.pr // empty')"
@@ -471,7 +471,7 @@ supervisor_cap_founder() { # id reason evidence report-path → one owner questi
     say "supervisor cap triage unit=$id: founder question not posted; retained for retry"
     return 0
   fi
-  cap_set_unit "$id" FOUNDER "founder decision required: $reason; question: $question" "$rep" "$(hist supervisor-cap-founder "$question" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-founder\" | .note=$(js "founder decision required: $reason") | .supervisor_cap_question=$(js "$question")" \
+  cap_set_unit "$id" FOUNDER "founder decision required: $reason; question: $question" "$rep" "$(hist supervisor-cap-founder "$question" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-founder\" | .unpark_condition=\"the maintainer answers the question\" | .note=$(js "founder decision required: $reason") | .supervisor_cap_question=$(js "$question")" \
     && say "supervisor cap triage unit=$id: FOUNDER question posted"
 }
 
@@ -608,7 +608,7 @@ supervisor_cap_triage_reask_or_park() { # id report-path → 一次复问；第�
   detail="invalid final cap triage report $(basename "$rep"): $excerpt"
   if (( reasks < 1 )); then
     decision="$(decision_entry 'Re-ask one invalid cap triage answer' 'the answer was not one of the four allowed verdicts CLOSE/RECUT/RULE/FOUNDER; the re-ask restates them' "$detail" '[]' scheduler)"
-    cap_set_unit "$id" reask "$detail" "$rep" "$(hist supervisor-cap-triage-reask "$detail" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-triage-reask\" | .supervisor_cap_reask=1 | .supervisor_cap_invalid_answers=[$(js "$excerpt")] | .note=$(js "cap triage answer invalid once; one re-ask restates the allowed verdicts")" \
+    cap_set_unit "$id" reask "$detail" "$rep" "$(hist supervisor-cap-triage-reask "$detail" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-triage-reask\" | .unpark_condition=\"the next cap triage verdict\" | .supervisor_cap_reask=1 | .supervisor_cap_invalid_answers=[$(js "$excerpt")] | .note=$(js "cap triage answer invalid once; one re-ask restates the allowed verdicts")" \
       && say "supervisor cap triage unit=$id: invalid answer; one re-ask will restate the allowed verdicts"
   else
     first="$(jqf -r '.supervisor_cap_invalid_answers[0] // empty' <<<"$u")"
@@ -633,7 +633,7 @@ supervisor_apply_jev_action() { # id action confidence event-id → mature, conf
       supervisor_needs_info "$id" "$question" "$evidence" ;;
     park)
       note="$(js "$reason")"
-      set_unit "$id" "$(hist supervisor-park "$reason" "$decision") | .stage=\"parked\" | .note=$note"
+      set_unit "$id" "$(hist supervisor-park "$reason" "$decision") | .stage=\"parked\" | .note=$note | $(park_fields supervisor-park 'a supervisor decision')"
       say "supervisor arbitration unit=$id: Jev park" ;;
     *) return 1 ;;
   esac
