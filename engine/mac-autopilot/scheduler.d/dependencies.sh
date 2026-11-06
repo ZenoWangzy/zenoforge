@@ -224,7 +224,7 @@ release_dependency_blocks() {
     fi
     info="$(jqf -c --arg d "$dep" '.[$d] // empty' <<<"$dep_cache")"; [[ -n "$info" ]] || continue
     state="$(jqf -r '.state // empty' <<<"$info")"; labels="$(jqf -r '.labels // ""' <<<"$info")"
-    if (( gh_due )) && [[ "$state" == OPEN ]] && ! unit_body_declares_dependency "$u" "$dep" \
+    if (( gh_due )) && [[ "$state" == OPEN && "$real_wait" != true ]] && ! unit_body_declares_dependency "$u" "$dep" \
         && stack_approved_dependency "$id" "$dep" "$u"; then continue; fi
     if [[ "$state" == CLOSED || "$state" == MERGED ]]; then
       dep_blocker_forget "$issue" "$dep"
