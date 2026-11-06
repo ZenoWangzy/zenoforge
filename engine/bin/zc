@@ -5,6 +5,7 @@
 # ZC_MODE (default yolo) maps to `zcode --mode`; yolo is not a sandbox, same trust level as luna's danger-full-access.
 # The worker is the ZCode Node bundle run through a copy of node named `zcode`, so its comm is `zcode-cli` (ZCode renames its own process title).
 set -uo pipefail
+unset GH_TOKEN GITHUB_TOKEN
 # Whole body is one { ... } block (see luna): replace this file atomically with a temp file + mv, never edit in place.
 {
 key="$1" cwd="$2" prompt="$3"

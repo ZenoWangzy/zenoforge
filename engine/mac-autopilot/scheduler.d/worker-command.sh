@@ -101,7 +101,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     [[ "$type" == implement || "$type" == repair || "$type" == review || "$type" == rereview ]] || return 1
     WORKER_STDOUT_REPORT=1
     CODEX_USAGE_START=null
-    CODEX_COMMAND=(env NODE_USE_ENV_PROXY=1 zcode -p "$prompt_arg" --cwd "$workdir" --mode yolo)
+    CODEX_COMMAND=(env -u GH_TOKEN -u GITHUB_TOKEN NODE_USE_ENV_PROXY=1 zcode -p "$prompt_arg" --cwd "$workdir" --mode yolo)
     return 0
   fi
   if [[ "$provider" == claude && ( "$type" == implement || "$type" == repair ) ]]; then

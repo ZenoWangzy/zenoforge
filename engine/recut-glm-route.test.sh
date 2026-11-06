@@ -58,11 +58,24 @@ assert_true "the alert is per unit, not recut only" grep -q 'unit=implement' "$A
 prompt="$(mktemp)"; schema="$(mktemp)"; echo '{"required":["children"]}' > "$schema"
 cat > "$AGENT_HOME/zcode" <<'Z'
 #!/usr/bin/env bash
+printf '%s\n' "${GH_TOKEN:-}${GITHUB_TOKEN:-}" > "$AGENT_HOME/zcode-token-seen"
 printf '%s\n' '```json' "$ZCODE_FAKE_REPLY" '```'
 Z
 chmod +x "$AGENT_HOME/zcode"; PATH="$AGENT_HOME:$PATH"
 assert_eq "a reply with every required key passes" false "$(ZCODE_FAKE_REPLY='{"children":[]}' run_zcode_json . "$GLM" 1 "$schema" "$prompt" hand-zcode | jq -r .is_error)"
+GH_TOKEN=planted GITHUB_TOKEN=planted ZCODE_FAKE_REPLY='{"children":[]}' run_zcode_json . "$GLM" 1 "$schema" "$prompt" hand-zcode >/dev/null
+assert_eq "zcode never inherits the pipeline GitHub token" "" "$(cat "$AGENT_HOME/zcode-token-seen")"
 assert_eq "a reply missing a required key fails closed" true "$(ZCODE_FAKE_REPLY='{"other":1}' run_zcode_json . "$GLM" 1 "$schema" "$prompt" hand-zcode | jq -r .is_error || true)"
 rm -f "$prompt" "$schema"
+
+# Every ZCode launch: new paths must strip too. stage-call.sh and bin/zc unset at the top of the script.
+launches="$(cd "$SCRIPT_DIR/.." && git grep -lE '(^|[ (=])zcode -p |/bin/zcode"' -- engine ':!*.test.*' ':!*.md')"
+assert_eq "the known ZCode launch set" "engine/bin/zc engine/eval/stage-call.sh engine/lib.d/model-calls.sh engine/mac-autopilot/scheduler.d/worker-command.sh engine/night/dispatch.sh" "$(tr '\n' ' ' <<< "$launches" | sed 's/ $//')"
+for launch in engine/lib.d/model-calls.sh engine/mac-autopilot/scheduler.d/worker-command.sh engine/night/dispatch.sh; do
+  assert_true "$launch strips the token at launch" grep -Eq 'env -u GH_TOKEN -u GITHUB_TOKEN .*zcode -p ' "$SCRIPT_DIR/../$launch"
+done
+for launch in engine/bin/zc engine/eval/stage-call.sh; do
+  assert_true "$launch unsets the token" grep -Eq '^unset GH_TOKEN GITHUB_TOKEN$' "$SCRIPT_DIR/../$launch"
+done
 
 lib_case_exit

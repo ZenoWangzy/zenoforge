@@ -722,7 +722,8 @@ run_zcode_json() {
     cat "$prompt_file"
   } > "$transcript"
   started_at="$(date +%s)"
-  NODE_USE_ENV_PROXY=1 timeout "${timeout_minutes}m" zcode -p "$(cat "$transcript")" \
+  # Same strip as run_codex_json: zcode has no sandbox, and the prompt carries ticket text.
+  NODE_USE_ENV_PROXY=1 timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN zcode -p "$(cat "$transcript")" \
     --cwd "$cwd" --mode yolo > "$out_file" 2>&1 || status=$?
   elapsed=$(( $(date +%s) - started_at ))
   if [ "$status" -eq 124 ]; then

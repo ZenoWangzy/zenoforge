@@ -391,7 +391,7 @@ else
     -E "NODE_USE_ENV_PROXY=1" \
     -E "https_proxy=http://127.0.0.1:3128" -E "HTTPS_PROXY=http://127.0.0.1:3128" \
     -E "http_proxy=http://127.0.0.1:3128" -E "HTTP_PROXY=http://127.0.0.1:3128" \
-    --unit="$HAND_UNIT" -- setsid nohup env "${worker_env[@]}" zcode -p "$zcode_prompt" --cwd "$WT" --mode yolo \
+    --unit="$HAND_UNIT" -- setsid nohup env -u GH_TOKEN -u GITHUB_TOKEN "${worker_env[@]}" zcode -p "$zcode_prompt" --cwd "$WT" --mode yolo \
     > "$LOG" 2>&1 &
   launcher_pid=$!
 fi
