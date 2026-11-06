@@ -120,7 +120,7 @@ dispatch_pending() {
     case "$stage" in
       repair-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || { to_supervisor "$id" "repair-pending without a PR"; continue; }
-        if [[ -n "$(jqf -r '.hold_handoff_episode // empty' <<<"$u")" ]] && park_if_body_blocked "$u"; then
+        if [[ -n "$(jqf -r '.hold_handoff_episode // .dep_wait_delivery // empty' <<<"$u")" ]] && park_if_body_blocked "$u"; then
           [[ "$(unit_field "$id" .stage)" != blocked-external ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
           continue
         fi

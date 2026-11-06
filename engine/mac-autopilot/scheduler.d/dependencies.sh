@@ -77,7 +77,7 @@ blocking_body_dependency() { # unit-json → first predecessor not yet delivered
     labels="$(jqf -r '.labels // ""' <<<"$info")"
     [[ "$state" == OPEN && ",$labels," =~ ,roadmap(-epic|-theme)?, ]] && continue
     printf '%s' "$dep"; return 0
-  done < <(unit_body_blockers "$1")
+  done < <(unit_body_blockers "$1"; jqf -r '.dep_wait_delivery // empty' <<<"$1") # every release path ends at dispatch, so the marker is enforced here
   return 1
 }
 park_if_body_blocked() { # unit-json → 0 当按正文前置停住（不派发）
