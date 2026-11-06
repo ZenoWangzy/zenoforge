@@ -262,6 +262,15 @@ issue_source_close_comment_valid() {
 }
 
 
+# A size-admission slice closes its parent with scope left over. Match titles, not sub_issues: the roadmap reparents follow-ups.
+# A failed search only drops the note: it must not hold a deployed close.
+split_followups_note() { # issue -> close-comment text, empty when none is open
+  local n="$1" open
+  open="$(gh issue list --repo "$REPO" --state open --search "\"续作自 #$n\" in:title" --json number,title 2>/dev/null \
+    | jq -r --arg tail "（续作自 #$n）" '[.[] | select(.title | endswith($tail)) | "#\(.number)"] | join("、")' 2>/dev/null)" || return 0
+  [ -z "$open" ] || printf '\n\n这张票只交付了第一个切片，剩余范围在 %s 继续。' "$open"
+}
+
 conclude_run() {
   local n="$1" outcome="$2" needs_md="${3:-}" quota_provider="${4:-}" expected_hold="${5:-}" state pr_number pr_head_sha review_verdict ci_outcome attempts acceptor duplicate_of deploy_state deployed_sha real_user_path policy_exhausted implement_episode implement_after_requeue implementation_run pipeline_sha pipeline_close_comment health_target health_detail health_target_json health_detail_json issue_state mandatory_check_status="" check_report_json conclusion_json='null'
   if [ -n "$quota_provider" ] && provider_quota_exhausted "$quota_provider"; then
@@ -429,7 +438,7 @@ $needs_md
     local transition_filter='del(.advisor_admission_measure_only) | .run.previous_concluded_at = (.run.concluded_at // .run.previous_concluded_at) | .run.concluded_at = (now | todate) | .released = true | .closed_by_pipeline = true | del(.web_advisor_provider_job_id, .web_advisor_provider_job_started_at, .web_advisor_provider_job_episode_seq)'
     issue_transition "$n" concluded conclude:deployed "$transition_filter" || return 1
     guarded_issue_comment "$n" "$BOT_DISCLAIMER
-这张票已部署，并已记录同一次真实用户路径的 URL、可见 DOM 和网络交换证据。$needs_md
+这张票已部署，并已记录同一次真实用户路径的 URL、可见 DOM 和网络交换证据。$needs_md$(split_followups_note "$n")
 
 这张票已经关闭。如果之后验证发现仍有问题，重新打开这张 issue 就行，机器人会当成新的一轮重新处理。" || return 1
     guarded_write gh issue close "$n" --repo "$REPO" || return 1

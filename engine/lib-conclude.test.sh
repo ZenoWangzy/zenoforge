@@ -501,6 +501,23 @@ CONCLUDE_DEPLOY_OK_OUT="$(
     echo "exit=$?"
   ' "$SCRIPT_DIR" 2>&1
 )"
+conclude_split_close() { # gh issue list body, then its exit code
+  AGENT_HOME="$CONCLUDE_HOME" AGENT_DRY_RUN=1 REPO="test/repo" SPLIT_LIST="$1" SPLIT_RC="$2" bash -c '
+    source "$0/lib.sh"
+    queue_maintainer_outcome() { :; }
+    guarded_issue_comment() { printf "%s\n" "$2"; }
+    gh() { [ "$1 $2" = "issue list" ] && { printf "%s" "$SPLIT_LIST"; return "$SPLIT_RC"; }; }
+    conclude_run 500013 deployed "Production evidence recorded."
+  ' "$SCRIPT_DIR" 2>&1
+}
+CONCLUDE_DEPLOY_SPLIT_OUT="$(conclude_split_close '[{"number":9001,"title":"x（续作自 #500013）"},{"number":9002,"title":"y（续作自 #5000130）"}]' 0)"
+assert_contains "a split parent's close comment names its open follow-up" "$CONCLUDE_DEPLOY_SPLIT_OUT" "剩余范围在 #9001 继续"
+assert_not_contains "...and no ticket whose title only looks like one" "$CONCLUDE_DEPLOY_SPLIT_OUT" "#9002"
+CONCLUDE_DEPLOY_NOSPLIT_OUT="$(conclude_split_close '[]' 0)"
+assert_contains "a ticket with no follow-up still closes" "$CONCLUDE_DEPLOY_NOSPLIT_OUT" "这张票已经关闭"
+assert_not_contains "...and says nothing about one" "$CONCLUDE_DEPLOY_NOSPLIT_OUT" "剩余范围"
+CONCLUDE_DEPLOY_SEARCHFAIL_OUT="$(conclude_split_close '' 1)"
+assert_contains "a failed search does not hold the deployed close" "$CONCLUDE_DEPLOY_SEARCHFAIL_OUT" "gh issue close 500013"
 assert_contains "deployed closes after URL, DOM, and same-run network evidence" \
   "$CONCLUDE_DEPLOY_OK_OUT" "gh issue close 500013"
 assert_contains "deployed conclusion clears a stale in-progress label" \
