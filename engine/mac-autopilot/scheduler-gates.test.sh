@@ -2071,6 +2071,9 @@ printf '{"states":{"146":{"state":"OPEN","labels":""}}}\n' > "$A/dep-check.cache
 printf '%s\n' "$(date +%s)" > "$A/dep-check.epoch"
 release_dependency_blocks
 [[ "$(field issue-597 .stage)" == blocked-external ]] || fail "a refused release must not repeat: $(field issue-597 .stage)"
+printf '{"states":{"146":{"state":"OPEN","labels":"roadmap-epic"}}}\n' > "$A/dep-check.cache.json"
+release_dependency_blocks
+[[ "$(field issue-597 .stage)" == blocked-external ]] || fail "a refused release must not go to the epic route: $(field issue-597 .stage)"
 printf '{"states":{"146":{"state":"CLOSED","labels":""}}}\n' > "$A/dep-check.cache.json"
 release_dependency_blocks
 [[ "$(field issue-597 .stage)" != blocked-external ]] || fail 'a real delivery must still free the unit'

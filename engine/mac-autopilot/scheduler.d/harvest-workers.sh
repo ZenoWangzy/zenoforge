@@ -335,7 +335,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
             INPUT_INCOMPLETE)
               set_unit "$unit" "$(hist review-block "$wsha") | $reviewed | .approved_sha=null | .blocked_main_sha=$(js "$MAIN_HEAD") | .stage=\"blocked-external\""
               local bdep; bdep="$(blocked_on_of "$rep")"
-              [[ -n "$bdep" ]] && set_unit "$unit" ".blocked_on=$bdep | .note=$(js "waiting for predecessor #$bdep")"
+              [[ -z "$bdep" ]] || park_blocked "$unit" "$bdep"
               cancel_unit_runs "$unit" "review blocked" ;;
             *)
               set_unit "$unit" "$reviewed | .approved_sha=null"

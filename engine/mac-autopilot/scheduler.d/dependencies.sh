@@ -54,7 +54,7 @@ dep_delivered_snapshot() {
     [[ "$dep" =~ ^[0-9]+$ ]] && DEP_DELIVERED_CACHE["$dep"]=1
   done < <(jqf -r '.units[] | select(.stage | IN("merged","landed","awaiting-live-event"))
     | ((.issue | select(type == "number")),
-       (if ((.branch // "") | test("^agent/issue-[0-9]+$")) then (.branch | sub("^agent/issue-"; "") | tonumber) else empty end))' <(units_history_doc))
+       (if ((.branch // "") | test("^agent/issue-[0-9]+$")) then (.branch | sub("^agent/issue-"; "") | tonumber) else empty end))' <(units_history_index))
 }
 dep_delivered_in_ledger() { # release_dependency_blocks 从台账建一次快照，避免每个 blocker 重读全文件
   [[ "${DEP_DELIVERED_CACHE[$1]:-}" == 1 ]]
@@ -235,7 +235,7 @@ release_dependency_blocks() {
     fi
     # 路线图 epic/主题是伞形 issue，永远不会"交付"；停在它上面就是永远停（2026-10-20 六个单元）。放开一次，
     # 同一个 epic 第二次停住就交给 supervisor。
-    if [[ ",$labels," =~ ,roadmap(-epic|-theme)?, ]]; then
+    if [[ "$real_wait" != true && ",$labels," =~ ,roadmap(-epic|-theme)?, ]]; then
       if jqf -e --arg id "$id" --arg r "#$dep" 'any(.units[]; .id == $id and any(.history[]?; .stage == "epic-not-predecessor" and .result == $r))' "$UNITS" >/dev/null; then
         dep_blocker_forget "$issue" "$dep"
         decision="$(decision_entry 'Hand off repeated roadmap block to supervisor' 'the same roadmap epic blocked this unit twice' "history contains repeated epic-not-predecessor events for #$dep" '["Keep waiting for the roadmap epic to close"]' scheduler)"
