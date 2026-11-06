@@ -358,3 +358,6 @@ zf_host_ops_file() {
   fi
   printf '%s\n' "$fallback"
 }
+
+# systemd-run -E passes an unset name as empty, and an empty lower-case proxy beats the upper-case one.
+export http_proxy="${http_proxy:-${HTTP_PROXY:-}}" https_proxy="${https_proxy:-${HTTPS_PROXY:-}}" no_proxy="${no_proxy:-${NO_PROXY:-}}"

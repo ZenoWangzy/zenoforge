@@ -97,4 +97,12 @@ for launch in engine/bin/zc engine/eval/stage-call.sh; do
   assert_true "$launch unsets the token" grep -Eq '^unset GH_TOKEN GITHUB_TOKEN$' "$SCRIPT_DIR/../$launch"
 done
 
+# A unit passing a lower-case proxy by name must fill it first: an unset name arrives empty and turns the proxy off.
+assert_eq "config fills a lower-case proxy from the upper-case one" http://proxy.test:1 \
+  "$(unset https_proxy; HTTPS_PROXY=http://proxy.test:1; source "$SCRIPT_DIR/config.sh" >/dev/null; printf '%s' "$https_proxy")"
+for launch in $(cd "$SCRIPT_DIR/.." && git grep -lE -- '-E (https?_proxy|no_proxy)( |$)' -- engine ':!*.test.*'); do
+  assert_true "$launch fills lower-case proxies before systemd-run -E" \
+    grep -Eq '(^|[ ])https_proxy="\$\{https_proxy:-|(lib|config)\.sh"' "$SCRIPT_DIR/../$launch"
+done
+
 lib_case_exit
