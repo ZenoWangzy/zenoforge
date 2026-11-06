@@ -53,41 +53,70 @@ worktree_cleanup_block_reason() { # dir -> reason when deleting it could lose re
 
 # A handoff cannot resume past a clone holding work, and only an inbox line used to follow. Move that work to rescued/ refs,
 # which no workflow runs on (push triggers are main only) and which open no PR. Nothing in the clone changes until the
-# remote has been read back, so any refusal leaves the work where it was.
+# remote has been read back, so any refusal leaves the work where it was. Work too large to read in passing stays for a person.
 HANDOFF_RESCUE_MAX_FILES="${HANDOFF_RESCUE_MAX_FILES:-50}"
 HANDOFF_RESCUE_MAX_FILE_KB="${HANDOFF_RESCUE_MAX_FILE_KB:-5120}"
-rescue_push_verified() { # clone sha branch
-  timeout 120 git -C "$1" -c core.hooksPath=scripts/hooks push -q origin "$2:refs/heads/$3" >/dev/null 2>&1 || return 1
-  [[ "$(timeout 30 git -C "$1" ls-remote origin "refs/heads/$3" 2>/dev/null | awk 'NR==1{print $1}')" == "$2" ]]
+rescue_push_verified() { # clone sha branch. The hook comes from the main checkout: rescued work could have edited or removed its own.
+  local url
+  [[ -x "$ROOT/scripts/hooks/pre-push" ]] || return 1
+  # By URL: a push to the remote name moves origin/* at once, and that is what marks a head as safe to delete.
+  url="$(git -C "$1" remote get-url origin)" || return 1
+  timeout 60 git -C "$1" -c core.hooksPath="$ROOT/scripts/hooks" push -q "$url" "$2:refs/heads/$3" >/dev/null 2>&1 </dev/null || return 1
+  [[ "$(timeout 30 git -C "$1" ls-remote "$url" "refs/heads/$3" 2>/dev/null | awk 'NR==1{print $1}')" == "$2" ]]
+}
+rescue_secret_scan() { # clone commit stash... -> 0 clean, 3 leak, else the tool failed
+  local wt="$1" commit="$2" stash rc=0; shift 2
+  command -v gitleaks >/dev/null || return 1
+  # log -p skips merge diffs, and a stash's worktree edits live only in its merge commit, so each stash is scanned as a diff.
+  timeout 120 gitleaks git --no-banner --redact --log-level error --exit-code 3 --log-opts="$commit $* --not --remotes" "$wt" >/dev/null 2>&1 </dev/null || return $?
+  for stash in "$@"; do
+    git -C "$wt" diff "$stash^1" "$stash" | timeout 60 gitleaks stdin --no-banner --redact --log-level error --exit-code 3 >/dev/null 2>&1; rc=${PIPESTATUS[1]}
+    (( rc == 0 )) || return "$rc"
+  done
 }
 rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescued; else RESCUE_REFUSED says why
-  local n="$1" wt="$2" status head commit tree index ref="" stash path size stash_list=""
-  local -a stashes=() changed=()
+  local n="$1" wt="$2" status head commit tree raw index ref="" stash stash_out stash_list="" scan=0 marker key big path
+  local -a stashes=()
   RESCUE_REFUSED=""; RESCUE_START_REF=""; RESCUE_START_SHA=""
   [[ -e "$wt/.git" ]] || { RESCUE_REFUSED="no clone"; return 1; }
   status="$(git -C "$wt" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || { RESCUE_REFUSED="unreadable status"; return 1; }
   head="$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null)" || { RESCUE_REFUSED="unreadable HEAD"; return 1; }
-  git -C "$wt" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 && { RESCUE_REFUSED="merge in progress"; return 1; }
-  mapfile -t stashes < <(git -C "$wt" stash list --format=%H 2>/dev/null)
-  mapfile -d '' -t changed < <(git -C "$wt" ls-files -z -m -o --exclude-standard 2>/dev/null)
-  (( $(grep -c . <<<"$status") <= HANDOFF_RESCUE_MAX_FILES )) || { RESCUE_REFUSED="more than $HANDOFF_RESCUE_MAX_FILES changed files"; return 1; }
-  for path in ${changed[@]+"${changed[@]}"}; do
-    size="$(stat -c %s -- "$wt/$path" 2>/dev/null || echo 0)"
-    (( size <= HANDOFF_RESCUE_MAX_FILE_KB * 1024 )) || { RESCUE_REFUSED="file over ${HANDOFF_RESCUE_MAX_FILE_KB}KB"; return 1; }
+  stash_out="$(git -C "$wt" stash list --format=%H 2>/dev/null)" || { RESCUE_REFUSED="unreadable stash list"; return 1; }
+  [[ -z "$stash_out" ]] || mapfile -t stashes <<<"$stash_out"
+  for path in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG rebase-merge rebase-apply; do
+    [[ ! -e "$(git -C "$wt" rev-parse --absolute-git-dir)/$path" ]] || { RESCUE_REFUSED="$path in progress"; return 1; }
   done
+  # A leak does not go away by retrying: skip the scan until the clone changes.
+  marker="$A/rescue-refused-$n"; key="$(printf '%s\n' "$head" "$status" "$stash_out" | sha256sum)"
+  [[ "$(cat "$marker" 2>/dev/null)" != "$key" ]] || { RESCUE_REFUSED="secret scan refused an earlier pass"; return 1; }
+  [[ -n "$(git -C "$wt" rev-list -n1 --branches --not --remotes "$head" 2>/dev/null)" ]] && { RESCUE_REFUSED="unpushed commits on another branch"; return 1; }
   commit="$head"
   if [[ -n "$status" ]]; then
     # A private index and commit-tree: the clone's index, branch and files stay untouched until the push is proved.
     index="$(mktemp -u)"
-    tree="$(GIT_INDEX_FILE="$index" git -C "$wt" read-tree HEAD && GIT_INDEX_FILE="$index" git -C "$wt" add -A && GIT_INDEX_FILE="$index" git -C "$wt" write-tree)" \
-      && commit="$(git -C "$wt" -c user.name=zenoforge-agent -c user.email=zenoforge-agent@users.noreply.github.com commit-tree "$tree" -p "$head" -m "rescue: uncommitted work from the clone of #$n")" \
-      || { rm -f "$index" "$index.lock"; RESCUE_REFUSED="could not build the rescue commit"; return 1; }
+    tree="$(GIT_INDEX_FILE="$index" git -C "$wt" read-tree HEAD && GIT_INDEX_FILE="$index" git -C "$wt" add -A 2>/dev/null && GIT_INDEX_FILE="$index" git -C "$wt" write-tree)" \
+      || { rm -f "$index" "$index.lock"; RESCUE_REFUSED="could not build the rescue tree"; return 1; }
     rm -f "$index"
+    raw="$(git -C "$wt" diff-tree -r --no-commit-id --raw --no-abbrev "$head" "$tree")" || { RESCUE_REFUSED="could not read the rescue tree"; return 1; }
+    (( $(grep -c . <<<"$raw") <= HANDOFF_RESCUE_MAX_FILES )) || { RESCUE_REFUSED="more than $HANDOFF_RESCUE_MAX_FILES changed files"; return 1; }
+    # A nested repo becomes a gitlink: its files would not travel, yet the clone would look clean.
+    ! awk '$2 == "160000"' <<<"$raw" | grep -q . || { RESCUE_REFUSED="nested repository or submodule change"; return 1; }
+    commit="$(git -C "$wt" -c user.name=zenoforge-agent -c user.email=zenoforge-agent@users.noreply.github.com commit-tree "$tree" -p "$head" -m "rescue: uncommitted work from the clone of #$n")" \
+      || { RESCUE_REFUSED="could not build the rescue commit"; return 1; }
   fi
-  # The repo has no commit hook; its pre-push runs on the pushes below, and this is the secret scan.
-  command -v gitleaks >/dev/null || { RESCUE_REFUSED="gitleaks unavailable"; return 1; }
-  timeout 120 gitleaks git --no-banner --redact --log-level error --log-opts="$commit ${stashes[*]:-} --not --remotes" "$wt" >/dev/null 2>&1 \
-    || { RESCUE_REFUSED="secret scan refused or failed"; return 1; }
+  for stash in ${stashes[@]+"${stashes[@]}"}; do
+    if git -C "$wt" rev-parse -q --verify "$stash^3" >/dev/null 2>&1 \
+      && git -C "$wt" ls-tree -r --name-only "$stash^3" | git -C "$wt" check-ignore -q --no-index --stdin; then
+      RESCUE_REFUSED="stash holds ignored files"; return 1
+    fi
+  done
+  # Everything about to leave, stashes and unpushed commits too, not only the uncommitted files.
+  big="$(git -C "$wt" rev-list --objects "$commit" ${stashes[@]+"${stashes[@]}"} --not --remotes 2>/dev/null | awk '{print $1}' \
+    | git -C "$wt" cat-file --batch-check='%(objecttype) %(objectsize)' | awk -v max="$((HANDOFF_RESCUE_MAX_FILE_KB * 1024))" '$1 == "blob" && $2 > max {found = 1} END {print found + 0}')"
+  [[ "$big" == 0 ]] || { RESCUE_REFUSED="file over ${HANDOFF_RESCUE_MAX_FILE_KB}KB"; return 1; }
+  rescue_secret_scan "$wt" "$commit" ${stashes[@]+"${stashes[@]}"} || scan=$?
+  if (( scan == 3 )); then printf '%s\n' "$key" > "$marker"; RESCUE_REFUSED="secret scan found a leak"; return 1; fi
+  (( scan == 0 )) || { RESCUE_REFUSED="secret scan could not run"; return 1; }
   for stash in ${stashes[@]+"${stashes[@]}"}; do
     rescue_push_verified "$wt" "$stash" "rescued/stash-of-$n-$stash" || { RESCUE_REFUSED="stash push failed"; return 1; }
     stash_list+=" rescued/stash-of-$n-$stash"
@@ -102,8 +131,10 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
   fi
   [[ "$commit" == "$head" ]] || git -C "$wt" reset -q --mixed "$commit" || { RESCUE_REFUSED="could not move the clone to its rescue commit"; return 1; } # the files already match it
   (( ${#stashes[@]} == 0 )) || git -C "$wt" stash clear || { RESCUE_REFUSED="could not clear rescued stashes"; return 1; }
-  gh issue comment "$n" --body "Work from the preserved clone is saved on the remote.${ref:+ The handoff resumes from \`$ref\`.}${stash_list:+ Stashes, not applied:$stash_list.}" >/dev/null 2>&1 \
+  rm -f "$marker"
+  gh issue comment "$n" --body "Work from the preserved clone is saved on the remote.${ref:+ The handoff resumes from \`$ref\`.}${stash_list:+ Stashes, not applied:$stash_list.}" >/dev/null 2>&1 </dev/null \
     || say "handoff issue #$n: could not post the rescue refs: ${ref}${stash_list}"
+  if worktree_cleanup_block_reason "$wt" >/dev/null; then RESCUE_REFUSED="clone still blocks after the rescue"; return 1; fi
 }
 
 # Engine version trees are read-only, and plain rm -rf cannot empty a read-only directory.

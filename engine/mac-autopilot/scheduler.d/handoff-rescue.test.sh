@@ -19,14 +19,16 @@ unset AUTOPI_TEST_LIBRARY_ONLY
 fail() { echo "handoff-rescue.test.sh: $*" >&2; exit 1; }
 SCHEDULER_AGENT_LIB="$fixture/lib.sh"
 printf '%s\n' 'state_merge() { [[ -z "${STATE_MERGE_FAILS:-}" ]] || return 1; printf "%s %s\n" "$1" "$2" >> "'"$fixture"'/state-merges"; }' > "$SCHEDULER_AGENT_LIB"
-printf '#!/usr/bin/env bash\n[[ ! -e "%s/leak" ]]\n' "$fixture" > "$fixture/bin/gitleaks"; chmod +x "$fixture/bin/gitleaks"
+# The stub reads what a real scan would: a stash reaches it only as a diff on stdin.
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/scans"\nif [[ "$1" == stdin ]] && grep -q AKIAFAKE; then exit 3; fi\n[[ ! -e "%s/leak" ]] || exit 3\n[[ ! -e "%s/scan-broken" ]]\n' "$fixture" "$fixture" "$fixture" > "$fixture/bin/gitleaks"; chmod +x "$fixture/bin/gitleaks"
+mkdir -p "$ROOT/scripts/hooks"; printf '#!/usr/bin/env bash\n[[ ! -e "%s/hook-refuses" ]]\n' "$fixture" > "$ROOT/scripts/hooks/pre-push"; chmod +x "$ROOT/scripts/hooks/pre-push"
 export PATH="$fixture/bin:$PATH"
 comments="$fixture/comments"; : > "$comments"
 gh() { [[ "$1 $2" == "issue comment" ]] && printf '%s\n' "$*" >> "$comments"; }
 
 origin="$fixture/origin.git"
 new_clone() { # fresh remote and clone with a clean pushed main
-  rm -rf "$origin" "$fixture/wt" "$fixture/state-merges"
+  rm -rf "$origin" "$fixture/wt" "$fixture/state-merges" "$fixture/supervisor/autopi/rescue-refused-70"
   git init -q --bare "$origin"
   git init -q "$fixture/wt"
   git -C "$fixture/wt" config user.name t; git -C "$fixture/wt" config user.email t@example.com
@@ -37,7 +39,10 @@ new_clone() { # fresh remote and clone with a clean pushed main
   git -C "$fixture/wt" fetch -q origin
   wt="$fixture/wt"
 }
-snapshot() { git -C "$wt" rev-parse HEAD; git -C "$wt" status --porcelain=v1 --untracked-files=all; git -C "$wt" stash list --format=%H; git -C "$wt" diff --cached --name-only; }
+snapshot() {
+  git -C "$wt" for-each-ref; git -C "$wt" status --porcelain=v1 --untracked-files=all; git -C "$wt" stash list --format=%H
+  git -C "$wt" diff --cached --name-only; tar -C "$wt" --exclude=.git -cf - . | sha256sum
+}
 remote_rescues() { git --git-dir="$origin" for-each-ref --format='%(refname:short) %(objectname)' refs/heads/rescued/; }
 refused_intact() { # what-it-is why-pattern
   local before after
@@ -73,11 +78,29 @@ rescue_handoff_clone 70 "$wt" || fail "stash-only rescue refused: $RESCUE_REFUSE
 [[ -z "$RESCUE_START_REF" && "$(remote_rescues | wc -l)" == 1 ]] || fail "a stash alone must not create a start ref"
 if worktree_cleanup_block_reason "$wt" >/dev/null; then fail "the stash still blocks"; fi
 
-# A failed push leaves everything where it was.
+# A failed push leaves everything where it was, at either push.
 new_clone
-printf 'dirty\n' >> "$wt/a.txt"; printf 'new\n' > "$wt/c.txt"; git -C "$wt" stash -q -u; printf 'dirty2\n' >> "$wt/a.txt"
+printf 'dirty\n' >> "$wt/a.txt"; printf 'new\n' > "$wt/c.txt"; git -C "$wt" rm -q .gitignore; git -C "$wt" stash -q -u; printf 'dirty2\n' >> "$wt/a.txt"
 git -C "$wt" remote set-url origin "$fixture/missing.git"
-refused_intact "a failed push" "push failed"
+refused_intact "a failed stash push" "stash push failed"
+new_clone
+printf 'dirty\n' >> "$wt/a.txt"
+git -C "$wt" remote set-url origin "$fixture/missing.git"
+refused_intact "a failed commit push" "rescue push failed"
+
+# Deletes, renames, modes and symlinks all reach the rescue commit, and the clone ends clean.
+new_clone
+git -C "$wt" config core.fileMode true; printf 'two\n' > "$wt/b.txt"; printf 'x\n' > "$wt/d.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm more; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
+git -C "$wt" mv b.txt renamed.txt; rm "$wt/d.txt"; ln -s a.txt "$wt/link"; chmod +x "$wt/a.txt"
+rescue_handoff_clone 70 "$wt" || fail "mixed changes refused: $RESCUE_REFUSED"
+tree="$(git --git-dir="$origin" ls-tree -r "$RESCUE_START_SHA")"
+grep -q 'renamed.txt' <<<"$tree" && ! grep -qE '\s(b|d)\.txt$' <<<"$tree" && grep -q '^120000.*link' <<<"$tree" && grep -q '^100755.*a.txt' <<<"$tree" || fail "the rescue lost a change"
+[[ -z "$(git -C "$wt" status --porcelain=v1)" ]] || fail "the clone is not clean after the rescue"
+
+# A detached HEAD is rescued like a branch.
+new_clone
+git -C "$wt" checkout -q --detach; printf 'dirty\n' >> "$wt/a.txt"
+rescue_handoff_clone 70 "$wt" || fail "detached HEAD refused: $RESCUE_REFUSED"
 
 # A push the remote did not keep: the read-back decides, not the exit code.
 new_clone
@@ -89,23 +112,41 @@ rm -f "$fixture/bin/git"; hash -r
 
 # The repo's pre-push hook is honoured.
 new_clone
-mkdir -p "$wt/scripts/hooks"; printf '#!/usr/bin/env bash\nexit 1\n' > "$wt/scripts/hooks/pre-push"; chmod +x "$wt/scripts/hooks/pre-push"
+printf 'dirty\n' >> "$wt/a.txt"; touch "$fixture/hook-refuses"
 refused_intact "a pre-push refusal" "push failed"
+rm -f "$fixture/hook-refuses"
 [[ -z "$(remote_rescues)" ]] || fail "a hook refusal still pushed"
 
-# The secret scan decides before anything leaves.
+# The secret scan decides before anything leaves, and it sees stashes.
 new_clone
 printf 'dirty\n' >> "$wt/a.txt"; touch "$fixture/leak"
-refused_intact "a secret scan refusal" "secret scan"
+refused_intact "a secret scan refusal" "found a leak"
 rm -f "$fixture/leak"; [[ -z "$(remote_rescues)" ]] || fail "a scan refusal still pushed"
+: > "$fixture/scans"
+if rescue_handoff_clone 70 "$wt"; then fail "a leak must not be retried"; fi
+[[ "$RESCUE_REFUSED" == *"earlier pass"* && ! -s "$fixture/scans" ]] || fail "an unchanged clone was scanned again ($RESCUE_REFUSED)"
+new_clone
+printf 'key=AKIAFAKE\n' >> "$wt/a.txt"; git -C "$wt" stash -q
+refused_intact "a secret in a stash's worktree edits" "found a leak"
+new_clone
+printf 'dirty\n' >> "$wt/a.txt"; touch "$fixture/scan-broken"
+refused_intact "a broken scanner" "could not run"
+rm -f "$fixture/scan-broken"
 
 # Size bounds keep large work for someone to read.
 new_clone
 for i in $(seq 1 51); do printf 'x\n' > "$wt/f$i.txt"; done
 refused_intact "too many files" "more than 50"
 new_clone
-head -c 6000000 /dev/zero > "$wt/big.bin"
+head -c 6000000 /dev/urandom > "$wt/big.bin"
 refused_intact "a large binary" "file over"
+git -C "$wt" add big.bin
+refused_intact "a large binary staged only" "file over"
+git -C "$wt" stash -q
+refused_intact "a large binary in a stash" "file over"
+new_clone
+head -c 6000000 /dev/urandom > "$wt/big.bin"; git -C "$wt" add big.bin; git -C "$wt" commit -qm big
+refused_intact "a large binary in an unpushed commit" "file over"
 [[ -z "$(remote_rescues)" ]] || fail "a size refusal still pushed"
 
 # A start ref that cannot be recorded would strand the work, so the clone stays.
@@ -113,12 +154,27 @@ new_clone
 printf 'dirty\n' >> "$wt/a.txt"
 STATE_MERGE_FAILS=1 refused_intact "an unrecorded start ref" "could not record"
 
+# A nested repo would travel as a bare gitlink and its files would be left to deletion.
+new_clone
+git init -q "$wt/nested"; git -C "$wt/nested" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m nested
+refused_intact "a nested repository" "nested repository"
+
+# A stash made with --all carries ignored files.
+new_clone
+printf 'local\n' > "$wt/ignored.log"; git -C "$wt" stash -q -a
+refused_intact "ignored files in a stash" "ignored files"
+
+# Commits on another local branch would be lost with the clone.
+new_clone
+git -C "$wt" checkout -q -b other; git -C "$wt" commit -q --allow-empty -m other; git -C "$wt" checkout -q -
+refused_intact "another branch's commits" "another branch"
+
 # A conflicted merge is not a state to snapshot.
 new_clone
 git -C "$wt" checkout -q -b side; printf 'side\n' > "$wt/a.txt"; git -C "$wt" commit -qam side; git -C "$wt" checkout -q -
 printf 'other\n' > "$wt/a.txt"; git -C "$wt" commit -qam other
 git -C "$wt" merge -q side >/dev/null 2>&1 || true
 if rescue_handoff_clone 70 "$wt"; then fail "a merge in progress was rescued"; fi
-[[ "$RESCUE_REFUSED" == "merge in progress" ]] || fail "said '$RESCUE_REFUSED'"
+[[ "$RESCUE_REFUSED" == "MERGE_HEAD in progress" ]] || fail "said '$RESCUE_REFUSED'"
 
 echo "handoff-rescue.test.sh: all assertions passed"

@@ -4541,6 +4541,7 @@ sched_case_hold_handoff_rescued_clone() {
   old_sha="$(command git -C "$clone" rev-parse HEAD)"
   touch "$TF/real-clone-git"
   mkdir -p "$TF/bin"; printf '#!/usr/bin/env bash\nexit 0\n' > "$TF/bin/gitleaks"; chmod +x "$TF/bin/gitleaks"
+  mkdir -p "$TF/repo/scripts/hooks"; printf '#!/usr/bin/env bash\nexit 0\n' > "$TF/repo/scripts/hooks/pre-push"; chmod +x "$TF/repo/scripts/hooks/pre-push"
   command jq -n '{state:"ready-for-agent",scheduler_handoff:{episode:"hold-780"}}' > "$TF/agent-home/state/780.json"
   command jq -n '{number:780,title:"resume held work",body:"finish",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
   command jq '.max_workers=1 | .implement_cap=0 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
