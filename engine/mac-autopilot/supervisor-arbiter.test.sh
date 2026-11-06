@@ -10,7 +10,7 @@ sup="$fixture/supervisor"
 mkdir -p "$sup/autopi/alerts" "$fixture/repo" "$fixture/bin"
 # Stage-transition fixtures are already roadmap leaves; this suite covers arbitration effects.
 export ZF_ROADMAP_TREE_CACHE_FILE="$fixture/roadmap-tree.json"
-jq -cn '{roots:[611,615,618,622,623,686,687,688,689,690,699] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
+jq -cn '{roots:[611,615,618,622,623,684,686,687,688,689,690,699] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
   > "$ZF_ROADMAP_TREE_CACHE_FILE"
 jq '.auto_merge = false | .advisor = false | .precheck = false | .supervisor_arbiter.enabled = true | .supervisor_arbiter.cap_triage = false' "$script_dir/config.template.json" > "$sup/autopi/config.json"
 echo '{"units":[]}' > "$sup/autopi/units.json"
@@ -521,13 +521,21 @@ stop_loss_hold 690
 supervisor_apply_cap_verdict pr-690 "$report" RULE
 [[ "$(refills pr-690)" == 1 && -n "$(budget_of pr-690)" ]] || fail "a second cap RULE must not refill the budget: $(budget_of pr-690)"
 # A RULE that never ran a round did not spend the retry, once: 2295's shape, retry spent, stopped in the tick of its RULE.
-unrun_unit() { units "$(jq -cn --arg id "$1" --argjson n "$2" "{units:[{id:\$id,issue:\$n,pr:\$n,lane:\"pr\",branch:\"agent/issue-\(\$n)\",stage:\"supervisor-review\",supervisor_cap_return_stage:\"repair-pending\",supervisor_cap_retry:\"spent\",history:[$old_write,{stage:\"supervisor-cap-rule\"},{stage:\"supervisor-cap-rule\"}]}]}")"; stop_loss_hold "$2"; }
+unrun_unit() { units "$(jq -cn --arg id "$1" --argjson n "$2" "{units:[{id:\$id,issue:\$n,pr:\$n,lane:\"pr\",branch:\"agent/issue-\(\$n)\",stage:\"supervisor-review\",supervisor_cap_return_stage:\"repair-pending\",supervisor_cap_retry:\"spent\",history:[$old_write,{stage:\"supervisor-cap-rule\"},{stage:\"supervisor-cap-rule\"},{stage:\"supervisor-arbiter-round\"},{stage:\"supervisor-escalated\"}]}]}")"; stop_loss_hold "$2"; }
 unrun_unit pr-689 689
 supervisor_apply_cap_verdict pr-689 "$report" RULE
 [[ "$(field pr-689 .stage)" == repair-pending && "$(refills pr-689)" == 1 && -z "$(budget_of pr-689)" ]] || fail "a RULE stopped before its round must get its refill: $(jq -c '.units[0]' "$UNITS")"
 set_unit pr-689 '.stage="supervisor-review"'
 supervisor_apply_cap_verdict pr-689 "$report" RULE
 [[ "$(field pr-689 .parked_reason)" == supervisor-cap-exhausted ]] || fail "the refill is one per unit: a later RULE with its retry spent must park: $(jq -c '.units[0]' "$UNITS")"
+# A RULE that returned to review did run, whatever the rows after it: 5464 went supervisor-escalated then review-approve, 4330 was requeued.
+for rows in '[{"stage":"supervisor-arbiter-round"}]' '[{"stage":"supervisor-escalated"},{"stage":"review-approve"}]' '[{"stage":"supervisor-escalated"},{"stage":"supervisor-requeue"}]'; do
+  supervisor_cap_rule_unrun "$(jq -cn --argjson rows "$rows" '{history:([{stage:"supervisor-cap-rule"}] + $rows)}')" && fail "this RULE ran: $rows"
+done
+unrun_unit pr-684 684
+set_unit pr-684 '.history += [{stage:"rereview-pending"}]'
+supervisor_apply_cap_verdict pr-684 "$report" RULE
+[[ "$(field pr-684 .parked_reason)" == supervisor-cap-exhausted && "$(refills pr-684)" == 0 ]] || fail "a RULE that returned to rereview used its retry: $(jq -c '.units[0]' "$UNITS")"
 # Only a RULE releases the hold.
 unrun_unit pr-688 688
 founder_report "Please decide this?"
@@ -547,10 +555,6 @@ unrun_unit pr-686 686
 units "$(jq -cn '{units:[{id:"pr-696",lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",supervisor_cap_retry:"spent",unpark_condition:"x",cap_exhausted_mark:"aaa||0",history:[]}]}')"
 SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
 [[ "$(field pr-696 .parked_reason)" == supervisor-cap-exhausted ]] || fail "an unchanged terminal park must stay parked"
-# A terminal park whose last RULE never ran a round gets the run that RULE was owed, though nothing else changed.
-units "$(jq -cn '{units:[{id:"pr-685",lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",supervisor_cap_retry:"spent",unpark_condition:"x",cap_exhausted_mark:"aaa||0",history:[{stage:"supervisor-cap-rule"}]}]}')"
-SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_CAP_TRIAGE=false dispatch_supervisor_arbiters
-[[ "$(field pr-685 .parked_reason)" == supervisor-arbitration-cap ]] || fail "an unrun RULE must unpark a terminal park: $(jq -c '.units[0]' "$UNITS")"
 # An issue whose state cannot be read keeps the unit parked, though the mark reads as changed.
 units "$(jq -cn '{units:[{id:"pr-693",issue:693,lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",supervisor_cap_retry:"spent",cap_exhausted_mark:"aaa|on-hold|0",history:[]}]}')"
 (scheduler_issue_state() { return 1; }; SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters)

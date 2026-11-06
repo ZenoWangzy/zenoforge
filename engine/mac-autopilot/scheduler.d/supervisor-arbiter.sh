@@ -54,7 +54,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
     elif [[ "$(jqf -r '.parked_reason // empty' <<<"$u")" == supervisor-cap-exhausted ]]; then
       mark="$(supervisor_arbiter_mark "$u")"
-      if [[ "$mark" == "$(jqf -r '.cap_exhausted_mark // empty' <<<"$u")" ]] && ! supervisor_cap_rule_unrun "$u"; then
+      if [[ "$mark" == "$(jqf -r '.cap_exhausted_mark // empty' <<<"$u")" ]]; then
         supervisor_cap_exhausted_alert "$id" "$mark" "$(jqf -r '.note // ""' <<<"$u")"  # once per mark: this repeats only a failed delivery
         continue
       fi
@@ -422,10 +422,12 @@ supervisor_release_stop_loss_hold() { # id issue → a RULE puts the unit back t
     || { say "supervisor cap triage unit=$id: stop-loss hold on issue #$issue not released; leaving the unit at supervisor-review"; return 1; }
 }
 
-supervisor_cap_rule_unrun() { # unit-json → the last cap RULE was stopped before it ran a round, and no RULE has refilled the budget yet
+supervisor_cap_rule_unrun() { # unit-json → stop-loss undid the last cap RULE before anything ran, and no RULE has refilled the budget yet
   jqf -e '.cap_budget_refilled_at == null and ((.history // []) as $h
     | ([$h | to_entries[] | select(.value.stage == "supervisor-cap-rule") | .key] | max) as $rule
-    | $rule != null and ([$h[($rule + 1):][] | select(.stage == "write-start")] | length) == 0)' <<<"$1" >/dev/null
+    | $rule != null and ($h[($rule + 1):] | map(.stage) as $after
+      | any($after[]; IN("supervisor-escalated", "supervisor-budget-park"))
+        and all($after[]; IN("supervisor-escalated", "supervisor-budget-park", "supervisor-arbiter-round", "supervisor-arbiter"))))' <<<"$1" >/dev/null
 }
 
 supervisor_cap_second_rule() { # id reason evidence decision retry-state → another cap gets one retry, then a terminal park; neither asks the founder
