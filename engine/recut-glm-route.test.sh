@@ -68,6 +68,20 @@ assert_eq "zcode never inherits the pipeline GitHub token" "" "$(cat "$AGENT_HOM
 assert_eq "a reply missing a required key fails closed" true "$(ZCODE_FAKE_REPLY='{"other":1}' run_zcode_json . "$GLM" 1 "$schema" "$prompt" hand-zcode | jq -r .is_error || true)"
 rm -f "$prompt" "$schema"
 
+now_iso() { date -u -d "@$(( $(date +%s) - ${1:-0} ))" +%Y-%m-%dT%H:%M:%SZ; }
+unset -f state_read state_merge
+source "$SCRIPT_DIR/lib.d/issue-state.sh"
+lane_case() { # issue failures-json -> remaining backoff is 0 or not
+  state_merge "$1" ".model_policy.failures = $2" >/dev/null
+  model_policy_lane_backoff "$1" recut "reason" 2>/dev/null
+  state_read "$1" | jq -e --argjson now "$(date +%s)" '(.model_failure_backoff.until_epoch // 0) > $now' >/dev/null && echo held || echo open
+}
+assert_eq "one failed run keeps the ticket at the head" open "$(lane_case 910710 "[{\"unit\":\"recut\",\"recorded_at\":\"$(now_iso 60)\"}]")"
+assert_eq "two failed runs move the lane on" held "$(lane_case 910711 "[{\"unit\":\"recut\",\"recorded_at\":\"$(now_iso 400)\"},{\"unit\":\"recut\",\"recorded_at\":\"$(now_iso 60)\"}]")"
+assert_eq "old failures do not count" open "$(lane_case 910712 "[{\"unit\":\"recut\",\"recorded_at\":\"$(now_iso 90000)\"},{\"unit\":\"recut\",\"recorded_at\":\"$(now_iso 60)\"}]")"
+assert_eq "another unit's failure does not count" open "$(lane_case 910713 "[{\"unit\":\"implement\",\"recorded_at\":\"$(now_iso 400)\"},{\"unit\":\"recut\",\"recorded_at\":\"$(now_iso 60)\"}]")"
+assert_true "every recorded failure reaches the lane check" grep -q 'model_policy_lane_backoff "\$n" "\$unit" "\$reason"' "$SCRIPT_DIR/lib.d/model-units.sh"
+
 # Every ZCode launch: new paths must strip too. stage-call.sh and bin/zc unset at the top of the script.
 launches="$(cd "$SCRIPT_DIR/.." && git grep -lE '(^|[ (=])zcode -p |/bin/zcode"' -- engine ':!*.test.*' ':!*.md')"
 assert_eq "the known ZCode launch set" "engine/bin/zc engine/eval/stage-call.sh engine/lib.d/model-calls.sh engine/mac-autopilot/scheduler.d/worker-command.sh engine/night/dispatch.sh" "$(tr '\n' ' ' <<< "$launches" | sed 's/ $//')"

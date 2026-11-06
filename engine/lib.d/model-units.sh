@@ -8,6 +8,20 @@ model_policy_normalize_failure_reason() {
 
 # Record one model-unit failure or transient retry note.
 # `evidence` is bounded before persistence; it can contain untrusted logs.
+# model_policy_lane_backoff <issue> <unit> <reason>: two recent failed runs of one unit in a row hold that ticket for an hour, so a
+# lane with one slot moves to the next ticket instead of retrying the head of its queue on every tick.
+model_policy_lane_backoff() {
+  local n="$1" unit="$2" reason="$3" now patch
+  now="$(date +%s)"
+  state_read "$n" | jq -e --arg unit "$unit" --argjson since "$((now - ${MODEL_LANE_BACKOFF_WINDOW_SECONDS:-21600}))" '
+    [(.model_policy.failures // [])[-2:][] | select(.unit == $unit and ((.recorded_at // "") | fromdateiso8601? // 0) >= $since)] | length == 2
+  ' >/dev/null || return 0
+  patch="$(jq -nc --arg unit "$unit" --arg reason "$reason" --argjson until "$((now + ${MODEL_LANE_BACKOFF_SECONDS:-3600}))" \
+    '{provider:"lane",model:$unit,caller:"model_policy_lane_backoff",reason:$reason,timestamp:(now|todate),until_epoch:$until}')"
+  state_merge "$n" ".model_failure_backoff = $patch"
+  echo "model_policy: #$n $unit backed off after two failed runs; the lane moves on" >&2
+}
+
 model_policy_record_failure() {
   local n="$1" step="$2" stage="$3" reason="$4" evidence="$5" status="${6:-1}" remove_label="${7:-ready-for-agent}" unit="${8:-}" refund_attempt="${9:-0}" snapshot_json="${10:-}"
   local next stored_step role identity reason_file evidence_file normalized_reason_file failure_patch retry_patch reason_json evidence_json state provider_outage provider_kind pipeline_system_enabled pipeline_system_status=0 open_pr_status=0 loop_limit loop_breaker_advisor=0
@@ -223,6 +237,7 @@ model_policy_record_failure() {
     '{unit: $unit, step: $step, resume_stage: $unit, failure: ({unit: $unit, step: $failed_step, transition: $transition, role: $role, identity: $identity, stage: $stage, status: $status, reason: $reason, normalized_reason: $normalized_reason, same_failure_streak: $same_streak, evidence: $evidence, recorded_at: (now | todate)} + (if $early_stop == null then {} else {early_stop: $early_stop} end))}')"
   rm -f -- "$reason_file" "$evidence_file" "$normalized_reason_file"
   state_merge "$n" ".model_policy = (.model_policy // {}) + $failure_patch | .model_policy.failures = ((.model_policy.failures // []) + [.model_policy.failure]) | del(.model_policy.active)" || return 1
+  model_policy_lane_backoff "$n" "$unit" "$reason" || return 1
   if [ "$same_failure" = 1 ]; then
     printf 'implement-early-stop issue=#%s reason=same-failure streak=%s decision=%s stage=%s\n' "$n" "$same_streak" "$next" "$stage" >&2
   fi
