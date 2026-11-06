@@ -90,6 +90,12 @@ assert_eq 'JSON adapter keeps fallback labels for lane classification' 'priority
   "$(roadmap_order_candidate_json "$FALLBACK_TREE" "$FALLBACK_CANDIDATES" | jq -r '.[] | select(.number == 121) | .labels | join(",")')"
 assert_eq 'candidate blocker excludes mapped ticket even when tree snapshot is clear' '' \
   "$(roadmap_order_candidates "$TREE" '[{"number":105,"blockedBy":{"nodes":[{"state":"OPEN"}]}}]')"
+assert_eq 'classification lists a ticket with an open blocker' '105' \
+  "$(roadmap_order_candidates "$TREE" '[{"number":105,"blockedBy":{"nodes":[{"state":"OPEN"}]}}]' '[]' false)"
+assert_eq 'classification keeps the hold' '' \
+  "$(roadmap_order_candidates "$TREE" '[{"number":105,"labels":["on-hold"],"blockedBy":{"nodes":[{"state":"OPEN"}]}}]' '[]' false)"
+assert_eq 'classification keeps the open-children exclusion' '' \
+  "$(roadmap_order_candidates "$TREE" '[{"number":138,"labels":[],"subIssuesSummary":{"total":2,"completed":1}}]' '[]' false)"
 assert_eq 'candidate hold excludes mapped ticket even when tree snapshot is clear' '' \
   "$(roadmap_order_candidates "$TREE" '[{"number":105,"labels":["on-hold"]}]')"
 assert_eq 'empty candidate set is a successful empty JSON queue' '[]' \
@@ -277,7 +283,7 @@ echo 'roadmap-order.test.sh: PASS'
 MERGED_TREE="$(jq '.roots[0].children[0].children[0].children += [{number:108,state:"OPEN",labels:["awaiting-release"],children:[]}]' <<< "$TREE")"
 assert_eq 'implement admits merged dependency still waiting for production' '107' \
   "$(roadmap_order_candidates "$MERGED_TREE" '[{"number":107,"labels":["ready-for-agent"]}]' '["awaiting-release","released"]')"
-assert_eq 'triage retains default open-blocker policy' '' \
+assert_eq 'the default keeps the open-blocker policy' '' \
   "$(roadmap_order_candidates "$MERGED_TREE" '[{"number":107,"labels":["ready-for-agent"]}]')"
 assert_eq 'inline blocker labels use same merged policy' '105' \
   "$(roadmap_order_candidates "$TREE" '[{"number":105,"blockedBy":{"nodes":[{"number":999,"state":"OPEN","labels":[{"name":"awaiting-release"}]}]}}]' '["awaiting-release","released"]')"

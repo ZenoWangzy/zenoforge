@@ -281,9 +281,9 @@ roadmap_flatten() {
 }
 
 roadmap_order_candidates() {
-  local tree="$1" candidates="$2" merged_labels="${3:-[]}" flat
+  local tree="$1" candidates="$2" merged_labels="${3:-[]}" honor_blockers="${4:-true}" flat
   flat="$(roadmap_flatten "$tree")" || return 1
-  jq -r --argjson merged_labels "$merged_labels" --slurpfile tree_s <(printf '%s' "$flat") '($tree_s[0]) as $tree |
+  jq -r --argjson merged_labels "$merged_labels" --argjson honor_blockers "$honor_blockers" --slurpfile tree_s <(printf '%s' "$flat") '($tree_s[0]) as $tree |
     def names: [(.labels // [])[] | if type == "string" then . else .name // "" end];
     def blockers: if (.blockedBy | type) == "object" then (.blockedBy.nodes // []) else (.blockedBy // []) end;
     def child_nodes: if (.subIssues | type) == "object" then (.subIssues.nodes // []) else [] end;
@@ -320,7 +320,7 @@ roadmap_order_candidates() {
         | (($candidate | names) + ($node | names)) as $labels
         | select($labels | index("on-hold") == null)
         | select($labels | any(. == "roadmap" or . == "roadmap-theme" or . == "roadmap-epic") | not)
-        | select(all((($candidate | blockers) + ($node | blockers))[]?;
+        | select(($honor_blockers | not) or all((($candidate | blockers) + ($node | blockers))[]?;
             ((.state // "") | ascii_downcase) != "open"
             or ((names + ($nodes[(.number | tostring)] // {} | names)) | any(. as $label | $merged_labels | index($label) != null))))
         | {number:$candidate.number, mapped:($node != null and $node.depth == 3),
