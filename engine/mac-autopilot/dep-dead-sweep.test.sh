@@ -84,6 +84,24 @@ reset; printf '{"units":[%s,%s,%s]}\n' "$dead" "$(marked 20)" "$(marked 30)" > "
 dep_dead_sweep
 [[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'the next sweep moves the next unit'
 
+# A closed issue that delivered nothing does not end a marker: only the sweep and the arbiter do (#536).
+NOW_EPOCH="$(date +%s)"
+closed_state() { jq -cn --argjson e "$NOW_EPOCH" --arg s "$1" '{epoch:$e,states:{"10":{state:$s,labels:""}}}' > "$A/dep-check.cache.json"; printf '%s\n' "$NOW_EPOCH" > "$A/dep-check.epoch"; }
+reset; closed_state CLOSED; release_dependency_blocks
+[[ "$(field issue-20 .stage):$(field issue-20 .blocked_on)" == blocked-external:10 ]] || fail "a closed undelivered predecessor released a marked unit: $(field issue-20 .stage)"
+[[ "$(dep_marker_open "$(jq -c '.units[1]' "$UNITS")")" == 10 ]] || fail 'the marker must stay open on a closed undelivered predecessor'
+dep_dead_sweep; [[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'the sweep must take a closed undelivered predecessor to the arbiter'
+reset; closed_state MERGED; release_dependency_blocks
+[[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'a merged predecessor must release a marked unit'
+reset; closed_state CLOSED; printf '{"units":[%s]}\n' "$(marked 20)" > "$UNITS"; release_dependency_blocks
+[[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'a closed predecessor with no unit row was closed by hand and must release'
+! dep_marker_open "$(marked 20)" >/dev/null || fail 'a closed predecessor with no unit row must end the marker'
+reset; closed_state CLOSED; printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20 | jq -c 'del(.dep_wait_delivery)')" > "$UNITS"; release_dependency_blocks
+[[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'an unmarked unit keeps the old release on a closed predecessor'
+reset; closed_state CLOSED; printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20 | jq -c '.stage="parked"')" > "$UNITS"; release_dependency_blocks
+[[ "$(field issue-20 .stage)" == parked ]] || fail 'a parked marked unit must not read a closed undelivered predecessor as delivered'
+rm -f "$A/dep-check.cache.json" "$A/dep-check.epoch"
+
 # Proof is the only way past the marker, including a body dependency on the same predecessor.
 printf '{"states":{}}\n' > "$A/dep-check.cache.json"
 reset
