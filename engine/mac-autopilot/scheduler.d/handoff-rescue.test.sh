@@ -19,7 +19,8 @@ unset AUTOPI_TEST_LIBRARY_ONLY
 fail() { echo "handoff-rescue.test.sh: $*" >&2; exit 1; }
 SCHEDULER_AGENT_LIB="$fixture/lib.sh"
 printf '%s\n' 'state_merge() { [[ -z "${STATE_MERGE_FAILS:-}" ]] || return 1; printf "%s %s\n" "$1" "$2" >> "'"$fixture"'/state-merges"; }' > "$SCHEDULER_AGENT_LIB"
-# The stub reads what a real scan would: a stash reaches it only as a diff on stdin.
+real_gitleaks="$(command -v gitleaks || true)"
+# The stub reads the same text a real scan would, so these cases prove what reaches the scanner.
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/scans"\nif [[ "$1" == stdin ]] && grep -q AKIAFAKE; then exit 3; fi\n[[ ! -e "%s/leak" ]] || exit 3\n[[ ! -e "%s/scan-broken" ]]\n' "$fixture" "$fixture" "$fixture" > "$fixture/bin/gitleaks"; chmod +x "$fixture/bin/gitleaks"
 mkdir -p "$ROOT/scripts/hooks"; printf '#!/usr/bin/env bash\n[[ ! -e "%s/hook-refuses" ]]\n' "$fixture" > "$ROOT/scripts/hooks/pre-push"; chmod +x "$ROOT/scripts/hooks/pre-push"
 export PATH="$fixture/bin:$PATH"
@@ -129,6 +130,33 @@ new_clone
 printf 'key=AKIAFAKE\n' >> "$wt/a.txt"; git -C "$wt" stash -q
 refused_intact "a secret in a stash's worktree edits" "found a leak"
 new_clone
+printf 'key=AKIAFAKE\n' > "$wt/new.txt"
+refused_intact "a secret in an untracked file, with no stash" "found a leak"
+new_clone
+printf 'key=AKIAFAKE\n' >> "$wt/a.txt"
+refused_intact "a secret in a dirty file" "found a leak"
+new_clone
+printf 'key=AKIAFAKE\n' > "$wt/b.txt"; git -C "$wt" add b.txt; git -C "$wt" commit -qm unpushed
+refused_intact "a secret in an unpushed commit" "found a leak"
+new_clone
+git -C "$wt" checkout -q -b side; printf 'side\n' > "$wt/a.txt"; git -C "$wt" commit -qam side; git -C "$wt" checkout -q -
+printf 'other\n' > "$wt/a.txt"; git -C "$wt" commit -qam other; git -C "$wt" merge -q side >/dev/null 2>&1 || true
+printf 'key=AKIAFAKE\n' > "$wt/a.txt"; git -C "$wt" add a.txt; git -C "$wt" commit -qm 'hand resolution'
+git -C "$wt" branch -qD side
+refused_intact "a secret in a hand-resolved merge" "found a leak"
+# A real scanner, where one is installed: its own exit codes are part of this contract.
+if [[ -n "$real_gitleaks" ]]; then
+  new_clone
+  printf 'aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzz91kQp7Xc"\n' > "$wt/new.txt"; git -C "$wt" add new.txt; git -C "$wt" commit -qm unpushed
+  rc=0; PATH="$(dirname -- "$real_gitleaks"):$PATH" rescue_secret_scan "$wt" "$(git -C "$wt" rev-parse HEAD)" || rc=$?
+  [[ "$rc" == 3 ]] || fail "the real scanner returned $rc on a commit with no stash"
+fi
+# A scan that could not read its input is not a clean scan.
+new_clone
+printf 'dirty\n' >> "$wt/a.txt"
+rc=0; rescue_secret_scan "$wt" 0000000000000000000000000000000000000001 || rc=$?
+[[ "$rc" == 1 ]] || fail "a scan of a bad revision returned $rc"
+new_clone
 printf 'dirty\n' >> "$wt/a.txt"; touch "$fixture/scan-broken"
 refused_intact "a broken scanner" "could not run"
 rm -f "$fixture/scan-broken"
@@ -153,6 +181,15 @@ refused_intact "a large binary in an unpushed commit" "file over"
 new_clone
 printf 'dirty\n' >> "$wt/a.txt"
 STATE_MERGE_FAILS=1 refused_intact "an unrecorded start ref" "could not record"
+
+# The private index sees only the worktree, so these would be lost without a word.
+new_clone
+printf 'staged\n' > "$wt/a.txt"; git -C "$wt" add a.txt; printf 'one\n' > "$wt/a.txt"
+git -C "$wt" diff --quiet --cached && fail "fixture: nothing staged"
+refused_intact "a staged version later reverted" "staged content differs"
+new_clone
+printf 'edit\n' >> "$wt/a.txt"; git -C "$wt" update-index --assume-unchanged a.txt
+refused_intact "an assume-unchanged edit" "assume-unchanged"
 
 # A nested repo would travel as a bare gitlink and its files would be left to deletion.
 new_clone

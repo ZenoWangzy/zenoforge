@@ -64,18 +64,20 @@ rescue_push_verified() { # clone sha branch. The hook comes from the main checko
   timeout 60 git -C "$1" -c core.hooksPath="$ROOT/scripts/hooks" push -q "$url" "$2:refs/heads/$3" >/dev/null 2>&1 </dev/null || return 1
   [[ "$(timeout 30 git -C "$1" ls-remote "$url" "refs/heads/$3" 2>/dev/null | awk 'NR==1{print $1}')" == "$2" ]]
 }
-rescue_secret_scan() { # clone commit stash... -> 0 clean, 3 leak, else the tool failed
-  local wt="$1" commit="$2" stash rc=0; shift 2
+rescue_secret_scan() { # clone commit stash... -> 0 clean, 3 leak, else the scan did not happen
+  local wt="$1" commit="$2" stream stash rc=0; shift 2
   command -v gitleaks >/dev/null || return 1
-  # log -p skips merge diffs, and a stash's worktree edits live only in its merge commit, so each stash is scanned as a diff.
-  timeout 120 gitleaks git --no-banner --redact --log-level error --exit-code 3 --log-opts="$commit $* --not --remotes" "$wt" >/dev/null 2>&1 </dev/null || return $?
-  for stash in "$@"; do
-    git -C "$wt" diff "$stash^1" "$stash" | timeout 60 gitleaks stdin --no-banner --redact --log-level error --exit-code 3 >/dev/null 2>&1; rc=${PIPESTATUS[1]}
-    (( rc == 0 )) || return "$rc"
-  done
+  # `gitleaks git` reports a clean exit when its git log fails, so the text is built here where every step can be checked.
+  # --cc keeps a hand-resolved merge, and a stash's worktree edits live only in its merge commit, so each stash also goes as a diff.
+  stream="$(mktemp)" || return 1
+  git -C "$wt" log -p --cc --format= "$commit" "$@" --not --remotes > "$stream" 2>/dev/null || rc=1
+  for stash in "$@"; do git -C "$wt" diff "$stash^1" "$stash" >> "$stream" 2>/dev/null || rc=1; done
+  (( rc != 0 )) || timeout 120 gitleaks stdin --no-banner --redact --log-level error --exit-code 3 < "$stream" >/dev/null 2>&1 || rc=$?
+  rm -f "$stream"
+  return "$rc"
 }
 rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescued; else RESCUE_REFUSED says why
-  local n="$1" wt="$2" status head commit tree raw index ref="" stash stash_out stash_list="" scan=0 marker key big path
+  local n="$1" wt="$2" status head commit tree raw index ref="" stash stash_out stash_list="" scan=0 marker key objects sizes other path
   local -a stashes=()
   RESCUE_REFUSED=""; RESCUE_START_REF=""; RESCUE_START_SHA=""
   [[ -e "$wt/.git" ]] || { RESCUE_REFUSED="no clone"; return 1; }
@@ -89,7 +91,12 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
   # A leak does not go away by retrying: skip the scan until the clone changes.
   marker="$A/rescue-refused-$n"; key="$(printf '%s\n' "$head" "$status" "$stash_out" | sha256sum)"
   [[ "$(cat "$marker" 2>/dev/null)" != "$key" ]] || { RESCUE_REFUSED="secret scan refused an earlier pass"; return 1; }
-  [[ -n "$(git -C "$wt" rev-list -n1 --branches --not --remotes "$head" 2>/dev/null)" ]] && { RESCUE_REFUSED="unpushed commits on another branch"; return 1; }
+  other="$(git -C "$wt" rev-list -n1 --branches --not --remotes "$head" 2>/dev/null)" || { RESCUE_REFUSED="unreadable branches"; return 1; }
+  [[ -z "$other" ]] || { RESCUE_REFUSED="unpushed commits on another branch"; return 1; }
+  # What the private index below cannot see: conflicted entries, flagged files, and a staged version later edited in the worktree.
+  [[ -z "$(git -C "$wt" ls-files -u)" ]] || { RESCUE_REFUSED="unmerged index"; return 1; }
+  ! git -C "$wt" ls-files -v | grep -q '^[a-zS]' || { RESCUE_REFUSED="assume-unchanged or skip-worktree files"; return 1; }
+  [[ -z "$(comm -12 <(git -C "$wt" diff --cached --name-only | sort) <(git -C "$wt" diff --name-only | sort))" ]] || { RESCUE_REFUSED="staged content differs from the worktree"; return 1; }
   commit="$head"
   if [[ -n "$status" ]]; then
     # A private index and commit-tree: the clone's index, branch and files stay untouched until the push is proved.
@@ -111,9 +118,9 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
     fi
   done
   # Everything about to leave, stashes and unpushed commits too, not only the uncommitted files.
-  big="$(git -C "$wt" rev-list --objects "$commit" ${stashes[@]+"${stashes[@]}"} --not --remotes 2>/dev/null | awk '{print $1}' \
-    | git -C "$wt" cat-file --batch-check='%(objecttype) %(objectsize)' | awk -v max="$((HANDOFF_RESCUE_MAX_FILE_KB * 1024))" '$1 == "blob" && $2 > max {found = 1} END {print found + 0}')"
-  [[ "$big" == 0 ]] || { RESCUE_REFUSED="file over ${HANDOFF_RESCUE_MAX_FILE_KB}KB"; return 1; }
+  objects="$(git -C "$wt" rev-list --objects "$commit" ${stashes[@]+"${stashes[@]}"} --not --remotes 2>/dev/null)" || { RESCUE_REFUSED="could not list outgoing objects"; return 1; }
+  sizes="$(awk '{print $1}' <<<"$objects" | git -C "$wt" cat-file --batch-check='%(objecttype) %(objectsize)' 2>/dev/null)" || { RESCUE_REFUSED="could not size outgoing objects"; return 1; }
+  ! awk -v max="$((HANDOFF_RESCUE_MAX_FILE_KB * 1024))" '$1 == "blob" && $2 > max {found = 1} END {exit !found}' <<<"$sizes" || { RESCUE_REFUSED="file over ${HANDOFF_RESCUE_MAX_FILE_KB}KB"; return 1; }
   rescue_secret_scan "$wt" "$commit" ${stashes[@]+"${stashes[@]}"} || scan=$?
   if (( scan == 3 )); then printf '%s\n' "$key" > "$marker"; RESCUE_REFUSED="secret scan found a leak"; return 1; fi
   (( scan == 0 )) || { RESCUE_REFUSED="secret scan could not run"; return 1; }
@@ -132,9 +139,9 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
   [[ "$commit" == "$head" ]] || git -C "$wt" reset -q --mixed "$commit" || { RESCUE_REFUSED="could not move the clone to its rescue commit"; return 1; } # the files already match it
   (( ${#stashes[@]} == 0 )) || git -C "$wt" stash clear || { RESCUE_REFUSED="could not clear rescued stashes"; return 1; }
   rm -f "$marker"
+  if worktree_cleanup_block_reason "$wt" >/dev/null; then RESCUE_REFUSED="clone still blocks after the rescue"; return 1; fi
   gh issue comment "$n" --body "Work from the preserved clone is saved on the remote.${ref:+ The handoff resumes from \`$ref\`.}${stash_list:+ Stashes, not applied:$stash_list.}" >/dev/null 2>&1 </dev/null \
     || say "handoff issue #$n: could not post the rescue refs: ${ref}${stash_list}"
-  if worktree_cleanup_block_reason "$wt" >/dev/null; then RESCUE_REFUSED="clone still blocks after the rescue"; return 1; fi
 }
 
 # Engine version trees are read-only, and plain rm -rf cannot empty a read-only directory.
