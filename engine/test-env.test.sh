@@ -11,6 +11,7 @@ esac
 [[ "$AGENT_HOME" == "$TMPDIR/agent" ]]
 [[ "$ZF_AGENT_TEST_MODE" == 1 ]]
 [[ "$ZF_AGENT_TEST_ROOT" == "$test_env_root" ]]
+[[ "$(uname -s)" != Linux || "$(ulimit -Su)" =~ ^[0-9]+$ ]]
 [[ "$(jq -n 1)" == 1 ]]
 if [[ "$(command -v codex || true)" != "$test_env_root/bin/codex" ]]; then
   echo 'test-env: codex guard is not first on PATH' >&2

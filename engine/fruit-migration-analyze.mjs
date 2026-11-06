@@ -1,8 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { PACK_DIR, zfConfigFile } from './pack-dir.mjs';
+import { packDelegate, zfConfigFile } from './pack-dir.mjs';
 
 const identifier = '(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)';
 const target = `(?<schema>${identifier})\\s*\\.\\s*(?<table>${identifier})`;
@@ -46,8 +45,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const configPath = zfConfigFile('release.json');
     const config = configPath ? JSON.parse(readFileSync(configPath, 'utf8')) : {};
     const schema = config.migration?.schema;
-    if (!schema && PACK_DIR) {
-      const legacy = join(PACK_DIR, 'fruit-migration-analyze.mjs');
+    const legacy = schema ? '' : packDelegate('fruit-migration-analyze.mjs');
+    if (legacy) {
       const result = spawnSync(process.execPath, [legacy, '--stdin'], { stdio: 'inherit' });
       if (result.error) throw result.error;
       process.exitCode = result.status ?? 1;

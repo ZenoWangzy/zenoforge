@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { analyzeMigrationSql } from './fruit-migration-analyze.mjs';
 
 const sql = `
@@ -43,4 +44,18 @@ assert.equal(result.stdout, 'legacy');
 result = run({ ZF_CONFIG_ROOT: join(root, 'missing'), ZF_PACK_DIR: '' });
 assert.equal(result.status, 1);
 assert.match(result.stderr, /migration.schema is required/);
+// A script that hands over to its own pack copy forks without end, so this is proved on the helper, never by running one.
+const here = dirname(fileURLToPath(import.meta.url));
+const delegate = (name, env = {}) => spawnSync(process.execPath, ['--input-type=module', '-e', `
+  import { packDelegate } from ${JSON.stringify(join(here, 'pack-dir.mjs'))};
+  process.argv[1] = ${JSON.stringify(join(here, 'pack-dir.mjs'))};
+  console.log(packDelegate(${JSON.stringify(name)}));
+`], { encoding: 'utf8', env: { ...process.env, ...env } }).stdout.trim();
+assert.equal(delegate('pack-dir.mjs', { ZF_PACK_DIR: here }), ''); // the pinned engine's default
+assert.equal(delegate('no-such-script.mjs', { ZF_PACK_DIR: here }), join(here, 'no-such-script.mjs'));
+assert.equal(delegate('pack-dir.mjs', { ZF_PACK_DIR: '' }), '');
+assert.equal(delegate('pack-dir.mjs', { ZF_PACK_DIR: root }), join(root, 'pack-dir.mjs'));
+for (const file of ['fruit-migration-analyze.mjs', 'check-fruit-migration-order.mjs', 'post-deploy-migrations.mjs']) {
+  assert.doesNotMatch(readFileSync(join(here, file), 'utf8'), /join\(PACK_DIR/, `${file} must go through packDelegate`);
+}
 console.log('migration ANALYZE parser: ok');

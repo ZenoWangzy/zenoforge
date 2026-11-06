@@ -43,6 +43,11 @@ exit 97
 EOF
 chmod +x "$test_env_bin/codex"
 export PATH="$test_env_bin:$PATH"
+# A self-exec chain must fail its own fork, not take the host down: 11-06 a node chain reached 2016 processes at 18 a second.
+# The limit counts every task of this user, threads included, so it sits above what is running now.
+if [[ "$(uname -s)" == Linux ]]; then
+  ulimit -Su "$(( $(ps -eLo uid= | grep -c "^ *$(id -u)\$") + 4000 ))" 2>/dev/null || :
+fi
 
 # The local jq shim resolves its private binary and libraries through HOME.
 if [[ -x "$test_host_home/.local/lib/jq.bin" ]]; then

@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { PACK_DIR, zfConfigFile } from './pack-dir.mjs';
+import { packDelegate, zfConfigFile } from './pack-dir.mjs';
 
 function settings() {
   const file = zfConfigFile('release.json');
@@ -146,8 +146,9 @@ export function sqlForRelease(repo, sha, phase = 'post-deploy') {
 
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
-    if (!settings().marker && PACK_DIR) {
-      const result = spawnSync(process.execPath, [join(PACK_DIR, 'post-deploy-migrations.mjs'), ...process.argv.slice(2)], { stdio: 'inherit' });
+    const legacy = settings().marker ? '' : packDelegate('post-deploy-migrations.mjs');
+    if (legacy) {
+      const result = spawnSync(process.execPath, [legacy, ...process.argv.slice(2)], { stdio: 'inherit' });
       if (result.error) throw result.error;
       process.exit(result.status ?? 1);
     }

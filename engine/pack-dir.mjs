@@ -1,7 +1,7 @@
 // The deployment's pack directory for node scripts (Line B pack seam; same setting as ZF_PACK_DIR in config.sh).
 // A pack holds optional modules and data the engine reads by relative path. No pack (empty directory) = every caller
 // uses its generic default. Default here = this directory, where the the product pack is laid over the engine today.
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -63,6 +63,19 @@ export function zfEnv(name, defaultValue = undefined, environment = process.env)
   const publicName = `ZF_${name}`;
   if (Object.prototype.hasOwnProperty.call(environment, publicName)) return environment[publicName];
   return defaultValue;
+}
+
+// packDelegate('x.mjs') -> the pack's copy of the running script, or '' when there is none to hand over to.
+// PACK_DIR defaults to this directory, so that copy can be the script itself, and running it forks without end.
+export function packDelegate(name) {
+  if (!PACK_DIR) return '';
+  const delegate = join(PACK_DIR, name);
+  try {
+    return realpathSync(delegate) === realpathSync(process.argv[1]) ? '' : delegate;
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return delegate;
+    throw error;
+  }
 }
 
 // readPackJson('state/x.json') -> parsed JSON, or null when there is no pack or the pack has no such file.

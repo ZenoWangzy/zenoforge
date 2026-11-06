@@ -1,8 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { join } from 'node:path';
-import { PACK_DIR, zfConfigFile } from './pack-dir.mjs';
+import { packDelegate, zfConfigFile } from './pack-dir.mjs';
 
 function migrationDirectory() {
   const file = zfConfigFile('release.json');
@@ -115,8 +114,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     const configFile = zfConfigFile('release.json');
     const config = configFile ? JSON.parse(readFileSync(configFile, 'utf8')) : {};
-    if (!config.migration?.path && PACK_DIR) {
-      const legacy = join(PACK_DIR, 'check-fruit-migration-order.mjs');
+    const legacy = config.migration?.path ? '' : packDelegate('check-fruit-migration-order.mjs');
+    if (legacy) {
       const result = spawnSync(process.execPath, [legacy, ...process.argv.slice(2)], { stdio: 'inherit' });
       if (result.error) throw result.error;
       process.exit(result.status ?? 2);
