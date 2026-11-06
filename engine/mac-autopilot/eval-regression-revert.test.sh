@@ -119,4 +119,19 @@ revert_url="$(PATH="$fixture/bin:$PATH" GH_CALLS="$fixture/gh-calls" AGENT_HOME=
 [[ "$revert_url" == https://example.invalid/pull/9 ]] || fail "unexpected revert PR url: $revert_url"
 grep -Fq -- "--head agent/revert-eval-78-${culprit:0:12}" "$fixture/gh-calls" || fail 'eval revert PR has the wrong branch'
 git -C "$fixture/origin.git" log -1 --format=%B "agent/revert-eval-78-${culprit:0:12}" | grep -Fxq "This reverts commit $culprit." || fail 'revert commit lacks the exact trailer'
+# No accepted baseline: no process, one terminal error, and the unit can retire.
+jq -cn --arg wd "$fixture/repo" --arg sha "$sha" '{units:[{id:"eval-79",issue:79,lane:"pr",stage:"merged",history:[],
+  eval_gate:{status:"pending",sha:$sha,tree:"t",workdir:$wd,stages:["triage"]}}]}' > "$UNITS"
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+launched=0
+worker_scope_launch() { launched=$((launched + 1)); return 1; }
+gate_status() { jq -r '.units[0].eval_gate.status' "$UNITS"; }
+export ZF_ENGINE_DIR="$script_dir/.."
+AGENT_HOME="$fixture/no-baseline" dispatch_prompt_evals
+[[ "$launched" == 0 && "$(gate_status)" == error ]] || fail "a missing baseline must end the gate without a process: launched=$launched status=$(gate_status)"
+grep -Fq 'eval unit=eval-79 error=baseline-missing' "$sup/autopi/alerts/events.md" || fail 'a missing baseline must alert'
+jq '.units[0].eval_gate.status = "pending"' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+mkdir -p "$fixture/has-baseline/eval/baseline"; printf '{}\n' > "$fixture/has-baseline/eval/baseline/results.json"
+AGENT_HOME="$fixture/has-baseline" dispatch_prompt_evals || :
+[[ "$launched" == 1 ]] || fail "a present baseline must launch the gate: launched=$launched"
 printf 'eval-regression-revert.test.sh: planted regression -> rerun, then 1 revert action; repeats, reverted, undelivered and unattributable changes -> none\n'

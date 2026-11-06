@@ -233,10 +233,18 @@ dispatch_prompt_evals() {
       say "eval failed unit=$id: $detail"
       continue
     fi
+    baseline="$(accepted_eval_label)"
+    # With no accepted results the gate stops before any case runs, and a retry repeats that on every tick and keeps the unit from retiring.
+    if [[ ! -f "$AGENT_HOME/eval/$baseline/results.json" ]]; then
+      detail="accepted evaluation label is missing: $baseline"
+      set_unit "$id" "$(hist eval-error "$detail") | .eval_gate.status=\"error\" | .eval_gate.error=$(js "$detail")"
+      echo "[$STAMP] eval unit=$id error=baseline-missing" >> "$A/alerts/events.md"
+      say "eval failed unit=$id: $detail"
+      continue
+    fi
     (( $(live_workers) < MAX )) || { say "eval pending unit=$id: worker capacity full"; return 0; }
     confirm=""; [[ -z "$(jqf -r '.eval_gate.confirm // empty' <<<"$u")" ]] || confirm=-confirm
     label="gate-$tree$confirm"
-    baseline="$(accepted_eval_label)"
     safe_id="$(tr -c 'A-Za-z0-9._-' '-' <<<"$id" | sed 's/-$//')"
     report="eval-gate-${safe_id}-${tree}$confirm.json"
     log="eval-gate-${safe_id}-${tree}$confirm.log"
