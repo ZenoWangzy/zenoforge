@@ -436,6 +436,10 @@ zcode_quota_status() { # fresh snapshot and active marker -> available|paced|exh
   ' "$file" 2>/dev/null || printf 'unknown\n'
 }
 
+zcode_review_open() { # a review is a GLM start: held by the marker, paced, or closed when the quota read is missing or stale
+  ! provider_quota_exhausted zcode && [ "$(zcode_quota_status)" = available ]
+}
+
 provider_quota_provider_for_model() {
   case "$1" in
     codex|codex:*) echo codex ;;

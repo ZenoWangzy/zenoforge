@@ -13,7 +13,7 @@ recover_orphan_landing() { # landing 无活 land worker（被杀/重启）→ �
 # 失败回合数：只数返工/阻断/回退/无产出，不数正常推进（批准、合并不算）。
 loop_rounds() { # 只数最近一次 supervisor 裁决（requeue/approve）或仲裁之后的失败回合（裁决后重新给满额度）
   # supervisor-approve 以前不算：issue-3560 获批后 CI 测试红转 repair，旧的 5 轮被重算，没修就直接转人工（05:13）。
-  jqf -r '(.history // []) as $h | ([$h | to_entries[] | select(.value.stage | IN("supervisor-requeue","supervisor-approve","arbiter-review")) | .key] | max // -1) as $i | [$h[($i + 1):][] | select(.stage=="review-request-changes" or .stage=="review-block" or .stage=="merge-reverted" or .stage=="worker-no-output")] | length' <<<"$1"
+  jqf -r '(.history // []) as $h | ([$h | to_entries[] | select(.value.stage | IN("supervisor-requeue","supervisor-approve","supervisor-cap-budget-refill","arbiter-review")) | .key] | max // -1) as $i | [$h[($i + 1):][] | select(.stage=="review-request-changes" or .stage=="review-block" or .stage=="merge-reverted" or .stage=="worker-no-output")] | length' <<<"$1"
 }
 
 # 止损预算（#4363）：自最近一次裁决（supervisor requeue/approve 或顾问裁决）起，
@@ -55,7 +55,7 @@ effective_write_starts_since_ruling() { # unit-json ruling-stages-json → write
 
 ticket_budget_reason() { # unit-json
   local rounds
-  rounds="$(effective_write_starts_since_ruling "$1" '["supervisor-requeue","supervisor-approve","advisor-ruling"]')" || return 1
+  rounds="$(effective_write_starts_since_ruling "$1" '["supervisor-requeue","supervisor-approve","supervisor-cap-budget-refill","advisor-ruling"]')" || return 1
   jqf -r --argjson rounds "$rounds" --argjson round_budget "$TICKET_ROUND_BUDGET" --argjson wall_budget "$TICKET_WALL_BUDGET_SECONDS" --argjson now "$NOW_EPOCH" '
     $rounds as $rounds
     | if ($rounds | length) >= $round_budget
@@ -113,10 +113,11 @@ repair_cap_admission() { # unit-id unit-json → two failed repair rounds escala
 # 2026-10-20 三个热修回迁在 review-pending 等了 56 分钟，名额被新收的孤儿 PR 先拿走（L62）。
 dispatch_order() {
   local started=$SECONDS rc=0 elapsed
-  jqf -c --argjson priority_order "$DISPATCH_PRIORITY_ORDER" '
+  jqf -c --argjson priority_order "$DISPATCH_PRIORITY_ORDER" --argjson first_issues "${DISPATCH_FIRST_ISSUES:-[]}" '
     .units
     | map(select(.stage | test("-pending$")))
     | sort_by([
+        (.issue as $issue | if any($first_issues[] | numbers; . == $issue) then 0 else 1 end),
         (if .main_red == true then 0 else 1 end),
         (if .hotpatch == true then 0 else 1 end),
         (if .critical == true then 0 else 1 end),

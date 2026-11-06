@@ -172,3 +172,10 @@ test('CLI compares baseline and candidate decisions over the same replay window'
     rmSync(temp, { recursive: true, force: true });
   }
 });
+
+test('the replay resets on the same ruling stages as the stop-loss budget', () => {
+  const replay = readFileSync(join(here, 'rule-replay.mjs'), 'utf8').match(/RULING_STAGES = new Set\(\[(.*?)\]\)/)[1];
+  const budget = readFileSync(join(here, 'scheduler.d/stop-loss.sh'), 'utf8').match(/ticket_budget_reason\(\)[\s\S]*?since_ruling "\$1" '\[(.*?)\]'/)[1];
+  const stages = (list) => [...list.matchAll(/['"]([a-z-]+)['"]/g)].map((match) => match[1]).sort();
+  assert.deepEqual(stages(replay), stages(budget));
+});

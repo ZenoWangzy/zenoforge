@@ -148,6 +148,11 @@ model_policy_role_fields() { # role -> provider, model, effort, service tier for
   ' <<<"${SCHED_MODEL_POLICY_JSON:-{}}"
 }
 
+# A tick outlives a quota read, and a read newer than a tick-start NOW_EPOCH reads as unknown: callers pass the current time.
+zcode_pace_inflight() { # GLM runs in flight, any stage: reviews and implement share one count
+  jqf -r '[.workers[] | select(.harvested != true and ((.model // "") | test("glm"; "i")))] | length' "$WORKERS"
+}
+
 pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with a fresh, available quota
   local fields provider model effort tier status
   fields="$(model_policy_role_fields hand-zcode 2>/dev/null || true)"
@@ -157,7 +162,7 @@ pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with 
   model_policy_model_allowed_for_role "$model" hand-zcode || return 1
   command -v zcode >/dev/null 2>&1 || return 1
   zcode_provider_config_model_matches "zcode:$model:$effort" || return 1
-  status="$(ZCODE_PACE_INFLIGHT="$(jqf -r '[.workers[] | select(.harvested != true and ((.model // "") | test("GLM")))] | length' "$WORKERS")" zcode_quota_status)"
+  status="$(NOW_EPOCH="$(date +%s)" ZCODE_PACE_INFLIGHT="$(zcode_pace_inflight)" zcode_quota_status)"
   [[ "$status" != paced ]] || say "glm pace hold: start waits for the 5h window to catch up"
   [[ "$status" == available ]] || return 1
   cooling zcode && return 1
@@ -248,7 +253,7 @@ provider_runtime_ready() { # provider model -> runnable, policy-authorized and n
   case "$provider" in
     codex) codex_week_stopped && return 1; command -v codex >/dev/null 2>&1 ;;
     zcode)
-      [[ "$(zcode_quota_status)" == available ]] || return 1
+      [[ "$(NOW_EPOCH="$(date +%s)" ZCODE_PACE_INFLIGHT="$(zcode_pace_inflight)" zcode_quota_status)" == available ]] || return 1
       command -v zcode >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"
       ;;
     claude) ! provider_quota_exhausted claude && command -v claude >/dev/null 2>&1 ;;
@@ -428,7 +433,7 @@ pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves 
     glm_identity="$(review_identity_for_model "$(model_tuple_field review_cross 0)" "$(model_tuple_field review_cross 1)" 2>/dev/null || true)"
     sonnet_identity="$(review_identity_for_model "$(model_tuple_field review_fallback 0)" "$(model_tuple_field review_fallback 1)" 2>/dev/null || true)"
     status=0
-    selected="$(review_model_for_implementer "$issue" "$author" "$codex_identity" "$glm_identity" "$sonnet_identity" "$id")" || status=$?
+    selected="$(NOW_EPOCH="$(date +%s)" ZCODE_PACE_INFLIGHT="$(zcode_pace_inflight)" review_model_for_implementer "$issue" "$author" "$codex_identity" "$glm_identity" "$sonnet_identity" "$id")" || status=$?
   fi
   if (( status == 0 )) && [[ -n "$selected" ]]; then
     PICK_MODEL="${selected#*:}"; PICK_EFFORT="${PICK_MODEL##*:}"; PICK_MODEL="${PICK_MODEL%:*}"

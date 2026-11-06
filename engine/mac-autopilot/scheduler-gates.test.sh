@@ -2098,6 +2098,12 @@ CFG="$CFG_SAVED"; DISPATCHED=(); DISPATCH_PROMPT=""
 
 # 派发顺序：修红 main > 热修回迁 > critical > 环节
 units '{"units":[{"id":"a","stage":"repair-pending","history":[]},{"id":"b","stage":"review-pending","critical":true,"history":[]},{"id":"c","stage":"review-pending","hotpatch":true,"critical":true,"history":[]},{"id":"d","stage":"implement-pending","main_red":true,"history":[]},{"id":"e","stage":"review","critical":true,"history":[]}]}'
+first_units="$(cat "$UNITS")"
+jq -n '{units:[{id:"a",issue:7,stage:"review-pending"},{id:"b",issue:8,stage:"rereview-pending"},{id:"c",stage:"rereview-pending"}]}' > "$UNITS"
+[[ "$(DISPATCH_FIRST_ISSUES='[7]' dispatch_order | jq -r .id | tr '\n' ' ')" == "a b c " ]] || fail "a named issue must dispatch first"
+[[ "$(DISPATCH_FIRST_ISSUES='[]' dispatch_order | jq -r .id | tr '\n' ' ')" == "b c a " ]] || fail "no named issue must keep the stage order"
+[[ "$(DISPATCH_FIRST_ISSUES='[null]' dispatch_order | jq -r .id | tr '\n' ' ')" == "b c a " ]] || fail "a null must not lift units with no issue"
+printf '%s\n' "$first_units" > "$UNITS"
 [[ "$(dispatch_order | jq -r .id | tr '\n' ' ')" == "d c b a " ]] || fail "dispatch order ignores release priority: $(dispatch_order | jq -r .id | tr '\n' ' ')"
 # Nearest the finish goes first: a fresh direct-main implement does not pass a normal repair.
 units '{"units":[{"id":"a","stage":"implement-pending","lane":"direct-main","history":[]},{"id":"b","stage":"review-pending","history":[]},{"id":"c","stage":"repair-pending","history":[]},{"id":"d","stage":"rereview-pending","history":[]}]}'

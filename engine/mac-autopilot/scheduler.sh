@@ -130,6 +130,7 @@ UNITS_ARCHIVE="${UNITS_ARCHIVE:-$A/units-archive.json}"
 [[ -f "$WORKERS" ]] || echo '{"workers":[]}' > "$WORKERS"
 MAX="$(jqf -r .max_workers <<<"$CFG")"
 DISPATCH_PRIORITY_ORDER="$(jqf -c '.dispatch_priority_order // ["hotfix", "opt", "normal"]' <<<"$CFG")"
+DISPATCH_FIRST_ISSUES="$(jqf -c 'if (.dispatch_first_issues | type) == "array" then .dispatch_first_issues else [] end' <<<"$CFG")"
 IMPLEMENT_CAP="$(jqf -r '.implement_cap // 99' <<<"$CFG")"
 log_reliability_breach
 BUDGET="$(jqf -r .daily_token_budget <<<"$CFG")"

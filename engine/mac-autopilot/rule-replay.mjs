@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-const RULING_STAGES = new Set(['supervisor-requeue', 'supervisor-approve', 'advisor-ruling']);
+const RULING_STAGES = new Set(['supervisor-requeue', 'supervisor-approve', 'supervisor-cap-budget-refill', 'advisor-ruling']);
 const ACCEPTED_STAGES = new Set(['review-approve', 'supervisor-approve', 'merged', 'landed']);
 const STOP_STAGES = new Set(['hold', 'on-hold', 'stop-loss', 'budget-stop', 'supervisor-budget-park']);
 const OPERATORS = new Set(['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'contains', 'exists']);

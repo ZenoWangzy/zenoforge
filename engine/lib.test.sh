@@ -6723,6 +6723,9 @@ mkdir -p "$REVIEW_HELPERS_HOME/home/.zcode/v2"
 jq -n --arg model "$CROSS_REVIEW_MODEL" '{config:{defaultModelSelection:{modelId:$model}}}' \
   > "$REVIEW_HELPERS_HOME/home/.zcode/v2/provider_config.json"
 touch "$REVIEW_HELPERS_HOME/codex-probe-passed"
+mkdir -p "$REVIEW_HELPERS_HOME/home/.zenoforge"
+jq -n --argjson read_at "$(date +%s)" '{freshness:"fresh",read_at:$read_at,max_age_seconds:900,five_h_pct:0,week_pct:1,cap_5h:60,cap_week:100}' \
+  > "$REVIEW_HELPERS_HOME/home/.zenoforge/zc-quota.json"
 REVIEW_CROSS_OUT="$(HOME="$REVIEW_HELPERS_HOME/home" AGENT_HOME="$REVIEW_HELPERS_HOME" PATH="$REVIEW_HELPERS_HOME/bin:$PATH" bash -c '
   source "$0/lib.sh"
   work="$(model_policy identity work)"

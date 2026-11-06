@@ -413,6 +413,24 @@ supervisor_cap_verdict_of() { # report-path → exactly one final CLOSE/RECUT/RU
   printf '%s\n' "$verdict"
 }
 
+supervisor_release_stop_loss_hold() { # id issue → a RULE puts the unit back to work, so the stop-loss hold on its issue goes too; 1 failed, 2 another holder's
+  local id="$1" issue="$2" state issue_json repo="${REPO:-${ZF_REPO:-}}"
+  state="$(scheduler_issue_state "$issue")" || { say "supervisor cap triage unit=$id: issue #$issue state is unreadable; leaving the unit at supervisor-review"; return 1; }
+  [[ "$(jqf -r '.state // empty' <<<"$state")" == on-hold ]] || return 0
+  [[ "$(jqf -r '.hold.holder // empty' <<<"$state")" == scheduler-stop-loss ]] || { say "supervisor cap triage unit=$id: issue #$issue is held by another holder; leaving the unit at supervisor-review"; return 2; }
+  [[ -n "$repo" ]] && issue_json="$(gh issue view "$issue" --repo "$repo" --json number,title,body,state,labels 2>/dev/null)" \
+    && scheduler_issue_transition "$issue" ready-for-agent hold-requeue . 0 "$issue_json" "" 0 "$(jqf -c '.hold' <<<"$state")" \
+    || { say "supervisor cap triage unit=$id: stop-loss hold on issue #$issue not released; leaving the unit at supervisor-review"; return 1; }
+}
+
+supervisor_cap_rule_unrun() { # unit-json → stop-loss undid the last cap RULE before anything ran, and no RULE has refilled the budget yet
+  jqf -e '.cap_budget_refilled_at == null and ((.history // []) as $h
+    | ([$h | to_entries[] | select(.value.stage == "supervisor-cap-rule") | .key] | max) as $rule
+    | $rule != null and ($h[($rule + 1):] as $after
+      | any($after[]; .stage == "supervisor-escalated" and ((.result // "") | tostring | test("stop-loss")))
+        and all($after[]; .stage | IN("supervisor-escalated", "supervisor-arbiter-round", "supervisor-arbiter"))))' <<<"$1" >/dev/null
+}
+
 supervisor_cap_second_rule() { # id reason evidence decision retry-state → another cap gets one retry, then a terminal park; neither asks the founder
   local id="$1" reason="$2" evidence="$3" decision="$4" retry="$5"
   if [[ "$retry" == spent ]]; then
@@ -458,7 +476,7 @@ supervisor_cap_founder() { # id reason evidence report-path → one owner questi
 }
 
 supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
-  local id="$1" rep="$2" verdict="$3" reason evidence decision issue pr state comment u cap_rules return_stage ruling retry spent
+  local id="$1" rep="$2" verdict="$3" reason evidence decision issue pr state comment u cap_rules return_stage ruling retry spent refill release
   reason="$(supervisor_cap_field_line "$rep" REASON)"
   evidence="$(supervisor_cap_field_line "$rep" EVIDENCE)"
   decision="$(decision_entry "Supervisor cap triage: $verdict" "$reason" "$evidence" '[]' supervisor)"
@@ -486,7 +504,7 @@ supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
     RULE)
       u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
       cap_rules="$(jqf -r '[(.history // [])[] | select(.stage=="supervisor-cap-rule")] | length' <<<"$u")"
-      if (( cap_rules >= 1 )) && [[ "$retry" != pending ]]; then
+      if (( cap_rules >= 1 )) && [[ "$retry" != pending ]] && ! supervisor_cap_rule_unrun "$u"; then
         supervisor_cap_second_rule "$id" "$reason" "$evidence" "$decision" "$retry"
         return 0
       fi
@@ -495,7 +513,17 @@ supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
       return_stage="$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")"
       [[ -n "$return_stage" ]] || return_stage="$(supervisor_return_stage "$u")"
       ruling="Supervisor cap ruling: $reason Evidence: $evidence"
-      cap_set_unit "$id" RULE "$ruling" "$rep" "$spent$(hist supervisor-cap-rule "$reason" "$decision") | $(hist supervisor-arbiter-round "cap triage ruling applied: $reason" "$decision") | .cto_rulings=($(cto_rulings_norm) + [$(js "$ruling")]) | .stage=$(js "$return_stage") | .supervisor_cap_return_stage=$(js "$return_stage") | del(.parked_reason,.note,.supervisor_cap_from_parked)" \
+      issue="$(jqf -r '.issue // empty' <<<"$u")"
+      if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+        release=0; supervisor_release_stop_loss_hold "$id" "$issue" || release=$?
+        (( release != 2 )) || return 0 # decided: the no-change mark waits for that holder to let go, with no run in between
+        (( release == 0 )) || return 1
+      fi
+      # One refill per unit, like recut-reopen: the marker keeps RULE, fail, RULE from outrunning the stop-loss budget.
+      refill=""
+      [[ "$(jqf -r '.cap_budget_refilled_at // empty' <<<"$u")" ]] \
+        || refill="$(hist supervisor-cap-budget-refill "$reason" "$decision") | .cap_budget_refilled_at=$(js "$STAMP") | "
+      cap_set_unit "$id" RULE "$ruling" "$rep" "$spent$refill$(hist supervisor-cap-rule "$reason" "$decision") | $(hist supervisor-arbiter-round "cap triage ruling applied: $reason" "$decision") | .cto_rulings=($(cto_rulings_norm) + [$(js "$ruling")]) | .stage=$(js "$return_stage") | .supervisor_cap_return_stage=$(js "$return_stage") | del(.parked_reason,.note,.supervisor_cap_from_parked)" \
         && say "supervisor cap triage unit=$id: RULE -> $return_stage" ;;
     FOUNDER)
       if [[ -n "$retry" ]]; then
@@ -649,9 +677,8 @@ harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or fin
       supervisor_arbiter_no_answer "$unit" "no report $report" true
     elif action="$(supervisor_cap_verdict_of "$SUP/$report")"; then
       say "supervisor cap triage unit=$unit verdict=$action"
-      decided=true
       set_unit "$unit" "del(.supervisor_cap_reask, .supervisor_cap_invalid_answers)"
-      supervisor_apply_cap_verdict "$unit" "$SUP/$report" "$action"
+      if supervisor_apply_cap_verdict "$unit" "$SUP/$report" "$action"; then decided=true; fi # not applied: the next tick may ask again
     else
       supervisor_cap_triage_reask_or_park "$unit" "$SUP/$report"
       say "supervisor cap triage unit=$unit: report did not end in one valid verdict"
