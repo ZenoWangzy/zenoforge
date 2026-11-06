@@ -50,7 +50,7 @@ refused_intact() { # what-it-is why-pattern
   before="$(snapshot)"
   if rescue_handoff_clone 70 "$wt"; then fail "$1: expected a refusal"; fi
   after="$(snapshot)"
-  [[ "$after" == "$before" ]] || fail "$1: the clone changed"
+  [[ "$after" == "$before" ]] || fail "$1: the clone changed: $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"
   [[ "$RESCUE_REFUSED" == *"$2"* ]] || fail "$1: said '$RESCUE_REFUSED'"
   [[ ! -s "$fixture/state-merges" ]] || fail "$1: a start ref was recorded"
 }
