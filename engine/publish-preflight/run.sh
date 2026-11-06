@@ -59,6 +59,14 @@ run_gate() {
         return 1
       fi
       ;;
+    prompt-contract)
+      echo "publish-preflight: checking prompt contracts"
+      if [[ "${ZF_PREFLIGHT_PREVIOUSLY_LIVE:-0}" == 1 ]]; then
+        echo "publish-preflight: skipping prompt-contract check for previously live version"
+      elif ! python3 -I "$here/prompt-contract-check.py" "$new_version" "$target_repo" "$new_ref"; then
+        echo "publish-preflight: prompt-contract check failed" >&2; return 1
+      fi
+      ;;
     *) echo "publish-preflight: unknown gate in gates.tsv: $gate" >&2; return 2 ;;
   esac
 }
