@@ -26,6 +26,14 @@ status=0; hold_sweep 2>"$AGENT_HOME/sweep.err" || status=$?
 assert_eq "a closed state-only hold reconciles" 0 "$status"
 assert_not_contains "the closed snapshot carries its number" "$(cat "$AGENT_HOME/sweep.err")" 'invalid closed issue snapshot'
 
+# Past the slice deadline every read is refused: the sweep stops and says so, it does not report owners unreadable.
+supervisor_holds_snapshot() { jq -cn '[{issue:910802,kind:"external-deliverable",age_seconds:99,owner:"none",holder:"supervisor",hold:{}}]'; }
+status=0; ZF_GH_CALL_DEADLINE_EPOCH_MS=$(( $(date +%s%3N) + 3000 )) supervisor_hold_sweep 2>"$AGENT_HOME/sweep.err" || status=$?
+assert_eq "a deadline stop is not a sweep failure" 0 "$status"
+assert_contains "a deadline stop names where it stopped" "$(cat "$AGENT_HOME/sweep.err")" 'gh deadline reached at #910802'
+unset -f supervisor_holds_snapshot
+assert_true "the supervisor sweep shuffles too" grep -Fq '<<< "$rows" | shuf)' "$SCRIPT_DIR/supervisor-holds.sh"
+
 assert_true "the sweep shuffles so a deadline cannot starve one tail" grep -Eq 'sort -u \| shuf\)' "$SCRIPT_DIR/lib.d/holds.sh"
 assert_true "blocker roots run last in the suffix" grep -Eq 'suffix_steps=\(.*batch-state needs-info-blocker-roots\)' "$SCRIPT_DIR/issue-pipeline.sh"
 

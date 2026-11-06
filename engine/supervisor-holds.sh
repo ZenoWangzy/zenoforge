@@ -459,7 +459,7 @@ supervisor_hold_record_merged_resolution() {
 
 supervisor_hold_sweep() {
   local numbers="${1:-}" held_json rows now_epoch n kind age owner_state issue_json state_json hold_json hold_b64 prs pr_json pr_number open_prs checks outcome
-  local open_count failure=0
+  local open_count failure=0 attempt
   [ "${DRY_RUN:-0}" != 1 ] || return 0
   if ! held_json="$(gh issue list --repo "$REPO" --state open --label on-hold --limit 1000 \
     --json number,title,body,state,labels,comments 2>/dev/null)"; then
@@ -485,6 +485,11 @@ supervisor_hold_sweep() {
       || { [ "$holder" = supervisor-inbox ] && [[ "$kind" == external-deliverable || "$kind" == blocked-on-resolution ]]; } \
       || [ "$kind" = pipeline-system-fastlane ] \
       || { [ "$holder" = "hand-$n" ] && [ "$kind" = hand-dispatch ]; } || continue
+    # Several bounded reads follow. Past the slice deadline they are all refused, which reads as an unreadable owner.
+    attempt="$(gh_tick_attempt_timeout_sec 2>/dev/null)" && (( attempt >= 10 )) || {
+      echo "supervisor_hold_sweep: gh deadline reached at #$n; the rest run next tick" >&2
+      break
+    }
     case "$owner_state" in
       queued|running|worktree-live|waiting)
         if [[ "$kind" == external-deliverable || "$kind" == ops-acceptance-after-release ]] \
@@ -611,6 +616,6 @@ supervisor_hold_sweep() {
         supervisor_hold_alert_once "$n" "$kind" "$age" "unknown hold kind; left unchanged" || failure=1
         ;;
     esac
-  done < <(jq -r '.[] | [.issue, .kind, (.age_seconds // "unknown"), .owner, .holder, (.hold | @base64)] | @tsv' <<< "$rows")
+  done < <(jq -r '.[] | [.issue, .kind, (.age_seconds // "unknown"), .owner, .holder, (.hold | @base64)] | @tsv' <<< "$rows" | shuf)
   [ "$failure" -eq 0 ]
 }
