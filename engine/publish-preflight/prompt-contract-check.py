@@ -15,7 +15,7 @@ LINK = re.compile(r'`([\w.-]+(?:/[\w.-]+)+\.\w+)`')
 
 
 def show(repo, ref, path):
-    r = subprocess.run(['git', '-C', repo, 'show', f'{ref}:{path}'], capture_output=True, text=True)
+    r = subprocess.run(['git', '-C', repo, 'show', f'{ref}:{path}'], capture_output=True, text=True, errors='replace')
     return r.stdout if r.returncode == 0 else None
 
 
@@ -23,33 +23,40 @@ def has_token(text, token):
     return re.search(r'(?<![\w-])' + re.escape(token) + r'(?![\w-])', text) is not None
 
 
-def required_names(node):
-    names = set()
+def required_at(node, path=()):
+    """Every (location, name) a schema requires: a name required elsewhere does not stand in for this one."""
+    found = set()
     if isinstance(node, dict):
         if isinstance(node.get('required'), list):
-            names |= set(node['required'])
-        for value in node.values():
-            names |= required_names(value)
+            found |= {(path, name) for name in node['required']}
+        for key, value in node.items():
+            found |= required_at(value, path + (key,))
     elif isinstance(node, list):
-        for value in node:
-            names |= required_names(value)
-    return names
+        for index, value in enumerate(node):
+            found |= required_at(value, path + (index,))
+    return found
 
 
-def enum_values(node, key=None):
-    """Map each property name to the enum values offered for it anywhere in the schema."""
+def required_names(schema):
+    return {name for _, name in required_at(schema)}
+
+
+def enums_at(node, path=()):
+    """Map each location to the enum values offered there."""
     found = {}
     if isinstance(node, dict):
         if isinstance(node.get('enum'), list):
-            found.setdefault(key, set()).update(node['enum'])
-        for name, value in node.items():
-            for prop, values in enum_values(value, name if key == 'properties' else key if name in ('enum', 'items') else name).items():
-                found.setdefault(prop, set()).update(values)
+            found[path] = set(node['enum'])
+        for key, value in node.items():
+            found.update(enums_at(value, path + (key,)))
     elif isinstance(node, list):
-        for value in node:
-            for prop, values in enum_values(value, key).items():
-                found.setdefault(prop, set()).update(values)
+        for index, value in enumerate(node):
+            found.update(enums_at(value, path + (index,)))
     return found
+
+
+def where(path):
+    return '/'.join(str(part) for part in path) or 'root'
 
 
 def main(version, repo, ref):
@@ -81,13 +88,14 @@ def main(version, repo, ref):
         if raw is None:
             continue
         ours, fork = engine_schema(name), json.loads(raw)
-        failures += [f'{name} does not require {n}' for n in sorted(required_names(ours) - required_names(fork))]
-        offered, aliases = enum_values(fork), rules.get('aliases', {})
-        for prop, values in sorted(enum_values(ours).items(), key=lambda row: str(row[0])):
+        failures += [f'{name} does not require {n} at {where(at)}' for at, n in sorted(required_at(ours) - required_at(fork), key=str)]
+        offered, aliases = enums_at(fork), rules.get('aliases', {})
+        for at, values in sorted(enums_at(ours).items(), key=str):
+            prop = at[-2] if at[-1] == 'items' else at[-1]
             if prop in rules.get('open_enums', []):
                 continue
-            missing = [v for v in values if not offered.get(prop, set()) & {v, aliases.get(v, v)}]
-            failures += [f'{name} enum {prop} lacks {v}' for v in sorted(missing, key=str)]
+            missing = [v for v in values if not offered.get(at, set()) & {v, aliases.get(v, v)}]
+            failures += [f'{name} enum {prop} lacks {v} at {where(at)}' for v in sorted(missing, key=str)]
 
     for line in failures:
         print(f'prompt-contract: {line}', file=sys.stderr)

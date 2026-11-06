@@ -4,9 +4,8 @@
     "advisor.md": {"schema": "advisor.schema.json"},
     "triage.md": {"schema": "triage.schema.json", "tokens": ["awaiting-release"]},
     "recut.md": {"schema": "recut.schema.json"},
-    "supervisor-arbiter.md": {"tokens": ["ACTION", "REASON", "GUIDANCE", "QUESTION"]},
-    "review-contract.md": {"tokens": ["VERDICT", "READY", "NOT_READY", "INPUT_INCOMPLETE", "review-findings"]},
-    "implement-contract.md": {"tokens": ["blast-radius"]},
+    "supervisor-arbiter.md": {"tokens": ["ACTION", "REASON", "GUIDANCE", "QUESTION", "REJECTED"]},
+    "review-contract.md": {"tokens": ["VERDICT", "READY", "NOT_READY", "INPUT_INCOMPLETE", "BLOCKED-ON", "review-findings"]},
     "guarded-recut-hand.md": {"tokens": ["STATUS", "BLOCKED-ON"]}
   },
   "schemas": {

@@ -80,9 +80,19 @@ rc=0; out=$(run 2>&1) || rc=$?
 [[ $rc == 1 ]] && grep -q 'advisor.schema.json does not require tests_fail_first' <<<"$out" || fail "a fork that stopped requiring a field passed: $out"
 restore advisor.schema.json; commit restored
 
+# A name kept in one place of a schema does not stand in for losing it in another.
+python3 -I - "$prompts/advisor.schema.json" <<'E'
+import json, sys
+path = sys.argv[1]; s = json.load(open(path)); s['required'].remove('verdict'); s['properties']['verdict']['enum'].remove('tracker'); json.dump(s, open(path, 'w'))
+E
+commit relocated
+rc=0; out=$(run 2>&1) || rc=$?
+[[ $rc == 1 ]] && grep -q 'advisor.schema.json does not require verdict at root' <<<"$out" && grep -q 'advisor.schema.json enum verdict lacks tracker at properties/verdict' <<<"$out" || fail "a value kept only in a conditional passed: $out"
+restore advisor.schema.json; commit restored
+
 # A fork may delegate its contract to a skill it names, and the skill must then carry it.
 mkdir -p "$t/repo/.agents/skills/review"
-printf 'VERDICT READY NOT_READY INPUT_INCOMPLETE review-findings\n' > "$t/repo/.agents/skills/review/SKILL.md"
+printf 'VERDICT READY NOT_READY INPUT_INCOMPLETE BLOCKED-ON review-findings\n' > "$t/repo/.agents/skills/review/SKILL.md"
 printf 'Follow `.agents/skills/review/SKILL.md`.\n' > "$prompts/review-contract.md"; commit delegated
 run | grep -q 'prompt-contract: OK' || fail 'a delegated contract was not followed'
 printf 'VERDICT READY\n' > "$t/repo/.agents/skills/review/SKILL.md"; commit thin-skill
