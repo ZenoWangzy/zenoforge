@@ -441,7 +441,7 @@ supervisor_hold_alert_once() {
   hold_json="$(state_read "$n" 2>/dev/null || true)"
   hold_change="$(jq -cS '.hold // {}' <<< "$hold_json" 2>/dev/null | sha256sum | cut -c1-16)"
   [ -n "$hold_change" ] || hold_change=unknown
-  echo "supervisor_hold_sweep: #$n kind=$kind $reason" >&2
+  echo "supervisor_hold_sweep: #$n kind=$kind $reason detail=${SUPERVISOR_HOLD_OWNER_DETAIL:-none}" >&2
   key="supervisor-hold-without-owner:$n:$kind:$hold_change:$reason"
   supervisor_inbox_append_once "$key" \
     "supervisor-hold-without-owner issue=#$n kind=$kind age=${age}s $reason"
