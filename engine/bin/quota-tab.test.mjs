@@ -10,7 +10,36 @@ import { fileURLToPath } from 'node:url';
 
 const bin = path.dirname(fileURLToPath(import.meta.url));
 
-async function run(script, tabs, files = {}) {
+// Replies to CDP calls like a tab whose quota call reports `week` percent, and records each method called.
+function answerCdp(socket, week, seen) {
+  const send = obj => {
+    const text = Buffer.from(JSON.stringify(obj));
+    const head = text.length < 126 ? Buffer.from([0x81, text.length]) : Buffer.from([0x81, 126, text.length >> 8, text.length & 255]);
+    socket.write(Buffer.concat([head, text]));
+  };
+  const limits = [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 10 }, { type: 'TOKENS_LIMIT', unit: 6, percentage: week, nextResetTime: 1800000000000 }];
+  let buf = Buffer.alloc(0);
+  socket.on('data', chunk => {
+    buf = Buffer.concat([buf, chunk]);
+    while (buf.length >= 6) {  // client frames are masked and under 64k here
+      const len7 = buf[1] & 127, at = len7 === 126 ? 4 : 2, len = len7 === 126 ? buf.readUInt16BE(2) : len7;
+      if (buf.length < at + 4 + len) return;
+      const mask = buf.subarray(at, at + 4), text = Buffer.from(buf.subarray(at + 4, at + 4 + len).map((b, i) => b ^ mask[i % 4]));
+      const opcode = buf[0] & 15;
+      buf = buf.subarray(at + 4 + len);
+      if (opcode !== 1) continue;
+      const m = JSON.parse(text);
+      seen.push(`CDP ${m.method}`);
+      if (m.method === 'Page.navigate') {
+        send({ method: 'Network.responseReceived', params: { requestId: 'q', response: { url: 'https://bigmodel.cn/api/monitor/usage/quota/limit' } } });
+        send({ method: 'Network.loadingFinished', params: { requestId: 'q' } });
+      }
+      send({ id: m.id, result: m.method === 'Network.getResponseBody' ? { body: JSON.stringify({ data: { limits } }) } : {} });
+    }
+  });
+}
+
+async function run(script, tabs, files = {}, { week, env = {}, home: reuse } = {}) {
   const seen = [];
   const server = http.createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
@@ -21,19 +50,20 @@ async function run(script, tabs, files = {}) {
     if (req.url.startsWith('/json/close')) return res.end('Target is closing');
     res.end(JSON.stringify(seen.some(s => s.startsWith('PUT')) ? [tab] : tabs(port)));
   });
-  // Accepts the upgrade, then never answers a CDP call: a hung renderer.
+  // Accepts the upgrade, then never answers a CDP call unless a week is given: a hung renderer.
   server.on('upgrade', (req, socket) => {
     const accept = createHash('sha1').update(`${req.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
     socket.on('error', () => {});
+    if (week !== undefined) answerCdp(socket, week, seen);
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-tab-'));
-  fs.mkdirSync(path.join(home, '.zenoforge'));
+  const home = reuse ?? fs.mkdtempSync(path.join(os.tmpdir(), 'quota-tab-'));
+  fs.mkdirSync(path.join(home, '.zenoforge'), { recursive: true });
   for (const [file, text] of Object.entries(files)) fs.writeFileSync(path.join(home, file), text);
   const child = spawn(process.execPath, [path.join(bin, script)], {
     env: { ...process.env, HOME: home, AGENT_HOME: path.join(home, '.zenoforge'), NO_PROXY: '127.0.0.1',
-      QUOTA_CDP_URL: `http://127.0.0.1:${server.address().port}`, QUOTA_CDP_CALL_TIMEOUT_MS: '300' },
+      QUOTA_CDP_URL: `http://127.0.0.1:${server.address().port}`, QUOTA_CDP_CALL_TIMEOUT_MS: '300', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let out = '';
@@ -75,5 +105,19 @@ const reused = await run('zc-quota', port => [{ id: 'mine', type: 'page', url: '
   webSocketDebuggerUrl: `ws://127.0.0.1:${port}/tab` }], { '.zenoforge/zc-quota.json.tab': 'mine\n' });
 assert.ok(reused.seen.some(s => s.startsWith('PUT /json/new')), `a booked tab that left the site is not ours: ${reused.seen.join()}`);
 assert.ok(!reused.seen.includes('GET /json/close/mine'), reused.seen.join());
+
+// Reset line above 100: at 98% nothing is spent, and head hears once for this weekly window.
+const usageTab = port => [{ id: 'read', type: 'page', url: 'https://bigmodel.cn/coding-plan/personal/usage',
+  webSocketDebuggerUrl: `ws://127.0.0.1:${port}/tab` }];
+const heldHome = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-held-'));
+const alerts = path.join(heldHome, 'alerts');
+const held = { week: 98, home: heldHome, env: { ZC_WEEK_RESET_AT: '101', ZC_ALERT_FILE: alerts } };
+for (let i = 0; i < 2; i++) {
+  const r = await run('zc-quota', usageTab, {}, held);
+  assert.equal(r.code, 0, r.out);
+  assert.ok(!r.seen.includes('CDP Runtime.evaluate'), `no reset may be spent: ${r.seen.join()}`);
+}
+assert.equal(JSON.parse(fs.readFileSync(path.join(heldHome, '.zenoforge/zc-quota.json'))).week_pct, 98);
+assert.equal(fs.readFileSync(alerts, 'utf8').match(/ZCODE-WEEK-RESET-HELD/g)?.length, 1);
 
 console.log('ok - quota scripts end on a hung tab, close it, and open a missing one');

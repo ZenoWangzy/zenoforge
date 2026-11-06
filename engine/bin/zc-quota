@@ -14,7 +14,8 @@ const CAP_5H = Number(process.env.ZC_5H_CAP || 85);              // stop startin
 const CAP_WEEK = Number(process.env.ZC_WEEK_CAP || 100);          // stop starting ZCode here; a weekly reset normally comes first
 const RESET_GAP_SECONDS = Number(process.env.ZC_WEEK_RESET_GAP_SECONDS || 21600); // one reset at a time: a slow page must not burn a second
 const ALERT_FILE = process.env.ZC_ALERT_FILE;                     // each spent reset is appended here
-const RESET_WEEK_AT = Number(process.env.ZC_WEEK_RESET_AT || 98); // spend a weekly reset at this weekly percentage
+const RESET_WEEK_AT = Number(process.env.ZC_WEEK_RESET_AT || 98); // spend a weekly reset at this weekly percentage; over 100 never spends
+const WEEK_ALERT_AT = Number(process.env.ZC_WEEK_ALERT_AT || 98); // below the spend line, tell head once per week at this percentage
 const PAGE = 'https://bigmodel.cn/coding-plan/personal/usage';
 const CDP = process.env.QUOTA_CDP_URL || 'http://127.0.0.1:9222';
 const CALL_TIMEOUT_MS = Number(process.env.QUOTA_CDP_CALL_TIMEOUT_MS || 30000);
@@ -123,6 +124,7 @@ try {
   const prev = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return {}; } })();
   q.reset_at = prev.reset_at || 0;
   q.week_resets_spent = prev.week_resets_spent || 0;
+  q.week_alert_for = prev.week_alert_for;
   if (q.week_pct >= RESET_WEEK_AT && Date.now() / 1000 - q.reset_at < RESET_GAP_SECONDS) {
     log(`weekly ${q.week_pct}% but the last reset was under ${RESET_GAP_SECONDS}s ago: not spending another`);
   } else if (q.week_pct >= RESET_WEEK_AT) {
@@ -140,6 +142,11 @@ try {
       const left = Number(result.match(/remaining before (\d+)/)?.[1]) - 1;
       if (ALERT_FILE) fs.appendFileSync(ALERT_FILE, `[${new Date().toISOString()}] ZCODE-WEEK-RESET spent=${q.week_resets_spent} left=${left} ${result}; weekly now ${q.week_pct}%\n`);
     }
+  }
+  if (q.week_pct >= WEEK_ALERT_AT && q.week_pct < RESET_WEEK_AT && q.week_alert_for !== String(q.week_reset)) {
+    q.week_alert_for = String(q.week_reset);
+    log(`weekly ${q.week_pct}%: the reset waits for the head, not spending one`);
+    if (ALERT_FILE) fs.appendFileSync(ALERT_FILE, `[${new Date().toISOString()}] ZCODE-WEEK-RESET-HELD weekly ${q.week_pct}%, automatic reset off at ${RESET_WEEK_AT}%: the last reset waits for the head\n`);
   }
   const now = Math.floor(Date.now() / 1000);
   const marker = (() => { try { return Number(fs.readFileSync(MARKER, 'utf8').trim()); } catch { return 0; } })();
