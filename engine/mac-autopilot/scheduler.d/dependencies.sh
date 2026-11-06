@@ -364,6 +364,7 @@ reconcile_stacked_units() {
     parent_reviewed="$(jqf -r '.reviewed_pr_head // empty' <<<"$parent")"
     child_stage="$(jqf -r .stage <<<"$child")"; old_stack="$(jqf -r '.stacked_on_sha // empty' <<<"$child")"
     [[ "$(jqf -r '.size_recut_pending // false' <<<"$child")" == true ]] && continue
+    jqf -e '.stage == "blocked-external" and .dep_wait_delivery != null and .dep_wait_delivery == .blocked_on' <<<"$child" >/dev/null && continue # a worker refused this release twice
     # A worker owns the clone while running. A size escalation owns the unit
     # afterward: restacking must not silently send it back to review (#4482).
     case "$child_stage" in implement|review|repair|rereview|supervisor-review|parked) continue ;; esac

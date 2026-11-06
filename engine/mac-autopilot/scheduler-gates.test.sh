@@ -2829,6 +2829,13 @@ stack_parent_active_old="$stack_parent_new"
 stack_parent_new="$(command git -C "$stack_root" rev-parse HEAD)"
 command git -C "$stack_root" push -q origin HEAD:refs/heads/agent/issue-1
 echo '[]' > "$GH_PR_TABLE"; gh_pr_open 101 "$stack_parent_new" false MERGEABLE agent/issue-1
+# A worker refused this release twice, so an approved parent does not free the child: only a delivery does.
+units "$(jq -cn --arg parent "$stack_parent_new" --arg old "$stack_parent_active_old" '{units:[
+  {id:"issue-1",issue:1,pr:101,branch:"agent/issue-1",stage:"ready-to-merge",approved_sha:$parent,reviewed_pr_head:$parent,history:[]},
+  {id:"issue-3",issue:3,pr:103,branch:"agent/issue-3",stage:"blocked-external",blocked_on:1,dep_wait_delivery:1,stacked_on:"issue-1@\($old)",stacked_on_unit:"issue-1",stacked_on_sha:$old,stacked_on_branch:"agent/issue-1",history:[]}
+]}')"
+reconcile_stacked_units
+[[ "$(field issue-3 .stage)" == blocked-external ]] || fail "a refused release must not restack free: $(field issue-3 .stage)"
 units "$(jq -cn --arg parent "$stack_parent_new" --arg old "$stack_parent_active_old" '{units:[
   {id:"issue-1",issue:1,pr:101,branch:"agent/issue-1",stage:"ready-to-merge",approved_sha:$parent,reviewed_pr_head:$parent,history:[]},
   {id:"issue-3",issue:3,pr:103,branch:"agent/issue-3",stage:"implement",blocked_on:1,stacked_on:"issue-1@\($old)",stacked_on_unit:"issue-1",stacked_on_sha:$old,stacked_on_branch:"agent/issue-1",history:[]}
