@@ -307,7 +307,7 @@ dep_predecessor_dead() { # waiter-unit-json predecessor
 }
 dep_dead_sweep() { # one marked unit at a time reaches the arbiter, so a wrong proof costs one unit
   local u id dep evidence
-  jqf -e 'any(.units[]; (.dep_dead_proved != null and (.stage | IN("merged","landed","awaiting-live-event","closed","parked","blocked-external") | not) and (.stage != "supervisor-review" or .arbiter_left_mark == null)) or (.dep_wait_delivery != null and .arbiter_left_mark == null and (.size_recut_pending == true or .stage == "supervisor-review")))' "$UNITS" >/dev/null && return 0
+  jqf -e 'any(.units[]; (.dep_dead_proved != null and ((.stage == "supervisor-review" and .arbiter_left_mark == null) or (.stage | test("^(implement|repair|review|rereview)(-pending)?$")))) or (.dep_wait_delivery != null and .arbiter_left_mark == null and (.size_recut_pending == true or .stage == "supervisor-review")))' "$UNITS" >/dev/null && return 0
   while IFS= read -r u; do
     id="$(jqf -r .id <<<"$u")"; dep="$(jqf -r .dep_wait_delivery <<<"$u")"
     evidence="$(dep_predecessor_dead "$u" "$dep")" || continue
