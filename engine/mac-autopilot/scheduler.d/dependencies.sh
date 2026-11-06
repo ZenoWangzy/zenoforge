@@ -93,11 +93,11 @@ dep_marker_open() { # unit-json → the marked predecessor while it is undeliver
   ! dep_dead_ruled "$1" "$dep" || return 1
   state="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$dep")")"
   [[ "$state" != MERGED ]] || return 1
-  [[ "$state" != CLOSED ]] || dep_ledger_dead "$dep" || return 1
+  [[ "$state" != CLOSED ]] || dep_has_unit "$dep" || return 1
   printf '%s' "$dep"
 }
-dep_ledger_dead() { # issue → 0 when it has unit rows and all are closed; with no delivery, that is work given up, not work done
-  jqf -e --argjson d "$1" '[.units[] | select(.issue == $d)] | length > 0 and all(.[]; .stage == "closed")' <(units_history_doc) >/dev/null
+dep_has_unit() { # issue → 0 when the ledger has a row for it: with no delivery, a closed state there is work given up or a stale read, not work done
+  jqf -e --argjson d "$1" 'any(.units[]; .issue == $d)' <(units_history_doc) >/dev/null
 }
 park_if_body_blocked() { # unit-json → 0 当按正文前置停住（不派发）
   local id dep
@@ -162,7 +162,7 @@ stack_approved_dependency() { # dependent unit-id issue-number unit-json; 0 when
 # 其余 → 升级 supervisor 一次。Airflow upstream_failed / Temporal timeout：每个等待都要有失败传播或超时。返回 0 = 已处理。
 dead_blocker_resolve() { # unit-id blocker-issue dependent-issue
   local id="$1" dep="$2" issue="$3" st children c next=""
-  dep_ledger_dead "$dep" || return 1
+  jqf -e --argjson d "$dep" '[.units[] | select(.issue == $d)] | length > 0 and all(.[]; .stage == "closed")' <(units_history_doc) >/dev/null || return 1
   st="$(scheduler_issue_state "$dep")" || return 1 # 子 shell 才载入 lib.sh；读不到就下一拍再试，不能当成无子票而升级
   children="$(jqf -r --argjson i "${issue:-0}" '(.recut_children // [])[] | select(. != $i)' <<<"$st")"
   if [[ -n "$children" ]]; then
@@ -246,7 +246,7 @@ release_dependency_blocks() {
     if (( gh_due )) && [[ "$state" == OPEN && "$real_wait" != true ]] && ! unit_body_declares_dependency "$u" "$dep" \
         && stack_approved_dependency "$id" "$dep" "$u"; then continue; fi
     # A marker ends on delivery or a ruling: a closed issue that delivered nothing goes to dep_dead_sweep, and a stale closed state cannot release it (#536).
-    if [[ "$real_wait" == true && "$state" == CLOSED ]] && dep_ledger_dead "$dep"; then continue; fi
+    if [[ "$real_wait" == true && "$state" == CLOSED ]] && dep_has_unit "$dep"; then continue; fi
     if [[ "$state" == CLOSED || "$state" == MERGED ]]; then
       dep_blocker_forget "$issue" "$dep"
       unblock_unit "$id" "#$dep delivered"; continue
@@ -272,7 +272,7 @@ release_dependency_blocks() {
   # supervisor 搁置（park）的单元仍带着 .blocked_on，却没有任何机制在前置交付后放开它；只放有前置号、无 parked_reason 的
   # （cap/stop-loss/founder 问题的搁置不点名前置，保持搁置）。
   while IFS=$'\t' read -r id dep marked; do
-    if [[ "$marked" == "$dep" ]] && ! dep_delivered_in_ledger "$dep" && dep_ledger_dead "$dep" \
+    if [[ "$marked" == "$dep" ]] && ! dep_delivered_in_ledger "$dep" && dep_has_unit "$dep" \
         && [[ "$(jqf -r --arg d "$dep" '.[$d].state // empty' <<<"$dep_cache")" != MERGED ]]; then continue; fi
     if dep_delivered_in_ledger "$dep" || [[ "$(jqf -r --arg d "$dep" '.[$d].state // empty' <<<"$dep_cache")" =~ ^(CLOSED|MERGED)$ ]]; then
       unblock_unit "$id" "parked on #$dep, which is delivered"
