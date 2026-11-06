@@ -1354,6 +1354,29 @@ assert_eq "both reduced groups receive rulings" "true" \
 assert_eq "size split clears after cohort is answered" "false" \
   "$(jq 'has("size_split")' "$SIZE_HOME/advisor-batch.json")"
 
+# A timeout cools the prompt and keeps the cohort whole: it is no evidence of size.
+TIMEOUT_COHORT_HOME="$(mktemp -d)"
+TMP_DIRS+=("$TIMEOUT_COHORT_HOME")
+mkdir -p "$TIMEOUT_COHORT_HOME/state" "$TIMEOUT_COHORT_HOME/locks"
+: > "$TIMEOUT_COHORT_HOME/codex-probe-passed"
+for n in 14121 14122; do seed_ticket "$TIMEOUT_COHORT_HOME" "$n"; done
+export AGENT_HOME="$TIMEOUT_COHORT_HOME"
+export FAKE_GH_LOG="$TIMEOUT_COHORT_HOME/gh.log"
+export FAKE_WEB_ADVISOR_PROVIDER_LOG="$TIMEOUT_COHORT_HOME/web-advisor-provider.log"
+export FAKE_WEB_ADVISOR_PROVIDER_PROMPT_LOG="$TIMEOUT_COHORT_HOME/prompt.txt"
+export FAKE_BATCH_NDJSON=""
+export FAKE_BATCH_ANSWER_ERR='FAIL: ADVISOR_ANSWER_TIMEOUT: stop button, empty text'
+export FAKE_BATCH_POLL_STATUS=1
+set +e
+TIMEOUT_COHORT_OUTPUT="$(run_batch_complete 14121 14122 2>&1)"
+TIMEOUT_COHORT_STATUS=$?
+set -e
+assert_eq "timed-out cohort exits cleanly" "0" "$TIMEOUT_COHORT_STATUS"
+assert_not_contains "timeout does not bisect the cohort" "$TIMEOUT_COHORT_OUTPUT" "measured size failure split"
+assert_eq "timeout leaves no size split" "false" "$(jq 'has("size_split")' "$TIMEOUT_COHORT_HOME/advisor-batch.json")"
+assert_true "timeout still cools the prompt" compgen -G "$TIMEOUT_COHORT_HOME/quarantine/advisor-batch/prompt-*.json"
+unset FAKE_BATCH_POLL_STATUS
+
 # A size failure that persists for one ticket becomes a dead letter keyed to
 # its exact input and episode; siblings continue and receive rulings.
 POISON_HOME="$(mktemp -d)"

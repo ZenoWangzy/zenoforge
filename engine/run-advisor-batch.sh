@@ -158,12 +158,9 @@ advisor_batch_is_size_failure() {
   [[ "$failure" =~ (^|[^0-9])413([^0-9]|$)|too[[:space:]]large|(payload|attachment|upload|request)[[:space:]].*(limit|maximum|max)|exceeds[[:space:]].*(limit|maximum|max)|(limit|maximum|max).*[[:space:]]exceeded ]]
 }
 
-advisor_batch_is_empty_failure() {
-  [[ "$1" =~ (ADVISOR_EMPTY_ANSWER|ADVISOR_ANSWER_TIMEOUT) ]]
-}
-
+# A timeout says nothing about size: splitting on it dropped a queue of 70 to one ticket a job. It only cools the prompt.
 advisor_batch_is_split_failure() {
-  advisor_batch_is_size_failure "$1" || advisor_batch_is_empty_failure "$1"
+  advisor_batch_is_size_failure "$1" || [[ "$1" == *ADVISOR_EMPTY_ANSWER* ]]
 }
 
 advisor_batch_trim_prompt_comments() {
@@ -405,7 +402,6 @@ advisor_batch_size_split_on_failure() {
   if [ "$members_count" -gt 1 ]; then
     advisor_batch_size_split_partition "$job_json" "$failure"
   elif [ "$members_count" -eq 1 ]; then
-    advisor_batch_is_size_failure "$failure" || [[ "$failure" == *ADVISOR_EMPTY_ANSWER* ]] || return 0
     advisor_batch_size_dead_letter_singleton "$job_json" "$failure" || return 1
     advisor_batch_size_split_advance
   fi
@@ -1613,9 +1609,7 @@ if [ "$BATCH_MEMBER_RETRY" = "0" ]; then
   record_premium_spend advisor-batch "$ADVISOR_MODEL_USED" "batch:$INCLUDED" "" "" "" "$ADVISOR_MODEL_FALLBACK"
 fi
 if [ "$BATCH_DRY_RUN" = "0" ] && [ "$BATCH_MEMBER_RETRY" = "0" ]; then
-  if [ "$BATCH_PARTIAL_TIMEOUT" = 1 ]; then
-    advisor_batch_size_split_on_failure "$ACTIVE_BATCH_JOB" ADVISOR_ANSWER_TIMEOUT || exit 1
-  else
+  if [ "$BATCH_PARTIAL_TIMEOUT" != 1 ]; then
     advisor_batch_size_split_record_success "$ACTIVE_BATCH_JOB" || {
       echo "run-advisor-batch: could not advance measured-size split after successful ruling persistence" >&2
       exit 1
