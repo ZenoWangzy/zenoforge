@@ -96,6 +96,10 @@ jq -c '(.units[] | select(.id=="issue-30")) |= (.stage="supervisor-review" | del
 # A ruling that failed to apply leaves the no-change mark: it must not hold every other unit.
 jq -c '(.units[] | select(.id=="issue-30")) |= (.arbiter_left_mark="x" | .dep_dead_proved=10)' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
 [[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'a unit the arbiter left must not wedge the sweep'
+# Past review the mark means nothing: a requeued unit still working holds the next proof, stale mark or not.
+reset; printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20)" > "$UNITS"
+jq -c '.units += [{id:"issue-30",issue:30,stage:"implement-pending",dep_dead_proved:10,arbiter_left_mark:"x",history:[]}]' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
+[[ "$(field issue-20 .stage)" == blocked-external ]] || fail 'a requeued unit with a stale mark keeps its turn'
 
 # Proof is the only way past the marker, including a body dependency on the same predecessor.
 printf '{"states":{}}\n' > "$A/dep-check.cache.json"
