@@ -170,6 +170,9 @@ SUPERVISOR_CAP_TRIAGE_PER_TICK="$(jqf -r '.supervisor_arbiter.cap_triage_per_tic
 SUPERVISOR_ARBITER_MAX="$(jqf -r '.supervisor_arbiter.max_in_flight // 4' <<<"$CFG")"
 SUPERVISOR_ARBITER_DAILY_MAX="$(jqf -r '.supervisor_arbiter.daily_max_per_unit // 6' <<<"$CFG")"
 [[ "$SUPERVISOR_ARBITER_DAILY_MAX" =~ ^[0-9]+$ ]] || SUPERVISOR_ARBITER_DAILY_MAX=6
+CODEX_CREDITS_ROLES="$(jqf -r '(.models.codex_credits.roles // []) | join(" ")' <<<"$CFG")"
+CODEX_CREDITS_CAP="$(jqf -r '.models.codex_credits.cap // empty' <<<"$CFG")"
+CODEX_CREDITS_START_BALANCE="$(jqf -r '.models.codex_credits.start_balance // empty' <<<"$CFG")"
 FOCUS_SKIPPED=()
 MAIN_HEAD=""
 if [[ "$FOCUS_MODE" != "all" && "$FOCUS_MODE" != "release" ]]; then

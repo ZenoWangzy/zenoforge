@@ -191,4 +191,39 @@ set -e
 grep -Fq 'FAIL planted pre-fix helper dispatched same-family reviewer=gpt-6-luna' <<<"$planted_output" || fail 'planted pre-fix selector did not reproduce the same-family dispatch'
 printf 'PLANTED_OLD_EXIT_CODE=%s\n%s\n' "$planted_status" "$planted_output"
 
+# Credits route: past the Codex hold only ZCode-authored review and the arbiter may run, up to a hard cap.
+set_config '.'; set_policy '.'
+printf '%s\n' '{"zcode":0,"claude":0,"codex":0}' > "$COOLDOWN"
+rm -f "$(_quota_marker_file zcode)" "$(_quota_marker_file claude)"
+sessions="$fixture/sessions/2026/11/06"; mkdir -p "$sessions"
+export CODEX_SESSIONS_DIR="$fixture/sessions"
+balance() { printf '{"payload":{"rate_limits":{"credits":{"has_credits":true,"balance":"%s"}}}}\n' "$1" > "$sessions/rollout-a.jsonl"; }
+printf '%s\n' "$(($(date +%s) + 3600))" > "$(_quota_marker_file codex)"
+: > "$AGENT_HOME/codex-credits.log"
+glm_unit="$(unit_for credit-glm zcode:GLM-5.3:max)"
+codex_unit="$(unit_for credit-codex codex:gpt-6-luna:max)"
+balance 29000.5
+if pick_review_for_unit "$glm_unit"; then fail 'credits route must be closed without config'; fi
+CODEX_CREDITS_ROLES="review arbiter"; CODEX_CREDITS_CAP=5000; CODEX_CREDITS_START_BALANCE=29582
+pick_review_for_unit "$glm_unit" || fail 'a ZCode unit must get a reviewer on credits'
+[[ "$PICK_PROVIDER" == codex ]] || fail "a ZCode unit was reviewed by $PICK_PROVIDER"
+grep -Fq $'review\tcredit-glm\tbalance=29000.5\tspent=582' "$AGENT_HOME/codex-credits.log" || fail 'a credit-funded review must be logged per unit'
+pick_review_for_unit "$codex_unit" || fail 'a Codex unit must keep its GLM reviewer'
+[[ "$PICK_PROVIDER" == zcode ]] || fail "a Codex unit was reviewed by $PICK_PROVIDER"
+codex_credits_open arbiter || fail 'the arbiter must be open under the cap'
+if codex_credits_open implement || codex_credits_open triage; then fail 'implement and triage must never spend credits'; fi
+balance 24583
+codex_credits_open arbiter || fail 'one credit under the cap must stay open'
+balance 24582
+if pick_review_for_unit "$glm_unit"; then fail 'spending past the cap must refuse the review'; fi
+if codex_credits_open arbiter; then fail 'spending past the cap must close the arbiter'; fi
+grep -Fq 'codex-credits-stop' "$AGENT_HOME/supervisor-inbox" || fail 'the stop must alert'
+rm -f "$sessions/rollout-a.jsonl"
+if codex_credits_open review; then fail 'an unreadable balance must close the route'; fi
+rm -f "$(_quota_marker_file codex)"
+pick_review_for_unit "$glm_unit" || fail 'after the reset a ZCode unit must get normal Codex'
+[[ "$PICK_PROVIDER" == codex ]] || fail 'after the reset the reviewer must be Codex'
+CODEX_CREDITS_ROLES=""; CODEX_CREDITS_CAP=""; CODEX_CREDITS_START_BALANCE=""
+
 echo 'PASS review family dispatch, fallback, wait, alert, and role policy'
+

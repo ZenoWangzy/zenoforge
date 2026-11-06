@@ -838,7 +838,7 @@ review_identity_available() {
   if declare -F cooling >/dev/null 2>&1 && cooling "$provider"; then return 1; fi
   case "$provider" in
     codex)
-      codex_quota_exhausted "$identity" && return 1
+      if codex_quota_exhausted "$identity"; then [[ "${3:-}" == glm ]] && codex_credits_open review || return 1; fi
       codex_probe_ok || return 1
       command -v codex >/dev/null 2>&1
       ;;
@@ -923,7 +923,7 @@ review_model_for_implementer() {
         continue
       fi
     fi
-    if review_identity_available "$candidate" "$candidate_role"; then
+    if review_identity_available "$candidate" "$candidate_role" "$author_family"; then
       if [[ "$candidate_role" == review_fallback ]]; then
         review_family_log "review-family fallback unit=$unit author=$author_family reviewer=sonnet reason=${primary_reason:-cross reviewer unavailable}"
         record_review_provider_fallback "$issue" "cross-family-reviewer" "$candidate" "${primary_reason:-cross reviewer unavailable}" 2>/dev/null || true

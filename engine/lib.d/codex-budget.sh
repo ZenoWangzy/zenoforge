@@ -365,6 +365,40 @@ codex_week_stopped() { # [stop percent]
   snapshot_week_at "${1:-${CODEX_WEEK_STOP_PCT:-101}}" "${CODEX_QUOTA_SNAPSHOT_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/codex-quota.json}"
 }
 
+# Credits route: past the weekly hold, only the roles in CODEX_CREDITS_ROLES may run, until CODEX_CREDITS_CAP credits are
+# gone from CODEX_CREDITS_START_BALANCE. Unset or unreadable means closed. Every session log carries the account balance.
+codex_credits_balance() {
+  local dir="${CODEX_SESSIONS_DIR:-${CODEX_HOME:-$HOME/.codex}/sessions}" f balance
+  while IFS= read -r f; do
+    balance="$(tac -- "${f#* }" 2>/dev/null | grep -m1 -oE '"balance":"[0-9]+(\.[0-9]+)?"' | grep -oE '[0-9]+(\.[0-9]+)?' || true)"
+    [ -z "$balance" ] || { printf '%s\n' "$balance"; return 0; }
+  done < <(find "$dir" -name 'rollout-*.jsonl' -mtime -8 -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -40)
+  return 1
+}
+
+codex_credits_spent() { # -> whole credits spent since the start balance, rounded up
+  local balance
+  balance="$(codex_credits_balance)" || return 1
+  awk -v s="$CODEX_CREDITS_START_BALANCE" -v b="$balance" 'BEGIN { d = s - b; i = int(d); print (d > i ? i + 1 : i) }'
+}
+
+codex_credits_open() { # role -> 0 while that role may spend credits
+  local role="$1" spent
+  [[ " ${CODEX_CREDITS_ROLES:-} " == *" $role "* ]] || return 1
+  [[ "${CODEX_CREDITS_CAP:-}" =~ ^[0-9]+$ && "${CODEX_CREDITS_START_BALANCE:-}" =~ ^[0-9]+$ ]] || return 1
+  spent="$(codex_credits_spent)" || return 1
+  (( spent < CODEX_CREDITS_CAP )) && return 0
+  (source "${SCHEDULER_AGENT_LIB:-$_AGENT_LIB_DIR/lib.sh}"; supervisor_inbox_append_once "codex-credits-stop:$CODEX_CREDITS_START_BALANCE" \
+    "codex-credits-stop spent=$spent cap=$CODEX_CREDITS_CAP: route closed; review of ZCode work and the arbiter wait for the weekly reset") 2>/dev/null || :
+  return 1
+}
+
+codex_credits_log() { # role unit -> one line per credit-funded dispatch
+  [[ -n "${CODEX_CREDITS_START_BALANCE:-}" ]] && provider_quota_exhausted codex || return 0
+  printf '%s\t%s\t%s\tbalance=%s\tspent=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" \
+    "$(codex_credits_balance || echo unknown)" "$(codex_credits_spent || echo unknown)" >> "${AGENT_HOME:-$HOME/.zenoforge}/codex-credits.log"
+}
+
 snapshot_week_at() { # stop percent, quota snapshot
   command jq -e --argjson stop "$1" --argjson now "${NOW_EPOCH:-$(date +%s)}" \
     '(.week_pct // 0) >= $stop and (.week_reset // 0) > $now' "$2" >/dev/null 2>&1

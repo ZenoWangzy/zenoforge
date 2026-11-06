@@ -41,7 +41,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
   local u id report log q pid w pid_file converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
   local -a launcher=() worker_command=()
   local over_stop=false arbiter_profile="$SUPERVISOR_ARBITER_PROFILE" arbiter_effort=""
-  codex_week_stopped && over_stop=true
+  if codex_week_stopped && ! codex_credits_open arbiter; then over_stop=true; fi
   in_flight="$(jqf -r '[.workers[] | select(.type=="supervise" and .harvested != true)] | length' "$WORKERS")"
   (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
   while IFS= read -r u; do
@@ -169,6 +169,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     jqf --argjson w "$w" '.workers += [$w]' "$WORKERS" | write_state "$WORKERS"
     set_unit "$id" "$(hist supervisor-arbiter "dispatched to profile $arbiter_profile") | .supervise_report=$(js "$report") | .hard_escalated=true"
     say "supervisor arbitration dispatched pid=$pid unit=$id profile=$arbiter_profile"
+    [[ "$over_stop" == true ]] || codex_credits_log arbiter "$id"
     in_flight=$((in_flight + 1))
     [[ "$cap_triage" == true ]] && cap_triaged=$((cap_triaged + 1))
     (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0

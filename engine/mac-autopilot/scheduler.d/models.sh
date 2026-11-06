@@ -456,6 +456,7 @@ pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves 
   if (( status == 0 )) && [[ -n "$selected" ]]; then
     PICK_MODEL="${selected#*:}"; PICK_EFFORT="${PICK_MODEL##*:}"; PICK_MODEL="${PICK_MODEL%:*}"
     PICK_PROVIDER="${selected%%:*}"
+    [[ "$PICK_PROVIDER" != codex ]] || codex_credits_log review "$id"
     PICK_SERVICE_TIER="$(jqf -r --arg m "$PICK_MODEL" '[.models[] | select(type=="array") | select(.[0]==$m) | .[2] // empty][0] // empty' <<<"$CFG")"
     if [[ "$(jqf -r '.review_family_wait_alerted // false' <<<"$unit_json")" == true ]]; then
       set_unit "$id" 'del(.review_family_wait_alerted)'
