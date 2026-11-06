@@ -26,6 +26,16 @@ run policy-inject.mjs '{"session_id":"s"}' 0
 grep -q 'policy' "$work/out"
 run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"echo ok"}}' 0
 run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"git push"}}' 2
+run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"pnpm test && gh pr create --title x"}}' 2
+run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"pnpm --filter a test:hooks; gh pr create"}}' 2
+run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"npx tsc --noEmit | tail -3; gh pr edit 1 --body-file b.md"}}' 2
+run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"vitest run a.test.ts\ngh issue comment 1 --body done"}}' 2
+run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"$P/run-test.sh bash -c x; gh pr create"}}' 2
+run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title x"}}' 0
+run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"gh pr edit 1 --add-label x; pnpm test"}}' 0
+run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"gh issue comment 1 --body \"tsc passed\""}}' 0
+run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"cat tsc.log; gh pr create"}}' 0
+run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"pnpm test"}}' 0
 printf '%s\n' '{"type":"assistant","message":{"content":"READY"}}' > "$HOME/transcript"
 input=$(printf '{"session_id":"s","transcript_path":"%s/transcript"}' "$HOME")
 run claim-gate.cjs "$input" 2

@@ -34,6 +34,14 @@ process.stdin.on('end', () => {
       process.stderr.write(C.command_messages[3]);
       process.exit(2);
     }
+    // A claim about a check must come from a result already read, so the check and the write cannot share a call.
+    const writesClaim = /\bgh\s+(?:pr\s+create\b|pr\s+edit\b[^\n;|&]*--body-file\b|issue\s+comment\b)/.test(cmd);
+    const unquoted = cmd.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""');
+    const runsCheck = /\bpnpm\s+(?:[^\s;&|]+\s+)*?test\b|(?:^|[\s;&|(/])(?:tsc|vitest)(?=[\s;&|)]|$)|\brun-test\.sh\b/.test(unquoted);
+    if (writesClaim && runsCheck) {
+      process.stderr.write('Refused: this call runs a test or typecheck and also writes a PR body or issue comment. Run the check first, read its result, then write the claim in a later call.\n');
+      process.exit(2);
+    }
     const lines = cmd.split('\n');
     const firstCd = lines.findIndex(l => /(^|[;&|(]\s*)cd\s+\S/.test(l));
     if (firstCd >= 0 && lines.some((l, i) => i > firstCd
