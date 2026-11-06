@@ -532,15 +532,15 @@ main() {
   phase precheck_harvest
   phase recover_orphans
   phase recover_orphan_landing
-  # 每慢拍一次终态退休（持锁、纯本地）：先把 600+ 终态单元移出热台账，本拍后续的 intake /
-  # dispatch / CI 准入 / 合并车道就不用再为它们付每笔 2 秒的整文件读写。
-  phase retire_terminal_units
   phase live_event_watch
   if [[ -e "$PAUSE_FILE" ]]; then
     # 用户的后端 Codex 暂停开关：保留回收、验证与发布列车，不派发、不合并。
     say "paused by $PAUSE_FILE: harvest and release train only, no dispatch or merge"
     phase run_release_train
   else
+    # 每慢拍一次终态退休（持锁、纯本地）：先把 600+ 终态单元移出热台账，本拍后续的 intake /
+    # dispatch / CI 准入 / 合并车道就不用再为它们付每笔 2 秒的整文件读写。PAUSE 期间不动台账。
+    phase retire_terminal_units
     phase stuck_worker_disposition
     phase_yield_lock release_dependency_blocks
     phase_yield_lock_batch run_issue_intake_phases
