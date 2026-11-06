@@ -38,6 +38,24 @@ ordered="$(roadmap_order_candidates "$ROOT_TREE" "$ROOT_CANDIDATES" | paste -sd,
 assert_eq 'priority override leads, then unblocking roots by open dependents count' \
   '112,117,116,106,105,110' "$ordered"
 
+# A chain counts in full, off-tree roots rank by what they hold, and a blocker cycle ends.
+HELD_TREE="$(jq '.roots[0].children[0].children[0].children += [
+  {number:140,title:"Chain root",state:"OPEN",labels:[],blockedBy:[],dependents_count:1,children:[]},
+  {number:141,title:"Chain 1",state:"OPEN",labels:[],blockedBy:[{number:140,state:"OPEN"}],dependents_count:1,children:[]},
+  {number:142,title:"Chain 2",state:"OPEN",labels:[],blockedBy:[{number:141,state:"OPEN"}],dependents_count:1,children:[]},
+  {number:143,title:"Chain 3",state:"OPEN",labels:[],blockedBy:[{number:142,state:"OPEN"}],dependents_count:0,children:[]},
+  {number:144,title:"Wide root",state:"OPEN",labels:[],blockedBy:[],dependents_count:2,children:[]},
+  {number:146,title:"On off-tree root",state:"OPEN",labels:[],blockedBy:[{number:145,state:"OPEN"}],dependents_count:0,children:[]},
+  {number:147,title:"Cycle a",state:"OPEN",labels:[],blockedBy:[{number:148,state:"OPEN"}],dependents_count:1,children:[]},
+  {number:148,title:"Cycle b",state:"OPEN",labels:[],blockedBy:[{number:147,state:"OPEN"}],dependents_count:1,children:[]},
+  {number:149,title:"Plain leaf",state:"OPEN",labels:[],blockedBy:[],dependents_count:0,children:[]}
+]' <<< "$TREE")"
+HELD_CANDIDATES='[{"number":149,"labels":[]},{"number":144,"labels":[]},{"number":140,"labels":[]},{"number":145,"labels":[]},{"number":150,"labels":[]},{"number":143,"labels":[]}]'
+assert_eq 'units held: whole chain first, then direct count, then off-tree root, ahead of tree order and plain fallback' \
+  '140,144,145,149,150' "$(roadmap_order_candidates "$HELD_TREE" "$HELD_CANDIDATES" | paste -sd, -)"
+assert_eq 'a blocker cycle ends the count' 'ok' "$(jq -c '.roots[0].children[0].children[0].children |= map(select(.number != 140))' <<< "$HELD_TREE" \
+  | { read -r cycle_tree; roadmap_order_candidates "$cycle_tree" '[{"number":149,"labels":[]}]' >/dev/null && echo ok; })"
+
 FALLBACK_TREE="$(jq '.roots[0].children[0].children += [
   {number:119,title:"Depth-2 leaf",state:"OPEN",labels:[],children:[]},
   {number:125,title:"Held depth-2 leaf",state:"OPEN",labels:["on-hold"],children:[]},

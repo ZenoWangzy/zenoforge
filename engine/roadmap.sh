@@ -298,7 +298,19 @@ roadmap_order_candidates() {
       or ((.children | type) != "array" and (.subIssuesSummary | type) != "object"
         and (.subIssues | type) != "object" and (.subIssues | type) != "array"
         and (.children_total // 0) > 0);
+    def units_held($waiting):
+      {seen:{},todo:[.]}
+      | until(.todo == [];
+          .todo[0] as $n | .todo |= .[1:]
+          | reduce (($waiting[$n | tostring] // [])[]) as $m (.;
+              if .seen[$m | tostring] then . else .seen[$m | tostring] = true | .todo += [$m] end))
+      | .seen | length;
     ($tree | map({key:(.number|tostring),value:.}) | from_entries) as $nodes
+    | ($tree | reduce .[] as $n ({};
+        if ((($n.state // "open") | ascii_downcase) == "open") then
+          reduce ($n | blockers[] | select(.number != null and ((.state // "") | ascii_downcase) == "open")) as $b
+            (.; .[$b.number | tostring] += [$n.number])
+        else . end)) as $waiting
     | if type != "array" then error("invalid roadmap candidate list") else . end
     | [ .[] as $candidate
         | ($nodes[($candidate.number|tostring)] // null) as $node
@@ -314,14 +326,16 @@ roadmap_order_candidates() {
         | {number:$candidate.number, mapped:($node != null and $node.depth == 3),
            bug_top:(($labels | index("bug")) != null and ($labels | index("priority:top")) != null),
            top:($labels | index("priority:top") != null),
-           dependents:($node.dependents_count // 0), order:$node.order}
+           held:([$node.dependents_count // 0, ($candidate.number | units_held($waiting))] | max),
+           order:$node.order}
       ]
-    # Ordering is not admission: unknown and other-depth leaves retain incoming order.
-    | [.[] | select(.mapped | not)] as $fallback
+    # Ordering is not admission: unknown and other-depth leaves retain incoming order
+    # unless they hold work, because a root off the tree holds its chain all the same.
+    | [.[] | select((.mapped | not) and .held == 0)] as $fallback
     | (if ($fallback | length) > 0 then
          ("roadmap: appended fallback candidates " + ($fallback | map(.number | tostring) | join(",")) + "\n" | stderr | empty)
        else empty end),
-      (([.[] | select(.mapped)] | sort_by([if .bug_top then 0 elif .top then 1 else 2 end, -.dependents, .order]))
+      (([.[] | select(.mapped or .held > 0)] | sort_by([if .bug_top then 0 elif .top then 1 else 2 end, -.held, .order]))
        + $fallback | .[].number)
   ' <<< "$candidates"
 }
