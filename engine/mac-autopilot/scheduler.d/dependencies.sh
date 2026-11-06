@@ -305,9 +305,8 @@ dep_predecessor_dead() { # waiter-unit-json predecessor
   printf 'predecessor #%s can never deliver (%s), no open PR, no live worker, no live child; branches:%s' \
     "$dep" "$(jqf -r 'if length == 0 then "open tracker with no unit" else "unit closed undelivered: " + (last.note // "no note" | .[0:200]) end' <<<"$rows")" "$branches"
 }
-dep_dead_sweep() { # one marked unit at a time reaches the arbiter, so a wrong proof costs one unit
+dep_dead_sweep() { # at most one marked unit per sweep reaches the arbiter; no state, so nothing can wedge it
   local u id dep evidence
-  jqf -e 'any(.units[]; (.dep_dead_proved != null and ((.stage == "supervisor-review" and .arbiter_left_mark == null) or (.stage | test("^(implement|repair|review|rereview)(-pending)?$")))) or (.dep_wait_delivery != null and .arbiter_left_mark == null and (.size_recut_pending == true or .stage == "supervisor-review")))' "$UNITS" >/dev/null && return 0
   while IFS= read -r u; do
     id="$(jqf -r .id <<<"$u")"; dep="$(jqf -r .dep_wait_delivery <<<"$u")"
     evidence="$(dep_predecessor_dead "$u" "$dep")" || continue

@@ -79,33 +79,10 @@ reset; ISSUE='{"state":"tracker","recut_children":[30]}'; CHILD=CLOSED; dep_dead
 reset; printf '{"units":[%s,%s,%s]}\n' "$dead" "$(marked 20)" "$(marked 30)" > "$UNITS"; SUBS=$'20\n30'; CHILD=OPEN; dep_dead_sweep
 [[ "$(field issue-30 .stage)" == supervisor-review ]] || fail 'a child waiting on the same predecessor is not live'
 
-# One at a time, newest first; the rest follow a real result.
+# One per sweep, newest first, with no state: nothing can wedge the next one.
 [[ "$(field issue-20 .stage)" == blocked-external ]] || fail 'only one unit moves'
 dep_dead_sweep
-[[ "$(field issue-20 .stage)" == blocked-external ]] || fail 'the next unit waits for a real result'
-jq -c '(.units[] | select(.id=="issue-30")).stage="implement-pending"' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
-[[ "$(field issue-20 .stage)" == blocked-external ]] || fail 'a unit back at work is not a result'
-jq -c '(.units[] | select(.id=="issue-30")).stage="merged"' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
-[[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'a result frees the next unit'
-reset; printf '{"units":[%s,%s,%s]}\n' "$dead" "$(marked 20)" "$(marked 30)" > "$UNITS"
-jq -c '(.units[] | select(.id=="issue-30")).size_recut_pending=true' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
-[[ "$(field issue-20 .stage)" == blocked-external ]] || fail 'a marked unit mid-recut keeps its turn'
-reset; printf '{"units":[%s,%s,%s]}\n' "$dead" "$(marked 20)" "$(marked 30)" > "$UNITS"
-jq -c '(.units[] | select(.id=="issue-30")) |= (.stage="supervisor-review" | del(.blocked_on))' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
-[[ "$(field issue-20 .stage)" == blocked-external ]] || fail 'a marked unit at the arbiter keeps its turn'
-# A ruling that failed to apply leaves the no-change mark: it must not hold every other unit.
-jq -c '(.units[] | select(.id=="issue-30")) |= (.arbiter_left_mark="x" | .dep_dead_proved=10)' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
-[[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'a unit the arbiter left must not wedge the sweep'
-# Past review the mark means nothing: a requeued unit still working holds the next proof, stale mark or not.
-reset; printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20)" > "$UNITS"
-jq -c '.units += [{id:"issue-30",issue:30,stage:"implement-pending",dep_dead_proved:10,arbiter_left_mark:"x",history:[]}]' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
-[[ "$(field issue-20 .stage)" == blocked-external ]] || fail 'a requeued unit with a stale mark keeps its turn'
-# Only work in progress holds the turn: a stage with no automatic exit must not stop every later proof.
-for stage in needs-human ready-to-merge; do
-  reset; printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20)" > "$UNITS"
-  jq -c --arg s "$stage" '.units += [{id:"issue-30",issue:30,stage:$s,dep_dead_proved:10,arbiter_left_mark:"x",history:[]}]' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
-  [[ "$(field issue-20 .stage)" == supervisor-review ]] || fail "a proved unit at $stage must not hold the sweep"
-done
+[[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'the next sweep moves the next unit'
 
 # Proof is the only way past the marker, including a body dependency on the same predecessor.
 printf '{"states":{}}\n' > "$A/dep-check.cache.json"

@@ -172,7 +172,6 @@ dispatch_supervisor_arbiters
 ! jq -e 'any(.workers[]; .unit=="pr-661")' "$WORKERS" >/dev/null || fail "an unchanged unit must not dispatch again"
 jq -e 'any(.workers[]; .unit=="pr-662")' "$WORKERS" >/dev/null || fail "a new head must reopen arbitration"
 jq -e 'any(.workers[]; .unit=="pr-663")' "$WORKERS" >/dev/null || fail "a new ruling must reopen arbitration"
-jq -e '.units[]|select(.id=="pr-662")|has("arbiter_left_mark")|not' "$UNITS" >/dev/null || fail "a live run must not read as left: the dead-predecessor sweep holds on it"
 grep -Fq 'arbiter-no-change unit=pr-661' "$AGENT_HOME/supervisor-inbox" || fail "a held unit must reach the supervisor"
 echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
 
