@@ -71,7 +71,7 @@ blocking_body_dependency() { # unit-json → first predecessor not yet delivered
   while read -r dep; do
     [[ "$dep" =~ ^[0-9]+$ ]] || continue
     dep_delivered_in_ledger "$dep" && continue
-    [[ "$dep" != "$(jqf -r '.dep_dead_proved // empty' <<<"$1")" ]] || continue
+    ! dep_dead_ruled "$1" "$dep" || continue
     info="$(dep_cache_info "$dep")"
     state="$(jqf -r '.state // empty' <<<"$info")"
     [[ "$state" == CLOSED || "$state" == MERGED ]] && continue
@@ -81,12 +81,16 @@ blocking_body_dependency() { # unit-json → first predecessor not yet delivered
   done < <(unit_body_blockers "$1")
   return 1
 }
+dep_dead_ruled() { # unit-json predecessor → 0 only when dep_dead_sweep proved it and the arbiter then ruled; a handoff requeue is no ruling
+  jqf -e --argjson d "$2" '.dep_dead_proved == $d and ((.history // []) | (map(.stage) | rindex("dep-dead-proved")) as $p
+    | $p != null and any(.[($p + 1):][]; (.stage | IN("supervisor-requeue","supervisor-reroute","supervisor-cap-rule")) and .decision.owner == "supervisor"))' <<<"$1" >/dev/null 2>&1
+}
 dep_marker_open() { # unit-json → the marked predecessor while it is undelivered; a roadmap label does not clear a marker, unlike a body dependency
   local dep state
   dep="$(jqf -r '.dep_wait_delivery // empty' <<<"$1")"
   [[ "$dep" =~ ^[0-9]+$ ]] || return 1
   dep_delivered_in_ledger "$dep" && return 1
-  [[ "$(jqf -r '.dep_dead_proved // empty' <<<"$1")" != "$dep" ]] || return 1 # the only way past: dep_dead_sweep proved it, and the arbiter sent the unit back
+  ! dep_dead_ruled "$1" "$dep" || return 1
   state="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$dep")")"
   [[ "$state" != CLOSED && "$state" != MERGED ]] || return 1
   printf '%s' "$dep"
@@ -280,13 +284,13 @@ dep_predecessor_dead() { # waiter-unit-json predecessor
   st="$(scheduler_issue_state "$dep")" && [[ -n "$st" ]] || return 1
   # An open tracker with no unit never delivers by itself, so only its children can end the wait.
   jqf -e --slurpfile st <(printf '%s' "$st") 'if length == 0 then $st[0].state == "tracker" else all(.[]; .stage == "closed") end' <<<"$rows" >/dev/null || return 1
-  jqf -e --slurpfile w "$A/workers.json" 'map(.id) as $ids | all($w[0].workers[]; .unit as $u | ($ids | index($u)) == null)' <<<"$rows" >/dev/null || return 1
+  jqf -e --slurpfile w "$A/workers.json" 'map(.id) as $ids | all($w[0].workers[]; .harvested == true or (.unit as $u | ($ids | index($u)) == null))' <<<"$rows" >/dev/null || return 1
   prs="$(tick_prs)" || return 1
   jqf -e --slurpfile rows <(printf '%s' "$rows") --arg d "$dep" '
     ($rows[0] | map(.pr)) as $own | ($rows[0] | map(.branch) + ["agent/issue-" + $d]) as $heads
     | all(.[]; (.number as $n | $own | index($n)) == null and (.headRefName as $h | $heads | index($h)) == null
       and ((.body // "") | test("#" + $d + "([^0-9]|$)") | not))' <<<"$prs" >/dev/null || return 1
-  subs="$(gh api "repos/{owner}/{repo}/issues/$dep/sub_issues?per_page=100" --jq '.[].number' 2>/dev/null)" || return 1
+  subs="$(gh api --paginate "repos/{owner}/{repo}/issues/$dep/sub_issues?per_page=100" --jq '.[].number' 2>/dev/null)" || return 1
   waiter="$(jqf -r '.issue // empty' <<<"$1")"
   for c in $(printf '%s\n%s\n' "$(jqf -r '(.recut_children // [])[]' <<<"$st")" "$subs" | sort -un); do
     [[ "$c" != "$waiter" ]] || continue
@@ -303,7 +307,7 @@ dep_predecessor_dead() { # waiter-unit-json predecessor
 }
 dep_dead_sweep() { # one marked unit at a time reaches the arbiter, so a wrong proof costs one unit
   local u id dep evidence
-  jqf -e 'any(.units[]; (.dep_dead_proved != null and (.stage | IN("merged","landed","awaiting-live-event","closed","parked","blocked-external") | not)) or (.dep_wait_delivery != null and (.size_recut_pending == true or .stage == "supervisor-review")))' "$UNITS" >/dev/null && return 0
+  jqf -e 'any(.units[]; (.dep_dead_proved != null and (.stage | IN("merged","landed","awaiting-live-event","closed","parked","blocked-external") | not) and .arbiter_left_mark == null) or (.dep_wait_delivery != null and .arbiter_left_mark == null and (.size_recut_pending == true or .stage == "supervisor-review")))' "$UNITS" >/dev/null && return 0
   while IFS= read -r u; do
     id="$(jqf -r .id <<<"$u")"; dep="$(jqf -r .dep_wait_delivery <<<"$u")"
     evidence="$(dep_predecessor_dead "$u" "$dep")" || continue
@@ -311,7 +315,7 @@ dep_dead_sweep() { # one marked unit at a time reaches the arbiter, so a wrong p
       set_unit "$id" "$(hist supervisor-park "blocked on dead predecessor #$dep again after arbitration") | del(.blocked_on) | .stage=\"parked\" | .parked_reason=\"dep-dead-repeat\" | .note=$(js "$evidence") | .unpark_condition=$(js "#$dep delivered in the ledger or closed on GitHub")"
       echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=parked reason=repeat" >> "$A/alerts/events.md"
     else
-      set_unit "$id" ".dep_dead_proved=$dep | del(.blocked_on)"
+      set_unit "$id" "$(hist dep-dead-proved "#$dep") | .dep_dead_proved=$dep | del(.blocked_on)"
       to_supervisor "$id" "$evidence. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #$dep"
     fi
     return 0

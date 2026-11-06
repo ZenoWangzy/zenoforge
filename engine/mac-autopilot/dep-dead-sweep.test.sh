@@ -58,6 +58,8 @@ reset; norow; dep_dead_sweep
 [[ "$(field issue-20 .note)" == *'open tracker with no unit'* ]] || fail "the evidence must say why: $(field issue-20 .note)"
 reset; printf '%s\n' '{"workers":[{"unit":"issue-10"}]}' > "$A/workers.json"; alive 'a live worker'
 reset; printf 'not json\n' > "$A/workers.json"; alive 'an unreadable worker list'
+reset; printf '%s\n' '{"workers":[{"unit":"issue-10","harvested":true}]}' > "$A/workers.json"; dep_dead_sweep
+[[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'a harvested worker is not live'
 reset; PRS='[{"number":510,"headRefName":"x","body":""}]'; alive 'its own PR open'
 reset; PRS='[{"number":600,"headRefName":"agent/issue-10","body":""}]'; alive 'a PR on its branch'
 reset; PRS='[{"number":600,"headRefName":"recovered","body":"Refs #10."}]'; alive 'a PR on another branch naming it'
@@ -91,15 +93,23 @@ jq -c '(.units[] | select(.id=="issue-30")).size_recut_pending=true' "$UNITS" > 
 reset; printf '{"units":[%s,%s,%s]}\n' "$dead" "$(marked 20)" "$(marked 30)" > "$UNITS"
 jq -c '(.units[] | select(.id=="issue-30")) |= (.stage="supervisor-review" | del(.blocked_on))' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
 [[ "$(field issue-20 .stage)" == blocked-external ]] || fail 'a marked unit at the arbiter keeps its turn'
+# A ruling that failed to apply leaves the no-change mark: it must not hold every other unit.
+jq -c '(.units[] | select(.id=="issue-30")) |= (.arbiter_left_mark="x" | .dep_dead_proved=10)' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
+[[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'a unit the arbiter left must not wedge the sweep'
 
 # Proof is the only way past the marker, including a body dependency on the same predecessor.
 printf '{"states":{}}\n' > "$A/dep-check.cache.json"
 reset
 [[ -n "$(dep_marker_open "$(jq -cn '{dep_wait_delivery:10}')")" ]] || fail 'no proof: the marker holds'
-[[ -n "$(dep_marker_open "$(jq -cn '{dep_wait_delivery:10,dep_dead_proved:11}')")" ]] || fail 'proof of another predecessor: the marker holds'
-[[ -z "$(dep_marker_open "$(jq -cn '{dep_wait_delivery:10,dep_dead_proved:10}')")" ]] || fail 'proof and a ruling: the unit may start'
+ruled='[{"stage":"dep-dead-proved"},{"stage":"supervisor-requeue","decision":{"owner":"supervisor"}}]'
+[[ -n "$(dep_marker_open "$(jq -cn --argjson h "$ruled" '{dep_wait_delivery:10,dep_dead_proved:11,history:$h}')")" ]] || fail 'proof of another predecessor: the marker holds'
+[[ -n "$(dep_marker_open "$(jq -cn '{dep_wait_delivery:10,dep_dead_proved:10,history:[{stage:"dep-dead-proved"}]}')")" ]] || fail 'proof with no ruling: the marker holds'
+[[ -n "$(dep_marker_open "$(jq -cn '{dep_wait_delivery:10,dep_dead_proved:10,history:[{stage:"dep-dead-proved"},{stage:"supervisor-requeue",result:"ownerless hold handoff"}]}')")" ]] || fail 'a handoff requeue is no ruling: the marker holds'
+[[ -n "$(dep_marker_open "$(jq -cn '{dep_wait_delivery:10,dep_dead_proved:10,history:[{stage:"supervisor-requeue",decision:{owner:"supervisor"}},{stage:"dep-dead-proved"}]}')")" ]] || fail 'a ruling before the proof: the marker holds'
+[[ -z "$(dep_marker_open "$(jq -cn --argjson h "$ruled" '{dep_wait_delivery:10,dep_dead_proved:10,history:$h}')")" ]] || fail 'proof and a ruling: the unit may start'
 [[ "$(blocking_body_dependency "$(jq -cn '{body_blocked_by:[10]}')")" == 10 ]] || fail 'no proof: the body dependency blocks'
-[[ -z "$(blocking_body_dependency "$(jq -cn '{body_blocked_by:[10],dep_dead_proved:10}')")" ]] || fail 'proof: the body dependency does not block'
+[[ "$(blocking_body_dependency "$(jq -cn '{body_blocked_by:[10],dep_dead_proved:10,history:[{stage:"dep-dead-proved"}]}')")" == 10 ]] || fail 'no ruling: the body dependency blocks'
+[[ -z "$(blocking_body_dependency "$(jq -cn --argjson h "$ruled" '{body_blocked_by:[10],dep_dead_proved:10,history:$h}')")" ]] || fail 'proof and a ruling: the body dependency does not block'
 
 # Blocking on it again after the ruling is a visible terminal park, not a second arbiter round.
 reset; jq -c '(.units[] | select(.id=="issue-20")).dep_dead_proved=10' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
