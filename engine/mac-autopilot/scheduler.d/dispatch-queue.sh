@@ -17,6 +17,7 @@ dispatch_pending() {
     step_elapsed=$((SECONDS - step_started))
     (( step_elapsed < 2 )) || say "dispatch detail advisor_harvest secs=${step_elapsed}s"
   fi
+  [[ "$local_refill" != true ]] || dep_delivered_snapshot # release_dependency_blocks fills this on a full tick; the body gate reads it on both
   ordered="$(dispatch_order)" || true
   while read -r u; do
     [[ -n "$u" ]] || continue
