@@ -61,14 +61,18 @@ ticket_budget_reason() { # unit-json
     def epoch: sub("\\.[0-9]+"; "") | fromdateiso8601;
     (.history // []) as $h
     | ([$h | to_entries[] | select(.value.stage | IN($ruling_stages[])) | .key] | max // -1) as $ruling
-    | (reduce ($h[($ruling + 1):][] | select(.at != null and (.stage == "write-start" or .stage == "write-end"))) as $e ({open: null, secs: 0};
+    | (reduce ($h[($ruling + 1):][] | select(.at != null)) as $e ({open: null, next_row: null, secs: 0};
         ($e.at | epoch) as $t
-        | (if .open != null then .secs += ([$t - .open, 0] | max) else . end)
-        | .open = (if $e.stage == "write-start" then $t else null end))) as $work
+        | if $e.stage == "write-start" or $e.stage == "write-end" then
+            # A write with no end stopped at the first row after it: the worker expired and the gap to the next start is queue.
+            (if .open != null then .secs += ([(if $e.stage == "write-end" then $t else .next_row // $t end) - .open, 0] | max) else . end)
+            | .open = (if $e.stage == "write-start" then $t else null end) | .next_row = null
+          elif .open != null then .next_row //= $t
+          else . end)) as $work
     | ($work.secs + (if $work.open != null and (.stage // "" | IN("implement", "repair")) then [$now - $work.open, 0] | max else 0 end)) as $worker_secs
     | if ($rounds | length) >= $round_budget
       then "rounds \($rounds | length) of \($round_budget)"
-      else select(($rounds | length) > 0 and $worker_secs > $wall_budget)
+      else select($worker_secs > $wall_budget)
         | "wall \(($worker_secs / 60) | floor)min of \(($wall_budget / 60) | floor)min after \($rounds | length) rounds"
       end' <<<"$1" 2>/dev/null
 }

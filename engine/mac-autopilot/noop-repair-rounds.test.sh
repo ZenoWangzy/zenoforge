@@ -133,6 +133,12 @@ open_now="$(jq -cn --arg s "$(day 18000)" '[{stage:"write-start",work_type:"repa
 [[ -z "$(wall_unit "$open_now" repair-pending)" ]] || fail "a killed worker must not count queue time: $(wall_unit "$open_now" repair-pending)"
 killed="$(jq -cn --arg s "$(day 864000)" --arg n "$(day 840000)" '[{stage:"write-start",work_type:"repair",at:$s},{stage:"write-start",work_type:"repair",at:$n},{stage:"write-end",at:$n}]')"
 [[ "$(wall_unit "$killed" repair-pending)" == 'wall 400min of 240min after 2 rounds' ]] || fail "a write with no end must close at the next start: $(wall_unit "$killed" repair-pending)"
+noop_only="$(jq -cn --arg sha2 "$sha2" --arg s "$(day 20000)" --arg e "$(day 2000)" '{stage:"repair-pending",
+  review_findings:[{round:1,block:"ok",findings:[],all_findings:[]}],
+  history:[{stage:"review-request-changes",result:$sha2},{stage:"write-start",work_type:"repair",at:$s},{stage:"write-end",at:$e},
+    {stage:"repair-no-push",result:("head "+$sha2+" unchanged after repair")}]}')"
+noop_wall="$(TICKET_ROUND_BUDGET=3 TICKET_WALL_BUDGET_SECONDS=14400 NOW_EPOCH=1800000000 ticket_budget_reason "$noop_only")"
+[[ "$noop_wall" == 'wall 300min of 240min after 0 rounds' ]] || fail "no-op work must still spend the wall: $noop_wall"
 
 # The same history through both implementations: the shell stop-loss and the replay must reach the same wall verdict.
 replay_wall() { # history-json -> "wall Nmin" or nothing
@@ -161,7 +167,9 @@ check_wall_agreement 'queue after short work' '' write-start 300000 write-end 29
 check_wall_agreement 'closed work over budget' 'wall 300min' write-start 20000 write-end 2000
 check_wall_agreement 'killed write closes at next start' 'wall 300min' write-start 20000 write-start 9200 write-end 2000
 check_wall_agreement 'ruling resets worker time' '' write-start 30000 write-end 19200 supervisor-requeue 19000 write-start 18000 write-end 7200
+check_wall_agreement 'expired write stops at its next row' '' write-start 20000 worker-no-output 19400 write-start 5000 write-end 4400
+check_wall_agreement 'expired write keeps the time before its next row' 'wall 300min' write-start 20000 worker-no-output 2000 write-start 1000 write-end 1000
 
 node "$script_dir/../lesson-guard-schema.mjs"
 printf 'noop-repair-rounds.test.sh: 3 write-starts -> 2 counted; 3-of-3 stop-loss clear; repair-cap count 1\n'
-printf 'noop-repair-rounds.test.sh: 23 focused assertions passed\n'
+printf 'noop-repair-rounds.test.sh: 26 focused assertions passed\n'
