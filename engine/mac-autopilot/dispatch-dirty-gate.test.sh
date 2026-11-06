@@ -67,3 +67,11 @@ rm -f "$PAUSE_FILE"
 grep -Fq 'if ! paused_midrun "acting phases"; then' "$script_dir/scheduler.sh" || fail 'the merge phases are not gated on a mid-run PAUSE'
 grep -Fq 'paused_midrun "refill merge" ||' "$script_dir/scheduler.sh" || fail 'the refill merge is not gated on a mid-run PAUSE'
 printf 'ok - PAUSE set mid-run stops dispatch and the merge phases\n'
+
+# A refill reads the delivery snapshot before its first dispatch: release_dependency_blocks, which fills it, runs on full ticks only.
+order=''
+dep_delivered_snapshot() { order+='snapshot '; }
+phase() { order+="$1 "; }
+run_refill_intake_dispatch_phases
+[[ "$order" == 'snapshot dispatch_pending register_new_issues ' ]] || fail "refill phases out of order: $order"
+printf 'ok - a refill fills the delivery snapshot before it dispatches\n'
