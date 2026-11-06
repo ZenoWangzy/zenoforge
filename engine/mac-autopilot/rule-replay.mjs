@@ -198,7 +198,7 @@ function replayUnit(unit, rule, fromMs, untilMs) {
         rawTokens,
         rounds,
         elapsedSeconds: firstWriteAt === null ? null : Math.max(0, (entry.atMs - firstWriteAt) / 1000),
-        workerSeconds: workerMs / 1000,
+        workerSeconds: (workerMs + (nextRowAt === null ? 0 : Math.max(0, nextRowAt - writeOpenAt))) / 1000,
       },
     };
     snapshots.push({ atMs: entry.atMs, snapshot });

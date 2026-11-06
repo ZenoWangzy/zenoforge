@@ -69,7 +69,10 @@ ticket_budget_reason() { # unit-json
             | .open = (if $e.stage == "write-start" then $t else null end) | .next_row = null
           elif .open != null then .next_row //= $t
           else . end)) as $work
-    | ($work.secs + (if $work.open != null and (.stage // "" | IN("implement", "repair")) then [$now - $work.open, 0] | max else 0 end)) as $worker_secs
+    | ($work.secs + (if $work.open == null then 0
+        elif (.stage // "" | IN("implement", "repair")) then [$now - $work.open, 0] | max
+        elif $work.next_row != null then [$work.next_row - $work.open, 0] | max
+        else 0 end)) as $worker_secs
     | if ($rounds | length) >= $round_budget
       then "rounds \($rounds | length) of \($round_budget)"
       else select($worker_secs > $wall_budget)

@@ -168,8 +168,9 @@ check_wall_agreement 'closed work over budget' 'wall 300min' write-start 20000 w
 check_wall_agreement 'killed write closes at next start' 'wall 300min' write-start 20000 write-start 9200 write-end 2000
 check_wall_agreement 'ruling resets worker time' '' write-start 30000 write-end 19200 supervisor-requeue 19000 write-start 18000 write-end 7200
 check_wall_agreement 'expired write stops at its next row' '' write-start 20000 worker-no-output 19400 write-start 5000 write-end 4400
+check_wall_agreement 'unended write with no later write' 'wall 300min' write-start 20000 worker-no-output 2000
 check_wall_agreement 'expired write keeps the time before its next row' 'wall 300min' write-start 20000 worker-no-output 2000 write-start 1000 write-end 1000
 
 node "$script_dir/../lesson-guard-schema.mjs"
 printf 'noop-repair-rounds.test.sh: 3 write-starts -> 2 counted; 3-of-3 stop-loss clear; repair-cap count 1\n'
-printf 'noop-repair-rounds.test.sh: 26 focused assertions passed\n'
+printf 'noop-repair-rounds.test.sh: 27 focused assertions passed\n'
