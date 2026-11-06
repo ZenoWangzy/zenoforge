@@ -49,6 +49,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     id="$(jqf -r .id <<<"$u")"
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
     supervisor_arbiter_over_daily_max "$u" && continue
+    supervisor_arbiter_no_change_hold "$u" && continue
     is_swept=false
     if [[ "$(jqf -r '.stage // empty' <<<"$u")" == parked ]]; then
       [[ "${SUPERVISOR_CAP_TRIAGE:-true}" == true ]] || continue
@@ -534,7 +535,7 @@ supervisor_record_jev_comparison() { # worker-json terra-action → shadow compa
 }
 
 harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or final cap-triage report
-  local w="$1" unit pid report log action stream tk session_id cap_triage
+  local w="$1" unit pid report log action stream tk session_id cap_triage decided=false
   unit="$(jqf -r .unit <<<"$w")"; pid="$(jqf -r .pid <<<"$w")"; report="$(jqf -r .report <<<"$w")"; log="$SUP/$(jqf -r .log <<<"$w")"
   cap_triage="$(jqf -r '.cap_triage // false' <<<"$w")"
   stream="$(python3 "$USAGE_READER" codex-stream "$log" 2>/dev/null || true)"
@@ -548,6 +549,7 @@ harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or fin
       say "supervisor cap triage unit=$unit: worker produced no report"
     elif action="$(supervisor_cap_verdict_of "$SUP/$report")"; then
       say "supervisor cap triage unit=$unit verdict=$action"
+      decided=true
       set_unit "$unit" "del(.supervisor_cap_reask, .supervisor_cap_invalid_answers)"
       supervisor_apply_cap_verdict "$unit" "$SUP/$report" "$action"
     else
@@ -560,6 +562,7 @@ harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or fin
   else
     if action="$(supervisor_action_of "$SUP/$report")"; then
       say "supervisor arbitration unit=$unit action=$action"
+      decided=true
       supervisor_record_jev_comparison "$w" "$action"
       supervisor_apply_action "$unit" "$action" "$SUP/$report"
     else
@@ -567,6 +570,8 @@ harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or fin
       say "supervisor arbitration unit=$unit: no single ACTION line in $report"
     fi
   fi
+  # A run with no answer decided nothing: only a decision holds the next run.
+  [[ "$decided" != true ]] || set_unit "$unit" ".arbiter_left_mark=$(js "$(supervisor_arbiter_mark "$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0]' "$UNITS")")")"
   jqf --argjson pid "$pid" --arg finished "$STAMP" \
     '(.workers[] |= (if .pid==$pid and .type=="supervise" and .harvested!=true then .harvested=true | .finished_at=$finished else . end))' "$WORKERS" | write_state "$WORKERS"
 }

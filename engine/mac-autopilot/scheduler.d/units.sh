@@ -302,6 +302,27 @@ supervisor_arbiter_over_daily_max() { # unit-json → 0 at the ceiling; one aler
   return 0
 }
 
+supervisor_arbiter_mark() { # unit-json → what must differ before another run: head, issue state, ruling count
+  local issue state=""
+  issue="$(jqf -r '.issue // empty' <<<"$1")"
+  [[ -z "$issue" ]] || state="$(scheduler_issue_state "$issue" 2>/dev/null | jqf -r '.state // empty')" || state=""
+  jqf -r --arg state "$state" "[(.reviewed_pr_head // .reviewed_sha // \"\"), \$state, ($(cto_rulings_norm) | length | tostring)] | join(\"|\")" <<<"$1"
+}
+
+supervisor_arbiter_no_change_hold() { # unit-json → 0 when a past run left it here and nothing changed: another run would repeat that one
+  local id mark
+  [[ "$(jqf -r '.stage // empty' <<<"$1")" == supervisor-review ]] || return 1
+  [[ -n "$(jqf -r '.arbiter_left_mark // empty' <<<"$1")" ]] || return 1
+  mark="$(supervisor_arbiter_mark "$1")"
+  [[ "$mark" == "$(jqf -r .arbiter_left_mark <<<"$1")" ]] || return 1
+  id="$(jqf -r .id <<<"$1")"
+  say "supervisor arbitration held unit=$id: no head, state or ruling change since its last run"
+  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "arbiter-no-change:$id:$mark" \
+    "arbiter-no-change unit=$id: its last run left it at supervisor-review; held until head, state or ruling changes") \
+    || say "arbitration hold unit=$id: escalation not delivered"
+  return 0
+}
+
 supervisor_cap_parked_unit() { # unit-json → whether this is a retryable arbitration-cap park (including legacy parks)
   jqf -e --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '
     .stage == "parked" and .parked_reason != "supervisor-cap-founder" and (

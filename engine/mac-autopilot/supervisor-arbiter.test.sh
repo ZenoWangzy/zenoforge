@@ -153,6 +153,19 @@ SUPERVISOR_ARBITER_DAILY_MAX="$saved_daily"
 jq -e 'any(.workers[]; .unit=="pr-652")' "$WORKERS" >/dev/null || fail "old dispatches must not count against the ceiling"
 echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
 
+# A run that left the unit here holds it until head, state or ruling moves.
+jq -cn '{units:[{id:"pr-661",stage:"supervisor-review",reviewed_pr_head:"aaa",history:[]},{id:"pr-662",stage:"supervisor-review",reviewed_pr_head:"bbb",history:[]},{id:"pr-663",stage:"supervisor-review",reviewed_pr_head:"ccc",cto_rulings:["new"],history:[]}]}' > "$UNITS"
+set_unit pr-661 ".arbiter_left_mark=$(js "$(supervisor_arbiter_mark "$(jq -c '.units[0]' "$UNITS")")")"
+set_unit pr-662 '.arbiter_left_mark="aaa||0"'
+set_unit pr-663 '.arbiter_left_mark="ccc||0"'
+echo '{"workers":[]}' > "$WORKERS"
+dispatch_supervisor_arbiters
+! jq -e 'any(.workers[]; .unit=="pr-661")' "$WORKERS" >/dev/null || fail "an unchanged unit must not dispatch again"
+jq -e 'any(.workers[]; .unit=="pr-662")' "$WORKERS" >/dev/null || fail "a new head must reopen arbitration"
+jq -e 'any(.workers[]; .unit=="pr-663")' "$WORKERS" >/dev/null || fail "a new ruling must reopen arbitration"
+grep -Fq 'arbiter-no-change unit=pr-661' "$AGENT_HOME/supervisor-inbox" || fail "a held unit must reach the supervisor"
+echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
+
 # ---- 回收：六个动作逐个断言对外效果 ----
 harvest_with_reply() { # unit report-body → 用一个已死 worker 回收
   local unit="$1" reply="$2"
@@ -240,9 +253,12 @@ units "$(jq -cn '{units:[{id:"pr-616",stage:"supervisor-review",history:[{stage:
 harvest_with_reply pr-616 'ACTION: park
 REASON: 策略性搁置，等产品决策
 REJECTED: close'
+[[ -n "$(field pr-616 .arbiter_left_mark)" ]] || fail "a decided run must leave its mark"
 [[ "$(field pr-616 .stage)" == parked ]] || fail "park must land in parked"
 
 units "$(jq -cn '{units:[{id:"pr-617",issue:617,pr:617,lane:"pr",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"superseded",at:"2026-10-27T00:00:00Z"}]}]}')"
+harvest_with_reply pr-617 'no action line'
+jq -e '.units[]|select(.id=="pr-617")|has("arbiter_left_mark")|not' "$UNITS" >/dev/null || fail "a run with no answer decided nothing and must not hold the next one"
 harvest_with_reply pr-617 'ACTION: close
 REASON: 已被 #618 取代
 REJECTED: park'
