@@ -220,4 +220,15 @@ unretire_all_units
 printf 'not json' > "$UNITS_ARCHIVE"
 jqf '.units[0].issue=406' "$UNITS" | write_state "$UNITS" || fail "an ordinary write must not depend on the archive"
 
+# No live stage is ever archived: not by the pass, and not by a write, even with a row of that id in the archive.
+for stage in implement-pending implement review-pending review rereview-pending rereview repair-pending repair \
+  ready-to-merge landing supervisor-review parked blocked-external needs-human awaiting-live-event; do
+  printf '{"units":[{"id":"live1","issue":407,"stage":"%s","history":[]}]}\n' "$stage" > "$UNITS"
+  printf '%s\n' '{"units":[]}' > "$UNITS_ARCHIVE"
+  retire_terminal_units
+  [[ "$(jqf -c '[.units[].id]' "$UNITS")" == '["live1"]' && "$(jqf '.units | length' "$UNITS_ARCHIVE")" == 0 ]] || fail "$stage was archived"
+  printf '%s\n' '{"units":[{"id":"live1","issue":407,"stage":"merged","history":[]}]}' > "$UNITS_ARCHIVE"
+  if printf '%s\n' '{"units":[]}' | write_state "$UNITS"; then fail "a write removed a $stage unit"; fi
+done
+
 echo "unit-retire.test.sh: all assertions passed"
