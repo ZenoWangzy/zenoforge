@@ -821,6 +821,27 @@ rows, silent = n.mechanism_heartbeat(f4, str(runtime), str(runtime), n.ts("2026-
 assert silent == 0 and rows[0]["last_event_at"] == "2026-11-04T11:00:00Z", rows
 print("node_health f4 gate pattern matches current merge-lane lines: PASS")
 CHECK
+# ci-admission's heartbeat is the line a completed pass writes every tick; the skip line shares its prefix and must not count.
+grep -Fq 'say "ci wip: $wip free PR runner slot(s);' "$script_dir/scheduler.d/ci-admission.sh" \
+  || fail 'ci-admission.sh no longer writes the completed-pass line; update the ci-admission registry pattern here'
+grep -Fq 'say "ci wip: PR runner capacity unavailable; admission skipped"' "$script_dir/scheduler.d/ci-admission.sh" \
+  || fail 'ci-admission.sh no longer writes the skip line; update its fixture here'
+python3 - "$script_dir" "$registry_file" "$test_env_root" <<'CHECK' || fail 'ci-admission registry pattern does not separate a completed pass from a skipped one'
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1]); import node_health as n
+reg = [m for m in json.load(open(sys.argv[2]))["mechanisms"] if m["id"] == "ci-admission"]
+assert len(reg) == 1, reg
+runtime = pathlib.Path(sys.argv[3]) / "ci-admission-heartbeat"
+runtime.mkdir(parents=True, exist_ok=True)
+now = n.ts("2026-11-06T20:30:00Z")
+(runtime / "scheduler.log").write_text("[2026-11-06T20:17:58Z] ci wip: PR runner capacity unavailable; admission skipped\n")
+rows, silent = n.mechanism_heartbeat(reg, str(runtime), str(runtime), now)
+assert silent == 1 and rows[0]["last_event_at"] is None, rows
+(runtime / "scheduler.log").write_text("[2026-11-06T20:17:58Z] ci wip: 8 free PR runner slot(s); 0 ready unit(s) wait for a CI slot (cancelled 0 queued run(s)); started 0; gated ready 0\n")
+rows, silent = n.mechanism_heartbeat(reg, str(runtime), str(runtime), now)
+assert silent == 0 and rows[0]["last_event_at"] == "2026-11-06T20:17:58Z", rows
+print("node_health ci-admission pattern counts a completed pass, not a skip: PASS")
+CHECK
 msup="$test_env_root/mech-sup"; ma="$msup/autopi"; mkdir -p "$ma/alerts" "$AGENT_HOME/logs"
 printf '{"units":[]}' > "$ma/units.json"
 {
@@ -830,7 +851,7 @@ printf '{"units":[]}' > "$ma/units.json"
   printf '[2026-10-29T11:55:00Z] self-check pid=99 unit=issue-1 head=0123456789abcdef (before review)\n'
   printf '[2026-10-29T11:55:00Z] merged PR#7 merge=0123456789abcdef (own checks green; main CI verifies)\n'
   printf '[2026-10-29T11:55:00Z] dispatch land pid=98 unit=issue-2 PR#8 sha=0123456789abcdef\n'
-  printf '[2026-10-29T11:55:00Z] ci wip: limit 8; 9 ready unit(s) wait for a CI slot (cancelled 1 queued run(s)); started 0\n'
+  printf '[2026-10-29T11:55:00Z] ci wip: 8 free PR runner slot(s); 9 ready unit(s) wait for a CI slot (cancelled 1 queued run(s)); started 0; gated ready 0\n'
   printf '[2026-10-29T11:55:00Z] ci deferred: cancelled 1 PR run(s) on heads still in review (CI starts on approval)\n'
   printf '[2026-10-29T11:55:00Z] intake issue #9 -> implement-pending (product)\n'
   printf '[2026-10-29T11:55:00Z] intake held: 30 units wait to merge (max_ready 30); the merge lane is the constraint; predecessors still admitted\n'

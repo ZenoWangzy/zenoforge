@@ -57,7 +57,7 @@
       "id": "ci-admission",
       "desc": "单一 CI 准入控制器（hotfix > main-red > opt > normal；统一处理 hold、defer 与 WIP 名额）",
       "events": [
-        {"base": "runtime", "file": "scheduler.log", "pattern": "ci wip: limit"},
+        {"base": "runtime", "file": "scheduler.log", "pattern": "ci wip: [0-9]+ free PR runner"},
         {"base": "runtime", "file": "scheduler.log", "pattern": "ci priority:"},
         {"base": "runtime", "file": "scheduler.log", "pattern": "ci deferred: cancelled"}
       ],
