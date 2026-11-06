@@ -1672,6 +1672,8 @@ flush_remote_deletions() {
       else
         manifest_record removed-remote-branch "$remote_branch" "$remote_head" || return 1
       fi
+      # The checkout fetches main only, so --prune never drops this ref, and the next reap would rescue the same head again.
+      git -C "$REPO" update-ref -d "refs/remotes/origin/$remote_branch" 2>/dev/null || :
       removed_remote=$((removed_remote + 1))
       say "removed remote branch $remote_branch at $remote_head"
     else

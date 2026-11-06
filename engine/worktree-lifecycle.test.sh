@@ -1080,6 +1080,9 @@ if [ "${WORKTREE_LIFECYCLE_CASE:-all}" != all ]; then
 
       ordinary_head="$(git -C "$REPO" rev-parse main)"
       git -C "$REPO" push -qu origin "$ordinary_head:refs/heads/ordinary-clean"
+      # As in the live checkout, no refspec covers this branch: neither the delete push nor a fetch --prune drops its tracking ref.
+      git -C "$REPO" config remote.origin.fetch '+refs/heads/main:refs/remotes/origin/main'
+      git -C "$REPO" config --add remote.origin.fetch '+refs/heads/rescued/*:refs/remotes/origin/rescued/*'
 
       rescue_wt="$ROOT/wt-rescue-binary-squash"
       git -C "$REPO" worktree add -q -b topic/rescue-binary-squash "$rescue_wt" main
@@ -1139,6 +1142,8 @@ if [ "${WORKTREE_LIFECYCLE_CASE:-all}" != all ]; then
         || fail 'ordinary remote deletion readback was not recorded'
       ! git --git-dir="$REMOTE" show-ref --verify --quiet refs/heads/ordinary-clean \
         || fail "ordinary remote candidate was not deleted/read back before index deferral: $first_output"
+      ! git -C "$REPO" show-ref --verify --quiet refs/remotes/origin/ordinary-clean \
+        || fail "a deleted remote branch kept its tracking ref, so the next reap rescues it again: $first_output"
       [ "$(git --git-dir="$REMOTE" rev-parse refs/heads/rescued/squash-binary-fixture 2>/dev/null || true)" = "$rescue_head" ] \
         || fail "rescue ref changed while patch index was incomplete: $first_output"
       ! find "$NIGHT/cleanup-archive" -maxdepth 1 -type f -name 'rescued-squash-binary-fixture-*.patch' -print -quit 2>/dev/null \
