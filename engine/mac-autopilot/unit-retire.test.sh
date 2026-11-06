@@ -85,7 +85,7 @@ if units_update '.units |= map(select(.id != "b1"))' 2>/dev/null; then
   fail "write_state must refuse deleting a unit id that is not in the archive"
 fi
 jqf -e --arg id b1 'any(.units[]; .id == $id)' "$UNITS" >/dev/null || fail "refused delete must leave the ledger untouched"
-seed_units '{"units":[{"id":"gone","issue":201,"stage":"implement-pending","history":[]},{"id":"stay","issue":202,"stage":"review","history":[]}]}'
+seed_units '{"units":[{"id":"gone","issue":201,"stage":"merged","history":[]},{"id":"stay","issue":202,"stage":"review","history":[]}]}'
 printf '%s\n' '{"units":[{"id":"gone","issue":201,"stage":"merged","history":[]}]}' > "$UNITS_ARCHIVE"
 units_update '.units |= map(select(.id != "gone"))' || fail "deleting an archived id is the retirement path and must pass the guard"
 jqf -e --arg id stay 'any(.units[]; .id == $id)' "$UNITS" >/dev/null || fail "the surviving unit must stay"
@@ -198,5 +198,26 @@ retire_terminal_units
 set_unit ap1 'del(.awaiting_release_pending)'
 retire_terminal_units
 [[ "$(jqf -c '[.units[].id]' "$UNITS")" == '[]' ]] || fail "the unit must retire once the write has landed"
+
+# A live checker still harvests into the hot ledger.
+printf '%s\n' '{"units":[{"id":"sc1","issue":402,"stage":"closed","self_check_pid":424242,"history":[]}]}' > "$UNITS"
+retire_terminal_units
+[[ "$(jqf -c '[.units[].id]' "$UNITS")" == '["sc1"]' ]] || fail "a unit with a live checker must not retire"
+
+# A stale archive row must not let a revived, live unit disappear.
+printf '%s\n' '{"units":[{"id":"rev1","issue":403,"stage":"merged","history":[]}]}' > "$UNITS_ARCHIVE"
+printf '%s\n' '{"units":[{"id":"rev1","issue":403,"stage":"repair-pending","history":[]}]}' > "$UNITS"
+if printf '%s\n' '{"units":[]}' | write_state "$UNITS"; then fail "a live unit left the ledger because a stale row is archived"; fi
+[[ "$(jqf -c '[.units[].id]' "$UNITS")" == '["rev1"]' ]] || fail "the refused write changed the ledger"
+
+# Rollback returns every archived row, and the hot row wins.
+printf '%s\n' '{"units":[{"id":"hot1","issue":404,"stage":"repair-pending","history":[]}]}' > "$UNITS"
+printf '%s\n' '{"units":[{"id":"hot1","issue":404,"stage":"merged","history":[]},{"id":"old1","issue":405,"stage":"merged","history":[]}]}' > "$UNITS_ARCHIVE"
+unretire_all_units
+[[ "$(jqf -c '[.units[] | [.id, .stage]] | sort' "$UNITS")" == '[["hot1","repair-pending"],["old1","merged"]]' ]] || fail "rollback must return archived rows without touching hot ones"
+
+# With no pending write the archive is not read, so a broken archive does not stop ordinary writes.
+printf 'not json' > "$UNITS_ARCHIVE"
+jqf '.units[0].issue=406' "$UNITS" | write_state "$UNITS" || fail "an ordinary write must not depend on the archive"
 
 echo "unit-retire.test.sh: all assertions passed"

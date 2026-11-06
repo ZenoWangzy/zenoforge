@@ -13,7 +13,7 @@ handoff_pr_waiting() { # PR issue: unresolved handoffs retain every associated P
     episode=""
   fi
   [[ -n "$episode" ]] || return 1
-  ! jqf -e --argjson n "$n" --arg episode "$episode" 'any(.units[]; .issue == $n and .hold_handoff_episode == $episode)' "$UNITS" >/dev/null
+  ! units_history_index | jqf -e --argjson n "$n" --arg episode "$episode" 'any(.units[]; .issue == $n and .hold_handoff_episode == $episode)' >/dev/null
 }
 orphan_issue_states() { # issue numbers... → {number:{state,labels}} from one targeted GraphQL census
   (( $# > 0 )) || { printf '{}\n'; return 0; }

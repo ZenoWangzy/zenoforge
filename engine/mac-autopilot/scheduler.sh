@@ -592,6 +592,7 @@ fi
 case "${1:-}" in
   --views) views_entry "${2:-dashboard}" ;;
   --refill) refill_tick ;;
+  --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; release_scheduler_lock ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick
   --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;; # hold.sh --rule: record the supervisor ruling that refills the stop-loss budget
   *) main "$@" ;;
 esac

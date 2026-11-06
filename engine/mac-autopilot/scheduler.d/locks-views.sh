@@ -93,6 +93,7 @@ state_schema_ok() {
 
 rule_entry() { # unit-id requeue|approve|arbiter|recut ref [guidance]：记裁决历史（预算自此重算）；parked 单元按动作放回环节
   [[ "$2" =~ ^(requeue|approve|arbiter|recut|reblock)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|approve|arbiter|recut|reblock <ref> [guidance]" >&2; return 64; }
+  restore_archived_unit "$1" || :
   [[ -n "$(unit_field "$1" .id)" ]] || { echo "rule: no unit $1" >&2; return 1; }
   local issue
   case "$2" in

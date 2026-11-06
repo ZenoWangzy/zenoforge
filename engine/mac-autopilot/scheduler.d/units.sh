@@ -41,11 +41,19 @@ _units_history_view() { # doc|index
     _units_history_view doc | jqf "$proj" > "$f.$$" || { rm -f "$f.$$"; _units_history_view doc; return; }
   fi
   if [[ -n "$key" ]] && mv -f "$f.$$" "$f"; then
-    for g in "$dir"/.units-history-"$kind".*.json; do [[ "$g" == "$f" ]] || rm -f "$g"; done
+    for g in "$dir"/.units-history-"$kind".*.json "$dir"/.units-history-"$kind".*.json.*; do
+      [[ "$g" == "$f" || -n "$(find "$g" -mmin -5 -name '*.json.*' 2>/dev/null)" ]] || rm -f "$g"
+    done
     cat "$f"
   else
     cat "$f.$$"; rm -f "$f.$$"
   fi
+}
+
+# Rollback, before any revert of retirement: the old engine reads units.json only. Run under the scheduler lock.
+unretire_all_units() {
+  [[ -s "$UNITS_ARCHIVE" ]] || return 0
+  units_update --slurpfile arch "$UNITS_ARCHIVE" '.units += ([.units[].id] as $hot | $arch[0].units | map(select(.id as $id | $hot | index($id) | not)))'
 }
 
 # 终态退休（每慢拍一次，持有调度锁）：把 terminal stage 且没有在途本地依赖的单元移进
@@ -66,6 +74,7 @@ retire_terminal_units() {
        | select((.eval_gate.status // "") | IN("pending","running") | not)
        | select((.hold_handoff_waiting // false) | not)
        | select(.awaiting_release_pending == null)
+       | select(.advisor_pid == null and .self_check_pid == null and .precheck_pid == null)
        | select((.main_red == true
            and (((.resolved_main_sha // "") == "") or ((.resolved_main_at // "") == ""))) | not)
        | .id]) as $retirable

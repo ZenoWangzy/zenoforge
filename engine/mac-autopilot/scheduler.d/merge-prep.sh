@@ -121,7 +121,10 @@ main_red_attribution() { # sha run-id attempt；置 MAIN_RED_REVERTED（已回�
   echo "[$STAMP] MAIN-RED-REVERTED main=$sha culprit=$culprit suite=$suite run=$run" >> "$A/alerts/gate.md"
   uid="$(jqf -r --arg c "$culprit" 'first(.units[] | select((.land_sha // "") == $c) | .id) // empty' <(units_history_doc))"
   [[ -n "$uid" ]] || return 0
-  restore_archived_unit "$uid" || say "main-red revert: landed unit $uid stays archived; repair dispatch skipped"
+  restore_archived_unit "$uid" || {
+    echo "[$STAMP] MAIN-RED-REVERTED main=$sha culprit=$culprit: landed unit $uid could not leave the archive; no repair dispatched" >> "$A/alerts/gate.md"
+    return 0
+  }
   set_unit "$uid" "$(hist main-red-reverted "$culprit reverted after $suite failed on main") | .main_red_reverted=$(js "$culprit") | .approved_sha=null | .repair_hint=$(js "你落地的提交 $culprit 让 main 的 Pipeline suites 失败（run $run attempt ${attempt}，suite ${suite}），已被自动回退：父提交通过、该提交失败。用 gh run view $run --attempt $attempt --log-failed 看失败，在你的分支上基于当前 origin/main 重新应用改动（回退的回退或 cherry-pick ${culprit}），先让 $suite 通过再落地。") | .stage=\"repair-pending\""
 }
 

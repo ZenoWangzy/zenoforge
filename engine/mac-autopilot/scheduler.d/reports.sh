@@ -2,7 +2,7 @@ final_message_of() { awk '/^tokens used$/{getline; buf=""; f=1; next} f{buf=buf 
 tokens_of() { awk '/tokens used/{getline; if (match($0, /[0-9][0-9,]*/)) { n=substr($0, RSTART, RLENGTH); gsub(/,/, "", n); print n }; exit}' "$1" 2>/dev/null; }
 
 write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=目标文件
-  local dst="$1" _t valid=false _arch_check _arch_args
+  local dst="$1" _t valid=false _units_shape
   _t="$(mktemp "${dst}.tmp.XXXXXX")" || return 1
   cat > "$_t"
   if [[ "$dst" == "$UNITS" ]]; then
@@ -13,20 +13,18 @@ write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=�
     # erase registered unit IDs.
     # -s: a state file must be exactly one document. A top-level comma in a hand edit (10-29 06:32Z) wrote three
     # concatenated copies; per-document -e accepted every later write and each copy drifted apart.
-    _arch_check='and (($old[0].units|map(.id)) - [.units[].id] | length)==0'
-    _arch_args=()
-    if [[ -s "${UNITS_ARCHIVE:-}" ]]; then
-      _arch_args=(--slurpfile arch "$UNITS_ARCHIVE")
-      _arch_check='and ((($old[0].units|map(.id)) - [.units[].id]) as $gone
-        | ($gone | length) == 0
-          or ([($arch[0].units // [])[].id] as $a | [$gone[] | select(. as $g | $a | index($g) | not)] | length) == 0)'
+    _units_shape='length==1 and (.[0] |
+      type=="object" and (.units|type)=="array"
+      and all(.units[]; type=="object" and (.id|type)=="string" and (.id|length)>0 and (.stage|type)=="string")
+      and ([.units[].id]|length)==([.units[].id]|unique|length)'
+    if jq -e -s --slurpfile old "$dst" "$_units_shape and ((\$old[0].units|map(.id)) - [.units[].id] | length)==0)" "$_t" >/dev/null 2>&1; then
+      valid=true
+    elif [[ -s "${UNITS_ARCHIVE:-}" ]] && jq -e -s --slurpfile old "$dst" --slurpfile arch "$UNITS_ARCHIVE" --argjson terminal "$UNIT_RETIRE_STAGES" "$_units_shape
+      and ((.units|map(.id)) as \$kept | (\$arch[0].units|map(.id)) as \$archived
+      | all(\$old[0].units[]; .id as \$i | (\$kept|index(\$i)) != null
+          or ((\$archived|index(\$i)) != null and (.stage as \$s | \$terminal|index(\$s)) != null))))" "$_t" >/dev/null 2>&1; then
+      valid=true
     fi
-    jq -e -s --slurpfile old "$dst" "${_arch_args[@]}" "length==1 and (.[0] |
-      type==\"object\" and (.units|type)==\"array\"
-      and all(.units[]; type==\"object\" and (.id|type)==\"string\" and (.id|length)>0 and (.stage|type)==\"string\")
-      and ([.units[].id]|length)==([.units[].id]|unique|length)
-      $_arch_check)
-    " "$_t" >/dev/null 2>&1 && valid=true
   elif [[ "$dst" == "$WORKERS" ]]; then
     jq -e -s 'length==1 and (.[0] | type=="object" and (.workers|type)=="array"
       and all(.workers[]; type=="object" and (.pid|type)=="number" and .pid>0 and (.unit|type)=="string"))' \
