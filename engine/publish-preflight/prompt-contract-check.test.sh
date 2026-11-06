@@ -46,6 +46,11 @@ rc=0; out=$(run 2>&1) || rc=$?
 [[ $rc == 1 ]] && grep -q 'advisor-batch.md never names tests_fail_first' <<<"$out" || fail "a fork without a required field passed: $out"
 restore advisor-batch.md; commit restored
 
+sed -i 's/OBSOLETE/RETIRED/g' "$prompts/implement-contract.md"; commit obsolete-renamed
+rc=0; out=$(run 2>&1) || rc=$?
+[[ $rc == 1 ]] && grep -q 'implement-contract.md never names OBSOLETE' <<<"$out" || fail "a fork that renamed the OBSOLETE first line passed: $out"
+restore implement-contract.md; commit restored
+
 python3 -I - "$prompts/triage.schema.json" <<'E'
 import json, sys
 path = sys.argv[1]; s = json.load(open(path)); s['properties']['state']['enum'].remove('awaiting-release'); json.dump(s, open(path, 'w'))
