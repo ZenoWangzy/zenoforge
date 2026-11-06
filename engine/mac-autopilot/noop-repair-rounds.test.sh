@@ -167,10 +167,16 @@ check_wall_agreement 'queue after short work' '' write-start 300000 write-end 29
 check_wall_agreement 'closed work over budget' 'wall 300min' write-start 20000 write-end 2000
 check_wall_agreement 'killed write closes at next start' 'wall 300min' write-start 20000 write-start 9200 write-end 2000
 check_wall_agreement 'ruling resets worker time' '' write-start 30000 write-end 19200 supervisor-requeue 19000 write-start 18000 write-end 7200
+check_wall_agreement 'a hold handoff is no ruling' 'wall 360min' write-start 30000 write-end 19200 hold-handoff 19000 write-start 18000 write-end 7200
 check_wall_agreement 'expired write stops at its next row' '' write-start 20000 worker-no-output 19400 write-start 5000 write-end 4400
 check_wall_agreement 'unended write with no later write' 'wall 300min' write-start 20000 worker-no-output 2000
 check_wall_agreement 'expired write keeps the time before its next row' 'wall 300min' write-start 20000 worker-no-output 2000 write-start 1000 write-end 1000
 
+handoff_unit="$(jq -cn '{history:[{stage:"write-start"},{stage:"write-start"},{stage:"hold-handoff"},{stage:"write-start"}]}')"
+[[ "$(TICKET_ROUND_BUDGET=3 TICKET_WALL_BUDGET_SECONDS=14400 NOW_EPOCH=1800000000 ticket_budget_reason "$handoff_unit")" == 'rounds 3 of 3' ]] || fail 'a hold handoff must not refill the stop-loss budget'
+grep -Fq 'stage:"hold-handoff",result:"ownerless hold handoff' "$script_dir/scheduler.d/intake.sh" \
+  || fail 'an ownerless handoff writes a row no ruling filter reads'
+
 node "$script_dir/../lesson-guard-schema.mjs"
 printf 'noop-repair-rounds.test.sh: 3 write-starts -> 2 counted; 3-of-3 stop-loss clear; repair-cap count 1\n'
-printf 'noop-repair-rounds.test.sh: 27 focused assertions passed\n'
+printf 'noop-repair-rounds.test.sh: 30 focused assertions passed\n'

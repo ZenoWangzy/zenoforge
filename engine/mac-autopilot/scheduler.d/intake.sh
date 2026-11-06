@@ -675,7 +675,7 @@ register_new_issues() {
         else
           .issue = $n | .labels = $labels | .body_blocked_by = $body_blocked_by | .hold_handoff_episode = $episode | .approved_sha = null | .reviewed_sha = null | .reviewed_pr_head = null | del(.blocked_on, .self_fix_pending)
           | if $pr_changed then del(.ci_adopt_head, .ci_adopt_at, .ci_sync_head, .ci_ready_sha, .ci_ready_at, .ci_held_sha, .ci_wip_wait, .gated, .lane_policy, .product_paths) else . end
-          | .history = ((.history // []) + [{stage:"supervisor-requeue",result:"ownerless hold handoff; read issue comments",at:$at}])
+          | .history = ((.history // []) + [{stage:"hold-handoff",result:"ownerless hold handoff; read issue comments",at:$at}])
           | if $pr_state == "OPEN" then
               .stage = "repair-pending" | .pr = ($existing_pr | tonumber) | .lane = $lane | .lane_policy = $lane_policy | del(.product_paths)
               | if $handoff_branch != "" then .branch = $handoff_branch else . end
