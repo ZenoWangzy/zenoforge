@@ -808,6 +808,8 @@ tick_gh() {
     'api graphql')
       if [[ "$*" == *'i9901:'* ]]; then
         if [[ -f "$TF/dependency-closed" ]]; then printf '9901\tCLOSED\tbug\n'; else printf '9901\tOPEN\tbug\n'; fi
+      elif [[ "$*" == *'REOPENED_EVENT'* ]]; then
+        cat "$TF/reopen-events.json" 2>/dev/null || echo '{}'
       elif [[ "$*" == *'labels(first: 100)'* ]]; then
         # predecessor_candidates batches the blocking issues into one GraphQL call; answer from the issue fixtures.
         local pred_n pred_resp='{}'
@@ -4395,6 +4397,39 @@ sched_case_hold_handoff_recut_refused() {
   grep -q 'unit=refused stays closed' "$TF/supervisor/autopi/scheduler.log" || { echo 'not ok - the stop must be visible in the log' >&2; exit 1; }
 }
 sched_run_case hold_handoff_recut_refused
+
+sched_case_reopened_issue_episode() {
+  local mode stage reopened
+  for mode in reopened stayed-open delivered; do
+    new_tick_fixture "reopened-issue-$mode"
+    mkdir -p "$TF/agent-home/state"
+    stage=closed reopened=2026-11-06T17:02:47Z
+    [[ "$mode" != stayed-open ]] || reopened=2026-11-01T00:00:00Z
+    [[ "$mode" != delivered ]] || stage=merged
+    command jq -n '{state:"ready-for-agent"}' > "$TF/agent-home/state/781.json"
+    command jq -n '{number:781,title:"reopened work",body:"do the work again",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+    command jq -n --arg at "$reopened" '{data:{repository:{i781:{number:781,timelineItems:{nodes:[{createdAt:$at}]}}}}}' > "$TF/reopen-events.json"
+    command jq '.max_workers=2 | .implement_cap=0 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+    mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+    printf '%s\n' '{"units":[]}' > "$TF/supervisor/autopi/units.json"
+    command jq -n --arg stage "$stage" '{units:[{id:"reopened",issue:781,title:"reopened work",task:"prior work",lane:"pr",branch:"agent/issue-781",stage:$stage,history:[{stage:"obsolete",at:"2026-11-06T14:58:02Z"}]}]}' > "$TF/supervisor/autopi/units-archive.json"
+    tick
+    case "$mode" in
+      reopened)
+        command jq -e '.scheduler_handoff.episode == "reopen-2026-11-06T17:02:47Z"' "$TF/agent-home/state/781.json" >/dev/null || { echo 'not ok - a reopen did not register an episode' >&2; exit 1; }
+        grep -q 'intake reopened issue #781 at 2026-11-06T17:02:47Z: new episode' "$TF/supervisor/autopi/scheduler.log" || { echo 'not ok - the reopen must log a line' >&2; exit 1; }
+        tick
+        command jq -e 'any(.units[]; .id == "reopened" and .stage == "implement-pending" and .hold_handoff_episode == "reopen-2026-11-06T17:02:47Z")' "$TF/supervisor/autopi/units.json" >/dev/null || { echo 'not ok - the episode did not restore the closed unit' >&2; exit 1; } ;;
+      stayed-open)
+        command jq -e 'has("scheduler_handoff") | not' "$TF/agent-home/state/781.json" >/dev/null || { echo 'not ok - an old reopen registered an episode for a later close' >&2; exit 1; }
+        ! grep -q 'intake reopened issue' "$TF/supervisor/autopi/scheduler.log" || { echo 'not ok - no reopen, no line' >&2; exit 1; } ;;
+      delivered)
+        command jq -e 'has("scheduler_handoff") | not' "$TF/agent-home/state/781.json" >/dev/null || { echo 'not ok - a delivered unit took an episode' >&2; exit 1; }
+        grep -q 'intake reopened issue #781 at 2026-11-06T17:02:47Z: skipped, its units ended merged' "$TF/supervisor/autopi/scheduler.log" || { echo 'not ok - a skipped reopen must log a line' >&2; exit 1; } ;;
+    esac
+  done
+}
+sched_run_case reopened_issue_episode
 
 sched_case_hold_handoff_existing_unit() {
   local mode n

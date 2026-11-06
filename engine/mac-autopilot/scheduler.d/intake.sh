@@ -379,6 +379,7 @@ register_new_issues() {
   fi
   say "intake detail footprint_snapshot secs=$((SECONDS - step_started))s"
   step_started=$SECONDS
+  local -a intake_terminal_rows=()
   while IFS=$'\t' read -r n lane title labels issue64; do
     [[ "$n" =~ ^[0-9]+$ ]] || { intake_skip badrow; continue; }
     (( added < want )) || break
@@ -415,7 +416,7 @@ register_new_issues() {
         [.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))] as $us
         | ($us | length) > 0 and all($us[]; (.stage | IN("merged","landed","closed","done","wontfix","duplicate"))
           and ($episode == "" or .hold_handoff_episode == $episode))' "$(intake_units_view)" >/dev/null 2>&1; then
-      intake_skip terminal; continue
+      intake_terminal_rows+=("$n"); intake_skip terminal; continue
     fi
     if [[ -n "$episode" ]]; then
       if (( existing_only )); then
@@ -722,6 +723,7 @@ register_new_issues() {
     added=$((added+1)); INTAKE_ADDED=$((${INTAKE_ADDED:-0}+1)) # refill dispatches again only when intake added work
     say "intake issue #$n -> implement-pending ($lane)"
   done < <(if (( existing_only )); then printf '%s\n' "$handoff_rows"; else predecessor_candidates; (( only_pred )) || intake_candidates "$refill_mode"; fi)
+  (( ${#intake_terminal_rows[@]} == 0 )) || intake_reopen_episodes "${intake_terminal_rows[@]}"
   say "intake detail candidates secs=$((SECONDS - step_started))s added=$added total_secs=$((SECONDS - intake_started))s"
   skip_line="intake skip counts refill=$refill_mode added=$added"
   if (( ${#intake_skip_counts[@]} )); then
