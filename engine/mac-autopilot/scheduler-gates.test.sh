@@ -2888,6 +2888,7 @@ gh() {
   esac
 }
 NOW_EPOCH=$((NOW_EPOCH + 1))
+set_unit issue-2 '.dep_wait_delivery = .blocked_on' # a marked child still frees on a real delivery
 release_dependency_blocks
 stack_child_released="$(command git --git-dir="$stack_remote" rev-parse refs/heads/agent/issue-2)"
 [[ "$(command git --git-dir="$stack_remote" merge-base "$stack_merged_main" "$stack_child_released")" == "$stack_merged_main" \
