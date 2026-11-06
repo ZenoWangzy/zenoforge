@@ -94,7 +94,7 @@ rescue_flagged_files_clean() { # clone -> 0 unless a flagged file hides an edit
   printf '%s\0' "${check[@]}" | GIT_INDEX_FILE="$index" git -C "$wt" update-index -z --no-assume-unchanged --stdin 2>/dev/null \
     && printf '%s\0' "${check[@]}" | GIT_INDEX_FILE="$index" git -C "$wt" update-index -z --no-skip-worktree --stdin 2>/dev/null \
     && GIT_INDEX_FILE="$index" git -C "$wt" update-index -q --refresh >/dev/null 2>&1 \
-    && GIT_INDEX_FILE="$index" git -C "$wt" diff-files --quiet -- "${check[@]}" || rc=1
+    && GIT_INDEX_FILE="$index" git --literal-pathspecs -C "$wt" diff-files --quiet -- "${check[@]}" || rc=1
   rm -f "$index" "$index.lock"
   return "$rc"
 }

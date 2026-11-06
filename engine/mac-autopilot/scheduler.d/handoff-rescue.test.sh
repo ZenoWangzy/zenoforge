@@ -220,6 +220,15 @@ flagged_clone --skip-worktree; chmod +x "$wt/hidden/x.txt"
 refused_intact "a mode change on a flagged file" "skip-worktree edit"
 flagged_clone --assume-unchanged; rm "$wt/hidden/x.txt"
 refused_intact "an assume-unchanged file deleted on purpose" "assume-unchanged"
+# Names are not pathspecs: ":x" would compare x, and "*" would match the dirty file.
+new_clone
+printf 'one\n' > "$wt/:x.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm colon; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
+git -C "$wt" update-index --assume-unchanged ":x.txt"; printf 'edit\n' >> "$wt/:x.txt"; printf 'dirty\n' >> "$wt/a.txt"
+refused_intact "an edit under a name that looks like pathspec magic" "assume-unchanged"
+new_clone
+printf 'one\n' > "$wt/*"; git -C "$wt" add -A; git -C "$wt" commit -qm glob; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
+git -C "$wt" update-index --assume-unchanged "*"; printf 'dirty\n' >> "$wt/a.txt"
+rescue_handoff_clone 70 "$wt" || fail "a clean flagged file named * was refused: $RESCUE_REFUSED"
 # A real sparse clone: git drops the flag on a file that shows up on disk, and add -A will not stage it.
 flagged_clone --no-skip-worktree; git -C "$wt" sparse-checkout set --no-cone '/*' '!/hidden/'
 mkdir -p "$wt/hidden"; printf 'edit\n' > "$wt/hidden/x.txt"
