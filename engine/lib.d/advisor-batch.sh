@@ -242,6 +242,40 @@ advisor_pending_orphan_candidates() {
 }
 
 
+# advisor_batch_yield_note -- after a run: two sends in a row with nothing applied and the same
+# class open the advisor quarantine. Its canary, one notice and backoff are the existing ones; a
+# send that applies a ruling closes it. env:web-advisor-provider:* would lift on the first healthy
+# tab probe, and a tab can be healthy while every send yields nothing.
+advisor_batch_yield_note() {
+  local class="" sends signature detail open_signature
+  [ "$DRY_RUN" != 1 ] || return 0
+  case "$BATCH_OUTCOME" in
+    completed) [ "${APPLIED:-0}" -gt 0 ] || class=no-applied ;;
+    plan-reask-dispatched) class=no-applied ;;
+    persistence-retry) [ "${APPLIED:-0}" -gt 0 ] || return 0 ;;
+    job-failed|job-timeout)
+      class=job-failed
+      if [[ "${ADVISOR_FAILURE_DETAIL:-}" =~ ADVISOR_[A-Z_]+ ]]; then class="${BASH_REMATCH[0]}"; fi ;;
+    *) return 0 ;;
+  esac
+  open_signature="$(jq -r '.signature // empty' "$(quarantine_file advisor)" 2>/dev/null || true)"
+  if [ -z "$class" ]; then
+    advisor_batch_state_write "$(advisor_batch_state_read | jq 'del(.yield_breaker)')" || return 1
+    [[ "$open_signature" != env:advisor-yield:* ]] || quarantine_lift advisor "a send applied rulings"
+    return
+  fi
+  sends="$(advisor_batch_state_read | jq --arg class "$class" 'if .yield_breaker.class == $class then .yield_breaker.sends + 1 else 1 end')" || return 1
+  advisor_batch_state_write "$(advisor_batch_state_read | jq --arg class "$class" --argjson sends "$sends" '.yield_breaker = {class: $class, sends: $sends}')" || return 1
+  signature="env:advisor-yield:$class"
+  if [[ "$open_signature" == env:advisor-yield:* ]]; then
+    signature="$open_signature"
+  elif [ "$sends" -lt 2 ]; then
+    return 0
+  fi
+  detail="$sends sends in a row with no ruling applied, class $class, last job ${BATCH_JOB_ID:-none}"
+  record_env_fault "$signature" advisor batch "$detail" && quarantine_open advisor "$signature" "$detail" "$sends"
+}
+
 advisor_batch_state_read() {
   if [ -f "$ADVISOR_BATCH_STATE_FILE" ]; then
     cat "$ADVISOR_BATCH_STATE_FILE"

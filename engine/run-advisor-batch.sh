@@ -522,6 +522,7 @@ record_batch_result() {
 cleanup() {
   local exit_status=$?
   record_batch_result "$exit_status" || echo 'run-advisor-batch: could not persist scheduler result' >&2
+  advisor_batch_yield_note || echo 'run-advisor-batch: could not update the send-yield breaker' >&2
   local n
   for n in "${!ADVISOR_TICKET_LOCK_FDS[@]}"; do
     unlock_fd "${ADVISOR_TICKET_LOCK_FDS[$n]}"
@@ -1134,6 +1135,8 @@ else
   CAP_REQUEST_BYTES=0
   CAP_DEFERRED_COUNT=0
   CAP_KEEP_DEFERRED=()
+  # A quarantined stage resumes with one ticket: a canary spends one send, not a full batch.
+  if [ -f "$(quarantine_file advisor)" ]; then CAP_ACTIVE=1; ADVISOR_BATCH_DEFAULT_CAP_TICKETS=1; fi
   if advisor_batch_default_cap_applies; then
     CAP_ACTIVE=1
     CAP_REQUEST_BYTES="$(advisor_batch_request_bytes "$PROMPT_FILE")"
