@@ -683,11 +683,20 @@ process.stdin.on("end", () => {
 # (engine/night/dispatch.sh): prompt through -p, --cwd, --mode yolo,
 # NODE_USE_ENV_PROXY=1 for proxied egress. Model and effort come from the
 # policy-resolved review identity; nothing here names a model.
+zcode_reply_valid() { # <role> <schema_file> <object>: zcode enforces no schema, so a recut reply needs every required key here
+  if [ "$1" = review ]; then
+    jq -e 'type == "object" and (.verdict | type) == "string" and (.verdict | IN("READY", "NOT_READY", "INPUT_INCOMPLETE")) and (.report_md | type) == "string"' \
+      <<< "$3" >/dev/null 2>&1
+  else
+    jq -e --slurpfile schema "$2" '. as $reply | type == "object" and all($schema[0].required[]; . as $key | $reply | has($key))' <<< "$3" >/dev/null 2>&1
+  fi
+}
+
 run_zcode_json() {
-  local cwd="$1" identity="$2" timeout_minutes="$3" schema_file="$4" prompt_file="$5"
+  local cwd="$1" identity="$2" timeout_minutes="$3" schema_file="$4" prompt_file="$5" role="${6:-review}"
   local zcode_id model effort status=0 started_at elapsed timeout_detail out_file transcript reply verdict_json
-  model_policy_require_role_identity review "$identity" || {
-    jq -nc '{is_error: true, subtype: "unsupported_model_identity", result: "identity does not match the review role"}'
+  model_policy_require_role_identity "$role" "$identity" || {
+    jq -nc --arg role "$role" '{is_error: true, subtype: "unsupported_model_identity", result: ("identity does not match the " + $role + " role")}'
     return 64
   }
   zcode_id="${identity#zcode:}"
@@ -702,7 +711,8 @@ run_zcode_json() {
   # The schema rides in the prompt (fenced, like web_advisor_provider_build_
   # question) because zcode enforces nothing itself.
   {
-    echo 'You are this pipeline'"'"'s independent cross-provider reviewer. Reply with EXACTLY one fenced code block, language "json", containing a single JSON object that validates against the JSON Schema given below -- no text before or after that one code block, no other commentary.'
+    [ "$role" != review ] || echo 'You are this pipeline'"'"'s independent cross-provider reviewer.'
+    echo 'Reply with EXACTLY one fenced code block, language "json", containing a single JSON object that validates against the JSON Schema given below -- no text before or after that one code block, no other commentary.'
     echo
     echo 'JSON Schema:'
     echo '```json'
@@ -722,9 +732,7 @@ run_zcode_json() {
   fi
   reply="$(cat "$out_file" 2>/dev/null || true)"
   verdict_json="$(zcode_extract_json_object "$reply")"
-  if [ "$status" -eq 0 ] && [ -n "$verdict_json" ] \
-    && jq -e 'type == "object" and (.verdict | type) == "string" and (.verdict | IN("READY", "NOT_READY", "INPUT_INCOMPLETE")) and (.report_md | type) == "string"' \
-      <<< "$verdict_json" >/dev/null 2>&1; then
+  if [ "$status" -eq 0 ] && [ -n "$verdict_json" ] && zcode_reply_valid "$role" "$schema_file" "$verdict_json"; then
     jq -nc --argjson so "$verdict_json" '{is_error: false, structured_output: $so, tokens_used: ""}'
   else
     result_text="$(tail -c 2000 "$out_file" 2>/dev/null)"
@@ -986,7 +994,7 @@ run_model_json() {
       ( CODEX_JSON_TIMEOUT_SECONDS=$((timeout_minutes * 60)) run_codex_json "$cwd" "${codex_id%:*}" "${codex_id#*:}" "$schema_file" "$prompt_file" )
       ;;
     zcode:*)
-      ( run_zcode_json "$cwd" "$identity" "$timeout_minutes" "$schema_file" "$prompt_file" )
+      ( run_zcode_json "$cwd" "$identity" "$timeout_minutes" "$schema_file" "$prompt_file" "$role" )
       ;;
     web:*)
       ( WEB_ADVISOR_PROVIDER_TIMEOUT_SECONDS=$((timeout_minutes * 60)) run_web_advisor_provider_json "$schema_file" "$prompt_file" )

@@ -148,30 +148,6 @@ model_policy_role_fields() { # role -> provider, model, effort, service tier for
   ' <<<"${SCHED_MODEL_POLICY_JSON:-{}}"
 }
 
-zcode_quota_status() { # fresh snapshot and active marker -> available|exhausted|unknown
-  local file="${ZCODE_QUOTA_SNAPSHOT_FILE:-${HOME:-}/.zenoforge/zc-quota.json}"
-  local max_age="${ZCODE_QUOTA_MAX_AGE_SECONDS:-${ZC_QUOTA_MAX_AGE_SECONDS:-}}" now read_at freshness
-  [[ -r "$file" ]] || { printf 'unknown\n'; return 0; }
-  freshness="$(command jq -r '.freshness // empty' "$file" 2>/dev/null || true)"
-  read_at="$(command jq -r '.read_at // empty' "$file" 2>/dev/null || true)"
-  [[ -n "$max_age" ]] || max_age="$(command jq -r '.max_age_seconds // 900' "$file" 2>/dev/null || true)"
-  now="${NOW_EPOCH:-$(date +%s)}"
-  if [[ "$freshness" != fresh || ! "$read_at" =~ ^[0-9]+$ || ! "$now" =~ ^[0-9]+$ \
-      || ! "$max_age" =~ ^[0-9]+$ ]] || (( read_at > now || now - read_at > max_age )); then
-    printf 'unknown\n'
-    return 0
-  fi
-  if provider_quota_exhausted zcode; then
-    printf 'exhausted\n'
-    return 0
-  fi
-  command jq -er '
-    if ((.five_h_pct | type) != "number" or (.week_pct | type) != "number") then "unknown"
-    elif .five_h_pct >= (.cap_5h // 85) or .week_pct >= (.cap_week // 100) then "exhausted"
-    else "available" end
-  ' "$file" 2>/dev/null || printf 'unknown\n'
-}
-
 pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with a fresh, available quota
   local fields provider model effort tier status
   fields="$(model_policy_role_fields hand-zcode 2>/dev/null || true)"

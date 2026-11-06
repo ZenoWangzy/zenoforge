@@ -947,7 +947,7 @@ dispatch_triage_batch() {
 # One persisted failure ladder for every issue work unit.
 dispatch_policy_unit() {
   local unit="$1" n="$2" queue_label="$3" bump="${4:-0}"
-  local prior step role identity provider active_patch dispatch_status backoff_remaining recovery_status skipped_patch budget_result budget_state budget_calls budget_tokens
+  local prior step role identity glm_identity provider active_patch dispatch_status backoff_remaining recovery_status skipped_patch budget_result budget_state budget_calls budget_tokens
   shift 3
   [ "$#" -eq 0 ] || shift
   budget_result="$(issue_spend_budget_status "$n")" || return 77
@@ -967,7 +967,7 @@ dispatch_policy_unit() {
       fi
       ;;
     unknown)
-      echo "issue-pipeline: #$n spend ledger unreadable; holding $unit dispatch" >&2
+      policy_route_held "$unit" "#$n" spend-ledger-unreadable
       return 77
       ;;
   esac
@@ -1019,26 +1019,33 @@ dispatch_policy_unit() {
   esac
   role="$(model_policy step-role "$step")" || return 76
   identity="$(model_policy dispatch-identity "$role")" || return 76
-  provider="${identity%%:*}"
-  [ "$provider" = codex ] || return 76
-  if model_config_fault_blocked "$role" "$identity"; then
-    echo "issue-pipeline: $unit held by $role/$identity model configuration fault" >&2
-    return 77
-  fi
-  if ! codex_probe_ok; then
-    record_env_fault env:codex-sandbox-probe "$unit" "$n" "Codex sandbox probe has not passed; model-policy dispatch held"
-    return 77
-  fi
-  if ! codex_provider_recovery_probe_if_due "$identity"; then
-    record_env_fault env:codex-provider-recovery-probe "$unit" "$n" "Codex provider recovery probe did not pass; model-policy dispatch held" "" "" 0
-    return 77
-  fi
-  if codex_quota_exhausted "$identity"; then
-    return 77
-  fi
-  if codex_model_capacity_held "$identity"; then
-    echo "issue-pipeline: $role model capacity hold; $unit dispatch deferred before attempt accounting" >&2
-    return 74
+  glm_identity=""
+  [ "$unit" != recut ] || glm_identity="$(recut_glm_identity)" || glm_identity=""
+  if [ -n "$glm_identity" ]; then
+    identity="$glm_identity"
+  else
+    provider="${identity%%:*}"
+    [ "$provider" = codex ] || return 76
+    if model_config_fault_blocked "$role" "$identity"; then
+      policy_route_held "$unit" "$role/$identity" model-configuration-fault
+      return 77
+    fi
+    if ! codex_probe_ok; then
+      record_env_fault env:codex-sandbox-probe "$unit" "$n" "Codex sandbox probe has not passed; model-policy dispatch held"
+      return 77
+    fi
+    if ! codex_provider_recovery_probe_if_due "$identity"; then
+      record_env_fault env:codex-provider-recovery-probe "$unit" "$n" "Codex provider recovery probe did not pass; model-policy dispatch held" "" "" 0
+      return 77
+    fi
+    if codex_quota_exhausted "$identity"; then
+      policy_route_held "$unit" "$role/$identity" codex-exhausted
+      return 77
+    fi
+    if codex_model_capacity_held "$identity"; then
+      echo "issue-pipeline: $role model capacity hold; $unit dispatch deferred before attempt accounting" >&2
+      return 74
+    fi
   fi
   if ! ensure_issue_roadmap_parent_for_dispatch "$n" "$queue_label"; then return 79; fi
   active_patch="$(jq -n --arg u "$unit" --arg q "$queue_label" --arg s "$step" --arg r "$role" --arg i "$identity" --arg boot "$(cat /proc/sys/kernel/random/boot_id)" \

@@ -278,6 +278,10 @@ run_once() {
   TMP_DIRS+=("$agent_home")
   mkdir -p "$agent_home/state"
   echo "$prior_state" > "$agent_home/state/$hand_issue.json"
+  if [ -n "${RECUT_TEST_EXHAUST_CODEX:-}" ]; then
+    printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$agent_home/codex-exhausted-until"
+    jq '.roles["hand-zcode"].disabled = false' "$SCRIPT_DIR/model-policy.default.json" > "$agent_home/model-policy.json"
+  fi
   if [ "${4:-0}" = 1 ]; then
     jq ".roles.advisor.disabled = false" "$SCRIPT_DIR/model-policy.default.json" > "$agent_home/model-policy.json"
     jq -n --argjson config "$(jq -c '.roles.work' "$agent_home/model-policy.json")" \
@@ -631,6 +635,23 @@ assert_eq "budget-refused recut exits cleanly" 0 "$RUN_STATUS"
 assert_contains "budget-refused recut reports deferral" "$RUN_OUTPUT" 'Codex budget/provider hold'
 assert_eq "budget-refused recut records no model spend" "" "$SPEND_CONTENT"
 assert_eq "budget-refused recut does not bump issue attempts" 0 "$(jq -r '.attempts' <<< "$STATE_CONTENT")"
+
+# --- Codex exhausted and GLM open: the same refusal contract runs on zcode, no Codex call, no Codex budget ---
+cat > "$FAKE_BIN/zcode" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$AGENT_HOME/zcode-args.txt"
+printf '%s\n' '```json' '{"domain_verified":false,"needs_production_access":false,"refuse_reason":"glm refusal","children":[]}' '```'
+EOF
+chmod +x "$FAKE_BIN/zcode"
+RECUT_GLM_QUOTA="$(mktemp)"
+TMP_DIRS+=("$RECUT_GLM_QUOTA")
+jq -n --argjson now "$(date +%s)" '{freshness:"fresh",read_at:$now,max_age_seconds:900,five_h_pct:10,week_pct:10,cap_5h:60,cap_week:100}' > "$RECUT_GLM_QUOTA"
+RECUT_TEST_EXHAUST_CODEX=1 ZCODE_QUOTA_SNAPSHOT_FILE="$RECUT_GLM_QUOTA" run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'
+assert_eq "exhausted Codex recut exits cleanly on GLM" 0 "$RUN_STATUS"
+assert_eq "exhausted Codex recut never calls codex" "" "$(cat "$FAKE_RECUIT_ARGS_FILE" 2>/dev/null || true)"
+assert_contains "exhausted Codex recut reaches zcode" "$(cat "$AGENT_HOME/zcode-args.txt")" '--mode yolo'
+assert_eq "GLM recut reply lands through the refusal path" "glm refusal" "$(jq -r '.recut_refused_reason' <<< "$STATE_CONTENT")"
+assert_not_contains "GLM recut prompt is not the reviewer prompt" "$(cat "$AGENT_HOME/zcode-args.txt")" 'cross-provider reviewer'
 
 if [ "$FAILED" -eq 1 ]; then
   echo "FAILED"

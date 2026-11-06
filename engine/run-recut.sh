@@ -68,13 +68,14 @@ fi
 # See lib.sh's gh()/_bounded_call_timed_out() comment: a bounded `gh` call
 # that times out here records env:network-timeout against this stage/$N.
 GH_ENV_FAULT_STAGE=recut
-MODEL_POLICY_IDENTITY="$(model_policy dispatch-state-identity "$N" recut)"
+MODEL_POLICY_IDENTITY="$(recut_glm_identity || model_policy dispatch-state-identity "$N" recut)"
+RECUT_MODEL_ROLE=work
 MODEL_POLICY_STEP="$(state_read "$N" | jq -r 'if .model_policy.unit == "recut" then .model_policy.step // "work" else "work" end')"
 if model_config_fault_blocked "$(model_policy step-role "$MODEL_POLICY_STEP")" "$MODEL_POLICY_IDENTITY"; then
   echo "run-recut: model configuration fault remains for $MODEL_POLICY_IDENTITY" >&2
   exit 0
 fi
-case "$MODEL_POLICY_IDENTITY" in codex:*) ;; *) echo "run-recut: policy step is not a work role; advisor dispatch belongs to the batch runner" >&2; exit 78 ;; esac
+case "$MODEL_POLICY_IDENTITY" in codex:*) ;; zcode:*) RECUT_MODEL_ROLE=hand-zcode ;; *) echo "run-recut: policy step is not a work role; advisor dispatch belongs to the batch runner" >&2; exit 78 ;; esac
 
 # Ponytail: a ticket too big for one dispatch rarely needs more than a
 # handful of independently-implementable pieces to become small enough --
@@ -221,7 +222,7 @@ fi
 
 CODEX_BUDGET_ROLE="$(model_policy step-role "$MODEL_POLICY_STEP")"
 CODEX_BUDGET_RESERVATION_ID="run-recut:$N:$$"
-if ! codex_budget_reserve "$CODEX_BUDGET_ROLE" "$CODEX_BUDGET_RESERVATION_ID" "" 0 "" "$MODEL_POLICY_IDENTITY"; then
+if [ "$RECUT_MODEL_ROLE" = work ] && ! codex_budget_reserve "$CODEX_BUDGET_ROLE" "$CODEX_BUDGET_RESERVATION_ID" "" 0 "" "$MODEL_POLICY_IDENTITY"; then
   echo "run-recut: Codex budget/provider hold; issue #$N deferred" >&2
   exit 0
 fi
@@ -291,7 +292,7 @@ set +e
 model_policy_mark_started "$N" recut
 OUTPUT="$(run_model_json "$WT" "$MODEL_POLICY_IDENTITY" 45 \
   "$(zf_config_file prompts/recut.schema.json)" "$PROMPT_FILE" \
-  "$(zf_config_file prompts/agent-settings.json)" work)"
+  "$(zf_config_file prompts/agent-settings.json)" "$RECUT_MODEL_ROLE")"
 STATUS=$?
 set -e
 RECUT_TOKENS="$(jq -r '.tokens_used // empty' <<< "$OUTPUT" 2>/dev/null || true)"
