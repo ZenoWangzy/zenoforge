@@ -57,15 +57,15 @@ worktree_cleanup_block_reason() { # dir -> reason when deleting it could lose re
 HANDOFF_RESCUE_MAX_FILES="${HANDOFF_RESCUE_MAX_FILES:-50}"
 HANDOFF_RESCUE_MAX_FILE_KB="${HANDOFF_RESCUE_MAX_FILE_KB:-5120}"
 rescue_push_verified() { # clone sha branch. The hook comes from the main checkout: rescued work could have edited or removed its own.
-  local url
+  local url remote
   [[ -x "$ROOT/scripts/hooks/pre-push" ]] || return 1
   # By URL: a push to the remote name moves origin/* at once, and that is what marks a head as safe to delete.
   url="$(git -C "$1" remote get-url origin)" || return 1
   timeout 60 git -C "$1" -c core.hooksPath="$ROOT/scripts/hooks" push -q "$url" "$2:refs/heads/$3" >/dev/null 2>&1 </dev/null || return 1
-  [[ "$(timeout 30 git -C "$1" ls-remote "$url" "refs/heads/$3" 2>/dev/null | awk 'NR==1{print $1}')" == "$2" ]] && return 0
-  # Newer git moves origin/* on a push by URL too, and an unproved tracking ref must not mark this head as safe to delete.
-  git -C "$1" update-ref -d "refs/remotes/origin/$3" "$2" 2>/dev/null
-  return 1
+  remote="$(timeout 30 git -C "$1" ls-remote "$url" "refs/heads/$3" 2>/dev/null | awk 'NR==1{print $1}')"
+  # Newer git moves origin/* on a push by URL too. That ref marks a head as safe to delete, so only the rescue writes it, once recorded.
+  git -C "$1" update-ref -d "refs/remotes/origin/$3" "$2" 2>/dev/null || :
+  [[ "$remote" == "$2" ]]
 }
 rescue_secret_scan() { # clone commit stash... -> 0 clean, 3 leak, else the scan did not happen
   local wt="$1" commit="$2" stream stash rc=0; shift 2
