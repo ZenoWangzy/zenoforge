@@ -117,6 +117,23 @@ supervisor_requeue_unit pr-real requeue 'repair the open finding' null
 [[ "$(field pr-real .stage)" == repair-pending ]] \
   || fail "a real failed repair must still requeue to repair-pending (got: $(field pr-real .stage))"
 
+# The wall counts worker time, not queue: 2295 read 1688min after 1 round and was stopped on arrival.
+wall_unit() { # history-json stage → budget reason
+  TICKET_ROUND_BUDGET=3 TICKET_WALL_BUDGET_SECONDS=14400 NOW_EPOCH=1800000000 ticket_budget_reason "$(jq -cn --argjson h "$1" --arg stage "$2" '{stage:$stage,history:$h}')"
+}
+day() { date -u -d "@$(( 1800000000 - $1 ))" +%Y-%m-%dT%H:%M:%SZ; }
+released_days_later="$(jq -cn --arg s "$(day 864000)" --arg e "$(day 863400)" '[{stage:"write-start",work_type:"repair",at:$s},{stage:"write-end",at:$e},{stage:"blocked-on",result:"#1"},{stage:"unblocked",result:"#1 delivered"}]')"
+[[ -z "$(wall_unit "$released_days_later" repair-pending)" ]] || fail "a unit released after days with 10min of work must not stop on arrival: $(wall_unit "$released_days_later" repair-pending)"
+three_rounds="$(jq -cn --arg s "$(day 864000)" --arg e "$(day 863400)" '[range(3) | {stage:"write-start",work_type:"repair",at:$s},{stage:"write-end",at:$e},{stage:"repair-delivered"}]')"
+[[ "$(wall_unit "$three_rounds" repair-pending)" == 'rounds 3 of 3' ]] || fail "three rounds must still stop: $(wall_unit "$three_rounds" repair-pending)"
+long_work="$(jq -cn --arg s "$(day 864000)" --arg e "$(day 840000)" '[{stage:"write-start",work_type:"repair",at:$s},{stage:"write-end",at:$e}]')"
+[[ "$(wall_unit "$long_work" repair-pending)" == 'wall 400min of 240min after 1 rounds' ]] || fail "worker time past the budget must stop: $(wall_unit "$long_work" repair-pending)"
+open_now="$(jq -cn --arg s "$(day 18000)" '[{stage:"write-start",work_type:"repair",at:$s}]')"
+[[ "$(wall_unit "$open_now" repair)" == 'wall 300min of 240min after 1 rounds' ]] || fail "a running worker must count to now: $(wall_unit "$open_now" repair)"
+[[ -z "$(wall_unit "$open_now" repair-pending)" ]] || fail "a killed worker must not count queue time: $(wall_unit "$open_now" repair-pending)"
+killed="$(jq -cn --arg s "$(day 864000)" --arg n "$(day 840000)" '[{stage:"write-start",work_type:"repair",at:$s},{stage:"write-start",work_type:"repair",at:$n},{stage:"write-end",at:$n}]')"
+[[ "$(wall_unit "$killed" repair-pending)" == 'wall 400min of 240min after 2 rounds' ]] || fail "a write with no end must close at the next start: $(wall_unit "$killed" repair-pending)"
+
 node "$script_dir/../lesson-guard-schema.mjs"
 printf 'noop-repair-rounds.test.sh: 3 write-starts -> 2 counted; 3-of-3 stop-loss clear; repair-cap count 1\n'
-printf 'noop-repair-rounds.test.sh: 13 focused assertions passed\n'
+printf 'noop-repair-rounds.test.sh: 19 focused assertions passed\n'

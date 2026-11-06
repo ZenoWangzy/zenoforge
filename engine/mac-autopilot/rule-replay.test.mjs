@@ -173,9 +173,23 @@ test('CLI compares baseline and candidate decisions over the same replay window'
   }
 });
 
+test('the replay counts worker time as the stop-loss wall does', () => {
+  const ledger = { units: [{ id: 'worker-time', issue: 1, stage: 'repair-pending', history: [
+    { stage: 'write-start', at: '2026-10-28T01:00:00Z' }, { stage: 'write-start', at: '2026-10-28T02:00:00Z' },
+    { stage: 'write-end', at: '2026-10-28T03:00:00Z' }, { stage: 'blocked-on', at: '2026-10-28T23:00:00Z' },
+    { stage: 'supervisor-requeue', at: '2026-10-29T00:00:00Z' }, { stage: 'custom-check', at: '2026-10-29T01:00:00Z' },
+  ] }] };
+  const rule = (seconds) => ({ id: 'worker-seconds', predicate: { path: 'metrics.workerSeconds', op: 'gte', value: seconds } });
+  // A write with no end closes at the next start, so 01:00 to 03:00 is 7200s; 20 hours of queue after it add nothing.
+  const report = replayRule(ledger, rule(7200), { asOf, generatedAt });
+  assert.equal(report.unresolved[0].trigger.metrics.workerSeconds, 7200);
+  assert.equal(report.unresolved[0].trigger.stage, 'write-end');
+  assert.equal(replayRule(ledger, rule(7201), { asOf, generatedAt }).unresolved.length, 0);
+});
+
 test('the replay resets on the same ruling stages as the stop-loss budget', () => {
   const replay = readFileSync(join(here, 'rule-replay.mjs'), 'utf8').match(/RULING_STAGES = new Set\(\[(.*?)\]\)/)[1];
-  const budget = readFileSync(join(here, 'scheduler.d/stop-loss.sh'), 'utf8').match(/ticket_budget_reason\(\)[\s\S]*?since_ruling "\$1" '\[(.*?)\]'/)[1];
+  const budget = readFileSync(join(here, 'scheduler.d/stop-loss.sh'), 'utf8').match(/ticket_budget_reason\(\)[\s\S]*?ruling_stages='\[(.*?)\]'/)[1];
   const stages = (list) => [...list.matchAll(/['"]([a-z-]+)['"]/g)].map((match) => match[1]).sort();
   assert.deepEqual(stages(replay), stages(budget));
 });

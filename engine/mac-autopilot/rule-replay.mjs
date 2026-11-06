@@ -154,6 +154,8 @@ function replayUnit(unit, rule, fromMs, untilMs) {
 
   let rounds = 0;
   let firstWriteAt = null;
+  let workerMs = 0;
+  let writeOpenAt = null;
   let rawTokens = null;
   let previousMatch = false;
   let trigger = null;
@@ -168,6 +170,12 @@ function replayUnit(unit, rule, fromMs, untilMs) {
     if (RULING_STAGES.has(stage)) {
       rounds = 0;
       firstWriteAt = null;
+      workerMs = 0;
+      writeOpenAt = null;
+    }
+    if (stage === 'write-start' || stage === 'write-end') {
+      if (writeOpenAt !== null) workerMs += Math.max(0, entry.atMs - writeOpenAt);
+      writeOpenAt = stage === 'write-start' ? entry.atMs : null;
     }
     if (stage === 'write-start') {
       rounds += 1;
@@ -183,6 +191,7 @@ function replayUnit(unit, rule, fromMs, untilMs) {
         rawTokens,
         rounds,
         elapsedSeconds: firstWriteAt === null ? null : Math.max(0, (entry.atMs - firstWriteAt) / 1000),
+        workerSeconds: workerMs / 1000,
       },
     };
     snapshots.push({ atMs: entry.atMs, snapshot });

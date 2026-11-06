@@ -504,7 +504,7 @@ REJECTED: close'
 jq -e '.units[0] | (has("arbiter_no_answer") or has("arbiter_retry_after")) | not' "$UNITS" >/dev/null || fail "a decision must clear the streak"
 
 # A cap RULE refills the stop-loss budget once and releases the stop-loss hold: 2295 was sent straight back by a wall counted from before its ruling.
-old_write='{stage:"write-start",at:"2026-10-01T00:00:00Z",work_type:"repair"}'
+old_write='{stage:"write-start",at:"2026-10-01T00:00:00Z",work_type:"repair"},{stage:"write-end",at:"2026-10-01T05:00:00Z"}'
 budget_of() { TICKET_WALL_BUDGET_SECONDS=14400 NOW_EPOCH="$(date +%s)" TICKET_ROUND_BUDGET=3 ticket_budget_reason "$(jq -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"; }
 stop_loss_hold() { jq -n '{state:"on-hold",hold:{kind:"stop-loss",holder:"scheduler-stop-loss"},recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/$1.json"; }
 refills() { field "$1" '[.history[] | select(.stage=="supervisor-cap-budget-refill")] | length'; }
@@ -516,7 +516,7 @@ supervisor_apply_cap_verdict pr-690 "$report" RULE
 [[ "$(field pr-690 .stage)" == repair-pending && -z "$(budget_of pr-690)" && "$(refills pr-690)" == 1 ]] || fail "the first cap RULE must return the unit with a refilled budget: $(jq -c '.units[0]' "$UNITS")"
 jq -e '.state == "ready-for-agent" and .hold == null' "$AGENT_HOME/state/690.json" >/dev/null || fail "RULE must release the stop-loss hold: $(cat "$AGENT_HOME/state/690.json")"
 # A later cap RULE, retry or not, gets no second refill: RULE, fail, RULE cannot outrun the budget.
-set_unit pr-690 "$(hist write-start repair) | .history[-1] += {at:\"2026-10-01T00:00:00Z\",work_type:\"repair\"} | .stage=\"supervisor-review\" | .supervisor_cap_retry=\"pending\""
+set_unit pr-690 ".history += [$old_write] | .stage=\"supervisor-review\" | .supervisor_cap_retry=\"pending\""
 stop_loss_hold 690
 supervisor_apply_cap_verdict pr-690 "$report" RULE
 [[ "$(refills pr-690)" == 1 && -n "$(budget_of pr-690)" ]] || fail "a second cap RULE must not refill the budget: $(budget_of pr-690)"

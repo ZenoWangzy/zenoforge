@@ -54,17 +54,22 @@ effective_write_starts_since_ruling() { # unit-json ruling-stages-json → write
 }
 
 ticket_budget_reason() { # unit-json
-  local rounds
-  rounds="$(effective_write_starts_since_ruling "$1" '["supervisor-requeue","supervisor-approve","supervisor-cap-budget-refill","advisor-ruling"]')" || return 1
-  jqf -r --argjson rounds "$rounds" --argjson round_budget "$TICKET_ROUND_BUDGET" --argjson wall_budget "$TICKET_WALL_BUDGET_SECONDS" --argjson now "$NOW_EPOCH" '
-    $rounds as $rounds
+  local rounds ruling_stages='["supervisor-requeue","supervisor-approve","supervisor-cap-budget-refill","advisor-ruling"]'
+  rounds="$(effective_write_starts_since_ruling "$1" "$ruling_stages")" || return 1
+  # The wall counts time a worker held the unit: 2295 read 1688min after 1 round, nearly all of it queue.
+  jqf -r --argjson rounds "$rounds" --argjson ruling_stages "$ruling_stages" --argjson round_budget "$TICKET_ROUND_BUDGET" --argjson wall_budget "$TICKET_WALL_BUDGET_SECONDS" --argjson now "$NOW_EPOCH" '
+    def epoch: sub("\\.[0-9]+"; "") | fromdateiso8601;
+    (.history // []) as $h
+    | ([$h | to_entries[] | select(.value.stage | IN($ruling_stages[])) | .key] | max // -1) as $ruling
+    | (reduce ($h[($ruling + 1):][] | select(.at != null and (.stage == "write-start" or .stage == "write-end"))) as $e ({open: null, secs: 0};
+        ($e.at | epoch) as $t
+        | (if .open != null then .secs += ([$t - .open, 0] | max) else . end)
+        | .open = (if $e.stage == "write-start" then $t else null end))) as $work
+    | ($work.secs + (if $work.open != null and (.stage // "" | IN("implement", "repair")) then [$now - $work.open, 0] | max else 0 end)) as $worker_secs
     | if ($rounds | length) >= $round_budget
       then "rounds \($rounds | length) of \($round_budget)"
-      else ($rounds | map(.at // empty) | first) as $first
-      | select($first != null)
-      | (($first | sub("\\.[0-9]+"; "") | fromdateiso8601) as $t
-        | select($now - $t > $wall_budget)
-        | "wall \((($now - $t) / 60) | floor)min of \(($wall_budget / 60) | floor)min after \($rounds | length) rounds")
+      else select(($rounds | length) > 0 and $worker_secs > $wall_budget)
+        | "wall \(($worker_secs / 60) | floor)min of \(($wall_budget / 60) | floor)min after \($rounds | length) rounds"
       end' <<<"$1" 2>/dev/null
 }
 
