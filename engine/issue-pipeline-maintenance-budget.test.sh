@@ -149,7 +149,8 @@ timeout() {
 ZF_GMAIL_CALL_DEADLINE_EPOCH_MS=$(( $(gmail_now_epoch_ms) + 7000 ))
 check 'Gmail token mint retains its access token' "$(gmail_access_token "$fake_gcloud")" test-access-token
 CAPTURED_TOKEN_TIMEOUT="$(cat "$CAPTURED_TOKEN_TIMEOUT_FILE")"
-if [[ "$CAPTURED_TOKEN_TIMEOUT" =~ ^[1-9][0-9]*s$ ]] && (( ${CAPTURED_TOKEN_TIMEOUT%s} <= 5 )); then
+# 7000ms less the 1s reserve floors to 5, or 6 when both clock reads land in one millisecond.
+if [[ "$CAPTURED_TOKEN_TIMEOUT" =~ ^[1-9][0-9]*s$ ]] && (( ${CAPTURED_TOKEN_TIMEOUT%s} <= 6 )); then
   check 'Gmail token mint timeout is capped by its absolute deadline' yes yes
 else
   fail "Gmail token mint timeout was not capped: $CAPTURED_TOKEN_TIMEOUT"
@@ -163,7 +164,7 @@ gmail_max_time=""
 for ((i = 0; i < ${#CAPTURED_CURL_ARGS[@]}; i++)); do
   if [[ "${CAPTURED_CURL_ARGS[$i]}" == --max-time ]]; then gmail_max_time="${CAPTURED_CURL_ARGS[$((i + 1))]}"; fi
 done
-if [[ "$gmail_max_time" =~ ^[1-9][0-9]*$ ]] && (( gmail_max_time <= 5 )); then
+if [[ "$gmail_max_time" =~ ^[1-9][0-9]*$ ]] && (( gmail_max_time <= 6 )); then
   check 'Gmail read curl timeout is capped by its absolute deadline' yes yes
 else
   fail "Gmail read curl timeout was not capped: $gmail_max_time"
