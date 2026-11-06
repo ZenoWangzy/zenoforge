@@ -392,7 +392,9 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
     supervisor_budget_park "$id" "$evidence (unit already has PR #$pr)" "$decision" "$park_reason" "$park_stage"; return 0
   fi
   # Route first: a refused route must leave the PR open, or the slice has no owner (#1167 and #4840 lost theirs this way).
-  if ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
+  # A retry after a failed close finds the issue already routed; the route guard would refuse it and strand the PR.
+  if ! { [[ -n "$pr" ]] && jqf -e '.state == "needs-recut" or has("recut_children")' <<<"$(scheduler_issue_state "$issue" 2>/dev/null)" >/dev/null 2>&1; } \
+      && ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
     supervisor_budget_park "$id" "$evidence (recut route failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
   fi
   if [[ -n "$pr" ]]; then
