@@ -71,6 +71,7 @@ blocking_body_dependency() { # unit-json → first predecessor not yet delivered
   while read -r dep; do
     [[ "$dep" =~ ^[0-9]+$ ]] || continue
     dep_delivered_in_ledger "$dep" && continue
+    [[ "$dep" != "$(jqf -r '.dep_dead_proved // empty' <<<"$1")" ]] || continue
     info="$(dep_cache_info "$dep")"
     state="$(jqf -r '.state // empty' <<<"$info")"
     [[ "$state" == CLOSED || "$state" == MERGED ]] && continue
@@ -85,6 +86,7 @@ dep_marker_open() { # unit-json → the marked predecessor while it is undeliver
   dep="$(jqf -r '.dep_wait_delivery // empty' <<<"$1")"
   [[ "$dep" =~ ^[0-9]+$ ]] || return 1
   dep_delivered_in_ledger "$dep" && return 1
+  [[ "$(jqf -r '.dep_dead_proved // empty' <<<"$1")" != "$dep" ]] || return 1 # the only way past: dep_dead_sweep proved it, and the arbiter sent the unit back
   state="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$dep")")"
   [[ "$state" != CLOSED && "$state" != MERGED ]] || return 1
   printf '%s' "$dep"
@@ -268,7 +270,52 @@ release_dependency_blocks() {
   for id in $(jqf -r '.units[] | select(.stage=="blocked-external" and .blocked_on == null and .size_recut_pending != true) | .id' "$UNITS"); do
     to_supervisor "$id" "blocked-external without a predecessor: nothing can release it"
   done
-  if (( gh_due )); then reconcile_stacked_units; fi
+  if (( gh_due )); then reconcile_stacked_units; dep_dead_sweep || :; fi
+}
+# Fail closed: any fact that cannot be read means not dead. Prints the arbiter's evidence.
+dep_predecessor_dead() { # waiter-unit-json predecessor
+  local dep="$2" waiter rows st prs subs c b sha branches=""
+  dep_delivered_in_ledger "$dep" && return 1
+  rows="$(jqf -c --argjson d "$dep" '[.units[] | select(.issue == $d)]' <(units_history_doc))" || return 1
+  st="$(scheduler_issue_state "$dep")" && [[ -n "$st" ]] || return 1
+  # An open tracker with no unit never delivers by itself, so only its children can end the wait.
+  jqf -e --slurpfile st <(printf '%s' "$st") 'if length == 0 then $st[0].state == "tracker" else all(.[]; .stage == "closed") end' <<<"$rows" >/dev/null || return 1
+  jqf -e --slurpfile w "$A/workers.json" 'map(.id) as $ids | all($w[0].workers[]; .unit as $u | ($ids | index($u)) == null)' <<<"$rows" >/dev/null || return 1
+  prs="$(tick_prs)" || return 1
+  jqf -e --slurpfile rows <(printf '%s' "$rows") --arg d "$dep" '
+    ($rows[0] | map(.pr)) as $own | ($rows[0] | map(.branch) + ["agent/issue-" + $d]) as $heads
+    | all(.[]; (.number as $n | $own | index($n)) == null and (.headRefName as $h | $heads | index($h)) == null
+      and ((.body // "") | test("#" + $d + "([^0-9]|$)") | not))' <<<"$prs" >/dev/null || return 1
+  subs="$(gh api "repos/{owner}/{repo}/issues/$dep/sub_issues?per_page=100" --jq '.[].number' 2>/dev/null)" || return 1
+  waiter="$(jqf -r '.issue // empty' <<<"$1")"
+  for c in $(printf '%s\n%s\n' "$(jqf -r '(.recut_children // [])[]' <<<"$st")" "$subs" | sort -un); do
+    [[ "$c" != "$waiter" ]] || continue
+    dep_delivered_in_ledger "$c" && continue
+    jqf -e --argjson c "$c" --argjson d "$dep" 'any(.units[]; .issue == $c and .dep_wait_delivery == $d)' "$UNITS" >/dev/null && continue # waits on the same dead predecessor
+    [[ "$(dep_states "$c" | cut -f2)" =~ ^(CLOSED|MERGED)$ ]] || return 1
+  done
+  for b in $(jqf -r --arg d "$dep" 'map(.branch // empty) + ["agent/issue-" + $d] | unique | .[]' <<<"$rows"); do
+    sha="$(gh api "repos/{owner}/{repo}/git/ref/heads/$b" --jq .object.sha 2>/dev/null)" || sha=gone
+    branches+=" $b@${sha:0:12}"
+  done
+  printf 'predecessor #%s can never deliver (%s), no open PR, no live worker, no live child; branches:%s' \
+    "$dep" "$(jqf -r 'if length == 0 then "open tracker with no unit" else "unit closed undelivered: " + (last.note // "no note" | .[0:200]) end' <<<"$rows")" "$branches"
+}
+dep_dead_sweep() { # one marked unit at a time reaches the arbiter, so a wrong proof costs one unit
+  local u id dep evidence
+  jqf -e 'any(.units[]; (.dep_dead_proved != null and (.stage | IN("merged","landed","awaiting-live-event","closed","parked","blocked-external") | not)) or (.dep_wait_delivery != null and (.size_recut_pending == true or .stage == "supervisor-review")))' "$UNITS" >/dev/null && return 0
+  while IFS= read -r u; do
+    id="$(jqf -r .id <<<"$u")"; dep="$(jqf -r .dep_wait_delivery <<<"$u")"
+    evidence="$(dep_predecessor_dead "$u" "$dep")" || continue
+    if [[ "$(jqf -r '.dep_dead_proved // empty' <<<"$u")" == "$dep" ]]; then
+      set_unit "$id" "$(hist supervisor-park "blocked on dead predecessor #$dep again after arbitration") | del(.blocked_on) | .stage=\"parked\" | .parked_reason=\"dep-dead-repeat\" | .note=$(js "$evidence") | .unpark_condition=$(js "#$dep delivered in the ledger or closed on GitHub")"
+      echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=parked reason=repeat" >> "$A/alerts/events.md"
+    else
+      set_unit "$id" ".dep_dead_proved=$dep | del(.blocked_on)"
+      to_supervisor "$id" "$evidence. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #$dep"
+    fi
+    return 0
+  done < <(jqf -c '[.units[] | select(.stage=="blocked-external" and .size_recut_pending != true and .dep_wait_delivery != null and .dep_wait_delivery == .blocked_on)] | sort_by(-.issue) | .[]' "$UNITS")
 }
 dep_blocker_forget() { # dynamic local map: keep mutual-cycle checks current as units leave blocked-external
   local key="$1:$2" count
