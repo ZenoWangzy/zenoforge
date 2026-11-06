@@ -403,7 +403,7 @@ INTEGRATION_RULE="改动涉及集成测试（*.integration.test.*、tests/integr
 # 优化类 ticket 先核实前提（#4370）：曾有几张先实现后才发现前提不成立，白耗数小时，
 # 且其测量窗口跨过了已上线的机制。eval 侧同一条规则在 prompts/implement-contract.md。
 OPT_PREMISE_RULE='
-优化类 ticket（声称浪费、延迟或竞态并给了量化数字）：第一步用现有数据复现这些数字——issue 自带的证据、账本、本 checkout 的文件与 git 历史，不发新的外部请求；测量窗口从被测机制最后一次改动之后开始（用 git log 定位），窗口跨过该改动测的是旧机制。把测到的数字和算法写进报告。复现不了就不实现：报告第一行写 OBSOLETE: <测到的数字、窗口、数据来源>，流水线据此关单。复现了就带着测量结果实现，它就是验收对比的基线。'
+优化类 ticket（声称浪费、延迟或竞态并给了量化数字）：第一步用现有数据复现这些数字——issue 自带的证据、账本、本 checkout 的文件与 git 历史，不发新的外部请求；测量窗口从被测机制最后一次改动之后开始（用 git log 定位），窗口跨过该改动测的是旧机制。把测到的数字和算法写进报告。复现不了就不实现：报告第一行写 OBSOLETE: <测到的数字、窗口、数据来源>，数据来源写 file:line、commit 或 run 链接，流水线据此关单；测不出数字不算 OBSOLETE。复现了就带着测量结果实现，它就是验收对比的基线。'
 # 风险类路径的 blast-radius 证明（#4787，pstack blast-radius）：auth、RLS、账本、迁移的 implement 交付要说出安全所依赖的那一个事实，
 # 并用真实函数的运行输出证明它。非风险类不要求。评审侧同一条规则在 prompts/review-contract.md，契约在 prompts/implement-contract.md。
 BLAST_RADIUS_RULE="

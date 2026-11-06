@@ -35,7 +35,8 @@ measured numbers and how you computed them.
 - The numbers do not reproduce: do not implement. Close the ticket with the
   measurement as evidence: the first line of the report is exactly
   `OBSOLETE: <measured numbers, window, data source>` and the pipeline closes
-  the issue with that evidence.
+  the issue with that evidence. The data source names a file:line, a commit or
+  a run on current main, or the report goes to review. No data is not OBSOLETE.
 - The numbers reproduce: implement, and carry the measured numbers in the
   report as the before-baseline that acceptance will compare against.
 - After the baseline, name the limiter mechanism (which step, which

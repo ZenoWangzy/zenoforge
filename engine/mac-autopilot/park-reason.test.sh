@@ -54,12 +54,32 @@ release_dependency_blocks
 [[ "$(field issue-901 .stage)" == parked ]] || fail 'a release must not reach an unrelated park'
 rm -f "$A/dep-check.cache.json" "$A/dep-check.epoch"
 
+# obsolete_evidence_gate: an OBSOLETE line closes an issue only if it names something checkable on current main.
+git -C "$ROOT" init -q -b main
+git -C "$ROOT" config user.name fixture; git -C "$ROOT" config user.email fixture@example.invalid
+printf 'x\n' > "$ROOT/a.ts"; git -C "$ROOT" add a.ts; git -C "$ROOT" commit -qm base
+git -C "$ROOT" update-ref refs/remotes/origin/main HEAD
+main_sha="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
+for line in 'OBSOLETE: already handled at a.ts:1' "OBSOLETE: fixed by $main_sha" 'OBSOLETE: measured 0 in https://github.com/o/r/actions/runs/123'; do
+  obsolete_evidence_gate "$line" || fail "evidence refused: $line"
+done
+for line in 'OBSOLETE: nothing to do' 'OBSOLETE: gone from b.ts:1' 'OBSOLETE: fixed by 0123456789ab' \
+  'OBSOLETE: no comparable data, see a.ts:1' 'OBSOLETE: 当前 main 的可比窗口没有复测值；旧样本 a.ts:1' 'OBSOLETE: no measurement on main'; do
+  ! obsolete_evidence_gate "$line" || fail "no evidence passed: $line"
+done
+to_supervisor() { set_unit "$1" '.stage="supervisor-review"'; }
+: > "$fixture/closes"
+gh() { [[ "$1 $2" != 'issue close' ]] || printf '%s\n' "$3" >> "$fixture/closes"; }
+unit 909 'x' | jq -c '.stage="implement"' | ledger
+obsolete_unit_close issue-909 909 'OBSOLETE: nothing to do'
+[[ "$(field issue-909 .stage)" == supervisor-review && ! -s "$fixture/closes" ]] || fail 'a line with no evidence must go to review, not close'
+
 # A failed issue close keeps the unit out of closed; a closed unit under an open issue is skipped by intake for good.
 rm -f "$fixture/close-fails"
 gh() { if [[ "$1 $2" == 'issue close' ]]; then printf '%s\n' "$3" >> "$fixture/closes"; [[ ! -f "$fixture/close-fails" ]]; fi; }
 touch "$fixture/close-fails"
 unit 910 'x' | jq -c '.stage="implement"' | ledger
-obsolete_unit_close issue-910 910 'OBSOLETE: nothing to do'
+obsolete_unit_close issue-910 910 'OBSOLETE: handled at a.ts:1'
 [[ "$(field issue-910 .stage):$(field issue-910 .parked_reason)" == parked:obsolete-close-failed ]] || fail 'a failed close must park the unit'
 obsolete_close_retry
 [[ "$(field issue-910 .stage)" == parked ]] || fail 'a retry that fails must stay parked'
@@ -69,7 +89,7 @@ obsolete_close_retry
 [[ "$(field issue-910 '[.history[] | select(.stage=="obsolete")] | length')" == 1 ]] || fail 'the close must keep the report line'
 [[ "$(wc -l < "$fixture/closes")" == 3 ]] || fail 'expected one first close and two retries'
 unit 911 'x' | jq -c '.stage="implement"' | ledger
-obsolete_unit_close issue-911 911 'OBSOLETE: nothing to do'
+obsolete_unit_close issue-911 911 'OBSOLETE: handled at a.ts:1'
 [[ "$(field issue-911 .stage)" == closed ]] || fail 'a close that works must close the unit'
 unset -f gh
 

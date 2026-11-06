@@ -1725,7 +1725,7 @@ gh() {
   esac
 }
 units '{"units":[{"id":"issue-7","issue":7,"lane":"direct-main","branch":"agent/auto-issue-7","stage":"implement","history":[]},{"id":"issue-8","issue":8,"lane":"direct-main","branch":"agent/auto-issue-8","stage":"implement","history":[]}]}'
-printf 'fixed it\n' > "$sup/impl-issue-7-T.md"; printf 'OBSOLETE: already fixed by abc123\n' > "$sup/impl-issue-8-T.md"
+printf 'fixed it\n' > "$sup/impl-issue-7-T.md"; printf 'OBSOLETE: already fixed, measured in https://github.com/o/r/actions/runs/123\n' > "$sup/impl-issue-8-T.md"
 jq -n '{workers:[{pid:9701,unit:"issue-7",type:"implement",log:"i7.log",report:"impl-issue-7-T.md"},{pid:9801,unit:"issue-8",type:"implement",log:"i8.log",report:"impl-issue-8-T.md"}]}' > "$WORKERS"
 harvest_workers || :
 [[ "$(field issue-7 .stage)" == review-pending ]] || fail "PR-less implement with a local commit did not go to review ($(field issue-7 .stage))"

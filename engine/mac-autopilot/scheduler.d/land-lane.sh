@@ -44,10 +44,29 @@ fast_land_lane() { # 一次只落一个；与产品合并门禁无关（land-dir
 
 # A closed unit under an open ready-for-agent issue is skipped by intake for good, so the unit closes only after the
 # issue does. A failed close parks the unit, and obsolete_close_retry tries again on each GitHub pass.
+# A worker's OBSOLETE line closes the issue, so it must name something on current main: a file:line, a commit or a run.
+# "No data" means unanswered, not obsolete. Three issues closed on lines that named nothing, and one was a false claim.
+obsolete_evidence_gate() { # first-report-line -> 0 when the claim can be checked
+  local first="$1" token
+  ! grep -Eiq '(没有|无|缺).{0,24}(复测|数据|样本|测量)|no (comparable |usable )?(data|measurement|re-?measure|sample)' <<<"$first" || return 1
+  ! grep -Eq 'actions/runs/[0-9]+' <<<"$first" || return 0
+  while IFS= read -r token; do
+    ! git -C "$ROOT" cat-file -e "refs/remotes/origin/main:${token%%:*}" 2>/dev/null || return 0
+  done < <(grep -oE '[[:alnum:]_./-]+\.[[:alnum:]]+:[0-9]+' <<<"$first")
+  while IFS= read -r token; do
+    ! git -C "$ROOT" merge-base --is-ancestor "$token" refs/remotes/origin/main 2>/dev/null || return 0
+  done < <(grep -oE '[0-9a-f]{7,40}' <<<"$first")
+  return 1
+}
 obsolete_issue_close() { # issue first-report-line
   gh issue close "$1" --comment "Autopilot: no change needed on current main. $2" >/dev/null 2>&1
 }
 obsolete_unit_close() { # unit issue first-report-line
+  if ! obsolete_evidence_gate "$3"; then
+    to_supervisor "$1" "OBSOLETE report names nothing checkable on current main: $3"
+    say "unit $1 obsolete: refused by obsolete_evidence_gate, sent to review"
+    return 0
+  fi
   if [[ -n "$2" ]] && ! obsolete_issue_close "$2" "$3"; then
     set_unit "$1" "$(hist obsolete-close-failed "$3") | .stage=\"parked\" | .parked_reason=\"obsolete-close-failed\" | .unpark_condition=\"the issue close succeeds\""
     say "unit $1 obsolete: closing issue #$2 failed; parked for retry"
