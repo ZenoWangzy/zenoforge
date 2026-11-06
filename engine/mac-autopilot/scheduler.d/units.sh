@@ -215,6 +215,11 @@ supervisor_return_stage() { # unit-json [stage-before-supervisor] → pending st
   esac
 }
 
+# A park with no reason has no exit, so every writer goes through this. A named predecessor outranks the reason: its delivery is what releases the unit.
+park_fields() { # reason unpark-condition → jq update
+  printf '.parked_reason=(if (.blocked_on | type) == "number" then "waiting-predecessor" else %s end) | .unpark_condition=(if (.blocked_on | type) == "number" then "#\\(.blocked_on) delivered" else %s end)' "$(js "$1")" "$(js "$2")"
+}
+
 to_supervisor() { # id note：升级到 supervisor；cap triage acts after the third entry
   local decision u return_stage
   u="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0]' "$UNITS")"
@@ -254,9 +259,10 @@ supervisor_needs_info_question() { # unit-json → 没有裁决报告时的模�
 # 预算用尽是流程问题，不是需求问题：10-28 解除 PAUSE 后它向维护者发了 6 个「继续、搁置还是关闭」的通用问题，
 # 每个都由 agent 自己就能定（已合入、有待修 P1、交接人不在）。只有裁决 worker 判定的 needs-info 才问人。
 supervisor_budget_park() { # id evidence → parked，留给 supervisor，不发评论
-  local id="$1" evidence="$2" decision="${3:-null}" reason="${4:-supervisor budget exhausted}" stage="${5:-supervisor-budget-park}" note
+  local id="$1" evidence="$2" decision="${3:-null}" reason="${4:-supervisor budget exhausted}" stage="${5:-supervisor-budget-park}" note parked_as=supervisor-budget unpark='a supervisor decision'
   note="$(js "$reason: $evidence")"
-  cap_set_unit "$id" park "$reason: $evidence" "" "$(hist "$stage" "$evidence" "$decision") | .stage=\"parked\" | .note=$note" \
+  [[ "$evidence" != 'ticket stop-loss'* ]] || { parked_as=ticket-stop-loss; unpark='the issue changes or the ticket budget is raised'; }
+  cap_set_unit "$id" park "$reason: $evidence" "" "$(hist "$stage" "$evidence" "$decision") | .stage=\"parked\" | .note=$note | $(park_fields "$parked_as" "$unpark")" \
     && say "supervisor budget-park unit=$1: $2"
 }
 
@@ -267,7 +273,7 @@ supervisor_recut_refuse() { # id evidence decision worktree
   local id="$1" evidence="$2" decision="$3" wt="$4" head note key
   head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
   note="RECUT refused: unpushed work at ${head:0:12}. Unparks when that head changes or the worktree is gone."
-  cap_set_unit "$id" park "$note $evidence" "" "$(hist supervisor-recut-refused "$evidence" "$decision") | .stage=\"parked\" | .parked_reason=\"recut-refused-unpushed\" | .recut_refused_head=$(js "$head") | .recut_refused_verdict=\"RECUT\" | .note=$(js "$note $evidence")" \
+  cap_set_unit "$id" park "$note $evidence" "" "$(hist supervisor-recut-refused "$evidence" "$decision") | .stage=\"parked\" | .parked_reason=\"recut-refused-unpushed\" | .unpark_condition=\"the unit head changes\" | .recut_refused_head=$(js "$head") | .recut_refused_verdict=\"RECUT\" | .note=$(js "$note $evidence")" \
     || return 1
   say "supervisor recut refused unit=$id head=${head:0:12}: unpushed work"
   key="recut-refused:$id:$head"
@@ -366,7 +372,7 @@ supervisor_cap_triage_park() { # id evidence → durable retry marker swept by t
   return_stage="$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")"
   [[ -n "$return_stage" ]] || return_stage="$(supervisor_return_stage "$u")"
   note="supervisor arbitration cap triage pending: $evidence"
-  cap_set_unit "$id" park "$note" "" "$(hist supervisor-cap-triage-park "$evidence" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-arbitration-cap\" | .supervisor_cap_return_stage=$(js "$return_stage") | .note=$(js "$note")" \
+  cap_set_unit "$id" park "$note" "" "$(hist supervisor-cap-triage-park "$evidence" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-arbitration-cap\" | .unpark_condition=\"a cap triage verdict\" | .supervisor_cap_return_stage=$(js "$return_stage") | .note=$(js "$note")" \
     && say "supervisor cap-triage parked unit=$id: $evidence"
 }
 
@@ -424,7 +430,7 @@ supervisor_needs_info() { # id question evidence —— needs-info：给提需�
   if [[ "$issue" =~ ^[0-9]+$ ]]; then
     if ! scheduler_issue_transition_allowed "$issue" needs-info supervisor-needs-info; then
       decision="$(decision_entry 'Needs-info transition unavailable' "issue #$issue cannot transition to needs-info from its current state" "$evidence" '["Post the question without the needs-info label"]' supervisor)"
-      set_unit "$id" "$(hist supervisor-park "needs-info transition unavailable for issue #$issue" "$decision") | .stage=\"parked\" | .note=$(js "needs-info question not posted: issue #$issue cannot transition to needs-info")"
+      set_unit "$id" "$(hist supervisor-park "needs-info transition unavailable for issue #$issue" "$decision") | .stage=\"parked\" | .note=$(js "needs-info question not posted: issue #$issue cannot transition to needs-info") | $(park_fields needs-info-unavailable 'the issue can move to needs-info')"
       say "supervisor needs-info unit=$id not posted=issue #$issue transition unavailable"
       return 0
     fi

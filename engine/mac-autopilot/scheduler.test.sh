@@ -4381,6 +4381,21 @@ sched_case_hold_handoff_retired_unit() {
 }
 sched_run_case hold_handoff_retired_unit
 
+sched_case_hold_handoff_recut_refused() {
+  new_tick_fixture hold-handoff-recut-refused
+  mkdir -p "$TF/agent-home/state"
+  command jq -n '{state:"ready-for-agent",scheduler_handoff:{episode:"hold-780"}}' > "$TF/agent-home/state/780.json"
+  command jq -n '{number:780,title:"recut refused work",body:"finish the work",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+  command jq '.max_workers=2 | .implement_cap=0 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+  mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  printf '%s\n' '{"units":[]}' > "$TF/supervisor/autopi/units.json"
+  printf '%s\n' '{"units":[{"id":"refused","issue":780,"title":"recut refused work","task":"prior work","lane":"pr","branch":"agent/issue-780","history":[],"stage":"closed","recut_reopen_refused":true}]}' > "$TF/supervisor/autopi/units-archive.json"
+  tick
+  command jq -e '(.units|length)==0' "$TF/supervisor/autopi/units.json" >/dev/null || { echo 'not ok - a handoff reopened a unit whose recut reopen is spent' >&2; exit 1; }
+  grep -q 'unit=refused stays closed' "$TF/supervisor/autopi/scheduler.log" || { echo 'not ok - the stop must be visible in the log' >&2; exit 1; }
+}
+sched_run_case hold_handoff_recut_refused
+
 sched_case_hold_handoff_existing_unit() {
   local mode n
   for mode in implement repair active live; do

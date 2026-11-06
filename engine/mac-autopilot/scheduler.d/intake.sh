@@ -502,6 +502,10 @@ register_new_issues() {
     if [[ -n "$existing_id" ]]; then
       (( existing_only )) || { intake_skip existing; continue; }
       [[ -n "$episode" ]] || { intake_skip no_episode; continue; }
+      # Recut refused and the one reopen is spent: this door must not undo that, or each refusal buys another pass through stop-loss and recut.
+      if jqf -e --arg id "$existing_id" 'any(.units[]; .id == $id and .stage == "closed" and .recut_reopen_refused == true)' "$(intake_units_view)" >/dev/null; then
+        say "intake hold handoff issue #$n: unit=$existing_id stays closed, recut refused and its reopen is spent"; intake_skip recut_refused; continue
+      fi
       ids="$(jqf -c --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)) | .id]' "$(intake_units_view)")"
       if jqf -e --argjson n "$n" --arg pr "$handoff_pr" --arg episode "$episode" 'all(.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)); .hold_handoff_episode == $episode) and ($pr == "" or any(.units[]; ((.pr // "") | tostring) == $pr))' "$(intake_units_view)" >/dev/null; then
         units_update --slurpfile ids <(printf '%s' "$ids") --argjson n "$n" '.units |= map(if (.id as $id | $ids[0] | index($id)) != null then .hold_handoff_wait_issues = ((.hold_handoff_wait_issues // []) | map(select(. != $n))) | if (.hold_handoff_wait_issues | length) == 0 and .hold_handoff_lookup_pending != true then del(.hold_handoff_wait_issues, .hold_handoff_waiting) else . end else . end)'
@@ -670,7 +674,7 @@ register_new_issues() {
           | if (.hold_handoff_wait_issues | length) == 0 and .hold_handoff_lookup_pending != true then del(.hold_handoff_wait_issues, .hold_handoff_waiting) else . end
         else . end | if .id != $id then
           if (.id as $other | $ids[0] | index($other)) != null then
-            .stage="parked" | .approved_sha=null | .hold_handoff_episode=$episode
+            .stage="parked" | .parked_reason="superseded" | .unpark_condition=("handoff unit " + $id + " settles") | .approved_sha=null | .hold_handoff_episode=$episode
             | .note=("Superseded by handoff unit " + $id)
           else . end
         else
