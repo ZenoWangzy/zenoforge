@@ -124,4 +124,8 @@ root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
 GH_RUNNERS='{"runners":[{"id":1,"status":"online","labels":[{"name":"cihost-ci"}]},{"id":2,"status":"offline","labels":[{"name":"cihost-ci"}]},{"id":3,"status":"online","labels":[{"name":"cihost-ci-main"}]}]}'; GH_RUN_JOBS='{}'
 rm -f "$HERE/precheck.sh"; HERE="$here_saved"
 CFG="$CFG_SAVED"; TICK_UNFINISHED=""; GH_RERUNS=()
+units '{"units":[]}'; : > "$LOG"; TICK_UNFINISHED='[]'
+root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
+grep -q 'ci wip: [0-9]* free PR runner slot(s); 0 ready unit(s) wait for a CI slot (cancelled 0 queued run(s)); started 0; gated ready 0' "$LOG" \
+  || fail 'an idle admission pass left no free-slot line'
 echo 'scheduler-gates-ci-slots.test.sh: PASS'

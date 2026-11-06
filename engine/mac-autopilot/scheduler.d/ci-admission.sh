@@ -124,7 +124,7 @@ slot_sync() { # id head gated
 }
 
 ci_assign_wip() {
-  local wip k=0 id br head r st jobs n=0 started=0 pre_id="" precheck_on gated gdraft ghead synced_pr cancelled_runs sync_rc
+  local wip k=0 id br head r st jobs n=0 started=0 gated_started=0 pre_id="" precheck_on gated gdraft ghead synced_pr cancelled_runs sync_rc
   local detail_started detail_elapsed
   local -a jobs_to_load=()
   SLOT_SYNC_SPENT=0
@@ -185,7 +185,7 @@ ci_assign_wip() {
         k=$((k - 1)); if (( gated )); then gwait_of["$br"]="$id:$head"; else wait_of["$br"]="$id:$head"; fi
         continue
       fi
-      if (( gated )); then gated_ready "$id" "$br" "$head"; continue; fi
+      if (( gated )); then gated_ready "$id" "$br" "$head"; gated_started=$((gated_started + 1)); continue; fi
       cancelled_runs="$(gh run list --commit "$head" --json databaseId,conclusion --jq '.[] | select(.conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
         || { say "ci wip unit=$id: could not list cancelled runs for head $head; admission deferred"; k=$((k-1)); continue; }
       for r in $cancelled_runs; do
@@ -239,7 +239,8 @@ ci_assign_wip() {
   if [[ -n "$pre_id" ]] && ! jqf -e 'any(.units[]; .precheck_pid != null)' "$UNITS" >/dev/null; then
     precheck_launch "$pre_id" "$(unit_field "$pre_id" .pr)" "$(unit_field "$pre_id" '.approved_sha // empty')" || say "precheck clone unavailable for $pre_id"
   fi
-  (( n + started > 0 )) && say "ci wip: $wip free PR runner slot(s); $(( ${#wait_of[@]} + ${#gwait_of[@]} )) ready unit(s) wait for a CI slot (cancelled $n queued run(s)); started $started"
+  # Every pass, idle ones too: grant delay cannot be read from a log that only speaks when something moved.
+  say "ci wip: $wip free PR runner slot(s); $(( ${#wait_of[@]} + ${#gwait_of[@]} )) ready unit(s) wait for a CI slot (cancelled $n queued run(s)); started $started; gated ready $gated_started"
   return 0
 }
 
