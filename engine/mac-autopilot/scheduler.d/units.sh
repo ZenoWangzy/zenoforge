@@ -397,7 +397,7 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
     supervisor_budget_park "$id" "$evidence (recut route failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
   fi
   if [[ -n "$pr" ]]; then
-    set_unit "$id" '.recut_routed=true'
+    set_unit "$id" '.recut_routed=true' || return 1
     pr_comment="Cap triage is sending issue #$issue to recut: $evidence"
     tick_prs_changed
     pr_state="$(tick_pr_state "$pr" 2>/dev/null || true)"

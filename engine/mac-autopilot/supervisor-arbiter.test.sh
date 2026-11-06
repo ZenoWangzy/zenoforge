@@ -587,16 +587,14 @@ printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor
 ROUTE_RC=0 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
 [[ "$(cat "$route_calls")" == 'route close ' && "$(field pr-651 .stage)" == closed ]] || fail "the PR closes only after the route: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
 
-# A retry after a failed close: the route guard refuses a routed issue, and the PR still has to close.
+# A failed close keeps the route on record, and the retry on that unit skips the refused route and closes.
 : > "$route_calls"
-printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",recut_routed:true,history:[]}]}')" > "$UNITS"
-ROUTE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
-[[ "$(cat "$route_calls")" == 'close ' && "$(field pr-651 .stage)" == closed ]] || fail "a routed unit must skip the route and close: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
-# A failed close keeps the route on record for that retry.
-: > "$route_calls"
-gh() { [[ "$1 $2" != 'pr close' ]] || { printf 'close ' >> "$route_calls"; return 1; }; return 0; }
+gh() { [[ "$1 $2" != 'pr close' ]] || { printf 'close ' >> "$route_calls"; [[ "${CLOSE_RC:-0}" == 0 ]]; return; }; return 0; }
 printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",history:[]}]}')" > "$UNITS"
-ROUTE_RC=0 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
+ROUTE_RC=0 CLOSE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
 [[ "$(field pr-651 .recut_routed)" == true && "$(field pr-651 .stage)" == parked ]] || fail "a failed close must keep the route on record: $(jq -c '.units[0]' "$UNITS")"
+: > "$route_calls"
+ROUTE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
+[[ "$(cat "$route_calls")" == 'close ' && "$(field pr-651 .stage)" == closed ]] || fail "the retry must skip the route and close: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
 
 echo 'supervisor-arbiter.test.sh: all assertions passed'

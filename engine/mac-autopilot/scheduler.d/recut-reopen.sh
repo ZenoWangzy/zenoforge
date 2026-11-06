@@ -17,7 +17,7 @@ intake_reopen_refused_recut() { # issue state-file → 0 when the issue's single
     set_unit "$id" '.recut_reopen_refused = true' && say "intake recut-reopen unit=$id issue=#$n: stop-loss budget already refilled once; stays closed"
     return 1
   fi
-  set_unit "$id" "$(hist supervisor-requeue "recut refused at $refused; reopened with a refilled stop-loss budget") | .stage = \"implement-pending\" | .recut_reopened_at = \"$STAMP\" | .note = null | del(.blocked_on, .self_fix_pending)" \
+  set_unit "$id" "$(hist supervisor-requeue "recut refused at $refused; reopened with a refilled stop-loss budget") | .stage = \"implement-pending\" | .recut_reopened_at = \"$STAMP\" | .note = null | del(.blocked_on, .self_fix_pending, .recut_routed)" \
     && say "intake recut-reopen unit=$id issue=#$n: recut refused at $refused; stop-loss budget refilled" \
     && added=$((${added:-0}+1)) && INTAKE_ADDED=$((${INTAKE_ADDED:-0}+1)) # a reopen is admitted work: it consumes want (added is register_new_issues local)
 }
