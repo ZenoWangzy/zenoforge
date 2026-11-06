@@ -5291,16 +5291,29 @@ sched_case_supervisor_cap_triage_rule_twice() {
     "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
   for attempt in $(seq 1 12); do
     tick
-    command jq -e '.units[0].stage=="parked" and .units[0].parked_reason=="supervisor-cap-founder"' \
-      "$TF/supervisor/autopi/units.json" >/dev/null && break
+    command jq -e '.units[0].supervisor_cap_retry=="spent"' "$TF/supervisor/autopi/units.json" >/dev/null && break
   done
-  command jq -e '.units[0].stage=="parked" and .units[0].parked_reason=="supervisor-cap-founder"
-    and ([.units[0].history[] | select(.stage=="supervisor-cap-rule")]|length)==1
-    and ([.units[0].history[] | select(.stage=="supervisor-cap-founder")]|length)==1' \
+  command jq -e '.units[0].supervisor_cap_retry=="spent"
+    and ([.units[0].history[] | select(.stage=="supervisor-cap-rule")]|length)==2' \
     "$TF/supervisor/autopi/units.json" >/dev/null \
-    || { echo 'not ok - scheduler.test.sh: a second cap RULE was not sent to FOUNDER' >&2; exit 1; }
-  [[ "$(grep -c 'cap-triage-founder' "$TF/agent-home/supervisor-inbox")" == 1 ]] \
-    || { echo 'not ok - scheduler.test.sh: second cap did not post exactly one founder question' >&2; exit 1; }
+    || { echo 'not ok - scheduler.test.sh: a second cap RULE did not get its one retry' >&2; exit 1; }
+  command jq --argjson h "$(cap_triage_history)" '(.units[0].history += $h) | .units[0].stage="supervisor-review" | .units[0].hold_handoff_waiting=false' \
+    "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+  for attempt in $(seq 1 12); do
+    # The mark is #504's no-change hold on the run before this cap; a real unit lifts it with a new head or ruling.
+    command jq 'del(.units[0].arbiter_left_mark)' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+    tick
+    command jq -e '.units[0].parked_reason=="supervisor-cap-exhausted"' "$TF/supervisor/autopi/units.json" >/dev/null && break
+  done
+  command jq -e '.units[0].stage=="parked" and .units[0].parked_reason=="supervisor-cap-exhausted"
+    and (.units[0].unpark_condition | length > 0) and (.units[0].cap_exhausted_mark != null)
+    and ([.units[0].history[] | select(.stage=="supervisor-cap-founder")]|length)==0' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: a third cap did not end in a terminal park with its unpark condition' >&2; exit 1; }
+  [[ "$(grep -c 'cap-exhausted' "$TF/agent-home/supervisor-inbox")" == 1 ]] \
+    || { echo 'not ok - scheduler.test.sh: a terminal park did not send head exactly one line' >&2; exit 1; }
+  ! grep -q 'cap-triage-founder' "$TF/agent-home/supervisor-inbox" \
+    || { echo 'not ok - scheduler.test.sh: repeated caps reached the founder' >&2; exit 1; }
 }
 sched_run_case supervisor_cap_triage_rule_twice
 

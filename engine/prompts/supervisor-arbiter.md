@@ -124,7 +124,11 @@ and CI evidence. This is the last automated arbitration at the current cap:
   ruling resolves. Put that ruling in the reason; do not use this for a
   product question that only the owner can answer.
 - `FOUNDER`: a product direction or owner fact is missing and only the owner
-  can supply it. State one direct question in `QUESTION`.
+  can supply it. State one direct question in `QUESTION`, ending in a question
+  mark and naming that fact: a business rule, a product choice, a contract or
+  an account detail. An engine fault, a failed delivery, a stuck unit or a
+  dispute you can rule on does not qualify. "Could not decide automatically"
+  is rejected.
 
 Output exactly one non-empty, single-line `REASON`, exactly one non-empty,
 single-line `EVIDENCE`, an optional single-line `QUESTION` only for `FOUNDER`,

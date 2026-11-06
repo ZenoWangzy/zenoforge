@@ -48,6 +48,11 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     [[ -n "$u" ]] || continue
     id="$(jqf -r .id <<<"$u")"
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
+    if [[ "$(jqf -r '.parked_reason // empty' <<<"$u")" == supervisor-cap-exhausted ]]; then
+      [[ "$(supervisor_arbiter_mark "$u")" != "$(jqf -r '.cap_exhausted_mark // empty' <<<"$u")" ]] || continue
+      set_unit "$id" '.parked_reason="supervisor-arbitration-cap" | del(.supervisor_cap_retry, .cap_exhausted_mark, .unpark_condition)'
+      u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+    fi
     supervisor_arbiter_over_daily_max "$u" && continue
     supervisor_arbiter_no_change_hold "$u" && continue
     is_swept=false
@@ -98,7 +103,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     if [[ "$is_swept" == true ]]; then
       return_stage="$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")"
       [[ -n "$return_stage" ]] || return_stage="$(supervisor_return_stage "$u")"
-      set_unit "$id" ".stage=\"supervisor-review\" | .supervisor_cap_return_stage=$(js "$return_stage") | .supervisor_cap_from_parked=true | del(.parked_reason)"
+      set_unit "$id" ".stage=\"supervisor-review\" | .supervisor_cap_return_stage=$(js "$return_stage") | .supervisor_cap_from_parked=true | if .parked_reason==\"supervisor-cap-founder\" then .supervisor_cap_retry=\"pending\" else . end | del(.parked_reason)"
       u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
     elif [[ -z "$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")" ]]; then
       return_stage="$(supervisor_return_stage "$u")"
@@ -174,7 +179,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     in_flight=$((in_flight + 1))
     [[ "$cap_triage" == true ]] && cap_triaged=$((cap_triaged + 1))
     (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
-  done < <(jqf -c --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '.units[] | select((.stage=="supervisor-review" or .stage=="parked") and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.stage!="parked" or .parked_reason=="supervisor-arbitration-cap" or .parked_reason=="supervisor-cap-triage-reask" or .parked_reason=="recut-refused-unpushed" or any((.history // [])[]?; .stage=="supervisor-budget-park" and ((.result // "") | test($cap_park_result_re))) or .stage=="supervisor-cap-triage-park"))' "$UNITS")
+  done < <(jqf -c --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '.units[] | select((.stage=="supervisor-review" or .stage=="parked") and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.stage!="parked" or .parked_reason=="supervisor-arbitration-cap" or .parked_reason=="supervisor-cap-triage-reask" or .parked_reason=="recut-refused-unpushed" or .parked_reason=="supervisor-cap-founder" or .parked_reason=="supervisor-cap-exhausted" or any((.history // [])[]?; .stage=="supervisor-budget-park" and ((.result // "") | test($cap_park_result_re))) or .stage=="supervisor-cap-triage-park"))' "$UNITS")
 }
 
 supervisor_action_of() { # report-path → 唯一 ACTION 行的动作名；无法判定返回 1
@@ -388,7 +393,7 @@ supervisor_cap_verdict_of() { # report-path → exactly one final CLOSE/RECUT/RU
   if [[ "$verdict" == FOUNDER ]]; then
     [[ "$question_count" == 1 ]] || return 1
     question="$(supervisor_cap_field_line "$report" QUESTION)" || return 1
-    [[ -n "${question//[[:space:]]/}" ]] || return 1
+    supervisor_founder_question_names_fact "$question" || return 1
   else
     [[ "$question_count" == 0 ]] || return 1
   fi
@@ -397,12 +402,32 @@ supervisor_cap_verdict_of() { # report-path → exactly one final CLOSE/RECUT/RU
   printf '%s\n' "$verdict"
 }
 
-supervisor_cap_founder() { # id reason evidence [report-path] → one owner question in the supervisor inbox
-  local id="$1" reason="$2" evidence="$3" rep="${4:-}" u issue question message decision inbox_status=0
+supervisor_cap_second_rule() { # id reason evidence decision retry-state → another cap gets one retry, then a terminal park; neither asks the founder
+  local id="$1" reason="$2" evidence="$3" decision="$4" retry="$5"
+  if [[ "$retry" == spent ]]; then
+    supervisor_cap_exhausted "$id" "$reason" "$decision"
+  else
+    set_unit "$id" '.supervisor_cap_retry="pending"'
+    supervisor_cap_triage_park "$id" "second cap after an earlier RULE: $reason; evidence: $evidence" "$decision"
+  fi
+}
+
+supervisor_cap_exhausted() { # id reason decision → terminal park with its unpark condition and one line to head
+  local id="$1" reason="$2" decision="$3" u mark condition note
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
-  question=""
-  [[ -z "$rep" ]] || question="$(supervisor_cap_field_line "$rep" QUESTION 2>/dev/null || true)"
-  [[ -n "${question//[[:space:]]/}" ]] || question="$(supervisor_needs_info_question "$u")"
+  mark="$(supervisor_arbiter_mark "$u")"
+  condition="a new PR head, issue state or supervisor ruling"
+  note="capped again after its one retry: $reason; unpark on $condition"
+  cap_set_unit "$id" park "$note" "" "$(hist supervisor-cap-exhausted "$reason" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-exhausted\" | .unpark_condition=$(js "$condition") | .cap_exhausted_mark=$(js "$mark") | .note=$(js "$note")" \
+    && say "supervisor cap triage unit=$id: parked, retry spent"
+  ( source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "cap-exhausted:$id:$mark" "cap-exhausted unit=$id: $note" ) \
+    || say "supervisor cap triage unit=$id: cap-exhausted alert not delivered"
+}
+
+supervisor_cap_founder() { # id reason evidence report-path → one owner question in the supervisor inbox; the verdict parser proved the QUESTION
+  local id="$1" reason="$2" evidence="$3" rep="$4" u issue question message decision inbox_status=0
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+  question="$(supervisor_cap_field_line "$rep" QUESTION)"
   issue="$(jqf -r '.issue // empty' <<<"$u")"
   message="cap-triage-founder unit=$id${issue:+ issue=#$issue} question=$question reason=$reason evidence=$evidence"
   decision="$(decision_entry 'Supervisor cap triage: FOUNDER' "$reason" "$evidence" '[]' supervisor)"
@@ -418,10 +443,11 @@ supervisor_cap_founder() { # id reason evidence [report-path] → one owner ques
 }
 
 supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
-  local id="$1" rep="$2" verdict="$3" reason evidence decision issue pr state comment u cap_rules return_stage ruling
+  local id="$1" rep="$2" verdict="$3" reason evidence decision issue pr state comment u cap_rules return_stage ruling retry
   reason="$(supervisor_cap_field_line "$rep" REASON)"
   evidence="$(supervisor_cap_field_line "$rep" EVIDENCE)"
   decision="$(decision_entry "Supervisor cap triage: $verdict" "$reason" "$evidence" '[]' supervisor)"
+  retry="$(unit_field "$id" '.supervisor_cap_retry // empty')"
   case "$verdict" in
     CLOSE)
       issue="$(unit_field "$id" '.issue // empty')"; pr="$(unit_field "$id" '.pr // empty')"
@@ -445,17 +471,22 @@ supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
     RULE)
       u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
       cap_rules="$(jqf -r '[(.history // [])[] | select(.stage=="supervisor-cap-rule")] | length' <<<"$u")"
-      if (( cap_rules >= 1 )); then
-        supervisor_cap_founder "$id" "second cap after an earlier RULE: $reason" "$evidence" "$rep"
+      if (( cap_rules >= 1 )) && [[ "$retry" != pending ]]; then
+        supervisor_cap_second_rule "$id" "$reason" "$evidence" "$decision" "$retry"
         return 0
       fi
+      [[ "$retry" != pending ]] || set_unit "$id" '.supervisor_cap_retry="spent"'
       return_stage="$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")"
       [[ -n "$return_stage" ]] || return_stage="$(supervisor_return_stage "$u")"
       ruling="Supervisor cap ruling: $reason Evidence: $evidence"
       cap_set_unit "$id" RULE "$ruling" "$rep" "$(hist supervisor-cap-rule "$reason" "$decision") | $(hist supervisor-arbiter-round "cap triage ruling applied: $reason" "$decision") | .cto_rulings=($(cto_rulings_norm) + [$(js "$ruling")]) | .stage=$(js "$return_stage") | .supervisor_cap_return_stage=$(js "$return_stage") | del(.parked_reason,.note,.supervisor_cap_from_parked)" \
         && say "supervisor cap triage unit=$id: RULE -> $return_stage" ;;
     FOUNDER)
-      supervisor_cap_founder "$id" "$reason" "$evidence" "$rep" ;;
+      if [[ "$retry" == spent ]]; then
+        supervisor_cap_exhausted "$id" "$reason" "$decision"
+      else
+        supervisor_cap_founder "$id" "$reason" "$evidence" "$rep"
+      fi ;;
     *) return 1 ;;
   esac
 }

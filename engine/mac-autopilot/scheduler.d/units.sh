@@ -333,9 +333,23 @@ supervisor_arbiter_record_left() { # unit: only a decision that left it here hol
   fi
 }
 
+# A question to the founder must name a fact only the owner has. Text that only
+# reports that the engine could not decide is an engine fault, not a question.
+SUPERVISOR_FOUNDER_GENERIC_RE='could not (be )?(decided?|resolved?)|cannot (be )?decided?|decide automatically|automatically decide|无法(自动)?裁决|多次升级'
+
+supervisor_founder_question_names_fact() { # question text
+  [[ -n "${1//[[:space:]]/}" && "$1" == *[?？]* ]] || return 1
+  ! grep -Eiq "$SUPERVISOR_FOUNDER_GENERIC_RE" <<<"$1"
+}
+
 supervisor_cap_parked_unit() { # unit-json → whether this is a retryable arbitration-cap park (including legacy parks)
+  if [[ "$(jqf -r '.stage + "|" + (.parked_reason // "")' <<<"$1")" == parked\|supervisor-cap-founder ]]; then
+    [[ -z "$(jqf -r '.supervisor_cap_retry // empty' <<<"$1")" ]] || return 1
+    ! supervisor_founder_question_names_fact "$(jqf -r '.supervisor_cap_question // ""' <<<"$1")"
+    return
+  fi
   jqf -e --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '
-    .stage == "parked" and .parked_reason != "supervisor-cap-founder" and (
+    .stage == "parked" and .parked_reason != "supervisor-cap-exhausted" and (
       .parked_reason == "supervisor-arbitration-cap" or
       .parked_reason == "supervisor-cap-triage-reask" or
       .parked_reason == "recut-refused-unpushed" or
