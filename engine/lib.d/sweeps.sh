@@ -404,6 +404,7 @@ sweep_batch_state() {
 sweep_unlabeled_issues() {
   local candidates issue_pages n issue_json issue_after_write issue_state recut_status state_labels_json lane_match_status maintainer_test founder_login roster intake_since candidate_branch source_issue
   local rescued=0 scan_complete=1 mutation_failed=0 state_label marker="$AGENT_HOME/unlabeled-issue-sweep-alerted"
+  local needs_read lane_labels_json read_error
   local inbox="$AGENT_HOME/supervisor-inbox"
   local -a edit_args=()
 
@@ -420,15 +421,18 @@ sweep_unlabeled_issues() {
   # it is new: only issues created inside the intake window qualify, and one
   # already judged (founder_test_checked in local state) is not re-read.
   intake_since="$(date -u -d "-${ZF_MAINTAINER_TEST_INTAKE_HOURS:-48} hours" +%Y-%m-%dT%H:%M:%SZ)" || return 1
-  if ! candidates="$(jq -r --argjson states "$state_labels_json" --arg maintainer "$founder_login" --arg since "$intake_since" '
+  lane_labels_json="$(pipeline_system_issue_labels_json)" || return 1
+  if ! candidates="$(jq -r --argjson states "$state_labels_json" --argjson lanes "$lane_labels_json" --arg maintainer "$founder_login" --arg since "$intake_since" '
     if type != "array" or any(.[]; type != "array") then error("invalid paginated issue response")
     else
       (add // [])[]
       | select(type == "object" and (has("pull_request") | not) and .state == "open")
       | [.labels[]?.name] as $names
-      | if all($states[]; . as $state | ($names | index($state)) == null) then "\(.number)\tunlabeled"
-        elif ($maintainer != "") and ((.user.login // "") | ascii_downcase) == ($maintainer | ascii_downcase)
-          and (($names | index("founder-test")) == null) and ((.created_at // "") >= $since) then "\(.number)\tmaintainer"
+      | (($maintainer != "") and ((.user.login // "") | ascii_downcase) == ($maintainer | ascii_downcase)
+          and (($names | index("founder-test")) == null) and ((.created_at // "") >= $since)) as $new
+      | (if $new or any($names[]; . as $name | ($lanes | index($name)) != null) then "read" else "" end) as $read
+      | if all($states[]; . as $state | ($names | index($state)) == null) then "\(.number)\tunlabeled\t\($read)"
+        elif $new then "\(.number)\tmaintainer\t\($read)"
         else empty end
     end
   ' <<< "$issue_pages")"; then
@@ -437,8 +441,14 @@ sweep_unlabeled_issues() {
   fi
   issue_label_cache_invalidate
 
-  while IFS=$'\t' read -r n candidate_branch; do
+  read_error="$(mktemp)" || return 1
+  while IFS=$'\t' read -r n candidate_branch needs_read; do
     [[ "$n" =~ ^[0-9]+$ ]] || continue
+    if ! gh_tick_attempt_timeout_sec >/dev/null; then
+      echo "sweep_unlabeled_issues: tick deadline reached at #$n; the rest wait for the next tick" >&2
+      scan_complete=0
+      break
+    fi
     if [ "$candidate_branch" = maintainer ] \
       && state_read "$n" 2>/dev/null | jq -e '.founder_test_checked == true' >/dev/null 2>&1; then
       continue
@@ -447,8 +457,13 @@ sweep_unlabeled_issues() {
       [ "${ISSUE_LABEL_VIEW_STATE[$n]:-}" = failed ] && scan_complete=0
       continue
     fi
-    if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json number,state,labels,title,body,author,comments 2>/dev/null)"; then
-      echo "sweep_unlabeled_issues: cannot re-read #$n; skipping" >&2
+    # A tracker leaves this loop unchanged, so 171 of them re-read every tick spent the deadline before anything else ran.
+    # Only a new maintainer issue or a pipeline-system issue has work to do before the tracker check below.
+    if [ -z "$needs_read" ] && state_read "$n" 2>/dev/null | jq -e '.tracker_parent == true or .state == "tracker"' >/dev/null 2>&1; then
+      continue
+    fi
+    if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json number,state,labels,title,body,author,comments 2>"$read_error")"; then
+      echo "sweep_unlabeled_issues: cannot re-read #$n: $(head -n 1 "$read_error"); skipping" >&2
       scan_complete=0
       continue
     fi
@@ -541,6 +556,7 @@ sweep_unlabeled_issues() {
     fi
     rescued=$((rescued + 1))
   done <<< "$candidates"
+  rm -f -- "$read_error"
 
   if [ "${DRY_RUN:-0}" = "1" ]; then
     [ "$rescued" -gt 0 ] && echo "issue-pipeline: unlabeled-issue-sweep would-rescue=$rescued" >&2

@@ -309,6 +309,28 @@ run_sweep >/dev/null
 assert_contains "sweep uses complete API pagination" "$(cat "$FAKE_GH_LOG")" 'api --paginate --slurp'
 assert_contains "sweep reaches unlabeled issue after 1000 results" "$(cat "$FAKE_GH_LOG")" 'issue edit 8200'
 
+# A tracker costs no GitHub read, a tracker with a lane label still does, and a spent deadline stops with one line.
+cat >"$FAKE_ISSUES_FILE" <<'JSON'
+[{"number":7131,"state":"OPEN","labels":[{"name":"bug"}]},
+ {"number":7132,"state":"OPEN","labels":[{"name":"pipeline-system"}]}]
+JSON
+printf '%s\n' '{"state":"tracker"}' >"$AGENT_HOME/state/7131.json"
+printf '%s\n' '{"state":"tracker"}' >"$AGENT_HOME/state/7132.json"
+: >"$FAKE_GH_LOG"
+run_sweep >/dev/null || true
+assert_eq "a tracker costs no GitHub read" 0 "$(grep -c '^issue view 7131 ' "$FAKE_GH_LOG" || true)"
+assert_contains "a lane issue is still read" "$(cat "$FAKE_GH_LOG")" 'issue view 7132 '
+cat >"$FAKE_ISSUES_FILE" <<'JSON'
+[{"number":7133,"state":"OPEN","labels":[{"name":"bug"}]},{"number":7134,"state":"OPEN","labels":[{"name":"bug"}]}]
+JSON
+printf '%s\n' '{}' >"$AGENT_HOME/state/7133.json"; printf '%s\n' '{}' >"$AGENT_HOME/state/7134.json"
+gh_tick_attempt_timeout_sec() { [ "${FUNCNAME[1]}" != sweep_unlabeled_issues ] || return 1; echo 60; } # the list still runs
+deadline_out="$(run_sweep || true)"
+unset -f gh_tick_attempt_timeout_sec
+source "$SCRIPT_DIR/lib.d/transport.sh"
+assert_eq "a spent deadline prints one line" 1 "$(grep -c 'sweep_unlabeled_issues:' <<<"$deadline_out")"
+assert_contains "a spent deadline names where it stopped" "$deadline_out" 'tick deadline reached at #7133'
+
 # A successful GitHub label write must be reported even when the following
 # local state merge fails and stops this sweep.
 cat >"$FAKE_ISSUES_FILE" <<'JSON'
