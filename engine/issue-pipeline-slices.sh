@@ -81,7 +81,7 @@ run_pipeline_slices() {
     case "$stage:$mode" in release:triage) continue ;; esac
     case "$stage" in
       fastlane) budget=150 ;; triage) budget=120 ;; advisor) budget=150 ;;
-      recut) budget=60 ;; release|maintenance) budget=120 ;;
+      recut) budget=60 ;; release) budget=120 ;; maintenance) budget=150 ;;
     esac
     if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
       ZF_CALL_PROFILE_STAGE="$stage"

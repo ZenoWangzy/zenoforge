@@ -545,7 +545,10 @@ issue_transition_allowed() {
     concluded:released)
       [ "$reason" = deployment-proven ] || return 1
       ;;
-    on-hold:concluded|on-hold:duplicate|on-hold:finish-first|on-hold:wontfix)
+    on-hold:finish-first)
+      [[ "$reason" == conclude:* || "$reason" == close-* || "$reason" == hold-expired ]] || return 1
+      ;;
+    on-hold:concluded|on-hold:duplicate|on-hold:wontfix)
       [[ "$reason" == conclude:* || "$reason" == close-* ]] || return 1
       ;;
     on-hold:*)

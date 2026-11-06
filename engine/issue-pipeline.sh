@@ -1435,7 +1435,7 @@ run_post_dispatch_maintenance() {
   local resume_suffix=0 original_gh_deadline="${ZF_GH_CALL_DEADLINE_EPOCH_MS:-}"
   local original_gmail_deadline="${ZF_GMAIL_CALL_DEADLINE_EPOCH_MS:-}" original_email_stop_at="${ZF_NEEDS_INFO_EMAIL_STOP_AT_SECONDS:-}"
   local -a prefix_steps=(checks-blocked-sweep hold-sweep supervisor-hold-sweep hand-completion-events founder-outcome-recovery)
-  local -a suffix_steps=(needs-info-blocker-roots needs-info-unlabeled needs-info-loop main-red-bisect batch-state)
+  local -a suffix_steps=(needs-info-unlabeled needs-info-loop main-red-bisect batch-state needs-info-blocker-roots) # roots last: it spends all the time it gets and resumes by its own cursor
   [[ "$required_slot" =~ ^[1-9][0-9]*$ ]] || required_slot=55
   [[ "$reopen_slot" =~ ^[1-9][0-9]*$ ]] || reopen_slot=18
   (( required_slot >= 55 )) || required_slot=55

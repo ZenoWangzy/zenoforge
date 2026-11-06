@@ -460,7 +460,8 @@ hold_sweep() {
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
     grep -Fxq "$n" <<< "$numbers" || numbers="${numbers}${numbers:+$'\n'}$n"
   done
-  numbers="$(printf '%s\n' "$numbers" | LC_ALL=C sort -u)" || return 1
+  # Shuffled: the slice deadline can end the loop, and a fixed order starves the same tail every tick.
+  numbers="$(printf '%s\n' "$numbers" | LC_ALL=C sort -u | shuf)" || return 1
   state_label_json="$(printf '%s\n' "${ALL_STATE_LABELS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
   now_epoch="$(date -u +%s)" || return 1
   while IFS= read -r n; do
@@ -473,7 +474,7 @@ hold_sweep() {
     if ! grep -Fxq "$n" <<< "$live_hold_numbers"; then
       [ "$(jq -r '.state // empty' <<< "$state_json")" = on-hold ] || continue
       if [ -z "$issue_json" ]; then
-        if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json state,stateReason,closedAt,labels,comments,title 2>/dev/null)"; then
+        if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json number,state,stateReason,closedAt,labels,comments,title 2>/dev/null)"; then
           echo "hold_sweep: could not inspect state-only held #$n; leaving state untouched" >&2
           failure=1
           continue
