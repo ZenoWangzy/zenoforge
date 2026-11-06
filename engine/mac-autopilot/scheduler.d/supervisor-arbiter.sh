@@ -48,7 +48,10 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     [[ -n "$u" ]] || continue
     id="$(jqf -r .id <<<"$u")"
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
-    if [[ "$(jqf -r '.parked_reason // empty' <<<"$u")" == supervisor-cap-exhausted ]]; then
+    if [[ "$(jqf -r '.cap_exhausted_by // empty' <<<"$u")" == no-answer ]]; then
+      supervisor_no_answer_unpark "$u" || continue
+      u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+    elif [[ "$(jqf -r '.parked_reason // empty' <<<"$u")" == supervisor-cap-exhausted ]]; then
       mark="$(supervisor_arbiter_mark "$u")"
       if [[ "$mark" == "$(jqf -r '.cap_exhausted_mark // empty' <<<"$u")" ]]; then
         supervisor_cap_exhausted_alert "$id" "$mark" "$(jqf -r '.note // ""' <<<"$u")"  # once per mark: this repeats only a failed delivery
@@ -60,6 +63,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
     fi
     supervisor_arbiter_over_daily_max "$u" && continue
+    (( "$(jqf -r '.arbiter_retry_after // 0' <<<"$u")" <= "$(date +%s)" )) || continue
     supervisor_arbiter_no_change_hold "$u" && continue
     is_swept=false
     if [[ "$(jqf -r '.stage // empty' <<<"$u")" == parked ]]; then
@@ -502,6 +506,58 @@ supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
   esac
 }
 
+# A run with no answer waits 1h, 2h, then 4h. The fourth in a row ends the streak:
+# if nothing answered meanwhile the provider is out and the unit waits for it,
+# otherwise the fault is this unit's and it takes the ordinary terminal park.
+ARBITER_NO_ANSWER_MAX=4
+ARBITER_PROBE_EVERY_S=21600
+
+supervisor_file_epoch() { date -r "$1" +%s 2>/dev/null || echo 0; }
+
+supervisor_arbiter_no_answer() { # id detail outage-possible(true|false)
+  local id="$1" detail="$2" outage="$3" n since now decision
+  now="$(date +%s)"
+  n="$(( $(unit_field "$id" '.arbiter_no_answer // 0') + 1 ))"
+  since="$(unit_field "$id" ".arbiter_no_answer_since // $now")"
+  if (( n < ARBITER_NO_ANSWER_MAX )); then
+    set_unit "$id" ".arbiter_no_answer=$n | .arbiter_no_answer_since=$since | .arbiter_retry_after=$(( now + 3600 * (1 << (n - 1)) ))"
+    say "supervisor arbitration unit=$id: no answer $n of $ARBITER_NO_ANSWER_MAX, next run waits $(( 1 << (n - 1) ))h"
+    return 0
+  fi
+  decision="$(decision_entry "Stop after $n arbiter runs with no answer" "$detail" "$detail" '[]' scheduler)"
+  if [[ "$outage" == true ]] && (( "$(supervisor_file_epoch "$SUP/arbiter-last-answer")" < since )); then
+    supervisor_no_answer_park "$id" "$n" "$detail" "$decision" "$now"
+  else
+    set_unit "$id" 'del(.arbiter_no_answer, .arbiter_no_answer_since, .arbiter_retry_after)'
+    supervisor_cap_exhausted "$id" "$n arbiter runs in a row gave no answer: $detail" "$decision"
+  fi
+}
+
+supervisor_no_answer_park() { # id count detail decision now → waits for a provider; one alert per outage
+  local id="$1" n="$2" detail="$3" decision="$4" now="$5" condition note outage
+  condition="any arbiter run answers, tried every $(( ARBITER_PROBE_EVERY_S / 3600 ))h on one unit"
+  note="$n arbiter runs in a row gave no answer and no other run answered: $detail; unpark when $condition"
+  cap_set_unit "$id" park "$note" "" "$(hist supervisor-cap-exhausted "$detail" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-exhausted\" | .cap_exhausted_by=\"no-answer\" | .cap_exhausted_at=$now | .unpark_condition=$(js "$condition") | .note=$(js "$note") | del(.arbiter_retry_after, .arbiter_no_answer_since)" || return 1
+  say "supervisor arbitration unit=$id: parked until a provider answers"
+  outage="$(supervisor_file_epoch "$SUP/arbiter-last-answer")"
+  ( source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "arbiter-no-answer:$outage" "arbiter-no-answer: runs stopped answering, first unit=$id; units park and return by themselves when $condition" ) \
+    || say "supervisor arbitration unit=$id: outage alert not delivered"
+}
+
+supervisor_no_answer_unpark() { # unit-json → 0 after unparking: a run answered, or this unit is the one probe of the interval
+  local u="$1" id now at last_probe keep
+  id="$(jqf -r .id <<<"$u")"; now="$(date +%s)"; at="$(jqf -r '.cap_exhausted_at // 0' <<<"$u")"
+  if (( "$(supervisor_file_epoch "$SUP/arbiter-last-answer")" > at )); then
+    keep='del(.arbiter_no_answer)'
+  else
+    last_probe="$(supervisor_file_epoch "$SUP/arbiter-last-probe")"
+    (( now - (last_probe > at ? last_probe : at) >= ARBITER_PROBE_EVERY_S )) || return 1
+    touch "$SUP/arbiter-last-probe"
+    keep=".arbiter_no_answer=$(( ARBITER_NO_ANSWER_MAX - 1 )) | .arbiter_no_answer_since=$now"  # a probe with no answer parks again at once
+  fi
+  set_unit "$id" ".parked_reason=\"supervisor-arbitration-cap\" | del(.cap_exhausted_by, .cap_exhausted_at, .unpark_condition) | $keep"
+}
+
 supervisor_cap_triage_failed() { # id detail → retryable cap park
   local id="$1" detail="$2" decision
   decision="$(decision_entry 'Retry supervisor cap triage' "$detail" "$detail" '[]' scheduler)"
@@ -584,10 +640,12 @@ harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or fin
   [[ "$tk" =~ ^[0-9]+$ ]] && set_unit "$unit" ".tokens = ((.tokens // 0) + $tk)"
   session_id="$(jqf -r '.session_id // empty' <<<"$stream")"
   python3 "$USAGE_READER" codex-ingest "$log" "$session_id" "$(jqf -r .started <<<"$w")" "$BUDGET_EVENTS" >/dev/null 2>&1 || true
+  [[ ! -s "$SUP/$report" ]] || touch "$SUP/arbiter-last-answer"
   if [[ "$cap_triage" == true ]]; then
     if [[ ! -s "$SUP/$report" ]]; then
       supervisor_cap_triage_failed "$unit" "final cap triage worker produced no report $report"
       say "supervisor cap triage unit=$unit: worker produced no report"
+      supervisor_arbiter_no_answer "$unit" "no report $report" true
     elif action="$(supervisor_cap_verdict_of "$SUP/$report")"; then
       say "supervisor cap triage unit=$unit verdict=$action"
       decided=true
@@ -600,6 +658,7 @@ harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or fin
   elif [[ ! -s "$SUP/$report" ]]; then
     set_unit "$unit" "$(hist supervisor-arbiter-no-output "$(tail -c 200 "$log" 2>/dev/null | tr '\n' ' ')")"
     say "supervisor arbitration unit=$unit: worker produced no report"
+    supervisor_arbiter_no_answer "$unit" "no report $report" true
   else
     if action="$(supervisor_action_of "$SUP/$report")"; then
       say "supervisor arbitration unit=$unit action=$action"
@@ -609,10 +668,14 @@ harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or fin
     else
       set_unit "$unit" "$(hist supervisor-arbiter-invalid "$(head -c 200 "$SUP/$report" | tr '\n' ' ')")"
       say "supervisor arbitration unit=$unit: no single ACTION line in $report"
+      supervisor_arbiter_no_answer "$unit" "no ACTION line in $report" false
     fi
   fi
-  # A run with no answer decided nothing: only a decision holds the next run.
-  [[ "$decided" != true ]] || supervisor_arbiter_record_left "$unit"
+  # A run with no answer decided nothing: only a decision holds the next run, and it ends a no-answer streak.
+  if [[ "$decided" == true ]]; then
+    set_unit "$unit" 'del(.arbiter_no_answer, .arbiter_no_answer_since, .arbiter_retry_after)'
+    supervisor_arbiter_record_left "$unit"
+  fi
   jqf --argjson pid "$pid" --arg finished "$STAMP" \
     '(.workers[] |= (if .pid==$pid and .type=="supervise" and .harvested!=true then .harvested=true | .finished_at=$finished else . end))' "$WORKERS" | write_state "$WORKERS"
 }
