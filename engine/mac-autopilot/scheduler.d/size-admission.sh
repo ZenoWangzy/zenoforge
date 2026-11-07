@@ -272,7 +272,7 @@ $remainder
 $(head -n 200 "$rep" 2>/dev/null)"
   # The follow-up is the parent's sibling: an open child makes the parent a roadmap container, which refuses awaiting-release.
   parent="$(gh api "repos/{owner}/{repo}/issues/$issue/parent" --jq '.number // empty' 2>/dev/null || true)"
-  url="$(gh issue create --title "$(unit_field "$unit" .title)（续作自 #${issue}）" --body "$body" --label needs-triage ${parent:+--parent "$parent"} 2>/dev/null || true)"
+  url="$(scheduler_auto_filed_issue_create --title "$(unit_field "$unit" .title)（续作自 #${issue}）" --body "$body" --label needs-triage ${parent:+--parent "$parent"} 2>/dev/null || true)"
   if [[ -n "$url" ]]; then
     num="${url##*/}"
     set_unit "$unit" "$(hist split-followup "issue #$num: $remainder") | .split_followup=$num"

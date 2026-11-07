@@ -11,6 +11,34 @@ STUCK = {"blocked-external", "parked", "needs-human", "supervisor-review"}
 ACCEPTED_KEEP_S = 3 * 86400  # an accepted requirement stays listed for 3 days
 
 
+def configured_anomaly_prefix():
+    """Configured title prefix for production-log anomaly tickets, if available."""
+    try:
+        from config_paths import zf_config_file
+        path = zf_config_file("night.json")
+        if not path: return ""
+        doc = json.load(open(path, encoding="utf-8"))
+        prefix = doc.get("anomaly_rules", {}).get("production_logs", {}).get("issue_title_prefix", "")
+        return prefix if isinstance(prefix, str) else ""
+    except (OSError, ValueError, TypeError, AttributeError):
+        return ""
+
+
+def is_auto_filed_ticket(issue, anomaly_prefix=None):
+    """Shared auto-filed predicate for GitHub issue rows and scheduler unit rows."""
+    labels = issue.get("labels") or []
+    names = set()
+    for label in labels:
+        name = label if isinstance(label, str) else label.get("name", "") if isinstance(label, dict) else ""
+        if isinstance(name, str): names.add(name)
+    if names & {"incident", "prod-anomaly", "auto-filed"}: return True
+    title = issue.get("title") or ""
+    if not isinstance(title, str): title = ""
+    if title.startswith(("Incident: ", "factory-f")): return True
+    prefix = configured_anomaly_prefix() if anomaly_prefix is None else anomaly_prefix
+    return isinstance(prefix, str) and bool(prefix) and title.startswith(prefix)
+
+
 def _epoch(iso):
     try: return calendar.timegm(time.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S"))
     except Exception: return None
@@ -65,8 +93,10 @@ def build(units, issues, rulings, accepted, now, hotfix_live=None):
     for n, u in by_issue.items():
         if n not in known and set(u.get("labels") or []) & set(LABELS) and u.get("stage") != "closed":
             cand[n] = (u.get("title") or "", set(u["labels"]))
+    anomaly_prefix = configured_anomaly_prefix()
     items = []
     for n, (title, labels) in cand.items():
+        if is_auto_filed_ticket({"title": title, "labels": labels}, anomaly_prefix): continue
         u = by_issue.get(n)
         stage, at = stage_of(u, labels, done.get(n), (hotfix_live or {}).get(n))
         blocked = (u or {}).get("blocked_on")

@@ -24,6 +24,25 @@ got = {i["issue"]: (i["stage"], i["text"], i["owner"], i["blocker"]) for i in r[
 assert got == {1: (2, "founder words", "vecta-29", ""), 2: (3, "t2", "热修值班", ""), 3: (4, "t3", "未接单", ""), 7: (0, "unit only", "pipeline", "等 #9")}, got
 assert [i["issue"] for i in r["items"]] == [7, 2, 1, 3] and not r["partial"]  # accepted last, newest issue first
 assert F.build(units, None, rulings, acc, now)["partial"]
+# Auto-filed tickets leave the founder ledger even when they carry a founder label.
+config_root = tempfile.mkdtemp()
+os.makedirs(config_root, exist_ok=True)
+json.dump({"anomaly_rules": {"production_logs": {"issue_title_prefix": "Configured anomaly: "}}},
+          open(config_root + "/night.json", "w"))
+os.environ["ZF_CONFIG_ROOT"] = config_root
+auto_issues = [
+    {"number": 20, "title": "founder requirement", "state": "OPEN", "labels": lab("founder-test")},
+    {"number": 21, "title": "Incident: machine report", "state": "OPEN", "labels": lab("founder-test")},
+    {"number": 22, "title": "factory-f1 machine report", "state": "OPEN", "labels": lab("focus")},
+    {"number": 23, "title": "Configured anomaly: machine report", "state": "OPEN", "labels": lab("focus")},
+    {"number": 24, "title": "machine report", "state": "OPEN", "labels": lab("founder-test", "auto-filed")},
+    {"number": 25, "title": "machine report", "state": "OPEN", "labels": lab("focus", "incident")},
+    {"number": 26, "title": "machine report", "state": "OPEN", "labels": lab("focus", "prod-anomaly")},
+]
+auto_units = [{"id": "issue-27", "issue": 27, "title": "Incident: unit-only machine report",
+               "stage": "implement-pending", "labels": ["founder-test"]}]
+auto_items = F.build(auto_units, auto_issues, [], [], now)["items"]
+assert [item["issue"] for item in auto_items] == [20], auto_items
 # hotfix-live.jsonl: the hotfix lane's event file moves a hotfix item to 热修生效; garbage lines skip, a missing file changes nothing
 tmp = tempfile.mkdtemp(); hl = tmp + "/hotfix-live.jsonl"
 issues6 = [{"number": 6, "title": "t6", "state": "OPEN", "labels": lab("hotfix")}]

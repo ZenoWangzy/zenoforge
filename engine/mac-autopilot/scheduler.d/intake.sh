@@ -73,7 +73,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
     cached_at="$(jqf_optional_file "$cache_file" -r '.created_at // empty' 2>/dev/null || true)"
     now="$(date +%s)"
     if [[ "$cached_at" =~ ^[0-9]+$ ]] && (( now >= cached_at && now - cached_at <= 600 )) \
-      && jqf_optional_file "$cache_file" -e '.schema == 3 and (.rows | type == "string")' >/dev/null 2>&1; then
+      && jqf_optional_file "$cache_file" -e '.schema == 4 and (.rows | type == "string")' >/dev/null 2>&1; then
       if cache_rows="$(jqf_optional_file "$cache_file" -r '.rows')"; then
         printf '%s\n' "$cache_rows"
         return 0
@@ -115,7 +115,16 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
       for ((index = 0; index < ${#query_files[@]}; index++)); do
         jqf -c --arg lane "${query_lanes[$index]}" '.[] | . + {lane:$lane}' "${query_files[$index]}" || true
       done
-    } | jqf -rs --argjson skip "$skip_labels" '
+    } | jqf -cs '.' \
+      | PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
+import json, sys
+import founder_reqs
+rows = json.load(sys.stdin)
+prefix = founder_reqs.configured_anomaly_prefix()
+for row in rows:
+    row["_auto_filed"] = founder_reqs.is_auto_filed_ticket(row, prefix)
+json.dump(rows, sys.stdout, separators=(",", ":"))
+' | jqf -r --argjson skip "$skip_labels" '
       def rank: [.labels[].name] as $n
         | if ($n | index("founder-test")) then 0 elif ($n | index("priority:top")) then 1
           elif ($n | index("critical-path")) then 2  # 批次 STATE 的关键路径（#4363）：排在普通功能前、遗留后
@@ -123,13 +132,14 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
           elif ($n | index("legacy")) then 7 else 6 end;
       map(select(([.labels[].name] - $skip) == [.labels[].name]))
       | group_by(.number) | map(sort_by(.lane) | .[0])
-      | sort_by([rank, -.number]) | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels,subIssuesSummary,blockedBy} | @base64)"'
+      | sort_by([rank, (if ._auto_filed then 1 else 0 end), -.number])
+      | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels,subIssuesSummary,blockedBy} | @base64)"'
     if (( valid_queries == expected_queries && ${#query_files[@]} == expected_queries )); then : >"$cache_valid_tmp"; fi
   ) >"$cache_rows_tmp"
   if [[ -f "$cache_valid_tmp" ]]; then
     rm -f -- "$cache_valid_tmp"
     now="$(date +%s)"
-    if jqf -Rs --argjson created_at "$now" '{schema:3,created_at:$created_at,rows:rtrimstr("\n")}' \
+    if jqf -Rs --argjson created_at "$now" '{schema:4,created_at:$created_at,rows:rtrimstr("\n")}' \
       <"$cache_rows_tmp" >"$cache_json_tmp" && mv -f -- "$cache_json_tmp" "$cache_file"; then
       if [[ "$refill_mode" != true && -n "${INTAKE_FULL_SCAN_FLAG:-}" ]]; then : > "$INTAKE_FULL_SCAN_FLAG"; fi
     else
