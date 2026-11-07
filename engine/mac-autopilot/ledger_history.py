@@ -54,3 +54,14 @@ def closed_units_open_issues(runtime, agent_home, units):
         if own and all(u.get("stage") in ended and (not episode or u.get("hold_handoff_episode") == episode) for u in own):
             found.append(int(n))
     return found
+
+
+def conflict_repairs(units, since, now, parse):
+    """Merge conflicts in [since, now] that a repair run followed: a later write-start in the same unit."""
+    count = 0
+    for unit in units:
+        events = [(e.get("stage") or "", parse(e.get("at"))) for e in unit.get("history") or []]
+        for i, (stage, at) in enumerate(events):
+            if stage == "merge-conflict" and at and since <= at <= now and any(s == "write-start" for s, _ in events[i + 1:]):
+                count += 1
+    return count
