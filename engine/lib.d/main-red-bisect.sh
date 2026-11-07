@@ -474,11 +474,11 @@ main_red_bisect_sweep() {
         continue
       fi
     fi
-    # A session steps only while its run is the latest verdict, so one with no write for this long will not end by itself.
+    # A session steps only while its run is the latest verdict, so it can stop with nobody told. Alert only: a pending probe or an open revert PR writes nothing either, and a terminal status would strand them.
     idle=$(( $(date +%s) - $(stat -c %Y "$session_file" 2>/dev/null || date +%s) ))
     if [ "$idle" -ge "$MAIN_RED_MAX_RUN_AGE_SECONDS" ]; then
-      main_red_session_write "$red_sha" unattributed || continue
-      main_red_supervisor_event "$red_sha" "status=unattributed reason=session-idle was=$status idle_seconds=$idle"
+      supervisor_inbox_append_once "main-red-session-idle:$red_sha" \
+        "main-red-bisect red=${red_sha:0:12} status=$status reason=session-idle idle_seconds=$idle" || true
     fi
   done < <(printf '%s\n' "$MAIN_RED_DIR"/*.json)
   return 0

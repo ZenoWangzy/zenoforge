@@ -534,18 +534,19 @@ assert_eq "PAUSE keeps the bisect session unopened in maintenance" absent \
   "$(if [ -e "$AGENT_HOME/main-red/$RED_SHA.json" ]; then echo present; else echo absent; fi)"
 rm -f "$PAUSE_FILE"
 
-# A session steps only while its run is the latest verdict: one that stops must end where the supervisor sees it.
+# A session steps only while its run is the latest verdict: one that stops must reach the supervisor, and stay open for a probe or a revert PR still running.
 IDLE_SHA="$(printf 'a%.0s' {1..40})"
 main_runs success success > "$FAKE_GH_STATE/completed-runs.json"
 main_red_session_write "$IDLE_SHA" bisecting
 MAIN_RED_MAX_RUN_AGE_SECONDS=86400
-: > "$EVENTS"
+IDLE_ALERTS="$test_root/idle-alerts"; : > "$IDLE_ALERTS"
+supervisor_inbox_append_once() { printf '%s %s\n' "$1" "$2" >> "$IDLE_ALERTS"; }
 main_red_bisect_sweep
-assert_eq "a session with recent writes stays open" bisecting "$(jq -r .status "$AGENT_HOME/main-red/$IDLE_SHA.json")"
+assert_eq "a session with recent writes raises nothing" 0 "$(grep -c session-idle "$IDLE_ALERTS" || true)"
 touch -d '2 days ago' "$AGENT_HOME/main-red/$IDLE_SHA.json"
 main_red_bisect_sweep
-assert_eq "an idle session ends" unattributed "$(jq -r .status "$AGENT_HOME/main-red/$IDLE_SHA.json")"
-assert_contains "an idle session reaches the supervisor" "$(cat "$EVENTS")" "reason=session-idle was=bisecting"
+assert_contains "an idle session reaches the supervisor" "$(cat "$IDLE_ALERTS")" "main-red-session-idle:$IDLE_SHA"
+assert_eq "an idle session stays open for its probe or revert PR" bisecting "$(jq -r .status "$AGENT_HOME/main-red/$IDLE_SHA.json")"
 
 if [ "$FAILED" -eq 1 ]; then
   printf 'FAILED\n' >&2
