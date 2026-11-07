@@ -180,21 +180,21 @@ new_batch="$(active_footprint_conflicts_batch "$owners" "$rows")"
 # The memoized batch gives what the legacy pair loop gives for every candidate, and classifies each distinct scope once.
 eval "$(declare -f footprint_classify | sed '1s/footprint_classify/footprint_classify_real/')"
 footprint_classify() { printf x >> "$fixture/classify-calls"; footprint_classify_real "$@"; }
-all_cands='["packages/hot/src/f1.ts"] ["packages/hot/src/f2.ts"] ["packages/hot/src/f3.ts"] ["packages/cold"] ["packages/cold/src/a.ts"] ["migrations/meta/_journal.json"] ["packages/new/y.ts"] ["packages/new"] ["docs/x.md"] []'
+IFS=' ' read -ra all_cands <<<'["packages/hot/src/f1.ts"] ["packages/hot/src/f2.ts"] ["packages/hot/src/f3.ts"] ["packages/cold"] ["packages/cold/src/a.ts"] ["migrations/meta/_journal.json"] ["packages/new/y.ts"] ["packages/new"] ["docs/x.md"] []'
 for mode in 0 1; do
   for shared in '[]' '["packages/hot/src/f3.ts"]'; do
     SHARED_APPEND="$shared"; export ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING="$mode"
     rows=''; expected=''; n=0
-    for cand in $all_cands; do
+    for cand in "${all_cands[@]}"; do
       n=$((n + 1)); rows+="c$n"$'\t'"$cand"$'\t'"$cand"$'\n'
       old="$(legacy_active_footprint_conflict "$cand" "$owners" "c$n" "$cand")"
       [[ -z "$old" ]] || expected+="c$n"$'\t'"$old"$'\n'
     done
     : > "$fixture/classify-calls"
     got="$(active_footprint_conflicts_batch "$owners" "$rows")"
-    [[ "$got"$'\n' == "$expected" || "$got" == "$expected" ]] || fail "batch differs from the legacy loop mode=$mode shared=$shared: got [$got] want [$expected]"
+    [[ "$got" == "${expected%$'\n'}" ]] || fail "batch differs from the legacy loop mode=$mode shared=$shared: got [$got] want [$expected]"
     if [[ "$mode" == 0 ]]; then
-      distinct="$( { printf '%s\n' $all_cands; jq -c '.[] | .footprint' <<<"$owners"; } | sort -u | grep -c .)"
+      distinct="$( { printf '%s\n' "${all_cands[@]}"; jq -c '.[] | .footprint' <<<"$owners"; } | sort -u | grep -c .)"
       (( "$(wc -c < "$fixture/classify-calls" | tr -d ' ')" <= distinct )) || fail "batch classified a scope twice: $(wc -c < "$fixture/classify-calls") calls for $distinct distinct scopes"
     fi
   done
