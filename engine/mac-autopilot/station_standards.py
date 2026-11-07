@@ -67,6 +67,7 @@ CRITERIA = {
     "repair.out_per_day":  ("repair", "repair write-ends per 24 h", 34, 19, True),
     "merge.wait_p50_min":  ("merge", "merge wait: previous event to merged, minutes p50", 31, 41, False),
     "ci.admission_p50_min": ("ci", "CI wait: review-approve to the first ci-ready after it, minutes p50", 0, 17, False),
+    "ci.admission_p90_min": ("ci", "CI wait: review-approve to the first ci-ready after it, minutes p90", 15, 60, False),
     "ci.out_per_day":      ("ci", "CI slots admitted per 24 h", 28, 13, True),
     # Pipeline steps outside the stations (PIPELINE). Bounds are filled from the measurement in NODE-HEALTH.md.
     "approve.out_per_day": ("approve", "review approvals per 24 h", 35, 30, True),
@@ -91,6 +92,7 @@ MEANING = {
     "repair.out_per_day": "Repair write-ends in 24 h: the repair station's throughput.",
     "merge.wait_p50_min": "Median minutes from a unit's previous ledger event to merged or landed: the merge station's own time.",
     "ci.admission_p50_min": "Median minutes from a review-approve to the first ci-ready after it (a later ci-ready on the same approval is not counted): the CI station's own queue time.",
+    "ci.admission_p90_min": "90th percentile of the same samples as ci.admission_p50_min: the slow tail of the CI station's queue time, which the median hides.",
     "ci.out_per_day": "CI slots admitted in 24 h (ci-ready and ci-wip-start): the CI station's throughput.",
 }
 SOURCE = {
@@ -106,6 +108,7 @@ SOURCE = {
     "repair.out_per_day": "7 daily counts: p25 34, p10 19",
     "merge.wait_p50_min": "7 d: 221 merged/landed events, previous event to merge: p75 30.8, p90 41.0 min (rounded up)",
     "ci.admission_p50_min": "bound measured 2026-11-07 on the old definition (previous event to every ci-ready): 7 d, 342 events, p75 0.0, p90 16.1 min. Since the definition is review-approve to the first ci-ready after it; same 7 d re-read on the WSL host ledger, 2026-11-07T17:55Z: 341 samples, p50 0.0, p75 31.3, p90 99.0. The bound is unchanged",
+    "ci.admission_p90_min": "founder's minutes rule (healthy 15, unhealthy 60), not a measured p75/p90 bound; same samples as ci.admission_p50_min. WSL host ledger, 2026-11-07T17:55Z, 7 d: 341 samples, p90 99.0 (UNHEALTHY); 24 h: 83 samples, p90 96.4",
     "ci.out_per_day": "7 daily counts: p25 28, p10 13",
     "approve.out_per_day": "7 daily counts of review-approve events: p25 35, p10 30",
     "rereview.runs_per_day": "7 daily counts of rereview worker runs from worker cost rows: p25 35, p10 10",
@@ -203,7 +206,9 @@ def collect(now, units, runs, runtime, agent_home, cost_rows=()):
     outs = station_health.outs(units, runtime, agent_home)
     values = {f"{s}.out_per_day": out_count(outs[s], now) for s in STATIONS}
     values["merge.wait_p50_min"] = _pct(gap_samples(units, since, now, GAP_EVENTS["merge"]), .5)
-    values["ci.admission_p50_min"] = _pct(approval_ready_samples(units, since, now), .5)
+    ci_wait = approval_ready_samples(units, since, now)
+    values["ci.admission_p50_min"] = _pct(ci_wait, .5)
+    values["ci.admission_p90_min"] = _pct(ci_wait, .9)
     for station, node in RUN_NODE.items():
         values[f"{station}.tokens_p50"] = _pct(run_tokens(runs, node), .5)
     values["triage.tokens_per_issue_p50"] = _pct(triage_tokens_per_issue(agent_home, since, now), .5)
@@ -221,6 +226,7 @@ def samples(now, hours, units, runs, agent_home, runtime):
     outs = station_health.outs(units, runtime, agent_home)
     raw = {"merge.wait_p50_min": gap_samples(units, since, now, GAP_EVENTS["merge"]),
            "ci.admission_p50_min": approval_ready_samples(units, since, now),
+           "ci.admission_p90_min": approval_ready_samples(units, since, now),
            "triage.tokens_per_issue_p50": triage_tokens_per_issue(agent_home, since, now)}
     for station, node in RUN_NODE.items():
         raw[f"{station}.tokens_p50"] = run_tokens(runs, node)

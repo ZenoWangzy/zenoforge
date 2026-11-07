@@ -63,5 +63,14 @@ u = [unit(("review-approve", "2026-11-07T10:00:00Z"), ("ci-ready", "2026-11-07T1
      unit(("ci-ready", "2026-11-07T08:00:00Z"))]
 got = sorted(ss.approval_ready_samples(u, datetime(2026, 11, 7, 0, 0, tzinfo=timezone.utc), now))
 assert got == [5, 10, 30], got
+# ci.admission_p90_min: same samples as the p50 row, so a slow tail the median hides reads UNHEALTHY (99 min >= 60).
+tail = [unit(("review-approve", "2026-11-07T10:00:00Z"), ("ci-ready", "2026-11-07T10:00:00Z")) for _ in range(8)]
+tail += [unit(("review-approve", "2026-11-07T08:00:00Z"), ("ci-ready", "2026-11-07T09:39:00Z")) for _ in range(2)]
+vals = ss.collect(now, [dict(x, id=f"u{i}") for i, x in enumerate(tail)], [], sys.argv[2], sys.argv[2])
+assert vals["ci.admission_p50_min"] == 0 and vals["ci.admission_p90_min"] == 99, vals
+_, _, healthy, unhealthy, higher = ss.CRITERIA["ci.admission_p90_min"]
+assert (healthy, unhealthy, higher) == (15, 60, False)
+assert node_health.status_of(vals["ci.admission_p90_min"], healthy, unhealthy, higher) == "UNHEALTHY"
+assert node_health.status_of(vals["ci.admission_p50_min"], *ss.CRITERIA["ci.admission_p50_min"][2:4], False) == "OK"
 print("station-standards ok: %d stations, %d metrics" % (len(ss.MATRIX), len(ss.CRITERIA)))
 PY
