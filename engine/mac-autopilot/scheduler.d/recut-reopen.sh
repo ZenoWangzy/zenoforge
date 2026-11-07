@@ -25,20 +25,39 @@ intake_reopen_refused_recut() { # issue state-file → 0 when the issue's single
 # and no log line. An unconsumed episode sends it through the hold handoff, which restores the closed unit next tick.
 # An issue that stayed open has no reopen event: its unit closed on purpose and stays closed. The reopen time is fixed, so
 # a unit that closes again is newer than it and this cannot loop.
-intake_reopen_episode() { # issue reopened-at
-  local n="$1" at="$2" units
+intake_reopen_episode() { # issue reopened-at [ruling]
+  local n="$1" at="$2" kind="${3:-reopen}" word=reopened units
+  [[ "$kind" == reopen ]] || word=ruling
   [[ -n "$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -r 'select(.state == "ready-for-agent") | .state' 2>/dev/null)" ]] || return 0
   units="$(jqf -c --argjson n "$n" '[.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))]
-    | {at: (map((.history // [])[-1].at // "") | max), other: (map(select(.stage != "closed") | .stage) | unique | join(","))}' <(units_history_doc))" || return 0
+    | {at: (map((.history // [])[-1].at // "") | max), other: (map(select(.stage != "closed") | .stage) | unique | join(",")),
+       sized: any(.[]; ((.hold_handoff_episode // "") | startswith("ruling-")) and ((.history // []) as $h
+         | ([$h | to_entries[] | select(.value.stage == "hold-handoff") | .key] | max // -1) as $i
+         | any($h[($i + 1):][]; .stage == "size-recut" or ((.result // "") | tostring | contains("size admission")))))}' <(units_history_doc))" || return 0
   [[ "$at" > "$(jqf -r '.at // ""' <<<"$units")" ]] || return 0
   if [[ -n "$(jqf -r '.other' <<<"$units")" ]]; then
-    say "intake reopened issue #$n at $at: skipped, its units ended $(jqf -r '.other' <<<"$units")"; return 0
+    say "intake $word issue #$n at $at: skipped, its units ended $(jqf -r '.other' <<<"$units")"; return 0
   fi
-  if (source "$SCHEDULER_AGENT_LIB"; state_merge "$n" ".scheduler_handoff.episode = $(js "reopen-$at")"); then
-    say "intake reopened issue #$n at $at: new episode; the hold handoff restores its closed unit"
+  if [[ "$kind" == ruling ]] && jqf -e '.sized' <<<"$units" >/dev/null; then
+    say "intake ruling issue #$n at $at: not restored, its last ruling restore failed size admission"; return 0
+  fi
+  if (source "$SCHEDULER_AGENT_LIB"; state_merge "$n" ".scheduler_handoff.episode = $(js "$kind-$at")"); then
+    say "intake $word issue #$n at $at: new episode; the hold handoff restores its closed unit"
   else
-    say "intake reopened issue #$n at $at: could not record the episode; retry next tick"
+    say "intake $word issue #$n at $at: could not record the episode; retry next tick"
   fi
+}
+# An advisor ruling sends an open issue back to ready-for-agent with no reopen event, and terminal skip kept it from any
+# worker. The state change is fixed, so a unit that closes again is newer than it: one restore per ruling. A later ruling
+# after a size failure would loop advisor, restore, size failure, so it stays closed and closed_units_open_issues names it.
+# Work outside this repository has no worker: external_deliverable routes it to the supervisor.
+intake_ruling_episodes() { # issue...
+  local n at
+  for n; do
+    at="$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -r 'select(.state == "ready-for-agent" and .state_changed_from == "needs-advisor"
+      and .external_deliverable.required != true) | .state_changed_at // empty' 2>/dev/null)" || continue
+    [[ -z "$at" ]] || intake_reopen_episode "$n" "$at" ruling
+  done
 }
 intake_reopen_episodes() { # issue... → one read per 20 issues: about 8 rows reach this each tick against a cap of 24 reads
   local -a issues=("$@")
