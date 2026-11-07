@@ -159,6 +159,7 @@ tick_gh_calls_begin() {
   printf '0\n' >"$TICK_INTAKE_READS_FILE" 2>/dev/null || TICK_INTAKE_READS_FILE=""
   TICK_PHASE_DETAILS=""
   TICK_PHASES=""
+  TICK_LOCK_WAIT=0
   # 被杀的 tick 留下的计数文件与过期的 ETag 缓存条目，下一拍顺手收掉。
   find "$A" -maxdepth 1 -name 'gh-calls.*' -mmin +120 -delete 2>/dev/null || :
   find "$A" -maxdepth 1 -name 'intake-reads.*' -mmin +120 -delete 2>/dev/null || :
