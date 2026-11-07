@@ -161,11 +161,13 @@ zcode_paced() { # command... -> run it with the current time and the GLM runs in
 }
 
 # The week hold needs Codex to take the work: during a Codex outage GLM runs ahead of pace, bounded by the 5h cap and the 98 alert.
-implement_week_held() { # prints week and allowed while implement and repair must leave GLM
-  (pick_codex_work_identity "{}") >/dev/null 2>&1 && zcode_paced zcode_week_held
+implement_week_held() { # [unit JSON] -> prints week and allowed while implement and repair must leave GLM
+  local unit='{}'
+  [[ -z "${1:-}" ]] || unit="$1"
+  (pick_codex_work_identity "$unit") >/dev/null 2>&1 && zcode_paced zcode_week_held
 }
 
-pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with a fresh, available quota
+pick_zcode_implementer() { # [unit JSON], configured hand-zcode identity -> PICK_* only with a fresh, available quota
   local fields provider model effort tier status week
   fields="$(model_policy_role_fields hand-zcode 2>/dev/null || true)"
   [[ -n "$fields" ]] || return 1
@@ -177,7 +179,7 @@ pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with 
   status="$(zcode_paced zcode_quota_status)"
   [[ "$status" != paced ]] || say "glm pace hold: start waits for the 5h window to catch up, runs and reviews in flight: $(zcode_pace_inflight)"
   [[ "$status" == available ]] || return 1
-  if week="$(implement_week_held)"; then
+  if week="$(implement_week_held "${1:-}")"; then
     say "glm week hold: implement and repair leave GLM while the week is ahead of pace $week"
     return 1
   fi
@@ -294,7 +296,7 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
         PICK_ROUTE_PROVIDER=claude; PICK_HARD=true; PICK_REASON=hard-fallback-claude
         return 0
       fi
-      if pick_zcode_implementer; then
+      if pick_zcode_implementer "$u"; then
         PICK_ROUTE_PROVIDER=zcode; PICK_HARD=true; PICK_REASON=hard-fallback-zcode
         return 0
       fi
@@ -353,10 +355,10 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
     # Share 0 is the kill switch: sticky Claude units go to Codex, or ZCode over its stop (a fresh session; repair never resumes across providers).
     reason=claude-share-off-codex
     pick_codex_work_identity "$u" && { PICK_REASON="$reason"; return 0; }
-    pick_zcode_implementer && { PICK_REASON=claude-share-off-zcode; return 0; }
+    pick_zcode_implementer "$u" && { PICK_REASON=claude-share-off-zcode; return 0; }
   elif [[ "$preferred" == zcode ]]; then
     status="$(zcode_quota_status)"
-    if pick_zcode_implementer; then PICK_REASON="$reason"; return 0; fi
+    if pick_zcode_implementer "$u"; then PICK_REASON="$reason"; return 0; fi
     if [[ "$status" == exhausted ]]; then reason=quota-fallback-zcode-to-codex
     elif [[ "$status" == unknown ]]; then reason=quota-unknown-zcode-to-codex
     else reason=zcode-unavailable-fallback-to-codex; fi
@@ -364,7 +366,7 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
   else
     if pick_codex_work_identity "$u"; then PICK_REASON="$reason"; return 0; fi
     status="$(zcode_quota_status)"
-    if pick_zcode_implementer; then
+    if pick_zcode_implementer "$u"; then
       if provider_quota_exhausted codex; then reason=quota-fallback-codex-to-zcode
       else reason=codex-unavailable-fallback-to-zcode; fi
       PICK_REASON="$reason"; return 0

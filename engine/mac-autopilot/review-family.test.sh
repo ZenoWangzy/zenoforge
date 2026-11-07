@@ -256,7 +256,7 @@ pace_review "[$glm_run,$glm_done]" || fail 'a harvested run must not count'
 pick_glm_implementer() { (
   model_policy_role_fields() { if [[ "$1" == hand-zcode ]]; then printf 'zcode\tGLM-5.3\tmax\t\n'; else printf 'codex\tgpt-6-luna\tmax\t\n'; fi; }
   model_policy_model_allowed_for_role() { return 0; }
-  pick_zcode_implementer
+  pick_zcode_implementer "$@"
 ); }
 pick_glm_implementer || fail 'implement must pass an open gate'
 write_workers "$(jq -cn --argjson workers "$(reviews 7)" '{workers:$workers}')"
@@ -275,6 +275,8 @@ pick_implementer '{"id":"week-held","implement_provider":"zcode"}' && [[ "$PICK_
 printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$(_quota_marker_file codex)"
 pick_glm_implementer || fail 'with Codex out the week hold must not stop implement'
 rm -f "$(_quota_marker_file codex)"
+( pick_codex_work_identity() { [[ "$1" != *no-codex-route* ]]; }; pick_glm_implementer '{"id":"no-codex-route"}' ) \
+  || fail 'the hold must ask about the unit at hand: Codex may refuse this one'
 glm_quota 21
 if pace_review '[]'; then fail 'a meter past the gate must hold a review'; fi
 glm_quota 0 901
