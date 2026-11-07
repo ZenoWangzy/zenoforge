@@ -936,7 +936,7 @@ maintainer_health_mail_deliver() {
 
 maintainer_health_mail_tick() {
   local home="$1" now="${2:-$(date +%s)}" ledger
-  local slot last_slot events repo_root facts subject body
+  local slot last_slot events repo_root facts subject body stored
   ledger="$home/night/founder-health-mail.json"
   maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
   maintainer_health_mail_incident_tick "$ledger" "$now" || return 1
@@ -960,7 +960,8 @@ maintainer_health_mail_tick() {
   facts="$(maintainer_health_mail_daily_facts "$home" "$ledger" "$now" "$repo_root")" || return 1
   subject="$(maintainer_health_mail_subject "$facts")" || return 1
   body="$(maintainer_health_mail_build_body "$facts")" || return 1
-  owner_report_snapshot_write "$facts" "$home" "$now" >/dev/null || printf 'owner report: snapshot not stored\n' >&2
+  stored="$(owner_report_snapshot_write "$facts" "$home" "$now")" || stored=failed
+  case "$stored" in stored|exists) ;; *) printf 'owner report: snapshot not stored: %s\n' "$stored" >&2 ;; esac
   maintainer_health_mail_deliver "$ledger" "$now" "$slot" "$subject" "$body" "$events"
 }
 
