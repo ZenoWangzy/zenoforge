@@ -316,38 +316,40 @@ p90 metrics above derive their bounds from the last 30 days of closed tickets in
 
 Every station in `station_health.py` `STATIONS` has one time, one tokens and one throughput standard, or a documented
 exception. `station_standards.MATRIX` holds the mapping and `station-standards.test.sh` fails a station without one.
-Each bound was measured on 2026-11-07 from the live ledger (`units.json` + archive), `scheduler.log`, triage batch
-logs and worker cost rows; the window and sample count are on the row. Healthy is the measured p50 and unhealthy the
-measured p90 (time and tokens, rounded up to a whole minute or 1,000 tokens); throughput is items out per 24 h,
-healthy at the measured p50 and unhealthy at the measured p10 of the seven daily counts. Seven days give seven
-samples, so throughput bounds are a first measurement that a month of samples should tighten. Time and token values
-use the same window as the other node metrics: time over 24 h, tokens over the `--hours` window of worker runs.
+Each bound was measured on 2026-11-07 from the live ledger (`units.json` + archive), `scheduler.log`, triage batch logs
+and worker cost rows; the window and sample count are on the row. For the new rows, healthy is the measured p75 and
+unhealthy the measured p90 for time and tokens (rounded up to a whole minute or 1,000 tokens). Throughput is items out
+per 24 h: healthy at the measured p25 and unhealthy at the measured p10 of the seven daily counts. (The p50 was the
+first cut; the head chose p75 and p25 so that a normal day does not turn a tile amber by construction. Existing rows
+keep their bounds.) Seven days give seven samples, so throughput bounds are a first measurement that a month of
+samples should tighten. Time and token values use the same window as the other node metrics: time over 24 h, tokens
+over the `--hours` window of worker runs.
 
 | Station | Dimension | Metric (id) | Healthy | Unhealthy | Source (live, window, n) |
 |---|---|---|---|---|---|
-| merge | time | merge wait, previous event to merged, min p50 (`merge.wait_p50_min`) | ≤ 25 | ≥ 41 | 7 d to 2026-11-07T13:13Z, 221 merged/landed events: p50 24.4, p90 41.0 |
-| ci | time | CI wait, previous event to ci-ready, min p50 (`ci.admission_p50_min`) | ≤ 0 | ≥ 17 | 7 d, 341 ci-ready events: p50 0.0, p90 16.1 |
-| triage | tokens | triage tokens per issue p50 (`triage.tokens_per_issue_p50`) | ≤ 110,000 | ≥ 210,000 | 7 d, 91 batch logs (tokens_used / issue_sample_size): p50 109,876, p90 209,961 |
-| implement | tokens | worker tokens per implement run p50 (`implement.tokens_p50`) | ≤ 182,000 | ≥ 555,000 | 7 d, 557 runs with measured tokens: p50 181,547, p90 554,952 |
-| review | tokens | worker tokens per review run p50 (`review.tokens_p50`) | ≤ 210,000 | ≥ 324,000 | 7 d, 24 runs with measured tokens (small n): p50 209,097, p90 323,831 |
-| repair | tokens | worker tokens per repair run p50 (`repair.tokens_p50`) | ≤ 155,000 | ≥ 307,000 | 7 d, 297 runs with measured tokens: p50 154,539, p90 306,942 |
-| intake | throughput | intake items out per 24 h (`intake.out_per_day`) | ≥ 39 | ≤ 25 | 7 daily counts to 2026-11-07T13:13Z: p50 39, p10 25 |
-| triage | throughput | triage issues applied per 24 h (`triage.out_per_day`) | ≥ 27 | ≤ 5 | 7 daily counts: p50 27, p10 5 |
-| advisor | throughput | advisor rulings applied per 24 h (`advisor.out_per_day`) | ≥ 19 | ≤ 2 | 7 daily counts: p50 19, p10 2 |
-| implement | throughput | implement write-ends per 24 h (`implement.out_per_day`) | ≥ 70 | ≤ 12 | 7 daily counts: p50 70, p10 12 |
-| review | throughput | review verdicts per 24 h (`review.out_per_day`) | ≥ 94 | ≤ 37 | 7 daily counts: p50 94, p10 37 |
-| repair | throughput | repair write-ends per 24 h (`repair.out_per_day`) | ≥ 70 | ≤ 19 | 7 daily counts: p50 70, p10 19 |
+| merge | time | merge wait, previous event to merged, min p50 (`merge.wait_p50_min`) | ≤ 31 | ≥ 41 | 7 d to 2026-11-07T13:13Z, 221 merged/landed events: p75 30.8, p90 41.0 min |
+| ci | time | CI wait, previous event to ci-ready, min p50 (`ci.admission_p50_min`) | ≤ 0 | ≥ 17 | 7 d, 342 ci-ready events: p75 0.0, p90 16.1 min |
+| triage | tokens | triage tokens per issue p50 (`triage.tokens_per_issue_p50`) | ≤ 152,000 | ≥ 210,000 | 7 d, 91 batch logs (tokens_used / issue_sample_size): p75 151,725, p90 209,961 |
+| implement | tokens | worker tokens per implement run p50 (`implement.tokens_p50`) | ≤ 392,000 | ≥ 555,000 | 7 d, 557 runs with measured tokens: p75 391,729, p90 554,952 |
+| review | tokens | worker tokens per review run p50 (`review.tokens_p50`) | ≤ 258,000 | ≥ 324,000 | 7 d, 24 runs with measured tokens (small n): p75 257,372, p90 323,831 |
+| repair | tokens | worker tokens per repair run p50 (`repair.tokens_p50`) | ≤ 230,000 | ≥ 307,000 | 7 d, 292 runs with measured tokens: p75 229,149, p90 306,942 |
+| intake | throughput | intake items out per 24 h (`intake.out_per_day`) | ≥ 37 | ≤ 25 | 7 daily counts to 2026-11-07T13:13Z: p25 37, p10 25 |
+| triage | throughput | triage issues applied per 24 h (`triage.out_per_day`) | ≥ 9 | ≤ 5 | 7 daily counts: p25 9, p10 5 |
+| advisor | throughput | advisor rulings applied per 24 h (`advisor.out_per_day`) | ≥ 3 | ≤ 2 | 7 daily counts: p25 3, p10 2 |
+| implement | throughput | implement write-ends per 24 h (`implement.out_per_day`) | ≥ 51 | ≤ 12 | 7 daily counts: p25 51, p10 12 |
+| review | throughput | review verdicts per 24 h (`review.out_per_day`) | ≥ 48 | ≤ 37 | 7 daily counts: p25 48, p10 37 |
+| repair | throughput | repair write-ends per 24 h (`repair.out_per_day`) | ≥ 34 | ≤ 19 | 7 daily counts: p25 34, p10 19 |
 | merge | throughput | merges per hour, existing `flow.merge_rate_per_hour` (#4355 SLO) | ≥ 6.5 | ≤ 3.5 | existing row above; not re-measured here |
-| ci | throughput | CI slots admitted per 24 h (`ci.out_per_day`) | ≥ 36 | ≤ 13 | 7 daily counts: p50 36, p10 13 |
+| ci | throughput | CI slots admitted per 24 h (`ci.out_per_day`) | ≥ 28 | ≤ 13 | 7 daily counts: p25 28, p10 13 |
 
 Pipeline steps outside the stations (the node map), measured the same way:
 
 | Step | Dimension | Metric (id) | Healthy | Unhealthy | Source (live, window, n) |
 |---|---|---|---|---|---|
-| rereview | time | rereview run minutes p50 (`rereview.wall_p50`) | ≤ 9 | ≥ 17 | 7 d, 364 rereview runs with output: p50 8.4, p90 16.1 |
-| rereview | tokens | rereview worker tokens per run p50 (`rereview.tokens_p50`) | ≤ 159,000 | ≥ 200,000 | 7 d, 6 rereview runs with measured tokens of 376 (small n, provisional): p50 158,523, p90 199,330 |
-| rereview | throughput | rereview worker runs started per 24 h (`rereview.runs_per_day`) | ≥ 45 | ≤ 11 | 7 daily counts from worker cost rows: p50 45, p10 11 |
-| approve | throughput | review approvals per 24 h (`approve.out_per_day`) | ≥ 49 | ≤ 31 | 7 daily counts of review-approve events (1,450 in total): p50 49, p10 31 |
+| rereview | time | rereview run minutes p50 (`rereview.wall_p50`) | ≤ 13 | ≥ 17 | 7 d, 364 rereview runs with output: p75 12.3, p90 16.1 |
+| rereview | tokens | rereview worker tokens per run p50 (`rereview.tokens_p50`) | ≤ 200,000 | ≥ 200,000 | 7 d, 6 rereview runs with measured tokens of 376 (small n, provisional): p75 199,330, p90 199,330; healthy equals unhealthy, so no WARN band |
+| rereview | throughput | rereview worker runs started per 24 h (`rereview.runs_per_day`) | ≥ 35 | ≤ 10 | 7 daily counts from worker cost rows: p25 35, p10 10 |
+| approve | throughput | review approvals per 24 h (`approve.out_per_day`) | ≥ 35 | ≤ 30 | 7 daily counts of review-approve events: p25 35, p10 30 |
 | approve | time | approve to merged, CI included (`ci.approve_to_ship_p50`) | ≤ 60 | ≥ 180 | existing row above |
 
 Existing standards that cover the other cells (bounds unchanged here, with their rationale in the table above):
