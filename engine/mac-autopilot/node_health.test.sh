@@ -349,7 +349,8 @@ touch -d "$(date -u -d "2026-10-19T11:30:00Z + 20 minutes" +%Y-%m-%dT%H:%M:%SZ)"
 jq '.units += [{"id":"pr-15","pr":15,"stage":"review-pending","history":[{"stage":"review-request-changes","at":"2026-10-19T11:50:00Z"}]},
                {"id":"pr-16","pr":16,"stage":"merged","history":[{"stage":"pr-opened","at":"2026-09-01T00:00:00Z"},{"stage":"merged","at":"2026-09-02T00:00:00Z"}]}]' "$a/units.json" > "$a/u.tmp" && mv "$a/u.tmp" "$a/units.json"
 # 时间都花在哪：返工触发→派出（排队）、返工干活、交付→复检派出、复检干活、批准→CI 判红，取自台账事件 + dispatch 行
-printf '[2026-10-19T10:40:00Z] dispatch mode=fresh pid=1 type=repair unit=pr-11\n[2026-10-19T11:00:00Z] dispatch mode=resume pid=2 type=rereview unit=pr-11\n' >> "$a/scheduler.log"
+# The first line has the live shape (claim, issue, reason), the second the older one; both must count.
+printf '[2026-10-19T10:40:00Z] dispatch claim=owned issue=11 mode=fresh reason=initial pid=1 type=repair unit=pr-11\n[2026-10-19T11:00:00Z] dispatch mode=resume pid=2 type=rereview unit=pr-11\n' >> "$a/scheduler.log"
 echo '{"lines":{"15":900,"16":2000},"nontest_added":{"15":900,"16":2000}}' > "$a/pr-sizes.json"
 out="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z --json "$a/node-health.json")"
 [[ "$(jq -c '[.time_sinks[] | [.id, (.value | if . == null then null else round end)]]' "$a/node-health.json")" == '[["repair_queue",4],["repair_work",12],["rereview_queue",8],["rereview_work",4],["approve_to_ci_red",10],["approve_to_merge",null]]' ]] \
