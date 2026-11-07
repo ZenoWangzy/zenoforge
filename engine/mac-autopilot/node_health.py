@@ -783,8 +783,32 @@ def shared_append_rebase_metrics(path, repo, since, now):
     return len(attempts), (100 * len(conflicts) / len(attempts) if attempts else None)
 
 
+RED_STAGES = ("ci-red", "ci-test-red", "ci-red-rerun")
+
+
+def red_after_approve(units, since):
+    """(approved unit count, one row per unit) for units approved in the window that saw CI red after
+    an approve and before the next verdict. A unit counts once however many approves it had; the row
+    names the failed checks and, for ci-test-red, the failing tests recorded on the event."""
+    approved, rows = 0, []
+    for u in units:
+        events = [(h.get("stage") or h.get("ev") or "", ts(h["at"]), h) for h in u.get("history") or [] if ts(h.get("at"))]
+        red, seen = [], False
+        for i, (k, t, _) in enumerate(events):
+            if k == "review-approve" and t >= since:
+                seen = True
+                rest = events[i + 1:]
+                stop = next((j for j, x in enumerate(rest) if x[0] in ("review-request-changes", "review-approve")), len(rest))
+                red += [x[2] for x in rest[:stop] if x[0] in RED_STAGES]
+        approved += seen
+        if red:
+            rows.append({"unit": u.get("id"), "reds": len(red), "stage": red[-1].get("stage"),
+                         "checks": red[-1].get("result") or "", "tests": red[-1].get("tests") or []})
+    return approved, rows
+
+
 def ledger_metrics(units, since, now):
-    first_reviews, rounds, approve_to_ship, red_after, approved, sup_lat, deaths = [], [], [], 0, 0, [], 0
+    first_reviews, rounds, approve_to_ship, sup_lat, deaths = [], [], [], [], 0
     for u in units:
         hist = [h for h in u.get("history") or [] if ts(h.get("at"))]
         kinds = [(h.get("stage") or h.get("ev") or "", ts(h["at"])) for h in hist]
@@ -799,12 +823,9 @@ def ledger_metrics(units, since, now):
             elif k == "review-approve":
                 if t >= since:
                     rounds.append(n)
-                    approved += 1
                     rest = kinds[i + 1:]
                     nxt = next((x for x in rest if x[0] in ("review-request-changes", "review-approve")), None)
                     window = rest[: rest.index(nxt)] if nxt else rest
-                    if any(x[0] in ("ci-red", "ci-test-red", "ci-red-rerun") for x in window):
-                        red_after += 1
                     ship = next((x for x in window if x[0] in ("merged", "landed")), None)
                     if ship:
                         approve_to_ship.append((ship[1] - t).total_seconds() / 60)
@@ -824,6 +845,7 @@ def ledger_metrics(units, since, now):
         and (h.get("result") or "").startswith("PRECHECK: SKIP workspace package selection failed")
         and (t := ts(h.get("at"))) and t >= since
     )
+    approved, red_units = red_after_approve(units, since)
     rejections = [r.get("block") == "missing" for u in units for r in u.get("review_findings") or []
                   if (t := ts(r.get("at"))) and t >= since]
     return {**arbiter_health.ledger_metrics(units, now, ts), **ledger_history.metrics(units, now, ts),
@@ -832,7 +854,7 @@ def ledger_metrics(units, since, now):
         "review.first_pass_pct": 100 * sum(first_reviews) / len(first_reviews) if first_reviews else None,
         "loop.rounds_p90": pct(rounds, .9),
         "ci.approve_to_ship_p50": pct(approve_to_ship, .5),
-        "ci.red_after_approve_pct": 100 * red_after / approved if approved else None,
+        "ci.red_after_approve_pct": 100 * len(red_units) / approved if approved else None,
         "ci.precheck_setup_failures": precheck_setup_failures,
         "supervisor.latency_p50": pct(sup_lat, .5),
         "workers.deaths": deaths,
@@ -1572,7 +1594,7 @@ def main():
                            for node, mid, desc, v, healthy, unhealthy, higher, status in rows],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
                "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],
-               "delivery": delivery["details"], "merge_wait": merge_details, "flow": flow_details, "mechanisms": mechanism_rows,
+               "delivery": delivery["details"], "red_after_approve": red_after_approve(units, since)[1], "merge_wait": merge_details, "flow": flow_details, "mechanisms": mechanism_rows,
                "ci_standards": {k: {"desc": d, "healthy": h, "unhealthy": u, "higher_is_better": hi, "meaning": m, "source": src}
                                 for k, (d, h, u, hi, m, src) in CI_STANDARDS.items()},
                "unit_standards": {k: {"desc": d, "healthy": h, "bug": b} for k, (d, h, b) in UNIT_STANDARDS.items()},

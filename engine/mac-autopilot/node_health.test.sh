@@ -559,6 +559,19 @@ waits = sorted(n.ledger_history.first_review_waits(units, now, n.ts))
 assert waits == [10, 30, 360], waits
 assert n.ledger_metrics(units, now - n.timedelta(hours=5), now)["review.open_to_first_review_p90_min"] == 360
 CHECK
+# Approved-then-red counts a unit once however many approves it had, and names the failed checks and tests.
+python3 - "$script_dir" <<'CHECK'
+import sys
+sys.path.insert(0, sys.argv[1]); import node_health as n
+now = n.ts("2026-10-24T12:00:00Z")
+ap = lambda m: {"stage":"review-approve","at":f"2026-10-24T11:{m}:00Z"}
+red = {"stage":"ci-test-red","result":"Touched packages PR gate","tests":["a.test.ts","does x"],"at":"2026-10-24T11:05:00Z"}
+units = [{"id":"twice", "history":[ap("00"), red, ap("10"), {**red, "at":"2026-10-24T11:15:00Z"}]},
+         {"id":"clean", "history":[ap("00")]}, {"id":"clean-twice", "history":[ap("00"), ap("10")]}]
+assert n.ledger_metrics(units, now-n.timedelta(hours=5), now)["ci.red_after_approve_pct"] == 100 / 3
+approved, rows = n.red_after_approve(units, now-n.timedelta(hours=5))
+assert approved == 3 and rows == [{"unit":"twice", "reds":2, "stage":"ci-test-red", "checks":"Touched packages PR gate", "tests":["a.test.ts","does x"]}], rows
+CHECK
 # First-pass BLOCK is a failed first review; native resumed workers count only
 # the new turn's fresh tokens, so pre-review repair cannot disappear from spend.
 python3 - "$script_dir" "$test_env_root" <<'CHECK'

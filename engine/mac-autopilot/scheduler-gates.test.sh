@@ -1167,6 +1167,9 @@ dispatch_pending || :
   && "${GH_RERUNS[*]:-}" == "run rerun 901 --failed" && ${#DISPATCHED[@]} == 0 \
   && "$(field pr-5ci-cancelled '.arbiter // false')" == false ]] \
   || fail "ci-test-red repair with a cancelled run did not rerun within the bound (stage=$(field pr-5ci-cancelled .stage), reruns=${GH_RERUNS[*]:-none})"
+# The ci-test-red entry names the failing suites and tests: vitest facts and engine suite lines, bounded.
+[[ "$(ci_red_tests "$(printf '%s\n%s\n' '{"suites":[{"file":"a/b.test.ts","tests":[{"name":"does x","msg":"m"}],"more":0}],"more":0}' '{"pipelineSuites":["engine/x.test.sh"]}')")" == '["a/b.test.ts","does x","engine/x.test.sh"]' \
+  && "$(ci_red_tests "")" == '[]' ]] || fail "ci_red_tests did not list the failing suites and tests"
 GH_RUN_JSON=
 GH_RUNS=777; GH_RERUN_FAIL_ID=
 eval "$cancel_unit_runs_saved"; GH_HEAD="$gh_head_saved"; GH_RUNS="$gh_runs_saved"; GH_RERUNS=()
