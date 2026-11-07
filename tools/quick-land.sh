@@ -23,8 +23,32 @@ quick_land_refusal() { # staged diff → prints why it is not simple; prints not
   fi
 }
 
+# merge-pr reads the checks once; right after `gh pr create` GitHub has none yet and
+# `gh pr checks` returns non-JSON (#636). Wait up to TRIES * SLEEP seconds (about 60s).
+quick_land_wait_checks() { # <pr number>
+  local pr="$1" try
+  for ((try = 0; try < ${QUICK_LAND_CHECKS_TRIES:-30}; try++)); do
+    if gh pr checks "$pr" --json name 2>/dev/null | jq -e 'type == "array"' >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "${QUICK_LAND_CHECKS_SLEEP:-2}"
+  done
+  echo "quick-land: PR $pr has no readable checks yet; run tools/merge-pr.sh $pr later" >&2
+  return 1
+}
+
+quick_land_ship() { # <branch> <subject> <trailer>; && chain keeps every failure visible under set -e
+  local branch="$1" subject="$2" trailer="$3" url
+  git commit -qm "$subject" ${trailer:+-m "$trailer"} \
+    && git push -q -u origin "$branch" \
+    && url="$(gh pr create --base main --head "$branch" --title "$subject" \
+      --body $'Small Markdown change, landed by tools/quick-land.sh.\n\n## prior-art\n\nno external prior art: small text change')" \
+    && quick_land_wait_checks "${url##*/}" \
+    && bash tools/merge-pr.sh "${url##*/}"
+}
+
 quick_land_main() {
-  local subject="${1:-}" trailer="${2:-}" reason branch url
+  local subject="${1:-}" trailer="${2:-}" reason branch rc=0
   [[ -n "$subject" ]] || { echo 'usage: quick-land.sh <commit subject> [commit trailer]' >&2; return 2; }
   git fetch -q origin main
   if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
@@ -39,13 +63,10 @@ quick_land_main() {
   fi
   branch="quick/$(git rev-parse --short HEAD)-$(date +%s)"
   git switch -q -c "$branch"
-  git commit -qm "$subject" ${trailer:+-m "$trailer"}
-  git push -q -u origin "$branch"
-  url="$(gh pr create --base main --head "$branch" --title "$subject" \
-    --body $'Small Markdown change, landed by tools/quick-land.sh.\n\n## prior-art\n\nno external prior art: small text change')"
-  bash tools/merge-pr.sh "${url##*/}"
+  quick_land_ship "$branch" "$subject" "$trailer" || rc=$?
   git fetch -q origin main
-  git switch -q --detach origin/main # the next run starts from origin/main
+  git switch -q --detach origin/main # the next run starts from origin/main, also after a failure
+  return "$rc"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
