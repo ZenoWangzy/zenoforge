@@ -56,6 +56,14 @@ refill_room preflight || rc=$?
 (( rc == 1 )) || fail "a refill at the limit must be refused with the default cost (rc=$rc)"
 grep -Eq "refill room refused stage=preflight at [0-9]+s need=${need}s limit=${limit}s" "$LOG" || fail "refusal line missing or wrong: $(cat "$LOG")"
 
+# A short recorded cost does not let a step start in the last 30s: the kill counts from the refill start, not from SECONDS.
+: > "$LOG"; printf 'register_new_issues 9\n' > "$COST_FILE"
+SECONDS=$((limit - 10)); rc=0
+refill_room register_new_issues || rc=$?
+(( rc == 1 )) || fail "intake with a 9s cost must not start 10s before the kill (rc=$rc)"
+SECONDS=$((limit - 40))
+refill_room register_new_issues || fail 'intake with a 9s cost has room 40s before the kill'
+
 # The recorded cost is the largest of the last few runs, so one slow run counts until newer runs push it out.
 : > "$LOG"; rm -f "$COST_FILE"
 refill_cost_record preflight 100; refill_cost_record preflight 20

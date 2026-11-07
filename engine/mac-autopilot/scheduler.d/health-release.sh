@@ -70,7 +70,8 @@ refill_room() { # stage -> 0 when the stage fits in what is left of the refill, 
   [[ "${TICK_LOCAL_REFILL:-false}" == true ]] || return 0
   local need limit="${AUTOPI_REFILL_LIMIT_SECONDS:-300}"
   need="$(refill_stage_cost "$1")"
-  (( SECONDS + need > limit )) || return 0
+  # 30s short of the kill, as intake's own budget: at 21:11:13Z intake started at 290s with a recorded 9s and was killed at 300s.
+  (( SECONDS + need > limit - 30 )) || return 0
   say "refill room refused stage=$1 at ${SECONDS}s need=${need}s limit=${limit}s: it waits for the next refill"
   return 1
 }
