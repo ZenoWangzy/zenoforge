@@ -90,6 +90,6 @@ assert [line.split("\t")[0] for line in open(partial_home + "/inbox")] == ["freq
 assert not os.path.exists(home + "/mail-attempts") and not os.path.exists(partial_home + "/mail-attempts")
 # Founder ruling 2026-11-07: this file must not grow a mail path back.
 source = open(os.path.join(sys.argv[1], "founder_reqs.py")).read()
-assert "send_email" not in source and "需求进展" not in source
+assert not any(word in source for word in ("send_email", "需求进展", "PushNotification"))
 PY
 echo "founder_reqs.test.sh: PASS"

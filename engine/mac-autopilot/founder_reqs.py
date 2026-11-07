@@ -1,7 +1,7 @@
 """Founder requirements for the dashboard front page: every issue or unit labelled founder-test, hotfix or focus,
 with the founder's words (rulings.json references, else the issue title), a stage that only pipeline events and release
 acceptance advance (never an agent's note), owner, blocker and the time the stage was established.
-A stage change appends one supervisor-inbox line; the head supervisor session turns it into the PushNotification."""
+A stage change appends one supervisor-inbox line; the head supervisor monitors it. Nothing per-requirement reaches the founder."""
 import calendar, json, os, re, subprocess, time
 
 LABELS = ("founder-test", "hotfix", "focus")
@@ -120,7 +120,7 @@ def push_changes(items, state_path, lib, agent_home):
         k = str(it["issue"])
         if old is not None and old.get(k) != it["stage"]:
             was = STAGES[old[k]] if isinstance(old.get(k), int) and old[k] < len(STAGES) else "新增"
-            msg = f"founder-req #{k} {was} → {STAGES[it['stage']]}：{it['title'][:80]}（请 PushNotification 通知创始人）"
+            msg = f"founder-req #{k} {was} → {STAGES[it['stage']]}：{it['title'][:80]}"
             try:
                 ok = subprocess.run(["bash", "-c", 'source "$1" && supervisor_inbox_append_once "$2" "$3"', "bash", lib, f"freq-{k}-{it['stage']}", msg],
                                     capture_output=True, timeout=30, env={**os.environ, "AGENT_HOME": agent_home}).returncode == 0
