@@ -683,6 +683,28 @@ assert n.status_of(None, healthy, unhealthy, False) == "NO-DATA"
 print("node_health green-to-merge truncated read is NO-DATA: PASS")
 CHECK
 
+# ci.held_ready_pct: no ready units reads 0 when units.json was read, NO-DATA when it was missing or unreadable.
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'held ready percent wrong'
+import json, os, sys
+sys.path.insert(0, sys.argv[1]); import node_health as n, ledger_history as lh
+root = os.path.join(sys.argv[2], "held-ready")
+def ledger(name, body):
+    d = os.path.join(root, name); os.makedirs(d, exist_ok=True)
+    if body is not None:
+        open(os.path.join(d, "units.json"), "w").write(body)
+    return d
+empty = ledger("empty", json.dumps({"units": []}))
+missing = ledger("missing", None)
+corrupt = ledger("corrupt", "{")
+ready = [{"id": "a", "stage": "ready-to-merge", "ci_held_sha": "x"}, {"id": "b", "stage": "ready-to-merge"}]
+assert n.held_ready_pct([], lh.live_ledger_readable(empty)) == 0
+assert n.status_of(n.held_ready_pct([], lh.live_ledger_readable(empty)), 20, 50, False) == "OK"
+assert n.held_ready_pct(ready, lh.live_ledger_readable(empty)) == 50
+for d in (missing, corrupt):
+    assert n.held_ready_pct(lh.load_units(d), lh.live_ledger_readable(d)) is None, d
+print("node_health held-ready percent: empty ready list is 0, unreadable ledger is NO-DATA: PASS")
+CHECK
+
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'delivery metrics join or percentiles are wrong'
 import datetime as dt, json, os, pathlib, sys

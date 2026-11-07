@@ -291,6 +291,14 @@ LARGE_PR_LINES = 800
 LARGE_PR_WINDOW_DAYS = 30
 
 
+def held_ready_pct(units, ledger_ok):
+    """Share of ready-to-merge units whose CI is held for a hot patch; no ready units is 0 when units.json was read, NO-DATA when not."""
+    ready = [u for u in units if u.get("stage") == "ready-to-merge"]
+    if not ready:
+        return 0 if ledger_ok else None
+    return 100 * sum(1 for u in ready if u.get("ci_held_sha")) / len(ready)
+
+
 def status_of(v, healthy, unhealthy, higher):
     if v is None:
         return "NO-DATA"
@@ -1440,8 +1448,7 @@ def main():
     metrics["flow.slot_idle_hours"] = slot_idle_hours(queue_waits, cost_rows, since)
     metrics["flow.main_red_hours"] = main_red_hours(args.main_red_dir, since, now)
     flow_details = {"entered": entered, "merged": merged, "wip_age": wip_rows}
-    ready = [u for u in units if u.get("stage") == "ready-to-merge"]
-    metrics["ci.held_ready_pct"] = 100 * sum(1 for u in ready if u.get("ci_held_sha")) / len(ready) if ready else None
+    metrics["ci.held_ready_pct"] = held_ready_pct(units, ledger_history.live_ledger_readable(a))
     spend = read_json(os.path.join(a, "ci-spend.json"))
     fresh = ts(spend.get("sampled_at"))
     metrics["ci.waste_runner_pct"] = spend.get("waste_pct") if fresh and (now - fresh).total_seconds() < 7200 else None
