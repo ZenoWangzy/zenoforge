@@ -4,6 +4,9 @@
 # 已安装 systemd 用户单元（ops/host-units/zenoforge-autopilot-*.service）时交给 systemd 托管，
 # 否则回退 nohup。看板只打印绝对路径，不自动打开桌面窗口。
 set -euo pipefail
+# Capture the caller's ZF_ENGINE_DIR before runtime-env.sh (platform-env.sh) derives an internal one;
+# the branch detection below must react to what the caller set, not to that derivation.
+ZF_ENGINE_DIR_EXTERNAL="${ZF_ENGINE_DIR:-}"
 SRC="$(cd "$(dirname "$0")" && pwd -P)"
 source "$SRC/runtime-env.sh"
 RUN="$MAC_AUTOPILOT_SUPERVISOR_DIR"
@@ -34,15 +37,15 @@ mkdir -p "$A/alerts" "$VERSIONS"
 # The zenoforge CLI is the other non-git case: it links ~/.zenoforge/engine/<version> into the checkout as engine/
 # (untracked), so git has nothing to archive. CLI_LINK pins by that version's directory name and copies the linked version.
 ENGINE_REPO="$MAC_AUTOPILOT_ROOT" ENGINE_REL=engine IMMUTABLE=0 CLI_LINK=0
-engine_dir="${ZF_ENGINE_DIR:-$(cd "$SRC/.." && pwd -P)}"
-if [[ -L "$MAC_AUTOPILOT_ROOT/engine" && -z "${ZF_ENGINE_DIR:-}" ]]; then
+engine_dir="${ZF_ENGINE_DIR_EXTERNAL:-$(cd "$SRC/.." && pwd -P)}"
+if [[ -L "$MAC_AUTOPILOT_ROOT/engine" && -z "$ZF_ENGINE_DIR_EXTERNAL" ]]; then
   # The installed version can itself sit below an unrelated Git checkout.
   # The checkout's engine link is authoritative, not Git's ancestor discovery.
   CLI_LINK=1
 elif ! git -C "$engine_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   IMMUTABLE=1 ENGINE_REL=. ZF_ENGINE_DIR="$engine_dir"
   export ZF_ENGINE_DIR
-elif [[ -n "${ZF_ENGINE_DIR:-}" ]]; then
+elif [[ -n "$ZF_ENGINE_DIR_EXTERNAL" ]]; then
   ENGINE_REPO="$(git -C "$ZF_ENGINE_DIR" rev-parse --show-toplevel)"
   ENGINE_REL="$(git -C "$ZF_ENGINE_DIR" rev-parse --show-prefix)"; ENGINE_REL="${ENGINE_REL%/}"
   export ZF_ENGINE_DIR # the pin self-check runs the scheduler in child shells
