@@ -16,7 +16,7 @@
     }
   },
   "station_health": {
-    "stall_minutes": {"intake": 90, "triage": 360, "advisor": 810, "implement": 60, "review": 60, "repair": 90, "merge": 150, "ci": 70, "release": 950}
+    "stall_minutes": {"intake": 90, "triage": 360, "advisor": 810, "implement": 60, "review": 60, "repair": 90, "merge": 150, "ci": 100, "release": 950}
   },
   "auto_merge": true,
   "merge_gate": {

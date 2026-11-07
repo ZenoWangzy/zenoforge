@@ -14,12 +14,12 @@ STATIONS = ("intake", "triage", "advisor", "implement", "review", "repair", "mer
 # Minutes without an out event, while work waits, before a station is STALLED: 2 x the p90 gap between out events,
 # rounded up to 10 (NODE-HEALTH.md "Stations" has the measured gaps). Runtime config `station_health.stall_minutes` overrides.
 DEFAULT_STALL_MINUTES = {"intake": 90, "triage": 360, "advisor": 810, "implement": 60, "review": 60, "repair": 90,
-                         "merge": 150, "ci": 70, "release": 950}
+                         "merge": 150, "ci": 100, "release": 950}
 UNIT_BUFFER = {"implement-pending": "implement", "review-pending": "review", "rereview-pending": "review",
                "repair-pending": "repair", "ready-to-merge": "merge"}
 STATE_BUFFER = {"needs-triage": "triage", "needs-advisor": "advisor"}
 UNIT_OUT = {"review-approve": "review", "review-request-changes": "review", "review-block": "review",
-            "merged": "merge", "landed": "merge", "ci-wip-start": "ci"}
+            "merged": "merge", "landed": "merge", "ci-ready": "ci", "ci-wip-start": "ci"}
 # `release-closer: deployed=<sha, any length> closed=[issue, ...]`, one out per closed issue.
 RELEASE_RE = re.compile(r"^\[(\S+)\] release-closer: deployed=[0-9a-f]+ closed=\[([0-9,\s]*)\]")
 WORK_OUT = {"implement": "implement", "repair": "repair"}

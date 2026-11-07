@@ -163,7 +163,7 @@ stall is never charged to merge.
 | review | units in `review-pending` or `rereview-pending` | `review-approve`, `review-request-changes`, `review-block` | 60 |
 | repair | units in `repair-pending` | `write-end` whose `write-start` has `work_type: repair` | 90 |
 | merge | units in `ready-to-merge` without `ci_wip_wait` | `merged`, `landed` | 150 |
-| CI | `ready-to-merge` units with `ci_wip_wait` | `ci-wip-start` | 70 |
+| CI | `ready-to-merge` units with `ci_wip_wait` | `ci-ready`, `ci-wip-start` (a slot after a wait) | 100 |
 | release | `awaiting-release` with `deploy_state` not `deployed` | `release-closer` line, one per closed issue | 950 |
 
 Status: `STALLED` when the buffer is not empty and the stall exceeds the bound, `PAUSED` while the pipeline pause
