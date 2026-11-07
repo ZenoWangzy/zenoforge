@@ -11,7 +11,7 @@
 1029	engine/lib.sh
 976	engine/mac-autopilot/bell.sh
 1188	engine/mac-autopilot/gen_dashboard.py
-1660	engine/mac-autopilot/node_health.py
+1665	engine/mac-autopilot/node_health.py
 839	engine/mac-autopilot/scheduler.d/harvest-workers.sh
 983	engine/mac-autopilot/usage_reader.py
 2628	engine/night/efficiency-regression.mjs
