@@ -20,6 +20,7 @@ from pathlib import Path
 import arbiter_health, ledger_history, live_delivery
 import line_holds
 import release_age
+import rulings_copies
 import station_standards
 import pr_census
 import watch_alerts
@@ -263,8 +264,9 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE, **ledger_history.SOUR
 CRITERIA.update({**line_holds.CRITERIA, **station_standards.CRITERIA})
 MEANING.update({**line_holds.MEANING, **station_standards.MEANING})
 SOURCE.update({**line_holds.SOURCE, **station_standards.SOURCE})
-# release.hours_since_release lives in release_age.py for the same size-ratchet reason.
+# release.hours_since_release lives in release_age.py, rulings.copies_differ in rulings_copies.py, for the same size-ratchet reason.
 CRITERIA.update(release_age.CRITERIA); MEANING.update(release_age.MEANING); SOURCE.update(release_age.SOURCE)
+CRITERIA.update(rulings_copies.CRITERIA); MEANING.update(rulings_copies.MEANING); SOURCE.update(rulings_copies.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
 TIME_SINK_HOURS = 24
@@ -1522,6 +1524,7 @@ def main():
     blockers = read_json(os.path.join(a, "release-blockers.json"))
     metrics["release.hotpatch_blockers"] = len(blockers["blockers"]) if isinstance(blockers.get("blockers"), list) else None
     line_holds.collect(metrics, a, agent_home, now)
+    rulings_copies.collect(metrics, agent_home)
     release_found = release_age.collect(metrics, now)
     registry = (zf_mechanism_registry() or {}).get("mechanisms")
     if isinstance(registry, list) and registry:
