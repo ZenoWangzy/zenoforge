@@ -9,6 +9,7 @@ engine/lib-conclude.test.sh
 engine/execution-admission.test.sh
 engine/execution-admission-metrics.test.sh
 engine/mac-autopilot/start.test.sh
+engine/mac-autopilot/start-sync-only.test.sh
 engine/mac-autopilot/scheduler.test.sh
 engine/mac-autopilot/scheduler-part-1.test.sh
 engine/mac-autopilot/scheduler-part-2.test.sh

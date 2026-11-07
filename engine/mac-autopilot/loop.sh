@@ -91,6 +91,10 @@ pid_running() { # read /proc directly: the 5s refill poll spawned one ps per wor
 # 它的 HEAD 变了就发布 pinned 版本并切换 live 指针。10-22 之前只能手工 start.sh --sync-only，修好的 advisor 与冷却晚生效一小时。
 sync_from_main() {
   local src="$MAC_AUTOPILOT_ROOT/engine/mac-autopilot" head
+  # Immutable 部署在 checkout 里不留 engine 副本（版本目录 + engine-live 才是部署物，2026-10-30 起）：这里的
+  # 早退让 .synced-head 冻结在旧 head，每拍空转。没有 checkout 副本时，用 live runtime 自己的 start.sh 同步
+  # （经 ZF_ENGINE_DIR 走 engine-versions 版本目录）。
+  [[ -f "$src/start.sh" ]] || src="$LIVE"
   [[ -f "$src/start.sh" ]] || return 0
   head="$(git -C "$MAC_AUTOPILOT_ROOT" rev-parse HEAD 2>/dev/null)" || return 0
   [[ "$head" == "$(cat "$A/.synced-head" 2>/dev/null)" ]] && return 0
