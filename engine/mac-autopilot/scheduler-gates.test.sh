@@ -1107,7 +1107,7 @@ grep -q 'in phase run_merge_lane after done: harvest_workers:3s/0gh,dispatch_pen
 
 # repair 没推出新 head：自动重试两次，第三次转人工
 for round in 1 2 3; do
-  hist_json="$(jq -cn --argjson n "$((round-1))" '[{stage:"review-request-changes"}] + [range($n) | {stage:"repair-no-push"}, {stage:"repair-delivered"}] + [{stage:"repair-delivered"}]')"
+  hist_json="$(jq -cn --arg h "$H1" --argjson n "$((round-1))" '[{stage:"review-request-changes"}] + [range($n) | {stage:"repair-no-push",result:("head "+$h+" unchanged after repair")}, {stage:"repair-delivered"}] + [{stage:"repair-delivered"}]')"
   units "{\"units\":[{\"id\":\"pr-5b\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"r.md\",\"history\":$hist_json}]}"
   dispatch_pending || :
   if (( round < 3 )); then
@@ -1116,6 +1116,11 @@ for round in 1 2 3; do
     [[ "$(field pr-5b .stage)" == rereview-pending && "$(field pr-5b .arbiter)" == true ]] || fail 'repair-no-push retried more than twice (expected one arbiter review)'
   fi
 done
+# No-push repairs on an earlier head do not use up the retries of the current head.
+hist_json="$(jq -cn --arg h "$H2" '[{stage:"review-request-changes"},{stage:"repair-no-push",result:("head "+$h+" unchanged after repair")},{stage:"repair-no-push",result:("head "+$h+" unchanged after repair")},{stage:"repair-delivered"}]')"
+units "{\"units\":[{\"id\":\"pr-5b\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"r.md\",\"history\":$hist_json}]}"
+dispatch_pending || :
+[[ "$(field pr-5b .stage)" == repair-pending ]] || fail "no-push repairs on another head spent this head's retries ($(field pr-5b .stage))"
 # A CI failure after approval followed by an unchanged repair returns to native CI within the existing unit-row bound.
 gh_head_saved="$GH_HEAD"; gh_runs_saved="$GH_RUNS"; cancel_unit_runs_saved="$(declare -f cancel_unit_runs)"
 GH_HEAD="$H1"; GH_RUNS=777; GH_RERUNS=(); DISPATCHED=(); cancel_unit_runs() { :; }
