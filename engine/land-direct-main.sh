@@ -1270,8 +1270,7 @@ landed_range_changes_postsubmit_input() {
 # manual re-override. Root cause: the lander verified the range against the engine's own checks but never
 # against the target's engine-build contract. This preflight runs the converge gates before the push --
 # hook --build into a scratch versions root, then --check, then the built engine's --preflight runner --
-# only when the range touches the pin file, the override table or the vendored pack, which a live engine
-# also resolves config from: a pack change refuses the running converge too. Converge and landing both call that
+# only when the range touches the pin file, the override table or the vendored pack. Converge and landing both call that
 # built engine's engine-sync.sh --preflight, which reads the same publish-preflight/gates.tsv list.
 # The pin file is the target config root's build.json (the same resolution engine-sync.sh uses; today
 # .zenoforge/build.json). The hook path comes from the pin file's hook field (repo-relative), and the
