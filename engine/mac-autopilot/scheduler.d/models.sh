@@ -149,12 +149,26 @@ model_policy_role_fields() { # role -> provider, model, effort, service tier for
 }
 
 # A tick outlives a quota read, and a read newer than a tick-start NOW_EPOCH reads as unknown: callers pass the current time.
-zcode_pace_inflight() { # GLM runs in flight, any stage: reviews and implement share one count
-  jqf -r '[.workers[] | select(.harvested != true and ((.model // "") | test("glm"; "i")))] | length' "$WORKERS"
+zcode_pace_inflight() { # GLM runs in flight -> "<runs> <reviews>": a review weighs less in the pace sum
+  jqf -r '[.workers[] | select(.harvested != true and ((.model // "") | test("glm"; "i")))]
+    | (map(select(.type == "review" or .type == "rereview")) | length) as $reviews | "\(length - $reviews) \($reviews)"' "$WORKERS"
 }
 
-pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with a fresh, available quota
-  local fields provider model effort tier status
+zcode_paced() { # command... -> run it with the current time and the GLM runs in flight
+  local runs reviews
+  read -r runs reviews <<<"$(zcode_pace_inflight)"
+  NOW_EPOCH="$(date +%s)" ZCODE_PACE_INFLIGHT="$runs" ZCODE_PACE_REVIEWS="$reviews" "$@"
+}
+
+# The week hold needs Codex to take the work: during a Codex outage GLM runs ahead of pace, bounded by the 5h cap and the 98 alert.
+implement_week_held() { # [unit JSON] -> prints week and allowed while implement and repair must leave GLM
+  local unit='{}'
+  [[ -z "${1:-}" ]] || unit="$1"
+  (pick_codex_work_identity "$unit") >/dev/null 2>&1 && zcode_paced zcode_week_held
+}
+
+pick_zcode_implementer() { # [unit JSON], configured hand-zcode identity -> PICK_* only with a fresh, available quota
+  local fields provider model effort tier status week
   fields="$(model_policy_role_fields hand-zcode 2>/dev/null || true)"
   [[ -n "$fields" ]] || return 1
   IFS=$'\t' read -r provider model effort tier <<<"$fields"
@@ -162,9 +176,13 @@ pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with 
   model_policy_model_allowed_for_role "$model" hand-zcode || return 1
   command -v zcode >/dev/null 2>&1 || return 1
   zcode_provider_config_model_matches "zcode:$model:$effort" || return 1
-  status="$(NOW_EPOCH="$(date +%s)" ZCODE_PACE_INFLIGHT="$(zcode_pace_inflight)" zcode_quota_status)"
-  [[ "$status" != paced ]] || say "glm pace hold: start waits for the 5h window to catch up"
+  status="$(zcode_paced zcode_quota_status)"
+  [[ "$status" != paced ]] || say "glm pace hold: start waits for the 5h window to catch up, runs and reviews in flight: $(zcode_pace_inflight)"
   [[ "$status" == available ]] || return 1
+  if week="$(implement_week_held "${1:-}")"; then
+    say "glm week hold: implement and repair leave GLM while the week is ahead of pace $week"
+    return 1
+  fi
   cooling zcode && return 1
   PICK_PROVIDER=zcode; PICK_MODEL="$model"; PICK_EFFORT="$effort"; PICK_HARD=false; PICK_SERVICE_TIER="$tier"
   return 0
@@ -244,7 +262,7 @@ hard_implementer_fields() { # optional models.hard; otherwise use the production
   PICK_PROVIDER="$provider"; PICK_MODEL="$model"; PICK_EFFORT="$effort"; PICK_SERVICE_TIER="${tier:-}"
 }
 
-provider_runtime_ready() { # provider model -> runnable, policy-authorized and not held
+provider_runtime_ready() { # provider model [role] [unit JSON] -> runnable, policy-authorized and not held
   local provider="$1" model="$2" role="${3:-work}"
   # production is the explicitly configured hard tier; its family can differ
   # from work's allowed families (for example Terra), by design.
@@ -253,7 +271,7 @@ provider_runtime_ready() { # provider model -> runnable, policy-authorized and n
   case "$provider" in
     codex) codex_week_stopped && return 1; command -v codex >/dev/null 2>&1 ;;
     zcode)
-      [[ "$(NOW_EPOCH="$(date +%s)" ZCODE_PACE_INFLIGHT="$(zcode_pace_inflight)" zcode_quota_status)" == available ]] || return 1
+      [[ "$(zcode_paced zcode_quota_status)" == available ]] && ! implement_week_held "${4:-}" >/dev/null || return 1
       command -v zcode >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"
       ;;
     claude) ! provider_quota_exhausted claude && command -v claude >/dev/null 2>&1 ;;
@@ -273,12 +291,12 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
     hard_implementer_fields || { say "no hard implementation identity available"; return 1; }
     actual="$PICK_PROVIDER"
     [[ "$(command jq -r '.hard_escalated // false' <<<"$u")" == true ]] || arbiter=true
-    provider_runtime_ready "$actual" "$PICK_MODEL" production || {
+    provider_runtime_ready "$actual" "$PICK_MODEL" production "$u" || {
       if [[ "$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")" != 0 ]] && pick_claude_implementer; then
         PICK_ROUTE_PROVIDER=claude; PICK_HARD=true; PICK_REASON=hard-fallback-claude
         return 0
       fi
-      if pick_zcode_implementer; then
+      if pick_zcode_implementer "$u"; then
         PICK_ROUTE_PROVIDER=zcode; PICK_HARD=true; PICK_REASON=hard-fallback-zcode
         return 0
       fi
@@ -337,10 +355,10 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
     # Share 0 is the kill switch: sticky Claude units go to Codex, or ZCode over its stop (a fresh session; repair never resumes across providers).
     reason=claude-share-off-codex
     pick_codex_work_identity "$u" && { PICK_REASON="$reason"; return 0; }
-    pick_zcode_implementer && { PICK_REASON=claude-share-off-zcode; return 0; }
+    pick_zcode_implementer "$u" && { PICK_REASON=claude-share-off-zcode; return 0; }
   elif [[ "$preferred" == zcode ]]; then
     status="$(zcode_quota_status)"
-    if pick_zcode_implementer; then PICK_REASON="$reason"; return 0; fi
+    if pick_zcode_implementer "$u"; then PICK_REASON="$reason"; return 0; fi
     if [[ "$status" == exhausted ]]; then reason=quota-fallback-zcode-to-codex
     elif [[ "$status" == unknown ]]; then reason=quota-unknown-zcode-to-codex
     else reason=zcode-unavailable-fallback-to-codex; fi
@@ -348,7 +366,7 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
   else
     if pick_codex_work_identity "$u"; then PICK_REASON="$reason"; return 0; fi
     status="$(zcode_quota_status)"
-    if pick_zcode_implementer; then
+    if pick_zcode_implementer "$u"; then
       if provider_quota_exhausted codex; then reason=quota-fallback-codex-to-zcode
       else reason=codex-unavailable-fallback-to-zcode; fi
       PICK_REASON="$reason"; return 0
@@ -433,7 +451,7 @@ pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves 
     glm_identity="$(review_identity_for_model "$(model_tuple_field review_cross 0)" "$(model_tuple_field review_cross 1)" 2>/dev/null || true)"
     sonnet_identity="$(review_identity_for_model "$(model_tuple_field review_fallback 0)" "$(model_tuple_field review_fallback 1)" 2>/dev/null || true)"
     status=0
-    selected="$(NOW_EPOCH="$(date +%s)" ZCODE_PACE_INFLIGHT="$(zcode_pace_inflight)" review_model_for_implementer "$issue" "$author" "$codex_identity" "$glm_identity" "$sonnet_identity" "$id")" || status=$?
+    selected="$(zcode_paced review_model_for_implementer "$issue" "$author" "$codex_identity" "$glm_identity" "$sonnet_identity" "$id")" || status=$?
   fi
   if (( status == 0 )) && [[ -n "$selected" ]]; then
     PICK_MODEL="${selected#*:}"; PICK_EFFORT="${PICK_MODEL##*:}"; PICK_MODEL="${PICK_MODEL%:*}"

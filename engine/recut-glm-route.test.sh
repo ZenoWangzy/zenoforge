@@ -70,6 +70,8 @@ assert_eq "halfway past that waits" paced "$(pace_case 50 9000 0)"
 assert_eq "the end of the window never allows past the cap" available "$(pace_case 59 17999 0)"
 assert_eq "the cap stays exhausted, not paced" exhausted "$(pace_case 60 17999 0)"
 assert_eq "a run in flight counts before the meter moves" paced "$(pace_case 6 0 1)"
+assert_eq "a review in flight counts at its own weight" available "$(ZCODE_PACE_REVIEWS=1 pace_case 6 0 0)"
+assert_eq "reviews still fill the sum" paced "$(ZCODE_PACE_REVIEWS=5 pace_case 6 0 0)"
 assert_eq "one run in flight still leaves room" available "$(pace_case 4 0 1)"
 rm -f "$pace_file"
 

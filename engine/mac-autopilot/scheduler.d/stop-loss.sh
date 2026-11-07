@@ -99,7 +99,7 @@ repair_cap_admission() { # unit-id unit-json → two failed repair rounds escala
   starts="$(effective_write_starts_since_ruling "$2" '["supervisor-arbiter","supervisor-arbiter-round","supervisor-requeue","supervisor-approve","advisor-ruling","review-approve"]')" || return 1
   hard_attempts="$(jqf -r --argjson starts "$starts" '[ $starts[] | select(.work_type == "repair" and .hard_escalation == true) ] | length')"
   if [[ "$(jqf -r '.hard_escalated // false' <<<"$2")" != true || "$hard_attempts" == 0 ]]; then
-    if ! hard_implementer_fields || ! provider_runtime_ready "$PICK_PROVIDER" "$PICK_MODEL" production; then
+    if ! hard_implementer_fields || ! provider_runtime_ready "$PICK_PROVIDER" "$PICK_MODEL" production "$2"; then
       to_supervisor "$1" "repair cap: two failed repair rounds and no configured hard implementation identity is available" \
         'Escalate to supervisor arbitration because the hard implementation identity is unavailable' \
         'two repair write-starts have failed and the configured production identity cannot run' \
