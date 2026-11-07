@@ -23,7 +23,7 @@ import pr_census
 import worker_cost
 import workorder_cost
 import usage_reader
-from config_paths import zf_config_file, zf_host_ops_file, zf_incident_guards, zf_mechanism_registry
+from config_paths import zf_config_file, zf_host_ops_file, zf_mechanism_registry
 
 
 def is_test_path(path):
@@ -91,12 +91,12 @@ CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     "delivery.issue_to_accept_p50_30d_hours": ("delivery", "issue created -> release accepted p50, 30 d hours", 24, 72, False),
     "delivery.issue_to_accept_p95_30d_hours": ("delivery", "issue created -> release accepted p95, 30 d hours", 72, 168, False),
     "delivery.revert_rate_30d_pct": ("delivery", "accepted units reverted within 30 d %", 5, 10, False),
-    "delivery.incident_rate_30d_pct": ("delivery", "incident records per accepted unit within 30 d %", 5, 10, False),
+    "delivery.incident_rate_30d_pct": ("delivery", "accepted units named by a production incident within 30 d %", 5, 10, False),
     "delivery.cycles_to_pass_30d": ("delivery", "review rounds to pass per merged unit, 30 d", 1.32, 2.28, False),
     "delivery.approvals_per_merge_30d": ("delivery", "review approvals per merged unit, 30 d", 1, 2.28, False),
     "delivery.human_actions_per_merge_30d": ("delivery", "human PR review actions per merged unit, 30 d", 1, 2, False),
     "delivery.unlinked_units_30d": ("delivery", "release-accepted units missing a recorded join, 30 d", 0, 1, False),
-    "delivery.unlinked_incidents_30d": ("delivery", "incident records without an accepted-unit link, 30 d", 0, 1, False),
+    "delivery.unlinked_incidents_30d": ("delivery", "production incidents without an accepted-unit link, 30 d", 0, 1, False),
     "delivery.human_actions_unattributed_30d": ("delivery", "maintainer-login PR review actions without reliable attribution, 30 d", 0, 1, False),
     "host.prereqs_missing":    ("host", "host services from host-prereqs.json that do not answer", 0, 1, False),
     "host.github_net_failures_per_hour": ("host", "GitHub fetch/API network failures per hour (user journal)", 2, 10, False),
@@ -177,12 +177,12 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "delivery.issue_to_accept_p50_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只用完整 ID 链。",
     "delivery.issue_to_accept_p95_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只用完整 ID 链。",
     "delivery.revert_rate_30d_pct": "过去 30 天接受单元中，release-closer 接受后 main 出现对应 Git revert marker 的比例。",
-    "delivery.incident_rate_30d_pct": "过去 30 天根因事故记录数 ÷ 同期接受单元数；没有明确关联到接受单元的记录同时计为 unlinked。",
+    "delivery.incident_rate_30d_pct": "过去 30 天被线上事故明确点名的接受单元数 ÷ 同期接受单元数（上限 100%）；没有明确关联到接受单元的事故计入 unlinked。",
     "delivery.cycles_to_pass_30d": "过去 30 天合并单元从首次评审到第一次 review-approve 的评审轮数均值，含通过轮。",
     "delivery.approvals_per_merge_30d": "过去 30 天合并单元的 review-approve 台账事件均值。",
     "delivery.human_actions_per_merge_30d": "过去 30 天合并 PR 的真人 review action 均值；扣除有 bot marker、commit trailer 或同刻 scheduler review 事件的 maintainer-account 操作。",
     "delivery.unlinked_units_30d": "过去 30 天 release-closer 明确关闭的 issue 中，issue→unit→PR→merge→release 链缺字段或多义的数量。",
-    "delivery.unlinked_incidents_30d": "过去 30 天事故记录中没有明确 issue ID、或 issue ID 未对应到同期接受单元的数量；不会猜测归属。",
+    "delivery.unlinked_incidents_30d": "过去 30 天线上事故（与负责人邮件同一份账本）中没有明确 issue ID、或 issue ID 未对应到同期接受单元的数量；不会猜测归属。",
     "delivery.human_actions_unattributed_30d": "过去 30 天 maintainer-login PR review 中，有 agent marker 或 commit trailer、但没有相应 scheduler review 事件的动作数；不算成人工动作。",
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
@@ -243,12 +243,12 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "delivery.issue_to_accept_p50_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
     "delivery.issue_to_accept_p95_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
     "delivery.revert_rate_30d_pct": "units.json 接受单元的 merge SHA，与 origin/main Git revert commit 的 This reverts commit marker",
-    "delivery.incident_rate_30d_pct": ".zenoforge/state/incident-guards.json dated incidents ÷ unique issue IDs in release-closer acceptance events; downstream joins are not required",
+    "delivery.incident_rate_30d_pct": "night/founder-health-mail.json production incidents (same ledger as the owner mail) naming an issue ID in release-closer acceptance events ÷ unique accepted issue IDs",
     "delivery.cycles_to_pass_30d": "units.json review-approve / review-request-changes / review-block events before merged / landed",
     "delivery.approvals_per_merge_30d": "units.json review-approve events on merged / landed units",
     "delivery.human_actions_per_merge_30d": "GitHub merged PR review records, matched against units.json history, PR body bot marker and commit trailers",
     "delivery.unlinked_units_30d": "release-closer output in alerts/events.md joined by exact issue, unit, PR and merge IDs",
-    "delivery.unlinked_incidents_30d": ".zenoforge/state/incident-guards.json explicit issue fields joined to accepted issue IDs",
+    "delivery.unlinked_incidents_30d": "night/founder-health-mail.json production incidents, issue field joined to accepted issue IDs",
     "delivery.human_actions_unattributed_30d": "GitHub PR reviews joined to scheduler history and PR/commit bot markers; no reliable actor attribution means unknown",
 }
 # Line-hold rows (holds.*) live in line_holds.py: node_health.py is at its size-ratchet baseline.
@@ -878,12 +878,14 @@ def read_json(path):
         return {}
 
 
-def load_incident_guards():
+def load_prod_incidents(agent_home):
+    """Production incidents from the owner-mail ledger as delivery_metrics records; None if unreadable."""
     try:
-        incidents = (zf_incident_guards() or {}).get("incidents")
-    except (OSError, ValueError):
+        rows = json.load(open(os.path.join(agent_home, "night", "founder-health-mail.json"))).get("incidents")
+        return [{"issue": r.get("issue"), "date": datetime.fromtimestamp(int(r["opened_at"]), timezone.utc).strftime("%Y-%m-%d")}
+                for r in rows]
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
         return None
-    return incidents if isinstance(incidents, list) else None
 
 
 def read_cancel_audit(path, repo):
@@ -1243,9 +1245,7 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
                 incident_rows.append(incident)
         details["incident_records_30d"] = len(incident_rows)
         if accepted_release_issues_30d is not None:
-            # Root-cause records (incident-guards.json) have no `issue` field (0/868); the existing
-            # convention is an explicit "Issue #N" in what_happened. Records naming no issue are not
-            # linkable and counted apart; only a named issue that was never accepted is unlinked.
+            # Ledger incidents carry `issue`; one naming none is counted apart, a named never-accepted one is unlinked.
             def _incident_issue(incident):
                 direct = _number(incident.get("issue") or incident.get("issue_number"))
                 if direct is not None:
@@ -1262,7 +1262,7 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
                     issue is not None and issue not in accepted_release_issues_30d for issue in named)
                 details["unlinked_incidents_30d"] = unlinked_incidents
                 values["delivery.unlinked_incidents_30d"] = unlinked_incidents
-                values["delivery.incident_rate_30d_pct"] = 100 * len(incident_rows) / len(accepted_release_issues_30d)
+                values["delivery.incident_rate_30d_pct"] = 100 * len(accepted_release_issues_30d.intersection(named)) / len(accepted_release_issues_30d)
     if details["unlinked_units_30d"] is not None:
         values["delivery.unlinked_units_30d"] = details["unlinked_units_30d"]
 
@@ -1487,7 +1487,7 @@ def main():
     repo = os.environ.get("ZF_REPO", "")
     release_events = release_acceptances(a)
     issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events)
-    incidents = load_incident_guards()
+    incidents = load_prod_incidents(agent_home)
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)

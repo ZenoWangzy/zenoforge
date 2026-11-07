@@ -76,12 +76,12 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | delivery | first-parent product commits on `origin/main` after the recorded live SHA (`delivery.merged_not_live`) | `$AGENT_HOME/state/live-sha.json` plus the merge lane's `NONPRODUCT_PATHS_RE`; every missing live SHA is NO-DATA and unhealthy because this signal was silent for 15 days | 0 | ≥ 1 | — |
 | delivery | age in hours of the oldest such commit (`delivery.oldest_merged_not_live_hours`) | commit time from the same first-parent product commit range; the 24/72 h bounds match issue-to-accept p50 | ≤ 24 | ≥ 72 | — |
 | delivery | fully linked units accepted in the last 30 d that have since been reverted % (`delivery.revert_rate_30d_pct`) | elite change failure rate < 5 % [4]; 10 % is twice that bound | ≤ 5 | ≥ 10 | first scorecard sample |
-| delivery | dated root-cause incident records per 100 release-accepted issue IDs % (`delivery.incident_rate_30d_pct`) | change-failure proxy [4]; no frozen incident-per-unit baseline yet, so 5 / 10 % are the same initial bands as reverts | ≤ 5 | ≥ 10 | first scorecard sample; unlinked incident records remain separately visible |
+| delivery | release-accepted issue IDs in the last 30 d named by a production incident, per 100 accepted IDs % (`delivery.incident_rate_30d_pct`) | change-failure proxy [4]; no frozen incident-per-unit baseline yet, so 5 / 10 % are the same initial bands as reverts | ≤ 5 | ≥ 10 | first scorecard sample; unlinked incident records remain separately visible |
 | delivery | review rounds through the first approval per merged unit (`delivery.cycles_to_pass_30d`) | Anthropic reported 1.32 reviews-to-pass after its change; the product's pre-pause 112 delivered units averaged 2.28 approvals [alignment §9] | ≤ 1.32 | ≥ 2.28 | first scorecard sample |
 | delivery | scheduler approvals per merged unit (`delivery.approvals_per_merge_30d`) | one successful approval is sufficient; the product pre-pause average was 2.28 per delivered unit [alignment §9] | ≤ 1 | ≥ 2.28 | first scorecard sample |
 | delivery | human GitHub PR review actions per merged PR (`delivery.human_actions_per_merge_30d`) | one real review action is an exception; two or more indicate repeated manual handling (estimate) | ≤ 1 | ≥ 2 | first scorecard sample; excludes the required user-path acceptance |
 | delivery | release-accepted issue records missing a unique issue → unit → PR → merge → release join (`delivery.unlinked_units_30d`) | exact IDs are required; guessing a missing edge would falsify lead time | 0 | ≥ 1 | first scorecard sample |
-| delivery | root-cause incident records without an explicit accepted-issue link (`delivery.unlinked_incidents_30d`) | exact issue link required; a record naming no issue (`issue` field or "Issue #N" in what_happened) is not linkable and is reported as `incident_unreferenced_30d`; a named issue that was never accepted is unlinked | 0 | ≥ 1 | first scorecard sample |
+| delivery | production incidents without an explicit accepted-issue link (`delivery.unlinked_incidents_30d`) | exact issue link required; a record naming no issue (`issue` field or "Issue #N" in what_happened) is not linkable and is reported as `incident_unreferenced_30d`; a named issue that was never accepted is unlinked | 0 | ≥ 1 | first scorecard sample |
 | delivery | maintainer-login PR review actions without reliable human/agent attribution (`delivery.human_actions_unattributed_30d`) | unknown attribution is not counted as human | 0 | ≥ 1 | first scorecard sample |
 | flow | merges per hour vs the 6.5 target; a starved queue (nothing open, nothing entered) reports no value (`flow.merge_rate_per_hour`) | #4355 SLO: ≥ 6.5 merges/h with sufficient backlog; 3.5/h was the pre-upgrade serial merge-lane ceiling | ≥ 6.5 | ≤ 3.5 | first scorecard sample |
 | flow | worst per-stage p90 age of open units, hours (`flow.wip_age_stage_p90_hours`; per-stage rows in scorecard `flow.wip_age`) | #4355 SLO: median ticket cycle ≤ 2 h; p90 stage age ≤ 4 h is consistent with it (estimate), half a day in one stage is stalled | ≤ 4 | ≥ 12 | first scorecard sample |
@@ -117,8 +117,12 @@ time because an issue can close before release acceptance. The unit's `merge_sha
 ambiguous or incomplete edge increments `delivery.unlinked_units_30d` and is excluded from lead-time samples and the
 revert-rate sample, which needs the linked merge SHA. Reverts are matched by the Git commit message marker
 `This reverts commit <merge_sha>.` on `origin/main`, and only count when the revert commit follows acceptance.
-Incident rate is the number of dated root-cause records divided by the number of unique issue IDs in release-closer
-acceptance events in the same 30-day window; the issue → unit → PR → merge join is not required for this denominator.
+Production incidents are the `incidents` of the owner-mail ledger (`night/founder-health-mail.json`), opened in the window; the
+owner mail counts the same ledger under 线上告警. Incident rate is the number of unique accepted issue IDs (release-closer
+acceptance events in the same 30-day window) that an incident names, divided by the number of those accepted IDs, so it cannot pass 100 %.
+The root-cause lesson records in `incident-guards.json` are factory process findings, not production incidents, and are
+not counted. Head-watch `PROD-DB-TIMEOUT` alerts name no issue and cannot be joined, so they are left out; an alert
+or incident would link only through an issue ID or a release SHA that matches a release-closer event.
 Incident linkage compares the record's explicit issue ID with those accepted IDs; missing or unmatched IDs remain
 visible in `delivery.unlinked_incidents_30d`. Human actions count GitHub PR review records:
 bot logins and explicit bot markers are excluded, scheduler review timestamps identify agent decisions made under
