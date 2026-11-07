@@ -62,17 +62,10 @@ pace_case() { # 5h-pct elapsed-seconds|none inflight -> status
   NOW_EPOCH=$now ZCODE_QUOTA_SNAPSHOT_FILE="$pace_file" ZCODE_PACE_INFLIGHT="$3" zcode_quota_status
 }
 pace_file="$(mktemp)"
-assert_eq "an open window allows the slack" available "$(pace_case 19 0 0)"
-assert_eq "over the slack at the start waits" paced "$(pace_case 21 0 0)"
-assert_eq "a window not started counts as elapsed 0" paced "$(pace_case 21 none 0)"
-assert_eq "halfway allows half the cap plus slack" available "$(pace_case 49 9000 0)"
-assert_eq "halfway past that waits" paced "$(pace_case 50 9000 0)"
-assert_eq "the end of the window never allows past the cap" available "$(pace_case 59 17999 0)"
-assert_eq "the cap stays exhausted, not paced" exhausted "$(pace_case 60 17999 0)"
-assert_eq "a run in flight counts before the meter moves" paced "$(pace_case 6 0 1)"
-assert_eq "a review in flight counts at its own weight" available "$(ZCODE_PACE_REVIEWS=1 pace_case 6 0 0)"
-assert_eq "reviews still fill the sum" paced "$(ZCODE_PACE_REVIEWS=5 pace_case 6 0 0)"
-assert_eq "one run in flight still leaves room" available "$(pace_case 4 0 1)"
+assert_eq "no pacing: only the cap stops GLM" available "$(pace_case 59 0 0)"
+assert_eq "a window not started is open" available "$(pace_case 21 none 0)"
+assert_eq "runs in flight do not count" available "$(pace_case 59 0 8)"
+assert_eq "the cap is exhausted" exhausted "$(pace_case 60 17999 0)"
 rm -f "$pace_file"
 
 prompt="$(mktemp)"; schema="$(mktemp)"; echo '{"required":["children"]}' > "$schema"

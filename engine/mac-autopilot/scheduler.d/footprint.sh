@@ -600,10 +600,8 @@ refill_dispatch_metrics() { # log byte offset live count -> one-line refill stat
     printf '%s\n' "$log_end" > "$A/.refill-dispatch-log-offset.tmp" \
       && mv -f -- "$A/.refill-dispatch-log-offset.tmp" "$A/.refill-dispatch-log-offset" || return 1
   fi
-  # Slots idle under pace are the plan, not a fault: the line names the state.
-  local glm=""; [[ "$(zcode_quota_status)" != paced ]] || glm=" glm=paced"
-  printf 'free_slots=%s pending=%s skips=footprint:%s,handoff:%s,memory:%s%s\n' \
-    "$free" "$pending" "$footprint" "$handoff" "$memory" "$glm"
+    printf 'free_slots=%s pending=%s skips=footprint:%s,handoff:%s,memory:%s\n' \
+    "$free" "$pending" "$footprint" "$handoff" "$memory"
 }
 # 每 tick：活 worker 跑超 hog_alert_minutes 且挡住 >hog_alert_blocked 个 *-pending 单元时只告警，不停 worker（2026-10-30 issue-3015/4280）
 footprint_hog_alert() {

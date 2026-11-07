@@ -149,26 +149,12 @@ model_policy_role_fields() { # role -> provider, model, effort, service tier for
 }
 
 # A tick outlives a quota read, and a read newer than a tick-start NOW_EPOCH reads as unknown: callers pass the current time.
-zcode_pace_inflight() { # GLM runs in flight -> "<runs> <reviews>": a review weighs less in the pace sum
-  jqf -r '[.workers[] | select(.harvested != true and ((.model // "") | test("glm"; "i")))]
-    | (map(select(.type == "review" or .type == "rereview")) | length) as $reviews | "\(length - $reviews) \($reviews)"' "$WORKERS"
-}
-
-zcode_paced() { # command... -> run it with the current time and the GLM runs in flight
-  local runs reviews
-  read -r runs reviews <<<"$(zcode_pace_inflight)"
-  NOW_EPOCH="$(date +%s)" ZCODE_PACE_INFLIGHT="$runs" ZCODE_PACE_REVIEWS="$reviews" "$@"
-}
-
-# The week hold needs Codex to take the work: during a Codex outage GLM runs ahead of pace, bounded by the 5h cap and the 98 alert.
-implement_week_held() { # [unit JSON] -> prints week and allowed while implement and repair must leave GLM
-  local unit='{}'
-  [[ -z "${1:-}" ]] || unit="$1"
-  (pick_codex_work_identity "$unit") >/dev/null 2>&1 && zcode_paced zcode_week_held
+zcode_paced() { # command... -> run it with the current time, not the tick's start
+  NOW_EPOCH="$(date +%s)" "$@"
 }
 
 pick_zcode_implementer() { # [unit JSON], configured hand-zcode identity -> PICK_* only with a fresh, available quota
-  local fields provider model effort tier status week
+  local fields provider model effort tier status
   fields="$(model_policy_role_fields hand-zcode 2>/dev/null || true)"
   [[ -n "$fields" ]] || return 1
   IFS=$'\t' read -r provider model effort tier <<<"$fields"
@@ -177,12 +163,7 @@ pick_zcode_implementer() { # [unit JSON], configured hand-zcode identity -> PICK
   command -v zcode >/dev/null 2>&1 || return 1
   zcode_provider_config_model_matches "zcode:$model:$effort" || return 1
   status="$(zcode_paced zcode_quota_status)"
-  [[ "$status" != paced ]] || say "glm pace hold: start waits for the 5h window to catch up, runs and reviews in flight: $(zcode_pace_inflight)"
   [[ "$status" == available ]] || return 1
-  if week="$(implement_week_held "${1:-}")"; then
-    say "glm week hold: implement and repair leave GLM while the week is ahead of pace $week"
-    return 1
-  fi
   cooling zcode && return 1
   PICK_PROVIDER=zcode; PICK_MODEL="$model"; PICK_EFFORT="$effort"; PICK_HARD=false; PICK_SERVICE_TIER="$tier"
   return 0
@@ -271,7 +252,7 @@ provider_runtime_ready() { # provider model [role] [unit JSON] -> runnable, poli
   case "$provider" in
     codex) codex_week_stopped && return 1; command -v codex >/dev/null 2>&1 ;;
     zcode)
-      [[ "$(zcode_paced zcode_quota_status)" == available ]] && ! implement_week_held "${4:-}" >/dev/null || return 1
+      [[ "$(zcode_paced zcode_quota_status)" == available ]] || return 1
       command -v zcode >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"
       ;;
     claude) ! provider_quota_exhausted claude && command -v claude >/dev/null 2>&1 ;;
