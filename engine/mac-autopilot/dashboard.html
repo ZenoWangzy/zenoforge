@@ -1316,7 +1316,7 @@ const metricStatusGroups = ms => ({
 const metricStatusText = (status, count) => `${count} ${status==="bad" ? "项异常" : "项需留意"}`;
 // 白话名称与原因，按指标 id 手写；没有的回退到指标自带解释的第一句。名称由英文标识推断，改错了在这里改。
 const PLAIN = {
-  "dispatch.collisions_per_day": ["多个任务同时改同一个文件", "会互相覆盖，需要返工"],
+  "merge.conflict_repairs_per_day": ["合并冲突后要返工的次数", "现在多个任务可以同时改同一个文件，不再排队等；撞上了由原任务自己修，次数偏高说明撞得太多、返工拖慢交付"],
   "repair.wall_p50": ["返工耗时偏长", "返工拖慢了交付"],
   "ci.red_after_approve_pct": ["检查通过后 CI 又变红", "评审没发现的问题，或 CI 环境不稳定"],
   "scheduler.tick_gap_p50": ["调度器间隔太长", "任务派得晚，看板数据也更新得慢"],
