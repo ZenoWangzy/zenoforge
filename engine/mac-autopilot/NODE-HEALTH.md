@@ -277,6 +277,8 @@ Measured by hand on 2026-10-20 (not yet scored automatically, needs the GitHub A
 A single work order that costs this much is not "a hard issue": the pipeline wasted it, and the cause gets
 found like any other defect. Bounds come from the 94 units delivered by 2026-10-21 (healthy ≈ p90, bug ≈ 2–4× p90);
 open units past a bug bound are counted in `workorders.over_standard` and listed on the dashboard.
+A held unit (`blocked-external`, `parked`, `supervisor-review`) is exempt from the age bound and counts on the spend bounds only if a worker of that unit ran inside the scorecard window; lifetime spend from before the hold does not age out otherwise.
+The M1 `ci.cancel_*_per_day` rows read a rolling 24 h, not the scorecard window scaled to a day.
 The same cost rows aggregate per ticket (all units of one issue) in `worker_cost.py`; the per-ticket
 p90 metrics above derive their bounds from the last 30 days of closed tickets instead of a frozen table.
 
