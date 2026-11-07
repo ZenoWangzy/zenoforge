@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import arbiter_health, ledger_history, live_delivery
-import line_holds
+import line_holds, station_standards
 import pr_census
 import worker_cost
 import workorder_cost
@@ -252,9 +252,9 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "delivery.human_actions_unattributed_30d": "GitHub PR reviews joined to scheduler history and PR/commit bot markers; no reliable actor attribution means unknown",
 }
 # Line-hold rows (holds.*) live in line_holds.py: node_health.py is at its size-ratchet baseline.
-CRITERIA.update(line_holds.CRITERIA)
-MEANING.update(line_holds.MEANING)
-SOURCE.update(line_holds.SOURCE)
+CRITERIA.update({**line_holds.CRITERIA, **station_standards.CRITERIA})
+MEANING.update({**line_holds.MEANING, **station_standards.MEANING})
+SOURCE.update({**line_holds.SOURCE, **station_standards.SOURCE})
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
 TIME_SINK_HOURS = 24
@@ -1481,7 +1481,7 @@ def main():
     followed = [n for n in followed if n]
     metrics["loop.incremental_rereview_pct"] = 100 * followed.count("rereview") / len(followed) if followed else None
     units = ledger_history.load_units(a)
-    metrics.update(ledger_metrics(units, since, now))
+    metrics.update({**ledger_metrics(units, since, now), **station_standards.collect(now, units, runs, a, agent_home)})
     # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
     metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]
     repo = os.environ.get("ZF_REPO", "")

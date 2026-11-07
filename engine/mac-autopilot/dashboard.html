@@ -633,7 +633,7 @@ const LABELS = {
   "delivery.human_actions_unattributed_30d":["真人动作归属不明（30 天）","次"],
   "mechanism.silent":["沉默超限的机制","个"],
 };
-const NODE_NM = {implement:"开发", review:"质检", repair:"返工", "review-loop":"评审循环", workers:"AI 员工", "ci+merge":"CI 与合并",
+const NODE_NM = {intake:"入口", triage:"分诊", advisor:"顾问", merge:"合并", ci:"CI 排队", implement:"开发", review:"质检", repair:"返工", "review-loop":"评审循环", workers:"AI 员工", "ci+merge":"CI 与合并",
   supervisor:"主管", scheduler:"调度", release:"发布", delivery:"交付质量", pipeline:"流水线台账", "work-orders":"工作单", host:"主机", mechanisms:"机制心跳"};
 // 指标归属模块：先看 id，再看 node；都不认识的只出现在"健康标准"
 const ID_MOD = {"loop.advisor_fail_pct":"advisor"};
@@ -978,10 +978,12 @@ function vRelease(D) {
 }
 
 // 7. 健康标准（全部有标准的数字一屏看完）
+// 车站状态（station_health.py）：STALLED 不健康；PAUSED 与 HELD 是有意停下，不计为异常
+const STSK = {OK:"ok", STALLED:"bad", PAUSED:"none", HELD:"none"};
 function allStatuses(D) {
   const F = FR(D);
   return [...nodeMetrics(D).map(m=>sk(m.status)), ...Object.values(F.status||{}).map(sk), ...Object.keys(ciStd(D)).map(k=>sk(ciStatus(D,k))),
-    ...(((D.standards||{}).time_sinks)||[]).map(r=>sk(r.status))];
+    ...(((D.standards||{}).time_sinks)||[]).map(r=>sk(r.status)), ...Object.values(((D.stations||{}).stations)||{}).map(r=>STSK[r.status]||"none")];
 }
 function sumHealth(D) {
   const a = allStatuses(D), bad = a.filter(s=>s==="bad").length, warn = a.filter(s=>s==="warn").length;
@@ -1018,11 +1020,14 @@ function vHealth(D) {
   const bad = Object.entries(groups).map(([node, g]) => [node, g.filter(abn).sort((x, y) => order(x) - order(y))]).filter(([, g]) => g.length);
   const okNodes = Object.entries(groups).filter(([, g]) => !g.some(abn)).map(([node]) => node);
   const abnPanels = bad.map(([node, g]) => panel(NODE_ICON[node]||"health", PLAIN_NODE[node]||node, g.map(anomRow).join(""), stChip(worst(g.map(m=>m.status))))).join("");
+  const SRows = Object.entries(((D.stations||{}).stations)||{});
+  const stationPanel = SRows.length ? panel("layers", "车站：等待、产出与停顿（24 h）", `<div class="buls">${SRows.map(([s, r]) => `<div><span class="bul-l">${esc(PLAIN_NODE[s]||s)} · ${esc(r.status)}</span><span class="bul-v">等待 ${num(r.waiting)} · 产出 ${num(r.out_24h)} · 停顿 ${num(r.stall_min)} / 上限 ${num(r.stall_bound_min)} 分</span></div>`).join("")}</div>`, `${SRows.filter(([,r]) => STSK[r.status] === "bad").length} 停顿`) : "";
   const okChips = okNodes.length ? panel("ok", "正常的环节", `<div class="lg">${okNodes.map(n => stChip("ok", PLAIN_NODE[n]||n)).join("")}</div>`) : "";
   return `<div class="stack16">
     ${panel("health","全部标准", `<div class="ringbox">${ring(a.length?100*cnt("ok")/a.length:0, cnt("bad")?"bad":cnt("warn")?"warn":"ok", 96, `${cnt("ok")}/${a.length}`)}
         <div style="flex:1;min-width:0">${stack([{label:"健康",value:cnt("ok"),color:COL.ok},{label:"警告",value:cnt("warn"),color:COL.warn},{label:"不健康",value:cnt("bad"),color:COL.bad},{label:"无数据",value:cnt("none"),color:COL.none}])}</div></div>`)}
     ${STD.metrics ? abnPanels + okChips : panel("health","节点评分", emptyMsg("尚无评分"))}
+    ${stationPanel}
     ${panel("bell","需要注意的事", alertList(D) + (cs.budget_tokens_match===false ? `<div class="al s-warn"><span class="si">${ic("warn")}</span><span class="t">今日</span><span class="x">token 对账不一致：sessions ${num(cs.today&&cs.today.tokens)}，budget.json ${num(cs.budget_tokens)}（${esc(cs.budget_date||"未知")}）</span></div>` : ""), `${(D.alerts_tail||[]).length} 条`)}
     <details class="panel"><summary class="ph" style="cursor:pointer">指标明细、后台机制、时间分布</summary><div class="stack16" style="margin-top:14px">
       ${STD.metrics ? `<div class="masonry">${Object.entries(groups).map(([node, g]) => panel(NODE_ICON[node]||"health", PLAIN_NODE[node]||node, `<div class="buls">${g.map(bNode).join("")}</div>`, stChip(worst(g.map(m=>m.status))))).join("")}</div>` : ""}

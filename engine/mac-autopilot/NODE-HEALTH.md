@@ -312,6 +312,51 @@ p90 metrics above derive their bounds from the last 30 days of closed tickets in
 | request-changes rounds (`unit.rounds`) | 0 / 2 | ≤ 2 | ≥ 5 | most changes need 1–2 iterations [1] |
 | hours from entry to merged (`unit.age_hours`; units waiting on a predecessor are exempt) | 7.4 / 18.5 | ≤ 24 | ≥ 72 | elite lead time < 1 day [4] |
 
+## Station standards (`station_standards.py`, each scheduler tick)
+
+Every station in `station_health.py` `STATIONS` has one time, one tokens and one throughput standard, or a documented
+exception. `station_standards.MATRIX` holds the mapping and `station-standards.test.sh` fails a station without one.
+Each bound was measured on 2026-11-07 from the live ledger (`units.json` + archive), `scheduler.log`, triage batch
+logs and worker cost rows; the window and sample count are on the row. Healthy is the measured p50 and unhealthy the
+measured p90 (time and tokens, rounded up to a whole minute or 1,000 tokens); throughput is items out per 24 h,
+healthy at the measured p50 and unhealthy at the measured p10 of the seven daily counts. Seven days give seven
+samples, so throughput bounds are a first measurement that a month of samples should tighten. Time and token values
+use the same window as the other node metrics: time over 24 h, tokens over the `--hours` window of worker runs.
+
+| Station | Dimension | Metric (id) | Healthy | Unhealthy | Source (live, window, n) |
+|---|---|---|---|---|---|
+| merge | time | merge wait, previous event to merged, min p50 (`merge.wait_p50_min`) | ≤ 25 | ≥ 41 | 7 d to 2026-11-07T13:13Z, 221 merged/landed events: p50 24.4, p90 41.0 |
+| ci | time | CI wait, previous event to ci-ready, min p50 (`ci.admission_p50_min`) | ≤ 0 | ≥ 17 | 7 d, 341 ci-ready events: p50 0.0, p90 16.1 |
+| triage | tokens | triage tokens per issue p50 (`triage.tokens_per_issue_p50`) | ≤ 110,000 | ≥ 210,000 | 7 d, 91 batch logs (tokens_used / issue_sample_size): p50 109,876, p90 209,961 |
+| implement | tokens | worker tokens per implement run p50 (`implement.tokens_p50`) | ≤ 182,000 | ≥ 555,000 | 7 d, 557 runs with measured tokens: p50 181,547, p90 554,952 |
+| review | tokens | worker tokens per review run p50 (`review.tokens_p50`) | ≤ 210,000 | ≥ 324,000 | 7 d, 24 runs with measured tokens (small n): p50 209,097, p90 323,831 |
+| repair | tokens | worker tokens per repair run p50 (`repair.tokens_p50`) | ≤ 155,000 | ≥ 307,000 | 7 d, 297 runs with measured tokens: p50 154,539, p90 306,942 |
+| intake | throughput | intake items out per 24 h (`intake.out_per_day`) | ≥ 39 | ≤ 25 | 7 daily counts to 2026-11-07T13:13Z: p50 39, p10 25 |
+| triage | throughput | triage issues applied per 24 h (`triage.out_per_day`) | ≥ 27 | ≤ 5 | 7 daily counts: p50 27, p10 5 |
+| advisor | throughput | advisor rulings applied per 24 h (`advisor.out_per_day`) | ≥ 19 | ≤ 2 | 7 daily counts: p50 19, p10 2 |
+| implement | throughput | implement write-ends per 24 h (`implement.out_per_day`) | ≥ 70 | ≤ 12 | 7 daily counts: p50 70, p10 12 |
+| review | throughput | review verdicts per 24 h (`review.out_per_day`) | ≥ 94 | ≤ 37 | 7 daily counts: p50 94, p10 37 |
+| repair | throughput | repair write-ends per 24 h (`repair.out_per_day`) | ≥ 70 | ≤ 19 | 7 daily counts: p50 70, p10 19 |
+| merge | throughput | merges per hour, existing `flow.merge_rate_per_hour` (#4355 SLO) | ≥ 6.5 | ≤ 3.5 | existing row above; not re-measured here |
+| ci | throughput | CI slots admitted per 24 h (`ci.out_per_day`) | ≥ 36 | ≤ 13 | 7 daily counts: p50 36, p10 13 |
+| release | throughput | issues released per 24 h (`release.out_per_day`) | ≥ 0 | ≤ 0 | 7 d: 0 release-closer events (release parked); the bound never fires, so a stopped release shows only in `release.hours_waiting` |
+
+Existing standards that cover the other cells (bounds unchanged here, with their rationale in the table above):
+`implement.wall_p50`, `review.wall_p50`, `repair.wall_p50` (time, run minutes), `advisor.last_answer_age_hours` (advisor time),
+`release.hours_waiting` (release time), `ci.approve_to_ship_p50` (approve to merged, CI included).
+
+Exceptions, with the reason each dimension cannot be measured (no row is faked):
+
+| Station | Dimension | Reason |
+|---|---|---|
+| intake | time | not measured: `state/N.json` keeps only the current `state_changed_at`, so the time an issue waited as ready-for-agent is lost once it leaves |
+| intake | tokens | no model call in `scheduler.d/intake.sh` |
+| triage | time | not measured: state files keep only the current state, so an issue's entry time into needs-triage is lost |
+| advisor | tokens | not measured: the advisor batch result JSON has no token field |
+| merge | tokens | no model call in `merge-prep.sh` or `merge-pr` |
+| ci | tokens | no model call in `scheduler.d/ci-admission.sh` (CI runner minutes are `ci.waste_runner_pct`) |
+| release | tokens | no model call in `run-release.sh` |
+
 ## Sources
 
 1. Sadowski et al., "Modern Code Review: A Case Study at Google", ICSE-SEIP 2018 — https://research.google/pubs/modern-code-review-a-case-study-at-google/ (latency figures as quoted by https://graphite.com/blog/how-google-does-code-review).
