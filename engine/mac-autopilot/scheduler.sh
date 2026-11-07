@@ -489,6 +489,7 @@ refill_tick() {
     return 2
   fi
   tick_gh_calls_begin
+  tick_roadmap_cache_begin
   MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   phase harvest_workers true
   coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
@@ -517,6 +518,7 @@ refill_tick() {
   fi
   local gh_calls; gh_calls="$(tick_gh_calls_count)"
   say "tick-phases kind=refill secs=$SECONDS gh_calls=$gh_calls lock_wait=$TICK_LOCK_WAIT phases=${TICK_PHASE_DETAILS:-none}"
+  tick_roadmap_cache_end
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
   rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""
@@ -537,6 +539,7 @@ main() {
     return 2
   fi
   tick_gh_calls_begin
+  tick_roadmap_cache_begin
   phase_yield_lock tick_prs_prime
   rotate_logs
   if update_budget >/dev/null; then
@@ -609,6 +612,7 @@ main() {
   cleanup_tick
   gh_calls="$(tick_gh_calls_count)"
   say "tick-phases kind=full secs=$SECONDS gh_calls=$gh_calls lock_wait=$TICK_LOCK_WAIT phases=${TICK_PHASE_DETAILS:-none}"
+  tick_roadmap_cache_end
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
   rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""
