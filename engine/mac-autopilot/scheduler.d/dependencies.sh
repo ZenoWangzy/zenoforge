@@ -66,21 +66,37 @@ dep_cache_info() { # predecessor issue → cached {state,labels} or {}
 unit_body_declares_dependency() { # unit predecessor-issue → true when the issue body explicitly names this prerequisite
   unit_body_blockers "$1" | grep -Fxq "$2"
 }
+dep_cleared() { # unit-json predecessor → 0 when the ledger and the cached GitHub state already count it as cleared
+  local info state labels
+  dep_delivered_in_ledger "$2" && return 0
+  ! dep_dead_ruled "$1" "$2" || return 0
+  ! dep_blocker_parked "$2" || return 0 # the release loop stops waiting on a parked blocker; the gate must not park the unit again
+  info="$(dep_cache_info "$2")"
+  state="$(jqf -r '.state // empty' <<<"$info")"
+  [[ "$state" == CLOSED || "$state" == MERGED ]] && return 0
+  labels="$(jqf -r '.labels // ""' <<<"$info")"
+  [[ "$state" == OPEN && ",$labels," =~ ,roadmap(-epic|-theme)?, ]] && return 0
+  return 1
+}
 blocking_body_dependency() { # unit-json → first predecessor not yet delivered/cleared by the local cache
-  local dep info state labels
+  local dep
   while read -r dep; do
     [[ "$dep" =~ ^[0-9]+$ ]] || continue
-    dep_delivered_in_ledger "$dep" && continue
-    ! dep_dead_ruled "$1" "$dep" || continue
-    ! dep_blocker_parked "$dep" || continue # the release loop stops waiting on a parked blocker; the gate must not park the unit again
-    info="$(dep_cache_info "$dep")"
-    state="$(jqf -r '.state // empty' <<<"$info")"
-    [[ "$state" == CLOSED || "$state" == MERGED ]] && continue
-    labels="$(jqf -r '.labels // ""' <<<"$info")"
-    [[ "$state" == OPEN && ",$labels," =~ ,roadmap(-epic|-theme)?, ]] && continue
+    dep_cleared "$1" "$dep" && continue
     printf '%s' "$dep"; return 0
   done < <(unit_body_blockers "$1")
   return 1
+}
+# unit-json → N when the unit's last run ended blocked-on #N with no commit and nothing since cleared it: no release, no
+# supervisor or typesafe ruling. A handoff requeue is no ruling (see dep_dead_ruled), so it cannot free the unit by itself.
+unit_blocked_run_dep() {
+  jqf -r '(.history // []) as $h | ([$h | to_entries[] | select(.value.stage == "write-start") | .key] | max) as $s
+    | if $s == null then empty else $h[$s:] as $r
+      | (($r | map(select(.stage == "write-end")) | last) // {}) as $e
+      | ([$r | to_entries[] | select(.value.stage == "blocked-on") | .key] | max) as $b
+      | if $e.result == "[]" and $b != null
+          and all($r[($b + 1):][]; (.stage == "unblocked" or ((.stage | IN("supervisor-requeue","supervisor-reroute","supervisor-cap-rule")) and (.decision.owner | IN("supervisor","typesafe")))) | not)
+        then ($r[$b].result // "" | ltrimstr("#")) else empty end end' <<<"$1" 2>/dev/null
 }
 dep_dead_ruled() { # unit-json predecessor → 0 only when dep_dead_sweep proved it and the arbiter then ruled; a handoff requeue is no ruling
   jqf -e --argjson d "$2" '.dep_dead_proved == $d and ((.history // []) | (map(.stage) | rindex("dep-dead-proved")) as $p
@@ -193,9 +209,17 @@ dep_blocker_parked() { # issue → 0 when every ledger row of it is parked or wa
 dep_stopped_waiting_on() { # unit-id blocker → 0 when the scheduler already released this unit from that blocker once
   jqf -e --arg id "$1" --arg p "stopped waiting on #$2:" 'any(.units[]; .id == $id and any(.history[]?; .stage == "unblocked" and ((.result // "") | startswith($p))))' "$UNITS" >/dev/null
 }
+dep_task_note() { # unit-id note: append a scheduler note to the worker brief
+  set_unit "$1" ".task += $(js $'\n\n'"$2")"
+}
 dep_stop_waiting() { # unit-id blocker why: a dead blocker never holds a waiter; real code dependence fails later in the unit's own review or merge
-  set_unit "$1" ".task += $(js $'\n\nScheduler note: predecessor #'"$2"$' is parked or can never deliver ('"$3"$'), so this unit no longer waits for it. Do not report BLOCKED-ON #'"$2"$'. Implement what you can; if the dependency is real in code, say so in the report and let review decide.')"
+  dep_task_note "$1" $'Scheduler note: predecessor #'"$2"$' is parked or can never deliver ('"$3"$'), so this unit no longer waits for it. Do not report BLOCKED-ON #'"$2"$'. Implement what you can; if the dependency is real in code, say so in the report and let review decide.'
   unblock_unit "$1" "stopped waiting on #$2: $3"
+}
+dep_release_delivered() { # unit-id blocker: the scheduler counts the blocker delivered; its issue may stay open until release, so tell the worker once
+  local note=$'Scheduler note: predecessor #'"$2"$' is delivered (its change is merged into main; an issue stays open until release). Do not report BLOCKED-ON #'"$2"$'.'
+  jqf -e --arg id "$1" --arg n "$note" 'any(.units[]; .id == $id and ((.task // "") | contains($n)))' "$UNITS" >/dev/null || dep_task_note "$1" "$note"
+  unblock_unit "$1" "#$2 delivered"
 }
 release_dependency_blocks() {
   local id dep issue info state labels gh_due=1 last decision dep_results dep_states_json dep_cache_file dep_cache u
@@ -263,7 +287,7 @@ release_dependency_blocks() {
         && ! unit_body_declares_dependency "$u" "$dep"; then continue; fi
     if dep_delivered_in_ledger "$dep"; then
       dep_blocker_forget "$issue" "$dep"
-      unblock_unit "$id" "#$dep delivered"; continue
+      dep_release_delivered "$id" "$dep"; continue
     fi
     real_wait="$(jqf -r --arg dep "$dep" '(.dep_wait_delivery // "" | tostring) == $dep' <<<"$u")" # a worker refused this release twice
     # 两个单元互相等对方（2026-10-20 #2743↔#3330）：放开这一个，另一个继续等它交付。
@@ -290,7 +314,8 @@ release_dependency_blocks() {
     if [[ "$real_wait" == true && "$state" == CLOSED ]] && dep_has_unit "$dep"; then continue; fi
     if [[ "$state" == CLOSED || "$state" == MERGED ]]; then
       dep_blocker_forget "$issue" "$dep"
-      unblock_unit "$id" "#$dep delivered"; continue
+      if [[ "$state" == MERGED ]]; then dep_release_delivered "$id" "$dep"; else unblock_unit "$id" "#$dep delivered"; fi
+      continue
     fi
     if [[ "$state" == OPEN && "$real_wait" != true ]] && dead_blocker_resolve "$id" "$dep" "$issue"; then
       dep_blocker_forget "$issue" "$dep"; continue

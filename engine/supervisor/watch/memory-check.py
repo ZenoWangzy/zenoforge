@@ -9,9 +9,9 @@ mtime is unchanged since the copy, so a peer session's newer write always wins.
 Env (defaults in parentheses, overridden by the test):
   MC_STATE (~/.zenoforge/state/memory-check)  MC_MEMORY_GLOB (~/.claude/projects/*/memory)
   MC_WORKER ($ZF_ENGINE_LIVE/bin/worker, else ~/.vecta-agent/engine-live)  MC_NEW_DIR (zenoforge project memory dir)
-  MC_REPOS (~/project/zenoforge-pub ~/project/vecta)  MC_BATCH (10)  MC_TIMEOUT (2400)  MC_KEEP (14)
+  MC_REPOS (~/project/zenoforge-pub ~/project/vecta)  MC_BATCH (10)  MC_TIMEOUT (7200, queue at the worker's capacity gate included)  MC_KEEP (14)  MC_SYSTEMCTL (systemctl)
 """
-import datetime, difflib, fcntl, glob, json, os, re, shlex, shutil, subprocess, sys, tarfile, tempfile, time
+import datetime, difflib, fcntl, glob, json, os, re, shlex, shutil, signal, subprocess, sys, tarfile, tempfile, time
 
 HOME = os.path.expanduser('~')
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -21,8 +21,9 @@ WORKER = os.environ.get('MC_WORKER', os.environ.get('ZF_ENGINE_LIVE', f'{HOME}/.
 NEW_DIR = os.environ.get('MC_NEW_DIR', f'{HOME}/.claude/projects/-home-gerald-project-zenoforge/memory')
 REPOS = shlex.split(os.environ.get('MC_REPOS', f'{HOME}/project/zenoforge-pub {HOME}/project/vecta'))
 BATCH = int(os.environ.get('MC_BATCH', '10'))
-TIMEOUT = int(os.environ.get('MC_TIMEOUT', '2400'))
+TIMEOUT = int(os.environ.get('MC_TIMEOUT', '7200'))
 KEEP = int(os.environ.get('MC_KEEP', '14'))
+SYSTEMCTL = os.environ.get('MC_SYSTEMCTL', 'systemctl')
 MAX_DELETE = 3  # a worker that deletes more than this in one run is more likely broken than right
 MAX_NEW = 2
 CITE = re.compile(r'~?/[\w.-]+/[\w./-]+|--[a-z][\w-]+|\b\w+\(\)|`[\w./-]+\.\w+`|\b\d{2,}\b')
@@ -267,11 +268,42 @@ def run_worker(work, key):
     with open(pf, 'w', encoding='utf-8') as f:
         f.write(prompt)
     env = dict(os.environ, WORKER_BACKEND='zc', LUNA_PRIORITY='low')
+    p = subprocess.Popen([WORKER, key, work, pf], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
-        r = subprocess.run([WORKER, key, work, pf], env=env, timeout=TIMEOUT, capture_output=True, text=True)
-        return r.returncode, (r.stderr or r.stdout)[-300:].strip()
+        out, err = p.communicate(timeout=TIMEOUT)
+        return p.returncode, (err or out)[-300:].strip()
     except subprocess.TimeoutExpired:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(p.pid, sig)
+                p.wait(10)
+                break
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                pass
+        stop_scopes(key)
         return 124, f'worker timeout after {TIMEOUT}s'
+
+
+def stop_scopes(key):
+    """bin/zc and bin/luna run the agent in a systemd scope named after the key (sanitized as they do);
+    killing the wrapper leaves that scope and its children running, so stop the units."""
+    k = re.sub(r'[^A-Za-z0-9_-]', '-', key)
+    for pat in (f'luna-zc-{k}-*.scope', f'luna-{k}-*.scope'):
+        subprocess.run([SYSTEMCTL, '--user', 'stop', pat], capture_output=True)
+
+
+def worker_times(key):
+    """(queue, work) minutes: wrapper.pid to codex.pid is the wait at the capacity gate, codex.pid to now is the run."""
+    d = f'{os.environ.get("WORKER_SCRATCH_ROOT", HOME + "/.zenoforge/scratch")}/luna/{key}'
+    try:
+        t0 = os.stat(f'{d}/wrapper.pid').st_mtime
+    except OSError:
+        return None
+    try:
+        t1 = os.stat(f'{d}/codex.pid').st_mtime
+    except OSError:
+        t1 = time.time()
+    return round((t1 - t0) / 60, 1), round(max(time.time() - t1, 0) / 60, 1)
 
 
 def main():
@@ -318,7 +350,7 @@ def main():
             backend = read(f'{os.environ.get("WORKER_SCRATCH_ROOT", HOME + "/.zenoforge/scratch")}/luna/memcheck-{stamp}/backend').strip()
         except OSError:
             pass
-        head = f'backup: {bk}\nselected: {len(sel)} of {len(paths)} notes\nworker: rc={rc} backend={backend or "unknown"}' + (f' note={tail!r}' if tail else '')
+        head = f'backup: {bk}\nselected: {len(sel)} of {len(paths)} notes\nworker: rc={rc} backend={backend or "unknown"}' + (' queue/work min={}/{}'.format(*t) if (t := worker_times(f'memcheck-{stamp}')) else '') + (f' note={tail!r}' if tail else '')
         if rc != 0:
             log('skipped', 'all', 'worker failed, nothing applied')
             flush(head)

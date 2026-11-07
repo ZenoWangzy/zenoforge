@@ -604,11 +604,12 @@ const kpi = (icon, v, unit, label, tip="") => `<div class="kpi" ${tip?`data-tip=
 // node_health.py 的指标 → 短中文名与单位（没列到的用英文 desc）
 const LABELS = {
   "implement.wall_p50":["开发时长 p50","分"], "implement.no_output_pct":["开发无报告","%"],
-  "review.wall_p50":["首次质检时长 p50","分"], "review.first_pass_pct":["一次通过率","%"],
+  "review.wall_p50":["首次质检时长 p50","分"], "review.open_to_first_review_p90_min":["PR 开出 → 首评 p90","分"], "review.first_pass_pct":["一次通过率","%"],
   "repair.wall_p50":["返工时长 p50","分"], "loop.rounds_p90":["打回轮数 p90","轮"],
   "loop.rework_token_pct":["返工 token 占比","%"], "loop.incremental_rereview_pct":["增量复检占比","%"],
   "workers.deaths":["员工无产出死亡","次"], "workers.local_test_db":["本机测试库可达","1=是"],
   "ci.approve_to_ship_p50":["批准 → 合并 p50","分"], "ci.red_after_approve_pct":["批准后 CI 变红","%"],
+  "merge.green_to_merge_max_min":["检查完成 → 合并 最长","分"],
   "ci.precheck_setup_failures":["预检选包失败","次"],
   "ci.waste_runner_pct":["CI 浪费","%"],
   "supervisor.latency_p50":["主管裁决延迟 p50","分"], "scheduler.tick_gap_p50":["调度间隔 p50","秒"],
@@ -627,13 +628,11 @@ const LABELS = {
   "delivery.incident_rate_30d_pct":["事故 / 验收单元（30 天）","%"],
   "delivery.cycles_to_pass_30d":["通过前评审轮次（30 天）","轮/单"],
   "delivery.approvals_per_merge_30d":["每个合并单元批准数（30 天）","次/单"],
-  "delivery.human_actions_per_merge_30d":["真人评审动作（30 天）","次/单"],
   "delivery.unlinked_units_30d":["未关联的验收单元（30 天）","个"],
   "delivery.unlinked_incidents_30d":["未关联的事故（30 天）","个"],
-  "delivery.human_actions_unattributed_30d":["真人动作归属不明（30 天）","次"],
   "mechanism.silent":["沉默超限的机制","个"],
 };
-const NODE_NM = {implement:"开发", review:"质检", repair:"返工", "review-loop":"评审循环", workers:"AI 员工", "ci+merge":"CI 与合并",
+const NODE_NM = {intake:"入口", triage:"分诊", advisor:"顾问", merge:"合并", ci:"CI 排队", implement:"开发", review:"质检", repair:"返工", "review-loop":"评审循环", workers:"AI 员工", "ci+merge":"CI 与合并",
   supervisor:"主管", scheduler:"调度", release:"发布", delivery:"交付质量", pipeline:"流水线台账", "work-orders":"工作单", host:"主机", mechanisms:"机制心跳"};
 // 指标归属模块：先看 id，再看 node；都不认识的只出现在"健康标准"
 const ID_MOD = {"loop.advisor_fail_pct":"advisor"};
@@ -645,10 +644,10 @@ const bNode = m => { const lb = LABELS[m.id] || [/[\u4e00-\u9fff]/.test(m.desc |
   return bullet({id:m.id, label:lb[0], unit:lb[1], value:m.value, healthy:m.healthy, unhealthy:m.unhealthy, hib:m.higher_is_better, status:m.status, desc:m.desc, meaning:m.meaning, source:m.source}); };
 const FR = D => D.front || {};
 // 指标行列表：异常、警告、无数据的行直接显示，正常的折成一行
-const isOk = h => /^<div class="bul zr s-(ok|none)/.test(h);
+const isOk = h => /^<div class="bul zr s-ok/.test(h);
 const foldOk = list => { const rows = list.filter(Boolean), ok = rows.filter(isOk), rest = rows.filter(h => !isOk(h));
   if (!rows.length) return emptyMsg("尚无评分");
-  return (rest.length ? `<div class="buls">${rest.join("")}</div>` : "") + (ok.length ? `<details class="okfold"><summary>${rest.length ? "其余 " : "全部 "}${ok.length} 项正常或暂无数据</summary><div class="buls">${ok.join("")}</div></details>` : ""); };
+  return (rest.length ? `<div class="buls">${rest.join("")}</div>` : "") + (ok.length ? `<details class="okfold"><summary>${rest.length ? "其余 " : "全部 "}${ok.length} 项正常</summary><div class="buls">${ok.join("")}</div></details>` : ""); };
 const bFront = (D, id, label, shown) => { const F = FR(D), sd = (F.standards||{})[id];
   if (!sd) return "";
   return bullet({id, label: label || sd.desc, unit: sd.unit, value: (F.values||{})[id], shown, healthy: sd.healthy, unhealthy: sd.unhealthy, hib: sd.higher_is_better,
@@ -834,7 +833,7 @@ const SORTS = {age:["存在最久", (a,b)=>b.journey.age_min-a.journey.age_min],
 const STEPS = ["开发","质检","返工","待合并","已合并","已上线"];
 const stepOf = j => ({develop:0, check:j.rounds?2:1, merge:3, waiting:-1, parked:-1, blocked:-1, "awaiting-release":4, reverted:4, released:5, live:5}[j.status]);
 const PAGE = 12;
-const UN = {tokens:["用量",""], worker_minutes:["员工用时","分"], rounds:["返工轮数","轮"], age_hours:["存在时长","时"]};
+const UN = {tokens:["未缓存用量",""], worker_minutes:["员工用时","分"], rounds:["返工轮数","轮"], age_hours:["存在时长","时"]};
 let view = {f:"active", p:0, s:"age", rf:"all", rp:0};
 try { view = Object.assign(view, JSON.parse(sessionStorage.getItem("unitsView2")||"{}")); } catch (e) {}
 const journeyOf = u => u.journey || {status:"closed", age_min:0, since_min:0, split_min:{}, rounds:0};
@@ -978,10 +977,12 @@ function vRelease(D) {
 }
 
 // 7. 健康标准（全部有标准的数字一屏看完）
+// 车站状态（station_health.py）：STALLED 不健康；PAUSED 与 HELD 是有意停下，不计为异常
+const STSK = {OK:"ok", STALLED:"bad", PAUSED:"none", HELD:"none"};
 function allStatuses(D) {
   const F = FR(D);
   return [...nodeMetrics(D).map(m=>sk(m.status)), ...Object.values(F.status||{}).map(sk), ...Object.keys(ciStd(D)).map(k=>sk(ciStatus(D,k))),
-    ...(((D.standards||{}).time_sinks)||[]).map(r=>sk(r.status))];
+    ...(((D.standards||{}).time_sinks)||[]).map(r=>sk(r.status)), ...Object.values(((D.stations||{}).stations)||{}).map(r=>STSK[r.status]||"none")];
 }
 function sumHealth(D) {
   const a = allStatuses(D), bad = a.filter(s=>s==="bad").length, warn = a.filter(s=>s==="warn").length;
@@ -1018,11 +1019,14 @@ function vHealth(D) {
   const bad = Object.entries(groups).map(([node, g]) => [node, g.filter(abn).sort((x, y) => order(x) - order(y))]).filter(([, g]) => g.length);
   const okNodes = Object.entries(groups).filter(([, g]) => !g.some(abn)).map(([node]) => node);
   const abnPanels = bad.map(([node, g]) => panel(NODE_ICON[node]||"health", PLAIN_NODE[node]||node, g.map(anomRow).join(""), stChip(worst(g.map(m=>m.status))))).join("");
+  const SRows = Object.entries(((D.stations||{}).stations)||{});
+  const stationPanel = SRows.length ? panel("layers", "车站：等待、产出与停顿（24 h）", `<div class="buls">${SRows.map(([s, r]) => `<div><span class="bul-l">${esc(PLAIN_NODE[s]||s)} · ${esc(r.status)}</span><span class="bul-v">等待 ${num(r.waiting)} · 产出 ${num(r.out_24h)} · 停顿 ${num(r.stall_min)} / 上限 ${num(r.stall_bound_min)} 分</span></div>`).join("")}</div>`, `${SRows.filter(([,r]) => STSK[r.status] === "bad").length} 停顿`) : "";
   const okChips = okNodes.length ? panel("ok", "正常的环节", `<div class="lg">${okNodes.map(n => stChip("ok", PLAIN_NODE[n]||n)).join("")}</div>`) : "";
   return `<div class="stack16">
     ${panel("health","全部标准", `<div class="ringbox">${ring(a.length?100*cnt("ok")/a.length:0, cnt("bad")?"bad":cnt("warn")?"warn":"ok", 96, `${cnt("ok")}/${a.length}`)}
         <div style="flex:1;min-width:0">${stack([{label:"健康",value:cnt("ok"),color:COL.ok},{label:"警告",value:cnt("warn"),color:COL.warn},{label:"不健康",value:cnt("bad"),color:COL.bad},{label:"无数据",value:cnt("none"),color:COL.none}])}</div></div>`)}
     ${STD.metrics ? abnPanels + okChips : panel("health","节点评分", emptyMsg("尚无评分"))}
+    ${stationPanel}
     ${panel("bell","需要注意的事", alertList(D) + (cs.budget_tokens_match===false ? `<div class="al s-warn"><span class="si">${ic("warn")}</span><span class="t">今日</span><span class="x">token 对账不一致：sessions ${num(cs.today&&cs.today.tokens)}，budget.json ${num(cs.budget_tokens)}（${esc(cs.budget_date||"未知")}）</span></div>` : ""), `${(D.alerts_tail||[]).length} 条`)}
     <details class="panel"><summary class="ph" style="cursor:pointer">指标明细、后台机制、时间分布</summary><div class="stack16" style="margin-top:14px">
       ${STD.metrics ? `<div class="masonry">${Object.entries(groups).map(([node, g]) => panel(NODE_ICON[node]||"health", PLAIN_NODE[node]||node, `<div class="buls">${g.map(bNode).join("")}</div>`, stChip(worst(g.map(m=>m.status))))).join("")}</div>` : ""}
@@ -1313,7 +1317,7 @@ const metricStatusGroups = ms => ({
 const metricStatusText = (status, count) => `${count} ${status==="bad" ? "项异常" : "项需留意"}`;
 // 白话名称与原因，按指标 id 手写；没有的回退到指标自带解释的第一句。名称由英文标识推断，改错了在这里改。
 const PLAIN = {
-  "dispatch.collisions_per_day": ["多个任务同时改同一个文件", "会互相覆盖，需要返工"],
+  "merge.conflict_repairs_per_day": ["合并冲突后要返工的次数", "现在多个任务可以同时改同一个文件，不再排队等；撞上了由原任务自己修，次数偏高说明撞得太多、返工拖慢交付"],
   "repair.wall_p50": ["返工耗时偏长", "返工拖慢了交付"],
   "ci.red_after_approve_pct": ["检查通过后 CI 又变红", "评审没发现的问题，或 CI 环境不稳定"],
   "scheduler.tick_gap_p50": ["调度器间隔太长", "任务派得晚，看板数据也更新得慢"],
@@ -1430,9 +1434,12 @@ function vOverview(D) {
   const {bad, warn} = metricStatusGroups(ms), rows = problems(D);
   const LWok = !!(D.live_workers && Array.isArray(D.live_workers.items)), LW = LWok ? D.live_workers.items : [], LWM = lwGrouped(LW), L = D.live_workers || {};
   const metricVs = f.s === "bad" || STD.paused || bad.length ? "bad" : warn.length ? "warn" : "ok";
-  const vs = f.age == null && !ms.length && !LWok ? "none" : worst([metricVs, ...rows.map(r => r.s)]);
+  // A NO-DATA metric never reads as OK: with nothing red or amber the verdict is 无数据 and the count shows.
+  const nNoData = ms.filter(m => m.status === "NO-DATA").length;
+  const vsRaw = f.age == null && !ms.length && !LWok ? "none" : worst([metricVs, ...rows.map(r => r.s)]);
+  const vs = vsRaw === "ok" && nNoData ? "none" : vsRaw;
   const nBad = rows.filter(r => r.s === "bad").length, nWarn = rows.length - nBad;
-  const verdict = `<div class="ov-vd s-${vs}" data-m="health">${bigIcon(vs)}<b>${{ok:"正常", warn:"需留意", bad:"异常", none:"无数据"}[vs]}</b><span class="aside">${nBad ? stChip("bad", `${nBad} 项要处理`) : ""}${nWarn ? stChip("warn", `${nWarn} 项需留意`) : ""}${STD.paused ? stChip("bad", "已暂停") : ""}${f.s === "bad" ? stChip("bad", "数据过期") : ""}</span></div>`;
+  const verdict = `<div class="ov-vd s-${vs}" data-m="health">${bigIcon(vs)}<b>${{ok:"正常", warn:"需留意", bad:"异常", none:"无数据"}[vs]}</b><span class="aside">${nBad ? stChip("bad", `${nBad} 项要处理`) : ""}${nWarn ? stChip("warn", `${nWarn} 项需留意`) : ""}${nNoData ? stChip("none", `${nNoData} 项无数据`) : ""}${STD.paused ? stChip("bad", "已暂停") : ""}${f.s === "bad" ? stChip("bad", "数据过期") : ""}</span></div>`;
   // 数 1 员工
   const cap = S.max_workers || 8, np = (LWM.pipeline || []).length, wst = LW.map(w => workerState(w, nowS)), waitN = wst.filter(x => x.h === "bad" || x.h === "warn").length;
   const slots = `<div class="slots" data-tip="产线 ${np} / 上限 ${cap}">${Array.from({length: Math.max(cap, np)}, (_, i) => `<i class="${i < np ? "on" : ""}"></i>`).join("")}</div>`;

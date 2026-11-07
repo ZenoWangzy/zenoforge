@@ -67,6 +67,15 @@ if (!calmHtml.includes("没有要处理的") || /class="hk s-(warn|bad)/.test(ca
 const none = dash.MODULES[0].render({});
 if (/NaN|undefined/.test(none) || !none.includes("无数据") || (none.match(/class="hk-v">—</g) || []).length < 4) throw new Error("empty data must read —, not 0");
 eq("no data rows", dash.problems({}, now), []);
+// NO-DATA 不读成正常：唯一的问题是一条无数据指标，总览显示「无数据」、计数 1，该行留在可见区而不进「正常」折叠
+const ndOnly = {...calm, standards: {mechanisms: [], metrics: [{id: "test.nodata", node: "workers", desc: "测试无数据行", meaning: "", value: null, healthy: 0, unhealthy: 1, higher_is_better: false, status: "NO-DATA", source: "x"}]}};
+const ndHtml = dash.MODULES[0].render(ndOnly);
+if (!ndHtml.includes("1 项无数据") || /class="ov-vd s-ok"/.test(ndHtml) || !/class="ov-vd s-none"/.test(ndHtml))
+  throw new Error("a NO-DATA row must not read as OK in the overview");
+if (/class="ov-vd s-(warn|bad)"/.test(ndHtml)) throw new Error("NO-DATA alone must not turn the verdict red or amber");
+// 行本身仍可见：在健康标准模块里，无数据行不进「正常」折叠
+const ndHealth = dash.MODULES.find(m => m.id === "health").render(ndOnly);
+if (!ndHealth.includes("测试无数据行") || /class="okfold"[\s\S]*测试无数据行/.test(ndHealth)) throw new Error("a blank row must stay visible, not folded into 正常");
 console.log("attention ok");
 JS
 echo "dashboard-attention.test.sh: PASS"

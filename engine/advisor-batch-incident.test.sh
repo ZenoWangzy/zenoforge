@@ -1715,5 +1715,16 @@ assert_not_contains "stored roadmap-parent verdict makes no new advisor call" \
 unset ZF_ROADMAP_TREE_CACHE_FILE MODEL_POLICY_FILE FAKE_NATIVE_SUB_ISSUES_JSON
 
 
+# A classifier that cannot run must read as risky, never as a clean footprint.
+BROKEN_RISK_DIR="$(mktemp -d)"
+: > "$BROKEN_RISK_DIR/lib.sh"
+echo 'throw new Error("classifier broken");' > "$BROKEN_RISK_DIR/risk-class.mjs"
+if ! _AGENT_LIB_DIR="$BROKEN_RISK_DIR" bash -c 'source "$1"; advisor_footprint_risky "[\"packages/x\"]"' _ \
+  "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib.d/advisor-batch.sh" 2>/dev/null; then
+  echo "FAIL: a crashed classifier read as a clean footprint"
+  FAILED=1
+fi
+rm -rf "$BROKEN_RISK_DIR"
+
 [ "$FAILED" -eq 0 ] || exit 1
 echo "ALL PASS"

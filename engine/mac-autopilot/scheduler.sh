@@ -36,6 +36,7 @@ GH_TICK_CALLS_FILE=""
 TICK_INTAKE_READS_FILE=""
 TICK_PHASE_DETAILS=""
 TICK_PHASES=""
+TICK_LOCK_WAIT=0
 # 有界并行：#4725 把 gh 全改串行后慢拍从 350s 涨到 636s；后台 gh 最多 GH_PARALLEL 个同时在途，避开二级限流。
 GH_PARALLEL="${GH_PARALLEL:-4}"
 # 条件请求（GitHub REST best practices，#4725）：周期性 GET 带 If-None-Match，命中 304 不占主限流配额，
@@ -102,6 +103,7 @@ source "$HERE/scheduler.d/ci-status.sh"
 source "$HERE/scheduler.d/ci-admission.sh"
 source "$HERE/scheduler.d/merge-prep.sh"
 source "$HERE/scheduler.d/merge-lane.sh"
+source "$HERE/scheduler.d/merge-tree-sweep.sh"
 source "$HERE/scheduler.d/cleanup.sh"
 source "$HERE/scheduler.d/acceptance.sh"
 source "$HERE/scheduler.d/intake.sh"
@@ -280,6 +282,11 @@ TICK_FOOTPRINT_CONFLICT_VALID=false
 TICK_FOOTPRINT_COMPARED_ACTIVE=''
 TICK_DISPATCH_LOCAL_REFILL=false
 declare -A TICK_FOOTPRINT_PREFLIGHT_CONFLICT=()
+# Footprint orders candidates and never refuses one: only the dispatch walk's first pass sets DEFER=true, and what
+# it defers starts in the second pass if a slot is still free.
+TICK_FOOTPRINT_DEFER=false
+declare -A TICK_FOOTPRINT_DEFERRED=()
+declare -A TICK_FOOTPRINT_DEFER_DETAIL=()
 declare -a TICK_FOOTPRINT_PREFLIGHT_IDS=()
 
 # #4621（维护者 2026-10-29 严格优先级 hotfix > opt > 普通 pipeline）：bin/luna、bin/zc 的门在 run 等待时写
@@ -429,6 +436,7 @@ AGED_PR_BEHIND_COMMITS=300
 
 # 记录每拍各阶段耗时（秒），tick done 行只列 ≥5s 的阶段：一拍 6–7 分钟时看不出慢在哪（L60）。
 TICK_PHASES=""
+TICK_LOCK_WAIT=0
 
 # ---------- tick 互斥：同一时刻只允许一个 scheduler 写台账 ----------
 SCHED_LOCK="$A/.scheduler.lock"
@@ -449,6 +457,7 @@ CI_STATION_LOCK="$A/.ci-station.lock"
 # land/eval/supervise、OBSOLETE、无报告的 worker 收割与 PR 注册仍由慢 tick 处理。
 # A tick runs for minutes after its one PAUSE check at the start, so acting phases look again.
 paused_midrun() {
+  refill_stopped && return 0 # a refused ledger lock wait ended this refill (already logged once)
   [[ -e "$PAUSE_FILE" ]] || return 1
   say "$1 stopped: paused by $PAUSE_FILE"
 }
@@ -459,9 +468,11 @@ run_issue_intake_phases() {
   return "$rc"
 }
 run_refill_intake_dispatch_phases() {
-  # Dispatch what is already startable first: refill intake took 60s+ in 43% of refills and held every free slot behind it (2026-11-05 24h census).
+  # Dispatch first: a refill exists to fill free slots, and 8 of the 33 refill kills of 2026-11-06/07 died in the merge pass that
+  # used to run in front of it, so those refills dispatched nothing. The merge pass and intake run on the time left.
   dep_delivered_snapshot # release_dependency_blocks fills this on a full tick; the body gate reads it on both
   phase dispatch_pending true
+  paused_midrun "refill merge" || { phase refill_merge_pass; tick_prs_changed; } # a merge changes the PRs intake reads next
   INTAKE_ADDED=0
   phase register_new_issues 0 true || say "refill intake failed; continuing to dispatch"
   # A pass started this late meets the 300s kill, and the next refill dispatches what intake added.
@@ -475,12 +486,14 @@ refill_tick() {
     [[ -f "$LOG" ]] && refill_log_offset="$(wc -c < "$LOG")"
   fi
   acquire_scheduler_lock || return 75
+  rm -f -- "$A/.refill-stop" # left by a refill that was killed after a refused lock wait
   if ! state_schema_ok; then
     say "state schema invalid; refill stopped before external actions"
     echo "[$STAMP] invalid units/workers schema; supervisor recovery required" >> "$A/alerts/state.md"
     return 2
   fi
   tick_gh_calls_begin
+  tick_roadmap_cache_begin
   MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   phase harvest_workers true
   coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
@@ -502,13 +515,12 @@ refill_tick() {
     if supervisor_marking_deferred; then
       say "refill dispatch held: supervisor-owned marking deferred"
     else
-      # Merge before intake: intake took 181-255s of the 300s limit, so the merge pass ran into the kill.
-      paused_midrun "refill merge" || phase_yield_lock refill_merge_pass
       phase_yield_lock_batch run_refill_intake_dispatch_phases
     fi
   fi
   local gh_calls; gh_calls="$(tick_gh_calls_count)"
-  say "tick-phases kind=refill secs=$SECONDS gh_calls=$gh_calls phases=${TICK_PHASE_DETAILS:-none}"
+  say "tick-phases kind=refill secs=$SECONDS gh_calls=$gh_calls lock_wait=$TICK_LOCK_WAIT phases=${TICK_PHASE_DETAILS:-none}"
+  tick_roadmap_cache_end
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
   rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""
@@ -529,7 +541,11 @@ main() {
     return 2
   fi
   tick_gh_calls_begin
-  phase_yield_lock tick_prs_prime
+  tick_roadmap_cache_begin
+  # No lock yield here: a refill that took the lock in this window held it for its first phases, then queued behind the tick's opening
+  # (harvest_workers and the phases after it hold the lock for minutes). 9 of the 37 refills that started within 12s of a tick start were killed.
+  phase tick_prs_prime
+  phase_mark opening # steps before the first phase; a name left by the last tick or by lock_wait must not stand for them
   rotate_logs
   if update_budget >/dev/null; then
     budget_alert_if_needed
@@ -540,8 +556,9 @@ main() {
   if git -C "$ROOT" fetch -q origin main 2>/dev/null; then
     MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   fi
-  : > "$A/.tick-phases"; rm -f -- "$A/.tick-phase" # loop.sh reads both when it kills this tick
+  : > "$A/.tick-phases" # loop.sh reads this and .tick-phase when it kills this tick
   phase harvest_workers
+  phase_mark coord_sweeps
   coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
   coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
   coord_reconcile_scheduler_workers
@@ -591,6 +608,9 @@ main() {
     views_mode=full
   fi
   # Views and the snapshot come before cleanup: a slow worktree walk under load used to eat the tick and lose them (2026-11-07).
+  # The closing steps write no ledger row except cleanup's one workers trim, which takes the lock itself. Measured 2026-11-07 16:14-16:16Z:
+  # the tick held the lock for 128s here (cleanup_tick alone 88s) and a refill's ledger writes waited behind it.
+  release_scheduler_lock
   phase_mark flush_focus_alert
   flush_focus_alert
   phase_mark publish_pr_run_snapshot
@@ -600,7 +620,8 @@ main() {
   phase_mark cleanup_tick
   cleanup_tick
   gh_calls="$(tick_gh_calls_count)"
-  say "tick-phases kind=full secs=$SECONDS gh_calls=$gh_calls phases=${TICK_PHASE_DETAILS:-none}"
+  say "tick-phases kind=full secs=$SECONDS gh_calls=$gh_calls lock_wait=$TICK_LOCK_WAIT phases=${TICK_PHASE_DETAILS:-none}"
+  tick_roadmap_cache_end
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
   rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""

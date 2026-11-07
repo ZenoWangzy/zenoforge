@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs';
+import { realpathSync, existsSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -52,7 +52,7 @@ export function validateRunnerLanes(runners, workflows, priorityPr = '') {
   return counts;
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const inventory = JSON.parse(readFileSync(0, 'utf8'));
   const directory = fileURLToPath(new URL('../.github/workflows/', import.meta.url));
   const workflows = readdirSync(directory).filter(file => /\.ya?ml$/.test(file))

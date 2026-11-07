@@ -94,14 +94,12 @@ legacy_footprint_match_detail() (
 legacy_scheduler_footprint() (
   local u="$1" state issue actual scope preserve_missing=false
   if [[ "$(jq -r '.footprint_source // empty' <<<"$u")" == pr-diff ]] \
-    && jq -e '(.footprint | type) == "array"' <<<"$u" >/dev/null; then
+    && jq -e '(.footprint | type) == "array" and (.footprint | length) > 0' <<<"$u" >/dev/null; then
     scope="$(jq -c '.footprint' <<<"$u")"; preserve_missing=true
   else
     actual="$(jq -r '[.history[]? | select(.stage=="write-end") | .result] | last // empty' <<<"$u")"
-    if jq -e 'type == "array"' <<<"$actual" >/dev/null 2>&1; then
+    if jq -e 'type == "array" and length > 0' <<<"$actual" >/dev/null 2>&1; then
       scope="$(jq -c . <<<"$actual")"; preserve_missing=true
-    elif jq -e 'has("footprint")' <<<"$u" >/dev/null; then
-      scope="$(jq -c '.footprint' <<<"$u")"
     else
       REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
       source "$SCHEDULER_AGENT_LIB" || return 1
@@ -273,6 +271,13 @@ for unit in \
   '{"id":"u10","task":"Affected files: packages/hot/src/f9.ts"}'; do
   same_result "scheduler_footprint $unit" legacy_scheduler_footprint scheduler_footprint "$unit"
 done
+# An empty write-end or an empty pr-diff footprint is no information: the ledger footprint and the fallbacks answer.
+[[ "$(scheduler_footprint '{"id":"e1","issue":9100,"footprint":["packages/hot/src/f6.ts"],"history":[{"stage":"write-end","result":[]}]}')" == '["packages/hot/src/f6.ts"]' ]] \
+  || fail 'an empty write-end overrode the ledger footprint'
+[[ "$(scheduler_footprint '{"id":"e2","issue":9101,"footprint":[],"footprint_source":"pr-diff","history":[{"stage":"write-end","result":[]}]}')" == '["packages/cold/src/a.ts"]' ]] \
+  || fail 'an empty pr-diff footprint overrode the issue state paths'
+[[ "$(scheduler_footprint '{"id":"e3","issue":9100,"footprint":["packages/hot/src/f6.ts"],"footprint_source":"pr-diff","history":[{"stage":"write-end","result":["packages/hot/src/f8.ts"]}]}')" == '["packages/hot/src/f6.ts"]' ]] \
+  || fail 'a non-empty pr-diff footprint no longer wins'
 
 # scheduler_issue_state: existing state, default for a missing one, and refusal while a transition holds the lock.
 printf '%s\n' '{"state":"on-hold","attempts":2}' > "$AGENT_HOME/state/9111.json"
@@ -336,11 +341,14 @@ register() { # n -> lib loads and wall seconds for one refill intake over n cand
   loads_before="$(lib_loads)"; start=$SECONDS
   register_new_issues 0 true
   REGISTER_SECS=$((SECONDS - start)); REGISTER_LOADS=$(( $(lib_loads) - loads_before ))
-  REGISTER_SKIPS="$(grep -c 'intake skip issue .*footprint overlaps' "$LOG" || true)"
+  REGISTER_SKIPS="$(grep -c 'intake order issue .*footprint overlaps' "$LOG" || true)"
+  REGISTER_ADDED="$(jq '.units | length' "$UNITS")"; REGISTER_REFUSED="$(grep -c 'intake skip issue .*footprint' "$LOG" || true)"
 }
-register 3;  loads_3=$REGISTER_LOADS; skips_3=$REGISTER_SKIPS
-register 20; loads_20=$REGISTER_LOADS; skips_20=$REGISTER_SKIPS; secs_20=$REGISTER_SECS
-[[ "$skips_3" == 3 && "$skips_20" == 20 ]] || fail "fixture candidates did not all overlap (3 -> $skips_3, 20 -> $skips_20)"
+register 3;  loads_3=$REGISTER_LOADS; skips_3=$REGISTER_SKIPS; added_3=$REGISTER_ADDED; refused_3=$REGISTER_REFUSED
+register 20; loads_20=$REGISTER_LOADS; skips_20=$REGISTER_SKIPS; secs_20=$REGISTER_SECS; added_20=$REGISTER_ADDED; refused_20=$REGISTER_REFUSED
+# Footprint only orders: every overlapping candidate is admitted (up to the intake budget), none is refused.
+[[ "$skips_3" == 3 && "$added_3" == 3 && "$skips_20" == "$added_20" && "$added_20" -ge 3 && "$refused_3" == 0 && "$refused_20" == 0 ]] \
+  || fail "overlapping candidates were refused or not logged (3 -> $skips_3/$added_3, 20 -> $skips_20/$added_20, refused $refused_3/$refused_20)"
 (( loads_20 == loads_3 && loads_20 <= 1 )) \
   || fail "register_new_issues sourced lib.sh per candidate: $loads_3 loads for 3 candidates, $loads_20 for 20"
 

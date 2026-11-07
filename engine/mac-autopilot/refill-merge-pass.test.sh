@@ -37,6 +37,18 @@ grep -q 'merge pass deadline' "$LOG" || fail 'the pass went on past its deadline
 grep -q 'check census unavailable' "$LOG" && fail 'the pass read a candidate past its deadline'
 tick_prs_prime() { :; }
 
+# A failed open-PR read is read again inside the pass: bounded in tries and by the refill deadline, and a census that was read is never repeated.
+MERGE_CENSUS_RETRY_WAIT=0
+tick_prs() { reads=$((reads + 1)); (( reads >= 2 )) || return 1; TICK_PRS='[]'; }
+: > "$LOG"; reads=0; TICK_PRS=""; SECONDS=0; run_merge_lane_pass
+(( reads == 2 )) || fail "the pass did not read the census again after a failed read: reads=$reads"
+grep -Fq 'merge census read failed; retry 1' "$LOG" || fail 'the retry was not logged'
+tick_prs() { reads=$((reads + 1)); return 1; }
+reads=0; TICK_PRS=""; merge_census_retry; (( reads == 3 )) || fail "a failing read was not bounded to 3 tries: reads=$reads"
+reads=0; TICK_PRS=""; SECONDS=200 TICK_LOCAL_REFILL=true merge_census_retry; (( reads == 0 )) || fail 'the retry ran past the refill deadline'
+reads=0; TICK_PRS='[]'; merge_census_retry; (( reads == 0 )) || fail 'a census that was read was read again'
+unset MERGE_CENSUS_RETRY_WAIT; unset -f tick_prs; TICK_PRS=""; : > "$LOG"
+
 # The stages before the loop cannot stop themselves: a spent budget skips the pass, or ends it between two stages.
 : > "$LOG"; stages=0; SECONDS=0
 merge_candidates() { stages=$((stages + 1)); printf '%s\n' "$ready_row"; }
@@ -73,8 +85,10 @@ CFG="$(jq -c '.auto_merge=false' "$A/config.json")"; refill_merge_pass; (( passe
 CFG="$(jq -c . "$A/config.json")"
 refill_merge_pass; (( passes == 1 )) || fail 'did not run for a ready-to-merge unit'
 refill_merge_pass; (( passes == 1 )) || fail 'ran again inside merge_refill_min_seconds'
+printf '%s\n' "$(( $(date +%s) - 90 ))" > "$A/.refill-merge-epoch"
+refill_merge_pass; (( passes == 2 )) || fail 'did not run again 90s after the last pass: the default gap is 60s'
 printf '%s\n' "$(( $(date +%s) - 1000 ))" > "$A/.refill-merge-epoch"
-refill_merge_pass; (( passes == 2 )) || fail 'did not run again after merge_refill_min_seconds'
+refill_merge_pass; (( passes == 3 )) || fail 'did not run again after merge_refill_min_seconds'
 
 # Mutual exclusion with the tick's pass: a held merge lock makes the refill skip and the tick wait.
 passes=0
@@ -89,9 +103,10 @@ start=$SECONDS; run_merge_lane; (( passes == 1 )) || fail 'the tick pass did not
 (( SECONDS - start >= 1 )) || fail 'the tick pass did not wait for the pass in progress'
 wait "$holder"
 
-grep -Fq 'phase_yield_lock refill_merge_pass' "$script_dir/scheduler.sh" || fail 'refill_tick does not run the merge pass'
-# The refill is killed at 300s: a pass after intake inherits that deadline in the middle of a merge.
-refill_body="$(sed -n '/^refill_tick() {/,/^}/p' "$script_dir/scheduler.sh")"
-[[ "${refill_body%%phase_yield_lock refill_merge_pass*}" != *run_refill_intake_dispatch_phases* ]] \
-  || fail 'refill_tick runs intake before the merge pass'
+# The refill is killed at 300s: dispatch runs first so a stalled merge pass cannot starve it, and the merge pass runs before intake
+# (a pass after intake inherits that deadline in the middle of a merge).
+batch_body="$(sed -n '/^run_refill_intake_dispatch_phases() {/,/^}/p' "$script_dir/scheduler.sh")"
+grep -Fq 'phase refill_merge_pass' <<<"$batch_body" || fail 'the refill batch does not run the merge pass'
+[[ "${batch_body%%phase refill_merge_pass*}" == *'phase dispatch_pending'* ]] || fail 'the refill merge pass runs before dispatch'
+[[ "${batch_body%%phase register_new_issues*}" == *'phase refill_merge_pass'* ]] || fail 'the refill merge pass runs after intake'
 printf 'ok - refill merge pass: gated on a ready unit, rate limited, exclusive with the tick pass\n'

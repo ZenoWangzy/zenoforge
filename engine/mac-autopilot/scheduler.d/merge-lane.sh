@@ -138,9 +138,10 @@ run_merge_lane() {
   return "$rc"
 }
 # A unit that turned ready-to-merge after the tick's merge pass waited for the next full tick (about half a cycle).
-# The refill runs one pass when such a unit exists, at most once per merge_refill_min_seconds.
+# The refill runs one pass when such a unit exists, at most once per merge_refill_min_seconds (60: 440 of 661 refill gaps in 24h were under 120s, p90 pass cost 47s of the 300s limit).
 # Nothing inside the pre-candidate stages can stop at the refill deadline (5 of 7 refill kills since 05:52Z, 2026-11-08), so check the budget between them.
 merge_refill_budget_spent() { # stage
+  refill_stopped && return 0 # a refused ledger lock wait ended the refill; its one line is already in the log
   [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 120 )) || return 1
   say "merge pass stopped before $1 at ${SECONDS}s: the refill budget is spent; the next refill resumes"
 }
@@ -149,13 +150,25 @@ refill_merge_pass() {
   [[ "$(jqf -r .auto_merge <<<"$CFG")" == "true" ]] || return 0
   jqf -e 'any(.units[]; .stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false
     and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main")' "$UNITS" >/dev/null || return 0
-  min="$(jqf -r '.merge_refill_min_seconds // 120' <<<"$CFG")"; [[ "$min" =~ ^[0-9]+$ ]] || min=120
+  min="$(jqf -r '.merge_refill_min_seconds // 60' <<<"$CFG")"; [[ "$min" =~ ^[0-9]+$ ]] || min=60
   now="$(date +%s)"; last="$(cat "$A/.refill-merge-epoch" 2>/dev/null || true)"; [[ "$last" =~ ^[0-9]+$ ]] || last=0
   (( now - last >= min )) || return 0
   ! merge_refill_budget_spent refill_merge_pass || return 0
   refill_room refill_merge_pass || return 0
   printf '%s\n' "$now" > "$A/.refill-merge-epoch"
   MERGE_LANE_WAIT=0 run_merge_lane
+}
+# A failed open-PR read left every candidate with no check rows, so the whole pass skipped and waited a round (2026-11-04: 10 PRs, 27 minutes).
+# Read again inside the pass, bounded by its deadline. Only an empty read counts: a PR that is really red or pending has rows and never lands here.
+merge_census_retry() {
+  local try
+  for try in 1 2 3; do
+    [[ -z "${TICK_PRS:-}" ]] || return 0
+    merge_refill_budget_spent census_retry && break
+    say "merge census read failed; retry $try inside the pass"
+    read -r -t "${MERGE_CENSUS_RETRY_WAIT:-2}" <> <(:) || :
+    tick_prs >/dev/null 2>&1 || :
+  done
 }
 run_merge_lane_pass() {
   local merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry
@@ -271,6 +284,7 @@ run_merge_lane_pass() {
   merge_refill_budget_spent candidate_build && return 0
   say "merge stage candidate_build start"
   tick_prs_prime
+  merge_census_retry
   detail_started=$SECONDS
   cands="$(merge_candidates "$((merge_max * 3))")"
   candidate_ids="$(jqf -cs '[.[] | select(type=="object") | .id] | unique' <<<"$cands")"
@@ -305,6 +319,7 @@ run_merge_lane_pass() {
     [[ -z "$ready" || "$ready" == "null" ]] && break
     tick_prs_prime
     id="$(jqf -r .id <<<"$ready")"; pr="$(jqf -r .pr <<<"$ready")"
+    refill_stopped && break # a merge whose ledger write is refused would leave a merged PR unrecorded
     # The kill counts from the refill's start, and one merge with its ledger writes took 27 to 45s on 2026-11-07.
     if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 90 )); then
       say "merge pass deadline after ${SECONDS}s: PR#$pr and later wait for the next pass"

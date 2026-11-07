@@ -6,10 +6,12 @@ Run through worker_cost.test.sh. Expected numbers are worked by hand from each f
 recomputed with the module's own formulas."""
 import json
 import os
+import re
+import sqlite3
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import worker_cost as wc  # noqa: E402
@@ -32,6 +34,14 @@ def codex_json_stream(session, snapshots):
         lines.append(json.dumps({"type": "turn.started"}))
         lines.append(json.dumps({"type": "turn.completed", "usage": usage}))
     return lines
+
+
+def fixture(name):
+    """Usage recorded from real runs (counts only; ids and paths replaced), with the expected
+    totals worked from the raw columns."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "usage-capture.json"),
+              encoding="utf-8") as source:
+        return json.load(source)[name]
 
 
 class Ledger(unittest.TestCase):
@@ -103,6 +113,86 @@ class Ledger(unittest.TestCase):
                 self.assertEqual((row["usage"].input, row["usage"].cached, row["usage"].output), expected)
                 self.assertEqual(row["backend"], "zcode")
                 self.assertEqual(row["phase"], "review")
+
+    # ---------- usage the worker log does not carry ----------
+
+    def test_resumed_repair_without_dispatch_baseline_starts_from_the_threads_previous_log(self):
+        # workers.json trimmed both rows, so the resume has no baseline; the thread's counters at
+        # the end of the earlier log are that baseline.
+        fx = fixture("codex_resume")
+        self.log("impl-issue-9-20261020T100000Z.worker.log", fx["prior"], "2026-10-20T10:30:00Z")
+        self.log("impl-9-fix-20261020T110000Z.worker.log", fx["resume"], "2026-10-20T11:30:00Z")
+        first, resumed = wc.run_rows(self.sup)
+        self.assertIsNotNone(first["usage"])  # a fresh session needs no baseline
+        got, want = resumed["usage"], fx["expected"]
+        self.assertEqual((got.input, got.cached, got.output, got.fresh),
+                         (want["input"], want["cached"], want["output"], want["fresh"]))
+
+    def test_supervisor_stream_without_marker_or_row_is_a_fresh_session(self):
+        # supervisor-arbiter.sh runs `codex exec` and never resumes: the counters start at zero.
+        self.log("supervise-issue-3-20261020T120000Z.worker.log", codex_json_stream(
+            "aaaaaaaa-0000-0000-0000-000000000003",
+            [{"input_tokens": 90_000, "cached_input_tokens": 60_000, "output_tokens": 4_000}]))
+        usage = wc.run_rows(self.sup)[0]["usage"]
+        self.assertEqual((usage.input, usage.cached, usage.output), (90_000, 60_000, 4_000))
+
+    def attached(self, name, report_end, units, **sources):
+        """One stdout-report run: the log is written at the start, the report when the run ends."""
+        self.log(name, ["ZCode Built-in (skipped)"] if "zcode_db" in sources else [], "2026-10-20T10:00:00Z")
+        report = name[:-len(".worker.log")] + ".md"
+        write(os.path.join(self.sup, report), ["report"], report_end)
+        rows = wc.run_rows(self.sup)
+        wc.attach_provider_usage(rows, units, **sources)
+        return rows
+
+    def test_claude_review_usage_comes_from_the_claude_project_transcript(self):
+        fx = fixture("claude_review")
+        clone, projects = os.path.join(self.root, "wt"), os.path.join(self.root, "projects")
+
+        def transcript(unit, at, usage, tag):
+            directory = os.path.join(projects, re.sub(r"[^A-Za-z0-9]", "-", f"{clone}/wt-{unit}"))
+            os.makedirs(directory, exist_ok=True)
+            with open(os.path.join(directory, f"{tag}.jsonl"), "a", encoding="utf-8") as out:
+                out.write(json.dumps({"type": "assistant", "timestamp": at.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+                                      "message": {"id": f"{tag}-{at.timestamp()}", "usage": usage}}) + "\n")
+        start = datetime(2026, 10, 20, 10, 5, tzinfo=timezone.utc)
+        for item in fx["responses"]:
+            usage = {k: v for k, v in item.items() if k != "offset_s"}
+            transcript("issue-7", start.replace(second=0) + (timedelta(seconds=item["offset_s"] + 300)), usage, "run")
+        zero = {"input_tokens": 1, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 1}
+        transcript("issue-7", datetime(2026, 10, 20, 9, 0, tzinfo=timezone.utc), zero, "earlier")  # before the run
+        transcript("issue-8", start, zero, "other-unit")
+        # review of PR 5 belongs to the unit issue-7 (it carries pr 5); the log name keeps only the PR number
+        rows = self.attached("review-5-20261020T100000Z.worker.log", "2026-10-20T10:20:00Z",
+                             [{"id": "issue-7", "pr": 5}], projects_root=projects, clone_root=clone,
+                             zcode_db=os.path.join(self.root, "none.sqlite"))
+        usage, want = rows[0]["usage"], fx["expected"]
+        self.assertEqual((usage.input, usage.cached, usage.output, usage.fresh),
+                         (want["input"], want["cached"], want["output"], want["fresh"]))
+        self.assertEqual((rows[0]["backend"], rows[0]["usage_source"]), ("claude", "claude-project"))
+
+    def test_glm_review_usage_comes_from_the_zcode_session_database(self):
+        fx = fixture("zcode_review")
+        clone, db = os.path.join(self.root, "wt"), os.path.join(self.root, "zcode.sqlite")
+        with sqlite3.connect(db) as con:
+            con.execute("create table session (id text, directory text)")
+            con.execute("create table turn_usage (session_id text, started_at integer, input_tokens integer, "
+                        "cache_read_input_tokens integer, output_tokens integer, reasoning_tokens integer, "
+                        "cache_creation_input_tokens integer)")
+            con.executemany("insert into session values (?, ?)", [("s1", f"{clone}/wt-issue-8"), ("s2", f"{clone}/wt-issue-9")])
+            base = int(datetime(2026, 10, 20, 10, 5, tzinfo=timezone.utc).timestamp() * 1000)
+            for item in fx["turns"]:
+                con.execute("insert into turn_usage values ('s1', ?, ?, ?, ?, ?, ?)", (
+                    base + item["offset_ms"], item["input_tokens"], item["cache_read_input_tokens"],
+                    item["output_tokens"], item["reasoning_tokens"], item["cache_creation_input_tokens"]))
+            con.execute("insert into turn_usage values ('s2', ?, 1, 0, 1, 0, 0)", (base,))  # another unit's clone
+        rows = self.attached("review-6-20261020T100000Z.worker.log", "2026-10-20T10:20:00Z",
+                             [{"id": "issue-8", "pr": 6}], zcode_db=db, clone_root=clone,
+                             projects_root=os.path.join(self.root, "none"))
+        usage, want = rows[0]["usage"], fx["expected"]
+        self.assertEqual((usage.input, usage.cached, usage.output, usage.fresh),
+                         (want["input"], want["cached"], want["output"], want["fresh"]))
+        self.assertEqual((rows[0]["backend"], rows[0]["usage_source"]), ("zcode", "zcode-db"))
 
     def test_legacy_footer_and_unknown_never_invent_a_split(self):
         self.log("impl-issue-6-20261020T120000Z.worker.log", ["codex", "tokens used", "12,345", "done"])
@@ -248,7 +338,8 @@ class Ledger(unittest.TestCase):
         self.workers([])
         trimmed = wc.run_rows(self.sup)[0]
         self.assertEqual(trimmed["phase"], "supervise")
-        self.assertIsNone(trimmed["usage"])  # markerless and rowless: the counters stay unknown
+        # markerless and rowless, but the arbiter never resumes: a fresh session, counters from zero
+        self.assertEqual((trimmed["usage"].input, trimmed["usage"].output), (50_000, 5_000))
 
     def test_trimmed_implement_row_uses_dispatched_model_from_log(self):
         name = "impl-issue-4355-20261020T120000Z.worker.log"
@@ -295,6 +386,19 @@ class Ledger(unittest.TestCase):
         # p50 = 500 (int(0.5*8)th value, daily_bound's convention; x1.5 -> 750), p90 = 800 (x2 -> 1600)
         self.assertEqual((bound["healthy"], bound["unhealthy"], bound["provisional"]), (750, 1600, False))
         self.assertIsNone(wc.ticket_bound([]))
+
+    def test_trimmed_pr_keyed_logs_count_toward_the_ticket_that_owns_the_pr(self):
+        # workers.json trims old rows, so review and repair logs fall back to the PR number in
+        # their file name; the unit is issue-5 with pr 11, not a unit named pr-11.
+        self.log("impl-issue-5-20261020T120000Z.worker.log", ["codex"], end="2026-10-20T12:10:00Z")
+        self.log("review-11-20261020T121000Z.worker.log", ["codex"], end="2026-10-20T12:20:00Z")
+        self.log("impl-11-fix-20261020T122000Z.worker.log", ["codex"], end="2026-10-20T12:50:00Z")
+        units = [{"id": "issue-5", "issue": 5, "pr": 11,
+                  "history": [{"stage": "merged", "at": "2026-10-20T12:55:00Z"}]}]
+        (ticket,) = wc.ticket_spend(wc.run_rows(self.sup), units)
+        self.assertEqual((ticket["ticket"], ticket["runs"], ticket["wall_min"]), (5, 3, 50.0))
+        self.assertEqual([t["ticket"] for t in wc.aggregate(wc.run_rows(self.sup), units,
+                                                            self.now.timestamp())["by_ticket"]], [5])
 
     def test_ticket_fresh_counts_uncached_input_and_output_and_skips_legacy_history(self):
         self.log("impl-issue-5-20261020T120000Z.worker.log",

@@ -26,4 +26,9 @@ for spec in \
   [ "$link" != "$(printf 'rc=0\n')" ] || { echo "FAIL $script did nothing: rc 0 with no output"; exit 1; }
 done
 
+# Imported with a non-path argv[1], as `node -e code arg` callers do, the check must stay false, not throw.
+while IFS= read -r script; do
+  node --input-type=module -e "await import('$engine/${script#engine/}')" 'not-a-path' >/dev/null 2>"$tmp/err" \
+    || { grep -q ENOENT "$tmp/err" && grep -q lstat "$tmp/err" && { echo "FAIL $script threw on a non-path argv[1]"; exit 1; }; true; }
+done < <(cd "$engine/.." && git grep -l 'realpathSync(process.argv\[1\])' -- 'engine/**.mjs')
 echo 'entry-symlink.test.sh: PASS'

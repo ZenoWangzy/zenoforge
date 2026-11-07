@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs';
+import { realpathSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -115,6 +115,6 @@ function main(base, head) {
   process.stdout.write(`${JSON.stringify(pipelineSuiteScope(changedPaths, trackedPaths, refs))}\n`);
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   main(...process.argv.slice(2));
 }

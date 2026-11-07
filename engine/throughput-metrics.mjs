@@ -173,7 +173,7 @@ function parseArgs(argv) {
   return { stateDir, now, windowHours };
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const { stateDir, now, windowHours } = parseArgs(process.argv.slice(2));
     const options = {};

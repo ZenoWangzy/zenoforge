@@ -665,11 +665,14 @@ roadmap_ensure_issue_parent() (
   [[ "$(roadmap_switch_value)" == true ]] || return 0
   roadmap_stage_requires_parent "$state" || return 0
   cache_file="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
-  if [[ -z "$cache_file" || ! -r "$cache_file" ]]; then
+  if [[ -z "$cache_file" ]]; then
     mkdir -p -- "$AGENT_HOME/night" || { echo "roadmap: could not create scratch dir for #$number" >&2; return 1; }
     scratch="$(mktemp -d "$AGENT_HOME/night/.roadmap-parent.XXXXXX")" || { echo "roadmap: could not create scratch dir for #$number" >&2; return 1; }
     trap 'rm -rf -- "$scratch"' EXIT
     cache_file="$scratch/tree.json"
+  fi
+  # A named but unwritten cache (the scheduler's per-tick file) takes the first fetch; a failed fetch writes nothing.
+  if [[ ! -r "$cache_file" ]]; then
     roadmap_fetch_tree "$cache_file" "$REPO" || { echo "roadmap: tree fetch failed for #$number (stage $state)" >&2; return 1; }
   fi
   tree="$(cat -- "$cache_file")" || { echo "roadmap: could not read tree cache for #$number" >&2; return 1; }

@@ -111,7 +111,7 @@ jq -e '.metrics[] | select(.id == "workorders.ticket_wall_p90")
   | .value == 30 and .healthy == 38 and .unhealthy == 180 and .status == "OK"' \
   "$a/node-health.json" >/dev/null || fail "ticket wall metric did not retain its static bounds"
 # unit_spend 经共享成本行走 --json 流：旧实现只读页脚时这张票是 0
-jq -e '[.work_orders[] | select(.id == "issue-4355")][0].tokens == 23010000' "$a/node-health.json" >/dev/null \
+jq -e '[.work_orders[] | select(.id == "issue-4355")][0].tokens == 700000' "$a/node-health.json" >/dev/null \
   || fail "a --json codex worker's tokens did not reach the work-order spend: $(jq -c '.work_orders' "$a/node-health.json")"
 
 # ---------- gen_dashboard：同一份账进 cost_ledger（单元 / ticket / 阶段 / 后端 / 24h / eval） ----------
@@ -135,5 +135,19 @@ jq -e '
   and ([.cost_ledger.by_unit[] | select(.unit == "101")][0].tokens == 200000)' \
   <<<"$dashboard_data" >/dev/null \
   || fail "cost_ledger missing or wrong: $(jq -c '.cost_ledger | {last_24h, by_unit, by_backend}' <<<"$dashboard_data")"
+
+# 每票 fresh p90 无缓存拆分时是 NO-DATA（不是 0，也不是旧的 580k）：票的 run 没有用量记录
+nd="$test_env_root/cost-nodata"; nda="$nd/supervisor/autopi"; mkdir -p "$nda"
+cat > "$nda/units.json" <<'JSON'
+{"units":[{"id":"issue-77","issue":77,"stage":"merged","history":[{"stage":"pr-opened","at":"2026-11-05T09:00:00Z"},{"stage":"merged","at":"2026-11-05T11:00:00Z"}]}]}
+JSON
+printf 'done\n' > "$nd/supervisor/impl-issue-77-20261105T100000Z.worker.log"
+printf 'report\n' > "$nd/supervisor/impl-issue-77-20261105T100000Z.md"
+PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$nda" \
+  --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 \
+  --now 2026-11-07T12:00:00Z --json "$nda/node-health.json" >/dev/null
+jq -e '.metrics[] | select(.id == "workorders.ticket_tokens_p90")
+  | .value == null and .status == "NO-DATA" and (.source | test("NO-DATA"))' "$nda/node-health.json" >/dev/null \
+  || fail "a ticket without a cache split must leave ticket tokens NO-DATA: $(jq -c '.metrics[] | select(.id == "workorders.ticket_tokens_p90")' "$nda/node-health.json")"
 
 echo 'worker_cost.test.sh: PASS'

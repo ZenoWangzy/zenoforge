@@ -507,6 +507,8 @@ merge_agent_pr() {
     # A classifier that cannot run reads as risky, never as a clean diff; the line keeps a lasting crash visible.
     if ! jq -e 'type == "array"' <<<"$risk_class_hits_json" >/dev/null 2>&1; then
       echo "merge-sweeper: RISK-CLASSIFIER-DOWN issue=#$n pr=#$pr_number: risk-class.mjs did not answer, merge refused"
+      supervisor_inbox_append_once "risk-classifier-down:$(date -u +%Y-%m-%dT%H)" \
+        "risk-classifier-down merges are refused: risk-class.mjs did not answer on issue #$n PR #$pr_number" || :
       MERGE_GATE_FAILURE_KIND="risk-class"
       MERGE_GATE_FAILURE_REASON="the risk classifier could not run"
       return 1

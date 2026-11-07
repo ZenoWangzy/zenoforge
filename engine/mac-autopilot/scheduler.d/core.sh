@@ -159,10 +159,24 @@ tick_gh_calls_begin() {
   printf '0\n' >"$TICK_INTAKE_READS_FILE" 2>/dev/null || TICK_INTAKE_READS_FILE=""
   TICK_PHASE_DETAILS=""
   TICK_PHASES=""
+  TICK_LOCK_WAIT=0
   # 被杀的 tick 留下的计数文件与过期的 ETag 缓存条目，下一拍顺手收掉。
   find "$A" -maxdepth 1 -name 'gh-calls.*' -mmin +120 -delete 2>/dev/null || :
   find "$A" -maxdepth 1 -name 'intake-reads.*' -mmin +120 -delete 2>/dev/null || :
   find "$GH_ETAG_DIR" -type f -mmin +360 -delete 2>/dev/null || :
+}
+# One roadmap tree per tick for issue_transition's parent check: a shell variable, not exported, so detached workers never see it.
+# The first transition fetches into this file (roadmap_ensure_issue_parent); a killed tick's leftover is swept after 120 min.
+tick_roadmap_cache_begin() {
+  find "$A" -maxdepth 1 -name 'roadmap-tree.*' -mmin +120 -delete 2>/dev/null || :
+  [[ -z "${ZF_ROADMAP_TREE_CACHE_FILE:-}" ]] || return 0
+  ZF_ROADMAP_TREE_CACHE_FILE="$A/roadmap-tree.$BASHPID.json"
+  TICK_ROADMAP_CACHE_OWNED=true
+}
+tick_roadmap_cache_end() {
+  [[ "${TICK_ROADMAP_CACHE_OWNED:-}" == true ]] || return 0
+  rm -f -- "$ZF_ROADMAP_TREE_CACHE_FILE" "$ZF_ROADMAP_TREE_CACHE_FILE".* 2>/dev/null || :
+  unset ZF_ROADMAP_TREE_CACHE_FILE TICK_ROADMAP_CACHE_OWNED
 }
 tick_gh_calls_count() { [[ -n "${GH_TICK_CALLS_FILE:-}" ]] || { printf '0\n'; return 0; }; awk 'END {print NR}' "$GH_TICK_CALLS_FILE" 2>/dev/null || printf '0\n'; }
 gh_par_throttle() { # pid 数组名：在途数达到 GH_PARALLEL 时等最早的一个结束

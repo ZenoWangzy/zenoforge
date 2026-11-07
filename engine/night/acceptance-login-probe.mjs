@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { realpathSync } from 'node:fs';
+import { realpathSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { readFile, mkdir, rename, writeFile } from 'node:fs/promises';
@@ -264,7 +264,7 @@ async function main() {
   process.exitCode = acceptanceProbeExitCode(checked);
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const settings = loadAcceptanceSettings();
   if (process.argv[2] === '--login-child') loginChild(settings);
   else main().catch(() => {

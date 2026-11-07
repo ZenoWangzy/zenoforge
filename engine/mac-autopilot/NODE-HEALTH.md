@@ -23,17 +23,18 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 
 | Node | Metric (id) | Human baseline | Healthy | Unhealthy | Measured 24h |
 |---|---|---|---|---|---|
-| implement | run minutes p50 (`implement.wall_p50`) | 2–4 h focused work (estimate) | ≤ 30 | ≥ 60 | — |
+| implement | run minutes p50, 24 h window (`implement.wall_p50`) | 2–4 h focused work (estimate) | ≤ 30 | ≥ 60 | — |
 | implement | runs with no report % (`implement.no_output_pct`) | — | ≤ 5 | ≥ 15 | — |
-| implement | overlapping writer unit pairs in a rolling 24h (`dispatch.collisions_per_day`) | #4190/#4192/#4193 concurrently edited the same 8000+ line hook; write-start/end record predicted + actual paths, waits do not count; since the 2026-10-29 zf-ab ruling a pair whose only overlap is a `footprint_mutex.shared_append` registry file is the legalized parallelism, not a collision (those conflicts move to the rebase metric below) | 0 | ≥ 1 | — |
 | review | first review minutes p50 (`review.wall_p50`) | first response < 1 h for small changes, < 4 h overall at Google [1]; one session ≤ 60 min, 200–400 LOC/h [2] | ≤ 10 | ≥ 20 | — |
+| review | PR opened → first review verdict minutes p90, rolling 7 d, a PR still in `review-pending` counts its age (`review.open_to_first_review_p90_min`; `review.wall_p50` above is the review run alone, not this wait) | first response < 1 h for small changes, < 4 h overall at Google [1]; measured on the 7 days to 2026-11-07T14:40Z, n = 236 PRs, p50 28.8 min, p90 93.8, max 1783: healthy 60 = 2 x p50, unhealthy 180 = 2 x p90 rounded down to 3 h, inside Google's 4 h. The p90 tail is review runs that died and parked in the supervisor path (7 PRs, one cause, 739–1783 min) and Codex-authored heads waiting for GLM, their only reviewer once the Claude route was off | ≤ 60 | ≥ 180 | — |
 | review | approved on first review % (`review.first_pass_pct`) | most changes need 1–2 iterations (estimate; [1] measured iterations, median not verified) | ≥ 50 | ≤ 30 | — |
-| repair | run minutes p50 (`repair.wall_p50`) | 15–60 min per round (estimate) | ≤ 15 | ≥ 30 | — |
+| repair | run minutes p50, 24 h window (`repair.wall_p50`) | 15–60 min per round (estimate) | ≤ 15 | ≥ 30 | — |
 | review loop | request-changes rounds before approve p90 (`loop.rounds_p90`) | 2–3 (estimate) | ≤ 3 | ≥ 5 | — |
 | review loop | repair (including pre-review self-fix) + rereview share of tokens % (`loop.rework_token_pct`) | — | ≤ 35 | ≥ 50 | — |
 | review loop | repairs followed by an incremental rereview % (`loop.incremental_rereview_pct`) | Fagan follow-up: the moderator verifies the rework, not a new inspection [6] | ≥ 60 | ≤ 30 | — |
 | workers | no-output events in window (`workers.deaths`) | — | ≤ 2 | ≥ 8 | — |
 | CI + merge | approve → merged/landed min p50, waiting units count their age (`ci.approve_to_ship_p50`) | ten-minute build [3]; elite lead time < 1 day [4] | ≤ 60 | ≥ 180 | — |
+| CI + merge | last required check completed → merged, max min over merged PRs in 24 h, both lanes; factory and session-owned split in details (`merge.green_to_merge_max_min`; GitHub check-runs read by `merge_wait.py`'s own 24 h query, `required-pr-checks.json` names, `mergedAt`; a failed or truncated read is NO-DATA; a PR without check data is counted in details, not as zero) | factory lane max 13.9 min since 2026-11-05 10:00Z (pr-wait report, 78 PRs); founder ruling 2026-11-07: a PR wait is held to minutes, and hours are a root-cause item (bounds from the pr-wait report, not a new estimate) | ≤ 15 | ≥ 60 | 31.1 min, WARN, session-owned PR (2026-11-07 15:50Z; `gh pr view` + REST check-runs agree); factory max 13.9 |
 | CI + merge | approved units that then saw CI red % (`ci.red_after_approve_pct`) | elite change failure ≈ 5 % [4] | ≤ 15 | ≥ 30 | — |
 | CI + merge | local prechecks skipped because affected packages could not be selected (`ci.precheck_setup_failures`) | 0; this setup failure can make CI the first test run | 0 | ≥ 1 | — |
 | supervisor | escalation → decision min p50 (`supervisor.latency_p50`) | ≤ 60 (estimate, on-call style) | ≤ 60 | ≥ 180 | — |
@@ -44,9 +45,10 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | release | hours since production last changed, formal or hand release (`release.hours_since_release`; source: GitHub production Deployments, the live sha (newest success record via `engine/production-deployment-read.sh`) and its earliest real deployment record, not `release-train.json` `released_at`; ruling `release-overdue-2026-11-07`: two 2 h batch cycles with no formal release is a stop, repeated hourly) | two batch cycles (2 h) per release; 4 h without one is a stalled line | ≤ 2 | ≥ 4 | — |
 | release | production hot patches whose PR is not on main (`release.hotpatch_blockers`) | a hotfix is merged the same day | 0 | ≥ 1 | — |
 | holds | line holds (a disabled release train or a valid PAUSE) without an owner or expiry, or past expiry (`holds.line_violations`; each violating hold appends one alerts/events.md line and one supervisor inbox line per day, naming owner, reason and hours since expiry) | a line hold is the same decision as an issue hold (`hold_issue` requires holder, release condition, expiry) and owes the same metadata; expiry fails loud and never re-enables the held line | 0 | ≥ 1 | first scorecard sample |
+| rulings | rulings rows in the pack's copy that the engine's resolved `state/rulings.json` lacks, matched by date and scope because the engine copy is renamed when it is built; rows only in the engine copy do not count (`rulings.copies_differ`; source: `zf_config_file('state/rulings.json')` against the pack's `scripts/agent/state/rulings.json` under the agent home; NO-DATA when either file is missing or unreadable) | 0: one set of rulings, so the dashboard, lane routing and founder's words read what the maintainer ruled | 0 | ≥ 1 | — |
 | pipeline | open agent PRs outside the ledger (`pipeline.orphan_prs`) | — | ≤ 3 | ≥ 10 | — |
 | work orders | open work orders past a spend bug bound (`workorders.over_standard`) | — | 0 | ≥ 3 | — |
-| work orders | per-ticket worker fresh tokens p90, tickets closed in 7 d (`workorders.ticket_tokens_p90`) | fresh means uncached input + output; bounds derive only from preceding 30 d of closed tickets with cache splits — healthy p50 x 1.5, unhealthy p90 x 2 (`worker_cost.ticket_bound`); no usable history falls back to the static values here | ≤ 800 k | ≥ 4.8 M | first scorecard sample |
+| work orders | per-ticket worker fresh tokens p90, tickets closed in 7 d (`workorders.ticket_tokens_p90`) | fresh means uncached input + output, and a ticket counts only when every one of its worker runs (review and repair logs found through `unit.pr`) has a usage record, so the row is NO-DATA while GLM and Claude review runs print none; bounds derive only from preceding 30 d of closed tickets with cache splits — healthy p50 x 1.5, unhealthy p90 x 2 (`worker_cost.ticket_bound`); no usable history falls back to the static values here | ≤ 800 k | ≥ 4.8 M | first scorecard sample |
 | work orders | per-ticket worker wall minutes p90, tickets closed in 7 d (`workorders.ticket_wall_p90`) | same history-derived bounds (p50 x 1.5 healthy, p90 x 2 unhealthy) | ≤ 38 | ≥ 180 | first scorecard sample |
 | CI + merge | CI runner minutes that could not change a verdict % (`ci.waste_runner_pct`, from `ci_spend.py`) | lean: work that cannot change the outcome is waste (muda) | ≤ 20 | ≥ 35 | — |
 | CI + merge | ready-to-merge units whose CI is held for hot patches % (`ci.held_ready_pct`) | priority must not become starvation | ≤ 20 | ≥ 50 | — |
@@ -56,12 +58,13 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | CI + merge | M1 audited cancelled runs/day: tests already red (`ci.cancel_tests_red_per_day`) | frozen M1: 244 / 3.94 days | ≤ 62 | ≥ 124 | rolling report |
 | CI + merge | M1 audited cancelled runs/day: review requested changes (`ci.cancel_review_changes_per_day`) | frozen M1: 237 / 3.94 days | 0 | ≥ 60 | rolling report |
 | CI + merge | M1 audited cancelled runs/day: review blocked (`ci.cancel_review_blocked_per_day`) | frozen M1: 8 / 3.94 days | ≤ 2 | ≥ 5 | rolling report |
-| CI + merge | M1 audited cancelled runs/day: parked (`ci.cancel_parked_per_day`) | frozen M1: 3 / 3.94 days | ≤ 1 | ≥ 2 | rolling report |
+| CI + merge | M1 audited cancelled runs/day: parked (`ci.cancel_parked_per_day`) | measured 2026-11-07, not frozen M1: 168 hourly rolling-24 h readings over the last 7 days (audit file reaches back 18.9 days, so the 7 days are complete): p50 0, p90 3, max 5; 6 parked runs from 4 units (mean 0.86/day) | ≤ 3 | ≥ 6 | rolling report |
 | CI + merge | M1 audited cancelled runs/day: superseded main run (`ci.cancel_superseded_per_day`) | no frozen cause baseline; tracks main merge rate | ≤ 30 | ≥ 60 | rolling report |
 | CI + merge | M1 audited cancelled runs/day: other or unclassified (`ci.cancel_other_per_day`) | no frozen cause baseline | 0 | ≥ 1 | rolling report |
 | CI + merge | active agent PRs with server label `agent/ci-gated` % (`ci.gated_pr_pct`, M12) | frozen M12: 0 of 87 | ≥ 80 | ≤ 50 | GitHub open-PR census |
 | CI + merge | distinct runs held by priority CI gate in last 48 h (`ci.priority_hold_runs_48h`, M13) | retire only after a full 48 h with zero firings | 0 | ≥ 1 | shared cancellation audit |
 | CI + merge | shared-append landings whose rebase conflicted on a shared-append file %, rolling 24 h (`ci.shared_append_rebase_conflict_pct`) | first-cut bound (2026-10-30): the ruling trades occasional rebase conflicts for parallel implement on append-registry files; a day of samples above the bound means tighten the list back to mutual exclusion | ≤ 25 | ≥ 50 | first scorecard sample 2026-10-30 |
+| CI + merge | merge conflicts that a repair run followed, rolling 24 h (`merge.conflict_repairs_per_day`); replaces `dispatch.collisions_per_day` (2026-11-07): the dispatcher no longer refuses a unit whose predicted files overlap a running one (footprint only orders, `engine/mac-autopilot/scheduler.d/footprint.sh`), so overlapping writers are expected and the cost is measured where it lands. Count of `merge-conflict` history events with a later `write-start` (repair run) in the same unit, from `units.json` plus `units-archive.json`. Baseline: ledger mean 15.6, sd 5.5 over 9 active UTC days (10-28 to 11-06, without the 11-01 pause). Unhealthy at 27 (baseline mean + 2 sd); healthy at 20 (mean + 2 standard errors of a 7-day mean). Revert rule for the footprint change: 7-day mean of the daily value at 20 or more, or two consecutive days at 27 or more. | #4190/#4192/#4193 concurrently edited one hook; first-dispatch file prediction has recall 0.31 and precision 0.67, so a lock on predicted files cost more than the conflicts it avoided | ≤ 20 | ≥ 27 | — |
 | review loop | ledger PRs over 800 non-test added lines %, rolling 30 d by ledger activity (`review.large_pr_pct`, from `pr-sizes.json`; active PRs without history are included and missing non-test addition counts report no data; test paths are directories named `test`, `tests`, `__tests__`, `fixture`, `fixtures`, or `__snapshots__`, or directories starting with `eval` and continuing only with lowercase letters, hyphens, or underscores; files containing `.test.` / `.spec.` or ending in `.snap` also count as tests; the all-time share was a metric bug — one-off oversized PRs never aged out and recovery required dilution, #4482) | small batches: review effectiveness drops past 200–400 LOC [2] | ≤ 10 | ≥ 25 | — |
 | workers | local test Postgres reachable (`workers.local_test_db`, TCP probe of `PGTEST_URL`) | shift left: run integration tests before review, not after approval | 1 | 0 | — |
 | host | host services from `host-prereqs.json` that do not answer (`host.prereqs_missing`; names printed as `host missing:`) | every dependency of a machine is declared and probed (infrastructure as code) | 0 | ≥ 1 | — |
@@ -72,20 +75,20 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | review loop | Advisor asks without a ruling % (`loop.advisor_fail_pct`) | maintainer 10-22: advisor decides after 2 rejected rounds | ≤ 10 | ≥ 50 | — |
 | review loop | hours since the newest successful advisor answer while needs-advisor > 0 (`advisor.last_answer_age_hours`) | a dead advisor must not stay silent while tickets wait | ≤ 2 | ≥ 6 | — |
 | review loop | REQUEST-CHANGES reports without a machine-readable findings block % (`review.findings_missing_pct`, from `review_findings` in `units.json`) | recurrence and per-round history are only as good as the data: a missing block is counted, never read as zero findings | ≤ 5 | ≥ 20 | — |
-| delivery | issue created → release accepted p50, rolling 7 d / 30 d hours (`delivery.issue_to_accept_p50_7d_hours`, `delivery.issue_to_accept_p50_30d_hours`) | DORA elite lead time < 1 day [4]; same bound as `unit.age_hours` | ≤ 24 | ≥ 72 | first scorecard sample |
+| delivery | issue created → release accepted p50, rolling 7 d / 30 d hours (`delivery.issue_to_accept_p50_7d_hours`, `delivery.issue_to_accept_p50_30d_hours`); every accepted issue with one acceptance event and a readable createdAt counts, the unit join is not required; a window with no acceptance reads NO-DATA (true while the release line is stopped) | DORA elite lead time < 1 day [4]; same bound as `unit.age_hours` | ≤ 24 | ≥ 72 | first scorecard sample |
 | delivery | issue created → release accepted p95, rolling 7 d / 30 d hours (`delivery.issue_to_accept_p95_7d_hours`, `delivery.issue_to_accept_p95_30d_hours`) | engineering estimate: healthy is three days; one week is a stalled delivery | ≤ 72 | ≥ 168 | first scorecard sample |
-| delivery | first-parent product commits on `origin/main` after the recorded live SHA (`delivery.merged_not_live`) | `$AGENT_HOME/state/live-sha.json` plus the merge lane's `NONPRODUCT_PATHS_RE`; every missing live SHA is NO-DATA and unhealthy because this signal was silent for 15 days | 0 | ≥ 1 | — |
+| delivery | first-parent product commits on `origin/main` after the recorded live SHA (`delivery.merged_not_live`) | the live sha from production's own deployment record (`release_age.production_deploy`), else `$AGENT_HOME/state/live-sha.json` (written on post-deploy success), plus the merge lane's `NONPRODUCT_PATHS_RE`; `release-train.json` and `deployed.json` are not read because a hand release leaves them stale; with no readable record the row is NO-DATA and unhealthy because this signal was silent for 15 days | 0 | ≥ 1 | — |
 | delivery | age in hours of the oldest such commit (`delivery.oldest_merged_not_live_hours`) | commit time from the same first-parent product commit range; the 24/72 h bounds match issue-to-accept p50 | ≤ 24 | ≥ 72 | — |
 | delivery | fully linked units accepted in the last 30 d that have since been reverted % (`delivery.revert_rate_30d_pct`) | elite change failure rate < 5 % [4]; 10 % is twice that bound | ≤ 5 | ≥ 10 | first scorecard sample |
-| delivery | dated root-cause incident records per 100 release-accepted issue IDs % (`delivery.incident_rate_30d_pct`) | change-failure proxy [4]; no frozen incident-per-unit baseline yet, so 5 / 10 % are the same initial bands as reverts | ≤ 5 | ≥ 10 | first scorecard sample; unlinked incident records remain separately visible |
+| delivery | release-accepted issue IDs in the last 30 d named by a production incident, per 100 accepted IDs % (`delivery.incident_rate_30d_pct`) | change-failure proxy [4]; no frozen incident-per-unit baseline yet, so 5 / 10 % are the same initial bands as reverts | ≤ 5 | ≥ 10 | first scorecard sample; unlinked incident records remain separately visible |
 | delivery | review rounds through the first approval per merged unit (`delivery.cycles_to_pass_30d`) | Anthropic reported 1.32 reviews-to-pass after its change; the product's pre-pause 112 delivered units averaged 2.28 approvals [alignment §9] | ≤ 1.32 | ≥ 2.28 | first scorecard sample |
 | delivery | scheduler approvals per merged unit (`delivery.approvals_per_merge_30d`) | one successful approval is sufficient; the product pre-pause average was 2.28 per delivered unit [alignment §9] | ≤ 1 | ≥ 2.28 | first scorecard sample |
-| delivery | human GitHub PR review actions per merged PR (`delivery.human_actions_per_merge_30d`) | one real review action is an exception; two or more indicate repeated manual handling (estimate) | ≤ 1 | ≥ 2 | first scorecard sample; excludes the required user-path acceptance |
 | delivery | release-accepted issue records missing a unique issue → unit → PR → merge → release join (`delivery.unlinked_units_30d`) | exact IDs are required; guessing a missing edge would falsify lead time | 0 | ≥ 1 | first scorecard sample |
-| delivery | root-cause incident records without an explicit accepted-issue link (`delivery.unlinked_incidents_30d`) | exact issue link required; a record naming no issue (`issue` field or "Issue #N" in what_happened) is not linkable and is reported as `incident_unreferenced_30d`; a named issue that was never accepted is unlinked | 0 | ≥ 1 | first scorecard sample |
-| delivery | maintainer-login PR review actions without reliable human/agent attribution (`delivery.human_actions_unattributed_30d`) | unknown attribution is not counted as human | 0 | ≥ 1 | first scorecard sample |
-| flow | merges per hour vs the 6.5 target; a starved queue (nothing open, nothing entered) reports no value (`flow.merge_rate_per_hour`) | #4355 SLO: ≥ 6.5 merges/h with sufficient backlog; 3.5/h was the pre-upgrade serial merge-lane ceiling | ≥ 6.5 | ≤ 3.5 | first scorecard sample |
-| flow | worst per-stage p90 age of open units, hours (`flow.wip_age_stage_p90_hours`; per-stage rows in scorecard `flow.wip_age`) | #4355 SLO: median ticket cycle ≤ 2 h; p90 stage age ≤ 4 h is consistent with it (estimate), half a day in one stage is stalled | ≤ 4 | ≥ 12 | first scorecard sample |
+| delivery | production incidents and head-watch alert episodes without an explicit accepted-issue link (`delivery.unlinked_incidents_30d`) | exact issue link required; a record naming no issue (`issue` field or "Issue #N" in what_happened) is not linkable, is counted here and is also shown as `incident_unreferenced_30d`; a named issue that was never accepted is unlinked | 0 | ≥ 1 | first scorecard sample |
+| flow | merges per hour vs the 6.5 target, rolling 24 h. Population: the factory's unit-ledger PRs only (merged/landed events in `units.json` and `units-archive.json`); human PRs and PRs outside the ledger are not counted. A starved queue (nothing open, nothing entered) reports no value (`flow.merge_rate_per_hour`) | #4355 SLO: ≥ 6.5 merges/h with sufficient backlog; 3.5/h was the pre-upgrade serial merge-lane ceiling | ≥ 6.5 | ≤ 3.5 | first scorecard sample |
+| flow | worst per-stage p90 age of open units, hours (`flow.wip_age_stage_p90_hours`; per-stage rows in scorecard `flow.wip_age`) | #4355 SLO: median ticket cycle ≤ 2 h; p90 stage age ≤ 4 h is consistent with it (estimate), half a day in one stage is stalled; `blocked-external` and `parked` rows are listed (`waiting: true`) but never pick the worst stage, they wait by design | ≤ 4 | ≥ 12 | first scorecard sample |
+| flow | p90 age of units waiting on a predecessor or a park, hours (`flow.wait_stage_p90_hours`; blocked-external and parked, last ledger event → now) | completed holds on 2026-11-07, 699 samples: 540 blocked-on → unblocked/requeue (p90 55 h), 159 supervisor park → next event (p90 94 h); combined p90 80 h. Bound = that p90 (healthy), 2× it (unhealthy), the bug ≈ 2× p90 convention of the spend standards | ≤ 80 | ≥ 160 | measured 2026-11-07: 94 waiting units, p90 227.6 h |
+| flow | units waiting on a predecessor or a park (`flow.wait_stage_units`) | — | measured, no bound (sentinel 0 / -1: any count is OK) | 2026-11-07: 94 |
 | flow | hours units queued for a repair/rereview worker while none of that phase ran (`flow.slot_idle_hours`) | idle-with-backlog is a dispatch stall, not a capacity bound (a busy bottleneck is the capacity case); between-tick waits of ~2 min are normal (estimate) | ≤ 0.25 | ≥ 1 | first scorecard sample |
 | flow | hours main was red (bisect sessions) in the window (`flow.main_red_hours`) | one clean episode (same-SHA rerun + bisect + revert) at a ~17 min Postsubmit cadence is ≈ 1 h (estimate) | ≤ 1 | ≥ 3 | first scorecard sample |
 | flow | \|units entered − units merged/landed\| in the window (`flow.in_out_imbalance`) | conservation: sustained inequality means WIP piling up or units vanishing; bands are ≤ 1 h vs > 2 h of net flow at the 6.5/h rate (estimate) | ≤ 5 | ≥ 15 | first scorecard sample |
@@ -130,21 +133,26 @@ time because an issue can close before release acceptance. The unit's `merge_sha
 ambiguous or incomplete edge increments `delivery.unlinked_units_30d` and is excluded from lead-time samples and the
 revert-rate sample, which needs the linked merge SHA. Reverts are matched by the Git commit message marker
 `This reverts commit <merge_sha>.` on `origin/main`, and only count when the revert commit follows acceptance.
-Incident rate is the number of dated root-cause records divided by the number of unique issue IDs in release-closer
-acceptance events in the same 30-day window; the issue → unit → PR → merge join is not required for this denominator.
+Production incidents are the `incidents` of the owner-mail ledger (`night/founder-health-mail.json`), opened in the window; the
+owner mail counts the same ledger under 线上告警. Incident rate is the number of unique accepted issue IDs (release-closer
+acceptance events in the same 30-day window) that an incident names, divided by the number of those accepted IDs, so it cannot pass 100 %.
+The root-cause lesson records in `incident-guards.json` are factory process findings, not production incidents, and are
+not counted. Head-watch `PROD-DB-TIMEOUT` alerts (`logs/head-watch.alerts`, alerts under 30 minutes apart are one episode, as in the owner mail's
+线上告警 line) name no issue, so they are not in the rate; each episode counts in `delivery.unlinked_incidents_30d`. That log
+starts 2026-11-04, so until it holds 30 days the count is a floor. A 0.0 rate therefore means no linked incident, not no production trouble.
+An alert would link only through an issue ID or a release SHA that matches a release-closer event.
 Incident linkage compares the record's explicit issue ID with those accepted IDs; missing or unmatched IDs remain
-visible in `delivery.unlinked_incidents_30d`. Human actions count GitHub PR review records:
-bot logins and explicit bot markers are excluded, scheduler review timestamps identify agent decisions made under
-the maintainer login, and PR bot markers / Codex or ZCode commit trailers leave unmatched maintainer-login actions
-unattributed instead of counting them as human. This is a review-action measure; the real user-path acceptance
-performed with a real user remains separate. GitHub census and missing-ID reads use bounded parallel calls with per-call
-and batch deadlines; an unavailable issue or PR source stays unknown rather than becoming a zero sample.
+visible in `delivery.unlinked_incidents_30d`. There is no human-action row: the factory is unattended, so a count of
+human PR review actions would measure the hand-off the design removes. The PR census reads only each PR's merge time and
+merge commit, so a PR with over 100 reviews or commits no longer blanks the window. GitHub census and missing-ID reads
+use bounded parallel calls with per-call and batch deadlines; an unavailable issue or PR source stays unknown rather
+than becoming a zero sample.
 
 The first delivery bounds use existing measured baselines where available and mark estimates above. The 30-day
 review values are intentionally a separate cohort from `--hours`; scorecard JSON carries its accepted, merged,
-unlinked and unattributed sample counts under `delivery`.
+and unlinked sample counts under `delivery`.
 
-M1 counts distinct run IDs from the shared cancellation audit in the rolling `--hours` window and normalizes them to a 24-hour rate. For causes expected to disappear with gating, zero is healthy and the frozen pre-change rate is the bug bound; other known causes use the frozen rate as the healthy ceiling and twice that rate as the bug bound. New or unclassified causes use 0 / 1 until there is a frozen baseline. Repeated audit attempts for one run count once. M12 reads the provider label on currently open `agent/issue-*` PRs. M13 counts distinct `ci hold` run IDs over 48 hours; zero is the retirement signal, not a measured before/after comparison.
+M1 counts distinct run IDs from the shared cancellation audit in the rolling `--hours` window and normalizes them to a 24-hour rate. For causes expected to disappear with gating, zero is healthy and the frozen pre-change rate is the bug bound; other known causes use the frozen rate as the healthy ceiling and twice that rate as the bug bound. The parked cause is the exception: the frozen 3 runs / 3.94 days predates `to_supervisor` cancelling CI runs, so its ceiling is the p90 of 168 hourly rolling-24 h readings over the 7 days to 2026-11-07 13:37Z (p50 0, p90 3, max 5; a thin sample, 6 runs, re-measure when the escalation rate changes) and its bug bound is twice that. New or unclassified causes use 0 / 1 until there is a frozen baseline. Repeated audit attempts for one run count once. M12 reads the provider label on currently open `agent/issue-*` PRs. M13 counts distinct `ci hold` run IDs over 48 hours; zero is the retirement signal, not a measured before/after comparison.
 
 ## Where the time goes (`time_sinks`, last 24 h)
 
@@ -320,10 +328,72 @@ p90 metrics above derive their bounds from the last 30 days of closed tickets in
 
 | Spend (id) | Delivered p50 / p90 | Healthy | Bug | Human baseline |
 |---|---|---|---|---|
-| worker tokens (`unit.tokens`) | 0.53 M / 2.4 M (10-21); per-ticket p90 13.9 M (7 d to 10-29) | ≤ 14 M | ≥ 28 M | — |
+| worker fresh tokens, cache reads excluded (`unit.tokens`) | 0.53 M / 2.4 M (10-21, raw basis, superseded); fresh basis 2026-11-07: 165 of 816 delivered units with a complete cache split, p50 109 k, p90 544 k, p99 1.23 M. Footer-only runs excluded. Provisional until usage-capture lands and the basis is re-measured | ≤ 600 k | ≥ 1.2 M | — |
 | worker minutes (`unit.worker_minutes`) | 25 / 90 | ≤ 90 | ≥ 240 | 2–4 h focused work for a small change (estimate) |
 | request-changes rounds (`unit.rounds`) | 0 / 2 | ≤ 2 | ≥ 5 | most changes need 1–2 iterations [1] |
-| hours from entry to merged (`unit.age_hours`; units waiting on a predecessor are exempt) | 7.4 / 18.5 | ≤ 24 | ≥ 72 | elite lead time < 1 day [4] |
+| hours from entry to merged (`unit.age_hours`; units waiting on a predecessor are exempt, and hours spent blocked or escalated (`blocked-on`/`supervisor-escalated`/park events up to `unblocked`/`supervisor-requeue`) are taken out of the age of a released unit) | 7.4 / 18.5 | ≤ 24 | ≥ 72 | elite lead time < 1 day [4] |
+
+## Station standards (`station_standards.py`, each scheduler tick)
+
+Every station in `station_health.py` `STATIONS` has one time, one tokens and one throughput standard, or a documented
+exception. `station_standards.MATRIX` holds the mapping and `station-standards.test.sh` fails a station without one.
+Each bound was measured on 2026-11-07 from the live ledger (`units.json` + archive), `scheduler.log`, triage batch logs
+and worker cost rows; the window and sample count are on the row. For the new rows, healthy is the measured p75 and
+unhealthy the measured p90 for time and tokens (rounded up to a whole minute or 1,000 tokens). Throughput is items out
+per 24 h: healthy at the measured p25 and unhealthy at the measured p10 of the seven daily counts. (The p50 was the
+first cut; the head chose p75 and p25 so that a normal day does not turn a tile amber by construction. Existing rows
+keep their bounds.) Seven days give seven samples, so throughput bounds are a first measurement that a month of
+samples should tighten. Time and token values use the same window as the other node metrics: time over 24 h, tokens
+over the `--hours` window of worker runs.
+
+| Station | Dimension | Metric (id) | Healthy | Unhealthy | Source (live, window, n) |
+|---|---|---|---|---|---|
+| merge | time | merge wait, previous event to merged, min p50 (`merge.wait_p50_min`) | ≤ 31 | ≥ 41 | 7 d to 2026-11-07T13:13Z, 221 merged/landed events: p75 30.8, p90 41.0 min |
+| ci | time | CI wait, previous event to ci-ready, min p50 (`ci.admission_p50_min`) | ≤ 0 | ≥ 17 | 7 d, 342 ci-ready events: p75 0.0, p90 16.1 min |
+| triage | tokens | triage tokens per issue p50 (`triage.tokens_per_issue_p50`) | ≤ 152,000 | ≥ 210,000 | 7 d, 91 batch logs (tokens_used / issue_sample_size): p75 151,725, p90 209,961 |
+| implement | tokens | worker tokens per implement run p50 (`implement.tokens_p50`) | ≤ 392,000 | ≥ 555,000 | 7 d, 557 runs with measured tokens: p75 391,729, p90 554,952 |
+| review | tokens | worker tokens per review run p50 (`review.tokens_p50`) | ≤ 258,000 | ≥ 324,000 | 7 d, 24 runs with measured tokens (small n): p75 257,372, p90 323,831 |
+| repair | tokens | worker tokens per repair run p50 (`repair.tokens_p50`) | ≤ 230,000 | ≥ 307,000 | 7 d, 292 runs with measured tokens: p75 229,149, p90 306,942 |
+| intake | throughput | intake items out per 24 h (`intake.out_per_day`) | ≥ 37 | ≤ 25 | 7 daily counts to 2026-11-07T13:13Z: p25 37, p10 25 |
+| triage | throughput | triage issues applied per 24 h (`triage.out_per_day`) | ≥ 9 | ≤ 5 | 7 daily counts: p25 9, p10 5 |
+| advisor | throughput | advisor rulings applied per 24 h (`advisor.out_per_day`) | ≥ 3 | ≤ 2 | 7 daily counts: p25 3, p10 2 |
+| implement | throughput | implement write-ends per 24 h (`implement.out_per_day`) | ≥ 51 | ≤ 12 | 7 daily counts: p25 51, p10 12 |
+| review | throughput | review verdicts per 24 h (`review.out_per_day`) | ≥ 48 | ≤ 37 | 7 daily counts: p25 48, p10 37 |
+| repair | throughput | repair write-ends per 24 h (`repair.out_per_day`) | ≥ 34 | ≤ 19 | 7 daily counts: p25 34, p10 19 |
+| merge | throughput | merges per hour, existing `flow.merge_rate_per_hour` (#4355 SLO) | ≥ 6.5 | ≤ 3.5 | existing row above; not re-measured here |
+| ci | throughput | CI slots admitted per 24 h (`ci.out_per_day`) | ≥ 28 | ≤ 13 | 7 daily counts: p25 28, p10 13 |
+
+Pipeline steps outside the stations (the node map), measured the same way:
+
+| Step | Dimension | Metric (id) | Healthy | Unhealthy | Source (live, window, n) |
+|---|---|---|---|---|---|
+| rereview | time | rereview run minutes p50 (`rereview.wall_p50`) | ≤ 13 | ≥ 17 | 7 d, 364 rereview runs with output: p75 12.3, p90 16.1 |
+| rereview | tokens | rereview worker tokens per run p50 (`rereview.tokens_p50`) | ≤ 200,000 | ≥ 200,000 | 7 d, 6 rereview runs with measured tokens of 376 (small n, provisional): p75 199,330, p90 199,330; healthy equals unhealthy, so no WARN band |
+| rereview | throughput | rereview worker runs started per 24 h (`rereview.runs_per_day`) | ≥ 35 | ≤ 10 | 7 daily counts from worker cost rows: p25 35, p10 10 |
+| approve | throughput | review approvals per 24 h (`approve.out_per_day`) | ≥ 35 | ≤ 30 | 7 daily counts of review-approve events: p25 35, p10 30 |
+| approve | time | approve to merged, CI included (`ci.approve_to_ship_p50`) | ≤ 60 | ≥ 180 | existing row above |
+
+Existing standards that cover the other cells (bounds unchanged here, with their rationale in the table above):
+`implement.wall_p50`, `review.wall_p50`, `repair.wall_p50` (time, run minutes), `advisor.last_answer_age_hours` (advisor time),
+`release.hours_waiting` (release time), `ci.approve_to_ship_p50` (approve to merged, CI included).
+
+Exceptions, with the reason each dimension cannot be measured (no row is faked):
+
+| Station | Dimension | Reason |
+|---|---|---|
+| intake | time | not measured: `state/N.json` keeps only the current `state_changed_at`, so the time an issue waited as ready-for-agent is lost once it leaves |
+| intake | tokens | no model call in `scheduler.d/intake.sh` |
+| triage | time | not measured: state files keep only the current state, so an issue's entry time into needs-triage is lost |
+| advisor | tokens | not measured: the advisor batch result JSON has no token field |
+| merge | tokens | no model call in `merge-prep.sh` or `merge-pr` |
+| ci | tokens | no model call in `scheduler.d/ci-admission.sh` (CI runner minutes are `ci.waste_runner_pct`) |
+| release | tokens | no model call in `run-release.sh` |
+| release | throughput | points at `release.hours_since_release` on the release-age branch (#635, not merged here): release cadence is scored there, so this file carries no separate bound |
+| PR CI | time | not measured by node_health: the CI run wall time needs the GitHub Actions run API, a gh call this tick does not make; the only figure is a hand measurement from 2026-10-20 |
+| PR CI | throughput | not measured: no local record counts completed CI runs; `ci.out_per_day` counts admissions, not runs |
+| PR CI | tokens | no model call in the PR CI workflow |
+| Postsubmit | throughput | not measured: no local record counts Postsubmit runs on main; main merges are counted by `flow.merge_rate_per_hour` |
+| Postsubmit | tokens | no model call in the Postsubmit workflow |
 
 ## Sources
 

@@ -212,7 +212,7 @@ export function runCli(argv = process.argv.slice(2)) {
   process.stdout.write(`${JSON.stringify(plan)}\n`);
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(SCRIPT_PATH)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(SCRIPT_PATH)) {
   try {
     runCli();
   } catch (error) {

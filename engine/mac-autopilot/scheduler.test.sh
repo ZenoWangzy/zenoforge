@@ -3312,6 +3312,23 @@ SCHED_LOCK="$old_lock"; rm -rf -- "$lock_root"
 }
 sched_run_case refill_yields_shared_lock
 
+sched_case_lock_wait_recorded() {
+# A refill holds the ledger lock while the slow phase runs, so re-acquiring it waits; that wait must reach tick-phases lock_wait=.
+local old_lock="$SCHED_LOCK" lock_root holder
+lock_root="$(mktemp -d)"; SCHED_LOCK="$lock_root/.scheduler.lock"; SCHED_LOCK_HELD=false; TICK_LOCK_WAIT=0
+acquire_scheduler_lock || { echo 'scheduler.test.sh: could not acquire fixture scheduler lock' >&2; exit 1; }
+holder_probe() {
+  sleep 2 >/dev/null 2>&1 & holder=$!
+  mkdir "$SCHED_LOCK" || return 1
+  printf '%s\n' "$holder" > "$SCHED_LOCK/pid"
+}
+phase_yield_lock holder_probe || { echo 'scheduler.test.sh: slow phase did not re-acquire the lock after the holder exited' >&2; exit 1; }
+[[ "$TICK_LOCK_WAIT" -ge 1 ]] || { echo 'scheduler.test.sh: the wait to re-acquire the scheduler lock was not recorded in lock_wait' >&2; exit 1; }
+release_scheduler_lock
+SCHED_LOCK="$old_lock"; rm -rf -- "$lock_root"
+}
+sched_run_case lock_wait_recorded
+
 sched_case_accounting() {
 for missing in missing-baseline missing-end session-changed counter-reset; do
   new_tick_fixture "accounting-$missing"
@@ -3456,6 +3473,7 @@ sched_run_case fast_land
 sched_case_footprint_main_paths() (
 # Dead predictions release waiters, while tracked paths keep their mutex.
   local repo candidate_unit
+  TICK_FOOTPRINT_DEFER=true # the walk's first pass asks for a verdict; other callers always start
   repo="$(mktemp -d)"
   ROOT="$repo"
   command git -C "$repo" init -q -b main
@@ -3513,6 +3531,7 @@ sched_case_footprint_mutex() {
   # The active-footprint snapshot is cached for the length of a tick; this case rewrites the workers between checks, so each check
   # starts from a fresh snapshot.
   footprint_room_each_tick() {
+    TICK_FOOTPRINT_DEFER=true # the walk's first pass asks for a verdict; other callers always start
     TICK_ACTIVE_FOOTPRINTS_VALID=false
     TICK_FOOTPRINT_CONFLICT_VALID=false
     footprint_room "$@"
@@ -4044,13 +4063,15 @@ sched_case_intake_footprint_selection() {
     > "$TF/supervisor/autopi/workers.json"
   touch "$TF/worker-alive"
   tick
-  command jq -e 'any(.units[]; .issue==777 and .stage=="implement-pending")
-    and all(.units[]; .issue != 778 and .issue != 779)' "$TF/supervisor/autopi/units.json" >/dev/null \
-    || { cat "$TF/tick.out" >&2; echo 'not ok - scheduler.test.sh: intake did not skip a footprint collision and admit independent work' >&2; exit 1; }
-  grep -Fq 'intake skip issue #779: footprint overlaps unit=issue-700' "$TF/supervisor/autopi/scheduler.log" \
-    || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake did not record why the colliding candidate was skipped' >&2; exit 1; }
-  grep -Fq 'intake skip issue #778: footprint overlaps unit=issue-701' "$TF/supervisor/autopi/scheduler.log" \
-    || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake did not skip a collision with pending work' >&2; exit 1; }
+  command jq -e '[777, 778, 779] | all(. as $n | any($units[0].units[]; .issue == $n and .stage == "implement-pending"))' \
+    --slurpfile units "$TF/supervisor/autopi/units.json" <<<null >/dev/null \
+    || { cat "$TF/tick.out" >&2; echo 'not ok - scheduler.test.sh: intake refused a footprint collision (footprint only orders)' >&2; exit 1; }
+  grep -Fq 'intake order issue #779: footprint overlaps unit=issue-700' "$TF/supervisor/autopi/scheduler.log" \
+    || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake did not record the overlap it admitted' >&2; exit 1; }
+  grep -Fq 'intake order issue #778: footprint overlaps unit=issue-701' "$TF/supervisor/autopi/scheduler.log" \
+    || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake did not record the overlap with pending work' >&2; exit 1; }
+  ! grep -Fq 'intake skip issue' "$TF/supervisor/autopi/scheduler.log" \
+    || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake still skipped an issue on footprint' >&2; exit 1; }
 }
 sched_run_case intake_footprint_selection
 
@@ -4167,9 +4188,9 @@ sched_case_intake_verdict_wait_admission() {
   tick
   command jq -e 'any(.units[]; .issue==777 and .stage=="implement-pending")' "$TF/supervisor/autopi/units.json" >/dev/null \
     || { cat "$TF/tick.out" >&2; cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: a supervisor-review unit still blocked intake with its footprint' >&2; exit 1; }
-  if grep -Fq 'intake skip issue #777: footprint overlaps unit=issue-700' "$TF/supervisor/autopi/scheduler.log"; then
+  if grep -Fq 'intake order issue #777: footprint overlaps unit=issue-700' "$TF/supervisor/autopi/scheduler.log"; then
     cat "$TF/supervisor/autopi/scheduler.log" >&2
-    echo 'not ok - scheduler.test.sh: intake still skipped a candidate for overlapping only a verdict-waiting unit' >&2
+    echo 'not ok - scheduler.test.sh: intake still counted a verdict-waiting unit as a footprint holder' >&2
     exit 1
   fi
 }
@@ -4196,6 +4217,7 @@ JSON
   TICK_ACTIVE_FOOTPRINTS_VALID=false
   TICK_FOOTPRINT_CONFLICT_VALID=false
   resumed_unit="$(jqf -c --arg id "resumed" '.units[] | select(.id==$id)' "$UNITS")"
+  TICK_FOOTPRINT_DEFER=true
   if footprint_room resumed "$resumed_unit" true; then
     echo 'not ok - resumed repair candidate overran the live writer started while it waited for a verdict' >&2
     exit 1
@@ -6377,6 +6399,31 @@ sched_case_tick_tail_order() {
 )
 }
 sched_run_case tick_tail_order
+
+sched_case_tick_unphased_marks() {
+# A kill outside a phase names what the tick was doing, not the last phase that finished (or the last tick's).
+(
+  mk_dir="$(mktemp -d)"
+  ROOT="$mk_dir" A="$mk_dir" LOG="$mk_dir/log" STAMP=test SCHED_LOCK="$mk_dir/lock"
+  UNITS="$mk_dir/units.json" WORKERS="$mk_dir/workers.json" PAUSE_FILE="$mk_dir/PAUSE"
+  echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; touch "$PAUSE_FILE"
+  echo stale > "$A/.tick-phase"
+  mark() { echo "$1 $(command cat "$mk_dir/.tick-phase")" >> "$mk_dir/marks"; }
+  acquire_scheduler_lock() { mark acquire; return 0; }
+  jqf() { command jq "$@"; }
+  git() { return 1; }
+  say() { :; }
+  phase() { echo "$1" > "$mk_dir/.tick-phase"; }
+  for stub in rotate_logs budget_alert_if_needed live_workers flush_focus_alert publish_pr_run_snapshot launch_views cleanup_tick; do eval "$stub() { :; }"; done
+  update_budget() { mark update_budget; }
+  for stub in coord_reap_expired coord_reconcile_systemd_workers coord_reconcile_scheduler_workers; do eval "$stub() { mark $stub; }"; done
+  eval "$(command sed -n '/^main() {/,/^}/p' "$scheduler")"
+  main
+  [[ "$(command cat "$mk_dir/marks")" == $'acquire stale\nupdate_budget opening\ncoord_reap_expired coord_sweeps\ncoord_reconcile_systemd_workers coord_sweeps\ncoord_reconcile_scheduler_workers coord_sweeps' ]] \
+    || { echo "unphased tick steps must name themselves in .tick-phase: $(command tr '\n' ';' < "$mk_dir/marks")" >&2; exit 1; }
+)
+}
+sched_run_case tick_unphased_marks
 
 sched_case_stop_loss_resume() {
   local units n=779 at

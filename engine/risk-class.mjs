@@ -26,7 +26,7 @@
 //
 // These patterns are layout conventions of a typical repository. Adjust them to
 // the target repository's own schema, auth and deployment directories.
-import { realpathSync } from 'node:fs';
+import { realpathSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -94,7 +94,7 @@ export function classify(changedPaths) {
   return classifyWithKind(changedPaths).map((hit) => hit.path);
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   // --json: print classifyWithKind()'s result as JSON on stdout and exit 0
   // always -- for a caller that needs to decide WHAT to do with a hit
   // (run-implement.sh's guarded-merge admission path), not just whether

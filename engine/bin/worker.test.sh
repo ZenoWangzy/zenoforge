@@ -53,7 +53,7 @@ if [[ $mode == builtin_info ]]; then
   mode=success
 fi
 [[ $mode == gated ]] && { sleep 3; mode=success; }   # queued at the capacity gate past the stall threshold
-[[ $mode == hang || $mode == builtin_noise ]] || echo $$ > "$d/codex.pid"   # real backends write it once past the capacity gate
+[[ $mode == hang || $mode == builtin_noise || $mode == queued ]] || echo $$ > "$d/codex.pid"   # real backends write it once past the capacity gate
 case "$mode" in
   hang|builtin_noise)
     : > "$d/events.jsonl"
@@ -71,6 +71,11 @@ case "$mode" in
       fi
       read -r -t 0.05 _ || true
     done
+    ;;
+  queued)
+    # Never passes the capacity gate: no codex.pid, no events (2026-11-07 vecta-roll-count sat 14 min like this).
+    trap 'exit 143' TERM
+    while :; do read -r -t 0.05 _ || true; done
     ;;
   fatal)
     printf 'AI_APICallError: provider request failed (isRetryable: true)\n' >> "$d/stderr.log"
@@ -273,6 +278,13 @@ assert_file_contains "$fatal_dir/failover" 'repeated AI_APICallError'
 assert_file_contains "$fatal_dir/briefs" 'Resume after backend failover'
 printf 'PASS fatal stderr pattern -> immediate failover\n'
 
+LUNA_AGE_ADMIT_SECONDS=0 run_case queued 75 queued success 1 8
+queued_dir=$CASE_DIR
+assert_file_contains "$queued_dir/failover" 'queued at the capacity gate'
+assert_file_contains "$test_root/queued.stderr" 'worker: queued at the capacity gate'
+[[ $(cat "$queued_dir/rc") == 75 && $(cat "$queued_dir/attempt-backend") == zc ]] || fail 'queue timeout did not end rc=75 on the first backend'
+[[ ! -e "$test_root/queued/.scratch/tmp/zc-breaker" ]] || fail 'queue timeout opened the provider breaker'
+printf 'PASS never passing the capacity gate fails fast with a named reason\n'
 run_case builtin 0 builtin_info success 8 4
 builtin_dir=$CASE_DIR
 [[ ! -e $builtin_dir/failover && $(cat "$builtin_dir/backend") == zc ]] || fail 'Built-in missing informational line caused failover'

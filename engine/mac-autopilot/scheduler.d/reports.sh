@@ -5,6 +5,9 @@ write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=�
   local dst="$1" _t valid=false _units_shape
   _t="$(mktemp "${dst}.tmp.XXXXXX")" || return 1
   cat > "$_t"
+  # Identical bytes are no write: validation reads two multi-MB files, the .bak copy and the mtime bump drop every cached ledger view.
+  # About one ledger write in three in a 2026-11-07 full tick left the content unchanged (13 of 36 in harvest, 5 of 14 in dispatch).
+  if [[ -s "$_t" ]] && cmp -s "$_t" "$dst"; then rm -f "$_t"; return 0; fi
   if [[ "$dst" == "$UNITS" ]]; then
     # No unit leaves the system through this scheduler: a write may only drop ids that
     # are already persisted in the retirement archive (retire_terminal_units writes the

@@ -179,12 +179,21 @@ remove_readonly_tree() {
 
 cleanup_unit_worktrees() { # id：终态单元的两个 worktree 位置；有可恢复 Git 工作时保留并说明
   local id="$1" wt block_reason
+  declare -p PRESERVE_KEEP >/dev/null 2>&1 || local -A PRESERVE_SEEN=() PRESERVE_KEEP=() # a caller outside cleanup_tick keeps no verdicts
   for wt in "$WT_ROOT/wt-${id}" "/tmp/wt-${id}"; do
     [[ -d "$wt" ]] || continue
     # cleanup_tick's deadline (its locals, by dynamic scope): count what the walk leaves instead of walking on.
-    if [[ -n "${CLEANUP_DEADLINE:-}" ]] && (( SECONDS >= CLEANUP_DEADLINE )); then CLEANUP_LEFT=$((CLEANUP_LEFT + 1)); continue; fi
-    if block_reason="$(worktree_cleanup_block_reason "$wt")"; then
+    if [[ -n "${CLEANUP_DEADLINE:-}" ]] && (( SECONDS >= CLEANUP_DEADLINE )); then
+      CLEANUP_LEFT=$((CLEANUP_LEFT + 1)); [[ -z "${PRESERVE_SEEN[$wt]:-}" ]] || PRESERVE_KEEP[$wt]="${PRESERVE_SEEN[$wt]}" # not reached: its verdict stands
+      continue
+    fi
+    # A kept worktree is kept again without the git walk until its verdict is AUTOPI_WORKTREE_PRESERVE_RECHECK_SECONDS old: the same 44 kept
+    # worktrees cost 24 s of git status and for-each-ref per tick (2026-11-07 timing). Only a preserve verdict is reused, so a stale one keeps work, never deletes it.
+    if [[ -n "${PRESERVE_SEEN[$wt]:-}" ]] && (( NOW_EPOCH - PRESERVE_SEEN[$wt] < ${AUTOPI_WORKTREE_PRESERVE_RECHECK_SECONDS:-3600} )); then
+      PRESERVE_KEEP[$wt]="${PRESERVE_SEEN[$wt]}"
+    elif block_reason="$(worktree_cleanup_block_reason "$wt")"; then
       say "preserve worktree $wt: $block_reason"
+      PRESERVE_KEEP[$wt]="$NOW_EPOCH"
     else
       rm -rf -- "$wt"
       say "cleanup worktree $wt"
@@ -196,6 +205,13 @@ cleanup_tick() {
   local id wt n_total b track r block_reason
   # 43 preserve lines under load ran the tick into its kill in this walk (2026-11-07): stop with time left for the end of the tick.
   local CLEANUP_DEADLINE=$(( ${AUTOPI_TICK_LIMIT_SECONDS:-1800} - 120 )) CLEANUP_LEFT=0
+  local -A PRESERVE_SEEN=() PRESERVE_KEEP=() # path -> epoch of its preserve verdict; read and written by cleanup_unit_worktrees (dynamic scope)
+  local preserve_file="$A/.worktree-preserved" preserve_epoch preserve_path
+  if [[ -r "$preserve_file" ]]; then
+    while IFS=$'\t' read -r preserve_epoch preserve_path; do
+      [[ "$preserve_epoch" =~ ^[0-9]+$ && -n "$preserve_path" ]] && PRESERVE_SEEN["$preserve_path"]="$preserve_epoch"
+    done < "$preserve_file"
+  fi
   # eval 在途（pending/running）的单元保留 worktree：#4656 起 eval 并行跑，可能在单元 merged 之后才结束。
   for id in $(jqf -r '.units[] | select(.stage=="merged" or .stage=="landed" or .stage=="awaiting-live-event" or .stage=="done" or .stage=="wontfix" or .stage=="duplicate" or .stage=="closed") | select((.eval_gate.status // "") | IN("pending","running") | not) | .id' "$UNITS"); do
     cleanup_unit_worktrees "$id"
@@ -207,12 +223,19 @@ cleanup_tick() {
       cleanup_unit_worktrees "$id"
     done < <(jqf -r --slurpfile live "$UNITS" '.units[] | select((.eval_gate.status // "") | IN("pending","running") | not) | select(.id as $i | any($live[0].units[]; .id == $i) | not) | .id' "$UNITS_ARCHIVE" 2>/dev/null) # a restored unit is live again: its worktree is not cleanup's
   fi
+  for preserve_path in "${!PRESERVE_KEEP[@]}"; do printf '%s\t%s\n' "${PRESERVE_KEEP[$preserve_path]}" "$preserve_path"; done > "$preserve_file.tmp" 2>/dev/null && mv -f -- "$preserve_file.tmp" "$preserve_file"
   (( CLEANUP_LEFT == 0 )) || say "cleanup worktree walk stopped at ${SECONDS}s: left $CLEANUP_LEFT worktrees for the next tick"
   n_total="$(jqf '.workers | length' "$WORKERS" 2>/dev/null || echo 0)"
   if (( n_total > 60 )); then
     # 未回收的 worker 一律保留，只裁剪已回收的旧记录。
-    jqf '{workers: ([.workers[] | select(.harvested != true)] + ([.workers[] | select(.harvested == true)] | sort_by(.started) | .[-60:]))}' "$WORKERS" | write_state "$WORKERS"
-    say "trim workers ledger $n_total"
+    # The tick's tail runs without the ledger lock, so this one write takes it (set_unit's own-lock pattern).
+    local own_lock=false
+    if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then acquire_scheduler_lock_wait && own_lock=true; fi
+    if [[ "${SCHED_LOCK_HELD:-false}" == true ]]; then
+      jqf '{workers: ([.workers[] | select(.harvested != true)] + ([.workers[] | select(.harvested == true)] | sort_by(.started) | .[-60:]))}' "$WORKERS" | write_state "$WORKERS"
+      say "trim workers ledger $n_total"
+    fi
+    [[ "$own_lock" != true ]] || release_scheduler_lock
   fi
   # 只删一天无写入的超大日志：活 worker 的日志仍在写，不会被删。
   find "$SUP" -maxdepth 1 -name '*.worker.log' -size +4M -mmin +1440 -delete 2>/dev/null

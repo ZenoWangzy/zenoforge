@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs';
+import { realpathSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -40,7 +40,7 @@ export function analyzeMigrationSql(sql, schema) {
   return [...tables].map((table) => `ANALYZE ${quoteIdentifier(schema)}.${quoteIdentifier(table)};`);
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     if (process.argv[2] !== '--stdin') throw new Error('usage: fruit-migration-analyze.mjs --stdin');
     const configPath = zfConfigFile('release.json');

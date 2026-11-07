@@ -269,6 +269,7 @@ CI_STATION_LOCK="$td/.ci-station.lock"; SCHED_LOCK="$td/.scheduler.lock"; SCHED_
 passes="$td/passes"; : > "$passes"
 git() { :; } # the fixture root is not a repository, and the station fetches origin main
 ci_admission() { printf 'pass etag=%s in_station=%s\n' "$GH_ETAG_DIR" "$(ci_in_station && echo yes || echo no)" >> "$passes"; while [[ -e "$td/hold" ]]; do read -t 0.1 <> <(:) || :; done; }
+sweeps="$td/sweeps"; : > "$sweeps"; merge_tree_sweep() { echo sweep >> "$sweeps"; }
 touch "$td/hold"
 ( ci_station_tick ) & first=$!
 for _ in $(seq 100); do [[ -s "$passes" ]] && break; read -t 0.1 <> <(:) || :; done
@@ -276,6 +277,7 @@ for _ in $(seq 100); do [[ -s "$passes" ]] && break; read -t 0.1 <> <(:) || :; d
 ci_station_tick # the first pass still runs: this one must return at once without admitting
 [[ "$(wc -l < "$passes")" == 1 ]] || { echo 'ci-admission-draft-starve.test.sh: two station passes ran together' >&2; exit 1; }
 rm -f "$td/hold"; wait "$first"
+[[ "$(wc -l < "$sweeps")" == 1 ]] || { echo 'ci-admission-draft-starve.test.sh: the station pass did not run the merge-tree sweep once' >&2; exit 1; }
 [[ ! -e "$CI_STATION_LOCK" ]] || { echo 'ci-admission-draft-starve.test.sh: a finished pass left its lock' >&2; exit 1; }
 grep -Fq "etag=$A/.gh-etag-ci in_station=yes" "$passes" || { echo "ci-admission-draft-starve.test.sh: the pass lacked its own ETag cache or station mode: $(cat "$passes")" >&2; exit 1; }
 # A scheduler lock held by the full tick (a live pid) does not keep the station out.
@@ -289,6 +291,7 @@ rm -rf "$SCHED_LOCK"
 ci_station_tick
 rm -f "$PAUSE_FILE"
 [[ ! -s "$passes" ]] || { echo 'ci-admission-draft-starve.test.sh: the station admitted while paused' >&2; exit 1; }
+[[ "$(wc -l < "$sweeps")" == 2 ]] || { echo 'ci-admission-draft-starve.test.sh: the station swept while paused, or skipped a live pass' >&2; exit 1; }
 ci_station_fresh || { echo 'ci-admission-draft-starve.test.sh: a paused station left no heartbeat' >&2; exit 1; }
 
 unset -f git

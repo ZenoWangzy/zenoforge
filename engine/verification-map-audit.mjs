@@ -120,7 +120,7 @@ export function runCli(argv = process.argv.slice(2)) {
   process.stdout.write(`${JSON.stringify(report)}\n`);
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     runCli();
   } catch (error) {

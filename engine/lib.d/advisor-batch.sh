@@ -67,10 +67,14 @@ advisor_footprint_risky() {
   # risk-class.mjs always lives right next to lib.sh, by construction.
   lib_dir="$(cd "$(dirname "$_AGENT_LIB_DIR/lib.sh")" && pwd)"
   RISK_CLASS_MODULE="$lib_dir/risk-class.mjs" node --input-type=module -e '
-    const { classify } = await import(process.env.RISK_CLASS_MODULE);
-    const pkgs = JSON.parse(process.argv[1]);
-    const candidates = pkgs.map((p) => (p.endsWith("/") ? p : p + "/"));
-    process.exit(classify(candidates).length > 0 ? 0 : 1);
+    try {
+      const { classify } = await import(process.env.RISK_CLASS_MODULE);
+      const pkgs = JSON.parse(process.argv[1]);
+      const candidates = pkgs.map((p) => (p.endsWith("/") ? p : p + "/"));
+      process.exit(classify(candidates).length > 0 ? 0 : 1);
+    } catch {
+      process.exit(0); // a classifier that cannot run reads as risky, never as a clean footprint
+    }
   ' "$expected_json"
 }
 

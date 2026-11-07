@@ -42,4 +42,26 @@ grep -q -- '--parent 7' "$created" || fail "the follow-up must be the parent's s
 [[ "$(jqf -r '.units[0].split_followup' "$UNITS")" == 41 ]] || fail "the follow-up number was not recorded"
 PARENT_OF_40= split_followup_issue issue-40 40 50 'SPLIT: the rest' "$fixture/report"
 ! grep -q -- '--parent' "$created" || fail "a top-level parent has no parent to share"
+# A refused recut sent back to implement escalated again and again at the same scope; after one ruling the worker runs once on the SPLIT contract.
+sa="$fixture/size-admit"; mkdir -p "$sa"; command git init -q -b main "$sa/wt"
+command git -C "$sa/wt" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m base
+sa_head="$(command git -C "$sa/wt" rev-parse HEAD)"
+SIZE_ADMISSION_LINES=800; TICK_DISPATCH_LOCAL_REFILL=false
+scheduler_issue_state() { echo '{"state":"ready-for-agent","recut_refused_at":"2026-11-06T00:00:00Z"}'; }
+scheduler_size_recut() { fail 'a refused head must not be routed to recut again'; }
+changed_lines_in_checkout() { echo "${SA_ACTUAL:-}"; }
+to_supervisor() { set_unit "$1" "$(hist supervisor-escalated "$2") | .stage=\"supervisor-review\""; }
+sa_unit='{"id":"issue-60","issue":60,"estimated_changed_lines":1000}'
+sa_hist='{"stage":"size-recut","result":"issue #60: 1000 lines exceed 800; head='"$sa_head"'","at":"t1"},{"stage":"size-recut-resumed","result":"back","at":"t2"}'
+printf '%s\n' '{"units":[{"id":"issue-60","issue":60,"estimated_changed_lines":1000,"stage":"implement-pending","history":['"$sa_hist"']}]}' > "$UNITS"
+rc=0; size_admission_write_start issue-60 "$sa/wt" "$sa_unit" || rc=$?
+[[ "$rc" == 1 && "$(jqf -r '.units[0].stage' "$UNITS")" == supervisor-review ]] || fail "first refusal must still reach the arbiter (rc=$rc)"
+rc=0; size_admission_write_start issue-60 "$sa/wt" "$sa_unit" || rc=$?
+[[ "$rc" == 0 && "$(jqf -r '[.units[0].history[] | select(.stage=="size-split-admitted")] | length' "$UNITS")" == 1 ]] \
+  || fail "a repeat refusal after a ruling was not admitted once for a split delivery (rc=$rc)"
+SA_ACTUAL=28; rc=0; size_admission_write_start issue-60 "$sa/wt" "$sa_unit" || rc=$?
+[[ "$rc" == 0 ]] || fail "an admitted slice was judged on the stale whole-ticket estimate (rc=$rc)"
+SA_ACTUAL=900; rc=0; size_admission_write_start issue-60 "$sa/wt" "$sa_unit" || rc=$?
+[[ "$rc" == 1 && "$(jqf -r '[.units[0].history[] | select(.stage=="size-split-admitted")] | length' "$UNITS")" == 1 ]] \
+  || fail "an oversized real diff must still be refused, and the admission is once only (rc=$rc)"
 echo "split-followup.test.sh: all assertions passed"
