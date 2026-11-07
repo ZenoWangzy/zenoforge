@@ -37,6 +37,18 @@ grep -q 'merge pass deadline' "$LOG" || fail 'the pass went on past its deadline
 grep -q 'check census unavailable' "$LOG" && fail 'the pass read a candidate past its deadline'
 tick_prs_prime() { :; }
 
+# A failed open-PR read is read again inside the pass: bounded in tries and by the refill deadline, and a census that was read is never repeated.
+MERGE_CENSUS_RETRY_WAIT=0
+tick_prs() { reads=$((reads + 1)); (( reads >= 2 )) || return 1; TICK_PRS='[]'; }
+: > "$LOG"; reads=0; TICK_PRS=""; SECONDS=0; run_merge_lane_pass
+(( reads == 2 )) || fail "the pass did not read the census again after a failed read: reads=$reads"
+grep -Fq 'merge census read failed; retry 1' "$LOG" || fail 'the retry was not logged'
+tick_prs() { reads=$((reads + 1)); return 1; }
+reads=0; TICK_PRS=""; merge_census_retry; (( reads == 3 )) || fail "a failing read was not bounded to 3 tries: reads=$reads"
+reads=0; TICK_PRS=""; SECONDS=200 TICK_LOCAL_REFILL=true merge_census_retry; (( reads == 0 )) || fail 'the retry ran past the refill deadline'
+reads=0; TICK_PRS='[]'; merge_census_retry; (( reads == 0 )) || fail 'a census that was read was read again'
+unset MERGE_CENSUS_RETRY_WAIT; unset -f tick_prs; TICK_PRS=""; : > "$LOG"
+
 # The stages before the loop cannot stop themselves: a spent budget skips the pass, or ends it between two stages.
 : > "$LOG"; stages=0; SECONDS=0
 merge_candidates() { stages=$((stages + 1)); printf '%s\n' "$ready_row"; }
@@ -73,8 +85,10 @@ CFG="$(jq -c '.auto_merge=false' "$A/config.json")"; refill_merge_pass; (( passe
 CFG="$(jq -c . "$A/config.json")"
 refill_merge_pass; (( passes == 1 )) || fail 'did not run for a ready-to-merge unit'
 refill_merge_pass; (( passes == 1 )) || fail 'ran again inside merge_refill_min_seconds'
+printf '%s\n' "$(( $(date +%s) - 90 ))" > "$A/.refill-merge-epoch"
+refill_merge_pass; (( passes == 2 )) || fail 'did not run again 90s after the last pass: the default gap is 60s'
 printf '%s\n' "$(( $(date +%s) - 1000 ))" > "$A/.refill-merge-epoch"
-refill_merge_pass; (( passes == 2 )) || fail 'did not run again after merge_refill_min_seconds'
+refill_merge_pass; (( passes == 3 )) || fail 'did not run again after merge_refill_min_seconds'
 
 # Mutual exclusion with the tick's pass: a held merge lock makes the refill skip and the tick wait.
 passes=0
