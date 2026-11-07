@@ -654,11 +654,11 @@ print("node_health green-to-merge wait splits lanes and counts missing check dat
 def node(number):
     return {"number": number, "mergedAt": "2026-11-07T11:00:00Z", "labels": {"nodes": []}, "head": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {
         "totalCount": 3, "nodes": [{"name": name, "completedAt": "2026-11-07T10:50:00Z"} for name in req]}}}}]}}
-def gh_pages(more, fail_at=None):
+def gh_pages(more, fail_at=()):
     seen = []
     def gh(args, timeout):
         seen.append(args)
-        if fail_at == len(seen):
+        if len(seen) in fail_at:
             return None
         return {"data": {"search": {"nodes": [node(len(seen))], "pageInfo": {"hasNextPage": more, "endCursor": f"c{len(seen)}"}}}}
     return gh, seen
@@ -666,13 +666,43 @@ gh, seen = gh_pages(False)
 assert [r["number"] for r in m.fetch("o/r", "2026-11-06", gh)] == [1] and len(seen) == 1
 gh, seen = gh_pages(True)
 assert m.fetch("o/r", "2026-11-06", gh) is None and len(seen) == m.PAGES  # truncated
-gh, seen = gh_pages(True, fail_at=2)
-assert m.fetch("o/r", "2026-11-06", gh) is None  # second page failed
-assert "reviews" not in m.QUERY and "first:100" in m.QUERY
+gh, seen = gh_pages(True, fail_at=(2, 3))
+assert m.fetch("o/r", "2026-11-06", gh) is None and len(seen) == 3  # second page failed twice: NO-DATA
+gh, seen = gh_pages(False, fail_at=(1,))
+value = m.green_to_merge(m.fetch("o/r", "2026-11-06", gh), req, now)[0]
+assert value == 10 and len(seen) == 2, (value, seen)  # first page failed once: one retry keeps the row a number
+spent = []
+def gh_timeout(args, timeout):
+    spent.append(timeout)
+    return None
+assert m.fetch("o/r", "2026-11-06", gh_timeout, timeout=5) is None and len(spent) == 2 and max(spent) <= 5  # retries share the caller's budget
+assert "reviews" not in m.QUERY and "first:50" in m.QUERY and "contexts(first:100)" in m.QUERY
 gh, seen = gh_pages(True)
 assert m.collect("o/r", now, sys.argv[1], gh)[0] == {"merge.green_to_merge_max_min": None}  # row value None -> NO-DATA, not 0
 assert n.status_of(None, healthy, unhealthy, False) == "NO-DATA"
 print("node_health green-to-merge truncated read is NO-DATA: PASS")
+CHECK
+
+# ci.held_ready_pct: no ready units reads 0 when units.json was read, NO-DATA when it was missing or unreadable.
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'held ready percent wrong'
+import json, os, sys
+sys.path.insert(0, sys.argv[1]); import node_health as n, ledger_history as lh
+root = os.path.join(sys.argv[2], "held-ready")
+def ledger(name, body):
+    d = os.path.join(root, name); os.makedirs(d, exist_ok=True)
+    if body is not None:
+        open(os.path.join(d, "units.json"), "w").write(body)
+    return d
+empty = ledger("empty", json.dumps({"units": []}))
+missing = ledger("missing", None)
+corrupt = ledger("corrupt", "{")
+ready = [{"id": "a", "stage": "ready-to-merge", "ci_held_sha": "x"}, {"id": "b", "stage": "ready-to-merge"}]
+assert n.held_ready_pct([], lh.live_ledger_readable(empty)) == 0
+assert n.status_of(n.held_ready_pct([], lh.live_ledger_readable(empty)), 20, 50, False) == "OK"
+assert n.held_ready_pct(ready, lh.live_ledger_readable(empty)) == 50
+for d in (missing, corrupt):
+    assert n.held_ready_pct(lh.load_units(d), lh.live_ledger_readable(d)) is None, d
+print("node_health held-ready percent: empty ready list is 0, unreadable ledger is NO-DATA: PASS")
 CHECK
 
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.
