@@ -250,6 +250,25 @@ assert_eq 'first stage label follows parent and milestone writes' true \
 assert_eq 'a roadmap root cannot receive an active stage label' false \
   "$(roadmap_ensure_issue_parent 900 ready-for-agent '{}' && echo true || echo false)"
 
+# Per-tick cache: the first ensure_issue_parent fetches into the named file, later ones reuse it; a failed fetch leaves no file.
+tick_cache="$test_tmp/tick-tree.json"
+fetch_log="$test_tmp/fetch.log"
+: > "$fetch_log"
+roadmap_fetch_tree() {
+  printf 'fetch\n' >> "$fetch_log"
+  [[ ! -e "$test_tmp/fetch-fails" ]] || return 1
+  printf '%s\n' "$TREE" > "$1"
+}
+ZF_ROADMAP_TREE_CACHE_FILE="$tick_cache"
+touch "$test_tmp/fetch-fails"
+roadmap_ensure_issue_parent 106 ready-for-agent '{"title":"Domain pack intake"}' && { echo 'not ok - failed fetch must fail the parent check' >&2; exit 1; }
+assert_eq 'failed fetch leaves no cached tree' false "$([[ -e "$tick_cache" ]] && echo true || echo false)"
+rm "$test_tmp/fetch-fails"
+roadmap_ensure_issue_parent 106 ready-for-agent '{"title":"Domain pack intake"}'
+roadmap_ensure_issue_parent 105 ready-for-agent '{"title":"Change intake UI"}'
+assert_eq 'two transitions in one tick fetch the tree once (plus the failed try)' 2 "$(wc -l < "$fetch_log" | tr -d ' ')"
+unset ZF_ROADMAP_TREE_CACHE_FILE
+
 NOW="$(date -u -d '2026-10-11T12:00:00Z' +%s)"
 OPEN='[{"number":106,"state":"OPEN","createdAt":"2026-10-11T11:50:00Z","labels":[{"name":"ready-for-agent"}]},{"number":112,"state":"OPEN","createdAt":"2026-10-10T10:00:00Z","labels":[{"name":"needs-triage"}]},{"number":119,"state":"OPEN","createdAt":"2026-10-11T10:00:00Z","labels":[{"name":"needs-triage"}]}]'
 broken="$(roadmap_health_assess "$TREE" "$OPEN" "$NOW" true)"

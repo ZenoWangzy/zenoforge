@@ -493,6 +493,7 @@ refill_tick() {
     return 2
   fi
   tick_gh_calls_begin
+  tick_roadmap_cache_begin
   MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   phase harvest_workers true
   coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
@@ -519,6 +520,7 @@ refill_tick() {
   fi
   local gh_calls; gh_calls="$(tick_gh_calls_count)"
   say "tick-phases kind=refill secs=$SECONDS gh_calls=$gh_calls lock_wait=$TICK_LOCK_WAIT phases=${TICK_PHASE_DETAILS:-none}"
+  tick_roadmap_cache_end
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
   rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""
@@ -539,6 +541,7 @@ main() {
     return 2
   fi
   tick_gh_calls_begin
+  tick_roadmap_cache_begin
   # No lock yield here: a refill that took the lock in this window held it for its first phases, then queued behind the tick's opening
   # (harvest_workers and the phases after it hold the lock for minutes). 9 of the 37 refills that started within 12s of a tick start were killed.
   phase tick_prs_prime
@@ -618,6 +621,7 @@ main() {
   cleanup_tick
   gh_calls="$(tick_gh_calls_count)"
   say "tick-phases kind=full secs=$SECONDS gh_calls=$gh_calls lock_wait=$TICK_LOCK_WAIT phases=${TICK_PHASE_DETAILS:-none}"
+  tick_roadmap_cache_end
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
   rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""
