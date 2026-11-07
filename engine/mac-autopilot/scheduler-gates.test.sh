@@ -231,6 +231,42 @@ harvest_workers || :
 [[ "$(field pr-1 '.session_ids.review')" == 11111111-2222-3333-4444-555555555555 ]] || fail 'review session not stored under review role'
 [[ "$(jq -r '.workers[0].harvested' "$WORKERS")" == true ]] || fail 'worker not marked harvested'
 
+# 补派的本地收割（harvest_workers true）：带报告的 review、rereview、repair 立即收，释放槽位；land、无报告和仍在跑的留给慢拍；每次最多 2 个。
+reject_block_local='{"findings":[{"id":"F1","severity":"P1","file":"src/a.ts","line":4,"rule":"Defect","status":"open","summary":"x","introduced_by":"candidate","base_evidence":"absent in base","rerun_command":"pnpm vitest run a","rerun_output":"FAIL a"}],"dispositions":[]}'
+units '{"units":[{"id":"pr-31","pr":31,"stage":"review","history":[]},{"id":"pr-32","pr":32,"stage":"rereview","hotpatch":true,"history":[]},{"id":"pr-33","pr":33,"stage":"repair","history":[]}]}'
+printf 'VERDICT: READY\n' > "$sup/review-31.md"
+printf 'VERDICT: NOT_READY\n\n```review-findings\n%s\n```\n' "$reject_block_local" > "$sup/review-32.md"
+printf 'repaired F1\n' > "$sup/repair-33.md"
+jq -n --arg sha "$H1" --arg pr_head "$H2" '{workers:[
+  {pid:4251,unit:"pr-31",type:"review",log:"x.log",report:"review-31.md",sha:$sha,pr_head:$pr_head},
+  {pid:4252,unit:"pr-32",type:"rereview",log:"x.log",report:"review-32.md",sha:$sha,pr_head:$pr_head},
+  {pid:4253,unit:"pr-33",type:"repair",log:"x.log",report:"repair-33.md",sha:$sha}]}' > "$WORKERS"
+harvest_workers true || :
+[[ "$(field pr-31 .stage)" == ready-to-merge && "$(field pr-31 .approved_sha)" == "$H1" ]] || fail 'refill did not harvest a finished review worker'
+[[ "$(field pr-32 .stage)" == repair-pending ]] || fail 'refill did not harvest a finished rereview worker'
+[[ "$(field pr-33 .stage)" == repair ]] || fail 'refill harvested a third worker past its cap of 2'
+harvest_workers true || :
+[[ "$(field pr-33 .stage)" == rereview-pending ]] || fail "refill did not harvest a finished repair worker ($(jq -c '.units[2]' "$UNITS"))"
+# 留给慢拍：land 报告、没有报告的 review、仍在运行的 review；超过 2 个的第三个等下一次补派。
+units '{"units":[{"id":"pr-41","pr":41,"stage":"landing","history":[]},{"id":"pr-42","pr":42,"stage":"review","history":[]},{"id":"pr-43","pr":43,"stage":"review","history":[]},{"id":"pr-44","pr":44,"stage":"review","history":[]},{"id":"pr-45","pr":45,"stage":"review","history":[]},{"id":"pr-46","pr":46,"stage":"review","history":[]}]}'
+printf 'LANDED %s\n' "$H1" > "$sup/land-41.md"
+printf 'VERDICT: READY\n' > "$sup/review-43.md"; printf 'VERDICT: READY\n' > "$sup/review-44.md"
+printf 'VERDICT: READY\n' > "$sup/review-45.md"; printf 'VERDICT: READY\n' > "$sup/review-46.md"; rm -f "$sup/review-42.md"
+jq -n --arg sha "$H1" --arg pr_head "$H2" '{workers:[
+  {pid:4261,unit:"pr-41",type:"land",log:"x.log",report:"land-41.md",sha:$sha},
+  {pid:4262,unit:"pr-42",type:"review",log:"x.log",report:"review-42.md",sha:$sha,pr_head:$pr_head},
+  {pid:4263,unit:"pr-43",type:"review",log:"x.log",report:"review-43.md",sha:$sha,pr_head:$pr_head},
+  {pid:4264,unit:"pr-44",type:"review",log:"x.log",report:"review-44.md",sha:$sha,pr_head:$pr_head},
+  {pid:4265,unit:"pr-45",type:"review",log:"x.log",report:"review-45.md",sha:$sha,pr_head:$pr_head},
+  {pid:4266,unit:"pr-46",type:"review",log:"x.log",report:"review-46.md",sha:$sha,pr_head:$pr_head}]}' > "$WORKERS"
+ALIVE_PIDS=4263; harvest_workers true || :; ALIVE_PIDS=
+[[ "$(field pr-41 .stage)" == landing && "$(field pr-42 .stage)" == review && "$(field pr-43 .stage)" == review ]] \
+  || fail 'refill harvested a land, report-less or still-running worker'
+[[ "$(jq -r '[.workers[] | select(.harvested == true) | .unit] | sort | join(",")' "$WORKERS")" == pr-44,pr-45 ]] \
+  || fail "refill did not stop at 2 harvests ($(jq -c '[.workers[] | select(.harvested == true) | .unit]' "$WORKERS"))"
+ALIVE_PIDS=; harvest_workers || :
+[[ "$(field pr-41 .stage)" != landing && "$(field pr-46 .stage)" == ready-to-merge ]] || fail 'the slow tick did not harvest what the refill left'
+
 # 无 VERDICT 行的报告：绝不 APPROVE；第一次重评一次，第二次才转人工
 units '{"units":[{"id":"pr-2","pr":2,"stage":"review","history":[]}]}'
 printf 'looks fine, APPROVE\n' > "$sup/review-2-T1.md"

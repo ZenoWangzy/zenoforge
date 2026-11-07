@@ -18,18 +18,33 @@ park_sweep_class() { # unit-json → reason<TAB>unpark condition
       else ["supervisor-park", "a supervisor decision"] end | @tsv' <<<"$1"
 }
 
+# A cap-triage founder park waits on a question, but the stop-loss hold that started it expires after 24h on its own
+# (the hold comment says undecided holds resume). Once that hold is gone the issue is ready-for-agent again, and the unit must not stay parked behind it.
+park_sweep_hold_lifted() { # issue unit-episode → 0 when the issue state shows no hold, and no handoff episode the intake path still owes the unit
+  jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$1.json" -e --arg unit_episode "$2" \
+    '.state == "ready-for-agent" and .hold == null and ((.scheduler_handoff.episode // "") | . == "" or . == $unit_episode)' >/dev/null 2>&1
+}
+
 park_label_sweep() {
-  local u id issue reason unpark n
+  local u id issue reason unpark n unit_episode
   while IFS= read -r u; do
     id="$(jqf -r .id <<<"$u")"
     IFS=$'\t' read -r reason unpark < <(park_sweep_class "$u")
     set_unit "$id" ".parked_reason=$(js "$reason") | .unpark_condition=$(js "$unpark")" && park_sweep_log "$id" "label $reason"
   done < <(jqf -c '.units[] | select(.stage == "parked" and .parked_reason == null)' "$UNITS")
+  # The same return as the issue-3015 ruling below, for any unit whose stop-loss hold is gone. The retry mark is what the arbiter's own
+  # swept route sets for this park: one more triage run, and a second cap ends terminal instead of asking again.
+  while IFS=$'\t' read -r id issue unit_episode; do
+    park_sweep_hold_lifted "$issue" "$unit_episode" || continue
+    set_unit "$id" "$(hist park-sweep-hold-lifted "stop-loss hold lifted: back to supervisor-review for one more cap triage") | .stage=\"supervisor-review\" | .supervisor_cap_retry=\"pending\" | .supervisor_cap_from_parked=true | del(.parked_reason, .unpark_condition)" \
+      && park_sweep_log "$id" supervisor-review
+  done < <(jqf -r '.units[] | select(.stage == "parked" and .parked_reason == "supervisor-cap-founder" and .supervisor_cap_retry == null and (.hold_handoff_waiting // false) == false and (.issue | type) == "number") | [.id, .issue, (.hold_handoff_episode // "")] | @tsv' "$UNITS")
   # Rulings that move a unit: at most one per sweep, each once.
-  u="$(jqf -c '[.units[] | select(.id == "issue-3015" and .stage == "parked" and .parked_reason == "preserved-clone-hold")][0] // empty' "$UNITS")"
+  # The stale form an earlier sweep left (arbitration cap, resume already in history) is released here too.
+  u="$(jqf -c '[.units[] | select(.id == "issue-3015" and .stage == "parked" and (.parked_reason == "preserved-clone-hold" or (.parked_reason == "supervisor-arbitration-cap" and any((.history // [])[]; .stage == "park-sweep-resume"))))][0] // empty' "$UNITS")"
   if [[ -n "$u" ]]; then
-    set_unit issue-3015 "$(hist park-sweep-resume "hold lifted: nothing in the clone needs preserving") | .parked_reason=\"supervisor-arbitration-cap\" | .unpark_condition=\"a cap triage verdict\" | del(.hold_handoff_waiting, .hold_handoff_wait_issues)" \
-      && park_sweep_log issue-3015 'arbiter route'; return 0
+    set_unit issue-3015 "$(hist park-sweep-resume "hold lifted: nothing in the clone needs preserving; back to supervisor-review") | .stage=\"supervisor-review\" | del(.parked_reason, .unpark_condition, .hold_handoff_waiting, .hold_handoff_wait_issues)" \
+      && park_sweep_log issue-3015 supervisor-review; return 0
   fi
   u="$(jqf -c '[.units[] | select(.id == "issue-4247" and .stage == "parked" and .parked_reason == "head-hold")][0] // empty' "$UNITS")"
   if [[ -n "$u" ]]; then

@@ -529,6 +529,8 @@ _footprint_room() {
 footprint_room() { # unit type; report checks that materially delay dispatch
   local started=$SECONDS rc=0 elapsed room_start="${EPOCHREALTIME:-0}" room_end
   _footprint_room "$@" || rc=$?
+  # A wait with an owner is already counted by the footprint skip; any other refusal is an error path.
+  if (( rc != 0 )) && [[ -z "$(unit_field "$1" '.footprint_wait_owner // empty')" ]]; then dispatch_skip footprint-error; fi
   room_end="${EPOCHREALTIME:-0}"
   TICK_FOOTPRINT_ROOM_USEC=$((${TICK_FOOTPRINT_ROOM_USEC:-0} + 10#${room_end/./} - 10#${room_start/./}))
   TICK_FOOTPRINT_ROOM_CALLS=$((${TICK_FOOTPRINT_ROOM_CALLS:-0} + 1)); (( rc == 0 )) || TICK_FOOTPRINT_ROOM_WAITS=$((${TICK_FOOTPRINT_ROOM_WAITS:-0} + 1))
@@ -600,8 +602,9 @@ refill_dispatch_metrics() { # log byte offset live count -> one-line refill stat
     printf '%s\n' "$log_end" > "$A/.refill-dispatch-log-offset.tmp" \
       && mv -f -- "$A/.refill-dispatch-log-offset.tmp" "$A/.refill-dispatch-log-offset" || return 1
   fi
-    printf 'free_slots=%s pending=%s skips=footprint:%s,handoff:%s,memory:%s\n' \
-    "$free" "$pending" "$footprint" "$handoff" "$memory"
+  local extra; extra="$(dispatch_skip_summary)"
+  printf 'free_slots=%s pending=%s skips=footprint:%s,handoff:%s,memory:%s%s\n' \
+    "$free" "$pending" "$footprint" "$handoff" "$memory" "${extra:+,$extra}"
 }
 # 每 tick：活 worker 跑超 hog_alert_minutes 且挡住 >hog_alert_blocked 个 *-pending 单元时只告警，不停 worker（2026-10-30 issue-3015/4280）
 footprint_hog_alert() {

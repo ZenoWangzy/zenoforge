@@ -158,7 +158,12 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
       && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" ]]; then return 0; fi
   out="$SUP/self-check-$id-$sha-$(jqf -r '.self_check_fixes // 0' <<<"$u")-$TAG.log"; result="$out.result"
   (
-    if self_check_run "$dir" "$sha" "$lane" "$pr_base"; then printf 'pass\n' > "$result"
+    # Same check as the review-time incident report gate (review-rules.sh), run here so the original session can repair the report via self-fix.
+    reason="$(incident_report_gate_reason "$u")"
+    if [[ -n "$reason" ]]; then
+      printf 'incident report check failed: %s\nreport: %s\n' "$reason" "$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
+      printf 'red\n' > "$result"
+    elif self_check_run "$dir" "$sha" "$lane" "$pr_base"; then printf 'pass\n' > "$result"
     else
       rc=$?
       # 75 (cihost admission queue) and 125 (transfer/setup) are not verdicts.
@@ -219,6 +224,11 @@ $(tail -100 "$out")"
   prompt="实现后的确定性自检失败，尚未派出评审。这是原实现会话的自修复，保持原任务范围，修复下列失败，不弱化断言。$failure
 在当前隔离 clone ${dir}、原分支 $branch 修复；$deliver 禁止 merge PR、部署或修改 GitHub 状态。把修复和验证证据写到 $SUP/${rep}，然后结束，流水线会重跑同一自检。
 $(matt_method_rule "$dir")"
+  # The fix report becomes the unit's implementation report, so an incident report failure must be repaired in it.
+  if grep -q '^incident report check failed' "$out"; then
+    prompt+="
+失败项是事故报告结构检查：$SUP/${rep} 会取代原实现报告，必须是完整的事故报告（保留原有内容，补齐 ## root-cause、带 kind: 行的 ## recurrence-guard、带 http(s) 来源 URL 的 ## prior-art），不要只写修复说明。"
+  fi
   if [[ "$(jqf -r '.implement_model // empty' <<<"$u")" == "$model" \
       && "$(jqf -r '.implement_effort // empty' <<<"$u")" == "$effort" \
       && "$(jqf -r '.implement_provider // empty' <<<"$u")" == "$provider" ]]; then
@@ -270,12 +280,21 @@ dispatch_capacity_free() { # worker slot available; the same predicate room_for 
 }
 # Apart from the predicate: the pack's dispatch-queue-footprint test stubs that false and must still reach footprint_room.
 dispatch_walk_full() { ! dispatch_capacity_free; }
+# Walk passes that drop a pending unit without a log line are counted by reason; the refill and tick summaries name them.
+declare -gA TICK_DISPATCH_SKIPS=()
+dispatch_skip() { TICK_DISPATCH_SKIPS[$1]=$(( ${TICK_DISPATCH_SKIPS[$1]:-0} + 1 )); }
+dispatch_skip_summary() { # name:count,... for the reasons that fired this pass, sorted; empty when none
+  local k out=""
+  (( ${#TICK_DISPATCH_SKIPS[@]} )) || return 0
+  for k in $(printf '%s\n' "${!TICK_DISPATCH_SKIPS[@]}" | sort); do out+="${out:+,}$k:${TICK_DISPATCH_SKIPS[$k]}"; done
+  printf '%s' "$out"
+}
 room_for() { # unit-id type [unit-json] [fresh-footprint=true]：焦点与并发检查
   local u="${3:-}" priority waiter impl_cap n_impl fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"
-  if [[ "$2" == repair ]]; then repair_cap_admission "$1" "$u" || return 1; fi
+  if [[ "$2" == repair ]]; then repair_cap_admission "$1" "$u" || { dispatch_skip repair-cap; return 1; }; fi
   if [[ "$2" == review || "$2" == rereview ]]; then
-    jqf -e '(.self_check_pid // null)==null and (.self_fix_pending // false)!=true' <<<"$u" >/dev/null || return 1
+    jqf -e '(.self_check_pid // null)==null and (.self_fix_pending // false)!=true' <<<"$u" >/dev/null || { dispatch_skip self-check; return 1; }
   fi
   if [[ "$FOCUS_MODE" == "release" && "$(unit_is_critical "$u")" != "true" && "$(critical_pending_count)" -gt 0 ]]; then
     FOCUS_SKIPPED+=("$1")

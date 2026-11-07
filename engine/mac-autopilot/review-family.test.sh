@@ -99,7 +99,7 @@ DISPATCH_COUNT=0
 dispatch_selected_review "$unit_json" || fail 'Luna-authored review did not dispatch'
 [[ "$DISPATCH_MODEL:$DISPATCH_EFFORT" == 'GLM-5.3:max' ]] || fail "Luna-authored review selected $DISPATCH_MODEL:$DISPATCH_EFFORT"
 [[ "$(provider_of "$DISPATCH_MODEL")" == zcode ]] || fail 'GLM review did not resolve to the zcode backend'
-grep -Fq 'pick_review_for_unit "$u" || continue' "$script_dir/scheduler.d/dispatch-queue.sh" || fail 'review/rereview dispatch path bypasses family selection'
+grep -Fq 'pick_review_for_unit "$u" || { dispatch_skip reviewer-wait; continue; }' "$script_dir/scheduler.d/dispatch-queue.sh" || fail 'review/rereview dispatch path bypasses family selection'
 grep -Fq 'pick_review_for_unit "$u" || continue' "$script_dir/scheduler.d/health-release.sh" || fail 'new PR review dispatch path bypasses family selection'
 
 # A GLM-authored repair worker is read from the worker ledger and its review runs on Luna.

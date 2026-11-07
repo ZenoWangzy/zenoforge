@@ -1519,7 +1519,7 @@ def main():
     closed_open = ledger_history.closed_units_open_issues(a, agent_home, units)
     metrics["intake.closed_units_open_issues"] = None if closed_open is None else len(closed_open)
     metrics["engine.follow_lag_hours"] = engine_follow_lag_hours(agent_home, now)
-    orders = work_orders(units, unit_spend(cost_rows), now)
+    orders = work_orders(units, unit_spend(cost_rows), now, workorder_cost.recent_units(cost_rows, since))
     metrics["workorders.over_standard"] = sum(1 for o in orders if o["over"])
     # Per-ticket spend from the same cost rows; token values and bounds use only complete fresh
     # splits. Bounds use the 30 days of closed tickets before the 7-day window (p50 x 1.5 healthy,
@@ -1568,7 +1568,7 @@ def main():
     fresh = ts(spend.get("sampled_at"))
     metrics["ci.waste_runner_pct"] = spend.get("waste_pct") if fresh and (now - fresh).total_seconds() < 7200 else None
     audit = read_cancel_audit(args.audit, repo)
-    metrics.update(cancel_metrics(audit, since, now)[0])
+    metrics.update(cancel_metrics(audit, now - timedelta(hours=24), now)[0])  # a 5 h window scaled to a day read one event as 4.8
     _, metrics["ci.priority_hold_runs_48h"] = cancel_metrics(audit, now - timedelta(hours=48), now)
     metrics["ci.gated_pr_pct"] = gated_agent_pr_share(repo)
     ticks = []

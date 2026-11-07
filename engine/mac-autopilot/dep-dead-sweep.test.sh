@@ -133,4 +133,17 @@ jq -e '.units[] | select(.id=="issue-20") | .stage=="parked" and .parked_reason=
   || fail "a repeat must park visibly: $(jq -c '.units[1]' "$UNITS")"
 grep -q 'dep-dead unit=issue-20 predecessor=#10 action=parked' "$A/alerts/events.md" || fail 'a repeat must raise an alert'
 
+# An issue closed as not_planned closes its open PR once and retires the unit through the terminal path; another close reason leaves it alone.
+pr_unit='{"id":"issue-5148","issue":5148,"stage":"blocked-external","pr":5311,"branch":"agent/issue-5148","task":"t","history":[]}'
+closed_reason() { jq -cn --argjson e "$NOW_EPOCH" --arg r "$1" '{epoch:$e,states:{"5148":{state:"CLOSED",labels:"",issue_state:"CLOSED",state_reason:$r}}}' > "$A/dep-check.cache.json"; printf '%s\n' "$NOW_EPOCH" > "$A/dep-check.epoch"; }
+gh() { [[ "$1 $2" != 'pr close' ]] || printf '%s\n' "$3" >> "$fixture/pr-closes"; return 0; }
+: > "$fixture/pr-closes"
+reset; PRS='[{"number":5311}]'; printf '{"units":[%s]}\n' "$pr_unit" > "$UNITS"; closed_reason NOT_PLANNED; release_dependency_blocks
+[[ "$(field issue-5148 .stage)" == closed && "$(cat "$fixture/pr-closes")" == 5311 ]] || fail "a not_planned close must close PR 5311 and retire the unit: $(field issue-5148 .stage) closes=$(cat "$fixture/pr-closes")"
+release_dependency_blocks
+[[ "$(wc -l < "$fixture/pr-closes")" == 1 ]] || fail 'the PR must be closed once'
+: > "$fixture/pr-closes"
+reset; PRS='[{"number":5311}]'; printf '{"units":[%s]}\n' "$pr_unit" > "$UNITS"; closed_reason COMPLETED; release_dependency_blocks
+[[ "$(field issue-5148 .stage)" != closed && ! -s "$fixture/pr-closes" ]] || fail "a completed close must neither retire the unit nor close its PR: $(field issue-5148 .stage) $(cat "$fixture/pr-closes")"
+
 echo 'dep-dead-sweep.test.sh: PASS'

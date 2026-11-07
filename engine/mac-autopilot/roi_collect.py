@@ -43,7 +43,7 @@ def _worker_event(row, units_by_id, host):
     tickets = [ticket] if isinstance(ticket, int) and ticket > 0 else []
     usage = row["usage"]
     footer = row["footer_tokens"]
-    end = row.get("finished_at") or row["end"]
+    end = row["end"]  # the log mtime is the real end; finished_at is the later harvest time
     model = row["model"] or None
     model_row = {
         "model": model,

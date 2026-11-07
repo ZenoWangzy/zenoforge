@@ -122,7 +122,8 @@ to_supervisor() { set_unit "$1" '.stage="supervisor-review"'; }
   unit 5171 'supervisor budget exhausted: ticket stop-loss budget: wall 249min of 240min after 1 rounds'; unit 1207 'supervisor budget exhausted: ticket stop-loss budget: rounds 3 of 3'
   unit 4508 'head 11-04: recut into child issues (see issue comment); close'; } | ledger
 park_label_sweep
-[[ "$(field issue-3015 .parked_reason):$(field issue-3015 .hold_handoff_waiting)" == supervisor-arbitration-cap:null && "$(field issue-4247 .stage)" == parked ]] || fail 'the first sweep must move only 3015'
+[[ "$(field issue-3015 .stage):$(field issue-3015 .parked_reason):$(field issue-3015 .hold_handoff_waiting)" == supervisor-review:null:null && "$(field issue-4247 .stage)" == parked ]] || fail 'the first sweep must return 3015 to its path with no parked_reason, and move only 3015'
+[[ "$(field issue-3015 '[.history[] | select(.stage == "park-sweep-resume")] | length')" == 1 ]] || fail 'the hold release must add exactly one history entry'
 [[ "$(field issue-4402 .parked_reason):$(field issue-4402 .hold_handoff_waiting)" == preserved-clone-hold:true ]] || fail '4402 stays held'
 park_label_sweep
 [[ "$(field issue-4247 .stage):$(field issue-4247 .parked_reason)" == repair-pending:null && "$(field issue-5171 .stage)" == parked ]] || fail 'the second sweep must move only 4247'
@@ -136,4 +137,19 @@ park_label_sweep
 park_label_sweep
 [[ "$(wc -l < "$fixture/recut-calls")" == 1 ]] || fail 'the recut record must run once'
 grep -q 'park-sweep unit=issue-4508 action=children' "$A/alerts/events.md" || fail 'each action must print'
+# A cap-triage founder park returns once its stop-loss hold is gone, and only then: a live hold, another reason, a spent retry or a pending handoff episode keep the park.
+mkdir -p "$AGENT_HOME/state"
+issue_state() { printf '%s\n' "$2" > "$AGENT_HOME/state/$1.json"; }
+founder() { unit "$1" 'founder decision required' | jq -c --arg reason "${2:-supervisor-cap-founder}" '.parked_reason=$reason | .unpark_condition="the maintainer answers the question"'; }
+{ founder 7001; founder 7002; founder 7003; founder 7004 supervisor-cap-exhausted; founder 7005 | jq -c '.supervisor_cap_retry="spent"'; founder 7006 | jq -c '.hold_handoff_episode="old"'; } | ledger
+issue_state 7001 '{"state":"ready-for-agent","hold":null}'
+issue_state 7002 '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss","kind":"stop-loss"}}'
+issue_state 7004 '{"state":"ready-for-agent","hold":null}'
+issue_state 7005 '{"state":"ready-for-agent","hold":null}'
+issue_state 7006 '{"state":"ready-for-agent","hold":null,"scheduler_handoff":{"episode":"new"}}'
+park_label_sweep
+[[ "$(field issue-7001 .stage):$(field issue-7001 .parked_reason):$(field issue-7001 .supervisor_cap_retry)" == supervisor-review:null:pending ]] || fail 'a lifted stop-loss hold must return the founder park with one retry'
+for n in 7002 7003 7004 7005 7006; do [[ "$(field issue-$n .stage)" == parked ]] || fail "issue-$n must stay parked"; done
+[[ "$(field issue-7001 '[.history[] | select(.stage == "park-sweep-hold-lifted")] | length')" == 1 ]] || fail 'the return must add exactly one history entry'
+
 echo 'park-reason.test.sh: PASS'

@@ -135,4 +135,12 @@ ticket_budget_reason() { :; }
 : > "$LOG"; stop_loss_calls=0; dispatch_pending false
 [[ "$self_fix_calls" == 1 && "$stop_loss_calls" == 0 ]] || fail "a self-fix under budget did not start (fix=$self_fix_calls supervisor=$stop_loss_calls)"
 
-echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; refill deadline)'
+# A review-pending unit without a PR is dropped by the walk with no log line: the pass names it, and the refill summary carries it.
+jq -n '{units:[{id:"issue-4905",stage:"review-pending",lane:"pr",title:"fixture no-pr review",history:[]}]}' > "$UNITS"
+write_workers 7
+: > "$GH_CALLS"; : > "$LOG"
+dispatch_pending true
+[[ "$(dispatch_skip_summary)" == 'no-pr:1' ]] || fail "a silent no-PR pass was not counted: $(dispatch_skip_summary)"
+[[ "$(refill_dispatch_metrics 0 7)" == *' skips=footprint:0,handoff:0,memory:0,no-pr:1' ]] || fail "refill summary omitted the no-PR skip"
+
+echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; refill deadline; silent skip named)'

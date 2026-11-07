@@ -59,6 +59,22 @@ active_unit = {"id": "issue-5", "issue": 5, "pr": 15, "stage": "review-pending",
 active_order = workorder_cost.work_orders(
     [active_unit], {}, datetime(2026, 10, 29, 1, tzinfo=timezone.utc))[0]
 assert active_order["over"] == ["age_hours"], active_order
+
+# A held unit (supervisor-review included) keeps its lifetime spend but is judged only on spend
+# inside the window; a progressable unit still trips on lifetime rounds with no recent spend.
+from datetime import timedelta
+now = datetime(2026, 10, 29, 1, tzinfo=timezone.utc)
+rc = [{"stage": "created", "at": "2026-10-28T20:00:00Z"}] + [
+    {"stage": "review-request-changes", "at": "2026-10-28T21:00:00Z"}] * 8
+big = {"issue-6": [30_000_000, 100], "issue-7": [30_000_000, 100]}
+sv = {"id": "issue-6", "issue": 6, "stage": "supervisor-review", "history": rc}
+loop = {"id": "issue-7", "issue": 7, "stage": "repair", "history": rc}
+assert [o["over"] for o in workorder_cost.work_orders([sv, loop], big, now, set())] == [[], ["tokens", "rounds"]]
+assert workorder_cost.work_orders([sv], big, now, {"issue-6"})[0]["over"] == ["tokens", "rounds"]
+since = now - timedelta(hours=5)
+row = lambda start, minutes: {"unit": "issue-6", "start": start, "minutes": minutes}
+assert workorder_cost.recent_units([row(since - timedelta(hours=2), 30)], since) == set()
+assert workorder_cost.recent_units([row(since - timedelta(minutes=10), 30)], since) == {"issue-6"}
 PY
 
 echo 'workorder_cost.test.sh: PASS'
