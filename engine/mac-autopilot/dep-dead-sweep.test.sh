@@ -127,8 +127,12 @@ ruled='[{"stage":"dep-dead-proved"},{"stage":"supervisor-requeue","decision":{"o
 [[ "$(blocking_body_dependency "$(jq -cn '{body_blocked_by:[10],dep_dead_proved:10,history:[{stage:"dep-dead-proved"}]}')")" == 10 ]] || fail 'no ruling: the body dependency blocks'
 [[ -z "$(blocking_body_dependency "$(jq -cn --argjson h "$ruled" '{body_blocked_by:[10],dep_dead_proved:10,history:$h}')")" ]] || fail 'proof and a ruling: the body dependency does not block'
 
-# Blocking on it again after the ruling is a visible terminal park, not a second arbiter round.
+# Blocking on it again after the ruling releases the waiter once, with a note and a history entry naming the blocker.
 reset; jq -c '(.units[] | select(.id=="issue-20")).dep_dead_proved=10' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
+jq -e '.units[] | select(.id=="issue-20") | .stage=="implement-pending" and .blocked_on == null and .dep_wait_delivery == null and (.task | contains("no longer waits for it")) and (.history[-1].result | startswith("stopped waiting on #10:"))' "$UNITS" >/dev/null \
+  || fail "a repeat must release the waiter once: $(jq -c '.units[1]' "$UNITS")"
+# Blocking on it yet again is a visible terminal park, not a loop of worker runs.
+reset; jq -c '(.units[] | select(.id=="issue-20")) |= (.dep_dead_proved=10 | .history=[{stage:"unblocked",result:"stopped waiting on #10: x"}])' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; dep_dead_sweep
 jq -e '.units[] | select(.id=="issue-20") | .stage=="parked" and .parked_reason=="dep-dead-repeat" and (.unpark_condition | length > 0) and (.note | contains("#10")) and .blocked_on == null' "$UNITS" >/dev/null \
   || fail "a repeat must park visibly: $(jq -c '.units[1]' "$UNITS")"
 grep -q 'dep-dead unit=issue-20 predecessor=#10 action=parked' "$A/alerts/events.md" || fail 'a repeat must raise an alert'

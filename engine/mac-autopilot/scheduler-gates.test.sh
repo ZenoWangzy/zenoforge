@@ -2064,6 +2064,21 @@ gh() { case "$1 $2" in "api graphql") printf '%s' "$*" > "$fixture/dep-query"
 rm -f "$A/dep-check.epoch"; release_dependency_blocks || :
 grep -q 'headRefName: \"agent/issue-3122\", states: MERGED' "$fixture/dep-query" || grep -q 'headRefName: "agent/issue-3122", states: MERGED' "$fixture/dep-query" || fail "dependency query does not ask for the predecessor's merged PR: $(cat "$fixture/dep-query")"
 [[ "$(field issue-98 .stage):$(field issue-99 .stage)" == "implement-pending:blocked-external" ]] || fail "merged agent/issue-N PR did not release its dependent, or an unmerged one did ($(field issue-98 .stage) $(field issue-99 .stage))"
+# awaiting-release means the blocker's PR merged and only the release is pending: it counts as delivered, whatever the PR branch is called
+units '{"units":[{"id":"issue-1915","issue":1915,"stage":"blocked-external","blocked_on":5491,"history":[]},{"id":"issue-1916","issue":1916,"stage":"blocked-external","blocked_on":5492,"history":[]}]}'
+gh() { case "$1 $2" in "api graphql")
+    jq -r "${@: -1}" <<<'{"data":{"repository":{"i5491":{"state":"OPEN","labels":{"nodes":[{"name":"awaiting-release"}]}},"p5491":{"totalCount":0},"i5492":{"state":"OPEN","labels":{"nodes":[{"name":"bug"}]}},"p5492":{"totalCount":0}}}}' ;;
+  *) eval "${gh_issue_stub/gh ()/gh_i ()}"; gh_i "$@" ;; esac; }
+rm -f "$A/dep-check.epoch"; release_dependency_blocks || :
+[[ "$(field issue-1915 .stage):$(field issue-1916 .stage)" == "implement-pending:blocked-external" ]] || fail "awaiting-release blocker did not release its dependent, or a plain open one did ($(field issue-1915 .stage) $(field issue-1916 .stage))"
+# a waiter stops waiting on a parked blocker, or on one that waits on a parked unit; a live chain keeps it, and a second block goes to the supervisor
+units '{"units":[{"id":"issue-1915","issue":1915,"stage":"parked","history":[]},{"id":"issue-5440","issue":5440,"stage":"blocked-external","blocked_on":1915,"history":[]},{"id":"issue-5441","issue":5441,"stage":"blocked-external","blocked_on":5440,"history":[]},{"id":"issue-4879","issue":4879,"stage":"implement","history":[]},{"id":"issue-4880","issue":4880,"stage":"blocked-external","blocked_on":4879,"history":[]},{"id":"issue-2649","issue":2649,"stage":"blocked-external","blocked_on":4880,"history":[]},{"id":"issue-7001","issue":7001,"stage":"blocked-external","blocked_on":1915,"history":[{"stage":"unblocked","result":"stopped waiting on #1915: x"}]}]}'
+gh() { case "$1 $2" in "api graphql") gh_dep_answer $'OPEN\tbug' "$@" ;; *) eval "${gh_issue_stub/gh ()/gh_i ()}"; gh_i "$@" ;; esac; }
+: > "$fixture/dep-views"; rm -f "$A/dep-check.epoch"; release_dependency_blocks || :
+[[ "$(field issue-5440 .stage):$(field issue-5441 .stage):$(field issue-2649 .stage):$(field issue-4880 .stage)" == "implement-pending:implement-pending:blocked-external:blocked-external" ]] || fail "parked-blocker release wrong ($(field issue-5440 .stage) $(field issue-5441 .stage) $(field issue-2649 .stage) $(field issue-4880 .stage))"
+[[ "$(field issue-5441 '.history[-1].result')" == "stopped waiting on #5440: blocker is parked or waits on a parked unit" && "$(field issue-5441 .task)" == *"BLOCKED-ON #5440"* ]] || fail "release must name the blocker in history and tell the worker: $(field issue-5441 '.history[-1].result')"
+[[ "$(field issue-7001 .stage)" == supervisor-review ]] || fail "a second block after the release must go to the supervisor, got $(field issue-7001 .stage)"
+[[ -z "$(blocking_body_dependency '{"body_blocked_by":[1915]}')" ]] || fail 'the dispatch gate must not park a unit again on a parked blocker'
 # 台账里的 PR 单元常没有 .issue（孤儿收编），按分支名认前置
 units '{"units":[{"id":"pr-3843","pr":3843,"branch":"agent/issue-3124","stage":"merged","history":[]},{"id":"issue-100","issue":100,"stage":"blocked-external","blocked_on":3124,"history":[]}]}'
 DEP_CHECK_SECONDS=600 release_dependency_blocks || :

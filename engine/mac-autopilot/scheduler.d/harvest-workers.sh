@@ -705,7 +705,7 @@ stuck_worker_disposition() {
           --arg unit "$cap_unit" --arg branch "$cap_branch" --arg stash "$cap_stash" --arg workdir "$cap_workdir" \
           '{kind:"implement-command-cap",commands:$commands,limit:$limit,unit:$unit,branch:$branch,stash:$stash,workdir:$workdir}')"
         if scheduler_recut_route "$cap_issue" "$cap_evidence"; then
-          if scheduler_issue_state "$cap_issue" | jq -e '.state == "needs-recut"' >/dev/null; then
+          if scheduler_issue_state "$cap_issue" | jq -e '.state == "needs-recut" or (.state == "on-hold" and (.size_admission | type == "object"))' >/dev/null; then
             cap_recut_ok=1
           fi
         fi

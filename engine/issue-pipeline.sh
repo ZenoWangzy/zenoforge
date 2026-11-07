@@ -1544,20 +1544,9 @@ run_post_dispatch_maintenance() {
 # longer holds up a multi-hour wrapper run; a held lock means another tick's
 # own (fast) decision-making is still in progress.
 # A slice inherits the parent's lock; manual stage runs acquire their own.
-if [ -z "${ZF_PIPELINE_SLICE_TICK:-}" ]; then exec 9>"$LOCK_FILE"; fi
-# The release train's delegated release slice waits for a gap between ticks: zenoforge-agent.service holds this
-# lock tick after tick, so a bare -n attempt exited 0 silently and the train logged "delegated" (2026-10-22).
-# The wait must span a whole tick (250-490 s, gaps 0-64 s on 10-22): a waiter blocked in flock wins the lock
-# when the tick ends, but 240 s missed the boundary whenever the tick had longer to run, e.g. 16:05Z.
-if [ "${ZF_RELEASE_TRAIN_DELEGATE:-0}" = 1 ]; then
-  flock -w "${ZF_RELEASE_DELEGATE_LOCK_WAIT_SECONDS:-600}" 9 || {
-    echo "issue-pipeline: release delegate found the pipeline lock busy; the next train retries" >&2
-    exit 75
-  }
-elif ! flock -n 9; then
-  [ "${EVENT_REFILL:-0}" = 0 ] || exit 75
-  exit 0
-fi
+# The delegated release slice takes its own lock: a 29 minute release run held this one on 2026-11-07 and
+# every tick skipped unseen. Why that is safe: docs/design/DISTRIBUTED.md, L1.
+pipeline_acquire_lock
 
 # --- tick timing and dispatch metrics ---------------------------------------
 # Keep timing markers across early exits and attach candidate/dispatch counts

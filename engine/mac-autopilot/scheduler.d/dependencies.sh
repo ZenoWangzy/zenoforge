@@ -72,6 +72,7 @@ blocking_body_dependency() { # unit-json → first predecessor not yet delivered
     [[ "$dep" =~ ^[0-9]+$ ]] || continue
     dep_delivered_in_ledger "$dep" && continue
     ! dep_dead_ruled "$1" "$dep" || continue
+    ! dep_blocker_parked "$dep" || continue # the release loop stops waiting on a parked blocker; the gate must not park the unit again
     info="$(dep_cache_info "$dep")"
     state="$(jqf -r '.state // empty' <<<"$info")"
     [[ "$state" == CLOSED || "$state" == MERGED ]] && continue
@@ -116,11 +117,12 @@ dep_states() { # issue/PR 号… → 每行 "号<TAB>STATE<TAB>标签,…"；一
     q+=" i$d: issueOrPullRequest(number: $d) { ... on Issue { state stateReason labels(first: 30) { nodes { name } } } ... on PullRequest { state labels(first: 30) { nodes { name } } } }"
     q+=" p$d: pullRequests(headRefName: \"agent/issue-$d\", states: MERGED, first: 1) { totalCount }"
   done
+  # awaiting-release is only set after a verified merge into main (AGENTS.md), so it counts as delivered here too, whatever the PR branch is called.
   # issue 要到发布后才关（close-after-release）：只看 issue 状态，前置合并了后继还要多等一整个发布周期
   # （10-22 #3122/#3431 已合并、后继仍停着）。流水线的实现分支是 agent/issue-N：它的 PR 合并即交付。
   gh api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q } }" \
     --jq '.data.repository | . as $r | to_entries[] | select((.key | startswith("i")) and .value != null) | .key[1:] as $d
-      | "\($d)\t\(if ($r["p" + $d].totalCount // 0) > 0 then "MERGED" else .value.state end)\t\([.value.labels.nodes[].name] | join(","))\t\(.value.state)\t\(.value.stateReason // "")"' 2>/dev/null
+      | "\($d)\t\(if ($r["p" + $d].totalCount // 0) > 0 or ([.value.labels.nodes[].name] | index("awaiting-release")) != null then "MERGED" else .value.state end)\t\([.value.labels.nodes[].name] | join(","))\t\(.value.state)\t\(.value.stateReason // "")"' 2>/dev/null
 }
 stack_pilot_label() { jqf -r 'if .stacking.enabled == false then "" else (.stacking.pilot_label // "stack-pilot") end' <<<"$CFG"; }
 unit_has_stack_pilot() { # unit-json
@@ -176,6 +178,25 @@ dead_blocker_resolve() { # unit-id blocker-issue dependent-issue
   fi
   to_supervisor "$id" "blocker #$dep is closed in the ledger but its issue is open with no recut children: decide"
 }
+dep_parked_snapshot() { # one ledger read per tick, so a chain is judged before its first waiter leaves it; no GitHub call
+  local n
+  DEP_PARKED_CACHE=()
+  while IFS= read -r n; do
+    [[ "$n" =~ ^[0-9]+$ ]] && DEP_PARKED_CACHE["$n"]=1
+  done < <(jqf -r '. as $root | def dead($n; $seen): if ($seen | index($n)) != null then false else [$root.units[] | select(.issue == $n)] as $r
+    | ($r | length) > 0 and all($r[]; .stage == "parked" or (.stage == "blocked-external" and (.blocked_on | type) == "number" and dead(.blocked_on; $seen + [$n]))) end;
+    [.units[] | .issue | numbers] | unique | .[] | select(dead(.; []))' "$UNITS")
+}
+dep_blocker_parked() { # issue → 0 when every ledger row of it is parked or waits on such a blocker
+  [[ "${DEP_PARKED_CACHE[$1]:-}" == 1 ]]
+}
+dep_stopped_waiting_on() { # unit-id blocker → 0 when the scheduler already released this unit from that blocker once
+  jqf -e --arg id "$1" --arg p "stopped waiting on #$2:" 'any(.units[]; .id == $id and any(.history[]?; .stage == "unblocked" and ((.result // "") | startswith($p))))' "$UNITS" >/dev/null
+}
+dep_stop_waiting() { # unit-id blocker why: a dead blocker never holds a waiter; real code dependence fails later in the unit's own review or merge
+  set_unit "$1" ".task += $(js $'\n\nScheduler note: predecessor #'"$2"$' is parked or can never deliver, so this unit no longer waits for it. Do not report BLOCKED-ON #'"$2"$'. Implement what you can; if the dependency is real in code, say so in the report and let review decide.')"
+  unblock_unit "$1" "stopped waiting on #$2: $3"
+}
 release_dependency_blocks() {
   local id dep issue info state labels gh_due=1 last decision dep_results dep_states_json dep_cache_file dep_cache u
   local blocker_issue pair_key real_wait
@@ -183,6 +204,7 @@ release_dependency_blocks() {
   local -A DEP_BLOCKED_PAIR_COUNTS=()
   tick_prs_prime
   dep_delivered_snapshot
+  dep_parked_snapshot
   while IFS=$'\t' read -r blocker_issue dep; do
     [[ "$blocker_issue" =~ ^[0-9]+$ && "$dep" =~ ^[0-9]+$ ]] || continue
     pair_key="$blocker_issue:$dep"
@@ -249,6 +271,16 @@ release_dependency_blocks() {
     if [[ "$real_wait" != true && "$issue" =~ ^[0-9]+$ && "${DEP_BLOCKED_PAIR_COUNTS[$pair_key]:-0}" =~ ^[1-9][0-9]*$ ]]; then
       dep_blocker_forget "$issue" "$dep"
       unblock_unit "$id" "#$dep waits on #$issue: dependency cycle broken here"; continue
+    fi
+    # A parked blocker, or one that waits on a parked unit, will not deliver soon: stop waiting. A second block on it goes to the supervisor, so a refusing worker cannot loop.
+    if dep_blocker_parked "$dep"; then
+      dep_blocker_forget "$issue" "$dep"
+      if dep_stopped_waiting_on "$id" "$dep"; then
+        to_supervisor "$id" "blocked again on #$dep after the scheduler stopped waiting on it (blocker is parked): decide"
+      else
+        dep_stop_waiting "$id" "$dep" "blocker is parked or waits on a parked unit"
+      fi
+      continue
     fi
     info="$(jqf -c --arg d "$dep" '.[$d] // empty' <<<"$dep_cache")"; [[ -n "$info" ]] || continue
     state="$(jqf -r '.state // empty' <<<"$info")"; labels="$(jqf -r '.labels // ""' <<<"$info")"
@@ -327,7 +359,10 @@ dep_dead_sweep() { # at most one marked unit per sweep reaches the arbiter; no s
   while IFS= read -r u; do
     id="$(jqf -r .id <<<"$u")"; dep="$(jqf -r .dep_wait_delivery <<<"$u")"
     evidence="$(dep_predecessor_dead "$u" "$dep")" || continue
-    if [[ "$(jqf -r '.dep_dead_proved // empty' <<<"$u")" == "$dep" ]]; then
+    if [[ "$(jqf -r '.dep_dead_proved // empty' <<<"$u")" == "$dep" ]] && ! dep_stopped_waiting_on "$id" "$dep"; then
+      dep_stop_waiting "$id" "$dep" "dead predecessor blocked it again after arbitration"
+      echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=released reason=repeat" >> "$A/alerts/events.md"
+    elif [[ "$(jqf -r '.dep_dead_proved // empty' <<<"$u")" == "$dep" ]]; then
       set_unit "$id" "$(hist supervisor-park "blocked on dead predecessor #$dep again after arbitration") | del(.blocked_on) | .stage=\"parked\" | .parked_reason=\"dep-dead-repeat\" | .note=$(js "$evidence") | .unpark_condition=$(js "#$dep delivered in the ledger or closed on GitHub")"
       echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=parked reason=repeat" >> "$A/alerts/events.md"
     else
