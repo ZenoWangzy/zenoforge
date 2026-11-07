@@ -647,9 +647,13 @@ dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == review:pr-5:* && "$DISPATCH_PROMPT" == *"仲裁评审"* ]] || fail "arbiter review not dispatched as a full review (${DISPATCHED[*]:-none})"
 [[ "$DISPATCH_PROMPT" == *".agents/skills/code-review/SKILL.md"* ]] || fail 'arbiter review prompt does not reference the canonical review contract'
 DISPATCHED=()
-units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\"}]}]}"
+units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\",\"result\":\"head $H1 unchanged since last review\"}]}]}"
 dispatch_pending || :
 [[ "$(field pr-5 .stage)" == supervisor-review && ${#DISPATCHED[@]} == 0 ]] || fail 'unchanged head after an arbiter review was redispatched'
+# An arbiter review of an earlier head does not count against the current head.
+units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\",\"result\":\"head $H2 unchanged since last review\"}]}]}"
+dispatch_pending || :
+[[ "$(field pr-5 .stage)" == rereview-pending && "$(field pr-5 .arbiter)" == true && ${#DISPATCHED[@]} == 0 ]] || fail 'an arbiter review of an earlier head escalated a later no-push repair'
 # 合并后被 revert 的单元：原 PR 已 MERGED，repair 推的提交挂不上去；repair 交付后用同一分支开新 PR（#4009 空转 4 小时）
 DISPATCHED=(); gh_reopen_saved="$(declare -f gh)"
 gh() { case "$1 $2" in "pr list") echo "" ;; "pr create") printf '%s' "$*" > "$fixture/reopen.args"; echo "https://github.com/example-maintainer/example-repo/pull/4100" ;; *) eval "${gh_reopen_saved/gh ()/gh_r ()}"; gh_r "$@" ;; esac; }
