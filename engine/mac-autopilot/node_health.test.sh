@@ -320,7 +320,10 @@ gaps += [k for k in list(n.TIME_SINKS) + list(n.CI_STANDARDS) if f"`{k}`" not in
 sys.exit(print("missing:", gaps) or 1 if gaps else 0)
 CHECK
 # 工作单标准：在途单超过 bug 线计入 workorders.over_standard；已合并的不算；--json 给看板
-run review-15-20261019T113000Z 11:30 20 29000000 1
+# 29 M 有缓存拆分（无缓存读）的 review 轮：未缓存 token 计入工单；只有页脚的轮不计 token
+rjs="$sup/review-15-20261019T113000Z.worker.log"
+printf '{"type":"pipeline.execution","mode":"fresh"}\n{"type":"thread.started","thread_id":"aaaaaaaa-0000-0000-0000-000000000001"}\n{"type":"turn.completed","usage":{"input_tokens":29000000,"cached_input_tokens":0,"output_tokens":0}}\n' > "$rjs"
+touch -d "$(date -u -d "2026-10-19T11:30:00Z + 20 minutes" +%Y-%m-%dT%H:%M:%SZ)" "$rjs"; echo report > "$sup/review-15-20261019T113000Z.md"
 jq '.units += [{"id":"pr-15","pr":15,"stage":"review-pending","history":[{"stage":"review-request-changes","at":"2026-10-19T11:50:00Z"}]},
                {"id":"pr-16","pr":16,"stage":"merged","history":[{"stage":"pr-opened","at":"2026-09-01T00:00:00Z"},{"stage":"merged","at":"2026-09-02T00:00:00Z"}]}]' "$a/units.json" > "$a/u.tmp" && mv "$a/u.tmp" "$a/units.json"
 # 时间都花在哪：返工触发→派出（排队）、返工干活、交付→复检派出、复检干活、批准→CI 判红，取自台账事件 + dispatch 行

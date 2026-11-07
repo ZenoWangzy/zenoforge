@@ -10,17 +10,18 @@ from types import SimpleNamespace
 import workorder_cost
 
 rows = [
-    {"unit": "issue-1", "usage": SimpleNamespace(raw=14_100_000),
+    {"unit": "issue-1", "usage": SimpleNamespace(raw=14_100_000, fresh=1_100_000),
      "footer_tokens": None, "minutes": 19.5},
-    {"unit": "11", "usage": SimpleNamespace(raw=13_900_000),
+    {"unit": "11", "usage": SimpleNamespace(raw=13_900_000, fresh=1_300_000),
      "footer_tokens": None, "minutes": 21.2},
-    {"unit": "issue-2", "usage": SimpleNamespace(raw=3_000_000),
+    # Footer-only: no cache split, so no fresh tokens; its minutes still count.
+    {"unit": "issue-2", "usage": None,
      "footer_tokens": 28_000_000, "minutes": 100},
 ]
 spend = workorder_cost.unit_spend(rows)
-assert spend["issue-1"] == [14_100_000, 19.5]
-assert spend["11"] == [13_900_000, 21.2]
-assert spend["issue-2"] == [28_000_000, 100]
+assert spend["issue-1"] == [1_100_000, 19.5]
+assert spend["11"] == [1_300_000, 21.2]
+assert spend["issue-2"] == [0, 100]
 
 units = [
     {"id": "issue-1", "issue": 1, "pr": 11, "stage": "repair-pending",
@@ -35,12 +36,12 @@ orders = workorder_cost.work_orders(
     units, spend, datetime(2026, 10, 29, 1, tzinfo=timezone.utc)
 )
 open_order, done_order = orders
-assert open_order["tokens"] == 28_000_000
+assert open_order["tokens"] == 2_400_000
 assert open_order["worker_minutes"] == 41
 assert open_order["over"] == ["tokens"]
-assert done_order["tokens"] == 28_000_000
+assert done_order["tokens"] == 0
 assert done_order["over"] == []
-assert workorder_cost.UNIT_STANDARDS["tokens"][2] == 28_000_000
+assert workorder_cost.UNIT_STANDARDS["tokens"][1:] == (600_000, 1_200_000)
 
 # Held stages (blocked-external, parked) wait on a predecessor or an external
 # decision: their age is not a defect, so the age bug bound must not count them.

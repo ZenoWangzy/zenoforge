@@ -309,7 +309,7 @@ p90 metrics above derive their bounds from the last 30 days of closed tickets in
 
 | Spend (id) | Delivered p50 / p90 | Healthy | Bug | Human baseline |
 |---|---|---|---|---|
-| worker tokens (`unit.tokens`) | 0.53 M / 2.4 M (10-21); per-ticket p90 13.9 M (7 d to 10-29) | ≤ 14 M | ≥ 28 M | — |
+| worker fresh tokens, cache reads excluded (`unit.tokens`) | 0.53 M / 2.4 M (10-21, raw basis, superseded); fresh basis 2026-11-07: 165 of 816 delivered units with a complete cache split, p50 109 k, p90 544 k, p99 1.23 M. Footer-only runs excluded. Provisional until usage-capture lands and the basis is re-measured | ≤ 600 k | ≥ 1.2 M | — |
 | worker minutes (`unit.worker_minutes`) | 25 / 90 | ≤ 90 | ≥ 240 | 2–4 h focused work for a small change (estimate) |
 | request-changes rounds (`unit.rounds`) | 0 / 2 | ≤ 2 | ≥ 5 | most changes need 1–2 iterations [1] |
 | hours from entry to merged (`unit.age_hours`; units waiting on a predecessor are exempt, and hours spent blocked or escalated (`blocked-on`/`supervisor-escalated`/park events up to `unblocked`/`supervisor-requeue`) are taken out of the age of a released unit) | 7.4 / 18.5 | ≤ 24 | ≥ 72 | elite lead time < 1 day [4] |

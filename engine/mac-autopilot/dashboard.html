@@ -834,7 +834,7 @@ const SORTS = {age:["存在最久", (a,b)=>b.journey.age_min-a.journey.age_min],
 const STEPS = ["开发","质检","返工","待合并","已合并","已上线"];
 const stepOf = j => ({develop:0, check:j.rounds?2:1, merge:3, waiting:-1, parked:-1, blocked:-1, "awaiting-release":4, reverted:4, released:5, live:5}[j.status]);
 const PAGE = 12;
-const UN = {tokens:["用量",""], worker_minutes:["员工用时","分"], rounds:["返工轮数","轮"], age_hours:["存在时长","时"]};
+const UN = {tokens:["未缓存用量",""], worker_minutes:["员工用时","分"], rounds:["返工轮数","轮"], age_hours:["存在时长","时"]};
 let view = {f:"active", p:0, s:"age", rf:"all", rp:0};
 try { view = Object.assign(view, JSON.parse(sessionStorage.getItem("unitsView2")||"{}")); } catch (e) {}
 const journeyOf = u => u.journey || {status:"closed", age_min:0, since_min:0, split_min:{}, rounds:0};

@@ -111,7 +111,7 @@ jq -e '.metrics[] | select(.id == "workorders.ticket_wall_p90")
   | .value == 30 and .healthy == 38 and .unhealthy == 180 and .status == "OK"' \
   "$a/node-health.json" >/dev/null || fail "ticket wall metric did not retain its static bounds"
 # unit_spend 经共享成本行走 --json 流：旧实现只读页脚时这张票是 0
-jq -e '[.work_orders[] | select(.id == "issue-4355")][0].tokens == 23010000' "$a/node-health.json" >/dev/null \
+jq -e '[.work_orders[] | select(.id == "issue-4355")][0].tokens == 700000' "$a/node-health.json" >/dev/null \
   || fail "a --json codex worker's tokens did not reach the work-order spend: $(jq -c '.work_orders' "$a/node-health.json")"
 
 # ---------- gen_dashboard：同一份账进 cost_ledger（单元 / ticket / 阶段 / 后端 / 24h / eval） ----------

@@ -5,7 +5,9 @@ import re
 
 
 UNIT_STANDARDS = {
-    "tokens": ("worker tokens per work order", 14_000_000, 28_000_000),
+    # Fresh tokens (uncached input + output), cache reads excluded. Base: 165 of 816 delivered units
+    # with a complete cache split (footer-only runs excluded), 2026-11-07; provisional until usage-capture lands.
+    "tokens": ("worker fresh tokens per work order (cache reads excluded)", 600_000, 1_200_000),
     "worker_minutes": ("worker minutes per work order", 90, 240),
     "rounds": ("request-changes rounds", 2, 5),
     "age_hours": ("hours from entry to merged (open: until now)", 24, 72),
@@ -46,12 +48,13 @@ def held_hours(unit, end):
 
 
 def unit_spend(rows):
-    """Lifetime worker tokens (raw) and minutes per unit key, from the shared cost rows."""
+    """Lifetime worker fresh tokens and minutes per unit key. A run without a cache split (legacy
+    footer or no usage record) adds no tokens; its minutes still count."""
     spend = {}
     for row in rows:
         unit = spend.setdefault(row["unit"], [0, 0.0])
-        usage, footer = row["usage"], row["footer_tokens"]
-        unit[0] += footer if footer is not None else (usage.raw if usage is not None else 0)
+        usage = row["usage"]
+        unit[0] += usage.fresh if usage is not None and usage.fresh is not None else 0
         unit[1] += row["minutes"]
     return spend
 
