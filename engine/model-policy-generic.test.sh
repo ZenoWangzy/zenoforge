@@ -38,8 +38,8 @@ engine_default="$engine/model-policy.default.json"
 refused="$t/cfg/model-policy.default.json"
 jq '.roles.work.provider = "bogus"' "$engine_default" > "$refused"
 refused_line="model-policy-template-refused file=$refused using=engine-default"
-load() { # load <agent home> <engine dir>: print the resolved default, then the work identity
-  AGENT_HOME="$1" ZF_CONFIG_ROOT="$t/cfg" bash -c 'source "$1/lib.sh" && printf "%s\n%s\n" "$MODEL_POLICY_DEFAULT" "$(model_policy identity work)"' _ "$2"
+load() { # load <agent home> <engine dir> [config root]: print the resolved default, then the work identity
+  AGENT_HOME="$1" ZF_CONFIG_ROOT="${3:-$t/cfg}" bash -c 'source "$1/lib.sh" && printf "%s\n%s\n" "$MODEL_POLICY_DEFAULT" "$(model_policy identity work)"' _ "$2"
 }
 live="$t/agent/model-policy.json"
 jq -S . "$engine_default" > "$live"
@@ -85,5 +85,41 @@ if AGENT_HOME="$t/agent" ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$engine" ZF_PACK_DIR
 rm -rf "$t/sched-agent"; mkdir -p "$t/sched-agent"
 sched_out="$(AGENT_HOME="$t/sched-agent" MODEL_POLICY_DEFAULT="$refused" bash -c 'source "$1/lib.d/model-policy.sh"; source "$1/lib.d/model-policy-fallback.sh"; model_policy_default_fallback "$1/model-policy.default.json"; printf "%s" "$MODEL_POLICY_DEFAULT"' _ "$engine" 2>"$t/err")" || fail "scheduler fallback: $(cat "$t/err")"
 [[ "$sched_out" == "$engine_default" ]] && grep -qxF "$refused_line" "$t/err" && grep -q ' model-policy-template-refused file=' "$t/sched-agent/supervisor-inbox" || fail "scheduler fallback: $sched_out $(cat "$t/err")"
+
+# Template and live both refused (an older engine that outlives apply): the engine default is the effective policy, read-only.
+live_line="model-policy-live-refused file=$t/agent/model-policy.json using=engine-default"
+both="$t/both"; rm -rf "$both"; mkdir -p "$both"
+jq '.roles.work.provider = "bogus"' "$engine_default" > "$both/model-policy.json"
+both_sum="$(cksum < "$both/model-policy.json")"
+out="$(load "$both" "$engine" 2>"$t/err")" || fail "both refused: lib.sh did not load: $(cat "$t/err")"
+[[ "$(sed -n 2p <<< "$out")" == "$MODEL_POLICY_TEST_WORK_IDENTITY" ]] || fail "both refused: work identity $(sed -n 2p <<< "$out")"
+[[ "$(grep -c '^model-policy-live-refused ' "$t/err")" == 1 ]] && grep -qxF "model-policy-live-refused file=$both/model-policy.json using=engine-default" "$t/err" || fail "both refused: stderr: $(cat "$t/err")"
+[[ "$(cksum < "$both/model-policy.json")" == "$both_sum" ]] || fail 'both refused: live bytes changed'
+load "$both" "$engine" >/dev/null 2>&1 || fail 'both refused: second load failed'
+[[ "$(grep -c ' model-policy-live-refused file=' "$both/supervisor-inbox")" == 1 ]] || fail 'both refused: live alert was not once per content'
+jq '.roles.work.provider = "bogus2"' "$engine_default" > "$both/model-policy.json"
+load "$both" "$engine" >/dev/null 2>&1 || fail 'both refused: changed live content failed'
+[[ "$(grep -c ' model-policy-live-refused file=' "$both/supervisor-inbox")" == 2 ]] || fail 'both refused: new live content was not alerted'
+
+# A refused live file under a valid template still fails hard, with no line.
+if load "$both" "$engine" "$valid" >"$t/out" 2>"$t/err"; then fail 'refused live with a valid template loaded'; fi
+! grep -q 'model-policy-.*-refused' "$t/err" || fail "refused live with a valid template used a fallback: $(cat "$t/err")"
+
+# Live at a higher schema version than the engine default, template refused: resolves.
+hi="$t/hi"; rm -rf "$hi"; mkdir -p "$hi"
+jq '.schema_version += 1' "$engine_default" > "$hi/model-policy.json"; hi_sum="$(cksum < "$hi/model-policy.json")"
+out="$(load "$hi" "$engine" 2>"$t/err")" || fail "newer live: $(cat "$t/err")"
+[[ "$(sed -n 2p <<< "$out")" == "$MODEL_POLICY_TEST_WORK_IDENTITY" && "$(cksum < "$hi/model-policy.json")" == "$hi_sum" ]] && grep -q '^model-policy-live-refused ' "$t/err" || fail "newer live: $(cat "$t/err")"
+
+# Reverse direction: an engine whose validator tightened meets a template behind it (the live view takes its extra keys from the engine default, so live stays valid).
+copy_agent_library "$t/tight-engine"
+sed -i 's|\.schema_version == \$canonical\[0\]\.schema_version$|& and has("tightened")|' "$t/tight-engine/lib.d/model-policy.sh"
+grep -q 'has("tightened")' "$t/tight-engine/lib.d/model-policy.sh" || fail 'tightened validator fixture did not apply'
+jq '.tightened = true' "$engine_default" > "$t/tight-engine/model-policy.default.json"
+tight="$t/tight"; rm -rf "$tight"; mkdir -p "$tight"; jq -S . "$engine_default" > "$tight/model-policy.json"
+mkdir -p "$t/cfg-old"; cp "$engine_default" "$t/cfg-old/model-policy.default.json"
+out="$(load "$tight" "$t/tight-engine" "$t/cfg-old" 2>"$t/err")" || fail "tightened engine: $(cat "$t/err")"
+[[ "$(sed -n 1p <<< "$out")" == "$t/tight-engine/model-policy.default.json" && "$(sed -n 2p <<< "$out")" == "$MODEL_POLICY_TEST_WORK_IDENTITY" ]] \
+  && grep -q '^model-policy-template-refused ' "$t/err" && ! grep -q '^model-policy-live-refused ' "$t/err" || fail "tightened engine: $out $(cat "$t/err")"
 
 echo 'PASS model-policy default: pack policy with the default pack dir, generic policy without a pack'
