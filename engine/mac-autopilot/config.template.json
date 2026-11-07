@@ -32,6 +32,7 @@
     "product_labels": ["ready-for-agent"],
     "ready_buffer": null,
     "refill_max": 2,
+    "refill_max_footprint_candidates": 4,
     "refill_full_tick_fresh_seconds": 600,
     "remote_reads_per_tick": 24
   },

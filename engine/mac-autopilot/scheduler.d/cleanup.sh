@@ -181,6 +181,8 @@ cleanup_unit_worktrees() { # id：终态单元的两个 worktree 位置；有可
   local id="$1" wt block_reason
   for wt in "$WT_ROOT/wt-${id}" "/tmp/wt-${id}"; do
     [[ -d "$wt" ]] || continue
+    # cleanup_tick's deadline (its locals, by dynamic scope): count what the walk leaves instead of walking on.
+    if [[ -n "${CLEANUP_DEADLINE:-}" ]] && (( SECONDS >= CLEANUP_DEADLINE )); then CLEANUP_LEFT=$((CLEANUP_LEFT + 1)); continue; fi
     if block_reason="$(worktree_cleanup_block_reason "$wt")"; then
       say "preserve worktree $wt: $block_reason"
     else
@@ -192,6 +194,8 @@ cleanup_unit_worktrees() { # id：终态单元的两个 worktree 位置；有可
 
 cleanup_tick() {
   local id wt n_total b track r block_reason
+  # 43 preserve lines under load ran the tick into its kill in this walk (2026-11-07): stop with time left for the end of the tick.
+  local CLEANUP_DEADLINE=$(( ${AUTOPI_TICK_LIMIT_SECONDS:-1800} - 120 )) CLEANUP_LEFT=0
   # eval 在途（pending/running）的单元保留 worktree：#4656 起 eval 并行跑，可能在单元 merged 之后才结束。
   for id in $(jqf -r '.units[] | select(.stage=="merged" or .stage=="landed" or .stage=="awaiting-live-event" or .stage=="done" or .stage=="wontfix" or .stage=="duplicate" or .stage=="closed") | select((.eval_gate.status // "") | IN("pending","running") | not) | .id' "$UNITS"); do
     cleanup_unit_worktrees "$id"
@@ -203,6 +207,7 @@ cleanup_tick() {
       cleanup_unit_worktrees "$id"
     done < <(jqf -r --slurpfile live "$UNITS" '.units[] | select((.eval_gate.status // "") | IN("pending","running") | not) | select(.id as $i | any($live[0].units[]; .id == $i) | not) | .id' "$UNITS_ARCHIVE" 2>/dev/null) # a restored unit is live again: its worktree is not cleanup's
   fi
+  (( CLEANUP_LEFT == 0 )) || say "cleanup worktree walk stopped at ${SECONDS}s: left $CLEANUP_LEFT worktrees for the next tick"
   n_total="$(jqf '.workers | length' "$WORKERS" 2>/dev/null || echo 0)"
   if (( n_total > 60 )); then
     # 未回收的 worker 一律保留，只裁剪已回收的旧记录。
@@ -232,7 +237,7 @@ cleanup_tick() {
     done < <(find "$sys_tmp" -mindepth 1 -maxdepth 1 -user "$(id -u)" -mmin +360 ! -name 'claude-*' -print0 2>/dev/null)
   fi
   # 本地分支只在"曾跟踪的远端分支已删除（[gone]）"时清理；从未 push 的本地分支不动。每小时一次。
-  if [[ ! -f "$A/.branch-gc" || -n "$(find "$A/.branch-gc" -mmin +60 2>/dev/null)" ]]; then
+  if (( SECONDS < CLEANUP_DEADLINE )) && { [[ ! -f "$A/.branch-gc" ]] || [[ -n "$(find "$A/.branch-gc" -mmin +60 2>/dev/null)" ]]; }; then
     touch "$A/.branch-gc"
     if git -C "$ROOT" fetch -q --prune origin 2>/dev/null; then
       while read -r b track; do

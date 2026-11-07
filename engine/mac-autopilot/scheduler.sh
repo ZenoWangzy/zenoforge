@@ -457,7 +457,8 @@ run_refill_intake_dispatch_phases() {
   phase dispatch_pending true
   INTAKE_ADDED=0
   phase register_new_issues 0 true || say "refill intake failed; continuing to dispatch"
-  (( INTAKE_ADDED == 0 )) || phase dispatch_pending true
+  # A pass started this late meets the 300s kill, and the next refill dispatches what intake added.
+  (( INTAKE_ADDED == 0 || SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 60 )) || phase dispatch_pending true
 }
 refill_tick() {
   local TICK_LOCAL_REFILL=true refill_log_offset=0 live metrics
@@ -532,7 +533,7 @@ main() {
   if git -C "$ROOT" fetch -q origin main 2>/dev/null; then
     MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   fi
-  TICK_DISPATCH_FP=''
+  : > "$A/.tick-phases"; rm -f -- "$A/.tick-phase" # loop.sh reads both when it kills this tick
   phase harvest_workers
   coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
   coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
@@ -564,7 +565,7 @@ main() {
       # 裁决整拍跳过；登记与生命周期照常，分类恢复的下一拍补标记后恢复推进。
       say "acting phases held: supervisor-owned marking deferred"
     else
-      phase_yield_lock dispatch_pending && TICK_DISPATCH_FP="$(dispatch_inputs_fingerprint)"
+      phase_yield_lock dispatch_pending
       if ! paused_midrun "acting phases"; then
         phase dispatch_supervisor_arbiters
         phase dispatch_prompt_evals
@@ -579,14 +580,18 @@ main() {
     phase aged_pr_lifecycle
     phase run_release_train
     phase stage_slo_watch
-    supervisor_marking_deferred || dispatch_pending_if_dirty
     phase footprint_hog_alert
     views_mode=full
   fi
-  cleanup_tick
+  # Views and the snapshot come before cleanup: a slow worktree walk under load used to eat the tick and lose them (2026-11-07).
+  phase_mark flush_focus_alert
   flush_focus_alert
+  phase_mark publish_pr_run_snapshot
   publish_pr_run_snapshot
+  phase_mark launch_views
   launch_views "$views_mode"
+  phase_mark cleanup_tick
+  cleanup_tick
   gh_calls="$(tick_gh_calls_count)"
   say "tick-phases kind=full secs=$SECONDS gh_calls=$gh_calls phases=${TICK_PHASE_DETAILS:-none}"
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :

@@ -12,7 +12,8 @@ run_tick() {
   local rc=0
   timeout --foreground -k 30 "${AUTOPI_TICK_LIMIT_SECONDS:-1800}" bash "$LIVE/scheduler.sh" >> "$A/loop.out" 2>&1 || rc=$?
   if (( rc == 124 || rc == 137 )); then
-    echo "[$(date -u +%FT%TZ)] TICK-TIMEOUT scheduler tick killed after ${AUTOPI_TICK_LIMIT_SECONDS:-1800}s; the next tick clears the stale lock" \
+    # The one line is also the alert (waste.md), so a kill names its phase and the finished ones without a log read.
+    echo "[$(date -u +%FT%TZ)] TICK-TIMEOUT scheduler tick killed after ${AUTOPI_TICK_LIMIT_SECONDS:-1800}s in phase $(cat "$A/.tick-phase" 2>/dev/null || echo unknown) after done: $(paste -sd, "$A/.tick-phases" 2>/dev/null || echo none); the next tick clears the stale lock" \
       | tee -a "$A/scheduler.log" >> "$A/alerts/waste.md"
   fi
   return 0
