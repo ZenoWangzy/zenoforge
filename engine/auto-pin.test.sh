@@ -70,4 +70,14 @@ sleep 1
 kill -0 "$pass" 2>/dev/null || fail 'a second refusal retried again instead of waiting'
 [[ $(grep -c "$c6" "$PIN_CALLS") == 2 ]] || fail "row retry calls: $(tr '\n' ' ' < "$PIN_CALLS")"
 kill "$pass" 2>/dev/null || :
+wait "$pass" 2>/dev/null
+
+# A clone script that differs from the running copy ends the daemon after its pass, so systemd reinstalls it.
+echo 0 > "$PIN_RC"
+{ cat "$repo/tools/auto-pin.sh"; echo '# newer'; } > "$tmp/clone/tools/auto-pin.sh"
+( auto_pin_main ) > "$tmp/out" 2>&1 & daemon=$!
+for _ in {1..40}; do kill -0 "$daemon" 2>/dev/null || break; sleep 0.25; done
+kill -0 "$daemon" 2>/dev/null && { kill "$daemon"; fail 'a daemon behind its clone kept running'; }
+wait "$daemon" || fail 'the self-restart exit was not clean'
+grep -q 'newer script' "$tmp/out" || fail "no self-restart line: $(cat "$tmp/out")"
 echo "auto-pin.test.sh: ok"
