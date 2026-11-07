@@ -138,6 +138,6 @@ function main(args) {
   console.log(`lesson-guard-schema: ${checked} registry record(s) pass the problem-record schema`);
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   main(process.argv.slice(2));
 }

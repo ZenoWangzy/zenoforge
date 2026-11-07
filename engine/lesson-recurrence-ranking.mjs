@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { realpathSync } from 'node:fs';
+import { realpathSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -395,7 +395,7 @@ function parseArgs(args) {
   return options;
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const options = parseArgs(process.argv.slice(2));
     const repo = path.resolve(options.repo);

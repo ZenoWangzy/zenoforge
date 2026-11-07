@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs';
+import { realpathSync, existsSync } from 'node:fs';
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -31,7 +31,7 @@ export function migrationScript(key, root = process.cwd()) {
   throw new Error(`migration script unavailable: ${key}`);
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const script = migrationScript(process.argv[2]);
     const result = spawnSync(process.execPath, [script, ...process.argv.slice(3)], { stdio: 'inherit' });

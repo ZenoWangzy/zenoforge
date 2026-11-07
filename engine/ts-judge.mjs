@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { realpathSync } from 'node:fs';
+import { realpathSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from "node:child_process";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
@@ -358,7 +358,7 @@ async function main(argv) {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   main(process.argv.slice(2)).catch(() => {
     process.stdout.write(`${JSON.stringify({ status: "fallback", reason: "invalid-input", adopted: false })}\n`);
   });

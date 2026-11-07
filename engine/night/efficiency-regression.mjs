@@ -2326,7 +2326,7 @@ function parseArgs(argv) {
   return { command, options };
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const { command, options } = parseArgs(process.argv.slice(2));
     if (command === 'sample') {

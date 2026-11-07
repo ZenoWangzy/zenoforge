@@ -3,7 +3,7 @@
 // Reuses the affected-only lane's suite mapping (pipeline-suites-scope.mjs); it adds no path list of its own.
 // Input (JSON file or stdin): { suites: [failing suite paths], prFiles: [PR-owned changed paths since the merge base],
 //   mainFiles: [paths main changed since that merge base], behind: <commits PR is behind main>, complete: <both lists untruncated> }
-import { realpathSync } from 'node:fs';
+import { realpathSync, existsSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,6 +43,6 @@ export function triage(facts) {
   return worst;
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   process.stdout.write(`${triage(JSON.parse(readFileSync(process.argv[2] ?? 0, 'utf8')))}\n`);
 }

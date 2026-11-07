@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { packDelegate, zfConfigFile } from './pack-dir.mjs';
 
@@ -144,7 +144,7 @@ export function sqlForRelease(repo, sha, phase = 'post-deploy') {
   return postDeploySql(migrationsForRelease(repo, sha, phase), sha, phase);
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const legacy = settings().marker ? '' : packDelegate('post-deploy-migrations.mjs');
     if (legacy) {

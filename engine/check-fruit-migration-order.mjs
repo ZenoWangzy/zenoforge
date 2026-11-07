@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs';
+import { realpathSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -111,7 +111,7 @@ function option(name) {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const configFile = zfConfigFile('release.json');
     const config = configFile ? JSON.parse(readFileSync(configFile, 'utf8')) : {};
