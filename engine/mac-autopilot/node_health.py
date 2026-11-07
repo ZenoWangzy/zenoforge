@@ -19,6 +19,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import arbiter_health, ledger_history, live_delivery
 import line_holds
+import release_age
 import pr_census
 import worker_cost
 import workorder_cost
@@ -255,6 +256,8 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
 CRITERIA.update(line_holds.CRITERIA)
 MEANING.update(line_holds.MEANING)
 SOURCE.update(line_holds.SOURCE)
+# release.hours_since_release lives in release_age.py for the same size-ratchet reason.
+CRITERIA.update(release_age.CRITERIA); MEANING.update(release_age.MEANING); SOURCE.update(release_age.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
 TIME_SINK_HOURS = 24
@@ -1585,6 +1588,7 @@ def main():
     blockers = read_json(os.path.join(a, "release-blockers.json"))
     metrics["release.hotpatch_blockers"] = len(blockers["blockers"]) if isinstance(blockers.get("blockers"), list) else None
     line_holds.collect(metrics, a, agent_home, now)
+    release_found = release_age.collect(metrics, now)
     registry = (zf_mechanism_registry() or {}).get("mechanisms")
     if isinstance(registry, list) and registry:
         mechanism_rows, metrics["mechanism.silent"] = mechanism_heartbeat(registry, a, agent_home, now)
@@ -1616,6 +1620,7 @@ def main():
     if args.inbox:
         flow_inbox(a, rows, now, agent_home, repo_root)
         line_holds.alert(a, agent_home, repo_root, now)
+        release_age.alert(a, agent_home, repo_root, now, release_found)
 
     if args.json:
         sampled_at = f"{now:%Y-%m-%dT%H:%M:%SZ}"
