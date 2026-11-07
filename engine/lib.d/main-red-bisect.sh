@@ -469,16 +469,17 @@ main_red_bisect_sweep() {
       fi
       rerun_verdict="$(main_red_probe_verdict "$red_sha" "$workflow" "$focused_head")" || rerun_verdict=""
       if [ "$rerun_verdict" = success ]; then
-        main_red_session_write "$red_sha" flaky
-        main_red_log "red ${red_sha:0:12}: same-SHA rerun went green; recorded flaky, no revert"
-        continue
+        if main_red_session_write "$red_sha" flaky; then
+          main_red_log "red ${red_sha:0:12}: same-SHA rerun went green; recorded flaky, no revert"
+          continue
+        fi
       fi
     fi
     # A session steps only while its run is the latest verdict, so it can stop with nobody told. Alert only: a pending probe or an open revert PR writes nothing either, and a terminal status would strand them.
     idle=$(( $(date +%s) - $(stat -c %Y "$session_file" 2>/dev/null || date +%s) ))
     if [ "$idle" -ge "$MAIN_RED_MAX_RUN_AGE_SECONDS" ]; then
       supervisor_inbox_append_once "main-red-session-idle:$red_sha" \
-        "main-red-session-idle:$red_sha status=$status idle_seconds=$idle" || true
+        "main-red-bisect red=${red_sha:0:12} status=$status reason=session-idle idle_seconds=$idle" || true
     fi
   done < <(printf '%s\n' "$MAIN_RED_DIR"/*.json)
   return 0

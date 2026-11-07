@@ -544,7 +544,7 @@ assert_eq "a session with recent writes raises nothing" 0 "$(grep -c session-idl
 touch -d '2 days ago' "$AGENT_HOME/main-red/$IDLE_SHA.json"
 main_red_bisect_sweep
 main_red_bisect_sweep
-assert_eq "an idle session reaches the supervisor once" 1 "$(grep -c "main-red-session-idle:$IDLE_SHA" "$AGENT_HOME/supervisor-inbox" 2>/dev/null || true)"
+assert_eq "an idle session reaches the supervisor once a day" 1 "$(grep -c "red=${IDLE_SHA:0:12} .*reason=session-idle" "$AGENT_HOME/supervisor-inbox" 2>/dev/null || true)"
 assert_eq "an idle session stays open for its probe or revert PR" bisecting "$(jq -r .status "$AGENT_HOME/main-red/$IDLE_SHA.json")"
 
 if [ "$FAILED" -eq 1 ]; then
