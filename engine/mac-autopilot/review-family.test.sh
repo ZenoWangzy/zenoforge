@@ -228,7 +228,7 @@ pick_review_for_unit "$glm_unit" || fail 'after the reset a ZCode unit must get 
 [[ "$PICK_PROVIDER" == codex ]] || fail 'after the reset the reviewer must be Codex'
 CODEX_CREDITS_ROLES=""; CODEX_CREDITS_CAP=""; CODEX_CREDITS_START_BALANCE=""
 
-# A GLM review is a paced start: reviews and implement share one in-flight count, and a bad quota read closes the route.
+# A GLM review is a paced start at its own weight in the shared sum, and a bad quota read closes the route.
 set_config '.models.review=["gpt-6-luna","max","fast"] | .models.review_cross=["GLM-5.3","max"] | .models.review_fallback=null'
 set_policy '.'
 set_cooldowns 0 0
@@ -247,9 +247,11 @@ pace_review() { # workers-array → whether the review started on GLM
 glm_quota 0
 pace_review '[]' || fail 'the first start of a window must pass'
 pace_review "[$glm_run]" || fail 'the second start of a window must pass'
-if pace_review "[$glm_run,$glm_review]"; then fail 'a third GLM start at window open must wait'; fi
-if pace_review "[$glm_review,$glm_review]"; then fail 'two reviews must fill the opening gate too'; fi
-if pace_review "[$glm_run,$glm_lower]"; then fail 'a lowercase GLM model must count'; fi
+if pace_review "[$glm_run,$glm_run]"; then fail 'a third GLM start at window open must wait'; fi
+reviews() { jq -cn --argjson review "$glm_review" --argjson n "$1" '[range($n) | $review]'; }
+pace_review "$(reviews 6)" || fail 'six reviews at 3 points must stay under the opening 20'
+if pace_review "$(reviews 7)"; then fail 'seven reviews at 3 points must fill the opening gate'; fi
+if pace_review "[$glm_run,$glm_lower,$glm_lower]"; then fail 'a lowercase GLM model must count'; fi
 pace_review "[$glm_run,$glm_done]" || fail 'a harvested run must not count'
 pick_glm_implementer() { (
   model_policy_role_fields() { printf 'zcode\tGLM-5.3\tmax\t\n'; }
@@ -257,8 +259,19 @@ pick_glm_implementer() { (
   pick_zcode_implementer
 ); }
 pick_glm_implementer || fail 'implement must pass an open gate'
-write_workers "$(jq -cn --argjson workers "[$glm_review,$glm_review]" '{workers:$workers}')"
+write_workers "$(jq -cn --argjson workers "$(reviews 7)" '{workers:$workers}')"
 if pick_glm_implementer; then fail 'running reviews must count against implement'; fi
+# Week pace: one hour in, 200 x 1/168 + 10 allows 11. It holds implement and repair, which move to Codex, and never a review.
+glm_week() { glm_quota 0; jq --argjson pct "$1" --argjson reset "$(( $(date +%s) + 167 * 3600 ))" '.week_pct=$pct | .week_reset=$reset' \
+  "$ZCODE_QUOTA_SNAPSHOT_FILE" > "$ZCODE_QUOTA_SNAPSHOT_FILE.new" && mv "$ZCODE_QUOTA_SNAPSHOT_FILE.new" "$ZCODE_QUOTA_SNAPSHOT_FILE"; }
+write_workers '{"workers":[]}'
+glm_week 11
+pick_glm_implementer || fail 'implement must pass a week on its pace'
+glm_week 12
+if pick_glm_implementer; then fail 'implement must wait while the week is ahead of pace'; fi
+pace_review '[]' || fail 'a review must pass during a week hold'
+pick_implementer '{"id":"week-held","implement_provider":"zcode"}' && [[ "$PICK_PROVIDER" == codex ]] \
+  || fail 'a held GLM implement must go to Codex, not wait'
 glm_quota 21
 if pace_review '[]'; then fail 'a meter past the gate must hold a review'; fi
 glm_quota 0 901

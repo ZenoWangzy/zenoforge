@@ -423,17 +423,31 @@ zcode_quota_status() { # fresh snapshot and active marker -> available|paced|exh
     return 0
   fi
   # paced: under the cap but ahead of an even spend. Allowed = min(cap, cap x elapsed/5h + slack); a window not started is elapsed 0.
-  # The meter lags a run by minutes, so each GLM run in flight counts at ZC_PACE_RUN_PCT (measured 7 to 30 points a run).
-  command jq -er --argjson now "$now" --argjson inflight "${ZCODE_PACE_INFLIGHT:-0}" \
-    --argjson slack "${ZC_PACE_SLACK_PCT:-20}" --argjson run_pct "${ZC_PACE_RUN_PCT:-15}" '
+  # The meter lags a run by minutes, so each GLM run in flight counts at ZC_PACE_RUN_PCT (measured 7 to 30 points a run);
+  # a review or rereview counts at ZC_PACE_REVIEW_PCT (three 2026-11-06 windows: at most 2.1 points a review).
+  command jq -er --argjson now "$now" --argjson inflight "${ZCODE_PACE_INFLIGHT:-0}" --argjson reviews "${ZCODE_PACE_REVIEWS:-0}" \
+    --argjson slack "${ZC_PACE_SLACK_PCT:-20}" --argjson run_pct "${ZC_PACE_RUN_PCT:-15}" --argjson review_pct "${ZC_PACE_REVIEW_PCT:-3}" '
     if ((.five_h_pct | type) != "number" or (.week_pct | type) != "number") then "unknown"
     elif .five_h_pct >= (.cap_5h // 85) or .week_pct >= (.cap_week // 100) then "exhausted"
     else
       (.cap_5h // 85) as $cap
       | ((.five_h_reset // 0) as $reset | if ($reset | type) == "number" and $reset > $now then ([18000 - ($reset - $now), 0] | max) else 0 end) as $elapsed
-      | if .five_h_pct + $inflight * $run_pct >= ([$cap, $cap * $elapsed / 18000 + $slack] | min) then "paced" else "available" end
+      | if .five_h_pct + $inflight * $run_pct + $reviews * $review_pct >= ([$cap, $cap * $elapsed / 18000 + $slack] | min) then "paced" else "available" end
     end
   ' "$file" 2>/dev/null || printf 'unknown\n'
+}
+
+# Implement and repair only: reviews clear the merge queue, and a held implement moves to Codex. Allowed = budget x elapsed/168h + slack.
+# shortcut: the budget 200 counts the one weekly reset left, set ZC_WEEK_BUDGET_PCT to 100 once it is spent.
+zcode_week_held() { # prints week and allowed while the week is ahead of its pace; fails otherwise
+  local file="${ZCODE_QUOTA_SNAPSHOT_FILE:-${HOME:-}/.zenoforge/zc-quota.json}"
+  command jq -er --argjson now "${NOW_EPOCH:-$(date +%s)}" --argjson budget "${ZC_WEEK_BUDGET_PCT:-200}" --argjson slack "${ZC_WEEK_SLACK_PCT:-10}" '
+    (.week_reset // 0) as $reset
+    | select(($reset | type) == "number" and $reset > $now)
+    | ($budget * ([604800 - ($reset - $now), 0] | max) / 604800 + $slack) as $allowed
+    | select(.week_pct >= $allowed)
+    | "week=\(.week_pct) allowed=\($allowed | floor)"
+  ' "$file" 2>/dev/null
 }
 
 zcode_review_open() { # a review is a GLM start: held by the marker, paced, or closed when the quota read is missing or stale
