@@ -139,6 +139,11 @@ run_merge_lane() {
 }
 # A unit that turned ready-to-merge after the tick's merge pass waited for the next full tick (about half a cycle).
 # The refill runs one pass when such a unit exists, at most once per merge_refill_min_seconds.
+# Nothing inside the pre-candidate stages can stop at the refill deadline (5 of 7 refill kills since 05:52Z, 2026-11-08), so check the budget between them.
+merge_refill_budget_spent() { # stage
+  [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 120 )) || return 1
+  say "merge pass stopped before $1 at ${SECONDS}s: the refill budget is spent; the next refill resumes"
+}
 refill_merge_pass() {
   local now last min
   [[ "$(jqf -r .auto_merge <<<"$CFG")" == "true" ]] || return 0
@@ -147,6 +152,7 @@ refill_merge_pass() {
   min="$(jqf -r '.merge_refill_min_seconds // 120' <<<"$CFG")"; [[ "$min" =~ ^[0-9]+$ ]] || min=120
   now="$(date +%s)"; last="$(cat "$A/.refill-merge-epoch" 2>/dev/null || true)"; [[ "$last" =~ ^[0-9]+$ ]] || last=0
   (( now - last >= min )) || return 0
+  ! merge_refill_budget_spent refill_merge_pass || return 0
   printf '%s\n' "$now" > "$A/.refill-merge-epoch"
   MERGE_LANE_WAIT=0 run_merge_lane
 }
@@ -181,6 +187,7 @@ run_merge_lane_pass() {
   fi
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "merge detail refresh_main=${detail_elapsed}s"
+  merge_refill_budget_spent suite_gate_lookup && return 0
   merge_max="$(jqf -r '.batch_max // 4' <<<"$CFG")"
   [[ "$merge_max" =~ ^[1-9][0-9]*$ ]] || merge_max=4
   eval_sha=""; gate_run=""
@@ -202,6 +209,8 @@ run_merge_lane_pass() {
   fi
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "merge detail suite_gate_lookup=${detail_elapsed}s"
+  merge_refill_budget_spent main_ci_classify && return 0
+  say "merge stage main_ci_classify start"
   detail_started=$SECONDS
   ci_classify_run "$gate_run" "$eval_sha"
   detail_elapsed=$((SECONDS - detail_started))
@@ -258,6 +267,8 @@ run_merge_lane_pass() {
   fi
 
   # 候选的检查行取自 merge_candidates 那一次批量 gh pr list（census），不再逐个 gh pr checks；合并仍用 --match-head-commit 钉住 head。
+  merge_refill_budget_spent candidate_build && return 0
+  say "merge stage candidate_build start"
   tick_prs_prime
   detail_started=$SECONDS
   cands="$(merge_candidates "$((merge_max * 3))")"
