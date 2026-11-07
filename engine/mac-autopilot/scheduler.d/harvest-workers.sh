@@ -52,16 +52,16 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
   fi
 }
 
-harvest_workers() { # [local-only]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement workers
+harvest_workers() { # [local-only]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers
   local pr_harvested=0 local_only="${1:-false}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"
     report="$(jqf -r .report <<<"$w")"; rep="$SUP/$report"; lg="$SUP/$(jqf -r .log <<<"$w")"
     if [[ "$local_only" == true ]]; then
-      if [[ "$wtype" == implement && "$(unit_field "$unit" '.lane // empty')" == pr ]]; then
-        # Finished PR-lane worker: harvest now so its footprint frees without waiting for the slow tick.
-        # At most 2 per refill: harvest_pr_implement makes GitHub calls and the REST quota is shared with releases.
+      if [[ "$wtype" =~ ^(review|rereview|repair)$ || ( "$wtype" == implement && "$(unit_field "$unit" '.lane // empty')" == pr ) ]]; then
+        # Finished worker with a report: harvest now so its slot frees and the next stage dispatches in this refill. Land, eval, supervise and report-less deaths stay on the slow tick.
+        # At most 2 per refill: these harvests make GitHub calls (census, approval status, run cancel) and the REST quota is shared with releases.
         [[ -s "$rep" ]] && ! harvest_worker_alive "$w" && (( pr_harvested < 2 )) || continue
         pr_harvested=$((pr_harvested + 1))
       else

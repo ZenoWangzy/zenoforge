@@ -50,7 +50,7 @@ Two of these scripts are not in this checkout: `run-release.sh` and `run-advisor
 `engine/mac-autopilot/loop.sh` runs forever. Its pieces:
 
 - **Scheduler tick.** Every `tick_seconds` (120 by default, from `engine/mac-autopilot/config.template.json`), it runs `scheduler.sh` under a timeout (`AUTOPI_TICK_LIMIT_SECONDS`, default 1800).
-- **Refill pass.** Between ticks, a refill runs every 30 seconds (`AUTOPI_REFILL_SECONDS`), so a freed worker slot is refilled without waiting for the next tick.
+- **Refill pass.** Between ticks, a refill runs every 30 seconds (`AUTOPI_REFILL_SECONDS`), so a freed worker slot is refilled without waiting for the next tick. A worker exit also starts one at once (the loop polls every 5 s and the set of exited workers must change). The refill harvests finished PR-lane implement, review, rereview and repair workers that left a report, at most 2 per refill, so the next stage dispatches in the same pass. Land, eval, supervise, OBSOLETE and report-less workers stay on the full tick.
 - **Bell.** `engine/mac-autopilot/bell-loop.sh` runs `bell.sh`, one anomaly scan, every 120 seconds.
 - **Watcher.** Every 15th loop, it runs `watcher/watch.sh` from the supervisor directory, if that file exists.
 

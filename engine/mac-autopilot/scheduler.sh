@@ -433,12 +433,12 @@ SCHED_LOCK_HELD=false
 VIEWS_LOCK="$A/.views.lock"
 
 # 补派循环入口（#4628）：loop.sh 与慢 tick 并行检查本地台账，30 秒一次或发现新退出的 worker 时触发。
-# 慢阶段只在等待 GitHub 时让出同一 SCHED_LOCK；补派本地收割 direct-main 实现结果，另每次最多收割 2 个已结束的 PR 车道实现 worker（释放足迹，开 PR 有少量 GitHub 调用）、回收孤儿记录，
+# 慢阶段只在等待 GitHub 时让出同一 SCHED_LOCK；补派本地收割 direct-main 实现结果，另每次最多收割 2 个已结束且带报告的 PR 车道 implement/review/rereview/repair worker（释放槽位，有少量 GitHub 调用）、回收孤儿记录，
 # 并收已结束的后台门（self_check_harvest / precheck_harvest，纯本地读写，不占 gh 配额）——否则自检早已
 # 结束的单元要空等下一次慢拍才派评审（2026-11-03 03:12Z 起空槽 0-2/8 干等 20 分钟）；
 # 当可启动 pending 少于空槽时先收 issue，再派发 implement/repair/review/rereview-pending。新候选优先复用慢拍缓存，
 # 缓存失效时最多查询一个标签；实现派发只读本地台账，PR 修复、评审或复审按需读取一次共享 PR census。
-# 报告收割与 PR 注册仍由慢 tick 处理。
+# land/eval/supervise、OBSOLETE、无报告的 worker 收割与 PR 注册仍由慢 tick 处理。
 # A tick runs for minutes after its one PAUSE check at the start, so acting phases look again.
 paused_midrun() {
   [[ -e "$PAUSE_FILE" ]] || return 1
