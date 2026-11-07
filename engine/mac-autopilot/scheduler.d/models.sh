@@ -434,6 +434,40 @@ review_wait_summary() { # the waits of this pass, by reason
   printf 'review_waits=%s review_wait_reasons=%s' "$(wc -w <<<"${TICK_REVIEW_WAITS:-}")" "${reasons:-none}"
 }
 
+review_failed_keys() { jqf -r '(.review_failed_reviewers // []) | join(" ")' <<<"$1"; } # unit JSON → provider:model keys of reviewers that failed on this head
+
+# A review run produced nothing usable. Hand the head to the next allowed reviewer (the different-family rule and policy
+# still apply) and return 0; return 1 when the caller must park, with REVIEW_NEXT_WHY naming why no reviewer is left.
+# Bounded: a reviewer is recorded once, and only a newly recorded failure requeues, so it ends after the allowed reviewers.
+review_failed_next() { # unit worker-json reason → requeues to review-pending, or 1
+  local unit="$1" w="$2" reason="$3" u key failed author codex glm sonnet next
+  REVIEW_NEXT_WHY=""
+  u="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+  key="$(jqf -r 'if (.provider // "") != "" and (.model // "") != "" then "\(.provider):\(.model)" else empty end' <<<"$w")"
+  [[ -n "$key" ]] || { REVIEW_NEXT_WHY=" (failed reviewer not recorded on the worker, so no other reviewer was tried)"; return 1; }
+  failed="$(review_failed_keys "$u")"
+  if [[ " $failed " == *" $key "* ]]; then
+    REVIEW_NEXT_WHY=" (no other allowed reviewer; tried: $failed)"; return 1
+  fi
+  failed="${failed:+$failed }$key"
+  set_unit "$unit" ".review_failed_reviewers=$(jqf -cn --arg f "$failed" '$f | split(" ")')"
+  author="$(unit_review_author_identity "$u")" || { REVIEW_NEXT_WHY=" (no author identity, so the family rule cannot name another reviewer; tried: $failed)"; return 1; }
+  codex="$(review_identity_for_model "$(model_tuple_field review 0)" "$(model_tuple_field review 1)" 2>/dev/null || true)"
+  glm="$(review_identity_for_model "$(model_tuple_field review_cross 0)" "$(model_tuple_field review_cross 1)" 2>/dev/null || true)"
+  sonnet="$(review_identity_for_model "$(model_tuple_field review_fallback 0)" "$(model_tuple_field review_fallback 1)" 2>/dev/null || true)"
+  next="$(review_untried_candidates "$author" "$codex" "$glm" "$sonnet" "$failed" | head -n1)"
+  [[ -n "$next" ]] || { REVIEW_NEXT_WHY=" (no other allowed reviewer for a $(review_identity_family "$author" 2>/dev/null || echo unknown)-authored head; tried: $failed)"; return 1; }
+  set_unit "$unit" "$(hist review-next-reviewer "$reason; failed ${key}; next ${next%:*}") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
+  say "review-next-reviewer unit=$unit failed=$key next=${next%:*}: $reason"
+}
+
+review_failed_or_park() { # unit worker-json reason [supervisor-note]: the next allowed reviewer, else the supervisor with why none was left
+  local unit="$1" w="$2" reason="$3" note="${4:-$3}"
+  REVIEW_NEXT_WHY=""
+  [[ "$(jqf -r '.type // empty' <<<"$w")" =~ ^(review|rereview)$ ]] && review_failed_next "$unit" "$w" "$reason" && return 0
+  to_supervisor "$unit" "$note$REVIEW_NEXT_WHY"
+}
+
 pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves the review pending and alerts once
   local unit_json="$1" id issue author author_family codex_identity glm_identity sonnet_identity selected status wait_reason=author-unknown
   id="$(jqf -r '.id // "unknown"' <<<"$unit_json")"
@@ -447,7 +481,7 @@ pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves 
     glm_identity="$(review_identity_for_model "$(model_tuple_field review_cross 0)" "$(model_tuple_field review_cross 1)" 2>/dev/null || true)"
     sonnet_identity="$(review_identity_for_model "$(model_tuple_field review_fallback 0)" "$(model_tuple_field review_fallback 1)" 2>/dev/null || true)"
     status=0
-    selected="$(zcode_paced review_model_for_implementer "$issue" "$author" "$codex_identity" "$glm_identity" "$sonnet_identity" "$id")" || status=$?
+    selected="$(zcode_paced review_model_for_implementer "$issue" "$author" "$codex_identity" "$glm_identity" "$sonnet_identity" "$id" "$(review_failed_keys "$unit_json")")" || status=$?
   fi
   if (( status == 0 )) && [[ -n "$selected" ]]; then
     PICK_MODEL="${selected#*:}"; PICK_EFFORT="${PICK_MODEL##*:}"; PICK_MODEL="${PICK_MODEL%:*}"

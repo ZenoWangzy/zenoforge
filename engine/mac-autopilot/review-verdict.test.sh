@@ -68,6 +68,28 @@ jq -n --arg sha "$H1" '{workers:[{pid:4244,unit:"pr-abstain",type:"review",log:"
 harvest_workers || :
 [[ "$(field pr-abstain .stage)" == supervisor-review ]] || fail 'a second missing verdict did not escalate'
 
+# A review run that fails twice goes to the next allowed reviewer, never to the supervisor while one is left.
+CFG="$(jq '.models.review=["gpt-6-luna","max","fast"] | .models.review_cross=["GLM-5.3","max"] | .models.review_fallback=null' <<<"$CFG")"
+fail_run() { # unit provider model → one harvest of a review worker with no VERDICT line
+  jq -n --arg sha "$H1" --arg unit "$1" --arg p "$2" --arg m "$3" '{workers:[{pid:4244,unit:$unit,type:"review",log:"x.log",report:"review-abstain-T1.md",sha:$sha,provider:$p,model:$m,process_group:4244}]}' > "$WORKERS"
+  harvest_workers || :
+}
+units '{"units":[{"id":"pr-next","pr":7,"stage":"review","implement_identity":"claude:claude-sonnet-5-5:high","history":[{"stage":"verdict-missing"}]}]}'
+fail_run pr-next zcode GLM-5.3
+[[ "$(field pr-next .stage)" == review-pending && "$(field pr-next '.history[-1].stage')" == review-next-reviewer \
+  && "$(field pr-next '.review_failed_reviewers|join(" ")')" == zcode:GLM-5.3 && "$(field pr-next '.history[-1].result')" == *'next codex:gpt-6-luna'* ]] \
+  || fail "a failed GLM review of a Claude-authored head did not go to the Codex reviewer: $(jq -c ".units[0]" "$UNITS")"
+fail_run pr-next codex gpt-6-luna
+[[ "$(field pr-next .stage)" == supervisor-review && "$(field pr-next '.history[-1].result')" == *'no other allowed reviewer'*'zcode:GLM-5.3 codex:gpt-6-luna'* ]] \
+  || fail "the park did not name why no reviewer was left: $(field pr-next '.history[-1].result')"
+units '{"units":[{"id":"pr-glm","pr":7,"stage":"review","implement_identity":"codex:gpt-6-luna:max","history":[{"stage":"verdict-missing"}]}]}'
+fail_run pr-glm zcode GLM-5.3
+[[ "$(field pr-glm .stage)" == supervisor-review && "$(field pr-glm '.history[-1].result')" == *'no other allowed reviewer for a codex-authored head'* ]] \
+  || fail 'a Codex-authored head with only GLM allowed must park with the reason'
+units '{"units":[{"id":"pr-next","pr":7,"stage":"review","implement_identity":"claude:claude-sonnet-5-5:high","review_failed_reviewers":["zcode:GLM-5.3"],"history":[{"stage":"verdict-missing"}]}]}'
+fail_run pr-next zcode GLM-5.3
+[[ "$(field pr-next .stage)" == supervisor-review ]] || fail 'the same reviewer failing again must not requeue'
+
 # A Zcode/Claude stdout capture must not replace a report the reviewer wrote at the prompted path.
 units '{"units":[{"id":"pr-report-capture","lane":"pr","history":[]}]}'
 report_capture="$sup/review-preserved.md"

@@ -887,42 +887,26 @@ review_family_log() {
 }
 
 review_model_for_implementer() {
-  local issue="$1" author_identity="$2" codex_identity="${3-}" glm_identity="${4-}" sonnet_identity="${5-}" unit="${6:-unknown}"
-  local author_family cross candidate candidate_family candidate_role unavailable_reason candidate_model primary_reason=""
-  local -a candidates=()
+  local issue="$1" author_identity="$2" codex_identity="${3-}" glm_identity="${4-}" sonnet_identity="${5-}" unit="${6:-unknown}" failed="${7-}"
+  local author_family candidate candidate_role unavailable_reason candidate_model primary_reason="" listed
+  local -a rows=() kept=() skipped=()
   author_family="$(review_identity_family "$author_identity" 2>/dev/null || true)"
   if (( $# >= 5 )); then
-    cross="$(review_cross_identity_for "$author_identity" "$codex_identity" "$glm_identity" 2>/dev/null || true)"
+    mapfile -t rows < <(review_allowed_candidates "$unit" "$author_identity" "$codex_identity" "$glm_identity" "$sonnet_identity")
   else
-    cross="$(review_cross_identity_for "$author_identity" 2>/dev/null || true)"
+    mapfile -t rows < <(review_allowed_candidates "$unit" "$author_identity")
   fi
-  [[ -z "$cross" ]] || candidates+=("$cross")
-  # A Claude-authored head is unusual and cannot use Sonnet. Try the other
-  # configured independent family after the preferred family for resilience.
-  if [[ "$author_family" == claude ]]; then
-    local second=""
-    [[ "$(review_identity_family "$cross" 2>/dev/null || true)" == glm ]] && second="$codex_identity"
-    [[ "$(review_identity_family "$cross" 2>/dev/null || true)" == codex ]] && second="$glm_identity"
-    [[ -z "$second" || "$second" == "$cross" ]] || candidates+=("$second")
-  fi
-  [[ -z "$sonnet_identity" ]] || candidates+=("$sonnet_identity")
+  # Reviewers that already failed on this head are skipped while another allowed one is left, so a failure never reruns on the same reviewer and a down alternate waits, not spins. With none left, the failed ones retry in order.
+  for listed in ${rows[@]+"${rows[@]}"}; do
+    candidate="${listed#*$'\t'}"
+    if [[ " $failed " == *" ${candidate%:*} "* ]]; then skipped+=("$listed"); else kept+=("$listed"); fi
+  done
+  (( ${#kept[@]} == 0 )) || rows=("${kept[@]}")
 
-  for candidate in "${candidates[@]}"; do
+  for listed in ${rows[@]+"${rows[@]}"}; do
+    candidate_role="${listed%%$'\t'*}"; candidate="${listed#*$'\t'}"
     [[ -n "$candidate" ]] || continue
-    candidate_family="$(review_identity_family "$candidate" 2>/dev/null || true)"
-    if [[ -z "$candidate_family" || "$candidate_family" == "$author_family" ]]; then
-      review_family_log "review-family refused unit=$unit author=${author_family:-unknown} reviewer=${candidate_family:-unknown} reason=same-family-or-unknown"
-      continue
-    fi
-    candidate_role=review
-    if [[ "$candidate_family" == claude ]]; then
-      candidate_role=review_fallback
-      candidate_model="${candidate#*:}"; candidate_model="${candidate_model%:*}"
-      if [[ "$author_family" == claude || ! "$candidate_model" =~ ^claude-(haiku|sonnet)- ]]; then
-        review_family_log "review-family refused unit=$unit author=$author_family reviewer=claude reason=fallback-must-be-claude-tier-and-cross-family"
-        continue
-      fi
-    fi
+    candidate_model="${candidate#*:}"; candidate_model="${candidate_model%:*}"
     if review_identity_available "$candidate" "$candidate_role" "$author_family"; then
       if [[ "$candidate_role" == review_fallback ]]; then
         review_family_log "review-family fallback unit=$unit author=$author_family reviewer=$candidate_model reason=${primary_reason:-cross reviewer unavailable}"

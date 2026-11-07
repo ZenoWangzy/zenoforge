@@ -273,7 +273,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
       say "harvest unit=$unit type=$wtype verdict=${v:-none} mode=$wmode tokens=${tk:-unavailable} session_id=${session_id:-none} session_tokens=$dispatch_usage_count session_total_tokens=$session_usage_count"
       case "$wtype" in
         review|rereview)
-          local reviewed=".reviewed_sha=$(js "$wsha") | .reviewed_pr_head=$(js "$wprhead") | .review_report=$(js "$report")"
+          local reviewed=".reviewed_sha=$(js "$wsha") | .reviewed_pr_head=$(js "$wprhead") | .review_report=$(js "$report")$([[ "$v" == READY || "$v" == INPUT_INCOMPLETE ]] && printf ' | del(.review_failed_reviewers)')" # a usable verdict ends the failed-reviewer episode
           case "$v" in
             READY)
               # 同时保留审核候选与当时观察到的 GitHub PR head；旧 worker 缺失 PR head 时拒绝批准。
@@ -317,7 +317,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
               fi ;;
             NOT_READY)
               if findings_block_of "$rep" >/dev/null 2>&1; then
-                set_unit "$unit" "$(hist review-request-changes "$wsha") | $reviewed | .approved_sha=null | .stage=\"repair-pending\"$(review_findings_update "$rep" "$report")$(review_findings_hint_update "$rep") | .author_dispositions_pending=true"
+                set_unit "$unit" "$(hist review-request-changes "$wsha") | $reviewed | del(.review_failed_reviewers) | .approved_sha=null | .stage=\"repair-pending\"$(review_findings_update "$rep" "$report")$(review_findings_hint_update "$rep") | .author_dispositions_pending=true"
                 cancel_unit_runs "$unit" "review requested changes; head will change"
               else
                 # 打回但发现块缺失/畸形（11-03：一个 line:0 的文件级发现废掉整块，修复拿到零发现）。
@@ -329,7 +329,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
                   set_unit "$unit" "$(hist review-findings-missing "$report") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
                   say "review-findings-missing unit=$unit report=$report: re-asking once with the findings contract"
                 else
-                  to_supervisor "$unit" "review report $report is REQUEST-CHANGES without a parseable review-findings block (one re-ask already failed)"
+                  review_failed_or_park "$unit" "$w" "review report $report is REQUEST-CHANGES without a parseable review-findings block (one re-ask already failed)"
                 fi
               fi ;;
             INPUT_INCOMPLETE)
@@ -342,7 +342,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
               if [[ "$(unit_retries "$unit" verdict-missing)" == 0 ]]; then
                 set_unit "$unit" "$(hist verdict-missing "$report") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
               else
-                to_supervisor "$unit" "review report $report has no single VERDICT line (twice)"
+                review_failed_or_park "$unit" "$w" "review report $report has no single VERDICT line (twice)"
               fi ;;
           esac ;;
         repair)
@@ -356,7 +356,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
             else
               disposition_update=""
             fi
-            set_unit "$unit" "$(hist repair-delivered) $disposition_update | .repair_hint=null | (.stage=\"rereview-pending\")"
+            set_unit "$unit" "$(hist repair-delivered) $disposition_update | .repair_hint=null | del(.review_failed_reviewers) | (.stage=\"rereview-pending\")"
             set_unit "$unit" ".author_dispositions_pending=false"
           fi
           # f6 复查（#4482）：repair/self-fix 推的新 head 重新过尺寸准入；超线同样转 supervisor 拆分
@@ -462,7 +462,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
           set_unit "$unit" "$(hist fresh-session-retry "$no_output deaths") | .session_ids={} | .sessions={} | .session_id=null | .stage=\"${wtype}-pending\""
           say "unit=$unit: $no_output workers died -> one fresh-session retry"
         else
-          to_supervisor "$unit" "$no_output workers died without a report, fresh session too (last log $(basename "$lg"))"
+          review_failed_or_park "$unit" "$w" "$no_output workers died without a report, fresh session too" "$no_output workers died without a report, fresh session too (last log $(basename "$lg"))"
         fi
       fi
     fi

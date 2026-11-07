@@ -58,3 +58,57 @@ model_policy_refused_alert() {
       supervisor_inbox_append "$kind" "file=$file sha=$sha using=engine-default" )
   fi && : > "$marker"
 }
+
+# The reviewers a head's author may have, in order: the different-family rule and the Claude tier rule applied, availability not.
+# Prints "role<TAB>identity" per candidate. A sixth argument "quiet" suppresses the refusal log lines (for a count, not a dispatch).
+review_allowed_candidates() { # unit author codex glm sonnet [quiet]
+  local unit="${1:-unknown}" author_identity="$2" codex_identity="${3-}" glm_identity="${4-}" sonnet_identity="${5-}" quiet="${6:-}"
+  local author_family cross candidate candidate_family candidate_role candidate_model
+  local -a candidates=()
+  author_family="$(review_identity_family "$author_identity" 2>/dev/null || true)"
+  if (( $# >= 5 )); then
+    cross="$(review_cross_identity_for "$author_identity" "$codex_identity" "$glm_identity" 2>/dev/null || true)"
+  else
+    cross="$(review_cross_identity_for "$author_identity" 2>/dev/null || true)"
+  fi
+  [[ -z "$cross" ]] || candidates+=("$cross")
+  # A Claude-authored head is unusual and cannot use Sonnet. Try the other
+  # configured independent family after the preferred family for resilience.
+  if [[ "$author_family" == claude ]]; then
+    local second=""
+    [[ "$(review_identity_family "$cross" 2>/dev/null || true)" == glm ]] && second="$codex_identity"
+    [[ "$(review_identity_family "$cross" 2>/dev/null || true)" == codex ]] && second="$glm_identity"
+    [[ -z "$second" || "$second" == "$cross" ]] || candidates+=("$second")
+  fi
+  [[ -z "$sonnet_identity" ]] || candidates+=("$sonnet_identity")
+  for candidate in "${candidates[@]}"; do
+    [[ -n "$candidate" ]] || continue
+    candidate_family="$(review_identity_family "$candidate" 2>/dev/null || true)"
+    if [[ -z "$candidate_family" || "$candidate_family" == "$author_family" ]]; then
+      [[ "$quiet" == quiet ]] || review_family_log "review-family refused unit=$unit author=${author_family:-unknown} reviewer=${candidate_family:-unknown} reason=same-family-or-unknown"
+      continue
+    fi
+    candidate_role=review
+    if [[ "$candidate_family" == claude ]]; then
+      candidate_role=review_fallback
+      candidate_model="${candidate#*:}"; candidate_model="${candidate_model%:*}"
+      if [[ "$author_family" == claude || ! "$candidate_model" =~ ^claude-(haiku|sonnet)- ]]; then
+        [[ "$quiet" == quiet ]] || review_family_log "review-family refused unit=$unit author=$author_family reviewer=claude reason=fallback-must-be-claude-tier-and-cross-family"
+        continue
+      fi
+    fi
+    printf '%s\t%s\n' "$candidate_role" "$candidate"
+  done
+}
+
+# Reviewers a failed review may still hand to: allowed by the family rule and by policy, and not in the failed list (provider:model keys).
+review_untried_candidates() { # author codex glm sonnet failed-keys → identity per line
+  local author_identity="$1" codex_identity="${2-}" glm_identity="${3-}" sonnet_identity="${4-}" failed="${5-}" role candidate model
+  while IFS=$'\t' read -r role candidate; do
+    [[ -n "$candidate" ]] || continue
+    model="${candidate#*:}"; model="${model%:*}"
+    model_policy_model_allowed_for_role "$model" "$role" || continue
+    [[ " $failed " != *" ${candidate%:*} "* ]] || continue
+    printf '%s\n' "$candidate"
+  done < <(review_allowed_candidates unknown "$author_identity" "$codex_identity" "$glm_identity" "$sonnet_identity" quiet)
+}

@@ -134,6 +134,20 @@ set_cooldowns "$((NOW_EPOCH + 1800))" 0
 dispatch_selected_review "$unit_json" || fail 'Claude-authored review did not fall back to the other family during a GLM hold'
 [[ "$(provider_of "$DISPATCH_MODEL")" == codex ]] || fail "Claude-authored review fell back to $DISPATCH_MODEL, not Codex"
 
+# A reviewer that already failed this head is skipped while another allowed one is left, and is retried only when none is.
+set_cooldowns 0 0
+unit_json="$(unit_for failed-glm 'claude:claude-sonnet-5-5:high' | jq -c '.review_failed_reviewers=["zcode:GLM-5.3"]')"
+write_units "$(jq -cn --argjson unit "$unit_json" '{units:[$unit]}')"
+dispatch_selected_review "$unit_json" || fail 'the next allowed reviewer did not dispatch after GLM failed'
+[[ "$(provider_of "$DISPATCH_MODEL")" == codex ]] || fail "after GLM failed the review went to $DISPATCH_MODEL, not Codex"
+unit_json="$(unit_for failed-both 'claude:claude-sonnet-5-5:high' | jq -c '.review_failed_reviewers=["zcode:GLM-5.3","codex:gpt-6-luna"]')"
+dispatch_selected_review "$unit_json" || fail 'with every reviewer failed the first one must retry, not wait forever'
+[[ "$DISPATCH_MODEL" == GLM-5.3 ]] || fail "with every reviewer failed the retry went to $DISPATCH_MODEL"
+set_config '.models.review_fallback=null'
+unit_json="$(unit_for failed-codex-author 'codex:gpt-6-luna:max' | jq -c '.review_failed_reviewers=["zcode:GLM-5.3"]')"
+dispatch_selected_review "$unit_json" || fail 'a Codex-authored head with only GLM allowed must retry GLM'
+[[ "$DISPATCH_MODEL" == GLM-5.3 ]] || fail 'a Codex-authored head must never be handed to its own family'
+
 # A same-family reviewer setting is logged and never dispatched.
 set_config '.models.review=["gpt-6-luna","max","fast"] | .models.review_cross=["gpt-6-luna","max"] | .models.review_fallback=null'
 set_policy '.'
