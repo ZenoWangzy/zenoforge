@@ -204,31 +204,93 @@ footprint_scopes_collide() { # scope, scope -> collision paths in EXPECTED_SCOPE
   EXPECTED_SCOPE_COLLISION_ACTIVE="$(jq -r '.[1] // empty' <<<"$result")"
   [[ -n "$EXPECTED_SCOPE_COLLISION_CANDIDATE" ]]
 }
+# A comparison batch classifies each distinct scope once and compares a candidate against every owner in one jq.
+# The memo and the owner rows live in the shell that runs the batch: a command substitution cannot keep them, so
+# active_footprint_conflict (one candidate) and active_footprint_conflicts_batch are subshell bodies around these.
+declare -gA FOOTPRINT_CLASSIFY_MEMO=()
+declare -ga FOOTPRINT_OWNER_IDS=() FOOTPRINT_OWNER_SCOPES=()
+FOOTPRINT_OWNERS_DOC='[]'
+FOOTPRINT_CONFLICT_OWNER=''
+footprint_classify_memo() { # scope -> FOOTPRINT_CLASSIFIED; call in the batch shell, never inside $( )
+  if [[ -z "${FOOTPRINT_CLASSIFY_MEMO[$1]+set}" ]]; then
+    FOOTPRINT_CLASSIFY_MEMO["$1"]="$(footprint_classify "$1")" || return 1
+  fi
+  FOOTPRINT_CLASSIFIED="${FOOTPRINT_CLASSIFY_MEMO[$1]}"
+}
+footprint_owners_prepare() { # owners-json: ids, stripped scopes and classified rows (null when classify failed), memo reset
+  local id scope sep=''
+  FOOTPRINT_CLASSIFY_MEMO=(); FOOTPRINT_OWNER_IDS=(); FOOTPRINT_OWNER_SCOPES=(); FOOTPRINT_OWNERS_DOC='['
+  while IFS= read -r -d '' id && IFS= read -r -d '' scope; do
+    scope="$(footprint_strip_shared_append "$scope")"
+    FOOTPRINT_OWNER_IDS+=("$id"); FOOTPRINT_OWNER_SCOPES+=("$scope")
+    if [[ "${ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING:-0}" != 1 ]]; then
+      if footprint_classify_memo "$scope"; then FOOTPRINT_OWNERS_DOC+="$sep$FOOTPRINT_CLASSIFIED"; else FOOTPRINT_OWNERS_DOC+="${sep}null"; fi
+      sep=,
+    fi
+  done < <(jq -j '.[] | (.id | if type == "string" then . else tojson end), "\u0000", ((.footprint // []) | tojson), "\u0000"' <<<"$1")
+  FOOTPRINT_OWNERS_DOC+=']'
+}
+footprint_owner_conflict() { # candidate scope, self id, original scope -> FOOTPRINT_CONFLICT_OWNER; rc 0 or 2 as the legacy pair loop
+  local candidate original i first=-1 flags='' sep='' c k hit rc
+  FOOTPRINT_CONFLICT_OWNER=''
+  original="$(footprint_strip_shared_append "${3:-$1}")"
+  candidate="$(footprint_strip_shared_append "$1")"
+  for i in "${!FOOTPRINT_OWNER_IDS[@]}"; do
+    if [[ "${FOOTPRINT_OWNER_IDS[$i]}" == "$2" ]]; then flags+="${sep}true"; else flags+="${sep}false"; (( first >= 0 )) || first=$i; fi
+    sep=,
+  done
+  (( first >= 0 )) || return 0
+  if [[ "${ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING:-0}" == 1 ]]; then # the old rule keeps its per-pair helper
+    for i in "${!FOOTPRINT_OWNER_IDS[@]}"; do
+      [[ "${FOOTPRINT_OWNER_IDS[$i]}" != "$2" ]] || continue
+      if footprint_scopes_collide "$candidate" "${FOOTPRINT_OWNER_SCOPES[$i]}" "$original"; then
+        FOOTPRINT_CONFLICT_OWNER="${FOOTPRINT_OWNER_IDS[$i]}"; return 0
+      else
+        rc=$?
+        (( rc == 1 )) || { say "footprint comparison failed candidate=$2 owner=${FOOTPRINT_OWNER_IDS[$i]} step=${FOOTPRINT_FAILED_STEP:-unknown} rc=$rc"; return "$rc"; }
+      fi
+    done
+    return 0
+  fi
+  if ! { footprint_classify_memo "$candidate" && c="$FOOTPRINT_CLASSIFIED" && footprint_classify_memo "$original" && k="$FOOTPRINT_CLASSIFIED"; }; then
+    say "footprint comparison failed candidate=$2 owner=${FOOTPRINT_OWNER_IDS[$first]} step=classify rc=2"; return 2
+  fi
+  # By file: argv holds 128KiB per value, and one owner over that fails every comparison against it.
+  hit="$(jq -rn --slurpfile c <(printf '%s' "$c") --slurpfile k <(printf '%s' "$k") --slurpfile o <(printf '%s' "$FOOTPRINT_OWNERS_DOC") --argjson skip "[$flags]" '
+    def overlaps($a; $b): $a == $b or ($a | startswith($b + "/")) or ($b | startswith($a + "/"));
+    (any($k[0][]; .type == "file")) as $cf
+    | first(range($o[0] | length) as $i | select($skip[$i] | not) | $o[0][$i] as $e
+      | if $e == null then "F\($i)" else
+          (any($e[]; .type == "file")) as $of
+          | select(any($c[0][] as $a | $e[] as $b | select(overlaps($a.path; $b.path))
+            | select(($a.type == "file" and $b.type == "file") or ($cf | not) or ($of | not)
+              or ($a.path | test("(^|/)migrations/meta/_journal\\.json$")) or ($b.path | test("(^|/)migrations/meta/_journal\\.json$"))); true))
+          | "\($i)" end)')" \
+    || { say "footprint comparison failed candidate=$2 owner=${FOOTPRINT_OWNER_IDS[$first]} step=compare rc=2"; return 2; }
+  if [[ "$hit" == F* ]]; then
+    say "footprint comparison failed candidate=$2 owner=${FOOTPRINT_OWNER_IDS[${hit#F}]} step=classify rc=2"; return 2
+  fi
+  [[ -z "$hit" ]] || FOOTPRINT_CONFLICT_OWNER="${FOOTPRINT_OWNER_IDS[$hit]}"
+  return 0
+}
 active_footprint_conflict() (
   scheduler_scope_lib open-pr-collision || { say "footprint comparison failed candidate=$3 step=load-lib rc=2"; exit 2; }
-  local candidate other owner scope original rc
-  original="$(footprint_strip_shared_append "${4:-$1}")"
-  candidate="$(footprint_strip_shared_append "$1")"
-  while IFS= read -r other; do
-    owner="$(jq -r .id <<<"$other")"
-    [[ "$owner" != "$3" ]] || continue
-    scope="$(footprint_strip_shared_append "$(jq -c '.footprint // []' <<<"$other")")"
-    if footprint_scopes_collide "$candidate" "$scope" "$original"; then
-      printf '%s\n' "$owner"; return 0
-    else
-      rc=$?
-      (( rc == 1 )) || { say "footprint comparison failed candidate=$3 owner=$owner step=${FOOTPRINT_FAILED_STEP:-unknown} rc=$rc"; return "$rc"; }
-    fi
-  done < <(jq -c '.[]' <<<"$2")
+  footprint_owners_prepare "$2"
+  footprint_owner_conflict "$1" "$3" "${4:-$1}" || exit $?
+  [[ -z "$FOOTPRINT_CONFLICT_OWNER" ]] || printf '%s\n' "$FOOTPRINT_CONFLICT_OWNER"
 )
-active_footprint_conflicts_batch() {
-  local active="$1" candidates="$2" id scope original owner
+active_footprint_conflicts_batch() ( # one memo and one owner pass for every candidate row
+  local active="$1" candidates="$2" id scope original prepared=false
   while IFS=$'\t' read -r id scope original; do
     [[ -n "$id" ]] || continue
-    owner="$(active_footprint_conflict "$scope" "$active" "$id" "${original:-$scope}")" || return 1
-    [[ -z "$owner" ]] || printf '%s\t%s\n' "$id" "$owner"
+    if [[ "$prepared" != true ]]; then
+      scheduler_scope_lib open-pr-collision || { say "footprint comparison failed candidate=$id step=load-lib rc=2"; return 1; }
+      footprint_owners_prepare "$active"; prepared=true
+    fi
+    footprint_owner_conflict "$scope" "$id" "${original:-$scope}" || return 1
+    [[ -z "$FOOTPRINT_CONFLICT_OWNER" ]] || printf '%s\t%s\n' "$id" "$FOOTPRINT_CONFLICT_OWNER"
   done <<<"$candidates"
-}
+)
 footprint_shadow_directory_rule() {
   [[ "${ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING:-0}" != 1 ]] || return 0
   local id="$1" active="$2" old_owner
