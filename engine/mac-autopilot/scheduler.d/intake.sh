@@ -285,6 +285,7 @@ register_new_issues() {
   local INTAKE_FULL_SCAN_FLAG="$A/.intake-full-scan.$BASHPID.$RANDOM"
   local -A intake_known_issues=() intake_skip_counts=()
   local skip_key skip_line
+  [[ "$refill_mode" != true ]] || refill_room register_new_issues || return 0
   if [[ "$refill_mode" == true ]]; then
     fresh_seconds="$(jqf -r '.issue_intake.refill_full_tick_fresh_seconds // 600' <<<"$CFG")"
     [[ "$fresh_seconds" =~ ^[0-9]+$ ]] || fresh_seconds=600

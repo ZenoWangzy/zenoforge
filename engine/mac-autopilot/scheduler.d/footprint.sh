@@ -410,6 +410,7 @@ footprint_preflight_snapshot() {
   TICK_FOOTPRINT_PREFLIGHT_STATUS=ready
   elapsed=$((SECONDS - started))
   (( elapsed < 2 )) || say "dispatch detail footprint_preflight candidates=$candidate_count secs=${elapsed}s"
+  refill_cost_record preflight "$elapsed"
 }
 # #4488 第二轮（spec #4495 的类级解法）：预测足迹本身也看不准，共享测试文件和
 # 运行时热点是和历史共同修改耦合的。派发检查前把窗口内与预测文件同提交
@@ -526,6 +527,8 @@ _footprint_room() {
   # 同时改同一批文件（#4488）。
   stage="$(jqf -r '.stage // empty' <<<"$u")"
   [[ "$stage" != review-pending && "$stage" != rereview-pending ]] || return 0
+  # The preflight is one step of 25 to 153s with no check inside: begin it only with room left in the refill.
+  [[ "$require_fresh" == true || "$TICK_FOOTPRINT_PREFLIGHT_STATUS" != not-started ]] || refill_room preflight || return 75
   if [[ "$require_fresh" != true ]] && footprint_preflight_snapshot; then
     conflict="${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[$id]:-}"
     if [[ -n "$conflict" ]]; then
@@ -600,8 +603,10 @@ footprint_room() { # unit type; report checks that materially delay dispatch
     fi
   fi
   _footprint_room "$@" || rc=$?
+  # No room left in the refill: the unit keeps waiting untouched, and the walk ends here.
+  if (( rc == 75 )); then dispatch_skip refill-room; TICK_FOOTPRINT_CAP_HIT=true; rc=1
   # A wait with an owner is already counted by the footprint skip; any other refusal is an error path.
-  if (( rc != 0 )) && [[ -z "$(unit_field "$1" '.footprint_wait_owner // empty')" ]]; then dispatch_skip footprint-error; fi
+  elif (( rc != 0 )) && [[ -z "$(unit_field "$1" '.footprint_wait_owner // empty')" ]]; then dispatch_skip footprint-error; fi
   room_end="${EPOCHREALTIME:-0}"
   TICK_FOOTPRINT_ROOM_USEC=$((${TICK_FOOTPRINT_ROOM_USEC:-0} + 10#${room_end/./} - 10#${room_start/./}))
   TICK_FOOTPRINT_ROOM_CALLS=$((${TICK_FOOTPRINT_ROOM_CALLS:-0} + 1)); (( rc == 0 )) || TICK_FOOTPRINT_ROOM_WAITS=$((${TICK_FOOTPRINT_ROOM_WAITS:-0} + 1))

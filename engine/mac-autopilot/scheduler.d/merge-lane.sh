@@ -153,6 +153,7 @@ refill_merge_pass() {
   now="$(date +%s)"; last="$(cat "$A/.refill-merge-epoch" 2>/dev/null || true)"; [[ "$last" =~ ^[0-9]+$ ]] || last=0
   (( now - last >= min )) || return 0
   ! merge_refill_budget_spent refill_merge_pass || return 0
+  refill_room refill_merge_pass || return 0
   printf '%s\n' "$now" > "$A/.refill-merge-epoch"
   MERGE_LANE_WAIT=0 run_merge_lane
 }
