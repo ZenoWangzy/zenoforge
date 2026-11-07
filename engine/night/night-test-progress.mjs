@@ -243,7 +243,7 @@ export function completeNightProgress(file, script) {
   return complete ? 0 : 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const [operation, ...args] = process.argv.slice(2);
     if (operation === 'policy-key' && args.length === 0) console.log(identityHash(nightProgressPolicy()));

@@ -10,8 +10,7 @@ fail() { echo "release-age.test.sh: $*" >&2; exit 1; }
 
 work="$test_env_root/release-age"
 rm -rf "$work"
-mkdir -p "$work/repo/engine" "$work/agent" "$work/runtime/alerts" "$work/fakebin" "$work/gh"
-printf 'supervisor_inbox_append_once() { printf "%%s|%%s\\n" "$1" "$2" >> "$AGENT_HOME/inbox.txt"; }\n' > "$work/repo/engine/lib.sh"
+mkdir -p "$work/repo" "$work/agent" "$work/runtime/alerts" "$work/fakebin" "$work/gh"
 # Fake gh: serves the deployment list and each record's statuses from FAKE_GH_DIR; FAKE_GH_FAIL=1 makes it fail.
 cat > "$work/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -58,7 +57,8 @@ def fixture(rows):
 agent = os.path.join(work, "agent")
 runtime = os.path.join(work, "runtime")
 events = os.path.join(runtime, "alerts", "events.md")
-inbox = os.path.join(agent, "inbox.txt")
+inbox = os.path.join(agent, "supervisor-inbox")
+once = os.path.join(agent, "supervisor-inbox.once")
 repo_root = os.path.join(work, "repo")
 
 def check(cond, msg):
@@ -98,7 +98,7 @@ t61 = now + timedelta(minutes=61)
 v, found = score(t61)
 release_age.alert(runtime, agent, repo_root, t61, found)
 check(len(stopped()) == 2 and len(inbox_lines()) == 2, "alert again after an hour while unhealthy")
-keys = [l.split("|")[0] for l in inbox_lines()]
+keys = [l.split("\t")[1] for l in open(once).read().splitlines()]
 check(keys[0] != keys[1] and keys[1].endswith(f"{t61:%Y-%m-%dT%H}"), f"inbox keys must carry the hour bucket: {keys}")
 
 # A reconciled record of the same sha, later than the real deploy, does not move the time.

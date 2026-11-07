@@ -572,7 +572,7 @@ maintainer_health_mail_report_day() { # <epoch> -> MM-DD, Beijing time
   TZ=Asia/Shanghai date -d "@$1" +%m-%d
 }
 
-# Scheduler runtime files (node-health, release train) live in the checkout.
+# Scheduler runtime files (node-health) live in the checkout.
 maintainer_health_mail_runtime_dir() {
   local home="$1" user_home
   user_home="${home%/.zenoforge}"
@@ -580,41 +580,19 @@ maintainer_health_mail_runtime_dir() {
   printf '%s\n' "${MAC_AUTOPILOT_RUNTIME_DIR:-${ZF_MAC_AUTOPILOT_RUNTIME_DIR:-${MAC_AUTOPILOT_ROOT:-$user_home/checkout}/.scratch-supervisor/autopi}}"
 }
 
-# maintainer_health_mail_release_history <home> <since> <until>
-# Formal production releases, from the release train's own log (`RELEASED` lines,
-# one per release): {total, last_at, items:[{at}]}, items being the releases in
-# [since, until). Hot patches are not in this log and are not counted. Null when
-# the log is unreadable.
-maintainer_health_mail_release_history() {
-  local home="$1" since="$2" until="$3" log
-  log="$(maintainer_health_mail_runtime_dir "$home")/release-train.log"
-  [ -r "$log" ] || { printf 'null\n'; return 0; }
-  python3 - "$log" "$since" "$until" <<'PY'
-import json
-import re
-import sys
-from datetime import datetime, timezone
-
-path, since, until = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-pattern = re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\] RELEASED ")
-stamps = set()
-try:
-    with open(path, encoding="utf-8", errors="replace") as source:
-        for line in source:
-            match = pattern.match(line)
-            if not match:
-                continue
-            try:
-                stamps.add(int(datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()))
-            except ValueError:
-                continue
-except OSError:
-    print("null")
-    raise SystemExit(0)
-releases = sorted(stamps)
-print(json.dumps({"total": len(releases), "last_at": releases[-1] if releases else None,
-                  "items": [{"at": at} for at in releases if since <= at < until]}, separators=(",", ":")))
-PY
+# maintainer_health_mail_last_deploy
+# Epoch of the earliest GitHub production Deployment record for the sha production
+# runs now, from the one definition in mac-autopilot/release_age.py (its command-line
+# entry prints "<time> <sha>"). Prints nothing when the read fails or the output is
+# not a time, so the caller drops the figure instead of showing a stale one. The
+# release train log is not read: its RELEASED lines go stale on a hand release.
+maintainer_health_mail_last_deploy() {
+  local script out at
+  script="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/mac-autopilot/release_age.py"
+  out="$(timeout 90 python3 "$script" 2>/dev/null)" || return 0
+  at="${out%% *}"
+  [[ "$at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 0
+  date -u -d "$at" +%s 2>/dev/null || true
 }
 
 # maintainer_health_mail_watch_episodes <home> <since> <until> <now>
@@ -794,9 +772,10 @@ maintainer_health_mail_decision_facts() {
 # cannot read its source leaves null, and the renderer drops that figure.
 maintainer_health_mail_daily_facts() {
   local home="$1" ledger="$2" now="$3" repo_root="$4"
-  local start=$((now - 86400)) output release spend spend_prev quality decisions day reason
+  local start=$((now - 86400)) output deploy_at spend spend_prev quality decisions day reason
   output="$(maintainer_health_mail_ladder_facts "$home" "$now")" || output=null
-  release="$(maintainer_health_mail_release_history "$home" "$now" "$now")" || release=null
+  deploy_at="$(maintainer_health_mail_last_deploy)" || deploy_at=null
+  [[ "$deploy_at" =~ ^[0-9]+$ ]] || deploy_at=null
   spend="$(maintainer_health_mail_spend_facts "$home" "$start" "$now")" || spend=null
   spend_prev="$(maintainer_health_mail_spend_facts "$home" "$((start - 86400))" "$start")" || spend_prev=null
   quality="$(maintainer_health_mail_quality_facts "$ledger" "$home" "$start" "$now" "$repo_root")" || quality='{}'
@@ -804,10 +783,10 @@ maintainer_health_mail_daily_facts() {
   day="$(maintainer_health_mail_report_day "$now")" || return 1
   reason="$(maintainer_health_mail_conclusion_facts "$output" "$quality")"
   jq -cn --arg day "$day" --rawfile reason <(printf '%s' "$reason") --argjson now "$now" \
-    --argjson output "$output" --argjson release "$release" --argjson spend "$spend" --argjson spend_prev "$spend_prev" \
+    --argjson output "$output" --argjson deploy_at "$deploy_at" --argjson spend "$spend" --argjson spend_prev "$spend_prev" \
     --argjson quality "$quality" --argjson decisions "$decisions" \
     '{report_day:$day,conclusion:{reason:$reason},window:{end:$now},
-      output:$output,last_release_at:($release.last_at // null),
+      output:$output,last_deploy_at:$deploy_at,
       spend:{day:$spend,prev_day:$spend_prev},quality:$quality,decisions:$decisions}'
 }
 

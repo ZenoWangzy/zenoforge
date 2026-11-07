@@ -1,3 +1,5 @@
+import { realpathSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import process from 'node:process';
 
@@ -159,7 +161,7 @@ async function runGate(base, head) {
   console.log(`CI toolchain gate passed on ${RUNNER}: ${testPaths.join(', ')}.`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const [base, head] = process.argv.slice(2);
   if (!base || !head) throw new Error('Usage: node ci-toolchain-preflight.mjs <base> <head>.');
   await runGate(base, head);

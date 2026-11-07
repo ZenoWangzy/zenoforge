@@ -1,6 +1,7 @@
+import { realpathSync, existsSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { CI_RUNNER_PREFIX, validateReservedRunners } from './ci-reserved-runners.mjs';
 
 // shortcut: inline runs-on selectors only; add YAML parsing when block selectors appear.
@@ -51,7 +52,7 @@ export function validateRunnerLanes(runners, workflows, priorityPr = '') {
   return counts;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const inventory = JSON.parse(readFileSync(0, 'utf8'));
   const directory = fileURLToPath(new URL('../.github/workflows/', import.meta.url));
   const workflows = readdirSync(directory).filter(file => /\.ya?ml$/.test(file))

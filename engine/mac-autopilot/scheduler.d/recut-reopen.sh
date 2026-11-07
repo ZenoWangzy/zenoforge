@@ -29,8 +29,10 @@ intake_reopen_episode() { # issue reopened-at [ruling]
   local n="$1" at="$2" kind="${3:-reopen}" word=reopened units
   [[ "$kind" == reopen ]] || word=ruling
   [[ -n "$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -r 'select(.state == "ready-for-agent") | .state' 2>/dev/null)" ]] || return 0
-  units="$(jqf -c --argjson n "$n" '[.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))]
-    | {at: (map((.history // [])[-1].at // "") | max), other: (map(select(.stage != "closed") | .stage) | unique | join(",")),
+  # A ruling after the delivery says more remains, so merged/landed units do not block it; a reopen event alone still does.
+# A unit still carrying awaiting_release_pending blocks too: retry_awaiting_release would conclude the issue on the old PR.
+  units="$(jqf -c --arg kind "$kind" --argjson n "$n" '[.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))]
+    | {at: (map((.history // [])[-1].at // "") | max), other: (map(select((.stage != "closed" and ($kind == "reopen" or (.stage | IN("merged", "landed") | not))) or .awaiting_release_pending != null) | .stage) | unique | join(",")),
        sized: any(.[]; ((.hold_handoff_episode // "") | startswith("ruling-")) and ((.history // []) as $h
          | ([$h | to_entries[] | select(.value.stage == "hold-handoff") | .key] | max // -1) as $i
          | any($h[($i + 1):][]; .stage == "size-recut" or ((.result // "") | tostring | contains("size admission")))))}' <(units_history_doc))" || return 0
@@ -51,13 +53,55 @@ intake_reopen_episode() { # issue reopened-at [ruling]
 # worker. The state change is fixed, so a unit that closes again is newer than it: one restore per ruling. A later ruling
 # after a size failure would loop advisor, restore, size failure, so it stays closed and closed_units_open_issues names it.
 # Work outside this repository has no worker: external_deliverable routes it to the supervisor.
+# A triage verdict after the last unit ended is the same kind of ruling: intake_closed_unit_rows asks triage about a delivered
+# issue, and triage answers awaiting-release only for a PR verified merged into main (triage_merged_pr_for_issue, run-triage.sh).
+# A held issue (.hold) and an issue at CONCLUDE_RUN_ATTEMPT_CAP are not restored: the hold mechanism is the exclusion, there is no list.
+intake_attempt_cap() { # → CONCLUDE_RUN_ATTEMPT_CAP read from lib.sh; empty when unreadable, so callers leave the row alone
+  ( REPO_DIR="$ROOT"; source "$SCHEDULER_AGENT_LIB" >/dev/null 2>&1 && printf '%s' "${CONCLUDE_RUN_ATTEMPT_CAP:-}" )
+}
 intake_ruling_episodes() { # issue...
-  local n at
+  local n at cap
+  cap="$(intake_attempt_cap)"; [[ "$cap" =~ ^[0-9]+$ ]] || return 0
   for n; do
-    at="$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -r 'select(.state == "ready-for-agent" and .state_changed_from == "needs-advisor"
-      and .external_deliverable.required != true) | .state_changed_at // empty' 2>/dev/null)" || continue
+    at="$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -r --argjson cap "$cap" 'select(.state == "ready-for-agent" and (.state_changed_from | IN("needs-advisor", "needs-triage"))
+      and .hold == null and (.attempts // 0) < $cap and .external_deliverable.required != true) | .state_changed_at // empty' 2>/dev/null)" || continue
     [[ -z "$at" ]] || intake_reopen_episode "$n" "$at" ruling
   done
+}
+# An open issue whose units all ended and were closed by a stop-loss recut, with no ruling after them, is a stopped ticket:
+# restore it once per unit; a unit that closes again stays closed and counted. A unit closed on purpose (obsolete, pr-closed)
+# is not restored. A delivered unit (merged) is not routed anywhere here: no signal says whether its PR did the whole work,
+# and triage would conclude it as awaiting-release (triage_merged_pr_for_issue); only a ruling after the delivery restores it.
+intake_closed_unit_rows() { # issue...
+  local n row units cap id
+  cap="$(intake_attempt_cap)"; [[ "$cap" =~ ^[0-9]+$ ]] || return 0
+  for n; do
+    row="$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -c --argjson cap "$cap" 'select(.state == "ready-for-agent" and .hold == null
+      and (.attempts // 0) < $cap and .external_deliverable.required != true)
+      | {at: (.state_changed_at // ""), from: (.state_changed_from // ""), episode: (.scheduler_handoff.episode // "")}' 2>/dev/null)" || continue
+    [[ -n "$row" ]] || continue
+    units="$(jqf -c --argjson n "$n" --argjson row "$row" '[.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))] as $us
+      | (($us | map((.history // [])[-1].at // "") | max) // "") as $at
+      | {ids: [$us[].id],
+         closed_by_recut: (($us | length) == 1 and $us[0].stage == "closed" and ((($us[0].history // []) | map(select(.stage != "supervisor-cap-default")) | last | .stage) | IN("supervisor-budget-recut", "supervisor-cap-triage-recut"))),
+         spent: any($us[]; .closed_units_restored_at != null),
+         skip: (($row.episode != "" and any($us[]; (.hold_handoff_episode // "") != $row.episode))
+           or (($row.from | IN("needs-advisor", "needs-triage")) and $row.at > $at))}' <(units_history_doc))" || continue
+    jqf -e '.skip | not' <<<"$units" >/dev/null || continue # a newer ruling or a pending episode already owns this row
+    if jqf -e '.closed_by_recut' <<<"$units" >/dev/null; then
+      id="$(jqf -r '.ids[0]' <<<"$units")"
+      restore_archived_unit "$id" || continue
+      if jqf -e '.spent' <<<"$units" >/dev/null; then
+        [[ "$(unit_field "$id" '.closed_units_restore_refused // empty')" == true ]] \
+          || { set_unit "$id" '.closed_units_restore_refused = true' && say "intake closed-units unit=$id issue=#$n: already restored once; stays closed"; }
+        continue
+      fi
+      intake_reopen_episode "$n" "$STAMP" ruling
+      [[ "$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -r '.scheduler_handoff.episode // empty')" == "ruling-$STAMP" ]] \
+        && set_unit "$id" ".closed_units_restored_at = $(js "$STAMP")"
+    fi
+  done
+  return 0
 }
 intake_reopen_episodes() { # issue... → one read per 20 issues: about 8 rows reach this each tick against a cap of 24 reads
   local -a issues=("$@")

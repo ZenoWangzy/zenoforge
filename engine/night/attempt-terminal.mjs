@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { realpathSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -87,7 +88,7 @@ export function recordAttempt(home, issue, kind, env = process.env, now = new Da
   return event;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   if (process.argv[2] === 'classify-no-diff') {
     console.log(classifyTerminal({stage:'no-reviewable-diff', evidence:readFileSync(0, 'utf8')}, 'success'));
   } else if (process.argv[2] === 'charged-runs') {

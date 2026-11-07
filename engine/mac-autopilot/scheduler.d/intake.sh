@@ -758,6 +758,7 @@ register_new_issues() {
     say "intake closed units under open issues count=${#intake_terminal_rows[@]} ids=$(IFS=,; printf '%s' "${intake_terminal_rows[*]}")"
     intake_reopen_episodes "${intake_terminal_rows[@]}"
     intake_ruling_episodes "${intake_terminal_rows[@]}"
+    intake_closed_unit_rows "${intake_terminal_rows[@]}"
   fi
   say "intake detail candidates secs=$((SECONDS - step_started))s added=$added total_secs=$((SECONDS - intake_started))s"
   skip_line="intake skip counts refill=$refill_mode added=$added"

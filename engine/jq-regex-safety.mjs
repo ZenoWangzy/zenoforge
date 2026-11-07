@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { realpathSync, existsSync } from 'node:fs';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -96,6 +97,6 @@ function main(args) {
   console.log(`jq-regex-safety: compiled ${result.checked} literal jq pattern(s) across ${result.files} engine shell file(s)`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   main(process.argv.slice(2));
 }

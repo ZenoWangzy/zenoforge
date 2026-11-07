@@ -8,6 +8,7 @@
 // Records dated before SCHEMA_START are the historical catalog (searchable via
 // lessons/CATALOG.md); they are reused, not backfilled.
 
+import { realpathSync } from 'node:fs';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -137,6 +138,6 @@ function main(args) {
   console.log(`lesson-guard-schema: ${checked} registry record(s) pass the problem-record schema`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   main(process.argv.slice(2));
 }

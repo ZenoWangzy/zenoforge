@@ -1,6 +1,7 @@
+import { realpathSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { packDelegate, zfConfigFile } from './pack-dir.mjs';
 
 function migrationDirectory() {
@@ -110,7 +111,7 @@ function option(name) {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const configFile = zfConfigFile('release.json');
     const config = configFile ? JSON.parse(readFileSync(configFile, 'utf8')) : {};

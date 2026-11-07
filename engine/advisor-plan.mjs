@@ -1,3 +1,4 @@
+import { realpathSync, existsSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -69,7 +70,7 @@ export function advisorPlanBrief(brief, plan) {
   return base ? `${base}\n\n${section}` : section;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const command = process.argv[2];
   const input = JSON.parse(readFileSync(0, 'utf8'));
   if (command === 'action') {

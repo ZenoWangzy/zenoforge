@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zfConfigJson } from './pack-dir.mjs';
@@ -903,7 +903,7 @@ export function intersectingFocusedTestPaths(branchChangedPaths, mainChangedPath
     .sort();
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const [mode, oldBase, newMain] = process.argv.slice(2);
   if (!['--intersection', '--range'].includes(mode) || !oldBase || !newMain || process.argv.length !== 5) {
     console.error(`Usage: node ${process.argv[1]} --intersection OLD_MAIN NEW_MAIN | --range FROM TO`);

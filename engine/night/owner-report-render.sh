@@ -30,10 +30,11 @@ maintainer_health_mail_build_body() {
     def section($name; $lines): ($lines | map(select(. != null and . != ""))) as $kept | if ($kept | length) == 0 then [] else [$name] + $kept end;
     . as $f
     | ($f.output) as $o
-    | (if $f.last_release_at == null then 0 else (($f.window.end - $f.last_release_at) / 86400 | floor) end) as $release_days
-    | (if $release_days >= 1 then "距上次正式发版 \($release_days) 天。" else "" end) as $since_release
+    | (if $f.last_deploy_at == null then ""
+       else (($f.window.end - $f.last_deploy_at) / 86400 | floor) as $days
+         | if $days >= 1 then "距上次上线 \($days) 天。" else "距上次上线不到 1 天。" end end) as $since_deploy
     | ([ (periods($o.finished; "个") | if . == "" then null else "- 做完（已合入主线）：" + . + "。" end),
-         (periods($o.shipped; "个") | if . == "" then null else "- 正式上线：" + . + "。" + $since_release end) ]
+         (periods($o.shipped; "个") | if . == "" then null else "- 正式上线：" + . + "。" + $since_deploy end) ]
        | map(select(. != null))) as $output_lines
     | [ "一句话结论：\($f.conclusion.reason)。" ]
     + [ "产出" ] + (if ($output_lines | length) == 0 then ["- 需求进度记录读取失败，产出无法统计。"] else $output_lines end)
