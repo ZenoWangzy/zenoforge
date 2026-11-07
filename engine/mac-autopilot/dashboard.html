@@ -612,7 +612,7 @@ const LABELS = {
   "ci.precheck_setup_failures":["预检选包失败","次"],
   "ci.waste_runner_pct":["CI 浪费","%"],
   "supervisor.latency_p50":["主管裁决延迟 p50","分"], "scheduler.tick_gap_p50":["调度间隔 p50","秒"],
-  "release.hours_waiting":["当前批次等待","时"], "release.hotpatch_blockers":["未进 main 的热修","个"],
+  "release.hours_waiting":["当前批次等待","时"], "release.hours_since_release":["距上次上线","时"], "release.hotpatch_blockers":["未进 main 的热修","个"],
   "pipeline.orphan_prs":["台账外 agent PR","个"], "workorders.over_standard":["超标工作单","单"],
   "workorders.ticket_tokens_p90":["每票 token p90","tok"], "workorders.ticket_wall_p90":["每票墙钟 p90","分"],
   "review.large_pr_pct":["大 PR（>800 行）","%"], "loop.advisor_fail_pct":["顾问没给裁决","%"],
@@ -1318,6 +1318,7 @@ const PLAIN = {
   "ci.red_after_approve_pct": ["检查通过后 CI 又变红", "评审没发现的问题，或 CI 环境不稳定"],
   "scheduler.tick_gap_p50": ["调度器间隔太长", "任务派得晚，看板数据也更新得慢"],
   "release.hours_waiting": ["做完的改动迟迟没上线", "功能还没到用户手里"],
+  "release.hours_since_release": ["生产太久没有新版本", "发版线停摆，主管要查原因"],
   "release.hotpatch_blockers": ["紧急修复没有合入主线", "每次发布都被它们挡住"],
   "workorders.over_standard": ["工作单超出时限", "耗时超过标准，需要查原因"],
   "workorders.ticket_wall_p90": ["单个任务耗时偏长", "少数任务拖得特别久"],
@@ -1456,11 +1457,14 @@ function vOverview(D) {
   const bd = budgetOf(D), cost = D.cost || {}, td = (cost.today || {}).dollars, bs = bd.pct == null ? "none" : bd.pct >= 100 ? "bad" : bd.pct >= 80 ? "warn" : "ok";
   const t6 = hk("cost", "额度", `<div class="hk-v">${bd.pct == null ? "—" : Math.round(bd.pct) + "%"}<small>估</small></div>`, bs, "cost",
     "今日计费 token 对日预算的占比，估算值；部分会话没有算进来时会偏低。", `<span>${bd.billable == null ? "—" : FMT.tok(Number(bd.billable))} / ${bd.budget ? FMT.tok(bd.budget) : "—"}</span><span>${td == null ? "—" : "$" + td.toFixed(1)}</span>`);
+  const relM = ms.find(m => m.id === "release.hours_since_release") || {};
+  const t7 = hk("git", "距上次上线", `<div class="hk-v">${relM.value == null ? "—" : Math.round(relM.value) + "<small>时</small>"}</div>`, relM.status ? sk(relM.status) : "none", "health",
+    "距上次生产变更（GitHub 生产部署记录）的小时数；超过 4 时为异常，计入总览的异常判断。");
   const aside = [bad.length ? stChip("bad", metricStatusText("bad", bad.length)) : "", warn.length ? stChip("warn", metricStatusText("warn", warn.length)) : ""].join("");
   const mrows = [...bad, ...warn].slice(0, 6).map(anomRow).join(""), more = bad.length + warn.length - 6;
   const CAP = 6, shown = rows.slice(0, CAP);
   const pbody = rows.length ? `<div>${shown.map(pbRow).join("")}${rows.length > CAP ? `<div class="pb more" data-tip="${esc(rows.slice(CAP).map(r => r.who + " " + r.what + " " + r.val).join("\n"))}">另有 ${rows.length - CAP} 项</div>` : ""}</div>` : emptyMsg(vs === "none" ? "无数据" : "没有要处理的");
-  return `<div class="stack16">${verdict}<div class="hks">${t1}${t2}${t3}${t4}${t5}${t6}</div>
+  return `<div class="stack16">${verdict}<div class="hks">${t1}${t2}${t3}${t4}${t5}${t6}${t7}</div>
     ${panel("warn", "要处理", pbody)}
     <div id="ov-workers">${livePanel(D)}</div>
     ${panel("arrow", "流水线", pipeStrip(D), (F.errors || {}).stages ? stChip("bad", "阶段计数不可用") : "")}
