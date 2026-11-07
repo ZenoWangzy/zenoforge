@@ -1844,6 +1844,31 @@ dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == implement:issue-23:* ]] || fail "PR-lane implement unit was not dispatched (${DISPATCHED[*]:-none})"
 impl_headings "$DISPATCH_PROMPT" || fail 'PR-lane implement brief lost the six orchestration headings'
 [[ "$DISPATCH_PROMPT" == *"不 push main"* && "$DISPATCH_PROMPT" == *"流水线会开 PR 并派评审"* ]] || fail 'PR-lane implement brief lost its push boundary'
+# A run that ended blocked-on with no commit starts again only once its blocker clears, whatever freed the unit.
+blocked_run='{"stage":"write-start","result":"[]"},{"stage":"write-end","result":"[]"},{"stage":"blocked-on","result":"#150"}'
+printf '{"states":{"150":{"state":"OPEN","labels":""}}}\n' > "$A/dep-check.cache.json"; printf '%s\n' "$(date +%s)" > "$A/dep-check.epoch"
+units "{\"units\":[{\"id\":\"issue-80\",\"issue\":80,\"lane\":\"pr\",\"branch\":\"agent/issue-80\",\"stage\":\"implement-pending\",\"task\":\"fix it\",\"history\":[$blocked_run,{\"stage\":\"hold-handoff\"}]},{\"id\":\"issue-150\",\"issue\":150,\"stage\":\"implement\",\"history\":[]}]}"
+DEP_DELIVERED_CACHE=(); DISPATCHED=(); dispatch_pending || :
+[[ "$(field issue-80 .stage):$(field issue-80 .blocked_on)" == blocked-external:150 && -z "${DISPATCHED[*]:-}" ]] \
+  || fail "a blocked run was started again before its blocker cleared ($(field issue-80 .stage) ${DISPATCHED[*]:-})"
+# Delivery frees it on the next pass with no human step.
+set_unit issue-150 '.stage="merged"'
+release_dependency_blocks
+[[ "$(field issue-80 .stage)" == implement-pending ]] || fail "a delivered blocker did not free the unit ($(field issue-80 .stage))"
+DISPATCHED=(); dispatch_pending || :
+[[ "${DISPATCHED[0]:-}" == implement:issue-80:* ]] || fail "a cleared blocker did not dispatch the unit (${DISPATCHED[*]:-none})"
+# A supervisor ruling is the way out of a dead blocker: it frees the unit even though the blocker never delivered.
+units "{\"units\":[{\"id\":\"issue-80\",\"issue\":80,\"lane\":\"pr\",\"branch\":\"agent/issue-80\",\"stage\":\"implement-pending\",\"task\":\"fix it\",\"history\":[$blocked_run,{\"stage\":\"supervisor-requeue\",\"decision\":{\"owner\":\"supervisor\"}}]},{\"id\":\"issue-150\",\"issue\":150,\"stage\":\"implement\",\"history\":[]}]}"
+DEP_DELIVERED_CACHE=(); DISPATCHED=(); dispatch_pending || :
+[[ "${DISPATCHED[0]:-}" == implement:issue-80:* ]] || fail "a ruled unit was held on its blocker (${DISPATCHED[*]:-none})"
+# A dead blocker (every ledger row closed, issue open, no recut child) does not hold the unit forever: it reaches the supervisor.
+scheduler_issue_state_saved="$(declare -f scheduler_issue_state)"
+scheduler_issue_state() { printf '{"state":"ready-for-agent"}'; }
+units "{\"units\":[{\"id\":\"issue-80\",\"issue\":80,\"lane\":\"pr\",\"branch\":\"agent/issue-80\",\"stage\":\"implement-pending\",\"task\":\"fix it\",\"history\":[$blocked_run,{\"stage\":\"hold-handoff\"}]},{\"id\":\"issue-150\",\"issue\":150,\"stage\":\"closed\",\"history\":[]}]}"
+DEP_DELIVERED_CACHE=(); DISPATCHED=(); dispatch_pending || :
+release_dependency_blocks
+[[ "$(field issue-80 .stage)" == supervisor-review && -z "${DISPATCHED[*]:-}" ]] || fail "a dead blocker held the unit instead of reaching the supervisor ($(field issue-80 .stage))"
+eval "$scheduler_issue_state_saved"; DISPATCHED=(); DISPATCH_PROMPT=""
 LANDS=(); launch_land() { LANDS+=("$2:$3:$8:$9"); }
 units "{\"units\":[{\"id\":\"issue-7\",\"issue\":7,\"lane\":\"direct-main\",\"branch\":\"agent/auto-issue-7\",\"stage\":\"ready-to-merge\",\"approved_sha\":\"$ih_local\",\"reviewed_pr_head\":\"$ih_base\",\"history\":[]}]}"
 fast_land_lane || :
