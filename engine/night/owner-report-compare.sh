@@ -49,3 +49,25 @@ owner_report_backfill() {
       "$(python3 "$OWNER_REPORT_COMPARE_PY" backfill "$(owner_report_snapshot_dir "$home")" "$at" "$home" "$(maintainer_health_mail_runtime_dir "$home")" <<< "$facts")"
   done
 }
+
+# Repository root for the rollback and landed-change reads: ZF_REPO_DIR, else the checkout this file lives in.
+owner_report_repo_root() {
+  printf '%s\n' "${ZF_REPO_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)}"
+}
+
+# owner_report_material <home> <ledger> <now>: the material changes of today's report as one JSON line, for the cause worker.
+owner_report_material() {
+  local facts
+  facts="$(maintainer_health_mail_daily_facts "$1" "$2" "$3" "$(owner_report_repo_root)")" || return 1
+  jq -c '.compare.material // []' <<< "$facts"
+}
+
+# owner_report_backfill_cli <home> <ledger> <days> [anchor]: anchor defaults to the latest 01:00 UTC slot start.
+owner_report_backfill_cli() {
+  local now anchor="${4:-}" days="$3"
+  now="$(date +%s)"
+  [[ -n "$anchor" ]] || anchor=$(( now / 86400 * 86400 + OWNER_REPORT_SEND_FROM_UTC_SECONDS ))
+  [[ "$days" =~ ^[0-9]+$ && "$anchor" =~ ^[0-9]+$ ]] || { printf 'usage: backfill-snapshots [days] [anchor-epoch]\n' >&2; return 2; }
+  (( anchor <= now )) || anchor=$(( anchor - 86400 ))
+  owner_report_backfill "$1" "$2" "$anchor" "$days" "$(owner_report_repo_root)"
+}
