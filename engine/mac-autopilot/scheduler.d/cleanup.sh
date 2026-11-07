@@ -211,8 +211,14 @@ cleanup_tick() {
   n_total="$(jqf '.workers | length' "$WORKERS" 2>/dev/null || echo 0)"
   if (( n_total > 60 )); then
     # 未回收的 worker 一律保留，只裁剪已回收的旧记录。
-    jqf '{workers: ([.workers[] | select(.harvested != true)] + ([.workers[] | select(.harvested == true)] | sort_by(.started) | .[-60:]))}' "$WORKERS" | write_state "$WORKERS"
-    say "trim workers ledger $n_total"
+    # The tick's tail runs without the ledger lock, so this one write takes it (set_unit's own-lock pattern).
+    local own_lock=false
+    if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then acquire_scheduler_lock_wait && own_lock=true; fi
+    if [[ "${SCHED_LOCK_HELD:-false}" == true ]]; then
+      jqf '{workers: ([.workers[] | select(.harvested != true)] + ([.workers[] | select(.harvested == true)] | sort_by(.started) | .[-60:]))}' "$WORKERS" | write_state "$WORKERS"
+      say "trim workers ledger $n_total"
+    fi
+    [[ "$own_lock" != true ]] || release_scheduler_lock
   fi
   # 只删一天无写入的超大日志：活 worker 的日志仍在写，不会被删。
   find "$SUP" -maxdepth 1 -name '*.worker.log' -size +4M -mmin +1440 -delete 2>/dev/null

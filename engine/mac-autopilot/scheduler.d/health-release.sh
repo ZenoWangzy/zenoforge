@@ -77,6 +77,7 @@ refill_room() { # stage -> 0 when the stage fits in what is left of the refill, 
 # Dispatch refreshes itself because running workers may have pushed.
 phase() {
   local t0=$SECONDS rc=0 gh_before=0 gh_after=0 gh_delta=0 phase_name="$1" elapsed
+  refill_stopped && return 1 # a refused ledger lock wait ended the refill: no later phase runs
   gh_before="$(tick_gh_calls_count)"
   phase_mark "$phase_name"
   [[ "${TICK_LOCAL_REFILL:-false}" == true || "$phase_name" == dispatch_pending || "$phase_name" == tick_prs_prime ]] || tick_prs_prime

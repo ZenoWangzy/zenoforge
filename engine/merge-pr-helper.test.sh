@@ -265,6 +265,10 @@ merge_pr_static_scans_ok 17 || fail 'a PR with no engine shell was refused by th
 PR_FILES='["engine/lib.d/model-units.sh"]'
 if merge_pr_static_scans_ok 17 >"$fixture/check-output" 2>&1; then fail 'a red static scan did not refuse the merge'; fi
 [[ "$(cat "$fixture/check-output")" == *'static scan failed: not ok - banned shape'* ]] || fail "scan refusal lost its reason: $(cat "$fixture/check-output")"
+# #659 reached main through a Python file: a text scan covers more than shell.
+PR_FILES='["engine/mac-autopilot/worker_cost.py"]'
+if merge_pr_static_scans_ok 17 >"$fixture/check-output" 2>&1; then fail 'a Python engine change skipped the static scans'; fi
+PR_FILES='["engine/lib.d/model-units.sh"]'
 PR_BODY=gh-error
 if merge_pr_static_scans_ok 17 >"$fixture/check-output" 2>&1; then fail 'an unreadable PR skipped the static scans'; fi
 PR_BODY=$'## prior-art\nno external prior art: test fixture'
