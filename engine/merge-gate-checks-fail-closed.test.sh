@@ -185,6 +185,13 @@ assert_eq "passing check rows admit the merge path" 0 "$status"
 assert_eq "passing checks call the guarded merge exactly once" 1 "$MERGE_CALLS"
 assert_eq "passing checks mark the PR ready exactly once" 1 "$READY_CALLS"
 
+risk_class_hits_for_paths() { return 1; }
+MERGE_CALLS=0
+classifier_down_output="$(merge_agent_pr 760001 760002 "$FIX_FORWARD_HEAD_SHA" 1 0 "$test_root/merge-wait.log"; printf 'status=%s kind=%s calls=%s\n' "$?" "$MERGE_GATE_FAILURE_KIND" "$MERGE_CALLS")"
+assert_eq "a crashed classifier refuses the merge" 'status=1 kind=risk-class calls=0' "$(tail -n 1 <<<"$classifier_down_output")"
+assert_eq "a crashed classifier leaves one alert line" 1 "$(grep -c 'RISK-CLASSIFIER-DOWN issue=#760001' <<<"$classifier_down_output")"
+risk_class_hits_for_paths() { printf '[]\n'; }
+
 run_review_case() {
   local scenario="$1" verdict="$2" reviewed_head="$3" current_head="$4"
   local expected_kind="$5" expected_status="$6" expected_merges="$7" status=0
