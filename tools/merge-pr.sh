@@ -26,6 +26,16 @@ merge_pr_result_file() {
   printf '%s/%s.json\n' "$dir" "$2"
 }
 
+merge_pr_receipt_file() {
+  local repo="$1" git_dir
+  git_dir="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  case "$git_dir" in
+    /*) ;;
+    *) git_dir="$repo/$git_dir" ;;
+  esac
+  printf '%s/zf-test-receipts/%s\n' "$git_dir" "$2"
+}
+
 merge_pr_refuse() {
   printf 'refusing to merge PR #%s: %s\n' "$1" "$2" >&2
   return 1
@@ -86,6 +96,59 @@ merge_pr_prior_art_ok() {
     merge_pr_refuse "$pr" '"## prior-art" needs a source URL or a line "no external prior art: <reason>"'
     return 1
   fi
+}
+
+# A merge must not follow a failed test: tools/test-receipt.sh records each test
+# command's exit code for the exact HEAD it ran at, and the merge needs every
+# command's last recorded run green. A Markdown-only PR (the quick-land path)
+# has no test run to prove, and a green full-suite result for the same SHA
+# (merge_pr_main) is itself a receipt.
+merge_pr_test_receipt_ok() {
+  local pr="$1" view head_sha root result_file receipt bad
+  if ! view="$(gh pr view "$pr" --json body,files,commits 2>/dev/null)" \
+    || ! jq -e '.files | type == "array" and length > 0' <<<"$view" >/dev/null 2>&1; then
+    merge_pr_refuse "$pr" 'could not read the PR file list for the test receipt'
+    return 1
+  fi
+  if jq -e 'all(.files[].path; test("\\.md$"))' <<<"$view" >/dev/null 2>&1; then
+    return 0
+  fi
+  head_sha="$(gh pr view "$pr" --json headRefOid 2>/dev/null \
+    | jq -er '.headRefOid | select(type == "string")' 2>/dev/null)" || {
+    merge_pr_refuse "$pr" 'could not read the PR head for the test receipt'
+    return 1
+  }
+  root="$(merge_pr_root)" || {
+    merge_pr_refuse "$pr" 'run this helper inside a Git checkout so test receipts can be found'
+    return 1
+  }
+  if result_file="$(merge_pr_result_file "$root" "$head_sha")" \
+    && [[ -f "$result_file" ]] && merge_pr_result_is_green "$result_file" "$head_sha"; then
+    return 0
+  fi
+  receipt="$(merge_pr_receipt_file "$root" "$head_sha")" || {
+    merge_pr_refuse "$pr" 'cannot locate the repository test-receipt directory'
+    return 1
+  }
+  if [[ ! -s "$receipt" ]]; then
+    merge_pr_refuse "$pr" "no test receipt exists for $head_sha: run the tests at that HEAD through tools/test-receipt.sh <command...>"
+    return 1
+  fi
+  bad="$(awk '
+    index($0, "\t") == 0 { print "malformed receipt line " NR; next }
+    {
+      tab = index($0, "\t")
+      rc = substr($0, 1, tab - 1)
+      cmd = substr($0, tab + 1)
+      if (rc !~ /^[0-9]+$/ || cmd == "") { print "malformed receipt line " NR; next }
+      last[cmd] = rc
+    }
+    END { for (cmd in last) if (last[cmd] + 0 != 0) print cmd " (exit " last[cmd] ")" }
+  ' "$receipt")"
+  [[ -z "$bad" ]] || {
+    merge_pr_refuse "$pr" "test receipt for $head_sha has a failed last run: $bad"
+    return 1
+  }
 }
 
 # Only this PR's own files: a main already over its baseline must not stop other merges.
@@ -217,6 +280,7 @@ merge_pr_checks_and_merge() {
   else
     merge_pr_prior_art_ok "$pr" || return 1
   fi
+  merge_pr_test_receipt_ok "$pr" || return 1
   merge_pr_size_ok "$pr" || return 1
   merge_pr_gate_ci_ok "$pr" "$checks_json" || return 1
   merge_pr_scheduler_prelude_ok "$pr" || return 1

@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh"
 merge_pr_static_scans() { return 0; }
-merge_pr_root() { return 1; } # the enclosing checkout's size state must not reach these fixtures: a PR over its baseline turned this test red too
+merge_pr_root() { printf '%s\n' "$repo"; } # the fixture repo stands in for the enclosing checkout: the host's size state and receipts must not reach these fixtures
 
 fixture="$test_env_root/merge-pr"
 repo="$fixture/repo"
@@ -93,7 +93,7 @@ assert_refuses "PR head $PR_HEAD does not match tested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"unit","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -104,7 +104,7 @@ fi
 check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'failed checks: cla, unit'* && "$check_output" == *'checks without a matching ZF_MERGE_OVERRIDE: unit'* ]] \
   || fail "failed check names or unmatched override were not reported: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
   || fail "an unmatched failed check reached merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -113,7 +113,7 @@ check_output="$(ZF_MERGE_OVERRIDE=cla merge_pr_checks_and_merge 17 2>&1)" \
   || fail "named failed-check override did not allow the merge: $check_output"
 [[ "$check_output" == *'explicit ZF_MERGE_OVERRIDE allows failed checks: cla'* ]] \
   || fail "merge did not print the failed check covered by its override: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
   || fail "pending check or named override did not reach squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS=gh-error
@@ -180,8 +180,51 @@ PR_FILES='["tools/quick-land.sh"]'
   PR_FILES='["tools/size-baseline.txt"]' expect_prior_art_merge 'PR edits the baseline file only'
   PR_FILES='["quick-land.sh"]' expect_prior_art_merge 'PR file is a substring of the failing path'
 )
+rm -f "$repo/tools/size-ratchet.sh" # the fake ratchet must not reach later merges
 ZF_MERGE_OVERRIDE=prior-art expect_prior_art_merge 'prior-art override'
 [[ "$(cat "$fixture/check-output")" == *'skips the prior-art check for PR #17'* ]] || fail 'override was not logged'
+
+# Test receipts: a merge must not follow a failed test run at the PR head.
+receipt_dir="$repo/.git/zf-test-receipts"
+rsha=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+expect_receipt_refusal() {
+  local label="$1" expected="$2"
+  : > "$fixture/gh-calls"
+  if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then
+    fail "$label reached merge"
+  fi
+  [[ "$(cat "$fixture/check-output")" == *"$expected"* ]] || fail "$label wrong refusal: $(cat "$fixture/check-output")"
+  [[ "$(cat "$fixture/gh-calls")" != *merge:* ]] || fail "$label reached the merge call"
+}
+expect_receipt_merge() {
+  local label="$1"
+  : > "$fixture/gh-calls"
+  merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1 || fail "$label refused: $(cat "$fixture/check-output")"
+  [[ "$(cat "$fixture/gh-calls")" == *merge:* ]] || fail "$label did not merge"
+}
+PR_CHECKS='[]'
+PR_BODY=$'## prior-art\nno external prior art: test fixture\n'
+PR_FILES='["tools/quick-land.sh"]'
+PR_HEAD="$rsha" # no full-suite result exists for this head, so only a receipt can pass
+rm -rf "$receipt_dir"
+expect_receipt_refusal 'no test receipt' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+mkdir -p "$receipt_dir"
+printf '0\tbash engine/quick-land.test.sh\n1\tbash engine/merge-pr-helper.test.sh\n' >"$receipt_dir/$rsha"
+expect_receipt_refusal 'failed last run' 'bash engine/merge-pr-helper.test.sh (exit 1)'
+printf '0\tbash engine/quick-land.test.sh\n1\tbash engine/merge-pr-helper.test.sh\n0\tbash engine/merge-pr-helper.test.sh\n' >"$receipt_dir/$rsha"
+expect_receipt_merge 'later pass of the same command'
+printf '1\tbash engine/x.test.sh\nnot-a-receipt-line\n' >"$receipt_dir/$rsha"
+expect_receipt_refusal 'malformed receipt line' 'malformed receipt line 2'
+rm -f "$receipt_dir/$rsha"
+PR_FILES='["docs/notes.md","README.md"]'
+expect_receipt_merge 'Markdown-only PR with no receipt'
+PR_FILES='["tools/quick-land.sh"]'
+PR_HEAD="$sha" # the green full-suite result above proves this head and counts as a receipt
+
+# tools/test-receipt.sh writes <rc><TAB><command> under the current HEAD and exits with the command's code.
+if (cd "$repo" && bash "$MODEL_POLICY_TEST_REPO/tools/test-receipt.sh" true); then :; else fail 'test-receipt.sh exited non-zero for a passing command'; fi
+if (cd "$repo" && bash "$MODEL_POLICY_TEST_REPO/tools/test-receipt.sh" false); then fail 'test-receipt.sh exited 0 for a failing command'; fi
+[[ "$(cat "$receipt_dir/$sha")" == $'0\ttrue\n1\tfalse' ]] || fail "test-receipt.sh wrote: $(cat "$receipt_dir/$sha" 2>/dev/null)"
 
 # Any engine shell change runs the static scans; a red scan refuses, other changes skip them.
 merge_pr_static_scans() { echo called >> "$fixture/scan-calls"; echo 'not ok - banned shape'; return 1; }
@@ -233,4 +276,4 @@ done
 PR_FILES='["tools/merge-pr.sh"]'
 ZF_MERGE_OVERRIDE=gate-ci merge_pr_gate_ci_ok 17 "$PR_CHECKS" || fail 'the gate-ci override was ignored'
 
-echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, and applies exact named overrides, and requires a prior-art section unless test-only or overridden'
+echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, applies exact named overrides, requires a prior-art section unless test-only or overridden, and requires a green test receipt for the PR head unless the PR is Markdown-only'
