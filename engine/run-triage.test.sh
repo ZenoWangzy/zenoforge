@@ -197,16 +197,26 @@ cat > "$FAKE_BIN/systemctl" <<'EOF'
 case " $* " in *' list-units '*) exit 0 ;; esac
 exit 1
 EOF
-REAL_NODE="$(command -v node)"
+REAL_NODE="$(test_env_resolve_node "$FAKE_BIN/node")"
 cat > "$FAKE_BIN/node" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${1##*/}" == benny-repro.mjs ]]; then
   printf '%s\n' "$*" >> "$FAKE_BENNY_LOG"
   exit 0
 fi
+if [[ "$REAL_NODE" -ef "$0" ]]; then
+  echo 'test-env: refusing node stub as real node' >&2
+  exit 1
+fi
 exec "$REAL_NODE" "$@"
 EOF
 chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/codex" "$FAKE_BIN/gitnexus" "$FAKE_BIN/systemctl" "$FAKE_BIN/node"
+# Exercise the installed stub with a self-referential target; it must stop immediately.
+if node_guard_output="$(REAL_NODE="$FAKE_BIN/node" "$FAKE_BIN/node" --version 2>&1)"; then
+  echo 'node stub accepted itself as the real node' >&2
+  exit 1
+fi
+[[ "$node_guard_output" == *'test-env: refusing node stub as real node'* ]] || { echo "$node_guard_output" >&2; exit 1; }
 export PATH="$FAKE_BIN:$PATH"
 export REAL_NODE
 export REPO="test/repo"

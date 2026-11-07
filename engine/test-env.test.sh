@@ -37,8 +37,39 @@ while IFS= read -r name; do
   esac
 done < <(compgen -e)
 
+# Re-entering with an inherited test HOME and PATH must fail before setup.
+if nested_output="$(bash -c 'source "$1"' _ "$(dirname -- "${BASH_SOURCE[0]}")/test-env.sh" 2>&1)"; then
+  echo 'test-env: nested bootstrap unexpectedly succeeded' >&2
+  exit 1
+fi
+[[ "$nested_output" == *'test-env: refusing nested test environment'* ]] || { echo "$nested_output" >&2; exit 1; }
+
+# Equivalent spellings of the test HOME are still nested entry.
+for home_spelling in "$HOME/" "$HOME/."; do
+  if HOME="$home_spelling" bash -c 'source "$1"' _ "$(dirname -- "${BASH_SOURCE[0]}")/test-env.sh" >/dev/null 2>&1; then
+    echo "test-env: nested bootstrap accepted HOME=$home_spelling" >&2
+    exit 1
+  fi
+done
+
+# The eval grader sets the marker before running a suite from the host HOME; that is not nesting.
+grader_root="$(env -u ZF_AGENT_TEST_ROOT HOME="$TEST_ENV_HOST_HOME" PATH="$TEST_ENV_HOST_PATH" TEST_ENV_PARENT="$TEST_ENV_NESTED_PARENT" \
+  ZF_AGENT_TEST_MODE=1 bash -c 'source "$1" && printf %s "$ZF_AGENT_TEST_ROOT"' _ "$(dirname -- "${BASH_SOURCE[0]}")/test-env.sh")"
+[[ "$grader_root" == "$TEST_ENV_NESTED_PARENT"/zenoforge-agent-test-* ]] || { echo "test-env: marker-only bootstrap refused or misplaced: $grader_root" >&2; exit 1; }
+
+# A shadowed lookup must reject the stub, even through a hard link.
+mkdir -p "$test_env_root/shadow"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$test_env_root/shadow/node"
+chmod +x "$test_env_root/shadow/node"
+ln "$test_env_root/shadow/node" "$test_env_root/shadow/alias"
+if shadow_output="$(PATH="$test_env_root/shadow:$PATH" test_env_resolve_node "$test_env_root/shadow/alias" 2>&1)"; then
+  echo 'test-env: shadowed node unexpectedly accepted' >&2
+  exit 1
+fi
+[[ "$shadow_output" == *'test-env: refusing node stub as real node'* ]] || { echo "$shadow_output" >&2; exit 1; }
+
 hostile_tmp="$MODEL_POLICY_TEST_REPO"
-hostile_test_root="$(HOME="$test_host_home" TMPDIR="$hostile_tmp" bash -c '
+hostile_test_root="$(TEST_ENV_NESTED_PARENT= TMPDIR="$hostile_tmp" test_env_run_clean bash -c '
   set -euo pipefail
   host_home="$HOME"
   source "$1"
@@ -52,7 +83,7 @@ hostile_test_root="$(HOME="$test_host_home" TMPDIR="$hostile_tmp" bash -c '
 # A repo fixture nested under the runner temp is not the runner's scratch root.
 nested_hostile_tmp="$TMPDIR/nested-suite/repo"
 mkdir -p "$nested_hostile_tmp"
-nested_hostile_root="$(HOME="$test_host_home" TMPDIR="$nested_hostile_tmp" bash -c '
+nested_hostile_root="$(TEST_ENV_NESTED_PARENT= TMPDIR="$nested_hostile_tmp" test_env_run_clean bash -c '
   set -euo pipefail
   host_home="$HOME"
   source "$1"
@@ -64,7 +95,7 @@ nested_hostile_root="$(HOME="$test_host_home" TMPDIR="$nested_hostile_tmp" bash 
 [[ "$nested_hostile_root" != "$nested_hostile_tmp"/zenoforge-agent-test-* ]]
 
 # A queued landing runs preflight with these set (land-queue.sh); they must not reach tests.
-if ! PLAN_PACKAGE=leaked-package REPO_DIR=/leaked/repo bash -c '
+if ! PLAN_PACKAGE=leaked-package REPO_DIR=/leaked/repo test_env_run_clean bash -c '
   source "$1"
   [[ ! -v PLAN_PACKAGE && ! -v REPO_DIR ]]
 ' _ "$(dirname -- "${BASH_SOURCE[0]}")/test-env.sh"; then
@@ -73,7 +104,7 @@ if ! PLAN_PACKAGE=leaked-package REPO_DIR=/leaked/repo bash -c '
 fi
 
 # Shared admission state must resolve inside the tested checkout, never the host.
-if ! HAND_PRIORITY_STATE=/live/hand-priority.json bash -c '
+if ! HAND_PRIORITY_STATE=/live/hand-priority.json test_env_run_clean bash -c '
   source "$1"
   [[ ! -v HAND_PRIORITY_STATE ]]
 ' _ "$(dirname -- "${BASH_SOURCE[0]}")/test-env.sh"; then

@@ -50,6 +50,8 @@ function fixture(t) {
     'done < <(compgen -e)',
     'test_env_root="$(mktemp -d "$TEST_ROOT/runtime.XXXXXX")"',
     'test_host_home="$TEST_ROOT/home"',
+    'TEST_ENV_HOST_HOME="$test_host_home" TEST_ENV_HOST_PATH="$PATH" TEST_ENV_NESTED_PARENT="$test_env_root/children"',
+    'test_env_run_clean() { env -u ZF_AGENT_TEST_MODE -u ZF_AGENT_TEST_ROOT HOME="$TEST_ENV_HOST_HOME" PATH="$TEST_ENV_HOST_PATH" "$@"; }',
     'mkdir -p "$test_host_home"',
   ].join('\n'));
   const groupBody = [
