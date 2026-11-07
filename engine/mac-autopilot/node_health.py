@@ -107,7 +107,7 @@ CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     # Factory flow metrics (#4366): throughput vs the 6.5/h SLO, staged WIP age, dispatch
     # stalls, main-red duration and in/out conservation. Crossing the unhealthy bound sends
     # one supervisor-inbox event per episode (--inbox); regular samples reach the dashboard.
-    "flow.merge_rate_per_hour": ("flow", "merges per hour vs the 6.5 target (starved queue has no value)", 6.5, 3.5, True),
+    "flow.merge_rate_per_hour": ("flow", "merges per hour vs the 6.5 target over 24 h (starved queue has no value)", 6.5, 3.5, True),
     "flow.wip_age_stage_p90_hours": ("flow", "worst per-stage p90 age of open units, hours", 4, 12, False),
     "flow.slot_idle_hours":    ("flow", "hours units queued for a repair/rereview worker while none of that phase ran", 0.25, 1, False),
     "flow.main_red_hours":     ("flow", "hours main was red (bisect sessions) in the window", 1, 3, False),
@@ -167,7 +167,7 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "engine.follow_lag_hours": "live 引擎没跟上 example HEAD:scripts 的小时数。converge 导出、构建或自检失败时开始计时，跟上后清零。高 = 落地了但没上线。",
     "host.stale_worktrees": "~/wt 下建立超过 2 小时还没删的工作目录数。分诊、顾问、hand 每轮结束就该删掉；堆积 = 收尾清理坏了（10-21/22 收尾先 fetch，代理一卡就全部保留，26 小时堆到 287 个）。",
     "intake.closed_units_open_issues": "issue 开着且 ready-for-agent、但单元都已结束的张数。intake 的 terminal 跳过不派 worker，也不逐行报，所以这类票会静默停住；非 0 时看体检输出列出的号（11-06 查出 8 张）。",
-    "flow.merge_rate_per_hour": "窗口内 merged/landed 单数 ÷ 小时数，对照 6.5/h 的吞吐目标（#4355）。窗口里没有在制品也没进单（无积压）时不计值；跌破 3.5/h 是升级前串行合并道的上限，工厂没在产出。",
+    "flow.merge_rate_per_hour": "过去 24 小时内 merged/landed 的工厂单元数（不含人工 PR 与账本外的 PR）÷ 24，对照 6.5/h 的吞吐目标（#4355）。窗口里没有在制品也没进单（无积压）时不计值；跌破 3.5/h 是升级前串行合并道的上限，工厂没在产出。",
     "flow.wip_age_stage_p90_hours": "每张在途单在当前阶段已停留的小时（按阶段分组取 p90，取最差阶段；分组明细在 scorecard 的 flow.wip_age）。高 = 流动卡在某个阶段，去单元表找是哪几张。",
     "flow.slot_idle_hours": "有单排队等返工/复检 worker、而该阶段一个 worker 都没在跑的小时数：这是派发停摆（槽位空转），不是产能不足（那会表现为 worker 全忙）。",
     "flow.main_red_hours": "main 处在红的小时数（#4356 二分会话覆盖）：红一次并自动回滚是设计内；持续红 = 二分卡住或回滚 PR 未合并。",
@@ -234,7 +234,7 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "engine.follow_lag_hours": "engine-sync converge 失败时写入的 $AGENT_HOME/engine-versions/.lag-since（epoch 秒），成功跟上即删除；没有该文件记 0",
     "host.stale_worktrees": "ZF_WORKTREE_ROOT（默认 ~/wt）下每个工作目录的 .git 链接文件建立时间早于 2 小时的个数；没有该目录（Mac）为空",
     "intake.closed_units_open_issues": "intake-candidates.json 的候选行里，单元全部处于终态且交接 episode 已消费的 issue 数；没有候选快照时为空",
-    "flow.merge_rate_per_hour": "units.json merged/landed 事件 ÷ 窗口小时；无积压判定：窗口内没有任何在途或新进入的单",
+    "flow.merge_rate_per_hour": "units.json 与 units-archive.json 的 merged/landed 事件 ÷ 24 h；无积压判定：窗口内没有任何在途或新进入的单",
     "flow.wip_age_stage_p90_hours": "units.json 在途单（stage 非终态）当前 stage 的最后事件时间 → now，按 stage 分组取 p90",
     "flow.slot_idle_hours": "units.json 触发事件 + scheduler.log dispatch 行给出排队区间（同 time_sinks），worker_cost 运行区间给出同阶段在跑区间，取无人在跑的净空转",
     "flow.main_red_hours": "$AGENT_HOME/main-red/*.json 二分会话（created_at → updated_at，未终态会话算到 now），按窗口裁剪",
@@ -1551,8 +1551,8 @@ def main():
         units, sizes, nontest_added, now - timedelta(days=LARGE_PR_WINDOW_DAYS), now)
     sinks, queue_waits = time_sinks(units, os.path.join(a, "scheduler.log"),
                                     now - timedelta(hours=TIME_SINK_HOURS), now)
-    merge_rate, entered, merged = merge_flow(units, since, now)
-    metrics["flow.merge_rate_per_hour"] = merge_rate
+    metrics["flow.merge_rate_per_hour"] = merge_flow(units, now - timedelta(hours=24), now)[0]
+    _, entered, merged = merge_flow(units, since, now)
     metrics["flow.in_out_imbalance"] = abs(entered - merged)
     wip_rows, metrics["flow.wip_age_stage_p90_hours"] = wip_stage_ages(units, now)
     metrics["flow.slot_idle_hours"] = slot_idle_hours(queue_waits, cost_rows, since)
