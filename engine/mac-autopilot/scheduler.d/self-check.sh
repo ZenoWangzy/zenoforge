@@ -352,7 +352,7 @@ $(tail -80 "$check_output" 2>/dev/null)"
     set_unit "$1" "$write_start_filter | .implement_route_provider=(.implement_route_provider // $(js "$route_provider")) | .implement_provider=$(js "$provider") | .implement_backend=$(js "$provider") | .implement_model=$(js "$6") | .implement_effort=$(js "$7") | .implement_identity=$(js "$provider:$6:$7")"
     [[ "$hard_escalation" != true ]] || set_unit "$1" '.hard_escalated=true'
     # Same-tick admission widens the active footprint set (write-start just landed).
-    # Fold the dispatched unit into the tick snapshot and recompute the preflight
+    # Fold the dispatched unit into the tick snapshot and extend the preflight
     # conflict map from cached data, so later candidates hit "footprint wait" at
     # room_for — before clone preparation and failure-evidence fetch — instead of
     # at the fresh admission check after that work was already done (05:10:42Z
@@ -360,7 +360,7 @@ $(tail -80 "$check_output" 2>/dev/null)"
     if [[ "$TICK_ACTIVE_FOOTPRINTS_VALID" == true ]]; then
       TICK_ACTIVE_FOOTPRINTS="$(jqf -c --arg id "$1" --argjson footprint "$footprint" \
         'map(select(.id != $id)) + [{id:$id,footprint:$footprint}]' <<<"$TICK_ACTIVE_FOOTPRINTS")" \
-        && footprint_refresh_conflicts cached || :
+        && footprint_merge_changed_owners || :
     fi
   fi
   local extra=""

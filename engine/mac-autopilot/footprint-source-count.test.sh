@@ -177,6 +177,62 @@ rows=$'c1\t["packages/hot/src/f1.ts"]\t["packages/hot/src/f1.ts"]\nc2\t["docs/x.
 new_batch="$(active_footprint_conflicts_batch "$owners" "$rows")"
 [[ "$new_batch" == $'c1\to-dir\nc3\to-file' ]] || fail "batch verdicts changed: [$new_batch]"
 
+# The conflict map after starts: the merge against changed owners must give what a full comparison gives, and may only keep more.
+merge_map() { local id; for id in "${!TICK_FOOTPRINT_PREFLIGHT_CONFLICT[@]}"; do printf '%s\n' "$id"; done | sort | paste -sd,; }
+full_map() ( footprint_refresh_conflicts cached && merge_map )
+merge_tick() { # owners-json, then id=path candidates
+  local row
+  TICK_ACTIVE_FOOTPRINTS="$1"; shift
+  TICK_ACTIVE_FOOTPRINTS_VALID=true; TICK_FOOTPRINT_PREFLIGHT_IDS=(); TICK_CHECK_SCOPE=(); TICK_FOOTPRINT_CACHE=()
+  for row in "$@"; do
+    TICK_FOOTPRINT_PREFLIGHT_IDS+=("${row%%=*}")
+    TICK_CHECK_SCOPE["${row%%=*}"]="[\"${row#*=}\"]"; TICK_FOOTPRINT_CACHE["${row%%=*}"]="[\"${row#*=}\"]"
+  done
+  footprint_refresh_conflicts cached
+}
+start() { # owner path: the fold in self-check.sh, then the merge
+  TICK_ACTIVE_FOOTPRINTS="$(jq -c --arg id "$1" --arg path "$2" 'map(select(.id != $id)) + [{id:$id,footprint:[$path]}]' <<<"$TICK_ACTIVE_FOOTPRINTS")"
+  footprint_merge_changed_owners
+}
+same_map() { [[ "$(merge_map)" == "$(full_map)" ]] || fail "$1: merged [$(merge_map)], full [$(full_map)]"; }
+grep -q 'footprint_merge_changed_owners || :' "$engine_dir/mac-autopilot/scheduler.d/self-check.sh" || fail 'self-check no longer merges after a start'
+
+merge_tick '[{"id":"held","footprint":["packages/cold/src/a.ts"]}]' a=packages/hot/src/f1.ts b=packages/hot/src/f2.ts c=docs/x.md d=packages/cold/src/a.ts
+[[ "$(merge_map)" == d ]] || fail "merge fixture: [$(merge_map)]"
+start s1 packages/hot/src/f1.ts; same_map 'a new owner conflicts with a clear candidate'
+[[ "$(merge_map)" == a,d ]] || fail "new owner missed: [$(merge_map)]"
+start s2 packages/cold/src/a.ts; same_map 'a candidate already in conflict stays there'
+[[ "$(merge_map)" == a,d ]] || fail "conflicted candidate lost: [$(merge_map)]"
+[[ "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[d]}" == held ]] || fail 'the first owner must stay named'
+start s3 packages/hot/src/f2.ts; same_map 'a second start in one tick'
+[[ "$(merge_map)" == a,b,d ]] || fail "second start missed: [$(merge_map)]"
+start s4 docs/other.md; same_map 'a start that conflicts with nobody'
+grep -q 'footprint_conflict_merge candidates=1 owners=1' "$LOG" || fail 'the merge must compare only clear candidates with the changed owner'
+
+# A fresh snapshot replaces the view between starts: the start after it must see an owner that widened.
+merge_tick '[{"id":"held","footprint":["packages/cold/src/a.ts"]}]' a=packages/hot/src/f1.ts c=docs/x.md
+TICK_ACTIVE_FOOTPRINTS='[{"id":"held","footprint":["packages/cold/src/a.ts","packages/hot/src/f1.ts"]}]'
+start s1 docs/other.md; same_map 'an owner widened by a fresh snapshot'
+[[ "$(merge_map)" == a ]] || fail "widened owner missed: [$(merge_map)]"
+
+# An owner that shrank keeps its conflict for this tick, which only delays the candidate.
+TICK_ACTIVE_FOOTPRINTS='[{"id":"s1","footprint":["docs/other.md"]}]'
+start s2 docs/third.md
+[[ "$(merge_map)" == a && -z "$(full_map)" ]] || fail "a shrunk owner must stay conservative: [$(merge_map)] [$(full_map)]"
+
+# The fresh check wrote its conflict for a rescoped candidate; the merge must not forget it.
+merge_tick '[{"id":"held","footprint":["packages/cold/src/a.ts"]}]' c=docs/x.md
+TICK_CHECK_SCOPE[c]='["packages/cold/src/a.ts"]'; TICK_HOTSPOT_COUNTS[c]='{}'
+footprint_wait_mark c held '{"id":"c"}' >/dev/null
+start s1 docs/other.md
+[[ "$(merge_map)" == c ]] || fail "a rescoped conflict was lost: [$(merge_map)]"
+
+# With no comparison on record the merge falls back to the full one.
+merge_tick '[{"id":"held","footprint":["packages/cold/src/a.ts"]}]' d=packages/cold/src/a.ts
+TICK_FOOTPRINT_COMPARED_ACTIVE=''; TICK_FOOTPRINT_PREFLIGHT_CONFLICT=()
+start s1 docs/other.md
+[[ "$(merge_map)" == d ]] || fail "the fallback must compare every owner: [$(merge_map)]"
+
 printf '%s\n' '{"expected_paths":["packages/cold/src/a.ts"]}' > "$AGENT_HOME/state/9101.json"
 printf '%s\n' '{"expected_packages":["packages/hot/src/"]}' > "$AGENT_HOME/state/9102.json"
 printf '%s\n' '{"expected_paths":[]}' > "$AGENT_HOME/state/9103.json"

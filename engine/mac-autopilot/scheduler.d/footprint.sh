@@ -236,7 +236,7 @@ footprint_shadow_directory_rule() {
   [[ -z "$old_owner" ]] || say "footprint-shadow-old-rule-would-block unit=$id owner=$old_owner source=directory-prefix"
 }
 footprint_refresh_conflicts() {
-  local refresh="${1:-true}" started=$SECONDS active candidates='' conflicts id scope owner elapsed
+  local refresh="${1:-true}" started=$SECONDS active candidates conflicts id owner elapsed
   if [[ "$refresh" == true ]]; then
     active="$(active_footprint_snapshot)" || { footprint_drop_check_scope_cache; return 1; }
     TICK_ACTIVE_FOOTPRINTS="$active"
@@ -245,11 +245,7 @@ footprint_refresh_conflicts() {
     [[ "$TICK_ACTIVE_FOOTPRINTS_VALID" == true ]] || { footprint_drop_check_scope_cache; return 1; }
     active="$TICK_ACTIVE_FOOTPRINTS"
   fi
-  for id in "${TICK_FOOTPRINT_PREFLIGHT_IDS[@]}"; do
-    [[ -n "$id" ]] || continue
-    scope="${TICK_CHECK_SCOPE[$id]:-[]}"
-    candidates+="$id"$'\t'"$scope"$'\t'"${TICK_FOOTPRINT_CACHE[$id]:-$scope}"$'\n'
-  done
+  candidates="$(footprint_candidate_rows)"
   conflicts="$(active_footprint_conflicts_batch "$active" "$candidates")" \
     || { footprint_drop_check_scope_cache; return 1; }
   TICK_FOOTPRINT_PREFLIGHT_CONFLICT=()
@@ -257,8 +253,37 @@ footprint_refresh_conflicts() {
     [[ -n "$id" ]] && TICK_FOOTPRINT_PREFLIGHT_CONFLICT["$id"]="${owner:-unknown}"
   done <<<"$conflicts"
   TICK_FOOTPRINT_CONFLICT_VALID=true
+  TICK_FOOTPRINT_COMPARED_ACTIVE="$active"
   elapsed=$((SECONDS - started))
   (( elapsed < 2 )) || say "dispatch detail footprint_conflict_refresh candidates=${#TICK_FOOTPRINT_PREFLIGHT_IDS[@]} secs=${elapsed}s"
+}
+footprint_candidate_rows() { # [clear]: only candidates with no conflict yet
+  local id scope
+  for id in "${TICK_FOOTPRINT_PREFLIGHT_IDS[@]}"; do
+    [[ -n "$id" ]] || continue
+    [[ "${1:-}" != clear || -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[$id]:-}" ]] || continue
+    scope="${TICK_CHECK_SCOPE[$id]:-[]}"
+    printf '%s\t%s\t%s\n' "$id" "$scope" "${TICK_FOOTPRINT_CACHE[$id]:-$scope}"
+  done
+}
+# After a start only owner rows changed since the last comparison can add a conflict: the fold, and any fresh snapshot in between that widened an owner.
+# A conflict kept past its owner only delays that candidate until the next full comparison; the fresh admission check stays the guard either way.
+footprint_merge_changed_owners() {
+  local started=$SECONDS changed candidates conflicts id owner
+  if [[ "$TICK_FOOTPRINT_CONFLICT_VALID" != true || -z "$TICK_FOOTPRINT_COMPARED_ACTIVE" ]]; then
+    footprint_refresh_conflicts cached
+    return
+  fi
+  changed="$(jqf -c --slurpfile old <(printf '%s' "$TICK_FOOTPRINT_COMPARED_ACTIVE") '. - $old[0]' <<<"$TICK_ACTIVE_FOOTPRINTS")" \
+    || { footprint_drop_check_scope_cache; return 1; }
+  candidates="$(footprint_candidate_rows clear)"
+  conflicts="$(active_footprint_conflicts_batch "$changed" "$candidates")" \
+    || { footprint_drop_check_scope_cache; return 1; }
+  while IFS=$'\t' read -r id owner; do
+    [[ -n "$id" ]] && TICK_FOOTPRINT_PREFLIGHT_CONFLICT["$id"]="${owner:-unknown}"
+  done <<<"$conflicts"
+  TICK_FOOTPRINT_COMPARED_ACTIVE="$TICK_ACTIVE_FOOTPRINTS"
+  say "dispatch detail footprint_conflict_merge candidates=$(grep -c . <<<"$candidates") owners=$(jqf 'length' <<<"$changed") secs=$((SECONDS - started))s"
 }
 footprint_preflight_snapshot() {
   if [[ "$TICK_FOOTPRINT_PREFLIGHT_STATUS" == ready ]]; then
@@ -413,6 +438,8 @@ footprint_shadow_old_rule() {
 }
 footprint_wait_mark() { # unit owner unit_json：记等待方与起始时间，intake 不把它算作占用产能
   local detail candidate owner_path origin count original active owner_scope
+  # A rescoped candidate is only compared here, and the merge after a start skips what did not change.
+  TICK_FOOTPRINT_PREFLIGHT_CONFLICT["$1"]="$2"
   original="${TICK_FOOTPRINT_CACHE[$1]:-[]}"
   active="${TICK_ACTIVE_FOOTPRINTS:-[]}"
   owner_scope="$(jq -c --arg id "$2" '[.[] | select(.id == $id) | .footprint[]?]' <<<"$active")"
