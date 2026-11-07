@@ -5,7 +5,10 @@
 PR_CENSUS_QUERY = ("query($q:String!,$after:String){search(query:$q,type:ISSUE,first:50,after:$after){"
                    "pageInfo{hasNextPage endCursor} nodes{... on PullRequest{number mergedAt body mergeCommit{oid} "
                    "reviews(first:100){totalCount nodes{author{login} body state submittedAt}} "
-                   "commits(first:100){totalCount nodes{commit{messageHeadline messageBody}}}}}}}")
+                   "commits(first:100){totalCount nodes{commit{messageHeadline messageBody}}} "
+                   "labels(first:20){nodes{name}} "
+                   "head:commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){totalCount "
+                   "nodes{... on CheckRun{name completedAt}}}}}}}}}}}")
 PAGES = 40  # 2,000 merged PRs in the window; past that the census is unavailable, not cut short
 
 
@@ -27,9 +30,14 @@ def fetch(repo, cutoff, gh_json, timeout):
             reviews, commits = node.get("reviews") or {}, node.get("commits") or {}
             if reviews.get("totalCount", 0) > 100 or commits.get("totalCount", 0) > 100:
                 return None  # a PR past the page size would be read short, so the census is unavailable
+            contexts = (((((node.get("head") or {}).get("nodes") or [{}])[0]).get("commit") or {})
+                        .get("statusCheckRollup") or {}).get("contexts") or {}
+            checks = None if contexts.get("totalCount", 0) > 100 else contexts.get("nodes") or []  # None: no check data
             rows.append({"number": node["number"], "mergedAt": node.get("mergedAt"), "body": node.get("body"),
                          "mergeCommit": node.get("mergeCommit"),
-                         "reviews": reviews.get("nodes") or [], "commits": commits.get("nodes") or []})
+                         "reviews": reviews.get("nodes") or [], "commits": commits.get("nodes") or [],
+                         "labels": [x.get("name") for x in (node.get("labels") or {}).get("nodes") or []],
+                         "checks": checks})
         info = search.get("pageInfo") or {}
         if not info.get("hasNextPage"):
             return rows

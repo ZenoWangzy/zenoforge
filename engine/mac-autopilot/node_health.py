@@ -56,6 +56,7 @@ CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     "loop.incremental_rereview_pct": ("review-loop", "repairs followed by an incremental rereview %", 60, 30, True),
     "workers.deaths":          ("workers", "worker-no-output events in window", 2, 8, False),
     "ci.approve_to_ship_p50":  ("ci+merge", "approve -> merged/landed min p50 (incl. waiting)", 60, 180, False),
+    "merge.green_to_merge_max_min": ("ci+merge", "last required check -> merged, max min, factory lane, 24 h", 15, 60, False),
     "ci.red_after_approve_pct": ("ci+merge", "approved units that then saw CI red %", 15, 30, False),
     "ci.precheck_setup_failures": ("ci+merge", "local prechecks skipped by package selector", 0, 1, False),
     "supervisor.latency_p50":  ("supervisor", "escalation -> supervisor decision minutes p50", 60, 180, False),
@@ -133,6 +134,7 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "loop.incremental_rereview_pct": "修复后只复查修复部分（增量复检）的比例：低说明每轮都在重审整份改动，永不收敛（L63）。",
     "workers.deaths": "窗口内 AI 员工无产出死亡次数。",
     "ci.approve_to_ship_p50": "批准到合并的中位等待（含仍在等的）：CI 排队与合并车道的速度。",
+    "merge.green_to_merge_max_min": "三个必需检查最后完成到合入的最长等待（工厂车道，近 24 小时）：等待要控制在分钟级，超过小时的要查根因。",
     "ci.red_after_approve_pct": "批准后 CI 又红的比例：评审没看出的问题，或 CI 环境不稳。",
     "ci.precheck_setup_failures": "本机预检因无法选择受影响的 workspace 包而跳过；CI 可能成为测试第一次运行的位置。",
     "ci.waste_runner_pct": "CI runner 时间里改变不了结论的部分：被取消的 job、从未获批又被取代的 head、非产品改动触发的产品 CI（L64/L65）。",
@@ -199,6 +201,7 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "loop.incremental_rereview_pct": "每次 repair 之后同一单的下一次评审是否为增量复检（rereview）",
     "workers.deaths": "units.json 的 worker-no-output 事件",
     "ci.approve_to_ship_p50": "units.json：review-approve → merged/landed；仍在等的按已等时长计",
+    "merge.green_to_merge_max_min": "GitHub check-runs：required-pr-checks.json 三个检查的最晚 completedAt → PR mergedAt（pr_census 同一查询，不额外调用 gh）；依据 factory-speed 的 pr-wait 报告与 2026-11-07 合并等待裁决",
     "ci.red_after_approve_pct": "units.json：批准后、下一次评审前出现 ci-red / ci-test-red 的比例",
     "ci.precheck_setup_failures": "units.json：窗口内 precheck 结果为 PRECHECK: SKIP workspace package selection failed 的次数",
     "supervisor.latency_p50": "units.json：supervisor-escalated → 下一个 supervisor 裁决事件",
@@ -282,6 +285,36 @@ CI_STANDARDS = {
 SIZE_BANDS = [(0, 300), (300, 800), (800, 2000), (2000, None)]
 LARGE_PR_LINES = 800
 LARGE_PR_WINDOW_DAYS = 30
+MERGE_WAIT_HOURS = 24
+
+
+def green_to_merge(pr_rows, required, now):
+    """Max minutes from the last required check to merge, factory lane, merged in the window; PRs without check data are counted apart."""
+    if pr_rows is None or not required:
+        return None, {"reason": "PR census or required-pr-checks.json unavailable"}
+    since = now - timedelta(hours=MERGE_WAIT_HOURS)
+    lanes, no_data = {"factory": [], "session-owned": []}, 0
+    for pr in pr_rows:
+        merged = ts(pr.get("mergedAt"))
+        if merged is None or not since <= merged <= now:
+            continue
+        latest = {}
+        for check in pr.get("checks") or []:
+            at = ts(check.get("completedAt")) if check.get("name") in required else None
+            if at and (check["name"] not in latest or at > latest[check["name"]]):
+                latest[check["name"]] = at
+        if len(latest) < len(required):
+            no_data += 1
+            continue
+        lane = "session-owned" if "session-owned" in (pr.get("labels") or []) else "factory"
+        lanes[lane].append((round((merged - max(latest.values())).total_seconds() / 60, 1), pr["number"]))
+    factory_max = max(lanes["factory"], default=None)
+    session_max = max(lanes["session-owned"], default=None)
+    return (factory_max[0] if factory_max else None), {
+        "window_hours": MERGE_WAIT_HOURS, "factory_n": len(lanes["factory"]), "session_owned_n": len(lanes["session-owned"]),
+        "no_check_data": no_data, "factory_max_pr": factory_max[1] if factory_max else None,
+        "session_owned_max_min": session_max[0] if session_max else None,
+        "session_owned_max_pr": session_max[1] if session_max else None}
 
 
 def status_of(v, healthy, unhealthy, higher):
@@ -1499,6 +1532,10 @@ def main():
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)
     metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now))
+    # The 30-day census is None while any PR in it has over 100 reviews or commits, so this 24 h read fetches its own window.
+    recent_rows = pr_census.fetch(repo, (now - timedelta(days=1)).strftime("%Y-%m-%d"), _gh_json, GH_DELIVERY_CENSUS_TIMEOUT)
+    green_value, green_details = green_to_merge(recent_rows, read_json(os.path.join(here, "required-pr-checks.json")).get("required"), now)
+    metrics["merge.green_to_merge_max_min"] = green_value
     try:
         shared_append = frozenset((json.load(open(os.path.join(a, "config.json")))
                                    .get("footprint_mutex") or {}).get("shared_append") or [])
@@ -1637,7 +1674,7 @@ def main():
                            for node, mid, desc, v, healthy, unhealthy, higher, status in rows],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
                "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],
-               "delivery": delivery["details"], "flow": flow_details, "mechanisms": mechanism_rows,
+               "delivery": delivery["details"], "merge_wait": green_details, "flow": flow_details, "mechanisms": mechanism_rows,
                "ci_standards": {k: {"desc": d, "healthy": h, "unhealthy": u, "higher_is_better": hi, "meaning": m, "source": src}
                                 for k, (d, h, u, hi, m, src) in CI_STANDARDS.items()},
                "unit_standards": {k: {"desc": d, "healthy": h, "bug": b} for k, (d, h, b) in UNIT_STANDARDS.items()},

@@ -594,6 +594,29 @@ assert pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30
 print("node_health PR census pages and refuses truncation: PASS")
 CHECK
 
+# Merge wait: minutes from the last required check to merge, factory lane vs session-owned, 24 h only; a PR without check data is counted apart, never as zero.
+python3 - "$script_dir" <<'CHECK' || fail 'green-to-merge wait wrong'
+import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
+req = ["Enforce branch delivery policy", "Required CI gates", "Required contract gates"]
+now = n.ts("2026-11-07T12:00:00Z")
+def pr(number, merged, checks, labels=()):
+    return {"number": number, "mergedAt": merged, "labels": list(labels),
+            "checks": [{"name": name, "completedAt": at} for name, at in checks]}
+def done(at): return [(name, at) for name in req]
+rows = [pr(1, "2026-11-07T11:00:00Z", done("2026-11-07T10:30:00Z")),
+        pr(2, "2026-11-07T11:30:00Z", [(req[0], "2026-11-07T11:00:00Z"), (req[1], "2026-11-07T11:10:00Z"), (req[2], "2026-11-07T10:00:00Z")]),
+        pr(3, "2026-11-07T11:00:00Z", done("2026-11-07T07:00:00Z"), labels=["session-owned"]),
+        pr(4, "2026-11-07T11:50:00Z", done("2026-11-07T11:40:00Z")[:2]),
+        pr(5, "2026-11-05T10:00:00Z", done("2026-11-05T00:00:00Z"))]
+value, details = n.green_to_merge(rows, req, now)
+assert value == 30, (value, details)
+assert details["factory_max_pr"] == 1 and details["factory_n"] == 2, details
+assert details["session_owned_max_min"] == 240 and details["session_owned_max_pr"] == 3, details
+assert details["no_check_data"] == 1, details
+assert n.green_to_merge(None, req, now)[0] is None
+print("node_health green-to-merge wait splits lanes and counts missing check data: PASS")
+CHECK
+
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'delivery metrics join or percentiles are wrong'
 import datetime as dt, json, os, pathlib, sys
