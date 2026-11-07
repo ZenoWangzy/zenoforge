@@ -24,15 +24,16 @@ test('a deleted changed test file is skipped instead of failing the lint', () =>
   assert.deepEqual(exactSecondFailures(['engine/gone.test.sh'], () => { throw new Error('missing'); }), []);
 });
 
-test('an entry check comparing argv[1] without realpathSync fails, in every plain form', () => {
+test('an entry check comparing argv[1] without existsSync and realpathSync fails, in every plain form', () => {
   const sources = {
     'engine/a.mjs': 'if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {',
     'engine/b.mjs': 'if (import.meta.url === `file://${process.argv[1]}`) {',
     'engine/c.js': 'if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {',
-    'engine/d.mjs': 'if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(SCRIPT_PATH)) {',
+    'engine/d.mjs': 'if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(SCRIPT_PATH)) {',
+    'engine/e.mjs': 'if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(SCRIPT_PATH)) {',
     'engine/f.test.mjs': 'if (process.argv[1] === x) {',
   };
-  assert.deepEqual(entryCheckFailures(Object.keys(sources), (file) => sources[file]), ['engine/a.mjs:1', 'engine/b.mjs:1', 'engine/c.js:1']);
+  assert.deepEqual(entryCheckFailures(Object.keys(sources), (file) => sources[file]), ['engine/a.mjs:1', 'engine/b.mjs:1', 'engine/c.js:1', 'engine/e.mjs:1']);
 });
 
 test('no engine script keeps a symlink-blind entry check', () => {

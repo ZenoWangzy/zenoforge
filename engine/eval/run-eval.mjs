@@ -606,6 +606,6 @@ export async function main(args = process.argv.slice(2)) {
 }
 // In a worker, process.argv[1] is this file's path, so the CLI guard below needs isMainThread.
 if (!isMainThread) parentPort.postMessage({ row: attempt(workerData.job, workerData.plan) });
-if (isMainThread && process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (isMainThread && process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   main().catch((e) => { console.error(e.message); process.exitCode = 1; });
 }

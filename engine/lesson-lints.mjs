@@ -347,7 +347,7 @@ export const exactSecondLint = {
 export const entryCheckLint = {
   classTag: 'symlink-blind-entry-check',
   pattern: /^\s*if \((?=.*process\.argv\[1\])(?=.*===)/,
-  guidance: 'Use process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) from engine/is-entry.mjs: an entry check that compares process.argv[1] without realpathSync silently does nothing through a symlink and exits 0.',
+  guidance: 'Use process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)), inline, so a script copied alone still runs; without existsSync an import under a non-path argv[1] throws: an entry check that compares process.argv[1] without realpathSync silently does nothing through a symlink and exits 0.',
 };
 
 export function entryCheckFailures(files, readSource) {
@@ -360,7 +360,7 @@ export function entryCheckFailures(files, readSource) {
       continue; // deleted at head
     }
     source.split(/\r?\n/).forEach((line, index) => {
-      if (entryCheckLint.pattern.test(line) && !line.includes('realpathSync')) failures.push(`${file}:${index + 1}`);
+      if (entryCheckLint.pattern.test(line) && !line.includes('existsSync(process.argv[1])')) failures.push(`${file}:${index + 1}`);
     });
   }
   return failures;
