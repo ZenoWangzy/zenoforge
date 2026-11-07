@@ -5,6 +5,10 @@
 run_node_health() {
   [[ -f "$HERE/node_health.py" ]] || return 0
   python3 "$HERE/node_health.py" --runtime "$A" --hours 5 --alert --file-issues --inbox --json "$A/node-health.json" > "$A/node-health.txt" 2>>"$A/autopilot.err" || say "node health scoring failed"
+  # Per-station throughput, stall and admission gaps (NODE-HEALTH.md "Stations"); STALLED lines go to the same alerts/node-health.md.
+  if [[ -f "$HERE/station_health.py" ]]; then
+    python3 "$HERE/station_health.py" --runtime "$A" --pause-file "$PAUSE_FILE" --alert 2>>"$A/autopilot.err" || say "station health failed"
+  fi
   # CI 花费采样要逐个取 job（首次几百次 API 调用）：每 30 分钟在后台跑一次，不占调度拍。
   # 没有 pid 文件时不能退成 kill -0 0：0 是本进程组，永远成功，采样就永远不启动（L71 体检时 CI 浪费一直 NO-DATA）。
   local cs_pid; cs_pid="$(cat "$A/.ci-spend.pid" 2>/dev/null || true)"

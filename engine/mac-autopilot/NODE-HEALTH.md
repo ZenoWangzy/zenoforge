@@ -142,6 +142,60 @@ Each phase of a work order, split into waiting and working. Source: `units.json`
 | approve → CI red (`approve_to_ci_red`) | p50 | ≤ 60 | ≥ 180 | — |
 | approve → merge issued (`approve_to_merge`) | p50 | ≤ 60 | ≥ 180 | — |
 
+## Stations (`station_health.py`, each scheduler tick)
+
+Each station reports its waiting count, oldest wait, items out in the last 1 h and 24 h, last out time, stall
+minutes and a status, written to `station-health.json` and `station-health.txt` in the runtime dir. It is stateless:
+every run derives everything from local files (`units.json` and its archive, `~/.zenoforge/state/*.json`, the triage
+batch logs, the advisor batch result files, `scheduler.log`, `alerts/events.md`), with no `gh` call.
+
+**Decoupling rule: no station may hold another except through a named buffer.** A station's only input is its buffer
+below; it never waits on, polls or blocks another station directly, and a stall is read from its own buffer and its
+own out events. A unit waiting for a CI slot (`ci_wip_wait`) counts in the CI buffer, not the merge buffer, so a CI
+stall is never charged to merge.
+
+| Station | Named input buffer (waiting) | Out event | Stall bound (min) |
+|---|---|---|---|
+| intake | `state/N.json` `ready-for-agent` with no unit for that issue | a unit's first ledger event | 90 |
+| triage | `needs-triage` | triage batch log with `applied_count` > 0 (log mtime, count) | 360 |
+| advisor | `needs-advisor` | advisor result `outcome: completed` (`applied_count`) | 810 |
+| implement | units in `implement-pending` | `write-end` whose `write-start` has `work_type: implement` | 60 |
+| review | units in `review-pending` or `rereview-pending` | `review-approve`, `review-request-changes`, `review-block` | 60 |
+| repair | units in `repair-pending` | `write-end` whose `write-start` has `work_type: repair` | 90 |
+| merge | units in `ready-to-merge` without `ci_wip_wait` | `merged`, `landed` | 150 |
+| CI | `ready-to-merge` units with `ci_wip_wait` | `ci-wip-start` | 70 |
+| release | `awaiting-release` with `deploy_state` not `deployed` | `release-closer` line, one per closed issue | 950 |
+
+Status: `STALLED` when the buffer is not empty and the stall exceeds the bound, `PAUSED` while the pipeline pause
+file exists (no alert), else `OK`. Stall minutes are `min(now - last out, oldest wait)` while something waits and 0
+when nothing waits: a station that sat idle for days is not stalled by a ticket that arrived five minutes ago.
+A `STATION-STALLED station=... waiting=... stall-min=... bound-min=...` line is appended to `alerts/node-health.md`
+once per station per hour. No human step is involved.
+
+Bounds are 2 x the p90 gap between consecutive out events, rounded up to 10 minutes, measured on the 7 days to
+2026-11-07T06:55Z (CI and release have too few events there, so their whole history is used). Measured p50 / p90 gap in minutes:
+
+| Station | Out events | p50 | p90 |
+|---|---|---|---|
+| intake | 450 | 5.3 | 41.0 |
+| triage | 91 | 32.1 | 176.9 |
+| advisor | 59 | 41.0 | 401.2 |
+| implement | 550 | 5.8 | 26.8 |
+| review | 695 | 0.0 | 25.2 |
+| repair | 450 | 11.0 | 42.0 |
+| merge | 221 | 19.5 | 71.6 |
+| CI (13 days) | 204 | 7.0 | 33.8 |
+| release (3 days, 14 closers) | 14 | 259.1 | 472.5 |
+
+`config.template.json` `station_health.stall_minutes` carries the per-station bound (runtime `config.json` is
+reconciled from it); the module holds the same numbers as defaults. A bound changes only with a new measurement, in
+the same landing as this table.
+
+Admission gaps in the same files say why a station waits, not only that it does: for implement and repair the gap
+from the previous ledger event to `write-start`, for merge/CI the gap before `ci-ready`, and for review the gap from
+the latest ledger event before the dispatch line (`type=review` or `type=rereview`) in `scheduler.log`. Review has no
+start event in the ledger, so the dispatch line is its only start marker.
+
 ## Live CI (`ci_standards`, measured by `gen_dashboard.py` each tick)
 
 | Number | Healthy | Unhealthy | Source |

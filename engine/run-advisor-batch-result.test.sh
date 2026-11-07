@@ -59,3 +59,24 @@ record_batch_result 0
 jq -e '.engine_version == "ver-def456"' \
   "$LOG_DIR/$ADVISOR_TICK_ID.result.json" >/dev/null
 printf 'ok - engine_version follows a logical engine-live path to its version\n'
+
+# failure_detail makes a failed or timed-out job countable by window; it is truncated, single-line, and absent otherwise.
+ADVISOR_TICK_ID=advisor-batch-job-failed
+BATCH_OUTCOME=job-failed
+ADVISOR_FAILURE_DETAIL="$(printf 'provider said no\n\tline two %0400d' 0)"
+record_batch_result 1
+jq -e '.outcome == "job-failed" and (.failure_detail | startswith("provider said no line two")) and
+  (.failure_detail | length <= 300) and (.failure_detail | test("[\\n\\t]") | not)' \
+  "$LOG_DIR/$ADVISOR_TICK_ID.result.json" >/dev/null
+ADVISOR_TICK_ID=advisor-batch-job-timeout
+BATCH_OUTCOME=job-timeout
+unset ADVISOR_FAILURE_DETAIL
+record_batch_result 0
+jq -e '.outcome == "job-timeout" and (has("failure_detail") | not)' \
+  "$LOG_DIR/$ADVISOR_TICK_ID.result.json" >/dev/null
+ADVISOR_TICK_ID=advisor-batch-after-failure
+BATCH_OUTCOME=completed
+ADVISOR_FAILURE_DETAIL="stale"
+record_batch_result 0
+jq -e 'has("failure_detail") | not' "$LOG_DIR/$ADVISOR_TICK_ID.result.json" >/dev/null
+printf 'ok - failure_detail is recorded only for job-failed and job-timeout\n'

@@ -492,7 +492,7 @@ record_batch_result() {
   tmp="$(mktemp "${result_file}.XXXXXX")"
   jq -Rn --arg tick "$ADVISOR_TICK_ID" --arg outcome "$BATCH_OUTCOME" \
     --arg job "$BATCH_JOB_ID" --arg job_artifact "$job_artifact" --arg ruling_artifact "$ruling_artifact" \
-    --arg engine_version "${ADVISOR_BATCH_ENGINE_VERSION:-}" \
+    --arg engine_version "${ADVISOR_BATCH_ENGINE_VERSION:-}" --arg failure_detail "${ADVISOR_FAILURE_DETAIL:-}" \
     --argjson status "$status" --argjson eligible "$eligible" \
     --argjson included "$INCLUDED" --argjson applied "${APPLIED:-0}" --argjson diagnostics "$diagnostics" '
     [inputs | split("\t") | {issue:(.[0] | tonumber), gate:.[1]}] as $selection
@@ -509,7 +509,9 @@ record_batch_result() {
        advisor_error_codes:($diagnostics.error_codes // []),
        model_fallback_signature:($diagnostics.model_fallback_signature // null),
        advisor_signal:(if $diagnostics.model_fallback_signature == "picker-not-found" then
-         "ADVISOR_MODEL_FALLBACK picker-not-found" else null end)}' \
+         "ADVISOR_MODEL_FALLBACK picker-not-found" else null end)}
+    + (if ($outcome == "job-failed" or $outcome == "job-timeout") and $failure_detail != ""
+       then {failure_detail:($failure_detail | gsub("\\s+"; " ") | .[0:300])} else {} end)' \
     < "$gates_file" > "$tmp" || { rm -f "$gates_file" "$tmp"; return 1; }
   mv "$tmp" "$result_file" || { rm -f "$gates_file" "$tmp"; return 1; }
   rm -f "$gates_file" "$tmp"
