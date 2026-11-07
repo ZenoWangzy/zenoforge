@@ -438,8 +438,23 @@ unit_review_author_identity() { # unit JSON → the model/backend that last wrot
   fi
 }
 
+review_wait_reason() { # author codex-identity glm-identity -> one word for why the cross-family reviewer cannot start now
+  local cross reason
+  cross="$(review_cross_identity_for "$1" "$2" "$3" 2>/dev/null || true)"
+  [[ -n "$cross" ]] || { echo no-cross-reviewer; return 0; }
+  reason="$(zcode_paced review_identity_unavailable_reason "$cross" review)"
+  [[ "$reason" != 'glm hold' ]] || reason+=":$(zcode_paced zcode_quota_status)"
+  echo "${reason// /-}"
+}
+
+review_wait_summary() { # the waits of this pass, by reason
+  local reasons
+  reasons="$(tr ' ' '\n' <<<"${TICK_REVIEW_WAITS:-}" | grep . | sort | uniq -c | awk '{printf "%s%s=%s", sep, $2, $1; sep=","}')"
+  printf 'review_waits=%s review_wait_reasons=%s' "$(wc -w <<<"${TICK_REVIEW_WAITS:-}")" "${reasons:-none}"
+}
+
 pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves the review pending and alerts once
-  local unit_json="$1" id issue author author_family codex_identity glm_identity sonnet_identity selected status
+  local unit_json="$1" id issue author author_family codex_identity glm_identity sonnet_identity selected status wait_reason=author-unknown
   id="$(jqf -r '.id // "unknown"' <<<"$unit_json")"
   issue="$(jqf -r '.issue // empty' <<<"$unit_json")"
   if ! author="$(unit_review_author_identity "$unit_json")"; then
@@ -467,8 +482,10 @@ pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves 
     say "review-family refused unit=$id author=$author_family reviewer=unknown reason=identity-resolution-failed"
     return 1
   fi
+  [[ "$author_family" == unknown ]] || wait_reason="$(review_wait_reason "$author" "$codex_identity" "$glm_identity")"
+  TICK_REVIEW_WAITS+=" $wait_reason" # the alert below fires once per wait; this counts every pass
   if [[ "$(jqf -r '.review_family_wait_alerted // false' <<<"$unit_json")" != true ]]; then
-    say "review-family wait unit=$id author=$author_family reason=no available different-family reviewer"
+    say "review-family wait unit=$id author=$author_family reason=no available different-family reviewer detail=$wait_reason"
     set_unit "$id" '.review_family_wait_alerted=true'
   fi
   return 1

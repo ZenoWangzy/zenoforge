@@ -261,6 +261,15 @@ pick_glm_implementer() { (
 pick_glm_implementer || fail 'implement must pass an open gate'
 write_workers "$(jq -cn --argjson workers "$(reviews 7)" '{workers:$workers}')"
 if pick_glm_implementer; then fail 'running reviews must count against implement'; fi
+TICK_REVIEW_WAITS=""
+: > "$LOG"
+if pick_review_for_unit "$(unit_for paced-reason 'codex:gpt-6-luna:max')"; then fail 'a paced review must wait'; fi
+[[ "$TICK_REVIEW_WAITS" == ' glm-hold:paced' ]] || fail "the wait reason must count every pass: $TICK_REVIEW_WAITS"
+grep -Fq 'review-family wait unit=paced-reason author=codex reason=no available different-family reviewer detail=glm-hold:paced' "$LOG" || fail "the wait line must name its reason: $(cat "$LOG")"
+TICK_REVIEW_WAITS=' glm-hold:paced codex-hold glm-hold:paced'
+[[ "$(review_wait_summary)" == 'review_waits=3 review_wait_reasons=codex-hold=1,glm-hold:paced=2' ]] || fail "wait summary: $(review_wait_summary)"
+TICK_REVIEW_WAITS=""
+[[ "$(review_wait_summary)" == 'review_waits=0 review_wait_reasons=none' ]] || fail "empty wait summary: $(review_wait_summary)"
 # Week pace: one hour in, 200 x 1/168 + 10 allows 11. It holds implement and repair, which move to Codex, and never a review.
 glm_week() { glm_quota 0; jq --argjson pct "$1" --argjson reset "$(( $(date +%s) + 167 * 3600 ))" '.week_pct=$pct | .week_reset=$reset' \
   "$ZCODE_QUOTA_SNAPSHOT_FILE" > "$ZCODE_QUOTA_SNAPSHOT_FILE.new" && mv "$ZCODE_QUOTA_SNAPSHOT_FILE.new" "$ZCODE_QUOTA_SNAPSHOT_FILE"; }
