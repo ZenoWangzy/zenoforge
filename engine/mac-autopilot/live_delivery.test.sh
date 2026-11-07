@@ -18,6 +18,20 @@ assert live.read_live_sha(agent_home) == record
 (agent_home / "state" / "live-sha.json").write_text('{"sha":"bad","at":"now","source":"test"}')
 assert live.read_live_sha(agent_home) is None
 
+# Without live-sha.json the train's recorded deploy stands in; a newer live-sha.json wins.
+runtime = root / "runtime"
+runtime.mkdir()
+(runtime / "release-train.json").write_text(json.dumps({"released_sha": "b" * 40, "released_at": "2026-10-23T01:57:55Z"}))
+assert live.newest_live_record(agent_home, runtime) == {"sha": "b" * 40, "at": "2026-10-23T01:57:55Z", "source": "release-train.json"}
+assert live.newest_live_record(agent_home, None) is None
+live.write_live_sha(agent_home, sha, "post-deploy-success", at="2026-11-01T00:00:00Z")
+assert live.newest_live_record(agent_home, runtime)["sha"] == sha
+live.write_live_sha(agent_home, sha, "post-deploy-success", at="2026-10-01T00:00:00Z")
+assert live.newest_live_record(agent_home, runtime)["sha"] == "b" * 40
+(runtime / "release-train.json").write_text(json.dumps({"released_sha": "abc", "released_at": "2026-10-23T01:57:55Z"}))
+assert live.read_released_sha(runtime) is None
+(agent_home / "state" / "live-sha.json").write_text('{"sha":"bad","at":"now","source":"test"}')
+
 repo = root / "repo"
 repo.mkdir()
 def git(*args, env=None):

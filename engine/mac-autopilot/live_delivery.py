@@ -54,6 +54,26 @@ def read_live_sha(agent_home):
     return {key: record[key] for key in ("sha", "at", "source")}
 
 
+def read_released_sha(runtime):
+    """The release train's last recorded deploy, for hosts whose post-deploy check has not written live-sha.json yet."""
+    try:
+        record = json.loads((Path(runtime) / "release-train.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(record, dict) or not valid_sha(record.get("released_sha")) or not _valid_time(record.get("released_at")):
+        return None
+    return {"sha": record["released_sha"], "at": record["released_at"], "source": "release-train.json"}
+
+
+def newest_live_record(agent_home, runtime):
+    """live-sha.json and the release train's released_sha are both recorded deploys; the later one is live."""
+    records = [r for r in (read_live_sha(agent_home), read_released_sha(runtime) if runtime else None) if r]
+    def at(record):
+        value = datetime.fromisoformat(record["at"].replace("Z", "+00:00"))
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return max(records, key=at, default=None)
+
+
 def write_live_sha(agent_home, sha, source, at=None):
     """Atomically publish the SHA proven by a successful post-deploy check."""
     record = {"sha": sha, "at": at or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -100,8 +120,8 @@ def ancestor_shas(repo_root, live_sha):
     return set(result.stdout.splitlines())
 
 
-def collect_health_metrics(agent_home, now):
-    return health_metrics(repository_root(), read_live_sha(agent_home), now.timestamp())
+def collect_health_metrics(agent_home, now, runtime=None):
+    return health_metrics(repository_root(), newest_live_record(agent_home, runtime), now.timestamp())
 
 
 def is_product_change(paths):
