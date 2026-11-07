@@ -11,7 +11,7 @@ Env (defaults in parentheses, overridden by the test):
   MC_WORKER ($ZF_ENGINE_LIVE/bin/worker, else ~/.vecta-agent/engine-live)  MC_NEW_DIR (zenoforge project memory dir)
   MC_REPOS (~/project/zenoforge-pub ~/project/vecta)  MC_BATCH (10)  MC_TIMEOUT (2400)  MC_KEEP (14)
 """
-import datetime, fcntl, glob, json, os, re, shlex, shutil, subprocess, sys, tarfile, tempfile, time
+import datetime, difflib, fcntl, glob, json, os, re, shlex, shutil, subprocess, sys, tarfile, tempfile, time
 
 HOME = os.path.expanduser('~')
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -71,18 +71,72 @@ def frontmatter_name(text):
     return n.group(1).strip() if n else None
 
 
+FOUNDER_QUOTE = re.compile(r'「[^」]*」|[“"][^”"\n]*[\u3400-\u9fff][^”"\n]*[”"]')
+LABEL = re.compile(r'\*\*(Why|How to apply):\*\*')
+
+
+def protected_lines(text):
+    """Lines of the frontmatter name and description, and of each **Why:** and **How to apply:** block."""
+    out, on, fm = [], False, True
+    lines = text.splitlines()
+    if not (lines and lines[0] == '---'):
+        fm = False
+    for i, l in enumerate(lines):
+        if fm and i > 0 and l == '---':
+            fm, on = False, False
+            continue
+        if fm and i > 0:
+            if re.match(r'(name|description):', l):
+                on = True
+            elif not l.startswith((' ', '\t')):
+                on = False
+        elif not fm:
+            if LABEL.search(l):
+                on = True
+            elif on and (l.startswith('#') or (l.startswith('**') and ':**' in l)):
+                on = False
+        if on:
+            out.append(l)
+    return out
+
+
 def invalid_change(old, new):
-    """Reason a worker rewrite breaks a hard rule, else None."""
+    """Reason a worker rewrite touches a protected part, else None."""
     if not new.strip():
         return 'empty result'
     if frontmatter_name(old) != frontmatter_name(new):
         return 'frontmatter name changed'
-    for line in (l for l in old.splitlines() if '**Why:**' in l):
-        if line not in new.splitlines():
-            return 'Why line changed'
-    for q in re.findall(r'「[^」]*」', old):
+    if protected_lines(old) != protected_lines(new):
+        return 'description, Why or How to apply block changed'
+    for q in FOUNDER_QUOTE.findall(old):
         if q not in new:
             return f'founder quote changed {q[:30]}'
+    return None
+
+
+def too_big(old, new, max_lines=3, min_ratio=0.6):
+    """Reason a rewrite is more than a small token fix, else None: at most 3 lines, each close to its original."""
+    a, b = old.splitlines(), new.splitlines()
+    changed = 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == 'equal':
+            continue
+        if i2 - i1 != j2 - j1 or tag != 'replace':
+            return 'lines added or removed'
+        for x, y in zip(a[i1:i2], b[j1:j2]):
+            changed += 1
+            r = difflib.SequenceMatcher(None, x, y).ratio()
+            if r < min_ratio:
+                return f'changed line too different (ratio {r:.2f}): {x[:60]!r}'
+    return f'{changed} lines changed, limit {max_lines}' if changed > max_lines else None
+
+
+def delete_refusal(old):
+    """Reason a note must not be deleted by this job, else None."""
+    if LABEL.search(old):
+        return 'note has a Why or How to apply block'
+    if FOUNDER_QUOTE.search(old):
+        return 'note has a founder quote'
     return None
 
 
@@ -110,7 +164,7 @@ def drop_index_line(d, fname):
     return edit_index(d, lambda t: ''.join(l for l in t.splitlines(True) if key not in l))
 
 
-def apply(manifest, work, report, log, now=None):
+def apply(manifest, work, report, log, propose):
     """Single writer. manifest: id -> {src, mtime_ns}. Returns ids that were checked (not skipped)."""
     done, deleted = [], 0
     for nid, m in manifest.items():
@@ -124,6 +178,10 @@ def apply(manifest, work, report, log, now=None):
             log('skipped', nid, 'original gone since copy')
             continue
         if not os.path.exists(copy):
+            why = delete_refusal(read(src))
+            if why:
+                log('skipped', nid, f'delete refused, file stays: {why}; {ev}')
+                continue
             if deleted >= MAX_DELETE:
                 log('skipped', nid, f'delete cap {MAX_DELETE} per run reached; {ev}')
                 continue
@@ -138,9 +196,10 @@ def apply(manifest, work, report, log, now=None):
             log('checked', nid, ev)
             done.append(nid)
             continue
-        why = invalid_change(old, new)
+        why = invalid_change(old, new) or too_big(old, new)
         if why:
-            log('skipped', nid, f'rewrite rejected: {why}; {ev}')
+            propose(nid, why, old, new, ev)
+            log('skipped', nid, f'rewrite refused, proposed: {why}; {ev}')
             continue
         tmp = atomic_write(src, new, os.stat(src).st_mode & 0o777)
         if os.stat(src).st_mtime_ns != m['mtime_ns']:  # peer wrote between the first check and now
@@ -148,7 +207,8 @@ def apply(manifest, work, report, log, now=None):
             log('skipped', nid, f'mtime changed during apply; {ev}')
             continue
         os.replace(tmp, src)
-        log('changed', nid, ev)
+        diff = ''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), 'before', 'after'))
+        log('changed', nid, f'{ev}\n```diff\n{diff}```')
         done.append(nid)
     return done
 
@@ -264,7 +324,13 @@ def main():
             flush(head)
             return 1
         report = load_report(scratch)
-        done = apply(manifest, scratch, report, log)
+        def propose(nid, why, old, new, ev):
+            os.makedirs(f'{STATE}/proposals', exist_ok=True)
+            diff = ''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), f'{nid} (kept)', f'{nid} (proposed)'))
+            with open(f'{STATE}/proposals/{datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d}.md', 'a', encoding='utf-8') as f:
+                f.write(f'## {nid} (run {stamp}Z)\nrefused: {why}\nevidence: {ev}\n```diff\n{diff}```\n\n')
+
+        done = apply(manifest, scratch, report, log, propose)
         apply_new(scratch, report, log)
         now = time.time()
         checked = {p: t for p, t in checked.items() if os.path.exists(p)}
