@@ -871,6 +871,38 @@ assert_eq "untracked file contents are recoverable from the archive" \
 assert_not_contains "recovered dirty checkout does not alert as a network failure" \
   "$RUN_OUTPUT" "网络或者内部代理"
 
+# --- ignored leftovers the release preflight refuses (#612) -----------------
+# Ignored .pyc files under scripts/agent never show in status, so only this step can see them; a tracked path stays put.
+fixture="$(make_fixture)"
+repo="${fixture%%|*}"
+printf '*.pyc\n' >>"$repo/.git/info/exclude"
+mkdir -p "$repo/scripts/agent" "$repo/scripts/zenoforge-pack"
+echo pyc >"$repo/scripts/agent/old.pyc"
+echo kept >"$repo/scripts/zenoforge-pack/keep.txt"
+git -C "$repo" add scripts/zenoforge-pack/keep.txt
+git -C "$repo" commit -q -m 'track pack path'
+git -C "$repo" push -q origin main
+echo pyc >"$repo/scripts/zenoforge-pack/other.pyc"
+agent_home="$(fresh_agent_home)"
+run_launcher "$repo" "$agent_home"
+assert_contains "the ignored refused path is moved and logged" "$RUN_OUTPUT" \
+  "moved ignored scripts/agent out of the checkout to $agent_home/quarantine/ignored-refused-"
+assert_eq "the ignored refused path is gone from the checkout" "no" "$([ -e "$repo/scripts/agent" ] && echo yes || echo no)"
+assert_eq "the moved file is kept in quarantine" "old.pyc" \
+  "$(find "$agent_home/quarantine" -path '*ignored-refused-*/scripts/agent/*' -type f -printf '%f\n')"
+assert_eq "a path with a tracked file is left untouched" "keep.txt other.pyc" \
+  "$(ls "$repo/scripts/zenoforge-pack" | paste -sd' ' -)"
+assert_contains "the tick still reaches the scheduler handoff" "$RUN_OUTPUT" "handing off to issue-pipeline.sh"
+
+# --- a stray argument starts no tick (#612) ---------------------------------
+fixture="$(make_fixture)"
+repo="${fixture%%|*}"
+agent_home="$(fresh_agent_home)"
+RUN_OUTPUT="$(AGENT_HOME="$agent_home" bash "$repo/engine/run-tick.sh" --help 2>&1)" && RUN_STATUS=0 || RUN_STATUS=$?
+assert_eq "run-tick --help is refused with 64" "64" "$RUN_STATUS"
+assert_not_contains "run-tick --help starts no tick" "$RUN_OUTPUT" "dedicated checkout"
+assert_eq "run-tick --help writes nothing under AGENT_HOME" "" "$(find "$agent_home" -mindepth 1 | head -1)"
+
 # --- restore failure is the only dirty-checkout refusal ---------------------
 fixture="$(make_fixture)"
 repo="${fixture%%|*}"

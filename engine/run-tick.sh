@@ -93,7 +93,7 @@ run_tick() {
   local fail_count_file alerted_file fail_threshold
   local timer_list timer_repo timer_gh_timeout_sec timer timer_off_variable timer_alert_marker
   local scheduler_status=0
-  local dirty_status quarantine_root quarantine_entry untracked_paths snapshot_stamp
+  local dirty_status quarantine_root quarantine_entry untracked_paths snapshot_stamp refused_path refused_dest
   local fast_forward_old_head fast_forward_new_head
   local landing_count landing_subjects
   local timer_alerted_file timer_mode
@@ -251,6 +251,19 @@ run_tick() {
     fi
     echo "run-tick: dirty checkout quarantined at $quarantine_entry; restored to HEAD and continuing" >&2
   fi
+
+  # The release preflight (check-no-pipeline-in-vecta.sh) fails on these directories whenever they exist. An ignored leftover
+  # (6 .pyc files, #612) never shows in status, so the restore above misses it and a release batch polled a failing preflight
+  # for 45 minutes. Move only a path with no tracked file: what is left there after the restore is ignored. Moved, not deleted.
+  for refused_path in scripts/agent scripts/zenoforge-pack; do
+    [ -e "$repo_dir/$refused_path" ] || [ -L "$repo_dir/$refused_path" ] || continue
+    [ -z "$(git -C "$repo_dir" ls-files -- "$refused_path")" ] || continue
+    refused_dest="$AGENT_HOME/quarantine/ignored-refused-$(date -u +%Y%m%dT%H%M%SZ)-$$/$refused_path"
+    if ! mkdir -p "${refused_dest%/*}" || ! mv -- "$repo_dir/$refused_path" "$refused_dest"; then
+      refuse_checkout_integrity "checkout-restore-failed" "could not move ignored $refused_path out of $repo_dir to $refused_dest"
+    fi
+    echo "run-tick: moved ignored $refused_path out of the checkout to $refused_dest (the release preflight refuses that path)" >&2
+  done
 
   branch="$(git -C "$repo_dir" symbolic-ref --quiet --short HEAD || true)"
   if [ "$branch" != "main" ]; then
@@ -549,4 +562,6 @@ run_tick() {
   rm -f "$fail_count_file"
 }
 
+# A stray argument such as --help must not start a tick: this service takes none.
+(( $# == 0 )) || { echo "usage: run-tick.sh (takes no arguments)" >&2; exit 64; }
 run_tick "$@"

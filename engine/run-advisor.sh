@@ -33,7 +33,7 @@ for arg in "$@"; do
     ARGS+=("$arg")
   fi
 done
-N="${ARGS[0]:?usage: run-advisor.sh [--dry-run] <issue-number>}"
+N="${ARGS[0]:?usage: run-advisor.sh [--dry-run] <issue-number>}"; [[ "$N" =~ ^[0-9]+$ ]] || { echo "usage: run-advisor.sh [--dry-run] <issue-number>" >&2; exit 64; } # --help or a stray word must not reach state or gh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"

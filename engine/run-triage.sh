@@ -37,7 +37,7 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-N="${ARGS[0]:?usage: run-triage.sh [--dry-run] [--batch-result <json-file>] <issue-number>}"
+N="${ARGS[0]:?usage: run-triage.sh [--dry-run] [--batch-result <json-file>] <issue-number>}"; [[ "$N" =~ ^[0-9]+$ ]] || { echo "usage: run-triage.sh [--dry-run] [--batch-result <json-file>] <issue-number>" >&2; exit 64; } # --help or a stray word must not reach state or gh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
