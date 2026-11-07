@@ -95,31 +95,65 @@ facts="$(jq -cn --argjson now "$now" --argjson stations "$stations_json" '{repor
   last_deploy_at:null,spend:{day:{tokens:100000,money_usd:0},prev_day:{tokens:100000,money_usd:0}},
   quality:{incidents_period:0,alert_classes:null,rollbacks:0,open_subjects:[]},decisions:{items:[],total:0,incomplete:0},stations:$stations}')"
 compare="$(owner_report_compare "$facts" "$home" "$now" "")"
-lines="$(jq -r '.lines[]' <<< "$compare")"
 station_lines="$(jq -r '.station_lines[]' <<< "$compare")"
-[[ "$lines" == *'- 做完：比昨天多 4 个，比上周同日多 6 个。'* ]] || fail 'finished shows direction against both bases'
-[[ "$lines" == *'- 令牌用量：比昨天没有变化，比上周同日多 1 万。'* ]] || fail 'tokens show the unchanged day and the week'
-[[ "$lines" == *'- 线上告警：比昨天没有变化。'* ]] || fail 'a missing week base drops only that comparison'
-[[ "$lines" != *撤回上线* ]] || fail 'a figure with no base in either snapshot gets no comparison line'
-[[ "$lines" == *'没有去年的数据'* ]] || fail 'the report says plainly there is no year-on-year base'
+inl() { jq -r --arg k "$1" '.inline[$k] // "none"' <<< "$compare"; }
+[[ "$(inl finished)" == '比昨天多 4 个，比上周同日多 6 个' ]] || fail 'finished shows direction against both bases'
+[[ "$(inl tokens)" == '比昨天没有变化，比上周同日多 1 万' ]] || fail 'tokens show the unchanged day and the week'
+[[ "$(inl incidents)" == '比昨天没有变化' ]] || fail 'a missing week base drops only that comparison'
+[[ "$(inl shipped)" == '比昨天没有变化' ]] || fail 'a day with no snapshot falls back to the report previous-day figure'
+[[ "$(inl stock)" == '比昨天多 1 个，比上周同日多 2 个' ]] || fail 'the waiting stock is compared once, with both bases'
+[[ "$(inl rollbacks)" == none ]] || fail 'a figure with no base anywhere gets no comparison'
+[[ "$(jq -r '.note' <<< "$compare")" == *'没有去年的数据'* ]] || fail 'the report says plainly there is no year-on-year base'
 [[ "$station_lines" == *'- 写代码：过去一天完成 60 次（标准至少 51 次），达标；比昨天少 40 次。'* ]] || fail 'a station line carries its standard and the day change'
 [[ "$station_lines" != *'写代码'*'上周同日'* ]] || fail 'a station with no week base shows no week change'
 ok 'every figure shows direction against the day and the same weekday, and drops an absent base'
 
 # --- Causes -------------------------------------------------------------------------
 causes="$(jq -r '.causes[]' <<< "$compare")"
-[[ "$causes" == *'- 做完比昨天多 4 个：未查明。'* ]] || fail 'an untraced material change reads 未查明'
+[[ "$causes" == *'- 做完比昨天多 4 个：未查明。'* ]] || fail 'a line with no mapped row reads 未查明'
 [[ "$causes" == *'- 写代码比昨天少 40 次：未查明。'* ]] || fail 'an untraced station change reads 未查明'
 [[ "$causes" != *评审* ]] || fail 'a change under the material bound gets no cause line'
-printf '%s\n' '{"implement.out_per_day":"模型额度用完，等明早恢复","release.hours_waiting":"head: roll fix, #1147"}' > "$tmp/owners.json"
+printf '%s\n' '{"dispatch.collisions_per_day":"提前预测会改同一文件就互相等待，正在换成成熟做法","release.hours_waiting":"head: roll fix, #1147"}' > "$tmp/owners.json"
 export ZF_ANOMALY_OWNERS_FILE="$tmp/owners.json"
 causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "")")"
-[[ "$causes" == *'- 写代码比昨天少 40 次：已有人跟进，登记的说明是：模型额度用完，等明早恢复。'* ]] || fail 'a plain-Chinese owner note is the cause'
+[[ "$causes" == *'- 写代码比昨天少 40 次：提前预测会改同一文件就互相等待，正在换成成熟做法。'* ]] || fail 'the mapped owner note is the cause, verbatim'
 jq -n --argjson at "$yesterday_at" '{schema:1,day:"2026-11-07",at:$at,figures:{"station:release":10}}' > "$snaps/2026-11-07.json"
 release_facts="$(jq -c '.stations=[{"key":"release","name":"发布","metric":"release.hours_waiting","unit":"小时","phrase":"当前这批已等 ","value":30,"healthy":4,"higher":false,"status":"UNHEALTHY","stall_hours":null}]' <<< "$facts")"
 causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$release_facts" "$home" "$now" "")")"
-[[ "$causes" == *'登记的原因没有写成平白中文'* && "$causes" != *1147* && "$causes" != *head* ]] || fail 'an owner note with Latin text or a tracker id is not repeated'
-# What landed between the two days is context beside an untraced station change, never the cause.
+[[ "$causes" == *'- 发布比昨天多 20 小时：已登记原因，但内容含不能直接发送的字符，没有转述。'* && "$causes" != *1147* && "$causes" != *head* ]] || fail 'a note with Latin text or a tracker id is not printed'
+# Every mapped line prints its note and never 未查明; every line with no row reads 未查明 (the table is OWNER_ROWS).
+python3 - "$SCRIPT_DIR/owner-report-compare.py" "$tmp" "$now" <<'PY' || fail 'every mapped line prints its owner note, every unmapped line reads 未查明'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("orc", sys.argv[1]); orc = importlib.util.module_from_spec(spec); spec.loader.exec_module(orc)
+tmp, now = sys.argv[2], int(sys.argv[3])
+snap = os.path.join(tmp, "map-snaps"); os.makedirs(snap, exist_ok=True)
+keys = list(orc.FIGURES) + ["station:" + s[0] for s in orc.STATIONS]
+json.dump({"schema": 1, "day": orc.beijing_day(now - 86400), "at": now - 86400, "figures": {k: 10 for k in keys}}, open(os.path.join(snap, orc.beijing_day(now - 86400) + ".json"), "w"))
+every_row = {row: "测试原因" + str(i) for i, row in enumerate(sorted({r for rows in orc.OWNER_ROWS.values() for r in rows}))}
+owners = os.path.join(tmp, "map-owners.json"); json.dump(every_row, open(owners, "w"))
+def facts_for(key):
+    f = {"output": {}, "quality": {}, "spend": {"day": {}}, "stations": []}
+    if key == "finished": f["output"]["finished"] = {"day": 30}
+    elif key == "shipped": f["output"]["shipped"] = {"day": 30}
+    elif key == "stock": f["output"]["stock"] = {"now": 30}
+    elif key == "incidents": f["quality"]["incidents_period"] = 30
+    elif key == "rollbacks": f["quality"]["rollbacks"] = 30
+    elif key == "tokens": f["spend"]["day"]["tokens"] = 30
+    elif key == "money": f["spend"]["day"]["money_usd"] = 30
+    else:
+        name = [s for s in orc.STATIONS if "station:" + s[0] == key][0]
+        f["stations"] = [{"key": name[0], "name": name[1], "metric": name[2], "unit": name[3], "phrase": name[4], "value": 30, "healthy": 5, "higher": True, "status": "OK", "stall_hours": None}]
+    return f
+problems = []
+for key in keys:
+    causes = orc.compare(facts_for(key), snap, now, "", owners)["causes"]
+    mapped = orc.OWNER_ROWS.get(key)
+    if len(causes) != 1: problems.append(f"{key}: {len(causes)} cause lines"); continue
+    if mapped and ("未查明" in causes[0] or every_row[mapped[0]] not in causes[0]): problems.append(f"{key}: mapped line did not print its note: {causes[0]}")
+    if not mapped and "未查明" not in causes[0]: problems.append(f"{key}: unmapped line did not read 未查明: {causes[0]}")
+print("\n".join(problems)); sys.exit(1 if problems else 0)
+PY
+# What landed between the two days is a hint beside 未查明, never the cause.
 repo="$tmp/repo"
 git init -q "$repo"
 mkdir -p "$repo/engine"
@@ -131,8 +165,13 @@ git -C "$repo" update-ref refs/remotes/origin/main HEAD
 jq -n --argjson at "$yesterday_at" '{schema:1,day:"2026-11-07",at:$at,figures:{"station:implement":100}}' > "$snaps/2026-11-07.json"
 export ZF_ANOMALY_OWNERS_FILE="$tmp/none.json"
 causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "$repo")")"
-[[ "$causes" == *'未查明（同期有 1 项改动合入了该环节的代码，尚未核实是否相关）'* ]] || fail 'landed changes are named as context, not as the cause'
-ok 'causes come from a traced note or read 未查明'
+[[ "$causes" == *'- 写代码比昨天少 40 次：未查明。线索，未核实：同期有 1 项改动合入了该环节的代码。'* ]] || fail 'landed changes read as a separate hint after 未查明'
+[[ "$causes" != *'次：线索'* && "$causes" != *'次：同期'* && "$causes" != *'个：线索'* && "$causes" != *'个：同期'* ]] || fail 'the hint never stands where the cause goes'
+export ZF_ANOMALY_OWNERS_FILE="$tmp/owners.json"
+causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "$repo")")"
+[[ "$causes" == *'- 写代码比昨天少 40 次：提前预测会改同一文件就互相等待，正在换成成熟做法。'* && "$causes" != *线索* ]] || fail 'a mapped owner note is the cause and no hint rides beside it'
+export ZF_ANOMALY_OWNERS_FILE="$tmp/none.json"
+ok 'causes are the mapped owner note or 未查明; timing is only a separate hint'
 
 # --- Report body and contract -------------------------------------------------------
 snaps_full="$tmp/snaps-full"
@@ -159,10 +198,12 @@ big="$(jq -c --argjson compare "$(owner_report_compare "$big" "$home" "$now" "")
 body="$(maintainer_health_mail_build_body "$big")"
 printf '%s\n' "$body"
 maintainer_health_mail_output_contract "$body" "$now" || fail 'the longest report the renderer can build meets the contract'
-[[ "$(wc -l <<< "$body")" -le 40 ]] || fail 'the longest report stays within the line limit'
+[[ "$(wc -l <<< "$body")" -eq 32 ]] || fail 'the longest report is 32 lines, which is the contract limit'
+[[ "$(sed -n 2p <<< "$body")" == 需要你决定 ]] || fail 'the decisions come right after the conclusion'
 mapfile -t order < <(grep -n -x -E '产出|变化|质量|资源|各环节效率|变化原因|需要你决定' <<< "$body" | cut -d: -f2)
-[[ "${order[*]}" == '产出 变化 质量 资源 各环节效率 变化原因 需要你决定' ]] || fail 'sections come in the contract order'
+[[ "${order[*]}" == '需要你决定 产出 变化 质量 资源 各环节效率 变化原因' ]] || fail 'sections come in the contract order'
 [[ "$(grep -c '^- .*未查明' <<< "$body")" -le 4 ]] || fail 'cause lines are capped'
+if maintainer_health_mail_output_contract "$body"$'\n- 多出一行' "$now" >/dev/null; then fail 'a 33rd line is refused'; fi
 bad="${body/变化原因/变化原因$'\n'- 事项 #4821 有变化}"
 if maintainer_health_mail_output_contract "$bad" "$now" >/dev/null; then fail 'a tracker id in the new section is refused'; fi
 ok 'the longer report meets the output contract'

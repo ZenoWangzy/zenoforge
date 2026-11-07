@@ -3,7 +3,7 @@
 
 Subcommands (facts JSON on stdin where noted; every answer is JSON on stdout):
   station <runtime_dir> <now>                          rows from node-health.json and station-health.json, or null
-  compare <snapshot_dir> <now> <repo_root> <owners>    facts -> {lines, station_lines, causes}
+  compare <snapshot_dir> <now> <repo_root> <owners>    facts -> {inline, note, station_lines, causes}
   write <snapshot_dir> <now>                           facts -> store today's snapshot unless one exists
   backfill <snapshot_dir> <T> <agent_home> <runtime>   facts at T -> store that day's snapshot unless one exists
 
@@ -18,7 +18,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 # A change is material when it moved at least this share of yesterday's figure (a base of zero counts any
-# movement). Chosen 2026-11-07: below 30 % a daily count of ten moves by three on ordinary days.
+# movement). PROVISIONAL: a first value chosen 2026-11-07, not measured; below 30 % a daily count of ten moves
+# by three on ordinary days. Tune it once a few weeks of snapshots show how much a normal day moves.
 MATERIAL_CHANGE_RATIO = 0.3
 MAX_CAUSE_LINES = 4
 STATION_FRESH_SECONDS = 6 * 3600
@@ -40,8 +41,24 @@ STATIONS = [
 # Files whose change between two days is named as context (never as the cause) beside an untraced station change.
 PATH_HINTS = {"intake": r"intake", "triage": r"triage", "advisor": r"advisor", "implement": r"dispatch|worker-command|implement",
               "review": r"review", "repair": r"repair|self-check", "merge": r"merge", "ci": r"ci[-_]admission|/ci", "release": r"release"}
+# The one table that ties a report line to rows of anomaly-owners.json (the head's plain-Chinese note per scorecard metric).
+# Line key -> row ids, first match first; a line prints the notes of the rows that exist, verbatim, at most two.
+# Lines with no row (finished, rollbacks, money, intake, triage, advisor, review) read 未查明; scorecard rows with no line:
+# scheduler.tick_gap_p50, delivery.unlinked_units_30d, delivery.issue_to_accept_p50_30d_hours, delivery.issue_to_accept_p95_30d_hours.
+OWNER_ROWS = {
+    "shipped": ["delivery.merged_not_live", "delivery.issue_to_accept_p50_7d_hours", "delivery.issue_to_accept_p95_7d_hours"],
+    "stock": ["flow.wait_stage_p90_hours", "delivery.merged_not_live"],
+    "incidents": ["delivery.unlinked_incidents_30d"],
+    "tokens": ["workorders.ticket_tokens_p90", "workorders.over_standard"],
+    "station:implement": ["dispatch.collisions_per_day"],
+    "station:repair": ["loop.rework_token_pct"],
+    "station:merge": ["flow.merge_rate_per_hour"],
+    "station:ci": ["ci.red_after_approve_pct", "ci.shared_append_rebase_conflict_pct"],
+    "station:release": ["release.hours_waiting", "delivery.merged_not_live"],
+}
 # key -> label, kind, unit (stations are added from STATIONS)
-FIGURES = {"finished": ("做完", "count", "个"), "shipped": ("正式上线", "count", "个"), "incidents": ("线上告警", "count", "次"),
+FIGURES = {"finished": ("做完", "count", "个"), "shipped": ("正式上线", "count", "个"), "stock": ("做完等上线的需求", "count", "个"),
+           "incidents": ("线上告警", "count", "次"),
            "rollbacks": ("撤回上线", "count", "次"), "tokens": ("令牌用量", "tokens", ""), "money": ("按美元计价的调用", "usd", "美元")}
 
 
@@ -123,6 +140,7 @@ def figures(facts):
     output = facts.get("output") or {}
     put("finished", (output.get("finished") or {}).get("day"))
     put("shipped", (output.get("shipped") or {}).get("day"))
+    put("stock", (output.get("stock") or {}).get("now"))
     quality = facts.get("quality") or {}
     put("incidents", quality.get("incidents_period"))
     put("rollbacks", quality.get("rollbacks"))
@@ -182,11 +200,43 @@ def landed(repo, since, until, pattern):
     return sum(any(re.search(pattern, p) for p in c.splitlines() if p.strip()) for c in commits)
 
 
+def printable(text):
+    """True when a note may go into the mail as written: Chinese, no Latin letters, no tracker id, no date, one line."""
+    return (isinstance(text, str) and bool(re.search(r"[一-龥]", text)) and "\n" not in text
+            and not re.search(r"[A-Za-z#]|[0-9]{4}-[0-9]{2}-[0-9]{2}|1970|1月1日", text))
+
+
+def owner_cause(owners, key):
+    """(rows found, text): the notes of the rows mapped to this line, verbatim; None when no mapped row exists."""
+    notes = []
+    for row in OWNER_ROWS.get(key, []):
+        if row in owners and owners[row] not in notes:
+            notes.append(owners[row])
+    if not notes:
+        return None
+    safe = [n.strip() for n in notes if printable(n)][:2]
+    return "；".join(safe) if safe else "已登记原因，但内容含不能直接发送的字符，没有转述"
+
+
 def compare(facts, directory, now, repo, owners_path):
     today = datetime.fromtimestamp(now, BEIJING)
-    bases = {"昨天": read_snapshot(directory, (today - timedelta(days=1)).strftime("%Y-%m-%d")),
+    snaps = {"昨天": read_snapshot(directory, (today - timedelta(days=1)).strftime("%Y-%m-%d")),
              "上周同日": read_snapshot(directory, (today - timedelta(days=7)).strftime("%Y-%m-%d"))}
     current = figures(facts)
+    # Where a day has no snapshot, the same figure one day (or seven days) back from the report's own records is the base.
+    o = facts.get("output") or {}
+    spend_prev = (facts.get("spend") or {}).get("prev_day") or {}
+    fallback = {"昨天": {"finished": (o.get("finished") or {}).get("prev_day"), "shipped": (o.get("shipped") or {}).get("prev_day"),
+                         "stock": (o.get("stock") or {}).get("day_ago"), "tokens": spend_prev.get("tokens"), "money": spend_prev.get("money_usd")},
+                "上周同日": {"stock": (o.get("stock") or {}).get("week_ago")}}
+
+    def base_value(name, key):
+        snap = snaps[name]
+        if snap and key in snap["figures"]:
+            return snap["figures"][key]
+        value = fallback[name].get(key)
+        return value if is_number(value) else None
+
     owners = load(owners_path) if owners_path else None
     owners = owners if isinstance(owners, dict) else {}
     stations = {r["key"]: r for r in facts.get("stations") or []}
@@ -194,53 +244,48 @@ def compare(facts, directory, now, repo, owners_path):
     for key, name, metric_id, unit, phrase in STATIONS:
         meta["station:" + key] = (name, "count", unit)
 
-    def clauses(key):
-        kind, unit = meta[key][1:]
-        return [f"比{name}{moved(kind, unit, current[key], base['figures'][key])}"
-                for name, base in bases.items() if base and key in base["figures"]]
-
-    lines, station_lines, material = [], [], []
+    inline, station_lines, material = {}, [], []
     for key in meta:
         if key not in current or (key == "money" and current[key] == 0):
             continue
-        said = clauses(key)
-        yesterday = bases["昨天"]
-        if yesterday and key in yesterday["figures"]:
-            before, now_value = yesterday["figures"][key], current[key]
-            change = abs(now_value - before)
-            if (before == 0 and change > 0) or (before != 0 and change / abs(before) >= MATERIAL_CHANGE_RATIO):
-                material.append((change / max(abs(before), 1), key))
+        kind, unit = meta[key][1:]
+        said = [f"比{name}{moved(kind, unit, current[key], v)}" for name in snaps if (v := base_value(name, key)) is not None]
+        yesterday = base_value("昨天", key)
+        if yesterday is not None:
+            change = abs(current[key] - yesterday)
+            if (yesterday == 0 and change > 0) or (yesterday != 0 and change / abs(yesterday) >= MATERIAL_CHANGE_RATIO):
+                material.append((change / max(abs(yesterday), 1), key))
         if key.startswith("station:"):
             r = stations[key[8:]]
-            kind, unit = meta[key][1:]
             verdict = {"OK": "达标", "WARN": "偏离标准", "UNHEALTHY": "未达标"}.get(r["status"])
             text = (f"- {r['name']}：{r['phrase']}{amount(kind, unit, r['value'])}（标准{'至少' if r['higher'] else '不超过'} "
                     f"{amount(kind, unit, r['healthy'])}）" + (f"，{verdict}" if verdict else "")
                     + (f"，已停滞 {num(r['stall_hours'])} 小时" if r["stall_hours"] else ""))
             station_lines.append(text + ("；" + "，".join(said) if said else "") + "。")
         elif said:
-            lines.append(f"- {meta[key][0]}：" + "，".join(said) + "。")
-    if lines or any("；比" in s for s in station_lines):
-        lines.insert(0, "- 对比说明：比昨天是环比，比上周同日是同比（同一个星期几）；没有去年的数据，所以没有按年的同比。"
-                        "对比的是前几天同一时刻留下的日报记录，缺记录的那天不比较。")
+            inline[key] = "，".join(said)
+    note = ""
+    if inline or any("；比" in line for line in station_lines):
+        note = ("- 对比说明：比昨天是环比，比上周同日是同比（同一个星期几）；没有去年的数据，所以没有按年的同比；"
+                "缺记录的那天不比较。")
 
     causes = []
     for _, key in sorted(material, reverse=True)[:MAX_CAUSE_LINES]:
         label, kind, unit = meta[key]
-        before = bases["昨天"]["figures"][key]
-        head = f"- {label}比昨天{moved(kind, unit, current[key], before)}："
+        yesterday = base_value("昨天", key)
+        head = f"- {label}比昨天{moved(kind, unit, current[key], yesterday)}："
         station = stations.get(key[8:]) if key.startswith("station:") else None
-        note = owners.get(station["metric"]) if station else None
         subjects = [s for s in (plain(x) for x in (facts.get("quality") or {}).get("open_subjects") or []) if s]
-        if note is not None:
-            text = plain(note)
-            causes.append(head + (f"已有人跟进，登记的说明是：{text}。" if text else "已有人在跟进，登记的原因没有写成平白中文，这里不转述。"))
-        elif key == "incidents" and current[key] > before and subjects:
+        found = owner_cause(owners, key)
+        if found is not None:
+            causes.append(head + found + ("" if found.endswith("。") else "。"))
+        elif key == "incidents" and current[key] > yesterday and subjects:
             causes.append(head + "线上有告警还没解决：" + "、".join(subjects[:2]) + "。")
         else:
-            n = landed(repo, bases["昨天"]["at"], now, PATH_HINTS[key[8:]]) if station and repo else None
-            causes.append(head + "未查明" + (f"（同期有 {n} 项改动合入了该环节的代码，尚未核实是否相关）" if n else "") + "。")
-    return {"lines": lines, "station_lines": station_lines, "causes": causes}
+            # Timing is not a cause: what landed between the two days is only a hint beside 未查明.
+            n = landed(repo, (snaps["昨天"] or {}).get("at", now - DAY), now, PATH_HINTS[key[8:]]) if station and repo else None
+            causes.append(head + "未查明。" + (f"线索，未核实：同期有 {n} 项改动合入了该环节的代码。" if n else ""))
+    return {"inline": inline, "note": note, "station_lines": station_lines, "causes": causes}
 
 
 def station_counts_at(agent_home, runtime, at):
