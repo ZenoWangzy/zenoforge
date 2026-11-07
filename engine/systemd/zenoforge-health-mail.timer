@@ -2,8 +2,12 @@
 Description=the product owner daily report mail timer
 
 [Timer]
-# 08:00 Beijing time (China has no daylight saving, so 00:00 UTC is exact).
-OnCalendar=*-*-* 00:00:00 UTC
+# 09:00 Beijing time (China has no daylight saving, so 01:00 UTC is exact). The second line is a retry an hour
+# later: the report is claimed once per day, so it never sends twice, and a failed send is tried again.
+# The tick itself sends only inside its daytime window (owner_report_in_send_window), so a late start after a
+# reboot (Persistent) sends once in the daytime or skips the day; it never mails in the evening.
+OnCalendar=*-*-* 01:00:00 UTC
+OnCalendar=*-*-* 02:00:00 UTC
 Persistent=true
 AccuracySec=1s
 

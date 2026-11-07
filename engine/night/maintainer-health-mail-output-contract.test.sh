@@ -70,7 +70,7 @@ contract_rejects 'four decision lines are refused' \
 - 第二个问题——建议：按默认继续。
 - 第三个问题——建议：按默认继续。
 - 第四个问题——建议：按默认继续。" 'decision-limit'
-filler_lines="$(printf -- '- 额外记录\n%.0s' {1..14})"
+filler_lines="$(printf -- '- 额外记录\n%.0s' {1..30})"
 too_many_lines="${golden_body/需要你决定/$filler_lines$'\n需要你决定'}"
 contract_rejects 'a report taller than one screen is refused' "$too_many_lines" 'one-screen'
 contract_rejects 'an English word is refused' "$golden_body

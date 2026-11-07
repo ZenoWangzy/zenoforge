@@ -22,6 +22,7 @@ if ! declare -F maintainer_local_time >/dev/null; then
 fi
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/owner-report-render.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/owner-report-ladder.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/owner-report-compare.sh"
 
 # One report per Beijing day; 08:00 Beijing is 00:00 UTC, so the slot is the
 # UTC day and the report date is the Beijing date.
@@ -772,7 +773,7 @@ maintainer_health_mail_decision_facts() {
 # cannot read its source leaves null, and the renderer drops that figure.
 maintainer_health_mail_daily_facts() {
   local home="$1" ledger="$2" now="$3" repo_root="$4"
-  local start=$((now - 86400)) output deploy_at spend spend_prev quality decisions day reason
+  local start=$((now - 86400)) output deploy_at spend spend_prev quality decisions day reason stations facts compare
   output="$(maintainer_health_mail_ladder_facts "$home" "$now")" || output=null
   deploy_at="$(maintainer_health_mail_last_deploy)" || deploy_at=null
   [[ "$deploy_at" =~ ^[0-9]+$ ]] || deploy_at=null
@@ -782,12 +783,16 @@ maintainer_health_mail_daily_facts() {
   decisions="$(maintainer_health_mail_decision_facts "$ledger")" || decisions='{"items":[],"total":null,"incomplete":0}'
   day="$(maintainer_health_mail_report_day "$now")" || return 1
   reason="$(maintainer_health_mail_conclusion_facts "$output" "$quality")"
-  jq -cn --arg day "$day" --rawfile reason <(printf '%s' "$reason") --argjson now "$now" \
+  stations="$(owner_report_station_facts "$home" "$now")" || stations=null
+  facts="$(jq -cn --arg day "$day" --rawfile reason <(printf '%s' "$reason") --argjson now "$now" \
     --argjson output "$output" --argjson deploy_at "$deploy_at" --argjson spend "$spend" --argjson spend_prev "$spend_prev" \
-    --argjson quality "$quality" --argjson decisions "$decisions" \
+    --argjson quality "$quality" --argjson decisions "$decisions" --argjson stations "$stations" \
     '{report_day:$day,conclusion:{reason:$reason},window:{end:$now},
       output:$output,last_deploy_at:$deploy_at,
-      spend:{day:$spend,prev_day:$spend_prev},quality:$quality,decisions:$decisions}'
+      spend:{day:$spend,prev_day:$spend_prev},quality:$quality,decisions:$decisions,stations:$stations}')" || return 1
+  # A failed comparison leaves the report without those lines, never with a guessed one.
+  compare="$(owner_report_compare "$facts" "$home" "$now" "$repo_root")" || compare=null
+  jq -c --argjson compare "$compare" '.compare=$compare' <<< "$facts"
 }
 
 # maintainer_health_mail_conclusion_facts <output> <quality>
@@ -942,6 +947,11 @@ maintainer_health_mail_tick() {
   slot="$(maintainer_health_mail_slot_key "$now")" || return 1
   last_slot="$(jq -r '.last_digest_slot' "$ledger")" || return 1
   [ "$slot" != "$last_slot" ] || return 0
+  # Daytime only: a tick outside the window (a late timer, a reboot) skips the day instead of mailing in the evening.
+  if ! owner_report_in_send_window "$now"; then
+    printf 'owner report: outside the daytime send window, skipped\n'
+    return 0
+  fi
   # The daily report consumes every queued change notice: its sections are
   # computed from the primary records, so the notices are marked reported here
   # and never repeat in a later report.
@@ -950,6 +960,7 @@ maintainer_health_mail_tick() {
   facts="$(maintainer_health_mail_daily_facts "$home" "$ledger" "$now" "$repo_root")" || return 1
   subject="$(maintainer_health_mail_subject "$facts")" || return 1
   body="$(maintainer_health_mail_build_body "$facts")" || return 1
+  owner_report_snapshot_write "$facts" "$home" "$now" >/dev/null || printf 'owner report: snapshot not stored\n' >&2
   maintainer_health_mail_deliver "$ledger" "$now" "$slot" "$subject" "$body" "$events"
 }
 
@@ -1589,8 +1600,18 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       facts="$(maintainer_health_mail_daily_facts "$AGENT_HOME" "$ledger" "$now" "$repo_root")" || exit 1
       printf '%s\n\n%s\n' "$(maintainer_health_mail_subject "$facts")" "$(maintainer_health_mail_build_body "$facts")"
       ;;
+    backfill-snapshots)
+      # Stores past days' snapshots under the snapshot directory only; sends nothing, leaves the ledger alone.
+      now="$(date +%s)"
+      days="${2:-7}"
+      anchor="${3:-$(( now / 86400 * 86400 + OWNER_REPORT_SEND_FROM_UTC_SECONDS ))}"
+      (( anchor <= now )) || anchor=$(( anchor - 86400 ))
+      [[ "$days" =~ ^[0-9]+$ && "$anchor" =~ ^[0-9]+$ ]] || { printf 'usage: %s backfill-snapshots [days] [anchor-epoch]\n' "$0" >&2; exit 2; }
+      repo_root="${ZF_REPO_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)}"
+      owner_report_backfill "$AGENT_HOME" "$ledger" "$anchor" "$days" "$repo_root"
+      ;;
     *)
-      printf 'usage: %s status [epoch] | render [epoch] | credential-status | tick | resolve-incident <issue-number> <reason> | queue-event <key> <section> <text> [epoch] | track-decision <issue-number> <subject> <decision-mail-body> [epoch]\n' "$0" >&2
+      printf 'usage: %s status [epoch] | render [epoch] | backfill-snapshots [days] [anchor-epoch] | credential-status | tick | resolve-incident <issue-number> <reason> | queue-event <key> <section> <text> [epoch] | track-decision <issue-number> <subject> <decision-mail-body> [epoch]\n' "$0" >&2
       exit 2
       ;;
   esac

@@ -346,9 +346,9 @@ assert_contains 'missing decision fields are stated without a proposed answer' \
 # daily cadence.
 cadence_home="$tmp/cadence"
 mkdir -p "$cadence_home/night" "$cadence_home/state"
-cadence_day1="$(date -u -d '2026-11-07T00:10:00Z' +%s)"
+cadence_day1="$(date -u -d '2026-11-07T01:10:00Z' +%s)"
 cadence_day1_late="$((cadence_day1 + 1200))"
-cadence_day2="$(date -u -d '2026-11-08T00:00:30Z' +%s)"
+cadence_day2="$(date -u -d '2026-11-08T01:10:00Z' +%s)"
 routine_sends=0
 urgent_sends=0
 routine_mail="$cadence_home/sent"
@@ -385,7 +385,7 @@ maintainer_health_mail_output_contract "$(maintainer_health_mail_build_body "$(c
     if [ "$(wc -l < "$retry_home/builds")" -eq 1 ]; then return 1; fi
     cat "$retry_facts_file"
   }
-  retry_now="$(date -u -d '2026-11-07T00:05:00Z' +%s)"
+  retry_now="$(date -u -d '2026-11-07T01:05:00Z' +%s)"
   if maintainer_health_mail_tick "$retry_home" "$retry_now"; then
     echo 'not ok - first report build failure was hidden'
     exit 1
@@ -415,7 +415,7 @@ mkdir -p "$retry_safe_home/night"
     return 0
   }
   maintainer_health_mail_daily_facts() { cat "$retry_facts_file"; }
-  retry_now="$(date -u -d '2026-11-07T00:05:00Z' +%s)"
+  retry_now="$(date -u -d '2026-11-07T01:05:00Z' +%s)"
   if maintainer_health_mail_tick "$retry_safe_home" "$retry_now"; then
     echo 'not ok - pre-POST failure hidden from health maintenance'; exit 1
   fi
@@ -440,7 +440,7 @@ mkdir -p "$retry_uncertain_home/night"
     return 1
   }
   maintainer_health_mail_daily_facts() { cat "$retry_facts_file"; }
-  retry_now="$(date -u -d '2026-11-07T00:05:00Z' +%s)"
+  retry_now="$(date -u -d '2026-11-07T01:05:00Z' +%s)"
   if maintainer_health_mail_tick "$retry_uncertain_home" "$retry_now"; then
     echo 'not ok - uncertain send failure hidden from health maintenance'; exit 1
   fi

@@ -38,10 +38,10 @@ maintainer_health_mail_build_body() {
        | map(select(. != null))) as $output_lines
     | [ "一句话结论：\($f.conclusion.reason)。" ]
     + [ "产出" ] + (if ($output_lines | length) == 0 then ["- 需求进度记录读取失败，产出无法统计。"] else $output_lines end)
-    + section("变化"; if $o == null or $o.stock.now == null then [] else
+    + section("变化"; (if $o == null or $o.stock.now == null then [] else
         ["- 做完等上线的需求（未关闭）：现在 \($o.stock.now) 个，"
           + ([moved($o.stock.now; $o.stock.day_ago; "一天前"), moved($o.stock.now; $o.stock.week_ago; "七天前")] | map(select(. != null)) | join("，")) + "。"
-          | sub("，。$"; "。")] end)
+          | sub("，。$"; "。")] end) + ($f.compare.lines // []))
     + section("质量"; [
         (if $f.quality.incidents_period == null then null
          else "- 线上告警：过去一天 \($f.quality.incidents_period) 次" + (if $f.quality.alert_classes == null then "" else "，共 \($f.quality.alert_classes) 类" end) + "。" end),
@@ -51,6 +51,8 @@ maintainer_health_mail_build_body() {
          else "- 令牌用量：过去一天 \(wan($f.spend.day.tokens))" + (if $f.spend.prev_day == null then "" else "（前一天 \(wan($f.spend.prev_day.tokens))）" end) + "。" end),
         (if $f.spend.day == null or $f.spend.day.money_usd == 0 then null
          else "- 按美元计价的调用：过去一天 \(money($f.spend.day.money_usd))" + (if $f.spend.prev_day == null then "" else "（前一天 \(money($f.spend.prev_day.money_usd))）" end) + "；与令牌分开记账，没有相加。" end)])
+    + section("各环节效率"; $f.compare.station_lines // [])
+    + section("变化原因"; $f.compare.causes // [])
     + [ "需要你决定" ]
     + (if $f.decisions.total == null then ["- 决定记录读取失败，本期无法列出。"]
        elif $f.decisions.total == 0 then ["- 没有"]
@@ -70,7 +72,9 @@ maintainer_health_mail_build_body() {
 }
 
 
-# The owner-report contract: the fixed sections in order (产出 and 需要你决定 always, the rest when they have content), plain Chinese
+# The owner-report contract: the fixed sections in order (产出 and 需要你决定 always, the rest when they have content;
+# 各环节效率 and 变化原因 were added 2026-11-07 for the daily daytime report, with the line limit raised from 25 to 40
+# so that the longest report the renderer can build still passes), plain Chinese
 # only (no Latin letters at all), no tracker or commit ids, no unreadable
 # epoch-derived dates, at most three decision lines. "isolate-lines" drops
 # single offending lines while keeping the rest of the report sendable.
@@ -82,8 +86,9 @@ import re
 import sys
 
 text = sys.stdin.read()
-SECTIONS = ["产出", "变化", "质量", "资源", "需要你决定"]
+SECTIONS = ["产出", "变化", "质量", "资源", "各环节效率", "变化原因", "需要你决定"]
 REQUIRED = ("产出", "需要你决定")
+MAX_LINES = 40
 
 def validate(text):
     errors = set()
@@ -91,7 +96,7 @@ def validate(text):
     if not text.strip():
         errors.add("empty-body")
         return errors
-    if len(lines) > 25:
+    if len(lines) > MAX_LINES:
         errors.add("one-screen")
     if not re.match(r"^一句话结论：.+。", lines[0] if lines else ""):
         errors.add("conclusion")
