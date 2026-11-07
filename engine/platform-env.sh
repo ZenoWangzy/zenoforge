@@ -26,7 +26,9 @@ platform_require() {
 case "${OSTYPE:-}" in darwin*) ZF_OS=darwin ;; linux*) ZF_OS=linux ;; *) ZF_OS=other ;; esac
 ZF_PLATFORM_ACTIVE=1
 if [[ $ZF_OS == linux && ${ZF_RUNNER:-systemd} == systemd ]]; then ZF_PLATFORM_ACTIVE=; return 0; fi   # the origin deployment's path ends here
-ZF_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# A caller-set ZF_ENGINE_DIR (tests, systemd units) keeps its value: runtime-env.sh promises "explicit paths win",
+# and start.sh's CLI_LINK branch detects it by emptiness — an unconditional assignment here broke both on macOS.
+: "${ZF_ENGINE_DIR:=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)}"
 
 # dir to the front unless already on PATH: a directory the caller put ahead (test stubs, a pinned tool) keeps its place
 _zf_path_front() { case ":$PATH:" in *":$1:"*) ;; *) PATH="$1:$PATH" ;; esac; }
