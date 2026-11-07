@@ -9,10 +9,6 @@ repo_root="$(cd -- "$script_dir/../.." && pwd -P)"
 fail() { echo "node_health.test.sh: $*" >&2; exit 1; }
 config_root="$test_env_root/config/.zenoforge"
 mkdir -p "$config_root/state" "$config_root/mac-autopilot"
-printf '{"incidents":[{"id":"config-only-incident"}]}\n' > "$config_root/state/incident-guards.json"
-config_incidents="$(PYTHONPATH="$script_dir" ZF_CONFIG_ROOT="$config_root" ZF_PACK_DIR='' \
-  python3 -c 'import node_health; print(node_health.load_incident_guards()[0]["id"])')"
-[[ "$config_incidents" == config-only-incident ]] || fail 'incident metrics did not read target config'
 cp "$script_dir/NODE-HEALTH.md" "$config_root/mac-autopilot/NODE-HEALTH.md"
 health_doc="$(PYTHONPATH="$script_dir" ZF_CONFIG_ROOT="$config_root" python3 -c 'import node_health; print(node_health.health_doc_reference())')"
 [[ "$health_doc" == "$config_root/mac-autopilot/NODE-HEALTH.md" ]] || fail 'health documentation did not resolve from target config'
@@ -672,7 +668,7 @@ assert values["delivery.issue_to_accept_p95_30d_hours"] == 240, values
 assert values["delivery.issue_to_accept_p50_7d_hours"] == 96 and values["delivery.issue_to_accept_p95_7d_hours"] == 120, values
 assert details["accepted_units_7d"] == 7, details
 assert values["delivery.revert_rate_30d_pct"] == 100 / 6, values
-assert values["delivery.incident_rate_30d_pct"] == 300 / 8, values
+assert values["delivery.incident_rate_30d_pct"] == 200 / 8, values
 assert values["delivery.cycles_to_pass_30d"] == 9 / 7, values
 assert values["delivery.approvals_per_merge_30d"] == 1, values
 assert values["delivery.unlinked_units_30d"] == 2, values
@@ -813,6 +809,33 @@ known = n.delivery_metrics([], [], [], [{"issue":101, "sha":"a"*40, "at":"2026-1
                            incidents, now)
 assert known["values"]["delivery.unlinked_incidents_30d"] == 1, known["values"]
 print("node_health empty accepted set reports unknown unlinked incidents: PASS")
+CHECK
+
+# 事故率分子是被事故点名的接受单元数（上限 100%），而不是事故记录数；线上事故读负责人邮件账本。
+python3 - "$script_dir" <<'CHECK' || fail 'incident rate must count accepted issues named by a production incident, from the owner ledger'
+import json, os, sys, tempfile
+sys.path.insert(0, sys.argv[1]); import node_health as n
+now = n.ts("2026-10-26T12:00:00Z")
+incidents = [{"id":f"i{k}", "date":"2026-10-25", "issue":101} for k in range(5)]
+rows = n.delivery_metrics([], [], [], [{"issue":101, "sha":"a"*40, "at":"2026-10-25T00:00:00Z"}], incidents, now)
+assert rows["values"]["delivery.incident_rate_30d_pct"] == 100, rows["values"]
+assert rows["values"]["delivery.unlinked_incidents_30d"] == 0, rows["values"]
+home = tempfile.mkdtemp(); os.makedirs(os.path.join(home, "night"))
+assert n.load_prod_incidents(home) is None
+json.dump({"incidents":[{"issue":"4061", "opened_at":"1793000000"}, {"opened_at":1793000000}]},
+          open(os.path.join(home, "night", "founder-health-mail.json"), "w"))
+assert n.load_prod_incidents(home) is None  # alert log missing: unknown, not a partial count
+os.makedirs(os.path.join(home, "logs"))
+open(os.path.join(home, "logs", "head-watch.alerts"), "w").write(
+    "2026-10-25T01:00:00Z PROD-DB-TIMEOUT postgres-statement-time\n2026-10-25T01:10:00Z PROD-DB-TIMEOUT postgres-statement-time\n"
+    "2026-10-25T01:50:00Z MAIN-CI-RED other\n2026-10-25T03:00:00Z PROD-DB-TIMEOUT x\n")
+got = n.load_prod_incidents(home)
+assert [row["issue"] for row in got[:2]] == ["4061", None] and got[0]["date"] == "2026-10-26", got
+assert [row.get("date") for row in got[2:]] == ["2026-10-25", "2026-10-25"], got  # 3 alerts, 2 episodes
+# Alerts name no issue: they are unlinked and never part of the rate (only 4061, accepted, is); no-issue ledger row + 2 episodes = 3.
+mixed = n.delivery_metrics([], [], [], [{"issue":4061, "sha":"a"*40, "at":"2026-10-25T00:00:00Z"}], got, now)
+assert mixed["values"]["delivery.incident_rate_30d_pct"] == 100 and mixed["values"]["delivery.unlinked_incidents_30d"] == 3, mixed["values"]
+print("node_health incident rate counts named accepted issues: PASS")
 CHECK
 
 # --- 流动指标（#4366）：fixture 账本算数值；阈值内不发事件，越限每个指标只发一次 ---
