@@ -141,12 +141,19 @@ cap_set_unit() { # id verb decision-text report-path jq_update_expression
   return 1
 }
 units_update() { # jq args; transactionally update the unit ledger under the shared scheduler lock
-  local own_lock=false rc=0
+  local own_lock=false rc=0 new
   if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then
     acquire_scheduler_lock_wait || return 1
     own_lock=true
   fi
-  jqf "$@" "$UNITS" | write_state "$UNITS" || rc=$?
+  # A no-op update skips the write: intake's consumed handoff rows made three per row, and each rewrite renewed the
+  # ledger's mtime (dropping the history view cache) and ran write_state's validation (128-146 s for 24 rows).
+  new="$(mktemp "$UNITS.noop.XXXXXX")" || rc=1
+  if (( rc == 0 )); then
+    jqf "$@" "$UNITS" > "$new" || rc=$?
+    if (( rc == 0 )) && ! cmp -s "$new" "$UNITS"; then write_state "$UNITS" < "$new" || rc=$?; fi
+    rm -f -- "$new"
+  fi
   if [[ "$own_lock" == true ]]; then release_scheduler_lock; fi
   return "$rc"
 }

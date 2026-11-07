@@ -108,4 +108,22 @@ done
 station() { python3 "$script_dir/station_health.py" --runtime "$A" --agent-home "$AGENT_HOME" --pause-file "$AGENT_HOME/PAUSE" --now "$1" >/dev/null; jq -r .stations.intake.status "$A/station-health.json"; }
 [[ "$(station 2026-11-07T01:40:00Z)" == HELD ]] || fail 'a hold under 2 x bound must be HELD'
 [[ "$(station 2026-11-07T03:10:00Z)" == STALLED ]] || fail 'a hold past 2 x bound must be STALLED'
+# units_update: a no-op writes nothing (mtime and inode kept, so the history view cache lives), a change writes, a jq failure keeps the ledger.
+jq -n '{units: [{id:"u1",stage:"implement-pending",history:[]}]}' > "$UNITS"
+units_update '.'
+stat_of() { stat -c '%i %y' "$UNITS"; }
+temps() { compgen -G "$UNITS.noop.*" || compgen -G "$UNITS.tmp.*" || true; }
+read -t 0.05 <> <(:) || true
+before="$(stat_of)"
+units_update '.units[0].stage |= .' || fail 'a no-op update returned nonzero'
+[[ "$(stat_of)" == "$before" ]] || fail 'a no-op update rewrote the ledger'
+read -t 0.05 <> <(:) || true
+units_update '.units[0].stage = "review"' || fail 'a real update returned nonzero'
+jq -e '.units[0].stage == "review"' "$UNITS" >/dev/null || fail 'a real update did not write'
+[[ "$(stat_of)" != "$before" ]] || fail 'a real update kept the old file time and inode'
+cp "$UNITS" "$test_env_root/units.keep"; before="$(stat_of)"; rc=0
+units_update 'error("boom")' 2>/dev/null || rc=$?
+(( rc != 0 )) || fail 'a jq failure returned zero'
+[[ "$(stat_of)" == "$before" ]] && cmp -s "$UNITS" "$test_env_root/units.keep" || fail 'a jq failure touched the ledger'
+[[ -z "$(temps)" ]] || fail "temp file left behind: $(temps)"
 echo 'intake-wip.test.sh: pass'
