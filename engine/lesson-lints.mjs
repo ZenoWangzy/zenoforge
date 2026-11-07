@@ -343,6 +343,29 @@ export const exactSecondLint = {
   guidance: 'Match an elapsed-seconds value with grep -Eq and [0-9]+s, never one exact second: SECONDS and scheduler timers keep ticking, so a stall moves the value by one. Example: grep -Eq "after [0-9]+s: ..." "$LOG".',
 };
 
+// A script run through the engine-live symlink has import.meta.url by real path and argv[1] as typed, so a plain compare is false and the script exits 0 doing nothing (release batch #1147, 11-07).
+export const entryCheckLint = {
+  classTag: 'symlink-blind-entry-check',
+  pattern: /^\s*if \((?=.*process\.argv\[1\])(?=.*===)/,
+  guidance: 'Use process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) from engine/is-entry.mjs: an entry check that compares process.argv[1] without realpathSync silently does nothing through a symlink and exits 0.',
+};
+
+export function entryCheckFailures(files, readSource) {
+  const failures = [];
+  for (const file of files.filter((p) => /\.m?js$/.test(p) && !/\.test\.m?js$/.test(p))) {
+    let source;
+    try {
+      source = readSource(file);
+    } catch {
+      continue; // deleted at head
+    }
+    source.split(/\r?\n/).forEach((line, index) => {
+      if (entryCheckLint.pattern.test(line) && !line.includes('realpathSync')) failures.push(`${file}:${index + 1}`);
+    });
+  }
+  return failures;
+}
+
 export function exactSecondFailures(files, readSource) {
   const failures = [];
   for (const file of files.filter((p) => p.endsWith('.test.sh'))) {
@@ -444,6 +467,10 @@ export function runLessonLints({ repo, base, head, log = (line) => console.log(l
   for (const hit of exactSecond) log(`lesson-lint: lesson=none incident_class=${exactSecondLint.classTag} verdict=fail at=${hit}`);
   if (exactSecond.length) log(`lesson-lint: fix: ${exactSecondLint.guidance}`);
   failed += exactSecond.length;
+  const entryChecks = entryCheckFailures(paths, readSource);
+  for (const hit of entryChecks) log(`lesson-lint: lesson=none incident_class=${entryCheckLint.classTag} verdict=fail at=${hit}`);
+  if (entryChecks.length) log(`lesson-lint: fix: ${entryCheckLint.guidance}`);
+  failed += entryChecks.length;
   return failed;
 }
 

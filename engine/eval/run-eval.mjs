@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, statSync, readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { isMainThread, parentPort, workerData, Worker } from 'node:worker_threads';
 import { gradeTriage, gradeAdvisor, gradeReview, gradeSupervisor, gradeTests, gradeImplementDecision, validateStageOutput } from './graders.mjs';
@@ -605,6 +606,6 @@ export async function main(args = process.argv.slice(2)) {
 }
 // In a worker, process.argv[1] is this file's path, so the CLI guard below needs isMainThread.
 if (!isMainThread) parentPort.postMessage({ row: attempt(workerData.job, workerData.plan) });
-if (isMainThread && process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainThread && process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   main().catch((e) => { console.error(e.message); process.exitCode = 1; });
 }
