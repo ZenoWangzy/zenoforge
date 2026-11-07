@@ -86,7 +86,7 @@ pin_scheduler_self_check() { # version-dir → 0 = 该 pin 可以切 live
   while IFS= read -r ref; do
     [[ -e "$code/${ref#\$HERE/}" ]] || { echo "pin self-check: $1 lacks $ref" >&2; return 1; }
   done < <(grep -vE '^[[:space:]]*#' "$code/scheduler.sh" | grep -hoE '\$HERE/[A-Za-z0-9._/-]+' | sort -u)
-  ( cd "$MAC_AUTOPILOT_ROOT" && AUTOPI_TEST_LIBRARY_ONLY=true bash -c '
+  ( cd "$MAC_AUTOPILOT_ROOT" && CI_CENSUS_FALLBACK=off AUTOPI_TEST_LIBRARY_ONLY=true bash -c '
       set -o pipefail
       source "$1/scheduler.sh"   # $HERE 落在新 pin 内，census 链用的 aggregate/jqf 都是 pin 里的这份
       tick_prs | pr_census_by_number | jqf -e "type == \"object\"" >/dev/null

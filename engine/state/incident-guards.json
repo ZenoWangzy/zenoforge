@@ -1,6 +1,54 @@
 {
   "incidents": [
     {
+      "id": "ci-admission-single-read-abort-draft-starvation",
+      "date": "2026-11-03",
+      "class": "controller-census-read-abort-starvation",
+      "what_happened": "Two ready-to-merge units on agent/ci-gated draft PRs (PR#5284/#5283) logged merge skipped (draft, waiting for its CI slot) from 14:17Z while 7 of 12 PR runners idled and 0 runs queued; no later admission pass flipped them before the 15:30Z stall snapshot.",
+      "root_cause_evidence": "Live scheduler.log: the 14:17:36Z pass readied three older units (wip=3) and queued both drafts; 14:39:53Z logged ci admission paused: open PR census unavailable for hotfix classification after ONE failed gh pr list (engine/mac-autopilot/scheduler.d/ci-admission.sh:288 pre-fix) and 15:01:41Z logged ci wip: PR runner capacity unavailable; admission skipped after ONE failed runner census read (ci-admission.sh:129 into ci_pr_free_slots, engine/mac-autopilot/scheduler.d/ci-status.sh pre-fix). Full admission passes came ~22 min apart, so two consecutive single-read aborts starved the drafts for over an hour beside idle capacity; ci_slot_starve_watch also no-ops when its own ci_pr_free_slots read fails, so no alert fired.",
+      "classic_pattern": "A reconcile loop aborts its whole pass on one failed remote read instead of degrading to a bounded-age cached snapshot; with a slow control cadence, every aborted pass is a full cadence period of starvation (fail-abort where fail-stale is correct).",
+      "best_known_solution": "Persist the last good census (open PRs and runner slot count) with a timestamp; on a failed read retry once within the tick, then continue the pass on the cached snapshot while it is younger than CI_CENSUS_FALLBACK_MAX_AGE_SECONDS, logging once; pause only when the fallback itself is beyond the bound, naming the exceeded bound in the one pause line.",
+      "lesson_id": "ci-admission-single-read-abort-draft-starvation",
+      "research_sources": [
+        "https://kubernetes.io/docs/concepts/architecture/controller/",
+        "https://sre.google/sre-book/monitoring-distributed-systems/"
+      ],
+      "options_considered": [
+        "Run admission more often than the slow tick; this multiplies GitHub reads against the same census endpoints and does not help when the read itself fails.",
+        "Retry the census reads more times; a transient blip survives one retry, but an outage window still aborts the pass.",
+        "Retry once within the tick and fall back to a persisted last-good census bounded by CI_CENSUS_FALLBACK_MAX_AGE_SECONDS (default 1800s) for both the open-PR census and the runner slot count; selected.",
+        "Keep the fail-closed pause when the fallback is older than the bound, with the exceeded bound named in the single pause log line; selected as the safety valve."
+      ],
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.d/ci-admission-census-fallback.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "A transient runner-census failure costs one retry and both labeled drafts are readied in the same pass oldest first; a failed PR census continues on a fresh cached census with one fallback log line; a fallback beyond the bound pauses admission with exactly one line naming the exceeded bound.",
+          "test_file": "engine/mac-autopilot/scheduler.d/ci-admission-census-fallback.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "The prior unlabeled-draft starvation guard still holds: one-pass draft admission, starvation alert, slot_sync and path lookup bounds.",
+          "test_file": "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "test",
+        "enforced_by": [
+          "engine/mac-autopilot/scheduler.d/ci-status.sh",
+          "engine/mac-autopilot/scheduler.d/ci-admission.sh",
+          "engine/mac-autopilot/scheduler.d/ci-admission-census-fallback.test.sh"
+        ]
+      }
+    },
+    {
       "id": "maintenance-tail-step-starvation",
       "date": "2026-11-03",
       "class": "optional-maintenance-work-consumes-required-recovery-budget",
@@ -450,7 +498,7 @@
       "date": "2026-11-03",
       "class": "defer-exit-status-treated-as-stage-failure",
       "what_happened": "Every pipeline tick since 2026-11-03 05:23Z was refused: one advisor batch member had a live scheduler worker, pipeline_batch_claim_acquire returned 1, the advisor stage translated it to exit 75, and issue-pipeline-slices.sh counted only 0/124/137 as non-failures, so failed=1 and run-tick refused the tick. The same batch re-triaged two tickets whose scheduler units were in flight, which is what made a member busy in the first place.",
-      "root_cause_evidence": "engine/issue-pipeline-slices.sh slice case (pre-fix: '0) ;; 124|137) ... *) failed=1') had no defer arm; engine/issue-pipeline.sh dispatch_advisor_batch claim-unavailable 'return 75'; live journal shows repeated 'run-tick: refusing to run this tick \u2014 issue-pipeline.sh exited with status 1' and the live autopilot scheduler.log shows the incident signature matched nothing in engine/mac-autopilot/bell.sh scheduler_signature_class().",
+      "root_cause_evidence": "engine/issue-pipeline-slices.sh slice case (pre-fix: '0) ;; 124|137) ... *) failed=1') had no defer arm; engine/issue-pipeline.sh dispatch_advisor_batch claim-unavailable 'return 75'; live journal shows repeated 'run-tick: refusing to run this tick — issue-pipeline.sh exited with status 1' and the live autopilot scheduler.log shows the incident signature matched nothing in engine/mac-autopilot/bell.sh scheduler_signature_class().",
       "classic_pattern": "A component communicates 'temporary, retry later' through a non-zero exit code that an aggregator treats as failure, so a single soft miss is escalated to a whole-system outage; paired with a monitor that only recognizes hard-crash signatures, the outage also files no incident.",
       "best_known_solution": "Keep the stage-exit contract in one place: 75 defers and 124/137 overrun without refusing, while any other unexpected stage status is logged and isolated to that slice. The run-tick checkout gate retains its explicit pre-handoff integrity refusal set. Advisor selection and batch acquisition both consult the scheduler-unit in-flight predicate; claim renewal drops one failed member and keeps the batch running; #166 incident classes include slice and status.",
       "lesson_id": "V1273",
