@@ -26,7 +26,8 @@ export function parseGhScopes(text) {
   return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
 }
 
-export const isGnuDate = (versionOutput) => /GNU coreutils/.test(versionOutput ?? '');
+// Ubuntu 25.10 and later ship uutils as the default date; it takes the same -d flags.
+export const isGnuDate = (versionOutput) => /(GNU|uutils) coreutils/.test(versionOutput ?? '');
 
 const BREW_GNUBIN = ['/opt/homebrew/opt/coreutils/libexec/gnubin', '/usr/local/opt/coreutils/libexec/gnubin'];
 

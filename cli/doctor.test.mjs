@@ -16,6 +16,7 @@ test('gh scopes and GNU date detection', () => {
   assert.deepEqual(parseGhScopes(out), ['gist', 'read:org', 'repo', 'workflow']);
   assert.equal(parseGhScopes('✓ Logged in (GH_TOKEN)\n'), null);
   assert.ok(isGnuDate('date (GNU coreutils) 9.4'));
+  assert.ok(isGnuDate('date (uutils coreutils) 0.2.2'));
   assert.ok(!isGnuDate('date: illegal option -- -'));
 });
 
