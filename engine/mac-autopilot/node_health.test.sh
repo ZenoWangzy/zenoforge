@@ -810,8 +810,17 @@ home = tempfile.mkdtemp(); os.makedirs(os.path.join(home, "night"))
 assert n.load_prod_incidents(home) is None
 json.dump({"incidents":[{"issue":"4061", "opened_at":"1793000000"}, {"opened_at":1793000000}]},
           open(os.path.join(home, "night", "founder-health-mail.json"), "w"))
+assert n.load_prod_incidents(home) is None  # alert log missing: unknown, not a partial count
+os.makedirs(os.path.join(home, "logs"))
+open(os.path.join(home, "logs", "head-watch.alerts"), "w").write(
+    "2026-10-25T01:00:00Z PROD-DB-TIMEOUT postgres-statement-time\n2026-10-25T01:10:00Z PROD-DB-TIMEOUT postgres-statement-time\n"
+    "2026-10-25T01:50:00Z MAIN-CI-RED other\n2026-10-25T03:00:00Z PROD-DB-TIMEOUT x\n")
 got = n.load_prod_incidents(home)
-assert [row["issue"] for row in got] == ["4061", None] and got[0]["date"] == "2026-10-26", got
+assert [row["issue"] for row in got[:2]] == ["4061", None] and got[0]["date"] == "2026-10-26", got
+assert [row.get("date") for row in got[2:]] == ["2026-10-25", "2026-10-25"], got  # 3 alerts, 2 episodes
+# Alerts name no issue: they are unlinked and never part of the rate (only 4061, accepted, is); no-issue ledger row + 2 episodes = 3.
+mixed = n.delivery_metrics([], [], [], [{"issue":4061, "sha":"a"*40, "at":"2026-10-25T00:00:00Z"}], got, now)
+assert mixed["values"]["delivery.incident_rate_30d_pct"] == 100 and mixed["values"]["delivery.unlinked_incidents_30d"] == 3, mixed["values"]
 print("node_health incident rate counts named accepted issues: PASS")
 CHECK
 

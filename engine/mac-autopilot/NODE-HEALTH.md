@@ -81,7 +81,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | delivery | scheduler approvals per merged unit (`delivery.approvals_per_merge_30d`) | one successful approval is sufficient; the product pre-pause average was 2.28 per delivered unit [alignment §9] | ≤ 1 | ≥ 2.28 | first scorecard sample |
 | delivery | human GitHub PR review actions per merged PR (`delivery.human_actions_per_merge_30d`) | one real review action is an exception; two or more indicate repeated manual handling (estimate) | ≤ 1 | ≥ 2 | first scorecard sample; excludes the required user-path acceptance |
 | delivery | release-accepted issue records missing a unique issue → unit → PR → merge → release join (`delivery.unlinked_units_30d`) | exact IDs are required; guessing a missing edge would falsify lead time | 0 | ≥ 1 | first scorecard sample |
-| delivery | production incidents without an explicit accepted-issue link (`delivery.unlinked_incidents_30d`) | exact issue link required; a record naming no issue (`issue` field or "Issue #N" in what_happened) is not linkable and is reported as `incident_unreferenced_30d`; a named issue that was never accepted is unlinked | 0 | ≥ 1 | first scorecard sample |
+| delivery | production incidents and head-watch alert episodes without an explicit accepted-issue link (`delivery.unlinked_incidents_30d`) | exact issue link required; a record naming no issue (`issue` field or "Issue #N" in what_happened) is not linkable, is counted here and is also shown as `incident_unreferenced_30d`; a named issue that was never accepted is unlinked | 0 | ≥ 1 | first scorecard sample |
 | delivery | maintainer-login PR review actions without reliable human/agent attribution (`delivery.human_actions_unattributed_30d`) | unknown attribution is not counted as human | 0 | ≥ 1 | first scorecard sample |
 | flow | merges per hour vs the 6.5 target; a starved queue (nothing open, nothing entered) reports no value (`flow.merge_rate_per_hour`) | #4355 SLO: ≥ 6.5 merges/h with sufficient backlog; 3.5/h was the pre-upgrade serial merge-lane ceiling | ≥ 6.5 | ≤ 3.5 | first scorecard sample |
 | flow | worst per-stage p90 age of open units, hours (`flow.wip_age_stage_p90_hours`; per-stage rows in scorecard `flow.wip_age`) | #4355 SLO: median ticket cycle ≤ 2 h; p90 stage age ≤ 4 h is consistent with it (estimate), half a day in one stage is stalled | ≤ 4 | ≥ 12 | first scorecard sample |
@@ -121,8 +121,10 @@ Production incidents are the `incidents` of the owner-mail ledger (`night/founde
 owner mail counts the same ledger under 线上告警. Incident rate is the number of unique accepted issue IDs (release-closer
 acceptance events in the same 30-day window) that an incident names, divided by the number of those accepted IDs, so it cannot pass 100 %.
 The root-cause lesson records in `incident-guards.json` are factory process findings, not production incidents, and are
-not counted. Head-watch `PROD-DB-TIMEOUT` alerts name no issue and cannot be joined, so they are left out; an alert
-or incident would link only through an issue ID or a release SHA that matches a release-closer event.
+not counted. Head-watch `PROD-DB-TIMEOUT` alerts (`logs/head-watch.alerts`, alerts under 30 minutes apart are one episode, as in the owner mail's
+线上告警 line) name no issue, so they are not in the rate; each episode counts in `delivery.unlinked_incidents_30d`. That log
+starts 2026-11-04, so until it holds 30 days the count is a floor. A 0.0 rate therefore means no linked incident, not no production trouble.
+An alert would link only through an issue ID or a release SHA that matches a release-closer event.
 Incident linkage compares the record's explicit issue ID with those accepted IDs; missing or unmatched IDs remain
 visible in `delivery.unlinked_incidents_30d`. Human actions count GitHub PR review records:
 bot logins and explicit bot markers are excluded, scheduler review timestamps identify agent decisions made under
