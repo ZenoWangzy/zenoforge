@@ -140,4 +140,40 @@ grep -q '^slow_stage ' "$COST_FILE" 2>/dev/null && fail 'only the named long sta
 register_new_issues() { SECONDS=$((SECONDS + 4)); }
 phase register_new_issues 0 true
 grep -Eq '^register_new_issues [0-9]+$' "$COST_FILE" || fail 'phase must record register_new_issues'
+# The ledger-lock wait: a refill stops waiting at its own deadline (the full tick can hold the lock for minutes), a full tick keeps waiting.
+# A waiter that never returns is stopped by its own pid after a generous poll, so a missing fix fails the test and does not hang it.
+await_rc() { # rc-file: poll for the waiter's exit code
+  local _
+  for _ in $(seq 100); do [[ -e "$1" ]] && return 0; read -r -t 0.1 <> <(:) || :; done
+  return 1
+}
+SCHED_LOCK_HELD=false
+mkdir "$SCHED_LOCK"; sleep 300 >/dev/null 2>&1 & holder=$!; echo "$holder" > "$SCHED_LOCK/pid" # a live foreign owner
+trap 'kill "$holder" 2>/dev/null || :' EXIT
+lock_rc="$A/.lock-wait-rc"; rm -f "$lock_rc"; : > "$LOG"
+TICK_LOCAL_REFILL=true; SECONDS=$((limit - 5))
+( rc=0; acquire_scheduler_lock_wait || rc=$?; echo "$rc" > "$lock_rc" ) & waiter=$!
+await_rc "$lock_rc" || { kill "$waiter" 2>/dev/null || :; wait "$waiter" 2>/dev/null || :; fail 'a refill past its deadline kept waiting for the ledger lock'; }
+[[ "$(cat "$lock_rc")" == 1 ]] || fail "a refill past its deadline must fail the lock wait (rc=$(cat "$lock_rc"))"
+grep -q 'ledger lock wait stopped' "$LOG" || fail 'the refused wait must say so in the log'
+rm -f "$lock_rc"; refill_lock_stage() { :; }
+( rc=0; phase_yield_lock refill_lock_stage || rc=$?; echo "$rc" > "$lock_rc" ) & waiter=$!
+await_rc "$lock_rc" || { kill "$waiter" 2>/dev/null || :; wait "$waiter" 2>/dev/null || :; fail 'a yielded phase kept waiting past the refill deadline'; }
+[[ "$(cat "$lock_rc")" == 1 ]] || fail 'a yielded phase that cannot retake the lock must return failure'
+rm -f "$lock_rc"; TICK_LOCAL_REFILL=false
+( rc=0; acquire_scheduler_lock_wait || rc=$?; echo "$rc" > "$lock_rc" ) & waiter=$!
+read -r -t 1 <> <(:) || :
+[[ ! -e "$lock_rc" ]] || { kill "$holder" "$waiter" 2>/dev/null || :; fail 'a full tick must keep waiting for the ledger lock'; }
+kill "$holder"; wait "$holder" 2>/dev/null || :
+await_rc "$lock_rc" || { kill "$waiter" 2>/dev/null || :; wait "$waiter" 2>/dev/null || :; fail 'a full tick did not take the lock once it was free'; }
+[[ "$(cat "$lock_rc")" == 0 ]] || fail 'a full tick must take the free lock'
+rm -rf "$SCHED_LOCK"; SCHED_LOCK_HELD=true; TICK_LOCAL_REFILL=true
+# cleanup_tick runs without the ledger lock at the end of a tick: its one workers write takes the lock itself and gives it back.
+SCHED_LOCK_HELD=false; rm -rf "$SCHED_LOCK"
+jq -n '{workers: [range(0;70) | {pid: (. + 1000), unit: "u\(.)", harvested: true, started: "2026-11-07T00:00:\(10 + (. % 50))Z"}]}' > "$WORKERS"
+sys_tmp="$(mktemp -d)"
+AP_SYSTEM_TMP="$sys_tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || : # its last step is a best-effort branch sweep
+[[ "$(jq '.workers | length' "$WORKERS")" == 60 ]] || fail 'cleanup_tick did not trim the workers ledger without the lock held'
+[[ ! -e "$SCHED_LOCK" && "$SCHED_LOCK_HELD" == false ]] || fail 'cleanup_tick kept the ledger lock'
+SCHED_LOCK_HELD=true
 echo 'refill-room.test.sh: ok'

@@ -17,14 +17,23 @@ release_scheduler_lock() {
   fi
   SCHED_LOCK_HELD=false
 }
+# A refill waits for the ledger lock only until its own deadline, like a lock_timeout under a statement deadline: the full tick holds the lock for
+# minutes (a refill's ledger write waited 93 to 158s on 2026-11-07), and a wait that outlasts the 300s kill loses the refill's closing lines.
+# After the deadline a free lock is still taken; only the wait is refused. A full tick waits as before.
+refill_lock_wait_spent() {
+  [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - ${AUTOPI_REFILL_LOCK_MARGIN_SECONDS:-15} ))
+}
 acquire_scheduler_lock_wait() {
-  until acquire_scheduler_lock; do sleep 0.05; done
+  until acquire_scheduler_lock; do
+    refill_lock_wait_spent && { say "ledger lock wait stopped at ${SECONDS}s: the refill limit is near"; return 1; }
+    sleep 0.05
+  done
 }
 phase_yield_lock() { # slow operation; let the local refill controller take the same ledger lock
   local rc=0
   release_scheduler_lock
   phase "$@" || rc=$?
-  acquire_scheduler_lock_wait
+  acquire_scheduler_lock_wait || rc=1
   tick_prs_changed # Refill can change PRs while the scheduler lock is released.
   LIVE_WORKER_CACHE_UNTIL=0
   TICK_ACTIVE_FOOTPRINTS_VALID=false
@@ -35,7 +44,7 @@ phase_yield_lock_batch() { # Callback that records its own phases while sharing 
   local rc=0
   release_scheduler_lock
   "$@" || rc=$?
-  acquire_scheduler_lock_wait
+  acquire_scheduler_lock_wait || rc=1
   tick_prs_changed # Refill can change PRs while the scheduler lock is released.
   LIVE_WORKER_CACHE_UNTIL=0
   TICK_ACTIVE_FOOTPRINTS_VALID=false

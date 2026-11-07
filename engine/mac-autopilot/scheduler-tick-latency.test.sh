@@ -74,23 +74,30 @@ failures=()
 # must keep the same release/read/commit/reacquire flow as the runtime lock helper.
 grep -Fq 'phase_yield_lock_batch run_issue_intake_phases' "$script_dir/scheduler.sh" \
   || failures+=('full-tick issue registration does not yield the ledger lock')
+# The tick's opening holds the lock; a yield around the census prime let a refill in at tick start, and 9 of 37 such refills were killed.
+tick_body="$(sed -n '/^main() {/,/^}/p' "$script_dir/scheduler.sh")"
+grep -Fq 'phase tick_prs_prime' <<<"$tick_body" && ! grep -Fq 'phase_yield_lock tick_prs_prime' <<<"$tick_body" \
+  || failures+=('the full tick yields the ledger lock at tick start, so a refill can queue behind its opening')
+# The closing steps (focus alert, snapshot, views, cleanup) run without the ledger lock: 128s of lock hold there blocked a refill's writes.
+[[ "${tick_body%%phase_mark flush_focus_alert*}" == *release_scheduler_lock* ]] \
+  || failures+=('the full tick still holds the ledger lock through its closing steps')
 grep -Fq 'phase_yield_lock dispatch_pending' "$script_dir/scheduler.sh" \
   || failures+=('full-tick dispatch does not yield the ledger lock')
 grep -Fq 'phase_yield_lock_batch run_refill_intake_dispatch_phases' "$script_dir/scheduler.sh" \
   || failures+=('refill issue registration and dispatch do not yield the ledger lock')
 
-# Refill dispatches startable work before intake, and again only when intake added some.
+# Refill dispatches startable work first, then merges, then takes in issues, and dispatches again only when intake added some.
 phase() { order+=("$1"); [[ "$1" != register_new_issues ]] || INTAKE_ADDED=$intake_adds; }
 for intake_adds in 0 1; do
   order=(); run_refill_intake_dispatch_phases
-  want='dispatch_pending register_new_issues'; (( intake_adds == 0 )) || want+=' dispatch_pending'
+  want='dispatch_pending refill_merge_pass register_new_issues'; (( intake_adds == 0 )) || want+=' dispatch_pending'
   [[ "${order[*]}" == "$want" ]] || failures+=("refill phase order with $intake_adds new issues was '${order[*]}', want '$want'")
 done
 
 # Late in the refill window the post-intake pass is left to the next refill.
 for late in 239 240; do
   SECONDS=$late; order=(); intake_adds=1; run_refill_intake_dispatch_phases
-  want='dispatch_pending register_new_issues dispatch_pending'; (( late < 240 )) || want='dispatch_pending register_new_issues'
+  want='dispatch_pending refill_merge_pass register_new_issues dispatch_pending'; (( late < 240 )) || want='dispatch_pending refill_merge_pass register_new_issues'
   [[ "${order[*]}" == "$want" ]] || failures+=("refill phase order at ${late}s was '${order[*]}', want '$want'")
 done
 SECONDS=0
