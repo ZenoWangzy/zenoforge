@@ -162,7 +162,7 @@ zcode_paced() { # command... -> run it with the current time and the GLM runs in
 
 # The week hold needs Codex to take the work: during a Codex outage GLM runs ahead of pace, bounded by the 5h cap and the 98 alert.
 implement_week_held() { # prints week and allowed while implement and repair must leave GLM
-  ! codex_week_stopped "${CODEX_IMPLEMENT_STOP_PCT:-101}" && ! cooling codex && zcode_paced zcode_week_held
+  (pick_codex_work_identity "{}") >/dev/null 2>&1 && zcode_paced zcode_week_held
 }
 
 pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with a fresh, available quota

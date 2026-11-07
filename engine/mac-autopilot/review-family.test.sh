@@ -254,7 +254,7 @@ if pace_review "$(reviews 7)"; then fail 'seven reviews at 3 points must fill th
 if pace_review "[$glm_run,$glm_lower,$glm_lower]"; then fail 'a lowercase GLM model must count'; fi
 pace_review "[$glm_run,$glm_done]" || fail 'a harvested run must not count'
 pick_glm_implementer() { (
-  model_policy_role_fields() { printf 'zcode\tGLM-5.3\tmax\t\n'; }
+  model_policy_role_fields() { if [[ "$1" == hand-zcode ]]; then printf 'zcode\tGLM-5.3\tmax\t\n'; else printf 'codex\tgpt-6-luna\tmax\t\n'; fi; }
   model_policy_model_allowed_for_role() { return 0; }
   pick_zcode_implementer
 ); }
