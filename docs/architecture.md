@@ -43,7 +43,7 @@ A tick that refuses counts as a failure. After three in a row, it writes an even
 - release batches (`run-release.sh`)
 - one main-red recovery step (`main-red-bisect` in the sweep loop)
 
-Two of these scripts are not in this checkout: `run-release.sh` and `run-advisor-batch.sh`. The implement leg is described in the header as `run-implement.sh`, which is also missing. See [install.md](install.md#not-generic-yet).
+The deployment-specific release runner and `run-advisor-batch.sh` are outside this checkout. `engine/run-release.sh` dispatches to the configured release runner; its verified post-deploy success callback is `record_deploy_evidence` in `engine/lib.d/release-close.sh`, which records the live commit SHA in `$AGENT_HOME/state/live-sha.json`. The implement leg is described in the header as `run-implement.sh`, which is also missing. See [install.md](install.md#not-generic-yet).
 
 ### 1.2 Unit loop
 
@@ -244,7 +244,7 @@ A change enters the hotfix lane when the issue has the `hotfix` label, or the br
 
 ## 8. Health, dashboard, and cost
 
-- **Node health.** `engine/mac-autopilot/node_health.py` scores each node of the flow (intake, implement, review, PR CI, merge, main Postsubmit, release, production, close, plus the scheduler tick, workers, and supervisor). Each node is healthy, unhealthy, or WARN in between. The bounds are in `engine/mac-autopilot/NODE-HEALTH.md`. The `node_health` key in `config.json` overrides a bound for one metric. `--alert` writes unhealthy nodes to the alerts file. `--file-issues` can open or comment on GitHub issues, and runs only when you pass the flag.
+- **Node health.** `engine/mac-autopilot/node_health.py` scores each node of the flow (intake, implement, review, PR CI, merge, main Postsubmit, release, production, close, plus the scheduler tick, workers, and supervisor). Delivery health reads `$AGENT_HOME/state/live-sha.json` and counts first-parent `origin/main` commits after that SHA whose paths are product paths under the merge lane's `NONPRODUCT_PATHS_RE`; a missing record is unhealthy NO-DATA. Each node is healthy, unhealthy, or WARN in between. The bounds are in `engine/mac-autopilot/NODE-HEALTH.md`. The `node_health` key in `config.json` overrides a bound for one metric. `--alert` writes unhealthy nodes to the alerts file. `--file-issues` can open or comment on GitHub issues, and runs only when you pass the flag.
 - **Bell.** `bell.sh` runs every 120 seconds and includes a stale-dashboard check.
 - **Dashboard.** `gen_dashboard.py` writes the dashboard data. `dashboard.html` is a static page in the runtime directory.
 - **Reports.** `health_report.py` and `waste_report.py` are read-only summaries of the pipeline's records, including token and CI-repair waste.

@@ -406,7 +406,7 @@ echo '{"attempts":1,"run":{"outcome":"merged","evidence":{"pr_number":791}}}' > 
 RECORD_DEPLOY_LEGACY_OUT="$(
   AGENT_HOME="$CONCLUDE_HOME" AGENT_DRY_RUN=1 REPO="test/repo" bash -c '
     source "$0/lib.sh"
-    record_deploy_evidence 500014 abc1234 "Feature surface: authenticated /chat/ photo attachment send\nURL: https://example.example/chat; Visible DOM: the product; Same-run network: GET /api/me -> 200"
+    record_deploy_evidence 500014 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "Feature surface: authenticated /chat/ photo attachment send\nURL: https://example.example/chat; Visible DOM: the product; Same-run network: GET /api/me -> 200"
     echo "exit=$?"
   ' "$SCRIPT_DIR" 2>&1
 )"
@@ -414,6 +414,9 @@ assert_contains "legacy merged record migrates to deploy_state through productio
   "$RECORD_DEPLOY_LEGACY_OUT" "exit=0"
 assert_contains "...records deployed state for the legacy merge too" \
   "$RECORD_DEPLOY_LEGACY_OUT" '"deploy_state": "deployed"'
+LIVE_SHA_RECORD="$(cat "$CONCLUDE_HOME/state/live-sha.json" 2>/dev/null || true)"
+assert_contains "post-deploy success writes the live SHA record" "$LIVE_SHA_RECORD" '"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+assert_contains "live SHA record carries its write time and source" "$LIVE_SHA_RECORD" '"source":"post-deploy-success"'
 
 echo '{"attempts":1,"brief_md":"#1839: send a photo attachment through /chat/","run":{"outcome":"merged","evidence":{"pr_number":793}}}' > "$CONCLUDE_HOME/state/500020.json"
 PHOTO_GENERIC_REPLAY_OUT="$(

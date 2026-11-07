@@ -17,7 +17,7 @@ import argparse, glob, json, os, re, socket, subprocess, urllib.parse, urllib.re
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import ledger_history
+import ledger_history, live_delivery
 import line_holds
 import worker_cost
 import workorder_cost
@@ -42,7 +42,7 @@ def health_doc_reference():
 
 
 # metric id: (node, description, healthy bound, unhealthy bound, higher_is_better)
-CRITERIA = {
+CRITERIA = {**live_delivery.CRITERIA,
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
     "implement.no_output_pct": ("implement", "implement runs with no report %", 5, 15, False),
     "dispatch.collisions_per_day": ("implement", "overlapping implement/repair unit pairs in the last 24h", 0, 1, False),
@@ -119,7 +119,7 @@ GH_DELIVERY_CALL_TIMEOUT = 15
 GH_DELIVERY_CENSUS_TIMEOUT = 30
 GH_DELIVERY_BATCH_TIMEOUT = 60
 # What each number means, in the dashboard's words. Every metric above needs one (node_health.test.sh).
-MEANING = {
+MEANING = {**live_delivery.MEANING,
     "implement.wall_p50": "一次开发从派出到交付的中位时长。偏长多半是任务太大，或卡在环境上。",
     "implement.no_output_pct": "开发员跑完却没交报告的比例：这些 token 全白花，多是进程被杀或崩溃。",
     "dispatch.collisions_per_day": "过去 24 小时不同开发单元同时写入同一文件的次数；正常等待不算碰撞，任何一次都是故障。",
@@ -185,7 +185,7 @@ MEANING = {
     "delivery.human_actions_unattributed_30d": "过去 30 天 maintainer-login PR review 中，有 agent marker 或 commit trailer、但没有相应 scheduler review 事件的动作数；不算成人工动作。",
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
-SOURCE = {
+SOURCE = {**live_delivery.SOURCE,
     "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "dispatch.collisions_per_day": "units.json write-start/write-end 的区间与文件范围（预测 + 实际 diff），按单元对去重；固定滚动 24h。",
@@ -1343,7 +1343,7 @@ def file_issues(a, rows, now):
         title = f"pipeline health: {mid} unhealthy"
         # #4487: per-metric symptom fixes twice replaced the behaviour fix (bound/criteria edits in
         # eee674e0c, 6362c5486). The template routes the worker to the behavioural root cause first.
-        body = (f"<!-- vecta-agent-comment -->\nnode_health.py at {now:%Y-%m-%dT%H:%MZ}: **{desc}** = {v:.0f} "
+        body = (f"<!-- vecta-agent-comment -->\nnode_health.py at {now:%Y-%m-%dT%H:%MZ}: **{desc}** = {live_delivery.display_value(v)} "
                 f"(healthy {'>=' if higher else '<='} {healthy}, unhealthy {'<=' if higher else '>='} {unhealthy}), "
                 f"unhealthy since {entry['since']}.\n\nNode: {node}. Criteria and human baseline: "
                 f"{health_doc_reference()}. Fix the behaviour, not the metric (#4487): "
@@ -1417,7 +1417,7 @@ def score(metrics, criteria):
     rows = []
     for mid, (node, desc, healthy, unhealthy, higher) in criteria.items():
         v = metrics.get(mid)
-        status = status_of(v, healthy, unhealthy, higher)
+        status = live_delivery.no_data_status(mid, v) or status_of(v, healthy, unhealthy, higher)
         rows.append((node, mid, desc, v, healthy, unhealthy, higher, status))
     return rows
 
@@ -1495,7 +1495,7 @@ def main():
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)
-    metrics.update(delivery["values"])
+    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now))
     try:
         shared_append = frozenset((json.load(open(os.path.join(a, "config.json")))
                                    .get("footprint_mutex") or {}).get("shared_append") or [])
@@ -1651,7 +1651,7 @@ def main():
             for node, mid, desc, v, healthy, unhealthy, higher, status in bad:
                 if f"[{hour}" in seen and f"NODE-UNHEALTHY metric={mid} " in seen.split(f"[{hour}", 1)[1]:
                     continue
-                out.write(f"[{now:%Y-%m-%dT%H:%M:%SZ}] NODE-UNHEALTHY metric={mid} node={node} value={v:.0f} "
+                out.write(f"[{now:%Y-%m-%dT%H:%M:%SZ}] NODE-UNHEALTHY metric={mid} node={node} value={live_delivery.display_value(v)} "
                           f"unhealthy-bound={unhealthy} ({desc}; see {health_doc_reference()})\n")
 
 

@@ -57,21 +57,22 @@ def _hotfix_live(path):
     return live
 
 
-def stage_of(unit, labels, accepted_at, hotfix_live_at=None):
-    """(stage index, ISO time of the event that set it). Acceptance = release-closer event; 上线 = the issue's `released` label;
+def stage_of(unit, labels, accepted_at, hotfix_live_at=None, live_merge_shas=None):
+    """(stage index, ISO time of the event that set it). Acceptance = release-closer event; 上线 = `released` plus live merge ancestry;
     进 main = unit merged; 热修生效 = a `hotfix-live` history event or the issue's line in hotfix-live.jsonl."""
     hist = (unit or {}).get("history") or []
     at_of = lambda names: next((h.get("at") for h in reversed(hist) if h.get("stage") in names), None)
     merged_at = at_of({"merged", "pr-merged"})
     if accepted_at: return 4, accepted_at
-    if "released" in labels: return 3, None
+    merge_sha = (unit or {}).get("merge_sha") or (unit or {}).get("land_sha")
+    if "released" in labels and merge_sha in (live_merge_shas or ()): return 3, None
     if unit and (unit.get("stage") in MERGED or merged_at): return 2, merged_at
     live_at = max(filter(None, (at_of({"hotfix-live"}), hotfix_live_at)), default=None)
     if live_at: return 1, live_at
     return 0, None
 
 
-def build(units, issues, rulings, accepted, now, hotfix_live=None):
+def build(units, issues, rulings, accepted, now, hotfix_live=None, live_merge_shas=None):
     """Pure core. issues: gh rows {number,title,state,labels:[{name}]} or None when GitHub was unreachable (units only)."""
     words = {}
     for r in rulings or []:
@@ -98,7 +99,7 @@ def build(units, issues, rulings, accepted, now, hotfix_live=None):
     for n, (title, labels) in cand.items():
         if is_auto_filed_ticket({"title": title, "labels": labels}, anomaly_prefix): continue
         u = by_issue.get(n)
-        stage, at = stage_of(u, labels, done.get(n), (hotfix_live or {}).get(n))
+        stage, at = stage_of(u, labels, done.get(n), (hotfix_live or {}).get(n), live_merge_shas)
         blocked = (u or {}).get("blocked_on")
         items.append({"issue": n, "title": title[:120], "text": (words.get(n) or title)[:300], "from_ruling": n in words,
                       "labels": sorted(labels & set(LABELS)), "stage": stage,
@@ -178,10 +179,12 @@ def _fetch_issues(repo, cache_path):
 
 
 def collect(units, repo, rulings_path, runtime, agent_home, lib):
-    import node_health
+    import node_health, live_delivery
     try: rulings = json.load(open(rulings_path)).get("rulings") or []
     except (OSError, ValueError): rulings = []
+    live = live_delivery.read_live_sha(agent_home)
+    live_merge_shas = live_delivery.ancestor_shas(live_delivery.repository_root(), live["sha"]) if live else set()
     out = build(units, _fetch_issues(repo, os.path.join(runtime, "founder-reqs.cache.json")), rulings, node_health.release_acceptances(runtime), time.time(),
-                _hotfix_live(os.path.join(agent_home, "hotfix-live.jsonl")))
+                _hotfix_live(os.path.join(agent_home, "hotfix-live.jsonl")), live_merge_shas)
     push_changes(out["items"], os.path.join(agent_home, "founder-req-stage.json"), lib, agent_home, repo)
     return out

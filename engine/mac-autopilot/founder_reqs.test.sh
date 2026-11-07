@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # founder_reqs.py: words come from ruling references else the issue title; a stage advances only on unit history,
-# the `released` label, a release-closer event or the hotfix lane's hotfix-live.jsonl; the first run is silent,
+# `released` plus live merge ancestry, a release-closer event or hotfix-live.jsonl; the first run is silent,
 # later stage changes append one inbox line each.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
@@ -15,15 +15,23 @@ issues = [{"number": 1, "title": "t1", "state": "OPEN", "labels": lab("focus")},
           {"number": 4, "title": "t4", "state": "CLOSED", "labels": lab("focus")},
           {"number": 5, "title": "t5", "state": "CLOSED", "labels": lab("focus")}]
 units = [{"id": "issue-1", "issue": 1, "stage": "merged", "handed_off_to": "vecta-29", "history": [{"stage": "merged", "at": iso(100)}]},
+         {"id": "issue-2", "issue": 2, "stage": "merged", "merge_sha": "d" * 40, "history": []},
          {"id": "issue-7", "issue": "7", "title": "unit only", "stage": "blocked-external", "blocked_on": "9", "labels": ["focus"], "history": [{"stage": "write-end", "at": iso(5)}]},
          {"id": "issue-8", "issue": 8, "title": "closed unit", "stage": "closed", "labels": ["focus"]}]
 rulings = [{"references": ["#1", "#4591–#4597", "memory:x.md"], "verbatim": "founder words"}]
 acc = [{"issue": 3, "sha": "a" * 40, "at": iso(3600)}, {"issue": 5, "sha": "b" * 40, "at": iso(5 * 86400)}]
-r = F.build(units, issues, rulings, acc, now)
+r = F.build(units, issues, rulings, acc, now, live_merge_shas={"d" * 40})
 got = {i["issue"]: (i["stage"], i["text"], i["owner"], i["blocker"]) for i in r["items"]}
 assert got == {1: (2, "founder words", "vecta-29", ""), 2: (3, "t2", "热修值班", ""), 3: (4, "t3", "未接单", ""), 7: (0, "unit only", "pipeline", "等 #9")}, got
 assert [i["issue"] for i in r["items"]] == [7, 2, 1, 3] and not r["partial"]  # accepted last, newest issue first
 assert F.build(units, None, rulings, acc, now)["partial"]
+released_sha = "c" * 40
+release_unit = {"id": "issue-2", "issue": 2, "stage": "merged", "merge_sha": released_sha, "history": []}
+release_units = units + [release_unit]
+not_live = F.build(release_units, issues, rulings, acc, now, live_merge_shas=set())
+is_live = F.build(release_units, issues, rulings, acc, now, live_merge_shas={released_sha})
+assert next(i for i in not_live["items"] if i["issue"] == 2)["stage"] == 2, "released label without live merge ancestry must stay at 进 main"
+assert next(i for i in is_live["items"] if i["issue"] == 2)["stage"] == 3, "released label plus live merge ancestry reaches 上线"
 # Auto-filed tickets leave the founder ledger even when they carry a founder label.
 config_root = tempfile.mkdtemp()
 os.makedirs(config_root, exist_ok=True)
