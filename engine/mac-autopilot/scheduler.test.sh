@@ -6419,7 +6419,7 @@ sched_case_tick_unphased_marks() {
   for stub in coord_reap_expired coord_reconcile_systemd_workers coord_reconcile_scheduler_workers; do eval "$stub() { mark $stub; }"; done
   eval "$(command sed -n '/^main() {/,/^}/p' "$scheduler")"
   main
-  [[ "$(command cat "$mk_dir/marks")" == $'acquire stale\nacquire lock_wait\nupdate_budget opening\ncoord_reap_expired coord_sweeps\ncoord_reconcile_systemd_workers coord_sweeps\ncoord_reconcile_scheduler_workers coord_sweeps' ]] \
+  [[ "$(command cat "$mk_dir/marks")" == $'acquire stale\nupdate_budget opening\ncoord_reap_expired coord_sweeps\ncoord_reconcile_systemd_workers coord_sweeps\ncoord_reconcile_scheduler_workers coord_sweeps' ]] \
     || { echo "unphased tick steps must name themselves in .tick-phase: $(command tr '\n' ';' < "$mk_dir/marks")" >&2; exit 1; }
 )
 }
