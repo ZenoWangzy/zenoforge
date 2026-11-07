@@ -176,18 +176,6 @@ MAIN_RED_MAX_RUN_AGE_SECONDS=$((10 * 365 * 86400)) # the fixtures carry fixed da
 big_runs="$(jq -cn '{workflow_runs:[range(0;400) | {id:.,head_sha:"x",status:"completed",conclusion:"success",created_at:"2026-11-07T00:00:00Z",padding:("y"*1000)}]}')"
 assert_eq "a run list over the argv limit still reads" 800 \
   "$(ci_main_completed_push_runs() { printf '%s\n' "$big_runs"; }; main_red_completed_runs | jq '.workflow_runs | length')"
-# A deleted workflow keeps a failed last run for ever: an old red must not open a session.
-now_iso="$(date -u +%FT%TZ)"
-age_runs="$(jq -cn --arg now "$now_iso" '{workflow_runs:[
-  {id:1,red_workflow:"pipeline-suites.yml",status:"completed",conclusion:"failure",created_at:"2026-10-31T06:44:46Z",head_sha:"old"},
-  {id:2,red_workflow:"ci.yml",status:"completed",conclusion:"success",created_at:$now,head_sha:"new"}]}')"
-MAIN_RED_MAX_RUN_AGE_SECONDS=86400
-if main_red_latest_failed_run "$age_runs" >/dev/null; then AGE_RESULT=picked; else AGE_RESULT=ignored; fi
-assert_eq "a red older than the bound is not a current red" ignored "$AGE_RESULT"
-age_runs="$(jq -cn --arg now "$now_iso" '{workflow_runs:[{id:3,red_workflow:"ci.yml",status:"completed",conclusion:"failure",created_at:$now,head_sha:"new"}]}')"
-assert_eq "a fresh red is still picked" 3 "$(main_red_latest_failed_run "$age_runs" | jq -r .id)"
-MAIN_RED_MAX_RUN_AGE_SECONDS=$((10 * 365 * 86400))
-
 # Run the tick-owned maintenance loop from its durable resume point. The
 # other maintenance owners are quiet fixtures; main-red is the real sweep.
 eval "$(sed -n '/^maintenance_record_deferred_step() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p; /^maintenance_clear_deferred_step() {/,/^}/p; /^maintenance_now_epoch_ms() {/,/^}/p; /^maintenance_set_optional_deadline() {/,/^}/p; /^maintenance_restore_slice_deadline() {/,/^}/p; /^maintenance_defer_optional_step() {/,/^}/p; /^maintenance_run_optional_step() {/,/^}/p; /^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
@@ -224,14 +212,29 @@ mkdir -p "$STATE_DIR"
 
 session_json() { jq -c . "$AGENT_HOME/main-red/$RED_SHA.json" 2>/dev/null || echo '{}'; }
 
+# A deleted workflow keeps a failed last run for ever: an old red with no session starts nothing.
+MAIN_RED_MAX_RUN_AGE_SECONDS=86400
+maintenance_tick
+assert_eq "an old red opens no session" null "$(session_json | jq -r .status)"
+if grep -q 'rerun 501' "$FAKE_GH_STATE/actions.log" 2>/dev/null; then OLD_RED=reran; else OLD_RED=quiet; fi
+assert_eq "an old red requests no rerun" quiet "$OLD_RED"
+fresh_run="$(jq -cn --arg now "$(date -u +%FT%TZ)" '{created_at:$now}')"
+if main_red_run_is_current "$fresh_run"; then FRESH=current; else FRESH=old; fi
+assert_eq "a fresh run is current" current "$FRESH"
+if main_red_run_is_current '{}'; then NO_DATE=current; else NO_DATE=old; fi
+assert_eq "a run with no date is not current" old "$NO_DATE"
+MAIN_RED_MAX_RUN_AGE_SECONDS=$((10 * 365 * 86400))
+
 # Tick 1: the red appears; the same-SHA rerun (flaky check) is requested.
 maintenance_tick
 assert_contains "tick 1 requests the one same-SHA rerun" "$(cat "$FAKE_GH_STATE/actions.log")" "rerun 501"
 assert_eq "tick 1 opens a rerun-requested session" rerun-requested "$(session_json | jq -r .status)"
 
-# Tick 2: the rerun finished red; the bisect window opens.
+# Tick 2: the rerun finished red; the bisect window opens. The bound stops new sessions only: this one is older than it and still advances.
 main_runs failure failure > "$FAKE_GH_STATE/completed-runs.json"
+MAIN_RED_MAX_RUN_AGE_SECONDS=86400
 maintenance_tick
+MAIN_RED_MAX_RUN_AGE_SECONDS=$((10 * 365 * 86400))
 assert_eq "tick 2 moves to bisecting after the rerun stayed red" bisecting "$(session_json | jq -r .status)"
 
 # Tick 3: the first midpoint is the culprit and has no verdict yet; the tick
@@ -530,6 +533,19 @@ assert_not_contains "PAUSE prevents the release exception from starting bisect a
 assert_eq "PAUSE keeps the bisect session unopened in maintenance" absent \
   "$(if [ -e "$AGENT_HOME/main-red/$RED_SHA.json" ]; then echo present; else echo absent; fi)"
 rm -f "$PAUSE_FILE"
+
+# A session steps only while its run is the latest verdict: one that stops must end where the supervisor sees it.
+IDLE_SHA="$(printf 'a%.0s' {1..40})"
+main_runs success success > "$FAKE_GH_STATE/completed-runs.json"
+main_red_session_write "$IDLE_SHA" bisecting
+MAIN_RED_MAX_RUN_AGE_SECONDS=86400
+: > "$EVENTS"
+main_red_bisect_sweep
+assert_eq "a session with recent writes stays open" bisecting "$(jq -r .status "$AGENT_HOME/main-red/$IDLE_SHA.json")"
+touch -d '2 days ago' "$AGENT_HOME/main-red/$IDLE_SHA.json"
+main_red_bisect_sweep
+assert_eq "an idle session ends" unattributed "$(jq -r .status "$AGENT_HOME/main-red/$IDLE_SHA.json")"
+assert_contains "an idle session reaches the supervisor" "$(cat "$EVENTS")" "reason=session-idle was=bisecting"
 
 if [ "$FAILED" -eq 1 ]; then
   printf 'FAILED\n' >&2

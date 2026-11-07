@@ -369,11 +369,8 @@ main_red_completed_runs() {
 }
 
 
-# An old red is not current: pipeline-suites.yml was deleted with a failed last run, which would otherwise open a session on a week-old SHA for ever.
 main_red_latest_failed_run() {
-  local cutoff
-  cutoff="$(date -u -d "@$(( $(date +%s) - MAIN_RED_MAX_RUN_AGE_SECONDS ))" +%FT%TZ)" || return 1
-  jq -ce --arg cutoff "$cutoff" '
+  jq -ce '
     [.workflow_runs[]?
       | select(.status == "completed"
         and (.conclusion | type == "string" and length > 0)
@@ -381,9 +378,20 @@ main_red_latest_failed_run() {
     | sort_by(.red_workflow)
     | group_by(.red_workflow)
     | map(sort_by([.created_at // "", .id // 0, .run_attempt // 0]) | last)
-    | map(select(.conclusion == "failure" and (.created_at // "") >= $cutoff))
+    | map(select(.conclusion == "failure"))
     | sort_by([.created_at // "", .id // 0, .run_attempt // 0])
     | last // empty' <<< "$1" 2>/dev/null
+}
+
+
+# An old red may not start anything: pipeline-suites.yml was deleted with a failed last run, which would open a session on a week-old SHA.
+# A session already open keeps advancing on its own run. Fails closed: with no clock, no new session.
+main_red_run_is_current() { # run_json
+  local created now cutoff
+  created="$(jq -r '.created_at // empty' <<< "$1" 2>/dev/null)"
+  now="$(date +%s)" && [[ "$now" =~ ^[0-9]+$ ]] || return 1
+  cutoff="$(date -u -d "@$((now - MAIN_RED_MAX_RUN_AGE_SECONDS))" +%FT%TZ)" || return 1
+  [[ -n "$created" && ! "$created" < "$cutoff" ]]
 }
 
 
@@ -393,6 +401,7 @@ main_red_paused_discovery() {
   local runs run sha workflow run_id
   runs="$(main_red_completed_runs)" || return 1
   run="$(main_red_latest_failed_run "$runs")" || return 0
+  main_red_run_is_current "$run" || return 0
   sha="$(jq -r '.head_sha // empty' <<< "$run")"
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 0
   workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$run")"
@@ -408,7 +417,7 @@ main_red_paused_discovery() {
 # (that red was flaky and the latest verdict is green again, so the step
 # path above can no longer see it).
 main_red_bisect_sweep() {
-  local runs run verdict sha session_file session red_sha rerun_verdict workflow focused_head recovery_status
+  local runs run verdict sha session_file session red_sha rerun_verdict workflow focused_head recovery_status status idle
   if [ "${MAIN_CI_RED_RECONCILIATION_DONE:-0}" = 1 ]; then
     [ "${MAIN_CI_RED_RECOVERY_HELD:-0}" != 1 ] || return 0
   elif ZF_REPO_DIR="$REPO_DIR" bash "${ZF_ENGINE_DIR:-$REPO_DIR/engine}/night/main-ci-recovery.sh" reconcile-red; then
@@ -431,7 +440,8 @@ main_red_bisect_sweep() {
   if run="$(main_red_latest_failed_run "$runs")" && [ -n "$run" ]; then
     verdict="$(jq -r '.conclusion // empty' 2>/dev/null <<< "$run")"
     sha="$(jq -r '.head_sha // empty' 2>/dev/null <<< "$run")"
-    if [ "$verdict" = failure ] && [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+    if [ "$verdict" = failure ] && [[ "$sha" =~ ^[0-9a-f]{40}$ ]] \
+      && { [ -n "$(main_red_session_read "$sha" 2>/dev/null || true)" ] || main_red_run_is_current "$run"; }; then
       # Sessions compare commits; the red SHA must be present locally.
       git_fetch_bounded "$REPO_DIR" main >/dev/null 2>&1 || true
       if ! git -C "$REPO_DIR" rev-parse -q --verify "${sha}^{commit}" >/dev/null 2>&1; then
@@ -445,20 +455,30 @@ main_red_bisect_sweep() {
   while IFS= read -r session_file; do
     [ -n "$session_file" ] || continue
     session="$(main_red_session_read_for_file "$session_file" 2>/dev/null || true)"
-    [ "$(jq -r '.status // empty' <<< "$session" 2>/dev/null)" = rerun-requested ] || continue
+    status="$(jq -r '.status // empty' <<< "$session" 2>/dev/null)"
+    case "$status" in rerun-requested|bisecting|culprit-found|revert-open) ;; *) continue ;; esac
     red_sha="$(jq -r '.red_sha // empty' <<< "$session")"
     [[ "$red_sha" =~ ^[0-9a-f]{40}$ ]] || continue
-    workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$session")"
-    focused_head="$(jq -r '.focused_head_sha // empty' <<< "$session")"
-    if [[ "$workflow" == pipeline-suites.yml && ! "$focused_head" =~ ^[0-9a-f]{40}$ ]]; then
-      focused_head="__full__"
-    elif [[ "$workflow" == pipeline-suites.yml && "$focused_head" == "$red_sha" ]]; then
-      focused_head="__rerun__"
+    if [ "$status" = rerun-requested ]; then
+      workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$session")"
+      focused_head="$(jq -r '.focused_head_sha // empty' <<< "$session")"
+      if [[ "$workflow" == pipeline-suites.yml && ! "$focused_head" =~ ^[0-9a-f]{40}$ ]]; then
+        focused_head="__full__"
+      elif [[ "$workflow" == pipeline-suites.yml && "$focused_head" == "$red_sha" ]]; then
+        focused_head="__rerun__"
+      fi
+      rerun_verdict="$(main_red_probe_verdict "$red_sha" "$workflow" "$focused_head")" || rerun_verdict=""
+      if [ "$rerun_verdict" = success ]; then
+        main_red_session_write "$red_sha" flaky
+        main_red_log "red ${red_sha:0:12}: same-SHA rerun went green; recorded flaky, no revert"
+        continue
+      fi
     fi
-    rerun_verdict="$(main_red_probe_verdict "$red_sha" "$workflow" "$focused_head")" || continue
-    if [ "$rerun_verdict" = success ]; then
-      main_red_session_write "$red_sha" flaky
-      main_red_log "red ${red_sha:0:12}: same-SHA rerun went green; recorded flaky, no revert"
+    # A session steps only while its run is the latest verdict, so one with no write for this long will not end by itself.
+    idle=$(( $(date +%s) - $(stat -c %Y "$session_file" 2>/dev/null || date +%s) ))
+    if [ "$idle" -ge "$MAIN_RED_MAX_RUN_AGE_SECONDS" ]; then
+      main_red_session_write "$red_sha" unattributed || continue
+      main_red_supervisor_event "$red_sha" "status=unattributed reason=session-idle was=$status idle_seconds=$idle"
     fi
   done < <(printf '%s\n' "$MAIN_RED_DIR"/*.json)
   return 0
