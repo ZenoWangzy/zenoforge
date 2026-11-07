@@ -22,6 +22,12 @@ that command reaches. Nobody answers questions or confirms seams here, so
 decide from the ticket and the code. Do not run `code-review` yourself: an
 independent reviewer does.
 
+## Check known failures first
+
+If the repository has `lessons/CATALOG.md`, search it for the subsystem you are
+changing before you edit, then read only the rules and write-ups it points to.
+Do not read the whole lessons tree.
+
 ## Verify an optimization premise before implementing
 
 When the ticket claims waste, latency or a race with quantified numbers, the
