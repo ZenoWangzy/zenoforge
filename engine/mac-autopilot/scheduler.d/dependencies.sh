@@ -113,14 +113,14 @@ dep_states() { # issue/PR 号… → 每行 "号<TAB>STATE<TAB>标签,…"；一
   (( $# > 0 )) || return 0
   local q="" d
   for d in "$@"; do
-    q+=" i$d: issueOrPullRequest(number: $d) { ... on Issue { state labels(first: 30) { nodes { name } } } ... on PullRequest { state labels(first: 30) { nodes { name } } } }"
+    q+=" i$d: issueOrPullRequest(number: $d) { ... on Issue { state stateReason labels(first: 30) { nodes { name } } } ... on PullRequest { state labels(first: 30) { nodes { name } } } }"
     q+=" p$d: pullRequests(headRefName: \"agent/issue-$d\", states: MERGED, first: 1) { totalCount }"
   done
   # issue 要到发布后才关（close-after-release）：只看 issue 状态，前置合并了后继还要多等一整个发布周期
   # （10-22 #3122/#3431 已合并、后继仍停着）。流水线的实现分支是 agent/issue-N：它的 PR 合并即交付。
   gh api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q } }" \
     --jq '.data.repository | . as $r | to_entries[] | select((.key | startswith("i")) and .value != null) | .key[1:] as $d
-      | "\($d)\t\(if ($r["p" + $d].totalCount // 0) > 0 then "MERGED" else .value.state end)\t\([.value.labels.nodes[].name] | join(","))\t\(.value.state)"' 2>/dev/null
+      | "\($d)\t\(if ($r["p" + $d].totalCount // 0) > 0 then "MERGED" else .value.state end)\t\([.value.labels.nodes[].name] | join(","))\t\(.value.state)\t\(.value.stateReason // "")"' 2>/dev/null
 }
 stack_pilot_label() { jqf -r 'if .stacking.enabled == false then "" else (.stacking.pilot_label // "stack-pilot") end' <<<"$CFG"; }
 unit_has_stack_pilot() { # unit-json
@@ -196,9 +196,9 @@ release_dependency_blocks() {
       [[ "$dep" =~ ^[0-9]+$ ]] || continue
       dep_delivered_in_ledger "$dep" || deps+=("$dep")
     done < <(jqf -r '[.units[] | select((.stage=="blocked-external" or (.stage=="parked" and (.parked_reason == null or .parked_reason == "waiting-predecessor"))) and .blocked_on != null) | .blocked_on | numbers] | unique | .[]' "$UNITS")
-    while IFS= read -r dep; do # 自己的 issue 已关的闲置单元要能被收掉：并入同一次批量查询
+    while IFS= read -r dep; do # 自己的 issue 已关的单元要能被收掉（带 PR 的也查，not_planned 时关 PR）：并入同一次批量查询
       [[ "$dep" =~ ^[0-9]+$ ]] && deps+=("$dep")
-    done < <(jqf -r '.units[] | select((.stage=="blocked-external" or .stage=="parked") and .pr == null and (.issue | type)=="number") | .issue' "$UNITS")
+    done < <(jqf -r '.units[] | select((.stage=="blocked-external" or .stage=="parked") and (.issue | type)=="number") | .issue' "$UNITS")
     while IFS= read -r u; do
       while IFS= read -r dep; do
         [[ "$dep" =~ ^[0-9]+$ ]] || continue
@@ -211,7 +211,7 @@ release_dependency_blocks() {
       dep_results="$(dep_states "${unique_deps[@]}" 2>/dev/null || true)"
       dep_states_json="$(printf '%s\n' "$dep_results" | jqf -Rn '
         [inputs | split("\t") | select(length >= 2 and .[0] != "" and .[1] != "")]
-        | map({key:.[0],value:{state:.[1],labels:(.[2] // ""),issue_state:(.[3] // "")}}) | from_entries')"
+        | map({key:.[0],value:{state:.[1],labels:(.[2] // ""),issue_state:(.[3] // ""),state_reason:(.[4] // "")}}) | from_entries')"
     else
       dep_states_json='{}'
     fi
@@ -224,6 +224,15 @@ release_dependency_blocks() {
     say "unit=$id issue #$issue already closed on GitHub; retired"
   done < <(jqf -r --slurpfile c <(printf '%s' "$dep_cache") '.units[] | select((.stage=="blocked-external" or .stage=="parked") and .pr == null and (.issue | type)=="number"
     and ((($c[0][(.issue | tostring)].state) // "") | IN("CLOSED","MERGED"))) | [.id, .issue] | @tsv' "$UNITS")
+  while IFS=$'\t' read -r id issue pr; do # 自己的 issue 以 not_planned 关闭、PR 仍开：关 PR 一次，单元走同一条终局路径
+    [[ "$pr" =~ ^[0-9]+$ ]] || continue
+    jqf -e --argjson p "$pr" 'any(.[]; .number == $p)' <<<"$(tick_prs)" >/dev/null || continue
+    gh pr close "$pr" --comment "Autopilot: issue #$issue was closed as not planned; this PR is superseded." >/dev/null 2>&1 \
+      || { say "unit=$id issue #$issue not_planned: could not close PR #$pr; next tick retries"; continue; }
+    set_unit "$id" "$(hist issue-closed "issue #$issue closed as not planned; PR #$pr closed") | .stage=\"closed\" | del(.blocked_on) | .note=null"
+    say "unit=$id issue #$issue closed as not planned; PR #$pr closed, unit retired"
+  done < <(jqf -r --slurpfile c <(printf '%s' "$dep_cache") '.units[] | select((.stage=="blocked-external" or .stage=="parked") and (.pr | type)=="number" and (.issue | type)=="number"
+    and ((($c[0][(.issue | tostring)].issue_state) // "") == "CLOSED") and ((($c[0][(.issue | tostring)].state_reason) // "") == "NOT_PLANNED")) | [.id, .issue, .pr] | @tsv' "$UNITS")
   while IFS= read -r u; do
     id="$(jqf -r '.id' <<<"$u")"; dep="$(jqf -r '.blocked_on' <<<"$u")"; issue="$(jqf -r '.issue // empty' <<<"$u")"
     [[ "$dep" =~ ^[0-9]+$ ]] || continue

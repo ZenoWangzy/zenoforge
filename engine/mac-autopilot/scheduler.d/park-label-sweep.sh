@@ -26,10 +26,11 @@ park_label_sweep() {
     set_unit "$id" ".parked_reason=$(js "$reason") | .unpark_condition=$(js "$unpark")" && park_sweep_log "$id" "label $reason"
   done < <(jqf -c '.units[] | select(.stage == "parked" and .parked_reason == null)' "$UNITS")
   # Rulings that move a unit: at most one per sweep, each once.
-  u="$(jqf -c '[.units[] | select(.id == "issue-3015" and .stage == "parked" and .parked_reason == "preserved-clone-hold")][0] // empty' "$UNITS")"
+  # The stale form an earlier sweep left (arbitration cap, resume already in history) is released here too.
+  u="$(jqf -c '[.units[] | select(.id == "issue-3015" and .stage == "parked" and (.parked_reason == "preserved-clone-hold" or (.parked_reason == "supervisor-arbitration-cap" and any((.history // [])[]; .stage == "park-sweep-resume"))))][0] // empty' "$UNITS")"
   if [[ -n "$u" ]]; then
-    set_unit issue-3015 "$(hist park-sweep-resume "hold lifted: nothing in the clone needs preserving") | .parked_reason=\"supervisor-arbitration-cap\" | .unpark_condition=\"a cap triage verdict\" | del(.hold_handoff_waiting, .hold_handoff_wait_issues)" \
-      && park_sweep_log issue-3015 'arbiter route'; return 0
+    set_unit issue-3015 "$(hist park-sweep-resume "hold lifted: nothing in the clone needs preserving; back to supervisor-review") | .stage=\"supervisor-review\" | del(.parked_reason, .unpark_condition, .hold_handoff_waiting, .hold_handoff_wait_issues)" \
+      && park_sweep_log issue-3015 supervisor-review; return 0
   fi
   u="$(jqf -c '[.units[] | select(.id == "issue-4247" and .stage == "parked" and .parked_reason == "head-hold")][0] // empty' "$UNITS")"
   if [[ -n "$u" ]]; then

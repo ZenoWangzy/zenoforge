@@ -122,7 +122,8 @@ to_supervisor() { set_unit "$1" '.stage="supervisor-review"'; }
   unit 5171 'supervisor budget exhausted: ticket stop-loss budget: wall 249min of 240min after 1 rounds'; unit 1207 'supervisor budget exhausted: ticket stop-loss budget: rounds 3 of 3'
   unit 4508 'head 11-04: recut into child issues (see issue comment); close'; } | ledger
 park_label_sweep
-[[ "$(field issue-3015 .parked_reason):$(field issue-3015 .hold_handoff_waiting)" == supervisor-arbitration-cap:null && "$(field issue-4247 .stage)" == parked ]] || fail 'the first sweep must move only 3015'
+[[ "$(field issue-3015 .stage):$(field issue-3015 .parked_reason):$(field issue-3015 .hold_handoff_waiting)" == supervisor-review:null:null && "$(field issue-4247 .stage)" == parked ]] || fail 'the first sweep must return 3015 to its path with no parked_reason, and move only 3015'
+[[ "$(field issue-3015 '[.history[] | select(.stage == "park-sweep-resume")] | length')" == 1 ]] || fail 'the hold release must add exactly one history entry'
 [[ "$(field issue-4402 .parked_reason):$(field issue-4402 .hold_handoff_waiting)" == preserved-clone-hold:true ]] || fail '4402 stays held'
 park_label_sweep
 [[ "$(field issue-4247 .stage):$(field issue-4247 .parked_reason)" == repair-pending:null && "$(field issue-5171 .stage)" == parked ]] || fail 'the second sweep must move only 4247'
