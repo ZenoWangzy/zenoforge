@@ -95,10 +95,8 @@ CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     "delivery.incident_rate_30d_pct": ("delivery", "incident records per accepted unit within 30 d %", 5, 10, False),
     "delivery.cycles_to_pass_30d": ("delivery", "review rounds to pass per merged unit, 30 d", 1.32, 2.28, False),
     "delivery.approvals_per_merge_30d": ("delivery", "review approvals per merged unit, 30 d", 1, 2.28, False),
-    "delivery.human_actions_per_merge_30d": ("delivery", "human PR review actions per merged unit, 30 d", 1, 2, False),
     "delivery.unlinked_units_30d": ("delivery", "release-accepted units missing a recorded join, 30 d", 0, 1, False),
     "delivery.unlinked_incidents_30d": ("delivery", "incident records without an accepted-unit link, 30 d", 0, 1, False),
-    "delivery.human_actions_unattributed_30d": ("delivery", "maintainer-login PR review actions without reliable attribution, 30 d", 0, 1, False),
     "host.prereqs_missing":    ("host", "host services from host-prereqs.json that do not answer", 0, 1, False),
     "host.github_net_failures_per_hour": ("host", "GitHub fetch/API network failures per hour (user journal)", 2, 10, False),
     "host.stale_worktrees":    ("host", "worktrees under ~/wt older than 2 h", 10, 40, False),
@@ -173,18 +171,16 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "flow.in_out_imbalance": "|窗口内进入的单数 − 完成合入的单数|：进出守恒。持续不等 = 单在系统里堆积或凭空消失（WIP 泄漏 / 孤儿单）。",
     "mechanism.silent": "登记表（engine/state/mechanism-registry.json）里沉默超过上限的机制数：代码落地了但没在跑（#4483 里 f3 落地后停转 18 小时就是这类）。允许长期无事件的机制（expected_idle）只展示最近事件时间，不计入。分组明细在 scorecard 的 mechanisms。",
     "workers.local_test_db": "AI 员工 push 前能否在本机跑集成测试。0 = 集成测试第一次运行要等到批准后的 CI，红了再返工一轮（10-17 重装丢了测试库，24h 内 146 次返工由批准后 CI 红触发）。",
-    "delivery.issue_to_accept_p50_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只用完整 ID 链。",
-    "delivery.issue_to_accept_p95_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只用完整 ID 链。",
-    "delivery.issue_to_accept_p50_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只用完整 ID 链。",
-    "delivery.issue_to_accept_p95_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只用完整 ID 链。",
+    "delivery.issue_to_accept_p50_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）；窗口内没有发布验收时显示 NO-DATA（发布停摆时如此，不是读数丢失）。",
+    "delivery.issue_to_accept_p95_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）；窗口内没有发布验收时显示 NO-DATA（发布停摆时如此，不是读数丢失）。",
+    "delivery.issue_to_accept_p50_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）。",
+    "delivery.issue_to_accept_p95_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）。",
     "delivery.revert_rate_30d_pct": "过去 30 天接受单元中，release-closer 接受后 main 出现对应 Git revert marker 的比例。",
     "delivery.incident_rate_30d_pct": "过去 30 天根因事故记录数 ÷ 同期接受单元数；没有明确关联到接受单元的记录同时计为 unlinked。",
     "delivery.cycles_to_pass_30d": "过去 30 天合并单元从首次评审到第一次 review-approve 的评审轮数均值，含通过轮。",
     "delivery.approvals_per_merge_30d": "过去 30 天合并单元的 review-approve 台账事件均值。",
-    "delivery.human_actions_per_merge_30d": "过去 30 天合并 PR 的真人 review action 均值；扣除有 bot marker、commit trailer 或同刻 scheduler review 事件的 maintainer-account 操作。",
     "delivery.unlinked_units_30d": "过去 30 天 release-closer 明确关闭的 issue 中，issue→unit→PR→merge→release 链缺字段或多义的数量。",
     "delivery.unlinked_incidents_30d": "过去 30 天事故记录中没有明确 issue ID、或 issue ID 未对应到同期接受单元的数量；不会猜测归属。",
-    "delivery.human_actions_unattributed_30d": "过去 30 天 maintainer-login PR review 中，有 agent marker 或 commit trailer、但没有相应 scheduler review 事件的动作数；不算成人工动作。",
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
 SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
@@ -239,18 +235,16 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "flow.in_out_imbalance": "units.json 首个事件落在窗口内 = 进入，merged/landed 落在窗口内 = 完成",
     "mechanism.silent": "engine/state/mechanism-registry.json 的事件模式匹配 scheduler.log / alerts/events.md / $AGENT_HOME/logs 的行（含轮转 .1 代），取每个机制最近一次事件时间",
     "workers.local_test_db": "每次体检对 PGTEST_URL（runtime-env.sh，zenoforge-pgtest.service）做 TCP 连接",
-    "delivery.issue_to_accept_p50_7d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
-    "delivery.issue_to_accept_p95_7d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
-    "delivery.issue_to_accept_p50_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
-    "delivery.issue_to_accept_p95_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
+    "delivery.issue_to_accept_p50_7d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
+    "delivery.issue_to_accept_p95_7d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
+    "delivery.issue_to_accept_p50_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
+    "delivery.issue_to_accept_p95_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
     "delivery.revert_rate_30d_pct": "units.json 接受单元的 merge SHA，与 origin/main Git revert commit 的 This reverts commit marker",
     "delivery.incident_rate_30d_pct": ".zenoforge/state/incident-guards.json dated incidents ÷ unique issue IDs in release-closer acceptance events; downstream joins are not required",
     "delivery.cycles_to_pass_30d": "units.json review-approve / review-request-changes / review-block events before merged / landed",
     "delivery.approvals_per_merge_30d": "units.json review-approve events on merged / landed units",
-    "delivery.human_actions_per_merge_30d": "GitHub merged PR review records, matched against units.json history, PR body bot marker and commit trailers",
     "delivery.unlinked_units_30d": "release-closer output in alerts/events.md joined by exact issue, unit, PR and merge IDs",
     "delivery.unlinked_incidents_30d": ".zenoforge/state/incident-guards.json explicit issue fields joined to accepted issue IDs",
-    "delivery.human_actions_unattributed_30d": "GitHub PR reviews joined to scheduler history and PR/commit bot markers; no reliable actor attribution means unknown",
 }
 # Line-hold rows (holds.*) live in line_holds.py: node_health.py is at its size-ratchet baseline.
 CRITERIA.update(line_holds.CRITERIA)
@@ -1001,15 +995,6 @@ def gated_agent_pr_share(repo):
 
 
 RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{7,40}) closed=\[([0-9,\s]*)\]")
-BOT_COMMENT_MARKER = "<!-- vecta-agent-comment -->"
-BOT_DISCLAIMER = "This comment is posted by the automated the product agent pipeline under the maintainer's GitHub account"
-REVIEW_STAGES = {
-    "APPROVED": {"review-approve"},
-    "CHANGES_REQUESTED": {"review-request-changes"},
-    "COMMENTED": {"review-block"},
-}
-
-
 def release_acceptances(runtime):
     """Read the batch close event, which names the accepted deployed SHA and issue IDs."""
     paths = [os.path.join(runtime, "alerts", "events.md"), os.path.join(runtime, "scheduler.log")]
@@ -1059,7 +1044,7 @@ def gh_delivery_rows(repo, now, units=None, release_events=None):
         for number in sorted(required_prs - available_prs):
             fallback_commands.append(("prs", number,
                                       ["pr", "view", str(number), "--repo", repo, "--json",
-                                       "number,mergedAt,mergeCommit,body,reviews,commits"]))
+                                       "number,mergedAt,mergeCommit"]))
         results = _parallel_gh_json([command for _, _, command in fallback_commands], GH_DELIVERY_CALL_TIMEOUT)
         for (key, number, _), row in zip(fallback_commands, results):
             if not isinstance(row, dict) or _number(row.get("number")) != number:
@@ -1132,29 +1117,6 @@ def git_revert_times(root, tip="HEAD"):
     return reverted
 
 
-def _has_agent_commit_trailer(pr):
-    trailer = re.compile(r"(?im)^Co-Authored-By:\s*(?:Codex|ZCode)\b")
-    for commit in pr.get("commits") or []:
-        data = commit.get("commit") or {}
-        if any(trailer.search(str(data.get(field) or "")) for field in ("messageBody", "messageHeadline")):
-            return True
-    return False
-
-
-def _has_bot_marker(text):
-    text = str(text or "")
-    return BOT_COMMENT_MARKER in text or BOT_DISCLAIMER in text
-
-
-def _scheduled_review(review, history):
-    submitted = ts(review.get("submittedAt") or review.get("submitted_at"))
-    if not submitted:
-        return False
-    stages = REVIEW_STAGES.get(str(review.get("state") or "").upper(), set())
-    return any(event.get("stage") in stages and (at := ts(event.get("at"))) and
-               abs((submitted - at).total_seconds()) <= 120 for event in history)
-
-
 def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo="",
                      reverted_merge_times=None):
     """Join recorded issue/unit/PR/merge/release IDs and summarize the last 7/30 days."""
@@ -1163,12 +1125,10 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
     details = {
         "accepted_units_7d": None, "accepted_units_30d": None, "merged_units_30d": None,
         "unlinked_units_30d": None, "incident_records_30d": None, "unlinked_incidents_30d": None,
-        "human_actions_merged_units_30d": None, "human_actions_unattributed_30d": None,
     }
 
     accepted = []
     release_events_by_issue = None
-    accepted_release_issues_7d = None
     accepted_release_issues_30d = None
     if release_events is not None:
         release_events_by_issue = {}
@@ -1180,9 +1140,8 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
             release_events_by_issue.setdefault(issue_number, []).append(event)
             if at >= since_7d:
                 release_events_7d_by_issue.setdefault(issue_number, []).append(event)
-        accepted_release_issues_7d = set(release_events_7d_by_issue)
         accepted_release_issues_30d = set(release_events_by_issue)
-        details["accepted_units_7d"] = len(accepted_release_issues_7d)
+        details["accepted_units_7d"] = len(release_events_7d_by_issue)
         details["accepted_units_30d"] = len(accepted_release_issues_30d)
 
     if issue_rows is not None and pr_rows is not None and release_events_by_issue is not None:
@@ -1193,12 +1152,16 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
             issue_number = _number(unit.get("issue"))
             if issue_number is not None:
                 units_by_issue.setdefault(issue_number, []).append(unit)
-        unlinked = 0
+        unlinked, lead_hours = 0, []
         for issue_number, events in release_events_by_issue.items():
             issue = issues.get(issue_number)
             created_at = ts((issue or {}).get("createdAt") or (issue or {}).get("created_at"))
             acceptance_event = events[0] if len(events) == 1 else None
             accepted_at = ts((acceptance_event or {}).get("at"))
+            # Lead time needs only the issue's creation and its one acceptance; the unit join below is an
+            # integrity check and must not choose the sample (50 of 64 accepted issues predate the ledger).
+            if created_at and accepted_at and created_at <= accepted_at:
+                lead_hours.append((accepted_at, (accepted_at - created_at).total_seconds() / 3600))
             candidates = units_by_issue.get(issue_number, [])
             unit = candidates[0] if len(candidates) == 1 else None
             merge_at = _merge_time(unit) if unit else None
@@ -1219,13 +1182,11 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
                              "created_at": created_at, "release_sha": release_sha})
 
         accepted = [row for row in accepted if row["accepted_at"] <= now]
-        accepted_7d = [row for row in accepted if row["accepted_at"] >= since_7d]
         details["unlinked_units_30d"] = unlinked
-        for window, target in ((accepted_7d, "7d"), (accepted, "30d")):
-            durations = [(row["accepted_at"] - row["created_at"]).total_seconds() / 3600
-                         for row in window if row["created_at"] <= row["accepted_at"]]
-            values[f"delivery.issue_to_accept_p50_{target}_hours"] = pct(durations, .5)
-            values[f"delivery.issue_to_accept_p95_{target}_hours"] = pct(durations, .95)
+        for since, target in ((since_7d, "7d"), (since_30d, "30d")):
+            window = [hours for at, hours in lead_hours if at >= since]
+            values[f"delivery.issue_to_accept_p50_{target}_hours"] = pct(window, .5)
+            values[f"delivery.issue_to_accept_p95_{target}_hours"] = pct(window, .95)
         if accepted and reverted_merge_times is not None:
             reverted = 0
             for row in accepted:
@@ -1292,34 +1253,6 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
     values["delivery.cycles_to_pass_30d"] = sum(review_rounds) / len(review_rounds) if review_rounds else None
     values["delivery.approvals_per_merge_30d"] = sum(approval_counts) / len(approval_counts) if approval_counts else None
 
-    if pr_rows is not None:
-        prs = {_number(pr.get("number")): pr for pr in pr_rows if _number(pr.get("number")) is not None}
-        owner = repo.split("/", 1)[0].casefold()
-        actions, samples, unattributed = 0, 0, 0
-        for unit, _ in merged_units:
-            pr_number = _number(unit.get("pr"))
-            pr = prs.get(pr_number)
-            if pr_number is None or pr is None or not isinstance(pr.get("reviews"), list):
-                continue
-            samples += 1
-            history = unit.get("history") or []
-            agent_context = _has_bot_marker(pr.get("body")) or _has_agent_commit_trailer(pr)
-            for review in pr["reviews"]:
-                author = (review.get("author") or {}).get("login") or review.get("login") or ""
-                login = str(author).casefold()
-                if not login or login.endswith("[bot]") or _has_bot_marker(review.get("body")):
-                    continue
-                if login == owner and _scheduled_review(review, history):
-                    continue
-                if login == owner and agent_context:
-                    unattributed += 1
-                    continue
-                actions += 1
-        details["human_actions_merged_units_30d"] = samples
-        details["human_actions_unattributed_30d"] = unattributed
-        values["delivery.human_actions_unattributed_30d"] = unattributed
-        if samples:
-            values["delivery.human_actions_per_merge_30d"] = actions / samples
     return {"values": values, "details": details}
 
 

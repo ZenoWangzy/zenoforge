@@ -22,8 +22,8 @@ MEANING = {
     "delivery.oldest_merged_not_live_hours": "origin/main 首父链上，最早尚未进入生产的产品提交年龄。",
 }
 SOURCE = {
-    "delivery.merged_not_live": "$AGENT_HOME/state/live-sha.json plus first-parent origin/main history classified by the merge-lane NONPRODUCT_PATHS_RE",
-    "delivery.oldest_merged_not_live_hours": "$AGENT_HOME/state/live-sha.json plus first-parent origin/main commit times classified by the merge-lane NONPRODUCT_PATHS_RE",
+    "delivery.merged_not_live": "production deployment record (release_age.production_deploy), else $AGENT_HOME/state/live-sha.json, plus first-parent origin/main history classified by the merge-lane NONPRODUCT_PATHS_RE",
+    "delivery.oldest_merged_not_live_hours": "production deployment record (release_age.production_deploy), else $AGENT_HOME/state/live-sha.json, plus first-parent origin/main commit times classified by the merge-lane NONPRODUCT_PATHS_RE",
 }
 
 
@@ -100,8 +100,19 @@ def ancestor_shas(repo_root, live_sha):
     return set(result.stdout.splitlines())
 
 
-def collect_health_metrics(agent_home, now):
-    return health_metrics(repository_root(), read_live_sha(agent_home), now.timestamp())
+def collect_health_metrics(agent_home, now, repo=None, reader=None):
+    """Production's own deployment record decides the live sha; live-sha.json (written after a deploy proof) covers an unreadable one.
+
+    release-train.json and deployed.json are never read: a hand release leaves them on an older sha.
+    """
+    if reader is None:
+        import release_age  # engine/mac-autopilot/release_age.py, landed by #635
+        reader = release_age.production_deploy
+    deploy = reader(repo if repo is not None else os.environ.get("RELEASE_TRAIN_REPO") or os.environ.get("ZF_REPO", ""))
+    record = None
+    if isinstance(deploy, dict) and valid_sha(deploy.get("sha")) and isinstance(deploy.get("at"), datetime):
+        record = {"sha": deploy["sha"], "at": deploy["at"].strftime("%Y-%m-%dT%H:%M:%SZ"), "source": "production-deployments"}
+    return health_metrics(repository_root(), record or read_live_sha(agent_home), now.timestamp())
 
 
 def is_product_change(paths):

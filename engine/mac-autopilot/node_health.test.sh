@@ -459,7 +459,9 @@ grep -Eq ' 1 .*WARN$' <<<"$(row 'past a spend bug bound')" || fail "over-standar
 [[ "$(jq -c '[.work_orders[] | select(.over != []) | [.id, .over]]' "$a/node-health.json")" == '[["pr-15",["tokens"]]]' ]] || fail "work-order bug bounds wrong: $(jq -c .work_orders "$a/node-health.json")"
 jq -e '.metrics[] | select(.id == "loop.rounds_p90") | .meaning != "" and .healthy == 3 and .unhealthy == 5' "$a/node-health.json" >/dev/null || fail 'scorecard JSON lacks meaning or bounds'
 jq -e '.metrics[] | select(.id == "delivery.cycles_to_pass_30d") | .value == 2 and .source != "" and .healthy == 1.32 and .unhealthy == 2.28' "$a/node-health.json" >/dev/null || fail 'delivery review cycles missing from scorecard JSON'
-jq -e '.metrics[] | select(.id == "delivery.issue_to_accept_p50_7d_hours") | .value == null and .source != "" and .healthy == 24 and .unhealthy == 72' "$a/node-health.json" >/dev/null || fail 'delivery lead-time standard missing when there are no acceptance records'
+jq -e '.metrics[] | select(.id == "delivery.issue_to_accept_p50_30d_hours") | .value == null and .source != "" and .healthy == 24 and .unhealthy == 72' "$a/node-health.json" >/dev/null || fail 'delivery lead-time standard missing when there are no acceptance records'
+jq -e '[.metrics[].id | select(test("^delivery[.]human_actions"))] == []' "$a/node-health.json" >/dev/null || fail 'removed human-action rows are still published'
+jq -e '.metrics[] | select(.id == "delivery.issue_to_accept_p95_7d_hours") | .value == null and .status == "NO-DATA" and .healthy == 72 and .unhealthy == 168' "$a/node-health.json" >/dev/null || fail 'the 7 d lead-time row must stay published as NO-DATA without acceptances'
 jq -e '.metrics[] | select(.id == "delivery.merged_not_live") | .value == null and .status == "UNHEALTHY" and .healthy == 0 and .unhealthy == 1 and .source != ""' "$a/node-health.json" >/dev/null || fail 'missing live SHA must be unhealthy NO-DATA for merged-not-live count'
 jq -e '.metrics[] | select(.id == "delivery.oldest_merged_not_live_hours") | .value == null and .status == "NO-DATA" and .healthy == 24 and .unhealthy == 72 and .source != ""' "$a/node-health.json" >/dev/null || fail 'oldest merged-not-live age must publish the delivery bounds'
 grep -Fq 'NODE-UNHEALTHY metric=delivery.merged_not_live node=delivery value=NO-DATA' "$a/alerts/node-health.md" || fail 'missing live SHA did not write an unhealthy alert'
@@ -574,30 +576,27 @@ assert n.release_acceptances(str(runtime)) == [
 print("node_health short release-closer sha: PASS")
 CHECK
 
-# The PR census pages GraphQL search results and refuses a PR whose reviews or commits would be cut short.
-python3 - "$script_dir" <<'CHECK' || fail 'PR census paging or truncation wrong'
+# The PR census pages GraphQL search results and reads only merge time and merge commit, so a PR with over 100
+# reviews or commits no longer blanks the whole window.
+python3 - "$script_dir" <<'CHECK' || fail 'PR census paging or big-PR handling wrong'
 import sys
 sys.path.insert(0, sys.argv[1]); import pr_census
 def pr(number, reviews=0, commits=0):
-    return {"number":number,"mergedAt":"2026-10-24T00:00:00Z","body":"","mergeCommit":{"oid":"a"*40},
+    return {"number":number,"mergedAt":"2026-10-24T00:00:00Z","mergeCommit":{"oid":"a"*40},
             "reviews":{"totalCount":reviews,"nodes":[]},"commits":{"totalCount":commits,"nodes":[]}}
 pages = [{"data":{"search":{"pageInfo":{"hasNextPage":True,"endCursor":"c1"},"nodes":[pr(1, 1, 1)]}}},
-         {"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(2)]}}}]
+         {"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(2, reviews=101, commits=101)]}}}]
 calls = []
 def fake(args, timeout):
     calls.append(args)
     return pages[len(calls) - 1]
 rows = pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30)
 assert [r["number"] for r in rows] == [1, 2], rows
+assert rows[1] == {"number": 2, "mergedAt": "2026-10-24T00:00:00Z", "mergeCommit": {"oid": "a" * 40}}, rows
 assert calls[0][:2] == ["api", "graphql"] and calls[1][-1] == "after=c1", calls
 assert "merged:>=2026-10-01" in calls[0][-1], calls[0]
-pages = [{"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(3, reviews=101)]}}}]
-calls.clear()
-assert pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30) is None
-pages = [{"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(4, commits=101)]}}}]
-calls.clear()
-assert pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30) is None
-print("node_health PR census pages and refuses truncation: PASS")
+assert "reviews" not in pr_census.PR_CENSUS_QUERY and "commits" not in pr_census.PR_CENSUS_QUERY
+print("node_health PR census pages and keeps a big PR: PASS")
 CHECK
 
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.
@@ -666,19 +665,19 @@ incidents = [{"id":"incident-1", "date":"2026-10-25", "issue":101},
 result = n.delivery_metrics(units, issues, prs, releases, incidents, now, repo="example-maintainer/example-repo",
                             reverted_merge_times={f"{1001:040x}": n.ts("2026-10-25T10:00:00Z")})
 values, details = result["values"], result["details"]
-assert values["delivery.issue_to_accept_p50_7d_hours"] == 72, values
-assert values["delivery.issue_to_accept_p95_7d_hours"] == 120, values
-assert values["delivery.issue_to_accept_p50_30d_hours"] == 72, values
+# Lead time counts all 8 accepted issues, including the 2 whose join is broken: 24 48 72 96 120 120 120 240.
+assert values["delivery.issue_to_accept_p50_30d_hours"] == 120, values
 assert values["delivery.issue_to_accept_p95_30d_hours"] == 240, values
+# 7 d window: 7 of the 8 accepted issues (the 240 h one was accepted 8 days ago): 24 48 72 96 120 120 120.
+assert values["delivery.issue_to_accept_p50_7d_hours"] == 96 and values["delivery.issue_to_accept_p95_7d_hours"] == 120, values
+assert details["accepted_units_7d"] == 7, details
 assert values["delivery.revert_rate_30d_pct"] == 100 / 6, values
 assert values["delivery.incident_rate_30d_pct"] == 300 / 8, values
 assert values["delivery.cycles_to_pass_30d"] == 9 / 7, values
 assert values["delivery.approvals_per_merge_30d"] == 1, values
-assert values["delivery.human_actions_per_merge_30d"] == 2 / 7, values
-assert values["delivery.human_actions_unattributed_30d"] == 1, values
 assert values["delivery.unlinked_units_30d"] == 2, values
 assert values["delivery.unlinked_incidents_30d"] == 1, values
-assert details["unlinked_incidents_30d"] == 1 and details["human_actions_unattributed_30d"] == 1, details
+assert details["unlinked_incidents_30d"] == 1, details
 assert details["accepted_units_30d"] == 8, details
 acceptance = n.delivery_metrics(
     [{"id":"pr-201", "issue":101, "pr":201, "merge_sha":"a"*40,
@@ -687,6 +686,15 @@ acceptance = n.delivery_metrics(
     [{"number":201, "mergedAt":"2026-10-24T20:00:00Z", "mergeCommit":{"oid":"a"*40}, "reviews":[]}],
     [{"issue":101, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}], [], now)
 assert acceptance["values"]["delivery.issue_to_accept_p50_30d_hours"] == 120, acceptance
+# An accepted issue whose unit left the ledger still counts for lead time; it only raises unlinked_units.
+unitless = n.delivery_metrics(
+    [{"id":"pr-201", "issue":101, "pr":201, "merge_sha":"a"*40,
+      "history":[{"stage":"merged", "at":"2026-10-24T20:00:00Z"}]}],
+    [{"number":101, "createdAt":"2026-10-20T00:00:00Z"}, {"number":102, "createdAt":"2026-10-24T00:00:00Z"}],
+    [{"number":201, "mergedAt":"2026-10-24T20:00:00Z", "mergeCommit":{"oid":"a"*40}}],
+    [{"issue":101, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}, {"issue":102, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}], [], now)
+assert unitless["values"]["delivery.issue_to_accept_p50_30d_hours"] == 24, unitless
+assert unitless["values"]["delivery.issue_to_accept_p95_30d_hours"] == 120 and unitless["values"]["delivery.unlinked_units_30d"] == 1, unitless
 gh_bin = pathlib.Path(sys.argv[2]) / "delivery-gh"
 gh_bin.mkdir()
 gh = gh_bin / "gh"
