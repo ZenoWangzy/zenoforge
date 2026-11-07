@@ -55,11 +55,29 @@ size_recut_refused_on_head() { # unit head issue
   state="$(scheduler_issue_state "$3" 2>/dev/null)" || return 0
   jqf -e 'has("recut_refused_at")' <<<"$state" >/dev/null
 }
+unit_history_count() { # unit stage [result-regex] → history entries of that stage whose result matches
+  jqf -r --arg id "$1" --arg st "$2" --arg re "${3:-}" '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage==$st and ((.result // "") | test($re)))] | length' "$UNITS"
+}
+# A refused recut leaves the issue at the same scope, so escalating a second time cannot change the outcome (28 lines over
+# 11 units in 24 h). The implement brief already carries the SPLIT contract (first independent slice, remainder filed as a
+# needs-triage ticket, see dispatch-queue.sh); admit the worker once on that contract. Harvest still recounts the real diff, so the limit holds.
+size_split_admit() { # unit issue lines limit → 0 after recording the one admission
+  set_unit "$1" "$(hist size-split-admitted "issue #$2: $3 lines exceed $4 and recut refused; one worker run on the SPLIT contract")"
+}
 size_admission_reject() { # unit lines branch context head estimate actual checkpoint [limit]
-  local issue limit="${9:-$SIZE_ADMISSION_LINES}"
+  local issue limit="${9:-$SIZE_ADMISSION_LINES}" refused=false
   issue="$(unit_field "$1" '.issue // empty')"
-  if [[ "$5" =~ $SHA_RE && "$issue" =~ ^[0-9]+$ ]] \
-    && ! size_recut_refused_on_head "$1" "$5" "$issue" \
+  if [[ "$5" =~ $SHA_RE && "$issue" =~ ^[0-9]+$ ]]; then
+    ! size_recut_refused_on_head "$1" "$5" "$issue" || refused=true
+  fi
+  if [[ "$8" == write-start && "$refused" == true ]] \
+    && (( $(unit_history_count "$1" supervisor-escalated '^size admission:') >= 1 )) \
+    && (( $(unit_history_count "$1" size-split-admitted) == 0 )) \
+    && size_split_admit "$1" "$issue" "$2" "$limit"; then
+    say "size admission write-start unit=$1 issue=#$issue estimate=${6:-unknown} actual=${7:-unknown} limit=$limit -> admitted once for a SPLIT delivery"
+    return 0
+  fi
+  if [[ "$5" =~ $SHA_RE && "$issue" =~ ^[0-9]+$ && "$refused" == false ]] \
     && scheduler_size_recut "$issue" "$2" "$limit" "$1" "$3" "$5"; then
     set_unit "$1" "$(hist size-recut "issue #$issue: $2 lines exceed $limit; head=$5") | .stage=\"blocked-external\" | .size_recut_pending=true"
     if [[ "$8" == write-start ]]; then
@@ -131,6 +149,7 @@ size_admission_write_start() { # unit workdir unit-json → block before worker 
     lines="$actual"; source=diff
   fi
   [[ -n "$lines" ]] || return 0
+  [[ "$source" != estimate || ! "$actual" =~ ^[0-9]+$ ]] || (( actual > limit )) || (( $(unit_history_count "$1" size-split-admitted) == 0 )) || return 0
   # The 30-second refill may start implement workers using local data only. It
   # defers an oversized ticket for the slow tick, which owns the existing recut
   # issue transition and records the decision once.
@@ -145,6 +164,20 @@ pre_dispatch_pr_admission() { # unit branch PR context → prepared clone; nonze
   printf '%s\n' "$dir"
 }
 
+# "Delivered nothing twice" recurs once per arbiter round, because the retry counter never resets: 9 lines over 2 units in
+# 24 h. After a supervisor ruling has already followed one such escalation, send the issue through the same recut route the
+# cap triage uses (once per unit); a unit that already had a recut, an uncommitted tree or no issue still goes to the supervisor.
+implement_nothing_escalate() { # unit message [dirty]
+  local issue
+  issue="$(unit_field "$1" '.issue // empty')"
+  if [[ -z "${3:-}" && "$issue" =~ ^[1-9][0-9]*$ ]] \
+    && (( $(unit_history_count "$1" supervisor-escalated '^implement (delivered no changes|pushed no branch)') >= 1 )) \
+    && jqf -e --arg id "$1" '[.units[] | select(.id==$id)][0] | (.recut_routed != true) and all((.history // [])[]; .stage != "supervisor-budget-recut" and .stage != "supervisor-cap-triage-recut" and .stage != "supervisor-cap-default")' "$UNITS" >/dev/null; then
+    supervisor_budget_recut "$1" "$2; escalated before and ruled on, same result" null "implement delivered nothing again" "implement delivered nothing again after a supervisor ruling"
+    return 0
+  fi
+  to_supervisor "$1" "$2"
+}
 # 产品 issue 的实现：worker 推分支，流水线开 PR（Refs #N）→ 进评审；OBSOLETE 直接结案。
 pr_create_failure_transient() { # gh output rc → true for retryable server/transport failures
   local output="${1:-}" rc="${2:-0}"
@@ -194,7 +227,7 @@ harvest_pr_implement() { # unit report-path
 
 上一轮交付了报告，但指定 worktree 的 ${branch} 上既没有本地提交也没有未提交改动（改动可能落在了别的 checkout 或别的远端）。本轮必须在指定 worktree 内完成并提交改动（或按协议写 OBSOLETE:）。") | .stage=\"implement-pending\""
       else
-        to_supervisor "$1" "implement delivered no changes in the assigned worktree twice: $branch has no local commits and a clean tree, so the work likely landed in another checkout or remote (report $(basename "$2"))"
+        implement_nothing_escalate "$1" "implement delivered no changes in the assigned worktree twice: $branch has no local commits and a clean tree, so the work likely landed in another checkout or remote (report $(basename "$2"))"
       fi
       return 0
     else
@@ -203,7 +236,7 @@ harvest_pr_implement() { # unit report-path
 
 上一轮交付了报告但 origin 上没有分支 ${branch}：本轮必须通过 push preflight 并 push 该分支。") | .stage=\"implement-pending\""
       else
-        to_supervisor "$1" "implement pushed no branch $branch twice (report $(basename "$2"))${dirty:+; the worktree holds uncommitted edits but no local commit on the branch}"
+        implement_nothing_escalate "$1" "implement pushed no branch $branch twice (report $(basename "$2"))${dirty:+; the worktree holds uncommitted edits but no local commit on the branch}" "$dirty"
       fi
       return 0
     fi

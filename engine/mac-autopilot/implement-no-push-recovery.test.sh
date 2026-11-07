@@ -91,5 +91,25 @@ harvest_pr_implement issue-904 "$sup/impl-904.md" || :
 [[ -z "$(np_origin rev-parse -q --verify refs/heads/agent/issue-904 2>/dev/null)" ]] \
   || fail 'uncommitted edits must not be pushed or published'
 
+# 5) The counter never resets, so after one ruling every empty delivery escalated again (9 lines over 2 units in 24 h):
+# the repeat takes the recut route once; a unit that already had a recut still goes to the supervisor.
+routed="$fixture/np-routed"; : > "$routed"
+scheduler_route_to_recut() { printf '%s ' "$1" >> "$routed"; }
+esc='{"stage":"supervisor-escalated","result":"implement delivered no changes in the assigned worktree twice: x","at":"2026-11-02T00:00:00Z"}'
+nc='{"stage":"implement-no-changes","result":"impl-1.md","at":"2026-11-02T00:00:00Z"}'
+for n in 905 906; do
+  command git clone -q "$np/origin.git" "$WT_ROOT/wt-issue-$n"
+  np_wt issue-$n checkout -q -b agent/issue-$n
+done
+units '{"units":[{"id":"issue-905","issue":905,"title":"repeat","branch":"agent/issue-905","lane":"pr","stage":"implement","history":['"$nc,$esc"']},
+ {"id":"issue-906","issue":906,"title":"recut already","branch":"agent/issue-906","lane":"pr","stage":"implement","history":['"$nc,$esc"',{"stage":"supervisor-budget-recut","result":"x","at":"2026-11-03T00:00:00Z"}]}]}'
+printf 'report only\n' > "$sup/impl-905.md"
+harvest_pr_implement issue-905 "$sup/impl-905.md" || :
+[[ "$(field issue-905 .stage)" == closed && "$(stage_of issue-905 supervisor-budget-recut)" == 1 && "$(cat "$routed")" == '905 ' ]] \
+  || fail "a repeat empty delivery was not sent to recut once ($(field issue-905 .stage))"
+harvest_pr_implement issue-906 "$sup/impl-905.md" || :
+[[ "$(field issue-906 .stage)" == supervisor-review && "$(cat "$routed")" == '905 ' ]] \
+  || fail "a unit that already had a recut must go to the supervisor ($(field issue-906 .stage))"
+
 eval "$np_gh_saved"; WT_ROOT="$WT_ROOT_SAVED"
 echo 'implement-no-push-recovery.test.sh: PASS'
