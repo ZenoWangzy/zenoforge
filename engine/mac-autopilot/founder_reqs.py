@@ -5,7 +5,7 @@ A stage change appends one supervisor-inbox line; the head supervisor monitors i
 import calendar, json, os, re, subprocess, time
 
 LABELS = ("founder-test", "hotfix", "focus")
-STAGES = ["提出", "热修生效", "进 main", "上线", "真人验收"]
+STAGES = ["提出", "热修生效", "进 main", "上线", "真人验收"]  # 上线 also = held by a release-retained deploy
 MERGED = {"merged", "landed", "done"}
 STUCK = {"blocked-external", "parked", "needs-human", "supervisor-review"}
 ACCEPTED_KEEP_S = 3 * 86400  # an accepted requirement stays listed for 3 days
@@ -57,13 +57,15 @@ def _hotfix_live(path):
     return live
 
 
-def stage_of(unit, labels, accepted_at, hotfix_live_at=None, live_merge_shas=None):
-    """(stage index, ISO time of the event that set it). Acceptance = release-closer event; 上线 = `released` plus live merge ancestry;
+def stage_of(unit, labels, accepted_at, hotfix_live_at=None, live_merge_shas=None, retained_at=None):
+    """(stage index, ISO time of the event that set it). Acceptance = release-closer event only; 上线 = `released` plus live merge ancestry,
+    or a release-retained deploy that holds the ticket while it is still awaiting-release (deployed, acceptance failed);
     进 main = unit merged; 热修生效 = a `hotfix-live` history event or the issue's line in hotfix-live.jsonl."""
     hist = (unit or {}).get("history") or []
     at_of = lambda names: next((h.get("at") for h in reversed(hist) if h.get("stage") in names), None)
     merged_at = at_of({"merged", "pr-merged"})
     if accepted_at: return 4, accepted_at
+    if retained_at and "awaiting-release" in labels: return 3, retained_at
     merge_sha = (unit or {}).get("merge_sha") or (unit or {}).get("land_sha")
     if "released" in labels and merge_sha in (live_merge_shas or ()): return 3, None
     if unit and (unit.get("stage") in MERGED or merged_at): return 2, merged_at
@@ -72,7 +74,7 @@ def stage_of(unit, labels, accepted_at, hotfix_live_at=None, live_merge_shas=Non
     return 0, None
 
 
-def build(units, issues, rulings, accepted, now, hotfix_live=None, live_merge_shas=None):
+def build(units, issues, rulings, accepted, now, hotfix_live=None, live_merge_shas=None, retained=None):
     """Pure core. issues: gh rows {number,title,state,labels:[{name}]} or None when GitHub was unreachable (units only)."""
     words = {}
     for r in rulings or []:
@@ -99,7 +101,7 @@ def build(units, issues, rulings, accepted, now, hotfix_live=None, live_merge_sh
     for n, (title, labels) in cand.items():
         if is_auto_filed_ticket({"title": title, "labels": labels}, anomaly_prefix): continue
         u = by_issue.get(n)
-        stage, at = stage_of(u, labels, done.get(n), (hotfix_live or {}).get(n), live_merge_shas)
+        stage, at = stage_of(u, labels, done.get(n), (hotfix_live or {}).get(n), live_merge_shas, (retained or {}).get(n))
         blocked = (u or {}).get("blocked_on")
         items.append({"issue": n, "title": title[:120], "text": (words.get(n) or title)[:300], "from_ruling": n in words,
                       "labels": sorted(labels & set(LABELS)), "stage": stage,
@@ -151,12 +153,12 @@ def _fetch_issues(repo, cache_path):
 
 
 def collect(units, repo, rulings_path, runtime, agent_home, lib):
-    import node_health, live_delivery
+    import node_health, live_delivery, release_retained
     try: rulings = json.load(open(rulings_path)).get("rulings") or []
     except (OSError, ValueError): rulings = []
     live = live_delivery.read_live_sha(agent_home)
     live_merge_shas = live_delivery.ancestor_shas(live_delivery.repository_root(), live["sha"]) if live else set()
     out = build(units, _fetch_issues(repo, os.path.join(runtime, "founder-reqs.cache.json")), rulings, node_health.release_acceptances(runtime), time.time(),
-                _hotfix_live(os.path.join(agent_home, "hotfix-live.jsonl")), live_merge_shas)
+                _hotfix_live(os.path.join(agent_home, "hotfix-live.jsonl")), live_merge_shas, release_retained.held_at(runtime))
     push_changes(out["items"], os.path.join(agent_home, "founder-req-stage.json"), lib, agent_home)
     return out

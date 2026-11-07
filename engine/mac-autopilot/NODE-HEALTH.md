@@ -41,7 +41,8 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | supervisor | arbiter dispatches in 24 h (`supervisor.arbiter_dispatches_24h`) | 1,003 arbitrations in the 7 days to 2026-11-06 (≈143/day, 801 on the hard tier, 4.6/merge; 20 units spent 71%); the per-unit lifetime cap `supervisor_arbiter.unit_cap` (default 4) now ends each unit's arbitration itself | ≤ 48 | ≥ 120 | first scorecard sample |
 | supervisor | supervisor-cap-default decisions in 24 h (`supervisor.cap_default_24h`; measured, no bound — the sentinel bounds 0/-1 keep any measured count OK) | every default decision ends a capped unit in the same tick with no model run and no founder question; watch the rate to see how often arbitration fails to converge | — | — | first scorecard sample |
 | scheduler | seconds between tick starts p50 (`scheduler.tick_gap_p50`) | — | ≤ 240 | ≥ 420 | — |
-| release | current release batch wait in hours (`release.hours_waiting`) | elite: deploy on demand, lead time < 1 day [4] | ≤ 4 | ≥ 12 | — |
+| release | current release batch wait in hours, not yet deployed (`release.hours_waiting`; 0 once a `release-retained` deploy came after the batch started) | elite: deploy on demand, lead time < 1 day [4] | ≤ 4 | ≥ 12 | — |
+| release | hours since the oldest deploy whose acceptance failed under FIX-FORWARD and still holds tickets no later `release-closer` line closed (`release.hours_acceptance_failed`; 0 when none; PROVISIONAL bounds, maintainer to confirm) | the next release's acceptance should clear the tracker: 24 h is about 6 missed 4 h release cycles (`release.hours_since_release` bound) | ≤ 24 | ≥ 72 | — |
 | release | hours since production last changed, formal or hand release (`release.hours_since_release`; source: GitHub production Deployments, the live sha (newest success record via `engine/production-deployment-read.sh`) and its earliest real deployment record, not `release-train.json` `released_at`; ruling `release-overdue-2026-11-07`: two 2 h batch cycles with no formal release is a stop, repeated hourly) | two batch cycles (2 h) per release; 4 h without one is a stalled line | ≤ 2 | ≥ 4 | — |
 | release | production hot patches whose PR is not on main (`release.hotpatch_blockers`) | a hotfix is merged the same day | 0 | ≥ 1 | — |
 | holds | line holds (a disabled release train or a valid PAUSE) without an owner or expiry, or past expiry (`holds.line_violations`; each violating hold appends one alerts/events.md line and one supervisor inbox line per day, naming owner, reason and hours since expiry) | a line hold is the same decision as an issue hold (`hold_issue` requires holder, release condition, expiry) and owes the same metadata; expiry fails loud and never re-enables the held line | 0 | ≥ 1 | first scorecard sample |
@@ -112,6 +113,10 @@ issues the selector confirms are pending, including dispatched batches, active u
 and release dispatch gates. It preserves known starts across retries and holds, and clears them when the selector
 reports no eligible pending work. Stale labels that fail release-state validation do not count. The metric does not
 reuse a prior `release-closer` timestamp, which would count idle time before the current batch existed.
+`release-retained: deployed=<sha> tracker=#<n|none> held=[ids]` (`run-release.sh`, FIX-FORWARD) means production changed but acceptance
+failed: the tickets stay `awaiting-release` and only a later `release-closer` line closes them. It never reuses the `release-closer` prefix, so
+`delivery.*`, the f3 heartbeat and `factory_trend.py` do not read it as an acceptance. `release_retained.py` reads it: the founder-requirements
+ladder puts a held ticket at 上线 (never 验收), and `release.hours_acceptance_failed` is the age of the oldest held deploy.
 `release.hours_waiting` is not time since the last formal release: it is 0 once the batch is released, and it is
 None with no batch. The age since the last release is `release.hours_since_release` (`release_age.py`): it reads the
 newest success record of the GitHub production Deployments, so a hand release counts. Its time is the earliest real
@@ -190,7 +195,7 @@ stall is never charged to merge.
 | repair | units in `repair-pending` | `write-end` whose `write-start` has `work_type: repair` | 90 |
 | merge | units in `ready-to-merge` without `ci_wip_wait` | `merged`, `landed` | 150 |
 | CI | `ready-to-merge` units with `ci_wip_wait` | `ci-ready`, `ci-wip-start` (a slot after a wait) | 100 |
-| release | `awaiting-release` with `deploy_state` not `deployed` | `release-closer` line, one per closed issue | 950 |
+| release | `awaiting-release` with `deploy_state` not `deployed` | `release-closer` line, one per closed issue; `release-retained` line, one per deploy (production changed, acceptance failed, nothing closed) | 950 |
 
 The CI station is also its own process: `scheduler.sh --ci-admission` runs `ci_admission` every 120 s under its own lock with a
 240 s bound (`AUTOPI_CI_ADMISSION_LIMIT_SECONDS`), not as a phase of the full tick, which took 1329-1668 s. Its `ci wip:` log line ends

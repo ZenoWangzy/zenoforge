@@ -24,6 +24,9 @@ UNIT_OUT = {"review-approve": "review", "review-request-changes": "review", "rev
             "hold-handoff": "intake"}  # a handoff re-enters an existing unit: its first row was the original intake
 # `release-closer: deployed=<sha, any length> closed=[issue, ...]`, one out per closed issue.
 RELEASE_RE = re.compile(r"^\[(\S+)\] release-closer: deployed=[0-9a-f]+ closed=\[([0-9,\s]*)\]")
+# `release-retained: deployed=<sha> tracker=#<n> held=[...]`: a deploy whose acceptance failed. One deploy out, not an
+# acceptance and not one out per held ticket (the later release-closer line counts those).
+RETAINED_RE = re.compile(r"^\[(\S+)\] release-retained: deployed=[0-9a-f]+ tracker=#(?:\d+|none) held=\[")
 WORK_OUT = {"implement": "implement", "repair": "repair"}
 # The live line is `dispatch claim=owned issue=N mode=.. reason=.. pid=P type=T unit=U`; older logs had no claim/issue/reason.
 DISPATCH_RE = re.compile(r"^\[(\S+)\] dispatch .*?\btype=(review|rereview)\b.*?\bunit=(\S+)")
@@ -111,6 +114,8 @@ def outs(units, runtime, agent_home):
                 m = RELEASE_RE.match(raw)
                 if m and ts(m.group(1)) and (n := len(re.findall(r"\d+", m.group(2)))):
                     ev["release"].append((ts(m.group(1)), n))
+                elif (m := RETAINED_RE.match(raw)) and ts(m.group(1)):
+                    ev["release"].append((ts(m.group(1)), 1))
         except OSError:
             continue
     return {s: sorted(v, key=lambda x: x[0]) for s, v in ev.items()}

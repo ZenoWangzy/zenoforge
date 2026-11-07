@@ -32,6 +32,15 @@ not_live = F.build(release_units, issues, rulings, acc, now, live_merge_shas=set
 is_live = F.build(release_units, issues, rulings, acc, now, live_merge_shas={released_sha})
 assert next(i for i in not_live["items"] if i["issue"] == 2)["stage"] == 2, "released label without live merge ancestry must stay at 进 main"
 assert next(i for i in is_live["items"] if i["issue"] == 2)["stage"] == 3, "released label plus live merge ancestry reaches 上线"
+# A release-retained deploy that holds an awaiting-release ticket reaches 上线; only a release-closer event reaches 验收.
+retained_issues = [{"number": 31, "title": "t31", "state": "OPEN", "labels": lab("focus", "awaiting-release")},
+                   {"number": 32, "title": "t32", "state": "OPEN", "labels": lab("focus")},
+                   {"number": 33, "title": "t33", "state": "CLOSED", "labels": lab("focus", "awaiting-release")}]
+retained_units = [{"id": "issue-%d" % n, "issue": n, "stage": "merged", "history": []} for n in (31, 32, 33)]
+stages = lambda **kw: {i["issue"]: i["stage"] for i in F.build(retained_units, retained_issues, [], kw.pop("acc", []), now, **kw)["items"]}
+assert stages(retained={31: iso(60), 32: iso(60)}) == {31: 3, 32: 2}, "retained reaches 上线 only while still awaiting-release"
+assert stages(retained={31: iso(60)}, acc=[{"issue": 31, "sha": "a" * 40, "at": iso(30)}])[31] == 4, "release-closer reaches 验收"
+assert stages()[31] == 2, "no retained event leaves 进 main"
 # Auto-filed tickets leave the founder ledger even when they carry a founder label.
 config_root = tempfile.mkdtemp()
 os.makedirs(config_root, exist_ok=True)
