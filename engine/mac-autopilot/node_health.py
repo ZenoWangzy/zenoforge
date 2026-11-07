@@ -1146,8 +1146,9 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
         prs = {_number(pr.get("number")): pr for pr in pr_rows if _number(pr.get("number")) is not None}
         units_by_issue = {}
         for unit in units:
-            issue_number = _number(unit.get("issue"))
-            if issue_number is not None:
+            # Older units carry no issue field; their branch agent/issue-N names the issue.
+            branch = re.fullmatch(r"agent/issue-(\d+)", str(unit.get("branch") or ""))
+            for issue_number in {_number(unit.get("issue")), int(branch[1]) if branch else None} - {None}:
                 units_by_issue.setdefault(issue_number, []).append(unit)
         unlinked, lead_hours = 0, []
         for issue_number, events in release_events_by_issue.items():

@@ -787,6 +787,14 @@ acceptance = n.delivery_metrics(
     [{"number":201, "mergedAt":"2026-10-24T20:00:00Z", "mergeCommit":{"oid":"a"*40}, "reviews":[]}],
     [{"issue":101, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}], [], now)
 assert acceptance["values"]["delivery.issue_to_accept_p50_30d_hours"] == 120, acceptance
+# An older unit with no issue field joins by its branch agent/issue-N.
+by_branch = n.delivery_metrics(
+    [{"id":"pr-201", "pr":201, "branch":"agent/issue-101", "merge_sha":"a"*40,
+      "history":[{"stage":"merged", "at":"2026-10-24T20:00:00Z"}]}],
+    [{"number":101, "createdAt":"2026-10-20T00:00:00Z", "closedAt":"2026-10-24T21:00:00Z"}],
+    [{"number":201, "mergedAt":"2026-10-24T20:00:00Z", "mergeCommit":{"oid":"a"*40}, "reviews":[]}],
+    [{"issue":101, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}], [], now)
+assert by_branch["values"]["delivery.unlinked_units_30d"] == 0, by_branch
 # An accepted issue whose unit left the ledger still counts for lead time; it only raises unlinked_units.
 unitless = n.delivery_metrics(
     [{"id":"pr-201", "issue":101, "pr":201, "merge_sha":"a"*40,
