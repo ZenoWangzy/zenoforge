@@ -24,6 +24,11 @@ dispatch_pending() {
     [[ -n "$u" ]] || continue
     paused_midrun dispatch && break
     id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"
+    # The kill counts from the refill's start, and one start can take a minute under load.
+    if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 60 )); then
+      say "dispatch deadline after ${SECONDS}s: units from $id wait for the next refill"
+      break
+    fi
     # The local refill path shares every stage handler with the slow tick. PR stages need one current-head census;
     # implementation-only refills continue to use local ledger data without a GitHub query.
     [[ "$local_refill" != true || "$stage" == implement-pending || "$stage" == repair-pending \

@@ -92,4 +92,22 @@ dispatch_pending true
 [[ "$(cat "$GH_CALLS")" == 'pr list' ]] || fail "expected exactly one census read at 7/8, got: $(tr '\n' ';' < "$GH_CALLS")"
 [[ "$dispatch_calls" == 1 ]] || fail "admitted review candidate was not dispatched (calls=$dispatch_calls)"
 
-echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8)'
+# A refill near its 300s kill stops the walk and leaves the unit for the next refill; a full tick has no such limit.
+dispatch_calls=0
+: > "$GH_CALLS"; : > "$LOG"
+TICK_PRS=''
+SECONDS=250
+TICK_LOCAL_REFILL=true dispatch_pending true
+[[ "$dispatch_calls" == 0 ]] || fail "a late refill still dispatched (calls=$dispatch_calls)"
+grep -Fq 'dispatch deadline after 250s: units from issue-4903 wait for the next refill' "$LOG" || fail "no deadline line: $(cat "$LOG")"
+: > "$LOG"
+SECONDS=239
+TICK_LOCAL_REFILL=true dispatch_pending true
+[[ "$dispatch_calls" == 1 ]] || fail "a refill before the deadline did not dispatch (calls=$dispatch_calls)"
+! grep -Fq 'dispatch deadline' "$LOG" || fail "an early refill stopped: $(cat "$LOG")"
+: > "$LOG"
+SECONDS=250
+dispatch_pending false
+[[ "$dispatch_calls" == 2 ]] || fail "a full tick stopped at the refill deadline (calls=$dispatch_calls)"
+
+echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; refill deadline)'
