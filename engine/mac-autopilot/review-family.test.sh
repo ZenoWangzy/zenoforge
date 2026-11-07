@@ -272,6 +272,9 @@ if pick_glm_implementer; then fail 'implement must wait while the week is ahead 
 pace_review '[]' || fail 'a review must pass during a week hold'
 pick_implementer '{"id":"week-held","implement_provider":"zcode"}' && [[ "$PICK_PROVIDER" == codex ]] \
   || fail 'a held GLM implement must go to Codex, not wait'
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$(_quota_marker_file codex)"
+pick_glm_implementer || fail 'with Codex out the week hold must not stop implement'
+rm -f "$(_quota_marker_file codex)"
 glm_quota 21
 if pace_review '[]'; then fail 'a meter past the gate must hold a review'; fi
 glm_quota 0 901
