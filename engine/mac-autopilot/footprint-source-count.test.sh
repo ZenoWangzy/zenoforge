@@ -341,11 +341,14 @@ register() { # n -> lib loads and wall seconds for one refill intake over n cand
   loads_before="$(lib_loads)"; start=$SECONDS
   register_new_issues 0 true
   REGISTER_SECS=$((SECONDS - start)); REGISTER_LOADS=$(( $(lib_loads) - loads_before ))
-  REGISTER_SKIPS="$(grep -c 'intake skip issue .*footprint overlaps' "$LOG" || true)"
+  REGISTER_SKIPS="$(grep -c 'intake order issue .*footprint overlaps' "$LOG" || true)"
+  REGISTER_ADDED="$(jq '.units | length' "$UNITS")"; REGISTER_REFUSED="$(grep -c 'intake skip issue .*footprint' "$LOG" || true)"
 }
-register 3;  loads_3=$REGISTER_LOADS; skips_3=$REGISTER_SKIPS
-register 20; loads_20=$REGISTER_LOADS; skips_20=$REGISTER_SKIPS; secs_20=$REGISTER_SECS
-[[ "$skips_3" == 3 && "$skips_20" == 20 ]] || fail "fixture candidates did not all overlap (3 -> $skips_3, 20 -> $skips_20)"
+register 3;  loads_3=$REGISTER_LOADS; skips_3=$REGISTER_SKIPS; added_3=$REGISTER_ADDED; refused_3=$REGISTER_REFUSED
+register 20; loads_20=$REGISTER_LOADS; skips_20=$REGISTER_SKIPS; secs_20=$REGISTER_SECS; added_20=$REGISTER_ADDED; refused_20=$REGISTER_REFUSED
+# Footprint only orders: every overlapping candidate is admitted (up to the intake budget), none is refused.
+[[ "$skips_3" == 3 && "$added_3" == 3 && "$skips_20" == "$added_20" && "$added_20" -ge 3 && "$refused_3" == 0 && "$refused_20" == 0 ]] \
+  || fail "overlapping candidates were refused or not logged (3 -> $skips_3/$added_3, 20 -> $skips_20/$added_20, refused $refused_3/$refused_20)"
 (( loads_20 == loads_3 && loads_20 <= 1 )) \
   || fail "register_new_issues sourced lib.sh per candidate: $loads_3 loads for 3 candidates, $loads_20 for 20"
 

@@ -512,11 +512,27 @@ footprint_wait_mark() { # unit owner unit_json：记等待方与起始时间，i
   detail="$(footprint_match_detail "$original" "$original" "$owner_scope" "${TICK_HOTSPOT_COUNTS[$1]:-\{\}}")"
   [[ -n "$detail" ]] || detail="$(footprint_match_detail "${TICK_CHECK_SCOPE[$1]:-$original}" "$original" "$owner_scope" "${TICK_HOTSPOT_COUNTS[$1]:-\{\}}")"
   say "footprint wait unit=$1 owner=$2 ${detail:-candidate_path=unknown owner_path=unknown source=unknown cochange_count=unknown}"
+  TICK_FOOTPRINT_DEFERRED["$1"]="$2"
+  TICK_FOOTPRINT_DEFER_DETAIL["$1"]="${detail:-source=unknown}"
   local marked_owner marked_since
   marked_owner="$(jqf -r '.footprint_wait_owner // empty' <<<"$3")"
   marked_since="$(jqf -r '.footprint_wait_since // empty' <<<"$3")"
   if [[ "$marked_owner" == "$2" && "$(ap_iso_epoch "$marked_since")" =~ ^[0-9]+$ ]]; then return 0; fi
   set_unit "$1" ".footprint_wait_owner=$(js "$2") | .footprint_wait_since=$(js "$STAMP")"
+}
+footprint_admit_unordered() { # unit-id unit-json: keep the predicted scope for write-start; log what the old gate would have held
+  local id="$1" u="$2" scope owner="${TICK_FOOTPRINT_DEFERRED[$1]:-}"
+  scope="$(scheduler_footprint "$u")" || return 1
+  if [[ -n "${TICK_FOOTPRINT_CACHE[$id]+cached}" ]]; then
+    [[ "${TICK_FOOTPRINT_CACHE[$id]}" == "$scope" ]] || set_unit "$id" ".footprint=$scope"
+  else
+    [[ "$(jqf -c '.footprint // []' <<<"$u")" == "$scope" ]] || set_unit "$id" ".footprint=$scope"
+  fi
+  TICK_FOOTPRINT_CACHE["$id"]="$scope"
+  if [[ -n "$owner" ]] && footprint_wait_owner_active "$owner"; then
+    say "footprint-shadow-old-rule-would-block unit=$id owner=$owner ${TICK_FOOTPRINT_DEFER_DETAIL[$id]:-source=unknown}"
+  fi
+  unset 'TICK_FOOTPRINT_DEFERRED[$id]' 'TICK_FOOTPRINT_DEFER_DETAIL[$id]'
 }
 _footprint_room() {
   local id="$1" u="${2:-}" scope active conflict check_scope refreshed=false require_fresh="${3:-true}" stage
@@ -530,6 +546,9 @@ _footprint_room() {
   # 同时改同一批文件（#4488）。
   stage="$(jqf -r '.stage // empty' <<<"$u")"
   [[ "$stage" != review-pending && "$stage" != rereview-pending ]] || return 0
+  # Footprint orders candidates, it never refuses one (Cursor and MergeGym: a lock on predicted files costs more than the
+  # conflicts it avoids). Only the dispatch walk's first pass asks for a verdict; every other caller, and the second pass, starts.
+  [[ "${TICK_FOOTPRINT_DEFER:-false}" == true ]] || { footprint_admit_unordered "$id" "$u"; return; }
   # The preflight is one step of 25 to 153s with no check inside: begin it only with room left in the refill.
   [[ "$require_fresh" == true || "$TICK_FOOTPRINT_PREFLIGHT_STATUS" != not-started ]] || refill_room preflight || return 75
   if [[ "$require_fresh" != true ]] && footprint_preflight_snapshot; then
@@ -597,7 +616,7 @@ _footprint_room() {
 footprint_room() { # unit type; report checks that materially delay dispatch
   local started=$SECONDS rc=0 elapsed room_start="${EPOCHREALTIME:-0}" room_end
   # Repair reaches this twice (room_for, then the handler); the walk is sequential, so one unit is one candidate.
-  if [[ -n "${TICK_FOOTPRINT_CAP:-}" && "$1" != "$TICK_FOOTPRINT_CAP_LAST" ]]; then
+  if [[ -n "${TICK_FOOTPRINT_CAP:-}" && "${TICK_FOOTPRINT_DEFER:-false}" == true && "$1" != "$TICK_FOOTPRINT_CAP_LAST" ]]; then
     TICK_FOOTPRINT_CAP_LAST="$1"
     if (( ++TICK_FOOTPRINT_CAP_SEEN > TICK_FOOTPRINT_CAP )); then
       say "dispatch walk stopped at cap $TICK_FOOTPRINT_CAP footprint candidates: units from $1 wait for the next refill"

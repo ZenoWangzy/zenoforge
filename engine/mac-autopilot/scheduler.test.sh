@@ -3456,6 +3456,7 @@ sched_run_case fast_land
 sched_case_footprint_main_paths() (
 # Dead predictions release waiters, while tracked paths keep their mutex.
   local repo candidate_unit
+  TICK_FOOTPRINT_DEFER=true # the walk's first pass asks for a verdict; other callers always start
   repo="$(mktemp -d)"
   ROOT="$repo"
   command git -C "$repo" init -q -b main
@@ -3513,6 +3514,7 @@ sched_case_footprint_mutex() {
   # The active-footprint snapshot is cached for the length of a tick; this case rewrites the workers between checks, so each check
   # starts from a fresh snapshot.
   footprint_room_each_tick() {
+    TICK_FOOTPRINT_DEFER=true # the walk's first pass asks for a verdict; other callers always start
     TICK_ACTIVE_FOOTPRINTS_VALID=false
     TICK_FOOTPRINT_CONFLICT_VALID=false
     footprint_room "$@"
@@ -4044,13 +4046,15 @@ sched_case_intake_footprint_selection() {
     > "$TF/supervisor/autopi/workers.json"
   touch "$TF/worker-alive"
   tick
-  command jq -e 'any(.units[]; .issue==777 and .stage=="implement-pending")
-    and all(.units[]; .issue != 778 and .issue != 779)' "$TF/supervisor/autopi/units.json" >/dev/null \
-    || { cat "$TF/tick.out" >&2; echo 'not ok - scheduler.test.sh: intake did not skip a footprint collision and admit independent work' >&2; exit 1; }
-  grep -Fq 'intake skip issue #779: footprint overlaps unit=issue-700' "$TF/supervisor/autopi/scheduler.log" \
-    || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake did not record why the colliding candidate was skipped' >&2; exit 1; }
-  grep -Fq 'intake skip issue #778: footprint overlaps unit=issue-701' "$TF/supervisor/autopi/scheduler.log" \
-    || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake did not skip a collision with pending work' >&2; exit 1; }
+  command jq -e '[777, 778, 779] | all(. as $n | any($units[0].units[]; .issue == $n and .stage == "implement-pending"))' \
+    --slurpfile units "$TF/supervisor/autopi/units.json" <<<null >/dev/null \
+    || { cat "$TF/tick.out" >&2; echo 'not ok - scheduler.test.sh: intake refused a footprint collision (footprint only orders)' >&2; exit 1; }
+  grep -Fq 'intake order issue #779: footprint overlaps unit=issue-700' "$TF/supervisor/autopi/scheduler.log" \
+    || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake did not record the overlap it admitted' >&2; exit 1; }
+  grep -Fq 'intake order issue #778: footprint overlaps unit=issue-701' "$TF/supervisor/autopi/scheduler.log" \
+    || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake did not record the overlap with pending work' >&2; exit 1; }
+  ! grep -Fq 'intake skip issue' "$TF/supervisor/autopi/scheduler.log" \
+    || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake still skipped an issue on footprint' >&2; exit 1; }
 }
 sched_run_case intake_footprint_selection
 
@@ -4167,9 +4171,9 @@ sched_case_intake_verdict_wait_admission() {
   tick
   command jq -e 'any(.units[]; .issue==777 and .stage=="implement-pending")' "$TF/supervisor/autopi/units.json" >/dev/null \
     || { cat "$TF/tick.out" >&2; cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: a supervisor-review unit still blocked intake with its footprint' >&2; exit 1; }
-  if grep -Fq 'intake skip issue #777: footprint overlaps unit=issue-700' "$TF/supervisor/autopi/scheduler.log"; then
+  if grep -Fq 'intake order issue #777: footprint overlaps unit=issue-700' "$TF/supervisor/autopi/scheduler.log"; then
     cat "$TF/supervisor/autopi/scheduler.log" >&2
-    echo 'not ok - scheduler.test.sh: intake still skipped a candidate for overlapping only a verdict-waiting unit' >&2
+    echo 'not ok - scheduler.test.sh: intake still counted a verdict-waiting unit as a footprint holder' >&2
     exit 1
   fi
 }
@@ -4196,6 +4200,7 @@ JSON
   TICK_ACTIVE_FOOTPRINTS_VALID=false
   TICK_FOOTPRINT_CONFLICT_VALID=false
   resumed_unit="$(jqf -c --arg id "resumed" '.units[] | select(.id==$id)' "$UNITS")"
+  TICK_FOOTPRINT_DEFER=true
   if footprint_room resumed "$resumed_unit" true; then
     echo 'not ok - resumed repair candidate overran the live writer started while it waited for a verdict' >&2
     exit 1
