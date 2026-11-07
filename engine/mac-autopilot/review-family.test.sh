@@ -277,6 +277,8 @@ pick_glm_implementer || fail 'with Codex out the week hold must not stop impleme
 rm -f "$(_quota_marker_file codex)"
 ( pick_codex_work_identity() { [[ "$1" != *no-codex-route* ]]; }; pick_glm_implementer '{"id":"no-codex-route"}' ) \
   || fail 'the hold must ask about the unit at hand: Codex may refuse this one'
+( pick_codex_work_identity() { [[ "$1" != *no-codex-route* ]]; }; provider_runtime_ready zcode GLM-5.3 production '{"id":"no-codex-route"}' ) \
+  || fail 'the hard route check must ask about the unit at hand'
 glm_quota 21
 if pace_review '[]'; then fail 'a meter past the gate must hold a review'; fi
 glm_quota 0 901
