@@ -53,7 +53,7 @@ body="$(maintainer_health_mail_build_body "$facts")"
 printf '%s\n' "$body"
 
 [[ "$body" == *'- 做完（已合入主线）：过去一天 2 个'* ]] || fail 'finished work in the window is counted, not zero'
-[[ "$body" == *'现在 3 个，比一天前多 2 个'* ]] || fail 'the stock growth is stated beside the finished count'
+[[ "$body" == *'现在 3 个（比昨天多 2 个'* ]] || fail 'the stock growth is stated beside the finished count'
 [[ "$body" == *'一句话结论：做完 2 个、正式上线 0 个、等上线 3 个；没有告警。'* ]] || fail 'the conclusion leads with finished, shipped and waiting'
 [[ "$body" != *'已做完等上线：过去一天 0 个'* ]] || fail 'the false zero line is gone'
 maintainer_health_mail_output_contract "$body" "$now" || fail 'the body meets the mail contract'
@@ -66,7 +66,7 @@ failed_body="$(maintainer_health_mail_build_body "$failed_facts")"
 printf '%s\n' "$failed_body"
 [[ "$(jq -r '.output.finished' <<< "$failed_facts")" == null ]] || fail 'a failed read leaves finished null'
 [[ "$(jq -r '.output.stock.now' <<< "$failed_facts")" == null ]] || fail 'a failed read leaves the stock null'
-[[ "$failed_body" != *'做完（已合入主线）'* && "$failed_body" != *'等上线'* && "$failed_body" != *'变化'* ]] || fail 'a failed read drops the finished and stock lines'
+[[ "$failed_body" != *'做完（已合入主线）'* && "$failed_body" != *'等上线'* && "$failed_body" != *'做完等上线的需求'* ]] || fail 'a failed read drops the finished and stock lines'
 [[ "$failed_body" == *'- 正式上线：过去一天 0 个'* ]] || fail 'lines that came from other sources stay'
 maintainer_health_mail_output_contract "$failed_body" "$now" || fail 'the body still meets the contract after a failed read'
 printf 'ok - a failed GitHub read drops its lines\n'

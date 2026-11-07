@@ -13,7 +13,7 @@ Nice=19
 CPUWeight=10
 IOWeight=10
 IOSchedulingClass=idle
-TimeoutStartSec=50min
+TimeoutStartSec=130min
 WorkingDirectory=%h
 Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 # zc needs the proxy, without it the run fails with project_token_request_failed.

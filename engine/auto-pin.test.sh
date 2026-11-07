@@ -55,4 +55,19 @@ wait "$pass" || fail 'retry pass returned non-zero'
 echo 0 > "$PIN_RC"
 auto_pin_pass > /dev/null; [[ $(last) == "$c5" ]] || fail "retry did not pin the same commit: $(last)"
 [[ $(grep -c "$c5" "$PIN_CALLS") == 2 ]] || fail "calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+
+# a pin refused for a missing intended-changes row is retried once the row lands, with no new main commit, and only once
+: > "$PIN_CALLS"; c6=$(commit six); echo 1 > "$PIN_RC"
+sed -i '2s/.*/echo "pin-vecta: add this row to intended-changes.tsv and rerun:"/' "$tmp/clone/tools/pin-vecta.sh"
+auto_pin_pass > "$tmp/out" & pass=$!
+sleep 1
+kill -0 "$pass" 2>/dev/null || fail 'a refused pin ended the wait before the row landed'
+printf 'state/rulings.json\tdeclared\t%s\n' "$c6" > "$tmp/agent/checkout/.zenoforge/build/intended-changes.tsv"
+wait "$pass" || fail 'row retry pass returned non-zero'
+[[ $(last) == "$c5" ]] || fail 'state moved before the row retry pinned'
+auto_pin_pass > "$tmp/out" & pass=$!
+sleep 1
+kill -0 "$pass" 2>/dev/null || fail 'a second refusal retried again instead of waiting'
+[[ $(grep -c "$c6" "$PIN_CALLS") == 2 ]] || fail "row retry calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+kill "$pass" 2>/dev/null || :
 echo "auto-pin.test.sh: ok"

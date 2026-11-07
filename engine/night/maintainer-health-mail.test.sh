@@ -177,10 +177,10 @@ assert_eq 'the conclusion leads with output, then production' '做完 3 个、�
 
 facts_body="$(maintainer_health_mail_build_body "$facts")"
 maintainer_health_mail_output_contract "$facts_body" "$facts_now"
-assert_contains 'body leads with finished work against the previous periods' "$facts_body" '- 做完（已合入主线）：过去一天 3 个（前一天 1 个）；近 7 天 5 个。'
-assert_contains 'body states what shipped and the days since the last deploy' "$facts_body" '- 正式上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个。距上次上线 5 天。'
-assert_contains 'body states how the waiting stock moved' "$facts_body" '现在 3 个，比一天前多 1 个，比七天前多 3 个。'
-assert_contains 'body states tokens in ten-thousands against the day before' "$facts_body" '- 令牌用量：过去一天 1222.6 万（前一天 1000）。'
+assert_contains 'body leads with finished work against the previous periods' "$facts_body" '- 做完（已合入主线）：过去一天 3 个（比昨天多 2 个）；近 7 天 5 个。'
+assert_contains 'body states what shipped and the days since the last deploy' "$facts_body" '- 正式上线：过去一天 1 个（比昨天多 1 个）；近 7 天 1 个。距上次上线 5 天。'
+assert_contains 'body states how the waiting stock moved' "$facts_body" '现在 3 个（比昨天多 1 个，比上周同日多 3 个）。'
+assert_contains 'body states tokens in ten-thousands against the day before' "$facts_body" '- 令牌用量：过去一天 1222.6 万（比昨天多 1222.5 万）。'
 assert_contains 'body states priced calls apart from tokens' "$facts_body" '按美元计价的调用：过去一天 0.5 美元'
 assert_contains 'body states no decisions wait' "$facts_body" '- 没有'
 assert_not_contains 'body no longer reports post-merge fixes' "$facts_body" '返修'
@@ -210,7 +210,7 @@ no_deploy_body="$(maintainer_health_mail_build_body "$no_deploy_facts")"
 maintainer_health_mail_output_contract "$no_deploy_body" "$facts_now"
 assert_eq 'a failed deploy read leaves the deploy time unread' 'null' "$(jq -r '.last_deploy_at' <<< "$no_deploy_facts")"
 assert_not_contains 'a failed deploy read prints no age clause' "$no_deploy_body" '距上次'
-assert_contains 'a failed deploy read keeps the shipped counts' "$no_deploy_body" '- 正式上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个。'
+assert_contains 'a failed deploy read keeps the shipped counts' "$no_deploy_body" '- 正式上线：过去一天 1 个（比昨天多 1 个）；近 7 天 1 个。'
 maintainer_health_mail_last_deploy() { printf 'not a time\n'; }
 assert_eq 'an unreadable deploy time is also dropped' 'null' "$(jq -r '.last_deploy_at' <<< "$(maintainer_health_mail_daily_facts "$facts_home" "$facts_home/night/founder-health-mail.json" "$facts_now" "$SCRIPT_DIR/../..")")"
 
@@ -325,7 +325,7 @@ assert_eq 'four open decisions surface in facts' '4' "$(jq -r '.decisions.total'
 assert_contains 'subject says something waits for the owner' \
   "$(maintainer_health_mail_subject "$decision_facts")" '有 4 件事等你'
 decision_body="$(maintainer_health_mail_build_body "$decision_facts")"
-assert_eq 'decision lines are capped at three' '3' "$(sed -n '/^需要你决定$/,$p' <<< "$decision_body" | grep -c '^- ')"
+assert_eq 'decision lines are capped at three' '3' "$(sed -n '/^需要你决定$/,/^产出$/p' <<< "$decision_body" | grep -c '^- ')"
 assert_contains 'each decision carries a recommendation' "$decision_body" '建议：先按默认值运行一周'
 assert_contains 'decision body ends each question with a question mark' "$decision_body" '库存预警阈值调到多少？'
 
@@ -346,9 +346,9 @@ assert_contains 'missing decision fields are stated without a proposed answer' \
 # daily cadence.
 cadence_home="$tmp/cadence"
 mkdir -p "$cadence_home/night" "$cadence_home/state"
-cadence_day1="$(date -u -d '2026-11-07T00:10:00Z' +%s)"
+cadence_day1="$(date -u -d '2026-11-07T01:10:00Z' +%s)"
 cadence_day1_late="$((cadence_day1 + 1200))"
-cadence_day2="$(date -u -d '2026-11-08T00:00:30Z' +%s)"
+cadence_day2="$(date -u -d '2026-11-08T01:10:00Z' +%s)"
 routine_sends=0
 urgent_sends=0
 routine_mail="$cadence_home/sent"
@@ -385,7 +385,7 @@ maintainer_health_mail_output_contract "$(maintainer_health_mail_build_body "$(c
     if [ "$(wc -l < "$retry_home/builds")" -eq 1 ]; then return 1; fi
     cat "$retry_facts_file"
   }
-  retry_now="$(date -u -d '2026-11-07T00:05:00Z' +%s)"
+  retry_now="$(date -u -d '2026-11-07T01:05:00Z' +%s)"
   if maintainer_health_mail_tick "$retry_home" "$retry_now"; then
     echo 'not ok - first report build failure was hidden'
     exit 1
@@ -415,7 +415,7 @@ mkdir -p "$retry_safe_home/night"
     return 0
   }
   maintainer_health_mail_daily_facts() { cat "$retry_facts_file"; }
-  retry_now="$(date -u -d '2026-11-07T00:05:00Z' +%s)"
+  retry_now="$(date -u -d '2026-11-07T01:05:00Z' +%s)"
   if maintainer_health_mail_tick "$retry_safe_home" "$retry_now"; then
     echo 'not ok - pre-POST failure hidden from health maintenance'; exit 1
   fi
@@ -440,7 +440,7 @@ mkdir -p "$retry_uncertain_home/night"
     return 1
   }
   maintainer_health_mail_daily_facts() { cat "$retry_facts_file"; }
-  retry_now="$(date -u -d '2026-11-07T00:05:00Z' +%s)"
+  retry_now="$(date -u -d '2026-11-07T01:05:00Z' +%s)"
   if maintainer_health_mail_tick "$retry_uncertain_home" "$retry_now"; then
     echo 'not ok - uncertain send failure hidden from health maintenance'; exit 1
   fi

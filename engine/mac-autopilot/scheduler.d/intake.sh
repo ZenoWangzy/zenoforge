@@ -367,7 +367,7 @@ register_new_issues() {
   fi
   (( want > 0 )) || { intake_hold_mark; say "intake held: $upstream units upstream (max_upstream $max_up)"; return 0; }
   rm -f -- "$A/intake-held-since"
-  # 只按可启动 pending 计目标；新登记的候选会再经 footprint 冲突筛选。
+  # 只按可启动 pending 计目标；footprint 重叠只排序（dispatch 先派不重叠的），不再筛掉候选。
   # 已有 open PR 的 issue 不再收（#3957 已由 #3958 实现，分支名却不是 agent/issue-N）：看分支、标题和正文里是否提到它。
   if [[ -n "${HANDOFF_PR_CENSUS:-}" && "${HANDOFF_CENSUS_PARTIAL:-0}" != 1 ]]; then
     busy="$(jqf -r '.[] | "\(.headRefName) \(.title) \(.body // "")"' <<<"$HANDOFF_PR_CENSUS")"
@@ -659,22 +659,22 @@ register_new_issues() {
     if (( ! existing_only )) && [[ -z "$existing_id" ]]; then
       intake_candidate_json="$(jqf -cn --argjson issue "$n" --arg task "$task" '{issue:$issue,task:$task}')" || { intake_skip candidate; continue; }
       candidate_started=$SECONDS
+      # Footprint orders work and never refuses it: an unreadable prediction or comparison admits the issue unordered.
       intake_candidate_scope="$(scheduler_footprint "$intake_candidate_json")" || {
-        say "intake defer issue #$n: predicted footprint unavailable"
-        intake_skip footprint_unavailable; continue
+        say "intake order issue #$n: predicted footprint unavailable, admitted unordered"
+        intake_candidate_scope='[]'
       }
       (( SECONDS - candidate_started < 2 )) || say "intake detail footprint_predict issue=$n secs=$((SECONDS - candidate_started))s"
       candidate_started=$SECONDS
       intake_conflict="$(active_footprint_conflict "$intake_candidate_scope" "$intake_footprint_owners" "__intake-$n")" || {
-        say "intake defer issue #$n: footprint comparison unavailable"
-        intake_skip footprint_unavailable; continue
+        say "intake order issue #$n: footprint comparison unavailable, admitted unordered"
+        intake_conflict=""
       }
       (( SECONDS - candidate_started < 2 )) || say "intake detail footprint_conflict issue=$n secs=$((SECONDS - candidate_started))s"
       if [[ -n "$intake_conflict" ]]; then
         intake_match="$(footprint_match_detail "$intake_candidate_scope" "$intake_candidate_scope" \
           "$(jqf -c --arg id "$intake_conflict" '[.[] | select(.id == $id) | .footprint[]?]' <<<"$intake_footprint_owners")" '{}')"
-        say "intake skip issue #$n: footprint overlaps unit=$intake_conflict candidate_unit=issue-$n owner=$intake_conflict ${intake_match:-candidate_path=unknown owner_path=unknown source=unknown cochange_count=unknown}"
-        intake_skip footprint; continue
+        say "intake order issue #$n: footprint overlaps unit=$intake_conflict candidate_unit=issue-$n owner=$intake_conflict ${intake_match:-candidate_path=unknown owner_path=unknown source=unknown cochange_count=unknown}; admitted, the dispatch walk runs it after units no live owner overlaps"
       fi
     fi
     if [[ "$lane" == direct-main ]]; then branch="agent/auto-issue-$n"; else branch="agent/issue-$n"; fi

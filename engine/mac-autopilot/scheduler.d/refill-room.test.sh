@@ -74,7 +74,7 @@ preflight_calls=0
 footprint_preflight_snapshot() { preflight_calls=$((preflight_calls + 1)); TICK_FOOTPRINT_PREFLIGHT_STATUS=ready; return 0; }
 footprint_shadow_directory_rule() { :; }
 TICK_FOOTPRINT_CACHE=([u1]='["src/a"]'); TICK_FOOTPRINT_PREFLIGHT_CONFLICT=()
-walk_state() { TICK_FOOTPRINT_PREFLIGHT_STATUS=not-started; TICK_FOOTPRINT_CAP_HIT=false; TICK_DISPATCH_SKIPS=(); preflight_calls=0; : > "$LOG"; }
+walk_state() { TICK_FOOTPRINT_DEFER=true; TICK_FOOTPRINT_PREFLIGHT_STATUS=not-started; TICK_FOOTPRINT_CAP_HIT=false; TICK_DISPATCH_SKIPS=(); preflight_calls=0; : > "$LOG"; }
 
 refill_cost_record preflight 200
 walk_state; SECONDS=$((limit - 50)); rc=0

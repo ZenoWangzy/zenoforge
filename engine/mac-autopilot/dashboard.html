@@ -604,11 +604,12 @@ const kpi = (icon, v, unit, label, tip="") => `<div class="kpi" ${tip?`data-tip=
 // node_health.py 的指标 → 短中文名与单位（没列到的用英文 desc）
 const LABELS = {
   "implement.wall_p50":["开发时长 p50","分"], "implement.no_output_pct":["开发无报告","%"],
-  "review.wall_p50":["首次质检时长 p50","分"], "review.first_pass_pct":["一次通过率","%"],
+  "review.wall_p50":["首次质检时长 p50","分"], "review.open_to_first_review_p90_min":["PR 开出 → 首评 p90","分"], "review.first_pass_pct":["一次通过率","%"],
   "repair.wall_p50":["返工时长 p50","分"], "loop.rounds_p90":["打回轮数 p90","轮"],
   "loop.rework_token_pct":["返工 token 占比","%"], "loop.incremental_rereview_pct":["增量复检占比","%"],
   "workers.deaths":["员工无产出死亡","次"], "workers.local_test_db":["本机测试库可达","1=是"],
   "ci.approve_to_ship_p50":["批准 → 合并 p50","分"], "ci.red_after_approve_pct":["批准后 CI 变红","%"],
+  "merge.green_to_merge_max_min":["检查完成 → 合并 最长","分"],
   "ci.precheck_setup_failures":["预检选包失败","次"],
   "ci.waste_runner_pct":["CI 浪费","%"],
   "supervisor.latency_p50":["主管裁决延迟 p50","分"], "scheduler.tick_gap_p50":["调度间隔 p50","秒"],
@@ -1316,7 +1317,7 @@ const metricStatusGroups = ms => ({
 const metricStatusText = (status, count) => `${count} ${status==="bad" ? "项异常" : "项需留意"}`;
 // 白话名称与原因，按指标 id 手写；没有的回退到指标自带解释的第一句。名称由英文标识推断，改错了在这里改。
 const PLAIN = {
-  "dispatch.collisions_per_day": ["多个任务同时改同一个文件", "会互相覆盖，需要返工"],
+  "merge.conflict_repairs_per_day": ["合并冲突后要返工的次数", "现在多个任务可以同时改同一个文件，不再排队等；撞上了由原任务自己修，次数偏高说明撞得太多、返工拖慢交付"],
   "repair.wall_p50": ["返工耗时偏长", "返工拖慢了交付"],
   "ci.red_after_approve_pct": ["检查通过后 CI 又变红", "评审没发现的问题，或 CI 环境不稳定"],
   "scheduler.tick_gap_p50": ["调度器间隔太长", "任务派得晚，看板数据也更新得慢"],

@@ -1,0 +1,32 @@
+# Runs supervisor/watch/owner-report-causes.py at 00:30 UTC: one GLM worker traces each material change of the owner report
+# in the snapshots and local logs and the script writes causes with evidence to state/work/owner-report-causes-<day>.json.
+# Same pattern as zenoforge-memory-check.service: lowest priority, own flock, worker stopped with its scopes on timeout.
+# The mail reads the file only when ZF_OWNER_REPORT_CAUSES=on (engine.env), which is off by default.
+# Not in pipeline-timers.list on purpose (as for memory-check): the tick has no business alerting on a maintenance job.
+# Enable by hand: systemctl --user enable --now zenoforge-owner-report-causes.timer
+[Unit]
+Description=the product owner report cause finder (one GLM worker)
+
+[Service]
+Type=oneshot
+Nice=19
+CPUWeight=10
+IOWeight=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min
+WorkingDirectory=%h/.zenoforge/checkout
+Environment=AGENT_HOME=%h/.zenoforge
+Environment=ZF_HOME=%h/.zenoforge
+Environment=ZF_NIGHT_DIR=%h/.zenoforge/night
+Environment=ZF_REPO_DIR=%h/.zenoforge/checkout
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+# zc needs the proxy, without it the run fails with project_token_request_failed.
+Environment=http_proxy=http://127.0.0.1:3128 https_proxy=http://127.0.0.1:3128
+Environment=HTTP_PROXY=http://127.0.0.1:3128 HTTPS_PROXY=http://127.0.0.1:3128
+Environment=no_proxy=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8
+Environment=NO_PROXY=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8
+StandardOutput=journal
+StandardError=journal
+EnvironmentFile=-%h/.zenoforge/engine.env
+# Engine-live pointer, else the checkout path; ":" stops systemd expanding $ (see zenoforge-agent.service).
+ExecStart=:/bin/bash -c 'e="$(readlink -e %h/.zenoforge/engine-live 2>/dev/null)"; if [ -n "$e" ]; then export ZF_ENGINE_DIR="$e" ZF_ENGINE_LIVE="$e"; fi; exec python3 -I "${e:-%h/.zenoforge/checkout/engine}/supervisor/watch/owner-report-causes.py"'
