@@ -1449,7 +1449,8 @@ def main():
     closed_open = ledger_history.closed_units_open_issues(a, agent_home, units)
     metrics["intake.closed_units_open_issues"] = None if closed_open is None else len(closed_open)
     metrics["engine.follow_lag_hours"] = engine_follow_lag_hours(agent_home, now)
-    orders = work_orders(units, unit_spend(cost_rows), now, workorder_cost.recent_units(cost_rows, since))
+    orders = work_orders(units, unit_spend(cost_rows), now, workorder_cost.recent_units(cost_rows, since),
+                         unit_spend(cost_rows, since))
     metrics["workorders.over_standard"] = sum(1 for o in orders if o["over"])
     # Per-ticket spend from the same cost rows; token values and bounds use only complete fresh
     # splits. Bounds use the 30 days of closed tickets before the 7-day window (p50 x 1.5 healthy,
