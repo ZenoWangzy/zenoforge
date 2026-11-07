@@ -206,6 +206,10 @@ ci_test_red_checks() { # checks_json → 第一行：失败日志含测试失败
   printf '%s' "$facts" | grep -a '^{' || true
 }
 
+ci_red_tests() { # facts lines (ci_test_red_checks, line 2 on) → JSON array of failing suite files and test names, for the ci-test-red history entry
+  jqf -sc '[.[] | (.suites[]? | .file, (.tests[]?.name)), (.pipelineSuites[]?)] | map(.[:120]) | .[:12]' <<<"$1" 2>/dev/null || echo '[]'
+}
+
 # 分诊（只出结论，不路由、不写台账）：stale-base / attributable / unknown。失败套件取自 ci_test_red_checks 的事实，
 # 改动面取自 GitHub compare 的不可变 SHA 对（PR 自己相对合并基点的改动 + main 自合并基点以来的改动），映射只用
 # engine/failure-triage.mjs 里复用的 pipeline-suites-scope.mjs；结果按 SHA 对落盘，同一对不再请求。

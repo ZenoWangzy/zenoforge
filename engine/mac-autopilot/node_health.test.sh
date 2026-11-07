@@ -557,6 +557,27 @@ assert row(ev("repair-delivered", "2026-11-07T10:00:00Z"), ev("repair-no-push", 
 assert row(ev("repair-delivered", "2026-11-07T10:00:00Z", "unknown", 500)) is None, "an unclassified run must read NO-DATA, not 0"
 assert row(ev("repair-no-push", "2026-11-07T11:00:00Z", "unchanged")) is None, "no token reading means no figure"
 CHECK
+# Approved-then-red counts a unit once however many approves it had, and names the failed checks and tests.
+python3 - "$script_dir" <<'CHECK'
+import sys
+sys.path.insert(0, sys.argv[1]); import node_health as n
+now = n.ts("2026-10-24T12:00:00Z")
+ap = lambda m: {"stage":"review-approve","at":f"2026-10-24T11:{m}:00Z"}
+red = {"stage":"ci-test-red","result":"Touched packages PR gate","tests":["a.test.ts","does x"],"at":"2026-10-24T11:05:00Z"}
+units = [{"id":"twice", "history":[ap("00"), red, ap("10"), {**red, "at":"2026-10-24T11:15:00Z"}]},
+         {"id":"clean", "history":[ap("00")]}, {"id":"clean-twice", "history":[ap("00"), ap("10")]}]
+assert n.ledger_metrics(units, now-n.timedelta(hours=5), now)["ci.red_after_approve_pct"] == 100 / 3
+approved, rows = n.red_after_approve(units, now-n.timedelta(hours=5))
+assert approved == 3 and rows == [{"unit":"twice", "reds":2, "stage":"ci-test-red", "checks":"Touched packages PR gate", "tests":["a.test.ts","does x"]}], rows
+CHECK
+# A metric that reads None only because no event happened shows N/A, not NO-DATA; other None rows stay NO-DATA.
+python3 - "$script_dir" <<'CHECK'
+import sys
+sys.path.insert(0, sys.argv[1]); import node_health as n
+status = {r[1]: r[7] for r in n.score({}, n.CRITERIA)}
+assert status["ci.shared_append_rebase_conflict_pct"] == "N/A" and status["review.wall_p50"] == "NO-DATA", status
+assert {r[1]: r[7] for r in n.score({"ci.shared_append_rebase_conflict_pct": 60}, n.CRITERIA)}["ci.shared_append_rebase_conflict_pct"] == "UNHEALTHY"
+CHECK
 # First-pass BLOCK is a failed first review; native resumed workers count only
 # the new turn's fresh tokens, so pre-review repair cannot disappear from spend.
 python3 - "$script_dir" "$test_env_root" <<'CHECK'
@@ -815,6 +836,14 @@ acceptance = n.delivery_metrics(
     [{"number":201, "mergedAt":"2026-10-24T20:00:00Z", "mergeCommit":{"oid":"a"*40}, "reviews":[]}],
     [{"issue":101, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}], [], now)
 assert acceptance["values"]["delivery.issue_to_accept_p50_30d_hours"] == 120, acceptance
+# An older unit with no issue field joins by its branch agent/issue-N.
+by_branch = n.delivery_metrics(
+    [{"id":"pr-201", "pr":201, "branch":"agent/issue-101", "merge_sha":"a"*40,
+      "history":[{"stage":"merged", "at":"2026-10-24T20:00:00Z"}]}],
+    [{"number":101, "createdAt":"2026-10-20T00:00:00Z", "closedAt":"2026-10-24T21:00:00Z"}],
+    [{"number":201, "mergedAt":"2026-10-24T20:00:00Z", "mergeCommit":{"oid":"a"*40}, "reviews":[]}],
+    [{"issue":101, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}], [], now)
+assert by_branch["values"]["delivery.unlinked_units_30d"] == 0, by_branch
 # An accepted issue whose unit left the ledger still counts for lead time; it only raises unlinked_units.
 unitless = n.delivery_metrics(
     [{"id":"pr-201", "issue":101, "pr":201, "merge_sha":"a"*40,

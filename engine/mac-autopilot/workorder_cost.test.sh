@@ -72,6 +72,20 @@ sv = {"id": "issue-6", "issue": 6, "stage": "supervisor-review", "history": rc}
 loop = {"id": "issue-7", "issue": 7, "stage": "repair", "history": rc}
 assert [o["over"] for o in workorder_cost.work_orders([sv, loop], big, now, set())] == [[], ["tokens", "rounds"]]
 assert workorder_cost.work_orders([sv], big, now, {"issue-6"})[0]["over"] == ["tokens", "rounds"]
+# Held units are judged on window spend only, and arbiter (supervise) minutes are not work minutes.
+arb = lambda start, minutes, phase: {"unit": "issue-6", "start": start, "minutes": minutes, "phase": phase,
+                                     "usage": SimpleNamespace(fresh=100_000)}
+ago = lambda hours: now - timedelta(hours=hours)
+old_runs = [arb(ago(30), 300, "supervise"), arb(ago(29), 100, "implement")]
+new_run = [arb(ago(1), 10, "implement")]
+life = workorder_cost.unit_spend(old_runs + new_run)
+assert life["issue-6"] == [300_000, 110], life
+win = workorder_cost.unit_spend(old_runs + new_run, ago(5))
+assert win["issue-6"] == [100_000, 10], win
+many = {"issue-6": [3_000_000, 500]}
+held_over = workorder_cost.work_orders([sv], many, now, {"issue-6"}, win)[0]
+assert held_over["over"] == ["rounds"] and held_over["tokens"] == 100_000, held_over
+assert workorder_cost.work_orders([loop], {"issue-7": [3_000_000, 500]}, now, {"issue-7"}, win)[0]["over"] == ["tokens", "worker_minutes", "rounds"]
 # Hold time is not age: blocked 200 h on a predecessor, released 16 h ago, is 17 h old and fine;
 # the same history with no release event on a unit that is not held keeps its full age.
 rel = [{"stage": "created", "at": "2026-10-20T00:00:00Z"}, {"stage": "blocked-on", "at": "2026-10-20T01:00:00Z"},
