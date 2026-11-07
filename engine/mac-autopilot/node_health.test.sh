@@ -568,30 +568,27 @@ assert n.release_acceptances(str(runtime)) == [
 print("node_health short release-closer sha: PASS")
 CHECK
 
-# The PR census pages GraphQL search results and refuses a PR whose reviews or commits would be cut short.
-python3 - "$script_dir" <<'CHECK' || fail 'PR census paging or truncation wrong'
+# The PR census pages GraphQL search results and reads only merge time and merge commit, so a PR with over 100
+# reviews or commits no longer blanks the whole window.
+python3 - "$script_dir" <<'CHECK' || fail 'PR census paging or big-PR handling wrong'
 import sys
 sys.path.insert(0, sys.argv[1]); import pr_census
 def pr(number, reviews=0, commits=0):
-    return {"number":number,"mergedAt":"2026-10-24T00:00:00Z","body":"","mergeCommit":{"oid":"a"*40},
+    return {"number":number,"mergedAt":"2026-10-24T00:00:00Z","mergeCommit":{"oid":"a"*40},
             "reviews":{"totalCount":reviews,"nodes":[]},"commits":{"totalCount":commits,"nodes":[]}}
 pages = [{"data":{"search":{"pageInfo":{"hasNextPage":True,"endCursor":"c1"},"nodes":[pr(1, 1, 1)]}}},
-         {"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(2)]}}}]
+         {"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(2, reviews=101, commits=101)]}}}]
 calls = []
 def fake(args, timeout):
     calls.append(args)
     return pages[len(calls) - 1]
 rows = pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30)
 assert [r["number"] for r in rows] == [1, 2], rows
+assert rows[1] == {"number": 2, "mergedAt": "2026-10-24T00:00:00Z", "mergeCommit": {"oid": "a" * 40}}, rows
 assert calls[0][:2] == ["api", "graphql"] and calls[1][-1] == "after=c1", calls
 assert "merged:>=2026-10-01" in calls[0][-1], calls[0]
-pages = [{"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(3, reviews=101)]}}}]
-calls.clear()
-assert pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30) is None
-pages = [{"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(4, commits=101)]}}}]
-calls.clear()
-assert pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30) is None
-print("node_health PR census pages and refuses truncation: PASS")
+assert "reviews" not in pr_census.PR_CENSUS_QUERY and "commits" not in pr_census.PR_CENSUS_QUERY
+print("node_health PR census pages and keeps a big PR: PASS")
 CHECK
 
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.

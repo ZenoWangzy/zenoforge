@@ -1052,7 +1052,7 @@ def gh_delivery_rows(repo, now, units=None, release_events=None):
         for number in sorted(required_prs - available_prs):
             fallback_commands.append(("prs", number,
                                       ["pr", "view", str(number), "--repo", repo, "--json",
-                                       "number,mergedAt,mergeCommit,body,reviews,commits"]))
+                                       "number,mergedAt,mergeCommit"]))
         results = _parallel_gh_json([command for _, _, command in fallback_commands], GH_DELIVERY_CALL_TIMEOUT)
         for (key, number, _), row in zip(fallback_commands, results):
             if not isinstance(row, dict) or _number(row.get("number")) != number:
