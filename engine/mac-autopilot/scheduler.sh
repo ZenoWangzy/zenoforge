@@ -450,6 +450,7 @@ CI_STATION_LOCK="$A/.ci-station.lock"
 # land/eval/supervise、OBSOLETE、无报告的 worker 收割与 PR 注册仍由慢 tick 处理。
 # A tick runs for minutes after its one PAUSE check at the start, so acting phases look again.
 paused_midrun() {
+  refill_stopped && return 0 # a refused ledger lock wait ended this refill (already logged once)
   [[ -e "$PAUSE_FILE" ]] || return 1
   say "$1 stopped: paused by $PAUSE_FILE"
 }
@@ -478,6 +479,7 @@ refill_tick() {
     [[ -f "$LOG" ]] && refill_log_offset="$(wc -c < "$LOG")"
   fi
   acquire_scheduler_lock || return 75
+  rm -f -- "$A/.refill-stop" # left by a refill that was killed after a refused lock wait
   if ! state_schema_ok; then
     say "state schema invalid; refill stopped before external actions"
     echo "[$STAMP] invalid units/workers schema; supervisor recovery required" >> "$A/alerts/state.md"

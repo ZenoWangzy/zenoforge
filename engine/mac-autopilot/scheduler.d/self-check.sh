@@ -338,6 +338,7 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
     check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
     worker_context="${19:-}" report_only=false failure_prompt="${12-$8}"
   provider="${15:-$(provider_of "$6")}"; route_provider="${18:-$provider}"
+  refill_stopped && return 1 # never start a worker once a ledger write was refused: its stage write would be refused too
   [[ -n "$unit_json" ]] || unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   if [[ -n "$worker_context" ]]; then
     report_only="$(jqf -r '.incident_report_resume // false' <<<"$worker_context")"

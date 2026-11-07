@@ -23,9 +23,20 @@ release_scheduler_lock() {
 refill_lock_wait_spent() {
   [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - ${AUTOPI_REFILL_LOCK_MARGIN_SECONDS:-15} ))
 }
+# The first refused wait ENDS the refill: a write that depends on one refused ledger write must not run after it (a worker started whose stage
+# write was refused would stay *-pending). The marker is a file because the wait can run in a $(...) subshell; refill_tick clears it at its start.
+# One REFILL-TIMEOUT line per refill, so a stop is counted like a kill (bell.sh and engine-canary.sh match the token); "stop" tells it from "refill tick killed".
+refill_stopped() {
+  [[ "${TICK_LOCAL_REFILL:-false}" == true && -e "$A/.refill-stop" ]]
+}
 acquire_scheduler_lock_wait() {
+  refill_stopped && return 1
   until acquire_scheduler_lock; do
-    refill_lock_wait_spent && { say "ledger lock wait stopped at ${SECONDS}s: the refill limit is near"; return 1; }
+    if refill_lock_wait_spent; then
+      : > "$A/.refill-stop"
+      say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): the refill limit is near, the refill ends here and the next one resumes"
+      return 1
+    fi
     sleep 0.05
   done
 }
