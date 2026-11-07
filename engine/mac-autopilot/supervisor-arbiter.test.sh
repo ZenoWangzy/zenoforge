@@ -770,6 +770,50 @@ echo '{"workers":[{"unit":"other","type":"supervise","harvested":false}]}' > "$W
 SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=1 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
 [[ "$(cap_default_history pr-637 supervisor-cap-default)" == 1 ]] \
   || fail "a capped unit must take its default decision even when another arbiter fills the worker cap"
+# Repeat guard: the same normalised escalation reason with no progress since the previous arbiter run takes the spent-budget route
+# in the same tick, with no model run and no supervisor-cap-default event, and that route's own event carries the counted prefix.
+repeat_unit() { # id issue extra-fields-json progress-stage-between(optional) second-reason → supervisor-review unit on its second identical escalation
+  printf '%s\n' "$(jq -cn --arg id "$1" --argjson issue "$2" --argjson extra "$3" --arg between "${4:-}" --arg second "${5:-implement delivered no changes in the assigned worktree twice: agent/issue-9002 (report impl-9002-20261107T080000Z.md)}" \
+    '{units:[({id:$id,issue:$issue,lane:"pr",stage:"supervisor-review"} + $extra)
+      | .history = ([{stage:"supervisor-escalated",result:"implement delivered no changes in the assigned worktree twice: agent/issue-9001 (report impl-9001-20261106T080000Z.md)",at:"2026-11-07T01:00:00Z"},
+                     {stage:"supervisor-arbiter",result:"dispatched",at:"2026-11-07T01:05:00Z"},
+                     {stage:"supervisor-requeue",result:"retry",at:"2026-11-07T01:10:00Z"}]
+          + (if $between == "" then [] else [{stage:$between,result:"",at:"2026-11-07T01:20:00Z"}] end)
+          + [{stage:"supervisor-escalated",result:$second,at:"2026-11-07T02:00:00Z"}])]}')" > "$UNITS"
+  echo '{"workers":[]}' > "$WORKERS"
+}
+repeat_dispatch() { SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters; }
+repeat_hist() { jq -r --arg stage "$1" '[.units[0].history[] | select(.stage==$stage)] | length' "$UNITS"; }
+jq -n '{state:"ready-for-agent",recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/9002.json"
+: > "$close_calls"; : > "$route2"
+repeat_unit pr-9002 9002 '{"pr":9002}'
+supervisor_repeat_arbitration "$(jq -c '.units[0]' "$UNITS")" || fail "same reason, digits and SHAs apart, no progress: must be a repeat"
+repeat_dispatch
+! jq -e 'any(.workers[]; .unit=="pr-9002")' "$WORKERS" >/dev/null || fail "a repeat must cost no model run"
+[[ "$(repeat_hist supervisor-arbiter)" == 1 && "$(repeat_hist supervisor-cap-default)" == 0 ]] || fail "a repeat adds no arbiter or cap-default event: $(jq -c '.units[0].history' "$UNITS")"
+[[ "$(field pr-9002 .stage)" == parked && "$(cat "$route2")" == '' && "$(field pr-9002 '.history[-1].stage')" == supervisor-cap-triage-park && "$(field pr-9002 '.history[-1].result')" == 'supervisor repeat guard: '* ]] \
+  || fail "a repeat on a unit with a PR must park through the cap route and name itself: $(jq -c '.units[0].history[-1]' "$UNITS")"
+# No PR and never recut: the same route cap default takes, one recut.
+repeat_unit pr-9003 9003 '{}'; drop_unit_pr
+jq -n '{state:"ready-for-agent",recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/9003.json"
+: > "$route2"; repeat_dispatch
+[[ "$(cat "$route2")" == 'route ' && "$(field pr-9003 .stage)" == closed && "$(field pr-9003 '.history[-1].stage')" == supervisor-cap-triage-recut && "$(field pr-9003 '.history[-1].result')" == 'supervisor repeat guard: '* ]] \
+  || fail "a repeat on a unit with no PR must take the recut route once: $(jq -c '.units[0]' "$UNITS")"
+# Progress between the two runs, a different reason, or no earlier run: dispatch as before.
+for progress in repair-delivered review-approve merged pr-opened; do
+  repeat_unit pr-9004 9004 '{}' "$progress"
+  ! supervisor_repeat_arbitration "$(jq -c '.units[0]' "$UNITS")" || fail "$progress between the runs is progress, not a repeat"
+done
+repeat_unit pr-9004 9004 '{}' '' 'size admission: 912 changed lines write-start (diff) exceed the 800-line limit'
+! supervisor_repeat_arbitration "$(jq -c '.units[0]' "$UNITS")" || fail "a different reason is not a repeat"
+jq -n '{state:"ready-for-agent",recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/9004.json"
+repeat_dispatch
+jq -e 'any(.workers[]; .unit=="pr-9004")' "$WORKERS" >/dev/null || fail "a first-time reason must still dispatch: $(jq -c '.units[0]' "$UNITS")"
+jq -cn '{units:[{id:"pr-9005",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"x 1",at:"2026-11-07T01:00:00Z"}]}]}' > "$UNITS"
+! supervisor_repeat_arbitration "$(jq -c '.units[0]' "$UNITS")" || fail "no earlier arbiter run is not a repeat"
+jq -cn '{units:[{id:"pr-9005",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"x 1",at:"2026-11-07T01:00:00Z"},{stage:"supervisor-arbiter",at:"2026-11-07T01:05:00Z"}]}]}' > "$UNITS"
+! supervisor_repeat_arbitration "$(jq -c '.units[0]' "$UNITS")" || fail "a run already made for this escalation is not a repeat"
+
 # Size recut without a person. (1) A held recut lifts on its own once the hold is gone, whatever state the issue came back in;
 # a live hold keeps it parked. (2) An on-hold issue counts as routed (the recut waits behind the hold) instead of going to the
 # supervisor. (3) A head sent to recut before routes again, unless that recut was refused.

@@ -121,6 +121,11 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       cap_triage=true
       (( cap_triaged < SUPERVISOR_CAP_TRIAGE_PER_TICK )) || { say "supervisor cap triage capped at $SUPERVISOR_CAP_TRIAGE_PER_TICK this tick"; continue; }
     fi
+    # Repeat guard: the same reason back with no progress since the last run gets the spent-budget route, not another requeue.
+    if [[ "$cap_triage" != true && "$is_swept" != true ]] && supervisor_repeat_arbitration "$u"; then
+      supervisor_cap_default "$id" "$u" repeat || say "supervisor repeat guard unit=$id: route not applied; retried next tick"
+      continue
+    fi
     (( $(live_workers) < MAX )) || { say "supervisor arbitration pending unit=$id: worker capacity full"; return 0; }
     arbiter_profile="$SUPERVISOR_ARBITER_PROFILE"
     if [[ "$over_stop" == true ]]; then

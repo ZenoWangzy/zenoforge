@@ -136,10 +136,18 @@ units = [
                           {"stage": "supervisor-arbiter-round", "at": "2026-10-19T10:00:00Z"},
                           {"stage": "supervisor-cap-default", "at": "2026-10-19T10:30:00Z"}]},
   {"id": "c", "history": [{"stage": "supervisor-arbiter", "at": "2026-10-19T11:00:00Z"}]},
+  # The guard adds no stage: its route events (recut, park, obsolete) carry the prefix in result.
+  {"id": "d", "history": [{"stage": "supervisor-cap-triage-park", "result": "supervisor repeat guard: same reason", "at": "2026-10-19T09:00:00Z"},
+                          {"stage": "supervisor-cap-triage-recut", "result": "supervisor repeat guard: same reason", "at": "2026-10-18T11:59:59Z"},
+                          {"stage": "supervisor-cap-triage-park", "result": "supervisor cap default: cap", "at": "2026-10-19T09:30:00Z"}]},
 ]
 metrics = n.ledger_metrics(units, now - dt.timedelta(hours=5), now)
 assert metrics["supervisor.arbiter_dispatches_24h"] == 2, metrics   # the round marker never counts
 assert metrics["supervisor.cap_default_24h"] == 1, metrics
+assert metrics["supervisor.repeat_guard_24h"] == 1, metrics   # in the window, prefix only: not the 24 h edge, not a cap-default park
+guard = n.CRITERIA["supervisor.repeat_guard_24h"]
+assert [n.status_of(v, guard[2], guard[3], guard[4]) for v in (0, 8, 9, 24)] == ["OK", "OK", "WARN", "UNHEALTHY"]
+assert n.MEANING["supervisor.repeat_guard_24h"] and n.SOURCE["supervisor.repeat_guard_24h"]
 dispatches = n.CRITERIA["supervisor.arbiter_dispatches_24h"]
 assert n.status_of(48, dispatches[2], dispatches[3], dispatches[4]) == "OK"
 assert n.status_of(120, dispatches[2], dispatches[3], dispatches[4]) == "UNHEALTHY"

@@ -344,9 +344,12 @@ supervisor_cap_default_issue() { # unit-json → linked issue, canonical id/bran
   return 1
 }
 
-supervisor_cap_default() { # id unit-json [lifetime|daily] → 0 当该单元已有、刚得到或暂不该有默认决定
-  local id="$1" u="$2" trigger="${3:-lifetime}" issue pr raw state="" delivered=false verdict recut_done branch reason decision limit_reason
-  jqf -e 'any((.history // [])[]?; .stage == "supervisor-cap-default")' <<<"$u" >/dev/null && return 0
+supervisor_cap_default() { # id unit-json [lifetime|daily|repeat] → 0 当该单元已有、刚得到或暂不该有默认决定
+  local id="$1" u="$2" trigger="${3:-lifetime}" issue pr raw state="" delivered=false verdict recut_done branch reason decision limit_reason tag="supervisor cap default"
+  # repeat：同一原因的第二次仲裁（supervisor_repeat_arbitration）走同一条路线，但不占「每单元一次」的终身默认决定，
+  # 也不追加 supervisor-cap-default 事件；路线自己的事件（recut/park/obsolete）以 "supervisor repeat guard:" 开头，供 supervisor.repeat_guard_24h 计数。
+  [[ "$trigger" == repeat ]] && tag="supervisor repeat guard"
+  [[ "$trigger" == repeat ]] || { jqf -e 'any((.history // [])[]?; .stage == "supervisor-cap-default")' <<<"$u" >/dev/null && return 0; }
   issue="$(supervisor_cap_default_issue "$u" || true)"; pr="$(jqf -r '.pr // empty' <<<"$u")"
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
     raw="$(scheduler_issue_state "$issue" 2>/dev/null)" || return 1
@@ -354,11 +357,13 @@ supervisor_cap_default() { # id unit-json [lifetime|daily] → 0 当该单元已
   fi
   [[ "$state" != on-hold ]] || return 0
   if [[ "$trigger" == daily ]]; then
-    limit_reason="24-hour arbitration ceiling ($SUPERVISOR_ARBITER_DAILY_MAX dispatches)"
+    limit_reason="24-hour arbitration ceiling ($SUPERVISOR_ARBITER_DAILY_MAX dispatches) reached"
+  elif [[ "$trigger" == repeat ]]; then
+    limit_reason="the same escalation reason came back with no delivery, approval, merge or new PR head since the last arbitration"
   else
-    limit_reason="arbitration cap ($SUPERVISOR_ARBITER_UNIT_CAP lifetime dispatches)"
+    limit_reason="arbitration cap ($SUPERVISOR_ARBITER_UNIT_CAP lifetime dispatches) reached"
   fi
-  decision="$(decision_entry 'Supervisor cap default' "unit $id: $limit_reason reached" "supervisor-arbiter history events" '[]' scheduler)"
+  decision="$(decision_entry "${tag^}" "unit $id: $limit_reason" "supervisor-arbiter history events" '[]' scheduler)"
   [[ "$state" =~ ^(closed|awaiting-release|released|concluded|tracker)$ ]] && delivered=true
   # merge-reverted 在 merged 之后意味着交付已被撤回：那不是「已交付」，不进分支 a。
   [[ "$(jqf -r '[(.history // [])[] | select(.stage == "merged" or .stage == "landed" or .stage == "merge-reverted") | .stage] | last // ""' <<<"$u")" =~ ^(merged|landed)$ ]] && delivered=true
@@ -370,20 +375,22 @@ supervisor_cap_default() { # id unit-json [lifetime|daily] → 0 当该单元已
   if [[ "$delivered" == true ]]; then
     branch=obsolete
     reason="issue state ${state:-unknown} or the work is already merged elsewhere"
+    [[ "$trigger" != repeat ]] || reason="$tag: $reason"
     cap_set_unit "$id" obsolete "$reason" "" "$(hist obsolete "$reason") | .stage=\"closed\" | .note=$(js "obsolete: $reason") | del(.parked_reason)" || return 1
   elif [[ "$verdict" == RECUT || "$recut_done" != true ]]; then
-    reason="$limit_reason reached; recut the unit once"
-    supervisor_budget_recut "$id" "supervisor cap default: $reason" "$decision" \
-      "supervisor cap default could not complete the recut route" "supervisor cap default recut" \
+    reason="$limit_reason; recut the unit once"
+    supervisor_budget_recut "$id" "$tag: $reason" "$decision" \
+      "$tag could not complete the recut route" "$tag recut" \
       supervisor-cap-triage-park supervisor-cap-triage-recut false false || return 1
     branch=park
     [[ "$(unit_field "$id" '.stage')" != closed ]] || branch=recut
   else
     branch=park
-    reason="$limit_reason reached; recut already tried and last cap verdict (${verdict:-none}) did not converge"
-    supervisor_budget_park "$id" "supervisor cap default: $reason" "$decision" \
-      "supervisor cap default stopped arbitration" supervisor-cap-triage-park || return 1
+    reason="$limit_reason; recut already tried and last cap verdict (${verdict:-none}) did not converge"
+    supervisor_budget_park "$id" "$tag: $reason" "$decision" \
+      "$tag stopped arbitration" supervisor-cap-triage-park || return 1
   fi
+  [[ "$trigger" != repeat ]] || { say "supervisor repeat guard unit=$id branch=$branch"; return 0; }
   cap_set_unit "$id" supervisor-cap-default "branch=$branch: $reason" "" \
     "$(hist supervisor-cap-default "branch=$branch: $reason" "$decision")" || return 1
   say "supervisor cap default unit=$id branch=$branch trigger=$trigger"
@@ -408,6 +415,28 @@ supervisor_arbiter_no_change_hold() { # unit-json → 0 when a past run left it 
     "arbiter-no-change unit=$id: its last run left it at supervisor-review; held until head, state or ruling changes") \
     || say "arbitration hold unit=$id: escalation not delivered"
   return 0
+}
+
+# Progress between two arbitrations: a delivery, an approval, ready-to-merge, a merge or a new PR head. Anything else (a requeue,
+# a stop-loss, a red check, a blocked-on) leaves the unit where the last arbiter found it.
+SUPERVISOR_PROGRESS_RE='^(repair-delivered|self-fix-delivered|delivered|implement-push-recovered|pr-opened|review-approve|supervisor-approve|ci-ready|land-issued|merge-issued|merged|pr-merged|landed)$'
+
+# 0 when this escalation has the same reason (digits and SHAs normalised) as the one the unit's previous arbiter run answered, and
+# none of the progress events came between that run and now: another run would only repeat that requeue (29 of 93 dispatches on 11-07).
+supervisor_repeat_arbitration() { # unit-json → 0 for a repeat
+  jqf -e --arg progress "$SUPERVISOR_PROGRESS_RE" '
+    def st: .stage // .event // .ev // "";
+    def norm: (. // "") | tostring | gsub("\\b(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\\b"; "N") | gsub("[0-9]+"; "N") | gsub("\\s+"; " ");
+    (.history // []) as $h
+    | [$h | to_entries[] | select(.value | st | IN("supervisor-escalated", "supervisor-review")) | .key] as $es
+    | ([$h | to_entries[] | select(.value | st == "supervisor-arbiter") | .key] | last) as $p
+    | ($es | last) as $e
+    | if $e == null or $p == null or $p > $e then false
+      else ([$es[] | select(. < $p)] | last) as $pe
+        | ($h[$e].result | norm) as $r
+        | $pe != null and $r != "" and ($h[$pe].result | norm) == $r
+          and all($h[$p + 1:][]; (st | test($progress)) | not)
+      end' <<<"$1" >/dev/null
 }
 
 supervisor_arbiter_record_left() { # unit: only a decision that left it here holds it; a unit a later stop returns here runs again
