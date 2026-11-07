@@ -68,10 +68,13 @@ git -C "$ROOT" update-ref refs/remotes/origin/main HEAD
 HOTSPOT_LOG=$'\001\nsrc/candidate\nsrc/hot\n\001\nsrc/candidate\nsrc/hot\n\001\nsrc/candidate\nsrc/once'
 HOTSPOT_LOG_LOADED=true HOTSPOT_LOG_OK=true
 unset ZF_FOOTPRINT_HOTSPOT_MIN
-[[ "$(hotspot_expand '["src/candidate"]')" == '["src/candidate"]' ]] || fail 'default minimum admitted weak hotspot'
+[[ "$(hotspot_expand '["src/candidate"]')" == '["src/candidate"]' ]] || fail 'default admitted weak hotspot'
 saved_hotspot_log="$HOTSPOT_LOG"
 for ((i=0;i<8;i++)); do HOTSPOT_LOG+=$'\001\nsrc/candidate\nsrc/hot\n'; done
-[[ "$(hotspot_expand '["src/candidate"]')" == '["src/candidate","src/hot"]' ]] || fail 'default minimum excluded count 10'
+[[ "$(hotspot_expand '["src/candidate"]')" == '["src/candidate"]' ]] || fail 'expansion is not off by default'
+ZF_FOOTPRINT_HOTSPOT_MIN=10
+[[ "$(hotspot_expand '["src/candidate"]')" == '["src/candidate","src/hot"]' ]] || fail 'minimum 10 did not restore the previous default'
+unset ZF_FOOTPRINT_HOTSPOT_MIN
 HOTSPOT_LOG="$saved_hotspot_log"
 ZF_FOOTPRINT_HOTSPOT_MIN=2
 [[ "$(hotspot_expand '["src/candidate"]')" == '["src/candidate","src/hot"]' ]] || fail 'threshold did not include count 2'
@@ -89,7 +92,7 @@ old_result="$(jq -Rsc --argjson scope '["src/candidate"]' '
 for invalid in 0 nope ""; do
   ZF_FOOTPRINT_HOTSPOT_MIN="$invalid"
   [[ "$(hotspot_expand '["src/candidate"]')" == '["src/candidate"]' ]] || fail "invalid minimum $invalid did not use default"
-  grep -Fq "footprint-hotspot-invalid-min value=$invalid default=10" "$LOG" || fail 'invalid minimum was not logged'
+  grep -Fq "footprint-hotspot-invalid-min value=$invalid default=off" "$LOG" || fail 'invalid minimum was not logged'
 done
 unset ZF_FOOTPRINT_HOTSPOT_MIN
 write_units '{units:[{id:"owner",stage:"implement",footprint:["src/hot"]},

@@ -425,12 +425,15 @@ hotspot_log() { # 窗口内提交的文件分组清单，每 scheduler 进程取
   fi
   printf '%s' "$HOTSPOT_LOG"
 }
-# The old algorithm requires two co-changes; setting 1 retains that historical floor.
+# Hotspot expansion is off unless ZF_FOOTPRINT_HOTSPOT_MIN is a count: 74% of its holds had no
+# real overlap. footprint_shadow_old_rule still logs every start the old two-co-change rule would
+# have held. To revert, set ZF_FOOTPRINT_HOTSPOT_MIN=10 (the previous default); 1 retains the
+# historical floor.
 hotspot_minimum() {
-  local min="${ZF_FOOTPRINT_HOTSPOT_MIN-10}"
-  if [[ ! "$min" =~ ^[0-9]+$ ]] || [[ ! "$min" =~ [1-9] ]]; then
-    say "footprint-hotspot-invalid-min value=$min default=10" >&2
-    min=10
+  local min="${ZF_FOOTPRINT_HOTSPOT_MIN-off}"
+  if [[ "$min" != off ]] && { [[ ! "$min" =~ ^[0-9]+$ ]] || [[ ! "$min" =~ [1-9] ]]; }; then
+    say "footprint-hotspot-invalid-min value=$min default=off" >&2
+    min=off
   fi
   # jq handles large numeric inputs without shell arithmetic overflow.
   printf '%s\n' "$min"
@@ -454,7 +457,7 @@ hotspot_expand_batch() { # Includes old-rule scope and counts for attribution wi
              | .[] | select(in_scope($scope; .) | not) ]
           | group_by(.) | map(select(length >= 2) | {f:.[0],n:length})
           | sort_by(-.n) | .[:12]) as $old
-        | ($old | map(select(.n >= ($min | tonumber)))) as $added
+        | ($old | map(select($min != "off" and .n >= ($min | tonumber)))) as $added
         | {id:$candidate.id, scope:(($scope + ($added | map(.f))) | unique),
            old_scope:(($scope + ($old | map(.f))) | unique),
            counts:($old | map({key:.f,value:.n}) | from_entries)}]
