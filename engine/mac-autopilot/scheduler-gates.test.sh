@@ -1855,8 +1855,11 @@ DEP_DELIVERED_CACHE=(); DISPATCHED=(); dispatch_pending || :
 set_unit issue-150 '.stage="merged"'
 release_dependency_blocks
 [[ "$(field issue-80 .stage)" == implement-pending ]] || fail "a delivered blocker did not free the unit ($(field issue-80 .stage))"
-DISPATCHED=(); dispatch_pending || :
+DISPATCHED=(); DISPATCH_PROMPT=""; dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == implement:issue-80:* ]] || fail "a cleared blocker did not dispatch the unit (${DISPATCHED[*]:-none})"
+# The released worker is told the blocker is delivered, or it blocks on the still-open issue again (issue-3686 and #3683).
+[[ "$DISPATCH_PROMPT" == *"predecessor #150 is delivered"*"Do not report BLOCKED-ON #150"* ]] || fail 'the brief of a unit released on a delivered blocker lacks the delivered note'
+[[ "$(field issue-80 .task | grep -c 'predecessor #150 is delivered')" == 1 ]] || fail 'the delivered note was added twice'
 # A supervisor ruling is the way out of a dead blocker: it frees the unit even though the blocker never delivered.
 units "{\"units\":[{\"id\":\"issue-80\",\"issue\":80,\"lane\":\"pr\",\"branch\":\"agent/issue-80\",\"stage\":\"implement-pending\",\"task\":\"fix it\",\"history\":[$blocked_run,{\"stage\":\"supervisor-requeue\",\"decision\":{\"owner\":\"supervisor\"}}]},{\"id\":\"issue-150\",\"issue\":150,\"stage\":\"implement\",\"history\":[]}]}"
 DEP_DELIVERED_CACHE=(); DISPATCHED=(); dispatch_pending || :
