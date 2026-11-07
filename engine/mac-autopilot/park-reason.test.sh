@@ -137,4 +137,19 @@ park_label_sweep
 park_label_sweep
 [[ "$(wc -l < "$fixture/recut-calls")" == 1 ]] || fail 'the recut record must run once'
 grep -q 'park-sweep unit=issue-4508 action=children' "$A/alerts/events.md" || fail 'each action must print'
+# A cap-triage founder park returns once its stop-loss hold is gone, and only then: a live hold, another reason, a spent retry or a pending handoff episode keep the park.
+mkdir -p "$AGENT_HOME/state"
+issue_state() { printf '%s\n' "$2" > "$AGENT_HOME/state/$1.json"; }
+founder() { unit "$1" 'founder decision required' | jq -c --arg reason "${2:-supervisor-cap-founder}" '.parked_reason=$reason | .unpark_condition="the maintainer answers the question"'; }
+{ founder 7001; founder 7002; founder 7003; founder 7004 supervisor-cap-exhausted; founder 7005 | jq -c '.supervisor_cap_retry="spent"'; founder 7006 | jq -c '.hold_handoff_episode="old"'; } | ledger
+issue_state 7001 '{"state":"ready-for-agent","hold":null}'
+issue_state 7002 '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss","kind":"stop-loss"}}'
+issue_state 7004 '{"state":"ready-for-agent","hold":null}'
+issue_state 7005 '{"state":"ready-for-agent","hold":null}'
+issue_state 7006 '{"state":"ready-for-agent","hold":null,"scheduler_handoff":{"episode":"new"}}'
+park_label_sweep
+[[ "$(field issue-7001 .stage):$(field issue-7001 .parked_reason):$(field issue-7001 .supervisor_cap_retry)" == supervisor-review:null:pending ]] || fail 'a lifted stop-loss hold must return the founder park with one retry'
+for n in 7002 7003 7004 7005 7006; do [[ "$(field issue-$n .stage)" == parked ]] || fail "issue-$n must stay parked"; done
+[[ "$(field issue-7001 '[.history[] | select(.stage == "park-sweep-hold-lifted")] | length')" == 1 ]] || fail 'the return must add exactly one history entry'
+
 echo 'park-reason.test.sh: PASS'

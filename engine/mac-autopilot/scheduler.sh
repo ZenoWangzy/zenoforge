@@ -294,6 +294,7 @@ HOTPATCH_REVIEW_RULE='
 # 批准后由 land worker 压成 [skip ci] 提交经 land-direct-main.sh 直落 main（不走 PR CI 等待与合并车道）。
 POLICY_SCRIPT="${AUTOPILOT_POLICY_SCRIPT:-$ROOT/scripts/branch-delivery-policy.mjs}"
 declare -A DEP_DELIVERED_CACHE=()
+declare -A DEP_PARKED_CACHE=()
 
 # ---------- 1c. 卡住任务处置（#4371）：消费 f8（#4366）的在制品年龄信号 ----------
 # 检测归 f8：flow.wip_age_stage_p90_hours 越过阈值（UNHEALTHY）时，scorecard 的

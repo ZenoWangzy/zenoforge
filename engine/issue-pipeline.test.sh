@@ -1173,8 +1173,84 @@ RELEASE_DELEGATE_LINE="$(grep -nF '[ "$PIPELINE_STAGE" = release ] && [ "${ZF_RE
 MODE_ANNOUNCE_LINE="$(grep -nF 'echo "issue-pipeline: AGENT_PIPELINE=$MODE"' "$PIPELINE_SRC" | head -n 1 | cut -d: -f1)"
 assert_cond "release-train delegation runs the release slice under triage mode before any mode dispatch" \
   "$([ -n "$RELEASE_DELEGATE_LINE" ] && [ -n "$MODE_ANNOUNCE_LINE" ] && [ "$RELEASE_DELEGATE_LINE" -lt "$MODE_ANNOUNCE_LINE" ] && sed -n "${RELEASE_DELEGATE_LINE},$((RELEASE_DELEGATE_LINE + 2))p" "$PIPELINE_SRC" | grep -qF 'MODE=release' && echo 1 || echo 0)"
-assert_cond "release delegate waits for the pipeline lock instead of a silent -n exit" \
-  "$(grep -qF 'flock -w "${ZF_RELEASE_DELEGATE_LOCK_WAIT_SECONDS:-600}" 9' "$PIPELINE_SRC" && grep -qF 'release delegate found the pipeline lock busy' "$PIPELINE_SRC" && echo 1 || echo 0)"
+assert_cond "release delegate waits on its own release lock instead of a silent -n exit" \
+  "$(grep -qF 'flock -w "${ZF_RELEASE_DELEGATE_LOCK_WAIT_SECONDS:-600}" "$RELEASE_LOCK_FD"' "$SCRIPT_DIR/issue-pipeline-slices.sh" && grep -qF 'release delegate found the release lock busy' "$SCRIPT_DIR/issue-pipeline-slices.sh" && grep -qxF 'pipeline_acquire_lock' "$PIPELINE_SRC" && echo 1 || echo 0)"
+# The delegated release slice owns release-stage.lock, so a long release run cannot make every tick skip.
+RELEASE_LOCK_T="$(mktemp -d)"
+cat > "$RELEASE_LOCK_T/harness.sh" <<EOF
+set -euo pipefail
+source "$SCRIPT_DIR/issue-pipeline-slices.sh"
+supervisor_inbox_append() { printf '%s|%s\n' "\$1" "\$2" >> "\$AGENT_HOME/alerts"; }
+LOCK_FILE="\$AGENT_HOME/lock"
+EVENT_REFILL="\${EVENT_REFILL:-0}"
+pipeline_acquire_lock
+echo got-lock
+read -t "\${HOLD:-0}" <> <(:) || true
+EOF
+# lock_run <stage> <delegate> [VAR=value ...]: prints the harness's stdout+stderr, then rc=<n>.
+lock_run() {
+  local stage="$1" delegate="$2"; shift 2
+  local out rc=0
+  out="$(env AGENT_HOME="$RELEASE_LOCK_T" PIPELINE_STAGE="$stage" ZF_RELEASE_TRAIN_DELEGATE="$delegate" \
+    ZF_RELEASE_DELEGATE_LOCK_WAIT_SECONDS=1 "$@" bash "$RELEASE_LOCK_T/harness.sh" 2>&1)" || rc=$?
+  printf '%s\nrc=%s\n' "$out" "$rc"
+}
+# lock_hold <stage> <delegate>: starts a holder in the background, sets HOLDER_PID once it holds the lock.
+lock_hold() {
+  local stage="$1" delegate="$2" n
+  : > "$RELEASE_LOCK_T/hold.out"
+  env AGENT_HOME="$RELEASE_LOCK_T" PIPELINE_STAGE="$stage" ZF_RELEASE_TRAIN_DELEGATE="$delegate" HOLD=60 \
+    bash "$RELEASE_LOCK_T/harness.sh" > "$RELEASE_LOCK_T/hold.out" 2>&1 &
+  HOLDER_PID=$!
+  for n in $(seq 1 100); do
+    grep -q got-lock "$RELEASE_LOCK_T/hold.out" && return 0
+    read -t 0.1 <> <(:) || true
+  done
+  return 1
+}
+lock_release() { kill "$HOLDER_PID" 2>/dev/null || true; wait "$HOLDER_PID" 2>/dev/null || true; }
+alert_count() { [ -f "$RELEASE_LOCK_T/alerts" ] || { echo 0; return; }; grep -c "^$1|" "$RELEASE_LOCK_T/alerts" || true; }
+
+lock_hold release 1
+RELEASE_HOLDS_TICK_OUT="$(lock_run triage 0)"
+assert_cond "a release stage holding its lock does not stop a tick stage from getting the tick lock" \
+  "$([[ "$RELEASE_HOLDS_TICK_OUT" == *got-lock*rc=0 ]] && echo 1 || echo 0)"
+RELEASE_TWICE_OUT="$(lock_run release 1)"
+assert_cond "a second release run is refused with exit 75 while the first holds the release lock" \
+  "$([[ "$RELEASE_TWICE_OUT" != *got-lock* && "$RELEASE_TWICE_OUT" == *'release lock busy'*rc=75 ]] && echo 1 || echo 0)"
+lock_release
+assert_cond "the release lock is free again once the first run ends" \
+  "$([[ "$(lock_run release 1)" == *got-lock*rc=0 ]] && echo 1 || echo 0)"
+
+lock_hold triage 0
+SKIP_OUT_1="$(lock_run triage 0)"
+assert_cond "a skipped tick logs the skip and names the lock file" \
+  "$([[ "$SKIP_OUT_1" == *"tick skipped, lock busy"*"file=$RELEASE_LOCK_T/lock consecutive=1"*rc=0 ]] && echo 1 || echo 0)"
+lock_run triage 0 >/dev/null
+assert_eq "two consecutive skips raise no alert" 0 "$(alert_count tick-outage)"
+lock_run triage 0 >/dev/null
+assert_eq "the third consecutive skip alerts" 1 "$(alert_count tick-outage)"
+lock_run triage 0 >/dev/null
+assert_eq "later skips of the same episode stay quiet" 1 "$(alert_count tick-outage)"
+REFILL_OUT="$(lock_run triage 0 EVENT_REFILL=1)"
+assert_cond "a refill event keeps exit 75 and does not count as a skipped tick" \
+  "$([[ "$REFILL_OUT" == *rc=75 && "$(cat "$RELEASE_LOCK_T/pipeline-lock-skip-count")" = 4 ]] && echo 1 || echo 0)"
+lock_release
+RESET_OUT="$(lock_run triage 0)"
+assert_cond "a tick that gets the lock resets the skip counter and records recovery once" \
+  "$([[ "$RESET_OUT" == *got-lock*rc=0 && ! -e "$RELEASE_LOCK_T/pipeline-lock-skip-count" && ! -e "$RELEASE_LOCK_T/pipeline-lock-skip-alerted" ]] && [ "$(alert_count tick-recovery)" = 1 ] && echo 1 || echo 0)"
+lock_hold triage 0
+lock_run triage 0 >/dev/null
+assert_cond "after a reset the next episode counts from one" \
+  "$([ "$(cat "$RELEASE_LOCK_T/pipeline-lock-skip-count")" = 1 ] && echo 1 || echo 0)"
+# The slice runner's own flock skips the same way.
+SLICE_SKIP_OUT="$( (AGENT_HOME="$RELEASE_LOCK_T" LOCK_FILE="$RELEASE_LOCK_T/lock"
+  supervisor_inbox_append() { printf '%s|%s\n' "$1" "$2" >> "$AGENT_HOME/alerts"; }
+  run_pipeline_slices unused-scheduler 2>&1; echo "rc=$?") )"
+assert_cond "the slice runner logs a busy tick lock and counts the skip" \
+  "$([[ "$SLICE_SKIP_OUT" == *"holder=slice-runner file=$RELEASE_LOCK_T/lock consecutive=2"*rc=0 ]] && echo 1 || echo 0)"
+lock_release
+rm -rf "$RELEASE_LOCK_T"
 assert_cond "release tick no longer infers awaiting-release from PR bodies" \
   "$(grep -qF 'Refs in:body' "$PIPELINE_SRC" && echo 0 || echo 1)"
 DELIVERY_READ_OUT="$(

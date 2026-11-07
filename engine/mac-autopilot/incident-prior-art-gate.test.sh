@@ -65,6 +65,28 @@ assert_case NOT_READY 'escalation note without a reference is rejected' "$incide
   'escalation reference'
 assert_case READY 'escalation with a reference is accepted' "$incident_unit" \
   "$base_body"$'\n## prior-art\nClassic problem: incomplete incident postmortem.\nUncertain sources were escalated to advisor (CTO) and the head.\nEscalation reference: #164\nSource: https://sre.google/workbook/postmortem-culture/\n'
+# A negated mention is not a stated escalation: it must not demand a reference.
+for negated in \
+  'No escalation was needed.' \
+  'Escalation was not needed.' \
+  'Escalation: none' \
+  'We did not need to escalate.' \
+  "Escalation wasn't necessary." \
+  'Resolved without any escalation.' \
+  'Nothing to escalate: the sources agree.'; do
+  assert_case READY "negated escalation is accepted: $negated" "$incident_unit" \
+    "$base_body"$'\n## prior-art\nClassic problem: incomplete incident postmortem.\n'"$negated"$'\nSource: https://sre.google/workbook/postmortem-culture/\n'
+done
+# The exact text from the rejected report, as its own sentence among others.
+assert_case READY 'no escalation was needed inside a longer paragraph' "$incident_unit" \
+  "$base_body"$'\n## prior-art\nThe three sources agree, so no escalation was needed.\nSource: https://sre.google/workbook/postmortem-culture/\n'
+# A positive claim, alone or mixed with a negated one, still needs its reference.
+assert_case NOT_READY 'positive escalation mixed with a negated one is rejected' "$incident_unit" \
+  "$base_body"$'\n## prior-art\nSources conflict, so it was escalated to the advisor; no further escalation was needed.\nSource: https://sre.google/workbook/postmortem-culture/\n' \
+  'escalation reference'
+assert_case NOT_READY 'was-not-sure-and-escalated is still a positive claim' "$incident_unit" \
+  "$base_body"$'\n## prior-art\nI was not sure and escalated to the CTO.\nSource: https://sre.google/workbook/postmortem-culture/\n' \
+  'escalation reference'
 assert_case READY 'non-incident report is unaffected' "$ordinary_unit" "$base_body"
 
 echo 'incident-prior-art-gate.test.sh: PASS'

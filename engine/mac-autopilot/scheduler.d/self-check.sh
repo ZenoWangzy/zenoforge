@@ -158,7 +158,12 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
       && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" ]]; then return 0; fi
   out="$SUP/self-check-$id-$sha-$(jqf -r '.self_check_fixes // 0' <<<"$u")-$TAG.log"; result="$out.result"
   (
-    if self_check_run "$dir" "$sha" "$lane" "$pr_base"; then printf 'pass\n' > "$result"
+    # Same check as the review-time incident report gate (review-rules.sh), run here so the original session can repair the report via self-fix.
+    reason="$(incident_report_gate_reason "$u")"
+    if [[ -n "$reason" ]]; then
+      printf 'incident report check failed: %s\nreport: %s\n' "$reason" "$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
+      printf 'red\n' > "$result"
+    elif self_check_run "$dir" "$sha" "$lane" "$pr_base"; then printf 'pass\n' > "$result"
     else
       rc=$?
       # 75 (cihost admission queue) and 125 (transfer/setup) are not verdicts.
@@ -219,6 +224,11 @@ $(tail -100 "$out")"
   prompt="实现后的确定性自检失败，尚未派出评审。这是原实现会话的自修复，保持原任务范围，修复下列失败，不弱化断言。$failure
 在当前隔离 clone ${dir}、原分支 $branch 修复；$deliver 禁止 merge PR、部署或修改 GitHub 状态。把修复和验证证据写到 $SUP/${rep}，然后结束，流水线会重跑同一自检。
 $(matt_method_rule "$dir")"
+  # The fix report becomes the unit's implementation report, so an incident report failure must be repaired in it.
+  if grep -q '^incident report check failed' "$out"; then
+    prompt+="
+失败项是事故报告结构检查：$SUP/${rep} 会取代原实现报告，必须是完整的事故报告（保留原有内容，补齐 ## root-cause、带 kind: 行的 ## recurrence-guard、带 http(s) 来源 URL 的 ## prior-art），不要只写修复说明。"
+  fi
   if [[ "$(jqf -r '.implement_model // empty' <<<"$u")" == "$model" \
       && "$(jqf -r '.implement_effort // empty' <<<"$u")" == "$effort" \
       && "$(jqf -r '.implement_provider // empty' <<<"$u")" == "$provider" ]]; then
