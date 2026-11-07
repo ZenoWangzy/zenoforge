@@ -296,6 +296,7 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true]：焦点与并发
   if [[ "$2" == review || "$2" == rereview ]]; then
     jqf -e '(.self_check_pid // null)==null and (.self_fix_pending // false)!=true' <<<"$u" >/dev/null || { dispatch_skip self-check; return 1; }
   fi
+  [[ "${TICK_DISPATCH_PAST_DEADLINE:-false}" != true ]] || { dispatch_skip tick-deadline; return 1; }
   if [[ "$FOCUS_MODE" == "release" && "$(unit_is_critical "$u")" != "true" && "$(critical_pending_count)" -gt 0 ]]; then
     FOCUS_SKIPPED+=("$1")
     say "skip dispatch unit=$1 focus=release critical=false"

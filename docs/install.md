@@ -158,6 +158,7 @@ Set these in the unit files (with a drop-in, see section 7), in `capacity.env`, 
 | `MAC_AUTOPILOT_SUPERVISOR_DIR` | `<root>/.scratch-supervisor` | Unit-loop versions and runtime |
 | `MAC_AUTOPILOT_RUNTIME_DIR` | `<supervisor dir>/autopi` | Live unit-loop runtime |
 | `AUTOPI_TICK_LIMIT_SECONDS` | 1800 | Time limit for one scheduler tick |
+| `AUTOPI_TICK_DISPATCH_SECONDS` | 420 | Walk time of a full tick's dispatch pass; later units get parks and holds but no starts until the next refill |
 | `AUTOPI_REFILL_SECONDS` / `AUTOPI_REFILL_LIMIT_SECONDS` | 30 / 300 | Refill cadence and time limit |
 | `WORKER_BACKEND` | unset (balance) | `luna` (Codex) or `zc` (ZCode) for `bin/worker` |
 | `WORKER_STALL_MINUTES` | 10 | No-progress limit for one worker |

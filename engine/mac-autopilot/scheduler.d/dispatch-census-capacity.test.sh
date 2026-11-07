@@ -73,13 +73,11 @@ for mode in true false; do
   grep -Fq 'capacity 8/8' "$LOG" || fail "full-capacity dispatch_pending (refill=$mode) never reached the capacity skip"
 done
 
-# At capacity a refill and a full tick's second pass stop at the first unit. The first pass walks every unit, so parks and holds still run.
+# At capacity a refill stops at the first unit. A full tick's pass walks every unit, so parks and holds still run.
 walk_stops() { grep -c 'dispatch walk stopped at capacity 8/8' "$LOG" || true; }
 walk_skips() { grep -c 'skip dispatch unit=.*capacity 8/8' "$LOG" || true; }
 : > "$LOG"; dispatch_pending false
 [[ "$(walk_stops)" == 0 && "$(walk_skips)" -ge 2 ]] || fail "the first pass of a full tick did not walk every unit: $(cat "$LOG")"
-: > "$LOG"; TICK_DISPATCH_FP=fixture dispatch_pending false
-[[ "$(walk_stops)" == 1 && "$(walk_skips)" == 0 ]] || fail "the second pass walked at capacity: $(cat "$LOG")"
 : > "$LOG"; dispatch_pending true
 [[ "$(walk_stops)" == 1 && "$(walk_skips)" == 0 ]] || fail "a refill walked at capacity: $(cat "$LOG")"
 
@@ -164,5 +162,35 @@ write_workers 7
 dispatch_pending true
 [[ "$(dispatch_skip_summary)" == 'no-pr:1' ]] || fail "a silent no-PR pass was not counted: $(dispatch_skip_summary)"
 [[ "$(refill_dispatch_metrics 0 7)" == *' skips=footprint:0,handoff:0,memory:0,no-pr:1' ]] || fail "refill summary omitted the no-PR skip"
+
+# A full tick past its walk deadline still reaches the stop-loss park, but refuses every start at room_for and counts it.
+jq -n '{units:[
+  {id:"issue-4904",stage:"implement-pending",task:"fixture task text",branch:"agent/issue-4904",lane:"pr",title:"fixture implement",history:[]},
+  {id:"issue-4907",issue:4907,pr:507,stage:"repair-pending",branch:"agent/issue-4907",lane:"pr",title:"fixture repair",review_report:"review-507.md",history:[]}]}' > "$UNITS"
+write_workers 3
+ticket_budget_reason() { [[ "$1" == *issue-4907* ]] && printf '9 rounds\n' || :; }
+dispatch_calls=0; stop_loss_calls=0
+: > "$LOG"; SECONDS=0
+AUTOPI_TICK_DISPATCH_SECONDS=0 dispatch_pending false
+[[ "$(grep -c 'dispatch deadline after .*parks and holds only' "$LOG")" == 1 ]] || fail "no single tick walk deadline line: $(cat "$LOG")"
+[[ "$stop_loss_calls" == 1 ]] || fail "a unit past the walk deadline missed its stop-loss park (calls=$stop_loss_calls)"
+[[ "$dispatch_calls" == 0 ]] || fail "a start ran past the walk deadline (calls=$dispatch_calls)"
+[[ "$(dispatch_skip_summary)" == 'tick-deadline:1' ]] || fail "the refused start was not counted: $(dispatch_skip_summary)"
+: > "$LOG"; dispatch_pending false
+! grep -Fq 'dispatch deadline' "$LOG" || fail "the default walk deadline fired at once: $(cat "$LOG")"
+
+# A refill stops once the units that reached footprint work pass the cap; cheap skips before it do not count.
+jq -n '{units:[range(0;3) | {id:("issue-490" + tostring),stage:"implement-pending",task:"fixture task text",branch:("agent/issue-490" + tostring),lane:"pr",title:"fixture implement",history:[]}]}' > "$UNITS"
+write_workers 3
+ticket_budget_reason() { :; }
+footprint_calls=0
+_footprint_room() { footprint_calls=$((footprint_calls + 1)); return 1; }
+saved_cfg="$CFG"; CFG="$(jq -c '.issue_intake.refill_max_footprint_candidates = 2' <<<"$CFG")"
+: > "$LOG"; SECONDS=0
+dispatch_pending true
+[[ "$footprint_calls" == 2 ]] || fail "footprint work ran for $footprint_calls candidates, want the cap of 2"
+[[ "$(grep -c 'dispatch walk stopped at cap 2' "$LOG")" == 1 ]] || fail "no single cap line: $(cat "$LOG")"
+[[ "$(dispatch_skip_summary)" == *footprint-cap:1* ]] || fail "the cap was not counted: $(dispatch_skip_summary)"
+CFG="$saved_cfg"
 
 echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; CONFLICTING census row repaired not reviewed; refill deadline; silent skip named)'

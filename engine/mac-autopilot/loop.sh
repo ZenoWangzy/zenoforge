@@ -12,7 +12,8 @@ run_tick() {
   local rc=0
   timeout --foreground -k 30 "${AUTOPI_TICK_LIMIT_SECONDS:-1800}" bash "$LIVE/scheduler.sh" >> "$A/loop.out" 2>&1 || rc=$?
   if (( rc == 124 || rc == 137 )); then
-    echo "[$(date -u +%FT%TZ)] TICK-TIMEOUT scheduler tick killed after ${AUTOPI_TICK_LIMIT_SECONDS:-1800}s; the next tick clears the stale lock" \
+    # The one line is also the alert (waste.md), so a kill names its phase and the finished ones without a log read.
+    echo "[$(date -u +%FT%TZ)] TICK-TIMEOUT scheduler tick killed after ${AUTOPI_TICK_LIMIT_SECONDS:-1800}s in phase $(cat "$A/.tick-phase" 2>/dev/null || echo unknown) after done: $(paste -sd, "$A/.tick-phases" 2>/dev/null || echo none); the next tick clears the stale lock" \
       | tee -a "$A/scheduler.log" >> "$A/alerts/waste.md"
   fi
   return 0
@@ -38,6 +39,17 @@ launch_dashboard_views() {
   DASH_NEXT=$((SECONDS + every))
   setsid timeout -k 30 900 bash "$LIVE/scheduler.sh" --views dashboard >> "$A/views.log" 2>&1 < /dev/null &
 }
+# ci_admission as its own station (scheduler.sh --ci-admission): a free CI slot must not wait on the 20+ minute tick or the 300 s refill.
+# The scheduler holds its own lock and a pass still running makes a new one exit at once, so this only paces the launches. The
+# tick skips ci_admission while a pass started recently, and runs it again if this loop is an older one that never launches it.
+launch_ci_admission() {
+  local every="${AUTOPI_CI_ADMISSION_SECONDS:-120}"
+  [[ "$every" =~ ^[0-9]+$ ]] && (( every >= 30 )) || every=120
+  CI_ADMISSION_NEXT="${CI_ADMISSION_NEXT:-$((SECONDS + every))}" # like the dashboard: the first pass is one cadence after loop start, the tick covers the gap
+  (( SECONDS >= CI_ADMISSION_NEXT )) || return 0
+  CI_ADMISSION_NEXT=$((SECONDS + every))
+  setsid timeout -k 30 "${AUTOPI_CI_ADMISSION_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --ci-admission >> "$A/loop.out" 2>&1 < /dev/null &
+}
 # #4628: the slow tick runs beside the refill controller. The scheduler yields the same ledger lock
 # around slow GitHub phases; a busy refill returns 75 and is retried five seconds later.
 refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一拍前的补派窗口
@@ -53,6 +65,7 @@ refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一�
     fi
     sleep 5; REFILL_SINCE=$((REFILL_SINCE + 5))
     launch_dashboard_views
+    launch_ci_admission
     signature="$(exited_worker_signature "$A/workers.json")"
     [[ -n "$signature" ]] || REFILL_LAST_EXIT=""
     if [[ -n "$signature" && "$signature" != "$REFILL_LAST_EXIT" ]] || (( REFILL_SINCE >= cadence )); then

@@ -422,7 +422,7 @@ elif [[ "$*" == 'api repos/example-maintainer/example-repo/deployments/1/statuse
 elif [[ "$*" == 'api repos/{owner}/{repo}/actions/runners?per_page=100'* ]]; then
   # 看板 60ba960cf 起按 runner 池展示 CI 现状：PR 池一个在线且忙，Mac 池一个离线
   printf '%s\n' '[{"name":"cihost-ci-1","status":"online","busy":true,"labels":["cihost-ci"]},{"name":"zf-mac-2","status":"offline","busy":false,"labels":["other"]}]'
-elif [[ "$*" == 'pr list --state merged --limit 30 --json number,mergedAt' ]]; then
+elif [[ "$*" == 'pr list --state merged --search merged:>='*' --limit 200 --json number,mergedAt' ]]; then
   cat "$MERGED_PR_FIXTURE"
 else
   echo '[]'
@@ -6348,6 +6348,74 @@ sched_case_claude_share_zero_restores_routing() {
   ! grep -Eq 'implement_share|hand-claude|claude-sonnet-5-5' "$LOG" || { echo "not ok - scheduler.test.sh: warn_forbidden_model_config named the claude implement config: $(cat "$LOG")" >&2; exit 1; }
 }
 sched_run_case claude_share_zero_restores_routing
+
+sched_case_tick_tail_order() {
+# The tail of a full tick: views and the snapshot run before the worktree walk, and the killed-tick marker names each step.
+(
+  tail_dir="$(mktemp -d)"
+  ROOT="$tail_dir" A="$tail_dir" LOG="$tail_dir/log" STAMP=test SCHED_LOCK="$tail_dir/lock"
+  UNITS="$tail_dir/units.json" WORKERS="$tail_dir/workers.json" PAUSE_FILE="$tail_dir/PAUSE"
+  echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; touch "$PAUSE_FILE"
+  printf 'stale:1s/0gh\n' > "$A/.tick-phases"; echo stale > "$A/.tick-phase"
+  acquire_scheduler_lock() { return 0; }
+  jqf() { command jq "$@"; }
+  git() { return 1; }
+  say() { :; }
+  phase() { :; }
+  for stub in rotate_logs update_budget budget_alert_if_needed live_workers; do eval "$stub() { :; }"; done
+  for stub in flush_focus_alert publish_pr_run_snapshot launch_views cleanup_tick; do
+    eval "$stub() { echo $stub >> '$tail_dir/order'; echo \"\$(command cat '$tail_dir/.tick-phase')\" >> '$tail_dir/marks'; }"
+  done
+  eval "$(command sed -n '/^main() {/,/^}/p' "$scheduler")"
+  main
+  [[ "$(command cat "$tail_dir/order")" == $'flush_focus_alert\npublish_pr_run_snapshot\nlaunch_views\ncleanup_tick' ]] \
+    || { echo 'tick tail must run views and the snapshot before cleanup_tick' >&2; exit 1; }
+  [[ "$(command cat "$tail_dir/marks")" == "$(command cat "$tail_dir/order")" ]] \
+    || { echo 'each tail step must name itself in .tick-phase before it runs' >&2; exit 1; }
+  [[ ! -s "$A/.tick-phases" ]] || { echo 'the tick start must clear the finished-phase list' >&2; exit 1; }
+)
+}
+sched_run_case tick_tail_order
+
+sched_case_stop_loss_resume() {
+  local units n=779 at
+  at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  stop_loss_fixture() { # name unit-extra-json history-json episode → a parked unit with three rounds spent whose stop-loss hold has just expired into a handoff
+    new_tick_fixture "$1"
+    units="$TF/supervisor/autopi/units.json"
+    mkdir -p "$TF/agent-home/state"
+    command jq '.max_workers=2 | .implement_cap=1 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+    mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+    command jq -n --argjson n "$n" '{number:$n,title:"stopped work",body:"finish the work",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$TF/hold.calls"\n' > "$TF/repo/engine/hold.sh"; chmod +x "$TF/repo/engine/hold.sh"
+    command jq -n --argjson n "$n" --argjson extra "$2" --argjson history "$3" '{units:[{id:"stopped",issue:$n,title:"stopped work",task:"prior work",lane:"pr",branch:"agent/issue-779",stage:"parked",
+      parked_reason:"supervisor-cap-founder",unpark_condition:"the maintainer answers the question",history:$history} + $extra]}' > "$units"
+    command jq -n --arg episode "$4" '{state:"ready-for-agent",hold:null,scheduler_handoff:{episode:$episode,kind:"stop-loss"}}' > "$TF/agent-home/state/$n.json"
+    touch "$TF/allow-dispatch" "$TF/worker-alive"
+  }
+  local rounds
+  rounds="$(command jq -cn --arg at "$at" '[range(3) | {stage:"write-start",work_type:"repair",at:$at}]')"
+  stop_loss_fixture stop-loss-resume '{}' "$rounds" hold-779
+  tick
+  command jq -e '.units[0] | (.parked_reason == null and .unpark_condition == null and .hold_handoff_episode == "hold-779"
+    and ([.history[] | select(.stage == "supervisor-requeue")] | length) == 1)' "$units" >/dev/null \
+    || { echo 'not ok - an expired stop-loss handoff must clear the park and record one resume' >&2; exit 1; }
+  command jq -e '([.workers[] | select(.unit == "stopped" and .type == "implement" and .harvested != true)] | length) == 1' "$TF/supervisor/autopi/workers.json" >/dev/null \
+    || { echo 'not ok - the resumed unit did not reach a start: the stop-loss check ran on the old rounds' >&2; exit 1; }
+  [[ ! -s "$TF/hold.calls" ]] || { echo 'not ok - the resumed unit was held again' >&2; exit 1; }
+  # One lift is one return: a repeated tick adds no second resume and the park sweep does not return the unit again.
+  tick
+  command jq -e '([.units[0].history[] | select(.stage == "supervisor-requeue" or .stage == "park-sweep-hold-lifted")] | length) == 1' "$units" >/dev/null \
+    || { echo 'not ok - one hold lift returned the unit twice' >&2; exit 1; }
+  # A second stop-loss after the resume: three more rounds since it and a new expired hold. No second resume; the budget check holds it for the arbiter.
+  stop_loss_fixture stop-loss-resume-again "$(command jq -cn --arg at "$at" '{stop_loss_resumed_at:$at,pr:4793}')" \
+    "$(command jq -cn --argjson rounds "$rounds" --arg at "$at" '$rounds + [{stage:"supervisor-requeue",at:$at}] + $rounds')" hold-779-again
+  tick
+  command jq -e '.units[0] | (.hold_handoff_episode == "hold-779-again" and ([.history[] | select(.stage == "supervisor-requeue")] | length) == 1 and .stage == "supervisor-review")' "$units" >/dev/null \
+    || { echo 'not ok - a second stop-loss must go to the arbiter, not resume again' >&2; exit 1; }
+  grep -Fq -- "--hold $n --holder scheduler-stop-loss" "$TF/hold.calls" || { echo 'not ok - the second stop-loss was not held' >&2; exit 1; }
+}
+sched_run_case stop_loss_resume
 
 # tools/merge-pr.sh runs only the shared prelude.
 [ "${SCHED_TEST_CASE:-}" != prelude ] || exit 0

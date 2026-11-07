@@ -88,6 +88,7 @@ precheck_launch() { # id pr head
 # 每个 head 只试一次；真冲突转 repair，不消耗 CI 运行，名额让给下一个就绪单元。mergeability 或 head 数据未知不做任何转移。
 # 返回 0 = 已请求 update-branch 或处理冲突（除携带批准的门控草稿外调用方延后），1 = 照常占名额。
 SLOT_SYNC_CARRIED_HEAD=""
+SLOT_SYNC_BUDGET=0 # set to the pass's free slots by ci_assign_wip: a fixed 2 left gated units in ready-to-merge with 6 slots free
 SLOT_SYNC_SPENT=0 # 本拍 update-branch 名额同步预算计数（SLOT_SYNC_MAX）：每条 MERGEABLE 链 5-7 个串行 gh 调用，是 wip_assignment 的大头
 slot_sync() { # id head gated
   local pr state updated_head
@@ -98,7 +99,7 @@ slot_sync() { # id head gated
   state="$(tick_pr_mergeable "$pr")"
   case "$state" in
     MERGEABLE)
-      if (( SLOT_SYNC_SPENT++ >= ${SLOT_SYNC_MAX:-2} )); then
+      if (( SLOT_SYNC_SPENT++ >= ${SLOT_SYNC_MAX:-$SLOT_SYNC_BUDGET} )); then
         return 2 # 本拍 update-branch 预算用完：调用方延后该单元（不占名额），下一拍再同步
       fi
       set_unit "$1" ".slot_sync_sha=$(js "$2")" || :
@@ -124,7 +125,7 @@ slot_sync() { # id head gated
 }
 
 ci_assign_wip() {
-  local wip k=0 id br head r st jobs n=0 started=0 gated_started=0 pre_id="" precheck_on gated gdraft ghead synced_pr cancelled_runs sync_rc
+  local wip k=0 id br head r st jobs n=0 started=0 gated_started=0 pre_id="" precheck_on gated gdraft ghead synced_pr cancelled_runs sync_rc deferred=0 stopped=0
   local detail_started detail_elapsed
   local -a jobs_to_load=()
   SLOT_SYNC_SPENT=0
@@ -133,8 +134,10 @@ ci_assign_wip() {
   mark_product_paths
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "ci admission detail product_path_lookup=${detail_elapsed}s"
-  (( precheck_on )) && precheck_harvest
+  # The refill and the tick harvest prechecks under the scheduler lock; the station would race them on the same unit's stage.
+  (( precheck_on )) && ! ci_in_station && precheck_harvest
   wip="$(ci_pr_free_slots)" || { say "ci wip: PR runner capacity unavailable; admission skipped"; return 0; }
+  SLOT_SYNC_BUDGET=$wip
   local -A wait_of=() gwait_of=()
   GATED_SLOT=()
   if jqf -e 'any(.units[]; .stage == "ready-to-merge" and (.pr // null) != null)' "$UNITS" >/dev/null; then
@@ -162,13 +165,17 @@ ci_assign_wip() {
     elif [[ "$(unit_field "$id" '.ci_wip_wait // empty')" != "$head" ]]; then
       continue
     fi
+    if (( stopped )) || ci_pass_stop; then
+      (( stopped )) || say "ci station: pass bound reached before unit=$id; the next pass takes the rest"
+      stopped=1; deferred=$((deferred + 1)); continue
+    fi
     k=$((k + 1))
     if (( k <= wip )); then
       if [[ "$gated:$gdraft" != "1:false" ]]; then
         sync_rc=0
         slot_sync "$id" "$head" "$gated" || sync_rc=$?
         if (( sync_rc == 2 )); then
-          k=$((k - 1)); continue # 本拍同步预算用完：名额让给已同步单元，下一拍再试
+          k=$((k - 1)); deferred=$((deferred + 1)); continue # 本拍同步预算用完：名额让给已同步单元，下一拍再试
         elif (( sync_rc == 0 )); then
           if (( gated )) && [[ -n "$SLOT_SYNC_CARRIED_HEAD" ]]; then
             head="$SLOT_SYNC_CARRIED_HEAD"
@@ -187,7 +194,7 @@ ci_assign_wip() {
       fi
       if (( gated )); then gated_ready "$id" "$br" "$head"; gated_started=$((gated_started + 1)); continue; fi
       cancelled_runs="$(gh run list --commit "$head" --json databaseId,conclusion --jq '.[] | select(.conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
-        || { say "ci wip unit=$id: could not list cancelled runs for head $head; admission deferred"; k=$((k-1)); continue; }
+        || { say "ci wip unit=$id: could not list cancelled runs for head $head; admission deferred"; k=$((k-1)); deferred=$((deferred + 1)); continue; }
       for r in $cancelled_runs; do
         gh run rerun "$r" --failed >/dev/null 2>&1 || true
       done
@@ -240,7 +247,7 @@ ci_assign_wip() {
     precheck_launch "$pre_id" "$(unit_field "$pre_id" .pr)" "$(unit_field "$pre_id" '.approved_sha // empty')" || say "precheck clone unavailable for $pre_id"
   fi
   # Every pass, idle ones too: grant delay cannot be read from a log that only speaks when something moved.
-  say "ci wip: $wip free PR runner slot(s); $(( ${#wait_of[@]} + ${#gwait_of[@]} )) ready unit(s) wait for a CI slot (cancelled $n queued run(s)); started $started; gated ready $gated_started"
+  say "ci wip: $wip free PR runner slot(s); $(( ${#wait_of[@]} + ${#gwait_of[@]} )) ready unit(s) wait for a CI slot (cancelled $n queued run(s)); started $started; gated ready $gated_started; deferred $deferred"
   return 0
 }
 
@@ -310,4 +317,59 @@ ci_admission() {
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "ci admission detail wip_assignment=${detail_elapsed}s"
   ci_slot_starve_watch
+}
+
+# ---------- CI admission station (scheduler.sh --ci-admission) ----------
+# The full tick took 1329-1668 s and the refill is nearly out of budget, so slots waited on both. The station runs
+# ci_admission alone, on loop.sh's short cadence, under its own lock. It never holds SCHED_LOCK across a pass: every
+# ledger write goes through set_unit/units_update, which take that lock per write, as ci_admission already does while
+# the tick yields it. The tick keeps running ci_admission itself unless a station pass started recently.
+ci_in_station() { [[ -n "${CI_STATION_DEADLINE:-}" ]]; }
+ci_pass_stop() { # 0 = stop before the next unit: PAUSE appeared, or the station's own time bound is spent
+  ci_in_station || return 1
+  if [[ -e "$PAUSE_FILE" ]]; then say "ci station stopped: paused by $PAUSE_FILE"; return 0; fi
+  (( SECONDS >= CI_STATION_DEADLINE ))
+}
+ci_station_fresh() { # 0 = a station pass started within the freshness window, so the tick skips ci_admission
+  local at; at="$(cat "$A/.ci-station-epoch" 2>/dev/null)"
+  [[ "$at" =~ ^[0-9]+$ ]] && (( $(date +%s) - at < ${AUTOPI_CI_STATION_FRESH_SECONDS:-900} ))
+}
+ci_station_tick() {
+  # Own ETag cache: gh_api_cached writes body and etag as two files, and the tick and refill share the default dir.
+  # The starvation watch counts passes; 3 slow ticks was about an hour, so keep that span at 120 s passes.
+  local old limit gh_calls CI_STATION_DEADLINE="" GH_ETAG_DIR="$A/.gh-etag-ci" CI_SLOT_STARVE_SLOW_TICKS="${CI_SLOT_STARVE_SLOW_TICKS:-30}"
+  cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
+  if ! mkdir "$CI_STATION_LOCK" 2>/dev/null; then
+    old="$(cat "$CI_STATION_LOCK/pid" 2>/dev/null || true)"
+    if [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" 2>/dev/null; then return 0; fi # a pass is still running
+    rm -rf -- "$CI_STATION_LOCK"
+    mkdir "$CI_STATION_LOCK" 2>/dev/null || return 0
+  fi
+  echo "$$" > "$CI_STATION_LOCK/pid"
+  # set_unit installs its own EXIT trap, so release explicitly; a killed pass leaves a dead pid that the next pass clears.
+  date +%s > "$A/.ci-station-epoch" # also while paused: the tick must not start a second admitter
+  if [[ -e "$PAUSE_FILE" ]]; then
+    say "ci station paused by $PAUSE_FILE: no admission"
+  elif ! state_schema_ok; then
+    say "state schema invalid; ci station stopped before external actions"
+  else
+    limit="${AUTOPI_CI_ADMISSION_LIMIT_SECONDS:-240}"
+    [[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=240
+    CI_STATION_DEADLINE=$((SECONDS + limit))
+    tick_gh_calls_begin
+    git -C "$ROOT" fetch -q origin main 2>/dev/null || :
+    MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
+    # Same order as the refill: the supervisor-owned marking comes before any acting phase.
+    mark_supervisor_owned_units
+    release_session_pr_units
+    if supervisor_marking_deferred; then
+      say "ci station held: supervisor-owned marking deferred"
+    else
+      ci_admission
+    fi
+    gh_calls="$(tick_gh_calls_count)"
+    say "ci station done secs=$SECONDS gh_calls=$gh_calls limit=${limit}s ended=$(date -u +%H:%M:%SZ)"
+    rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
+  fi
+  [[ "$(cat "$CI_STATION_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$CI_STATION_LOCK"
 }

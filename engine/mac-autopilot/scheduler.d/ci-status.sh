@@ -147,6 +147,12 @@ ci_cancelled_upstream() { # checks_json
     and any(.[]; (.name == "Select pipeline-suite scope" or (.name | startswith("Pipeline suites "))) and .bucket == "cancel")' <<<"$1" >/dev/null
 }
 
+# The merge lane can rerun a check that admission just cancelled, before .ci_wip_wait lands (the flag is what would say so, and it is
+# the thing missing in that window). The cancel audit is already written before the cancel is sent, so its latest reason for the run decides.
+ci_admission_cancelled() { # run-id -> 0 when the audit's latest reason for the run is admission's (ci wip / ci deferred)
+  tail -n 2000 "$AGENT_HOME/logs/actions-run-cancellations.jsonl" 2>/dev/null \
+    | jqf -es --arg r "$1" '[.[] | select(.run_id == $r and (.reason // "") != "")] | last | (.reason // "" | split(";")[0]) | IN("ci wip", "ci deferred")' >/dev/null 2>&1
+}
 ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不动批准与重跑额度；同一 head 第 CI_CANCEL_RERUNS 次后交 supervisor；upstream=1 时 run 结论是聚合 job 的 failure
   local r n=0 k up="${5:-}" decision runs
   k=0; [[ "$(unit_field "$1" .ci_cancel_head)" == "$3" ]] && k="$(unit_field "$1" .ci_cancel_reruns)"
@@ -161,6 +167,7 @@ ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不
   runs="$(gh run list --commit "$3" --json databaseId,conclusion --jq ".[] | select($sel) | .databaseId" 2>/dev/null)" \
     || { say "CI cancelled unit=$1: could not list cancelled runs for head $3"; return 1; }
   for r in $runs; do
+    ci_admission_cancelled "$r" && say "ci cancel-rerun unit=$1 head=$3 run=$r: rerun of a check admission cancelled"
     gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
   done
   set_unit "$1" "$(hist ci-cancelled-restart "$4") | .ci_cancel_head=$(js "$3") | .ci_cancel_reruns=$((k+1))"
@@ -452,6 +459,7 @@ gated_ready_exempt() { # 热修（含关联 issue 分类）与非产品 PR 不�
   local id br head
   while IFS=$'\t' read -r id br head; do
     [[ -n "$id" ]] || continue
+    ci_pass_stop && break
     gated_ready "$id" "$br" "$head"
   done < <(jqf -r --slurpfile hotfix <(printf '%s' "${CI_HOTFIX_BRANCHES:-[]}") '.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main"
       and ((.hotpatch // false) == true or .product_paths == false or ((.branch // "") as $br | $hotfix[0] | index($br) != null))
@@ -463,6 +471,7 @@ ci_ready_hotfix_gated() { # 先触发门控热修的 ready 事件，让它先进
   gated_load || return 0
   while IFS=$'\t' read -r id br head; do
     [[ -n "$id" ]] || continue
+    ci_pass_stop && break
     gated_ready "$id" "$br" "$head"
   done < <(jqf -r --slurpfile hotfix <(printf '%s' "${CI_HOTFIX_BRANCHES:-[]}") '.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null
       and (.lane // "") != "direct-main" and ((.branch // "") as $br | $hotfix[0] | index($br) != null)

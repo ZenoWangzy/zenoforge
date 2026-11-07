@@ -39,18 +39,25 @@ log_reliability_breach() {
   jq -cn --argjson b "$cur" --argjson s "$since" 'if $b == [] then {breached:$b} else {breached:$b, since:$s} end' | write_state "$st"
   say "reliability breach breached=$cur$secs"
 }
+# A killed tick never prints tick-phases: leave the running phase for loop.sh's TICK-TIMEOUT / REFILL-TIMEOUT line.
+# A refill runs beside a full tick, so each keeps its own file.
+phase_mark() {
+  local f=.tick-phase
+  [[ "${TICK_LOCAL_REFILL:-false}" != true ]] || f=.refill-phase
+  printf '%s\n' "$1" > "$A/$f" || :
+}
 # Dispatch refreshes itself because running workers may have pushed.
 phase() {
   local t0=$SECONDS rc=0 gh_before=0 gh_after=0 gh_delta=0 phase_name="$1" elapsed
   gh_before="$(tick_gh_calls_count)"
-  # A killed refill never prints tick-phases: leave the running phase for loop.sh's REFILL-TIMEOUT line.
-  [[ "${TICK_LOCAL_REFILL:-false}" != true ]] || printf '%s\n' "$phase_name" > "$A/.refill-phase" || :
+  phase_mark "$phase_name"
   [[ "${TICK_LOCAL_REFILL:-false}" == true || "$phase_name" == dispatch_pending || "$phase_name" == tick_prs_prime ]] || tick_prs_prime
   "$@" || rc=$?
   elapsed=$((SECONDS - t0))
   gh_after="$(tick_gh_calls_count)"
   (( gh_after >= gh_before )) && gh_delta=$((gh_after - gh_before))
   TICK_PHASE_DETAILS+="${TICK_PHASE_DETAILS:+,}${phase_name}:${elapsed}s/${gh_delta}gh"
+  [[ "${TICK_LOCAL_REFILL:-false}" == true ]] || printf '%s\n' "${phase_name}:${elapsed}s/${gh_delta}gh" >> "$A/.tick-phases" || :
   (( elapsed < 5 )) || TICK_PHASES+=" $phase_name=${elapsed}s"
   return "$rc"
 }

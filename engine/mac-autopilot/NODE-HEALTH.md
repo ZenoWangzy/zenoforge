@@ -169,6 +169,14 @@ stall is never charged to merge.
 | CI | `ready-to-merge` units with `ci_wip_wait` | `ci-ready`, `ci-wip-start` (a slot after a wait) | 100 |
 | release | `awaiting-release` with `deploy_state` not `deployed` | `release-closer` line, one per closed issue | 950 |
 
+The CI station is also its own process: `scheduler.sh --ci-admission` runs `ci_admission` every 120 s under its own lock with a
+240 s bound (`AUTOPI_CI_ADMISSION_LIMIT_SECONDS`), not as a phase of the full tick, which took 1329-1668 s. Its `ci wip:` log line ends
+with `deferred N`: the units the pass left for the next one (slot-sync budget spent, run list unavailable, or the bound reached),
+which `0 ready unit(s) wait` alone did not show. The sync budget is the pass's free slots.
+The merge lane can rerun a check that admission cancelled before `ci_wip_wait` is set; each such rerun logs one
+`ci cancel-rerun unit=<id> head=<sha> run=<id>` line (decided from the cancel audit's latest reason for the run being `ci wip` or
+`ci deferred`), so a day's count is one grep.
+
 Status: `STALLED` when the buffer is not empty and the stall exceeds the bound, `PAUSED` while the pipeline pause
 file exists (no alert), else `OK`. Stall minutes are `min(now - last out, oldest wait)` while something waits and 0
 when nothing waits: a station that sat idle for days is not stalled by a ticket that arrived five minutes ago.

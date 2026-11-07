@@ -699,9 +699,14 @@ register_new_issues() {
             | .note=("Superseded by handoff unit " + $id)
           else . end
         else
-          .issue = $n | .labels = $labels | .body_blocked_by = $body_blocked_by | .hold_handoff_episode = $episode | .approved_sha = null | .reviewed_sha = null | .reviewed_pr_head = null | del(.blocked_on, .self_fix_pending)
+          .issue = $n | .labels = $labels | .body_blocked_by = $body_blocked_by | .hold_handoff_episode = $episode | .approved_sha = null | .reviewed_sha = null | .reviewed_pr_head = null | del(.blocked_on, .self_fix_pending, .parked_reason, .unpark_condition)
           | if $pr_changed then del(.ci_adopt_head, .ci_adopt_at, .ci_sync_head, .ci_ready_sha, .ci_ready_at, .ci_held_sha, .ci_wip_wait, .gated, .lane_policy, .product_paths) else . end
           | .history = ((.history // []) + [{stage:"hold-handoff",result:"ownerless hold handoff; read issue comments",at:$at}])
+          # An expired stop-loss hold promises to resume the issue, but the budget check ran again on the same 3-of-3 rounds and re-held it.
+          # One supervisor-requeue (no decision, so it is not a ruling for dep_dead_ruled) restarts the count; the mark keeps a second stop-loss with the arbiter.
+          | if $handoff_all.kind == "stop-loss" and .stop_loss_resumed_at == null then
+              .history += [{stage:"supervisor-requeue",result:"stop-loss hold expired; resumed once with a refilled budget",at:$at}] | .stop_loss_resumed_at = $at
+            else . end
           | if $pr_state == "OPEN" then
               .stage = "repair-pending" | .pr = ($existing_pr | tonumber) | .lane = $lane | .lane_policy = $lane_policy | del(.product_paths)
               | if $handoff_branch != "" then .branch = $handoff_branch else . end

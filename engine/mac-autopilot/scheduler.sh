@@ -111,7 +111,7 @@ source "$HERE/scheduler.d/health-release.sh"
 source "$HERE/scheduler.d/locks-views.sh"
 mkdir -p "$A/alerts"
 
-if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --rule ]]; then
+if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --rule ]]; then
   if ! reconcile_event="$(reconcile_runtime_config "$(sched_config_file mac-autopilot/config.template.json)" "$A/config.json" "${ZF_ENGINE_DIR:-$ROOT/engine}/lib.sh")"; then
     say "config-reconcile failed; tick stopped before reading config"
     exit 1
@@ -432,6 +432,8 @@ SCHED_LOCK_HELD=false
 # ---------- 派生视图：体检评分、看板渲染 ----------
 # 它们只读快照与台账，不参与任何单元决策：拍末起一个分离的进程去跑，拍不等它们（看板一次约 40 秒）。上一轮视图没跑完就让它跑完、本轮跳过。
 VIEWS_LOCK="$A/.views.lock"
+# ci_admission as its own station (ci_station_tick): its own lock, so a pass never waits on the tick or the refill.
+CI_STATION_LOCK="$A/.ci-station.lock"
 
 # 补派循环入口（#4628）：loop.sh 与慢 tick 并行检查本地台账，30 秒一次或发现新退出的 worker 时触发。
 # 慢阶段只在等待 GitHub 时让出同一 SCHED_LOCK；补派本地收割 direct-main 实现结果，另每次最多收割 2 个已结束且带报告的 PR 车道 implement/review/rereview/repair worker（释放槽位，有少量 GitHub 调用）、回收孤儿记录，
@@ -457,7 +459,8 @@ run_refill_intake_dispatch_phases() {
   phase dispatch_pending true
   INTAKE_ADDED=0
   phase register_new_issues 0 true || say "refill intake failed; continuing to dispatch"
-  (( INTAKE_ADDED == 0 )) || phase dispatch_pending true
+  # A pass started this late meets the 300s kill, and the next refill dispatches what intake added.
+  (( INTAKE_ADDED == 0 || SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 60 )) || phase dispatch_pending true
 }
 refill_tick() {
   local TICK_LOCAL_REFILL=true refill_log_offset=0 live metrics
@@ -532,7 +535,7 @@ main() {
   if git -C "$ROOT" fetch -q origin main 2>/dev/null; then
     MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   fi
-  TICK_DISPATCH_FP=''
+  : > "$A/.tick-phases"; rm -f -- "$A/.tick-phase" # loop.sh reads both when it kills this tick
   phase harvest_workers
   coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
   coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
@@ -564,13 +567,13 @@ main() {
       # 裁决整拍跳过；登记与生命周期照常，分类恢复的下一拍补标记后恢复推进。
       say "acting phases held: supervisor-owned marking deferred"
     else
-      phase_yield_lock dispatch_pending && TICK_DISPATCH_FP="$(dispatch_inputs_fingerprint)"
+      phase_yield_lock dispatch_pending
       if ! paused_midrun "acting phases"; then
         phase dispatch_supervisor_arbiters
         phase dispatch_prompt_evals
         phase fast_land_lane
         tick_prs_changed # Dispatched workers can push while earlier phases run.
-        phase_yield_lock ci_admission
+        ci_station_fresh || phase_yield_lock ci_admission # a live station admits; an older loop.sh without it leaves this to the tick
         phase_yield_lock run_merge_lane
       fi
     fi
@@ -579,14 +582,18 @@ main() {
     phase aged_pr_lifecycle
     phase run_release_train
     phase stage_slo_watch
-    supervisor_marking_deferred || dispatch_pending_if_dirty
     phase footprint_hog_alert
     views_mode=full
   fi
-  cleanup_tick
+  # Views and the snapshot come before cleanup: a slow worktree walk under load used to eat the tick and lose them (2026-11-07).
+  phase_mark flush_focus_alert
   flush_focus_alert
+  phase_mark publish_pr_run_snapshot
   publish_pr_run_snapshot
+  phase_mark launch_views
   launch_views "$views_mode"
+  phase_mark cleanup_tick
+  cleanup_tick
   gh_calls="$(tick_gh_calls_count)"
   say "tick-phases kind=full secs=$SECONDS gh_calls=$gh_calls phases=${TICK_PHASE_DETAILS:-none}"
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
@@ -603,6 +610,7 @@ fi
 case "${1:-}" in
   --views) views_entry "${2:-dashboard}" ;;
   --refill) refill_tick ;;
+  --ci-admission) ci_station_tick ;;
   --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; unretire_rc=$?; release_scheduler_lock; exit "$unretire_rc" ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick
   --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;; # hold.sh --rule: record the supervisor ruling that refills the stop-loss budget
   *) main "$@" ;;
