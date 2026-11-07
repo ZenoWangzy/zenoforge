@@ -29,6 +29,11 @@ dispatch_pending() {
       say "dispatch deadline after ${SECONDS}s: units from $id wait for the next refill"
       break
     fi
+    # Every start ends at room_for's capacity check. The first pass of a full tick still walks all, for parks and holds.
+    if [[ "$local_refill" == true || -n "${TICK_DISPATCH_FP:-}" ]] && ! dispatch_capacity_free; then
+      say "dispatch walk stopped at capacity $(live_workers)/$MAX: units from $id wait for a free slot"
+      break
+    fi
     # The local refill path shares every stage handler with the slow tick. PR stages need one current-head census;
     # implementation-only refills continue to use local ledger data without a GitHub query.
     [[ "$local_refill" != true || "$stage" == implement-pending || "$stage" == repair-pending \

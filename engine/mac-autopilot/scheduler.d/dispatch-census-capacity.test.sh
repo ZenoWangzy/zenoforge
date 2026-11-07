@@ -72,6 +72,16 @@ for mode in true false; do
   grep -Fq 'capacity 8/8' "$LOG" || fail "full-capacity dispatch_pending (refill=$mode) never reached the capacity skip"
 done
 
+# At capacity a refill and a full tick's second pass stop at the first unit. The first pass walks every unit, so parks and holds still run.
+walk_stops() { grep -c 'dispatch walk stopped at capacity 8/8' "$LOG" || true; }
+walk_skips() { grep -c 'skip dispatch unit=.*capacity 8/8' "$LOG" || true; }
+: > "$LOG"; dispatch_pending false
+[[ "$(walk_stops)" == 0 && "$(walk_skips)" -ge 2 ]] || fail "the first pass of a full tick did not walk every unit: $(cat "$LOG")"
+: > "$LOG"; TICK_DISPATCH_FP=fixture dispatch_pending false
+[[ "$(walk_stops)" == 1 && "$(walk_skips)" == 0 ]] || fail "the second pass walked at capacity: $(cat "$LOG")"
+: > "$LOG"; dispatch_pending true
+[[ "$(walk_stops)" == 1 && "$(walk_skips)" == 0 ]] || fail "a refill walked at capacity: $(cat "$LOG")"
+
 # Capacity free: the first PR-stage candidate that passes room_for still gets exactly one
 # fresh census, and the review dispatch proceeds on it (no per-PR view fallbacks).
 dispatch_calls=0

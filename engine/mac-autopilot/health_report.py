@@ -85,7 +85,7 @@ def main():
     print("stages: " + " ".join(f"{k}={v}" for k, v in sorted(stages.items())))
     live = sum(1 for w in workers if not w.get("harvested"))
     print(f"workers: unharvested={live} dispatched={count(r'^dispatch mode=')} "
-          f"capacity-skips={count(r'skip dispatch .*capacity')} ticks={count(r'^tick done')}")
+          f"capacity-skips={count(r'(skip dispatch|dispatch walk stopped) .*capacity')} ticks={count(r'^tick done')}")
     print("stage            runs  wall-min p50/p90  tokens p50   outcomes")
     for k, s in per_type.items():
         if not s["n"]:
