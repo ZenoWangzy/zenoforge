@@ -849,6 +849,11 @@ jq -e '.flow.entered == 2 and .flow.merged == 3
   and (.flow.wip_age[] | select(.stage == "parked") | .waiting == true and .p90_hours == 204)
   and (.flow.wip_age[] | select(.stage == "implement") | .waiting == false)' \
   "$fa/node-health.json" >/dev/null || fail "flow details wrong: $(jq -c .flow "$fa/node-health.json")"
+# 等待阶段单独成行：计数 = blocked-external + parked 的单数，p90 落在两阶段最老的单之间（指标行不进最差阶段）。
+[[ "$(flowval flow.wait_stage_units)" == "$(jq -r '[.flow.wip_age[] | select(.waiting) | .count] | add' "$fa/node-health.json") OK" ]] \
+  || fail "waiting unit count wrong: $(flowval flow.wait_stage_units) vs $(jq -c '[.flow.wip_age[] | select(.waiting)]' "$fa/node-health.json")"
+[[ "$(flowval flow.wait_stage_p90_hours)" =~ ^(204|20[5-9]|21[0-9]|22[0-8])(\.[0-9])?\ UNHEALTHY$ ]] \
+  || fail "waiting age p90 wrong: $(flowval flow.wait_stage_p90_hours)"
 # 无积压（全部终态且在窗口前）：合入速率不计值，不读成 0
 ssup="$test_env_root/starve-sup"; sa="$ssup/autopi"; mkdir -p "$sa" "$ssup"
 printf '{"units":[{"id":"pr-31","stage":"merged","history":[{"stage":"created","at":"2026-10-18T10:00:00Z"},{"stage":"merged","at":"2026-10-18T11:00:00Z"}]}]}' > "$sa/units.json"
@@ -872,22 +877,23 @@ state_file="$fa/flow-inbox-state.json"
 rm -f "$inbox" "$state_file" "$AGENT_HOME"/logs/supervisor-alert-seen-*.tsv
 flowrun "$fa" --inbox >/dev/null
 flowlines() { grep -c 'flow metric=flow\.' "$inbox" 2>/dev/null || printf '0\n'; }
-[[ "$(flowlines)" == 4 ]] || fail "expected one inbox event per unhealthy flow metric, got $(flowlines): $(cat "$inbox" 2>/dev/null)"
+# 5 = the fixture's four flow rows plus wait_stage_p90_hours (228 h > 160 h); a healthy run has none (no waiting units)
+[[ "$(flowlines)" == 5 ]] || fail "expected one inbox event per unhealthy flow metric, got $(flowlines): $(cat "$inbox" 2>/dev/null)"
 grep -Fq 'flow metric=flow.merge_rate_per_hour status=UNHEALTHY value=0.6' "$inbox" || fail "inbox event lacks metric id and value: $(cat "$inbox")"
 flowrun "$fa" --inbox >/dev/null
-[[ "$(flowlines)" == 4 ]] || fail "same unhealthy episode emitted again: $(flowlines)"
+[[ "$(flowlines)" == 5 ]] || fail "same unhealthy episode emitted again: $(flowlines)"
 # 恢复：同一 runtime 换回健康账本（无越限 flow 指标）→ 越限记录清空，不再发事件
 mv "$fa/units.json" "$fa/units.busy.json"
 mv "$fa/main-red" "$fa/main-red.busy"
 cp "$ra/units.json" "$fa/units.json"
 flowrun "$fa" --inbox >/dev/null
 jq -e 'length == 0' "$state_file" >/dev/null || fail "recovered metrics still recorded as alerted: $(cat "$state_file")"
-[[ "$(flowlines)" == 4 ]] || fail "healthy run emitted events: $(flowlines)"
+[[ "$(flowlines)" == 5 ]] || fail "healthy run emitted events: $(flowlines)"
 # 再越限：恢复后状态已重新武装；lib.sh 的同文去重按天滚动（supervisor-alert-seen-<day>.tsv），跨天后可重发
 rm -f "$fa/units.json"; mv "$fa/units.busy.json" "$fa/units.json"; mv "$fa/main-red.busy" "$fa/main-red"
 rm -f "$AGENT_HOME"/logs/supervisor-alert-seen-*.tsv
 flowrun "$fa" --inbox >/dev/null
-[[ "$(flowlines)" == 8 ]] || fail "re-armed crossing did not emit again after recovery: $(flowlines)"
+[[ "$(flowlines)" == 10 ]] || fail "re-armed crossing did not emit again after recovery: $(flowlines)"
 
 # --- 线级 hold：release_train.enabled=false 或有效 PAUSE 是把整条线停住的 hold，和 issue 级 hold
 # （hold_issue 的 --holder/--release/--expires）欠同样的元数据。缺 owner、缺到期或已过期计入

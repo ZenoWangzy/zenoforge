@@ -108,6 +108,10 @@ CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     # one supervisor-inbox event per episode (--inbox); regular samples reach the dashboard.
     "flow.merge_rate_per_hour": ("flow", "merges per hour vs the 6.5 target (starved queue has no value)", 6.5, 3.5, True),
     "flow.wip_age_stage_p90_hours": ("flow", "worst per-stage p90 age of open units, hours", 4, 12, False),
+    # Units parked on purpose (blocked-external, parked) stay out of the worst-stage pick; their own row
+    # shows how long they have waited. Bounds: 699 completed holds (2026-11-07), p90 80 h and 2x it.
+    "flow.wait_stage_p90_hours": ("flow", "p90 age of units waiting on a predecessor or a park, hours", 80, 160, False),
+    "flow.wait_stage_units":   ("flow", "units waiting on a predecessor or a park (measured, no bound)", 0, -1, True),
     "flow.slot_idle_hours":    ("flow", "hours units queued for a repair/rereview worker while none of that phase ran", 0.25, 1, False),
     "flow.main_red_hours":     ("flow", "hours main was red (bisect sessions) in the window", 1, 3, False),
     "flow.in_out_imbalance":   ("flow", "|units entered - units merged/landed| in the window", 5, 15, False),
@@ -167,6 +171,8 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "intake.closed_units_open_issues": "issue 开着且 ready-for-agent、但单元都已结束的张数。intake 的 terminal 跳过不派 worker，也不逐行报，所以这类票会静默停住；非 0 时看体检输出列出的号（11-06 查出 8 张）。",
     "flow.merge_rate_per_hour": "窗口内 merged/landed 单数 ÷ 小时数，对照 6.5/h 的吞吐目标（#4355）。窗口里没有在制品也没进单（无积压）时不计值；跌破 3.5/h 是升级前串行合并道的上限，工厂没在产出。",
     "flow.wip_age_stage_p90_hours": "每张在途单在当前阶段已停留的小时（按阶段分组取 p90，取最差阶段；分组明细在 scorecard 的 flow.wip_age）。高 = 流动卡在某个阶段，去单元表找是哪几张。",
+    "flow.wait_stage_p90_hours": "units.json 中 blocked-external（等前序单）与 parked（止损挂起）的在途单，自进入该阶段的最后事件起算的 p90 小时；不计入上一行的最差阶段。高 = 有一串单长期等同一个前序，去单元表找前序。",
+    "flow.wait_stage_units": "同上两个阶段的在途单数，只计数，不设阈值。",
     "flow.slot_idle_hours": "有单排队等返工/复检 worker、而该阶段一个 worker 都没在跑的小时数：这是派发停摆（槽位空转），不是产能不足（那会表现为 worker 全忙）。",
     "flow.main_red_hours": "main 处在红的小时数（#4356 二分会话覆盖）：红一次并自动回滚是设计内；持续红 = 二分卡住或回滚 PR 未合并。",
     "flow.in_out_imbalance": "|窗口内进入的单数 − 完成合入的单数|：进出守恒。持续不等 = 单在系统里堆积或凭空消失（WIP 泄漏 / 孤儿单）。",
@@ -233,6 +239,8 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "intake.closed_units_open_issues": "intake-candidates.json 的候选行里，单元全部处于终态且交接 episode 已消费的 issue 数；没有候选快照时为空",
     "flow.merge_rate_per_hour": "units.json merged/landed 事件 ÷ 窗口小时；无积压判定：窗口内没有任何在途或新进入的单",
     "flow.wip_age_stage_p90_hours": "units.json 在途单（stage 非终态）当前 stage 的最后事件时间 → now，按 stage 分组取 p90",
+    "flow.wait_stage_p90_hours": "units.json 在途单 stage 为 blocked-external 或 parked：最后事件时间 → now，取 p90",
+    "flow.wait_stage_units": "units.json 在途单 stage 为 blocked-external 或 parked 的个数",
     "flow.slot_idle_hours": "units.json 触发事件 + scheduler.log dispatch 行给出排队区间（同 time_sinks），worker_cost 运行区间给出同阶段在跑区间，取无人在跑的净空转",
     "flow.main_red_hours": "$AGENT_HOME/main-red/*.json 二分会话（created_at → updated_at，未终态会话算到 now），按窗口裁剪",
     "flow.in_out_imbalance": "units.json 首个事件落在窗口内 = 进入，merged/landed 落在窗口内 = 完成",
@@ -395,6 +403,18 @@ def wip_stage_ages(units, now):
                      "oldest": [{"id": uid, "age_hours": round(h, 1)} for h, uid in oldest]})
     worst = max((r["p90_hours"] for r in rows if r["p90_hours"] is not None and not r["waiting"]), default=None)
     return rows, worst
+
+
+def wait_stage(units, now):
+    """p90 hours (last ledger event -> now) and count of open units in WIP_WAITING: the waits the worst pick skips."""
+    ages = []
+    for u in units:
+        if u.get("stage") not in WIP_WAITING:
+            continue
+        times = [t for t in (ts(h.get("at")) for h in u.get("history") or []) if t]
+        if times:
+            ages.append((now - max(times)).total_seconds() / 3600)
+    return (round(pct(ages, .9), 1) if ages else None), len(ages)
 
 
 def slot_idle_hours(waits, cost_rows, since):
@@ -1563,6 +1583,7 @@ def main():
     metrics["flow.merge_rate_per_hour"] = merge_rate
     metrics["flow.in_out_imbalance"] = abs(entered - merged)
     wip_rows, metrics["flow.wip_age_stage_p90_hours"] = wip_stage_ages(units, now)
+    metrics["flow.wait_stage_p90_hours"], metrics["flow.wait_stage_units"] = wait_stage(units, now)
     metrics["flow.slot_idle_hours"] = slot_idle_hours(queue_waits, cost_rows, since)
     metrics["flow.main_red_hours"] = main_red_hours(args.main_red_dir, since, now)
     flow_details = {"entered": entered, "merged": merged, "wip_age": wip_rows}
