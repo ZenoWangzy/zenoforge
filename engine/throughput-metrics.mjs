@@ -2,6 +2,7 @@
 // Delivery-stage timings plus the factory flow numbers (#4366): merges per hour against
 // the 6.5 target, per-stage WIP age of open runs, and in/out conservation. Thresholds and
 // the threshold-crossing inbox events live in mac-autopilot/node_health.py (one place).
+import { realpathSync } from 'node:fs';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -172,7 +173,7 @@ function parseArgs(argv) {
   return { stateDir, now, windowHours };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const { stateDir, now, windowHours } = parseArgs(process.argv.slice(2));
     const options = {};

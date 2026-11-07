@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Pure seven-day replay of a candidate control rule against the autopilot unit ledger.
+import { realpathSync } from 'node:fs';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -366,7 +367,7 @@ function runCli(argv) {
   process.stdout.write(`${rule.id}: false-stops=${report.falseStops.length} intercepted=${report.intercepted.length} unresolved=${report.unresolved.length}${comparison}\nreport=${output}\n`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     runCli(process.argv.slice(2));
   } catch (error) {

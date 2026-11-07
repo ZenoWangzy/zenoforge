@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Offline replay for ticket 11. Inputs contain copied repair rows and immutable
 // GitHub compare facts; this command never resolves refs or calls GitHub.
+import { realpathSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -190,7 +191,7 @@ export function replayTriage(input) {
   };
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const path = process.argv[2];
     if (!path) throw new Error('usage: failure-triage-replay.mjs <copied-replay-input.json>');

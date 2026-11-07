@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { realpathSync } from 'node:fs';
 import {
   chmodSync,
   existsSync,
@@ -2325,7 +2326,7 @@ function parseArgs(argv) {
   return { command, options };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const { command, options } = parseArgs(process.argv.slice(2));
     if (command === 'sample') {

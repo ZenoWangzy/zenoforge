@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -88,7 +89,7 @@ export function appendRepairReceipt(receiptsFile, receipt) {
   if (result.error || result.status !== 0) throw new Error(`CI repair receipt append failed: ${result.error?.message ?? result.stderr}`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === modulePath) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const [operation, receiptsFile, branch, failedHeadSha, testedHeadSha, failureLink, checkName, failedAt, prNumber, mainHeadSha] = process.argv.slice(2);
     if (operation === '--append') {
