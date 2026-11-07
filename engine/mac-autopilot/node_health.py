@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import ledger_history
+import line_holds
 import worker_cost
 import workorder_cost
 import usage_reader
@@ -249,6 +250,10 @@ SOURCE = {
     "delivery.unlinked_incidents_30d": ".zenoforge/state/incident-guards.json explicit issue fields joined to accepted issue IDs",
     "delivery.human_actions_unattributed_30d": "GitHub PR reviews joined to scheduler history and PR/commit bot markers; no reliable actor attribution means unknown",
 }
+# Line-hold rows (holds.*) live in line_holds.py: node_health.py is at its size-ratchet baseline.
+CRITERIA.update(line_holds.CRITERIA)
+MEANING.update(line_holds.MEANING)
+SOURCE.update(line_holds.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
 TIME_SINK_HOURS = 24
@@ -1430,15 +1435,6 @@ def source_commit(here):
     ).stdout.strip()
 
 
-def pause_state(agent_home):
-    path = Path(agent_home) / "PAUSE"
-    if not path.exists():
-        return None
-    with path.open() as source:
-        state = json.load(source)
-    return {"since": state.get("timestamp"), "reason": state.get("reason")}
-
-
 def main():
     here = os.path.dirname(os.path.realpath(__file__))
     agent_home = os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or os.path.expanduser("~/.zenoforge")
@@ -1592,6 +1588,7 @@ def main():
         )
     blockers = read_json(os.path.join(a, "release-blockers.json"))
     metrics["release.hotpatch_blockers"] = len(blockers["blockers"]) if isinstance(blockers.get("blockers"), list) else None
+    line_holds.collect(metrics, a, agent_home, now)
     registry = (zf_mechanism_registry() or {}).get("mechanisms")
     if isinstance(registry, list) and registry:
         mechanism_rows, metrics["mechanism.silent"] = mechanism_heartbeat(registry, a, agent_home, now)
@@ -1622,11 +1619,12 @@ def main():
 
     if args.inbox:
         flow_inbox(a, rows, now, agent_home, repo_root)
+        line_holds.alert(a, agent_home, repo_root, now)
 
     if args.json:
         sampled_at = f"{now:%Y-%m-%dT%H:%M:%SZ}"
         doc = {"generated": sampled_at, "generated_at": sampled_at,
-               "source_commit": source_commit(here), "paused": pause_state(agent_home),
+               "source_commit": source_commit(here), "paused": line_holds.pause_state(agent_home),
                "window_hours": args.hours,
                "metrics": [{"id": mid, "node": node, "desc": desc, "meaning": MEANING.get(mid, ""), "value": v,
                             "healthy": healthy, "unhealthy": unhealthy, "higher_is_better": higher, "status": status,

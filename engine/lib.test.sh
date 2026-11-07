@@ -5567,6 +5567,15 @@ QUOTA_ALERT_OUT="$(
     manual_pause_is_valid && echo "PLAIN-TEXT-PAUSE:valid" || echo "PLAIN-TEXT-PAUSE:invalid"
     printf "{\"reason\":\"operator stop\",\"caller\":\"operator\",\"issue\":\"none\",\"provider\":\"none\",\"model\":\"none\",\"timestamp\":\"%s\"}\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PAUSE_FILE"
     manual_pause_is_valid && echo "MANUAL-PAUSE:valid" || echo "MANUAL-PAUSE:invalid"
+    # 线级 hold 元数据（owner/expires_at，可选）：不改变 PAUSE 的有效性；过期也不解除暂停
+    # （到期只由 node_health 的 holds.line_violations 每天告警，绝不自动恢复）。
+    # expires_at 用 epoch 运算生成：外层是单引号 heredoc，不能再出现单引号。
+    printf "{\"reason\":\"operator stop\",\"caller\":\"operator\",\"issue\":\"none\",\"provider\":\"none\",\"model\":\"none\",\"timestamp\":\"%s\",\"owner\":\"founder\",\"expires_at\":\"%s\"}\n" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u -d "@$(( $(date +%s) + 7200 ))" +%Y-%m-%dT%H:%M:%SZ)" > "$PAUSE_FILE"
+    manual_pause_is_valid && echo "OWNER-PAUSE:valid" || echo "OWNER-PAUSE:invalid"
+    printf "{\"reason\":\"operator stop\",\"caller\":\"operator\",\"issue\":\"none\",\"provider\":\"none\",\"model\":\"none\",\"timestamp\":\"%s\",\"owner\":\"founder\",\"expires_at\":\"%s\"}\n" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u -d "@$(( $(date +%s) - 7200 ))" +%Y-%m-%dT%H:%M:%SZ)" > "$PAUSE_FILE"
+    manual_pause_is_valid && echo "EXPIRED-PAUSE:valid" || echo "EXPIRED-PAUSE:invalid"
 
     web_provider="$(provider_quota_provider_for_model "$POLICY_ADVISOR_IDENTITY")"
     if provider_quota_provider_for_model "other-model:$POLICY_WORK_EFFORT" >/dev/null 2>&1; then echo "UNSUPPORTED-MODEL-PROVIDER:accepted"; else echo "UNSUPPORTED-MODEL-PROVIDER:rejected"; fi
@@ -5706,6 +5715,10 @@ assert_contains "a plain-text PAUSE is a pause" \
   "$QUOTA_ALERT_OUT" "PLAIN-TEXT-PAUSE:valid"
 assert_contains "complete operator PAUSE metadata is valid" \
   "$QUOTA_ALERT_OUT" "MANUAL-PAUSE:valid"
+assert_contains "PAUSE with hold owner and future expiry stays a valid pause" \
+  "$QUOTA_ALERT_OUT" "OWNER-PAUSE:valid"
+assert_contains "an expired PAUSE hold stays a valid pause: expiry alarms, it never un-pauses" \
+  "$QUOTA_ALERT_OUT" "EXPIRED-PAUSE:valid"
 assert_contains "#1457: web model resolves to its own quota provider" \
   "$QUOTA_ALERT_OUT" "WEB-PROVIDER:web-advisor-provider"
 assert_contains "#1457: unconfigured model identity cannot borrow provider quota state" \

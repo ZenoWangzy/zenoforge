@@ -40,6 +40,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | scheduler | seconds between tick starts p50 (`scheduler.tick_gap_p50`) | — | ≤ 240 | ≥ 420 | — |
 | release | current release batch wait in hours (`release.hours_waiting`) | elite: deploy on demand, lead time < 1 day [4] | ≤ 4 | ≥ 12 | — |
 | release | production hot patches whose PR is not on main (`release.hotpatch_blockers`) | a hotfix is merged the same day | 0 | ≥ 1 | — |
+| holds | line holds (a disabled release train or a valid PAUSE) without an owner or expiry, or past expiry (`holds.line_violations`; each violating hold appends one alerts/events.md line and one supervisor inbox line per day, naming owner, reason and hours since expiry) | a line hold is the same decision as an issue hold (`hold_issue` requires holder, release condition, expiry) and owes the same metadata; expiry fails loud and never re-enables the held line | 0 | ≥ 1 | first scorecard sample |
 | pipeline | open agent PRs outside the ledger (`pipeline.orphan_prs`) | — | ≤ 3 | ≥ 10 | — |
 | work orders | open work orders past a spend bug bound (`workorders.over_standard`) | — | 0 | ≥ 3 | — |
 | work orders | per-ticket worker fresh tokens p90, tickets closed in 7 d (`workorders.ticket_tokens_p90`) | fresh means uncached input + output; bounds derive only from preceding 30 d of closed tickets with cache splits — healthy p50 x 1.5, unhealthy p90 x 2 (`worker_cost.ticket_bound`); no usable history falls back to the static values here | ≤ 800 k | ≥ 4.8 M | first scorecard sample |
