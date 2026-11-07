@@ -146,6 +146,7 @@ command jq -e --arg h1 "$head1" --arg h4 "$head4" '
   || { echo 'ci-admission-draft-starve.test.sh: ledger evidence after the ready flips is wrong' >&2; exit 1; }
 grep -Fq 'PR#4921 readied on' "$LOG" || { echo 'ci-admission-draft-starve.test.sh: no readied log line for PR#4921' >&2; exit 1; }
 grep -Fq 'ci slot starvation' "$LOG" && { echo 'ci-admission-draft-starve.test.sh: starvation alert fired for units readied this pass' >&2; exit 1; }
+grep -Fq 'gated ready 0; deferred 0' "$LOG" || { echo 'ci-admission-draft-starve.test.sh: the ci wip line lacks its deferred count' >&2; exit 1; }
 
 # --- case 2: the recurrence guard. A draft still unready after two free-slot ticks alerts once. ---
 starve_fixture starve-watch
@@ -183,7 +184,8 @@ update_calls=0
 pr_behind_main() { return 0; }
 tick_pr_mergeable() { echo MERGEABLE; }
 ci_update_branch() { update_calls=$((update_calls + 1)); return 0; }
-ci_assign_wip
+SLOT_SYNC_MAX=2 ci_assign_wip # an explicit SLOT_SYNC_MAX still overrides the free-slot budget
+grep -Fq 'gated ready 0; deferred 1' "$LOG" || { echo 'ci-admission-draft-starve.test.sh: the unit past the sync budget was not counted as deferred' >&2; exit 1; }
 [[ "$update_calls" == 2 ]] || { echo "ci-admission-draft-starve.test.sh: slot_sync cap did not bound update-branch chains (calls=$update_calls)" >&2; exit 1; }
 command jq -e '([.units[] | select(.id == "sync-3")][0].slot_sync_sha == null)' "$UNITS" >/dev/null \
   || { echo 'ci-admission-draft-starve.test.sh: third behind-main unit synced past the per-pass budget' >&2; exit 1; }
@@ -217,4 +219,87 @@ command jq -e '
   and ([.units[] | select(.pr == 3004)][0].product_paths == null)' "$UNITS" >/dev/null \
   || { echo 'ci-admission-draft-starve.test.sh: missing GraphQL path data was incorrectly classified' >&2; exit 1; }
 
-echo 'ci-admission-draft-starve.test.sh: pass (one-pass draft admission, 3-tick starvation alert, slot_sync and path lookup bounds verified)'
+
+# --- case 5: the slot-sync budget is the pass's free slots, and the units it cannot sync show up as deferred. ---
+for slots in 3 2; do
+  starve_fixture "sync-budget-$slots"
+  command jq -cn --arg s1 "$s1" --arg s2 "$s2" --arg s3 "$s3" '{units:[
+      {id:"sync-1", pr:2101, branch:"fix/sync-1", lane:"pr", stage:"ready-to-merge", approved_sha:$s1, product_paths:true, ready_since:1, ci_wip_wait:$s1, history:[]},
+      {id:"sync-2", pr:2102, branch:"fix/sync-2", lane:"pr", stage:"ready-to-merge", approved_sha:$s2, product_paths:true, ready_since:2, ci_wip_wait:$s2, history:[]},
+      {id:"sync-3", pr:2103, branch:"fix/sync-3", lane:"pr", stage:"ready-to-merge", approved_sha:$s3, product_paths:true, ready_since:3, ci_wip_wait:$s3, history:[]} ]}' > "$UNITS"
+  update_calls=0
+  ci_pr_free_slots() { printf '%s\n' "$slots"; }
+  ci_assign_wip
+  [[ "$update_calls" == "$slots" ]] || { echo "ci-admission-draft-starve.test.sh: $slots free slots allowed $update_calls slot syncs" >&2; exit 1; }
+  grep -Fq "deferred $((3 - slots))" "$LOG" || { echo "ci-admission-draft-starve.test.sh: $slots free slots: deferred count wrong: $(grep 'ci wip:' "$LOG")" >&2; exit 1; }
+done
+
+# --- case 6: the station's bound stops the pass before the next unit and counts the rest as deferred. ---
+starve_fixture station-bound
+command jq -cn --arg s1 "$s1" --arg s2 "$s2" --arg s3 "$s3" '{units:[
+    {id:"sync-1", pr:2101, branch:"fix/sync-1", lane:"pr", stage:"ready-to-merge", approved_sha:$s1, product_paths:true, ready_since:1, ci_wip_wait:$s1, history:[]},
+    {id:"sync-2", pr:2102, branch:"fix/sync-2", lane:"pr", stage:"ready-to-merge", approved_sha:$s2, product_paths:true, ready_since:2, ci_wip_wait:$s2, history:[]},
+    {id:"sync-3", pr:2103, branch:"fix/sync-3", lane:"pr", stage:"ready-to-merge", approved_sha:$s3, product_paths:true, ready_since:3, ci_wip_wait:$s3, history:[]} ]}' > "$UNITS"
+update_calls=0
+ci_update_branch() { update_calls=$((update_calls + 1)); SECONDS=$((SECONDS + 500)); return 0; } # the first unit's sync spends the whole bound
+ci_pr_free_slots() { printf '5\n'; }
+PAUSE_FILE="$td/PAUSE"
+CI_STATION_DEADLINE=$((SECONDS + 100)); ci_assign_wip; unset CI_STATION_DEADLINE
+[[ "$update_calls" == 1 ]] || { echo "ci-admission-draft-starve.test.sh: the pass went on past its bound (syncs=$update_calls)" >&2; exit 1; }
+grep -Fq 'ci station: pass bound reached before unit=sync-2' "$LOG" || { echo 'ci-admission-draft-starve.test.sh: the bound stop was not logged at the next unit' >&2; exit 1; }
+grep -Fq 'gated ready 0; deferred 2' "$LOG" || { echo 'ci-admission-draft-starve.test.sh: units left by the bound were not counted' >&2; exit 1; }
+# Without a station deadline (the full tick) nothing stops the pass.
+: > "$LOG"; update_calls=0
+command jq 'del(.units[].slot_sync_sha)' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS" # each head syncs once
+ci_update_branch() { update_calls=$((update_calls + 1)); return 0; }
+ci_assign_wip
+[[ "$update_calls" == 3 ]] || { echo "ci-admission-draft-starve.test.sh: the full tick pass was bounded (syncs=$update_calls)" >&2; exit 1; }
+
+# --- case 7: PAUSE stops a running station pass at the next unit. ---
+starve_fixture station-pause
+touch "$PAUSE_FILE"
+CI_STATION_DEADLINE=$((SECONDS + 1000)); ci_admission; unset CI_STATION_DEADLINE
+[[ "$ready_calls" == 0 ]] || { echo "ci-admission-draft-starve.test.sh: a paused station readied $ready_calls PR(s)" >&2; exit 1; }
+grep -Fq 'ci station stopped: paused by' "$LOG" || { echo 'ci-admission-draft-starve.test.sh: the pause stop was not logged' >&2; exit 1; }
+rm -f "$PAUSE_FILE"
+
+# --- case 8: the station entry takes its own lock, two passes exclude each other, the scheduler lock does not stop it. ---
+starve_fixture station-entry
+CI_STATION_LOCK="$td/.ci-station.lock"; SCHED_LOCK="$td/.scheduler.lock"; SCHED_LOCK_HELD=false
+passes="$td/passes"; : > "$passes"
+git() { :; } # the fixture root is not a repository, and the station fetches origin main
+ci_admission() { printf 'pass etag=%s in_station=%s\n' "$GH_ETAG_DIR" "$(ci_in_station && echo yes || echo no)" >> "$passes"; while [[ -e "$td/hold" ]]; do read -t 0.1 <> <(:) || :; done; }
+touch "$td/hold"
+( ci_station_tick ) & first=$!
+for _ in $(seq 100); do [[ -s "$passes" ]] && break; read -t 0.1 <> <(:) || :; done
+[[ -s "$passes" ]] || { echo "ci-admission-draft-starve.test.sh: the first station pass never started" >&2; exit 1; }
+ci_station_tick # the first pass still runs: this one must return at once without admitting
+[[ "$(wc -l < "$passes")" == 1 ]] || { echo 'ci-admission-draft-starve.test.sh: two station passes ran together' >&2; exit 1; }
+rm -f "$td/hold"; wait "$first"
+[[ ! -e "$CI_STATION_LOCK" ]] || { echo 'ci-admission-draft-starve.test.sh: a finished pass left its lock' >&2; exit 1; }
+grep -Fq "etag=$A/.gh-etag-ci in_station=yes" "$passes" || { echo "ci-admission-draft-starve.test.sh: the pass lacked its own ETag cache or station mode: $(cat "$passes")" >&2; exit 1; }
+# A scheduler lock held by the full tick (a live pid) does not keep the station out.
+mkdir "$SCHED_LOCK"; printf '%s\n' "$$" > "$SCHED_LOCK/pid"
+: > "$passes"; ci_station_tick
+[[ "$(wc -l < "$passes")" == 1 ]] || { echo 'ci-admission-draft-starve.test.sh: a held scheduler lock stopped the station' >&2; exit 1; }
+[[ "$(cat "$SCHED_LOCK/pid")" == "$$" ]] || { echo 'ci-admission-draft-starve.test.sh: the station took the scheduler lock' >&2; exit 1; }
+rm -rf "$SCHED_LOCK"
+# PAUSE: no admission, but the heartbeat is written so the tick does not start a second admitter.
+: > "$passes"; rm -f "$A/.ci-station-epoch"; touch "$PAUSE_FILE"
+ci_station_tick
+rm -f "$PAUSE_FILE"
+[[ ! -s "$passes" ]] || { echo 'ci-admission-draft-starve.test.sh: the station admitted while paused' >&2; exit 1; }
+ci_station_fresh || { echo 'ci-admission-draft-starve.test.sh: a paused station left no heartbeat' >&2; exit 1; }
+
+unset -f git
+# --- case 9: the tick skips ci_admission only while a station pass is recent. ---
+rm -f "$A/.ci-station-epoch"
+! ci_station_fresh || { echo 'ci-admission-draft-starve.test.sh: a missing heartbeat counted as fresh' >&2; exit 1; }
+echo $(( $(date +%s) - 1000 )) > "$A/.ci-station-epoch"
+! ci_station_fresh || { echo 'ci-admission-draft-starve.test.sh: a stale heartbeat counted as fresh' >&2; exit 1; }
+echo $(( $(date +%s) - 10 )) > "$A/.ci-station-epoch"
+ci_station_fresh || { echo 'ci-admission-draft-starve.test.sh: a recent heartbeat did not count as fresh' >&2; exit 1; }
+grep -Fq 'ci_station_fresh || phase_yield_lock ci_admission' "$engine_dir/mac-autopilot/scheduler.sh" \
+  || { echo 'ci-admission-draft-starve.test.sh: the tick no longer defers ci_admission to a fresh station' >&2; exit 1; }
+
+echo 'ci-admission-draft-starve.test.sh: pass (one-pass draft admission, 3-tick starvation alert, slot_sync budget, path lookup bounds, station lock, pause and bound verified)'

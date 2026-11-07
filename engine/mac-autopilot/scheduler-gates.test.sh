@@ -1012,6 +1012,29 @@ SH
 for _ in $(seq 50); do [[ -s "$dv/calls" ]] && break; command sleep 0.1; done
 touch "$dv/release"
 [[ "$(cat "$dv/calls")" == '--views dashboard' ]] || fail "dashboard views were not launched once on cadence ($(cat "$dv/calls" 2>/dev/null))"
+# ci_admission station: the same 5 s poll starts a detached --ci-admission on its own cadence (not before it, once per cadence),
+# and a hung pass does not hold the window.
+cs="$fixture/ci-station-loop"; mkdir -p "$cs/live" "$cs/state"
+cat > "$cs/live/scheduler.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CS_CALLS"
+while [[ ! -e "$CS_RELEASE" ]]; do command sleep 0.1; done
+SH
+( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
+  A="$cs/state"; LIVE="$cs/live"; export CS_CALLS="$cs/calls" CS_RELEASE="$cs/release"; : > "$CS_CALLS"
+  export AUTOPI_CI_ADMISSION_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647
+  echo '{"workers":[]}' > "$A/workers.json"
+  sleep() { SECONDS=$((SECONDS + 5)); }
+  refill_window 25 ) || fail 'refill window failed before the ci station cadence'
+[[ ! -s "$cs/calls" ]] || fail "the ci station started before its cadence ($(cat "$cs/calls"))"
+( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
+  A="$cs/state"; LIVE="$cs/live"; export CS_CALLS="$cs/calls" CS_RELEASE="$cs/release"
+  export AUTOPI_CI_ADMISSION_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647
+  sleep() { SECONDS=$((SECONDS + 5)); }
+  refill_window 40 ) || fail 'refill window blocked on a running ci station pass'
+for _ in $(seq 50); do [[ -s "$cs/calls" ]] && break; command sleep 0.1; done
+touch "$cs/release"
+[[ "$(cat "$cs/calls")" == '--ci-admission' ]] || fail "the ci station was not launched once on cadence ($(cat "$cs/calls" 2>/dev/null))"
 
 # tick 末尾的 full 视图遇到仍在跑的 dashboard 视图时等它放锁（否则体检被跳过）；dashboard 视图照旧直接让位。
 ( VIEWS_LOCK="$fixture/views-wait.lock"; run_views() { echo "$1" >> "$fixture/views-ran"; }; : > "$fixture/views-ran"

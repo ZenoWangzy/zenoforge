@@ -76,7 +76,7 @@ Every `flock`, lock file and lock directory under `engine/`. "Where" gives the f
 | L6 | Provider session lease | `engine/lib.sh:16345` (`acquire_web_session_lease`) | flock on `web-session.lock` | One automated session of an optional advisor provider | **Host-local.** The session is bound to the machine. |
 | L7 | Codex budget | `engine/lib.sh:11477` to `:11574` (flock `:11504`) | flock on `locks/codex-budget.lock` | Daily token reservations | **Host-local accounting.** Totals are published in the status ref; a global budget is not enforced (accepted by the ruling). |
 | L8 | Provider quota markers | `engine/lib.sh:15762` to `:15860` | flock per provider | "Quota exhausted until T" | **Host-local file, published** in the status ref; peers on the same declared account honor it (4.9). |
-| L9 | Scheduler ledger lock | `engine/mac-autopilot/scheduler.sh:6675` to `:6695`, `:309` to `:327`, `:6743` | `mkdir` lock plus pid, stale test `kill -0` | Writes to `units.json` and `workers.json` (slow tick versus 30 s refill) | **Host-local, keep.** |
+| L9 | Scheduler ledger lock | `engine/mac-autopilot/scheduler.sh:6675` to `:6695`, `:309` to `:327`, `:6743` | `mkdir` lock plus pid, stale test `kill -0` | Writes to `units.json` and `workers.json` (slow tick versus 30 s refill versus the CI admission station, which takes it per write) | **Host-local, keep.** |
 | L10 | Views lock, shared state read | `engine/mac-autopilot/scheduler.sh:6712` to `:6728`; `:1097` to `:1098` | `mkdir` lock; `flock -sn` | One dashboard render; no read mid-transition | **Host-local, keep.** |
 | L11 | Execution admission | `engine/execution-admission.py:481` (gate), `:532` to `:546` (slot locks), `:277` to `:279`; `engine/bin/luna:51` to `:54` | `fcntl.flock` gate plus N slot files plus a CPU sampler | Machine capacity: global cap, memory floor, load, CPU target | **Host-local by nature.** Capacity is per machine. |
 | L12 | Land queue | `engine/land-queue.sh:580`, `:636` (allocator), `:1435`, `:1501`, `:1663` (per request), `:266`; `engine/land-direct-main.sh:160`, `:985` (preflight slot) | flock allocator, per-request and per-slot files | FIFO order of direct-main landings on one host | **Local FIFO stays; cross-host order becomes `lane-land`.** The final `git push origin HEAD:main` (`engine/land-direct-main.sh:1398`) is already an optimistic compare-and-swap; the lander rebases after losing (`land_main_rebase_after_advance`, `:1290`). |
@@ -129,7 +129,7 @@ Eighteen rows, 161 flock lines in 25 files. Only L2, L5, L13 and L17 plus the di
 
 ### 2.4 The two loops, phase by phase
 
-The issue loop (`engine/run-tick.sh` then `engine/issue-pipeline.sh`, every 5 min) and the unit loop (`engine/mac-autopilot/loop.sh` then `scheduler.sh`, every 120 s plus a 30 s refill). The ruling covered the first; the second is what owns implement, review, merge and release on the origin deployment. Phases of `main()` in `scheduler.sh` (`:6764` onward) and what each needs:
+The issue loop (`engine/run-tick.sh` then `engine/issue-pipeline.sh`, every 5 min) and the unit loop (`engine/mac-autopilot/loop.sh` then `scheduler.sh`, every 120 s plus a 30 s refill and a 120 s CI admission station). The ruling covered the first; the second is what owns implement, review, merge and release on the origin deployment. Phases of `main()` in `scheduler.sh` (`:6764` onward) and what each needs:
 
 | Phase | Mutates | Multi-host rule |
 |---|---|---|
@@ -139,7 +139,7 @@ The issue loop (`engine/run-tick.sh` then `engine/issue-pipeline.sh`, every 5 mi
 | `register_new_issues`, `register_new_prs`, `retire_landed_pr_units`, `release_dependency_blocks`, `supersede_resolved_main_red_units` | local ledger from GitHub reads | Host-local cache, no lease. Every host registers every unit; only the lease holder advances one. |
 | `dispatch_pending`, `dispatch_supervisor_arbiters`, `dispatch_prompt_evals` | starts workers | **Claim before dispatch** (`dispatch_if_room`). Evals are a capability (`needs:eval`), not a lease. |
 | `fast_land_lane` | pushes to main | `lane-land` |
-| `ci_admission` | draft-to-ready flips, WIP slots | Per-unit ticket lease for the flip; the free-slot count already comes from GitHub (runner busy state), so no semaphore (4.8). |
+| `ci_admission` | draft-to-ready flips, WIP slots | Per-unit ticket lease for the flip; the free-slot count already comes from GitHub (runner busy state), so no semaphore (4.8). Not a tick phase while the CI admission station runs: `scheduler.sh --ci-admission` (started by `loop.sh` every 120 s, own lock `.ci-station.lock`, `AUTOPI_CI_ADMISSION_LIMIT_SECONDS` bound of 240 s) runs it beside the tick and the refill. The station never holds the scheduler lock for a pass; each ledger write takes it through `set_unit`. The tick still runs the phase when no station pass started within `AUTOPI_CI_STATION_FRESH_SECONDS` (900). |
 | `run_merge_lane` | `gh pr merge`, post-merge verification, main-red units | `lane-merge`; main-red unit creation under `lane-main-red` |
 | `run_release_train` | release batches, deploy | `lane-release` |
 | `stage_slo_watch`, `flush_focus_alert`, `launch_views` | alerts, dashboard | Alerts take an event claim; views are per host and also render the remote status refs |

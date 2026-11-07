@@ -452,6 +452,7 @@ gated_ready_exempt() { # 热修（含关联 issue 分类）与非产品 PR 不�
   local id br head
   while IFS=$'\t' read -r id br head; do
     [[ -n "$id" ]] || continue
+    ci_pass_stop && break
     gated_ready "$id" "$br" "$head"
   done < <(jqf -r --slurpfile hotfix <(printf '%s' "${CI_HOTFIX_BRANCHES:-[]}") '.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main"
       and ((.hotpatch // false) == true or .product_paths == false or ((.branch // "") as $br | $hotfix[0] | index($br) != null))
@@ -463,6 +464,7 @@ ci_ready_hotfix_gated() { # 先触发门控热修的 ready 事件，让它先进
   gated_load || return 0
   while IFS=$'\t' read -r id br head; do
     [[ -n "$id" ]] || continue
+    ci_pass_stop && break
     gated_ready "$id" "$br" "$head"
   done < <(jqf -r --slurpfile hotfix <(printf '%s' "${CI_HOTFIX_BRANCHES:-[]}") '.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null
       and (.lane // "") != "direct-main" and ((.branch // "") as $br | $hotfix[0] | index($br) != null)
