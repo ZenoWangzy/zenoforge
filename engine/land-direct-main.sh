@@ -1270,13 +1270,14 @@ landed_range_changes_postsubmit_input() {
 # manual re-override. Root cause: the lander verified the range against the engine's own checks but never
 # against the target's engine-build contract. This preflight runs the converge gates before the push --
 # hook --build into a scratch versions root, then --check, then the built engine's --preflight runner --
-# only when the range touches the pin file or the override table. Converge and landing both call that
+# only when the range touches the pin file, the override table or the vendored pack, which a live engine
+# also resolves config from: a pack change refuses the running converge too. Converge and landing both call that
 # built engine's engine-sync.sh --preflight, which reads the same publish-preflight/gates.tsv list.
 # The pin file is the target config root's build.json (the same resolution engine-sync.sh uses; today
 # .zenoforge/build.json). The hook path comes from the pin file's hook field (repo-relative), and the
 # override table is the overrides.tsv beside that hook, the layout the build contract reads.
 land_pin_preflight_verified_key=""
-land_engine_pin_preflight() { # <base> <head>; no-op unless the range changes the pin file or override table
+land_engine_pin_preflight() { # <base> <head>; no-op unless the range changes the pin file, override table or vendored pack
   local base="$1" head="$2"
   local key="$base:$head"
   # Once per (base, head): the push loop retries after a rebase, where both change; an unchanged
@@ -1294,7 +1295,7 @@ land_engine_pin_preflight() { # <base> <head>; no-op unless the range changes th
   fi
   while IFS= read -r changed_path; do
     [[ -n "$changed_path" ]] || continue
-    if [[ "$changed_path" == "$pin_rel" || ( -n "$overrides_rel" && "$changed_path" == "$overrides_rel" ) ]]; then
+    if [[ "$changed_path" == "$pin_rel" || ( -n "$overrides_rel" && ( "$changed_path" == "$overrides_rel" || "$changed_path" == "${overrides_rel%overrides.tsv}pack/"* ) ) ]]; then
       touched=1
       break
     fi
