@@ -6349,6 +6349,34 @@ sched_case_claude_share_zero_restores_routing() {
 }
 sched_run_case claude_share_zero_restores_routing
 
+sched_case_tick_tail_order() {
+# The tail of a full tick: views and the snapshot run before the worktree walk, and the killed-tick marker names each step.
+(
+  tail_dir="$(mktemp -d)"
+  ROOT="$tail_dir" A="$tail_dir" LOG="$tail_dir/log" STAMP=test SCHED_LOCK="$tail_dir/lock"
+  UNITS="$tail_dir/units.json" WORKERS="$tail_dir/workers.json" PAUSE_FILE="$tail_dir/PAUSE"
+  echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; touch "$PAUSE_FILE"
+  printf 'stale:1s/0gh\n' > "$A/.tick-phases"; echo stale > "$A/.tick-phase"
+  acquire_scheduler_lock() { return 0; }
+  jqf() { command jq "$@"; }
+  git() { return 1; }
+  say() { :; }
+  phase() { :; }
+  for stub in rotate_logs update_budget budget_alert_if_needed live_workers; do eval "$stub() { :; }"; done
+  for stub in flush_focus_alert publish_pr_run_snapshot launch_views cleanup_tick; do
+    eval "$stub() { echo $stub >> '$tail_dir/order'; echo \"\$(command cat '$tail_dir/.tick-phase')\" >> '$tail_dir/marks'; }"
+  done
+  eval "$(command sed -n '/^main() {/,/^}/p' "$scheduler")"
+  main
+  [[ "$(command cat "$tail_dir/order")" == $'flush_focus_alert\npublish_pr_run_snapshot\nlaunch_views\ncleanup_tick' ]] \
+    || { echo 'tick tail must run views and the snapshot before cleanup_tick' >&2; exit 1; }
+  [[ "$(command cat "$tail_dir/marks")" == "$(command cat "$tail_dir/order")" ]] \
+    || { echo 'each tail step must name itself in .tick-phase before it runs' >&2; exit 1; }
+  [[ ! -s "$A/.tick-phases" ]] || { echo 'the tick start must clear the finished-phase list' >&2; exit 1; }
+)
+}
+sched_run_case tick_tail_order
+
 # tools/merge-pr.sh runs only the shared prelude.
 [ "${SCHED_TEST_CASE:-}" != prelude ] || exit 0
 if [ -n "${SCHED_TEST_CASE:-}" ]; then

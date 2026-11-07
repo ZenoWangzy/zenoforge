@@ -1057,6 +1057,27 @@ lt="$fixture/looptick"; mkdir -p "$lt/alerts"; printf 'exec sleep 60 # wall-cloc
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"; A="$lt"; LIVE="$lt"; AUTOPI_TICK_LIMIT_SECONDS=1 run_tick ) || fail 'run_tick failed on a hung tick'
 grep -q 'TICK-TIMEOUT' "$lt/scheduler.log" && grep -q 'TICK-TIMEOUT' "$lt/alerts/waste.md" || fail 'hung tick was not killed and alerted'
 
+# A kill names the running phase and the finished ones, once, in the log and in the alert the health tooling reads.
+lt="$fixture/looptick-phase"; mkdir -p "$lt/alerts"; printf 'exec sleep 60 # wall-clock-allow: stands in for a hung tick that the limit must kill\n' > "$lt/scheduler.sh"
+printf 'harvest_workers:3s/0gh\ndispatch_pending:812s/4gh\n' > "$lt/.tick-phases"; echo run_merge_lane > "$lt/.tick-phase"
+( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"; A="$lt"; LIVE="$lt"; AUTOPI_TICK_LIMIT_SECONDS=1 run_tick ) || fail 'run_tick failed on a hung tick with phases'
+[[ "$(grep -c 'TICK-TIMEOUT' "$lt/alerts/waste.md")" == 1 ]] || fail 'a tick kill did not raise exactly one alert'
+grep -q 'TICK-TIMEOUT.* in phase run_merge_lane after done: harvest_workers:3s/0gh,dispatch_pending:812s/4gh;' "$lt/alerts/waste.md" || fail "tick-timeout alert does not name the phases: $(cat "$lt/alerts/waste.md")"
+grep -q 'in phase run_merge_lane after done: harvest_workers:3s/0gh,dispatch_pending:812s/4gh;' "$lt/scheduler.log" || fail 'tick-timeout log line does not name the phases'
+
+# phase() leaves the full tick's running phase and one finished-phase line each; a refill keeps its own marker file.
+(
+  A="$lt/phase"; mkdir -p "$A"; : > "$A/.tick-phases"; TICK_PHASE_DETAILS=""; TICK_PHASES=""
+  tick_gh_calls_count() { echo 0; }
+  tick_prs_prime() { :; }
+  fixture_phase() { [[ "$(cat "$A/.tick-phase")" == fixture_phase ]] || exit 1; }
+  fixture_phase_refill() { :; }
+  phase fixture_phase
+  [[ "$(cat "$A/.tick-phase")" == fixture_phase && "$(cat "$A/.tick-phases")" =~ ^fixture_phase:[0-9]+s/0gh$ ]] || fail 'phase did not leave the tick marker and one finished line'
+  TICK_LOCAL_REFILL=true phase fixture_phase_refill
+  [[ "$(cat "$A/.refill-phase")" == fixture_phase_refill && "$(cat "$A/.tick-phase")" == fixture_phase && "$(wc -l < "$A/.tick-phases")" == 1 ]] || fail 'a refill phase touched the full tick markers'
+)
+
 # repair 没推出新 head：自动重试两次，第三次转人工
 for round in 1 2 3; do
   hist_json="$(jq -cn --argjson n "$((round-1))" '[{stage:"review-request-changes"}] + [range($n) | {stage:"repair-no-push"}, {stage:"repair-delivered"}] + [{stage:"repair-delivered"}]')"
@@ -2674,6 +2695,14 @@ AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || fail 'cle
   || fail 'cleanup removed a terminal worktree with an unpushed HEAD'
 [[ ! -e "$cleanup_clean_wt" && ! -e "$cleanup_tmp_clean" ]] \
   || fail 'cleanup kept a clean, pushed terminal worktree'
+# cleanup_tick leaves the worktree walk at tick limit - 120s, counts what it left, and keeps the worktrees.
+command git clone -q "$cleanup_remote" "$cleanup_clean_wt"
+: > "$LOG"
+( SECONDS=1680; AUTOPI_TICK_LIMIT_SECONDS=1800 AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick ) || fail 'late cleanup tick failed'
+[[ -d "$cleanup_clean_wt" ]] || fail 'cleanup walked a worktree past its deadline'
+grep -Eq 'cleanup worktree walk stopped at [0-9]+s: left 4 worktrees for the next tick' "$LOG" || fail "no deadline line naming the 4 left worktrees: $(cat "$LOG")"
+( SECONDS=1000; AUTOPI_TICK_LIMIT_SECONDS=1800 AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick ) || fail 'early cleanup tick failed'
+[[ ! -e "$cleanup_clean_wt" ]] || fail 'cleanup stopped before its deadline'
 rm -rf -- "$cleanup_dirty_wt" "$cleanup_tmp_stash" "$cleanup_unpushed_wt" "$cleanup_seed" "$cleanup_remote" "$cleanup_fixture"
 ROOT="$cleanup_saved_root" WT_ROOT="$cleanup_saved_wt_root" UNITS="$cleanup_saved_units"
 WORKERS="$cleanup_saved_workers" SUP="$cleanup_saved_sup" A="$cleanup_saved_runtime" LOG="$cleanup_saved_log"

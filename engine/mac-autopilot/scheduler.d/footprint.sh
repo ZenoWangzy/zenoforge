@@ -528,6 +528,15 @@ _footprint_room() {
 }
 footprint_room() { # unit type; report checks that materially delay dispatch
   local started=$SECONDS rc=0 elapsed room_start="${EPOCHREALTIME:-0}" room_end
+  # Repair reaches this twice (room_for, then the handler); the walk is sequential, so one unit is one candidate.
+  if [[ -n "${TICK_FOOTPRINT_CAP:-}" && "$1" != "$TICK_FOOTPRINT_CAP_LAST" ]]; then
+    TICK_FOOTPRINT_CAP_LAST="$1"
+    if (( ++TICK_FOOTPRINT_CAP_SEEN > TICK_FOOTPRINT_CAP )); then
+      say "dispatch walk stopped at cap $TICK_FOOTPRINT_CAP footprint candidates: units from $1 wait for the next refill"
+      dispatch_skip footprint-cap; TICK_FOOTPRINT_CAP_HIT=true
+      return 1
+    fi
+  fi
   _footprint_room "$@" || rc=$?
   # A wait with an owner is already counted by the footprint skip; any other refusal is an error path.
   if (( rc != 0 )) && [[ -z "$(unit_field "$1" '.footprint_wait_owner // empty')" ]]; then dispatch_skip footprint-error; fi

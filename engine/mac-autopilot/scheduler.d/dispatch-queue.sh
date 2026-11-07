@@ -3,6 +3,14 @@ dispatch_pending() {
   TICK_DISPATCH_SKIPS=()
   local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep u id stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started
+  # A full tick's first pass: past the walk deadline room_for refuses every start, so the tail still gets its parks and holds.
+  local TICK_DISPATCH_PAST_DEADLINE=false
+  # A refill: cap the units that reach footprint work (footprint_room); cheap skips do not count.
+  local TICK_FOOTPRINT_CAP="" TICK_FOOTPRINT_CAP_SEEN=0 TICK_FOOTPRINT_CAP_LAST="" TICK_FOOTPRINT_CAP_HIT=false
+  if [[ "$local_refill" == true ]]; then
+    TICK_FOOTPRINT_CAP="$(jqf -r '.issue_intake.refill_max_footprint_candidates // 4' <<<"$CFG")"
+    [[ "$TICK_FOOTPRINT_CAP" =~ ^[1-9][0-9]*$ ]] || TICK_FOOTPRINT_CAP=4
+  fi
   footprint_waiters_revalidate || { say 'dispatch held: footprint wait owners could not be revalidated'; return 1; }
   revalidate_secs=$((SECONDS - pending_started))
   if [[ "$local_refill" != true ]]; then
@@ -24,14 +32,21 @@ dispatch_pending() {
   while read -r u; do
     [[ -n "$u" ]] || continue
     paused_midrun dispatch && break
+    [[ "$TICK_FOOTPRINT_CAP_HIT" != true ]] || break # footprint_room said why
     id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"
-    # The kill counts from the refill's start, and one start can take a minute under load.
-    if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 60 )); then
+    # The kill counts from the refill's start, and one start can take a minute under load. 90 matches the merge pass stop.
+    if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 90 )); then
       say "dispatch deadline after ${SECONDS}s: units from $id wait for the next refill"
       break
     fi
+    # 812s for 9 units in one pass under load, and the 1800s kill took the tail of the tick with it (2026-11-07).
+    if [[ "$local_refill" != true && "$TICK_DISPATCH_PAST_DEADLINE" != true ]] \
+      && (( SECONDS - loop_started >= ${AUTOPI_TICK_DISPATCH_SECONDS:-420} )); then
+      TICK_DISPATCH_PAST_DEADLINE=true
+      say "dispatch deadline after ${SECONDS}s: units from $id get parks and holds only, starts wait for the next refill"
+    fi
     # Every start ends at room_for's capacity check. The first pass of a full tick still walks all, for parks and holds.
-    if [[ "$local_refill" == true || -n "${TICK_DISPATCH_FP:-}" ]] && dispatch_walk_full; then
+    if [[ "$local_refill" == true ]] && dispatch_walk_full; then
       say "dispatch walk stopped at capacity $(live_workers)/$MAX: units from $id wait for a free slot"
       break
     fi
