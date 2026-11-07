@@ -136,4 +136,18 @@ jq -e '
   <<<"$dashboard_data" >/dev/null \
   || fail "cost_ledger missing or wrong: $(jq -c '.cost_ledger | {last_24h, by_unit, by_backend}' <<<"$dashboard_data")"
 
+# 每票 fresh p90 无缓存拆分时是 NO-DATA（不是 0，也不是旧的 580k）：票的 run 没有用量记录
+nd="$test_env_root/cost-nodata"; nda="$nd/supervisor/autopi"; mkdir -p "$nda"
+cat > "$nda/units.json" <<'JSON'
+{"units":[{"id":"issue-77","issue":77,"stage":"merged","history":[{"stage":"pr-opened","at":"2026-11-05T09:00:00Z"},{"stage":"merged","at":"2026-11-05T11:00:00Z"}]}]}
+JSON
+printf 'done\n' > "$nd/supervisor/impl-issue-77-20261105T100000Z.worker.log"
+printf 'report\n' > "$nd/supervisor/impl-issue-77-20261105T100000Z.md"
+PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$nda" \
+  --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 \
+  --now 2026-11-07T12:00:00Z --json "$nda/node-health.json" >/dev/null
+jq -e '.metrics[] | select(.id == "workorders.ticket_tokens_p90")
+  | .value == null and .status == "NO-DATA" and (.source | test("NO-DATA"))' "$nda/node-health.json" >/dev/null \
+  || fail "a ticket without a cache split must leave ticket tokens NO-DATA: $(jq -c '.metrics[] | select(.id == "workorders.ticket_tokens_p90")' "$nda/node-health.json")"
+
 echo 'worker_cost.test.sh: PASS'
