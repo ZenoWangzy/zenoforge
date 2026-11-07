@@ -3,6 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh"
 merge_pr_static_scans() { return 0; }
+merge_pr_review_family() { return 0; }
 merge_pr_root() { printf '%s\n' "$repo"; } # the fixture repo stands in for the enclosing checkout: the host's size state and receipts must not reach these fixtures
 
 fixture="$test_env_root/merge-pr"
@@ -239,6 +240,17 @@ PR_BODY=gh-error
 if merge_pr_static_scans_ok 17 >"$fixture/check-output" 2>&1; then fail 'an unreadable PR skipped the static scans'; fi
 PR_BODY=$'## prior-art\nno external prior art: test fixture'
 merge_pr_static_scans() { return 0; }
+
+# A dispatch-queue change runs review-family.test.sh; a red run refuses, other files skip it.
+merge_pr_review_family() { echo called >> "$fixture/review-family-calls"; echo 'not ok - dispatch line'; return 1; }
+: > "$fixture/review-family-calls"
+PR_CHECKS='[]' PR_FILES='["tools/quick-land.sh"]' PR_BODY=$'## prior-art\nno external prior art: test fixture'
+merge_pr_review_family_ok 17 || fail 'a non-dispatch PR was refused by review-family'
+[[ ! -s "$fixture/review-family-calls" ]] || fail 'a non-dispatch PR ran review-family'
+PR_FILES='["engine/mac-autopilot/scheduler.d/dispatch-queue.sh"]'
+if merge_pr_review_family_ok 17 >"$fixture/check-output" 2>&1; then fail 'a red review-family did not refuse a dispatch-queue PR'; fi
+[[ "$(cat "$fixture/check-output")" == *'review-family.test.sh failed: not ok - dispatch line'* ]] || fail "review-family refusal lost its reason: $(cat "$fixture/check-output")"
+merge_pr_review_family() { return 0; }
 
 # A scheduler change runs the scheduler.test.sh prelude; a red prelude refuses, other changes skip it.
 merge_pr_scheduler_prelude() { echo called >> "$fixture/prelude-calls"; echo 'not ok - stale grep'; return 1; }
