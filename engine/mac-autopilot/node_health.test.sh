@@ -485,56 +485,31 @@ jq -e '.metrics[] | select(.id == "delivery.oldest_merged_not_live_hours") | .va
 grep -Fq 'NODE-UNHEALTHY metric=delivery.merged_not_live node=delivery value=NO-DATA' "$a/alerts/node-health.md" || fail 'missing live SHA did not write an unhealthy alert'
 echo 'node_health.test.sh: PASS'
 
-# A prevented wait is not a collision. Count actual overlapping writers, even
-# when triage missed the shared file, independently of the scorecard window.
+# Overlapping writers are expected now (footprint only orders): the scorecard has no collision row, only the repair cost.
 python3 - "$script_dir" <<'CHECK'
 import sys
 sys.path.insert(0, sys.argv[1])
 import node_health as n
-now = n.ts("2026-10-24T12:00:00Z")
-import json
-def unit(uid, start, end, predicted, actual):
-    return {"id": uid, "history": [
-        {"stage": "write-start", "at": start, "result": json.dumps(predicted)},
-        {"stage": "write-end", "at": end, "result": json.dumps(actual)}]}
-a = unit("a", "2026-10-24T10:00:00Z", "2026-10-24T11:00:00Z", ["a.py"], ["shared.py"])
-b = unit("b", "2026-10-24T10:30:00Z", "2026-10-24T11:30:00Z", ["b.py"], ["shared.py"])
-c = unit("c", "2026-10-24T11:30:00Z", "2026-10-24T11:40:00Z", ["shared.py"], ["shared.py"])
-assert n.dispatch_collisions([a, b, c], now) == 1
-# A write-start with no write-end only means "still writing" on a unit that can still be writing.
-def open_unit(uid, stage):
-    return {"id": uid, "stage": stage, "history": [
-        {"stage": "write-start", "at": "2026-10-24T10:00:00Z", "result": json.dumps(["shared.py"])}]}
-assert n.dispatch_collisions([open_unit("x", "merged"), open_unit("y", "implement")], now) == 0
-assert n.dispatch_collisions([open_unit("x", "ready-to-merge"), open_unit("y", "repair")], now) == 0
-assert n.dispatch_collisions([open_unit("x", "implement"), open_unit("y", "repair")], now) == 1
-assert n.dispatch_collisions([a, c], now) == 0
-# A directory-vs-file overlap is no collision: footprint_owner_conflict skips it by default.
-p = unit("p", "2026-10-24T10:00:00Z", "2026-10-24T11:00:00Z", ["engine/x"], ["engine/x"])
-q = unit("q", "2026-10-24T10:30:00Z", "2026-10-24T11:30:00Z", ["engine/x/y.py"], ["engine/x/y.py"])
-assert n.dispatch_collisions([p, q], now) == 0
-assert n.dispatch_collisions([], now) is None
-assert n.dispatch_collisions([a, b], now + n.timedelta(days=2)) == 0
-assert n.CRITERIA["dispatch.collisions_per_day"][2:4] == (0, 1)
-print("node_health collision intervals: PASS")
+assert not hasattr(n, "dispatch_collisions")
+assert "dispatch.collisions_per_day" not in n.CRITERIA and "dispatch.conflict_repairs_per_day" not in n.CRITERIA
+assert n.CRITERIA["merge.conflict_repairs_per_day"] == ("ci+merge", "merge conflicts that a repair run followed, in 24 h", 20, 27, False)
+print("node_health conflict repair standard: PASS")
 CHECK
-# The scorecard reads units.json AND units-archive.json and the runtime config's
-# footprint_mutex.shared_append: a pair overlapping only on a listed file is no collision,
-# an archived unit's real overlap still is (the live 21 vs 5 came from reading units.json alone).
-coll="$test_env_root/collisions"; mkdir -p "$coll"
-w() { printf '{"id":"%s","stage":"merged","history":[{"stage":"write-start","at":"2026-10-24T10:%s:00Z","result":"[]"},{"stage":"write-end","at":"2026-10-24T11:%s:00Z","result":"%s"}]}' "$1" "$2" "$2" "$3"; }
-echo "{\"units\":[$(w a 00 '[\"reg.ts\",\"a.ts\"]'),$(w b 10 '[\"reg.ts\"]')]}" > "$coll/units.json"
-echo "{\"units\":[$(w c 20 '[\"a.ts\"]')]}" > "$coll/units-archive.json"
-echo '{"footprint_mutex":{"shared_append":["reg.ts"]}}' > "$coll/config.json"
-python3 "$script_dir/node_health.py" --runtime "$coll" --audit "$audit" --now 2026-10-24T12:00:00Z --json "$coll/result.json" >/dev/null
-jq -e '[.metrics[] | select(.id == "dispatch.collisions_per_day")][0].value == 1' "$coll/result.json" >/dev/null \
-  || fail "collisions must count the archived overlap once and skip the shared-append pair: $(jq -c '[.metrics[] | select(.id == "dispatch.collisions_per_day")]' "$coll/result.json")"
 # A merge conflict counts only when a repair run followed it in the same unit, within 24 h.
 rep="$test_env_root/repairs"; mkdir -p "$rep"
 echo '{"units":[{"id":"r1","stage":"merged","history":[{"stage":"merge-conflict","at":"2026-10-24T10:00:00Z"},{"stage":"write-start","at":"2026-10-24T10:05:00Z"}]},{"id":"r2","stage":"merged","history":[{"stage":"merge-conflict","at":"2026-10-24T10:00:00Z"}]},{"id":"r3","stage":"merged","history":[{"stage":"merge-conflict","at":"2026-10-22T10:00:00Z"},{"stage":"write-start","at":"2026-10-22T10:05:00Z"}]}]}' > "$rep/units.json"
 python3 "$script_dir/node_health.py" --runtime "$rep" --audit "$audit" --now 2026-10-24T12:00:00Z --json "$rep/result.json" >/dev/null
-jq -e '[.metrics[] | select(.id == "dispatch.conflict_repairs_per_day")][0].value == 1' "$rep/result.json" >/dev/null \
-  || fail "conflict repairs must count only the repaired conflict in the window: $(jq -c '[.metrics[] | select(.id == "dispatch.conflict_repairs_per_day")]' "$rep/result.json")"
+jq -e '[.metrics[] | select(.id == "merge.conflict_repairs_per_day")][0].value == 1' "$rep/result.json" >/dev/null \
+  || fail "conflict repairs must count only the repaired conflict in the window: $(jq -c '[.metrics[] | select(.id == "merge.conflict_repairs_per_day")]' "$rep/result.json")"
+# Standard 20 / 27: twenty repaired conflicts in the day are OK, twenty-seven are UNHEALTHY, in between WARN.
+rep_status() { # n -> status of merge.conflict_repairs_per_day with n repaired conflicts in the window
+  local n="$1" d="$test_env_root/repairs-$1"; mkdir -p "$d"
+  jq -n --argjson n "$n" '{units:[range(0;$n) | {id:("r"+tostring),stage:"merged",history:[{stage:"merge-conflict",at:"2026-10-24T10:00:00Z"},{stage:"write-start",at:"2026-10-24T10:05:00Z"}]}]}' > "$d/units.json"
+  python3 "$script_dir/node_health.py" --runtime "$d" --audit "$audit" --now 2026-10-24T12:00:00Z --json "$d/result.json" >/dev/null
+  jq -r '[.metrics[] | select(.id == "merge.conflict_repairs_per_day")][0].status' "$d/result.json"
+}
+[[ "$(rep_status 20)" == OK && "$(rep_status 23)" == WARN && "$(rep_status 27)" == UNHEALTHY ]] \
+  || fail "conflict repair bounds are not 20/27: $(rep_status 20) $(rep_status 23) $(rep_status 27)"
 # The merge rate is a 24 h window: one merge 10 h ago reads 1/24 h, not a starved 5 h queue.
 mr="$test_env_root/mergerate"; mkdir -p "$mr"
 echo '{"units":[{"id":"m1","stage":"merged","history":[{"stage":"implement","at":"2026-10-23T20:00:00Z"},{"stage":"merged","at":"2026-10-24T02:00:00Z"}]}]}' > "$mr/units.json"
