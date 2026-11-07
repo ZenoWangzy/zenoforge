@@ -3,7 +3,7 @@
 
 Subcommands (facts JSON on stdin where noted; every answer is JSON on stdout):
   station <runtime_dir> <now>                          rows from node-health.json and station-health.json, or null
-  compare <snapshot_dir> <now> <repo_root> <owners>    facts -> {inline, note, station_lines, causes}
+  compare <snapshot_dir> <now> <repo_root> <owners>    facts -> {inline, note, station_lines, causes, material}
   write <snapshot_dir> <now>                           facts -> store today's snapshot unless one exists
   backfill <snapshot_dir> <T> <agent_home> <runtime>   facts at T -> store that day's snapshot unless one exists
 
@@ -206,6 +206,44 @@ def printable(text):
             and not re.search(r"[A-Za-z#]|[0-9]{4}-[0-9]{2}-[0-9]{2}|1970|1月1日", text))
 
 
+# A cause row the worker wrote is printed only if this code accepts it (never on the worker's say-so): basis "read", a plain-Chinese
+# cause with no wording of mere timing, and evidence that names what was read (a file path, a metric id or a line count) together with
+# at least one number it shows (times and dates do not count). The row may carry no address or tracker id.
+TIMING_WORDS = re.compile(r"同期|同一时间|同时|时间上|恰好|碰巧|之后不久|前后|先后")
+SOURCE = re.compile(r"(?:~|/)[\w.\-/]+|\b[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\b|\d+ ?(?:lines|行)")
+CAUSES_SWITCH = "ZF_OWNER_REPORT_CAUSES"  # must be exactly "on"; off by default, landing leaves it off
+
+
+def valid_cause_row(row):
+    """The cause text of an acceptable worker row, else None."""
+    if not isinstance(row, dict) or row.get("basis") != "read":
+        return None
+    cause, evidence = row.get("cause"), row.get("evidence")
+    if not isinstance(evidence, str) or not printable(cause) or len(cause) > 80 or TIMING_WORDS.search(cause):
+        return None
+    if re.search(r"@|#[0-9]", evidence):
+        return None
+    stripped = re.sub(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9:]+Z?)?|\b[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?\b", "", evidence)
+    if not SOURCE.search(stripped) or not re.search(r"[0-9]", SOURCE.sub("", stripped)):
+        return None
+    return cause.strip().rstrip("。")
+
+
+def worker_causes(day):
+    """{line key: cause} from the day's causes file, only behind the switch; {} when off, absent or unreadable."""
+    if os.environ.get(CAUSES_SWITCH) != "on":
+        return {}
+    directory = os.environ.get("ZF_OWNER_REPORT_CAUSES_DIR") or os.path.expanduser("~/.zenoforge/state/work")
+    doc = load(os.path.join(directory, f"owner-report-causes-{day}.json"))
+    rows = doc.get("rows") if isinstance(doc, dict) and doc.get("day") == day else None
+    out = {}
+    for row in rows if isinstance(rows, list) else []:
+        text = valid_cause_row(row)
+        if text and isinstance(row.get("line"), str):
+            out.setdefault(row["line"], text)
+    return out
+
+
 def owner_cause(owners, key):
     """(rows found, text): the notes of the rows mapped to this line, verbatim; None when no mapped row exists."""
     notes = []
@@ -269,23 +307,28 @@ def compare(facts, directory, now, repo, owners_path):
         note = ("- 对比说明：比昨天是环比，比上周同日是同比（同一个星期几）；没有去年的数据，所以没有按年的同比；"
                 "缺记录的那天不比较。")
 
-    causes = []
+    causes, changes = [], []
+    worker = worker_causes(today.strftime("%Y-%m-%d"))
     for _, key in sorted(material, reverse=True)[:MAX_CAUSE_LINES]:
         label, kind, unit = meta[key]
         yesterday = base_value("昨天", key)
         head = f"- {label}比昨天{moved(kind, unit, current[key], yesterday)}："
+        changes.append({"line": key, "label": label, "now": amount(kind, unit, current[key]), "yesterday": amount(kind, unit, yesterday),
+                        "change": moved(kind, unit, current[key], yesterday), "scorecard_rows": OWNER_ROWS.get(key, [])})
         station = stations.get(key[8:]) if key.startswith("station:") else None
         subjects = [s for s in (plain(x) for x in (facts.get("quality") or {}).get("open_subjects") or []) if s]
         found = owner_cause(owners, key)
         if found is not None:
             causes.append(head + found + ("" if found.endswith("。") else "。"))
+        elif key in worker:
+            causes.append(head + worker[key] + "。")
         elif key == "incidents" and current[key] > yesterday and subjects:
             causes.append(head + "线上有告警还没解决：" + "、".join(subjects[:2]) + "。")
         else:
             # Timing is not a cause: what landed between the two days is only a hint beside 未查明.
             n = landed(repo, (snaps["昨天"] or {}).get("at", now - DAY), now, PATH_HINTS[key[8:]]) if station and repo else None
             causes.append(head + "未查明。" + (f"线索，未核实：同期有 {n} 项改动合入了该环节的代码。" if n else ""))
-    return {"inline": inline, "note": note, "station_lines": station_lines, "causes": causes}
+    return {"inline": inline, "note": note, "station_lines": station_lines, "causes": causes, "material": changes}
 
 
 def station_counts_at(agent_home, runtime, at):

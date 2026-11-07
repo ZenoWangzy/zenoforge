@@ -1600,6 +1600,13 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       facts="$(maintainer_health_mail_daily_facts "$AGENT_HOME" "$ledger" "$now" "$repo_root")" || exit 1
       printf '%s\n\n%s\n' "$(maintainer_health_mail_subject "$facts")" "$(maintainer_health_mail_build_body "$facts")"
       ;;
+    material)
+      # The material changes of today's report as JSON, for the cause worker. Read-only, like render.
+      now="${2:-$(date +%s)}"
+      repo_root="${ZF_REPO_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)}"
+      facts="$(maintainer_health_mail_daily_facts "$AGENT_HOME" "$ledger" "$now" "$repo_root")" || exit 1
+      jq -c '.compare.material // []' <<< "$facts"
+      ;;
     backfill-snapshots)
       # Stores past days' snapshots under the snapshot directory only; sends nothing, leaves the ledger alone.
       now="$(date +%s)"
@@ -1611,7 +1618,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       owner_report_backfill "$AGENT_HOME" "$ledger" "$anchor" "$days" "$repo_root"
       ;;
     *)
-      printf 'usage: %s status [epoch] | render [epoch] | backfill-snapshots [days] [anchor-epoch] | credential-status | tick | resolve-incident <issue-number> <reason> | queue-event <key> <section> <text> [epoch] | track-decision <issue-number> <subject> <decision-mail-body> [epoch]\n' "$0" >&2
+      printf 'usage: %s status [epoch] | render [epoch] | material [epoch] | backfill-snapshots [days] [anchor-epoch] | credential-status | tick | resolve-incident <issue-number> <reason> | queue-event <key> <section> <text> [epoch] | track-decision <issue-number> <subject> <decision-mail-body> [epoch]\n' "$0" >&2
       exit 2
       ;;
   esac

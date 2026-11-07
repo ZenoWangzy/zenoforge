@@ -1,0 +1,10 @@
+[Unit]
+Description=Find the causes behind the owner report changes at 00:30 UTC
+
+[Timer]
+# 30 minutes before the 01:00 UTC report. Not Persistent: a run after a reboot would answer too late for the day's mail.
+OnCalendar=*-*-* 00:30:00 UTC
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

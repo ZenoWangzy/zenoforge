@@ -173,6 +173,57 @@ causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" 
 export ZF_ANOMALY_OWNERS_FILE="$tmp/none.json"
 ok 'causes are the mapped owner note or 未查明; timing is only a separate hint'
 
+# --- Worker causes: behind one switch, off by default, and only rows with evidence ----------
+export ZF_OWNER_REPORT_CAUSES_DIR="$tmp/causes"
+mkdir -p "$tmp/causes"
+jq -n '{day:"2026-11-08",generated_at:1,rows:[
+  {line:"finished",cause:"合并队列停了九个小时，所以做完的需求变多后又补回",evidence:"~/scheduler.log: 41 merged lines the day before, 12 today",basis:"read"},
+  {line:"station:implement",cause:"额度用完，写代码的任务停了",basis:"read"},
+  {line:"stock",cause:"同期有发版，所以等上线的需求变多",evidence:"~/scheduler.log: 3 lines",basis:"read"}]}' > "$tmp/causes/owner-report-causes-2026-11-08.json"
+unset ZF_OWNER_REPORT_CAUSES
+causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "")")"
+[[ "$causes" != *合并队列* && "$causes" == *'- 做完比昨天多 4 个：未查明。'* ]] || fail 'with the switch off nothing from the causes file is printed'
+export ZF_OWNER_REPORT_CAUSES=1
+causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "")")"
+[[ "$causes" != *合并队列* ]] || fail 'the switch is exactly on, not any value'
+export ZF_OWNER_REPORT_CAUSES=on
+causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "")")"
+[[ "$causes" == *'- 做完比昨天多 4 个：合并队列停了九个小时，所以做完的需求变多后又补回。'* ]] || fail 'a row with a source and numbers is printed as the cause'
+[[ "$causes" == *'- 写代码比昨天少 40 次：未查明。'* ]] || fail 'a row without an evidence field stays 未查明'
+[[ "$causes" == *'- 做完等上线的需求比昨天多 1 个：未查明。'* ]] || fail 'a cause worded as timing stays 未查明'
+python3 - "$SCRIPT_DIR/owner-report-compare.py" <<'PY' || fail 'the evidence rule is a code check'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("orc", sys.argv[1]); orc = importlib.util.module_from_spec(spec); spec.loader.exec_module(orc)
+good = {"line": "finished", "cause": "合并队列停了九个小时", "evidence": "~/scheduler.log: 41 merged lines, 12 today", "basis": "read"}
+assert orc.valid_cause_row(good) == "合并队列停了九个小时"
+assert orc.valid_cause_row({**good, "evidence": "metric flow.merge_rate_per_hour 2.1 against 1.2"}) == "合并队列停了九个小时"
+bad = {
+    "no evidence field": {k: v for k, v in good.items() if k != "evidence"},
+    "empty evidence": {**good, "evidence": ""},
+    "evidence without a number": {**good, "evidence": "~/scheduler.log shows the queue stopped"},
+    "evidence with only times": {**good, "evidence": "~/scheduler.log at 12:03 and 2026-11-07T01:00:00Z"},
+    "evidence without a source": {**good, "evidence": "it was 41 merged then 12"},
+    "basis timing": {**good, "basis": "timing"},
+    "no basis": {k: v for k, v in good.items() if k != "basis"},
+    "latin in cause": {**good, "cause": "merge 队列停了"},
+    "tracker id in cause": {**good, "cause": "合并队列停了，见 #4821"},
+    "address in evidence": {**good, "evidence": "~/scheduler.log: 3 lines for a@b.c"},
+    "tracker id in evidence": {**good, "evidence": "~/scheduler.log: 3 lines of #4821"},
+    "timing wording": {**good, "cause": "同一时间有发版"},
+    "too long": {**good, "cause": "合" * 81},
+    "not a row": "text",
+}
+for name, row in bad.items():
+    assert orc.valid_cause_row(row) is None, name
+PY
+export ZF_OWNER_REPORT_CAUSES=on ZF_ANOMALY_OWNERS_FILE="$tmp/owners.json"
+causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "")")"
+[[ "$causes" == *'- 写代码比昨天少 40 次：提前预测会改同一文件'* ]] || fail 'a head note outranks a worker row'
+unset ZF_OWNER_REPORT_CAUSES ZF_OWNER_REPORT_CAUSES_DIR
+export ZF_ANOMALY_OWNERS_FILE="$tmp/none.json"
+[[ "$(jq -c '[.material[].line] | sort' <<< "$compare")" == '["finished","station:implement","stock"]' ]] || fail 'the compare step lists the material changes for the worker'
+ok 'worker causes are printed only behind the switch and only with evidence'
+
 # --- Report body and contract -------------------------------------------------------
 snaps_full="$tmp/snaps-full"
 mkdir -p "$snaps_full"
