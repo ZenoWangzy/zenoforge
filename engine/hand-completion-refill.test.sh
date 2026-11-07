@@ -63,9 +63,11 @@ echo 'PASS malformed/unreadable continuation is pending and arbitrary command pa
 # The same decision lock used by normal intake must defer this event, rather
 # than return a false successful/no-eligible result that consumes its receipt.
 decision_block="$(sed -n '/^# A slice inherits the parent/,/^# --- tick timing/p' "$script_dir/issue-pipeline.sh" | sed '$d')"
+lock_function="$(sed -n '/^pipeline_acquire_lock() {/,/^}/p' "$script_dir/issue-pipeline-slices.sh")"
 exec {held}>"$tmp/intake.lock"; flock -n "$held"
 status=0
-EVENT_REFILL=1 LOCK_FILE="$tmp/intake.lock" bash -eu -c 'eval "$1"' _ "$decision_block" || status=$?
+EVENT_REFILL=1 LOCK_FILE="$tmp/intake.lock" PIPELINE_STAGE=intake AGENT_HOME="$tmp" \
+  bash -eu -c 'eval "$1"; eval "$2"' _ "$lock_function" "$decision_block" || status=$?
 [[ "$status" == 75 ]]
 exec {held}>&-
 echo 'PASS existing intake singleton contention defers75 rather than consuming an event'
