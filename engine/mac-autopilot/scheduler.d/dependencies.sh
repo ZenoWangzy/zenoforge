@@ -304,7 +304,7 @@ dep_predecessor_dead() { # waiter-unit-json predecessor
     [[ "$c" != "$waiter" ]] || continue
     dep_delivered_in_ledger "$c" && continue
     jqf -e --argjson c "$c" --argjson d "$dep" 'any(.units[]; .issue == $c and .dep_wait_delivery == $d)' "$UNITS" >/dev/null && continue # waits on the same dead predecessor
-    [[ "$(dep_states "$c" | cut -f2)" =~ ^(CLOSED|MERGED)$ ]] || return 1
+    [[ "$(dep_states "$c" | cut -f2)" =~ ^(CLOSED|MERGED)$ ]] || { say "dep-dead skip waiter=#$waiter predecessor=#$dep live child #$c"; return 1; }
   done
   for b in $(jqf -r --arg d "$dep" 'map(.branch // empty) + ["agent/issue-" + $d] | unique | .[]' <<<"$rows"); do
     sha="$(gh api "repos/{owner}/{repo}/git/ref/heads/$b" --jq .object.sha 2>/dev/null)" || sha=gone

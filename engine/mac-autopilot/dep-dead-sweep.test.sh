@@ -76,6 +76,8 @@ reset; SUBS=20; CHILD=OPEN; dep_dead_sweep
 [[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'the waiter is not its own live child'
 reset; ISSUE='{"state":"tracker","recut_children":[30]}'; CHILD=CLOSED; dep_dead_sweep
 [[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'a closed child is not live'
+reset; ISSUE='{"state":"tracker","recut_children":[30]}'; CHILD=OPEN; alive 'a live child'
+grep -q 'dep-dead skip waiter=#20 predecessor=#10 live child #30' "$LOG" || fail 'a skip on a live child must name the child'
 reset; printf '{"units":[%s,%s,%s]}\n' "$dead" "$(marked 20)" "$(marked 30)" > "$UNITS"; SUBS=$'20\n30'; CHILD=OPEN; dep_dead_sweep
 [[ "$(field issue-30 .stage)" == supervisor-review ]] || fail 'a child waiting on the same predecessor is not live'
 
