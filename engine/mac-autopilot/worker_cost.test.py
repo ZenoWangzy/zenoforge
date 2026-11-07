@@ -296,6 +296,19 @@ class Ledger(unittest.TestCase):
         self.assertEqual((bound["healthy"], bound["unhealthy"], bound["provisional"]), (750, 1600, False))
         self.assertIsNone(wc.ticket_bound([]))
 
+    def test_trimmed_pr_keyed_logs_count_toward_the_ticket_that_owns_the_pr(self):
+        # workers.json trims old rows, so review and repair logs fall back to the PR number in
+        # their file name; the unit is issue-5 with pr 11, not a unit named pr-11.
+        self.log("impl-issue-5-20261020T120000Z.worker.log", ["codex"], end="2026-10-20T12:10:00Z")
+        self.log("review-11-20261020T121000Z.worker.log", ["codex"], end="2026-10-20T12:20:00Z")
+        self.log("impl-11-fix-20261020T122000Z.worker.log", ["codex"], end="2026-10-20T12:50:00Z")
+        units = [{"id": "issue-5", "issue": 5, "pr": 11,
+                  "history": [{"stage": "merged", "at": "2026-10-20T12:55:00Z"}]}]
+        (ticket,) = wc.ticket_spend(wc.run_rows(self.sup), units)
+        self.assertEqual((ticket["ticket"], ticket["runs"], ticket["wall_min"]), (5, 3, 50.0))
+        self.assertEqual([t["ticket"] for t in wc.aggregate(wc.run_rows(self.sup), units,
+                                                            self.now.timestamp())["by_ticket"]], [5])
+
     def test_ticket_fresh_counts_uncached_input_and_output_and_skips_legacy_history(self):
         self.log("impl-issue-5-20261020T120000Z.worker.log",
                  [json.dumps({"type": "pipeline.execution", "mode": "fresh"})]

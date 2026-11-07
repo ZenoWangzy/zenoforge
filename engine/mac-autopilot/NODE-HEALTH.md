@@ -23,12 +23,12 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 
 | Node | Metric (id) | Human baseline | Healthy | Unhealthy | Measured 24h |
 |---|---|---|---|---|---|
-| implement | run minutes p50 (`implement.wall_p50`) | 2–4 h focused work (estimate) | ≤ 30 | ≥ 60 | — |
+| implement | run minutes p50, 24 h window (`implement.wall_p50`) | 2–4 h focused work (estimate) | ≤ 30 | ≥ 60 | — |
 | implement | runs with no report % (`implement.no_output_pct`) | — | ≤ 5 | ≥ 15 | — |
 | implement | overlapping writer unit pairs in a rolling 24h (`dispatch.collisions_per_day`) | #4190/#4192/#4193 concurrently edited the same 8000+ line hook; write-start/end record predicted + actual paths, waits do not count; since the 2026-10-29 zf-ab ruling a pair whose only overlap is a `footprint_mutex.shared_append` registry file is the legalized parallelism, not a collision (those conflicts move to the rebase metric below) | 0 | ≥ 1 | — |
 | review | first review minutes p50 (`review.wall_p50`) | first response < 1 h for small changes, < 4 h overall at Google [1]; one session ≤ 60 min, 200–400 LOC/h [2] | ≤ 10 | ≥ 20 | — |
 | review | approved on first review % (`review.first_pass_pct`) | most changes need 1–2 iterations (estimate; [1] measured iterations, median not verified) | ≥ 50 | ≤ 30 | — |
-| repair | run minutes p50 (`repair.wall_p50`) | 15–60 min per round (estimate) | ≤ 15 | ≥ 30 | — |
+| repair | run minutes p50, 24 h window (`repair.wall_p50`) | 15–60 min per round (estimate) | ≤ 15 | ≥ 30 | — |
 | review loop | request-changes rounds before approve p90 (`loop.rounds_p90`) | 2–3 (estimate) | ≤ 3 | ≥ 5 | — |
 | review loop | repair (including pre-review self-fix) + rereview share of tokens % (`loop.rework_token_pct`) | — | ≤ 35 | ≥ 50 | — |
 | review loop | repairs followed by an incremental rereview % (`loop.incremental_rereview_pct`) | Fagan follow-up: the moderator verifies the rework, not a new inspection [6] | ≥ 60 | ≤ 30 | — |
@@ -46,7 +46,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | holds | line holds (a disabled release train or a valid PAUSE) without an owner or expiry, or past expiry (`holds.line_violations`; each violating hold appends one alerts/events.md line and one supervisor inbox line per day, naming owner, reason and hours since expiry) | a line hold is the same decision as an issue hold (`hold_issue` requires holder, release condition, expiry) and owes the same metadata; expiry fails loud and never re-enables the held line | 0 | ≥ 1 | first scorecard sample |
 | pipeline | open agent PRs outside the ledger (`pipeline.orphan_prs`) | — | ≤ 3 | ≥ 10 | — |
 | work orders | open work orders past a spend bug bound (`workorders.over_standard`) | — | 0 | ≥ 3 | — |
-| work orders | per-ticket worker fresh tokens p90, tickets closed in 7 d (`workorders.ticket_tokens_p90`) | fresh means uncached input + output; bounds derive only from preceding 30 d of closed tickets with cache splits — healthy p50 x 1.5, unhealthy p90 x 2 (`worker_cost.ticket_bound`); no usable history falls back to the static values here | ≤ 800 k | ≥ 4.8 M | first scorecard sample |
+| work orders | per-ticket worker fresh tokens p90, tickets closed in 7 d (`workorders.ticket_tokens_p90`) | fresh means uncached input + output, and a ticket counts only when every one of its worker runs (review and repair logs found through `unit.pr`) has a usage record, so the row is NO-DATA while GLM and Claude review runs print none; bounds derive only from preceding 30 d of closed tickets with cache splits — healthy p50 x 1.5, unhealthy p90 x 2 (`worker_cost.ticket_bound`); no usable history falls back to the static values here | ≤ 800 k | ≥ 4.8 M | first scorecard sample |
 | work orders | per-ticket worker wall minutes p90, tickets closed in 7 d (`workorders.ticket_wall_p90`) | same history-derived bounds (p50 x 1.5 healthy, p90 x 2 unhealthy) | ≤ 38 | ≥ 180 | first scorecard sample |
 | CI + merge | CI runner minutes that could not change a verdict % (`ci.waste_runner_pct`, from `ci_spend.py`) | lean: work that cannot change the outcome is waste (muda) | ≤ 20 | ≥ 35 | — |
 | CI + merge | ready-to-merge units whose CI is held for hot patches % (`ci.held_ready_pct`) | priority must not become starvation | ≤ 20 | ≥ 50 | — |
@@ -83,7 +83,9 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | delivery | release-accepted issue records missing a unique issue → unit → PR → merge → release join (`delivery.unlinked_units_30d`) | exact IDs are required; guessing a missing edge would falsify lead time | 0 | ≥ 1 | first scorecard sample |
 | delivery | production incidents and head-watch alert episodes without an explicit accepted-issue link (`delivery.unlinked_incidents_30d`) | exact issue link required; a record naming no issue (`issue` field or "Issue #N" in what_happened) is not linkable, is counted here and is also shown as `incident_unreferenced_30d`; a named issue that was never accepted is unlinked | 0 | ≥ 1 | first scorecard sample |
 | flow | merges per hour vs the 6.5 target; a starved queue (nothing open, nothing entered) reports no value (`flow.merge_rate_per_hour`) | #4355 SLO: ≥ 6.5 merges/h with sufficient backlog; 3.5/h was the pre-upgrade serial merge-lane ceiling | ≥ 6.5 | ≤ 3.5 | first scorecard sample |
-| flow | worst per-stage p90 age of open units, hours (`flow.wip_age_stage_p90_hours`; per-stage rows in scorecard `flow.wip_age`) | #4355 SLO: median ticket cycle ≤ 2 h; p90 stage age ≤ 4 h is consistent with it (estimate), half a day in one stage is stalled | ≤ 4 | ≥ 12 | first scorecard sample |
+| flow | worst per-stage p90 age of open units, hours (`flow.wip_age_stage_p90_hours`; per-stage rows in scorecard `flow.wip_age`) | #4355 SLO: median ticket cycle ≤ 2 h; p90 stage age ≤ 4 h is consistent with it (estimate), half a day in one stage is stalled; `blocked-external` and `parked` rows are listed (`waiting: true`) but never pick the worst stage, they wait by design | ≤ 4 | ≥ 12 | first scorecard sample |
+| flow | p90 age of units waiting on a predecessor or a park, hours (`flow.wait_stage_p90_hours`; blocked-external and parked, last ledger event → now) | completed holds on 2026-11-07, 699 samples: 540 blocked-on → unblocked/requeue (p90 55 h), 159 supervisor park → next event (p90 94 h); combined p90 80 h. Bound = that p90 (healthy), 2× it (unhealthy), the bug ≈ 2× p90 convention of the spend standards | ≤ 80 | ≥ 160 | measured 2026-11-07: 94 waiting units, p90 227.6 h |
+| flow | units waiting on a predecessor or a park (`flow.wait_stage_units`) | — | measured, no bound (sentinel 0 / -1: any count is OK) | 2026-11-07: 94 |
 | flow | hours units queued for a repair/rereview worker while none of that phase ran (`flow.slot_idle_hours`) | idle-with-backlog is a dispatch stall, not a capacity bound (a busy bottleneck is the capacity case); between-tick waits of ~2 min are normal (estimate) | ≤ 0.25 | ≥ 1 | first scorecard sample |
 | flow | hours main was red (bisect sessions) in the window (`flow.main_red_hours`) | one clean episode (same-SHA rerun + bisect + revert) at a ~17 min Postsubmit cadence is ≈ 1 h (estimate) | ≤ 1 | ≥ 3 | first scorecard sample |
 | flow | \|units entered − units merged/landed\| in the window (`flow.in_out_imbalance`) | conservation: sustained inequality means WIP piling up or units vanishing; bands are ≤ 1 h vs > 2 h of net flow at the 6.5/h rate (estimate) | ≤ 5 | ≥ 15 | first scorecard sample |
@@ -323,10 +325,10 @@ p90 metrics above derive their bounds from the last 30 days of closed tickets in
 
 | Spend (id) | Delivered p50 / p90 | Healthy | Bug | Human baseline |
 |---|---|---|---|---|
-| worker tokens (`unit.tokens`) | 0.53 M / 2.4 M (10-21); per-ticket p90 13.9 M (7 d to 10-29) | ≤ 14 M | ≥ 28 M | — |
+| worker fresh tokens, cache reads excluded (`unit.tokens`) | 0.53 M / 2.4 M (10-21, raw basis, superseded); fresh basis 2026-11-07: 165 of 816 delivered units with a complete cache split, p50 109 k, p90 544 k, p99 1.23 M. Footer-only runs excluded. Provisional until usage-capture lands and the basis is re-measured | ≤ 600 k | ≥ 1.2 M | — |
 | worker minutes (`unit.worker_minutes`) | 25 / 90 | ≤ 90 | ≥ 240 | 2–4 h focused work for a small change (estimate) |
 | request-changes rounds (`unit.rounds`) | 0 / 2 | ≤ 2 | ≥ 5 | most changes need 1–2 iterations [1] |
-| hours from entry to merged (`unit.age_hours`; units waiting on a predecessor are exempt) | 7.4 / 18.5 | ≤ 24 | ≥ 72 | elite lead time < 1 day [4] |
+| hours from entry to merged (`unit.age_hours`; units waiting on a predecessor are exempt, and hours spent blocked or escalated (`blocked-on`/`supervisor-escalated`/park events up to `unblocked`/`supervisor-requeue`) are taken out of the age of a released unit) | 7.4 / 18.5 | ≤ 24 | ≥ 72 | elite lead time < 1 day [4] |
 
 ## Sources
 

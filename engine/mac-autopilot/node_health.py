@@ -108,6 +108,10 @@ CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     # one supervisor-inbox event per episode (--inbox); regular samples reach the dashboard.
     "flow.merge_rate_per_hour": ("flow", "merges per hour vs the 6.5 target (starved queue has no value)", 6.5, 3.5, True),
     "flow.wip_age_stage_p90_hours": ("flow", "worst per-stage p90 age of open units, hours", 4, 12, False),
+    # Units parked on purpose (blocked-external, parked) stay out of the worst-stage pick; their own row
+    # shows how long they have waited. Bounds: 699 completed holds (2026-11-07), p90 80 h and 2x it.
+    "flow.wait_stage_p90_hours": ("flow", "p90 age of units waiting on a predecessor or a park, hours", 80, 160, False),
+    "flow.wait_stage_units":   ("flow", "units waiting on a predecessor or a park (measured, no bound)", 0, -1, True),
     "flow.slot_idle_hours":    ("flow", "hours units queued for a repair/rereview worker while none of that phase ran", 0.25, 1, False),
     "flow.main_red_hours":     ("flow", "hours main was red (bisect sessions) in the window", 1, 3, False),
     "flow.in_out_imbalance":   ("flow", "|units entered - units merged/landed| in the window", 5, 15, False),
@@ -167,6 +171,8 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "intake.closed_units_open_issues": "issue 开着且 ready-for-agent、但单元都已结束的张数。intake 的 terminal 跳过不派 worker，也不逐行报，所以这类票会静默停住；非 0 时看体检输出列出的号（11-06 查出 8 张）。",
     "flow.merge_rate_per_hour": "窗口内 merged/landed 单数 ÷ 小时数，对照 6.5/h 的吞吐目标（#4355）。窗口里没有在制品也没进单（无积压）时不计值；跌破 3.5/h 是升级前串行合并道的上限，工厂没在产出。",
     "flow.wip_age_stage_p90_hours": "每张在途单在当前阶段已停留的小时（按阶段分组取 p90，取最差阶段；分组明细在 scorecard 的 flow.wip_age）。高 = 流动卡在某个阶段，去单元表找是哪几张。",
+    "flow.wait_stage_p90_hours": "units.json 中 blocked-external（等前序单）与 parked（止损挂起）的在途单，自进入该阶段的最后事件起算的 p90 小时；不计入上一行的最差阶段。高 = 有一串单长期等同一个前序，去单元表找前序。",
+    "flow.wait_stage_units": "同上两个阶段的在途单数，只计数，不设阈值。",
     "flow.slot_idle_hours": "有单排队等返工/复检 worker、而该阶段一个 worker 都没在跑的小时数：这是派发停摆（槽位空转），不是产能不足（那会表现为 worker 全忙）。",
     "flow.main_red_hours": "main 处在红的小时数（#4356 二分会话覆盖）：红一次并自动回滚是设计内；持续红 = 二分卡住或回滚 PR 未合并。",
     "flow.in_out_imbalance": "|窗口内进入的单数 − 完成合入的单数|：进出守恒。持续不等 = 单在系统里堆积或凭空消失（WIP 泄漏 / 孤儿单）。",
@@ -185,12 +191,12 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
 SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
-    "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮",
+    "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮；24 h 窗口",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "dispatch.collisions_per_day": "units.json write-start/write-end 的区间与文件范围（预测 + 实际 diff），按单元对去重；固定滚动 24h。",
     "review.wall_p50": "review-*.worker.log 的开始 → 最后写入",
     "review.first_pass_pct": "units.json 每单第一次评审结论（review-approve / review-request-changes / review-block）",
-    "repair.wall_p50": "impl-*-fix-*.worker.log 的开始 → 最后写入",
+    "repair.wall_p50": "impl-*-fix-*.worker.log 的开始 → 最后写入；24 h 窗口",
     "loop.rounds_p90": "units.json：每次 review-approve 之前的 review-request-changes 次数",
     "loop.rework_token_pct": "worker 页脚或 usage_reader 原生 turn 用量减派发基线：repair（含 self-fix）+ rereview ÷ 已计量的 run；未计量的 run 不计入，显示已计量 run 数；全部未计量则 N/A",
     "loop.incremental_rereview_pct": "每次 repair 之后同一单的下一次评审是否为增量复检（rereview）",
@@ -204,8 +210,8 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "release.hotpatch_blockers": "release-blockers.json（release_train.sh 对照生产热修与 main）",
     "pipeline.orphan_prs": "orphan-prs.count（调度器比对 open PR 与台账）",
     "workorders.over_standard": "units.json + worker 日志：每单 token、员工分钟、返工轮、年龄对照下方工作单标准",
-    "workorders.ticket_tokens_p90": "worker_cost.ticket_spend.fresh（未缓存输入 + 输出）按 units.json issue 归票；只纳入有缓存拆分的票，窗口 7 天，阈值取窗口前 30 天有缓存拆分的已关票 p50/p90；无可用历史时用静态 800k / 4.8M",
-    "workorders.ticket_wall_p90": "worker 日志文件名起始 → 最后写入，按 units.json issue 归票；窗口 7 天，阈值取窗口前 30 天已关票 p50/p90",
+    "workorders.ticket_tokens_p90": "worker_cost.ticket_spend.fresh（未缓存输入 + 输出）按 units.json issue 归票；只纳入有缓存拆分的票（票的任一 run 没有用量记录就不算：GLM 与 claude 的 review 不写用量，7 天窗口内没有任何票全程有记录时为 NO-DATA），窗口 7 天，阈值取窗口前 30 天有缓存拆分的已关票 p50/p90；无可用历史时用静态 800k / 4.8M",
+    "workorders.ticket_wall_p90": "worker 日志文件名起始 → 最后写入，按 units.json issue 归票（review/repair 日志文件名里的 PR 号经 unit.pr 归到 issue）；窗口 7 天，阈值取窗口前 30 天已关票 p50/p90",
     "ci.waste_runner_pct": "ci-spend.json（ci_spend.py 每 30 分钟用 GitHub Actions jobs API 统计）",
     "ci.held_ready_pct": "units.json：ready-to-merge 且带 ci_held_sha 的单数 ÷ 就绪单数",
     "ci.cancel_deferred_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=ci deferred ÷ 窗口小时 × 24；边界取冻结基线 M1。",
@@ -231,6 +237,8 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "intake.closed_units_open_issues": "intake-candidates.json 的候选行里，单元全部处于终态且交接 episode 已消费的 issue 数；没有候选快照时为空",
     "flow.merge_rate_per_hour": "units.json merged/landed 事件 ÷ 窗口小时；无积压判定：窗口内没有任何在途或新进入的单",
     "flow.wip_age_stage_p90_hours": "units.json 在途单（stage 非终态）当前 stage 的最后事件时间 → now，按 stage 分组取 p90",
+    "flow.wait_stage_p90_hours": "units.json 在途单 stage 为 blocked-external 或 parked：最后事件时间 → now，取 p90",
+    "flow.wait_stage_units": "units.json 在途单 stage 为 blocked-external 或 parked 的个数",
     "flow.slot_idle_hours": "units.json 触发事件 + scheduler.log dispatch 行给出排队区间（同 time_sinks），worker_cost 运行区间给出同阶段在跑区间，取无人在跑的净空转",
     "flow.main_red_hours": "$AGENT_HOME/main-red/*.json 二分会话（created_at → updated_at，未终态会话算到 now），按窗口裁剪",
     "flow.in_out_imbalance": "units.json 首个事件落在窗口内 = 进入，merged/landed 落在窗口内 = 完成",
@@ -256,6 +264,7 @@ CRITERIA.update(release_age.CRITERIA); MEANING.update(release_age.MEANING); SOUR
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
 TIME_SINK_HOURS = 24
+WALL_WINDOW_HOURS = 24  # implement/repair run-minute p50 window
 TIME_SINKS = {
     "repair_queue": ("返工触发 → 派出返工员", "p90", 30, 120, "等 AI 员工名额。长 = 员工数不够，或派活顺序有问题。"),
     "repair_work": ("返工员干活", "p50", 15, 30, "一轮返工本身的时长。"),
@@ -366,8 +375,15 @@ def merge_flow(units, since, now):
     return (merges / hours if backlog and hours > 0 else None), entered, merges
 
 
+# Stages that wait by design (a predecessor, a stop-loss): their rows stay listed but never pick the worst stage.
+WIP_WAITING = ("blocked-external", "parked")
+
+
 def wip_stage_ages(units, now):
-    """Each open unit's age in its current stage (last ledger event -> now), grouped by stage."""
+    """Each open unit's age in its current stage (last ledger event -> now), grouped by stage.
+
+    The worst p90 skips WIP_WAITING stages: 54 units waiting on one parked predecessor read 228 h
+    on 2026-11-07 and hid the one stage a worker could move (supervisor-review, 8 h)."""
     ages = {}
     for u in units:
         if u.get("stage") in UNIT_DONE:
@@ -382,9 +398,22 @@ def wip_stage_ages(units, now):
         hours = sorted(h for h, _ in ages[stage])
         oldest = sorted(ages[stage], key=lambda h: h[0], reverse=True)[:5]
         rows.append({"stage": stage, "count": len(hours), "p90_hours": round(pct(hours, .9), 1),
+                     "waiting": stage in WIP_WAITING,
                      "oldest": [{"id": uid, "age_hours": round(h, 1)} for h, uid in oldest]})
-    worst = max((r["p90_hours"] for r in rows if r["p90_hours"] is not None), default=None)
+    worst = max((r["p90_hours"] for r in rows if r["p90_hours"] is not None and not r["waiting"]), default=None)
     return rows, worst
+
+
+def wait_stage(units, now):
+    """p90 hours (last ledger event -> now) and count of open units in WIP_WAITING: the waits the worst pick skips."""
+    ages = []
+    for u in units:
+        if u.get("stage") not in WIP_WAITING:
+            continue
+        times = [t for t in (ts(h.get("at")) for h in u.get("history") or []) if t]
+        if times:
+            ages.append((now - max(times)).total_seconds() / 3600)
+    return (round(pct(ages, .9), 1) if ages else None), len(ages)
 
 
 def slot_idle_hours(waits, cost_rows, since):
@@ -1404,8 +1433,12 @@ def main():
     attach_claude_usage((r for r in cost_rows if since <= r["start"] <= now))
     runs = worker_runs(cost_rows, since, now)
     metrics = {}
+    # Implement and repair run minutes are per-run samples (no time weighting): a 5 h window held 20 to 45 runs
+    # and swung on the model mix, so they read the 24 h window.
+    day_runs = worker_runs(cost_rows, now - timedelta(hours=WALL_WINDOW_HOURS), now)
     for node in ("implement", "review", "repair"):
-        done = [r["minutes"] for r in runs if r["node"] == node and r["output"]]
+        pool = runs if node == "review" else day_runs
+        done = [r["minutes"] for r in pool if r["node"] == node and r["output"]]
         metrics[f"{node}.wall_p50"] = pct(done, .5)
     impl = [r for r in runs if r["node"] == "implement"]
     impl = [r for r in impl if not r["running"]]
@@ -1491,6 +1524,7 @@ def main():
     metrics["flow.merge_rate_per_hour"] = merge_rate
     metrics["flow.in_out_imbalance"] = abs(entered - merged)
     wip_rows, metrics["flow.wip_age_stage_p90_hours"] = wip_stage_ages(units, now)
+    metrics["flow.wait_stage_p90_hours"], metrics["flow.wait_stage_units"] = wait_stage(units, now)
     metrics["flow.slot_idle_hours"] = slot_idle_hours(queue_waits, cost_rows, since)
     metrics["flow.main_red_hours"] = main_red_hours(args.main_red_dir, since, now)
     flow_details = {"entered": entered, "merged": merged, "wip_age": wip_rows}

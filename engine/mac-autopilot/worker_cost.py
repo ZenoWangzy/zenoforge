@@ -236,9 +236,19 @@ def _finish(total):
     return out
 
 
+def units_index(units):
+    """Units by id, plus each unit's PR under its pr-N key (an id already named pr-N wins), so a
+    bare PR number from a trimmed log's file name finds the issue-N unit that owns that PR."""
+    by_id = {u.get("id"): u for u in units if isinstance(u, dict) and u.get("id")}
+    for unit in list(by_id.values()):
+        if unit.get("pr"):
+            by_id.setdefault(f"pr-{unit['pr']}", unit)
+    return by_id
+
+
 def ticket_of(unit_key, units_by_id):
     """The issue number a unit key belongs to, or None. issue-N keys carry it directly; a bare
-    PR number (the file-name form of a trimmed log) maps through the unit's pr-N record."""
+    PR number (the file-name form of a trimmed log) maps through units_index's pr-N key."""
     for key in (unit_key, f"pr-{unit_key}" if str(unit_key or "").isdigit() else None):
         unit = units_by_id.get(key)
         if unit is not None and unit.get("issue"):
@@ -255,7 +265,7 @@ def aggregate(rows, units, now):
 
     A log whose unit key has no ticket (triage runs, trimmed ledgers) lands in no by_ticket
     bucket; its tokens still count toward by_phase, by_backend and the 24h totals."""
-    units_by_id = {u.get("id"): u for u in units if isinstance(u, dict) and u.get("id")}
+    units_by_id = units_index(units)
     now = datetime.fromtimestamp(now, timezone.utc)
     by_unit, by_ticket, by_phase, by_backend = {}, {}, {}, {}
     unit_phases = {}
@@ -287,7 +297,7 @@ def aggregate(rows, units, now):
 def ticket_spend(rows, units):
     """Lifetime spend per ticket with its close time (latest merged/landed event). A ticket
     with no merged/landed unit anywhere is open."""
-    units_by_id = {u.get("id"): u for u in units if isinstance(u, dict) and u.get("id")}
+    units_by_id = units_index(units)
     done = ("merged", "landed")
     spend, closes = {}, {}
     for row in rows:
