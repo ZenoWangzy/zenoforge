@@ -366,6 +366,7 @@ ci_station_tick() {
       say "ci station held: supervisor-owned marking deferred"
     else
       ci_admission
+      merge_tree_sweep # after admission, own time bound: a conflict found when main moves starts its repair now, not at review or merge
     fi
     gh_calls="$(tick_gh_calls_count)"
     say "ci station done secs=$SECONDS gh_calls=$gh_calls limit=${limit}s ended=$(date -u +%H:%M:%SZ)"
