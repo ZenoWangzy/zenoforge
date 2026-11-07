@@ -17,7 +17,7 @@ capture_worker_stdout_report() { # report-path command...
 }
 
 dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason] [worker-context-json]
-  local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census
+  local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census guard_env_word
   local -a launcher=() worker_env=() launch_command=()
   if [[ -n "$worker_context" ]]; then
     report_only="$(jqf -r '.incident_report_resume // false' <<<"$worker_context")"
@@ -28,6 +28,11 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
     worker_env=(env ZF_NON_PRODUCT_UNIT=1 "ZF_PIPELINE_UNIT=$unit" \
       "PATH=${ZF_ENGINE_DIR:-$ROOT/engine}/non-product-test-shim:$PATH")
   fi
+  # Worker write guard: a node or python write into the deployment checkout fails loudly (2026-11-07).
+  if ((${#worker_env[@]} == 0)); then worker_env=(env); fi
+  while IFS= read -r guard_env_word; do
+    [[ -n "$guard_env_word" ]] && worker_env+=("$guard_env_word")
+  done < <(worker_write_guard_env "$workdir" || true)
   # setsid：worker 自成进程组，超时可整组终止（含 codex 子进程）。
   command -v setsid >/dev/null 2>&1 && launcher=(setsid)
   build_codex_command "$type" "$model" "$effort" "$unit" "$prompt" "${11-$prompt}" "$workdir" "$provider" "$report_only" "$expected_session_id" || return 1

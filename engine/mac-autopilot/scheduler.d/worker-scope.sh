@@ -1,5 +1,29 @@
 worker_scope_systemd_run_path() { type -P systemd-run 2>/dev/null; }
 
+# The 2026-11-07 incident-guard write: an implement worker's node helper appended a lesson row to the
+# deployment checkout's .zenoforge/state/incident-guards.json (unit issue-5573, 05:41:06Z and 05:46:00Z).
+# The dirty registry stalled every engine pin until a person cleared it. Every node and python process a
+# worker starts now loads a preload that refuses writes below the checkout. The supervisor scratch stays
+# writable, because workers file their reports there.
+# shortcut: covers node and python only, not shell redirects or coreutils; add those if a write gets past this.
+worker_write_guard_env() { # workdir -> env(1) assignment words, one per line
+  local workdir="$1" root allow dir guard="${ZF_ENGINE_DIR:-${ROOT:-}/engine}/worker-write-guard"
+  [[ -n "${ROOT:-}" && -d "$ROOT" && -f "$guard/node-guard.cjs" && -f "$guard/sitecustomize.py" ]] || return 0
+  root="$(cd -- "$ROOT" && pwd -P)" || return 0
+  if dir="$(cd -- "$workdir" 2>/dev/null && pwd -P)"; then
+    # A worker running inside the checkout itself (none today) keeps direct access.
+    if [[ "$dir" == "$root" || "$dir" == "$root/"* ]]; then return 0; fi
+  fi
+  printf 'ZF_WORKER_WRITE_GUARD_ROOT=%s\n' "$root"
+  printf 'NODE_OPTIONS=--require=%s%s\n' "$guard/node-guard.cjs" "${NODE_OPTIONS:+ $NODE_OPTIONS}"
+  printf 'PYTHONPATH=%s%s\n' "$guard" "${PYTHONPATH:+:$PYTHONPATH}"
+  if [[ -n "${SUP:-}" && -d "$SUP" ]]; then
+    allow="$(cd -- "$SUP" && pwd -P)" || return 0
+    printf 'ZF_WORKER_WRITE_GUARD_ALLOW=%s\n' "$allow"
+  fi
+  return 0
+}
+
 worker_scope_unavailable() { # reason; one warning for this scheduler tick
   local reason="$1"
   WORKER_SCOPE_MODE=unavailable
