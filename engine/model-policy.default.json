@@ -25,7 +25,7 @@
     },
     "hand-claude": {
       "provider": "claude",
-      "model": "claude-sonnet-5-5",
+      "model": "claude-haiku-5-5",
       "effort": "high"
     },
     "triage-haiku": {
@@ -41,7 +41,7 @@
   },
   "allow_roles": {
     "sonnet": ["hand-claude"],
-    "haiku": ["triage-haiku"]
+    "haiku": ["triage-haiku", "hand-claude"]
   },
   "escalation": {
     "initial_step": "work",

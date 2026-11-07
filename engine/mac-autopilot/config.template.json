@@ -120,7 +120,7 @@
       "fast"
     ],
     "review_fallback": [
-      "claude-sonnet-4-5",
+      "claude-haiku-5-5",
       "high"
     ],
     "implement_hotfix": [

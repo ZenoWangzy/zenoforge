@@ -65,7 +65,7 @@ jq -e '.max_workers == 10 and .auto_merge == true and .implement_cap == 8
   and .models.implement == ["gpt-6-luna", "max", "fast"]
   and .models.implement_share == {"claude":50,"codex":50,"zcode":0}
   and .models.triage == ["gpt-6-luna", "max", "fast"]
-  and .models.review_fallback == ["claude-sonnet-4-5", "high"]
+  and .models.review_fallback == ["claude-haiku-5-5", "high"]
   and .supervisor_arbiter.cap_triage == true
   and .supervisor_arbiter.cap_triage_per_tick == 3
   and .models.implement_hotfix == ["gpt-6.1-terra", "high"]' "$template" >/dev/null
@@ -6294,7 +6294,7 @@ sched_case_claude_share_split_fallback_and_off_switch() {
       || { echo "not ok - scheduler.test.sh: #$issue did not follow the claude/codex hash ($PICK_PROVIDER/$PICK_REASON != $expected)" >&2; exit 1; }
     if [[ "$expected" == claude ]]; then
       claude_count=$((claude_count+1)); [[ -n "$first_claude" ]] || first_claude="$issue"
-      [[ "$PICK_MODEL:$PICK_EFFORT" == claude-sonnet-5-5:high ]] \
+      [[ "$PICK_MODEL:$PICK_EFFORT" == claude-haiku-5-5:high ]] \
         || { echo "not ok - scheduler.test.sh: claude implement identity is $PICK_MODEL:$PICK_EFFORT" >&2; exit 1; }
     else codex_count=$((codex_count+1)); fi
   done

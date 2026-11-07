@@ -154,7 +154,7 @@ write_units "$(jq -cn --argjson unit "$unit_json" '{units:[$unit]}')"
 write_workers '{workers:[]}'
 dispatch_selected_review "$unit_json" || fail 'Sonnet fallback did not dispatch during a GLM hold'
 [[ "$DISPATCH_MODEL:$DISPATCH_EFFORT" == 'claude-sonnet-4-5:high' ]] || fail "quota fallback selected $DISPATCH_MODEL:$DISPATCH_EFFORT"
-grep -Fq 'review-family fallback unit=quota-fallback author=codex reviewer=sonnet reason=glm hold' "$LOG" || fail 'Sonnet fallback line did not record the GLM hold'
+grep -Fq 'review-family fallback unit=quota-fallback author=codex reviewer=claude-sonnet-4-5 reason=glm hold' "$LOG" || fail 'Sonnet fallback line did not record the GLM hold'
 
 # When GLM and Sonnet are both held, the unit stays pending, alerts once, and never uses Luna.
 set_cooldowns "$((NOW_EPOCH + 1800))" "$((NOW_EPOCH + 1800))"
@@ -170,9 +170,12 @@ if dispatch_selected_review "$unit_json"; then fail 'review escaped its wait sta
 [[ "$(grep -Fc 'review-family wait unit=both-held ' "$LOG")" == 1 ]] || fail 'wait alert was not deduplicated to one line'
 grep -Fq 'review-family wait unit=' "$script_dir/bell.sh" && grep -Fq 'sched-review-family-wait' "$script_dir/bell.sh" || fail 'wait alert is not wired to bell incident intake'
 
-# The Sonnet exception is limited to the fallback role; implement identity checks stay Codex-only.
+# The Claude exception is limited to the fallback role and to Haiku or Sonnet; implement identity checks stay Codex-only.
 model_policy_model_allowed_for_role claude-sonnet-4-5 review_fallback || fail 'named Sonnet review role was not permitted by allow_roles'
-if model_policy_model_allowed_for_role claude-haiku-5-5 review_fallback; then fail 'Sonnet exception allowed a non-Sonnet Claude model'; fi
+set_policy '.allow_roles.sonnet=["review_fallback"] | .allow_roles.haiku=["review_fallback"]'
+model_policy_model_allowed_for_role claude-haiku-5-5 review_fallback || fail 'a granted Haiku review role was not permitted'
+set_policy '.allow_roles.sonnet=["review_fallback"]'
+if model_policy_model_allowed_for_role claude-opus-4-5 review_fallback; then fail 'the exception allowed a Claude model above Sonnet'; fi
 if model_policy_model_allowed_for_role claude-sonnet-4-5 implement; then fail 'Sonnet exception leaked into implement'; fi
 if model_policy_validate_json <<<"$(jq '.allow_roles.claude=["review_fallback"]' "$MODEL_POLICY_FILE")"; then fail 'a broad Claude exception was accepted by model-policy schema'; fi
 model_policy_require_stage_identity review claude:claude-sonnet-4-5:high || fail 'policy-authorized Sonnet was refused for review'
@@ -181,7 +184,8 @@ build_codex_command implement claude-sonnet-5-5 high claude-impl 'prompt' 'promp
 [[ "${CODEX_COMMAND[0]}" == claude && " ${CODEX_COMMAND[*]} " == *' --output-format stream-json '* ]] || fail 'Claude implement command is not claude -p stream-json'
 # The hand-claude role is the only implement grant; opus and fable stay refused for every role.
 model_policy_model_allowed_for_role claude-sonnet-5-5 hand-claude || fail 'hand-claude was not permitted for Sonnet'
-for refused in claude-opus-5-5 claude-fable-5 claude-haiku-5-5; do
+model_policy_model_allowed_for_role claude-haiku-5-5 hand-claude || fail 'hand-claude was not permitted for its default Haiku'
+for refused in claude-opus-5-5 claude-fable-5; do
   if model_policy_model_allowed_for_role "$refused" hand-claude; then fail "$refused was permitted for hand-claude"; fi
 done
 if model_policy_validate_json <<<"$(jq '.roles["hand-claude"].model="claude-opus-5-5"' "$MODEL_POLICY_DEFAULT")"; then fail 'an opus hand-claude role passed the model-policy schema'; fi

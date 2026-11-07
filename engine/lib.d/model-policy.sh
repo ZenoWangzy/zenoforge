@@ -42,7 +42,7 @@ model_policy_validate_json() {
               and . != "work" and . != "production" and . != "implement"))
           and (if $family == "sonnet"
             then all($roles[]; . == "review_fallback" or . == "hand-claude")
-            elif $family == "haiku" then all($roles[]; . == "triage-haiku")
+            elif $family == "haiku" then all($roles[]; . == "triage-haiku" or . == "hand-claude" or . == "review_fallback")
             else true end)] | all)
     else true end)
     and ((.forbidden + $canonical[0].forbidden | unique) as $forbidden
@@ -918,14 +918,14 @@ review_model_for_implementer() {
     if [[ "$candidate_family" == claude ]]; then
       candidate_role=review_fallback
       candidate_model="${candidate#*:}"; candidate_model="${candidate_model%:*}"
-      if [[ "$author_family" == claude || ! "$candidate_model" =~ ^claude-sonnet- ]]; then
-        review_family_log "review-family refused unit=$unit author=$author_family reviewer=claude reason=fallback-must-be-sonnet-and-cross-family"
+      if [[ "$author_family" == claude || ! "$candidate_model" =~ ^claude-(haiku|sonnet)- ]]; then
+        review_family_log "review-family refused unit=$unit author=$author_family reviewer=claude reason=fallback-must-be-claude-tier-and-cross-family"
         continue
       fi
     fi
     if review_identity_available "$candidate" "$candidate_role" "$author_family"; then
       if [[ "$candidate_role" == review_fallback ]]; then
-        review_family_log "review-family fallback unit=$unit author=$author_family reviewer=sonnet reason=${primary_reason:-cross reviewer unavailable}"
+        review_family_log "review-family fallback unit=$unit author=$author_family reviewer=$candidate_model reason=${primary_reason:-cross reviewer unavailable}"
         record_review_provider_fallback "$issue" "cross-family-reviewer" "$candidate" "${primary_reason:-cross reviewer unavailable}" 2>/dev/null || true
       fi
       printf '%s\n' "$candidate"
