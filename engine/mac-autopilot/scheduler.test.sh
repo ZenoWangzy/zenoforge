@@ -422,7 +422,7 @@ elif [[ "$*" == 'api repos/example-maintainer/example-repo/deployments/1/statuse
 elif [[ "$*" == 'api repos/{owner}/{repo}/actions/runners?per_page=100'* ]]; then
   # 看板 60ba960cf 起按 runner 池展示 CI 现状：PR 池一个在线且忙，Mac 池一个离线
   printf '%s\n' '[{"name":"cihost-ci-1","status":"online","busy":true,"labels":["cihost-ci"]},{"name":"zf-mac-2","status":"offline","busy":false,"labels":["other"]}]'
-elif [[ "$*" == 'pr list --state merged --limit 30 --json number,mergedAt' ]]; then
+elif [[ "$*" == 'pr list --state merged --search merged:>='*' --limit 200 --json number,mergedAt' ]]; then
   cat "$MERGED_PR_FIXTURE"
 else
   echo '[]'
