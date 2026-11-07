@@ -229,7 +229,7 @@
       "rulings": []
     },
     "parallel-scheduling": {
-      "rule": "独立工作并行：pending 单元按 main-red > hotpatch > critical > 阶段 > 车道排序派发，文件足迹互斥防冲突，30s refill 在 worker 退出后立即补位，不等慢拍。",
+      "rule": "独立工作并行：pending 单元按 main-red > hotpatch > critical > 阶段 > 车道排序派发，文件足迹只排序（重叠的单元排在不重叠的后面，有空槽照样启动），30s refill 在 worker 退出后立即补位，不等慢拍。",
       "enforced_by": [
         "engine/mac-autopilot/scheduler.sh",
         "engine/mac-autopilot/loop.sh"

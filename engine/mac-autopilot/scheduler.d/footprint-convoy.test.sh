@@ -37,10 +37,13 @@ pending_fixture_stubs() {
   blocking_body_dependency() { return 0; }
   room_for() { return 0; }
   pick() { PICK_MODEL=fixture; PICK_EFFORT=high; return 0; }
+  # Stands in for the real check: a live owner defers the unit only while the walk's first pass asks for a verdict.
   footprint_room() {
     local owner
     owner="$(unit_field "$1" '.footprint_wait_owner // empty')"
-    if [[ -n "$owner" ]] && footprint_wait_owner_active "$owner"; then return 1; fi
+    if [[ -n "$owner" && "$TICK_FOOTPRINT_DEFER" == true ]] && footprint_wait_owner_active "$owner"; then
+      TICK_FOOTPRINT_DEFERRED["$1"]="$owner"; return 1
+    fi
     set_unit "$1" 'del(.footprint_wait_owner,.footprint_wait_since)'
   }
   ensure_clone() { printf '%s\n' "$ROOT"; }
@@ -49,7 +52,8 @@ pending_fixture_stubs() {
   verification_plan_brief() { echo focused; }
   matt_method_rule() { :; }
   decision_scope() { :; }
-  dispatch_if_room() { dispatch_calls=$((dispatch_calls + 1)); return 0; }
+  dispatch_ids=""
+  dispatch_if_room() { dispatch_calls=$((dispatch_calls + 1)); dispatch_ids+="$1 "; return 0; }
   live_workers() { echo 0; }
   live_by_type() { echo 0; }
 }
@@ -103,6 +107,7 @@ TICK_ACTIVE_FOOTPRINTS_VALID=false
 TICK_FOOTPRINT_PREFLIGHT_STATUS=not-started
 TICK_FOOTPRINT_CONFLICT_VALID=false
 TICK_DISPATCH_LOCAL_REFILL=false
+TICK_FOOTPRINT_DEFER=true
 footprint_preflight_snapshot || fail 'batch preflight failed'
 [[ -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[candidate]:-}" && "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[direct]:-}" == owner ]] || fail 'batch preflight applied wrong threshold'
 footprint_room candidate "$(jq -c '.units[] | select(.id=="candidate")' "$UNITS")" true || fail 'weak expansion blocked admission'
@@ -111,11 +116,18 @@ TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS
 if footprint_room direct "$(jq -c '.units[] | select(.id=="direct")' "$UNITS")" true; then fail 'direct overlap admitted'; fi
 (( TICK_FOOTPRINT_ROOM_CALLS == 1 && TICK_FOOTPRINT_ROOM_WAITS == 1 && TICK_FOOTPRINT_ROOM_USEC > 0 )) || fail 'a waiter was not counted in the phase summary'
 grep -Fq 'footprint wait unit=direct owner=owner candidate_path=src/hot owner_path=src/hot source=original cochange_count=not-applicable' "$LOG" || fail 'direct attribution missing'
+# Footprint orders and never refuses: outside the walk's first pass the deferred unit starts, and the shadow logs what the old gate held.
+TICK_FOOTPRINT_DEFER=false
+footprint_room direct "$(jq -c '.units[] | select(.id=="direct")' "$UNITS")" true || fail 'a deferred unit was refused outside the first pass'
+grep -Fq 'footprint-shadow-old-rule-would-block unit=direct owner=owner candidate_path=src/hot owner_path=src/hot source=original' "$LOG" || fail 'forced start did not log the old-rule shadow'
+(( ${#TICK_FOOTPRINT_DEFERRED[@]} == 0 )) || fail 'a started unit stayed in the deferred set'
+TICK_FOOTPRINT_DEFER=true
 ZF_FOOTPRINT_HOTSPOT_MIN=1
 TICK_CHECK_SCOPE_SOURCE=()
 if footprint_room candidate "$(jq -c '.units[] | select(.id=="candidate")' "$UNITS")" true; then fail 'old rule did not block weak expansion'; fi
 grep -Fq 'footprint wait unit=candidate owner=owner candidate_path=src/hot owner_path=src/hot source=expansion cochange_count=2' "$LOG" || fail 'expansion attribution missing'
 unset ZF_FOOTPRINT_HOTSPOT_MIN
+TICK_FOOTPRINT_DEFER=false
 
 # Directory predictions only conflict on known shared files, unless a side has no known files.
 mkdir -p "$ROOT/packages/fleet-gateway/src/auth" "$ROOT/migrations/meta"
@@ -179,7 +191,21 @@ jqf -e '.units[] | select(.id=="live-waiter") | .footprint_wait_owner=="live-own
 [[ "$(startable_pending_count)" == 0 ]] || fail 'live owner waiter counted as startable'
 pending_fixture_stubs
 dispatch_pending true
-[[ "$dispatch_calls" == 0 ]] || fail 'live owner waiter dispatched through the footprint lock'
+[[ "$dispatch_calls" == 1 ]] || fail 'a live owner left a free slot idle: its waiter never started'
+footprint_wait_mark live-waiter live-owner "$(jqf -c '.units[] | select(.id=="live-waiter")' "$UNITS")"
+# Order only: the unit a live owner overlaps starts after the one nobody overlaps, even when it comes first.
+write_units '{units:[
+  {id:"live-owner",stage:"implement",footprint:["packages/fixture/shared.ts"]},
+  {id:"overlap-first",stage:"implement-pending",task:"fixture task",branch:"agent/overlap-first",
+   footprint:["packages/fixture/shared.ts"],footprint_wait_owner:"live-owner",history:[]},
+  {id:"free-second",stage:"implement-pending",task:"fixture task",branch:"agent/free-second",footprint:["packages/fixture/free.ts"],history:[]}]}'
+pending_fixture_stubs
+dispatch_pending true
+[[ "$dispatch_ids" == 'free-second overlap-first ' ]] || fail "footprint did not order the walk: [$dispatch_ids]"
+write_units '{units:[
+  {id:"live-owner",stage:"implement",footprint:["packages/fixture/shared.ts"]},
+  {id:"live-waiter",stage:"implement-pending",task:"fixture task",branch:"agent/live-waiter",
+   footprint:["packages/fixture/shared.ts"],footprint_wait_owner:"live-owner",history:[]}]}'
 set_unit live-owner '.stage="merged"'
 jqf -e '.units[] | select(.id=="live-waiter") | (has("footprint_wait_owner") or has("footprint_wait_since")) | not' "$UNITS" >/dev/null \
   || fail 'owner transition to merged did not clear waiter markers'

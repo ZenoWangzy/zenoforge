@@ -180,7 +180,7 @@
     },
     {
       "id": "factory-f9-footprint-wait",
-      "desc": "实现/返工派发的文件足迹互斥（#4361）：冲突时等待并记 footprint wait 行",
+      "desc": "实现/返工派发的文件足迹排序（#4361）：重叠的单元先排后并记 footprint wait 行，空槽时照样启动，不再拒绝",
       "events": [
         {"base": "runtime", "file": "scheduler.log", "pattern": "footprint wait unit="}
       ],

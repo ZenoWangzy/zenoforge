@@ -280,6 +280,11 @@ TICK_FOOTPRINT_CONFLICT_VALID=false
 TICK_FOOTPRINT_COMPARED_ACTIVE=''
 TICK_DISPATCH_LOCAL_REFILL=false
 declare -A TICK_FOOTPRINT_PREFLIGHT_CONFLICT=()
+# Footprint orders candidates and never refuses one: only the dispatch walk's first pass sets DEFER=true, and what
+# it defers starts in the second pass if a slot is still free.
+TICK_FOOTPRINT_DEFER=false
+declare -A TICK_FOOTPRINT_DEFERRED=()
+declare -A TICK_FOOTPRINT_DEFER_DETAIL=()
 declare -a TICK_FOOTPRINT_PREFLIGHT_IDS=()
 
 # #4621（维护者 2026-10-29 严格优先级 hotfix > opt > 普通 pipeline）：bin/luna、bin/zc 的门在 run 等待时写
