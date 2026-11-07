@@ -57,6 +57,11 @@ auto_pin_pass() {
       [[ "$(git -C "$C" rev-parse origin/main)" == "$next" ]] || break
       # A dirty checkout clears with no new main commit, so try the same commit again.
       grep -q 'source checkout has changes' "$log" && [[ -z "$(git -C "$AGENT_HOME/checkout" status --porcelain 2>/dev/null)" ]] && return 0
+      # A row declared for this commit after the refusal: try it again, since a new main commit would make the row stale. Once only.
+      if grep -q 'add this row' "$log" && [[ ! -e $log.row-retried ]] \
+        && grep -q "$next" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv" 2>/dev/null; then
+        : > "$log.row-retried"; return 0
+      fi
     done
     echo "$next" > "$state"
   fi
