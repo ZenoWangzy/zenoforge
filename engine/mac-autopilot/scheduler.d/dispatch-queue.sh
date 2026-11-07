@@ -280,7 +280,8 @@ $(decision_scope "$u")"
             continue
           fi
           # 修复者两次都没推新提交，多半认为评审发现不成立：先做一次仲裁评审，仍不收敛才转人工。
-          if (( $(jqf -r '[(.history // [])[] | select(.stage=="arbiter-review")] | length' <<<"$u") == 0 )); then
+          # One arbiter review per head: an arbiter that judged an earlier head must not make a later no-push repair escalate.
+          if (( $(jqf -r --arg h "head $sha " '[(.history // [])[] | select(.stage=="arbiter-review" and ((.result // "") | startswith($h)))] | length' <<<"$u") == 0 )); then
             decision="$(decision_entry 'Route to one arbiter review' 'repair returned without a new commit' "head $sha unchanged since last review" '["Dispatch another repair without independent review"]' scheduler)"
             set_unit "$id" "$(hist arbiter-review "head $sha unchanged since last review" "$decision") | .arbiter=true | .reviewed_sha=null | .reviewed_pr_head=null"
             say "head unchanged unit=$id -> one arbiter review"
