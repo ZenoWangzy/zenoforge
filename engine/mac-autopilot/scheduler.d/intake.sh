@@ -409,6 +409,7 @@ register_new_issues() {
   while IFS=$'\t' read -r n lane title labels issue64; do
     [[ "$n" =~ ^[0-9]+$ ]] || { intake_skip badrow; continue; }
     (( added < want )) || break
+    refill_stopped && break # a refused ledger lock wait ended the refill
     (( SECONDS - intake_started < intake_budget )) || { say "intake budget spent after ${intake_budget}s: rows from #$n wait for the next tick"; intake_skip budget; break; }
     intake_candidate_json=''; intake_candidate_scope=''; intake_conflict=''
     issue_json=""

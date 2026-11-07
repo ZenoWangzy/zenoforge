@@ -141,6 +141,7 @@ run_merge_lane() {
 # The refill runs one pass when such a unit exists, at most once per merge_refill_min_seconds (60: 440 of 661 refill gaps in 24h were under 120s, p90 pass cost 47s of the 300s limit).
 # Nothing inside the pre-candidate stages can stop at the refill deadline (5 of 7 refill kills since 05:52Z, 2026-11-08), so check the budget between them.
 merge_refill_budget_spent() { # stage
+  refill_stopped && return 0 # a refused ledger lock wait ended the refill; its one line is already in the log
   [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 120 )) || return 1
   say "merge pass stopped before $1 at ${SECONDS}s: the refill budget is spent; the next refill resumes"
 }
@@ -318,6 +319,7 @@ run_merge_lane_pass() {
     [[ -z "$ready" || "$ready" == "null" ]] && break
     tick_prs_prime
     id="$(jqf -r .id <<<"$ready")"; pr="$(jqf -r .pr <<<"$ready")"
+    refill_stopped && break # a merge whose ledger write is refused would leave a merged PR unrecorded
     # The kill counts from the refill's start, and one merge with its ledger writes took 27 to 45s on 2026-11-07.
     if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 90 )); then
       say "merge pass deadline after ${SECONDS}s: PR#$pr and later wait for the next pass"
