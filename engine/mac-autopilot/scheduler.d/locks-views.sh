@@ -22,6 +22,7 @@ acquire_scheduler_lock_wait() {
 }
 reacquire_scheduler_lock_timed() { # the seconds waiting here go to tick-phases lock_wait=
   local t0=$SECONDS
+  phase_mark lock_wait # no deadline here: a kill in this wait must not be blamed on the phase before it
   acquire_scheduler_lock_wait
   TICK_LOCK_WAIT=$((TICK_LOCK_WAIT + SECONDS - t0))
 }
