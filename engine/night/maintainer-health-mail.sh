@@ -715,8 +715,9 @@ PY
 # Production-failure episodes: head-watch's PROD-DB-TIMEOUT alerts in
 # logs/head-watch.alerts. Alerts less than 30 minutes apart are one episode,
 # counted at its first alert. {period: episodes starting in [since, until),
-# open: episodes whose last alert is under 30 minutes old at now}. Null when the
-# log is unreadable.
+# alerting: episodes whose last alert is under 30 minutes old at now,
+# hours_since_last: whole hours from the newest alert to now}. A pause in alerts
+# is not evidence that an episode closed. Null when the log is unreadable.
 maintainer_health_mail_watch_episodes() {
   local home="$1" since="$2" until="$3" now="$4"
   local file="$home/logs/head-watch.alerts"
@@ -751,7 +752,8 @@ for at in sorted(stamps):
     else:
         episodes.append([at, at])
 print(json.dumps({"period": sum(since <= first < until for first, _ in episodes),
-                  "open": sum(last + GAP > now for _, last in episodes)}, separators=(",", ":")))
+                  "alerting": sum(last + GAP > now for _, last in episodes),
+                  "hours_since_last": (now - stamps[-1]) // 3600 if stamps else None}, separators=(",", ":")))
 PY
 }
 
@@ -1118,7 +1120,11 @@ maintainer_health_mail_quality_facts() {
   jq -cn --argjson incidents "$incidents" --argjson incidents_open "$incidents_open" --argjson open_subjects "$open_subjects" \
     --argjson rollbacks "$rollbacks" --argjson mttr "$mttr" --argjson watch "$watch" '
     {incidents_period:(if $incidents == null or $watch == null then null else $incidents + $watch.period end),
-     incidents_open:(if $incidents_open == null or $watch == null then null else $incidents_open + $watch.open end),
+     incidents_open:(if $incidents_open == null or $watch == null then null
+       elif $watch.period == 0 then $incidents_open
+       elif $watch.alerting > 0 then $incidents_open + $watch.alerting
+       else null end),
+     watch_hours_since_last:(if $watch == null then null else $watch.hours_since_last end),
      open_subjects:$open_subjects,
      rollbacks:$rollbacks,
      post_land_fixes:(if $mttr == null or ($mttr.summary.count | type) != "number" then null else $mttr.summary.count end)}'
@@ -1220,9 +1226,9 @@ maintainer_health_mail_conclusion_facts() {
   jq -r --arg sep $'\t' '
     . as $ctx
     | if $ctx.quality.incidents_open > 0 then
-        "出事了\($sep)仍有 \($ctx.quality.incidents_open) 起线上事故没有恢复"
+        "出事了\($sep)仍有 \($ctx.quality.incidents_open) 起线上事故正在告警"
       elif ($ctx.quality.incidents_period // 0) > 0 then
-        "出事了\($sep)过去一天发生 \($ctx.quality.incidents_period) 起线上事故，现均已停止告警"
+        "出事了\($sep)过去一天发生 \($ctx.quality.incidents_period) 起线上事故，\(if $ctx.quality.watch_hours_since_last == null then "最后一次告警时间未核实" elif $ctx.quality.watch_hours_since_last == 0 then "最后一次告警不到 1 小时前" else "最后一次告警在 \($ctx.quality.watch_hours_since_last) 小时前" end)"
       elif $ctx.attention != null and $ctx.attention > 0 then
         "有风险\($sep)有 \($ctx.attention) 项运行指标需要留意"
       elif $ctx.quality.incidents_open == null or $ctx.quality.incidents_period == null then

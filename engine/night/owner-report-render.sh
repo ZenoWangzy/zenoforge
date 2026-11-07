@@ -57,7 +57,7 @@ maintainer_health_mail_build_body() {
          else "- 金额没有完整记录，无法算出总花费。" end)
       ]
     + [ "质量",
-        "- 线上事故：过去一天 \(count($f.quality.incidents_period; " 起"))；目前仍在处理 \(count($f.quality.incidents_open; " 起"))。",
+        "- 线上事故：过去一天 \(count($f.quality.incidents_period; " 起"))；\(if $f.quality.watch_hours_since_last == null then "最后一次告警时间未核实" elif $f.quality.watch_hours_since_last == 0 then "最后一次告警不到 1 小时前" else "最后一次告警在 \($f.quality.watch_hours_since_last) 小时前" end)；目前仍在处理 \(if $f.quality.incidents_open == null then "未核实" else (($f.quality.incidents_open | tostring) + " 起") end)。",
         "- 撤回上线：过去一天 \(count($f.quality.rollbacks; " 次"))。",
         "- 已上线需求后来再出问题并返修：过去一天 \(count($f.quality.post_land_fixes; " 起"))。"
       ]

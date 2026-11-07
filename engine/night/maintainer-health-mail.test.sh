@@ -242,10 +242,12 @@ watch_start="$(date -u -d '2026-11-07T00:00:00Z' +%s)"
 watch_end="$(date -u -d '2026-11-08T00:00:00Z' +%s)"
 assert_eq 'two clusters of alerts make two episodes' '2' \
   "$(maintainer_health_mail_watch_episodes "$watch_home" "$watch_start" "$watch_end" "$(date -u -d '2026-11-07T09:00:00Z' +%s)" | jq -r '.period')"
-assert_eq 'an episode with no alert in the last 30 minutes is not open' '0' \
-  "$(maintainer_health_mail_watch_episodes "$watch_home" "$watch_start" "$watch_end" "$(date -u -d '2026-11-07T09:00:00Z' +%s)" | jq -r '.open')"
-assert_eq 'an episode alerting within 30 minutes is open' '1' \
-  "$(maintainer_health_mail_watch_episodes "$watch_home" "$watch_start" "$watch_end" "$(date -u -d '2026-11-07T08:10:00Z' +%s)" | jq -r '.open')"
+assert_eq 'a pause in alerts is not counted as an episode alerting now' '0' \
+  "$(maintainer_health_mail_watch_episodes "$watch_home" "$watch_start" "$watch_end" "$(date -u -d '2026-11-07T09:00:00Z' +%s)" | jq -r '.alerting')"
+assert_eq 'the last alert age is whole hours' '1' \
+  "$(maintainer_health_mail_watch_episodes "$watch_home" "$watch_start" "$watch_end" "$(date -u -d '2026-11-07T09:00:00Z' +%s)" | jq -r '.hours_since_last')"
+assert_eq 'an episode alerting within 30 minutes is alerting' '1' \
+  "$(maintainer_health_mail_watch_episodes "$watch_home" "$watch_start" "$watch_end" "$(date -u -d '2026-11-07T08:10:00Z' +%s)" | jq -r '.alerting')"
 
 # The conclusion escalates: open incident beats risk beats normal.
 conclusion_home="$tmp/conclusion"
