@@ -69,7 +69,7 @@ printf '%s\n' "$class" >> "$BELL_TEST_ISSUES"
 cat "$body" >> "$BELL_TEST_BODIES"
 SH
   chmod +x "$CASE_ENGINE/pipeline-issue-upsert.sh"
-  printf '%s\n' '{"bell":{"enabled":true,"notify":false,"auto_supervisor":false,"dedup_minutes":30},"incident":{"file_min_severity":"medium"}}' > "$CASE_AUTOPI/config.json"
+  printf '%s\n' '{"bell":{"enabled":true,"dedup_minutes":30},"incident":{"file_min_severity":"medium"}}' > "$CASE_AUTOPI/config.json"
   printf 'window.DASH={};\n' > "$CASE_AUTOPI/dashboard.data.js"
   printf '[%s] tick done units=0 live=0 secs=1\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$CASE_AUTOPI/scheduler.log"
   printf '%s\n' '{"units":[]}' > "$CASE_AUTOPI/units.json"

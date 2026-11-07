@@ -14,17 +14,15 @@ source "$ENGINE_DIR/lib.d/transport.sh"
 source "$ENGINE_DIR/lib.d/ci-checks.sh"; source "$HERE/pin-lag.sh"; source "$HERE/zf-main-ci.sh"
 A="${BELL_AUTOPI_DIR:-$MAC_AUTOPILOT_RUNTIME_DIR}"
 CHECK_ONLY=0
-TEST_NOTIFICATION=0
 for arg in "$@"; do
   case "$arg" in
     --check-only) CHECK_ONLY=1 ;;
-    --test-notification) TEST_NOTIFICATION=1; CHECK_ONLY=1 ;;
     *) echo "bell.sh: unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 [[ -d "$A" ]] || { echo "bell.sh: autopilot runtime is missing: $A" >&2; exit 1; }
 
-# 不用 `// empty`：jq 的 // 把 false 当缺省，`auto_supervisor:false` 等开关会被静默改回默认 true。
+# 不用 `// empty`：jq 的 // 把 false 当缺省，`enabled:false` 会被静默改回默认 true。
 cfg() { jq -r "($1) | if . == null then empty else . end" "$A/config.json" 2>/dev/null || true; }
 cfg_bool() {
   local value
@@ -33,8 +31,6 @@ cfg_bool() {
   printf '%s' "$value"
 }
 ENABLED="$(cfg_bool '.bell.enabled' true)"
-NOTIFY="$(cfg_bool '.bell.notify' true)"
-AUTO_SUPERVISOR="$(cfg_bool '.bell.auto_supervisor' true)"
 DEDUP_MINUTES="$(cfg '.bell.dedup_minutes')"
 [[ "$DEDUP_MINUTES" =~ ^[0-9]+$ ]] || DEDUP_MINUTES=30
 (( DEDUP_MINUTES > 0 )) || DEDUP_MINUTES=30
@@ -62,7 +58,6 @@ STATE="$A/bell-state.json"
 QUEUE="$A/BELL-QUEUE.md"
 LOG="$A/bell.log"
 SCAN_LOCK="$A/.bell.lock"
-SUPERVISOR_LOCK="$A/.bell-supervisor.lock"
 SCAN_PID=""
 if [[ -s "$STATE" ]] && jq -e 'type=="object"' "$STATE" >/dev/null 2>&1; then
   STATE_JSON="$(jq -c '. + {monitor_initialized:(.monitor_initialized//false),scheduler_lines:(.scheduler_lines//0),alert_mtimes:(.alert_mtimes//{}),merge_events:(.merge_events//{}),signatures:(.signatures//{}),pending:(.pending//[]),incident_stats:(.incident_stats//{}),incident_filing:(.incident_filing//{}),scheduler_signature_seen:(.scheduler_signature_seen//{}),main_ci_runs_seen:(.main_ci_runs_seen//{}),slow_phase_ticks:(.slow_phase_ticks//{}),network_down:(.network_down//false)}' "$STATE")"
@@ -895,9 +890,6 @@ if [[ "$CHECK_ONLY" == 1 ]]; then
     h="$(printf '%s' "$raw" | shasum -a 256 | awk '{print $1}')"
     echo "candidate severity=$sev sig=${h:0:16}"
   done
-  if [[ "$TEST_NOTIFICATION" == 1 && "$NOTIFY" == true ]]; then
-    if ap_notify "流水线异常" "the product bell: 验收测试"; then echo "test-notification=sent"; else echo "test-notification=failed (silent)"; fi
-  fi
   exit 0
 fi
 
@@ -911,7 +903,7 @@ for item in "${events[@]}"; do
   [[ "$count" =~ ^[0-9]+$ ]] || count=0
   if [[ "$raw" != network-recovered ]] && (( prev > 0 && now - prev < DEDUP_SECONDS )); then
     count=$((count+1))
-    STATE_JSON="$(jq -c --arg h "$h" --argjson now "$now" --argjson n "$count" --arg id "$event_id" '.signatures[$h].last=$now|.signatures[$h].count=$n|if $n>=2 and $id!="" then .pending|=map(if .id==$id and .status=="queued" then .needs_supervisor=true else . end) else . end' <<<"$STATE_JSON")"
+    STATE_JSON="$(jq -c --arg h "$h" --argjson now "$now" --argjson n "$count" '.signatures[$h].last=$now|.signatures[$h].count=$n' <<<"$STATE_JSON")"
     queue_incident_filing "$sev" "$raw" "$summary" "$evidence"
     save_state
     continue
@@ -921,20 +913,12 @@ for item in "${events[@]}"; do
 
   event_seq=$((event_seq+1))
   event_id="${now}-$$-${event_seq}"
-  needs=false
-  case "$sev" in high|critical) needs=true ;; esac
-  STATE_JSON="$(jq -c --arg h "$h" --arg raw "$raw" --arg id "$event_id" --arg sev "$sev" --arg summary "$summary" --arg evidence "$evidence" --argjson now "$now" --argjson needs "$needs" '.signatures[$h]={last:$now,count:1,event_id:$id}|.pending += [{id:$id,signature:$h,raw_signature:$raw,severity:$sev,summary:$summary,evidence:$evidence,needs_supervisor:$needs,status:"queued"}]' <<<"$STATE_JSON")"
+  STATE_JSON="$(jq -c --arg h "$h" --arg raw "$raw" --arg id "$event_id" --arg sev "$sev" --arg summary "$summary" --arg evidence "$evidence" --argjson now "$now" '.signatures[$h]={last:$now,count:1,event_id:$id}|.pending += [{id:$id,signature:$h,raw_signature:$raw,severity:$sev,summary:$summary,evidence:$evidence,status:"queued"}]' <<<"$STATE_JSON")"
   if ! grep -Fq "event_id=$event_id" "$QUEUE" 2>/dev/null; then
     printf '[%s] %s %s event_id=%s | %s | %s\n' "$stamp" "$sev" "$h" "$event_id" "$summary" "$evidence" >> "$QUEUE" || true
   fi
-  if [[ "$NOTIFY" == true ]]; then
-    if ap_notify "流水线异常" "the product bell: ${h:0:16}"; then notified=sent; else notified=failed; fi
-  else notified=off
-  fi
-  sup=not-required
-  [[ "$needs" == true ]] && sup=queued
   action_ids+=("$event_id"); action_severities+=("$sev"); action_sigs+=("$h")
-  action_results+=("queue=append,notify=$notified,supervisor=$sup")
+  action_results+=("queue=append")
   save_state
 done
 
@@ -972,81 +956,13 @@ if [[ -r "$A/BELL-RESOLUTION.md" ]]; then
   fi
 fi
 
-lock_live=0
-if [[ -d "$SUPERVISOR_LOCK" ]]; then
-  spid="$(cat "$SUPERVISOR_LOCK/pid" 2>/dev/null || true)"
-  if [[ "$spid" =~ ^[0-9]+$ ]] && kill -0 "$spid" 2>/dev/null; then lock_live=1
-  else
-    rm -f "$SUPERVISOR_LOCK/pid" 2>/dev/null || true; rmdir "$SUPERVISOR_LOCK" 2>/dev/null || true
-    STATE_JSON="$(jq -c '.pending|=map(if .status=="running" then .status="queued" else . end)' <<<"$STATE_JSON")"
-  fi
-fi
-trigger_pending="$(jq -r '[.pending[]?|select(.needs_supervisor==true and .status=="queued")]|length>0' <<<"$STATE_JSON")"
-pending="$(jq -c '[.pending[]?|select(.status=="queued")]|.[0]//empty' <<<"$STATE_JSON")"
-if [[ "$AUTO_SUPERVISOR" == true && "$trigger_pending" == true && -n "$pending" && "$lock_live" == 0 ]] && mkdir "$SUPERVISOR_LOCK" 2>/dev/null; then
-  id="$(jq -r '.id' <<<"$pending")"
-  h="$(jq -r '.signature' <<<"$pending")"
-  summary="$(jq -r '.summary' <<<"$pending")"
-  STATE_JSON="$(jq -c --arg id "$id" '.pending|=map(if .id==$id then .status="running" else . end)' <<<"$STATE_JSON")"
-  save_state
-  BELL_CODE="$HERE" BELL_A="$A" BELL_LOCK="$SUPERVISOR_LOCK" BELL_ID="$id" BELL_HASH="$h" BELL_SUMMARY="$summary" \
-    nohup python3 - <<'PY' >/dev/null 2>&1 &
-import datetime,os,signal,subprocess
-a=os.environ["BELL_A"]; lock=os.environ["BELL_LOCK"]
-event_id=os.environ["BELL_ID"]; signature=os.environ["BELL_HASH"]; summary=os.environ["BELL_SUMMARY"]
-prompt=f"""Read {os.environ["BELL_CODE"]}/BELL-CHARTER.md, then read the first unresolved entry in {a}/BELL-QUEUE.md (event_id={event_id}, signature={signature}).
-Classify the anomaly, gather evidence using only the permitted read tools, and return a concise resolution report with evidence paths and a recommended next action. Do not perform the recommendation. Do not deploy, push, delete data, change workers.json or units.json, or access production. The runner appends your response to BELL-RESOLUTION.md."""
-allowed="Read,Grep,Bash(git log:*),Bash(tail:*),Bash(grep:*),Bash(ps:*),Bash(log show:*),Bash(journalctl:*)"
-# 不加 --dangerously-skip-permissions：只读边界靠 allowedTools 强制，而不只靠提示词。
-cmd=["claude","-p",prompt,"--max-turns","12","--tools","Read,Grep,Bash","--allowedTools",allowed]
-out=""; code=1; timed_out=False
-try:
- p=subprocess.Popen(cmd,cwd=a,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
- with open(os.path.join(lock,"pid"),"w") as f: f.write(str(p.pid))
- try: out,_=p.communicate(timeout=600); code=p.returncode
- except subprocess.TimeoutExpired:
-  timed_out=True
-  try: os.killpg(p.pid,signal.SIGTERM); out,_=p.communicate(timeout=5)
-  except Exception:
-   try: os.killpg(p.pid,signal.SIGKILL)
-   except Exception: pass
-   out,_=p.communicate()
-  code=124
-except Exception as e: out=f"Supervisor launch failed: {e}"
-stamp=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-status="complete" if code==0 and out.strip() and not timed_out else "failed"
-with open(os.path.join(a,"BELL-SUPERVISOR.log"),"a") as f:
- f.write(f"\n[{stamp}] event_id={event_id} signature={signature} status={status} exit={code}\n{out.rstrip()}\n")
-with open(os.path.join(a,"BELL-RESOLUTION.md"),"a") as f:
- f.write(f"\n## {stamp} event_id: {event_id} status: {status}\nSignature: {signature}\nSummary: {summary}\n\n{out.rstrip()}\n")
- if timed_out: f.write("Runner stopped the supervisor after the 10 minute limit.\n")
-try: os.remove(os.path.join(lock,"pid"))
-except OSError: pass
-try: os.rmdir(lock)
-except OSError: pass
-PY
-  sup_pid=$!
-  printf '%s\n' "$sup_pid" > "$SUPERVISOR_LOCK/pid" 2>/dev/null || true
-  if kill -0 "$sup_pid" 2>/dev/null; then
-    for i in "${!action_ids[@]}"; do
-      if [[ "${action_ids[$i]}" == "$id" ]]; then action_results[$i]="${action_results[$i]/supervisor=queued/supervisor=started}"; fi
-    done
-  else
-    STATE_JSON="$(jq -c --arg id "$id" '.pending|=map(if .id==$id then .status="queued" else . end)' <<<"$STATE_JSON")"
-    rm -f "$SUPERVISOR_LOCK/pid" 2>/dev/null || true; rmdir "$SUPERVISOR_LOCK" 2>/dev/null || true
-    for i in "${!action_ids[@]}"; do
-      if [[ "${action_ids[$i]}" == "$id" ]]; then action_results[$i]="${action_results[$i]/supervisor=queued/supervisor=launch-failed}"; fi
-    done
-  fi
-  save_state
-fi
-
 for i in "${!action_ids[@]}"; do
   printf '[%s] %s sig=%s event_id=%s action=%s\n' "$stamp" "${action_severities[$i]}" "${action_sigs[$i]}" "${action_ids[$i]}" "${action_results[$i]}" >> "$LOG"
 done
 # 状态瘦身:已完结 pending 只留最近 50 条,7 天未再出现的签名淘汰(防 bell-state 无界增长拖慢每拍)。
-# 2026-11-04：仅 auto_supervisor 才会清 queued 条目；它关闭时 queued 无限堆积(实测 3500+ 条/1.9MB，
+# 2026-11-04：queued 条目曾只有 auto_supervisor 会清，它关闭时无限堆积(实测 3500+ 条/1.9MB，
 # 每拍 jq 都在反复解析它)，故未完结条目也只留最近 BELL_PENDING_KEEP 条。去重走 .signatures，不受影响。
+# auto_supervisor 已退役：没有任何进程再清 queued，这个上限是唯一的界。
 BELL_PENDING_KEEP="${BELL_PENDING_KEEP:-200}"
 STATE_JSON="$(jq -c --argjson now "$now" --argjson keep "$BELL_PENDING_KEEP" '
   .pending |= (([.[] | select(.status != "done" and .status != "failed")] | if length > $keep then .[-$keep:] else . end)

@@ -55,7 +55,7 @@ upsert_calls="$test_env_root/upsert-calls"
 upsert_body="$test_env_root/upsert-body"
 mkdir -p "$autopi/alerts" "$repo" "$engine" "$supervisor"
 cat > "$autopi/config.json" <<'JSON'
-{"bell":{"enabled":true,"notify":false,"auto_supervisor":false},"incident":{"file_min_severity":"medium"}}
+{"bell":{"enabled":true},"incident":{"file_min_severity":"medium"}}
 JSON
 printf 'window.DASH={};\n' > "$autopi/dashboard.data.js"
 cp "$LOG" "$autopi/scheduler.log"

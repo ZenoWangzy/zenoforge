@@ -125,8 +125,8 @@
     ]
   },
   "bell": {
-    "notify": false,
-    "auto_supervisor": false
+    "enabled": true,
+    "dedup_minutes": 30
   },
   "supervisor_arbiter": {
     "enabled": true,

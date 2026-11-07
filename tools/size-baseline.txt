@@ -9,7 +9,7 @@
 1064	engine/lib.d/model-calls.sh
 967	engine/lib.d/model-policy.sh
 1029	engine/lib.sh
-1060	engine/mac-autopilot/bell.sh
+976	engine/mac-autopilot/bell.sh
 1199	engine/mac-autopilot/gen_dashboard.py
 1661	engine/mac-autopilot/node_health.py
 839	engine/mac-autopilot/scheduler.d/harvest-workers.sh

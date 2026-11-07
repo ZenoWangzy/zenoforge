@@ -116,7 +116,7 @@ make_runtime() { # $1=name → prints the autopilot runtime dir
   local a="$tmp/$1"
   mkdir -p "$a/alerts"
   printf 'window.DASH={};\n' > "$a/dashboard.data.js"
-  printf '%s\n' '{"bell":{"enabled":true,"notify":false,"auto_supervisor":false,"dedup_minutes":30}}' > "$a/config.json"
+  printf '%s\n' '{"bell":{"enabled":true,"dedup_minutes":30}}' > "$a/config.json"
   printf '%s\n' '{"units":[]}' > "$a/units.json"
   printf '%s\n' '{"workers":[]}' > "$a/workers.json"
   jq -n '{monitor_initialized:true,scheduler_lines:0,alert_mtimes:{},merge_events:{},signatures:{},pending:[]}' > "$a/bell-state.json"

@@ -13,7 +13,7 @@ fixture_root="$tmp/repo"
 bin="$tmp/bin"
 mkdir -p "$autopi/alerts" "$fixture_root/engine/mac-autopilot" "$bin" "$tmp/supervisor"
 cat > "$autopi/config.json" <<'JSON'
-{"bell":{"enabled":true,"notify":false,"auto_supervisor":false,"dedup_minutes":30},"incident":{"file_min_severity":"off"}}
+{"bell":{"enabled":true,"dedup_minutes":30},"incident":{"file_min_severity":"off"}}
 JSON
 touch -t 202001010000 "$autopi/dashboard.data.js"
 printf '[%s] scheduler tick\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$autopi/scheduler.log"
@@ -99,8 +99,9 @@ S12_CANCELS="$s12/cancels" BELL_STALE_CI_DISABLE=0 MAC_AUTOPILOT_ROOT="$s12/root
 [[ ! -e "$s12/cancels" ]] || { echo "S12 cancelled runs in --check-only: $(cat "$s12/cancels")" >&2; exit 1; }
 S12_CANCELS="$s12/cancels" BELL_STALE_CI_DISABLE=0 MAC_AUTOPILOT_ROOT="$s12/root" BELL_AUTOPI_DIR="$s12/autopi" BELL_SUPERVISOR_DIR="$s12/supervisor" PATH="$s12/bin:$PATH" bash "$bell"
 [[ "$(cat "$s12/cancels" | tr '\n' ' ')" == "cancel-run 7 cancel-run 5 " ]] || { echo "S12 cancelled the wrong runs: $(cat "$s12/cancels" 2>/dev/null)" >&2; exit 1; }
-# 配置里的 false 必须生效（jq // 会把 false 当缺省）：auto_supervisor:false 时绝不起调查锁。
-[[ ! -e "$autopi/.bell-supervisor.lock" && ! -e "$s12/autopi/.bell-supervisor.lock" && ! -e "$autopi/BELL-SUPERVISOR.log" ]] || { echo 'auto_supervisor:false ignored' >&2; exit 1; }
+# bell.notify/bell.auto_supervisor 已退役：任何路径都不得起调查锁或写 BELL-SUPERVISOR.log
+# （桌面通知与 supervisor 代理调用由上面的 unexpected-actions 桩兜底）。
+[[ ! -e "$autopi/.bell-supervisor.lock" && ! -e "$s12/autopi/.bell-supervisor.lock" && ! -e "$autopi/BELL-SUPERVISOR.log" ]] || { echo 'a supervisor was started' >&2; exit 1; }
 # 慢 tick（夹具里唯一可能的事件就是 stale tick）：日志超过 6 分钟没新行，但 tick 锁的持有进程还活着 → 不判 stale、不重启；锁没了才判 stale
 st="$tmp/slow-tick"; mkdir -p "$st/alerts" "$st/.scheduler.lock"; cp "$autopi/config.json" "$st/config.json"
 # Keep dashboard heartbeat evidence healthy so only the slow tick can raise this fixture.
@@ -119,7 +120,7 @@ grep -q '^candidate severity=high' "$st/out" || { echo 'tick with no lock holder
 sig="$tmp/signature-autopi"
 mkdir -p "$sig/alerts"
 cat > "$sig/config.json" <<'JSON'
-{"bell":{"enabled":true,"notify":false,"auto_supervisor":false},"incident":{"file_min_severity":"critical"}}
+{"bell":{"enabled":true},"incident":{"file_min_severity":"critical"}}
 JSON
 printf 'window.DASH={};\n' > "$sig/dashboard.data.js"
 sig_old_time="$(python3 - <<'PY'

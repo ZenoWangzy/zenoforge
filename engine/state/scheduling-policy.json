@@ -258,7 +258,7 @@
       "rulings": []
     },
     "failure-wake": {
-      "rule": "只在失败时唤醒：成功路径不产生 supervisor 事件（bell notify/auto_supervisor 关闭，supervisor inbox 只收要动手的事），30s refill 只在 worker 退出后唤醒派发，不需要 agent 巡检也能自转。",
+      "rule": "只在失败时唤醒：成功路径不产生 supervisor 事件（bell 的 notify/auto_supervisor 已退役，告警经 head-watch 与 owner mail 到人，supervisor inbox 只收要动手的事），30s refill 只在 worker 退出后唤醒派发，不需要 agent 巡检也能自转。",
       "enforced_by": [
         "engine/mac-autopilot/loop.sh",
         "engine/mac-autopilot/bell.sh",

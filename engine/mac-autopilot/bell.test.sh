@@ -18,7 +18,7 @@ printf 'window.DASH={};\n' > "$autopi/dashboard.data.js"
 trap 'rm -rf "$tmp"' EXIT
 
 cat > "$autopi/config.json" <<'JSON'
-{"bell":{"enabled":true,"notify":true,"auto_supervisor":true,"dedup_minutes":30},"incident":{"file_min_severity":"off"}}
+{"bell":{"enabled":true,"dedup_minutes":30},"incident":{"file_min_severity":"off"}}
 JSON
 printf 'existing alert\n' > "$autopi/alerts/gate.md"
 old_mtime="$(python3 - "$autopi/alerts/gate.md" <<'PY'
@@ -68,10 +68,8 @@ cat > "$bin/systemctl" <<'SH'
 printf '%s\n' "$*" >> "$BELL_TEST_SYSTEMCTL_CALLS"
 exit 0
 SH
-real_nohup="$(command -v nohup)"
 cat > "$bin/nohup" <<'SH'
 #!/usr/bin/env bash
-if [[ "$1" == python3 ]]; then exec "$BELL_TEST_REAL_NOHUP" "$@"; fi
 exit 0
 SH
 cat > "$bin/notify-send" <<'SH'
@@ -129,7 +127,6 @@ chmod +x "$bin/"*
 export BELL_AUTOPI_DIR="$autopi"
 export BELL_TEST_NOTIFICATIONS="$tmp/notifications.log"
 export BELL_TEST_CLAUDE_CALLS="$tmp/claude-calls.log"
-export BELL_TEST_REAL_NOHUP="$real_nohup"
 export BELL_TEST_SYSTEMCTL_CALLS="$tmp/systemctl-calls.log"
 export BELL_SUPERVISOR_DIR="$supervisor"
 export BELL_TEST_NETWORK=green
@@ -140,7 +137,7 @@ export PATH="$bin:$PATH"
 pause_autopi="$tmp/pause-autopi"
 pause_agent="$tmp/pause-agent"
 mkdir -p "$pause_autopi/alerts" "$pause_agent"
-printf '%s\n' '{"bell":{"enabled":true,"notify":false,"auto_supervisor":false},"incident":{"file_min_severity":"off"}}' > "$pause_autopi/config.json"
+printf '%s\n' '{"bell":{"enabled":true},"incident":{"file_min_severity":"off"}}' > "$pause_autopi/config.json"
 printf '%s\n' '{"units":[]}' > "$pause_autopi/units.json"
 printf '%s\n' '{"caller":"operator","reason":"maintenance","issue":"1","provider":"manual","model":"manual","timestamp":"2026-10-01T00:00:00Z"}' > "$pause_agent/PAUSE"
 BELL_AUTOPI_DIR="$pause_autopi" AGENT_HOME="$pause_agent" AUTOPILOT_LOOP_UNIT=fixture-loop.service bash "$bell"
@@ -156,10 +153,6 @@ grep -Fxq -- '--user restart fixture-loop.service' "$BELL_TEST_SYSTEMCTL_CALLS" 
 mv "$BELL_TEST_SYSTEMCTL_CALLS" "$tmp/pause-systemctl-calls"
 
 bash "$bell"
-for _ in $(seq 1 50); do
-  [[ ! -d "$autopi/.bell-supervisor.lock" ]] && break
-  sleep 0.05
-done
 grep -Fq 'worker-died unit=unit-worker' "$autopi/BELL-QUEUE.md"
 ! grep -Fq 'tick done' "$autopi/BELL-QUEUE.md" || { echo 'bell.test.sh: a tick summary line was queued as an event' >&2; exit 1; }
 grep -Fq 'log=impl-worker.log report=impl-worker.md' "$autopi/BELL-QUEUE.md"
@@ -178,24 +171,19 @@ grep -Fq 'verdicts-backlog-stale' "$autopi/BELL-QUEUE.md"
 grep -Fq '1 unimported FIX item' "$autopi/BELL-QUEUE.md"
 grep -Fq 'gh issue create --repo example-maintainer/example-repo' "$autopi/BELL-QUEUE.md"
 grep -Fq -- '--label bug --label needs-triage' "$autopi/BELL-QUEUE.md"
-grep -Fq 'queue=append,notify=sent' "$autopi/bell.log"
-first_queue_id="$(sed -n '1s/.*event_id=\([^ ]*\).*/\1/p' "$autopi/BELL-QUEUE.md")"
-[[ -n "$first_queue_id" ]]
-grep -Fq "event_id: $first_queue_id status: complete" "$autopi/BELL-RESOLUTION.md"
-grep -Fq "Read $script_dir/BELL-CHARTER.md, then read" "$BELL_TEST_CLAUDE_CALLS" || { echo 'bell.test.sh: charter is not read from the code directory' >&2; exit 1; }
+grep -Fq 'action=queue=append' "$autopi/bell.log"
+# The retired bell.notify/bell.auto_supervisor keys: with neither key in the
+# config, high and critical events neither notify nor start a supervisor.
+[[ ! -e "$autopi/.bell-supervisor.lock" && ! -e "$autopi/BELL-SUPERVISOR.log" ]] || { echo 'bell.test.sh: a supervisor was started with no auto_supervisor key' >&2; exit 1; }
+[[ ! -s "$BELL_TEST_NOTIFICATIONS" ]] || { echo 'bell.test.sh: a desktop notification was sent with no notify key' >&2; exit 1; }
+[[ ! -s "$BELL_TEST_CLAUDE_CALLS" ]] || { echo 'bell.test.sh: a supervisor agent was launched with no auto_supervisor key' >&2; exit 1; }
 queue_count="$(wc -l < "$autopi/BELL-QUEUE.md" | awk '{print $1}')"
 log_count="$(wc -l < "$autopi/bell.log" | awk '{print $1}')"
-notification_count="$(wc -l < "$BELL_TEST_NOTIFICATIONS" | awk '{print $1}')"
 
 # Re-observing the same dead worker and stale tick must not emit again.
 bash "$bell"
-for _ in $(seq 1 50); do
-  [[ ! -d "$autopi/.bell-supervisor.lock" ]] && break
-  sleep 0.05
-done
 [[ "$(wc -l < "$autopi/BELL-QUEUE.md" | awk '{print $1}')" == "$queue_count" ]]
 [[ "$(wc -l < "$autopi/bell.log" | awk '{print $1}')" == "$log_count" ]]
-[[ "$(wc -l < "$BELL_TEST_NOTIFICATIONS" | awk '{print $1}')" == "$notification_count" ]]
 
 # S6: the down signature deduplicates, while recovery bypasses a seeded
 # matching dedup window and emits exactly once.
@@ -204,8 +192,6 @@ network_supervisor="$tmp/network-supervisor"
 mkdir -p "$network_autopi/alerts" "$network_supervisor"
 printf 'window.DASH={};\n' > "$network_autopi/dashboard.data.js"
 cp "$autopi/config.json" "$network_autopi/config.json"
-jq '.bell.auto_supervisor=false' "$network_autopi/config.json" > "$tmp/network-config.json"
-mv "$tmp/network-config.json" "$network_autopi/config.json"
 printf '%s\n' '{"units":[]}' > "$network_autopi/units.json"
 printf '%s\n' '{"workers":[]}' > "$network_autopi/workers.json"
 printf '[%s] scheduler tick\n' "$old_tick" > "$network_autopi/scheduler.log"
@@ -248,28 +234,17 @@ export BELL_AUTOPI_DIR="$repeat_autopi"
 bash "$bell"
 [[ "$(wc -l < "$repeat_autopi/BELL-QUEUE.md" | awk '{print $1}')" == 1 ]]
 repeat_log_count="$(wc -l < "$repeat_autopi/bell.log" | awk '{print $1}')"
-repeat_notice_count="$(wc -l < "$BELL_TEST_NOTIFICATIONS" | awk '{print $1}')"
-call_count="$(wc -l < "$BELL_TEST_CLAUDE_CALLS" | awk '{print $1}')"
 
 printf '[%s] BUDGET-STOP token spent>100, unit=unit-budget not dispatched\n' "$repeat_tick" >> "$repeat_autopi/scheduler.log"
 bash "$bell"
-for _ in $(seq 1 50); do
-  [[ ! -d "$repeat_autopi/.bell-supervisor.lock" ]] && break
-  sleep 0.05
-done
 [[ "$(wc -l < "$repeat_autopi/BELL-QUEUE.md" | awk '{print $1}')" == 1 ]]
 [[ "$(wc -l < "$repeat_autopi/bell.log" | awk '{print $1}')" == "$repeat_log_count" ]]
-[[ "$(wc -l < "$BELL_TEST_NOTIFICATIONS" | awk '{print $1}')" == "$repeat_notice_count" ]]
-[[ "$(wc -l < "$BELL_TEST_CLAUDE_CALLS" | awk '{print $1}')" -gt "$call_count" ]]
-grep -Fq 'status: complete' "$repeat_autopi/BELL-RESOLUTION.md"
 
 # S9: worker-death evidence is collected in the same beat and capped at 2 KB.
 trunc_autopi="$tmp/trunc-autopi"
 mkdir -p "$trunc_autopi/alerts"
 printf 'window.DASH={};\n' > "$trunc_autopi/dashboard.data.js"
 cp "$autopi/config.json" "$trunc_autopi/config.json"
-jq '.bell.auto_supervisor=false' "$trunc_autopi/config.json" > "$tmp/trunc-config.json"
-mv "$tmp/trunc-config.json" "$trunc_autopi/config.json"
 printf '[%s] scheduler tick\n' "$old_tick" > "$trunc_autopi/scheduler.log"
 jq -n --argjson pid "$dead_pid" '{units:[{id:"unit-trunc",stage:"review",history:[]}],workers:[{pid:$pid,unit:"unit-trunc",log:"impl.log",report:"impl.md",harvested:false}]}' > "$trunc_autopi/units.json"
 jq -n --argjson pid "$dead_pid" '{workers:[{pid:$pid,unit:"unit-trunc",log:"impl.log",report:"impl.md",harvested:false}]}' > "$trunc_autopi/workers.json"
@@ -306,7 +281,7 @@ unset AGENT_HOME
 ci_autopi="$tmp/ci-autopi"
 mkdir -p "$ci_autopi/alerts" "$tmp/ci-supervisor"
 printf 'window.DASH={};\n' > "$ci_autopi/dashboard.data.js"
-printf '%s\n' '{"bell":{"enabled":true,"notify":false,"auto_supervisor":false},"incident":{"file_min_severity":"off"}}' > "$ci_autopi/config.json"
+printf '%s\n' '{"bell":{"enabled":true},"incident":{"file_min_severity":"off"}}' > "$ci_autopi/config.json"
 printf '%s\n' '{"units":[]}' > "$ci_autopi/units.json"
 printf '%s\n' '{"workers":[]}' > "$ci_autopi/workers.json"
 printf '%s\n' '{"steps":[{"step":"release fixture","status":"done"}]}' > "$ci_autopi/release.json"
@@ -537,7 +512,7 @@ incident_supervisor="$tmp/incident-supervisor"
 incident_bin="$tmp/incident-bin"
 mkdir -p "$incident_autopi/alerts" "$incident_supervisor" "$incident_bin"
 cat > "$incident_autopi/config.json" <<'JSON'
-{"bell":{"enabled":true,"notify":false,"auto_supervisor":false,"dedup_minutes":30}}
+{"bell":{"enabled":true,"dedup_minutes":30}}
 JSON
 printf 'window.DASH={};\n' > "$incident_autopi/dashboard.data.js"
 incident_tick="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"

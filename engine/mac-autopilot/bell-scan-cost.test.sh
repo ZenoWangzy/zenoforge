@@ -69,7 +69,7 @@ PY
 # --- Scenario A: bounded pending, single-pass resolution, bell.log rotation ---
 autopi="$tmp/autopi-a"
 mkdir -p "$autopi/alerts"
-printf '%s\n' '{"bell":{"enabled":true,"notify":false,"auto_supervisor":false,"dedup_minutes":30},"incident":{"file_min_severity":"off"}}' > "$autopi/config.json"
+printf '%s\n' '{"bell":{"enabled":true,"dedup_minutes":30},"incident":{"file_min_severity":"off"}}' > "$autopi/config.json"
 printf 'window.DASH={};\n' > "$autopi/dashboard.data.js"
 printf '[%s] tick done units=0 live=0 secs=1\n' "$fresh_tick" > "$autopi/scheduler.log"
 touch "$autopi/scheduler.log"
@@ -121,7 +121,7 @@ python3 - "$autopi/bell.log" <<'PY'
 import sys
 with open(sys.argv[1],"w") as f:
     for i in range(300):
-        f.write("[2026-10-01T00:%02d:%02dZ] medium sig=%064d event_id=1700000000-1-1 action=queue=append,notify=off,supervisor=not-required fixture padding\n" % (i // 60, i % 60, i))
+        f.write("[2026-10-01T00:%02d:%02dZ] medium sig=%064d event_id=1700000000-1-1 action=queue=append fixture padding\n" % (i // 60, i % 60, i))
     f.write("[2026-10-01T00:59:59Z] medium sig=rotation-keepme event_id=1700000000-1-1 action=fixture\n")
 PY
 

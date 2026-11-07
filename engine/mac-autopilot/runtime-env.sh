@@ -69,14 +69,6 @@ ap_mtime_epoch() {
   python3 -c 'import os,sys; print(int(os.stat(sys.argv[1]).st_mtime))' "$1" 2>/dev/null
 }
 
-ap_notify() { # title message；无桌面通知通道时返回 1（调用方记 failed，不影响主流程）
-  if command -v notify-send >/dev/null 2>&1; then
-    notify-send "$1" "$2" >/dev/null 2>&1
-  else
-    return 1
-  fi
-}
-
 # worker 死因的内存证据：查内核 OOM 记录。
 ap_oom_command() { # minutes
   printf "journalctl -k --since '-%s min' --no-pager 2>/dev/null | grep -iE 'out of memory|oom-kill|killed process' | tail -20" "$1"
