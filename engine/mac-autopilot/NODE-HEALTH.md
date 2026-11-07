@@ -56,7 +56,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | CI + merge | M1 audited cancelled runs/day: tests already red (`ci.cancel_tests_red_per_day`) | frozen M1: 244 / 3.94 days | ≤ 62 | ≥ 124 | rolling report |
 | CI + merge | M1 audited cancelled runs/day: review requested changes (`ci.cancel_review_changes_per_day`) | frozen M1: 237 / 3.94 days | 0 | ≥ 60 | rolling report |
 | CI + merge | M1 audited cancelled runs/day: review blocked (`ci.cancel_review_blocked_per_day`) | frozen M1: 8 / 3.94 days | ≤ 2 | ≥ 5 | rolling report |
-| CI + merge | M1 audited cancelled runs/day: parked (`ci.cancel_parked_per_day`) | frozen M1: 3 / 3.94 days | ≤ 1 | ≥ 2 | rolling report |
+| CI + merge | M1 audited cancelled runs/day: parked (`ci.cancel_parked_per_day`) | measured 2026-11-07, not frozen M1: 168 hourly rolling-24 h readings over the last 7 days (audit file reaches back 18.9 days, so the 7 days are complete): p50 0, p90 3, max 5; 6 parked runs from 4 units (mean 0.86/day) | ≤ 3 | ≥ 6 | rolling report |
 | CI + merge | M1 audited cancelled runs/day: superseded main run (`ci.cancel_superseded_per_day`) | no frozen cause baseline; tracks main merge rate | ≤ 30 | ≥ 60 | rolling report |
 | CI + merge | M1 audited cancelled runs/day: other or unclassified (`ci.cancel_other_per_day`) | no frozen cause baseline | 0 | ≥ 1 | rolling report |
 | CI + merge | active agent PRs with server label `agent/ci-gated` % (`ci.gated_pr_pct`, M12) | frozen M12: 0 of 87 | ≥ 80 | ≤ 50 | GitHub open-PR census |
@@ -144,7 +144,7 @@ The first delivery bounds use existing measured baselines where available and ma
 review values are intentionally a separate cohort from `--hours`; scorecard JSON carries its accepted, merged,
 unlinked and unattributed sample counts under `delivery`.
 
-M1 counts distinct run IDs from the shared cancellation audit in the rolling `--hours` window and normalizes them to a 24-hour rate. For causes expected to disappear with gating, zero is healthy and the frozen pre-change rate is the bug bound; other known causes use the frozen rate as the healthy ceiling and twice that rate as the bug bound. New or unclassified causes use 0 / 1 until there is a frozen baseline. Repeated audit attempts for one run count once. M12 reads the provider label on currently open `agent/issue-*` PRs. M13 counts distinct `ci hold` run IDs over 48 hours; zero is the retirement signal, not a measured before/after comparison.
+M1 counts distinct run IDs from the shared cancellation audit in the rolling `--hours` window and normalizes them to a 24-hour rate. For causes expected to disappear with gating, zero is healthy and the frozen pre-change rate is the bug bound; other known causes use the frozen rate as the healthy ceiling and twice that rate as the bug bound. The parked cause is the exception: the frozen 3 runs / 3.94 days predates `to_supervisor` cancelling CI runs, so its ceiling is the p90 of 168 hourly rolling-24 h readings over the 7 days to 2026-11-07 13:37Z (p50 0, p90 3, max 5; a thin sample, 6 runs, re-measure when the escalation rate changes) and its bug bound is twice that. New or unclassified causes use 0 / 1 until there is a frozen baseline. Repeated audit attempts for one run count once. M12 reads the provider label on currently open `agent/issue-*` PRs. M13 counts distinct `ci hold` run IDs over 48 hours; zero is the retirement signal, not a measured before/after comparison.
 
 ## Where the time goes (`time_sinks`, last 24 h)
 

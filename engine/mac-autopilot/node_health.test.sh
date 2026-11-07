@@ -151,6 +151,12 @@ cap_default = n.CRITERIA["supervisor.cap_default_24h"]  # measured, no bound: an
 assert all(n.status_of(v, cap_default[2], cap_default[3], cap_default[4]) == "OK" for v in (0, 1, 9, 999))
 print("node_health supervisor arbitration metrics: PASS")
 CHECK
+python3 - "$script_dir" <<'CHECK' || fail 'parked-cancel bound must come from the measured 7-day p50/p90 (healthy 3, bug 6), not the frozen M1 baseline'
+import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
+parked = n.CRITERIA["ci.cancel_parked_per_day"]
+assert parked[2:4] == (3, 6), parked
+assert [n.status_of(v, parked[2], parked[3], parked[4]) for v in (0, 3, 5, 6)] == ["OK", "OK", "WARN", "UNHEALTHY"]
+CHECK
 quiet="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 0.2 --now 2026-10-19T12:00:00Z)"
 grep -Eq 'findings block % +-  .*NO-DATA' <<<"$quiet" || fail "no rejection records in the window must show no value, not 0: $(grep -F 'findings block' <<<"$quiet")"
 grep -Eq ' 1 .*WARN$' <<<"$(row 'M1 audited cancelled runs/day: ci deferred')" || fail "M1 did not count one unique audited deferred run: $(row 'ci deferred')"
