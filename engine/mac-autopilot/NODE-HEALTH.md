@@ -23,12 +23,12 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 
 | Node | Metric (id) | Human baseline | Healthy | Unhealthy | Measured 24h |
 |---|---|---|---|---|---|
-| implement | run minutes p50 (`implement.wall_p50`) | 2–4 h focused work (estimate) | ≤ 30 | ≥ 60 | — |
+| implement | run minutes p50, 24 h window (`implement.wall_p50`) | 2–4 h focused work (estimate) | ≤ 30 | ≥ 60 | — |
 | implement | runs with no report % (`implement.no_output_pct`) | — | ≤ 5 | ≥ 15 | — |
 | implement | overlapping writer unit pairs in a rolling 24h (`dispatch.collisions_per_day`) | #4190/#4192/#4193 concurrently edited the same 8000+ line hook; write-start/end record predicted + actual paths, waits do not count; since the 2026-10-29 zf-ab ruling a pair whose only overlap is a `footprint_mutex.shared_append` registry file is the legalized parallelism, not a collision (those conflicts move to the rebase metric below) | 0 | ≥ 1 | — |
 | review | first review minutes p50 (`review.wall_p50`) | first response < 1 h for small changes, < 4 h overall at Google [1]; one session ≤ 60 min, 200–400 LOC/h [2] | ≤ 10 | ≥ 20 | — |
 | review | approved on first review % (`review.first_pass_pct`) | most changes need 1–2 iterations (estimate; [1] measured iterations, median not verified) | ≥ 50 | ≤ 30 | — |
-| repair | run minutes p50 (`repair.wall_p50`) | 15–60 min per round (estimate) | ≤ 15 | ≥ 30 | — |
+| repair | run minutes p50, 24 h window (`repair.wall_p50`) | 15–60 min per round (estimate) | ≤ 15 | ≥ 30 | — |
 | review loop | request-changes rounds before approve p90 (`loop.rounds_p90`) | 2–3 (estimate) | ≤ 3 | ≥ 5 | — |
 | review loop | repair (including pre-review self-fix) + rereview share of tokens % (`loop.rework_token_pct`) | — | ≤ 35 | ≥ 50 | — |
 | review loop | repairs followed by an incremental rereview % (`loop.incremental_rereview_pct`) | Fagan follow-up: the moderator verifies the rework, not a new inspection [6] | ≥ 60 | ≤ 30 | — |

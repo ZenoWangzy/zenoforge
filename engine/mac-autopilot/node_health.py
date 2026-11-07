@@ -193,12 +193,12 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
 SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
-    "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮",
+    "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮；24 h 窗口",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "dispatch.collisions_per_day": "units.json write-start/write-end 的区间与文件范围（预测 + 实际 diff），按单元对去重；固定滚动 24h。",
     "review.wall_p50": "review-*.worker.log 的开始 → 最后写入",
     "review.first_pass_pct": "units.json 每单第一次评审结论（review-approve / review-request-changes / review-block）",
-    "repair.wall_p50": "impl-*-fix-*.worker.log 的开始 → 最后写入",
+    "repair.wall_p50": "impl-*-fix-*.worker.log 的开始 → 最后写入；24 h 窗口",
     "loop.rounds_p90": "units.json：每次 review-approve 之前的 review-request-changes 次数",
     "loop.rework_token_pct": "worker 页脚或 usage_reader 原生 turn 用量减派发基线：repair（含 self-fix）+ rereview ÷ 已计量的 run；未计量的 run 不计入，显示已计量 run 数；全部未计量则 N/A",
     "loop.incremental_rereview_pct": "每次 repair 之后同一单的下一次评审是否为增量复检（rereview）",
@@ -266,6 +266,7 @@ SOURCE.update(line_holds.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
 TIME_SINK_HOURS = 24
+WALL_WINDOW_HOURS = 24  # implement/repair run-minute p50 window
 TIME_SINKS = {
     "repair_queue": ("返工触发 → 派出返工员", "p90", 30, 120, "等 AI 员工名额。长 = 员工数不够，或派活顺序有问题。"),
     "repair_work": ("返工员干活", "p50", 15, 30, "一轮返工本身的时长。"),
@@ -1496,8 +1497,12 @@ def main():
     attach_claude_usage((r for r in cost_rows if since <= r["start"] <= now))
     runs = worker_runs(cost_rows, since, now)
     metrics = {}
+    # Implement and repair run minutes are per-run samples (no time weighting): a 5 h window held 20 to 45 runs
+    # and swung on the model mix, so they read the 24 h window.
+    day_runs = worker_runs(cost_rows, now - timedelta(hours=WALL_WINDOW_HOURS), now)
     for node in ("implement", "review", "repair"):
-        done = [r["minutes"] for r in runs if r["node"] == node and r["output"]]
+        pool = runs if node == "review" else day_runs
+        done = [r["minutes"] for r in pool if r["node"] == node and r["output"]]
         metrics[f"{node}.wall_p50"] = pct(done, .5)
     impl = [r for r in runs if r["node"] == "implement"]
     impl = [r for r in impl if not r["running"]]

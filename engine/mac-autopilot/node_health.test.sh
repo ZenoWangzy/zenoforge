@@ -1220,3 +1220,12 @@ json.dump({"outcome": "completed"}, open(home + "/logs/advisor-batch-x.result.js
 assert n.advisor_answer_age_hours(home, "r", now) < 1
 print("node_health advisor answer age: PASS")
 CHECK2
+# 实施/返工耗时看 24 h：一张 13 h 前交报告的开发轮（5 h 窗口外）必须进 implement.wall_p50
+w24="$test_env_root/wall24"; mkdir -p "$w24/autopi"
+printf 'codex\ntokens used\n1000\ndone\n' > "$w24/impl-pr-40-20261018T230000Z.worker.log"
+printf 'report\n' > "$w24/impl-pr-40-20261018T230000Z.md"
+touch -d "2026-10-19T00:30:00Z" "$w24/impl-pr-40-20261018T230000Z.worker.log"
+PATH="$test_env_root/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$w24/autopi" --audit "$noaudit" \
+  --main-red-dir "$w24/autopi/main-red" --hours 5 --now 2026-10-19T12:00:00Z --json "$w24/node-health.json" >/dev/null
+jq -e '.metrics[] | select(.id == "implement.wall_p50") | .value == 90' "$w24/node-health.json" >/dev/null \
+  || fail "implement wall p50 ignored a run inside the 24 h window: $(jq -c '.metrics[] | select(.id == "implement.wall_p50")' "$w24/node-health.json")"
