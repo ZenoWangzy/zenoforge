@@ -285,6 +285,11 @@ run_merge_lane_pass() {
     [[ -z "$ready" || "$ready" == "null" ]] && break
     tick_prs_prime
     id="$(jqf -r .id <<<"$ready")"; pr="$(jqf -r .pr <<<"$ready")"
+    # The kill counts from the refill's start, and one merge with its ledger writes took 27 to 45s on 2026-11-07.
+    if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 90 )); then
+      say "merge pass deadline after ${SECONDS}s: PR#$pr and later wait for the next pass"
+      break
+    fi
     checks="$(jqf -c '.pr_open_checks // null' <<<"$ready")"
     if [[ "$checks" == null && "${TICK_PR_STATE[$pr]:-}" != MERGED && "${TICK_PR_STATE[$pr]:-}" != CLOSED ]]; then
       say "merge skipped PR#$pr (check census unavailable)"
