@@ -105,7 +105,7 @@ fi
 check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'failed checks: cla, unit'* && "$check_output" == *'checks without a matching ZF_MERGE_OVERRIDE: unit'* ]] \
   || fail "failed check names or unmatched override were not reported: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
   || fail "an unmatched failed check reached merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
