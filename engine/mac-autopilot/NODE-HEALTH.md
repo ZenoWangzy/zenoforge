@@ -339,7 +339,16 @@ use the same window as the other node metrics: time over 24 h, tokens over the `
 | repair | throughput | repair write-ends per 24 h (`repair.out_per_day`) | ≥ 70 | ≤ 19 | 7 daily counts: p50 70, p10 19 |
 | merge | throughput | merges per hour, existing `flow.merge_rate_per_hour` (#4355 SLO) | ≥ 6.5 | ≤ 3.5 | existing row above; not re-measured here |
 | ci | throughput | CI slots admitted per 24 h (`ci.out_per_day`) | ≥ 36 | ≤ 13 | 7 daily counts: p50 36, p10 13 |
-| release | throughput | issues released per 24 h (`release.out_per_day`) | ≥ 0 | ≤ 0 | 7 d: 0 release-closer events (release parked); the bound never fires, so a stopped release shows only in `release.hours_waiting` |
+
+Pipeline steps outside the stations (the node map), measured the same way:
+
+| Step | Dimension | Metric (id) | Healthy | Unhealthy | Source (live, window, n) |
+|---|---|---|---|---|---|
+| rereview | time | rereview run minutes p50 (`rereview.wall_p50`) | ≤ 9 | ≥ 17 | 7 d, 364 rereview runs with output: p50 8.4, p90 16.1 |
+| rereview | tokens | rereview worker tokens per run p50 (`rereview.tokens_p50`) | ≤ 159,000 | ≥ 200,000 | 7 d, 6 rereview runs with measured tokens of 376 (small n, provisional): p50 158,523, p90 199,330 |
+| rereview | throughput | rereview worker runs started per 24 h (`rereview.runs_per_day`) | ≥ 45 | ≤ 11 | 7 daily counts from worker cost rows: p50 45, p10 11 |
+| approve | throughput | review approvals per 24 h (`approve.out_per_day`) | ≥ 49 | ≤ 31 | 7 daily counts of review-approve events (1,450 in total): p50 49, p10 31 |
+| approve | time | approve to merged, CI included (`ci.approve_to_ship_p50`) | ≤ 60 | ≥ 180 | existing row above |
 
 Existing standards that cover the other cells (bounds unchanged here, with their rationale in the table above):
 `implement.wall_p50`, `review.wall_p50`, `repair.wall_p50` (time, run minutes), `advisor.last_answer_age_hours` (advisor time),
@@ -356,6 +365,12 @@ Exceptions, with the reason each dimension cannot be measured (no row is faked):
 | merge | tokens | no model call in `merge-prep.sh` or `merge-pr` |
 | ci | tokens | no model call in `scheduler.d/ci-admission.sh` (CI runner minutes are `ci.waste_runner_pct`) |
 | release | tokens | no model call in `run-release.sh` |
+| release | throughput | points at `release.hours_since_release` on the release-age branch (#635, not merged here): release cadence is scored there, so this file carries no separate bound |
+| PR CI | time | not measured by node_health: the CI run wall time needs the GitHub Actions run API, a gh call this tick does not make; the only figure is a hand measurement from 2026-10-20 |
+| PR CI | throughput | not measured: no local record counts completed CI runs; `ci.out_per_day` counts admissions, not runs |
+| PR CI | tokens | no model call in the PR CI workflow |
+| Postsubmit | throughput | not measured: no local record counts Postsubmit runs on main; main merges are counted by `flow.merge_rate_per_hour` |
+| Postsubmit | tokens | no model call in the Postsubmit workflow |
 
 ## Sources
 

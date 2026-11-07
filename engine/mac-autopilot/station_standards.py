@@ -26,9 +26,24 @@ MATRIX = {
     "repair":    {"time": "repair.wall_p50", "tokens": "repair.tokens_p50", "throughput": "repair.out_per_day"},
     "merge":     {"time": "merge.wait_p50_min", "tokens": None, "throughput": "flow.merge_rate_per_hour"},
     "ci":        {"time": "ci.admission_p50_min", "tokens": None, "throughput": "ci.out_per_day"},
-    "release":   {"time": "release.hours_waiting", "tokens": None, "throughput": "release.out_per_day"},
+    "release":   {"time": "release.hours_waiting", "tokens": None, "throughput": None},
+}
+# Pipeline steps that no station covers (the node map). Each cell is a metric in CRITERIA or a documented exception.
+PIPELINE = {
+    "approve": {"time": "ci.approve_to_ship_p50", "tokens": None, "throughput": "approve.out_per_day"},
+    "rereview": {"time": "rereview.wall_p50", "tokens": "rereview.tokens_p50", "throughput": "rereview.runs_per_day"},
+    "pr_ci": {"time": None, "tokens": None, "throughput": None},
+    "postsubmit": {"time": "delivery.oldest_merged_not_live_hours", "tokens": None, "throughput": None},
 }
 EXCEPTIONS = {
+    ("release", "throughput"): "points at release.hours_since_release (release-age branch, #635, not merged here): release cadence is scored there, with no separate bound in this file",
+    ("pr_ci", "time"): "not measured by node_health: the CI run wall time needs the GitHub Actions run API (a gh call), which this tick does not make; NODE-HEALTH holds only a hand measurement from 2026-10-20",
+    ("pr_ci", "throughput"): "not measured: no local record counts CI runs; ci.out_per_day counts the station's admissions, not completed runs",
+    ("pr_ci", "tokens"): NO_MODEL + " (PR CI workflow)",
+    ("postsubmit", "throughput"): "not measured: no local record counts Postsubmit runs on main; main merges are counted by flow.merge_rate_per_hour",
+    ("postsubmit", "tokens"): NO_MODEL + " (Postsubmit workflow)",
+    ("approve", "tokens"): "approval is a review verdict with no model call of its own",
+    ("approve", "time"): "ci.approve_to_ship_p50 is the approve time (approve to merged, CI included)",
     ("intake", "time"): "not measured: state/N.json keeps only the current state_changed_at, so an issue's time as ready-for-agent is lost once it leaves",
     ("intake", "tokens"): NO_MODEL + " (intake.sh)",
     ("triage", "time"): "not measured: state files keep only the current state, so an issue's entry time into needs-triage is lost; batch logs record counts only",
@@ -53,9 +68,17 @@ CRITERIA = {
     "merge.wait_p50_min":  ("merge", "merge wait: previous event to merged, minutes p50", 25, 41, False),
     "ci.admission_p50_min": ("ci", "CI wait: previous event to ci-ready, minutes p50", 0, 17, False),
     "ci.out_per_day":      ("ci", "CI slots admitted per 24 h", 36, 13, True),
-    "release.out_per_day": ("release", "issues released per 24 h", 0, 0, True),
+    # Pipeline steps outside the stations (PIPELINE). Bounds are filled from the measurement in NODE-HEALTH.md.
+    "approve.out_per_day": ("approve", "review approvals per 24 h", 49, 31, True),
+    "rereview.wall_p50": ("rereview", "rereview run minutes p50", 9, 17, False),
+    "rereview.tokens_p50": ("rereview", "rereview worker tokens per run p50", 159000, 200000, False),
+    "rereview.runs_per_day": ("rereview", "rereview worker runs started per 24 h", 45, 11, True),
 }
 MEANING = {
+    "approve.out_per_day": "Review approvals in 24 h: how many units cleared review.",
+    "rereview.runs_per_day": "Rereview worker runs started in 24 h: the rework loop's re-review load.",
+    "rereview.wall_p50": "Median minutes of a rereview run: the time a re-review takes.",
+    "rereview.tokens_p50": "Median worker tokens per rereview run.",
     "intake.out_per_day": "Issues that left intake (first unit event) in 24 h: the intake station's throughput.",
     "triage.out_per_day": "Issues the triage batches applied in 24 h: the triage station's throughput.",
     "triage.tokens_per_issue_p50": "Median triage model tokens per issue in a batch; a rise means each issue costs more to triage.",
@@ -69,9 +92,12 @@ MEANING = {
     "merge.wait_p50_min": "Median minutes from a unit's previous ledger event to merged or landed: the merge station's own time.",
     "ci.admission_p50_min": "Median minutes from a unit's previous ledger event to ci-ready: the CI station's own queue time.",
     "ci.out_per_day": "CI slots admitted in 24 h (ci-ready and ci-wip-start): the CI station's throughput.",
-    "release.out_per_day": "Issues closed by release batches in 24 h: the release station's throughput.",
 }
 SOURCE = {
+    "approve.out_per_day": "measured 7 d to 2026-11-07T13:13Z: 7 daily counts of review-approve events, p50 49, p10 31 (1,450 events total)",
+    "rereview.runs_per_day": "measured 7 d: 7 daily counts of rereview worker runs from worker cost rows, p50 45, p10 11 (376 runs)",
+    "rereview.wall_p50": "measured 7 d: 364 rereview runs with output, minutes p50 8.4, p90 16.1 (rounded up)",
+    "rereview.tokens_p50": "measured 7 d: 6 rereview runs with measured tokens of 376 (small n, provisional), p50 158,523, p90 199,330 (rounded up)",
     "intake.out_per_day": "measured 7 d to 2026-11-07T13:13Z: 7 daily counts (24 h windows), p50 39, p10 25",
     "triage.out_per_day": "measured 7 d to 2026-11-07T13:13Z: 7 daily counts, p50 27, p10 5",
     "triage.tokens_per_issue_p50": "measured 7 d: 91 triage batch logs, tokens_used / issue_sample_size, p50 109876, p90 209961 (rounded up)",
@@ -85,7 +111,6 @@ SOURCE = {
     "merge.wait_p50_min": "measured 7 d: 221 merged/landed events, p50 24.4, p90 41.0 min (rounded up)",
     "ci.admission_p50_min": "measured 7 d: 341 ci-ready events, p50 0.0, p90 16.1 min (rounded up)",
     "ci.out_per_day": "measured 7 d: 7 daily counts, p50 36, p10 13",
-    "release.out_per_day": "measured 7 d: 0 release-closer events in 7 d (release parked); p50 and p10 both 0, so this bound never fires",
 }
 
 
@@ -139,12 +164,21 @@ def triage_tokens_per_issue(agent_home, since, now):
     return out
 
 
+def event_times(units, names):
+    """Times of every ledger event named in `names`, across all units."""
+    return [t for unit in units for t, h in _history(unit) if h["stage"] in names]
+
+
+def count_between(times, since, now):
+    return sum(1 for t in times if since <= t <= now)
+
+
 def out_count(events, now, hours=WINDOW_HOURS):
     since = now - timedelta(hours=hours)
     return sum(c for t, c in events if since <= t <= now)
 
 
-def collect(now, units, runs, runtime, agent_home):
+def collect(now, units, runs, runtime, agent_home, cost_rows=()):
     """The station metric values for one tick: time and tokens over the last 24 h, throughput as out events in 24 h."""
     import station_health  # lazy: station_health imports node_health, which imports this module
     since = now - timedelta(hours=WINDOW_HOURS)
@@ -155,6 +189,10 @@ def collect(now, units, runs, runtime, agent_home):
     for station, node in RUN_NODE.items():
         values[f"{station}.tokens_p50"] = _pct(run_tokens(runs, node), .5)
     values["triage.tokens_per_issue_p50"] = _pct(triage_tokens_per_issue(agent_home, since, now), .5)
+    values["approve.out_per_day"] = count_between(event_times(units, ("review-approve",)), since, now)
+    values["rereview.runs_per_day"] = count_between([r["start"] for r in cost_rows if r["phase"] == "rereview"], since, now)
+    values["rereview.wall_p50"] = _pct([r["minutes"] for r in runs if r["node"] == "rereview" and r["output"]], .5)
+    values["rereview.tokens_p50"] = _pct(run_tokens(runs, "rereview"), .5)
     return values
 
 

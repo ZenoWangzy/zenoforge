@@ -32,6 +32,14 @@ def missing(stations):
 
 assert set(ss.MATRIX) == set(station_health.STATIONS), (sorted(ss.MATRIX), station_health.STATIONS)
 assert missing(station_health.STATIONS) == [], missing(station_health.STATIONS)
+# Pipeline steps outside the stations: every cell is a metric in CRITERIA or a documented exception.
+for step, row in ss.PIPELINE.items():
+    for dim in DIMS:
+        metric = row.get(dim)
+        if metric is None:
+            assert (ss.EXCEPTIONS.get((step, dim)) or "").strip(), (step, dim)
+        else:
+            assert metric in node_health.CRITERIA, (step, dim, metric)
 # A new station without a standard must fail, not pass silently.
 assert missing(station_health.STATIONS + ("newstation",)) == [("newstation", "no MATRIX row")]
 # Every new metric is sourced (a measured window and sample count), not a bare bound.

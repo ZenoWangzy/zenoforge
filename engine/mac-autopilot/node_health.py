@@ -1481,7 +1481,7 @@ def main():
     followed = [n for n in followed if n]
     metrics["loop.incremental_rereview_pct"] = 100 * followed.count("rereview") / len(followed) if followed else None
     units = ledger_history.load_units(a)
-    metrics.update({**ledger_metrics(units, since, now), **station_standards.collect(now, units, runs, a, agent_home)})
+    metrics.update({**ledger_metrics(units, since, now), **station_standards.collect(now, units, runs, a, agent_home, cost_rows)})
     # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
     metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]
     repo = os.environ.get("ZF_REPO", "")
