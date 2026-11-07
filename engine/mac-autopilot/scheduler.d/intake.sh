@@ -665,7 +665,6 @@ register_new_issues() {
     fi
     if [[ "$episode" == ruling-* ]]; then # the old branch is a closed PR's, up to thousands of commits behind main
       branch="agent/issue-$n-${episode//:/}"
-      task+=$'\n\n本轮从最新 main 的新分支开始，不要沿用旧分支：它属于已关闭的 PR。裁决里提到的旧 PR CI 失败，只有能从当前 main 复现才算本轮范围。'
     fi
     if (( existing_only )) && [[ -n "$existing_id" ]] && ! jqf -e --arg id "$existing_id" 'any(.units[]; .id == $id and (.stage | test("^(implement|review|rereview|repair)(-pending)?$")))' "$(intake_units_view)" >/dev/null; then
       total_upstream="$(jqf '[.units[] | select(.stage | test("^(implement|review|rereview|repair)(-pending)?$"))] | length' "$UNITS")"
@@ -717,6 +716,7 @@ register_new_issues() {
           + (if (($handoff_all.worktree_sha // "") | test("^[0-9a-f]{40}$")) then {handoff_worktree:$handoff_all.worktree,handoff_worktree_sha:$handoff_all.worktree_sha,handoff_worktree_dirty:$handoff_all.worktree_dirty} else {} end)
           + (if $handoff.start_ref then {handoff_start_ref:$handoff.start_ref,handoff_start_sha:$handoff.start_sha} else {} end)] end'
     fi
+    [[ "$episode" != ruling-* || -z "$existing_id" ]] || set_unit "$existing_id" '.task += "\n\n本轮从最新 main 的新分支开始，不要沿用旧分支：它属于已关闭的 PR。裁决里提到的旧 PR CI 失败，只有能从当前 main 复现才算本轮范围。"'
     if [[ -n "$intake_candidate_scope" ]]; then
       intake_candidate_stage=implement-pending
       if [[ -n "$existing_id" && "$pr_state" == OPEN ]] || [[ -z "$existing_id" && "$handoff_pr" =~ ^[0-9]+$ ]]; then
