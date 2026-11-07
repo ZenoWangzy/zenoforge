@@ -572,6 +572,14 @@ assert n.ledger_metrics(units, now-n.timedelta(hours=5), now)["ci.red_after_appr
 approved, rows = n.red_after_approve(units, now-n.timedelta(hours=5))
 assert approved == 3 and rows == [{"unit":"twice", "reds":2, "stage":"ci-test-red", "checks":"Touched packages PR gate", "tests":["a.test.ts","does x"]}], rows
 CHECK
+# A metric that reads None only because no event happened shows N/A, not NO-DATA; other None rows stay NO-DATA.
+python3 - "$script_dir" <<'CHECK'
+import sys
+sys.path.insert(0, sys.argv[1]); import node_health as n
+status = {r[1]: r[7] for r in n.score({}, n.CRITERIA)}
+assert status["ci.shared_append_rebase_conflict_pct"] == "N/A" and status["review.wall_p50"] == "NO-DATA", status
+assert {r[1]: r[7] for r in n.score({"ci.shared_append_rebase_conflict_pct": 60}, n.CRITERIA)}["ci.shared_append_rebase_conflict_pct"] == "UNHEALTHY"
+CHECK
 # First-pass BLOCK is a failed first review; native resumed workers count only
 # the new turn's fresh tokens, so pre-review repair cannot disappear from spend.
 python3 - "$script_dir" "$test_env_root" <<'CHECK'

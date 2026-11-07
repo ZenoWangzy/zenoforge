@@ -230,7 +230,7 @@ SOURCE = {**arbiter_health.SOURCE, **merge_wait.SOURCE, **live_delivery.SOURCE, 
     "ci.cancel_other_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的其他或缺失 reason ÷ 窗口小时 × 24。",
     "ci.gated_pr_pct": "GitHub pull request API：带 agent/ci-gated 标签的 open agent/issue-* PR ÷ 所有 open agent/issue-* PR。",
     "ci.priority_hold_runs_48h": "共享 actions-run-cancellations.jsonl：最近 48 小时不同 run_id 的最后一个非空 reason=ci hold。",
-    "ci.shared_append_rebase_conflict_pct": "logs/shared-append-rebases.jsonl（land-direct-main 记录每次改动范围带 shared-append 文件的落地 rebase）：固定滚动 24h 内 conflict_files 非空的比例；无记录不计值。",
+    "ci.shared_append_rebase_conflict_pct": "logs/shared-append-rebases.jsonl（land-direct-main 记录每次改动范围带 shared-append 文件的落地 rebase）：固定滚动 24h 内 conflict_files 非空的比例；24h 内没有这类落地 rebase 时显示 N/A（没有事件可量，不是缺数据）。",
     "review.large_pr_pct": "pr-sizes.json（ci_spend.py 取 PR 非测试新增行；测试路径包括名为 test、tests、__tests__、fixture、fixtures、__snapshots__ 的目录，以及名称以 eval 开头且后续只含小写字母、连字符或下划线的目录；文件名含 .test.、.spec. 或以 .snap 结尾也排除）对照最近 30 天有台账活动的 PR；无历史的在途单也计入，缺尺寸时显示无数据",
     "loop.advisor_fail_pct": "units.json：advisor-unavailable ÷（advisor-ruling + advisor-unavailable），24 h 窗口",
     "advisor.last_answer_age_hours": "web-advisor-provider-jobs/*/answer.err 中不含 FAIL: 的最新 mtime；needs-advisor 数来自 gh issue list",
@@ -1363,11 +1363,17 @@ def flow_inbox(a, rows, now, agent_home, repo_root):
     os.replace(tmp, state_path)
 
 
+# Rows that read None only because no event happened: shown N/A, not NO-DATA. land-direct-main appends a
+# row only when a landing rebase touches a shared-append file; this host's runtime has no such log.
+NOT_APPLICABLE_WITHOUT_EVENTS = frozenset({"ci.shared_append_rebase_conflict_pct"})
+
+
 def score(metrics, criteria):
     rows = []
     for mid, (node, desc, healthy, unhealthy, higher) in criteria.items():
         v = metrics.get(mid)
-        status = live_delivery.no_data_status(mid, v) or status_of(v, healthy, unhealthy, higher)
+        status = live_delivery.no_data_status(mid, v) or (
+            "N/A" if v is None and mid in NOT_APPLICABLE_WITHOUT_EVENTS else status_of(v, healthy, unhealthy, higher))
         rows.append((node, mid, desc, v, healthy, unhealthy, higher, status))
     return rows
 
