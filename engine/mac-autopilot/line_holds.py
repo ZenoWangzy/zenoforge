@@ -61,6 +61,7 @@ def _hold_row(hold_id, hold, now):
     owner = str((hold or {}).get("owner") or "").strip()
     reason = " ".join(str((hold or {}).get("reason") or "").split())[:120]
     expiry = _ts((hold or {}).get("expires_at") or "")
+    expired_ago_hours = int((now - expiry).total_seconds() // 3600) if expiry is not None and expiry <= now else None
     problem = None
     if not owner:
         problem = "no-owner"
@@ -71,8 +72,7 @@ def _hold_row(hold_id, hold, now):
     if problem is None:
         return None
     return {"hold": hold_id, "owner": owner or "missing", "reason": reason or "missing",
-            "problem": problem,
-            "expired_ago_hours": int((now - expiry).total_seconds() // 3600) if problem == "expired" else None}
+            "problem": problem, "expired_ago_hours": expired_ago_hours}
 
 
 def _config_hold(config, now):

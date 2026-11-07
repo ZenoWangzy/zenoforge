@@ -862,6 +862,12 @@ lhrun 2026-10-20T12:00:00Z
 grep -Fq 'line-hold hold=release_train.enabled owner=ops reason=demo revert after 11-03 problem=expired expired_ago=30h' "$lhinbox" \
   || fail "next-day alert must recompute the expiry age: $(grep 'release_train.enabled' "$lhinbox" | tail -1)"
 rm -f "$lhpause_home/PAUSE"
+printf '%s' '{"release_train":{"enabled":false,"hold":{"reason":"missing owner after expiry","expires_at":"2026-10-19T06:00:00Z"}}}' > "$lha/config.json"
+rm -f "$lhpause_home"/logs/supervisor-alert-seen-*.tsv
+lhrun 2026-10-21T12:00:00Z
+[[ "$(lhlines)" == 5 && "$(lhevents)" == 5 ]] || fail "combined missing-owner and expired hold did not alert: inbox=$(lhlines) events=$(lhevents)"
+grep -Fq 'line-hold hold=release_train.enabled owner=missing reason=missing owner after expiry problem=no-owner expired_ago=54h' "$lhinbox" \
+  || fail "a missing owner must not hide how long the hold has been expired: $(grep 'release_train.enabled' "$lhinbox" | tail -1)"
 
 # --- 机制心跳（#4495 M2/#4498 登记接缝；#4500 STPA 全量登记）：登记表机制超过沉默上限计入
 # mechanism.silent，expected_idle 不计。fixture 覆盖全量登记：非 idle 项每项一条新鲜事件
