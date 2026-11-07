@@ -6,8 +6,9 @@ maintainer_health_mail_subject() { # <facts>
   local facts="$1" decisions day headline
   decisions="$(jq -r '.decisions.total // "null"' <<< "$facts")"
   day="$(jq -r '.report_day' <<< "$facts")"
-  headline="$(jq -r 'if .output == null then "产出记录读取失败"
-    else "做完 \(.output.finished.day // 0) 个、上线 \(.output.shipped.day // 0) 个" end' <<< "$facts")"
+  headline="$(jq -r '[(if .output.finished.day != null then "做完 \(.output.finished.day) 个" else empty end),
+      (if .output.shipped.day != null then "上线 \(.output.shipped.day) 个" else empty end)]
+    | if length == 0 then "产出记录读取失败" else join("、") end' <<< "$facts")"
   if [[ "$decisions" =~ ^[1-9][0-9]*$ ]]; then printf '工厂日报 %s：%s，有 %s 件事等你\n' "$day" "$headline" "$decisions"; else printf '工厂日报 %s：%s\n' "$day" "$headline"; fi
 }
 
@@ -19,33 +20,34 @@ maintainer_health_mail_build_body() {
   jq -r '
     # "过去一天 N 个（前一天 M 个）；近 7 天 X 个（上一个 7 天 Y 个）", dropping what is null.
     def pair($a; $b; $cmp; $unit): if $a == null then null else "\($a) \($unit)" + (if $b == null then "" else "（\($cmp) \($b) \($unit)）" end) end;
-    def periods($p; $unit):
+    def periods($p; $unit): if $p == null then "" else
       [(pair($p.day; $p.prev_day; "前一天"; $unit) | if . == null then empty else "过去一天 " + . end),
-       (pair($p.week; $p.prev_week; "上一个 7 天"; $unit) | if . == null then empty else "近 7 天 " + . end)] | join("；");
+       (pair($p.week; $p.prev_week; "上一个 7 天"; $unit) | if . == null then empty else "近 7 天 " + . end)] | join("；") end;
     def moved($now; $then; $label): if $then == null then null
       else "比\($label)" + (if $now > $then then "多 \($now - $then) 个" elif $now < $then then "少 \($then - $now) 个" else "没有变化" end) end;
+    def wan($n): if $n >= 10000 then "\((($n / 1000 | round) / 10)) 万" else "\($n)" end;
     def money($v): if $v == null then null else "\($v) 美元" end;
     def section($name; $lines): ($lines | map(select(. != null and . != ""))) as $kept | if ($kept | length) == 0 then [] else [$name] + $kept end;
     . as $f
     | ($f.output) as $o
     | (if $f.last_release_at == null then 0 else (($f.window.end - $f.last_release_at) / 86400 | floor) end) as $release_days
     | (if $release_days >= 1 then "距上次正式发版 \($release_days) 天。" else "" end) as $since_release
-    | [ "一句话结论：\($f.conclusion.level)——\($f.conclusion.reason)。" ]
-    + section("产出"; if $o == null then ["- 需求进度记录读取失败，产出无法统计。"] else
-        [(periods($o.finished; "个") | if . == "" then null else "- 做完（已合入主线）：" + . + "。" end),
-         (periods($o.shipped; "个") | if . == "" then null else "- 上线：" + . + "。" + $since_release end)] end)
+    | ([ (periods($o.finished; "个") | if . == "" then null else "- 做完（已合入主线）：" + . + "。" end),
+         (periods($o.shipped; "个") | if . == "" then null else "- 上线：" + . + "。" + $since_release end) ]
+       | map(select(. != null))) as $output_lines
+    | [ "一句话结论：\($f.conclusion.reason)。" ]
+    + [ "产出" ] + (if ($output_lines | length) == 0 then ["- 需求进度记录读取失败，产出无法统计。"] else $output_lines end)
     + section("变化"; if $o == null or $o.stock.now == null then [] else
-        ["- 做完等上线的需求：现在 \($o.stock.now) 个，"
+        ["- 做完等上线的需求（未关闭）：现在 \($o.stock.now) 个，"
           + ([moved($o.stock.now; $o.stock.day_ago; "一天前"), moved($o.stock.now; $o.stock.week_ago; "七天前")] | map(select(. != null)) | join("，")) + "。"
           | sub("，。$"; "。")] end)
     + section("质量"; [
         (if $f.quality.incidents_period == null then null
          else "- 线上事故：过去一天 \($f.quality.incidents_period) 起" + (if $f.quality.incidents_open == null then "" else "，目前仍在处理 \($f.quality.incidents_open) 起" end) + "。" end),
-        (if $f.quality.rollbacks == null then null else "- 撤回上线：过去一天 \($f.quality.rollbacks) 次。" end),
-        (if $f.quality.post_land_fixes == null then null else "- 合入后又出问题、需要返修：过去一天 \($f.quality.post_land_fixes) 起。" end)])
+        (if $f.quality.rollbacks == null then null else "- 撤回上线：过去一天 \($f.quality.rollbacks) 次。" end)])
     + section("资源"; [
         (if $f.spend.day == null then null
-         else "- 令牌用量：过去一天 \($f.spend.day.tokens)" + (if $f.spend.prev_day == null then "" else "（前一天 \($f.spend.prev_day.tokens)）" end) + "。" end),
+         else "- 令牌用量：过去一天 \(wan($f.spend.day.tokens))" + (if $f.spend.prev_day == null then "" else "（前一天 \(wan($f.spend.prev_day.tokens))）" end) + "。" end),
         (if $f.spend.day == null or $f.spend.day.money_usd == 0 then null
          else "- 按美元计价的调用：过去一天 \(money($f.spend.day.money_usd))" + (if $f.spend.prev_day == null then "" else "（前一天 \(money($f.spend.prev_day.money_usd))）" end) + "；与令牌分开记账，没有相加。" end)])
     + [ "需要你决定" ]
@@ -90,7 +92,7 @@ def validate(text):
         return errors
     if len(lines) > 25:
         errors.add("one-screen")
-    if not re.match(r"^一句话结论：(正常|有风险|出事了)——.+。", lines[0] if lines else ""):
+    if not re.match(r"^一句话结论：.+。", lines[0] if lines else ""):
         errors.add("conclusion")
     position = 0
     for section in SECTIONS:

@@ -20,11 +20,8 @@ fi
 if ! declare -F maintainer_local_time >/dev/null; then
   source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/comms-format.sh"
 fi
-# Post-land breakage MTTR feeds the quality section of the owner report.
-if ! declare -F post_land_mttr_summary >/dev/null; then
-  source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/post-land-mttr.sh"
-fi
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/owner-report-render.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/owner-report-ladder.sh"
 
 # One report per Beijing day; 08:00 Beijing is 00:00 UTC, so the slot is the
 # UTC day and the report date is the Beijing date.
@@ -666,84 +663,6 @@ print(json.dumps({"period": sum(since <= first < until for first, _ in episodes)
 PY
 }
 
-# maintainer_health_mail_ladder_facts <home> <now>
-# Requirement output and the waiting stock, from the founder ladder's own trail:
-# supervisor-inbox lines "founder-req #N <from> → <to>" (one per stage change) and
-# founder-req-stage.json (the stage each requirement holds now). A requirement is
-# finished when it first reaches 进 main (merged) and shipped when it first reaches
-# 上线; the waiting stock is the requirements held at 进 main. Counts are for the
-# last day and the day before, the last 7 days and the 7 before. A period that
-# starts before the trail's first line is null: the trail cannot vouch for it.
-# {finished:{day,prev_day,week,prev_week}, shipped:{...}, stock:{now,day_ago,week_ago}}
-# or null when the trail is unreadable or empty.
-maintainer_health_mail_ladder_facts() {
-  local home="$1" now="$2"
-  python3 - "$home/supervisor-inbox" "$home/founder-req-stage.json" "$now" <<'PY'
-import json
-import re
-import sys
-from datetime import datetime, timezone
-
-inbox, stage_path, now = sys.argv[1], sys.argv[2], int(sys.argv[3])
-LADDER = {"新增": -1, "提出": 0, "热修生效": 1, "进 main": 2, "上线": 3, "真人验收": 4}
-pattern = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) (?:founder-req )+#([1-9]\d*) ([^：]+)：")
-rows = []
-try:
-    with open(inbox, encoding="utf-8", errors="replace") as source:
-        for line in source:
-            match = pattern.match(line)
-            steps = match.group(3).split(" → ") if match else []
-            if len(steps) != 2 or steps[0] not in LADDER or steps[1] not in LADDER:
-                continue
-            try:
-                at = int(datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp())
-            except ValueError:
-                continue
-            rows.append((at, match.group(2), LADDER[steps[0]], LADDER[steps[1]]))
-except OSError:
-    pass
-if not rows:
-    print("null")
-    raise SystemExit(0)
-first_seen = min(row[0] for row in rows)
-
-def first_reached(level):
-    reached = {}
-    for at, issue, was, to in rows:
-        if was < level <= to and at < reached.get(issue, now + 1):
-            reached[issue] = at
-    return sorted(reached.values())
-
-def periods(times):
-    def count(start, end):
-        return sum(start <= at < end for at in times) if start >= first_seen else None
-    day, week = 86400, 7 * 86400
-    return {"day": count(now - day, now), "prev_day": count(now - 2 * day, now - day),
-            "week": count(now - week, now), "prev_week": count(now - 2 * week, now - week)}
-
-stock = {"now": None, "day_ago": None, "week_ago": None}
-try:
-    with open(stage_path, encoding="utf-8") as source:
-        stages = json.load(source)
-    if isinstance(stages, dict) and all(isinstance(v, int) and not isinstance(v, bool) for v in stages.values()):
-        held = sum(v == 2 for v in stages.values())
-        def stock_at(moment):
-            # Undo every stage change after the moment; each line moves one requirement.
-            total = held
-            for at, _issue, was, to in rows:
-                if at >= moment:
-                    total += (was == 2 and to != 2) - (to == 2 and was != 2)
-            return total
-        stock = {"now": stock_at(now),
-                 "day_ago": stock_at(now - 86400) if now - 86400 >= first_seen else None,
-                 "week_ago": stock_at(now - 7 * 86400) if now - 7 * 86400 >= first_seen else None}
-except (OSError, ValueError):
-    pass
-print(json.dumps({"finished": periods(first_reached(2)), "shipped": periods(first_reached(3)), "stock": stock},
-                 separators=(",", ":")))
-PY
-}
-
 # maintainer_health_mail_spend_facts <home> <start> <end>
 # What the spend log recorded in [start, end): tokens from the rows that carry a
 # token count, dollars from the rows that carry a price. The two kinds of rows are
@@ -790,7 +709,7 @@ PY
 # maintainer_health_mail_quality_facts <ledger> <home> <start> <end> <repo_root>
 maintainer_health_mail_quality_facts() {
   local ledger="$1" home="$2" start="$3" end="$4" repo_root="$5"
-  local incidents incidents_open open_subjects rollbacks mttr git_dir watch
+  local incidents incidents_open open_subjects rollbacks git_dir watch
   incidents="$(jq -c --argjson start "$start" --argjson end "$end" '
     (.incidents // []) as $rows
     | if any($rows[]; (.opened_at | type) != "number") then null
@@ -804,16 +723,14 @@ maintainer_health_mail_quality_facts() {
     if rollbacks="$(git -C "$repo_root" log "$git_dir" --since="@${start}" --until="@${end}" \
       --fixed-strings --grep='This reverts commit' --format=%H 2>/dev/null)"; then
       rollbacks="$(printf '%s' "$rollbacks" | wc -l | tr -d '[:space:]')"
+    else
+      rollbacks=null
     fi
-  fi
-  mttr='null'
-  if [ -n "$repo_root" ] && git -C "$repo_root" rev-parse --verify origin/main >/dev/null 2>&1; then
-    mttr="$(post_land_mttr_summary "$repo_root" "$start" "$end" 2>/dev/null)" || mttr='null'
   fi
   # Production incidents: ledger incidents plus head-watch PROD-DB-TIMEOUT episodes (see maintainer_health_mail_watch_episodes).
   watch="$(maintainer_health_mail_watch_episodes "$home" "$start" "$end" "$end")" || watch='null'
   jq -cn --argjson incidents "$incidents" --argjson incidents_open "$incidents_open" --argjson open_subjects "$open_subjects" \
-    --argjson rollbacks "$rollbacks" --argjson mttr "$mttr" --argjson watch "$watch" '
+    --argjson rollbacks "$rollbacks" --argjson watch "$watch" '
     {incidents_period:(if $incidents == null or $watch == null then null else $incidents + $watch.period end),
      incidents_open:(if $incidents_open == null or $watch == null then null
        elif $watch.period == 0 then $incidents_open
@@ -821,8 +738,7 @@ maintainer_health_mail_quality_facts() {
        else null end),
      watch_hours_since_last:(if $watch == null then null else $watch.hours_since_last end),
      open_subjects:$open_subjects,
-     rollbacks:$rollbacks,
-     post_land_fixes:(if $mttr == null or ($mttr.summary.count | type) != "number" then null else $mttr.summary.count end)}'
+     rollbacks:$rollbacks}'
 }
 
 # maintainer_health_mail_decision_facts <ledger>
@@ -867,7 +783,7 @@ maintainer_health_mail_decision_facts() {
 # cannot read its source leaves null, and the renderer drops that figure.
 maintainer_health_mail_daily_facts() {
   local home="$1" ledger="$2" now="$3" repo_root="$4"
-  local start=$((now - 86400)) output release spend spend_prev quality decisions day level reason
+  local start=$((now - 86400)) output release spend spend_prev quality decisions day reason
   output="$(maintainer_health_mail_ladder_facts "$home" "$now")" || output=null
   release="$(maintainer_health_mail_release_history "$home" "$now" "$now")" || release=null
   spend="$(maintainer_health_mail_spend_facts "$home" "$start" "$now")" || spend=null
@@ -875,31 +791,29 @@ maintainer_health_mail_daily_facts() {
   quality="$(maintainer_health_mail_quality_facts "$ledger" "$home" "$start" "$now" "$repo_root")" || quality='{}'
   decisions="$(maintainer_health_mail_decision_facts "$ledger")" || decisions='{"items":[],"total":null,"incomplete":0}'
   day="$(maintainer_health_mail_report_day "$now")" || return 1
-  IFS=$'\t' read -r level reason <<< "$(maintainer_health_mail_conclusion_facts "$output" "$quality")"
-  jq -cn --arg day "$day" --arg level "$level" --rawfile reason <(printf '%s' "$reason") --argjson now "$now" \
+  reason="$(maintainer_health_mail_conclusion_facts "$output" "$quality")"
+  jq -cn --arg day "$day" --arg reason "$reason" --argjson now "$now" \
     --argjson output "$output" --argjson release "$release" --argjson spend "$spend" --argjson spend_prev "$spend_prev" \
     --argjson quality "$quality" --argjson decisions "$decisions" \
-    '{report_day:$day,conclusion:{level:$level,reason:$reason},window:{end:$now},
+    '{report_day:$day,conclusion:{reason:$reason},window:{end:$now},
       output:$output,last_release_at:($release.last_at // null),
       spend:{day:$spend,prev_day:$spend_prev},quality:$quality,decisions:$decisions}'
 }
 
 # maintainer_health_mail_conclusion_facts <output> <quality>
-# Prints "<level><TAB><reason>": an incident is 出事了, a pile of finished but
-# unshipped requirements or an unreadable source is 有风险, else 正常.
+# One sentence that leads with output (做完, 上线, 等上线) and then says one
+# thing about production incidents. A part whose figure is unread is left out.
 maintainer_health_mail_conclusion_facts() {
-  jq -r --arg sep $'\t' '
+  jq -r '
     . as $c | ($c.output) as $o | ($c.quality) as $q
-    | [ (if ($q.incidents_open // 0) > 0 then "仍有 \($q.incidents_open) 起线上事故正在告警"
-         elif ($q.incidents_period // 0) > 0 then "过去一天发生 \($q.incidents_period) 起线上事故" else empty end) ] as $incident
-    | [ (if $o == null then "需求进度记录读取失败，产出无法统计"
-         elif $o.finished.day > 0 and $o.shipped.day == 0 and $o.stock.day_ago != null and $o.stock.now > $o.stock.day_ago
-           then "过去一天做完 \($o.finished.day) 个需求、上线 0 个，等上线的需求从 \($o.stock.day_ago) 个涨到 \($o.stock.now) 个"
-         else empty end),
-        (if $q.incidents_period == null then "线上事故记录读取失败" else empty end) ] as $risk
-    | if ($incident | length) > 0 then "出事了\($sep)\(($incident + $risk) | join("；"))"
-      elif ($risk | length) > 0 then "有风险\($sep)\($risk | join("；"))"
-      else "正常\($sep)过去一天做完 \($o.finished.day // 0) 个需求，上线 \($o.shipped.day // 0) 个，没有线上事故" end
+    | [ (if $o.finished.day != null then "做完 \($o.finished.day) 个" else empty end),
+        (if $o.shipped.day != null then "上线 \($o.shipped.day) 个" else empty end),
+        (if $o.stock.now != null then "等上线 \($o.stock.now) 个" else empty end) ] as $out
+    | (if ($q.incidents_open // 0) > 0 then "仍有 \($q.incidents_open) 起线上事故正在告警"
+       elif ($q.incidents_period // 0) > 0 then "过去一天发生 \($q.incidents_period) 起线上事故"
+       elif $q.incidents_period == 0 then "没有线上事故" else "" end) as $incident
+    | [($out | join("、")), $incident] | map(select(. != "")) | join("；")
+    | if . == "" then "今天的产出记录读取失败" else . end
   ' <<< "$(jq -cn --argjson output "$1" --argjson quality "$2" '{output:$output,quality:$quality}')"
 }
 

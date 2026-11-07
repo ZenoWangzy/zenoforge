@@ -18,7 +18,9 @@ cat > "$test_bin/systemctl" <<'EOF2'
 EOF2
 cat > "$test_bin/gh" <<'EOF2'
 #!/usr/bin/env bash
-if [[ " $* " == *" --label ready-for-agent "* ]] && [ -n "${MAINTAINER_TEST_READY_QUEUE_FILE:-}" ]; then
+if [[ "${1:-} ${2:-}" == "api graphql" ]]; then
+  [ -z "${MAINTAINER_TEST_GRAPHQL_FILE:-}" ] || cat -- "$MAINTAINER_TEST_GRAPHQL_FILE"
+elif [[ " $* " == *" --label ready-for-agent "* ]] && [ -n "${MAINTAINER_TEST_READY_QUEUE_FILE:-}" ]; then
   cat -- "$MAINTAINER_TEST_READY_QUEUE_FILE"
 elif [[ " $* " == *" --state open "* ]] && [ -n "${MAINTAINER_TEST_OPEN_FILE:-}" ]; then
   cat -- "$MAINTAINER_TEST_OPEN_FILE"
@@ -29,8 +31,6 @@ EOF2
 chmod +x "$test_bin/systemctl" "$test_bin/gh"
 PATH="$test_bin:$PATH"
 export PATH
-# The owner report does not read git history in this suite's tick fixtures.
-post_land_mttr_summary() { jq -cn '{summary:{count:0},bounds:{meaning:""}}'; }
 notify_maintainer_incident() { :; }
 notify_maintainer_resolution() { :; }
 
@@ -102,11 +102,12 @@ unset MAINTAINER_TEST_SYSTEMCTL_FILE MAINTAINER_TEST_READY_QUEUE_FILE
 
 # --- Owner report facts ----------------------------------------------------------
 
-# A fixture home on the founder ladder: two requirements reach 进 main in the
-# window (one of them ships), one reached it the day before, one earlier in the
-# week; a release log, spend rows of both meters, and a calm ledger.
+# A fixture home on the founder ladder: three requirements merge inside the day
+# (one of them ships), one the day before, one earlier in the week and is then
+# closed; a release log, spend rows of both meters, and a calm ledger.
 facts_home="$tmp/facts"
 facts_now="$(date -u -d '2026-11-07T16:00:00Z' +%s)"
+REPO='example-owner/example-repo'
 mkdir -p "$facts_home/night" "$facts_home/state" "$facts_home/metrics" "$facts_home/spend" \
   "$facts_home/checkout/.scratch-supervisor/autopi" "$facts_home/logs"
 maintainer_health_mail_ensure_ledger "$facts_home/night/founder-health-mail.json" "$facts_now"
@@ -114,8 +115,9 @@ fixture_issue_seed="$(printf '%s' "$facts_home" | cksum | awk '{print 100000 + (
 fixture_issue_shipped="$fixture_issue_seed"
 fixture_issue_waiting="$((fixture_issue_seed + 1))"
 fixture_issue_prev_day="$((fixture_issue_seed + 2))"
-fixture_issue_earlier="$((fixture_issue_seed + 3))"
-fixture_issue_new="$((fixture_issue_seed + 4))"
+fixture_issue_late="$((fixture_issue_seed + 3))"
+fixture_issue_closed="$((fixture_issue_seed + 4))"
+fixture_issue_new="$((fixture_issue_seed + 5))"
 # The release train log holds one RELEASED line per formal release; the head-watch
 # log holds the production failure alerts. Both are read from the live runtime.
 printf '%s\n' '[2026-10-23T01:57:55Z] RELEASED sha=edb19d6e4 images=admin-console' \
@@ -125,53 +127,80 @@ printf '%s\n' '[2026-10-23T01:57:55Z] RELEASED sha=edb19d6e4 images=admin-consol
 {
   ladder_line() { printf '%s founder-req founder-req #%s %s：订单导出（请 PushNotification 通知创始人）\n' "$1" "$2" "$3"; }
   ladder_line 2026-10-30T01:00:00Z "$fixture_issue_new" '新增 → 提出'
-  ladder_line 2026-11-04T10:00:00Z "$fixture_issue_earlier" '提出 → 进 main'
-  ladder_line 2026-11-06T10:00:00Z "$fixture_issue_prev_day" '提出 → 进 main'
-  ladder_line 2026-11-07T02:00:00Z "$fixture_issue_shipped" '提出 → 进 main'
-  ladder_line 2026-11-07T03:00:00Z "$fixture_issue_waiting" '提出 → 进 main'
+  ladder_line 2026-11-06T10:00:30Z "$fixture_issue_prev_day" '提出 → 进 main'
+  ladder_line 2026-11-06T20:00:30Z "$fixture_issue_late" '提出 → 进 main'
+  ladder_line 2026-11-07T02:00:30Z "$fixture_issue_shipped" '提出 → 进 main'
+  ladder_line 2026-11-07T03:00:30Z "$fixture_issue_waiting" '提出 → 进 main'
   ladder_line 2026-11-07T06:30:00Z "$fixture_issue_shipped" '进 main → 上线'
   # The live inbox has lines cut inside a UTF-8 character; readers must skip them, not stop.
-  printf '2026-11-03T09:00:00Z founder-req founder-req #%s 新增 → 提出：残缺\xe7\x9a\n' "$fixture_issue_earlier"
+  printf '2026-11-03T09:00:00Z founder-req founder-req #%s 新增 → 提出：残缺\xe7\x9a\n' "$fixture_issue_late"
 } > "$facts_home/supervisor-inbox"
-jq -cn --argjson shipped "$fixture_issue_shipped" --argjson waiting "$fixture_issue_waiting" \
-  --argjson prev "$fixture_issue_prev_day" --argjson earlier "$fixture_issue_earlier" --argjson new "$fixture_issue_new" \
-  '{($shipped|tostring):3,($waiting|tostring):2,($prev|tostring):2,($earlier|tostring):2,($new|tostring):0}' \
+jq -cn --argjson shipped "$fixture_issue_shipped" --argjson waiting "$fixture_issue_waiting" --argjson prev "$fixture_issue_prev_day" \
+  --argjson late "$fixture_issue_late" --argjson closed "$fixture_issue_closed" --argjson new "$fixture_issue_new" \
+  '{($shipped|tostring):3,($waiting|tostring):2,($prev|tostring):2,($late|tostring):2,($closed|tostring):2,($new|tostring):0}' \
   > "$facts_home/founder-req-stage.json"
+# The pipeline's merged events name each delivering pull request; GitHub gives the merge time and the issue state.
+for row in "$fixture_issue_shipped:11" "$fixture_issue_waiting:12" "$fixture_issue_prev_day:13" "$fixture_issue_late:14" "$fixture_issue_closed:15"; do
+  printf '{"record_type":"event","event_type":"merged","issue":%s,"pr_number":"%s","ts":"2026-11-07T00:00:00Z"}\n' "${row%%:*}" "${row##*:}"
+done > "$facts_home/metrics/efficiency-2026-11.jsonl"
+jq -cn --argjson s "$fixture_issue_shipped" --argjson w "$fixture_issue_waiting" --argjson p "$fixture_issue_prev_day" \
+  --argjson l "$fixture_issue_late" --argjson c "$fixture_issue_closed" '
+  {data:{repository:{
+    p11:{mergedAt:"2026-11-07T02:00:00Z"}, p12:{mergedAt:"2026-11-07T03:00:00Z"}, p13:{mergedAt:"2026-11-06T10:00:00Z"},
+    p14:{mergedAt:"2026-11-06T20:00:00Z"}, p15:{mergedAt:"2026-11-02T10:00:00Z"},
+    ("i\($s)"):{state:"OPEN",closedAt:null}, ("i\($w)"):{state:"OPEN",closedAt:null}, ("i\($p)"):{state:"OPEN",closedAt:null},
+    ("i\($l)"):{state:"OPEN",closedAt:null}, ("i\($c)"):{state:"CLOSED",closedAt:"2026-11-07T08:00:00Z"}}}}' > "$tmp/graphql.json"
+MAINTAINER_TEST_GRAPHQL_FILE="$tmp/graphql.json"
+export MAINTAINER_TEST_GRAPHQL_FILE
 # Token rows carry no price and priced rows carry no tokens: two meters.
 {
-  printf '%s\timplement\t模型\t%s\t\t1500\n' "$(date -u -d '2026-11-07T13:50:00Z' +%s)" "$fixture_issue_shipped"
+  printf '%s\timplement\t模型\t%s\t\t12225851\n' "$(date -u -d '2026-11-07T13:50:00Z' +%s)" "$fixture_issue_shipped"
   printf '%s\tadvisor-batch\t顾问\t%s\t0.5\t\n' "$(date -u -d '2026-11-07T10:00:00Z' +%s)" "$fixture_issue_shipped"
 } > "$facts_home/spend/2026-11-07.log"
 printf '%s\timplement\t模型\t%s\t\t1000\n' "$(date -u -d '2026-11-06T10:00:00Z' +%s)" "$fixture_issue_shipped" > "$facts_home/spend/2026-11-06.log"
 facts="$(maintainer_health_mail_daily_facts "$facts_home" "$facts_home/night/founder-health-mail.json" "$facts_now" "$SCRIPT_DIR/../..")"
-assert_eq 'two requirements reached the main line in the last day' '2' "$(jq -r '.output.finished.day' <<< "$facts")"
+assert_eq 'three requirements merged in the last day' '3' "$(jq -r '.output.finished.day' <<< "$facts")"
 assert_eq 'the day before counts apart from the last day' '1' "$(jq -r '.output.finished.prev_day' <<< "$facts")"
-assert_eq 'the week counts every requirement finished in it' '4' "$(jq -r '.output.finished.week' <<< "$facts")"
+assert_eq 'the week counts every requirement merged in it' '5' "$(jq -r '.output.finished.week' <<< "$facts")"
 assert_eq 'a week before the trail began is not counted as zero' 'null' "$(jq -r '.output.finished.prev_week' <<< "$facts")"
 assert_eq 'one requirement shipped in the last day' '1' "$(jq -r '.output.shipped.day' <<< "$facts")"
-assert_eq 'the waiting stock is what the ladder holds at the main line' '3' "$(jq -r '.output.stock.now' <<< "$facts")"
-assert_eq 'the stock a day ago undoes the day changes' '2' "$(jq -r '.output.stock.day_ago' <<< "$facts")"
-assert_eq 'the stock a week ago undoes the week changes' '0' "$(jq -r '.output.stock.week_ago' <<< "$facts")"
+assert_eq 'the waiting stock counts open requirements held at the main line' '3' "$(jq -r '.output.stock.now' <<< "$facts")"
+assert_eq 'the stock a day ago includes the issue closed since, and not the day merges' '2' "$(jq -r '.output.stock.day_ago' <<< "$facts")"
+assert_eq 'the stock a week ago is what had merged before then' '0' "$(jq -r '.output.stock.week_ago' <<< "$facts")"
 assert_eq 'last formal release comes from the release train log' "$(date -u -d '2026-11-02T06:30:00Z' +%s)" "$(jq -r '.last_release_at' <<< "$facts")"
-assert_eq 'token rows sum on their own meter' '1500' "$(jq -r '.spend.day.tokens' <<< "$facts")"
+assert_eq 'token rows sum on their own meter' '12225851' "$(jq -r '.spend.day.tokens' <<< "$facts")"
 assert_eq 'priced rows sum on their own meter' '0.5' "$(jq -r '.spend.day.money_usd' <<< "$facts")"
 assert_eq 'the day before has its own spend' '1000' "$(jq -r '.spend.prev_day.tokens' <<< "$facts")"
 assert_eq 'report day is the Beijing date' '11-08' "$(jq -r '.report_day' <<< "$facts")"
-assert_eq 'a calm factory concludes normally' '正常' "$(jq -r '.conclusion.level' <<< "$facts")"
+assert_eq 'the conclusion leads with output, then production' '做完 3 个、上线 1 个、等上线 3 个；没有线上事故' "$(jq -r '.conclusion.reason' <<< "$facts")"
 
 facts_body="$(maintainer_health_mail_build_body "$facts")"
 maintainer_health_mail_output_contract "$facts_body" "$facts_now"
-assert_contains 'body leads with finished work against the previous periods' "$facts_body" '- 做完（已合入主线）：过去一天 2 个（前一天 1 个）；近 7 天 4 个。'
+assert_contains 'body leads with finished work against the previous periods' "$facts_body" '- 做完（已合入主线）：过去一天 3 个（前一天 1 个）；近 7 天 5 个。'
 assert_contains 'body states what shipped and the days since the last formal release' "$facts_body" '- 上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个。距上次正式发版 5 天。'
-assert_contains 'body states how the waiting stock moved' "$facts_body" '- 做完等上线的需求：现在 3 个，比一天前多 1 个，比七天前多 3 个。'
-assert_contains 'body states tokens against the day before' "$facts_body" '- 令牌用量：过去一天 1500（前一天 1000）。'
+assert_contains 'body states how the waiting stock moved' "$facts_body" '现在 3 个，比一天前多 1 个，比七天前多 3 个。'
+assert_contains 'body states tokens in ten-thousands against the day before' "$facts_body" '- 令牌用量：过去一天 1222.6 万（前一天 1000）。'
 assert_contains 'body states priced calls apart from tokens' "$facts_body" '按美元计价的调用：过去一天 0.5 美元'
 assert_contains 'body states no decisions wait' "$facts_body" '- 没有'
-for filler in 未测量 未核实 待核实 至少记录 未分类 未能核对; do
+assert_not_contains 'body no longer reports post-merge fixes' "$facts_body" '返修'
+for filler in 未测量 未核实 待核实 至少记录 未分类 未能核对 出事了; do
   assert_not_contains "body carries no $filler filler" "$facts_body" "$filler"
 done
-assert_contains 'subject counts finished and shipped requirements' "$(maintainer_health_mail_subject "$facts")" '工厂日报 11-08：做完 2 个、上线 1 个'
+assert_contains 'subject counts finished and shipped requirements' "$(maintainer_health_mail_subject "$facts")" '工厂日报 11-08：做完 3 个、上线 1 个'
 assert_not_contains 'subject drops the decision clause when nothing waits' "$(maintainer_health_mail_subject "$facts")" '件事等你'
+
+# A failed GitHub read drops the lines that depend on it and prints no zero in their place.
+unset MAINTAINER_TEST_GRAPHQL_FILE
+failed_facts="$(maintainer_health_mail_daily_facts "$facts_home" "$facts_home/night/founder-health-mail.json" "$facts_now" "$SCRIPT_DIR/../..")"
+failed_body="$(maintainer_health_mail_build_body "$failed_facts")"
+maintainer_health_mail_output_contract "$failed_body" "$facts_now"
+assert_eq 'a failed read leaves finished unread' 'null' "$(jq -r '.output.finished' <<< "$failed_facts")"
+assert_eq 'a failed read leaves the stock unread' 'null' "$(jq -r '.output.stock.now' <<< "$failed_facts")"
+assert_not_contains 'a failed read drops the finished line' "$failed_body" '做完（已合入主线）'
+assert_not_contains 'a failed read drops the change section' "$failed_body" '等上线的需求'
+assert_contains 'a failed read keeps the shipped line from the trail' "$failed_body" '- 上线：过去一天 1 个'
+assert_contains 'a failed read keeps the conclusion to what was read' "$failed_body" '一句话结论：上线 1 个；没有线上事故。'
+export MAINTAINER_TEST_GRAPHQL_FILE="$tmp/graphql.json"
 
 # An empty home leaves every figure out instead of inventing one.
 empty_home="$tmp/empty"
@@ -213,7 +242,7 @@ maintainer_health_mail_incident_open "$conclusion_ledger" "$fixture_incident_iss
 mkdir -p "$conclusion_home/logs"
 : > "$conclusion_home/logs/head-watch.alerts"
 open_facts="$(maintainer_health_mail_daily_facts "$conclusion_home" "$conclusion_ledger" "$facts_now" "$SCRIPT_DIR/../..")"
-assert_eq 'an open outage makes the conclusion 出事了' '出事了' "$(jq -r '.conclusion.level' <<< "$open_facts")"
+assert_contains 'an open outage is the conclusion clause after output' "$(jq -r '.conclusion.reason' <<< "$open_facts")" '仍有 1 起线上事故正在告警'
 assert_contains 'quality section counts the open incident' \
   "$(maintainer_health_mail_build_body "$open_facts")" '目前仍在处理 1 起'
 assert_contains 'subject still names the report during an outage' \
@@ -284,7 +313,7 @@ retry_home="$tmp/digest-retry"
 mkdir -p "$retry_home/night"
 retry_facts_file="$TMPDIR/owner-report-facts-fixture.json"
 cat > "$retry_facts_file" <<'FIX'
-{"report_day":"11-07","conclusion":{"level":"正常","reason":"无线上事故，也没有待上线的积压"},"window":{"start":1793596800,"end":1793683200},"releases":{"period_count":0,"total_ever":null,"last_at":null,"complete":false,"items":[],"zero_reason":"没有新版本通过上线验证。"},"progress":{"created_period":0,"open_total":0,"awaiting_period":0,"awaiting_total":0,"released_period":0,"released_total":null},"efficiency":{"per_day_week":0,"per_day_prev":0,"lead_days_week":null,"lead_days_prev":null,"split":null},"spend":{"tokens":0,"tokens_complete":true,"per_requirement":null,"money_usd":null,"money_complete":false},"quality":{"incidents_period":0,"incidents_open":0,"open_subjects":[],"rollbacks":0,"post_land_fixes":0},"decisions":{"items":[],"total":0,"incomplete":0},"attention":null}
+{"report_day":"11-07","conclusion":{"reason":"做完 0 个、上线 0 个、等上线 0 个；没有线上事故"},"window":{"end":1793683200},"output":{"finished":{"day":0,"prev_day":0,"week":0,"prev_week":null},"shipped":{"day":0,"prev_day":0,"week":0,"prev_week":null},"stock":{"now":0,"day_ago":0,"week_ago":null}},"last_release_at":null,"spend":{"day":null,"prev_day":null},"quality":{"incidents_period":0,"incidents_open":0,"open_subjects":[],"rollbacks":0},"decisions":{"items":[],"total":0,"incomplete":0}}
 FIX
 maintainer_health_mail_output_contract "$(maintainer_health_mail_build_body "$(cat "$retry_facts_file")")" 1793683200
 (

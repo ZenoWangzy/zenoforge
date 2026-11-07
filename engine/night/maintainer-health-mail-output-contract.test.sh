@@ -39,7 +39,7 @@ now="$(date -u -d '2026-11-07T16:00:00Z' +%s)"
 tracker_fixture_id="$(printf '%s' "$TMPDIR/output-contract-tracker" | cksum | awk '{print 100000 + ($1 % 800000)}')"
 mkdir -p "$AGENT_HOME/night" "$AGENT_HOME/metrics"
 
-golden_body='一句话结论：正常——过去一天做完 2 个需求，上线 1 个，没有线上事故。
+golden_body='一句话结论：做完 2 个、上线 1 个、等上线 3 个；没有线上事故。
 产出
 - 做完（已合入主线）：过去一天 2 个（前一天 1 个）；近 7 天 4 个（上一个 7 天 3 个）。
 - 上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个（上一个 7 天 0 个）。距上次正式发版 5 天。
@@ -58,8 +58,8 @@ echo 'ok - golden owner report passes the contract'
 
 contract_rejects 'an empty body is refused' '' 'empty-body'
 contract_rejects 'a missing conclusion line is refused' "$(tail -n +2 <<< "$golden_body")" 'conclusion'
-contract_rejects 'a conclusion without a known level is refused' \
-  "${golden_body/一句话结论：正常——/一句话结论：还行——}" 'conclusion'
+contract_rejects 'a conclusion without a sentence is refused' \
+  "${golden_body/一句话结论：做完 2 个、上线 1 个、等上线 3 个；没有线上事故。/一句话结论：}" 'conclusion'
 contract_rejects 'a missing section is refused' "$(grep -v '^产出$' <<< "$golden_body")" 'missing-section'
 contract_rejects 'a reordered section is refused' \
   "$(grep -v '^产出$' <<< "$golden_body" | sed 's/^质量$/产出\n质量/')" 'section-order'
@@ -77,7 +77,7 @@ contract_rejects 'an English word is refused' "$golden_body
 - Channel Gateway 审批与飞书通知" 'ascii-text'
 contract_rejects 'a tracker id is refused' "$golden_body
 - 事项 #${tracker_fixture_id} 已上线" 'issue-id'
-contract_rejects 'an epoch-derived date is refused' "${golden_body/一句话结论：正常——/一句话结论：正常——自1月1日起}" 'epoch-date'
+contract_rejects 'an epoch-derived date is refused' "${golden_body/一句话结论：做完/一句话结论：自1月1日起做完}" 'epoch-date'
 contract_rejects 'an iso timestamp is refused' "$golden_body
 - 上线时间 2026-11-07T08:00:00Z" 'iso-date'
 contract_rejects 'an unreadable release date is refused' "$golden_body
