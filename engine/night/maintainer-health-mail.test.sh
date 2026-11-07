@@ -20,6 +20,12 @@ cat > "$test_bin/gh" <<'EOF2'
 #!/usr/bin/env bash
 if [[ " $* " == *" --label ready-for-agent "* ]] && [ -n "${MAINTAINER_TEST_READY_QUEUE_FILE:-}" ]; then
   cat -- "$MAINTAINER_TEST_READY_QUEUE_FILE"
+elif [[ " $* " == *" --label released "* ]] && [ -n "${MAINTAINER_TEST_RELEASED_FILE:-}" ]; then
+  cat -- "$MAINTAINER_TEST_RELEASED_FILE"
+elif [[ "$*" == *timeline* ]] && [ -n "${MAINTAINER_TEST_TIMELINE_DIR:-}" ]; then
+  cat -- "$MAINTAINER_TEST_TIMELINE_DIR/$(sed -E 's#.*/issues/([0-9]+)/timeline.*#\1#' <<< "$*").json"
+elif [[ " $* " == *" --state open "* ]] && [ -n "${MAINTAINER_TEST_OPEN_FILE:-}" ]; then
+  cat -- "$MAINTAINER_TEST_OPEN_FILE"
 else
   printf '[]\n'
 fi
@@ -105,11 +111,11 @@ unset MAINTAINER_TEST_SYSTEMCTL_FILE MAINTAINER_TEST_READY_QUEUE_FILE
 facts_home="$tmp/facts"
 facts_now="$(date -u -d '2026-11-07T16:00:00Z' +%s)"
 mkdir -p "$facts_home/night" "$facts_home/state" "$facts_home/metrics" "$facts_home/spend" \
-  "$facts_home/.scratch-supervisor/autopi"
+  "$facts_home/checkout/.scratch-supervisor/autopi"
 maintainer_health_mail_ensure_ledger "$facts_home/night/founder-health-mail.json" "$facts_now"
 jq -n --arg generated '2026-11-07T16:00:00Z' \
   '{generated:$generated,metrics:[{status:"OK"},{status:"NO-DATA"}]}' \
-  > "$facts_home/.scratch-supervisor/autopi/node-health.json"
+  > "$facts_home/checkout/.scratch-supervisor/autopi/node-health.json"
 fixture_issue_seed="$(printf '%s' "$facts_home" | cksum | awk '{print 100000 + ($1 % 800000)}')"
 fixture_issue_live="$fixture_issue_seed"
 fixture_issue_waiting=$((fixture_issue_seed + 1))
@@ -131,14 +137,24 @@ EOF
 cat > "$facts_home/state/${fixture_issue_factory}.json" <<'EOF'
 {"state":"concluded","closed_by_pipeline":true,"pipeline_system":{"enabled":true},"run":{"outcome":"pipeline-system","concluded_at":"2026-10-01T00:00:00Z"}}
 EOF
+# GitHub is the release source: the released label and its time (one fixture per issue).
+printf '[{"number":%s,"updatedAt":"2026-11-07T06:30:00Z"}]\n' "$fixture_issue_live" > "$tmp/released.json"
+mkdir -p "$tmp/timeline"
+printf '[{"event":"labeled","created_at":"2026-11-07T06:30:00Z","label":{"name":"released"}}]\n' \
+  > "$tmp/timeline/$fixture_issue_live.json"
+printf '[{"number":%s}]\n' "$fixture_issue_waiting" > "$tmp/open.json"
+MAINTAINER_TEST_RELEASED_FILE="$tmp/released.json"
+MAINTAINER_TEST_TIMELINE_DIR="$tmp/timeline"
+MAINTAINER_TEST_OPEN_FILE="$tmp/open.json"
+export MAINTAINER_TEST_RELEASED_FILE MAINTAINER_TEST_TIMELINE_DIR MAINTAINER_TEST_OPEN_FILE
+# One efficiency line is cut mid-write, as seen on the live host: the rest still counts.
 cat > "$facts_home/metrics/efficiency-2026-11.jsonl" <<EOF
 {"record_type":"event","event_type":"ticket-created","stage":"needs-triage","issue":${fixture_issue_live},"ts":"2026-11-02T06:00:00Z"}
 {"record_type":"event","event_type":"stage-entered","stage":"awaiting-release","issue":${fixture_issue_live},"ts":"2026-11-07T02:30:00Z"}
-{"record_type":"event","event_type":"ticket-released","stage":"released","issue":${fixture_issue_live},"ts":"2026-11-07T06:30:00Z"}
 {"record_type":"event","event_type":"ticket-created","stage":"needs-triage","issue":${fixture_issue_waiting},"ts":"2026-11-07T09:00:00Z"}
-{"record_type":"event","event_type":"ticket-released","stage":"released","issue":${fixture_issue_second_release},"ts":"2026-11-07T05:00:00Z"}
 {"record_type":"event","event_type":"ticket-created","stage":"needs-triage","issue":${fixture_issue_second_release},"ts":"2026-11-07T09:00:00Z"}
 {"record_type":"event","event_type":"ticket-created","stage":"needs-triage","issue":${fixture_issue_declined},"ts":"2026-11-01T00:00:00Z"}
+{"record_type":"event","event_type":"ticket-created","stage":"needs
 {"record_type":"hourly","sampled_at":"2026-11-07T15:00:00Z","metrics":{"tokens":9}}
 EOF
 printf '%s\n' "$(jq -cn --argjson issue "$fixture_issue_live" --arg sent_at '2026-11-07T06:31:00Z' \
@@ -148,8 +164,13 @@ printf '%s\n' "$(jq -cn --argjson issue "$fixture_issue_live" --arg sent_at '202
 printf '%s\timplement\t模型\t%s\t\t1500\n' \
   "$(date -u -d '2026-11-07T13:50:00Z' +%s)" "$fixture_issue_live" \
   > "$facts_home/spend/2026-11-07.log"
-printf '%s\n' "2026-11-07T06:30:00Z founder-req #${fixture_issue_live} 提出 → 上线：订单导出（请 PushNotification 通知创始人）" \
-  > "$facts_home/supervisor-inbox"
+{
+  printf '%s\n' "2026-11-02T06:00:00Z founder-req founder-req #${fixture_issue_live} 新增 → 提出：订单导出（请 PushNotification 通知创始人）"
+  # The live inbox has lines cut inside a UTF-8 character; readers must skip them, not stop.
+  printf '2026-11-03T01:00:00Z founder-req founder-req #%s 新增 → 提出：残缺\xe7\x9a\n' "$fixture_issue_waiting"
+  printf '2026-11-07T09:00:00Z founder-req founder-req #%s 新增 → 提出：待上线需求（请 PushNotification 通知创始人）\n' "$fixture_issue_waiting"
+  printf '%s\n' "2026-11-07T06:30:00Z founder-req founder-req #${fixture_issue_live} 提出 → 上线：订单导出（请 PushNotification 通知创始人）"
+} > "$facts_home/supervisor-inbox"
 jq -cn --argjson live "$fixture_issue_live" --argjson waiting "$fixture_issue_waiting" \
   '{($live|tostring):3,($waiting|tostring):2}' > "$facts_home/founder-req-stage.json"
 cat > "$facts_home/metrics/units-2026-11.jsonl" <<EOF
@@ -165,7 +186,7 @@ assert_eq 'current founder requirements count as open' '1' "$(jq -r '.progress.o
 assert_eq 'awaiting-release total comes from the state census' '1' "$(jq -r '.progress.awaiting_total' <<< "$facts")"
 assert_eq 'new proposals in the window are counted' '1' "$(jq -r '.progress.created_period' <<< "$facts")"
 assert_eq 'new proposals total uses the requirement ladder' '2' "$(jq -r '.progress.created_total' <<< "$facts")"
-assert_eq 'released-all-time comes from the deployment catalog' '1' "$(jq -r '.progress.released_total' <<< "$facts")"
+assert_eq 'released-all-time comes from the GitHub released label' '1' "$(jq -r '.progress.released_total' <<< "$facts")"
 expected_lead_days="$(jq -nr '(("2026-11-07T06:30:00Z" | fromdateiso8601) - ("2026-11-02T06:00:00Z" | fromdateiso8601)) / 86400')"
 assert_eq 'median lead time is measured in days' "$expected_lead_days" "$(jq -r '.efficiency.lead_days_week' <<< "$facts")"
 assert_eq 'week and previous week per-day counts stay separate' '1' "$(jq -r '.efficiency.per_day_week * 7 | round' <<< "$facts")"

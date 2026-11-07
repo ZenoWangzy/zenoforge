@@ -498,41 +498,6 @@ maintainer_health_mail_issue_catalog() {
   ' <<< "$response"
 }
 
-maintainer_health_mail_requirement_deployment_catalog() {
-  local home="$1" requirement_catalog
-  local -a state_files=()
-  requirement_catalog="$(maintainer_health_mail_requirement_catalog "$home")" || requirement_catalog=null
-  [ "$requirement_catalog" != null ] || { printf 'null\n'; return 0; }
-  [ "$(jq -r '.ids | length' <<< "$requirement_catalog")" -gt 0 ] \
-    || { printf '{"complete":true,"requirements_complete":true,"deployments":[]}\n'; return 0; }
-  [ -d "$home/state" ] && [ -r "$home/state" ] && [ -x "$home/state" ] || { printf 'null\n'; return 0; }
-  shopt -s nullglob
-  state_files=("$home"/state/*.json)
-  shopt -u nullglob
-  ((${#state_files[@]})) || { printf 'null\n'; return 0; }
-  jq -cn --argjson requirements "$requirement_catalog" '
-    [inputs as $state
-      | (input_filename | split("/")[-1] | rtrimstr(".json")) as $issue
-      | select($issue | test("^[0-9]+$"))
-      | {issue:$issue,state:$state}] as $records
-    | if ($records | length) == 0 then null
-      else
-        [$records[] as $record | $record.issue as $issue
-          | select(($requirements.ids | index($issue)) != null) | $record] as $requirement_records
-        | [$requirement_records[] as $record | $record.state as $state
-          | select($state.deploy_state == "deployed" and ($state.deployed_sha // "") != "")
-          | ($state.deployed_at // $state.run.deployed_at // $state.run.evidence.production_evidence_at // "") as $stamp
-          | ($stamp | try fromdateiso8601 catch null) as $at
-          | {issue:$record.issue,at:$at}] as $deployed
-        | {complete:($requirements.complete
-                      and ($requirement_records | length) == ($requirements.ids | length)
-                      and all($deployed[]; .at != null)),
-           requirements_complete:$requirements.complete,
-           deployments:[$deployed[] | select(.at != null) | {issue,at}]}
-      end
-  ' "${state_files[@]}"
-}
-
 maintainer_health_mail_deployment_catalog() {
   local home="$1"
   local -a state_files=()
@@ -624,10 +589,10 @@ import sys
 from datetime import datetime, timezone
 
 path = sys.argv[1]
-pattern = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) founder-req #([1-9]\d*) ([^：]+)：(.*?)(?:（请 PushNotification 通知创始人）)?$")
+pattern = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) (?:founder-req )+#([1-9]\d*) ([^：]+)：(.*?)(?:（请 PushNotification 通知创始人）)?$")
 rows = []
 try:
-    with open(path, encoding="utf-8") as source:
+    with open(path, encoding="utf-8", errors="replace") as source:
         for line in source:
             match = pattern.match(line.rstrip("\r\n"))
             if not match:
@@ -676,7 +641,7 @@ maintainer_health_mail_period_events() {
   files=("$home"/metrics/efficiency-????-??.jsonl)
   shopt -u nullglob
   ((${#files[@]})) || { printf 'null\n'; return 0; }
-  jq -cs --argjson start "$start" --argjson end "$end" --arg types "$types" '
+  jq -cR 'fromjson?' "${files[@]}" 2>/dev/null | jq -cs --argjson start "$start" --argjson end "$end" --arg types "$types" '
     def epoch: (.ts // "") | try fromdateiso8601 catch null;
     [ .[] | select(type == "object" and .record_type == "event")
       | select(.event_type | IN($types | split(",")[])) ] as $selected
@@ -690,7 +655,7 @@ maintainer_health_mail_period_events() {
       | {event_type, stage:(.stage // ""), issue:(.issue // null | tostring), at:$at} ]
     | unique_by([.event_type, .issue, .at])
       end
-  ' "${files[@]}" 2>/dev/null || printf 'null\n'
+  ' 2>/dev/null || printf 'null\n'
 }
 
 maintainer_health_mail_created_total() {
@@ -701,70 +666,70 @@ maintainer_health_mail_created_total() {
   jq -r '.ids | length' <<< "$requirements"
 }
 
-# maintainer_health_mail_release_lead_days <home> <start> <end>
-# Days from a requirement's first recorded proposal to its release, one number
-# per release inside the window; releases without a recorded proposal are left
-# out rather than guessed.
-maintainer_health_mail_release_lead_days() {
-  local home="$1" start="$2" end="$3"
-  local requirements
-  local -a files=()
+# maintainer_health_mail_release_history <home> <since> <until>
+# Requirements that reached 上线 (the GitHub `released` label, the ladder's last
+# production stage): {total, last_at, items:[{issue,at}]}. items are the labels
+# added in [since, until); total and last_at cover all time. A label cannot be
+# added after its issue's last update, so the timeline is read only where needed.
+# Null when GitHub or the requirement ladder cannot answer.
+maintainer_health_mail_release_history() {
+  local home="$1" since="$2" until="$3" requirements ids listing total issue updated at best='' items='[]' raw
   requirements="$(maintainer_health_mail_requirement_catalog "$home")" || requirements=null
   [ "$requirements" != null ] && [ "$(jq -r '.complete' <<< "$requirements")" = true ] || { printf 'null\n'; return 0; }
-  shopt -s nullglob
-  files=("$home"/metrics/efficiency-????-??.jsonl)
-  shopt -u nullglob
-  ((${#files[@]})) || { printf 'null\n'; return 0; }
-  jq -cs --argjson start "$start" --argjson end "$end" --argjson requirements "$requirements" '
-    [ .[] | select(type == "object" and .record_type == "event")
-      | select(.event_type == "ticket-released" or .event_type == "ticket-created") ] as $selected
-    | if any($selected[]; ((.ts // "") | try fromdateiso8601 catch null) == null
-      or ((.issue // "") | tostring | test("^[1-9][0-9]*$") | not)) then null else
-    [ $selected[]
-      | ((.ts // "") | try fromdateiso8601 catch null) as $at
-      | {event_type, issue:(.issue // "" | tostring), at:$at} ] as $rows
-    | [ $rows[] | select(.event_type == "ticket-released")
-        | .issue as $issue
-        | select(($requirements.ids | index($issue)) != null)
-        | select(.at >= $start and .at < $end)
-        | . as $release
-        | ([$rows[] | select(.event_type == "ticket-created" and .issue == $release.issue and .at <= $release.at)
-             | .at] | min) as $created
-        | select($created != null)
-        | ($release.at - $created) / 86400 ]
-      end
-  ' "${files[@]}" 2>/dev/null || printf 'null\n'
+  ids="$(jq -c '.ids' <<< "$requirements")"
+  listing="$(timeout 60 gh issue list --repo "${REPO:-}" --label released --state all --limit 1000 --json number,updatedAt 2>/dev/null)" || { printf 'null\n'; return 0; }
+  jq -e 'type == "array" and length < 1000' <<< "$listing" >/dev/null || { printf 'null\n'; return 0; }
+  listing="$(jq -c --argjson ids "$ids" '
+    [.[] | {issue:(.number | tostring), at:(.updatedAt | fromdateiso8601)} | select(.issue as $i | $ids | index($i) != null)]
+    | sort_by(.at) | reverse' <<< "$listing")" || { printf 'null\n'; return 0; }
+  total="$(jq 'length' <<< "$listing")"
+  while IFS=$'\t' read -r issue updated; do
+    if [ -n "$best" ] && (( updated < since )) && (( updated < best )); then break; fi
+    raw="$(timeout 30 gh api --paginate "repos/${REPO:-}/issues/$issue/timeline" 2>/dev/null)" || { printf 'null\n'; return 0; }
+    at="$(jq -rs '[.[][]? | select(.event == "labeled" and .label.name == "released") | .created_at | fromdateiso8601] | max // empty' <<< "$raw" 2>/dev/null)" || at=''
+    [[ "$at" =~ ^[0-9]+$ ]] || { printf 'null\n'; return 0; }
+    if [ -z "$best" ] || (( at > best )); then best=$at; fi
+    if (( at >= since && at < until )); then
+      items="$(jq -c --arg issue "$issue" --argjson at "$at" '. + [{issue:$issue,at:$at}]' <<< "$items")"
+    fi
+  done < <(jq -r '.[] | "\(.issue)\t\(.at)"' <<< "$listing")
+  jq -cn --argjson total "$total" --argjson items "$items" --arg last "$best" '
+    {total:$total, last_at:(if $last == "" then null else ($last | tonumber) end), items:$items}'
+}
+
+# maintainer_health_mail_release_lead_days <home> <start> <end>
+# Days from a requirement's first 提出 record in the founder-req inbox to its
+# 上线 for each release inside the window. A release with no proposal record is
+# left out rather than guessed.
+maintainer_health_mail_release_lead_days() {
+  local home="$1" start="$2" end="$3" history proposals
+  history="$(maintainer_health_mail_release_history "$home" "$start" "$end")" || history=null
+  proposals="$(maintainer_health_mail_founder_req_events "$home")" || proposals=null
+  [ "$history" != null ] && [ "$proposals" != null ] || { printf 'null\n'; return 0; }
+  jq -c --argjson proposals "$proposals" '
+    [ .items[] as $release
+      | ([$proposals[] | select(.issue == $release.issue) | .at] | min) as $proposed
+      | select($proposed != null and $proposed <= $release.at)
+      | ($release.at - $proposed) / 86400 ]
+  ' <<< "$history"
 }
 
 # maintainer_health_mail_state_census <home>
-# {open, awaiting_release} over the requirement state files; null when the
-# census itself cannot be read.
+# {open, awaiting_release}. open: requirement issues still open on GitHub (state
+# files do not always carry a state). awaiting_release: requirements on the founder
+# ladder at 进 main (stage 2), not yet 上线. Null when either source fails.
 maintainer_health_mail_state_census() {
-  local home="$1" requirements
-  local -a state_files=()
+  local home="$1" requirements listing open awaiting
   requirements="$(maintainer_health_mail_requirement_catalog "$home")" || requirements=null
   [ "$requirements" != null ] && [ "$(jq -r '.complete' <<< "$requirements")" = true ] || { printf 'null\n'; return 0; }
   [ "$(jq -r '.ids | length' <<< "$requirements")" -gt 0 ] || { printf '{"open":0,"awaiting_release":0}\n'; return 0; }
-  [ -d "$home/state" ] && [ -r "$home/state" ] && [ -x "$home/state" ] || { printf 'null\n'; return 0; }
-  shopt -s nullglob
-  state_files=("$home"/state/*.json)
-  shopt -u nullglob
-  ((${#state_files[@]})) || { printf 'null\n'; return 0; }
-  jq -n --argjson requirements "$requirements" '
-    [inputs as $s
-      | (input_filename | split("/")[-1] | rtrimstr(".json")) as $issue
-      | select($issue | test("^[0-9]+$"))
-      | select(($requirements.ids | index($issue)) != null)
-      | {state:(try $s.state catch null), deployed:($s.deploy_state == "deployed"),
-         internal:($s.pipeline_system.enabled == true or $s.run.outcome == "pipeline-system")} ] as $rows
-    | if any($rows[]; (.state | type) != "string" or .state == "")
-      or ([$rows[].state] | length) != ($requirements.ids | length) then null
-      else reduce $rows[] as $row ({open:0, awaiting_release:0};
-        if $row.internal or $row.deployed or ($row.state | IN("concluded","closed","wontfix","duplicate")) then .
-        else .open += 1
-          | (if $row.state == "awaiting-release" then .awaiting_release += 1 else . end) end)
-      end
-  ' "${state_files[@]}" 2>/dev/null || printf 'null\n'
+  awaiting="$(jq -c '[to_entries[] | select(.value == 2)] | length' "$home/founder-req-stage.json" 2>/dev/null)" || awaiting=''
+  [[ "$awaiting" =~ ^[0-9]+$ ]] || { printf 'null\n'; return 0; }
+  listing="$(timeout 60 gh issue list --repo "${REPO:-}" --state open --limit 1000 --json number 2>/dev/null)" || { printf 'null\n'; return 0; }
+  jq -e 'type == "array" and length < 1000' <<< "$listing" >/dev/null || { printf 'null\n'; return 0; }
+  open="$(jq -c --argjson ids "$(jq -c '.ids' <<< "$requirements")" \
+    '[.[] | (.number | tostring) | select(. as $i | $ids | index($i) != null)] | length' <<< "$listing")" || { printf 'null\n'; return 0; }
+  jq -cn --argjson open "$open" --argjson awaiting "$awaiting" '{open:$open, awaiting_release:$awaiting}'
 }
 
 # Work share uses the append-only worker unit ledger. A unit tied to several
@@ -807,9 +772,9 @@ except (OSError, ValueError):
 
 inbox_path = os.path.join(home, "supervisor-inbox")
 try:
-    with open(inbox_path, encoding="utf-8") as source:
+    with open(inbox_path, encoding="utf-8", errors="replace") as source:
         for line in source:
-            match = re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ founder-req #([1-9]\d*) ", line)
+            match = re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ (?:founder-req )+#([1-9]\d*) ", line)
             if match:
                 requirements.add(match.group(1))
 except OSError:
@@ -913,13 +878,12 @@ PY
 # the all-time count, and the most recent release time on record.
 maintainer_health_mail_release_facts() {
   local home="$1" start="$2" end="$3"
-  local deployments complete total last_at in_window outcome_rows req_events req_titles rows title outcome at text
-  deployments="$(maintainer_health_mail_requirement_deployment_catalog "$home" 2>/dev/null)" || deployments='null'
-  complete="$(jq -r 'if . == null then "false" else (.complete | tostring) end' <<< "$deployments")"
-  total="$(jq -r 'if . == null or .complete != true then "null" else (.deployments | length) end' <<< "$deployments")"
-  last_at="$(jq -r 'if . == null or .complete != true then "null" else ([.deployments[].at] | max // null) end' <<< "$deployments")"
-  in_window="$(jq -c --argjson start "$start" --argjson end "$end" '
-    if . == null then [] else [.deployments[] | select(.at >= $start and .at < $end)] end' <<< "$deployments")"
+  local history complete total last_at in_window outcome_rows req_events req_titles rows title outcome at text
+  history="$(maintainer_health_mail_release_history "$home" "$start" "$end")" || history='null'
+  complete="$(jq -r 'if . == null then "false" else "true" end' <<< "$history")"
+  total="$(jq -r 'if . == null then "null" else (.total | tostring) end' <<< "$history")"
+  last_at="$(jq -c 'if . == null then null else .last_at end' <<< "$history")"
+  in_window="$(jq -c 'if . == null then [] else .items end' <<< "$history")"
   # Outcome rows carry the user-visible sentence the pipeline recorded at send time.
   outcome_rows='[]'
   if [ -r "$home/night/founder-health-outcomes.jsonl" ]; then
@@ -996,7 +960,9 @@ maintainer_health_mail_release_facts() {
 maintainer_health_mail_progress_facts() {
   local home="$1" start="$2" end="$3" releases="$4" census created awaiting released_period released_total created_total requirements
   census="$(maintainer_health_mail_state_census "$home")"
-  created="$(maintainer_health_mail_period_events "$home" "$start" "$end" "ticket-created")"
+  # 新提出 is the founder ladder's 新增 → 提出 inbox event, not a pipeline ticket event.
+  created="$(maintainer_health_mail_founder_req_events "$home" | jq -c --argjson start "$start" --argjson end "$end" \
+    '[.[] | select(.transition == "新增 → 提出" and .at >= $start and .at < $end) | {issue, at}]' 2>/dev/null)" || created=null
   awaiting="$(maintainer_health_mail_period_events "$home" "$start" "$end" "stage-entered")"
   created_total="$(maintainer_health_mail_created_total "$home")"
   requirements="$(maintainer_health_mail_requirement_catalog "$home")"
@@ -1031,13 +997,12 @@ maintainer_health_mail_progress_facts() {
 # maintainer_health_mail_efficiency_facts <home> <now>
 maintainer_health_mail_efficiency_facts() {
   local home="$1" now="$2"
-  local week_start prev_start deployments week_count prev_count lead_week lead_prev lead_week_days lead_prev_days
-  local created_week catalog split
+  local week_start prev_start history week_count prev_count lead_week lead_prev lead_week_days lead_prev_days split
   week_start=$((now - 7 * 86400))
   prev_start=$((now - 14 * 86400))
-  deployments="$(maintainer_health_mail_requirement_deployment_catalog "$home" 2>/dev/null)" || deployments='null'
-  week_count="$(jq -r --argjson start "$week_start" --argjson end "$now" 'if . == null or .complete != true then "null" else ([.deployments[] | select(.at >= $start and .at < $end)] | length) end' <<< "$deployments")"
-  prev_count="$(jq -r --argjson start "$prev_start" --argjson end "$week_start" 'if . == null or .complete != true then "null" else ([.deployments[] | select(.at >= $start and .at < $end)] | length) end' <<< "$deployments")"
+  history="$(maintainer_health_mail_release_history "$home" "$prev_start" "$now")" || history='null'
+  week_count="$(jq -r --argjson start "$week_start" 'if . == null then "null" else [.items[] | select(.at >= $start)] | length end' <<< "$history")"
+  prev_count="$(jq -r --argjson start "$prev_start" --argjson end "$week_start" 'if . == null then "null" else [.items[] | select(.at >= $start and .at < $end)] | length end' <<< "$history")"
   lead_week_days="$(maintainer_health_mail_release_lead_days "$home" "$week_start" "$now")"
   lead_prev_days="$(maintainer_health_mail_release_lead_days "$home" "$prev_start" "$week_start")"
   lead_week="$(jq -r 'if . == null or length == 0 then "null" else (sort | .[length / 2 | floor] + .[length / 2 | ceil - 1]) / 2 end' <<< "$lead_week_days" 2>/dev/null || printf 'null')"
@@ -1202,7 +1167,7 @@ maintainer_health_mail_attention_count() {
   local home="$1" now="$2" user_home runtime_dir scorecard generated sampled_epoch age
   user_home="${home%/.zenoforge}"
   [ "$user_home" != "$home" ] || user_home="$home"
-  runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${ZF_MAC_AUTOPILOT_RUNTIME_DIR:-$user_home/.scratch-supervisor/autopi}}"
+  runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${ZF_MAC_AUTOPILOT_RUNTIME_DIR:-${MAC_AUTOPILOT_ROOT:-$user_home/checkout}/.scratch-supervisor/autopi}}"
   scorecard="$runtime_dir/node-health.json"
   [ -r "$scorecard" ] || { printf 'null\n'; return 0; }
   generated="$(jq -r '.generated // empty' "$scorecard" 2>/dev/null || true)"
@@ -1346,7 +1311,7 @@ maintainer_health_mail_current_anomalies() {
   local home="$1" now="$2" user_home runtime_dir scorecard generated sampled_epoch age result
   user_home="${home%/.zenoforge}"
   [ "$user_home" != "$home" ] || user_home="$home"
-  runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${ZF_MAC_AUTOPILOT_RUNTIME_DIR:-$user_home/.scratch-supervisor/autopi}}"
+  runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${ZF_MAC_AUTOPILOT_RUNTIME_DIR:-${MAC_AUTOPILOT_ROOT:-$user_home/checkout}/.scratch-supervisor/autopi}}"
   scorecard="$runtime_dir/node-health.json"
   [ -r "$scorecard" ] || { printf '调度评分样本待补'; return 0; }
   generated="$(jq -r '.generated // empty' "$scorecard" 2>/dev/null || true)"
@@ -2055,8 +2020,15 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       maintainer_health_mail_track_important "$ledger" "decision:$issue:$subject" decision "$subject" \
         "$issue" "$now" "$question" "$recommendation"
       ;;
+    render)
+      # Same facts and text as the mail, printed only: nothing is sent or written.
+      now="${2:-$(date +%s)}"
+      repo_root="${ZF_REPO_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)}"
+      facts="$(maintainer_health_mail_daily_facts "$AGENT_HOME" "$ledger" "$now" "$repo_root")" || exit 1
+      printf '%s\n\n%s\n' "$(maintainer_health_mail_subject "$facts")" "$(maintainer_health_mail_build_body "$facts")"
+      ;;
     *)
-      printf 'usage: %s status [epoch] | credential-status | tick | resolve-incident <issue-number> <reason> | queue-event <key> <section> <text> [epoch] | track-decision <issue-number> <subject> <decision-mail-body> [epoch]\n' "$0" >&2
+      printf 'usage: %s status [epoch] | render [epoch] | credential-status | tick | resolve-incident <issue-number> <reason> | queue-event <key> <section> <text> [epoch] | track-decision <issue-number> <subject> <decision-mail-body> [epoch]\n' "$0" >&2
       exit 2
       ;;
   esac
