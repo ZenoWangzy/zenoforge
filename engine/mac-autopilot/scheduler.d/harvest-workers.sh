@@ -188,7 +188,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
       if [[ "$(jqf -r '.lease_expired // false' <<<"$w")" == true ]]; then
         set_unit "$unit" '.footprint=[]'
       else
-        if actual="$(set -o pipefail; git -C "$paths_dir" diff --name-only origin/main...HEAD | jq -Rsc 'split("\n") | map(select(length>0))')"; then
+        if [[ -n "$paths_dir" ]] && actual="$(set -o pipefail; git -C "$paths_dir" diff --name-only origin/main...HEAD | jq -Rsc 'split("\n") | map(select(length>0))')"; then
           set_unit "$unit" "$(STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" hist write-end "$actual") | .footprint=((.footprint // []) + $actual | unique)"
         else
           say "unit $unit footprint refresh failed; keeping existing footprint"
