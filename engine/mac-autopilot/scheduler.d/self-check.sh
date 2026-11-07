@@ -268,6 +268,8 @@ dispatch_capacity_free() { # worker slot available; the same predicate room_for 
   local cur; cur="$(live_workers)"
   (( cur < MAX ))
 }
+# Apart from the predicate: the pack's dispatch-queue-footprint test stubs that false and must still reach footprint_room.
+dispatch_walk_full() { ! dispatch_capacity_free; }
 room_for() { # unit-id type [unit-json] [fresh-footprint=true]：焦点与并发检查
   local u="${3:-}" priority waiter impl_cap n_impl fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"

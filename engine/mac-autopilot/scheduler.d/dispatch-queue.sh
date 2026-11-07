@@ -30,7 +30,7 @@ dispatch_pending() {
       break
     fi
     # Every start ends at room_for's capacity check. The first pass of a full tick still walks all, for parks and holds.
-    if [[ "$local_refill" == true || -n "${TICK_DISPATCH_FP:-}" ]] && ! dispatch_capacity_free; then
+    if [[ "$local_refill" == true || -n "${TICK_DISPATCH_FP:-}" ]] && dispatch_walk_full; then
       say "dispatch walk stopped at capacity $(live_workers)/$MAX: units from $id wait for a free slot"
       break
     fi
