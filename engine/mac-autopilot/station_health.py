@@ -2,7 +2,8 @@
 """Per-station health: throughput, idle and stall time, from local files only (stateless, no gh calls).
 
 A station is stalled when work waits in its named input buffer and nothing has left it for longer than its
-bound; a paused pipeline reports PAUSED and raises nothing. See "Stations" in NODE-HEALTH.md.
+bound; a paused pipeline reports PAUSED and raises nothing. Intake that took nothing on purpose (target met, marker
+`intake-held-since`) reports HELD, not STALLED, until the hold is 2 x its bound old. See "Stations" in NODE-HEALTH.md.
 """
 import argparse, glob, json, os, re
 from datetime import datetime, timedelta, timezone
@@ -19,7 +20,8 @@ UNIT_BUFFER = {"implement-pending": "implement", "review-pending": "review", "re
                "repair-pending": "repair", "ready-to-merge": "merge"}
 STATE_BUFFER = {"needs-triage": "triage", "needs-advisor": "advisor"}
 UNIT_OUT = {"review-approve": "review", "review-request-changes": "review", "review-block": "review",
-            "merged": "merge", "landed": "merge", "ci-ready": "ci", "ci-wip-start": "ci"}
+            "merged": "merge", "landed": "merge", "ci-ready": "ci", "ci-wip-start": "ci",
+            "hold-handoff": "intake"}  # a handoff re-enters an existing unit: its first row was the original intake
 # `release-closer: deployed=<sha, any length> closed=[issue, ...]`, one out per closed issue.
 RELEASE_RE = re.compile(r"^\[(\S+)\] release-closer: deployed=[0-9a-f]+ closed=\[([0-9,\s]*)\]")
 WORK_OUT = {"implement": "implement", "repair": "repair"}
@@ -142,7 +144,7 @@ def admission_gaps(units, runtime, since):
     return {k: {"n": len(v), "p50": pct(v, .5), "p90": pct(v, .9)} for k, v in gaps.items()}
 
 
-def station_rows(wait, ev, now, bounds, paused):
+def station_rows(wait, ev, now, bounds, paused, held_since=None):
     rows = {}
     for s in STATIONS:
         times = wait[s]
@@ -157,6 +159,9 @@ def station_rows(wait, ev, now, bounds, paused):
             stall = min(minutes(now, last) if last else float("inf"), oldest if oldest is not None else float("inf"))
             stall = 0.0 if stall == float("inf") else max(stall, 0.0)
         status = "PAUSED" if paused else "STALLED" if times and stall > bounds[s] else "OK"
+        # Held is measured from the hold's start, so a long hold cannot hide a real stop.
+        if s == "intake" and status == "STALLED" and held_since and minutes(now, held_since) < 2 * bounds[s]:
+            status = "HELD"
         rows[s] = {"waiting": len(times), "oldest_wait_min": None if oldest is None else round(oldest, 1),
                    "out_1h": count(1), "out_24h": count(24),
                    "last_out": last.strftime("%Y-%m-%dT%H:%M:%SZ") if last else None,
@@ -212,10 +217,14 @@ def main():
     bounds = dict(DEFAULT_STALL_MINUTES)
     bounds.update({k: v for k, v in (cfg.get("stall_minutes") or {}).items() if k in bounds and isinstance(v, (int, float))})
     units = ledger_history.load_units(args.runtime)
+    try:
+        held_since = ts(open(os.path.join(args.runtime, "intake-held-since")).read().strip())
+    except OSError:
+        held_since = None
     paused = os.path.exists(args.pause_file)
     doc = {"at": f"{now:%Y-%m-%dT%H:%M:%SZ}", "paused": paused,
            "stations": station_rows(waiting(units, list(read_states(args.agent_home))), outs(units, args.runtime, args.agent_home),
-                                    now, bounds, paused),
+                                    now, bounds, paused, held_since),
            "admission_gaps": admission_gaps(units, args.runtime, now - timedelta(hours=24))}
     for name, body in (("station-health.json", json.dumps(doc, ensure_ascii=False)), ("station-health.txt", render(doc))):
         tmp = os.path.join(args.runtime, name + ".tmp")

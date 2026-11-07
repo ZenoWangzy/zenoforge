@@ -273,6 +273,9 @@ startable_pending_count() { # pending units eligible to start under intake's #15
   footprint_waiters_revalidate || return 1
   jqf "[.units[] | select(.stage | test(\"-pending$\")) $(intake_eligible_filter)] | length" "$UNITS"
 }
+# station_health.py reads this marker so a pass that took nothing on purpose is HELD, not STALLED. It keeps the hold's first
+# time (a long hold is measured from its start) and goes when a pass gets past the held checks, which is when intake can add.
+intake_hold_mark() { [[ -e "$A/intake-held-since" ]] || date -u +%Y-%m-%dT%H:%M:%SZ > "$A/intake-held-since"; }
 intake_skip() { intake_skip_counts[$1]=$(( ${intake_skip_counts[$1]:-0} + 1 )); } # bumps register_new_issues' local intake_skip_counts (dynamic scope)
 register_new_issues() {
   local enabled live pending upstream total_upstream total_room max_up ready_q max_ready want added=0 n lane title labels task_record task body_blocked_by branch busy handoff state_file acceptance
@@ -346,12 +349,12 @@ register_new_issues() {
     ready_buffer="$(jqf -r --argjson max "$MAX" '.issue_intake.ready_buffer // $max' <<<"$CFG")"; [[ "$ready_buffer" =~ ^[0-9]+$ ]] || ready_buffer="$MAX"
     target_pending=$(( MAX - live + ready_buffer ))
     want=$(( target_pending - pending ))
-    (( want > 0 )) || { say "intake held: startable pending $pending meets target $target_pending (live $live max $MAX)"; return 0; }
+    (( want > 0 )) || { intake_hold_mark; say "intake held: startable pending $pending meets target $target_pending (live $live max $MAX)"; return 0; }
   fi
   upstream="$(jqf "[.units[] | select(.stage | test(\"^(implement|review|rereview|repair)(-pending)?$\")) $(intake_eligible_filter)] | length" "$UNITS")"
   total_upstream="$(jqf '[.units[] | select(.stage | test("^(implement|review|rereview|repair)(-pending)?$"))] | length' "$UNITS")"
   total_room=$(( 2 * max_up - total_upstream ))
-  (( total_room > 0 )) || { say "intake held: $total_upstream total units upstream (ceiling $((2 * max_up)))"; return 0; }
+  (( total_room > 0 )) || { intake_hold_mark; say "intake held: $total_upstream total units upstream (ceiling $((2 * max_up)))"; return 0; }
   (( want <= total_room )) || want=$total_room
   ready_q="$(jqf '[.units[] | select(.stage=="ready-to-merge" or .stage=="landing")] | length' "$UNITS")"
   upstream_room=$(( max_up - upstream ))
@@ -362,7 +365,8 @@ register_new_issues() {
   elif (( upstream_room < want )); then
     want=$upstream_room
   fi
-  (( want > 0 )) || { say "intake held: $upstream units upstream (max_upstream $max_up)"; return 0; }
+  (( want > 0 )) || { intake_hold_mark; say "intake held: $upstream units upstream (max_upstream $max_up)"; return 0; }
+  rm -f -- "$A/intake-held-since"
   # 只按可启动 pending 计目标；新登记的候选会再经 footprint 冲突筛选。
   # 已有 open PR 的 issue 不再收（#3957 已由 #3958 实现，分支名却不是 agent/issue-N）：看分支、标题和正文里是否提到它。
   if [[ -n "${HANDOFF_PR_CENSUS:-}" && "${HANDOFF_CENSUS_PARTIAL:-0}" != 1 ]]; then

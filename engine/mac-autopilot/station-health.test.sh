@@ -71,3 +71,29 @@ run
 [[ "$(field review status)" == PAUSED && "$(field release status)" == PAUSED ]] || fail 'pause should report PAUSED'
 [[ ! -s "$R/alerts/node-health.md" ]] || fail 'PAUSED must raise no alert'
 echo 'ok - pause reports PAUSED and raises no alert'
+
+# Intake held: a pass that took nothing on purpose is HELD, not STALLED, until the hold is 2 x the bound (90 -> 180 min) old.
+R="$test_env_root/runtime-held"; H="$test_env_root/home-held"; mkdir -p "$R/alerts" "$H/state" "$H/logs"
+echo '{"units":[]}' > "$R/units.json"
+echo '{"state":"ready-for-agent","state_changed_at":"2026-11-07T01:00:00Z"}' > "$H/state/20.json"
+run() { python3 "$here/station_health.py" --runtime "$R" --agent-home "$H" --pause-file "$H/PAUSE" --now "$NOW" --alert; }
+stalls() { grep -c 'STATION-STALLED station=intake ' "$R/alerts/node-health.md" || true; }
+run
+[[ "$(field intake status)" == STALLED && "$(stalls)" == 1 ]] || fail 'no marker: intake with a 300 min wait must stay STALLED and alert'
+: > "$R/alerts/node-health.md"
+echo 2026-11-07T04:20:00Z > "$R/intake-held-since"
+run
+[[ "$(field intake status)" == HELD && "$(stalls)" == 0 ]] || fail 'a hold younger than 2 x bound must be HELD with no alert'
+grep -q '^intake  *HELD' "$R/station-health.txt" || fail 'text view must show HELD'
+echo 2026-11-07T02:00:00Z > "$R/intake-held-since"
+touch "$R/intake-held-since"  # a fresh file time must not restart the clock: the hold start is the content
+run
+[[ "$(field intake status)" == STALLED && "$(stalls)" == 1 ]] || fail 'a hold older than 2 x bound must be STALLED and alert, measured from its start'
+echo 'ok - held intake is HELD under 2 x bound and STALLED past it'
+
+rm "$R/intake-held-since"; : > "$R/alerts/node-health.md"
+# A re-entry to an existing unit (hold-handoff) is intake output, not only a unit's first history row.
+jq -n '{units: [{id:"issue-30", stage:"implement-pending", history:[{stage:"pr-opened", at:"2026-11-06T01:00:00Z"}, {stage:"hold-handoff", at:"2026-11-07T05:50:00Z"}]}]}' > "$R/units.json"
+run
+[[ "$(field intake out_1h)" == 1 && "$(field intake last_out)" == 2026-11-07T05:50:00Z && "$(field intake status)" == OK ]] || fail 'hold-handoff must count as an intake out'
+echo 'ok - hold-handoff counts as intake output'

@@ -159,7 +159,7 @@ stall is never charged to merge.
 
 | Station | Named input buffer (waiting) | Out event | Stall bound (min) |
 |---|---|---|---|
-| intake | `state/N.json` `ready-for-agent` with no unit for that issue | a unit's first ledger event | 90 |
+| intake | `state/N.json` `ready-for-agent` with no unit for that issue | a unit's first ledger event, or a `hold-handoff` event (a re-entry to an existing unit) | 90 |
 | triage | `needs-triage` | triage batch log with `applied_count` > 0 (log mtime, count) | 360 |
 | advisor | `needs-advisor` | advisor result `outcome: completed` (`applied_count`) | 810 |
 | implement | units in `implement-pending` | `write-end` whose `write-start` has `work_type: implement` | 60 |
@@ -182,6 +182,16 @@ file exists (no alert), else `OK`. Stall minutes are `min(now - last out, oldest
 when nothing waits: a station that sat idle for days is not stalled by a ticket that arrived five minutes ago.
 A `STATION-STALLED station=... waiting=... stall-min=... bound-min=...` line is appended to `alerts/node-health.md`
 once per station per hour. No human step is involved.
+
+Intake can take nothing on purpose: `register_new_issues` prints `intake held: ...` when startable pending meets the target, the
+total ceiling is reached, or upstream has no room. The first such pass writes the time to the runtime file `intake-held-since` and
+later held passes keep it (a marker file, so the station reads one small file, not `scheduler.log`); a pass that gets past those
+checks removes it. While the marker is younger than 2 x the intake bound (180 min at the default 90) an intake that would be
+`STALLED` reports `HELD` and raises no alert; past that it is `STALLED` again, so a hold cannot hide a real stop. The hold is
+measured from the marker's content, not its file time. The held check runs before the candidate walk of the full pass; the
+`existing_only` pass (`run_issue_intake_phases` runs it first) resumes known units from their ownerless handoffs and is not
+bounded by the target (only by the total ceiling), so it still runs on a held tick. The `intake detail candidates secs=277s` of 2026-11-07 was that pass walking
+its handoff rows, not the candidate walk (`consumed=24` only exists in that pass).
 
 Bounds are 2 x the p90 gap between consecutive out events, rounded up to 10 minutes, measured on the 7 days to
 2026-11-07T06:55Z (CI and release have too few events there, so their whole history is used). Measured p50 / p90 gap in minutes:

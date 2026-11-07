@@ -63,4 +63,31 @@ grep -Fq 'ceiling 32); handoff issue #902 deferred' "$LOG" || fail 'handoff ceil
 jq 'del(.units[0])' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
 register_new_issues 1 reuse
 jq -e '.units[] | select(.id=="issue-902") | .stage=="implement-pending"' "$UNITS" >/dev/null || fail 'handoff did not resume when ceiling had room'
+# Held target: a full pass takes nothing, does no candidate work, and leaves the hold marker the station reads.
+walked="$test_env_root/walked"; marker="$A/intake-held-since"
+predecessor_candidates() { : > "$walked"; }
+intake_candidates() { : > "$walked"; printf '900\tpr\tfixture\t[]\t%s\n' "$(printf '%s' '{"number":900,"state":"OPEN","subIssuesSummary":{"total":0},"labels":[{"name":"ready-for-agent"}]}' | base64 -w0)"; }
+intake_footprint_snapshot() { : > "$walked"; echo '[]'; }
+CFG='{"issue_intake":{"enabled":true,"max_upstream":16,"max_ready":30,"ready_buffer":0}}'
+jq -n '{units: [range(0;8) | {id:("p-"+tostring),stage:"implement-pending"}]}' > "$UNITS"
+rm -f "$walked" "$marker"; : > "$LOG"
+register_new_issues 0
+grep -Fq 'intake held: startable pending 8 meets target 8 (live 0 max 8)' "$LOG" || fail 'held line text changed or missing'
+[[ ! -e "$walked" ]] || fail 'a held pass did candidate work'
+[[ -s "$marker" ]] || fail 'a held pass left no marker'
+printf '%s\n' 2026-11-07T00:00:00Z > "$marker"
+register_new_issues 0
+[[ "$(cat "$marker")" == 2026-11-07T00:00:00Z ]] || fail 'a second held pass moved the hold start'
+# Handoffs resume known units while held: they are not new intake, and the ceiling still bounds them.
+printf '%s\n' '{"state":"ready-for-agent","scheduler_handoff":{"episode":"held"}}' > "$AGENT_HOME/state/903.json"
+existing_handoff_candidates() { printf '903\tpr\thandoff\t[]\n'; }
+jq '.units += [{id:"issue-903",issue:903,stage:"parked",lane:"pr",history:[]}]' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+register_new_issues 1 reuse
+jq -e '.units[] | select(.id=="issue-903") | .stage=="implement-pending"' "$UNITS" >/dev/null || fail 'held target blocked a handoff'
+[[ -s "$marker" ]] || fail 'a handoff pass cleared the hold'
+# Room again: the pass adds a unit and the marker goes.
+jq -n '{units: []}' > "$UNITS"
+register_new_issues 0
+jq -e 'any(.units[]; .id=="issue-900")' "$UNITS" >/dev/null || fail 'intake did not add once the target had room'
+[[ ! -e "$marker" ]] || fail 'adding a unit left the hold marker'
 echo 'intake-wip.test.sh: pass'
