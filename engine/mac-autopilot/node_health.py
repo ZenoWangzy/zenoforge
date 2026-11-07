@@ -20,6 +20,7 @@ from pathlib import Path
 import arbiter_health, ledger_history, live_delivery
 import line_holds
 import release_age
+import station_standards
 import pr_census
 import watch_alerts
 import worker_cost
@@ -259,9 +260,9 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "delivery.unlinked_incidents_30d": "night/founder-health-mail.json incidents (issue joined to accepted issue IDs) plus logs/head-watch.alerts PROD-DB-TIMEOUT episodes, which name no issue",
 }
 # Line-hold rows (holds.*) live in line_holds.py: node_health.py is at its size-ratchet baseline.
-CRITERIA.update(line_holds.CRITERIA)
-MEANING.update(line_holds.MEANING)
-SOURCE.update(line_holds.SOURCE)
+CRITERIA.update({**line_holds.CRITERIA, **station_standards.CRITERIA})
+MEANING.update({**line_holds.MEANING, **station_standards.MEANING})
+SOURCE.update({**line_holds.SOURCE, **station_standards.SOURCE})
 # release.hours_since_release lives in release_age.py for the same size-ratchet reason.
 CRITERIA.update(release_age.CRITERIA); MEANING.update(release_age.MEANING); SOURCE.update(release_age.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
@@ -1453,7 +1454,7 @@ def main():
     followed = [n for n in followed if n]
     metrics["loop.incremental_rereview_pct"] = 100 * followed.count("rereview") / len(followed) if followed else None
     units = ledger_history.load_units(a)
-    metrics.update(ledger_metrics(units, since, now))
+    metrics.update({**ledger_metrics(units, since, now), **station_standards.collect(now, units, runs, a, agent_home, cost_rows)})
     # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
     metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]
     repo = os.environ.get("ZF_REPO", "")

@@ -1135,7 +1135,7 @@ data = {
     "live_workers": live_workers_data,
     "factory": factory_data, "founder_reqs": founder_data,
     "units": units, "workers": wl, "release": release, "cost": cost_data, "cost_ledger": cost_ledger,
-    "traffic": traffic, "front": front,
+    "traffic": traffic, "front": front, "stations": read_json(f"{A}/station-health.json") or {},
     "release_train": (json.load(open(f"{A}/release-train.json")) if os.path.exists(f"{A}/release-train.json") else {}),
     "config": {
         "models": cfg["models"], "max_workers": cfg["max_workers"],
