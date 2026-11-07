@@ -184,7 +184,7 @@ Bounds are 2 x the p90 gap between consecutive out events, rounded up to 10 minu
 | review | 695 | 0.0 | 25.2 |
 | repair | 450 | 11.0 | 42.0 |
 | merge | 221 | 19.5 | 71.6 |
-| CI (13 days) | 204 | 7.0 | 33.8 |
+| CI | 335 | 13.4 | 47.2 |
 | release (3 days, 14 closers) | 14 | 259.1 | 472.5 |
 
 `config.template.json` `station_health.stall_minutes` carries the per-station bound (runtime `config.json` is
