@@ -214,6 +214,29 @@ assert_contains 'a failed deploy read keeps the shipped counts' "$no_deploy_body
 maintainer_health_mail_last_deploy() { printf 'not a time\n'; }
 assert_eq 'an unreadable deploy time is also dropped' 'null' "$(jq -r '.last_deploy_at' <<< "$(maintainer_health_mail_daily_facts "$facts_home" "$facts_home/night/founder-health-mail.json" "$facts_now" "$SCRIPT_DIR/../..")")"
 
+# End to end through the release_age.py entry: GitHub Deployments served by a fake gh on PATH.
+# The newest sha has a stale RELEASED line (2026-10-23 in the fixture trail) and a newer Deployment; the Deployment wins.
+source "$SCRIPT_DIR/maintainer-health-mail.sh"
+mkdir -p "$tmp/fakebin" "$tmp/gh"
+cat > "$tmp/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+[[ "${FAKE_GH_FAIL:-}" != 1 && "$1" == api ]] || exit 1
+case "$2" in
+  repos/*/deployments/*/statuses) id="${2#*/deployments/}"; cat "$FAKE_GH_DIR/status-${id%/statuses}.json" ;;
+  repos/*/deployments\?*) cat "$FAKE_GH_DIR/deployments.json" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$tmp/fakebin/gh"
+deploy_sha="$(printf 'a%.0s' {1..40})"
+printf '[{"id":7,"sha":"%s","created_at":"2026-11-02T06:30:00Z","payload":{}}]\n' "$deploy_sha" > "$tmp/gh/deployments.json"
+printf '[{"state":"success","created_at":"2026-11-02T06:31:00Z"}]\n' > "$tmp/gh/status-7.json"
+e2e_repo="maintainer/example"
+e2e_deploy="$(PATH="$tmp/fakebin:$PATH" FAKE_GH_DIR="$tmp/gh" ZF_REPO="$e2e_repo" RELEASE_TRAIN_REPO="$e2e_repo" maintainer_health_mail_last_deploy)"
+assert_eq 'the CLI entry gives the Deployment time, not the stale RELEASED line' "$(date -u -d '2026-11-02T06:30:00Z' +%s)" "$e2e_deploy"
+e2e_fail="$(PATH="$tmp/fakebin:$PATH" FAKE_GH_DIR="$tmp/gh" FAKE_GH_FAIL=1 ZF_REPO="$e2e_repo" RELEASE_TRAIN_REPO="$e2e_repo" maintainer_health_mail_last_deploy)"
+assert_eq 'a failed Deployment read through the CLI entry prints nothing' '' "$e2e_fail"
+
 # An empty home leaves every figure out instead of inventing one.
 empty_home="$tmp/empty"
 mkdir -p "$empty_home/night" "$empty_home/state"
