@@ -66,21 +66,37 @@ dep_cache_info() { # predecessor issue → cached {state,labels} or {}
 unit_body_declares_dependency() { # unit predecessor-issue → true when the issue body explicitly names this prerequisite
   unit_body_blockers "$1" | grep -Fxq "$2"
 }
+dep_cleared() { # unit-json predecessor → 0 when the ledger and the cached GitHub state already count it as cleared
+  local info state labels
+  dep_delivered_in_ledger "$2" && return 0
+  ! dep_dead_ruled "$1" "$2" || return 0
+  ! dep_blocker_parked "$2" || return 0 # the release loop stops waiting on a parked blocker; the gate must not park the unit again
+  info="$(dep_cache_info "$2")"
+  state="$(jqf -r '.state // empty' <<<"$info")"
+  [[ "$state" == CLOSED || "$state" == MERGED ]] && return 0
+  labels="$(jqf -r '.labels // ""' <<<"$info")"
+  [[ "$state" == OPEN && ",$labels," =~ ,roadmap(-epic|-theme)?, ]] && return 0
+  return 1
+}
 blocking_body_dependency() { # unit-json → first predecessor not yet delivered/cleared by the local cache
-  local dep info state labels
+  local dep
   while read -r dep; do
     [[ "$dep" =~ ^[0-9]+$ ]] || continue
-    dep_delivered_in_ledger "$dep" && continue
-    ! dep_dead_ruled "$1" "$dep" || continue
-    ! dep_blocker_parked "$dep" || continue # the release loop stops waiting on a parked blocker; the gate must not park the unit again
-    info="$(dep_cache_info "$dep")"
-    state="$(jqf -r '.state // empty' <<<"$info")"
-    [[ "$state" == CLOSED || "$state" == MERGED ]] && continue
-    labels="$(jqf -r '.labels // ""' <<<"$info")"
-    [[ "$state" == OPEN && ",$labels," =~ ,roadmap(-epic|-theme)?, ]] && continue
+    dep_cleared "$1" "$dep" && continue
     printf '%s' "$dep"; return 0
   done < <(unit_body_blockers "$1")
   return 1
+}
+# unit-json → N when the unit's last run ended blocked-on #N with no commit and nothing since cleared it: no release, no
+# supervisor or typesafe ruling. A handoff requeue is no ruling (see dep_dead_ruled), so it cannot free the unit by itself.
+unit_blocked_run_dep() {
+  jqf -r '(.history // []) as $h | ([$h | to_entries[] | select(.value.stage == "write-start") | .key] | max) as $s
+    | if $s == null then empty else $h[$s:] as $r
+      | (($r | map(select(.stage == "write-end")) | last) // {}) as $e
+      | ([$r | to_entries[] | select(.value.stage == "blocked-on") | .key] | max) as $b
+      | if $e.result == "[]" and $b != null
+          and all($r[($b + 1):][]; (.stage == "unblocked" or ((.stage | IN("supervisor-requeue","supervisor-reroute","supervisor-cap-rule")) and (.decision.owner | IN("supervisor","typesafe")))) | not)
+        then ($r[$b].result // "" | ltrimstr("#")) else empty end end' <<<"$1" 2>/dev/null
 }
 dep_dead_ruled() { # unit-json predecessor → 0 only when dep_dead_sweep proved it and the arbiter then ruled; a handoff requeue is no ruling
   jqf -e --argjson d "$2" '.dep_dead_proved == $d and ((.history // []) | (map(.stage) | rindex("dep-dead-proved")) as $p
