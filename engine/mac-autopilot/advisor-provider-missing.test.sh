@@ -107,6 +107,10 @@ printf '[%s] issue-pipeline: maintenance deferred streak section=needs-info-reco
   "$STAMP" >> "$autopi/scheduler.log"
 bash "$script_dir/bell.sh" > "$test_env_root/bell-maintenance-repeat.out" 2>&1 \
   || fail 'bell failed on a repeated maintenance signature'
-check 'repeated maintenance signature stays deduplicated' "$(wc -l < "$upsert_calls" | tr -d ' ')" 2
+# A repeat inside the 24h window now reaches the class upsert (it comments an
+# occurrence on the open issue), so the call count grows; the dedup contract is
+# that it is the same class, i.e. no third issue.
+check 'repeated maintenance signature upserts the same class' "$(tail -n 1 "$upsert_calls")" sched-maintenance-deferral-needs-info-recovery
+check 'repeated maintenance signature stays deduplicated' "$(sort -u "$upsert_calls" | wc -l | tr -d ' ')" 2
 
 echo 'advisor-provider-missing.test.sh: PASS'

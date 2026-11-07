@@ -135,13 +135,13 @@ printf '%s\n' '{"units":[]}' > "$sig/units.json"
 printf '%s\n' '{"workers":[]}' > "$sig/workers.json"
 jq -n '{monitor_initialized:true,scheduler_lines:1,alert_mtimes:{},merge_events:{},signatures:{},pending:[]}' > "$sig/bell-state.json"
 BELL_AUTOPI_DIR="$sig" bash "$bell"
-jq -e '[.pending[].raw_signature] == ["sched-jqf-new-fn-rc3"]' "$sig/bell-state.json" >/dev/null \
+jq -e '[.pending[].raw_signature] == ["sched-jqf-error-new-fn"]' "$sig/bell-state.json" >/dev/null \
   || { echo 'bell-drift-sigs.test.sh: new jqf signature was not emitted alone' >&2; cat "$sig/bell-state.json" >&2; exit 1; }
-grep -Fq 'scheduler signature sched-jqf-new-fn-rc3' "$sig/BELL-QUEUE.md" \
+grep -Fq 'scheduler signature sched-jqf-error-new-fn' "$sig/BELL-QUEUE.md" \
   || { echo 'bell-drift-sigs.test.sh: stable jqf class missing from event evidence' >&2; exit 1; }
 grep -Fq 'ROLLBACK engine candidate -> old: jqf error (rc=3) in new_fn' "$sig/BELL-QUEUE.md" \
   || { echo 'bell-drift-sigs.test.sh: canary ROLLBACK evidence did not reach the bell event' >&2; exit 1; }
-! grep -Fq 'sched-jqf-known-fn-rc7' "$sig/BELL-QUEUE.md" \
+! grep -Fq 'sched-jqf-error-known-fn' "$sig/BELL-QUEUE.md" \
   || { echo 'bell-drift-sigs.test.sh: recurring jqf signature emitted again' >&2; exit 1; }
 
 rm "$autopi/dashboard.data.js"

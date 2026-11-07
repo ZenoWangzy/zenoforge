@@ -264,11 +264,11 @@ grep -q 'issue-pipeline: slice-failed tick=.* stage=recut status=1' "$RUNTIME/sc
 eval "$(sed -n '/^scheduler_signature_class() {/,/^}/p' "$SCRIPT_DIR/mac-autopilot/bell.sh")"
 assert_eq 'tick refusal line gets an incident class' 'sched-run-tick-refused' \
   "$(scheduler_signature_class '[2026-11-03T05:23:11Z] run-tick: refusing to run this tick — cause=scheduler-failed observed=issue-pipeline.sh exited with status 1')"
-assert_eq 'slice-failure line gets an incident class' 'sched-slice-failed-advisor-1' \
+assert_eq 'slice-failure line gets an incident class' 'sched-slice-failed-advisor' \
   "$(scheduler_signature_class '[2026-11-03T05:24:00Z] issue-pipeline: slice-failed tick=20261103T052311Z stage=advisor status=1')"
-assert_eq 'slice incident identity includes the failed stage and status' 'sched-slice-failed-advisor-1' \
+assert_eq 'slice incident identity is the failed stage, free of tick ids and statuses' 'sched-slice-failed-advisor' \
   "$(scheduler_signature_class '[2026-11-03T05:24:00Z] issue-pipeline: slice-failed tick=20261103T052311Z stage=advisor status=1')"
-assert_eq 'different statuses on the same stage have different incident identities' 'sched-slice-failed-advisor-2' \
+assert_eq 'a different status on the same stage stays one incident class' 'sched-slice-failed-advisor' \
   "$(scheduler_signature_class '[2026-11-03T05:24:00Z] issue-pipeline: slice-failed tick=20261103T052311Z stage=advisor status=2')"
 assert_eq 'a deferring slice line raises no incident' '' \
   "$(scheduler_signature_class '[2026-11-03T05:25:00Z] issue-pipeline: slice deferred stage=advisor status=75 (claim/admission said not-now); continuing other stages')"
