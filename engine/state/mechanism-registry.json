@@ -304,6 +304,16 @@
       "expected_idle": false
     },
     {
+      "id": "main-red-read",
+      "desc": "main-red 扫描读到 main 的完成运行列表：读不到时看不见红、也不会重跑或二分；expected_idle 的 f1 只记动作，这一行记它还在看",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "main-red read ok"}
+      ],
+      "silence_hours": 2,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
       "id": "node-health-scorecard",
       "desc": "node_health 体检（每拍评分，UNHEALTHY 写告警行；--file-issues 满 3h 升级 pipeline health 票）",
       "events": [

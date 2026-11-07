@@ -170,6 +170,23 @@ probe_runs() { # <sha> <status> <conclusion> [workflow]
 main_runs > "$FAKE_GH_STATE/completed-runs.json"
 
 source "$SCRIPT_DIR/lib.sh"
+MAIN_RED_MAX_RUN_AGE_SECONDS=$((10 * 365 * 86400)) # the fixtures carry fixed dates; the age bound has its own case below
+
+# The list crosses the 128 KiB argv limit in production: 100 runs, about 1.4 MB, failed every tick for 39 hours.
+big_runs="$(jq -cn '{workflow_runs:[range(0;400) | {id:.,head_sha:"x",status:"completed",conclusion:"success",created_at:"2026-11-07T00:00:00Z",padding:("y"*1000)}]}')"
+assert_eq "a run list over the argv limit still reads" 800 \
+  "$(ci_main_completed_push_runs() { printf '%s\n' "$big_runs"; }; main_red_completed_runs | jq '.workflow_runs | length')"
+# A deleted workflow keeps a failed last run for ever: an old red must not open a session.
+now_iso="$(date -u +%FT%TZ)"
+age_runs="$(jq -cn --arg now "$now_iso" '{workflow_runs:[
+  {id:1,red_workflow:"pipeline-suites.yml",status:"completed",conclusion:"failure",created_at:"2026-10-31T06:44:46Z",head_sha:"old"},
+  {id:2,red_workflow:"ci.yml",status:"completed",conclusion:"success",created_at:$now,head_sha:"new"}]}')"
+MAIN_RED_MAX_RUN_AGE_SECONDS=86400
+if main_red_latest_failed_run "$age_runs" >/dev/null; then AGE_RESULT=picked; else AGE_RESULT=ignored; fi
+assert_eq "a red older than the bound is not a current red" ignored "$AGE_RESULT"
+age_runs="$(jq -cn --arg now "$now_iso" '{workflow_runs:[{id:3,red_workflow:"ci.yml",status:"completed",conclusion:"failure",created_at:$now,head_sha:"new"}]}')"
+assert_eq "a fresh red is still picked" 3 "$(main_red_latest_failed_run "$age_runs" | jq -r .id)"
+MAIN_RED_MAX_RUN_AGE_SECONDS=$((10 * 365 * 86400))
 
 # Run the tick-owned maintenance loop from its durable resume point. The
 # other maintenance owners are quiet fixtures; main-red is the real sweep.

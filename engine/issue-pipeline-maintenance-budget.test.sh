@@ -216,13 +216,32 @@ check 'a read roots finishes clears the cursor' "$(resume)" none
 check 'a read ok line feeds the node health row' \
   "$(grep -c 'blocker-root sweep read ok tick=20261107T000002Z' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")" 1
 
-ROOTS_READ=unknown
-for n in 3 4 5; do printf 'needs-info-blocker-roots\n' > "$AGENT_HOME/night/maintenance-resume"; tick "2026110700000${n}Z"; done
-check 'an unread graph keeps the cursor' "$(resume)" needs-info-blocker-roots
+ROOTS_READ=unknown; ROOTS_REACHED_AT=20
+for n in 3 4 5; do tick "2026110700000${n}Z"; done
+check 'an unread graph holds no cursor, so a lasting failure cannot stop the prefix' "$(resume)" none
+check 'the prefix still ran after a failed read' "${CALLS[0]}" checks-blocked-sweep
 check 'three unread graphs in a row ring the bell' \
   "$(grep -c 'maintenance deferred streak section=needs-info-blocker-roots consecutive=3' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")" 1
 check 'an unread graph writes no read ok line' \
   "$(grep -c 'read ok tick=20261107T00000[345]Z' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")" 0
+ROOTS_READ=available; tick 20261107T000008Z
+check 'a good read clears the streak' "$([[ -e "$AGENT_HOME/night/maintenance-deferral-state.json" ]] && echo kept || echo cleared)" cleared
+
+# The main red read rang nowhere for 39 hours: the sweep returned 0 after it failed.
+: > "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"
+main_red_bisect_sweep() { CALLS+=(main-red-bisect); return 1; }
+for n in 1 2 3; do tick "2026110700010${n}Z"; done
+check 'three failed main red reads ring the bell' \
+  "$(grep -c 'maintenance deferred streak section=main-red-bisect consecutive=3' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")" 1
+check 'roots still run after a failed main red read' "${CALLS[-1]}" needs-info-blocker-roots
+main_red_bisect_sweep() { CALLS+=(main-red-bisect); MAIN_RED_RUNS_READ=1; }
+tick 20261107T000104Z
+check 'a read main red list feeds its node health row' \
+  "$(grep -c 'main-red read ok tick=20261107T000104Z' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")" 1
+main_red_bisect_sweep() { CALLS+=(main-red-bisect); }
+tick 20261107T000105Z
+check 'a held sweep that read nothing writes no read ok line' \
+  "$(grep -c 'main-red read ok tick=20261107T000105Z' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")" 0
 
 ROOTS_READ=available
 sweep_blocking_issue_roots() { CALLS+=(needs-info-blocker-roots); OPEN_ISSUE_BLOCKER_GRAPH_STATUS=available; return 1; }

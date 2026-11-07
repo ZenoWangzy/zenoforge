@@ -876,6 +876,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/open-pr-collision.sh"
 MAIN_RED_PROBE_DISPATCH_ATTEMPTS=2
 MAIN_RED_PROBE_RETRY_DELAY_SECONDS=600
 MAIN_RED_REVERT_ATTEMPTS=3
+MAIN_RED_MAX_RUN_AGE_SECONDS="${MAIN_RED_MAX_RUN_AGE_SECONDS:-86400}"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/main-red-bisect.sh"
 

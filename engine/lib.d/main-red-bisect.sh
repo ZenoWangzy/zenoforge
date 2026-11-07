@@ -362,15 +362,18 @@ main_red_completed_runs() {
   local postsubmit suites
   postsubmit="$(ci_main_completed_push_runs ci.yml)" || return 1
   suites="$(ci_main_completed_push_runs pipeline-suites.yml)" || return 1
-  jq -cn --argjson postsubmit "$postsubmit" --argjson suites "$suites" '
+  jq -cn --slurpfile postsubmit <(printf '%s' "$postsubmit") --slurpfile suites <(printf '%s' "$suites") '
     {workflow_runs:
-      ([$postsubmit.workflow_runs[]? | . + {red_workflow:"ci.yml"}]
-       + [$suites.workflow_runs[]? | . + {red_workflow:"pipeline-suites.yml"}])}'
+      ([$postsubmit[0].workflow_runs[]? | . + {red_workflow:"ci.yml"}]
+       + [$suites[0].workflow_runs[]? | . + {red_workflow:"pipeline-suites.yml"}])}'
 }
 
 
+# An old red is not current: pipeline-suites.yml was deleted with a failed last run, which would otherwise open a session on a week-old SHA for ever.
 main_red_latest_failed_run() {
-  jq -ce '
+  local cutoff
+  cutoff="$(date -u -d "@$(( $(date +%s) - MAIN_RED_MAX_RUN_AGE_SECONDS ))" +%FT%TZ)" || return 1
+  jq -ce --arg cutoff "$cutoff" '
     [.workflow_runs[]?
       | select(.status == "completed"
         and (.conclusion | type == "string" and length > 0)
@@ -378,7 +381,7 @@ main_red_latest_failed_run() {
     | sort_by(.red_workflow)
     | group_by(.red_workflow)
     | map(sort_by([.created_at // "", .id // 0, .run_attempt // 0]) | last)
-    | map(select(.conclusion == "failure"))
+    | map(select(.conclusion == "failure" and (.created_at // "") >= $cutoff))
     | sort_by([.created_at // "", .id // 0, .run_attempt // 0])
     | last // empty' <<< "$1" 2>/dev/null
 }
@@ -422,8 +425,9 @@ main_red_bisect_sweep() {
   fi
   if ! runs="$(main_red_completed_runs)"; then
     echo "main-red-bisect: could not read the completed main verdict list" >&2
-    return 0
+    return 1
   fi
+  MAIN_RED_RUNS_READ=1
   if run="$(main_red_latest_failed_run "$runs")" && [ -n "$run" ]; then
     verdict="$(jq -r '.conclusion // empty' 2>/dev/null <<< "$run")"
     sha="$(jq -r '.head_sha // empty' 2>/dev/null <<< "$run")"

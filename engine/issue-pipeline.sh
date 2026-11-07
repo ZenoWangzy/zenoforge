@@ -1399,8 +1399,7 @@ maintenance_run_optional_step() { # bounded maintenance work that can yield to r
       if ! sweep_blocking_issue_roots; then
         echo "issue-pipeline: blocker-root recovery failed; current roots unavailable" >&2
       fi
-      # One failed root is its own retry; an unread graph means no root ran, so the step owes a tick.
-      [ "${OPEN_ISSUE_BLOCKER_GRAPH_STATUS:-unknown}" = available ] || return 1
+      [ "${OPEN_ISSUE_BLOCKER_GRAPH_STATUS:-unknown}" = available ] || return 1 # one failed root is its own retry; an unread graph means no root ran
       maintenance_scheduler_log "blocker-root sweep read ok tick=$IMPLEMENT_TICK_ID"
       ;;
     needs-info-unlabeled)
@@ -1419,8 +1418,13 @@ maintenance_run_optional_step() { # bounded maintenance work that can yield to r
       # Session writes are pipeline state, so this never runs under DRY_RUN.
       # A valid manual PAUSE still permits red discovery at the tick gate,
       # but stops this recovery step (including the delegated release slice).
-      if [ "$DRY_RUN" != "1" ] && ! manual_pause_is_valid && ! main_red_bisect_sweep; then
-        echo "issue-pipeline: main-red bisect step failed; the red session retries next tick" >&2
+      if [ "$DRY_RUN" != "1" ] && ! manual_pause_is_valid; then
+        MAIN_RED_RUNS_READ=0
+        if ! main_red_bisect_sweep; then
+          echo "issue-pipeline: main-red bisect step failed; the red session retries next tick" >&2
+          return 1
+        fi
+        [ "$MAIN_RED_RUNS_READ" != 1 ] || maintenance_scheduler_log "main-red read ok tick=$IMPLEMENT_TICK_ID"
       fi
       ;;
     batch-state)
@@ -1439,7 +1443,7 @@ run_post_dispatch_maintenance() {
   local budget="${TICK_UNIT_TIMEOUT_SECONDS:-1200}" timeout_reserve="${MAINTENANCE_STEP_RESERVE_SECONDS:-240}"
   local required_slot="${MAINTENANCE_REQUIRED_SLOT_SECONDS:-55}"
   local reopen_slot="${MAINTENANCE_REOPEN_SLOT_SECONDS:-18}" email_slot email_stop_at max_email_stop_at
-  local prefix_stop_at suffix_stop_at step_floor
+  local prefix_stop_at suffix_stop_at step_floor failed_step=""
   local resume_file="$AGENT_HOME/night/maintenance-resume" resume="" step i prefix_start=0 suffix_start=0 deferred_step=""
   local resume_suffix=0 original_gh_deadline="${ZF_GH_CALL_DEADLINE_EPOCH_MS:-}"
   local original_gmail_deadline="${ZF_GMAIL_CALL_DEADLINE_EPOCH_MS:-}" original_email_stop_at="${ZF_NEEDS_INFO_EMAIL_STOP_AT_SECONDS:-}"
@@ -1519,15 +1523,16 @@ run_post_dispatch_maintenance() {
       fi
       profile_mark "$step"
       if ! maintenance_run_optional_step "$step"; then
-        maintenance_defer_optional_step "$step" "$IMPLEMENT_TICK_ID" "$resume_file" "$suffix_stop_at"
-        deferred_step="$step"
-        break
+        # Rings without the cursor: a resume skips the prefix, so a lasting failure must not hold it.
+        failed_step="$step"
+        [ "$DRY_RUN" = "1" ] || maintenance_record_deferred_step "$step" "$IMPLEMENT_TICK_ID"
       fi
     done
     maintenance_restore_slice_deadline "$original_gh_deadline" "$original_gmail_deadline"
   fi
-  if [ -z "$deferred_step" ]; then
-    [ "$DRY_RUN" = "1" ] || { rm -f -- "$resume_file"; maintenance_clear_deferred_step; }
+  if [ -z "$deferred_step" ] && [ "$DRY_RUN" != "1" ]; then
+    rm -f -- "$resume_file"
+    [ -n "$failed_step" ] || maintenance_clear_deferred_step
   fi
 }
 

@@ -94,7 +94,8 @@ def is_banned(name):
 ARG_RE = re.compile(r'--arg(?:json)?\s+[A-Za-z_][A-Za-z0-9_]*\s+"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"')
 FUNCTION_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{')
 ASSIGN_RE = re.compile(r'(?:^|;)\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(\+?=)\s*([^;]*)')
-COLLECTION_COMMAND_RE = re.compile(r'\bgh\s+(?:pr|issue|run)\s+list\b')
+# Includes completed run lists: 100 runs crossed the limit and stopped main-red-bisect for 39 hours, through a main_gh wrapper.
+COLLECTION_COMMAND_RE = re.compile(r'\bgh\s+(?:pr|issue|run)\s+list\b|gh\s+api\b[^;]*/actions/[^;]*/runs\?')
 PAGINATED_API_RE = re.compile(r'\bgh\s+api\b[^;]*--paginate')
 
 def code_only(line):
@@ -285,6 +286,20 @@ BAD_RECUT_REASON_HITS="$(scan_file "$BAD_RECUT_REASON_FIXTURE")"
 BAD_MATERIAL_HITS="$(scan_file "$BAD_MATERIAL_FIXTURE")"
 CLEAN_HITS="$(scan_file "$CLEAN_FIXTURE")"
 BAD_CHILDREN_HITS="$(scan_file "$BAD_CHILDREN_FIXTURE")"
+BAD_RUNS_FIXTURE="$TMP_DIR/bad_runs.sh"
+cat > "$BAD_RUNS_FIXTURE" <<'EOF'
+completed_runs() {
+  main_gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=main&per_page=50"
+}
+red_runs() {
+  local first
+  first="$(completed_runs)"
+  jq -cn --argjson first "$first" '$first'
+}
+EOF
+assert_eq "meta-test: a completed run list reached through a wrapper is caught" \
+  "1" "$(scan_file "$BAD_RUNS_FIXTURE" | sed '/^$/d' | wc -l | tr -d ' ')"
+
 BAD_CENSUS_FIXTURE="$TMP_DIR/bad_census.sh"
 cat > "$BAD_CENSUS_FIXTURE" <<'EOF'
 merge_census() {
