@@ -233,6 +233,70 @@ merge_pr_review_family_ok() {
   out="$(merge_pr_review_family "$pr")" && return 0
   merge_pr_refuse "$pr" "review-family.test.sh failed: $out"
 }
+# The pin three-way merges every overridden engine file into the target's pack copy and refuses on a conflict (tools/pin-vecta.sh): #643 merged such a change and stopped every pin for 12 minutes.
+# Same table, base blob, pack path and `git merge-file ours base theirs` as the pin; only files the PR touches are read, so a clean merge passes.
+# Fails closed like the checks above: an unreadable target refuses, ZF_MERGE_OVERRIDE=override-merge skips (logged).
+# shortcut: theirs is the PR head's file, not main plus the PR, so a head behind main can differ from what the pin sees; rebase before merging if it matters.
+merge_pr_override_ok() {
+  local pr="$1" files root home target ref="refs/zf-merge-pr/$1" hook table rel pack work ov_path ov_base ov_new rc bad=
+  pack=.zenoforge/build/pack/scripts/agent
+  if [[ ",${ZF_MERGE_OVERRIDE:-}," == *,override-merge,* ]]; then
+    printf 'merge-pr: explicit ZF_MERGE_OVERRIDE skips the override merge check for PR #%s\n' "$pr" >&2
+    return 0
+  fi
+  if ! files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" 2>/dev/null \
+    | jq -rs 'add // [] | [.[] | (.filename, .previous_filename // empty) | select(startswith("engine/"))] | unique | .[]')"; then
+    merge_pr_refuse "$pr" 'could not read PR files for the override merge check'
+    return 1
+  fi
+  [[ -n "$files" ]] || return 0
+  home="${AGENT_HOME:-${ZF_HOME:-}}"
+  target="$home/checkout"
+  if [[ -z "$home" ]] || ! root="$(merge_pr_root)" \
+    || ! git -C "$target" fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main 2>/dev/null \
+    || ! hook="$(git -C "$target" show origin/main:.zenoforge/build.json 2>/dev/null | jq -er '.hook | select(type == "string" and length > 0)')"; then
+    merge_pr_refuse "$pr" "could not read the target's origin/main and build config at $target for the override merge check; the pin needs them too (ZF_MERGE_OVERRIDE=override-merge skips)"
+    return 1
+  fi
+  rel="$(dirname -- "$hook")/overrides.tsv"
+  table="$(git -C "$target" show "origin/main:$rel" 2>/dev/null)" || return 0 # no table: the pin merges nothing
+  work="$(mktemp -d)"
+  while IFS=$'\t' read -r ov_path ov_base _; do
+    [[ -n "$ov_path" && "$ov_path" != '#'* ]] || continue
+    grep -qxF "engine/$ov_path" <<<"$files" || continue
+    if ! git -C "$root" fetch -q origin "+pull/$pr/head:$ref" 2>/dev/null; then
+      bad='could not fetch the PR head for the override merge check'
+      break
+    fi
+    if ! ov_new="$(git -C "$root" rev-parse --verify -q "$ref:engine/$ov_path")"; then
+      bad="override $ov_path: the PR removes or moves engine/$ov_path, and the pin refuses an engine without it"
+      break
+    fi
+    [[ "$ov_base" != "$ov_new" ]] || continue
+    if ! git -C "$root" cat-file blob "$ov_base" > "$work/base" 2>/dev/null \
+      || ! git -C "$root" cat-file blob "$ov_new" > "$work/theirs" \
+      || ! git -C "$target" show "origin/main:$pack/$ov_path" > "$work/ours" 2>/dev/null; then
+      bad="override $ov_path: base blob $ov_base, the PR's file or the pack copy $pack/$ov_path is unreadable"
+      break
+    fi
+    rc=0
+    git merge-file -p "$work/ours" "$work/base" "$work/theirs" > "$work/merged" 2>/dev/null || rc=$?
+    if ((rc > 0 && rc < 128)); then
+      bad="override $ov_path: three-way merge conflicts ($rc hunk(s)) between the pack copy and the PR's engine/$ov_path; the pin would refuse every pin after this merge, so resolve the pack copy first"
+      break
+    elif ((rc != 0)); then
+      bad="override $ov_path: three-way merge failed (git merge-file exit $rc)"
+      break
+    fi
+    if [[ "$ov_path" == *.sh ]] && ! bash -n "$work/merged" 2>/dev/null; then
+      bad="override $ov_path: the merged result fails bash -n; the pin would refuse"
+      break
+    fi
+  done <<<"$table"
+  rm -rf -- "$work"
+  [[ -z "$bad" ]] && return 0
+  merge_pr_refuse "$pr" "$bad"
+}
 # suite-set-check.py refuses a pin that drops a baseline suite and has no retire path: a deleted suite merged, then stopped auto-pin (#614).
 # A rename counts as a deletion unless it is a pure move (no changed lines) that stays a suite under engine/.
 merge_pr_suite_delete_ok() {
@@ -321,6 +385,7 @@ merge_pr_checks_and_merge() {
   merge_pr_scheduler_prelude_ok "$pr" || return 1
   merge_pr_static_scans_ok "$pr" || return 1
   merge_pr_review_family_ok "$pr" || return 1
+  merge_pr_override_ok "$pr" || return 1
   merge_pr_suite_delete_ok "$pr" || return 1
 
   while IFS= read -r check_name; do
