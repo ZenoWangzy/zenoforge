@@ -234,7 +234,7 @@ aged_pr_lifecycle() {
       [[ -n "$pr_json_meta" ]] || pr_json_meta="$(gh pr view "$prn" --json title,body 2>/dev/null)" || { say "aged PR#$prn: pr view failed; retry next round"; continue; }
       intent_title="$(jqf -r .title <<<"$pr_json_meta")"; intent_body="$(jqf -r .body <<<"$pr_json_meta")"
     fi
-    m_url="$(gh issue create --title "重做（旧 PR #${prn}）：${intent_title}" \
+    m_url="$(scheduler_auto_filed_issue_create --title "重做（旧 PR #${prn}）：${intent_title}" \
       --body "$(aged_pr_ticket_body "$prn" "$branch" "$age" "${behind:-?}" "$n" "$intent_title" "$intent_body")" \
       --label ready-for-agent 2>/dev/null)" || { say "aged PR#$prn: new ticket create failed; retry next round"; continue; }
     m_n="${m_url##*/}"

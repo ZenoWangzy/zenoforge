@@ -36,6 +36,7 @@ if [[ "$lane" == pipeline-system ]]; then
 else
   labels=(bug priority:top needs-triage)
 fi
+labels+=(auto-filed)
 for label in "${extra_labels[@]}"; do
   found=0
   for existing_label in "${labels[@]}"; do

@@ -166,7 +166,9 @@ if grep -q '^issue create --repo test/product ' "$INCIDENT_GH_CALLS"; then
 fi
 jq -e '.[0].body | contains("<!-- vecta-incident-class:scheduler-orphan-recover-reclaimed-unit-unit-route -->")
   and contains("Occurrence count: 1")' "$INCIDENT_ISSUES" >/dev/null
+jq -e '.[0].labels | any(.name == "auto-filed") and any(.name == "incident")' "$INCIDENT_ISSUES" >/dev/null
 grep -Fxq incident "$INCIDENT_LABELS"
+grep -Fxq auto-filed "$INCIDENT_LABELS"
 echo 'ok - scheduler.log evidence files the incident on the engine repo'
 
 # 2. Product-path evidence keeps filing on the product repo.
@@ -190,7 +192,24 @@ fi
 jq -e '.[0].body | contains("<!-- vecta-incident-class:verdicts-backlog-stale -->")' "$INCIDENT_ISSUES" >/dev/null
 echo 'ok - product-path evidence keeps filing on the product repo'
 
-# 3. A single slow-phase notice is a metric: no event, no issue.
+# 3. A plain refill summary is routine scheduler output, not an incident.
+plain_refill_autopi="$(make_runtime plain-refill)"
+reset_gh_fixture plain-refill
+printf '[%s] refill done live=5 secs=43 gh_calls=7\n' \
+  "$(tick_stamps 1)" > "$plain_refill_autopi/scheduler.log"
+run_bell "$plain_refill_autopi" "$tmp/plain-refill-sup"
+[[ "$(jq 'length' "$INCIDENT_ISSUES")" == 0 ]] || { echo 'bell-incident-routing.test.sh: plain refill summary filed an incident' >&2; exit 1; }
+if grep -q '^issue create ' "$INCIDENT_GH_CALLS"; then
+  echo 'bell-incident-routing.test.sh: plain refill summary created an issue' >&2
+  exit 1
+fi
+[[ ! -s "$plain_refill_autopi/BELL-QUEUE.md" ]] || {
+  echo 'bell-incident-routing.test.sh: plain refill summary queued an event' >&2
+  exit 1
+}
+echo 'ok - a plain refill summary is ignored'
+
+# 4. A single slow-phase notice is a metric: no event, no issue.
 single_autopi="$(make_runtime single-slow)"
 reset_gh_fixture single-slow
 printf '[%s] refill done live=1 free_slots=7 pending=0 secs=25 gh_calls=1 slow: dispatch_pending=14s\n' \
@@ -211,7 +230,7 @@ fi
 }
 echo 'ok - a single slow-phase notice files nothing'
 
-# 4. The same phase slow in 5 of the last 10 tick summaries files exactly one engine incident.
+# 5. The same phase slow in 5 of the last 10 tick summaries files exactly one engine incident.
 repeat_autopi="$(make_runtime repeat-slow)"
 reset_gh_fixture repeat-slow
 mapfile -t stamps < <(tick_stamps 10)

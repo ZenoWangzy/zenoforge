@@ -433,7 +433,7 @@ hold_sweep_refusal_remember() {
 hold_sweep() {
   local NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
   local held_numbers live_hold_numbers numbers n issue_json state_json hold_json holder release_condition expires_at kind hand_owner owner_status dead_owner
-  local held_issue_snapshot
+  local held_issue_snapshot expired_numbers
   local stage now_epoch expiry_epoch marker body record_json expiry_at renewal_expiry hold_created_at state_path state_label_json live_stage_labels durable_record
   local routing_stage inbox_key github_state handoff_patch
   local failure=0
@@ -462,8 +462,13 @@ hold_sweep() {
   done
   # Shuffled: the slice deadline can end the loop, and a fixed order starves the same tail every tick.
   numbers="$(printf '%s\n' "$numbers" | LC_ALL=C sort -u | shuf)" || return 1
-  state_label_json="$(printf '%s\n' "${ALL_STATE_LABELS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
   now_epoch="$(date -u +%s)" || return 1
+  # Expired holds first: a gh deadline can cut the walk at a late random position and the suffix cursor then skips it (#4879, #4776).
+  # One jq over the state files, no gh call; a corrupt file only shortens this list, the shuffled rest still covers every hold.
+  expired_numbers="$(jq -r --argjson now "$now_epoch" 'select(.state == "on-hold") | ((.hold.expires_at // "") | try fromdateiso8601 catch null) as $e
+    | select($e != null and $e <= $now) | input_filename | split("/")[-1] | rtrimstr(".json") | select(test("^[1-9][0-9]*$"))' "$STATE_DIR"/*.json 2>/dev/null)" || true
+  numbers="$(awk 'NR == FNR { first[$0]; next } $0 in first { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }' <(printf '%s\n' "$expired_numbers") - <<< "$numbers")" || return 1
+  state_label_json="$(printf '%s\n' "${ALL_STATE_LABELS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
   while IFS= read -r n; do
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
     state_json="$(state_read "$n")" || { failure=1; continue; }

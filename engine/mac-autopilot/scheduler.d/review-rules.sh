@@ -27,6 +27,13 @@ incident_worker_prompt() { # worker type unit JSON prompt → prompt with the sh
   esac
   printf '%s' "$prompt"
 }
+incident_escalation_stated() { # prior-art section on stdin → success when it says an escalation happened; negated mentions ("no escalation was needed") do not count
+  local apos="'" aux='(was|were|is|are|be|been|has|have|had|did|does)' before after
+  # Negators may be followed only by a short closed filler list, so "was not sure and escalated" still counts as an escalation.
+  before="(^|[^[:alpha:]])(no|not|never|without|nothing)([[:space:]]+(further|other|additional|formal|any|an|a|the|need|needed|to|be|have|required))*[[:space:]]+escalat[[:alpha:]]*"
+  after="escalat[[:alpha:]]*[:,]?([[:space:]]+reference)?[:,]?([[:space:]]+$aux)*(([[:space:]]+(not|never|unnecessary|unneeded|moot|none|n/a))|[[:space:]]+[[:alpha:]]+n${apos}t)([^[:alpha:]/]|$)"
+  tr '[:upper:]' '[:lower:]' | sed -E "s/$before//g; s#$after#  #g" | grep -Eq '(^|[^[:alpha:]])escalat(e|ed|es|ion|ions|ing)([^[:alpha:]]|$)'
+}
 incident_report_gate_reason() { # incident unit [implementation report path] → missing report requirement or empty
   local unit_json="$1" report="${2:-}" kind_line kind guard_section prior_art_section missing=()
   incident_labels_match_json "$unit_json" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}" || return 0
@@ -54,7 +61,7 @@ incident_report_gate_reason() { # incident unit [implementation report path] →
     printf 'missing an http(s) source URL in ## prior-art'
     return 0
   fi
-  if grep -Eiq '(^|[^[:alpha:]])escalat(e|ed|ion|ing)([^[:alpha:]]|$)' <<<"$prior_art_section" \
+  if incident_escalation_stated <<<"$prior_art_section" \
     && ! grep -Eiq '^[[:space:]]*([-*][[:space:]]+)?escalation reference:[[:space:]]*(https?://[^[:space:]]+|#[0-9]+|PR[[:space:]]*#[0-9]+|issue[[:space:]]*#[0-9]+)[[:space:]]*$' <<<"$prior_art_section"; then
     printf 'escalation note in ## prior-art lacks an escalation reference'
     return 0

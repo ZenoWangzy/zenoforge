@@ -109,7 +109,9 @@ scheduler_size_recut() ( # issue lines limit unit branch head → one durable re
   scheduler_recut_route "$1" "$evidence" || return 1
   REPO_DIR="$ROOT"
   source "$SCHEDULER_AGENT_LIB" || return 1
-  state_read "$1" | jq -e '.state == "needs-recut" and .size_admission.lines > .size_admission.limit' >/dev/null
+  # An on-hold issue stays on-hold (route_to_recut records the evidence and keeps the hold): the recut is queued behind
+  # that hold, which reconcile_size_recuts parks and lifts, so it counts as routed.
+  state_read "$1" | jq -e '(.state == "needs-recut" or .state == "on-hold") and .size_admission.lines > .size_admission.limit' >/dev/null
 )
 scheduler_footprint_filter_main() (
   local scope="$1" preserve_missing="${2:-false}" main_ref=refs/remotes/origin/main specs='' path object kept='' objects_output index

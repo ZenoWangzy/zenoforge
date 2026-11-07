@@ -47,11 +47,19 @@ size_admission_limit_for() { # unit-json → effective limit: a supervisor size_
 # 尺寸准入在 write-start、开 PR、派已有 PR 的 implement/repair 前和每次 repair/self-fix 交付后复查。
 # repair-pending 的超线 PR 先走现有 needs-recut 通道，不占 worker；同一 head 已拒过或不能路由时转 supervisor。
 # repair/self-fix 仍需复查新 head（#4482：PR #4396 从 611 增到 1090、#4403 从 796 增到 1063）。返回 1 = 已升级。
+# A head already sent to recut routes again after a held or resumed recut; only a refused recut (recut_refused_at on the
+# issue state) makes it a person's problem. An unreadable state stays refused.
+size_recut_refused_on_head() { # unit head issue
+  local state
+  jqf -e --arg id "$1" --arg head "$2" 'any(.units[] | select(.id==$id) | .history[]?; .stage=="size-recut" and (.result | contains("head="+$head)))' "$UNITS" >/dev/null || return 1
+  state="$(scheduler_issue_state "$3" 2>/dev/null)" || return 0
+  jqf -e 'has("recut_refused_at")' <<<"$state" >/dev/null
+}
 size_admission_reject() { # unit lines branch context head estimate actual checkpoint [limit]
   local issue limit="${9:-$SIZE_ADMISSION_LINES}"
   issue="$(unit_field "$1" '.issue // empty')"
   if [[ "$5" =~ $SHA_RE && "$issue" =~ ^[0-9]+$ ]] \
-    && ! jqf -e --arg id "$1" --arg head "$5" 'any(.units[] | select(.id==$id) | .history[]?; .stage=="size-recut" and (.result | contains("head="+$head)))' "$UNITS" >/dev/null \
+    && ! size_recut_refused_on_head "$1" "$5" "$issue" \
     && scheduler_size_recut "$issue" "$2" "$limit" "$1" "$3" "$5"; then
     set_unit "$1" "$(hist size-recut "issue #$issue: $2 lines exceed $limit; head=$5") | .stage=\"blocked-external\" | .size_recut_pending=true"
     if [[ "$8" == write-start ]]; then
@@ -272,7 +280,7 @@ $remainder
 $(head -n 200 "$rep" 2>/dev/null)"
   # The follow-up is the parent's sibling: an open child makes the parent a roadmap container, which refuses awaiting-release.
   parent="$(gh api "repos/{owner}/{repo}/issues/$issue/parent" --jq '.number // empty' 2>/dev/null || true)"
-  url="$(gh issue create --title "$(unit_field "$unit" .title)（续作自 #${issue}）" --body "$body" --label needs-triage ${parent:+--parent "$parent"} 2>/dev/null || true)"
+  url="$(scheduler_auto_filed_issue_create --title "$(unit_field "$unit" .title)（续作自 #${issue}）" --body "$body" --label needs-triage ${parent:+--parent "$parent"} 2>/dev/null || true)"
   if [[ -n "$url" ]]; then
     num="${url##*/}"
     set_unit "$unit" "$(hist split-followup "issue #$num: $remainder") | .split_followup=$num"

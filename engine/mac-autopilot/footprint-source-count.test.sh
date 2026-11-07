@@ -305,7 +305,7 @@ register() { # n -> lib loads and wall seconds for one refill intake over n cand
       "$(jq -cn --argjson n "$((9300 + i))" --arg b "Affected files: packages/hot/src/f$i.ts" \
         '{number:$n,title:"candidate",body:$b,state:"OPEN",labels:[{name:"ready-for-agent"}],subIssuesSummary:{total:0,completed:0}}' | base64 -w0)")"$'\n'
   done
-  jq -cn --argjson at "$(date +%s)" --arg rows "${rows%$'\n'}" '{schema:3,created_at:$at,rows:$rows}' > "$A/intake-candidates.json"
+  jq -cn --argjson at "$(date +%s)" --arg rows "${rows%$'\n'}" '{schema:4,created_at:$at,rows:$rows}' > "$A/intake-candidates.json"
   printf '{"units":[]}\n' > "$UNITS"; : > "$LOG"; SCHEDULER_LIB_CONTEXT_FOR=''
   SECONDS=0 # refill intake counts its budget from the tick's start, and this file can pass 270s on a loaded host
   loads_before="$(lib_loads)"; start=$SECONDS

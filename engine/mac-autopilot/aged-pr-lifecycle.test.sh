@@ -57,6 +57,7 @@ cd - >/dev/null
 
 # ---- gh 打桩：fixture 库 + 动作日志 ----------------------------------------------------------------------------
 DB="$fixture/db"; ACTIONS="$DB/actions.log"; NEXT="$DB/next-issue"
+printf '%s\n' needs-triage ready-for-agent > "$DB/labels"
 iso_days_ago() { date -u -d "@$(( $(date -u +%s) - $1 * 86400 ))" +%Y-%m-%dT%H:%M:%SZ; }
 mk_pr() { # number branch head days-ago base title body
   jq -cn --argjson n "$1" --arg b "$2" --arg h "$3" --arg c "$(iso_days_ago "$4")" \
@@ -92,6 +93,10 @@ A="$MAC_AUTOPILOT_RUNTIME_DIR"
 gh() {
   local n c num t b
   case "$1 $2" in
+    'label list') cat "$DB/labels" ;;
+    'label create')
+      grep -qx -- "$3" "$DB/labels" || printf '%s\n' "$3" >> "$DB/labels"
+      printf 'label-create\t%s\n' "$3" >> "$ACTIONS" ;;
     'pr list')
       jq -c 'map(select(.state == "OPEN"))' "$DB/prs.json" ;;
     'pr close')
@@ -106,9 +111,10 @@ gh() {
       jq -c --argjson n "$3" 'map(select(.number == $n)) | first' "$DB/issues.json" ;;
     'issue create')
       num="$(( $(cat "$NEXT") + 1 ))"; echo "$num" > "$NEXT"
-      t=""; b=""
+      t=""; b=""; auto_label=""
       [[ "$3" == --title ]] && t="$4"; [[ "$5" == --body ]] && b="$6"
-      printf 'issue-create\t%s\t%s\t%s\n' "$num" "$t" "${b//$'\n'/ }" >> "$ACTIONS"
+      for arg in "$@"; do [[ "$arg" != auto-filed ]] || auto_label=auto-filed; done
+      printf 'issue-create\t%s\t%s\t%s\t%s\n' "$num" "$t" "${b//$'\n'/ }" "$auto_label" >> "$ACTIONS"
       printf 'https://github.com/example-maintainer/example-repo/issues/%s\n' "$num" ;;
     'issue close')
       n="$3"; c=""
@@ -160,6 +166,8 @@ grep -q $'^pr-close\t104\t.*分类：仍需要' "$ACTIONS" || fail "PR 104 (hand
 # 新 ticket 带上原 PR 链接和原意图摘要
 create_106="$(grep -F $'issue-create\t9001\t' "$ACTIONS")"
 [[ "$create_106" == *"重做（旧 PR #106）：改 c"* ]] || fail "conflict PR's new ticket title should carry the original intent: $create_106"
+[[ "$create_106" == *$'\tauto-filed' ]] || fail "conflict PR's new ticket is missing the auto-filed label: $create_106"
+grep -Fqx $'label-create\tauto-filed' "$ACTIONS" || fail 'auto-filed label was not created before the issue write'
 [[ "$create_106" == *"#106"* && "$create_106" == *"agent/issue-906"* ]] || fail "conflict PR's new ticket body should link the original PR"
 [[ "$create_106" == *"issue 906 body"* ]] || fail "conflict PR's new ticket body should carry the intent summary"
 grep -q $'^issue-close\t906\t.*#9001' "$ACTIONS" || fail "open original ticket 906 should be superseded by the new ticket"

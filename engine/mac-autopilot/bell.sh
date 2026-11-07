@@ -798,7 +798,7 @@ done
 if (( unimported_fix_count > 0 )); then
   file_list="$(printf '%s, ' "${stale_verdict_files[@]}")"
   file_list="${file_list%, }"
-  add_event medium "verdicts-backlog-stale" "verdicts-backlog-stale: $unimported_fix_count unimported FIX item(s) in files older than 48h ($file_list); 批量导入模板：gh issue create --repo ${ZF_REPO:-<owner/name>} --title '<FIX 标题>' --body-file '<issue-body.md>' --label bug --label needs-triage（建成 issue 后由 auto_triage 接管）" "advisor FIX backlog: $unimported_fix_count unimported item(s) in $file_list; template: gh issue create --repo ${ZF_REPO:-<owner/name>} --title '<FIX 标题>' --body-file '<issue-body.md>' --label bug --label needs-triage"
+  add_event medium "verdicts-backlog-stale" "verdicts-backlog-stale: $unimported_fix_count unimported FIX item(s) in files older than 48h ($file_list); 批量导入模板：gh issue create --repo ${ZF_REPO:-<owner/name>} --title '<FIX 标题>' --body-file '<issue-body.md>' --label auto-filed --label bug --label needs-triage（建成 issue 后由 auto_triage 接管）" "advisor FIX backlog: $unimported_fix_count unimported item(s) in $file_list; template: gh issue create --repo ${ZF_REPO:-<owner/name>} --title '<FIX 标题>' --body-file '<issue-body.md>' --label auto-filed --label bug --label needs-triage"
 fi
 
 # S11 dashboard 心跳(dead man's switch):gen_dashboard 曾静默崩 3268 次

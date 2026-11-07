@@ -138,10 +138,11 @@
     "cap_triage": true,
     "cap_triage_per_tick": 3
   },
-  "notes": "发布批次需要 release train 出车。",
+  "notes": "发布批次需要 release train 出车。release_train.enabled=false 是线级 hold：要登记 release_train.hold = {owner, reason, expires_at}（expires_at 用 ISO UTC，例如 {\"owner\":\"ops\",\"reason\":\"demo 11-03，结束后恢复\",\"expires_at\":\"2026-11-04T18:00:00Z\"}）；缺 owner、缺到期或已过期会每天告警一条（holds.line_violations），过期只告警、绝不自动恢复。",
   "implement_cap": 8,
   "release_train": {
-    "enabled": false
+    "enabled": false,
+    "hold": null
   },
   "precheck": false,
   "implement_command_cap": 230

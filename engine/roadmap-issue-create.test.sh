@@ -29,6 +29,11 @@ if [[ "${EXPECT_WRAPPER:-0}" == 1 && "${WRAPPER_SENTINEL:-}" != loaded ]]; then
   exit 42
 fi
 case "${1:-}:${2:-}:${3:-}" in
+  label:list:*) cat "$FAKE_LABELS" ;;
+  label:create:*)
+    label="${3:?}"
+    grep -qx -- "$label" "$FAKE_LABELS" || printf '%s\n' "$label" >> "$FAKE_LABELS"
+    ;;
   issue:create:*)
     echo "https://github.com/example-maintainer/example-repo/issues/${FAKE_NEXT_ISSUE:?}"
     ;;
@@ -66,9 +71,11 @@ export MODEL_POLICY_FILE="$test_tmp/model-policy.json"
 printf '%s\n' '{"switches":{"roadmap-order":false}}' > "$MODEL_POLICY_FILE"
 export ZF_ROADMAP_TREE_CACHE_FILE="$test_tmp/tree.json"
 export FAKE_GH_LOG="$test_tmp/gh.log" FAKE_NEXT_ISSUE=99000
+export FAKE_LABELS="$test_tmp/labels"
 export FAKE_ISSUE_TITLE='Unrelated follow-up'
 export FAKE_ISSUE_BODY='Observed evidence with no category keyword.'
 : > "$FAKE_GH_LOG"
+printf '%s\n' needs-triage pipeline-system > "$FAKE_LABELS"
 
 source "$SCRIPT_DIR/lib.sh"
 created_url="$(guarded_write gh issue create --repo "$REPO" --title "$FAKE_ISSUE_TITLE" \
@@ -79,6 +86,10 @@ assert_eq 'unmatched issue uses existing 待归类 epic' true \
   "$(grep -Fq 'repos/example-maintainer/example-repo/issues/904/sub_issues' "$FAKE_GH_LOG" && echo true || echo false)"
 assert_eq 'stage label stays on original create request' true \
   "$(grep -Eq '^issue create .*--label needs-triage' "$FAKE_GH_LOG" && echo true || echo false)"
+assert_eq 'automatic issue creation adds the auto-filed label' true \
+  "$(grep -Eq '^issue create .*--label auto-filed' "$FAKE_GH_LOG" && echo true || echo false)"
+assert_eq 'the auto-filed label is created before issue creation' true \
+  "$(grep -qx auto-filed "$FAKE_LABELS" && echo true || echo false)"
 assert_eq 'placement does not edit stage labels' false \
   "$(grep -Fq -- '--add-label' "$FAKE_GH_LOG" && echo true || echo false)"
 

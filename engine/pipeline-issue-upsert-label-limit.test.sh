@@ -100,11 +100,12 @@ ZF_ISSUE_LOCK_DIR="$tmp/locks" ZF_GH_REPO=test/repo \
 
 jq -e --arg marker '<!-- vecta-incident-class:label-limit-refusal -->' \
   '[.[] | select((.body // "") | contains($marker))][0]
-   | ([.labels[].name] | sort) == ["pipeline-system","ready-for-agent"]' "$FAKE_ISSUES" >/dev/null
+   | ([.labels[].name] | sort) == ["auto-filed","pipeline-system","ready-for-agent"]' "$FAKE_ISSUES" >/dev/null
 grep -q '^created https://github.com/test/repo/issues/5001 for class label-limit-refusal$' "$tmp/upsert.out"
 
 # The label read paged down: one refusal at --limit 200, one retry at --limit 100.
-[[ "$(grep -c '^label list ' "$FAKE_GH_LOG")" == 2 ]]
+# Two reads for the downshift, one for the auto-filed marker at issue creation.
+[[ "$(grep -c '^label list ' "$FAKE_GH_LOG")" == 3 ]]
 first_label_call="$(grep '^label list ' "$FAKE_GH_LOG" | sed -n '1p')"
 second_label_call="$(grep '^label list ' "$FAKE_GH_LOG" | sed -n '2p')"
 [[ "$first_label_call" == *'--limit 200'* ]]

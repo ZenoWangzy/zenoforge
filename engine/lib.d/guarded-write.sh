@@ -30,6 +30,23 @@ comment_is_bot() {
   [ "${body:0:${#BOT_DISCLAIMER}}" = "$BOT_DISCLAIMER" ]
 }
 
+# Issue creation is machine filing; create the marker before GitHub validates it.
+AUTO_FILED_LABEL_REPOS="${AUTO_FILED_LABEL_REPOS:-}"
+ensure_auto_filed_label() {
+  local repo="${1:-${REPO:-}}" existing
+  [[ -n "$repo" && "${DRY_RUN:-0}" != 1 ]] || return 0
+  [[ " $AUTO_FILED_LABEL_REPOS " != *" $repo "* ]] || return 0
+  existing="$(gh label list --repo "$repo" --limit 100 --json name -q '.[].name' 2>/dev/null)" || return 0
+  if ! grep -qx -- auto-filed <<<"$existing"; then
+    if ! guarded_write gh label create auto-filed --repo "$repo" --color ededed \
+        --description "Automatically filed by Zenoforge" >/dev/null 2>&1; then
+      existing="$(gh label list --repo "$repo" --limit 100 --json name -q '.[].name' 2>/dev/null)" || return 1
+      grep -qx -- auto-filed <<<"$existing" || return 1
+    fi
+  fi
+  AUTO_FILED_LABEL_REPOS+=" $repo"
+}
+
 guarded_write() {
   reject_native_auto_merge "$@" || return $?
   local issue_number lane caller="${FUNCNAME[1]:-main}" create_repo="${REPO:-}" has_lane_add=0 has_hold_remove=0 has_ready_add=0 has_edit=0 child_status i
@@ -37,16 +54,30 @@ guarded_write() {
   local transition_stderr transition_stderr_file
   local status profile_source="" profile_function="" profile_line=0
   local -a command_args=("$@") filtered_args=() transition_add_labels=()
-  if [ "${ROADMAP_ISSUE_CREATE_INNER:-0}" != 1 ] \
-    && [ "${command_args[0]:-}" = gh ] && [ "${command_args[1]:-}" = issue ] \
+  if [ "${command_args[0]:-}" = gh ] && [ "${command_args[1]:-}" = issue ] \
     && [ "${command_args[2]:-}" = create ]; then
+    local issue_create_has_auto_filed=0 label_value
     for ((i = 3; i < ${#command_args[@]}; i++)); do
       case "${command_args[i]}" in
         --repo|-R) ((i += 1)); create_repo="${command_args[i]:-}" ;;
         --repo=*) create_repo="${command_args[i]#*=}" ;;
+        --label|-l)
+          label_value=",${command_args[i + 1]:-},"
+          [[ "$label_value" != *,auto-filed,* ]] || issue_create_has_auto_filed=1
+          ((i += 1))
+          ;;
+        --label=*|-l=*)
+          label_value=",${command_args[i]#*=},"
+          [[ "$label_value" != *,auto-filed,* ]] || issue_create_has_auto_filed=1
+          ;;
       esac
     done
-    if [[ "${create_repo,,}" == "${REPO,,}" ]]; then
+    # The marker must not block filing: a ticket that fails to file is worse than one the title predicate has to catch.
+    if ensure_auto_filed_label "$create_repo"; then
+      (( issue_create_has_auto_filed )) || command_args+=(--label auto-filed)
+    fi
+    if [ "${ROADMAP_ISSUE_CREATE_INNER:-0}" != 1 ] \
+      && [[ "${create_repo,,}" == "${REPO,,}" ]]; then
       if ! declare -F roadmap_issue_create >/dev/null; then
         echo "guarded_write: refusing the product issue creation; roadmap helper is unavailable" >&2
         return 1

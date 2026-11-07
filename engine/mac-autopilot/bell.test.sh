@@ -170,7 +170,7 @@ grep -Fq 'run-ci-suites.sh --nightly' "$autopi/BELL-QUEUE.md"
 grep -Fq 'verdicts-backlog-stale' "$autopi/BELL-QUEUE.md"
 grep -Fq '1 unimported FIX item' "$autopi/BELL-QUEUE.md"
 grep -Fq 'gh issue create --repo example-maintainer/example-repo' "$autopi/BELL-QUEUE.md"
-grep -Fq -- '--label bug --label needs-triage' "$autopi/BELL-QUEUE.md"
+grep -Fq -- '--label auto-filed --label bug --label needs-triage' "$autopi/BELL-QUEUE.md"
 grep -Fq 'action=queue=append' "$autopi/bell.log"
 # The retired bell.notify/bell.auto_supervisor keys: with neither key in the
 # config, high and critical events neither notify nor start a supervisor.

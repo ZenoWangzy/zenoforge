@@ -32,6 +32,53 @@ tick_checkout_integrity_refusal_tag() { # run-tick refusal tag -> 0 only for che
   esac
 }
 
+# A skipped tick must leave a trace: on 2026-11-07 a 29 minute release stage held the tick lock and every tick
+# exited 0 unseen. Same counter and once-per-episode alert as run-tick's refuse(), same supervisor channel.
+ZF_LOCK_SKIP_ALERT_THRESHOLD=3
+pipeline_lock_skipped() { # holder lock-file
+  local count_file="$AGENT_HOME/pipeline-lock-skip-count" alerted_file="$AGENT_HOME/pipeline-lock-skip-alerted" count
+  count=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
+  echo "issue-pipeline: tick skipped, lock busy holder=$1 file=$2 consecutive=$count" >&2
+  echo "$count" > "$count_file" 2>/dev/null || true
+  if [ "$count" -ge "$ZF_LOCK_SKIP_ALERT_THRESHOLD" ] && [ ! -f "$alerted_file" ]; then
+    supervisor_inbox_append tick-outage "cause=pipeline-lock-busy skips=$count file=$2" 2>/dev/null || true
+    touch "$alerted_file" 2>/dev/null || true
+  fi
+}
+pipeline_lock_acquired() { # a tick that got the lock ends the episode
+  local alerted_file="$AGENT_HOME/pipeline-lock-skip-alerted"
+  if [ -f "$alerted_file" ]; then
+    supervisor_inbox_append tick-recovery "" 2>/dev/null || true
+    rm -f -- "$alerted_file"
+  fi
+  rm -f -- "$AGENT_HOME/pipeline-lock-skip-count"
+}
+
+# The stage's lock, taken once before any decision. Tick stages share LOCK_FILE (a slice inherits its parent's
+# fd 9); the delegated release slice excludes only another release run, via RELEASE_STAGE_LOCK_FILE.
+pipeline_acquire_lock() {
+  local RELEASE_STAGE_LOCK_FILE="${RELEASE_STAGE_LOCK_FILE:-$AGENT_HOME/release-stage.lock}"
+  if [ "$PIPELINE_STAGE" = release ] && [ "${ZF_RELEASE_TRAIN_DELEGATE:-0}" = 1 ]; then
+    exec {RELEASE_LOCK_FD}>"$RELEASE_STAGE_LOCK_FILE" # not fd 9: a slice's inherited tick lock stays open
+    # A bare -n attempt exited 0 silently and the train logged "delegated" (2026-10-22).
+    flock -w "${ZF_RELEASE_DELEGATE_LOCK_WAIT_SECONDS:-600}" "$RELEASE_LOCK_FD" || {
+      echo "issue-pipeline: release delegate found the release lock busy ($RELEASE_STAGE_LOCK_FILE); the next train retries" >&2
+      exit 75
+    }
+    return 0
+  fi
+  if [ -z "${ZF_PIPELINE_SLICE_TICK:-}" ]; then exec 9>"$LOCK_FILE"; fi
+  if flock -n 9; then
+    [ -n "${ZF_PIPELINE_SLICE_TICK:-}" ] || pipeline_lock_acquired
+  elif [ "${EVENT_REFILL:-0}" != 0 ]; then
+    echo "issue-pipeline: refill skipped, lock busy file=$LOCK_FILE" >&2
+    exit 75
+  else
+    pipeline_lock_skipped "stage-${PIPELINE_STAGE:-none}" "$LOCK_FILE"
+    exit 0
+  fi
+}
+
 # Best-effort durable note for the bell scanner (mac-autopilot/bell.sh reads
 # this log; the slice's own stderr goes only to the unit journal, which bell
 # never scans). Never fatal: a slice failure must not prevent later work.
@@ -46,7 +93,8 @@ pipeline_slice_failure_note() { # tick stage status
 run_pipeline_slices() {
   local scheduler="$1" mode stage budget status=0 started tick="" deadline night
   exec 9>"$LOCK_FILE"
-  flock -n 9 || return 0
+  flock -n 9 || { pipeline_lock_skipped slice-runner "$LOCK_FILE"; return 0; }
+  pipeline_lock_acquired
   if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
     tick="$(date -u +%Y%m%dT%H%M%SZ)"
     ZF_CALL_PROFILE_TICK_ID="$tick"

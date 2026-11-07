@@ -146,7 +146,7 @@ product_class=ci-example-pack-0123456789abcdef0123456789abcdef01234567
 run_zf_upsert --lane product --class "$product_class" --title '主线 CI Example 测试失败' --body-file "$tmp/product.md"
 product_issue="$(jq -r --arg marker "<!-- vecta-incident-class:$product_class -->" '.[] | select((.body // "") | contains($marker)) | .number' "$FAKE_ISSUES")"
 jq -e --argjson number "$product_issue" '.[] | select(.number==$number)
-  | ([.labels[].name] | sort) == ["bug","needs-triage","priority:top"]' "$FAKE_ISSUES" >/dev/null
+  | ([.labels[].name] | sort) == ["auto-filed","bug","needs-triage","priority:top"]' "$FAKE_ISSUES" >/dev/null
 grep -Fq 'api repos/example-maintainer/example-repo/issues/913/sub_issues --method POST' "$FAKE_GH_LOG"
 echo 'ok - product lane upsert attaches new issue to roadmap epic before success'
 [[ "$(jq 'length' "$FAKE_ISSUES")" == 5 ]]
@@ -165,8 +165,9 @@ printf 'incident evidence\n' > "$tmp/incident.md"
 run_upsert --class incident-intake-fixture --title 'Bell incident intake fixture' --body-file "$tmp/incident.md" --label incident
 jq -e --arg marker '<!-- vecta-incident-class:incident-intake-fixture -->' \
   '[.[] | select((.body // "") | contains($marker))][0]
-   | ([.labels[].name] | sort) == ["incident","pipeline-system","ready-for-agent"]' "$FAKE_ISSUES" >/dev/null
+   | ([.labels[].name] | sort) == ["auto-filed","incident","pipeline-system","ready-for-agent"]' "$FAKE_ISSUES" >/dev/null
 grep -Fxq incident "$FAKE_LABELS"
+grep -Fxq auto-filed "$FAKE_LABELS"
 [[ "$(jq 'length' "$FAKE_ISSUES")" == 6 ]]
 echo 'ok - custom incident label preserves the pipeline-system lane and creates the missing repository label'
 

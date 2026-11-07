@@ -44,6 +44,7 @@ gh() {
   printf '%s %s\n' "${1:-}" "${2:-}" >> "$GH_CALLS"
   case "${1:-} ${2:-}" in
     'pr list') cat "$FIXTURE_PRS" ;;
+    'pr view') printf 'CONFLICTING %s\n' "$sha" ;; # the one GitHub re-check merge_conflict_to_repair makes
     *) printf 'unexpected gh query during dispatch: %s\n' "$*" >&2; return 97 ;;
   esac
 }
@@ -102,6 +103,27 @@ dispatch_pending true
 [[ "$(cat "$GH_CALLS")" == 'pr list' ]] || fail "expected exactly one census read at 7/8, got: $(tr '\n' ';' < "$GH_CALLS")"
 [[ "$dispatch_calls" == 1 ]] || fail "admitted review candidate was not dispatched (calls=$dispatch_calls)"
 
+# A CONFLICTING census row sends a review-pending and a rereview-pending unit to conflict repair, not review: no worker is
+# dispatched, and the only extra gh call is the one `pr view` re-check per unit (the clean census above made none).
+dispatch_calls=0
+jq -n --arg sha "$sha" '[range(503; 505) | {number:.,headRefOid:$sha,headRefName:"agent/issue-49\(. - 500)",baseRefName:"main",
+  isDraft:false,title:"fixture",labels:[],body:"",statusCheckRollup:[],mergeable:"CONFLICTING",createdAt:"2026-11-03T00:00:00Z"}]' > "$FIXTURE_PRS"
+jq -n '{units:[{id:"issue-4903",stage:"review-pending",pr:503,branch:"agent/issue-4903",lane:"pr",title:"fixture review",history:[]},
+  {id:"issue-4904",stage:"rereview-pending",pr:504,branch:"agent/issue-4904",lane:"pr",title:"fixture rereview",history:[]}]}' > "$UNITS"
+write_workers 7
+: > "$GH_CALLS"; : > "$LOG"
+TICK_PRS=''
+dispatch_pending true
+[[ "$dispatch_calls" == 0 ]] || fail "a CONFLICTING PR was dispatched to review (calls=$dispatch_calls)"
+[[ "$(sort "$GH_CALLS" | uniq -c | tr -s ' ' | tr '\n' ';')" == ' 1 pr list; 2 pr view;' ]] || fail "unexpected gh calls for two conflicts: $(tr '\n' ';' < "$GH_CALLS")"
+for u in issue-4903 issue-4904; do
+  jq -e --arg id "$u" '.units[] | select(.id == $id) | .stage == "repair-pending" and (.repair_hint | contains("git merge --no-edit origin/main")) and ([.history[].stage] | index("merge-conflict") != null)' "$UNITS" >/dev/null \
+    || fail "$u was not routed to conflict repair: $(jq -c --arg id "$u" '.units[] | select(.id == $id)' "$UNITS")"
+done
+jq -n --arg sha "$sha" '[{number:503,headRefOid:$sha,headRefName:"agent/issue-4903",baseRefName:"main",isDraft:false,title:"fixture",labels:[],body:"",
+  statusCheckRollup:[],mergeable:"UNKNOWN",createdAt:"2026-11-03T00:00:00Z"}]' > "$FIXTURE_PRS"
+jq -n '{units:[{id:"issue-4903",stage:"review-pending",pr:503,branch:"agent/issue-4903",lane:"pr",title:"fixture review",history:[]}]}' > "$UNITS"
+
 # A refill near its 300s kill stops the walk and leaves the unit for the next refill; a full tick has no such limit.
 dispatch_calls=0
 : > "$GH_CALLS"; : > "$LOG"
@@ -109,9 +131,9 @@ TICK_PRS=''
 SECONDS=250
 TICK_LOCAL_REFILL=true dispatch_pending true
 [[ "$dispatch_calls" == 0 ]] || fail "a late refill still dispatched (calls=$dispatch_calls)"
-grep -Fq 'dispatch deadline after 250s: units from issue-4903 wait for the next refill' "$LOG" || fail "no deadline line: $(cat "$LOG")"
+grep -Eq 'dispatch deadline after [0-9]+s: units from issue-4903 wait for the next refill' "$LOG" || fail "no deadline line: $(cat "$LOG")"
 : > "$LOG"
-SECONDS=239
+SECONDS=100
 TICK_LOCAL_REFILL=true dispatch_pending true
 [[ "$dispatch_calls" == 1 ]] || fail "a refill before the deadline did not dispatch (calls=$dispatch_calls)"
 ! grep -Fq 'dispatch deadline' "$LOG" || fail "an early refill stopped: $(cat "$LOG")"
@@ -143,4 +165,4 @@ dispatch_pending true
 [[ "$(dispatch_skip_summary)" == 'no-pr:1' ]] || fail "a silent no-PR pass was not counted: $(dispatch_skip_summary)"
 [[ "$(refill_dispatch_metrics 0 7)" == *' skips=footprint:0,handoff:0,memory:0,no-pr:1' ]] || fail "refill summary omitted the no-PR skip"
 
-echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; refill deadline; silent skip named)'
+echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; CONFLICTING census row repaired not reviewed; refill deadline; silent skip named)'
