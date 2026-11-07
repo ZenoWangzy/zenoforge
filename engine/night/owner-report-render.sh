@@ -3,13 +3,16 @@
 # Subject, body rendering and the send-boundary contract for the owner report.
 
 maintainer_health_mail_subject() { # <facts>
-  local facts="$1" released decisions day headline clause
+  local facts="$1" released decisions day headline
   released="$(jq -r '.releases.period_count // "null"' <<< "$facts")"
   decisions="$(jq -r '.decisions.total // "null"' <<< "$facts")"
   day="$(jq -r '.report_day' <<< "$facts")"
-  if [[ "$released" =~ ^[0-9]+$ ]]; then headline="上线 ${released} 个需求"; else headline='上线数量待核实'; fi
-  if [[ "$decisions" =~ ^[0-9]+$ ]]; then clause="有 ${decisions} 件事等你"; else clause='待决定事项未测量'; fi
-  printf '工厂日报 %s：%s，%s\n' "$day" "$headline" "$clause"
+  if [[ "$released" =~ ^[0-9]+$ ]]; then headline="正式发版 ${released} 次（热修未计入）"; else headline='正式发版次数待核实'; fi
+  if [[ "$decisions" =~ ^[0-9]+$ ]]; then
+    if (( decisions > 0 )); then printf '工厂日报 %s：%s，有 %s 件事等你\n' "$day" "$headline" "$decisions"; else printf '工厂日报 %s：%s\n' "$day" "$headline"; fi
+  else
+    printf '工厂日报 %s：%s，待决定事项未测量\n' "$day" "$headline"
+  fi
 }
 
 # maintainer_health_mail_build_body <facts>
@@ -38,11 +41,11 @@ maintainer_health_mail_build_body() {
     + [ "进度",
         "- 新提出：过去一天 \(count($f.progress.created_period; " 个"))；累计 \(count($f.progress.created_total; " 个"))；目前在办共 \(count($f.progress.open_total; " 个"))。",
         "- 已做完等上线：过去一天 \(count($f.progress.awaiting_period; " 个"))；当前共 \(count($f.progress.awaiting_total; " 个"))。",
-        "- 已上线：过去一天 \(count($f.progress.released_period; " 个"))；有记录以来共 \(count($f.progress.released_total; " 个"))。"
+        "- 已上线：过去一天正式发版 \(count($f.progress.released_period; " 次"))（热修未计入）；有记录以来正式发版 \(count($f.progress.released_total; " 次"))，需求逐个数量未能核对。"
       ]
-    + (if $days_since != null and $days_since > 1 then ["- 距离上一次上线已经 \($days_since | floor) 天。"] else [] end)
+    + (if $days_since != null and $days_since > 1 then ["- 距离上一次正式发版已经 \($days_since | floor) 天（热修未计入）。"] else [] end)
     + [ "效率",
-        "- 近 7 天平均每天上线 \(if $f.efficiency.per_day_week == null then "未测量" else ((($f.efficiency.per_day_week * 10 | round) / 10) | tostring) end) 个需求；上一个 7 天 \(if $f.efficiency.per_day_prev == null then "未测量" else ((($f.efficiency.per_day_prev * 10 | round) / 10) | tostring) end) 个。",
+        "- 近 7 天平均每天正式发版 \(if $f.efficiency.per_day_week == null then "未测量" else ((($f.efficiency.per_day_week * 10 | round) / 10) | tostring) end) 次；上一个 7 天 \(if $f.efficiency.per_day_prev == null then "未测量" else ((($f.efficiency.per_day_prev * 10 | round) / 10) | tostring) end) 次（热修未计入）。",
         "- 需求从提出到上线：近 7 天中位 \(if $f.efficiency.lead_days_week != null then ((($f.efficiency.lead_days_week * 10 | round) / 10) | tostring) + " 天" elif $f.efficiency.lead_week_measured == true then "无样本" else "未测量" end)；上一个 7 天 \(if $f.efficiency.lead_days_prev != null then ((($f.efficiency.lead_days_prev * 10 | round) / 10) | tostring) + " 天" elif $f.efficiency.lead_prev_measured == true then "无样本" else "未测量" end)。",
         (if $f.efficiency.split == null or $f.efficiency.split.requirement_pct == null then "- 近 7 天工作时间：需求与工厂自身维护占比未测量。"
          else "- 近 7 天已分类工作时间：需求 \($f.efficiency.split.requirement_pct)%；工厂自身维护 \($f.efficiency.split.self_pct)%\(if $f.efficiency.split.unclassified_seconds > 0 then "；另有 \((($f.efficiency.split.unclassified_seconds / 3600 * 10 | round) / 10)) 小时未分类" else "" end)\(if $f.efficiency.split.partial then "；部分记录未能读取" else "" end)。" end)
@@ -166,7 +169,7 @@ else:
 
 maintainer_health_mail_subject_rejection_reason() {
   local subject="$1" body="$2"
-  if ! grep -Eq '^工厂日报 [0-9]{2}-[0-9]{2}：.+，(有 [0-9]+ 件事等你|待决定事项未测量)$' <<< "$subject"; then
+  if ! grep -Eq '^工厂日报 [0-9]{2}-[0-9]{2}：.+(，(有 [0-9]+ 件事等你|待决定事项未测量))?$' <<< "$subject"; then
     printf 'health-subject\n'
     return 0
   fi

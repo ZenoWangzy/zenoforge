@@ -20,10 +20,6 @@ cat > "$test_bin/gh" <<'EOF2'
 #!/usr/bin/env bash
 if [[ " $* " == *" --label ready-for-agent "* ]] && [ -n "${MAINTAINER_TEST_READY_QUEUE_FILE:-}" ]; then
   cat -- "$MAINTAINER_TEST_READY_QUEUE_FILE"
-elif [[ " $* " == *" --label released "* ]] && [ -n "${MAINTAINER_TEST_RELEASED_FILE:-}" ]; then
-  cat -- "$MAINTAINER_TEST_RELEASED_FILE"
-elif [[ "$*" == *timeline* ]] && [ -n "${MAINTAINER_TEST_TIMELINE_DIR:-}" ]; then
-  cat -- "$MAINTAINER_TEST_TIMELINE_DIR/$(sed -E 's#.*/issues/([0-9]+)/timeline.*#\1#' <<< "$*").json"
 elif [[ " $* " == *" --state open "* ]] && [ -n "${MAINTAINER_TEST_OPEN_FILE:-}" ]; then
   cat -- "$MAINTAINER_TEST_OPEN_FILE"
 else
@@ -137,16 +133,16 @@ EOF
 cat > "$facts_home/state/${fixture_issue_factory}.json" <<'EOF'
 {"state":"concluded","closed_by_pipeline":true,"pipeline_system":{"enabled":true},"run":{"outcome":"pipeline-system","concluded_at":"2026-10-01T00:00:00Z"}}
 EOF
-# GitHub is the release source: the released label and its time (one fixture per issue).
-printf '[{"number":%s,"updatedAt":"2026-11-07T06:30:00Z"}]\n' "$fixture_issue_live" > "$tmp/released.json"
-mkdir -p "$tmp/timeline"
-printf '[{"event":"labeled","created_at":"2026-11-07T06:30:00Z","label":{"name":"released"}}]\n' \
-  > "$tmp/timeline/$fixture_issue_live.json"
+# The release train log holds one RELEASED line per formal release; the head-watch
+# log holds the production failure alerts. Both are read from the live runtime.
+mkdir -p "$facts_home/checkout/.scratch-supervisor/autopi" "$facts_home/logs"
+printf '%s\n' '[2026-10-23T01:57:55Z] RELEASED sha=edb19d6e4 images=admin-console' \
+  '[2026-11-07T06:30:00Z] RELEASED sha=123456789 images=fleet-gateway' \
+  > "$facts_home/checkout/.scratch-supervisor/autopi/release-train.log"
+: > "$facts_home/logs/head-watch.alerts"
 printf '[{"number":%s}]\n' "$fixture_issue_waiting" > "$tmp/open.json"
-MAINTAINER_TEST_RELEASED_FILE="$tmp/released.json"
-MAINTAINER_TEST_TIMELINE_DIR="$tmp/timeline"
 MAINTAINER_TEST_OPEN_FILE="$tmp/open.json"
-export MAINTAINER_TEST_RELEASED_FILE MAINTAINER_TEST_TIMELINE_DIR MAINTAINER_TEST_OPEN_FILE
+export MAINTAINER_TEST_OPEN_FILE
 # One efficiency line is cut mid-write, as seen on the live host: the rest still counts.
 cat > "$facts_home/metrics/efficiency-2026-11.jsonl" <<EOF
 {"record_type":"event","event_type":"ticket-created","stage":"needs-triage","issue":${fixture_issue_live},"ts":"2026-11-02T06:00:00Z"}
@@ -157,10 +153,6 @@ cat > "$facts_home/metrics/efficiency-2026-11.jsonl" <<EOF
 {"record_type":"event","event_type":"ticket-created","stage":"needs
 {"record_type":"hourly","sampled_at":"2026-11-07T15:00:00Z","metrics":{"tokens":9}}
 EOF
-printf '%s\n' "$(jq -cn --argjson issue "$fixture_issue_live" --arg sent_at '2026-11-07T06:31:00Z' \
-  --arg outcome '用户可以把订单导出成表格。' --arg sha '123456789abcdef' \
-  '{sent_at:$sent_at,issue:$issue,outcome:$outcome,deployed_sha:$sha}')" \
-  > "$facts_home/night/founder-health-outcomes.jsonl"
 printf '%s\timplement\t模型\t%s\t\t1500\n' \
   "$(date -u -d '2026-11-07T13:50:00Z' +%s)" "$fixture_issue_live" \
   > "$facts_home/spend/2026-11-07.log"
@@ -179,35 +171,37 @@ cat > "$facts_home/metrics/units-2026-11.jsonl" <<EOF
 {"record_type":"event","event_type":"unit-end","event_id":"unit-unclassified","ts":"2026-11-07T14:10:00Z","wall_s":300,"tickets":[]}
 EOF
 facts="$(maintainer_health_mail_daily_facts "$facts_home" "$facts_home/night/founder-health-mail.json" "$facts_now" "$SCRIPT_DIR/../..")"
-assert_eq 'one requirement reached production in the window' '1' "$(jq -r '.releases.period_count' <<< "$facts")"
-assert_contains 'release line states the user-visible outcome' \
-  "$(jq -r '.releases.items[0].text' <<< "$facts")" '用户可以把订单导出成表格'
+assert_eq 'one formal release reached production in the window' '1' "$(jq -r '.releases.period_count' <<< "$facts")"
+assert_contains 'release line states a formal release and that hot patches are not counted' \
+  "$(jq -r '.releases.items[0].text' <<< "$facts")" '正式发版一次（'
+assert_contains 'release line says the requirement detail is unverified' \
+  "$(jq -r '.releases.items[0].text' <<< "$facts")" '需求明细未能核对；热修未计入。'
 assert_eq 'current founder requirements count as open' '1' "$(jq -r '.progress.open_total' <<< "$facts")"
 assert_eq 'awaiting-release total comes from the state census' '1' "$(jq -r '.progress.awaiting_total' <<< "$facts")"
 assert_eq 'new proposals in the window are counted' '1' "$(jq -r '.progress.created_period' <<< "$facts")"
 assert_eq 'new proposals total uses the requirement ladder' '2' "$(jq -r '.progress.created_total' <<< "$facts")"
-assert_eq 'released-all-time comes from the GitHub released label' '1' "$(jq -r '.progress.released_total' <<< "$facts")"
+assert_eq 'formal releases all-time come from the release train log' '2' "$(jq -r '.progress.released_total' <<< "$facts")"
 expected_lead_days="$(jq -nr '(("2026-11-07T06:30:00Z" | fromdateiso8601) - ("2026-11-02T06:00:00Z" | fromdateiso8601)) / 86400')"
-assert_eq 'median lead time is measured in days' "$expected_lead_days" "$(jq -r '.efficiency.lead_days_week' <<< "$facts")"
+assert_eq 'lead time stays unmeasured without per-requirement release times' 'null' "$(jq -r '.efficiency.lead_days_week' <<< "$facts")"
 assert_eq 'week and previous week per-day counts stay separate' '1' "$(jq -r '.efficiency.per_day_week * 7 | round' <<< "$facts")"
 assert_eq 'unit ledger splits product work from factory maintenance' '85.7' "$(jq -r '.efficiency.split.requirement_pct' <<< "$facts")"
 assert_eq 'unclassified time stays outside the work-share calculation' '300.0' "$(jq -r '.efficiency.split.unclassified_seconds' <<< "$facts")"
 assert_eq 'spend tokens come from the window day log' '1500' "$(jq -r '.spend.tokens' <<< "$facts")"
-assert_eq 'spend per requirement divides by releases in window' '1500' "$(jq -r '.spend.per_requirement' <<< "$facts")"
+assert_eq 'spend per requirement stays unmeasured without requirement releases' 'null' "$(jq -r '.spend.per_requirement' <<< "$facts")"
 assert_eq 'report day is the Beijing date' '11-08' "$(jq -r '.report_day' <<< "$facts")"
 assert_eq 'a calm factory concludes normally' '正常' "$(jq -r '.conclusion.level' <<< "$facts")"
 
 facts_body="$(maintainer_health_mail_build_body "$facts")"
 maintainer_health_mail_output_contract "$facts_body" "$facts_now"
-assert_contains 'body names the released requirement' "$facts_body" '「订单导出」：用户可以把订单导出成表格'
+assert_contains 'body names a formal release, not a requirement' "$facts_body" '正式发版一次（'
 assert_contains 'body states the in-flight requirement counts' "$facts_body" '目前在办共 1 个'
 assert_contains 'body states the awaiting-release backlog' "$facts_body" '已做完等上线：过去一天 1 个；当前共 1 个'
-assert_contains 'body states spend per delivered requirement' "$facts_body" '每个上线需求平均 1500 令牌'
-assert_contains 'a measured week with no prior releases says 无样本' "$facts_body" '上一个 7 天 无样本'
+assert_contains 'body states spend per delivered requirement is unmeasured' "$facts_body" '每个上线需求的令牌花费未测量'
+assert_contains 'lead time without release times says 未测量' "$facts_body" '上一个 7 天 未测量'
 assert_contains 'body states money is not measured' "$facts_body" '金额没有完整记录，无法算出总花费'
 assert_contains 'body states no decisions wait' "$facts_body" '- 没有'
-assert_contains 'subject counts released requirements' "$(maintainer_health_mail_subject "$facts")" '工厂日报 11-08：上线 1 个需求'
-assert_contains 'subject states the decision count' "$(maintainer_health_mail_subject "$facts")" '有 0 件事等你'
+assert_contains 'subject counts formal releases and discloses hot patches' "$(maintainer_health_mail_subject "$facts")" '工厂日报 11-08：正式发版 1 次（热修未计入）'
+assert_not_contains 'subject drops the decision clause when nothing waits' "$(maintainer_health_mail_subject "$facts")" '件事等你'
 
 many_release_facts="$(jq -c '.releases.items += [{text:"「第二项」：用户可以查看更多信息"},{text:"「第三项」：用户可以完成另一件事"},{text:"「第四项」：用户可以完成更多操作"}]' <<< "$facts")"
 many_release_body="$(maintainer_health_mail_build_body "$many_release_facts")"
@@ -231,13 +225,27 @@ assert_eq 'an empty state directory leaves the production census unmeasured' 'nu
 empty_facts="$(maintainer_health_mail_daily_facts "$empty_home" "$empty_home/night/founder-health-mail.json" "$facts_now" "$SCRIPT_DIR/../..")"
 empty_body="$(maintainer_health_mail_build_body "$empty_facts")"
 maintainer_health_mail_output_contract "$empty_body" "$facts_now"
-assert_contains 'empty home says releases are unverified' "$empty_body" '上线记录未能完整核对'
+assert_contains 'empty home says formal releases are unverified' "$empty_body" '正式发版记录未能读取'
 assert_contains 'empty home leaves the subject decision count unmeasured' \
   "$(maintainer_health_mail_subject "$empty_facts")" '待决定事项未测量'
 assert_contains 'empty home leaves lead time unmeasured' "$empty_body" '近 7 天中位 未测量'
 assert_contains 'empty home leaves the self-work share unmeasured' "$empty_body" '占比未测量'
 assert_contains 'empty home states per-requirement spend is unmeasured' "$empty_body" '每个上线需求的令牌花费未测量'
 assert_contains 'empty home states decision facts are unmeasured without inventing a decision' "$empty_body" '待决定事项未测量，无法列出问题和建议'
+
+# Watch alerts less than 30 minutes apart are one production episode.
+watch_home="$tmp/watch"
+mkdir -p "$watch_home/logs"
+printf '%s\n' '2026-11-07T06:00:00Z PROD-DB-TIMEOUT first' '2026-11-07T06:20:00Z PROD-DB-TIMEOUT same' \
+  '2026-11-07T08:00:00Z PROD-DB-TIMEOUT later' > "$watch_home/logs/head-watch.alerts"
+watch_start="$(date -u -d '2026-11-07T00:00:00Z' +%s)"
+watch_end="$(date -u -d '2026-11-08T00:00:00Z' +%s)"
+assert_eq 'two clusters of alerts make two episodes' '2' \
+  "$(maintainer_health_mail_watch_episodes "$watch_home" "$watch_start" "$watch_end" "$(date -u -d '2026-11-07T09:00:00Z' +%s)" | jq -r '.period')"
+assert_eq 'an episode with no alert in the last 30 minutes is not open' '0' \
+  "$(maintainer_health_mail_watch_episodes "$watch_home" "$watch_start" "$watch_end" "$(date -u -d '2026-11-07T09:00:00Z' +%s)" | jq -r '.open')"
+assert_eq 'an episode alerting within 30 minutes is open' '1' \
+  "$(maintainer_health_mail_watch_episodes "$watch_home" "$watch_start" "$watch_end" "$(date -u -d '2026-11-07T08:10:00Z' +%s)" | jq -r '.open')"
 
 # The conclusion escalates: open incident beats risk beats normal.
 conclusion_home="$tmp/conclusion"
@@ -247,11 +255,13 @@ fixture_incident_issue=$((fixture_issue_seed + 10))
 maintainer_health_mail_ensure_ledger "$conclusion_ledger" 1000
 maintainer_health_mail_incident_open "$conclusion_ledger" "$fixture_incident_issue" '线上服务中断' '服务中断。' \
   '用户暂时无法使用。' '正在恢复服务。' "$((facts_now + 3600))" "$facts_now" 1 >/dev/null
+mkdir -p "$conclusion_home/logs"
+: > "$conclusion_home/logs/head-watch.alerts"
 open_facts="$(maintainer_health_mail_daily_facts "$conclusion_home" "$conclusion_ledger" "$facts_now" "$SCRIPT_DIR/../..")"
 assert_eq 'an open outage makes the conclusion 出事了' '出事了' "$(jq -r '.conclusion.level' <<< "$open_facts")"
 assert_contains 'quality section counts the open incident' \
   "$(maintainer_health_mail_build_body "$open_facts")" '目前仍在处理 1 起'
-assert_contains 'subject counts released requirements even during an outage' \
+assert_contains 'subject still names the report during an outage' \
   "$(maintainer_health_mail_subject "$open_facts")" '工厂日报'
 risk_runtime="$tmp/risk-runtime"
 mkdir -p "$risk_runtime"

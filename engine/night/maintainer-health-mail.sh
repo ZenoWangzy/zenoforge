@@ -666,52 +666,93 @@ maintainer_health_mail_created_total() {
   jq -r '.ids | length' <<< "$requirements"
 }
 
-# maintainer_health_mail_release_history <home> <since> <until>
-# Requirements that reached 上线 (the GitHub `released` label, the ladder's last
-# production stage): {total, last_at, items:[{issue,at}]}. items are the labels
-# added in [since, until); total and last_at cover all time. A label cannot be
-# added after its issue's last update, so the timeline is read only where needed.
-# Null when GitHub or the requirement ladder cannot answer.
-maintainer_health_mail_release_history() {
-  local home="$1" since="$2" until="$3" requirements ids listing total issue updated at best='' items='[]' raw
-  requirements="$(maintainer_health_mail_requirement_catalog "$home")" || requirements=null
-  [ "$requirements" != null ] && [ "$(jq -r '.complete' <<< "$requirements")" = true ] || { printf 'null\n'; return 0; }
-  ids="$(jq -c '.ids' <<< "$requirements")"
-  listing="$(timeout 60 gh issue list --repo "${REPO:-}" --label released --state all --limit 1000 --json number,updatedAt 2>/dev/null)" || { printf 'null\n'; return 0; }
-  jq -e 'type == "array" and length < 1000' <<< "$listing" >/dev/null || { printf 'null\n'; return 0; }
-  listing="$(jq -c --argjson ids "$ids" '
-    [.[] | {issue:(.number | tostring), at:(.updatedAt | fromdateiso8601)} | select(.issue as $i | $ids | index($i) != null)]
-    | sort_by(.at) | reverse' <<< "$listing")" || { printf 'null\n'; return 0; }
-  total="$(jq 'length' <<< "$listing")"
-  while IFS=$'\t' read -r issue updated; do
-    if [ -n "$best" ] && (( updated < since )) && (( updated < best )); then break; fi
-    raw="$(timeout 30 gh api --paginate "repos/${REPO:-}/issues/$issue/timeline" 2>/dev/null)" || { printf 'null\n'; return 0; }
-    at="$(jq -rs '[.[][]? | select(.event == "labeled" and .label.name == "released") | .created_at | fromdateiso8601] | max // empty' <<< "$raw" 2>/dev/null)" || at=''
-    [[ "$at" =~ ^[0-9]+$ ]] || { printf 'null\n'; return 0; }
-    if [ -z "$best" ] || (( at > best )); then best=$at; fi
-    if (( at >= since && at < until )); then
-      items="$(jq -c --arg issue "$issue" --argjson at "$at" '. + [{issue:$issue,at:$at}]' <<< "$items")"
-    fi
-  done < <(jq -r '.[] | "\(.issue)\t\(.at)"' <<< "$listing")
-  jq -cn --argjson total "$total" --argjson items "$items" --arg last "$best" '
-    {total:$total, last_at:(if $last == "" then null else ($last | tonumber) end), items:$items}'
+# Scheduler runtime files (node-health, release train) live in the checkout.
+maintainer_health_mail_runtime_dir() {
+  local home="$1" user_home
+  user_home="${home%/.zenoforge}"
+  [ "$user_home" != "$home" ] || user_home="$home"
+  printf '%s\n' "${MAC_AUTOPILOT_RUNTIME_DIR:-${ZF_MAC_AUTOPILOT_RUNTIME_DIR:-${MAC_AUTOPILOT_ROOT:-$user_home/checkout}/.scratch-supervisor/autopi}}"
 }
 
-# maintainer_health_mail_release_lead_days <home> <start> <end>
-# Days from a requirement's first 提出 record in the founder-req inbox to its
-# 上线 for each release inside the window. A release with no proposal record is
-# left out rather than guessed.
-maintainer_health_mail_release_lead_days() {
-  local home="$1" start="$2" end="$3" history proposals
-  history="$(maintainer_health_mail_release_history "$home" "$start" "$end")" || history=null
-  proposals="$(maintainer_health_mail_founder_req_events "$home")" || proposals=null
-  [ "$history" != null ] && [ "$proposals" != null ] || { printf 'null\n'; return 0; }
-  jq -c --argjson proposals "$proposals" '
-    [ .items[] as $release
-      | ([$proposals[] | select(.issue == $release.issue) | .at] | min) as $proposed
-      | select($proposed != null and $proposed <= $release.at)
-      | ($release.at - $proposed) / 86400 ]
-  ' <<< "$history"
+# maintainer_health_mail_release_history <home> <since> <until>
+# Formal production releases, from the release train's own log (`RELEASED` lines,
+# one per release): {total, last_at, items:[{at}]}, items being the releases in
+# [since, until). Hot patches are not in this log and are not counted. Null when
+# the log is unreadable.
+maintainer_health_mail_release_history() {
+  local home="$1" since="$2" until="$3" log
+  log="$(maintainer_health_mail_runtime_dir "$home")/release-train.log"
+  [ -r "$log" ] || { printf 'null\n'; return 0; }
+  python3 - "$log" "$since" "$until" <<'PY'
+import json
+import re
+import sys
+from datetime import datetime, timezone
+
+path, since, until = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+pattern = re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\] RELEASED ")
+stamps = set()
+try:
+    with open(path, encoding="utf-8", errors="replace") as source:
+        for line in source:
+            match = pattern.match(line)
+            if not match:
+                continue
+            try:
+                stamps.add(int(datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()))
+            except ValueError:
+                continue
+except OSError:
+    print("null")
+    raise SystemExit(0)
+releases = sorted(stamps)
+print(json.dumps({"total": len(releases), "last_at": releases[-1] if releases else None,
+                  "items": [{"at": at} for at in releases if since <= at < until]}, separators=(",", ":")))
+PY
+}
+
+# maintainer_health_mail_watch_episodes <home> <since> <until> <now>
+# Production-failure episodes: head-watch's PROD-DB-TIMEOUT alerts in
+# logs/head-watch.alerts. Alerts less than 30 minutes apart are one episode,
+# counted at its first alert. {period: episodes starting in [since, until),
+# open: episodes whose last alert is under 30 minutes old at now}. Null when the
+# log is unreadable.
+maintainer_health_mail_watch_episodes() {
+  local home="$1" since="$2" until="$3" now="$4"
+  local file="$home/logs/head-watch.alerts"
+  [ -r "$file" ] || { printf 'null\n'; return 0; }
+  python3 - "$file" "$since" "$until" "$now" <<'PY'
+import json
+import re
+import sys
+from datetime import datetime, timezone
+
+path, since, until, now = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+GAP = 30 * 60
+pattern = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) PROD-DB-TIMEOUT ")
+stamps = []
+try:
+    with open(path, encoding="utf-8", errors="replace") as source:
+        for line in source:
+            match = pattern.match(line)
+            if not match:
+                continue
+            try:
+                stamps.append(int(datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()))
+            except ValueError:
+                continue
+except OSError:
+    print("null")
+    raise SystemExit(0)
+episodes = []
+for at in sorted(stamps):
+    if episodes and at - episodes[-1][1] < GAP:
+        episodes[-1][1] = at
+    else:
+        episodes.append([at, at])
+print(json.dumps({"period": sum(since <= first < until for first, _ in episodes),
+                  "open": sum(last + GAP > now for _, last in episodes)}, separators=(",", ":")))
+PY
 }
 
 # maintainer_health_mail_state_census <home>
@@ -874,84 +915,40 @@ PY
 }
 
 # maintainer_health_mail_release_facts <home> <start> <end>
-# What reached production in the window: one line per requirement, the count,
-# the all-time count, and the most recent release time on record.
+# What reached production in the window, from the formal release log. The log
+# keeps no per-requirement release record, so no requirement titles or counts are
+# shown; hot patches are not in the log and the report says so.
 maintainer_health_mail_release_facts() {
   local home="$1" start="$2" end="$3"
-  local history complete total last_at in_window outcome_rows req_events req_titles rows title outcome at text
+  local history complete total last_at count items zero_reason census awaiting at
   history="$(maintainer_health_mail_release_history "$home" "$start" "$end")" || history='null'
   complete="$(jq -r 'if . == null then "false" else "true" end' <<< "$history")"
   total="$(jq -r 'if . == null then "null" else (.total | tostring) end' <<< "$history")"
   last_at="$(jq -c 'if . == null then null else .last_at end' <<< "$history")"
-  in_window="$(jq -c 'if . == null then [] else .items end' <<< "$history")"
-  # Outcome rows carry the user-visible sentence the pipeline recorded at send time.
-  outcome_rows='[]'
-  if [ -r "$home/night/founder-health-outcomes.jsonl" ]; then
-    outcome_rows="$(jq -cs '
-      [ .[]
-        | (.sent_at // "") as $stamp
-        | ($stamp | try fromdateiso8601 catch null) as $at
-        | select($at != null)
-        | select((.issue // "" | tostring | test("^[0-9]+$")))
-        | {issue:(.issue | tostring), at:$at, outcome:(.outcome // "")}
-        | select(.outcome | test("[一-龥]")) ]
-      | sort_by(.at) | group_by(.issue) | map(last | {key:.issue,value:.outcome}) | from_entries
-    ' "$home/night/founder-health-outcomes.jsonl" 2>/dev/null || outcome_rows='[]')"
+  count=null
+  items='[]'
+  if [ "$complete" = true ]; then
+    count="$(jq -r '.items | length' <<< "$history")"
+    while IFS= read -r at; do
+      items="$(jq -c --arg text "正式发版一次（$(maintainer_health_mail_date_time "$at")上线），需求明细未能核对；热修未计入。" '. + [{text:$text}]' <<< "$items")"
+    done < <(jq -r '.items[].at' <<< "$history")
   fi
-  req_events="$(maintainer_health_mail_founder_req_events "$home")" || req_events=null
-  [ "$req_events" != null ] || req_events='[]'
-  req_titles="$(jq -cn --argjson events "$req_events" '
-    reduce ($events | sort_by(.at)[]) as $event ({};
-      .[$event.issue] = $event.title)
-  ')" || req_titles='{}'
-  rows="$(jq -cn --argjson deployed "$in_window" --argjson outcomes "$outcome_rows" --argjson titles "$req_titles" '
-    [$deployed[] as $release | $release.issue as $issue
-      | {issue:$issue, outcome:($outcomes[$issue] // ""),
-         title:($titles[$issue] // ""), at:$release.at}]
-    | sort_by(.at)
-  ')" || rows='[]'
-  local -a items=()
-  local row
-  while IFS= read -r row; do
-    [ -n "$row" ] || continue
-    title="$(jq -r '.title // ""' <<< "$row")"
-    outcome="$(jq -r '.outcome // ""' <<< "$row")"
-    at="$(jq -r '.at // ""' <<< "$row")"
-    outcome="$(maintainer_health_mail_scrub_text "$outcome")" || outcome=''
-    title="$(maintainer_health_mail_scrub_text "$title")" || title=''
-    if [[ "$title" == *[一-龥]* ]] && [[ "$title" != *[A-Za-z]* ]]; then
-      title="$(maintainer_health_mail_plain_title "$title")"
-      if [ -n "$outcome" ]; then text="「${title}」：$outcome"; else text="「${title}」已上线；用户影响说明未记录。"; fi
-    elif [ -n "$outcome" ]; then
-      text="$outcome"
-    else
-      text='有一项需求已上线，但标题和用户影响均未记录。'
-    fi
-    [ "$at" = null ] && at=''
-    if [[ "$at" =~ ^[0-9]+$ ]]; then
-      text="${text}（$(maintainer_health_mail_date_time "$at")上线）"
-    fi
-    items+=("$(jq -cn --arg text "$text" '{text:$text}')")
-  done < <(jq -c '.[]' <<< "$rows")
-  local count zero_reason
-  if [ "$complete" = true ]; then count="$(jq -r 'length' <<< "$rows")"; else count=null; fi
   zero_reason=''
   if [ "$count" = null ]; then
-    zero_reason='上线记录未能完整核对，过去一天上线数量无法确认。'
+    zero_reason='正式发版记录未能读取，过去一天发版数量无法确认；热修未计入。'
   elif (( count == 0 )); then
-    local census awaiting
     census="$(maintainer_health_mail_state_census "$home")"
     awaiting="$(jq -r 'if . == null then "null" else .awaiting_release end' <<< "$census")"
     if [ "$awaiting" = null ]; then
-      zero_reason='过去一天上线 0 个需求：没有可确认的需求上线记录；待上线数量未测量。'
+      zero_reason='过去一天正式发版 0 次，热修未计入；待上线数量未测量。'
     elif (( awaiting > 0 )); then
-      zero_reason="过去一天上线 0 个需求：还有 $awaiting 项已做完，正在等待上线。"
+      zero_reason="过去一天正式发版 0 次，热修未计入；还有 $awaiting 项已做完，正在等待上线。"
     else
-      zero_reason='过去一天上线 0 个需求：没有可确认的需求上线记录，也没有待上线积压。'
+      zero_reason='过去一天正式发版 0 次，热修未计入，也没有待上线积压。'
     fi
   fi
   jq -cn --argjson count "$count" --argjson total "$total" --argjson last_at "$last_at" \
-    --argjson complete "$complete" --argjson items "$(printf '%s\n' "${items[@]:-null}" | jq -cs 'if . == [null] then [] else . end' 2>/dev/null || printf '[]')" \
+    --argjson complete "$complete" --argjson items "$items" \
     --arg zero_reason "$zero_reason" \
     '{period_count:$count,total_ever:$total,last_at:$last_at,complete:$complete,items:$items,zero_reason:$zero_reason}'
 }
@@ -1003,8 +1000,9 @@ maintainer_health_mail_efficiency_facts() {
   history="$(maintainer_health_mail_release_history "$home" "$prev_start" "$now")" || history='null'
   week_count="$(jq -r --argjson start "$week_start" 'if . == null then "null" else [.items[] | select(.at >= $start)] | length end' <<< "$history")"
   prev_count="$(jq -r --argjson start "$prev_start" --argjson end "$week_start" 'if . == null then "null" else [.items[] | select(.at >= $start and .at < $end)] | length end' <<< "$history")"
-  lead_week_days="$(maintainer_health_mail_release_lead_days "$home" "$week_start" "$now")"
-  lead_prev_days="$(maintainer_health_mail_release_lead_days "$home" "$prev_start" "$week_start")"
+  # Lead time needs a per-requirement release time, which no source records.
+  lead_week_days='null'
+  lead_prev_days='null'
   lead_week="$(jq -r 'if . == null or length == 0 then "null" else (sort | .[length / 2 | floor] + .[length / 2 | ceil - 1]) / 2 end' <<< "$lead_week_days" 2>/dev/null || printf 'null')"
   lead_prev="$(jq -r 'if . == null or length == 0 then "null" else (sort | .[length / 2 | floor] + .[length / 2 | ceil - 1]) / 2 end' <<< "$lead_prev_days" 2>/dev/null || printf 'null')"
   split="$(maintainer_health_mail_unit_work_split "$home" "$week_start" "$now")" || split='null'
@@ -1095,7 +1093,7 @@ PY
 # maintainer_health_mail_quality_facts <ledger> <home> <start> <end> <repo_root>
 maintainer_health_mail_quality_facts() {
   local ledger="$1" home="$2" start="$3" end="$4" repo_root="$5"
-  local incidents incidents_open open_subjects rollbacks mttr git_dir
+  local incidents incidents_open open_subjects rollbacks mttr git_dir watch
   incidents="$(jq -c --argjson start "$start" --argjson end "$end" '
     (.incidents // []) as $rows
     | if any($rows[]; (.opened_at | type) != "number") then null
@@ -1115,10 +1113,12 @@ maintainer_health_mail_quality_facts() {
   if [ -n "$repo_root" ] && git -C "$repo_root" rev-parse --verify origin/main >/dev/null 2>&1; then
     mttr="$(post_land_mttr_summary "$repo_root" "$start" "$end" 2>/dev/null)" || mttr='null'
   fi
+  # Production incidents: ledger incidents plus head-watch PROD-DB-TIMEOUT episodes (see maintainer_health_mail_watch_episodes).
+  watch="$(maintainer_health_mail_watch_episodes "$home" "$start" "$end" "$end")" || watch='null'
   jq -cn --argjson incidents "$incidents" --argjson incidents_open "$incidents_open" --argjson open_subjects "$open_subjects" \
-    --argjson rollbacks "$rollbacks" --argjson mttr "$mttr" '
-    {incidents_period:$incidents,
-     incidents_open:$incidents_open,
+    --argjson rollbacks "$rollbacks" --argjson mttr "$mttr" --argjson watch "$watch" '
+    {incidents_period:(if $incidents == null or $watch == null then null else $incidents + $watch.period end),
+     incidents_open:(if $incidents_open == null or $watch == null then null else $incidents_open + $watch.open end),
      open_subjects:$open_subjects,
      rollbacks:$rollbacks,
      post_land_fixes:(if $mttr == null or ($mttr.summary.count | type) != "number" then null else $mttr.summary.count end)}'
@@ -1167,7 +1167,7 @@ maintainer_health_mail_attention_count() {
   local home="$1" now="$2" user_home runtime_dir scorecard generated sampled_epoch age
   user_home="${home%/.zenoforge}"
   [ "$user_home" != "$home" ] || user_home="$home"
-  runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${ZF_MAC_AUTOPILOT_RUNTIME_DIR:-${MAC_AUTOPILOT_ROOT:-$user_home/checkout}/.scratch-supervisor/autopi}}"
+  runtime_dir="$(maintainer_health_mail_runtime_dir "$home")"
   scorecard="$runtime_dir/node-health.json"
   [ -r "$scorecard" ] || { printf 'null\n'; return 0; }
   generated="$(jq -r '.generated // empty' "$scorecard" 2>/dev/null || true)"
@@ -1198,7 +1198,7 @@ maintainer_health_mail_daily_facts() {
   releases="$(maintainer_health_mail_release_facts "$home" "$start" "$now")" || releases='{"period_count":null,"total_ever":null,"last_at":null,"complete":false,"items":[],"zero_reason":"上线情况待核实。"}'
   progress="$(maintainer_health_mail_progress_facts "$home" "$start" "$now" "$releases")" || progress='{}'
   efficiency="$(maintainer_health_mail_efficiency_facts "$home" "$now")" || efficiency='{}'
-  spend="$(maintainer_health_mail_spend_facts "$home" "$start" "$now" "$(jq -r '.released_period // 0' <<< "$progress")")" || spend='{}'
+  spend="$(maintainer_health_mail_spend_facts "$home" "$start" "$now" 0)" || spend='{}'
   quality="$(maintainer_health_mail_quality_facts "$ledger" "$home" "$start" "$now" "$repo_root")" || quality='{}'
   decisions="$(maintainer_health_mail_decision_facts "$ledger")" || decisions='{"items":[],"total":null,"incomplete":0}'
   attention="$(maintainer_health_mail_attention_count "$home" "$now")" || attention=null
@@ -1222,7 +1222,7 @@ maintainer_health_mail_conclusion_facts() {
     | if $ctx.quality.incidents_open > 0 then
         "出事了\($sep)仍有 \($ctx.quality.incidents_open) 起线上事故没有恢复"
       elif ($ctx.quality.incidents_period // 0) > 0 then
-        "出事了\($sep)过去一天发生 \($ctx.quality.incidents_period) 起线上事故，现均已恢复"
+        "出事了\($sep)过去一天发生 \($ctx.quality.incidents_period) 起线上事故，现均已停止告警"
       elif $ctx.attention != null and $ctx.attention > 0 then
         "有风险\($sep)有 \($ctx.attention) 项运行指标需要留意"
       elif $ctx.quality.incidents_open == null or $ctx.quality.incidents_period == null then
@@ -1230,15 +1230,15 @@ maintainer_health_mail_conclusion_facts() {
       elif $ctx.attention == null then
         "有风险\($sep)当前运行状态未能核实"
       elif $ctx.releases.period_count == null or $ctx.releases.complete != true then
-        "有风险\($sep)上线记录不完整，无法确认本期上线情况"
+        "有风险\($sep)正式发版记录不完整，无法确认本期发版情况"
       elif $ctx.progress.awaiting_total == null then
         "有风险\($sep)待上线需求数量未能核实"
       elif ($ctx.progress.awaiting_total // 0) > 0 and ((($ctx.releases.last_at // null) == null) or (($ctx.releases.period_count // 0) == 0)) then
         "有风险\($sep)\($ctx.progress.awaiting_total) 个做完的需求还在等上线"
       else
         (if (($ctx.releases.period_count // 0) > 0)
-         then "正常\($sep)过去一天上线 \($ctx.releases.period_count) 个需求，没有线上事故"
-         else "正常\($sep)过去一天上线 0 个需求，没有线上事故，也没有待上线积压" end)
+         then "正常\($sep)过去一天正式发版 \($ctx.releases.period_count) 次，没有线上事故"
+         else "正常\($sep)过去一天没有正式发版，没有线上事故，也没有待上线积压" end)
       end
   ' <<< "$(jq -cn --argjson releases "$releases" --argjson progress "$progress" --argjson quality "$quality" --argjson decisions "$decisions" --argjson attention "$attention" \
     '{releases:$releases,progress:$progress,quality:$quality,decisions:$decisions,attention:$attention}')"
@@ -1311,7 +1311,7 @@ maintainer_health_mail_current_anomalies() {
   local home="$1" now="$2" user_home runtime_dir scorecard generated sampled_epoch age result
   user_home="${home%/.zenoforge}"
   [ "$user_home" != "$home" ] || user_home="$home"
-  runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${ZF_MAC_AUTOPILOT_RUNTIME_DIR:-${MAC_AUTOPILOT_ROOT:-$user_home/checkout}/.scratch-supervisor/autopi}}"
+  runtime_dir="$(maintainer_health_mail_runtime_dir "$home")"
   scorecard="$runtime_dir/node-health.json"
   [ -r "$scorecard" ] || { printf '调度评分样本待补'; return 0; }
   generated="$(jq -r '.generated // empty' "$scorecard" 2>/dev/null || true)"
