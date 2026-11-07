@@ -90,4 +90,22 @@ jq -n '{units: []}' > "$UNITS"
 register_new_issues 0
 jq -e 'any(.units[]; .id=="issue-900")' "$UNITS" >/dev/null || fail 'intake did not add once the target had room'
 [[ ! -e "$marker" ]] || fail 'adding a unit left the hold marker'
+# Two ticks with a consumed handoff row: the existing pass must not clear or restart the hold, so the station can see it age past 2 x bound.
+printf '%s\n' '{"state":"ready-for-agent","scheduler_handoff":{"episode":"done"}}' > "$AGENT_HOME/state/905.json"
+printf '%s\n' '{"state":"ready-for-agent","state_changed_at":"2026-11-06T00:00:00Z"}' > "$AGENT_HOME/state/906.json"
+existing_handoff_candidates() { printf '905\tpr\thandoff\t[]\n'; }
+jq -n '{units: ([range(0;8) | {id:("p-"+tostring),stage:"implement-pending"}] + [{id:"issue-905",issue:905,stage:"review",lane:"pr",hold_handoff_episode:"done",history:[]}])}' > "$UNITS"
+printf '%s\n' 2026-11-07T00:00:00Z > "$marker"
+for tick in 1 2; do
+  : > "$LOG"
+  register_new_issues 1 reuse
+  grep -Fq 'consumed=1' "$LOG" || fail "tick $tick: the handoff row was not consumed"
+  [[ "$(cat "$marker")" == 2026-11-07T00:00:00Z ]] || fail "tick $tick: the existing pass moved the hold start"
+  register_new_issues 0
+  grep -Fq 'intake held: startable pending' "$LOG" || fail "tick $tick: full pass was not held"
+  [[ "$(cat "$marker")" == 2026-11-07T00:00:00Z ]] || fail "tick $tick: the held pass moved the hold start"
+done
+station() { python3 "$script_dir/station_health.py" --runtime "$A" --agent-home "$AGENT_HOME" --pause-file "$AGENT_HOME/PAUSE" --now "$1" >/dev/null; jq -r .stations.intake.status "$A/station-health.json"; }
+[[ "$(station 2026-11-07T01:40:00Z)" == HELD ]] || fail 'a hold under 2 x bound must be HELD'
+[[ "$(station 2026-11-07T03:10:00Z)" == STALLED ]] || fail 'a hold past 2 x bound must be STALLED'
 echo 'intake-wip.test.sh: pass'
