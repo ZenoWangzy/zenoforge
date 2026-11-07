@@ -1230,25 +1230,18 @@ INCIDENT_SUBJECT='部分客户暂时无法完成付款'
 INCIDENT_BODY='用户目前看到：提交订单后无法完成付款。
 我们正在：恢复付款服务并核对受影响订单。
 下次更新：2026-09-23 18:30（协调世界时）'
-HEALTH_SUBJECT='工厂日报 11-07：上线 1 个需求，有 1 件事等你'
-HEALTH_BODY='一句话结论：正常——过去一天 1 个需求上线，无线上事故。
-今天上线了什么
-- 「订单清单下载」：员工可批量下载订单清单
-进度
-- 新提出：过去一天 2 个；累计 18 个；目前在办共 5 个。
-- 已做完等上线：过去一天 1 个；当前共 1 个。
-- 已上线：过去一天 1 个；有记录以来共 12 个。
-效率
-- 近 7 天平均每天上线 1.4 个需求；上一个 7 天 1.1 个。
-- 需求从提出到上线：近 7 天中位 3.2 天；上一个 7 天 3.9 天。
-- 近 7 天已分类工作时间：需求 75%；工厂自身维护 25%。
-花费
-- 过去一天令牌用量 3000；每个上线需求平均 3000 令牌。
-- 金额没有完整记录，无法算出总花费。
+HEALTH_SUBJECT='工厂日报 11-07：做完 2 个、上线 1 个，有 1 件事等你'
+HEALTH_BODY='一句话结论：正常——过去一天做完 2 个需求，上线 1 个，没有线上事故。
+产出
+- 做完（已合入主线）：过去一天 2 个（前一天 1 个）；近 7 天 4 个。
+- 上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个。
+变化
+- 做完等上线的需求：现在 3 个，比一天前多 1 个。
 质量
-- 线上事故：过去一天 0 起；目前仍在处理 0 起。
+- 线上事故：过去一天 0 起，目前仍在处理 0 起。
 - 撤回上线：过去一天 0 次。
-- 已上线需求后来再出问题并返修：过去一天 0 起。
+资源
+- 令牌用量：过去一天 3000（前一天 2000）。
 需要你决定
 - 是否保留次日送达？——建议：选择第一项，改为普通配送。'
 RECIPIENTS_FILE="$AUDIENCE_ROSTER"
@@ -1499,11 +1492,11 @@ cat "$HEALTH_MAIL_FIXTURE/open-issues.json"
 EOF
 chmod +x "$HEALTH_MAIL_BIN/gh"
 PATH="$HEALTH_MAIL_BIN:$PATH"
-HEALTH_MAIL_FACTS='{"report_day":"11-07","conclusion":{"level":"正常","reason":"过去一天上线 1 个需求，没有线上事故"},"window":{"start":1793596800,"end":1793683200},"releases":{"period_count":1,"total_ever":12,"last_at":1793680000,"complete":true,"items":[{"text":"「订单清单下载」：员工可批量下载订单清单。"}],"zero_reason":""},"progress":{"created_period":2,"created_total":18,"open_total":5,"awaiting_period":1,"awaiting_total":1,"released_period":1,"released_total":12},"efficiency":{"per_day_week":1.4,"per_day_prev":1.1,"lead_days_week":3.2,"lead_days_prev":3.9,"split":{"requirement_pct":75,"self_pct":25,"unclassified_seconds":0,"partial":false}},"spend":{"tokens":3000,"tokens_complete":true,"per_requirement":3000,"money_usd":null,"money_complete":false},"quality":{"incidents_period":0,"incidents_open":0,"open_subjects":[],"rollbacks":0,"post_land_fixes":0},"decisions":{"items":[{"question":"是否保留次日送达？","recommendation":"建议：选择第一项，改为普通配送。"}],"total":1,"incomplete":0},"attention":0}'
+HEALTH_MAIL_FACTS='{"report_day":"11-07","conclusion":{"level":"正常","reason":"过去一天做完 2 个需求，上线 1 个，没有线上事故"},"window":{"end":1793683200},"output":{"finished":{"day":2,"prev_day":1,"week":4,"prev_week":null},"shipped":{"day":1,"prev_day":0,"week":1,"prev_week":null},"stock":{"now":3,"day_ago":2,"week_ago":null}},"last_release_at":1793000000,"spend":{"day":{"tokens":3000,"money_usd":0},"prev_day":{"tokens":2000,"money_usd":0}},"quality":{"incidents_period":0,"incidents_open":0,"open_subjects":[],"rollbacks":0,"post_land_fixes":0},"decisions":{"items":[{"question":"是否保留次日送达？","recommendation":"建议：选择第一项，改为普通配送。"}],"total":1,"incomplete":0}}'
 HEALTH_MAIL_BUILT="$(maintainer_health_mail_build_body "$HEALTH_MAIL_FACTS")"
-assert_contains 'owner report lists the user-visible release outcome' "$HEALTH_MAIL_BUILT" '员工可批量下载订单清单'
-assert_contains 'owner report counts formal releases and discloses hot patches' "$HEALTH_MAIL_BUILT" '已上线：过去一天正式发版 1 次（热修未计入）；有记录以来正式发版 12 次'
-assert_contains 'owner report compares release pace with last week' "$HEALTH_MAIL_BUILT" '上一个 7 天 1.1 次'
+assert_contains 'owner report leads with finished work against the day before' "$HEALTH_MAIL_BUILT" '做完（已合入主线）：过去一天 2 个（前一天 1 个）；近 7 天 4 个。'
+assert_contains 'owner report states what shipped' "$HEALTH_MAIL_BUILT" '上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个。距上次正式发版 7 天。'
+assert_contains 'owner report states how the waiting stock moved' "$HEALTH_MAIL_BUILT" '现在 3 个，比一天前多 1 个。'
 assert_contains 'owner report includes a recommended decision' "$HEALTH_MAIL_BUILT" '建议：选择第一项，改为普通配送'
 assert_eq 'complete owner report passes maintainer mail contract' '' \
   "$(_pre_send_mail_rejection_for_recipients health "$HEALTH_SUBJECT" "$HEALTH_MAIL_BUILT" "$HEALTH_MAINTAINER_ADDRESS")"

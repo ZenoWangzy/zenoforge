@@ -4,8 +4,8 @@
 # The report goes out at 08:00 Beijing time (the timer fires at 00:00 UTC); the
 # only other mail this ledger sends is the immediate short outage mail, which
 # the incident path below keeps. Every number in the report comes from the
-# engine's own records; a question those records cannot answer is stated in the
-# mail as unmeasured, never invented.
+# engine's own records; a figure those records cannot give is left out of the
+# mail, never invented.
 # In a deployed engine, load the unit prefix before resolving it; a plain checkout has no deploy.env.
 if [[ -f "$(dirname -- "${BASH_SOURCE[0]}")/../deploy.env" ]]; then
   source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/config.sh"
@@ -575,97 +575,6 @@ maintainer_health_mail_report_day() { # <epoch> -> MM-DD, Beijing time
   TZ=Asia/Shanghai date -d "@$1" +%m-%d
 }
 
-# founder-req is the durable requirement ladder's inbox trail. Keep these
-# local events for names and stage changes; report text uses only Chinese user
-# wording from the event or the separately recorded user outcome.
-maintainer_health_mail_founder_req_events() {
-  local inbox="$1/supervisor-inbox"
-  [ -e "$inbox" ] || { printf '[]\n'; return 0; }
-  [ -r "$inbox" ] || { printf 'null\n'; return 0; }
-  python3 - "$inbox" <<'PY'
-import json
-import re
-import sys
-from datetime import datetime, timezone
-
-path = sys.argv[1]
-pattern = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) (?:founder-req )+#([1-9]\d*) ([^：]+)：(.*?)(?:（请 PushNotification 通知创始人）)?$")
-rows = []
-try:
-    with open(path, encoding="utf-8", errors="replace") as source:
-        for line in source:
-            match = pattern.match(line.rstrip("\r\n"))
-            if not match:
-                continue
-            stamp, issue, transition, title = match.groups()
-            try:
-                at = int(datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp())
-            except (ValueError, OverflowError, OSError):
-                continue
-            rows.append({"at": at, "issue": issue, "transition": transition, "title": title.strip()})
-except OSError:
-    print("null")
-    raise SystemExit(0)
-print(json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
-PY
-}
-
-# founder-req-stage.json is the durable issue-to-requirement ladder. Inbox
-# transitions supply IDs during the brief window before that map is updated.
-# A missing or unreadable ladder leaves requirement counts unmeasured.
-maintainer_health_mail_requirement_catalog() {
-  local home="$1"
-  local stage_path="$home/founder-req-stage.json" events
-  local stage_complete=false stage_ids='[]' event_ids='[]'
-  if [ -r "$stage_path" ] \
-    && jq -e 'type == "object" and all(to_entries[]; (.key | test("^[1-9][0-9]*$")) and (.value | type == "number" and floor == . and . >= 0 and . <= 4))' "$stage_path" >/dev/null 2>&1; then
-    stage_complete=true
-    stage_ids="$(jq -c 'keys' "$stage_path")" || stage_ids='[]'
-  fi
-  events="$(maintainer_health_mail_founder_req_events "$home")" || events=null
-  if [ "$events" != null ]; then
-    event_ids="$(jq -c '[.[] | .issue] | unique' <<< "$events")" || event_ids='[]'
-  fi
-  [ "$stage_complete" = true ] || [ "$event_ids" != '[]' ] || { printf 'null\n'; return 0; }
-  jq -cn --argjson stages "$stage_ids" --argjson events "$event_ids" --argjson complete "$stage_complete" \
-    '{ids:($stages + $events | unique),complete:$complete}'
-}
-
-# maintainer_health_mail_period_events <home> <start> <end> "type,type"
-# Matching metric events as {event_type,issue,at}, de-duplicated by identity.
-maintainer_health_mail_period_events() {
-  local home="$1" start="$2" end="$3" types="$4"
-  local -a files=()
-  [ -d "$home/metrics" ] && [ -r "$home/metrics" ] && [ -x "$home/metrics" ] || { printf 'null\n'; return 0; }
-  shopt -s nullglob
-  files=("$home"/metrics/efficiency-????-??.jsonl)
-  shopt -u nullglob
-  ((${#files[@]})) || { printf 'null\n'; return 0; }
-  jq -cR 'fromjson?' "${files[@]}" 2>/dev/null | jq -cs --argjson start "$start" --argjson end "$end" --arg types "$types" '
-    def epoch: (.ts // "") | try fromdateiso8601 catch null;
-    [ .[] | select(type == "object" and .record_type == "event")
-      | select(.event_type | IN($types | split(",")[])) ] as $selected
-    | if any($selected[]; epoch == null or ((.issue // "") | tostring | test("^[1-9][0-9]*$") | not)
-      or ((.stage // "") == "" and ($types | split(",") | index("stage-entered")) != null)) then null else
-      [ $selected[]
-      | select(type == "object" and .record_type == "event")
-      | select(.event_type | IN($types | split(",")[]))
-      | (epoch) as $at
-      | select($at != null and $at >= $start and $at < $end)
-      | {event_type, stage:(.stage // ""), issue:(.issue // null | tostring), at:$at} ]
-    | unique_by([.event_type, .issue, .at])
-      end
-  ' 2>/dev/null || printf 'null\n'
-}
-
-maintainer_health_mail_created_total() {
-  local home="$1" requirements
-  requirements="$(maintainer_health_mail_requirement_catalog "$home")" || requirements=null
-  [ "$requirements" != null ] && [ "$(jq -r '.complete' <<< "$requirements")" = true ] \
-    || { printf 'null\n'; return 0; }
-  jq -r '.ids | length' <<< "$requirements"
-}
-
 # Scheduler runtime files (node-health, release train) live in the checkout.
 maintainer_health_mail_runtime_dir() {
   local home="$1" user_home
@@ -757,340 +666,124 @@ print(json.dumps({"period": sum(since <= first < until for first, _ in episodes)
 PY
 }
 
-# maintainer_health_mail_state_census <home>
-# {open, awaiting_release}. open: requirement issues still open on GitHub (state
-# files do not always carry a state). awaiting_release: requirements on the founder
-# ladder at 进 main (stage 2), not yet 上线. Null when either source fails.
-maintainer_health_mail_state_census() {
-  local home="$1" requirements listing open awaiting
-  requirements="$(maintainer_health_mail_requirement_catalog "$home")" || requirements=null
-  [ "$requirements" != null ] && [ "$(jq -r '.complete' <<< "$requirements")" = true ] || { printf 'null\n'; return 0; }
-  [ "$(jq -r '.ids | length' <<< "$requirements")" -gt 0 ] || { printf '{"open":0,"awaiting_release":0}\n'; return 0; }
-  awaiting="$(jq -c '[to_entries[] | select(.value == 2)] | length' "$home/founder-req-stage.json" 2>/dev/null)" || awaiting=''
-  [[ "$awaiting" =~ ^[0-9]+$ ]] || { printf 'null\n'; return 0; }
-  listing="$(timeout 60 gh issue list --repo "${REPO:-}" --state open --limit 1000 --json number 2>/dev/null)" || { printf 'null\n'; return 0; }
-  jq -e 'type == "array" and length < 1000' <<< "$listing" >/dev/null || { printf 'null\n'; return 0; }
-  open="$(jq -c --argjson ids "$(jq -c '.ids' <<< "$requirements")" \
-    '[.[] | (.number | tostring) | select(. as $i | $ids | index($i) != null)] | length' <<< "$listing")" || { printf 'null\n'; return 0; }
-  jq -cn --argjson open "$open" --argjson awaiting "$awaiting" '{open:$open, awaiting_release:$awaiting}'
+# maintainer_health_mail_ladder_facts <home> <now>
+# Requirement output and the waiting stock, from the founder ladder's own trail:
+# supervisor-inbox lines "founder-req #N <from> → <to>" (one per stage change) and
+# founder-req-stage.json (the stage each requirement holds now). A requirement is
+# finished when it first reaches 进 main (merged) and shipped when it first reaches
+# 上线; the waiting stock is the requirements held at 进 main. Counts are for the
+# last day and the day before, the last 7 days and the 7 before. A period that
+# starts before the trail's first line is null: the trail cannot vouch for it.
+# {finished:{day,prev_day,week,prev_week}, shipped:{...}, stock:{now,day_ago,week_ago}}
+# or null when the trail is unreadable or empty.
+maintainer_health_mail_ladder_facts() {
+  local home="$1" now="$2"
+  python3 - "$home/supervisor-inbox" "$home/founder-req-stage.json" "$now" <<'PY'
+import json
+import re
+import sys
+from datetime import datetime, timezone
+
+inbox, stage_path, now = sys.argv[1], sys.argv[2], int(sys.argv[3])
+LADDER = {"新增": -1, "提出": 0, "热修生效": 1, "进 main": 2, "上线": 3, "真人验收": 4}
+pattern = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) (?:founder-req )+#([1-9]\d*) ([^：]+)：")
+rows = []
+try:
+    with open(inbox, encoding="utf-8", errors="replace") as source:
+        for line in source:
+            match = pattern.match(line)
+            steps = match.group(3).split(" → ") if match else []
+            if len(steps) != 2 or steps[0] not in LADDER or steps[1] not in LADDER:
+                continue
+            try:
+                at = int(datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp())
+            except ValueError:
+                continue
+            rows.append((at, match.group(2), LADDER[steps[0]], LADDER[steps[1]]))
+except OSError:
+    pass
+if not rows:
+    print("null")
+    raise SystemExit(0)
+first_seen = min(row[0] for row in rows)
+
+def first_reached(level):
+    reached = {}
+    for at, issue, was, to in rows:
+        if was < level <= to and at < reached.get(issue, now + 1):
+            reached[issue] = at
+    return sorted(reached.values())
+
+def periods(times):
+    def count(start, end):
+        return sum(start <= at < end for at in times) if start >= first_seen else None
+    day, week = 86400, 7 * 86400
+    return {"day": count(now - day, now), "prev_day": count(now - 2 * day, now - day),
+            "week": count(now - week, now), "prev_week": count(now - 2 * week, now - week)}
+
+stock = {"now": None, "day_ago": None, "week_ago": None}
+try:
+    with open(stage_path, encoding="utf-8") as source:
+        stages = json.load(source)
+    if isinstance(stages, dict) and all(isinstance(v, int) and not isinstance(v, bool) for v in stages.values()):
+        held = sum(v == 2 for v in stages.values())
+        def stock_at(moment):
+            # Undo every stage change after the moment; each line moves one requirement.
+            total = held
+            for at, _issue, was, to in rows:
+                if at >= moment:
+                    total += (was == 2 and to != 2) - (to == 2 and was != 2)
+            return total
+        stock = {"now": stock_at(now),
+                 "day_ago": stock_at(now - 86400) if now - 86400 >= first_seen else None,
+                 "week_ago": stock_at(now - 7 * 86400) if now - 7 * 86400 >= first_seen else None}
+except (OSError, ValueError):
+    pass
+print(json.dumps({"finished": periods(first_reached(2)), "shipped": periods(first_reached(3)), "stock": stock},
+                 separators=(",", ":")))
+PY
 }
 
-# Work share uses the append-only worker unit ledger. A unit tied to several
-# issues is divided evenly, following the existing ROI rollup; unclassified
-# time stays visible outside the requirement/self-maintenance percentages.
-maintainer_health_mail_unit_work_split() {
+# maintainer_health_mail_spend_facts <home> <start> <end>
+# What the spend log recorded in [start, end): tokens from the rows that carry a
+# token count, dollars from the rows that carry a price. The two kinds of rows are
+# different meters (a row has one or the other), so each sum is exact for its own
+# meter and the two are never added. Null when the log is missing or unreadable.
+maintainer_health_mail_spend_facts() {
   local home="$1" start="$2" end="$3"
   python3 - "$home" "$start" "$end" <<'PY'
-import gzip
 import glob
 import json
-import math
 import os
-import re
 import sys
 from datetime import datetime, timezone
 
 home, start_raw, end_raw = sys.argv[1:]
 start, end = int(start_raw), int(end_raw)
-paths = sorted(glob.glob(os.path.join(home, "metrics", "units-????-??.jsonl"))
-               + glob.glob(os.path.join(home, "metrics", "units-????-??.jsonl.gz")))
-if not paths:
-    print("null")
-    raise SystemExit(0)
-
-requirements = set()
-requirements_complete = False
-stage_path = os.path.join(home, "founder-req-stage.json")
-try:
-    with open(stage_path, encoding="utf-8") as source:
-        stages = json.load(source)
-    if isinstance(stages, dict) and all(
-            isinstance(key, str) and key.isdigit() and int(key) > 0
-            and isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 4
-            for key, value in stages.items()):
-        requirements.update(stages)
-        requirements_complete = True
-except (OSError, ValueError):
-    pass
-
-inbox_path = os.path.join(home, "supervisor-inbox")
-try:
-    with open(inbox_path, encoding="utf-8", errors="replace") as source:
-        for line in source:
-            match = re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ (?:founder-req )+#([1-9]\d*) ", line)
-            if match:
-                requirements.add(match.group(1))
-except OSError:
-    pass
-
-states = {}
-state_dir = os.path.join(home, "state")
-try:
-    for name in os.listdir(state_dir):
-        if not re.fullmatch(r"[1-9]\d*\.json", name):
-            continue
-        issue = name[:-5]
-        try:
-            with open(os.path.join(state_dir, name), encoding="utf-8") as source:
-                value = json.load(source)
-            states[issue] = value if isinstance(value, dict) else None
-        except (OSError, ValueError):
-            states[issue] = None
-except OSError:
-    pass
-
-events = {}
-partial = False
-for path in paths:
-    try:
-        opener = gzip.open if path.endswith(".gz") else open
-        with opener(path, "rt", encoding="utf-8") as source:
-            for line in source:
-                if not line.strip():
-                    continue
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    partial = True
-                    continue
-                if not isinstance(row, dict) or row.get("record_type") != "event" \
-                        or row.get("event_type") != "unit-end":
-                    continue
-                event_id = row.get("event_id")
-                key = event_id if isinstance(event_id, str) and event_id else f"{path}:{len(events)}"
-                events[key] = row
-    except OSError:
-        partial = True
-
-requirements_seconds = self_seconds = unclassified_seconds = 0.0
-measured_rows = 0
-for row in events.values():
-    try:
-        stamp = datetime.fromisoformat(str(row.get("ts", "")).replace("Z", "+00:00"))
-        if stamp.tzinfo is None:
-            raise ValueError("timezone missing")
-        at = int(stamp.astimezone(timezone.utc).timestamp())
-    except (ValueError, OverflowError, OSError):
-        partial = True
-        continue
-    if at < start or at >= end:
-        continue
-    seconds = row.get("wall_s")
-    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) \
-            or not math.isfinite(seconds) or seconds < 0:
-        partial = True
-        continue
-    measured_rows += 1
-    tickets = row.get("tickets")
-    if not isinstance(tickets, list) or not tickets:
-        unclassified_seconds += seconds
-        continue
-    share = seconds / len(tickets)
-    for raw_issue in tickets:
-        issue = str(raw_issue)
-        state = states.get(issue)
-        pipeline = state.get("pipeline_system") if isinstance(state, dict) else None
-        run = state.get("run") if isinstance(state, dict) else None
-        if isinstance(pipeline, dict) and pipeline.get("enabled") is True \
-                or isinstance(run, dict) and run.get("outcome") == "pipeline-system":
-            self_seconds += share
-        elif issue in requirements:
-            requirements_seconds += share
-        else:
-            unclassified_seconds += share
-
-if measured_rows == 0 or not requirements_complete:
-    print("null")
-    raise SystemExit(0)
-known = requirements_seconds + self_seconds
-result = {
-    "requirement_seconds": round(requirements_seconds, 1),
-    "self_seconds": round(self_seconds, 1),
-    "unclassified_seconds": round(unclassified_seconds, 1),
-    "requirement_pct": round(requirements_seconds / known * 100, 1) if known else None,
-    "self_pct": round(self_seconds / known * 100, 1) if known else None,
-    "partial": partial,
-    "rows": measured_rows,
-}
-print(json.dumps(result, separators=(",", ":")))
-PY
-}
-
-# maintainer_health_mail_release_facts <home> <start> <end>
-# What reached production in the window, from the formal release log. The log
-# keeps no per-requirement release record, so no requirement titles or counts are
-# shown; hot patches are not in the log and the report says so.
-maintainer_health_mail_release_facts() {
-  local home="$1" start="$2" end="$3"
-  local history complete total last_at count items zero_reason census awaiting at
-  history="$(maintainer_health_mail_release_history "$home" "$start" "$end")" || history='null'
-  complete="$(jq -r 'if . == null then "false" else "true" end' <<< "$history")"
-  total="$(jq -r 'if . == null then "null" else (.total | tostring) end' <<< "$history")"
-  last_at="$(jq -c 'if . == null then null else .last_at end' <<< "$history")"
-  count=null
-  items='[]'
-  if [ "$complete" = true ]; then
-    count="$(jq -r '.items | length' <<< "$history")"
-    local -a texts=()
-    while IFS= read -r at; do
-      texts+=("正式发版一次（$(maintainer_health_mail_date_time "$at")上线），需求明细未能核对；热修未计入。")
-    done < <(jq -r '.items[].at' <<< "$history")
-    items="$(printf '%s\n' ${texts[@]+"${texts[@]}"} | jq -Rsc 'split("\n") | map(select(length > 0) | {text:.})')"
-  fi
-  zero_reason=''
-  if [ "$count" = null ]; then
-    zero_reason='正式发版记录未能读取，过去一天发版数量无法确认；热修未计入。'
-  elif (( count == 0 )); then
-    census="$(maintainer_health_mail_state_census "$home")"
-    awaiting="$(jq -r 'if . == null then "null" else .awaiting_release end' <<< "$census")"
-    if [ "$awaiting" = null ]; then
-      zero_reason='过去一天正式发版 0 次，热修未计入；待上线数量未测量。'
-    elif (( awaiting > 0 )); then
-      zero_reason="过去一天正式发版 0 次，热修未计入；还有 $awaiting 项已做完，正在等待上线。"
-    else
-      zero_reason='过去一天正式发版 0 次，热修未计入，也没有待上线积压。'
-    fi
-  fi
-  jq -cn --argjson count "$count" --argjson total "$total" --argjson last_at "$last_at" \
-    --argjson complete "$complete" --argjson items "$items" \
-    --arg zero_reason "$zero_reason" \
-    '{period_count:$count,total_ever:$total,last_at:$last_at,complete:$complete,items:$items,zero_reason:$zero_reason}'
-}
-
-# maintainer_health_mail_progress_facts <home> <start> <end> <release_facts>
-maintainer_health_mail_progress_facts() {
-  local home="$1" start="$2" end="$3" releases="$4" census created awaiting released_period released_total created_total requirements
-  census="$(maintainer_health_mail_state_census "$home")"
-  # 新提出 is the founder ladder's 新增 → 提出 inbox event, not a pipeline ticket event.
-  created="$(maintainer_health_mail_founder_req_events "$home" | jq -c --argjson start "$start" --argjson end "$end" \
-    '[.[] | select(.transition == "新增 → 提出" and .at >= $start and .at < $end) | {issue, at}]' 2>/dev/null)" || created=null
-  awaiting="$(maintainer_health_mail_period_events "$home" "$start" "$end" "stage-entered")"
-  created_total="$(maintainer_health_mail_created_total "$home")"
-  requirements="$(maintainer_health_mail_requirement_catalog "$home")"
-  if [ "$requirements" = null ] || [ "$(jq -r '.complete' <<< "$requirements")" != true ]; then
-    created=null
-    awaiting=null
-  else
-    created="$(jq -cn --argjson events "$created" --argjson requirements "$requirements" '
-      if $events == null then null else [$events[] | .issue as $issue
-        | select($issue != "" and $issue != "null" and (($requirements.ids | index($issue)) != null))] end
-    ')" || created=null
-    awaiting="$(jq -cn --argjson events "$awaiting" --argjson requirements "$requirements" '
-      if $events == null then null else [$events[] | .issue as $issue
-        | select($issue != "" and $issue != "null" and (($requirements.ids | index($issue)) != null))] end
-    ')" || awaiting=null
-  fi
-  released_period="$(jq -r '.period_count' <<< "$releases")"
-  released_total="$(jq -r '.total_ever' <<< "$releases")"
-  jq -cn --argjson census_counts "$(jq -c '{open, awaiting_release}' <<< "$census")" --argjson created "$created" --argjson awaiting "$awaiting" \
-    --argjson created_total "$created_total" --argjson released_period "$released_period" --argjson released_total "$released_total" '
-    {created_period:(if $created == null then null else
-        ([$created[] | .issue as $issue | select($issue != "") | $issue] | unique | length) end),
-     created_total:$created_total,
-     open_total:($census_counts.open // null),
-     awaiting_period:(if $awaiting == null then null else
-       ([$awaiting[] | select(.stage == "awaiting-release")] | unique_by(.issue) | length) end),
-     awaiting_total:($census_counts.awaiting_release // null),
-     released_period:$released_period,
-     released_total:$released_total}'
-}
-
-# maintainer_health_mail_efficiency_facts <home> <now>
-maintainer_health_mail_efficiency_facts() {
-  local home="$1" now="$2"
-  local week_start prev_start history week_count prev_count lead_week lead_prev lead_week_days lead_prev_days split
-  week_start=$((now - 7 * 86400))
-  prev_start=$((now - 14 * 86400))
-  history="$(maintainer_health_mail_release_history "$home" "$prev_start" "$now")" || history='null'
-  week_count="$(jq -r --argjson start "$week_start" 'if . == null then "null" else [.items[] | select(.at >= $start)] | length end' <<< "$history")"
-  prev_count="$(jq -r --argjson start "$prev_start" --argjson end "$week_start" 'if . == null then "null" else [.items[] | select(.at >= $start and .at < $end)] | length end' <<< "$history")"
-  # Lead time needs a per-requirement release time, which no source records.
-  lead_week_days='null'
-  lead_prev_days='null'
-  lead_week="$(jq -r 'if . == null or length == 0 then "null" else (sort | .[length / 2 | floor] + .[length / 2 | ceil - 1]) / 2 end' <<< "$lead_week_days" 2>/dev/null || printf 'null')"
-  lead_prev="$(jq -r 'if . == null or length == 0 then "null" else (sort | .[length / 2 | floor] + .[length / 2 | ceil - 1]) / 2 end' <<< "$lead_prev_days" 2>/dev/null || printf 'null')"
-  split="$(maintainer_health_mail_unit_work_split "$home" "$week_start" "$now")" || split='null'
-  jq -cn --argjson week_count "$week_count" --argjson prev_count "$prev_count" \
-    --argjson lead_week "$lead_week" --argjson lead_prev "$lead_prev" --argjson split "$split" \
-    --argjson lead_week_measured "$(jq -r '. != null' <<< "$lead_week_days")" \
-    --argjson lead_prev_measured "$(jq -r '. != null' <<< "$lead_prev_days")" \
-    '{per_day_week:(if $week_count == null then null else $week_count / 7 end),
-      per_day_prev:(if $prev_count == null then null else $prev_count / 7 end),
-      lead_days_week:$lead_week,lead_days_prev:$lead_prev,
-      lead_week_measured:$lead_week_measured,lead_prev_measured:$lead_prev_measured,split:$split}'
-}
-
-# maintainer_health_mail_spend_facts <home> <start> <end> <released_period>
-# Spend rows with missing token/cost fields stay incomplete; known subtotals are
-# never presented as a complete total or used for a per-requirement average.
-maintainer_health_mail_spend_facts() {
-  local home="$1" start="$2" end="$3" released_period="$4"
-  python3 - "$home" "$start" "$end" "$released_period" <<'PY'
-import glob
-import json
-import os
-import sys
-from datetime import datetime, timezone
-
-home, start_raw, end_raw, released_raw = sys.argv[1:]
-start, end = int(start_raw), int(end_raw)
 first_day = datetime.fromtimestamp(start, timezone.utc).strftime("%Y-%m-%d")
 last_day = datetime.fromtimestamp(max(start, end - 1), timezone.utc).strftime("%Y-%m-%d")
 paths = sorted(path for path in glob.glob(os.path.join(home, "spend", "????-??-??.log"))
                if first_day <= os.path.basename(path)[:10] <= last_day)
-if not os.path.isdir(os.path.join(home, "spend")) or not paths:
-    print(json.dumps({"tokens": None, "tokens_complete": False, "per_requirement": None,
-                      "money_usd": None, "money_complete": False, "rows": 0}, separators=(",", ":")))
-    raise SystemExit(0)
-
-rows = 0
-tokens = 0
-money = 0.0
-tokens_complete = True
-money_complete = True
-readable = True
-bad_date = False
-for path in paths:
-    try:
+tokens, money, rows = 0, 0.0, 0
+try:
+    for path in paths:
         with open(path, encoding="utf-8") as source:
             for line in source:
                 fields = line.rstrip("\r\n").split("\t")
-                try:
-                    at = int(fields[0])
-                except (ValueError, IndexError):
-                    bad_date = True
-                    continue
-                if not start <= at < end:
+                if not fields[0].isdigit() or not start <= int(fields[0]) < end:
                     continue
                 rows += 1
                 if len(fields) > 5 and fields[5].isdigit():
                     tokens += int(fields[5])
-                else:
-                    tokens_complete = False
-                if len(fields) > 4:
-                    try:
-                        value = float(fields[4])
-                        if value >= 0 and value < float("inf"):
-                            money += value
-                        else:
-                            money_complete = False
-                    except ValueError:
-                        money_complete = False
-                else:
-                    money_complete = False
-    except OSError:
-        readable = False
-
-if rows == 0 or not readable or bad_date:
-    result = {"tokens": None, "tokens_complete": False, "per_requirement": None,
-              "money_usd": None, "money_complete": False, "rows": rows}
-else:
-    release_count = int(released_raw) if released_raw.isdigit() else 0
-    result = {"tokens": tokens, "tokens_complete": tokens_complete,
-              "per_requirement": round(tokens / release_count) if tokens_complete and release_count > 0 else None,
-              "money_usd": round(money, 6) if money_complete or money > 0 else None,
-              "money_complete": money_complete, "rows": rows}
-print(json.dumps(result, separators=(",", ":")))
+                try:
+                    price = float(fields[4]) if len(fields) > 4 else 0.0
+                except ValueError:
+                    price = 0.0
+                if 0 <= price < float("inf"):
+                    money += price
+except OSError:
+    rows = 0
+print(json.dumps({"tokens": tokens, "money_usd": round(money, 2)} if rows else None, separators=(",", ":")))
 PY
 }
 
@@ -1169,87 +862,45 @@ maintainer_health_mail_decision_facts() {
   ' "$1" 2>/dev/null || printf '{"items":[],"total":null,"incomplete":0}'
 }
 
-# maintainer_health_mail_attention_count <home> <now>
-# Fresh scorecard only; a stale, missing or unreadable one is unmeasured.
-maintainer_health_mail_attention_count() {
-  local home="$1" now="$2" user_home runtime_dir scorecard generated sampled_epoch age
-  user_home="${home%/.zenoforge}"
-  [ "$user_home" != "$home" ] || user_home="$home"
-  runtime_dir="$(maintainer_health_mail_runtime_dir "$home")"
-  scorecard="$runtime_dir/node-health.json"
-  [ -r "$scorecard" ] || { printf 'null\n'; return 0; }
-  generated="$(jq -r '.generated // empty' "$scorecard" 2>/dev/null || true)"
-  sampled_epoch="$(agent_epoch -u "$generated" 2>/dev/null || true)"
-  if ! [[ "$sampled_epoch" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]]; then
-    printf 'null\n'
-    return 0
-  fi
-  age=$((now - sampled_epoch))
-  if (( age < 0 || age > 43200 )) || ! jq -e '.metrics | type == "array"' "$scorecard" >/dev/null 2>&1; then
-    printf 'null\n'
-    return 0
-  fi
-  jq -r '
-    if (.metrics | length) == 0
-      or (any(.metrics[]; (.status // "") | IN("OK","WARN","UNHEALTHY","NO-DATA") | not))
-      or (all(.metrics[]; .status == "NO-DATA")) then null
-    else [.metrics[] | select(.status == "UNHEALTHY" or .status == "WARN")] | length end
-  ' "$scorecard"
-}
-
 # maintainer_health_mail_daily_facts <home> <ledger> <now> <repo_root>
 # Everything the owner report shows, as one JSON object. A collector that
-# cannot read its source leaves null; the renderer says so in plain words.
+# cannot read its source leaves null, and the renderer drops that figure.
 maintainer_health_mail_daily_facts() {
   local home="$1" ledger="$2" now="$3" repo_root="$4"
-  local start=$((now - 86400)) releases progress efficiency spend quality decisions attention day level reason
-  releases="$(maintainer_health_mail_release_facts "$home" "$start" "$now")" || releases='{"period_count":null,"total_ever":null,"last_at":null,"complete":false,"items":[],"zero_reason":"上线情况待核实。"}'
-  progress="$(maintainer_health_mail_progress_facts "$home" "$start" "$now" "$releases")" || progress='{}'
-  efficiency="$(maintainer_health_mail_efficiency_facts "$home" "$now")" || efficiency='{}'
-  spend="$(maintainer_health_mail_spend_facts "$home" "$start" "$now" 0)" || spend='{}'
+  local start=$((now - 86400)) output release spend spend_prev quality decisions day level reason
+  output="$(maintainer_health_mail_ladder_facts "$home" "$now")" || output=null
+  release="$(maintainer_health_mail_release_history "$home" "$now" "$now")" || release=null
+  spend="$(maintainer_health_mail_spend_facts "$home" "$start" "$now")" || spend=null
+  spend_prev="$(maintainer_health_mail_spend_facts "$home" "$((start - 86400))" "$start")" || spend_prev=null
   quality="$(maintainer_health_mail_quality_facts "$ledger" "$home" "$start" "$now" "$repo_root")" || quality='{}'
   decisions="$(maintainer_health_mail_decision_facts "$ledger")" || decisions='{"items":[],"total":null,"incomplete":0}'
-  attention="$(maintainer_health_mail_attention_count "$home" "$now")" || attention=null
   day="$(maintainer_health_mail_report_day "$now")" || return 1
-  IFS=$'\t' read -r level reason <<< "$(maintainer_health_mail_conclusion_facts "$releases" "$progress" "$quality" "$decisions" "$attention")"
-  jq -cn --arg day "$day" --arg level "$level" --rawfile reason <(printf '%s' "$reason") --argjson start "$start" --argjson now "$now" \
-    --argjson releases "$releases" --argjson progress "$progress" --argjson efficiency "$efficiency" \
-    --argjson spend "$spend" --argjson quality "$quality" --argjson decisions "$decisions" \
-    --argjson attention "$attention" \
-    '{report_day:$day,conclusion:{level:$level,reason:$reason},window:{start:$start,end:$now},
-      releases:$releases,progress:$progress,efficiency:$efficiency,spend:$spend,
-      quality:$quality,decisions:$decisions,attention:$attention}'
+  IFS=$'\t' read -r level reason <<< "$(maintainer_health_mail_conclusion_facts "$output" "$quality")"
+  jq -cn --arg day "$day" --arg level "$level" --rawfile reason <(printf '%s' "$reason") --argjson now "$now" \
+    --argjson output "$output" --argjson release "$release" --argjson spend "$spend" --argjson spend_prev "$spend_prev" \
+    --argjson quality "$quality" --argjson decisions "$decisions" \
+    '{report_day:$day,conclusion:{level:$level,reason:$reason},window:{end:$now},
+      output:$output,last_release_at:($release.last_at // null),
+      spend:{day:$spend,prev_day:$spend_prev},quality:$quality,decisions:$decisions}'
 }
 
-# maintainer_health_mail_conclusion_facts <releases> <progress> <quality> <decisions> <attention>
-# Prints "<level><TAB><reason>".
+# maintainer_health_mail_conclusion_facts <output> <quality>
+# Prints "<level><TAB><reason>": an incident is 出事了, a pile of finished but
+# unshipped requirements or an unreadable source is 有风险, else 正常.
 maintainer_health_mail_conclusion_facts() {
-  local releases="$1" progress="$2" quality="$3" decisions="$4" attention="$5"
   jq -r --arg sep $'\t' '
-    . as $ctx
-    | if $ctx.quality.incidents_open > 0 then
-        "出事了\($sep)仍有 \($ctx.quality.incidents_open) 起线上事故正在告警"
-      elif ($ctx.quality.incidents_period // 0) > 0 then
-        "出事了\($sep)过去一天发生 \($ctx.quality.incidents_period) 起线上事故，\(if $ctx.quality.watch_hours_since_last == null then "最后一次告警时间未核实" elif $ctx.quality.watch_hours_since_last == 0 then "最后一次告警不到 1 小时前" else "最后一次告警在 \($ctx.quality.watch_hours_since_last) 小时前" end)"
-      elif $ctx.attention != null and $ctx.attention > 0 then
-        "有风险\($sep)有 \($ctx.attention) 项运行指标需要留意"
-      elif $ctx.quality.incidents_open == null or $ctx.quality.incidents_period == null then
-        "有风险\($sep)线上事故记录未能核实"
-      elif $ctx.attention == null then
-        "有风险\($sep)当前运行状态未能核实"
-      elif $ctx.releases.period_count == null or $ctx.releases.complete != true then
-        "有风险\($sep)正式发版记录不完整，无法确认本期发版情况"
-      elif $ctx.progress.awaiting_total == null then
-        "有风险\($sep)待上线需求数量未能核实"
-      elif ($ctx.progress.awaiting_total // 0) > 0 and ((($ctx.releases.last_at // null) == null) or (($ctx.releases.period_count // 0) == 0)) then
-        "有风险\($sep)\($ctx.progress.awaiting_total) 个做完的需求还在等上线"
-      else
-        (if (($ctx.releases.period_count // 0) > 0)
-         then "正常\($sep)过去一天正式发版 \($ctx.releases.period_count) 次，没有线上事故"
-         else "正常\($sep)过去一天没有正式发版，没有线上事故，也没有待上线积压" end)
-      end
-  ' <<< "$(jq -cn --argjson releases "$releases" --argjson progress "$progress" --argjson quality "$quality" --argjson decisions "$decisions" --argjson attention "$attention" \
-    '{releases:$releases,progress:$progress,quality:$quality,decisions:$decisions,attention:$attention}')"
+    . as $c | ($c.output) as $o | ($c.quality) as $q
+    | [ (if ($q.incidents_open // 0) > 0 then "仍有 \($q.incidents_open) 起线上事故正在告警"
+         elif ($q.incidents_period // 0) > 0 then "过去一天发生 \($q.incidents_period) 起线上事故" else empty end) ] as $incident
+    | [ (if $o == null then "需求进度记录读取失败，产出无法统计"
+         elif $o.finished.day > 0 and $o.shipped.day == 0 and $o.stock.day_ago != null and $o.stock.now > $o.stock.day_ago
+           then "过去一天做完 \($o.finished.day) 个需求、上线 0 个，等上线的需求从 \($o.stock.day_ago) 个涨到 \($o.stock.now) 个"
+         else empty end),
+        (if $q.incidents_period == null then "线上事故记录读取失败" else empty end) ] as $risk
+    | if ($incident | length) > 0 then "出事了\($sep)\(($incident + $risk) | join("；"))"
+      elif ($risk | length) > 0 then "有风险\($sep)\($risk | join("；"))"
+      else "正常\($sep)过去一天做完 \($o.finished.day // 0) 个需求，上线 \($o.shipped.day // 0) 个，没有线上事故" end
+  ' <<< "$(jq -cn --argjson output "$1" --argjson quality "$2" '{output:$output,quality:$quality}')"
 }
 
 maintainer_health_mail_date_time() {
