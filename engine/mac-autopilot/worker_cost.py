@@ -18,7 +18,7 @@ Usage formats, one per backend (usage_reader.py is the single reader):
                  session's counters start at zero.
   codex legacy   the "tokens used" footer is one blended total; the split stays unknown.
   zcode          the usage of the last {"type":"result"} line, per invocation.
-  claude         the claude CLI prints no usage to its worker log, and zcode -p prints none either:
+  claude         the claude CLI prints no usage to its worker log, and zcode print mode prints none either:
                  attach_provider_usage() reads each CLI's own record instead (Claude project
                  transcripts, the zcode session database), joined by the unit's clone directory and
                  the run interval. A resumed codex stream with no dispatch baseline takes the
@@ -254,7 +254,7 @@ def _zcode_turns(db, clone_root):
 def attach_provider_usage(rows, units=(), projects_root=None, clone_root=None, zcode_db=None):
     """Give a row its own usage from the CLI's own record when the worker log carries none.
 
-    Claude (review runs print only the report) and zcode -p (stdout is the report) keep their
+    Claude (review runs print only the report) and zcode print mode (stdout is the report) keep their
     per-call usage in ~/.claude/projects transcripts and the zcode session database, keyed by
     the unit's clone directory wt-<unit>. A row owns the entries that started inside its
     interval; an entry joins one row only. A bare PR number (trimmed log) maps to pr-<n> and to
