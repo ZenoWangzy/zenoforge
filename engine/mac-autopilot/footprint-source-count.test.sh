@@ -307,6 +307,7 @@ register() { # n -> lib loads and wall seconds for one refill intake over n cand
   done
   jq -cn --argjson at "$(date +%s)" --arg rows "${rows%$'\n'}" '{schema:3,created_at:$at,rows:$rows}' > "$A/intake-candidates.json"
   printf '{"units":[]}\n' > "$UNITS"; : > "$LOG"; SCHEDULER_LIB_CONTEXT_FOR=''
+  SECONDS=0 # refill intake counts its budget from the tick's start, and this file can pass 270s on a loaded host
   loads_before="$(lib_loads)"; start=$SECONDS
   register_new_issues 0 true
   REGISTER_SECS=$((SECONDS - start)); REGISTER_LOADS=$(( $(lib_loads) - loads_before ))
