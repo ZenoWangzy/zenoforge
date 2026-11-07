@@ -483,6 +483,10 @@ assert n.dispatch_collisions([open_unit("x", "merged"), open_unit("y", "implemen
 assert n.dispatch_collisions([open_unit("x", "ready-to-merge"), open_unit("y", "repair")], now) == 0
 assert n.dispatch_collisions([open_unit("x", "implement"), open_unit("y", "repair")], now) == 1
 assert n.dispatch_collisions([a, c], now) == 0
+# A directory-vs-file overlap is no collision: footprint_owner_conflict skips it by default.
+p = unit("p", "2026-10-24T10:00:00Z", "2026-10-24T11:00:00Z", ["engine/x"], ["engine/x"])
+q = unit("q", "2026-10-24T10:30:00Z", "2026-10-24T11:30:00Z", ["engine/x/y.py"], ["engine/x/y.py"])
+assert n.dispatch_collisions([p, q], now) == 0
 assert n.dispatch_collisions([], now) is None
 assert n.dispatch_collisions([a, b], now + n.timedelta(days=2)) == 0
 assert n.CRITERIA["dispatch.collisions_per_day"][2:4] == (0, 1)

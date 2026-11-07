@@ -46,7 +46,7 @@ def health_doc_reference():
 CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
     "implement.no_output_pct": ("implement", "implement runs with no report %", 5, 15, False),
-    "dispatch.collisions_per_day": ("implement", "overlapping implement/repair unit pairs in the last 24h", 0, 1, False),
+    "dispatch.collisions_per_day": ("implement", "implement/repair unit pairs writing the same path in the last 24h", 0, 1, False),
     "review.wall_p50":         ("review", "first review minutes p50", 10, 20, False),
     "review.first_pass_pct":   ("review", "units approved on their first review %", 50, 30, True),
     "repair.wall_p50":         ("repair", "repair run minutes p50", 15, 30, False),
@@ -715,18 +715,15 @@ def host_prereqs_missing(path=None):
 
 
 def dispatch_collisions(units, now, shared=frozenset()):
-    """Count unit pairs with overlapping writing intervals and path scopes.
+    """Count unit pairs with overlapping writing intervals and the same file path.
 
     End records include the actual diff, so an underpredicted footprint remains
     measurable. Old ledgers without dispatch intervals have no observation.
+    A directory-vs-file overlap is not a collision (footprint_owner_conflict skips it by default).
     A pair whose ONLY overlapping paths are shared-append registry files is the
     parallelism the 2026-10-29 zf-ab ruling legalized, not a collision; those
     conflicts are observed at landing rebase time instead.
     """
-
-    def collides(a, b):
-        return a == b or a.startswith(b + "/") or b.startswith(a + "/")
-
     intervals = []
     observed = False
     for unit in units:
@@ -752,8 +749,7 @@ def dispatch_collisions(units, now, shared=frozenset()):
         for vid, vstart, vend, vpaths in intervals[i + 1:]:
             if uid == vid or max(start, vstart, now - timedelta(hours=24)) >= min(end, vend):
                 continue
-            overlap = ({a for a in paths for b in vpaths if collides(a, b)}
-                       | {b for b in vpaths for a in paths if collides(a, b)})
+            overlap = set(paths) & set(vpaths)
             if not overlap:
                 continue
             if shared and overlap <= shared:
