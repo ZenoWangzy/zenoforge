@@ -650,6 +650,10 @@ DISPATCHED=()
 units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\",\"result\":\"head $H1 unchanged since last review\"}]}]}"
 dispatch_pending || :
 [[ "$(field pr-5 .stage)" == supervisor-review && ${#DISPATCHED[@]} == 0 ]] || fail 'unchanged head after an arbiter review was redispatched'
+# A supervisor requeue on the same head does not give it a fresh arbiter review: only a moved head does.
+units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\",\"result\":\"head $H1 unchanged since last review\"},{\"stage\":\"supervisor-requeue\",\"decision\":{\"owner\":\"supervisor\"}}]}]}"
+dispatch_pending || :
+[[ "$(field pr-5 .stage)" == supervisor-review && ${#DISPATCHED[@]} == 0 ]] || fail 'a supervisor requeue on the same head reset its arbiter budget'
 # An arbiter review of an earlier head does not count against the current head.
 units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\",\"result\":\"head $H2 unchanged since last review\"}]}]}"
 dispatch_pending || :
