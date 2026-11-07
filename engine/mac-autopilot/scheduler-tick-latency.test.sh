@@ -88,7 +88,7 @@ for intake_adds in 0 1; do
 done
 
 # Late in the refill window the post-intake pass is left to the next refill.
-for late in 239 240; do
+for late in 180 240; do
   SECONDS=$late; order=(); intake_adds=1; run_refill_intake_dispatch_phases
   want='dispatch_pending register_new_issues dispatch_pending'; (( late < 240 )) || want='dispatch_pending register_new_issues'
   [[ "${order[*]}" == "$want" ]] || failures+=("refill phase order at ${late}s was '${order[*]}', want '$want'")

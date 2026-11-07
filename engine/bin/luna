@@ -49,8 +49,8 @@ trap 'rm -f -- "$wait_f"' EXIT
 exec {mx}>"$slots/mutex"
 while :; do
   flock "$mx"
-  if box_has_room; then rm -f -- "$wait_f"; break; fi
-  : >"$wait_f"; wait_stale_drop
+  if box_has_room; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
+  : >"$wait_f"; [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"; wait_stale_drop
   flock -u "$mx"; sleep 30
 done
 # Workers need no MCP servers; each codex run otherwise spawns chrome-devtools, gbrain and gitnexus (~360 MB).

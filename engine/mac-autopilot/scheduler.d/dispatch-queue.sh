@@ -29,6 +29,10 @@ dispatch_pending() {
   fi
   ordered="$(dispatch_order)" || true
   loop_started=$SECONDS
+  # Footprint only orders: pass 1 starts what no live owner overlaps and defers the rest; pass 2 starts the deferred while a slot is free.
+  local dispatch_pass TICK_FOOTPRINT_DEFER=true defer_ids
+  TICK_FOOTPRINT_DEFERRED=(); TICK_FOOTPRINT_DEFER_DETAIL=()
+  for dispatch_pass in 1 2; do
   while read -r u; do
     [[ -n "$u" ]] || continue
     paused_midrun dispatch && break
@@ -450,6 +454,11 @@ $deliver"
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "" "$wt" "" "$prompt" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" || true ;;
     esac
   done <<<"$ordered"
+  (( dispatch_pass == 1 && ${#TICK_FOOTPRINT_DEFERRED[@]} > 0 )) || break
+  defer_ids="$(printf '%s\n' "${!TICK_FOOTPRINT_DEFERRED[@]}" | jqf -R . | jqf -sc .)" || break
+  ordered="$(jqf -c --argjson ids "$defer_ids" 'select(.id as $i | $ids | index($i))' <<<"$(dispatch_order)")" || true
+  TICK_FOOTPRINT_DEFER=false; TICK_FOOTPRINT_CAP_HIT=false
+  done
   # Per-unit checks under the 2s detail threshold add up: name the waiters' share of this phase.
   { (( SECONDS - pending_started < 10 )) && [[ -z "$TICK_REVIEW_WAITS" ]]; } || say "dispatch detail pending_summary secs=$((SECONDS - pending_started)) revalidate_secs=$revalidate_secs loop_secs=$((SECONDS - loop_started)) units=$(grep -c . <<<"$ordered") footprint_room_ms=$((TICK_FOOTPRINT_ROOM_USEC / 1000)) footprint_room_calls=$TICK_FOOTPRINT_ROOM_CALLS footprint_waits=$TICK_FOOTPRINT_ROOM_WAITS $(review_wait_summary)"
   footprint_convoy_alert || say 'footprint-convoy alert check failed'

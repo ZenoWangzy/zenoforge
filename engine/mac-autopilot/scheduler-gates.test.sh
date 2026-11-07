@@ -613,8 +613,10 @@ lane_dispatch_tick "engine/alpha.sh" "docs/agents/beta.md"
 [[ ${#DISPATCHED[@]} == 2 && "$(field issue-91 .stage)" == implement && "$(field issue-92 .stage)" == implement ]] \
   || fail "disjoint pipeline-system scopes were not dispatched together (${DISPATCHED[*]:-none}, 91=$(field issue-91 .stage), 92=$(field issue-92 .stage))"
 lane_dispatch_tick "engine/lib.sh" "engine/lib.sh"
-[[ ${#DISPATCHED[@]} == 1 && "$(field issue-92 .stage)" == implement-pending ]] \
-  || fail "overlapping pipeline-system scope did not wait (dispatched=${DISPATCHED[*]:-none}, 92=$(field issue-92 .stage))"
+# Footprint only orders: the overlapping ticket is deferred behind issue-91 and still starts in the second pass, so no slot idles.
+[[ ${#DISPATCHED[@]} == 2 && "${DISPATCHED[0]}" == implement:issue-91 && "$(field issue-92 .stage)" == implement ]] \
+  || fail "overlapping pipeline-system scope was refused or ran out of order (dispatched=${DISPATCHED[*]:-none}, 92=$(field issue-92 .stage))"
+grep -Fq 'footprint wait unit=issue-92 owner=issue-91' "$LOG" || fail 'the overlap was not logged as a deferral'
 rm -f "$AGENT_HOME/state/91.json" "$AGENT_HOME/state/92.json" "$WORKERS.lane-tmp"
 eval "$lane_dispatch_real"
 DISPATCHED=()

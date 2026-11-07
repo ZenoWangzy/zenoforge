@@ -40,18 +40,18 @@ tracker_fixture_id="$(printf '%s' "$TMPDIR/output-contract-tracker" | cksum | aw
 mkdir -p "$AGENT_HOME/night" "$AGENT_HOME/metrics"
 
 golden_body='一句话结论：做完 2 个、正式上线 1 个、等上线 3 个；没有告警。
+需要你决定
+- 库存预警阈值调到多少？——建议：先按默认值运行一周。
 产出
-- 做完（已合入主线）：过去一天 2 个（前一天 1 个）；近 7 天 4 个（上一个 7 天 3 个）。
-- 正式上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个（上一个 7 天 0 个）。距上次上线 5 天。
+- 做完（已合入主线）：过去一天 2 个（比昨天多 1 个，比上周同日少 1 个）；近 7 天 4 个（上一个 7 天 3 个）。
+- 正式上线：过去一天 1 个（比昨天多 1 个）；近 7 天 1 个（上一个 7 天 0 个）。距上次上线 5 天。
 变化
-- 做完等上线的需求：现在 3 个，比一天前多 1 个，比七天前多 3 个。
+- 做完等上线的需求（未关闭）：现在 3 个（比昨天多 1 个，比上周同日多 3 个）。
 质量
 - 线上告警：过去一天 0 次，共 0 类。
 - 撤回上线：过去一天 0 次。
 资源
-- 令牌用量：过去一天 1500（前一天 1000）。
-需要你决定
-- 库存预警阈值调到多少？——建议：先按默认值运行一周。'
+- 令牌用量：过去一天 1500（比昨天多 500）。'
 
 maintainer_health_mail_output_contract "$golden_body" "$now"
 echo 'ok - golden owner report passes the contract'
@@ -66,11 +66,8 @@ contract_rejects 'a reordered section is refused' \
 contract_rejects 'an empty section is refused' \
   "$(grep -v '^- 令牌用量' <<< "$golden_body")" 'empty-section'
 contract_rejects 'four decision lines are refused' \
-  "$golden_body
-- 第二个问题——建议：按默认继续。
-- 第三个问题——建议：按默认继续。
-- 第四个问题——建议：按默认继续。" 'decision-limit'
-filler_lines="$(printf -- '- 额外记录\n%.0s' {1..14})"
+  "${golden_body/先按默认值运行一周。/先按默认值运行一周。$'\n- 第二个问题——建议：按默认继续。\n- 第三个问题——建议：按默认继续。\n- 第四个问题——建议：按默认继续。'}" 'decision-limit'
+filler_lines="$(printf -- '- 额外记录\n%.0s' {1..30})"
 too_many_lines="${golden_body/需要你决定/$filler_lines$'\n需要你决定'}"
 contract_rejects 'a report taller than one screen is refused' "$too_many_lines" 'one-screen'
 contract_rejects 'an English word is refused' "$golden_body
@@ -99,8 +96,7 @@ echo 'ok - isolated report still passes the contract'
 
 # The shared pre-send gate accepts the same report through the strict sender.
 source "$SCRIPT_DIR/../notify.sh"
-unknown_decision_body="$(sed '/^需要你决定$/,$d' <<< "$golden_body")"
-unknown_decision_body+=$'\n需要你决定\n- 决定记录读取失败，本期无法列出。'
+unknown_decision_body="${golden_body/- 库存预警阈值调到多少？——建议：先按默认值运行一周。/- 决定记录读取失败，本期无法列出。}"
 maintainer_health_mail_output_contract "$unknown_decision_body" "$now"
 assert_eq 'notify gate accepts decisions stated as unreadable' '' \
   "$(maintainer_mail_rejection_reason health '工厂日报 11-07：做完 2 个、正式上线 1 个' "$unknown_decision_body")"

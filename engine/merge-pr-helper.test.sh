@@ -374,3 +374,85 @@ PR_META_ERROR=''
 PR_FILE_STATUSES='[]' PR_FILES_BY_PR='{}' PR_LIST='[]'
 
 echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, applies exact named overrides, requires a prior-art section unless test-only or overridden, requires a green test receipt for the PR head unless the PR is Markdown-only, and refuses a silent revert of a recent merge unless it is stated'
+# Override merge check: a PR that changes an overridden engine file must merge cleanly into the target's pack copy, as the pin will do (#643 stopped every pin).
+ov_dir="$fixture/override"
+mkdir -p "$ov_dir"
+git init -q --bare -b main "$ov_dir/engine-origin.git"
+git init -q --bare -b main "$ov_dir/target-origin.git"
+git -C "$repo" remote add origin "$ov_dir/engine-origin.git"
+numbered() { seq -f 'line %g' 1 12; }
+edit_line() { numbered | sed "$1s/\$/ $2/"; } # numbered with ' <text>' appended to line N
+mkdir -p "$repo/engine/state"
+numbered > "$repo/engine/state/rulings.json"
+numbered > "$repo/engine/dispatch-queue.sh"
+git -C "$repo" add engine
+git -C "$repo" commit -qm 'override base'
+base_blob="$(git -C "$repo" rev-parse HEAD:engine/state/rulings.json)"
+push_pr_head() { # rulings text, dispatch text: commit the PR head on top of the base and publish it as the PR ref
+  printf '%s\n' "$1" > "$repo/engine/state/rulings.json"
+  printf '%s\n' "$2" > "$repo/engine/dispatch-queue.sh"
+  git -C "$repo" commit -qam 'pr head'
+  git -C "$repo" push -q -f origin HEAD:refs/pull/17/head
+  git -C "$repo" reset -q --hard HEAD^
+}
+export AGENT_HOME="$ov_dir/agent"
+mkdir -p "$AGENT_HOME"
+git clone -q "$ov_dir/target-origin.git" "$AGENT_HOME/checkout" 2>/dev/null
+tgt="$AGENT_HOME/checkout"
+git -C "$tgt" config user.name t
+git -C "$tgt" config user.email t@example.invalid
+pack_dir=.zenoforge/build/pack/scripts/agent
+mkdir -p "$tgt/$pack_dir/state" "$tgt/.zenoforge/build"
+edit_line 5 'pack' > "$tgt/$pack_dir/state/rulings.json"
+edit_line 2 'pack' > "$tgt/$pack_dir/dispatch-queue.sh"
+printf '{"hook":".zenoforge/build/hook.sh","engine":"%s"}\n' "$(printf 'a%.0s' $(seq 40))" > "$tgt/.zenoforge/build.json"
+printf '# path\tbase\nstate/rulings.json\t%s\ndispatch-queue.sh\t%s\n' "$base_blob" "$(git -C "$repo" rev-parse HEAD:engine/dispatch-queue.sh)" > "$tgt/.zenoforge/build/overrides.tsv"
+git -C "$tgt" add -A
+git -C "$tgt" commit -qm pack
+git -C "$tgt" push -q origin HEAD:main
+files_json() { jq -cn --args '[$ARGS.positional[] | {filename:., status:"modified"}]' -- "$@"; }
+expect_override() { # label verdict(pass|refuse) expected-text
+  local out
+  if out="$(merge_pr_override_ok 17 2>&1)"; then
+    [[ "$2" == pass ]] || fail "$1 was not refused"
+  else
+    [[ "$2" == refuse ]] || fail "$1 refused: $out"
+    [[ "$out" == *"refusing to merge PR #17: "*"$3"* ]] || fail "$1 wrong refusal: $out"
+  fi
+}
+PR_FILE_STATUSES="$(files_json engine/state/rulings.json)"
+push_pr_head "$(edit_line 5 'pr')" "$(numbered)"
+expect_override 'rulings conflict' refuse 'override state/rulings.json: three-way merge conflicts (1 hunk(s))'
+[[ "$(merge_pr_override_ok 17 2>&1)" == *'pin would refuse'* ]] || fail 'conflict refusal does not say the pin would refuse'
+push_pr_head "$(edit_line 10 'pr')" "$(numbered)"
+expect_override 'clean rulings merge' pass
+PR_FILE_STATUSES="$(files_json engine/dispatch-queue.sh)"
+push_pr_head "$(numbered)" "$(edit_line 9 'pr')"
+expect_override 'clean live-scheduler-file merge' pass
+PR_FILE_STATUSES="$(files_json engine/other.sh tools/quick-land.sh)"
+push_pr_head "$(edit_line 5 'pr')" "$(edit_line 2 'pr')"
+expect_override 'engine file with no override row' pass
+PR_FILE_STATUSES="$(files_json engine/state/rulings.json)"
+push_pr_head "$(edit_line 5 'pr')" "$(numbered)"
+PR_FILE_STATUSES="$(files_json tools/quick-land.sh)"
+AGENT_HOME="$ov_dir/missing" expect_override 'PR with no engine file reads no target' pass
+PR_FILE_STATUSES="$(files_json engine/state/rulings.json)"
+AGENT_HOME="$ov_dir/missing" expect_override 'unreadable target' refuse 'could not read the target'
+# A hand merge from a session has no AGENT_HOME: the check must find the same default checkout as auto-pin.
+(unset AGENT_HOME ZF_HOME; HOME="$ov_dir/default-home"; mkdir -p "$HOME/.vecta-agent"; ln -s "$tgt" "$HOME/.vecta-agent/checkout"; export HOME; expect_override 'no AGENT_HOME reads the default checkout' refuse 'override state/rulings.json')
+[[ "$(ZF_MERGE_OVERRIDE=override-merge AGENT_HOME="$ov_dir/missing" merge_pr_override_ok 17 2>&1)" == *'skips the override merge check'* ]] || fail 'override-merge did not skip and log'
+PR_FILE_STATUSES='[{"filename":"engine/state/rulings.json","status":"removed"}]'
+git -C "$repo" rm -q engine/state/rulings.json
+git -C "$repo" commit -qm 'pr removes the file'
+git -C "$repo" push -q -f origin HEAD:refs/pull/17/head
+git -C "$repo" reset -q --hard HEAD^
+expect_override 'removed overridden file' refuse 'removes or moves engine/state/rulings.json'
+push_pr_head "$(edit_line 5 'pr')" "$(numbered)"
+PR_FILE_STATUSES="$(files_json engine/state/rulings.json)" PR_FILES='["engine/state/rulings.json"]' PR_HEAD="$sha" PR_CHECKS='[]' PR_BODY=$'## prior-art\nno external prior art: test fixture'
+: > "$fixture/gh-calls"
+if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail 'an override conflict reached merge'; fi
+[[ "$(cat "$fixture/check-output")" == *'three-way merge conflicts (1 hunk(s))'* ]] || fail "wired refusal lost its reason: $(cat "$fixture/check-output")"
+! grep -q '^merge:' "$fixture/gh-calls" || fail 'an override conflict still merged'
+PR_FILE_STATUSES='[]'
+
+echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, applies exact named overrides, requires a prior-art section unless test-only or overridden, and requires a green test receipt for the PR head unless the PR is Markdown-only'
