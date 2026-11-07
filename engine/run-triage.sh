@@ -552,14 +552,14 @@ $NOTES_GATE_OFFENDING" >&2
   fi
 fi
 
-# An unconfirmed product index must never admit an L2 ticket. Defer unchanged
-# tickets for at most two hours; after that, continue triage and route an
-# otherwise-agent-ready L2 result to the advisor. Founder-test issues skip
-# retry parking, but never bypass this admission gate.
+# Unconfirmed freshness supplies no L2 impact evidence. Defer unchanged
+# tickets for at most two hours; afterward follow triage's default and mark
+# the impact unconfirmed. Only an advisor-only reason routes it to the advisor.
+# Founder-test issues skip retry parking, not the freshness guard.
 TRIAGE_FRESHNESS_BLOCKED=0
 if [ "$LEVEL" = "L2" ] && [ "$RISK_CLASS" != "P2" ] && [ "$PHASE" = "3" ] \
   && [[ "$INDEX_FRESHNESS_NOTE" == "NOT confirmed"* ]] \
-  && { [ "$MODEL_STATE" = "ready-for-agent" ] || [ "$MODEL_STATE" = "ready-for-human" ] || [ "$PRECUT" = "1" ] || [ "$ADVISOR_ADMISSION_MEASURE_ONLY" = "1" ]; }; then
+  && { [ "$MODEL_STATE" = "ready-for-agent" ] || [ "$MODEL_STATE" = "ready-for-human" ] || [ "$MODEL_STATE" = "needs-owner" ] || [ "$PRECUT" = "1" ] || [ "$ADVISOR_ADMISSION_MEASURE_ONLY" = "1" ]; }; then
   if [ "$MAINTAINER_TEST" = "1" ]; then
     TRIAGE_FRESHNESS_BLOCKED=1
   else

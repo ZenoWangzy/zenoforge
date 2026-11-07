@@ -91,7 +91,8 @@ They share GitHub labels and the per-issue state files. The issue loop never mer
         |
         +--> needs-recut --> recut (run-recut.sh) --> child issues, parent becomes a tracker
         +--> needs-info          waits for a person's answer, then goes back to triage
-        +--> ready-for-human     a person decides; the pipeline never moves past it
+        +--> ready-for-human / needs-owner model verdict
+        |       --> ready-for-agent by default; advisor-only calls or autonomy refusals --> needs-advisor
 ```
 
 The diagram shows the main path and the common side branches. `ISSUE_TRANSITION_TABLE` in `engine/lib.sh` lists every allowed move.
@@ -105,11 +106,11 @@ The diagram shows the main path and the common side branches. `ISSUE_TRANSITION_
 | `needs-triage` | Waiting for triage |
 | `needs-info` | Waiting for an answer from a person |
 | `ready-for-agent` | Accepted for implementation |
-| `ready-for-human` | A person decides. The code comment says this is the one state the pipeline never automates past |
+| `ready-for-human` | Transient model verdict. Triage defaults to implementation or sends an irreversible, production-data, or security call to the advisor; it never parks for a person |
 | `needs-advisor` | Sent to the advisor for a judgment call |
 | `needs-recut` | Too big. To be cut into child issues |
 | `checks-blocked` | Required checks could not run or could not be read. A sweep re-checks them (`checks_blocked_sweep`) |
-| `needs-owner` | Needs an owner before work can move. The code has no comment for it, so check the callers |
+| `needs-owner` | Transient model verdict treated like `ready-for-human`; triage defaults to implementation or sends an advisor-only call to the advisor |
 | `duplicate`, `wontfix`, `finish-first` | Closed as a duplicate or declined. `finish-first` waits for a blocking PR to land |
 | `awaiting-release` | Merged. Waiting for release |
 | `awaiting-pipeline-sync`, `awaiting-pipeline-health` | Waiting for the pipeline's own sync or health check before release |

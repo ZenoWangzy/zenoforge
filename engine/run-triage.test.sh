@@ -633,6 +633,20 @@ assert_eq "...state stays ready-for-agent" "ready-for-agent" "$(echo "$STATE_CON
 assert_contains "...comment records the unconfirmed impact" "$GH_LOG_CONTENT" "L2 impact freshness was not confirmed"
 assert_contains "...comment tells the implementer to verify the impact" "$GH_LOG_CONTENT" "treat the L2 impact as unconfirmed"
 
+export FAKE_TRIAGE_STRUCTURED="$(verdict needs-owner P1 L2)"
+export MAC_AUTOPILOT_RUNTIME_DIR="$(mktemp -d)"; TMP_DIRS+=("$MAC_AUTOPILOT_RUNTIME_DIR"); echo '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
+run_once "$RAW_BODY" testuser 0 0 0 "" 1
+assert_eq "expired L2 needs-owner freshness exits 0" "0" "$RUN_STATUS"
+assert_eq "expired L2 needs-owner default enters implementation" "ready-for-agent" "$(echo "$STATE_CONTENT" | jq -r '.state')"
+assert_contains "expired L2 needs-owner applies the implement label" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
+assert_not_contains "expired L2 needs-owner does not route to advisor by default" "$GH_LOG_CONTENT" "--add-label needs-advisor"
+assert_not_contains "expired L2 needs-owner never becomes a human terminal" "$GH_LOG_CONTENT" "--add-label ready-for-human"
+assert_contains "expired L2 needs-owner still marks impact unconfirmed" "$GH_LOG_CONTENT" "treat the L2 impact as unconfirmed"
+assert_contains "expired L2 needs-owner logs the freshness default" \
+  "$(grep -E ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null)" \
+  "advisor-route issue=#$N reason=default_decided outcome=l2_freshness"
+unset MAC_AUTOPILOT_RUNTIME_DIR
+
 export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L2 "" production-data)"
 export MAC_AUTOPILOT_RUNTIME_DIR="$(mktemp -d)"; TMP_DIRS+=("$MAC_AUTOPILOT_RUNTIME_DIR"); echo '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
 run_once "$RAW_BODY" testuser 0 0 0 "" 1
