@@ -734,7 +734,7 @@ stuck_worker_disposition() {
     signal_active=1
     bound="$(jqf -r '[.metrics[] | select(.id=="flow.wip_age_stage_p90_hours")][0].unhealthy // 12' "$scorecard")"
     if [[ "$bound" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-      offenders="$(jqf -r --argjson bound "$bound" '[.flow.wip_age[]? | select((.p90_hours // 0) >= $bound and (.waiting | not)) | .oldest[]?.id] | unique | join(" ")' "$scorecard")"
+      offenders="$(jqf -r --argjson bound "$bound" '[.flow.wip_age[]? | select((.p90_hours // 0) >= $bound) | .oldest[]?.id] | unique | join(" ")' "$scorecard")"
     fi
   fi
   # 盲区：点名名单只含 wip_age oldest[]（有上限），名单外的 worker 永远不被探测。
