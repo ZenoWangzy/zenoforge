@@ -18,6 +18,24 @@ source "$engine_dir/mac-autopilot/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
 UNITS="$MAC_AUTOPILOT_RUNTIME_DIR/units.json"; LOG="$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"; A="$MAC_AUTOPILOT_RUNTIME_DIR"; : > "$LOG"
 
+# The refill is killed at its limit: the pass stops before the next candidate, leaving room for the one in progress.
+CFG="$(jq -c . "$A/config.json")"; STAMP=T; ROOT="$fixture/repo"; MAIN_HEAD=""
+declare -gA TICK_PR_STATE=()
+git() { :; }
+merge_gate_suites_active() { MERGE_GATE_SUITES_NOTE=""; return 1; }
+ci_classify_run() { :; }
+tick_prs_prime() { :; }
+merge_census_watch() { :; }
+retry_blocked_units() { :; }
+ready_row='{"id":"u","stage":"ready-to-merge","pr":7,"lane":"pr","issue":9}'
+merge_candidates() { printf '%s\n' "$ready_row"; }
+printf '{"units":[%s]}\n' "$ready_row" > "$UNITS"
+TICK_LOCAL_REFILL=true AUTOPI_REFILL_LIMIT_SECONDS=0 run_merge_lane_pass
+grep -q 'merge pass deadline' "$LOG" || fail 'the pass went on past its deadline'
+grep -q 'check census unavailable' "$LOG" && fail 'the pass read a candidate past its deadline'
+unset -f git merge_candidates
+: > "$LOG"
+
 passes=0; run_merge_lane_pass() { passes=$((passes + 1)); }
 ready='{"units":[{"id":"u","stage":"ready-to-merge","pr":7,"lane":"pr"}]}'
 CFG="$(jq -c . "$A/config.json")"
