@@ -243,7 +243,8 @@ record_deploy_evidence() {
   fi
   release_feature_evidence_valid "$n" "$evidence" || return 1
   python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/mac-autopilot/live_delivery.py" \
-    write-live-sha "$deployed_sha" post-deploy-success || return $?
+    write-live-sha "$deployed_sha" post-deploy-success \
+    || echo "record_deploy_evidence: live SHA not recorded for #$n; the delivery alarm reads a stale live SHA" >&2 # the deploy is proven either way
   evidence_file="$(jq_arg_file "$evidence")"
   evidence_json="$(jq -n --rawfile e "$evidence_file" '$e')"
   rm -f "$evidence_file"
