@@ -22,7 +22,6 @@ import line_holds
 import pr_census
 import worker_cost
 import workorder_cost
-import usage_reader
 from config_paths import zf_config_file, zf_host_ops_file, zf_incident_guards, zf_mechanism_registry
 
 
@@ -545,44 +544,6 @@ def ts(value):
 def pct(values, q):
     values = sorted(values)
     return values[min(len(values) - 1, int(round(q * (len(values) - 1))))] if values else None
-
-
-def claude_worker_usage(row, responses):
-    """Sum Claude responses inside one worker's run interval; no matching response is unknown."""
-    end = row.get("finished_at") or row["end"]
-    total = usage_reader.Usage(0, 0, 0)
-    matched = False
-    for stamp, usage in responses:
-        try:
-            at = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(timezone.utc)
-        except (AttributeError, ValueError):
-            continue
-        if row["start"] <= at <= end:
-            total += usage
-            matched = True
-    return total if matched else None
-
-
-def attach_claude_usage(rows, projects_root=None, clone_root=None):
-    """Join Claude project transcript usage to worker logs by worktree unit and run interval."""
-    agent_home = os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or os.path.expanduser("~/.zenoforge")
-    projects_root = projects_root or os.environ.get("CLAUDE_PROJECTS_DIR") or os.path.expanduser("~/.claude/projects")
-    clone_root = clone_root or os.environ.get("MAC_AUTOPILOT_WT_ROOT") or os.path.join(agent_home, "autopilot-wt")
-    if not os.path.isdir(projects_root):
-        return
-    by_unit = {}
-    for row in rows:
-        if row["backend"] != "claude" or row["usage"] is not None:
-            continue
-        unit = row["unit"]
-        if unit not in by_unit:
-            try:
-                by_unit[unit] = usage_reader.claude_unit_responses(projects_root, clone_root, unit)
-            except usage_reader.Unavailable:
-                by_unit[unit] = []
-        row["usage"] = claude_worker_usage(row, by_unit[unit])
-        if row["usage"] is not None:
-            row["usage_source"] = "claude-project"
 
 
 def worker_runs(rows, since, now):
@@ -1460,8 +1421,9 @@ def main():
             node, desc, _, _, higher = criteria[mid]
             criteria[mid] = (node, desc, bounds[0], bounds[1], higher)
 
+    units = ledger_history.load_units(a)
     cost_rows = worker_cost.run_rows(sup)
-    attach_claude_usage((r for r in cost_rows if since <= r["start"] <= now))
+    worker_cost.attach_provider_usage(cost_rows, units)  # every row: a ticket's fresh total needs all its runs
     runs = worker_runs(cost_rows, since, now)
     metrics = {}
     for node in ("implement", "review", "repair"):
@@ -1480,7 +1442,6 @@ def main():
                 for r in runs if r["node"] == "repair" and r["output"] and not r["self_fix"]]
     followed = [n for n in followed if n]
     metrics["loop.incremental_rereview_pct"] = 100 * followed.count("rereview") / len(followed) if followed else None
-    units = ledger_history.load_units(a)
     metrics.update(ledger_metrics(units, since, now))
     # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
     metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]

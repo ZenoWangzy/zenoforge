@@ -18,8 +18,11 @@ Usage formats, one per backend (usage_reader.py is the single reader):
                  session's counters start at zero.
   codex legacy   the "tokens used" footer is one blended total; the split stays unknown.
   zcode          the usage of the last {"type":"result"} line, per invocation.
-  claude         the claude CLI prints no usage to its worker log; usage stays unknown here
-                 (the daily meter reads Claude from the projects directory).
+  claude         the claude CLI prints no usage to its worker log, and zcode -p prints none either:
+                 attach_provider_usage() reads each CLI's own record instead (Claude project
+                 transcripts, the zcode session database), joined by the unit's clone directory and
+                 the run interval. A resumed codex stream with no dispatch baseline takes the
+                 thread's counters at the end of its previous log (_chain_baselines).
 
 A dispatch counts as a failover when its pipeline.execution reason names a switch away from
 the preferred path. Eval runs are not worker logs: their runner already records per-call
@@ -30,9 +33,10 @@ import glob
 import json
 import os
 import re
+import sqlite3
 from datetime import datetime, timezone
 
-from usage_reader import Usage, codex_stream_facts, zcode_stream_usage
+from usage_reader import Usage, claude_unit_responses, codex_stream_facts, zcode_stream_usage, Unavailable
 
 LOG_RE = re.compile(r"^(impl|review|land|triage|supervise)-(.+?)-(\d{8}T\d{6})Z\.worker\.log$")
 UNIT_KEY_RE = re.compile(r"-(?:selfcheck[0-9]+-)?(?:fix|r)$")
@@ -87,6 +91,17 @@ def _counter_delta(value, baseline):
     return value - baseline
 
 
+def _usage_delta(last, baseline):
+    """This invocation's own usage: a resumed thread's cumulative counters minus the baseline; None
+    when there is no baseline or a counter went backwards."""
+    if baseline is None or last.input < baseline.input or last.output < baseline.output:
+        return None
+    cached = None if last.cached is None or baseline.cached is None else last.cached - baseline.cached
+    return Usage(last.input - baseline.input, cached, last.output - baseline.output,
+                 reasoning=_counter_delta(last.reasoning, baseline.reasoning),
+                 cache_write=_counter_delta(last.cache_write, baseline.cache_write))
+
+
 def measure(path, worker):
     """One worker log's facts: phase, unit key, wall clock, that invocation's own usage, failover.
 
@@ -120,6 +135,7 @@ def measure(path, worker):
         tail = ""
     usage, footer, backend = None, None, None
     marker, text, json_stream = None, None, False
+    session, last, need_base = None, None, False
     footers = FOOTER_RE.findall(tail)
     if footers:
         footer, backend = int(footers[-1].replace(",", "")), "codex"
@@ -134,27 +150,21 @@ def measure(path, worker):
         json_stream = True
         marker = _marker(text)
         facts = codex_stream_facts(path)
-        last = facts["snapshots"][-1] if facts["snapshots"] else None
+        session, last = facts["session_id"], facts["snapshots"][-1] if facts["snapshots"] else None
         if last is not None:
             # A resume stream's counters carry the whole thread: only the delta past the
             # dispatch baseline is this invocation. The mode comes from the log's own
             # pipeline.execution marker, or from the ledger row for pre-marker logs; a
             # marker rewritten by a failover (mode=fresh) resets the baseline to zero, and
-            # with neither marker nor row fresh-vs-resume is unknowable, not fresh.
+            # with neither marker nor row fresh-vs-resume is unknowable, not fresh -- except
+            # the supervisor arbiter, whose command never resumes (supervisor-arbiter.sh).
             mode = marker.get("mode") if marker else worker.get("mode")
-            if marker is None and not worker:
+            if marker is None and not worker and kind != "supervise":
                 usage = None
             elif mode == "resume" and (marker is None
                                        or marker.get("reason") != "resume-startup-failed"):
                 baseline = _baseline(worker)
-                if baseline is not None and last.input >= baseline.input \
-                        and last.output >= baseline.output:
-                    cached = None if last.cached is None or baseline.cached is None \
-                        else last.cached - baseline.cached
-                    usage = Usage(last.input - baseline.input, cached,
-                                  last.output - baseline.output,
-                                  reasoning=_counter_delta(last.reasoning, baseline.reasoning),
-                                  cache_write=_counter_delta(last.cache_write, baseline.cache_write))
+                usage, need_base = _usage_delta(last, baseline), baseline is None
             else:
                 usage = last  # fresh session: its counters start at zero
     elif text and '"type":"assistant"' in text:
@@ -178,6 +188,7 @@ def measure(path, worker):
             "start": start, "end": end, "minutes": max(0.0, (end - start).total_seconds() / 60),
             "finished_at": _parse_ts(worker.get("finished_at")) if worker else None,
             "usage": usage, "footer_tokens": footer, "json_stream": json_stream,
+            "session": session, "last": last, "need_base": need_base,
             "failover": bool(marker and marker.get("reason") in FAILOVER_REASONS),
             "harvested": worker.get("harvested") is True}
 
@@ -197,7 +208,99 @@ def run_rows(sup, finished_only=False):
         if row is not None:
             rows.append(row)
     rows.sort(key=lambda r: r["start"])
+    _chain_baselines(rows)
     return rows
+
+
+def _chain_baselines(rows):
+    """A resumed stream whose dispatch baseline is gone (workers.json keeps 60 rows): the thread's
+    cumulative counters at the end of its previous log are the baseline. Rows are oldest first."""
+    ended = {}
+    for row in rows:
+        last = row["last"]
+        if row["need_base"] and row["session"] in ended and last is not None:
+            row["usage"] = _usage_delta(last, ended[row["session"]])
+        if row["session"] and last is not None:
+            ended[row["session"]] = last
+
+
+def _stamp(value):
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (AttributeError, ValueError):
+        return None
+
+
+def _zcode_turns(db, clone_root):
+    """{clone directory: [(start, Usage)]} from the zcode session database, read only."""
+    like = clone_root.rstrip("/").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/wt-%"
+    turns = {}
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as con:
+            query = ("select s.directory, t.started_at, t.input_tokens, t.cache_read_input_tokens, "
+                     "t.output_tokens, t.reasoning_tokens, t.cache_creation_input_tokens "
+                     "from turn_usage t join session s on s.id = t.session_id "
+                     "where s.directory like ? escape '\\'")
+            for directory, started, inp, cached, out, reasoning, write in con.execute(query, (like,)):
+                if all(type(v) is int and v >= 0 for v in (started, inp, out)) and (cached or 0) <= inp:
+                    turns.setdefault(directory, []).append((
+                        datetime.fromtimestamp(started / 1000, timezone.utc),
+                        Usage(inp, cached, out, reasoning=reasoning, cache_write=write)))
+    except sqlite3.Error:
+        pass
+    return turns
+
+
+def attach_provider_usage(rows, units=(), projects_root=None, clone_root=None, zcode_db=None):
+    """Give a row its own usage from the CLI's own record when the worker log carries none.
+
+    Claude (review runs print only the report) and zcode -p (stdout is the report) keep their
+    per-call usage in ~/.claude/projects transcripts and the zcode session database, keyed by
+    the unit's clone directory wt-<unit>. A row owns the entries that started inside its
+    interval; an entry joins one row only. A bare PR number (trimmed log) maps to pr-<n> and to
+    every unit that carries that PR. The interval ends at the latest of log, report and ledger
+    finish: a stdout-report run writes its log at the start. Rows already measured, codex rows
+    and phases without a model run are left alone."""
+    agent_home = os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or os.path.expanduser("~/.zenoforge")
+    projects_root = projects_root or os.environ.get("CLAUDE_PROJECTS_DIR") or os.path.expanduser("~/.claude/projects")
+    clone_root = clone_root or os.environ.get("MAC_AUTOPILOT_WT_ROOT") or os.path.join(agent_home, "autopilot-wt")
+    zcode_db = zcode_db or os.environ.get("ZCODE_DB") or os.path.expanduser("~/.zcode/cli/db/db.sqlite")
+    by_pr = {}
+    for unit in units:
+        if isinstance(unit, dict) and unit.get("pr") and unit.get("id"):
+            by_pr.setdefault(str(unit["pr"]), []).append(unit["id"])
+    claude, zcode = {}, None
+    for row in rows:
+        if row["usage"] is not None or row["footer_tokens"] is not None \
+                or row["backend"] not in (None, "claude", "zcode") \
+                or row["phase"] not in ("implement", "repair", "review", "rereview"):
+            continue
+        key = row["unit"]
+        names = [key] + ([f"pr-{key}"] + by_pr.get(key, []) if key.isdigit() else [])
+        end = max(row["end"], row["finished_at"] or row["end"])
+        try:
+            end = max(end, datetime.fromtimestamp(os.path.getmtime(row["path"][:-len(".worker.log")] + ".md"), timezone.utc))
+        except OSError:
+            pass
+        for name in names:
+            if name not in claude:
+                try:
+                    claude[name] = [(_stamp(at), u) for at, u in claude_unit_responses(projects_root, clone_root, name)]
+                except Unavailable:
+                    claude[name] = []
+            if zcode is None:
+                zcode = _zcode_turns(zcode_db, clone_root)
+            for pool, backend, source in ((claude[name], "claude", "claude-project"),
+                                          (zcode.get(f"{clone_root.rstrip('/')}/wt-{name}", []), "zcode", "zcode-db")):
+                hit = [e for e in pool if e[0] is not None and row["start"] <= e[0] <= end]
+                if hit:
+                    for e in hit:
+                        pool.remove(e)
+                    row["usage"] = sum((u for _, u in hit), Usage(0, 0, 0))
+                    row["backend"], row["usage_source"] = backend, source
+                    break
+            if row["usage"] is not None:
+                break
 
 
 def _new_total():

@@ -216,7 +216,7 @@ project_dir.mkdir(parents=True)
 ]) + "\n")
 
 rows = worker_cost.run_rows(str(sup))
-n.attach_claude_usage(rows, str(projects), str(clone))
+worker_cost.attach_provider_usage(rows, [], str(projects), str(clone))
 runs = n.worker_runs(rows, now-n.timedelta(hours=5), now)
 assert {r["node"]: r["tokens"] for r in runs} == {
     "implement": 100, "repair": 20, "review": 80, "rereview": 15
