@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dashboard.html 总览回答「工厂现在正常吗？卡在哪？谁来处理？」：固定样本触发每一种问题，期望值按样本手算（不经页面代码）。
-# 检查：问题清单的行、顺序、数字；6 个数的显示；员工卡的暖色与排序；没有数据显示 —，不画成 0；估算有标。
+# 检查：问题清单的行、顺序、数字；7 个数的显示；员工卡的暖色与排序；没有数据显示 —，不画成 0；估算有标。
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -49,7 +49,7 @@ eq("slot rule", rows[7].rule, "产线空位 6");
 const html = dash.MODULES[0].render(D);
 const at = s => { const i = html.indexOf(s); if (i < 0) throw new Error("overview lacks " + s); return i; };
 if (!(at('class="hks"') < at(">要处理</h2>") && at(">要处理</h2>") < at('id="ov-workers"') && at('id="ov-workers"') < at('class="pst"'))) throw new Error("overview order is tiles, problems, workers, pipeline");
-eq("tiles", (html.match(/class="hk s-/g) || []).length, 6);
+eq("tiles", (html.match(/class="hk s-/g) || []).length, 7);
 const cards = html.match(/class="lwc [^"]*"/g);
 eq("worker cards, groups by heat, hottest first inside", cards.map(c => c.match(/w-(\w+)/)[1]), ["bad", "ok", "warn", "none"]);
 for (const s of ["等待 ≥30 分", "等待 ≥5 分", "工作中", "无日志", "估</small>", "可启动", "卡住"]) at(s);
