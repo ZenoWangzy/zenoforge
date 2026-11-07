@@ -812,7 +812,9 @@ cat > "$fa/units.json" <<'JSON'
  {"id":"pr-23","stage":"ready-to-merge","history":[{"stage":"created","at":"2026-10-19T06:30:00Z"},{"stage":"review-approve","at":"2026-10-19T11:50:00Z"}]},
  {"id":"pr-24","stage":"implement","history":[{"stage":"created","at":"2026-10-18T22:00:00Z"},{"stage":"implement-started","at":"2026-10-18T23:00:00Z"}]},
  {"id":"pr-26","stage":"repair-pending","history":[{"stage":"created","at":"2026-10-19T06:00:00Z"},{"stage":"review-request-changes","at":"2026-10-19T07:50:00Z"}]},
- {"id":"pr-27","stage":"repair-pending","history":[{"stage":"created","at":"2026-10-19T06:00:00Z"},{"stage":"review-request-changes","at":"2026-10-19T10:00:00Z"}]}
+ {"id":"pr-27","stage":"repair-pending","history":[{"stage":"created","at":"2026-10-19T06:00:00Z"},{"stage":"review-request-changes","at":"2026-10-19T10:00:00Z"}]},
+ {"id":"pr-28","stage":"blocked-external","history":[{"stage":"blocked-on","at":"2026-10-10T00:00:00Z"}]},
+ {"id":"pr-29","stage":"parked","history":[{"stage":"supervisor-budget-park","at":"2026-10-11T00:00:00Z"}]}
 ]}
 JSON
 printf '[2026-10-19T09:00:00Z] dispatch mode=fresh pid=1 type=repair unit=pr-26\n[2026-10-19T11:00:00Z] dispatch mode=fresh pid=2 type=repair unit=pr-27\n' > "$fa/scheduler.log"
@@ -842,7 +844,10 @@ flowval() { jq -r --arg id "$1" '.metrics[] | select(.id == $id) | "\(.value) \(
 [[ "$(flowval flow.main_red_hours)" == "3.67 UNHEALTHY" ]] || fail "main-red hours wrong: $(flowval flow.main_red_hours)（flaky 0.67 + 未终结 3.0，与未终结重叠的 flaky 只算一次，窗口外 reverted 不算）"
 jq -e '.flow.entered == 2 and .flow.merged == 3
   and (.flow.wip_age[] | select(.stage == "implement") | .count == 1 and .p90_hours == 13)
-  and (.flow.wip_age[] | select(.stage == "ready-to-merge") | .p90_hours == 0.2)' \
+  and (.flow.wip_age[] | select(.stage == "ready-to-merge") | .p90_hours == 0.2)
+  and (.flow.wip_age[] | select(.stage == "blocked-external") | .waiting == true and .p90_hours == 228)
+  and (.flow.wip_age[] | select(.stage == "parked") | .waiting == true and .p90_hours == 204)
+  and (.flow.wip_age[] | select(.stage == "implement") | .waiting == false)' \
   "$fa/node-health.json" >/dev/null || fail "flow details wrong: $(jq -c .flow "$fa/node-health.json")"
 # 无积压（全部终态且在窗口前）：合入速率不计值，不读成 0
 ssup="$test_env_root/starve-sup"; sa="$ssup/autopi"; mkdir -p "$sa" "$ssup"

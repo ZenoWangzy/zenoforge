@@ -368,8 +368,15 @@ def merge_flow(units, since, now):
     return (merges / hours if backlog and hours > 0 else None), entered, merges
 
 
+# Stages that wait by design (a predecessor, a stop-loss): their rows stay listed but never pick the worst stage.
+WIP_WAITING = ("blocked-external", "parked")
+
+
 def wip_stage_ages(units, now):
-    """Each open unit's age in its current stage (last ledger event -> now), grouped by stage."""
+    """Each open unit's age in its current stage (last ledger event -> now), grouped by stage.
+
+    The worst p90 skips WIP_WAITING stages: 54 units waiting on one parked predecessor read 228 h
+    on 2026-11-07 and hid the one stage a worker could move (supervisor-review, 8 h)."""
     ages = {}
     for u in units:
         if u.get("stage") in UNIT_DONE:
@@ -384,8 +391,9 @@ def wip_stage_ages(units, now):
         hours = sorted(h for h, _ in ages[stage])
         oldest = sorted(ages[stage], key=lambda h: h[0], reverse=True)[:5]
         rows.append({"stage": stage, "count": len(hours), "p90_hours": round(pct(hours, .9), 1),
+                     "waiting": stage in WIP_WAITING,
                      "oldest": [{"id": uid, "age_hours": round(h, 1)} for h, uid in oldest]})
-    worst = max((r["p90_hours"] for r in rows if r["p90_hours"] is not None), default=None)
+    worst = max((r["p90_hours"] for r in rows if r["p90_hours"] is not None and not r["waiting"]), default=None)
     return rows, worst
 
 
