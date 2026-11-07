@@ -16,9 +16,21 @@ holder() { # prints the live holder pid, fails when the lock is free or stale
   pid="$(cat "$lock/pid" 2>/dev/null || true)"
   [[ -d "$lock" && "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && printf '%s' "$pid"
 }
+# A running tick lets go of the lock at every phase_yield_lock, so a free lock does not mean the old tick is gone:
+# on 2026-11-07 the new loop started a second full tick beside one with 9 minutes left (528 s of two ticks on one ledger).
+# loop.sh runs the tick as `bash <supervisor>/autopi-live/scheduler.sh` with no argument; read /proc with builtins, no process per entry.
+live_tick() { # prints the pid of a running main tick, fails when none
+  local d argv
+  for d in /proc/[0-9]*; do
+    { mapfile -d '' -t argv < "$d/cmdline"; } 2>/dev/null || continue # a process can exit between the glob and the read
+    [[ "${#argv[@]}" == 2 && "${argv[0]##*/}" == bash && "${argv[1]}" == "$MAC_AUTOPILOT_SUPERVISOR_DIR/autopi-live/scheduler.sh" ]] && { printf '%s' "${d#/proc/}"; return 0; }
+  done
+  return 1
+}
+holder_or_tick() { holder || live_tick; }
 log() { printf '[%s] loop start: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"; }
 waited=0
-while pid="$(holder)"; do
+while pid="$(holder_or_tick)"; do
   (( waited > 0 )) || log "waiting up to ${limit}s for pid $pid to release .scheduler.lock"
   if (( waited >= limit )); then
     log "pid $pid still holds .scheduler.lock after ${limit}s; starting anyway"

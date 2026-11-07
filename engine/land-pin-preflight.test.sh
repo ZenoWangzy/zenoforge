@@ -256,6 +256,16 @@ run_preflight "$base" "$head" "$tmp/calls-docs.log" || status=$?
 [[ "$status" -eq 0 ]] || fail "docs-only range was refused (exit $status): $(tail -5 "$out")"
 [[ ! -e "$tmp/calls-docs.log" ]] || fail 'build hook ran for a range that touches neither the pin nor the overrides'
 
+# A vendored pack change moves the live engine's resolved config, so the gates run for it too.
+git -C "$repo" checkout -q -b pack-only "$base"
+printf '{"value":"product-v2"}\n' > "$repo/.zenoforge/build/pack/scripts/agent/state/rulings.json"
+git -C "$repo" add .zenoforge/build/pack/scripts/agent/state/rulings.json
+git -C "$repo" commit -qm 'fixture: vendored rulings only'
+head="$(git -C "$repo" rev-parse HEAD)"
+status=0
+run_preflight "$base" "$head" "$tmp/calls-pack.log" || status=$?
+[[ -s "$tmp/calls-pack.log" ]] || fail 'a vendored pack change skipped the engine gates'
+
 # Set up a live v3 engine and product ref so the next pin bump only changes rulings data.
 git -C "$repo" checkout -q -b product-base-v3 "$base"
 printf '{"hook":".zenoforge/build/engine-sync.sh","engine":"%s"}\n' "$engine_v3" > "$repo/.zenoforge/build.json"
@@ -278,6 +288,19 @@ grep -Fq "resolved-config-check: product-owned change state/rulings.json (produc
   || fail 'preflight did not report the product-owned vendored rulings change'
 grep -Fq "resolved-config-check: product-owned change state/direct.json (product ${base_v3:0:8}..${head:0:8})" "$out" \
   || fail 'preflight did not report the product-owned direct config change'
+
+# The build rewrites a mapped pack file, so its output differs from the product bytes: still product-owned, no row.
+git -C "$repo" checkout -q -b product-owned-rewritten "$base_v3"
+printf '{"hook":".zenoforge/build/engine-sync.sh","engine":"%s"}\n' "$engine_v4" > "$repo/.zenoforge/build.json"
+printf '{"value":"product-v2"}\n' > "$repo/.zenoforge/build/pack/scripts/agent/state/rulings.json"
+git -C "$repo" add -A && git -C "$repo" commit -qm 'fixture: a vendored rulings edit the build rewrites'
+head="$(git -C "$repo" rev-parse HEAD)"
+set_live "$engine_v3" "$base_v3"
+status=0
+run_preflight "$base_v3" "$head" "$tmp/calls-product-rewritten.log" || status=$?
+[[ "$status" -eq 0 ]] || fail "a rewritten vendored rulings change needed a row (exit $status): $(tail -8 "$out")"
+grep -Fq "resolved-config-check: product-owned change state/rulings.json (product ${base_v3:0:8}..${head:0:8})" "$out" \
+  || fail 'preflight did not report the rewritten vendored rulings change as product-owned'
 
 # The same path changing on the engine side still blocks unless approved for the new engine SHA.
 git -C "$repo" checkout -q -b engine-rulings-unlisted "$base_v3"

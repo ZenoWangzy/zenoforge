@@ -103,9 +103,10 @@ start=$SECONDS; run_merge_lane; (( passes == 1 )) || fail 'the tick pass did not
 (( SECONDS - start >= 1 )) || fail 'the tick pass did not wait for the pass in progress'
 wait "$holder"
 
-grep -Fq 'phase_yield_lock refill_merge_pass' "$script_dir/scheduler.sh" || fail 'refill_tick does not run the merge pass'
-# The refill is killed at 300s: a pass after intake inherits that deadline in the middle of a merge.
-refill_body="$(sed -n '/^refill_tick() {/,/^}/p' "$script_dir/scheduler.sh")"
-[[ "${refill_body%%phase_yield_lock refill_merge_pass*}" != *run_refill_intake_dispatch_phases* ]] \
-  || fail 'refill_tick runs intake before the merge pass'
+# The refill is killed at 300s: dispatch runs first so a stalled merge pass cannot starve it, and the merge pass runs before intake
+# (a pass after intake inherits that deadline in the middle of a merge).
+batch_body="$(sed -n '/^run_refill_intake_dispatch_phases() {/,/^}/p' "$script_dir/scheduler.sh")"
+grep -Fq 'phase refill_merge_pass' <<<"$batch_body" || fail 'the refill batch does not run the merge pass'
+[[ "${batch_body%%phase refill_merge_pass*}" == *'phase dispatch_pending'* ]] || fail 'the refill merge pass runs before dispatch'
+[[ "${batch_body%%phase register_new_issues*}" == *'phase refill_merge_pass'* ]] || fail 'the refill merge pass runs after intake'
 printf 'ok - refill merge pass: gated on a ready unit, rate limited, exclusive with the tick pass\n'

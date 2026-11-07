@@ -28,6 +28,14 @@ def load_units(runtime_dir):
     return list(by_id.values())
 
 
+def live_ledger_readable(runtime_dir):
+    """True when units.json parses with a units list; load_units reads a missing ledger as empty."""
+    try:
+        return isinstance(json.load(open(os.path.join(runtime_dir, LEDGER_FILES[0]), encoding="utf-8")).get("units"), list)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def _read_dict(path):
     try:
         value = json.load(open(path))

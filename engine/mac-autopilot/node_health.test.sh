@@ -321,7 +321,7 @@ gaps += [f"source:{m}" for m in n.CRITERIA if not n.SOURCE.get(m)] + [f"source:{
 gaps += [k for k in list(n.TIME_SINKS) + list(n.CI_STANDARDS) if f"`{k}`" not in doc]
 sys.exit(print("missing:", gaps) or 1 if gaps else 0)
 CHECK
-# 裁决副本对账：引擎实际读取的 state/rulings.json 与 pack 的那份，只有一边有的行数计入 rulings.copies_differ
+# 裁决副本对账：pack 有而引擎实际读取的 state/rulings.json 没有的行数计入 rulings.copies_differ
 # （健康 0，异常 ≥1）；按 (date, scope) 对账因为引擎副本构建时会改 id 和路径；任一文件缺失记 NO-DATA。
 rch="$test_env_root/rulings-copies"; mkdir -p "$rch/config/state" "$rch/pack/scripts/agent/state" "$rch/runtime"
 rcrows() { printf '{"rulings":[%s]}\n' "$1"; }
@@ -339,6 +339,7 @@ rc_b='{"id":"b","date":"2026-11-02","scope":"pipeline"}'
 rc_a2='{"id":"a-renamed","date":"2026-11-01","scope":"ops"}'
 [[ "$(rcval "$rc_a,$rc_b" "$rc_a2,$rc_b")" == "0 OK" ]] || fail "copies with renamed ids must match: $(rcval "$rc_a,$rc_b" "$rc_a2,$rc_b")"
 [[ "$(rcval "$rc_a" "$rc_a2,$rc_b")" == "1 UNHEALTHY" ]] || fail "a ruling only in the pack must be one difference: $(rcval "$rc_a" "$rc_a2,$rc_b")"
+[[ "$(rcval "$rc_a,$rc_b" "$rc_a2")" == "0 OK" ]] || fail "a ruling only in the engine copy is live and must not count: $(rcval "$rc_a,$rc_b" "$rc_a2")"
 [[ "$(rcval "$rc_a" -)" == "null NO-DATA" ]] || fail "a missing pack copy must be NO-DATA, not 0: $(rcval "$rc_a" -)"
 # 工作单标准：在途单超过 bug 线计入 workorders.over_standard；已合并的不算；--json 给看板
 # 29 M 有缓存拆分（无缓存读）的 review 轮：未缓存 token 计入工单；只有页脚的轮不计 token
@@ -485,56 +486,31 @@ jq -e '.metrics[] | select(.id == "delivery.oldest_merged_not_live_hours") | .va
 grep -Fq 'NODE-UNHEALTHY metric=delivery.merged_not_live node=delivery value=NO-DATA' "$a/alerts/node-health.md" || fail 'missing live SHA did not write an unhealthy alert'
 echo 'node_health.test.sh: PASS'
 
-# A prevented wait is not a collision. Count actual overlapping writers, even
-# when triage missed the shared file, independently of the scorecard window.
+# Overlapping writers are expected now (footprint only orders): the scorecard has no collision row, only the repair cost.
 python3 - "$script_dir" <<'CHECK'
 import sys
 sys.path.insert(0, sys.argv[1])
 import node_health as n
-now = n.ts("2026-10-24T12:00:00Z")
-import json
-def unit(uid, start, end, predicted, actual):
-    return {"id": uid, "history": [
-        {"stage": "write-start", "at": start, "result": json.dumps(predicted)},
-        {"stage": "write-end", "at": end, "result": json.dumps(actual)}]}
-a = unit("a", "2026-10-24T10:00:00Z", "2026-10-24T11:00:00Z", ["a.py"], ["shared.py"])
-b = unit("b", "2026-10-24T10:30:00Z", "2026-10-24T11:30:00Z", ["b.py"], ["shared.py"])
-c = unit("c", "2026-10-24T11:30:00Z", "2026-10-24T11:40:00Z", ["shared.py"], ["shared.py"])
-assert n.dispatch_collisions([a, b, c], now) == 1
-# A write-start with no write-end only means "still writing" on a unit that can still be writing.
-def open_unit(uid, stage):
-    return {"id": uid, "stage": stage, "history": [
-        {"stage": "write-start", "at": "2026-10-24T10:00:00Z", "result": json.dumps(["shared.py"])}]}
-assert n.dispatch_collisions([open_unit("x", "merged"), open_unit("y", "implement")], now) == 0
-assert n.dispatch_collisions([open_unit("x", "ready-to-merge"), open_unit("y", "repair")], now) == 0
-assert n.dispatch_collisions([open_unit("x", "implement"), open_unit("y", "repair")], now) == 1
-assert n.dispatch_collisions([a, c], now) == 0
-# A directory-vs-file overlap is no collision: footprint_owner_conflict skips it by default.
-p = unit("p", "2026-10-24T10:00:00Z", "2026-10-24T11:00:00Z", ["engine/x"], ["engine/x"])
-q = unit("q", "2026-10-24T10:30:00Z", "2026-10-24T11:30:00Z", ["engine/x/y.py"], ["engine/x/y.py"])
-assert n.dispatch_collisions([p, q], now) == 0
-assert n.dispatch_collisions([], now) is None
-assert n.dispatch_collisions([a, b], now + n.timedelta(days=2)) == 0
-assert n.CRITERIA["dispatch.collisions_per_day"][2:4] == (0, 1)
-print("node_health collision intervals: PASS")
+assert not hasattr(n, "dispatch_collisions")
+assert "dispatch.collisions_per_day" not in n.CRITERIA and "dispatch.conflict_repairs_per_day" not in n.CRITERIA
+assert n.CRITERIA["merge.conflict_repairs_per_day"] == ("ci+merge", "merge conflicts that a repair run followed, in 24 h", 20, 27, False)
+print("node_health conflict repair standard: PASS")
 CHECK
-# The scorecard reads units.json AND units-archive.json and the runtime config's
-# footprint_mutex.shared_append: a pair overlapping only on a listed file is no collision,
-# an archived unit's real overlap still is (the live 21 vs 5 came from reading units.json alone).
-coll="$test_env_root/collisions"; mkdir -p "$coll"
-w() { printf '{"id":"%s","stage":"merged","history":[{"stage":"write-start","at":"2026-10-24T10:%s:00Z","result":"[]"},{"stage":"write-end","at":"2026-10-24T11:%s:00Z","result":"%s"}]}' "$1" "$2" "$2" "$3"; }
-echo "{\"units\":[$(w a 00 '[\"reg.ts\",\"a.ts\"]'),$(w b 10 '[\"reg.ts\"]')]}" > "$coll/units.json"
-echo "{\"units\":[$(w c 20 '[\"a.ts\"]')]}" > "$coll/units-archive.json"
-echo '{"footprint_mutex":{"shared_append":["reg.ts"]}}' > "$coll/config.json"
-python3 "$script_dir/node_health.py" --runtime "$coll" --audit "$audit" --now 2026-10-24T12:00:00Z --json "$coll/result.json" >/dev/null
-jq -e '[.metrics[] | select(.id == "dispatch.collisions_per_day")][0].value == 1' "$coll/result.json" >/dev/null \
-  || fail "collisions must count the archived overlap once and skip the shared-append pair: $(jq -c '[.metrics[] | select(.id == "dispatch.collisions_per_day")]' "$coll/result.json")"
 # A merge conflict counts only when a repair run followed it in the same unit, within 24 h.
 rep="$test_env_root/repairs"; mkdir -p "$rep"
 echo '{"units":[{"id":"r1","stage":"merged","history":[{"stage":"merge-conflict","at":"2026-10-24T10:00:00Z"},{"stage":"write-start","at":"2026-10-24T10:05:00Z"}]},{"id":"r2","stage":"merged","history":[{"stage":"merge-conflict","at":"2026-10-24T10:00:00Z"}]},{"id":"r3","stage":"merged","history":[{"stage":"merge-conflict","at":"2026-10-22T10:00:00Z"},{"stage":"write-start","at":"2026-10-22T10:05:00Z"}]}]}' > "$rep/units.json"
 python3 "$script_dir/node_health.py" --runtime "$rep" --audit "$audit" --now 2026-10-24T12:00:00Z --json "$rep/result.json" >/dev/null
-jq -e '[.metrics[] | select(.id == "dispatch.conflict_repairs_per_day")][0].value == 1' "$rep/result.json" >/dev/null \
-  || fail "conflict repairs must count only the repaired conflict in the window: $(jq -c '[.metrics[] | select(.id == "dispatch.conflict_repairs_per_day")]' "$rep/result.json")"
+jq -e '[.metrics[] | select(.id == "merge.conflict_repairs_per_day")][0].value == 1' "$rep/result.json" >/dev/null \
+  || fail "conflict repairs must count only the repaired conflict in the window: $(jq -c '[.metrics[] | select(.id == "merge.conflict_repairs_per_day")]' "$rep/result.json")"
+# Standard 20 / 27: twenty repaired conflicts in the day are OK, twenty-seven are UNHEALTHY, in between WARN.
+rep_status() { # n -> status of merge.conflict_repairs_per_day with n repaired conflicts in the window
+  local n="$1" d="$test_env_root/repairs-$1"; mkdir -p "$d"
+  jq -n --argjson n "$n" '{units:[range(0;$n) | {id:("r"+tostring),stage:"merged",history:[{stage:"merge-conflict",at:"2026-10-24T10:00:00Z"},{stage:"write-start",at:"2026-10-24T10:05:00Z"}]}]}' > "$d/units.json"
+  python3 "$script_dir/node_health.py" --runtime "$d" --audit "$audit" --now 2026-10-24T12:00:00Z --json "$d/result.json" >/dev/null
+  jq -r '[.metrics[] | select(.id == "merge.conflict_repairs_per_day")][0].status' "$d/result.json"
+}
+[[ "$(rep_status 20)" == OK && "$(rep_status 23)" == WARN && "$(rep_status 27)" == UNHEALTHY ]] \
+  || fail "conflict repair bounds are not 20/27: $(rep_status 20) $(rep_status 23) $(rep_status 27)"
 # The merge rate is a 24 h window: one merge 10 h ago reads 1/24 h, not a starved 5 h queue.
 mr="$test_env_root/mergerate"; mkdir -p "$mr"
 echo '{"units":[{"id":"m1","stage":"merged","history":[{"stage":"implement","at":"2026-10-23T20:00:00Z"},{"stage":"merged","at":"2026-10-24T02:00:00Z"}]}]}' > "$mr/units.json"
@@ -700,11 +676,11 @@ print("node_health green-to-merge wait splits lanes and counts missing check dat
 def node(number):
     return {"number": number, "mergedAt": "2026-11-07T11:00:00Z", "labels": {"nodes": []}, "head": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {
         "totalCount": 3, "nodes": [{"name": name, "completedAt": "2026-11-07T10:50:00Z"} for name in req]}}}}]}}
-def gh_pages(more, fail_at=None):
+def gh_pages(more, fail_at=()):
     seen = []
     def gh(args, timeout):
         seen.append(args)
-        if fail_at == len(seen):
+        if len(seen) in fail_at:
             return None
         return {"data": {"search": {"nodes": [node(len(seen))], "pageInfo": {"hasNextPage": more, "endCursor": f"c{len(seen)}"}}}}
     return gh, seen
@@ -712,13 +688,43 @@ gh, seen = gh_pages(False)
 assert [r["number"] for r in m.fetch("o/r", "2026-11-06", gh)] == [1] and len(seen) == 1
 gh, seen = gh_pages(True)
 assert m.fetch("o/r", "2026-11-06", gh) is None and len(seen) == m.PAGES  # truncated
-gh, seen = gh_pages(True, fail_at=2)
-assert m.fetch("o/r", "2026-11-06", gh) is None  # second page failed
-assert "reviews" not in m.QUERY and "first:100" in m.QUERY
+gh, seen = gh_pages(True, fail_at=(2, 3))
+assert m.fetch("o/r", "2026-11-06", gh) is None and len(seen) == 3  # second page failed twice: NO-DATA
+gh, seen = gh_pages(False, fail_at=(1,))
+value = m.green_to_merge(m.fetch("o/r", "2026-11-06", gh), req, now)[0]
+assert value == 10 and len(seen) == 2, (value, seen)  # first page failed once: one retry keeps the row a number
+spent = []
+def gh_timeout(args, timeout):
+    spent.append(timeout)
+    return None
+assert m.fetch("o/r", "2026-11-06", gh_timeout, timeout=5) is None and len(spent) == 2 and max(spent) <= 5  # retries share the caller's budget
+assert "reviews" not in m.QUERY and "first:50" in m.QUERY and "contexts(first:100)" in m.QUERY
 gh, seen = gh_pages(True)
 assert m.collect("o/r", now, sys.argv[1], gh)[0] == {"merge.green_to_merge_max_min": None}  # row value None -> NO-DATA, not 0
 assert n.status_of(None, healthy, unhealthy, False) == "NO-DATA"
 print("node_health green-to-merge truncated read is NO-DATA: PASS")
+CHECK
+
+# ci.held_ready_pct: no ready units reads 0 when units.json was read, NO-DATA when it was missing or unreadable.
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'held ready percent wrong'
+import json, os, sys
+sys.path.insert(0, sys.argv[1]); import node_health as n, ledger_history as lh
+root = os.path.join(sys.argv[2], "held-ready")
+def ledger(name, body):
+    d = os.path.join(root, name); os.makedirs(d, exist_ok=True)
+    if body is not None:
+        open(os.path.join(d, "units.json"), "w").write(body)
+    return d
+empty = ledger("empty", json.dumps({"units": []}))
+missing = ledger("missing", None)
+corrupt = ledger("corrupt", "{")
+ready = [{"id": "a", "stage": "ready-to-merge", "ci_held_sha": "x"}, {"id": "b", "stage": "ready-to-merge"}]
+assert n.held_ready_pct([], lh.live_ledger_readable(empty)) == 0
+assert n.status_of(n.held_ready_pct([], lh.live_ledger_readable(empty)), 20, 50, False) == "OK"
+assert n.held_ready_pct(ready, lh.live_ledger_readable(empty)) == 50
+for d in (missing, corrupt):
+    assert n.held_ready_pct(lh.load_units(d), lh.live_ledger_readable(d)) is None, d
+print("node_health held-ready percent: empty ready list is 0, unreadable ledger is NO-DATA: PASS")
 CHECK
 
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.

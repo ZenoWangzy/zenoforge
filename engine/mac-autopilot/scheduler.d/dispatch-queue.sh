@@ -1,7 +1,7 @@
 
 dispatch_pending() {
   TICK_DISPATCH_SKIPS=()
-  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep u id stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
+  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started
   # A full tick's first pass: past the walk deadline room_for refuses every start, so the tail still gets its parks and holds.
   local TICK_DISPATCH_PAST_DEADLINE=false
@@ -29,6 +29,10 @@ dispatch_pending() {
   fi
   ordered="$(dispatch_order)" || true
   loop_started=$SECONDS
+  # Footprint only orders: pass 1 starts what no live owner overlaps and defers the rest; pass 2 starts the deferred while a slot is free.
+  local dispatch_pass TICK_FOOTPRINT_DEFER=true defer_ids
+  TICK_FOOTPRINT_DEFERRED=(); TICK_FOOTPRINT_DEFER_DETAIL=()
+  for dispatch_pass in 1 2; do
   while read -r u; do
     [[ -n "$u" ]] || continue
     paused_midrun dispatch && break
@@ -66,6 +70,17 @@ dispatch_pending() {
       set_unit "$id" 'del(.dep_wait_delivery, .unpark_condition)' # satisfied: a later cache read must not park on it again
     fi
     [[ "$(jqf -r '.hold_handoff_waiting // false' <<<"$u")" != false ]] && ! handoff_wait_stale "$id" && continue
+    # A run that ended blocked-on with no commit starts again only once its blocker clears: a hold handoff or requeue that frees it earlier
+    # sends it back to blocked-external, where release_dependency_blocks frees it on delivery or routes a dead blocker (dead_blocker_resolve, dep_dead_sweep).
+    if [[ "$stage" == implement-pending || "$stage" == repair-pending ]] && blocked_dep="$(unit_blocked_run_dep "$u")" \
+      && [[ "$blocked_dep" =~ ^[0-9]+$ ]] && ! dep_cleared "$u" "$blocked_dep"; then
+      if [[ "$local_refill" != true ]]; then
+        set_unit "$id" ".blocked_on=$blocked_dep | .note=$(js "waiting for predecessor #$blocked_dep") | .stage=\"blocked-external\""
+        [[ "$stage" != repair-pending ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
+        say "unit $id back to blocked-external: its last run ended blocked on #$blocked_dep and nothing cleared it"
+      fi
+      dispatch_skip blocked-run; continue
+    fi
     # supervisor-owned 热修单元只计数：评审/修复/复审都由热修 supervisor 会话自己派，这里不派任何 worker。
     [[ "$(jqf -r '.supervisor_owned // false' <<<"$u")" != true ]] || { dispatch_skip supervisor-owned; continue; }
     [[ -n "$(jqf -r '.advisor_pid // empty' <<<"$u")" ]] && { dispatch_skip advisor-running; continue; }
@@ -274,13 +289,14 @@ $(decision_scope "$u")"
           fi
           # repair 交付了报告却没推出新 head（多为 GitHub 间歇断连，改动留在 clone/stash）：自动重试 repair 两次再转人工。
           if [[ "$(jqf -r '(.history // [])[-1].stage // ""' <<<"$u")" == repair-delivered ]] \
-            && (( $(jqf -r '[(.history // [])[] | select(.stage=="repair-no-push")] | length' <<<"$u") < 2 )); then
+            && (( $(jqf -r --arg h "head $sha " '[(.history // [])[] | select(.stage=="repair-no-push" and ((.result // "") | startswith($h)))] | length' <<<"$u") < 2 )); then
             set_unit "$id" "$(hist repair-no-push "head $sha unchanged after repair") | .stage=\"repair-pending\""
             say "repair-no-push unit=$id: head $sha unchanged after repair -> retry repair"
             continue
           fi
           # 修复者两次都没推新提交，多半认为评审发现不成立：先做一次仲裁评审，仍不收敛才转人工。
-          if (( $(jqf -r '[(.history // [])[] | select(.stage=="arbiter-review")] | length' <<<"$u") == 0 )); then
+          # One arbiter review per head: an arbiter that judged an earlier head must not make a later no-push repair escalate.
+          if (( $(jqf -r --arg h "head $sha " '[(.history // [])[] | select(.stage=="arbiter-review" and ((.result // "") | startswith($h)))] | length' <<<"$u") == 0 )); then
             decision="$(decision_entry 'Route to one arbiter review' 'repair returned without a new commit' "head $sha unchanged since last review" '["Dispatch another repair without independent review"]' scheduler)"
             set_unit "$id" "$(hist arbiter-review "head $sha unchanged since last review" "$decision") | .arbiter=true | .reviewed_sha=null | .reviewed_pr_head=null"
             say "head unchanged unit=$id -> one arbiter review"
@@ -438,6 +454,11 @@ $deliver"
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "" "$wt" "" "$prompt" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" || true ;;
     esac
   done <<<"$ordered"
+  (( dispatch_pass == 1 && ${#TICK_FOOTPRINT_DEFERRED[@]} > 0 )) || break
+  defer_ids="$(printf '%s\n' "${!TICK_FOOTPRINT_DEFERRED[@]}" | jqf -R . | jqf -sc .)" || break
+  ordered="$(jqf -c --argjson ids "$defer_ids" 'select(.id as $i | $ids | index($i))' <<<"$(dispatch_order)")" || true
+  TICK_FOOTPRINT_DEFER=false; TICK_FOOTPRINT_CAP_HIT=false
+  done
   # Per-unit checks under the 2s detail threshold add up: name the waiters' share of this phase.
   { (( SECONDS - pending_started < 10 )) && [[ -z "$TICK_REVIEW_WAITS" ]]; } || say "dispatch detail pending_summary secs=$((SECONDS - pending_started)) revalidate_secs=$revalidate_secs loop_secs=$((SECONDS - loop_started)) units=$(grep -c . <<<"$ordered") footprint_room_ms=$((TICK_FOOTPRINT_ROOM_USEC / 1000)) footprint_room_calls=$TICK_FOOTPRINT_ROOM_CALLS footprint_waits=$TICK_FOOTPRINT_ROOM_WAITS $(review_wait_summary)"
   footprint_convoy_alert || say 'footprint-convoy alert check failed'

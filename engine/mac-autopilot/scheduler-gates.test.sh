@@ -613,8 +613,10 @@ lane_dispatch_tick "engine/alpha.sh" "docs/agents/beta.md"
 [[ ${#DISPATCHED[@]} == 2 && "$(field issue-91 .stage)" == implement && "$(field issue-92 .stage)" == implement ]] \
   || fail "disjoint pipeline-system scopes were not dispatched together (${DISPATCHED[*]:-none}, 91=$(field issue-91 .stage), 92=$(field issue-92 .stage))"
 lane_dispatch_tick "engine/lib.sh" "engine/lib.sh"
-[[ ${#DISPATCHED[@]} == 1 && "$(field issue-92 .stage)" == implement-pending ]] \
-  || fail "overlapping pipeline-system scope did not wait (dispatched=${DISPATCHED[*]:-none}, 92=$(field issue-92 .stage))"
+# Footprint only orders: the overlapping ticket is deferred behind issue-91 and still starts in the second pass, so no slot idles.
+[[ ${#DISPATCHED[@]} == 2 && "${DISPATCHED[0]}" == implement:issue-91 && "$(field issue-92 .stage)" == implement ]] \
+  || fail "overlapping pipeline-system scope was refused or ran out of order (dispatched=${DISPATCHED[*]:-none}, 92=$(field issue-92 .stage))"
+grep -Fq 'footprint wait unit=issue-92 owner=issue-91' "$LOG" || fail 'the overlap was not logged as a deferral'
 rm -f "$AGENT_HOME/state/91.json" "$AGENT_HOME/state/92.json" "$WORKERS.lane-tmp"
 eval "$lane_dispatch_real"
 DISPATCHED=()
@@ -647,9 +649,17 @@ dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == review:pr-5:* && "$DISPATCH_PROMPT" == *"仲裁评审"* ]] || fail "arbiter review not dispatched as a full review (${DISPATCHED[*]:-none})"
 [[ "$DISPATCH_PROMPT" == *".agents/skills/code-review/SKILL.md"* ]] || fail 'arbiter review prompt does not reference the canonical review contract'
 DISPATCHED=()
-units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\"}]}]}"
+units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\",\"result\":\"head $H1 unchanged since last review\"}]}]}"
 dispatch_pending || :
 [[ "$(field pr-5 .stage)" == supervisor-review && ${#DISPATCHED[@]} == 0 ]] || fail 'unchanged head after an arbiter review was redispatched'
+# A supervisor requeue on the same head does not give it a fresh arbiter review: only a moved head does.
+units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\",\"result\":\"head $H1 unchanged since last review\"},{\"stage\":\"supervisor-requeue\",\"decision\":{\"owner\":\"supervisor\"}}]}]}"
+dispatch_pending || :
+[[ "$(field pr-5 .stage)" == supervisor-review && ${#DISPATCHED[@]} == 0 ]] || fail 'a supervisor requeue on the same head reset its arbiter budget'
+# An arbiter review of an earlier head does not count against the current head.
+units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[{\"stage\":\"arbiter-review\",\"result\":\"head $H2 unchanged since last review\"}]}]}"
+dispatch_pending || :
+[[ "$(field pr-5 .stage)" == rereview-pending && "$(field pr-5 .arbiter)" == true && ${#DISPATCHED[@]} == 0 ]] || fail 'an arbiter review of an earlier head escalated a later no-push repair'
 # 合并后被 revert 的单元：原 PR 已 MERGED，repair 推的提交挂不上去；repair 交付后用同一分支开新 PR（#4009 空转 4 小时）
 DISPATCHED=(); gh_reopen_saved="$(declare -f gh)"
 gh() { case "$1 $2" in "pr list") echo "" ;; "pr create") printf '%s' "$*" > "$fixture/reopen.args"; echo "https://github.com/example-maintainer/example-repo/pull/4100" ;; *) eval "${gh_reopen_saved/gh ()/gh_r ()}"; gh_r "$@" ;; esac; }
@@ -1103,7 +1113,7 @@ grep -q 'in phase run_merge_lane after done: harvest_workers:3s/0gh,dispatch_pen
 
 # repair 没推出新 head：自动重试两次，第三次转人工
 for round in 1 2 3; do
-  hist_json="$(jq -cn --argjson n "$((round-1))" '[{stage:"review-request-changes"}] + [range($n) | {stage:"repair-no-push"}, {stage:"repair-delivered"}] + [{stage:"repair-delivered"}]')"
+  hist_json="$(jq -cn --arg h "$H1" --argjson n "$((round-1))" '[{stage:"review-request-changes"}] + [range($n) | {stage:"repair-no-push",result:("head "+$h+" unchanged after repair")}, {stage:"repair-delivered"}] + [{stage:"repair-delivered"}]')"
   units "{\"units\":[{\"id\":\"pr-5b\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"r.md\",\"history\":$hist_json}]}"
   dispatch_pending || :
   if (( round < 3 )); then
@@ -1112,6 +1122,11 @@ for round in 1 2 3; do
     [[ "$(field pr-5b .stage)" == rereview-pending && "$(field pr-5b .arbiter)" == true ]] || fail 'repair-no-push retried more than twice (expected one arbiter review)'
   fi
 done
+# No-push repairs on an earlier head do not use up the retries of the current head.
+hist_json="$(jq -cn --arg h "$H2" '[{stage:"review-request-changes"},{stage:"repair-no-push",result:("head "+$h+" unchanged after repair")},{stage:"repair-no-push",result:("head "+$h+" unchanged after repair")},{stage:"repair-delivered"}]')"
+units "{\"units\":[{\"id\":\"pr-5b\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"r.md\",\"history\":$hist_json}]}"
+dispatch_pending || :
+[[ "$(field pr-5b .stage)" == repair-pending ]] || fail "no-push repairs on another head spent this head's retries ($(field pr-5b .stage))"
 # A CI failure after approval followed by an unchanged repair returns to native CI within the existing unit-row bound.
 gh_head_saved="$GH_HEAD"; gh_runs_saved="$GH_RUNS"; cancel_unit_runs_saved="$(declare -f cancel_unit_runs)"
 GH_HEAD="$H1"; GH_RUNS=777; GH_RERUNS=(); DISPATCHED=(); cancel_unit_runs() { :; }
@@ -1843,6 +1858,34 @@ dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == implement:issue-23:* ]] || fail "PR-lane implement unit was not dispatched (${DISPATCHED[*]:-none})"
 impl_headings "$DISPATCH_PROMPT" || fail 'PR-lane implement brief lost the six orchestration headings'
 [[ "$DISPATCH_PROMPT" == *"不 push main"* && "$DISPATCH_PROMPT" == *"流水线会开 PR 并派评审"* ]] || fail 'PR-lane implement brief lost its push boundary'
+# A run that ended blocked-on with no commit starts again only once its blocker clears, whatever freed the unit.
+blocked_run='{"stage":"write-start","result":"[]"},{"stage":"write-end","result":"[]"},{"stage":"blocked-on","result":"#150"}'
+printf '{"states":{"150":{"state":"OPEN","labels":""}}}\n' > "$A/dep-check.cache.json"; printf '%s\n' "$(date +%s)" > "$A/dep-check.epoch"
+units "{\"units\":[{\"id\":\"issue-80\",\"issue\":80,\"lane\":\"pr\",\"branch\":\"agent/issue-80\",\"stage\":\"implement-pending\",\"task\":\"fix it\",\"history\":[$blocked_run,{\"stage\":\"hold-handoff\"}]},{\"id\":\"issue-150\",\"issue\":150,\"stage\":\"implement\",\"history\":[]}]}"
+DEP_DELIVERED_CACHE=(); DISPATCHED=(); dispatch_pending || :
+[[ "$(field issue-80 .stage):$(field issue-80 .blocked_on)" == blocked-external:150 && -z "${DISPATCHED[*]:-}" ]] \
+  || fail "a blocked run was started again before its blocker cleared ($(field issue-80 .stage) ${DISPATCHED[*]:-})"
+# Delivery frees it on the next pass with no human step.
+set_unit issue-150 '.stage="merged"'
+release_dependency_blocks
+[[ "$(field issue-80 .stage)" == implement-pending ]] || fail "a delivered blocker did not free the unit ($(field issue-80 .stage))"
+DISPATCHED=(); DISPATCH_PROMPT=""; dispatch_pending || :
+[[ "${DISPATCHED[0]:-}" == implement:issue-80:* ]] || fail "a cleared blocker did not dispatch the unit (${DISPATCHED[*]:-none})"
+# The released worker is told the blocker is delivered, or it blocks on the still-open issue again (issue-3686 and #3683).
+[[ "$DISPATCH_PROMPT" == *"predecessor #150 is delivered"*"Do not report BLOCKED-ON #150"* ]] || fail 'the brief of a unit released on a delivered blocker lacks the delivered note'
+[[ "$(field issue-80 .task | grep -c 'predecessor #150 is delivered')" == 1 ]] || fail 'the delivered note was added twice'
+# A supervisor ruling is the way out of a dead blocker: it frees the unit even though the blocker never delivered.
+units "{\"units\":[{\"id\":\"issue-80\",\"issue\":80,\"lane\":\"pr\",\"branch\":\"agent/issue-80\",\"stage\":\"implement-pending\",\"task\":\"fix it\",\"history\":[$blocked_run,{\"stage\":\"supervisor-requeue\",\"decision\":{\"owner\":\"supervisor\"}}]},{\"id\":\"issue-150\",\"issue\":150,\"stage\":\"implement\",\"history\":[]}]}"
+DEP_DELIVERED_CACHE=(); DISPATCHED=(); dispatch_pending || :
+[[ "${DISPATCHED[0]:-}" == implement:issue-80:* ]] || fail "a ruled unit was held on its blocker (${DISPATCHED[*]:-none})"
+# A dead blocker (every ledger row closed, issue open, no recut child) does not hold the unit forever: it reaches the supervisor.
+scheduler_issue_state_saved="$(declare -f scheduler_issue_state)"
+scheduler_issue_state() { printf '{"state":"ready-for-agent"}'; }
+units "{\"units\":[{\"id\":\"issue-80\",\"issue\":80,\"lane\":\"pr\",\"branch\":\"agent/issue-80\",\"stage\":\"implement-pending\",\"task\":\"fix it\",\"history\":[$blocked_run,{\"stage\":\"hold-handoff\"}]},{\"id\":\"issue-150\",\"issue\":150,\"stage\":\"closed\",\"history\":[]}]}"
+DEP_DELIVERED_CACHE=(); DISPATCHED=(); dispatch_pending || :
+release_dependency_blocks
+[[ "$(field issue-80 .stage)" == supervisor-review && -z "${DISPATCHED[*]:-}" ]] || fail "a dead blocker held the unit instead of reaching the supervisor ($(field issue-80 .stage))"
+eval "$scheduler_issue_state_saved"; DISPATCHED=(); DISPATCH_PROMPT=""
 LANDS=(); launch_land() { LANDS+=("$2:$3:$8:$9"); }
 units "{\"units\":[{\"id\":\"issue-7\",\"issue\":7,\"lane\":\"direct-main\",\"branch\":\"agent/auto-issue-7\",\"stage\":\"ready-to-merge\",\"approved_sha\":\"$ih_local\",\"reviewed_pr_head\":\"$ih_base\",\"history\":[]}]}"
 fast_land_lane || :

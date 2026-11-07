@@ -50,8 +50,7 @@ def health_doc_reference():
 CRITERIA = {**arbiter_health.CRITERIA, **merge_wait.CRITERIA, **live_delivery.CRITERIA, **ledger_history.CRITERIA,
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
     "implement.no_output_pct": ("implement", "implement runs with no report %", 5, 15, False),
-    "dispatch.collisions_per_day": ("implement", "implement/repair unit pairs writing the same path in the last 24h", 0, 1, False),
-    "dispatch.conflict_repairs_per_day": ("implement", "merge conflicts that a repair run followed, in 24 h (measured, no bound yet)", 0, -1, True),
+    "merge.conflict_repairs_per_day": ("ci+merge", "merge conflicts that a repair run followed, in 24 h", 20, 27, False),
     "review.wall_p50":         ("review", "first review minutes p50", 10, 20, False),
     "review.first_pass_pct":   ("review", "units approved on their first review %", 50, 30, True),
     "repair.wall_p50":         ("repair", "repair run minutes p50", 15, 30, False),
@@ -130,8 +129,7 @@ GH_DELIVERY_BATCH_TIMEOUT = 60
 MEANING = {**arbiter_health.MEANING, **merge_wait.MEANING, **live_delivery.MEANING, **ledger_history.MEANING,
     "implement.wall_p50": "一次开发从派出到交付的中位时长。偏长多半是任务太大，或卡在环境上。",
     "implement.no_output_pct": "开发员跑完却没交报告的比例：这些 token 全白花，多是进程被杀或崩溃。",
-    "dispatch.collisions_per_day": "过去 24 小时不同开发单元同时写入同一文件的次数；正常等待不算碰撞，任何一次都是故障。",
-    "dispatch.conflict_repairs_per_day": "过去 24 小时内发生了合并冲突（merge-conflict）、随后由修复运行接手的单元数；只测量不设界，提议的界见 NODE-HEALTH.md。",
+    "merge.conflict_repairs_per_day": "过去 24 小时内发生了合并冲突（merge-conflict）、随后由修复运行接手的次数。多个任务可以同时改同一个文件，撞上了由原任务自己修；这个数偏高说明撞得太多，修复拖慢交付。24 小时值 20 以内健康，27 以上不健康；这两个界来自 9 个有效日的账本均值 15.6、标准差 5.5。",
     "review.wall_p50": "首次质检的中位时长。",
     "review.first_pass_pct": "第一次质检就通过的工作单比例：越高说明开发一次做对，返工越少。",
     "repair.wall_p50": "一次返工修改的中位时长。",
@@ -197,8 +195,7 @@ MEANING = {**arbiter_health.MEANING, **merge_wait.MEANING, **live_delivery.MEANI
 SOURCE = {**arbiter_health.SOURCE, **merge_wait.SOURCE, **live_delivery.SOURCE, **ledger_history.SOURCE,
     "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮；24 h 窗口",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
-    "dispatch.collisions_per_day": "units.json write-start/write-end 的区间与文件范围（预测 + 实际 diff），按单元对去重；固定滚动 24h。",
-    "dispatch.conflict_repairs_per_day": "units.json（含 units-archive.json）单元历史：merge-conflict 事件之后出现 write-start（修复运行）的次数，固定滚动 24h。",
+    "merge.conflict_repairs_per_day": "units.json（含 units-archive.json）单元历史：merge-conflict 事件之后出现 write-start（修复运行）的次数，固定滚动 24h。",
     "review.wall_p50": "review-*.worker.log 的开始 → 最后写入",
     "review.first_pass_pct": "units.json 每单第一次评审结论（review-approve / review-request-changes / review-block）",
     "repair.wall_p50": "impl-*-fix-*.worker.log 的开始 → 最后写入；24 h 窗口",
@@ -292,6 +289,14 @@ CI_STANDARDS = {
 SIZE_BANDS = [(0, 300), (300, 800), (800, 2000), (2000, None)]
 LARGE_PR_LINES = 800
 LARGE_PR_WINDOW_DAYS = 30
+
+
+def held_ready_pct(units, ledger_ok):
+    """Share of ready-to-merge units whose CI is held for a hot patch; no ready units is 0 when units.json was read, NO-DATA when not."""
+    ready = [u for u in units if u.get("stage") == "ready-to-merge"]
+    if not ready:
+        return 0 if ledger_ok else None
+    return 100 * sum(1 for u in ready if u.get("ci_held_sha")) / len(ready)
 
 
 def status_of(v, healthy, unhealthy, higher):
@@ -707,50 +712,6 @@ def host_prereqs_missing(path=None):
         except (OSError, ValueError):
             missing.append(p["name"])
     return missing
-
-
-def dispatch_collisions(units, now, shared=frozenset()):
-    """Count unit pairs with overlapping writing intervals and the same file path.
-
-    End records include the actual diff, so an underpredicted footprint remains
-    measurable. Old ledgers without dispatch intervals have no observation.
-    A directory-vs-file overlap is not a collision (footprint_owner_conflict skips it by default).
-    A pair whose ONLY overlapping paths are shared-append registry files is the
-    parallelism the 2026-10-29 zf-ab ruling legalized, not a collision; those
-    conflicts are observed at landing rebase time instead.
-    """
-    intervals = []
-    observed = False
-    for unit in units:
-        start, paths = None, []
-        for event in unit.get("history") or []:
-            kind, at = event.get("stage"), ts(event.get("at"))
-            if not at or kind not in ("write-start", "write-end"):
-                continue
-            try:
-                scope = json.loads(event.get("result") or "[]")
-            except (ValueError, TypeError):
-                scope = []
-            if kind == "write-start":
-                observed = True
-                start, paths = at, scope
-            elif start:
-                intervals.append((unit["id"], start, at, set(paths + scope)))
-                start = None
-        if start and unit.get("stage") in ("implement", "repair"):  # no write-end on a finished unit is a lost record, not a write
-            intervals.append((unit["id"], start, now, set(paths)))
-    pairs = set()
-    for i, (uid, start, end, paths) in enumerate(intervals):
-        for vid, vstart, vend, vpaths in intervals[i + 1:]:
-            if uid == vid or max(start, vstart, now - timedelta(hours=24)) >= min(end, vend):
-                continue
-            overlap = set(paths) & set(vpaths)
-            if not overlap:
-                continue
-            if shared and overlap <= shared:
-                continue
-            pairs.add(tuple(sorted((uid, vid))))
-    return len(pairs) if observed else None
 
 
 def shared_append_rebase_metrics(path, repo, since, now):
@@ -1458,13 +1419,7 @@ def main():
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)
     metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); merge_metrics, merge_details = merge_wait.collect(repo, now, here, _gh_json); metrics.update(merge_metrics)
-    try:
-        shared_append = frozenset((json.load(open(os.path.join(a, "config.json")))
-                                   .get("footprint_mutex") or {}).get("shared_append") or [])
-    except (OSError, ValueError):
-        shared_append = frozenset()
-    metrics["dispatch.collisions_per_day"] = dispatch_collisions(units, now, shared_append)
-    metrics["dispatch.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
+    metrics["merge.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
     sa_attempts, sa_conflict = shared_append_rebase_metrics(
         os.path.join(agent_home, "logs", "shared-append-rebases.jsonl"), repo,
         now - timedelta(hours=24), now)
@@ -1523,8 +1478,7 @@ def main():
     metrics["flow.slot_idle_hours"] = slot_idle_hours(queue_waits, cost_rows, since)
     metrics["flow.main_red_hours"] = main_red_hours(args.main_red_dir, since, now)
     flow_details = {"entered": entered, "merged": merged, "wip_age": wip_rows}
-    ready = [u for u in units if u.get("stage") == "ready-to-merge"]
-    metrics["ci.held_ready_pct"] = 100 * sum(1 for u in ready if u.get("ci_held_sha")) / len(ready) if ready else None
+    metrics["ci.held_ready_pct"] = held_ready_pct(units, ledger_history.live_ledger_readable(a))
     spend = read_json(os.path.join(a, "ci-spend.json"))
     fresh = ts(spend.get("sampled_at"))
     metrics["ci.waste_runner_pct"] = spend.get("waste_pct") if fresh and (now - fresh).total_seconds() < 7200 else None
