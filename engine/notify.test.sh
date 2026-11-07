@@ -1502,8 +1502,8 @@ PATH="$HEALTH_MAIL_BIN:$PATH"
 HEALTH_MAIL_FACTS='{"report_day":"11-07","conclusion":{"level":"正常","reason":"过去一天上线 1 个需求，没有线上事故"},"window":{"start":1793596800,"end":1793683200},"releases":{"period_count":1,"total_ever":12,"last_at":1793680000,"complete":true,"items":[{"text":"「订单清单下载」：员工可批量下载订单清单。"}],"zero_reason":""},"progress":{"created_period":2,"created_total":18,"open_total":5,"awaiting_period":1,"awaiting_total":1,"released_period":1,"released_total":12},"efficiency":{"per_day_week":1.4,"per_day_prev":1.1,"lead_days_week":3.2,"lead_days_prev":3.9,"split":{"requirement_pct":75,"self_pct":25,"unclassified_seconds":0,"partial":false}},"spend":{"tokens":3000,"tokens_complete":true,"per_requirement":3000,"money_usd":null,"money_complete":false},"quality":{"incidents_period":0,"incidents_open":0,"open_subjects":[],"rollbacks":0,"post_land_fixes":0},"decisions":{"items":[{"question":"是否保留次日送达？","recommendation":"建议：选择第一项，改为普通配送。"}],"total":1,"incomplete":0},"attention":0}'
 HEALTH_MAIL_BUILT="$(maintainer_health_mail_build_body "$HEALTH_MAIL_FACTS")"
 assert_contains 'owner report lists the user-visible release outcome' "$HEALTH_MAIL_BUILT" '员工可批量下载订单清单'
-assert_contains 'owner report counts delivered requirements' "$HEALTH_MAIL_BUILT" '已上线：过去一天 1 个；有记录以来共 12 个'
-assert_contains 'owner report compares delivery pace with last week' "$HEALTH_MAIL_BUILT" '上一个 7 天 1.1 个'
+assert_contains 'owner report counts formal releases and discloses hot patches' "$HEALTH_MAIL_BUILT" '已上线：过去一天正式发版 1 次（热修未计入）；有记录以来正式发版 12 次'
+assert_contains 'owner report compares release pace with last week' "$HEALTH_MAIL_BUILT" '上一个 7 天 1.1 次'
 assert_contains 'owner report includes a recommended decision' "$HEALTH_MAIL_BUILT" '建议：选择第一项，改为普通配送'
 assert_eq 'complete owner report passes maintainer mail contract' '' \
   "$(_pre_send_mail_rejection_for_recipients health "$HEALTH_SUBJECT" "$HEALTH_MAIL_BUILT" "$HEALTH_MAINTAINER_ADDRESS")"

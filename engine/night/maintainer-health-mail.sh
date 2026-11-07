@@ -931,9 +931,11 @@ maintainer_health_mail_release_facts() {
   items='[]'
   if [ "$complete" = true ]; then
     count="$(jq -r '.items | length' <<< "$history")"
+    local -a texts=()
     while IFS= read -r at; do
-      items="$(jq -c --arg text "正式发版一次（$(maintainer_health_mail_date_time "$at")上线），需求明细未能核对；热修未计入。" '. + [{text:$text}]' <<< "$items")"
+      texts+=("正式发版一次（$(maintainer_health_mail_date_time "$at")上线），需求明细未能核对；热修未计入。")
     done < <(jq -r '.items[].at' <<< "$history")
+    items="$(printf '%s\n' ${texts[@]+"${texts[@]}"} | jq -Rsc 'split("\n") | map(select(length > 0) | {text:.})')"
   fi
   zero_reason=''
   if [ "$count" = null ]; then
@@ -980,15 +982,15 @@ maintainer_health_mail_progress_facts() {
   fi
   released_period="$(jq -r '.period_count' <<< "$releases")"
   released_total="$(jq -r '.total_ever' <<< "$releases")"
-  jq -cn --argjson census "$census" --argjson created "$created" --argjson awaiting "$awaiting" \
+  jq -cn --argjson census_counts "$(jq -c '{open, awaiting_release}' <<< "$census")" --argjson created "$created" --argjson awaiting "$awaiting" \
     --argjson created_total "$created_total" --argjson released_period "$released_period" --argjson released_total "$released_total" '
     {created_period:(if $created == null then null else
         ([$created[] | .issue as $issue | select($issue != "") | $issue] | unique | length) end),
      created_total:$created_total,
-     open_total:($census.open // null),
+     open_total:($census_counts.open // null),
      awaiting_period:(if $awaiting == null then null else
        ([$awaiting[] | select(.stage == "awaiting-release")] | unique_by(.issue) | length) end),
-     awaiting_total:($census.awaiting_release // null),
+     awaiting_total:($census_counts.awaiting_release // null),
      released_period:$released_period,
      released_total:$released_total}'
 }
@@ -1210,7 +1212,7 @@ maintainer_health_mail_daily_facts() {
   attention="$(maintainer_health_mail_attention_count "$home" "$now")" || attention=null
   day="$(maintainer_health_mail_report_day "$now")" || return 1
   IFS=$'\t' read -r level reason <<< "$(maintainer_health_mail_conclusion_facts "$releases" "$progress" "$quality" "$decisions" "$attention")"
-  jq -cn --arg day "$day" --arg level "$level" --arg reason "$reason" --argjson start "$start" --argjson now "$now" \
+  jq -cn --arg day "$day" --arg level "$level" --rawfile reason <(printf '%s' "$reason") --argjson start "$start" --argjson now "$now" \
     --argjson releases "$releases" --argjson progress "$progress" --argjson efficiency "$efficiency" \
     --argjson spend "$spend" --argjson quality "$quality" --argjson decisions "$decisions" \
     --argjson attention "$attention" \
