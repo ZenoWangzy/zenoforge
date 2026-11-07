@@ -70,7 +70,13 @@ auto_pin_pass() {
 auto_pin_main() {
   mkdir -p "$logdir" "$ZF_AUTO_PIN_HOME/locks"
   exec 8>"$ZF_AUTO_PIN_HOME/locks/auto-pin"; flock -n 8 || { echo 'zf-auto-pin: already running'; exit 1; }
-  while [[ ! -e $stop ]]; do auto_pin_pass || exit 1; done
+  while [[ ! -e $stop ]]; do
+    auto_pin_pass || exit 1
+    # A running daemon keeps the script it started with: #656 sat unused for 13 hours. On exit systemd reinstalls the copy from the clone.
+    if [[ -f $C/tools/auto-pin.sh ]] && ! cmp -s "$C/tools/auto-pin.sh" "${BASH_SOURCE[0]}"; then
+      echo 'zf-auto-pin: the clone has a newer script, exiting for systemd to reinstall it'; exit 0
+    fi
+  done
   echo 'zf-auto-pin: stopped by stop file'
 }
 [[ ${BASH_SOURCE[0]} != "$0" ]] || auto_pin_main

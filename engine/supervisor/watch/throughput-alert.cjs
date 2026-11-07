@@ -22,8 +22,11 @@ try {
 }
 if (!ledger || !Array.isArray(ledger.units)) process.exit(0);
 
+// Rotation leaves recent lines in .1, and the live file absent for a moment.
 let log = '';
-try { log = fs.readFileSync(logPath, 'utf8'); } catch {}
+for (const path of [`${logPath}.1`, logPath]) {
+  try { log += `${fs.readFileSync(path, 'utf8')}\n`; } catch {}
+}
 const lines = log.split(/\r?\n/);
 const latestSkip = new Map();
 const mergedAt = [];

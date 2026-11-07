@@ -181,6 +181,11 @@ existing_handoff_candidates() {
   local state_dir="${AGENT_HOME:-${HOME:-}/.zenoforge}/state" file read_status
   local files=( "$state_dir"/*.json )
   [[ -e "${files[0]}" || -L "${files[0]}" ]] || return 0
+  # One process per state file cost 20.5 s per tick on 1,034 files (2026-11-07 replay) and only 69 name a handoff.
+  # A valid file without the key cannot select, so grep names the candidates; any file jq cannot parse keeps the per-file path (jqf logs it).
+  if jq empty "${files[@]}" >/dev/null 2>&1; then
+    mapfile -t files < <(grep -l -- '"scheduler_handoff"' "${files[@]}" 2>/dev/null)
+  fi
   for file in "${files[@]}"; do
     if jqf_optional_file "$file" -r '
       select(.state == "ready-for-agent" and (.scheduler_handoff.episode // "") != "")

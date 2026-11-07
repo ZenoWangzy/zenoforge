@@ -213,7 +213,7 @@ dep_task_note() { # unit-id note: append a scheduler note to the worker brief
   set_unit "$1" ".task += $(js $'\n\n'"$2")"
 }
 dep_stop_waiting() { # unit-id blocker why: a dead blocker never holds a waiter; real code dependence fails later in the unit's own review or merge
-  dep_task_note "$1" $'Scheduler note: predecessor #'"$2"$' is parked or can never deliver, so this unit no longer waits for it. Do not report BLOCKED-ON #'"$2"$'. Implement what you can; if the dependency is real in code, say so in the report and let review decide.'
+  dep_task_note "$1" $'Scheduler note: predecessor #'"$2"$' is parked or can never deliver ('"$3"$'), so this unit no longer waits for it. Do not report BLOCKED-ON #'"$2"$'. Implement what you can; if the dependency is real in code, say so in the report and let review decide.'
   unblock_unit "$1" "stopped waiting on #$2: $3"
 }
 dep_release_delivered() { # unit-id blocker: the scheduler counts the blocker delivered; its issue may stay open until release, so tell the worker once
@@ -348,7 +348,7 @@ release_dependency_blocks() {
   for id in $(jqf -r '.units[] | select(.stage=="blocked-external" and .blocked_on == null and .size_recut_pending != true) | .id' "$UNITS"); do
     to_supervisor "$id" "blocked-external without a predecessor: nothing can release it"
   done
-  if (( gh_due )); then reconcile_stacked_units; dep_dead_sweep || :; obsolete_close_retry || :; park_label_sweep || :; fi
+  if (( gh_due )); then reconcile_stacked_units; dep_dead_sweep || :; dep_dead_unpark || :; obsolete_close_retry || :; park_label_sweep || :; fi
 }
 # Fail closed: any fact that cannot be read means not dead. Prints the arbiter's evidence.
 dep_predecessor_dead() { # waiter-unit-json predecessor
@@ -396,6 +396,17 @@ dep_dead_sweep() { # at most one marked unit per sweep reaches the arbiter; no s
     fi
     return 0
   done < <(jqf -c '[.units[] | select(.stage=="blocked-external" and .size_recut_pending != true and .dep_wait_delivery != null and .dep_wait_delivery == .blocked_on)] | sort_by(-.issue) | .[]' "$UNITS")
+}
+dep_dead_unpark() { # a unit parked dep-dead-repeat before the one release existed (#609) is owed it; one that already had it stays parked, or a refusing worker loops
+  local u id dep
+  while IFS= read -r u; do
+    id="$(jqf -r .id <<<"$u")"; dep="$(jqf -r .dep_wait_delivery <<<"$u")"
+    dep_stopped_waiting_on "$id" "$dep" && continue
+    dep_predecessor_dead "$u" "$dep" >/dev/null || continue # fail closed: closed on GitHub is not delivered, and not proven dead stays parked
+    set_unit "$id" 'del(.parked_reason, .unpark_condition)'
+    dep_stop_waiting "$id" "$dep" "it was closed without delivering, its work is not in main"
+    echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=released reason=parked-before-release" >> "$A/alerts/events.md"
+  done < <(jqf -c '.units[] | select(.stage=="parked" and .parked_reason=="dep-dead-repeat" and (.dep_wait_delivery | type)=="number")' "$UNITS")
 }
 dep_blocker_forget() { # dynamic local map: keep mutual-cycle checks current as units leave blocked-external
   local key="$1:$2" count

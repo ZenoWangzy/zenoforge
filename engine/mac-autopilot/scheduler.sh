@@ -545,6 +545,7 @@ main() {
   # No lock yield here: a refill that took the lock in this window held it for its first phases, then queued behind the tick's opening
   # (harvest_workers and the phases after it hold the lock for minutes). 9 of the 37 refills that started within 12s of a tick start were killed.
   phase tick_prs_prime
+  phase_mark opening # steps before the first phase; a name left by the last tick or by lock_wait must not stand for them
   rotate_logs
   if update_budget >/dev/null; then
     budget_alert_if_needed
@@ -555,8 +556,9 @@ main() {
   if git -C "$ROOT" fetch -q origin main 2>/dev/null; then
     MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   fi
-  : > "$A/.tick-phases"; rm -f -- "$A/.tick-phase" # loop.sh reads both when it kills this tick
+  : > "$A/.tick-phases" # loop.sh reads this and .tick-phase when it kills this tick
   phase harvest_workers
+  phase_mark coord_sweeps
   coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
   coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
   coord_reconcile_scheduler_workers

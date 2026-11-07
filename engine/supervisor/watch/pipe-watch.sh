@@ -22,7 +22,7 @@ while true; do
   failed=$(systemctl --user --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | grep -E "$W_units_pattern" | sort | tr '\n' ' ')
   [ -n "$failed" ] && [ "$failed" != "$(cat "$S/failed" 2>/dev/null)" ] && echo "failed units: $failed"
   echo "$failed" > "$S/failed"
-  last_tick=$(stat -c %Y "$A/scheduler.log" 2>/dev/null || echo 0)
+  last_tick=$(stat -c %Y "$A/scheduler.log" "$A/scheduler.log.1" 2>/dev/null | sort -n | tail -n 1); last_tick=${last_tick:-0}
   if [ ! -s "$W_pause" ] && [ $((now - last_tick)) -gt "$W_tick_seconds" ] && [ ! -e "$S/tickgap" ]; then echo "scheduler.log silent for $(( (now - last_tick) / 60 ))m"; touch "$S/tickgap"; fi
   [ $((now - last_tick)) -le "$W_tick_seconds" ] && mv "$S/tickgap" "$S/tickgap.old" 2>/dev/null || :
   if [ -s "$A/node-health.txt" ]; then
