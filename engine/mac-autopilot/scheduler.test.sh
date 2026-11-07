@@ -6465,6 +6465,49 @@ sched_case_stop_loss_resume() {
 }
 sched_run_case stop_loss_resume
 
+sched_case_guarded_recut_roundtrip() {
+  # issue-1171, 2026-11-07: a stop-loss recut closed the unit, recut refused the guarded issue and handed it back, intake resumed the
+  # closed unit with its three rounds still spent, and the same tick recut it again: 8 passes in 4 hours.
+  local units n=1171 at rounds
+  at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  rounds="$(command jq -cn --arg at "$at" '[range(3) | {stage:"write-start",work_type:"implement",at:$at}]')"
+  roundtrip_fixture() { # name unit-extra-json history-json episode → a budget-closed unit whose guarded recut refusal just handed the issue back
+    new_tick_fixture "$1"
+    units="$TF/supervisor/autopi/units.json"
+    mkdir -p "$TF/agent-home/state"
+    command jq '.max_workers=2 | .implement_cap=1 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+    mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+    command jq -n --argjson n "$n" '{number:$n,title:"guarded work",body:"finish the work",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+    command jq -n --argjson n "$n" --argjson extra "$2" --argjson history "$3" '{units:[{id:"issue-1171",issue:$n,title:"guarded work",task:"prior work",lane:"pr",branch:"agent/issue-1171",stage:"closed",
+      note:"stop-loss recut",history:$history} + $extra]}' > "$units"
+    command jq -n --arg episode "$4" --arg at "$at" '{state:"ready-for-agent",hold:null,guarded:true,recut_refused_at:$at,scheduler_handoff:{episode:$episode}}' > "$TF/agent-home/state/$n.json"
+    touch "$TF/allow-dispatch" "$TF/worker-alive"
+  }
+  roundtrip_fixture roundtrip-first '{}' "$(command jq -cn --argjson rounds "$rounds" --arg at "$at" '$rounds + [{stage:"supervisor-budget-recut",result:"ticket stop-loss budget: rounds 3 of 3",at:$at}]')" hold-1
+  tick
+  command jq -e '.units[0] | (.stage != "closed" and .stage != "supervisor-review" and .guarded_recut_roundtrips == 1 and .hold_handoff_episode == "hold-1"
+    and ([.history[] | select(.stage == "supervisor-requeue")] | length) == 1)' "$units" >/dev/null \
+    || { echo 'not ok - the first guarded recut round trip must resume the unit with a refilled budget' >&2; exit 1; }
+  command jq -e '([.workers[] | select(.unit == "issue-1171" and .type == "implement" and .harvested != true)] | length) == 1' "$TF/supervisor/autopi/workers.json" >/dev/null \
+    || { echo 'not ok - the resumed unit did not start: the stop-loss check ran on the old rounds' >&2; exit 1; }
+  grep -Fq 'guarded-recut-roundtrip unit=issue-1171 issue=#1171 count=1 max=1' "$TF/supervisor/autopi/scheduler.log" || { echo 'not ok - the round trip was not logged' >&2; exit 1; }
+  # Second pass: three more rounds, closed again by the stop-loss recut, recut refused again with a new episode. The bound ends it.
+  roundtrip_fixture roundtrip-bound '{"guarded_recut_roundtrips":1}' \
+    "$(command jq -cn --argjson rounds "$rounds" --arg at "$at" '$rounds + [{stage:"supervisor-requeue",at:$at}] + $rounds + [{stage:"supervisor-budget-recut",result:"ticket stop-loss budget: rounds 3 of 3",at:$at}]')" hold-2
+  tick
+  command jq -e '.units[0] | (.stage == "supervisor-review" and .guarded_recut_roundtrips == 2 and .hold_handoff_episode == "hold-2"
+    and ([.history[] | select(.stage == "supervisor-requeue")] | length) == 1 and ([.history[] | select(.stage == "supervisor-escalated")] | length) == 1)' "$units" >/dev/null \
+    || { echo 'not ok - the round-trip bound must send the unit to the arbiter, not resume it again' >&2; exit 1; }
+  command jq -e '([.workers[] | select(.unit == "issue-1171" and .harvested != true)] | length) == 0' "$TF/supervisor/autopi/workers.json" >/dev/null \
+    || { echo 'not ok - the bounded unit was dispatched' >&2; exit 1; }
+  grep -Fq 'guarded-recut-loop unit=issue-1171 issue=#1171 count=2 max=1' "$TF/supervisor/autopi/scheduler.log" || { echo 'not ok - the loop stop was not logged' >&2; exit 1; }
+  # The episode is consumed: a repeated tick neither counts nor escalates again.
+  tick
+  command jq -e '.units[0] | (.guarded_recut_roundtrips == 2 and ([.history[] | select(.stage == "supervisor-escalated")] | length) == 1)' "$units" >/dev/null \
+    || { echo 'not ok - one handed-back episode was counted twice' >&2; exit 1; }
+}
+sched_run_case guarded_recut_roundtrip
+
 # tools/merge-pr.sh runs only the shared prelude.
 [ "${SCHED_TEST_CASE:-}" != prelude ] || exit 0
 if [ -n "${SCHED_TEST_CASE:-}" ]; then
