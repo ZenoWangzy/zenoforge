@@ -1,0 +1,23 @@
+# Runs supervisor/watch/memory-check.py: one small batch of agent memory notes checked against current
+# origin/main and recent transcripts by one worker, applied by the script as the single writer. The factory
+# never idles, so this job never waits for idle: it runs beside it at the lowest priority (sessions first,
+# factory next, this last) and the script holds its own flock so a manual run cannot overlap the timer.
+# Not in pipeline-timers.list on purpose: the tick has no business alerting on a maintenance job.
+# Enable by hand: systemctl --user enable --now zenoforge-memory-check.timer
+[Unit]
+Description=the product agent memory note check (one small batch)
+
+[Service]
+Type=oneshot
+Nice=19
+CPUWeight=10
+IOWeight=10
+IOSchedulingClass=idle
+TimeoutStartSec=50min
+WorkingDirectory=%h
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+StandardOutput=journal
+StandardError=journal
+EnvironmentFile=-%h/.zenoforge/engine.env
+# Engine-live pointer, else the checkout path; ":" stops systemd expanding $ (see zenoforge-agent.service).
+ExecStart=:/bin/bash -c 'e="$(readlink -e %h/.zenoforge/engine-live 2>/dev/null)"; [ -z "$e" ] || export ZF_ENGINE_LIVE="$e"; exec python3 -I "${e:-%h/.zenoforge/checkout/engine}/supervisor/watch/memory-check.py"'
