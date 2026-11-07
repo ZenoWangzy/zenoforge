@@ -156,6 +156,10 @@ for key in keys:
     if len(causes) != 1: problems.append(f"{key}: {len(causes)} cause lines"); continue
     if mapped and ("未查明" in causes[0] or every_row[mapped[0]] not in causes[0]): problems.append(f"{key}: mapped line did not print its note: {causes[0]}")
     if not mapped and "未查明" not in causes[0]: problems.append(f"{key}: unmapped line did not read 未查明: {causes[0]}")
+# The repair line also reads the repair no-change row: with only that row noted, its note is the cause.
+only = os.path.join(tmp, "repair-owners.json"); json.dump({"repair.unchanged_head_token_pct": "返工没推出新提交"}, open(only, "w"))
+text = orc.compare(facts_for("station:repair"), snap, now, "", only)["causes"][0]
+if "返工没推出新提交" not in text: problems.append(f"station:repair did not print the repair no-change row note: {text}")
 print("\n".join(problems)); sys.exit(1 if problems else 0)
 PY
 # What landed between the two days is a hint beside 未查明, never the cause.

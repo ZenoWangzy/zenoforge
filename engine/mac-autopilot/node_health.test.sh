@@ -535,6 +535,28 @@ waits = sorted(n.ledger_history.first_review_waits(units, now, n.ts))
 assert waits == [10, 30, 360], waits
 assert n.ledger_metrics(units, now - n.timedelta(hours=5), now)["review.open_to_first_review_p90_min"] == 360
 CHECK
+# repair.unchanged_head_token_pct: fresh tokens of classified repair runs that left the head unchanged, rolling 24 h.
+# Unclassified runs and events from before the detector are left out, and an empty window is NO-DATA, never 0.
+python3 - "$script_dir" <<'CHECK'
+import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
+now = n.ts("2026-11-07T12:00:00Z"); ID = "repair.unchanged_head_token_pct"
+def ev(stage, at, cls=None, tokens=None):
+    e = {"stage": stage, "at": at}
+    if cls: e["head_class"] = cls
+    if tokens is not None: e["fresh_tokens"] = tokens
+    return e
+def row(*events): return n.ledger_metrics([{"id": "x", "history": list(events)}], now, now)[ID]
+assert n.CRITERIA[ID] == ("review-loop", "fresh tokens of repair runs that left the PR head unchanged, % of classified repair runs, 24 h", 5, 15, False)
+assert ID in n.MEANING and ID in n.SOURCE
+assert row(ev("repair-delivered", "2026-11-07T10:00:00Z", "changed", 300), ev("repair-no-push", "2026-11-07T11:00:00Z", "unchanged", 100)) == 25
+assert row(ev("repair-delivered", "2026-11-07T10:00:00Z", "unchanged-expected", 100), ev("repair-no-push", "2026-11-07T11:00:00Z", "unchanged", 100)) == 50
+assert row(ev("repair-delivered", "2026-11-07T10:00:00Z", "changed", 300)) == 0
+assert row(ev("repair-no-push", "2026-11-06T11:00:00Z", "unchanged", 100), ev("repair-delivered", "2026-11-07T10:00:00Z", "changed", 100)) == 0, "outside 24 h"
+assert row() is None
+assert row(ev("repair-delivered", "2026-11-07T10:00:00Z"), ev("repair-no-push", "2026-11-07T11:00:00Z")) is None, "legacy events carry no class"
+assert row(ev("repair-delivered", "2026-11-07T10:00:00Z", "unknown", 500)) is None, "an unclassified run must read NO-DATA, not 0"
+assert row(ev("repair-no-push", "2026-11-07T11:00:00Z", "unchanged")) is None, "no token reading means no figure"
+CHECK
 # First-pass BLOCK is a failed first review; native resumed workers count only
 # the new turn's fresh tokens, so pre-review repair cannot disappear from spend.
 python3 - "$script_dir" "$test_env_root" <<'CHECK'

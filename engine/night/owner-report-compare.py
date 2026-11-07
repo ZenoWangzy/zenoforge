@@ -51,7 +51,7 @@ OWNER_ROWS = {
     "incidents": ["delivery.unlinked_incidents_30d"],
     "tokens": ["workorders.ticket_tokens_p90", "workorders.over_standard"],
     "station:implement": ["dispatch.collisions_per_day"],
-    "station:repair": ["loop.rework_token_pct"],
+    "station:repair": ["loop.rework_token_pct", "repair.unchanged_head_token_pct"],
     "station:merge": ["flow.merge_rate_per_hour"],
     "station:ci": ["ci.red_after_approve_pct", "ci.shared_append_rebase_conflict_pct"],
     "station:release": ["release.hours_waiting", "delivery.merged_not_live"],
