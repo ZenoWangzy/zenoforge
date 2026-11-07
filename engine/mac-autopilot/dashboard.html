@@ -645,10 +645,10 @@ const bNode = m => { const lb = LABELS[m.id] || [/[\u4e00-\u9fff]/.test(m.desc |
   return bullet({id:m.id, label:lb[0], unit:lb[1], value:m.value, healthy:m.healthy, unhealthy:m.unhealthy, hib:m.higher_is_better, status:m.status, desc:m.desc, meaning:m.meaning, source:m.source}); };
 const FR = D => D.front || {};
 // 指标行列表：异常、警告、无数据的行直接显示，正常的折成一行
-const isOk = h => /^<div class="bul zr s-(ok|none)/.test(h);
+const isOk = h => /^<div class="bul zr s-ok/.test(h);
 const foldOk = list => { const rows = list.filter(Boolean), ok = rows.filter(isOk), rest = rows.filter(h => !isOk(h));
   if (!rows.length) return emptyMsg("尚无评分");
-  return (rest.length ? `<div class="buls">${rest.join("")}</div>` : "") + (ok.length ? `<details class="okfold"><summary>${rest.length ? "其余 " : "全部 "}${ok.length} 项正常或暂无数据</summary><div class="buls">${ok.join("")}</div></details>` : ""); };
+  return (rest.length ? `<div class="buls">${rest.join("")}</div>` : "") + (ok.length ? `<details class="okfold"><summary>${rest.length ? "其余 " : "全部 "}${ok.length} 项正常</summary><div class="buls">${ok.join("")}</div></details>` : ""); };
 const bFront = (D, id, label, shown) => { const F = FR(D), sd = (F.standards||{})[id];
   if (!sd) return "";
   return bullet({id, label: label || sd.desc, unit: sd.unit, value: (F.values||{})[id], shown, healthy: sd.healthy, unhealthy: sd.unhealthy, hib: sd.higher_is_better,
@@ -1429,9 +1429,12 @@ function vOverview(D) {
   const {bad, warn} = metricStatusGroups(ms), rows = problems(D);
   const LWok = !!(D.live_workers && Array.isArray(D.live_workers.items)), LW = LWok ? D.live_workers.items : [], LWM = lwGrouped(LW), L = D.live_workers || {};
   const metricVs = f.s === "bad" || STD.paused || bad.length ? "bad" : warn.length ? "warn" : "ok";
-  const vs = f.age == null && !ms.length && !LWok ? "none" : worst([metricVs, ...rows.map(r => r.s)]);
+  // A NO-DATA metric never reads as OK: with nothing red or amber the verdict is 无数据 and the count shows.
+  const nNoData = ms.filter(m => m.status === "NO-DATA").length;
+  const vsRaw = f.age == null && !ms.length && !LWok ? "none" : worst([metricVs, ...rows.map(r => r.s)]);
+  const vs = vsRaw === "ok" && nNoData ? "none" : vsRaw;
   const nBad = rows.filter(r => r.s === "bad").length, nWarn = rows.length - nBad;
-  const verdict = `<div class="ov-vd s-${vs}" data-m="health">${bigIcon(vs)}<b>${{ok:"正常", warn:"需留意", bad:"异常", none:"无数据"}[vs]}</b><span class="aside">${nBad ? stChip("bad", `${nBad} 项要处理`) : ""}${nWarn ? stChip("warn", `${nWarn} 项需留意`) : ""}${STD.paused ? stChip("bad", "已暂停") : ""}${f.s === "bad" ? stChip("bad", "数据过期") : ""}</span></div>`;
+  const verdict = `<div class="ov-vd s-${vs}" data-m="health">${bigIcon(vs)}<b>${{ok:"正常", warn:"需留意", bad:"异常", none:"无数据"}[vs]}</b><span class="aside">${nBad ? stChip("bad", `${nBad} 项要处理`) : ""}${nWarn ? stChip("warn", `${nWarn} 项需留意`) : ""}${nNoData ? stChip("none", `${nNoData} 项无数据`) : ""}${STD.paused ? stChip("bad", "已暂停") : ""}${f.s === "bad" ? stChip("bad", "数据过期") : ""}</span></div>`;
   // 数 1 员工
   const cap = S.max_workers || 8, np = (LWM.pipeline || []).length, wst = LW.map(w => workerState(w, nowS)), waitN = wst.filter(x => x.h === "bad" || x.h === "warn").length;
   const slots = `<div class="slots" data-tip="产线 ${np} / 上限 ${cap}">${Array.from({length: Math.max(cap, np)}, (_, i) => `<i class="${i < np ? "on" : ""}"></i>`).join("")}</div>`;
