@@ -262,7 +262,7 @@ hard_implementer_fields() { # optional models.hard; otherwise use the production
   PICK_PROVIDER="$provider"; PICK_MODEL="$model"; PICK_EFFORT="$effort"; PICK_SERVICE_TIER="${tier:-}"
 }
 
-provider_runtime_ready() { # provider model -> runnable, policy-authorized and not held
+provider_runtime_ready() { # provider model [role] [unit JSON] -> runnable, policy-authorized and not held
   local provider="$1" model="$2" role="${3:-work}"
   # production is the explicitly configured hard tier; its family can differ
   # from work's allowed families (for example Terra), by design.
@@ -271,7 +271,7 @@ provider_runtime_ready() { # provider model -> runnable, policy-authorized and n
   case "$provider" in
     codex) codex_week_stopped && return 1; command -v codex >/dev/null 2>&1 ;;
     zcode)
-      [[ "$(zcode_paced zcode_quota_status)" == available ]] && ! implement_week_held >/dev/null || return 1
+      [[ "$(zcode_paced zcode_quota_status)" == available ]] && ! implement_week_held "${4:-}" >/dev/null || return 1
       command -v zcode >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"
       ;;
     claude) ! provider_quota_exhausted claude && command -v claude >/dev/null 2>&1 ;;
@@ -291,7 +291,7 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
     hard_implementer_fields || { say "no hard implementation identity available"; return 1; }
     actual="$PICK_PROVIDER"
     [[ "$(command jq -r '.hard_escalated // false' <<<"$u")" == true ]] || arbiter=true
-    provider_runtime_ready "$actual" "$PICK_MODEL" production || {
+    provider_runtime_ready "$actual" "$PICK_MODEL" production "$u" || {
       if [[ "$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")" != 0 ]] && pick_claude_implementer; then
         PICK_ROUTE_PROVIDER=claude; PICK_HARD=true; PICK_REASON=hard-fallback-claude
         return 0
