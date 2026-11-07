@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import worker_cost as wc  # noqa: E402
 import roi_collect  # noqa: E402
+import roi_ledger  # noqa: E402
 
 
 def write(path, lines, end="2026-10-20T12:30:00Z"):
@@ -229,6 +230,24 @@ class Ledger(unittest.TestCase):
         row = wc.run_rows(self.sup)[0]  # workers.json no longer has this harvested row
         event = roi_collect._worker_event(row, {}, "test-host")
         self.assertEqual(event["models"][0]["model"], "gpt-6-luna")
+
+    def test_unit_end_is_the_log_mtime_even_when_a_harvest_record_comes_later(self):
+        self.log("impl-issue-4356-20261020T120000Z.worker.log",
+                 codex_json_stream("aaaaaaaa-0000-0000-0000-000000000001",
+                                   [{"input_tokens": 10_000, "cached_input_tokens": 0, "output_tokens": 1_000}]))
+        row = wc.run_rows(self.sup)[0]
+        row["finished_at"] = datetime(2026, 10, 20, 12, 40, tzinfo=timezone.utc)  # harvested 10 min after the last write
+        event = roi_collect._worker_event(row, {}, "test-host")
+        self.assertEqual((event["ts"], event["wall_s"]), ("2026-10-20T12:30:00Z", 1800.0))
+        harvest = dict(event, ts="2026-10-20T12:40:00Z", wall_s=2400.0)
+        # Old ledgers hold both records under one event_id; the harvest record is written last here.
+        home = os.path.join(self.root, "home")
+        os.makedirs(os.path.join(home, "metrics"))
+        with open(os.path.join(home, "metrics", "units-2026-10.jsonl"), "w", encoding="utf-8") as out:
+            for record in (event, harvest):
+                out.write(json.dumps(record) + "\n")
+        (kept,) = roi_ledger.read_events(home)
+        self.assertEqual((kept["ts"], kept["wall_s"]), ("2026-10-20T12:30:00Z", 1800.0))
 
     def test_ticket_spend_closes_tickets_on_merged_history_and_bounds_from_history(self):
         self.log("impl-issue-5-20261020T120000Z.worker.log",

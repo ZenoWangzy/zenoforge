@@ -270,12 +270,21 @@ dispatch_capacity_free() { # worker slot available; the same predicate room_for 
 }
 # Apart from the predicate: the pack's dispatch-queue-footprint test stubs that false and must still reach footprint_room.
 dispatch_walk_full() { ! dispatch_capacity_free; }
+# Walk passes that drop a pending unit without a log line are counted by reason; the refill and tick summaries name them.
+declare -gA TICK_DISPATCH_SKIPS=()
+dispatch_skip() { TICK_DISPATCH_SKIPS[$1]=$(( ${TICK_DISPATCH_SKIPS[$1]:-0} + 1 )); }
+dispatch_skip_summary() { # name:count,... for the reasons that fired this pass, sorted; empty when none
+  local k out=""
+  (( ${#TICK_DISPATCH_SKIPS[@]} )) || return 0
+  for k in $(printf '%s\n' "${!TICK_DISPATCH_SKIPS[@]}" | sort); do out+="${out:+,}$k:${TICK_DISPATCH_SKIPS[$k]}"; done
+  printf '%s' "$out"
+}
 room_for() { # unit-id type [unit-json] [fresh-footprint=true]：焦点与并发检查
   local u="${3:-}" priority waiter impl_cap n_impl fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"
-  if [[ "$2" == repair ]]; then repair_cap_admission "$1" "$u" || return 1; fi
+  if [[ "$2" == repair ]]; then repair_cap_admission "$1" "$u" || { dispatch_skip repair-cap; return 1; }; fi
   if [[ "$2" == review || "$2" == rereview ]]; then
-    jqf -e '(.self_check_pid // null)==null and (.self_fix_pending // false)!=true' <<<"$u" >/dev/null || return 1
+    jqf -e '(.self_check_pid // null)==null and (.self_fix_pending // false)!=true' <<<"$u" >/dev/null || { dispatch_skip self-check; return 1; }
   fi
   if [[ "$FOCUS_MODE" == "release" && "$(unit_is_critical "$u")" != "true" && "$(critical_pending_count)" -gt 0 ]]; then
     FOCUS_SKIPPED+=("$1")

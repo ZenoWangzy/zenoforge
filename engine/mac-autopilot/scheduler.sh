@@ -592,7 +592,8 @@ main() {
   rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""
   TICK_INTAKE_READS_FILE=""
-  say "tick done units=$(jqf '.units | length' "$UNITS") live=$(live_workers) secs=$SECONDS ended=$(date -u +%H:%M:%SZ) gh_calls=$gh_calls${TICK_PHASES:+ slow:$TICK_PHASES}"
+  local tick_skips; tick_skips="$(dispatch_skip_summary)"
+  say "tick done units=$(jqf '.units | length' "$UNITS") live=$(live_workers) secs=$SECONDS ended=$(date -u +%H:%M:%SZ) gh_calls=$gh_calls${TICK_PHASES:+ slow:$TICK_PHASES}${tick_skips:+ skips=$tick_skips}"
 }
 
 if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" == "true" ]]; then
