@@ -110,13 +110,12 @@ def build(units, issues, rulings, accepted, now, hotfix_live=None, live_merge_sh
     return {"stages": STAGES, "items": items, "partial": issues is None}
 
 
-def push_changes(items, state_path, lib, agent_home, repo=None):
-    """First run records stages silently; later changes append an inbox line and send best-effort founder mail.
-    A failed append leaves the old stage recorded so the next beat retries it."""
+def push_changes(items, state_path, lib, agent_home):
+    """First run records stages silently; later changes append an inbox line. The founder gets no per-change mail;
+    stage changes reach them through the daily owner report. A failed append leaves the old stage recorded so the next beat retries it."""
     try: old = json.load(open(state_path))
     except (OSError, ValueError): old = None
     new = dict(old or {})
-    changes = []
     for it in items:
         k = str(it["issue"])
         if old is not None and old.get(k) != it["stage"]:
@@ -127,34 +126,7 @@ def push_changes(items, state_path, lib, agent_home, repo=None):
                                     capture_output=True, timeout=30, env={**os.environ, "AGENT_HOME": agent_home}).returncode == 0
             except Exception: ok = False
             if not ok: continue
-            changes.append((was, it))
         new[k] = it["stage"]
-    if changes and repo:
-        subject = f"需求进展：{STAGES[changes[0][1]['stage']]}" if len(changes) == 1 else f"需求进展：{len(changes)}项有变化"
-        blocks, titleless_blocks = [], []
-        for was, it in changes[:20]:
-            progress = f"进展：{was} 到 {STAGES[it['stage']]}"
-            title = " ".join((it.get("text") or it.get("title") or "").split())
-            url = f"https://github.com/{repo}/issues/{it['issue']}"
-            blocks.append(f"{progress}\n- {title}\n{url}")
-            titleless_blocks.append(f"{progress}\n{url}")
-        if len(changes) > 20:
-            remaining = f"另有 {len(changes) - 20} 项变化，见首页。"
-            blocks.append(remaining); titleless_blocks.append(remaining)
-        body, without_title = "\n\n".join(blocks), "\n\n".join(titleless_blocks)
-        script = (
-            'subject="$2"; body="$3"; without_title="$4"; '
-            'source "$1" && send_email_strict "$subject" "$body" --maintainer-kind progress "$(_maintainer_email)"; '
-            'send_status=$?; [ "$send_status" -eq 0 ] && exit 0; '
-            'reason="$(maintainer_mail_rejection_reason progress "$subject" "$body")"; '
-            'case "$reason" in body-internal|body-language) '
-            'source "$1" && send_email_strict "$subject" "$without_title" --maintainer-kind progress "$(_maintainer_email)" ;; '
-            '*) exit "$send_status" ;; esac'
-        )
-        try:
-            subprocess.run(["bash", "-c", script, "bash", lib, subject, body, without_title],
-                           capture_output=True, timeout=30, env={**os.environ, "AGENT_HOME": agent_home})
-        except Exception: pass
     if new != old:
         with open(state_path + ".tmp", "w") as f: json.dump(new, f)
         os.replace(state_path + ".tmp", state_path)
@@ -186,5 +158,5 @@ def collect(units, repo, rulings_path, runtime, agent_home, lib):
     live_merge_shas = live_delivery.ancestor_shas(live_delivery.repository_root(), live["sha"]) if live else set()
     out = build(units, _fetch_issues(repo, os.path.join(runtime, "founder-reqs.cache.json")), rulings, node_health.release_acceptances(runtime), time.time(),
                 _hotfix_live(os.path.join(agent_home, "hotfix-live.jsonl")), live_merge_shas)
-    push_changes(out["items"], os.path.join(agent_home, "founder-req-stage.json"), lib, agent_home, repo)
+    push_changes(out["items"], os.path.join(agent_home, "founder-req-stage.json"), lib, agent_home)
     return out
