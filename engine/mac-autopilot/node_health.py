@@ -1397,7 +1397,7 @@ def flow_inbox(a, rows, now, agent_home, repo_root):
     for mid in list(state):
         if mid not in bad:
             del state[mid]
-    lib = os.path.join(repo_root, "engine", "lib.sh")
+    lib = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib.sh")
     for mid, (node, _, desc, v, healthy, unhealthy, higher, status) in sorted(bad.items()):
         if mid in state:
             continue

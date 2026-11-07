@@ -152,7 +152,7 @@ def alert(runtime, agent_home, repo_root, now):
         seen = open(events, errors="ignore").read()
     except OSError:
         pass
-    lib = os.path.join(repo_root, "engine", "lib.sh")
+    lib = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib.sh")
     os.makedirs(os.path.dirname(events), exist_ok=True)
     for row in rows:
         if re.search(rf"^\[{re.escape(day)}T.*LINE-HOLD-VIOLATION hold={re.escape(row['hold'])}\b",

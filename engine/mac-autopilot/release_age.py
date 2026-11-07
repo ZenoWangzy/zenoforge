@@ -107,7 +107,7 @@ def alert(runtime, agent_home, repo_root, now, found):
     if state.get("record") == found["id"] and isinstance(last, (int, float)) and now.timestamp() - last < HOUR:
         return
     text = f"hours={found['hours']:.1f} record={found['id']} sha={found['sha']}"
-    lib = os.path.join(repo_root, "engine", "lib.sh")
+    lib = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib.sh")
     hour = f"{now:%Y-%m-%dT%H}"
     done = subprocess.run(
         ["bash", "-c", 'source "$1" && supervisor_inbox_append_once "$2" "$3"', "bash", lib,
