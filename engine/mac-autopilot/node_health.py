@@ -428,7 +428,7 @@ def main_red_hours(red_dir, since, now):
         names = os.listdir(red_dir)
     except OSError:
         return None
-    total = 0.0
+    spans = []
     for name in names:
         if not name.endswith(".json"):
             continue
@@ -437,8 +437,12 @@ def main_red_hours(red_dir, since, now):
         if not created or not re.fullmatch(r"[0-9a-f]{40}", str(session.get("red_sha") or "")):
             continue
         end = updated if updated and session.get("status") in ("flaky", "reverted", "unattributed") else now
-        total += max((min(end, now) - max(created, since)).total_seconds(), 0) / 3600
-    return round(total, 2)
+        spans.append((max(created, since), min(end, now)))
+    total, frontier = 0.0, since  # overlapping sessions are one wall-clock red: merge before summing
+    for start, end in sorted(spans):
+        total += max((end - max(start, frontier)).total_seconds(), 0)
+        frontier = max(frontier, end)
+    return round(total / 3600, 2)
 
 
 MECHANISM_LINE_TS_RE = re.compile(r"^\[?(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\]?")
