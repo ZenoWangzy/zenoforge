@@ -91,4 +91,19 @@ alert="$(run_alert)"
 assert_contains "$alert" 'throughput idle' 'no-output alert'
 assert_contains "$alert" 'ready-to-merge=1' 'no-output ready count'
 
+# A rotation moves the last merge to scheduler.log.1 and leaves the live log missing or fresh.
+cat > "$log.1" <<'LOG'
+[2026-11-02T11:45:00Z] merged PR#60 (rotated out)
+LOG
+rm -f "$log"
+alert="$(run_alert)"
+assert_empty "$alert" 'merge in the rotated log, live log missing'
+: > "$log"
+alert="$(run_alert)"
+assert_empty "$alert" 'merge in the rotated log, live log fresh'
+rm -f "$log.1"
+
+# The tick gap also reads the newest of the two logs: a missing live log is not 0 epoch.
+grep -Fq 'stat -c %Y "$A/scheduler.log" "$A/scheduler.log.1"' "$watch_dir/pipe-watch.sh" || fail 'pipe-watch must stat both logs'
+
 printf 'throughput alert tests: all checks passed\n'

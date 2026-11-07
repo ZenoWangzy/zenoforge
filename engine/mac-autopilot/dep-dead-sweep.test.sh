@@ -137,6 +137,33 @@ jq -e '.units[] | select(.id=="issue-20") | .stage=="parked" and .parked_reason=
   || fail "a repeat must park visibly: $(jq -c '.units[1]' "$UNITS")"
 grep -q 'dep-dead unit=issue-20 predecessor=#10 action=parked' "$A/alerts/events.md" || fail 'a repeat must raise an alert'
 
+# A unit parked dep-dead-repeat before the one release existed is owed it, with a note that says the predecessor delivered nothing.
+parked_repeat() { marked 20 | jq -c '.stage="parked" | .parked_reason="dep-dead-repeat" | .unpark_condition="#10 delivered in the ledger or closed on GitHub" | .dep_dead_proved=10 | del(.blocked_on)'; }
+reset; printf '{"units":[%s,%s]}\n' "$dead" "$(parked_repeat)" > "$UNITS"; dep_dead_unpark
+jq -e '.units[] | select(.id=="issue-20") | .stage=="implement-pending" and .parked_reason == null and .unpark_condition == null and (.task | contains("closed without delivering")) and (.history[-1].result | startswith("stopped waiting on #10:") and (contains("without delivering")))' "$UNITS" >/dev/null \
+  || fail "a parked unit that never had its release must get it, told the truth: $(jq -c '.units[1]' "$UNITS")"
+grep -q 'dep-dead unit=issue-20 predecessor=#10 action=released' "$A/alerts/events.md" || fail 'the release must raise an alert'
+# One that already had it and blocked again stays parked: a refusing worker must not loop.
+reset; printf '{"units":[%s,%s]}\n' "$dead" "$(parked_repeat | jq -c '.history=[{stage:"unblocked",result:"stopped waiting on #10: x"}]')" > "$UNITS"; dep_dead_unpark
+[[ "$(field issue-20 .stage)" == parked ]] || fail 'a unit already released once must stay parked'
+# Not proven dead: stays parked.
+reset; PRS='[{"number":510,"headRefName":"x","body":""}]'; printf '{"units":[%s,%s]}\n' "$dead" "$(parked_repeat)" > "$UNITS"; dep_dead_unpark
+[[ "$(field issue-20 .stage)" == parked ]] || fail 'a predecessor with an open PR is not dead: the unit stays parked'
+# And release_dependency_blocks, which the loop calls, never reads that park as delivered.
+reset; printf '{"units":[%s,%s]}\n' "$(jq -c '.stage="implement"' <<<"$dead")" "$(parked_repeat)" > "$UNITS"; closed_state CLOSED; release_dependency_blocks
+[[ "$(field issue-20 .stage)" == parked ]] || fail 'a dep-dead-repeat park must not read a closed predecessor as delivered'
+
+# A serial chain (the 2507 shape): a delivered head frees only its direct waiter; each link frees when its own predecessor delivers.
+chain() { printf '{"id":"issue-%s","issue":%s,"stage":"blocked-external","blocked_on":%s,"task":"t","branch":"agent/issue-%s","history":[]}' "$1" "$1" "$2" "$1"; }
+chain_cache() { jq -cn --argjson e "$NOW_EPOCH" '{epoch:$e,states:{"31":{state:"OPEN",labels:""},"32":{state:"OPEN",labels:""}}}' > "$A/dep-check.cache.json"; printf '%s\n' "$NOW_EPOCH" > "$A/dep-check.epoch"; }
+reset; printf '{"units":[%s,%s,%s,%s]}\n' "$(jq -c '.id="issue-30" | .issue=30 | .stage="merged"' <<<"$dead")" "$(chain 31 30)" "$(chain 32 31)" "$(chain 33 32)" > "$UNITS"
+DEP_DELIVERED_CACHE=([30]=1); chain_cache; release_dependency_blocks
+[[ "$(field issue-31 .stage)" == implement-pending && "$(field issue-32 .stage)" == blocked-external && "$(field issue-33 .stage)" == blocked-external ]] \
+  || fail "a delivered head must free its direct waiter only: $(field issue-31 .stage) $(field issue-32 .stage) $(field issue-33 .stage)"
+DEP_DELIVERED_CACHE=([30]=1 [31]=1); release_dependency_blocks
+[[ "$(field issue-32 .stage)" == implement-pending && "$(field issue-33 .stage)" == blocked-external ]] || fail 'the next link frees when its predecessor delivers'
+rm -f "$A/dep-check.cache.json" "$A/dep-check.epoch"
+
 # An issue closed as not_planned closes its open PR once and retires the unit through the terminal path; another close reason leaves it alone.
 pr_unit='{"id":"issue-5148","issue":5148,"stage":"blocked-external","pr":5311,"branch":"agent/issue-5148","task":"t","history":[]}'
 closed_reason() { jq -cn --argjson e "$NOW_EPOCH" --arg r "$1" '{epoch:$e,states:{"5148":{state:"CLOSED",labels:"",issue_state:"CLOSED",state_reason:$r}}}' > "$A/dep-check.cache.json"; printf '%s\n' "$NOW_EPOCH" > "$A/dep-check.epoch"; }

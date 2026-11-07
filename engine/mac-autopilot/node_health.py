@@ -227,7 +227,7 @@ SOURCE = {**arbiter_health.SOURCE, **merge_wait.SOURCE, **live_delivery.SOURCE, 
     "ci.cancel_other_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的其他或缺失 reason ÷ 窗口小时 × 24。",
     "ci.gated_pr_pct": "GitHub pull request API：带 agent/ci-gated 标签的 open agent/issue-* PR ÷ 所有 open agent/issue-* PR。",
     "ci.priority_hold_runs_48h": "共享 actions-run-cancellations.jsonl：最近 48 小时不同 run_id 的最后一个非空 reason=ci hold。",
-    "ci.shared_append_rebase_conflict_pct": "logs/shared-append-rebases.jsonl（land-direct-main 记录每次改动范围带 shared-append 文件的落地 rebase）：固定滚动 24h 内 conflict_files 非空的比例；无记录不计值。",
+    "ci.shared_append_rebase_conflict_pct": "logs/shared-append-rebases.jsonl（land-direct-main 记录每次改动范围带 shared-append 文件的落地 rebase）：固定滚动 24h 内 conflict_files 非空的比例；24h 内没有这类落地 rebase 时显示 N/A（没有事件可量，不是缺数据）。",
     "review.large_pr_pct": "pr-sizes.json（ci_spend.py 取 PR 非测试新增行；测试路径包括名为 test、tests、__tests__、fixture、fixtures、__snapshots__ 的目录，以及名称以 eval 开头且后续只含小写字母、连字符或下划线的目录；文件名含 .test.、.spec. 或以 .snap 结尾也排除）对照最近 30 天有台账活动的 PR；无历史的在途单也计入，缺尺寸时显示无数据",
     "loop.advisor_fail_pct": "units.json：advisor-unavailable ÷（advisor-ruling + advisor-unavailable），24 h 窗口",
     "advisor.last_answer_age_hours": "web-advisor-provider-jobs/*/answer.err 中不含 FAIL: 的最新 mtime；needs-advisor 数来自 gh issue list",
@@ -573,7 +573,8 @@ ESCALATE_HOURS, REFILE_HOURS = 3, 6
 RUNNING_LOG_SECONDS = 600
 SUPERVISOR_EVENTS = ("supervisor-requeue", "supervisor-approve", "supervisor-close", "supervisor-park",
                      "supervisor-decision", "supervisor-reroute", "supervisor-unblock", "arbiter-review")
-DISPATCH_RE = re.compile(r"^\[(\S+)\] dispatch mode=\S+ pid=\d+ type=(repair|rereview|review) unit=(\S+)")
+# The live line is `dispatch claim=owned issue=N mode=.. reason=.. pid=P type=T unit=U` (station_health.py reads the same); older logs had no claim/issue/reason.
+DISPATCH_RE = re.compile(r"^\[(\S+)\] dispatch (?:claim=\S+ )?(?:issue=\S+ )?mode=\S+ (?:reason=\S+ )?pid=\d+ type=(repair|rereview|review) unit=(\S+)")
 LINE_RE = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\] tick done")
 
 
@@ -744,8 +745,32 @@ def shared_append_rebase_metrics(path, repo, since, now):
     return len(attempts), (100 * len(conflicts) / len(attempts) if attempts else None)
 
 
+RED_STAGES = ("ci-red", "ci-test-red", "ci-red-rerun")
+
+
+def red_after_approve(units, since):
+    """(approved unit count, one row per unit) for units approved in the window that saw CI red after
+    an approve and before the next verdict. A unit counts once however many approves it had; the row
+    names the failed checks and, for ci-test-red, the failing tests recorded on the event."""
+    approved, rows = 0, []
+    for u in units:
+        events = [(h.get("stage") or h.get("ev") or "", ts(h["at"]), h) for h in u.get("history") or [] if ts(h.get("at"))]
+        red, seen = [], False
+        for i, (k, t, _) in enumerate(events):
+            if k == "review-approve" and t >= since:
+                seen = True
+                rest = events[i + 1:]
+                stop = next((j for j, x in enumerate(rest) if x[0] in ("review-request-changes", "review-approve")), len(rest))
+                red += [x[2] for x in rest[:stop] if x[0] in RED_STAGES]
+        approved += seen
+        if red:
+            rows.append({"unit": u.get("id"), "reds": len(red), "stage": red[-1].get("stage"),
+                         "checks": red[-1].get("result") or "", "tests": red[-1].get("tests") or []})
+    return approved, rows
+
+
 def ledger_metrics(units, since, now):
-    first_reviews, rounds, approve_to_ship, red_after, approved, sup_lat, deaths = [], [], [], 0, 0, [], 0
+    first_reviews, rounds, approve_to_ship, sup_lat, deaths = [], [], [], [], 0
     for u in units:
         hist = [h for h in u.get("history") or [] if ts(h.get("at"))]
         kinds = [(h.get("stage") or h.get("ev") or "", ts(h["at"])) for h in hist]
@@ -760,12 +785,9 @@ def ledger_metrics(units, since, now):
             elif k == "review-approve":
                 if t >= since:
                     rounds.append(n)
-                    approved += 1
                     rest = kinds[i + 1:]
                     nxt = next((x for x in rest if x[0] in ("review-request-changes", "review-approve")), None)
                     window = rest[: rest.index(nxt)] if nxt else rest
-                    if any(x[0] in ("ci-red", "ci-test-red", "ci-red-rerun") for x in window):
-                        red_after += 1
                     ship = next((x for x in window if x[0] in ("merged", "landed")), None)
                     if ship:
                         approve_to_ship.append((ship[1] - t).total_seconds() / 60)
@@ -785,6 +807,7 @@ def ledger_metrics(units, since, now):
         and (h.get("result") or "").startswith("PRECHECK: SKIP workspace package selection failed")
         and (t := ts(h.get("at"))) and t >= since
     )
+    approved, red_units = red_after_approve(units, since)
     rejections = [r.get("block") == "missing" for u in units for r in u.get("review_findings") or []
                   if (t := ts(r.get("at"))) and t >= since]
     return {**arbiter_health.ledger_metrics(units, now, ts), **ledger_history.metrics(units, now, ts),
@@ -793,7 +816,7 @@ def ledger_metrics(units, since, now):
         "review.first_pass_pct": 100 * sum(first_reviews) / len(first_reviews) if first_reviews else None,
         "loop.rounds_p90": pct(rounds, .9),
         "ci.approve_to_ship_p50": pct(approve_to_ship, .5),
-        "ci.red_after_approve_pct": 100 * red_after / approved if approved else None,
+        "ci.red_after_approve_pct": 100 * len(red_units) / approved if approved else None,
         "ci.precheck_setup_failures": precheck_setup_failures,
         "supervisor.latency_p50": pct(sup_lat, .5),
         "workers.deaths": deaths,
@@ -1107,8 +1130,9 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
         prs = {_number(pr.get("number")): pr for pr in pr_rows if _number(pr.get("number")) is not None}
         units_by_issue = {}
         for unit in units:
-            issue_number = _number(unit.get("issue"))
-            if issue_number is not None:
+            # Older units carry no issue field; their branch agent/issue-N names the issue.
+            branch = re.fullmatch(r"agent/issue-(\d+)", str(unit.get("branch") or ""))
+            for issue_number in {_number(unit.get("issue")), int(branch[1]) if branch else None} - {None}:
                 units_by_issue.setdefault(issue_number, []).append(unit)
         unlinked, lead_hours = 0, []
         for issue_number, events in release_events_by_issue.items():
@@ -1301,11 +1325,17 @@ def flow_inbox(a, rows, now, agent_home, repo_root):
     os.replace(tmp, state_path)
 
 
+# Rows that read None only because no event happened: shown N/A, not NO-DATA. land-direct-main appends a
+# row only when a landing rebase touches a shared-append file; this host's runtime has no such log.
+NOT_APPLICABLE_WITHOUT_EVENTS = frozenset({"ci.shared_append_rebase_conflict_pct"})
+
+
 def score(metrics, criteria):
     rows = []
     for mid, (node, desc, healthy, unhealthy, higher) in criteria.items():
         v = metrics.get(mid)
-        status = live_delivery.no_data_status(mid, v) or status_of(v, healthy, unhealthy, higher)
+        status = live_delivery.no_data_status(mid, v) or (
+            "N/A" if v is None and mid in NOT_APPLICABLE_WITHOUT_EVENTS else status_of(v, healthy, unhealthy, higher))
         rows.append((node, mid, desc, v, healthy, unhealthy, higher, status))
     return rows
 
@@ -1404,7 +1434,8 @@ def main():
     closed_open = ledger_history.closed_units_open_issues(a, agent_home, units)
     metrics["intake.closed_units_open_issues"] = None if closed_open is None else len(closed_open)
     metrics["engine.follow_lag_hours"] = engine_follow_lag_hours(agent_home, now)
-    orders = work_orders(units, unit_spend(cost_rows), now, workorder_cost.recent_units(cost_rows, since))
+    orders = work_orders(units, unit_spend(cost_rows), now, workorder_cost.recent_units(cost_rows, since),
+                         unit_spend(cost_rows, since))
     metrics["workorders.over_standard"] = sum(1 for o in orders if o["over"])
     # Per-ticket spend from the same cost rows; token values and bounds use only complete fresh
     # splits. Bounds use the 30 days of closed tickets before the 7-day window (p50 x 1.5 healthy,
@@ -1524,7 +1555,7 @@ def main():
                            for node, mid, desc, v, healthy, unhealthy, higher, status in rows],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
                "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],
-               "delivery": delivery["details"], "merge_wait": merge_details, "flow": flow_details, "mechanisms": mechanism_rows,
+               "delivery": delivery["details"], "red_after_approve": red_after_approve(units, since)[1], "merge_wait": merge_details, "flow": flow_details, "mechanisms": mechanism_rows,
                "ci_standards": {k: {"desc": d, "healthy": h, "unhealthy": u, "higher_is_better": hi, "meaning": m, "source": src}
                                 for k, (d, h, u, hi, m, src) in CI_STANDARDS.items()},
                "unit_standards": {k: {"desc": d, "healthy": h, "bug": b} for k, (d, h, b) in UNIT_STANDARDS.items()},

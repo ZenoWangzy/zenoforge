@@ -23,6 +23,7 @@ JSON
 cat > "$a/scheduler.log" <<'LOG'
 [2026-10-19T05:00:00Z] harvest unit=old type=review verdict=APPROVE mode=fresh tokens=5 session_id=none
 [2026-10-19T10:00:00Z] dispatch mode=fresh pid=1 type=review unit=pr-1
+[2026-10-19T10:01:00Z] dispatch claim=owned issue=7 mode=fresh reason=initial pid=2 type=review unit=pr-2
 [2026-10-19T10:06:00Z] harvest unit=pr-1 type=review verdict=REQUEST-CHANGES mode=fresh tokens=1000 session_id=none
 [2026-10-19T10:28:00Z] harvest unit=pr-1 type=repair verdict=none mode=fresh tokens=200000 session_id=none
 [2026-10-19T10:28:00Z] WASTE zero-output pid=9 unit=pr-9
@@ -43,6 +44,7 @@ grep -Eq '^  repair +1 +18/18 +200000 ' <<<"$out" || fail "repair stats wrong: $
 grep -Fq 'no-output=1 provider-cooldowns=1' <<<"$out" || fail 'failure counts wrong'
 grep -Fq 'merge: issued=1 merged=2 reverted=0' <<<"$out" || fail 'merge counts wrong'
 grep -Fq 'gate: held 1.0h of 5h' <<<"$out" || fail "gate held time wrong: $out"
+grep -Fq ' dispatched=2 ' <<<"$out" || fail "the live dispatch line (claim, issue, reason) must count: $out"
 # 最后一个 hold 事件只在 scheduler 仍出 tick 时算「现在 held」；停摆后只算到最后一拍，不再无限增长。
 cat > "$a/alerts/gate.md" <<'G'
 [2026-10-19T08:00:00Z] GATE main=a suites=success — merge lane open

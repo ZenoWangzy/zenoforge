@@ -6400,6 +6400,31 @@ sched_case_tick_tail_order() {
 }
 sched_run_case tick_tail_order
 
+sched_case_tick_unphased_marks() {
+# A kill outside a phase names what the tick was doing, not the last phase that finished (or the last tick's).
+(
+  mk_dir="$(mktemp -d)"
+  ROOT="$mk_dir" A="$mk_dir" LOG="$mk_dir/log" STAMP=test SCHED_LOCK="$mk_dir/lock"
+  UNITS="$mk_dir/units.json" WORKERS="$mk_dir/workers.json" PAUSE_FILE="$mk_dir/PAUSE"
+  echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; touch "$PAUSE_FILE"
+  echo stale > "$A/.tick-phase"
+  mark() { echo "$1 $(command cat "$mk_dir/.tick-phase")" >> "$mk_dir/marks"; }
+  acquire_scheduler_lock() { mark acquire; return 0; }
+  jqf() { command jq "$@"; }
+  git() { return 1; }
+  say() { :; }
+  phase() { echo "$1" > "$mk_dir/.tick-phase"; }
+  for stub in rotate_logs budget_alert_if_needed live_workers flush_focus_alert publish_pr_run_snapshot launch_views cleanup_tick; do eval "$stub() { :; }"; done
+  update_budget() { mark update_budget; }
+  for stub in coord_reap_expired coord_reconcile_systemd_workers coord_reconcile_scheduler_workers; do eval "$stub() { mark $stub; }"; done
+  eval "$(command sed -n '/^main() {/,/^}/p' "$scheduler")"
+  main
+  [[ "$(command cat "$mk_dir/marks")" == $'acquire stale\nupdate_budget opening\ncoord_reap_expired coord_sweeps\ncoord_reconcile_systemd_workers coord_sweeps\ncoord_reconcile_scheduler_workers coord_sweeps' ]] \
+    || { echo "unphased tick steps must name themselves in .tick-phase: $(command tr '\n' ';' < "$mk_dir/marks")" >&2; exit 1; }
+)
+}
+sched_run_case tick_unphased_marks
+
 sched_case_stop_loss_resume() {
   local units n=779 at
   at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

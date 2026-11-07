@@ -47,15 +47,19 @@ def held_hours(unit, end):
     return total / 3600
 
 
-def unit_spend(rows):
-    """Lifetime worker fresh tokens and minutes per unit key. A run without a cache split (legacy
-    footer or no usage record) adds no tokens; its minutes still count."""
+def unit_spend(rows, since=None):
+    """Lifetime worker fresh tokens and minutes per unit key (only runs that ended at or after `since`
+    when given). A run without a cache split (legacy footer or no usage record) adds no tokens; its
+    minutes still count. Arbiter runs (phase supervise) are the supervisor's time, not the unit's work:
+    their minutes are left out (134 arbiter runs put 1185 min on one blocked unit)."""
     spend = {}
     for row in rows:
+        if since is not None and row["start"] + timedelta(minutes=row["minutes"]) < since:
+            continue
         unit = spend.setdefault(row["unit"], [0, 0.0])
         usage = row["usage"]
         unit[0] += usage.fresh if usage is not None and usage.fresh is not None else 0
-        unit[1] += row["minutes"]
+        unit[1] += 0 if row.get("phase") == "supervise" else row["minutes"]
     return spend
 
 
@@ -64,11 +68,12 @@ def recent_units(rows, since):
     return {row["unit"] for row in rows if row["start"] + timedelta(minutes=row["minutes"]) >= since}
 
 
-def work_orders(units, spend, now, recent=None):
+def work_orders(units, spend, now, recent=None, window=None):
     """Each unit's spend against UNIT_STANDARDS; `over` lists the bug bounds an open unit has passed.
 
     A held unit (UNIT_HELD) is judged only on spend inside the window: `recent` holds the unit keys
-    that ran there, so lifetime spend from before it was held never counts. None skips that rule."""
+    that ran there and `window` is unit_spend(rows, since), so lifetime spend from before it was held
+    never counts. None skips that rule."""
     out = []
     for unit in units:
         keys = {key for key in (unit.get("id"), str(unit.get("pr") or ""),
@@ -76,9 +81,11 @@ def work_orders(units, spend, now, recent=None):
         keys.add(re.sub(r"^pr-", "", unit.get("id", "")))
         hist = [entry for entry in unit.get("history") or [] if _ts(entry.get("at"))]
         done = next((_ts(entry["at"]) for entry in hist if entry.get("stage") in ("merged", "landed")), None)
+        held = unit.get("stage") in UNIT_HELD
+        used = window if held and window is not None else spend
         value = {
-            "tokens": sum(spend.get(key, [0, 0])[0] for key in keys),
-            "worker_minutes": round(sum(spend.get(key, [0, 0])[1] for key in keys)),
+            "tokens": sum(used.get(key, [0, 0])[0] for key in keys),
+            "worker_minutes": round(sum(used.get(key, [0, 0])[1] for key in keys)),
             "rounds": sum(1 for entry in hist if entry.get("stage") == "review-request-changes"),
             # Time on hold is waiting, not work: 10 of 11 units over the age bound on 2026-11-07 had
             # spent 71 to 430 h blocked or escalated and were judged the moment they were released.
@@ -91,7 +98,6 @@ def work_orders(units, spend, now, recent=None):
         # hold, main-red) and a supervisor-review unit on the supervisor. The age bound only
         # judges units the factory could progress; the spend bounds judge a held unit only if
         # it spent inside the window.
-        held = unit.get("stage") in UNIT_HELD
         quiet = held and recent is not None and not keys & recent
         over = [key for key, (_, _, bug) in UNIT_STANDARDS.items()
                 if open_unit and value[key] is not None and value[key] >= bug

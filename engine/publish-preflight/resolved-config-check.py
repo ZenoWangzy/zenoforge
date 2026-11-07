@@ -142,7 +142,10 @@ def main(argv):
             changed_product_source = False
             for source in sorted(sources):
                 product_new = git_bytes(nrepo, nref, source)
-                if product_new is None or hashlib.sha256(product_new).hexdigest() != n[1]:
+                # The build rewrites a mapped pack file (rulings ids and paths), so its bytes never match the source.
+                # The source and the rewrite are both product-owned, so a changed source explains the change.
+                mapped = source in pack_sources.get(rel, ())
+                if product_new is None or (not mapped and hashlib.sha256(product_new).hexdigest() != n[1]):
                     continue
                 product_old = git_bytes(brepo, old_product_ref, source) if old_product_ref else None
                 if old_product_ref and product_old != product_new:

@@ -349,20 +349,20 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
           if [[ "$(unit_field "$unit" '.self_fix_active // false')" == true ]]; then
             set_unit "$unit" "$(hist self-fix-delivered) | .self_fix_active=false | .self_fix_pending=false | .self_check_sha=null | .self_check_status=null | .stage=.self_check_return_stage"
           else
-            local current_unit disposition_update
+            local current_unit disposition_update head_class head_base
             if [[ "$(unit_field "$unit" '.author_dispositions_pending // false')" == true ]]; then
               current_unit="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
               disposition_update="$(review_dispositions_update "$rep" "$current_unit")"
             else
               disposition_update=""
             fi
-            set_unit "$unit" "$(hist repair-delivered) $disposition_update | .repair_hint=null | (.stage=\"rereview-pending\")"
-            set_unit "$unit" ".author_dispositions_pending=false"
+            read -r head_class head_base <<<"$(repair_head_class "$unit" "$(jqf -r '.workdir // empty' <<<"$w")")"
+            set_unit "$unit" "$(repair_run_filter "$unit" "$head_class" "$head_base" "$tk") $disposition_update | .author_dispositions_pending=false"
           fi
           # f6 复查（#4482）：repair/self-fix 推的新 head 重新过尺寸准入；超线同样转 supervisor 拆分
           local recheck_dir recheck_branch
           recheck_dir="$(jqf -r '.workdir // empty' <<<"$w")"; recheck_branch="$(unit_field "$unit" '.branch // empty')"
-          if [[ "$(unit_field "$unit" '.lane // "pr"')" != direct-main ]] && [[ "$(unit_field "$unit" '.pr // empty')" =~ ^[0-9]+$ ]]; then
+          if [[ "$(unit_field "$unit" '.history[-1].stage // empty')" != repair-no-push && "$(unit_field "$unit" '.lane // "pr"')" != direct-main ]] && [[ "$(unit_field "$unit" '.pr // empty')" =~ ^[0-9]+$ ]]; then
             size_admission_recheck "$unit" "$recheck_dir" "$recheck_branch" "on $recheck_branch after repair" || :
           fi ;;
         land)

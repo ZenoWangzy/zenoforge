@@ -264,7 +264,7 @@ supervisor_requeue_rereview() { # unit-json → true when the latest unchanged r
         | ([$history | to_entries[] | select(.key > $review.key and .value.stage == "write-start")] | last // null) as $latest_write
         | $reviewed_pair and (
             ($no_actionable and $latest_write == null)
-            or ($delivery != null and $no_push != null and $no_push.key > $delivery.key
+            or ($no_push != null and ($delivery == null or $no_push.key > $delivery.key)
                 and $no_push_sha == $review_sha
                 and ($latest_write == null or $latest_write.key < $no_push.key))
           )
