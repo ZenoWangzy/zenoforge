@@ -36,6 +36,7 @@ GH_TICK_CALLS_FILE=""
 TICK_INTAKE_READS_FILE=""
 TICK_PHASE_DETAILS=""
 TICK_PHASES=""
+TICK_LOCK_WAIT=0
 # 有界并行：#4725 把 gh 全改串行后慢拍从 350s 涨到 636s；后台 gh 最多 GH_PARALLEL 个同时在途，避开二级限流。
 GH_PARALLEL="${GH_PARALLEL:-4}"
 # 条件请求（GitHub REST best practices，#4725）：周期性 GET 带 If-None-Match，命中 304 不占主限流配额，
@@ -429,6 +430,7 @@ AGED_PR_BEHIND_COMMITS=300
 
 # 记录每拍各阶段耗时（秒），tick done 行只列 ≥5s 的阶段：一拍 6–7 分钟时看不出慢在哪（L60）。
 TICK_PHASES=""
+TICK_LOCK_WAIT=0
 
 # ---------- tick 互斥：同一时刻只允许一个 scheduler 写台账 ----------
 SCHED_LOCK="$A/.scheduler.lock"
@@ -508,7 +510,7 @@ refill_tick() {
     fi
   fi
   local gh_calls; gh_calls="$(tick_gh_calls_count)"
-  say "tick-phases kind=refill secs=$SECONDS gh_calls=$gh_calls phases=${TICK_PHASE_DETAILS:-none}"
+  say "tick-phases kind=refill secs=$SECONDS gh_calls=$gh_calls lock_wait=$TICK_LOCK_WAIT phases=${TICK_PHASE_DETAILS:-none}"
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
   rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""
@@ -600,7 +602,7 @@ main() {
   phase_mark cleanup_tick
   cleanup_tick
   gh_calls="$(tick_gh_calls_count)"
-  say "tick-phases kind=full secs=$SECONDS gh_calls=$gh_calls phases=${TICK_PHASE_DETAILS:-none}"
+  say "tick-phases kind=full secs=$SECONDS gh_calls=$gh_calls lock_wait=$TICK_LOCK_WAIT phases=${TICK_PHASE_DETAILS:-none}"
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
   rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""
