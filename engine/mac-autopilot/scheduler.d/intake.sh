@@ -663,6 +663,9 @@ register_new_issues() {
       if [[ "$lane" == pr ]]; then branch="agent/issue-$n-recovered-${recovery_sha:0:12}"
       else branch="agent/auto-issue-$n-recovered-${recovery_sha:0:12}"; fi
     fi
+    if [[ "$episode" == ruling-* ]]; then # the old branch is a closed PR's, up to thousands of commits behind main
+      branch="agent/issue-$n-${episode//:/}"
+    fi
     if (( existing_only )) && [[ -n "$existing_id" ]] && ! jqf -e --arg id "$existing_id" 'any(.units[]; .id == $id and (.stage | test("^(implement|review|rereview|repair)(-pending)?$")))' "$(intake_units_view)" >/dev/null; then
       total_upstream="$(jqf '[.units[] | select(.stage | test("^(implement|review|rereview|repair)(-pending)?$"))] | length' "$UNITS")"
       if (( max_up > 0 && total_upstream >= 2 * max_up )); then # max_up 0 is a paused pool: known units still resume, as they did before the ceiling.
@@ -713,6 +716,7 @@ register_new_issues() {
           + (if (($handoff_all.worktree_sha // "") | test("^[0-9a-f]{40}$")) then {handoff_worktree:$handoff_all.worktree,handoff_worktree_sha:$handoff_all.worktree_sha,handoff_worktree_dirty:$handoff_all.worktree_dirty} else {} end)
           + (if $handoff.start_ref then {handoff_start_ref:$handoff.start_ref,handoff_start_sha:$handoff.start_sha} else {} end)] end'
     fi
+    [[ "$episode" != ruling-* || -z "$existing_id" ]] || set_unit "$existing_id" '.task += "\n\n本轮从最新 main 的新分支开始，不要沿用旧分支：它属于已关闭的 PR。裁决里提到的旧 PR CI 失败，只有能从当前 main 复现才算本轮范围。"'
     if [[ -n "$intake_candidate_scope" ]]; then
       intake_candidate_stage=implement-pending
       if [[ -n "$existing_id" && "$pr_state" == OPEN ]] || [[ -z "$existing_id" && "$handoff_pr" =~ ^[0-9]+$ ]]; then
@@ -729,6 +733,7 @@ register_new_issues() {
   if (( ${#intake_terminal_rows[@]} )); then
     say "intake closed units under open issues count=${#intake_terminal_rows[@]} ids=$(IFS=,; printf '%s' "${intake_terminal_rows[*]}")"
     intake_reopen_episodes "${intake_terminal_rows[@]}"
+    intake_ruling_episodes "${intake_terminal_rows[@]}"
   fi
   say "intake detail candidates secs=$((SECONDS - step_started))s added=$added total_secs=$((SECONDS - intake_started))s"
   skip_line="intake skip counts refill=$refill_mode added=$added"

@@ -4448,6 +4448,45 @@ sched_case_reopened_issue_episode() {
 }
 sched_run_case reopened_issue_episode
 
+sched_case_ruling_restore() {
+  local mode log="supervisor/autopi/scheduler.log" ruled=2026-11-06T22:44:55Z closed_at=2026-11-03T14:39:00Z episode='' history
+  for mode in ruled closed-again external sized; do
+    new_tick_fixture "ruling-restore-$mode"
+    mkdir -p "$TF/agent-home/state"
+    [[ "$mode" != closed-again ]] || closed_at=2026-11-06T23:00:00Z
+    [[ "$mode" == closed-again ]] || closed_at=2026-11-03T14:39:00Z
+    command jq -n --arg at "$ruled" --argjson ext "$([[ "$mode" == external ]] && echo true || echo false)" \
+      '{state:"ready-for-agent",state_changed_from:"needs-advisor",state_changed_at:$at,external_deliverable:{required:$ext,location:"",reason:""}}' > "$TF/agent-home/state/782.json"
+    command jq -n '{number:782,title:"ruled work",body:"do the work",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+    printf '%s\n' '{"data":{"repository":{}}}' > "$TF/reopen-events.json"
+    command jq '.max_workers=2 | .implement_cap=0 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+    mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+    printf '%s\n' '{"units":[]}' > "$TF/supervisor/autopi/units.json"
+    episode=''; history='[{stage:"pr-closed",at:$at}]'
+    if [[ "$mode" == sized ]]; then
+      episode=ruling-2026-11-01T00:00:00Z
+      history='[{stage:"hold-handoff",at:"2026-11-01T01:00:00Z"},{stage:"supervisor-escalated",result:"size admission: 968 changed lines",at:$at}]'
+    fi
+    command jq -n --arg at "$closed_at" --arg episode "$episode" "{units:[{id:\"ruled\",issue:782,title:\"ruled work\",task:\"prior work\",lane:\"pr\",branch:\"agent/issue-782\",stage:\"closed\",history:$history} + (if \$episode == \"\" then {} else {hold_handoff_episode:\$episode} end)]}" > "$TF/supervisor/autopi/units-archive.json"
+    tick
+    case "$mode" in
+      ruled)
+        command jq -e '.scheduler_handoff.episode == "ruling-2026-11-06T22:44:55Z"' "$TF/agent-home/state/782.json" >/dev/null || { echo 'not ok - a ruling did not register an episode' >&2; exit 1; }
+        tick
+        command jq -e 'any(.units[]; .id == "ruled" and .stage == "implement-pending" and .branch == "agent/issue-782-ruling-2026-11-06T224455Z"
+          and .hold_handoff_episode == "ruling-2026-11-06T22:44:55Z" and (.task | contains("只有能从当前 main 复现")))' "$TF/supervisor/autopi/units.json" >/dev/null || { echo 'not ok - a ruling must restore on a fresh branch with the brief' >&2; exit 1; } ;;
+      closed-again)
+        command jq -e 'has("scheduler_handoff") | not' "$TF/agent-home/state/782.json" >/dev/null || { echo 'not ok - one ruling restored twice' >&2; exit 1; } ;;
+      external)
+        command jq -e 'has("scheduler_handoff") | not' "$TF/agent-home/state/782.json" >/dev/null || { echo 'not ok - a worker was sent at an external deliverable' >&2; exit 1; } ;;
+      sized)
+        command jq -e 'has("scheduler_handoff") | not' "$TF/agent-home/state/782.json" >/dev/null || { echo 'not ok - size failure looped advisor to restore' >&2; exit 1; }
+        grep -q 'intake ruling issue #782 at 2026-11-06T22:44:55Z: not restored, its last ruling restore failed size admission' "$TF/$log" || { echo 'not ok - the size refusal must log a line' >&2; exit 1; } ;;
+    esac
+  done
+}
+sched_run_case ruling_restore
+
 sched_case_intake_budget() {
   new_tick_fixture intake-budget
   command jq -n '{number:782,title:"waits a tick",body:"do the work",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
