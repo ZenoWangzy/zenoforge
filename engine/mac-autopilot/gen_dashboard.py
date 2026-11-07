@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost, live_workers, factory_trend, founder_reqs
+import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles
 import ledger_history
 from config_paths import zf_config_file
 
@@ -107,9 +107,18 @@ cost_cache_path = os.environ.get("MAC_AUTOPILOT_COST_CACHE", os.path.join(SUP, "
 previous_cost_cache = load_cost_cache(cost_cache_path)
 current_cost_cache = {}
 session_rows = []
-for day_text in (yesterday_text, today_text):
-    day_dir = os.path.join(SESSION_ROOT, *day_text.split("-"))
+def codex_day_of(path, dir_text):
+    # Codex names both the dir and the rollout stamp in the host's local time; a session belongs to the SESSION_TZ day it started on.
+    stamp = re.match(r"rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})", os.path.basename(path))
+    if not stamp: return dir_text
+    started = datetime.strptime(stamp.group(1), "%Y-%m-%dT%H-%M-%S").astimezone()
+    return started.astimezone(SESSION_TIMEZONE).date().isoformat()
+# host-local dirs (Asia/Shanghai when the host is there) run up to 16 h ahead of LA, so scan one day either side of the LA window
+for dir_text in [(today - timedelta(days=offset)).isoformat() for offset in (-1, 0, 1, 2)]:
+    day_dir = os.path.join(SESSION_ROOT, *dir_text.split("-"))
     for path in sorted(glob.glob(os.path.join(day_dir, "rollout-*.jsonl"))):
+        day_text = codex_day_of(path, dir_text)
+        if day_text not in (yesterday_text, today_text): continue
         try: stat = os.stat(path)
         except OSError: continue
         cached_entry = previous_cost_cache.get(path) or {}
@@ -392,7 +401,10 @@ def snapshot_section(*path):
     return node if isinstance(node, list) else None
 issues_open = gh(["issue", "list", "--state", "open", "--limit", "300", "--json", "number,labels"])
 prs_open = snapshot_section("prs") or []
-prs_merged_today = gh(["pr", "list", "--state", "merged", "--limit", "30", "--json", "number,mergedAt"])
+# 按合并时间检索（gh 默认按创建时间排序，老编号今天合并的 PR 不能被截掉）；200 是上限，不是窗口
+la_midnight_utc = datetime.combine(today, datetime.min.time(), tzinfo=SESSION_TIMEZONE).astimezone(ZoneInfo("UTC"))
+prs_merged_today = gh(["pr", "list", "--state", "merged", "--search", f"merged:>={la_midnight_utc:%Y-%m-%dT%H:%M:%SZ}",
+                       "--limit", "200", "--json", "number,mergedAt"])
 merged_today = [p["number"] for p in prs_merged_today
                 if session_date_of(p.get("mergedAt")) == today_text]
 needs_triage = sum(1 for i in issues_open if any(l.get("name") == "needs-triage" for l in i.get("labels", [])))
@@ -406,7 +418,8 @@ def main_verdict(workflow):
     verdict = next((r.get("conclusion") for r in runs
                     if r.get("status") == "completed" and r.get("conclusion") not in (None, "", "cancelled")), None) or "unknown"
     return verdict + ("（新一轮进行中）" if runs[0].get("status") != "completed" else "")
-suites = main_verdict("Pipeline suites")
+# 套件只认已配置的 Pipeline suites 工作流；配成别的（如 CI）时它不存在，不能把 CI 的 run 当成第二个结果
+suites = main_verdict("Pipeline suites") if (cfg.get("merge_gate") or {}).get("main_workflow") == "Pipeline suites" else "unknown"
 ci = main_verdict("CI")
 
 # ---- CI 现状（每拍）：runner、排队、WIP 等待、热修挡板。健康线在 node-health.json 的 ci_standards（node_health.py）----
@@ -820,36 +833,12 @@ except Exception as e:
     founder_data = {"error": str(e)[:200]}
 
 ISSUE_TITLES_PATH = os.path.join(A, "issue-titles.json")
-
-def fill_titles(rows, known):
-    """Cards whose task is only an id (opt-i4727, 4631) get the issue / PR title: ledger and stage-tile titles first, then a
-    persistent cache, then ONE batched GraphQL call for the numbers still missing (titles never change, so cached forever)."""
-    idish = lambda t: not t or re.fullmatch(r"[\w.-]+", t) is not None
-    need = {r["issue"] for r in rows if r.get("issue") and idish(r.get("task"))}
-    cache = read_json(ISSUE_TITLES_PATH) or {}
-    titles = {**cache, **{str(k): v for k, v in known.items() if v}}
-    miss = sorted(n for n in need if str(n) not in titles)[:30]
-    if miss:
-        try:
-            query = ("query($owner:String!,$name:String!){repository(owner:$owner,name:$name){" +
-                     "".join(f"r{n}:issueOrPullRequest(number:{int(n)}){{... on Issue{{title}} ... on PullRequest{{title}}}} " for n in miss) + "}}")
-            repo = ((json.loads(front_run(["gh", "api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", "query=" + query], 30)) or {}).get("data") or {}).get("repository") or {}
-            for n in miss:
-                t = (repo.get(f"r{n}") or {}).get("title")
-                if t: titles[str(n)] = cache[str(n)] = t
-            with open(ISSUE_TITLES_PATH + ".tmp", "w", encoding="utf-8") as out: json.dump(cache, out, ensure_ascii=False)
-            os.replace(ISSUE_TITLES_PATH + ".tmp", ISSUE_TITLES_PATH)
-        except Exception:
-            pass
-    for r in rows:
-        t = titles.get(str(r.get("issue")))
-        if t and idish(r.get("task")): r["task"] = t[:60]
-
 try:
-    known = {u.get("issue"): u.get("title") for u in units}
+    known = {u.get("issue"): u.get("title") for u in units if u.get("issue")}
     for s in (read_json(FRONT_CACHE_PATH) or {}).get("github", {}).get("stages", []):
-        known.update({i.get("number"): i.get("title") for i in s.get("items") or []})
-    fill_titles((live_workers_data.get("items") or []) + (factory_data.get("archive") or []), known)
+        known.update({i.get("number"): i.get("title") for i in s.get("items") or [] if i.get("number")})
+    dashboard_titles.fill_titles((live_workers_data.get("items") or []) + (factory_data.get("archive") or []), known,
+                                 ISSUE_TITLES_PATH, front_run)
 except Exception:
     pass
 

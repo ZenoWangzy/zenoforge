@@ -19,6 +19,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import ledger_history
 import line_holds
+import pr_census
 import worker_cost
 import workorder_cost
 import usage_reader
@@ -193,7 +194,7 @@ SOURCE = {
     "review.first_pass_pct": "units.json 每单第一次评审结论（review-approve / review-request-changes / review-block）",
     "repair.wall_p50": "impl-*-fix-*.worker.log 的开始 → 最后写入",
     "loop.rounds_p90": "units.json：每次 review-approve 之前的 review-request-changes 次数",
-    "loop.rework_token_pct": "worker 页脚或 usage_reader 原生 turn 用量减派发基线：repair（含 self-fix）+ rereview ÷ 全部；计数不可用则 N/A",
+    "loop.rework_token_pct": "worker 页脚或 usage_reader 原生 turn 用量减派发基线：repair（含 self-fix）+ rereview ÷ 已计量的 run；未计量的 run 不计入，显示已计量 run 数；全部未计量则 N/A",
     "loop.incremental_rereview_pct": "每次 repair 之后同一单的下一次评审是否为增量复检（rereview）",
     "workers.deaths": "units.json 的 worker-no-output 事件",
     "ci.approve_to_ship_p50": "units.json：review-approve → merged/landed；仍在等的按已等时长计",
@@ -222,7 +223,7 @@ SOURCE = {
     "ci.priority_hold_runs_48h": "共享 actions-run-cancellations.jsonl：最近 48 小时不同 run_id 的最后一个非空 reason=ci hold。",
     "ci.shared_append_rebase_conflict_pct": "logs/shared-append-rebases.jsonl（land-direct-main 记录每次改动范围带 shared-append 文件的落地 rebase）：固定滚动 24h 内 conflict_files 非空的比例；无记录不计值。",
     "review.large_pr_pct": "pr-sizes.json（ci_spend.py 取 PR 非测试新增行；测试路径包括名为 test、tests、__tests__、fixture、fixtures、__snapshots__ 的目录，以及名称以 eval 开头且后续只含小写字母、连字符或下划线的目录；文件名含 .test.、.spec. 或以 .snap 结尾也排除）对照最近 30 天有台账活动的 PR；无历史的在途单也计入，缺尺寸时显示无数据",
-    "loop.advisor_fail_pct": "units.json：advisor-unavailable ÷（advisor-ruling + advisor-unavailable），窗口内",
+    "loop.advisor_fail_pct": "units.json：advisor-unavailable ÷（advisor-ruling + advisor-unavailable），24 h 窗口",
     "advisor.last_answer_age_hours": "web-advisor-provider-jobs/*/answer.err 中不含 FAIL: 的最新 mtime；needs-advisor 数来自 gh issue list",
     "review.findings_missing_pct": "units.json 每单的 review_findings：窗口内 block=missing 的打回 ÷ 全部打回（调度器收割打回报告时写入）",
     "host.prereqs_missing": "host-prereqs.json 里每项每次体检做一次 TCP 连接或 HTTP 200 探测",
@@ -503,23 +504,21 @@ def rework_by_size(units, sizes, nontest_added, since, now):
 
     Only PRs with a ledger event in the 30-day window (#4482): the all-ledger share could
     only fall by dilution, so one-off oversized PRs kept it unhealthy indefinitely."""
-    per, large_sizes, missing = [], [], False
+    per, large_sizes = [], []
     for u in size_window_units(units, since, now):
         number = str(u.get("pr"))
         lines = sizes.get(number)
         if lines is not None:
             per.append((lines, sum(1 for h in u.get("history") or [] if h.get("stage") == "repair-delivered")))
         nontest = nontest_added.get(number)
-        if nontest is None:
-            missing = True
-        else:
+        if nontest is not None:  # a PR with no size row is left out of the share, not voiding it
             large_sizes.append(nontest)
     rows = []
     for lo, hi in SIZE_BANDS:
         reps = sorted(r for n, r in per if n >= lo and (hi is None or n < hi))
         rows.append({"band": f"{lo}–{hi}" if hi else f"≥{lo}", "units": len(reps), "median_repairs": pct(reps, .5),
                      "share_4plus": round(100 * sum(1 for r in reps if r >= 4) / len(reps)) if reps else None})
-    large = 100 * sum(1 for n in large_sizes if n > LARGE_PR_LINES) / len(large_sizes) if large_sizes and not missing else None
+    large = 100 * sum(1 for n in large_sizes if n > LARGE_PR_LINES) / len(large_sizes) if large_sizes else None
     return rows, large
 
 
@@ -614,13 +613,12 @@ def worker_runs(rows, since, now):
 
 
 def rework_token_pct(runs):
-    """Repair and rereview share of worker tokens; incomplete run usage makes the metric unavailable."""
-    if not runs or any(r["tokens"] is None for r in runs):
-        return None
-    tokens = sum(r["tokens"] for r in runs)
+    """Repair and rereview share of worker tokens over the runs whose usage was measured (the caller shows how many)."""
+    measured = [r for r in runs if r["tokens"] is not None]
+    tokens = sum(r["tokens"] for r in measured)
     if not tokens:
         return None
-    rework = sum(r["tokens"] for r in runs if r["node"] in ("repair", "rereview"))
+    rework = sum(r["tokens"] for r in measured if r["node"] in ("repair", "rereview"))
     return 100 * rework / tokens
 
 
@@ -995,7 +993,7 @@ def gated_agent_pr_share(repo):
         return None
 
 
-RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{40}) closed=\[([0-9,\s]*)\]")
+RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{7,40}) closed=\[([0-9,\s]*)\]")
 BOT_COMMENT_MARKER = "<!-- vecta-agent-comment -->"
 BOT_DISCLAIMER = "This comment is posted by the automated the product agent pipeline under the maintainer's GitHub account"
 REVIEW_STAGES = {
@@ -1033,14 +1031,10 @@ def release_acceptances(runtime):
 def gh_delivery_rows(repo, now, units=None, release_events=None):
     """Fetch issue creation times and recent merged-PR review activity for delivery metrics."""
     cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%d")
-    commands = {
-        "issues": ["issue", "list", "--repo", repo, "--state", "closed", "--search", f"closed:>={cutoff}",
-                   "--limit", "1000", "--json", "number,createdAt"],
-        "prs": ["pr", "list", "--repo", repo, "--state", "merged", "--search", f"merged:>={cutoff}",
-                "--limit", "1000", "--json", "number,mergedAt,mergeCommit,body,reviews,commits"],
-    }
-    census = _parallel_gh_json(list(commands.values()), GH_DELIVERY_CENSUS_TIMEOUT)
-    rows = {key: value if isinstance(value, list) else None for key, value in zip(commands, census)}
+    issues = _gh_json(["issue", "list", "--repo", repo, "--state", "closed", "--search", f"closed:>={cutoff}",
+                       "--limit", "1000", "--json", "number,createdAt"], GH_DELIVERY_CENSUS_TIMEOUT)
+    rows = {"issues": issues if isinstance(issues, list) else None,
+            "prs": pr_census.fetch(repo, cutoff, _gh_json, GH_DELIVERY_CENSUS_TIMEOUT)}
     if rows["issues"] is not None and rows["prs"] is not None and units is not None and release_events is not None:
         since = now - timedelta(days=30)
         accepted_issues = {_number(event.get("issue")) for event in release_events
@@ -1488,6 +1482,8 @@ def main():
     metrics["loop.incremental_rereview_pct"] = 100 * followed.count("rereview") / len(followed) if followed else None
     units = ledger_history.load_units(a)
     metrics.update(ledger_metrics(units, since, now))
+    # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
+    metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]
     repo = os.environ.get("ZF_REPO", "")
     release_events = release_acceptances(a)
     issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events)
@@ -1631,6 +1627,7 @@ def main():
                             "source": SOURCE.get(mid, "")}
                            for node, mid, desc, v, healthy, unhealthy, higher, status in rows],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
+               "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],
                "delivery": delivery["details"], "flow": flow_details, "mechanisms": mechanism_rows,
                "ci_standards": {k: {"desc": d, "healthy": h, "unhealthy": u, "higher_is_better": hi, "meaning": m, "source": src}
                                 for k, (d, h, u, hi, m, src) in CI_STANDARDS.items()},

@@ -132,14 +132,15 @@ jq -e '.metrics[] | select(.id == "ci.priority_hold_runs_48h") | .value == 2 and
 ! grep -Fq 'tokens=1649999' <<<"$out" || fail 'run outside the window counted'
 python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:20:00Z --alert >/dev/null
 [[ "$(grep -c 'metric=loop.rework_token_pct' "$a/alerts/node-health.md")" == 1 ]] || fail "unhealthy metric alerted more than once per hour: $(cat "$a/alerts/node-health.md")"
-# A review with no readable usage is unknown, so it must make the rework share N/A.
+# A review with no readable usage is not measured: the rework share reads the measured runs and says how many were measured.
 unknown_review="$sup/review-99-20261019T112000Z.worker.log"
 printf '{"type":"assistant"}\n' > "$unknown_review"
 touch -d '2026-10-19T11:30:00Z' "$unknown_review"
 python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z \
   --json "$a/node-health-unknown-review.json" >/dev/null
-jq -e '[.metrics[] | select(.id == "loop.rework_token_pct")][0] | .value == null and .status == "NO-DATA"' \
-  "$a/node-health-unknown-review.json" >/dev/null || fail 'unknown review tokens must make the rework share N/A'
+jq -e '([.metrics[] | select(.id == "loop.rework_token_pct")][0] | .value != null and .status != "NO-DATA")
+  and .rework_token_measured[0] + 1 == .rework_token_measured[1]' \
+  "$a/node-health-unknown-review.json" >/dev/null || fail "one unmeasured review must not void the rework share: $(jq -c '.rework_token_measured' "$a/node-health-unknown-review.json")"
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'measured review usage did not enter the rework metric denominator'
 import json, os, pathlib, re, sys
 from datetime import datetime, timezone
@@ -389,14 +390,15 @@ echo '{"lines":{"1":2000,"2":801,"3":800,"4":2000,"5":2000,"6":100},"nontest_add
 python3 "$script_dir/node_health.py" --runtime "$window" --audit "$audit" --now 2026-10-19T12:00:00Z --json "$window/result.json" >/dev/null
 jq -e '[.metrics[] | select(.id == "review.large_pr_pct")][0] | .value == 50 and .healthy == 10 and .unhealthy == 25 and .status == "UNHEALTHY"' "$window/result.json" >/dev/null \
   || fail 'large-PR share did not honor the 30-day window and 800-line boundary'
+# A window PR with no size row is left out of the share: 1 of the 3 PRs with data is over 800 lines, so 33.3 (not N/A).
 # A temporary failed size fetch must not reset an existing unhealthy episode.
 export FAKE_ISSUE_LIST='[]' FAKE_ISSUE_TITLE='pipeline health: review.large_pr_pct unhealthy'
 size_alert() { python3 "$script_dir/node_health.py" --runtime "$window" --audit "$audit" --now "$1" --file-issues >/dev/null; }
 size_alert 2026-10-19T12:00:00Z
 jq 'del(.nontest_added["5"])' "$window/pr-sizes.json" > "$window/sizes.tmp"; mv "$window/sizes.tmp" "$window/pr-sizes.json"
 python3 "$script_dir/node_health.py" --runtime "$window" --audit "$audit" --now 2026-10-19T12:00:00Z --json "$window/result.json" >/dev/null
-jq -e '[.metrics[] | select(.id == "review.large_pr_pct")][0] | .value == null and .status == "NO-DATA"' "$window/result.json" >/dev/null \
-  || fail 'missing non-test addition count for an active PR must not produce a partial percentage'
+jq -e '[.metrics[] | select(.id == "review.large_pr_pct")][0] | .value > 33.3 and .value < 33.4 and .status == "UNHEALTHY"' "$window/result.json" >/dev/null \
+  || fail "a window PR without a size row must be left out of the share, not void it: $(jq -c '[.metrics[] | select(.id == "review.large_pr_pct")][0]' "$window/result.json")"
 size_alert 2026-10-19T13:00:00Z
 jq -e '.["review.large_pr_pct"].since == "2026-10-19T12:00:00Z"' "$window/node-health-state.json" >/dev/null \
   || fail 'missing size reset the unhealthy episode'
@@ -513,6 +515,47 @@ assert metrics["values"]["delivery.revert_rate_30d_pct"] == 100, metrics
 print("node_health Git revert markers: PASS")
 CHECK
 
+# The release-closer log writes a 9- or 12-character sha: the acceptance regex must read it, or 30 d delivery stays empty.
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'short release-closer sha not read as an acceptance'
+import pathlib, sys
+sys.path.insert(0, sys.argv[1]); import node_health as n
+runtime = pathlib.Path(sys.argv[2]) / "short-sha-events"
+(runtime / "alerts").mkdir(parents=True)
+(runtime / "alerts" / "events.md").write_text(
+    "[2026-10-26T11:59:00Z] release-closer: deployed=abc123def closed=[101]\n"
+    "[2026-10-26T12:00:00Z] release-closer: deployed=abc123def456 closed=[102]\n")
+assert n.release_acceptances(str(runtime)) == [
+    {"issue":101,"sha":"abc123def","at":"2026-10-26T11:59:00Z"},
+    {"issue":102,"sha":"abc123def456","at":"2026-10-26T12:00:00Z"}], n.release_acceptances(str(runtime))
+print("node_health short release-closer sha: PASS")
+CHECK
+
+# The PR census pages GraphQL search results and refuses a PR whose reviews or commits would be cut short.
+python3 - "$script_dir" <<'CHECK' || fail 'PR census paging or truncation wrong'
+import sys
+sys.path.insert(0, sys.argv[1]); import pr_census
+def pr(number, reviews=0, commits=0):
+    return {"number":number,"mergedAt":"2026-10-24T00:00:00Z","body":"","mergeCommit":{"oid":"a"*40},
+            "reviews":{"totalCount":reviews,"nodes":[]},"commits":{"totalCount":commits,"nodes":[]}}
+pages = [{"data":{"search":{"pageInfo":{"hasNextPage":True,"endCursor":"c1"},"nodes":[pr(1, 1, 1)]}}},
+         {"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(2)]}}}]
+calls = []
+def fake(args, timeout):
+    calls.append(args)
+    return pages[len(calls) - 1]
+rows = pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30)
+assert [r["number"] for r in rows] == [1, 2], rows
+assert calls[0][:2] == ["api", "graphql"] and calls[1][-1] == "after=c1", calls
+assert "merged:>=2026-10-01" in calls[0][-1], calls[0]
+pages = [{"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(3, reviews=101)]}}}]
+calls.clear()
+assert pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30) is None
+pages = [{"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(4, commits=101)]}}}]
+calls.clear()
+assert pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30) is None
+print("node_health PR census pages and refuses truncation: PASS")
+CHECK
+
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'delivery metrics join or percentiles are wrong'
 import datetime as dt, json, os, pathlib, sys
@@ -606,7 +649,9 @@ gh = gh_bin / "gh"
 gh.write_text("""#!/usr/bin/env python3
 import json, sys
 args = sys.argv[1:]
-if args[:2] in (["issue", "list"], ["pr", "list"]):
+if args[:2] == ["api", "graphql"]:
+    print(json.dumps({"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[]}}}))
+elif args[:2] in (["issue", "list"], ["pr", "list"]):
     print("[]")
 elif args[:3] == ["issue", "view", "101"]:
     print(json.dumps({"number":101,"createdAt":"2026-09-01T00:00:00Z","closedAt":"2026-09-02T00:00:00Z"}))
@@ -643,7 +688,9 @@ args = sys.argv[1:]
 change_active(1)
 try:
     time.sleep(0.1)
-    if args[:2] in (["issue", "list"], ["pr", "list"]):
+    if args[:2] == ["api", "graphql"]:
+        print(json.dumps({"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[]}}}))
+    elif args[:2] in (["issue", "list"], ["pr", "list"]):
         print("[]")
     elif args[:2] == ["issue", "view"]:
         number = int(args[2])
@@ -675,7 +722,9 @@ gh = unavailable_bin / "gh"
 gh.write_text("""#!/usr/bin/env python3
 import json, sys
 args = sys.argv[1:]
-if args[:2] in (["issue", "list"], ["pr", "list"]):
+if args[:2] == ["api", "graphql"]:
+    print(json.dumps({"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[]}}}))
+elif args[:2] in (["issue", "list"], ["pr", "list"]):
     print("[]")
 elif args[:2] == ["issue", "view"]:
     raise SystemExit(1)

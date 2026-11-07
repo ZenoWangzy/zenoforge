@@ -108,6 +108,8 @@ elif [[ "$1 $2" == "api repos/"* ]]; then
       echo '{"id":8}' ;;
     *) echo "unexpected fake gh API call: $*" >&2; exit 2 ;;
   esac
+elif [[ "$1 $2" == "pr list" ]]; then
+  printf '%s\n' "$*" >> "$FAKE_PR_LOG"; cat "${FAKE_PR_JSON:-/dev/null}"
 else echo '[]'; fi
 GH
 cat > "$f/bin/ssh" <<SH
@@ -251,4 +253,62 @@ FAKE_OBSERVED_OLD="$deployed" FAKE_OBSERVED_SHA="$main" FAKE_OBSERVED_IMAGE=sha2
 # 7. 看板页面把前段拆进入口 / 顾问 / 发布三个模块渲染，且每块都有"数据不可用"分支（逐模块渲染见 dashboard-modules.test.sh）
 for m in intake advisor release; do grep -Fq "{id:\"$m\"" "$script_dir/dashboard.html" || fail "dashboard.html has no $m module for the front"; done
 [[ "$(grep -c '数据不可用' "$script_dir/dashboard.html")" -ge 1 ]] || fail "no unavailable state in dashboard.html"
+# 8. 看板数字的三个口径：今日完成按合并时间检索（不被 --limit 截掉）；套件只认配置的 Pipeline suites；额度按 LA 日归属会话
+export FAKE_PR_LOG="$f/pr-list.log" FAKE_PR_JSON="$f/merged-prs.json"; : > "$FAKE_PR_LOG"
+la_today="$(TZ=America/Los_Angeles date +%F)"
+la_yesterday="$(TZ=America/Los_Angeles date -d "$la_today -1 day" +%F)"
+utc_of() { date -u -d "@$(TZ=America/Los_Angeles date -d "$1" +%s)" +%Y-%m-%dT%H:%M:%SZ; } # an LA wall-clock time as UTC
+la_midnight_utc="$(utc_of "$la_today 00:00")"
+jq -n --arg today_early "$(utc_of "$la_today 00:01")" \
+  --arg yesterday "$(utc_of "$la_yesterday 12:00")" \
+  '[{number:3,mergedAt:$today_early},{number:4,mergedAt:$yesterday}]' > "$FAKE_PR_JSON"
+jq -n '{schema:1,main_runs:{"Pipeline suites":[{databaseId:1,status:"completed",conclusion:"success"}],CI:[{databaseId:2,status:"completed",conclusion:"failure"}]}}' \
+  > "$a/pr-run-snapshot.json"
+codex="$f/codex-block"; mkdir -p "$codex"
+gen_block() { # extra env, then config main_workflow, then the codex root
+  env TZ=Asia/Shanghai SESSION_TZ=America/Los_Angeles CODEX_SESSIONS_DIR="$codex" MAC_AUTOPILOT_COST_CACHE="$f/cost-block.json" \
+    MAC_AUTOPILOT_DASHBOARD_OUTPUT="$f/out-block.js" python3 "$script_dir/gen_dashboard.py"
+}
+block_out() { sed 's/^window.DASH=//; s/;$//' "$f/out-block.js"; }
+cp "$a/config.json" "$f/config.saved.json"
+# 8a. 今日完成：请求带 --search merged:>=LA 午夜 与 --limit 200；昨天合并的不算
+gen_block >/dev/null
+grep -Fq -- "--search merged:>=$la_midnight_utc" "$FAKE_PR_LOG" && grep -Fq -- "--limit 200" "$FAKE_PR_LOG" \
+  || fail "merged-today census did not search by merge time with a 200 limit: $(cat "$FAKE_PR_LOG")"
+block_out | jq -e '.totals.merged_today == [3]' >/dev/null || fail "merged-today census wrong: $(block_out | jq -c .totals.merged_today)"
+# 8b. 套件：配置的是 Pipeline suites 才取它的结果；配成 CI 时 套件 为未知，不复用 CI 的结果
+block_out | jq -e '.totals.suites == "success" and .totals.ci == "failure"' >/dev/null || fail "suites verdict wrong: $(block_out | jq -c '.totals | {suites, ci}')"
+jq '.merge_gate.main_workflow = "CI"' "$f/config.saved.json" > "$a/config.json"
+gen_block >/dev/null
+block_out | jq -e '.totals.suites == "unknown" and .totals.ci == "failure"' >/dev/null \
+  || fail "suites shown for a CI-configured main: $(block_out | jq -c '.totals | {suites, ci}')"
+cp "$f/config.saved.json" "$a/config.json"
+# 8c. 额度：Codex 目录按宿主时区（Asia/Shanghai）命名，会话归属看 LA 日；LA 今天 23:30 的会话落在宿主的下一天目录里也要算
+codex_session() { # LA day, LA clock, id: one rollout of 1M input + 1M output on gpt-6-luna, filed under the host-local dir
+  local epoch host_dir host_stamp
+  epoch="$(TZ=America/Los_Angeles date -d "$1 $2" +%s)"
+  host_dir="$codex/$(TZ=Asia/Shanghai date -d "@$epoch" +%Y/%m/%d)"; host_stamp="$(TZ=Asia/Shanghai date -d "@$epoch" +%Y-%m-%dT%H-%M-%S)"
+  mkdir -p "$host_dir"
+  printf '%s\n' '{"type":"turn_context","payload":{"model":"gpt-6-luna"}}' \
+    '{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":0,"output_tokens":1000000}}}}' \
+    > "$host_dir/rollout-$host_stamp-$3.jsonl"
+}
+codex_session "$la_today" 08:00 aaaaaaaa-0000-0000-0000-00000000000a
+codex_session "$la_today" 23:30 aaaaaaaa-0000-0000-0000-00000000000c
+codex_session "$la_yesterday" 23:00 aaaaaaaa-0000-0000-0000-00000000000b
+codex_session "$(TZ=America/Los_Angeles date -d "$la_today -2 days" +%F)" 12:00 aaaaaaaa-0000-0000-0000-00000000000d
+gen_block >/dev/null
+block_out | jq -e '.cost.today.sessions == 2 and .cost.today.billable == 4000000 and .cost.yesterday.sessions == 1' >/dev/null \
+  || fail "codex sessions not attributed to the LA day: $(block_out | jq -c '{today: .cost.today, yesterday: .cost.yesterday}')"
+# 8d. 员工标题：没有 issue 的行不查 "None"；标题缓存里 issue 为空的单元不成为 None 键
+python3 - "$script_dir" <<'CHECK' || fail 'fill_titles gave an issue-less card another unit title'
+import sys
+sys.path.insert(0, sys.argv[1]); import dashboard_titles
+rows = [{"issue": None, "task": "fs-triage-default"}, {"issue": 555, "task": "opt-i555"}]
+dashboard_titles.fill_titles(rows, {None: "title of an issue-less unit", 555: "Real issue title"}, "/nonexistent/titles.json",
+                             lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+assert rows[0]["task"] == "fs-triage-default", rows
+assert rows[1]["task"] == "Real issue title", rows
+print("dashboard fill_titles skips issue-less cards: PASS")
+CHECK
 echo "dashboard-front.test.sh: PASS"
