@@ -597,4 +597,43 @@ ROUTE_RC=0 CLOSE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triag
 ROUTE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
 [[ "$(cat "$route_calls")" == 'close ' && "$(field pr-651 .stage)" == closed ]] || fail "the retry must skip the route and close: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
 
+# Size recut without a person. (1) A held recut lifts on its own once the hold is gone, whatever state the issue came back in;
+# a live hold keeps it parked. (2) An on-hold issue counts as routed (the recut waits behind the hold) instead of going to the
+# supervisor. (3) A head sent to recut before routes again, unless that recut was refused.
+issue_states="$fixture/issue-states"; mkdir -p "$issue_states"
+scheduler_issue_state() { cat "$issue_states/$1.json"; }
+printf '%s\n' '{"state":"on-hold","hold":{"kind":"stop-loss"}}' > "$issue_states/701.json"
+printf '%s\n' '{"state":"needs-recut","hold":null}' > "$issue_states/702.json"
+printf '%s\n' '{"state":"needs-triage","hold":null}' > "$issue_states/703.json"
+units "$(jq -cn '{units:[701,702,703] | map({id:("issue-"+tostring),issue:.,stage:"parked",size_recut_pending:true,note:("issue #"+tostring+" recut is on hold"),parked_reason:"on-hold",unpark_condition:"the on-hold label lifts",history:[]})}')"
+reconcile_size_recuts
+[[ "$(field issue-701 .stage)" == parked ]] || fail "a live hold must keep the size recut parked"
+for u in issue-702 issue-703; do
+  jq -e --arg id "$u" '.units[] | select(.id == $id) | .stage == "blocked-external" and .note == null and .size_recut_pending == true and (has("parked_reason") | not) and ([.history[].stage] | index("size-recut-unheld") != null)' "$UNITS" >/dev/null \
+    || fail "$u: a lifted hold did not release the size recut: $(jq -c --arg id "$u" '.units[] | select(.id == $id)' "$UNITS")"
+done
+
+printf '%s\n' '{"state":"on-hold","hold":{"kind":"stop-loss"},"size_admission":{"lines":802,"limit":800}}' > "$fixture/recut-agent-state.json"
+cat > "$fixture/recut-agent-lib.sh" <<LIB
+route_to_recut() { return 0; }
+state_read() { cat "$fixture/recut-agent-state.json"; }
+LIB
+( SCHEDULER_AGENT_LIB="$fixture/recut-agent-lib.sh"; scheduler_size_recut 705 802 800 issue-705 agent/issue-705 "$(printf 'a%.0s' {1..40})" ) \
+  || fail "an on-hold issue with the recorded size evidence must count as routed"
+printf '%s\n' '{"state":"ready-for-agent"}' > "$fixture/recut-agent-state.json"
+( SCHEDULER_AGENT_LIB="$fixture/recut-agent-lib.sh"; ! scheduler_size_recut 705 802 800 issue-705 agent/issue-705 "$(printf 'a%.0s' {1..40})" ) \
+  || fail "an issue the route left elsewhere must not count as routed"
+
+head_a="$(printf 'a%.0s' {1..40})"
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/706.json"
+printf '%s\n' '{"state":"ready-for-agent","recut_refused_at":"now"}' > "$issue_states/707.json"
+for n in 706 707; do
+  units "$(jq -cn --argjson n "$n" --arg head "$head_a" '{units:[{id:("issue-"+($n|tostring)),issue:$n,stage:"implement",history:[{stage:"size-recut",result:("head="+$head)}]}]}')"
+  : > "$fixture/recut-calls"
+  ( scheduler_size_recut() { echo routed >> "$fixture/recut-calls"; }; to_supervisor() { echo supervisor >> "$fixture/recut-calls"; }
+    size_admission_reject "issue-$n" 802 agent/x "admission" "$head_a" "" 802 admission 800 ) || true
+  [[ "$n" == 706 && "$(cat "$fixture/recut-calls")" == routed || "$n" == 707 && "$(cat "$fixture/recut-calls")" == supervisor ]] \
+    || fail "issue $n: wrong size-admission route: $(cat "$fixture/recut-calls")"
+done
+
 echo 'supervisor-arbiter.test.sh: all assertions passed'

@@ -323,6 +323,10 @@ reconcile_size_recuts() {
         echo "[$STAMP] size-recut issue=#$issue action=parked reason=state-label-reconciliation-required" >> "$A/alerts/events.md"
         say "unit $id parked for issue #$issue recut state/label reconciliation"
       fi
+    elif [[ "$(jqf -r '.stage // empty' <<<"$u")" == parked && "$(jqf -r '.note // ""' <<<"$u")" == "issue #$issue recut is on hold" ]]; then
+      # The hold is gone and no branch above claimed the state: size-recut-held lifts on its own.
+      set_unit "$id" "$(hist size-recut-unheld "issue #$issue hold lifted") | .stage=\"blocked-external\" | .note=null | del(.parked_reason, .unpark_condition)"
+      say "unit $id recut hold lifted; back to waiting for issue #$issue recut"
     fi
   done < <(jqf -c '.units[] | select((.stage=="blocked-external" or .stage=="parked") and .size_recut_pending==true)' "$UNITS")
 }

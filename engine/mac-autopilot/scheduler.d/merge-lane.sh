@@ -75,6 +75,14 @@ merge_conflict_to_repair() { # id pr cause repair_hint head
   say "merge-conflict-attribution unit=$1 pr=$2 pr_head=${head:-unknown} main_sha=${MAIN_HEAD:-unknown} conflicting_files=unavailable"
 }
 
+# 评审派发前的冲突分流：只读本拍已取的 open-PR census（TICK_PRS，不补取、不逐单元 gh）；census 说 CONFLICTING 才走
+# merge_conflict_to_repair（它自带一次 GitHub 复核，按 unit/head 记账）。返回 0 = 已处理，调用方本拍跳过评审。
+review_conflict_to_repair() { # id pr head
+  [[ "$2" =~ ^[0-9]+$ && -n "${TICK_PRS:-}" ]] || return 1
+  [[ "$(jqf -r --argjson p "$2" '[.[] | select(.number == $p) | .mergeable][0] // empty' <<<"$TICK_PRS")" == CONFLICTING ]] || return 1
+  merge_conflict_to_repair "$1" "$2" "conflicts with main before review" "PR 与最新 main 冲突，评审前发现，评审只会落在合不进去的 head 上。git merge --no-edit origin/main，按两边意图解决冲突，跑受影响测试，推送。" "$3"
+}
+
 # 合入即写 awaiting-release（#4515 发布状态单一事实源）：unit 台账的 unit→issue 关系驱动，
 # 不读 PR 正文。无 issue 的单元（外部 PR，关闭词由 GitHub 在合并时自动关票）无事可写。
 # 写失败不回滚合入（PR 已在 main 上），告警到 alerts/merge.md 人工补 conclude_merged_run。

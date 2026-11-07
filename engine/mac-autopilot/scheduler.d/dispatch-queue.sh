@@ -232,6 +232,7 @@ $(decision_scope "$u")"
         # Delivery verification outranks reviewer selection (#178): an undelivered
         # handoff must escalate even while the cross-family reviewer wait holds.
         verify_handoff_delivery "$id" "$pr_num" "$(jqf -r '.branch // empty' <<<"$u")" "$sha" || { dispatch_skip handoff-delivery; continue; }
+        [[ "$lane" == direct-main ]] || ! review_conflict_to_repair "$id" "$pr_num" "$pr_head" || { dispatch_skip pr-conflict; continue; }
         pick_review_for_unit "$u" || { dispatch_skip reviewer-wait; continue; }
         prev_sha="$(jqf -r '.reviewed_sha // empty' <<<"$u")"
         prev_pr_head="$(jqf -r '.reviewed_pr_head // empty' <<<"$u")"
@@ -303,6 +304,7 @@ $(decision_scope "$u")"
         read -r pr_head sha <<<"$target"
         [[ "$sha" =~ $SHA_RE ]] || { dispatch_skip review-target; continue; }
         verify_handoff_delivery "$id" "$pr_num" "$(jqf -r '.branch // empty' <<<"$u")" "$sha" || { dispatch_skip handoff-delivery; continue; }
+        [[ "$lane" == direct-main ]] || ! review_conflict_to_repair "$id" "$pr_num" "$pr_head" || { dispatch_skip pr-conflict; continue; }
         pick_review_for_unit "$u" || { dispatch_skip reviewer-wait; continue; }
         wt="$(ensure_clone "$id")" || { say "review-pending unit=$id: clone unavailable"; continue; }
         checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "review-pending unit=$id: PR head $sha unavailable"; continue; }
