@@ -1492,10 +1492,10 @@ cat "$HEALTH_MAIL_FIXTURE/open-issues.json"
 EOF
 chmod +x "$HEALTH_MAIL_BIN/gh"
 PATH="$HEALTH_MAIL_BIN:$PATH"
-HEALTH_MAIL_FACTS='{"report_day":"11-07","conclusion":{"reason":"做完 2 个、正式上线 1 个、等上线 3 个；没有告警"},"window":{"end":1793683200},"output":{"finished":{"day":2,"prev_day":1,"week":4,"prev_week":null},"shipped":{"day":1,"prev_day":0,"week":1,"prev_week":null},"stock":{"now":3,"day_ago":2,"week_ago":null}},"last_release_at":1793000000,"spend":{"day":{"tokens":3000,"money_usd":0},"prev_day":{"tokens":2000,"money_usd":0}},"quality":{"incidents_period":0,"incidents_open":0,"open_subjects":[],"rollbacks":0,"post_land_fixes":0},"decisions":{"items":[{"question":"是否保留次日送达？","recommendation":"建议：选择第一项，改为普通配送。"}],"total":1,"incomplete":0}}'
+HEALTH_MAIL_FACTS='{"report_day":"11-07","conclusion":{"reason":"做完 2 个、正式上线 1 个、等上线 3 个；没有告警"},"window":{"end":1793683200},"output":{"finished":{"day":2,"prev_day":1,"week":4,"prev_week":null},"shipped":{"day":1,"prev_day":0,"week":1,"prev_week":null},"stock":{"now":3,"day_ago":2,"week_ago":null}},"last_deploy_at":1793000000,"spend":{"day":{"tokens":3000,"money_usd":0},"prev_day":{"tokens":2000,"money_usd":0}},"quality":{"incidents_period":0,"incidents_open":0,"open_subjects":[],"rollbacks":0,"post_land_fixes":0},"decisions":{"items":[{"question":"是否保留次日送达？","recommendation":"建议：选择第一项，改为普通配送。"}],"total":1,"incomplete":0}}'
 HEALTH_MAIL_BUILT="$(maintainer_health_mail_build_body "$HEALTH_MAIL_FACTS")"
 assert_contains 'owner report leads with finished work against the day before' "$HEALTH_MAIL_BUILT" '做完（已合入主线）：过去一天 2 个（前一天 1 个）；近 7 天 4 个。'
-assert_contains 'owner report states what shipped' "$HEALTH_MAIL_BUILT" '上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个。距上次正式发版 7 天。'
+assert_contains 'owner report states what shipped' "$HEALTH_MAIL_BUILT" '上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个。距上次上线 7 天。'
 assert_contains 'owner report states how the waiting stock moved' "$HEALTH_MAIL_BUILT" '现在 3 个，比一天前多 1 个。'
 assert_contains 'owner report includes a recommended decision' "$HEALTH_MAIL_BUILT" '建议：选择第一项，改为普通配送'
 assert_eq 'complete owner report passes maintainer mail contract' '' \

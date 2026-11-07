@@ -118,8 +118,8 @@ fixture_issue_prev_day="$((fixture_issue_seed + 2))"
 fixture_issue_late="$((fixture_issue_seed + 3))"
 fixture_issue_closed="$((fixture_issue_seed + 4))"
 fixture_issue_new="$((fixture_issue_seed + 5))"
-# The release train log holds one RELEASED line per formal release; the head-watch
-# log holds the production failure alerts. Both are read from the live runtime.
+# The release train log is stale on purpose (a hand release leaves it behind) and is not read; the
+# last deploy comes from the Deployment read, stubbed here. The head-watch log holds the alerts.
 printf '%s\n' '[2026-10-23T01:57:55Z] RELEASED sha=edb19d6e4 images=admin-console' \
   '[2026-11-02T06:30:00Z] RELEASED sha=123456789 images=fleet-gateway' \
   > "$facts_home/checkout/.scratch-supervisor/autopi/release-train.log"
@@ -158,6 +158,7 @@ export MAINTAINER_TEST_GRAPHQL_FILE
   printf '%s\tadvisor-batch\t顾问\t%s\t0.5\t\n' "$(date -u -d '2026-11-07T10:00:00Z' +%s)" "$fixture_issue_shipped"
 } > "$facts_home/spend/2026-11-07.log"
 printf '%s\timplement\t模型\t%s\t\t1000\n' "$(date -u -d '2026-11-06T10:00:00Z' +%s)" "$fixture_issue_shipped" > "$facts_home/spend/2026-11-06.log"
+maintainer_health_mail_last_deploy() { date -u -d '2026-11-02T06:30:00Z' +%s; }
 facts="$(maintainer_health_mail_daily_facts "$facts_home" "$facts_home/night/founder-health-mail.json" "$facts_now" "$SCRIPT_DIR/../..")"
 assert_eq 'three requirements merged in the last day' '3' "$(jq -r '.output.finished.day' <<< "$facts")"
 assert_eq 'the day before counts apart from the last day' '1' "$(jq -r '.output.finished.prev_day' <<< "$facts")"
@@ -167,7 +168,7 @@ assert_eq 'one requirement shipped in the last day' '1' "$(jq -r '.output.shippe
 assert_eq 'the waiting stock counts open requirements held at the main line' '3' "$(jq -r '.output.stock.now' <<< "$facts")"
 assert_eq 'the stock a day ago includes the issue closed since, and not the day merges' '2' "$(jq -r '.output.stock.day_ago' <<< "$facts")"
 assert_eq 'the stock a week ago is what had merged before then' '0' "$(jq -r '.output.stock.week_ago' <<< "$facts")"
-assert_eq 'last formal release comes from the release train log' "$(date -u -d '2026-11-02T06:30:00Z' +%s)" "$(jq -r '.last_release_at' <<< "$facts")"
+assert_eq 'last deploy is the Deployment time, not the stale RELEASED line' "$(date -u -d '2026-11-02T06:30:00Z' +%s)" "$(jq -r '.last_deploy_at' <<< "$facts")"
 assert_eq 'token rows sum on their own meter' '12225851' "$(jq -r '.spend.day.tokens' <<< "$facts")"
 assert_eq 'priced rows sum on their own meter' '0.5' "$(jq -r '.spend.day.money_usd' <<< "$facts")"
 assert_eq 'the day before has its own spend' '1000' "$(jq -r '.spend.prev_day.tokens' <<< "$facts")"
@@ -177,7 +178,7 @@ assert_eq 'the conclusion leads with output, then production' '做完 3 个、�
 facts_body="$(maintainer_health_mail_build_body "$facts")"
 maintainer_health_mail_output_contract "$facts_body" "$facts_now"
 assert_contains 'body leads with finished work against the previous periods' "$facts_body" '- 做完（已合入主线）：过去一天 3 个（前一天 1 个）；近 7 天 5 个。'
-assert_contains 'body states what shipped and the days since the last formal release' "$facts_body" '- 正式上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个。距上次正式发版 5 天。'
+assert_contains 'body states what shipped and the days since the last deploy' "$facts_body" '- 正式上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个。距上次上线 5 天。'
 assert_contains 'body states how the waiting stock moved' "$facts_body" '现在 3 个，比一天前多 1 个，比七天前多 3 个。'
 assert_contains 'body states tokens in ten-thousands against the day before' "$facts_body" '- 令牌用量：过去一天 1222.6 万（前一天 1000）。'
 assert_contains 'body states priced calls apart from tokens' "$facts_body" '按美元计价的调用：过去一天 0.5 美元'
@@ -201,6 +202,17 @@ assert_not_contains 'a failed read drops the change section' "$failed_body" '等
 assert_contains 'a failed read keeps the shipped line from the trail' "$failed_body" '- 正式上线：过去一天 1 个'
 assert_contains 'a failed read keeps the conclusion to what was read' "$failed_body" '一句话结论：正式上线 1 个；没有告警。'
 export MAINTAINER_TEST_GRAPHQL_FILE="$tmp/graphql.json"
+
+# A failed Deployment read drops the age clause; the stale RELEASED line is never used as a fallback.
+maintainer_health_mail_last_deploy() { :; }
+no_deploy_facts="$(maintainer_health_mail_daily_facts "$facts_home" "$facts_home/night/founder-health-mail.json" "$facts_now" "$SCRIPT_DIR/../..")"
+no_deploy_body="$(maintainer_health_mail_build_body "$no_deploy_facts")"
+maintainer_health_mail_output_contract "$no_deploy_body" "$facts_now"
+assert_eq 'a failed deploy read leaves the deploy time unread' 'null' "$(jq -r '.last_deploy_at' <<< "$no_deploy_facts")"
+assert_not_contains 'a failed deploy read prints no age clause' "$no_deploy_body" '距上次'
+assert_contains 'a failed deploy read keeps the shipped counts' "$no_deploy_body" '- 正式上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个。'
+maintainer_health_mail_last_deploy() { printf 'not a time\n'; }
+assert_eq 'an unreadable deploy time is also dropped' 'null' "$(jq -r '.last_deploy_at' <<< "$(maintainer_health_mail_daily_facts "$facts_home" "$facts_home/night/founder-health-mail.json" "$facts_now" "$SCRIPT_DIR/../..")")"
 
 # An empty home leaves every figure out instead of inventing one.
 empty_home="$tmp/empty"
@@ -341,7 +353,7 @@ retry_home="$tmp/digest-retry"
 mkdir -p "$retry_home/night"
 retry_facts_file="$TMPDIR/owner-report-facts-fixture.json"
 cat > "$retry_facts_file" <<'FIX'
-{"report_day":"11-07","conclusion":{"reason":"做完 0 个、正式上线 0 个、等上线 0 个；没有告警"},"window":{"end":1793683200},"output":{"finished":{"day":0,"prev_day":0,"week":0,"prev_week":null},"shipped":{"day":0,"prev_day":0,"week":0,"prev_week":null},"stock":{"now":0,"day_ago":0,"week_ago":null}},"last_release_at":null,"spend":{"day":null,"prev_day":null},"quality":{"incidents_period":0,"incidents_open":0,"open_subjects":[],"rollbacks":0},"decisions":{"items":[],"total":0,"incomplete":0}}
+{"report_day":"11-07","conclusion":{"reason":"做完 0 个、正式上线 0 个、等上线 0 个；没有告警"},"window":{"end":1793683200},"output":{"finished":{"day":0,"prev_day":0,"week":0,"prev_week":null},"shipped":{"day":0,"prev_day":0,"week":0,"prev_week":null},"stock":{"now":0,"day_ago":0,"week_ago":null}},"last_deploy_at":null,"spend":{"day":null,"prev_day":null},"quality":{"incidents_period":0,"incidents_open":0,"open_subjects":[],"rollbacks":0},"decisions":{"items":[],"total":0,"incomplete":0}}
 FIX
 maintainer_health_mail_output_contract "$(maintainer_health_mail_build_body "$(cat "$retry_facts_file")")" 1793683200
 (
