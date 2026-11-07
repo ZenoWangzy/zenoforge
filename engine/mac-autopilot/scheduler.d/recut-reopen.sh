@@ -30,8 +30,9 @@ intake_reopen_episode() { # issue reopened-at [ruling]
   [[ "$kind" == reopen ]] || word=ruling
   [[ -n "$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -r 'select(.state == "ready-for-agent") | .state' 2>/dev/null)" ]] || return 0
   # A ruling after the delivery says more remains, so merged/landed units do not block it; a reopen event alone still does.
+# A unit still carrying awaiting_release_pending blocks too: retry_awaiting_release would conclude the issue on the old PR.
   units="$(jqf -c --arg kind "$kind" --argjson n "$n" '[.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))]
-    | {at: (map((.history // [])[-1].at // "") | max), other: (map(select(.stage != "closed" and ($kind == "reopen" or (.stage | IN("merged", "landed") | not))) | .stage) | unique | join(",")),
+    | {at: (map((.history // [])[-1].at // "") | max), other: (map(select((.stage != "closed" and ($kind == "reopen" or (.stage | IN("merged", "landed") | not))) or .awaiting_release_pending != null) | .stage) | unique | join(",")),
        sized: any(.[]; ((.hold_handoff_episode // "") | startswith("ruling-")) and ((.history // []) as $h
          | ([$h | to_entries[] | select(.value.stage == "hold-handoff") | .key] | max // -1) as $i
          | any($h[($i + 1):][]; .stage == "size-recut" or ((.result // "") | tostring | contains("size admission")))))}' <(units_history_doc))" || return 0
@@ -67,10 +68,10 @@ intake_ruling_episodes() { # issue...
     [[ -z "$at" ]] || intake_reopen_episode "$n" "$at" ruling
   done
 }
-# An open issue whose units all ended, with no ruling after them, is a stopped ticket. Delivered (a merged unit): ask triage,
-# which decides awaiting-release (verified merged PR) or sends it on, and the ruling path above then restores it as the next
-# slice. Never closed here. Closed by a stop-loss recut and not delivered: restore once per unit; a unit that closes again
-# stays closed and counted. A unit closed on purpose (obsolete, pr-closed) is not restored.
+# An open issue whose units all ended and were closed by a stop-loss recut, with no ruling after them, is a stopped ticket:
+# restore it once per unit; a unit that closes again stays closed and counted. A unit closed on purpose (obsolete, pr-closed)
+# is not restored. A delivered unit (merged) is not routed anywhere here: no signal says whether its PR did the whole work,
+# and triage would conclude it as awaiting-release (triage_merged_pr_for_issue); only a ruling after the delivery restores it.
 intake_closed_unit_rows() { # issue...
   local n row units cap id
   cap="$(intake_attempt_cap)"; [[ "$cap" =~ ^[0-9]+$ ]] || return 0
@@ -81,19 +82,13 @@ intake_closed_unit_rows() { # issue...
     [[ -n "$row" ]] || continue
     units="$(jqf -c --argjson n "$n" --argjson row "$row" '[.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))] as $us
       | (($us | map((.history // [])[-1].at // "") | max) // "") as $at
-      | {merged: any($us[]; .stage | IN("merged", "landed")), ids: [$us[].id],
+      | {ids: [$us[].id],
          closed_by_recut: (($us | length) == 1 and $us[0].stage == "closed" and ((($us[0].history // []) | map(select(.stage != "supervisor-cap-default")) | last | .stage) | IN("supervisor-budget-recut", "supervisor-cap-triage-recut"))),
          spent: any($us[]; .closed_units_restored_at != null),
          skip: (($row.episode != "" and any($us[]; (.hold_handoff_episode // "") != $row.episode))
            or (($row.from | IN("needs-advisor", "needs-triage")) and $row.at > $at))}' <(units_history_doc))" || continue
     jqf -e '.skip | not' <<<"$units" >/dev/null || continue # a newer ruling or a pending episode already owns this row
-    if jqf -e '.merged' <<<"$units" >/dev/null; then
-      if scheduler_issue_transition "$n" needs-triage "closed-units:delivered" . 0; then
-        say "intake closed-units issue #$n: unit delivered, issue still open; routed to triage (awaiting-release needs a verified merged PR)"
-      else
-        say "intake closed-units issue #$n: could not route to triage; retry next tick"
-      fi
-    elif jqf -e '.closed_by_recut' <<<"$units" >/dev/null; then
+    if jqf -e '.closed_by_recut' <<<"$units" >/dev/null; then
       id="$(jqf -r '.ids[0]' <<<"$units")"
       restore_archived_unit "$id" || continue
       if jqf -e '.spent' <<<"$units" >/dev/null; then

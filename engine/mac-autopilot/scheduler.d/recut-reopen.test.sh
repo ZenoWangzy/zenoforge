@@ -89,23 +89,25 @@ cu_unit() { # issue stage last-history-stage [extra jq]
 cu_state() { jq -n --argjson extra "${3:-{\}}" --arg from "$2" '{state:"ready-for-agent",state_changed_from:$from,state_changed_at:"2026-01-01T00:00:00Z"} + $extra' > "$AGENT_HOME/state/$1.json"; }
 cu_episode() { jq -r '.scheduler_handoff.episode // "none"' "$AGENT_HOME/state/$1.json"; }
 { cu_unit 21 merged merged; cu_unit 22 closed supervisor-cap-triage-recut; cu_unit 23 closed obsolete; cu_unit 24 merged merged
-  cu_unit 25 closed supervisor-cap-triage-recut; cu_unit 26 merged merged; cu_unit 27 merged merged; } | jq -s '{units:.}' > "$UNITS"
-cu_state 21 needs-hold                                   # delivered, nobody decided since: ask triage
+  cu_unit 25 closed supervisor-cap-triage-recut; cu_unit 26 merged merged; cu_unit 27 merged merged; cu_unit 28 merged merged; } | jq -s '{units:.}' > "$UNITS"
+cu_state 21 needs-hold                                   # delivered, nobody decided since: nothing acts (no signal says the PR did the whole work)
 cu_state 22 needs-hold                                   # closed by a stop-loss recut: restore once
 cu_state 23 needs-hold                                   # closed on purpose: stays closed
 cu_state 24 needs-triage '{"state_changed_at":"2026-01-03T00:00:00Z"}'  # triage ruled after the merge: restore as the next slice
 cu_state 25 needs-hold '{"hold":{"holder":"head"}}'      # held: not touched
 cu_state 26 needs-hold '{"external_deliverable":{"required":true}}'
 cu_state 27 needs-hold '{"attempts":4}'                  # at CONCLUDE_RUN_ATTEMPT_CAP
+cu_state 28 needs-triage '{"state_changed_at":"2026-01-03T00:00:00Z"}'  # ruled after the merge, but still owed its awaiting-release write
+set_unit issue-28 '.awaiting_release_pending = 99'
 CU_ROUTED=""
 scheduler_issue_transition() { CU_ROUTED+=" $1:$2"; }
-intake_ruling_episodes 21 22 23 24 25 26 27
-intake_closed_unit_rows 21 22 23 24 25 26 27
-[[ "$CU_ROUTED" == " 21:needs-triage" ]] || fail "only the delivered, undecided, unheld issue goes to triage, got:$CU_ROUTED"
+intake_ruling_episodes 21 22 23 24 25 26 27 28
+intake_closed_unit_rows 21 22 23 24 25 26 27 28
+[[ -z "$CU_ROUTED" ]] || fail "no closed-unit path may route a delivered issue to triage (it would conclude on a partial PR), got:$CU_ROUTED"
 [[ "$(cu_episode 24)" == ruling-2026-01-03T00:00:00Z ]] || fail "a triage ruling after a merge must restore it as the next slice"
 [[ "$(cu_episode 22)" == "ruling-$STAMP" ]] || fail "a recut-closed unit must be restored"
 [[ "$(unit_json issue-22 | jq -r .closed_units_restored_at)" == "$STAMP" ]] || fail "restore must be marked on the unit"
-for n in 21 23 25 26 27; do [[ "$(cu_episode $n)" == none ]] || fail "issue $n must take no episode"; done
+for n in 21 23 25 26 27 28; do [[ "$(cu_episode $n)" == none ]] || fail "issue $n must take no episode"; done
 # One restore per unit: the unit closes again, a later tick leaves it closed and says so once.
 set_unit issue-22 '.stage = "closed" | .history += [{stage:"supervisor-cap-triage-recut",at:"2026-01-04T00:00:00Z"}]'
 cu_state 22 needs-hold
