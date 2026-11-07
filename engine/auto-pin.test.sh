@@ -39,4 +39,20 @@ auto_pin_pass > /dev/null; [[ $(last) == "$c3" ]] || fail "second pass did not p
 auto_pin_pass > /dev/null; [[ $(last) == "$c4" ]] || fail "third pass did not pin the next: $(last)"
 auto_pin_pass > /dev/null; [[ $(last) == "$c4" ]] || fail 'idle pass moved state'
 [[ $(tr '\n' ' ' < "$PIN_CALLS") == "$c2 $c3 converge $c4 converge " ]] || fail "calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+
+# a pin refused for a dirty checkout is retried once the tree clears, with no new main commit
+g -C "$tmp/agent/checkout" init -q
+: > "$PIN_CALLS"; c5=$(commit five); echo 1 > "$PIN_RC"
+sed -i '2i echo "pin-vecta: source checkout has changes; commit or clear them"' "$tmp/clone/tools/pin-vecta.sh" 2>/dev/null || :
+touch "$tmp/agent/checkout/dirty"
+auto_pin_pass > "$tmp/out" & pass=$!
+sleep 1
+kill -0 "$pass" 2>/dev/null || fail 'a dirty checkout ended the wait'
+[[ $(last) == "$c4" ]] || fail 'state moved on a dirty checkout'
+g -C "$tmp/agent/checkout" add -A; g -C "$tmp/agent/checkout" commit -qm clean
+wait "$pass" || fail 'retry pass returned non-zero'
+[[ $(last) == "$c4" ]] || fail 'state moved before the retry pinned'
+echo 0 > "$PIN_RC"
+auto_pin_pass > /dev/null; [[ $(last) == "$c5" ]] || fail "retry did not pin the same commit: $(last)"
+[[ $(grep -c "$c5" "$PIN_CALLS") == 2 ]] || fail "calls: $(tr '\n' ' ' < "$PIN_CALLS")"
 echo "auto-pin.test.sh: ok"

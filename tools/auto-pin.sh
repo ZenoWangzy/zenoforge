@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pins each new zenoforge main commit, oldest first, one pin per merge (ruling zenoforge-instant-effect-2026-11-05).
-# A failed pin waits for the next main commit, then moves on. Stop by hand: touch "$ZF_AUTO_PIN_HOME/auto-pin.stop"
+# A failed pin waits for the next main commit, then moves on; one refused for a dirty checkout is retried once that clears. Stop by hand: touch "$ZF_AUTO_PIN_HOME/auto-pin.stop"
 # Run a copy, not the clone's file: the loop checks out new commits in its clone (see tools/zf-auto-pin.service).
 # State and stop file live in ZF_AUTO_PIN_HOME; engine/mac-autopilot/pin-lag.sh (bell) reads auto-pin.last to alert on a stall.
 set -u
@@ -55,6 +55,8 @@ auto_pin_pass() {
     while [[ ! -e $stop ]]; do
       sleep "$retry"; git -C "$C" fetch -q origin main || continue
       [[ "$(git -C "$C" rev-parse origin/main)" == "$next" ]] || break
+      # A dirty checkout clears with no new main commit, so try the same commit again.
+      grep -q 'source checkout has changes' "$log" && [[ -z "$(git -C "$AGENT_HOME/checkout" status --porcelain 2>/dev/null)" ]] && return 0
     done
     echo "$next" > "$state"
   fi
