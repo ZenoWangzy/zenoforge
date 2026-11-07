@@ -1,0 +1,71 @@
+{
+ "codex_resume": {
+  "prior": [
+   "{\"type\": \"pipeline.execution\", \"mode\": \"fresh\", \"reason\": \"initial\", \"model\": \"gpt-6-luna\"}",
+   "{\"type\": \"thread.started\", \"thread_id\": \"aaaaaaaa-0000-0000-0000-000000000009\"}",
+   "{\"type\": \"turn.started\"}",
+   "{\"type\": \"turn.completed\", \"usage\": {\"input_tokens\": 14899613, \"cached_input_tokens\": 14506624, \"output_tokens\": 106235}}"
+  ],
+  "resume": [
+   "{\"type\": \"pipeline.execution\", \"mode\": \"resume\", \"reason\": \"same-provider-model\", \"model\": \"gpt-6-luna\"}",
+   "{\"type\": \"thread.started\", \"thread_id\": \"aaaaaaaa-0000-0000-0000-000000000009\"}",
+   "{\"type\": \"turn.started\"}",
+   "{\"type\": \"turn.completed\", \"usage\": {\"input_tokens\": 16055145, \"cached_input_tokens\": 15599104, \"output_tokens\": 116894}}"
+  ],
+  "expected": {
+   "input": 1155532,
+   "cached": 1092480,
+   "output": 10659,
+   "fresh": 73711
+  }
+ },
+ "claude_review": {
+  "responses": [
+   {
+    "offset_s": 0.0,
+    "input_tokens": 2,
+    "cache_read_input_tokens": 4410,
+    "cache_creation_input_tokens": 8614,
+    "output_tokens": 603
+   },
+   {
+    "offset_s": 4.48,
+    "input_tokens": 2,
+    "cache_read_input_tokens": 13024,
+    "cache_creation_input_tokens": 1434,
+    "output_tokens": 508
+   },
+   {
+    "offset_s": 24.447,
+    "input_tokens": 2,
+    "cache_read_input_tokens": 14458,
+    "cache_creation_input_tokens": 761,
+    "output_tokens": 4410
+   }
+  ],
+  "expected": {
+   "fresh": 16336,
+   "cached": 31892,
+   "input": 42707,
+   "output": 5521
+  }
+ },
+ "zcode_review": {
+  "turns": [
+   {
+    "offset_ms": 0,
+    "input_tokens": 1367707,
+    "cache_read_input_tokens": 1306496,
+    "output_tokens": 26802,
+    "reasoning_tokens": 0,
+    "cache_creation_input_tokens": 0
+   }
+  ],
+  "expected": {
+   "input": 1367707,
+   "cached": 1306496,
+   "output": 26802,
+   "fresh": 88013
+  }
+ }
+}

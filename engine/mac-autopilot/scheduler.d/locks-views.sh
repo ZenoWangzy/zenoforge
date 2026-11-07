@@ -20,11 +20,16 @@ release_scheduler_lock() {
 acquire_scheduler_lock_wait() {
   until acquire_scheduler_lock; do sleep 0.05; done
 }
+reacquire_scheduler_lock_timed() { # the seconds waiting here go to tick-phases lock_wait=
+  local t0=$SECONDS
+  acquire_scheduler_lock_wait
+  TICK_LOCK_WAIT=$((TICK_LOCK_WAIT + SECONDS - t0))
+}
 phase_yield_lock() { # slow operation; let the local refill controller take the same ledger lock
   local rc=0
   release_scheduler_lock
   phase "$@" || rc=$?
-  acquire_scheduler_lock_wait
+  reacquire_scheduler_lock_timed
   tick_prs_changed # Refill can change PRs while the scheduler lock is released.
   LIVE_WORKER_CACHE_UNTIL=0
   TICK_ACTIVE_FOOTPRINTS_VALID=false
@@ -35,7 +40,7 @@ phase_yield_lock_batch() { # Callback that records its own phases while sharing 
   local rc=0
   release_scheduler_lock
   "$@" || rc=$?
-  acquire_scheduler_lock_wait
+  reacquire_scheduler_lock_timed
   tick_prs_changed # Refill can change PRs while the scheduler lock is released.
   LIVE_WORKER_CACHE_UNTIL=0
   TICK_ACTIVE_FOOTPRINTS_VALID=false

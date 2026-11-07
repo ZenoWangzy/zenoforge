@@ -35,6 +35,9 @@ PR_CHECKS='[]'
 PR_BODY=$'## prior-art\nFollows required status checks: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches\n'
 PR_FILES='["tools/quick-land.sh"]'
 PR_FILE_STATUSES='[]'
+PR_META='{"title":"fixture","body":""}'
+PR_LIST='[]'
+PR_FILES_BY_PR='{}'
 gh() {
   case "$1 $2" in
     'pr view')
@@ -68,7 +71,29 @@ gh() {
       printf '%s\n' "$3" >> "$fixture/cancelled"
       ;;
     'api '*)
-      printf '%s\n' "$PR_FILE_STATUSES"
+      local path="${!#}" num
+      case "$path" in
+        'repos/{owner}/{repo}/pulls/17')
+          [[ "${PR_META_ERROR:-}" != 1 ]] || return 1
+          printf '%s\n' "$PR_META"
+          ;;
+        'repos/{owner}/{repo}/pulls?'*)
+          [[ "${PR_LIST_ERROR:-}" != 1 ]] || return 1
+          printf '%s\n' "$PR_LIST"
+          ;;
+        'repos/{owner}/{repo}/pulls/'*'/files')
+          num="${path#*pulls/}"
+          num="${num%%/*}"
+          if [[ "$num" == 17 ]]; then
+            printf '%s\n' "$PR_FILE_STATUSES"
+          else
+            jq -c --arg n "$num" '.[$n] // []' <<<"$PR_FILES_BY_PR"
+          fi
+          ;;
+        *)
+          printf '%s\n' "$PR_FILE_STATUSES"
+          ;;
+      esac
       ;;
     *)
       fail "unexpected gh command: $*"
@@ -310,6 +335,124 @@ expect_suite 'pure suite move' '[{"filename":"engine/new.test.sh","previous_file
 expect_suite 'modified suite' '[{"filename":"engine/old.test.sh","status":"modified","changes":4}]' pass
 expect_suite 'removed non-engine test' '[{"filename":"tools/old.test.sh","status":"removed","changes":3}]' pass
 expect_suite 'removed engine script' '[{"filename":"engine/old.sh","status":"removed","changes":3}]' pass
+PR_FILE_STATUSES='[]'
+
+# A silent revert: removed lines that a PR merged in the last 24 h added to the same file are refused unless the title or body says revert. A failed read warns and passes.
+expect_revert() {
+  local label="$1" verdict="$2" must="$3" out
+  if out="$(merge_pr_revert_ok 17 2>&1)"; then
+    [[ "$verdict" == pass ]] || fail "$label was not refused"
+  else
+    [[ "$verdict" == refuse ]] || fail "$label refused: $out"
+  fi
+  [[ "$out" == *"$must"* ]] || fail "$label output lacks '$must': $out"
+}
+rem() { for i in "$@"; do printf -- '-alpha %s\n' "$i"; done; }
+add_all() { for i in one two three four five six seven eight nine ten eleven twelve; do printf '+alpha %s\n' "$i"; done; }
+recent="$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
+old="$(date -u -d '-3 days' +%Y-%m-%dT%H:%M:%SZ)"
+PR_LIST="$(jq -cn --arg recent "$recent" '[{number:640,merged_at:$recent},{number:17,merged_at:null}]')"
+PR_FILES_BY_PR="$(jq -cn --arg a "$(add_all)" '{"640":[{filename:"engine/a.sh",status:"modified",patch:$a}]}')"
+PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two three four five six)" '[{filename:"engine/a.sh",status:"modified",patch:$p}]')"
+expect_revert 'silent revert of a 24 h merge' refuse 'engine/a.sh'
+expect_revert 'silent revert names the merged PR' refuse '#640'
+PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two three four five)" '[{filename:"engine/a.sh",status:"modified",patch:$p}]')"
+expect_revert 'five removed lines under half of the merged PR' pass ''
+PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two)" '[{filename:"engine/a.sh",status:"modified",patch:$p}]')"
+expect_revert 'normal edit of the same file' pass ''
+PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two three four five six)" '[{filename:"engine/a.sh",status:"modified",patch:$p}]')"
+PR_META='{"title":"Revert #640: dashboard mail age","body":""}' expect_revert 'stated revert in the title' pass ''
+PR_META='{"title":"fixture","body":"This reverts #640 on purpose."}' expect_revert 'stated revert in the body' pass ''
+PR_META='{"title":"fixture","body":""}'
+PR_LIST="$(jq -cn --arg old "$old" '[{number:600,merged_at:$old}]')"
+expect_revert 'merge older than 24 h' pass ''
+PR_LIST="$(jq -cn --arg recent "$recent" '[{number:640,merged_at:$recent}]')"
+PR_LIST_ERROR=1 expect_revert 'failed merged-PR list warns and passes' pass 'could not list merged PRs'
+PR_LIST_ERROR=''
+PR_META_ERROR=1 expect_revert 'failed PR read warns and passes' pass 'could not read PR #17'
+PR_META_ERROR=''
+PR_FILE_STATUSES='[]' PR_FILES_BY_PR='{}' PR_LIST='[]'
+
+echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, applies exact named overrides, requires a prior-art section unless test-only or overridden, requires a green test receipt for the PR head unless the PR is Markdown-only, and refuses a silent revert of a recent merge unless it is stated'
+# Override merge check: a PR that changes an overridden engine file must merge cleanly into the target's pack copy, as the pin will do (#643 stopped every pin).
+ov_dir="$fixture/override"
+mkdir -p "$ov_dir"
+git init -q --bare -b main "$ov_dir/engine-origin.git"
+git init -q --bare -b main "$ov_dir/target-origin.git"
+git -C "$repo" remote add origin "$ov_dir/engine-origin.git"
+numbered() { seq -f 'line %g' 1 12; }
+edit_line() { numbered | sed "$1s/\$/ $2/"; } # numbered with ' <text>' appended to line N
+mkdir -p "$repo/engine/state"
+numbered > "$repo/engine/state/rulings.json"
+numbered > "$repo/engine/dispatch-queue.sh"
+git -C "$repo" add engine
+git -C "$repo" commit -qm 'override base'
+base_blob="$(git -C "$repo" rev-parse HEAD:engine/state/rulings.json)"
+push_pr_head() { # rulings text, dispatch text: commit the PR head on top of the base and publish it as the PR ref
+  printf '%s\n' "$1" > "$repo/engine/state/rulings.json"
+  printf '%s\n' "$2" > "$repo/engine/dispatch-queue.sh"
+  git -C "$repo" commit -qam 'pr head'
+  git -C "$repo" push -q -f origin HEAD:refs/pull/17/head
+  git -C "$repo" reset -q --hard HEAD^
+}
+export AGENT_HOME="$ov_dir/agent"
+mkdir -p "$AGENT_HOME"
+git clone -q "$ov_dir/target-origin.git" "$AGENT_HOME/checkout" 2>/dev/null
+tgt="$AGENT_HOME/checkout"
+git -C "$tgt" config user.name t
+git -C "$tgt" config user.email t@example.invalid
+pack_dir=.zenoforge/build/pack/scripts/agent
+mkdir -p "$tgt/$pack_dir/state" "$tgt/.zenoforge/build"
+edit_line 5 'pack' > "$tgt/$pack_dir/state/rulings.json"
+edit_line 2 'pack' > "$tgt/$pack_dir/dispatch-queue.sh"
+printf '{"hook":".zenoforge/build/hook.sh","engine":"%s"}\n' "$(printf 'a%.0s' $(seq 40))" > "$tgt/.zenoforge/build.json"
+printf '# path\tbase\nstate/rulings.json\t%s\ndispatch-queue.sh\t%s\n' "$base_blob" "$(git -C "$repo" rev-parse HEAD:engine/dispatch-queue.sh)" > "$tgt/.zenoforge/build/overrides.tsv"
+git -C "$tgt" add -A
+git -C "$tgt" commit -qm pack
+git -C "$tgt" push -q origin HEAD:main
+files_json() { jq -cn --args '[$ARGS.positional[] | {filename:., status:"modified"}]' -- "$@"; }
+expect_override() { # label verdict(pass|refuse) expected-text
+  local out
+  if out="$(merge_pr_override_ok 17 2>&1)"; then
+    [[ "$2" == pass ]] || fail "$1 was not refused"
+  else
+    [[ "$2" == refuse ]] || fail "$1 refused: $out"
+    [[ "$out" == *"refusing to merge PR #17: "*"$3"* ]] || fail "$1 wrong refusal: $out"
+  fi
+}
+PR_FILE_STATUSES="$(files_json engine/state/rulings.json)"
+push_pr_head "$(edit_line 5 'pr')" "$(numbered)"
+expect_override 'rulings conflict' refuse 'override state/rulings.json: three-way merge conflicts (1 hunk(s))'
+[[ "$(merge_pr_override_ok 17 2>&1)" == *'pin would refuse'* ]] || fail 'conflict refusal does not say the pin would refuse'
+push_pr_head "$(edit_line 10 'pr')" "$(numbered)"
+expect_override 'clean rulings merge' pass
+PR_FILE_STATUSES="$(files_json engine/dispatch-queue.sh)"
+push_pr_head "$(numbered)" "$(edit_line 9 'pr')"
+expect_override 'clean live-scheduler-file merge' pass
+PR_FILE_STATUSES="$(files_json engine/other.sh tools/quick-land.sh)"
+push_pr_head "$(edit_line 5 'pr')" "$(edit_line 2 'pr')"
+expect_override 'engine file with no override row' pass
+PR_FILE_STATUSES="$(files_json engine/state/rulings.json)"
+push_pr_head "$(edit_line 5 'pr')" "$(numbered)"
+PR_FILE_STATUSES="$(files_json tools/quick-land.sh)"
+AGENT_HOME="$ov_dir/missing" expect_override 'PR with no engine file reads no target' pass
+PR_FILE_STATUSES="$(files_json engine/state/rulings.json)"
+AGENT_HOME="$ov_dir/missing" expect_override 'unreadable target' refuse 'could not read the target'
+# A hand merge from a session has no AGENT_HOME: the check must find the same default checkout as auto-pin.
+(unset AGENT_HOME ZF_HOME; HOME="$ov_dir/default-home"; mkdir -p "$HOME/.vecta-agent"; ln -s "$tgt" "$HOME/.vecta-agent/checkout"; export HOME; expect_override 'no AGENT_HOME reads the default checkout' refuse 'override state/rulings.json')
+[[ "$(ZF_MERGE_OVERRIDE=override-merge AGENT_HOME="$ov_dir/missing" merge_pr_override_ok 17 2>&1)" == *'skips the override merge check'* ]] || fail 'override-merge did not skip and log'
+PR_FILE_STATUSES='[{"filename":"engine/state/rulings.json","status":"removed"}]'
+git -C "$repo" rm -q engine/state/rulings.json
+git -C "$repo" commit -qm 'pr removes the file'
+git -C "$repo" push -q -f origin HEAD:refs/pull/17/head
+git -C "$repo" reset -q --hard HEAD^
+expect_override 'removed overridden file' refuse 'removes or moves engine/state/rulings.json'
+push_pr_head "$(edit_line 5 'pr')" "$(numbered)"
+PR_FILE_STATUSES="$(files_json engine/state/rulings.json)" PR_FILES='["engine/state/rulings.json"]' PR_HEAD="$sha" PR_CHECKS='[]' PR_BODY=$'## prior-art\nno external prior art: test fixture'
+: > "$fixture/gh-calls"
+if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail 'an override conflict reached merge'; fi
+[[ "$(cat "$fixture/check-output")" == *'three-way merge conflicts (1 hunk(s))'* ]] || fail "wired refusal lost its reason: $(cat "$fixture/check-output")"
+! grep -q '^merge:' "$fixture/gh-calls" || fail 'an override conflict still merged'
 PR_FILE_STATUSES='[]'
 
 echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, applies exact named overrides, requires a prior-art section unless test-only or overridden, and requires a green test receipt for the PR head unless the PR is Markdown-only'

@@ -141,6 +141,7 @@ cat > "$stub" <<'S'
 # worker <key> <cwd> <prompt-file>
 key=$1; cwd=$2; n="$cwd/notes/p1"
 [[ -f $3 ]] || exit 2
+[[ ${STUB_RC:-0} != hang ]] || { echo $$ > "$HANG_PID"; exec sleep 60; }   # a worker stuck at its gate
 [[ ${STUB_RC:-0} == 0 ]] || { rm -f "$n/tok.md"; exit "$STUB_RC"; }
 sed -i 's#~/.old/bin/tool#~/.new/bin/tool#' "$n/tok.md"                      # small token fix: applied
 rm -f "$n/a2a-product.md" "$n/quoteonly.md" "$n/gone.md"                    # first two refused, last deleted
@@ -167,6 +168,21 @@ mkdir "$fx/before"; cp "$mem"/*.md "$fx/before/"
 STUB_RC=1 python3 "$mc" && fail "failed worker must give nonzero rc"
 grep -q '.new/bin' "$mem/tok.md" && fail "failed worker changed a note"
 [[ ! -e "$state/checked.json" ]] || fail "failed worker marked notes checked"
+
+# timeout: the worker is killed and the zc and luna scopes of its sanitized key are stopped through systemctl
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\n' "$fx/systemctl.log" > "$fx/systemctl"; chmod +x "$fx/systemctl"
+STUB_RC=hang HANG_PID="$fx/hang.pid" MC_TIMEOUT=1 MC_SYSTEMCTL="$fx/systemctl" python3 "$mc" && fail "timeout must give nonzero rc"
+! kill -0 "$(cat "$fx/hang.pid")" 2>/dev/null || fail "timed-out worker still running"
+grep -Eq '^--user stop luna-zc-memcheck-[0-9]{8}T[0-9]{6}-\*\.scope$' "$fx/systemctl.log" && grep -Eq '^--user stop luna-memcheck-[0-9]{8}T[0-9]{6}-\*\.scope$' "$fx/systemctl.log" || fail "scopes not stopped: $(cat "$fx/systemctl.log")"
+grep -q 'rc=124' "$state"/????-??-??.md || fail "timeout not logged as rc=124"
+grep -q '.new/bin' "$mem/tok.md" && fail "timed-out worker changed a note"
+rm -f "$fx/systemctl.log"
+MC_SYSTEMCTL="$fx/systemctl" python3 - "$mc" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('mc', sys.argv[1]); mc = importlib.util.module_from_spec(spec); spec.loader.exec_module(mc)
+mc.stop_scopes('a b.c/d')
+PY
+grep -qFx -- '--user stop luna-zc-a-b-c-d-*.scope' "$fx/systemctl.log" && grep -qFx -- '--user stop luna-a-b-c-d-*.scope' "$fx/systemctl.log" || fail "key not sanitized like bin/zc: $(cat "$fx/systemctl.log")"
 
 python3 "$mc" > "$fx/out" 2>&1 || { cat "$fx/out" >&2; fail "run failed"; }
 log=$(cat "$state"/????-??-??.md); prop=$(cat "$state"/proposals/????-??-??.md)

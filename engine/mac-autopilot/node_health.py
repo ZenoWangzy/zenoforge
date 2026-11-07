@@ -17,16 +17,17 @@ import argparse, glob, json, os, re, socket, subprocess, urllib.parse, urllib.re
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import arbiter_health, ledger_history, live_delivery
+import arbiter_health, ledger_history, live_delivery, merge_wait
 import line_holds
 import release_age
+import rulings_copies
 import station_standards
 import pr_census
 import watch_alerts
 import worker_cost
 import workorder_cost
 import usage_reader
-from config_paths import zf_config_file, zf_host_ops_file, zf_mechanism_registry
+from config_paths import zf_config_file, zf_host_ops_file, zf_incident_guards, zf_mechanism_registry
 
 
 def is_test_path(path):
@@ -46,7 +47,7 @@ def health_doc_reference():
 
 
 # metric id: (node, description, healthy bound, unhealthy bound, higher_is_better)
-CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
+CRITERIA = {**arbiter_health.CRITERIA, **merge_wait.CRITERIA, **live_delivery.CRITERIA, **ledger_history.CRITERIA,
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
     "implement.no_output_pct": ("implement", "implement runs with no report %", 5, 15, False),
     "merge.conflict_repairs_per_day": ("ci+merge", "merge conflicts that a repair run followed, in 24 h", 20, 27, False),
@@ -125,7 +126,7 @@ GH_DELIVERY_CALL_TIMEOUT = 15
 GH_DELIVERY_CENSUS_TIMEOUT = 30
 GH_DELIVERY_BATCH_TIMEOUT = 60
 # What each number means, in the dashboard's words. Every metric above needs one (node_health.test.sh).
-MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
+MEANING = {**arbiter_health.MEANING, **merge_wait.MEANING, **live_delivery.MEANING, **ledger_history.MEANING,
     "implement.wall_p50": "一次开发从派出到交付的中位时长。偏长多半是任务太大，或卡在环境上。",
     "implement.no_output_pct": "开发员跑完却没交报告的比例：这些 token 全白花，多是进程被杀或崩溃。",
     "merge.conflict_repairs_per_day": "过去 24 小时内发生了合并冲突（merge-conflict）、随后由修复运行接手的次数。多个任务可以同时改同一个文件，撞上了由原任务自己修；这个数偏高说明撞得太多，修复拖慢交付。24 小时值 20 以内健康，27 以上不健康；这两个界来自 9 个有效日的账本均值 15.6、标准差 5.5。",
@@ -191,7 +192,7 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "delivery.unlinked_incidents_30d": "过去 30 天线上事故账本（与负责人邮件同源）里未关联接受单元的事故，加上 head-watch 的线上告警次数（PROD-DB-TIMEOUT，间隔 30 分钟内算一次，与负责人邮件线上告警同口径）；告警不带 issue，一律未关联。告警日志只从 2026-11-04 开始，所以这是下限而非完整 30 天；不会猜测归属。",
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
-SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
+SOURCE = {**arbiter_health.SOURCE, **merge_wait.SOURCE, **live_delivery.SOURCE, **ledger_history.SOURCE,
     "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮；24 h 窗口",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "merge.conflict_repairs_per_day": "units.json（含 units-archive.json）单元历史：merge-conflict 事件之后出现 write-start（修复运行）的次数，固定滚动 24h。",
@@ -260,8 +261,9 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
 CRITERIA.update({**line_holds.CRITERIA, **station_standards.CRITERIA})
 MEANING.update({**line_holds.MEANING, **station_standards.MEANING})
 SOURCE.update({**line_holds.SOURCE, **station_standards.SOURCE})
-# release.hours_since_release lives in release_age.py for the same size-ratchet reason.
+# release.hours_since_release lives in release_age.py, rulings.copies_differ in rulings_copies.py, for the same size-ratchet reason.
 CRITERIA.update(release_age.CRITERIA); MEANING.update(release_age.MEANING); SOURCE.update(release_age.SOURCE)
+CRITERIA.update(rulings_copies.CRITERIA); MEANING.update(rulings_copies.MEANING); SOURCE.update(rulings_copies.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
 TIME_SINK_HOURS = 24
@@ -579,44 +581,6 @@ def pct(values, q):
     return values[min(len(values) - 1, int(round(q * (len(values) - 1))))] if values else None
 
 
-def claude_worker_usage(row, responses):
-    """Sum Claude responses inside one worker's run interval; no matching response is unknown."""
-    end = row.get("finished_at") or row["end"]
-    total = usage_reader.Usage(0, 0, 0)
-    matched = False
-    for stamp, usage in responses:
-        try:
-            at = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(timezone.utc)
-        except (AttributeError, ValueError):
-            continue
-        if row["start"] <= at <= end:
-            total += usage
-            matched = True
-    return total if matched else None
-
-
-def attach_claude_usage(rows, projects_root=None, clone_root=None):
-    """Join Claude project transcript usage to worker logs by worktree unit and run interval."""
-    agent_home = os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or os.path.expanduser("~/.zenoforge")
-    projects_root = projects_root or os.environ.get("CLAUDE_PROJECTS_DIR") or os.path.expanduser("~/.claude/projects")
-    clone_root = clone_root or os.environ.get("MAC_AUTOPILOT_WT_ROOT") or os.path.join(agent_home, "autopilot-wt")
-    if not os.path.isdir(projects_root):
-        return
-    by_unit = {}
-    for row in rows:
-        if row["backend"] != "claude" or row["usage"] is not None:
-            continue
-        unit = row["unit"]
-        if unit not in by_unit:
-            try:
-                by_unit[unit] = usage_reader.claude_unit_responses(projects_root, clone_root, unit)
-            except usage_reader.Unavailable:
-                by_unit[unit] = []
-        row["usage"] = claude_worker_usage(row, by_unit[unit])
-        if row["usage"] is not None:
-            row["usage_source"] = "claude-project"
-
-
 def worker_runs(rows, since, now):
     """Windowed view of the shared cost rows (worker_cost.run_rows): wall, tokens, report facts.
 
@@ -815,7 +779,7 @@ def ledger_metrics(units, since, now):
     )
     rejections = [r.get("block") == "missing" for u in units for r in u.get("review_findings") or []
                   if (t := ts(r.get("at"))) and t >= since]
-    return {**arbiter_health.ledger_metrics(units, now, ts),
+    return {**arbiter_health.ledger_metrics(units, now, ts), **ledger_history.metrics(units, now, ts),
         "review.findings_missing_pct": 100 * sum(rejections) / len(rejections) if rejections else None,
         "loop.advisor_fail_pct": 100 * asked.count("advisor-unavailable") / len(asked) if asked else None,
         "review.first_pass_pct": 100 * sum(first_reviews) / len(first_reviews) if first_reviews else None,
@@ -1382,8 +1346,9 @@ def main():
             node, desc, _, _, higher = criteria[mid]
             criteria[mid] = (node, desc, bounds[0], bounds[1], higher)
 
+    units = ledger_history.load_units(a)
     cost_rows = worker_cost.run_rows(sup)
-    attach_claude_usage((r for r in cost_rows if since <= r["start"] <= now))
+    worker_cost.attach_provider_usage(cost_rows, units)  # every row: a ticket's fresh total needs all its runs
     runs = worker_runs(cost_rows, since, now)
     metrics = {}
     # Implement and repair run minutes are per-run samples (no time weighting): a 5 h window held 20 to 45 runs
@@ -1406,7 +1371,6 @@ def main():
                 for r in runs if r["node"] == "repair" and r["output"] and not r["self_fix"]]
     followed = [n for n in followed if n]
     metrics["loop.incremental_rereview_pct"] = 100 * followed.count("rereview") / len(followed) if followed else None
-    units = ledger_history.load_units(a)
     metrics.update({**ledger_metrics(units, since, now), **station_standards.collect(now, units, runs, a, agent_home, cost_rows)})
     # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
     metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]
@@ -1417,7 +1381,7 @@ def main():
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)
-    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now))
+    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); merge_metrics, merge_details = merge_wait.collect(repo, now, here, _gh_json); metrics.update(merge_metrics)
     metrics["merge.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
     sa_attempts, sa_conflict = shared_append_rebase_metrics(
         os.path.join(agent_home, "logs", "shared-append-rebases.jsonl"), repo,
@@ -1507,6 +1471,7 @@ def main():
     blockers = read_json(os.path.join(a, "release-blockers.json"))
     metrics["release.hotpatch_blockers"] = len(blockers["blockers"]) if isinstance(blockers.get("blockers"), list) else None
     line_holds.collect(metrics, a, agent_home, now)
+    rulings_copies.collect(metrics, agent_home)
     release_found = release_age.collect(metrics, now)
     registry = (zf_mechanism_registry() or {}).get("mechanisms")
     if isinstance(registry, list) and registry:
@@ -1552,7 +1517,7 @@ def main():
                            for node, mid, desc, v, healthy, unhealthy, higher, status in rows],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
                "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],
-               "delivery": delivery["details"], "flow": flow_details, "mechanisms": mechanism_rows,
+               "delivery": delivery["details"], "merge_wait": merge_details, "flow": flow_details, "mechanisms": mechanism_rows,
                "ci_standards": {k: {"desc": d, "healthy": h, "unhealthy": u, "higher_is_better": hi, "meaning": m, "source": src}
                                 for k, (d, h, u, hi, m, src) in CI_STANDARDS.items()},
                "unit_standards": {k: {"desc": d, "healthy": h, "bug": b} for k, (d, h, b) in UNIT_STANDARDS.items()},

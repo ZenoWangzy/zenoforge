@@ -3312,6 +3312,23 @@ SCHED_LOCK="$old_lock"; rm -rf -- "$lock_root"
 }
 sched_run_case refill_yields_shared_lock
 
+sched_case_lock_wait_recorded() {
+# A refill holds the ledger lock while the slow phase runs, so re-acquiring it waits; that wait must reach tick-phases lock_wait=.
+local old_lock="$SCHED_LOCK" lock_root holder
+lock_root="$(mktemp -d)"; SCHED_LOCK="$lock_root/.scheduler.lock"; SCHED_LOCK_HELD=false; TICK_LOCK_WAIT=0
+acquire_scheduler_lock || { echo 'scheduler.test.sh: could not acquire fixture scheduler lock' >&2; exit 1; }
+holder_probe() {
+  sleep 2 >/dev/null 2>&1 & holder=$!
+  mkdir "$SCHED_LOCK" || return 1
+  printf '%s\n' "$holder" > "$SCHED_LOCK/pid"
+}
+phase_yield_lock holder_probe || { echo 'scheduler.test.sh: slow phase did not re-acquire the lock after the holder exited' >&2; exit 1; }
+[[ "$TICK_LOCK_WAIT" -ge 1 ]] || { echo 'scheduler.test.sh: the wait to re-acquire the scheduler lock was not recorded in lock_wait' >&2; exit 1; }
+release_scheduler_lock
+SCHED_LOCK="$old_lock"; rm -rf -- "$lock_root"
+}
+sched_run_case lock_wait_recorded
+
 sched_case_accounting() {
 for missing in missing-baseline missing-end session-changed counter-reset; do
   new_tick_fixture "accounting-$missing"
