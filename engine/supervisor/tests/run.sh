@@ -24,6 +24,18 @@ printf '{"session_id":"s"}' | node "$work/links/legacy.mjs" > "$work/linked"
 grep -q policy "$work/linked"
 run policy-inject.mjs '{"session_id":"s"}' 0
 grep -q 'policy' "$work/out"
+printf '%s' '{"keep":{"rule":"live rule","verbatim":"quoted words","enforced_by":"x"},"old":{"rule":"dead rule","superseded_by":"keep"},"off":{"rule":"off rule","inactive":"2026-11-07: ended"},"list":[{"rule":"listed live"},{"rule":"listed dead","inactive":"x"}]}' > "$HOME/policy"
+run policy-inject.mjs '{"session_id":"s"}' 0
+grep -q 'live rule' "$work/out"; grep -q 'listed live' "$work/out"; grep -q 'overrides this view' "$work/out"
+if grep -Eq 'dead rule|off rule|listed dead|quoted words|enforced_by|over budget' "$work/out"; then echo 'FAIL policy view kept dead or bookkeeping text'; exit 1; fi
+printf '{"big":"%s"}' "$(head -c 9100 /dev/zero | tr '\0' x)" > "$HOME/policy"
+run policy-inject.mjs '{"session_id":"s"}' 0
+node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hookSpecificOutput.additionalContext; if(!c.startsWith("WARNING: the policy is over budget")||!c.includes("xxxx")) process.exit(1)' "$work/out"
+printf '{not json' > "$HOME/policy"
+run policy-inject.mjs '{"session_id":"s"}' 0
+grep -q '{not json' "$work/out"
+if grep -q 'over budget' "$work/out"; then echo 'FAIL fallback warned'; exit 1; fi
+printf 'policy\n' > "$HOME/policy"
 run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"echo ok"}}' 0
 run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"git push"}}' 2
 run command-gate.cjs '{"tool_name":"Bash","tool_input":{"command":"pnpm test && gh pr create --title x"}}' 2

@@ -52,9 +52,26 @@ const pct = (q) => {
   const left = (t) => (t ? `${Math.max(0, Math.round((t * 1000 - Date.now()) / 3600000))}h` : '?');
   return `5h ${j.five_h_pct}% (reset in ${left(j.five_h_reset)}), week ${j.week_pct}% (reset in ${left(j.week_reset)})`;
 };
+// Claude Code swaps a hook output over ~10KB for a 2KB preview, so inject a live-only view of the policy.
+// shortcut: 9000 is inferred from observed truncation ("Output too large (33.6KB)"), not a documented limit.
+const POLICY_BUDGET = 9000;
+const POLICY_DROP_KEYS = new Set(['verbatim', 'enforced_by', 'ruled_at', 'carrier', 'interpreted_by', 'asked_by', 'verbatim_relayed_by_vecta_e4', 'superseded_in_part_by', 'supersedes', 'supersedes_for_pipeline', 'owner_changed_by', '_doc', 'scope_note', 'applied', 'not_covered', 'how']);
+const policyDead = (n) => n && typeof n === 'object' && !Array.isArray(n) && (n.superseded_by || n.inactive);
+const policyLive = (n) => {
+  if (Array.isArray(n)) return n.filter((x) => !policyDead(x)).map(policyLive);
+  if (!n || typeof n !== 'object') return n;
+  return Object.fromEntries(Object.entries(n).filter(([k, v]) => !POLICY_DROP_KEYS.has(k) && !policyDead(v)).map(([k, v]) => [k, policyLive(v)]));
+};
+const renderPolicy = (raw) => {
+  let live;
+  try { live = JSON.stringify(policyLive(JSON.parse(raw))); } catch { return { warn: '', text: raw }; }
+  const note = 'Compact view: superseded and inactive rulings and bookkeeping keys are dropped. The full text with founder quotes is in the file and overrides this view.\n';
+  const warn = live.length > POLICY_BUDGET ? `WARNING: the policy is over budget (${live.length} chars, budget ${POLICY_BUDGET}); Claude Code may truncate it. Trim it by marking dead rulings superseded_by or inactive.\n` : '';
+  return { warn, text: note + live };
+};
 const parts = [];
 const policy = read(sources.policy);
-if (policy) parts.push(C.labels.policy.replace('{path}', sources.policy) + policy);
+if (policy) { const view = renderPolicy(policy); parts.push(view.warn + C.labels.policy.replace('{path}', sources.policy) + view.text); }
 let quotas = [];
 try { quotas.push(`${C.labels.quotas[0]} ${pct(read(sources.claude_quota))}`); } catch {}
 try { quotas.push(`${C.labels.quotas[1]} ${pct(read(sources.zcode_quota))}`); } catch {}
