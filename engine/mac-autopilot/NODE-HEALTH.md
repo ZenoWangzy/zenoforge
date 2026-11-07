@@ -310,7 +310,7 @@ p90 metrics above derive their bounds from the last 30 days of closed tickets in
 | worker tokens (`unit.tokens`) | 0.53 M / 2.4 M (10-21); per-ticket p90 13.9 M (7 d to 10-29) | ≤ 14 M | ≥ 28 M | — |
 | worker minutes (`unit.worker_minutes`) | 25 / 90 | ≤ 90 | ≥ 240 | 2–4 h focused work for a small change (estimate) |
 | request-changes rounds (`unit.rounds`) | 0 / 2 | ≤ 2 | ≥ 5 | most changes need 1–2 iterations [1] |
-| hours from entry to merged (`unit.age_hours`; units waiting on a predecessor are exempt) | 7.4 / 18.5 | ≤ 24 | ≥ 72 | elite lead time < 1 day [4] |
+| hours from entry to merged (`unit.age_hours`; units waiting on a predecessor are exempt, and hours spent blocked or escalated (`blocked-on`/`supervisor-escalated`/park events up to `unblocked`/`supervisor-requeue`) are taken out of the age of a released unit) | 7.4 / 18.5 | ≤ 24 | ≥ 72 | elite lead time < 1 day [4] |
 
 ## Sources
 

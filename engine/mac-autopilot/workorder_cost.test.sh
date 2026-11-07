@@ -71,6 +71,20 @@ sv = {"id": "issue-6", "issue": 6, "stage": "supervisor-review", "history": rc}
 loop = {"id": "issue-7", "issue": 7, "stage": "repair", "history": rc}
 assert [o["over"] for o in workorder_cost.work_orders([sv, loop], big, now, set())] == [[], ["tokens", "rounds"]]
 assert workorder_cost.work_orders([sv], big, now, {"issue-6"})[0]["over"] == ["tokens", "rounds"]
+# Hold time is not age: blocked 200 h on a predecessor, released 16 h ago, is 17 h old and fine;
+# the same history with no release event on a unit that is not held keeps its full age.
+rel = [{"stage": "created", "at": "2026-10-20T00:00:00Z"}, {"stage": "blocked-on", "at": "2026-10-20T01:00:00Z"},
+       {"stage": "unblocked", "at": "2026-10-28T09:00:00Z"}]
+released = {"id": "issue-8", "issue": 8, "stage": "implement-pending", "history": rel}
+assert workorder_cost.work_orders([released], {}, now)[0]["age_hours"] == 17.0
+assert workorder_cost.work_orders([released], {}, now)[0]["over"] == []
+# Same-second requeue then blocked-on (ledger order) keeps the unit on hold.
+same_sec = [{"stage": "created", "at": "2026-10-20T00:00:00Z"}, {"stage": "blocked-on", "at": "2026-10-20T01:00:00Z"},
+            {"stage": "supervisor-requeue", "at": "2026-10-22T00:00:00Z"}, {"stage": "blocked-on", "at": "2026-10-22T00:00:00Z"},
+            {"stage": "unblocked", "at": "2026-10-28T09:00:00Z"}]
+assert workorder_cost.work_orders([{"id": "issue-10", "issue": 10, "stage": "implement-pending", "history": same_sec}], {}, now)[0]["age_hours"] == 17.0
+no_release = {"id": "issue-9", "issue": 9, "stage": "implement-pending", "history": rel[:2]}
+assert workorder_cost.work_orders([no_release], {}, now)[0]["over"] == ["age_hours"]
 since = now - timedelta(hours=5)
 row = lambda start, minutes: {"unit": "issue-6", "start": start, "minutes": minutes}
 assert workorder_cost.recent_units([row(since - timedelta(hours=2), 30)], since) == set()
