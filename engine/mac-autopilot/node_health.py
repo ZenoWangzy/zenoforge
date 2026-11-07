@@ -18,8 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import arbiter_health, ledger_history, live_delivery
-import line_holds
-import release_age
+import line_holds, release_age, rulings_copies
 import pr_census
 import worker_cost
 import workorder_cost
@@ -256,8 +255,8 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
 CRITERIA.update(line_holds.CRITERIA)
 MEANING.update(line_holds.MEANING)
 SOURCE.update(line_holds.SOURCE)
-# release.hours_since_release lives in release_age.py for the same size-ratchet reason.
-CRITERIA.update(release_age.CRITERIA); MEANING.update(release_age.MEANING); SOURCE.update(release_age.SOURCE)
+# release.hours_since_release (release_age.py) and rulings.copies_differ (rulings_copies.py) live apart for the same size-ratchet reason.
+for _rows in (release_age, rulings_copies): CRITERIA.update(_rows.CRITERIA); MEANING.update(_rows.MEANING); SOURCE.update(_rows.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
 TIME_SINK_HOURS = 24
@@ -1592,6 +1591,7 @@ def main():
     blockers = read_json(os.path.join(a, "release-blockers.json"))
     metrics["release.hotpatch_blockers"] = len(blockers["blockers"]) if isinstance(blockers.get("blockers"), list) else None
     line_holds.collect(metrics, a, agent_home, now)
+    rulings_copies.collect(metrics, agent_home)
     release_found = release_age.collect(metrics, now)
     registry = (zf_mechanism_registry() or {}).get("mechanisms")
     if isinstance(registry, list) and registry:
