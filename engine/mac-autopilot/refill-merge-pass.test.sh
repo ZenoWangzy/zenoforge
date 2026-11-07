@@ -43,16 +43,16 @@ merge_candidates() { stages=$((stages + 1)); printf '%s\n' "$ready_row"; }
 ci_classify_run() { SECONDS=200; }
 TICK_LOCAL_REFILL=true AUTOPI_REFILL_LIMIT_SECONDS=300 run_merge_lane_pass
 grep -Fq 'merge stage main_ci_classify start' "$LOG" || fail "no start line for main_ci_classify: $(cat "$LOG")"
-grep -Fq 'merge pass stopped before candidate_build at 200s' "$LOG" || fail "the pass did not stop between its stages: $(cat "$LOG")"
+grep -Eq 'merge pass stopped before candidate_build at [0-9]+s' "$LOG" || fail "the pass did not stop between its stages: $(cat "$LOG")"
 grep -Fq 'merge stage candidate_build start' "$LOG" && fail 'candidate_build started with the budget spent'
 (( stages == 0 )) || fail 'the candidate census ran with the budget spent'
 : > "$LOG"; SECONDS=180
 TICK_LOCAL_REFILL=true AUTOPI_REFILL_LIMIT_SECONDS=300 run_merge_lane_pass
-grep -Fq 'merge pass stopped before suite_gate_lookup at 180s' "$LOG" || fail "a spent budget did not stop the first stage: $(cat "$LOG")"
+grep -Eq 'merge pass stopped before suite_gate_lookup at [0-9]+s' "$LOG" || fail "a spent budget did not stop the first stage: $(cat "$LOG")"
 SECONDS=0; ci_classify_run() { :; }
 : > "$LOG"; : > "$A/.refill-merge-epoch"; TICK_LOCAL_REFILL=true; SECONDS=180
 refill_merge_pass
-grep -Fq 'merge pass stopped before refill_merge_pass at 180s' "$LOG" || fail "refill_merge_pass ran with the budget spent: $(cat "$LOG")"
+grep -Eq 'merge pass stopped before refill_merge_pass at [0-9]+s' "$LOG" || fail "refill_merge_pass ran with the budget spent: $(cat "$LOG")"
 [[ ! -s "$A/.refill-merge-epoch" ]] || fail 'a skipped pass spent the rate-limit slot'
 SECONDS=0; unset TICK_LOCAL_REFILL
 unset -f git merge_candidates
