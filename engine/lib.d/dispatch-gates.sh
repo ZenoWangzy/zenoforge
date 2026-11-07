@@ -105,7 +105,14 @@ for issue in sys.stdin.read().split():
         state = json.loads(path.read_text())
     except (OSError, ValueError):
         continue  # Same malformed exclusion as triage_classification_status.
-    if not isinstance(state, dict) or not ("risk_class" in state and "level" in state):
+    if not isinstance(state, dict):
+        print(issue)
+        continue
+    # A merged ticket waiting for deploy keeps a stale ready label: #1145 took the only batch slot 217 times in 95 h.
+    if state.get("state") == "awaiting-release" and state.get("deploy_state") == "pending" \
+            and (state.get("run") or {}).get("outcome") == "merged":
+        continue
+    if not ("risk_class" in state and "level" in state):
         print(issue)
 ' "$STATE_DIR" <<< "$1"
 }

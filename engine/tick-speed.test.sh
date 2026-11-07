@@ -32,8 +32,9 @@ echo 'ok - maintainer prefilter command count stays constant for 200 issues'
 printf '{"risk_class":"P0","level":"L0"}' > "$STATE_DIR/1.json"
 printf '{bad-json' > "$STATE_DIR/2.json"
 printf '{}' > "$STATE_DIR/3.json"
+printf '{"state":"awaiting-release","deploy_state":"pending","run":{"outcome":"merged"}}' > "$STATE_DIR/4.json"
 before_calls="$(wc -c < "$AGENT_HOME/jq-calls")"
-[ "$(triage_unmeasured_issue_ids '1 2 3 999')" = $'3\n999' ]
+[ "$(triage_unmeasured_issue_ids '1 2 3 4 999')" = $'3\n999' ]
 [ "$(wc -c < "$AGENT_HOME/jq-calls")" = "$before_calls" ]
 echo 'ok - measurement prefilter batches state reads; measured/malformed/missing gates remain distinct'
 printf '{}' > "$STATE_DIR/2.json"
