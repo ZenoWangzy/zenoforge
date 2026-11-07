@@ -97,15 +97,13 @@ if [ -f "$MODEL_POLICY_FILE" ] && grep -q '"web-advisor-provider"' "$MODEL_POLIC
 fi
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/model-policy.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/model-policy-fallback.sh"; model_policy_default_fallback "$_AGENT_LIB_DIR/model-policy.default.json"
 # shellcheck source=./dispatch-load-guard.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/dispatch-load-guard.sh"
 # Read-only policy probes set this before sourcing so library initialization
 # cannot seed or migrate the host file before model_policy source-check runs.
 if [[ "${MODEL_POLICY_SOURCE_CHECK_ONLY:-0}" != 1 ]]; then
-  if ! model_policy identity work >/dev/null; then
-    echo "lib.sh: model policy cannot resolve the work role" >&2
-    return 1 2>/dev/null || exit 1
-  fi
+  model_policy identity work >/dev/null || { echo "lib.sh: model policy cannot resolve the work role" >&2; return 1 2>/dev/null || exit 1; }
   for _model_policy_override in AGENT_MODEL ${!AGENT_MODEL_@}; do
     [ -n "${!_model_policy_override:-}" ] || continue
     model_policy_require_role_identity work "${!_model_policy_override}" || {

@@ -262,7 +262,7 @@ model_policy_migrate_live() {
   # HEALTH resolves model identities while inspecting hand agents. Those
   # lookups must not rewrite the persistent policy before HEALTH can report
   # whether the original file was missing or stale.
-  [[ "${MODEL_POLICY_READ_ONLY:-0}" == 1 ]] && return 0
+  [[ "${MODEL_POLICY_READ_ONLY:-0}" == 1 || -n "${MODEL_POLICY_DEFAULT_REFUSED:-}" ]] && return 0
 
   if (( live_version < default_version )); then
     backup="$MODEL_POLICY_FILE.bak.schema-v$live_version.$(date -u +%Y%m%dT%H%M%SZ).$$"
@@ -371,7 +371,7 @@ model_policy() {
   local action="${1:-}" arg="${2:-}" field="${3:-}" temporary override effective_policy identity fallback primary_identity
   # Checks validate legacy state through the effective view without migrating it.
   if [ "$action" = "source-check" ]; then
-    model_policy_validate_file "$MODEL_POLICY_DEFAULT" || { echo "model_policy: versioned policy is invalid" >&2; return 1; }
+    [[ -z "${MODEL_POLICY_DEFAULT_REFUSED:-}" ]] && model_policy_validate_file "$MODEL_POLICY_DEFAULT" || { echo "model_policy: versioned policy is invalid" >&2; return 1; }
     [ -s "$MODEL_POLICY_FILE" ] || { echo "model_policy: persistent policy is missing" >&2; return 1; }
     local default_version live_version
     default_version="$(model_policy_schema_version "$MODEL_POLICY_DEFAULT")" || {
@@ -406,7 +406,7 @@ model_policy() {
     return 0
   fi
   if [ ! -s "$MODEL_POLICY_FILE" ]; then
-    if [[ "${MODEL_POLICY_READ_ONLY:-0}" == 1 ]]; then
+    if [[ "${MODEL_POLICY_READ_ONLY:-0}" == 1 || -n "${MODEL_POLICY_DEFAULT_REFUSED:-}" ]]; then
       echo "model_policy: persistent policy is missing (read-only)" >&2
       return 1
     fi

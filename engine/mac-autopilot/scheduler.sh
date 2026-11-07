@@ -71,6 +71,7 @@ CLAUDE_EXHAUSTED_MARKER_FILE="${CLAUDE_EXHAUSTED_MARKER_FILE:-$AGENT_HOME/claude
 ZCODE_PROVIDER_CONFIG_FILE="${ZCODE_PROVIDER_CONFIG_FILE:-$HOME/.zcode/v2/provider_config.json}"
 source "$HERE/../lib.d/codex-budget.sh"
 source "$HERE/../lib.d/model-policy.sh"
+source "$HERE/../lib.d/model-policy-fallback.sh"; model_policy_default_fallback "$HERE/../model-policy.default.json"
 declare -F codex_probe_ok >/dev/null 2>&1 || codex_probe_ok() { [[ -f "$CODEX_PROBE_MARKER" ]]; }
 if [[ -z "${REQUIRED_PR_CHECKS_FILE:-}" ]]; then
   REQUIRED_PR_CHECKS_FILE="$(ZF_REPO_DIR="${ZF_REPO_DIR:-$MAC_AUTOPILOT_ROOT}" \

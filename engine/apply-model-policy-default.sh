@@ -32,6 +32,8 @@ cp -- "$LIVE_FILE" "$validation_home/model-policy.json"
   while IFS= read -r variable; do
     [[ "$variable" == AGENT_MODEL* ]] && unset "$variable"
   done < <(compgen -e)
+  # Strict: a template the engine validator refuses fails here, never publishes through lib.sh's engine-default fallback.
+  MODEL_POLICY_STRICT_DEFAULT=1
   source "$SCRIPT_DIR/lib.sh"
   # This command validates and publishes the durable policy itself. Do not let
   # lib.sh redirect migration into its compatibility view; that would leave
