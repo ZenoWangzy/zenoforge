@@ -18,18 +18,26 @@ assert live.read_live_sha(agent_home) == record
 (agent_home / "state" / "live-sha.json").write_text('{"sha":"bad","at":"now","source":"test"}')
 assert live.read_live_sha(agent_home) is None
 
-# Without live-sha.json the train's recorded deploy stands in; a newer live-sha.json wins.
-runtime = root / "runtime"
-runtime.mkdir()
-(runtime / "release-train.json").write_text(json.dumps({"released_sha": "b" * 40, "released_at": "2026-10-23T01:57:55Z"}))
-assert live.newest_live_record(agent_home, runtime) == {"sha": "b" * 40, "at": "2026-10-23T01:57:55Z", "source": "release-train.json"}
-assert live.newest_live_record(agent_home, None) is None
+# Production's deployment record decides the live sha; live-sha.json only covers an unreadable one.
+# release-train.json is never read: it keeps an older sha after a hand release.
+(root / "runtime").mkdir()
+(root / "runtime" / "release-train.json").write_text(json.dumps({"released_sha": "c" * 40, "released_at": "2026-10-23T01:57:55Z"}))
+seen = []
+def production(repo):
+    seen.append(repo)
+    return {"id": 7, "sha": "b" * 40, "at": datetime(2026, 10, 31, 3, 57, 58, tzinfo=timezone.utc)}
+calls = []
+real = live.health_metrics
+live.health_metrics = lambda repo_root, record, now=None: calls.append(record) or {}
+now_dt = datetime.now(timezone.utc)
+live.collect_health_metrics(agent_home, now_dt, "o/r", production)
+assert seen == ["o/r"] and calls[-1] == {"sha": "b" * 40, "at": "2026-10-31T03:57:58Z", "source": "production-deployments"}, calls
 live.write_live_sha(agent_home, sha, "post-deploy-success", at="2026-11-01T00:00:00Z")
-assert live.newest_live_record(agent_home, runtime)["sha"] == sha
-live.write_live_sha(agent_home, sha, "post-deploy-success", at="2026-10-01T00:00:00Z")
-assert live.newest_live_record(agent_home, runtime)["sha"] == "b" * 40
-(runtime / "release-train.json").write_text(json.dumps({"released_sha": "abc", "released_at": "2026-10-23T01:57:55Z"}))
-assert live.read_released_sha(runtime) is None
+live.collect_health_metrics(agent_home, now_dt, "o/r", lambda repo: None)
+assert calls[-1]["sha"] == sha, calls
+live.collect_health_metrics(agent_home, now_dt, "o/r", lambda repo: {"sha": "bad", "at": now_dt})
+assert calls[-1]["sha"] == sha, calls
+live.health_metrics = real
 (agent_home / "state" / "live-sha.json").write_text('{"sha":"bad","at":"now","source":"test"}')
 
 repo = root / "repo"

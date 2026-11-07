@@ -1412,7 +1412,7 @@ def main():
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)
-    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now, a))
+    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now))
     try:
         shared_append = frozenset((json.load(open(os.path.join(a, "config.json")))
                                    .get("footprint_mutex") or {}).get("shared_append") or [])
