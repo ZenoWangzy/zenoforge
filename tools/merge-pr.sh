@@ -198,7 +198,7 @@ merge_pr_scheduler_prelude_ok() {
 # These scans take seconds, so they run here and hold no merge on CI: #502 reached main past jq-arg-safety.
 merge_pr_static_scans_in() {
   local scan rc=0
-  for scan in jq-arg-safety jq-regex-safety scheduler-gh-timeout-safety; do
+  for scan in jq-arg-safety jq-regex-safety scheduler-gh-timeout-safety zcode-launch-set; do
     timeout 120 bash "$1/engine/$scan.test.sh" 2>&1 | tail -3
     [[ "${PIPESTATUS[0]}" == 0 ]] || rc=1
   done
@@ -207,7 +207,7 @@ merge_pr_static_scans_in() {
 merge_pr_static_scans() { merge_pr_with_tree "$1" merge_pr_static_scans_in; }
 merge_pr_static_scans_ok() {
   local pr="$1" out touched
-  touched="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq '[.files[].path | select(test("^engine/.*\\.sh$"))] | length')" || touched=
+  touched="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq '[.files[].path | select(test("^engine/.*\\.(sh|py|mjs)$"))] | length')" || touched=
   if [[ -z "$touched" ]]; then
     merge_pr_refuse "$pr" 'could not read PR files for the static scans'
     return 1

@@ -101,8 +101,6 @@ assert_eq "another unit's failure does not count" open "$(lane_case 910713 "[{\"
 assert_true "every recorded failure reaches the lane check" grep -q 'model_policy_lane_backoff "\$n" "\$unit" "\$reason"' "$SCRIPT_DIR/lib.d/model-units.sh"
 
 # Every ZCode launch: new paths must strip too. stage-call.sh and bin/zc unset at the top of the script.
-launches="$(cd "$SCRIPT_DIR/.." && git grep -lE '(^|[ (=])zcode -p |/bin/zcode"' -- engine ':!*.test.*' ':!*.md')"
-assert_eq "the known ZCode launch set" "engine/bin/zc engine/eval/stage-call.sh engine/lib.d/model-calls.sh engine/mac-autopilot/scheduler.d/worker-command.sh engine/night/dispatch.sh" "$(tr '\n' ' ' <<< "$launches" | sed 's/ $//')"
 for launch in engine/lib.d/model-calls.sh engine/mac-autopilot/scheduler.d/worker-command.sh engine/night/dispatch.sh; do
   assert_true "$launch strips the token at launch" grep -Eq 'env -u GH_TOKEN -u GITHUB_TOKEN .*zcode -p ' "$SCRIPT_DIR/../$launch"
 done
