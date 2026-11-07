@@ -30,4 +30,18 @@ AUTOPI_LOCK_WAIT_SECONDS=2 wait_lock
 kill "$holder"; wait "$holder" 2>/dev/null || :
 (( elapsed >= 2 && elapsed < 10 )) || fail "bound not honoured (elapsed=$elapsed)"
 grep -Eq "pid $holder still holds .scheduler.lock after [0-9]+s; starting anyway" "$log" || fail 'fail-open line not logged'
+# A free lock is not a finished tick: a running tick yields the lock in every slow phase. The wait must hold for the tick itself.
+export MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/sup"
+mkdir -p "$MAC_AUTOPILOT_SUPERVISOR_DIR/autopi-live"
+printf 'sleep 2; : > "$TICK_DONE"\n' > "$MAC_AUTOPILOT_SUPERVISOR_DIR/autopi-live/scheduler.sh"
+rm -rf "$lock"; rm -f "$test_env_root/tick-done"
+TICK_DONE="$test_env_root/tick-done" bash "$MAC_AUTOPILOT_SUPERVISOR_DIR/autopi-live/scheduler.sh" & tick=$!
+AUTOPI_LOCK_WAIT_SECONDS=30 wait_lock
+[[ -e "$test_env_root/tick-done" ]] || fail 'the loop started while the old tick was still running with the lock free'
+wait "$tick" || :
+# A tick-shaped process with an argument (a refill, a views run) is not the main tick.
+TICK_DONE="$test_env_root/tick-never" bash "$MAC_AUTOPILOT_SUPERVISOR_DIR/autopi-live/scheduler.sh" --refill & refill=$!
+AUTOPI_LOCK_WAIT_SECONDS=30 wait_lock
+[[ ! -e "$test_env_root/tick-never" ]] || fail 'waited for a refill-shaped process as if it were the main tick'
+wait "$refill" || :
 echo 'wait-scheduler-lock.test.sh: PASS'
