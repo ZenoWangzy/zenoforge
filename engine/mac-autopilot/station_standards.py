@@ -12,7 +12,7 @@ STATIONS = ("intake", "triage", "advisor", "implement", "review", "repair", "mer
 WINDOW_HOURS = 24
 TRIAGE_LOG_RE = re.compile(r"^(tokens_used|issue_sample_size)=(\d+)$", re.M)
 # Gap events: the time from the unit's previous ledger event to this one (the same admission gap station_health uses).
-GAP_EVENTS = {"merge": ("merged", "landed"), "ci": ("ci-ready",)}
+GAP_EVENTS = {"merge": ("merged", "landed")}
 RUN_NODE = {"implement": "implement", "review": "review", "repair": "repair"}
 NO_MODEL = "no model call in its script (grep of the station script finds none), so no token count exists"
 
@@ -66,7 +66,7 @@ CRITERIA = {
     "repair.tokens_p50":   ("repair", "repair worker tokens per run p50", 230000, 307000, False),
     "repair.out_per_day":  ("repair", "repair write-ends per 24 h", 34, 19, True),
     "merge.wait_p50_min":  ("merge", "merge wait: previous event to merged, minutes p50", 31, 41, False),
-    "ci.admission_p50_min": ("ci", "CI wait: previous event to ci-ready, minutes p50", 0, 17, False),
+    "ci.admission_p50_min": ("ci", "CI wait: review-approve to the first ci-ready after it, minutes p50", 0, 17, False),
     "ci.out_per_day":      ("ci", "CI slots admitted per 24 h", 28, 13, True),
     # Pipeline steps outside the stations (PIPELINE). Bounds are filled from the measurement in NODE-HEALTH.md.
     "approve.out_per_day": ("approve", "review approvals per 24 h", 35, 30, True),
@@ -90,7 +90,7 @@ MEANING = {
     "repair.tokens_p50": "Median worker tokens per repair run.",
     "repair.out_per_day": "Repair write-ends in 24 h: the repair station's throughput.",
     "merge.wait_p50_min": "Median minutes from a unit's previous ledger event to merged or landed: the merge station's own time.",
-    "ci.admission_p50_min": "Median minutes from a unit's previous ledger event to ci-ready: the CI station's own queue time.",
+    "ci.admission_p50_min": "Median minutes from a review-approve to the first ci-ready after it (a later ci-ready on the same approval is not counted): the CI station's own queue time.",
     "ci.out_per_day": "CI slots admitted in 24 h (ci-ready and ci-wip-start): the CI station's throughput.",
 }
 SOURCE = {
@@ -105,7 +105,7 @@ SOURCE = {
     "repair.tokens_p50": "7 d: 292 repair runs with measured tokens: p75 229,149, p90 306,942 (rounded up)",
     "repair.out_per_day": "7 daily counts: p25 34, p10 19",
     "merge.wait_p50_min": "7 d: 221 merged/landed events, previous event to merge: p75 30.8, p90 41.0 min (rounded up)",
-    "ci.admission_p50_min": "7 d: 342 ci-ready events, previous event to ci-ready: p75 0.0, p90 16.1 min (rounded up)",
+    "ci.admission_p50_min": "bound measured 2026-11-07 on the old definition (previous event to every ci-ready): 7 d, 342 events, p75 0.0, p90 16.1 min. Since the definition is review-approve to the first ci-ready after it; same 7 d re-read on the WSL host ledger, 2026-11-07T17:55Z: 341 samples, p50 0.0, p75 31.3, p90 99.0. The bound is unchanged",
     "ci.out_per_day": "7 daily counts: p25 28, p10 13",
     "approve.out_per_day": "7 daily counts of review-approve events: p25 35, p10 30",
     "rereview.runs_per_day": "7 daily counts of rereview worker runs from worker cost rows: p25 35, p10 10",
@@ -139,6 +139,24 @@ def gap_samples(units, since, now, events):
         for i, (t, h) in enumerate(rows):
             if i and since <= t <= now and h["stage"] in events:
                 out.append((t - rows[i - 1][0]).total_seconds() / 60)
+    return out
+
+
+def approval_ready_samples(units, since, now):
+    """Minutes from each review-approve to the first ci-ready after it, for ci-ready events inside the window.
+
+    A later ci-ready on the same approval (CI went red, the branch was updated, the unit was readied again) is not an
+    admission wait and is not counted; a ci-ready with no approval before it has no sample."""
+    out = []
+    for unit in units:
+        approved = None
+        for t, h in _history(unit):
+            if h["stage"] == "review-approve":
+                approved = t
+            elif h["stage"] == "ci-ready" and approved is not None:
+                if since <= t <= now:
+                    out.append(max((t - approved).total_seconds() / 60, 0))
+                approved = None
     return out
 
 
@@ -185,7 +203,7 @@ def collect(now, units, runs, runtime, agent_home, cost_rows=()):
     outs = station_health.outs(units, runtime, agent_home)
     values = {f"{s}.out_per_day": out_count(outs[s], now) for s in STATIONS}
     values["merge.wait_p50_min"] = _pct(gap_samples(units, since, now, GAP_EVENTS["merge"]), .5)
-    values["ci.admission_p50_min"] = _pct(gap_samples(units, since, now, GAP_EVENTS["ci"]), .5)
+    values["ci.admission_p50_min"] = _pct(approval_ready_samples(units, since, now), .5)
     for station, node in RUN_NODE.items():
         values[f"{station}.tokens_p50"] = _pct(run_tokens(runs, node), .5)
     values["triage.tokens_per_issue_p50"] = _pct(triage_tokens_per_issue(agent_home, since, now), .5)
@@ -202,7 +220,7 @@ def samples(now, hours, units, runs, agent_home, runtime):
     since = now - timedelta(hours=hours)
     outs = station_health.outs(units, runtime, agent_home)
     raw = {"merge.wait_p50_min": gap_samples(units, since, now, GAP_EVENTS["merge"]),
-           "ci.admission_p50_min": gap_samples(units, since, now, GAP_EVENTS["ci"]),
+           "ci.admission_p50_min": approval_ready_samples(units, since, now),
            "triage.tokens_per_issue_p50": triage_tokens_per_issue(agent_home, since, now)}
     for station, node in RUN_NODE.items():
         raw[f"{station}.tokens_p50"] = run_tokens(runs, node)

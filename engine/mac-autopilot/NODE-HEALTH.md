@@ -350,7 +350,7 @@ over the `--hours` window of worker runs.
 | Station | Dimension | Metric (id) | Healthy | Unhealthy | Source (live, window, n) |
 |---|---|---|---|---|---|
 | merge | time | merge wait, previous event to merged, min p50 (`merge.wait_p50_min`) | ≤ 31 | ≥ 41 | 7 d to 2026-11-07T13:13Z, 221 merged/landed events: p75 30.8, p90 41.0 min |
-| ci | time | CI wait, previous event to ci-ready, min p50 (`ci.admission_p50_min`) | ≤ 0 | ≥ 17 | 7 d, 342 ci-ready events: p75 0.0, p90 16.1 min |
+| ci | time | CI wait, review-approve to the first ci-ready after it, min p50 (`ci.admission_p50_min`) | ≤ 0 | ≥ 17 | Bound measured 2026-11-07 on the old definition (previous event to every ci-ready): 7 d, 342 events, p75 0.0, p90 16.1 min. Definition changed afterwards: a re-ready after CI red, on the same approval, is no longer a sample. Same 7 d on the WSL host ledger, 2026-11-07T17:55Z: 341 samples, p50 0.0, p75 31.3, p90 99.0. Bound unchanged, not re-measured on production |
 | triage | tokens | triage tokens per issue p50 (`triage.tokens_per_issue_p50`) | ≤ 152,000 | ≥ 210,000 | 7 d, 91 batch logs (tokens_used / issue_sample_size): p75 151,725, p90 209,961 |
 | implement | tokens | worker tokens per implement run p50 (`implement.tokens_p50`) | ≤ 392,000 | ≥ 555,000 | 7 d, 557 runs with measured tokens: p75 391,729, p90 554,952 |
 | review | tokens | worker tokens per review run p50 (`review.tokens_p50`) | ≤ 258,000 | ≥ 324,000 | 7 d, 24 runs with measured tokens (small n): p75 257,372, p90 323,831 |

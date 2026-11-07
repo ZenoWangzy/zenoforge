@@ -52,5 +52,16 @@ assert set(ss.CRITERIA) <= set(values), sorted(set(ss.CRITERIA) - set(values))
 for mid, v in values.items():
     assert v is None or isinstance(v, (int, float)), (mid, v)
 assert all(values[f"{s}.out_per_day"] == 0 for s in station_health.STATIONS), values
+# ci.admission_p50_min: review-approve to the FIRST ci-ready after it. A re-ready after CI went red (same approval,
+# no new approval) is not an admission wait; a new approval starts a new sample; a ci-ready with no approval has none.
+def unit(*rows):
+    return {"history": [{"stage": k, "at": a} for k, a in rows]}
+u = [unit(("review-approve", "2026-11-07T10:00:00Z"), ("ci-ready", "2026-11-07T10:30:00Z"),
+          ("ci-red", "2026-11-07T10:50:00Z"), ("ci-ready", "2026-11-07T11:40:00Z")),
+     unit(("review-approve", "2026-11-07T09:00:00Z"), ("ci-ready", "2026-11-07T09:10:00Z"),
+          ("review-approve", "2026-11-07T09:20:00Z"), ("ci-ready", "2026-11-07T09:25:00Z")),
+     unit(("ci-ready", "2026-11-07T08:00:00Z"))]
+got = sorted(ss.approval_ready_samples(u, datetime(2026, 11, 7, 0, 0, tzinfo=timezone.utc), now))
+assert got == [5, 10, 30], got
 print("station-standards ok: %d stations, %d metrics" % (len(ss.MATRIX), len(ss.CRITERIA)))
 PY
