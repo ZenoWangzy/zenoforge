@@ -35,6 +35,9 @@ PR_CHECKS='[]'
 PR_BODY=$'## prior-art\nFollows required status checks: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches\n'
 PR_FILES='["tools/quick-land.sh"]'
 PR_FILE_STATUSES='[]'
+PR_META='{"title":"fixture","body":""}'
+PR_LIST='[]'
+PR_FILES_BY_PR='{}'
 gh() {
   case "$1 $2" in
     'pr view')
@@ -68,7 +71,29 @@ gh() {
       printf '%s\n' "$3" >> "$fixture/cancelled"
       ;;
     'api '*)
-      printf '%s\n' "$PR_FILE_STATUSES"
+      local path="${!#}" num
+      case "$path" in
+        'repos/{owner}/{repo}/pulls/17')
+          [[ "${PR_META_ERROR:-}" != 1 ]] || return 1
+          printf '%s\n' "$PR_META"
+          ;;
+        'repos/{owner}/{repo}/pulls?'*)
+          [[ "${PR_LIST_ERROR:-}" != 1 ]] || return 1
+          printf '%s\n' "$PR_LIST"
+          ;;
+        'repos/{owner}/{repo}/pulls/'*'/files')
+          num="${path#*pulls/}"
+          num="${num%%/*}"
+          if [[ "$num" == 17 ]]; then
+            printf '%s\n' "$PR_FILE_STATUSES"
+          else
+            jq -c --arg n "$num" '.[$n] // []' <<<"$PR_FILES_BY_PR"
+          fi
+          ;;
+        *)
+          printf '%s\n' "$PR_FILE_STATUSES"
+          ;;
+      esac
       ;;
     *)
       fail "unexpected gh command: $*"
@@ -312,4 +337,40 @@ expect_suite 'removed non-engine test' '[{"filename":"tools/old.test.sh","status
 expect_suite 'removed engine script' '[{"filename":"engine/old.sh","status":"removed","changes":3}]' pass
 PR_FILE_STATUSES='[]'
 
-echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, applies exact named overrides, requires a prior-art section unless test-only or overridden, and requires a green test receipt for the PR head unless the PR is Markdown-only'
+# A silent revert: removed lines that a PR merged in the last 24 h added to the same file are refused unless the title or body says revert. A failed read warns and passes.
+expect_revert() {
+  local label="$1" verdict="$2" must="$3" out
+  if out="$(merge_pr_revert_ok 17 2>&1)"; then
+    [[ "$verdict" == pass ]] || fail "$label was not refused"
+  else
+    [[ "$verdict" == refuse ]] || fail "$label refused: $out"
+  fi
+  [[ "$out" == *"$must"* ]] || fail "$label output lacks '$must': $out"
+}
+rem() { for i in "$@"; do printf -- '-alpha %s\n' "$i"; done; }
+add_all() { for i in one two three four five six seven eight nine ten eleven twelve; do printf '+alpha %s\n' "$i"; done; }
+recent="$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
+old="$(date -u -d '-3 days' +%Y-%m-%dT%H:%M:%SZ)"
+PR_LIST="$(jq -cn --arg recent "$recent" '[{number:640,merged_at:$recent},{number:17,merged_at:null}]')"
+PR_FILES_BY_PR="$(jq -cn --arg a "$(add_all)" '{"640":[{filename:"engine/a.sh",status:"modified",patch:$a}]}')"
+PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two three four five six)" '[{filename:"engine/a.sh",status:"modified",patch:$p}]')"
+expect_revert 'silent revert of a 24 h merge' refuse 'engine/a.sh'
+expect_revert 'silent revert names the merged PR' refuse '#640'
+PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two three four five)" '[{filename:"engine/a.sh",status:"modified",patch:$p}]')"
+expect_revert 'five removed lines under half of the merged PR' pass ''
+PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two)" '[{filename:"engine/a.sh",status:"modified",patch:$p}]')"
+expect_revert 'normal edit of the same file' pass ''
+PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two three four five six)" '[{filename:"engine/a.sh",status:"modified",patch:$p}]')"
+PR_META='{"title":"Revert #640: dashboard mail age","body":""}' expect_revert 'stated revert in the title' pass ''
+PR_META='{"title":"fixture","body":"This reverts #640 on purpose."}' expect_revert 'stated revert in the body' pass ''
+PR_META='{"title":"fixture","body":""}'
+PR_LIST="$(jq -cn --arg old "$old" '[{number:600,merged_at:$old}]')"
+expect_revert 'merge older than 24 h' pass ''
+PR_LIST="$(jq -cn --arg recent "$recent" '[{number:640,merged_at:$recent}]')"
+PR_LIST_ERROR=1 expect_revert 'failed merged-PR list warns and passes' pass 'could not list merged PRs'
+PR_LIST_ERROR=''
+PR_META_ERROR=1 expect_revert 'failed PR read warns and passes' pass 'could not read PR #17'
+PR_META_ERROR=''
+PR_FILE_STATUSES='[]' PR_FILES_BY_PR='{}' PR_LIST='[]'
+
+echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, applies exact named overrides, requires a prior-art section unless test-only or overridden, requires a green test receipt for the PR head unless the PR is Markdown-only, and refuses a silent revert of a recent merge unless it is stated'

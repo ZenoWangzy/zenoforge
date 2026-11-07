@@ -650,6 +650,56 @@ assert "reviews" not in pr_census.PR_CENSUS_QUERY and "commits" not in pr_census
 print("node_health PR census pages and keeps a big PR: PASS")
 CHECK
 
+# Merge wait (merge_wait.py): minutes from the last required check to merge, max over both lanes, 24 h only; a PR without check data is counted apart, never as zero.
+python3 - "$script_dir" <<'CHECK' || fail 'green-to-merge wait wrong'
+import sys; sys.path.insert(0, sys.argv[1]); import node_health as n, merge_wait as m
+req = ["Enforce branch delivery policy", "Required CI gates", "Required contract gates"]
+now = n.ts("2026-11-07T12:00:00Z")
+def pr(number, merged, checks, labels=()):
+    return {"number": number, "mergedAt": merged, "labels": list(labels),
+            "checks": [{"name": name, "completedAt": at} for name, at in checks]}
+def done(at): return [(name, at) for name in req]
+rows = [pr(1, "2026-11-07T11:00:00Z", done("2026-11-07T10:30:00Z")),
+        pr(2, "2026-11-07T11:30:00Z", [(req[0], "2026-11-07T11:00:00Z"), (req[1], "2026-11-07T11:10:00Z"), (req[2], "2026-11-07T10:00:00Z")]),
+        pr(3, "2026-11-07T11:00:00Z", done("2026-11-07T07:00:00Z"), labels=["session-owned"]),
+        pr(4, "2026-11-07T11:50:00Z", done("2026-11-07T11:40:00Z")[:2]),
+        pr(5, "2026-11-05T10:00:00Z", done("2026-11-05T00:00:00Z"))]
+value, details = m.green_to_merge(rows, req, now)
+assert value == 240, (value, details)  # the row is the max over both lanes
+assert details["factory_max_pr"] == 1 and details["factory_n"] == 2, details
+assert details["session_owned_max_min"] == 240 and details["session_owned_max_pr"] == 3, details
+assert details["no_check_data"] == 1, details
+slow_only, _ = m.green_to_merge([rows[2]], req, now)  # only the session-owned PR is slow: the row must still go over the bound
+healthy, unhealthy = n.CRITERIA["merge.green_to_merge_max_min"][2:4]
+assert n.status_of(slow_only, healthy, unhealthy, False) == "UNHEALTHY", slow_only
+assert m.green_to_merge(None, req, now)[0] is None
+print("node_health green-to-merge wait splits lanes and counts missing check data: PASS")
+
+# A failed or truncated read is NO-DATA, never 0: a failed page, and pages that never end.
+def node(number):
+    return {"number": number, "mergedAt": "2026-11-07T11:00:00Z", "labels": {"nodes": []}, "head": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {
+        "totalCount": 3, "nodes": [{"name": name, "completedAt": "2026-11-07T10:50:00Z"} for name in req]}}}}]}}
+def gh_pages(more, fail_at=None):
+    seen = []
+    def gh(args, timeout):
+        seen.append(args)
+        if fail_at == len(seen):
+            return None
+        return {"data": {"search": {"nodes": [node(len(seen))], "pageInfo": {"hasNextPage": more, "endCursor": f"c{len(seen)}"}}}}
+    return gh, seen
+gh, seen = gh_pages(False)
+assert [r["number"] for r in m.fetch("o/r", "2026-11-06", gh)] == [1] and len(seen) == 1
+gh, seen = gh_pages(True)
+assert m.fetch("o/r", "2026-11-06", gh) is None and len(seen) == m.PAGES  # truncated
+gh, seen = gh_pages(True, fail_at=2)
+assert m.fetch("o/r", "2026-11-06", gh) is None  # second page failed
+assert "reviews" not in m.QUERY and "first:100" in m.QUERY
+gh, seen = gh_pages(True)
+assert m.collect("o/r", now, sys.argv[1], gh)[0] == {"merge.green_to_merge_max_min": None}  # row value None -> NO-DATA, not 0
+assert n.status_of(None, healthy, unhealthy, False) == "NO-DATA"
+print("node_health green-to-merge truncated read is NO-DATA: PASS")
+CHECK
+
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'delivery metrics join or percentiles are wrong'
 import datetime as dt, json, os, pathlib, sys

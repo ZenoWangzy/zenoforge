@@ -251,6 +251,48 @@ merge_pr_suite_delete_ok() {
   [[ -z "$deleted" ]] && return 0
   merge_pr_refuse "$pr" "deletes or renames away test suite(s) $deleted: keep the suite; a pin that drops a baseline suite has no retire path"
 }
+# Silent revert (incident 2026-11-07): a PR that removes lines a PR merged in the last 24 h added to the same file, unless its title or body says it is a revert.
+# shortcut: reads only the 10 newest merged PRs of the last 24 h, a revert of an older one passes; raise the cap if one slips through.
+# Any failed read warns and passes: the check must never stop the merge lane on a gh failure.
+merge_pr_revert_ok() {
+  local pr="$1" meta raw mine list merged num theirs hit file matched added
+  if ! meta="$(gh api "repos/{owner}/{repo}/pulls/$pr" 2>/dev/null)" \
+    || ! raw="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" 2>/dev/null)" \
+    || ! mine="$(jq -cs 'add // []' <<<"$raw" 2>/dev/null)"; then
+    printf 'merge-pr: warning: could not read PR #%s for the revert check; not refusing\n' "$pr" >&2
+    return 0
+  fi
+  jq -e '((.title // "") + "\n" + (.body // "")) | test("revert"; "i")' <<<"$meta" >/dev/null 2>&1 && return 0
+  if ! list="$(gh api 'repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100' 2>/dev/null)" \
+    || ! merged="$(jq -c --arg pr "$pr" --argjson since "$(date -u -d '24 hours ago' +%s)" \
+      '[.[] | select(.merged_at != null and (.number | tostring) != $pr and (.merged_at | fromdateiso8601) >= $since) | .number] | .[0:10]' <<<"$list" 2>/dev/null)"; then
+    printf 'merge-pr: warning: could not list merged PRs for the revert check; not refusing PR #%s\n' "$pr" >&2
+    return 0
+  fi
+  for num in $(jq -r '.[]' <<<"$merged"); do
+    if ! raw="$(gh api --paginate "repos/{owner}/{repo}/pulls/$num/files" 2>/dev/null)" \
+      || ! theirs="$(jq -cs 'add // []' <<<"$raw" 2>/dev/null)"; then
+      printf 'merge-pr: warning: could not read merged PR #%s files for the revert check; skipping it\n' "$num" >&2
+      continue
+    fi
+    # A file both PRs touch: removed lines of this PR that equal lines the merged PR added, at least 5 and half its added lines.
+    hit="$(printf '%s\n%s\n' "$mine" "$theirs" | jq -rs '
+      def lines($s): [.patch // "" | split("\n")[] | select(startswith($s)) | .[1:] | select(test("\\S"))];
+      .[0] as $mine | .[1] as $theirs
+      | $mine[] as $m | ($m | lines("-")) as $r | select($r | length > 0)
+      | $theirs[] | select(.filename == $m.filename) | lines("+") as $a | select($a | length > 0)
+      | ([$r[] as $x | select(any($a[]; . == $x))] | length) as $hit
+      | select($hit >= 5 and $hit * 2 >= ($a | length))
+      | "\($m.filename)\t\($hit)\t\($a | length)"')"
+    hit="${hit%%$'\n'*}"
+    if [[ -n "$hit" ]]; then
+      IFS=$'\t' read -r file matched added <<<"$hit"
+      merge_pr_refuse "$pr" "removes $matched lines of $file that merged PR #$num added ($added lines): a revert must say so in the PR title or body"
+      return 1
+    fi
+  done
+  return 0
+}
 # Ruling zenoforge-instant-effect-2026-11-05: gates, evaluators, the pin, the watchdog and rollback keep CI before merge.
 # Code that deletes clones and refs is held the same way: #485 reached main 95s into a CI run that then failed.
 merge_pr_gate_ci_ok() {
@@ -322,6 +364,7 @@ merge_pr_checks_and_merge() {
   merge_pr_static_scans_ok "$pr" || return 1
   merge_pr_review_family_ok "$pr" || return 1
   merge_pr_suite_delete_ok "$pr" || return 1
+  merge_pr_revert_ok "$pr" || return 1
 
   while IFS= read -r check_name; do
     [[ -n "$check_name" ]] || continue
