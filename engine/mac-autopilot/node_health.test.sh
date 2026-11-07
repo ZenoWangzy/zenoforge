@@ -454,7 +454,8 @@ grep -Eq ' 1 .*WARN$' <<<"$(row 'past a spend bug bound')" || fail "over-standar
 jq -e '.metrics[] | select(.id == "loop.rounds_p90") | .meaning != "" and .healthy == 3 and .unhealthy == 5' "$a/node-health.json" >/dev/null || fail 'scorecard JSON lacks meaning or bounds'
 jq -e '.metrics[] | select(.id == "delivery.cycles_to_pass_30d") | .value == 2 and .source != "" and .healthy == 1.32 and .unhealthy == 2.28' "$a/node-health.json" >/dev/null || fail 'delivery review cycles missing from scorecard JSON'
 jq -e '.metrics[] | select(.id == "delivery.issue_to_accept_p50_30d_hours") | .value == null and .source != "" and .healthy == 24 and .unhealthy == 72' "$a/node-health.json" >/dev/null || fail 'delivery lead-time standard missing when there are no acceptance records'
-jq -e '[.metrics[].id | select(test("^delivery[.](human_actions|issue_to_accept_p(50|95)_7d)"))] == []' "$a/node-health.json" >/dev/null || fail 'removed human-action and 7 d lead-time rows are still published'
+jq -e '[.metrics[].id | select(test("^delivery[.]human_actions"))] == []' "$a/node-health.json" >/dev/null || fail 'removed human-action rows are still published'
+jq -e '.metrics[] | select(.id == "delivery.issue_to_accept_p95_7d_hours") | .value == null and .status == "NO-DATA" and .healthy == 72 and .unhealthy == 168' "$a/node-health.json" >/dev/null || fail 'the 7 d lead-time row must stay published as NO-DATA without acceptances'
 jq -e '.metrics[] | select(.id == "delivery.merged_not_live") | .value == null and .status == "UNHEALTHY" and .healthy == 0 and .unhealthy == 1 and .source != ""' "$a/node-health.json" >/dev/null || fail 'missing live SHA must be unhealthy NO-DATA for merged-not-live count'
 jq -e '.metrics[] | select(.id == "delivery.oldest_merged_not_live_hours") | .value == null and .status == "NO-DATA" and .healthy == 24 and .unhealthy == 72 and .source != ""' "$a/node-health.json" >/dev/null || fail 'oldest merged-not-live age must publish the delivery bounds'
 grep -Fq 'NODE-UNHEALTHY metric=delivery.merged_not_live node=delivery value=NO-DATA' "$a/alerts/node-health.md" || fail 'missing live SHA did not write an unhealthy alert'
@@ -661,6 +662,9 @@ values, details = result["values"], result["details"]
 # Lead time counts all 8 accepted issues, including the 2 whose join is broken: 24 48 72 96 120 120 120 240.
 assert values["delivery.issue_to_accept_p50_30d_hours"] == 120, values
 assert values["delivery.issue_to_accept_p95_30d_hours"] == 240, values
+# 7 d window: 7 of the 8 accepted issues (the 240 h one was accepted 8 days ago): 24 48 72 96 120 120 120.
+assert values["delivery.issue_to_accept_p50_7d_hours"] == 96 and values["delivery.issue_to_accept_p95_7d_hours"] == 120, values
+assert details["accepted_units_7d"] == 7, details
 assert values["delivery.revert_rate_30d_pct"] == 100 / 6, values
 assert values["delivery.incident_rate_30d_pct"] == 300 / 8, values
 assert values["delivery.cycles_to_pass_30d"] == 9 / 7, values

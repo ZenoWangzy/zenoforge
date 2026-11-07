@@ -86,6 +86,8 @@ CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     "loop.advisor_fail_pct":   ("review-loop", "advisor asks that got no ruling %", 10, 50, False),
     "advisor.last_answer_age_hours": ("review-loop", "hours since the newest successful advisor answer while needs-advisor > 0", 2, 6, False),
     "review.findings_missing_pct": ("review-loop", "REQUEST-CHANGES reports without a findings block %", 5, 20, False),
+    "delivery.issue_to_accept_p50_7d_hours": ("delivery", "issue created -> release accepted p50, 7 d hours", 24, 72, False),
+    "delivery.issue_to_accept_p95_7d_hours": ("delivery", "issue created -> release accepted p95, 7 d hours", 72, 168, False),
     "delivery.issue_to_accept_p50_30d_hours": ("delivery", "issue created -> release accepted p50, 30 d hours", 24, 72, False),
     "delivery.issue_to_accept_p95_30d_hours": ("delivery", "issue created -> release accepted p95, 30 d hours", 72, 168, False),
     "delivery.revert_rate_30d_pct": ("delivery", "accepted units reverted within 30 d %", 5, 10, False),
@@ -168,8 +170,10 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "flow.in_out_imbalance": "|窗口内进入的单数 − 完成合入的单数|：进出守恒。持续不等 = 单在系统里堆积或凭空消失（WIP 泄漏 / 孤儿单）。",
     "mechanism.silent": "登记表（engine/state/mechanism-registry.json）里沉默超过上限的机制数：代码落地了但没在跑（#4483 里 f3 落地后停转 18 小时就是这类）。允许长期无事件的机制（expected_idle）只展示最近事件时间，不计入。分组明细在 scorecard 的 mechanisms。",
     "workers.local_test_db": "AI 员工 push 前能否在本机跑集成测试。0 = 集成测试第一次运行要等到批准后的 CI，红了再返工一轮（10-17 重装丢了测试库，24h 内 146 次返工由批准后 CI 红触发）。",
-    "delivery.issue_to_accept_p50_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只用完整 ID 链。",
-    "delivery.issue_to_accept_p95_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只用完整 ID 链。",
+    "delivery.issue_to_accept_p50_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）；窗口内没有发布验收时显示 NO-DATA（发布停摆时如此，不是读数丢失）。",
+    "delivery.issue_to_accept_p95_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）；窗口内没有发布验收时显示 NO-DATA（发布停摆时如此，不是读数丢失）。",
+    "delivery.issue_to_accept_p50_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）。",
+    "delivery.issue_to_accept_p95_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）。",
     "delivery.revert_rate_30d_pct": "过去 30 天接受单元中，release-closer 接受后 main 出现对应 Git revert marker 的比例。",
     "delivery.incident_rate_30d_pct": "过去 30 天根因事故记录数 ÷ 同期接受单元数；没有明确关联到接受单元的记录同时计为 unlinked。",
     "delivery.cycles_to_pass_30d": "过去 30 天合并单元从首次评审到第一次 review-approve 的评审轮数均值，含通过轮。",
@@ -230,8 +234,10 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "flow.in_out_imbalance": "units.json 首个事件落在窗口内 = 进入，merged/landed 落在窗口内 = 完成",
     "mechanism.silent": "engine/state/mechanism-registry.json 的事件模式匹配 scheduler.log / alerts/events.md / $AGENT_HOME/logs 的行（含轮转 .1 代），取每个机制最近一次事件时间",
     "workers.local_test_db": "每次体检对 PGTEST_URL（runtime-env.sh，zenoforge-pgtest.service）做 TCP 连接",
-    "delivery.issue_to_accept_p50_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
-    "delivery.issue_to_accept_p95_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
+    "delivery.issue_to_accept_p50_7d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
+    "delivery.issue_to_accept_p95_7d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
+    "delivery.issue_to_accept_p50_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
+    "delivery.issue_to_accept_p95_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
     "delivery.revert_rate_30d_pct": "units.json 接受单元的 merge SHA，与 origin/main Git revert commit 的 This reverts commit marker",
     "delivery.incident_rate_30d_pct": ".zenoforge/state/incident-guards.json dated incidents ÷ unique issue IDs in release-closer acceptance events; downstream joins are not required",
     "delivery.cycles_to_pass_30d": "units.json review-approve / review-request-changes / review-block events before merged / landed",
@@ -1107,10 +1113,10 @@ def git_revert_times(root, tip="HEAD"):
 def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo="",
                      reverted_merge_times=None):
     """Join recorded issue/unit/PR/merge/release IDs and summarize the last 7/30 days."""
-    since_30d = now - timedelta(days=30)
+    since_7d, since_30d = now - timedelta(days=7), now - timedelta(days=30)
     values = {key: None for key in CRITERIA if key.startswith("delivery.")}
     details = {
-        "accepted_units_30d": None, "merged_units_30d": None,
+        "accepted_units_7d": None, "accepted_units_30d": None, "merged_units_30d": None,
         "unlinked_units_30d": None, "incident_records_30d": None, "unlinked_incidents_30d": None,
     }
 
@@ -1119,12 +1125,16 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
     accepted_release_issues_30d = None
     if release_events is not None:
         release_events_by_issue = {}
+        release_events_7d_by_issue = {}
         for event in release_events:
             issue_number, at = _number(event.get("issue")), ts(event.get("at"))
             if issue_number is None or not at or at > now or at < since_30d:
                 continue
             release_events_by_issue.setdefault(issue_number, []).append(event)
+            if at >= since_7d:
+                release_events_7d_by_issue.setdefault(issue_number, []).append(event)
         accepted_release_issues_30d = set(release_events_by_issue)
+        details["accepted_units_7d"] = len(release_events_7d_by_issue)
         details["accepted_units_30d"] = len(accepted_release_issues_30d)
 
     if issue_rows is not None and pr_rows is not None and release_events_by_issue is not None:
@@ -1144,7 +1154,7 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
             # Lead time needs only the issue's creation and its one acceptance; the unit join below is an
             # integrity check and must not choose the sample (50 of 64 accepted issues predate the ledger).
             if created_at and accepted_at and created_at <= accepted_at:
-                lead_hours.append((accepted_at - created_at).total_seconds() / 3600)
+                lead_hours.append((accepted_at, (accepted_at - created_at).total_seconds() / 3600))
             candidates = units_by_issue.get(issue_number, [])
             unit = candidates[0] if len(candidates) == 1 else None
             merge_at = _merge_time(unit) if unit else None
@@ -1166,8 +1176,10 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
 
         accepted = [row for row in accepted if row["accepted_at"] <= now]
         details["unlinked_units_30d"] = unlinked
-        values["delivery.issue_to_accept_p50_30d_hours"] = pct(lead_hours, .5)
-        values["delivery.issue_to_accept_p95_30d_hours"] = pct(lead_hours, .95)
+        for since, target in ((since_7d, "7d"), (since_30d, "30d")):
+            window = [hours for at, hours in lead_hours if at >= since]
+            values[f"delivery.issue_to_accept_p50_{target}_hours"] = pct(window, .5)
+            values[f"delivery.issue_to_accept_p95_{target}_hours"] = pct(window, .95)
         if accepted and reverted_merge_times is not None:
             reverted = 0
             for row in accepted:
