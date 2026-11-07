@@ -500,6 +500,23 @@ python3 "$script_dir/node_health.py" --runtime "$coll" --audit "$audit" --now 20
 jq -e '[.metrics[] | select(.id == "dispatch.collisions_per_day")][0].value == 1' "$coll/result.json" >/dev/null \
   || fail "collisions must count the archived overlap once and skip the shared-append pair: $(jq -c '[.metrics[] | select(.id == "dispatch.collisions_per_day")]' "$coll/result.json")"
 
+# PR opened -> first verdict, 7 d: the first verdict of each PR only, a PR still in review-pending counts its age,
+# a verdict older than 7 d does not count; the 5 h window of the other ledger rows does not shorten it.
+python3 - "$script_dir" <<'CHECK' || fail 'open to first review wait wrong'
+import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
+now = n.ts("2026-11-07T12:00:00Z")
+def u(i, stage, *ev): return {"id": i, "stage": stage, "history": [{"stage": k, "at": a} for k, a in ev]}
+units = [
+ u("a", "merged", ("pr-opened", "2026-11-07T08:00:00Z"), ("review-request-changes", "2026-11-07T08:30:00Z"), ("review-approve", "2026-11-07T09:00:00Z")),
+ u("b", "merged", ("pr-opened", "2026-11-06T08:00:00Z"), ("review-approve", "2026-11-06T08:10:00Z")),
+ u("old", "merged", ("pr-opened", "2026-10-01T08:00:00Z"), ("review-approve", "2026-10-02T08:00:00Z")),
+ u("waiting", "review-pending", ("pr-opened", "2026-11-07T06:00:00Z")),
+ u("parked", "parked", ("pr-opened", "2026-11-07T06:00:00Z")),
+]
+waits = sorted(n.ledger_history.first_review_waits(units, now, n.ts))
+assert waits == [10, 30, 360], waits
+assert n.ledger_metrics(units, now - n.timedelta(hours=5), now)["review.open_to_first_review_p90_min"] == 360
+CHECK
 # First-pass BLOCK is a failed first review; native resumed workers count only
 # the new turn's fresh tokens, so pre-review repair cannot disappear from spend.
 python3 - "$script_dir" "$test_env_root" <<'CHECK'

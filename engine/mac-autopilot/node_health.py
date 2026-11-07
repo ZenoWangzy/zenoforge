@@ -44,7 +44,7 @@ def health_doc_reference():
 
 
 # metric id: (node, description, healthy bound, unhealthy bound, higher_is_better)
-CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
+CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA, **ledger_history.CRITERIA,
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
     "implement.no_output_pct": ("implement", "implement runs with no report %", 5, 15, False),
     "dispatch.collisions_per_day": ("implement", "overlapping implement/repair unit pairs in the last 24h", 0, 1, False),
@@ -121,7 +121,7 @@ GH_DELIVERY_CALL_TIMEOUT = 15
 GH_DELIVERY_CENSUS_TIMEOUT = 30
 GH_DELIVERY_BATCH_TIMEOUT = 60
 # What each number means, in the dashboard's words. Every metric above needs one (node_health.test.sh).
-MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
+MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING, **ledger_history.MEANING,
     "implement.wall_p50": "一次开发从派出到交付的中位时长。偏长多半是任务太大，或卡在环境上。",
     "implement.no_output_pct": "开发员跑完却没交报告的比例：这些 token 全白花，多是进程被杀或崩溃。",
     "dispatch.collisions_per_day": "过去 24 小时不同开发单元同时写入同一文件的次数；正常等待不算碰撞，任何一次都是故障。",
@@ -187,7 +187,7 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "delivery.human_actions_unattributed_30d": "过去 30 天 maintainer-login PR review 中，有 agent marker 或 commit trailer、但没有相应 scheduler review 事件的动作数；不算成人工动作。",
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
-SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
+SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE, **ledger_history.SOURCE,
     "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "dispatch.collisions_per_day": "units.json write-start/write-end 的区间与文件范围（预测 + 实际 diff），按单元对去重；固定滚动 24h。",
@@ -838,7 +838,7 @@ def ledger_metrics(units, since, now):
     )
     rejections = [r.get("block") == "missing" for u in units for r in u.get("review_findings") or []
                   if (t := ts(r.get("at"))) and t >= since]
-    return {**arbiter_health.ledger_metrics(units, now, ts),
+    return {**arbiter_health.ledger_metrics(units, now, ts), **ledger_history.metrics(units, now, ts),
         "review.findings_missing_pct": 100 * sum(rejections) / len(rejections) if rejections else None,
         "loop.advisor_fail_pct": 100 * asked.count("advisor-unavailable") / len(asked) if asked else None,
         "review.first_pass_pct": 100 * sum(first_reviews) / len(first_reviews) if first_reviews else None,
