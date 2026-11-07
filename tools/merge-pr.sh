@@ -250,7 +250,7 @@ merge_pr_override_ok() {
     return 1
   fi
   [[ -n "$files" ]] || return 0
-  home="${AGENT_HOME:-${ZF_HOME:-}}"
+  home="${AGENT_HOME:-${ZF_HOME:-$HOME/.vecta-agent}}"
   target="$home/checkout"
   if [[ -z "$home" ]] || ! root="$(merge_pr_root)" \
     || ! git -C "$target" fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main 2>/dev/null \

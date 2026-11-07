@@ -438,6 +438,8 @@ PR_FILE_STATUSES="$(files_json tools/quick-land.sh)"
 AGENT_HOME="$ov_dir/missing" expect_override 'PR with no engine file reads no target' pass
 PR_FILE_STATUSES="$(files_json engine/state/rulings.json)"
 AGENT_HOME="$ov_dir/missing" expect_override 'unreadable target' refuse 'could not read the target'
+# A hand merge from a session has no AGENT_HOME: the check must find the same default checkout as auto-pin.
+(unset AGENT_HOME ZF_HOME; HOME="$ov_dir/default-home"; mkdir -p "$HOME/.vecta-agent"; ln -s "$tgt" "$HOME/.vecta-agent/checkout"; export HOME; expect_override 'no AGENT_HOME reads the default checkout' refuse 'override state/rulings.json')
 [[ "$(ZF_MERGE_OVERRIDE=override-merge AGENT_HOME="$ov_dir/missing" merge_pr_override_ok 17 2>&1)" == *'skips the override merge check'* ]] || fail 'override-merge did not skip and log'
 PR_FILE_STATUSES='[{"filename":"engine/state/rulings.json","status":"removed"}]'
 git -C "$repo" rm -q engine/state/rulings.json
