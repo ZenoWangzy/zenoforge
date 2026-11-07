@@ -933,6 +933,7 @@ printf '{"units":[]}' > "$ma/units.json"
 {
   printf '[2026-10-29T01:00:00Z] footprint wait unit=pr-9 owner=pr-8\n'
   printf '[2026-10-29T11:55:00Z] tick done units=0\n'
+  printf '[2026-10-29T11:55:00Z] issue-pipeline: blocker-root sweep read ok tick=fixture\n'
   printf '[2026-10-29T11:55:00Z] dispatch mode=fresh reason=initial pid=99 type=implement unit=issue-1\n'
   printf '[2026-10-29T11:55:00Z] self-check pid=99 unit=issue-1 head=0123456789abcdef (before review)\n'
   printf '[2026-10-29T11:55:00Z] merged PR#7 merge=0123456789abcdef (own checks green; main CI verifies)\n'
@@ -979,18 +980,18 @@ jq -e '.mechanisms[] | select(.id == "factory-f9-footprint-wait") | .silent == f
 grep -Fq 'NODE-UNHEALTHY metric=mechanism.silent node=mechanisms value=1 unhealthy-bound=1' "$ma/alerts/node-health.md" \
   || fail "silent mechanism was not written to the health alert: $(cat "$ma/alerts/node-health.md" 2>/dev/null)"
 # scheduler.test.sh proves disabling f9 suppresses new footprint-wait lines.
-# Two hours later (14:00): f9's last event is 13h (>12h) and the two 1h-bound loop mechanisms
-# (scheduler-tick, bell-triage) are 2.1h quiet; f3 is 28h. Exactly those four must be silent.
+# Two hours later (14:00): f9's last event is 13h (>12h) and the 1h-bound loop mechanisms
+# (scheduler-tick, bell-triage) and blocker-root-sweep are 2.1h quiet; f3 is 28h. Exactly those five must be silent.
 out="$(PATH="$test_env_root/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$ma" --audit "$noaudit" \
   --hours 1 --now 2026-10-29T14:00:00Z --alert --json "$ma/node-health.json")"
-jq -e '.metrics[] | select(.id == "mechanism.silent") | .value == 4 and .status == "UNHEALTHY"' \
-  "$ma/node-health.json" >/dev/null || fail 'f9/tick/bell did not become silent after their bounds'
-jq -e '[.mechanisms[] | select(.silent) | .id] | sort == (["factory-f3-release-train", "factory-f9-footprint-wait", "scheduler-tick", "bell-triage"] | sort)' \
+jq -e '.metrics[] | select(.id == "mechanism.silent") | .value == 5 and .status == "UNHEALTHY"' \
+  "$ma/node-health.json" >/dev/null || fail 'f9/tick/bell/blocker-root did not become silent after their bounds'
+jq -e '[.mechanisms[] | select(.silent) | .id] | sort == (["factory-f3-release-train", "factory-f9-footprint-wait", "scheduler-tick", "bell-triage", "blocker-root-sweep"] | sort)' \
   "$ma/node-health.json" >/dev/null \
   || fail "wrong silent set at 14:00: $(jq -c '[.mechanisms[] | select(.silent) | .id]' "$ma/node-health.json")"
 jq -e '.mechanisms[] | select(.id == "factory-f9-footprint-wait") | .silent == true and .silent_hours == 13' \
   "$ma/node-health.json" >/dev/null || fail "f9 silence was not reported: $(jq -c '.mechanisms[] | select(.id == "factory-f9-footprint-wait")' "$ma/node-health.json")"
-grep -Fq '[2026-10-29T14:00:00Z] NODE-UNHEALTHY metric=mechanism.silent node=mechanisms value=4 unhealthy-bound=1' "$ma/alerts/node-health.md" \
+grep -Fq '[2026-10-29T14:00:00Z] NODE-UNHEALTHY metric=mechanism.silent node=mechanisms value=5 unhealthy-bound=1' "$ma/alerts/node-health.md" \
   || fail "post-bound f9 health alert missing: $(cat "$ma/alerts/node-health.md")"
 python3 - "$script_dir" "$ma" <<'CHECK' || fail 'mechanism heartbeat semantics wrong'
 import datetime as dt, json, os, sys

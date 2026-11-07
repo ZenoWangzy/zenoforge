@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$AGENT_HOME/night" "$test_env_root/autopi" "$test_env_root/repo"
 export REPO_DIR="$test_env_root/repo"
 export MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/autopi"
-eval "$(sed -n '/^maintenance_record_deferred_step() {/,/^}/p; /^maintenance_clear_deferred_step() {/,/^}/p; /^maintenance_now_epoch_ms() {/,/^}/p; /^maintenance_set_optional_deadline() {/,/^}/p; /^maintenance_restore_slice_deadline() {/,/^}/p; /^maintenance_defer_optional_step() {/,/^}/p; /^maintenance_run_optional_step() {/,/^}/p; /^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+eval "$(sed -n '/^maintenance_record_deferred_step() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p; /^maintenance_clear_deferred_step() {/,/^}/p; /^maintenance_now_epoch_ms() {/,/^}/p; /^maintenance_set_optional_deadline() {/,/^}/p; /^maintenance_restore_slice_deadline() {/,/^}/p; /^maintenance_defer_optional_step() {/,/^}/p; /^maintenance_run_optional_step() {/,/^}/p; /^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 
 if [[ "${1:-}" == --plant-old ]]; then
   PLANT_OLD_ORDER=1
@@ -190,5 +190,47 @@ check 'threshold writes the #166 scheduler incident signature' \
 maintenance_record_deferred_step needs-info-recovery 20261103T000004Z
 check 'duplicate section deferral in one tick does not repeat the warning' \
   "$(grep -c 'maintenance deferred streak section=needs-info-recovery consecutive=3' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")" 1
+
+# Reached with 15s left, the roots read met the deadline every tick and left no cursor for 20 hours (2026-11-06).
+maintenance_clear_deferred_step
+rm -f "$AGENT_HOME/night/maintenance-resume"
+: > "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"
+checks_blocked_sweep() { CALLS+=(checks-blocked-sweep); }
+read_needs_info_email_replies() { :; }
+sweep_reopened_issues() { :; }
+sweep_unlabeled_issues() { CALLS+=(needs-info-unlabeled); SECONDS=$ROOTS_REACHED_AT; }
+ROOTS_READ=available
+sweep_blocking_issue_roots() { CALLS+=(needs-info-blocker-roots); OPEN_ISSUE_BLOCKER_GRAPH_STATUS="$ROOTS_READ"; [[ "$ROOTS_READ" == available ]]; }
+TICK_UNIT_TIMEOUT_SECONDS=150
+tick() { CALLS=(); IMPLEMENT_TICK_ID="$1"; OPEN_ISSUE_BLOCKER_GRAPH_STATUS=unknown; SECONDS=0; run_post_dispatch_maintenance; }
+resume() { cat "$AGENT_HOME/night/maintenance-resume" 2>/dev/null || echo none; }
+
+ROOTS_REACHED_AT=118; tick 20261107T000001Z
+check 'roots with under 40s left take the cursor instead of the deadline' "$(resume)" needs-info-blocker-roots
+[[ " ${CALLS[*]} " != *' needs-info-blocker-roots '* ]] || fail 'roots ran with no time for the read'
+check 'the short step before roots still ran' "${CALLS[*]: -2}" 'main-red-bisect batch-state'
+
+tick 20261107T000002Z
+check 'the next tick gives roots its turn first and skips the prefix' "${CALLS[*]}" needs-info-blocker-roots
+check 'a read roots finishes clears the cursor' "$(resume)" none
+check 'a read ok line feeds the node health row' \
+  "$(grep -c 'blocker-root sweep read ok tick=20261107T000002Z' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")" 1
+
+ROOTS_READ=unknown
+for n in 3 4 5; do printf 'needs-info-blocker-roots\n' > "$AGENT_HOME/night/maintenance-resume"; tick "2026110700000${n}Z"; done
+check 'an unread graph keeps the cursor' "$(resume)" needs-info-blocker-roots
+check 'three unread graphs in a row ring the bell' \
+  "$(grep -c 'maintenance deferred streak section=needs-info-blocker-roots consecutive=3' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")" 1
+check 'an unread graph writes no read ok line' \
+  "$(grep -c 'read ok tick=20261107T00000[345]Z' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")" 0
+
+ROOTS_READ=available
+sweep_blocking_issue_roots() { CALLS+=(needs-info-blocker-roots); OPEN_ISSUE_BLOCKER_GRAPH_STATUS=available; return 1; }
+rm -f "$AGENT_HOME/night/maintenance-resume"; ROOTS_REACHED_AT=20; tick 20261107T000006Z
+check 'one failed root does not stop the prefix on the next tick' "$(resume)" none
+
+# needs-info-loop and main-red-bisect meet the deadline the same way, so short steps have a floor too.
+ROOTS_REACHED_AT=121; tick 20261107T000007Z
+check 'a short step with under 15s left takes the cursor' "$(resume)" needs-info-loop
 
 echo 'issue-pipeline-maintenance-budget.test.sh: PASS'

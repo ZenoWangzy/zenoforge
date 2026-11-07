@@ -1310,6 +1310,12 @@ maintenance_record_deferred_step() { # section tick; emit one bell signature at 
   fi
 }
 
+maintenance_scheduler_log() { # one line for node health; a tick without the runtime dir has no health to feed
+  local runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${REPO_DIR:+$REPO_DIR/.scratch-supervisor/autopi}}"
+  [[ -n "$runtime_dir" && -d "$runtime_dir" ]] || return 0
+  printf '[%s] issue-pipeline: %s\n' "$(date -u +%FT%TZ)" "$1" >> "$runtime_dir/scheduler.log" 2>/dev/null || true
+}
+
 maintenance_clear_deferred_step() {
   rm -f -- "$AGENT_HOME/night/maintenance-deferral-state.json" 2>/dev/null || true
 }
@@ -1393,6 +1399,9 @@ maintenance_run_optional_step() { # bounded maintenance work that can yield to r
       if ! sweep_blocking_issue_roots; then
         echo "issue-pipeline: blocker-root recovery failed; current roots unavailable" >&2
       fi
+      # One failed root is its own retry; an unread graph means no root ran, so the step owes a tick.
+      [ "${OPEN_ISSUE_BLOCKER_GRAPH_STATUS:-unknown}" = available ] || return 1
+      maintenance_scheduler_log "blocker-root sweep read ok tick=$IMPLEMENT_TICK_ID"
       ;;
     needs-info-unlabeled)
       if ! sweep_unlabeled_issues; then
@@ -1430,7 +1439,7 @@ run_post_dispatch_maintenance() {
   local budget="${TICK_UNIT_TIMEOUT_SECONDS:-1200}" timeout_reserve="${MAINTENANCE_STEP_RESERVE_SECONDS:-240}"
   local required_slot="${MAINTENANCE_REQUIRED_SLOT_SECONDS:-55}"
   local reopen_slot="${MAINTENANCE_REOPEN_SLOT_SECONDS:-18}" email_slot email_stop_at max_email_stop_at
-  local prefix_stop_at suffix_stop_at
+  local prefix_stop_at suffix_stop_at step_floor
   local resume_file="$AGENT_HOME/night/maintenance-resume" resume="" step i prefix_start=0 suffix_start=0 deferred_step=""
   local resume_suffix=0 original_gh_deadline="${ZF_GH_CALL_DEADLINE_EPOCH_MS:-}"
   local original_gmail_deadline="${ZF_GMAIL_CALL_DEADLINE_EPOCH_MS:-}" original_email_stop_at="${ZF_NEEDS_INFO_EMAIL_STOP_AT_SECONDS:-}"
@@ -1500,13 +1509,20 @@ run_post_dispatch_maintenance() {
     maintenance_set_optional_deadline "$suffix_stop_at" "$original_gh_deadline" "$original_gmail_deadline"
     for ((i = suffix_start; i < ${#suffix_steps[@]}; i++)); do
       step="${suffix_steps[$i]}"
-      if [ "$SECONDS" -ge "$suffix_stop_at" ]; then
+      # A step needs time for one bounded read, or it only meets the deadline and no cursor is left (blocker roots: 12s read, 15s left, 20 hours).
+      step_floor=15
+      [ "$step" != needs-info-blocker-roots ] || step_floor=40
+      if [ "$((SECONDS + step_floor))" -ge "$suffix_stop_at" ]; then
         maintenance_defer_optional_step "$step" "$IMPLEMENT_TICK_ID" "$resume_file" "$suffix_stop_at"
         deferred_step="$step"
         break
       fi
       profile_mark "$step"
-      maintenance_run_optional_step "$step"
+      if ! maintenance_run_optional_step "$step"; then
+        maintenance_defer_optional_step "$step" "$IMPLEMENT_TICK_ID" "$resume_file" "$suffix_stop_at"
+        deferred_step="$step"
+        break
+      fi
     done
     maintenance_restore_slice_deadline "$original_gh_deadline" "$original_gmail_deadline"
   fi

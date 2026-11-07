@@ -294,6 +294,16 @@
       "expected_idle": true
     },
     {
+      "id": "blocker-root-sweep",
+      "desc": "blocker-root 扫描读到开放票依赖图：伞形票关闭、依赖边转移、concluded 根恢复都靠它；连续 3 拍读不到另由 maintenance deferred streak 响铃",
+      "events": [
+        {"base": "runtime", "file": "scheduler.log", "pattern": "blocker-root sweep read ok"}
+      ],
+      "silence_hours": 1,
+      "supervisor": "head-supervisor",
+      "expected_idle": false
+    },
+    {
       "id": "node-health-scorecard",
       "desc": "node_health 体检（每拍评分，UNHEALTHY 写告警行；--file-issues 满 3h 升级 pipeline health 票）",
       "events": [

@@ -1,6 +1,6 @@
 824	engine/execution-admission.py
 941	engine/focused-test-paths.mjs
-3190	engine/issue-pipeline.sh
+3206	engine/issue-pipeline.sh
 1792	engine/land-direct-main.sh
 2083	engine/land-queue.sh
 804	engine/lib.d/blockers.sh

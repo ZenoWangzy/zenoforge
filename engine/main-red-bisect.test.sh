@@ -173,7 +173,7 @@ source "$SCRIPT_DIR/lib.sh"
 
 # Run the tick-owned maintenance loop from its durable resume point. The
 # other maintenance owners are quiet fixtures; main-red is the real sweep.
-eval "$(sed -n '/^maintenance_record_deferred_step() {/,/^}/p; /^maintenance_clear_deferred_step() {/,/^}/p; /^maintenance_now_epoch_ms() {/,/^}/p; /^maintenance_set_optional_deadline() {/,/^}/p; /^maintenance_restore_slice_deadline() {/,/^}/p; /^maintenance_defer_optional_step() {/,/^}/p; /^maintenance_run_optional_step() {/,/^}/p; /^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+eval "$(sed -n '/^maintenance_record_deferred_step() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p; /^maintenance_clear_deferred_step() {/,/^}/p; /^maintenance_now_epoch_ms() {/,/^}/p; /^maintenance_set_optional_deadline() {/,/^}/p; /^maintenance_restore_slice_deadline() {/,/^}/p; /^maintenance_defer_optional_step() {/,/^}/p; /^maintenance_run_optional_step() {/,/^}/p; /^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 profile_mark() { :; }
 checks_blocked_sweep() { :; }
 hold_sweep() { :; }
@@ -182,7 +182,7 @@ reconcile_maintainer_outcomes() { :; }
 flush_maintainer_outcome_digest() { :; }
 read_needs_info_email_replies() { :; }
 sweep_reopened_issues() { :; }
-sweep_blocking_issue_roots() { :; }
+sweep_blocking_issue_roots() { OPEN_ISSUE_BLOCKER_GRAPH_STATUS=available; }
 sweep_unlabeled_issues() { :; }
 reconcile_needs_info_issues() { :; }
 is_on_hold() { return 1; }
