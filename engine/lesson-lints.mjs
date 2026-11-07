@@ -335,6 +335,29 @@ export const lessonLints = [
   },
 ];
 
+// Exact-second greps fail when a stall moves the elapsed value (three CI failures 11-07). No ranking row backs this class, so it is a plain scan of changed test files.
+export const exactSecondLint = {
+  classTag: 'exact-second-elapsed-grep',
+  pattern: /grep -Fq\b.*\b(?:after|at) [0-9]+s\b/,
+  guidance: 'Match an elapsed-seconds value with grep -Eq and [0-9]+s, never one exact second: SECONDS and scheduler timers keep ticking, so a stall moves the value by one. Example: grep -Eq "after [0-9]+s: ..." "$LOG".',
+};
+
+export function exactSecondFailures(files, readSource) {
+  const failures = [];
+  for (const file of files.filter((p) => p.endsWith('.test.sh'))) {
+    let source;
+    try {
+      source = readSource(file);
+    } catch {
+      continue; // deleted at head
+    }
+    source.split(/\r?\n/).forEach((line, index) => {
+      if (exactSecondLint.pattern.test(line)) failures.push(`${file}:${index + 1}`);
+    });
+  }
+  return failures;
+}
+
 export function lintPaths(lint) {
   return lint.gate ?? [...Object.keys(lint.files), lintPath, rankingPath];
 }
@@ -416,6 +439,10 @@ export function runLessonLints({ repo, base, head, log = (line) => console.log(l
       failed += 1;
     }
   }
+  const exactSecond = exactSecondFailures(paths, readSource);
+  for (const hit of exactSecond) log(`lesson-lint: lesson=none incident_class=${exactSecondLint.classTag} verdict=fail at=${hit}`);
+  if (exactSecond.length) log(`lesson-lint: fix: ${exactSecondLint.guidance}`);
+  failed += exactSecond.length;
   return failed;
 }
 

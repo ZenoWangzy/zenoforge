@@ -233,6 +233,24 @@ merge_pr_review_family_ok() {
   out="$(merge_pr_review_family "$pr")" && return 0
   merge_pr_refuse "$pr" "review-family.test.sh failed: $out"
 }
+# suite-set-check.py refuses a pin that drops a baseline suite and has no retire path: a deleted suite merged, then stopped auto-pin (#614).
+# A rename counts as a deletion unless it is a pure move (no changed lines) that stays a suite under engine/.
+merge_pr_suite_delete_ok() {
+  local pr="$1" files deleted
+  if ! files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" 2>/dev/null)"; then
+    merge_pr_refuse "$pr" 'could not read PR file statuses for the suite check'
+    return 1
+  fi
+  if ! deleted="$(jq -rs 'def t: test("^engine/.*\\.test\\.(sh|py|mjs)$");
+    add // [] | [.[] | select((.status == "removed" and (.filename | t))
+      or (.status == "renamed" and (.previous_filename | t) and (((.changes // 1) != 0) or (.filename | t | not))))
+      | (.previous_filename // .filename)] | join(", ")' <<<"$files")"; then
+    merge_pr_refuse "$pr" 'could not read PR file statuses for the suite check'
+    return 1
+  fi
+  [[ -z "$deleted" ]] && return 0
+  merge_pr_refuse "$pr" "deletes or renames away test suite(s) $deleted: keep the suite; a pin that drops a baseline suite has no retire path"
+}
 # Ruling zenoforge-instant-effect-2026-11-05: gates, evaluators, the pin, the watchdog and rollback keep CI before merge.
 # Code that deletes clones and refs is held the same way: #485 reached main 95s into a CI run that then failed.
 merge_pr_gate_ci_ok() {
@@ -303,6 +321,7 @@ merge_pr_checks_and_merge() {
   merge_pr_scheduler_prelude_ok "$pr" || return 1
   merge_pr_static_scans_ok "$pr" || return 1
   merge_pr_review_family_ok "$pr" || return 1
+  merge_pr_suite_delete_ok "$pr" || return 1
 
   while IFS= read -r check_name; do
     [[ -n "$check_name" ]] || continue

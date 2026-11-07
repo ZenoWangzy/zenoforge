@@ -62,5 +62,5 @@ grep -Fq ' census_partial=2' "$LOG" || fail "live rows not counted: $(grep 'skip
 : > "$LOG"
 SECONDS=280
 register_new_issues 0 true
-grep -Fq 'intake budget spent after 0s: rows from #10 wait for the next tick' "$LOG" || fail "a late refill ran into the kill: $(cat "$LOG")"
+grep -Eq 'intake budget spent after [0-9]+s: rows from #10 wait for the next tick' "$LOG" || fail "a late refill ran into the kill: $(cat "$LOG")"
 echo 'intake-terminal-skip.test.sh: pass'

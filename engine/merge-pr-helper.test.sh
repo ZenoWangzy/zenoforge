@@ -34,6 +34,7 @@ PR_HEAD="$sha"
 PR_CHECKS='[]'
 PR_BODY=$'## prior-art\nFollows required status checks: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches\n'
 PR_FILES='["tools/quick-land.sh"]'
+PR_FILE_STATUSES='[]'
 gh() {
   case "$1 $2" in
     'pr view')
@@ -65,6 +66,9 @@ gh() {
       ;;
     'run cancel')
       printf '%s\n' "$3" >> "$fixture/cancelled"
+      ;;
+    'api '*)
+      printf '%s\n' "$PR_FILE_STATUSES"
       ;;
     *)
       fail "unexpected gh command: $*"
@@ -287,5 +291,25 @@ for preserved in engine/worktree-lifecycle.sh engine/mac-autopilot/rescued_gc.sh
 done
 PR_FILES='["tools/merge-pr.sh"]'
 ZF_MERGE_OVERRIDE=gate-ci merge_pr_gate_ci_ok 17 "$PR_CHECKS" || fail 'the gate-ci override was ignored'
+
+# A PR that deletes or renames away an engine test suite is refused; a pure move, a modify or a non-engine test passes.
+expect_suite() {
+  local label="$1" statuses="$2" verdict="$3" out
+  PR_FILE_STATUSES="$statuses"
+  if out="$(merge_pr_suite_delete_ok 17 2>&1)"; then
+    [[ "$verdict" == pass ]] || fail "$label was not refused"
+  else
+    [[ "$verdict" == refuse ]] || fail "$label refused: $out"
+    [[ "$out" == *"$4"* ]] || fail "$label refusal lost its file: $out"
+  fi
+}
+expect_suite 'removed suite' '[{"filename":"engine/old.test.sh","status":"removed","changes":9}]' refuse 'engine/old.test.sh'
+expect_suite 'renamed suite with edits' '[{"filename":"engine/new.test.sh","previous_filename":"engine/old.test.sh","status":"renamed","changes":2}]' refuse 'engine/old.test.sh'
+expect_suite 'renamed suite out of engine' '[{"filename":"tools/new.test.sh","previous_filename":"engine/old.test.sh","status":"renamed","changes":0}]' refuse 'engine/old.test.sh'
+expect_suite 'pure suite move' '[{"filename":"engine/new.test.sh","previous_filename":"engine/old.test.sh","status":"renamed","changes":0}]' pass
+expect_suite 'modified suite' '[{"filename":"engine/old.test.sh","status":"modified","changes":4}]' pass
+expect_suite 'removed non-engine test' '[{"filename":"tools/old.test.sh","status":"removed","changes":3}]' pass
+expect_suite 'removed engine script' '[{"filename":"engine/old.sh","status":"removed","changes":3}]' pass
+PR_FILE_STATUSES='[]'
 
 echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, applies exact named overrides, requires a prior-art section unless test-only or overridden, and requires a green test receipt for the PR head unless the PR is Markdown-only'

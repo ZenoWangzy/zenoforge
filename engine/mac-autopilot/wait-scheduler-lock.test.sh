@@ -29,5 +29,5 @@ command sleep 30 & holder=$!; echo "$holder" > "$lock/pid"
 AUTOPI_LOCK_WAIT_SECONDS=2 wait_lock
 kill "$holder"; wait "$holder" 2>/dev/null || :
 (( elapsed >= 2 && elapsed < 10 )) || fail "bound not honoured (elapsed=$elapsed)"
-grep -Fq "pid $holder still holds .scheduler.lock after 2s; starting anyway" "$log" || fail 'fail-open line not logged'
+grep -Eq "pid $holder still holds .scheduler.lock after [0-9]+s; starting anyway" "$log" || fail 'fail-open line not logged'
 echo 'wait-scheduler-lock.test.sh: PASS'
