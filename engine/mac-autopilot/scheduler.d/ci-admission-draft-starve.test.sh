@@ -302,4 +302,19 @@ ci_station_fresh || { echo 'ci-admission-draft-starve.test.sh: a recent heartbea
 grep -Fq 'ci_station_fresh || phase_yield_lock ci_admission' "$engine_dir/mac-autopilot/scheduler.sh" \
   || { echo 'ci-admission-draft-starve.test.sh: the tick no longer defers ci_admission to a fresh station' >&2; exit 1; }
 
+
+# --- case 10: a rerun of a check that admission cancelled is counted by one fixed line; other cancels are not. ---
+starve_fixture cancel-rerun
+AGENT_HOME="$td"; mkdir -p "$td/logs"
+printf '%s\n' \
+  '{"when":"T","run_id":"11","reason":"ci wip"}' \
+  '{"when":"T","run_id":"12","reason":"repair dispatched; head will change"}' \
+  '{"when":"T","run_id":"13","reason":"ci deferred"}' '{"when":"T","run_id":"13","reason":"repair dispatched"}' \
+  '{"when":"T","run_id":"14"}' > "$td/logs/actions-run-cancellations.jsonl"
+command jq -cn '{units:[{id:"rerun-1", pr:2201, branch:"fix/rerun-1", stage:"ready-to-merge", history:[]}]}' > "$UNITS"
+gh() { case "$*" in "run list --commit"*) printf '11\n12\n13\n14\n' ;; "run rerun"*) ;; *) return 97 ;; esac; }
+ci_cancelled rerun-1 2201 "$s1" "Pipeline suites"
+[[ "$(grep -c 'ci cancel-rerun unit=' "$LOG")" == 1 ]] && grep -Fq "ci cancel-rerun unit=rerun-1 head=$s1 run=11" "$LOG" \
+  || { echo "ci-admission-draft-starve.test.sh: only the admission-cancelled rerun should be counted: $(grep 'cancel-rerun' "$LOG")" >&2; exit 1; }
+
 echo 'ci-admission-draft-starve.test.sh: pass (one-pass draft admission, 3-tick starvation alert, slot_sync budget, path lookup bounds, station lock, pause and bound verified)'
