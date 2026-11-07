@@ -36,11 +36,11 @@ ensure_auto_filed_label() {
   local repo="${1:-${REPO:-}}" existing
   [[ -n "$repo" && "${DRY_RUN:-0}" != 1 ]] || return 0
   [[ " $AUTO_FILED_LABEL_REPOS " != *" $repo "* ]] || return 0
-  existing="$(gh label list --repo "$repo" --limit 200 --json name -q '.[].name' 2>/dev/null)" || return 0
+  existing="$(gh label list --repo "$repo" --limit 100 --json name -q '.[].name' 2>/dev/null)" || return 0
   if ! grep -qx -- auto-filed <<<"$existing"; then
     if ! guarded_write gh label create auto-filed --repo "$repo" --color ededed \
         --description "Automatically filed by Zenoforge" >/dev/null 2>&1; then
-      existing="$(gh label list --repo "$repo" --limit 200 --json name -q '.[].name' 2>/dev/null)" || return 1
+      existing="$(gh label list --repo "$repo" --limit 100 --json name -q '.[].name' 2>/dev/null)" || return 1
       grep -qx -- auto-filed <<<"$existing" || return 1
     fi
   fi
@@ -72,8 +72,10 @@ guarded_write() {
           ;;
       esac
     done
-    (( issue_create_has_auto_filed )) || command_args+=(--label auto-filed)
-    ensure_auto_filed_label "$create_repo" || return 1
+    # The marker must not block filing: a ticket that fails to file is worse than one the title predicate has to catch.
+    if ensure_auto_filed_label "$create_repo"; then
+      (( issue_create_has_auto_filed )) || command_args+=(--label auto-filed)
+    fi
     if [ "${ROADMAP_ISSUE_CREATE_INNER:-0}" != 1 ] \
       && [[ "${create_repo,,}" == "${REPO,,}" ]]; then
       if ! declare -F roadmap_issue_create >/dev/null; then

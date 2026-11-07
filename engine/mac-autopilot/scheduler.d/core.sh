@@ -139,17 +139,18 @@ AUTOPILOT_AUTO_FILED_LABEL_READY="${AUTOPILOT_AUTO_FILED_LABEL_READY:-false}"
 scheduler_auto_filed_issue_create() {
   local existing
   if [[ "$AUTOPILOT_AUTO_FILED_LABEL_READY" != true ]]; then
-    existing="$(gh label list --limit 200 --json name -q '.[].name' 2>/dev/null)" || return 1
-    if ! grep -qx -- auto-filed <<<"$existing"; then
-      if ! gh label create auto-filed --color ededed \
-          --description "Automatically filed by Zenoforge" >/dev/null 2>&1; then
-        existing="$(gh label list --limit 200 --json name -q '.[].name' 2>/dev/null)" || return 1
-        grep -qx -- auto-filed <<<"$existing" || return 1
-      fi
+    existing="$(gh label list --limit 100 --json name -q '.[].name' 2>/dev/null || true)"
+    if grep -qx -- auto-filed <<<"$existing" || gh label create auto-filed --color ededed \
+        --description "Automatically filed by Zenoforge" >/dev/null 2>&1; then
+      AUTOPILOT_AUTO_FILED_LABEL_READY=true
     fi
-    AUTOPILOT_AUTO_FILED_LABEL_READY=true
   fi
-  gh issue create "$@" --label auto-filed
+  # The marker must not block filing: a ticket that fails to file is worse than one the title predicate has to catch.
+  if [[ "$AUTOPILOT_AUTO_FILED_LABEL_READY" == true ]]; then
+    gh issue create "$@" --label auto-filed
+  else
+    gh issue create "$@"
+  fi
 }
 tick_gh_calls_begin() {
   GH_TICK_CALLS_FILE="$A/gh-calls.$BASHPID"
