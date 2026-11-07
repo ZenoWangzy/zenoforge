@@ -539,13 +539,12 @@ IDLE_SHA="$(printf 'a%.0s' {1..40})"
 main_runs success success > "$FAKE_GH_STATE/completed-runs.json"
 main_red_session_write "$IDLE_SHA" bisecting
 MAIN_RED_MAX_RUN_AGE_SECONDS=86400
-IDLE_ALERTS="$test_root/idle-alerts"; : > "$IDLE_ALERTS"
-supervisor_inbox_append_once() { printf '%s %s\n' "$1" "$2" >> "$IDLE_ALERTS"; }
 main_red_bisect_sweep
-assert_eq "a session with recent writes raises nothing" 0 "$(grep -c session-idle "$IDLE_ALERTS" || true)"
+assert_eq "a session with recent writes raises nothing" 0 "$(grep -c session-idle "$AGENT_HOME/supervisor-inbox" 2>/dev/null || true)"
 touch -d '2 days ago' "$AGENT_HOME/main-red/$IDLE_SHA.json"
 main_red_bisect_sweep
-assert_contains "an idle session reaches the supervisor" "$(cat "$IDLE_ALERTS")" "main-red-session-idle:$IDLE_SHA"
+main_red_bisect_sweep
+assert_eq "an idle session reaches the supervisor once" 1 "$(grep -c "main-red-session-idle:$IDLE_SHA" "$AGENT_HOME/supervisor-inbox" 2>/dev/null || true)"
 assert_eq "an idle session stays open for its probe or revert PR" bisecting "$(jq -r .status "$AGENT_HOME/main-red/$IDLE_SHA.json")"
 
 if [ "$FAILED" -eq 1 ]; then
