@@ -210,7 +210,7 @@ export ZF_GCLOUD_BIN=/nonexistent/gcloud
 export AGENT_TRIAGE_CAP=3
 
 valid_result() {
-  jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L1",entry_surface:"Web /chat/",acceptor:"maintainer",brief_md:"Summary: fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}'
+  jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L1",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}'
 }
 VALID="$(valid_result)"
 INVALID="$(jq -c 'del(.notes_md)' <<< "$VALID")"
@@ -371,16 +371,17 @@ printf '%s\n' "$(date +%s)" > "$AGENT_HOME/gitnexus-analyze-last-start"
 jq -n --arg updated_at "$TEST_UPDATED_AT" \
   '{triage_retry_after_epoch:1,triage_freshness_deferred_issue_updated_at:$updated_at}' \
   > "$AGENT_HOME/state/910504.json"
-jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",brief_md:"Summary: freshness failure fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
+jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: freshness failure fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
   | jq -c --argjson issue 910504 '{issue:$issue,result:.}' > "$FAKE_CODEX_OUTPUT"
 RUN_OUTPUT="$(FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" bash "$BATCH_SRC" --scheduled 910504 2>&1)"
 assert_not_contains "failed analyze streak bypasses batch freshness wait" "$RUN_OUTPUT" 'all candidates still require the same unconfirmed L2 freshness'
 assert_contains "batch reports why it skipped the unchanged-issue deferral" "$RUN_OUTPUT" 'last 3 GitNexus analyze runs failed'
 assert_eq "failed analyze streak re-admits issue to Codex" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
-assert_eq "batch result keeps the unconfirmed L2 gate closed" needs-advisor "$(jq -r '.state' "$AGENT_HOME/state/910504.json")"
+assert_eq "unconfirmed L2 keeps the model's state under the default" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/910504.json")"
 assert_eq "failed streak does not schedule a future freshness retry" true \
   "$(jq -r --argjson now "$(date +%s)" '(.triage_retry_after_epoch // 0) <= $now' "$AGENT_HOME/state/910504.json")"
 assert_contains "batch decision comment explains the skipped deferral" "$(cat "$FAKE_GH_LOG")" 'last 3 GitNexus analyze runs failed'
+assert_contains "batch decision comment records the unconfirmed impact" "$(cat "$FAKE_GH_LOG")" 'L2 impact freshness was not confirmed'
 
 : > "$FAKE_CODEX_ARGS"
 jq -n --arg updated_at "$TEST_UPDATED_AT" \
@@ -395,7 +396,7 @@ assert_eq "changed issue version returns to Codex" 1 "$(wc -l < "$FAKE_CODEX_ARG
 jq -n --arg updated_at "$TEST_UPDATED_AT" \
   '{triage_retry_after_epoch:1,triage_freshness_deferred_issue_updated_at:$updated_at}' \
   > "$AGENT_HOME/state/910507.json"
-jq -nc '{category:"enhancement",state:"ready-for-human",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",brief_md:"Summary: freshness fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
+jq -nc '{category:"enhancement",state:"ready-for-human",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: freshness fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
   | jq -c --argjson issue 910507 '{issue:$issue,result:.}' > "$FAKE_CODEX_OUTPUT"
 RUN_OUTPUT="$(FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" FAKE_ISSUE_UPDATED_AT_AFTER_FIRST_VIEW=2026-09-27T00:00:00Z bash "$BATCH_SRC" --scheduled 910507 2>&1)"
 assert_eq "live issue update after batch snapshot prevents retry suppression" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
@@ -414,39 +415,41 @@ RUN_OUTPUT="$(FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" bash "$BATCH_SRC" --sched
 assert_eq "fresh index returns unchanged issue to Codex" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
 
 # Once an unchanged issue has waited two hours, stale freshness no longer
-# suppresses triage. The L2 gate still routes it to the advisor, never to the
-# ready-for-agent queue.
+# suppresses triage. The 2026-11-06 default keeps the model's state with the
+# impact marked unconfirmed; only an advisor-only reason routes to the advisor.
 : > "$FAKE_GH_LOG"
 : > "$FAKE_CODEX_ARGS"
 printf '%s\n' '{"lastCommit":"stale"}' > "$ZF_REPO_DIR/.gitnexus/meta.json"
 jq -n --arg updated_at "$TEST_UPDATED_AT" --argjson since "$(( $(date +%s) - 7201 ))" \
   '{triage_retry_after_epoch:1,triage_freshness_deferred_issue_updated_at:$updated_at,triage_freshness_deferred_since_epoch:$since}' \
   > "$AGENT_HOME/state/910508.json"
-jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",brief_md:"Summary: stale L2 fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
+jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: stale L2 fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
   | jq -c --argjson issue 910508 '{issue:$issue,result:.}' > "$FAKE_CODEX_OUTPUT"
 RUN_OUTPUT="$(FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" bash "$BATCH_SRC" --scheduled 910508 2>&1)"
 assert_not_contains "expired freshness deferral does not skip stale L2 triage" "$RUN_OUTPUT" 'all candidates still require the same unconfirmed L2 freshness'
 assert_eq "expired freshness deferral invokes Codex once" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
-assert_eq "stale L2 result is fail-closed to advisor" needs-advisor "$(jq -r '.state' "$AGENT_HOME/state/910508.json")"
-assert_contains "stale L2 result enters advisor queue" "$(cat "$FAKE_GH_LOG")" '--add-label needs-advisor'
-assert_not_contains "stale L2 result never enters implement queue" "$(cat "$FAKE_GH_LOG")" '--add-label ready-for-agent'
+assert_eq "stale L2 result keeps the model's state under the default" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/910508.json")"
+assert_contains "stale L2 result enters the implement queue" "$(cat "$FAKE_GH_LOG")" '--add-label ready-for-agent'
+assert_not_contains "stale L2 result is not routed to the advisor by default" "$(cat "$FAKE_GH_LOG")" '--add-label needs-advisor'
+assert_contains "stale L2 comment records the unconfirmed impact" "$(cat "$FAKE_GH_LOG")" 'L2 impact freshness was not confirmed'
 
-# Maintainer-filed issues bypass an already-set freshness deadline, keep L2
-# fail-closed, and receive their durable priority label during triage intake.
+# Maintainer-filed issues bypass an already-set freshness deadline, keep the
+# default routing with the unconfirmed-impact note, and receive their durable
+# priority label during triage intake.
 : > "$FAKE_CODEX_ARGS"
 : > "$FAKE_GH_LOG"
 printf '%s\n' '{"lastCommit":"stale"}' > "$ZF_REPO_DIR/.gitnexus/meta.json"
 jq -n --arg updated_at "$TEST_UPDATED_AT" --argjson retry "$(( $(date +%s) + 600 ))" --argjson since "$(date +%s)" \
   '{triage_retry_after_epoch:$retry,triage_freshness_deferred_issue_updated_at:$updated_at,triage_freshness_deferred_since_epoch:$since}' \
   > "$AGENT_HOME/state/910509.json"
-jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",brief_md:"Summary: maintainer test.",notes_md:"Index freshness unconfirmed.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
+jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: maintainer test.",notes_md:"Index freshness unconfirmed.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
   | jq -c --argjson issue 910509 '{issue:$issue,result:.}' > "$FAKE_CODEX_OUTPUT"
 RUN_OUTPUT="$(FAKE_AUTHOR=maintainer FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" bash "$BATCH_SRC" --scheduled 910509 2>&1)"
 assert_eq "founder-test freshness deadline does not suppress triage" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
 assert_contains "founder-filed issue gets founder-test label at intake" "$(cat "$FAKE_GH_LOG")" 'issue edit 910509 --repo test/repo --add-label founder-test'
-assert_eq "founder-test stale L2 is fail-closed to advisor" needs-advisor "$(jq -r '.state' "$AGENT_HOME/state/910509.json")"
-assert_contains "founder-test stale L2 enters advisor queue" "$(cat "$FAKE_GH_LOG")" '--add-label needs-advisor'
-assert_not_contains "founder-test stale L2 never enters implement queue" "$(cat "$FAKE_GH_LOG")" '--add-label ready-for-agent'
+assert_eq "founder-test stale L2 keeps the model's state under the default" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/910509.json")"
+assert_contains "founder-test stale L2 enters the implement queue" "$(cat "$FAKE_GH_LOG")" '--add-label ready-for-agent'
+assert_not_contains "founder-test stale L2 is not routed to the advisor by default" "$(cat "$FAKE_GH_LOG")" '--add-label needs-advisor'
 
 # A missing line follows same isolated retry path; cap remains independent.
 : > "$FAKE_CODEX_ARGS"
@@ -559,6 +562,48 @@ assert_not_contains "2025 partial apply never re-routes to advisor" "$(cat "$FAK
 assert_eq "2025 successful measurement consumes admission marker" false \
   "$(jq 'has("advisor_admission_measure_only")' "$AGENT_HOME/state/910702.json")"
 unset FAKE_ISSUE_READY_FOR_AGENT
+
+# Issue #1145 (2026-11-06): a ticket whose advisor convergence pass is still
+# pending (advisor_convergence_pass=true, attempts unchanged since the pass
+# was granted) while its triage ladder reads step=advisor used to be routed
+# through the policy-step branch on EVERY tick: route_to_advisor() keeps the
+# implement route without touching labels, state or the step, and the batch
+# logged one policy_step routed line each time -- most of 154 lines over
+# three days for that one ticket, none of them an actual route. One ticket is
+# routed once per episode: the first keep advances the ladder off the advisor
+# rung (the ruling already granted the implement pass) and logs outcome=kept,
+# and the next tick no longer routes the same episode.
+: > "$FAKE_CODEX_ARGS"
+: > "$FAKE_GH_LOG"
+export MAC_AUTOPILOT_RUNTIME_DIR="$TEST_ROOT/autopi-loop"
+mkdir -p "$MAC_AUTOPILOT_RUNTIME_DIR"
+echo '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
+printf '%s\n' "{\"lastCommit\":\"$(git -C "$ZF_REPO_DIR" rev-parse HEAD)\"}" \
+  > "$ZF_REPO_DIR/.gitnexus/meta.json"
+jq -n '{
+  state:"ready-for-agent",
+  attempts:2,
+  advisor_convergence_pass:true,
+  advisor_convergence_pass_attempt:2,
+  model_policy:{unit:"triage",step:"advisor"}
+}' > "$AGENT_HOME/state/910802.json"
+jq -nc --argjson issue 910802 --argjson result "$VALID" \
+  '{issue:$issue,result:$result}' > "$FAKE_CODEX_OUTPUT"
+LOOP_OUTPUT_1="$(FAKE_ISSUE_READY_FOR_AGENT=910802 bash "$BATCH_SRC" --scheduled 910802 2>&1)"
+assert_contains "convergence keep reports the kept implement route" "$LOOP_OUTPUT_1" \
+  'repeated advisor ruling still awaits its one implement pass'
+assert_eq "first tick logs exactly one policy_step line" 1 \
+  "$(grep -c 'advisor-route issue=#910802 reason=policy_step' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")"
+assert_eq "policy_step line says kept, not routed" kept \
+  "$(grep 'advisor-route issue=#910802 reason=policy_step' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" | tail -1 | sed -n 's/.*outcome=\([a-z-]*\).*/\1/p')"
+assert_eq "first tick advances the ladder off the advisor rung" false \
+  "$(jq '.model_policy.step == "advisor"' "$AGENT_HOME/state/910802.json")"
+assert_not_contains "the kept route never writes the needs-advisor label" "$(cat "$FAKE_GH_LOG")" '--add-label needs-advisor'
+LOOP_OUTPUT_2="$(FAKE_ISSUE_READY_FOR_AGENT=910802 bash "$BATCH_SRC" --scheduled 910802 2>&1)"
+assert_eq "second tick does not route the same episode again" 1 \
+  "$(grep -c 'advisor-route issue=#910802 reason=policy_step' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")"
+assert_eq "second tick proceeds to the triage measurement" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
+unset MAC_AUTOPILOT_RUNTIME_DIR FAKE_ISSUE_READY_FOR_AGENT
 
 # Budget refusal leaves batch queued and never starts Codex.
 : > "$FAKE_CODEX_ARGS"

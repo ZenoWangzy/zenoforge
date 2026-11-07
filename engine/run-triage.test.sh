@@ -21,6 +21,8 @@ jq -e '(.required | index("expected_paths")) != null and .properties.expected_pa
   "$(dirname "${BASH_SOURCE[0]}")/prompts/triage.schema.json" >/dev/null
 jq -e '.properties.external_deliverable.type == "object" and .properties.external_deliverable.properties.required.type == "boolean" and ((.required | index("external_deliverable")) != null)' \
   "$(dirname "${BASH_SOURCE[0]}")/prompts/triage.schema.json" >/dev/null
+jq -e '.properties.advisor_reason.type == "string" and (.properties.advisor_reason.enum | sort) == (["none", "irreversible", "production-data", "security"] | sort) and ((.required | index("advisor_reason")) != null)' \
+  "$(dirname "${BASH_SOURCE[0]}")/prompts/triage.schema.json" >/dev/null
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRIAGE_SRC="$SCRIPT_DIR/run-triage.sh"
@@ -77,8 +79,10 @@ assert_not_contains() {
 
 TRIAGE_PROMPT_CONTENT="$(cat "$SCRIPT_DIR/prompts/triage.md")"
 assert_contains "unknown impact cannot count as L2 evidence" "$TRIAGE_PROMPT_CONTENT" '`UNKNOWN`, `target not found`, an error'
-assert_contains "unknown impact cannot admit or reject L2" "$TRIAGE_PROMPT_CONTENT" $'Do not admit or\n       reject based on it: route unresolved L2 to `needs-advisor`'
-assert_contains "unknown L2 impact stays neutral and routes to advisor" "$TRIAGE_PROMPT_CONTENT" 'route unresolved L2 to `needs-advisor`'
+assert_contains "unknown impact cannot admit or reject L2" "$TRIAGE_PROMPT_CONTENT" $'Do not admit or\n       reject based on it'
+assert_contains "unresolved L2 takes the default with the impact marked unconfirmed" "$TRIAGE_PROMPT_CONTENT" 'the impact marked unconfirmed'
+assert_contains "only the three advisor_reason values route to the advisor" "$TRIAGE_PROMPT_CONTENT" '`irreversible`, `production-data` or `security`'
+assert_contains "the prompt names the advisor_reason gate for ready-for-human" "$TRIAGE_PROMPT_CONTENT" 'never a human park'
 
 TRIAGE_SCHEMA_MISSING_REQUIRED="$(jq -c '(.required // []) as $required | [(.properties // {} | keys[]) as $key | select(($required | index($key)) == null) | $key]' "$SCRIPT_DIR/prompts/triage.schema.json")"
 assert_eq "triage schema requires every key for Codex structured output" '[]' "$TRIAGE_SCHEMA_MISSING_REQUIRED"
@@ -339,9 +343,15 @@ run_once() {
 }
 
 verdict() {
-  # verdict <state> <risk> <level> [category] -- a minimal structured triage output.
+  # verdict <state> <risk> <level> [category] [advisor_reason] -- a minimal
+  # structured triage output. advisor_reason is omitted entirely when the
+  # caller passes nothing, which is also the shape an older target-repository
+  # prompt override produces: the wrapper must treat that as none.
+  local reason_json="null"
+  if [ -n "${5:-}" ]; then reason_json="$(jq -nc --arg r "$5" '$r')"; fi
   jq -nc --arg s "$1" --arg r "$2" --arg l "$3" --arg c "${4:-enhancement}" \
-    '{category: $c, state: $s, risk_class: $r, level: $l, entry_surface: "Web /chat/", acceptor: "maintainer", brief_md: "**Summary:** 测量简报。", notes_md: "有几个问题想确认。", expected_packages: ["packages/react-example"], expected_paths: [], estimated_changed_lines: 0, external_deliverable: {required:false, location:"", reason:""}}'
+    --argjson advisor_reason "$reason_json" \
+    '{category: $c, state: $s, risk_class: $r, level: $l, entry_surface: "Web /chat/", acceptor: "maintainer", brief_md: "**Summary:** 测量简报。", notes_md: "有几个问题想确认。", expected_packages: ["packages/react-example"], expected_paths: [], estimated_changed_lines: 0, external_deliverable: {required:false, location:"", reason:""}} + (if $advisor_reason == null then {} else {advisor_reason: $advisor_reason} end)'
 }
 
 # --- precut, model says ready-for-human (the #1193 shape): measured, never -
@@ -474,19 +484,55 @@ assert_eq "raw + duplicate with an advisor job: exits 0" "0" "$RUN_STATUS"
 assert_contains "raw + duplicate with an advisor job: closes the issue" "$GH_LOG_CONTENT" "issue close $N"
 assert_eq "raw + duplicate with an advisor job: clears job id" "null" "$(echo "$STATE_CONTENT" | jq -r '.web_advisor_provider_job_id // null')"
 
-# --- raw report, model says ready-for-human: the advisor rung, not a human -
+# --- raw report, model says ready-for-human, no advisor_reason: the 2026-11-06 --
+# --- default runs it; only irreversible/production-data/security go to the advisor -
 export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-human P1 L1)"
 export MAC_AUTOPILOT_RUNTIME_DIR="$(mktemp -d)"; TMP_DIRS+=("$MAC_AUTOPILOT_RUNTIME_DIR"); echo '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
 run_once "$RAW_BODY"
-assert_eq "raw + model ready-for-human: exits 0" "0" "$RUN_STATUS"
+assert_eq "raw + model ready-for-human without advisor_reason: exits 0" "0" "$RUN_STATUS"
+assert_contains "...missing advisor_reason field (an old prompt override) still logs one decision line" \
+  "$(grep -E ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null)" "advisor-route issue=#$N reason=default_decided outcome=model_verdict_human"
+assert_eq "...exactly one advisor-route line" "1" "$(grep -c ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null || true)"
+unset MAC_AUTOPILOT_RUNTIME_DIR
+assert_contains "...label is ready-for-agent (triage took the default)" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
+assert_not_contains "...no advisor stop without an advisor-only reason" "$GH_LOG_CONTENT" "--add-label needs-advisor"
+assert_not_contains "...never ready-for-human" "$GH_LOG_CONTENT" "--add-label ready-for-human"
+assert_contains "...the comment says triage took the default" "$GH_LOG_CONTENT" "Triage took the default"
+assert_contains "...the implementer decides the open point" "$GH_LOG_CONTENT" "the implementer decides the open point"
+assert_eq "...state.precut is false for a raw report" "false" "$(echo "$STATE_CONTENT" | jq -r '.precut')"
+assert_not_contains "...the model was NOT told it is precut" "$PROMPT_CONTENT" "agent-ready by construction"
+
+export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-human P1 L1 "" irreversible)"
+export MAC_AUTOPILOT_RUNTIME_DIR="$(mktemp -d)"; TMP_DIRS+=("$MAC_AUTOPILOT_RUNTIME_DIR"); echo '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
+run_once "$RAW_BODY"
+assert_eq "raw + model ready-for-human, advisor_reason=irreversible: exits 0" "0" "$RUN_STATUS"
 assert_contains "...scheduler.log records one advisor-route line with a fixed reason code" "$(grep -E ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null)" "advisor-route issue=#$N reason=model_verdict_human outcome=routed"
 assert_eq "...exactly one advisor-route line" "1" "$(grep -c ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null || true)"
 unset MAC_AUTOPILOT_RUNTIME_DIR
 assert_contains "...label is needs-advisor" "$GH_LOG_CONTENT" "--add-label needs-advisor"
 assert_not_contains "...never ready-for-human" "$GH_LOG_CONTENT" "--add-label ready-for-human"
-assert_contains "...the comment says why" "$GH_LOG_CONTENT" "Routed to the advisor instead of a human"
-assert_eq "...state.precut is false for a raw report" "false" "$(echo "$STATE_CONTENT" | jq -r '.precut')"
-assert_not_contains "...the model was NOT told it is precut" "$PROMPT_CONTENT" "agent-ready by construction"
+assert_contains "...the comment names the advisor-only reason" "$GH_LOG_CONTENT" "irreversible"
+assert_contains "...the comment says why the advisor decides" "$GH_LOG_CONTENT" "Routed to the advisor instead of a human"
+
+# The default still passes through the autonomy gate: a P1/L3 measurement the
+# model parked on ready-for-human is refused like an over-admitted ready-for-agent.
+export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-human P1 L3)"
+run_once "$RAW_BODY"
+assert_eq "default with an out-of-set measurement: exits 0" "0" "$RUN_STATUS"
+assert_contains "...the autonomy gate still refuses the default" "$GH_LOG_CONTENT" "--add-label needs-advisor"
+assert_contains "...the comment explains the autonomy-set refusal" "$GH_LOG_CONTENT" "outside this phase's autonomy set"
+assert_not_contains "...the refusal is never a human terminal" "$GH_LOG_CONTENT" "--add-label ready-for-human"
+
+# needs-owner follows the same rule: default runs it, security routes it.
+export FAKE_TRIAGE_STRUCTURED="$(verdict needs-owner P1 L1)"
+run_once "$RAW_BODY"
+assert_eq "raw + needs-owner default: exits 0" "0" "$RUN_STATUS"
+assert_contains "...needs-owner default enters implementation" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
+assert_contains "...needs-owner comment says triage took the default" "$GH_LOG_CONTENT" "Triage took the default"
+export FAKE_TRIAGE_STRUCTURED="$(verdict needs-owner P1 L1 "" security)"
+run_once "$RAW_BODY"
+assert_eq "raw + needs-owner, advisor_reason=security: exits 0" "0" "$RUN_STATUS"
+assert_contains "...needs-owner with advisor_reason=security routes to advisor" "$GH_LOG_CONTENT" "--add-label needs-advisor"
 
 # --- raw report, model over-admits P2/L3: the gate still refuses, and the --
 # --- refusal still goes to the advisor (unchanged from the advisor leg) ----
@@ -567,9 +613,10 @@ assert_not_contains "unconfirmed L2 freshness leaves GitHub labels untouched" "$
 export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L2)"
 run_once "$RAW_BODY" testuser 0 0 0 "" 0 0 "124,124,124"
 assert_eq "three failed analyzes skip freshness deferral and triage immediately" "0" "$RUN_STATUS"
-assert_eq "three failed analyzes keep the L2 gate closed" "needs-advisor" "$(echo "$STATE_CONTENT" | jq -r '.state')"
+assert_eq "three failed analyzes keep the model's state under the default" "ready-for-agent" "$(echo "$STATE_CONTENT" | jq -r '.state')"
 assert_eq "three failed analyzes do not schedule another deferral" "0" "$(echo "$STATE_CONTENT" | jq -r '.triage_retry_after_epoch // 0')"
 assert_contains "decision comment explains the skipped deferral" "$GH_LOG_CONTENT" "last 3 GitNexus analyze runs failed"
+assert_contains "decision comment records the unconfirmed impact" "$GH_LOG_CONTENT" "L2 impact freshness was not confirmed"
 
 run_once "$RAW_BODY" testuser 0 0 0 "" 0 0 "124,124,0"
 assert_eq "a recent successful analyze keeps the existing freshness deferral" "0" "$RUN_STATUS"
@@ -579,11 +626,22 @@ assert_eq "a recent success still schedules the bounded retry" "true" \
 export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L2)"
 run_once "$RAW_BODY" testuser 0 0 0 "" 1
 assert_eq "expired single-ticket freshness deferral exits 0" "0" "$RUN_STATUS"
-assert_contains "expired L2 freshness goes to advisor" "$GH_LOG_CONTENT" "--add-label needs-advisor"
-assert_not_contains "expired L2 freshness never enters implement queue" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
-assert_not_contains "expired L2 freshness never uses human terminal" "$GH_LOG_CONTENT" "--add-label ready-for-human"
-assert_eq "expired L2 freshness persists advisor state" "needs-advisor" "$(echo "$STATE_CONTENT" | jq -r '.state')"
-assert_contains "advisor comment explains freshness gate" "$GH_LOG_CONTENT" "L2 impact freshness was not confirmed"
+assert_contains "...default keeps the model's ready-for-agent state" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
+assert_not_contains "...freshness alone no longer routes to the advisor" "$GH_LOG_CONTENT" "--add-label needs-advisor"
+assert_not_contains "...expired L2 freshness never uses human terminal" "$GH_LOG_CONTENT" "--add-label ready-for-human"
+assert_eq "...state stays ready-for-agent" "ready-for-agent" "$(echo "$STATE_CONTENT" | jq -r '.state')"
+assert_contains "...comment records the unconfirmed impact" "$GH_LOG_CONTENT" "L2 impact freshness was not confirmed"
+assert_contains "...comment tells the implementer to verify the impact" "$GH_LOG_CONTENT" "treat the L2 impact as unconfirmed"
+
+export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L2 "" production-data)"
+export MAC_AUTOPILOT_RUNTIME_DIR="$(mktemp -d)"; TMP_DIRS+=("$MAC_AUTOPILOT_RUNTIME_DIR"); echo '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
+run_once "$RAW_BODY" testuser 0 0 0 "" 1
+assert_eq "expired L2 freshness with advisor_reason=production-data exits 0" "0" "$RUN_STATUS"
+assert_contains "...an advisor-only reason still routes unconfirmed L2 to the advisor" "$GH_LOG_CONTENT" "--add-label needs-advisor"
+assert_eq "...state is needs-advisor" "needs-advisor" "$(echo "$STATE_CONTENT" | jq -r '.state')"
+assert_contains "...advisor comment explains freshness gate" "$GH_LOG_CONTENT" "The phase-3 L2 admission gate remains closed"
+assert_contains "...one l2_freshness routed line is logged" "$(grep -E ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null)" "advisor-route issue=#$N reason=l2_freshness outcome=routed"
+unset MAC_AUTOPILOT_RUNTIME_DIR
 
 # Issue 2040: an advisor-admitted episode is measure-only even when triage
 # returns ready-for-human and its L2 freshness check remains blocked.
@@ -599,14 +657,15 @@ assert_eq "2040 preserves raw model verdict for audit" "ready-for-human" "$(echo
 assert_eq "2040 consumes the measure-only marker after measurement" "false" "$(echo "$STATE_CONTENT" | jq 'has("advisor_admission_measure_only")')"
 
 # Founder-test bypasses the environment retry, but still sees the same
-# unconfirmed-freshness L2 gate. It must continue to advisor, never agent.
+# unconfirmed-freshness L2 gate. The default now keeps the model's state and
+# records the unconfirmed impact; only an advisor-only reason routes it.
 export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L2)"
 run_once "$RAW_BODY" "$MAINTAINER_LOGIN" 0 0 0 "" 0 1
 assert_eq "founder-test + unconfirmed L2 freshness: exits 0" "0" "$RUN_STATUS"
 assert_contains "founder-test label is persisted during direct triage" "$GH_LOG_CONTENT" "--add-label founder-test"
-assert_contains "unconfirmed L2 verdict proceeds to advisor" "$GH_LOG_CONTENT" "--add-label needs-advisor"
-assert_not_contains "unconfirmed L2 verdict never reaches implementation" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
-assert_eq "founder-test freshness bypass leaves existing retry deadline unchanged" "$ACTIVE_FRESHNESS_RETRY_EPOCH" \
+assert_contains "unconfirmed L2 verdict keeps the model's state by default" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
+assert_not_contains "unconfirmed L2 verdict is not routed to the advisor by default" "$GH_LOG_CONTENT" "--add-label needs-advisor"
+assert_contains "founder-test freshness bypass leaves existing retry deadline unchanged" "$ACTIVE_FRESHNESS_RETRY_EPOCH" \
   "$(echo "$STATE_CONTENT" | jq -r '.triage_retry_after_epoch')"
 
 # Issue 2007: acceptance that writes outside this checkout belongs to

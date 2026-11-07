@@ -103,7 +103,7 @@ EOF
 chmod +x "$FAKE_BIN"/*
 export PATH="$FAKE_BIN:$PATH" ZF_GCLOUD_BIN=/nonexistent/gcloud
 
-VALID="$(jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L1",entry_surface:"Web /chat/",acceptor:"maintainer",brief_md:"Summary: fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:10,external_deliverable:{required:false,location:"",reason:""}}')"
+VALID="$(jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L1",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:10,external_deliverable:{required:false,location:"",reason:""}}')"
 printf '%s\n' "$VALID" > "$FAKE_CLAUDE_STRUCTURED"
 for n in 920101 920102 920103 920104; do jq -nc --argjson issue "$n" --argjson result "$VALID" '{issue:$issue,result:$result}'; done > "$FAKE_CODEX_OUTPUT"
 for n in 920101 920103; do jq -nc --argjson issue "$n" --argjson result "$VALID" '{issue:$issue,result:$result}'; done > "$FAKE_CLAUDE_RESULT"

@@ -28,6 +28,11 @@
       "enum": ["none", "reporter", "maintainer"],
       "description": "Who, if anyone, personally cares that this fix works -- decides ONLY whether a closing notification email goes out and to whom once this merges. Never inferred from author.login (the pipeline may post every comment/PR as the owner's own GitHub account, so hand-cut tickets and the pipeline's own self-filed findings are indistinguishable by author alone). maintainer is the pipeline owner and gets no closing email."
     },
+    "advisor_reason": {
+      "type": "string",
+      "enum": ["none", "irreversible", "production-data", "security"],
+      "description": "The only open questions that still go to the advisor. irreversible: a wrong choice cannot be undone (destructive migration, data deletion, spending money). production-data: the work itself must read or change live production data. security: credentials, authorization or access boundaries, or a vulnerability. Everything else -- engineering shape, ownership, scope, an unconfirmed impact reading -- is the implementer's call: return none, and the ticket proceeds to implementation. The wrapper treats a missing or unrecognized value as none."
+    },
     "brief_md": {
       "type": "string",
       "description": "The agent-brief-shaped comment body to post (Category, Summary, User outcome, Current behavior, Desired behavior, Key interfaces, Acceptance criteria, Out of scope; without the disclaimer line, which the wrapper adds)."
@@ -63,6 +68,6 @@
       "description": "Set required true only if acceptance cannot be met by a change in this repository. When false, location and reason are empty strings."
     }
   },
-  "required": ["category", "state", "risk_class", "level", "entry_surface", "acceptor", "brief_md", "notes_md", "expected_packages", "expected_paths", "estimated_changed_lines", "external_deliverable"],
+  "required": ["category", "state", "risk_class", "level", "entry_surface", "acceptor", "advisor_reason", "brief_md", "notes_md", "expected_packages", "expected_paths", "estimated_changed_lines", "external_deliverable"],
   "additionalProperties": false
 }

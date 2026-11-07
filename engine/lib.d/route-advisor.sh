@@ -47,8 +47,9 @@ issue_verdict_snapshot_guard() {
 route_to_advisor() {
   local n="$1" remove_label="${2:-ready-for-agent}" snapshot_json="${4:-}" pipeline_loop_breaker="${5:-}"
   local convergence_attempt current_attempt skip_label_write=0
-  local lane_state pipeline_system_status=0
+  local lane_state pipeline_system_status=0 kept_step kept_step_json
   ISSUE_VERDICT_GUARD_SKIPPED=0
+  ADVISOR_ROUTE_KEPT_IMPLEMENT=0
   if ! issue_verdict_snapshot_guard "$n" "$snapshot_json"; then
     ISSUE_VERDICT_GUARD_SKIPPED=1
     echo "route_to_advisor: #$n -- $ISSUE_VERDICT_GUARD_REASON; skipping stale route" >&2
@@ -121,6 +122,22 @@ route_to_advisor() {
       return $?
     fi
     echo "route_to_advisor: #$n -- repeated advisor ruling still awaits its one implement pass; keeping the implement route" >&2
+    # 2026-11-06 (#1145): returning 0 here without touching anything left a
+    # ticket selectable with .model_policy.step == advisor, so every
+    # run-triage-batch.sh tick re-routed it and logged another policy_step
+    # line -- most of 154 lines over three days for one ticket, none of them
+    # an actual route. The advisor rung is finished: its repeated ruling is
+    # what granted this implement pass (the same on_success transition
+    # run-advisor.sh applies when it rules), so advance the leftover rung and
+    # the next tick stops routing this episode. ADVISOR_ROUTE_KEPT_IMPLEMENT
+    # tells the caller the call kept the implement route instead of opening
+    # a new advisor episode, so its route log can say so.
+    if [ "$(jq -r '.model_policy.step // empty' <<< "$lane_state")" = advisor ]; then
+      kept_step="$(model_policy transition advisor on_success)" || return 1
+      kept_step_json="$(jq -nc --arg step "$kept_step" '$step')"
+      state_merge "$n" "if .model_policy.step == \"advisor\" then .model_policy.step = $kept_step_json else . end" || return 1
+    fi
+    ADVISOR_ROUTE_KEPT_IMPLEMENT=1
     return 0
   fi
   local admission=0
@@ -326,7 +343,9 @@ advisor_retry_admission() {
 }
 
 # One scheduler.log line per advisor routing decision (count: grep -c ' advisor-route ' scheduler.log). Reason is a fixed
-# code, never issue text. Observability only: always returns 0 so a log failure cannot change a routing decision.
+# code, never issue text: routed/kept outcomes for an advisor episode, or default_decided with the source route
+# (model_verdict_human, l2_freshness) as the outcome when triage's 2026-11-06 default kept a ticket out of the advisor
+# queue. Observability only: always returns 0 so a log failure cannot change a routing decision.
 advisor_route_log() {
   local n="$1" reason="${2:-unknown}" outcome="$3" runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-$REPO_DIR/.scratch-supervisor/autopi}" line
   line="$(printf '[%s] advisor-route issue=#%s reason=%s outcome=%s' "$(date -u +%FT%TZ)" "$n" "$reason" "$outcome")"

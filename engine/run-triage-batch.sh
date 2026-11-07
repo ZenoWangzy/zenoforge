@@ -176,6 +176,11 @@ for n in "${BATCH_IDS[@]}"; do
     advisor)
       ADVISOR_ROUTE_OUTCOME=routed
       route_to_advisor "$n" "$POLICY_QUEUE_LABEL" true "$ISSUE_JSON" || { ADVISOR_ROUTE_OUTCOME=fault; record_env_fault env:model-policy-route triage-batch "$n" "could not route triage policy step to advisor" || true; }
+      # One policy_step line per episode (2026-11-06, #1145): when a
+      # convergence pass already granted this ticket's implement route,
+      # route_to_advisor kept that route instead of opening a new advisor
+      # episode, and the log must not claim a route that did not happen.
+      if [ "$ADVISOR_ROUTE_KEPT_IMPLEMENT" = 1 ]; then ADVISOR_ROUTE_OUTCOME=kept; fi
       advisor_route_log "$n" policy_step "$ADVISOR_ROUTE_OUTCOME"
       continue
       ;;

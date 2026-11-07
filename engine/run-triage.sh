@@ -41,6 +41,8 @@ N="${ARGS[0]:?usage: run-triage.sh [--dry-run] [--batch-result <json-file>] <iss
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
+# shellcheck source=./lib.d/triage-default.sh
+source "$SCRIPT_DIR/lib.d/triage-default.sh"
 if [ -n "$BATCH_RESULT_FILE" ] && ! triage_result_matches_schema "$BATCH_RESULT_FILE" "$(zf_config_file prompts/triage.schema.json)"; then
   echo "run-triage: batch result for issue #$N does not match triage.schema.json" >&2
   exit 2
@@ -297,7 +299,7 @@ if gitnexus_refresh_index_once "$REPO_DIR" "$ORIGIN_MAIN_SHA" gitnexus_index_mat
 else
   ORIGIN_MAIN_SHA="$(git -C "$REPO_DIR" rev-parse origin/main 2>/dev/null || echo unknown)"
   echo "run-triage: gitnexus index freshness not confirmed for origin/main ($ORIGIN_MAIN_SHA) -- refresh: ${GITNEXUS_REFRESH_OUTPUT:-<none>} -- continuing without it (WSL memory floor, throttle, remote build/transfer failure, or other environment fault; not charged to this ticket)" >&2
-  INDEX_FRESHNESS_NOTE="NOT confirmed fresh this run -- refresh was deferred or failed (WSL memory floor, throttle, remote build/transfer failure, or other environment fault), not a problem with this ticket. UNKNOWN, target not found, unsupported symbol, error, missing result, or unconfirmed impact carries no L2 evidence; do not treat it as LOW or use it alone to choose wontfix. Route unresolved L2 to needs-advisor."
+  INDEX_FRESHNESS_NOTE="NOT confirmed fresh this run -- refresh was deferred or failed (WSL memory floor, throttle, remote build/transfer failure, or other environment fault), not a problem with this ticket. UNKNOWN, target not found, unsupported symbol, error, missing result, or unconfirmed impact carries no L2 evidence; do not treat it as LOW or use it alone to choose wontfix. Record unresolved L2 as ready-for-human; unless advisor_reason is irreversible, production-data or security, the wrapper's default proceeds with the impact marked unconfirmed."
 fi
 
 MODEL_POLICY_RETRY_NOTE="$(state_read "$N" | jq -r 'select(.model_policy.retry_note.status == 124) | "Previous model call timed out at " + .model_policy.retry_note.stage + "; retry this same policy step without counting the timeout as a failure."')"
@@ -473,6 +475,10 @@ fi
 NEEDS_INFO_DOWNGRADE_REASON=""
 LEVEL="$(echo "$RESULT" | jq -r '.level')"
 MODEL_STATE="$STATE"
+# 2026-11-06 founder ruling: triage decides by default; the advisor sees a
+# ticket only for an advisor_reason call (lib.d/triage-default.sh).
+ADVISOR_REASON="$(triage_advisor_reason "$RESULT")"
+ADVISOR_DEFAULT_SOURCE=""
 EXTERNAL_DELIVERABLE_LOCATION=""
 EXTERNAL_DELIVERABLE_REASON=""
 EXTERNAL_DELIVERABLE_REQUIRED=0
@@ -621,19 +627,10 @@ elif [ "$ENFORCED_STATE" != "$STATE" ]; then
 $BRIEF"
   STATE="needs-advisor" ADVISOR_ROUTE_REASON=autonomy_gate
 elif [ "$STATE" = "ready-for-human" ] || [ "$STATE" = "needs-owner" ]; then
-  # 2026-09-15 (maintainer ruling, verbatim: [...]
-  # ): both are abolished human-decision terminals --
-  # a queue nobody is assigned to drain is not a queue. The model's own
-  # ready-for-human -- "a judgment call about the codebase, external
-  # access, or manual testing" per prompts/triage.md -- and its own
-  # needs-owner -- "the ambiguity isn't technical, it's ownership or scope"
-  # -- are both the advisor's to resolve now, never a human's on first
-  # sight. No code path in this pipeline may add either any more.
-  echo "run-triage: #$N model verdict $STATE -> needs-advisor (a codebase judgment call or an ownership/scope question is the advisor's, not a human's)" >&2
-  BRIEF="**Routed to the advisor instead of a human.** This triage run judged issue #$N to need an implementer's judgment call (or flagged it as an ownership/scope question); under the 2026-09-15 ruling that call is the advisor's first.
-
-$BRIEF"
-  STATE="needs-advisor" ADVISOR_ROUTE_REASON=model_verdict_human
+  # 2026-09-15: both are abolished human-decision terminals. 2026-11-06: the
+  # advisor sees one only for an advisor_reason call, otherwise the default
+  # runs it (triage_route_model_verdict, lib.d/triage-default.sh).
+  triage_route_model_verdict "$N" "$STATE" "$ADVISOR_REASON" "$RISK_CLASS" "$LEVEL" "$PHASE"
 fi
 
 if [ "$TRIAGE_FRESHNESS_BLOCKED" = "1" ] && [ "$ADVISOR_ADMISSION_MEASURE_ONLY" = "1" ]; then
@@ -644,11 +641,10 @@ $BRIEF"
 fi
 
 if [ "$TRIAGE_FRESHNESS_BLOCKED" = "1" ] && [ "$ADVISOR_ADMISSION_MEASURE_ONLY" != "1" ]; then
-  echo "run-triage: #$N unconfirmed L2 freshness keeps admission closed; routing to advisor" >&2
-  STATE=needs-advisor ADVISOR_ROUTE_REASON=l2_freshness
-  BRIEF="**L2 impact freshness was not confirmed.** The phase-3 L2 admission gate remains closed; the advisor must resolve the impact gate.
-
-$BRIEF"
+  # 2026-11-06: unconfirmed freshness is an environment condition, not a
+  # judgment call -- it no longer routes to the advisor on its own
+  # (triage_route_l2_freshness, lib.d/triage-default.sh).
+  triage_route_l2_freshness "$N" "$ADVISOR_REASON"
 fi
 
 if [ "$OPS_ACCEPTANCE_AFTER_RELEASE" = "1" ]; then
@@ -792,7 +788,11 @@ if [ "$STATE" != on-hold ]; then
     conclude_merged_run "$N" "$TRIAGE_MERGED_PR" \
       "Triage verified that PR #$TRIAGE_MERGED_PR already delivers this issue; waiting for release verification." || exit 1
   else
-    issue_transition "$N" "$STATE" triage-verdict && { [ "$STATE" != needs-advisor ] || advisor_route_log "$N" "${ADVISOR_ROUTE_REASON:-}" routed; } || exit 1
+    # One advisor-route line per decision: routed for an advisor episode, or
+    # default_decided naming the 2026-11-06 default's source route as outcome.
+    issue_transition "$N" "$STATE" triage-verdict && {
+      if [ "$STATE" = needs-advisor ]; then advisor_route_log "$N" "${ADVISOR_ROUTE_REASON:-}" routed; elif [ -n "$ADVISOR_DEFAULT_SOURCE" ]; then advisor_route_log "$N" default_decided "$ADVISOR_DEFAULT_SOURCE"; fi
+    } || exit 1
   fi
 fi
 
