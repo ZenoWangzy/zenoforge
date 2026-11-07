@@ -530,7 +530,7 @@ model_policy() {
       fi
       ;;
     live)
-      local forbidden_words allowed_identities pipeline_worktrees pipeline_settings legacy_settings policy_age
+      local forbidden_words allowed_identities granted_claude pipeline_worktrees pipeline_settings legacy_settings policy_age
       forbidden_words="$(jq -r '.forbidden | join(",")' <<< "$effective_policy")"
       allowed_identities="$(jq -nr --argjson live "$effective_policy" --slurpfile defaults "$MODEL_POLICY_DEFAULT" '
         [$live.roles[], $defaults[0].roles[]]
@@ -539,6 +539,8 @@ model_policy() {
               + (if .fallback_model then [.fallback_model + ":" + .effort] else [] end))
           | flatten | unique | join(",")
       ')"
+      # A Claude process on a tier the policy grants a role (allow_roles) is not a forbidden executable; any other model still is.
+      granted_claude="$(jq -r '[(.allow_roles // {}) | to_entries[] | select((.key == "sonnet" or .key == "haiku") and (.value | length > 0)) | "claude-\(.key)-"] | join(",")' <<< "$effective_policy")"
       pipeline_worktrees="${ZF_WORKTREE_ROOT:-${HOME:?HOME is not set}/wt}/"
       # Dispatchers pass the resolved settings file; runs started from the legacy engine path still count.
       legacy_settings="${ZF_ENGINE_LIVE:-$AGENT_HOME/checkout/engine}/prompts/agent-settings.json"
@@ -549,12 +551,13 @@ model_policy() {
       # Forbidden names still apply to it.
       policy_age=$(( $(date +%s) - $(stat -c %Y "$MODEL_POLICY_FILE") ))
       ps -ww -eo etimes=,comm=,args= | awk -v forbidden_words="$forbidden_words" \
-        -v allowed_identities="$allowed_identities" -v policy_age="$policy_age" \
+        -v allowed_identities="$allowed_identities" -v granted_claude="$granted_claude" -v policy_age="$policy_age" \
         -v worktrees="$pipeline_worktrees" -v settings="$pipeline_settings" -v legacy_settings="$legacy_settings" '
         BEGIN {
           bad = 0
           forbidden_count = split(forbidden_words, forbidden, ",")
           allowed_count = split(allowed_identities, allowed, ",")
+          granted_count = split(granted_claude, granted, ",")
         }
         function basename(value) {
           sub(/^.*\//, "", value)
@@ -570,6 +573,10 @@ model_policy() {
             gsub(/\./, "\\.", word)
             if (value ~ ("(^|[^a-z0-9])" word "([^a-z0-9]|$)")) return 1
           }
+          return 0
+        }
+        function granted_model(model, i) {
+          for (i = 1; i <= granted_count; i++) if (granted[i] != "" && index(model, granted[i]) == 1) return 1
           return 0
         }
         function allowed_identity(model, effort, i, identity) {
@@ -614,6 +621,7 @@ model_policy() {
               gsub(/^[\047\042]|[\047\042]$/, "", effort)
             }
           }
+          if (has_forbidden_executable && (process == "claude" || argv0 == "claude") && granted_model(model)) has_forbidden_executable = 0
           if (has_forbidden_executable && (uses_pipeline_settings || in_pipeline_worktree)) bad = 1
           if (has_codex_exec && in_pipeline_worktree && (model == "" || prohibited(model))) bad = 1
           if (has_codex_exec && in_pipeline_worktree && !predates_policy && (effort == "" || !allowed_identity(model, effort))) bad = 1

@@ -204,6 +204,24 @@ for refused in claude-opus-5-5 claude-fable-5; do
 done
 if model_policy_validate_json <<<"$(jq '.roles["hand-claude"].model="claude-opus-5-5"' "$MODEL_POLICY_DEFAULT")"; then fail 'an opus hand-claude role passed the model-policy schema'; fi
 
+# The haiku grant for review_fallback wins against `claude` in forbidden: that role only, in the role check and in the live scan.
+set_policy '.allow_roles.haiku=["review_fallback"]'
+jq -e '.forbidden | index("claude")' "$MODEL_POLICY_FILE" >/dev/null || fail 'fixture policy must forbid claude for this check'
+model_policy_model_allowed_for_role claude-haiku-5-5 review_fallback || fail 'the haiku grant did not win against claude in forbidden'
+for refused_role in review implement production; do
+  if model_policy_model_allowed_for_role claude-haiku-5-5 "$refused_role"; then fail "haiku was allowed for $refused_role with only a review_fallback grant"; fi
+done
+live_worktree="$HOME/wt/issue-42"
+ps() { printf '%s\n' "$LIVE_PROCESS"; }
+LIVE_PROCESS="0 claude claude -p x --model claude-haiku-5-5 --cd $live_worktree"
+[[ "$(model_policy live 2>&1)" == clean ]] || fail 'the live scan flagged a granted haiku reviewer'
+LIVE_PROCESS="0 claude claude -p x --model claude-opus-5-5 --cd $live_worktree"
+if model_policy live >/dev/null 2>&1; then fail 'the live scan accepted a Claude model no grant names'; fi
+LIVE_PROCESS="0 claude claude -p x --model custom --cd $live_worktree"
+if model_policy live >/dev/null 2>&1; then fail 'the live scan accepted a Claude process with an unnamed model'; fi
+set_policy '.'
+unset -f ps
+
 set +e
 planted_output="$(bash "$script_dir/review-family.test.sh" --plant-old 2>&1)"
 planted_status=$?
