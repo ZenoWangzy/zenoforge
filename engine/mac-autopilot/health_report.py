@@ -84,6 +84,7 @@ def main():
         stages[u.get("stage")] = stages.get(u.get("stage"), 0) + 1
     print("stages: " + " ".join(f"{k}={v}" for k, v in sorted(stages.items())))
     live = sum(1 for w in workers if not w.get("harvested"))
+    # capacity-skips: one per unit skipped, and one per walk stopped since #583, so it reads low against older reports.
     print(f"workers: unharvested={live} dispatched={count(r'^dispatch mode=')} "
           f"capacity-skips={count(r'(skip dispatch|dispatch walk stopped) .*capacity')} ticks={count(r'^tick done')}")
     print("stage            runs  wall-min p50/p90  tokens p50   outcomes")

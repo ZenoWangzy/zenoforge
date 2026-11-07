@@ -1,6 +1,6 @@
 
 dispatch_pending() {
-  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep u id stage rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
+  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep u id stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started
   footprint_waiters_revalidate || { say 'dispatch held: footprint wait owners could not be revalidated'; return 1; }
   revalidate_secs=$((SECONDS - pending_started))
@@ -53,11 +53,6 @@ dispatch_pending() {
     # supervisor-owned 热修单元只计数：评审/修复/复审都由热修 supervisor 会话自己派，这里不派任何 worker。
     [[ "$(jqf -r '.supervisor_owned // false' <<<"$u")" != true ]] || continue
     [[ -n "$(jqf -r '.advisor_pid // empty' <<<"$u")" ]] && continue
-    if [[ "$(jqf -r '.self_fix_pending // false' <<<"$u")" == true ]]; then
-      [[ "$local_refill" != true ]] || continue
-      self_fix_dispatch "$u" || true
-      continue
-    fi
     # 慢拍：容量空出（如拍内有 worker 退出）时逐单元补一次 census；满载时不取。
     # refill 不在这里取 census：PR 车道候选先过 room_for（容量、足迹、优先级），
     # 第一个真正通过 room_for 的候选才在 stage handler 里取一次（#5200 的容量门控，上游化）。
@@ -67,7 +62,8 @@ dispatch_pending() {
     # 止损预算（#4363）：第 4 轮（implement 加 repair）或超 4h 墙钟不再派发——
     # 原票经 hold.sh（on-hold 的唯一写入口，带 24h 过期的 durable hold 记录）自动搁置并评论附原因，
     # 单元转 supervisor（#4369 terra 裁决）；裁决后重新给满额度。
-    if [[ "$stage" == implement-pending || "$stage" == repair-pending ]]; then
+    self_fix="$(jqf -r '.self_fix_pending // false' <<<"$u")"
+    if [[ "$stage" == implement-pending || "$stage" == repair-pending || "$self_fix" == true ]]; then
       budget_started=$SECONDS
       budget="$(ticket_budget_reason "$u")"
       budget_elapsed=$((SECONDS - budget_started))
@@ -98,6 +94,11 @@ dispatch_pending() {
         (( SECONDS - escalate_started < 2 )) || say "dispatch detail stop_loss_escalate unit=$id secs=$((SECONDS - escalate_started))s"
         continue
       fi
+    fi
+    if [[ "$self_fix" == true ]]; then
+      [[ "$local_refill" != true ]] || continue
+      self_fix_dispatch "$u" || true
+      continue
     fi
     if [[ "$stage" == repair-pending || "$stage" == rereview-pending ]]; then
       total="$(jqf -r '[(.history // [])[] | select(.stage=="review-request-changes")] | length' <<<"$u")"

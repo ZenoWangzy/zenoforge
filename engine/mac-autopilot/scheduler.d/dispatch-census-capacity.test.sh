@@ -120,4 +120,19 @@ SECONDS=250
 dispatch_pending false
 [[ "$dispatch_calls" == 2 ]] || fail "a full tick stopped at the refill deadline (calls=$dispatch_calls)"
 
+# A self-fix is a repair round too: at the ticket stop-loss it goes to the supervisor, and below it the fix starts.
+jq -n '{units:[{id:"issue-4903",issue:4903,pr:503,stage:"review-pending",self_fix_pending:true,branch:"agent/issue-4903",lane:"pr",title:"fixture self-fix",history:[]}]}' > "$UNITS"
+write_workers 7
+self_fix_calls=0; stop_loss_calls=0
+self_fix_dispatch() { self_fix_calls=$((self_fix_calls + 1)); }
+to_supervisor() { stop_loss_calls=$((stop_loss_calls + 1)); }
+: > "$fixture/hold.sh"; export ZF_ENGINE_DIR="$fixture"
+gh() { return 0; }
+ticket_budget_reason() { printf '9 rounds\n'; }
+: > "$LOG"; SECONDS=0; dispatch_pending false
+[[ "$self_fix_calls" == 0 && "$stop_loss_calls" == 1 ]] || fail "a self-fix passed the stop-loss (fix=$self_fix_calls supervisor=$stop_loss_calls)"
+ticket_budget_reason() { :; }
+: > "$LOG"; stop_loss_calls=0; dispatch_pending false
+[[ "$self_fix_calls" == 1 && "$stop_loss_calls" == 0 ]] || fail "a self-fix under budget did not start (fix=$self_fix_calls supervisor=$stop_loss_calls)"
+
 echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; refill deadline)'
