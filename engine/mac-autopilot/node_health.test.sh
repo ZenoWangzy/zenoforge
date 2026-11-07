@@ -490,6 +490,10 @@ assert n.dispatch_collisions([open_unit("x", "merged"), open_unit("y", "implemen
 assert n.dispatch_collisions([open_unit("x", "ready-to-merge"), open_unit("y", "repair")], now) == 0
 assert n.dispatch_collisions([open_unit("x", "implement"), open_unit("y", "repair")], now) == 1
 assert n.dispatch_collisions([a, c], now) == 0
+# A directory-vs-file overlap is no collision: footprint_owner_conflict skips it by default.
+p = unit("p", "2026-10-24T10:00:00Z", "2026-10-24T11:00:00Z", ["engine/x"], ["engine/x"])
+q = unit("q", "2026-10-24T10:30:00Z", "2026-10-24T11:30:00Z", ["engine/x/y.py"], ["engine/x/y.py"])
+assert n.dispatch_collisions([p, q], now) == 0
 assert n.dispatch_collisions([], now) is None
 assert n.dispatch_collisions([a, b], now + n.timedelta(days=2)) == 0
 assert n.CRITERIA["dispatch.collisions_per_day"][2:4] == (0, 1)
@@ -506,6 +510,18 @@ echo '{"footprint_mutex":{"shared_append":["reg.ts"]}}' > "$coll/config.json"
 python3 "$script_dir/node_health.py" --runtime "$coll" --audit "$audit" --now 2026-10-24T12:00:00Z --json "$coll/result.json" >/dev/null
 jq -e '[.metrics[] | select(.id == "dispatch.collisions_per_day")][0].value == 1' "$coll/result.json" >/dev/null \
   || fail "collisions must count the archived overlap once and skip the shared-append pair: $(jq -c '[.metrics[] | select(.id == "dispatch.collisions_per_day")]' "$coll/result.json")"
+# A merge conflict counts only when a repair run followed it in the same unit, within 24 h.
+rep="$test_env_root/repairs"; mkdir -p "$rep"
+echo '{"units":[{"id":"r1","stage":"merged","history":[{"stage":"merge-conflict","at":"2026-10-24T10:00:00Z"},{"stage":"write-start","at":"2026-10-24T10:05:00Z"}]},{"id":"r2","stage":"merged","history":[{"stage":"merge-conflict","at":"2026-10-24T10:00:00Z"}]},{"id":"r3","stage":"merged","history":[{"stage":"merge-conflict","at":"2026-10-22T10:00:00Z"},{"stage":"write-start","at":"2026-10-22T10:05:00Z"}]}]}' > "$rep/units.json"
+python3 "$script_dir/node_health.py" --runtime "$rep" --audit "$audit" --now 2026-10-24T12:00:00Z --json "$rep/result.json" >/dev/null
+jq -e '[.metrics[] | select(.id == "dispatch.conflict_repairs_per_day")][0].value == 1' "$rep/result.json" >/dev/null \
+  || fail "conflict repairs must count only the repaired conflict in the window: $(jq -c '[.metrics[] | select(.id == "dispatch.conflict_repairs_per_day")]' "$rep/result.json")"
+# The merge rate is a 24 h window: one merge 10 h ago reads 1/24 h, not a starved 5 h queue.
+mr="$test_env_root/mergerate"; mkdir -p "$mr"
+echo '{"units":[{"id":"m1","stage":"merged","history":[{"stage":"implement","at":"2026-10-23T20:00:00Z"},{"stage":"merged","at":"2026-10-24T02:00:00Z"}]}]}' > "$mr/units.json"
+python3 "$script_dir/node_health.py" --runtime "$mr" --audit "$audit" --now 2026-10-24T12:00:00Z --json "$mr/result.json" >/dev/null
+jq -e '[.metrics[] | select(.id == "flow.merge_rate_per_hour")][0].value | . > 0.041 and . < 0.042' "$mr/result.json" >/dev/null \
+  || fail "merge rate must use a 24 h window: $(jq -c '[.metrics[] | select(.id == "flow.merge_rate_per_hour")]' "$mr/result.json")"
 
 # First-pass BLOCK is a failed first review; native resumed workers count only
 # the new turn's fresh tokens, so pre-review repair cannot disappear from spend.
@@ -877,7 +893,7 @@ printf '{"red_sha":"%s","status":"flaky","created_at":"2026-10-19T09:30:00Z","up
 printf 'not json' > "$fa/main-red/stale.json.tmp"
 flowrun "$fa" --json "$fa/node-health.json" >/dev/null
 flowval() { jq -r --arg id "$1" '.metrics[] | select(.id == $id) | "\(.value) \(.status)"' "$fa/node-health.json"; }
-[[ "$(flowval flow.merge_rate_per_hour)" == "0.6 UNHEALTHY" ]] || fail "merge rate wrong: $(flowval flow.merge_rate_per_hour)（3 merged / 5h，有积压）"
+[[ "$(flowval flow.merge_rate_per_hour)" == "0.125 UNHEALTHY" ]] || fail "merge rate wrong: $(flowval flow.merge_rate_per_hour)（3 merged / 24h，有积压）"
 [[ "$(flowval flow.in_out_imbalance)" == "1 OK" ]] || fail "in/out imbalance wrong: $(flowval flow.in_out_imbalance)（entered 2, merged 3）"
 [[ "$(flowval flow.wip_age_stage_p90_hours)" == "13.0 UNHEALTHY" ]] || fail "wip stage age wrong: $(flowval flow.wip_age_stage_p90_hours)"
 [[ "$(flowval flow.slot_idle_hours)" == "1.83 UNHEALTHY" ]] || fail "slot idle wrong: $(flowval flow.slot_idle_hours)"
@@ -899,17 +915,17 @@ ssup="$test_env_root/starve-sup"; sa="$ssup/autopi"; mkdir -p "$sa" "$ssup"
 printf '{"units":[{"id":"pr-31","stage":"merged","history":[{"stage":"created","at":"2026-10-18T10:00:00Z"},{"stage":"merged","at":"2026-10-18T11:00:00Z"}]}]}' > "$sa/units.json"
 out="$(flowrun "$sa")"
 grep -F '6.5 target' <<<"$out" | grep -Eq ' - +>=6.5 .*NO-DATA$' || fail "starved queue must show no value, not 0: $(grep -F '6.5 target' <<<"$out")"
-# 阈值内（33 单 / 5h = 6.6/h，全部当天完成）：全 OK，且不发事件
+# 阈值内（157 单 / 24h = 6.54/h，全部当天完成）：全 OK，且不发事件
 rsup="$test_env_root/rate-sup"; ra="$rsup/autopi"; mkdir -p "$ra" "$rsup"
 python3 - "$ra" <<'PY'
 import json, sys
 units = [{"id": f"pr-{i}", "stage": "merged",
           "history": [{"stage": "created", "at": "2026-10-19T08:00:00Z"},
-                      {"stage": "merged", "at": "2026-10-19T09:00:00Z"}]} for i in range(100, 133)]
+                      {"stage": "merged", "at": "2026-10-19T09:00:00Z"}]} for i in range(100, 257)]
 json.dump({"units": units}, open(sys.argv[1] + "/units.json", "w"))
 PY
 flowrun "$ra" --json "$ra/node-health.json" >/dev/null
-jq -e '.metrics[] | select(.id == "flow.merge_rate_per_hour") | .value == 6.6 and .status == "OK"' "$ra/node-health.json" >/dev/null \
+jq -e '.metrics[] | select(.id == "flow.merge_rate_per_hour") | .value > 6.5 and .status == "OK"' "$ra/node-health.json" >/dev/null \
   || fail "healthy merge rate wrong: $(jq '.metrics[] | select(.id == "flow.merge_rate_per_hour")' "$ra/node-health.json")"
 # 事件：越限每个 flow 指标只发一条；同一越限期内重跑不再发；恢复清记录；再越限重新可发
 inbox="$AGENT_HOME/supervisor-inbox"
@@ -919,7 +935,7 @@ flowrun "$fa" --inbox >/dev/null
 flowlines() { grep -c 'flow metric=flow\.' "$inbox" 2>/dev/null || printf '0\n'; }
 # 5 = the fixture's four flow rows plus wait_stage_p90_hours (228 h > 160 h); a healthy run has none (no waiting units)
 [[ "$(flowlines)" == 5 ]] || fail "expected one inbox event per unhealthy flow metric, got $(flowlines): $(cat "$inbox" 2>/dev/null)"
-grep -Fq 'flow metric=flow.merge_rate_per_hour status=UNHEALTHY value=0.6' "$inbox" || fail "inbox event lacks metric id and value: $(cat "$inbox")"
+grep -Fq 'flow metric=flow.merge_rate_per_hour status=UNHEALTHY value=0.1' "$inbox" || fail "inbox event lacks metric id and value: $(cat "$inbox")"
 flowrun "$fa" --inbox >/dev/null
 [[ "$(flowlines)" == 5 ]] || fail "same unhealthy episode emitted again: $(flowlines)"
 # 恢复：同一 runtime 换回健康账本（无越限 flow 指标）→ 越限记录清空，不再发事件

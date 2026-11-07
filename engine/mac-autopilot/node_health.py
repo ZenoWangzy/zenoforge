@@ -48,7 +48,8 @@ def health_doc_reference():
 CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
     "implement.no_output_pct": ("implement", "implement runs with no report %", 5, 15, False),
-    "dispatch.collisions_per_day": ("implement", "overlapping implement/repair unit pairs in the last 24h", 0, 1, False),
+    "dispatch.collisions_per_day": ("implement", "implement/repair unit pairs writing the same path in the last 24h", 0, 1, False),
+    "dispatch.conflict_repairs_per_day": ("implement", "merge conflicts that a repair run followed, in 24 h (measured, no bound yet)", 0, -1, True),
     "review.wall_p50":         ("review", "first review minutes p50", 10, 20, False),
     "review.first_pass_pct":   ("review", "units approved on their first review %", 50, 30, True),
     "repair.wall_p50":         ("repair", "repair run minutes p50", 15, 30, False),
@@ -106,7 +107,7 @@ CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     # Factory flow metrics (#4366): throughput vs the 6.5/h SLO, staged WIP age, dispatch
     # stalls, main-red duration and in/out conservation. Crossing the unhealthy bound sends
     # one supervisor-inbox event per episode (--inbox); regular samples reach the dashboard.
-    "flow.merge_rate_per_hour": ("flow", "merges per hour vs the 6.5 target (starved queue has no value)", 6.5, 3.5, True),
+    "flow.merge_rate_per_hour": ("flow", "merges per hour vs the 6.5 target over 24 h (starved queue has no value)", 6.5, 3.5, True),
     "flow.wip_age_stage_p90_hours": ("flow", "worst per-stage p90 age of open units, hours", 4, 12, False),
     # Units parked on purpose (blocked-external, parked) stay out of the worst-stage pick; their own row
     # shows how long they have waited. Bounds: 699 completed holds (2026-11-07), p90 80 h and 2x it.
@@ -128,6 +129,7 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "implement.wall_p50": "一次开发从派出到交付的中位时长。偏长多半是任务太大，或卡在环境上。",
     "implement.no_output_pct": "开发员跑完却没交报告的比例：这些 token 全白花，多是进程被杀或崩溃。",
     "dispatch.collisions_per_day": "过去 24 小时不同开发单元同时写入同一文件的次数；正常等待不算碰撞，任何一次都是故障。",
+    "dispatch.conflict_repairs_per_day": "过去 24 小时内发生了合并冲突（merge-conflict）、随后由修复运行接手的单元数；只测量不设界，提议的界见 NODE-HEALTH.md。",
     "review.wall_p50": "首次质检的中位时长。",
     "review.first_pass_pct": "第一次质检就通过的工作单比例：越高说明开发一次做对，返工越少。",
     "repair.wall_p50": "一次返工修改的中位时长。",
@@ -169,7 +171,7 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "engine.follow_lag_hours": "live 引擎没跟上 example HEAD:scripts 的小时数。converge 导出、构建或自检失败时开始计时，跟上后清零。高 = 落地了但没上线。",
     "host.stale_worktrees": "~/wt 下建立超过 2 小时还没删的工作目录数。分诊、顾问、hand 每轮结束就该删掉；堆积 = 收尾清理坏了（10-21/22 收尾先 fetch，代理一卡就全部保留，26 小时堆到 287 个）。",
     "intake.closed_units_open_issues": "issue 开着且 ready-for-agent、但单元都已结束的张数。intake 的 terminal 跳过不派 worker，也不逐行报，所以这类票会静默停住；非 0 时看体检输出列出的号（11-06 查出 8 张）。",
-    "flow.merge_rate_per_hour": "窗口内 merged/landed 单数 ÷ 小时数，对照 6.5/h 的吞吐目标（#4355）。窗口里没有在制品也没进单（无积压）时不计值；跌破 3.5/h 是升级前串行合并道的上限，工厂没在产出。",
+    "flow.merge_rate_per_hour": "过去 24 小时内 merged/landed 的工厂单元数（不含人工 PR 与账本外的 PR）÷ 24，对照 6.5/h 的吞吐目标（#4355）。窗口里没有在制品也没进单（无积压）时不计值；跌破 3.5/h 是升级前串行合并道的上限，工厂没在产出。",
     "flow.wip_age_stage_p90_hours": "每张在途单在当前阶段已停留的小时（按阶段分组取 p90，取最差阶段；分组明细在 scorecard 的 flow.wip_age）。高 = 流动卡在某个阶段，去单元表找是哪几张。",
     "flow.wait_stage_p90_hours": "units.json 中 blocked-external（等前序单）与 parked（止损挂起）的在途单，自进入该阶段的最后事件起算的 p90 小时；不计入上一行的最差阶段。高 = 有一串单长期等同一个前序，去单元表找前序。",
     "flow.wait_stage_units": "同上两个阶段的在途单数，只计数，不设阈值。",
@@ -194,6 +196,7 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮；24 h 窗口",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "dispatch.collisions_per_day": "units.json write-start/write-end 的区间与文件范围（预测 + 实际 diff），按单元对去重；固定滚动 24h。",
+    "dispatch.conflict_repairs_per_day": "units.json（含 units-archive.json）单元历史：merge-conflict 事件之后出现 write-start（修复运行）的次数，固定滚动 24h。",
     "review.wall_p50": "review-*.worker.log 的开始 → 最后写入",
     "review.first_pass_pct": "units.json 每单第一次评审结论（review-approve / review-request-changes / review-block）",
     "repair.wall_p50": "impl-*-fix-*.worker.log 的开始 → 最后写入；24 h 窗口",
@@ -235,7 +238,7 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "engine.follow_lag_hours": "engine-sync converge 失败时写入的 $AGENT_HOME/engine-versions/.lag-since（epoch 秒），成功跟上即删除；没有该文件记 0",
     "host.stale_worktrees": "ZF_WORKTREE_ROOT（默认 ~/wt）下每个工作目录的 .git 链接文件建立时间早于 2 小时的个数；没有该目录（Mac）为空",
     "intake.closed_units_open_issues": "intake-candidates.json 的候选行里，单元全部处于终态且交接 episode 已消费的 issue 数；没有候选快照时为空",
-    "flow.merge_rate_per_hour": "units.json merged/landed 事件 ÷ 窗口小时；无积压判定：窗口内没有任何在途或新进入的单",
+    "flow.merge_rate_per_hour": "units.json 与 units-archive.json 的 merged/landed 事件 ÷ 24 h；无积压判定：窗口内没有任何在途或新进入的单",
     "flow.wip_age_stage_p90_hours": "units.json 在途单（stage 非终态）当前 stage 的最后事件时间 → now，按 stage 分组取 p90",
     "flow.wait_stage_p90_hours": "units.json 在途单 stage 为 blocked-external 或 parked：最后事件时间 → now，取 p90",
     "flow.wait_stage_units": "units.json 在途单 stage 为 blocked-external 或 parked 的个数",
@@ -742,18 +745,15 @@ def host_prereqs_missing(path=None):
 
 
 def dispatch_collisions(units, now, shared=frozenset()):
-    """Count unit pairs with overlapping writing intervals and path scopes.
+    """Count unit pairs with overlapping writing intervals and the same file path.
 
     End records include the actual diff, so an underpredicted footprint remains
     measurable. Old ledgers without dispatch intervals have no observation.
+    A directory-vs-file overlap is not a collision (footprint_owner_conflict skips it by default).
     A pair whose ONLY overlapping paths are shared-append registry files is the
     parallelism the 2026-10-29 zf-ab ruling legalized, not a collision; those
     conflicts are observed at landing rebase time instead.
     """
-
-    def collides(a, b):
-        return a == b or a.startswith(b + "/") or b.startswith(a + "/")
-
     intervals = []
     observed = False
     for unit in units:
@@ -779,8 +779,7 @@ def dispatch_collisions(units, now, shared=frozenset()):
         for vid, vstart, vend, vpaths in intervals[i + 1:]:
             if uid == vid or max(start, vstart, now - timedelta(hours=24)) >= min(end, vend):
                 continue
-            overlap = ({a for a in paths for b in vpaths if collides(a, b)}
-                       | {b for b in vpaths for a in paths if collides(a, b)})
+            overlap = set(paths) & set(vpaths)
             if not overlap:
                 continue
             if shared and overlap <= shared:
@@ -1471,6 +1470,7 @@ def main():
     except (OSError, ValueError):
         shared_append = frozenset()
     metrics["dispatch.collisions_per_day"] = dispatch_collisions(units, now, shared_append)
+    metrics["dispatch.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
     sa_attempts, sa_conflict = shared_append_rebase_metrics(
         os.path.join(agent_home, "logs", "shared-append-rebases.jsonl"), repo,
         now - timedelta(hours=24), now)
@@ -1520,8 +1520,8 @@ def main():
         units, sizes, nontest_added, now - timedelta(days=LARGE_PR_WINDOW_DAYS), now)
     sinks, queue_waits = time_sinks(units, os.path.join(a, "scheduler.log"),
                                     now - timedelta(hours=TIME_SINK_HOURS), now)
-    merge_rate, entered, merged = merge_flow(units, since, now)
-    metrics["flow.merge_rate_per_hour"] = merge_rate
+    metrics["flow.merge_rate_per_hour"] = merge_flow(units, now - timedelta(hours=24), now)[0]
+    _, entered, merged = merge_flow(units, since, now)
     metrics["flow.in_out_imbalance"] = abs(entered - merged)
     wip_rows, metrics["flow.wip_age_stage_p90_hours"] = wip_stage_ages(units, now)
     metrics["flow.wait_stage_p90_hours"], metrics["flow.wait_stage_units"] = wait_stage(units, now)
