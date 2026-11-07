@@ -344,13 +344,14 @@ sys.exit(0 if got == (2, None, (10, 40)) else print(got) or 1)
 CHECK
 # intake 的 terminal 跳过藏起来的票：单元全部结束且 episode 已消费才算；episode 未消费的还在走交接
 closed_dir="$a/closed-open"; mkdir -p "$closed_dir/state"
-printf '%s\n' '{"rows":"501\tpr\tt\t[]\tx\n502\tpr\tt\t[]\tx\n503\tpr\tt\t[]\tx\n504\tpr\tt\t[]\tx"}' > "$closed_dir/intake-candidates.json"
+printf '%s\n' '{"rows":"501\tpr\tt\t[]\tx\n502\tpr\tt\t[]\tx\n503\tpr\tt\t[]\tx\n504\tpr\tt\t[]\tx\n505\tpr\tt\t[]\tx"}' > "$closed_dir/intake-candidates.json"
 printf '%s\n' '{"state":"ready-for-agent","scheduler_handoff":{"episode":"e"}}' > "$closed_dir/state/502.json"
+printf '%s\n' '{"state":"awaiting-release"}' > "$closed_dir/state/505.json" # merged after the census: not hidden
 python3 - "$script_dir" "$closed_dir" <<'CHECK' || fail 'closed units under open issues count wrong'
 import sys; sys.path.insert(0, sys.argv[1]); import ledger_history as n
 d = sys.argv[2]
 units = [{"issue": 501, "stage": "closed"}, {"issue": 502, "stage": "closed", "hold_handoff_episode": "old"},
-         {"issue": 503, "stage": "closed"}, {"issue": 503, "stage": "implement"}]
+         {"issue": 503, "stage": "closed"}, {"issue": 503, "stage": "implement"}, {"issue": 505, "stage": "merged"}]
 got = (n.closed_units_open_issues(d, d, units), n.closed_units_open_issues(d + "/missing", d, units))
 sys.exit(0 if got == ([501], None) else print(got) or 1)
 CHECK
@@ -892,6 +893,32 @@ overlay.unlink()
 assert c.zf_mechanism_registry()["mechanisms"] == engine_only
 print("node_health mechanism registry overlay merges by id: PASS")
 CHECK
+# Reports see engine incident records the target lacks, target wins by id, and python and node agree.
+guards_root="$test_env_root/incident-guards"; mkdir -p "$guards_root/engine/state" "$guards_root/target/state"
+printf '{"incidents":[{"id":"both","class":"engine"},{"id":"engine-only","class":"engine"}]}' > "$guards_root/engine/state/incident-guards.json"
+printf '{"schema":"t","incidents":[{"id":"both","class":"target"},{"id":"target-only","class":"target"}]}' > "$guards_root/target/state/incident-guards.json"
+guards_expected='{"schema":"t","incidents":[{"id":"both","class":"target"},{"id":"target-only","class":"target"},{"id":"engine-only","class":"engine"}]}'
+guards_py="$(ZF_ENGINE_DIR="$guards_root/engine" python3 -B "$script_dir/config_paths.py" --incident-guards "$guards_root/target/state/incident-guards.json")" \
+  || fail 'python incident merge failed'
+[[ "$(jq -cS . <<<"$guards_py")" == "$(jq -cS . <<<"$guards_expected")" ]] || fail "python incident merge: $guards_py"
+guards_node="$(ZF_ENGINE_DIR="$guards_root/engine" ZF_CONFIG_ROOT="$guards_root/target" node --input-type=module -e \
+  "import {zfIncidentGuards} from '$script_dir/../pack-dir.mjs'; console.log(JSON.stringify(zfIncidentGuards('$guards_root')))")" \
+  || fail 'node incident merge failed'
+[[ "$(jq -cS . <<<"$guards_node")" == "$(jq -cS . <<<"$guards_py")" ]] || fail "node and python incident merges differ: $guards_node"
+printf 'not json' > "$guards_root/engine/state/incident-guards.json"
+[[ "$(ZF_ENGINE_DIR="$guards_root/engine" python3 -B "$script_dir/config_paths.py" --incident-guards "$guards_root/target/state/incident-guards.json" 2>/dev/null | jq -c '.incidents | length')" == 2 ]] \
+  || fail 'a broken engine registry must leave the target records'
+# Rows without a usable id: the merge never adds them from the engine, and both languages agree.
+printf '{"incidents":[{"id":null},{},null,{"id":7},{"id":"kept"}]}' > "$guards_root/engine/state/incident-guards.json"
+printf '{"incidents":[{},null,{"id":null},{"id":"target-only"}]}' > "$guards_root/target/state/incident-guards.json"
+guards_py="$(ZF_ENGINE_DIR="$guards_root/engine" python3 -B "$script_dir/config_paths.py" --incident-guards "$guards_root/target/state/incident-guards.json")" \
+  || fail 'python incident merge failed on rows without an id'
+guards_node="$(ZF_ENGINE_DIR="$guards_root/engine" ZF_CONFIG_ROOT="$guards_root/target" node --input-type=module -e \
+  "import {zfIncidentGuards} from '$script_dir/../pack-dir.mjs'; console.log(JSON.stringify(zfIncidentGuards('$guards_root')))")" \
+  || fail 'node incident merge failed on rows without an id'
+[[ "$(jq -c '.incidents' <<<"$guards_py")" == '[{},null,{"id":null},{"id":"target-only"},{"id":"kept"}]' ]] || fail "python merge of rows without an id: $guards_py"
+[[ "$(jq -cS . <<<"$guards_node")" == "$(jq -cS . <<<"$guards_py")" ]] || fail "node and python differ on rows without an id: $guards_node"
+echo "node_health incident records merge by id: PASS"
 overlay_runtime="$overlay_root/runtime"; mkdir -p "$overlay_runtime"
 printf '{"mechanisms":[{"id":"a","expected_idle":true}]}' > "$overlay_root/target/state/mechanism-registry.json"
 merged_file="$(ZF_ENGINE_DIR="$overlay_root/engine" ZF_CONFIG_ROOT="$overlay_root/target" HERE="$script_dir" A="$overlay_runtime" \

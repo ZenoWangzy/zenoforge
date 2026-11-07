@@ -104,7 +104,9 @@ footprint_preflight_snapshot || fail 'batch preflight failed'
 [[ -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[candidate]:-}" && "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[direct]:-}" == owner ]] || fail 'batch preflight applied wrong threshold'
 footprint_room candidate "$(jq -c '.units[] | select(.id=="candidate")' "$UNITS")" true || fail 'weak expansion blocked admission'
 grep -Fq 'footprint-shadow-old-rule-would-block unit=candidate owner=owner candidate_path=src/hot owner_path=src/hot source=expansion cochange_count=2' "$LOG" || fail 'shadow attribution missing'
+TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0
 if footprint_room direct "$(jq -c '.units[] | select(.id=="direct")' "$UNITS")" true; then fail 'direct overlap admitted'; fi
+(( TICK_FOOTPRINT_ROOM_CALLS == 1 && TICK_FOOTPRINT_ROOM_WAITS == 1 && TICK_FOOTPRINT_ROOM_USEC > 0 )) || fail 'a waiter was not counted in the phase summary'
 grep -Fq 'footprint wait unit=direct owner=owner candidate_path=src/hot owner_path=src/hot source=original cochange_count=not-applicable' "$LOG" || fail 'direct attribution missing'
 ZF_FOOTPRINT_HOTSPOT_MIN=1
 TICK_CHECK_SCOPE_SOURCE=()

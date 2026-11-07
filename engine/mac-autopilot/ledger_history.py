@@ -48,7 +48,9 @@ def closed_units_open_issues(runtime, agent_home, units):
             continue
         own = [u for u in units if u.get("issue") == int(n) or u.get("branch") == f"agent/issue-{n}"]
         state = _read_dict(os.path.join(agent_home, "state", f"{n}.json"))
-        episode = (state.get("scheduler_handoff") or {}).get("episode") if state.get("state") == "ready-for-agent" else None
+        if state.get("state", "ready-for-agent") != "ready-for-agent":  # the census is older than a merge: awaiting-release is not hidden
+            continue
+        episode = (state.get("scheduler_handoff") or {}).get("episode")
         if own and all(u.get("stage") in ended and (not episode or u.get("hold_handoff_episode") == episode) for u in own):
             found.append(int(n))
     return found
