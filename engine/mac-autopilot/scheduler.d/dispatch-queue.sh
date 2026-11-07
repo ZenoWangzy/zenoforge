@@ -65,6 +65,7 @@ dispatch_pending() {
       fi
       set_unit "$id" 'del(.dep_wait_delivery, .unpark_condition)' # satisfied: a later cache read must not park on it again
     fi
+    [[ "$(jqf -r '.hold_handoff_waiting // false' <<<"$u")" != false ]] && ! handoff_wait_stale "$id" && continue
     # A run that ended blocked-on with no commit starts again only once its blocker clears: a hold handoff or requeue that frees it earlier
     # sends it back to blocked-external, where release_dependency_blocks frees it on delivery or routes a dead blocker (dead_blocker_resolve, dep_dead_sweep).
     if [[ "$stage" == implement-pending || "$stage" == repair-pending ]] && blocked_dep="$(unit_blocked_run_dep "$u")" \
