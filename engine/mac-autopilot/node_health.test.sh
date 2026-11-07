@@ -609,10 +609,13 @@ rows = [pr(1, "2026-11-07T11:00:00Z", done("2026-11-07T10:30:00Z")),
         pr(4, "2026-11-07T11:50:00Z", done("2026-11-07T11:40:00Z")[:2]),
         pr(5, "2026-11-05T10:00:00Z", done("2026-11-05T00:00:00Z"))]
 value, details = n.green_to_merge(rows, req, now)
-assert value == 30, (value, details)
+assert value == 240, (value, details)  # the row is the max over both lanes
 assert details["factory_max_pr"] == 1 and details["factory_n"] == 2, details
 assert details["session_owned_max_min"] == 240 and details["session_owned_max_pr"] == 3, details
 assert details["no_check_data"] == 1, details
+slow_only, _ = n.green_to_merge([rows[2]], req, now)  # only the session-owned PR is slow: the row must still go over the bound
+healthy, unhealthy = n.CRITERIA["merge.green_to_merge_max_min"][2:4]
+assert n.status_of(slow_only, healthy, unhealthy, False) == "UNHEALTHY", slow_only
 assert n.green_to_merge(None, req, now)[0] is None
 print("node_health green-to-merge wait splits lanes and counts missing check data: PASS")
 CHECK

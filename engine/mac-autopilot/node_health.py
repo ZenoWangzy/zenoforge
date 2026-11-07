@@ -56,7 +56,7 @@ CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     "loop.incremental_rereview_pct": ("review-loop", "repairs followed by an incremental rereview %", 60, 30, True),
     "workers.deaths":          ("workers", "worker-no-output events in window", 2, 8, False),
     "ci.approve_to_ship_p50":  ("ci+merge", "approve -> merged/landed min p50 (incl. waiting)", 60, 180, False),
-    "merge.green_to_merge_max_min": ("ci+merge", "last required check -> merged, max min, factory lane, 24 h", 15, 60, False),
+    "merge.green_to_merge_max_min": ("ci+merge", "last required check -> merged, max min, both lanes, 24 h", 15, 60, False),
     "ci.red_after_approve_pct": ("ci+merge", "approved units that then saw CI red %", 15, 30, False),
     "ci.precheck_setup_failures": ("ci+merge", "local prechecks skipped by package selector", 0, 1, False),
     "supervisor.latency_p50":  ("supervisor", "escalation -> supervisor decision minutes p50", 60, 180, False),
@@ -134,7 +134,7 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "loop.incremental_rereview_pct": "修复后只复查修复部分（增量复检）的比例：低说明每轮都在重审整份改动，永不收敛（L63）。",
     "workers.deaths": "窗口内 AI 员工无产出死亡次数。",
     "ci.approve_to_ship_p50": "批准到合并的中位等待（含仍在等的）：CI 排队与合并车道的速度。",
-    "merge.green_to_merge_max_min": "三个必需检查最后完成到合入的最长等待（工厂车道，近 24 小时）：等待要控制在分钟级，超过小时的要查根因。",
+    "merge.green_to_merge_max_min": "三个必需检查最后完成到合入的最长等待（全部合入的 PR，近 24 小时，按车道拆分写入 details）：等待要控制在分钟级，超过小时的要查根因。",
     "ci.red_after_approve_pct": "批准后 CI 又红的比例：评审没看出的问题，或 CI 环境不稳。",
     "ci.precheck_setup_failures": "本机预检因无法选择受影响的 workspace 包而跳过；CI 可能成为测试第一次运行的位置。",
     "ci.waste_runner_pct": "CI runner 时间里改变不了结论的部分：被取消的 job、从未获批又被取代的 head、非产品改动触发的产品 CI（L64/L65）。",
@@ -289,7 +289,7 @@ MERGE_WAIT_HOURS = 24
 
 
 def green_to_merge(pr_rows, required, now):
-    """Max minutes from the last required check to merge, factory lane, merged in the window; PRs without check data are counted apart."""
+    """Max minutes from the last required check to merge over both lanes, merged in the window; lanes and no-data PRs go to details."""
     if pr_rows is None or not required:
         return None, {"reason": "PR census or required-pr-checks.json unavailable"}
     since = now - timedelta(hours=MERGE_WAIT_HOURS)
@@ -310,7 +310,8 @@ def green_to_merge(pr_rows, required, now):
         lanes[lane].append((round((merged - max(latest.values())).total_seconds() / 60, 1), pr["number"]))
     factory_max = max(lanes["factory"], default=None)
     session_max = max(lanes["session-owned"], default=None)
-    return (factory_max[0] if factory_max else None), {
+    overall = max(lanes["factory"] + lanes["session-owned"], default=None)
+    return (overall[0] if overall else None), {
         "window_hours": MERGE_WAIT_HOURS, "factory_n": len(lanes["factory"]), "session_owned_n": len(lanes["session-owned"]),
         "no_check_data": no_data, "factory_max_pr": factory_max[1] if factory_max else None,
         "session_owned_max_min": session_max[0] if session_max else None,
