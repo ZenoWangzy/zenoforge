@@ -803,7 +803,7 @@ maintainer_health_mail_daily_facts() {
   decisions="$(maintainer_health_mail_decision_facts "$ledger")" || decisions='{"items":[],"total":null,"incomplete":0}'
   day="$(maintainer_health_mail_report_day "$now")" || return 1
   reason="$(maintainer_health_mail_conclusion_facts "$output" "$quality")"
-  jq -cn --arg day "$day" --arg reason "$reason" --argjson now "$now" \
+  jq -cn --arg day "$day" --rawfile reason <(printf '%s' "$reason") --argjson now "$now" \
     --argjson output "$output" --argjson release "$release" --argjson spend "$spend" --argjson spend_prev "$spend_prev" \
     --argjson quality "$quality" --argjson decisions "$decisions" \
     '{report_day:$day,conclusion:{reason:$reason},window:{end:$now},
