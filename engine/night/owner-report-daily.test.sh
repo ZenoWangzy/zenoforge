@@ -38,6 +38,11 @@ export MAC_AUTOPILOT_ROOT="$tmp/host-root"
 mkdir -p "$MAC_AUTOPILOT_ROOT"
 home="$tmp/home"
 mkdir -p "$home/night" "$home/state"
+# The tick's only figure here is the rollback count from origin/main, a ref CI's checkout does not have.
+export ZF_REPO_DIR="$tmp/tick-repo"
+git init -q "$ZF_REPO_DIR"
+git -C "$ZF_REPO_DIR" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m seed
+git -C "$ZF_REPO_DIR" update-ref refs/remotes/origin/main HEAD
 export ZF_ANOMALY_OWNERS_FILE="$tmp/none.json"
 maintainer_health_mail_tick "$home" "$(epoch 2026-11-07T12:18:00Z)" >/dev/null
 [[ "$sends" == 0 ]] || fail 'an evening tick must not send'
