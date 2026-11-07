@@ -654,11 +654,11 @@ print("node_health green-to-merge wait splits lanes and counts missing check dat
 def node(number):
     return {"number": number, "mergedAt": "2026-11-07T11:00:00Z", "labels": {"nodes": []}, "head": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {
         "totalCount": 3, "nodes": [{"name": name, "completedAt": "2026-11-07T10:50:00Z"} for name in req]}}}}]}}
-def gh_pages(more, fail_at=None):
+def gh_pages(more, fail_at=()):
     seen = []
     def gh(args, timeout):
         seen.append(args)
-        if fail_at == len(seen):
+        if len(seen) in fail_at:
             return None
         return {"data": {"search": {"nodes": [node(len(seen))], "pageInfo": {"hasNextPage": more, "endCursor": f"c{len(seen)}"}}}}
     return gh, seen
@@ -666,9 +666,17 @@ gh, seen = gh_pages(False)
 assert [r["number"] for r in m.fetch("o/r", "2026-11-06", gh)] == [1] and len(seen) == 1
 gh, seen = gh_pages(True)
 assert m.fetch("o/r", "2026-11-06", gh) is None and len(seen) == m.PAGES  # truncated
-gh, seen = gh_pages(True, fail_at=2)
-assert m.fetch("o/r", "2026-11-06", gh) is None  # second page failed
-assert "reviews" not in m.QUERY and "first:100" in m.QUERY
+gh, seen = gh_pages(True, fail_at=(2, 3))
+assert m.fetch("o/r", "2026-11-06", gh) is None and len(seen) == 3  # second page failed twice: NO-DATA
+gh, seen = gh_pages(False, fail_at=(1,))
+value = m.green_to_merge(m.fetch("o/r", "2026-11-06", gh), req, now)[0]
+assert value == 10 and len(seen) == 2, (value, seen)  # first page failed once: one retry keeps the row a number
+spent = []
+def gh_timeout(args, timeout):
+    spent.append(timeout)
+    return None
+assert m.fetch("o/r", "2026-11-06", gh_timeout, timeout=5) is None and len(spent) == 2 and max(spent) <= 5  # retries share the caller's budget
+assert "reviews" not in m.QUERY and "first:50" in m.QUERY and "contexts(first:100)" in m.QUERY
 gh, seen = gh_pages(True)
 assert m.collect("o/r", now, sys.argv[1], gh)[0] == {"merge.green_to_merge_max_min": None}  # row value None -> NO-DATA, not 0
 assert n.status_of(None, healthy, unhealthy, False) == "NO-DATA"

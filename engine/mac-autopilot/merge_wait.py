@@ -1,14 +1,15 @@
 """Health row merge.green_to_merge_max_min: last required check completed to merge, max over merged PRs in 24 h, both lanes."""
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 WINDOW_HOURS = 24
-PAGES = 10  # 100 PRs a page; the 24 h window holds about 100, so past 1,000 the read is NO-DATA, not cut short
-TIMEOUT = 30
+PAGES = 20  # 50 PRs a page (100 with contexts(first:100) hit GitHub 504s); past 1,000 the read is NO-DATA, not cut short
+TIMEOUT = 30  # total seconds for the whole read, retries included
 # Only the fields this row needs. It stays apart from pr_census: the census asks for the merge time and commit alone,
 # because a wide query (reviews, commits) blanked its whole 30-day window on PRs over 100 commits (#646).
-QUERY = ("query($q:String!,$after:String){search(query:$q,type:ISSUE,first:100,after:$after){"
+QUERY = ("query($q:String!,$after:String){search(query:$q,type:ISSUE,first:50,after:$after){"
          "pageInfo{hasNextPage endCursor} nodes{... on PullRequest{number mergedAt labels(first:20){nodes{name}} "
          "head:commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){totalCount "
          "nodes{... on CheckRun{name completedAt}}}}}}}}}}}")
@@ -24,16 +25,28 @@ def _ts(value):
         return None
 
 
+def _page(gh_json, args, deadline):
+    """One GraphQL page of search results; one retry on a failed call, both attempts inside the deadline."""
+    for _ in range(2):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return None
+        page = gh_json(args, left)
+        search = ((page or {}).get("data") or {}).get("search") if isinstance(page, dict) else None
+        if isinstance(search, dict):
+            return search
+    return None
+
+
 def fetch(repo, cutoff, gh_json, timeout=TIMEOUT):
-    """Merged PRs since cutoff (YYYY-MM-DD) as number, mergedAt, labels, checks; None when any page fails or the pages run out."""
-    rows, after = [], None
+    """Merged PRs since cutoff (YYYY-MM-DD) as number, mergedAt, labels, checks; None when a page fails twice, the pages run out, or the timeout is spent."""
+    deadline, rows, after = time.monotonic() + timeout, [], None
     for _ in range(PAGES):
         args = ["api", "graphql", "-f", f"query={QUERY}", "-f", f"q=repo:{repo} is:pr is:merged merged:>={cutoff}"]
         if after:
             args += ["-f", f"after={after}"]
-        page = gh_json(args, timeout)
-        search = ((page or {}).get("data") or {}).get("search") if isinstance(page, dict) else None
-        if not isinstance(search, dict):
+        search = _page(gh_json, args, deadline)
+        if search is None:
             return None
         for node in search.get("nodes") or []:
             if not isinstance(node, dict) or node.get("number") is None:
