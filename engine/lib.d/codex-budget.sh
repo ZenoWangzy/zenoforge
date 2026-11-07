@@ -430,8 +430,48 @@ zcode_quota_status() { # fresh snapshot and active marker -> available|exhausted
   ' "$file" 2>/dev/null || printf 'unknown\n'
 }
 
-zcode_review_open() { # a review is a GLM start: held by the marker, paced, or closed when the quota read is missing or stale
-  ! provider_quota_exhausted zcode && [ "$(zcode_quota_status)" = available ]
+zcode_quota_unknown_why() { # why zcode_quota_status says unknown: missing | freshness-<value> | no-read-time | stale-<age>s | read-ahead-<n>s | no-percent
+  local file="${ZCODE_QUOTA_SNAPSHOT_FILE:-${HOME:-}/.zenoforge/zc-quota.json}" freshness read_at max_age now
+  [[ -r "$file" ]] || { printf 'missing\n'; return 0; }
+  freshness="$(command jq -r '.freshness // empty' "$file" 2>/dev/null || true)"
+  read_at="$(command jq -r '.read_at // empty' "$file" 2>/dev/null || true)"
+  max_age="${ZCODE_QUOTA_MAX_AGE_SECONDS:-${ZC_QUOTA_MAX_AGE_SECONDS:-$(command jq -r '.max_age_seconds // 900' "$file" 2>/dev/null || true)}}"
+  now="${NOW_EPOCH:-$(date +%s)}"
+  [[ "$freshness" == fresh ]] || { printf 'freshness-%s\n' "${freshness:-none}"; return 0; }
+  [[ "$read_at" =~ ^[0-9]+$ ]] || { printf 'no-read-time\n'; return 0; }
+  if (( read_at > now )); then printf 'read-ahead-%ss\n' "$((read_at - now))"
+  elif [[ "$max_age" =~ ^[0-9]+$ ]] && (( now - read_at > max_age )); then printf 'stale-%ss\n' "$((now - read_at))"
+  else printf 'no-percent\n'; fi
+}
+
+# 2026-11-07: 11 of 15 logged review waits read glm-hold:unknown. Only the quota timer wrote the snapshot, so a missed or failed
+# run left every review waiting on an old read. A wait now re-reads it once, at most every ZCODE_QUOTA_REREAD_MIN_SECONDS.
+zcode_quota_reread() { # one bounded re-read of the snapshot; 0 when the reader ran and exited 0
+  local file="${ZCODE_QUOTA_SNAPSHOT_FILE:-${HOME:-}/.zenoforge/zc-quota.json}" cmd="${ZCODE_QUOTA_REREAD_COMMAND:-}" now last rc
+  [[ -n "$cmd" || -n "${ZF_AGENT_TEST_MODE:-}" || -n "${ZCODE_QUOTA_SNAPSHOT_FILE:-}" ]] || cmd="${ZF_ENGINE_DIR:+$ZF_ENGINE_DIR/bin/zc-quota}"
+  [[ -n "$cmd" && -x "$cmd" ]] || return 1
+  now="$(date +%s)"
+  last="$(command awk 'NR==1{print $1}' "$file.reread" 2>/dev/null || true)"
+  [[ ! "$last" =~ ^[0-9]+$ ]] || (( now - last >= ${ZCODE_QUOTA_REREAD_MIN_SECONDS:-120} )) || return 1
+  rc=0
+  ( command flock -n 9 || exit 99; exec timeout "${ZCODE_QUOTA_REREAD_TIMEOUT_SECONDS:-60}" "$cmd" >/dev/null 2>&1 ) 9>"$file.reread.lock" || rc=$?
+  printf '%s %s\n' "$(date +%s)" "$rc" > "$file.reread" 2>/dev/null || :
+  (( rc == 0 ))
+}
+
+zcode_quota_reread_result() { # the last re-read as one word: none | ok | failed-rc<n> | busy
+  local file="${ZCODE_QUOTA_SNAPSHOT_FILE:-${HOME:-}/.zenoforge/zc-quota.json}" rc
+  rc="$(command awk 'NR==1{print $2}' "$file.reread" 2>/dev/null || true)"
+  case "$rc" in '') echo none ;; 0) echo ok ;; 99) echo busy ;; *) echo "failed-rc$rc" ;; esac
+}
+
+zcode_review_open() { # a review is a GLM start: held by the marker, or paced; a missing or stale read is re-read once before it closes the start
+  ! provider_quota_exhausted zcode || return 1
+  if [ "$(zcode_quota_status)" = unknown ] && zcode_quota_reread; then
+    [ "$(NOW_EPOCH="$(date +%s)" zcode_quota_status)" = available ] # the re-read ended after this tick's clock was taken
+  else
+    [ "$(zcode_quota_status)" = available ]
+  fi
 }
 
 provider_quota_provider_for_model() {

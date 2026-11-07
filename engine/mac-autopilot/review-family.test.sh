@@ -304,5 +304,27 @@ printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$marker"
 if pace_review '[]'; then fail 'the hold marker must still hold a review'; fi
 rm -f "$marker"
 
+# A stale or missing read is re-read by the wait; a read that still fails names why, never a bare unknown.
+reader="$fixture/zc-reader.sh"
+printf '#!/usr/bin/env bash\njq -n --argjson t "$(date +%%s)" %s > "$ZCODE_QUOTA_SNAPSHOT_FILE"\n' "'{freshness:\"fresh\",read_at:\$t,max_age_seconds:900,five_h_pct:1,week_pct:1,cap_5h:60,cap_week:100}'" > "$reader"
+chmod +x "$reader"
+export ZCODE_QUOTA_REREAD_MIN_SECONDS=0
+glm_quota 0 901
+ZCODE_QUOTA_REREAD_COMMAND="$reader" pace_review '[]' || fail 'a stale quota read must be re-read, and a fresh one lets the review start'
+[[ "$(zcode_paced zcode_quota_status)" == available ]] || fail "the re-read did not leave a fresh snapshot"
+rm -f "$ZCODE_QUOTA_SNAPSHOT_FILE"
+ZCODE_QUOTA_REREAD_COMMAND="$reader" pace_review '[]' || fail 'a missing quota read must be re-read'
+printf '#!/usr/bin/env bash\nexit 3\n' > "$fixture/zc-bad.sh"; chmod +x "$fixture/zc-bad.sh"
+glm_quota 0 901
+TICK_REVIEW_WAITS=""
+ZCODE_QUOTA_REREAD_COMMAND="$fixture/zc-bad.sh" pick_review_for_unit "$(unit_for failed-read 'codex:gpt-6-luna:max')" && fail 'a failed re-read must not start a review'
+[[ "$TICK_REVIEW_WAITS" == ' glm-hold:unknown:stale-'[0-9]*'s:reread-failed-rc3' ]] || fail "a failed re-read must say why: $TICK_REVIEW_WAITS"
+rm -f "$ZCODE_QUOTA_SNAPSHOT_FILE" "$ZCODE_QUOTA_SNAPSHOT_FILE.reread"
+TICK_REVIEW_WAITS=""
+pick_review_for_unit "$(unit_for no-read 'codex:gpt-6-luna:max')" && fail 'a missing read with no reader must hold'
+[[ "$TICK_REVIEW_WAITS" == ' glm-hold:unknown:missing:reread-none' ]] || fail "a missing read must say so: $TICK_REVIEW_WAITS"
+unset ZCODE_QUOTA_REREAD_MIN_SECONDS
+glm_quota 0
+
 echo 'PASS review family dispatch, fallback, wait, alert, and role policy'
 

@@ -424,7 +424,11 @@ review_wait_reason() { # author codex-identity glm-identity -> one word for why 
   cross="$(review_cross_identity_for "$1" "$2" "$3" 2>/dev/null || true)"
   [[ -n "$cross" ]] || { echo no-cross-reviewer; return 0; }
   reason="$(zcode_paced review_identity_unavailable_reason "$cross" review)"
-  [[ "$reason" != 'glm hold' ]] || reason+=":$(zcode_paced zcode_quota_status)"
+  if [[ "$reason" == 'glm hold' ]]; then
+    reason+=":$(zcode_paced zcode_quota_status)"
+    # A read that stays unknown says why and what the re-read did, never a bare unknown.
+    [[ "$reason" != *:unknown ]] || reason+=":$(zcode_paced zcode_quota_unknown_why):reread-$(zcode_quota_reread_result)"
+  fi
   echo "${reason// /-}"
 }
 
