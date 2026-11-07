@@ -143,18 +143,18 @@ scheduler_footprint_filter_main() (
 scheduler_footprint() (
   local u="$1" state issue actual scope preserve_missing=false
   if [[ "$(jq -r '.footprint_source // empty' <<<"$u")" == pr-diff ]] \
-    && jq -e '(.footprint | type) == "array"' <<<"$u" >/dev/null; then
+    && jq -e '(.footprint | type) == "array" and (.footprint | length) > 0' <<<"$u" >/dev/null; then
     scope="$(jq -c '.footprint' <<<"$u")"
     preserve_missing=true
   else
     # Older units kept the triage package prediction beside #4510's write-end
     # record. Once a worker has produced a PR diff, preserve paths it created.
+    # An empty array (a run that wrote nothing, or an empty PR-diff read) is no
+    # information: it falls through to the ledger footprint and the fallbacks below.
     actual="$(jq -r '[.history[]? | select(.stage=="write-end") | .result] | last // empty' <<<"$u")"
-    if jq -e 'type == "array"' <<<"$actual" >/dev/null 2>&1; then
+    if jq -e 'type == "array" and length > 0' <<<"$actual" >/dev/null 2>&1; then
       scope="$(jq -c . <<<"$actual")"
       preserve_missing=true
-    elif jq -e 'has("footprint")' <<<"$u" >/dev/null; then
-      scope="$(jq -c '.footprint' <<<"$u")"
     else
       scheduler_scope_lib selection-scope || return 1
       issue="$(jq -r '.issue // empty' <<<"$u")"

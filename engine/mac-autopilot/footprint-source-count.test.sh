@@ -94,14 +94,12 @@ legacy_footprint_match_detail() (
 legacy_scheduler_footprint() (
   local u="$1" state issue actual scope preserve_missing=false
   if [[ "$(jq -r '.footprint_source // empty' <<<"$u")" == pr-diff ]] \
-    && jq -e '(.footprint | type) == "array"' <<<"$u" >/dev/null; then
+    && jq -e '(.footprint | type) == "array" and (.footprint | length) > 0' <<<"$u" >/dev/null; then
     scope="$(jq -c '.footprint' <<<"$u")"; preserve_missing=true
   else
     actual="$(jq -r '[.history[]? | select(.stage=="write-end") | .result] | last // empty' <<<"$u")"
-    if jq -e 'type == "array"' <<<"$actual" >/dev/null 2>&1; then
+    if jq -e 'type == "array" and length > 0' <<<"$actual" >/dev/null 2>&1; then
       scope="$(jq -c . <<<"$actual")"; preserve_missing=true
-    elif jq -e 'has("footprint")' <<<"$u" >/dev/null; then
-      scope="$(jq -c '.footprint' <<<"$u")"
     else
       REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
       source "$SCHEDULER_AGENT_LIB" || return 1
@@ -273,6 +271,13 @@ for unit in \
   '{"id":"u10","task":"Affected files: packages/hot/src/f9.ts"}'; do
   same_result "scheduler_footprint $unit" legacy_scheduler_footprint scheduler_footprint "$unit"
 done
+# An empty write-end or an empty pr-diff footprint is no information: the ledger footprint and the fallbacks answer.
+[[ "$(scheduler_footprint '{"id":"e1","issue":9100,"footprint":["packages/hot/src/f6.ts"],"history":[{"stage":"write-end","result":[]}]}')" == '["packages/hot/src/f6.ts"]' ]] \
+  || fail 'an empty write-end overrode the ledger footprint'
+[[ "$(scheduler_footprint '{"id":"e2","issue":9101,"footprint":[],"footprint_source":"pr-diff","history":[{"stage":"write-end","result":[]}]}')" == '["packages/cold/src/a.ts"]' ]] \
+  || fail 'an empty pr-diff footprint overrode the issue state paths'
+[[ "$(scheduler_footprint '{"id":"e3","issue":9100,"footprint":["packages/hot/src/f6.ts"],"footprint_source":"pr-diff","history":[{"stage":"write-end","result":["packages/hot/src/f8.ts"]}]}')" == '["packages/hot/src/f6.ts"]' ]] \
+  || fail 'a non-empty pr-diff footprint no longer wins'
 
 # scheduler_issue_state: existing state, default for a missing one, and refusal while a transition holds the lock.
 printf '%s\n' '{"state":"on-hold","attempts":2}' > "$AGENT_HOME/state/9111.json"
