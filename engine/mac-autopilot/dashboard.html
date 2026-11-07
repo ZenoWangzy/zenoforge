@@ -604,7 +604,7 @@ const kpi = (icon, v, unit, label, tip="") => `<div class="kpi" ${tip?`data-tip=
 // node_health.py 的指标 → 短中文名与单位（没列到的用英文 desc）
 const LABELS = {
   "implement.wall_p50":["开发时长 p50","分"], "implement.no_output_pct":["开发无报告","%"],
-  "review.wall_p50":["首次质检时长 p50","分"], "review.first_pass_pct":["一次通过率","%"],
+  "review.wall_p50":["首次质检时长 p50","分"], "review.open_to_first_review_p90_min":["PR 开出 → 首评 p90","分"], "review.first_pass_pct":["一次通过率","%"],
   "repair.wall_p50":["返工时长 p50","分"], "loop.rounds_p90":["打回轮数 p90","轮"],
   "loop.rework_token_pct":["返工 token 占比","%"], "loop.incremental_rereview_pct":["增量复检占比","%"],
   "workers.deaths":["员工无产出死亡","次"], "workers.local_test_db":["本机测试库可达","1=是"],
