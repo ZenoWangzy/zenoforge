@@ -945,6 +945,8 @@ scheduler_requeue_issue() {
   else
     handoff_data="$(jq -cn --arg episode "$hold_id" --argjson pr "$pr_handoff" '{episode:$episode} + $pr')"
   fi
+  # The unit-side intake needs to know an expired stop-loss hold ended this episode.
+  [ "$hold_kind" != stop-loss ] || handoff_data="$(jq -c '. + {kind:"stop-loss"}' <<< "$handoff_data")" || return 1
   if [ -z "$old_worktree" ]; then
     hand_name="$(jq -r '.hold.holder // empty' <<< "$state")"
     [[ "$hand_name" == hand-* ]] || hand_name="hand-$n"

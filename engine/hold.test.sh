@@ -652,6 +652,18 @@ test_expired_hold_restores_original_stage() {
   state="$(state_read 4101)"
   assert_eq "released hold record is cleared" null "$(jq -c '.hold' <<< "$state")"
   assert_eq "ordinary expiry records a scheduler handoff" "hold-$created" "$(jq -r '.scheduler_handoff.episode' <<< "$state")"
+  assert_eq "an ordinary hold names no kind in the handoff" "" "$(jq -r '.scheduler_handoff.kind // empty' <<< "$state")"
+}
+test_expired_stop_loss_handoff_names_its_kind() {
+  local now state
+  reset_fixture
+  now="$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
+  write_issue 4102 '[{"name":"on-hold"}]' '[]' 'plain title'
+  write_state 4102 "$(jq -cn --arg expires "$now" '{state:"on-hold",state_changed_from:"ready-for-agent",hold:{holder:"scheduler-stop-loss",release_condition:"supervisor rules",expires_at:$expires,stage_before:"ready-for-agent",kind:"stop-loss"}}')"
+  run_sweep
+  assert_eq "expired stop-loss sweep succeeds" 0 "$LAST_STATUS"
+  state="$(state_read 4102)"
+  assert_eq "an expired stop-loss handoff names its kind" stop-loss "$(jq -r '.scheduler_handoff.kind' <<< "$state")"
 }
 
 test_expired_unknown_backfill_stays_ownerless() {
@@ -1669,6 +1681,7 @@ run_case "fastlane holds immediately requeue an out-of-band hand" test_pipeline_
 run_case "named queued hand owns fastlane issue" test_named_queued_hand_owns_fastlane_issue
 run_case "queued sweep owns fastlane issues from row and brief" test_queued_sweep_owns_fastlane_issues
 run_case "expired hold resumes original stage" test_expired_hold_restores_original_stage
+run_case "expired stop-loss handoff names its kind" test_expired_stop_loss_handoff_names_its_kind
 run_case "unknown backfill remains ownerless and unreleased" test_expired_unknown_backfill_stays_ownerless
 run_case "manual hold release reconciles persisted state" test_manual_hold_release_reconciles_persisted_state
 run_case "durable hold release resolves conflicting labels" test_durable_hold_release_uses_recorded_stage_when_labels_conflict
