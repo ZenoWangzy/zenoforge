@@ -172,12 +172,12 @@ assert_eq 'token rows sum on their own meter' '12225851' "$(jq -r '.spend.day.to
 assert_eq 'priced rows sum on their own meter' '0.5' "$(jq -r '.spend.day.money_usd' <<< "$facts")"
 assert_eq 'the day before has its own spend' '1000' "$(jq -r '.spend.prev_day.tokens' <<< "$facts")"
 assert_eq 'report day is the Beijing date' '11-08' "$(jq -r '.report_day' <<< "$facts")"
-assert_eq 'the conclusion leads with output, then production' '做完 3 个、上线 1 个、等上线 3 个；没有线上事故' "$(jq -r '.conclusion.reason' <<< "$facts")"
+assert_eq 'the conclusion leads with output, then production' '做完 3 个、正式上线 1 个、等上线 3 个；没有告警' "$(jq -r '.conclusion.reason' <<< "$facts")"
 
 facts_body="$(maintainer_health_mail_build_body "$facts")"
 maintainer_health_mail_output_contract "$facts_body" "$facts_now"
 assert_contains 'body leads with finished work against the previous periods' "$facts_body" '- 做完（已合入主线）：过去一天 3 个（前一天 1 个）；近 7 天 5 个。'
-assert_contains 'body states what shipped and the days since the last formal release' "$facts_body" '- 上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个。距上次正式发版 5 天。'
+assert_contains 'body states what shipped and the days since the last formal release' "$facts_body" '- 正式上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个。距上次正式发版 5 天。'
 assert_contains 'body states how the waiting stock moved' "$facts_body" '现在 3 个，比一天前多 1 个，比七天前多 3 个。'
 assert_contains 'body states tokens in ten-thousands against the day before' "$facts_body" '- 令牌用量：过去一天 1222.6 万（前一天 1000）。'
 assert_contains 'body states priced calls apart from tokens' "$facts_body" '按美元计价的调用：过去一天 0.5 美元'
@@ -186,7 +186,7 @@ assert_not_contains 'body no longer reports post-merge fixes' "$facts_body" '返
 for filler in 未测量 未核实 待核实 至少记录 未分类 未能核对 出事了; do
   assert_not_contains "body carries no $filler filler" "$facts_body" "$filler"
 done
-assert_contains 'subject counts finished and shipped requirements' "$(maintainer_health_mail_subject "$facts")" '工厂日报 11-08：做完 3 个、上线 1 个'
+assert_contains 'subject counts finished and shipped requirements' "$(maintainer_health_mail_subject "$facts")" '工厂日报 11-08：做完 3 个、正式上线 1 个'
 assert_not_contains 'subject drops the decision clause when nothing waits' "$(maintainer_health_mail_subject "$facts")" '件事等你'
 
 # A failed GitHub read drops the lines that depend on it and prints no zero in their place.
@@ -198,8 +198,8 @@ assert_eq 'a failed read leaves finished unread' 'null' "$(jq -r '.output.finish
 assert_eq 'a failed read leaves the stock unread' 'null' "$(jq -r '.output.stock.now' <<< "$failed_facts")"
 assert_not_contains 'a failed read drops the finished line' "$failed_body" '做完（已合入主线）'
 assert_not_contains 'a failed read drops the change section' "$failed_body" '等上线的需求'
-assert_contains 'a failed read keeps the shipped line from the trail' "$failed_body" '- 上线：过去一天 1 个'
-assert_contains 'a failed read keeps the conclusion to what was read' "$failed_body" '一句话结论：上线 1 个；没有线上事故。'
+assert_contains 'a failed read keeps the shipped line from the trail' "$failed_body" '- 正式上线：过去一天 1 个'
+assert_contains 'a failed read keeps the conclusion to what was read' "$failed_body" '一句话结论：正式上线 1 个；没有告警。'
 export MAINTAINER_TEST_GRAPHQL_FILE="$tmp/graphql.json"
 
 # An empty home leaves every figure out instead of inventing one.
@@ -231,6 +231,34 @@ assert_eq 'the last alert age is whole hours' '1' \
 assert_eq 'an episode alerting within 30 minutes is alerting' '1' \
   "$(maintainer_health_mail_watch_episodes "$watch_home" "$watch_start" "$watch_end" "$(date -u -d '2026-11-07T08:10:00Z' +%s)" | jq -r '.alerting')"
 
+# Alerts with the same first word and the same message (digits aside) are one class.
+class_home="$tmp/classes"
+mkdir -p "$class_home/logs"
+class_start="$(date -u -d '2026-11-07T00:00:00Z' +%s)"
+class_end="$(date -u -d '2026-11-08T00:00:00Z' +%s)"
+class_facts() { # prints the watch episodes then the classes the quality facts carry
+  maintainer_health_mail_quality_facts "$facts_home/night/founder-health-mail.json" "$class_home" "$class_start" "$class_end" "$SCRIPT_DIR/../.." | jq -c '[.incidents_period, .alert_classes]'
+}
+printf '%s\n' '2026-11-07T06:00:00Z PROD-DB-TIMEOUT svc-a connection timed out count=6' \
+  '2026-11-07T08:00:00Z PROD-DB-TIMEOUT svc-a connection timed out count=14' > "$class_home/logs/head-watch.alerts"
+assert_eq 'two alerts with one signature are 2 times in 1 class' '[2,1]' "$(class_facts)"
+printf '%s\n' '2026-11-07T10:00:00Z PROD-DB-TIMEOUT svc-b connection timed out count=3' >> "$class_home/logs/head-watch.alerts"
+assert_eq 'a different first word makes a second class' '[3,2]' "$(class_facts)"
+printf '%s\n' '2026-11-07T12:00:00Z PROD-DB-TIMEOUT svc-a pool exhausted count=3' >> "$class_home/logs/head-watch.alerts"
+assert_eq 'a different message makes a third class' '[4,3]' "$(class_facts)"
+printf '%s\n' '2026-11-07T14:00:00Z PROD-DB-TIMEOUT' >> "$class_home/logs/head-watch.alerts"
+assert_eq 'an alert with no readable signature leaves the class count unread' '[5,null]' "$(class_facts)"
+class_body() { # <times> <classes|null>
+  maintainer_health_mail_build_body "$(jq -c --argjson n "$1" --argjson k "$2" '.quality.incidents_period=$n | .quality.alert_classes=$k' <<< "$facts")"
+}
+assert_contains 'two signatures print 共 2 类' "$(class_body 8 2)" '- 线上告警：过去一天 8 次，共 2 类。'
+assert_contains 'one signature prints 共 1 类' "$(class_body 8 1)" '- 线上告警：过去一天 8 次，共 1 类。'
+assert_not_contains 'an unread class count drops the class part' "$(class_body 8 null)" '共'
+assert_contains 'the conclusion names the alert count' "$(maintainer_health_mail_conclusion_facts "$(jq -c '.output' <<< "$facts")" '{"incidents_period":8}')" '；8 次告警'
+for word in 事故 起; do
+  assert_not_contains "the alert body never says $word" "$(class_body 8 2)" "$word"
+done
+
 # The conclusion escalates: open incident beats risk beats normal.
 conclusion_home="$tmp/conclusion"
 mkdir -p "$conclusion_home/night"
@@ -238,13 +266,13 @@ conclusion_ledger="$conclusion_home/night/founder-health-mail.json"
 fixture_incident_issue=$((fixture_issue_seed + 10))
 maintainer_health_mail_ensure_ledger "$conclusion_ledger" 1000
 maintainer_health_mail_incident_open "$conclusion_ledger" "$fixture_incident_issue" '线上服务中断' '服务中断。' \
-  '用户暂时无法使用。' '正在恢复服务。' "$((facts_now + 3600))" "$facts_now" 1 >/dev/null
+  '用户暂时无法使用。' '正在恢复服务。' "$facts_now" "$((facts_now - 3600))" 1 >/dev/null
 mkdir -p "$conclusion_home/logs"
 : > "$conclusion_home/logs/head-watch.alerts"
 open_facts="$(maintainer_health_mail_daily_facts "$conclusion_home" "$conclusion_ledger" "$facts_now" "$SCRIPT_DIR/../..")"
-assert_contains 'an open outage is the conclusion clause after output' "$(jq -r '.conclusion.reason' <<< "$open_facts")" '仍有 1 起线上事故正在告警'
-assert_contains 'quality section counts the open incident' \
-  "$(maintainer_health_mail_build_body "$open_facts")" '目前仍在处理 1 起'
+assert_contains 'an outage in the ledger is the alert clause after output' "$(jq -r '.conclusion.reason' <<< "$open_facts")" '1 次告警'
+assert_contains 'quality section counts the alerts but cannot class a ledger incident' \
+  "$(maintainer_health_mail_build_body "$open_facts")" '- 线上告警：过去一天 1 次。'
 assert_contains 'subject still names the report during an outage' \
   "$(maintainer_health_mail_subject "$open_facts")" '工厂日报'
 
@@ -313,7 +341,7 @@ retry_home="$tmp/digest-retry"
 mkdir -p "$retry_home/night"
 retry_facts_file="$TMPDIR/owner-report-facts-fixture.json"
 cat > "$retry_facts_file" <<'FIX'
-{"report_day":"11-07","conclusion":{"reason":"做完 0 个、上线 0 个、等上线 0 个；没有线上事故"},"window":{"end":1793683200},"output":{"finished":{"day":0,"prev_day":0,"week":0,"prev_week":null},"shipped":{"day":0,"prev_day":0,"week":0,"prev_week":null},"stock":{"now":0,"day_ago":0,"week_ago":null}},"last_release_at":null,"spend":{"day":null,"prev_day":null},"quality":{"incidents_period":0,"incidents_open":0,"open_subjects":[],"rollbacks":0},"decisions":{"items":[],"total":0,"incomplete":0}}
+{"report_day":"11-07","conclusion":{"reason":"做完 0 个、正式上线 0 个、等上线 0 个；没有告警"},"window":{"end":1793683200},"output":{"finished":{"day":0,"prev_day":0,"week":0,"prev_week":null},"shipped":{"day":0,"prev_day":0,"week":0,"prev_week":null},"stock":{"now":0,"day_ago":0,"week_ago":null}},"last_release_at":null,"spend":{"day":null,"prev_day":null},"quality":{"incidents_period":0,"incidents_open":0,"open_subjects":[],"rollbacks":0},"decisions":{"items":[],"total":0,"incomplete":0}}
 FIX
 maintainer_health_mail_output_contract "$(maintainer_health_mail_build_body "$(cat "$retry_facts_file")")" 1793683200
 (

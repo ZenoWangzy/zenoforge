@@ -7,7 +7,7 @@ maintainer_health_mail_subject() { # <facts>
   decisions="$(jq -r '.decisions.total // "null"' <<< "$facts")"
   day="$(jq -r '.report_day' <<< "$facts")"
   headline="$(jq -r '[(if .output.finished.day != null then "做完 \(.output.finished.day) 个" else empty end),
-      (if .output.shipped.day != null then "上线 \(.output.shipped.day) 个" else empty end)]
+      (if .output.shipped.day != null then "正式上线 \(.output.shipped.day) 个" else empty end)]
     | if length == 0 then "产出记录读取失败" else join("、") end' <<< "$facts")"
   if [[ "$decisions" =~ ^[1-9][0-9]*$ ]]; then printf '工厂日报 %s：%s，有 %s 件事等你\n' "$day" "$headline" "$decisions"; else printf '工厂日报 %s：%s\n' "$day" "$headline"; fi
 }
@@ -33,7 +33,7 @@ maintainer_health_mail_build_body() {
     | (if $f.last_release_at == null then 0 else (($f.window.end - $f.last_release_at) / 86400 | floor) end) as $release_days
     | (if $release_days >= 1 then "距上次正式发版 \($release_days) 天。" else "" end) as $since_release
     | ([ (periods($o.finished; "个") | if . == "" then null else "- 做完（已合入主线）：" + . + "。" end),
-         (periods($o.shipped; "个") | if . == "" then null else "- 上线：" + . + "。" + $since_release end) ]
+         (periods($o.shipped; "个") | if . == "" then null else "- 正式上线：" + . + "。" + $since_release end) ]
        | map(select(. != null))) as $output_lines
     | [ "一句话结论：\($f.conclusion.reason)。" ]
     + [ "产出" ] + (if ($output_lines | length) == 0 then ["- 需求进度记录读取失败，产出无法统计。"] else $output_lines end)
@@ -43,7 +43,7 @@ maintainer_health_mail_build_body() {
           | sub("，。$"; "。")] end)
     + section("质量"; [
         (if $f.quality.incidents_period == null then null
-         else "- 线上事故：过去一天 \($f.quality.incidents_period) 起" + (if $f.quality.incidents_open == null then "" else "，目前仍在处理 \($f.quality.incidents_open) 起" end) + "。" end),
+         else "- 线上告警：过去一天 \($f.quality.incidents_period) 次" + (if $f.quality.alert_classes == null then "" else "，共 \($f.quality.alert_classes) 类" end) + "。" end),
         (if $f.quality.rollbacks == null then null else "- 撤回上线：过去一天 \($f.quality.rollbacks) 次。" end)])
     + section("资源"; [
         (if $f.spend.day == null then null

@@ -25,8 +25,8 @@ ledger="$AGENT_HOME/night/founder-health-mail.json"
 now=1791803400
 slot="$(maintainer_health_mail_slot_key "$now")"
 events='[{"key":"fixture:change","created_at":1791803400}]'
-body=$'一句话结论：做完 0 个、上线 0 个、等上线 0 个；没有线上事故。\n产出\n- 做完（已合入主线）：过去一天 0 个（前一天 0 个）；近 7 天 0 个。\n- 上线：过去一天 0 个（前一天 0 个）；近 7 天 0 个。\n需要你决定\n- 没有'
-subject='工厂日报 11-07：做完 0 个、上线 0 个'
+body=$'一句话结论：做完 0 个、正式上线 0 个、等上线 0 个；没有告警。\n产出\n- 做完（已合入主线）：过去一天 0 个（前一天 0 个）；近 7 天 0 个。\n- 正式上线：过去一天 0 个（前一天 0 个）；近 7 天 0 个。\n需要你决定\n- 没有'
+subject='工厂日报 11-07：做完 0 个、正式上线 0 个'
 deliver() {
   maintainer_health_mail_deliver "$ledger" "$now" "$slot" "$subject" "$body" "$events"
 }

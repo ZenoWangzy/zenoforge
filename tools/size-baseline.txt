@@ -16,7 +16,7 @@
 983	engine/mac-autopilot/usage_reader.py
 2628	engine/night/efficiency-regression.mjs
 1035	engine/night/main-ci-recovery.sh
-1608	engine/night/maintainer-health-mail.sh
+1618	engine/night/maintainer-health-mail.sh
 1391	engine/night/outcomes-audit.sh
 2180	engine/notify.sh
 1945	engine/run-advisor-batch.sh

@@ -39,14 +39,14 @@ now="$(date -u -d '2026-11-07T16:00:00Z' +%s)"
 tracker_fixture_id="$(printf '%s' "$TMPDIR/output-contract-tracker" | cksum | awk '{print 100000 + ($1 % 800000)}')"
 mkdir -p "$AGENT_HOME/night" "$AGENT_HOME/metrics"
 
-golden_body='一句话结论：做完 2 个、上线 1 个、等上线 3 个；没有线上事故。
+golden_body='一句话结论：做完 2 个、正式上线 1 个、等上线 3 个；没有告警。
 产出
 - 做完（已合入主线）：过去一天 2 个（前一天 1 个）；近 7 天 4 个（上一个 7 天 3 个）。
-- 上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个（上一个 7 天 0 个）。距上次正式发版 5 天。
+- 正式上线：过去一天 1 个（前一天 0 个）；近 7 天 1 个（上一个 7 天 0 个）。距上次正式发版 5 天。
 变化
 - 做完等上线的需求：现在 3 个，比一天前多 1 个，比七天前多 3 个。
 质量
-- 线上事故：过去一天 0 起，目前仍在处理 0 起。
+- 线上告警：过去一天 0 次，共 0 类。
 - 撤回上线：过去一天 0 次。
 资源
 - 令牌用量：过去一天 1500（前一天 1000）。
@@ -59,7 +59,7 @@ echo 'ok - golden owner report passes the contract'
 contract_rejects 'an empty body is refused' '' 'empty-body'
 contract_rejects 'a missing conclusion line is refused' "$(tail -n +2 <<< "$golden_body")" 'conclusion'
 contract_rejects 'a conclusion without a sentence is refused' \
-  "${golden_body/一句话结论：做完 2 个、上线 1 个、等上线 3 个；没有线上事故。/一句话结论：}" 'conclusion'
+  "${golden_body/一句话结论：做完 2 个、正式上线 1 个、等上线 3 个；没有告警。/一句话结论：}" 'conclusion'
 contract_rejects 'a missing section is refused' "$(grep -v '^产出$' <<< "$golden_body")" 'missing-section'
 contract_rejects 'a reordered section is refused' \
   "$(grep -v '^产出$' <<< "$golden_body" | sed 's/^质量$/产出\n质量/')" 'section-order'
@@ -103,7 +103,7 @@ unknown_decision_body="$(sed '/^需要你决定$/,$d' <<< "$golden_body")"
 unknown_decision_body+=$'\n需要你决定\n- 决定记录读取失败，本期无法列出。'
 maintainer_health_mail_output_contract "$unknown_decision_body" "$now"
 assert_eq 'notify gate accepts decisions stated as unreadable' '' \
-  "$(maintainer_mail_rejection_reason health '工厂日报 11-07：做完 2 个、上线 1 个' "$unknown_decision_body")"
+  "$(maintainer_mail_rejection_reason health '工厂日报 11-07：做完 2 个、正式上线 1 个' "$unknown_decision_body")"
 body_with_env="${golden_body/需要你决定/$'ZF_HOME\n需要你决定'}"
 body_with_path="${golden_body/需要你决定/$'\$HOME/private.log\n需要你决定'}"
 body_with_sha="${golden_body/需要你决定/$'版本：b454fd00fa\n需要你决定'}"

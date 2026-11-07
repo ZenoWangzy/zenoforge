@@ -622,8 +622,11 @@ PY
 # logs/head-watch.alerts. Alerts less than 30 minutes apart are one episode,
 # counted at its first alert. {period: episodes starting in [since, until),
 # alerting: episodes whose last alert is under 30 minutes old at now,
-# hours_since_last: whole hours from the newest alert to now}. A pause in alerts
-# is not evidence that an episode closed. Null when the log is unreadable.
+# hours_since_last: whole hours from the newest alert to now, classes: distinct
+# signatures among the alerts of the episodes starting in the period}. A signature
+# is the alert's first word plus its message with digits removed; it is only
+# compared, never printed, and classes is null if any such alert has no message.
+# A pause in alerts is not evidence that an episode closed. Null when the log is unreadable.
 maintainer_health_mail_watch_episodes() {
   local home="$1" since="$2" until="$3" now="$4"
   local file="$home/logs/head-watch.alerts"
@@ -636,8 +639,9 @@ from datetime import datetime, timezone
 
 path, since, until, now = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
 GAP = 30 * 60
-pattern = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) PROD-DB-TIMEOUT ")
+pattern = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) PROD-DB-TIMEOUT(?: (\S.*))?$")
 stamps = []
+signatures = {}
 try:
     with open(path, encoding="utf-8", errors="replace") as source:
         for line in source:
@@ -645,9 +649,12 @@ try:
             if not match:
                 continue
             try:
-                stamps.append(int(datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()))
+                at = int(datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp())
             except ValueError:
                 continue
+            stamps.append(at)
+            message = (match.group(2) or "").rstrip()
+            signatures.setdefault(at, []).append((message.split()[0], re.sub(r"[0-9]+", "#", message)) if message else None)
 except OSError:
     print("null")
     raise SystemExit(0)
@@ -657,7 +664,10 @@ for at in sorted(stamps):
         episodes[-1][1] = at
     else:
         episodes.append([at, at])
+shown = [signature for first, last in episodes if since <= first < until
+         for at in signatures if first <= at <= last for signature in signatures[at]]
 print(json.dumps({"period": sum(since <= first < until for first, _ in episodes),
+                  "classes": None if None in shown else len(set(shown)),
                   "alerting": sum(last + GAP > now for _, last in episodes),
                   "hours_since_last": (now - stamps[-1]) // 3600 if stamps else None}, separators=(",", ":")))
 PY
@@ -737,6 +747,7 @@ maintainer_health_mail_quality_facts() {
        elif $watch.alerting > 0 then $incidents_open + $watch.alerting
        else null end),
      watch_hours_since_last:(if $watch == null then null else $watch.hours_since_last end),
+     alert_classes:(if $watch == null or $incidents != 0 then null else $watch.classes end),
      open_subjects:$open_subjects,
      rollbacks:$rollbacks}'
 }
@@ -801,17 +812,16 @@ maintainer_health_mail_daily_facts() {
 }
 
 # maintainer_health_mail_conclusion_facts <output> <quality>
-# One sentence that leads with output (做完, 上线, 等上线) and then says one
-# thing about production incidents. A part whose figure is unread is left out.
+# One sentence that leads with output (做完, 正式上线, 等上线) and then says one
+# thing about production alerts. A part whose figure is unread is left out.
 maintainer_health_mail_conclusion_facts() {
   jq -r '
     . as $c | ($c.output) as $o | ($c.quality) as $q
     | [ (if $o.finished.day != null then "做完 \($o.finished.day) 个" else empty end),
-        (if $o.shipped.day != null then "上线 \($o.shipped.day) 个" else empty end),
+        (if $o.shipped.day != null then "正式上线 \($o.shipped.day) 个" else empty end),
         (if $o.stock.now != null then "等上线 \($o.stock.now) 个" else empty end) ] as $out
-    | (if ($q.incidents_open // 0) > 0 then "仍有 \($q.incidents_open) 起线上事故正在告警"
-       elif ($q.incidents_period // 0) > 0 then "过去一天发生 \($q.incidents_period) 起线上事故"
-       elif $q.incidents_period == 0 then "没有线上事故" else "" end) as $incident
+    | (if ($q.incidents_period // 0) > 0 then "\($q.incidents_period) 次告警"
+       elif $q.incidents_period == 0 then "没有告警" else "" end) as $incident
     | [($out | join("、")), $incident] | map(select(. != "")) | join("；")
     | if . == "" then "今天的产出记录读取失败" else . end
   ' <<< "$(jq -cn --argjson output "$1" --argjson quality "$2" '{output:$output,quality:$quality}')"
