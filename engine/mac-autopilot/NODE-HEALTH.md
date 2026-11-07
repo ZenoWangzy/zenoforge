@@ -41,7 +41,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | supervisor | supervisor-cap-default decisions in 24 h (`supervisor.cap_default_24h`; measured, no bound — the sentinel bounds 0/-1 keep any measured count OK) | every default decision ends a capped unit in the same tick with no model run and no founder question; watch the rate to see how often arbitration fails to converge | — | — | first scorecard sample |
 | scheduler | seconds between tick starts p50 (`scheduler.tick_gap_p50`) | — | ≤ 240 | ≥ 420 | — |
 | release | current release batch wait in hours (`release.hours_waiting`) | elite: deploy on demand, lead time < 1 day [4] | ≤ 4 | ≥ 12 | — |
-| release | hours since production last changed, formal or hand release (`release.hours_since_release`; source: GitHub production Deployments, newest success record via `engine/production-deployment-read.sh`, not `release-train.json` `released_at`; ruling `release-overdue-2026-11-07`: two 2 h batch cycles with no formal release is a stop) | two batch cycles (2 h) per release; 4 h without one is a stalled line | ≤ 2 | ≥ 4 | — |
+| release | hours since production last changed, formal or hand release (`release.hours_since_release`; source: GitHub production Deployments, the live sha (newest success record via `engine/production-deployment-read.sh`) and its earliest real deployment record, not `release-train.json` `released_at`; ruling `release-overdue-2026-11-07`: two 2 h batch cycles with no formal release is a stop, repeated hourly) | two batch cycles (2 h) per release; 4 h without one is a stalled line | ≤ 2 | ≥ 4 | — |
 | release | production hot patches whose PR is not on main (`release.hotpatch_blockers`) | a hotfix is merged the same day | 0 | ≥ 1 | — |
 | holds | line holds (a disabled release train or a valid PAUSE) without an owner or expiry, or past expiry (`holds.line_violations`; each violating hold appends one alerts/events.md line and one supervisor inbox line per day, naming owner, reason and hours since expiry) | a line hold is the same decision as an issue hold (`hold_issue` requires holder, release condition, expiry) and owes the same metadata; expiry fails loud and never re-enables the held line | 0 | ≥ 1 | first scorecard sample |
 | pipeline | open agent PRs outside the ledger (`pipeline.orphan_prs`) | — | ≤ 3 | ≥ 10 | — |
@@ -111,11 +111,14 @@ reports no eligible pending work. Stale labels that fail release-state validatio
 reuse a prior `release-closer` timestamp, which would count idle time before the current batch existed.
 `release.hours_waiting` is not time since the last formal release: it is 0 once the batch is released, and it is
 None with no batch. The age since the last release is `release.hours_since_release` (`release_age.py`): it reads the
-newest success record of the GitHub production Deployments, so a hand release counts. It is NO-DATA when that read
-fails, never 0. Any production deployment record resets it, including ones missing from the `RELEASED` lines of
-`release-train.log` (none after 2026-10-23 while production deployments continued); the night report's formal-release
-count reads only those lines. One `RELEASE-STOPPED` event and one supervisor
-inbox line are raised per episode, the episode being the production record that has aged past 4 h. A `PAUSE` file
+newest success record of the GitHub production Deployments, so a hand release counts. Its time is the earliest real
+(non-reconciled) deployment record of the live sha: a later reconciled record of the same sha does not move it, and a
+newer sha does. It is NO-DATA when that read fails, never 0. Deployment records missing from the `RELEASED` lines of
+`release-train.log` (none after 2026-10-23 while production deployments continued) do count; the night report's
+formal-release count reads only those lines. While unhealthy, `RELEASE-STOPPED` repeats at most once an hour (ruling
+`release-overdue-2026-11-07`) until a new production record is healthy; each repeat is one events line and one
+supervisor inbox line keyed by the hour. The CLI `python3 engine/mac-autopilot/release_age.py` prints the same deploy
+time and sha for owner reports. A `PAUSE` file
 keeps the value and the overview tile but raises no alert, as `station_health` does; the line hold itself is
 `holds.line_violations`.
 
