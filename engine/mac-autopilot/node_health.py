@@ -17,7 +17,7 @@ import argparse, glob, json, os, re, socket, subprocess, urllib.parse, urllib.re
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import arbiter_health, ledger_history, live_delivery
+import arbiter_health, ledger_history, live_delivery, merge_wait
 import line_holds
 import release_age
 import station_standards
@@ -46,7 +46,7 @@ def health_doc_reference():
 
 
 # metric id: (node, description, healthy bound, unhealthy bound, higher_is_better)
-CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
+CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA, **merge_wait.CRITERIA,
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
     "implement.no_output_pct": ("implement", "implement runs with no report %", 5, 15, False),
     "dispatch.collisions_per_day": ("implement", "implement/repair unit pairs writing the same path in the last 24h", 0, 1, False),
@@ -126,7 +126,7 @@ GH_DELIVERY_CALL_TIMEOUT = 15
 GH_DELIVERY_CENSUS_TIMEOUT = 30
 GH_DELIVERY_BATCH_TIMEOUT = 60
 # What each number means, in the dashboard's words. Every metric above needs one (node_health.test.sh).
-MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
+MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING, **merge_wait.MEANING,
     "implement.wall_p50": "一次开发从派出到交付的中位时长。偏长多半是任务太大，或卡在环境上。",
     "implement.no_output_pct": "开发员跑完却没交报告的比例：这些 token 全白花，多是进程被杀或崩溃。",
     "dispatch.collisions_per_day": "过去 24 小时不同开发单元同时写入同一文件的次数；正常等待不算碰撞，任何一次都是故障。",
@@ -193,7 +193,7 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "delivery.unlinked_incidents_30d": "过去 30 天线上事故账本（与负责人邮件同源）里未关联接受单元的事故，加上 head-watch 的线上告警次数（PROD-DB-TIMEOUT，间隔 30 分钟内算一次，与负责人邮件线上告警同口径）；告警不带 issue，一律未关联。告警日志只从 2026-11-04 开始，所以这是下限而非完整 30 天；不会猜测归属。",
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
-SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
+SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE, **merge_wait.SOURCE,
     "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮；24 h 窗口",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "dispatch.collisions_per_day": "units.json write-start/write-end 的区间与文件范围（预测 + 实际 diff），按单元对去重；固定滚动 24h。",
@@ -1464,7 +1464,7 @@ def main():
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)
-    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now))
+    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); merge_metrics, merge_details = merge_wait.collect(repo, now, here, _gh_json); metrics.update(merge_metrics)
     try:
         shared_append = frozenset((json.load(open(os.path.join(a, "config.json")))
                                    .get("footprint_mutex") or {}).get("shared_append") or [])
@@ -1605,7 +1605,7 @@ def main():
                            for node, mid, desc, v, healthy, unhealthy, higher, status in rows],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
                "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],
-               "delivery": delivery["details"], "flow": flow_details, "mechanisms": mechanism_rows,
+               "delivery": delivery["details"], "merge_wait": merge_details, "flow": flow_details, "mechanisms": mechanism_rows,
                "ci_standards": {k: {"desc": d, "healthy": h, "unhealthy": u, "higher_is_better": hi, "meaning": m, "source": src}
                                 for k, (d, h, u, hi, m, src) in CI_STANDARDS.items()},
                "unit_standards": {k: {"desc": d, "healthy": h, "bug": b} for k, (d, h, b) in UNIT_STANDARDS.items()},
