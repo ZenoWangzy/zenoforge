@@ -56,4 +56,11 @@ for pr in 120 130; do grep -Fq "pr view $pr " "$gh_log" || fail "live handoff ro
 grep -Fq 'intake skip counts refill=true added=0 ' "$LOG" || fail "no count line: $(cat "$LOG")"
 grep -Fq ' terminal=2' "$LOG" || fail "terminal not counted: $(grep 'skip counts' "$LOG")"
 grep -Fq ' census_partial=2' "$LOG" || fail "live rows not counted: $(grep 'skip counts' "$LOG")"
+! grep -Fq 'intake budget spent' "$LOG" || fail "an early refill spent its budget: $(cat "$LOG")"
+
+# A refill near its 300s kill stops intake cleanly, whatever is left of its own budget.
+: > "$LOG"
+SECONDS=280
+register_new_issues 0 true
+grep -Fq 'intake budget spent after 0s: rows from #10 wait for the next tick' "$LOG" || fail "a late refill ran into the kill: $(cat "$LOG")"
 echo 'intake-terminal-skip.test.sh: pass'

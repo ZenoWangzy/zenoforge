@@ -271,7 +271,7 @@ register_new_issues() {
   local existing_only="${1:-0}" only_pred=0 ids lookup handoff_rows matches ids_state pr_number known_prs known_failed hotfix_prs prior_worktree prior_reason episode_hash related_id related_hash unsafe_clones
   local issue_json parent_reason parent_status parent_transition_status intake_footprint_owners='[]' intake_candidate_json intake_candidate_scope intake_candidate_stage intake_conflict state_read_status state_read_value
   local refill_mode="${2:-false}" free_slots ready_buffer target_pending max_refill upstream_room
-  local intake_budget intake_started=$SECONDS step_started=$SECONDS candidate_started full_at now fresh_seconds existing_issue
+  local intake_budget intake_left intake_started=$SECONDS step_started=$SECONDS candidate_started full_at now fresh_seconds existing_issue
   local INTAKE_FULL_SCAN_FLAG="$A/.intake-full-scan.$BASHPID.$RANDOM"
   local -A intake_known_issues=() intake_skip_counts=()
   local skip_key skip_line
@@ -382,6 +382,10 @@ register_new_issues() {
   local -a intake_terminal_rows=()
   # A slow row must not cost the tick: refill is killed at 300s and dispatch still runs after this loop. Rows left wait a tick.
   intake_budget="${ISSUE_INTAKE_BUDGET_SECONDS:-$([[ "$refill_mode" == true ]] && echo 150 || echo 600)}"
+  if [[ "$refill_mode" == true ]]; then # the kill counts from the tick's start: a 141s merge pass left this budget 87s of its 150 on 2026-11-07
+    intake_left=$(( ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - intake_started - 30 ))
+    (( intake_budget <= intake_left )) || intake_budget=$(( intake_left > 0 ? intake_left : 0 ))
+  fi
   while IFS=$'\t' read -r n lane title labels issue64; do
     [[ "$n" =~ ^[0-9]+$ ]] || { intake_skip badrow; continue; }
     (( added < want )) || break
