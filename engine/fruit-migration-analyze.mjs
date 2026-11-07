@@ -1,6 +1,7 @@
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
 import { packDelegate, zfConfigFile } from './pack-dir.mjs';
 
 const identifier = '(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)';
@@ -39,7 +40,7 @@ export function analyzeMigrationSql(sql, schema) {
   return [...tables].map((table) => `ANALYZE ${quoteIdentifier(schema)}.${quoteIdentifier(table)};`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     if (process.argv[2] !== '--stdin') throw new Error('usage: fruit-migration-analyze.mjs --stdin');
     const configPath = zfConfigFile('release.json');
