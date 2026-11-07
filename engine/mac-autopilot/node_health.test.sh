@@ -321,7 +321,7 @@ gaps += [f"source:{m}" for m in n.CRITERIA if not n.SOURCE.get(m)] + [f"source:{
 gaps += [k for k in list(n.TIME_SINKS) + list(n.CI_STANDARDS) if f"`{k}`" not in doc]
 sys.exit(print("missing:", gaps) or 1 if gaps else 0)
 CHECK
-# 裁决副本对账：引擎实际读取的 state/rulings.json 与 pack 的那份，只有一边有的行数计入 rulings.copies_differ
+# 裁决副本对账：pack 有而引擎实际读取的 state/rulings.json 没有的行数计入 rulings.copies_differ
 # （健康 0，异常 ≥1）；按 (date, scope) 对账因为引擎副本构建时会改 id 和路径；任一文件缺失记 NO-DATA。
 rch="$test_env_root/rulings-copies"; mkdir -p "$rch/config/state" "$rch/pack/scripts/agent/state" "$rch/runtime"
 rcrows() { printf '{"rulings":[%s]}\n' "$1"; }
@@ -339,6 +339,7 @@ rc_b='{"id":"b","date":"2026-11-02","scope":"pipeline"}'
 rc_a2='{"id":"a-renamed","date":"2026-11-01","scope":"ops"}'
 [[ "$(rcval "$rc_a,$rc_b" "$rc_a2,$rc_b")" == "0 OK" ]] || fail "copies with renamed ids must match: $(rcval "$rc_a,$rc_b" "$rc_a2,$rc_b")"
 [[ "$(rcval "$rc_a" "$rc_a2,$rc_b")" == "1 UNHEALTHY" ]] || fail "a ruling only in the pack must be one difference: $(rcval "$rc_a" "$rc_a2,$rc_b")"
+[[ "$(rcval "$rc_a,$rc_b" "$rc_a2")" == "0 OK" ]] || fail "a ruling only in the engine copy is live and must not count: $(rcval "$rc_a,$rc_b" "$rc_a2")"
 [[ "$(rcval "$rc_a" -)" == "null NO-DATA" ]] || fail "a missing pack copy must be NO-DATA, not 0: $(rcval "$rc_a" -)"
 # 工作单标准：在途单超过 bug 线计入 workorders.over_standard；已合并的不算；--json 给看板
 # 29 M 有缓存拆分（无缓存读）的 review 轮：未缓存 token 计入工单；只有页脚的轮不计 token
