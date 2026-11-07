@@ -110,49 +110,61 @@ maintainer_health_mail_ensure_ledger "$facts_home/night/founder-health-mail.json
 jq -n --arg generated '2026-11-07T16:00:00Z' \
   '{generated:$generated,metrics:[{status:"OK"},{status:"NO-DATA"}]}' \
   > "$facts_home/.scratch-supervisor/autopi/node-health.json"
-cat > "$facts_home/state/6001.json" <<'EOF'
-{"state":"awaiting-release","run":{"outcome":"merged","merged_at":"2026-11-07T02:00:00Z","evidence":{"pr_number":42}},"deploy_state":"deployed","deployed_sha":"123456789abcdef","deployed_at":"2026-11-07T06:30:00Z"}
+fixture_issue_seed="$(printf '%s' "$facts_home" | cksum | awk '{print 100000 + ($1 % 800000)}')"
+fixture_issue_live="$fixture_issue_seed"
+fixture_issue_waiting=$((fixture_issue_seed + 1))
+fixture_issue_second_release=$((fixture_issue_seed + 2))
+fixture_issue_declined=$((fixture_issue_seed + 3))
+fixture_issue_factory=$((fixture_issue_seed + 4))
+cat > "$facts_home/state/${fixture_issue_live}.json" <<EOF
+{"state":"awaiting-release","run":{"outcome":"merged","merged_at":"2026-11-07T02:00:00Z"},"deploy_state":"deployed","deployed_sha":"123456789abcdef","deployed_at":"2026-11-07T06:30:00Z"}
 EOF
-cat > "$facts_home/state/6002.json" <<'EOF'
-{"state":"awaiting-release","run":{"outcome":"merged","merged_at":"2026-11-07T05:00:00Z","evidence":{"pr_number":43}}}
+cat > "$facts_home/state/${fixture_issue_waiting}.json" <<EOF
+{"state":"awaiting-release","run":{"outcome":"merged","merged_at":"2026-11-07T05:00:00Z"}}
 EOF
-cat > "$facts_home/state/6003.json" <<'EOF'
-{"state":"needs-triage"}
+cat > "$facts_home/state/${fixture_issue_second_release}.json" <<EOF
+{"state":"concluded","deploy_state":"deployed","deployed_sha":"abcdef123456789","deployed_at":"2026-11-07T05:00:00Z"}
 EOF
-cat > "$facts_home/state/6004.json" <<'EOF'
+cat > "$facts_home/state/${fixture_issue_declined}.json" <<'EOF'
 {"state":"concluded","run":{"outcome":"wontfix"}}
 EOF
-cat > "$facts_home/state/6000.json" <<'EOF'
+cat > "$facts_home/state/${fixture_issue_factory}.json" <<'EOF'
 {"state":"concluded","closed_by_pipeline":true,"pipeline_system":{"enabled":true},"run":{"outcome":"pipeline-system","concluded_at":"2026-10-01T00:00:00Z"}}
 EOF
-cat > "$facts_home/metrics/efficiency-2026-11.jsonl" <<'EOF'
-{"record_type":"event","event_type":"ticket-created","stage":"needs-triage","issue":6001,"ts":"2026-11-02T06:00:00Z"}
-{"record_type":"event","event_type":"stage-entered","stage":"awaiting-release","issue":6001,"ts":"2026-11-07T02:30:00Z"}
-{"record_type":"event","event_type":"ticket-released","stage":"released","issue":6001,"ts":"2026-11-07T06:30:00Z"}
-{"record_type":"event","event_type":"ticket-created","stage":"needs-triage","issue":6003,"ts":"2026-11-07T09:00:00Z"}
-{"record_type":"event","event_type":"ticket-created","stage":"needs-triage","issue":6004,"ts":"2026-11-01T00:00:00Z"}
+cat > "$facts_home/metrics/efficiency-2026-11.jsonl" <<EOF
+{"record_type":"event","event_type":"ticket-created","stage":"needs-triage","issue":${fixture_issue_live},"ts":"2026-11-02T06:00:00Z"}
+{"record_type":"event","event_type":"stage-entered","stage":"awaiting-release","issue":${fixture_issue_live},"ts":"2026-11-07T02:30:00Z"}
+{"record_type":"event","event_type":"ticket-released","stage":"released","issue":${fixture_issue_live},"ts":"2026-11-07T06:30:00Z"}
+{"record_type":"event","event_type":"ticket-created","stage":"needs-triage","issue":${fixture_issue_waiting},"ts":"2026-11-07T09:00:00Z"}
+{"record_type":"event","event_type":"ticket-released","stage":"released","issue":${fixture_issue_second_release},"ts":"2026-11-07T05:00:00Z"}
+{"record_type":"event","event_type":"ticket-created","stage":"needs-triage","issue":${fixture_issue_second_release},"ts":"2026-11-07T09:00:00Z"}
+{"record_type":"event","event_type":"ticket-created","stage":"needs-triage","issue":${fixture_issue_declined},"ts":"2026-11-01T00:00:00Z"}
 {"record_type":"hourly","sampled_at":"2026-11-07T15:00:00Z","metrics":{"tokens":9}}
 EOF
-printf '%s\n' '{"sent_at":"2026-11-07T06:31:00Z","issue":6001,"outcome":"用户可以把订单导出成表格。","deployed_sha":"123456789abcdef"}' \
+printf '%s\n' "$(jq -cn --argjson issue "$fixture_issue_live" --arg sent_at '2026-11-07T06:31:00Z' \
+  --arg outcome '用户可以把订单导出成表格。' --arg sha '123456789abcdef' \
+  '{sent_at:$sent_at,issue:$issue,outcome:$outcome,deployed_sha:$sha}')" \
   > "$facts_home/night/founder-health-outcomes.jsonl"
-printf '%s\n' "$(date -u -d '2026-11-07T13:50:00Z' +%s)	implement	模型	6001		1500" > "$facts_home/spend/2026-11-07.log"
-cat > "$facts_home/supervisor-inbox" <<'EOF'
-2026-11-07T06:30:00Z founder-req #6001 提出 → 上线：订单导出（请 PushNotification 通知创始人）
-EOF
-printf '%s\n' '{"6001":3,"6002":2}' > "$facts_home/founder-req-stage.json"
-cat > "$facts_home/metrics/units-2026-11.jsonl" <<'EOF'
-{"record_type":"event","event_type":"unit-end","event_id":"unit-req","ts":"2026-11-07T14:00:00Z","wall_s":3600,"tickets":[6001]}
-{"record_type":"event","event_type":"unit-end","event_id":"unit-self","ts":"2026-11-07T14:05:00Z","wall_s":600,"tickets":[6000]}
+printf '%s\timplement\t模型\t%s\t\t1500\n' \
+  "$(date -u -d '2026-11-07T13:50:00Z' +%s)" "$fixture_issue_live" \
+  > "$facts_home/spend/2026-11-07.log"
+printf '%s\n' "2026-11-07T06:30:00Z founder-req #${fixture_issue_live} 提出 → 上线：订单导出（请 PushNotification 通知创始人）" \
+  > "$facts_home/supervisor-inbox"
+jq -cn --argjson live "$fixture_issue_live" --argjson waiting "$fixture_issue_waiting" \
+  '{($live|tostring):3,($waiting|tostring):2}' > "$facts_home/founder-req-stage.json"
+cat > "$facts_home/metrics/units-2026-11.jsonl" <<EOF
+{"record_type":"event","event_type":"unit-end","event_id":"unit-req","ts":"2026-11-07T14:00:00Z","wall_s":3600,"tickets":[${fixture_issue_live}]}
+{"record_type":"event","event_type":"unit-end","event_id":"unit-self","ts":"2026-11-07T14:05:00Z","wall_s":600,"tickets":[${fixture_issue_factory}]}
 {"record_type":"event","event_type":"unit-end","event_id":"unit-unclassified","ts":"2026-11-07T14:10:00Z","wall_s":300,"tickets":[]}
 EOF
 facts="$(maintainer_health_mail_daily_facts "$facts_home" "$facts_home/night/founder-health-mail.json" "$facts_now" "$SCRIPT_DIR/../..")"
 assert_eq 'one requirement reached production in the window' '1' "$(jq -r '.releases.period_count' <<< "$facts")"
 assert_contains 'release line states the user-visible outcome' \
   "$(jq -r '.releases.items[0].text' <<< "$facts")" '用户可以把订单导出成表格'
-assert_eq 'current proposals and waiting work count as open' '2' "$(jq -r '.progress.open_total' <<< "$facts")"
+assert_eq 'current founder requirements count as open' '1' "$(jq -r '.progress.open_total' <<< "$facts")"
 assert_eq 'awaiting-release total comes from the state census' '1' "$(jq -r '.progress.awaiting_total' <<< "$facts")"
 assert_eq 'new proposals in the window are counted' '1' "$(jq -r '.progress.created_period' <<< "$facts")"
-assert_eq 'new proposals total uses all recorded product requirements' '3' "$(jq -r '.progress.created_total' <<< "$facts")"
+assert_eq 'new proposals total uses the requirement ladder' '2' "$(jq -r '.progress.created_total' <<< "$facts")"
 assert_eq 'released-all-time comes from the deployment catalog' '1' "$(jq -r '.progress.released_total' <<< "$facts")"
 expected_lead_days="$(jq -nr '(("2026-11-07T06:30:00Z" | fromdateiso8601) - ("2026-11-02T06:00:00Z" | fromdateiso8601)) / 86400')"
 assert_eq 'median lead time is measured in days' "$expected_lead_days" "$(jq -r '.efficiency.lead_days_week' <<< "$facts")"
@@ -167,19 +179,27 @@ assert_eq 'a calm factory concludes normally' '正常' "$(jq -r '.conclusion.lev
 facts_body="$(maintainer_health_mail_build_body "$facts")"
 maintainer_health_mail_output_contract "$facts_body" "$facts_now"
 assert_contains 'body names the released requirement' "$facts_body" '「订单导出」：用户可以把订单导出成表格'
-assert_contains 'body states the in-flight requirement counts' "$facts_body" '目前在办共 2 个'
+assert_contains 'body states the in-flight requirement counts' "$facts_body" '目前在办共 1 个'
 assert_contains 'body states the awaiting-release backlog' "$facts_body" '已做完等上线：过去一天 1 个；当前共 1 个'
 assert_contains 'body states spend per delivered requirement' "$facts_body" '每个上线需求平均 1500 令牌'
+assert_contains 'a measured week with no prior releases says 无样本' "$facts_body" '上一个 7 天 无样本'
 assert_contains 'body states money is not measured' "$facts_body" '金额没有完整记录，无法算出总花费'
 assert_contains 'body states no decisions wait' "$facts_body" '- 没有'
 assert_contains 'subject counts released requirements' "$(maintainer_health_mail_subject "$facts")" '工厂日报 11-08：上线 1 个需求'
 assert_contains 'subject states the decision count' "$(maintainer_health_mail_subject "$facts")" '有 0 件事等你'
 
+many_release_facts="$(jq -c '.releases.items += [{text:"「第二项」：用户可以查看更多信息"},{text:"「第三项」：用户可以完成另一件事"},{text:"「第四项」：用户可以完成更多操作"}]' <<< "$facts")"
+many_release_body="$(maintainer_health_mail_build_body "$many_release_facts")"
+maintainer_health_mail_output_contract "$many_release_body" "$facts_now"
+assert_contains 'one-screen report counts extra releases without listing every one' "$many_release_body" '另有 2 个需求上线，邮件未逐项列出'
+assert_eq 'one-screen report stays at or below twenty-five lines' 'true' \
+  "$([[ "$(wc -l <<< "$many_release_body" | tr -d '[:space:]')" -le 25 ]] && printf true || printf false)"
+
 # A window with no releases names zero and the reason.
 quiet_releases="$(maintainer_health_mail_release_facts "$facts_home" "$((facts_now - 7200))" "$((facts_now - 3600))")"
 assert_eq 'empty window counts zero releases' '0' "$(jq -r '.period_count' <<< "$quiet_releases")"
 assert_contains 'zero-release reason names the awaiting-release backlog' \
-  "$(jq -r '.zero_reason' <<< "$quiet_releases")" '1 项做完的改进在等上线'
+  "$(jq -r '.zero_reason' <<< "$quiet_releases")" '还有 1 项已做完，正在等待上线'
 
 # An empty home leaves every number unmeasured instead of inventing one.
 empty_home="$tmp/empty"
@@ -191,16 +211,20 @@ empty_facts="$(maintainer_health_mail_daily_facts "$empty_home" "$empty_home/nig
 empty_body="$(maintainer_health_mail_build_body "$empty_facts")"
 maintainer_health_mail_output_contract "$empty_body" "$facts_now"
 assert_contains 'empty home says releases are unverified' "$empty_body" '上线记录未能完整核对'
-assert_contains 'empty home leaves lead time unmeasured' "$empty_body" '无样本'
+assert_contains 'empty home leaves the subject decision count unmeasured' \
+  "$(maintainer_health_mail_subject "$empty_facts")" '待决定事项未测量'
+assert_contains 'empty home leaves lead time unmeasured' "$empty_body" '近 7 天中位 未测量'
 assert_contains 'empty home leaves the self-work share unmeasured' "$empty_body" '占比未测量'
-assert_contains 'empty home states an unknown decision ledger' "$empty_body" '是否先核实待决定事项'
+assert_contains 'empty home states per-requirement spend is unmeasured' "$empty_body" '每个上线需求的令牌花费未测量'
+assert_contains 'empty home states decision facts are unmeasured without inventing a decision' "$empty_body" '待决定事项未测量，无法列出问题和建议'
 
 # The conclusion escalates: open incident beats risk beats normal.
 conclusion_home="$tmp/conclusion"
 mkdir -p "$conclusion_home/night"
 conclusion_ledger="$conclusion_home/night/founder-health-mail.json"
+fixture_incident_issue=$((fixture_issue_seed + 10))
 maintainer_health_mail_ensure_ledger "$conclusion_ledger" 1000
-maintainer_health_mail_incident_open "$conclusion_ledger" 99001 '线上服务中断' '服务中断。' \
+maintainer_health_mail_incident_open "$conclusion_ledger" "$fixture_incident_issue" '线上服务中断' '服务中断。' \
   '用户暂时无法使用。' '正在恢复服务。' "$((facts_now + 3600))" "$facts_now" 1 >/dev/null
 open_facts="$(maintainer_health_mail_daily_facts "$conclusion_home" "$conclusion_ledger" "$facts_now" "$SCRIPT_DIR/../..")"
 assert_eq 'an open outage makes the conclusion 出事了' '出事了' "$(jq -r '.conclusion.level' <<< "$open_facts")"
@@ -216,10 +240,14 @@ assert_eq 'fresh risk and unhealthy scorecard rows are counted' '2' \
   "$(MAC_AUTOPILOT_RUNTIME_DIR="$risk_runtime" maintainer_health_mail_attention_count "$facts_home" "$facts_now")"
 
 # Decisions come from the ledger, capped at three lines in the body.
-maintainer_health_mail_track_important "$conclusion_ledger" 'decision:99002:阈值' decision '库存预警阈值' 99002 "$facts_now" '库存预警阈值调到多少？' '建议：先按默认值运行一周' >/dev/null
-maintainer_health_mail_track_important "$conclusion_ledger" 'decision:99003:注册' decision '自助注册' 99003 "$facts_now" '下周是否开放自助注册？' '建议：先小范围开放' >/dev/null
-maintainer_health_mail_track_important "$conclusion_ledger" 'decision:99004:账期' decision '账期' 99004 "$facts_now" '账期是否从三十天改到十五天？' '建议：先维持三十天' >/dev/null
-maintainer_health_mail_track_important "$conclusion_ledger" 'decision:99005:套餐' decision '套餐' 99005 "$facts_now" '是否下架旧套餐？' '建议：暂时保留旧套餐' >/dev/null
+fixture_decision_threshold=$((fixture_issue_seed + 11))
+fixture_decision_signup=$((fixture_issue_seed + 12))
+fixture_decision_terms=$((fixture_issue_seed + 13))
+fixture_decision_plan=$((fixture_issue_seed + 14))
+maintainer_health_mail_track_important "$conclusion_ledger" "decision:${fixture_decision_threshold}:阈值" decision '库存预警阈值' "$fixture_decision_threshold" "$facts_now" '库存预警阈值调到多少？' '建议：先按默认值运行一周' >/dev/null
+maintainer_health_mail_track_important "$conclusion_ledger" "decision:${fixture_decision_signup}:注册" decision '自助注册' "$fixture_decision_signup" "$facts_now" '下周是否开放自助注册？' '建议：先小范围开放' >/dev/null
+maintainer_health_mail_track_important "$conclusion_ledger" "decision:${fixture_decision_terms}:账期" decision '账期' "$fixture_decision_terms" "$facts_now" '账期是否从三十天改到十五天？' '建议：先维持三十天' >/dev/null
+maintainer_health_mail_track_important "$conclusion_ledger" "decision:${fixture_decision_plan}:套餐" decision '套餐' "$fixture_decision_plan" "$facts_now" '是否下架旧套餐？' '建议：暂时保留旧套餐' >/dev/null
 decision_facts="$(maintainer_health_mail_daily_facts "$conclusion_home" "$conclusion_ledger" "$facts_now" "$SCRIPT_DIR/../..")"
 assert_eq 'four open decisions surface in facts' '4' "$(jq -r '.decisions.total' <<< "$decision_facts")"
 assert_contains 'subject says something waits for the owner' \
@@ -228,6 +256,16 @@ decision_body="$(maintainer_health_mail_build_body "$decision_facts")"
 assert_eq 'decision lines are capped at three' '3' "$(sed -n '/^需要你决定$/,$p' <<< "$decision_body" | grep -c '^- ')"
 assert_contains 'each decision carries a recommendation' "$decision_body" '建议：先按默认值运行一周'
 assert_contains 'decision body ends each question with a question mark' "$decision_body" '库存预警阈值调到多少？'
+
+incomplete_decision_ledger="$conclusion_home/night/incomplete-decisions.json"
+jq -n '{important_items:{one:{kind:"decision",status:"open",question:"",recommendation:""}}}' > "$incomplete_decision_ledger"
+incomplete_decisions="$(maintainer_health_mail_decision_facts "$incomplete_decision_ledger")"
+assert_eq 'a decision with missing fields remains counted but not listed' '1' "$(jq -r '.total' <<< "$incomplete_decisions")"
+assert_eq 'missing decision fields do not get a fabricated recommendation' '0' "$(jq -r '.items | length' <<< "$incomplete_decisions")"
+incomplete_body="$(maintainer_health_mail_build_body "$(jq -cn --argjson decisions "$incomplete_decisions" \
+  --argjson base "$decision_facts" '$base | .decisions=$decisions')")"
+assert_contains 'missing decision fields are stated without a proposed answer' \
+  "$incomplete_body" '有 1 件事项缺少问题或建议，暂无法给出建议'
 
 # --- Tick cadence -----------------------------------------------------------------
 
@@ -350,23 +388,24 @@ mkdir -p "$retry_uncertain_home/night"
 quiet_home="$tmp/quiet"
 mkdir -p "$quiet_home/night" "$quiet_home/state"
 quiet_ledger="$quiet_home/night/founder-health-mail.json"
+quiet_event_key="release:$(printf '%s' "$quiet_home" | cksum | awk '{print $1}')"
 maintainer_health_mail_record_event "$quiet_ledger" \
-  'release:issue-1:sha-1' '发布进度' '事项已上线。' 1790640001 >/dev/null
+  "$quiet_event_key" '发布进度' '事项已上线。' 1790640001 >/dev/null
 assert_eq 'recorded change waits in the pending queue' 'true' \
-  "$(jq -r '.pending_events | has("release:issue-1:sha-1")' "$quiet_ledger")"
+  "$(jq -r --arg key "$quiet_event_key" '.pending_events | has($key)' "$quiet_ledger")"
 assert_eq 'pending item cannot be queued twice' 'existing' \
   "$(maintainer_health_mail_record_event "$quiet_ledger" \
-    'release:issue-1:sha-1' '发布进度' '事项已上线。' 1790640100)"
+    "$quiet_event_key" '发布进度' '事项已上线。' 1790640100)"
 consumed="$(maintainer_health_mail_claim_digest "$quiet_ledger" 20261108 1790726400 \
   "$(jq -c '[.pending_events[]]' "$quiet_ledger")")"
 assert_eq 'claim consumes the queued event' 'reserved' "$consumed"
 assert_eq 'consumed event is marked reported' 'true' \
-  "$(jq -r '.reported_items | has("release:issue-1:sha-1")' "$quiet_ledger")"
+  "$(jq -r --arg key "$quiet_event_key" '.reported_items | has($key)' "$quiet_ledger")"
 assert_eq 'consumed event leaves the pending queue' '0' \
   "$(jq '.pending_events | length' "$quiet_ledger")"
 assert_eq 'already reported item cannot be queued again' 'reported' \
   "$(maintainer_health_mail_record_event "$quiet_ledger" \
-    'release:issue-1:sha-1' '发布进度' '事项已上线。' 1790730000)"
+    "$quiet_event_key" '发布进度' '事项已上线。' 1790730000)"
 maintainer_health_mail_mark_sent "$quiet_ledger" 1790726400
 assert_eq 'send time recorded' '1790726400' "$(jq -r '.last_sent_at' "$quiet_ledger")"
 

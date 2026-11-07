@@ -861,7 +861,7 @@ maintainer_mail_rejection_reason() {
       fi
       ;;
     health)
-      if ! grep -Eq '^工厂日报 [0-9]{2}-[0-9]{2}：.+，有 [0-9]+ 件事等你$' <<< "$subject"; then echo health-subject; return 0; fi
+      if [ -n "$(maintainer_health_mail_subject_rejection_reason "$subject" "$body")" ]; then echo health-subject; return 0; fi
       contract_reason="$(maintainer_health_mail_notify_rejection_reason "$body" "$(date +%s)")"
       [ -z "$contract_reason" ] || { echo "$contract_reason"; return 0; }
       if grep -Eq '[A-Z][A-Z0-9_]{2,}|(^|[[:space:]])/[^[:space:]]+|[[:xdigit:]]{10,}|^[[:space:]]*[0-9]{4}-[0-9]{2}-[0-9]{2}T[^[:space:]]+|[[:alnum:]_.-]+=[^[:space:]]*|^[[:space:]]*(deploy|build|postsubmit|implement|merge|advisor|rulings|health-mail)[[:space:]]+(OK|SLOW|STUCK|BROKEN|NONE)([[:space:]]|$)' <<< "$body"; then

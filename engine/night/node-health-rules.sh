@@ -187,6 +187,16 @@ prod_errors_ack_alert() {
   python3 "$PROD_ERRORS_RULES_DIR/prod-errors-assess.py" --ack "$state_file" "$event_id"
 }
 
+health_prod_errors_ack_routed_alert() {
+  local state_file="$1" event_id="$2" status
+  exec 7>"$NIGHT/$PROD_ERRORS_LOCK_FILE_NAME" || return 1
+  if ! flock -n 7; then exec 7>&-; return 1; fi
+  if prod_errors_ack_alert "$state_file" "$event_id"; then status=0; else status=$?; fi
+  flock -u 7
+  exec 7>&-
+  return "$status"
+}
+
 health_prod_errors_write_evidence() {
   local alert="$1" path="$2" trace_output="${3:-}" tmp
   tmp="$(mktemp "${path}.XXXXXX")" || return 1
@@ -264,11 +274,12 @@ health_prod_errors_rollup_issue() {
     rm -f -- "$rollup_body_file"
   fi
   body="$(cat -- "$evidence_file")" || return 1
-  guarded_issue_comment "$rollup" "$body" >/dev/null
+  guarded_issue_comment "$rollup" "$body" >/dev/null || return 1
+  printf '%s\n' "$rollup"
 }
 
 health_prod_errors_upsert_issue() {
-  local marker="$1" title="$2" body_file="$3"
+  local marker="$1" title="$2" body_file="$3" force_individual="${4:-0}"
   local anomaly=0 results lookup_results issue state issue_json issue_url legacy_results recent_count
   if [[ "$marker" == "$PROD_ERRORS_SIGNATURE_MARKER_PREFIX"* ]]; then
     anomaly=1
@@ -298,12 +309,13 @@ health_prod_errors_upsert_issue() {
         end
     ' <<< "$results")" || return 1
     [[ "$recent_count" =~ ^[0-9]+$ ]] || return 1
-    if (( recent_count >= PROD_ERRORS_ROLLUP_THRESHOLD )); then
+    if (( recent_count >= PROD_ERRORS_ROLLUP_THRESHOLD )) && [[ "$force_individual" != 1 ]]; then
       health_prod_errors_rollup_issue "$results" "$body_file"
       return $?
     fi
     issue_url="$(health_prod_errors_create_anomaly_issue "$title" "$body_file")" || return 1
     [[ "$issue_url" =~ ^[1-9][0-9]*$ ]] || return 1
+    printf '%s\n' "$issue_url"
     return 0
   fi
   if [[ -z "$issue" ]]; then
@@ -320,12 +332,16 @@ health_prod_errors_upsert_issue() {
       issue_json="$(jq -cn --argjson number "$issue" --arg title "$title" --rawfile body "$body_file" \
         --arg label "$PROD_ERRORS_ISSUE_LABEL" \
         '{number:$number,title:$title,body:$body,state:"OPEN",labels:[{name:$label}]}')" || return 1
-      issue_transition "$issue" needs-triage prod-anomaly-created . 0 "$issue_json"
-      return $?
+      issue_transition "$issue" needs-triage prod-anomaly-created . 0 "$issue_json" >/dev/null || return 1
+      printf '%s\n' "$issue"
+      return 0
     fi
-    guarded_write gh issue create --repo "$REPO" --title "$title" --label needs-triage \
-      --label "$PROD_ERRORS_ISSUE_LABEL" --body-file "$body_file" >/dev/null
-    return $?
+    issue_url="$(guarded_write gh issue create --repo "$REPO" --title "$title" --label needs-triage \
+      --label "$PROD_ERRORS_ISSUE_LABEL" --body-file "$body_file")" || return 1
+    issue="${issue_url##*/}"
+    [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
+    printf '%s\n' "$issue"
+    return 0
   fi
   issue_json="$(jq -c --argjson issue "$issue" '[.[] | select(.number == $issue)][0]' <<< "$lookup_results")" || return 1
   state="$(jq -r --argjson issue "$issue" '[.[] | select(.number == $issue)][0].state // "" | ascii_downcase' <<< "$lookup_results")"
@@ -334,6 +350,7 @@ health_prod_errors_upsert_issue() {
     issue_transition "$issue" needs-triage prod-anomaly-recurred . 0 "$issue_json" "" open || return 1
   fi
   guarded_issue_comment "$issue" "$(cat -- "$body_file")" >/dev/null || return 1
+  printf '%s\n' "$issue"
 }
 
 health_prod_errors_ensure_roadmap_cache() {
@@ -353,7 +370,7 @@ health_prod_errors_ensure_roadmap_cache() {
 
 health_prod_errors_route() {
   local result="$1" verdict="$2" detail="$3" state_file="$4" failed=0 event_failed
-  local alert key event_id container count first trace_id request_id service route evidence body_file marker title trace_output
+  local alert key event_id container count first trace_id request_id service route evidence body_file marker title trace_output issue_id now next_update force_individual reason
   local anomaly_dir="$NIGHT/prod-anomalies"
   local -A inbox_ok=()
   mkdir -p -- "$anomaly_dir" || return 1
@@ -362,6 +379,10 @@ health_prod_errors_route() {
     key="$(jq -r '.key // empty' <<< "$alert")"
     [[ "$key" =~ ^[a-f0-9]{20}$ ]] || { failed=1; continue; }
     event_id="$(jq -r '.event_id // .reason // "first-seen"' <<< "$alert" | tr -cd 'A-Za-z0-9._:-')"
+    reason="$(jq -r '.reason // ""' <<< "$alert")"
+    if [[ "$reason" == production-recovered || ( "$reason" == production-down && "$(jq -r '.production_down == true' <<< "$result")" != true ) ]]; then
+      continue
+    fi
     container="$(jq -r '.container // "unknown"' <<< "$alert" | tr -cd 'A-Za-z0-9_.:-<>')"
     count="$(jq -r '.count // 1' <<< "$alert")"
     first="$(jq -r '.first // "unknown"' <<< "$alert" | tr -cd 'A-Za-z0-9T:+.-')"
@@ -386,7 +407,21 @@ health_prod_errors_route() {
     key="$(jq -r '.key // empty' <<< "$alert")"
     [[ "$key" =~ ^[a-f0-9]{20}$ ]] || continue
     event_id="$(jq -r '.event_id // .reason // "first-seen"' <<< "$alert" | tr -cd 'A-Za-z0-9._:-')"
+    reason="$(jq -r '.reason // ""' <<< "$alert")"
     event_failed=0
+    if [[ "$reason" == production-recovered ]]; then
+      now="$(date +%s)" || { failed=1; continue; }
+      if ! maintainer_health_mail_incidents_production_recovered "$NIGHT/founder-health-mail.json" "$now"; then
+        failed=1
+        continue
+      fi
+      health_prod_errors_ack_routed_alert "$state_file" "$event_id" || failed=1
+      continue
+    fi
+    if [[ "$reason" == production-down && "$(jq -r '.production_down == true' <<< "$result")" != true ]]; then
+      health_prod_errors_ack_routed_alert "$state_file" "$event_id" || failed=1
+      continue
+    fi
     trace_id="$(jq -r '.trace_id // ""' <<< "$alert")"
     evidence="$anomaly_dir/$key.md"
     trace_output=""
@@ -400,7 +435,42 @@ health_prod_errors_route() {
     body_file="$(mktemp "$anomaly_dir/.issue-body.XXXXXX")" || { failed=1; continue; }
     printf '%s\n%s\n\n' "$BOT_DISCLAIMER" "$marker" > "$body_file"
     cat -- "$evidence" >> "$body_file"
-    if ! health_prod_errors_upsert_issue "$marker" "$title" "$body_file"; then failed=1; event_failed=1; fi
+    force_individual=0
+    if [[ "$(jq -r '.reason // ""' <<< "$alert")" == production-down ]]; then force_individual=1; fi
+    if ! issue_id="$(health_prod_errors_upsert_issue "$marker" "$title" "$body_file" "$force_individual")"; then
+      failed=1
+      event_failed=1
+    elif [[ "$force_individual" == 1 ]]; then
+      if [[ "$issue_id" =~ ^[1-9][0-9]*$ ]] && declare -F maintainer_health_mail_incident_open >/dev/null; then
+        now="$(date +%s)" || { failed=1; event_failed=1; }
+        if [[ "$now" =~ ^[0-9]+$ ]]; then
+          next_update="$(TZ=Asia/Shanghai date -d "@${now}" +%F)" || { failed=1; event_failed=1; }
+          if [[ -n "$next_update" ]]; then
+            next_update="$(TZ=Asia/Shanghai date -d "$next_update 08:00:00" +%s)" || { failed=1; event_failed=1; }
+            if [[ "$next_update" =~ ^[0-9]+$ ]] && (( next_update <= now )); then next_update=$((next_update + 86400)); fi
+          fi
+          [[ "$next_update" =~ ^[0-9]+$ ]] || { failed=1; event_failed=1; }
+        else
+          next_update=''
+        fi
+        if [[ "$now" =~ ^[0-9]+$ && "$next_update" =~ ^[0-9]+$ ]]; then
+          maintainer_health_mail_incident_open "$NIGHT/founder-health-mail.json" "$issue_id" \
+            '线上服务暂时无法使用' \
+            '自动巡检确认全部主要服务都已停止，线上服务暂时无法使用。' \
+            '用户暂时无法正常使用服务。' \
+            '工厂正在自动排查并恢复服务。' "$next_update" "$now" 1 >/dev/null || {
+              failed=1
+              event_failed=1
+            }
+        else
+          failed=1
+          event_failed=1
+        fi
+      else
+        failed=1
+        event_failed=1
+      fi
+    fi
     rm -f -- "$body_file"
 
     if [[ "$(jq -r '.source // "log"' <<< "$alert")" == log && -z "$trace_id" && -z "$request_id" ]]; then
@@ -415,19 +485,12 @@ health_prod_errors_route() {
         "$PROD_ERRORS_MISSING_TRACE_HEADING_ROUTE" "$route" \
         "$PROD_ERRORS_MISSING_TRACE_HEADING_FIRST" "$first" \
         "$PROD_ERRORS_MISSING_TRACE_HEADING_EVIDENCE" "$evidence" > "$missing_body"
-      if ! health_prod_errors_upsert_issue "$missing_marker" "$missing_title" "$missing_body"; then failed=1; event_failed=1; fi
+      if ! health_prod_errors_upsert_issue "$missing_marker" "$missing_title" "$missing_body" >/dev/null; then failed=1; event_failed=1; fi
       rm -f -- "$missing_body"
     fi
     if [[ "$event_failed" == 0 && "${inbox_ok[$event_id]:-}" == 1 ]]; then
       # Same lock file as the node-health monitor run: an ack must not interleave with a fresh probe writing state.
-      exec 7>"$NIGHT/$PROD_ERRORS_LOCK_FILE_NAME"
-      if flock -n 7; then
-        prod_errors_ack_alert "$state_file" "$event_id" || failed=1
-        flock -u 7
-      else
-        failed=1
-      fi
-      exec 7>&-
+      health_prod_errors_ack_routed_alert "$state_file" "$event_id" || failed=1
     fi
   done < <(jq -c '.alerts[]?' <<< "$result")
   flock -u 8

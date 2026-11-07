@@ -19,6 +19,7 @@ NIGHT="${ZF_NIGHT_DIR:-$H/night}"
 REPO_DIR="$ZF_REPO_DIR"
 WORKTREE_ROOT="${ZF_WORKTREE_ROOT:-$HOME/worktrees}"
 export AGENT_HOME="$H"
+export ZF_NIGHT_DIR="$NIGHT"
 export MODEL_POLICY_READ_ONLY=1
 
 model_policy_source_check_only_was_set="${MODEL_POLICY_SOURCE_CHECK_ONLY+x}"
@@ -36,6 +37,8 @@ agent_pipeline_write_guard node-health "$H" "$NIGHT" || exit 1
 source "$script_dir/hand-agent-watchdog.sh"
 source "$script_dir/hand-exit-handoff.sh"
 source "$script_dir/node-health-rules.sh"
+source "$script_dir/../notify.sh"
+source "$script_dir/maintainer-health-mail.sh"
 prod_errors_config_ready || {
   echo 'skip: production anomaly monitor settings are incomplete in night.json'
   exit 0

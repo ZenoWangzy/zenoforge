@@ -9,8 +9,15 @@ config_root="$tmp/target/.zenoforge"
 pack_dir="$tmp/pack"
 mkdir -p "$config_root" "$pack_dir" "$tmp/agent-home"
 touch "$tmp/agent-home/env"
+export AGENT_HOME="$tmp/agent-home" ZF_NIGHT_DIR="$tmp/agent-home/night"
 export TEST_ENV_HOME="$tmp/agent-home" TEST_DB_USER=fixture TEST_DB_NAME=fixture
 export TEST_CREDENTIAL_WRAPPER="$tmp/credential-wrapper"
+
+assert_eq() {
+  local label="$1" expected="$2" actual="$3"
+  [[ "$expected" == "$actual" ]] || { printf 'not ok - %s\n' "$label" >&2; exit 1; }
+  printf 'ok - %s\n' "$label"
+}
 
 cat > "$config_root/night.json" <<'JSON'
 {
@@ -94,14 +101,29 @@ grep -Fq 'target-anomaly' "$calls"
 
 NIGHT="$tmp/night" BOT_DISCLAIMER='Automated test'
 mkdir -p "$NIGHT"
+source "$script_dir/maintainer-health-mail.sh"
+REPO=example/repository
 inbox="$tmp/inbox"
 issue_calls="$tmp/issues"
+incident_mail_calls="$tmp/incident-mails"
+outage_ack_calls="$tmp/outage-acks"
+touch "$outage_ack_calls"
 supervisor_inbox_append_once() { printf '%s\n' "$2" >> "$inbox"; }
 health_prod_errors_upsert_issue() {
   printf '%s\t%s\n' "$1" "$2" >> "$issue_calls"
   if [[ -n "${3:-}" && -f "$3" ]]; then cp "$3" "$tmp/last-issue-body"; fi
+  printf '%s\n' "${OUTAGE_FIXTURE_ISSUE:-}"
 }
-prod_errors_ack_alert() { return 0; }
+notify_maintainer_incident() {
+  if [[ "${OUTAGE_MAIL_MODE:-success}" == safe-failure ]]; then
+    NOTIFY_LAST_SEND_RETRY_SAFE=1
+    return 1
+  fi
+  jq -cn --arg issue "$1" --arg subject "$2" --arg what "$3" --arg impact "$4" --arg action "$5" \
+    --arg next "$6" '{issue:$issue,subject:$subject,what:$what,impact:$impact,action:$action,next:$next}' \
+    >> "$incident_mail_calls"
+}
+prod_errors_ack_alert() { printf '%s\n' "$2" >> "$outage_ack_calls"; }
 fixture_key="$(printf 'fixture-redaction-marker' | sha256sum | cut -c1-20)"
 alert="$(jq -cn --arg key "$fixture_key" '{alerts:[{key:$key,event_id:"first-seen-1",source:"log",reason:"first-seen",container:"service",service:"service",count:1,first:"2026-10-12T02:13:14Z",route:"/items",sample_request_id:"",trace_id:"",deduplicated_lines:["route=GET /items status=500"]}]}')"
 health_prod_errors_route "$alert" BROKEN '' "$tmp/state.json"
@@ -116,6 +138,55 @@ grep -Fq 'Target Service: service' "$tmp/last-issue-body"
 grep -Fq 'Target Route: /items' "$tmp/last-issue-body"
 grep -Fq 'Target First: 2026-10-12T02:13:14Z' "$tmp/last-issue-body"
 grep -Fq 'Target Evidence: ' "$tmp/last-issue-body"
+[[ ! -s "$incident_mail_calls" ]]
+
+outage_issue="$(printf '%s' "$tmp/primary-services-down" | cksum | awk '{print 900000000 + ($1 % 99999999)}')"
+export OUTAGE_FIXTURE_ISSUE="$outage_issue"
+outage_key="$(printf 'primary-services-down' | sha256sum | cut -c1-20)"
+outage_alert="$(jq -cn --arg key "$outage_key" '{production_down:true,alerts:[{
+  key:$key,event_id:"production-down",source:"availability",reason:"production-down",
+  container:"production",service:"production",count:1,first:"unknown",route:"",
+  trace_id:"",sample_request_id:"",deduplicated_lines:["all primary services are stopped"]
+}]}')"
+OUTAGE_MAIL_MODE=safe-failure
+if OUTAGE_MAIL_MODE="$OUTAGE_MAIL_MODE" health_prod_errors_route "$outage_alert" BROKEN 'production-down' "$tmp/state.json"; then
+  echo 'not ok - a safely failed urgent mail was acknowledged' >&2
+  exit 1
+fi
+assert_eq 'safe urgent-mail failure remains retryable in the shared ledger' 'failed-safe' \
+  "$(jq -r --argjson issue "$outage_issue" '.incidents[] | select(.issue == $issue) | .initial_mail_status' \
+    "$NIGHT/founder-health-mail.json")"
+! grep -qx 'production-down' "$outage_ack_calls"
+OUTAGE_MAIL_MODE=success
+health_prod_errors_route "$outage_alert" BROKEN 'production-down' "$tmp/state.json"
+assert_eq 'only the detected full production outage sends an immediate short mail' '1' \
+  "$(wc -l < "$incident_mail_calls" | tr -d '[:space:]')"
+assert_eq 'outage alert is recorded in the shared mail ledger' \
+  "$outage_issue|sent|true" \
+  "$(jq -r --argjson issue "$outage_issue" '.incidents[] | select(.issue == $issue) | [.issue,.initial_mail_status,.urgent] | join("|")' \
+    "$NIGHT/founder-health-mail.json")"
+assert_eq 'outage email stays in plain Chinese' '线上服务暂时无法使用|用户暂时无法正常使用服务。|工厂正在自动排查并恢复服务。' \
+  "$(jq -r '[.subject,.impact,.action] | join("|")' "$incident_mail_calls")"
+health_prod_errors_route "$outage_alert" BROKEN 'production-down' "$tmp/state.json"
+assert_eq 'a repeated outage alert is deduplicated by the mail ledger' '1' \
+  "$(wc -l < "$incident_mail_calls" | tr -d '[:space:]')"
+grep -qx 'production-down' "$outage_ack_calls"
+issue_count_before_recovery="$(wc -l < "$issue_calls" | tr -d '[:space:]')"
+recovery_alert="$(jq -cn --arg key "$outage_key" '{production_down:false,production_up:true,alerts:[{
+  key:$key,event_id:"production-recovered",source:"availability",reason:"production-recovered",
+  container:"production",service:"production",count:1,first:"unknown",route:"",
+  trace_id:"",sample_request_id:"",deduplicated_lines:["all primary services are running"]
+}]}')"
+health_prod_errors_route "$recovery_alert" OK 'production recovered' "$tmp/state.json"
+assert_eq 'verified service recovery closes the production incident without a second immediate email' \
+  'resolved|availability|queued' \
+  "$(jq -r '.incidents[] | [.status,.resolution_kind,.resolution_mail_status] | join("|")' \
+    "$NIGHT/founder-health-mail.json")"
+assert_eq 'recovery does not create another issue' "$issue_count_before_recovery" \
+  "$(wc -l < "$issue_calls" | tr -d '[:space:]')"
+grep -qx 'production-recovered' "$outage_ack_calls"
+assert_eq 'recovery does not send an immediate second mail' '1' \
+  "$(wc -l < "$incident_mail_calls" | tr -d '[:space:]')"
 
 wrapper_repo="$tmp/repo"
 wrapper_root="$tmp/wrapper-config/.zenoforge"
@@ -188,10 +259,10 @@ run_missing_trace_create() { # roadmap-flag -> call the real upsert once
       : >"$tmp/roadmap-tree.json"
       ZF_ROADMAP_TREE_CACHE_FILE="$tmp/roadmap-tree.json" \
         health_prod_errors_upsert_issue '<!-- target-missing-trace service=fixture' \
-        'Target trace gap: service' "$missing_body"
+        'Target trace gap: service' "$missing_body" >/dev/null
     else
       health_prod_errors_upsert_issue '<!-- target-missing-trace service=fixture' \
-        'Target trace gap: service' "$missing_body"
+        'Target trace gap: service' "$missing_body" >/dev/null
     fi
   )
 }

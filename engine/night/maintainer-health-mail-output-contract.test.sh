@@ -36,33 +36,28 @@ contract_rejects() {
 }
 
 now="$(date -u -d '2026-11-07T16:00:00Z' +%s)"
+tracker_fixture_id="$(printf '%s' "$TMPDIR/output-contract-tracker" | cksum | awk '{print 100000 + ($1 % 800000)}')"
 mkdir -p "$AGENT_HOME/night" "$AGENT_HOME/metrics"
 
 golden_body='一句话结论：正常——过去一天 2 个需求上线，无线上事故。
-
 今天上线了什么
 - 「订单导出」：用户可以把订单导出成表格（11月7日 07:33上线）
 - 「库存提醒」：库存低于阈值时用户会收到提醒（11月6日 22:10上线）
-
 进度
 - 新提出：过去一天 3 个；累计 48 个；目前在办共 12 个。
 - 已做完等上线：过去一天 1 个；当前共 2 个。
 - 已上线：过去一天 2 个；有记录以来共 31 个。
-
 效率
 - 近 7 天平均每天上线 0.7 个需求；上一个 7 天 1.1 个。
 - 需求从提出到上线：近 7 天中位 2.4 天；上一个 7 天 3.1 天。
 - 近 7 天已分类工作时间：需求 72%；工厂自身维护 28%；另有 0.4 小时未分类。
-
 花费
 - 过去一天令牌用量 1234.6 万；每个上线需求平均 617.3 万令牌。
 - 金额没有完整记录，无法算出总花费。
-
 质量
 - 线上事故：过去一天 0 起；目前仍在处理 0 起。
-- 回滚：过去一天 0 次。
+- 撤回上线：过去一天 0 次。
 - 已上线需求后来再出问题并返修：过去一天 1 起。
-
 需要你决定
 - 库存预警阈值调到多少？——建议：先按默认值运行一周。'
 
@@ -83,10 +78,12 @@ contract_rejects 'four decision lines are refused' \
 - 第二个问题——建议：按默认继续。
 - 第三个问题——建议：按默认继续。
 - 第四个问题——建议：按默认继续。" 'decision-limit'
+too_many_lines="${golden_body/需要你决定/$'- 额外记录一\n- 额外记录二\n- 额外记录三\n- 额外记录四\n- 额外记录五\n需要你决定'}"
+contract_rejects 'a report taller than one screen is refused' "$too_many_lines" 'one-screen'
 contract_rejects 'an English word is refused' "$golden_body
 - Channel Gateway 审批与飞书通知" 'ascii-text'
 contract_rejects 'a tracker id is refused' "$golden_body
-- 事项 #3451 已上线" 'issue-id'
+- 事项 #${tracker_fixture_id} 已上线" 'issue-id'
 contract_rejects 'an epoch-derived date is refused' "${golden_body/一句话结论：正常——/一句话结论：正常——自1月1日起}" 'epoch-date'
 contract_rejects 'an iso timestamp is refused' "$golden_body
 - 上线时间 2026-11-07T08:00:00Z" 'iso-date'
@@ -109,6 +106,11 @@ echo 'ok - isolated report still passes the contract'
 
 # The shared pre-send gate accepts the same report through the strict sender.
 source "$SCRIPT_DIR/../notify.sh"
+unknown_decision_body="$(sed '/^需要你决定$/,$d' <<< "$golden_body")"
+unknown_decision_body+=$'\n需要你决定\n- 待决定事项未测量，无法列出问题和建议。'
+maintainer_health_mail_output_contract "$unknown_decision_body" "$now"
+assert_eq 'notify gate accepts an unknown decision count stated as unmeasured' '' \
+  "$(maintainer_mail_rejection_reason health '工厂日报 11-07：上线 2 个需求，待决定事项未测量' "$unknown_decision_body")"
 body_with_env="${golden_body/需要你决定/$'ZF_HOME\n需要你决定'}"
 body_with_path="${golden_body/需要你决定/$'\$HOME/private.log\n需要你决定'}"
 body_with_sha="${golden_body/需要你决定/$'版本：b454fd00fa\n需要你决定'}"
@@ -116,6 +118,8 @@ assert_eq 'notify gate accepts the golden owner report' '' \
   "$(maintainer_mail_rejection_reason health '工厂日报 11-07：上线 2 个需求，有 1 件事等你' "$golden_body")"
 assert_eq 'notify gate refuses a foreign subject' 'health-subject' \
   "$(maintainer_mail_rejection_reason health '工作进展简报' "$golden_body")"
+assert_eq 'notify gate refuses an invented decision count' 'health-subject' \
+  "$(maintainer_mail_rejection_reason health '工厂日报 11-07：上线 2 个需求，有 0 件事等你' "$unknown_decision_body")"
 assert_eq 'notify gate refuses an empty digest' 'health-sections' \
   "$(maintainer_mail_rejection_reason health '工厂日报 11-07：上线 0 个需求，有 0 件事等你' '- 没有')"
 assert_eq 'notify gate refuses environment names' 'body-internal' \

@@ -805,17 +805,18 @@ A）改为普通配送；影响：预计晚一天送达。
 B）保留次日送达；影响：需要承担加急费用。
 建议：A
 请回复“A”'
-notify_email_verbatim 9006 '是否保留次日送达' "$FOUNDER_DECISION_BODY" >/dev/null
+founder_decision_fixture_id="$(printf '%s' "$TMP_DIR/founder-decision" | cksum | awk '{print 100000 + ($1 % 800000)}')"
+notify_email_verbatim "$founder_decision_fixture_id" '是否保留次日送达' "$FOUNDER_DECISION_BODY" >/dev/null
 assert_eq 'founder-only decision sends immediately to maintainer' \
   'maintainer@notify-fixture.invalid' "$(printf '%s\n' "${LAST_SEND_RECIPIENTS[@]}")"
 assert_eq 'founder-only decision keeps decision mail kind' '--maintainer-kind decision' "$LAST_SEND_KIND"
 assert_eq 'founder-only decision enters four-hour reminder ledger' '1' \
-  "$(jq '[.important_items[] | select(.kind == "decision" and .issue == "9006" and .status == "open")] | length' \
+  "$(jq --arg issue "$founder_decision_fixture_id" '[.important_items[] | select(.kind == "decision" and .issue == $issue and .status == "open")] | length' \
     "$AGENT_HOME/night/founder-health-mail.json")"
 assert_eq 'founder decision question reaches the daily report ledger' '是否保留次日送达？' \
-  "$(jq -r '.important_items[] | select(.issue == "9006") | .question' "$AGENT_HOME/night/founder-health-mail.json")"
+  "$(jq -r --arg issue "$founder_decision_fixture_id" '.important_items[] | select(.issue == $issue) | .question' "$AGENT_HOME/night/founder-health-mail.json")"
 assert_eq 'founder recommended answer reaches the daily report ledger' '建议：选择第一项，改为普通配送' \
-  "$(jq -r '.important_items[] | select(.issue == "9006") | .recommendation' "$AGENT_HOME/night/founder-health-mail.json")"
+  "$(jq -r --arg issue "$founder_decision_fixture_id" '.important_items[] | select(.issue == $issue) | .recommendation' "$AGENT_HOME/night/founder-health-mail.json")"
 
 # --- send_email_strict() (#1442) ------------------------------------------
 # config-watchdog.sh's whole reason for needing a separate entry point: it
@@ -1231,29 +1232,23 @@ INCIDENT_BODY='用户目前看到：提交订单后无法完成付款。
 下次更新：2026-09-23 18:30（协调世界时）'
 HEALTH_SUBJECT='工厂日报 11-07：上线 1 个需求，有 1 件事等你'
 HEALTH_BODY='一句话结论：正常——过去一天 1 个需求上线，无线上事故。
-
 今天上线了什么
 - 「订单清单下载」：员工可批量下载订单清单
-
 进度
 - 新提出：过去一天 2 个；累计 18 个；目前在办共 5 个。
 - 已做完等上线：过去一天 1 个；当前共 1 个。
 - 已上线：过去一天 1 个；有记录以来共 12 个。
-
 效率
 - 近 7 天平均每天上线 1.4 个需求；上一个 7 天 1.1 个。
 - 需求从提出到上线：近 7 天中位 3.2 天；上一个 7 天 3.9 天。
 - 近 7 天已分类工作时间：需求 75%；工厂自身维护 25%。
-
 花费
 - 过去一天令牌用量 3000；每个上线需求平均 3000 令牌。
 - 金额没有完整记录，无法算出总花费。
-
 质量
 - 线上事故：过去一天 0 起；目前仍在处理 0 起。
 - 撤回上线：过去一天 0 次。
 - 已上线需求后来再出问题并返修：过去一天 0 起。
-
 需要你决定
 - 是否保留次日送达？——建议：选择第一项，改为普通配送。'
 RECIPIENTS_FILE="$AUDIENCE_ROSTER"

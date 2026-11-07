@@ -267,13 +267,11 @@ maintainer_health_mail_mark_sent() {
   maintainer_health_mail_unlock "$lock_fd"
 }
 
-# Incident lifecycle shares the owner-mail ledger and lock. Reserving each
-# send before Gmail prevents a lost response or overlapping tick from sending
-# the same incident update twice. An urgent open is the immediate short mail
-# for production being down; everything else waits for the daily report.
+# Incidents share the owner-mail ledger; sends are reserved first to prevent
+# duplicates. A confirmed production outage gets the immediate short mail.
 maintainer_health_mail_incident_open() {
   local ledger="$1" issue="$2" subject="$3" what="$4" impact="$5" action="$6" promised="$7" now="$8" urgent="${9:-0}"
-  local lock_fd existing tmp send_status important_kind incident_key what_file
+  local lock_fd existing tmp initial_status retry_initial=0 important_kind incident_key what_file
   [[ "$issue" =~ ^[0-9]+$ && "$promised" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ && "$urgent" =~ ^[01]$ ]] || return 1
   maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
   exec {lock_fd}>"$ledger.lock" || return 1
@@ -281,15 +279,24 @@ maintainer_health_mail_incident_open() {
   existing="$(jq -r --argjson issue "$issue" '[.incidents[]? | select(.issue == $issue)] | last | .status // empty' "$ledger")" || return 1
   if [ -n "$existing" ]; then
     if [ "$existing" = open ]; then
+      initial_status="$(jq -r --argjson issue "$issue" '[.incidents[]? | select(.issue == $issue)] | last | .initial_mail_status // "queued"' "$ledger")" || return 1
+      if [ "$urgent" = 1 ] && { [ "$initial_status" = queued ] || [ "$initial_status" = failed-safe ]; }; then
+        retry_initial=1
+      fi
       what_file="$(jq_arg_file "$what")" || return 1
       tmp="$(mktemp "${ledger}.XXXXXX")" || { rm -f -- "$what_file"; return 1; }
       jq --argjson issue "$issue" --rawfile what "$what_file" --arg impact "$impact" --arg action "$action" --argjson urgent "$urgent" \
-        '.incidents |= map(if .issue == $issue and .status == "open" then .what=$what | .impact=$impact | .action=$action | .urgent=((.urgent // false) or $urgent) else . end)' \
+        --argjson retry "$retry_initial" \
+        '.incidents |= map(if .issue == $issue and .status == "open" then .what=$what | .impact=$impact | .action=$action | .urgent=((.urgent // false) or $urgent) | if $retry then .initial_mail_status="reserved" else . end else . end)' \
         "$ledger" > "$tmp" || { rm -f -- "$what_file" "$tmp"; return 1; }
       rm -f -- "$what_file"
       mv -f -- "$tmp" "$ledger" || { rm -f -- "$tmp"; return 1; }
     fi
     maintainer_health_mail_unlock "$lock_fd"
+    if [ "$existing" = open ] && [ "$retry_initial" = 1 ]; then
+      maintainer_health_mail_incident_send_initial "$ledger" "$issue" "$subject" "$what" "$impact" "$action" "$promised" "$now"
+      return $?
+    fi
     printf 'existing\n'
     return 0
   fi
@@ -318,21 +325,32 @@ maintainer_health_mail_incident_open() {
     maintainer_health_mail_track_important "$ledger" "$incident_key" "$important_kind" "$subject" "$issue" "$now" || return 1
   fi
   if [ "$urgent" = 1 ]; then
-    if notify_maintainer_incident "$issue" "$subject" "$what" "$impact" "$action" "$promised" >/dev/null; then
-      send_status=sent
-    else
-      send_status=failed
-    fi
-    maintainer_health_mail_incident_mark_mail_result "$ledger" "$issue" initial "$send_status" "$now" || return 1
+    maintainer_health_mail_incident_send_initial "$ledger" "$issue" "$subject" "$what" "$impact" "$action" "$promised" "$now" || return 1
   fi
   printf 'opened\n'
+}
+
+maintainer_health_mail_incident_send_initial() {
+  local ledger="$1" issue="$2" subject="$3" what="$4" impact="$5" action="$6" promised="$7" now="$8"
+  local status retry_safe=0
+  NOTIFY_LAST_SEND_RETRY_SAFE=1
+  if notify_maintainer_incident "$issue" "$subject" "$what" "$impact" "$action" "$promised" >/dev/null; then
+    status=sent
+  elif [ "${NOTIFY_LAST_SEND_RETRY_SAFE:-0}" = 1 ]; then
+    status=failed-safe
+    retry_safe=1
+  else
+    status=uncertain
+  fi
+  maintainer_health_mail_incident_mark_mail_result "$ledger" "$issue" initial "$status" "$now" || return 1
+  [ "$retry_safe" = 0 ]
 }
 
 maintainer_health_mail_incident_request_resolution() {
   local ledger="$1" issue="$2" kind="$3" reason="$4" now="$5" reference="${6:-}"
   local lock_fd status requested tmp reason_file
   [[ "$issue" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
-  [[ "$kind" == release || "$kind" == supervisor ]] || return 1
+  [[ "$kind" == release || "$kind" == supervisor || "$kind" == availability ]] || return 1
   maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
   exec {lock_fd}>"$ledger.lock" || return 1
   flock -x "$lock_fd" || return 1
@@ -433,6 +451,21 @@ maintainer_health_mail_incidents_release_accepted() {
   maintainer_health_mail_incident_tick "$ledger" "$now"
 }
 
+maintainer_health_mail_incidents_production_recovered() {
+  local ledger="$1" now="$2" issues issue
+  local -a open_issues=()
+  [[ "$now" =~ ^[0-9]+$ ]] || return 1
+  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
+  issues="$(jq -r '.incidents[]? | select(.status == "open" and .urgent == true) | .issue' "$ledger")" || return 1
+  mapfile -t open_issues <<< "$issues"
+  for issue in "${open_issues[@]}"; do
+    [ -n "$issue" ] || continue
+    maintainer_health_mail_incident_request_resolution "$ledger" "$issue" availability \
+      '自动巡检确认全部主要服务已经恢复。' "$now" >/dev/null || return 1
+  done
+  maintainer_health_mail_incident_tick "$ledger" "$now"
+}
+
 maintainer_health_mail_issue_catalog() {
   local issue_numbers="${1:-[]}" repo owner name query response issue
   local -a numbers=()
@@ -463,6 +496,41 @@ maintainer_health_mail_issue_catalog() {
        | $repository["issue_" + $id]
        | {number,title,state,createdAt,closedAt,labels:[.labels.nodes[]? | {name}]}]
   ' <<< "$response"
+}
+
+maintainer_health_mail_requirement_deployment_catalog() {
+  local home="$1" requirement_catalog
+  local -a state_files=()
+  requirement_catalog="$(maintainer_health_mail_requirement_catalog "$home")" || requirement_catalog=null
+  [ "$requirement_catalog" != null ] || { printf 'null\n'; return 0; }
+  [ "$(jq -r '.ids | length' <<< "$requirement_catalog")" -gt 0 ] \
+    || { printf '{"complete":true,"requirements_complete":true,"deployments":[]}\n'; return 0; }
+  [ -d "$home/state" ] && [ -r "$home/state" ] && [ -x "$home/state" ] || { printf 'null\n'; return 0; }
+  shopt -s nullglob
+  state_files=("$home"/state/*.json)
+  shopt -u nullglob
+  ((${#state_files[@]})) || { printf 'null\n'; return 0; }
+  jq -cn --argjson requirements "$requirement_catalog" '
+    [inputs as $state
+      | (input_filename | split("/")[-1] | rtrimstr(".json")) as $issue
+      | select($issue | test("^[0-9]+$"))
+      | {issue:$issue,state:$state}] as $records
+    | if ($records | length) == 0 then null
+      else
+        [$records[] as $record | $record.issue as $issue
+          | select(($requirements.ids | index($issue)) != null) | $record] as $requirement_records
+        | [$requirement_records[] as $record | $record.state as $state
+          | select($state.deploy_state == "deployed" and ($state.deployed_sha // "") != "")
+          | ($state.deployed_at // $state.run.deployed_at // $state.run.evidence.production_evidence_at // "") as $stamp
+          | ($stamp | try fromdateiso8601 catch null) as $at
+          | {issue:$record.issue,at:$at}] as $deployed
+        | {complete:($requirements.complete
+                      and ($requirement_records | length) == ($requirements.ids | length)
+                      and all($deployed[]; .at != null)),
+           requirements_complete:$requirements.complete,
+           deployments:[$deployed[] | select(.at != null) | {issue,at}]}
+      end
+  ' "${state_files[@]}"
 }
 
 maintainer_health_mail_deployment_catalog() {
@@ -577,23 +645,25 @@ print(json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
 PY
 }
 
-# Issues marked pipeline-system are factory maintenance, not product
-# requirements. This local state marker keeps owner-report counts offline.
-maintainer_health_mail_internal_issue_ids() {
+# founder-req-stage.json is the durable issue-to-requirement ladder. Inbox
+# transitions supply IDs during the brief window before that map is updated.
+# A missing or unreadable ladder leaves requirement counts unmeasured.
+maintainer_health_mail_requirement_catalog() {
   local home="$1"
-  local -a state_files=()
-  [ -d "$home/state" ] && [ -r "$home/state" ] && [ -x "$home/state" ] || { printf 'null\n'; return 0; }
-  shopt -s nullglob
-  state_files=("$home"/state/*.json)
-  shopt -u nullglob
-  ((${#state_files[@]})) || { printf 'null\n'; return 0; }
-  jq -cn '
-    [inputs as $state
-      | (input_filename | split("/")[-1] | rtrimstr(".json")) as $issue
-      | select($issue | test("^[0-9]+$"))
-      | select($state.pipeline_system.enabled == true or $state.run.outcome == "pipeline-system")
-      | $issue] | unique
-  ' "${state_files[@]}" 2>/dev/null || printf 'null\n'
+  local stage_path="$home/founder-req-stage.json" events
+  local stage_complete=false stage_ids='[]' event_ids='[]'
+  if [ -r "$stage_path" ] \
+    && jq -e 'type == "object" and all(to_entries[]; (.key | test("^[1-9][0-9]*$")) and (.value | type == "number" and floor == . and . >= 0 and . <= 4))' "$stage_path" >/dev/null 2>&1; then
+    stage_complete=true
+    stage_ids="$(jq -c 'keys' "$stage_path")" || stage_ids='[]'
+  fi
+  events="$(maintainer_health_mail_founder_req_events "$home")" || events=null
+  if [ "$events" != null ]; then
+    event_ids="$(jq -c '[.[] | .issue] | unique' <<< "$events")" || event_ids='[]'
+  fi
+  [ "$stage_complete" = true ] || [ "$event_ids" != '[]' ] || { printf 'null\n'; return 0; }
+  jq -cn --argjson stages "$stage_ids" --argjson events "$event_ids" --argjson complete "$stage_complete" \
+    '{ids:($stages + $events | unique),complete:$complete}'
 }
 
 # maintainer_health_mail_period_events <home> <start> <end> "type,type"
@@ -624,14 +694,11 @@ maintainer_health_mail_period_events() {
 }
 
 maintainer_health_mail_created_total() {
-  local home="$1" events internal
-  events="$(maintainer_health_mail_period_events "$home" 0 4102444800 ticket-created)" || events=null
-  internal="$(maintainer_health_mail_internal_issue_ids "$home")" || internal=null
-  [ "$events" != null ] && [ "$internal" != null ] || { printf 'null\n'; return 0; }
-  jq -cn --argjson events "$events" --argjson internal "$internal" '
-    [$events[] | .issue as $event_issue | select($event_issue != "")
-      | select(($internal | index($event_issue)) == null) | $event_issue] | unique | length
-  ' 2>/dev/null || printf 'null\n'
+  local home="$1" requirements
+  requirements="$(maintainer_health_mail_requirement_catalog "$home")" || requirements=null
+  [ "$requirements" != null ] && [ "$(jq -r '.complete' <<< "$requirements")" = true ] \
+    || { printf 'null\n'; return 0; }
+  jq -r '.ids | length' <<< "$requirements"
 }
 
 # maintainer_health_mail_release_lead_days <home> <start> <end>
@@ -640,15 +707,15 @@ maintainer_health_mail_created_total() {
 # out rather than guessed.
 maintainer_health_mail_release_lead_days() {
   local home="$1" start="$2" end="$3"
-  local internal
+  local requirements
   local -a files=()
-  internal="$(maintainer_health_mail_internal_issue_ids "$home")" || internal=null
-  [ "$internal" != null ] || { printf 'null\n'; return 0; }
+  requirements="$(maintainer_health_mail_requirement_catalog "$home")" || requirements=null
+  [ "$requirements" != null ] && [ "$(jq -r '.complete' <<< "$requirements")" = true ] || { printf 'null\n'; return 0; }
   shopt -s nullglob
   files=("$home"/metrics/efficiency-????-??.jsonl)
   shopt -u nullglob
   ((${#files[@]})) || { printf 'null\n'; return 0; }
-  jq -cs --argjson start "$start" --argjson end "$end" --argjson internal "$internal" '
+  jq -cs --argjson start "$start" --argjson end "$end" --argjson requirements "$requirements" '
     [ .[] | select(type == "object" and .record_type == "event")
       | select(.event_type == "ticket-released" or .event_type == "ticket-created") ] as $selected
     | if any($selected[]; ((.ts // "") | try fromdateiso8601 catch null) == null
@@ -658,7 +725,7 @@ maintainer_health_mail_release_lead_days() {
       | {event_type, issue:(.issue // "" | tostring), at:$at} ] as $rows
     | [ $rows[] | select(.event_type == "ticket-released")
         | .issue as $issue
-        | select(($internal | index($issue)) == null)
+        | select(($requirements.ids | index($issue)) != null)
         | select(.at >= $start and .at < $end)
         | . as $release
         | ([$rows[] | select(.event_type == "ticket-created" and .issue == $release.issue and .at <= $release.at)
@@ -673,20 +740,25 @@ maintainer_health_mail_release_lead_days() {
 # {open, awaiting_release} over the requirement state files; null when the
 # census itself cannot be read.
 maintainer_health_mail_state_census() {
-  local home="$1"
+  local home="$1" requirements
   local -a state_files=()
+  requirements="$(maintainer_health_mail_requirement_catalog "$home")" || requirements=null
+  [ "$requirements" != null ] && [ "$(jq -r '.complete' <<< "$requirements")" = true ] || { printf 'null\n'; return 0; }
+  [ "$(jq -r '.ids | length' <<< "$requirements")" -gt 0 ] || { printf '{"open":0,"awaiting_release":0}\n'; return 0; }
   [ -d "$home/state" ] && [ -r "$home/state" ] && [ -x "$home/state" ] || { printf 'null\n'; return 0; }
   shopt -s nullglob
   state_files=("$home"/state/*.json)
   shopt -u nullglob
   ((${#state_files[@]})) || { printf 'null\n'; return 0; }
-  jq -n '
+  jq -n --argjson requirements "$requirements" '
     [inputs as $s
       | (input_filename | split("/")[-1] | rtrimstr(".json")) as $issue
       | select($issue | test("^[0-9]+$"))
+      | select(($requirements.ids | index($issue)) != null)
       | {state:(try $s.state catch null), deployed:($s.deploy_state == "deployed"),
          internal:($s.pipeline_system.enabled == true or $s.run.outcome == "pipeline-system")} ] as $rows
-    | if ($rows | length) == 0 or any($rows[]; (.state | type) != "string" or .state == "") then null
+    | if any($rows[]; (.state | type) != "string" or .state == "")
+      or ([$rows[].state] | length) != ($requirements.ids | length) then null
       else reduce $rows[] as $row ({open:0, awaiting_release:0};
         if $row.internal or $row.deployed or ($row.state | IN("concluded","closed","wontfix","duplicate")) then .
         else .open += 1
@@ -719,13 +791,17 @@ if not paths:
     raise SystemExit(0)
 
 requirements = set()
+requirements_complete = False
 stage_path = os.path.join(home, "founder-req-stage.json")
 try:
     with open(stage_path, encoding="utf-8") as source:
         stages = json.load(source)
-    if isinstance(stages, dict):
-        requirements.update(key for key, value in stages.items()
-                            if key.isdigit() and isinstance(value, int) and 0 <= value <= 4)
+    if isinstance(stages, dict) and all(
+            isinstance(key, str) and key.isdigit() and int(key) > 0
+            and isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 4
+            for key, value in stages.items()):
+        requirements.update(stages)
+        requirements_complete = True
 except (OSError, ValueError):
     pass
 
@@ -810,12 +886,12 @@ for row in events.values():
         if isinstance(pipeline, dict) and pipeline.get("enabled") is True \
                 or isinstance(run, dict) and run.get("outcome") == "pipeline-system":
             self_seconds += share
-        elif state is not None or issue in requirements:
+        elif issue in requirements:
             requirements_seconds += share
         else:
             unclassified_seconds += share
 
-if measured_rows == 0:
+if measured_rows == 0 or not requirements_complete:
     print("null")
     raise SystemExit(0)
 known = requirements_seconds + self_seconds
@@ -838,7 +914,7 @@ PY
 maintainer_health_mail_release_facts() {
   local home="$1" start="$2" end="$3"
   local deployments complete total last_at in_window outcome_rows req_events req_titles rows title outcome at text
-  deployments="$(maintainer_health_mail_deployment_catalog "$home" 2>/dev/null)" || deployments='null'
+  deployments="$(maintainer_health_mail_requirement_deployment_catalog "$home" 2>/dev/null)" || deployments='null'
   complete="$(jq -r 'if . == null then "false" else (.complete | tostring) end' <<< "$deployments")"
   total="$(jq -r 'if . == null or .complete != true then "null" else (.deployments | length) end' <<< "$deployments")"
   last_at="$(jq -r 'if . == null or .complete != true then "null" else ([.deployments[].at] | max // null) end' <<< "$deployments")"
@@ -885,7 +961,7 @@ maintainer_health_mail_release_facts() {
     elif [ -n "$outcome" ]; then
       text="$outcome"
     else
-      text='一项改进已上线；名称待核实。'
+      text='有一项需求已上线，但标题和用户影响均未记录。'
     fi
     [ "$at" = null ] && at=''
     if [[ "$at" =~ ^[0-9]+$ ]]; then
@@ -903,11 +979,11 @@ maintainer_health_mail_release_facts() {
     census="$(maintainer_health_mail_state_census "$home")"
     awaiting="$(jq -r 'if . == null then "null" else .awaiting_release end' <<< "$census")"
     if [ "$awaiting" = null ]; then
-      zero_reason='过去一天上线 0 个需求：没有新版本通过上线验证；待上线数量待核实。'
+      zero_reason='过去一天上线 0 个需求：没有可确认的需求上线记录；待上线数量未测量。'
     elif (( awaiting > 0 )); then
-      zero_reason="过去一天上线 0 个需求：没有新版本通过上线验证；已有 ${awaiting} 项做完的改进在等上线。"
+      zero_reason="过去一天上线 0 个需求：还有 $awaiting 项已做完，正在等待上线。"
     else
-      zero_reason='过去一天上线 0 个需求：没有新版本通过上线验证。'
+      zero_reason='过去一天上线 0 个需求：没有可确认的需求上线记录，也没有待上线积压。'
     fi
   fi
   jq -cn --argjson count "$count" --argjson total "$total" --argjson last_at "$last_at" \
@@ -918,23 +994,23 @@ maintainer_health_mail_release_facts() {
 
 # maintainer_health_mail_progress_facts <home> <start> <end> <release_facts>
 maintainer_health_mail_progress_facts() {
-  local home="$1" start="$2" end="$3" releases="$4" census created awaiting released_period released_total created_total internal
+  local home="$1" start="$2" end="$3" releases="$4" census created awaiting released_period released_total created_total requirements
   census="$(maintainer_health_mail_state_census "$home")"
   created="$(maintainer_health_mail_period_events "$home" "$start" "$end" "ticket-created")"
   awaiting="$(maintainer_health_mail_period_events "$home" "$start" "$end" "stage-entered")"
   created_total="$(maintainer_health_mail_created_total "$home")"
-  internal="$(maintainer_health_mail_internal_issue_ids "$home")"
-  if [ "$internal" = null ]; then
+  requirements="$(maintainer_health_mail_requirement_catalog "$home")"
+  if [ "$requirements" = null ] || [ "$(jq -r '.complete' <<< "$requirements")" != true ]; then
     created=null
     awaiting=null
   else
-    created="$(jq -cn --argjson events "$created" --argjson internal "$internal" '
+    created="$(jq -cn --argjson events "$created" --argjson requirements "$requirements" '
       if $events == null then null else [$events[] | .issue as $issue
-        | select($issue != "" and $issue != "null" and (($internal | index($issue)) == null))] end
+        | select($issue != "" and $issue != "null" and (($requirements.ids | index($issue)) != null))] end
     ')" || created=null
-    awaiting="$(jq -cn --argjson events "$awaiting" --argjson internal "$internal" '
+    awaiting="$(jq -cn --argjson events "$awaiting" --argjson requirements "$requirements" '
       if $events == null then null else [$events[] | .issue as $issue
-        | select($issue != "" and $issue != "null" and (($internal | index($issue)) == null))] end
+        | select($issue != "" and $issue != "null" and (($requirements.ids | index($issue)) != null))] end
     ')" || awaiting=null
   fi
   released_period="$(jq -r '.period_count' <<< "$releases")"
@@ -959,19 +1035,22 @@ maintainer_health_mail_efficiency_facts() {
   local created_week catalog split
   week_start=$((now - 7 * 86400))
   prev_start=$((now - 14 * 86400))
-  deployments="$(maintainer_health_mail_deployment_catalog "$home" 2>/dev/null)" || deployments='null'
+  deployments="$(maintainer_health_mail_requirement_deployment_catalog "$home" 2>/dev/null)" || deployments='null'
   week_count="$(jq -r --argjson start "$week_start" --argjson end "$now" 'if . == null or .complete != true then "null" else ([.deployments[] | select(.at >= $start and .at < $end)] | length) end' <<< "$deployments")"
   prev_count="$(jq -r --argjson start "$prev_start" --argjson end "$week_start" 'if . == null or .complete != true then "null" else ([.deployments[] | select(.at >= $start and .at < $end)] | length) end' <<< "$deployments")"
   lead_week_days="$(maintainer_health_mail_release_lead_days "$home" "$week_start" "$now")"
   lead_prev_days="$(maintainer_health_mail_release_lead_days "$home" "$prev_start" "$week_start")"
-  lead_week="$(jq -r 'if length == 0 then "null" else (sort | .[length / 2 | floor] + .[length / 2 | ceil - 1]) / 2 end' <<< "$lead_week_days" 2>/dev/null || printf 'null')"
-  lead_prev="$(jq -r 'if length == 0 then "null" else (sort | .[length / 2 | floor] + .[length / 2 | ceil - 1]) / 2 end' <<< "$lead_prev_days" 2>/dev/null || printf 'null')"
+  lead_week="$(jq -r 'if . == null or length == 0 then "null" else (sort | .[length / 2 | floor] + .[length / 2 | ceil - 1]) / 2 end' <<< "$lead_week_days" 2>/dev/null || printf 'null')"
+  lead_prev="$(jq -r 'if . == null or length == 0 then "null" else (sort | .[length / 2 | floor] + .[length / 2 | ceil - 1]) / 2 end' <<< "$lead_prev_days" 2>/dev/null || printf 'null')"
   split="$(maintainer_health_mail_unit_work_split "$home" "$week_start" "$now")" || split='null'
   jq -cn --argjson week_count "$week_count" --argjson prev_count "$prev_count" \
     --argjson lead_week "$lead_week" --argjson lead_prev "$lead_prev" --argjson split "$split" \
+    --argjson lead_week_measured "$(jq -r '. != null' <<< "$lead_week_days")" \
+    --argjson lead_prev_measured "$(jq -r '. != null' <<< "$lead_prev_days")" \
     '{per_day_week:(if $week_count == null then null else $week_count / 7 end),
       per_day_prev:(if $prev_count == null then null else $prev_count / 7 end),
-      lead_days_week:$lead_week,lead_days_prev:$lead_prev,split:$split}'
+      lead_days_week:$lead_week,lead_days_prev:$lead_prev,
+      lead_week_measured:$lead_week_measured,lead_prev_measured:$lead_prev_measured,split:$split}'
 }
 
 # maintainer_health_mail_spend_facts <home> <start> <end> <released_period>

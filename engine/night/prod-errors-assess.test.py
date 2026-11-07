@@ -156,9 +156,52 @@ def test_rate_spike_and_state_acknowledgement():
     print("ok - repeated signatures produce one rate-spike alert")
 
 
+def test_only_all_primary_services_stopped_trigger_immediate_down_alert():
+    stopped = "\n".join([
+        "__PROD_ERRORS_OK__",
+        "__CONTAINER_STATE__\tmodel-service\t0\tfalse\t1\t2026-10-11T11:59:00Z\tfalse",
+        "__CONTAINER_STATE__\tgateway-service\t0\tfalse\t1\t2026-10-11T11:59:00Z\tfalse",
+    ])
+    running = "\n".join([
+        "__PROD_ERRORS_OK__",
+        "__CONTAINER_STATE__\tmodel-service\t0\tfalse\t0\t0001-01-01T00:00:00Z\ttrue",
+        "__CONTAINER_STATE__\tgateway-service\t0\tfalse\t0\t0001-01-01T00:00:00Z\ttrue",
+    ])
+    with tempfile.TemporaryDirectory() as directory:
+        state = Path(directory) / "seen.json"
+        first = assess(stopped, state)
+        assert first["production_down"] is True, first
+        assert [item["reason"] for item in first["alerts"]] == ["production-down"], first
+        assert monitor.ack_alerts(state, ["production-down"])
+        repeated = assess(stopped, state)
+        assert repeated["production_down"] is True and not repeated["alerts"], repeated
+        partial = assess("\n".join([
+            "__PROD_ERRORS_OK__",
+            "__CONTAINER_STATE__\tmodel-service\t0\tfalse\t1\t2026-10-11T11:59:00Z\tfalse",
+            "__CONTAINER_STATE__\tgateway-service\t0\tfalse\t0\t0001-01-01T00:00:00Z\ttrue",
+        ]), state)
+        assert partial["production_down"] is False and not partial["alerts"], partial
+        saved = json.loads(state.read_text())
+        assert saved["production_down"] is True, saved
+        unknown = assess("__PROD_ERRORS_OK__\n__CONTAINER_STATE_READ_FAILED__", state)
+        assert unknown["production_down"] is False and not unknown["alerts"], unknown
+        assert json.loads(state.read_text())["production_down"] is True
+        recovered = assess(running, state)
+        assert recovered["production_down"] is False and recovered["production_up"] is True, recovered
+        assert [item["reason"] for item in recovered["alerts"]] == ["production-recovered"], recovered
+        assert monitor.ack_alerts(state, ["production-recovered"])
+        repeated_up = assess(running, state)
+        assert repeated_up["production_up"] is True and not repeated_up["alerts"], repeated_up
+        again = assess(stopped, state)
+        assert again["production_down"] is True
+        assert [item["reason"] for item in again["alerts"]] == ["production-down"], again
+    print("ok - only an all-primary-service outage triggers one alert until recovery")
+
+
 if __name__ == "__main__":
     test_masks_credentials_and_private_identifiers()
     test_gateway_counters_and_configured_labels()
     test_configured_ux_rules_and_container_aliases()
     test_config_override_drives_assessment_values()
     test_rate_spike_and_state_acknowledgement()
+    test_only_all_primary_services_stopped_trigger_immediate_down_alert()

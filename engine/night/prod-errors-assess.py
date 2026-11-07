@@ -83,6 +83,7 @@ def monitor_settings(config):
     sources = production.get("log_sources", {}) if isinstance(production, dict) else {}
     rules = config.get("anomaly_rules", {}).get("production_logs", {}) if isinstance(config, dict) else {}
     return {
+        "primary_containers": names.get("production", []),
         "known_containers": set(rules.get("known_containers", names.get("production", []))),
         "container_prefix_labels": rules.get("container_prefix_labels", []),
         "request_id_fields": sources.get("request_id_fields", ["request_id", "requestId", "req_id", "reqId"]),
@@ -326,7 +327,8 @@ def load_state(path):
     try:
         state = json.loads(path.read_text())
     except FileNotFoundError:
-        return {"version": 2, "signatures": [], "containers": {}, "pending_alerts": [], "sampled_at_epoch": None}, None, False
+        return {"version": 2, "signatures": [], "containers": {}, "pending_alerts": [],
+                "sampled_at_epoch": None, "production_down": False}, None, False
     except (OSError, json.JSONDecodeError):
         return None, "signature state unreadable", False
     if not isinstance(state, dict) or not isinstance(state.get("signatures", []), list):
@@ -338,6 +340,7 @@ def load_state(path):
         "containers": state.get("containers", {}) if isinstance(state.get("containers", {}), dict) else {},
         "pending_alerts": state.get("pending_alerts", []) if isinstance(state.get("pending_alerts", []), list) else [],
         "sampled_at_epoch": state.get("sampled_at_epoch"),
+        "production_down": state.get("production_down") is True,
     }, None, legacy
 
 
@@ -597,6 +600,51 @@ def assess(raw, state_path, window="10m", min_requests=10, non_2xx_percent=20, n
 
     now_epoch = float(now_epoch if now_epoch is not None else time.time())
     previous_containers = state["containers"]
+    expected_container_ids = {
+        hashlib.sha256(name.encode()).hexdigest()[:24]
+        for name in settings["primary_containers"]
+        if isinstance(name, str) and name
+    }
+    primary_containers_present = bool(
+        container_state_ok and expected_container_ids
+        and expected_container_ids.issubset(current_containers)
+    )
+    production_down = bool(
+        primary_containers_present
+        and not any(current_containers[identity]["running"] for identity in expected_container_ids)
+    )
+    production_up = bool(
+        primary_containers_present
+        and all(current_containers[identity]["running"] for identity in expected_container_ids)
+    )
+    if production_down and not state["production_down"]:
+        signature = "production/down"
+        alerts.append({
+            "key": hashlib.sha256(signature.encode()).hexdigest()[:20],
+            "signature": signature, "count": 1, "first": "unknown",
+            "container": "production", "service": "production", "route": "",
+            "status": None, "code": "production-down", "trace_id": "",
+            "sample_request_id": "", "request_id_seen": False,
+            "deduplicated_lines": ["all configured primary services are stopped"],
+            "source": "availability", "reason": "production-down",
+            "event_id": "production-down",
+        })
+    elif production_up and state["production_down"]:
+        signature = "production/down"
+        alerts.append({
+            "key": hashlib.sha256(signature.encode()).hexdigest()[:20],
+            "signature": signature, "count": 1, "first": "unknown",
+            "container": "production", "service": "production", "route": "",
+            "status": None, "code": "production-recovered", "trace_id": "",
+            "sample_request_id": "", "request_id_seen": False,
+            "deduplicated_lines": ["all configured primary services are running"],
+            "source": "availability", "reason": "production-recovered",
+            "event_id": "production-recovered",
+        })
+    if production_down:
+        state["production_down"] = True
+    elif production_up:
+        state["production_down"] = False
     current_alerts = []
     if container_state_ok:
         for identity, current in current_containers.items():
@@ -675,6 +723,8 @@ def assess(raw, state_path, window="10m", min_requests=10, non_2xx_percent=20, n
         reasons.append(settings["production_anomaly_reason"])
     if ux_found:
         reasons.append(settings["ux_reason"])
+    if production_down:
+        reasons.append("production-down")
     verdict = "BROKEN" if reasons else ("UNKNOWN" if incomplete or not container_state_ok else "OK")
     statuses = ",".join(f"{code}:{count}" for code, count in sorted(gateway_statuses.items(), key=lambda item: int(item[0]))) or "none"
     group_summary = " ; ".join(
@@ -701,7 +751,9 @@ def assess(raw, state_path, window="10m", min_requests=10, non_2xx_percent=20, n
         return {"verdict": "UNKNOWN", "detail": "signature state write failed; " + detail, "alerts": [], "new_signatures": []}
     visible_alerts = [{k: v for k, v in alert.items() if not k.startswith("_")} for alert in visible_alerts]
     new_signatures = [alert for alert in detected_alerts if alert["reason"] == "first-seen"]
-    return {"verdict": verdict, "detail": detail, "alerts": visible_alerts, "new_signatures": new_signatures}
+    return {"verdict": verdict, "detail": detail, "alerts": visible_alerts,
+            "new_signatures": new_signatures, "production_down": production_down,
+            "production_up": production_up}
 
 
 def main():

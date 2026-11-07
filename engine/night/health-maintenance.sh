@@ -179,9 +179,37 @@ run_gh_spikes() {
 
 run_maintenance() {
   local rc=0
+  run_production_monitor || rc=$?
   run_worktrees || rc=$?
   run_gh_spikes || true
   return "$rc"
+}
+
+run_production_monitor() {
+  local output status detail verdict
+  [[ -r "$ENGINE_DIR/night/node-health.sh" ]] || return 0
+  output="$(mktemp "$NIGHT/.production-monitor-output.XXXXXX")" || {
+    write_result "$NIGHT/production-monitor-last-result.json" BROKEN 'could not create monitor output file'
+    return $?
+  }
+  if timeout -k 5 "${ZF_PRODUCTION_MONITOR_TIMEOUT_SECONDS:-150}" \
+    bash "$ENGINE_DIR/night/node-health.sh" --prod-anomaly-only >"$output" 2>&1; then
+    status=0
+    verdict=OK
+  else
+    status=$?
+    verdict=BROKEN
+  fi
+  retain_output production-monitor "$output" || status=1
+  detail="$(last_output_line "$output")"
+  if [[ "$status" == 0 ]]; then
+    detail="${detail:-production monitor completed}"
+  else
+    detail="production monitor failed (exit $status)${detail:+: $detail}"
+  fi
+  write_result "$NIGHT/production-monitor-last-result.json" "$verdict" "$detail" || status=1
+  rm -f -- "$output"
+  [[ "$status" == 0 ]]
 }
 
 case "${1:-}" in
