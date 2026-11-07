@@ -9,7 +9,7 @@
 # launcher must not pick up. See run-tick.sh's own header for why.
 #
 # Maintainer mail is limited to business decisions, delivered production
-# outcomes, active customer incidents, and the scheduled health digest.
+# outcomes, active customer incidents, and the scheduled owner report.
 # Per-ticket run conclusions go only to a rostered non-founder reporter; the
 # shared pre-send check rejects unclassified maintainer mail.
 #
@@ -47,6 +47,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/write-guard.sh"
 # runs on every send below. lib.sh also loads it earlier; re-sourcing is
 # idempotent here.
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/comms-format.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/night/owner-report-render.sh"
 
 # jq_arg_file() is lib.sh's helper for handing jq untrusted-size data via a
 # temp file instead of argv (see lib.sh for the full comment and incident
@@ -125,10 +126,10 @@ _maintainer_health_mail_queue_event() {
 }
 
 _maintainer_health_mail_track_decision() {
-  local issue="$1" subject="$2" script_dir
+  local issue="$1" subject="$2" body="$3" script_dir
   script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
   AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}" \
-    bash "$script_dir/night/maintainer-health-mail.sh" track-decision "$issue" "$subject" >/dev/null
+    bash "$script_dir/night/maintainer-health-mail.sh" track-decision "$issue" "$subject" "$body" >/dev/null
 }
 
 # Pure function, no gh call and no network: given a reporter's GitHub login
@@ -734,7 +735,7 @@ maintainer_digest_subject() {
 }
 
 maintainer_mail_rejection_reason() {
-  local kind="$1" subject="$2" body="$3" subject_chars option_count option_line consequence letter recommended last_line line readable_body internal_body
+  local kind="$1" subject="$2" body="$3" subject_chars option_count option_line consequence letter recommended last_line line readable_body internal_body contract_reason
   local -a options=()
 
   case "$kind" in decision|outcome|incident|resolution|progress|health) ;; *) echo kind; return 0 ;; esac
@@ -860,11 +861,9 @@ maintainer_mail_rejection_reason() {
       fi
       ;;
     health)
-      if ! grep -Eq '^\*\*结论：\*\* 本次有 [1-9][0-9]* 项新变化。$' <<< "$body" \
-        || ! grep -Eq '^\*\*[^*]+\*\*' <<< "$(tail -n +2 <<< "$body")"; then
-        echo health-sections
-        return 0
-      fi
+      if ! grep -Eq '^工厂日报 [0-9]{2}-[0-9]{2}：.+，有 [0-9]+ 件事等你$' <<< "$subject"; then echo health-subject; return 0; fi
+      contract_reason="$(maintainer_health_mail_notify_rejection_reason "$body" "$(date +%s)")"
+      [ -z "$contract_reason" ] || { echo "$contract_reason"; return 0; }
       if grep -Eq '[A-Z][A-Z0-9_]{2,}|(^|[[:space:]])/[^[:space:]]+|[[:xdigit:]]{10,}|^[[:space:]]*[0-9]{4}-[0-9]{2}-[0-9]{2}T[^[:space:]]+|[[:alnum:]_.-]+=[^[:space:]]*|^[[:space:]]*(deploy|build|postsubmit|implement|merge|advisor|rulings|health-mail)[[:space:]]+(OK|SLOW|STUCK|BROKEN|NONE)([[:space:]]|$)' <<< "$body"; then
         echo body-internal
         return 0
@@ -1635,7 +1634,7 @@ $body"
   send_email "$subject" "$full_body" "$issue_num" --maintainer-kind decision "$email" || return 1
   maintainer="$(_maintainer_email)"
   if [ -n "$maintainer" ] && [ "${email,,}" = "${maintainer,,}" ]; then
-    if ! _maintainer_health_mail_track_decision "$issue_num" "$subject"; then
+    if ! _maintainer_health_mail_track_decision "$issue_num" "$subject" "$body"; then
       echo "notify: could not track maintainer decision for issue $issue_num" >&2
     fi
   fi

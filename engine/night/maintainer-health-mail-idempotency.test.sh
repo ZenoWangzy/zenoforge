@@ -25,9 +25,10 @@ ledger="$AGENT_HOME/night/founder-health-mail.json"
 now=1791803400
 slot="$(maintainer_health_mail_slot_key "$now")"
 events='[{"key":"fixture:change","created_at":1791803400}]'
-body=$'**结论：** 本次有 1 项新变化。\n时间均为协调世界时。\n\n**效率（最近六小时）**\n| 指标 | 当前六小时 | 前六小时 | 昨日同时段 |\n| --- | ---: | ---: | ---: |\n| 调度一轮耗时 | 样本待补 | 样本待补 | 样本待补 |\n| 自动检查浪费占比 | 样本待补 | 样本待补 | 样本待补 |\n| 主干检查通过率 | 样本待补 | 样本待补 | 样本待补 |\n| 上线后复核有效率 | 样本待补 | 样本待补 | 样本待补 |\n| 派活失败次数 | 样本待补 | 样本待补 | 样本待补 |\n| 重复派活 | 样本待补 | 样本待补 | 样本待补 |\n| 提交失败次数 | 样本待补 | 样本待补 | 样本待补 |\n| 系统自动开单 / 关单 | 样本待补 | 样本待补 | 样本待补 |\n\n**上线情况：**\n最近六小时没有上线：没有新版本通过上线验证。\n\n**事项变化**\n订单页面已恢复。'
+body=$'一句话结论：正常——过去一天上线 0 个需求，没有线上事故，也没有待上线积压。\n\n今天上线了什么\n- 过去一天上线 0 个需求：没有新版本通过上线验证。\n\n进度\n- 新提出：过去一天 0 个；累计 0 个；目前在办共 0 个。\n- 已做完等上线：过去一天 0 个；当前共 0 个。\n- 已上线：过去一天 0 个；有记录以来共 0 个。\n\n效率\n- 近 7 天平均每天上线 0 个需求；上一个 7 天 0 个。\n- 需求从提出到上线：近 7 天中位无样本；上一个 7 天无样本。\n- 近 7 天工作时间：需求与工厂自身维护占比未测量。\n\n花费\n- 过去一天令牌用量未测量。\n- 金额没有完整记录，无法算出总花费。\n\n质量\n- 线上事故：过去一天 0 起；目前仍在处理 0 起。\n- 回滚：过去一天 0 次。\n- 已上线需求后来再出问题并返修：过去一天 0 起。\n\n需要你决定\n- 没有'
+subject='工厂日报 11-07：上线 0 个需求，有 0 件事等你'
 deliver() {
-  maintainer_health_mail_deliver "$ledger" "$now" "$slot" '工作进展简报' "$body" "$events"
+  maintainer_health_mail_deliver "$ledger" "$now" "$slot" "$subject" "$body" "$events"
 }
 assert_one_send() {
   [[ "$(wc -l < "$fixture_root/posts")" -eq 1 ]] || {
@@ -60,7 +61,7 @@ printf 'release\n' >&"$release_fd"
 wait "$initializer_pid"
 exec {ready_fd}>&-
 exec {release_fd}>&-
-assert_one_send 'cold-start initializer cannot erase a completed six-hour send'
+assert_one_send 'cold-start initializer cannot erase a completed daily send'
 
 # Same-slot concurrent workers plus a later retry share the durable claim.
 rm -f -- "$ledger" "$fixture_root/posts" "$NOTIFY_LOG_FILE"
@@ -72,7 +73,7 @@ second_pid=$!
 wait "$first_pid"
 wait "$second_pid"
 deliver
-assert_one_send 'two concurrent invocations and a same-hour retry send once'
+assert_one_send 'two concurrent invocations and a same-day retry send once'
 [[ "$(grep -c $'\tresult=attempted' "$NOTIFY_LOG_FILE")" -eq 1 ]] || {
   echo 'not ok - pre-send audit must say attempted, distinct from sent'; exit 1;
 }

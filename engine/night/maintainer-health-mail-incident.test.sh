@@ -81,12 +81,12 @@ maintainer_health_mail_incident_tick "$ledger" 15400 >/dev/null
 assert_eq 'ordinary incident ticks do not send repeat updates' '1' "$(wc -l < "$MAIL_EVENTS" | tr -d '[:space:]')"
 maintainer_health_mail_incident_release_accepted "$ledger" 1221 \
   '0123456789abcdef' 15401 >/dev/null
-assert_eq 'urgent outage recovery sends immediately and closes incident' \
-  'resolved|release|sent|0123456789abcdef' \
+assert_eq 'urgent outage recovery closes the incident for the daily report' \
+  'resolved|release|queued|0123456789abcdef' \
   "$(jq -r '.incidents[0] | [.status,.resolution_kind,.resolution_mail_status,.resolution_ref] | join("|")' "$ledger")"
-assert_eq 'outage recovery is sent once' '2' "$(wc -l < "$MAIL_EVENTS" | tr -d '[:space:]')"
+assert_eq 'recovery does not send an immediate second mail' '1' "$(wc -l < "$MAIL_EVENTS" | tr -d '[:space:]')"
 maintainer_health_mail_incident_tick "$ledger" 15400 >/dev/null
-assert_eq 'repeated resolution tick sends nothing twice' '2' "$(wc -l < "$MAIL_EVENTS" | tr -d '[:space:]')"
+assert_eq 'repeated resolution tick sends nothing' '1' "$(wc -l < "$MAIL_EVENTS" | tr -d '[:space:]')"
 
 false_alarm_ledger="$tmp/night/false-alarm.json"
 maintainer_health_mail_ensure_ledger "$false_alarm_ledger" 2000
@@ -96,13 +96,13 @@ maintainer_health_mail_incident_open "$false_alarm_ledger" 1222 '线上服务尚
 maintainer_health_mail_incident_mark_resolved "$false_alarm_ledger" 1222 \
   '误报：生产服务一直正常，没有影响用户。' 2100 >/dev/null
 maintainer_health_mail_incident_tick "$false_alarm_ledger" 2100 >/dev/null
-assert_eq 'false alarm resolution queues without immediate maintainer mail' '2' "$(wc -l < "$MAIL_EVENTS" | tr -d '[:space:]')"
-assert_eq 'false alarm resolution is durable for the routine digest' \
-  'resolved|supervisor|queued|2' \
-  "$(jq -r '.incidents[0] | [.status,.resolution_kind,.resolution_mail_status] | join("|")' "$false_alarm_ledger")|$(jq -r '.pending_events | length' "$false_alarm_ledger")"
-assert_contains 'false alarm resolution remains maintainer-readable' \
-  '生产服务状态已确认：误报：生产服务一直正常，没有影响用户。' \
-  "$(jq -r '.pending_events["incident:1222:2000:resolved"].text' "$false_alarm_ledger")"
+assert_eq 'false alarm resolution queues without immediate maintainer mail' '1' "$(wc -l < "$MAIL_EVENTS" | tr -d '[:space:]')"
+assert_eq 'false alarm resolution is durable for the daily report' \
+  'resolved|supervisor|queued' \
+  "$(jq -r '.incidents[0] | [.status,.resolution_kind,.resolution_mail_status] | join("|")' "$false_alarm_ledger")"
+assert_contains 'false alarm resolution reason stays on record' \
+  '误报：生产服务一直正常，没有影响用户。' \
+  "$(jq -r '.incidents[0].resolution_reason' "$false_alarm_ledger")"
 
 # Recovery closes an already mailed lifecycle, even for ledgers predating urgent.
 for classification in legacy mailed queued; do
@@ -115,11 +115,10 @@ for classification in legacy mailed queued; do
         else {urgent:false,initial_mail_status:"queued"} end)
     ]}' > "$recovery_ledger"
   before="$(wc -l < "$MAIL_EVENTS")"
-  expected=$((before + 1))
-  [[ "$classification" != queued ]] || expected="$before"
+  expected="$before"
   maintainer_health_mail_incident_release_accepted "$recovery_ledger" 1230 accepted-sha 2001
-  assert_eq "$classification recovery respects prior incident notification" "$expected" "$(wc -l < "$MAIL_EVENTS")"
-  assert_eq "$classification recovery preserves routine cooldown" 2000 "$(jq -r '.last_sent_at' "$recovery_ledger")"
+  assert_eq "$classification recovery sends no immediate mail" "$expected" "$(wc -l < "$MAIL_EVENTS")"
+  assert_eq "$classification recovery leaves daily report timestamp alone" 2000 "$(jq -r '.last_sent_at' "$recovery_ledger")"
   maintainer_health_mail_incident_tick "$recovery_ledger" 2002
   assert_eq "$classification recovery sends at most once" "$expected" "$(wc -l < "$MAIL_EVENTS")"
 done

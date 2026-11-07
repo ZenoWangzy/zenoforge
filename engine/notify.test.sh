@@ -797,13 +797,25 @@ assert_eq "founder-authored product question has no recipients" "" \
 LAST_SEND_RECIPIENTS=()
 LAST_SEND_KIND=""
 gh() { echo '{"author":{"login":"fixture-maintainer"}}'; }
-notify_email_verbatim 9006 '是否保留次日送达' '客户事实与两个选项。' >/dev/null
+FOUNDER_DECISION_BODY='客户/公司：测试对象
+问题：是否保留次日送达？
+用户动作：用户选择次日送达。
+结果：目前无法保证次日送达。
+A）改为普通配送；影响：预计晚一天送达。
+B）保留次日送达；影响：需要承担加急费用。
+建议：A
+请回复“A”'
+notify_email_verbatim 9006 '是否保留次日送达' "$FOUNDER_DECISION_BODY" >/dev/null
 assert_eq 'founder-only decision sends immediately to maintainer' \
   'maintainer@notify-fixture.invalid' "$(printf '%s\n' "${LAST_SEND_RECIPIENTS[@]}")"
 assert_eq 'founder-only decision keeps decision mail kind' '--maintainer-kind decision' "$LAST_SEND_KIND"
 assert_eq 'founder-only decision enters four-hour reminder ledger' '1' \
   "$(jq '[.important_items[] | select(.kind == "decision" and .issue == "9006" and .status == "open")] | length' \
     "$AGENT_HOME/night/founder-health-mail.json")"
+assert_eq 'founder decision question reaches the daily report ledger' '是否保留次日送达？' \
+  "$(jq -r '.important_items[] | select(.issue == "9006") | .question' "$AGENT_HOME/night/founder-health-mail.json")"
+assert_eq 'founder recommended answer reaches the daily report ledger' '建议：选择第一项，改为普通配送' \
+  "$(jq -r '.important_items[] | select(.issue == "9006") | .recommendation' "$AGENT_HOME/night/founder-health-mail.json")"
 
 # --- send_email_strict() (#1442) ------------------------------------------
 # config-watchdog.sh's whole reason for needing a separate entry point: it
@@ -1217,17 +1229,33 @@ INCIDENT_SUBJECT='部分客户暂时无法完成付款'
 INCIDENT_BODY='用户目前看到：提交订单后无法完成付款。
 我们正在：恢复付款服务并核对受影响订单。
 下次更新：2026-09-23 18:30（协调世界时）'
-HEALTH_SUBJECT='流水线运行近况'
-HEALTH_BODY='**结论：** 本次有 3 项新变化。
+HEALTH_SUBJECT='工厂日报 11-07：上线 1 个需求，有 1 件事等你'
+HEALTH_BODY='一句话结论：正常——过去一天 1 个需求上线，无线上事故。
 
-**发布进度**
-- 员工可批量下载订单清单
+今天上线了什么
+- 「订单清单下载」：员工可批量下载订单清单
 
-**事项完成：** 2 项
-- #9001 订单查询
+进度
+- 新提出：过去一天 2 个；累计 18 个；目前在办共 5 个。
+- 已做完等上线：过去一天 1 个；当前共 1 个。
+- 已上线：过去一天 1 个；有记录以来共 12 个。
 
-**需要你决定的**
-- 暂无'
+效率
+- 近 7 天平均每天上线 1.4 个需求；上一个 7 天 1.1 个。
+- 需求从提出到上线：近 7 天中位 3.2 天；上一个 7 天 3.9 天。
+- 近 7 天已分类工作时间：需求 75%；工厂自身维护 25%。
+
+花费
+- 过去一天令牌用量 3000；每个上线需求平均 3000 令牌。
+- 金额没有完整记录，无法算出总花费。
+
+质量
+- 线上事故：过去一天 0 起；目前仍在处理 0 起。
+- 撤回上线：过去一天 0 次。
+- 已上线需求后来再出问题并返修：过去一天 0 起。
+
+需要你决定
+- 是否保留次日送达？——建议：选择第一项，改为普通配送。'
 RECIPIENTS_FILE="$AUDIENCE_ROSTER"
 HEALTH_MAINTAINER_ADDRESS="$(_maintainer_email)"
 
@@ -1289,38 +1317,31 @@ assert_eq 'resolution sender output passes contract without next-update promise'
   "$(maintainer_mail_rejection_reason resolution "$(jq -r '.subject' <<< "$RESOLUTION_SEND")" "$(jq -r '.body' <<< "$RESOLUTION_SEND")")"
 assert_contains 'resolution sender states false alarm caused no user-facing outage' \
   "$(jq -r '.body' <<< "$RESOLUTION_SEND")" '不是用户可见的服务中断'
-assert_eq 'maintainer mail accepts a complete health digest with pipeline subject' '' \
+assert_eq 'maintainer mail accepts a complete daily owner report' '' \
   "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY")"
-HEALTH_BODY_WITH_PIPELINE="$HEALTH_BODY
-
-**流水线效率**
-- 最慢环节：排队到开始开发，均值 1小时；前一日缩短50%。"
-assert_eq 'maintainer health mail accepts the requested efficiency section' '' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY_WITH_PIPELINE")"
-HEALTH_BODY_WITH_CHANGE="${HEALTH_BODY/发布进度/处理变化}"
-assert_eq 'maintainer health mail accepts a change section' '' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY_WITH_CHANGE")"
-assert_eq 'maintainer health mail rejects an empty digest' 'health-sections' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" '**结论：** 本次有 0 项新变化。')"
-assert_eq 'maintainer health mail rejects a missing change section' 'health-sections' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" '**结论：** 本次有 1 项新变化。')"
-assert_eq 'maintainer health mail rejects missing required sections' 'health-sections' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" '一句话结论：运行正常')"
+assert_eq 'maintainer health mail rejects a foreign subject line' 'health-subject' \
+  "$(maintainer_mail_rejection_reason health '工作进展简报' "$HEALTH_BODY")"
+assert_eq 'maintainer health mail rejects an empty report' 'health-sections' \
+  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" '- 没有')"
+assert_eq 'maintainer health mail rejects a report without sections' 'health-sections' \
+  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" '一句话结论：正常——无事发生。')"
+assert_eq 'maintainer health mail rejects a report without a conclusion' 'health-sections' \
+  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$(tail -n +2 <<< "$HEALTH_BODY")")"
+HEALTH_BODY_WITH_ENV="${HEALTH_BODY/需要你决定/$'ZF_HOME\n需要你决定'}"
+HEALTH_BODY_WITH_PATH="${HEALTH_BODY/需要你决定/$'\$HOME/private.log\n需要你决定'}"
+HEALTH_BODY_WITH_SHA="${HEALTH_BODY/需要你决定/$'版本：b454fd00fa\n需要你决定'}"
+HEALTH_BODY_WITH_LOG="${HEALTH_BODY/需要你决定/$'2026-09-26T03:00:00Z deploy STUCK detail=x=y\n需要你决定'}"
+HEALTH_BODY_WITH_STATUS="${HEALTH_BODY/需要你决定/$'deploy STUCK 2 pending\n需要你决定'}"
 assert_eq 'maintainer health mail rejects environment names' 'body-internal' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
-ZF_HOME")"
+  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY_WITH_ENV")"
 assert_eq 'maintainer health mail rejects file paths' 'body-internal' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
-$HOME/private.log")"
+  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY_WITH_PATH")"
 assert_eq 'maintainer health mail rejects long SHAs' 'body-internal' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
-版本：b454fd00fa")"
+  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY_WITH_SHA")"
 assert_eq 'maintainer health mail rejects raw log rows' 'body-internal' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
-2026-09-26T03:00:00Z deploy STUCK detail=x=y")"
+  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY_WITH_LOG")"
 assert_eq 'maintainer health mail rejects raw node status rows' 'body-internal' \
-  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY
-deploy STUCK 2 pending")"
+  "$(maintainer_mail_rejection_reason health "$HEALTH_SUBJECT" "$HEALTH_BODY_WITH_STATUS")"
 assert_eq 'maintainer health mail rejects a roster recipient' 'health-recipient' \
   "$(_pre_send_mail_rejection_for_recipients health "$HEALTH_SUBJECT" "$HEALTH_BODY" reporter@fixture.invalid)"
 assert_eq 'maintainer health mail accepts only the maintainer recipient' '' \
@@ -1391,23 +1412,23 @@ assert_eq 'maintainer mail rejects incident without an exact next-update time' '
 
 # --- maintainer health-mail schedule and incident state ---------------------
 source "$SCRIPT_DIR/night/maintainer-health-mail.sh"
-assert_eq 'health digest uses six-hour UTC slots' \
-  '20260926T00Z' "$(maintainer_health_mail_slot_key 1790391000)"
-assert_eq 'health digest advances at the next UTC interval' \
-  '20260926T06Z' "$(maintainer_health_mail_slot_key 1790402400)"
+assert_eq 'health report uses one UTC-day slot' \
+  '20260926' "$(maintainer_health_mail_slot_key 1790391000)"
+assert_eq 'health report advances at the next UTC midnight' \
+  '20260927' "$(maintainer_health_mail_slot_key 1790467200)"
 HEALTH_MAIL_LEDGER="$TMP_DIR/founder-health-mail.json"
 maintainer_health_mail_ensure_ledger "$HEALTH_MAIL_LEDGER" 1000
 HEALTH_MAIL_CLAIM_EVENTS='[{"key":"fixture:1","created_at":1000}]'
-assert_eq 'health digest slot can be reserved once' 'reserved' \
-  "$(maintainer_health_mail_claim_digest "$HEALTH_MAIL_LEDGER" 20260926T00Z 1000 "$HEALTH_MAIL_CLAIM_EVENTS")"
-assert_eq 'health digest reservation survives restart' 'duplicate' \
-  "$(maintainer_health_mail_claim_digest "$HEALTH_MAIL_LEDGER" 20260926T00Z 1001 "$HEALTH_MAIL_CLAIM_EVENTS")"
+assert_eq 'health report day slot can be reserved once' 'reserved' \
+  "$(maintainer_health_mail_claim_digest "$HEALTH_MAIL_LEDGER" 20260926 1000 "$HEALTH_MAIL_CLAIM_EVENTS")"
+assert_eq 'health report reservation survives restart' 'duplicate' \
+  "$(maintainer_health_mail_claim_digest "$HEALTH_MAIL_LEDGER" 20260926 1001 "$HEALTH_MAIL_CLAIM_EVENTS")"
 assert_eq 'health-mail node stays OK before cadence grace expires' 'OK' \
-  "$(maintainer_health_mail_node_status "$HEALTH_MAIL_LEDGER" 22899)"
+  "$(maintainer_health_mail_node_status "$HEALTH_MAIL_LEDGER" 87699)"
 assert_eq 'health-mail node goes SLOW at cadence plus five-minute grace' 'SLOW' \
-  "$(maintainer_health_mail_node_status "$HEALTH_MAIL_LEDGER" 22900)"
-assert_eq 'health-mail node goes STUCK after cadence plus two hours' 'STUCK' \
-  "$(maintainer_health_mail_node_status "$HEALTH_MAIL_LEDGER" 29800)"
+  "$(maintainer_health_mail_node_status "$HEALTH_MAIL_LEDGER" 87700)"
+assert_eq 'health-mail node goes STUCK after cadence plus one hour' 'STUCK' \
+  "$(maintainer_health_mail_node_status "$HEALTH_MAIL_LEDGER" 91000)"
 HEALTH_MAIL_FIXTURE="$TMP_DIR/health-mail-fixture"
 export HEALTH_MAIL_FIXTURE
 mkdir -p "$HEALTH_MAIL_FIXTURE/night" "$HEALTH_MAIL_FIXTURE/state" \
@@ -1483,19 +1504,13 @@ cat "$HEALTH_MAIL_FIXTURE/open-issues.json"
 EOF
 chmod +x "$HEALTH_MAIL_BIN/gh"
 PATH="$HEALTH_MAIL_BIN:$PATH"
-HEALTH_MAIL_EVENTS='[
-  {"key":"deploy:56:73ed7da83","section":"发布进度","text":"现在可以：员工可批量下载订单清单；9月26日 09:00 上线的版本。","kind":"deploy","highlight":false,"created_at":1790395500},
-  {"key":"closed:1831:1","section":"事项完成","text":"修好了：订单查询 #1831 4b7c032e0。","kind":"closed","highlight":true,"created_at":1790395600},
-  {"key":"node:build:1","section":"处理变化","text":"构建环节持续异常，后续由负责人继续处理。","kind":"node","highlight":false,"created_at":1790395700},
-  {"key":"daily:2026-09-26","section":"今日汇总","text":"今日发布 2 次。","kind":"daily","highlight":false,"created_at":1790395800}
-]'
-HEALTH_MAIL_BUILT="$(maintainer_health_mail_build_body "$HEALTH_MAIL_EVENTS")"
-assert_contains 'incremental digest lists user-visible release outcome' "$HEALTH_MAIL_BUILT" '员工可批量下载订单清单'
-assert_contains 'incremental digest counts closed tickets and highlights focus tickets' "$HEALTH_MAIL_BUILT" '**事项完成：** 1 项'
-assert_contains 'incremental digest keeps the focus ticket headline without ID' "$HEALTH_MAIL_BUILT" '- 修好了：订单查询'
-assert_contains 'incremental digest folds node alert into change section' "$HEALTH_MAIL_BUILT" '构建环节持续异常'
-assert_contains 'daily report rides under 今日汇总' "$HEALTH_MAIL_BUILT" '**今日汇总**'
-assert_eq 'incremental digest passes maintainer mail contract' '' \
+HEALTH_MAIL_FACTS='{"report_day":"11-07","conclusion":{"level":"正常","reason":"过去一天上线 1 个需求，没有线上事故"},"window":{"start":1793596800,"end":1793683200},"releases":{"period_count":1,"total_ever":12,"last_at":1793680000,"complete":true,"items":[{"text":"「订单清单下载」：员工可批量下载订单清单。"}],"zero_reason":""},"progress":{"created_period":2,"created_total":18,"open_total":5,"awaiting_period":1,"awaiting_total":1,"released_period":1,"released_total":12},"efficiency":{"per_day_week":1.4,"per_day_prev":1.1,"lead_days_week":3.2,"lead_days_prev":3.9,"split":{"requirement_pct":75,"self_pct":25,"unclassified_seconds":0,"partial":false}},"spend":{"tokens":3000,"tokens_complete":true,"per_requirement":3000,"money_usd":null,"money_complete":false},"quality":{"incidents_period":0,"incidents_open":0,"open_subjects":[],"rollbacks":0,"post_land_fixes":0},"decisions":{"items":[{"question":"是否保留次日送达？","recommendation":"建议：选择第一项，改为普通配送。"}],"total":1,"incomplete":0},"attention":0}'
+HEALTH_MAIL_BUILT="$(maintainer_health_mail_build_body "$HEALTH_MAIL_FACTS")"
+assert_contains 'owner report lists the user-visible release outcome' "$HEALTH_MAIL_BUILT" '员工可批量下载订单清单'
+assert_contains 'owner report counts delivered requirements' "$HEALTH_MAIL_BUILT" '已上线：过去一天 1 个；有记录以来共 12 个'
+assert_contains 'owner report compares delivery pace with last week' "$HEALTH_MAIL_BUILT" '上一个 7 天 1.1 个'
+assert_contains 'owner report includes a recommended decision' "$HEALTH_MAIL_BUILT" '建议：选择第一项，改为普通配送'
+assert_eq 'complete owner report passes maintainer mail contract' '' \
   "$(_pre_send_mail_rejection_for_recipients health "$HEALTH_SUBJECT" "$HEALTH_MAIL_BUILT" "$HEALTH_MAINTAINER_ADDRESS")"
 
 HEALTH_MAIL_NO_WAKE_LOG="$TMP_DIR/health-mail-no-wake-log"

@@ -1,9 +1,9 @@
 [Unit]
-Description=the product maintainer health mail timer
+Description=the product owner daily report mail timer
 
 [Timer]
-OnActiveSec=45s
-OnUnitActiveSec=6h
+# 08:00 Beijing time (China has no daylight saving, so 00:00 UTC is exact).
+OnCalendar=*-*-* 00:00:00 UTC
 Persistent=true
 AccuracySec=1s
 

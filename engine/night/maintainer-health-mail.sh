@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 
-# Sourceable helpers plus the six-hour maintainer health-mail digest.
+# Sourceable helpers plus the once-a-day owner report mail.
+# The report goes out at 08:00 Beijing time (the timer fires at 00:00 UTC); the
+# only other mail this ledger sends is the immediate short outage mail, which
+# the incident path below keeps. Every number in the report comes from the
+# engine's own records; a question those records cannot answer is stated in the
+# mail as unmeasured, never invented.
 # In a deployed engine, load the unit prefix before resolving it; a plain checkout has no deploy.env.
 if [[ -f "$(dirname -- "${BASH_SOURCE[0]}")/../deploy.env" ]]; then
   source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/config.sh"
@@ -15,22 +20,22 @@ fi
 if ! declare -F maintainer_local_time >/dev/null; then
   source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/comms-format.sh"
 fi
-# Post-land breakage MTTR feeds the efficiency block of the six-hour digest.
+# Post-land breakage MTTR feeds the quality section of the owner report.
 if ! declare -F post_land_mttr_summary >/dev/null; then
   source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/post-land-mttr.sh"
 fi
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/owner-report-render.sh"
+
+# One report per Beijing day; 08:00 Beijing is 00:00 UTC, so the slot is the
+# UTC day and the report date is the Beijing date.
 maintainer_health_mail_slot_key() {
-  local now="$1" interval
-  interval="$(maintainer_health_mail_digest_interval_seconds)" || return 1
-  [[ "$now" =~ ^[0-9]+$ && "$interval" =~ ^[1-9][0-9]*$ ]] || return 1
-  date -u -d "@$((now / interval * interval))" +%Y%m%dT%HZ
+  local now="$1"
+  [[ "$now" =~ ^[0-9]+$ ]] || return 1
+  date -u -d "@$((now / 86400 * 86400))" +%Y%m%d
 }
 
 maintainer_health_mail_digest_interval_seconds() {
-  local state_dir
-  state_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/state"
-  jq -er '.digest_interval_seconds | select(type == "number" and . > 0 and . == floor)' \
-    "$state_dir/founder-health-mail.json"
+  printf '86400\n'
 }
 
 maintainer_health_mail_ensure_ledger() {
@@ -94,16 +99,19 @@ maintainer_health_mail_record_event() {
 
 maintainer_health_mail_track_important() {
   local ledger="$1" key="$2" kind="$3" text="$4" issue="${5:-}" now="${6:-$(date +%s)}"
-  local lock_fd tmp
+  local question="${7:-}" recommendation="${8:-}" lock_fd tmp
   [[ -n "$key" && "$kind" =~ ^(outage|wrong-business-numbers|decision|team-blocker)$ && -n "$text" && "$now" =~ ^[0-9]+$ ]] || return 1
   maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
   exec {lock_fd}>"$ledger.lock" || return 1
   flock -x "$lock_fd" || return 1
   tmp="$(mktemp "${ledger}.XXXXXX")" || return 1
-  if ! jq --arg key "$key" --arg kind "$kind" --arg text "$text" --arg issue "$issue" --argjson now "$now" '
+  if ! jq --arg key "$key" --arg kind "$kind" --arg text "$text" --arg issue "$issue" \
+    --arg question "$question" --arg recommendation "$recommendation" --argjson now "$now" '
     (.important_items //= {}) | (.reported_items //= {})
     | if (.important_items[$key] // null) == null then
-        .important_items[$key]={kind:$kind,text:$text,issue:$issue,opened_at:$now,last_reminded_at:$now,status:"open"}
+        .important_items[$key]=({kind:$kind,text:$text,issue:$issue,opened_at:$now,last_reminded_at:$now,status:"open"}
+          + (if $kind == "decision" and $question != "" and $recommendation != ""
+             then {question:$question,recommendation:$recommendation} else {} end))
       else . end
     | .reported_items[$key]=$now
   ' "$ledger" > "$tmp"; then
@@ -171,30 +179,22 @@ maintainer_health_mail_node_status() {
   [[ "$interval" =~ ^[1-9][0-9]*$ ]] || { printf 'UNKNOWN\n'; return 0; }
   age=$((now - last))
   (( age < 0 )) && age=0
-  # Routine mail follows its configured interval; no successful send for seven hours is stuck.
+  # Routine mail is daily; no successful send for a day plus five minutes is
+  # slow, and an hour past that is stuck.
   slow_after=$((interval + 300))
-  stuck_after=25200
+  stuck_after=$((interval + 3600))
   if (( age >= stuck_after )); then printf 'STUCK\n'
   elif (( age >= slow_after )); then printf 'SLOW\n'
   else printf 'OK\n'; fi
 }
 
 maintainer_health_mail_claim_digest() {
-  local ledger="$1" slot="$2" now="$3" events="${4:-[]}" interval lock_fd current last_sent_at tmp
+  local ledger="$1" slot="$2" now="$3" events="${4:-[]}" lock_fd current tmp
   maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
-  interval="$(maintainer_health_mail_digest_interval_seconds)" || return 1
-  [[ "$interval" =~ ^[1-9][0-9]*$ ]] || return 1
   jq -e 'type == "array" and all(.[]; (.key|type)=="string" and (.created_at|type)=="number")' <<< "$events" >/dev/null || return 1
-  [ "$(jq -r 'length' <<< "$events")" -gt 0 ] || { printf 'no-change\n'; return 0; }
   exec {lock_fd}>"$ledger.lock" || return 1
   flock -x "$lock_fd" || return 1
   current="$(jq -r '.last_digest_slot' "$ledger")" || return 1
-  last_sent_at="$(jq -r '.last_sent_at' "$ledger")" || return 1
-  if (( last_sent_at > 0 && now - last_sent_at < interval )); then
-    maintainer_health_mail_unlock "$lock_fd"
-    printf 'cooldown\n'
-    return 0
-  fi
   if [ "$current" = "$slot" ]; then
     maintainer_health_mail_unlock "$lock_fd"
     printf 'duplicate\n'
@@ -267,9 +267,10 @@ maintainer_health_mail_mark_sent() {
   maintainer_health_mail_unlock "$lock_fd"
 }
 
-# Incident lifecycle shares the founder-mail ledger and lock. Reserving each
+# Incident lifecycle shares the owner-mail ledger and lock. Reserving each
 # send before Gmail prevents a lost response or overlapping tick from sending
-# the same incident update twice.
+# the same incident update twice. An urgent open is the immediate short mail
+# for production being down; everything else waits for the daily report.
 maintainer_health_mail_incident_open() {
   local ledger="$1" issue="$2" subject="$3" what="$4" impact="$5" action="$6" promised="$7" now="$8" urgent="${9:-0}"
   local lock_fd existing tmp send_status important_kind incident_key what_file
@@ -323,9 +324,6 @@ maintainer_health_mail_incident_open() {
       send_status=failed
     fi
     maintainer_health_mail_incident_mark_mail_result "$ledger" "$issue" initial "$send_status" "$now" || return 1
-  else
-    maintainer_health_mail_record_event "$ledger" "$incident_key:opened" '事项变化' \
-      "${subject}：$what 用户影响：$impact 当前处理：$action" "$now" incident >/dev/null || return 1
   fi
   printf 'opened\n'
 }
@@ -386,7 +384,7 @@ maintainer_health_mail_incident_mark_mail_result() {
 }
 
 maintainer_health_mail_incident_tick() {
-  local ledger="$1" now="$2" only_issue="${3:-}" issue lock_fd eligible tmp event kind reason subject what impact action immediate send_status incident_key
+  local ledger="$1" now="$2" only_issue="${3:-}" issue lock_fd eligible tmp opened_at incident_key
   local -a pending=()
   [[ "$now" =~ ^[0-9]+$ ]] || return 1
   maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
@@ -402,41 +400,15 @@ maintainer_health_mail_incident_tick() {
       continue
     fi
     tmp="$(mktemp "${ledger}.XXXXXX")" || return 1
-    # Before urgent existed, every incident was mailed immediately.
     jq --argjson issue "$issue" --argjson now "$now" \
-      '.incidents |= map(if .issue == $issue and .status == "open" then .status="resolved" | .resolved_at=$now | .resolution_mail_status=(if .urgent == true or .initial_mail_status == "sent" or (has("urgent") | not) then "reserved" else "queued" end) else . end)' \
+      '.incidents |= map(if .issue == $issue and .status == "open" then .status="resolved" | .resolved_at=$now | .resolution_mail_status="queued" else . end)' \
       "$ledger" > "$tmp" || { rm -f -- "$tmp"; return 1; }
     mv -f -- "$tmp" "$ledger" || return 1
-    event="$(jq -c --argjson issue "$issue" '[.incidents[]? | select(.issue == $issue)] | last' "$ledger")" || return 1
+    opened_at="$(jq -r --argjson issue "$issue" '[.incidents[]? | select(.issue == $issue)] | last | .opened_at' "$ledger")" || return 1
     maintainer_health_mail_unlock "$lock_fd"
 
-    kind="$(jq -r '.resolution_kind' <<< "$event")"
-    reason="$(jq -r '.resolution_reason' <<< "$event")"
-    immediate="$(jq -r '.resolution_mail_status == "reserved"' <<< "$event")"
-    incident_key="incident:$issue:$(jq -r '.opened_at' <<< "$event")"
-    subject='线上服务已恢复'
-    what="$reason"
-    action='恢复确认已完成，无需处理。'
-    if [ "$kind" = supervisor ] && [[ "$reason" == *误报* ]]; then
-      impact='这是误报，不是用户可见的服务中断；生产服务一直正常，没有影响用户。'
-    else
-      impact='生产服务现已恢复，用户可以继续正常使用。'
-    fi
+    incident_key="incident:$issue:$opened_at"
     maintainer_health_mail_resolve_important "$ledger" "$incident_key" "$now" '事项变化' '' || return 1
-    if [ "$immediate" = true ]; then
-      if notify_maintainer_resolution "$issue" "$subject" "$what" "$impact" "$action" >/dev/null; then
-        send_status=sent
-      else
-        send_status=failed
-      fi
-      # The outage end is itself reported immediately; persist its key before
-      # returning so a later digest cannot repeat it after a restart.
-      maintainer_health_mail_mark_reported "$ledger" "$incident_key:resolved" "$now" || return 1
-      maintainer_health_mail_incident_mark_mail_result "$ledger" "$issue" resolution "$send_status" "$now" || return 1
-    else
-      maintainer_health_mail_record_event "$ledger" "$incident_key:resolved" '事项变化' \
-        "生产服务状态已确认：$reason" "$now" incident >/dev/null || return 1
-    fi
   done
 }
 
@@ -459,74 +431,6 @@ maintainer_health_mail_incidents_release_accepted() {
       "生产服务已通过发布验收，恢复确认完成。" "$now" "$deployed_sha" >/dev/null || return 1
   done
   maintainer_health_mail_incident_tick "$ledger" "$now"
-}
-
-maintainer_health_mail_collect_reminders() {
-  local ledger="$1" home="$2" now="$3" row key kind issue state_file state text text_file opened last hours event_key lock_fd tmp node earliest_key reminder_for
-  local -a items=()
-  mapfile -t items < <(jq -c '(.important_items // {}) | to_entries[] | select(.value.status == "open")' "$ledger")
-  for row in "${items[@]}"; do
-    key="$(jq -r '.key' <<< "$row")"
-    kind="$(jq -r '.value.kind' <<< "$row")"
-    issue="$(jq -r '.value.issue // empty' <<< "$row")"
-    text="$(jq -r '.value.text' <<< "$row")"
-    if [ "$kind" = team-blocker ] && [[ "$key" =~ ^node-important:([^:]+):[0-9]+$ ]]; then
-      node="${BASH_REMATCH[1]}"
-      earliest_key="$(jq -r --arg node "$node" '
-        [.important_items // {} | to_entries[] | select(.value.status == "open")
-          | select(.key | test("^node-important:" + $node + ":[0-9]+$"))]
-        | sort_by(.value.opened_at // 0) | .[0].key // empty
-      ' "$ledger")" || return 1
-      [ "$key" = "$earliest_key" ] || continue
-    fi
-    if [ "$kind" = decision ] && [[ "$issue" =~ ^[0-9]+$ ]]; then
-      state_file="$home/state/$issue.json"
-      if [ -r "$state_file" ]; then
-        state="$(jq -r '.state // empty' "$state_file" 2>/dev/null || true)"
-        if [ -n "$state" ] && [ "$state" != needs-info ]; then
-          maintainer_health_mail_resolve_important "$ledger" "$key" "$now" '决定更新' "已收到你的答复：$text" || return 1
-          continue
-        fi
-      fi
-    fi
-    exec {lock_fd}>"$ledger.lock" || return 1
-    flock -x "$lock_fd" || return 1
-    row="$(jq -c --arg key "$key" '.important_items[$key] // empty' "$ledger")" || return 1
-    if [ -z "$row" ] || [ "$(jq -r '.status' <<< "$row")" != open ]; then
-      maintainer_health_mail_unlock "$lock_fd"
-      continue
-    fi
-    opened="$(jq -r '.opened_at' <<< "$row")"
-    last="$(jq -r '.last_reminded_at // .opened_at' <<< "$row")"
-    [[ "$opened" =~ ^[0-9]+$ && "$last" =~ ^[0-9]+$ ]] || { maintainer_health_mail_unlock "$lock_fd"; continue; }
-    (( now - last >= 14400 )) || { maintainer_health_mail_unlock "$lock_fd"; continue; }
-    reminder_for="$key"
-    if [ "$kind" = team-blocker ] && [[ "$key" =~ ^node-important:([^:]+):([0-9]+)$ ]]; then
-      node="${BASH_REMATCH[1]}"
-      opened="${BASH_REMATCH[2]}"
-      text="$(maintainer_health_mail_anomaly_sentence "$node" open "$opened" "$now")" || return 1
-    else
-      hours=$(( (now - opened) / 3600 ))
-      (( hours < 0 )) && hours=0
-      text="仍在处理：${text}（已持续 ${hours} 小时）"
-    fi
-    event_key="reminder:$key:$now"
-    tmp="$(mktemp "${ledger}.XXXXXX")" || return 1
-    text_file="$(jq_arg_file "$text")" || { rm -f -- "$tmp"; return 1; }
-    if ! jq --arg key "$key" --arg event_key "$event_key" --rawfile text "$text_file" --arg reminder_for "$reminder_for" \
-      --argjson now "$now" '
-      (.pending_events //= {}) | .important_items[$key].last_reminded_at=$now
-      | if (.reported_items // {}) | has($event_key) then . else
-          .pending_events[$event_key]={key:$event_key,section:"仍在处理",text:$text,kind:"reminder",highlight:false,reminder_for:$reminder_for,created_at:$now}
-        end
-    ' "$ledger" > "$tmp"; then
-      rm -f -- "$tmp" "$text_file"
-      return 1
-    fi
-    rm -f -- "$text_file"
-    mv -f -- "$tmp" "$ledger" || return 1
-    maintainer_health_mail_unlock "$lock_fd"
-  done
 }
 
 maintainer_health_mail_issue_catalog() {
@@ -564,20 +468,26 @@ maintainer_health_mail_issue_catalog() {
 maintainer_health_mail_deployment_catalog() {
   local home="$1"
   local -a state_files=()
-  [ -d "$home/state" ] || { printf 'null\n'; return 0; }
+  [ -d "$home/state" ] && [ -r "$home/state" ] && [ -x "$home/state" ] || { printf 'null\n'; return 0; }
   shopt -s nullglob
   state_files=("$home"/state/*.json)
   shopt -u nullglob
-  ((${#state_files[@]})) || { printf '{"complete":true,"deployments":[]}\n'; return 0; }
+  ((${#state_files[@]})) || { printf 'null\n'; return 0; }
   jq -cn '
     [inputs as $state
       | (input_filename | split("/")[-1] | rtrimstr(".json")) as $issue
       | select($issue | test("^[0-9]+$"))
-      | select($state.deploy_state == "deployed" and ($state.deployed_sha // "") != "")
-      | ($state.deployed_at // $state.run.deployed_at // $state.run.evidence.production_evidence_at // "") as $stamp
-      | ($stamp | try fromdateiso8601 catch null) as $at
-      | {issue:$issue,at:$at}] as $deployed
-    | {complete:all($deployed[]; .at != null),deployments:[$deployed[] | select(.at != null) | {issue,at}]}
+      | {issue:$issue,state:$state}] as $records
+    | if ($records | length) == 0 then null
+      else
+        [$records[] as $record | $record.state as $state
+          | select($state.pipeline_system.enabled != true and $state.run.outcome != "pipeline-system")
+          | select($state.deploy_state == "deployed" and ($state.deployed_sha // "") != "")
+          | ($state.deployed_at // $state.run.deployed_at // $state.run.evidence.production_evidence_at // "") as $stamp
+          | ($stamp | try fromdateiso8601 catch null) as $at
+          | {issue:$record.issue,at:$at}] as $deployed
+        | {complete:all($deployed[]; .at != null),deployments:[$deployed[] | select(.at != null) | {issue,at}]}
+      end
   ' "${state_files[@]}"
 }
 
@@ -595,7 +505,6 @@ maintainer_health_mail_plain_title() {
   printf '%s' "$title" | jq -Rr '
     gsub("[[:space:]]+"; " ")
     | gsub("^[[:space:][:punct:]]+|[[:space:][:punct:]]+$"; "")
-    | gsub("GitHub"; "代码平台")
     | if test("[一-龥]") and (test("[A-Za-z]") | not) then .[0:20] else "功能改进" end
   '
 }
@@ -604,79 +513,9 @@ maintainer_health_mail_scrub_text() {
   printf '%s' "$1" | jq -Rr '
     gsub("#[[:space:]]*[0-9]+"; "")
     | gsub("[[:xdigit:]]{7,}"; "")
-    | gsub("(?i)channel[[:space:]]+gateway"; "渠道网关")
-    | gsub("(?i)agent"; "员工助手")
-    | gsub("(?i)mcp"; "工具连接")
-    | gsub("(?i)implement"; "开发")
-    | gsub("(?i)canary"; "验证")
-    | gsub("(?i)quarantine"; "暂缓")
-    | gsub("(?i)rulings"; "规则核验")
-    | gsub("(?i)health[[:space:]_-]*node"; "运行状态")
-    | gsub("(?i)health"; "运行状态")
-    | gsub("(?i)slots?"; "时段")
-    | gsub("(?i)owners?"; "负责人")
-    | gsub("(?i)pipeline"; "交付流程")
-    | gsub("(?i)postsubmit"; "上线检查")
-    | gsub("(?i)deploy"; "上线")
-    | gsub("(?i)build"; "构建")
-    | gsub("(?i)merge"; "合入")
-    | gsub("(?i)advisor"; "业务评审")
-    | gsub("(?i)node"; "环节")
     | gsub("[[:space:]]+"; " ")
+    | if test("[一-龥]") and (test("[A-Za-z]") | not) then . else "" end
   '
-}
-
-maintainer_health_mail_acceptance_events() {
-  local ledger="$1" home="$2" now="$3" snapshot
-  snapshot="$home/state/ticket-stage-status.json"
-  local current_file catalog_file title_file current_ids previous_ids catalog titles title lines count key lock_fd tmp
-  [ -r "$snapshot" ] || return 0
-  current_file="$(mktemp)" || return 1
-  catalog_file="$(mktemp)" || { rm -f -- "$current_file"; return 1; }
-  title_file="$(mktemp)" || { rm -f -- "$current_file" "$catalog_file"; return 1; }
-  if ! jq -c '[.tickets | to_entries[]? | select(.value.stage == "awaiting-release") | .key] | sort' "$snapshot" > "$current_file"; then
-    rm -f -- "$current_file" "$catalog_file" "$title_file"
-    return 1
-  fi
-  current_ids="$(cat "$current_file")" || return 1
-  previous_ids="$(jq -c '.acceptance_snapshot.issues // []' "$ledger")" || return 1
-  [ "$current_ids" != "$previous_ids" ] || { rm -f -- "$current_file" "$catalog_file" "$title_file"; return 0; }
-  catalog="$(maintainer_health_mail_issue_catalog "$current_ids")" || { rm -f -- "$current_file" "$catalog_file" "$title_file"; return 0; }
-  printf '%s\n' "$catalog" > "$catalog_file"
-  if ! jq -nr --slurpfile ids "$current_file" --slurpfile issues "$catalog_file" '
-    ($ids[0] | map({key:.,value:true}) | from_entries) as $wanted
-    | $issues[0][]
-    | select($wanted[.number|tostring] == true)
-    | select(all(.labels[]?.name; . != "pipeline-system"))
-    | select(.title | test("[一-龥]"))
-    | .title | gsub("[\r\n]"; " ")
-  ' > "$title_file"; then
-    rm -f -- "$current_file" "$catalog_file" "$title_file"
-    return 1
-  fi
-  titles=()
-  while IFS= read -r title; do
-    titles+=("$(maintainer_health_mail_plain_title "$title")")
-  done < "$title_file"
-  count="${#titles[@]}"
-  if (( count > 0 )); then
-    lines="$(printf '%s\n' "${titles[@]:0:5}" | sed 's/^/- /')"
-    if (( count > 5 )); then lines+=$'\n'"等$((count - 5))项"; fi
-    key="acceptance:$now"
-    maintainer_health_mail_record_event "$ledger" "$key" '待验收' "$lines" "$now" acceptance >/dev/null || return 1
-  fi
-  exec {lock_fd}>"$ledger.lock" || return 1
-  flock -x "$lock_fd" || return 1
-  tmp="$(mktemp "${ledger}.XXXXXX")" || { maintainer_health_mail_unlock "$lock_fd"; return 1; }
-  if ! jq --slurpfile acceptance "$current_file" --slurpfile time <(printf '%s\n' "$now") \
-    '.acceptance_snapshot={issues:$acceptance[0],updated_at:($time[0]|tonumber)}' "$ledger" > "$tmp"; then
-    rm -f -- "$tmp" "$current_file" "$catalog_file" "$title_file"
-    maintainer_health_mail_unlock "$lock_fd"
-    return 1
-  fi
-  mv -f -- "$tmp" "$ledger" || { maintainer_health_mail_unlock "$lock_fd"; return 1; }
-  maintainer_health_mail_unlock "$lock_fd"
-  rm -f -- "$current_file" "$catalog_file" "$title_file"
 }
 
 maintainer_health_mail_active_implements() {
@@ -696,477 +535,822 @@ maintainer_health_mail_work_counts() {
   printf '{"active":%s,"queued":%s}\n' "$units" "$ready"
 }
 
-maintainer_health_mail_metrics_json() {
-  local home="$1" mode="$2" anchor="$3" as_of="$4" work="${5:-}" current_start current_end previous_start previous_end week_start week_end earliest interval
-  local periods_file work_file activity_json
-  local -a metric_files=()
-  if [ "$mode" = hourly ]; then
-    interval="$(maintainer_health_mail_digest_interval_seconds)" || return 1
-    current_end="$as_of"
-    current_start=$((current_end - interval))
-    previous_start=$((current_start - interval))
-    previous_end="$current_start"
-    week_start=$((current_start - 86400))
-    week_end=$((current_end - 86400))
-  else
-    current_start="$(date -u -d "$anchor 00:00:00" +%s)" || return 1
-    current_end="$(date -u -d "$anchor +1 day 00:00:00" +%s)" || return 1
-    previous_start="$(date -u -d "$anchor -1 day 00:00:00" +%s)" || return 1
-    previous_end="$current_start"
-    week_start="$(date -u -d "$anchor -7 days 00:00:00" +%s)" || return 1
-    week_end="$(date -u -d "$anchor -6 days 00:00:00" +%s)" || return 1
-  fi
-  periods_file="$(mktemp)" || return 1
-  work_file="$(mktemp)" || { rm -f -- "$periods_file"; return 1; }
-  printf '{"current":{"start":%s,"end":%s},"previous":{"start":%s,"end":%s},"week":{"start":%s,"end":%s}}\n' \
-    "$current_start" "$current_end" "$previous_start" "$previous_end" "$week_start" "$week_end" > "$periods_file"
-  if [ -z "$work" ]; then work="$(maintainer_health_mail_work_counts "$home" "$as_of")" || work='{"active":null,"queued":null}'; fi
-  printf '%s\n' "$work" > "$work_file"
-  shopt -s nullglob
-  metric_files=("$home"/metrics/efficiency-????-??.jsonl)
-  shopt -u nullglob
-  if ((${#metric_files[@]})); then
-    activity_json="$(jq -sc --slurpfile periods "$periods_file" --slurpfile work "$work_file" '
-      def epoch: try fromdateiso8601 catch null;
-      def record_epoch: (.ts // .sampled_at // "") | try fromdateiso8601 catch null;
-      def within($window): . as $row | ($row | record_epoch) as $at
-        | ($at != null and $at >= $window.start and $at < $window.end);
-      def events($rows; $type; $window): [$rows[] | select(.record_type == "event" and .event_type == $type and within($window))]
-        | unique_by(.event_id // ([.event_type,.issue,.ts] | map(tostring) | join("|")));
-      def stats($rows; $window):
-        events($rows; "ticket-created"; $window) as $created_rows
-        | events($rows; "github-closed"; $window) as $closed_rows
-        | events($rows; "ticket-released"; $window) as $released_rows
-        | ([$released_rows[] as $release
-            | ($release | record_epoch) as $release_at
-            | ([$rows[] | select(.record_type == "event" and .event_type == "ticket-created"
-                and (.issue|tostring) == ($release.issue|tostring)
-                and ((. | record_epoch) != null) and ((. | record_epoch) <= $release_at))]
-               | min_by(.ts) // null) as $created
-            | if $created == null then null else ($release_at - ($created | record_epoch)) / 3600 end]) as $lead_times
-        | [$lead_times[] | select(type == "number")] as $known_lead_times
-        | {launched:($released_rows|length),created:($created_rows|length),closed:($closed_rows|length),
-           backlog:(($created_rows|length)-($closed_rows|length)),
-           average_hours:(if ($known_lead_times|length)==0 then null
-             else (($known_lead_times|add)/($known_lead_times|length)*10|round)/10 end),
-           average_hours_reason:(if ($released_rows|length)==0 then "本期无上线事项"
-             elif ($known_lead_times|length)==0 then "提出记录待核实" else "" end)};
-      (flatten | map(select(type == "object"))) as $all_rows
-      | ($periods[0]) as $p | ($work[0]) as $w
-      | {current:stats($all_rows;$p.current),previous:stats($all_rows;$p.previous),week:stats($all_rows;$p.week),
-         work:{active:$w.active,queued:$w.queued},periods:$p}
-    ' "${metric_files[@]}")" || { rm -f -- "$periods_file" "$work_file"; return 1; }
-  else
-    activity_json='{"current":{"launched":null,"created":null,"closed":null,"backlog":null,"average_hours":null,"average_hours_reason":"上线记录待核实"},"previous":{"launched":null,"created":null,"closed":null,"backlog":null,"average_hours":null,"average_hours_reason":"上线记录待核实"},"week":{"launched":null,"created":null,"closed":null,"backlog":null,"average_hours":null,"average_hours_reason":"上线记录待核实"},"work":{"active":null,"queued":null}}'
-  fi
-  printf '%s\n' "$activity_json"
-  rm -f -- "$periods_file" "$work_file"
+# --- Owner report: facts --------------------------------------------------------
+
+maintainer_health_mail_report_day() { # <epoch> -> MM-DD, Beijing time
+  [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 946684800 )) || return 1
+  TZ=Asia/Shanghai date -d "@$1" +%m-%d
 }
 
-maintainer_health_mail_efficiency_block() {
-  local home="$1" mode="$2" anchor="$3" now="$4" work="${5:-}" data
-  if [ -z "$work" ]; then work="$(maintainer_health_mail_work_counts "$home" "$now")" || work='{"active":null,"queued":null}'; fi
-  data="$(maintainer_health_mail_metrics_json "$home" "$mode" "$anchor" "$now" "$work")" || return 1
-  maintainer_health_mail_render_efficiency "$data" "$mode"
+# founder-req is the durable requirement ladder's inbox trail. Keep these
+# local events for names and stage changes; report text uses only Chinese user
+# wording from the event or the separately recorded user outcome.
+maintainer_health_mail_founder_req_events() {
+  local inbox="$1/supervisor-inbox"
+  [ -e "$inbox" ] || { printf '[]\n'; return 0; }
+  [ -r "$inbox" ] || { printf 'null\n'; return 0; }
+  python3 - "$inbox" <<'PY'
+import json
+import re
+import sys
+from datetime import datetime, timezone
+
+path = sys.argv[1]
+pattern = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) founder-req #([1-9]\d*) ([^：]+)：(.*?)(?:（请 PushNotification 通知创始人）)?$")
+rows = []
+try:
+    with open(path, encoding="utf-8") as source:
+        for line in source:
+            match = pattern.match(line.rstrip("\r\n"))
+            if not match:
+                continue
+            stamp, issue, transition, title = match.groups()
+            try:
+                at = int(datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp())
+            except (ValueError, OverflowError, OSError):
+                continue
+            rows.append({"at": at, "issue": issue, "transition": transition, "title": title.strip()})
+except OSError:
+    print("null")
+    raise SystemExit(0)
+print(json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
+PY
 }
 
-maintainer_health_mail_pipeline_efficiency_block() {
-  local home="$1" period="$2" anchor="$3" script_dir report now_iso
-  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
-  if [ "$period" = hourly ]; then
-    now_iso="$(date -u -d "@$anchor" +%Y-%m-%dT%H:%M:%SZ)" || return 1
-    if ! report="$(node "$script_dir/efficiency-regression.mjs" summary --home "$home" --now "$now_iso" 2>/dev/null)"; then
-      printf '**流水线效率**\n- 最慢环节：统计样本待补。\n- 最慢检查：统计样本待补。'
-      return 0
-    fi
-    jq -r '
-      def duration($seconds):
-        if $seconds == null then "样本待补"
-        elif $seconds >= 3600 then ((($seconds / 3600 * 10 | round) / 10) | tostring) + "小时"
-        elif $seconds >= 60 then ((($seconds / 60 * 10 | round) / 10) | tostring) + "分钟"
-        else (($seconds|round)|tostring) + "秒" end;
-      def hours($value):
-        if $value == null then "数据待补" else (((($value * 10) | round) / 10) | tostring) + "小时/天" end;
-      def coverage($value):
-        if $value == null then "覆盖待补" else (((($value * 100) | round) | tostring) + "%") end;
-      def change($current; $previous):
-        if $current == null then "本期数据待补"
-        elif $previous == null then "数据待补"
-        elif $current == $previous then "持平"
-        elif $previous <= 0 then (if $current > $previous then "增加" + duration($current - $previous) else "缩短" + duration($previous - $current) end)
-        elif $current > $previous then "增加" + (((($current - $previous) / $previous * 100) | round) | tostring) + "%"
-        else "缩短" + (((($previous - $current) / $previous * 100) | round) | tostring) + "%" end;
-      (.current_24h.metrics // {}) as $current
-      | (.previous_24h.metrics // {}) as $previous
-      | (.weekly_delivery // {}) as $delivery
-      | (.weekly_time_sinks.special_waits // {}) as $waits
-      | ([
-          {label:"排队到开始开发",value:$current.queue_to_implement_seconds,old:$previous.queue_to_implement_seconds},
-          {label:"开发到合入",value:$current.implement_to_merge_seconds,old:$previous.implement_to_merge_seconds},
-          {label:"合入到上线",value:$current.merge_to_release_seconds,old:$previous.merge_to_release_seconds}
-        ] | map(select(.value != null)) | max_by(.value) // null) as $stage
-      | ([
-          {label:"自动化检查排队",value:$current.ci_queue_seconds,old:$previous.ci_queue_seconds},
-          {label:"自动化检查运行",value:$current.ci_run_seconds,old:$previous.ci_run_seconds}
-        ] | map(select(.value != null)) | max_by(.value) // null) as $check
-      | "**流水线效率**\n"
-        + (if $stage == null then "- 最慢环节：本期样本待补。"
-           else "- 最慢环节：\($stage.label)，均值 \(duration($stage.value))；前一日\(change($stage.value;$stage.old))。" end)
-        + "\n"
-        + (if $check == null then "- 最慢检查：本期样本待补。"
-           else "- 最慢检查：\($check.label)，均值 \(duration($check.value))；前一日\(change($check.value;$check.old))。" end)
-        + "\n- 近7天从工单提出到真实上线：\(duration($delivery.open_to_released.median_seconds))；样本 \($delivery.open_to_released.samples // 0)/\($delivery.product_release_count // 0)，覆盖 \(coverage($delivery.open_to_released.coverage))。"
-        + "\n- 五阶段事项小时/天（覆盖率）：实现 \(hours($delivery.stages.implementation.issue_hours_per_day)) \(coverage($delivery.stages.implementation.coverage))；检查 \(hours($delivery.stages.checks.issue_hours_per_day)) \(coverage($delivery.stages.checks.coverage))；合并 \(hours($delivery.stages.merge.issue_hours_per_day)) \(coverage($delivery.stages.merge.coverage))；构建/滚动 \(hours($delivery.stages.build_roll.issue_hours_per_day)) \(coverage($delivery.stages.build_roll.coverage))；生产验收 \(hours($delivery.stages.production_proof.issue_hours_per_day)) \(coverage($delivery.stages.production_proof.coverage))。"
-        + "\n- 独立耗时：顾问等待 \(hours($waits.advisor_issue_hours_per_day))；暂缓 \(hours($waits.hold_issue_hours_per_day))；容器阶段等待 \(hours($waits.container_issue_hours_per_day))；检查执行机时间 \(duration($delivery.ci_runner_seconds))，容器化检查任务执行时间 \(duration($delivery.testcontainers_job_runner_seconds))（执行机时间不计入事项等待）。"
-        + (if $delivery.window.complete == true then "" else "\n- 历史覆盖不足7天：上线前阶段时间戳无法恢复；未使用标签或关闭时间回填。" end)
-    ' <<< "$report"
-    return $?
-  fi
-  if ! report="$(node "$script_dir/efficiency-regression.mjs" daily --home "$home" --day "$anchor" --read-only 2>/dev/null)"; then
-    printf '**流水线效率**\n- 最慢环节：统计样本待补。\n- 最慢检查：统计样本待补。'
-    return 0
-  fi
-  jq -r '
-    def duration($seconds):
-      if $seconds == null then "样本待补"
-      else (($seconds / 3600 * 10 | round) / 10) as $hours
-        | if $hours >= 1 then "\($hours)小时"
-          else ((($seconds / 60 * 10 | round) / 10) | tostring) + "分钟" end
-      end;
-    def change($current; $previous):
-      if $previous == null then "缺少前期样本"
-      elif $current == $previous then "持平"
-      elif $previous == 0 then (if $current > $previous then "增加" + duration($current - $previous) else "缩短" + duration($previous - $current) end)
-      elif $current > $previous then
-        "增加" + (((($current - $previous) / ($previous|abs) * 100) | round) | tostring) + "%"
-      else
-        "缩短" + (((($previous - $current) / ($previous|abs) * 100) | round) | tostring) + "%"
-      end;
-    (.slowest_nodes // [] | .[0] // null) as $stage
-    | (.slowest_checks // [] | .[0] // null) as $check
-    | "**流水线效率**\n"
-      + (if $stage == null then "- 最慢环节：本期无环节样本。"
-         else "- 最慢环节：\($stage.label)，均值 \(duration($stage.mean_seconds))；前一日 "
-           + change($stage.mean_seconds;$stage.comparison.previous_mean_seconds)
-           + "；上周 " + change($stage.mean_seconds;$stage.comparison.seven_day_mean_seconds) + "。" end)
-      + "\n"
-      + (if $check == null then "- 最慢检查：本期无检查样本。"
-         else ($check.slowest_metric // "run") as $metric
-           | $check[$metric] as $measure
-           | "- 最慢检查：\($check.label)\(if $metric == "queue" then "排队" else "运行" end)，均值 \(duration($measure.mean_seconds))；前一日 "
-             + change($measure.mean_seconds;$measure.comparison.previous_mean_seconds)
-             + "；上周 " + change($measure.mean_seconds;$measure.comparison.seven_day_mean_seconds) + "。" end)
-  ' <<< "$report"
-}
-
-maintainer_health_mail_pressure_snapshot() {
-  local load5 cpu_psi memory_psi
-  load5="$(awk '{print $2}' /proc/loadavg 2>/dev/null || true)"
-  cpu_psi="$(awk '$1 == "some" { for (i=2;i<=NF;i++) if ($i ~ /^avg10=/) { sub(/^avg10=/,"",$i); print $i; exit } }' /proc/pressure/cpu 2>/dev/null || true)"
-  memory_psi="$(awk '$1 == "some" { for (i=2;i<=NF;i++) if ($i ~ /^avg10=/) { sub(/^avg10=/,"",$i); print $i; exit } }' /proc/pressure/memory 2>/dev/null || true)"
-  jq -cn --arg load5 "$load5" --arg cpu "$cpu_psi" --arg memory "$memory_psi" '
-    def number: if test("^[0-9]+([.][0-9]+)?$") then tonumber else null end;
-    {cpu_load_5m:($load5|number),cpu_psi_avg10:($cpu|number),memory_psi_avg10:($memory|number)}'
-}
-
-maintainer_health_mail_maintainer_efficiency_block() {
-  local home="$1" now="$2" ledger="$3" script_dir now_iso summary pressure snapshot previous result repo_root mttr since
-  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
-  now_iso="$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)" || return 1
-  summary="$(node "$script_dir/efficiency-regression.mjs" summary --home "$home" --now "$now_iso")" || return 1
-  pressure="$(maintainer_health_mail_pressure_snapshot)" || return 1
-  # Post-land breakage MTTR covers the fixes that landed since the last
-  # successful digest, so each completed breakage is reported exactly once.
-  repo_root="$(cd -- "$script_dir/../.." && pwd -P)" || return 1
-  since="$(jq -r 'if .last_sent_at > 0 then .last_sent_at else .started_at end' "$ledger")" || return 1
-  mttr="$(post_land_mttr_summary "$repo_root" "$since" "$now")" \
-    || mttr='{"summary":{"count":0},"bounds":{"meaning":""}}'
-  snapshot="$(jq -cn --argjson summary "$summary" --argjson pressure "$pressure" --argjson mttr "$mttr" '
-    {captured_at:$summary.sampled_at,
-     landed_prs_24h:($summary.current_24h.metrics.merged_prs // null),
-     lead_time_7d_seconds:($summary.weekly_delivery.open_to_released.median_seconds // null),
-     release_lag_24h_seconds:($summary.current_24h.metrics.merge_to_release_seconds // null),
-     tokens_24h:($summary.current_24h.metrics.tokens // null),
-     tokens_per_released_issue:($summary.current_24h.metrics.tokens_per_released_issue // null),
-     cpu_load_5m:$pressure.cpu_load_5m,cpu_psi_avg10:$pressure.cpu_psi_avg10,
-     memory_psi_avg10:$pressure.memory_psi_avg10,
-     post_land_breakage_count:($mttr.summary.count // 0),
-     post_land_mttr_median_seconds:($mttr.summary.total_median_seconds // null)}')" || return 1
-  previous="$(jq -c '.last_sent_efficiency // null' "$ledger")" || return 1
-  result="$(jq -cn --argjson current "$snapshot" --argjson previous "$previous" --argjson mttr "$mttr" '
-    def duration($seconds):
-      if $seconds == null then "待核实"
-      elif $seconds >= 3600 then (((($seconds / 3600 * 10) | round) / 10) | tostring) + "小时"
-      elif $seconds >= 60 then (((($seconds / 60 * 10) | round) / 10) | tostring) + "分钟"
-      else (($seconds | round) | tostring) + "秒" end;
-    def value($number;$kind;$unit):
-      if $kind == "duration" then duration($number)
-      elif $kind == "decimal" then (((($number * 100) | round) / 100) | tostring) + $unit
-      else (($number | round) | tostring) + $unit end;
-    def change($number;$old;$kind;$unit):
-      if $kind == "duration" then
-        (if $number < $old then "缩短" else "延长" end) + duration((($number - $old) | if . < 0 then -. else . end))
-      elif $kind == "decimal" then
-        (if $number < $old then "降低" else "升高" end) + value((($number - $old) | if . < 0 then -. else . end);$kind;$unit)
-      else
-        (if $number < $old then "减少" else "增加" end) + value((($number - $old) | if . < 0 then -. else . end);$kind;$unit)
-      end;
-    [
-      {label:"近24小时落地合并请求",key:"landed_prs_24h",kind:"count",unit:"项"},
-      {label:"近7天提出至上线中位时长",key:"lead_time_7d_seconds",kind:"duration",unit:""},
-      {label:"近24小时合并至上线中位时长",key:"release_lag_24h_seconds",kind:"duration",unit:""},
-      {label:"近24小时模型令牌消耗",key:"tokens_24h",kind:"count",unit:"枚"},
-      {label:"每项上线改进平均令牌消耗",key:"tokens_per_released_issue",kind:"count",unit:"枚"},
-      {label:"处理器5分钟负载",key:"cpu_load_5m",kind:"decimal",unit:""},
-      {label:"处理器压力均值",key:"cpu_psi_avg10",kind:"decimal",unit:"%"},
-      {label:"内存压力均值",key:"memory_psi_avg10",kind:"decimal",unit:"%"}
-    ] as $metrics
-    | [$metrics[] as $metric
-       | $current[$metric.key] as $number
-       | $previous[$metric.key] as $old
-       | select($number != null)
-       | select($previous == null or $old == null or $number != $old)
-       | {label:$metric.label,value:value($number;$metric.kind;$metric.unit),baseline:
-           (if $previous == null then "首次基线"
-            elif $old == null then "开始记录"
-            else "较上一封" + change($number;$old;$metric.kind;$metric.unit) end)}] as $changes
-    | ($changes + (if (($mttr.summary.count // 0) > 0) then [{
-        label:"落地后损坏恢复",
-        value:("本期\($mttr.summary.count)起：发现中位\(duration($mttr.summary.detect_median_seconds))、修复中位\(duration($mttr.summary.fix_median_seconds))、总恢复中位\(duration($mttr.summary.total_median_seconds))，最长\(duration($mttr.summary.total_max_seconds))"),
-        baseline:("标准：\($mttr.bounds.meaning)；超线\($mttr.summary.over_standard // 0)起")}]
-      else [] end)) as $changes
-    | {count:($changes|length),body:(if ($changes|length) == 0 then ""
-        else "**效率变化**\n" + ($changes | map("- " + .label + "：" + .value + "；" + .baseline + "。") | join("\n")) end)}')" || return 1
-  jq -cn --argjson efficiency "$result" --argjson snapshot "$snapshot" \
-    '$efficiency + {snapshot:$snapshot}'
-}
-
-maintainer_health_mail_render_efficiency() {
-  local data="$1" mode="$2" mode_file status
-  mode_file="$(mktemp)" || return 1
-  printf '"%s"\n' "$mode" > "$mode_file"
-  jq -r --slurpfile render_mode "$mode_file" '
-    def value($n; $unit; $reason): if $n == null then $reason else ($n|tostring) + $unit end;
-    def change($current; $old; $unit; $reason):
-      if $current == null then $reason
-      elif $old == null then "缺少对比数据"
-      elif $old <= 0 then ($current - $old) as $delta
-        | (if $delta > 0 then "+" else "" end) + ($delta|tostring) + $unit
-      else (($current - $old) / $old * 100 | round) as $percent
-        | (if $percent > 0 then "↑" elif $percent < 0 then "↓" else "→" end)
-          + (($percent|if . < 0 then -. else . end)|tostring) + "%（上期" + ($old|tostring) + $unit + "）"
-      end;
-    def row($label; $key; $unit; $reason):
-      "| " + $label + " | " + value(.current[$key];$unit;(.current[$key + "_reason"] // $reason)) + " | "
-      + change(.current[$key];.previous[$key];$unit;(.current[$key + "_reason"] // $reason)) + " | "
-      + change(.current[$key];.week[$key];$unit;(.current[$key + "_reason"] // $reason)) + " |";
-    def work_value: if .work.active == null or .work.queued == null then "工作数量待核实"
-      else (.work.active|tostring) + "/" + (.work.queued|tostring) + "项" end;
-    def work_change: if .work.active == null or .work.queued == null then "工作数量待核实" else "工作数量仅展示当前" end;
-    if $render_mode[0] == "hourly" then
-      "效率对比（本期：近1小时；环比：前1小时；同比：上周同一时段）\n"
-      + "| 指标 | 本期 | 环比 | 同比 |\n| --- | ---: | --- | --- |\n"
-      + row("上线的改进项数";"launched";"项";"上线记录待核实") + "\n"
-      + row("关闭的事项";"closed";"项";"关闭记录待核实") + "\n"
-      + row("新增事项";"created";"项";"新增记录待核实") + "\n"
-      + row("积压增减";"backlog";"项";"积压数据待核实") + "\n"
-      + row("平均从提出到上线";"average_hours";"小时";"上线记录待核实") + "\n"
-      + "| 正在做/排队 | " + work_value + " | "
-      + work_change + " | " + work_change + " |"
-    else
-      "效率对比（本期：报告日；环比：前一日；同比：上周同日）\n"
-      + "| 指标 | 本期 | 环比 | 同比 |\n| --- | ---: | --- | --- |\n"
-      + row("上线的改进项数";"launched";"项";"上线记录待核实") + "\n"
-      + row("关闭的事项";"closed";"项";"关闭记录待核实") + "\n"
-      + row("新增事项";"created";"项";"新增记录待核实") + "\n"
-      + row("积压增减";"backlog";"项";"积压数据待核实") + "\n"
-      + row("平均从提出到上线";"average_hours";"小时";"上线记录待核实") + "\n"
-      + "| 正在做/排队 | " + work_value + " | "
-      + work_change + " | " + work_change + " |"
-    end
-  ' <<< "$data"
-  status=$?
-  rm -f -- "$mode_file"
-  return "$status"
-}
-
-maintainer_health_mail_collect_state_events() {
-  local idx ledger="$1" home="$2" now="$3" since known candidates catalog catalog_map metadata row issue key kind title labels at highlight text display_title local_time state_file candidate_json issue_summary
-  local -a state_files=() batch_rows=() candidate_rows=() candidate_batches=() unreadable_issues=() summary_issues=()
-  since="$(jq -r 'if .last_sent_at > 0 then .last_sent_at else .started_at end' "$ledger")" || return 1
-  [[ "$since" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
+# Issues marked pipeline-system are factory maintenance, not product
+# requirements. This local state marker keeps owner-report counts offline.
+maintainer_health_mail_internal_issue_ids() {
+  local home="$1"
+  local -a state_files=()
+  [ -d "$home/state" ] && [ -r "$home/state" ] && [ -x "$home/state" ] || { printf 'null\n'; return 0; }
   shopt -s nullglob
   state_files=("$home"/state/*.json)
   shopt -u nullglob
-  ((${#state_files[@]})) || return 0
-  known="$(jq -c '{reported:(.reported_items // {}),pending:(.pending_events // {})}' "$ledger")" || return 1
-  # One jq over all files: 508 per-file jq spawns took ~25 s under load and tripped the 120 s tick timeout.
-  local cand_def='def cands($issue):
-    . as $s
-          | ($s.run // {}) as $run
-          | [
-              (if $run.outcome == "merged" and (($run.evidence.pr_number // "") | tostring | test("^[1-9][0-9]*$")) then
-                (($run.merged_at // "") | try fromdateiso8601 catch -1) as $at
-                | if $at > $since and $at <= $now then {kind:"release",issue:$issue,pr:($run.evidence.pr_number|tostring),at:$at,key:("release:"+$issue+":"+($run.evidence.pr_number|tostring)+":"+($at|tostring))} else empty end
-               else empty end),
-              (if $s.deploy_state == "deployed" and ($s.deployed_sha // "") != "" then
-                (($s.deployed_at // $run.deployed_at // $run.evidence.production_evidence_at // "") | try fromdateiso8601 catch -1) as $at
-                | if $at > $since and $at <= $now then {kind:"deploy",issue:$issue,sha:$s.deployed_sha,at:$at,key:("deploy:"+$issue+":"+$s.deployed_sha)} else empty end
-               else empty end),
-              (if $s.state == "concluded" and $s.closed_by_pipeline == true then
-                (($run.concluded_at // "") | try fromdateiso8601 catch -1) as $at
-                | if $at > $since and $at <= $now then {kind:"closed",issue:$issue,at:$at,key:("closed:"+$issue+":"+($run.concluded_at|tostring))} else empty end
-               else empty end)
-            ]
-          | map(. as $candidate | select(($known.reported | has($candidate.key) | not) and ($known.pending | has($candidate.key) | not)))
-  ;'
-  local batch_lines
-  if batch_lines="$(jq -c --argjson since "$since" --argjson now "$now" --argjson known "$known" "$cand_def"'
-      (input_filename | sub(".*/"; "") | sub("\\.json$"; "")) as $issue
-      | if type == "object" then cands($issue) else {unreadable:true} end' "${state_files[@]}")" \
-    && [ "$(wc -l <<< "$batch_lines")" -eq "${#state_files[@]}" ]; then
-    mapfile -t batch_rows <<< "$batch_lines"
-    for idx in "${!state_files[@]}"; do
-      issue="${state_files[idx]##*/}"
-      issue="${issue%.json}"
-      [[ "$issue" =~ ^[0-9]+$ ]] || continue
-      if [[ "${batch_rows[idx]}" == \{* ]]; then unreadable_issues+=("$issue"); else candidate_batches+=("${batch_rows[idx]}"); fi
-    done
-  else
-  # One damaged issue state must not abort the rest of this digest.
-  for state_file in "${state_files[@]}"; do
-    issue="${state_file##*/}"
-    issue="${issue%.json}"
-    [[ "$issue" =~ ^[0-9]+$ ]] || continue
-    candidate_json="$(jq -cn --arg issue "$issue" --argjson since "$since" --argjson now "$now" --argjson known "$known" "$cand_def"'
-      (try [inputs] catch null) as $states
-      | if ($states | type) != "array" or ($states | length) != 1 or ($states[0] | type) != "object" then
-          {unreadable:true}
-        else $states[0] | cands($issue) end
-    ' "$state_file")" || return 1
-    if [[ "$candidate_json" == \{* ]]; then
-      unreadable_issues+=("$issue")
-    else
-      candidate_batches+=("$candidate_json")
-    fi
-  done
-  fi
-  candidates="$(printf '%s\n' "${candidate_batches[@]}" | jq -cs 'add // []')" || return 1
-  if ((${#unreadable_issues[@]})); then
-    for issue in "${unreadable_issues[@]}"; do
-      AGENT_HOME="$home" supervisor_inbox_append_once "maintainer-health-mail-unreadable-state:$issue" \
-        "maintainer-health-mail-unreadable-state issue=$issue state/$issue.json unreadable; maintainer digest omitted this issue's events" || return 1
-    done
-    summary_issues=("${unreadable_issues[@]:0:5}")
-    issue_summary="$(IFS=,; printf '%s' "${summary_issues[*]}")"
-    ((${#unreadable_issues[@]} <= 5)) || issue_summary+=",..."
-    printf 'maintainer health mail: partial-state-scan unreadable=%s issues=%s\n' \
-      "${#unreadable_issues[@]}" "$issue_summary" >&2
-  fi
-  [ "$(jq -r 'length' <<< "$candidates")" -gt 0 ] || return 0
-  local issue_ids
-  issue_ids="$(jq -c '[.[].issue | tonumber] | unique' <<< "$candidates")" || return 1
-  catalog="$(maintainer_health_mail_issue_catalog "$issue_ids")" || {
-    printf 'maintainer health mail: issue catalog lookup failed\n' >&2
-    return 1
-  }
-  catalog_map="$(jq -c 'map({key:(.number|tostring),value:.}) | from_entries' <<< "$catalog")" || return 1
-  mapfile -t candidate_rows < <(jq -c '.[]' <<< "$candidates")
-  for row in "${candidate_rows[@]}"; do
-    issue="$(jq -r '.issue' <<< "$row")"
-    key="$(jq -r '.key' <<< "$row")"
-    kind="$(jq -r '.kind' <<< "$row")"
-    at="$(jq -r '.at' <<< "$row")"
-    metadata="$(jq -c --arg issue "$issue" '.[$issue] // empty' <<< "$catalog_map")" || return 1
-    [ -n "$metadata" ] || { printf 'maintainer health mail: issue catalog lookup failed\n' >&2; return 1; }
-    labels=",$(jq -r '[.labels[]?.name // ""] | join(",")' <<< "$metadata"),"
-    [[ "$labels" == *,pipeline-system,* ]] && continue
-    title="$(jq -r '.title' <<< "$metadata" | tr '\n\r' '  ' | sed -E 's/[[:space:]]+/ /g; s/^ | $//g')"
-    [[ -n "$title" ]] || return 1
-    display_title="$(maintainer_health_mail_plain_title "$title")" || return 1
-    case "$kind" in
-      release)
-        text="待上线：${display_title}。"
-        maintainer_health_mail_record_event "$ledger" "$key" '发布进度' "$text" "$now" release >/dev/null || return 1
-        ;;
-      deploy)
-        local_time="$(maintainer_local_time "$at")" || return 1
-        text="现在可以使用「${display_title}」；$local_time 上线的版本。"
-        maintainer_health_mail_record_event "$ledger" "$key" '发布进度' "$text" "$now" deploy >/dev/null || return 1
-        ;;
-      closed)
-        highlight=false
-        if [[ "$labels" == *,focus,* || "$labels" == *,priority:top,* ]]; then highlight=true; fi
-        maintainer_health_mail_record_event "$ledger" "$key" '事项完成' "修好了：${display_title}。" "$now" closed "$highlight" >/dev/null || return 1
-        ;;
-    esac
-  done
+  ((${#state_files[@]})) || { printf 'null\n'; return 0; }
+  jq -cn '
+    [inputs as $state
+      | (input_filename | split("/")[-1] | rtrimstr(".json")) as $issue
+      | select($issue | test("^[0-9]+$"))
+      | select($state.pipeline_system.enabled == true or $state.run.outcome == "pipeline-system")
+      | $issue] | unique
+  ' "${state_files[@]}" 2>/dev/null || printf 'null\n'
 }
 
-maintainer_health_mail_collect_outcomes() {
-  local ledger="$1" home="$2" now="$3" activity since activity_rows issue_ids row issue sha outcome at key local_time deployed_at deployed_epoch catalog metadata title display_title catalog_map=''
-  activity="$home/night/founder-health-outcomes.jsonl"
-  [ -r "$activity" ] || return 0
-  since="$(jq -r 'if .last_sent_at > 0 then .last_sent_at else .started_at end' "$ledger")" || return 1
-  [[ "$since" =~ ^[0-9]+$ ]] || return 1
-  activity_rows="$(jq -cs --argjson since "$since" --argjson now "$now" '
-    [ .[]
-      | . as $row
-      | ($row.issue // "" | tostring) as $issue
-      | ($row.sent_at // "" | try fromdateiso8601 catch empty) as $at
-      | select($issue | test("^[1-9][0-9]*$"))
-      | select(($row.deployed_sha // "") != "" and ($at | type) == "number" and $at > $since and $at <= $now)
-      | select((($row.outcome // "") | type) == "string")
-      | select($row.outcome | test("^[一-龥]"))
-      | $row
-    ]
-  ' "$activity")" || return 1
-  [ "$(jq -r 'length' <<< "$activity_rows")" -gt 0 ] || return 0
-  issue_ids="$(jq -c '[.[].issue | tonumber] | unique' <<< "$activity_rows")" || return 1
-  catalog="$(maintainer_health_mail_issue_catalog "$issue_ids")" || return 1
-  catalog_map="$(jq -c 'map({key:(.number|tostring),value:.}) | from_entries' <<< "$catalog")" || return 1
+# maintainer_health_mail_period_events <home> <start> <end> "type,type"
+# Matching metric events as {event_type,issue,at}, de-duplicated by identity.
+maintainer_health_mail_period_events() {
+  local home="$1" start="$2" end="$3" types="$4"
+  local -a files=()
+  [ -d "$home/metrics" ] && [ -r "$home/metrics" ] && [ -x "$home/metrics" ] || { printf 'null\n'; return 0; }
+  shopt -s nullglob
+  files=("$home"/metrics/efficiency-????-??.jsonl)
+  shopt -u nullglob
+  ((${#files[@]})) || { printf 'null\n'; return 0; }
+  jq -cs --argjson start "$start" --argjson end "$end" --arg types "$types" '
+    def epoch: (.ts // "") | try fromdateiso8601 catch null;
+    [ .[] | select(type == "object" and .record_type == "event")
+      | select(.event_type | IN($types | split(",")[])) ] as $selected
+    | if any($selected[]; epoch == null or ((.issue // "") | tostring | test("^[1-9][0-9]*$") | not)
+      or ((.stage // "") == "" and ($types | split(",") | index("stage-entered")) != null)) then null else
+      [ $selected[]
+      | select(type == "object" and .record_type == "event")
+      | select(.event_type | IN($types | split(",")[]))
+      | (epoch) as $at
+      | select($at != null and $at >= $start and $at < $end)
+      | {event_type, stage:(.stage // ""), issue:(.issue // null | tostring), at:$at} ]
+    | unique_by([.event_type, .issue, .at])
+      end
+  ' "${files[@]}" 2>/dev/null || printf 'null\n'
+}
+
+maintainer_health_mail_created_total() {
+  local home="$1" events internal
+  events="$(maintainer_health_mail_period_events "$home" 0 4102444800 ticket-created)" || events=null
+  internal="$(maintainer_health_mail_internal_issue_ids "$home")" || internal=null
+  [ "$events" != null ] && [ "$internal" != null ] || { printf 'null\n'; return 0; }
+  jq -cn --argjson events "$events" --argjson internal "$internal" '
+    [$events[] | .issue as $event_issue | select($event_issue != "")
+      | select(($internal | index($event_issue)) == null) | $event_issue] | unique | length
+  ' 2>/dev/null || printf 'null\n'
+}
+
+# maintainer_health_mail_release_lead_days <home> <start> <end>
+# Days from a requirement's first recorded proposal to its release, one number
+# per release inside the window; releases without a recorded proposal are left
+# out rather than guessed.
+maintainer_health_mail_release_lead_days() {
+  local home="$1" start="$2" end="$3"
+  local internal
+  local -a files=()
+  internal="$(maintainer_health_mail_internal_issue_ids "$home")" || internal=null
+  [ "$internal" != null ] || { printf 'null\n'; return 0; }
+  shopt -s nullglob
+  files=("$home"/metrics/efficiency-????-??.jsonl)
+  shopt -u nullglob
+  ((${#files[@]})) || { printf 'null\n'; return 0; }
+  jq -cs --argjson start "$start" --argjson end "$end" --argjson internal "$internal" '
+    [ .[] | select(type == "object" and .record_type == "event")
+      | select(.event_type == "ticket-released" or .event_type == "ticket-created") ] as $selected
+    | if any($selected[]; ((.ts // "") | try fromdateiso8601 catch null) == null
+      or ((.issue // "") | tostring | test("^[1-9][0-9]*$") | not)) then null else
+    [ $selected[]
+      | ((.ts // "") | try fromdateiso8601 catch null) as $at
+      | {event_type, issue:(.issue // "" | tostring), at:$at} ] as $rows
+    | [ $rows[] | select(.event_type == "ticket-released")
+        | .issue as $issue
+        | select(($internal | index($issue)) == null)
+        | select(.at >= $start and .at < $end)
+        | . as $release
+        | ([$rows[] | select(.event_type == "ticket-created" and .issue == $release.issue and .at <= $release.at)
+             | .at] | min) as $created
+        | select($created != null)
+        | ($release.at - $created) / 86400 ]
+      end
+  ' "${files[@]}" 2>/dev/null || printf 'null\n'
+}
+
+# maintainer_health_mail_state_census <home>
+# {open, awaiting_release} over the requirement state files; null when the
+# census itself cannot be read.
+maintainer_health_mail_state_census() {
+  local home="$1"
+  local -a state_files=()
+  [ -d "$home/state" ] && [ -r "$home/state" ] && [ -x "$home/state" ] || { printf 'null\n'; return 0; }
+  shopt -s nullglob
+  state_files=("$home"/state/*.json)
+  shopt -u nullglob
+  ((${#state_files[@]})) || { printf 'null\n'; return 0; }
+  jq -n '
+    [inputs as $s
+      | (input_filename | split("/")[-1] | rtrimstr(".json")) as $issue
+      | select($issue | test("^[0-9]+$"))
+      | {state:(try $s.state catch null), deployed:($s.deploy_state == "deployed"),
+         internal:($s.pipeline_system.enabled == true or $s.run.outcome == "pipeline-system")} ] as $rows
+    | if ($rows | length) == 0 or any($rows[]; (.state | type) != "string" or .state == "") then null
+      else reduce $rows[] as $row ({open:0, awaiting_release:0};
+        if $row.internal or $row.deployed or ($row.state | IN("concluded","closed","wontfix","duplicate")) then .
+        else .open += 1
+          | (if $row.state == "awaiting-release" then .awaiting_release += 1 else . end) end)
+      end
+  ' "${state_files[@]}" 2>/dev/null || printf 'null\n'
+}
+
+# Work share uses the append-only worker unit ledger. A unit tied to several
+# issues is divided evenly, following the existing ROI rollup; unclassified
+# time stays visible outside the requirement/self-maintenance percentages.
+maintainer_health_mail_unit_work_split() {
+  local home="$1" start="$2" end="$3"
+  python3 - "$home" "$start" "$end" <<'PY'
+import gzip
+import glob
+import json
+import math
+import os
+import re
+import sys
+from datetime import datetime, timezone
+
+home, start_raw, end_raw = sys.argv[1:]
+start, end = int(start_raw), int(end_raw)
+paths = sorted(glob.glob(os.path.join(home, "metrics", "units-????-??.jsonl"))
+               + glob.glob(os.path.join(home, "metrics", "units-????-??.jsonl.gz")))
+if not paths:
+    print("null")
+    raise SystemExit(0)
+
+requirements = set()
+stage_path = os.path.join(home, "founder-req-stage.json")
+try:
+    with open(stage_path, encoding="utf-8") as source:
+        stages = json.load(source)
+    if isinstance(stages, dict):
+        requirements.update(key for key, value in stages.items()
+                            if key.isdigit() and isinstance(value, int) and 0 <= value <= 4)
+except (OSError, ValueError):
+    pass
+
+inbox_path = os.path.join(home, "supervisor-inbox")
+try:
+    with open(inbox_path, encoding="utf-8") as source:
+        for line in source:
+            match = re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ founder-req #([1-9]\d*) ", line)
+            if match:
+                requirements.add(match.group(1))
+except OSError:
+    pass
+
+states = {}
+state_dir = os.path.join(home, "state")
+try:
+    for name in os.listdir(state_dir):
+        if not re.fullmatch(r"[1-9]\d*\.json", name):
+            continue
+        issue = name[:-5]
+        try:
+            with open(os.path.join(state_dir, name), encoding="utf-8") as source:
+                value = json.load(source)
+            states[issue] = value if isinstance(value, dict) else None
+        except (OSError, ValueError):
+            states[issue] = None
+except OSError:
+    pass
+
+events = {}
+partial = False
+for path in paths:
+    try:
+        opener = gzip.open if path.endswith(".gz") else open
+        with opener(path, "rt", encoding="utf-8") as source:
+            for line in source:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    partial = True
+                    continue
+                if not isinstance(row, dict) or row.get("record_type") != "event" \
+                        or row.get("event_type") != "unit-end":
+                    continue
+                event_id = row.get("event_id")
+                key = event_id if isinstance(event_id, str) and event_id else f"{path}:{len(events)}"
+                events[key] = row
+    except OSError:
+        partial = True
+
+requirements_seconds = self_seconds = unclassified_seconds = 0.0
+measured_rows = 0
+for row in events.values():
+    try:
+        stamp = datetime.fromisoformat(str(row.get("ts", "")).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            raise ValueError("timezone missing")
+        at = int(stamp.astimezone(timezone.utc).timestamp())
+    except (ValueError, OverflowError, OSError):
+        partial = True
+        continue
+    if at < start or at >= end:
+        continue
+    seconds = row.get("wall_s")
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) \
+            or not math.isfinite(seconds) or seconds < 0:
+        partial = True
+        continue
+    measured_rows += 1
+    tickets = row.get("tickets")
+    if not isinstance(tickets, list) or not tickets:
+        unclassified_seconds += seconds
+        continue
+    share = seconds / len(tickets)
+    for raw_issue in tickets:
+        issue = str(raw_issue)
+        state = states.get(issue)
+        pipeline = state.get("pipeline_system") if isinstance(state, dict) else None
+        run = state.get("run") if isinstance(state, dict) else None
+        if isinstance(pipeline, dict) and pipeline.get("enabled") is True \
+                or isinstance(run, dict) and run.get("outcome") == "pipeline-system":
+            self_seconds += share
+        elif state is not None or issue in requirements:
+            requirements_seconds += share
+        else:
+            unclassified_seconds += share
+
+if measured_rows == 0:
+    print("null")
+    raise SystemExit(0)
+known = requirements_seconds + self_seconds
+result = {
+    "requirement_seconds": round(requirements_seconds, 1),
+    "self_seconds": round(self_seconds, 1),
+    "unclassified_seconds": round(unclassified_seconds, 1),
+    "requirement_pct": round(requirements_seconds / known * 100, 1) if known else None,
+    "self_pct": round(self_seconds / known * 100, 1) if known else None,
+    "partial": partial,
+    "rows": measured_rows,
+}
+print(json.dumps(result, separators=(",", ":")))
+PY
+}
+
+# maintainer_health_mail_release_facts <home> <start> <end>
+# What reached production in the window: one line per requirement, the count,
+# the all-time count, and the most recent release time on record.
+maintainer_health_mail_release_facts() {
+  local home="$1" start="$2" end="$3"
+  local deployments complete total last_at in_window outcome_rows req_events req_titles rows title outcome at text
+  deployments="$(maintainer_health_mail_deployment_catalog "$home" 2>/dev/null)" || deployments='null'
+  complete="$(jq -r 'if . == null then "false" else (.complete | tostring) end' <<< "$deployments")"
+  total="$(jq -r 'if . == null or .complete != true then "null" else (.deployments | length) end' <<< "$deployments")"
+  last_at="$(jq -r 'if . == null or .complete != true then "null" else ([.deployments[].at] | max // null) end' <<< "$deployments")"
+  in_window="$(jq -c --argjson start "$start" --argjson end "$end" '
+    if . == null then [] else [.deployments[] | select(.at >= $start and .at < $end)] end' <<< "$deployments")"
+  # Outcome rows carry the user-visible sentence the pipeline recorded at send time.
+  outcome_rows='[]'
+  if [ -r "$home/night/founder-health-outcomes.jsonl" ]; then
+    outcome_rows="$(jq -cs '
+      [ .[]
+        | (.sent_at // "") as $stamp
+        | ($stamp | try fromdateiso8601 catch null) as $at
+        | select($at != null)
+        | select((.issue // "" | tostring | test("^[0-9]+$")))
+        | {issue:(.issue | tostring), at:$at, outcome:(.outcome // "")}
+        | select(.outcome | test("[一-龥]")) ]
+      | sort_by(.at) | group_by(.issue) | map(last | {key:.issue,value:.outcome}) | from_entries
+    ' "$home/night/founder-health-outcomes.jsonl" 2>/dev/null || outcome_rows='[]')"
+  fi
+  req_events="$(maintainer_health_mail_founder_req_events "$home")" || req_events=null
+  [ "$req_events" != null ] || req_events='[]'
+  req_titles="$(jq -cn --argjson events "$req_events" '
+    reduce ($events | sort_by(.at)[]) as $event ({};
+      .[$event.issue] = $event.title)
+  ')" || req_titles='{}'
+  rows="$(jq -cn --argjson deployed "$in_window" --argjson outcomes "$outcome_rows" --argjson titles "$req_titles" '
+    [$deployed[] as $release | $release.issue as $issue
+      | {issue:$issue, outcome:($outcomes[$issue] // ""),
+         title:($titles[$issue] // ""), at:$release.at}]
+    | sort_by(.at)
+  ')" || rows='[]'
+  local -a items=()
+  local row
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    issue="$(jq -r '.issue // empty' <<< "$row")"
-    sha="$(jq -r '.deployed_sha // empty' <<< "$row")"
-    outcome="$(jq -r '.outcome // empty' <<< "$row")"
-    at="$(jq -r '.sent_at // empty | try fromdateiso8601 catch empty' <<< "$row")"
-    [[ "$issue" =~ ^[0-9]+$ && -n "$sha" && "$at" =~ ^[0-9]+$ && "$at" -gt "$since" && "$at" -le "$now" ]] || continue
-    maintainer_health_mail_safe_outcome "$outcome" || continue
-    key="deploy:$issue:$sha"
-    metadata="$(jq -c --arg issue "$issue" '.[$issue] // empty' <<< "$catalog_map")" || return 1
-    title="$(jq -r '.title // empty' <<< "${metadata:-null}")" || return 1
-    display_title="$(maintainer_health_mail_plain_title "$title")" || return 1
-    # Keep an existing readable outcome when the issue title is not readable.
-    if [ -n "$title" ] && [ -z "$(maintainer_health_mail_event_rejection_reason '发布进度' "$title")" ]; then
-      outcome="现在可以使用「${display_title}」"
+    title="$(jq -r '.title // ""' <<< "$row")"
+    outcome="$(jq -r '.outcome // ""' <<< "$row")"
+    at="$(jq -r '.at // ""' <<< "$row")"
+    outcome="$(maintainer_health_mail_scrub_text "$outcome")" || outcome=''
+    title="$(maintainer_health_mail_scrub_text "$title")" || title=''
+    if [[ "$title" == *[一-龥]* ]] && [[ "$title" != *[A-Za-z]* ]]; then
+      title="$(maintainer_health_mail_plain_title "$title")"
+      if [ -n "$outcome" ]; then text="「${title}」：$outcome"; else text="「${title}」已上线；用户影响说明未记录。"; fi
+    elif [ -n "$outcome" ]; then
+      text="$outcome"
     else
-      outcome="$(maintainer_health_mail_scrub_text "$outcome")" || return 1
-      case "$outcome" in
-        现在可以*|修好了*) ;;
-        *) outcome="现在可以：$outcome" ;;
-      esac
+      text='一项改进已上线；名称待核实。'
     fi
-    deployed_at="$(maintainer_health_mail_deployed_at "$home" "$issue")" || return 1
-    deployed_epoch=''
-    if [ -n "$deployed_at" ]; then deployed_epoch="$(agent_epoch -u "$deployed_at" 2>/dev/null || true)"; fi
-    if [[ "$deployed_epoch" =~ ^[0-9]+$ ]]; then
-      local_time="$(maintainer_health_mail_date_time "$deployed_epoch")" || return 1
-      outcome="${outcome}；$local_time 上线的版本。"
+    [ "$at" = null ] && at=''
+    if [[ "$at" =~ ^[0-9]+$ ]]; then
+      text="${text}（$(maintainer_health_mail_date_time "$at")上线）"
+    fi
+    items+=("$(jq -cn --arg text "$text" '{text:$text}')")
+  done < <(jq -c '.[]' <<< "$rows")
+  local count zero_reason
+  if [ "$complete" = true ]; then count="$(jq -r 'length' <<< "$rows")"; else count=null; fi
+  zero_reason=''
+  if [ "$count" = null ]; then
+    zero_reason='上线记录未能完整核对，过去一天上线数量无法确认。'
+  elif (( count == 0 )); then
+    local census awaiting
+    census="$(maintainer_health_mail_state_census "$home")"
+    awaiting="$(jq -r 'if . == null then "null" else .awaiting_release end' <<< "$census")"
+    if [ "$awaiting" = null ]; then
+      zero_reason='过去一天上线 0 个需求：没有新版本通过上线验证；待上线数量待核实。'
+    elif (( awaiting > 0 )); then
+      zero_reason="过去一天上线 0 个需求：没有新版本通过上线验证；已有 ${awaiting} 项做完的改进在等上线。"
     else
-      outcome="${outcome}；上线时间待核实。"
+      zero_reason='过去一天上线 0 个需求：没有新版本通过上线验证。'
     fi
-    maintainer_health_mail_record_event "$ledger" "$key" '发布进度' "$outcome" "$at" deploy >/dev/null || return 1
-  done < <(jq -c '.[]' <<< "$activity_rows")
+  fi
+  jq -cn --argjson count "$count" --argjson total "$total" --argjson last_at "$last_at" \
+    --argjson complete "$complete" --argjson items "$(printf '%s\n' "${items[@]:-null}" | jq -cs 'if . == [null] then [] else . end' 2>/dev/null || printf '[]')" \
+    --arg zero_reason "$zero_reason" \
+    '{period_count:$count,total_ever:$total,last_at:$last_at,complete:$complete,items:$items,zero_reason:$zero_reason}'
 }
 
-maintainer_health_mail_safe_outcome() {
-  local text="$1" internal="${MAINTAINER_BODY_INTERNAL_PATTERN:-流水线|节点|运维|健康检查|advisor|pipeline|deploy|build|merge|pull request}"
-  [[ "$text" =~ [一-龥] ]] || return 1
-  grep -iEq "$internal" <<< "$text" && return 1
-  grep -Eq '[A-Z][A-Z0-9_]{2,}|(^|[[:space:]])/[^[:space:]]+|[[:xdigit:]]{10,}|^[[:space:]]*[0-9]{4}-[0-9]{2}-[0-9]{2}T[^[:space:]]+|[[:alnum:]_.-]+=[^[:space:]]*' <<< "$text" && return 1
-  return 0
+# maintainer_health_mail_progress_facts <home> <start> <end> <release_facts>
+maintainer_health_mail_progress_facts() {
+  local home="$1" start="$2" end="$3" releases="$4" census created awaiting released_period released_total created_total internal
+  census="$(maintainer_health_mail_state_census "$home")"
+  created="$(maintainer_health_mail_period_events "$home" "$start" "$end" "ticket-created")"
+  awaiting="$(maintainer_health_mail_period_events "$home" "$start" "$end" "stage-entered")"
+  created_total="$(maintainer_health_mail_created_total "$home")"
+  internal="$(maintainer_health_mail_internal_issue_ids "$home")"
+  if [ "$internal" = null ]; then
+    created=null
+    awaiting=null
+  else
+    created="$(jq -cn --argjson events "$created" --argjson internal "$internal" '
+      if $events == null then null else [$events[] | .issue as $issue
+        | select($issue != "" and $issue != "null" and (($internal | index($issue)) == null))] end
+    ')" || created=null
+    awaiting="$(jq -cn --argjson events "$awaiting" --argjson internal "$internal" '
+      if $events == null then null else [$events[] | .issue as $issue
+        | select($issue != "" and $issue != "null" and (($internal | index($issue)) == null))] end
+    ')" || awaiting=null
+  fi
+  released_period="$(jq -r '.period_count' <<< "$releases")"
+  released_total="$(jq -r '.total_ever' <<< "$releases")"
+  jq -cn --argjson census "$census" --argjson created "$created" --argjson awaiting "$awaiting" \
+    --argjson created_total "$created_total" --argjson released_period "$released_period" --argjson released_total "$released_total" '
+    {created_period:(if $created == null then null else
+        ([$created[] | .issue as $issue | select($issue != "") | $issue] | unique | length) end),
+     created_total:$created_total,
+     open_total:($census.open // null),
+     awaiting_period:(if $awaiting == null then null else
+       ([$awaiting[] | select(.stage == "awaiting-release")] | unique_by(.issue) | length) end),
+     awaiting_total:($census.awaiting_release // null),
+     released_period:$released_period,
+     released_total:$released_total}'
 }
+
+# maintainer_health_mail_efficiency_facts <home> <now>
+maintainer_health_mail_efficiency_facts() {
+  local home="$1" now="$2"
+  local week_start prev_start deployments week_count prev_count lead_week lead_prev lead_week_days lead_prev_days
+  local created_week catalog split
+  week_start=$((now - 7 * 86400))
+  prev_start=$((now - 14 * 86400))
+  deployments="$(maintainer_health_mail_deployment_catalog "$home" 2>/dev/null)" || deployments='null'
+  week_count="$(jq -r --argjson start "$week_start" --argjson end "$now" 'if . == null or .complete != true then "null" else ([.deployments[] | select(.at >= $start and .at < $end)] | length) end' <<< "$deployments")"
+  prev_count="$(jq -r --argjson start "$prev_start" --argjson end "$week_start" 'if . == null or .complete != true then "null" else ([.deployments[] | select(.at >= $start and .at < $end)] | length) end' <<< "$deployments")"
+  lead_week_days="$(maintainer_health_mail_release_lead_days "$home" "$week_start" "$now")"
+  lead_prev_days="$(maintainer_health_mail_release_lead_days "$home" "$prev_start" "$week_start")"
+  lead_week="$(jq -r 'if length == 0 then "null" else (sort | .[length / 2 | floor] + .[length / 2 | ceil - 1]) / 2 end' <<< "$lead_week_days" 2>/dev/null || printf 'null')"
+  lead_prev="$(jq -r 'if length == 0 then "null" else (sort | .[length / 2 | floor] + .[length / 2 | ceil - 1]) / 2 end' <<< "$lead_prev_days" 2>/dev/null || printf 'null')"
+  split="$(maintainer_health_mail_unit_work_split "$home" "$week_start" "$now")" || split='null'
+  jq -cn --argjson week_count "$week_count" --argjson prev_count "$prev_count" \
+    --argjson lead_week "$lead_week" --argjson lead_prev "$lead_prev" --argjson split "$split" \
+    '{per_day_week:(if $week_count == null then null else $week_count / 7 end),
+      per_day_prev:(if $prev_count == null then null else $prev_count / 7 end),
+      lead_days_week:$lead_week,lead_days_prev:$lead_prev,split:$split}'
+}
+
+# maintainer_health_mail_spend_facts <home> <start> <end> <released_period>
+# Spend rows with missing token/cost fields stay incomplete; known subtotals are
+# never presented as a complete total or used for a per-requirement average.
+maintainer_health_mail_spend_facts() {
+  local home="$1" start="$2" end="$3" released_period="$4"
+  python3 - "$home" "$start" "$end" "$released_period" <<'PY'
+import glob
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+home, start_raw, end_raw, released_raw = sys.argv[1:]
+start, end = int(start_raw), int(end_raw)
+first_day = datetime.fromtimestamp(start, timezone.utc).strftime("%Y-%m-%d")
+last_day = datetime.fromtimestamp(max(start, end - 1), timezone.utc).strftime("%Y-%m-%d")
+paths = sorted(path for path in glob.glob(os.path.join(home, "spend", "????-??-??.log"))
+               if first_day <= os.path.basename(path)[:10] <= last_day)
+if not os.path.isdir(os.path.join(home, "spend")) or not paths:
+    print(json.dumps({"tokens": None, "tokens_complete": False, "per_requirement": None,
+                      "money_usd": None, "money_complete": False, "rows": 0}, separators=(",", ":")))
+    raise SystemExit(0)
+
+rows = 0
+tokens = 0
+money = 0.0
+tokens_complete = True
+money_complete = True
+readable = True
+bad_date = False
+for path in paths:
+    try:
+        with open(path, encoding="utf-8") as source:
+            for line in source:
+                fields = line.rstrip("\r\n").split("\t")
+                try:
+                    at = int(fields[0])
+                except (ValueError, IndexError):
+                    bad_date = True
+                    continue
+                if not start <= at < end:
+                    continue
+                rows += 1
+                if len(fields) > 5 and fields[5].isdigit():
+                    tokens += int(fields[5])
+                else:
+                    tokens_complete = False
+                if len(fields) > 4:
+                    try:
+                        value = float(fields[4])
+                        if value >= 0 and value < float("inf"):
+                            money += value
+                        else:
+                            money_complete = False
+                    except ValueError:
+                        money_complete = False
+                else:
+                    money_complete = False
+    except OSError:
+        readable = False
+
+if rows == 0 or not readable or bad_date:
+    result = {"tokens": None, "tokens_complete": False, "per_requirement": None,
+              "money_usd": None, "money_complete": False, "rows": rows}
+else:
+    release_count = int(released_raw) if released_raw.isdigit() else 0
+    result = {"tokens": tokens, "tokens_complete": tokens_complete,
+              "per_requirement": round(tokens / release_count) if tokens_complete and release_count > 0 else None,
+              "money_usd": round(money, 6) if money_complete or money > 0 else None,
+              "money_complete": money_complete, "rows": rows}
+print(json.dumps(result, separators=(",", ":")))
+PY
+}
+
+# maintainer_health_mail_quality_facts <ledger> <home> <start> <end> <repo_root>
+maintainer_health_mail_quality_facts() {
+  local ledger="$1" home="$2" start="$3" end="$4" repo_root="$5"
+  local incidents incidents_open open_subjects rollbacks mttr git_dir
+  incidents="$(jq -c --argjson start "$start" --argjson end "$end" '
+    (.incidents // []) as $rows
+    | if any($rows[]; (.opened_at | type) != "number") then null
+      else [$rows[] | select(.opened_at < $end and ((.resolved_at // $end) >= $start))] | length end
+  ' "$ledger" 2>/dev/null || printf 'null')"
+  open_subjects="$(jq -c '[.incidents[]? | select(.status == "open") | .subject]' "$ledger" 2>/dev/null || printf 'null')"
+  incidents_open=null
+  [ "$open_subjects" = null ] || incidents_open="$(jq 'length' <<< "$open_subjects")"
+  rollbacks=null
+  if [ -n "$repo_root" ] && git_dir="$(git -C "$repo_root" rev-parse --verify origin/main 2>/dev/null)"; then
+    if rollbacks="$(git -C "$repo_root" log "$git_dir" --since="@${start}" --until="@${end}" \
+      --fixed-strings --grep='This reverts commit' --format=%H 2>/dev/null)"; then
+      rollbacks="$(printf '%s' "$rollbacks" | wc -l | tr -d '[:space:]')"
+    fi
+  fi
+  mttr='null'
+  if [ -n "$repo_root" ] && git -C "$repo_root" rev-parse --verify origin/main >/dev/null 2>&1; then
+    mttr="$(post_land_mttr_summary "$repo_root" "$start" "$end" 2>/dev/null)" || mttr='null'
+  fi
+  jq -cn --argjson incidents "$incidents" --argjson incidents_open "$incidents_open" --argjson open_subjects "$open_subjects" \
+    --argjson rollbacks "$rollbacks" --argjson mttr "$mttr" '
+    {incidents_period:$incidents,
+     incidents_open:$incidents_open,
+     open_subjects:$open_subjects,
+     rollbacks:$rollbacks,
+     post_land_fixes:(if $mttr == null or ($mttr.summary.count | type) != "number" then null else $mttr.summary.count end)}'
+}
+
+# maintainer_health_mail_decision_facts <ledger>
+maintainer_health_mail_decision_detail() {
+  python3 - "$1" <<'PY'
+import json
+import re
+import sys
+
+lines = sys.argv[1].splitlines()
+question = next((line[len("问题："):].strip() for line in lines if line.startswith("问题：")), "")
+letter = next((match.group(1) for line in lines
+               if (match := re.match(r"^建议：([ABC])$", line))), "")
+option = next((line for line in lines if letter and line.startswith(letter + "）")), "")
+recommendation = ""
+if letter and option:
+    detail = option[len(letter) + 1:].strip()
+    detail = re.split(r"[；;]影响：", detail, maxsplit=1)[0].strip()
+    ordinal = {"A": "第一项", "B": "第二项", "C": "第三项"}[letter]
+    recommendation = f"建议：选择{ordinal}，{detail}"
+if not re.search(r"[一-龥]", question) or re.search(r"[A-Za-z]", question):
+    question = ""
+if not re.search(r"[一-龥]", recommendation) or re.search(r"[A-Za-z]", recommendation):
+    recommendation = ""
+print(json.dumps({"question": question[:120], "recommendation": recommendation[:160]}, ensure_ascii=False))
+PY
+}
+
+maintainer_health_mail_decision_facts() {
+  jq -c '
+    [(.important_items // {}) | to_entries[]
+      | select(.value.status == "open" and .value.kind == "decision") | .value] as $rows
+    | {items:[$rows[] | select((.question // "") != "" and (.recommendation // "") != "")
+        | {question:.question,recommendation:.recommendation}],
+       total:($rows | length),
+       incomplete:([$rows[] | select((.question // "") == "" or (.recommendation // "") == "")] | length)}
+  ' "$1" 2>/dev/null || printf '{"items":[],"total":null,"incomplete":0}'
+}
+
+# maintainer_health_mail_attention_count <home> <now>
+# Fresh scorecard only; a stale, missing or unreadable one is unmeasured.
+maintainer_health_mail_attention_count() {
+  local home="$1" now="$2" user_home runtime_dir scorecard generated sampled_epoch age
+  user_home="${home%/.zenoforge}"
+  [ "$user_home" != "$home" ] || user_home="$home"
+  runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${ZF_MAC_AUTOPILOT_RUNTIME_DIR:-$user_home/.scratch-supervisor/autopi}}"
+  scorecard="$runtime_dir/node-health.json"
+  [ -r "$scorecard" ] || { printf 'null\n'; return 0; }
+  generated="$(jq -r '.generated // empty' "$scorecard" 2>/dev/null || true)"
+  sampled_epoch="$(agent_epoch -u "$generated" 2>/dev/null || true)"
+  if ! [[ "$sampled_epoch" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]]; then
+    printf 'null\n'
+    return 0
+  fi
+  age=$((now - sampled_epoch))
+  if (( age < 0 || age > 43200 )) || ! jq -e '.metrics | type == "array"' "$scorecard" >/dev/null 2>&1; then
+    printf 'null\n'
+    return 0
+  fi
+  jq -r '
+    if (.metrics | length) == 0
+      or (any(.metrics[]; (.status // "") | IN("OK","WARN","UNHEALTHY","NO-DATA") | not))
+      or (all(.metrics[]; .status == "NO-DATA")) then null
+    else [.metrics[] | select(.status == "UNHEALTHY" or .status == "WARN")] | length end
+  ' "$scorecard"
+}
+
+# maintainer_health_mail_daily_facts <home> <ledger> <now> <repo_root>
+# Everything the owner report shows, as one JSON object. A collector that
+# cannot read its source leaves null; the renderer says so in plain words.
+maintainer_health_mail_daily_facts() {
+  local home="$1" ledger="$2" now="$3" repo_root="$4"
+  local start=$((now - 86400)) releases progress efficiency spend quality decisions attention day level reason
+  releases="$(maintainer_health_mail_release_facts "$home" "$start" "$now")" || releases='{"period_count":null,"total_ever":null,"last_at":null,"complete":false,"items":[],"zero_reason":"上线情况待核实。"}'
+  progress="$(maintainer_health_mail_progress_facts "$home" "$start" "$now" "$releases")" || progress='{}'
+  efficiency="$(maintainer_health_mail_efficiency_facts "$home" "$now")" || efficiency='{}'
+  spend="$(maintainer_health_mail_spend_facts "$home" "$start" "$now" "$(jq -r '.released_period // 0' <<< "$progress")")" || spend='{}'
+  quality="$(maintainer_health_mail_quality_facts "$ledger" "$home" "$start" "$now" "$repo_root")" || quality='{}'
+  decisions="$(maintainer_health_mail_decision_facts "$ledger")" || decisions='{"items":[],"total":null,"incomplete":0}'
+  attention="$(maintainer_health_mail_attention_count "$home" "$now")" || attention=null
+  day="$(maintainer_health_mail_report_day "$now")" || return 1
+  IFS=$'\t' read -r level reason <<< "$(maintainer_health_mail_conclusion_facts "$releases" "$progress" "$quality" "$decisions" "$attention")"
+  jq -cn --arg day "$day" --arg level "$level" --arg reason "$reason" --argjson start "$start" --argjson now "$now" \
+    --argjson releases "$releases" --argjson progress "$progress" --argjson efficiency "$efficiency" \
+    --argjson spend "$spend" --argjson quality "$quality" --argjson decisions "$decisions" \
+    --argjson attention "$attention" \
+    '{report_day:$day,conclusion:{level:$level,reason:$reason},window:{start:$start,end:$now},
+      releases:$releases,progress:$progress,efficiency:$efficiency,spend:$spend,
+      quality:$quality,decisions:$decisions,attention:$attention}'
+}
+
+# maintainer_health_mail_conclusion_facts <releases> <progress> <quality> <decisions> <attention>
+# Prints "<level><TAB><reason>".
+maintainer_health_mail_conclusion_facts() {
+  local releases="$1" progress="$2" quality="$3" decisions="$4" attention="$5"
+  jq -r --arg sep $'\t' '
+    . as $ctx
+    | if $ctx.quality.incidents_open > 0 then
+        "出事了\($sep)仍有 \($ctx.quality.incidents_open) 起线上事故没有恢复"
+      elif ($ctx.quality.incidents_period // 0) > 0 then
+        "出事了\($sep)过去一天发生 \($ctx.quality.incidents_period) 起线上事故，现均已恢复"
+      elif $ctx.attention != null and $ctx.attention > 0 then
+        "有风险\($sep)有 \($ctx.attention) 项运行指标需要留意"
+      elif $ctx.quality.incidents_open == null or $ctx.quality.incidents_period == null then
+        "有风险\($sep)线上事故记录未能核实"
+      elif $ctx.attention == null then
+        "有风险\($sep)当前运行状态未能核实"
+      elif $ctx.releases.period_count == null or $ctx.releases.complete != true then
+        "有风险\($sep)上线记录不完整，无法确认本期上线情况"
+      elif $ctx.progress.awaiting_total == null then
+        "有风险\($sep)待上线需求数量未能核实"
+      elif ($ctx.progress.awaiting_total // 0) > 0 and ((($ctx.releases.last_at // null) == null) or (($ctx.releases.period_count // 0) == 0)) then
+        "有风险\($sep)\($ctx.progress.awaiting_total) 个做完的需求还在等上线"
+      else
+        (if (($ctx.releases.period_count // 0) > 0)
+         then "正常\($sep)过去一天上线 \($ctx.releases.period_count) 个需求，没有线上事故"
+         else "正常\($sep)过去一天上线 0 个需求，没有线上事故，也没有待上线积压" end)
+      end
+  ' <<< "$(jq -cn --argjson releases "$releases" --argjson progress "$progress" --argjson quality "$quality" --argjson decisions "$decisions" --argjson attention "$attention" \
+    '{releases:$releases,progress:$progress,quality:$quality,decisions:$decisions,attention:$attention}')"
+}
+
+maintainer_health_mail_date_time() {
+  [[ "$1" =~ ^[0-9]{10,}$ ]] && (( $1 >= 946684800 )) || { printf '时间待核实'; return 0; }
+  maintainer_local_time "$1"
+}
+
+maintainer_health_mail_release_lines() {
+  local home="$1" start="$2" end="$3" deployments complete period_file issues_file rows issue_ids issue title at local_time
+  deployments="$(maintainer_health_mail_deployment_catalog "$home")" || return 1
+  if [ "$deployments" = null ]; then
+    printf -- '- 上线记录待核实，无法确认本期上线内容。\n'
+    return 0
+  fi
+  complete="$(jq -r '.complete' <<< "$deployments")" || return 1
+  if [ "$complete" != true ]; then
+    printf -- '- 上线时间待核实，无法确认本期上线内容。\n'
+  fi
+  period_file="$(mktemp)" || return 1
+  printf '{"start":%s,"end":%s}\n' "$start" "$end" > "$period_file"
+  deployments="$(jq -cn --argjson period "$(cat "$period_file")" --argjson releases "$deployments" \
+    '[$releases.deployments[] | select(.at >= $period.start and .at < $period.end)]')" || { rm -f -- "$period_file"; return 1; }
+  rm -f -- "$period_file"
+  [ "$(jq -r 'length' <<< "$deployments")" -gt 0 ] || return 0
+  issue_ids="$(jq -c '[.[].issue | tonumber] | unique' <<< "$deployments")" || return 1
+  issues_file="$(mktemp)" || return 1
+  if ! maintainer_health_mail_issue_catalog "$issue_ids" > "$issues_file"; then
+    while IFS=$'\t' read -r issue at; do
+      local_time="$(maintainer_health_mail_date_time "$at")" || { rm -f -- "$issues_file"; return 1; }
+      printf -- '- 已确认一项改进于%s上线；事项名称待核实。\n' "$local_time"
+    done < <(jq -nr --argjson releases "$deployments" '$releases[] | [.issue,.at] | @tsv')
+    rm -f -- "$issues_file"
+    return 0
+  fi
+  rows="$(jq -nr --slurpfile issues "$issues_file" --argjson releases "$deployments" '
+    $releases[] as $release
+    | ([$issues[0][] | select((.number|tostring) == $release.issue)][0] // null) as $issue
+    | select($issue == null or (all($issue.labels[]?.name; . != "pipeline-system")))
+    | [$release.issue, ($issue.title // ""), $release.at] | @tsv
+  ' 2>/dev/null)" || { rm -f -- "$issues_file"; return 1; }
+  while IFS=$'\t' read -r issue title at; do
+    [ -n "$issue" ] || continue
+    if [ -n "$title" ]; then title="现在可以使用「$(maintainer_health_mail_plain_title "$title")」"
+    else title='已确认一项改进；事项名称待核实。'; fi
+    local_time="$(maintainer_health_mail_date_time "$at")" || { rm -f -- "$issues_file"; return 1; }
+    printf -- '- %s；%s 上线的版本。\n' "$title" "$local_time"
+  done <<< "$rows"
+  rm -f -- "$issues_file"
+}
+
+maintainer_health_mail_no_launch_reason() {
+  printf '没有新版本通过上线验证'
+}
+
+maintainer_health_mail_no_work_reason() {
+  local active="${1:-null}" queued="${2:-null}"
+  [[ "$active" =~ ^[0-9]+$ ]] && (( active == 0 )) || return 0
+  case "$queued" in
+    0) printf '当前无人处理：没有符合条件的待办事项。' ;;
+    ''|null) printf '当前无人处理：待领取队列状态待核实。' ;;
+    *[!0-9]*) printf '当前无人处理：待领取队列状态待核实。' ;;
+    *) printf '当前无人处理：仍有待领取事项在队列中。' ;;
+  esac
+}
+
+maintainer_health_mail_current_anomalies() {
+  local home="$1" now="$2" user_home runtime_dir scorecard generated sampled_epoch age result
+  user_home="${home%/.zenoforge}"
+  [ "$user_home" != "$home" ] || user_home="$home"
+  runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${ZF_MAC_AUTOPILOT_RUNTIME_DIR:-$user_home/.scratch-supervisor/autopi}}"
+  scorecard="$runtime_dir/node-health.json"
+  [ -r "$scorecard" ] || { printf '调度评分样本待补'; return 0; }
+  generated="$(jq -r '.generated // empty' "$scorecard" 2>/dev/null || true)"
+  sampled_epoch="$(agent_epoch -u "$generated" 2>/dev/null || true)"
+  if ! [[ "$sampled_epoch" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]]; then
+    printf '调度评分样本待补'
+    return 0
+  fi
+  age=$((now - sampled_epoch))
+  if (( age < 0 || age > 43200 )) || ! jq -e '.metrics | type == "array"' "$scorecard" >/dev/null 2>&1; then
+    printf '调度评分样本待补'
+    return 0
+  fi
+  result="$(jq -r '[.metrics[] | select(.status == "UNHEALTHY") | (.desc // "调度指标异常")] | .[:5] | if length == 0 then "未发现超出健康线的调度指标" else "超出健康线的调度指标：" + join("；") end' "$scorecard")" || return 1
+  printf '%s' "$result"
+}
+
+maintainer_health_mail_contract_inbox() {
+  local home="$1" reason="$2"
+  AGENT_HOME="$home" supervisor_inbox_append_once "founder-mail-output-contract:$reason" \
+    "founder-mail-output-contract status=failed rules=$reason"
+}
+
+maintainer_health_mail_deliver() {
+  local ledger="$1" now="$2" slot="$3" subject="$4" body="$5" events="$6" claim home contract_errors isolated row key reason
+  home="${ledger%/night/founder-health-mail.json}"
+  if ! contract_errors="$(maintainer_health_mail_output_contract "$body" "$now")"; then
+    isolated="$(maintainer_health_mail_output_contract "$body" "$now" isolate-lines)" || return 1
+    while IFS= read -r row; do
+      key="$(jq -r '.key' <<< "$row")" || return 1
+      reason="$(jq -r '.reason' <<< "$row")" || return 1
+      if ! jq -e --arg key "$key" '(.reported_items // {}) | has($key)' "$ledger" >/dev/null; then
+        AGENT_HOME="$home" supervisor_inbox_append_once "founder-mail-item-rejected:$key" \
+          "founder-mail-item-rejected key=$key reason=$reason 不可读行已隔离，其他邮件内容继续发送" || return 1
+        maintainer_health_mail_mark_reported "$ledger" "$key" "$now" "$reason" || return 1
+      fi
+    done < <(jq -c '.rejected[]' <<< "$isolated")
+    body="$(jq -r '.body' <<< "$isolated")" || return 1
+    if ! contract_errors="$(maintainer_health_mail_output_contract "$body" "$now")"; then
+      maintainer_health_mail_contract_inbox "$home" "${contract_errors:-validator-failed}" || return 1
+      return 1
+    fi
+  fi
+  claim="$(maintainer_health_mail_claim_digest "$ledger" "$slot" "$now" "$events")" || return 1
+  [ "$claim" = reserved ] || return 0
+  if notify_maintainer_health "$subject" "$body"; then
+    maintainer_health_mail_mark_sent "$ledger" "$now"
+    return $?
+  fi
+  if [ "${NOTIFY_LAST_SEND_RETRY_SAFE:-0}" = 1 ]; then
+    maintainer_health_mail_release_digest "$ledger" "$slot" >/dev/null || return 1
+  fi
+  return 1
+}
+
+maintainer_health_mail_tick() {
+  local home="$1" now="${2:-$(date +%s)}" ledger
+  local slot last_slot events repo_root facts subject body
+  ledger="$home/night/founder-health-mail.json"
+  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
+  maintainer_health_mail_incident_tick "$ledger" "$now" || return 1
+  # A tick killed after claiming its slot (timeout) leaves the slot reserved and the events marked reported: release stale claims.
+  if jq -e --argjson now "$now" '.last_digest_claim != null and ($now - .last_digest_attempted_at > 900)' "$ledger" >/dev/null; then
+    maintainer_health_mail_release_digest "$ledger" "$(jq -r '.last_digest_slot' "$ledger")" >/dev/null || return 1
+  fi
+  slot="$(maintainer_health_mail_slot_key "$now")" || return 1
+  last_slot="$(jq -r '.last_digest_slot' "$ledger")" || return 1
+  [ "$slot" != "$last_slot" ] || return 0
+  # The daily report consumes every queued change notice: its sections are
+  # computed from the primary records, so the notices are marked reported here
+  # and never repeat in a later report.
+  events="$(jq -c '[.pending_events // {} | to_entries[] | .value] | sort_by([.section,.created_at,.key])' "$ledger")" || return 1
+  repo_root="${ZF_REPO_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)}"
+  facts="$(maintainer_health_mail_daily_facts "$home" "$ledger" "$now" "$repo_root")" || return 1
+  subject="$(maintainer_health_mail_subject "$facts")" || return 1
+  body="$(maintainer_health_mail_build_body "$facts")" || return 1
+  maintainer_health_mail_deliver "$ledger" "$now" "$slot" "$subject" "$body" "$events"
+}
+
+
+# --- Perf-report helpers ---------------------------------------------------------
+# The helpers below feed engine/night/daily-perf-report.sh (its own daily file
+# and supervisor notes). They are not part of the owner mail.
 
 maintainer_health_mail_alert_stats() {
   local agent_dir="$1" end_epoch="$2" repo_root="$3" end_iso since_iso day offset
@@ -1427,271 +1611,155 @@ maintainer_health_mail_metric_lines() {
   fi
 }
 
-maintainer_health_mail_date_time() {
-  [[ "$1" =~ ^[0-9]{10,}$ ]] && (( $1 >= 946684800 )) || { printf '时间待核实'; return 0; }
-  maintainer_local_time "$1"
-}
-
-maintainer_health_mail_elapsed() {
-  local since="$1" now="$2" seconds minutes
-  [[ "$since" =~ ^[0-9]{10,}$ && "$now" =~ ^[0-9]+$ ]] && (( since >= 946684800 )) || { printf '持续时间待核实'; return 0; }
-  seconds=$((now - since))
-  (( seconds < 0 )) && seconds=0
-  minutes=$((seconds / 60))
-  if (( minutes < 60 )); then printf '约%d分钟' "$minutes"
-  else printf '约%d小时' "$((minutes / 60))"; fi
-}
-
-maintainer_health_mail_anomaly_sentence() {
-  local node="$1" action="$2" since="$3" now="$4" when elapsed shown_since
-  if [[ "$since" =~ ^[0-9]{10,}$ && "$now" =~ ^[0-9]+$ ]] && (( since >= 946684800 && since <= now )); then
-    shown_since=$((since / 60 * 60))
-    when="自$(maintainer_health_mail_date_time "$shown_since")起"
-    elapsed="$(maintainer_health_mail_elapsed "$shown_since" "$now")"
+maintainer_health_mail_metrics_json() {
+  local home="$1" mode="$2" anchor="$3" as_of="$4" work="${5:-}" current_start current_end previous_start previous_end week_start week_end earliest interval
+  local current_day_end
+  local periods_file work_file activity_json
+  local -a metric_files=()
+  interval="$(maintainer_health_mail_digest_interval_seconds)" || return 1
+  current_start="$(date -u -d "$anchor 00:00:00" +%s)" || return 1
+  current_day_end="$(date -u -d "$anchor +1 day 00:00:00" +%s)" || return 1
+  current_end="$current_day_end"
+  (( as_of < current_end )) && current_end="$as_of"
+  previous_start="$(date -u -d "$anchor -1 day 00:00:00" +%s)" || return 1
+  previous_end="$current_start"
+  week_start="$(date -u -d "$anchor -7 days 00:00:00" +%s)" || return 1
+  week_end="$(date -u -d "$anchor -6 days 00:00:00" +%s)" || return 1
+  periods_file="$(mktemp)" || return 1
+  work_file="$(mktemp)" || { rm -f -- "$periods_file"; return 1; }
+  printf '{"current":{"start":%s,"end":%s},"previous":{"start":%s,"end":%s},"week":{"start":%s,"end":%s}}\n' \
+    "$current_start" "$current_end" "$previous_start" "$previous_end" "$week_start" "$week_end" > "$periods_file"
+  if [ -z "$work" ]; then work="$(maintainer_health_mail_work_counts "$home" "$as_of")" || work='{"active":null,"queued":null}'; fi
+  printf '%s\n' "$work" > "$work_file"
+  shopt -s nullglob
+  metric_files=("$home"/metrics/efficiency-????-??.jsonl)
+  shopt -u nullglob
+  if ((${#metric_files[@]})); then
+    activity_json="$(jq -sc --slurpfile periods "$periods_file" --slurpfile work "$work_file" '
+      def epoch: try fromdateiso8601 catch null;
+      def record_epoch: (.ts // .sampled_at // "") | try fromdateiso8601 catch null;
+      def within($window): . as $row | ($row | record_epoch) as $at
+        | ($at != null and $at >= $window.start and $at < $window.end);
+      def events($rows; $type; $window): [$rows[] | select(.record_type == "event" and .event_type == $type and within($window))]
+        | unique_by(.event_id // ([.event_type,.issue,.ts] | map(tostring) | join("|")));
+      def stats($rows; $window):
+        events($rows; "ticket-created"; $window) as $created_rows
+        | events($rows; "github-closed"; $window) as $closed_rows
+        | events($rows; "ticket-released"; $window) as $released_rows
+        | ([$released_rows[] as $release
+            | ($release | record_epoch) as $release_at
+            | ([$rows[] | select(.record_type == "event" and .event_type == "ticket-created"
+                and (.issue|tostring) == ($release.issue|tostring)
+                and ((. | record_epoch) != null) and ((. | record_epoch) <= $release_at))]
+               | min_by(.ts) // null) as $created
+            | if $created == null then null else ($release_at - ($created | record_epoch)) / 3600 end]) as $lead_times
+        | [$lead_times[] | select(type == "number")] as $known_lead_times
+        | {launched:($released_rows|length),created:($created_rows|length),closed:($closed_rows|length),
+           backlog:(($created_rows|length)-($closed_rows|length)),
+           average_hours:(if ($known_lead_times|length)==0 then null
+             else (($known_lead_times|add)/($known_lead_times|length)*10|round)/10 end),
+           average_hours_reason:(if ($released_rows|length)==0 then "本期无上线事项"
+             elif ($known_lead_times|length)==0 then "提出记录待核实" else "" end)};
+      (flatten | map(select(type == "object"))) as $all_rows
+      | ($periods[0]) as $p | ($work[0]) as $w
+      | {current:stats($all_rows;$p.current),previous:stats($all_rows;$p.previous),week:stats($all_rows;$p.week),
+         work:{active:$w.active,queued:$w.queued},periods:$p}
+    ' "${metric_files[@]}")" || { rm -f -- "$periods_file" "$work_file"; return 1; }
   else
-    when='开始时间暂无数据'
-    elapsed=''
+    activity_json='{"current":{"launched":null,"created":null,"closed":null,"backlog":null,"average_hours":null,"average_hours_reason":"上线记录待核实"},"previous":{"launched":null,"created":null,"closed":null,"backlog":null,"average_hours":null,"average_hours_reason":"上线记录待核实"},"week":{"launched":null,"created":null,"closed":null,"backlog":null,"average_hours":null,"average_hours_reason":"上线记录待核实"},"work":{"active":null,"queued":null}}'
   fi
-  if [ "$action" = recovery ]; then
-    case "$node" in
-      implement) printf '已恢复：GitHub 连接已恢复，开发已继续。' ;;
-      egress) printf '已恢复：网络连接已恢复，交付已继续。' ;;
-      merge) printf '已恢复：合入检查已恢复，团队可以继续提交变更。' ;;
-      postsubmit|build|deploy) printf '已恢复：上线检查已恢复，版本继续验证。' ;;
-      advisor) printf '已恢复：业务评审已恢复，评审继续。' ;;
-      rulings) printf '已恢复：规则检查已恢复，处理继续。' ;;
-      *) printf '已恢复：处理已恢复，工作继续。' ;;
-    esac
+  printf '%s\n' "$activity_json"
+  rm -f -- "$periods_file" "$work_file"
+}
+
+maintainer_health_mail_efficiency_block() {
+  local home="$1" mode="$2" anchor="$3" now="$4" work="${5:-}" data
+  if [ -z "$work" ]; then work="$(maintainer_health_mail_work_counts "$home" "$now")" || work='{"active":null,"queued":null}'; fi
+  data="$(maintainer_health_mail_metrics_json "$home" "$mode" "$anchor" "$now" "$work")" || return 1
+  maintainer_health_mail_render_efficiency "$data" "$mode"
+}
+
+maintainer_health_mail_render_efficiency() {
+  local data="$1" mode="$2" mode_file status
+  mode_file="$(mktemp)" || return 1
+  printf '"%s"\n' "$mode" > "$mode_file"
+  jq -r --slurpfile render_mode "$mode_file" '
+    def value($n; $unit; $reason): if $n == null then $reason else ($n|tostring) + $unit end;
+    def change($current; $old; $unit; $reason):
+      if $current == null then $reason
+      elif $old == null then "缺少对比数据"
+      elif $old <= 0 then ($current - $old) as $delta
+        | (if $delta > 0 then "+" else "" end) + ($delta|tostring) + $unit
+      else (($current - $old) / $old * 100 | round) as $percent
+        | (if $percent > 0 then "↑" elif $percent < 0 then "↓" else "→" end)
+          + (($percent|if . < 0 then -. else . end)|tostring) + "%（上期" + ($old|tostring) + $unit + "）"
+      end;
+    def row($label; $key; $unit; $reason):
+      "| " + $label + " | " + value(.current[$key];$unit;(.current[$key + "_reason"] // $reason)) + " | "
+      + change(.current[$key];.previous[$key];$unit;(.current[$key + "_reason"] // $reason)) + " | "
+      + change(.current[$key];.week[$key];$unit;(.current[$key + "_reason"] // $reason)) + " |";
+    def work_value: if .work.active == null or .work.queued == null then "工作数量待核实"
+      else (.work.active|tostring) + "/" + (.work.queued|tostring) + "项" end;
+    def work_change: if .work.active == null or .work.queued == null then "工作数量待核实" else "工作数量仅展示当前" end;
+    "效率对比（本期：报告日；环比：前一日；同比：上周同日）\n"
+    + "| 指标 | 本期 | 环比 | 同比 |\n| --- | ---: | --- | --- |\n"
+    + row("上线的改进项数";"launched";"项";"上线记录待核实") + "\n"
+    + row("关闭的事项";"closed";"项";"关闭记录待核实") + "\n"
+    + row("新增事项";"created";"项";"新增记录待核实") + "\n"
+    + row("积压增减";"backlog";"项";"积压数据待核实") + "\n"
+    + row("平均从提出到上线";"average_hours";"小时";"上线记录待核实") + "\n"
+    + "| 正在做/排队 | " + work_value + " | "
+    + work_change + " | " + work_change + " |"
+  ' <<< "$data"
+  status=$?
+  rm -f -- "$mode_file"
+  return "$status"
+}
+
+maintainer_health_mail_pipeline_efficiency_block() {
+  local home="$1" period="$2" anchor="$3" script_dir report now_iso
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
+  if ! report="$(node "$script_dir/efficiency-regression.mjs" daily --home "$home" --day "$anchor" --read-only 2>/dev/null)"; then
+    printf '**流水线效率**\n- 最慢环节：统计样本待补。\n- 最慢检查：统计样本待补。'
     return 0
   fi
-  case "$node" in
-    implement) printf '开发暂停，%s%s：连接 GitHub 的网络时断时续，网络恢复后自动继续。' "$when" "${elapsed:+$elapsed}" ;;
-    egress) printf '网络连接不稳定，%s%s；恢复后交付继续。' "$when" "${elapsed:+$elapsed}" ;;
-    merge) printf '变更合入暂停，%s%s：部分检查未通过，安排处理后继续。' "$when" "${elapsed:+$elapsed}" ;;
-    postsubmit) printf '上线验证暂停，%s%s：主干检查结果异常，修复后继续验证。' "$when" "${elapsed:+$elapsed}" ;;
-    build) printf '版本构建暂停，%s%s：上线前检查尚未通过，修复后继续。' "$when" "${elapsed:+$elapsed}" ;;
-    deploy) printf '版本上线暂停，%s%s：生产验证未完成，检查通过后继续。' "$when" "${elapsed:+$elapsed}" ;;
-    advisor) printf '业务评审暂停，%s%s：评审服务暂不可用，恢复后自动继续。' "$when" "${elapsed:+$elapsed}" ;;
-    rulings) printf '规则检查暂停，%s%s：检查未完成，修复后继续。' "$when" "${elapsed:+$elapsed}" ;;
-    *) printf '团队工作暂停，%s%s：检查未完成，修复后继续。' "$when" "${elapsed:+$elapsed}" ;;
-  esac
+  jq -r '
+    def duration($seconds):
+      if $seconds == null then "样本待补"
+      else (($seconds / 3600 * 10 | round) / 10) as $hours
+        | if $hours >= 1 then "\($hours)小时"
+          else ((($seconds / 60 * 10 | round) / 10) | tostring) + "分钟" end
+      end;
+    def change($current; $previous):
+      if $previous == null then "缺少前期样本"
+      elif $current == $previous then "持平"
+      elif $previous == 0 then (if $current > $previous then "增加" + duration($current - $previous) else "缩短" + duration($previous - $current) end)
+      elif $current > $previous then
+        "增加" + (((($current - $previous) / ($previous|abs) * 100) | round) | tostring) + "%"
+      else
+        "缩短" + (((($previous - $current) / ($previous|abs) * 100) | round) | tostring) + "%"
+      end;
+    (.slowest_nodes // [] | .[0] // null) as $stage
+    | (.slowest_checks // [] | .[0] // null) as $check
+    | "**流水线效率**\n"
+      + (if $stage == null then "- 最慢环节：本期无环节样本。"
+         else "- 最慢环节：\($stage.label)，均值 \(duration($stage.mean_seconds))；前一日 "
+           + change($stage.mean_seconds;$stage.comparison.previous_mean_seconds)
+           + "；上周 " + change($stage.mean_seconds;$stage.comparison.seven_day_mean_seconds) + "。" end)
+      + "\n"
+      + (if $check == null then "- 最慢检查：本期无检查样本。"
+         else ($check.slowest_metric // "run") as $metric
+           | $check[$metric] as $measure
+           | "- 最慢检查：\($check.label)\(if $metric == "queue" then "排队" else "运行" end)，均值 \(duration($measure.mean_seconds))；前一日 "
+             + change($measure.mean_seconds;$measure.comparison.previous_mean_seconds)
+             + "；上周 " + change($measure.mean_seconds;$measure.comparison.seven_day_mean_seconds) + "。" end)
+  ' <<< "$report"
 }
 
-maintainer_health_mail_no_launch_reason() {
-  printf '没有新版本通过上线验证'
-}
-
-maintainer_health_mail_no_work_reason() {
-  local active="${1:-null}" queued="${2:-null}"
-  [[ "$active" =~ ^[0-9]+$ ]] && (( active == 0 )) || return 0
-  case "$queued" in
-    0) printf '当前无人处理：没有符合条件的待办事项。' ;;
-    ''|null) printf '当前无人处理：待领取队列状态待核实。' ;;
-    *[!0-9]*) printf '当前无人处理：待领取队列状态待核实。' ;;
-    *) printf '当前无人处理：仍有待领取事项在队列中。' ;;
-  esac
-}
-
-maintainer_health_mail_current_anomalies() {
-  local home="$1" now="$2" user_home runtime_dir scorecard generated sampled_epoch age result
-  user_home="${home%/.zenoforge}"
-  [ "$user_home" != "$home" ] || user_home="$home"
-  runtime_dir="${MAC_AUTOPILOT_RUNTIME_DIR:-${ZF_MAC_AUTOPILOT_RUNTIME_DIR:-$user_home/.scratch-supervisor/autopi}}"
-  scorecard="$runtime_dir/node-health.json"
-  [ -r "$scorecard" ] || { printf '调度评分样本待补'; return 0; }
-  generated="$(jq -r '.generated // empty' "$scorecard" 2>/dev/null || true)"
-  sampled_epoch="$(agent_epoch -u "$generated" 2>/dev/null || true)"
-  if ! [[ "$sampled_epoch" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]]; then
-    printf '调度评分样本待补'
-    return 0
-  fi
-  age=$((now - sampled_epoch))
-  if (( age < 0 || age > 43200 )) || ! jq -e '.metrics | type == "array"' "$scorecard" >/dev/null 2>&1; then
-    printf '调度评分样本待补'
-    return 0
-  fi
-  result="$(jq -r '[.metrics[] | select(.status == "UNHEALTHY") | (.desc // "调度指标异常")] | .[:5] | if length == 0 then "未发现超出健康线的调度指标" else "超出健康线的调度指标：" + join("；") end' "$scorecard")" || return 1
-  printf '%s' "$result"
-}
-
-maintainer_health_mail_release_lines() {
-  local home="$1" start="$2" end="$3" deployments complete period_file issues_file rows issue_ids issue title at local_time
-  deployments="$(maintainer_health_mail_deployment_catalog "$home")" || return 1
-  if [ "$deployments" = null ]; then
-    printf -- '- 上线记录待核实，无法确认本期上线内容。\n'
-    return 0
-  fi
-  complete="$(jq -r '.complete' <<< "$deployments")" || return 1
-  if [ "$complete" != true ]; then
-    printf -- '- 上线时间待核实，无法确认本期上线内容。\n'
-  fi
-  period_file="$(mktemp)" || return 1
-  printf '{"start":%s,"end":%s}\n' "$start" "$end" > "$period_file"
-  deployments="$(jq -cn --argjson period "$(cat "$period_file")" --argjson releases "$deployments" \
-    '[$releases.deployments[] | select(.at >= $period.start and .at < $period.end)]')" || { rm -f -- "$period_file"; return 1; }
-  rm -f -- "$period_file"
-  [ "$(jq -r 'length' <<< "$deployments")" -gt 0 ] || return 0
-  issue_ids="$(jq -c '[.[].issue | tonumber] | unique' <<< "$deployments")" || return 1
-  issues_file="$(mktemp)" || return 1
-  if ! maintainer_health_mail_issue_catalog "$issue_ids" > "$issues_file"; then
-    while IFS=$'\t' read -r issue at; do
-      local_time="$(maintainer_health_mail_date_time "$at")" || { rm -f -- "$issues_file"; return 1; }
-      printf -- '- 已确认一项改进于%s上线；事项名称待核实。\n' "$local_time"
-    done < <(jq -nr --argjson releases "$deployments" '$releases[] | [.issue,.at] | @tsv')
-    rm -f -- "$issues_file"
-    return 0
-  fi
-  rows="$(jq -nr --slurpfile issues "$issues_file" --argjson releases "$deployments" '
-    $releases[] as $release
-    | ([$issues[0][] | select((.number|tostring) == $release.issue)][0] // null) as $issue
-    | select($issue == null or (all($issue.labels[]?.name; . != "pipeline-system")))
-    | [$release.issue, ($issue.title // ""), $release.at] | @tsv
-  ' 2>/dev/null)" || { rm -f -- "$issues_file"; return 1; }
-  while IFS=$'\t' read -r issue title at; do
-    [ -n "$issue" ] || continue
-    if [ -n "$title" ]; then title="现在可以使用「$(maintainer_health_mail_plain_title "$title")」"
-    else title='已确认一项改进；事项名称待核实。'; fi
-    local_time="$(maintainer_health_mail_date_time "$at")" || { rm -f -- "$issues_file"; return 1; }
-    printf -- '- %s；%s 上线的版本。\n' "$title" "$local_time"
-  done <<< "$rows"
-  rm -f -- "$issues_file"
-}
-
-maintainer_health_mail_event_rejection_reason() {
-  local section="$1" text="$2"
-  text="$(maintainer_health_mail_scrub_text "$text")" || return 1
-  if ! looks_like_maintainer_readable "$text" 0; then
-    printf 'body-language\n'
-    return 0
-  fi
-  maintainer_mail_rejection_reason health '工作进展简报' \
-    "$(printf '**结论：** 本次有 1 项新变化。\n\n**%s**\n%s\n' "$section" "$text")"
-}
-
-maintainer_health_mail_filter_events() {
-  local events="$1" home="$2" now="${3:-$(date +%s)}" event key section text reason accepted='[]'
-  local -a rows=()
-  mapfile -t rows < <(jq -c '.[]' <<< "$events")
-  for event in "${rows[@]}"; do
-    key="$(jq -r '.key' <<< "$event")" || return 1
-    section="$(jq -r '.section' <<< "$event")" || return 1
-    text="$(jq -r '.text' <<< "$event")" || return 1
-    reason="$(maintainer_health_mail_event_rejection_reason "$section" "$text")" || return 1
-    if [ -n "$reason" ]; then
-      printf 'maintainer health mail: dropped key=%s reason=%s\n' "$key" "$reason" >&2
-      AGENT_HOME="$home" supervisor_inbox_append_once "founder-mail-item-rejected:$key" \
-        "founder-mail-item-rejected key=$key reason=$reason 不可读条目已隔离，其他邮件内容继续发送" || return 1
-      maintainer_health_mail_mark_reported "$home/night/founder-health-mail.json" "$key" "$now" "$reason" || return 1
-      continue
-    fi
-    accepted="$(jq -c --argjson event "$event" '. + [$event]' <<< "$accepted")" || return 1
-  done
-  printf '%s\n' "$accepted"
-}
-
-maintainer_health_mail_normalize_events() {
-  local events="$1" now="$2" row key node opened section text normalized
-  local -a nodes=()
-  mapfile -t nodes < <(jq -r '
-    [.[] | (try ((.key // "") | capture("^node:(?<node>[^:]+):alert:(?<since>[0-9]+)$").node) catch null),
-      (try ((.reminder_for // "") | capture("^node-important:(?<node>[^:]+):(?<since>[0-9]+)$").node) catch null)]
-    | map(select(type == "string")) | unique[]
-  ' <<< "$events")
-  normalized="$events"
-  for node in "${nodes[@]}"; do
-    row="$(jq -c --arg node "$node" '
-      [.[] as $event
-        | ($event.key // "") as $key
-        | ($event.reminder_for // "") as $reminder
-        | (if ($key | test("^node:" + $node + ":alert:[0-9]+$"))
-           then ($key | capture("^node:" + $node + ":alert:(?<since>[0-9]+)$").since)
-           elif ($reminder | test("^node-important:" + $node + ":[0-9]+$"))
-           then ($reminder | capture("^node-important:" + $node + ":(?<since>[0-9]+)$").since)
-           else null end) as $since
-        | select($since != null) | {event:$event,since:($since|tonumber)}]
-      | sort_by(if .since > 0 then [0,.since] else [1,0] end) | .[0] // null
-    ' <<< "$normalized")" || return 1
-    [ "$row" != null ] || continue
-    opened="$(jq -r '.since' <<< "$row")"
-    section=处理变化
-    if jq -e --arg node "$node" 'any(.[]; ((.reminder_for // "") | startswith("node-important:" + $node + ":")))' \
-      <<< "$normalized" >/dev/null; then section=仍在处理; fi
-    text="$(maintainer_health_mail_anomaly_sentence "$node" open "$opened" "$now")" || return 1
-    normalized="$(jq -c --arg node "$node" --arg section "$section" --arg text "$text" --argjson opened "$opened" '
-      [.[] | select(((.key // "") | test("^node:" + $node + ":alert:")) | not)
-        | select(((.reminder_for // "") | startswith("node-important:" + $node + ":")) | not)]
-      + [{key:("normalized-open:" + $node),section:$section,text:$text,kind:"node",created_at:$opened,reminder_for:"",highlight:false}]
-    ' <<< "$normalized")" || return 1
-  done
-  normalized="$(jq -c --argjson now "$now" '
-    map(if (.kind == "reminder" and ((.reminder_for // "") | startswith("node-important:") | not))
-      then .text |= (gsub("（已持续[[:space:]]*[0-9]+[[:space:]]*小时）"; "")
-        | gsub("^[[:space:]]*仍在处理[：:][[:space:]]*"; ""))
-      else . end)
-    | sort_by([.section,.created_at,.key])
-  ' <<< "$normalized")" || return 1
-  printf '%s\n' "$normalized"
-}
-
-maintainer_health_mail_build_body() {
-  local events="$1" efficiency="${2:-}" launch_reason="${3:-没有新版本通过上线验证}" work_reason="${4:-}" pipeline_efficiency="${5:-}" now="${6:-$(date +%s)}" count closed highlights rest live_lines
-  count="$(jq -r '[.[] | select(.kind != "efficiency")] | length' <<< "$events")" || return 1
-  count=$((count + ${MAINTAINER_HEALTH_MAIL_EFFICIENCY_CHANGE_COUNT:-0}))
-  (( count > 0 )) || return 1
-  events="$(maintainer_health_mail_normalize_events "$events" "$now")" || return 1
-  events="$(jq '
-    map(. as $event | .text |= (gsub("^[[:space:]]*" + ($event.section // "") + "[：:][[:space:]]*"; "")
-      | gsub("^[[:space:]]*-[[:space:]]*" + ($event.section // "") + "[：:][[:space:]]*"; "")
-      | gsub("#[[:space:]]*[0-9]+"; "")
-      | gsub("[[:xdigit:]]{7,}"; "")
-      | gsub("(?i)implement"; "开发")
-      | gsub("(?i)canary"; "验证")
-      | gsub("(?i)quarantine"; "暂缓")
-      | gsub("(?i)rulings"; "规则核验")
-      | gsub("(?i)health[[:space:]_-]*node"; "运行状态")
-      | gsub("(?i)health"; "运行状态")
-      | gsub("(?i)slots?"; "时段")
-      | gsub("(?i)owners?"; "负责人")
-      | gsub("(?i)pipeline"; "交付流程")
-      | gsub("(?i)postsubmit"; "上线检查")
-      | gsub("(?i)deploy"; "上线")
-      | gsub("(?i)build"; "构建")
-      | gsub("(?i)merge"; "合入")
-      | gsub("(?i)advisor"; "业务评审")
-      | gsub("(?i)node"; "环节")))
-  ' <<< "$events")" || return 1
-  events="$(jq '
-    map(if ((.kind == "release" or .section == "发布进度") and (.text | test("[A-Za-z]")))
-      then .text = "待上线：这项改进的上线准备尚未完成。" else . end)
-  ' <<< "$events")" || return 1
-  closed="$(jq -r '[.[] | select(.kind == "closed")] | length' <<< "$events")" || return 1
-  count="$(jq -r '[.[] | select(.kind != "efficiency")] | length' <<< "$events")" || return 1
-  count=$((count + ${MAINTAINER_HEALTH_MAIL_EFFICIENCY_CHANGE_COUNT:-0}))
-  highlights="$(jq -r '[.[] | select(.kind == "closed" and .highlight == true) | .text] | .[] | "- " + .' <<< "$events")" || return 1
-  live_lines="$(jq -r '[.[] | select(.kind == "deploy") | .text] | .[] | "- " + .' <<< "$events")" || return 1
-  rest="$(jq -r '
-    [.[] | select(.kind != "closed" and .kind != "deploy" and .kind != "efficiency")] | sort_by([.section,.created_at,.key]) | group_by(.section)
-    | map("**" + .[0].section + "**\n" + (map(if .section == "今日汇总" or .section == "待验收" then .text else "- " + (.text|gsub("\n";"\n  ")) end) | join("\n")))
-    | join("\n\n")
-  ' <<< "$events")" || return 1
-  {
-    if [ -n "$efficiency" ]; then printf '%s\n\n' "$efficiency"; fi
-    printf '**结论：** 本次有 %s 项新变化。\n' "$count"
-    printf '%s\n' "$(maintainer_timezone_note)"
-    printf '\n**上线情况：**\n'
-    if [ -n "$live_lines" ]; then printf '%s\n' "$live_lines"
-    else printf '最近六小时没有上线：%s。\n' "$launch_reason"; fi
-    [ -z "$pipeline_efficiency" ] || printf '\n%s\n' "$pipeline_efficiency"
-    [ -z "$work_reason" ] || printf '\n%s\n' "$work_reason"
-    if (( closed > 0 )); then
-      printf '\n**事项完成：** %s 项\n' "$closed"
-      [ -z "$highlights" ] || printf '%s\n' "$highlights"
-    fi
-    [ -z "$rest" ] || printf '\n%s\n' "$rest"
-  }
-}
-
-maintainer_health_mail_output_contract() {
+# The generic plain-report validator the daily perf report file is checked
+# against. The owner mail has its own contract above; this one keeps the
+# perf-report file's checks unchanged (dates, ids, tables).
+maintainer_health_mail_report_contract() {
   local body="$1" now="$2" maintainer_tz
   maintainer_tz="$(maintainer_timezone)" || { printf 'comms-profile-unreadable'; return 1; }
   printf '%s' "$body" | ZF_MAINTAINER_TZ="$maintainer_tz" python3 -c '
@@ -1717,44 +1785,10 @@ def validate(text):
         errors.add("commit-id")
     if set(re.findall(r"[A-Za-z]+", text)) - {"GitHub"}:
         errors.add("ascii-text")
-    section = None
-    for line in text.splitlines():
-        header = re.fullmatch(r"\*\*(.+?)\*\*", line.strip())
-        if header:
-            section = header.group(1).rstrip("：:")
-            continue
-        if section and re.match(r"^\s*(?:-\s*)?" + re.escape(section) + r"[：:]", line):
-            errors.add("duplicate-prefix")
-        if re.search(r"仍在处理[：:]\s*仍在处理[：:]", line):
-            errors.add("duplicate-prefix")
-
-    # Times in the body are maintainer-local (comms-format.sh maintainer_local_time);
-    # validate them in the same profile timezone so DST days agree.
-    tz = ZoneInfo(os.environ["ZF_MAINTAINER_TZ"])
-    now_dt = datetime.fromtimestamp(now, tz)
-    for match in re.finditer(r"自(\d{1,2})月(\d{1,2})日\s+(\d{2}):(\d{2})起(约\d+(?:小时|分钟))", text):
-        month, day, hour, minute = map(int, match.groups()[:4])
-        try:
-            start = datetime(now_dt.year, month, day, hour, minute, tzinfo=tz)
-            if start > now_dt + timedelta(minutes=1):
-                start = datetime(now_dt.year - 1, month, day, hour, minute, tzinfo=tz)
-            seconds = int((now_dt - start).total_seconds())
-            if seconds < -60:
-                errors.add("future-duration")
-                continue
-            minutes = max(seconds, 0) // 60
-            expected = f"约{minutes}分钟" if minutes < 60 else f"约{minutes // 60}小时"
-            if expected != match.group(5):
-                errors.add("duration-mismatch")
-        except ValueError:
-            errors.add("invalid-duration-start")
-
     reason = re.compile(r"(?:缺少[^，；。]{1,16}(?:数据|样本)|[^，；。]{1,18}(?:待核实|待补|待统计|无样本|没有事项)|本期无.{1,12}事项|工作数量仅展示当前)")
-    # Every comparison table owns its own row count; the mail can contain both schemas.
     table_expected_rows = None
     table_row_count = 0
     table_headers = {
-        "| 指标 | 当前六小时 | 前六小时 | 昨日同时段 |": 8,
         "| 指标 | 本期 | 环比 | 同比 |": 6,
     }
     in_table = False
@@ -1800,84 +1834,11 @@ def validate(text):
         errors.add("metric-table-incomplete")
     return errors
 
-if len(sys.argv) > 2 and sys.argv[2] == "isolate-lines":
-    import json
-    kept, rejected = [], []
-    section, in_table, table_context = "", False, ""
-    for line in text.splitlines():
-        header = re.fullmatch(r"\*\*(.+?)\*\*", line.strip())
-        table_header = bool(re.match(r"^\|\s*指标\s*\|", line.strip()))
-        context = section + "\n" + line if section else line
-        if table_header:
-            if line.strip() in ("| 指标 | 当前六小时 | 前六小时 | 昨日同时段 |", "| 指标 | 本期 | 环比 | 同比 |"):
-                table_context = line.strip()
-                context = line
-            else:
-                table_context = "| 指标 | 本期 | 环比 | 同比 |" if any(value in line for value in ("本期", "环比", "同比")) else "| 指标 | 当前六小时 | 前六小时 | 昨日同时段 |"
-                context = table_context + "\n" + line
-        elif in_table and line.strip().startswith("|"):
-            context = (table_context or "| 指标 | 当前六小时 | 前六小时 | 昨日同时段 |") + "\n" + line
-        errors = validate(context) - {"metric-table-incomplete"}
-        if errors:
-            rejected.append({"key":"output-line:" + line, "reason":",".join(sorted(errors))})
-            if table_header:
-                kept.append(table_context)
-            elif in_table and line.strip().startswith("|"):
-                kept.append("| 统计项目 | 数据待核实 | 数据待核实 | 数据待核实 |")
-        else:
-            kept.append(line)
-        if header:
-            section = line if not errors else ""
-        if table_header:
-            in_table = True
-        elif in_table and line.strip() and not line.strip().startswith("|"):
-            in_table = False
-            table_context = ""
-    print(json.dumps({"body":"\n".join(kept), "rejected":rejected}, ensure_ascii=False))
-else:
-    errors = validate(text)
-    if errors:
-        print(",".join(sorted(errors)))
-        raise SystemExit(1)
-' "$now" "${3:-validate}"
-}
-
-maintainer_health_mail_contract_inbox() {
-  local home="$1" reason="$2"
-  AGENT_HOME="$home" supervisor_inbox_append_once "founder-mail-output-contract:$reason" \
-    "founder-mail-output-contract status=failed rules=$reason"
-}
-
-maintainer_health_mail_deliver() {
-  local ledger="$1" now="$2" slot="$3" subject="$4" body="$5" events="$6" claim home contract_errors isolated row key reason
-  home="${ledger%/night/founder-health-mail.json}"
-  if ! contract_errors="$(maintainer_health_mail_output_contract "$body" "$now")"; then
-    isolated="$(maintainer_health_mail_output_contract "$body" "$now" isolate-lines)" || return 1
-    while IFS= read -r row; do
-      key="$(jq -r '.key' <<< "$row")" || return 1
-      reason="$(jq -r '.reason' <<< "$row")" || return 1
-      if ! jq -e --arg key "$key" '(.reported_items // {}) | has($key)' "$ledger" >/dev/null; then
-        AGENT_HOME="$home" supervisor_inbox_append_once "founder-mail-item-rejected:$key" \
-          "founder-mail-item-rejected key=$key reason=$reason 不可读行已隔离，其他邮件内容继续发送" || return 1
-        maintainer_health_mail_mark_reported "$ledger" "$key" "$now" "$reason" || return 1
-      fi
-    done < <(jq -c '.rejected[]' <<< "$isolated")
-    body="$(jq -r '.body' <<< "$isolated")" || return 1
-    if ! contract_errors="$(maintainer_health_mail_output_contract "$body" "$now")"; then
-      maintainer_health_mail_contract_inbox "$home" "${contract_errors:-validator-failed}" || return 1
-      return 1
-    fi
-  fi
-  claim="$(maintainer_health_mail_claim_digest "$ledger" "$slot" "$now" "$events")" || return 1
-  [ "$claim" = reserved ] || return 0
-  if notify_maintainer_health "$subject" "$body"; then
-    maintainer_health_mail_mark_sent "$ledger" "$now"
-    return $?
-  fi
-  if [ "${NOTIFY_LAST_SEND_RETRY_SAFE:-0}" = 1 ]; then
-    maintainer_health_mail_release_digest "$ledger" "$slot" >/dev/null || return 1
-  fi
-  return 1
+errors = validate(text)
+if errors:
+    print(",".join(sorted(errors)))
+    raise SystemExit(1)
+' "$now"
 }
 
 # Prints credential verdict. Probe output is discarded; only allowlisted
@@ -1949,51 +1910,6 @@ maintainer_health_mail_credential_status() {
   printf '%s %s\n' "$primary_status" "$primary_detail"
 }
 
-maintainer_health_mail_tick() {
-  local home="$1" now="${2:-$(date +%s)}" ledger
-  local slot last_slot last_sent_at interval body events event_count efficiency efficiency_report efficiency_change_count launch_reason work_data active queued work_reason
-  ledger="$home/night/founder-health-mail.json"
-  maintainer_health_mail_ensure_ledger "$ledger" "$now" || return 1
-  maintainer_health_mail_incident_tick "$ledger" "$now" || return 1
-  maintainer_health_mail_collect_outcomes "$ledger" "$home" "$now" || return 1
-  maintainer_health_mail_collect_state_events "$ledger" "$home" "$now" || return 1
-  maintainer_health_mail_acceptance_events "$ledger" "$home" "$now" || return 1
-
-  maintainer_health_mail_collect_reminders "$ledger" "$home" "$now" || return 1
-  # A tick killed after claiming its slot (timeout) leaves the slot reserved and the events marked reported: release stale claims.
-  if jq -e --argjson now "$now" '.last_digest_claim != null and ($now - .last_digest_attempted_at > 900)' "$ledger" >/dev/null; then
-    maintainer_health_mail_release_digest "$ledger" "$(jq -r '.last_digest_slot' "$ledger")" >/dev/null || return 1
-  fi
-  slot="$(maintainer_health_mail_slot_key "$now")" || return 1
-  last_slot="$(jq -r '.last_digest_slot' "$ledger")" || return 1
-  [ "$slot" != "$last_slot" ] || return 0
-  events="$(jq -c '[.pending_events // {} | to_entries[] | .value] | sort_by([.section,.created_at,.key])' "$ledger")" || return 1
-  events="$(maintainer_health_mail_filter_events "$events" "$home" "$now")" || return 1
-  event_count="$(jq -r 'length' <<< "$events")" || return 1
-  interval="$(maintainer_health_mail_digest_interval_seconds)" || return 1
-  last_sent_at="$(jq -r '.last_sent_at' "$ledger")" || return 1
-  if (( last_sent_at > 0 && now - last_sent_at < interval )); then return 0; fi
-  work_data="$(maintainer_health_mail_work_counts "$home" "$now")" || work_data='{"active":null,"queued":null}'
-  active="$(jq -r '.active // "null"' <<< "$work_data")" || active=null
-  queued="$(jq -r '.queued // "null"' <<< "$work_data")" || queued=null
-  efficiency_report="$(maintainer_health_mail_maintainer_efficiency_block "$home" "$now" "$ledger")" || return 1
-  efficiency="$(jq -r '.body' <<< "$efficiency_report")" || return 1
-  efficiency_change_count="$(jq -r '.count' <<< "$efficiency_report")" || return 1
-  MAINTAINER_HEALTH_MAIL_EFFICIENCY_SNAPSHOT="$(jq -c '.snapshot' <<< "$efficiency_report")" || return 1
-  MAINTAINER_HEALTH_MAIL_EFFICIENCY_CHANGE_COUNT="$efficiency_change_count"
-  event_count="$(jq -r '[.[] | select(.kind != "efficiency")] | length' <<< "$events")" || return 1
-  (( event_count > 0 || efficiency_change_count > 0 )) || return 0
-  if (( efficiency_change_count > 0 )) \
-    && ! jq -e 'any(.[]; .kind == "efficiency")' <<< "$events" >/dev/null; then
-    events="$(jq -cn --argjson events "$events" --arg key "efficiency:$now" --argjson now "$now" \
-      '$events + [{key:$key,section:"效率变化",text:"效率指标有新的变化。",kind:"efficiency",highlight:false,created_at:$now}]')" || return 1
-  fi
-  launch_reason="$(maintainer_health_mail_no_launch_reason)"
-  work_reason="$(maintainer_health_mail_no_work_reason "$active" "$queued")"
-  body="$(maintainer_health_mail_build_body "$events" "$efficiency" "$launch_reason" "$work_reason" '' "$now")" || return 1
-  maintainer_health_mail_deliver "$ledger" "$now" "$slot" '工作进展简报' "$body" "$events"
-}
-
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   set -euo pipefail
   source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/config.sh"
@@ -2040,7 +1956,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       text="${4:-}"
       now="${5:-$(date +%s)}"
       [[ -n "$key" && -n "$section" && -n "$text" && "$now" =~ ^[0-9]+$ ]] || {
-        printf 'usage: %s queue-event <key> <section> <text> [epoch] | track-decision <issue-number> <subject> [epoch]\n' "$0" >&2
+        printf 'usage: %s queue-event <key> <section> <text> [epoch] | track-decision <issue-number> <subject> <decision-mail-body> [epoch]\n' "$0" >&2
         exit 2
       }
       maintainer_health_mail_record_event "$ledger" "$key" "$section" "$text" "$now"
@@ -2048,15 +1964,20 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     track-decision)
       issue="${2:-}"
       subject="${3:-}"
-      now="${4:-$(date +%s)}"
+      body="${4:-}"
+      now="${5:-$(date +%s)}"
       [[ "$issue" =~ ^[0-9]+$ && -n "$subject" && "$now" =~ ^[0-9]+$ ]] || {
-        printf 'usage: %s track-decision <issue-number> <subject> [epoch]\n' "$0" >&2
+        printf 'usage: %s track-decision <issue-number> <subject> <decision-mail-body> [epoch]\n' "$0" >&2
         exit 2
       }
-      maintainer_health_mail_track_important "$ledger" "decision:$issue:$subject" decision "$subject" "$issue" "$now"
+      decision_detail="$(maintainer_health_mail_decision_detail "$body")"
+      question="$(jq -r '.question' <<< "$decision_detail")"
+      recommendation="$(jq -r '.recommendation' <<< "$decision_detail")"
+      maintainer_health_mail_track_important "$ledger" "decision:$issue:$subject" decision "$subject" \
+        "$issue" "$now" "$question" "$recommendation"
       ;;
     *)
-      printf 'usage: %s status [epoch] | credential-status | tick | resolve-incident <issue-number> <reason> | queue-event <key> <section> <text> [epoch] | track-decision <issue-number> <subject> [epoch]\n' "$0" >&2
+      printf 'usage: %s status [epoch] | credential-status | tick | resolve-incident <issue-number> <reason> | queue-event <key> <section> <text> [epoch] | track-decision <issue-number> <subject> <decision-mail-body> [epoch]\n' "$0" >&2
       exit 2
       ;;
   esac

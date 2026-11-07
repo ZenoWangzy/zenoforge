@@ -179,7 +179,7 @@ The unit files are in `engine/systemd/`:
 | `zenoforge-agent` | every 5 min | `engine/run-tick.sh` (issue loop) | Install this one first |
 | `zenoforge-supervisor` | every 10 min (first run after 2 min) | `engine/supervise-pipeline.sh` | Acts only when `AGENT_SUPERVISOR` is `act` |
 | `zenoforge-health-maintenance` | every 10 min | `engine/night/health-maintenance.sh maintenance` | Bounded health checks |
-| `zenoforge-health-mail` | every 6 h | `engine/night/health-maintenance.sh maintainer-mail` | Sends mail. Not in `pipeline-timers.list`, so `run-tick.sh` does not enable it |
+| `zenoforge-health-mail` | daily, 08:00 Beijing (00:00 UTC) | `engine/night/health-maintenance.sh founder-mail` | Sends the owner report mail. A short immediate mail is sent only for a production outage. Not in `pipeline-timers.list`, so `run-tick.sh` does not enable it |
 | `zenoforge-label-churn` | every 30 min | `engine/detect-label-churn.sh` | Finds issues that loop between labels |
 | `zenoforge-daily-perf-report` | daily at 01:00 UTC | `engine/night/daily-perf-report.sh` | Daily report |
 

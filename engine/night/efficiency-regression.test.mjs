@@ -15,8 +15,6 @@ import {
   dailyEfficiency,
   dailyNodeMetrics,
   efficiencySummary,
-  maintainerMailEfficiencySummary,
-  renderMaintainerMailEfficiency,
   ghPages,
   readMetricRows,
   weeklyTimeSinks,
@@ -435,69 +433,6 @@ try {
   assert.ok(comparativeSummary.previous_24h);
   assert.equal(comparativeSummary.baseline_2026_10_10.metrics.closed_issues, 7);
   console.log('ok - hourly row reads spend, release, merge, stage, repeat-dispatch, and GitHub CI sources');
-
-  const maintainerHome = path.join(root, 'founder-mail-efficiency');
-  mkdirSync(path.join(maintainerHome, 'night'), { recursive: true });
-  mkdirSync(path.join(maintainerHome, 'land-queue', 'logs'), { recursive: true });
-  mkdirSync(path.join(maintainerHome, 'land-queue', 'requests'), { recursive: true });
-  const maintainerNow = '2026-10-13T12:00:00Z';
-  const maintainerJournal = path.join(maintainerHome, 'journal.jsonl');
-  writeFileSync(maintainerJournal, [
-    { __REALTIME_TIMESTAMP: String(Date.parse('2026-10-13T06:10:00Z') * 1000), MESSAGE: 'timing tick=current-a section=read elapsed_sec=120' },
-    { __REALTIME_TIMESTAMP: String(Date.parse('2026-10-13T06:11:00Z') * 1000), MESSAGE: 'timing tick=current-a section=dispatch elapsed_sec=180' },
-    { __REALTIME_TIMESTAMP: String(Date.parse('2026-10-13T00:10:00Z') * 1000), MESSAGE: 'timing tick=previous-a section=read elapsed_sec=360' },
-    { __REALTIME_TIMESTAMP: String(Date.parse('2026-10-13T00:11:00Z') * 1000), MESSAGE: 'timing tick=previous-a section=dispatch elapsed_sec=240' },
-    { __REALTIME_TIMESTAMP: String(Date.parse('2026-10-12T06:10:00Z') * 1000), MESSAGE: 'timing tick=yesterday-a section=read elapsed_sec=420' },
-  ].map((row) => JSON.stringify(row)).join('\n'));
-  writeFileSync(path.join(maintainerHome, 'night/efficiency-ci-jobs.json'), JSON.stringify({ version: 3, runs: {
-    '1:1': { created_at: '2026-10-13T06:30:00Z', conclusion: 'failure', event: 'pull_request', run_seconds: [100] },
-    '2:1': { created_at: '2026-10-13T07:00:00Z', conclusion: 'success', event: 'push', head_branch: 'main', run_seconds: [400] },
-    '3:1': { created_at: '2026-10-13T08:00:00Z', conclusion: 'failure', event: 'push', head_branch: 'main', run_seconds: [100] },
-    '4:1': { created_at: '2026-10-13T01:00:00Z', conclusion: 'failure', event: 'pull_request', run_seconds: [100] },
-    '5:1': { created_at: '2026-10-13T02:00:00Z', conclusion: 'success', event: 'push', head_branch: 'main', run_seconds: [100] },
-    '6:1': { created_at: '2026-10-12T07:00:00Z', conclusion: 'failure', event: 'pull_request', run_seconds: [100] },
-    '7:1': { created_at: '2026-10-12T08:00:00Z', conclusion: 'success', event: 'push', head_branch: 'main', run_seconds: [100] },
-    '8:1': { created_at: '2026-10-13T09:00:00Z', conclusion: 'success', event: 'push', head_branch: 'feature', run_seconds: [100] },
-  } }));
-  writeFileSync(path.join(maintainerHome, 'night/supervisor-dispatch-queue.tsv.done'), [
-    '2026-10-13T06:20:00Z\thand-a\tdispatched',
-    '2026-10-13T07:20:00Z\thand-a\tdispatched',
-    '2026-10-13T08:20:00Z\thand-b\tFAILED route unavailable',
-    '2026-10-13T00:20:00Z\thand-a\tdispatched',
-    '2026-10-13T01:20:00Z\thand-b\tdispatched',
-    '2026-10-12T07:20:00Z\thand-a\tdispatched',
-  ].join('\n'));
-  writeFileSync(path.join(maintainerHome, 'land-queue/logs/receipts.log'), [
-    'post-land-verify: receipt ticket=alpha outcome=green at=2026-10-13T06:45:00Z',
-    'post-land-verify: receipt ticket=alpha outcome=green at=2026-10-13T06:45:00Z',
-    'post-land-verify: receipt ticket=beta outcome=inconclusive at=2026-10-13T07:45:00Z',
-    'post-land-verify: receipt ticket=gamma outcome=pre-existing at=2026-10-13T00:45:00Z',
-    'post-land-verify: receipt ticket=delta outcome=culprit-test at=2026-10-12T06:45:00Z',
-  ].join('\n'));
-  writeFileSync(path.join(maintainerHome, 'land-queue/requests/failed-current.json'), JSON.stringify({ state: 'failed', updated_epoch: Date.parse('2026-10-13T09:00:00Z') / 1000 }));
-  writeFileSync(path.join(maintainerHome, 'night/ps-issues.json'), JSON.stringify([
-    { createdAt: '2026-10-13T06:30:00Z', closedAt: '2026-10-13T07:00:00Z', labels: [{ name: 'pipeline-system' }] },
-    { createdAt: '2026-10-13T08:30:00Z', closedAt: '2026-10-13T08:45:00Z', labels: ['pipeline-system'] },
-    { createdAt: '2026-10-13T09:30:00Z', closedAt: null, labels: [{ name: 'pipeline-system' }] },
-    { createdAt: '2026-10-13T01:30:00Z', closedAt: '2026-10-13T02:00:00Z', labels: [{ name: 'pipeline-system' }] },
-    { createdAt: '2026-10-12T07:30:00Z', closedAt: '2026-10-12T08:00:00Z', labels: [{ name: 'pipeline-system' }] },
-  ]));
-  const maintainerStats = maintainerMailEfficiencySummary(maintainerHome, maintainerNow, { journalFile: maintainerJournal });
-  assert.equal(maintainerStats.metrics.current.tickSeconds, 300);
-  assert.equal(maintainerStats.metrics.previous.tickSeconds, 600);
-  assert.equal(maintainerStats.metrics.yesterday.tickSeconds, 420);
-  assert.equal(maintainerStats.metrics.current.ciWaste, 2 / 7);
-  assert.equal(maintainerStats.metrics.current.mainGreen, 0.5);
-  assert.equal(maintainerStats.metrics.current.postLandEffective, 0.5, 'duplicate ticket+time receipt counts once');
-  assert.equal(maintainerStats.metrics.current.dispatchFailures, 1);
-  assert.equal(maintainerStats.metrics.current.repeatedDispatches, 2);
-  assert.deepEqual(maintainerStats.metrics.current.pipelineIssues, { created: 3, closed: 2 });
-  const maintainerDigest = renderMaintainerMailEfficiency(maintainerStats);
-  assert.match(maintainerDigest, /\| 指标 \| 当前六小时 \| 前六小时 \| 昨日同时段 \|/);
-  assert.match(maintainerDigest, /自动检查浪费占比较前六小时下降43%/);
-  assert.match(maintainerDigest, /系统自动开单 \/ 关单 \| 3 \/ 2 次 \| 1 \/ 1 次 \| 1 \/ 1 次 \|/);
-  console.log(`fixture maintainer digest:\n${maintainerDigest}`);
-  console.log('ok - maintainer digest renders fixture-backed six-hour efficiency windows and >20% movement');
 
   const cacheHome = path.join(root, 'cache');
   const jobCalls = [];

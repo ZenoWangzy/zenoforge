@@ -260,7 +260,7 @@ daily_perf_report_build() {
     [ -z "$work_reason" ] || printf '\n%s\n' "$work_reason"
     printf '\n**异常**\n%s\n' "$anomalies"
   } )" || return 1
-  if ! contract_errors="$(maintainer_health_mail_output_contract "$report" "$now")"; then
+  if ! contract_errors="$(maintainer_health_mail_report_contract "$report" "$now")"; then
     contract_errors="${contract_errors:-validator-failed}"
     if [ "$dry_run" != 1 ]; then
       maintainer_health_mail_contract_inbox "$agent_home" "$contract_errors" || return 1

@@ -15,11 +15,9 @@ import { execFile, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { zfConfigFile } from '../pack-dir.mjs';
 
 const execFileAsync = promisify(execFile);
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const FOUNDER_HEALTH_MAIL_FILE = zfConfigFile('state/founder-health-mail.json');
 const LIB_PATH = path.resolve(SCRIPT_DIR, '../lib.sh');
 // Same setting lib.sh resolves.
 const UNIT_PREFIX = process.env.ZF_UNIT_PREFIX || 'zenoforge';
@@ -1502,266 +1500,12 @@ export function efficiencySummary(home, now = new Date().toISOString()) {
   };
 }
 
-function maintainerMailWindows(nowMs, intervalMs) {
-  return {
-    current: { start: nowMs - intervalMs, end: nowMs },
-    previous: { start: nowMs - 2 * intervalMs, end: nowMs - intervalMs },
-    yesterday: { start: nowMs - DAY_MS - intervalMs, end: nowMs - DAY_MS },
-  };
-}
-
-function inWindow(value, window) {
-  const at = typeof value === 'number' ? value : parseTime(value);
-  return at !== null && at >= window.start && at < window.end;
-}
-
-function readMaintainerJournal(home, nowMs, windows, journalFile) {
-  const earliest = Math.min(...Object.values(windows).map((window) => window.start));
-  const since = new Date(earliest).toISOString();
-  const until = new Date(nowMs).toISOString();
-  let output = '';
-  if (journalFile) {
-    try {
-      output = readFileSync(journalFile, 'utf8');
-    } catch {
-      return [];
-    }
-  } else {
-    const result = spawnSync('journalctl', [
-      '--user', '-u', `${UNIT_PREFIX}-agent.service`, '--since', since, '--until', until, '--output=json',
-    ], { encoding: 'utf8', timeout: 12_000, maxBuffer: 16 * 1024 * 1024 });
-    if (result.status !== 0) return [];
-    output = result.stdout;
-  }
-  return output.split(/\r?\n/).flatMap((line) => {
-    try { return [JSON.parse(line)]; } catch { return []; }
-  });
-}
-
-function maintainerTickSamples(home, nowMs, windows, journalFile) {
-  const ticks = new Map();
-  for (const row of readMaintainerJournal(home, nowMs, windows, journalFile)) {
-    const message = String(row.MESSAGE || '');
-    const match = message.match(/\btiming tick=(\S+) section=\S+ elapsed_sec=(\d+(?:\.\d+)?)(?:\s|$)/);
-    if (!match) continue;
-    const at = Number(row.__REALTIME_TIMESTAMP) / 1000;
-    if (!Number.isFinite(at)) continue;
-    const tick = ticks.get(match[1]) || { at, seconds: 0 };
-    tick.at = Math.min(tick.at, at);
-    tick.seconds += Number(match[2]);
-    ticks.set(match[1], tick);
-  }
-  return Object.fromEntries(Object.entries(windows).map(([name, window]) => {
-    const values = [...ticks.values()].filter((tick) => inWindow(tick.at, window)).map((tick) => tick.seconds);
-    return [name, values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null];
-  }));
-}
-
 function ciRatios(runSeconds, wastedRunSeconds, mainTotal, mainSuccess) {
   const totalRunnerSeconds = runSeconds.reduce((sum, value) => sum + value, 0);
   return {
     ci_waste_share: totalRunnerSeconds ? wastedRunSeconds.reduce((sum, value) => sum + value, 0) / totalRunnerSeconds : null,
     main_green_share: mainTotal ? mainSuccess / mainTotal : null,
   };
-}
-
-function maintainerCiSamples(home, windows) {
-  const cache = readJson(path.join(home, 'night/efficiency-ci-jobs.json'), null);
-  const rows = Object.values(cache?.runs || {});
-  return Object.fromEntries(Object.entries(windows).map(([name, window]) => {
-    const runSeconds = [];
-    const wastedRunSeconds = [];
-    let mainTotal = 0;
-    let mainSuccess = 0;
-    for (const row of rows) {
-      if (!inWindow(row.created_at, window)) continue;
-      const seconds = (row.run_seconds || []).filter(Number.isFinite);
-      runSeconds.push(...seconds);
-      if (['failure', 'cancelled'].includes(row.conclusion)) wastedRunSeconds.push(...seconds);
-      if (row.event === 'push' && row.head_branch === 'main' && row.conclusion !== 'cancelled') {
-        mainTotal += 1;
-        if (row.conclusion === 'success') mainSuccess += 1;
-      }
-    }
-    const ratios = ciRatios(runSeconds, wastedRunSeconds, mainTotal, mainSuccess);
-    return [name, { ciWaste: ratios.ci_waste_share, mainGreen: ratios.main_green_share }];
-  }));
-}
-
-function maintainerReceiptSamples(home, windows) {
-  const dir = path.join(home, 'land-queue/logs');
-  let files = [];
-  try { files = readdirSync(dir).filter((name) => name.endsWith('.log')).sort(); } catch { /* no receipts yet */ }
-  const receipts = new Map();
-  for (const file of files) {
-    let contents = '';
-    try { contents = readFileSync(path.join(dir, file), 'utf8'); } catch { continue; }
-    for (const line of contents.split(/\r?\n/)) {
-      if (!line.includes('post-land-verify: receipt ')) continue;
-      const ticket = line.match(/\bticket=(\S+)/)?.[1];
-      const outcome = line.match(/\boutcome=(\S+)/)?.[1];
-      const at = line.match(/\bat=(\S+)/)?.[1];
-      if (!ticket || !outcome || !at || parseTime(at) === null) continue;
-      const key = `${ticket}\0${at}`;
-      const previous = receipts.get(key);
-      const conclusive = outcome === 'green' || outcome === 'pre-existing' || outcome.startsWith('culprit-');
-      receipts.set(key, { at, conclusive: Boolean(previous?.conclusive || conclusive) });
-    }
-  }
-  return Object.fromEntries(Object.entries(windows).map(([name, window]) => {
-    const rows = [...receipts.values()].filter((row) => inWindow(row.at, window));
-    const good = rows.filter((row) => row.conclusive).length;
-    return [name, rows.length ? good / rows.length : null];
-  }));
-}
-
-function maintainerDispatchSamples(home, windows) {
-  // TSV dispatch ledger is line-oriented, not JSON. Parse its small fixed schema separately.
-  const file = path.join(home, 'night/supervisor-dispatch-queue.tsv.done');
-  let lines = [];
-  try { lines = readFileSync(file, 'utf8').split(/\r?\n/); } catch { /* missing input stays unknown */ }
-  const available = existsSync(file);
-  return Object.fromEntries(Object.entries(windows).map(([name, window]) => {
-    if (!available) return [name, { failures: null, repeatedDispatches: null }];
-    let failures = 0;
-    let dispatches = 0;
-    const hands = new Set();
-    for (const line of lines) {
-      const [stamp, hand, state] = line.split('\t');
-      if (!inWindow(stamp, window)) continue;
-      if ((state || '').startsWith('FAILED')) failures += 1;
-      if ((state || '').startsWith('dispatched')) {
-        dispatches += 1;
-        if (hand?.startsWith('hand-')) hands.add(hand);
-      }
-    }
-    return [name, { failures, repeatedDispatches: hands.size ? dispatches / hands.size : null }];
-  }));
-}
-
-function maintainerLandFailureSamples(home, windows) {
-  const dir = path.join(home, 'land-queue/requests');
-  let files = [];
-  try { files = readdirSync(dir).filter((name) => name.endsWith('.json')); } catch { /* missing input stays unknown */ }
-  const available = existsSync(dir);
-  const rows = files.flatMap((file) => {
-    try { return [JSON.parse(readFileSync(path.join(dir, file), 'utf8'))]; } catch { return []; }
-  });
-  return Object.fromEntries(Object.entries(windows).map(([name, window]) => [name, available
-    ? rows.filter((row) => row.state === 'failed' && inWindow(Number(row.updated_epoch) * 1000, window)).length
-    : null]));
-}
-
-function maintainerPipelineIssueSamples(home, windows) {
-  const source = readJson(path.join(home, 'night/ps-issues.json'), null);
-  const issues = Array.isArray(source) ? source : source?.issues;
-  if (!Array.isArray(issues)) return Object.fromEntries(Object.keys(windows).map((name) => [name, null]));
-  const pipelineIssues = issues.filter((issue) => (issue.labels || []).some((label) => (label.name || label) === 'pipeline-system'));
-  return Object.fromEntries(Object.entries(windows).map(([name, window]) => [name, {
-    created: pipelineIssues.filter((issue) => inWindow(issue.createdAt, window)).length,
-    closed: pipelineIssues.filter((issue) => inWindow(issue.closedAt, window)).length,
-  }]));
-}
-
-export function maintainerMailEfficiencySummary(home, now = new Date().toISOString(), { journalFile } = {}) {
-  const nowMs = parseTime(now);
-  if (nowMs === null) throw new Error('--now must be an ISO timestamp');
-  const policy = readJson(FOUNDER_HEALTH_MAIL_FILE, null);
-  const intervalMs = Number(policy?.digest_interval_seconds) * 1000;
-  if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) throw new Error('maintainer mail digest interval is invalid');
-  const windows = maintainerMailWindows(nowMs, intervalMs);
-  const ticks = maintainerTickSamples(home, nowMs, windows, journalFile);
-  const ci = maintainerCiSamples(home, windows);
-  const receipts = maintainerReceiptSamples(home, windows);
-  const dispatch = maintainerDispatchSamples(home, windows);
-  const landFailures = maintainerLandFailureSamples(home, windows);
-  const issues = maintainerPipelineIssueSamples(home, windows);
-  return {
-    windows,
-    metrics: Object.fromEntries(Object.keys(windows).map((name) => [name, {
-      tickSeconds: ticks[name],
-      ciWaste: ci[name].ciWaste,
-      mainGreen: ci[name].mainGreen,
-      postLandEffective: receipts[name],
-      dispatchFailures: dispatch[name].failures,
-      repeatedDispatches: dispatch[name].repeatedDispatches,
-      landFailures: landFailures[name],
-      pipelineIssues: issues[name],
-    }])),
-  };
-}
-
-function maintainerMetricValue(metric, key) {
-  const value = metric?.[key];
-  if (key === 'pipelineIssues') {
-    if (!value) return null;
-    return [value.created, value.closed];
-  }
-  return Number.isFinite(value) ? value : null;
-}
-
-function maintainerMetricLabelValue(value, key) {
-  if (value === null) return '样本待补';
-  if (Array.isArray(value)) return `${value[0]} / ${value[1]} 次`;
-  if (['ciWaste', 'mainGreen', 'postLandEffective'].includes(key)) return `${Math.round(value * 100)}%`;
-  if (key === 'tickSeconds') return `${Math.round(value)} 秒`;
-  if (key === 'repeatedDispatches') return `${value.toFixed(1)} 次/人`;
-  return `${value} 次`;
-}
-
-function maintainerMetricMovement(current, baseline, key) {
-  if (current === null || baseline === null) return null;
-  const delta = current - baseline;
-  if (!delta) return null;
-  if (baseline === 0) return { magnitude: Infinity, text: `从 ${maintainerMetricLabelValue(baseline, key)} 变为 ${maintainerMetricLabelValue(current, key)}` };
-  const change = Math.abs(delta / baseline);
-  if (change <= 0.2) return null;
-  return { magnitude: change, percent: Math.round(change * 100), direction: delta > 0 ? '增加' : '下降' };
-}
-
-export function renderMaintainerMailEfficiency(summary) {
-  const order = [
-    ['调度一轮耗时', 'tickSeconds'],
-    ['自动检查浪费占比', 'ciWaste'],
-    ['主干检查通过率', 'mainGreen'],
-    ['上线后复核有效率', 'postLandEffective'],
-    ['派活失败次数', 'dispatchFailures'],
-    ['重复派活', 'repeatedDispatches'],
-    ['提交失败次数', 'landFailures'],
-    ['系统自动开单 / 关单', 'pipelineIssues'],
-  ];
-  const metrics = summary.metrics || {};
-  const lines = [
-    '**效率（最近六小时）**',
-    '| 指标 | 当前六小时 | 前六小时 | 昨日同时段 |',
-    '| --- | ---: | ---: | ---: |',
-  ];
-  for (const [label, key] of order) {
-    lines.push(`| ${label} | ${maintainerMetricLabelValue(maintainerMetricValue(metrics.current, key), key)} | ${maintainerMetricLabelValue(maintainerMetricValue(metrics.previous, key), key)} | ${maintainerMetricLabelValue(maintainerMetricValue(metrics.yesterday, key), key)} |`);
-  }
-  const changes = [];
-  for (const [label, key] of order) {
-    const current = maintainerMetricValue(metrics.current, key);
-    if (current === null) continue;
-    const candidates = ['previous', 'yesterday'].flatMap((period) => {
-      const baseline = maintainerMetricValue(metrics[period], key);
-      if (Array.isArray(current) && Array.isArray(baseline)) {
-        const movements = current.map((value, index) => maintainerMetricMovement(value, baseline[index], key)).filter(Boolean);
-        return movements.length ? [{ period, magnitude: Math.max(...movements.map((move) => move.magnitude)), text: `从 ${baseline.join(' / ')} 变为 ${current.join(' / ')}` }] : [];
-      }
-      const movement = maintainerMetricMovement(current, baseline, key);
-      return movement ? [{ period, ...movement }] : [];
-    });
-    if (!candidates.length) continue;
-    candidates.sort((a, b) => (b.magnitude || 0) - (a.magnitude || 0));
-    const change = candidates[0];
-    const period = change.period === 'previous' ? '前六小时' : '昨日同时段';
-    changes.push(Array.isArray(current)
-      ? `${label}较${period}${change.text}。`
-      : `${label}较${period}${change.magnitude === Infinity ? change.text : `${change.direction}${change.percent}%`}。`);
-  }
-  lines.push('', ...(changes.length ? changes : ['近六小时指标没有单项变动超过20%。']));
-  return lines.join('\n');
 }
 
 const MISSING_NODE_DAYS = new Set(['2026-10-07', '2026-10-08', '2026-10-09']);
@@ -2560,7 +2304,7 @@ function parseArgs(argv) {
       options.readOnly = true;
       continue;
     }
-    if (!['--home', '--repo', '--history', '--before', '--now', '--day', '--journal-file', '--issue'].includes(key)) throw new Error(`unknown argument: ${key}`);
+    if (!['--home', '--repo', '--history', '--before', '--now', '--day', '--issue'].includes(key)) throw new Error(`unknown argument: ${key}`);
     options[key.slice(2)] = rest[++index] || '';
   }
   if (command === 'sample') {
@@ -2571,14 +2315,12 @@ function parseArgs(argv) {
     if (!options.home) throw new Error('usage: efficiency-regression.mjs summary --home DIR');
   } else if (command === 'sync-issue') {
     if (!options.home || !/^\d+$/.test(options.issue || '')) throw new Error('usage: efficiency-regression.mjs sync-issue --home DIR --issue N');
-  } else if (command === 'founder-mail') {
-    if (!options.home) throw new Error('usage: efficiency-regression.mjs founder-mail --home DIR [--now ISO] [--journal-file FILE]');
   } else if (command === 'daily') {
     if (!options.home || !options.day || (!options.repo && !options.readOnly)) {
       throw new Error('usage: efficiency-regression.mjs daily --home DIR --day YYYY-MM-DD [--repo OWNER/REPO] [--read-only]');
     }
   } else {
-    throw new Error('usage: efficiency-regression.mjs sample|baseline|summary|daily|founder-mail ...');
+    throw new Error('usage: efficiency-regression.mjs sample|baseline|summary|daily ...');
   }
   return { command, options };
 }
@@ -2612,11 +2354,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       process.stdout.write(`${JSON.stringify(result)}\n`);
     } else if (command === 'sync-issue') {
       syncIssueLifecycleEvents(path.resolve(options.home), options.issue);
-    } else if (command === 'founder-mail') {
-      const summary = maintainerMailEfficiencySummary(path.resolve(options.home), options.now || new Date().toISOString(), {
-        journalFile: options['journal-file'] ? path.resolve(options['journal-file']) : undefined,
-      });
-      process.stdout.write(`${renderMaintainerMailEfficiency(summary)}\n`);
     } else {
       const result = efficiencySummary(path.resolve(options.home), options.now || new Date().toISOString());
       process.stdout.write(`${JSON.stringify(result)}\n`);
