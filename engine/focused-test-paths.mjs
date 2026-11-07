@@ -210,7 +210,8 @@ export const RELATED_TESTS = new Map([
   ['engine/ci/pr-required-aggregate.mjs', ['engine/ci/pr-required-aggregate.test.mjs']],
   ['.github/workflows/migration-sql-gate.yml', ['scripts/deploy-regression-contract.test.mjs']],
   ['engine/git-merge-state-json.sh', ['engine/state-json-merge.test.sh', 'engine/land-direct-main.test.sh']],
-  ['engine/land-direct-main-bootstrap.sh', ['engine/land-direct-main.test.sh', 'engine/pipeline-system-deliver.test.mjs']],
+  ['engine/land-direct-main-bootstrap.sh', ['engine/land-direct-main.test.sh', 'engine/pipeline-system-deliver.test.mjs', 'engine/land-shared-append.test.sh']],
+  ['engine/land-shared-append.sh', ['engine/land-shared-append.test.sh', 'engine/land-agent-home.test.sh']],
   ['engine/land-direct-main.sh', [
     'engine/land-direct-main.test.sh',
     'engine/land-agent-home.test.sh',

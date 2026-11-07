@@ -32,6 +32,7 @@ git -C "$fixture_repo" commit -q -m 'fixture: seed repo'
 
 cp "$script_dir/land-direct-main.sh" "$fixture_engine/land-direct-main.sh"
 cp "$script_dir/land-direct-main-bootstrap.sh" "$fixture_engine/land-direct-main-bootstrap.sh"
+cp "$script_dir/land-shared-append.sh" "$fixture_engine/land-shared-append.sh"
 {
   printf 'export ZF_HOME=%q\n' "$fixture_home"
   printf 'export ZF_REPO_DIR=%q\n' "$deploy_repo"

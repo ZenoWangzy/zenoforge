@@ -202,7 +202,8 @@ if [[ -n "$land_recorded_main_base" ]] && ! git -C "$repo_root" merge-base --is-
   echo "land-direct-main: recorded origin/main base $land_recorded_main_base was rewritten off main (current=$land_main_base)" >&2
   exit 1
 fi
-if ! land_configure_git_identity || ! land_git_rebase "$land_main_base"; then
+source "$land_driver_dir/land-shared-append.sh"
+if ! land_configure_git_identity || ! land_rebase_record_shared_append "$land_main_base"; then
   echo 'land-direct-main: could not rebase onto origin/main during startup sync' >&2
   exit 1
 fi
