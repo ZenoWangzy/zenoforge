@@ -152,12 +152,17 @@ dispatch_pending() {
         [[ "$local_refill" != true ]] || { dispatch_skip stop-loss-refill; continue; }
         issue="$(jqf -r '.issue // empty' <<<"$u")"
         pr="$(jqf -r '.pr // empty' <<<"$u")"
-        # Same failure as an earlier round: the arbiter's requeue delivered 0 of 4 (row 90), so decide here by the cap-default route (recut once, else park).
+        # Same failure as an earlier round: the arbiter's requeue delivered 0 of 4 (row 90), so decide here. A check that is red on main belongs to main:
+        # wait for main green. Otherwise the cap-default route (recut once, else park "stop-loss same failure: <check>"), both with a requeue exit.
         # No decision made (already given, issue on hold, state unreadable) falls through to the supervisor as before.
-        if stop_loss_same_failure "$u" && supervisor_cap_default "$id" "$u" stop-loss "$budget" \
-          && [[ "$(unit_field "$id" '.stage // empty')" != "$stage" ]]; then
-          dmark stop_loss_escalate
-          continue
+        if same_check="$(stop_loss_same_failure "$u")"; then
+          if main_red_sha="$(stop_loss_main_red_sha "$same_check")"; then
+            stop_loss_same_failure_hold "$id" "$stage" "$same_check" "$main_red_sha" && { dmark stop_loss_escalate; continue; }
+          elif supervisor_cap_default "$id" "$u" stop-loss "$budget" && [[ "$(unit_field "$id" '.stage // empty')" != "$stage" ]]; then
+            stop_loss_same_failure_hold "$id" "$stage" "$same_check" || :
+            dmark stop_loss_escalate
+            continue
+          fi
         fi
         if [[ "$issue" =~ ^[0-9]+$ && -z "$pr" ]]; then
           supervisor_budget_recut "$id" "ticket stop-loss budget: $budget"

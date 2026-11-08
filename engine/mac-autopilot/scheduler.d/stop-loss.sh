@@ -85,8 +85,8 @@ ticket_budget_reason() { # unit-json
 # 同一失败重复（行 90：24h 内 37 次 stop-loss 转 arbiter，前面是同一个 self-check-red/ci-test-red 的，requeue 交付 0 of 4）：
 # 自最近一次裁决（与 ticket_budget_reason 同一组 ruling 阶段）起，单元最前面的事件是红（ci-test-red/ci-red/self-check-red），
 # 且它的 (阶段, 规整后的 result) 与更早一轮的红相同。规整同 ~/.zenoforge/state/work/90/v2.py：长十六进制串和数字都换成 N。
-stop_loss_same_failure() { # unit-json → 0 when the failure in front of the unit repeats an earlier round's
-  jqf -e '
+stop_loss_same_failure() { # unit-json → prints the failure's check label (the red event's result) when it repeats an earlier round's; rc 1 otherwise
+  jqf -er '
     def norm: tostring | gsub("\\b(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\\b"; "N") | gsub("[0-9]+"; "N") | gsub("\\s+"; " ");
     def red: .stage | IN("ci-test-red", "ci-red", "self-check-red");
     (.history // []) as $h
@@ -94,8 +94,58 @@ stop_loss_same_failure() { # unit-json → 0 when the failure in front of the un
     | $h[($ruling + 1):] as $w
     | ([$w[] | select(.stage | IN("ci-test-red", "ci-red", "self-check-red", "merge-conflict", "review-request-changes", "review-block", "review-approve", "ci-ready",
         "repair-no-push", "worker-no-output", "implement-no-push", "implement-no-changes", "size-recut"))] | last // null) as $front
-    | ([$w[] | select(red) | [.stage, (.result | norm)]]) as $reds
-    | $front != null and ($front | red) and (($reds[-1]) as $c | $reds[:-1] | any(. == $c))' <<<"$1" >/dev/null 2>&1
+    | ([$w[] | select(red) | [.stage, (.result | norm), (.result // "" | tostring | gsub("\\s+"; " "))]]) as $reds
+    | select($front != null and ($front | red) and (($reds[-1]) as $c | $reds[:-1] | any(.[0] == $c[0] and .[1] == $c[1])))
+    | $reds[-1][2]' <<<"$1" 2>/dev/null
+}
+
+# A repeated failure whose check is red on main belongs to main, not to the unit (main-red units come from health-release; their SHAs'
+# failed checks are fetched once per SHA per tick by main_red_failed_checks). label → the active main-red SHA, rc 1 when none.
+stop_loss_main_red_sha() { # check-label (ci-* result: names joined by ", ")
+  local sha checks
+  while read -r sha; do
+    [[ "$sha" =~ $SHA_RE ]] || continue
+    checks="$(main_red_failed_checks "$sha")" || continue
+    jqf -en --arg label "$1" --argjson main "$checks" '($label | split(", ")) as $names | any($names[]; . as $n | $main | index($n) != null)' >/dev/null 2>&1 \
+      && { printf '%s\n' "$sha"; return 0; }
+  done < <(jqf -r '.units[] | select(.main_red == true and ((.ci_sha // "") | test("^[0-9a-f]{40}$")) and ((.stage // "") | IN("closed","landed","merged","done") | not)) | .ci_sha' "$UNITS" | sort -u)
+  return 1
+}
+
+# Both exits of a same-failure stop-loss land here. The wait (check red on main) reuses the main-red park fields; the park (unit's own failure)
+# reads exactly "stop-loss same failure: <check>". Each records the PR head so stop_loss_unpark_sweep can requeue when it changes.
+stop_loss_same_failure_hold() { # id from-stage label [main-red-sha]
+  local id="$1" from="$2" label="$3" red_sha="${4:-}" pr head="" set
+  pr="$(unit_field "$id" '.pr // empty')"
+  [[ ! "$pr" =~ ^[0-9]+$ ]] || head="$(tick_pr_head "$pr" 2>/dev/null || true)"
+  if [[ -n "$red_sha" ]]; then
+    set="$(hist ci-main-red-park "stop-loss same failure: ${label:0:80} also failed on main $red_sha") | .stage=\"parked\" | .parked_reason=\"main-red\" | .unpark_condition=\"the same checks pass on main\" | .parked_main_red_sha=$(js "$red_sha") | .stop_loss_wait=true"
+  else
+    [[ "$(unit_field "$id" '.stage // empty')" == parked ]] || return 0
+    set=".parked_reason=$(js "stop-loss same failure: ${label:0:80}") | .unpark_condition=$(js "$([[ -n "$pr" ]] && echo 'the PR head changes' || echo 'a supervisor decision')")"
+  fi
+  set_unit "$id" "$set | .parked_from_stage=$(js "$from") | .stop_loss_park_head=$(js "$head")" && say "stop-loss same failure unit=$id: $([[ -n "$red_sha" ]] && echo "waits for main green ($red_sha)" || echo parked)"
+}
+
+stop_loss_unpark_sweep() { # requeue (refilled budget) when the PR head changed or the main red the unit waited on turned green
+  local id from head red_sha pr cur resolved why
+  while IFS=$'\t' read -r id from head red_sha pr; do
+    [[ -n "$id" ]] || continue
+    why=""
+    if [[ "$pr" =~ ^[0-9]+$ && "$head" =~ $SHA_RE ]]; then
+      cur="$(tick_pr_head "$pr" 2>/dev/null || true)"
+      [[ ! "$cur" =~ $SHA_RE || "$cur" == "$head" ]] || why="PR head changed to ${cur:0:9}"
+    fi
+    if [[ -z "$why" && "$red_sha" =~ $SHA_RE ]]; then
+      resolved="$(jqf -r --arg red "$red_sha" 'first(.units[] | select(.main_red==true and .ci_sha==$red and .stage=="closed" and ((.resolved_main_sha // "") | test("^[0-9a-f]{40}$"))) | .resolved_main_sha) // empty' <(units_history_doc))"
+      [[ ! "$resolved" =~ $SHA_RE ]] || why="main green at ${resolved:0:9}"
+    fi
+    [[ -n "$why" ]] || continue
+    [[ "$from" != - ]] || from=repair-pending
+    set_unit "$id" "$(hist supervisor-requeue "stop-loss same failure: unparked, $why; budget refilled") | .stage=$(js "$from") | .note=null | del(.parked_reason,.unpark_condition,.parked_main_red_sha,.parked_from_stage,.stop_loss_park_head,.stop_loss_wait)" \
+      && say "stop-loss same failure unit=$id requeued at $from: $why"
+  done < <(jqf -r '.units[] | select(.stage == "parked" and .stop_loss_park_head != null)
+    | [.id, (.parked_from_stage // "-"), (.stop_loss_park_head | if . == "" then "-" else . end), (.parked_main_red_sha // "-"), (.pr // "-")] | @tsv' "$UNITS")
 }
 
 # Token spend gate. Every finished worker log is one `spend_runs` record on its unit (spend_ledger.py; fresh tokens come from the

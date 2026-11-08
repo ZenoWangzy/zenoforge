@@ -333,6 +333,7 @@ supersede_resolved_main_red_units() {
     fi
   fi
   unpark_resolved_main_red_units
+  stop_loss_unpark_sweep
 }
 
 # ---------- 4. 新 PR 自动评审（限量：只挑最新 max_pending_reviews 个） ----------
