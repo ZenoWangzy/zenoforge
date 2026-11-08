@@ -24,10 +24,20 @@ events=(); add_event() { events+=("$1 $2"); }
 ROOT=$tmp/root A=$tmp ZF_AUTO_PIN_HOME=$tmp/home CHECK_ONLY=0 now=100
 mkdir -p "$tmp/home"
 auto_pin_scan; ((${#events[@]} == 0)) && [[ ! -e $tmp/auto-pin-lag.stamp ]] || fail 'absent state must skip'
-echo deadbeef > "$tmp/home/auto-pin.last"
+echo '10:00:00 PINNED deadbeef0000 committed=x' > "$tmp/home/auto-pin.log"
 CHECK_ONLY=1 auto_pin_scan; [[ ! -e $tmp/auto-pin-lag.stamp ]] || fail '--check-only must not write'
 auto_pin_scan; ((${#events[@]} == 0)) || fail 'first sight raised'
 now=2000 auto_pin_scan; [[ ${events[*]} == 'high auto-pin-stalled' ]] || fail "events: ${events[*]:-none}"
-events=(); echo "$main" > "$tmp/home/auto-pin.last"; now=3000 auto_pin_scan
+events=(); echo "10:00:00 PINNED ${main:0:12} committed=x" > "$tmp/home/auto-pin.log"; now=3000 auto_pin_scan
 ((${#events[@]} == 0)) && [[ ! -e $tmp/auto-pin-lag.stamp ]] || fail 'caught up must clear'
+
+# failed pins: PINNED then 3 PIN-FAILED alerts on the first scan, naming the count and first failed SHA; 1 does not
+mkdir -p "$tmp/fail/home"; A=$tmp/fail; ZF_AUTO_PIN_HOME=$tmp/fail/home; events=(); now=100
+add_event() { events+=("$1 $2"); msg=$3; }
+printf '%s\n' '10:00:00 PINNED aaaaaaaaaaaa committed=x' '10:05:00 PIN-FAILED bbbbbbbbbbbb log=/h/bbbb.log' \
+  '10:10:00 PIN-FAILED cccccccccccc log=/h/cccc.log' '10:15:00 PIN-FAILED dddddddddddd log=/h/dddd.log' > "$tmp/fail/home/auto-pin.log"
+auto_pin_scan; [[ ${events[*]} == 'high auto-pin-failing' && $msg == 'auto-pin-failing: 3 PIN-FAILED since the last pin aaaaaaaaaaaa; first failed bbbbbbbbbbbb; log /h/bbbb.log' ]] \
+  || fail "failing alert: ${events[*]:-none} | $msg"
+events=(); printf '%s\n' '10:00:00 PINNED aaaaaaaaaaaa committed=x' '10:05:00 PIN-FAILED bbbbbbbbbbbb log=/h/bbbb.log' > "$tmp/fail/home/auto-pin.log"
+auto_pin_scan; [[ ${events[*]} != *auto-pin-failing* ]] || fail 'one PIN-FAILED must not alert'
 echo "pin-lag.test.sh: ok"
