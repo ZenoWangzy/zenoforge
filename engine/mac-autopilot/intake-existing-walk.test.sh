@@ -87,7 +87,7 @@ existing_handoff_candidates() { local n; for n in 1 2 3 4; do printf '%s\tpr\tha
 updates="$fixture/updates"; : > "$updates"
 units_update() { printf '%s\n' "$*" >> "$updates"; local t="$UNITS.t"; jq "$@" "$UNITS" > "$t" && mv -f "$t" "$UNITS"; }
 register_new_issues 1
-[[ "$(grep -c -- '--slurpfile pairs' "$updates")" == 1 ]] || { echo 'not ok - census_partial rows were not one ledger update' >&2; cat "$updates" >&2; exit 1; }
+[[ "$(grep -c -- '--slurpfile ops' "$updates")" == 1 ]] || { echo 'not ok - census_partial rows were not one ledger update' >&2; cat "$updates" >&2; exit 1; }
 jq -e '[.units[] | select(.issue <= 4)] | all(.hold_handoff_waiting == true and .hold_handoff_wait_issues == [.issue])' "$UNITS" >/dev/null \
   || { echo 'not ok - census_partial rows did not wait' >&2; jq -c '.units[]' "$UNITS" >&2; exit 1; }
 jq -e '.units[] | select(.id == "issue-6") | (has("hold_handoff_waiting") or has("hold_handoff_wait_issues")) | not' "$UNITS" >/dev/null \
