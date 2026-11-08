@@ -178,6 +178,18 @@ if [ -e "$AGENT_HOME/logs/daily-perf-$DRY_RUN_DAY.md" ] \
 fi
 echo 'ok - daily dry-run persists no report or audit output'
 
+REJECT_HOME="$TMP_DIR/reject-home"
+STRAY_REPORT='**今日汇总**
+调度指标 stray 异常'
+if REJECT_ERR="$(daily_perf_report_check_contract "$REJECT_HOME" 2026-09-25 "$STRAY_REPORT" "$NOW" 1 2>&1)"; then
+  echo 'not ok - stray Latin word passed the report contract' >&2
+  exit 1
+fi
+[ "$(cat "$REJECT_HOME/logs/daily-perf-2026-09-25.rejected.md")" = "$STRAY_REPORT" ] \
+  && grep -Fq "rejected report saved: $REJECT_HOME/logs/daily-perf-2026-09-25.rejected.md" <<< "$REJECT_ERR" \
+  && echo 'ok - stray Latin word fails the contract and saves the rejected report' \
+  || { echo 'not ok - stray Latin word fails the contract and saves the rejected report' >&2; exit 1; }
+
 grep -Fq 'OnCalendar=*-*-* 01:00:00 UTC' "$SCRIPT_DIR/../systemd/zenoforge-daily-perf-report.timer" \
   && echo 'ok - daily summary timer runs at 01:00 UTC' \
   || { echo 'not ok - daily summary timer runs at 01:00 UTC' >&2; exit 1; }

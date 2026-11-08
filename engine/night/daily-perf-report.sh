@@ -233,6 +233,25 @@ daily_perf_report_timing_section() {
   node "$SCRIPT_DIR/efficiency-regression.mjs" "${args[@]}" | jq -r '.mail_summary'
 }
 
+# On an ascii-text failure the full rejected text is saved next to the report so the next failure names its word without a rerun.
+daily_perf_report_check_contract() {
+  local agent_home="$1" day="$2" report="$3" now="$4" dry_run="$5" contract_errors rejected
+  if ! contract_errors="$(maintainer_health_mail_report_contract "$report" "$now")"; then
+    contract_errors="${contract_errors:-validator-failed}"
+    if [[ ",$contract_errors," == *,ascii-text,* ]]; then
+      mkdir -p "$agent_home/logs"
+      rejected="$agent_home/logs/daily-perf-$day.rejected.md"
+      printf '%s\n' "$report" > "$rejected"
+      printf 'daily-perf-report: rejected report saved: %s\n' "$rejected" >&2
+    fi
+    if [ "$dry_run" != 1 ]; then
+      maintainer_health_mail_contract_inbox "$agent_home" "$contract_errors" || return 1
+    fi
+    printf 'daily-perf-report: output contract failed: %s\n' "$contract_errors" >&2
+    return 1
+  fi
+}
+
 daily_perf_report_build() {
   local agent_home="$1" repo_root="$2" day="$3" guard_audit="$4" dry_run="${5:-0}" start_epoch end_epoch now label releases efficiency timing anomalies reason work_data active queued work_reason pipeline_efficiency report contract_errors
   start_epoch="$(date -u -d "$day 00:00:00" +%s)" || return 1
@@ -260,14 +279,7 @@ daily_perf_report_build() {
     [ -z "$work_reason" ] || printf '\n%s\n' "$work_reason"
     printf '\n**异常**\n%s\n' "$anomalies"
   } )" || return 1
-  if ! contract_errors="$(maintainer_health_mail_report_contract "$report" "$now")"; then
-    contract_errors="${contract_errors:-validator-failed}"
-    if [ "$dry_run" != 1 ]; then
-      maintainer_health_mail_contract_inbox "$agent_home" "$contract_errors" || return 1
-    fi
-    printf 'daily-perf-report: output contract failed: %s\n' "$contract_errors" >&2
-    return 1
-  fi
+  daily_perf_report_check_contract "$agent_home" "$day" "$report" "$now" "$dry_run" || return 1
   printf '%s\n' "$report"
 }
 
