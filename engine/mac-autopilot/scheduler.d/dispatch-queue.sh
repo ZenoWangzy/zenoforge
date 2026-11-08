@@ -14,7 +14,7 @@ dcapture() { local var=$1 step=$2 rc=0 out; shift 2; out="$("$@")" || rc=$?; pri
 # Every caller reads the live-worker count as $(live_workers), and a cache refresh inside that subshell is lost: the cache stayed cold, so each
 # capacity, priority and implement-cap check re-ran the refresh (one jq and three jq per worker plus ps: 2244 of about 8000 processes in a
 # five-unit fixture pass). Refreshing here, in dispatch_pending's own shell, lets those subshells inherit it; the 10 s TTL is unchanged.
-dispatch_live_prime() { (( SECONDS < LIVE_WORKER_CACHE_UNTIL )) || refresh_live_worker_cache; dmark live_workers; }
+dispatch_live_prime() { (( SECONDS < ${LIVE_WORKER_CACHE_UNTIL:-0} )) || refresh_live_worker_cache; dmark live_workers; }
 dispatch_steps_say() {
   (( ${#dispatch_step_secs[@]} )) || return 0
   local step_name step_time step_line="dispatch detail steps refill=$local_refill"
@@ -42,7 +42,7 @@ dispatch_pending() {
   revalidate_secs=$((SECONDS - pending_started))
   dmark revalidate
   local TICK_FOOTPRINT_MAIN # rows are memoised against this main; leaving the pass drops the key, so a later phase never reuses them
-  TICK_FOOTPRINT_MAIN="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)" || TICK_FOOTPRINT_MAIN=''
+  TICK_FOOTPRINT_MAIN="$(git -C "${ROOT:-.}" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)" || TICK_FOOTPRINT_MAIN=''
   if [[ "$local_refill" != true ]]; then
     dispatch_live_prime
     tick_prs_changed # Running workers may have pushed since the previous phase.
