@@ -324,7 +324,7 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true]：焦点与并发
 
 footprint_recurrence_brief() { # unit JSON → up to 3 ranked CATALOG rules, bounded to 1 KB
   local footprint count brief
-  footprint="$(scheduler_footprint "$1")" || return 0
+  footprint_scope_for "$1" footprint || return 0
   count="$(jqf 'length' <<<"$footprint")" || return 0
   (( count > 0 )) || return 0
   if brief="$(node "${ZF_ENGINE_DIR:-$ROOT/engine}/lesson-recurrence-ranking.mjs" --repo "$ROOT" --footprint-json "$footprint" 2>/dev/null)"; then

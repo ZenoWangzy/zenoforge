@@ -41,6 +41,8 @@ dispatch_pending() {
   footprint_waiters_revalidate || { say 'dispatch held: footprint wait owners could not be revalidated'; return 1; }
   revalidate_secs=$((SECONDS - pending_started))
   dmark revalidate
+  local TICK_FOOTPRINT_MAIN # rows are memoised against this main; leaving the pass drops the key, so a later phase never reuses them
+  TICK_FOOTPRINT_MAIN="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)" || TICK_FOOTPRINT_MAIN=''
   if [[ "$local_refill" != true ]]; then
     dispatch_live_prime
     tick_prs_changed # Running workers may have pushed since the previous phase.

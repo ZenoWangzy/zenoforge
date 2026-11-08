@@ -115,16 +115,39 @@ live_writes_union() { # workdir scope_json -> scope ∪ 实际已写路径；wor
   fi
   printf '%s\n' "$scope"
 }
+# scheduler_footprint is a pure function of the unit row, the issue state file and origin/main, and costs about 24 processes. One dispatch
+# pass asked for it 3 to 4 times per candidate and once per live owner at every fresh snapshot. TICK_FOOTPRINT_MAIN (set by dispatch_pending;
+# empty anywhere else, which bypasses the memo) keys the rows to the main they were filtered against.
+declare -gA TICK_FOOTPRINT_SCOPE_MEMO=()
+TICK_FOOTPRINT_MAIN=''
+footprint_scope_for() { # unit-json var-name -> sets the variable to scheduler_footprint's scope; fills the memo only in the caller's shell
+  local key="$TICK_FOOTPRINT_MAIN|$1" out
+  if [[ -z "$TICK_FOOTPRINT_MAIN" ]]; then
+    out="$(scheduler_footprint "$1")" || return 1
+  elif [[ -n "${TICK_FOOTPRINT_SCOPE_MEMO[$key]+set}" ]]; then
+    out="${TICK_FOOTPRINT_SCOPE_MEMO[$key]}"
+  else
+    out="$(scheduler_footprint "$1")" || return 1
+    TICK_FOOTPRINT_SCOPE_MEMO["$key"]="$out"
+  fi
+  printf -v "$2" %s "$out"
+}
 resolve_active_footprints() { # active-unit JSON array → fresh live scopes; scan worktrees concurrently, persist ledger changes once
   local active="$1" scan_dir other file scope workdir rows updates resolved rc=0 index=0 pid
-  local -a pids=()
+  local -a pids=() memo_keys=()
   scan_dir="$(mktemp -d)" || return 1
   while IFS= read -r other; do
     [[ -n "$other" ]] || continue
     file="$scan_dir/$index.json"
+    memo_keys+=("$TICK_FOOTPRINT_MAIN|$other")
     {
       local other_scope other_workdir
-      other_scope="$(scheduler_footprint "$other")" || exit 1
+      if [[ -n "$TICK_FOOTPRINT_MAIN" && -n "${TICK_FOOTPRINT_SCOPE_MEMO[$TICK_FOOTPRINT_MAIN|$other]+set}" ]]; then
+        other_scope="${TICK_FOOTPRINT_SCOPE_MEMO[$TICK_FOOTPRINT_MAIN|$other]}"
+      else
+        other_scope="$(scheduler_footprint "$other")" || exit 1
+        printf '%s' "$other_scope" > "$file.scope" # the background job cannot fill the memo itself
+      fi
       other_workdir="$(jq -r '.live_workdir // empty' <<<"$other")"
       other_scope="$(live_writes_union "$other_workdir" "$other_scope")" || exit 1
       jq -c --slurpfile resolved <(printf '%s' "$other_scope") \
@@ -135,6 +158,11 @@ resolve_active_footprints() { # active-unit JSON array → fresh live scopes; sc
   done < <(jq -c '.[]' <<<"$active")
   for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
   if (( rc != 0 )); then rm -rf -- "$scan_dir"; return 1; fi
+  if [[ -n "$TICK_FOOTPRINT_MAIN" ]]; then
+    for index in "${!memo_keys[@]}"; do
+      [[ ! -f "$scan_dir/$index.json.scope" ]] || TICK_FOOTPRINT_SCOPE_MEMO["${memo_keys[$index]}"]="$(<"$scan_dir/$index.json.scope")"
+    done
+  fi
   rows="$(cat "$scan_dir"/*.json | jqf -cs '.')" || { rm -rf -- "$scan_dir"; return 1; }
   updates="$(jqf -c '[.[] | select((.footprint // []) != .resolved_footprint) | {id, footprint:.resolved_footprint}]' <<<"$rows")" \
     || { rm -rf -- "$scan_dir"; return 1; }
@@ -430,7 +458,7 @@ footprint_preflight_snapshot() {
   while IFS= read -r u; do
     id="$(jqf -r '.id' <<<"$u")"
     heads["$id"]="$(footprint_unit_head "$u")"
-    scope="$(scheduler_footprint "$u")" || return 1
+    footprint_scope_for "$u" scope || return 1
     TICK_FOOTPRINT_CACHE["$id"]="$scope"
     TICK_FOOTPRINT_PREFLIGHT_IDS+=("$id")
     TICK_CHECK_SCOPE_SOURCE["$id"]="$scope"
@@ -578,7 +606,7 @@ footprint_wait_mark() { # unit owner unit_json：记等待方与起始时间，i
 }
 footprint_admit_unordered() { # unit-id unit-json: keep the predicted scope for write-start; log what the old gate would have held
   local id="$1" u="$2" scope owner="${TICK_FOOTPRINT_DEFERRED[$1]:-}"
-  scope="$(scheduler_footprint "$u")" || return 1
+  footprint_scope_for "$u" scope || return 1
   if [[ -n "${TICK_FOOTPRINT_CACHE[$id]+cached}" ]]; then
     [[ "${TICK_FOOTPRINT_CACHE[$id]}" == "$scope" ]] || set_unit "$id" ".footprint=$scope"
   else
@@ -618,7 +646,7 @@ _footprint_room() {
       return 0
     fi
   fi
-  scope="$(scheduler_footprint "$u")" || return 1
+  footprint_scope_for "$u" scope || return 1
   if [[ -n "${TICK_FOOTPRINT_CACHE[$id]+cached}" ]]; then
     [[ "${TICK_FOOTPRINT_CACHE[$id]}" == "$scope" ]] || set_unit "$id" ".footprint=$scope"
   else
