@@ -14,8 +14,28 @@ const CAP_5H = Number(process.env.ZC_5H_CAP || 85);              // stop startin
 const CAP_WEEK = Number(process.env.ZC_WEEK_CAP || 100);          // stop starting ZCode here; a weekly reset normally comes first
 const RESET_GAP_SECONDS = Number(process.env.ZC_WEEK_RESET_GAP_SECONDS || 21600); // one reset at a time: a slow page must not burn a second
 const ALERT_FILE = process.env.ZC_ALERT_FILE;                     // each spent reset is appended here
-const RESET_WEEK_AT = Number(process.env.ZC_WEEK_RESET_AT || 98); // spend a weekly reset at this weekly percentage; over 100 never spends
+// Founder 2026-11-08 (glm_factory_cap_2026_11_08): no weekly resets remain, so the default never spends one.
+const RESET_WEEK_AT = Number(process.env.ZC_WEEK_RESET_AT || 101); // spend a weekly reset at this weekly percentage; over 100 never spends
 const WEEK_ALERT_AT = Number(process.env.ZC_WEEK_ALERT_AT || 98); // below the spend line, tell head once per week at this percentage
+// Production shares this GLM account and falls back to paid DeepSeek when it runs out: factory ZCode keeps under a straight
+// line from 0% at the week start to WEEK_PACE% at the week reset, leaving the rest for production.
+const WEEK_PACE = Number(process.env.ZC_WEEK_PACE_PCT || 90);
+const WEEK_SECONDS = 7 * 86400;
+// week percentage, week reset epoch, now epoch -> epoch until which ZCode holds, or 0 when under the line (or the window has not started)
+const weekPaceUntil = (pct, reset, now) => {
+  if (!reset || !(WEEK_PACE > 0)) return 0;
+  const start = reset - WEEK_SECONDS;
+  if (pct <= WEEK_PACE * (now - start) / WEEK_SECONDS) return 0;
+  return Math.min(reset, Math.ceil(start + pct / WEEK_PACE * WEEK_SECONDS)); // when the line reaches today's percentage
+};
+if (process.argv[2] === '--self-test') {
+  const r = 1_000_000_000, s = r - WEEK_SECONDS, assert = (c, m) => { if (!c) { console.error('FAIL', m); process.exit(1); } };
+  assert(weekPaceUntil(30, r, s + 7 * 3600) === Math.ceil(s + 30 / WEEK_PACE * WEEK_SECONDS), 'over the line holds until the line catches up');
+  assert(weekPaceUntil(10, r, s + 3 * 86400) === 0, 'under the line does not hold');
+  assert(weekPaceUntil(95, r, r - 60) === r, 'over the pace at week end holds to the reset, never past it');
+  assert(weekPaceUntil(30, null, s) === 0, 'a window that has not started never holds');
+  console.log('zc-quota self-test ok'); process.exit(0);
+}
 const PAGE = 'https://bigmodel.cn/coding-plan/personal/usage';
 const CDP = process.env.QUOTA_CDP_URL || 'http://127.0.0.1:9222';
 const CALL_TIMEOUT_MS = Number(process.env.QUOTA_CDP_CALL_TIMEOUT_MS || 30000);
@@ -150,11 +170,14 @@ try {
   }
   const now = Math.floor(Date.now() / 1000);
   const marker = (() => { try { return Number(fs.readFileSync(MARKER, 'utf8').trim()); } catch { return 0; } })();
-  if (q.five_h_pct >= CAP_5H || q.week_pct >= CAP_WEEK) {
-    const until = q.week_pct >= CAP_WEEK ? q.week_reset : q.five_h_reset;
+  const paceUntil = weekPaceUntil(q.week_pct, q.week_reset, now);
+  q.week_pace_line = q.week_reset ? Math.round(WEEK_PACE * (now - (q.week_reset - WEEK_SECONDS)) / WEEK_SECONDS * 10) / 10 : null;
+  if (q.five_h_pct >= CAP_5H || q.week_pct >= CAP_WEEK || paceUntil) {
+    const until = Math.max(q.week_pct >= CAP_WEEK ? q.week_reset : 0, q.five_h_pct >= CAP_5H ? q.five_h_reset : 0, paceUntil);
     if (until > marker) fs.writeFileSync(MARKER, `${until}\n`);
     q.marker_written = Math.max(until, marker);
-    log(`hold ZCode until ${new Date(until * 1000).toISOString()}: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
+    const why = paceUntil ? `week pace line ${q.week_pace_line}% of ${WEEK_PACE}%` : 'cap';
+    log(`hold ZCode until ${new Date(until * 1000).toISOString()}: 5h ${q.five_h_pct}% weekly ${q.week_pct}% (${why})`);
   } else if (prev.marker_written && marker === prev.marker_written && marker > now) {
     // Only clear a hold this script wrote; a provider refusal's marker stays. MARKER may be a symlink: readers see its target.
     fs.rmSync(fs.realpathSync(MARKER), { force: true });
