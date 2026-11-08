@@ -171,4 +171,66 @@ assert n.MEANING["supervisor.token_parks_24h"] and n.SOURCE["supervisor.token_pa
 PY
 grep -q 'supervisor.token_parks_24h' "$script_dir/NODE-HEALTH.md" || fail "NODE-HEALTH.md lacks the metric row"
 
+# ---- 8. a resumed run takes its baseline from the previous log: in start order, across sweep batches ----
+# The resume log sorts BEFORE its predecessor by file name (fix < selfcheck1), and a batch of one cuts them apart.
+first=impl-issue-7-selfcheck1-fix-20261105T100000Z.worker.log; second=impl-issue-7-fix-20261105T110000Z.worker.log
+codex_run "$first" 1000000 600000 50000
+codex_run "$second" 1500000 900000 80000
+for f in "$first" "$second"; do touch -d 2026-11-05T16:00:00Z "$sup/$f"; done
+jq -n --arg a "$first" --arg b "$second" '{workers:[
+ {pid:0,log:$a,unit:"issue-7",type:"repair",mode:"fresh",harvested:true,started:"2026-11-05T10:00:00Z"},
+ {pid:0,log:$b,unit:"issue-7",type:"repair",mode:"resume",harvested:true,started:"2026-11-05T11:00:00Z"}]}' > "$WORKERS"
+echo '{"units":[{"id":"issue-7","issue":7,"stage":"repair-pending","history":[]}]}' > "$UNITS"
+python3 - "$script_dir" "$sup" "$UNITS" <<'PY' || fail "a resumed run lost its baseline across batches"
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import spend_ledger
+units = json.load(open(sys.argv[3]))["units"]
+got = {}
+for _ in range(2):  # one record per sweep, as a backlog larger than the limit is swept
+    runs = spend_ledger.new_runs(sys.argv[2], units, 1)
+    assert len(runs) == 1, runs
+    got[runs[0][1]["log"]] = runs[0][1]["fresh_tokens"]
+    units[0].setdefault("spend_runs", []).append(runs[0][1])
+assert got["impl-issue-7-selfcheck1-fix-20261105T100000Z.worker.log"] == 450000, got
+assert got["impl-issue-7-fix-20261105T110000Z.worker.log"] == 230000, got  # (500000-300000 uncached) + 30000 output; 0 without the baseline
+PY
+
+# ---- 9. the real write path: one ledger write for the sweep, a failed sweep says so, the refill records before it dispatches ----
+: > "$fixture/writes"; : > "$LOG"
+eval "$(declare -f write_state | sed '1s/^write_state/write_state_real/')"
+write_state() { echo w >> "$fixture/writes"; write_state_real "$@"; }
+record_run_spend
+[[ "$(field issue-7 '.spend_runs | length')" == 2 ]] || fail "both runs recorded by one sweep: $(field issue-7 '.spend_runs | length')"
+[[ "$(field issue-7 '[.spend_runs[].fresh_tokens] | add')" == 680000 ]] || fail "recorded total: $(field issue-7 '[.spend_runs[].fresh_tokens] | add')"
+[[ "$(wc -l < "$fixture/writes")" == 1 ]] || fail "a sweep is one ledger write, not one per record: $(wc -l < "$fixture/writes")"
+grep -q 'spend ledger recorded 2 run' "$LOG" || fail "a recording sweep logs its count"
+unset -f write_state; eval "$(declare -f write_state_real | sed '1s/^write_state_real/write_state/')"
+bad="$fixture/bad-engine"; mkdir -p "$bad"; printf 'import sys\nsys.exit(3)\n' > "$bad/spend_ledger.py"
+: > "$LOG"; (HERE="$bad"; record_run_spend)
+grep -q 'spend ledger sweep failed rc=3' "$LOG" || fail "a failed sweep must be logged, not swallowed: $(cat "$LOG")"
+trace="$fixture/refill-trace"; : > "$trace"
+(phase() { echo "$1" >> "$trace"; }; record_run_spend() { echo record >> "$trace"; }; paused_midrun() { return 1; }
+ dep_delivered_snapshot() { :; }; tick_prs_changed() { :; }; INTAKE_ADDED=0; run_refill_intake_dispatch_phases)
+[[ "$(head -n 2 "$trace" | tr '\n' ' ')" == "record dispatch_pending " ]] || fail "a refill records spend before it dispatches: $(tr '\n' ' ' < "$trace")"
+
+# ---- 10. liveness: workers ran in the last 6 h and no unit holds a spend_runs record from that window ----
+python3 - "$script_dir" <<'PY' || fail "supervisor.spend_ledger_blind wrong"
+import sys
+sys.path.insert(0, sys.argv[1])
+import node_health as n
+now = n.ts("2026-11-08T12:00:00Z")
+ran = {"id": "a", "history": [{"stage": "pr-opened", "at": "2026-11-08T10:00:00Z"}]}
+def blind(*units): return n.ledger_metrics(list(units), now - n.timedelta(hours=5), now)["supervisor.spend_ledger_blind"]
+assert blind(ran) == 1, "workers ran and nothing was recorded"
+assert blind({"id": "b", "history": [], "spend_runs": [{"log": "x", "start": "2026-11-08T09:00:00Z"}]}, ran) == 0
+assert blind({"id": "b", "spend_runs": [{"log": "x", "start": "2026-11-08T05:59:00Z"}]}, ran) == 1, "an old record is not a live input"
+assert blind({"id": "c", "history": [{"stage": "pr-opened", "at": "2026-11-08T05:00:00Z"}]}) == 0, "no worker in the window, nothing to record"
+assert blind() == 0
+crit = n.CRITERIA["supervisor.spend_ledger_blind"]
+assert [n.status_of(v, crit[2], crit[3], crit[4]) for v in (0, 1)] == ["OK", "UNHEALTHY"]
+assert n.MEANING["supervisor.spend_ledger_blind"] and n.SOURCE["supervisor.spend_ledger_blind"]
+PY
+grep -q 'supervisor.spend_ledger_blind' "$script_dir/NODE-HEALTH.md" || fail "NODE-HEALTH.md lacks the liveness row"
+
 echo 'token-spend-gate.test.sh: PASS'

@@ -22,25 +22,29 @@ def phase_of(row):
 
 
 def new_runs(sup, units, limit=25):
-    """(unit id, record) for finished logs no unit carries yet. A log whose unit is not in the ledger is skipped
-    before it is read, so it costs nothing per tick."""
+    """(unit id, record) for finished logs no unit carries yet, oldest first, at most `limit`. A log whose unit is not in
+    the ledger is skipped before it is read, so it costs nothing per tick. Baselines chain over every log of the units that
+    have something to record, recorded ones included and in start order: a resumed run takes its predecessor's counters
+    from the previous log, whichever tick recorded that one."""
     seen = {r.get("log") for u in units for r in u.get("spend_runs") or [] if isinstance(r, dict)}
     index = worker_cost.units_index(units)
     by_log = worker_cost._read_workers(sup)
-    rows = []
-    for path in sorted(glob.glob(os.path.join(sup, "*.worker.log"))):
+    logs = []
+    for path in glob.glob(os.path.join(sup, "*.worker.log")):
         name = os.path.basename(path)
         worker = by_log.get(name)
         match = worker_cost.LOG_RE.match(name)
-        if name in seen or not match or (worker is not None and worker.get("harvested") is not True):
-            continue  # recorded, not a worker log, or a worker still running
+        if not match or (worker is not None and worker.get("harvested") is not True):
+            continue  # not a worker log, or a worker still running
         key = (worker or {}).get("unit") or worker_cost.UNIT_KEY_RE.sub("", match.group(2))
-        if key not in index and f"pr-{key}" not in index:
-            continue
-        rows.append(worker_cost.measure(path, worker))
-        if len(rows) >= limit:
-            break
+        if key in index or f"pr-{key}" in index:
+            logs.append((path, name, worker, key))
+    open_keys = {key for _, name, _, key in logs if name not in seen}
+    rows = [worker_cost.measure(path, worker) for path, _, worker, key in logs if key in open_keys]
+    rows = [row for row in rows if row is not None]
+    rows.sort(key=lambda row: row["start"])
     worker_cost._chain_baselines(rows)
+    rows = [row for row in rows if row["log"] not in seen][:limit]
     if rows:
         worker_cost.attach_provider_usage(rows, units)
     out = []

@@ -85,17 +85,17 @@ ticket_budget_reason() { # unit-json
 # send it to one arbiter decision whose prompt carries the per-run table and a class; the first return to dispatch after that is the
 # single refill (a `token-refill` event). Past the hard line the unit parks for good: the check reads only spend, so no ruling kind
 # (supervisor-requeue, cap-budget-refill, advisor-ruling, arbiter) can refill it, and the head hears of it once through the inbox.
-record_run_spend() { # → one spend_runs record on the unit of each finished worker log not yet recorded
-  local out line unit log run
-  local -a lines=()
-  out="$(timeout 120 python3 "$HERE/spend_ledger.py" sweep "$SUP" "$UNITS" 25 2>/dev/null)" || return 0
-  mapfile -t lines <<<"$out"
-  for line in "${lines[@]}"; do
-    [[ -n "$line" ]] || continue
-    IFS=$'\t' read -r unit log < <(jqf -r '[.unit, .run.log] | @tsv' <<<"$line")
-    run="$(jqf -c .run <<<"$line")"
-    set_unit "$unit" ".spend_runs = (if any((.spend_runs // [])[]; .log == $(js "$log")) then .spend_runs else (.spend_runs // []) + [$run] end)" || :
-  done
+record_run_spend() { # → one spend_runs record on the unit of each finished worker log not yet recorded; one ledger write for the lot
+  local out rc=0 err
+  err="$(mktemp "$A/.spend-sweep.XXXXXX")" || return 0
+  out="$(timeout 120 python3 "$HERE/spend_ledger.py" sweep "$SUP" "$UNITS" 500 2>"$err")" || rc=$?
+  # A failed sweep used to vanish (2>/dev/null) and left the gate summing zero: say it, the liveness metric then names the gap.
+  (( rc == 0 )) || { say "spend ledger sweep failed rc=$rc: $(tail -n 1 "$err" | cut -c1-200)"; rm -f -- "$err"; return 0; }
+  rm -f -- "$err"
+  [[ -n "$out" ]] || return 0
+  units_update --slurpfile runs <(printf '%s\n' "$out") 'reduce $runs[] as $r (.;
+    (.units[] | select(.id == $r.unit)) |= (.spend_runs = (if any((.spend_runs // [])[]; .log == $r.run.log) then .spend_runs else (.spend_runs // []) + [$r.run] end)))' \
+    && say "spend ledger recorded $(grep -c . <<<"$out") run(s)" || say "spend ledger write failed"
 }
 
 unit_fresh_tokens() { jqf -r '[(.spend_runs // [])[] | .fresh_tokens // 0] | add // 0' <<<"$1"; }
