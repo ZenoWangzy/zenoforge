@@ -53,3 +53,6 @@ for f in luna zc; do
   grep -q 'install-guard:' "$guard/../$f" || fail "bin/$f does not put install-guard first on the worker PATH"
 done
 echo "ok - bin/luna and bin/zc put install-guard on the worker PATH"
+
+[[ -z $(find "$guard" -type l) ]] || fail "install-guard holds a symlink: npm pack drops it (cli test 34)"
+echo "ok - install-guard has no symlinks"
