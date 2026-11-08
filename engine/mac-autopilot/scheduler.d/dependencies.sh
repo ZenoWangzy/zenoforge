@@ -8,6 +8,13 @@ blocked_on_of() {
     | grep -oE '[0-9]+$' | head -1
 }
 park_blocked() { # unit dep
+  # supervisor 已在 reroute 中放弃的前置（dropped_deps）：worker 报告的 BLOCKED-ON 不停住单元，单元留在原环节再跑一次。
+  # 调用方若刚把单元标成 blocked-external（评审路径），这里还原成可继续的环节。
+  if [[ "$2" =~ ^[0-9]+$ ]] && jqf -e --arg id "$1" --argjson d "$2" 'any(.units[]; .id == $id and ((.dropped_deps // []) | index($d) != null))' "$UNITS" >/dev/null; then
+    set_unit "$1" "$(hist dropped-dep-ignored "#$2") | (if .dep_wait_delivery == $2 then del(.dep_wait_delivery, .unpark_condition) else . end) | (if .stage == \"blocked-external\" then .stage = (if .pr != null then \"review-pending\" else \"implement-pending\" end) else . end)"
+    say "unit $1 ignores dropped dependency #$2 from a worker report; it runs again"
+    return 0
+  fi
   # 生产热修回迁不等前置（代码已在线）：第一次退回按热修规则重评，第二次交 supervisor（pr-3596 被 #3145 挡住）。
   if [[ "$(unit_field "$1" '.hotpatch // false')" == true ]]; then
     if jqf -e --arg id "$1" 'any(.units[]; .id == $id and any(.history[]?; .stage == "hotpatch-not-blocked"))' "$UNITS" >/dev/null; then

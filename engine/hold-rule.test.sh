@@ -67,3 +67,21 @@ printf 'ok - hold.sh --rule accepts --reroute\n'
   [ "$(unit_body_blockers "$(jq -c '.units[0]' "$UNITS")")" = 5388 ] || { echo "FAIL: reblock did not restore the body blocker" >&2; exit 1; }
 )
 printf 'ok - reroute keeps a dropped body blocker off the unit until reblock names it\n'
+# A worker report that blocks on a dropped dependency does not park the unit; one on any other dependency still parks.
+(
+  export AUTOPI_TEST_LIBRARY_ONLY=true MAC_AUTOPILOT_ROOT="$test_env_root/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/sup" MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/sup/autopi"
+  mkdir -p "$test_env_root/repo" "$test_env_root/sup/autopi/alerts"
+  cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$test_env_root/sup/autopi/config.json"
+  echo '{"units":[{"id":"issue-13","stage":"implement-pending","task":"t","branch":"b","dropped_deps":[5388],"history":[]},{"id":"issue-14","stage":"supervisor-review","blocked_on":5388,"task":"t","branch":"b","history":[]},{"id":"issue-15","stage":"implement-pending","task":"t","branch":"b","dropped_deps":[5388],"history":[]}]}' > "$test_env_root/sup/autopi/units.json"
+  echo '{"workers":[]}' > "$test_env_root/sup/autopi/workers.json"
+  source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
+  report="$test_env_root/report-13.txt"; printf 'BLOCKED-ON: #5388\n' > "$report"
+  park_blocked issue-13 "$(blocked_on_of "$report")"
+  [ "$(jq -r '.units[]|select(.id=="issue-13")|.stage+"|"+(.history[-1].stage)' "$UNITS")" = "implement-pending|dropped-dep-ignored" ] || { echo "FAIL: dropped dependency parked the unit" >&2; exit 1; }
+  rule_entry issue-14 reroute u "dead blocker" ""
+  jq -e '.units[]|select(.id=="issue-14")|.task|contains("Supervisor ruling: dependency #5388 is resolved") and contains("do not report blocked on it")' "$UNITS" >/dev/null || { echo "FAIL: reroute task line missing" >&2; exit 1; }
+  printf 'BLOCKED-ON: #9999\n' > "$report"
+  park_blocked issue-15 "$(blocked_on_of "$report")"
+  [ "$(jq -r '.units[]|select(.id=="issue-15")|.stage+"|"+(.blocked_on|tostring)' "$UNITS")" = "blocked-external|9999" ] || { echo "FAIL: undropped dependency did not park" >&2; exit 1; }
+)
+printf 'ok - a worker report on a dropped dependency does not park; the reroute task line says so; another dependency still parks\n'
