@@ -293,6 +293,7 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true]：焦点与并发
   local u="${3:-}" priority waiter impl_cap n_impl fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"
   if [[ "$2" == repair ]]; then repair_cap_admission "$1" "$u" || { dispatch_skip repair-cap; return 1; }; fi
+  if [[ "$2" == repair ]]; then repair_runtime_admission "$1" "$u" || { dispatch_skip repair-runtime; return 1; }; fi
   if [[ "$2" == review || "$2" == rereview ]]; then
     jqf -e '(.self_check_pid // null)==null and (.self_fix_pending // false)!=true' <<<"$u" >/dev/null || { dispatch_skip self-check; return 1; }
   fi

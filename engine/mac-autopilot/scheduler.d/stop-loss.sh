@@ -266,18 +266,22 @@ approved_ci_repair_unchanged() { # unit-json head pr-head
 # A repair run whose PR head did not move is no delivered repair (2026-11-07, PR 5690: a run that stopped before its push was
 # written repair-delivered, counted as a repair, and conflict triage re-flagged the same head before the no-push check ran).
 # Unchanged heads that are expected stay delivered: an approved head whose CI went red after the approval (the repair concludes
-# an infrastructure red and the scheduler reruns it, approved_ci_repair_unchanged), and a round whose findings record is verified empty.
+# an infrastructure red and the scheduler reruns it, approved_ci_repair_unchanged), a round whose findings record is verified empty,
+# and a report-only round: every blocking finding names the PR body or the delivery report in its `file` field (live values
+# "(PR #5618 body)", "PR #4888 implementer report"), so the repair edits GitHub text and no commit can move the head (4741, 5544).
 repair_unchanged_expected() { # unit-json head
   jqf -e --arg b "$2" '
     (.history // []) as $h
     | ([$h | to_entries[] | select(.value.stage | IN("review-approve", "review-request-changes", "review-block")) | .key] | max // -1) as $i
-    | if $i < 0 or $h[$i].result != $b then false
+    | def report_only: type == "string" and (contains("/") | not) and test("^[(]?(PR|pull request)[^/]*(body|description|report)[)]?$|delivery[ -]report"; "i");
+      if $i < 0 or $h[$i].result != $b then false
       elif $h[$i].stage == "review-approve" then any($h[($i + 1):][]; .stage == "ci-test-red" or .stage == "ci-red")
       elif $h[$i].stage == "review-request-changes" then
         ([$h[0:($i + 1)][] | select(.stage == "review-request-changes")] | length) as $round
         | ([(.review_findings // [])[] | select(.round == $round)] | last // null) as $f
-        | $f != null and $f.block == "ok" and ($f.findings | type) == "array" and ($f.findings | length) == 0
-          and ($f.all_findings | type) == "array" and ($f.all_findings | length) == 0
+        | $f != null and $f.block == "ok" and ($f.findings | type) == "array"
+          and ((($f.findings | length) == 0 and ($f.all_findings | type) == "array" and ($f.all_findings | length) == 0)
+            or (($f.findings | length) > 0 and all($f.findings[]; .file | report_only)))
           and (any($h[($i + 1):][]; .stage == "merge-conflict") | not)
       else false end' <<<"$1" >/dev/null
 }
@@ -303,6 +307,51 @@ repair_run_filter() { # unit class head fresh-tokens -> jq filter: record the ru
   else
     echo "$(hist repair-delivered) | .history[-1].head_class=$(js "$2") | .history[-1].fresh_tokens=${4:-null} | .repair_hint=null | .stage=\"$stage\""
   fi
+}
+# Circuit breaker on repeated identical outcomes (Nygard, Release It!): REPAIR_BREAKER_RUNS repair runs in a row that end on one
+# head leave a further run nothing new to try (issue-5573: four terra repairs on e145d3f0, none pushed), so the unit parks and
+# one supervisor inbox entry carries the head, the run count and the last evidence line of the final report.
+REPAIR_BREAKER_RUNS="${REPAIR_BREAKER_RUNS:-2}"
+repair_breaker() { # unit report-file → parks the unit when its last repair runs all ended repair-no-push on the same head
+  local u head n evidence result
+  u="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  head="$(jqf -r '(.history // [])[-1] // {} | select(.stage == "repair-no-push") | (.result // "") | capture("^head (?<sha>[0-9a-f]{40}) unchanged").sha? // empty' <<<"$u" 2>/dev/null)"
+  [[ "$head" =~ $SHA_RE ]] || return 0
+  n="$(jqf -r --arg r "head $head unchanged after repair" '[(.history // [])[] | select(.stage == "repair-no-push" or .stage == "repair-delivered")] | reverse
+    | reduce .[] as $e ({n: 0, stop: false}; if .stop then . elif $e.stage == "repair-no-push" and $e.result == $r then .n += 1 else .stop = true end) | .n' <<<"$u")"
+  [[ "$n" =~ ^[0-9]+$ ]] && (( n >= REPAIR_BREAKER_RUNS )) || return 0
+  evidence="$(awk '/^```/ { fence = !fence; next } !fence && NF { last = $0 } END { print last }' "$2" 2>/dev/null | cut -c1-300)"
+  result="head $head: $n consecutive repair runs ended on it without a push; last evidence: ${evidence:-none recorded}"
+  cap_set_unit "$1" park "$result" "" "$(hist repair-breaker "$result") | .stage=\"parked\" | .parked_reason=\"repair-breaker\" | .unpark_condition=\"a supervisor decision\" | .note=$(js "$result")" || return 1
+  say "repair breaker unit=$1 head=${head:0:12} runs=$n -> parked"
+  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "repair-breaker:$1:$head" "repair-breaker unit=$1: $result") \
+    || say "repair breaker unit=$1: inbox entry not delivered"
+}
+# Admission: a repair on package code runs the Dagger gate, which needs the host's container runtime. The probe is the
+# env-fault ledger's own (env:test-gate:docker); rc 1 or 127 means missing, anything else (unknown, timeout) admits. The
+# refusal is counted once per hold on the unit and in the ledger counter admission_refusals, and logged; the unit stays
+# repair-pending and each later tick only skips it (dispatch_skip), so nothing retries in a loop.
+REPAIR_DAGGER_PATH_RE="${REPAIR_DAGGER_PATH_RE:-^(packages|apps)/}"
+container_runtime_missing() { # → 0 when the host probe says the runtime is missing; one probe per tick
+  local rc=0
+  if [[ -z "${TICK_CONTAINER_RUNTIME:-}" ]]; then
+    timeout 30 bash -c 'source "$1" >/dev/null 2>&1 || exit 2; env_fault_probe env:test-gate:docker' _ "$SCHEDULER_AGENT_LIB" >/dev/null 2>&1 || rc=$?
+    case "$rc" in 1|127) TICK_CONTAINER_RUNTIME=missing ;; *) TICK_CONTAINER_RUNTIME=ready ;; esac
+  fi
+  [[ "$TICK_CONTAINER_RUNTIME" == missing ]]
+}
+repair_runtime_admission() { # id unit-json → 1 when the repair needs containers and the host has none
+  jqf -e --arg re "$REPAIR_DAGGER_PATH_RE" 'any((.footprint // [])[]?; type == "string" and test($re))' <<<"$2" >/dev/null || return 0
+  if ! container_runtime_missing; then
+    [[ "$(jqf -r '.repair_runtime_refused // false' <<<"$2")" != true ]] || set_unit "$1" 'del(.repair_runtime_refused)'
+    return 0
+  fi
+  if [[ "$(jqf -r '.repair_runtime_refused // false' <<<"$2")" != true ]]; then
+    set_unit "$1" '.repair_runtime_refused=true' \
+      && units_update '.admission_refusals["repair-no-container-runtime"] = ((.admission_refusals["repair-no-container-runtime"] // 0) + 1)'
+    say "repair-runtime-refused unit=$1: the repair gate needs Dagger and the host container runtime is missing"
+  fi
+  return 1
 }
 repair_failure_prompt() { # unit-json review-report -> only this repair's failure evidence
   local u="$1" report="$2" hint pr checks name link job tmp i pid step_file log_file started=$SECONDS elapsed index=0

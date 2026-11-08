@@ -64,10 +64,11 @@ run_repair "$H1" '[{"stage":"review-request-changes","result":"'"$H1"'"}]' '{"re
 [[ "$(field issue-9 .stage)" == repair-pending && "$(field issue-9 .repair_hint)" == "keep me" ]] || fail "first no-push must retry the repair and keep its hint ($(field issue-9 .stage))"
 [[ "$(field issue-9 '.history[-1].head_class')" == unchanged ]] || fail 'no-push event is not classified for the dashboard row'
 
-# 2. Third attempt on the same head (two no-push already): no more retries, the arbiter route takes it from rereview-pending.
-run_repair "$H1" "$(jq -cn --argjson n "$(nopush_hist "$H1" 2)" '[{stage:"review-request-changes",result:"'"$H1"'"}] + $n')"
-[[ "$(field issue-9 .stage)" == rereview-pending && "$(field issue-9 '.history[-1].stage')" == repair-no-push ]] \
-  || fail "a third unchanged run must leave repair for the arbiter route ($(field issue-9 .stage))"
+# 2. Second unchanged run on the same head (one no-push already): the circuit breaker parks the unit instead of a third repair.
+SCHEDULER_AGENT_LIB="$fixture/agent-lib.sh"; printf '%s\n' 'supervisor_inbox_append_once() { :; }' > "$SCHEDULER_AGENT_LIB"
+run_repair "$H1" "$(jq -cn --argjson n "$(nopush_hist "$H1" 1)" '[{stage:"review-request-changes",result:"'"$H1"'"}] + $n')"
+[[ "$(field issue-9 .stage)" == parked && "$(field issue-9 '.history[-2].stage')" == repair-no-push && "$(field issue-9 '.history[-1].stage')" == repair-breaker ]] \
+  || fail "a second unchanged run must park the unit ($(field issue-9 .stage))"
 
 # 3. The run pushed a new head: delivered, classified changed, fresh tokens recorded.
 git -C "$fixture/wt" reset -q --hard "$H2"; git -C "$fixture/wt" push -q origin agent/issue-9
