@@ -11,6 +11,8 @@ export PATH="$tmp/bin:$PATH"
 
 fail() { echo "pin-vecta.test.sh: $*" >&2; exit 1; }
 ok() { echo "pin-vecta.test.sh: $*"; }
+# The pin's worktree is removed on exit; its commit stays on the printed branch.
+branch_of() { sed -n 's/^pin-vecta: branch=\([^ ]*\) head=.*/\1/p' "$1" | tail -1; }
 
 cat > "$tmp/bin/systemd-run" <<'SYSTEMD'
 #!/usr/bin/env bash
@@ -244,10 +246,13 @@ if ! run_pin "$direct_calls" "$direct_scopes" "$direct_agent" "$direct_target" >
   fail 'direct pin preparation failed'
 fi
 direct_worktree=$(sed -n 's/^pin-vecta: worktree=//p' "$tmp/direct.out" | tail -1)
-[[ -n "$direct_worktree" && -d "$direct_worktree" ]] || fail 'fresh worktree was not created'
+[[ -n "$direct_worktree" && ! -e "$direct_worktree" ]] || fail 'successful pin left its worktree behind'
+git -C "$direct_target" worktree list | grep -Fq "$direct_worktree" && fail 'successful pin left a registered worktree'
+direct_branch=$(branch_of "$tmp/direct.out")
+[[ -n "$direct_branch" ]] || fail 'pin did not print its branch'
 direct_out=$(sed -n 's/^pin-vecta: out=//p' "$tmp/direct.out" | tail -1)
 [[ -n "$direct_out" && -d "$direct_out" ]] || fail 'fresh out directory was not created'
-subject=$(git -C "$direct_worktree" log -1 --format=%s)
+subject=$(git -C "$direct_target" log -1 --format=%s "$direct_branch")
 [[ "$subject" == '[skip ci]'* ]] || fail "direct route commit lacks [skip ci]: $subject"
 grep -Fq 'pin-vecta: prepared route=land-direct-main' "$tmp/direct.out" || fail 'pin-only diff did not select land-direct-main'
 build_line=$(grep -n '^dispatcher:--build ' "$direct_calls" | cut -d: -f1)
@@ -284,8 +289,10 @@ pack_status=$?
 set -e
 ((pack_status != 0)) || fail 'failed pack preflight was allowed to publish'
 pack_worktree=$(sed -n 's/^pin-vecta: worktree=//p' "$tmp/pack.out" | tail -1)
-[[ -n "$pack_worktree" && -d "$pack_worktree" ]] || fail 'pack pin worktree was not retained for review'
-pack_subject=$(git -C "$pack_worktree" log -1 --format=%s)
+[[ -n "$pack_worktree" && ! -e "$pack_worktree" ]] || fail 'failed pack pin left its worktree behind'
+pack_branch=$(branch_of "$tmp/pack.out")
+git -C "$pack_target" rev-parse --verify -q "refs/heads/$pack_branch" >/dev/null || fail 'failed pack pin dropped its branch for review'
+pack_subject=$(git -C "$pack_target" log -1 --format=%s "$pack_branch")
 [[ "$pack_subject" != '[skip ci]'* ]] || fail "pack-touching PR commit unexpectedly has [skip ci]: $pack_subject"
 grep -Fq 'candidate:--preflight ' "$pack_calls" || fail 'publish preflight was skipped for the PR route'
 grep -Fq 'resolved-config-check: CHANGED hotfix.json' "$tmp/pack.out" || fail 'fixture did not reach the intended publish-preflight failure'
@@ -320,8 +327,8 @@ if ((pr_status != 75)); then
   fail "PR pin must exit 75 (opened, not landed), got $pr_status"
 fi
 pr_worktree=$(sed -n 's/^pin-vecta: worktree=//p' "$tmp/pr.out" | tail -1)
-pr_branch=$(git -C "$pr_worktree" symbolic-ref --short HEAD)
-pr_subject=$(git -C "$pr_worktree" log -1 --format=%s)
+pr_branch=$(branch_of "$tmp/pr.out")
+pr_subject=$(git -C "$pr_target" log -1 --format=%s "$pr_branch")
 [[ "$pr_subject" != '[skip ci]'* ]] || fail "PR route commit unexpectedly has [skip ci]: $pr_subject"
 grep -Fq "delivery:$pr_worktree/scripts/branch-delivery-preflight.mjs --mode push --publish-topic" "$pr_calls" \
   || fail 'PR route skipped Vecta branch delivery preflight'
@@ -389,14 +396,15 @@ if ! ZF_LAND_DIRECT_MAIN="$tmp/fake-lander.sh" \
   fail 'pack-only direct-main pin did not publish through land-direct-main'
 fi
 pack_direct_worktree=$(sed -n 's/^pin-vecta: worktree=//p' "$tmp/pack-direct.out" | tail -1)
-pack_direct_subject=$(git -C "$pack_direct_worktree" log -1 --format=%s)
+pack_direct_branch=$(branch_of "$tmp/pack-direct.out")
+pack_direct_subject=$(git -C "$pack_direct_target" log -1 --format=%s "$pack_direct_branch")
 [[ "$pack_direct_subject" == '[skip ci]'* ]] \
   || fail "pack-only direct-main commit lacks [skip ci]: $pack_direct_subject"
 grep -Fq 'pin-vecta: prepared route=land-direct-main' "$tmp/pack-direct.out" \
   || fail 'pack-only pin did not select land-direct-main'
-git -C "$pack_direct_worktree" diff --name-only origin/main...HEAD | grep -Fxq '.zenoforge/build.json' \
+git -C "$pack_direct_target" diff --name-only origin/main..."$pack_direct_branch" | grep -Fxq '.zenoforge/build.json' \
   || fail 'pack-only pin diff omitted .zenoforge/build.json'
-git -C "$pack_direct_worktree" diff --name-only origin/main...HEAD \
+git -C "$pack_direct_target" diff --name-only origin/main..."$pack_direct_branch" \
   | grep -Fxq '.zenoforge/build/pack/scripts/agent/hotfix/pack-only.sh' \
   || fail 'pack-only pin diff omitted its .zenoforge/build/pack/ path'
 grep -Fq "classifier:$pack_direct_worktree/scripts/branch-delivery-policy.mjs --classify-path-set -" "$pack_direct_calls" \
@@ -433,6 +441,7 @@ grep -Fq 'pack copy shares changed lines: yes (1/1 lines; .zenoforge/build/pack/
 grep -Fq 'pack copy shares changed lines: no (0/2 lines; .zenoforge/build/pack/scripts/agent/hotfix/two.sh)' "$tmp/override.out" \
   || fail 'pack copy missing the changed line was not reported'
 grep -Fq 'fallback publish-preflight: attempted' "$tmp/override.out" || fail 'preflight was skipped after an override build failure'
+[[ -z "$(ls -A "$override_target/.worktrees" 2>/dev/null)" ]] || fail 'failed build left its worktree behind'
 ok 'override diagnostics report each path and pack-line overlap'
 
 # Override three-way merge: engine B2 changes m.sh (top) and c.sh (line 3) and
@@ -482,13 +491,13 @@ run_merge_pin() { # <name> <target> [args]
 mc_target=$(merge_target mclean "hotfix/m.sh\t$blob_m\nhotfix/k.sh\t$blob_k\n")
 set +e; run_merge_pin mclean "$mc_target" --land > "$tmp/mclean.out" 2>&1; mc_status=$?; set -e
 ((mc_status == 75)) || { cat "$tmp/mclean.out" >&2; fail "clean override merge: expected PR route exit 75, got $mc_status"; }
-mc_wt=$(sed -n 's/^pin-vecta: worktree=//p' "$tmp/mclean.out" | tail -1)
+mc_branch=$(branch_of "$tmp/mclean.out")
 grep -Fq "pin-vecta: merged override hotfix/m.sh base=${blob_m:0:12} -> engine=${mnew_m:0:12}" "$tmp/mclean.out" \
   || fail 'clean merge log line missing'
-[[ "$(seq_file TOP a b c d e f LOCAL)" == "$(cat "$mc_wt/.zenoforge/build/pack/scripts/agent/hotfix/m.sh")" ]] \
+[[ "$(seq_file TOP a b c d e f LOCAL)" == "$(git -C "$mc_target" show "$mc_branch:.zenoforge/build/pack/scripts/agent/hotfix/m.sh")" ]] \
   || fail 'merged pack copy lost the local or the engine edit'
-[[ "$(cat "$mc_wt/.zenoforge/build/overrides.tsv")" == "$(printf 'hotfix/m.sh\t%s\nhotfix/k.sh\t%s' "$mnew_m" "$blob_k")" ]] || fail 'row not updated to the new blob'
-[[ "$(git -C "$mc_wt" diff --name-only HEAD~1 HEAD | sort)" == "$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv .zenoforge/build/pack/scripts/agent/hotfix/m.sh)" ]] \
+[[ "$(git -C "$mc_target" show "$mc_branch:.zenoforge/build/overrides.tsv")" == "$(printf 'hotfix/m.sh\t%s\nhotfix/k.sh\t%s' "$mnew_m" "$blob_k")" ]] || fail 'row not updated to the new blob'
+[[ "$(git -C "$mc_target" diff --name-only "$mc_branch~1" "$mc_branch" | sort)" == "$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv .zenoforge/build/pack/scripts/agent/hotfix/m.sh)" ]] \
   || fail 'pin, row and pack copy are not one commit'
 grep -Fq 'pin-vecta: result=pr-open route=PR landed=no' "$tmp/mclean.out" || fail 'overrides.tsv change did not report the PR route as not landed'
 ok 'clean override merge lands pack copy and row in the pin commit'
@@ -510,5 +519,34 @@ set +e; run_merge_pin mdeleted "$md_target" --land > "$tmp/mdeleted.out" 2>&1; m
 grep -Fq 'override hotfix/d.sh: the engine' "$tmp/mdeleted.out" || fail 'deleted file was not named'
 [[ -z "$(ls -A "$md_target/.worktrees" 2>/dev/null)" ]] || fail 'deleted-file refusal left a worktree behind'
 ok 'engine-deleted override file stops the pin'
+
+# Leaked pin-vecta worktrees: a run prunes pin-vecta-* worktrees older than 6 h
+# unless a live pid holds their lock; fresh, live-locked and non-pin ones stay.
+prune_target=$(setup_target prune)
+prune_wt="$prune_target/.worktrees"
+mkdir -p "$prune_wt"
+for name in pin-vecta-stale pin-vecta-initializing pin-vecta-live pin-vecta-fresh other-worktree; do
+  git -C "$prune_target" worktree add -q -b "prune-$name" "$prune_wt/$name" HEAD
+done
+git -C "$prune_target" worktree lock --reason initializing "$prune_wt/pin-vecta-initializing"
+git -C "$prune_target" worktree lock --reason "$$" "$prune_wt/pin-vecta-live"
+for name in pin-vecta-stale pin-vecta-initializing pin-vecta-live other-worktree; do
+  touch -d '7 hours ago' "$prune_wt/$name"
+done
+prune_agent=$(setup_agent prune)
+prune_calls="$tmp/prune.calls"
+prune_scopes="$tmp/prune.scopes"
+: > "$prune_calls"
+: > "$prune_scopes"
+run_pin "$prune_calls" "$prune_scopes" "$prune_agent" "$prune_target" > "$tmp/prune.out" 2>&1 \
+  || { cat "$tmp/prune.out" >&2; fail 'pin with leaked worktrees did not run'; }
+[[ ! -e "$prune_wt/pin-vecta-stale" ]] || fail 'stale pin-vecta worktree was not pruned'
+[[ ! -e "$prune_wt/pin-vecta-initializing" ]] || fail 'stale initializing-locked pin-vecta worktree was not pruned'
+! git -C "$prune_target" worktree list --porcelain | grep -Fxq "worktree $prune_wt/pin-vecta-stale" \
+  || fail 'pruned worktree is still registered'
+[[ -d "$prune_wt/pin-vecta-live" ]] || fail 'worktree locked by a live pid was pruned'
+[[ -d "$prune_wt/pin-vecta-fresh" ]] || fail 'fresh pin-vecta worktree was pruned'
+[[ -d "$prune_wt/other-worktree" ]] || fail 'non-pin worktree was pruned'
+ok 'stale pin-vecta worktrees are pruned; live, fresh and non-pin worktrees are kept'
 
 echo 'pin-vecta.test.sh: PASS'

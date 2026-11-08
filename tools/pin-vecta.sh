@@ -112,7 +112,16 @@ fi
 pack_agent_rel=".zenoforge/build/pack/scripts/agent"
 short_sha=${engine_sha:0:12}
 merge_stage=$(mktemp -d "${TMPDIR:-/tmp}/zf-pin-merge.XXXXXXXX")
-trap 'rm -rf -- "$merge_stage"' EXIT
+pin_worktree='' # set once this run creates its worktree; cleanup removes only that one
+cleanup() {
+  rm -rf -- "$merge_stage"
+  if [[ -n "$pin_worktree" ]]; then
+    git -C "$target" worktree remove --force "$pin_worktree" >/dev/null 2>&1 || true
+    git -C "$target" worktree prune
+  fi
+  return 0
+}
+trap cleanup EXIT
 merged_rows="$merge_stage/rows.tsv" # path <TAB> new engine blob, rows that were merged
 : > "$merged_rows"
 merge_fail() { echo "pin-vecta: refusing pin: override $1: $2" >&2; exit 1; }
@@ -146,11 +155,41 @@ if table_text=$(git -C "$target" show "$start_head:$overrides_rel" 2>/dev/null);
   done <<<"$table_text"
 fi
 
+# Leaked worktrees from crashed runs: drop pin-vecta-* ones older than 6 h unless
+# their lock names a live pid. Only pin-vecta-* directories under .worktrees are touched.
+prune_stale_pin_worktrees() { # <target>
+  local target=$1 line path='' reason='' now mtime pid live
+  local max_age=21600
+  now=$(date +%s)
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *) path=${line#worktree } ;;
+      locked|locked\ *) reason=${line#locked}; reason=${reason# } ;;
+      '')
+        if [[ "$(dirname -- "$path")" == "$target/.worktrees" && "$(basename -- "$path")" == pin-vecta-* && -d "$path" ]]; then
+          mtime=$(stat -c %Y -- "$path")
+          pid=''
+          [[ "$reason" =~ ^[0-9]+$ ]] && pid=$reason
+          live=0
+          [[ -n "$pid" && -d "/proc/$pid" ]] && live=1
+          if ((now - mtime >= max_age && live == 0)); then
+            git -C "$target" worktree remove --force --force "$path" >/dev/null 2>&1 || true
+          fi
+        fi
+        path='' reason=''
+        ;;
+    esac
+  done < <(git -C "$target" worktree list --porcelain; printf '\n')
+  git -C "$target" worktree prune
+}
+
 stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
 branch="chore/pin-vecta-$short_sha-$stamp"
 worktree="$target/.worktrees/pin-vecta-$short_sha-$stamp"
+prune_stale_pin_worktrees "$target"
 mkdir -p -- "$target/.worktrees"
 git -C "$target" worktree add -b "$branch" "$worktree" "$start_head"
+pin_worktree=$worktree
 [[ -f "$worktree/$hook" ]] || { echo "pin-vecta: build hook is missing at $start_head: $hook" >&2; exit 2; }
 
 pin_tmp="$worktree/$build_rel.tmp.$$"
