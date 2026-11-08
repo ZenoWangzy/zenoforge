@@ -62,12 +62,24 @@ for step in state_read terminal_check skip_terminal skip_census_partial; do
   [[ "$steps_line" == *" $step="*"s/"* ]] || fail "steps line lacks $step: $steps_line"
 done
 
-# An issue only an open PR's text names is dropped with a reason line.
-: > "$LOG"
-tick_prs() { echo '[{"headRefName":"agent/issue-99","title":"other work (#14)","body":""}]'; }
-intake_candidates() { row 14; }
-register_new_issues 0 true
-grep -Fq "intake skip issue #14: an open PR's branch, title or body names it" "$LOG" || fail "open_pr drop has no reason: $(cat "$LOG")"
+# Only an open PR's own branch (agent/issue-N) or a `Refs|Fixes|Closes|Resolves #N` body line holds issue N; prose, titles and longer numbers do not.
+cp "$UNITS" "$fixture/units.keep"
+open_pr_case() { # name, PR JSON, held|free
+  jq -n '{units:[]}' > "$UNITS"; rm -f "$A/intake-skip-noted.tsv"; : > "$LOG"
+  PRS="$2" register_new_issues 0 true
+  if grep -Fq "intake skip issue #5028: an open PR's branch, title or body names it" "$LOG"; then got=held; else got=free; fi
+  [[ "$got" == "$3" ]] || fail "$1: expected $3, got $got: $(cat "$LOG")"
+  if [[ "$3" == held ]]; then grep -Fq ' open_pr=1' "$LOG" || fail "$1: held but not counted: $(grep 'skip counts' "$LOG")"
+  else ! grep -Fq ' open_pr=' "$LOG" || fail "$1: free but counted open_pr"; fi
+}
+tick_prs() { echo "$PRS"; }
+intake_candidates() { row 5028; }
+open_pr_case 'sibling prose'  '[{"headRefName":"agent/issue-5398","title":"x (#5028)","body":"Sibling #5028 owns screen-read authorization.\nsee #5028"}]' free
+open_pr_case 'Refs line'      '[{"headRefName":"agent/issue-9","title":"x","body":"intro\nRefs #5028\n"}]' held
+open_pr_case 'lower case'     '[{"headRefName":"agent/issue-9","title":"x","body":"  refs #5028"}]' held
+open_pr_case 'own branch'     '[{"headRefName":"agent/issue-5028","title":"x","body":""}]' held
+open_pr_case 'longer number'  '[{"headRefName":"agent/issue-50281","title":"x","body":"Refs #50281"}]' free
+cp "$fixture/units.keep" "$UNITS"; rm -f "$A/intake-skip-noted.tsv"
 tick_prs() { echo '[]'; }
 intake_candidates() { for n in 10 11 12 13; do row "$n"; done; }
 

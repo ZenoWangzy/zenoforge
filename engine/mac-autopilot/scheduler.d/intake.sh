@@ -337,15 +337,17 @@ register_new_issues() {
   rm -f -- "$A/intake-held-since"
   # 只按可启动 pending 计目标；footprint 重叠只排序（dispatch 先派不重叠的），不再筛掉候选。
   # 已有 open PR 的 issue 不再收（#3957 已由 #3958 实现，分支名却不是 agent/issue-N）：看分支、标题和正文里是否提到它。
+  # Now (intake_open_pr_holds): the branch is agent/issue-N, or a body line starts with Refs/Fixes/Closes/Resolves #N. A title or prose mention holds nothing.
   if [[ -n "${HANDOFF_PR_CENSUS:-}" && "${HANDOFF_CENSUS_PARTIAL:-0}" != 1 ]]; then
-    busy="$(jqf -r '.[] | "\(.headRefName) \(.title) \(.body // "")"' <<<"$HANDOFF_PR_CENSUS")"
+    busy="$(intake_busy_text <<<"$HANDOFF_PR_CENSUS")"
   else
     tick_prs_prime
     busy_prs="$(tick_prs 2>/dev/null)" || busy_prs=""
     if [[ -n "$busy_prs" ]]; then
-      busy="$(jqf -r '.[] | "\(.headRefName) \(.title) \(.body // "")"' <<<"$busy_prs")"
+      busy="$(intake_busy_text <<<"$busy_prs")"
     else
-      busy="$(intake_gh_read pr list --state open --limit 200 --json headRefName,title,body --jq '.[] | "\(.headRefName) \(.title) \(.body // "")"' 2>/dev/null)" || return 0
+      busy_prs="$(intake_gh_read pr list --state open --limit 200 --json headRefName,title,body 2>/dev/null)" || return 0
+      busy="$(intake_busy_text <<<"$busy_prs")"
     fi
   fi
   fi
@@ -602,7 +604,7 @@ register_new_issues() {
       else
         handoff_pr=""
       fi
-      [[ -n "$handoff_pr" ]] || ! grep -qE "(#|issue-)${n}([^0-9]|\$)" <<<"$busy" || { intake_skip open_pr; intake_skip_note "$n" "an open PR's branch, title or body names it"; continue; }
+      [[ -n "$handoff_pr" ]] || ! intake_open_pr_holds "$n" "$handoff_branch" || { intake_skip open_pr; intake_skip_note "$n" "an open PR's branch, title or body names it"; continue; }
     fi
     if (( ! existing_only )) && [[ -z "$episode" ]]; then
       ! intake_parent_retry_waiting "$n" || { intake_skip parent_retry; continue; }
