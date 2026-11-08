@@ -647,6 +647,26 @@ assert n.worker_runs(n.worker_cost.run_rows(str(sup)),now-n.timedelta(hours=5),n
 print("node_health native self-fix spend: PASS")
 CHECK
 
+# First-pass counts each unit by its first verdict in a fixed 24 h window ending now, over units.json plus the archive.
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'first-pass 24 h window misses archived units or counts a late first verdict'
+import json, os, sys
+sys.path.insert(0, sys.argv[1]); import node_health as n, ledger_history as lh
+d = os.path.join(sys.argv[2], "first-pass-window"); os.makedirs(d, exist_ok=True)
+now = n.ts("2026-11-08T12:00:00Z")
+ev = lambda *pairs: [{"stage": k, "at": (now - n.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")} for k, h in pairs]
+live = [{"id": "live-approve", "history": ev(("review-approve", 2))},
+        {"id": "live-late", "history": ev(("review-block", 30), ("review-approve", 1))}]
+archived = [{"id": "archived-approve", "history": ev(("review-approve", 10))},
+            {"id": "archived-block-first", "history": ev(("review-block", 20), ("review-approve", 1))},
+            {"id": "archived-old", "history": ev(("review-approve", 40))}]
+json.dump({"units": live}, open(os.path.join(d, "units.json"), "w"))
+json.dump({"units": archived}, open(os.path.join(d, "units-archive.json"), "w"))
+m = n.ledger_metrics(lh.load_units(d), now - n.timedelta(hours=5), now)
+# Counted: live-approve, archived-approve, archived-block-first (2 approved of 3). Excluded: live-late and archived-old.
+assert abs(m["review.first_pass_pct"] - 100 * 2 / 3) < 1e-9, m["review.first_pass_pct"]
+print("node_health first-pass 24 h window: PASS")
+CHECK
+
 # Delivery metrics recognize the Git revert marker written by scheduler revert paths.
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'delivery revert marker is not reflected in the accepted-unit rate'
 import json, os, pathlib, subprocess, sys

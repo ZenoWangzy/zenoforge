@@ -134,7 +134,7 @@ MEANING = {**arbiter_health.MEANING, **merge_wait.MEANING, **live_delivery.MEANI
     "implement.no_output_pct": "开发员跑完却没交报告的比例：这些 token 全白花，多是进程被杀或崩溃。",
     "merge.conflict_repairs_per_day": "过去 24 小时内发生了合并冲突（merge-conflict）、随后由修复运行接手的次数。多个任务可以同时改同一个文件，撞上了由原任务自己修；这个数偏高说明撞得太多，修复拖慢交付。24 小时值 20 以内健康，27 以上不健康；这两个界来自 9 个有效日的账本均值 15.6、标准差 5.5。",
     "review.wall_p50": "首次质检的中位时长。",
-    "review.first_pass_pct": "第一次质检就通过的工作单比例：越高说明开发一次做对，返工越少。",
+    "review.first_pass_pct": "固定滚动 24h（止于现在）内，首条评审结论为通过的工作单占比：每单取时间最早的一条 review-approve / review-request-changes / review-block，落在窗口内才计入分母；通过数 ÷ 计入数。越高说明开发一次做对，返工越少。",
     "repair.wall_p50": "一次返工修改的中位时长。",
     "loop.rounds_p90": "通过前被打回的轮数（90 分位）：轮数多 = 评审不收敛，时间和 token 都耗在来回上。",
     "loop.rework_token_pct": "返工 + 复检占全部 AI 用量的比例：隐性工厂，越低越好。",
@@ -202,7 +202,7 @@ SOURCE = {**arbiter_health.SOURCE, **merge_wait.SOURCE, **live_delivery.SOURCE, 
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "merge.conflict_repairs_per_day": "units.json（含 units-archive.json）单元历史：merge-conflict 事件之后出现 write-start（修复运行）的次数，固定滚动 24h。",
     "review.wall_p50": "review-*.worker.log 的开始 → 最后写入",
-    "review.first_pass_pct": "units.json 每单第一次评审结论（review-approve / review-request-changes / review-block）",
+    "review.first_pass_pct": "units.json 与 units-archive.json 单元历史（同 id 取 units.json 行）：每单最早一条评审结论（review-approve / review-request-changes / review-block），其时间落在固定滚动 24h 窗口内才计入；通过 = review-approve。",
     "repair.wall_p50": "impl-*-fix-*.worker.log 的开始 → 最后写入；24 h 窗口",
     "loop.rounds_p90": "units.json：每次 review-approve 之前的 review-request-changes 次数",
     "loop.rework_token_pct": "worker 页脚或 usage_reader 原生 turn 用量减派发基线：repair（含 self-fix）+ rereview ÷ 已计量的 run；未计量的 run 不计入，显示已计量 run 数；全部未计量则 N/A",
@@ -832,7 +832,7 @@ def ledger_metrics(units, since, now):
         kinds = [(h.get("stage") or h.get("ev") or "", ts(h["at"])) for h in hist]
         deaths += sum(1 for k, t in kinds if k == "worker-no-output" and t >= since)
         verdicts = [(k, t) for k, t in kinds if k in ("review-approve", "review-request-changes", "review-block")]
-        if verdicts and verdicts[0][1] >= since:
+        if verdicts and now - timedelta(hours=24) <= verdicts[0][1] <= now:  # fixed 24 h: the caller's 5 h window read 25 %
             first_reviews.append(verdicts[0][0] == "review-approve")
         n = 0
         for i, (k, t) in enumerate(kinds):
