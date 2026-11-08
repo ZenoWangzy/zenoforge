@@ -61,4 +61,13 @@ cmp -s "$fixture/scan1.json" "$fixture/scan2.json" || fail "memoised snapshot di
 : > "$SF"; TICK_FOOTPRINT_MAIN=''
 resolve_active_footprints "$rows" >/dev/null; resolve_active_footprints "$rows" >/dev/null
 [[ "$(calls)" == 6 ]] || fail "outside a pass every scan must recompute (calls=$(calls))"
+# The real callers snapshot inside $( ), which cannot fill the memo: priming in the caller's shell does, and the snapshot then computes nothing.
+jq -n --argjson rows "$rows" '{units:$rows}' > "$UNITS"
+jq -n '{workers:[range(1; 4) | {pid:(100000 + .),unit:("o" + tostring),type:"implement",workdir:""}]}' > "$WORKERS"
+: > "$SF"; TICK_FOOTPRINT_SCOPE_MEMO=(); TICK_FOOTPRINT_MAIN=ddd
+footprint_prime_owner_scopes
+[[ "$(calls)" == 3 ]] || fail "priming must compute each live owner once (calls=$(calls))"
+snap1="$(active_footprint_snapshot)"; snap2="$(active_footprint_snapshot)"; footprint_prime_owner_scopes
+[[ "$(calls)" == 3 && "$snap1" == "$snap2" ]] || fail "a snapshot of primed owners recomputed (calls=$(calls))"
+jq -e 'length == 3 and (map(.id) | sort) == ["o1","o2","o3"]' <<<"$snap1" >/dev/null || fail "snapshot lost an owner: $snap1"
 echo "footprint-scope-memo.test.sh: pass (repeated rows and live-owner snapshots compute once per main; no memo outside a pass)"

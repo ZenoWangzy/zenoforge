@@ -184,13 +184,25 @@ footprint_drop_check_scope_cache() {
   TICK_OLD_SCOPE=()
   TICK_HOTSPOT_COUNTS=()
 }
-active_footprint_snapshot() { # refresh live writes for all active implementation workers
-  local active
-  active="$(jqf -c --slurpfile w "$WORKERS" --argjson live "$FOOTPRINT_LIVE_WRITER_STAGES" '
+footprint_active_rows() { # ledger rows that hold a live implement/repair worker, with the worker's workdir
+  jqf -c --slurpfile w "$WORKERS" --argjson live "$FOOTPRINT_LIVE_WRITER_STAGES" '
     [.units[] | . as $u
       | select(.stage as $s | $live | index($s) != null)
       | select(any($w[0].workers[]; .unit==$u.id and .harvested!=true and .lease_expired!=true and (.type | IN("implement","repair"))))
-      | . + {live_workdir: ([$w[0].workers[] | select(.unit==$u.id and .harvested!=true and .lease_expired!=true and (.type | IN("implement","repair"))) | .workdir] | first)}]' "$UNITS")"
+      | . + {live_workdir: ([$w[0].workers[] | select(.unit==$u.id and .harvested!=true and .lease_expired!=true and (.type | IN("implement","repair"))) | .workdir] | first)}]' "$UNITS"
+}
+# Every snapshot is taken in $( ), where the memo cannot be filled: compute the owners' scopes here, in the caller's shell, first. A repeat
+# snapshot of unchanged owners then finds them all in the memo.
+footprint_prime_owner_scopes() {
+  local other discard
+  [[ -n "$TICK_FOOTPRINT_MAIN" ]] || return 0
+  while IFS= read -r other; do
+    footprint_scope_for "$other" discard || return 0
+  done < <(footprint_active_rows | jqf -c '.[]')
+}
+active_footprint_snapshot() { # refresh live writes for all active implementation workers
+  local active
+  active="$(footprint_active_rows)"
   [[ "$active" == '[]' ]] || active="$(resolve_active_footprints "$active")" || return 1
   printf '%s\n' "$active"
 }
@@ -328,6 +340,7 @@ footprint_shadow_directory_rule() {
 footprint_refresh_conflicts() {
   local refresh="${1:-true}" started=$SECONDS active candidates conflicts id owner elapsed
   if [[ "$refresh" == true ]]; then
+    footprint_prime_owner_scopes
     active="$(active_footprint_snapshot)" || { footprint_drop_check_scope_cache; return 1; }
     TICK_ACTIVE_FOOTPRINTS="$active"
     TICK_ACTIVE_FOOTPRINTS_VALID=true
@@ -664,6 +677,7 @@ _footprint_room() {
   if [[ "$TICK_ACTIVE_FOOTPRINTS_VALID" == true ]]; then
     active="$TICK_ACTIVE_FOOTPRINTS"
   else
+    footprint_prime_owner_scopes
     active="$(active_footprint_snapshot)" || return 1
     TICK_ACTIVE_FOOTPRINTS="$active"
     TICK_ACTIVE_FOOTPRINTS_VALID=true
@@ -681,6 +695,7 @@ _footprint_room() {
   # A cached conflict can conservatively reject a candidate. A candidate that
   # appears clear must refresh every active worktree before it can be admitted.
   if [[ "$refreshed" != true ]]; then
+    footprint_prime_owner_scopes
     active="$(active_footprint_snapshot)" || return 1
     TICK_ACTIVE_FOOTPRINTS="$active"
     conflict="$(active_footprint_conflict "$check_scope" "$active" "$id" "$scope")" || return 1
