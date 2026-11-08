@@ -86,6 +86,7 @@ CRITERIA = {**arbiter_health.CRITERIA, **merge_wait.CRITERIA, **live_delivery.CR
     "ci.gated_pr_pct":          ("ci+merge", "active agent PRs with the agent/ci-gated label %", 80, 50, True),
     "ci.priority_hold_runs_48h": ("ci+merge", "unique PR runs cancelled for priority hold in 48 h", 0, 1, False),
     "ci.shared_append_rebase_conflict_pct": ("ci+merge", "shared-append landings whose rebase conflicted on a shared-append file %, rolling 24 h", 25, 50, False),
+    "landing.post_land_runs_ratio": ("ci+merge", "post-land Pipeline suites runs per direct-main landing, rolling 24 h", 0.5, 0, True),
     "review.large_pr_pct":     ("review-loop", "ledger PRs over 800 non-test added lines %, rolling 30 d", 10, 25, False),
     "workers.local_test_db":   ("workers", "local test Postgres (PGTEST_URL) reachable, 1 = yes", 1, 0, True),
     "loop.advisor_fail_pct":   ("review-loop", "advisor asks that got no ruling %", 10, 50, False),
@@ -154,6 +155,7 @@ MEANING = {**arbiter_health.MEANING, **merge_wait.MEANING, **live_delivery.MEANI
     "ci.gated_pr_pct": "M12：当前活跃 agent/issue-* PR 中带服务端 agent/ci-gated 标签的比例；不读本机台账镜像。",
     "ci.priority_hold_runs_48h": "M13：最近 48 小时共享取消审计中原因是 ci hold 的不同 PR run 数；零活动满足优先挡板的退役观察条件。",
     "ci.shared_append_rebase_conflict_pct": "shared-append 注册表文件（footprint 互斥对其放行并行的名单，config 的 footprint_mutex.shared_append）在 direct-main 落地 rebase 时真的撞出文本冲突的比例。裁决接受少量冲突换并行；一天样本里持续偏高就把对应文件从名单移回互斥。无样本不计值。",
+    "landing.post_land_runs_ratio": "founder 裁决 2026-10-29：非产品代码先落地，落地后的 Pipeline suites 加 fix-forward 就是检查。24h 内有 direct-main 落地却一次落地后运行都没有，说明这个检查已经失效（2026-10-31 #4860 删掉 workflow 后就是这样）。无落地不计值。",
     "supervisor.latency_p50": "升级到主管后多久得到裁决（中位）。",
     "scheduler.tick_gap_p50": "调度两拍之间的秒数（中位）：越长，派活、合并、发布都越慢。",
     "release.hours_waiting": "当前有待发布改动时，本批次已等待的小时数；无待发布工作时为 0。",
@@ -229,6 +231,7 @@ SOURCE = {**arbiter_health.SOURCE, **merge_wait.SOURCE, **live_delivery.SOURCE, 
     "ci.gated_pr_pct": "GitHub pull request API：带 agent/ci-gated 标签的 open agent/issue-* PR ÷ 所有 open agent/issue-* PR。",
     "ci.priority_hold_runs_48h": "共享 actions-run-cancellations.jsonl：最近 48 小时不同 run_id 的最后一个非空 reason=ci hold。",
     "ci.shared_append_rebase_conflict_pct": "logs/shared-append-rebases.jsonl（land-direct-main 记录每次改动范围带 shared-append 文件的落地 rebase）：固定滚动 24h 内 conflict_files 非空的比例；24h 内没有这类落地 rebase 时显示 N/A（没有事件可量，不是缺数据）。",
+    "landing.post_land_runs_ratio": "land-queue/requests/*.json：direct_landing 且 state=landed、finished_epoch 在固定滚动 24h 内的数量为落地数；GitHub pipeline-suites.yml 在 main 上 display_title 以 “Pipeline suites post-land ” 开头的 run 数（含取消）为运行数；比值=运行数÷落地数。24h 内没有落地，或 gh 读不到 run 列表时显示 N/A。",
     "review.large_pr_pct": "pr-sizes.json（ci_spend.py 取 PR 非测试新增行；测试路径包括名为 test、tests、__tests__、fixture、fixtures、__snapshots__ 的目录，以及名称以 eval 开头且后续只含小写字母、连字符或下划线的目录；文件名含 .test.、.spec. 或以 .snap 结尾也排除）对照最近 30 天有台账活动的 PR；无历史的在途单也计入，缺尺寸时显示无数据",
     "loop.advisor_fail_pct": "units.json：advisor-unavailable ÷（advisor-ruling + advisor-unavailable），24 h 窗口",
     "advisor.last_answer_age_hours": "web-advisor-provider-jobs/*/answer.err 中不含 FAIL: 的最新 mtime；needs-advisor 数来自 gh issue list",
@@ -754,6 +757,31 @@ def shared_append_rebase_metrics(path, repo, since, now):
             attempts.append(row)
     conflicts = [row for row in attempts if row.get("conflict_files")]
     return len(attempts), (100 * len(conflicts) / len(attempts) if attempts else None)
+
+
+def post_land_runs_ratio(requests_dir, repo, since, now, gh_json):
+    """Post-land Pipeline suites runs per direct-main landing in the window. None when nothing landed
+    or the run list cannot be read (no observation); 0 with landings is the broken-check signal."""
+    landings = 0
+    for path in glob.glob(os.path.join(requests_dir, "*.json")):
+        try:
+            with open(path) as handle:
+                row = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        done = row.get("finished_epoch") if isinstance(row, dict) else None
+        if (row.get("direct_landing") is True and row.get("state") == "landed"
+                and isinstance(done, (int, float)) and since.timestamp() <= done <= now.timestamp()):
+            landings += 1
+    if not landings or not repo:
+        return None
+    created = urllib.parse.quote(">=" + since.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    response = gh_json(["api", f"repos/{repo}/actions/workflows/pipeline-suites.yml/runs?branch=main&per_page=100&created={created}"],
+                       GH_DELIVERY_CALL_TIMEOUT)
+    if not isinstance(response, dict) or not isinstance(response.get("workflow_runs"), list):
+        return None
+    runs = sum(1 for run in response["workflow_runs"] if str(run.get("display_title") or "").startswith("Pipeline suites post-land "))
+    return runs / landings
 
 
 RED_STAGES = ("ci-red", "ci-test-red", "ci-red-rerun")
@@ -1338,7 +1366,7 @@ def flow_inbox(a, rows, now, agent_home, repo_root):
 
 # Rows that read None only because no event happened: shown N/A, not NO-DATA. land-direct-main appends a
 # row only when a landing rebase touches a shared-append file; this host's runtime has no such log.
-NOT_APPLICABLE_WITHOUT_EVENTS = frozenset({"ci.shared_append_rebase_conflict_pct"})
+NOT_APPLICABLE_WITHOUT_EVENTS = frozenset({"ci.shared_append_rebase_conflict_pct", "landing.post_land_runs_ratio"})
 
 
 def score(metrics, criteria):
@@ -1436,6 +1464,8 @@ def main():
         os.path.join(agent_home, "logs", "shared-append-rebases.jsonl"), repo,
         now - timedelta(hours=24), now)
     metrics["ci.shared_append_rebase_conflict_pct"] = sa_conflict
+    metrics["landing.post_land_runs_ratio"] = post_land_runs_ratio(
+        os.path.join(agent_home, "land-queue", "requests"), repo, now - timedelta(hours=24), now, _gh_json)
     metrics["workers.local_test_db"] = local_test_db()
     metrics["advisor.last_answer_age_hours"] = advisor_answer_age_hours(agent_home, repo, now)
     host_missing = host_prereqs_missing()

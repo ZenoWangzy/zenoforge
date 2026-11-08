@@ -587,6 +587,25 @@ status = {r[1]: r[7] for r in n.score({}, n.CRITERIA)}
 assert status["ci.shared_append_rebase_conflict_pct"] == "N/A" and status["review.wall_p50"] == "NO-DATA", status
 assert {r[1]: r[7] for r in n.score({"ci.shared_append_rebase_conflict_pct": 60}, n.CRITERIA)}["ci.shared_append_rebase_conflict_pct"] == "UNHEALTHY"
 CHECK
+# landing.post_land_runs_ratio: post-land suite runs per direct-main landing; 0 runs with landings is UNHEALTHY, no landings is N/A.
+python3 - "$script_dir" "$test_env_root" <<'CHECK'
+import sys, os, json
+sys.path.insert(0, sys.argv[1]); import node_health as n
+reqs = os.path.join(sys.argv[2], "plr-requests"); os.makedirs(reqs, exist_ok=True)
+now = n.datetime(2026, 11, 8, 12, 0, tzinfo=n.timezone.utc); since = now - n.timedelta(hours=24)
+def land(name, at, **kw):
+    json.dump({"direct_landing": True, "state": "landed", "finished_epoch": at.timestamp(), **kw}, open(os.path.join(reqs, name + ".json"), "w"))
+def runs(*titles): return lambda cmd, timeout: {"workflow_runs": [{"display_title": t} for t in titles]}
+ratio = lambda gh: n.post_land_runs_ratio(reqs, "o/r", since, now, gh)
+assert ratio(runs()) is None  # nothing landed: no observation
+land("a", now - n.timedelta(hours=2)); land("b", now - n.timedelta(hours=3))
+land("old", now - n.timedelta(hours=30)); land("pending", now - n.timedelta(hours=1), state="direct-pending-push")
+assert ratio(runs()) == 0, ratio(runs())  # two landings in the window, no run
+assert ratio(runs("Pipeline suites post-land abc def", "Pipeline suites", "Pipeline suites post-land 123 456")) == 1.0
+assert ratio(lambda cmd, timeout: None) is None  # gh unreadable: no observation
+status = lambda v: {r[1]: r[7] for r in n.score({"landing.post_land_runs_ratio": v}, n.CRITERIA)}["landing.post_land_runs_ratio"]
+assert status(0) == "UNHEALTHY" and status(1.0) == "HEALTHY" and status(None) == "N/A", (status(0), status(1.0), status(None))
+CHECK
 # First-pass BLOCK is a failed first review; native resumed workers count only
 # the new turn's fresh tokens, so pre-review repair cannot disappear from spend.
 python3 - "$script_dir" "$test_env_root" <<'CHECK'
