@@ -81,4 +81,22 @@ for _ in {1..40}; do kill -0 "$daemon" 2>/dev/null || break; sleep 0.25; done
 kill -0 "$daemon" 2>/dev/null && { kill "$daemon"; fail 'a daemon behind its clone kept running'; }
 wait "$daemon" || fail 'the self-restart exit was not clean'
 grep -q 'newer script' "$tmp/out" || fail "no self-restart line: $(cat "$tmp/out")"
+# merge_override_pin: a base-only override move (clean three-way, pack copy byte-identical) has no pack file in the PR and must still merge
+gh() { # stub: the PR's file list comes from GH_FILES; checks are green and the merge completes at once
+  case "$*" in
+    *"--json files"*) printf '%s\n' "$GH_FILES" ;;
+    *statusCheckRollup*) echo 0 ;;
+    *"pr merge"*) echo merged ;;
+    *"--json state"*) echo MERGED ;;
+  esac
+}
+ovlog=$tmp/override.log
+printf '%s\n' 'result=pr-open route=PR landed=no pr=https://github.com/ZenoWangzy/vecta/pull/5876' \
+  'pin-vecta: merged override mac-autopilot/scheduler.d/dispatch-queue.sh base=416ca459497a -> engine=cb9fd885a3b6 (clean three-way merge)' > "$ovlog"
+GH_FILES=$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv)
+merge_override_pin "$ovlog" > "$tmp/ov.out" || fail "base-only override PR refused: $(cat "$tmp/ov.out")"
+GH_FILES=$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv engine/unrelated.sh)
+if merge_override_pin "$ovlog" > "$tmp/ov.out"; then fail 'an unrelated file in the override PR was merged'; fi
+GH_FILES=.zenoforge/build.json
+if merge_override_pin "$ovlog" > "$tmp/ov.out"; then fail 'an override PR without overrides.tsv was merged'; fi
 echo "auto-pin.test.sh: ok"

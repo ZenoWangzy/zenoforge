@@ -11,7 +11,8 @@ idle=${ZF_AUTO_PIN_IDLE_SECS:-30} retry=${ZF_AUTO_PIN_RETRY_SECS:-60}
 state=$ZF_AUTO_PIN_HOME/auto-pin.last; stop=$ZF_AUTO_PIN_HOME/auto-pin.stop
 logdir=$ZF_AUTO_PIN_HOME/auto-pin-logs
 # Head 2026-11-05: an override pin must take the PR lane; merge that PR here so it does not wait for head.
-# Only a PR holding exactly build.json, overrides.tsv and the pack copies merged by this pin, with no failed check.
+# Only a PR holding build.json, overrides.tsv and, optionally, the pack copies merged by this pin, with no failed check.
+# A clean three-way merge that leaves a pack copy byte-identical adds no pack file, so the PR is base-only.
 merge_override_pin() { # log -> 0 merged, 1 leave for head
   local log=$1 url pr allowed files bad state i
   url=$(sed -n 's/.*result=pr-open route=PR landed=no pr=\([^ ]*\).*/\1/p' "$log" | tail -1)
@@ -19,7 +20,10 @@ merge_override_pin() { # log -> 0 merged, 1 leave for head
   allowed=$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv; sed -n 's#^pin-vecta: merged override \([^ ]*\) base=.*#.zenoforge/build/pack/scripts/agent/\1#p' "$log")
   [[ $(wc -l <<<"$allowed") -ge 3 ]] || { echo "override-pin: #$pr merged no override"; return 1; }
   files=$(gh pr view "$pr" -R ZenoWangzy/vecta --json files -q '.files[].path') || return 1
-  if [[ $(sort <<<"$files") != "$(sort <<<"$allowed")" ]]; then echo "override-pin: #$pr files are not exactly the pin and its overrides"; return 1; fi
+  if [[ -n $(comm -23 <(sort <<<"$files") <(sort <<<"$allowed")) \
+     || -n $(comm -13 <(sort <<<"$files") <(sort <<<".zenoforge/build.json"$'\n'".zenoforge/build/overrides.tsv")) ]]; then
+    echo "override-pin: #$pr files are not the pin, its overrides and their pack copies"; return 1
+  fi
   bad=$(gh pr view "$pr" -R ZenoWangzy/vecta --json statusCheckRollup -q '[.statusCheckRollup[] | select((.conclusion // .state // "") | test("^(FAILURE|ERROR|CANCELLED|TIMED_OUT|ACTION_REQUIRED|STARTUP_FAILURE)$"))] | length') || return 1
   [[ $bad == 0 ]] || { echo "override-pin: #$pr has $bad failed check(s)"; return 1; }
   gh pr merge "$pr" -R ZenoWangzy/vecta --squash >>"$log" 2>&1 || { echo "override-pin: gh pr merge #$pr failed"; return 1; }
