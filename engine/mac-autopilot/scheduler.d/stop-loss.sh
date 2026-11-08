@@ -341,7 +341,7 @@ container_runtime_missing() { # → 0 when the host probe says the runtime is mi
   fi
   [[ "$TICK_CONTAINER_RUNTIME" == missing ]]
 }
-repair_runtime_admission() { # id unit-json → 1 when the repair needs containers and the host has none
+repair_runtime_admission() { # id unit-json → logs once when a container repair runs on a host with no runtime; always admits
   jqf -e --arg re "$REPAIR_DAGGER_PATH_RE" 'any((.footprint // [])[]?; type == "string" and test($re))' <<<"$2" >/dev/null || return 0
   if ! container_runtime_missing; then
     [[ "$(jqf -r '.repair_runtime_refused // false' <<<"$2")" != true ]] || set_unit "$1" 'del(.repair_runtime_refused)'
@@ -350,9 +350,9 @@ repair_runtime_admission() { # id unit-json → 1 when the repair needs containe
   if [[ "$(jqf -r '.repair_runtime_refused // false' <<<"$2")" != true ]]; then
     set_unit "$1" '.repair_runtime_refused=true' \
       && units_update '.admission_refusals["repair-no-container-runtime"] = ((.admission_refusals["repair-no-container-runtime"] // 0) + 1)'
-    say "repair-runtime-refused unit=$1: the repair gate needs Dagger and the host container runtime is missing"
+    say "repair-runtime-missing unit=$1: admitted without a local container runtime; PR CI runs the Dagger gate"
   fi
-  return 1
+  return 0 # 2026-11-08: refusing here never cleared on a host with no runtime (13 repairs held 3.5 h); the same-head breaker still stops a repair that cannot push
 }
 repair_failure_prompt() { # unit-json review-report -> only this repair's failure evidence
   local u="$1" report="$2" hint pr checks name link job tmp i pid step_file log_file started=$SECONDS elapsed index=0

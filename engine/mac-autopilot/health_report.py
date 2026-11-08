@@ -96,7 +96,7 @@ def main():
               f"{pct(s['tokens'], .5):>9}   {outcomes}")
     print(f"failures: no-output={count(r'WASTE zero-output pid')} provider-cooldowns={count(r'cooling down')} "
           f"repair-no-push={count(r'repair-no-push')} repair-breaker={count(r'^repair breaker unit')} "
-          f"repair-runtime-refused={count(r'repair-runtime-refused')} loop-breaker={count(r'loop-breaker')} "
+          f"repair-runtime-missing={count(r'repair-runtime-missing')} loop-breaker={count(r'loop-breaker')} "
           f"stuck-kills={count(r'STUCK-KILL')} escalations={count(r'^supervisor-review unit')}")
     print(f"merge: issued={count(r'^merge issued')} merged={count(r'merged after Pipeline suites success|^merged PR#')} "
           f"reverted={count(r'repair-pending after merge revert')} skipped-checks={count(r'checks red or pending')}")

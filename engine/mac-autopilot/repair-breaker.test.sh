@@ -92,23 +92,23 @@ res="$(field issue-9 '.history[-1].result')"
 run_repair "$H1" "$(jq -cn --arg h "$H1" --argjson rc "$RC" '$rc + [{stage:"repair-no-push",result:("head "+$h+" unchanged after repair")},{stage:"repair-delivered",result:"x"}]')"
 [[ "$(field issue-9 .stage)" == repair-pending ]] || fail "a delivered run between must reset the count ($(field issue-9 .stage))"
 
-# 3. Admission: a repair on package code is refused while the container runtime probe fails; counted once per hold.
-refused() { grep -c 'repair-runtime-refused unit=issue-9' "$LOG" || true; }
+# 3. Admission: a package repair on a host with no container runtime still runs (PR CI runs the Dagger gate); logged and counted once per hold.
+missing() { grep -c 'repair-runtime-missing unit=issue-9' "$LOG" || true; }
 units_with() { jq -cn --argjson fp "$1" '{units:[{id:"issue-9",issue:9,pr:9,lane:"pr",stage:"repair-pending",footprint:$fp,history:[]}]}' > "$UNITS"; }
 admit() { TICK_CONTAINER_RUNTIME=""; repair_runtime_admission issue-9 "$(jq -c '.units[0]' "$UNITS")"; }
 : > "$LOG"; echo 1 > "$fixture/probe-rc"; units_with '["packages/a/src/x.ts"]'
-admit && fail 'a package repair must be refused when the runtime probe fails'
-admit && fail 'a second tick must still refuse'
-[[ "$(refused)" == 1 && "$(jq -r '.admission_refusals["repair-no-container-runtime"]' "$UNITS")" == 1 && "$(field issue-9 .repair_runtime_refused)" == true ]] \
-  || fail "refusal must be logged and counted once per hold ($(refused), $(jq -c .admission_refusals "$UNITS"))"
-echo 127 > "$fixture/probe-rc"; admit && fail 'docker missing (127) must refuse'
+admit || fail 'a package repair must still be admitted when the runtime probe fails'
+admit || fail 'a second tick must still admit'
+[[ "$(missing)" == 1 && "$(jq -r '.admission_refusals["repair-no-container-runtime"]' "$UNITS")" == 1 && "$(field issue-9 .repair_runtime_refused)" == true ]] \
+  || fail "a missing runtime must be logged and counted once per hold ($(missing), $(jq -c .admission_refusals "$UNITS"))"
+echo 127 > "$fixture/probe-rc"; admit || fail 'docker missing (127) must admit'
 echo 0 > "$fixture/probe-rc"; admit || fail 'a ready runtime must admit'
 [[ "$(field issue-9 '.repair_runtime_refused // false')" == false ]] || fail 'the hold flag must clear when the runtime is back'
 echo 2 > "$fixture/probe-rc"; admit || fail 'an unknown probe result must admit'
 echo 1 > "$fixture/probe-rc"; units_with '["docs/a.md"]'; admit || fail 'a docs-only repair needs no container runtime'
-# room_for wires it in before any capacity work.
-units_with '["packages/a/x.ts"]'; repair_cap_admission() { return 0; }; TICK_CONTAINER_RUNTIME=""
-room_for issue-9 repair && fail 'room_for must refuse the repair'
-[[ "${TICK_DISPATCH_SKIPS[repair-runtime]:-0}" -ge 1 ]] || fail 'room_for must count the skip as repair-runtime'
+# room_for: a no-runtime host still dispatches the repair (no repair-runtime skip).
+units_with '["packages/a/x.ts"]'; repair_cap_admission() { return 0; }; TICK_CONTAINER_RUNTIME=""; echo 1 > "$fixture/probe-rc"
+room_for issue-9 repair || fail 'room_for must admit the repair on a host with no container runtime'
+[[ "${TICK_DISPATCH_SKIPS[repair-runtime]:-0}" == 0 ]] || fail 'no repair-runtime skip may be counted'
 
 echo 'repair-breaker.test.sh: ok'
