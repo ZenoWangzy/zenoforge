@@ -77,6 +77,34 @@ incident_report_gate_reason() { # incident unit [implementation report path] →
   esac
   return 0
 }
+# 4741: every repair replaced implementation_report, so a 5-line merge-repair report failed the gate above on the newest file,
+# turned a READY review into NOT_READY and dispatched another repair, four times. A report becomes the unit's implementation_report only when it passes the gate.
+implementation_report_adopt() { # unit report-name [dispatch] → 0 adopted, 1 failed the gate (resume may repair it), 2 kept the old report or escalated
+  local id="$1" new="$2" mode="${3:-harvest}" u old reason prev_reason n
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  old="$(jqf -r '.implementation_report // empty' <<<"$u")"
+  reason="$(incident_report_gate_reason "$u" "$new")"
+  if [[ -z "$reason" ]]; then
+    set_unit "$id" ".implementation_report=$(js "$new") | del(.report_gate_fail)"
+    return 0
+  fi
+  # At dispatch the worker has not written the report yet, so an incident unit keeps its passing report until harvest judges the new one.
+  if [[ -n "$old" && "$old" != "$new" && -z "$(incident_report_gate_reason "$u" "$old")" ]]; then
+    [[ "$mode" == dispatch ]] || { say "report-keep unit=$id kept=$old rejected=$new reason=$reason"; set_unit "$id" 'del(.report_gate_fail)'; }
+    return 2
+  fi
+  set_unit "$id" ".implementation_report=$(js "$new")"
+  [[ "$mode" != dispatch ]] || return 1
+  prev_reason="$(jqf -r '.report_gate_fail.reason // empty' <<<"$u")"
+  n=1; [[ "$prev_reason" != "$reason" ]] || n=$(( $(jqf -r '.report_gate_fail.n // 0' <<<"$u") + 1 ))
+  set_unit "$id" ".report_gate_fail={reason:$(js "$reason"),n:$n}"
+  # No passing report to keep and the same reason twice in a row: another repair writes the same kind of report.
+  if (( n >= 2 )); then
+    to_supervisor "$id" "incident report gate failed ${n} times in a row with the same reason: $reason (report $new)"
+    return 2
+  fi
+  return 1
+}
 incident_review_verdict() { # incident unit READY|other [implementation report] → READY or forced NOT_READY
   local unit_json="$1" verdict="$2" report="${3:-}" reason
   [[ "$verdict" == READY ]] || { printf '%s' "$verdict"; return 0; }

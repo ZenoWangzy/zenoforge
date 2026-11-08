@@ -53,7 +53,7 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
 }
 
 harvest_workers() { # [local-only]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers
-  local pr_harvested=0 local_only="${1:-false}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage
+  local pr_harvested=0 local_only="${1:-false}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage report_keep_rc
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"
@@ -212,7 +212,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
       incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
       incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json" "$rep")"
       if [[ -z "$incident_gate_reason" && -s "$rep" ]]; then
-        set_unit "$unit" ".implementation_report=$(js "$report") | .stage=$(js "$report_resume_stage")"
+        set_unit "$unit" ".implementation_report=$(js "$report") | del(.report_gate_fail) | .stage=$(js "$report_resume_stage")"
         say "incident report resume passed unit=$unit report=$report; sending to review"
       else
         [[ -n "$incident_gate_reason" ]] || incident_gate_reason='resumed session did not produce a report'
@@ -420,7 +420,9 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
           fi ;;
       esac
       if [[ "$wtype" == implement || "$wtype" == repair ]]; then
-        incident_report_pre_review "$w" "$report" "$rep"
+        report_keep_rc=0
+        implementation_report_adopt "$unit" "$report" || report_keep_rc=$?
+        (( report_keep_rc == 2 )) || incident_report_pre_review "$w" "$report" "$rep"
       fi
     else
       if [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" == true ]]; then

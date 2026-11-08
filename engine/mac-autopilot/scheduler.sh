@@ -173,6 +173,9 @@ TOKEN_PARK_HARD_TOKENS="$(jqf -r '.token_park_hard_tokens // 2400000' <<<"$CFG")
 # 工单 token/分钟/轮数是仪表盘指标（workorder_cost.py，node_health 用），不是停单开关（#4486：
 # #4053 把 raw-token bug 线当硬停，96% 是缓存读取、按生命周期累计、事后才停，36 次误停正常单）。
 MAX_NO_OUTPUT="$(jqf -r '.waste.max_no_output // 2' <<<"$CFG")"
+# Per-command output cap in KB for every worker backend (lib.d/worker-output-cap.sh); bin/luna and bin/zc read the same variable.
+WORKER_OUTPUT_CAP_KB="$(jqf -r '.waste.tool_output_cap_kb // 64' <<<"$CFG")"
+export WORKER_OUTPUT_CAP_KB
 # f12（#4369）：supervisor-review 由 terra 裁决 worker 接管；eval 门槛（恒选 requeue 参照 + 零危险 approve）达标前默认关。
 SUPERVISOR_ARBITER="$(jqf -r 'if .supervisor_arbiter.enabled == true then "true" else "false" end' <<<"$CFG")"
 SUPERVISOR_ARBITER_PROFILE="$(jqf -r '.supervisor_arbiter.profile // "terra"' <<<"$CFG")"

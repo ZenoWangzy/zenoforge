@@ -362,7 +362,7 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
 $(tail -80 "$check_output" 2>/dev/null)"
   fi
   dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || return 1
-  if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then set_unit "$1" ".implementation_report=$(js "$5")"; fi
+  if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then implementation_report_adopt "$1" "$5" dispatch || :; fi
   if [[ "$3" == review || "$3" == rereview ]]; then set_unit "$1" '.self_check_fixes=0'; fi
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     if [[ -n "${TICK_FOOTPRINT_CACHE[$1]+cached}" ]]; then
