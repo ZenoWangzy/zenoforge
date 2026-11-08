@@ -66,7 +66,7 @@ merge_conflict_files() { # main_sha pr_head
 # 冲突的单元送修复：作废批准、留历史、给 repair 提示。合并车道两处发现冲突（checks 未齐时、合并失败后）共用；
 # cause 同时进历史和日志，hint 各处自己的话（热修回迁 / 迁移编号）。
 merge_conflict_to_repair() { # id pr cause repair_hint head
-  local head="${5:-}" fresh files
+  local head="${5:-}" fresh files conflict_files
   # 已排队：上一次冲突送了 repair-pending 且其后没有 write-start。修复 worker 合并的是它开跑时的 main，再标一次（扫描+评审，
   # 或 main 又动了）只多记一次 merge-conflict，merge.conflict_repairs_per_day 把它算成又一次修复。
   if [[ "$(unit_field "$1" '(.stage // "") + " " + ([(.history // [])[] | select(.stage | IN("merge-conflict","write-start")) | .stage] | last // "")')" == "repair-pending merge-conflict" ]]; then
@@ -89,9 +89,10 @@ merge_conflict_to_repair() { # id pr cause repair_hint head
       fi
     fi
   fi
-  set_unit "$1" "$(hist merge-conflict "PR#$2 $3") | .approved_sha=null | .repair_hint=$(js "$4") | .stage=\"repair-pending\""
+  conflict_files="$(merge_conflict_files "${MAIN_HEAD:-}" "$head")"
+  set_unit "$1" "$(hist merge-conflict "PR#$2 $3") | .history[-1].conflict_files=$(js "$conflict_files") | .approved_sha=null | .repair_hint=$(js "$4") | .stage=\"repair-pending\""
   say "merge skipped PR#$2 ($3) -> repair-pending"
-  say "merge-conflict-attribution unit=$1 pr=$2 pr_head=${head:-unknown} main_sha=${MAIN_HEAD:-unknown} conflicting_files=$(merge_conflict_files "${MAIN_HEAD:-}" "$head")"
+  say "merge-conflict-attribution unit=$1 pr=$2 pr_head=${head:-unknown} main_sha=${MAIN_HEAD:-unknown} conflicting_files=$conflict_files"
 }
 
 # 评审派发前的冲突分流：只读本拍已取的 open-PR census（TICK_PRS，不补取、不逐单元 gh）；census 说 CONFLICTING 才走

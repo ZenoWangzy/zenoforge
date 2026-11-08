@@ -80,6 +80,100 @@ ticket_budget_reason() { # unit-json
       end' <<<"$1" 2>/dev/null
 }
 
+# Token spend gate. Every finished worker log is one `spend_runs` record on its unit (spend_ledger.py; fresh tokens come from the
+# dashboard's own unit_spend, so this gate and `workorders` agree). Lifetime fresh tokens past the soft line park the unit once and
+# send it to one arbiter decision whose prompt carries the per-run table and a class; the first return to dispatch after that is the
+# single refill (a `token-refill` event). Past the hard line the unit parks for good: the check reads only spend, so no ruling kind
+# (supervisor-requeue, cap-budget-refill, advisor-ruling, arbiter) can refill it, and the head hears of it once through the inbox.
+record_run_spend() { # → one spend_runs record on the unit of each finished worker log not yet recorded
+  local out line unit log run
+  local -a lines=()
+  out="$(timeout 120 python3 "$HERE/spend_ledger.py" sweep "$SUP" "$UNITS" 25 2>/dev/null)" || return 0
+  mapfile -t lines <<<"$out"
+  for line in "${lines[@]}"; do
+    [[ -n "$line" ]] || continue
+    IFS=$'\t' read -r unit log < <(jqf -r '[.unit, .run.log] | @tsv' <<<"$line")
+    run="$(jqf -c .run <<<"$line")"
+    set_unit "$unit" ".spend_runs = (if any((.spend_runs // [])[]; .log == $(js "$log")) then .spend_runs else (.spend_runs // []) + [$run] end)" || :
+  done
+}
+
+unit_fresh_tokens() { jqf -r '[(.spend_runs // [])[] | .fresh_tokens // 0] | add // 0' <<<"$1"; }
+
+token_spend_verdict() { # unit-json → hard | soft | refill | ok
+  local total
+  total="$(unit_fresh_tokens "$1")"
+  [[ "$total" =~ ^[0-9]+$ ]] || { echo ok; return 0; }
+  if (( total >= TOKEN_PARK_HARD_TOKENS )); then echo hard
+  elif (( total >= TOKEN_PARK_SOFT_TOKENS )); then
+    jqf -r '(.history // []) as $h
+      | if any($h[]; .stage == "token-refill") then "ok"
+        elif any($h[]; .stage == "token-park" and ((.result // "") | startswith("soft"))) then "refill"
+        else "soft" end' <<<"$1"
+  else echo ok; fi
+}
+
+token_park_class() { # unit-json → report-gate-loop | hot-file-churn | undersized | unclassified
+  jqf -r '
+    (.history // []) as $h
+    | ([(.review_findings // [])[] | select((.report // "") | test("^(incident|engine-override)-gate-"))] | length) as $gates
+    | ([$h[] | if .stage == "merge-conflict" then ((.conflict_files // "") | sub(" count=[0-9]+$"; "") | split(",") | unique[])
+               elif .stage == "ci-test-red" then ((.tests // []) | unique[])
+               else empty end
+        | select(type == "string" and length > 0 and (startswith("unavailable") | not) and (startswith("none") | not))]
+       | group_by(.) | map(length) | max // 0) as $same_file
+    | if $gates >= 2 then "report-gate-loop"
+      elif $same_file >= 2 then "hot-file-churn"
+      elif any($h[]; .stage == "size-recut" or .stage == "size-split-admitted"
+                     or (.stage == "supervisor-escalated" and ((.result // "") | startswith("size admission:")))) then "undersized"
+      else "unclassified" end' <<<"$1"
+}
+
+token_park_context() { # unit-json → the arbiter prompt block for a unit parked at the soft line; empty otherwise
+  jqf -r 'select((.token_park.level // "") == "soft") | .token_park as $t
+    | "## Token-spend park (scheduler)\nThis unit passed \($t.fresh_tokens) lifetime fresh tokens (uncached input + output) and was parked for this one decision. Class: \($t.class) (report-gate-loop = repeated incident/report gate overrides; hot-file-churn = repeated merge-conflict or ci-test-red on the same shared file; undersized = size recheck escalation after implement; unclassified = none of these). A ruling that sends the unit back to work refills it once; past the hard line no ruling refills it, so prefer recut, close or park when the class says the loop will repeat.\nPer-run spend (start, phase, backend, minutes, fresh tokens):\n"
+      + ([$t.runs[] | "\(.start)\t\(.phase)\t\(.backend)\t\(.minutes)\t\(.fresh_tokens)"] | join("\n"))' <<<"$1"
+}
+
+token_spend_park() { # id unit-json soft|hard
+  local id="$1" u="$2" level="$3" total class rec note ev=""
+  total="$(unit_fresh_tokens "$u")"; class="$(token_park_class "$u")"
+  note="$level token line: $total lifetime fresh tokens (class $class)"
+  # The table is built inside the filter from the unit's own records: a unit with many runs must not ride on a command line.
+  rec="(.spend_runs // []) as \$r | {level:$(js "$level"), class:$(js "$class"), fresh_tokens:$total, at:$(js "$STAMP"), runs:[\$r | sort_by(.start)[] | {start, phase, backend, minutes, fresh_tokens}]}"
+  if [[ "$level" == soft ]]; then
+    set_unit "$id" "$(hist token-park "soft: $note") | .token_park=($rec)" || return 1
+    to_supervisor "$id" "token park: $note" 'Park at the soft token line for one arbiter decision' \
+      'lifetime fresh tokens passed the soft line' "$total fresh tokens against the $TOKEN_PARK_SOFT_TOKENS line, class $class" \
+      '["Dispatch another worker round at the same scope"]'
+    return 0
+  fi
+  cancel_unit_runs "$id" "parked at the hard token line"
+  # The park event is recorded once per unit: a later requeue that the gate parks again only repeats the state, not the count.
+  jqf -e 'any((.history // [])[]; .stage == "token-park" and ((.result // "") | startswith("hard")))' <<<"$u" >/dev/null 2>&1 || ev="$(hist token-park "hard: $note") | "
+  set_unit "$id" "${ev}.token_park=($rec) | .stage=\"parked\" | .note=$(js "token hard park: $note") | $(park_fields token-hard-park 'never: no ruling refills a unit past the hard token line')" || return 1
+  say "token hard park unit=$id fresh=$total line=$TOKEN_PARK_HARD_TOKENS class=$class"
+  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "token-hard-park:$id" "token-hard-park unit=$id: $total lifetime fresh tokens passed the hard line $TOKEN_PARK_HARD_TOKENS (class $class); no ruling refills it") \
+    || say "token hard park unit=$id: inbox entry not delivered"
+}
+
+token_spend_gate() { # id unit-json [check-only] → 0 when the unit may dispatch, 1 when it is held (parked, or the full tick decides)
+  local id="$1" u="$2" verdict ruling
+  verdict="$(token_spend_verdict "$u")"
+  [[ "$verdict" != ok ]] || return 0
+  [[ "${3:-}" != check-only ]] || return 1
+  case "$verdict" in
+    refill)
+      ruling="$(jqf -r '(.history // []) as $h | ([$h | to_entries[] | select(.value.stage == "token-park") | .key] | max // -1) as $p
+        | [$h[($p + 1):][] | select((.stage | test("^(supervisor|advisor|arbiter)-")) and (.stage | IN("supervisor-escalated", "supervisor-arbiter") | not)) | .stage] | last // "released"' <<<"$u")"
+      set_unit "$id" "$(hist token-refill "once, after $ruling; the hard line stays $TOKEN_PARK_HARD_TOKENS") | del(.token_park)" || return 1
+      say "token refill unit=$id after $ruling"
+      return 0 ;;
+    soft) token_spend_park "$id" "$u" soft || :; return 1 ;;
+    *) token_spend_park "$id" "$u" hard || :; return 1 ;;
+  esac
+}
+
 repair_rounds_since_ruling() { # unit-json → repair starts since the last successful review or supervisor/advisor decision
   local starts
   starts="$(effective_write_starts_since_ruling "$1" '["supervisor-arbiter","supervisor-arbiter-round","supervisor-requeue","supervisor-approve","advisor-ruling","review-approve"]')" || return 1

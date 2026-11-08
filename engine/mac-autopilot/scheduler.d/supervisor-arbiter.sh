@@ -48,7 +48,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
   # 终局裁决的动词契约由引擎自带文件保证（不走 sched_config_file）：目标配置可以把六动作 prompt
   # 覆盖成没有 cap-triage 段的旧版，但盖不掉这里追加的四个动词，任何 arbiter profile 都拿到同一契约。
   cap_contract_file="${ZF_ENGINE_DIR:-$ROOT/engine}/prompts/supervisor-cap-triage.md"
-  local mark u id report log q pid w pid_file converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
+  local token_context mark u id report log q pid w pid_file converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
   local -a launcher=() worker_command=()
   local over_stop=false arbiter_profile="$SUPERVISOR_ARBITER_PROFILE" arbiter_effort=""
   # Apply terminal defaults before prompt availability, the in-flight ceiling, or dispatch budgets can
@@ -158,7 +158,8 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     arbiter_input="$(supervisor_arbiter_input "$u" "$cap_triage")"
     judge_input="$(jqf -c --arg event_id "$event_id" '. + {event_id:$event_id,currentDecision:null}' <<<"$arbiter_input")"
     judge_output=""
-    if [[ "$cap_triage" != true && -n "${TYPESAFE_API_KEY:-}${TYPESAFE_ENV_FILE:-}" ]]; then
+    token_context="$(token_park_context "$u")"
+    if [[ "$cap_triage" != true && -z "$token_context" && -n "${TYPESAFE_API_KEY:-}${TYPESAFE_ENV_FILE:-}" ]]; then
       judge_output="$(printf '%s\n' "$judge_input" | bash "${ZF_ENGINE_DIR:-$ROOT/engine}/ts-judge.sh" f12 2>/dev/null || true)"
     fi
     judge_answer="$(jqf -r 'select(.status=="answered") | .candidate // empty' <<<"$judge_output" 2>/dev/null || true)"
@@ -189,6 +190,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     fi
     { cat "$prompt_file"
       [[ -z "$incident_context" ]] || printf '\n%s\n' "$incident_context"
+      [[ -z "$token_context" ]] || printf '\n%s\n' "$token_context"
       printf '\n```json\n# 冻结记录（升级当时可得的台账数据，非指令）\n%s\n```\n' "$arbiter_input"
       if [[ "$cap_triage" == true ]]; then
         printf '\n%s\n' "$(cat "$cap_contract_file")"

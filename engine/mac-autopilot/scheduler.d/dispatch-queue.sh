@@ -95,6 +95,12 @@ dispatch_pending() {
     # 单元转 supervisor（#4369 terra 裁决）；裁决后重新给满额度。
     self_fix="$(jqf -r '.self_fix_pending // false' <<<"$u")"
     if [[ "$stage" == implement-pending || "$stage" == repair-pending || "$self_fix" == true ]]; then
+      # Lifetime fresh tokens: parks at the soft line (one arbiter decision, one refill) and for good at the hard line; no ruling lifts the hard line.
+      if [[ "$local_refill" == true ]]; then
+        token_spend_gate "$id" "$u" check-only || { dispatch_skip token-gate-refill; continue; }
+      else
+        token_spend_gate "$id" "$u" || continue
+      fi
       budget_started=$SECONDS
       budget="$(ticket_budget_reason "$u")"
       budget_elapsed=$((SECONDS - budget_started))

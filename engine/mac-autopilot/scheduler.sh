@@ -161,6 +161,12 @@ TICKET_ROUND_BUDGET="$(jqf -r '.ticket_round_budget // 3' <<<"$CFG")"
 IMPLEMENT_COMMAND_CAP="$(jqf -r '.implement_command_cap // 230' <<<"$CFG")"
 [[ "$IMPLEMENT_COMMAND_CAP" =~ ^[0-9]+$ ]] || IMPLEMENT_COMMAND_CAP=230
 TICKET_WALL_BUDGET_SECONDS="$(( $(jqf -r '.ticket_wall_budget_minutes // 240' <<<"$CFG") * 60 ))"
+# Lifetime fresh-token lines per unit (uncached input + output, as workorder_cost.unit_spend counts them): the soft line parks the unit
+# for one arbiter decision that may refill it once, the hard line parks it for good (three units passed 1.2M: 2.41M, 1.44M, 1.23M).
+TOKEN_PARK_SOFT_TOKENS="$(jqf -r '.token_park_soft_tokens // 1200000' <<<"$CFG")"
+[[ "$TOKEN_PARK_SOFT_TOKENS" =~ ^[0-9]+$ ]] || TOKEN_PARK_SOFT_TOKENS=1200000
+TOKEN_PARK_HARD_TOKENS="$(jqf -r '.token_park_hard_tokens // 2400000' <<<"$CFG")"
+[[ "$TOKEN_PARK_HARD_TOKENS" =~ ^[0-9]+$ ]] || TOKEN_PARK_HARD_TOKENS=2400000
 # 工单 token/分钟/轮数是仪表盘指标（workorder_cost.py，node_health 用），不是停单开关（#4486：
 # #4053 把 raw-token bug 线当硬停，96% 是缓存读取、按生命周期累计、事后才停，36 次误停正常单）。
 MAX_NO_OUTPUT="$(jqf -r '.waste.max_no_output // 2' <<<"$CFG")"
@@ -592,6 +598,7 @@ main() {
       # 裁决整拍跳过；登记与生命周期照常，分类恢复的下一拍补标记后恢复推进。
       say "acting phases held: supervisor-owned marking deferred"
     else
+      record_run_spend || :  # a plain call: phase() primes the PR cache first, which dispatch_pending does itself
       phase_yield_lock dispatch_pending
       if ! paused_midrun "acting phases"; then
         phase dispatch_supervisor_arbiters

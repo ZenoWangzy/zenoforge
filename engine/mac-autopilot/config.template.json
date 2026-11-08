@@ -75,6 +75,8 @@
   },
   "ticket_round_budget": 3,
   "ticket_wall_budget_minutes": 240,
+  "token_park_soft_tokens": 1200000,
+  "token_park_hard_tokens": 2400000,
   "stacking": {
     "enabled": true,
     "pilot_label": "stack-pilot"
