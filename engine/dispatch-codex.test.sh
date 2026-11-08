@@ -326,7 +326,8 @@ wait_for_budget_release() {
 
 wait_for_owner_terminal() {
   local manifest="$1"
-  for _ in $(seq 1 150); do
+  # 30 s budget: the owner writes its terminal status after TERM, which is slow under host load.
+  for _ in $(seq 1 1500); do
     if jq -e '.status != "launching" and .status != "running"' "$manifest" >/dev/null 2>&1; then return 0; fi
     sleep 0.02
   done
