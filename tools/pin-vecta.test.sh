@@ -167,24 +167,7 @@ run_pin() { # <calls-file> <scope-file> <agent-home> <target> [args...]
 }
 
 # Ruling zenoforge-pin-does-not-wait-ci-2026-11-05: a completed red engine-tests/cli-tests run for
-# this exact SHA on main never blocks the pin; it files one incident per (SHA, workflow) and logs PIN-ON-RED.
-cat > "$tmp/bin/upsert" <<'UPSERT'
-#!/usr/bin/env bash
-# Stands in for engine/pipeline-issue-upsert.sh: idempotent by --class, like the real one.
-set -euo pipefail
-class=""; body=""
-while (($#)); do case "$1" in --class) class=$2; shift 2 ;; --body-file) body=$2; shift 2 ;; *) shift ;; esac; done
-printf 'upsert class=%s\n' "$class" >> "${PIN_UPSERT_CALLS:?}"
-if grep -Fxq "$class" "$PIN_UPSERT_CALLS.seen" 2>/dev/null; then echo "commented class $class"; exit 0; fi
-echo "$class" >> "$PIN_UPSERT_CALLS.seen"
-printf 'created class=%s\n' "$class" >> "$PIN_UPSERT_CALLS"
-cat -- "$body" >> "$PIN_UPSERT_CALLS.bodies"
-UPSERT
-chmod +x "$tmp/bin/upsert"
-export ZF_PIN_INCIDENT_UPSERT="$tmp/bin/upsert"
-export PIN_UPSERT_CALLS="$tmp/upsert.calls"
-: > "$PIN_UPSERT_CALLS"
-
+# this exact SHA on main never blocks the pin; it logs PIN-ON-RED (the incident comes from bell's zf_main_ci_scan).
 ci_target=$(setup_target ci)
 ci_agent=$(setup_agent ci)
 ci_calls="$tmp/ci.calls"
@@ -199,36 +182,29 @@ failed_runs=$(jq -cn --arg sha "$new_engine" --arg url "$engine_url" '{workflow_
   {name:"cli-tests",head_sha:("0" * 40),head_branch:"main",status:"completed",conclusion:"failure",run_number:4,html_url:"https://example.invalid/other-sha"},
   {name:"unrelated",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure",run_number:5,html_url:"https://example.invalid/unrelated"}
 ]} | [. ]')
-for attempt in 1 2; do
-  if ! PIN_WORKFLOW_RUNS="$failed_runs" run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-red$attempt.out" 2>&1; then
-    cat "$tmp/ci-red$attempt.out" >&2
-    fail "completed red engine-tests blocked the pin (attempt $attempt)"
-  fi
-  grep -Fq 'pin-vecta: prepared route=' "$tmp/ci-red$attempt.out" || fail 'red CI pin did not reach pin preparation'
-  [[ $(grep -c '^PIN-ON-RED' "$tmp/ci-red$attempt.out") == 1 ]] || fail 'expected exactly one PIN-ON-RED line'
-  grep -Fxq "PIN-ON-RED sha=$new_engine workflow=engine-tests run=$engine_url" "$tmp/ci-red$attempt.out" \
-    || fail 'PIN-ON-RED line lacks sha, workflow and the latest red run URL'
-  grep -Fq 'refusing pin' "$tmp/ci-red$attempt.out" && fail 'red CI still printed a refusal'
-done
-red_class="pin-on-red-${new_engine:0:12}-engine-tests"
-[[ $(grep -c '^created ' "$PIN_UPSERT_CALLS") == 1 ]] || fail 'a retry for the same SHA and workflow filed a second incident'
-[[ $(grep -c "^upsert class=$red_class\$" "$PIN_UPSERT_CALLS") == 2 ]] || fail 'incident class is not stable per (SHA, workflow)'
-grep -Fq "$engine_url" "$PIN_UPSERT_CALLS.bodies" && grep -Fq "$new_engine" "$PIN_UPSERT_CALLS.bodies" \
-  || fail 'incident body lacks the run URL or SHA'
+if ! PIN_WORKFLOW_RUNS="$failed_runs" run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-red.out" 2>&1; then
+  cat "$tmp/ci-red.out" >&2
+  fail 'completed red engine-tests blocked the pin'
+fi
+grep -Fq 'pin-vecta: prepared route=' "$tmp/ci-red.out" || fail 'red CI pin did not reach pin preparation'
+[[ $(grep -c '^PIN-ON-RED' "$tmp/ci-red.out") == 1 ]] || fail 'expected exactly one PIN-ON-RED line'
+grep -Fxq "PIN-ON-RED sha=$new_engine workflow=engine-tests run=$engine_url incident=zf_main_ci_scan" "$tmp/ci-red.out" \
+  || fail 'PIN-ON-RED line lacks sha, workflow, the latest red run URL or the incident owner'
+grep -Fq 'refusing pin' "$tmp/ci-red.out" && fail 'red CI still printed a refusal'
+# pin-vecta files no incident itself (bell's zf_main_ci_scan does): no issue call through gh, no upsert script.
+! grep -q '^gh:issue\|^gh:label' "$ci_calls" || fail 'pin-vecta called gh issue/label on a red run'
+! grep -q 'pipeline-issue-upsert' "$pin_script" || fail 'pin-vecta.sh references the incident upsert'
 
-# Both workflows red: one incident each. An upsert that fails does not stop the pin.
+# Both workflows red: one PIN-ON-RED line each, still pinned.
 both_failed_runs=$(jq -cn --arg sha "$new_engine" '{workflow_runs:[
   {name:"engine-tests",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure",html_url:"https://example.invalid/e"},
   {name:"cli-tests",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure",html_url:"https://example.invalid/c"}
 ]} | [. ]')
-printf '#!/usr/bin/env bash\nexit 1\n' > "$tmp/bin/upsert-fail"; chmod +x "$tmp/bin/upsert-fail"
-if ! PIN_WORKFLOW_RUNS="$both_failed_runs" ZF_PIN_INCIDENT_UPSERT="$tmp/bin/upsert-fail" \
-  run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-both.out" 2>&1; then
+if ! PIN_WORKFLOW_RUNS="$both_failed_runs" run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-both.out" 2>&1; then
   cat "$tmp/ci-both.out" >&2
-  fail 'a failed incident upsert blocked the pin'
+  fail 'two red workflows blocked the pin'
 fi
 [[ $(grep -c '^PIN-ON-RED' "$tmp/ci-both.out") == 2 ]] || fail 'expected one PIN-ON-RED line per red workflow'
-grep -Fq 'could not file the PIN-ON-RED incident for cli-tests' "$tmp/ci-both.out" || fail 'failed upsert was not logged'
 # ZF_PIN_OVERRIDE is gone: setting it changes nothing.
 if ! PIN_WORKFLOW_RUNS="$both_failed_runs" ZF_PIN_OVERRIDE=bogus \
   run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-override.out" 2>&1; then
@@ -253,7 +229,7 @@ set -e
 ((ci_unreadable_status != 0)) || fail 'pin continued when main CI runs could not be read'
 grep -Fq 'could not read zenoforge main CI runs' "$tmp/ci-unreadable.out" \
   || fail 'CI API read failure was not explained'
-ok 'pin-on-red: completed red main CI pins anyway, files one incident per SHA and workflow, logs PIN-ON-RED; pending runs pass and unreadable runs fail closed'
+ok 'pin-on-red: completed red main CI pins anyway, logs one PIN-ON-RED line per red workflow, files no incident itself; pending runs pass and unreadable runs fail closed'
 
 # A pin-only diff gets a fresh worktree/out root, a skip-ci head commit, and all
 # three engine operations in order. Default mode does not publish.

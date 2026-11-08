@@ -55,26 +55,16 @@ if ! jq -e 'type == "array" and length > 0 and all(.[];
 fi
 
 # Founder ruling zenoforge-pin-does-not-wait-ci-2026-11-05: a completed red engine-tests or cli-tests
-# run never blocks the pin. It files one incident per (SHA, workflow) through the incident upsert
-# (idempotent by class, so a retry only comments) and logs one PIN-ON-RED line.
+# run never blocks the pin. The incident is filed by bell's zf_main_ci_scan (engine/mac-autopilot/zf-main-ci.sh),
+# not here; this only logs one PIN-ON-RED line per red workflow.
 red_runs=$(jq -r --arg sha "$engine_sha" '[.[] | .workflow_runs[]
   | select(.head_sha == $sha and .head_branch == "main" and .status == "completed" and .conclusion == "failure"
       and (.name == "engine-tests" or .name == "cli-tests"))]
   | group_by(.name)[] | max_by(.run_number // 0) | [.name, (.html_url // "unknown")] | @tsv' <<<"$main_ci_runs") \
   || { echo "pin-vecta: refusing pin: could not inspect zenoforge main CI runs for $engine_sha" >&2; exit 1; }
-incident_upsert=${ZF_PIN_INCIDENT_UPSERT:-$repo_root/engine/pipeline-issue-upsert.sh}
 while IFS=$'\t' read -r red_workflow red_url; do
   [[ -n "$red_workflow" ]] || continue
-  printf 'PIN-ON-RED sha=%s workflow=%s run=%s\n' "$engine_sha" "$red_workflow" "$red_url"
-  red_body=$(mktemp "${TMPDIR:-/tmp}/zf-pin-on-red.XXXXXXXX")
-  printf 'The engine pin for `%s` went ahead although the main `%s` run is red.\n\n- SHA: %s\n- Workflow: %s\n- Run: %s\n' \
-    "${engine_sha:0:12}" "$red_workflow" "$engine_sha" "$red_workflow" "$red_url" > "$red_body"
-  # An incident that cannot be filed is logged; it never stops the pin.
-  ZF_GH_REPO=ZenoWangzy/zenoforge ZF_REPO=ZenoWangzy/zenoforge bash "$incident_upsert" \
-    --class "pin-on-red-${engine_sha:0:12}-$red_workflow" --lane pipeline-system --label incident \
-    --repo ZenoWangzy/zenoforge --title "Incident: engine pin on red $red_workflow for ${engine_sha:0:12}" \
-    --body-file "$red_body" >&2 || echo "pin-vecta: could not file the PIN-ON-RED incident for $red_workflow $engine_sha" >&2
-  rm -f -- "$red_body"
+  printf 'PIN-ON-RED sha=%s workflow=%s run=%s incident=zf_main_ci_scan\n' "$engine_sha" "$red_workflow" "$red_url"
 done <<<"$red_runs"
 
 git -C "$target" rev-parse --show-toplevel >/dev/null 2>&1 \
