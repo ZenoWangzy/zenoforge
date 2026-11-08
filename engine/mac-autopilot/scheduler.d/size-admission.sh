@@ -67,6 +67,7 @@ size_split_admit() { # unit issue lines limit → 0 after recording the one admi
 size_admission_reject() { # unit lines branch context head estimate actual checkpoint [limit]
   local issue limit="${9:-$SIZE_ADMISSION_LINES}" refused=false
   issue="$(unit_field "$1" '.issue // empty')"
+  [[ "$5" =~ $SHA_RE ]] || say "size recheck without head: $1 $4"
   if [[ "$5" =~ $SHA_RE && "$issue" =~ ^[0-9]+$ ]]; then
     ! size_recut_refused_on_head "$1" "$5" "$issue" || refused=true
   fi

@@ -368,7 +368,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
           local recheck_dir recheck_branch
           recheck_dir="$(jqf -r '.workdir // empty' <<<"$w")"; recheck_branch="$(unit_field "$unit" '.branch // empty')"
           if [[ "$(unit_field "$unit" '.history[-1].stage // empty')" != repair-no-push && "$(unit_field "$unit" '.lane // "pr"')" != direct-main ]] && [[ "$(unit_field "$unit" '.pr // empty')" =~ ^[0-9]+$ ]]; then
-            size_admission_recheck "$unit" "$recheck_dir" "$recheck_branch" "on $recheck_branch after repair" || :
+            size_admission_recheck "$unit" "$recheck_dir" "$recheck_branch" "on $recheck_branch after repair" "$(git -C "$recheck_dir" rev-parse -q --verify HEAD 2>/dev/null)" || :
           fi; repair_breaker "$unit" "$rep" || : ;;
         land)
           local land_result; land_result="$(head -1 "$rep")"
