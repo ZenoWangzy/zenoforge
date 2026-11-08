@@ -1042,6 +1042,8 @@ printf '{"red_sha":"%s","status":"flaky","created_at":"2026-10-19T08:00:00Z","up
 printf '{"red_sha":"%s","status":"bisecting","created_at":"2026-10-19T09:00:00Z","updated_at":"2026-10-19T09:30:00Z"}' "$(printf 'b%.0s' {1..40})" > "$fa/main-red/$(printf 'b%.0s' {1..40}).json"
 printf '{"red_sha":"%s","status":"reverted","created_at":"2026-10-18T20:00:00Z","updated_at":"2026-10-18T21:00:00Z"}' "$(printf 'c%.0s' {1..40})" > "$fa/main-red/$(printf 'c%.0s' {1..40}).json"
 printf '{"red_sha":"%s","status":"flaky","created_at":"2026-10-19T09:30:00Z","updated_at":"2026-10-19T10:30:00Z"}' "$(printf 'd%.0s' {1..40})" > "$fa/main-red/$(printf 'd%.0s' {1..40}).json" # overlaps the open bisecting session: counts once
+printf '{"red_sha":"%s","status":"rerun-requested","created_at":"2026-10-19T05:00:00Z","updated_at":"2026-10-19T05:30:00Z"}' "$(printf 'e%.0s' {1..40})" > "$fa/main-red/$(printf 'e%.0s' {1..40}).json" # open and idle over 6 h: ends at its last transition, never counts to now
+printf '{"red_sha":"%s","status":"recovered","created_at":"2026-10-19T06:30:00Z","updated_at":"2026-10-19T07:30:00Z"}' "$(printf 'f%.0s' {1..40})" > "$fa/main-red/$(printf 'f%.0s' {1..40}).json" # closed on green: counts only 07:00-07:30 of the window
 printf 'not json' > "$fa/main-red/stale.json.tmp"
 flowrun "$fa" --json "$fa/node-health.json" >/dev/null
 flowval() { jq -r --arg id "$1" '.metrics[] | select(.id == $id) | "\(.value) \(.status)"' "$fa/node-health.json"; }
@@ -1049,7 +1051,7 @@ flowval() { jq -r --arg id "$1" '.metrics[] | select(.id == $id) | "\(.value) \(
 [[ "$(flowval flow.in_out_imbalance)" == "1 OK" ]] || fail "in/out imbalance wrong: $(flowval flow.in_out_imbalance)（entered 2, merged 3）"
 [[ "$(flowval flow.wip_age_stage_p90_hours)" == "13.0 UNHEALTHY" ]] || fail "wip stage age wrong: $(flowval flow.wip_age_stage_p90_hours)"
 [[ "$(flowval flow.slot_idle_hours)" == "1.83 UNHEALTHY" ]] || fail "slot idle wrong: $(flowval flow.slot_idle_hours)"
-[[ "$(flowval flow.main_red_hours)" == "3.67 UNHEALTHY" ]] || fail "main-red hours wrong: $(flowval flow.main_red_hours)（flaky 0.67 + 未终结 3.0，与未终结重叠的 flaky 只算一次，窗口外 reverted 不算）"
+[[ "$(flowval flow.main_red_hours)" == "4.17 UNHEALTHY" ]] || fail "main-red hours wrong: $(flowval flow.main_red_hours)（flaky 0.67 + recovered 0.5 + 未终结 3.0，与未终结重叠的 flaky 只算一次，窗口外 reverted 不算，空闲超 6 小时的未终结只算到最后一次转移）"
 jq -e '.flow.entered == 2 and .flow.merged == 3
   and (.flow.wip_age[] | select(.stage == "implement") | .count == 1 and .p90_hours == 13)
   and (.flow.wip_age[] | select(.stage == "ready-to-merge") | .p90_hours == 0.2)

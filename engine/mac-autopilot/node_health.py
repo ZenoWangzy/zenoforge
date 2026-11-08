@@ -459,11 +459,19 @@ def slot_idle_hours(waits, cost_rows, since):
     return round(idle, 2)
 
 
+# An open session is rewritten at every transition, and a probe wait or the 10 min dispatch retry
+# never leaves it untouched for hours. One idle this long is no longer advancing (main went green
+# and nothing closed it), so it ends at its last transition. The reader holds no CI run list to
+# find the first green main run, so idleness is the bound it can know.
+MAIN_RED_OPEN_IDLE_HOURS = 6
+
+
 def main_red_hours(red_dir, since, now):
     """Hours main was red in the window, from the #4356 bisect sessions.
 
-    A session still in the state machine counts to now; flaky/reverted/unattributed ended at
-    their last transition. None without a main-red directory (hosts without the merge lane)."""
+    A session still in the state machine counts to now unless it has been idle longer than
+    MAIN_RED_OPEN_IDLE_HOURS; flaky/recovered/reverted/unattributed ended at their last transition.
+    None without a main-red directory (hosts without the merge lane)."""
     try:
         names = os.listdir(red_dir)
     except OSError:
@@ -476,7 +484,8 @@ def main_red_hours(red_dir, since, now):
         created, updated = ts(session.get("created_at")), ts(session.get("updated_at"))
         if not created or not re.fullmatch(r"[0-9a-f]{40}", str(session.get("red_sha") or "")):
             continue
-        end = updated if updated and session.get("status") in ("flaky", "reverted", "unattributed") else now
+        idle = updated and (now - updated).total_seconds() > MAIN_RED_OPEN_IDLE_HOURS * 3600
+        end = updated if updated and (idle or session.get("status") in ("flaky", "recovered", "reverted", "unattributed")) else now
         spans.append((max(created, since), min(end, now)))
     total, frontier = 0.0, since  # overlapping sessions are one wall-clock red: merge before summing
     for start, end in sorted(spans):

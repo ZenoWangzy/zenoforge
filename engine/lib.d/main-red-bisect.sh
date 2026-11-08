@@ -348,7 +348,7 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
           ;;
       esac
       ;;
-    reverted|flaky|unattributed)
+    reverted|flaky|recovered|unattributed)
       # Terminal records; a later green Postsubmit clears the existing
       # ci.yml merge gate.
       ;;
@@ -411,13 +411,33 @@ main_red_paused_discovery() {
 }
 
 
+# Newest green main run of this workflow whose head is a strict descendant of
+# the red SHA: main recovered after it (a same-SHA green is the flaky path).
+# The sweep closes such an open session (not revert-open) as the terminal status
+# `recovered`, with recovered_by_sha and closed_at.
+main_red_green_after() { # runs_json red_sha workflow ; prints the green head SHA
+  local sha
+  while IFS= read -r sha; do
+    [[ "$sha" =~ ^[0-9a-f]{40}$ && "$sha" != "$2" ]] || continue
+    if git -C "$REPO_DIR" merge-base --is-ancestor "$2" "$sha" 2>/dev/null; then
+      printf '%s\n' "$sha"
+      return 0
+    fi
+  done < <(jq -r --arg w "$3" '[.workflow_runs[]?
+      | select(.red_workflow == $w and .status == "completed" and .conclusion == "success"
+        and ((.display_title // "") | startswith("Pipeline suites post-land ") | not))]
+    | sort_by([.created_at // "", .id // 0]) | reverse | .[].head_sha // empty' <<< "$1" 2>/dev/null)
+  return 1
+}
+
+
 # The tick's maintenance entry point: if the latest completed main validation
 # run is red, advance that red's session by one bounded step;
 # then close any rerun-requested session whose same-SHA rerun went green
 # (that red was flaky and the latest verdict is green again, so the step
 # path above can no longer see it).
 main_red_bisect_sweep() {
-  local runs run verdict sha session_file session red_sha rerun_verdict workflow focused_head recovery_status status idle
+  local runs run verdict sha session_file session red_sha rerun_verdict workflow focused_head recovery_status status idle green_sha fetched=0
   if [ "${MAIN_CI_RED_RECONCILIATION_DONE:-0}" = 1 ]; then
     [ "${MAIN_CI_RED_RECOVERY_HELD:-0}" != 1 ] || return 0
   elif ZF_REPO_DIR="$REPO_DIR" bash "${ZF_ENGINE_DIR:-$REPO_DIR/engine}/night/main-ci-recovery.sh" reconcile-red; then
@@ -459,8 +479,8 @@ main_red_bisect_sweep() {
     case "$status" in rerun-requested|bisecting|culprit-found|revert-open) ;; *) continue ;; esac
     red_sha="$(jq -r '.red_sha // empty' <<< "$session")"
     [[ "$red_sha" =~ ^[0-9a-f]{40}$ ]] || continue
+    workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$session")"
     if [ "$status" = rerun-requested ]; then
-      workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$session")"
       focused_head="$(jq -r '.focused_head_sha // empty' <<< "$session")"
       if [[ "$workflow" == pipeline-suites.yml && ! "$focused_head" =~ ^[0-9a-f]{40}$ ]]; then
         focused_head="__full__"
@@ -473,6 +493,16 @@ main_red_bisect_sweep() {
           main_red_log "red ${red_sha:0:12}: same-SHA rerun went green; recorded flaky, no revert"
           continue
         fi
+      fi
+    fi
+    # Main went green on a descendant of the red SHA: the session is over. A revert-open session stays with its revert PR, which sweep-merges.sh still merges.
+    if [ "$status" != revert-open ]; then
+      [ "$fetched" = 1 ] || { git_fetch_bounded "$REPO_DIR" main >/dev/null 2>&1 || true; fetched=1; }
+      if green_sha="$(main_red_green_after "$runs" "$red_sha" "$workflow")" \
+          && main_red_session_write "$red_sha" recovered \
+            ".recovered_by_sha = \"$green_sha\" | .closed_at = \$now"; then
+        main_red_log "red ${red_sha:0:12}: main green again at ${green_sha:0:12}; closed $status session as recovered"
+        continue
       fi
     fi
     # A session steps only while its run is the latest verdict, so it can stop with nobody told. Alert only: a pending probe or an open revert PR writes nothing either, and a terminal status would strand them.

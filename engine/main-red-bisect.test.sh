@@ -331,6 +331,39 @@ assert_not_contains "the flaky path never creates a revert PR" "$(cat "$FAKE_GH_
 assert_not_contains "the flaky path never dispatches a probe" "$(cat "$FAKE_GH_STATE/actions.log")" "dispatch"
 assert_not_contains "the flaky path never comments on a ticket" "$(cat "$FAKE_GH_STATE/actions.log")" "issue comment"
 
+# --- Recovered: a bisecting session is closed when main goes green on a later commit (no revert, no probe).
+rm -rf "$AGENT_HOME/main-red"
+: > "$FAKE_GH_STATE/actions.log"
+commit "fix(#4106): red tip"
+REC_RED_SHA="$(git -C "$repo" rev-parse HEAD)"
+commit "fix(#4106): fix forward"
+REC_GREEN_SHA="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" push -q origin main
+main_red_session_write "$REC_RED_SHA" bisecting ".red_workflow = \"ci.yml\""
+jq -cn --arg red "$REC_RED_SHA" --arg green "$REC_GREEN_SHA" \
+  '{workflow_runs:[
+    {id:810,head_sha:$red,head_branch:"main",event:"push",status:"completed",conclusion:"failure",created_at:"2026-10-29T10:00:00Z"},
+    {id:811,head_sha:$green,head_branch:"main",event:"push",status:"completed",conclusion:"success",created_at:"2026-10-29T11:00:00Z"}]}' \
+  > "$FAKE_GH_STATE/completed-runs.json"
+maintenance_tick
+assert_eq "an open session is closed recovered once main is green on a descendant" recovered \
+  "$(jq -r .status "$AGENT_HOME/main-red/$REC_RED_SHA.json")"
+assert_eq "the recovered session names the green SHA" "$REC_GREEN_SHA" \
+  "$(jq -r .recovered_by_sha "$AGENT_HOME/main-red/$REC_RED_SHA.json")"
+assert_eq "the recovered session records when it closed" "$(jq -r .updated_at "$AGENT_HOME/main-red/$REC_RED_SHA.json")" \
+  "$(jq -r .closed_at "$AGENT_HOME/main-red/$REC_RED_SHA.json")"
+assert_not_contains "the recovered path never dispatches a probe" "$(cat "$FAKE_GH_STATE/actions.log")" "dispatch"
+# A green run on an unrelated (older) commit is not a recovery.
+main_red_session_write "$REC_RED_SHA" bisecting
+jq -cn --arg red "$REC_RED_SHA" --arg old "$GREEN_SHA" \
+  '{workflow_runs:[
+    {id:810,head_sha:$red,head_branch:"main",event:"push",status:"completed",conclusion:"failure",created_at:"2026-10-29T10:00:00Z"},
+    {id:812,head_sha:$old,head_branch:"main",event:"push",status:"completed",conclusion:"success",created_at:"2026-10-29T09:00:00Z"}]}' \
+  > "$FAKE_GH_STATE/completed-runs.json"
+main_red_bisect_sweep
+assert_eq "a green run on an ancestor does not close the session" bisecting \
+  "$(jq -r .status "$AGENT_HOME/main-red/$REC_RED_SHA.json")"
+
 # No successful baseline cannot anchor attribution. The tick emits one
 # supervisor event and keeps the red gate closed; later ticks do not repeat it.
 rm -rf "$AGENT_HOME/main-red"

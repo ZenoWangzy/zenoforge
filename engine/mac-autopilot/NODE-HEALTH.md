@@ -295,7 +295,7 @@ Flow metrics (`flow.*`) also cross into the supervisor inbox: each crossing of t
 appends one `flow-metric` event (`--inbox`; the crossing record in `flow-inbox-state.json` clears when
 the metric recovers, so the next crossing emits again). Regular flow samples only reach the dashboard.
 `flow.main_red_hours` reads the #4356 bisect sessions under `$AGENT_HOME/main-red/` — a session still
-in the state machine counts to now, flaky/reverted/unattributed end at their last transition.
+in the state machine counts to now unless idle over 6 h (`MAIN_RED_OPEN_IDLE_HOURS`), and flaky/recovered/reverted/unattributed end at their last transition. `recovered` is written by the sweep when a later main run of the same workflow goes green on a descendant of the red SHA.
 Rework rounds were already covered by `loop.rounds_p90` and `delivery.cycles_to_pass_30d`.
 
 Reliability alert (#425): when `delivery.revert_rate_30d_pct` or `flow.main_red_hours` goes UNHEALTHY on a scorecard

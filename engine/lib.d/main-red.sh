@@ -473,7 +473,7 @@ main_red_session_read_for_file() {
   local file="$1"
   jq -ce 'select(type == "object"
     and (.red_sha | type == "string" and test("^[0-9a-f]{40}$"))
-    and (.status | IN("rerun-requested", "bisecting", "culprit-found", "revert-open", "reverted", "flaky", "unattributed")))' \
+    and (.status | IN("rerun-requested", "bisecting", "culprit-found", "revert-open", "reverted", "flaky", "recovered", "unattributed")))' \
     "$file" 2>/dev/null
 }
 
@@ -482,7 +482,7 @@ main_red_session_read() {
   local sha="$1" file
   file="$(main_red_session_file "$sha")" || return 1
   jq -ce --arg sha "$sha" 'select(type == "object" and .red_sha == $sha
-    and (.status | IN("rerun-requested", "bisecting", "culprit-found", "revert-open", "reverted", "flaky", "unattributed")))' \
+    and (.status | IN("rerun-requested", "bisecting", "culprit-found", "revert-open", "reverted", "flaky", "recovered", "unattributed")))' \
     "$file" 2>/dev/null
 }
 
@@ -495,7 +495,7 @@ main_red_session_write() {
   if [ "$#" -ge 3 ]; then update="$3"; else update="."; fi
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
   case "$status" in
-    rerun-requested|bisecting|culprit-found|revert-open|reverted|flaky|unattributed) ;;
+    rerun-requested|bisecting|culprit-found|revert-open|reverted|flaky|recovered|unattributed) ;;
     *) return 1 ;;
   esac
   file="$(main_red_session_file "$sha")" || return 1
