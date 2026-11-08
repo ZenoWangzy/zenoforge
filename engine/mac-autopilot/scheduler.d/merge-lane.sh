@@ -157,6 +157,7 @@ run_merge_lane() {
     say "merge lane busy: pass skipped"
     return 0
   fi
+  [[ -z "${A:-}" ]] || date +%s > "$A/.merge-pass-epoch" # node_health merge_pass_gap_min: the last pass that held the lane, whoever ran it
   run_merge_lane_pass || rc=$?
   exec {fd}>&-
   return "$rc"
@@ -169,8 +170,16 @@ merge_refill_budget_spent() { # stage
   [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 120 )) || return 1
   say "merge pass stopped before $1 at ${SECONDS}s: the refill budget is spent; the next refill resumes"
 }
+# A live merge station (loop.sh launches scheduler.sh --merge) owns the pass: the refill and the full tick skip theirs while a station pass
+# started within the freshness window, and run it again when this loop is an older one that never launches the station or the station is stuck.
+# Both ways go through run_merge_lane's flock, so a pass never runs beside another.
+merge_station_fresh() { # 0 = a station pass started within the freshness window
+  local at; at="$(cat "$A/.merge-station-epoch" 2>/dev/null)"
+  [[ "$at" =~ ^[0-9]+$ ]] && (( $(date +%s) - at < ${AUTOPI_MERGE_STATION_FRESH_SECONDS:-600} ))
+}
 refill_merge_pass() {
   local now last min
+  ! merge_station_fresh || return 0
   [[ "$(jqf -r .auto_merge <<<"$CFG")" == "true" ]] || return 0
   jqf -e 'any(.units[]; .stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false
     and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main")' "$UNITS" >/dev/null || return 0
@@ -189,6 +198,7 @@ refill_merge_pass() {
 merge_entry() {
   local gh_calls
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
+  date +%s > "$A/.merge-station-epoch" # also while paused or busy: the tick and the refill must not start a second merger beside a live station
   if [[ -e "$PAUSE_FILE" ]]; then
     say "merge entry paused by $PAUSE_FILE: no merge"
     return 0
@@ -205,7 +215,7 @@ merge_entry() {
   if supervisor_marking_deferred; then
     say "merge entry held: supervisor-owned marking deferred"
   else
-    MERGE_LANE_WAIT=0 run_merge_lane || :
+    MERGE_SCAN_NOWAIT=true MERGE_LANE_WAIT=0 run_merge_lane || :
   fi
   gh_calls="$(tick_gh_calls_count)"
   say "merge entry done secs=$SECONDS gh_calls=$gh_calls ended=$(date -u +%H:%M:%SZ)"
@@ -237,7 +247,7 @@ pass_steps_line() { # "name=<secs>s/<count> ..." slowest first
     | sort -rn | cut -d' ' -f2- | paste -sd' ' -
 }
 run_merge_lane_pass() {
-  local merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry
+  local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry
   local -A merge_head_ref=()
   local -a merge_head_refspecs=() merge_head_refs=()
   # 所有 PR（含流水线 PR）都只由自己 head 上的必需检查把关，合并后由 main CI 验证；没有待验证批、没有合并后等裁决的 merging 态。
@@ -354,11 +364,18 @@ run_merge_lane_pass() {
   detail_started=$SECONDS
   cands="$(merge_candidates "$((merge_max * 3))")"
   candidate_ids="$(jqf -cs '[.[] | select(type=="object") | .id] | unique' <<<"$cands")"
-  if jqf -e 'length > 0' <<<"$candidate_ids" >/dev/null; then
+  # The scan time only rotates which candidates come first. The station (MERGE_SCAN_NOWAIT) does not queue for the ledger lock here: a tick that holds it
+  # for minutes would hold the merge back, and the merge is what the station is for. A busy lock skips the record; the later writes still wait for it.
+  scan_lock=false; scan_skipped=false
+  if [[ "${MERGE_SCAN_NOWAIT:-false}" == true && "${SCHED_LOCK_HELD:-false}" != true ]]; then
+    if acquire_scheduler_lock; then scan_lock=true; else scan_skipped=true; say "merge scan time not recorded: ledger lock busy"; fi
+  fi
+  if [[ "$scan_skipped" != true ]] && jqf -e 'length > 0' <<<"$candidate_ids" >/dev/null; then
     units_update --slurpfile ids <(printf '%s' "$candidate_ids") --argjson checked "$NOW_EPOCH" \
       '.units |= map(if (.id as $id | $ids[0] | index($id)) != null then .merge_checked_epoch=$checked else . end)' \
-      || { detail_elapsed=$((SECONDS - detail_started)); (( detail_elapsed < 2 )) || say "merge detail candidate_build=${detail_elapsed}s"; say "merge lane stopped: could not record the current candidate scan"; return 0; }
+      || { [[ "$scan_lock" != true ]] || release_scheduler_lock; detail_elapsed=$((SECONDS - detail_started)); (( detail_elapsed < 2 )) || say "merge detail candidate_build=${detail_elapsed}s"; say "merge lane stopped: could not record the current candidate scan"; return 0; }
   fi
+  [[ "$scan_lock" != true ]] || release_scheduler_lock
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "merge detail candidate_build=${detail_elapsed}s"
   # Fetch all bounded candidate heads in one GitHub round trip. The census SHA

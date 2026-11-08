@@ -50,6 +50,17 @@ launch_ci_admission() {
   CI_ADMISSION_NEXT=$((SECONDS + every))
   setsid timeout -k 30 "${AUTOPI_CI_ADMISSION_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --ci-admission >> "$A/loop.out" 2>&1 < /dev/null &
 }
+# The merge lane as its own station (scheduler.sh --merge): a CLEAN PR must not wait for a refill that spent its budget on dispatch, or for a tick that is
+# killed before its merge phase (no pass 10:11Z-, 2026-11-08). Same pacing as the CI station: the merge-lane flock makes an overlapping pass skip itself,
+# so this only spaces the launches. The refill and the tick merge themselves while no pass started recently (an older loop, or a stuck station).
+launch_merge_station() {
+  local every="${AUTOPI_MERGE_STATION_SECONDS:-60}"
+  [[ "$every" =~ ^[0-9]+$ ]] && (( every >= 30 )) || every=60
+  MERGE_STATION_NEXT="${MERGE_STATION_NEXT:-$((SECONDS + every))}"
+  (( SECONDS >= MERGE_STATION_NEXT )) || return 0
+  MERGE_STATION_NEXT=$((SECONDS + every))
+  setsid timeout -k 30 "${AUTOPI_MERGE_STATION_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --merge >> "$A/loop.out" 2>&1 < /dev/null &
+}
 # #4628: the slow tick runs beside the refill controller. The scheduler yields the same ledger lock
 # around slow GitHub phases; a busy refill returns 75 and is retried five seconds later.
 refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一拍前的补派窗口
@@ -66,6 +77,7 @@ refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一�
     sleep 5; REFILL_SINCE=$((REFILL_SINCE + 5))
     launch_dashboard_views
     launch_ci_admission
+    launch_merge_station
     signature="$(exited_worker_signature "$A/workers.json")"
     [[ -n "$signature" ]] || REFILL_LAST_EXIT=""
     if [[ -n "$signature" && "$signature" != "$REFILL_LAST_EXIT" ]] || (( REFILL_SINCE >= cadence )); then

@@ -44,7 +44,7 @@ PATH_HINTS = {"intake": r"intake", "triage": r"triage", "advisor": r"advisor", "
 # The one table that ties a report line to rows of anomaly-owners.json (the head's plain-Chinese note per scorecard metric).
 # Line key -> row ids, first match first; a line prints the notes of the rows that exist, verbatim, at most two.
 # Lines with no row (finished, rollbacks, money, intake, triage, advisor, review) read 未查明; scorecard rows with no line:
-# scheduler.tick_gap_p50, delivery.unlinked_units_30d, delivery.issue_to_accept_p50_30d_hours, delivery.issue_to_accept_p95_30d_hours.
+# scheduler.tick_gap_p50, scheduler.merge_pass_gap_min, delivery.unlinked_units_30d, delivery.issue_to_accept_p50_30d_hours, delivery.issue_to_accept_p95_30d_hours.
 OWNER_ROWS = {
     "shipped": ["delivery.merged_not_live", "delivery.issue_to_accept_p50_7d_hours", "delivery.issue_to_accept_p95_7d_hours"],
     "stock": ["flow.wait_stage_p90_hours", "delivery.merged_not_live"],

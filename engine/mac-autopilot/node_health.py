@@ -64,6 +64,7 @@ CRITERIA = {**arbiter_health.CRITERIA, **merge_wait.CRITERIA, **live_delivery.CR
     "ci.precheck_setup_failures": ("ci+merge", "local prechecks skipped by package selector", 0, 1, False),
     "supervisor.latency_p50":  ("supervisor", "escalation -> supervisor decision minutes p50", 60, 180, False),
     "scheduler.tick_gap_p50":  ("scheduler", "seconds between tick starts p50", 240, 420, False),
+    "scheduler.merge_pass_gap_min": ("scheduler", "minutes since the last merge pass while ready-to-merge units wait", 10, 30, False),
     "release.hours_waiting":   ("release", "hours current release batch has waited", 4, 12, False),
     "release.hotpatch_blockers": ("release", "production hot patches whose PR is not on main", 0, 1, False),
     "pipeline.orphan_prs":     ("pipeline", "open agent PRs outside the ledger", 3, 10, False),
@@ -156,6 +157,7 @@ MEANING = {**arbiter_health.MEANING, **merge_wait.MEANING, **live_delivery.MEANI
     "ci.shared_append_rebase_conflict_pct": "shared-append 注册表文件（footprint 互斥对其放行并行的名单，config 的 footprint_mutex.shared_append）在 direct-main 落地 rebase 时真的撞出文本冲突的比例。裁决接受少量冲突换并行；一天样本里持续偏高就把对应文件从名单移回互斥。无样本不计值。",
     "supervisor.latency_p50": "升级到主管后多久得到裁决（中位）。",
     "scheduler.tick_gap_p50": "调度两拍之间的秒数（中位）：越长，派活、合并、发布都越慢。",
+    "scheduler.merge_pass_gap_min": "有已批准待合并的单、但合并车道已经多少分钟没跑过一次：越长，绿了的 PR 越晚合入（暂定界线，攒够 10 天数据再调）。",
     "release.hours_waiting": "当前有待发布改动时，本批次已等待的小时数；无待发布工作时为 0。",
     "release.hotpatch_blockers": "生产上跑着、但源 PR 还没进 main 的热修数：每个都会挡住发布。",
     "pipeline.orphan_prs": "流水线台账之外的 agent PR：没人推进的工作。",
@@ -209,6 +211,7 @@ SOURCE = {**arbiter_health.SOURCE, **merge_wait.SOURCE, **live_delivery.SOURCE, 
     "ci.precheck_setup_failures": "units.json：窗口内 precheck 结果为 PRECHECK: SKIP workspace package selection failed 的次数",
     "supervisor.latency_p50": "units.json：supervisor-escalated → 下一个 supervisor 裁决事件",
     "scheduler.tick_gap_p50": "scheduler.log 相邻两条 tick done 的间隔",
+    "scheduler.merge_pass_gap_min": "运行目录 .merge-pass-epoch（run_merge_lane 拿到车道锁时写入）距今分钟数；units.json 里没有待合并单时为 0",
     "release.hours_waiting": "release-train.json：当前待发布批次的 started_at",
     "release.hotpatch_blockers": "release-blockers.json（release_train.sh 对照生产热修与 main）",
     "pipeline.orphan_prs": "orphan-prs.count（调度器比对 open PR 与台账）",
@@ -299,6 +302,20 @@ def held_ready_pct(units, ledger_ok):
     if not ready:
         return 0 if ledger_ok else None
     return 100 * sum(1 for u in ready if u.get("ci_held_sha")) / len(ready)
+
+
+def merge_pass_gap_min(units, ledger_ok, a, now):
+    """Minutes since run_merge_lane last held the lane (.merge-pass-epoch), while a unit the lane would take waits in ready-to-merge.
+    No such unit is 0 when units.json was read; no recorded pass yet is NO-DATA, not a gap."""
+    ready = [u for u in units if u.get("stage") == "ready-to-merge" and not u.get("hold_handoff_waiting")
+             and not u.get("supervisor_owned") and u.get("pr") is not None and u.get("lane") != "direct-main"]
+    if not ready:
+        return 0 if ledger_ok else None
+    try:
+        last = int(open(os.path.join(a, ".merge-pass-epoch")).read().strip())
+    except (OSError, ValueError):
+        return None
+    return round(max(0, now.timestamp() - last) / 60, 1)
 
 
 def status_of(v, healthy, unhealthy, higher):
@@ -1506,6 +1523,7 @@ def main():
             if m and (t := ts(m.group(1))) and since <= t <= now:
                 ticks.append(t)
     metrics["scheduler.tick_gap_p50"] = pct([(b - x).total_seconds() for x, b in zip(ticks, ticks[1:])], .5)
+    metrics["scheduler.merge_pass_gap_min"] = merge_pass_gap_min(units, ledger_history.live_ledger_readable(a), a, now)
 
     train = read_json(os.path.join(a, "release-train.json"))
     if not train:

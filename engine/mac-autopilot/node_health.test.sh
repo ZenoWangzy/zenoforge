@@ -758,6 +758,29 @@ for d in (missing, corrupt):
 print("node_health held-ready percent: empty ready list is 0, unreadable ledger is NO-DATA: PASS")
 CHECK
 
+# scheduler.merge_pass_gap_min: minutes since the last merge pass, only while a unit the lane would take waits.
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'merge pass gap wrong'
+import json, os, sys
+from datetime import datetime, timezone
+sys.path.insert(0, sys.argv[1]); import node_health as n
+d = os.path.join(sys.argv[2], "merge-pass-gap"); os.makedirs(d, exist_ok=True)
+now = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
+ep = lambda hhmm: str(int(datetime(2026, 10, 19, int(hhmm[:2]), int(hhmm[2:]), tzinfo=timezone.utc).timestamp()))
+ready = {"id": "a", "stage": "ready-to-merge", "pr": 7, "lane": "pr"}
+assert n.merge_pass_gap_min([], True, d, now) == 0          # nothing waits: no gap
+assert n.merge_pass_gap_min([], False, d, now) is None      # ledger unreadable: NO-DATA
+assert n.merge_pass_gap_min([ready], True, d, now) is None  # no pass recorded yet: NO-DATA, not a gap
+open(os.path.join(d, ".merge-pass-epoch"), "w").write(ep("1135") + "\n")
+assert n.merge_pass_gap_min([ready], True, d, now) == 25.0
+assert n.status_of(25.0, 10, 30, False) == "WARN" and n.status_of(31, 10, 30, False) == "UNHEALTHY" and n.status_of(9.5, 10, 30, False) == "OK"
+for skipped in ({"hold_handoff_waiting": True}, {"supervisor_owned": True}, {"lane": "direct-main"}, {"pr": None}):
+    assert n.merge_pass_gap_min([{**ready, **skipped}], True, d, now) == 0, skipped   # the lane does not take these
+assert n.merge_pass_gap_min([ready], True, d, datetime(2026, 10, 19, 11, 0, tzinfo=timezone.utc)) == 0.0  # a pass after the sample time never reads negative
+print("node_health merge pass gap: waiting unit, skipped units, NO-DATA and bounds: PASS")
+CHECK
+jq -e '.metrics[] | select(.id == "scheduler.merge_pass_gap_min") | .healthy == 10 and .unhealthy == 30 and .source != ""' "$a/node-health.json" >/dev/null \
+  || fail 'merge pass gap row lacks its bounds or source'
+
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'delivery metrics join or percentiles are wrong'
 import datetime as dt, json, os, pathlib, sys
