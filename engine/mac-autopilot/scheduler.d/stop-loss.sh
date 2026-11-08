@@ -331,6 +331,7 @@ repair_breaker() { # unit report-file → parks the unit when its last repair ru
 # env-fault ledger's own (env:test-gate:docker); rc 1 or 127 means missing, anything else (unknown, timeout) admits. The
 # refusal is counted once per hold on the unit and in the ledger counter admission_refusals, and logged; the unit stays
 # repair-pending and each later tick only skips it (dispatch_skip), so nothing retries in a loop.
+# shortcut: a path regex stands in for "gate needs Dagger" and can drift from the target CI map; upgrade to reading .zenoforge/ci.json (or the focused-test map) and treating a path routed to a Dagger-run suite as needing Dagger, when a second target or a new Dagger suite appears.
 REPAIR_DAGGER_PATH_RE="${REPAIR_DAGGER_PATH_RE:-^(packages|apps)/}"
 container_runtime_missing() { # → 0 when the host probe says the runtime is missing; one probe per tick
   local rc=0
