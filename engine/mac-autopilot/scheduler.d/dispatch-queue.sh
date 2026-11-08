@@ -11,6 +11,10 @@ dmark() {
 }
 dstep() { local step=$1 rc=0; shift; "$@" || rc=$?; dmark "$step"; return $rc; }
 dcapture() { local var=$1 step=$2 rc=0 out; shift 2; out="$("$@")" || rc=$?; printf -v "$var" %s "$out"; dmark "$step"; return $rc; }
+# Every caller reads the live-worker count as $(live_workers), and a cache refresh inside that subshell is lost: the cache stayed cold, so each
+# capacity, priority and implement-cap check re-ran the refresh (one jq and three jq per worker plus ps: 2244 of about 8000 processes in a
+# five-unit fixture pass). Refreshing here, in dispatch_pending's own shell, lets those subshells inherit it; the 10 s TTL is unchanged.
+dispatch_live_prime() { (( SECONDS < LIVE_WORKER_CACHE_UNTIL )) || refresh_live_worker_cache; dmark live_workers; }
 dispatch_steps_say() {
   (( ${#dispatch_step_secs[@]} )) || return 0
   local step_name step_time step_line="dispatch detail steps refill=$local_refill"
@@ -38,6 +42,7 @@ dispatch_pending() {
   revalidate_secs=$((SECONDS - pending_started))
   dmark revalidate
   if [[ "$local_refill" != true ]]; then
+    dispatch_live_prime
     tick_prs_changed # Running workers may have pushed since the previous phase.
     # Load the open-PR census in this shell: $(tick_prs) in a subshell cannot cache it, so every lookup re-ran the 300-PR list.
     # Capacity-gated (incident #5147, #5200 上游化): live 已满时每个候选都会在 room_for 的容量检查处跳过，
@@ -63,6 +68,7 @@ dispatch_pending() {
   while read -r u; do
     [[ -n "$u" ]] || continue
     dmark "after_$dispatch_step_last" # the previous row's skip, park or escalate path after its last step
+    dispatch_live_prime
     paused_midrun dispatch && break
     [[ "$TICK_FOOTPRINT_CAP_HIT" != true ]] || break # footprint_room said why
     id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"
