@@ -604,7 +604,7 @@ assert ratio(runs()) == 0, ratio(runs())  # two landings in the window, no run
 assert ratio(runs("Pipeline suites post-land abc def", "Pipeline suites", "Pipeline suites post-land 123 456")) == 1.0
 assert ratio(lambda cmd, timeout: None) is None  # gh unreadable: no observation
 status = lambda v: {r[1]: r[7] for r in n.score({"landing.post_land_runs_ratio": v}, n.CRITERIA)}["landing.post_land_runs_ratio"]
-assert status(0) == "UNHEALTHY" and status(1.0) == "HEALTHY" and status(None) == "N/A", (status(0), status(1.0), status(None))
+assert status(0) == "UNHEALTHY" and status(1.0) == "OK" and status(None) == "N/A", (status(0), status(1.0), status(None))
 CHECK
 # First-pass BLOCK is a failed first review; native resumed workers count only
 # the new turn's fresh tokens, so pre-review repair cannot disappear from spend.
