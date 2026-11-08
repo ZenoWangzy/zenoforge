@@ -201,6 +201,10 @@ decision_entry() { # decision why evidence rejected-json owner -> history decisi
   jqf -cn --arg decision "$1" --arg why "$2" --arg evidence "$3" --argjson rejected "$4" --arg owner "$5" \
     '{decision:$decision,why:$why,evidence:$evidence,rejected:$rejected,owner:$owner}'
 }
+# An INPUT_INCOMPLETE review judged nothing about the code: the way back is a review, never a commit repair (pr-5650 spent 822k tokens on 3 repairs of an unchanged head).
+last_review_blocked() { # unit-json → 0 when the latest review verdict in its history is review-block
+  jqf -e '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last.stage == "review-block"' <<<"$1" >/dev/null 2>&1
+}
 supervisor_return_stage() { # unit-json [stage-before-supervisor] → pending stage for a RULE decision
   local u="$1" stage="${2:-}"
   [[ -n "$stage" ]] || stage="$(jqf -r '.stage // empty' <<<"$u")"
@@ -214,10 +218,12 @@ supervisor_return_stage() { # unit-json [stage-before-supervisor] → pending st
       local resume
       resume="$(jqf -r '.blocked_resume_stage // empty' <<<"$u")"
       if [[ "$resume" =~ ^(implement|repair|review|rereview)-pending$ ]]; then printf '%s\n' "$resume"
+      elif last_review_blocked "$u"; then printf 'review-pending\n'
       elif [[ -n "$(jqf -r '.pr // empty' <<<"$u")" ]]; then printf 'repair-pending\n'
       else printf 'implement-pending\n'; fi ;;
     *)
-      if [[ -n "$(jqf -r '.pr // empty' <<<"$u")" ]]; then printf 'repair-pending\n'
+      if last_review_blocked "$u"; then printf 'review-pending\n'
+      elif [[ -n "$(jqf -r '.pr // empty' <<<"$u")" ]]; then printf 'repair-pending\n'
       elif [[ -n "$(jqf -r '.task // empty' <<<"$u")" && -n "$(jqf -r '.branch // empty' <<<"$u")" ]]; then printf 'implement-pending\n'
       else printf 'review-pending\n'; fi ;;
   esac

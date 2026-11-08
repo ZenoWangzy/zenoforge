@@ -236,9 +236,21 @@ harvest_with_reply pr-612 'ACTION: reroute
 REASON: BLOCK 在可修的点上
 REJECTED: park
 GUIDANCE: 按 F1 修复后重推'
-[[ "$(field pr-612 .stage)" == repair-pending ]] || fail "reroute must land in repair-pending"
+[[ "$(field pr-612 .stage)" == review-pending ]] || fail "reroute after an INPUT_INCOMPLETE review must land in review-pending, never a repair, got $(field pr-612 .stage)"
 [[ "$(field pr-612 .blocked_on)" == null ]] || fail "reroute must clear blocked_on"
 [[ "$(field pr-612 .reviewed_sha)" == null ]] || fail "reroute must clear the reviewed pair for a fresh review"
+
+# INPUT_INCOMPLETE judged no code: a requeue or a cap return goes back to a review, not to a commit repair.
+units "$(jq -cn --argjson sha "$SHA1" '{units:[{id:"pr-616",pr:616,lane:"pr",branch:"agent/issue-616",stage:"supervisor-review",reviewed_sha:$sha,reviewed_pr_head:$sha,
+  history:[{stage:"review-block",result:$sha,at:"2026-10-27T00:00:00Z"},{stage:"supervisor-escalated",result:"x",at:"2026-10-27T00:01:00Z"}]}]}')"
+harvest_with_reply pr-616 'ACTION: requeue
+REASON: 评审未能给出结论
+REJECTED: park
+GUIDANCE: 再评审一次'
+[[ "$(field pr-616 .stage)" == review-pending && "$(field pr-616 .reviewed_sha)" == null ]] || fail "requeue after review-block must land in a fresh review, got $(field pr-616 .stage)"
+blocked_unit="$(jq -cn --argjson sha "$SHA1" '{id:"pr-617",pr:617,stage:"blocked-external",history:[{stage:"review-block",result:$sha}]}')"
+[[ "$(supervisor_return_stage "$blocked_unit")" == review-pending ]] || fail "cap return after review-block must be review-pending"
+[[ "$(supervisor_return_stage "$(jq -c '.history=[{stage:"review-request-changes"}]' <<<"$blocked_unit")")" == repair-pending ]] || fail "cap return after a real NOT_READY stays repair-pending"
 
 units "$(jq -cn --argjson sha "$SHA1" --argjson head "$SHA2" '{units:[{id:"pr-613",issue:613,pr:613,lane:"pr",branch:"agent/issue-613",stage:"supervisor-review",
   reviewed_sha:$sha,reviewed_pr_head:$head,approved_sha:null,
@@ -334,7 +346,7 @@ harvest_supervisor_arbiter "$(jq -cn '{pid:99999999,unit:"pr-620",type:"supervis
 [[ "$(field pr-620 '.history[-1].stage')" == supervisor-arbiter-no-output ]] || fail "a report-less worker must record supervisor-arbiter-no-output"
 
 # 历史里先有非评审记录再有评审记录（真实单元的形状）：requeue 回 repair，不因 jq 优先级报错落 parked。
-units "$(jq -cn '{units:[{id:"pr-620",pr:620,lane:"pr",branch:"fix/x",stage:"supervisor-review",history:[{stage:"self-check-red",result:"x",at:"2026-10-27T00:00:00Z"},{stage:"review-block",result:"y",at:"2026-10-27T00:01:00Z"},{stage:"supervisor-escalated",result:"blocked-external without a predecessor",at:"2026-10-27T00:02:00Z"}]}]}')"
+units "$(jq -cn '{units:[{id:"pr-620",pr:620,lane:"pr",branch:"fix/x",stage:"supervisor-review",history:[{stage:"self-check-red",result:"x",at:"2026-10-27T00:00:00Z"},{stage:"review-request-changes",result:"y",at:"2026-10-27T00:01:00Z"},{stage:"supervisor-escalated",result:"blocked-external without a predecessor",at:"2026-10-27T00:02:00Z"}]}]}')"
 harvest_with_reply pr-620 'ACTION: requeue
 REASON: 无前置可等
 GUIDANCE: git merge origin/main 后重新评审'

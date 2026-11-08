@@ -82,6 +82,29 @@ verdict_of() {
     && printf 'NOT_READY'
 }
 
+# 10-28..11-08: a reviewer whose Bash the permission mode refused reports INPUT_INCOMPLETE without judging the code.
+review_tools_denied() { # report-path → 0 when the report blames a denied tool (don't-ask mode / 权限模式)
+  grep -qiE "don.t.ask|权限模式" "$1" 2>/dev/null
+}
+harvest_input_incomplete() { # unit report-path report-name head reviewed-filter: an INPUT_INCOMPLETE review never leads to a commit repair
+  local unit="$1" rep="$2" report="$3" wsha="$4" reviewed="$5" bdep
+  bdep="$(blocked_on_of "$rep" || :)"
+  if [[ -z "$bdep" ]] && review_tools_denied "$rep"; then
+    # The reviewer's own tools were refused: the code was never judged. One re-review per head, then the supervisor.
+    set_unit "$unit" "$(hist review-block "$wsha") | $reviewed | .approved_sha=null"
+    if [[ "$(unit_history_count "$unit" review-tools-denied "^$wsha")" == 0 ]]; then
+      set_unit "$unit" "$(hist review-tools-denied "$wsha $report") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
+      say "review-tools-denied unit=$unit report=$report: re-reviewing the same head once"
+    else
+      to_supervisor "$unit" "review tools were denied twice on head $wsha (report $report)"
+    fi
+    return 0
+  fi
+  set_unit "$unit" "$(hist review-block "$wsha") | $reviewed | .approved_sha=null | .blocked_main_sha=$(js "$MAIN_HEAD") | .stage=\"blocked-external\""
+  [[ -z "$bdep" ]] || park_blocked "$unit" "$bdep"
+  cancel_unit_runs "$unit" "review blocked"
+}
+
 verification_plan_for_state() { # checkout state-json → advisory feature plan from declared paths
   local checkout="$1" state="$2" entry_surface expected_paths
   entry_surface="$(jqf -r '.entry_surface // empty' <<<"$state")"

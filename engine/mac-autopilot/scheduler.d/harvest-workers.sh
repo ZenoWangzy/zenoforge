@@ -337,11 +337,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
                   to_supervisor "$unit" "review report $report is REQUEST-CHANGES without a parseable review-findings block (one re-ask already failed)"
                 fi
               fi ;;
-            INPUT_INCOMPLETE)
-              set_unit "$unit" "$(hist review-block "$wsha") | $reviewed | .approved_sha=null | .blocked_main_sha=$(js "$MAIN_HEAD") | .stage=\"blocked-external\""
-              local bdep; bdep="$(blocked_on_of "$rep")"
-              [[ -z "$bdep" ]] || park_blocked "$unit" "$bdep"
-              cancel_unit_runs "$unit" "review blocked" ;;
+            INPUT_INCOMPLETE) harvest_input_incomplete "$unit" "$rep" "$report" "$wsha" "$reviewed" ;;
             *)
               set_unit "$unit" "$reviewed | .approved_sha=null"
               if [[ "$(unit_retries "$unit" verdict-missing)" == 0 ]]; then

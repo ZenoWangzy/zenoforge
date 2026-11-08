@@ -293,6 +293,9 @@ supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute
     if supervisor_requeue_rereview "$u"; then
       target="rereview-pending"
       extra=' | .reviewed_sha=null | .reviewed_pr_head=null | .repair_hint=null'
+    elif last_review_blocked "$u"; then
+      target="review-pending"
+      extra=' | .reviewed_sha=null | .reviewed_pr_head=null | .repair_hint=null'
     else
       target="repair-pending"
       extra=" | .repair_hint=$(js "$guidance")"
