@@ -104,7 +104,7 @@ state_schema_ok() {
 }
 
 rule_entry() { # unit-id requeue|approve|arbiter|recut ref [guidance]：记裁决历史（预算自此重算）；parked 单元按动作放回环节
-  [[ "$2" =~ ^(requeue|approve|arbiter|recut|reblock)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|approve|arbiter|recut|reblock <ref> [guidance]" >&2; return 64; }
+  [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock <ref> [guidance]" >&2; return 64; }
   restore_archived_unit "$1" || :
   [[ -n "$(unit_field "$1" .id)" ]] || { echo "rule: no unit $1" >&2; return 1; }
   local issue
@@ -117,6 +117,8 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut ref [guidance]：记裁�
       [[ "$issue" =~ ^[0-9]+$ ]] || { echo "rule: $1 has no issue to recut" >&2; return 1; }
       scheduler_route_to_recut "$issue" || return 1
       set_unit "$1" "$(hist supervisor-recut "supervisor ruling: $3") | .stage=\"closed\" | .note=$(js "supervisor ruling sent issue #$issue to recut: $3")" ;;
+    reroute) [[ "$(unit_field "$1" .stage)" != closed ]] || { echo "rule: $1 is closed" >&2; return 1; }
+      supervisor_requeue_unit "$1" reroute "supervisor ruling $3: ${4:-see ruling}" null ;; # releases blocked_on and moves the unit back to its work stage, parked or not
     *) if [[ "$(unit_field "$1" .stage)" == parked && "$2" == requeue ]]; then
          supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null
        else
