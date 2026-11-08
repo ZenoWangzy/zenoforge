@@ -508,6 +508,7 @@ run_merge_lane_pass() {
     [[ "$checks" != null && -n "$checks" ]] || { say "merge skipped PR#$pr (check census unavailable)"; MERGE_CENSUS_MISSED=1; pass_step_end skipped-census "$pr"; continue; }
     fails="$(jqf -r '[.[] | select(.bucket == "fail") | .name] | sort | join(",")' <<<"$checks" 2>/dev/null || true)"
     if [[ -n "$fails" ]] && park_ci_red_for_main_red "$id" "$pr" "$head" "$checks"; then pass_step_end ci-red-main-park "$pr"; continue; fi
+    if [[ -n "$fails" ]] && ci_red_green_on_main_hop "$id" "$pr" "$head" "$fails"; then pass_step_end ci-red-green-on-main-update "$pr"; continue; fi
     if [[ -n "$fails" && "$(jqf -r '.ci_test_checked // empty' <<<"$ready")" != "$head:$fails" ]]; then
       set_unit "$id" ".ci_test_checked=$(js "$head:$fails")"
       red_out="$(ci_test_red_checks "$checks")"
@@ -537,7 +538,9 @@ run_merge_lane_pass() {
         merge_conflict_to_repair "$id" "$pr" "conflicts with main; CI cannot start" "PR 与最新 main 冲突，GitHub 不会跑 CI 也拒绝合并。git merge --no-edit origin/main，按两边意图解决冲突（热修回迁以生产已验证行为为准），跑受影响测试，推送。" "$head"
         pass_step_end conflict-repair "$pr"; continue
       fi
-      say "merge skipped PR#$pr (checks pending or unavailable)"
+      # A completed failure is a failure even while other checks still run; only pending or unreadable rows are "pending or unavailable".
+      if [[ -n "$fails" ]]; then say "merge skipped PR#$pr (check failed: $fails; other checks still pending)"
+      else say "merge skipped PR#$pr (checks pending or unavailable)"; fi
       pass_step_end skipped-pending "$pr"; continue
     fi
     red="$(jqf -r '[.[] | select(.bucket=="fail" or .bucket=="cancel") | .name] | unique | join(", ")' <<<"$checks")"

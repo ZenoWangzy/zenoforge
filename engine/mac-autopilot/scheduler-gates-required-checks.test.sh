@@ -175,6 +175,43 @@ SH
   [[ "$(field pr-stale-wf2 .stage)" == repair-pending ]] || fail 'a conflicting stale branch was not routed to repair'
   eval "$pr_view_saved"; eval "$ci_update_branch_saved"; eval "$pr_behind_saved"
   unset GH_MERGEABLE_STATE GH_PR_TABLE
+  # 2026-11-08 PR#5707: a PR red on a check that is green on main has a base from before main's fix. One update-branch
+  # per unit and failed-check set, then the normal path; "check failed" is never logged as "pending or unavailable".
+  UPDATE_BRANCH_CALLS="$fixture/green-main-update.calls"; : > "$UPDATE_BRANCH_CALLS"
+  ci_update_branch() { printf '%s %s\n' "$1" "$2" >> "$UPDATE_BRANCH_CALLS"; return 0; }
+  pr_behind_main() { return 0; }
+  pr_view() { case "$2" in state) echo OPEN ;; headRefOid) echo "$GH_HEAD" ;; mergeable) echo MERGEABLE ;; mergeCommit) echo "$GH_MERGE_SHA" ;; *) echo "" ;; esac; }
+  gh_green_stub="$(declare -f gh)"
+  gh() { if [[ "$1 $2" == "api repos/{owner}/{repo}/commits/$M1/check-runs?per_page=100" ]]; then echo "$MAIN_RUNS"; else eval "${gh_green_stub/gh ()/gh_g ()}"; gh_g "$@"; fi; }
+  gate='Release suites PR gate (release-entry shard)'
+  MAIN_RUNS="$(jq -cn --arg n "$gate" '{check_runs:[{name:$n,conclusion:"success"},{name:"other",conclusion:"failure"}]}')"
+  GH_HEAD="$H1"; GH_MERGES=()
+  GH_CHECKS="$(jq -cn --arg n "$gate" '[{name:$n,bucket:"fail"},{name:"contract",bucket:"pass"}]')"
+  units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-green-main",pr:11,branch:"agent/issue-11",stage:"ready-to-merge",approved_sha:$sha,history:[]}]}')"
+  : > "$LOG"; run_merge_lane || :
+  [[ "$(cat "$UPDATE_BRANCH_CALLS")" == "11 $H1" && ${#GH_MERGES[@]} == 0 && "$(field pr-green-main .stage)" == ready-to-merge \
+      && "$(field pr-green-main '.history[-1].stage')" == ci-red-green-on-main-update ]] || fail 'a red check that is green on main did not get one update-branch'
+  grep -Fq "check failed: $gate; green on main" "$LOG" || fail 'the stale-base update lacks the check failed log line'
+  # Same failed checks on the updated head (new SHA, still behind a moving main): no second update-branch, the failure is named.
+  : > "$UPDATE_BRANCH_CALLS"; GH_HEAD="$H2"
+  GH_CHECKS="$(jq -cn --arg n "$gate" '[{name:$n,bucket:"fail"},{name:"Required CI gates",bucket:"pending"}]')"
+  jq -c --arg sha "$H2" '.units[0].approved_sha=$sha' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+  : > "$LOG"; run_merge_lane || :
+  [[ ! -s "$UPDATE_BRANCH_CALLS" ]] || fail 'the updated head got a second update-branch for the same failed check'
+  grep -Fq "merge skipped PR#11 (check failed: $gate; other checks still pending)" "$LOG" || fail 'a completed failure beside a pending check lacks the check failed label'
+  ! grep -Fq 'pending or unavailable' "$LOG" || fail 'a completed failure was logged as pending or unavailable'
+  # A check that is not green on main gets no hop; pending-only keeps the old label.
+  MAIN_RUNS='{"check_runs":[]}'; CI_MAIN_GREEN_CHECKS_CACHE=()
+  GH_HEAD="$H1"
+  GH_CHECKS="$(jq -cn --arg n "$gate" '[{name:$n,bucket:"fail"},{name:"Required CI gates",bucket:"pending"}]')"
+  units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-red-main-red",pr:11,branch:"agent/issue-11",stage:"ready-to-merge",approved_sha:$sha,history:[]}]}')"
+  run_merge_lane || :
+  [[ ! -s "$UPDATE_BRANCH_CALLS" ]] || fail 'a check that is not green on main still triggered the update-branch hop'
+  GH_CHECKS='[{"name":"Required CI gates","bucket":"pending"}]'
+  units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-pending",pr:11,branch:"agent/issue-11",stage:"ready-to-merge",approved_sha:$sha,history:[]}]}')"
+  : > "$LOG"; run_merge_lane || :
+  grep -Fq 'merge skipped PR#11 (checks pending or unavailable)' "$LOG" || fail 'a pending check lost the pending or unavailable label'
+  eval "$gh_green_stub"; eval "$pr_view_saved"; eval "$ci_update_branch_saved"; eval "$pr_behind_saved"
   GH_CHECKS="$passing_checks"
   REQUIRED_PR_CHECKS_FILE="$fixture/absent-required-pr-checks.json"
   units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-required",pr:11,stage:"ready-to-merge",approved_sha:$sha,history:[]}]}')"
