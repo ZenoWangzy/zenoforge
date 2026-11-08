@@ -90,7 +90,27 @@ precheck_launch() { # id pr head
 SLOT_SYNC_CARRIED_HEAD=""
 SLOT_SYNC_BUDGET=0 # set to the pass's free slots by ci_assign_wip: a fixed 2 left gated units in ready-to-merge with 6 slots free
 SLOT_SYNC_SPENT=0 # 本拍 update-branch 名额同步预算计数（SLOT_SYNC_MAX）：每条 MERGEABLE 链 5-7 个串行 gh 调用，是 wip_assignment 的大头
-slot_sync() { # id head gated
+# 干净（MERGEABLE）且落后 main 的 head 只在这几种情形才值得 update-branch；其余原样占名额，不新增 head、不重跑 CI：
+# 排队首位且合并基点早于 ci.slot_sync_max_base_age_hours（默认 6）；或 main 自合并基点以来的改动碰到 PR 改的任一路径。
+# 冲突不在这里判，slot_sync 的 CONFLICTING 分支先处理。2026-11-08 VectA 24h：43 次名额同步里 29 次是纯 main 合并的重复 head，
+# 浪费 340 CI 分钟。数据全取本地 git（pr_behind_main 已取到 head），不加 gh 调用；读不出来就按旧行为同步。
+# shortcut: 路径重叠只比文件名，不看语义依赖（main 改了 PR 没改的文件而 PR 依赖它）；该缺口由 merge-tree sweep、PR CI 与合并后 main CI 兜底。
+slot_sync_needs_refresh() { # head next → 0 = update-branch
+  local base base_ts max_hours main_files pr_files
+  base="$(git -C "$ROOT" merge-base refs/remotes/origin/main "$1" 2>/dev/null)" || return 0
+  [[ "$base" =~ $SHA_RE ]] || return 0
+  if [[ "${2:-0}" == 1 ]]; then
+    max_hours="$(jqf -r '.ci.slot_sync_max_base_age_hours // 6' <<<"$CFG" 2>/dev/null)"
+    [[ "$max_hours" =~ ^[0-9]+$ ]] || max_hours=6
+    base_ts="$(git -C "$ROOT" log -1 --format=%ct "$base" 2>/dev/null)"
+    [[ "$base_ts" =~ ^[0-9]+$ ]] || return 0
+    (( $(date +%s) - base_ts > max_hours * 3600 )) && return 0
+  fi
+  main_files="$(git -C "$ROOT" diff --name-only --no-renames "$base" refs/remotes/origin/main 2>/dev/null)" || return 0
+  pr_files="$(git -C "$ROOT" diff --name-only --no-renames "$base" "$1" 2>/dev/null)" || return 0
+  [[ -n "$(comm -12 <(sort -u <<<"$main_files") <(sort -u <<<"$pr_files") | grep -v '^$')" ]]
+}
+slot_sync() { # id head gated next
   local pr state updated_head
   SLOT_SYNC_CARRIED_HEAD=""
   pr="$(unit_field "$1" .pr)"; [[ "$pr" =~ ^[0-9]+$ && "$2" =~ $SHA_RE ]] || return 1
@@ -99,6 +119,7 @@ slot_sync() { # id head gated
   state="$(tick_pr_mergeable "$pr")"
   case "$state" in
     MERGEABLE)
+      slot_sync_needs_refresh "$2" "${4:-0}" || return 1
       if (( SLOT_SYNC_SPENT++ >= ${SLOT_SYNC_MAX:-$SLOT_SYNC_BUDGET} )); then
         return 2 # 本拍 update-branch 预算用完：调用方延后该单元（不占名额），下一拍再同步
       fi
@@ -173,7 +194,7 @@ ci_assign_wip() {
     if (( k <= wip )); then
       if [[ "$gated:$gdraft" != "1:false" ]]; then
         sync_rc=0
-        slot_sync "$id" "$head" "$gated" || sync_rc=$?
+        slot_sync "$id" "$head" "$gated" "$(( k == 1 ))" || sync_rc=$?
         if (( sync_rc == 2 )); then
           k=$((k - 1)); deferred=$((deferred + 1)); continue # 本拍同步预算用完：名额让给已同步单元，下一拍再试
         elif (( sync_rc == 0 )); then

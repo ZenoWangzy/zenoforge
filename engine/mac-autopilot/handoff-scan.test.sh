@@ -14,6 +14,7 @@ mkdir -p "$AGENT_HOME/state" "$A"
 : > "$LOG"
 
 source "$script_dir/scheduler.d/core.sh"
+source "$script_dir/scheduler.d/intake-steps.sh"
 source "$script_dir/scheduler.d/intake.sh"
 
 fail() { printf 'not ok - %s\n' "$*" >&2; exit 1; }

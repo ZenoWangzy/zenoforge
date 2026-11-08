@@ -281,7 +281,7 @@ startable_pending_count() { # pending units eligible to start under intake's #15
 # station_health.py reads this marker so a pass that took nothing on purpose is HELD, not STALLED. It keeps the hold's first
 # time (a long hold is measured from its start) and goes when a pass gets past the held checks, which is when intake can add.
 intake_hold_mark() { [[ -e "$A/intake-held-since" ]] || date -u +%Y-%m-%dT%H:%M:%SZ > "$A/intake-held-since"; }
-intake_skip() { intake_skip_counts[$1]=$(( ${intake_skip_counts[$1]:-0} + 1 )); } # bumps register_new_issues' local intake_skip_counts (dynamic scope)
+intake_skip() { intake_skip_counts[$1]=$(( ${intake_skip_counts[$1]:-0} + 1 )); intake_mark "skip_$1"; } # bumps register_new_issues' local intake_skip_counts (dynamic scope); a skipped row's time goes to skip_<reason>
 register_new_issues() {
   local enabled live pending upstream total_upstream total_room max_up ready_q max_ready want added=0 n lane title labels task_record task body_blocked_by branch busy handoff state_file acceptance
   local episode existing_id existing_pr prior_pr pr_changed pr_state lane_policy handoff_all handoff_pr handoff_branch recovery_sha
@@ -291,8 +291,8 @@ register_new_issues() {
   local refill_mode="${2:-false}" free_slots ready_buffer target_pending max_refill upstream_room
   local intake_budget intake_left intake_started=$SECONDS step_started=$SECONDS candidate_started full_at now fresh_seconds existing_issue
   local INTAKE_FULL_SCAN_FLAG="$A/.intake-full-scan.$BASHPID.$RANDOM"
-  local -A intake_known_issues=() intake_skip_counts=()
-  local skip_key skip_line
+  local -A intake_known_issues=() intake_skip_counts=() intake_step_secs=() intake_step_counts=()
+  local intake_step_at=$SECONDS skip_key skip_line step_name step_line
   [[ "$refill_mode" != true ]] || refill_room register_new_issues || return 0
   if [[ "$refill_mode" == true ]]; then
     fresh_seconds="$(jqf -r '.issue_intake.refill_full_tick_fresh_seconds // 600' <<<"$CFG")"
@@ -407,7 +407,7 @@ register_new_issues() {
     (( intake_budget <= intake_left )) || intake_budget=$(( intake_left > 0 ? intake_left : 0 ))
   fi
   while IFS=$'\t' read -r n lane title labels issue64; do
-    [[ "$n" =~ ^[0-9]+$ ]] || { intake_skip badrow; continue; }
+    intake_step_at=$SECONDS; [[ "$n" =~ ^[0-9]+$ ]] || { intake_skip badrow; continue; }
     (( added < want )) || break
     refill_stopped && break # a refused ledger lock wait ended the refill
     (( SECONDS - intake_started < intake_budget )) || { say "intake budget spent after ${intake_budget}s: rows from #$n wait for the next tick"; intake_skip budget; break; }
@@ -436,7 +436,7 @@ register_new_issues() {
     fi
     [[ -n "$handoff_all" ]] || handoff_all='{}'
     handoff_pr="$(jqf -r '.open_pr // empty' <<<"$handoff_all")"
-    handoff_branch="$(jqf -r '.open_branch // empty' <<<"$handoff_all")"
+    handoff_branch="$(jqf -r '.open_branch // empty' <<<"$handoff_all")"; intake_mark state_read
     (( existing_only )) || ! intake_reopen_refused_recut "$n" "$state_file" || { intake_skip recut_reopen; continue; }
     # A row whose units are all terminal and whose episode (if any) is consumed has nothing to hand off:
     # skip it from the ledger before the handoff path reads PRs (gh pr view per merged PR).
@@ -445,7 +445,7 @@ register_new_issues() {
         | ($us | length) > 0 and all($us[]; (.stage | IN("merged","landed","closed","done","wontfix","duplicate"))
           and ($episode == "" or .hold_handoff_episode == $episode))' "$(intake_units_view)" >/dev/null 2>&1; then
       intake_terminal_rows+=("$n"); intake_skip terminal; continue
-    fi
+    fi; intake_mark terminal_check
     if [[ -n "$episode" ]]; then
       if (( existing_only )); then
         # An unavailable PR lookup must not release an already known unit's old approval.
@@ -518,7 +518,7 @@ register_new_issues() {
         handoff_pr="$(jqf -r '.[0].number' <<<"$lookup")"
         handoff_branch="$(jqf -r '.[0].headRefName' <<<"$lookup")"
       fi
-    fi
+    fi; intake_mark handoff_lookup
     handoff=''
     if state_read_value="$(jqf_optional_file "$state_file" -c --arg n "$n" '(.scheduler_handoff // {}) | select((.start_ref // "") | test("^rescued/.*(issue-|hand-)" + $n + "([^0-9]|$)")) | select((.start_sha // "") | test("^[0-9a-f]{40}$"))' 2>/dev/null)"; then
       handoff="$state_read_value"
@@ -527,7 +527,7 @@ register_new_issues() {
       (( state_read_status == 64 )) || return "$state_read_status"
     fi
     [[ -n "$handoff" ]] || handoff='{}'
-    existing_id="$(jqf -r --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr))] | sort_by([if ($pr != "" and ((.pr // "") | tostring) == $pr) then 0 else 1 end, if (.stage | IN("parked","supervisor-review","blocked-external","done","closed","landed","merged","wontfix","duplicate")) then 1 else 0 end]) | .[0].id // empty' "$(intake_units_view)")"
+    existing_id="$(jqf -r --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr))] | sort_by([if ($pr != "" and ((.pr // "") | tostring) == $pr) then 0 else 1 end, if (.stage | IN("parked","supervisor-review","blocked-external","done","closed","landed","merged","wontfix","duplicate")) then 1 else 0 end]) | .[0].id // empty' "$(intake_units_view)")"; intake_mark unit_lookup
     if [[ -n "$existing_id" ]]; then
       (( existing_only )) || { intake_skip existing; continue; }
       [[ -n "$episode" ]] || { intake_skip no_episode; continue; }
@@ -607,7 +607,7 @@ register_new_issues() {
     fi
     if (( ! existing_only )) && [[ -z "$episode" ]]; then
       ! intake_parent_retry_waiting "$n" || { intake_skip parent_retry; continue; }
-      [[ -n "$issue_json" ]] || issue_json="$(intake_gh_read issue view "$n" --json number,title,body,state,labels,subIssuesSummary,blockedBy 2>/dev/null)" || { intake_skip issue_read; continue; }
+      [[ -n "$issue_json" ]] || issue_json="$(intake_gh_read issue view "$n" --json number,title,body,state,labels,subIssuesSummary,blockedBy 2>/dev/null)" || { intake_skip issue_read; continue; }; intake_mark issue_read
       scheduler_lib_context || true # prime here: the substitution below is a subshell and cannot cache
       if parent_reason="$(scheduler_issue_intake_parent_reason "$n" "$issue_json")"; then
         if scheduler_issue_transition "$n" needs-triage "intake-parent:$parent_reason" . 0 "$issue_json"; then
@@ -639,7 +639,7 @@ register_new_issues() {
         fi
         intake_parent_retry_clear "$n"
       fi
-    fi
+    fi; intake_mark parent_detect
     if (( ! existing_only )) && [[ -z "$episode" && -z "${existing_id:-}" && "$lane" == direct-main ]]; then
       acceptance="$(jqf -r '.body // ""' <<<"$issue_json" | acceptance_block_from_body || true)"
       # M5（#4501）：pipeline-system 票的验收块必须绑定 live-event 到登记机制，否则退回补写。
@@ -652,12 +652,12 @@ register_new_issues() {
         fi
         intake_skip m5; continue
       fi
-    fi
+    fi; intake_mark m5_admission
     if (( existing_only )) || [[ -n "$episode" ]]; then
       task_record="$(issue_unit_task "$n" require-ready)" || { intake_skip task; continue; }
     else
       task_record="$(issue_unit_task "$n" "$issue_json")" || { intake_skip task; continue; }
-    fi
+    fi; intake_mark issue_unit_task
     task="$(jqf -r .task <<<"$task_record")"
     body_blocked_by="$(jqf -c '.body_blocked_by // []' <<<"$task_record")"
     labels="$(jqf -c '.labels // []' <<<"$task_record")"
@@ -669,13 +669,13 @@ register_new_issues() {
         say "intake order issue #$n: predicted footprint unavailable, admitted unordered"
         intake_candidate_scope='[]'
       }
-      (( SECONDS - candidate_started < 2 )) || say "intake detail footprint_predict issue=$n secs=$((SECONDS - candidate_started))s"
+      (( SECONDS - candidate_started < 2 )) || say "intake detail footprint_predict issue=$n secs=$((SECONDS - candidate_started))s"; intake_mark footprint_predict
       candidate_started=$SECONDS
       intake_conflict="$(active_footprint_conflict "$intake_candidate_scope" "$intake_footprint_owners" "__intake-$n")" || {
         say "intake order issue #$n: footprint comparison unavailable, admitted unordered"
         intake_conflict=""
       }
-      (( SECONDS - candidate_started < 2 )) || say "intake detail footprint_conflict issue=$n secs=$((SECONDS - candidate_started))s"
+      (( SECONDS - candidate_started < 2 )) || say "intake detail footprint_conflict issue=$n secs=$((SECONDS - candidate_started))s"; intake_mark footprint_compare
       if [[ -n "$intake_conflict" ]]; then
         intake_match="$(footprint_match_detail "$intake_candidate_scope" "$intake_candidate_scope" \
           "$(jqf -c --arg id "$intake_conflict" '[.[] | select(.id == $id) | .footprint[]?]' <<<"$intake_footprint_owners")" '{}')"
@@ -749,7 +749,7 @@ register_new_issues() {
           + (if (($handoff_all.worktree_sha // "") | test("^[0-9a-f]{40}$")) then {handoff_worktree:$handoff_all.worktree,handoff_worktree_sha:$handoff_all.worktree_sha,handoff_worktree_dirty:$handoff_all.worktree_dirty} else {} end)
           + (if $handoff.start_ref then {handoff_start_ref:$handoff.start_ref,handoff_start_sha:$handoff.start_sha} else {} end)] end'
     fi
-    [[ "$episode" != ruling-* || -z "$existing_id" ]] || set_unit "$existing_id" '.task += "\n\n本轮从最新 main 的新分支开始，不要沿用旧分支：它属于已关闭的 PR。裁决里提到的旧 PR CI 失败，只有能从当前 main 复现才算本轮范围。"'
+    [[ "$episode" != ruling-* || -z "$existing_id" ]] || set_unit "$existing_id" '.task += "\n\n本轮从最新 main 的新分支开始，不要沿用旧分支：它属于已关闭的 PR。裁决里提到的旧 PR CI 失败，只有能从当前 main 复现才算本轮范围。"'; intake_mark unit_write
     if [[ -n "$intake_candidate_scope" ]]; then
       intake_candidate_stage=implement-pending
       if [[ -n "$existing_id" && "$pr_state" == OPEN ]] || [[ -z "$existing_id" && "$handoff_pr" =~ ^[0-9]+$ ]]; then
@@ -758,7 +758,7 @@ register_new_issues() {
       intake_footprint_owners="$(jqf -c --arg id "issue-$n" --arg stage "$intake_candidate_stage" \
         --slurpfile scope <(printf '%s' "$intake_candidate_scope") \
         '. + [{id:$id,stage:$stage,footprint:$scope[0]}]' <<<"$intake_footprint_owners")"
-    fi
+    fi; intake_mark footprint_owners
     intake_known_issues["$n"]=1
     added=$((added+1)); INTAKE_ADDED=$((${INTAKE_ADDED:-0}+1)) # refill dispatches again only when intake added work
     say "intake issue #$n -> implement-pending ($lane)"
@@ -770,6 +770,7 @@ register_new_issues() {
     intake_closed_unit_rows "${intake_terminal_rows[@]}"
   fi
   say "intake detail candidates secs=$((SECONDS - step_started))s added=$added total_secs=$((SECONDS - intake_started))s"
+  intake_steps_say
   skip_line="intake skip counts refill=$refill_mode added=$added"
   if (( ${#intake_skip_counts[@]} )); then
     while IFS= read -r skip_key; do skip_line+=" $skip_key=${intake_skip_counts[$skip_key]}"; done < <(printf '%s\n' "${!intake_skip_counts[@]}" | sort)

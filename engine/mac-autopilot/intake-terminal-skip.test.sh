@@ -57,6 +57,10 @@ grep -Fq 'intake skip counts refill=true added=0 ' "$LOG" || fail "no count line
 grep -Fq ' terminal=2' "$LOG" || fail "terminal not counted: $(grep 'skip counts' "$LOG")"
 grep -Fq ' census_partial=2' "$LOG" || fail "live rows not counted: $(grep 'skip counts' "$LOG")"
 ! grep -Fq 'intake budget spent' "$LOG" || fail "an early refill spent its budget: $(cat "$LOG")"
+steps_line="$(grep 'intake detail steps' "$LOG" || true)"
+for step in state_read terminal_check skip_terminal skip_census_partial; do
+  [[ "$steps_line" == *" $step="*"s/"* ]] || fail "steps line lacks $step: $steps_line"
+done
 
 # A refill near its 300s kill stops intake cleanly, whatever is left of its own budget.
 : > "$LOG"
