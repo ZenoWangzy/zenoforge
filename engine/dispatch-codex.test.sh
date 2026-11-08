@@ -104,14 +104,18 @@ stop_fake_codex() {
     esac
   fi
 }
-# Killing the fake Codex lets its detached owner session run its exit trap, which still writes the
-# manifest, budget and report files under TEST_ROOT. Wait for the owners this test started (their
-# PIDs are in the hand-dispatch manifests; dispatch removes its own .pid file once it hands off)
-# before rm, or rm races those writes ("Directory not empty").
+# Killing the fake Codex (or refusing a launch) lets the detached owner session run its exit trap,
+# which still writes manifest, budget and lock files under TEST_ROOT. Wait for every owner this test
+# started before rm, or rm races those writes ("Directory not empty"). Their PIDs come from the
+# hand-dispatch manifests (dispatch removes its own .pid file after handoff) and from OWNER_PIDS_FILE,
+# which the stub setsid binaries fill: an owner whose PID publication failed has no manifest PID.
 # Only waits, never kills: a recorded PID may be stale after a long run.
+OWNER_PIDS_FILE="$TEST_ROOT/owner-pids"
+export OWNER_PIDS_FILE
 wait_for_owner_sessions() {
   local pid attempt
-  for pid in $(jq -r '.pid // empty' "$TEST_ROOT"/*/hand-dispatch/*.json 2>/dev/null); do
+  for pid in $(jq -r '.pid // empty' "$TEST_ROOT"/*/hand-dispatch/*.json 2>/dev/null) \
+             $(cat "$OWNER_PIDS_FILE" 2>/dev/null); do
     case "$pid" in ''|*[!0-9]*) continue ;; esac
     for ((attempt = 0; attempt < 1500; attempt++)); do
       kill -0 "$pid" 2>/dev/null || break
@@ -213,6 +217,7 @@ chmod +x "$LOW_MEMORY_BIN/ps"
 
 cat > "$BAD_SETSID_BIN/setsid" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$$" >> "${OWNER_PIDS_FILE:-/dev/null}"
 while [ "$#" -gt 0 ] && [ "$1" = "--fork" ]; do
   shift
 done
@@ -223,6 +228,7 @@ chmod +x "$BAD_SETSID_BIN/setsid"
 cat > "$PID_FAILURE_SETSID_BIN/setsid" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$$" >> "${OWNER_PIDS_FILE:-/dev/null}"
 while [ "$#" -gt 0 ] && [ "$1" = "--fork" ]; do
   shift
 done
