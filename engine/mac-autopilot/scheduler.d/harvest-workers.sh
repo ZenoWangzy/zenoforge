@@ -82,12 +82,12 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
       harvest_supervisor_arbiter "$w"
       continue
     fi
-    # --json 日志：末次累计 turn.completed 的新鲜 token（旧页脚 blended 口径一致）；legacy 日志退回页脚
+    # --json 日志：末次累计 turn.completed 的新鲜 token 减去派发时的 token_usage_start（续会话累计计数器）；legacy 日志退回页脚
     claude_impl=false
     [[ "$(jqf -r '.provider // empty' <<<"$w")" == claude && "$wtype" =~ ^(implement|repair)$ ]] && claude_impl=true
     # Claude implement logs are stream-json: the result line carries the session, the final answer, usage and any provider fault.
     stream="$(python3 "$USAGE_READER" "$([[ "$claude_impl" == true ]] && echo claude-stream || echo codex-stream)" "$lg" 2>/dev/null || true)"
-    tk="$(jqf -r '.fresh // empty' <<<"$stream")"
+    tk="$(jqf -r --argjson s "$([[ "$claude_impl" == true ]] && echo null || jqf -c '.token_usage_start // null' <<<"$w")" --arg m "$(jqf -r '.mode // "fresh"' <<<"$w")" 'if .fresh == null then empty elif $s == null then (if $m == "resume" then empty else .fresh end) else .fresh - ($s | if (.cached_input_tokens|type)=="number" then .input_tokens - .cached_input_tokens + .output_tokens else empty end) | select(. >= 0) end' <<<"$stream")"
     [[ "$tk" =~ ^[0-9]+$ ]] || tk="$(tokens_of "$lg")"
     [[ "$tk" =~ ^[0-9]+$ ]] || tk=""  # 读不出来就是 unavailable，不当 0
     # ZCode prints its turn error and then idles with the process alive: stop it so the zero-output path below records the death.

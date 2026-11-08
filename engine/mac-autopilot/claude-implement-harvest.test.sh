@@ -58,4 +58,30 @@ jq -e '.workers[0].token_accounting == "measured" and .workers[0].dispatch_token
   || fail "usage was not measured from the result line: $(jq -c '.workers[0]' "$WORKERS")"
 ! provider_quota_exhausted claude || fail 'a successful run held claude'
 
+# codex resumed run: turn.completed usage is the thread's cumulative counter, so this run's fresh tokens are the final
+# snapshot minus the dispatch snapshot (fresh = input - cached + output: 1500 - 700 = 800, not the cumulative 1500).
+codex_sid=eeeeeeee-0000-0000-0000-00000000000f
+cat > "$sup/codex.worker.log" <<JSONL
+{"type":"thread.started","thread_id":"$codex_sid"}
+{"type":"turn.started"}
+{"type":"turn.completed","usage":{"input_tokens":2000,"cached_input_tokens":800,"output_tokens":300}}
+JSONL
+printf 'CODEX REPORT\n' > "$sup/codex-report.md"
+codex_worker() { # mode start-json
+  printf '{"units":[{"id":"issue-3","stage":"implement","lane":"pr","history":[]}]}' > "$UNITS"
+  jq -n --argjson pid "$(dead_pid)" --arg sid "$codex_sid" --arg mode "$1" --argjson start "$2" \
+    '{workers:[{pid:$pid,pid_start:1,process_group:$pid,claim_owner:"o",unit:"issue-3",type:"implement",provider:"codex",model:"gpt-6-luna",effort:"high",
+      log:"codex.worker.log",report:"codex-report.md",started:"2026-11-08T00:00:00Z",mode:$mode,session_id:$sid,workdir:"/nonexistent",token_usage_start:$start}]}' > "$WORKERS"
+}
+codex_worker resume '{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100}'
+: > "$LOG"
+harvest_workers || :
+grep -q ' harvest unit=issue-3 .* tokens=800 ' "$LOG" \
+  || fail "resumed codex run did not record its own fresh tokens: $(grep 'unit=issue-3' "$LOG" || true)"
+codex_worker fresh '{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}'
+: > "$LOG"
+harvest_workers || :
+grep -q ' harvest unit=issue-3 .* tokens=1500 ' "$LOG" \
+  || fail "fresh codex run did not record its stream fresh tokens: $(grep 'unit=issue-3' "$LOG" || true)"
+
 echo 'claude-implement-harvest.test.sh: PASS'
