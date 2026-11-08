@@ -334,7 +334,7 @@ footprint_recurrence_brief() { # unit JSON → up to 3 ranked CATALOG rules, bou
 }
 
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider] [worker-context-json]
-  local unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter repair_head \
+  local ledger_filter="" unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter repair_head \
     check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
     worker_context="${19:-}" report_only=false failure_prompt="${12-$8}"
   provider="${15:-$(provider_of "$6")}"; route_provider="${18:-$provider}"
@@ -362,8 +362,8 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
 $(tail -80 "$check_output" 2>/dev/null)"
   fi
   dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || return 1
-  if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then set_unit "$1" ".implementation_report=$(js "$5")"; fi
-  if [[ "$3" == review || "$3" == rereview ]]; then set_unit "$1" '.self_check_fixes=0'; fi
+  if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then ledger_filter+=" | .implementation_report=$(js "$5")"; fi
+  if [[ "$3" == review || "$3" == rereview ]]; then ledger_filter+=' | .self_check_fixes=0'; fi
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     if [[ -n "${TICK_FOOTPRINT_CACHE[$1]+cached}" ]]; then
       footprint="${TICK_FOOTPRINT_CACHE[$1]}"
@@ -375,8 +375,8 @@ $(tail -80 "$check_output" 2>/dev/null)"
     # The PR head a repair starts from, so harvest can tell a run that pushed nothing (repair_head_class); unreadable = unclassified.
     if [[ "$3" == repair && "$report_only" != true && "$(unit_field "$1" '.lane // "pr"')" != direct-main && "$(unit_field "$1" '.pr // empty')" =~ ^[0-9]+$ ]] \
       && repair_head="$(tick_pr_head "$(unit_field "$1" .pr)" 2>/dev/null)"; then write_start_filter+=" | .history[-1].pr_head=$(js "$repair_head")"; fi
-    set_unit "$1" "$write_start_filter | .implement_route_provider=(.implement_route_provider // $(js "$route_provider")) | .implement_provider=$(js "$provider") | .implement_backend=$(js "$provider") | .implement_model=$(js "$6") | .implement_effort=$(js "$7") | .implement_identity=$(js "$provider:$6:$7")"
-    [[ "$hard_escalation" != true ]] || set_unit "$1" '.hard_escalated=true'
+    ledger_filter+=" | $write_start_filter | .implement_route_provider=(.implement_route_provider // $(js "$route_provider")) | .implement_provider=$(js "$provider") | .implement_backend=$(js "$provider") | .implement_model=$(js "$6") | .implement_effort=$(js "$7") | .implement_identity=$(js "$provider:$6:$7")"
+    [[ "$hard_escalation" != true ]] || ledger_filter+=' | .hard_escalated=true'
     # Same-tick admission widens the active footprint set (write-start just landed).
     # Fold the dispatched unit into the tick snapshot and extend the preflight
     # conflict map from cached data, so later candidates hit "footprint wait" at
@@ -397,5 +397,7 @@ $(tail -80 "$check_output" 2>/dev/null)"
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]] && [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$unit_json")" ]]; then
     extra+=' | .handoff_worktree_applied=true'
   fi
-  set_unit "$1" ".stage=\"$2\"$extra"
+  # The three trailing ledger writes of a started worker (report, write-start, stage) are one rewrite of the whole ledger: same filters, same order.
+  ledger_filter="${ledger_filter# | }"
+  set_unit "$1" "${ledger_filter:+$ledger_filter | }.stage=\"$2\"$extra"
 }
