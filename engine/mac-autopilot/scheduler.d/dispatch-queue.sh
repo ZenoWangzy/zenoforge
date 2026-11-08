@@ -192,12 +192,13 @@ dispatch_pending() {
         u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
         pick implement "$u" || { dispatch_skip pick; continue; }
         branch="$(jqf -r '.branch // empty' <<<"$u")"
+        # Reject local footprint conflicts before tick_pr_branch can fall back to a remote PR lookup.
+        footprint_room "$id" "$u" true || continue
         if [[ -z "$branch" && -n "$pr_num" ]]; then
           branch="$(tick_pr_branch "$pr_num")"
           [[ -n "$branch" ]] && set_unit "$id" ".branch=$(js "$branch")"
         fi
         [[ -n "$branch" ]] || { say "repair-pending unit=$id: PR branch unavailable"; continue; }
-        footprint_room "$id" "$u" true || continue
         wt=""
         if [[ "$pr_num" =~ ^[0-9]+$ && "$lane" != direct-main ]]; then
           wt="$(pre_dispatch_pr_admission "$id" "$branch" "$pr_num" "repair-pending before dispatch")" || { dispatch_skip size-admission; continue; }
