@@ -85,18 +85,41 @@ ticket_budget_reason() { # unit-json
 # 同一失败重复（行 90：24h 内 37 次 stop-loss 转 arbiter，前面是同一个 self-check-red/ci-test-red 的，requeue 交付 0 of 4）：
 # 自最近一次裁决（与 ticket_budget_reason 同一组 ruling 阶段）起，单元最前面的事件是红（ci-test-red/ci-red/self-check-red），
 # 且它的 (阶段, 规整后的 result) 与更早一轮的红相同。规整同 ~/.zenoforge/state/work/90/v2.py：长十六进制串和数字都换成 N。
-stop_loss_same_failure() { # unit-json → prints the failure's check label (the red event's result) when it repeats an earlier round's; rc 1 otherwise
-  jqf -er '
+# The scheduler's own fresh-signal requeue (stop_loss_fresh_requeue) is not a ruling here: the window runs on across it, so the same signal
+# coming back after that requeue is a repeat. A merge conflict or a review request-changes repeats when the requeue named it.
+STOP_LOSS_FRESH_PREFIX='scheduler fresh-signal requeue: '
+STOP_LOSS_FRESH_METRIC=supervisor.fresh_requeue_delivery_24h
+STOP_LOSS_WINDOW_JQ='
+    def sched: .stage == "supervisor-requeue" and ((.result // "") | startswith($prefix));
     def norm: tostring | gsub("\\b(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\\b"; "N") | gsub("[0-9]+"; "N") | gsub("\\s+"; " ");
     def red: .stage | IN("ci-test-red", "ci-red", "self-check-red");
     (.history // []) as $h
-    | ([$h | to_entries[] | select(.value.stage | IN("supervisor-requeue", "supervisor-approve", "supervisor-cap-budget-refill", "advisor-ruling")) | .key] | max // -1) as $ruling
+    | ([$h | to_entries[] | select((.value.stage | IN("supervisor-requeue", "supervisor-approve", "supervisor-cap-budget-refill", "advisor-ruling")) and (.value | sched | not)) | .key] | max // -1) as $ruling
     | $h[($ruling + 1):] as $w
     | ([$w[] | select(.stage | IN("ci-test-red", "ci-red", "self-check-red", "merge-conflict", "review-request-changes", "review-block", "review-approve", "ci-ready",
         "repair-no-push", "worker-no-output", "implement-no-push", "implement-no-changes", "size-recut"))] | last // null) as $front
-    | ([$w[] | select(red) | [.stage, (.result | norm), (.result // "" | tostring | gsub("\\s+"; " "))]]) as $reds
-    | select($front != null and ($front | red) and (($reds[-1]) as $c | $reds[:-1] | any(.[0] == $c[0] and .[1] == $c[1])))
-    | $reds[-1][2]' <<<"$1" 2>/dev/null
+    | ([$w[] | select(red) | [.stage, (.result | norm), (.result // "" | tostring | gsub("\\s+"; " "))]]) as $reds'
+stop_loss_same_failure() { # unit-json → prints the failure's check label (the red event's result) when it repeats an earlier round's; rc 1 otherwise
+  jqf -er --arg prefix "$STOP_LOSS_FRESH_PREFIX" "$STOP_LOSS_WINDOW_JQ"'
+    | select($front != null and (if $front | red then ($reds[-1]) as $c | $reds[:-1] | any(.[0] == $c[0] and .[1] == $c[1])
+        else ($front.stage | IN("merge-conflict", "review-request-changes")) and any($w[] | select(sched); (.result | ltrimstr($prefix)) == $front.stage) end))
+    | if $front | red then $reds[-1][2] else $front.stage end' <<<"$1" 2>/dev/null
+}
+
+# A fresh signal (a first-time red check, a merge conflict, a review request-changes) at the round budget: row 90 saw the arbiter requeue 30 of 31
+# of them and 16 of 22 delivered, so the scheduler requeues without a model run, at most twice since the last real ruling (a repeat of the first
+# signal is stop_loss_same_failure, the other route). While the fresh requeues' own delivery rate sits under 50% on at least 6 outcomes
+# (the scorecard value is null below 6), they go back to the arbiter. rc 0 when it requeued.
+stop_loss_fresh_requeue() { # id unit-json budget-reason
+  local id="$1" signal count rate
+  [[ "$3" == rounds* ]] && ! stop_loss_same_failure "$2" >/dev/null || return 1
+  IFS=$'\t' read -r signal count < <(jqf -er --arg prefix "$STOP_LOSS_FRESH_PREFIX" "$STOP_LOSS_WINDOW_JQ"'
+    | select($front != null and ($front.stage | IN("ci-test-red", "ci-red", "self-check-red", "merge-conflict", "review-request-changes")))
+    | [(if $front | red then $reds[-1][0] + " " + $reds[-1][2][0:100] else $front.stage end), ([$w[] | select(sched)] | length)] | @tsv' <<<"$2" 2>/dev/null) || return 1
+  (( count < 2 )) || return 1
+  rate="$(jqf -r --arg id "$STOP_LOSS_FRESH_METRIC" '.metrics[]? | select(.id == $id) | .value // empty' "$A/node-health.json" 2>/dev/null || true)"
+  [[ -z "$rate" ]] || jqf -en --argjson rate "$rate" '$rate >= 50' >/dev/null 2>&1 || return 1
+  set_unit "$id" "$(hist supervisor-requeue "$STOP_LOSS_FRESH_PREFIX$signal")" && say "stop-loss fresh signal unit=$id requeued once in the scheduler: $signal"
 }
 
 # A repeated failure whose check is red on main belongs to main, not to the unit (main-red units come from health-release; their SHAs'

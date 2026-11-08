@@ -199,6 +199,8 @@ dispatch_pending() {
             continue
           fi
         fi
+        # A fresh signal (not a repeat) is requeued here, at most twice per ruling and while those requeues deliver; otherwise on to the arbiter as before.
+        if stop_loss_fresh_requeue "$id" "$u" "$budget"; then dmark stop_loss_escalate; continue; fi
         if [[ "$issue" =~ ^[0-9]+$ && -z "$pr" ]]; then
           supervisor_budget_recut "$id" "ticket stop-loss budget: $budget"
           (( SECONDS - escalate_started < 2 )) || say "dispatch detail stop_loss_escalate unit=$id secs=$((SECONDS - escalate_started))s"
