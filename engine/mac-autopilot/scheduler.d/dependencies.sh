@@ -40,12 +40,14 @@ issue_body_blocked_by() { # stdin: saved task text → refs from its issue-body 
   body="$(awk '/^--- issue 正文（任务数据）---$/{b=1;next} /^--- 正文结束 ---$/{b=0} b' <<<"$task")"
   blocked_by_ids_from_body <<<"$body"
 }
-unit_body_blockers() { # unit-json → stored full-body IDs, or fallback IDs from older task text
-  if jqf -e '(.body_blocked_by | type)=="array"' <<<"$1" >/dev/null; then
-    jqf -r '.body_blocked_by[] | select(type=="number")' <<<"$1"
-  else
-    issue_body_blocked_by <<<"$(jqf -r '.task // ""' <<<"$1")"
-  fi
+unit_body_blockers() { # unit-json → stored full-body IDs, or fallback IDs from older task text, minus dropped_deps (supervisor reroute)
+  {
+    if jqf -e '(.body_blocked_by | type)=="array"' <<<"$1" >/dev/null; then
+      jqf -r '.body_blocked_by[] | select(type=="number")' <<<"$1"
+    else
+      issue_body_blocked_by <<<"$(jqf -r '.task // ""' <<<"$1")"
+    fi
+  } | grep -vxF -f <(jqf -r '(.dropped_deps // [])[] | tostring' <<<"$1") || true
 }
 dep_delivered_snapshot() {
   local dep

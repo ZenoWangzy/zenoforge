@@ -49,3 +49,21 @@ printf 'ok - rule_entry reroute releases a blocked supervisor-review unit; reque
 rc=0; hold_cli_main --rule issue-5 --reroute --comment 7 2>/dev/null || rc=$?
 [ "$rc" != 64 ] || { echo "FAIL: hold.sh rejects --reroute" >&2; exit 1; }
 printf 'ok - hold.sh --rule accepts --reroute\n'
+# A reroute drops the cleared blocker: the body reader does not re-derive it until a reblock names it again.
+(
+  export AUTOPI_TEST_LIBRARY_ONLY=true MAC_AUTOPILOT_ROOT="$test_env_root/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/sup" MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/sup/autopi"
+  mkdir -p "$test_env_root/repo" "$test_env_root/sup/autopi/alerts"
+  cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$test_env_root/sup/autopi/config.json"
+  echo '{"units":[{"id":"issue-12","stage":"supervisor-review","blocked_on":5388,"task":"t","branch":"b","body_blocked_by":[5388],"history":[]}]}' > "$test_env_root/sup/autopi/units.json"
+  echo '{"workers":[]}' > "$test_env_root/sup/autopi/workers.json"
+  source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
+  rule_entry issue-12 reroute u "dead blocker" ""
+  [ "$(jq -r '.units[0] | .stage+"|"+(has("blocked_on")|tostring)+"|"+(.dropped_deps|tostring)+"|"+.history[-1].result' "$UNITS")" = "implement-pending|false|[5388]|supervisor ruling u: dead blocker (dropped blocker #5388)" ] || { echo "FAIL: reroute did not record the dropped blocker" >&2; exit 1; }
+  park_if_body_blocked "$(jq -c '.units[0]' "$UNITS")" || :
+  [ "$(jq -r '.units[0].stage' "$UNITS")" = implement-pending ] || { echo "FAIL: body reader re-blocked a rerouted unit" >&2; exit 1; }
+  [ -z "$(unit_body_blockers "$(jq -c '.units[0]' "$UNITS")")" ] || { echo "FAIL: body reader still derives #5388" >&2; exit 1; }
+  rule_entry issue-12 reblock u "" 5388
+  [ "$(jq -r '.units[0] | .stage+"|"+(.blocked_on|tostring)+"|"+(.dropped_deps|tostring)' "$UNITS")" = "blocked-external|5388|[]" ] || { echo "FAIL: reblock did not re-block" >&2; exit 1; }
+  [ "$(unit_body_blockers "$(jq -c '.units[0]' "$UNITS")")" = 5388 ] || { echo "FAIL: reblock did not restore the body blocker" >&2; exit 1; }
+)
+printf 'ok - reroute keeps a dropped body blocker off the unit until reblock names it\n'

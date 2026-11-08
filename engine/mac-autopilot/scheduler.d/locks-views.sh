@@ -111,7 +111,7 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut ref [guidance]：记裁�
   case "$2" in
     reblock) issue="${5:-$(unit_field "$1" '.blocked_on // empty')}" # back to dependency wait; $5 names the blocker when the unit has none
       [[ "$issue" =~ ^[0-9]+$ ]] || { echo "rule: $1 has no blocker; pass --blocked-on N" >&2; return 1; }
-      set_unit "$1" "$(hist supervisor-reblock "supervisor ruling: $3") | .stage=\"blocked-external\" | .blocked_on=$issue | .note=$(js "waiting for predecessor #$issue")" ;;
+      set_unit "$1" "$(hist supervisor-reblock "supervisor ruling: $3") | .stage=\"blocked-external\" | .blocked_on=$issue | del(.dropped_deps[]? | select(. == $issue)) | .note=$(js "waiting for predecessor #$issue")" ;;
     arbiter) set_unit "$1" "$(hist supervisor-arbiter-round "supervisor ruling: $3") | .stage=\"supervisor-review\"" ;;
     recut) issue="$(unit_field "$1" '.issue // empty')"
       [[ "$issue" =~ ^[0-9]+$ ]] || { echo "rule: $1 has no issue to recut" >&2; return 1; }
