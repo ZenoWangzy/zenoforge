@@ -52,7 +52,8 @@ dispatch_if_room() { dispatch_calls=$((dispatch_calls + 1)); return 0; }
 # Count refreshes through a file: a call inside $(...) increments nothing in this shell, which is the bug.
 REFRESHES="$fixture/refreshes"
 eval "real_refresh_live_worker_cache() $(declare -f refresh_live_worker_cache | tail -n +2)"
-refresh_live_worker_cache() { echo r >> "$REFRESHES"; real_refresh_live_worker_cache; }
+# The 10 s TTL runs on wall time, so a slow host would add refreshes to a long pass: pin it for the test.
+refresh_live_worker_cache() { echo r >> "$REFRESHES"; real_refresh_live_worker_cache; LIVE_WORKER_CACHE_UNTIL=$((SECONDS + 100000)); }
 
 pass_refreshes() { # pending units -> refreshes in one full-tick pass, 3 of 8 slots taken
   local n="$1"
@@ -68,5 +69,5 @@ pass_refreshes() { # pending units -> refreshes in one full-tick pass, 3 of 8 sl
 }
 small="$(pass_refreshes 5)"; large="$(pass_refreshes 20)"
 [[ "$small" == "$large" ]] || fail "refreshes grew with the pending units: 5 units $small, 20 units $large"
-(( large >= 1 && large <= 2 )) || fail "expected one refresh per 10 s of the pass, got $large"
+(( large == 1 )) || fail "expected a single refresh with the TTL pinned, got $large"
 echo "dispatch-live-cache.test.sh: pass (live-worker refreshes per pass: $small for 5 pending units, $large for 20)"
