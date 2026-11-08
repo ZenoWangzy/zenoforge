@@ -330,7 +330,7 @@ gaps += [k for k in list(n.TIME_SINKS) + list(n.CI_STANDARDS) if f"`{k}`" not in
 sys.exit(print("missing:", gaps) or 1 if gaps else 0)
 CHECK
 # 裁决副本对账：pack 有而引擎实际读取的 state/rulings.json 没有的行数计入 rulings.copies_differ
-# （健康 0，异常 ≥1）；按 id 对账，无 id 的行按 (date, scope)；同 id 换 scope 不算缺行；任一文件缺失记 NO-DATA。
+# （健康 0，异常 ≥1）；先按 id 对账，剩下的按 (date, scope) 多重集对账（构建会给部分 id 改名）；同 id 换 scope 不算缺行；任一文件缺失记 NO-DATA。
 rch="$test_env_root/rulings-copies"; mkdir -p "$rch/config/state" "$rch/pack/scripts/agent/state" "$rch/runtime"
 rcrows() { printf '{"rulings":[%s]}\n' "$1"; }
 rcval() { # <engine rows> <pack rows|-> → metric value and status（引擎副本缺失时 zf_config_file 回落到引擎自带的那份，所以只测 pack 缺失）
@@ -348,6 +348,8 @@ rc_bs='{"id":"b","date":"2026-11-02","scope":"process"}'
 rc_c='{"id":"c","date":"2026-11-03","scope":"ops"}'
 rc_n='{"date":"2026-11-04","scope":"ops"}'
 rc_n2='{"date":"2026-11-04","scope":"pipeline"}'
+rc_r='{"id":"b-renamed","date":"2026-11-02","scope":"pipeline"}'
+[[ "$(rcval "$rc_a,$rc_b" "$rc_a,$rc_r")" == "0 OK" ]] || fail "a renamed id with the same date and scope must match: $(rcval "$rc_a,$rc_b" "$rc_a,$rc_r")"
 [[ "$(rcval "$rc_a,$rc_b" "$rc_a,$rc_bs")" == "0 OK" ]] || fail "a scope change on the same id must not be a missing row: $(rcval "$rc_a,$rc_b" "$rc_a,$rc_bs")"
 [[ "$(rcval "$rc_a" "$rc_a,$rc_c")" == "1 UNHEALTHY" ]] || fail "a pack-only id must be one difference: $(rcval "$rc_a" "$rc_a,$rc_c")"
 [[ "$(rcval "$rc_a,$rc_n" "$rc_a,$rc_n2")" == "1 UNHEALTHY" ]] || fail "a row without id falls back to (date, scope): $(rcval "$rc_a,$rc_n" "$rc_a,$rc_n2")"
