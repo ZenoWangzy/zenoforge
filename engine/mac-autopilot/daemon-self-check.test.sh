@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 # daemon-self-check.sh: a supervised loop is stale only when its own script or a file it sources differs from the live copy.
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/daemon-self-check-test.XXXXXX"); trap 'rm -rf "$tmp"' EXIT

@@ -2,7 +2,7 @@
 # Every station in station_health.STATIONS has a time, tokens and throughput standard (a measured metric in
 # CRITERIA) or a documented exception; a station added without one fails. collect() emits the values it names.
 set -euo pipefail
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT

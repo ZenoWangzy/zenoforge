@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/pin-lag-test.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 fail() { echo "pin-lag.test.sh: $*" >&2; exit 1; }

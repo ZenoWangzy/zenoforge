@@ -3,7 +3,7 @@
 # helpers must return exactly what the lib-sourcing ones did. Part 1 is the parity check against
 # verbatim copies of the old bodies; part 2 counts lib.sh loads across N candidates.
 set -euo pipefail
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 engine_dir="$(cd -- "$script_dir/.." && pwd -P)"
 fail() { printf 'footprint-source-count.test.sh: %s\n' "$*" >&2; exit 1; }
