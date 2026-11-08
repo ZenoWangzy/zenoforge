@@ -374,7 +374,7 @@ $(decision_scope "$u")"
           || ! git -C "$wt" merge-base --is-ancestor "$prev_sha" "$sha" 2>/dev/null; then
           # 没有可核销的上一轮基线：做一次完整评审，不允许空 diff 的"增量复审"放行。
           rep="review-${key}-${TAG}.md"
-          prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(sweep_rule "$u" "$sha")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+          prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt")$(sweep_rule "$u" "$sha")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         dmark prompt
         dispatch_if_room "$id" "review" "review" "${rep%.md}.worker.log" "$rep" \
             "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true; dmark dispatch
@@ -384,7 +384,7 @@ $(decision_scope "$u")"
         prompt="你是 the product 流水线的独立代码评审 subagent，只读增量复审。当前目录是隔离 clone，已检出 PR 当前 head（detached），origin/main 为最新 main。
 复审 ${subject}（${title}）当前 head ${sha}，上轮 head ${prev_sha}。按正式契约中的 Targeted re-review 流程，仅检查 ${prev_sha}..${sha} 的 PR 增量及其直接依赖闭包；报告写到 $SUP/${rep}。
 读取上轮报告 $SUP/${prev_report} 和单元历史中的作者处置，再按处置逐条核验。$(review_contract_rule)
-只读边界：不编辑/commit/push/merge/评论。$(review_dispositions_context "$u")$(risk_class_safety_rule "$wt")$(lane_rule "$lane" "$sha")$(sweep_rule "$u" "$sha")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+只读边界：不编辑/commit/push/merge/评论。$(review_dispositions_context "$u")$(review_inputs_rule "$u" "$wt")$(risk_class_safety_rule "$wt")$(lane_rule "$lane" "$sha")$(sweep_rule "$u" "$sha")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         dmark prompt
         dispatch_if_room "$id" "rereview" "rereview" "${rep%.md}.worker.log" "$rep" \
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true; dmark dispatch ;;
@@ -401,7 +401,7 @@ $(decision_scope "$u")"
         dcapture wt clone ensure_clone "$id" || { say "review-pending unit=$id: clone unavailable"; continue; }
         dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "review-pending unit=$id: PR head $sha unavailable"; continue; }
         rep="review-${key}-${TAG}.md"
-        prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+        prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         # 打回报告缺可解析发现块后的同 head 重问：history 尾事件就是重问标记（重交合规报告后即被新事件取代）。
         [[ "$(jqf -r '(.history // [])[-1].stage // empty' <<<"$u")" == review-findings-missing ]] && prompt+="$(findings_reask_rule "$u")"
         # 结论行不可解析后的同 head 格式重问：评审员读回自己的报告只补独立 VERDICT 行，不整场重评。

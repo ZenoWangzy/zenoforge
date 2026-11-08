@@ -246,6 +246,26 @@ review_prompt() { # pr-or-subject title sha report [lane] [checkout]
 效率纪律：不重述代码内容；不展开未变更文件的细节；低风险样式性改动一行带过。目标 15-25 分钟内交付。
 只读边界：不编辑/commit/push/merge/评论。报告写到 $SUP/$4。落盘后交付完即结束。$(risk_class_safety_rule "${6:-}")$(lane_rule "${5:-}" "$3")"
 }
+# Reviewers run with no read access under $SUP, so copy the unit's implementation report and latest self-check log into the review
+# clone (git-ignored) and name only the copies. Shared by every reviewer provider; a missing input is left out of the prompt.
+review_inputs_rule() { # unit-json workdir → copies the two inputs, git-ignores the copy dir, prints the prompt paragraph
+  local unit_json="$1" wd="$2" dir rep log ex list named=()
+  dir="$wd/.zf-review-inputs"
+  rep="$(jqf -r '.implementation_report // .report // empty' <<<"$unit_json")"
+  log="$(jqf -r '.self_check_output // empty' <<<"$unit_json")"
+  [[ -z "$rep" || "$rep" == /* ]] || rep="$SUP/$rep"
+  [[ -z "$log" || "$log" == /* ]] || log="$SUP/$log"
+  mkdir -p "$dir"
+  if [[ -s "$rep" ]] && cp -f "$rep" "$dir/implementation-report.md"; then named+=("$dir/implementation-report.md（实现报告）"); fi
+  if [[ -s "$log" ]] && cp -f "$log" "$dir/self-check.log"; then named+=("$dir/self-check.log（最近一次自检日志）"); fi
+  # The clone's info/exclude is shared by every worktree of it, so append the line only when it is absent.
+  ex="$(git -C "$wd" rev-parse --git-path info/exclude 2>/dev/null)" && [[ -n "$ex" ]] || return 0
+  [[ "$ex" == /* ]] || ex="$wd/$ex"
+  mkdir -p "${ex%/*}"
+  grep -qxF '/.zf-review-inputs/' "$ex" 2>/dev/null || printf '%s\n' '/.zf-review-inputs/' >> "$ex"
+  (( ${#named[@]} == 0 )) || { list="$(printf '%s；' "${named[@]}")"; printf '\n评审输入（已复制到本评审目录，读取时只用下列路径，不去读其他位置）：%s。' "${list%；}"; }
+  return 0
+}
 
 pr_view() { gh pr view "$1" --json "$2" --jq ".$2" 2>/dev/null; }
 tick_pr_head() { # PR → head SHA from this tick's open-PR census, with a direct fallback for a census miss
