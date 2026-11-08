@@ -195,16 +195,39 @@ pr_body_source() { # issue report-path → the body text before closing keywords
 $(head -40 "$2")"
 }
 pr_body_hash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+pr_body_append_missing() { # unit pr report hash → a legacy PR (opened before .pr_body_hash) keeps its body; only the incident sections it lacks are appended
+  local body new file h sec added=false missing=false
+  body="$(gh pr view "$2" --json body -q .body 2>/dev/null)" || return 0
+  new="$body"
+  for h in root-cause recurrence-guard prior-art; do
+    grep -qE "^## $h[[:space:]]*\$" <<<"$body" && continue
+    sec="$(awk -v h="## $h" '$0 ~ "^" h "[ \t]*$" { p = 1; print; next } /^## / { p = 0 } p' "$3")"
+    if [[ -n "$sec" ]]; then new+=$'\n\n'"$sec"; added=true; else missing=true; fi
+  done
+  if [[ "$added" == true ]]; then
+    file="$(mktemp)" || return 0
+    scrub_closing_keywords <<<"$new" > "$file"
+    if gh pr edit "$2" --body-file "$file" >/dev/null 2>&1 && set_unit "$1" ".pr_body_hash=$(js "$4")"; then
+      say "unit $1 PR#$2 legacy body: appended the sections it lacked from ${3##*/}"
+    else
+      say "unit $1 PR#$2 legacy body append failed; tried again at the next review or land"
+    fi
+    rm -f -- "$file"
+  elif [[ "$missing" == false ]]; then
+    set_unit "$1" ".pr_body_hash=$(js "$4")" # complete as it is: the normal path takes over, one gh read less per pass
+  fi
+}
 pr_body_refresh() { # unit-json → one gh pr edit --body-file when the current report renders a body other than the one stored at open
   local id pr rep src hash stored file
   id="$(jqf -r '.id // empty' <<<"$1")"; pr="$(jqf -r '.pr // empty' <<<"$1")"
   rep="$(jqf -r '.implementation_report // empty' <<<"$1")"; stored="$(jqf -r '.pr_body_hash // empty' <<<"$1")"
-  # A unit with no stored hash was opened before the hash existed: its body may carry hand edits, so it is left alone.
-  [[ "$pr" =~ ^[0-9]+$ && -n "$rep" && -n "$stored" ]] || return 0
+  [[ "$pr" =~ ^[0-9]+$ && -n "$rep" ]] || return 0
   [[ "$rep" == /* ]] || rep="$SUP/$rep"
   [[ -s "$rep" ]] || return 0
   src="$(pr_body_source "$(jqf -r '.issue // empty' <<<"$1")" "$rep")"
   hash="$(pr_body_hash "$src")"
+  # No stored hash: the PR opened before the hash existed and its body may carry hand edits, so it is never re-rendered, only completed.
+  [[ -n "$stored" ]] || { pr_body_append_missing "$id" "$pr" "$rep" "$hash"; return 0; }
   [[ "$hash" != "$stored" ]] || return 0
   file="$(mktemp)" || return 0
   scrub_closing_keywords <<<"$src" > "$file"

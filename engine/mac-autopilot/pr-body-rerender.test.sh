@@ -26,9 +26,11 @@ command git -C "$WT_ROOT/wt-body-1" add -A
 command git -C "$WT_ROOT/wt-body-1" commit -qm work
 command git -C "$WT_ROOT/wt-body-1" push -q origin agent/body-1
 
+GH_BODY=''
 gh() {
   case "$1 $2" in
     'pr list') ;;
+    'pr view') printf '%s' "$GH_BODY" ;;
     'pr create') printf 'pr create\n' >> "$GH_CALLS"; echo 'https://github.com/example/repo/pull/4500' ;;
     'pr edit')
       printf 'pr edit %s\n' "$3" >> "$GH_CALLS"
@@ -66,9 +68,19 @@ room_for() { return 0; }; dispatch() { return 1; } # stop after the refresh: no 
 dispatch_if_room body-1 review-pending review log.md rep.md model high "prompt" "" "" "" "" "$(jq -c '.units[0]' "$UNITS")" || :
 [[ "$(edits)" == 2 ]] || fail 'the review dispatch did not refresh the body'
 
-# A unit with no stored hash (opened before it existed) is left alone.
+# A legacy unit (no stored hash) keeps its body: only the sections it lacks are appended, from the report, hand text verbatim.
+printf '%s\n' '## root-cause' 'rc text' '## recurrence-guard' 'guard text' '## prior-art' 'https://example.com/z' 'more art' '## blast-radius' 'not appended' > "$sup/impl-body-1.md"
 set_unit body-1 'del(.pr_body_hash)'
-printf '%s\n' '## other' > "$sup/impl-body-1.md"
+GH_BODY=$'HAND EDIT KEEP\n\n## root-cause\nhand rc\n\n## recurrence-guard\nhand guard'
 pr_body_refresh "$(jq -c '.units[0]' "$UNITS")"
-[[ "$(edits)" == 2 ]] || fail 'a unit without a stored hash was edited'
+[[ "$(edits)" == 3 ]] || fail 'a legacy body lacking prior-art was not edited once'
+grep -qx 'HAND EDIT KEEP' "$fixture/edited-body" && grep -qx 'hand guard' "$fixture/edited-body" || fail 'the legacy edit lost the hand-written text'
+[[ "$(grep -c '^## root-cause' "$fixture/edited-body")" == 1 && "$(grep -c '^## prior-art' "$fixture/edited-body")" == 1 ]] || fail 'the legacy edit repeated or missed a section'
+grep -qx 'more art' "$fixture/edited-body" && ! grep -q 'not appended' "$fixture/edited-body" || fail 'the appended section does not run exactly to the next ## heading'
+[[ "$(field body-1 .pr_body_hash)" =~ ^[0-9a-f]{64}$ ]] || fail 'the legacy append did not store the hash'
+# A legacy body that has all three gets no edit, and the hash is stored.
+set_unit body-1 'del(.pr_body_hash)'
+GH_BODY=$'## root-cause\nx\n## recurrence-guard\ny\n## prior-art\nz'
+pr_body_refresh "$(jq -c '.units[0]' "$UNITS")"
+[[ "$(edits)" == 3 && "$(field body-1 .pr_body_hash)" =~ ^[0-9a-f]{64}$ ]] || fail 'a complete legacy body was edited or left without a hash'
 echo 'pr-body-rerender.test.sh: ok'
