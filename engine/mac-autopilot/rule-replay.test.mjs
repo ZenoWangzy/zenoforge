@@ -193,3 +193,12 @@ test('the replay resets on the same ruling stages as the stop-loss budget', () =
   const stages = (list) => [...list.matchAll(/['"]([a-z-]+)['"]/g)].map((match) => match[1]).sort();
   assert.deepEqual(stages(replay), stages(budget));
 });
+
+test('the replay restarts its round count on the same round stages as the stop-loss budget', () => {
+  const replay = readFileSync(join(here, 'rule-replay.mjs'), 'utf8').match(/ROUND_STAGES = new Set\(\[(.*?)\]\)/)[1];
+  const budget = readFileSync(join(here, 'scheduler.d/stop-loss.sh'), 'utf8').match(/ticket_budget_reason\(\)[\s\S]*?round_stages='\[(.*?)\]'/)[1];
+  const stages = (list) => [...list.matchAll(/['"]([a-z-]+)['"]/g)].map((match) => match[1]).sort();
+  const ruling = readFileSync(join(here, 'rule-replay.mjs'), 'utf8').match(/RULING_STAGES = new Set\(\[(.*?)\]\)/)[1];
+  // The replay spreads RULING_STAGES into ROUND_STAGES, so its own list shows only the additions.
+  assert.deepEqual([...stages(ruling), ...stages(replay)].sort(), stages(budget));
+});

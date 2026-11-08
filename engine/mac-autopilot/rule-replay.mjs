@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const RULING_STAGES = new Set(['supervisor-requeue', 'supervisor-approve', 'supervisor-cap-budget-refill', 'advisor-ruling']);
+// An approval or ci-ready also restarts the round count, as ticket_budget_reason's round_stages do; the wall resets on RULING_STAGES only.
+const ROUND_STAGES = new Set([...RULING_STAGES, 'review-approve', 'ci-ready']);
 const ACCEPTED_STAGES = new Set(['review-approve', 'supervisor-approve', 'merged', 'landed']);
 const STOP_STAGES = new Set(['hold', 'on-hold', 'stop-loss', 'budget-stop', 'supervisor-budget-park']);
 const OPERATORS = new Set(['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'contains', 'exists']);
@@ -169,8 +171,8 @@ function replayUnit(unit, rule, fromMs, untilMs) {
     if (entry.atMs > untilMs) continue;
     if (entry.atMs >= fromMs) eventsInWindow += 1;
     const stage = entry.event.stage;
+    if (ROUND_STAGES.has(stage)) rounds = 0;
     if (RULING_STAGES.has(stage)) {
-      rounds = 0;
       firstWriteAt = null;
       workerMs = 0;
       writeOpenAt = null;
