@@ -22,9 +22,10 @@ intake_skip_label_report() { # candidate rows JSON, skip labels JSON
 }
 # Open-PR census for the hold check: one `branch:<head>` line and one `body:<line>` per body line, so a body line cannot pose as a branch.
 intake_busy_text() { jqf -r '.[] | "branch:\(.headRefName)", ((.body // "") | gsub("\r"; "") | split("\n")[] | "body:" + .)'; }
-# Whether an open PR in $busy holds issue $1: its branch is agent/issue-N, agent/auto-issue-N or the handoff branch $2, or a body line opens with Refs/Fixes/Closes/Resolves #N.
+# Whether an open PR in $busy holds issue $1: its branch is agent/issue-N or agent/auto-issue-N (optionally followed by -<anything>) or the handoff branch $2, or a body line opens with Refs/Fixes/Closes/Resolves #N.
 intake_open_pr_holds() {
   local n="$1" br="${2:-}"
-  grep -qxF -e "branch:agent/issue-$n" -e "branch:agent/auto-issue-$n" ${br:+-e "branch:$br"} <<<"$busy" && return 0
+  grep -qE "^branch:agent/(auto-)?issue-$n(-.*)?\$" <<<"$busy" && return 0
+  [[ -z "$br" ]] || ! grep -qxF "branch:$br" <<<"$busy" || return 0
   grep -qiE "^body:[[:space:]]*(Refs|Fixes|Closes|Resolves)[[:space:]]+#$n([^0-9A-Za-z_]|\$)" <<<"$busy"
 }

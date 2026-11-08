@@ -78,6 +78,8 @@ open_pr_case 'sibling prose'  '[{"headRefName":"agent/issue-5398","title":"x (#5
 open_pr_case 'Refs line'      '[{"headRefName":"agent/issue-9","title":"x","body":"intro\nRefs #5028\n"}]' held
 open_pr_case 'lower case'     '[{"headRefName":"agent/issue-9","title":"x","body":"  refs #5028"}]' held
 open_pr_case 'own branch'     '[{"headRefName":"agent/issue-5028","title":"x","body":""}]' held
+open_pr_case 'branch suffix'  '[{"headRefName":"agent/issue-5028-recovered-abc123","title":"x","body":""}]' held
+open_pr_case 'longer branch'  '[{"headRefName":"agent/issue-50281","title":"x","body":""}]' free
 open_pr_case 'longer number'  '[{"headRefName":"agent/issue-50281","title":"x","body":"Refs #50281"}]' free
 cp "$fixture/units.keep" "$UNITS"; rm -f "$A/intake-skip-noted.tsv"
 tick_prs() { echo '[]'; }
