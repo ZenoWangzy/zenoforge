@@ -16,10 +16,11 @@ INDEX_ROOT="${ZF_CODE_INTELLIGENCE_ROOT:-$REPO_DIR}"
 MIN_AVAILABLE_KIB=$((2 * 1024 * 1024))
 VERIFY_ATTEMPTS=50
 VERIFY_DELAY_SECONDS=0.1
-# Owner session sources lib.sh, probes Codex and reserves budget before it publishes its PID;
-# tests under host load raise this, production keeps the default.
-PID_WAIT_ATTEMPTS="${AGENT_DISPATCH_PID_WAIT_ATTEMPTS:-$VERIFY_ATTEMPTS}"
-[[ "$PID_WAIT_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || PID_WAIT_ATTEMPTS=$VERIFY_ATTEMPTS
+# Production waits up to 30 s (300 x 0.1 s) for the owner session to publish its PID: it sources lib.sh,
+# probes Codex and reserves budget first, and a launch at load 30-50 already used about 4.5 of the old 5 s.
+# Tests raise it further; VERIFY_ATTEMPTS (50) still bounds the detach check.
+PID_WAIT_ATTEMPTS="${AGENT_DISPATCH_PID_WAIT_ATTEMPTS:-300}"
+[[ "$PID_WAIT_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || PID_WAIT_ATTEMPTS=300
 AGENT_HOME="${AGENT_HOME:-${HOME:-.}/.zenoforge}"
 DISPATCH_DIR="${AGENT_DISPATCH_DIR:-$AGENT_HOME/hand-dispatch}"
 LOG_ROOT="${AGENT_DISPATCH_LOG_DIR:-$AGENT_HOME/logs/hand-dispatch}"

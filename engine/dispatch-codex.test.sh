@@ -1014,7 +1014,13 @@ stop_fake_codex
 
 reset_fake_codex
 set +e
-RUN_OUTPUT="$(PATH="$PID_FAILURE_SETSID_BIN:$FAKE_BIN:$PATH" \
+SLEEP_COUNT_BIN="$TEST_ROOT/sleep-count-bin"
+SLEEP_COUNT_LOG="$TEST_ROOT/sleep-count.log"
+mkdir -p "$SLEEP_COUNT_BIN"
+: > "$SLEEP_COUNT_LOG"
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$SLEEP_COUNT_LOG" > "$SLEEP_COUNT_BIN/sleep"
+chmod +x "$SLEEP_COUNT_BIN/sleep"
+RUN_OUTPUT="$(PATH="$SLEEP_COUNT_BIN:$PID_FAILURE_SETSID_BIN:$FAKE_BIN:$PATH" \
   AGENT_HOME="$AGENT_HOME" \
   AGENT_DISPATCH_LOG_DIR="$LOG_DIR" \
   FAKE_CODEX_ARGS_FILE="$FAKE_CODEX_ARGS_FILE" \
@@ -1025,6 +1031,8 @@ RUN_STATUS=$?
 set -e
 assert_eq "PID-publication failure is refused" "1" "$RUN_STATUS"
 assert_contains "PID-publication failure names verification" "$RUN_OUTPUT" "agent never published a PID"
+# Env var unset: the production wait is 300 attempts (30 s). The stub sleep returns at once and counts the 0.1 s polls.
+assert_eq "production PID wait defaults to 300 attempts" "300" "$(grep -cx '0.1' "$SLEEP_COUNT_LOG")"
 assert_eq "PID-publication failure never starts codex" "" "$(tr -d '[:space:]' < "$FAKE_CODEX_PID_FILE")"
 stop_fake_codex
 
