@@ -173,7 +173,8 @@ run_backend() {
   trap 'stop_backend_group "$backend_pid"; exit 143' TERM INT HUP
 
   while kill -0 "$pid" 2>/dev/null; do
-    [[ ! -s $d/backend-run.pid ]] || backend_pid=$(cat "$d/backend-run.pid")
+    # Builtin read, not $(cat): a TERM to the worker's group kills the substitution and would blank backend_pid, so the TERM trap would signal no group and orphan the backend.
+    [[ ! -s $d/backend-run.pid ]] || { read -r group_pid < "$d/backend-run.pid" && [[ $group_pid =~ ^[0-9]+$ ]] && backend_pid=$group_pid; } || true
     monitor_reason=$(fatal_reason || true)
     if [[ -n $monitor_reason ]]; then should_stop=1; break; fi
     now=$(date +%s); progress=0

@@ -231,11 +231,21 @@ reset_fake_codex() {
   : > "$FAKE_CODEX_PID_FILE"
 }
 
+# The owner session probes Codex (ten-second timeout) and reserves budget before it publishes its PID,
+# so under host load the production default of 5 seconds is too short; the poll still ends at the PID.
+PID_WAIT_ATTEMPTS=600
+
+assert_launch_ok() {
+  assert_eq "$1" "0" "$RUN_STATUS"
+  [ "$RUN_STATUS" = 0 ] || echo "# RUN_OUTPUT: $RUN_OUTPUT"
+}
+
 run_dispatch() {
   set +e
   RUN_OUTPUT="$(PATH="$FAKE_BIN:$PATH" \
     AGENT_HOME="$AGENT_HOME" \
     AGENT_DISPATCH_LOG_DIR="$LOG_DIR" \
+    AGENT_DISPATCH_PID_WAIT_ATTEMPTS="$PID_WAIT_ATTEMPTS" \
     FAKE_CODEX_ARGS_FILE="$FAKE_CODEX_ARGS_FILE" \
     FAKE_CODEX_STDIN_FILE="$FAKE_CODEX_STDIN_FILE" \
     FAKE_CODEX_PID_FILE="$FAKE_CODEX_PID_FILE" \
@@ -260,9 +270,8 @@ wait_for_text() {
   return 1
 }
 
-# Dispatch publishes its PID before config preflight invokes Codex. That probe
-# has a ten-second command timeout; allow twenty seconds for it and process
-# startup under load before treating an async launch as broken.
+# The fake Codex writes its args after dispatch returns; allow twenty seconds
+# under load before treating an async launch as broken.
 ASYNC_CODEX_START_ATTEMPTS=1000
 
 wait_for_owner_exit() {
@@ -412,7 +421,7 @@ assert_contains "node auto-owner records env fault in supervisor inbox" \
 
 reset_fake_codex
 run_dispatch --kind work --prompt-file "$PROMPT_FILE"
-assert_eq "work launch succeeds" "0" "$RUN_STATUS"
+assert_launch_ok "work launch succeeds"
 wait_for_text "$FAKE_CODEX_ARGS_FILE" "<->" "$ASYNC_CODEX_START_ATTEMPTS" || {
   echo "not ok - work fake Codex args finish writing"
   FAILED=1
@@ -870,7 +879,7 @@ fi
 
 reset_fake_codex
 run_dispatch --kind hard --prompt-file "$PROMPT_FILE"
-assert_eq "hard launch succeeds" "0" "$RUN_STATUS"
+assert_launch_ok "hard launch succeeds"
 wait_for_text "$FAKE_CODEX_ARGS_FILE" "<->" "$ASYNC_CODEX_START_ATTEMPTS" || {
   echo "not ok - hard fake Codex args finish writing"
   FAILED=1
@@ -888,7 +897,7 @@ stop_fake_codex
 
 reset_fake_codex
 run_dispatch --kind production --access delivery --prompt-file "$PROMPT_FILE"
-assert_eq "production launch succeeds" "0" "$RUN_STATUS"
+assert_launch_ok "production launch succeeds"
 wait_for_text "$FAKE_CODEX_ARGS_FILE" "<->" "$ASYNC_CODEX_START_ATTEMPTS" || {
   echo "not ok - production fake Codex args finish writing"
   FAILED=1

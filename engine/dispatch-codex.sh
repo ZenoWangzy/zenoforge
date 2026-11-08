@@ -16,6 +16,10 @@ INDEX_ROOT="${ZF_CODE_INTELLIGENCE_ROOT:-$REPO_DIR}"
 MIN_AVAILABLE_KIB=$((2 * 1024 * 1024))
 VERIFY_ATTEMPTS=50
 VERIFY_DELAY_SECONDS=0.1
+# Owner session sources lib.sh, probes Codex and reserves budget before it publishes its PID;
+# tests under host load raise this, production keeps the default.
+PID_WAIT_ATTEMPTS="${AGENT_DISPATCH_PID_WAIT_ATTEMPTS:-$VERIFY_ATTEMPTS}"
+[[ "$PID_WAIT_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || PID_WAIT_ATTEMPTS=$VERIFY_ATTEMPTS
 AGENT_HOME="${AGENT_HOME:-${HOME:-.}/.zenoforge}"
 DISPATCH_DIR="${AGENT_DISPATCH_DIR:-$AGENT_HOME/hand-dispatch}"
 LOG_ROOT="${AGENT_DISPATCH_LOG_DIR:-$AGENT_HOME/logs/hand-dispatch}"
@@ -652,7 +656,7 @@ if [ -n "$OWNER_UNIT" ]; then
     exit 1
   fi
 
-  for ((attempt = 0; attempt < VERIFY_ATTEMPTS; attempt++)); do
+  for ((attempt = 0; attempt < PID_WAIT_ATTEMPTS; attempt++)); do
     [ -s "$PID_FILE" ] && break
     if [ "$(jq -r '.status // empty' "$MANIFEST_FILE" 2>/dev/null || true)" = dispatch-failed ]; then break; fi
     sleep "$VERIFY_DELAY_SECONDS"
@@ -698,7 +702,7 @@ ZF_REPO_DIR="$WORKTREE" REPO_DIR="$WORKTREE" setsid --fork \
   "$DISPATCH_BUDGET_ID" hand-dispatch </dev/null >> "$PENDING_LOG" 2>&1 &
 LAUNCHER_PID=$!
 
-for ((attempt = 0; attempt < VERIFY_ATTEMPTS; attempt++)); do
+for ((attempt = 0; attempt < PID_WAIT_ATTEMPTS; attempt++)); do
   [ -s "$PID_FILE" ] && break
   sleep "$VERIFY_DELAY_SECONDS"
 done

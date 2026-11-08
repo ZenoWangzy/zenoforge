@@ -52,7 +52,7 @@ if [[ $mode == builtin_info ]]; then
   sleep 0.3
   mode=success
 fi
-[[ $mode == gated ]] && { sleep 3; mode=success; }   # queued at the capacity gate past the stall threshold
+[[ $mode == gated ]] && { sleep 7; mode=success; }   # queued at the capacity gate past the stall threshold
 [[ $mode == hang || $mode == builtin_noise || $mode == queued ]] || echo $$ > "$d/codex.pid"   # real backends write it once past the capacity gate
 case "$mode" in
   hang|builtin_noise)
@@ -266,7 +266,8 @@ timeout 4 env -u WORKER_BACKEND WORKER_SCRATCH_ROOT="$root" WORKER_STALL_SECONDS
 [[ $(cat "$root/luna/$key/backend") == luna ]] || fail 'new automatic job ignored the open zc breaker'
 printf 'PASS new jobs avoid zc while its breaker is open\n'
 
-run_case gated 0 gated success 1 8
+# The stall bound must exceed one health pass under host load (a pass that took over 1s read the first output after the gate as a stall).
+run_case gated 0 gated success 5 25
 [[ ! -e $CASE_DIR/failover && $(cat "$CASE_DIR/backend") == zc ]] || fail 'waiting at the capacity gate was treated as a stall'
 printf 'PASS waiting at the capacity gate is not a stall\n'
 
@@ -357,8 +358,10 @@ setsid env WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND=luna CODEX_MODEL=gpt-6.1-t
   WORKER_STALL_SECONDS=60 WORKER_HEALTH_INTERVAL_SECONDS=0.05 FAKE_LUNA_MODE=hang \
   bash "$worker_script" "$key" "$wt" "$prompt" > "$test_root/term.stdout" 2> "$test_root/term.stderr" &
 worker_pid=$!
-for ((i=0; i<200; i++)); do
-  [[ ! -s $d/hang-child.pid ]] || break
+# codex.pid is written after the fake installed its TERM trap and its child touched hang-child-ready;
+# TERM before that kills them by default, with no marker, and looks like a lost signal.
+deadline=$((SECONDS + 30))
+until [[ -s $d/codex.pid && -s $d/backend-run.pid && -s $d/hang-child.pid && -e $d/hang-child-ready ]] || (( SECONDS >= deadline )); do
   sleep 0.05
 done
 [[ -s $d/backend-run.pid && -s $d/hang-child.pid ]] || fail 'TERM fixture never started backend and child'
