@@ -382,6 +382,11 @@ for preserved in engine/worktree-lifecycle.sh engine/mac-autopilot/rescued_gc.sh
   PR_FILES="[\"$preserved\"]"
   if merge_pr_gate_ci_ok 17 "$PR_CHECKS" >"$fixture/check-output" 2>&1; then fail "$preserved merged with pending suites"; fi
 done
+# Ruling zenoforge-limited-allow-research-first-2026-11-05: a review rule file and a credential loader wait for PR CI too.
+for guarded in engine/mac-autopilot/scheduler.d/review-rules.sh engine/night/acceptance-login-probe.mjs; do
+  PR_FILES="[\"$guarded\"]"
+  if merge_pr_gate_ci_ok 17 '[{"name":"suites (0)","bucket":"pending"}]' >"$fixture/check-output" 2>&1; then fail "$guarded merged with pending suites"; fi
+done
 PR_FILES='["tools/merge-pr.sh"]'
 ZF_MERGE_OVERRIDE=gate-ci merge_pr_gate_ci_ok 17 "$PR_CHECKS" || fail 'the gate-ci override was ignored'
 
