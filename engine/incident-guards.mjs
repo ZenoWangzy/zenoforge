@@ -10,7 +10,7 @@
 //
 // CLI: read <file> | read-rev <repo> <rev> <repo-relative-file> | add <file> <record.json> | split <file>
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -120,7 +120,7 @@ export function splitIncidentGuards(file) {
   return before.incidents.length;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const [command, ...args] = process.argv.slice(2);
     if (command === 'read' && args.length === 1) process.stdout.write(JSON.stringify(readIncidentGuards(args[0])));
