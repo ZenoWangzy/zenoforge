@@ -412,6 +412,7 @@ export const RELATED_TESTS = new Map([
   ['scripts/branch-delivery-preflight.mjs', ['scripts/branch-delivery-preflight.test.mjs', 'engine/landing-fast-path.test.mjs']],
   ['engine/focused-test-paths.mjs', ['engine/focused-test-paths.test.mjs', 'engine/landing-fast-path.test.mjs']],
   ['engine/pack-dir.mjs', ['engine/risk-class.test.mjs', 'engine/verification-plan.test.mjs']],
+  ['engine/incident-guards.mjs', ['engine/incident-guards.test.mjs', 'engine/generate-lesson-enforcers.test.mjs', 'engine/lesson-recurrence-ranking.test.mjs', 'engine/night/incident-guard-audit.test.mjs']],
 ].map(([key, tests]) => [packPath(key), tests.map(packPath)]));
 
 // The target config's (or, during migration, the pack's) state/focused-test-map.json adds or replaces
@@ -816,7 +817,8 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
     // Release fixtures load mail indirectly, beyond the shell function caller scan.
     const functionMapped = helperTests.mappedPaths.has(path)
       && !['engine/night/maintainer-health-mail.sh', 'engine/notify.sh'].map(packPath).includes(path);
-    let candidates = functionMapped ? undefined : RELATED_TESTS.get(path);
+    // A guard fragment is the registry's data: it maps to the same tests as the registry file.
+    let candidates = functionMapped ? undefined : RELATED_TESTS.get(path.replace(/\/incident-guards\.d\/[^/]+\.json$/, '/incident-guards.json'));
     if (!candidates && path.startsWith('lessons/')) {
       candidates = [packPath('engine/land-direct-main.test.sh')];
     }

@@ -38,7 +38,7 @@ guarded_pr_merge() {
     incident_guards_path="${ZF_PACK_REL:-engine}/state/incident-guards.json"
   fi
   if ! identity="$(gh pr view "$pr" --repo "$REPO" --json headRefName,headRefOid,files,state,mergeCommit \
-    -q '[.headRefName, .headRefOid, any(.files[]; (.path | startswith("lessons/")) or .path == "'"$incident_guards_path"'"), .state, (.mergeCommit.oid // "")] | @tsv')"; then
+    -q '[.headRefName, .headRefOid, any(.files[]; (.path | startswith("lessons/")) or .path == "'"$incident_guards_path"'" or (.path | startswith("'"${incident_guards_path%.json}.d/"'"))), .state, (.mergeCommit.oid // "")] | @tsv')"; then
     rm -f "$body_file"
     return 1
   fi

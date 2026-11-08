@@ -8,6 +8,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zfConfigFile, zfEnv, zfIncidentGuards } from '../pack-dir.mjs';
+import { readIncidentGuards } from '../incident-guards.mjs';
 
 const REGISTRY_PATH = 'state/incident-guards.json';
 // Guard targets resolve against --repo, then the engine build, and then the target repo.
@@ -398,10 +399,9 @@ export async function auditIncidentGuards(repoInput, historyDirInput, targetRepo
   const repo = path.resolve(repoInput);
   const historyDir = path.resolve(historyDirInput);
   const targetRepo = targetRepoInput ? path.resolve(targetRepoInput) : null;
-  const registry = zfIncidentGuards(repo) ?? JSON.parse(await readFile(
+  const registry = zfIncidentGuards(repo) ?? readIncidentGuards(
     path.join(PACK_ROOT ?? repo, `${process.env.ZF_PACK_REL || 'engine'}/${REGISTRY_PATH}`),
-    'utf8',
-  ));
+  );
   if (!Array.isArray(registry.incidents)) throw new Error(`invalid incident guard registry: ${REGISTRY_PATH}`);
   const incidents = registry.incidents;
   const history = await readGuardHistory(historyDir);

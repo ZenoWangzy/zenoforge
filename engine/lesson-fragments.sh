@@ -16,7 +16,7 @@ usage() {
 stale_fragment() {
   local repo="$1" registry="$2" file="$3" id lesson_path
   id="$(jq -r '.guard.id // empty' "$file" 2>/dev/null)" && [[ -n "$id" ]] || return 1
-  jq -e --arg id "$id" 'any(.incidents[]; .id == $id)' "$registry" >/dev/null 2>&1 || return 1
+  zf_incident_guards_read "$registry" 2>/dev/null | jq -e --arg id "$id" 'any(.incidents[]; .id == $id)' >/dev/null 2>&1 || return 1
   lesson_path="$(jq -r '.full_lesson_path // empty' "$file")"
   [[ -n "$lesson_path" && -f "$repo/$lesson_path" ]] && ! grep -Fq 'V-NEXT' "$repo/$lesson_path"
 }

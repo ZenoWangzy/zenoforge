@@ -263,6 +263,9 @@ if [[ "$incident_guards_file" == "$ZF_REPO_DIR/"* ]]; then
 else
   INCIDENT_GUARDS_REPO_PATH="${ZF_PACK_REL:-engine}/state/incident-guards.json"
 fi
+# One fragment per guard sits beside the registry file (engine/incident-guards.mjs); both count as the registry.
+INCIDENT_GUARDS_FRAGMENT_DIR="${INCIDENT_GUARDS_REPO_PATH%.json}.d"
+land_is_incident_guards_path() { [[ "$1" == "$INCIDENT_GUARDS_REPO_PATH" || "$1" == "$INCIDENT_GUARDS_FRAGMENT_DIR"/*.json ]]; }
 ZF_AGENT_ISSUES="$(agent_owned_issue_ids "${ZF_AGENT_NAME:-direct-main}" "${ZF_AGENT_ISSUES:-${HAND_ISSUES:-}}")" || {
   echo 'land-direct-main: could not resolve owner issues' >&2
   exit 1
@@ -457,8 +460,11 @@ replace_added_lesson_id() {
 # A registry may live outside the target repo during migration; then the resolved config file supplies the used ids.
 landed_incident_guards() {
   local p="$INCIDENT_GUARDS_REPO_PATH" f
-  if git cat-file -e "$1:$p" 2>/dev/null; then git show "$1:$p"; return; fi
-  f="$(zf_config_file state/incident-guards.json)" && cat "$f" || echo '{}'
+  if git cat-file -e "$1:$p" 2>/dev/null || git ls-tree "$1" -- "$INCIDENT_GUARDS_FRAGMENT_DIR/" 2>/dev/null | grep -q .; then
+    node "$land_script_dir/incident-guards.mjs" read-rev . "$1" "$p"
+    return
+  fi
+  f="$(zf_config_file state/incident-guards.json)" && node "$land_script_dir/incident-guards.mjs" read "$f" || echo '{}'
 }
 
 added_guard_id_for_lesson_occurrence() {
@@ -474,8 +480,8 @@ added_guard_id_for_lesson_occurrence() {
       printf '%s\n' "$guard_id"
       return 0
     fi
-  done < <(jq -r --arg lesson_id "V$candidate" '.incidents[]? | select(.lesson_id == $lesson_id) | .id' \
-    "$INCIDENT_GUARDS_REPO_PATH")
+  done < <(node "$land_script_dir/incident-guards.mjs" read "$INCIDENT_GUARDS_REPO_PATH" \
+    | jq -r --arg lesson_id "V$candidate" '.incidents[]? | select(.lesson_id == $lesson_id) | .id')
   return 1
 }
 
@@ -502,7 +508,7 @@ replace_added_lesson_occurrence() {
   local -a added_lines=()
   local added
 
-  if [[ "$file" == "$INCIDENT_GUARDS_REPO_PATH" ]]; then
+  if land_is_incident_guards_path "$file"; then
     guard_id="$(added_guard_id_for_lesson_occurrence "$base" "$candidate" "$occurrence")" || return 0
     temp_file="$(mktemp)"
     if ! jq --arg id "$guard_id" --arg lesson_id "V$assigned" \
@@ -680,17 +686,17 @@ assign_lesson_ids() {
       if [[ "$direction" == added ]]; then
         [[ -n "${added_counts[$candidate]:-}" ]] || candidate_order+=("$candidate")
         added_counts["$candidate"]=$(( ${added_counts[$candidate]:-0} + 1 ))
-        if [[ "$current_path" == "$INCIDENT_GUARDS_REPO_PATH" ]]; then
+        if land_is_incident_guards_path "$current_path"; then
           added_incident_counts["$candidate"]=$(( ${added_incident_counts[$candidate]:-0} + 1 ))
         fi
       else
         removed_counts["$candidate"]=$(( ${removed_counts[$candidate]:-0} + 1 ))
-        if [[ "$current_path" == "$INCIDENT_GUARDS_REPO_PATH" ]]; then
+        if land_is_incident_guards_path "$current_path"; then
           removed_incident_counts["$candidate"]=$(( ${removed_incident_counts[$candidate]:-0} + 1 ))
         fi
       fi
     fi
-  done < <(git diff --no-ext-diff --unified=0 "$base...HEAD" -- lessons/RULES.md "$INCIDENT_GUARDS_REPO_PATH")
+  done < <(git diff --no-ext-diff --unified=0 "$base...HEAD" -- lessons/RULES.md "$INCIDENT_GUARDS_REPO_PATH" "$INCIDENT_GUARDS_FRAGMENT_DIR")
   for candidate in "${candidate_order[@]}"; do
     count="${added_counts[$candidate]}"
     removed="${removed_counts[$candidate]:-0}"
@@ -774,7 +780,7 @@ assign_lesson_ids() {
   done
   ((did_rewrite == 1)) || return 0
 
-  mapfile -t lesson_paths < <(git diff --name-only "$base...HEAD" -- lessons/RULES.md lessons/CATALOG.md lessons/full "$INCIDENT_GUARDS_REPO_PATH")
+  mapfile -t lesson_paths < <(git diff --name-only "$base...HEAD" -- lessons/RULES.md lessons/CATALOG.md lessons/full "$INCIDENT_GUARDS_REPO_PATH" "$INCIDENT_GUARDS_FRAGMENT_DIR")
   for ((occurrence_index = ${#assignment_keys[@]} - 1; occurrence_index >= 0; occurrence_index--)); do
     assignment_key="${assignment_keys[$occurrence_index]}"
     candidate="${assignment_key%:*}"
@@ -931,7 +937,7 @@ reconcile_merged_pr() {
     return 1
   }
   if git diff --quiet "$merge_parent" "$merge_commit" -- \
-    lessons/RULES.md "$INCIDENT_GUARDS_REPO_PATH"; then
+    lessons/RULES.md "$INCIDENT_GUARDS_REPO_PATH" "$INCIDENT_GUARDS_FRAGMENT_DIR"; then
     echo "land-direct-main: PR #$pr introduced no numbered lesson records; reconciliation is already complete"
     return 0
   fi
@@ -1187,7 +1193,7 @@ syntax_only_landing() {
       packages/*|infra/*|deploy/*|migrations/*) return 1 ;;
     esac
     case "$path" in
-      *.md|docs/*|lessons/*|"$pack_rel"/state/*.json|.zenoforge/state/hand-priority.json|.zenoforge/state/incident-guards.json|\
+      *.md|docs/*|lessons/*|"$pack_rel"/state/*.json|.zenoforge/state/hand-priority.json|.zenoforge/state/incident-guards.json|.zenoforge/state/incident-guards.d/*.json|\
         "$pack_rel"/prompts/*|.zenoforge/prompts/*|\
         "$pack_rel"/mac-autopilot/config.template.json|.zenoforge/mac-autopilot/config.template.json|.agents/skills/*) ;;
       *) return 1 ;;

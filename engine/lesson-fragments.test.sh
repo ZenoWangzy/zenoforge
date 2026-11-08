@@ -5,7 +5,7 @@ REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 tmp="$(mktemp -d)"
 trap 'rm -r -- "$tmp"' EXIT
 mkdir -p "$tmp/repo/lessons/pending" "$tmp/repo/lessons/full" "$tmp/repo/engine/state" "$tmp/repo/.zenoforge/state"
-cp "$REPO_DIR/engine/lesson-fragments.sh" "$REPO_DIR/engine/config.sh" "$tmp/repo/engine/"
+cp "$REPO_DIR/engine/lesson-fragments.sh" "$REPO_DIR/engine/config.sh" "$REPO_DIR/engine/incident-guards.mjs" "$tmp/repo/engine/"
 printf '{"incidents":[]}\n' > "$tmp/registry.json"
 printf 'Rule: [V-NEXT](../RULES.md#v-next).\n' > "$tmp/repo/lessons/full/registry-parity.md"
 cat > "$tmp/valid-fragment.json" <<'JSON'
@@ -36,6 +36,13 @@ printf '{"guard":{"id":"config-only"},"full_lesson_path":"lessons/full/override-
   > "$tmp/repo/lessons/pending/override-stale.json"
 ZF_REPO_DIR="$tmp/repo" ZF_ENGINE_DIR="$tmp/repo/engine" \
   bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo"
+# The same guard registered only as a fragment beside the registry file still marks the pending fragment folded.
+printf '{"incidents":[]}\n' > "$tmp/repo/.zenoforge/state/incident-guards.json"
+mkdir -p "$tmp/repo/.zenoforge/state/incident-guards.d"
+printf '{"incidents":[{"id":"config-only"}]}\n' > "$tmp/repo/.zenoforge/state/incident-guards.d/config-only.json"
+ZF_REPO_DIR="$tmp/repo" ZF_ENGINE_DIR="$tmp/repo/engine" \
+  bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo"
+rm -r "$tmp/repo/.zenoforge/state/incident-guards.d"
 rm "$tmp/repo/lessons/pending/override-stale.json"
 printf '{"id":"unselected-invalid"}\n' > "$tmp/repo/lessons/pending/unselected-invalid.json"
 bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo" "$tmp/registry.json" --files "$tmp/repo/lessons/pending/registry-parity.json"

@@ -256,6 +256,12 @@ zf_config_file() {
   return 1
 }
 
+# zf_incident_guards_read <registry file> -- print the registry merged with the fragments beside it (engine/incident-guards.mjs).
+zf_incident_guards_read() {
+  [[ $# -eq 1 ]] || return 2
+  node "$ZF_ENGINE_DIR/incident-guards.mjs" read "$1"
+}
+
 # Resolve the target's release runner, retaining the engine runner as fallback.
 zf_release_runner() {
   local config runner

@@ -9,10 +9,11 @@
 // lessons/CATALOG.md); they are reused, not backfilled.
 
 import { realpathSync } from 'node:fs';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zfConfigFile, zfEnv } from './pack-dir.mjs';
+import { readIncidentGuards } from './incident-guards.mjs';
 
 const DEFAULT_ROOT = zfEnv('REPO_DIR') || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REGISTRY_PATH = 'state/incident-guards.json';
@@ -114,7 +115,7 @@ export function validateRegistry(root = DEFAULT_ROOT) {
   }
   let registry;
   try {
-    registry = JSON.parse(readFileSync(registryFile, 'utf8'));
+    registry = readIncidentGuards(registryFile);
   } catch (error) {
     return { checked: 0, errors: [`${REGISTRY_PATH} does not parse: ${error.message}`] };
   }
