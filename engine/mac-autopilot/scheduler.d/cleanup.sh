@@ -229,11 +229,14 @@ cleanup_tick() {
   if (( n_total > 60 )); then
     # 未回收的 worker 一律保留，只裁剪已回收的旧记录。
     # The tick's tail runs without the ledger lock, so this one write takes it (set_unit's own-lock pattern).
-    local own_lock=false
-    if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then acquire_scheduler_lock_wait && own_lock=true; fi
+    # 2026-11-08: a refill held the ledger lock and this wait ran the tick into its 1800 s kill. The wait is bounded; a busy lock skips the trim to the next tick.
+    local own_lock=false t0=$SECONDS
+    if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then acquire_scheduler_lock_wait 5 && own_lock=true; fi
     if [[ "${SCHED_LOCK_HELD:-false}" == true ]]; then
       jqf '{workers: ([.workers[] | select(.harvested != true)] + ([.workers[] | select(.harvested == true)] | sort_by(.started) | .[-60:]))}' "$WORKERS" | write_state "$WORKERS"
-      say "trim workers ledger $n_total"
+      say "trim workers ledger $n_total secs=$((SECONDS - t0))"
+    else
+      say "cleanup trim skipped at ${SECONDS}s: ledger lock busy"
     fi
     [[ "$own_lock" != true ]] || release_scheduler_lock
   fi

@@ -29,7 +29,8 @@ refill_lock_wait_spent() {
 refill_stopped() {
   [[ "${TICK_LOCAL_REFILL:-false}" == true && -e "$A/.refill-stop" ]]
 }
-acquire_scheduler_lock_wait() {
+acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it the wait returns 1 and the caller decides
+  local t0=$SECONDS
   refill_stopped && return 1
   until acquire_scheduler_lock; do
     if refill_lock_wait_spent; then
@@ -37,6 +38,7 @@ acquire_scheduler_lock_wait() {
       say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): the refill limit is near, the refill ends here and the next one resumes"
       return 1
     fi
+    if [[ -n "${1:-}" ]] && (( SECONDS - t0 >= $1 )); then return 1; fi
     sleep 0.05
   done
 }
