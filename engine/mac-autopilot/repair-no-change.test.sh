@@ -46,12 +46,12 @@ git -C "$fixture/wt" reset -q --hard "$H1"
 printf 'repair report\n' > "$sup/repair-9.md"
 
 # Run one finished repair worker for unit "issue-9": base = the head the run started from, history = the unit's prior events.
-run_repair() { # base-head-or-empty history-json [extra unit fields json]
+run_repair() { # base-head-or-empty history-json [extra unit fields json] [workdir, default the clone]
   local ws='{"stage":"write-start","work_type":"repair","at":"2026-11-07T10:00:00Z"'
   [[ -z "$1" ]] || ws+=",\"pr_head\":\"$1\""
   jq -n --argjson h "$2" --argjson ws "$ws}" --argjson extra "${3:-{\}}" \
     '{units:[({id:"issue-9",issue:9,pr:9,lane:"pr",branch:"agent/issue-9",stage:"repair",history:($h + [$ws])} + $extra)]}' > "$UNITS"
-  jq -n --arg dir "$fixture/wt" '{workers:[{pid:4242,unit:"issue-9",type:"repair",log:"none.log",report:"repair-9.md",workdir:$dir}]}' > "$WORKERS"
+  jq -n --arg dir "${4-$fixture/wt}" '{workers:[{pid:4242,unit:"issue-9",type:"repair",log:"none.log",report:"repair-9.md",workdir:$dir}]}' > "$WORKERS"
   harvest_workers || true
 }
 nopush_hist() { jq -cn --arg h "$1" --argjson n "$2" '[range($n) | {stage:"repair-no-push",result:("head "+$h+" unchanged after repair")}]'; }
@@ -126,5 +126,11 @@ grep -q '^recut issue=9 lines=900 unit=issue-9$' "$fixture/recut-calls" && ! gre
 rm -f "$fixture/recut-calls"; : > "$LOG"
 size_admission_recheck issue-9 "$fixture/wt" agent/issue-9 "ctx-nohead" || true
 grep -qx '\[.*\] size recheck without head: issue-9 ctx-nohead' "$LOG" || fail "a headless recheck left no scheduler.log line ($(cat "$LOG"))"
+# 11. An empty workdir gives no head, so no recut is routed; the log line records the skipped recheck.
+rm -f "$fixture/recut-calls"; : > "$LOG"
+run_repair "$H1" '[{"stage":"review-request-changes","result":"'"$H1"'"}]' '{}' ""
+[[ "$(field issue-9 '[.history[] | select(.stage=="size-recut")] | length')" == 0 && ! -e "$fixture/recut-calls" ]] \
+  || fail "an empty workdir must not route a recut ($(cat "$fixture/recut-calls" 2>/dev/null))"
+grep -q 'size recheck without head: issue-9 on agent/issue-9 after repair' "$LOG" || fail "an empty workdir left no scheduler.log line ($(cat "$LOG"))"
 
 echo 'repair-no-change.test.sh: ok'
