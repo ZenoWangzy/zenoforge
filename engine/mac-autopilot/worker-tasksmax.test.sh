@@ -48,6 +48,7 @@ say() { printf '%s\n' "$*" >> "$task_root/scheduler.log"; }
 alive() { kill -0 "$1" 2>/dev/null; }
 source "$script_dir/scheduler.d/worker-scope.sh"
 source "$script_dir/scheduler.d/harvest-workers.sh"
+source "$script_dir/scheduler.d/review-rules.sh"
 
 fail() { printf 'worker-tasksmax.test.sh: %s\n' "$*" >&2; exit 1; }
 for launch_file in dispatch.sh evals-arbiter.sh supervisor-arbiter.sh land-lane.sh; do

@@ -363,3 +363,19 @@ unit_head() { # id pr lane branch → candidate SHA (compatibility helper)
   target="$(unit_review_target "$1" "$2" "$3" "$4")" || return 1
   printf '%s' "${target#* }"
 }
+
+incident_report_pre_review() { # implement/repair worker-json report-name report-path → start one report-only continuation when needed
+  local w="$1" report_name="$2" report_path="$3" unit wtype incident_unit_json reason
+  wtype="$(jqf -r '.type // empty' <<<"$w")"
+  [[ "$wtype" == implement || "$wtype" == repair ]] || return 0
+  [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" != true ]] || return 0
+  unit="$(jqf -r '.unit // empty' <<<"$w")"
+  incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  reason="$(incident_report_gate_reason "$incident_unit_json" "$report_path")"
+  [[ -n "$reason" ]] || return 0
+  if dispatch_incident_report_resume "$w" "$report_name" "$reason"; then
+    return 0
+  else
+    say "incident report resume unavailable unit=$unit; review will use the existing report"
+  fi
+}

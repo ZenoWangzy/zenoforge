@@ -23,7 +23,7 @@ source "$AGENT_DIR/coord.sh"
 fn() { sed -n "/^$2() {/,/^}/p" "$SD/$1"; }  # the real function text, nothing else from the file
 source <(fn core.sh jqf); source <(fn units.sh unit_field)
 [[ ! -f "$SD/worker-scope.sh" ]] || source "$SD/worker-scope.sh"
-source "$SD/harvest-workers.sh"; source <(fn dispatch.sh dispatch)
+source "$SD/review-rules.sh"; source "$SD/harvest-workers.sh"; source <(fn dispatch.sh dispatch)
 # Stubs for what dispatch() needs around the claim: the worker command, the GitHub census, state writes, liveness.
 build_codex_command() { CODEX_COMMAND=(sleep 300); CODEX_MODE=fresh; CODEX_PATH_REASON=replay; CODEX_SESSION_ID=""; CODEX_USAGE_START=0; }
 tick_prs() { cat "$GH_PRS"; }

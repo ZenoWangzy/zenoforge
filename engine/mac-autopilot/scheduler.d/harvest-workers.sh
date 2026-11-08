@@ -36,22 +36,6 @@ dispatch_incident_report_resume() { # worker-json source-report gate-reason → 
   say "incident report resume dispatched unit=$unit source=$source_report output=$output_report"
 }
 
-incident_report_pre_review() { # implement/repair worker-json report-name report-path → start one report-only continuation when needed
-  local w="$1" report_name="$2" report_path="$3" unit wtype incident_unit_json reason
-  wtype="$(jqf -r '.type // empty' <<<"$w")"
-  [[ "$wtype" == implement || "$wtype" == repair ]] || return 0
-  [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" != true ]] || return 0
-  unit="$(jqf -r '.unit // empty' <<<"$w")"
-  incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
-  reason="$(incident_report_gate_reason "$incident_unit_json" "$report_path")"
-  [[ -n "$reason" ]] || return 0
-  if dispatch_incident_report_resume "$w" "$report_name" "$reason"; then
-    return 0
-  else
-    say "incident report resume unavailable unit=$unit; review will use the existing report"
-  fi
-}
-
 harvest_workers() { # [local-only]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers
   local pr_harvested=0 local_only="${1:-false}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage report_keep_rc
   while read -r w; do
