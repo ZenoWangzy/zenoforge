@@ -125,7 +125,8 @@ const target = path.join(linkHome, 'readers-zcode-exhausted-until');
 const link = path.join(linkHome, '.zenoforge/zcode-exhausted-until');
 fs.mkdirSync(path.dirname(link), { recursive: true });
 fs.symlinkSync(target, link);
-const linked = env => run('zc-quota', usageTab, {}, { week: 13, home: linkHome, env });
+// Pace off: the fixture's week reset is years ahead, so the pace line would hold (glm_factory_cap_2026_11_08 has its own self-test).
+const linked = env => run('zc-quota', usageTab, {}, { week: 13, home: linkHome, env: { ZC_WEEK_PACE_PCT: '0', ...env } });
 await linked({ ZC_WEEK_CAP: '0' });
 assert.ok(Number(fs.readFileSync(target, 'utf8')) > Date.now() / 1000, 'a hold must reach the symlink target');
 await linked({});
