@@ -317,7 +317,7 @@ footprint_refresh_conflicts() {
   TICK_FOOTPRINT_CONFLICT_VALID=true
   TICK_FOOTPRINT_COMPARED_ACTIVE="$active"
   elapsed=$((SECONDS - started))
-  (( elapsed < 2 )) || say "dispatch detail footprint_conflict_refresh candidates=${#TICK_FOOTPRINT_PREFLIGHT_IDS[@]} secs=${elapsed}s"
+  (( elapsed < 2 )) || say "dispatch detail footprint_conflict_refresh candidates=${#TICK_FOOTPRINT_PREFLIGHT_IDS[@]} secs=${elapsed}s cache=$FOOTPRINT_CACHE_PREFLIGHT"
 }
 footprint_candidate_rows() { # [clear]: only candidates with no conflict yet
   local id scope
@@ -347,6 +347,72 @@ footprint_merge_changed_owners() {
   TICK_FOOTPRINT_COMPARED_ACTIVE="$TICK_ACTIVE_FOOTPRINTS"
   say "dispatch detail footprint_conflict_merge candidates=$(grep -c . <<<"$candidates") owners=$(jqf 'length' <<<"$changed") secs=$((SECONDS - started))s"
 }
+# Candidate expansion cache: hotspot_expand_batch is the slow step (2.7s for one 800-path scope, run per candidate in the preflight).
+# A row is a pure function of the candidate scope, the unit's PR head, origin/main (filter_main), the checkout HEAD (hotspot_log reads it),
+# ZF_FOOTPRINT_HOTSPOT_MIN and the UTC day (30-day window; shortcut: a commit aging out mid-day shows at the next day). Live owner writes are
+# not in it: conflict checks always re-read the active worktrees. Files: $A/footprint-cache/<main sha>-<key>.json, like triage-cache.
+FOOTPRINT_CACHE_KEEP=256 FOOTPRINT_CACHE_STATE=miss FOOTPRINT_CACHE_PREFLIGHT=miss FOOTPRINT_CACHE_PRUNED= # hit: no miss in the last batch, not fresh
+footprint_unit_head() { jqf -r '.reviewed_pr_head // .reviewed_sha // .pr_head // .head_sha // ""' <<<"$1"; } # unit-json -> PR head sha or empty
+footprint_cache_prune() { # main sha: keep only entries of the current main, then the newest FOOTPRINT_CACHE_KEEP
+  local dir="$A/footprint-cache" f n=0
+  [[ "$FOOTPRINT_CACHE_PRUNED" != "$1" ]] || return 0
+  FOOTPRINT_CACHE_PRUNED="$1"
+  rm -f -- "$dir"/.*.tmp 2>/dev/null || :
+  for f in "$dir"/*; do
+    [[ -e "$f" ]] || continue
+    [[ "${f##*/}" == "$1-"*.json ]] || rm -f -- "$f"
+  done
+  for f in $(ls -t "$dir" 2>/dev/null); do
+    n=$((n + 1)); (( n <= FOOTPRINT_CACHE_KEEP )) || rm -f -- "$dir/$f"
+  done
+}
+footprint_expand_rows() { # rows [{id,scope,head}], fresh -> TICK_CHECK_SCOPE/OLD_SCOPE/HOTSPOT_COUNTS per id; fresh=true skips the lookup but still stores
+  local rows="$1" fresh="${2:-false}" dir="$A/footprint-cache" main='' rhead='' min day id head scope key file row miss_ids='' total=0 hits=0
+  local -A keys=(); local -a miss=() parts=()
+  FOOTPRINT_CACHE_STATE=miss
+  main="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)" || main=''
+  rhead="$(git -C "$ROOT" rev-parse -q --verify HEAD 2>/dev/null)" || rhead=''
+  min="$(hotspot_minimum)"; day="$(date -u +%F)"
+  while IFS= read -r -d '' id && IFS= read -r -d '' head && IFS= read -r -d '' scope; do
+    total=$((total + 1)); key=''
+    if [[ -n "$main" && -n "$rhead" ]]; then
+      key="$main-$(printf '%s\0' v1 "$main" "$rhead" "$head" "$min" "$day" "$scope" | sha256sum | cut -c1-40).json"
+    fi
+    keys["$id"]="$key"; file="$dir/$key"
+    parts=()
+    # Compact JSON has no raw newline: three lines are scope, old_scope, counts; anything else is a miss.
+    [[ "$fresh" == true || -z "$key" || ! -s "$file" ]] || mapfile -t parts < <(jq -r '[(.scope | tojson), (.old_scope | tojson), (.counts | tojson)] | join("\n")' "$file" 2>/dev/null)
+    if (( ${#parts[@]} == 3 )); then
+      TICK_CHECK_SCOPE["$id"]="${parts[0]}"; TICK_OLD_SCOPE["$id"]="${parts[1]}"; TICK_HOTSPOT_COUNTS["$id"]="${parts[2]}"
+      hits=$((hits + 1))
+    else
+      miss+=("$id"); miss_ids+="$id"$'\n'
+    fi
+  done < <(jq -j '.[] | (.id | if type == "string" then . else tojson end), "\u0000", (.head // ""), "\u0000", (.scope | tojson), "\u0000"' <<<"$rows")
+  if (( ${#miss[@]} > 0 )); then
+    local expanded filtered_scope filtered_old tmp
+    hotspot_log >/dev/null # Subshell expansions must inherit the same history.
+    expanded="$(hotspot_expand_batch "$(jq -c --argjson ids "$(printf '%s' "$miss_ids" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+      '[.[] | select((.id | if type == "string" then . else tojson end) as $i | $ids | index($i)) | {id,scope}]' <<<"$rows")")" || return 1
+    [[ "${HOTSPOT_LOG_OK:-false}" == true ]] || HOTSPOT_LOG_LOADED=false
+    while IFS= read -r row; do
+      id="$(jqf -r '.id' <<<"$row")"
+      filtered_scope="$(scheduler_footprint_filter_main "$(jqf -c '.scope' <<<"$row")")" || return 1
+      filtered_old="$(scheduler_footprint_filter_main "$(jqf -c '.old_scope' <<<"$row")")" || return 1
+      TICK_CHECK_SCOPE["$id"]="$filtered_scope"; TICK_OLD_SCOPE["$id"]="$filtered_old"
+      TICK_HOTSPOT_COUNTS["$id"]="$(jqf -c '.counts' <<<"$row")"
+      # A failed history read gives a degraded expansion: never store it.
+      if [[ "${HOTSPOT_LOG_OK:-false}" == true && -n "${keys[$id]:-}" ]] && mkdir -p "$dir" 2>/dev/null; then
+        tmp="$dir/.${keys[$id]}.$$.tmp"
+        if jq -cn --argjson scope "$filtered_scope" --argjson old "$filtered_old" --argjson counts "${TICK_HOTSPOT_COUNTS[$id]}" \
+          '{scope:$scope,old_scope:$old,counts:$counts}' >"$tmp" 2>/dev/null && mv -f -- "$tmp" "$dir/${keys[$id]}"; then :; else rm -f -- "$tmp"; fi
+      fi
+    done < <(jqf -c '.[]' <<<"$expanded")
+    [[ -z "$main" ]] || footprint_cache_prune "$main"
+  fi
+  (( total > 0 && hits == total )) && FOOTPRINT_CACHE_STATE=hit
+  return 0
+}
 footprint_preflight_snapshot() {
   if [[ "$TICK_FOOTPRINT_PREFLIGHT_STATUS" == ready ]]; then
     [[ "$TICK_FOOTPRINT_CONFLICT_VALID" == true ]] && return 0
@@ -355,12 +421,15 @@ footprint_preflight_snapshot() {
   fi
   [[ "$TICK_FOOTPRINT_PREFLIGHT_STATUS" == not-started ]] || return 1
   TICK_FOOTPRINT_PREFLIGHT_STATUS=failed
-  local started=$SECONDS scope_rows='' clear_scope_rows='' scope_candidates expanded_scopes row updates update_count u id scope check_scope elapsed candidate_count=0
+  local started=$SECONDS scope_rows='' clear_scope_rows='' scope_candidates updates update_count u id head scope elapsed candidate_count=0
+  local -A heads=()
+  FOOTPRINT_CACHE_PREFLIGHT=miss
   local candidate_filter='.units[] | select(.stage == "implement-pending" or .stage == "repair-pending")'
   [[ "$TICK_DISPATCH_LOCAL_REFILL" != true ]] || candidate_filter='.units[] | select(.stage == "implement-pending")'
   TICK_FOOTPRINT_PREFLIGHT_IDS=()
   while IFS= read -r u; do
     id="$(jqf -r '.id' <<<"$u")"
+    heads["$id"]="$(footprint_unit_head "$u")"
     scope="$(scheduler_footprint "$u")" || return 1
     TICK_FOOTPRINT_CACHE["$id"]="$scope"
     TICK_FOOTPRINT_PREFLIGHT_IDS+=("$id")
@@ -379,26 +448,13 @@ footprint_preflight_snapshot() {
   footprint_refresh_conflicts true || return 1
   while IFS=$'\t' read -r id scope; do
     [[ -n "$id" && -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[$id]:-}" ]] || continue
-    clear_scope_rows+="$id"$'\t'"$scope"$'\n'
+    clear_scope_rows+="$id"$'\t'"$scope"$'\t'"${heads[$id]:-}"$'\n'
   done <<<"$scope_rows"
   if [[ -n "$clear_scope_rows" ]]; then
-    scope_candidates="$(jqf -Rn '[inputs | split("\t") | select(length == 2) | {id:.[0],scope:(.[1] | fromjson)}]' <<<"$clear_scope_rows")" \
+    scope_candidates="$(jqf -Rn '[inputs | split("\t") | select(length == 3) | {id:.[0],scope:(.[1] | fromjson),head:.[2]}]' <<<"$clear_scope_rows")" \
       || { footprint_drop_check_scope_cache; return 1; }
-    hotspot_log >/dev/null # Subshell expansions must inherit the same history.
-    expanded_scopes="$(hotspot_expand_batch "$scope_candidates")" \
-      || { footprint_drop_check_scope_cache; return 1; }
-    [[ "${HOTSPOT_LOG_OK:-false}" == true ]] || HOTSPOT_LOG_LOADED=false
-    while IFS= read -r row; do
-      id="$(jqf -r '.id' <<<"$row")"
-      check_scope="$(jqf -c '.scope' <<<"$row")"
-      check_scope="$(scheduler_footprint_filter_main "$check_scope")" || {
-        footprint_drop_check_scope_cache
-        return 1
-      }
-      TICK_CHECK_SCOPE["$id"]="$check_scope"
-      TICK_OLD_SCOPE["$id"]="$(scheduler_footprint_filter_main "$(jqf -c '.old_scope' <<<"$row")")" || return 1
-      TICK_HOTSPOT_COUNTS["$id"]="$(jqf -c '.counts' <<<"$row")"
-    done < <(jqf -c '.[]' <<<"$expanded_scopes")
+    footprint_expand_rows "$scope_candidates" false || { footprint_drop_check_scope_cache; return 1; }
+    FOOTPRINT_CACHE_PREFLIGHT="$FOOTPRINT_CACHE_STATE"
     footprint_refresh_conflicts cached || return 1
   fi
   updates="$(jqf -Rn '[inputs | split("\t") | select(length == 2) | {key:.[0],value:(.[1] | fromjson)}] | from_entries' <<<"$scope_rows")" || return 1
@@ -409,7 +465,7 @@ footprint_preflight_snapshot() {
   fi
   TICK_FOOTPRINT_PREFLIGHT_STATUS=ready
   elapsed=$((SECONDS - started))
-  (( elapsed < 2 )) || say "dispatch detail footprint_preflight candidates=$candidate_count secs=${elapsed}s"
+  (( elapsed < 2 )) || say "dispatch detail footprint_preflight candidates=$candidate_count secs=${elapsed}s cache=$FOOTPRINT_CACHE_PREFLIGHT"
   refill_cost_record preflight "$elapsed"
 }
 # #4488 第二轮（spec #4495 的类级解法）：预测足迹本身也看不准，共享测试文件和
@@ -572,15 +628,10 @@ _footprint_room() {
   if [[ "${TICK_CHECK_SCOPE_SOURCE[$id]:-}" == "$scope" ]]; then
     check_scope="${TICK_CHECK_SCOPE[$id]}"
   else
-    hotspot_log >/dev/null
-    local expanded_row
-    expanded_row="$(hotspot_expand_batch "$(jq -cn --arg id "$id" --argjson scope "$scope" '[{id:$id,scope:$scope}]')")" || return 1
-    check_scope="$(scheduler_footprint_filter_main "$(jq -c '.[0].scope' <<<"$expanded_row")")" || return 1
-    TICK_OLD_SCOPE["$id"]="$(scheduler_footprint_filter_main "$(jq -c '.[0].old_scope' <<<"$expanded_row")")" || return 1
-    TICK_HOTSPOT_COUNTS["$id"]="$(jq -c '.[0].counts' <<<"$expanded_row")"
-    [[ "${HOTSPOT_LOG_OK:-false}" == true ]] || HOTSPOT_LOG_LOADED=false
+    # require_fresh asks for a verdict that cannot be older than this call: it recomputes the expansion and refreshes the cache entry.
+    footprint_expand_rows "$(jq -cn --arg id "$id" --argjson scope "$scope" --arg head "$(footprint_unit_head "$u")" '[{id:$id,scope:$scope,head:$head}]')" "$require_fresh" || return 1
+    check_scope="${TICK_CHECK_SCOPE[$id]}"
     TICK_CHECK_SCOPE_SOURCE["$id"]="$scope"
-    TICK_CHECK_SCOPE["$id"]="$check_scope"
   fi
   if [[ "$TICK_ACTIVE_FOOTPRINTS_VALID" == true ]]; then
     active="$TICK_ACTIVE_FOOTPRINTS"
@@ -615,6 +666,7 @@ _footprint_room() {
 }
 footprint_room() { # unit type; report checks that materially delay dispatch
   local started=$SECONDS rc=0 elapsed room_start="${EPOCHREALTIME:-0}" room_end
+  FOOTPRINT_CACHE_STATE=''
   # Repair reaches this twice (room_for, then the handler); the walk is sequential, so one unit is one candidate.
   if [[ -n "${TICK_FOOTPRINT_CAP:-}" && "${TICK_FOOTPRINT_DEFER:-false}" == true && "$1" != "$TICK_FOOTPRINT_CAP_LAST" ]]; then
     TICK_FOOTPRINT_CAP_LAST="$1"
@@ -637,7 +689,7 @@ footprint_room() { # unit type; report checks that materially delay dispatch
     set_unit "$1" 'del(.footprint_wait_owner,.footprint_wait_since)'
   fi
   elapsed=$((SECONDS - started))
-  (( elapsed >= 2 )) && say "dispatch detail footprint_check unit=$1 secs=${elapsed}s"
+  (( elapsed >= 2 )) && say "dispatch detail footprint_check unit=$1 secs=${elapsed}s cache=${FOOTPRINT_CACHE_STATE:-$FOOTPRINT_CACHE_PREFLIGHT}"
   return "$rc"
 }
 # Old wait-age markers are released only after their owner leaves the writer set. Do not weaken

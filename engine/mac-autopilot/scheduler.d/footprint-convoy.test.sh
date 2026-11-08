@@ -110,6 +110,11 @@ TICK_DISPATCH_LOCAL_REFILL=false
 TICK_FOOTPRINT_DEFER=true
 footprint_preflight_snapshot || fail 'batch preflight failed'
 [[ -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[candidate]:-}" && "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[direct]:-}" == owner ]] || fail 'batch preflight applied wrong threshold'
+# A second preflight over the same heads and main reads the cache and reaches the same verdicts.
+TICK_FOOTPRINT_PREFLIGHT_STATUS=not-started TICK_FOOTPRINT_CONFLICT_VALID=false TICK_ACTIVE_FOOTPRINTS_VALID=false
+footprint_preflight_snapshot || fail 'second preflight failed'
+[[ "$FOOTPRINT_CACHE_PREFLIGHT" == hit && -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[candidate]:-}" && "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[direct]:-}" == owner ]] \
+  || fail "second preflight did not hit the expansion cache (state=$FOOTPRINT_CACHE_PREFLIGHT)"
 footprint_room candidate "$(jq -c '.units[] | select(.id=="candidate")' "$UNITS")" true || fail 'weak expansion blocked admission'
 grep -Fq 'footprint-shadow-old-rule-would-block unit=candidate owner=owner candidate_path=src/hot owner_path=src/hot source=expansion cochange_count=2' "$LOG" || fail 'shadow attribution missing'
 TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0
@@ -251,4 +256,36 @@ metrics="$(refill_dispatch_metrics "$log_start" 3)"
 [[ "$metrics" == 'free_slots=5 pending=3 skips=footprint:1,handoff:1,memory:1' ]] \
   || fail "refill metrics were incomplete: $metrics"
 
-echo 'footprint-convoy.test.sh: pass (stale-owner release, live-owner lock, convoy dedupe, refill metrics)'
+# Expansion cache: the same head and main hit without the expensive step; a moved main, a new head, another hotspot floor and require_fresh miss.
+git -C "$ROOT" init -q
+git -C "$ROOT" config user.email t@t.invalid; git -C "$ROOT" config user.name t
+printf 'a\n' > "$ROOT/a.txt"; git -C "$ROOT" add a.txt; git -C "$ROOT" commit -qm one
+git -C "$ROOT" update-ref refs/remotes/origin/main HEAD
+expand_count_file="$test_env_root/expand-calls"; : > "$expand_count_file"
+hotspot_expand_batch() { echo x >> "$expand_count_file"; jq -c '[.[] | {id,scope,old_scope:.scope,counts:{}}]' <<<"$1"; }
+expand_calls() { wc -l < "$expand_count_file" | tr -d ' '; }
+cache_rows='[{"id":"c1","scope":["a.txt"],"head":"h1"}]'
+footprint_expand_rows "$cache_rows" false
+[[ "$(expand_calls)" == 1 && "$FOOTPRINT_CACHE_STATE" == miss && "${TICK_CHECK_SCOPE[c1]}" == '["a.txt"]' ]] || fail 'first expansion was not a computed miss'
+TICK_CHECK_SCOPE[c1]=cleared; TICK_OLD_SCOPE[c1]=cleared; TICK_HOTSPOT_COUNTS[c1]=cleared
+footprint_expand_rows "$cache_rows" false
+[[ "$(expand_calls)" == 1 && "$FOOTPRINT_CACHE_STATE" == hit ]] || fail "same head and main did not hit (calls=$(expand_calls) state=$FOOTPRINT_CACHE_STATE)"
+[[ "${TICK_CHECK_SCOPE[c1]}" == '["a.txt"]' && "${TICK_OLD_SCOPE[c1]}" == '["a.txt"]' && "${TICK_HOTSPOT_COUNTS[c1]}" == '{}' ]] || fail 'a hit did not restore scope, old scope and counts'
+footprint_expand_rows "$cache_rows" true
+[[ "$(expand_calls)" == 2 && "$FOOTPRINT_CACHE_STATE" == miss ]] || fail 'require_fresh did not bypass the cache'
+footprint_expand_rows '[{"id":"c1","scope":["a.txt"],"head":"h2"}]' false
+[[ "$(expand_calls)" == 3 && "$FOOTPRINT_CACHE_STATE" == miss ]] || fail 'a new PR head did not miss'
+ZF_FOOTPRINT_HOTSPOT_MIN=5 footprint_expand_rows "$cache_rows" false
+[[ "$(expand_calls)" == 4 && "$FOOTPRINT_CACHE_STATE" == miss ]] || fail 'another hotspot floor did not miss'
+old_main="$(git -C "$ROOT" rev-parse refs/remotes/origin/main)"
+printf 'b\n' > "$ROOT/b.txt"; git -C "$ROOT" add b.txt; git -C "$ROOT" commit -qm two
+git -C "$ROOT" update-ref refs/remotes/origin/main HEAD
+footprint_expand_rows "$cache_rows" false
+[[ "$(expand_calls)" == 5 && "$FOOTPRINT_CACHE_STATE" == miss ]] || fail 'a moved main did not miss'
+footprint_expand_rows "$cache_rows" false
+[[ "$(expand_calls)" == 5 && "$FOOTPRINT_CACHE_STATE" == hit ]] || fail 'the new main did not hit on its second call'
+[[ -z "$(ls "$A/footprint-cache" | grep -v "^$(git -C "$ROOT" rev-parse refs/remotes/origin/main)-" || true)" ]] || fail 'entries of the old main were not pruned'
+[[ -n "$old_main" ]] || fail 'fixture lost the old main'
+unset -f hotspot_expand_batch
+
+echo 'footprint-convoy.test.sh: pass (stale-owner release, live-owner lock, convoy dedupe, refill metrics, expansion cache)'
