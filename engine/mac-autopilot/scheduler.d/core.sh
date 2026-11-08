@@ -11,6 +11,14 @@ sched_mechanism_registry() { # stdout: path of the engine registry with the targ
   fi
 }
 say() { echo "[$STAMP] $*" >> "$LOG"; }
+# Add $1 to the EXIT trap in front of the trap already set (the engine canary, scheduler.sh:11), never replacing it; skipped when already there.
+chain_exit_trap() {
+  local cur prior
+  cur="$(trap -p EXIT)"
+  [[ "$cur" == *"$1"* ]] && return 0
+  eval "prior=$(sed -n 's/^trap -- //; s/ EXIT$//p' <<<"$cur")"
+  trap "$1${prior:+; $prior}" EXIT # lint-exempt: the one bare EXIT trap, every other one calls this
+}
 # Refuse a unit advisor launch before Node sees a bad provider path. The bell
 # recognizes this stable line and files one incident through pipeline issue upsert.
 ADVISOR_PROVIDER_MISSING_LOGGED=false

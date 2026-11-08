@@ -8,7 +8,7 @@ acquire_scheduler_lock() {
   fi
   echo "$owner" > "$SCHED_LOCK/pid"
   SCHED_LOCK_HELD=true
-  trap 'release_scheduler_lock' EXIT
+  chain_exit_trap 'release_scheduler_lock'
 }
 release_scheduler_lock() {
   [[ "${SCHED_LOCK_HELD:-false}" == true ]] || return 0
@@ -87,7 +87,7 @@ views_entry() { # scheduler.sh --views <mode>：分离进程入口，自己持�
     mkdir "$VIEWS_LOCK" 2>/dev/null || return 0
   fi
   echo "$$" > "$VIEWS_LOCK/pid"
-  trap 'rm -rf "$VIEWS_LOCK"' EXIT
+  chain_exit_trap 'rm -rf "$VIEWS_LOCK"'
   run_views "${1:-dashboard}"
 }
 launch_views() { # mode；AUTOPI_VIEWS_INLINE=true 时就地跑完（测试与排障）

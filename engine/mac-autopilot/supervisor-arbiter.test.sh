@@ -32,8 +32,7 @@ decision_eval_stages() { printf '\n'; }
 [[ "$(review_contract_rule)" == *"$ZF_CONFIG_ROOT/prompts/review-contract.md"* ]] \
   || { echo 'supervisor-arbiter.test.sh: review contract must use target config override' >&2; exit 1; }
 
-# The scheduler lock's EXIT trap replaces test-env.sh's root cleanup, so clean up here on both paths.
-fail() { echo "supervisor-arbiter.test.sh: $*" >&2; release_scheduler_lock; test_env_chain_exit "$test_env_root"; exit 1; }
+fail() { echo "supervisor-arbiter.test.sh: $*" >&2; exit 1; }
 units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 
@@ -854,6 +853,4 @@ for n in 706 707; do
     || fail "issue $n: wrong size-admission route: $(cat "$fixture/recut-calls")"
 done
 
-release_scheduler_lock
-test_env_chain_exit "$test_env_root"
 echo 'supervisor-arbiter.test.sh: all assertions passed'

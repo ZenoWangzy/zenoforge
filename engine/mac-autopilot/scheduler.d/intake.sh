@@ -94,7 +94,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
   rm -f -- "$cache_valid_tmp"
   (
     query_dir="$(mktemp -d)" || exit 1
-    trap 'rm -rf -- "$query_dir"' EXIT
+    chain_exit_trap 'rm -rf -- "$query_dir"'
     local valid_queries=0
     # 标签列表有界并行取（GH_PARALLEL）。
     while IFS=$'\t' read -r lane label; do
