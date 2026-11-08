@@ -19,6 +19,15 @@ incident_labels_match_json() { # issue/unit JSON, configured labels JSON → suc
   ' <<<"$1" >/dev/null 2>&1
 }
 
+incident_match_line() { # issue/unit JSON, configured labels JSON → the line naming the matched incident labels, shown before the rule
+  local matched
+  matched="$(jq -r --argjson configured "$2" '
+    [.labels[]? | if type == "string" then . else (.name // empty) end]
+    | map(select(. as $label | ($configured | index($label)) != null)) | unique | join(", ")
+  ' <<<"$1")" || return 1
+  printf 'This unit IS an incident unit: its label %s is in incident.labels, so every requirement below applies to your report.' "$matched"
+}
+
 incident_rule_text() { # canonical requirements shared across implementation, review, arbiter and hotfix prompts
   cat <<EOF
 INCIDENT_RULE

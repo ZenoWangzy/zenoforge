@@ -18,7 +18,7 @@ hotpatch_rule() { [[ "$(jqf -r '.hotpatch // false' <<<"$1")" == true ]] && prin
 arbiter_rule() { [[ "$(jqf -r '.arbiter // false' <<<"$1")" == true ]] && printf '%s' "$ARBITER_RULE"; return 0; }
 incident_rule_for_unit() {
   incident_labels_match_json "$1" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}" || return 0
-  printf '\n%s' "${INCIDENT_RULE:-$(incident_rule_text)}"
+  printf '\n%s\n%s' "$(incident_match_line "$1" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}")" "${INCIDENT_RULE:-$(incident_rule_text)}"
 }
 incident_worker_prompt() { # worker type unit JSON prompt → prompt with the shared incident rule when applicable
   local type="$1" unit_json="$2" prompt="$3"

@@ -20,7 +20,7 @@ git worktree add --lock -b "hotfix/$issue-$slug" "$worktree" origin/main
 worker_brief="$root/hf-$issue-$slug-brief.md"
 cat "$brief" > "$worker_brief"
 if incident_labels_match_json "$issue_json" "$incident_labels"; then
-  printf '\n%s\n' "$(incident_rule_text)" >> "$worker_brief"
+  printf '\n%s\n%s\n' "$(incident_match_line "$issue_json" "$incident_labels")" "$(incident_rule_text)" >> "$worker_brief"
 fi
 cat >> "$worker_brief" <<'FOOTER'
 
