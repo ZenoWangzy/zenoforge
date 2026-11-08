@@ -330,7 +330,7 @@ gaps += [k for k in list(n.TIME_SINKS) + list(n.CI_STANDARDS) if f"`{k}`" not in
 sys.exit(print("missing:", gaps) or 1 if gaps else 0)
 CHECK
 # 裁决副本对账：pack 有而引擎实际读取的 state/rulings.json 没有的行数计入 rulings.copies_differ
-# （健康 0，异常 ≥1）；按 (date, scope) 对账因为引擎副本构建时会改 id 和路径；任一文件缺失记 NO-DATA。
+# （健康 0，异常 ≥1）；按 id 对账，无 id 的行按 (date, scope)；同 id 换 scope 不算缺行；任一文件缺失记 NO-DATA。
 rch="$test_env_root/rulings-copies"; mkdir -p "$rch/config/state" "$rch/pack/scripts/agent/state" "$rch/runtime"
 rcrows() { printf '{"rulings":[%s]}\n' "$1"; }
 rcval() { # <engine rows> <pack rows|-> → metric value and status（引擎副本缺失时 zf_config_file 回落到引擎自带的那份，所以只测 pack 缺失）
@@ -344,10 +344,14 @@ rcval() { # <engine rows> <pack rows|-> → metric value and status（引擎副�
 }
 rc_a='{"id":"a","date":"2026-11-01","scope":"ops"}'
 rc_b='{"id":"b","date":"2026-11-02","scope":"pipeline"}'
-rc_a2='{"id":"a-renamed","date":"2026-11-01","scope":"ops"}'
-[[ "$(rcval "$rc_a,$rc_b" "$rc_a2,$rc_b")" == "0 OK" ]] || fail "copies with renamed ids must match: $(rcval "$rc_a,$rc_b" "$rc_a2,$rc_b")"
-[[ "$(rcval "$rc_a" "$rc_a2,$rc_b")" == "1 UNHEALTHY" ]] || fail "a ruling only in the pack must be one difference: $(rcval "$rc_a" "$rc_a2,$rc_b")"
-[[ "$(rcval "$rc_a,$rc_b" "$rc_a2")" == "0 OK" ]] || fail "a ruling only in the engine copy is live and must not count: $(rcval "$rc_a,$rc_b" "$rc_a2")"
+rc_bs='{"id":"b","date":"2026-11-02","scope":"process"}'
+rc_c='{"id":"c","date":"2026-11-03","scope":"ops"}'
+rc_n='{"date":"2026-11-04","scope":"ops"}'
+rc_n2='{"date":"2026-11-04","scope":"pipeline"}'
+[[ "$(rcval "$rc_a,$rc_b" "$rc_a,$rc_bs")" == "0 OK" ]] || fail "a scope change on the same id must not be a missing row: $(rcval "$rc_a,$rc_b" "$rc_a,$rc_bs")"
+[[ "$(rcval "$rc_a" "$rc_a,$rc_c")" == "1 UNHEALTHY" ]] || fail "a pack-only id must be one difference: $(rcval "$rc_a" "$rc_a,$rc_c")"
+[[ "$(rcval "$rc_a,$rc_n" "$rc_a,$rc_n2")" == "1 UNHEALTHY" ]] || fail "a row without id falls back to (date, scope): $(rcval "$rc_a,$rc_n" "$rc_a,$rc_n2")"
+[[ "$(rcval "$rc_a,$rc_b" "$rc_a")" == "0 OK" ]] || fail "a ruling only in the engine copy is live and must not count: $(rcval "$rc_a,$rc_b" "$rc_a")"
 [[ "$(rcval "$rc_a" -)" == "null NO-DATA" ]] || fail "a missing pack copy must be NO-DATA, not 0: $(rcval "$rc_a" -)"
 # 工作单标准：在途单超过 bug 线计入 workorders.over_standard；已合并的不算；--json 给看板
 # 29 M 有缓存拆分（无缓存读）的 review 轮：未缓存 token 计入工单；只有页脚的轮不计 token
