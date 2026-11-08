@@ -147,6 +147,19 @@ unit_json="{\"sessions\":{\"repair\":{\"id\":\"$claude_sid\",\"provider\":\"code
 build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$impl_repo" claude || fail 'Claude repair after a provider change was refused'
 [[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == provider-changed ]] || fail 'Claude resumed another provider session'
 
+# Codex repair resumes the recorded thread up to the repair cutoff (20M cumulative raw), goes cold above it.
+codex_sid=223e4567-e89b-12d3-a456-426614174000
+unit_field() { case "$2" in .sessions.repair*) printf '{"id":"%s","provider":"codex","model":"gpt-6-luna"}' "$codex_sid" ;; *) printf false ;; esac; }
+session_file_for_id() { printf '/dev/null'; }
+session_usage_for_id() { printf '{"input_tokens":%s,"cached_input_tokens":0,"output_tokens":0,"raw":%s}' "$repair_raw" "$repair_raw"; }
+session_tokens_for_id() { printf '%s' "$repair_raw"; }
+repair_raw=12000000
+build_codex_command repair gpt-6-luna max implement-1 'cold' 'new failure' || fail 'codex repair at 12M raw was refused'
+[[ "$CODEX_MODE" == resume && "$CODEX_SESSION_ID" == "$codex_sid" ]] || fail "codex repair at 12M raw went cold ($CODEX_MODE/$CODEX_PATH_REASON)"
+repair_raw=21000000
+build_codex_command repair gpt-6-luna max implement-1 'cold' 'new failure' || fail 'codex repair at 21M raw was refused'
+[[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == session-too-large ]] || fail "codex repair above the cutoff resumed ($CODEX_MODE/$CODEX_PATH_REASON)"
+
 printf '%s\n' 'PASS scheduler Codex commands disable configured MCP servers and limit implement tool output'
 printf '%s\n' 'PASS Sonnet fallback allows focused test runners and does not allow git push'
 printf '%s\n' 'PASS Claude implement is stream-json, worktree-scoped, branch-only push, resumes its own session'

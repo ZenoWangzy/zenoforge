@@ -144,8 +144,8 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
         CODEX_PATH_REASON=session-files-missing
       elif [[ -z "$failure" ]]; then
         CODEX_PATH_REASON=no-new-failure
-      elif [[ "$self_fix" != true ]] && ! { usage="$(session_tokens_for_id "$session_id")"; [[ "$usage" =~ ^[0-9]+$ ]] && (( usage < 8000000 )); }; then
-        # Same cumulative-raw cutoff as rereview (a repair chain keeps growing one session); a self-fix always continues.
+      elif [[ "$self_fix" != true ]] && ! { usage="$(session_tokens_for_id "$session_id")"; [[ "$usage" =~ ^[0-9]+$ ]] && (( usage < ${REPAIR_RESUME_MAX_RAW:-20000000} )); }; then
+        # Repair cutoff on cumulative raw (cached input counts, so it is no context size). 2026-11-05..08: 93 cold repairs after the old 8M cutoff cost 208k fresh each; resumes at 8-20M cost 116k. A self-fix always continues.
         CODEX_PATH_REASON=session-too-large
       else
         CODEX_MODE=resume
