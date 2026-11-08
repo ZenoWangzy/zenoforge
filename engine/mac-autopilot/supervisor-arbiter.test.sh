@@ -853,4 +853,30 @@ for n in 706 707; do
     || fail "issue $n: wrong size-admission route: $(cat "$fixture/recut-calls")"
 done
 
+# Starvation: more candidates than slots. A unit that was arbitrated comes back as a fresh escalation (requeue, repair delivers,
+# review blocks again), so in units.json order the front units were re-picked every tick and the rest never ran
+# (issue-5389 waited 14.5 h on 2026-11-08 with 55 of 55 picks ahead of it). Oldest-waiting first: every candidate runs within
+# ceil(candidates / slots) ticks. The array is oldest-last, so array order and age order disagree.
+n_cand=7 slots=2
+: > "$fixture/starve-picks"
+jq -cn --argjson n "$n_cand" '{units:[range($n; 0; -1) as $i | {id:("pr-91\($i)"),issue:(9100+$i),pr:(9100+$i),lane:"pr",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:("blocked by reason " + ("x" * $i)),at:("2026-11-08T01:0\($i):00Z")}]}]}' > "$UNITS"
+echo '{"workers":[]}' > "$WORKERS"
+for i in $(seq 1 "$n_cand"); do jq -n '{state:"ready-for-agent",recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/910$i.json"; done
+for tick in $(seq 1 "$(( (n_cand + slots - 1) / slots ))"); do
+  SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX="$slots" SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+  picked="$(jq -r '[.workers[] | select(.type=="supervise") | .unit] | join(" ")' "$WORKERS")"
+  [[ -n "$picked" ]] || fail "starvation tick $tick dispatched nothing: $(jq -c '[.units[] | {id,stage}]' "$UNITS")"
+  [[ "$tick" != 1 || "$picked" == "pr-911 pr-912" ]] || fail "first tick must take the two oldest escalations, got: $picked"
+  printf '%s\n' $picked >> "$fixture/starve-picks"
+  # The worker ends; each picked unit re-escalates later than every unit still waiting.
+  for id in $picked; do
+    jq --arg id "$id" --arg at "$(printf '2026-11-08T%02d:00:00Z' "$((10 + tick))")" \
+      '.units |= map(if .id == $id then .history += [{stage:"repair-delivered",at:$at},{stage:"supervisor-escalated",result:("blocked again at " + $at + " after a repair"),at:$at}] else . end)' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+  done
+  echo '{"workers":[]}' > "$WORKERS"
+done
+for i in $(seq 1 "$n_cand"); do
+  grep -qx "pr-91$i" "$fixture/starve-picks" || fail "pr-91$i starved: not picked in $(( (n_cand + slots - 1) / slots )) ticks, picks: $(tr '\n' ' ' < "$fixture/starve-picks")"
+done
+
 echo 'supervisor-arbiter.test.sh: all assertions passed'

@@ -30,15 +30,20 @@ supervisor_arbiter_input() { # unit-json [cap-triage] → frozen record JSON
     }' <<<"$u"
 }
 
+# Oldest-waiting first (when it last entered supervisor-review or a cap park; ties keep units.json order): in array order the front
+# units that return here after a failed repair took every slot and 5389 waited 14.5 h on 2026-11-08 with 55 of 55 picks ahead of it.
 supervisor_arbiter_candidates() {
-  jqf -c --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '.units[]
+  jqf -c --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '[.units[]
     | select((.stage=="supervisor-review" or .stage=="parked")
       and (.hold_handoff_waiting // false)==false and (.supervisor_owned // false)==false
       and (.stage!="parked" or .parked_reason=="supervisor-arbitration-cap"
         or .parked_reason=="supervisor-cap-triage-reask" or .parked_reason=="recut-refused-unpushed"
         or .parked_reason=="supervisor-cap-founder" or .parked_reason=="supervisor-cap-exhausted"
         or any((.history // [])[]?; .stage=="supervisor-budget-park" and ((.result // "") | test($cap_park_result_re)))
-        or any((.history // [])[]?; .stage=="supervisor-cap-triage-park")))' "$UNITS"
+        or any((.history // [])[]?; .stage=="supervisor-cap-triage-park")))]
+    | sort_by(. as $u | ([$u.history[]? | select(.at != null and (.stage | IN("supervisor-escalated", "supervisor-review", "supervisor-budget-park", "supervisor-cap-triage-park"))) | .at] | max)
+        // ([$u.history[]?.at | select(. != null)] | max) // "")
+    | .[]' "$UNITS"
 }
 
 dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 worker；在途上限 SUPERVISOR_ARBITER_MAX，两轮上限
