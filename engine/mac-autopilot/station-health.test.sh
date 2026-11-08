@@ -97,3 +97,12 @@ jq -n '{units: [{id:"issue-30", stage:"implement-pending", history:[{stage:"pr-o
 run
 [[ "$(field intake out_1h)" == 1 && "$(field intake last_out)" == 2026-11-07T05:50:00Z && "$(field intake status)" == OK ]] || fail 'hold-handoff must count as an intake out'
 echo 'ok - hold-handoff counts as intake output'
+
+# A release batch that deployed but closed nothing (closed=[]) is one release out, same as release-retained.
+R="$test_env_root/runtime-closer-empty"; H="$test_env_root/home-closer-empty"; mkdir -p "$R/alerts" "$H/state" "$H/logs"
+echo '{"units":[]}' > "$R/units.json"
+echo '{"state":"awaiting-release","deploy_state":"pending","state_changed_at":"2026-11-07T01:00:00Z"}' > "$H/state/21.json"
+printf '[2026-11-07T05:00:00Z] release-closer: deployed=%s closed=[] awaiting-release=[]\n' "$(printf 'c%.0s' {1..40})" > "$R/alerts/events.md"
+run
+[[ "$(jq -r .stations.release.last_out "$R/station-health.json")" == 2026-11-07T05:00:00Z && "$(field release out_24h)" == 1 ]] || fail 'closer with closed=[] must count as one release out'
+echo 'ok - empty release-closer is one release out'

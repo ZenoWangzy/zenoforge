@@ -22,7 +22,7 @@ STATE_BUFFER = {"needs-triage": "triage", "needs-advisor": "advisor"}
 UNIT_OUT = {"review-approve": "review", "review-request-changes": "review", "review-block": "review",
             "merged": "merge", "landed": "merge", "ci-ready": "ci", "ci-wip-start": "ci",
             "hold-handoff": "intake"}  # a handoff re-enters an existing unit: its first row was the original intake
-# `release-closer: deployed=<sha, any length> closed=[issue, ...]`, one out per closed issue.
+# `release-closer: deployed=<sha, any length> closed=[issue, ...]`, one out per closed issue; an empty list is one deploy out.
 RELEASE_RE = re.compile(r"^\[(\S+)\] release-closer: deployed=[0-9a-f]+ closed=\[([0-9,\s]*)\]")
 # `release-retained: deployed=<sha> tracker=#<n> held=[...]`: a deploy whose acceptance failed. One deploy out, not an
 # acceptance and not one out per held ticket (the later release-closer line counts those).
@@ -112,8 +112,8 @@ def outs(units, runtime, agent_home):
         try:
             for raw in open(os.path.join(runtime, name), errors="ignore"):
                 m = RELEASE_RE.match(raw)
-                if m and ts(m.group(1)) and (n := len(re.findall(r"\d+", m.group(2)))):
-                    ev["release"].append((ts(m.group(1)), n))
+                if m and ts(m.group(1)):
+                    ev["release"].append((ts(m.group(1)), len(re.findall(r"\d+", m.group(2))) or 1))
                 elif (m := RETAINED_RE.match(raw)) and ts(m.group(1)):
                     ev["release"].append((ts(m.group(1)), 1))
         except OSError:
