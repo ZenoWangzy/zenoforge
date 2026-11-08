@@ -67,7 +67,7 @@ rf() { jq -cn --arg f "$1" '{review_findings:[{round:1,block:"ok",findings:[{id:
 RC='[{"stage":"review-request-changes","result":"'"$H1"'"}]'
 
 # 1. Report-only round: every blocking finding names the PR body or the delivery report, so an unchanged head is expected.
-for f in '(PR #5618 body)' 'PR #4888 implementer report' 'delivery report'; do
+for f in '(PR #5618 body)' 'PR #4888 implementer report' 'delivery report' 'PR #5650 body'; do
   run_repair "$H1" "$RC" "$(rf "$f")"
   [[ "$(field issue-9 '.history[-1].stage')" == repair-delivered && "$(field issue-9 '.history[-1].head_class')" == unchanged-expected ]] \
     || fail "report-only finding \"$f\" must be unchanged-expected ($(field issue-9 '.history[-1] | tojson'))"

@@ -355,6 +355,7 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
     lesson_brief="$(footprint_recurrence_brief "$unit_json")"
     [[ -z "$lesson_brief" ]] || prompt+=$'\n'"$lesson_brief"
   fi
+  [[ "$3" != review && "$3" != rereview ]] || pr_body_refresh "$unit_json"
   if [[ "$3" == review || "$3" == rereview ]] && [[ "${9:-}" =~ $SHA_RE ]]; then
     self_check_before_review "$1" "$9" "${10:-$ROOT}" "$unit_json" || return 1
     check_output="$(jqf -r '.self_check_output // empty' <<<"$unit_json")"

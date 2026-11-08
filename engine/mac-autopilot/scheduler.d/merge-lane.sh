@@ -683,6 +683,7 @@ run_merge_lane_pass() {
       say "merge skipped PR#$pr (supervisor-owned hotfix lane; the hotfix supervisor merges it)"
       pass_step_end skipped-supervisor-owned "$pr"; continue
     fi
+    pr_body_refresh "$ready"
     pre_merge_sha="$(git -C "$ROOT" ls-remote origin refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}')"
     # main may advance while PR checks run or another lane lands; exact-head PR checks gate the merge,
     # and post-merge exact-SHA CI verifies the resulting main commit without a stable-main barrier.
