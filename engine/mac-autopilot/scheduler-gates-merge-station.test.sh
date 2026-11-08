@@ -43,7 +43,8 @@ fresh_epoch() { date +%s > "$A/.merge-station-epoch"; }
 
 # ---- (a) starvation: a full tick holds the ledger lock and the refill budget is spent; the station still merges ----
 open_pr; ready_unit; : > "$MERGE_LOG"; : > "$LOG"; rm -f "$A/.merge-station-epoch" "$A/.merge-pass-epoch"
-bash -c 'mkdir "$1" && echo $$ > "$1/pid" && sleep 3 && rm -rf "$1"' _ "$SCHED_LOCK" & fake_tick=$!
+# The fake tick holds the lock until the merge call is logged (60 s at most), so a loaded host cannot release it before the station gets there.
+bash -c 'mkdir "$1" && echo $$ > "$1/pid" && for _ in $(seq 600); do [[ -s "$2" ]] && break; sleep 0.1; done; rm -rf "$1"' _ "$SCHED_LOCK" "$MERGE_LOG" & fake_tick=$!
 for _ in $(seq 50); do [[ -s "$SCHED_LOCK/pid" ]] && break; command sleep 0.1; done
 [[ -s "$SCHED_LOCK/pid" ]] || fail 'the fake tick did not take the scheduler lock'
 SECONDS=290; AUTOPI_REFILL_LIMIT_SECONDS=300 # the refill's budget is spent (a refill-side pass would stop: refill-merge-pass.test.sh)
