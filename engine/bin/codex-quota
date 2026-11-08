@@ -14,6 +14,7 @@ const MARKER = `${AGENT_HOME}/codex-exhausted-until`;
 const CAP_5H = Number(process.env.CODEX_5H_CAP || 85);  // stop starting Codex at this 5h percentage
 const CDP = process.env.QUOTA_CDP_URL || 'http://127.0.0.1:9222';
 const CALL_TIMEOUT_MS = Number(process.env.QUOTA_CDP_CALL_TIMEOUT_MS || 30000);
+const RESPONSE_WAIT_MS = Number(process.env.QUOTA_RESPONSE_WAIT_MS || 40000); // the usage call after a navigate
 // 2026-10-31 ~19:39Z: /codex/settings/usage started redirecting to chatgpt.com/ without the usage call; the usage page is now here.
 const PAGE = 'https://chatgpt.com/settings/usage';
 const API = '/backend-api/wham/usage';
@@ -51,13 +52,24 @@ try {
   const evaluate = async expression => (await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
   const body = async h => (await call('Network.getResponseBody', { requestId: h.requestId })).result?.body;
 
-  async function readQuota() {
+  // Navigate, not reload: a reused tab may have drifted (redirect, another session), and a reload elsewhere never calls the usage API.
+  // 40 s default, the same wait as zc-quota: the usage call can be slow under load.
+  async function awaitQuotaReply() {
     hits = [];
-    // Navigate, not reload: a reused tab may have drifted (redirect, another session), and a reload elsewhere never calls the usage API.
     await call('Page.navigate', { url: PAGE });
-    // 40 s, the same wait as zc-quota: the usage call can be slow under load.
-    for (let i = 0; i < 80 && !hits.some(h => h.done); i++) await sleep(500);
-    const h = hits.find(x => x.done);
+    for (let i = 0; i < RESPONSE_WAIT_MS / 500 && !hits.some(h => h.done); i++) await sleep(500);
+    return hits.find(x => x.done);
+  }
+
+  async function readQuota() {
+    let h = await awaitQuotaReply();
+    if (!h) {
+      // A signed-out tab sits on a login page and never sends the usage call: a second reload cannot help.
+      const at = await evaluate('location.href').catch(() => '');
+      if (/login|signin|sign-in/i.test(at || '')) throw new Error(`signed out: the usage tab is at ${at} (not retried)`);
+      log('usage response not seen after reload: retrying the reload once');
+      h = await awaitQuotaReply();
+    }
     if (!h) throw new Error('wham/usage response not seen after reload (signed out?)');
     const rl = JSON.parse(await body(h)).rate_limit || {};
     // Windows are matched by length: 18000 s = 5h, 604800 s = weekly. This account currently reports weekly only.

@@ -10,14 +10,24 @@ import { fileURLToPath } from 'node:url';
 
 const bin = path.dirname(fileURLToPath(import.meta.url));
 
-// Replies to CDP calls like a tab whose quota call reports `week` percent, and records each method called.
-function answerCdp(socket, week, seen) {
+// The quota reply a script reads: zc-quota the GLM limit list, codex-quota the ChatGPT rate_limit windows.
+function quotaReply(script, week) {
+  if (script === 'codex-quota') return { hit: 'https://chatgpt.com/backend-api/wham/usage', body: JSON.stringify({ rate_limit: {
+    primary_window: { limit_window_seconds: 18000, used_percent: 10, reset_at: 1800000000 },
+    secondary_window: { limit_window_seconds: 604800, used_percent: week, reset_at: 1800000000 } } }) };
+  const limits = [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 10 }, { type: 'TOKENS_LIMIT', unit: 6, percentage: week, nextResetTime: 1800000000000 }];
+  return { hit: 'https://bigmodel.cn/api/monitor/usage/quota/limit', body: JSON.stringify({ data: { limits } }) };
+}
+
+// Replies to CDP calls like a usage tab: its quota reply is `reply.hit`/`reply.body`, the first `reply.miss` navigations never
+// get one, and the tab sits at `reply.atUrl`. Records each method called.
+function answerCdp(socket, reply, seen) {
   const send = obj => {
     const text = Buffer.from(JSON.stringify(obj));
     const head = text.length < 126 ? Buffer.from([0x81, text.length]) : Buffer.from([0x81, 126, text.length >> 8, text.length & 255]);
     socket.write(Buffer.concat([head, text]));
   };
-  const limits = [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 10 }, { type: 'TOKENS_LIMIT', unit: 6, percentage: week, nextResetTime: 1800000000000 }];
+  let navigations = 0;
   let buf = Buffer.alloc(0);
   socket.on('data', chunk => {
     buf = Buffer.concat([buf, chunk]);
@@ -30,16 +40,18 @@ function answerCdp(socket, week, seen) {
       if (opcode !== 1) continue;
       const m = JSON.parse(text);
       seen.push(`CDP ${m.method}`);
-      if (m.method === 'Page.navigate') {
-        send({ method: 'Network.responseReceived', params: { requestId: 'q', response: { url: 'https://bigmodel.cn/api/monitor/usage/quota/limit' } } });
+      if (m.method === 'Page.navigate' && ++navigations > (reply.miss || 0)) {
+        send({ method: 'Network.responseReceived', params: { requestId: 'q', response: { url: reply.hit } } });
         send({ method: 'Network.loadingFinished', params: { requestId: 'q' } });
       }
-      send({ id: m.id, result: m.method === 'Network.getResponseBody' ? { body: JSON.stringify({ data: { limits } }) } : {} });
+      const result = m.method === 'Network.getResponseBody' ? { body: reply.body }
+        : m.method === 'Runtime.evaluate' ? { result: { value: reply.atUrl } } : {};
+      send({ id: m.id, result });
     }
   });
 }
 
-async function run(script, tabs, files = {}, { week, env = {}, home: reuse } = {}) {
+async function run(script, tabs, files = {}, { week, miss, atUrl, env = {}, home: reuse } = {}) {
   const seen = [];
   const server = http.createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
@@ -55,7 +67,7 @@ async function run(script, tabs, files = {}, { week, env = {}, home: reuse } = {
     const accept = createHash('sha1').update(`${req.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
     socket.on('error', () => {});
-    if (week !== undefined) answerCdp(socket, week, seen);
+    if (week !== undefined) answerCdp(socket, { ...quotaReply(script, week), miss, atUrl }, seen);
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const home = reuse ?? fs.mkdtempSync(path.join(os.tmpdir(), 'quota-tab-'));
@@ -63,7 +75,7 @@ async function run(script, tabs, files = {}, { week, env = {}, home: reuse } = {
   for (const [file, text] of Object.entries(files)) fs.writeFileSync(path.join(home, file), text);
   const child = spawn(process.execPath, [path.join(bin, script)], {
     env: { ...process.env, HOME: home, AGENT_HOME: path.join(home, '.zenoforge'), NO_PROXY: '127.0.0.1',
-      QUOTA_CDP_URL: `http://127.0.0.1:${server.address().port}`, QUOTA_CDP_CALL_TIMEOUT_MS: '300', ...env },
+      QUOTA_CDP_URL: `http://127.0.0.1:${server.address().port}`, QUOTA_CDP_CALL_TIMEOUT_MS: '300', QUOTA_RESPONSE_WAIT_MS: '1000', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let out = '';
@@ -79,11 +91,11 @@ async function run(script, tabs, files = {}, { week, env = {}, home: reuse } = {
 
 const scripts = {
   'zc-quota': { url: 'https://bigmodel.cn/coding-plan/personal/usage', book: '.zenoforge/zc-quota.json.tab',
-    write: id => `${id}\n`, read: t => t.trim() },
+    write: id => `${id}\n`, read: t => t.trim(), signIn: 'https://bigmodel.cn/login' },
   'codex-quota': { url: 'https://chatgpt.com/settings/usage', book: '.zenoforge/codex-quota-state.json',
-    write: id => JSON.stringify({ tab_id: id }), read: t => JSON.parse(t).tab_id },
+    write: id => JSON.stringify({ tab_id: id }), read: t => JSON.parse(t).tab_id, signIn: 'https://chatgpt.com/auth/login' },
 };
-for (const [script, { url, book, write, read }] of Object.entries(scripts)) {
+for (const [script, { url, book, write, read, signIn }] of Object.entries(scripts)) {
   const tab = (id, at) => port => [{ id, type: 'page', url: at, webSocketDebuggerUrl: `ws://127.0.0.1:${port}/tab` }];
 
   const hung = await run(script, tab('hung', url), { [book]: write('hung') });
@@ -94,6 +106,19 @@ for (const [script, { url, book, write, read }] of Object.entries(scripts)) {
   const missing = await run(script, () => []);
   assert.ok(missing.seen.some(s => s.startsWith('PUT /json/new')), missing.seen.join());
   assert.equal(read(fs.readFileSync(path.join(missing.home, book), 'utf8')), 'new-tab');
+
+  // A reply missed once is retried once: the second reload answers and the read succeeds.
+  const retried = await run(script, tab('read', url), { [book]: write('read') }, { week: 13, miss: 1, env: { ZC_WEEK_PACE_PCT: '0' } });
+  assert.equal(retried.code, 0, retried.out);
+  assert.equal(retried.seen.filter(s => s === 'CDP Page.navigate').length, 2, retried.seen.join());
+  assert.equal(retried.out.match(/retrying the reload once/g)?.length, 1, retried.out);
+
+  // A signed-out tab is an immediate failure with its own line: no second reload.
+  const signedOut = await run(script, tab('read', url), { [book]: write('read') }, { week: 13, miss: 99, atUrl: signIn, env: { ZC_WEEK_PACE_PCT: '0' } });
+  assert.equal(signedOut.code, 1, signedOut.out);
+  assert.match(signedOut.out, /signed out: the usage tab is at/);
+  assert.ok(!/retrying the reload once/.test(signedOut.out), signedOut.out);
+  assert.equal(signedOut.seen.filter(s => s === 'CDP Page.navigate').length, 1, signedOut.seen.join());
 }
 
 const redirected = await run('zc-quota', port => [{ id: 'mine', type: 'page', url: 'https://bigmodel.cn/coding-plan/personal/overview',

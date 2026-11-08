@@ -39,6 +39,7 @@ if (process.argv[2] === '--self-test') {
 const PAGE = 'https://bigmodel.cn/coding-plan/personal/usage';
 const CDP = process.env.QUOTA_CDP_URL || 'http://127.0.0.1:9222';
 const CALL_TIMEOUT_MS = Number(process.env.QUOTA_CDP_CALL_TIMEOUT_MS || 30000);
+const RESPONSE_WAIT_MS = Number(process.env.QUOTA_RESPONSE_WAIT_MS || 40000); // the page's quota call after a navigate
 const TAB_BOOK = `${STATE}.tab`;                                  // target id of the tab this script opened
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -92,13 +93,23 @@ ws.onmessage = e => {
 const evaluate = async expression => (await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
 const body = async h => (await call('Network.getResponseBody', { requestId: h.requestId })).result?.body;
 
-async function readQuota() {
+// navigate, not reload: reload kept the chrome-error page after a network timeout. 40 s default: at load5 ~20 the page's quota call took longer than 15 s (10-30 15:22Z).
+async function awaitQuotaReply() {
   hits = [];
-  // navigate, not reload: reload kept the chrome-error page after a network timeout
   await call('Page.navigate', { url: PAGE });
-  // 40 s: at load5 ~20 the page's quota call took longer than 15 s (10-30 15:22Z).
-  for (let i = 0; i < 80 && !hits.some(h => h.done && /quota\/limit/.test(h.url)); i++) await sleep(500);
-  const h = hits.find(x => x.done && /quota\/limit/.test(x.url));
+  for (let i = 0; i < RESPONSE_WAIT_MS / 500 && !hits.some(h => h.done && /quota\/limit/.test(h.url)); i++) await sleep(500);
+  return hits.find(x => x.done && /quota\/limit/.test(x.url));
+}
+
+async function readQuota() {
+  let h = await awaitQuotaReply();
+  if (!h) {
+    // A signed-out tab sits on a login page and never sends the quota call: a second reload cannot help.
+    const at = await evaluate('location.href').catch(() => '');
+    if (/login|signin|sign-in/i.test(at || '')) throw new Error(`signed out: the usage tab is at ${at} (not retried)`);
+    log('usage response not seen after reload: retrying the reload once');
+    h = await awaitQuotaReply();
+  }
   if (!h) throw new Error('quota/limit response not seen after reload (signed out?)');
   const limits = JSON.parse(await body(h)).data?.limits || [];
   const tok = unit => limits.find(l => l.type === 'TOKENS_LIMIT' && l.unit === unit);
