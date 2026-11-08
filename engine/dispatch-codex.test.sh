@@ -104,7 +104,24 @@ stop_fake_codex() {
     esac
   fi
 }
-trap 'stop_fake_codex; rm -rf "$TEST_ROOT"' EXIT
+# Killing the fake Codex lets its detached owner session run its exit trap, which still writes the
+# manifest, budget and report files under TEST_ROOT. Wait for the owners this test started (their
+# PIDs are in the hand-dispatch manifests; dispatch removes its own .pid file once it hands off)
+# before rm, or rm races those writes ("Directory not empty").
+# Only waits, never kills: a recorded PID may be stale after a long run.
+wait_for_owner_sessions() {
+  local pid attempt
+  for pid in $(jq -r '.pid // empty' "$TEST_ROOT"/*/hand-dispatch/*.json 2>/dev/null); do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    for ((attempt = 0; attempt < 1500; attempt++)); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.02 # wall-clock-allow: bounded poll for the owner session this test started
+    done
+    if kill -0 "$pid" 2>/dev/null; then echo "# owner session $pid still running at teardown" >&2; fi
+  done
+}
+cleanup_test_root() { stop_fake_codex; wait_for_owner_sessions; rm -rf "$TEST_ROOT"; }
+trap cleanup_test_root EXIT
 
 mkdir -p "$FAKE_BIN" "$LOW_MEMORY_BIN" "$BAD_SETSID_BIN" "$PID_FAILURE_SETSID_BIN" "$LOG_DIR" "$WORKTREE" "$ZF_WORKTREE_ROOT"
 printf '%s\n' '0.10 0.12 0.13 1/1 100' > "$AGENT_DISPATCH_LOADAVG_FILE"
