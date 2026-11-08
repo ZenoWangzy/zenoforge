@@ -124,7 +124,14 @@ wait_for_owner_sessions() {
     if kill -0 "$pid" 2>/dev/null; then echo "# owner session $pid still running at teardown" >&2; fi
   done
 }
-cleanup_test_root() { stop_fake_codex; wait_for_owner_sessions; rm -rf "$TEST_ROOT"; }
+# A child killed above can still be writing under TEST_ROOT: wait for the owners, then retry the removal,
+# and never let cleanup fail the run under set -e.
+cleanup_test_root() {
+  local i
+  stop_fake_codex; wait_for_owner_sessions
+  for i in 1 2 3 4 5; do rm -rf "$TEST_ROOT" 2>/dev/null && return 0; sleep 0.2; done
+  rm -rf "$TEST_ROOT" 2>/dev/null || true
+}
 trap cleanup_test_root EXIT
 
 mkdir -p "$FAKE_BIN" "$LOW_MEMORY_BIN" "$BAD_SETSID_BIN" "$PID_FAILURE_SETSID_BIN" "$LOG_DIR" "$WORKTREE" "$ZF_WORKTREE_ROOT"
