@@ -166,50 +166,75 @@ run_pin() { # <calls-file> <scope-file> <agent-home> <target> [args...]
     bash "$pin_script" "$new_engine" "$target" "$@"
 }
 
-# Main CI pin guard: only completed failures for this exact SHA on main block;
-# named workflow overrides are narrow, pending runs are allowed, and API errors fail closed.
+# Ruling zenoforge-pin-does-not-wait-ci-2026-11-05: a completed red engine-tests/cli-tests run for
+# this exact SHA on main never blocks the pin; it files one incident per (SHA, workflow) and logs PIN-ON-RED.
+cat > "$tmp/bin/upsert" <<'UPSERT'
+#!/usr/bin/env bash
+# Stands in for engine/pipeline-issue-upsert.sh: idempotent by --class, like the real one.
+set -euo pipefail
+class=""; body=""
+while (($#)); do case "$1" in --class) class=$2; shift 2 ;; --body-file) body=$2; shift 2 ;; *) shift ;; esac; done
+printf 'upsert class=%s\n' "$class" >> "${PIN_UPSERT_CALLS:?}"
+if grep -Fxq "$class" "$PIN_UPSERT_CALLS.seen" 2>/dev/null; then echo "commented class $class"; exit 0; fi
+echo "$class" >> "$PIN_UPSERT_CALLS.seen"
+printf 'created class=%s\n' "$class" >> "$PIN_UPSERT_CALLS"
+cat -- "$body" >> "$PIN_UPSERT_CALLS.bodies"
+UPSERT
+chmod +x "$tmp/bin/upsert"
+export ZF_PIN_INCIDENT_UPSERT="$tmp/bin/upsert"
+export PIN_UPSERT_CALLS="$tmp/upsert.calls"
+: > "$PIN_UPSERT_CALLS"
+
 ci_target=$(setup_target ci)
 ci_agent=$(setup_agent ci)
 ci_calls="$tmp/ci.calls"
 ci_scopes="$tmp/ci.scopes"
 : > "$ci_calls"
 : > "$ci_scopes"
-failed_runs=$(jq -cn --arg sha "$new_engine" '{workflow_runs:[
-  {name:"engine-tests",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure"},
-  {name:"engine-tests",head_sha:$sha,head_branch:"feature",status:"completed",conclusion:"failure"},
-  {name:"cli-tests",head_sha:("0" * 40),head_branch:"main",status:"completed",conclusion:"failure"},
-  {name:"unrelated",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure"}
+engine_url="https://github.com/ZenoWangzy/zenoforge/actions/runs/111"
+failed_runs=$(jq -cn --arg sha "$new_engine" --arg url "$engine_url" '{workflow_runs:[
+  {name:"engine-tests",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure",run_number:1,html_url:"https://example.invalid/old"},
+  {name:"engine-tests",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure",run_number:2,html_url:$url},
+  {name:"engine-tests",head_sha:$sha,head_branch:"feature",status:"completed",conclusion:"failure",run_number:3,html_url:"https://example.invalid/feature"},
+  {name:"cli-tests",head_sha:("0" * 40),head_branch:"main",status:"completed",conclusion:"failure",run_number:4,html_url:"https://example.invalid/other-sha"},
+  {name:"unrelated",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure",run_number:5,html_url:"https://example.invalid/unrelated"}
 ]} | [. ]')
-set +e
-PIN_WORKFLOW_RUNS="$failed_runs" run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-blocked.out" 2>&1
-ci_blocked_status=$?
-set -e
-((ci_blocked_status != 0)) || fail 'completed engine-tests failure on main was allowed without an override'
-grep -Fq "failed zenoforge main workflows for $new_engine: engine-tests" "$tmp/ci-blocked.out" \
-  || fail 'main CI failure was not named in the refusal'
-! grep -q '^dispatcher:' "$ci_calls" || fail 'failed main CI ran pin build steps before refusing'
+for attempt in 1 2; do
+  if ! PIN_WORKFLOW_RUNS="$failed_runs" run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-red$attempt.out" 2>&1; then
+    cat "$tmp/ci-red$attempt.out" >&2
+    fail "completed red engine-tests blocked the pin (attempt $attempt)"
+  fi
+  grep -Fq 'pin-vecta: prepared route=' "$tmp/ci-red$attempt.out" || fail 'red CI pin did not reach pin preparation'
+  [[ $(grep -c '^PIN-ON-RED' "$tmp/ci-red$attempt.out") == 1 ]] || fail 'expected exactly one PIN-ON-RED line'
+  grep -Fxq "PIN-ON-RED sha=$new_engine workflow=engine-tests run=$engine_url" "$tmp/ci-red$attempt.out" \
+    || fail 'PIN-ON-RED line lacks sha, workflow and the latest red run URL'
+  grep -Fq 'refusing pin' "$tmp/ci-red$attempt.out" && fail 'red CI still printed a refusal'
+done
+red_class="pin-on-red-${new_engine:0:12}-engine-tests"
+[[ $(grep -c '^created ' "$PIN_UPSERT_CALLS") == 1 ]] || fail 'a retry for the same SHA and workflow filed a second incident'
+[[ $(grep -c "^upsert class=$red_class\$" "$PIN_UPSERT_CALLS") == 2 ]] || fail 'incident class is not stable per (SHA, workflow)'
+grep -Fq "$engine_url" "$PIN_UPSERT_CALLS.bodies" && grep -Fq "$new_engine" "$PIN_UPSERT_CALLS.bodies" \
+  || fail 'incident body lacks the run URL or SHA'
 
-if ! PIN_WORKFLOW_RUNS="$failed_runs" ZF_PIN_OVERRIDE=engine-tests \
+# Both workflows red: one incident each. An upsert that fails does not stop the pin.
+both_failed_runs=$(jq -cn --arg sha "$new_engine" '{workflow_runs:[
+  {name:"engine-tests",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure",html_url:"https://example.invalid/e"},
+  {name:"cli-tests",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure",html_url:"https://example.invalid/c"}
+]} | [. ]')
+printf '#!/usr/bin/env bash\nexit 1\n' > "$tmp/bin/upsert-fail"; chmod +x "$tmp/bin/upsert-fail"
+if ! PIN_WORKFLOW_RUNS="$both_failed_runs" ZF_PIN_INCIDENT_UPSERT="$tmp/bin/upsert-fail" \
+  run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-both.out" 2>&1; then
+  cat "$tmp/ci-both.out" >&2
+  fail 'a failed incident upsert blocked the pin'
+fi
+[[ $(grep -c '^PIN-ON-RED' "$tmp/ci-both.out") == 2 ]] || fail 'expected one PIN-ON-RED line per red workflow'
+grep -Fq 'could not file the PIN-ON-RED incident for cli-tests' "$tmp/ci-both.out" || fail 'failed upsert was not logged'
+# ZF_PIN_OVERRIDE is gone: setting it changes nothing.
+if ! PIN_WORKFLOW_RUNS="$both_failed_runs" ZF_PIN_OVERRIDE=bogus \
   run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-override.out" 2>&1; then
   cat "$tmp/ci-override.out" >&2
-  fail 'named engine-tests override did not allow the pin'
+  fail 'ZF_PIN_OVERRIDE still changes pin behaviour'
 fi
-grep -Fq 'explicit ZF_PIN_OVERRIDE allows failed workflows: engine-tests' "$tmp/ci-override.out" \
-  || fail 'allowed workflow override was not printed'
-
-both_failed_runs=$(jq -cn --arg sha "$new_engine" '{workflow_runs:[
-  {name:"engine-tests",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure"},
-  {name:"cli-tests",head_sha:$sha,head_branch:"main",status:"completed",conclusion:"failure"}
-]} | [. ]')
-set +e
-PIN_WORKFLOW_RUNS="$both_failed_runs" ZF_PIN_OVERRIDE=engine-tests \
-  run_pin "$ci_calls" "$ci_scopes" "$ci_agent" "$ci_target" > "$tmp/ci-partial.out" 2>&1
-ci_partial_status=$?
-set -e
-((ci_partial_status != 0)) || fail 'engine-tests override allowed an unlisted cli-tests failure'
-grep -Fq 'failed zenoforge main workflows' "$tmp/ci-partial.out" \
-  && grep -Fq 'cli-tests' "$tmp/ci-partial.out" \
-  || fail 'partial override refusal did not name the unapproved workflow'
 
 pending_runs=$(jq -cn --arg sha "$new_engine" '{workflow_runs:[
   {name:"engine-tests",head_sha:$sha,head_branch:"main",status:"in_progress",conclusion:null},
@@ -228,7 +253,7 @@ set -e
 ((ci_unreadable_status != 0)) || fail 'pin continued when main CI runs could not be read'
 grep -Fq 'could not read zenoforge main CI runs' "$tmp/ci-unreadable.out" \
   || fail 'CI API read failure was not explained'
-ok 'main CI pin guard blocks completed failures, permits named overrides and pending runs, and fails closed on unreadable runs'
+ok 'pin-on-red: completed red main CI pins anyway, files one incident per SHA and workflow, logs PIN-ON-RED; pending runs pass and unreadable runs fail closed'
 
 # A pin-only diff gets a fresh worktree/out root, a skip-ci head commit, and all
 # three engine operations in order. Default mode does not publish.
