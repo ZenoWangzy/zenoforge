@@ -2044,9 +2044,9 @@ command jq -n --arg sha "$late_green_sha" \
   > "$TF/main-suites.json"
 printf '%s %s\n%s %s\n' "$late_red_sha" "$late_green_sha" "$late_green_sha" "$late_green_sha" > "$TF/ancestry.tsv"
 printf '%s\n' '{"databaseId":701,"attempt":1,"status":"completed","conclusion":"failure","createdAt":"2026-11-02T12:20:00Z"}' > "$TF/run.json"
-command jq -n --arg id "$late_red_id" --arg red "$late_red_sha" --arg green "$late_green_sha" --arg head "$late_pr_head" --arg checked "$late_checked" \
+command jq -n --arg id "$late_red_id" --arg red "$late_red_sha" --arg green "$late_green_sha" --arg head "$late_pr_head" --arg checked "$late_checked" --arg late_names "$late_failed_names" \
   '{units:[{id:$id,main_red:true,ci_sha:$red,resolved_main_sha:$green,resolved_main_at:"2026-11-02T12:00:00Z",lane:"direct-main",stage:"closed",history:[]},
-    {id:"pr-late-red",pr:77,branch:"agent/issue-77",lane:"pr",lane_policy:"unknown",stage:"ready-to-merge",approved_sha:$head,ci_rerun_sha:$head,ci_test_checked:$checked,ready_since:1,history:[]}]}' \
+    {id:"pr-late-red",pr:77,branch:"agent/issue-77",lane:"pr",lane_policy:"unknown",stage:"ready-to-merge",approved_sha:$head,ci_rerun_sha:$head,ci_test_checked:$checked,behind_main_hops:[$late_names],ready_since:1,history:[]}]}' \
   > "$TF/supervisor/autopi/units.json"
 command jq -n --arg head "$late_pr_head" \
   '[{number:77,headRefName:"feature/77",headRefOid:$head,isDraft:false,mergeable:"MERGEABLE",title:"fixture",body:"",labels:[],statusCheckRollup:[
