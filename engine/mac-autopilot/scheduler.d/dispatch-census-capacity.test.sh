@@ -263,6 +263,31 @@ jq -c '.units[1] += {stage:"closed",resolved_main_sha:"5555555555555555555555555
 stop_loss_unpark_sweep
 [[ "$(case_stage issue-4917)" == repair-pending && "$(case_events issue-4917)" == *,supervisor-requeue ]] || fail "main green did not requeue: $(case_stage issue-4917) $(case_events issue-4917)"
 stop_loss_main_red_sha 'Pipeline suites' >/dev/null && fail "a resolved main red still counted as red"
+# A same-failure park with an open PR gets one timed retry: parked 24 h and main advanced -> update the branch and requeue once. Not before 24 h, not with main unchanged.
+main_red_failed_checks() { return 1; }
+rebases=0; ci_update_branch() { rebases=$((rebases + 1)); rebased_to="$1 $2"; return 0; }
+m1=6666666666666666666666666666666666666666 m2=7777777777777777777777777777777777777777 m3=8888888888888888888888888888888888888888
+park_now=$(date +%s); NOW_EPOCH=$park_now; MAIN_HEAD=$m1
+stop_loss_case issue-4918 "$(red_history "$same_a" "$same_b")" 518 repair-pending
+[[ "$(case_stage issue-4918)" == parked && "$(jq -r '.units[0].stop_loss_park_epoch' "$UNITS")" == "$park_now" && "$(jq -r '.units[0].stop_loss_park_main' "$UNITS")" == "$m1" ]] \
+  || fail "the park did not record its time and main: $(jq -c '.units[0] | [.stage,.stop_loss_park_epoch,.stop_loss_park_main]' "$UNITS")"
+NOW_EPOCH=$((park_now + 86401)); MAIN_HEAD=$m1; stop_loss_unpark_sweep
+[[ "$(case_stage issue-4918)" == parked && "$rebases" == 0 ]] || fail "24 h with main unchanged lifted the park (rebases=$rebases)"
+NOW_EPOCH=$((park_now + 3600)); MAIN_HEAD=$m2; stop_loss_unpark_sweep
+[[ "$(case_stage issue-4918)" == parked && "$rebases" == 0 ]] || fail "main advanced inside 24 h lifted the park (rebases=$rebases)"
+NOW_EPOCH=$((park_now + 86401)); MAIN_HEAD=$m2; stop_loss_unpark_sweep
+[[ "$(case_stage issue-4918)" == repair-pending && "$(case_events issue-4918)" == *,supervisor-requeue && "$rebases" == 1 && "$rebased_to" == "518 $head_one" ]] \
+  || fail "24 h plus main advanced did not requeue once with a branch update ($(case_stage issue-4918) rebases=$rebases $rebased_to)"
+jq -e '.units[0] | .stop_loss_timed_requeue == true and .stop_loss_park_epoch == null' "$UNITS" >/dev/null || fail "the timed requeue left its marks wrong"
+# The second same failure parks again, with no timed exit however long it waits or however far main moves.
+jq -c --argjson more "$(red_history "$same_a" "$same_b")" '.units[0].history += $more' "$UNITS" > "$UNITS.new" && mv "$UNITS.new" "$UNITS"
+stop_loss_calls=0; : > "$LOG"; SECONDS=0; MAIN_HEAD=$m2; dispatch_pending false
+[[ "$stop_loss_calls" == 0 && "$(case_stage issue-4918)" == parked && "$(jq -r '.units[0].parked_reason' "$UNITS")" == "stop-loss same failure: $same_b" ]] \
+  || fail "the second same failure did not park (calls=$stop_loss_calls $(jq -c '.units[0] | [.stage,.parked_reason]' "$UNITS"))"
+jq -e '.units[0] | .stop_loss_park_epoch == null and .stop_loss_park_main == null' "$UNITS" >/dev/null || fail "the second park got a timed exit"
+NOW_EPOCH=$((park_now + 10 * 86400)); MAIN_HEAD=$m3; stop_loss_unpark_sweep
+[[ "$(case_stage issue-4918)" == parked && "$rebases" == 1 ]] || fail "the second park lifted on a timer (rebases=$rebases)"
+NOW_EPOCH=$(date +%s); MAIN_HEAD=""
 
 # A fresh failure, a different red kind, a ruling between the reds, or a cap default already given: the supervisor as before.
 stop_loss_case issue-4914 "$(red_history "$same_a" 'self-check failed at 77be0e3a: 15 tests, 1 failed (lib/other)')" 140 repair-pending
@@ -271,6 +296,6 @@ stop_loss_case issue-4915 "$(red_history "$same_a" "$same_b" '[]' | jq -c '.[0:2
 [[ "$stop_loss_calls" == 1 ]] || fail "a red from before a ruling counted as an earlier round (calls=$stop_loss_calls)"
 stop_loss_case issue-4916 "$(red_history "$same_a" "$same_b" '[{"stage":"supervisor-cap-default","result":"branch=park: earlier","at":"2026-11-07T10:00:00Z"}]')" 160 repair-pending
 [[ "$stop_loss_calls" == 1 && "$(case_stage issue-4916)" == repair-pending ]] || fail "a unit that already had its cap default must still go to the supervisor (calls=$stop_loss_calls)"
-unset -f red_history stop_loss_case case_stage case_events
 
+unset -f red_history stop_loss_case case_stage case_events red_check_history ci_update_branch
 echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; CONFLICTING census row repaired not reviewed; refill deadline; silent skip named)'

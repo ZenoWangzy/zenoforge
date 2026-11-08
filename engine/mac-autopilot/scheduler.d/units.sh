@@ -359,7 +359,9 @@ supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [bud
   # repeat：同一原因的第二次仲裁（supervisor_repeat_arbitration）走同一条路线，但不占「每单元一次」的终身默认决定，
   # 也不追加 supervisor-cap-default 事件；路线自己的事件（recut/park/obsolete）以 "supervisor repeat guard:" 开头，供 supervisor.repeat_guard_24h 计数。
   [[ "$trigger" == repeat ]] && tag="supervisor repeat guard"
-  [[ "$trigger" == repeat ]] || { jqf -e 'any((.history // [])[]?; .stage == "supervisor-cap-default")' <<<"$u" >/dev/null && return 0; }
+  # A stop-loss park that was requeued by its timed retry (.stop_loss_timed_requeue) gets one more default decision: the second same failure parks again.
+  [[ "$trigger" == repeat ]] || { jqf -e --argjson limit "$([[ "$trigger" == stop-loss ]] && [[ "$(jqf -r '.stop_loss_timed_requeue // empty' <<<"$u")" == true ]] && echo 2 || echo 1)" \
+    '[(.history // [])[]? | select(.stage == "supervisor-cap-default")] | length >= $limit' <<<"$u" >/dev/null && return 0; }
   issue="$(supervisor_cap_default_issue "$u" || true)"; pr="$(jqf -r '.pr // empty' <<<"$u")"
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
     raw="$(scheduler_issue_state "$issue" 2>/dev/null)" || return 1

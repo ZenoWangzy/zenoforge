@@ -153,6 +153,19 @@ assert n.status_of(48, dispatches[2], dispatches[3], dispatches[4]) == "OK"
 assert n.status_of(120, dispatches[2], dispatches[3], dispatches[4]) == "UNHEALTHY"
 cap_default = n.CRITERIA["supervisor.cap_default_24h"]  # measured, no bound: any value stays OK
 assert all(n.status_of(v, cap_default[2], cap_default[3], cap_default[4]) == "OK" for v in (0, 1, 9, 999))
+# Parked-by-same-failure stop-loss units are a current count: only a parked unit with the exact reason prefix, archived rows included.
+parked_units = [
+  {"id": "p1", "stage": "parked", "parked_reason": "stop-loss same failure: Pipeline suites", "history": []},
+  {"id": "p2", "stage": "parked", "parked_reason": "stop-loss same failure: self-check failed", "history": []},
+  {"id": "p3", "stage": "parked", "parked_reason": "main-red", "history": []},
+  {"id": "p4", "stage": "repair-pending", "parked_reason": "stop-loss same failure: Pipeline suites", "history": []},
+]
+assert n.ledger_metrics(parked_units, now - dt.timedelta(hours=5), now)["supervisor.stop_loss_same_failure_parked"] == 2
+assert n.ledger_metrics([], now - dt.timedelta(hours=5), now)["supervisor.stop_loss_same_failure_parked"] == 0
+same_failure = n.CRITERIA["supervisor.stop_loss_same_failure_parked"]
+assert all(n.status_of(v, same_failure[2], same_failure[3], same_failure[4]) == "OK" for v in (0, 1, 99))
+assert n.MEANING["supervisor.stop_loss_same_failure_parked"] and n.SOURCE["supervisor.stop_loss_same_failure_parked"]
+assert "supervisor.stop_loss_same_failure_parked" in open(sys.argv[1] + "/NODE-HEALTH.md").read()
 print("node_health supervisor arbitration metrics: PASS")
 CHECK
 python3 - "$script_dir" <<'CHECK' || fail 'parked-cancel bound must come from the measured 7-day p50/p90 (healthy 3, bug 6), not the frozen M1 baseline'

@@ -124,12 +124,16 @@ stop_loss_same_failure_hold() { # id from-stage label [main-red-sha]
     [[ "$(unit_field "$id" '.stage // empty')" == parked ]] || return 0
     set=".parked_reason=$(js "stop-loss same failure: ${label:0:80}") | .unpark_condition=$(js "$([[ -n "$pr" ]] && echo 'the PR head changes' || echo 'a supervisor decision')")"
   fi
+  # One timed retry per unit: a unit already requeued by it parks again with the PR-head exit only.
+  if [[ -z "$red_sha" && -n "$head" && "$(unit_field "$id" '.stop_loss_timed_requeue // empty')" != true && "$MAIN_HEAD" =~ $SHA_RE ]]; then
+    set="$set | .stop_loss_park_epoch=${NOW_EPOCH:-$(date +%s)} | .stop_loss_park_main=$(js "$MAIN_HEAD")"
+  fi
   set_unit "$id" "$set | .parked_from_stage=$(js "$from") | .stop_loss_park_head=$(js "$head")" && say "stop-loss same failure unit=$id: $([[ -n "$red_sha" ]] && echo "waits for main green ($red_sha)" || echo parked)"
 }
 
 stop_loss_unpark_sweep() { # requeue (refilled budget) when the PR head changed or the main red the unit waited on turned green
-  local id from head red_sha pr cur resolved why
-  while IFS=$'\t' read -r id from head red_sha pr; do
+  local id from head red_sha pr park_epoch park_main cur resolved why timed
+  while IFS=$'\t' read -r id from head red_sha pr park_epoch park_main; do
     [[ -n "$id" ]] || continue
     why=""
     if [[ "$pr" =~ ^[0-9]+$ && "$head" =~ $SHA_RE ]]; then
@@ -140,12 +144,22 @@ stop_loss_unpark_sweep() { # requeue (refilled budget) when the PR head changed 
       resolved="$(jqf -r --arg red "$red_sha" 'first(.units[] | select(.main_red==true and .ci_sha==$red and .stage=="closed" and ((.resolved_main_sha // "") | test("^[0-9a-f]{40}$"))) | .resolved_main_sha) // empty' <(units_history_doc))"
       [[ ! "$resolved" =~ $SHA_RE ]] || why="main green at ${resolved:0:9}"
     fi
+    # Backoff retry, once: parked past STOP_LOSS_PARK_RETRY_SECONDS (24 h) and main has advanced since the park. The branch is brought up to the new main
+    # through ci_update_branch (the one server-side rebase path); a refused update still requeues, and the redispatched worker starts from the latest main.
+    timed=""
+    if [[ -z "$why" && "$park_epoch" =~ ^[0-9]+$ && "$park_main" =~ $SHA_RE && "$MAIN_HEAD" =~ $SHA_RE && "$MAIN_HEAD" != "$park_main" ]] \
+      && (( ${NOW_EPOCH:-$(date +%s)} - park_epoch >= ${STOP_LOSS_PARK_RETRY_SECONDS:-86400} )); then
+      cur="$(tick_pr_head "$pr" 2>/dev/null || true)"
+      if [[ "$cur" =~ $SHA_RE ]] && ci_update_branch "$pr" "$cur"; then why="parked over 24 h and main advanced to ${MAIN_HEAD:0:9}: branch updated onto it"
+      else why="parked over 24 h and main advanced to ${MAIN_HEAD:0:9}: branch update not applied, the worker starts from the latest main"; fi
+      timed=" | .stop_loss_timed_requeue=true"
+    fi
     [[ -n "$why" ]] || continue
     [[ "$from" != - ]] || from=repair-pending
-    set_unit "$id" "$(hist supervisor-requeue "stop-loss same failure: unparked, $why; budget refilled") | .stage=$(js "$from") | .note=null | del(.parked_reason,.unpark_condition,.parked_main_red_sha,.parked_from_stage,.stop_loss_park_head,.stop_loss_wait)" \
+    set_unit "$id" "$(hist supervisor-requeue "stop-loss same failure: unparked, $why; budget refilled") | .stage=$(js "$from") | .note=null$timed | del(.stop_loss_park_epoch,.stop_loss_park_main,.parked_reason,.unpark_condition,.parked_main_red_sha,.parked_from_stage,.stop_loss_park_head,.stop_loss_wait)" \
       && say "stop-loss same failure unit=$id requeued at $from: $why"
   done < <(jqf -r '.units[] | select(.stage == "parked" and .stop_loss_park_head != null)
-    | [.id, (.parked_from_stage // "-"), (.stop_loss_park_head | if . == "" then "-" else . end), (.parked_main_red_sha // "-"), (.pr // "-")] | @tsv' "$UNITS")
+    | [.id, (.parked_from_stage // "-"), (.stop_loss_park_head | if . == "" then "-" else . end), (.parked_main_red_sha // "-"), (.pr // "-"), (.stop_loss_park_epoch // "-"), (.stop_loss_park_main // "-")] | @tsv' "$UNITS")
 }
 
 # Token spend gate. Every finished worker log is one `spend_runs` record on its unit (spend_ledger.py; fresh tokens come from the
