@@ -290,6 +290,7 @@ register_new_issues() {
   local issue_json parent_reason parent_status parent_transition_status intake_footprint_owners='[]' intake_candidate_json intake_candidate_scope intake_candidate_stage intake_conflict state_read_status state_read_value
   local refill_mode="${2:-false}" free_slots ready_buffer target_pending max_refill upstream_room
   local intake_budget intake_left intake_started=$SECONDS step_started=$SECONDS candidate_started full_at now fresh_seconds existing_issue
+  local walk_cursor="$A/intake-existing-cursor" walk_from walk_start='' walk_rows=0 walk_broke=''
   local INTAKE_FULL_SCAN_FLAG="$A/.intake-full-scan.$BASHPID.$RANDOM"
   local -A intake_known_issues=() intake_skip_counts=() intake_step_secs=() intake_step_counts=()
   local intake_step_at=$SECONDS skip_key skip_line step_name step_line
@@ -319,6 +320,13 @@ register_new_issues() {
     # Existing units may consume their handoff at the normal cap, subject to the total ceiling.
     handoff_rows="$(existing_handoff_candidates)"
     [[ -n "$handoff_rows" ]] || return 0
+    # Numeric order, so a stored cursor resumes at the first row at or after it even when that row is gone; the rows before it come last (wrap).
+    handoff_rows="$(sort -s -n -k1,1 <<<"$handoff_rows")"
+    walk_from="$(cat "$walk_cursor" 2>/dev/null || true)"
+    if [[ "$walk_from" =~ ^[0-9]+$ ]]; then
+      handoff_rows="$(awk -F'\t' -v c="$walk_from" '$1+0 >= c' <<<"$handoff_rows"; awk -F'\t' -v c="$walk_from" '$1+0 < c' <<<"$handoff_rows")"
+    fi
+    walk_start="${handoff_rows%%$'\t'*}"
     if [[ "${2:-}" != reuse ]]; then
       HANDOFF_CENSUS_PARTIAL=0; HANDOFF_WAIT_PRS='[]'; HANDOFF_WAIT_BRANCHES='[]'
       tick_prs_prime
@@ -401,7 +409,7 @@ register_new_issues() {
   step_started=$SECONDS
   local -a intake_terminal_rows=()
   # A slow row must not cost the tick: refill is killed at 300s and dispatch still runs after this loop. Rows left wait a tick.
-  intake_budget="${ISSUE_INTAKE_BUDGET_SECONDS:-$([[ "$refill_mode" == true ]] && echo 150 || echo 600)}"
+  intake_budget="${ISSUE_INTAKE_BUDGET_SECONDS:-$([[ "$refill_mode" == true ]] && echo 150 || { (( existing_only )) && echo "${ISSUE_INTAKE_EXISTING_BUDGET_SECONDS:-240}" || echo 600; })}"
   if [[ "$refill_mode" == true ]]; then # the kill counts from the tick's start: a 141s merge pass left this budget 87s of its 150 on 2026-11-07
     intake_left=$(( ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - intake_started - 30 ))
     (( intake_budget <= intake_left )) || intake_budget=$(( intake_left > 0 ? intake_left : 0 ))
@@ -410,7 +418,9 @@ register_new_issues() {
     intake_step_at=$SECONDS; [[ "$n" =~ ^[0-9]+$ ]] || { intake_skip badrow; continue; }
     (( added < want )) || break
     refill_stopped && break # a refused ledger lock wait ended the refill
-    (( SECONDS - intake_started < intake_budget )) || { say "intake budget spent after ${intake_budget}s: rows from #$n wait for the next tick"; intake_skip budget; break; }
+    # The existing walk always takes its first row, so a census longer than the budget still moves the cursor.
+    (( SECONDS - intake_started < intake_budget || (existing_only && walk_rows == 0) )) || { say "intake budget spent after ${intake_budget}s: rows from #$n wait for the next tick"; walk_broke="$n"; intake_skip budget; break; }
+    walk_rows=$((walk_rows+1))
     intake_candidate_json=''; intake_candidate_scope=''; intake_conflict=''
     issue_json=""
     [[ -n "$issue64" ]] && issue_json="$(printf '%s' "$issue64" | base64 -d 2>/dev/null)" || true
@@ -763,6 +773,10 @@ register_new_issues() {
     added=$((added+1)); INTAKE_ADDED=$((${INTAKE_ADDED:-0}+1)) # refill dispatches again only when intake added work
     say "intake issue #$n -> implement-pending ($lane)"
   done < <(if (( existing_only )); then printf '%s\n' "$handoff_rows"; else predecessor_candidates; (( only_pred )) || intake_candidates "$refill_mode"; fi)
+  if (( existing_only )); then
+    if [[ -n "$walk_broke" ]]; then printf '%s\n' "$walk_broke" > "$walk_cursor"; else rm -f -- "$walk_cursor"; fi
+    say "intake detail existing_walk start=#$walk_start rows=$walk_rows lap_done=$([[ -z "$walk_broke" ]] && echo true || echo false)"
+  fi
   if (( ${#intake_terminal_rows[@]} )); then
     say "intake closed units under open issues count=${#intake_terminal_rows[@]} ids=$(IFS=,; printf '%s' "${intake_terminal_rows[*]}")"
     intake_reopen_episodes "${intake_terminal_rows[@]}"
