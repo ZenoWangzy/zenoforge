@@ -21,4 +21,17 @@ SCHED_DIR="$script_dir" SCHED_LOCK="$fixture/sched.lock" PROBE_COUNT="$fixture/p
 [[ "$(cat "$fixture/prior.count" 2>/dev/null)" == x ]] || { echo 'locks-views-trap.test.sh: prior EXIT trap did not run after acquire_scheduler_lock' >&2; exit 1; }
 [[ ! -e "$fixture/sched.lock" ]] || { echo 'locks-views-trap.test.sh: lock dir survived exit' >&2; exit 1; }
 [[ "$(wc -c < "$fixture/prior.count")" == 1 ]] || { echo 'locks-views-trap.test.sh: prior EXIT trap ran more than once after a re-acquire' >&2; exit 1; }
+# A subshell that takes the lock must not run the parent's EXIT trap (in a subshell trap -p shows the parent's trap).
+sub="$fixture/sub.sh"
+cat > "$sub" <<'SUB'
+set -euo pipefail
+source "$SCHED_DIR/core.sh"
+source "$SCHED_DIR/locks-views.sh"
+trap 'printf p >> "$PROBE_COUNT"' EXIT
+( acquire_scheduler_lock; chain_exit_trap 'printf s >> "$PROBE_COUNT"' )
+printf '|' >> "$PROBE_COUNT"
+SUB
+SCHED_DIR="$script_dir" SCHED_LOCK="$fixture/sub.lock" PROBE_COUNT="$fixture/sub.count" bash "$sub"
+[[ "$(cat "$fixture/sub.count")" == 's|p' ]] || { echo "locks-views-trap.test.sh: subshell ran the parent's EXIT trap or lost its own: $(cat "$fixture/sub.count")" >&2; exit 1; }
+[[ ! -e "$fixture/sub.lock" ]] || { echo 'locks-views-trap.test.sh: subshell lock dir survived its exit' >&2; exit 1; }
 echo 'locks-views-trap.test.sh: all assertions passed'

@@ -12,8 +12,15 @@ sched_mechanism_registry() { # stdout: path of the engine registry with the targ
 }
 say() { echo "[$STAMP] $*" >> "$LOG"; }
 # Add $1 to the EXIT trap in front of the trap already set (the engine canary, scheduler.sh:11), never replacing it; skipped when already there.
+# In a subshell `trap -p` still prints the parent's trap, which the subshell never runs: chaining it there made every
+# ( ... ) that took a lock run the parent's cleanup on exit (#753 red: test roots removed mid-test). A subshell's first call sets only its own.
 chain_exit_trap() {
   local cur prior
+  if [[ "$BASHPID" != "$$" && "${chain_exit_trap_pid:-}" != "$BASHPID" ]]; then
+    chain_exit_trap_pid=$BASHPID
+    trap "$1" EXIT # lint-exempt: a subshell's own first EXIT trap, see above
+    return 0
+  fi
   cur="$(trap -p EXIT)"
   [[ "$cur" == *"$1"* ]] && return 0
   eval "prior=$(sed -n 's/^trap -- //; s/ EXIT$//p' <<<"$cur")"
