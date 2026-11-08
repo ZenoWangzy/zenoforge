@@ -118,7 +118,7 @@ grep -Eq ' 50 .*UNHEALTHY$' <<<"$(row 'advisor asks that got no ruling')" || fai
 grep -Eq ' 300 .*WARN$' <<<"$(row 'between tick starts')" || fail "tick gap wrong: $(row 'tick starts')"
 # harvest station: the gaps of the four pass starts are 120, 120 and 360 s, so the median is 120 (the tick lines do not count)
 grep -Eq ' 120 .*OK$' <<<"$(row 'between harvest station pass starts')" || fail "harvest gap wrong: $(row 'harvest station pass starts')"
-jq -e '.metrics[] | select(.id == "scheduler.harvest_gap_p50") | .value == 120 and .healthy == 240 and .unhealthy == 420 and .source != ""' \
+jq -e '.metrics[] | select(.id == "scheduler.harvest_gap_p50") | .value == 120 and .healthy == 120 and .unhealthy == 300 and .source != ""' \
   "$a/node-health.json" >/dev/null || fail 'harvest gap row lacks its bounds or source'
 # 打回报告缺发现块的比例：窗口内 3 次打回记录里 2 次 missing（窗口外那条不算）；窗口内没有记录时为空，不算 0
 grep -Eq ' 67 .*UNHEALTHY$' <<<"$(row 'without a findings block')" || fail "findings-block gap wrong: $(row 'findings block')"

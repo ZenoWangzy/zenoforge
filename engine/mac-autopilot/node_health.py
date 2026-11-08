@@ -65,7 +65,7 @@ CRITERIA = {**arbiter_health.CRITERIA, **merge_wait.CRITERIA, **live_delivery.CR
     "supervisor.latency_p50":  ("supervisor", "escalation -> supervisor decision minutes p50", 60, 180, False),
     "scheduler.tick_gap_p50":  ("scheduler", "seconds between tick starts p50", 240, 420, False),
     "scheduler.merge_pass_gap_min": ("scheduler", "minutes since the last merge pass while ready-to-merge units wait", 10, 30, False),
-    "scheduler.harvest_gap_p50": ("scheduler", "seconds between harvest station pass starts p50", 240, 420, False),
+    "scheduler.harvest_gap_p50": ("scheduler", "seconds between harvest station pass starts p50", 120, 300, False),
     "release.hours_waiting":   ("release", "hours current release batch has waited", 4, 12, False),
     "release.hotpatch_blockers": ("release", "production hot patches whose PR is not on main", 0, 1, False),
     "pipeline.orphan_prs":     ("pipeline", "open agent PRs outside the ledger", 3, 10, False),
