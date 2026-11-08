@@ -47,6 +47,7 @@ SCOPED_DOCUMENT_LABELS = {
 }
 LANE_ORDER = ("product", "pipeline-system", "direct-main", "main-red", "hot-patch", "unknown")
 CI_REPAIR_STAGES = {"ci-red", "ci-test-red"}
+UPDATE_BRANCH_STAGES = {"ci-red-update-branch", "ci-red-behind-main-update"}
 REVIEW_SWITCH = "2026-10-22T05:39:00Z"
 CI_CAUSES = ("cancellation", "stale-base", "attributable", "infrastructure", "missing-log", "unclassified")
 LESSON_HIT_RE = re.compile(r"(?:^|\s)lesson-rule-hit lesson=((?:V|D)\d+)(?:\s|$)")
@@ -191,7 +192,7 @@ def ci_review_events_section(units, audit, cache, since, until, units_available=
         if cause == "unclassified":
             event_at = norm_ts(event.get("at"))
             updated_after_failure = any(
-                (hop.get("stage") or hop.get("ev")) == "ci-red-update-branch"
+                (hop.get("stage") or hop.get("ev")) in UPDATE_BRANCH_STAGES
                 and (hop_at := norm_ts(hop.get("at"))) and event_at and event_at <= hop_at <= until
                 for hop in unit.get("history") or []
             )
@@ -215,9 +216,9 @@ def ci_review_events_section(units, audit, cache, since, until, units_available=
             approvals_by_unit[key] = approvals_by_unit.get(key, 0) + 1
         if stage == "review-request-changes":
             rejections_by_unit[key] = rejections_by_unit.get(key, 0) + 1
-        if stage == "ci-red-update-branch":
+        if stage in UPDATE_BRANCH_STAGES:
             hops += 1
-        if stage in CI_REPAIR_STAGES | {"ci-red-rerun", "ci-red-update-branch"} and event.get("run_id") is not None:
+        if stage in CI_REPAIR_STAGES | {"ci-red-rerun"} | UPDATE_BRANCH_STAGES and event.get("run_id") is not None:
             ci_run_ids.add(str(event["run_id"]))
 
     approvals = sum(approvals_by_unit.values())

@@ -97,6 +97,7 @@ cat > "$outcomes/units.json" <<'JSON'
  {"id":"pr-1","pr":1,"stage":"merged","session_ids":{"repair":"11111111-2222-3333-4444-555555555555"},"history":[
   {"stage":"ci-red","result":"required check failed","at":"2026-10-19T06:10:00Z"},
   {"stage":"ci-red-update-branch","run_id":"run-a","at":"2026-10-19T06:11:00Z"},
+  {"stage":"ci-red-behind-main-update","run_id":"run-a","at":"2026-10-19T06:12:00Z"},
   {"stage":"review-approve","at":"2026-10-19T07:00:00Z"},
   {"stage":"ci-red","result":"PR-owned failure","at":"2026-10-19T08:00:00Z"},
   {"stage":"repair-delivered","at":"2026-10-19T08:30:00Z"},
@@ -168,7 +169,7 @@ T7 observed CI and review events (2026-10-19T06:00:00Z .. 2026-10-23T00:00:00Z)
   approve to merge: median 0.5h, p90 0.5h across 2 approvals
   review rejections: 10 across 3 units; six or more 1 of 3
   findings-block coverage: before Claude reviews 1/1 (100.0%); since Claude switch 0/1 (0.0%)
-  verdicts: approve 3, request-changes 10, block 0; stale-base hops 1
+  verdicts: approve 3, request-changes 10, block 0; stale-base hops 2
   CI runner minutes: 5.0 across 1 of 2 linked runs
   third rejections: 3; advisor rulings 1, unavailable 1, arbiter fallbacks 1
 EXPECTED
