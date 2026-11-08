@@ -23,6 +23,7 @@ jq -cn '{units: [range(1;6) | {id:"issue-\(.)",issue:.,branch:"agent/issue-\(.)"
 source "$script_dir/scheduler.d/core.sh"
 source "$script_dir/scheduler.d/units.sh"
 source "$script_dir/scheduler.d/intake-steps.sh"
+source "$script_dir/scheduler.d/intake-index.sh"
 source "$script_dir/scheduler.d/intake.sh"
 UNITS_ARCHIVE="$A/units-archive.json"
 

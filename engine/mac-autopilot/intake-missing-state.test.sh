@@ -23,6 +23,7 @@ printf '%s\n' '{"units":[{"id":"issue-2826","issue":2826,"branch":"agent/issue-2
 source "$script_dir/scheduler.d/core.sh"
 source "$script_dir/scheduler.d/units.sh"
 source "$script_dir/scheduler.d/intake-steps.sh"
+source "$script_dir/scheduler.d/intake-index.sh"
 source "$script_dir/scheduler.d/intake.sh"
 UNITS_ARCHIVE="$A/units-archive.json"
 
