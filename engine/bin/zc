@@ -30,7 +30,7 @@ box_has_room() {  # maintainer bound: at most 10 agent runs, whatever LUNA_MAX a
   # maintainer 10-29: hotfix takes whatever it needs first; only the memory floor still applies (LUNA_PRIORITY=hotfix)
   [[ "${LUNA_PRIORITY:-}" == hotfix ]] && (( avail >= 2048 && mem < 10 )) && return 0
   # Aging (10-29): strict priority starved opt 25-31 min at CPU>85% while hotfix ran. A run that has waited
-  # LUNA_AGE_ADMIT_SECONDS skips only the CPU target; CPUWeight 100 vs hotfix 1000 keeps it on leftover cycles.
+  # LUNA_AGE_ADMIT_SECONDS skips only the CPU target; CPUWeight 10 (AGENT_WORKER_CPU_WEIGHT) vs hotfix 1000 keeps it on leftover cycles.
   (( SECONDS >= ${LUNA_AGE_ADMIT_SECONDS:-1200} && runs < 10 && mem < 5 && avail >= 3072 )) && return 0
   cpu=$(cpu_busy)
   (( runs < (${LUNA_MAX:-10} < 10 ? ${LUNA_MAX:-10} : 10) && cpu < ${LUNA_CPU_TARGET:-85} && mem < 5 && avail >= 3072 ))
@@ -56,7 +56,7 @@ done
 source "${ZF_ENGINE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}/thread-budget.sh" && agent_thread_budget
 scope="luna-zc-${key//[^A-Za-z0-9_-]/-}-$$"
 TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/install-guard:$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NODE_USE_ENV_PROXY=1 \
-  systemd-run --user --scope --quiet --unit="$scope" -p MemoryMax="${LUNA_MEM_MAX:-4G}" -p CPUQuota="${LUNA_CPU_QUOTA:-200%}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo 100)" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
+  systemd-run --user --scope --quiet --unit="$scope" -p MemoryMax="${LUNA_MEM_MAX:-4G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo "${AGENT_WORKER_CPU_WEIGHT:-10}")" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
   "$zsrc/bin/zcode" "$zsrc/repo/apps/zcode-cli/packages/cli/dist/zcode.cjs" \
   --prompt "$(<"$prompt")" --cwd "$cwd" --mode "${ZC_MODE:-yolo}" --output-format stream-json --no-color \
   >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &

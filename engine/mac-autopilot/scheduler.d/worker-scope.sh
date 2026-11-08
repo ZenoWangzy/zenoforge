@@ -33,6 +33,8 @@ worker_scope_unavailable() { # reason; one warning for this scheduler tick
   fi
 }
 
+# 2026-11-08: 12 cores at load 30-56 with every worker scope uncapped. Each scheduler worker gets a CPU ceiling and a
+# low weight, so one worker's test fan-out cannot take the host and interactive sessions win. Same knobs as bin/luna.
 worker_scope_prepare() { # config/systemd probe, cached for this scheduler tick
   local configured probe status config="${CFG:-}"
   [[ "${WORKER_SCOPE_PREPARED:-false}" == true ]] && return 0
@@ -55,7 +57,8 @@ worker_scope_prepare() { # config/systemd probe, cached for this scheduler tick
   probe="$(type -P true 2>/dev/null || true)"
   [[ -n "$probe" ]] || probe=true
   status=0
-  "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet -p "TasksMax=$WORKER_TASKS_MAX" -- "$probe" \
+  "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet -p "TasksMax=$WORKER_TASKS_MAX" \
+    -p "CPUQuota=${AGENT_WORKER_CPU_QUOTA:-200%}" -p "CPUWeight=${AGENT_WORKER_CPU_WEIGHT:-10}" -- "$probe" \
     >/dev/null 2>&1 || status=$?
   if (( status != 0 )); then
     worker_scope_unavailable "systemd-run --user probe failed (exit $status)"
@@ -67,9 +70,10 @@ worker_scope_prepare() { # config/systemd probe, cached for this scheduler tick
 # Runs beside the worker in its scope (own session, so a group kill of the worker does not take it down) and
 # reports the first fork the scope's TasksMax refused (pids.events "max"). Builtins only: a fork-bound scope cannot spawn `sleep`.
 read -r -d '' WORKER_SCOPE_WATCH <<'WATCH' || :
-leader=$1 max=$2 label=$3 sched_log=$4 hit=0 ev=${WORKER_SCOPE_EVENTS_FILE:-}
+leader=$1 max=$2 label=$3 sched_log=$4 tag=${5:-log=$3} hit=0 ev=${WORKER_SCOPE_EVENTS_FILE:-}
 if [[ -z $ev ]]; then read -r ev < /proc/self/cgroup && ev=/sys/fs/cgroup${ev#0::}/pids.events; fi
 [[ -r $ev ]] || exit 0
+cs=${ev%/*}/cpu.stat
 exec {fd}<> <(:)
 while :; do
   alive=1; [[ -d /proc/$leader ]] || alive=0
@@ -82,6 +86,10 @@ while :; do
   (( alive )) || break
   read -r -t 1 -u "$fd" || :
 done
+# The scope outlives its leader while this watcher runs, so cpu.stat still holds the whole worker tree's CPU time.
+u=0; while read -r k v; do [[ $k == usage_usec ]] && u=$v; done 2>/dev/null < "$cs"
+printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+[[ -z $sched_log ]] || echo "[$now] worker cost $tag wall=${SECONDS} cpu=$((u / 1000000)).$((u / 100000 % 10))" >> "$sched_log"
 WATCH
 
 worker_scope_exec() { # pid-file output-file launcher... -- command...; executed inside the worker's output/session wrapper
@@ -92,11 +100,12 @@ worker_scope_exec() { # pid-file output-file launcher... -- command...; executed
   shift
   worker_command=("$@")
   if [[ "$WORKER_SCOPE_MODE" == scope ]]; then
-    exec "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet -p "TasksMax=$WORKER_TASKS_MAX" -- \
+    exec "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet -p "TasksMax=$WORKER_TASKS_MAX" \
+      -p "CPUQuota=${AGENT_WORKER_CPU_QUOTA:-200%}" -p "CPUWeight=${AGENT_WORKER_CPU_WEIGHT:-10}" -- \
       setsid bash -c 'pid_file=$1; st=$(</proc/$$/stat); st=(${st##*) }); printf "%s %s\n" "$$" "${st[19]}" > "$pid_file" || exit 125
         [[ -z $6 ]] || printf "%s\n" "$$" > "$6" || exit 125
-        setsid bash -c "$5" worker-scope-watch "$$" "$2" "$3" "$4" & shift 6; exec "$@"' \
-      worker-scope "$pid_file" "$WORKER_TASKS_MAX" "$label" "${LOG:-}" "$WORKER_SCOPE_WATCH" "${WORKER_PIDFILE:-}" "${worker_command[@]}"
+        setsid bash -c "$5" worker-scope-watch "$$" "$2" "$3" "$4" "$7" & shift 7; exec "$@"' \
+      worker-scope "$pid_file" "$WORKER_TASKS_MAX" "$label" "${LOG:-}" "$WORKER_SCOPE_WATCH" "${WORKER_PIDFILE:-}" "${WORKER_COST_TAG:-}" "${worker_command[@]}"
   fi
   exec "${launcher[@]}" "${worker_command[@]}"
 }

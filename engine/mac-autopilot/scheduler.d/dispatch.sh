@@ -89,8 +89,9 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
       && shift 4 && exec "$@"' autopilot-worker "$CODEX_MODE" "$CODEX_PATH_REASON" "$model" \
       '{type:"pipeline.execution",mode:$mode,reason:$reason,model:$model}' "${CODEX_COMMAND[@]}")
   fi
-  local worker_pid_file WORKER_PIDFILE # not exported: the worker must not inherit it; worker_scope_launch reads it
+  local worker_pid_file WORKER_PIDFILE WORKER_COST_TAG # not exported: the worker must not inherit them; worker_scope_launch reads them
   WORKER_PIDFILE="$(worker_pidfile "$unit")"
+  WORKER_COST_TAG="type=$type unit=$unit"
   worker_pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
   rm -f -- "$worker_pid_file"
   worker_scope_launch "$worker_pid_file" "$workdir" "$SUP/$log" "${launcher[@]}" -- \

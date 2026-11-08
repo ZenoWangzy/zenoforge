@@ -656,6 +656,8 @@ assert_contains "owner episode passes remaining runtime ceiling to systemd" "$(c
 assert_contains "owner unit records stop intent before systemd sends TERM" "$(cat "$FAKE_SYSTEMD_ARGS_FILE")" \
   "<ExecStop=$SCRIPT_DIR/owner-stop-request.sh $OWNER_RECORD"
 assert_contains "owner unit copies the defaulted Node env-proxy opt-in" "$(cat "$FAKE_SYSTEMD_ARGS_FILE")" "<NODE_USE_ENV_PROXY>"
+assert_contains "owner unit caps CPU quota" "$(cat "$FAKE_SYSTEMD_ARGS_FILE")" "<CPUQuota=200%>"
+assert_contains "owner unit lowers CPU weight" "$(cat "$FAKE_SYSTEMD_ARGS_FILE")" "<CPUWeight=10>"
 assert_contains "owner unit copies uppercase NO_PROXY" "$(cat "$FAKE_SYSTEMD_ARGS_FILE")" "<NO_PROXY>"
 assert_contains "owner delivery uses danger-full-access" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<danger-full-access>"
 
