@@ -99,6 +99,12 @@ test('guard audit reports historical drift, missing targets, and duplicate check
       command: ['node', '${REPO_DIR}/engine/present.test.mjs', 'alpha', 'beta'],
     }], 'argv boundary', 'same failure'),
   ] }, null, 2));
+  // missing-file-guard exists only as a fragment beside the registry file; the audit must still report it.
+  const split = JSON.parse(readFileSync(path.join(state, 'incident-guards.json'), 'utf8'));
+  const [fragmentGuard] = split.incidents.splice(split.incidents.findIndex((row) => row.id === 'missing-file-guard'), 1);
+  writeFileSync(path.join(state, 'incident-guards.json'), JSON.stringify(split, null, 2));
+  mkdirSync(path.join(state, 'incident-guards.d'));
+  writeFileSync(path.join(state, 'incident-guards.d/missing-file-guard.json'), JSON.stringify({ incidents: [fragmentGuard] }, null, 2));
   writeFileSync(path.join(history, 'rulings-progress-20261001T000000.log'), [
     'CHECKED incident-guard:stable-guard',
     'CHECKED incident-guard:drifted-guard',

@@ -21,7 +21,7 @@ engine="$test_root/engine"
 target="$test_root/target"
 mkdir -p "$engine/night" "$engine/state" "$target/.zenoforge"
 cp "$REPO_ROOT/engine/night/incident-guard-audit.mjs" "$engine/night/incident-guard-audit.mjs"
-cp "$REPO_ROOT/engine/pack-dir.mjs" "$engine/pack-dir.mjs"
+cp "$REPO_ROOT/engine/pack-dir.mjs" "$REPO_ROOT/engine/incident-guards.mjs" "$engine/"
 printf '{"incidents":[]}' > "$engine/state/incident-guards.json"
 
 assert_fails_with() {

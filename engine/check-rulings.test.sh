@@ -7,7 +7,7 @@ trap 'rm -rf -- "$tmp"' EXIT
 mkdir -p "$tmp/repo/engine/state" "$tmp/home"
 cp "$REPO_DIR/engine/check-rulings.sh" "$REPO_DIR/engine/test-bootstrap-check.sh" "$REPO_DIR/engine/config.sh" \
   "$REPO_DIR/engine/test-env.sh" "$REPO_DIR/engine/scheduling-policy.mjs" \
-  "$REPO_DIR/engine/lesson-guard-schema.mjs" "$REPO_DIR/engine/pack-dir.mjs" "$tmp/repo/engine/"
+  "$REPO_DIR/engine/lesson-guard-schema.mjs" "$REPO_DIR/engine/pack-dir.mjs" "$REPO_DIR/engine/incident-guards.mjs" "$tmp/repo/engine/"
 # scheduling-policy.mjs verifies the contract against minimal fixture copies; AGENT_HOME points
 # away from any live ledger so the ledger-conformance part stays hermetic.
 printf '{"rulings": []}\n' > "$tmp/repo/engine/state/rulings.json"

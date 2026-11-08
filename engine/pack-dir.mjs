@@ -1,6 +1,7 @@
 // The deployment's pack directory for node scripts (Line B pack seam; same setting as ZF_PACK_DIR in config.sh).
 // A pack holds optional modules and data the engine reads by relative path. No pack (empty directory) = every caller
 // uses its generic default. Default here = this directory, where the the product pack is laid over the engine today.
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -104,19 +105,26 @@ export function zfConfigFile(relativePath, repoRoot = zfEnv('REPO_DIR') || dirna
   return resolveConfigFile(relativePath, repoRoot, process.env);
 }
 
+// engine/incident-guards.mjs is the one reader of a registry file and the fragments beside it. It runs as a child so
+// this module, which scripts copy on its own, imports nothing from the engine.
+function readIncidentGuardsFile(file) {
+  const helper = join(dirname(fileURLToPath(import.meta.url)), 'incident-guards.mjs');
+  return JSON.parse(execFileSync(process.execPath, [helper, 'read', file], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }));
+}
+
 // The target's incident records, then engine records under an id the target lacks, for reports.
 // Validators, writers and the lesson_id join keep the target file: engine lesson ids mean other rules there.
 // Same merge as zf_incident_guards in mac-autopilot/config_paths.py. Null means no target file resolved.
 export function zfIncidentGuards(repoRoot = zfEnv('REPO_DIR') || dirname(ENGINE_DIR)) {
   const targetPath = zfConfigFile('state/incident-guards.json', repoRoot);
   if (!targetPath) return null;
-  const doc = JSON.parse(readFileSync(targetPath, 'utf8'));
+  const doc = readIncidentGuardsFile(targetPath);
   const enginePath = join(process.env.ZF_ENGINE_DIR || ENGINE_DIR, 'state/incident-guards.json');
   if (targetPath === enginePath || !existsSync(enginePath)) return doc;
   try {
     const incidentId = (row) => (typeof row?.id === 'string' ? row.id : null);
     const seen = new Set([null, ...doc.incidents.map(incidentId)]);
-    const engineRows = JSON.parse(readFileSync(enginePath, 'utf8')).incidents;
+    const engineRows = readIncidentGuardsFile(enginePath).incidents;
     return { ...doc, incidents: [...doc.incidents, ...engineRows.filter((row) => !seen.has(incidentId(row)))] };
   } catch (error) {
     console.error(`engine incident records ignored: ${error.message}`);

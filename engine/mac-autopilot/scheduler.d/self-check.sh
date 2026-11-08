@@ -334,7 +334,7 @@ footprint_recurrence_brief() { # unit JSON → up to 3 ranked CATALOG rules, bou
 }
 
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider] [worker-context-json]
-  local unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter \
+  local unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter repair_head \
     check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
     worker_context="${19:-}" report_only=false failure_prompt="${12-$8}"
   provider="${15:-$(provider_of "$6")}"; route_provider="${18:-$provider}"
@@ -372,6 +372,9 @@ $(tail -80 "$check_output" 2>/dev/null)"
     fi
     write_start_filter="$(STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" hist write-start "$footprint")"
     write_start_filter+=" | .history[-1].work_type=$(js "$3") | .history[-1].provider=$(js "$provider") | .history[-1].hard_escalation=$hard_escalation"
+    # The PR head a repair starts from, so harvest can tell a run that pushed nothing (repair_head_class); unreadable = unclassified.
+    if [[ "$3" == repair && "$report_only" != true && "$(unit_field "$1" '.lane // "pr"')" != direct-main && "$(unit_field "$1" '.pr // empty')" =~ ^[0-9]+$ ]] \
+      && repair_head="$(tick_pr_head "$(unit_field "$1" .pr)" 2>/dev/null)"; then write_start_filter+=" | .history[-1].pr_head=$(js "$repair_head")"; fi
     set_unit "$1" "$write_start_filter | .implement_route_provider=(.implement_route_provider // $(js "$route_provider")) | .implement_provider=$(js "$provider") | .implement_backend=$(js "$provider") | .implement_model=$(js "$6") | .implement_effort=$(js "$7") | .implement_identity=$(js "$provider:$6:$7")"
     [[ "$hard_escalation" != true ]] || set_unit "$1" '.hard_escalated=true'
     # Same-tick admission widens the active footprint set (write-start just landed).

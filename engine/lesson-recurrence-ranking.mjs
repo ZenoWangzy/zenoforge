@@ -6,6 +6,7 @@ import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zfConfigFile, zfEnv } from './pack-dir.mjs';
+import { readIncidentGuards, incidentGuardFragmentDir } from './incident-guards.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepo = zfEnv('REPO_DIR') || path.resolve(scriptDir, '..');
@@ -63,29 +64,39 @@ export function parseIncidentHistory(history) {
   let currentCommit = null;
   let currentSubject = '';
   let currentRecord = null;
+  // A move of a record between the monolith and a fragment adds and removes the same id in one commit; it is not a new record.
+  let added = [];
+  let removed = new Set();
+  const flush = () => {
+    for (const record of added) {
+      if (removed.has(record.id)) continue;
+      const { commit, subject, ...fields } = record;
+      if (!records.has(fields.id)) records.set(fields.id, { ...fields, record_commit: { sha: commit, subject } });
+      if (!commits.has(fields.id)) commits.set(fields.id, { sha: commit, subject });
+    }
+    added = [];
+    removed = new Set();
+  };
   const saveRecord = () => {
     if (!currentRecord) return;
-    if (!records.has(currentRecord.id)) records.set(currentRecord.id, {
-      ...currentRecord,
-      record_commit: { sha: currentCommit, subject: currentSubject },
-    });
+    added.push({ ...currentRecord, commit: currentCommit, subject: currentSubject });
     currentRecord = null;
   };
   for (const line of history.split(/\r?\n/)) {
     const header = line.match(/^([0-9a-f]{40})\t(.*)$/i);
     if (header) {
       saveRecord();
+      flush();
       currentCommit = header[1].toLowerCase();
       currentSubject = header[2];
       continue;
     }
+    const removedIncident = line.match(/^- {6}"id": "([^"]+)"\s*,?\s*$/);
+    if (removedIncident) removed.add(removedIncident[1]);
     const addedIncident = line.match(/^\+ {6}"id": "([^"]+)"\s*,?\s*$/);
     if (currentCommit && addedIncident) {
       saveRecord();
       currentRecord = { id: addedIncident[1] };
-      if (!commits.has(addedIncident[1])) {
-        commits.set(addedIncident[1], { sha: currentCommit, subject: currentSubject });
-      }
       continue;
     }
     const addedField = line.match(/^\+ {6}"(lesson_id|class|incident_class|recurs_of)":\s*(.+?)\s*,?\s*$/);
@@ -101,6 +112,7 @@ export function parseIncidentHistory(history) {
     }
   }
   saveRecord();
+  flush();
   return { recordCommits: commits, historicalRecords: records };
 }
 
@@ -337,7 +349,7 @@ function recordFootprintLessonHits(runtimeDir, brief) {
 function collectRecordCommits(repo, registryPath) {
   const history = execFileSync('git', [
     '-C', repo,
-    'log', '--all', '--format=%H%x09%s', '--unified=0', '-p', '--', registryPath,
+    'log', '--all', '--format=%H%x09%s', '--unified=0', '-p', '--', registryPath, incidentGuardFragmentDir(registryPath),
   ], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   const subjects = execFileSync('git', ['-C', repo, 'log', '--all', '--format=%H%x09%s'], {
     encoding: 'utf8',
@@ -401,7 +413,7 @@ if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[
     const repo = path.resolve(options.repo);
     const registryPath = configRegistryPath(repo);
     const registryFile = zfConfigFile(REGISTRY_RELATIVE_PATH, repo) ?? path.join(repo, registryPath);
-    const registry = JSON.parse(readFileSync(registryFile, 'utf8'));
+    const registry = readIncidentGuards(registryFile);
     const ranking = buildLessonRecurrenceRanking(registry, collectRecordCommits(repo, registryPath), registryPath);
     if (options.footprintJson !== null) {
       const footprint = JSON.parse(options.footprintJson);

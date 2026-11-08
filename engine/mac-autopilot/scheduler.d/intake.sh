@@ -698,6 +698,9 @@ register_new_issues() {
         intake_skip ceiling; continue
       fi
     fi
+    if [[ -n "$existing_id" ]] && intake_guarded_recut_roundtrip "$existing_id" "$n" "$state_file" "$episode"; then
+      intake_skip guarded_recut_loop; continue
+    fi
     if [[ -n "$existing_id" ]]; then
       units_update --arg id "$existing_id" --argjson n "$n" --arg episode "$episode" --arg pr_state "$pr_state" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --argjson labels "$labels" \
         --arg lane "$lane" --arg lane_policy "${lane_policy:-}" --arg branch "$branch" --arg existing_pr "$existing_pr" --arg handoff_branch "$handoff_branch" --argjson pr_changed "$pr_changed" --slurpfile ids <(printf '%s' "$ids") --argjson handoff "$handoff" --argjson handoff_all "$handoff_all" --arg at "$STAMP" \

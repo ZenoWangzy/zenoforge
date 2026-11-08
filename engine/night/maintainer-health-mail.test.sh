@@ -569,4 +569,22 @@ jq -e '.recurrences_day == 1 and .recurrence_categories == ["config-class"]' \
     exit 1
 }
 echo 'ok - health measure reads target incident config'
+
+# A recurrence that exists only as a fragment beside the registry file is counted, by the resolved path and by the override file.
+printf '{"incidents":[]}\n' > "$incident_config"
+mkdir -p "${incident_config%.json}.d"
+printf '{"incidents":[{"id":"fragment-recurrence","date":"2026-09-29","recurs_of":"root","class":"fragment-class"}]}\n' \
+  > "${incident_config%.json}.d/fragment-recurrence.json"
+fragment_metric="$(ZF_REPO_DIR="$tmp/config" ZF_CONFIG_ROOT="$tmp/config/.zenoforge" \
+  ZF_ENGINE_DIR="$SCRIPT_DIR/.." maintainer_health_mail_measure \
+    "$metric_home" '2026-09-29' "$metric_now" "$action_repo")"
+override_metric="$(AGENT_INCIDENT_GUARDS_FILE="$incident_config" ZF_ENGINE_DIR="$SCRIPT_DIR/.." \
+  maintainer_health_mail_measure "$metric_home" '2026-09-29' "$metric_now" "$action_repo")"
+for fragment_json in "$fragment_metric" "$override_metric"; do
+  jq -e '.recurrences_day == 1 and .recurrence_categories == ["fragment-class"]' <<< "$fragment_json" >/dev/null || {
+    echo "not ok - health measure did not read a fragment-only incident guard: $fragment_json" >&2
+    exit 1
+  }
+done
+echo 'ok - health measure reads fragment-only incident guards'
 echo 'ALL PASS'

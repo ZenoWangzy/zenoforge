@@ -84,6 +84,22 @@ fi
 [[ "$status" == 1 ]]
 grep -Fq "forbidden model name 'claude' appears in $candidate/.zenoforge/state/incident-guards.json" \
   "$TMPDIR/config-guard-command.log"
+# The same forbidden command, but only in a fragment beside the registry file: the scan must still fail.
+printf '{"incidents":[]}\n' > "$candidate/.zenoforge/state/incident-guards.json"
+mkdir -p "$candidate/.zenoforge/state/incident-guards.d"
+cat > "$candidate/.zenoforge/state/incident-guards.d/fragment-command.json" <<'JSON'
+{"incidents":[{"id":"fragment-command","machine_checks":[{"command":["bash","-c","MODEL=claude"]}]}]}
+JSON
+if check_config_model_sources > "$TMPDIR/config-guard-fragment.log" 2>&1; then
+  echo 'not ok - model source scan ignored a forbidden model in an incident fragment' >&2
+  exit 1
+else
+  status=$?
+fi
+[[ "$status" == 1 ]]
+grep -Fq "forbidden model name 'claude' appears in $candidate/.zenoforge/state/incident-guards.json" \
+  "$TMPDIR/config-guard-fragment.log"
+rm -r "$candidate/.zenoforge/state/incident-guards.d"
 rm "$candidate/.zenoforge/state/incident-guards.json"
 traffic="$candidate/engine/network-traffic.py"
 cat >> "$traffic" <<'PY'

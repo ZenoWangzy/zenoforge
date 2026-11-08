@@ -575,7 +575,8 @@ ESCALATE_HOURS, REFILE_HOURS = 3, 6
 RUNNING_LOG_SECONDS = 600
 SUPERVISOR_EVENTS = ("supervisor-requeue", "supervisor-approve", "supervisor-close", "supervisor-park",
                      "supervisor-decision", "supervisor-reroute", "supervisor-unblock", "arbiter-review")
-DISPATCH_RE = re.compile(r"^\[(\S+)\] dispatch mode=\S+ pid=\d+ type=(repair|rereview|review) unit=(\S+)")
+# The live line is `dispatch claim=owned issue=N mode=.. reason=.. pid=P type=T unit=U` (station_health.py reads the same); older logs had no claim/issue/reason.
+DISPATCH_RE = re.compile(r"^\[(\S+)\] dispatch (?:claim=\S+ )?(?:issue=\S+ )?mode=\S+ (?:reason=\S+ )?pid=\d+ type=(repair|rereview|review) unit=(\S+)")
 LINE_RE = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\] tick done")
 
 

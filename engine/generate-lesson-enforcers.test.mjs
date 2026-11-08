@@ -118,6 +118,11 @@ test('maps rules to behavioral, existence, weak, and prose enforcement from a sm
     ] }, null, 2)}\n`);
     write(root, '.zenoforge/state/incident-guards.json',
       readFileSync(path.join(root, 'engine/state/incident-guards.json')));
+    // The behavior guard exists only as a fragment beside the registry file; the reader must merge it.
+    const target = JSON.parse(readFileSync(path.join(root, '.zenoforge/state/incident-guards.json'), 'utf8'));
+    const [behavior] = target.incidents.splice(target.incidents.findIndex((row) => row.id === 'behavior-incident'), 1);
+    write(root, '.zenoforge/state/incident-guards.json', JSON.stringify(target));
+    write(root, '.zenoforge/state/incident-guards.d/behavior-incident.json', JSON.stringify({ incidents: [behavior] }));
 
     execFileSync('git', ['init', '-q', root]);
     execFileSync('git', ['-C', root, 'add', '.']);
@@ -159,6 +164,7 @@ test('maps rules to behavioral, existence, weak, and prose enforcement from a sm
     assert.equal(map.rules.V90011.classification, 'weak');
     assert.equal(map.rules.V90011.enforcer, 'prose');
 
+      rmSync(path.join(root, '.zenoforge/state/incident-guards.d'), { recursive: true });
       write(root, '.zenoforge/state/incident-guards.json', '{"incidents":[]}\n');
       const overridden = buildLessonEnforcers(root);
       assert.deepEqual(overridden.rules.V90002.incident_refs, []);

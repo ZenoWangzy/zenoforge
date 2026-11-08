@@ -694,11 +694,13 @@ model_policy_scan_sources() {
       ' "$file")
       source="$(sed -E 's/\.claude([^[:alnum:]_]|$)/ /Ig' <<< "$source")"
       selection="$source"
-    elif [[ "$file" == "$incident_guards_file" || "$file" == "$script_dir/state/incident-guards.json" ]]; then
+    elif [[ "$file" == "$incident_guards_file" || "$file" == "$script_dir/state/incident-guards.json" || "$file" == */state/incident-guards.d/*.json ]]; then
       # Incident records mix prose with machine checks. Only machine-check argv
       # is executable; projecting that field masks all prose, including fields
       # added to the record schema later.
-      selection="$(jq -r '.incidents[]?.machine_checks[]?.command[]? | strings' "$file" | sed -E 's/\.claude([^[:alnum:]_]|$)/ /Ig')"
+      # An unreadable registry (a duplicate id, a bad fragment) must fail the scan, not read as no commands.
+      source="$(zf_incident_guards_read "$file")" || { echo "model_policy: incident guard registry unreadable: $file" >&2; return 1; }
+      selection="$(jq -r '.incidents[]?.machine_checks[]?.command[]? | strings' <<< "$source" | sed -E 's/\.claude([^[:alnum:]_]|$)/ /Ig')"
     else
       source="$(sed -E 's/CLAUDE\.md//Ig; s/\.claude([^[:alnum:]_]|$)/ /Ig; s#/tmp/[[:alpha:]]+-[0-9]+# #g; /source=.*CLAUDE/d' "$file" | tr -d '\000')"
       if [[ "$file" == "$script_dir/network-traffic.py" ]]; then

@@ -132,6 +132,9 @@ test('ranking CLI reads the target incident registry before engine defaults', (t
     '{"incidents":[{"id":"config-root","lesson_id":"V900","class":"config root"}]}\n');
   writeFileSync(path.join(root, 'engine/state/incident-guards.json'),
     '{"incidents":[{"id":"engine-only","lesson_id":"V901","class":"engine default"}]}\n');
+  mkdirSync(path.join(root, '.zenoforge/state/incident-guards.d'), { recursive: true });
+  writeFileSync(path.join(root, '.zenoforge/state/incident-guards.d/fragment-only.json'),
+    '{"incidents":[{"id":"fragment-only","lesson_id":"V900","class":"fragment"}]}\n');
   execFileSync('git', ['init', '-q', root]);
   execFileSync('git', ['-C', root, 'config', 'user.name', 'ranking fixture']);
   execFileSync('git', ['-C', root, 'config', 'user.email', 'ranking@example.invalid']);
@@ -150,7 +153,7 @@ test('ranking CLI reads the target incident registry before engine defaults', (t
   assert.equal(result.status, 0, result.stderr);
   const ranking = JSON.parse(result.stdout);
   assert.equal(ranking.source, '.zenoforge/state/incident-guards.json');
-  assert.deepEqual(ranking.ranking.map((row) => row.incident_id), ['config-root']);
+  assert.deepEqual(ranking.ranking.map((row) => row.incident_id).sort(), ['config-root', 'fragment-only']);
 });
 
 test('commit-history parser associates added incident records with their recording commit', () => {
@@ -239,4 +242,25 @@ test('V930 lint refuses a missing recurrence ranking with repair guidance', () =
   assert.equal(result.verdict, 'fail');
   assert.match(result.missing.join('\n'), /recurrence ranking is missing V930/);
   assert.match(result.fix_guidance, /manual and no-reachable-path/);
+});
+
+test('moving a record from the registry file into a fragment keeps its first recording commit', () => {
+  const first = 'a'.repeat(40);
+  const move = 'b'.repeat(40);
+  const history = [
+    `${move}\tsplit the registry`,
+    '-      "id": "moved-incident",',
+    '-      "lesson_id": "V7",',
+    '+      "id": "moved-incident",',
+    '+      "lesson_id": "V7",',
+    '+      "id": "brand-new-incident",',
+    '+      "lesson_id": "V8",',
+    `${first}\trecord the incident`,
+    '+      "id": "moved-incident",',
+    '+      "lesson_id": "V7",',
+  ].join('\n');
+  const { recordCommits, historicalRecords } = parseIncidentHistory(history);
+  assert.equal(recordCommits.get('moved-incident').sha, first);
+  assert.equal(recordCommits.get('brand-new-incident').sha, move);
+  assert.deepEqual(Object.keys(historicalRecords.get('moved-incident')).sort(), ['id', 'lesson_id', 'record_commit']);
 });

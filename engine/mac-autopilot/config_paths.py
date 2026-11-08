@@ -1,6 +1,7 @@
 """Resolve shared config data in target, pack, then engine order."""
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -65,6 +66,15 @@ def zf_mechanism_registry(overlay=None):
     return {**doc, "mechanisms": list(rows.values())} if rows else None
 
 
+def read_incident_guards(path):
+    """The registry at path: monolith plus fragments, merged by engine/incident-guards.mjs, the one reader."""
+    helper = Path(__file__).resolve().parent.parent / "incident-guards.mjs"
+    done = subprocess.run(["node", str(helper), "read", str(path)], capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        raise ValueError(done.stderr.strip() or f"incident-guards.mjs read failed for {path}")
+    return json.loads(done.stdout)
+
+
 def _incident_id(row):
     return row["id"] if isinstance(row, dict) and isinstance(row.get("id"), str) else None
 
@@ -80,12 +90,12 @@ def zf_incident_guards(target=None):
     target_path = Path(target) if target else zf_config_file(INCIDENT_GUARDS)
     if target_path is None:
         return None
-    doc = json.loads(target_path.read_text(encoding="utf-8"))
+    doc = read_incident_guards(target_path)
     if target_path == engine_path or not engine_path.is_file():
         return doc
     try:
         seen = {None, *map(_incident_id, doc["incidents"])}
-        engine_rows = json.loads(engine_path.read_text(encoding="utf-8"))["incidents"]
+        engine_rows = read_incident_guards(engine_path)["incidents"]
         return {**doc, "incidents": doc["incidents"] + [row for row in engine_rows if _incident_id(row) not in seen]}
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"engine incident records ignored: {error!r}", file=sys.stderr)

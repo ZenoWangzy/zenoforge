@@ -169,6 +169,47 @@ approved_ci_repair_unchanged() { # unit-json head pr-head
       and any($h[($last_review + 1):][]; .stage == "ci-test-red" or .stage == "ci-red")
   ' <<<"$1" >/dev/null
 }
+# A repair run whose PR head did not move is no delivered repair (2026-11-07, PR 5690: a run that stopped before its push was
+# written repair-delivered, counted as a repair, and conflict triage re-flagged the same head before the no-push check ran).
+# Unchanged heads that are expected stay delivered: an approved head whose CI went red after the approval (the repair concludes
+# an infrastructure red and the scheduler reruns it, approved_ci_repair_unchanged), and a round whose findings record is verified empty.
+repair_unchanged_expected() { # unit-json head
+  jqf -e --arg b "$2" '
+    (.history // []) as $h
+    | ([$h | to_entries[] | select(.value.stage | IN("review-approve", "review-request-changes", "review-block")) | .key] | max // -1) as $i
+    | if $i < 0 or $h[$i].result != $b then false
+      elif $h[$i].stage == "review-approve" then any($h[($i + 1):][]; .stage == "ci-test-red" or .stage == "ci-red")
+      elif $h[$i].stage == "review-request-changes" then
+        ([$h[0:($i + 1)][] | select(.stage == "review-request-changes")] | length) as $round
+        | ([(.review_findings // [])[] | select(.round == $round)] | last // null) as $f
+        | $f != null and $f.block == "ok" and ($f.findings | type) == "array" and ($f.findings | length) == 0
+          and ($f.all_findings | type) == "array" and ($f.all_findings | length) == 0
+          and (any($h[($i + 1):][]; .stage == "merge-conflict") | not)
+      else false end' <<<"$1" >/dev/null
+}
+repair_head_class() { # unit workdir -> "<class> <head before the run>": changed | unchanged | unchanged-expected | unknown
+  local u base pr branch now
+  u="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  base="$(jqf -r '[(.history // [])[] | select(.stage == "write-start" and .work_type == "repair")] | (last // {}) | .pr_head // empty' <<<"$u")"
+  pr="$(jqf -r '.pr // empty' <<<"$u")"; branch="$(jqf -r '.branch // empty' <<<"$u")"
+  if [[ ! "$base" =~ $SHA_RE || ! "$pr" =~ ^[0-9]+$ || "$(jqf -r '.lane // "pr"' <<<"$u")" == direct-main ]]; then echo "unknown -"; return 0; fi
+  now=""; [[ -z "$2" || -z "$branch" ]] || now="$(timeout 30 git -C "$2" ls-remote origin "refs/heads/$branch" 2>/dev/null | cut -f1)"
+  [[ "$now" =~ $SHA_RE ]] || now="$(pr_view "$pr" headRefOid)"
+  [[ "$now" =~ $SHA_RE ]] || { echo "unknown $base"; return 0; }
+  if [[ "$now" != "$base" ]]; then echo "changed $base"
+  elif repair_unchanged_expected "$u" "$base"; then echo "unchanged-expected $base"
+  else echo "unchanged $base"; fi
+}
+repair_run_filter() { # unit class head fresh-tokens -> jq filter: record the run; an unchanged head is repair-no-push, retried twice per head, then to the arbiter route
+  local stage=rereview-pending n
+  if [[ "$2" == unchanged ]]; then
+    n="$(jqf -r --arg id "$1" --arg h "head $3 " '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage=="repair-no-push" and ((.result // "") | startswith($h)))] | length' "$UNITS")"
+    (( n < 2 )) && stage=repair-pending
+    echo "$(hist repair-no-push "head $3 unchanged after repair") | .history[-1].head_class=\"unchanged\" | .history[-1].fresh_tokens=${4:-null} | .stage=\"$stage\""
+  else
+    echo "$(hist repair-delivered) | .history[-1].head_class=$(js "$2") | .history[-1].fresh_tokens=${4:-null} | .repair_hint=null | .stage=\"$stage\""
+  fi
+}
 repair_failure_prompt() { # unit-json review-report -> only this repair's failure evidence
   local u="$1" report="$2" hint pr checks name link job tmp i pid step_file log_file started=$SECONDS elapsed index=0
   local -a names=() links=() step_files=() log_files=() pids=()

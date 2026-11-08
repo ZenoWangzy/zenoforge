@@ -117,3 +117,28 @@ intake_reopen_episodes() { # issue... → one read per 20 issues: about 8 rows r
     done < <(jqf -r '.data.repository | to_entries[] | .value | select(.timelineItems.nodes[0].createdAt != null) | "\(.number)\t\(.timelineItems.nodes[0].createdAt)"' <<<"$response")
   done
 }
+
+# A guarded recut refusal hands the issue back (run-recut.sh) so the scheduler resumes it from its PR or rescued work. A unit that a
+# stop-loss recut closed has spent its rounds, so each handoff resumed it into an immediate recut: 8 passes in 4 hours for issue-1171
+# on 2026-11-07. Count the round trip on the unit. The first one resumes with a refilled budget (the work the refusal promised); past
+# GUARDED_RECUT_RESUME_MAX the unit goes to the arbiter instead of the next recut. Returns 0 when it ended the cycle (the caller skips the resume).
+GUARDED_RECUT_RESUME_MAX="${GUARDED_RECUT_RESUME_MAX:-1}"
+intake_guarded_recut_roundtrip() { # unit issue state-file episode
+  local id="$1" n="$2" state_file="$3" episode="$4" count
+  jqf_optional_file "$state_file" -e '.guarded == true and (.recut_refused_at // "") != ""' >/dev/null 2>&1 || return 1
+  jqf -e --arg id "$id" 'any(.units[]; .id == $id and .stage == "closed"
+    and ((.history // []) | map(select(.stage != "supervisor-cap-default")) | last | .stage) == "supervisor-budget-recut")' <(units_history_doc) >/dev/null || return 1
+  count=$(( $(unit_field "$id" '.guarded_recut_roundtrips // 0') + 1 ))
+  if (( count <= GUARDED_RECUT_RESUME_MAX )); then
+    set_unit "$id" "$(hist supervisor-requeue "guarded recut refused; resumed with a refilled budget (round trip $count of $GUARDED_RECUT_RESUME_MAX)") | .guarded_recut_roundtrips = $count" || return 1
+    say "guarded-recut-roundtrip unit=$id issue=#$n count=$count max=$GUARDED_RECUT_RESUME_MAX: resumed with a refilled budget"
+    return 1
+  fi
+  set_unit "$id" ".guarded_recut_roundtrips = $count | .hold_handoff_episode = $(js "$episode")
+    | .hold_handoff_wait_issues = ((.hold_handoff_wait_issues // []) | map(select(. != $n)))
+    | if (.hold_handoff_wait_issues | length) == 0 and .hold_handoff_lookup_pending != true then del(.hold_handoff_wait_issues, .hold_handoff_waiting) else . end" || return 1
+  to_supervisor "$id" "guarded recut loop: issue #$n was refused by recut and handed back $count times since its stop-loss recut; the scope needs an arbiter ruling, not another resume" \
+    'Arbiter rescopes or splits the ticket' 'the guarded recut round-trip bound was reached' \
+    "round trip $count of $GUARDED_RECUT_RESUME_MAX allowed; each resume ended in the same stop-loss recut" '["Resume the unit again at the same scope"]'
+  say "guarded-recut-loop unit=$id issue=#$n count=$count max=$GUARDED_RECUT_RESUME_MAX: cycle ended, unit sent to the arbiter"
+}

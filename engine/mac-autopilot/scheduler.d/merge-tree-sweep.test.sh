@@ -44,7 +44,7 @@ for b in $(g for-each-ref --format='%(refname:short)' refs/heads/agent refs/head
 head_of() { g rev-parse "$1"; }
 MAIN_HEAD="$(command git -C "$root" rev-parse refs/remotes/origin/main)"
 SCHED_LOCK_HELD=true
-git() { [[ "$*" != *" merge-tree --write-tree "* ]] || echo x >> "$fixture/mt-calls"; command git "$@"; }
+git() { [[ "$*" != *" merge-tree --write-tree "* || "$*" == *--name-only* ]] || echo x >> "$fixture/mt-calls"; command git "$@"; }
 mt_calls() { wc -l < "$fixture/mt-calls"; }
 gh() { [[ "$1 $2" == 'pr view' ]] && { printf ' %s' "$3" >> "$fixture/gh-views"; printf 'UNKNOWN %s\n' "$(head_of "agent/issue-$3" 2>/dev/null || true)"; return 0; }; return 1; }
 tick_prs() { TICK_PRS="$(cat "$fixture/prs.json")"; printf '%s' "$TICK_PRS"; }
@@ -131,5 +131,22 @@ MERGE_SWEEP_MAX=2 merge_tree_sweep
 census 803:agent/issue-803: 806:agent/issue-806:
 merge_tree_sweep
 [[ "$(jq -r 'keys | join(",")' "$A/merge-tree-sweep.json")" == 803,806 ]] || fail 'the memo kept a PR that is no longer open'
+
+# 9. attribution names the real conflicting paths (head and main as the line records them); a missing object says why.
+census 801:agent/issue-801:
+reset "$(unit pr-801 801 review-pending)"; merge_tree_sweep
+grep -Fq "merge-conflict-attribution unit=pr-801 pr=801 pr_head=$(head_of agent/issue-801) main_sha=$MAIN_HEAD conflicting_files=shared.txt count=1" "$LOG" || fail "attribution did not name the path: $(grep attribution "$LOG")"
+[[ "$(merge_conflict_files "$MAIN_HEAD" "$(printf '0%.0s' {1..40})")" == 'unavailable (objects missing)' ]] || fail 'a missing object did not say why'
+
+# 10. a conflict already queued for repair (repair-pending from a conflict, no write-start since) is not flagged a second time,
+# even from a stale review census and a newer main; once a repair has started, a new conflict is flagged again.
+reset "$(unit pr-801 801 review-pending)"; merge_tree_sweep
+conflicts() { jq -r --arg id "$1" '[.units[] | select(.id == $id) | .history[] | select(.stage == "merge-conflict")] | length' "$UNITS"; }
+TICK_PRS="$(jq -c '[{number:801,mergeable:"CONFLICTING"}]' <<<'null')"
+review_conflict_to_repair pr-801 801 "$(head_of agent/issue-801)" || fail 'a queued conflict was not handled by the review path'
+[[ "$(conflicts pr-801)" == 1 ]] || fail "a queued conflict was flagged again ($(conflicts pr-801) merge-conflict events)"
+set_unit pr-801 '.history += [{stage:"write-start",work_type:"repair"}] | .stage="review-pending"'
+review_conflict_to_repair pr-801 801 "$(head_of agent/issue-801)" || fail 'a conflict after a repair run was dropped'
+[[ "$(conflicts pr-801)" == 2 && "$(stage_of pr-801)" == repair-pending ]] || fail 'a conflict after a repair run was not flagged'
 
 printf 'merge-tree-sweep.test.sh: PASS\n'

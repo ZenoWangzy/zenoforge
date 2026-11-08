@@ -136,10 +136,18 @@ units = [
                           {"stage": "supervisor-arbiter-round", "at": "2026-10-19T10:00:00Z"},
                           {"stage": "supervisor-cap-default", "at": "2026-10-19T10:30:00Z"}]},
   {"id": "c", "history": [{"stage": "supervisor-arbiter", "at": "2026-10-19T11:00:00Z"}]},
+  # The guard adds no stage: its route events (recut, park, obsolete) carry the prefix in result.
+  {"id": "d", "history": [{"stage": "supervisor-cap-triage-park", "result": "supervisor repeat guard: same reason", "at": "2026-10-19T09:00:00Z"},
+                          {"stage": "supervisor-cap-triage-recut", "result": "supervisor repeat guard: same reason", "at": "2026-10-18T11:59:59Z"},
+                          {"stage": "supervisor-cap-triage-park", "result": "supervisor cap default: cap", "at": "2026-10-19T09:30:00Z"}]},
 ]
 metrics = n.ledger_metrics(units, now - dt.timedelta(hours=5), now)
 assert metrics["supervisor.arbiter_dispatches_24h"] == 2, metrics   # the round marker never counts
 assert metrics["supervisor.cap_default_24h"] == 1, metrics
+assert metrics["supervisor.repeat_guard_24h"] == 1, metrics   # in the window, prefix only: not the 24 h edge, not a cap-default park
+guard = n.CRITERIA["supervisor.repeat_guard_24h"]
+assert [n.status_of(v, guard[2], guard[3], guard[4]) for v in (0, 8, 9, 24)] == ["OK", "OK", "WARN", "UNHEALTHY"]
+assert n.MEANING["supervisor.repeat_guard_24h"] and n.SOURCE["supervisor.repeat_guard_24h"]
 dispatches = n.CRITERIA["supervisor.arbiter_dispatches_24h"]
 assert n.status_of(48, dispatches[2], dispatches[3], dispatches[4]) == "OK"
 assert n.status_of(120, dispatches[2], dispatches[3], dispatches[4]) == "UNHEALTHY"
@@ -349,7 +357,8 @@ touch -d "$(date -u -d "2026-10-19T11:30:00Z + 20 minutes" +%Y-%m-%dT%H:%M:%SZ)"
 jq '.units += [{"id":"pr-15","pr":15,"stage":"review-pending","history":[{"stage":"review-request-changes","at":"2026-10-19T11:50:00Z"}]},
                {"id":"pr-16","pr":16,"stage":"merged","history":[{"stage":"pr-opened","at":"2026-09-01T00:00:00Z"},{"stage":"merged","at":"2026-09-02T00:00:00Z"}]}]' "$a/units.json" > "$a/u.tmp" && mv "$a/u.tmp" "$a/units.json"
 # 时间都花在哪：返工触发→派出（排队）、返工干活、交付→复检派出、复检干活、批准→CI 判红，取自台账事件 + dispatch 行
-printf '[2026-10-19T10:40:00Z] dispatch mode=fresh pid=1 type=repair unit=pr-11\n[2026-10-19T11:00:00Z] dispatch mode=resume pid=2 type=rereview unit=pr-11\n' >> "$a/scheduler.log"
+# The first line has the live shape (claim, issue, reason), the second the older one; both must count.
+printf '[2026-10-19T10:40:00Z] dispatch claim=owned issue=11 mode=fresh reason=initial pid=1 type=repair unit=pr-11\n[2026-10-19T11:00:00Z] dispatch mode=resume pid=2 type=rereview unit=pr-11\n' >> "$a/scheduler.log"
 echo '{"lines":{"15":900,"16":2000},"nontest_added":{"15":900,"16":2000}}' > "$a/pr-sizes.json"
 out="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z --json "$a/node-health.json")"
 [[ "$(jq -c '[.time_sinks[] | [.id, (.value | if . == null then null else round end)]]' "$a/node-health.json")" == '[["repair_queue",4],["repair_work",12],["rereview_queue",8],["rereview_work",4],["approve_to_ci_red",10],["approve_to_merge",null]]' ]] \
@@ -534,6 +543,28 @@ units = [
 waits = sorted(n.ledger_history.first_review_waits(units, now, n.ts))
 assert waits == [10, 30, 360], waits
 assert n.ledger_metrics(units, now - n.timedelta(hours=5), now)["review.open_to_first_review_p90_min"] == 360
+CHECK
+# repair.unchanged_head_token_pct: fresh tokens of classified repair runs that left the head unchanged, rolling 24 h.
+# Unclassified runs and events from before the detector are left out, and an empty window is NO-DATA, never 0.
+python3 - "$script_dir" <<'CHECK'
+import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
+now = n.ts("2026-11-07T12:00:00Z"); ID = "repair.unchanged_head_token_pct"
+def ev(stage, at, cls=None, tokens=None):
+    e = {"stage": stage, "at": at}
+    if cls: e["head_class"] = cls
+    if tokens is not None: e["fresh_tokens"] = tokens
+    return e
+def row(*events): return n.ledger_metrics([{"id": "x", "history": list(events)}], now, now)[ID]
+assert n.CRITERIA[ID] == ("review-loop", "fresh tokens of repair runs that left the PR head unchanged, % of classified repair runs, 24 h", 5, 15, False)
+assert ID in n.MEANING and ID in n.SOURCE
+assert row(ev("repair-delivered", "2026-11-07T10:00:00Z", "changed", 300), ev("repair-no-push", "2026-11-07T11:00:00Z", "unchanged", 100)) == 25
+assert row(ev("repair-delivered", "2026-11-07T10:00:00Z", "unchanged-expected", 100), ev("repair-no-push", "2026-11-07T11:00:00Z", "unchanged", 100)) == 50
+assert row(ev("repair-delivered", "2026-11-07T10:00:00Z", "changed", 300)) == 0
+assert row(ev("repair-no-push", "2026-11-06T11:00:00Z", "unchanged", 100), ev("repair-delivered", "2026-11-07T10:00:00Z", "changed", 100)) == 0, "outside 24 h"
+assert row() is None
+assert row(ev("repair-delivered", "2026-11-07T10:00:00Z"), ev("repair-no-push", "2026-11-07T11:00:00Z")) is None, "legacy events carry no class"
+assert row(ev("repair-delivered", "2026-11-07T10:00:00Z", "unknown", 500)) is None, "an unclassified run must read NO-DATA, not 0"
+assert row(ev("repair-no-push", "2026-11-07T11:00:00Z", "unchanged")) is None, "no token reading means no figure"
 CHECK
 # Approved-then-red counts a unit once however many approves it had, and names the failed checks and tests.
 python3 - "$script_dir" <<'CHECK'

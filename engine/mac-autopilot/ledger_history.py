@@ -99,6 +99,27 @@ def first_review_waits(units, now, ts):
     return waits
 
 
+UNCHANGED = "repair.unchanged_head_token_pct"
+CLASSIFIED = ("changed", "unchanged", "unchanged-expected")
+CRITERIA[UNCHANGED] = ("review-loop", "fresh tokens of repair runs that left the PR head unchanged, % of classified repair runs, 24 h", 5, 15, False)
+MEANING[UNCHANGED] = "过去 24 小时内，返工运行里「PR head 没有变化」的那些花掉的新鲜 token 占全部已判定返工运行新鲜 token 的比例。跑完什么都没推出去的返工照样花 token，但不算交付；越低越好。head 判不出的运行（无 PR、没记起点、读不到远端）不计入，没有任何已判定的运行时读 NO-DATA，不读 0。「预期不变」的运行（已批准 head 上 CI 红后的返工、经确认的空发现回合）算已判定但不算浪费。"
+SOURCE[UNCHANGED] = "units.json（含 units-archive.json）单元历史里 repair-delivered / repair-no-push 事件的 head_class 与 fresh_tokens（harvest 写入：派发时记的 PR head 对比结束时 origin 分支 head），事件时间固定滚动 24h；没有 head_class 的旧事件不读"
+
+
+def unchanged_head_token_pct(units, now, ts):
+    """Share of fresh tokens spent on repair runs whose PR head did not move; None while no run in the window is classified."""
+    since, spent, wasted = now - timedelta(hours=24), 0, 0
+    for u in units:
+        for h in u.get("history") or []:
+            tokens, at = h.get("fresh_tokens"), ts(h.get("at"))
+            if h.get("stage") in ("repair-delivered", "repair-no-push") and h.get("head_class") in CLASSIFIED \
+                    and isinstance(tokens, int) and at and since <= at <= now:
+                spent += tokens
+                wasted += tokens if h["head_class"] == "unchanged" else 0
+    return 100 * wasted / spent if spent else None
+
+
 def metrics(units, now, ts):
     waits = sorted(first_review_waits(units, now, ts))
-    return {ID: waits[min(len(waits) - 1, int(round(.9 * (len(waits) - 1))))] if waits else None}
+    return {ID: waits[min(len(waits) - 1, int(round(.9 * (len(waits) - 1))))] if waits else None,
+            UNCHANGED: unchanged_head_token_pct(units, now, ts)}

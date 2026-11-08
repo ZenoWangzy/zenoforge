@@ -121,6 +121,11 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       cap_triage=true
       (( cap_triaged < SUPERVISOR_CAP_TRIAGE_PER_TICK )) || { say "supervisor cap triage capped at $SUPERVISOR_CAP_TRIAGE_PER_TICK this tick"; continue; }
     fi
+    # Repeat guard: the same reason back with no progress since the last run gets the spent-budget route, not another requeue.
+    if [[ "$cap_triage" != true && "$is_swept" != true ]] && supervisor_repeat_arbitration "$u"; then
+      supervisor_cap_default "$id" "$u" repeat || say "supervisor repeat guard unit=$id: route not applied; retried next tick"
+      continue
+    fi
     (( $(live_workers) < MAX )) || { say "supervisor arbitration pending unit=$id: worker capacity full"; return 0; }
     arbiter_profile="$SUPERVISOR_ARBITER_PROFILE"
     if [[ "$over_stop" == true ]]; then
@@ -264,7 +269,7 @@ supervisor_requeue_rereview() { # unit-json → true when the latest unchanged r
         | ([$history | to_entries[] | select(.key > $review.key and .value.stage == "write-start")] | last // null) as $latest_write
         | $reviewed_pair and (
             ($no_actionable and $latest_write == null)
-            or ($delivery != null and $no_push != null and $no_push.key > $delivery.key
+            or ($no_push != null and ($delivery == null or $no_push.key > $delivery.key)
                 and $no_push_sha == $review_sha
                 and ($latest_write == null or $latest_write.key < $no_push.key))
           )
