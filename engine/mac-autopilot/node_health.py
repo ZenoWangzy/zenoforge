@@ -65,6 +65,7 @@ CRITERIA = {**arbiter_health.CRITERIA, **merge_wait.CRITERIA, **live_delivery.CR
     "supervisor.latency_p50":  ("supervisor", "escalation -> supervisor decision minutes p50", 60, 180, False),
     "scheduler.tick_gap_p50":  ("scheduler", "seconds between tick starts p50", 240, 420, False),
     "scheduler.merge_pass_gap_min": ("scheduler", "minutes since the last merge pass while ready-to-merge units wait", 10, 30, False),
+    "scheduler.harvest_gap_p50": ("scheduler", "seconds between harvest station pass starts p50", 240, 420, False),
     "release.hours_waiting":   ("release", "hours current release batch has waited", 4, 12, False),
     "release.hotpatch_blockers": ("release", "production hot patches whose PR is not on main", 0, 1, False),
     "pipeline.orphan_prs":     ("pipeline", "open agent PRs outside the ledger", 3, 10, False),
@@ -160,6 +161,7 @@ MEANING = {**arbiter_health.MEANING, **merge_wait.MEANING, **live_delivery.MEANI
     "supervisor.latency_p50": "升级到主管后多久得到裁决（中位）。",
     "scheduler.tick_gap_p50": "调度两拍之间的秒数（中位）：越长，派活、合并、发布都越慢。",
     "scheduler.merge_pass_gap_min": "有已批准待合并的单、但合并车道已经多少分钟没跑过一次：越长，绿了的 PR 越晚合入（暂定界线，攒够 10 天数据再调）。",
+    "scheduler.harvest_gap_p50": "收割站两次运行之间的秒数（中位）：越长，做完的 worker 越晚被收走、槽位越晚空出。",
     "release.hours_waiting": "当前有待发布改动时，本批次已等待的小时数；无待发布工作时为 0。",
     "release.hotpatch_blockers": "生产上跑着、但源 PR 还没进 main 的热修数：每个都会挡住发布。",
     "pipeline.orphan_prs": "流水线台账之外的 agent PR：没人推进的工作。",
@@ -214,6 +216,7 @@ SOURCE = {**arbiter_health.SOURCE, **merge_wait.SOURCE, **live_delivery.SOURCE, 
     "supervisor.latency_p50": "units.json：supervisor-escalated → 下一个 supervisor 裁决事件",
     "scheduler.tick_gap_p50": "scheduler.log 相邻两条 tick done 的间隔",
     "scheduler.merge_pass_gap_min": "运行目录 .merge-pass-epoch（run_merge_lane 拿到车道锁时写入）距今分钟数；units.json 里没有待合并单时为 0",
+    "scheduler.harvest_gap_p50": "scheduler.log 相邻两条 harvest-station done 的间隔",
     "release.hours_waiting": "release-train.json：当前待发布批次的 started_at",
     "release.hotpatch_blockers": "release-blockers.json（release_train.sh 对照生产热修与 main）",
     "pipeline.orphan_prs": "orphan-prs.count（调度器比对 open PR 与台账）",
@@ -607,6 +610,7 @@ SUPERVISOR_EVENTS = ("supervisor-requeue", "supervisor-approve", "supervisor-clo
 # The live line is `dispatch claim=owned issue=N mode=.. reason=.. pid=P type=T unit=U` (station_health.py reads the same); older logs had no claim/issue/reason.
 DISPATCH_RE = re.compile(r"^\[(\S+)\] dispatch (?:claim=\S+ )?(?:issue=\S+ )?mode=\S+ (?:reason=\S+ )?pid=\d+ type=(repair|rereview|review) unit=(\S+)")
 LINE_RE = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\] tick done")
+HARVEST_RE = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\] harvest-station done")
 
 
 def ts(value):
@@ -1545,15 +1549,19 @@ def main():
     metrics.update(cancel_metrics(audit, now - timedelta(hours=24), now)[0])  # a 5 h window scaled to a day read one event as 4.8
     _, metrics["ci.priority_hold_runs_48h"] = cancel_metrics(audit, now - timedelta(hours=48), now)
     metrics["ci.gated_pr_pct"] = gated_agent_pr_share(repo)
-    ticks = []
+    ticks, harvests = [], []
     log = os.path.join(a, "scheduler.log")
     if os.path.exists(log):
         for raw in open(log, errors="ignore"):
             m = LINE_RE.match(raw)
             if m and (t := ts(m.group(1))) and since <= t <= now:
                 ticks.append(t)
+            m = HARVEST_RE.match(raw)  # the line's stamp is the pass start, as the tick's is
+            if m and (t := ts(m.group(1))) and since <= t <= now:
+                harvests.append(t)
     metrics["scheduler.tick_gap_p50"] = pct([(b - x).total_seconds() for x, b in zip(ticks, ticks[1:])], .5)
     metrics["scheduler.merge_pass_gap_min"] = merge_pass_gap_min(units, ledger_history.live_ledger_readable(a), a, now)
+    metrics["scheduler.harvest_gap_p50"] = pct([(b - x).total_seconds() for x, b in zip(harvests, harvests[1:])], .5)
 
     train = read_json(os.path.join(a, "release-train.json"))
     if not train:

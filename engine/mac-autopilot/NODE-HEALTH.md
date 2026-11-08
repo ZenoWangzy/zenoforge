@@ -47,6 +47,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | supervisor | token gate input empty while workers ran (`supervisor.spend_ledger_blind`; 1 when a finished worker left a history event in the last 6 h and no unit holds a `spend_runs` record that started in that window) | the gate sums `spend_runs`, so an unwritten ledger reads as zero spend and returns ok. #700 was live on 2026-11-08 with no record on 182 + 889 units while issue-5730 had spent 1,410,761 fresh tokens against the 1,200,000 line: the writer ran only on full ticks, 25 records a tick in file-name order, and nothing said so | 0 | ≥ 1 | first scorecard sample |
 | scheduler | seconds between tick starts p50 (`scheduler.tick_gap_p50`) | — | ≤ 240 | ≥ 420 | — |
 | scheduler | minutes since the last merge pass while ready-to-merge units wait (`scheduler.merge_pass_gap_min`; the pass is `run_merge_lane` holding the lane, run by the merge station, the refill or the tick; the time is `.merge-pass-epoch`; 0 when no unit the lane would take is ready, NO-DATA until the first pass is recorded). TENTATIVE bounds, 10/30 min from the merge station's 60 s cadence plus up to one 300 s refill that can delay a launch; no live samples yet, re-measure after 10 days of data | no merge pass ran 10:11Z-after on 2026-11-08 with two CLEAN PRs waiting | ≤ 10 | ≥ 30 | — |
+| scheduler | seconds between harvest station pass starts p50 (`scheduler.harvest_gap_p50`); the station's stall bound | — | ≤ 240 | ≥ 420 | — |
 | release | current release batch wait in hours, not yet deployed (`release.hours_waiting`; 0 once a `release-retained` deploy came after the batch started) | elite: deploy on demand, lead time < 1 day [4] | ≤ 4 | ≥ 12 | — |
 | release | hours since the oldest deploy whose acceptance failed under FIX-FORWARD and still holds tickets no later `release-closer` line closed (`release.hours_acceptance_failed`; 0 when none; PROVISIONAL bounds, maintainer to confirm) | the next release's acceptance should clear the tracker: 24 h is about 6 missed 4 h release cycles (`release.hours_since_release` bound) | ≤ 24 | ≥ 72 | — |
 | release | hours since production last changed, formal or hand release (`release.hours_since_release`; source: GitHub production Deployments, the live sha (newest success record via `engine/production-deployment-read.sh`) and its earliest real deployment record, not `release-train.json` `released_at`; ruling `release-overdue-2026-11-07`: two 2 h batch cycles with no formal release is a stop, repeated hourly) | two batch cycles (2 h) per release; 4 h without one is a stalled line | ≤ 2 | ≥ 4 | — |
@@ -211,6 +212,17 @@ which `0 ready unit(s) wait` alone did not show. The sync budget is the pass's f
 The merge lane can rerun a check that admission cancelled before `ci_wip_wait` is set; each such rerun logs one
 `ci cancel-rerun unit=<id> head=<sha> run=<id>` line (decided from the cancel audit's latest reason for the run being `ci wip` or
 `ci deferred`), so a day's count is one grep.
+
+The harvest group is a station process too (`scheduler.sh --harvest-station`, `scheduler.d/harvest-station.sh`): `loop.sh` starts a
+detached pass every 60 s (`AUTOPI_HARVEST_STATION_SECONDS`, kill at 600 s) that runs `harvest_workers`, the claim sweeps,
+`self_check_harvest`, `precheck_harvest` and `recover_orphans` with a 240 s bound (`AUTOPI_HARVEST_STATION_LIMIT_SECONDS`). It takes
+the ledger lock one worker at a time, so the tick, the refill and the merge lane run between workers, and it re-checks under the lock
+that a worker is still unharvested. The full tick runs that group itself only while no pass started within 600 s
+(`AUTOPI_HARVEST_STATION_FRESH_SECONDS`). Live workers are visited once per 900 s (`AUTOPI_HARVEST_LIVE_SECONDS`), so the SLOW/BURN
+alert lines stay one per sweep. Each pass logs `harvest-station done secs= gh_calls= lock_wait= lock_hold= workers= harvested=
+deferred= limit= ended= phases=` (the stamp is the pass start); `scheduler.harvest_gap_p50` is the median gap between those stamps. Its
+bounds are the tick's (240 / 420), set by design, not measured: re-measure on the first 7 live days, and change them only with that
+measurement and this table. Before the split the tick spent 128-215 s in `harvest_workers` (9-19 gh calls) on 2026-11-08.
 
 Status: `STALLED` when the buffer is not empty and the stall exceeds the bound, `PAUSED` while the pipeline pause
 file exists (no alert), else `OK`. Stall minutes are `min(now - last out, oldest wait)` while something waits and 0

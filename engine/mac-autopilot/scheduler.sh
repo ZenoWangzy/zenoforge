@@ -101,6 +101,7 @@ source "$HERE/scheduler.d/stop-loss.sh"
 source "$HERE/scheduler.d/dispatch-queue.sh"
 source "$HERE/scheduler.d/ci-status.sh"
 source "$HERE/scheduler.d/ci-admission.sh"
+source "$HERE/scheduler.d/harvest-station.sh"
 source "$HERE/scheduler.d/merge-prep.sh"
 source "$HERE/scheduler.d/merge-lane.sh"
 source "$HERE/scheduler.d/conflict-resolve.sh"
@@ -118,7 +119,7 @@ source "$HERE/scheduler.d/health-release.sh"
 source "$HERE/scheduler.d/locks-views.sh"
 mkdir -p "$A/alerts"
 
-if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --rule ]]; then
+if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --rule ]]; then
   if ! reconcile_event="$(reconcile_runtime_config "$(sched_config_file mac-autopilot/config.template.json)" "$A/config.json" "${ZF_ENGINE_DIR:-$ROOT/engine}/lib.sh")"; then
     say "config-reconcile failed; tick stopped before reading config"
     exit 1
@@ -459,6 +460,8 @@ SCHED_LOCK_HELD=false
 VIEWS_LOCK="$A/.views.lock"
 # ci_admission as its own station (ci_station_tick): its own lock, so a pass never waits on the tick or the refill.
 CI_STATION_LOCK="$A/.ci-station.lock"
+# The harvest group as its own station (harvest_station_tick, scheduler.d/harvest-station.sh): its own lock, the ledger lock one worker at a time.
+HARVEST_STATION_LOCK="$A/.harvest-station.lock"
 
 # 补派循环入口（#4628）：loop.sh 与慢 tick 并行检查本地台账，30 秒一次或发现新退出的 worker 时触发。
 # 慢阶段只在等待 GitHub 时让出同一 SCHED_LOCK；补派本地收割 direct-main 实现结果，另每次最多收割 2 个已结束且带报告的 PR 车道 implement/review/rereview/repair worker（释放槽位，有少量 GitHub 调用）、回收孤儿记录，
@@ -545,7 +548,7 @@ refill_tick() {
 }
 
 main() {
-  local views_mode=dashboard gh_calls=0
+  local views_mode=dashboard gh_calls=0 tick_harvests=false
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
   acquire_scheduler_lock || { echo "[$STAMP] scheduler tick skipped: another tick holds $SCHED_LOCK" >> "$LOG"; return 0; }
   if ! state_schema_ok; then
@@ -570,15 +573,20 @@ main() {
     MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   fi
   : > "$A/.tick-phases" # loop.sh reads this and .tick-phase when it kills this tick
-  phase harvest_workers
-  phase_mark coord_sweeps
-  coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
-  coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
-  coord_reconcile_scheduler_workers
+  harvest_station_fresh || tick_harvests=true # a live station harvests; an older loop.sh without it, or a stuck station, leaves this to the tick
+  if [[ "$tick_harvests" == true ]]; then
+    phase harvest_workers
+    phase_mark coord_sweeps
+    coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
+    coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
+    coord_reconcile_scheduler_workers
+  fi
   phase reconcile_size_recuts
-  phase self_check_harvest
-  phase precheck_harvest
-  phase recover_orphans
+  if [[ "$tick_harvests" == true ]]; then
+    phase self_check_harvest
+    phase precheck_harvest
+    phase recover_orphans
+  fi
   phase recover_orphan_landing
   phase live_event_watch
   if [[ -e "$PAUSE_FILE" ]]; then
@@ -652,6 +660,7 @@ case "${1:-}" in
   --refill) refill_tick ;;
   --ci-admission) ci_station_tick ;;
   --merge) merge_entry ;;
+  --harvest-station) harvest_station_tick ;;
   --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; unretire_rc=$?; release_scheduler_lock; exit "$unretire_rc" ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick
   --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;; # hold.sh --rule: record the supervisor ruling that refills the stop-loss budget
   *) main "$@" ;;

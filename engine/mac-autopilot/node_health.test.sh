@@ -87,7 +87,7 @@ cat > "$a/units.json" <<'JSON'
    {"stage":"supervisor-cap-default","at":"2026-10-19T10:45:00Z"}]}
 ]}
 JSON
-printf '[2026-10-19T11:00:00Z] tick done units=3 live=1\n[2026-10-19T11:05:00Z] tick done units=3 live=1\n[2026-10-19T11:12:00Z] tick done units=3 live=1\n' > "$a/scheduler.log"
+printf '[2026-10-19T11:00:00Z] tick done units=3 live=1\n[2026-10-19T11:05:00Z] tick done units=3 live=1\n[2026-10-19T11:12:00Z] tick done units=3 live=1\n[2026-10-19T11:00:00Z] harvest-station done secs=9 gh_calls=2 lock_wait=0 lock_hold=7 workers=1 harvested=1 deferred=0 limit=240s ended=11:00:09Z phases=harvest_workers:7s/2gh\n[2026-10-19T11:02:00Z] harvest-station done secs=3 gh_calls=0 lock_wait=0 lock_hold=0 workers=0 harvested=0 deferred=0 limit=240s ended=11:02:03Z phases=none\n[2026-10-19T11:04:00Z] harvest-station done secs=3 gh_calls=0 lock_wait=0 lock_hold=0 workers=0 harvested=0 deferred=0 limit=240s ended=11:04:03Z phases=none\n[2026-10-19T11:10:00Z] harvest-station done secs=3 gh_calls=0 lock_wait=0 lock_hold=0 workers=0 harvested=0 deferred=0 limit=240s ended=11:10:03Z phases=none\n' > "$a/scheduler.log"
 echo '{"node_health":{"review.first_pass_pct":[40,10]}}' > "$a/config.json"
 
 pause_since="2026-10-19T11:50:00Z"
@@ -116,6 +116,10 @@ grep -Eq ' 120 .*WARN$' <<<"$(row 'escalation -> supervisor')" || fail "supervis
 grep -Eq ' 1 .*OK$' <<<"$(row 'worker-no-output events')" || fail "deaths wrong: $(row 'worker-no-output')"
 grep -Eq ' 50 .*UNHEALTHY$' <<<"$(row 'advisor asks that got no ruling')" || fail "advisor failure share wrong: $(row 'advisor asks')"
 grep -Eq ' 300 .*WARN$' <<<"$(row 'between tick starts')" || fail "tick gap wrong: $(row 'tick starts')"
+# harvest station: the gaps of the four pass starts are 120, 120 and 360 s, so the median is 120 (the tick lines do not count)
+grep -Eq ' 120 .*OK$' <<<"$(row 'between harvest station pass starts')" || fail "harvest gap wrong: $(row 'harvest station pass starts')"
+jq -e '.metrics[] | select(.id == "scheduler.harvest_gap_p50") | .value == 120 and .healthy == 240 and .unhealthy == 420 and .source != ""' \
+  "$a/node-health.json" >/dev/null || fail 'harvest gap row lacks its bounds or source'
 # 打回报告缺发现块的比例：窗口内 3 次打回记录里 2 次 missing（窗口外那条不算）；窗口内没有记录时为空，不算 0
 grep -Eq ' 67 .*UNHEALTHY$' <<<"$(row 'without a findings block')" || fail "findings-block gap wrong: $(row 'findings block')"
 # 仲裁调度与触顶默认决定：固定滚动 24h（pr-12/pr-14 的 10-17 事件在窗外，pr-13 的 06:30 在 5h 窗外仍在 24h 内）
