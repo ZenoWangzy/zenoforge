@@ -19,6 +19,6 @@ git -C "$C" fetch -q origin main || exit 1
 # systemd-run -E passes an unset name as empty, and an empty lower-case proxy beats the upper-case one.
 export http_proxy="${http_proxy:-${HTTP_PROXY:-}}" https_proxy="${https_proxy:-${HTTPS_PROXY:-}}" no_proxy="${no_proxy:-${NO_PROXY:-}}"
 # 10-30 head: opt workers bypassed the luna CPU cap (CPUQuota=infinity); cap every opt worker at start (hotfix weight is 1000)
-systemd-run --user --unit "$key" --collect -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="${AGENT_WORKER_CPU_WEIGHT:-10}" -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY \
+systemd-run --user --unit "$key" --collect -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="${AGENT_WORKER_CPU_WEIGHT:-10}" -p MemoryHigh="${AGENT_WORKER_MEM_HIGH:-2G}" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY \
   -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY -E WORKER_SCRATCH_ROOT -E LUNA_PRIORITY=opt -E LUNA_AGE_ADMIT_SECONDS -p WorkingDirectory="$W" \
   "$S/bin/worker" "$key" "$W" "$B" >/dev/null 2>&1 && echo "started $key #$issue" || echo "FAILED $key"

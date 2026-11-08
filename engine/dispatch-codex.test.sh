@@ -658,6 +658,8 @@ assert_contains "owner unit records stop intent before systemd sends TERM" "$(ca
 assert_contains "owner unit copies the defaulted Node env-proxy opt-in" "$(cat "$FAKE_SYSTEMD_ARGS_FILE")" "<NODE_USE_ENV_PROXY>"
 assert_contains "owner unit caps CPU quota" "$(cat "$FAKE_SYSTEMD_ARGS_FILE")" "<CPUQuota=200%>"
 assert_contains "owner unit lowers CPU weight" "$(cat "$FAKE_SYSTEMD_ARGS_FILE")" "<CPUWeight=10>"
+assert_contains "owner unit sets MemoryHigh" "$(cat "$FAKE_SYSTEMD_ARGS_FILE")" "<MemoryHigh=2G>"
+assert_contains "owner unit sets TasksMax" "$(cat "$FAKE_SYSTEMD_ARGS_FILE")" "<TasksMax=500>"
 assert_contains "owner unit copies uppercase NO_PROXY" "$(cat "$FAKE_SYSTEMD_ARGS_FILE")" "<NO_PROXY>"
 assert_contains "owner delivery uses danger-full-access" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<danger-full-access>"
 
