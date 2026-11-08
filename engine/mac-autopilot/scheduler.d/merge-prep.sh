@@ -307,32 +307,17 @@ retry_blocked_units() { # BLOCK 只在 head 变了，或 main 已推进且该单
   done < <(jqf -r '.units[] | select(.stage=="blocked-external" and .blocked_on == null and .size_recut_pending != true and ((.note // "") | contains("CONFLICTED") | not)) | [.id, (.pr // "" | tostring), (.reviewed_sha // ""), (.blocked_main_sha // ""), (.block_retries // 0 | tostring)] | @tsv' "$UNITS")
 }
 
-declare -gA CI_MAIN_GREEN_CHECKS_CACHE=()
-main_green_checks() { # main SHA -> check names that succeeded on that SHA (one API read per SHA per tick)
-  local sha="$1" raw green
-  if [[ -v "CI_MAIN_GREEN_CHECKS_CACHE[$sha]" ]]; then
-    printf '%s\n' "${CI_MAIN_GREEN_CHECKS_CACHE[$sha]}"
-    return 0
-  fi
-  raw="$(gh api "repos/{owner}/{repo}/commits/$sha/check-runs?per_page=100" 2>/dev/null)" || return 1
-  green="$(jqf -c '[.check_runs[]? | select(.conclusion == "success") | .name? | select(type=="string" and length>0)] | unique' <<<"$raw" 2>/dev/null)" || return 1
-  CI_MAIN_GREEN_CHECKS_CACHE["$sha"]="$green"
-  printf '%s\n' "$green"
-}
-
-# 2026-11-08 PR#5707：run-release.test.sh 两个测试在 main 上红、11491f2f88 修好，base 没有这个修复的 PR 永远红，
-# 没人给它们 rebase（head 手动 update-branch 了 4 个）。失败检查在当前 main 上同名为绿且 PR 落后 main：服务端 update-branch 一次
-# 让 CI 重跑，不去重跑旧 base、不派修复。每个单元同一组失败检查只走一跳（.green_main_hops）：更新后的新 head 再红就走原路径。
-# shortcut: 绿的判断只看 MAIN_HEAD 上同名 check-run；main 上检查名与 PR 门不同名就不触发，需要时再按套件比对。
-ci_red_green_on_main_hop() { # id pr head fails-csv -> 0 = branch updated
-  local green
-  [[ -n "$4" && "$MAIN_HEAD" =~ $SHA_RE ]] || return 1
-  jq -e --arg id "$1" --arg k "$4" '[.units[] | select(.id == $id) | (.green_main_hops // [])[]] | index($k) | not' "$UNITS" >/dev/null 2>&1 || return 1
-  green="$(main_green_checks "$MAIN_HEAD")" || return 1
-  jqf -en --argjson green "$green" --arg fails "$4" '($fails | split(",")) | length > 0 and all(.[]; . as $n | $green | index($n) != null)' >/dev/null 2>&1 || return 1
+# 2026-11-08 PR#5707: run-release.test.sh tests were red on main and fixed at 11491f2f88; PRs whose base lacks the fix stayed red
+# and nothing rebased them (head ran update-branch by hand on 4). A ready-to-merge PR with a completed failed check that is behind
+# main and mergeable gets one server-side update-branch before any repair, rerun or wait: a stale base is refreshed before we spend a
+# repair on it. One hop per unit and failed-check set (.behind_main_hops): update-branch itself makes a new head, so a head-SHA key
+# cannot stop a loop. The refreshed head failing the same checks again takes the existing paths unchanged.
+ci_red_behind_main_hop() { # id pr head fails-csv -> 0 = branch updated
+  [[ -n "$4" ]] || return 1
+  jq -e --arg id "$1" --arg k "$4" '[.units[] | select(.id == $id) | (.behind_main_hops // [])[]] | index($k) | not' "$UNITS" >/dev/null 2>&1 || return 1
   pr_behind_main "$2" "$3" || return 1
   [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]] || return 1
   ci_update_branch "$2" "$3" || return 1
-  set_unit "$1" "$(hist ci-red-green-on-main-update "$4 green on main $MAIN_HEAD") | .green_main_hops = ((.green_main_hops // []) + [$(js "$4")] | unique)"
-  say "merge skipped PR#$2 (check failed: $4; green on main ${MAIN_HEAD:0:9}, stale base) -> update-branch at $3, CI reruns once"
+  set_unit "$1" "$(hist ci-red-behind-main-update "$4 failed on a head behind main $MAIN_HEAD") | .behind_main_hops = ((.behind_main_hops // []) + [$(js "$4")] | unique)"
+  say "merge skipped PR#$2 (check failed: $4; head behind main, stale base) -> update-branch at $3, CI reruns once"
 }
