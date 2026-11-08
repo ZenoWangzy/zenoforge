@@ -182,6 +182,35 @@ refill_merge_pass() {
   printf '%s\n' "$now" > "$A/.refill-merge-epoch"
   MERGE_LANE_WAIT=0 run_merge_lane
 }
+# scheduler.sh --merge: the merge lane alone, as its own process. It has no refill budget (TICK_LOCAL_REFILL is unset, so the budget stops above
+# and refill_room never fire), takes no ledger lock for the pass (set_unit and units_update take it per write, as under the tick's yield) and
+# starts no worker: no dispatch, no intake. One pass at a time across the tick, the refill and this entry stays with run_merge_lane's flock;
+# MERGE_LANE_WAIT=0 makes this entry skip a pass already in progress instead of queueing behind it.
+merge_entry() {
+  local gh_calls
+  cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
+  if [[ -e "$PAUSE_FILE" ]]; then
+    say "merge entry paused by $PAUSE_FILE: no merge"
+    return 0
+  fi
+  if ! state_schema_ok; then
+    say "state schema invalid; merge entry stopped before external actions"
+    return 2
+  fi
+  tick_gh_calls_begin
+  MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
+  # Same order as the tick: the supervisor-owned marking comes before the lane, which skips those units.
+  mark_supervisor_owned_units
+  release_session_pr_units
+  if supervisor_marking_deferred; then
+    say "merge entry held: supervisor-owned marking deferred"
+  else
+    MERGE_LANE_WAIT=0 run_merge_lane || :
+  fi
+  gh_calls="$(tick_gh_calls_count)"
+  say "merge entry done secs=$SECONDS gh_calls=$gh_calls ended=$(date -u +%H:%M:%SZ)"
+  rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
+}
 # A failed open-PR read left every candidate with no check rows, so the whole pass skipped and waited a round (2026-11-04: 10 PRs, 27 minutes).
 # Read again inside the pass, bounded by its deadline. Only an empty read counts: a PR that is really red or pending has rows and never lands here.
 merge_census_retry() {
