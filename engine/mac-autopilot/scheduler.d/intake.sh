@@ -124,7 +124,7 @@ prefix = founder_reqs.configured_anomaly_prefix()
 for row in rows:
     row["_auto_filed"] = founder_reqs.is_auto_filed_ticket(row, prefix)
 json.dump(rows, sys.stdout, separators=(",", ":"))
-' | jqf -r --argjson skip "$skip_labels" '
+' | tee "$query_dir/rows.json" | jqf -r --argjson skip "$skip_labels" '
       def rank: [.labels[].name] as $n
         | if ($n | index("founder-test")) then 0 elif ($n | index("priority:top")) then 1
           elif ($n | index("critical-path")) then 2  # 批次 STATE 的关键路径（#4363）：排在普通功能前、遗留后
@@ -134,6 +134,7 @@ json.dump(rows, sys.stdout, separators=(",", ":"))
       | group_by(.number) | map(sort_by(.lane) | .[0])
       | sort_by([rank, (if ._auto_filed then 1 else 0 end), -.number])
       | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels,subIssuesSummary,blockedBy} | @base64)"'
+    intake_skip_label_report "$query_dir/rows.json" "$skip_labels"
     if (( valid_queries == expected_queries && ${#query_files[@]} == expected_queries )); then : >"$cache_valid_tmp"; fi
   ) >"$cache_rows_tmp"
   if [[ -f "$cache_valid_tmp" ]]; then
@@ -601,7 +602,7 @@ register_new_issues() {
       else
         handoff_pr=""
       fi
-      [[ -n "$handoff_pr" ]] || ! grep -qE "(#|issue-)${n}([^0-9]|\$)" <<<"$busy" || { intake_skip open_pr; continue; }
+      [[ -n "$handoff_pr" ]] || ! grep -qE "(#|issue-)${n}([^0-9]|\$)" <<<"$busy" || { intake_skip open_pr; intake_skip_note "$n" "an open PR's branch, title or body names it"; continue; }
     fi
     if (( ! existing_only )) && [[ -z "$episode" ]]; then
       ! intake_parent_retry_waiting "$n" || { intake_skip parent_retry; continue; }

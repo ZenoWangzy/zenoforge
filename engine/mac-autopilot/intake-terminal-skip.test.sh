@@ -62,6 +62,15 @@ for step in state_read terminal_check skip_terminal skip_census_partial; do
   [[ "$steps_line" == *" $step="*"s/"* ]] || fail "steps line lacks $step: $steps_line"
 done
 
+# An issue only an open PR's text names is dropped with a reason line.
+: > "$LOG"
+tick_prs() { echo '[{"headRefName":"agent/issue-99","title":"other work (#14)","body":""}]'; }
+intake_candidates() { row 14; }
+register_new_issues 0 true
+grep -Fq "intake skip issue #14: an open PR's branch, title or body names it" "$LOG" || fail "open_pr drop has no reason: $(cat "$LOG")"
+tick_prs() { echo '[]'; }
+intake_candidates() { for n in 10 11 12 13; do row "$n"; done; }
+
 # A refill near its 300s kill stops intake cleanly, whatever is left of its own budget.
 : > "$LOG"
 SECONDS=280

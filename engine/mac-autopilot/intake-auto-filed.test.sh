@@ -21,7 +21,8 @@ cat > "$fixture/issues.json" <<'JSON'
   {"number":301,"title":"focus requirement","state":"OPEN","labels":[{"name":"focus"}]},
   {"number":302,"title":"Configured anomaly: machine report","state":"OPEN","labels":[{"name":"focus"}]},
   {"number":303,"title":"factory-f2 machine report","state":"OPEN","labels":[{"name":"focus"}]},
-  {"number":304,"title":"machine report","state":"OPEN","labels":[{"name":"focus"},{"name":"prod-anomaly"}]}
+  {"number":304,"title":"machine report","state":"OPEN","labels":[{"name":"focus"},{"name":"prod-anomaly"}]},
+  {"number":401,"title":"optimizer ticket","state":"OPEN","labels":[{"name":"focus"},{"name":"opt-lane"},{"name":"hotfix"}]}
 ]
 JSON
 export INTAKE_ISSUES_FILE="$fixture/issues.json"
@@ -50,6 +51,12 @@ expected='101,102,201,202,301,304,303,302'
 }
 [[ "$(printf '%s\n' "$rows" | wc -l | tr -d ' ')" == 8 ]] || {
   echo 'intake-auto-filed.test.sh: auto-filed candidates were blocked' >&2
+  exit 1
+}
+# A skip-label row is dropped, and says why once per 6h, not on every pass.
+intake_candidates false >/dev/null
+[[ "$(grep -c 'intake skip issue #401: skip label opt-lane,hotfix' "$LOG")" == 1 ]] || {
+  printf 'intake-auto-filed.test.sh: skip-label drop not logged once: %s\n' "$(cat "$LOG")" >&2
   exit 1
 }
 echo 'intake-auto-filed.test.sh: PASS'
