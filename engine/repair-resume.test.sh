@@ -193,13 +193,13 @@ echo 'PASS hint plus review, hint only, missing report'
 
 # Cumulative-raw cutoff applies to repair; a self-fix is exempt and never goes cold.
 seed
-counters 8950000 8700000 50000 > "$fixture/sessions/2026/10/24/rollout-$sid.jsonl"
+counters 20950000 20700000 50000 > "$fixture/sessions/2026/10/24/rollout-$sid.jsonl"
 build_codex_command repair gpt-6-luna max u 'COLD BRIEF' 'NEW REVIEW FAILURE'
-[[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == session-too-large ]] || fail "9M raw repair resumed (mode=$CODEX_MODE reason=$CODEX_PATH_REASON)"
+[[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == session-too-large ]] || fail "21M raw repair resumed (mode=$CODEX_MODE reason=$CODEX_PATH_REASON)"
 counters 7800000 7500000 100000 > "$fixture/sessions/2026/10/24/rollout-$sid.jsonl"
 build_codex_command repair gpt-6-luna max u 'COLD BRIEF' 'NEW REVIEW FAILURE'
 [[ "$CODEX_MODE" == resume ]] || fail "7.9M raw repair did not resume (reason=$CODEX_PATH_REASON)"
-counters 8950000 8700000 50000 > "$fixture/sessions/2026/10/24/rollout-$sid.jsonl"
+counters 20950000 20700000 50000 > "$fixture/sessions/2026/10/24/rollout-$sid.jsonl"
 set_unit u '.self_fix_active=true'
 build_codex_command repair gpt-6-luna max u 'COLD BRIEF' 'SELF FIX FAILURE'
 [[ "$CODEX_MODE" == resume ]] || fail "self-fix over the cutoff did not resume"
