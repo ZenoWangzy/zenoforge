@@ -1,0 +1,1588 @@
+== ledger
+{
+  "units": [
+    {
+      "branch": "agent/issue-100",
+      "history": [],
+      "id": "issue-100",
+      "issue": 100,
+      "stage": "merged",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        100
+      ],
+      "branch": "agent/issue-1",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#100 delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-1",
+      "issue": 1,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t\n\nScheduler note: predecessor #100 is delivered (its change is merged into main; an issue stays open until release). Do not report BLOCKED-ON #100."
+    },
+    {
+      "branch": "agent/issue-101",
+      "history": [],
+      "id": "issue-101",
+      "issue": 101,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        101
+      ],
+      "branch": "agent/issue-2",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#101 delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-2",
+      "issue": 2,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t\n\nScheduler note: predecessor #101 is delivered (its change is merged into main; an issue stays open until release). Do not report BLOCKED-ON #101."
+    },
+    {
+      "body_blocked_by": [
+        102
+      ],
+      "branch": "agent/issue-3",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#102 delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-3",
+      "issue": 3,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-103",
+      "history": [],
+      "id": "issue-103",
+      "issue": 103,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "blocked_on": 103,
+      "body_blocked_by": [
+        103
+      ],
+      "branch": "agent/issue-4",
+      "history": [],
+      "id": "issue-4",
+      "issue": 4,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        106
+      ],
+      "branch": "agent/issue-105",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#106 waits on #105: dependency cycle broken here",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-105",
+      "issue": 105,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "blocked_on": 105,
+      "body_blocked_by": [
+        105
+      ],
+      "branch": "agent/issue-106",
+      "history": [],
+      "id": "issue-106",
+      "issue": 106,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-107",
+      "history": [],
+      "id": "issue-107",
+      "issue": 107,
+      "parked_reason": "supervisor-park",
+      "stage": "parked",
+      "task": "t",
+      "unpark_condition": "a supervisor decision"
+    },
+    {
+      "body_blocked_by": [
+        107
+      ],
+      "branch": "agent/issue-7",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "stopped waiting on #107: blocker is parked or waits on a parked unit",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-7",
+      "issue": 7,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t\n\nScheduler note: predecessor #107 is parked or can never deliver (blocker is parked or waits on a parked unit), so this unit no longer waits for it. Do not report BLOCKED-ON #107. Implement what you can; if the dependency is real in code, say so in the report and let review decide."
+    },
+    {
+      "blocked_on": 107,
+      "body_blocked_by": [
+        107
+      ],
+      "branch": "agent/issue-8",
+      "history": [
+        {
+          "result": "stopped waiting on #107: x",
+          "stage": "unblocked"
+        },
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off to supervisor",
+            "evidence": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide",
+            "owner": "scheduler",
+            "rejected": [
+              "Continue automated handling"
+            ],
+            "why": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide"
+          },
+          "result": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide",
+          "stage": "supervisor-escalated"
+        }
+      ],
+      "id": "issue-8",
+      "issue": 8,
+      "note": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide",
+      "stage": "supervisor-review",
+      "supervisor_cap_return_stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-108",
+      "history": [],
+      "id": "issue-108",
+      "issue": 108,
+      "stage": "closed",
+      "task": "t"
+    },
+    {
+      "blocked_on": 109,
+      "body_blocked_by": [
+        108
+      ],
+      "branch": "agent/issue-9",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#108 closed in ledger after recut; now waits on child #109",
+          "stage": "blocker-repointed"
+        }
+      ],
+      "id": "issue-9",
+      "issue": 9,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-110",
+      "history": [],
+      "id": "issue-110",
+      "issue": 110,
+      "stage": "closed",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        110
+      ],
+      "branch": "agent/issue-10",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#110 closed on purpose (tracker/spec parent)",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-10",
+      "issue": 10,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-111",
+      "history": [],
+      "id": "issue-111",
+      "issue": 111,
+      "stage": "closed",
+      "task": "t"
+    },
+    {
+      "blocked_on": 111,
+      "body_blocked_by": [
+        111
+      ],
+      "branch": "agent/issue-11",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off to supervisor",
+            "evidence": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide",
+            "owner": "scheduler",
+            "rejected": [
+              "Continue automated handling"
+            ],
+            "why": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide"
+          },
+          "result": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide",
+          "stage": "supervisor-escalated"
+        }
+      ],
+      "id": "issue-11",
+      "issue": 11,
+      "note": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide",
+      "stage": "supervisor-review",
+      "supervisor_cap_return_stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        112
+      ],
+      "branch": "agent/issue-12",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#112",
+          "stage": "epic-not-predecessor"
+        }
+      ],
+      "id": "issue-12",
+      "issue": 12,
+      "note": "#112 is a roadmap epic, not a predecessor: implement this slice",
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        112
+      ],
+      "branch": "agent/issue-13",
+      "history": [
+        {
+          "result": "#112",
+          "stage": "epic-not-predecessor"
+        },
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off repeated roadmap block to supervisor",
+            "evidence": "history contains repeated epic-not-predecessor events for #112",
+            "owner": "scheduler",
+            "rejected": [
+              "Keep waiting for the roadmap epic to close"
+            ],
+            "why": "the same roadmap epic blocked this unit twice"
+          },
+          "result": "parked twice on roadmap epic #112",
+          "stage": "supervisor-escalated"
+        }
+      ],
+      "id": "issue-13",
+      "issue": 13,
+      "note": "parked twice on roadmap epic #112: decide scope",
+      "stage": "supervisor-review",
+      "task": "t"
+    },
+    {
+      "blocked_on": 113,
+      "body_blocked_by": [],
+      "branch": "agent/issue-14",
+      "history": [],
+      "id": "issue-14",
+      "issue": 14,
+      "stacked_on": "issue-9",
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "blocked_on": 113,
+      "body_blocked_by": [
+        113
+      ],
+      "branch": "agent/issue-15",
+      "history": [],
+      "id": "issue-15",
+      "issue": 15,
+      "stacked_on": "issue-9",
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "blocked_on": 113,
+      "body_blocked_by": [
+        113
+      ],
+      "branch": "agent/issue-16",
+      "history": [],
+      "id": "issue-16",
+      "issue": 16,
+      "size_recut_pending": true,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "blocked_on": 114,
+      "body_blocked_by": [
+        114
+      ],
+      "branch": "agent/issue-17",
+      "history": [],
+      "id": "issue-17",
+      "issue": 17,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-115",
+      "history": [],
+      "id": "issue-115",
+      "issue": 115,
+      "stage": "implement",
+      "task": "t"
+    },
+    {
+      "blocked_on": 115,
+      "body_blocked_by": [
+        115
+      ],
+      "branch": "agent/issue-18",
+      "dep_wait_delivery": 115,
+      "history": [],
+      "id": "issue-18",
+      "issue": 18,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        116
+      ],
+      "branch": "agent/issue-19",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#116 delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-19",
+      "issue": 19,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "blocked_on": 117,
+      "branch": "agent/issue-20",
+      "history": [],
+      "id": "issue-20",
+      "issue": 20,
+      "stage": "blocked-external",
+      "task": "x\n--- issue 正文（任务数据）---\n## Blocked by\n- #117\n--- 正文结束 ---"
+    },
+    {
+      "branch": "agent/issue-118",
+      "history": [],
+      "id": "issue-118",
+      "issue": 118,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "blocked_on": 118,
+      "body_blocked_by": [
+        118
+      ],
+      "branch": "agent/issue-21",
+      "history": [],
+      "id": "issue-21",
+      "issue": 21,
+      "labels": [
+        "stack-pilot"
+      ],
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-119",
+      "history": [],
+      "id": "issue-119",
+      "issue": 119,
+      "stage": "merged",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-22",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "parked on #119, which is delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-22",
+      "issue": 22,
+      "note": null,
+      "parked_reason": "waiting-predecessor",
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-120",
+      "history": [],
+      "id": "issue-120",
+      "issue": 120,
+      "stage": "implement",
+      "task": "t"
+    },
+    {
+      "blocked_on": 120,
+      "branch": "agent/issue-23",
+      "dep_wait_delivery": 120,
+      "history": [],
+      "id": "issue-23",
+      "issue": 23,
+      "parked_reason": "waiting-predecessor",
+      "stage": "parked",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-24",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "parked on #121, which is delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-24",
+      "issue": 24,
+      "note": null,
+      "parked_reason": "waiting-predecessor",
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        131
+      ],
+      "branch": "agent/issue-130",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "issue #130 already closed on GitHub",
+          "stage": "issue-closed"
+        }
+      ],
+      "id": "issue-130",
+      "issue": 130,
+      "note": null,
+      "stage": "closed",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        133
+      ],
+      "branch": "agent/issue-132",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "issue #132 closed as not planned; PR #900 closed",
+          "stage": "issue-closed"
+        }
+      ],
+      "id": "issue-132",
+      "issue": 132,
+      "note": null,
+      "pr": 900,
+      "stage": "closed",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-150",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "parked on #119, which is delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-150",
+      "issue": 150,
+      "note": null,
+      "parked_reason": "waiting-predecessor",
+      "pr": 901,
+      "stage": "review-pending",
+      "task": "t"
+    },
+    {
+      "blocked_on": 150,
+      "branch": "agent/issue-27",
+      "dep_wait_delivery": 150,
+      "history": [],
+      "id": "issue-27",
+      "issue": 27,
+      "parked_reason": "waiting-predecessor",
+      "stage": "parked",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-25",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off to supervisor",
+            "evidence": "blocked-external without a predecessor: nothing can release it",
+            "owner": "scheduler",
+            "rejected": [
+              "Continue automated handling"
+            ],
+            "why": "blocked-external without a predecessor: nothing can release it"
+          },
+          "result": "blocked-external without a predecessor: nothing can release it",
+          "stage": "supervisor-escalated"
+        }
+      ],
+      "id": "issue-25",
+      "issue": 25,
+      "note": "blocked-external without a predecessor: nothing can release it",
+      "stage": "supervisor-review",
+      "supervisor_cap_return_stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-140",
+      "history": [],
+      "id": "issue-140",
+      "issue": 140,
+      "stage": "closed",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        140
+      ],
+      "branch": "agent/issue-26",
+      "dep_dead_proved": 140,
+      "dep_wait_delivery": 140,
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#140",
+          "stage": "dep-dead-proved"
+        },
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off to supervisor",
+            "evidence": "predecessor #140 can never deliver (unit closed undelivered: no note), no open PR, no live worker, no live child; branches: agent/issue-140@abcdef012345. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #140",
+            "owner": "scheduler",
+            "rejected": [
+              "Continue automated handling"
+            ],
+            "why": "predecessor #140 can never deliver (unit closed undelivered: no note), no open PR, no live worker, no live child; branches: agent/issue-140@abcdef012345. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #140"
+          },
+          "result": "predecessor #140 can never deliver (unit closed undelivered: no note), no open PR, no live worker, no live child; branches: agent/issue-140@abcdef012345. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #140",
+          "stage": "supervisor-escalated"
+        }
+      ],
+      "id": "issue-26",
+      "issue": 26,
+      "note": "predecessor #140 can never deliver (unit closed undelivered: no note), no open PR, no live worker, no live child; branches: agent/issue-140@abcdef012345. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #140",
+      "stage": "supervisor-review",
+      "supervisor_cap_return_stage": "implement-pending",
+      "task": "t"
+    }
+  ]
+}
+== log
+[2026-11-08T10:47:12Z] unit=issue-130 issue #130 already closed on GitHub; retired
+[2026-11-08T10:47:12Z] unit=issue-132 issue #132 closed as not planned; PR #900 closed, unit retired
+[2026-11-08T10:47:12Z] unit issue-1 unblocked: #100 delivered
+[2026-11-08T10:47:12Z] unit issue-2 unblocked: #101 delivered
+[2026-11-08T10:47:12Z] unit issue-3 unblocked: #102 delivered
+[2026-11-08T10:47:12Z] unit issue-105 unblocked: #106 waits on #105: dependency cycle broken here
+[2026-11-08T10:47:12Z] unit issue-7 unblocked: stopped waiting on #107: blocker is parked or waits on a parked unit
+[2026-11-08T10:47:12Z] supervisor-review unit=issue-8: blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide
+[2026-11-08T10:47:12Z] unit issue-9 blocker #108 dead (recut): repointed to child #109
+[2026-11-08T10:47:12Z] unit issue-10 unblocked: #110 closed on purpose (tracker/spec parent)
+[2026-11-08T10:47:12Z] supervisor-review unit=issue-11: blocker #111 is closed in the ledger but its issue is open with no recut children: decide
+[2026-11-08T10:47:12Z] unit issue-12 released: #112 is a roadmap epic, not a predecessor
+[2026-11-08T10:47:12Z] unit issue-13 escalated: parked twice on roadmap epic #112
+[2026-11-08T10:47:12Z] unit issue-19 unblocked: #116 delivered
+[2026-11-08T10:47:12Z] unit issue-22 unblocked: parked on #119, which is delivered
+[2026-11-08T10:47:12Z] unit issue-24 unblocked: parked on #121, which is delivered
+[2026-11-08T10:47:12Z] unit issue-150 unblocked: parked on #119, which is delivered
+[2026-11-08T10:47:12Z] supervisor-review unit=issue-25: blocked-external without a predecessor: nothing can release it
+[2026-11-08T10:47:12Z] supervisor-review unit=issue-26: predecessor #140 can never deliver (unit closed undelivered: no note), no open PR, no live worker, no live child; branches: agent/issue-140@abcdef012345. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #140
+[2026-11-08T10:47:12Z] park-sweep unit=issue-107 action=label supervisor-park
+== gh
+pr close 900 --comment Autopilot: issue #132 was closed as not planned; this PR is superseded.
+api --paginate repos/{owner}/{repo}/issues/140/sub_issues?per_page=100 --jq .[].number
+api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
+== cache
+{
+  "epoch": 1794221232,
+  "states": {
+    "101": {
+      "issue_state": "",
+      "labels": "",
+      "state": "MERGED",
+      "state_reason": ""
+    },
+    "102": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    },
+    "103": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "105": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "106": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "107": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "108": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "110": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "111": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "112": {
+      "issue_state": "",
+      "labels": "roadmap-epic",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "113": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "115": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    },
+    "116": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    },
+    "117": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "118": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "120": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "121": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    },
+    "130": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    },
+    "131": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "132": {
+      "issue_state": "CLOSED",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": "NOT_PLANNED"
+    },
+    "133": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    },
+    "140": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "150": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    }
+  }
+}
+== cache hit
+== ledger
+{
+  "units": [
+    {
+      "branch": "agent/issue-100",
+      "history": [],
+      "id": "issue-100",
+      "issue": 100,
+      "stage": "merged",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        100
+      ],
+      "branch": "agent/issue-1",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#100 delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-1",
+      "issue": 1,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t\n\nScheduler note: predecessor #100 is delivered (its change is merged into main; an issue stays open until release). Do not report BLOCKED-ON #100."
+    },
+    {
+      "branch": "agent/issue-101",
+      "history": [],
+      "id": "issue-101",
+      "issue": 101,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        101
+      ],
+      "branch": "agent/issue-2",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#101 delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-2",
+      "issue": 2,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t\n\nScheduler note: predecessor #101 is delivered (its change is merged into main; an issue stays open until release). Do not report BLOCKED-ON #101."
+    },
+    {
+      "body_blocked_by": [
+        102
+      ],
+      "branch": "agent/issue-3",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#102 delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-3",
+      "issue": 3,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-103",
+      "history": [],
+      "id": "issue-103",
+      "issue": 103,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "blocked_on": 103,
+      "body_blocked_by": [
+        103
+      ],
+      "branch": "agent/issue-4",
+      "history": [],
+      "id": "issue-4",
+      "issue": 4,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        106
+      ],
+      "branch": "agent/issue-105",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#106 waits on #105: dependency cycle broken here",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-105",
+      "issue": 105,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "blocked_on": 105,
+      "body_blocked_by": [
+        105
+      ],
+      "branch": "agent/issue-106",
+      "history": [],
+      "id": "issue-106",
+      "issue": 106,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-107",
+      "history": [],
+      "id": "issue-107",
+      "issue": 107,
+      "parked_reason": "supervisor-park",
+      "stage": "parked",
+      "task": "t",
+      "unpark_condition": "a supervisor decision"
+    },
+    {
+      "body_blocked_by": [
+        107
+      ],
+      "branch": "agent/issue-7",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "stopped waiting on #107: blocker is parked or waits on a parked unit",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-7",
+      "issue": 7,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t\n\nScheduler note: predecessor #107 is parked or can never deliver (blocker is parked or waits on a parked unit), so this unit no longer waits for it. Do not report BLOCKED-ON #107. Implement what you can; if the dependency is real in code, say so in the report and let review decide."
+    },
+    {
+      "blocked_on": 107,
+      "body_blocked_by": [
+        107
+      ],
+      "branch": "agent/issue-8",
+      "history": [
+        {
+          "result": "stopped waiting on #107: x",
+          "stage": "unblocked"
+        },
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off to supervisor",
+            "evidence": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide",
+            "owner": "scheduler",
+            "rejected": [
+              "Continue automated handling"
+            ],
+            "why": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide"
+          },
+          "result": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide",
+          "stage": "supervisor-escalated"
+        }
+      ],
+      "id": "issue-8",
+      "issue": 8,
+      "note": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide",
+      "stage": "supervisor-review",
+      "supervisor_cap_return_stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-108",
+      "history": [],
+      "id": "issue-108",
+      "issue": 108,
+      "stage": "closed",
+      "task": "t"
+    },
+    {
+      "blocked_on": 109,
+      "body_blocked_by": [
+        108
+      ],
+      "branch": "agent/issue-9",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#108 closed in ledger after recut; now waits on child #109",
+          "stage": "blocker-repointed"
+        }
+      ],
+      "id": "issue-9",
+      "issue": 9,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-110",
+      "history": [],
+      "id": "issue-110",
+      "issue": 110,
+      "stage": "closed",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        110
+      ],
+      "branch": "agent/issue-10",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#110 closed on purpose (tracker/spec parent)",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-10",
+      "issue": 10,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-111",
+      "history": [],
+      "id": "issue-111",
+      "issue": 111,
+      "stage": "closed",
+      "task": "t"
+    },
+    {
+      "blocked_on": 111,
+      "body_blocked_by": [
+        111
+      ],
+      "branch": "agent/issue-11",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off to supervisor",
+            "evidence": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide",
+            "owner": "scheduler",
+            "rejected": [
+              "Continue automated handling"
+            ],
+            "why": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide"
+          },
+          "result": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide",
+          "stage": "supervisor-escalated"
+        }
+      ],
+      "id": "issue-11",
+      "issue": 11,
+      "note": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide",
+      "stage": "supervisor-review",
+      "supervisor_cap_return_stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        112
+      ],
+      "branch": "agent/issue-12",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#112",
+          "stage": "epic-not-predecessor"
+        }
+      ],
+      "id": "issue-12",
+      "issue": 12,
+      "note": "#112 is a roadmap epic, not a predecessor: implement this slice",
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        112
+      ],
+      "branch": "agent/issue-13",
+      "history": [
+        {
+          "result": "#112",
+          "stage": "epic-not-predecessor"
+        },
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off repeated roadmap block to supervisor",
+            "evidence": "history contains repeated epic-not-predecessor events for #112",
+            "owner": "scheduler",
+            "rejected": [
+              "Keep waiting for the roadmap epic to close"
+            ],
+            "why": "the same roadmap epic blocked this unit twice"
+          },
+          "result": "parked twice on roadmap epic #112",
+          "stage": "supervisor-escalated"
+        }
+      ],
+      "id": "issue-13",
+      "issue": 13,
+      "note": "parked twice on roadmap epic #112: decide scope",
+      "stage": "supervisor-review",
+      "task": "t"
+    },
+    {
+      "blocked_on": 113,
+      "body_blocked_by": [],
+      "branch": "agent/issue-14",
+      "history": [],
+      "id": "issue-14",
+      "issue": 14,
+      "stacked_on": "issue-9",
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "blocked_on": 113,
+      "body_blocked_by": [
+        113
+      ],
+      "branch": "agent/issue-15",
+      "history": [],
+      "id": "issue-15",
+      "issue": 15,
+      "stacked_on": "issue-9",
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "blocked_on": 113,
+      "body_blocked_by": [
+        113
+      ],
+      "branch": "agent/issue-16",
+      "history": [],
+      "id": "issue-16",
+      "issue": 16,
+      "size_recut_pending": true,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "blocked_on": 114,
+      "body_blocked_by": [
+        114
+      ],
+      "branch": "agent/issue-17",
+      "history": [],
+      "id": "issue-17",
+      "issue": 17,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-115",
+      "history": [],
+      "id": "issue-115",
+      "issue": 115,
+      "stage": "implement",
+      "task": "t"
+    },
+    {
+      "blocked_on": 115,
+      "body_blocked_by": [
+        115
+      ],
+      "branch": "agent/issue-18",
+      "dep_wait_delivery": 115,
+      "history": [],
+      "id": "issue-18",
+      "issue": 18,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        116
+      ],
+      "branch": "agent/issue-19",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#116 delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-19",
+      "issue": 19,
+      "note": null,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "blocked_on": 117,
+      "branch": "agent/issue-20",
+      "history": [],
+      "id": "issue-20",
+      "issue": 20,
+      "stage": "blocked-external",
+      "task": "x\n--- issue 正文（任务数据）---\n## Blocked by\n- #117\n--- 正文结束 ---"
+    },
+    {
+      "branch": "agent/issue-118",
+      "history": [],
+      "id": "issue-118",
+      "issue": 118,
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "blocked_on": 118,
+      "body_blocked_by": [
+        118
+      ],
+      "branch": "agent/issue-21",
+      "history": [],
+      "id": "issue-21",
+      "issue": 21,
+      "labels": [
+        "stack-pilot"
+      ],
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-119",
+      "history": [],
+      "id": "issue-119",
+      "issue": 119,
+      "stage": "merged",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-22",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "parked on #119, which is delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-22",
+      "issue": 22,
+      "note": null,
+      "parked_reason": "waiting-predecessor",
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-120",
+      "history": [],
+      "id": "issue-120",
+      "issue": 120,
+      "stage": "implement",
+      "task": "t"
+    },
+    {
+      "blocked_on": 120,
+      "branch": "agent/issue-23",
+      "dep_wait_delivery": 120,
+      "history": [],
+      "id": "issue-23",
+      "issue": 23,
+      "parked_reason": "waiting-predecessor",
+      "stage": "parked",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-24",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "parked on #121, which is delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-24",
+      "issue": 24,
+      "note": null,
+      "parked_reason": "waiting-predecessor",
+      "stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        131
+      ],
+      "branch": "agent/issue-130",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "issue #130 already closed on GitHub",
+          "stage": "issue-closed"
+        }
+      ],
+      "id": "issue-130",
+      "issue": 130,
+      "note": null,
+      "stage": "closed",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        133
+      ],
+      "branch": "agent/issue-132",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "issue #132 closed as not planned; PR #900 closed",
+          "stage": "issue-closed"
+        }
+      ],
+      "id": "issue-132",
+      "issue": 132,
+      "note": null,
+      "pr": 900,
+      "stage": "closed",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-150",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "parked on #119, which is delivered",
+          "stage": "unblocked"
+        }
+      ],
+      "id": "issue-150",
+      "issue": 150,
+      "note": null,
+      "parked_reason": "waiting-predecessor",
+      "pr": 901,
+      "stage": "review-pending",
+      "task": "t"
+    },
+    {
+      "blocked_on": 150,
+      "branch": "agent/issue-27",
+      "dep_wait_delivery": 150,
+      "history": [],
+      "id": "issue-27",
+      "issue": 27,
+      "parked_reason": "waiting-predecessor",
+      "stage": "parked",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-25",
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off to supervisor",
+            "evidence": "blocked-external without a predecessor: nothing can release it",
+            "owner": "scheduler",
+            "rejected": [
+              "Continue automated handling"
+            ],
+            "why": "blocked-external without a predecessor: nothing can release it"
+          },
+          "result": "blocked-external without a predecessor: nothing can release it",
+          "stage": "supervisor-escalated"
+        }
+      ],
+      "id": "issue-25",
+      "issue": 25,
+      "note": "blocked-external without a predecessor: nothing can release it",
+      "stage": "supervisor-review",
+      "supervisor_cap_return_stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "branch": "agent/issue-140",
+      "history": [],
+      "id": "issue-140",
+      "issue": 140,
+      "stage": "closed",
+      "task": "t"
+    },
+    {
+      "body_blocked_by": [
+        140
+      ],
+      "branch": "agent/issue-26",
+      "dep_dead_proved": 140,
+      "dep_wait_delivery": 140,
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#140",
+          "stage": "dep-dead-proved"
+        },
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off to supervisor",
+            "evidence": "predecessor #140 can never deliver (unit closed undelivered: no note), no open PR, no live worker, no live child; branches: agent/issue-140@abcdef012345. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #140",
+            "owner": "scheduler",
+            "rejected": [
+              "Continue automated handling"
+            ],
+            "why": "predecessor #140 can never deliver (unit closed undelivered: no note), no open PR, no live worker, no live child; branches: agent/issue-140@abcdef012345. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #140"
+          },
+          "result": "predecessor #140 can never deliver (unit closed undelivered: no note), no open PR, no live worker, no live child; branches: agent/issue-140@abcdef012345. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #140",
+          "stage": "supervisor-escalated"
+        }
+      ],
+      "id": "issue-26",
+      "issue": 26,
+      "note": "predecessor #140 can never deliver (unit closed undelivered: no note), no open PR, no live worker, no live child; branches: agent/issue-140@abcdef012345. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #140",
+      "stage": "supervisor-review",
+      "supervisor_cap_return_stage": "implement-pending",
+      "task": "t"
+    }
+  ]
+}
+== log
+== gh
+== cache
+{
+  "epoch": 1794221232,
+  "states": {
+    "101": {
+      "issue_state": "",
+      "labels": "",
+      "state": "MERGED",
+      "state_reason": ""
+    },
+    "102": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    },
+    "103": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "105": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "106": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "107": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "108": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "110": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "111": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "112": {
+      "issue_state": "",
+      "labels": "roadmap-epic",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "113": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "115": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    },
+    "116": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    },
+    "117": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "118": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "120": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "121": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    },
+    "130": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    },
+    "131": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "132": {
+      "issue_state": "CLOSED",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": "NOT_PLANNED"
+    },
+    "133": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    },
+    "140": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "150": {
+      "issue_state": "",
+      "labels": "",
+      "state": "CLOSED",
+      "state_reason": ""
+    }
+  }
+}

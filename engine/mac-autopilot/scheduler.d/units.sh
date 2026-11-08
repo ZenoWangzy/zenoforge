@@ -105,6 +105,7 @@ retire_terminal_units() {
 }
 
 set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）
+  [[ "${SET_UNIT_QUEUE:-0}" != 1 ]] || { dep_q_enqueue "$@"; return 0; } # release_dependency_blocks batches its writes, see dep_q_flush
   local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage=""
   if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then
     acquire_scheduler_lock_wait || return 1
