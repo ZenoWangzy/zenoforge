@@ -2,8 +2,10 @@
 # issue-4706 spent 2.06M fresh tokens, most of it on repeated repairs of conflicts in files two PRs always touch together
 # (the Drizzle journal, an append-only catalog). Called from merge_conflict_to_repair when the unit already had a
 # merge-conflict and EVERY conflicting path is in a class below; any other conflict still goes to repair untouched.
-#   journal  migrations/meta/_journal.json: take main's journal, re-append this PR's own new entries, then the pack's
-#            renumber hook (pack_rebase_hook) assigns the next free number; without that hook nothing is resolved.
+#   journal  <migration.path>/meta/_journal.json, migration.path from the target's release.json: the one directory the pack's
+#            renumber script owns. Take main's journal, re-append this PR's own new entries, then the pack's renumber hook
+#            (pack_rebase_hook) assigns the next free number; without that hook nothing is resolved. Any other
+#            migrations/ journal is not resolved: a merged journal whose files nobody renumbered is the 2026-11 schema-parity shape.
 #   union    one-line-per-entry append-only lists (lessons/CATALOG.md): keep both sides' lines (git merge-file --union).
 #            lessons/RULES.md stays out: its entries span lines and a union there could drop or split a lesson.
 # The result is a merge commit (no rebase, no force) pushed with a lease on the observed head; the approval is cleared.
@@ -11,13 +13,19 @@
 # one of these files gets a structural merge driver in the target repo.
 # Bounds: first conflict goes to repair as before (CONFLICT_AUTO_MIN_PRIOR=1), at most CONFLICT_AUTO_MAX resolutions per
 # unit, a failed attempt falls through to repair at once and leaves the clone at the observed head.
-CONFLICT_JOURNAL_RE="${CONFLICT_JOURNAL_RE:-(^|/)migrations/meta/_journal\.json$}"
 CONFLICT_UNION_RE="${CONFLICT_UNION_RE:-(^|/)lessons/CATALOG\.md$}"
 CONFLICT_AUTO_MIN_PRIOR="${CONFLICT_AUTO_MIN_PRIOR:-1}"
 CONFLICT_AUTO_MAX="${CONFLICT_AUTO_MAX:-3}"
 
-conflict_hot_class() { # path → journal | union | (nothing)
-  if [[ "$1" =~ $CONFLICT_JOURNAL_RE ]]; then echo journal; elif [[ "$1" =~ $CONFLICT_UNION_RE ]]; then echo union; fi
+# The target's migration directory, read the way the real hook reads it (lib.sh's config, release.json migration.path).
+conflict_migration_path() ( # → path, or nothing when the target configures no migration gate
+  REPO_DIR="$ROOT"; source "$SCHEDULER_AGENT_LIB" >/dev/null 2>&1 || exit 1
+  jq -er '.migration.path | select(type == "string" and length > 0)' "$(zf_config_file release.json)" 2>/dev/null
+)
+conflict_hot_class() { # path → journal | union | (nothing); needs CONFLICT_JOURNAL_PATH from conflict_auto_resolve
+  # shortcut: root migrations/ journal is not resolved because pack_rebase_hook does not renumber its files; extend once the hook renumbers root migrations/.
+  if [[ -n "${CONFLICT_JOURNAL_PATH:-}" && "$1" == "${CONFLICT_JOURNAL_PATH%/}/meta/_journal.json" ]]; then echo journal
+  elif [[ "$1" =~ $CONFLICT_UNION_RE ]]; then echo union; fi
 }
 
 # main's journal plus the entries this PR added to the merge base's journal (placeholder idx/when: the renumber hook fixes them).
@@ -67,6 +75,7 @@ conflict_auto_resolve() { # id pr head paths(newline list of every conflicting p
   (( $(unit_retries "$id" conflict-auto-resolved) < CONFLICT_AUTO_MAX )) || return 1
   [[ "$(unit_field "$id" '.supervisor_owned // false')" != true ]] || return 1
   branch="$(unit_field "$id" '.branch // empty')"; [[ "$branch" =~ ^agent/[A-Za-z0-9._/-]+$ ]] || return 1
+  [[ -n "${CONFLICT_JOURNAL_PATH+x}" ]] || CONFLICT_JOURNAL_PATH="$(conflict_migration_path)" || CONFLICT_JOURNAL_PATH=""
   while IFS= read -r p; do
     class="$(conflict_hot_class "$p")"; [[ -n "$class" ]] || return 1
     [[ "$classes" == *"$class"* ]] || classes+="${classes:+,}$class"
