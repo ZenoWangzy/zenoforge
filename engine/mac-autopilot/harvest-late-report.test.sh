@@ -124,3 +124,29 @@ if coord_on_expire "$claim"; then echo 'unreadable ledger freed the claim' >&2; 
 jq -n '{workers:[{claim_owner:"pidless",unit:"issue-1",type:"review",harvested:false}]}' > "$WORKERS"
 if coord_on_expire '{"owner_kind":"scheduler-worker","owner":"pidless","unit":"issue-1","stage":"review"}'; then echo 'worker without pid expired' >&2; exit 1; fi
 echo 'ok - pidless claim expires only when the unit pidfile proves no worker'
+
+# A live ZCode worker whose log ends in its turn error and has been quiet for 60 s is stopped and counted as a zero-output death.
+hung_case() { # last log line, log age in seconds before NOW_EPOCH -> starts a live worker for issue-4 and runs harvest
+  printf '{"units":[{"id":"issue-4","stage":"review","history":[]}]}' > "$UNITS"
+  printf 'earlier output\n%s\n\n' "$1" > "$sup/hung.log"; touch -d "@$((NOW_EPOCH - $2))" "$sup/hung.log"
+  rm -f "$sup/hung.md"
+  setsid sleep 600 < /dev/null > /dev/null 2>&1 &
+  hung_pid=$!; backend="$hung_pid"
+  jq -n --argjson pid "$hung_pid" --argjson start "$(coord_process_start_ticks "$hung_pid")" '{workers:[{pid:$pid,pid_start:$start,process_group:$pid,unit:"issue-4",type:"review",provider:"zcode",log:"hung.log",report:"hung.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+  harvest_workers
+}
+turn_error='Error: Turn execution failed (traceId: abc123)'
+hung_case "$turn_error" 300
+for _ in $(seq 50); do kill -0 "$hung_pid" 2>/dev/null || break; sleep 0.1; done
+! kill -0 "$hung_pid" 2>/dev/null || { echo 'hung worker was not stopped' >&2; exit 1; }
+jq -e '.workers[0].harvested == true' "$WORKERS" >/dev/null
+jq -e '[.units[0].history[] | select(.stage == "worker-no-output")] | length == 1' "$UNITS" >/dev/null
+grep -q "stopping hung worker unit=issue-4 pid=$hung_pid reason=zcode-turn-failed" "$LOG" || { echo 'no say line for the hung worker' >&2; exit 1; }
+wait "$hung_pid" 2>/dev/null || :; backend=''
+for case in "$turn_error|30" 'Reading the file next|300'; do
+  hung_case "${case%%|*}" "${case#*|}"
+  kill -0 "$hung_pid" 2>/dev/null || { echo "worker was stopped for: $case" >&2; exit 1; }
+  jq -e '.workers[0].harvested == false and (.units[0].history | all(.stage != "worker-no-output"))' <<<"$(jq -s '{workers: .[0].workers, units: .[1].units}' "$WORKERS" "$UNITS")" >/dev/null
+  kill "$hung_pid"; wait "$hung_pid" 2>/dev/null || :; backend=''
+done
+echo 'ok - hung ZCode worker is stopped only when its log ends in the turn error and is quiet'

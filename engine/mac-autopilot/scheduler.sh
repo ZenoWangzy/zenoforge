@@ -316,6 +316,9 @@ declare -A DEP_PARKED_CACHE=()
 # requeue；同一单元第 2 次卡住不再 requeue，走 #4363（f6）的止损路由（hold.sh on-hold +
 # supervisor 裁决）。指纹一直在变的长任务不会被停（取代旧的 90 分钟盲杀）。
 STUCK_CONFIRM_MINUTES="$(jqf -r '.waste.stuck_confirm_minutes // 10' <<<"$CFG")"
+# A live ZCode worker whose log ends in its turn error and has been quiet this long is hung, not working.
+ZCODE_TURN_FAILED_QUIET_SECONDS="$(jqf -r '.waste.zcode_turn_failed_quiet_seconds // 60' <<<"$CFG")"
+[[ "$ZCODE_TURN_FAILED_QUIET_SECONDS" =~ ^[0-9]+$ ]] || ZCODE_TURN_FAILED_QUIET_SECONDS=60
 ADVISOR_ROUNDS="$(jqf -r '.advisor_rounds // 3' <<<"$CFG")"
 # The advisor loop is an optional target-config module, then pack fallback. Without it, the final rejection routes to arbiter review.
 _advisor_unit_loop="$(sched_config_file mac-autopilot/advisor-unit-loop.sh)" && source "$_advisor_unit_loop"

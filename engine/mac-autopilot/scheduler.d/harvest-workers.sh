@@ -90,6 +90,11 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
     tk="$(jqf -r '.fresh // empty' <<<"$stream")"
     [[ "$tk" =~ ^[0-9]+$ ]] || tk="$(tokens_of "$lg")"
     [[ "$tk" =~ ^[0-9]+$ ]] || tk=""  # 读不出来就是 unavailable，不当 0
+    # ZCode prints its turn error and then idles with the process alive: stop it so the zero-output path below records the death.
+    if harvest_worker_alive "$w" && zcode_turn_failed_hung "$lg"; then
+      say "stopping hung worker unit=$unit pid=$pid reason=zcode-turn-failed"
+      stuck_worker_stop "$pid" "$(jqf -r '.process_group // empty' <<<"$w")"
+    fi
     if harvest_worker_alive "$w"; then
       started="$(jqf -r .started <<<"$w")"
       s="$(ap_iso_epoch "$started")"; [[ "$s" =~ ^[0-9]+$ ]] || s="$NOW_EPOCH"
@@ -526,6 +531,12 @@ stuck_worker_progress_fp() { # worker-json → "<log字节>|<HEAD>|<工作区内
     head=nogit; dirty=nogit
   fi
   printf '%s|%s|%s' "$size" "$head" "$dirty"
+}
+zcode_turn_failed_hung() { # log path: last non-empty line is ZCode's turn error and the log has been quiet for ZCODE_TURN_FAILED_QUIET_SECONDS
+  local mt
+  mt="$(stat -c %Y -- "$1" 2>/dev/null)" || return 1
+  (( NOW_EPOCH - mt >= ZCODE_TURN_FAILED_QUIET_SECONDS )) || return 1
+  [[ "$(tail -n 20 -- "$1" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1)" =~ ^[[:space:]]*Error:\ Turn\ execution\ failed ]]
 }
 stuck_worker_stop() { # pid [recorded process group]
   local pid="$1" pgid="${2:-}"
