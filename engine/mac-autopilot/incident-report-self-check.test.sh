@@ -49,25 +49,23 @@ good=impl-71002-good.md
 printf '## root-cause\nx\n\n## recurrence-guard\nkind: test\n\n## prior-art\nThe sources agree, so no escalation was needed.\nSource: https://example.invalid/ref\n' > "$sup/$good"
 [[ "$(run_self_check "$good")" == pass && "$(self_check_runs)" == 1 ]] || fail 'compliant report did not reach the normal self-check'
 
-# A repair that keeps the incident sections in the earlier report and leaves only a fix note at its own path must not turn the check red (issue 5527).
+# A repair worker edits the original report in place and leaves only a fix note at its own path (issue 5527): the unit keeps pointing at the edited report.
 note=impl-71002-selfcheck1-fix-note.md
 printf 'Fixed the test. Report updated in place.\n' > "$sup/$note"
 room_for() { return 0; }; size_admission_write_start() { return 0; }; dispatch() { return 0; }; refill_stopped() { return 1; }
 footprint_merge_changed_owners() { :; }
 write_unit "$bad"
 dispatch_if_room issue-71002 repair repair r.log "$note" GPT-5 high prompt "" "$fixture/repo" "" "" "" false codex false configured codex || fail 'repair dispatch failed'
-[[ "$(jqf -r '.units[0].incident_base_report' "$UNITS")" == "$bad" && "$(jqf -r '.units[0].implementation_report' "$UNITS")" == "$note" ]] || fail "repair dispatch did not keep the earlier report as base: $(jqf -c '.units[0]' "$UNITS")"
-cp "$sup/$good" "$sup/$bad" # the worker updated the earlier report in place
-[[ "$(run_self_check_keep)" == pass ]] || fail 'incident sections kept in the base report were not accepted next to a fix note'
-dispatch_if_room issue-71002 repair repair r.log impl-71002-selfcheck2-fix-note.md GPT-5 high prompt "" "$fixture/repo" "" "" "" false codex false configured codex || fail 'second repair dispatch failed'
-[[ "$(jqf -r '.units[0].incident_base_report' "$UNITS")" == "$bad" ]] || fail 'a failing fix note replaced the base report'
+jqf -e --arg bad "$bad" --arg note "$note" '.units[0] | .implementation_report == $bad and .repair_note_report == $note and has("incident_base_report") == false' "$UNITS" >/dev/null \
+  || fail "repair dispatch moved implementation_report off the edited report: $(jqf -c '.units[0]' "$UNITS")"
+cp "$sup/$good" "$sup/$bad" # the worker added the three headings to the original report in place
+[[ -z "$(incident_report_gate_reason "$(jqf -c '.units[0]' "$UNITS")")" ]] || fail 'the gate did not read the report the repair edited'
+[[ "$(run_self_check_keep)" == pass ]] || fail 'incident sections edited in place were not accepted next to a fix note'
 dispatch_if_room issue-71002 implement implement r.log impl-71002-new.md GPT-5 high prompt "" "$fixture/repo" "" "" "" false codex false configured codex || fail 'implement dispatch failed'
-jqf -e '.units[0] | has("incident_base_report") | not' "$UNITS" >/dev/null || fail 'a new implementation kept the old base report'
-printf 'not a report\n' > "$sup/impl-71002-new.md"
-[[ "$(run_self_check_keep)" == red ]] || fail 'a stub with no base report passed'
+jqf -e --arg new impl-71002-new.md '.units[0] | .implementation_report == $new and has("repair_note_report") == false' "$UNITS" >/dev/null || fail 'a new implementation kept the repair note field'
 printf '## root-cause\nx\n\n## recurrence-guard\nkind: test\n' > "$sup/$bad"
 
-# The self-fix prompt tells the worker its report replaces the implementation report.
+# The self-fix prompt tells the worker to edit the implementation report in place and keep the fix note separate.
 captured=''
 room_for() { return 0; }
 pick() { PICK_MODEL=gpt-6-luna; PICK_EFFORT=high; PICK_PROVIDER=codex; PICK_HARD=false; PICK_REASON=configured; PICK_ROUTE_PROVIDER=codex; }
@@ -79,5 +77,6 @@ command git -C "$fixture/repo" commit --allow-empty -qm base 2>/dev/null || true
 command git -C "$fixture/repo" branch -f agent/issue-71002 HEAD
 self_fix_dispatch "$(jqf -c '.units[0]' "$UNITS")" || fail 'self-fix did not dispatch'
 [[ "$captured" == *'事故报告结构检查'* && "$captured" == *'incident report check failed'* ]] || fail 'self-fix prompt lacks the incident report instruction'
+[[ "$captured" == *"$sup/$bad"* ]] || fail 'self-fix prompt does not name the report to edit in place'
 
 echo 'ok - incident report failure is caught in the self-check and repaired by self-fix before review'

@@ -43,13 +43,10 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
   [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" != true ]] || return 0
   unit="$(jqf -r '.unit // empty' <<<"$w")"
   incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
-  reason="$(incident_report_gate_reason "$incident_unit_json" "$report_path")"
+  [[ "$wtype" != repair ]] || report_name="$(jqf -r --arg n "$report_name" '.implementation_report // $n' <<<"$incident_unit_json")" # a repair edits the unit's own report in place; its worker report is only the fix note
+  reason="$(incident_report_gate_reason "$incident_unit_json" "$SUP/$report_name")"
   [[ -n "$reason" ]] || return 0
-  if dispatch_incident_report_resume "$w" "$report_name" "$reason"; then
-    return 0
-  else
-    say "incident report resume unavailable unit=$unit; review will use the existing report"
-  fi
+  dispatch_incident_report_resume "$w" "$report_name" "$reason" || say "incident report resume unavailable unit=$unit; review will use the existing report"
 }
 
 harvest_workers() { # [local-only]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers

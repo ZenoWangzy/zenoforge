@@ -203,7 +203,7 @@ self_check_harvest() {
   done < <(jqf -r '.units[] | select(.self_check_pid!=null) | [.id,.self_check_pid,.self_check_output,(.self_check_start // "")] | @tsv' "$UNITS")
 }
 self_fix_dispatch() { # unit JSON; keep its selected provider/session unless quota or hard-tier routing changes it
-  local u="$1" id dir branch out rep prompt model effort provider hard_escalation route_reason route_provider deliver key failure
+  local u="$1" id dir branch out rep impl_report prompt model effort provider hard_escalation route_reason route_provider deliver key failure
   id="$(jqf -r .id <<<"$u")"
   room_for "$id" repair "$u" false || return 1
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
@@ -224,10 +224,11 @@ $(tail -100 "$out")"
   prompt="实现后的确定性自检失败，尚未派出评审。这是原实现会话的自修复，保持原任务范围，修复下列失败，不弱化断言。$failure
 在当前隔离 clone ${dir}、原分支 $branch 修复；$deliver 禁止 merge PR、部署或修改 GitHub 状态。把修复和验证证据写到 $SUP/${rep}，然后结束，流水线会重跑同一自检。
 $(matt_method_rule "$dir")"
-  # The fix report becomes the unit's implementation report, so an incident report failure must be repaired in it.
+  # The incident sections live in the unit's implementation report, so an incident report failure is repaired there in place; the fix note keeps its own path.
   if grep -q '^incident report check failed' "$out"; then
+    impl_report="$(jqf -r '.implementation_report // empty' <<<"$u")"
     prompt+="
-失败项是事故报告结构检查：$SUP/${rep} 会取代原实现报告，必须是完整的事故报告（保留原有内容，补齐 ## root-cause、带 kind: 行的 ## recurrence-guard、带 http(s) 来源 URL 的 ## prior-art），不要只写修复说明。"
+失败项是事故报告结构检查：请就地修改原实现报告 $SUP/${impl_report:-$rep}（保留原有内容，补齐 ## root-cause、带 kind: 行的 ## recurrence-guard、带 http(s) 来源 URL 的 ## prior-art），不要另写一份替代它；$SUP/${rep} 只写修复说明。"
   fi
   if [[ "$(jqf -r '.implement_model // empty' <<<"$u")" == "$model" \
       && "$(jqf -r '.implement_effort // empty' <<<"$u")" == "$effort" \
@@ -336,7 +337,7 @@ footprint_recurrence_brief() { # unit JSON → up to 3 ranked CATALOG rules, bou
 
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider] [worker-context-json]
   local ledger_filter="" unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter repair_head \
-    check_footprint="${14:-true}" base provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
+    check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
     worker_context="${19:-}" report_only=false failure_prompt="${12-$8}"
   provider="${15:-$(provider_of "$6")}"; route_provider="${18:-$provider}"
   refill_stopped && return 1 # never start a worker once a ledger write was refused: its stage write would be refused too
@@ -364,10 +365,12 @@ $(tail -80 "$check_output" 2>/dev/null)"
   fi
   dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || return 1
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
-    # A repair may leave a fix note at its own report path, so remember which earlier report held the incident sections; a new implementation starts over.
-    if [[ "$3" == implement ]]; then ledger_filter+=' | del(.incident_base_report)'
-    elif base="$(incident_base_report "$unit_json")" && [[ -n "$base" ]]; then ledger_filter+=" | .incident_base_report=$(js "$base")"; fi
-    ledger_filter+=" | .implementation_report=$(js "$5")"
+    if [[ "$3" == repair ]]; then
+      # A repair worker edits the unit's existing report in place; its own report path only holds the fix note.
+      ledger_filter+=" | .repair_note_report=$(js "$5") | .implementation_report=(if (.implementation_report // \"\")==\"\" then $(js "$5") else .implementation_report end)"
+    else
+      ledger_filter+=" | .implementation_report=$(js "$5") | del(.repair_note_report)"
+    fi
   fi
   if [[ "$3" == review || "$3" == rereview ]]; then ledger_filter+=' | .self_check_fixes=0'; fi
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then

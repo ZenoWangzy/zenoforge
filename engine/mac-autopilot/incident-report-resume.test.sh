@@ -124,6 +124,21 @@ dispatch_pending
 [[ "$(jqf -r '.units[0].stage' "$UNITS")" == review && "$REVIEW_DISPATCHES" == 1 ]] \
   || fail "passing report did not dispatch review (stage=$(jqf -r '.units[0].stage' "$UNITS") reviews=$REVIEW_DISPATCHES)"
 
+# A repair worker edits the original report in place and writes nothing at its own path: the gate reads the edited report, and the final message is saved as the repair note.
+note_name=impl-71001-fix-note.md
+rm -f "$sup/$note_name"
+write_unit "$passing_report_name"
+jqf --arg note "$note_name" '.units[0].pr=71001 | .units[0].stage="repair" | .units[0].repair_note_report=$note' "$UNITS" | write_state "$UNITS"
+write_worker repair "$note_name" impl-71001-fix-note.worker.log
+printf 'tokens used\n1,020\nFixed in place; the incident sections are in the original report.\n' > "$sup/impl-71001-fix-note.worker.log"
+before_resumes=$RESUME_DISPATCHES
+harvest_workers || : # verdict_of fails on a fix note with no verdict line
+[[ "$RESUME_DISPATCHES" == "$before_resumes" && "$(jqf -r '.units[0].implementation_report' "$UNITS")" == "$passing_report_name" ]] \
+  || fail "a repair that edited the original report was gated on its fix note (resumes=$RESUME_DISPATCHES report=$(jqf -r '.units[0].implementation_report' "$UNITS"))"
+grep -q '^Fixed in place' "$sup/$note_name" && [[ "$(jqf -r '.units[0].repair_note_report' "$UNITS")" == "$note_name" ]] \
+  || fail 'the worker final message was not saved at repair_note_report'
+grep -q '^## prior-art' "$sup/$passing_report_name" || fail 'the recovered final message replaced the edited report'
+
 # A report-only worker is already the single continuation for its source run.
 resumed_report_name=incident-report-issue-71001-T1.md
 resumed_report="$sup/$resumed_report_name"

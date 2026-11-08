@@ -35,22 +35,6 @@ incident_escalation_stated() { # prior-art section on stdin → success when it 
   tr '[:upper:]' '[:lower:]' | sed -E "s/$before//g; s#$after#  #g" | grep -Eq '(^|[^[:alpha:]])escalat(e|ed|es|ion|ions|ing)([^[:alpha:]]|$)'
 }
 incident_report_gate_reason() { # incident unit [implementation report path] → missing report requirement or empty
-  local reason base
-  reason="$(incident_report_gate_check "$@")"
-  # A repair worker often puts the incident sections into the earlier report and leaves a fix note at the new path, so an unnamed report also passes on the kept base.
-  base="$(jqf -r '.incident_base_report // empty' <<<"$1")"
-  if [[ -n "$reason" && -z "${2:-}" && -n "$base" && -z "$(incident_report_gate_check "$1" "$base")" ]]; then reason=''; fi
-  printf '%s' "$reason"
-}
-incident_base_report() { # unit JSON → report a repair dispatch keeps as the incident base (stdout) before implementation_report moves to the repair's own path
-  local cur base abs
-  incident_labels_match_json "$1" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}" || return 0
-  cur="$(jqf -r '.implementation_report // empty' <<<"$1")"; base="$(jqf -r '.incident_base_report // empty' <<<"$1")"
-  abs="$cur"; [[ "$abs" == /* ]] || abs="$SUP/$abs"; [[ -s "$abs" ]] || cur=''
-  if [[ -n "$cur" && ( -z "$base" || -z "$(incident_report_gate_check "$1" "$cur")" ) ]]; then base="$cur"; fi
-  printf '%s' "$base"
-}
-incident_report_gate_check() { # incident unit [implementation report path] → missing report requirement or empty
   local unit_json="$1" report="${2:-}" kind_line kind guard_section prior_art_section missing=()
   incident_labels_match_json "$unit_json" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}" || return 0
   if [[ -z "$report" ]]; then
