@@ -8,7 +8,11 @@ writer: it keeps only rows that pass night/owner-report-compare.py valid_cause_r
 (off by default); until then the file is for the head to read. It never sends mail and never writes under the agent home.
 
 One run: flock, skip if today's file exists, list the material changes, copy the last snapshots to a scratch dir, run one worker on
-the copy, validate its rows, write the file. A worker that fails or times out writes no file (a rerun is possible).
+the copy, validate its rows, write the file. A worker that fails or times out writes no file (a rerun is possible). The worker
+must create causes.jsonl even when it traces nothing (empty file = nothing traced, 未查明); no file at all after rc 0 is a failed
+run: the worker is run once more with the time left, the last 40 lines of its output go to the run log, and the job exits 1.
+The worker is Codex luna (WORKER_BACKEND=luna), not GLM: factory GLM is paced (glm_factory_cap_2026_11_08). bin/worker may still
+fail over to zc on a provider health failure, as for every worker.
 
 Env (defaults in parentheses, overridden by the test):
   OC_STATE (~/.zenoforge/state/owner-report-causes)  OC_OUT_DIR (~/.zenoforge/state/work)
@@ -66,7 +70,7 @@ def material_changes():
     return rows if isinstance(rows, list) else None
 
 
-def run_worker(work, key):
+def run_worker(work, key, timeout=None):
     prompt = open(f'{HERE}/owner-report-causes.prompt.md', encoding='utf-8').read() + f"""
 ## This run
 
@@ -74,16 +78,16 @@ def run_worker(work, key):
 - Snapshots (copies, read-only): `{work}/snapshots/`.
 - Local records you may read: the files and directories under `{runtime_dir()}` named in the allowed list, `{agent_home()}/logs/` only the files named in the allowed list, `{agent_home()}/spend/`.
 - Repos for `git log origin/main`: {' '.join(REPOS)}
-- Output: `{work}/causes.jsonl`, one JSON object per line.
+- Output: `{work}/causes.jsonl`, one JSON object per line. Create it as your first command (`: > {work}/causes.jsonl`), then append rows.
 """
     pf = f'{work}/prompt.md'
     with open(pf, 'w', encoding='utf-8') as f:
         f.write(prompt)
-    env = dict(os.environ, WORKER_BACKEND='zc', LUNA_PRIORITY='low')
+    env = dict(os.environ, WORKER_BACKEND='luna', LUNA_PRIORITY='low')
     p = subprocess.Popen([WORKER, key, work, pf], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
-        out, err = p.communicate(timeout=TIMEOUT)
-        return p.returncode, (err or out)[-300:].strip()
+        out, err = p.communicate(timeout=timeout or TIMEOUT)
+        return p.returncode, '\n'.join(((out or '') + (err or '')).strip().splitlines()[-40:])[-6000:]
     except subprocess.TimeoutExpired:
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
@@ -93,7 +97,7 @@ def run_worker(work, key):
             except (ProcessLookupError, subprocess.TimeoutExpired):
                 pass
         stop_scopes(key)
-        return 124, f'worker timeout after {TIMEOUT}s'
+        return 124, f'worker timeout after {timeout or TIMEOUT}s'
 
 
 def stop_scopes(key):
@@ -104,15 +108,13 @@ def stop_scopes(key):
 
 
 def read_rows(work):
+    """Rows of causes.jsonl; the caller has checked that the file exists."""
     rows = []
-    try:
-        for line in open(f'{work}/causes.jsonl', encoding='utf-8').read().splitlines():
-            try:
-                rows.append(json.loads(line))
-            except ValueError:
-                rows.append(None)
-    except FileNotFoundError:
-        pass
+    for line in open(f'{work}/causes.jsonl', encoding='utf-8').read().splitlines():
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            rows.append(None)
     return rows
 
 
@@ -171,10 +173,16 @@ def main():
             os.makedirs(f'{scratch}/snapshots')
             for p in sorted(f for f in os.listdir(snapshot_dir()) if re.fullmatch(r'\d{4}-\d{2}-\d{2}\.json', f))[-SNAPSHOTS_KEPT:] if os.path.isdir(snapshot_dir()) else []:
                 shutil.copy2(f'{snapshot_dir()}/{p}', f'{scratch}/snapshots/{p}')
-            rc, tail = run_worker(scratch, f'owncause-{stamp}')
-            if rc != 0:
-                flush(f'worker: rc={rc}' + (f' note={tail!r}' if tail else '') + '\nworker failed, no file written')
-                return 1
+            started = time.time()
+            for attempt in (1, 2):
+                rc, tail = run_worker(scratch, f'owncause-{stamp}' + ('-r2' if attempt == 2 else ''), max(int(started + TIMEOUT - time.time()), 1))
+                missing = rc == 0 and not os.path.exists(f'{scratch}/causes.jsonl')
+                if rc == 0 and not missing:
+                    break
+                lines.append(f'worker attempt {attempt}: rc={rc}' + (', no causes.jsonl written' if missing else '') + (f'\n```\n{tail}\n```' if tail else ''))
+                if not missing or attempt == 2 or started + TIMEOUT - time.time() < 60:
+                    flush('worker failed, no file written')
+                    return 1
             rows, dropped = accept(read_rows(scratch), wanted, cmp.valid_cause_row)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)

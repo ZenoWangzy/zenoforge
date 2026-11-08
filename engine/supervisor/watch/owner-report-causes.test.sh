@@ -27,6 +27,8 @@ cp "$work/material.json" "$OC_TEST_CALLS.material"
 case "$OC_TEST_MODE" in
   fail) exit 1 ;;
   hang) sleep 120 ;;
+  nofile) printf 'stub-tail-%s\n' $(seq 1 60); exit 0 ;;  # rc 0, nothing written (the 2026-11-08 run)
+  retry) [[ "$(wc -l < "$OC_TEST_CALLS")" -ge 2 ]] || exit 0 ;;  # first run writes nothing, the second answers
 esac
 printf '%s' "$OC_TEST_ROWS" > "$work/causes.jsonl"
 echo done
@@ -56,7 +58,7 @@ rows='{"line":"finished","cause":"合并队列停了九个小时","evidence":"~/
 {"line":"bogus","cause":"没有这一行","evidence":"~/x.log: 3 lines","basis":"read"}
 not json'
 
-# --- a normal run: the worker is GLM (zc), gets the snapshots, only checked rows reach the file
+# --- a normal run: the worker is Codex luna, gets the snapshots, only checked rows reach the file
 run ok "$rows" "$material" || fail "normal run failed: $(cat "$fx/run.out")"
 f="$(outfile)"
 [[ -n "$f" ]] || fail 'no causes file written'
@@ -65,7 +67,8 @@ f="$(outfile)"
 [[ "$(jq -r '.rows[0].evidence' "$f")" == *scheduler.log* ]] || fail 'the kept row carries its evidence'
 [[ "$(jq -r '.dropped | length' "$f")" == 3 ]] || fail 'the row without evidence, the unknown line and the broken line are dropped and listed'
 [[ "$(jq -r '.dropped[].reason' "$f")" != *"@"* ]] || fail 'dropped reasons carry no row text'
-[[ "$(cat "$fx/calls.backend")" == zc ]] || fail 'the worker is launched with WORKER_BACKEND=zc'
+[[ "$(cat "$fx/calls.backend")" == luna ]] || fail 'the worker is launched with WORKER_BACKEND=luna, never GLM'
+grep -q 'causes.jsonl`) as your first\|Create it as your first command' "$fx/calls.prompt" || fail 'the prompt tells the worker to create the output file first'
 [[ "$(wc -l < "$fx/calls")" == 1 ]] || fail 'one worker run'
 [[ "$(wc -l < "$fx/calls.snaps")" == 8 ]] || fail 'the worker gets the last 8 snapshots only'
 grep -q 'notes.txt' "$fx/calls.snaps" && fail 'a file that is not a snapshot is not copied'
@@ -93,6 +96,21 @@ run fail '' "$material" && fail 'a failed worker must fail the run'
 run ok '' fail && fail 'unreadable material must fail the run'
 [[ -z "$(outfile)" && ! -e "$fx/calls" ]] || fail 'unreadable material writes no file and starts no worker'
 echo 'ok - failures write nothing'
+
+# --- rc 0 with no causes.jsonl is a failure: one more run, the output tail in the run log, no file, rc 1
+OC_TIMEOUT_TEST=300 run nofile '' "$material" && fail 'a worker that exits 0 without the file must fail the run'
+[[ -z "$(outfile)" ]] || fail 'no file written when the worker left no causes.jsonl'
+[[ "$(wc -l < "$fx/calls")" == 2 ]] || fail "the worker is retried once, not more"
+log="$(cat "$fx"/state/*.md)"
+[[ "$log" == *'no causes.jsonl written'* && "$log" == *stub-tail-60* && "$log" != *stub-tail-20* ]] || fail "the run log keeps the last 40 lines of the worker output: $log"
+echo 'ok - missing causes file fails and keeps the tail'
+
+# --- the retry can recover; an empty causes.jsonl is a real answer (nothing traced), not a failure
+OC_TIMEOUT_TEST=300 run retry "$rows" "$material" || fail "retry run failed: $(cat "$fx/run.out")"
+[[ "$(wc -l < "$fx/calls")" == 2 && "$(jq -r '.rows | length' "$(outfile)")" == 1 ]] || fail 'the second worker run is used'
+run ok '' "$material" || fail 'an empty causes.jsonl must not fail the run'
+[[ "$(jq -r '.rows | length' "$(outfile)")" == 0 && "$(wc -l < "$fx/calls")" == 1 ]] || fail 'an empty file means nothing traced, one worker run'
+echo 'ok - retry and empty file'
 
 # --- a worker that hangs is killed at the total timeout and its scopes are stopped (as memory-check does)
 rm -f "$fx/systemctl.log"
