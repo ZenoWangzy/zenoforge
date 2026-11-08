@@ -415,7 +415,17 @@ merge_pr_checks_and_merge() {
 
   # gh pr checks exits non-zero when checks are failed or pending. The JSON
   # buckets distinguish those valid results from a command/API error.
-  checks_json="$(gh pr checks "$pr" --json bucket,name 2>/dev/null)" || :
+  # A fresh push registers its checks seconds late: until then gh prints
+  # "no checks reported" on stderr with empty stdout. Retry that case only.
+  local checks_err wait_max="${ZF_CHECKS_WAIT_SECS:-180}" waited=0
+  checks_err="$(mktemp)"
+  while :; do
+    checks_json="$(gh pr checks "$pr" --json bucket,name 2>"$checks_err")" || :
+    [[ -z "$checks_json" ]] && grep -q 'no checks reported' "$checks_err" && (( waited < wait_max )) || break
+    sleep 10
+    waited=$((waited + 10))
+  done
+  rm -f "$checks_err"
   if ! jq -e 'type == "array" and all(.[];
       type == "object" and (.name | type == "string" and length > 0)
       and (.bucket | type == "string"))' <<<"$checks_json" >/dev/null 2>&1; then

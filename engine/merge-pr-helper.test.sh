@@ -58,6 +58,12 @@ gh() {
       ;;
     'pr checks')
       printf 'checks:%s\n' "$*" >> "$fixture/gh-calls"
+      local unregistered; unregistered="$(cat "$fixture/no-checks-left" 2>/dev/null || printf 0)"
+      if (( unregistered > 0 )); then
+        printf '%s\n' "$((unregistered - 1))" > "$fixture/no-checks-left"
+        printf "no checks reported on the 'parent-branch' branch\n" >&2
+        return 1
+      fi
       if [[ "$PR_CHECKS" == gh-error ]]; then
         printf 'gh pr checks: API error\n' >&2
         return 1
@@ -190,6 +196,30 @@ check_output="$(cat "$fixture/check-output")"
   || fail "gh pr checks error was not reported: $check_output"
 [[ "$(cat "$fixture/gh-calls")" == 'checks:pr checks 17 --json bucket,name' ]] \
   || fail "gh pr checks error reached merge: $(cat "$fixture/gh-calls")"
+
+# Checks that register late: "no checks reported" twice, then JSON, must proceed to merge.
+sleep() { printf 'sleep:%s\n' "$1" >> "$fixture/sleep-calls"; }
+PR_CHECKS='[]'
+printf '2\n' > "$fixture/no-checks-left"
+: > "$fixture/sleep-calls"
+: > "$fixture/gh-calls"
+merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1 || fail "late checks refused: $(cat "$fixture/check-output")"
+[[ "$(cat "$fixture/gh-calls")" == *merge:* ]] || fail 'late checks did not reach merge'
+[[ "$(grep -c '^checks:' "$fixture/gh-calls")" == 3 ]] || fail "late checks were not retried twice: $(cat "$fixture/gh-calls")"
+[[ "$(cat "$fixture/sleep-calls")" == $'sleep:10\nsleep:10' ]] || fail "retry gap was not 10 s: $(cat "$fixture/sleep-calls")"
+
+# Checks that never register: the bound (here 30 s) ends the retries and the merge is refused.
+printf '999\n' > "$fixture/no-checks-left"
+: > "$fixture/sleep-calls"
+: > "$fixture/gh-calls"
+if ZF_CHECKS_WAIT_SECS=30 merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then
+  fail 'checks that never registered reached merge'
+fi
+[[ "$(cat "$fixture/check-output")" == *'could not read PR checks as JSON'* ]] || fail "unregistered checks gave the wrong refusal: $(cat "$fixture/check-output")"
+[[ "$(grep -c '^checks:' "$fixture/gh-calls")" == 4 && "$(grep -c '^sleep' "$fixture/sleep-calls")" == 3 ]] \
+  || fail "bound was not 30 s of retries: checks=$(cat "$fixture/gh-calls") sleeps=$(cat "$fixture/sleep-calls")"
+unset -f sleep
+rm -f "$fixture/no-checks-left"
 
 # Prior-art gate: body needs "## prior-art" with a URL or "no external prior art: <reason>".
 PR_CHECKS='[]'
