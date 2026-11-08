@@ -28,6 +28,13 @@ case "${TMPDIR:-}" in
 esac
 mkdir -p -- "$test_env_parent"
 test_env_root="$(mktemp -d "$test_env_parent/zenoforge-agent-test-XXXXXX")"
+# The root goes on exit. A caller's EXIT trap set before this file runs first, so it keeps working.
+eval "test_env_prior_exit=$(trap -p EXIT | sed -n 's/^trap -- //; s/ EXIT$//p')"
+test_env_chain_exit() {
+  if [[ -n "${2:-}" ]]; then eval "$2" || true; fi
+  rm -rf -- "$1"
+}
+trap "test_env_chain_exit $(printf %q "$test_env_root") $(printf %q "$test_env_prior_exit")" EXIT
 export TMPDIR="$test_env_root"
 export HOME="$test_env_root/home"
 export AGENT_HOME="$test_env_root/agent"
