@@ -31,22 +31,26 @@ repair_check_rows() { # PR number → latest normalized check rows from the tick
 # supervisor-owned 热修单元不进合并车道（update-branch、接管 pipeline-ci、gh pr merge 都不碰），
 # 热修 supervisor 会话自己合；台账里留着它们做 census 与发布阻断计数。
 merge_candidates() { # window → 就绪单元（每行一个 JSON）
-  local rf prs_file; rf="$(mktemp)" || return 0
+  local rf prs_file bs="" bs_started=$SECONDS bs_t0=$SECONDS; rf="$(mktemp)" || return 0
   prs_file="$(mktemp)" || { rm -f -- "$rf"; return 0; }
   # Use the same open-PR census, but normalize checks only for ready-to-merge PRs before sorting all candidates.
   jqf -c '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main") | .pr | tostring] | unique' "$UNITS" > "$prs_file" \
     || { rm -f -- "$rf" "$prs_file"; return 0; }
+  bs+=" ready_ids=$((SECONDS - bs_t0))s"; bs_t0=$SECONDS
   if [[ "$(jqf -r 'length' "$prs_file")" == 0 ]]; then
     printf '{}\n' > "$rf"
   else
     tick_prs | jqf --slurpfile prs "$prs_file" '[.[] | select((.number | tostring) as $n | $prs[0] | index($n) != null)]' | pr_census_by_number > "$rf"
   fi
+  bs+=" census=$((SECONDS - bs_t0))s"; bs_t0=$SECONDS
   jqf -e 'type == "object"' "$rf" >/dev/null 2>&1 || echo '{}' > "$rf"
   jqf -c --slurpfile r "$rf" '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main")]
     | sort_by([(if (.ci_wip_wait != null and .ci_wip_wait == .approved_sha) then 1 else 0 end),
         (if .hotpatch == true then 0 elif .critical == true then 1 else 2 end),
         ($r[0][(.pr | tostring)].ci // 2), (.merge_checked_epoch // 0), '"$(ready_since_epoch)"'])
     | .[0:'"$1"'] | map(. + {pr_open_head: ($r[0][(.pr | tostring)].head // null), pr_open_draft: $r[0][(.pr | tostring)].draft, pr_open_mergeable: $r[0][(.pr | tostring)].mergeable, pr_open_checks: ($r[0][(.pr | tostring)].checks // null)}) | .[]' "$UNITS"
+  bs+=" sort_select=$((SECONDS - bs_t0))s"
+  (( SECONDS - bs_started < 2 )) || say "merge detail build_steps${bs}"
   rm -f -- "$rf" "$prs_file"
 }
 
@@ -188,6 +192,19 @@ merge_census_retry() {
     read -r -t "${MERGE_CENSUS_RETRY_WAIT:-2}" <> <(:) || :
     tick_prs >/dev/null 2>&1 || :
   done
+}
+# Candidate-pass timing (log only): each candidate's seconds go to the branch it took.
+pass_step_begin() { PASS_STEP_T0=$SECONDS; }
+pass_step_end() { # outcome pr
+  local secs=$((SECONDS - PASS_STEP_T0))
+  PASS_STEP_SECS[$1]=$(( ${PASS_STEP_SECS[$1]:-0} + secs ))
+  PASS_STEP_COUNT[$1]=$(( ${PASS_STEP_COUNT[$1]:-0} + 1 ))
+  (( secs > PASS_SLOW_SECS )) && { PASS_SLOW_SECS=$secs; PASS_SLOW_PR=$2; PASS_SLOW_OUTCOME=$1; } || :
+}
+pass_steps_line() { # "name=<secs>s/<count> ..." slowest first
+  local k
+  for k in "${!PASS_STEP_SECS[@]}"; do printf '%08d %s=%ss/%s\n' "${PASS_STEP_SECS[$k]}" "$k" "${PASS_STEP_SECS[$k]}" "${PASS_STEP_COUNT[$k]}"; done \
+    | sort -rn | cut -d' ' -f2- | paste -sd' ' -
 }
 run_merge_lane_pass() {
   local merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry
@@ -334,10 +351,12 @@ run_merge_lane_pass() {
   merge_head_fetch_elapsed=$((SECONDS - merge_head_fetch_started))
   (( merge_head_fetch_elapsed < 2 )) || say "merge detail candidate_head_fetch=${merge_head_fetch_elapsed}s"
   detail_started=$SECONDS
+  declare -gA PASS_STEP_SECS=() PASS_STEP_COUNT=(); PASS_SLOW_SECS=-1; PASS_SLOW_PR=""; PASS_SLOW_OUTCOME=""
   while IFS= read -r ready; do
     [[ -z "$ready" || "$ready" == "null" ]] && break
     tick_prs_prime
     id="$(jqf -r .id <<<"$ready")"; pr="$(jqf -r .pr <<<"$ready")"
+    pass_step_begin
     refill_stopped && break # a merge whose ledger write is refused would leave a merged PR unrecorded
     # The kill counts from the refill's start, and one merge with its ledger writes took 27 to 45s on 2026-11-07.
     if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 90 )); then
@@ -348,7 +367,7 @@ run_merge_lane_pass() {
     if [[ "$checks" == null && "${TICK_PR_STATE[$pr]:-}" != MERGED && "${TICK_PR_STATE[$pr]:-}" != CLOSED ]]; then
       say "merge skipped PR#$pr (check census unavailable)"
       MERGE_CENSUS_MISSED=1
-      continue
+      pass_step_end skipped-census "$pr"; continue
     fi
     # Fair bounded scans rotate past repeatedly blocked candidates; their scan time was written as one ledger update above.
     approved="$(jqf -r '.approved_sha // empty' <<<"$ready")"
@@ -365,13 +384,13 @@ run_merge_lane_pass() {
       [[ "$state" == MERGED ]] && state=merged || state=closed
       set_unit "$id" "$(hist pr-"$state" "outside the merge lane") | .stage=\"$state\""
       say "unit=$id PR#$pr already $state; left the merge lane"
-      continue
+      pass_step_end left-lane "$pr"; continue
     fi
     if ! jqf -e '(.stacked_on == null) or (.stacked_on_released == true)' <<<"$ready" >/dev/null; then
       say "merge skipped PR#$pr (stacked predecessor has not completed its release cycle)"
-      continue
+      pass_step_end skipped-stacked "$pr"; continue
     fi
-    if [[ -n "${READIED_PRS[$pr]:-}" ]]; then say "merge skipped PR#$pr (readied this pass; CI starts now)"; continue; fi
+    if [[ -n "${READIED_PRS[$pr]:-}" ]]; then say "merge skipped PR#$pr (readied this pass; CI starts now)"; pass_step_end skipped-readied "$pr"; continue; fi
     [[ "$head" =~ $SHA_RE ]] || head="$(pr_view "$pr" headRefOid)"
     # 先沿用批准再跳过 draft：slot_sync 的 update-branch 会换 draft 的 head，不沿用的话 gated_ready 永远不 ready 它
     if [[ "$approved" =~ $SHA_RE && "$head" =~ $SHA_RE && "$head" != "$approved" ]] && approval_carries "$pr" "$approved" "$head"; then
@@ -389,13 +408,13 @@ run_merge_lane_pass() {
       approved="$head"
     fi
     # Only an approved head can win a CI slot, so a draft with no approval goes to review below instead of waiting forever.
-    if [[ "$(jqf -r '.pr_open_draft // false' <<<"$ready")" == true && "$approved" =~ $SHA_RE ]]; then say "merge skipped PR#$pr (draft, waiting for its CI slot)"; continue; fi
-    if [[ ! "$head" =~ $SHA_RE ]]; then say "merge skipped PR#$pr (head unreadable; unit left unchanged)"; continue; fi
+    if [[ "$(jqf -r '.pr_open_draft // false' <<<"$ready")" == true && "$approved" =~ $SHA_RE ]]; then say "merge skipped PR#$pr (draft, waiting for its CI slot)"; pass_step_end skipped-draft "$pr"; continue; fi
+    if [[ ! "$head" =~ $SHA_RE ]]; then say "merge skipped PR#$pr (head unreadable; unit left unchanged)"; pass_step_end skipped-head-unreadable "$pr"; continue; fi
     if [[ ! "$approved" =~ $SHA_RE || "$head" != "$approved" ]]; then
       # 批准绑定的 head 已变（或旧台账无绑定）：新提交必须先评审，不能带着旧批准合并。
       set_unit "$id" "$(hist approval-stale "approved=${approved:-none} head=${head:-unknown}") | .stage=\"rereview-pending\""
       say "merge skipped PR#$pr (head ${head:-unknown} != approved ${approved:-none}) -> rereview-pending"
-      continue
+      pass_step_end rereview "$pr"; continue
     fi
     # #4484：非 agent 分支的接管 PR，重活 job 的 if 只认 agent/issue- 前缀或 pipeline-ci 标签，不打标签
     # 就永远拿不到必需检查。首次接管确保产生 labeled 事件并记录时间下限；已有同名标签时先移除再加回，
@@ -424,23 +443,23 @@ run_merge_lane_pass() {
           say "merge skipped PR#$pr ($PIPELINE_CI_LABEL label event setup failed; retried next pass)"
         fi
       fi
-      continue
+      pass_step_end adopt-pipeline-ci "$pr"; continue
     fi
-    [[ "$checks" != null && -n "$checks" ]] || { say "merge skipped PR#$pr (check census unavailable)"; MERGE_CENSUS_MISSED=1; continue; }
+    [[ "$checks" != null && -n "$checks" ]] || { say "merge skipped PR#$pr (check census unavailable)"; MERGE_CENSUS_MISSED=1; pass_step_end skipped-census "$pr"; continue; }
     fails="$(jqf -r '[.[] | select(.bucket == "fail") | .name] | sort | join(",")' <<<"$checks" 2>/dev/null || true)"
-    if [[ -n "$fails" ]] && park_ci_red_for_main_red "$id" "$pr" "$head" "$checks"; then continue; fi
+    if [[ -n "$fails" ]] && park_ci_red_for_main_red "$id" "$pr" "$head" "$checks"; then pass_step_end ci-red-main-park "$pr"; continue; fi
     if [[ -n "$fails" && "$(jqf -r '.ci_test_checked // empty' <<<"$ready")" != "$head:$fails" ]]; then
       set_unit "$id" ".ci_test_checked=$(js "$head:$fails")"
       red_out="$(ci_test_red_checks "$checks")"
       red="$(head -n1 <<<"$red_out")"; red_facts="$(tail -n +2 <<<"$red_out")"
       if [[ -n "$red" ]]; then
-        if ci_stale_base_hop "$id" "$pr" "$head" "$red_facts"; then continue; fi
+        if ci_stale_base_hop "$id" "$pr" "$head" "$red_facts"; then pass_step_end ci-stale-base-hop "$pr"; continue; fi
         set_unit "$id" ".ci_facts_head=$(js "$head") | .ci_facts=$(js "$red_facts")"
         say "triage PR#$pr head ${head:0:9}: $(ci_triage "$head" "$red_facts") (verdict only; routing unchanged)"
         cancel_branch_runs "$(jqf -r '.branch // empty' <<<"$ready")" "tests already red; repair pushes a new head" || :
         set_unit "$id" "$(hist ci-test-red "$red") | .history[-1].tests=$(ci_red_tests "$red_facts") | .approved_sha=null | .repair_hint=$(js "PR head $head 的必需检查已有测试失败：${red}。用 gh pr checks $pr 与失败 job 日志定位；失败的是集成测试就先在本机测试库复现（RUN_INTEGRATION=1 npx vitest run <文件>，PGTEST_URL 已配好），修到本地绿再 push；本 PR 引起的就修并补回归测试；确属与本 PR 无关的环境故障就不改代码，在报告里写明证据。$(ci_fact_hint "$head" "$red_facts")") | .stage=\"repair-pending\""
         say "merge skipped PR#$pr (tests failed in: $red) -> repair-pending without waiting for the other checks or a rerun"
-        continue
+        pass_step_end repair-tests-red "$pr"; continue
       fi
     fi
     if ! jqf -e 'length > 0 and all(.[]; .bucket != "pending")' <<<"$checks" >/dev/null; then
@@ -449,17 +468,17 @@ run_merge_lane_pass() {
       candidate_ref="${merge_head_ref[$pr]:-}"
       if [[ "$merge_head_batch_ok" == true && -n "$candidate_ref" ]]; then
         candidate_head="$(git -C "$ROOT" rev-parse --verify "${candidate_ref}^{commit}" 2>/dev/null || true)"
-        [[ "$candidate_head" == "$head" ]] || { say "merge skipped PR#$pr (head moved after census)"; continue; }
+        [[ "$candidate_head" == "$head" ]] || { say "merge skipped PR#$pr (head moved after census)"; pass_step_end skipped-head-moved "$pr"; continue; }
         state="$(jqf -r '.pr_open_mergeable // empty' <<<"$ready")"
       else
         state="$(tick_pr_mergeable "$pr")"
       fi
       if [[ "$state" == CONFLICTING ]]; then
         merge_conflict_to_repair "$id" "$pr" "conflicts with main; CI cannot start" "PR 与最新 main 冲突，GitHub 不会跑 CI 也拒绝合并。git merge --no-edit origin/main，按两边意图解决冲突（热修回迁以生产已验证行为为准），跑受影响测试，推送。" "$head"
-        continue
+        pass_step_end conflict-repair "$pr"; continue
       fi
       say "merge skipped PR#$pr (checks pending or unavailable)"
-      continue
+      pass_step_end skipped-pending "$pr"; continue
     fi
     red="$(jqf -r '[.[] | select(.bucket=="fail" or .bucket=="cancel") | .name] | unique | join(", ")' <<<"$checks")"
     if [[ -n "$red" ]]; then
@@ -470,14 +489,14 @@ run_merge_lane_pass() {
         else ci_red "$id" "$pr" "$head" "$red"; fi
       elif [[ "$(unit_field "$id" '.ci_wip_wait // empty')" == "$head" ]]; then say "merge skipped PR#$pr (CI waits for a WIP slot)"
       else ci_cancelled "$id" "$pr" "$head" "$red"; fi
-      continue
+      pass_step_end ci-red "$pr"; continue
     fi
     if [[ "$(jqf -r '.gated // false' <<<"$ready")" == true ]]; then
       ready_at="$(jqf -r '.ci_ready_at // empty' <<<"$ready")"
       ready_sha="$(jqf -r '.ci_ready_sha // empty' <<<"$ready")"
       if [[ -z "$ready_at" || "$ready_sha" != "$head" ]]; then
         say "merge skipped PR#$pr (ready_for_review evidence missing for approved head)"
-        continue
+        pass_step_end skipped-ready-evidence "$pr"; continue
       fi
       missing_required="$(required_checks_without_pass "$checks" "$ready_at")"
     else
@@ -508,16 +527,16 @@ run_merge_lane_pass() {
         if [[ "$state" == MERGEABLE ]] && ci_update_branch "$pr" "$head"; then
           set_unit "$id" "$(hist ci-sync-update-branch "required checks missing: $missing_required") | .ci_sync_head=$(js "$head")"
           say "merge skipped PR#$pr (required checks without a real pass: $missing_required) -> update-branch refreshes the branch workflows"
-          continue
+          pass_step_end update-branch "$pr"; continue
         fi
         if [[ "$state" == CONFLICTING ]]; then
           set_unit "$id" ".ci_sync_head=$(js "$head")"
           merge_conflict_to_repair "$id" "$pr" "required checks never ran; branch conflicts with main" "PR 长期拿不到必需检查且与最新 main 冲突。git merge --no-edit origin/main，按两边意图解决冲突，跑受影响测试，推送。" "$head"
-          continue
+          pass_step_end conflict-repair "$pr"; continue
         fi
       fi
       say "merge skipped PR#$pr (required checks without a real pass: $missing_required)"
-      continue
+      pass_step_end skipped-required-checks "$pr"; continue
     fi
     pipe_dep=0
     jqf -e 'any(.[]; .name | startswith("Pipeline suites") or . == "Select pipeline-suite scope")' <<<"$checks" >/dev/null && pipe_dep=1
@@ -526,12 +545,12 @@ run_merge_lane_pass() {
       [[ -n "$mstate" ]] || mstate="$(tick_pr_mergeable "$pr" 2>/dev/null || true)"
       if [[ "$mstate" == CONFLICTING ]]; then
         merge_conflict_to_repair "$id" "$pr" "conflicts with main; pipeline-path changes include files deleted from main" "PR 与最新 main 冲突，且 main 已删除 PR 涉及的 pipeline 文件。git merge --no-edit origin/main，丢弃 main 已删除文件上的改动，保留其余改动，按两边意图解决剩余冲突，跑受影响测试后推送。" "$head"
-        continue
+        pass_step_end conflict-repair "$pr"; continue
       fi
       if (( hotpatch_pass )) && [[ "$(jqf -r '.hotpatch // false' <<<"$ready")" == true ]]; then
         say "merge PR#$pr hot patch while main suites are pending (not red)"
       else
-        say "merge skipped PR#$pr (touches pipeline paths; pipeline merges held)"; continue
+        say "merge skipped PR#$pr (touches pipeline paths; pipeline merges held)"; pass_step_end skipped-pipeline-paths "$pr"; continue
       fi
     fi
     # 先取当前 PR ref 并确认它仍是刚才审核/批准的 head，再对这个固定 SHA 执行同一规则判定（#4548 CTO 裁决
@@ -542,17 +561,17 @@ run_merge_lane_pass() {
     candidate_ref="${merge_head_ref[$pr]:-}"
     if [[ -z "$candidate_ref" ]]; then
       say "merge skipped PR#$pr (rule diff unavailable)"
-      continue
+      pass_step_end skipped-rule-diff "$pr"; continue
     fi
     if [[ "$merge_head_batch_ok" != true ]] \
         && ! git -C "$ROOT" fetch -q --no-tags origin "+refs/pull/$pr/head:$candidate_ref" 2>/dev/null; then
       say "merge skipped PR#$pr (rule diff unavailable)"
-      continue
+      pass_step_end skipped-rule-diff "$pr"; continue
     fi
     rule_head="$(git -C "$ROOT" rev-parse --verify "$candidate_ref^{commit}" 2>/dev/null || true)"
     if [[ "$rule_head" != "$head" ]]; then
       say "merge skipped PR#$pr (rule diff head moved)"
-      continue
+      pass_step_end skipped-rule-diff "$pr"; continue
     fi
     case "$branch" in
       agent/issue-*|agent/auto-issue-*|factory/*|hand/*) rule_actor="unit:${branch}" ;;
@@ -566,7 +585,7 @@ run_merge_lane_pass() {
     rule_event="${rule_result%%$'\n'*}"
     if [[ "$rule_event" != rule-lane:\ decision=* ]]; then
       say "merge skipped PR#$pr (rule lane unavailable: ${rule_event:-no result})"
-      continue
+      pass_step_end skipped-rule-lane "$pr"; continue
     fi
     say "$rule_event"
     if (( ! rule_ok )); then
@@ -587,19 +606,19 @@ run_merge_lane_pass() {
       else
         say "merge skipped PR#$pr (rule lane failed)"
       fi
-      continue
+      pass_step_end rule-reject "$pr"; continue
     fi
     if ! merge_result_errors="$(merge_result_node_check "$ROOT" refs/remotes/origin/main "$approved" 2>&1)"; then
       merge_result_hint="Squash merge result failed Node syntax checking. Repair the reported syntax errors, push the fix, and request review:"$'\n'"$merge_result_errors"
       set_unit "$id" "$(hist merge-result-syntax "$merge_result_errors") | .approved_sha=null | .repair_hint=$(js "$merge_result_hint") | .stage=\"repair-pending\""
       say "merge skipped PR#$pr (merge result Node syntax check failed) -> repair-pending"
-      continue
+      pass_step_end repair-merge-result "$pr"; continue
     fi
     [[ -z "$merge_result_errors" ]] || say "PR#$pr $merge_result_errors"
     if [[ "$(jqf -r '.supervisor_owned // false' <<<"$ready")" == true ]]; then
       # merge_candidates 已滤掉 supervisor-owned 单元；此处是最后防线：热修 supervisor 会话自己合并。
       say "merge skipped PR#$pr (supervisor-owned hotfix lane; the hotfix supervisor merges it)"
-      continue
+      pass_step_end skipped-supervisor-owned "$pr"; continue
     fi
     pre_merge_sha="$(git -C "$ROOT" ls-remote origin refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}')"
     # main may advance while PR checks run or another lane lands; exact-head PR checks gate the merge,
@@ -614,27 +633,29 @@ run_merge_lane_pass() {
           merge_lane_awaiting_release "$ready" "$pr"
           merged_count=$((merged_count + 1))
           say "merged PR#$pr merge=$merge_sha (own checks green; main CI verifies)"
-          (( merged_count >= merge_max )) && break
-          continue
+          (( merged_count >= merge_max )) && { pass_step_end merged "$pr"; break; }
+          pass_step_end merged "$pr"; continue
         fi
         set_unit "$id" "$(hist merged "merged on green PR CI; mergeCommit SHA unavailable") | (.stage=\"merged\") | $(awaiting_release_mark "$pr")"
         merge_lane_awaiting_release "$ready" "$pr"
         echo "[$STAMP] merged PR#$pr but mergeCommit SHA unavailable; unit=$id marked merged, main CI covers it" >> "$A/alerts/merge.md"
-        break
+        pass_step_end merged-sha-unavailable "$pr"; break
       elif mstate="$(pr_view "$pr" mergeable)"; for i in 1 2 3; do [[ "$mstate" == UNKNOWN ]] || break; sleep 2; mstate="$(pr_view "$pr" mergeable)"; done; [[ "$mstate" == CONFLICTING ]]; then
         # GitHub 合并失败后 mergeable 常短暂为 UNKNOWN：以前当成"squash 失败"每拍空试（#3885/#3860 又空转 10+ 小时）
         # 冲突不会自己消失：以前每拍空试 merge（#3885/#3860 空转数小时），现在直接派修复合 main。
-        merge_conflict_to_repair "$id" "$pr" "conflicts with main" "PR 与最新 main 冲突，GitHub 拒绝合并。git merge --no-edit origin/main，按两边意图解决冲突（迁移编号顺延到 main 之后），跑受影响测试后 push。" "$head"
+        merge_conflict_to_repair "$id" "$pr" "conflicts with main" "PR 与最新 main 冲突，GitHub 拒绝合并。git merge --no-edit origin/main，按两边意图解决冲突（迁移编号顺延到 main 之后），跑受影响测试后 push。" "$head"; pass_step_end conflict-repair "$pr"
       else
-        say "merge skipped PR#$pr (synchronous squash merge failed)"
+        say "merge skipped PR#$pr (synchronous squash merge failed)"; pass_step_end skipped-merge-failed "$pr"
       fi
     else
-      say "merge skipped PR#$pr (pre-merge main SHA unavailable)"
+      say "merge skipped PR#$pr (pre-merge main SHA unavailable)"; pass_step_end skipped-main-sha "$pr"
     fi
   done <<<"$cands"
   merge_census_watch "$MERGE_CENSUS_MISSED"
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "merge detail candidate_pass=${detail_elapsed}s"
+  (( detail_elapsed < 2 || ${#PASS_STEP_COUNT[@]} == 0 )) || say "merge detail pass_steps $(pass_steps_line)"
+  (( detail_elapsed < 2 || ${#PASS_STEP_COUNT[@]} == 0 )) || say "merge detail pass_slowest pr=$PASS_SLOW_PR secs=$PASS_SLOW_SECS outcome=$PASS_SLOW_OUTCOME"
   detail_started=$SECONDS
   retry_blocked_units
   detail_elapsed=$((SECONDS - detail_started))

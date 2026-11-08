@@ -67,6 +67,14 @@ refill_merge_pass
 grep -Eq 'merge pass stopped before refill_merge_pass at [0-9]+s' "$LOG" || fail "refill_merge_pass ran with the budget spent: $(cat "$LOG")"
 [[ ! -s "$A/.refill-merge-epoch" ]] || fail 'a skipped pass spent the rate-limit slot'
 SECONDS=0; unset TICK_LOCAL_REFILL
+# The pass names where its time went: a candidate's seconds go to the branch it took, and the step lines print once the pass ran 2s or more.
+: > "$LOG"; SECONDS=0; TICK_PRS='[]'
+refill_stopped() { SECONDS=$((SECONDS + 3)); return 1; }
+run_merge_lane_pass
+unset -f refill_stopped; TICK_PRS=""
+grep -Eq 'merge detail pass_steps [a-z-]+=[0-9]+s/[0-9]+' "$LOG" || fail "no pass_steps line with a step name: $(cat "$LOG")"
+grep -Fq 'merge detail pass_steps skipped-census=3s/1' "$LOG" || fail "pass_steps did not charge the census skip: $(cat "$LOG")"
+grep -Fq 'merge detail pass_slowest pr=7 secs=3 outcome=skipped-census' "$LOG" || fail "no pass_slowest line: $(cat "$LOG")"
 unset -f git merge_candidates
 : > "$LOG"
 
