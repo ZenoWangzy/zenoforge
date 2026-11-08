@@ -1222,8 +1222,7 @@ pipeline_suites_main_focused_run_covers_sha() {
 dispatch_pipeline_suites_after_landing() {
   local main_sha="$1" base_sha="${2:-}" status=0 census_status=0 ticket="${direct_landing_ticket:-${ZF_LAND_QUEUE_TICKET:-unknown}}"
   local focused_covered=false
-  # Post-land checks need the target to carry .github/workflows/pipeline-suites.yml. A target without it gets no dispatch
-  # and no failure here; VectA deleted its workflow on 10-31 (#4860), and its release suites run on PRs and nightly, not post-land.
+  # Post-land checks need the target to carry .github/workflows/pipeline-suites.yml; without it nothing is dispatched (VectA deleted it 10-31, #4860).
   git cat-file -e "$main_sha:.github/workflows/pipeline-suites.yml" 2>/dev/null || return 0
   if pipeline_suites_main_focused_run_covers_sha "$main_sha"; then
     focused_covered=true
