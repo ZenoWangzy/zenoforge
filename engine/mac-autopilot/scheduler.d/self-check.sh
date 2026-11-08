@@ -336,7 +336,7 @@ footprint_recurrence_brief() { # unit JSON → up to 3 ranked CATALOG rules, bou
 
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider] [worker-context-json]
   local ledger_filter="" unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter repair_head \
-    check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
+    check_footprint="${14:-true}" base provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
     worker_context="${19:-}" report_only=false failure_prompt="${12-$8}"
   provider="${15:-$(provider_of "$6")}"; route_provider="${18:-$provider}"
   refill_stopped && return 1 # never start a worker once a ledger write was refused: its stage write would be refused too
@@ -363,7 +363,12 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
 $(tail -80 "$check_output" 2>/dev/null)"
   fi
   dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || return 1
-  if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then ledger_filter+=" | .implementation_report=$(js "$5")"; fi
+  if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
+    # A repair may leave a fix note at its own report path, so remember which earlier report held the incident sections; a new implementation starts over.
+    if [[ "$3" == implement ]]; then ledger_filter+=' | del(.incident_base_report)'
+    elif base="$(incident_base_report "$unit_json")" && [[ -n "$base" ]]; then ledger_filter+=" | .incident_base_report=$(js "$base")"; fi
+    ledger_filter+=" | .implementation_report=$(js "$5")"
+  fi
   if [[ "$3" == review || "$3" == rereview ]]; then ledger_filter+=' | .self_check_fixes=0'; fi
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     if [[ -n "${TICK_FOOTPRINT_CACHE[$1]+cached}" ]]; then
