@@ -2618,7 +2618,7 @@ pr_behind_main() { return 0; }
 GH_MERGEABLE=MERGEABLE; GH_CHECKS='[{"name":"suites","bucket":"fail"}]'
 units "{\"units\":[{\"id\":\"pr-16\",\"pr\":16,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
 run_merge_lane || :
-[[ "${GH_UPDATES[*]:-}" == *"pulls/16/update-branch"*"expected_head_sha=$H1"* && "$(field pr-16 .stage)" == ready-to-merge && "$(field pr-16 '.history[-1].stage')" == ci-red-update-branch ]] || fail 'red PR on a stale base was not updated from main'
+[[ "${GH_UPDATES[*]:-}" == *"pulls/16/update-branch"*"expected_head_sha=$H1"* && "$(field pr-16 .stage)" == ready-to-merge && "$(field pr-16 '.history[-1].stage')" == ci-red-behind-main-update ]] || fail 'red PR on a stale base was not updated from main'
 unset GH_CHECKS; unset -f git pr_behind_main; eval "$gh_conf_stub"
 source <(sed -n '/^pr_behind_main() {/,/^}/p' "$script_dir/scheduler.d/merge-prep.sh")
 # update-branch 的干净合并沿用批准；夹带改动的合并不沿用

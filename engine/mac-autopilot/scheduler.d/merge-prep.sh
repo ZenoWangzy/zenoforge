@@ -318,6 +318,6 @@ ci_red_behind_main_hop() { # id pr head fails-csv -> 0 = branch updated
   pr_behind_main "$2" "$3" || return 1
   [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]] || return 1
   ci_update_branch "$2" "$3" || return 1
-  set_unit "$1" "$(hist ci-red-behind-main-update "$4 failed on a head behind main $MAIN_HEAD") | .behind_main_hops = ((.behind_main_hops // []) + [$(js "$4")] | unique)"
+  set_unit "$1" "$(hist ci-red-behind-main-update "$4 failed on a head behind main $MAIN_HEAD") | .behind_main_hops = ((.behind_main_hops // []) + [$(js "$4")] | unique) | .ci_rerun_sha=$(js "$3")"
   say "merge skipped PR#$2 (check failed: $4; head behind main, stale base) -> update-branch at $3, CI reruns once"
 }
