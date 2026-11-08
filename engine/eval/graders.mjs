@@ -41,10 +41,10 @@ export function gradeAdvisor(actual, expected) {
   return result(failures);
 }
 function reviewFindingsBlock(text) {
-  const blocks = [...String(text).matchAll(/(?:^|\n)```review-findings[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*(?=\n|$)/g)];
+  const blocks = [...String(text).matchAll(/(?:^|\n)(```|~~~)review-findings[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*(?=\n|$)/g)];
   if (!blocks.length) return { error: 'missing review-findings block' };
   let value;
-  try { value = JSON.parse(blocks.at(-1)[1]); } catch { return { error: 'invalid review-findings JSON' }; }
+  try { value = JSON.parse(blocks.at(-1)[2]); } catch { return { error: 'invalid review-findings JSON' }; }
   if (Array.isArray(value)) return { legacy: true, findings: value, dispositions: [] };
   const keys = (object) => Object.keys(object ?? {}).sort().join(',');
   if (!value || typeof value !== 'object' || keys(value) !== 'dispositions,findings'

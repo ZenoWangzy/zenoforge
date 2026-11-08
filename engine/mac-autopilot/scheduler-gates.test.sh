@@ -472,6 +472,13 @@ harvest_rc pr-claude-line1 rf-claude-line1-T1.md
   || fail 'claude shape with line:1 file-level findings was not accepted'
 # codex 后端形状：canonical 块缺 base_evidence 仍拒（已有 bad_canonical 用例），此处断言同一解析器两条路径共用
 [[ -z "$(findings_block_of "$sup/rf-bad-canonical-T1.md" 2>/dev/null)" ]] || fail 'codex canonical shape without base_evidence was accepted'
+# 11-08 gpt-6-luna 形状（issue-4739 两份报告）：块用 ~~~review-findings 围栏、前文另有反引号代码块。同一合规 JSON 必须读得出；
+# ~~~ 开栏只认 ~~~ 收栏，没有收栏的块仍算缺失。
+tilde_report="$sup/rf-tilde-fence-T1.md"
+printf 'VERDICT: NOT_READY\n\n```text\nsample output\n```\n\n~~~review-findings\n%s\n~~~\n' "$claude_line1_block" > "$tilde_report"
+[[ "$(findings_block_of "$tilde_report" | jq -r '.findings[0].id')" == F1 ]] || fail 'a ~~~review-findings block was not read'
+printf 'VERDICT: NOT_READY\n\n~~~review-findings\n%s\n```\n' "$claude_line1_block" > "$tilde_report"
+[[ -z "$(findings_block_of "$tilde_report" 2>/dev/null)" ]] || fail 'a ~~~ block closed by a backtick fence was accepted'
 
 # 重问 prompt 段：点名上一份报告与契约要点（正整数 line），供 review-pending 派发附加
 reask="$(findings_reask_rule '{"review_report":"rf-4-T1.md"}')"

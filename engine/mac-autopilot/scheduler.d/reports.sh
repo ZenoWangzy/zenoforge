@@ -107,7 +107,9 @@ verification_plan_brief() { # plan-json → worker-facing structured feature evi
 # findings, and `dropped` / `dropped_findings` keep the count and reasons visible.
 findings_block_of() { # report → stdout: {findings:[...],dispositions:[...]}
   local raw
-  raw="$(awk '/^```review-findings[[:space:]]*$/{on=1;buf="";last="";next} on&&/^```[[:space:]]*$/{last=buf;on=0;next} on{buf=buf $0 "\n"} END{printf "%s", last}' "$1" 2>/dev/null)"
+  # 11-08：gpt-6-luna 评审员把块写成 ~~~review-findings（合法的 CommonMark 围栏），旧 awk 只认反引号，两份报告都记 block=missing。
+  # 收栏必须与开栏同一围栏字符。
+  raw="$(awk '/^(```|~~~)review-findings[[:space:]]*$/{on=1;buf="";last="";f=substr($0,1,3);next} on&&$0 ~ ("^" f "[[:space:]]*$"){last=buf;on=0;next} on{buf=buf $0 "\n"} END{printf "%s", last}' "$1" 2>/dev/null)"
   [[ -n "${raw//[[:space:]]/}" ]] || return 1
   jq -ce '
     def finding($legacy): type=="object"
@@ -155,7 +157,7 @@ review_findings_hint_update() { # report → jq update fragment for open P0/P1 f
 findings_reask_rule() { # unit-json → prompt 片段
   local prev
   prev="$(jqf -r '.review_report // empty' <<<"$1")"
-  printf '\n【发现块重问】上一份评审报告 %s 的结论是打回，但其 review-findings 块缺失或不符合 schema，流水线无法把发现交给修复，请重做这次评审并重新交付完整报告。机器可读块是报告最后一个 fence、恰好一个，正文与块所述一致；每个 finding 的字段与取值以 %s 为准：line 必须是正整数（文件级发现写 1，不是 0），file 用仓库相对路径，severity 取 P0-P3，introduced_by 与 base_evidence 必填非空；发现 ID 沿用上一份报告的编号。\n' \
+  printf '\n【发现块重问】上一份评审报告 %s 的结论是打回，但其 review-findings 块缺失或不符合 schema，流水线无法把发现交给修复，请重做这次评审并重新交付完整报告。机器可读块是报告最后一个 fence、恰好一个，围栏用三个反引号写成 ```review-findings（不用 ~~~），正文与块所述一致；每个 finding 的字段与取值以 %s 为准：line 必须是正整数（文件级发现写 1，不是 0），file 用仓库相对路径，severity 取 P0-P3，introduced_by 与 base_evidence 必填非空；发现 ID 沿用上一份报告的编号。\n' \
     "${prev:-上一份报告}" "$REVIEW_CONTRACT_MD"
 }
 # 结论行不可解析时的同 head 格式重问段（harvest 的 verdict-missing 路径派发时附带）。
