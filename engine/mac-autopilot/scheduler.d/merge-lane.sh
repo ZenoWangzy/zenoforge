@@ -54,23 +54,32 @@ merge_candidates() { # window → 就绪单元（每行一个 JSON）
   rm -f -- "$rf" "$prs_file"
 }
 
-# 归因行的冲突文件：对该行记录的 main_sha 与 pr_head 跑 git merge-tree，列前 5 个路径加总数；对象缺失或命令失败才 unavailable 并写原因。
-merge_conflict_files() { # main_sha pr_head
-  local out rc=0 n
-  [[ "$1" =~ $SHA_RE && "$2" =~ $SHA_RE ]] || { echo "unavailable (no sha)"; return 0; }
-  git -C "$ROOT" cat-file -e "$1^{commit}" 2>/dev/null && git -C "$ROOT" cat-file -e "$2^{commit}" 2>/dev/null || { echo "unavailable (objects missing)"; return 0; }
+# 冲突路径全集：对 main_sha 与 pr_head 跑 git merge-tree；head 不在本地对象库时先按 refs/pull/<pr>/head 取（66/84 条归因行曾因
+# 对象缺失记成 unavailable）。stdout 每行一个路径；失败时 rc 1，stdout 只有一行原因。
+merge_conflict_paths() { # main_sha pr_head [pr]
+  local out rc=0
+  [[ "$1" =~ $SHA_RE && "$2" =~ $SHA_RE ]] || { echo "no sha"; return 1; }
+  [[ ! "${3:-}" =~ ^[0-9]+$ ]] || git -C "$ROOT" cat-file -e "$2^{commit}" 2>/dev/null \
+    || timeout 60 git -C "$ROOT" fetch -q --no-write-fetch-head origin "refs/pull/$3/head" 2>/dev/null || :
+  git -C "$ROOT" cat-file -e "$1^{commit}" 2>/dev/null && git -C "$ROOT" cat-file -e "$2^{commit}" 2>/dev/null || { echo "objects missing"; return 1; }
   out="$(git -C "$ROOT" merge-tree --write-tree --name-only "$1" "$2" 2>/dev/null)" || rc=$?
-  (( rc <= 1 )) || { echo "unavailable (merge-tree rc=$rc)"; return 0; }
-  out="$(sed -n '2,/^$/{/./p}' <<<"$out")"
+  (( rc <= 1 )) || { echo "merge-tree rc=$rc"; return 1; }
+  (( rc == 1 )) || { echo "none (merge-tree clean)"; return 1; }
+  sed -n '2,/^$/{/./p}' <<<"$out" | sort -u
+}
+# 归因行的冲突文件：对该行记录的 main_sha 与 pr_head 跑 git merge-tree，列前 5 个路径加总数；对象缺失或命令失败才 unavailable 并写原因。
+merge_conflict_files() { # main_sha pr_head [pr]
+  local out n
+  out="$(merge_conflict_paths "$@")" || { [[ "$out" == none* ]] && echo "$out" || echo "unavailable ($out)"; return 0; }
   n="$(grep -c . <<<"$out" || :)"
-  (( rc == 1 && n > 0 )) || { echo "none (merge-tree clean)"; return 0; }
+  (( n > 0 )) || { echo "none (merge-tree clean)"; return 0; }
   echo "$(head -n 5 <<<"$out" | paste -sd, -) count=$n"
 }
 
 # 冲突的单元送修复：作废批准、留历史、给 repair 提示。合并车道两处发现冲突（checks 未齐时、合并失败后）共用；
 # cause 同时进历史和日志，hint 各处自己的话（热修回迁 / 迁移编号）。
 merge_conflict_to_repair() { # id pr cause repair_hint head
-  local head="${5:-}" fresh files conflict_files
+  local head="${5:-}" fresh files conflict_files paths
   # 已排队：上一次冲突送了 repair-pending 且其后没有 write-start。修复 worker 合并的是它开跑时的 main，再标一次（扫描+评审，
   # 或 main 又动了）只多记一次 merge-conflict，merge.conflict_repairs_per_day 把它算成又一次修复。
   if [[ "$(unit_field "$1" '(.stage // "") + " " + ([(.history // [])[] | select(.stage | IN("merge-conflict","write-start")) | .stage] | last // "")')" == "repair-pending merge-conflict" ]]; then
@@ -93,7 +102,10 @@ merge_conflict_to_repair() { # id pr cause repair_hint head
       fi
     fi
   fi
-  conflict_files="$(merge_conflict_files "${MAIN_HEAD:-}" "$head")"
+  conflict_files="$(merge_conflict_files "${MAIN_HEAD:-}" "$head" "$2")"
+  # 第二次冲突起、且冲突文件全在热点文件类里：确定性解决并 push，不派 LLM 修复（见 conflict-resolve.sh）；否则照旧。
+  if declare -F conflict_auto_resolve >/dev/null && paths="$(merge_conflict_paths "${MAIN_HEAD:-}" "$head" "$2")" \
+    && conflict_auto_resolve "$1" "$2" "$head" "$paths"; then return 0; fi
   set_unit "$1" "$(hist merge-conflict "PR#$2 $3") | .history[-1].conflict_files=$(js "$conflict_files") | .approved_sha=null | .repair_hint=$(js "$4") | .stage=\"repair-pending\""
   say "merge skipped PR#$2 ($3) -> repair-pending"
   say "merge-conflict-attribution unit=$1 pr=$2 pr_head=${head:-unknown} main_sha=${MAIN_HEAD:-unknown} conflicting_files=$conflict_files"
