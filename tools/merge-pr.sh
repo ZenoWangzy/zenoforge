@@ -378,6 +378,33 @@ merge_pr_cancel_ci() {
     | while read -r id; do gh run cancel "$id" >/dev/null 2>&1 || true; done
 }
 
+# --delete-branch removes the head branch, and GitHub then closes every open PR based on it.
+# Retarget those children to the default branch first; refuse the merge if any retarget fails.
+merge_pr_retarget_children() {
+  local pr="$1" head_ref default_ref children_json child
+  if ! head_ref="$(gh pr view "$pr" --json headRefName 2>/dev/null | jq -er '.headRefName | select(type == "string" and length > 0)')"; then
+    merge_pr_refuse "$pr" 'could not read the PR head branch to find stacked child PRs'
+    return 1
+  fi
+  if ! default_ref="$(gh repo view --json defaultBranchRef 2>/dev/null | jq -er '.defaultBranchRef.name | select(type == "string" and length > 0)')"; then
+    merge_pr_refuse "$pr" 'could not read the default branch to retarget stacked child PRs'
+    return 1
+  fi
+  if ! children_json="$(gh pr list --state open --base "$head_ref" --json number 2>/dev/null)" \
+    || ! jq -e 'type == "array"' <<<"$children_json" >/dev/null 2>&1; then
+    merge_pr_refuse "$pr" "could not list open PRs based on $head_ref"
+    return 1
+  fi
+  while IFS= read -r child; do
+    [[ -n "$child" ]] || continue
+    if ! gh pr edit "$child" --base "$default_ref" >/dev/null; then
+      merge_pr_refuse "$pr" "could not retarget child PR #$child to $default_ref; merging would close it"
+      return 1
+    fi
+    printf 'merge-pr: retargeted child PR #%s from %s to %s before deleting %s\n' "$child" "$head_ref" "$default_ref" "$head_ref" >&2
+  done < <(jq -r '.[].number' <<<"$children_json")
+}
+
 merge_pr_checks_and_merge() {
   local pr="${1:-}" checks_json check_name override_name matched
   local -a override_names=() failed_names=() blocked_names=() overridden_names=()
@@ -461,6 +488,7 @@ merge_pr_checks_and_merge() {
     printf 'merge-pr: explicit ZF_MERGE_OVERRIDE allows failed checks: %s\n' "$overridden_csv" >&2
   fi
 
+  merge_pr_retarget_children "$pr" || return 1
   gh pr merge "$pr" --squash --delete-branch || return
   merge_pr_cancel_ci "$pr" || true
 }

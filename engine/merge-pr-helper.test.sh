@@ -38,9 +38,15 @@ PR_FILE_STATUSES='[]'
 PR_META='{"title":"fixture","body":""}'
 PR_LIST='[]'
 PR_FILES_BY_PR='{}'
+PR_HEAD_REF=parent-branch
+PR_CHILDREN='[]'
 gh() {
   case "$1 $2" in
     'pr view')
+      if [[ "$*" == *headRefName* ]]; then
+        printf '{"headRefName":"%s"}\n' "$PR_HEAD_REF"
+        return
+      fi
       printf 'view:%s\n' "$*" >> "$fixture/gh-calls"
       if [[ "$*" == *body,files* ]]; then
         [[ "$PR_BODY" != gh-error ]] || return 1
@@ -63,6 +69,16 @@ gh() {
       ;;
     'pr merge')
       printf 'merge:%s\n' "$*" >> "$fixture/gh-calls"
+      ;;
+    'pr edit')
+      printf 'edit:%s\n' "$*" >> "$fixture/gh-calls"
+      [[ "${PR_EDIT_ERROR:-}" != 1 ]] || return 1
+      ;;
+    'pr list')
+      printf '%s\n' "$PR_CHILDREN"
+      ;;
+    'repo view')
+      printf '{"defaultBranchRef":{"name":"main"}}\n'
       ;;
     'run list')
       printf '[{"databaseId":7,"status":"queued"},{"databaseId":8,"status":"completed"}]\n'
@@ -125,6 +141,24 @@ PR_HEAD="$sha"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
 [[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
+
+# Stacked child: deleting the parent's head branch closes open PRs based on it, so the child is retargeted before the merge.
+PR_CHILDREN='[{"number":21}]'
+: > "$fixture/gh-calls"
+merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1 || fail "stacked parent did not merge: $(cat "$fixture/check-output")"
+[[ "$(cat "$fixture/gh-calls")" == *$'edit:pr edit 21 --base main\nmerge:pr merge 17 --squash --delete-branch'* ]] \
+  || fail "child PR was not retargeted before the squash merge: $(cat "$fixture/gh-calls")"
+[[ "$(cat "$fixture/check-output")" == *'retargeted child PR #21 from parent-branch to main'* ]] \
+  || fail "retarget was not logged: $(cat "$fixture/check-output")"
+
+PR_EDIT_ERROR=1
+: > "$fixture/gh-calls"
+if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail 'a failed child retarget still merged the parent'; fi
+[[ "$(cat "$fixture/check-output")" == *'refusing to merge PR #17: could not retarget child PR #21 to main'* ]] \
+  || fail "failed retarget did not refuse with a reason: $(cat "$fixture/check-output")"
+! grep -q '^merge:' "$fixture/gh-calls" || fail 'a failed child retarget reached merge'
+PR_EDIT_ERROR=
+PR_CHILDREN='[]'
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"unit","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
 : > "$fixture/gh-calls"
