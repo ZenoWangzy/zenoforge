@@ -400,7 +400,7 @@ register_new_prs() {
       continue
     fi
     u="$(jqf -cn --argjson pr_num "$pr_num" --arg title "$title" --arg branch "$branch" --argjson critical "$critical" '{id:("pr-"+($pr_num|tostring)),title:$title,stage:"review-pending",pr:$pr_num,branch:$branch,critical:$critical,history:[]}')"
-    jqf --argjson u "$u" '.units += [$u]' "$UNITS" | write_state "$UNITS"
+    ledger_jq_write --argjson u "$u" '.units += [$u]' "$UNITS"
     n_registered=$((n_registered+1))
     if [[ -n "${HANDOFF_PR_CENSUS:-}" ]]; then
       if [[ "${HANDOFF_CENSUS_PARTIAL:-0}" == 1 ]]; then handoff_include_pr "$pr_num" || continue; fi

@@ -117,7 +117,7 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   if [[ ( "${WORKER_STDOUT_REPORT:-0}" == 1 || "$provider" == claude ) && ${#launcher[@]} -gt 0 ]]; then
     w="$(jqf --argjson pgid "$pid" '. + {process_group:$pgid}' <<<"$w")"
   fi
-  if ! jqf --argjson w "$w" '.workers += [$w]' "$WORKERS" | write_state "$WORKERS"; then
+  if ! ledger_jq_write --argjson w "$w" '.workers += [$w]' "$WORKERS"; then
     stuck_worker_stop "$pid" || :
     if ! alive "$pid"; then coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :; fi
     say "dispatch stopped unit=$unit reason=worker-ledger-write-failed"

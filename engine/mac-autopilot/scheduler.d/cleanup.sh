@@ -232,7 +232,7 @@ cleanup_tick() {
     local own_lock=false
     if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then acquire_scheduler_lock_wait && own_lock=true; fi
     if [[ "${SCHED_LOCK_HELD:-false}" == true ]]; then
-      jqf '{workers: ([.workers[] | select(.harvested != true)] + ([.workers[] | select(.harvested == true)] | sort_by(.started) | .[-60:]))}' "$WORKERS" | write_state "$WORKERS"
+      ledger_jq_write '{workers: ([.workers[] | select(.harvested != true)] + ([.workers[] | select(.harvested == true)] | sort_by(.started) | .[-60:]))}' "$WORKERS"
       say "trim workers ledger $n_total"
     fi
     [[ "$own_lock" != true ]] || release_scheduler_lock

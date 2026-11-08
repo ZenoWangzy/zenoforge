@@ -1481,3 +1481,24 @@ PATH="$test_env_root/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "
   --main-red-dir "$w24/autopi/main-red" --hours 5 --now 2026-10-19T12:00:00Z --json "$w24/node-health.json" >/dev/null
 jq -e '.metrics[] | select(.id == "implement.wall_p50") | .value == 90' "$w24/node-health.json" >/dev/null \
   || fail "implement wall p50 ignored a run inside the 24 h window: $(jq -c '.metrics[] | select(.id == "implement.wall_p50")' "$w24/node-health.json")"
+# refill_lock_wait_s: p50 over 24 h of lock_wait= on refill lines, a kill in lock_wait counts at its second; a stop line (the refill still prints tick-phases), a kill in another phase, older lines and full-tick lines do not
+python3 - "$script_dir" <<'CHECK3'
+import os, sys, tempfile, datetime; sys.path.insert(0, sys.argv[1]); import node_health as n, refill_lock_wait as r
+log = tempfile.mkdtemp() + "/scheduler.log"
+open(log, "w").write("""[2026-11-07T01:00:00Z] tick-phases kind=refill secs=10 gh_calls=0 lock_wait=900 phases=none
+[2026-11-08T08:00:00Z] tick-phases kind=refill secs=10 gh_calls=0 lock_wait=0 phases=none
+[2026-11-08T09:00:00Z] tick-phases kind=refill secs=20 gh_calls=0 lock_wait=0 phases=none
+[2026-11-08T10:00:00Z] tick-phases kind=full secs=900 gh_calls=0 lock_wait=500 phases=none
+[2026-11-08T11:00:00Z] tick-phases kind=refill secs=60 gh_calls=0 lock_wait=40 phases=none
+[2026-11-08T11:07:09Z] REFILL-TIMEOUT stop: ledger lock wait stopped at 291s in phase lock_wait: the refill limit is near
+[2026-11-08T11:12:08Z] REFILL-TIMEOUT refill tick killed after 300s in phase lock_wait; the next tick clears the stale lock
+[2026-11-08T11:13:00Z] REFILL-TIMEOUT refill tick killed after 300s in phase dispatch_pending; the next tick clears the stale lock
+""")
+now = datetime.datetime(2026, 11, 8, 12, 0, tzinfo=datetime.timezone.utc)
+m = {}; r.collect(m, log, now)
+assert m["scheduler.refill_lock_wait_s"] == 40, m  # samples 0 0 40 300 -> p50 40
+m = {}; r.collect(m, log + ".none", now)
+assert m["scheduler.refill_lock_wait_s"] is None
+assert "scheduler.refill_lock_wait_s" in n.CRITERIA and "scheduler.refill_lock_wait_s" in n.MEANING and "scheduler.refill_lock_wait_s" in n.SOURCE
+print("node_health refill lock wait: PASS")
+CHECK3

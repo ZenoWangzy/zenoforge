@@ -13,7 +13,7 @@ launch_land() { # id pr sha title report log workdir reviewed-pr-head [issue]
   rm -f -- "$pid_file"
   w="$(jqf -cn --argjson pid "$pid" --arg unit "$1" --arg log "$6" --arg report "$5" --arg at "$STAMP" --arg sha "$3" --arg pr_head "$8" --arg workdir "$7" \
     '{pid:$pid,unit:$unit,type:"land",log:$log,report:$report,started:$at,sha:$sha,pr_head:$pr_head,workdir:$workdir,model:"none"}')"
-  jqf --argjson w "$w" '.workers += [$w]' "$WORKERS" | write_state "$WORKERS"
+  ledger_jq_write --argjson w "$w" '.workers += [$w]' "$WORKERS"
   say "dispatch land pid=$pid unit=$1 PR#${2:-none} sha=$3"
 }
 fast_land_lane() { # 一次只落一个；与产品合并门禁无关（land-direct-main 自带 focused 检查与锁）

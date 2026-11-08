@@ -112,8 +112,8 @@ harvest_prompt_eval() { # worker JSON; report status is produced by eval/decisio
     detail="evaluation process exited without report $report"
     set_unit "$unit" "$(hist eval-error "$detail") | .eval_gate.status=\"pending\" | .eval_gate.error=$(js "$detail")"
     say "eval worker pid=$pid unit=$unit: $detail; retry next tick"
-    jqf --argjson pid "$pid" --arg finished "$STAMP" \
-      '(.workers[] |= (if .pid==$pid and .type=="eval" and .harvested!=true then .harvested=true | .finished_at=$finished else . end))' "$WORKERS" | write_state "$WORKERS"
+    ledger_jq_write --argjson pid "$pid" --arg finished "$STAMP" \
+      '(.workers[] |= (if .pid==$pid and .type=="eval" and .harvested!=true then .harvested=true | .finished_at=$finished else . end))' "$WORKERS"
     return 0
   }
   gate="$(jqf -c . "$gate")" || gate='{}'
@@ -180,8 +180,8 @@ harvest_prompt_eval() { # worker JSON; report status is produced by eval/decisio
     set_unit "$unit" "$(hist eval-error "$detail") | .eval_gate.status=\"pending\" | .eval_gate.error=$(js "$detail")"
     say "eval worker pid=$pid unit=$unit: $detail; retry next tick"
   fi
-  jqf --argjson pid "$pid" --arg finished "$STAMP" \
-    '(.workers[] |= (if .pid==$pid and .type=="eval" and .harvested!=true then .harvested=true | .finished_at=$finished else . end))' "$WORKERS" | write_state "$WORKERS"
+  ledger_jq_write --argjson pid "$pid" --arg finished "$STAMP" \
+    '(.workers[] |= (if .pid==$pid and .type=="eval" and .harvested!=true then .harvested=true | .finished_at=$finished else . end))' "$WORKERS"
 }
 
 dispatch_prompt_evals() {
@@ -264,7 +264,7 @@ dispatch_prompt_evals() {
     worker="$(jqf -cn --argjson pid "$pid" --arg unit "$id" --arg log "$log" --arg report "$report" \
       --arg at "$STAMP" --arg sha "$sha" --arg workdir "$workdir" --arg label "$label" --arg baseline "$baseline" \
       '{pid:$pid,unit:$unit,type:"eval",log:$log,report:$report,started:$at,sha:$sha,workdir:$workdir,eval_label:$label,eval_baseline:$baseline}')"
-    jqf --argjson worker "$worker" '.workers += [$worker]' "$WORKERS" | write_state "$WORKERS"
+    ledger_jq_write --argjson worker "$worker" '.workers += [$worker]' "$WORKERS"
     set_unit "$id" ".eval_gate.status=\"running\" | .eval_gate.label=$(js "$label") | .eval_gate.baseline=$(js "$baseline") | .eval_gate.report=$(js "$report")"
     say "eval dispatched pid=$pid unit=$id label=$label baseline=$baseline stages=$stages"
     return 0

@@ -484,12 +484,56 @@ run_refill_intake_dispatch_phases() {
   # used to run in front of it, so those refills dispatched nothing. The merge pass and intake run on the time left.
   dep_delivered_snapshot # release_dependency_blocks fills this on a full tick; the body gate reads it on both
   record_run_spend || : # the gate in dispatch_pending reads spend_runs; a refill used to dispatch on whatever the last full tick left
+  # The slot-filling dispatch writes through the ledger lock alone (units.sh set_unit), so a tick that took SCHED_LOCK back cannot hold it up.
+  REFILL_LEDGER_ONLY=true
   phase dispatch_pending true
+  REFILL_LEDGER_ONLY=false
   paused_midrun "refill merge" || { phase refill_merge_pass; tick_prs_changed; } # a merge changes the PRs intake reads next
   INTAKE_ADDED=0
   phase register_new_issues 0 true || say "refill intake failed; continuing to dispatch"
   # A pass started this late meets the 300s kill, and the next refill dispatches what intake added.
   (( INTAKE_ADDED == 0 || SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 60 )) || phase dispatch_pending true
+}
+refill_lock_wait_total() { # seconds this refill waited for the scheduler lock and the ledger lock (logged as lock_wait=, row refill_lock_wait_s)
+  local n=0
+  n="$(awk '{ n += $1 } END { print n + 0 }' "$A/.refill-lock-wait.$$" 2>/dev/null)" || n=0
+  rm -f -- "$A/.refill-lock-wait.$$"
+  printf '%s\n' "$((TICK_LOCK_WAIT + n))"
+}
+refill_lite_ready() { # SCHED_LOCK is held by another process: is there a free slot and a startable pending unit, and no PAUSE
+  [[ ! -e "$PAUSE_FILE" ]] || return 1
+  state_schema_ok || return 1
+  dispatch_capacity_free || return 1
+  jqf -e 'any(.units[]; (.stage // "") | test("^(implement|repair|review|rereview)-pending$"))' "$UNITS" >/dev/null
+}
+# The refill without SCHED_LOCK: only what fills a slot. Harvest, orphan recovery, intake and the merge pass stay with the tick (it is in them).
+# Its writes (set_unit, the workers append) take the ledger lock, and a double start is refused by the dispatch claim (coord_acquire), not by SCHED_LOCK.
+refill_lite_tick() { # log-offset
+  local live metrics gh_calls REFILL_LEDGER_ONLY=true
+  rm -f -- "$A/.refill-stop"
+  say "refill lite: the scheduler lock is held, dispatching under the ledger lock only"
+  tick_gh_calls_begin
+  tick_roadmap_cache_begin
+  MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
+  phase mark_supervisor_owned_units
+  phase release_session_pr_units
+  if supervisor_marking_deferred; then
+    say "refill dispatch held: supervisor-owned marking deferred"
+  else
+    dep_delivered_snapshot
+    phase dispatch_pending true
+  fi
+  gh_calls="$(tick_gh_calls_count)"
+  say "tick-phases kind=refill secs=$SECONDS gh_calls=$gh_calls lock_wait=$(refill_lock_wait_total) phases=${TICK_PHASE_DETAILS:-none}"
+  tick_roadmap_cache_end
+  rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
+  rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
+  GH_TICK_CALLS_FILE=""
+  TICK_INTAKE_READS_FILE=""
+  live="$(live_workers)"
+  metrics="$(refill_dispatch_metrics "$1" "$live")" \
+    || metrics='free_slots=unknown pending=unknown skips=footprint:unknown,handoff:unknown,memory:unknown'
+  say "refill done live=$live $metrics secs=$SECONDS ended=$(date -u +%H:%M:%SZ) gh_calls=$gh_calls${TICK_PHASES:+ slow:$TICK_PHASES}"
 }
 refill_tick() {
   local TICK_LOCAL_REFILL=true refill_log_offset=0 live metrics
@@ -498,7 +542,14 @@ refill_tick() {
   if [[ ! "$refill_log_offset" =~ ^[0-9]+$ ]]; then
     [[ -f "$LOG" ]] && refill_log_offset="$(wc -c < "$LOG")"
   fi
-  acquire_scheduler_lock || return 75
+  rm -f -- "$A/.refill-lock-wait.$$"
+  if ! acquire_scheduler_lock; then
+    # A tick holds SCHED_LOCK through phases of minutes (harvest_workers p50 77 s, max 267 s). The refill's purpose is a free slot, so with a
+    # slot and a pending unit it dispatches without that lock (refill_lite_tick); with neither it waits for the next poll as before.
+    refill_lite_ready || return 75
+    refill_lite_tick "$refill_log_offset"
+    return
+  fi
   rm -f -- "$A/.refill-stop" # left by a refill that was killed after a refused lock wait
   if ! state_schema_ok; then
     say "state schema invalid; refill stopped before external actions"
@@ -532,7 +583,7 @@ refill_tick() {
     fi
   fi
   local gh_calls; gh_calls="$(tick_gh_calls_count)"
-  say "tick-phases kind=refill secs=$SECONDS gh_calls=$gh_calls lock_wait=$TICK_LOCK_WAIT phases=${TICK_PHASE_DETAILS:-none}"
+  say "tick-phases kind=refill secs=$SECONDS gh_calls=$gh_calls lock_wait=$(refill_lock_wait_total) phases=${TICK_PHASE_DETAILS:-none}"
   tick_roadmap_cache_end
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
   rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :

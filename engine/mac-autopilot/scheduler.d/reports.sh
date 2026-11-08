@@ -46,6 +46,44 @@ write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=�
   fi
 }
 
+# The ledger lock: a flock held across ONE read-modify-write of units.json or workers.json (a jq read plus write_state, seconds), never across
+# a phase. SCHED_LOCK orders whole phases and a tick holds it for minutes; a refill dispatching beside it needs only its own writes to be atomic.
+# Every writer of the two files takes this lock (set_unit, units_update, ledger_jq_write), so the writers still cannot lose each other's rows.
+# flock dies with its holder, so a killed refill leaves nothing to clear. Order: SCHED_LOCK first, ledger lock inside it, never the reverse.
+LEDGER_LOCK_HELD=false
+ledger_lock_wait_note() { # seconds waited: a refill records them for the refill_lock_wait_s row (tick-phases lock_wait=)
+  [[ "${TICK_LOCAL_REFILL:-false}" == true && "$1" =~ ^[0-9]+$ ]] && (( $1 > 0 )) || return 0
+  printf '%s\n' "$1" >> "$A/.refill-lock-wait.$$"
+}
+ledger_locked() { # command...: run it holding the ledger lock; rc 1 when the lock could not be taken in time
+  local fd rc=0 t0=$SECONDS limit="${AUTOPI_LEDGER_LOCK_WAIT_SECONDS:-600}"
+  [[ "$LEDGER_LOCK_HELD" != true ]] || { "$@"; return; } # inside a held region: a $(...) subshell of the holder
+  if [[ "${TICK_LOCAL_REFILL:-false}" == true ]]; then # a refill waits only until its own deadline, as acquire_scheduler_lock_wait
+    refill_stopped && return 1
+    limit=$(( ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - ${AUTOPI_REFILL_LOCK_MARGIN_SECONDS:-15} - SECONDS ))
+    (( limit >= 1 )) || limit=1
+  fi
+  exec {fd}>>"${LEDGER_LOCK:-$A/.ledger.lock}" || return 1
+  if ! flock -w "$limit" "$fd"; then
+    exec {fd}>&-
+    if [[ "${TICK_LOCAL_REFILL:-false}" == true ]]; then refill_stop_marked ledger; else say "ledger lock wait gave up after ${limit}s"; fi
+    return 1
+  fi
+  ledger_lock_wait_note $((SECONDS - t0))
+  LEDGER_LOCK_HELD=true
+  "$@" || rc=$?
+  LEDGER_LOCK_HELD=false
+  exec {fd}>&-
+  return "$rc"
+}
+_ledger_jq_write() { # jq-args... file
+  local file="${@: -1}"
+  jqf "$@" | write_state "$file"
+}
+ledger_jq_write() { # jq-args... file: replaces `jqf jq-args... file | write_state file` under the ledger lock
+  ledger_locked _ledger_jq_write "$@"
+}
+
 # 评审结论：整文件扫「VERDICT token + 取值」并规范化旧别名（review-contract.md 的 verdict）。
 # 11-04 根因（一晚 9 个单元两次转 supervisor）：结论行写法带加粗/前缀/行内备注——`**VERDICT: READY**（备注）`、
 # `## 结论：VERDICT: READY`、复原终答里的 `结论 **VERDICT: READY**。`——整行锚定正则一概不认。取值只在含

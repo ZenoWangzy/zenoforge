@@ -29,16 +29,22 @@ refill_lock_wait_spent() {
 refill_stopped() {
   [[ "${TICK_LOCAL_REFILL:-false}" == true && -e "$A/.refill-stop" ]]
 }
+refill_stop_marked() { # which lock: end this refill, one REFILL-TIMEOUT line (the callers check refill_stopped first)
+  : > "$A/.refill-stop"
+  say "REFILL-TIMEOUT stop: ${1:-ledger} lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): the refill limit is near, the refill ends here and the next one resumes"
+}
 acquire_scheduler_lock_wait() {
+  local t0=$SECONDS
   refill_stopped && return 1
   until acquire_scheduler_lock; do
     if refill_lock_wait_spent; then
-      : > "$A/.refill-stop"
-      say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): the refill limit is near, the refill ends here and the next one resumes"
+      refill_stop_marked ledger
+      ledger_lock_wait_note $((SECONDS - t0))
       return 1
     fi
     sleep 0.05
   done
+  ledger_lock_wait_note $((SECONDS - t0))
 }
 reacquire_scheduler_lock_timed() { # the seconds waiting here go to tick-phases lock_wait=
   local t0=$SECONDS rc=0
@@ -62,7 +68,9 @@ phase_yield_lock_batch() { # Callback that records its own phases while sharing 
   local rc=0
   release_scheduler_lock
   "$@" || rc=$?
-  reacquire_scheduler_lock_timed || rc=1
+  # A refill closes with log lines and read-only metrics: waiting to take the lock back only let a tick's phase kill it (stopped at 291 s and
+  # killed at 300 s in lock_wait on 2026-11-08), so the refill stays without it.
+  [[ "${TICK_LOCAL_REFILL:-false}" == true ]] || reacquire_scheduler_lock_timed || rc=1
   tick_prs_changed # Refill can change PRs while the scheduler lock is released.
   LIVE_WORKER_CACHE_UNTIL=0
   TICK_ACTIVE_FOOTPRINTS_VALID=false

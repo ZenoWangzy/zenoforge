@@ -71,13 +71,13 @@ reconcile_orphan_prs() {
     handoff_pr_waiting "$prn" 0 && continue
     jqf -e --argjson p "$prn" 'any(.units[]; .pr == $p)' <(units_history_index) >/dev/null && continue
     jqf -e --argjson p "$prn" 'any(.[]; .number == $p)' <<<"$prs" >/dev/null || continue
-    jqf --argjson prn "$prn" --arg b "$(jqf -r --argjson p "$prn" '.[] | select(.number == $p) | .headRefName' <<<"$prs")" \
+    ledger_jq_write --argjson prn "$prn" --arg b "$(jqf -r --argjson p "$prn" '.[] | select(.number == $p) | .headRefName' <<<"$prs")" \
       --arg t "$(jqf -r --argjson p "$prn" '.[] | select(.number == $p) | .title' <<<"$prs")" --arg now "$now" --arg h "$HOTPATCH_HINT" \
       --argjson owned "$(hotfix_lane_supervisor_owned && echo true || echo false)" \
       '.units += [({id:("pr-"+($prn|tostring)), title:$t, stage:"review-pending", pr:$prn, branch:$b, critical:true, hotpatch:true, repair_hint:$h,
         note:"release blocker: production hot patch not on main; forward-port and merge first",
         history:[{stage:"orphan-registered", result:"release blocker (carried production hot patch)", at:$now}]}
-        + (if $owned then {supervisor_owned:true} else {} end))]' "$UNITS" | write_state "$UNITS"
+        + (if $owned then {supervisor_owned:true} else {} end))]' "$UNITS"
     say "release-blocker PR#$prn registered (carried production hot patch)"
   done
   while IFS=$'\t' read -r prn branch draft n title issue_state issue_labels; do
@@ -108,10 +108,10 @@ reconcile_orphan_prs() {
     if [[ "$draft" == true ]]; then
       if [[ "$branch" =~ $GATED_BRANCH_RE ]]; then gated_flag_pr "$prn" && gated=1; else tick_prs_changed; gh pr ready "$prn" >/dev/null 2>&1; fi
     fi
-    jqf --argjson prn "$prn" --argjson n "$n" --arg b "$branch" --arg t "$title" --arg now "$now" --argjson labels "${issue_labels:-[]}" \
+    ledger_jq_write --argjson prn "$prn" --argjson n "$n" --arg b "$branch" --arg t "$title" --arg now "$now" --argjson labels "${issue_labels:-[]}" \
       '.units += [{id:("pr-"+($prn|tostring)), title:$t, stage:"review-pending", pr:$prn, issue:$n, branch:$b, labels:$labels,
         critical:([.units[] | select(.stage=="blocked-external" and .blocked_on == $n)] | length > 0),
-        history:[{stage:"orphan-registered", result:"open PR outside the ledger", at:$now}]}]' "$UNITS" | write_state "$UNITS"
+        history:[{stage:"orphan-registered", result:"open PR outside the ledger", at:$now}]}]' "$UNITS"
     (( gated )) && set_unit "pr-$prn" '.gated=true'
     reg=$((reg + 1))
     say "orphan PR#$prn registered for review (issue #$n)"

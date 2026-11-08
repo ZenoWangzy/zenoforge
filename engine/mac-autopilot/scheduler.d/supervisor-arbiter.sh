@@ -218,7 +218,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       --argjson cap_triage "$([[ "$cap_triage" == true ]] && echo true || echo false)" \
       --argjson jev "$judge_metadata" \
       '{pid:$pid,unit:$unit,type:"supervise",log:$log,report:$report,started:$at,model:("profile:"+$profile),cap_triage:$cap_triage,jev:$jev}')"
-    jqf --argjson w "$w" '.workers += [$w]' "$WORKERS" | write_state "$WORKERS"
+    ledger_jq_write --argjson w "$w" '.workers += [$w]' "$WORKERS"
     set_unit "$id" "$(hist supervisor-arbiter "dispatched to profile $arbiter_profile") | .supervise_report=$(js "$report") | .hard_escalated=true"
     say "supervisor arbitration dispatched pid=$pid unit=$id profile=$arbiter_profile"
     [[ "$over_stop" == true ]] || codex_credits_log arbiter "$id"
@@ -745,6 +745,6 @@ harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or fin
     set_unit "$unit" 'del(.arbiter_no_answer, .arbiter_no_answer_since, .arbiter_retry_after)'
     supervisor_arbiter_record_left "$unit"
   fi
-  jqf --argjson pid "$pid" --arg finished "$STAMP" \
-    '(.workers[] |= (if .pid==$pid and .type=="supervise" and .harvested!=true then .harvested=true | .finished_at=$finished else . end))' "$WORKERS" | write_state "$WORKERS"
+  ledger_jq_write --argjson pid "$pid" --arg finished "$STAMP" \
+    '(.workers[] |= (if .pid==$pid and .type=="supervise" and .harvested!=true then .harvested=true | .finished_at=$finished else . end))' "$WORKERS"
 }

@@ -116,8 +116,8 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
     if [[ "$(jqf -r '.process_group // empty' <<<"$w")" == "" && "$(jqf -r '.provider // empty' <<<"$w")" =~ ^(zcode|claude)$ ]]; then
       s="$(jqf -r '.no_output_check_after // 0' <<<"$w")"
       if [[ ! "$s" =~ ^[0-9]+$ ]] || (( s == 0 )); then
-        jqf --argjson pid "$pid" --arg unit "$unit" --argjson after "$((NOW_EPOCH + 300))" \
-          '(.workers[] | select(.pid==$pid and .unit==$unit and .harvested != true) | .no_output_check_after)=$after' "$WORKERS" | write_state "$WORKERS"
+        ledger_jq_write --argjson pid "$pid" --arg unit "$unit" --argjson after "$((NOW_EPOCH + 300))" \
+          '(.workers[] | select(.pid==$pid and .unit==$unit and .harvested != true) | .no_output_check_after)=$after' "$WORKERS"
         continue
       fi
       (( NOW_EPOCH >= s )) || continue
@@ -220,10 +220,10 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
         set_unit "$unit" ".stage=$(js "$report_resume_stage")"
         say "incident report resume failed unit=$unit reason=$incident_gate_reason; sending to review with the existing report"
       fi
-      jqf --argjson accounting "$accounting" --arg finished "$STAMP" \
+      ledger_jq_write --argjson accounting "$accounting" --arg finished "$STAMP" \
         --argjson pid "$pid" --arg unit "$unit" \
         '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (. += $accounting | .harvested=true | .finished_at=$finished) else . end))' \
-        "$WORKERS" | write_state "$WORKERS"
+        "$WORKERS"
       continue
     fi
     if [[ -s "$rep" ]]; then
@@ -435,10 +435,10 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
         [[ -n "$report_resume_source" ]] && set_unit "$unit" ".implementation_report=$(js "$report_resume_source")"
         set_unit "$unit" ".stage=$(js "$report_resume_stage")"
         say "incident report resume produced no report unit=$unit; sending to review with the existing report"
-        jqf --argjson accounting "$accounting" --arg finished "$STAMP" \
+        ledger_jq_write --argjson accounting "$accounting" --arg finished "$STAMP" \
           --argjson pid "$pid" --arg unit "$unit" \
           '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (. += $accounting | .harvested=true | .finished_at=$finished) else . end))' \
-          "$WORKERS" | write_state "$WORKERS"
+          "$WORKERS"
         continue
       fi
       limit_hit="$( { tail -n 40 "$lg"; cat "$rep.partial"; } 2>/dev/null | grep -m1 -oiE "$PROVIDER_LIMIT_RE" || true)"
@@ -453,7 +453,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
         # The scheduler does not load lib.sh, so note_provider_quota_exhausted (locks, env faults) is unavailable here: write the hold directly.
         [[ "$worker_provider" != claude ]] || provider_quota_write_until claude "$((NOW_EPOCH + 1800))" || :
         set_unit "$unit" "$(hist worker-provider-limit "$limit_hit")"
-        jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
+        ledger_jq_write --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS"
         continue
       fi
       echo "[$STAMP] WASTE zero-output worker pid=$pid unit=$unit log=$(basename "$lg")" >> "$A/alerts/waste.md"
@@ -471,7 +471,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
         fi
       fi
     fi
-    jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
+    ledger_jq_write --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS"
   done < <(jqf -c '.workers[]' "$WORKERS")
 }
 
@@ -598,8 +598,8 @@ coord_on_expire() { # claim JSON; called under that ticket's claim lock
         return 1
       fi
       if [[ "$(jqf -r '.no_output_check_after // 0' <<<"$worker")" == 0 ]]; then
-        jqf --arg owner "$owner" --argjson after "$((NOW_EPOCH + 300))" \
-          '(.workers[] | select(.claim_owner==$owner and .harvested != true) | .no_output_check_after)=$after' "$WORKERS" | write_state "$WORKERS" || return 1
+        ledger_jq_write --arg owner "$owner" --argjson after "$((NOW_EPOCH + 300))" \
+          '(.workers[] | select(.claim_owner==$owner and .harvested != true) | .no_output_check_after)=$after' "$WORKERS" || return 1
         say "claim expiry awaiting worker recheck owner=$owner pid=$pid; retaining claim"
         return 1
       fi
@@ -644,9 +644,9 @@ coord_on_expire() { # claim JSON; called under that ticket's claim lock
     return 1
   fi
   if [[ -n "$worker" ]]; then
-    jqf --arg owner "$owner" \
+    ledger_jq_write --arg owner "$owner" \
       '(.workers[] |= (if .claim_owner==$owner and .harvested!=true then .lease_expired=true else . end))' \
-      "$WORKERS" | write_state "$WORKERS" || return 1
+      "$WORKERS" || return 1
   fi
   if [[ "$type" == implement || "$type" == repair ]]; then
     [[ -n "$unit" ]] && set_unit "$unit" '.footprint=[]' || return 1
@@ -704,10 +704,10 @@ stuck_worker_disposition() {
         fi
       fi
       cap_commands="$(jq -Rr 'fromjson? | select(.type=="item.completed" and .item.type=="command_execution") | .item.command // empty | gsub("[\\r\\n]+"; " ") | .[0:200]' "$cap_log" 2>/dev/null | tail -n 20 || true)"
-      jqf --argjson pid "$cap_pid" --arg unit "$cap_unit" --arg finished "$STAMP" \
+      ledger_jq_write --argjson pid "$cap_pid" --arg unit "$cap_unit" --arg finished "$STAMP" \
         --argjson count "$cap_count" --argjson cap "$IMPLEMENT_COMMAND_CAP" \
         '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (.harvested=true | .finished_at=$finished | .implement_command_capped={count:$count,cap:$cap}) else . end))' \
-        "$WORKERS" | write_state "$WORKERS"
+        "$WORKERS"
       cap_issue="$(unit_field "$cap_unit" '.issue // empty')"
       cap_branch="$(unit_field "$cap_unit" '.branch // empty')"
       cap_recut_ok=0
@@ -785,9 +785,9 @@ stuck_worker_disposition() {
       unchanged_confirmed=$((unchanged_confirmed + 1))
       stuck_worker_stop "$pid" "$(jqf -r '.process_group // empty' <<<"$w")"
       killed_count=$((killed_count + 1))
-      jqf --argjson pid "$pid" --arg unit "$id" --arg finished "$STAMP" \
+      ledger_jq_write --argjson pid "$pid" --arg unit "$id" --arg finished "$STAMP" \
         '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (.harvested=true | .finished_at=$finished | .stuck_killed=true) else . end))' \
-        "$WORKERS" | write_state "$WORKERS"
+        "$WORKERS"
       kills=$(( $(unit_retries "$id" stuck-killed) + 1 ))
       if (( kills >= 2 )); then
         # 第 2 次卡住走 #4363（f6）的止损路由：原票经 hold.sh 自动 on-hold（24h）附原因，

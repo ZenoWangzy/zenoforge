@@ -22,6 +22,7 @@ echo '{"workers":[]}' > "$WORKERS"; echo '[]' > "$GH_PRS"
 source "$AGENT_DIR/coord.sh"
 fn() { sed -n "/^$2() {/,/^}/p" "$SD/$1"; }  # the real function text, nothing else from the file
 source <(fn core.sh jqf); source <(fn units.sh unit_field)
+LEDGER_LOCK_HELD=false; for f in ledger_locked _ledger_jq_write ledger_jq_write; do source <(fn reports.sh "$f"); done # the real ledger lock around the workers append
 [[ ! -f "$SD/worker-scope.sh" ]] || source "$SD/worker-scope.sh"
 source "$SD/harvest-workers.sh"; source <(fn dispatch.sh dispatch)
 # Stubs for what dispatch() needs around the claim: the worker command, the GitHub census, state writes, liveness.

@@ -106,12 +106,12 @@ retire_terminal_units() {
 
 set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）
   local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage=""
-  if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then
+  if [[ "${SCHED_LOCK_HELD:-false}" != true && "${REFILL_LEDGER_ONLY:-false}" != true ]]; then
     acquire_scheduler_lock_wait || return 1
     own_lock=true
   fi
   [[ "$2" == *".stage"* ]] && old_stage="$(unit_field "$1" '.stage')"
-  jqf --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" | write_state "$UNITS" || rc=$?
+  ledger_jq_write --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" || rc=$?
   if [[ "$own_lock" == true ]]; then release_scheduler_lock; fi
   elapsed=$((SECONDS - started))
   [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || (( elapsed < 2 )) || say "dispatch detail ledger_write unit=$1 secs=${elapsed}s"
@@ -141,20 +141,23 @@ cap_set_unit() { # id verb decision-text report-path jq_update_expression
   return 1
 }
 units_update() { # jq args; transactionally update the unit ledger under the shared scheduler lock
-  local own_lock=false rc=0 new
-  if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then
+  local own_lock=false rc=0
+  if [[ "${SCHED_LOCK_HELD:-false}" != true && "${REFILL_LEDGER_ONLY:-false}" != true ]]; then
     acquire_scheduler_lock_wait || return 1
     own_lock=true
   fi
+  ledger_locked units_update_locked "$@" || rc=$?
+  if [[ "$own_lock" == true ]]; then release_scheduler_lock; fi
+  return "$rc"
+}
+units_update_locked() { # jq args; the read-modify-write itself, under the ledger lock
+  local rc=0 new
   # A no-op update skips the write: intake's consumed handoff rows made three per row, and each rewrite renewed the
   # ledger's mtime (dropping the history view cache) and ran write_state's validation (128-146 s for 24 rows).
-  new="$(mktemp "$UNITS.noop.XXXXXX")" || rc=1
-  if (( rc == 0 )); then
-    jqf "$@" "$UNITS" > "$new" || rc=$?
-    if (( rc == 0 )) && ! cmp -s "$new" "$UNITS"; then write_state "$UNITS" < "$new" || rc=$?; fi
-    rm -f -- "$new"
-  fi
-  if [[ "$own_lock" == true ]]; then release_scheduler_lock; fi
+  new="$(mktemp "$UNITS.noop.XXXXXX")" || return 1
+  jqf "$@" "$UNITS" > "$new" || rc=$?
+  if (( rc == 0 )) && ! cmp -s "$new" "$UNITS"; then write_state "$UNITS" < "$new" || rc=$?; fi
+  rm -f -- "$new"
   return "$rc"
 }
 # A refused or failed parent label write for an issue without a unit would otherwise retry on every refill

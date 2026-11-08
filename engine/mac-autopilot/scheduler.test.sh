@@ -3016,6 +3016,67 @@ command jq -e 'all(.workers[]; .harvested!=true)' "$TF/supervisor/autopi/workers
 }
 sched_run_case refill_entry
 
+sched_case_refill_busy_lock() {
+# Item 52: a tick that holds the scheduler lock must not stop a refill from filling a free slot. The refill dispatches under the
+# ledger lock alone ("refill lite"), writes the unit and the worker row, and a second refill racing it starts nothing twice.
+new_tick_fixture refill-busy-lock
+command jq '.max_workers=2 | .implement_cap=2 | .hotfix_lane.supervisor_owned=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+command jq -n '{units:[
+  {id:"issue-8902",lane:"direct-main",branch:"agent/issue-8902",task:"busy lock fixture task",footprint:[],stage:"implement-pending",history:[]}]}' > "$TF/supervisor/autopi/units.json"
+cat > "$TF/bin/codex" <<'SH'
+#!/usr/bin/env bash
+sleep 300
+SH
+chmod +x "$TF/bin/codex"
+touch "$TF/allow-dispatch"
+# A live foreign owner (this test shell) holds SCHED_LOCK for the whole case, as a tick in harvest_workers does.
+mkdir "$TF/supervisor/autopi/.scheduler.lock"; printf '%s\n' "$$" > "$TF/supervisor/autopi/.scheduler.lock/pid"
+# Two refills at once, one pending unit and two free slots: exactly one may start it.
+TF_REAL_PS=1 tick --refill & refill_a=$!
+TF_REAL_PS=1 tick --refill & refill_b=$!
+refill_rc=0; wait "$refill_a" || refill_rc=$?; wait "$refill_b" || refill_rc=$((refill_rc + $?))
+(( refill_rc == 0 || refill_rc == 75 )) || { cat "$TF/tick.out" >&2; echo "scheduler.test.sh: a refill beside a held scheduler lock failed (rc=$refill_rc)" >&2; exit 1; }
+command jq -e '.units[] | select(.id=="issue-8902") | .stage=="implement"' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { cat "$TF/tick.out" "$TF/supervisor/autopi/scheduler.log" >&2; echo 'scheduler.test.sh: a refill did not dispatch into a free slot while the scheduler lock was held' >&2; exit 1; }
+[[ "$(command jq '[.workers[] | select(.unit=="issue-8902")] | length' "$TF/supervisor/autopi/workers.json")" == 1 ]] \
+  || { command jq -c '.workers' "$TF/supervisor/autopi/workers.json" >&2; echo 'scheduler.test.sh: the same unit was started more than once by two racing refills' >&2; exit 1; }
+grep -Fq 'refill lite: the scheduler lock is held' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: the lock-free refill did not say so in scheduler.log' >&2; exit 1; }
+[[ "$(cat "$TF/supervisor/autopi/.scheduler.lock/pid")" == "$$" ]] || { echo 'scheduler.test.sh: the refill touched the scheduler lock it did not hold' >&2; exit 1; }
+if grep -Fq 'REFILL-TIMEOUT' "$TF/supervisor/autopi/scheduler.log"; then echo 'scheduler.test.sh: a lock-free refill logged a lock timeout' >&2; exit 1; fi
+for refill_worker_pid in $(command jq -r '.workers[] | select(.harvested!=true) | .pid' "$TF/supervisor/autopi/workers.json"); do
+  kill -- "-$refill_worker_pid" 2>/dev/null || :
+done
+rm -rf "$TF/supervisor/autopi/.scheduler.lock"
+}
+sched_run_case refill_busy_lock
+
+sched_case_refill_beside_tick() {
+# Item 52: a real full tick and three refills run at once on four pending units and four free slots. Whichever of them dispatches a
+# unit (the tick under SCHED_LOCK, a refill under the ledger lock alone), each unit starts exactly once and no unit row loses its stage.
+new_tick_fixture refill-beside-tick
+command jq '.max_workers=4 | .implement_cap=4 | .hotfix_lane.supervisor_owned=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+command jq -n '{units:[range(4) | {id:("issue-890\(.+3)"),lane:"direct-main",branch:("agent/issue-890\(.+3)"),task:"beside tick fixture task",footprint:[],stage:"implement-pending",history:[]}]}' > "$TF/supervisor/autopi/units.json"
+printf '#!/usr/bin/env bash\nsleep 300\n' > "$TF/bin/codex"; chmod +x "$TF/bin/codex"
+touch "$TF/allow-dispatch"
+TF_REAL_PS=1 tick & tick_pid=$!
+TF_REAL_PS=1 tick --refill & refill_a=$!
+TF_REAL_PS=1 tick --refill & refill_b=$!
+TF_REAL_PS=1 tick --refill & refill_c=$!
+for beside_pid in "$refill_a" "$refill_b" "$refill_c" "$tick_pid"; do wait "$beside_pid" || :; done
+[[ "$(command jq '[.units[] | select(.stage=="implement")] | length' "$TF/supervisor/autopi/units.json")" == 4 ]] \
+  || { cat "$TF/supervisor/autopi/scheduler.log" >&2; command jq -c '[.units[] | {id,stage}]' "$TF/supervisor/autopi/units.json" >&2; echo 'scheduler.test.sh: a tick racing refills left a unit undispatched or lost its stage' >&2; exit 1; }
+command jq -e '[.workers[] | select(.harvested!=true)] | group_by(.unit) | all(length == 1) and length == 4' "$TF/supervisor/autopi/workers.json" >/dev/null \
+  || { command jq -c '.workers' "$TF/supervisor/autopi/workers.json" >&2; echo 'scheduler.test.sh: a tick racing refills started a unit twice or lost a worker row' >&2; exit 1; }
+for beside_pid in $(command jq -r '.workers[] | select(.harvested!=true) | .pid' "$TF/supervisor/autopi/workers.json"); do
+  kill -- "-$beside_pid" 2>/dev/null || :
+done
+rm -rf "$TF/supervisor/autopi/.scheduler.lock"
+}
+sched_run_case refill_beside_tick
+
 sched_case_refill_pending_stages() (
 # The refill dispatcher reuses the shared per-stage gates: PR stages use one
 # cached census, supervisor-owned work stays put, and oversized implementation
