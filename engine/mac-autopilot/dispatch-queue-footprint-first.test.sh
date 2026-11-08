@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+# Engine home of the pack dispatch-queue-footprint test. The name differs on purpose: a same-path pack file shadows the engine one in the build and needs an overrides.tsv row.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 queue_source="${1:-$here/scheduler.d/dispatch-queue.sh}"
-[[ -r "$queue_source" ]] || { echo "dispatch-queue-footprint: missing queue source: $queue_source" >&2; exit 2; }
-command -v jq >/dev/null || { echo 'dispatch-queue-footprint: jq is required' >&2; exit 2; }
+[[ -r "$queue_source" ]] || { echo "dispatch-queue-footprint-first: missing queue source: $queue_source" >&2; exit 2; }
+command -v jq >/dev/null || { echo 'dispatch-queue-footprint-first: jq is required' >&2; exit 2; }
 
 events="$(mktemp)"
 UNITS="$(mktemp)"
