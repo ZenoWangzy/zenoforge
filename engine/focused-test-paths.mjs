@@ -81,7 +81,7 @@ export const RELATED_TESTS = new Map([
   ['engine/mac-autopilot/scheduler.d/stop-loss.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh']],
   ['engine/mac-autopilot/scheduler.d/evals-arbiter.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh', 'engine/mac-autopilot/eval-regression-revert.test.sh']],
   ['engine/mac-autopilot/scheduler.d/supervisor-arbiter.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh', 'engine/mac-autopilot/scheduler.test.sh']],
-  ['engine/mac-autopilot/scheduler.d/dispatch-queue.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh']],
+  ['engine/mac-autopilot/scheduler.d/dispatch-queue.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh', 'engine/mac-autopilot/scheduler.d/dispatch-census-capacity.test.sh']],
   ['engine/mac-autopilot/scheduler.d/footprint.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh']],
   ['engine/mac-autopilot/scheduler.d/intake.sh', ['engine/mac-autopilot/intake-existing-walk.test.sh', 'engine/mac-autopilot/intake-handoff-skip.test.sh', 'engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh', 'engine/mac-autopilot/scheduler.d/recut-reopen.test.sh']], ['engine/mac-autopilot/scheduler.d/recut-reopen.sh', ['engine/mac-autopilot/scheduler.d/recut-reopen.test.sh']],
   ['engine/mac-autopilot/scheduler.d/units.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh', 'engine/mac-autopilot/dependencies-onepass.test.sh']], ['engine/mac-autopilot/scheduler.d/dependencies.sh', ['engine/mac-autopilot/dependencies-onepass.test.sh', 'engine/mac-autopilot/dep-dead-sweep.test.sh']],

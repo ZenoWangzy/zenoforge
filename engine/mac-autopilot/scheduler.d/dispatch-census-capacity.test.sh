@@ -100,6 +100,11 @@ TICK_PRS=''
 dispatch_pending true
 [[ "$(cat "$GH_CALLS")" == 'pr list' ]] || fail "expected exactly one census read at 7/8, got: $(tr '\n' ';' < "$GH_CALLS")"
 [[ "$dispatch_calls" == 1 ]] || fail "admitted review candidate was not dispatched (calls=$dispatch_calls)"
+# One steps line per pass: every row step it ran, with seconds and counts, in the shape of `intake detail steps`.
+steps_line="$(grep -F 'dispatch detail steps refill=true' "$LOG")" || fail "no dispatch steps line: $(cat "$LOG")"
+for step in order row_head room_for review_target reviewer_pick clone checkout prompt dispatch; do
+  [[ "$steps_line" =~ \ $step=[0-9]+\.[0-9]{3}s/1(\ |$) ]] || fail "steps line lacks $step/1: $steps_line"
+done
 
 # A CONFLICTING census row sends a review-pending and a rereview-pending unit to conflict repair, not review: no worker is
 # dispatched, and the only extra gh call is the one `pr view` re-check per unit (the clean census above made none).

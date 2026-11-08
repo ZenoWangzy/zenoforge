@@ -1,8 +1,31 @@
 
+# Per-row step timing for dispatch_pending: dmark charges the microseconds since the last mark to a named step, dispatch_steps_say logs
+# the pass's `dispatch detail steps` line (name=secs/count). All use dispatch_pending's locals (dynamic scope, like intake_mark).
+# dstep runs a command and marks it; dcapture does the same for `var="$(command)"`; both return the command's status, so the call sites
+# keep their `|| continue`. A row's unmarked skip, park or escalate path lands in after_<last step> at the next row's top.
+dmark() {
+  local now=${EPOCHREALTIME/[.,]/}
+  [[ -n "${dispatch_step_at:-}" ]] || return 0
+  dispatch_step_secs[$1]=$(( ${dispatch_step_secs[$1]:-0} + now - dispatch_step_at )); dispatch_step_counts[$1]=$(( ${dispatch_step_counts[$1]:-0} + 1 ))
+  dispatch_step_at=$now; dispatch_step_last=$1
+}
+dstep() { local step=$1 rc=0; shift; "$@" || rc=$?; dmark "$step"; return $rc; }
+dcapture() { local var=$1 step=$2 rc=0 out; shift 2; out="$("$@")" || rc=$?; printf -v "$var" %s "$out"; dmark "$step"; return $rc; }
+dispatch_steps_say() {
+  (( ${#dispatch_step_secs[@]} )) || return 0
+  local step_name step_time step_line="dispatch detail steps refill=$local_refill"
+  while IFS= read -r step_name; do
+    printf -v step_time '%d.%03d' $(( dispatch_step_secs[$step_name] / 1000000 )) $(( dispatch_step_secs[$step_name] % 1000000 / 1000 ))
+    step_line+=" $step_name=${step_time}s/${dispatch_step_counts[$step_name]}"
+  done < <(for step_name in "${!dispatch_step_secs[@]}"; do printf '%s %s\n' "${dispatch_step_secs[$step_name]}" "$step_name"; done | sort -k1,1nr -k2,2 | cut -d' ' -f2)
+  say "$step_line"
+}
+
 dispatch_pending() {
   TICK_DISPATCH_SKIPS=()
   local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started
+  local -A dispatch_step_secs=() dispatch_step_counts=(); local dispatch_step_at=${EPOCHREALTIME/[.,]/} dispatch_step_last=start
   # A full tick's first pass: past the walk deadline room_for refuses every start, so the tail still gets its parks and holds.
   local TICK_DISPATCH_PAST_DEADLINE=false
   # A refill: cap the units that reach footprint work (footprint_room); cheap skips do not count.
@@ -13,6 +36,7 @@ dispatch_pending() {
   fi
   footprint_waiters_revalidate || { say 'dispatch held: footprint wait owners could not be revalidated'; return 1; }
   revalidate_secs=$((SECONDS - pending_started))
+  dmark revalidate
   if [[ "$local_refill" != true ]]; then
     tick_prs_changed # Running workers may have pushed since the previous phase.
     # Load the open-PR census in this shell: $(tick_prs) in a subshell cannot cache it, so every lookup re-ran the 300-PR list.
@@ -20,14 +44,17 @@ dispatch_pending() {
     # census（gh pr list --limit 300，实测 9–15s）此时是纯浪费；满载的 12h 里 51/387 次 refill 白付了这笔。
     dispatch_capacity_free && tick_prs_prime
   fi
+  dmark census
   TICK_DISPATCH_LOCAL_REFILL="$local_refill"
   if [[ "$local_refill" != true ]] && declare -F advisor_harvest >/dev/null; then
     step_started=$SECONDS
     advisor_harvest
     step_elapsed=$((SECONDS - step_started))
     (( step_elapsed < 2 )) || say "dispatch detail advisor_harvest secs=${step_elapsed}s"
+    dmark advisor_harvest
   fi
   ordered="$(dispatch_order)" || true
+  dmark order
   loop_started=$SECONDS
   # Footprint only orders: pass 1 starts what no live owner overlaps and defers the rest; pass 2 starts the deferred while a slot is free.
   local dispatch_pass TICK_FOOTPRINT_DEFER=true defer_ids
@@ -35,6 +62,7 @@ dispatch_pending() {
   for dispatch_pass in 1 2; do
   while read -r u; do
     [[ -n "$u" ]] || continue
+    dmark "after_$dispatch_step_last" # the previous row's skip, park or escalate path after its last step
     paused_midrun dispatch && break
     [[ "$TICK_FOOTPRINT_CAP_HIT" != true ]] || break # footprint_room said why
     id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"
@@ -58,6 +86,7 @@ dispatch_pending() {
     # implementation-only refills continue to use local ledger data without a GitHub query.
     [[ "$local_refill" != true || "$stage" == implement-pending || "$stage" == repair-pending \
       || "$stage" == review-pending || "$stage" == rereview-pending ]] || { dispatch_skip refill-stage; continue; }
+    dmark row_head
     # Every path that frees a marked unit ends here, so the marker is enforced once, ahead of anything that can change the stage.
     if [[ "$stage" == *-pending && -n "$(jqf -r '.dep_wait_delivery // empty' <<<"$u")" ]]; then
       if marked_dep="$(dep_marker_open "$u")"; then
@@ -69,6 +98,7 @@ dispatch_pending() {
       fi
       set_unit "$id" 'del(.dep_wait_delivery, .unpark_condition)' # satisfied: a later cache read must not park on it again
     fi
+    dmark dep_marker
     [[ "$(jqf -r '.hold_handoff_waiting // false' <<<"$u")" != false ]] && ! handoff_wait_stale "$id" && continue
     # A run that ended blocked-on with no commit starts again only once its blocker clears: a hold handoff or requeue that frees it earlier
     # sends it back to blocked-external, where release_dependency_blocks frees it on delivery or routes a dead blocker (dead_blocker_resolve, dep_dead_sweep).
@@ -84,12 +114,14 @@ dispatch_pending() {
     # supervisor-owned 热修单元只计数：评审/修复/复审都由热修 supervisor 会话自己派，这里不派任何 worker。
     [[ "$(jqf -r '.supervisor_owned // false' <<<"$u")" != true ]] || { dispatch_skip supervisor-owned; continue; }
     [[ -n "$(jqf -r '.advisor_pid // empty' <<<"$u")" ]] && { dispatch_skip advisor-running; continue; }
+    dmark row_gates
     # 慢拍：容量空出（如拍内有 worker 退出）时逐单元补一次 census；满载时不取。
     # refill 不在这里取 census：PR 车道候选先过 room_for（容量、足迹、优先级），
     # 第一个真正通过 room_for 的候选才在 stage handler 里取一次（#5200 的容量门控，上游化）。
     if [[ "$local_refill" != true ]]; then
       dispatch_capacity_free && tick_prs_prime
     fi
+    dmark row_census
     # 止损预算（#4363）：第 4 轮（implement 加 repair）或超 4h 墙钟不再派发——
     # 原票经 hold.sh（on-hold 的唯一写入口，带 24h 过期的 durable hold 记录）自动搁置并评论附原因，
     # 单元转 supervisor（#4369 terra 裁决）；裁决后重新给满额度。
@@ -97,14 +129,15 @@ dispatch_pending() {
     if [[ "$stage" == implement-pending || "$stage" == repair-pending || "$self_fix" == true ]]; then
       # Lifetime fresh tokens: parks at the soft line (one arbiter decision, one refill) and for good at the hard line; no ruling lifts the hard line.
       if [[ "$local_refill" == true ]]; then
-        token_spend_gate "$id" "$u" check-only || { dispatch_skip token-gate-refill; continue; }
+        dstep token_gate token_spend_gate "$id" "$u" check-only || { dispatch_skip token-gate-refill; continue; }
       else
-        token_spend_gate "$id" "$u" || continue
+        dstep token_gate token_spend_gate "$id" "$u" || continue
       fi
       budget_started=$SECONDS
       budget="$(ticket_budget_reason "$u")"
       budget_elapsed=$((SECONDS - budget_started))
       (( budget_elapsed < 2 )) || say "dispatch detail stop_loss_check unit=$id secs=${budget_elapsed}s"
+      dmark stop_loss_check
       if [[ -n "$budget" ]]; then
         escalate_started=$SECONDS
         [[ "$local_refill" != true ]] || { dispatch_skip stop-loss-refill; continue; }
@@ -113,6 +146,7 @@ dispatch_pending() {
         if [[ "$issue" =~ ^[0-9]+$ && -z "$pr" ]]; then
           supervisor_budget_recut "$id" "ticket stop-loss budget: $budget"
           (( SECONDS - escalate_started < 2 )) || say "dispatch detail stop_loss_escalate unit=$id secs=$((SECONDS - escalate_started))s"
+          dmark stop_loss_escalate
           continue
         fi
         if [[ -n "$issue" ]]; then
@@ -129,12 +163,13 @@ dispatch_pending() {
           "budget of $TICKET_ROUND_BUDGET rounds (implement+repair) or $((TICKET_WALL_BUDGET_SECONDS / 60)) minutes exceeded: $budget" \
           '["Dispatch another implement/repair round at the same scope"]'
         (( SECONDS - escalate_started < 2 )) || say "dispatch detail stop_loss_escalate unit=$id secs=$((SECONDS - escalate_started))s"
+        dmark stop_loss_escalate
         continue
       fi
     fi
     if [[ "$self_fix" == true ]]; then
       [[ "$local_refill" != true ]] || { dispatch_skip self-fix-refill; continue; }
-      self_fix_dispatch "$u" || true
+      self_fix_dispatch "$u" || true; dmark self_fix
       continue
     fi
     if [[ "$stage" == repair-pending || "$stage" == rereview-pending ]]; then
@@ -159,6 +194,7 @@ dispatch_pending() {
         continue
       fi
     fi
+    dmark advisor_rounds
     rounds="$(loop_rounds "$u")"
     if [[ "${rounds:-0}" =~ ^[0-9]+$ ]] && (( rounds >= LOOP_BREAKER_ROUNDS )); then
       [[ "$local_refill" != true ]] || { dispatch_skip loop-breaker-refill; continue; }
@@ -174,67 +210,72 @@ dispatch_pending() {
       fi
       continue
     fi
+    dmark loop_breaker
     title="$(jqf -r '.title // ""' <<<"$u")"; pr_num="$(jqf -r '.pr // empty' <<<"$u")"
     issue="$(jqf -r '.issue // empty' <<<"$u")"; lane="$(jqf -r '.lane // empty' <<<"$u")"
     key="${pr_num:-$id}"; subject="$(subject_of "$pr_num" "$issue")"
     prless=0; [[ -z "$pr_num" && "$lane" == direct-main ]] && prless=1
+    dmark row_fields
     case "$stage" in
       repair-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || { to_supervisor "$id" "repair-pending without a PR"; continue; }
-        if [[ -n "$(jqf -r '.hold_handoff_episode // empty' <<<"$u")" ]] && park_if_body_blocked "$u"; then
+        if [[ -n "$(jqf -r '.hold_handoff_episode // empty' <<<"$u")" ]] && dstep body_block park_if_body_blocked "$u"; then
           [[ "$(unit_field "$id" .stage)" != blocked-external ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
           dispatch_skip body-blocked; continue
         fi
-        room_for "$id" repair "$u" false || continue
+        dstep room_for room_for "$id" repair "$u" false || continue
         # refill 首个通过 room_for 的 PR 车道候选才取一次 census；满载时上面的 room_for 已跳过，一次都不取。
-        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }
+        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }; dmark census_prime
         # repair_cap_admission may have just moved this unit onto the hard tier.
-        u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
-        pick implement "$u" || { dispatch_skip pick; continue; }
+        u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"; dmark unit_reload
+        dstep pick pick implement "$u" || { dispatch_skip pick; continue; }
         branch="$(jqf -r '.branch // empty' <<<"$u")"
         # Reject local footprint conflicts before tick_pr_branch can fall back to a remote PR lookup.
-        footprint_room "$id" "$u" true || continue
+        dstep footprint_room footprint_room "$id" "$u" true || continue
         if [[ -z "$branch" && -n "$pr_num" ]]; then
           branch="$(tick_pr_branch "$pr_num")"
           [[ -n "$branch" ]] && set_unit "$id" ".branch=$(js "$branch")"
         fi
+        dmark branch_lookup
         [[ -n "$branch" ]] || { say "repair-pending unit=$id: PR branch unavailable"; continue; }
         wt=""
         if [[ "$pr_num" =~ ^[0-9]+$ && "$lane" != direct-main ]]; then
-          wt="$(pre_dispatch_pr_admission "$id" "$branch" "$pr_num" "repair-pending before dispatch")" || { dispatch_skip size-admission; continue; }
+          dcapture wt size_admission pre_dispatch_pr_admission "$id" "$branch" "$pr_num" "repair-pending before dispatch" || { dispatch_skip size-admission; continue; }
         fi
         prev_report="$(jqf -r '.review_report // empty' <<<"$u")"
         [[ -n "$prev_report" ]] || prev_report="$(cd "$SUP" && ls -t "review-${key}-"*.md 2>/dev/null | grep -v worker | head -1)"
+        dmark report_lookup
         [[ -n "$prev_report" || -n "$(jqf -r '.repair_hint // empty' <<<"$u")" ]] || { to_supervisor "$id" "repair-pending without a review report"; continue; }
         handoff_original=""
         if [[ -n "$pr_num" ]] && { [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]] || [[ -n "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; }; then
           handoff_original="$(tick_pr_head "$pr_num")" || { dispatch_skip pr-head; continue; }
           [[ "$handoff_original" =~ $SHA_RE ]] || { dispatch_skip pr-head; continue; }
         fi
+        dmark handoff_head
         if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
-          wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" "$((1 - prless))" "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")")" || handoff_status=$?
+          wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" "$((1 - prless))" "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
             if (( handoff_status == 73 )); then to_supervisor "$id" "handoff conflicts with the existing branch; inspect the preserved owner worktree and PR"; else say "repair-pending unit=$id: previous worktree unavailable"; fi
             continue
           fi
-          record_handoff_integration "$id" "$wt" "$handoff_original" || { dispatch_skip handoff-integration; continue; }
+          dstep handoff_integration record_handoff_integration "$id" "$wt" "$handoff_original" || { dispatch_skip handoff-integration; continue; }
         elif [[ -n "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
-          wt="$(handoff_worktree_clone "$id" "$branch" "" "$(jqf -r '.handoff_start_sha' <<<"$u")" false "$((1 - prless))" "$(jqf -r '.handoff_start_ref' <<<"$u")" "$(jqf -r '.handoff_start_sha' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")")" || handoff_status=$?
+          wt="$(handoff_worktree_clone "$id" "$branch" "" "$(jqf -r '.handoff_start_sha' <<<"$u")" false "$((1 - prless))" "$(jqf -r '.handoff_start_ref' <<<"$u")" "$(jqf -r '.handoff_start_sha' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
             if (( handoff_status == 73 )); then to_supervisor "$id" "rescued handoff conflicts with the existing branch; inspect the preserved rescue and PR"; else say "repair-pending unit=$id: rescued ref unavailable"; fi
             continue
           fi
-          record_handoff_integration "$id" "$wt" "$handoff_original" || { dispatch_skip handoff-integration; continue; }
+          dstep handoff_integration record_handoff_integration "$id" "$wt" "$handoff_original" || { dispatch_skip handoff-integration; continue; }
         else
           if [[ -z "$wt" ]]; then
-            wt="$(ensure_clone "$id" "$branch" "$((1 - prless))" "$([[ -n "$pr_num" ]] && tick_pr_head "$pr_num")")" || { say "repair-pending unit=$id: clone/branch $branch unavailable"; continue; }
+            dcapture wt clone ensure_clone "$id" "$branch" "$((1 - prless))" "$([[ -n "$pr_num" ]] && tick_pr_head "$pr_num")" || { say "repair-pending unit=$id: clone/branch $branch unavailable"; continue; }
           fi
         fi
-        resume_handoff_integration "$id" "$wt" || { dispatch_skip handoff-integration; continue; }
+        dstep handoff_integration resume_handoff_integration "$id" "$wt" || { dispatch_skip handoff-integration; continue; }
         rep="impl-${key}-fix-${TAG}.md"
-        failure="$(repair_failure_prompt "$u" "$prev_report")" || { to_supervisor "$id" "repair-pending: cannot read the failure evidence ($prev_report)"; continue; }
+        dcapture failure failure_prompt repair_failure_prompt "$u" "$prev_report" || { to_supervisor "$id" "repair-pending: cannot read the failure evidence ($prev_report)"; continue; }
         hint="$(jqf -r '.repair_hint // empty' <<<"$u")"
         [[ -n "$hint" ]] && hint="
 本轮额外阻断（优先处理；评审报告若已 READY，只需处理这一条）：$hint"
@@ -255,22 +296,23 @@ $(matt_method_rule "$wt")
 4. 禁止：动主 checkout、合并 PR（gh pr merge）、改 GitHub 状态、部署。0b 的 git merge origin/main 不在此列。
 5. 修复说明（改动、验证输出摘要、push SHA 或本地提交 SHA）写到 $SUP/${rep}，交付完即结束。
 $(decision_scope "$u")"
+        dmark prompt
         dispatch_if_room "$id" "repair" "repair" "${rep%.md}.worker.log" "$rep" \
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt$(sweep_rule "$u")$(supervisor_rule "$u")" "" "$wt" "" "$failure" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" && [[ -n "$pr_num" ]] && repair_demote "$id" "$pr_num" "$branch"
-        true ;;
+        dmark dispatch; true ;;
       rereview-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || { to_supervisor "$id" "rereview-pending without a PR"; continue; }
         if [[ "$(jqf -r '.reopen_pr // false' <<<"$u")" == true ]]; then reopen_reverted_pr "$id" "$pr_num"; continue; fi
-        room_for "$id" rereview "$u" || continue
-        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }
-        target="$(unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")")" || { dispatch_skip review-target; continue; }
+        dstep room_for room_for "$id" rereview "$u" || continue
+        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }; dmark census_prime
+        dcapture target review_target unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")" || { dispatch_skip review-target; continue; }
         read -r pr_head sha <<<"$target"
         [[ "$sha" =~ $SHA_RE ]] || { dispatch_skip review-target; continue; }
         # Delivery verification outranks reviewer selection (#178): an undelivered
         # handoff must escalate even while the cross-family reviewer wait holds.
-        verify_handoff_delivery "$id" "$pr_num" "$(jqf -r '.branch // empty' <<<"$u")" "$sha" || { dispatch_skip handoff-delivery; continue; }
-        [[ "$lane" == direct-main ]] || ! review_conflict_to_repair "$id" "$pr_num" "$pr_head" || { dispatch_skip pr-conflict; continue; }
-        pick_review_for_unit "$u" || { dispatch_skip reviewer-wait; continue; }
+        dstep handoff_delivery verify_handoff_delivery "$id" "$pr_num" "$(jqf -r '.branch // empty' <<<"$u")" "$sha" || { dispatch_skip handoff-delivery; continue; }
+        [[ "$lane" == direct-main ]] || ! dstep pr_conflict review_conflict_to_repair "$id" "$pr_num" "$pr_head" || { dispatch_skip pr-conflict; continue; }
+        dstep reviewer_pick pick_review_for_unit "$u" || { dispatch_skip reviewer-wait; continue; }
         prev_sha="$(jqf -r '.reviewed_sha // empty' <<<"$u")"
         prev_pr_head="$(jqf -r '.reviewed_pr_head // empty' <<<"$u")"
         if [[ "$prev_sha" == "$sha" && "$prev_pr_head" == "$pr_head" ]]; then
@@ -312,8 +354,9 @@ $(decision_scope "$u")"
           fi
           continue
         fi
-        wt="$(ensure_clone "$id")" || { say "rereview-pending unit=$id: clone unavailable"; continue; }
-        checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "rereview-pending unit=$id: PR head $sha unavailable"; continue; }
+        dmark head_compare
+        dcapture wt clone ensure_clone "$id" || { say "rereview-pending unit=$id: clone unavailable"; continue; }
+        dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "rereview-pending unit=$id: PR head $sha unavailable"; continue; }
         prev_report="$(jqf -r '.review_report // empty' <<<"$u")"
         # 增量复审的前提是上轮 head 是当前 head 的真祖先（prev..sha 即修复增量）。PR head 随每次修复推送而变，
         # 不能用"PR head 未变"当前提：7c38abda0 那样判定后，2026-10-20 起 PR 车道零增量复审，每轮都是重新抽样的全量评审，
@@ -323,8 +366,9 @@ $(decision_scope "$u")"
           # 没有可核销的上一轮基线：做一次完整评审，不允许空 diff 的"增量复审"放行。
           rep="review-${key}-${TAG}.md"
           prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(sweep_rule "$u" "$sha")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+        dmark prompt
         dispatch_if_room "$id" "review" "review" "${rep%.md}.worker.log" "$rep" \
-            "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true
+            "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true; dmark dispatch
           continue
         fi
         rep="review-${key}-r-${TAG}.md"
@@ -332,30 +376,33 @@ $(decision_scope "$u")"
 复审 ${subject}（${title}）当前 head ${sha}，上轮 head ${prev_sha}。按正式契约中的 Targeted re-review 流程，仅检查 ${prev_sha}..${sha} 的 PR 增量及其直接依赖闭包；报告写到 $SUP/${rep}。
 读取上轮报告 $SUP/${prev_report} 和单元历史中的作者处置，再按处置逐条核验。$(review_contract_rule)
 只读边界：不编辑/commit/push/merge/评论。$(review_dispositions_context "$u")$(risk_class_safety_rule "$wt")$(lane_rule "$lane" "$sha")$(sweep_rule "$u" "$sha")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+        dmark prompt
         dispatch_if_room "$id" "rereview" "rereview" "${rep%.md}.worker.log" "$rep" \
-          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true ;;
+          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true; dmark dispatch ;;
       review-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || { dispatch_skip no-pr; continue; }
-        room_for "$id" review "$u" || continue
-        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }
-        target="$(unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")")" || { dispatch_skip review-target; continue; }
+        dstep room_for room_for "$id" review "$u" || continue
+        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }; dmark census_prime
+        dcapture target review_target unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")" || { dispatch_skip review-target; continue; }
         read -r pr_head sha <<<"$target"
         [[ "$sha" =~ $SHA_RE ]] || { dispatch_skip review-target; continue; }
-        verify_handoff_delivery "$id" "$pr_num" "$(jqf -r '.branch // empty' <<<"$u")" "$sha" || { dispatch_skip handoff-delivery; continue; }
-        [[ "$lane" == direct-main ]] || ! review_conflict_to_repair "$id" "$pr_num" "$pr_head" || { dispatch_skip pr-conflict; continue; }
-        pick_review_for_unit "$u" || { dispatch_skip reviewer-wait; continue; }
-        wt="$(ensure_clone "$id")" || { say "review-pending unit=$id: clone unavailable"; continue; }
-        checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "review-pending unit=$id: PR head $sha unavailable"; continue; }
+        dstep handoff_delivery verify_handoff_delivery "$id" "$pr_num" "$(jqf -r '.branch // empty' <<<"$u")" "$sha" || { dispatch_skip handoff-delivery; continue; }
+        [[ "$lane" == direct-main ]] || ! dstep pr_conflict review_conflict_to_repair "$id" "$pr_num" "$pr_head" || { dispatch_skip pr-conflict; continue; }
+        dstep reviewer_pick pick_review_for_unit "$u" || { dispatch_skip reviewer-wait; continue; }
+        dcapture wt clone ensure_clone "$id" || { say "review-pending unit=$id: clone unavailable"; continue; }
+        dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "review-pending unit=$id: PR head $sha unavailable"; continue; }
         rep="review-${key}-${TAG}.md"
         prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         # 打回报告缺可解析发现块后的同 head 重问：history 尾事件就是重问标记（重交合规报告后即被新事件取代）。
         [[ "$(jqf -r '(.history // [])[-1].stage // empty' <<<"$u")" == review-findings-missing ]] && prompt+="$(findings_reask_rule "$u")"
         # 结论行不可解析后的同 head 格式重问：评审员读回自己的报告只补独立 VERDICT 行，不整场重评。
         [[ "$(jqf -r '(.history // [])[-1].stage // empty' <<<"$u")" == verdict-missing ]] && prompt+="$(verdict_reask_rule "$u")"
+        dmark prompt
         dispatch_if_room "$id" "review" "review" "${rep%.md}.worker.log" "$rep" \
-          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true ;;
+          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true; dmark dispatch ;;
       implement-pending)
         task="$(jqf -r '.task // empty' <<<"$u")"; branch="$(jqf -r '.branch // ""' <<<"$u")"
+        dmark task_read
         [[ -z "$task" ]] && { say "implement-pending unit=$id has no .task; supervisor required"; continue; }
         [[ -z "$branch" ]] && { say "implement-pending unit=$id has no .branch; supervisor required"; continue; }
         wt=""
@@ -368,30 +415,32 @@ $(decision_scope "$u")"
         else
           park_if_body_blocked "$u" && { dispatch_skip body-blocked; continue; }
         fi
-        room_for "$id" implement "$u" false || continue
-        pick implement "$u" || { dispatch_skip pick; continue; }
-        footprint_room "$id" "$u" true || continue
+        dmark body_block
+        dstep room_for room_for "$id" implement "$u" false || continue
+        dstep pick pick implement "$u" || { dispatch_skip pick; continue; }
+        dstep footprint_room footprint_room "$id" "$u" true || continue
         if [[ "$local_refill" != true && "$pr_num" =~ ^[0-9]+$ && "$lane" != direct-main ]]; then
-          wt="$(pre_dispatch_pr_admission "$id" "$branch" "$pr_num" "implement-pending before dispatch")" || { dispatch_skip size-admission; continue; }
+          dcapture wt size_admission pre_dispatch_pr_admission "$id" "$branch" "$pr_num" "implement-pending before dispatch" || { dispatch_skip size-admission; continue; }
         fi
         stack_branch="$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")"; stack_sha="$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")"
         resume_branch="$(jqf -r '.handoff_start_ref // empty' <<<"$u")"; resume_sha="$(jqf -r '.handoff_start_sha // empty' <<<"$u")"
+        dmark stack_fields
         if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
-          wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" 0 "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$stack_branch" "$stack_sha")" || handoff_status=$?
+          wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" 0 "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$stack_branch" "$stack_sha")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
             if (( handoff_status == 73 )); then to_supervisor "$id" "handoff conflicts with the existing branch; inspect the preserved owner worktree and PR"; else say "implement-pending unit=$id: previous worktree unavailable"; fi
             continue
           fi
-          record_handoff_integration "$id" "$wt" "" || { dispatch_skip handoff-integration; continue; }
+          dstep handoff_integration record_handoff_integration "$id" "$wt" "" || { dispatch_skip handoff-integration; continue; }
         elif [[ -n "$resume_branch" && "$resume_sha" =~ $SHA_RE && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
-          wt="$(handoff_worktree_clone "$id" "$branch" "" "$resume_sha" false 0 "$resume_branch" "$resume_sha" "$stack_branch" "$stack_sha")" || handoff_status=$?
+          wt="$(handoff_worktree_clone "$id" "$branch" "" "$resume_sha" false 0 "$resume_branch" "$resume_sha" "$stack_branch" "$stack_sha")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
             if (( handoff_status == 73 )); then to_supervisor "$id" "rescued handoff conflicts with the stacked branch; inspect both histories"; else say "implement-pending unit=$id: rescued checkout unavailable"; fi
             continue
           fi
-          record_handoff_integration "$id" "$wt" "" || { dispatch_skip handoff-integration; continue; }
+          dstep handoff_integration record_handoff_integration "$id" "$wt" "" || { dispatch_skip handoff-integration; continue; }
         elif [[ -n "$stack_branch" && -n "$stack_sha" ]]; then
           if [[ -z "$wt" ]]; then
             if [[ "$local_refill" == true ]]; then
@@ -409,9 +458,9 @@ $(decision_scope "$u")"
             fi
           fi
         fi
-        resume_handoff_integration "$id" "$wt" || { dispatch_skip handoff-integration; continue; }
+        dstep handoff_integration resume_handoff_integration "$id" "$wt" || { dispatch_skip handoff-integration; continue; }
         rep="impl-${id}-${TAG}.md"
-        set_unit "$id" ".report=$(js "$rep")"
+        set_unit "$id" ".report=$(js "$rep")"; dmark unit_write
         if [[ "$lane" == direct-main ]]; then
           deliver="ACCEPTANCE：
 先确认问题在当前 main 上仍存在：已被修复或不再适用就不改代码，报告第一行写 OBSOLETE: <证据：写明当前 main 上的 file:line、commit 或 run 链接；没有数据不算 OBSOLETE>。${OPT_PREMISE_RULE}${BLAST_RADIUS_RULE}
@@ -442,6 +491,7 @@ REPORT：
         feature_plan="$(verification_plan_for_state "$wt" "$feature_state")"
         plan_elapsed=$((SECONDS - plan_started))
         (( plan_elapsed < 2 )) || say "dispatch detail feature_plan unit=$id secs=${plan_elapsed}s"
+        dmark feature_plan
         feature_brief="$(verification_plan_brief "$feature_plan")"
         prompt="GOAL：
 $task
@@ -457,16 +507,20 @@ After implementation, refresh IDs from the actual changed paths with node engine
 优先用有界读取：用 rg -l 或 rg -m 20 缩小搜索结果，再用 sed -n '起,止p' 读取指定行区间；大文件不要整份 cat。
 
 $deliver"
+        dmark prompt
         dispatch_if_room "$id" "implement" "implement" "${rep%.md}.worker.log" "$rep" \
-          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "" "$wt" "" "$prompt" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" || true ;;
+          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "" "$wt" "" "$prompt" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" || true; dmark dispatch ;;
     esac
   done <<<"$ordered"
   (( dispatch_pass == 1 && ${#TICK_FOOTPRINT_DEFERRED[@]} > 0 )) || break
   defer_ids="$(printf '%s\n' "${!TICK_FOOTPRINT_DEFERRED[@]}" | jqf -R . | jqf -sc .)" || break
   ordered="$(jqf -c --argjson ids "$defer_ids" 'select(.id as $i | $ids | index($i))' <<<"$(dispatch_order)")" || true
-  TICK_FOOTPRINT_DEFER=false; TICK_FOOTPRINT_CAP_HIT=false
+  TICK_FOOTPRINT_DEFER=false; TICK_FOOTPRINT_CAP_HIT=false; dmark pass2_order
   done
+  dmark "after_$dispatch_step_last"
   # Per-unit checks under the 2s detail threshold add up: name the waiters' share of this phase.
   { (( SECONDS - pending_started < 10 )) && [[ -z "$TICK_REVIEW_WAITS" ]]; } || say "dispatch detail pending_summary secs=$((SECONDS - pending_started)) revalidate_secs=$revalidate_secs loop_secs=$((SECONDS - loop_started)) units=$(grep -c . <<<"$ordered") footprint_room_ms=$((TICK_FOOTPRINT_ROOM_USEC / 1000)) footprint_room_calls=$TICK_FOOTPRINT_ROOM_CALLS footprint_waits=$TICK_FOOTPRINT_ROOM_WAITS $(review_wait_summary)"
   footprint_convoy_alert || say 'footprint-convoy alert check failed'
+  dmark convoy_alert
+  dispatch_steps_say
 }
