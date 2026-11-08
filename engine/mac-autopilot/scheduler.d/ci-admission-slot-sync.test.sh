@@ -87,4 +87,16 @@ run_sync e2e-overlap a.txt a.txt 1 0
 mergeable=CONFLICTING
 run_sync e2e-conflict b.txt a.txt 1 0
 [[ "$rc" == 0 && "$update_calls" == 0 && "$repair_calls" == 1 ]] || fail "conflict did not go to repair (rc=$rc update=$update_calls repair=$repair_calls)"
-echo 'ci-admission-slot-sync.test.sh: pass (no refresh when clean and fresh; refresh on stale next, overlap, conflict)'
+# One sync per (PR, main): the async update-branch moves the head, so the next tick sees a head the memo does not know.
+# With main unchanged that head must not sync again; a main move that touches a PR path must.
+mergeable=MERGEABLE
+run_sync e2e-memo a.txt a.txt 1 0
+[[ "$rc" == 0 && "$update_calls" == 1 ]] || fail "memo case: first sync missing (rc=$rc calls=$update_calls)"
+git -C "$ROOT" checkout -q pr; printf 'async\n' > "$ROOT/c.txt"; git -C "$ROOT" add -A; git -C "$ROOT" commit -q -m async-head
+PR_HEAD="$(git -C "$ROOT" rev-parse pr)"; git -C "$ROOT" checkout -q main
+update_calls=0; SLOT_SYNC_SPENT=0; rc=0; slot_sync u1 "$PR_HEAD" 0 0 || rc=$?
+[[ "$rc" == 1 && "$update_calls" == 0 ]] || fail "second tick after the async head move synced again (rc=$rc calls=$update_calls)"
+printf 'more\n' >> "$ROOT/a.txt"; git -C "$ROOT" commit -q -am main-moves; git -C "$ROOT" update-ref refs/remotes/origin/main main
+update_calls=0; SLOT_SYNC_SPENT=0; rc=0; slot_sync u1 "$PR_HEAD" 0 0 || rc=$?
+[[ "$rc" == 0 && "$update_calls" == 1 ]] || fail "a main move touching a PR path did not sync (rc=$rc calls=$update_calls)"
+echo 'ci-admission-slot-sync.test.sh: pass (no refresh when clean and fresh; refresh on stale next, overlap, conflict; one sync per PR and main)'

@@ -111,7 +111,7 @@ slot_sync_needs_refresh() { # head next → 0 = update-branch
   [[ -n "$(comm -12 <(sort -u <<<"$main_files") <(sort -u <<<"$pr_files") | grep -v '^$')" ]]
 }
 slot_sync() { # id head gated next
-  local pr state updated_head
+  local pr state updated_head base
   SLOT_SYNC_CARRIED_HEAD=""
   pr="$(unit_field "$1" .pr)"; [[ "$pr" =~ ^[0-9]+$ && "$2" =~ $SHA_RE ]] || return 1
   [[ "$(unit_field "$1" '.slot_sync_sha // empty')" != "$2" ]] || return 1
@@ -120,10 +120,14 @@ slot_sync() { # id head gated next
   case "$state" in
     MERGEABLE)
       slot_sync_needs_refresh "$2" "${4:-0}" || return 1
+      # 一个 (PR, main) 只同步一次：update-branch 是异步的，新 head（merge-lane 沿用批准的那个）不等于备忘的旧 head，
+      # 但它已含本次同步的 main；main 没动就不再同步，main 前进了才重新判（仍需 needs_refresh 的触发条件）。
+      base="$(git -C "$ROOT" rev-parse --verify refs/remotes/origin/main 2>/dev/null)" || base=""
+      [[ -z "$base" || "$(unit_field "$1" '.slot_sync_base // empty')" != "$base" ]] || return 1
       if (( SLOT_SYNC_SPENT++ >= ${SLOT_SYNC_MAX:-$SLOT_SYNC_BUDGET} )); then
         return 2 # 本拍 update-branch 预算用完：调用方延后该单元（不占名额），下一拍再同步
       fi
-      set_unit "$1" ".slot_sync_sha=$(js "$2")" || :
+      set_unit "$1" ".slot_sync_sha=$(js "$2") | .slot_sync_base=$(js "$base")" || :
       ci_update_branch "$pr" "$2" || return 1
       set_unit "$1" "$(hist slot-sync "PR#$pr behind main; update-branch at $2 before the CI slot")"
       say "slot sync PR#$pr: behind main, update-branch requested before CI starts"
