@@ -8,6 +8,11 @@ shard=${1:-0} shards=${2:-1} timeout_s=${SUITE_TIMEOUT:-600}
 # PORTABLE_ONLY=1 keeps only the suites listed in tools/portable-suites.txt (the platform-layer suites that run on every OS leg).
 portable_filter() { if [[ ${PORTABLE_ONLY:-} == 1 ]]; then grep -Fxf <(awk 'NF && $1 !~ /^#/ {print $1}' tools/portable-suites.txt); else cat; fi; }
 mapfile -t suites < <(find engine \( -name '*.test.sh' -o -name '*.test.mjs' \) | sort | portable_filter | awk -v s="$shard" -v n="$shards" 'NR % n == s')
+# CI runs this once per run (shard 0): check-rulings.sh static mode enforces the bootstrap but CI never ran it, so 13 suites drifted.
+if [[ $shard == 0 ]]; then
+  mapfile -t bootstrap_files < <(find engine -type f -name '*.test.sh')
+  bash engine/test-bootstrap-check.sh "${bootstrap_files[@]}" || { echo 'ERROR run-engine-tests: test bootstrap check failed' >&2; exit 1; }
+fi
 # tools/quarantine.txt: "<suite>\t<reason>" per line, suites known to fail for a reason outside the exported files; skipped and counted, never silently.
 # ZF_QUARANTINE_SETS="darwin wsl" (space or comma separated) also loads tools/quarantine-darwin.txt and tools/quarantine-wsl.txt, same format.
 declare -A quarantine=()

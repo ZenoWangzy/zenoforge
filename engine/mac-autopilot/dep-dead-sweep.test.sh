@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # A marked unit reaches the arbiter once, only on proof its predecessor can never deliver; any unreadable fact means not dead.
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-source "$script_dir/test-env.sh"
 engine_dir="$(cd -- "$script_dir/.." && pwd -P)"
 fail() { printf 'dep-dead-sweep.test.sh: %s\n' "$*" >&2; exit 1; }
 

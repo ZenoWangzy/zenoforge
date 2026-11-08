@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # A park with no reason has no exit: every writer names a reason and an unpark condition, and a label never changes who releases a unit.
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-source "$script_dir/test-env.sh"
 engine_dir="$(cd -- "$script_dir/.." && pwd -P)"
 fail() { printf 'park-reason.test.sh: %s\n' "$*" >&2; exit 1; }
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The refill runs a merge pass for a ready-to-merge unit, never alongside the tick's pass.
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-source "$script_dir/test-env.sh"
 engine_dir="$(cd -- "$script_dir/.." && pwd -P)"
 fail() { printf 'refill-merge-pass.test.sh: %s\n' "$*" >&2; exit 1; }
 

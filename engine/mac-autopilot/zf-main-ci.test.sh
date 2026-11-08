@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 fail() { echo "zf-main-ci.test.sh: $*" >&2; exit 1; }
 source "$here/../lib.d/ci-checks.sh"; source "$here/zf-main-ci.sh"
