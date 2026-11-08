@@ -152,6 +152,13 @@ dispatch_pending() {
         [[ "$local_refill" != true ]] || { dispatch_skip stop-loss-refill; continue; }
         issue="$(jqf -r '.issue // empty' <<<"$u")"
         pr="$(jqf -r '.pr // empty' <<<"$u")"
+        # Same failure as an earlier round: the arbiter's requeue delivered 0 of 4 (row 90), so decide here by the cap-default route (recut once, else park).
+        # No decision made (already given, issue on hold, state unreadable) falls through to the supervisor as before.
+        if stop_loss_same_failure "$u" && supervisor_cap_default "$id" "$u" stop-loss "$budget" \
+          && [[ "$(unit_field "$id" '.stage // empty')" != "$stage" ]]; then
+          dmark stop_loss_escalate
+          continue
+        fi
         if [[ "$issue" =~ ^[0-9]+$ && -z "$pr" ]]; then
           supervisor_budget_recut "$id" "ticket stop-loss budget: $budget"
           (( SECONDS - escalate_started < 2 )) || say "dispatch detail stop_loss_escalate unit=$id secs=$((SECONDS - escalate_started))s"

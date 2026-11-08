@@ -351,8 +351,11 @@ supervisor_cap_default_issue() { # unit-json → linked issue, canonical id/bran
   return 1
 }
 
-supervisor_cap_default() { # id unit-json [lifetime|daily|repeat] → 0 当该单元已有、刚得到或暂不该有默认决定
+supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [budget] → 0 当该单元已有、刚得到或暂不该有默认决定
   local id="$1" u="$2" trigger="${3:-lifetime}" issue pr raw state="" delivered=false verdict recut_done branch reason decision limit_reason tag="supervisor cap default"
+  # stop-loss：止损遇到同一失败（stop_loss_same_failure）不派 arbiter，用止损自己的 park/recut 阶段：cap-triage-park 会被 arbiter 清扫成一次模型 cap triage。
+  local park_stage=supervisor-cap-triage-park recut_stage=supervisor-cap-triage-recut
+  [[ "$trigger" != stop-loss ]] || { park_stage=supervisor-budget-park; recut_stage=supervisor-budget-recut; }
   # repeat：同一原因的第二次仲裁（supervisor_repeat_arbitration）走同一条路线，但不占「每单元一次」的终身默认决定，
   # 也不追加 supervisor-cap-default 事件；路线自己的事件（recut/park/obsolete）以 "supervisor repeat guard:" 开头，供 supervisor.repeat_guard_24h 计数。
   [[ "$trigger" == repeat ]] && tag="supervisor repeat guard"
@@ -367,6 +370,8 @@ supervisor_cap_default() { # id unit-json [lifetime|daily|repeat] → 0 当该�
     limit_reason="24-hour arbitration ceiling ($SUPERVISOR_ARBITER_DAILY_MAX dispatches) reached"
   elif [[ "$trigger" == repeat ]]; then
     limit_reason="the same escalation reason came back with no delivery, approval, merge or new PR head since the last arbitration"
+  elif [[ "$trigger" == stop-loss ]]; then
+    limit_reason="stop-loss same failure (${4:-budget reached}): the failure in front of the unit repeats an earlier round, and an arbiter requeue delivered 0 of 4 in that case"
   else
     limit_reason="arbitration cap ($SUPERVISOR_ARBITER_UNIT_CAP lifetime dispatches) reached"
   fi
@@ -388,14 +393,14 @@ supervisor_cap_default() { # id unit-json [lifetime|daily|repeat] → 0 当该�
     reason="$limit_reason; recut the unit once"
     supervisor_budget_recut "$id" "$tag: $reason" "$decision" \
       "$tag could not complete the recut route" "$tag recut" \
-      supervisor-cap-triage-park supervisor-cap-triage-recut false false || return 1
+      "$park_stage" "$recut_stage" false false || return 1
     branch=park
     [[ "$(unit_field "$id" '.stage')" != closed ]] || branch=recut
   else
     branch=park
     reason="$limit_reason; recut already tried and last cap verdict (${verdict:-none}) did not converge"
     supervisor_budget_park "$id" "$tag: $reason" "$decision" \
-      "$tag stopped arbitration" supervisor-cap-triage-park || return 1
+      "$tag stopped arbitration" "$park_stage" || return 1
   fi
   [[ "$trigger" != repeat ]] || { say "supervisor repeat guard unit=$id branch=$branch"; return 0; }
   cap_set_unit "$id" supervisor-cap-default "branch=$branch: $reason" "" \

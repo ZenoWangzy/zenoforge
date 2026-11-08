@@ -82,6 +82,22 @@ ticket_budget_reason() { # unit-json
       end' <<<"$1" 2>/dev/null
 }
 
+# 同一失败重复（行 90：24h 内 37 次 stop-loss 转 arbiter，前面是同一个 self-check-red/ci-test-red 的，requeue 交付 0 of 4）：
+# 自最近一次裁决（与 ticket_budget_reason 同一组 ruling 阶段）起，单元最前面的事件是红（ci-test-red/ci-red/self-check-red），
+# 且它的 (阶段, 规整后的 result) 与更早一轮的红相同。规整同 ~/.zenoforge/state/work/90/v2.py：长十六进制串和数字都换成 N。
+stop_loss_same_failure() { # unit-json → 0 when the failure in front of the unit repeats an earlier round's
+  jqf -e '
+    def norm: tostring | gsub("\\b(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\\b"; "N") | gsub("[0-9]+"; "N") | gsub("\\s+"; " ");
+    def red: .stage | IN("ci-test-red", "ci-red", "self-check-red");
+    (.history // []) as $h
+    | ([$h | to_entries[] | select(.value.stage | IN("supervisor-requeue", "supervisor-approve", "supervisor-cap-budget-refill", "advisor-ruling")) | .key] | max // -1) as $ruling
+    | $h[($ruling + 1):] as $w
+    | ([$w[] | select(.stage | IN("ci-test-red", "ci-red", "self-check-red", "merge-conflict", "review-request-changes", "review-block", "review-approve", "ci-ready",
+        "repair-no-push", "worker-no-output", "implement-no-push", "implement-no-changes", "size-recut"))] | last // null) as $front
+    | ([$w[] | select(red) | [.stage, (.result | norm)]]) as $reds
+    | $front != null and ($front | red) and (($reds[-1]) as $c | $reds[:-1] | any(. == $c))' <<<"$1" >/dev/null 2>&1
+}
+
 # Token spend gate. Every finished worker log is one `spend_runs` record on its unit (spend_ledger.py; fresh tokens come from the
 # dashboard's own unit_spend, so this gate and `workorders` agree). Lifetime fresh tokens past the soft line park the unit once and
 # send it to one arbiter decision whose prompt carries the per-run table and a class; the first return to dispatch after that is the

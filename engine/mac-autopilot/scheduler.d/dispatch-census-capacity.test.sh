@@ -198,4 +198,44 @@ dispatch_pending true
 [[ "$(dispatch_skip_summary)" == *footprint-cap:1* ]] || fail "the cap was not counted: $(dispatch_skip_summary)"
 CFG="$saved_cfg"
 
+# A stop-loss that repeats an earlier round's failure is decided by the cap-default route, not sent to the arbiter (row 93: row 90 saw 0 of 4 requeues deliver).
+# Hash and number noise must not hide the repeat; a fresh failure and a unit already given a cap default still go to the supervisor.
+scheduler_issue_state() { printf '{"state":"in-progress"}\n'; }
+scheduler_route_to_recut() { :; }
+tick_pr_state() { printf 'OPEN\n'; }
+ticket_budget_reason() { printf 'rounds 3 of 3\n'; }
+write_workers 3
+red_history() { # first-result second-result [extra-first-event]
+  jq -cn --arg a "$1" --arg b "$2" --argjson extra "${3:-[]}" '$extra + [{stage:"self-check-red",result:$a,at:"2026-11-08T10:00:00Z"},{stage:"repair-no-push",at:"2026-11-08T10:30:00Z"},{stage:"self-check-red",result:$b,at:"2026-11-08T11:00:00Z"}]'
+}
+stop_loss_case() { # id history pr-or-empty stage → runs one dispatch pass at the stop-loss
+  jq -n --arg id "$1" --argjson h "$2" --arg pr "$3" --arg stage "$4" \
+    '{units:[({id:$id,issue:($id | ltrimstr("issue-") | tonumber),stage:$stage,task:"fixture task text",branch:("agent/" + $id),lane:"pr",title:"fixture stop-loss",history:$h} + (if $pr == "" then {} else {pr:($pr | tonumber),review_report:"review-fixture.md"} end))]}' > "$UNITS"
+  stop_loss_calls=0; : > "$LOG"; SECONDS=0
+  dispatch_pending false
+}
+case_stage() { jq -r --arg id "$1" '.units[] | select(.id == $id) | .stage' "$UNITS"; }
+case_events() { jq -r --arg id "$1" '[.units[] | select(.id == $id) | .history[].stage] | join(",")' "$UNITS"; }
+same_a='self-check failed at 4f9a2c1d: 12 tests, 3 failed (core/budget)'
+same_b='self-check failed at 77be0e3a: 15 tests, 3 failed (core/budget)'
+stop_loss_case issue-4911 "$(red_history "$same_a" "$same_b")" '' implement-pending
+[[ "$stop_loss_calls" == 0 && "$(case_stage issue-4911)" == closed ]] || fail "a repeated failure was not recut (calls=$stop_loss_calls stage=$(case_stage issue-4911))"
+[[ "$(case_events issue-4911)" == *supervisor-budget-recut,supervisor-cap-default ]] || fail "recut and cap-default events missing: $(case_events issue-4911)"
+[[ "$(case_events issue-4911)" != *supervisor-escalated* && "$(case_events issue-4911)" != *supervisor-review* ]] || fail "a repeated failure reached the arbiter: $(case_events issue-4911)"
+jq -e '.units[0].history[-1].result | contains("stop-loss same failure")' "$UNITS" >/dev/null || fail "the cap-default event does not name the stop-loss same failure"
+# Same again after a recut was already spent: park (an open PR is never closed by this route).
+stop_loss_case issue-4912 "$(red_history "$same_a" "$same_b" '[{"stage":"supervisor-budget-recut","result":"earlier","at":"2026-11-07T10:00:00Z"}]')" '' implement-pending
+[[ "$stop_loss_calls" == 0 && "$(case_stage issue-4912)" == parked && "$(case_events issue-4912)" == *supervisor-budget-park,supervisor-cap-default ]] \
+  || fail "a repeat after a spent recut was not parked (calls=$stop_loss_calls stage=$(case_stage issue-4912) events=$(case_events issue-4912))"
+stop_loss_case issue-4913 "$(red_history "$same_a" "$same_b")" 513 repair-pending
+[[ "$stop_loss_calls" == 0 && "$(case_stage issue-4913)" == parked ]] || fail "a repeated failure on a PR unit was not parked (calls=$stop_loss_calls stage=$(case_stage issue-4913))"
+# A fresh failure, a different red kind, a ruling between the reds, or a cap default already given: the supervisor as before.
+stop_loss_case issue-4914 "$(red_history "$same_a" 'self-check failed at 77be0e3a: 15 tests, 1 failed (lib/other)')" 140 repair-pending
+[[ "$stop_loss_calls" == 1 && "$(case_events issue-4914)" != *supervisor-cap-default* ]] || fail "a fresh failure skipped the supervisor (calls=$stop_loss_calls)"
+stop_loss_case issue-4915 "$(red_history "$same_a" "$same_b" '[]' | jq -c '.[0:2] + [{stage:"supervisor-requeue",at:"2026-11-08T10:45:00Z"}] + .[2:]')" 150 repair-pending
+[[ "$stop_loss_calls" == 1 ]] || fail "a red from before a ruling counted as an earlier round (calls=$stop_loss_calls)"
+stop_loss_case issue-4916 "$(red_history "$same_a" "$same_b" '[{"stage":"supervisor-cap-default","result":"branch=park: earlier","at":"2026-11-07T10:00:00Z"}]')" 160 repair-pending
+[[ "$stop_loss_calls" == 1 && "$(case_stage issue-4916)" == repair-pending ]] || fail "a unit that already had its cap default must still go to the supervisor (calls=$stop_loss_calls)"
+unset -f red_history stop_loss_case case_stage case_events
+
 echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; CONFLICTING census row repaired not reviewed; refill deadline; silent skip named)'
