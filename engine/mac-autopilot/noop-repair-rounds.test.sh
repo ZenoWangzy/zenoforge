@@ -177,6 +177,22 @@ handoff_unit="$(jq -cn '{history:[{stage:"write-start"},{stage:"write-start"},{s
 grep -Fq 'stage:"hold-handoff",result:"ownerless hold handoff' "$script_dir/scheduler.d/intake.sh" \
   || fail 'an ownerless handoff writes a row no ruling filter reads'
 
+# Rounds restart at an approval or ci-ready: 15 of the 37 stop-loss escalations of 2026-11-08 burned their 3 rounds on repairs after one.
+rounds_of() { # history-json → budget reason
+  TICKET_ROUND_BUDGET=3 TICKET_WALL_BUDGET_SECONDS=14400 NOW_EPOCH=1800000000 ticket_budget_reason "$(jq -cn --argjson h "$1" '{stage:"repair-pending",history:$h}')"
+}
+for boundary in review-approve ci-ready; do
+  after_two="$(jq -cn --arg b "$boundary" '[{stage:"write-start"},{stage:"write-start"},{stage:$b},{stage:"write-start"},{stage:"write-start"}]')"
+  [[ -z "$(rounds_of "$after_two")" ]] || fail "2 write-starts, $boundary, 2 more must not hit stop-loss: $(rounds_of "$after_two")"
+  after_three="$(jq -cn --arg b "$boundary" '[{stage:"write-start"},{stage:"write-start"},{stage:$b},{stage:"write-start"},{stage:"write-start"},{stage:"write-start"}]')"
+  [[ "$(rounds_of "$after_three")" == 'rounds 3 of 3' ]] || fail "3 write-starts after $boundary must hit stop-loss: $(rounds_of "$after_three")"
+done
+unsplit="$(jq -cn '[{stage:"write-start"},{stage:"write-start"},{stage:"write-start"}]')"
+[[ "$(rounds_of "$unsplit")" == 'rounds 3 of 3' ]] || fail "3 write-starts with no approval must still hit stop-loss: $(rounds_of "$unsplit")"
+# The wall counts from the last ruling only: worker time before an approval still counts.
+wall_before_approval="$(jq -cn --arg s "$(day 864000)" --arg e "$(day 840000)" '[{stage:"write-start",work_type:"repair",at:$s},{stage:"write-end",at:$e},{stage:"review-approve"}]')"
+[[ "$(rounds_of "$wall_before_approval")" == 'wall 400min of 240min after 0 rounds' ]] || fail "an approval must not reset the wall: $(rounds_of "$wall_before_approval")"
+
 node "$script_dir/../lesson-guard-schema.mjs"
 printf 'noop-repair-rounds.test.sh: 3 write-starts -> 2 counted; 3-of-3 stop-loss clear; repair-cap count 1\n'
 printf 'noop-repair-rounds.test.sh: 30 focused assertions passed\n'
