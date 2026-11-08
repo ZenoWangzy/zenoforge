@@ -431,6 +431,31 @@ main_red_green_after() { # runs_json red_sha workflow ; prints the green head SH
 }
 
 
+# A same-SHA rerun cancelled by a superseding push has no usable verdict ("none"), and its run is
+# no longer the latest failed one, so no step reads the session again. Re-request the rerun within
+# the dispatch cap (rerun_attempts counts the opening rerun), then close the session unattributed.
+# Returns 0 only when it wrote the terminal status, so the caller must not touch the session again.
+main_red_rerun_retry() { # red_sha session_json
+  local red_sha="$1" session="$2" run_id attempts age
+  run_id="$(jq -r '.red_run_id // empty' <<< "$session")"
+  attempts="$(jq -r '.rerun_attempts // 1' <<< "$session")"
+  if [ -z "$run_id" ] || [[ ! "$attempts" =~ ^[0-9]+$ ]] || [ "$attempts" -ge "$MAIN_RED_PROBE_DISPATCH_ATTEMPTS" ]; then
+    main_red_session_write "$red_sha" unattributed || return 1
+    main_red_supervisor_event "$red_sha" "status=unattributed reason=rerun-no-verdict run=${run_id:-none} attempts=$attempts"
+    return 0
+  fi
+  age=$(( $(date +%s) - $(stat -c %Y "$(main_red_session_file "$red_sha")" 2>/dev/null || echo 0) ))
+  [ "$age" -ge "$MAIN_RED_PROBE_RETRY_DELAY_SECONDS" ] || return 1
+  main_red_session_write "$red_sha" rerun-requested ".rerun_attempts = ($attempts + 1)" || return 1
+  if guarded_write gh run rerun "$run_id" --failed --repo "$REPO"; then
+    main_red_log "red ${red_sha:0:12} run=$run_id: rerun had no verdict (cancelled?); re-requested (attempt $((attempts + 1))/$MAIN_RED_PROBE_DISPATCH_ATTEMPTS)"
+  else
+    echo "main-red-bisect: same-SHA rerun re-request failed for run $run_id (attempt $((attempts + 1))/$MAIN_RED_PROBE_DISPATCH_ATTEMPTS)" >&2
+  fi
+  return 1
+}
+
+
 # The tick's maintenance entry point: if the latest completed main validation
 # run is red, advance that red's session by one bounded step;
 # then close any rerun-requested session whose same-SHA rerun went green
@@ -504,6 +529,9 @@ main_red_bisect_sweep() {
         main_red_log "red ${red_sha:0:12}: main green again at ${green_sha:0:12}; closed $status session as recovered"
         continue
       fi
+    fi
+    if [ "$status" = rerun-requested ] && [ "$rerun_verdict" = none ] && main_red_rerun_retry "$red_sha" "$session"; then
+      continue
     fi
     # A session steps only while its run is the latest verdict, so it can stop with nobody told. Alert only: a pending probe or an open revert PR writes nothing either, and a terminal status would strand them.
     idle=$(( $(date +%s) - $(stat -c %Y "$session_file" 2>/dev/null || date +%s) ))

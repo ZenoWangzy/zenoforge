@@ -580,6 +580,25 @@ main_red_bisect_sweep
 assert_eq "an idle session reaches the supervisor once a day" 1 "$(grep -c "red=${IDLE_SHA:0:12} .*reason=session-idle" "$AGENT_HOME/supervisor-inbox" 2>/dev/null || true)"
 assert_eq "an idle session stays open for its probe or revert PR" bisecting "$(jq -r .status "$AGENT_HOME/main-red/$IDLE_SHA.json")"
 
+# A rerun cancelled by a superseding push leaves no verdict and its run is no longer the latest failed one: the session must re-request within the cap, then close, never sit open for ever.
+CANCEL_SHA="$(printf 'b%.0s' {1..40})"
+CANCEL_FILE="$AGENT_HOME/main-red/$CANCEL_SHA.json"
+main_runs success success > "$FAKE_GH_STATE/completed-runs.json"
+probe_runs "$CANCEL_SHA" completed cancelled
+main_red_session_write "$CANCEL_SHA" rerun-requested '.red_run_id = "701" | .red_workflow = "ci.yml"'
+main_red_bisect_sweep
+assert_not_contains "a cancelled rerun is not re-requested before the retry delay" "$(cat "$FAKE_GH_STATE/actions.log")" "rerun 701"
+touch -d '1 hour ago' "$CANCEL_FILE"
+main_red_bisect_sweep
+assert_eq "a cancelled rerun is re-requested once" 1 "$(grep -c '^rerun 701$' "$FAKE_GH_STATE/actions.log")"
+assert_eq "the re-request is counted against the cap" 2 "$(jq -r .rerun_attempts "$CANCEL_FILE")"
+touch -d '1 hour ago' "$CANCEL_FILE"
+main_red_bisect_sweep
+assert_eq "a rerun cancelled again closes the session unattributed" unattributed "$(jq -r .status "$CANCEL_FILE")"
+assert_eq "the exhausted cap does not re-request again" 1 "$(grep -c '^rerun 701$' "$FAKE_GH_STATE/actions.log")"
+assert_contains "the closed session reaches the supervisor" "$(cat "$EVENTS")" \
+  "red=${CANCEL_SHA:0:12} status=unattributed reason=rerun-no-verdict run=701"
+
 if [ "$FAILED" -eq 1 ]; then
   printf 'FAILED\n' >&2
   exit 1
