@@ -142,7 +142,7 @@ TICK_PRS=""; TICK_UNFINISHED=""
 eval "$gh_prio_saved"; GH_RUNS='[]'; GH_RERUNS=()
 
 rm -f "$LUNA_SLOTS"/wait-*
-: > "$LOG" "$A/alerts/waste.md" "$LUNA_SLOTS/wait-opt-$$"
+touch "$LOG" "$A/alerts/waste.md" "$LUNA_SLOTS/wait-opt-$$"
 units "$(jq -cn --argjson since "$(( $(date +%s) - 1201 ))" '{units:[{id:"review",stage:"review-pending"},{id:"normal-a",stage:"implement"},{id:"normal-b",stage:"implement"},{id:"starved",stage:"implement",priority_hold:{since_epoch:$since,alerted:false}}]}')"
 priority_failures=()
 if room_for review review "$(jq -c '.units[] | select(.id=="review")' "$UNITS")"; then :; else priority_failures+=(review); fi
