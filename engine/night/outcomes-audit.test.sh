@@ -970,7 +970,7 @@ assert_eq 0 "$(wc -l <"$timeline_rest_calls" | tr -d ' ')" 'scale audit makes no
   echo "not ok - scale audit batches timeline requests (got $(wc -l <"$timeline_graphql_calls" | tr -d ' ') calls)" >&2
   exit 1
 }
-assert_eq 11 "$(wc -l <"$scale_gh_calls" | tr -d ' ')" 'scale audit performs 11 GitHub calls with paginated timelines'
+assert_eq 12 "$(wc -l <"$scale_gh_calls" | tr -d ' ')" 'scale audit performs 12 GitHub calls with paginated timelines (11 + closed ready-for-agent snapshot)'
 [[ "$audit_elapsed" -lt 60 ]] || {
   echo "not ok - delayed scale audit took ${audit_elapsed}s (budget 60s)" >&2
   exit 1
