@@ -20,7 +20,7 @@ rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch r
 #   - otherwise only below LUNA_MAX (10) runs, with sampled CPU busy under LUNA_CPU_TARGET (85%), memory pressure
 #     under 5% and at least 3 GB available (maintainer 2026-10-24: keep the box near 85% busy).
 # Runs are counted as top-level codex processes from any caller; the check and the start happen under one mutex.
-slots="$root/tmp/luna-slots"; mkdir -p "$slots"
+slots="${LUNA_SLOTS:-$root/tmp/luna-slots}"; mkdir -p "$slots"
 codex_runs() { local p n=0 pc; for p in $(pgrep -x codex) $(pgrep -x zcode-cli); do pc=$(ps -o comm= -p "$(ps -o ppid= -p "$p" | tr -d ' ')" 2>/dev/null); [[ "$pc" == codex || "$pc" == zcode-cli ]] || n=$((n+1)); done; echo "$n"; }
 cpu_busy() { local a b; a=($(head -1 /proc/stat)); sleep 2; b=($(head -1 /proc/stat))
   local busy=$(( (b[1]+b[2]+b[3]+b[6]+b[7]+b[8]) - (a[1]+a[2]+a[3]+a[6]+a[7]+a[8]) )) idle=$(( (b[4]+b[5]) - (a[4]+a[5]) ))
