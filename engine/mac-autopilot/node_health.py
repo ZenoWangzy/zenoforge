@@ -1590,7 +1590,8 @@ def main():
         shown = "-" if v is None else f"{v:.0f}"
         op = ">=" if higher else "<="
         print(f"  {node:<12} {desc:<48} {shown:>7}  {op}{healthy:<6} {'<=' if higher else '>='}{unhealthy:<8} {status}")
-    node_health_summary.print_summary(metrics, spend, rows, host_missing, closed_open)
+    bad = [row for row in rows if row[7] == "UNHEALTHY"]
+    node_health_summary.print_summary(metrics, spend, bad, host_missing, closed_open)
 
     if args.file_issues:
         file_issues(a, rows, now)
