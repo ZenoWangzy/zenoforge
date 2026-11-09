@@ -62,6 +62,10 @@ intake_units_view() {
   fi
   printf '%s' "$view"
 }
+intake_units_view_refresh() { # rebuild before existing-handoff decisions; a newer stale view must not hide a unit's taken episode
+  rm -f -- "$UNITS.view"
+  intake_units_view >/dev/null
+}
 intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序；refill 复用近 10 分钟的候选缓存，缓存失效时最多查一个标签
   local refill_mode="${1:-false}" skip_labels candidate_labels query_dir lane label query_file pid index=0 expected_queries=0 cache_file="$A/intake-candidates.json" cached_at now cache_rows cache_read_status
   local cache_token="$BASHPID.$RANDOM" cache_rows_tmp cache_valid_tmp cache_json_tmp
@@ -292,6 +296,7 @@ register_new_issues() {
     # Existing units may consume their handoff at the normal cap, subject to the total ceiling.
     handoff_rows="$(existing_handoff_candidates)"
     [[ -n "$handoff_rows" ]] || { INTAKE_WALK_LAP=true; return 0; }
+    intake_units_view_refresh
     # Numeric order, so a stored cursor resumes at the first row at or after it even when that row is gone; the rows before it come last (wrap).
     handoff_rows="$(sort -s -n -k1,1 <<<"$handoff_rows")"
     walk_from="$(cat "$walk_cursor" 2>/dev/null || true)"
