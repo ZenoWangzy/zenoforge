@@ -90,4 +90,20 @@ ROWS="$pass_row"; supervisor_requeue_unit pr-land-failed requeue 'fix the land f
 [[ "$(field pr-land-failed .stage)" == repair-pending ]] \
   || fail "a land failure must stay in repair (got: $(field pr-land-failed .stage))"
 
+# 7. A handoff not yet integrated stays in repair: the repair worker integrates it first.
+jq --arg now "$head_now" '.units += [{id:"pr-handoff",pr:13,lane:"pr",branch:"agent/h",stage:"repair-pending",
+  handoff_start_ref:"agent/h",handoff_start_applied:false,
+  history:[{stage:"review-approve",result:$now},{stage:"repair-delivered"}]}]' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+ROWS="$cancel_row"; supervisor_requeue_unit pr-handoff requeue 'integrate the handoff' null
+[[ "$(field pr-handoff .stage)" == repair-pending ]] \
+  || fail "an unintegrated handoff must stay in repair (got: $(field pr-handoff .stage))"
+
+# 8. A review report with no findings record cannot prove nothing is open, so it stays in repair.
+jq --arg now "$head_now" '.units += [{id:"pr-report-only",pr:14,lane:"pr",branch:"agent/i",stage:"repair-pending",
+  review_report:"needs work",review_findings:[],
+  history:[{stage:"review-request-changes",result:$now}]}]' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+ROWS="$cancel_row"; supervisor_requeue_unit pr-report-only requeue 'repair the report' null
+[[ "$(field pr-report-only .stage)" == repair-pending ]] \
+  || fail "a findingless review report must stay in repair (got: $(field pr-report-only .stage))"
+
 echo 'no-finding-repair-route.test.sh: ok'
