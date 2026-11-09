@@ -94,7 +94,7 @@ for id in share-off-one share-off-two; do
 done
 [[ "$review_checks" == 1 ]] || fail "reviewability checked $review_checks times in one tick"
 
-CODEX_PROVIDER_BACKOFF_SECONDS=3600; CODEX_PROVIDER_PROBE_NOTICE_FILE="$A/probe-notice"; CODEX_PROVIDER_FAILURE_EVENTS_FILE="$A/probe-events"; model_policy() { [[ "$1" == tier ]]; }
+CODEX_PROVIDER_BACKOFF_SECONDS=3600; CODEX_PROVIDER_PROBE_NOTICE_FILE="$A/probe-notice"; CODEX_PROVIDER_FAILURE_EVENTS_FILE="$A/probe-events"; CODEX_SANDBOX_MODE=read-only; REPO_DIR="$script_dir"; model_policy() { [[ "$1" == tier ]]; }
 probe_calls=0; probe_due_during_call=''
 pipeline_execution_run() { probe_calls=$((probe_calls+1)); probe_due_during_call="$(<"$CODEX_PROVIDER_PROBE_REQUIRED_FILE")"; return 1; }
 printf '0\n' > "$CODEX_PROVIDER_PROBE_REQUIRED_FILE"
