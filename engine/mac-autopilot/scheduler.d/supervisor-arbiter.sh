@@ -354,6 +354,9 @@ reconcile_size_recuts() {
     if jqf -e '.state == "tracker" or (.state == "released" and (has("recut_children") or .tracker_parent == true)) or (.state == "concluded" and .run.outcome == "duplicate" and .closed_by_pipeline == true)' <<<"$state" >/dev/null; then
       set_unit "$id" "$(hist size-recut-completed "issue #$issue became a tracker or a closed duplicate") | .stage=\"closed\" | .note=null | del(.size_recut_pending)"
       say "unit $id recut completed; parent is a tracker or closed duplicate"
+    elif [[ "$(jqf -r '.stage // empty' <<<"$u")" == supervisor-review ]]; then
+      # The arbiter owns a supervisor-review unit: only the completed recut above may move it here.
+      continue
     elif jqf -e '.state == "on-hold" or .hold != null' <<<"$state" >/dev/null; then
       hold_note="issue #$issue recut is on hold"
       if [[ "$(jqf -r '.note // ""' <<<"$u")" != "$hold_note" ]]; then
@@ -379,7 +382,7 @@ reconcile_size_recuts() {
       set_unit "$id" "$(hist size-recut-unheld "issue #$issue hold lifted") | .stage=\"blocked-external\" | .note=null | del(.parked_reason, .unpark_condition)"
       say "unit $id recut hold lifted; back to waiting for issue #$issue recut"
     fi
-  done < <(jqf -c '.units[] | select((.stage=="blocked-external" or .stage=="parked") and .size_recut_pending==true)' "$UNITS")
+  done < <(jqf -c '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review") and .size_recut_pending==true)' "$UNITS")
 }
 
 supervisor_apply_action() { # id action report-path —— 六动作落地，决定/理由/证据/否掉选项写进单元

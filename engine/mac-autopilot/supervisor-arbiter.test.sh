@@ -842,6 +842,17 @@ for u in issue-702 issue-703; do
     || fail "$u: a lifted hold did not release the size recut: $(jq -c --arg id "$u" '.units[] | select(.id == $id)' "$UNITS")"
 done
 
+# A supervisor-review unit whose issue became a tracker closes (the arbiter cannot requeue a tracker, and its no-change hold
+# would repeat that failure forever). Only that branch applies there: a ready issue leaves the unit with the arbiter.
+printf '%s\n' '{"state":"tracker"}' > "$issue_states/704.json"
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/705.json"
+units "$(jq -cn '{units:[704,705] | map({id:("issue-"+tostring),issue:.,stage:"supervisor-review",size_recut_pending:true,history:[]})}')"
+reconcile_size_recuts
+[[ "$(field issue-704 .stage)" == closed && "$(field issue-704 .size_recut_pending)" == null ]] \
+  || fail "a tracker issue must close its supervisor-review size recut: $(jq -c '.units' "$UNITS")"
+[[ "$(field issue-705 .stage)" == supervisor-review && "$(field issue-705 .size_recut_pending)" == true ]] \
+  || fail "a supervisor-review unit with a ready issue must stay with the arbiter: $(jq -c '.units' "$UNITS")"
+
 printf '%s\n' '{"state":"on-hold","hold":{"kind":"stop-loss"},"size_admission":{"lines":802,"limit":800}}' > "$fixture/recut-agent-state.json"
 cat > "$fixture/recut-agent-lib.sh" <<LIB
 route_to_recut() { return 0; }
