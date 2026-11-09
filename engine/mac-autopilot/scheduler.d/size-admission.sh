@@ -70,7 +70,8 @@ size_admission_reject() { # unit lines branch context head estimate actual check
   if [[ "$5" =~ $SHA_RE && "$issue" =~ ^[0-9]+$ ]]; then
     ! size_recut_refused_on_head "$1" "$5" "$issue" || refused=true
   fi
-  if [[ "$8" == write-start && "$refused" == true ]] \
+  # Repair-pending dispatch (5374: the repair that trims the PR was refused on every tick) gets the same one admission.
+  if [[ ( "$8" == write-start || "$4" == repair-pending* ) && "$refused" == true ]] \
     && (( $(unit_history_count "$1" supervisor-escalated '^size admission:') >= 1 )) \
     && (( $(unit_history_count "$1" size-split-admitted) == 0 )) \
     && size_split_admit "$1" "$issue" "$2" "$limit"; then
