@@ -9,19 +9,20 @@ counted in release.batch_failed_no_verdict (0 is OK, 1 or more is UNHEALTHY and 
 Bounds are TENTATIVE (head, 2026-11-08): re-derive after 10 batches with a verdict.
 """
 import bisect, os, subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import release_retained
 
 METRIC = "release.batch_minutes"
 FAILED = "release.batch_failed_no_verdict"
+FAILED_14D = "release.batch_failed_14d"  # info only, not scored: the 14-day count behind FAILED
 CRITERIA = {
     METRIC: ("release", "minutes of the latest release batch, start to verdict (running: age so far)", 120, 240, False),
-    FAILED: ("release", "release batches with no verdict whose unit run failed, 14 days", 0, 1, False),
+    FAILED: ("release", "failed release batch runs with no verdict after the last verdict", 0, 1, False),
 }
 MEANING = {
     METRIC: "最近一次发布批次从启动到结论（release-retained 或 release-closer）的分钟数；批次仍在运行时显示已经跑了多少分钟。暂定标准（2026-11-08 head），满 10 个有结论的批次后重新校准。",
-    FAILED: "过去 14 天内没有结论、且单元运行以失败结束的发布批次数；大于 0 即 UNHEALTHY，会进入节点体检告警。",
+    FAILED: "最近一次有结论的发布之后，没有结论且单元运行以失败结束的批次数；大于 0 即 UNHEALTHY，会进入节点体检告警。没有结论的 14 天内则按整个窗口计。",
 }
 SOURCE = {
     METRIC: "journalctl --user 的 <前缀>-release-batch 单元 Started 行（启动）；alerts/events.md 的 release-retained / release-closer 行（结论）；systemctl --user is-active（是否仍在运行）",
@@ -88,19 +89,24 @@ def batch_minutes(starts, verdicts, now, active):
     return (first_verdict[s] - s).total_seconds() / 60
 
 
-def failed_no_verdict(runs, verdicts):
-    """Batches with no verdict whose unit run ended failed. A run's end is its first end line before the next start."""
+def failed_no_verdict(runs, verdicts, since=None):
+    """(after the last verdict, all in the window): no-verdict batches whose unit run ended failed.
+    A run's end is its first end line before the next start. The scored count keeps only the runs that started
+    after the latest verdict in the window; with no verdict in the window it is the whole window."""
     starts = _starts(runs)
     ends = sorted((at, kind) for at, kind in runs if kind != "start")
-    count = 0
+    window = [v for v in verdicts if since is None or v >= since]
+    last = max(window) if window else None
+    after = total = 0
     for i, s in enumerate(starts):
         nxt = starts[i + 1] if i + 1 < len(starts) else None
         if any(s <= v and (nxt is None or v < nxt) for v in verdicts):
             continue
         end = next(((at, kind) for at, kind in ends if at >= s and (nxt is None or at < nxt)), None)
         if end and end[1] == "failed":
-            count += 1
-    return count
+            total += 1
+            after += last is None or s > last
+    return after, total
 
 
 def collect(metrics, runtime, now, runs=None, active=None):
@@ -109,10 +115,10 @@ def collect(metrics, runtime, now, runs=None, active=None):
     events = release_retained.read(runtime)
     runs = _journal_runs(unit) if runs is None else runs
     if events is None or runs is None:
-        metrics[METRIC] = metrics[FAILED] = None
+        metrics[METRIC] = metrics[FAILED] = metrics[FAILED_14D] = None
         return
     retained, closed = events
     verdicts = [at for at, _, _ in retained] + [at for at, _ in closed]
     active = _active(unit) if active is None else active
     metrics[METRIC] = batch_minutes(_starts(runs), verdicts, now, active)
-    metrics[FAILED] = failed_no_verdict(runs, verdicts)
+    metrics[FAILED], metrics[FAILED_14D] = failed_no_verdict(runs, verdicts, now - timedelta(days=14))

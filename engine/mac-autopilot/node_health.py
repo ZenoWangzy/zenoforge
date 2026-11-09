@@ -1592,7 +1592,8 @@ def main():
             for node, mid, desc, v, healthy, unhealthy, higher, status in rows]
         doc = {"generated": sampled_at, "generated_at": sampled_at,
                "source_commit": source_commit(here), "paused": line_holds.pause_state(agent_home),
-               "window_hours": args.hours, "future_stamped": future_stamped,
+               "window_hours": args.hours, "release_batch_info": {"failed_14d": metrics.get(release_batch.FAILED_14D)},
+               "future_stamped": future_stamped,
                "metrics": scorecard_metrics, "trend_metrics": [m for m in scorecard_metrics if "_30d" in m["id"]],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
                "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],
