@@ -58,7 +58,7 @@ unit_body_blockers() { # unit-json → stored full-body IDs, or fallback IDs fro
 }
 dep_delivered_snapshot() {
   local dep pr sha
-  DEP_DELIVERED_CACHE=() DEP_DELIVERED_PR=()
+  DEP_DELIVERED_CACHE=() DEP_DELIVERED_PR=() TRACKER_KIDS=()
   while IFS=$'\t' read -r dep pr sha; do
     [[ "$dep" =~ ^[0-9]+$ ]] || continue
     DEP_DELIVERED_CACHE["$dep"]=1
@@ -80,6 +80,30 @@ dep_cache_info() { # predecessor issue → cached {state,labels} or {}
 unit_body_declares_dependency() { # unit predecessor-issue → true when the issue body explicitly names this prerequisite
   unit_body_blockers "$1" | grep -Fxq "$2"
 }
+declare -A TRACKER_KIDS=() # blocker → its recut_children, "-" when it is no tracker parent; one state read per blocker per tick (dep_delivered_snapshot resets it)
+# A tracker counts as delivered only when every recut child is, so a child that names its own parent as blocker waits on itself forever (#5714 on #5712),
+# and a latched real_wait skipped the one path that knows trackers (#2511 on #2510). Wait on the OTHER children only; no other children = cleared.
+tracker_dep_cleared() { # blocker blocked-issue → 0 when the blocker is a tracker parent and every recut child but the blocked issue is delivered or closed
+  local dep="$1" issue="$2" st kids c s
+  [[ "$dep" =~ ^[0-9]+$ ]] || return 1
+  if [[ -z "${TRACKER_KIDS[$dep]:-}" ]]; then
+    kids=""
+    # shortcut: the text test skips jq for the common non-tracker blocker (the release pass must not grow its jq runs with blocked units); pretty or compact JSON both match
+    if st="$(scheduler_issue_state "$dep" 2>/dev/null)" && [[ "$st" == *'"recut_children"'* ]]; then
+      kids="$(jqf -r 'if (.state == "tracker" or .tracker_parent == true) and ((.recut_children | type) == "array") then [.recut_children[] | select(type == "number")] | join(" ") else empty end' <<<"$st")"
+    fi
+    TRACKER_KIDS["$dep"]="${kids:--}"
+  fi
+  [[ "${TRACKER_KIDS[$dep]}" != - ]] || return 1
+  for c in ${TRACKER_KIDS[$dep]}; do
+    [[ "$c" != "$issue" ]] || continue
+    dep_delivered_in_ledger "$c" && continue
+    s="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$c")")"
+    [[ "$s" == CLOSED || "$s" == MERGED ]] || return 1
+  done
+  [[ " ${TRACKER_KIDS[$dep]} " != *" $issue "* ]] || say "issue #$issue waits on tracker #$dep, its own parent: dependency rewritten to its sibling children, all delivered"
+  return 0
+}
 dep_cleared() { # unit-json predecessor → 0 when the ledger and the cached GitHub state already count it as cleared
   local info state labels
   dep_delivered_in_ledger "$2" && return 0
@@ -89,7 +113,7 @@ dep_cleared() { # unit-json predecessor → 0 when the ledger and the cached Git
   [[ "$state" == CLOSED || "$state" == MERGED ]] && return 0
   labels="$(jqf -r '.labels // ""' <<<"$info")"
   [[ "$state" == OPEN && ",$labels," =~ ,roadmap(-epic|-theme)?, ]] && return 0
-  return 1
+  tracker_dep_cleared "$2" "$(jqf -r '.issue // empty' <<<"$1")"
 }
 blocking_body_dependency() { # unit-json → first predecessor not yet delivered/cleared by the local cache
   local dep
@@ -124,6 +148,7 @@ dep_marker_open() { # unit-json → the marked predecessor while it is undeliver
   state="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$dep")")"
   [[ "$state" != MERGED ]] || return 1
   [[ "$state" != CLOSED ]] || dep_has_unit "$dep" || return 1
+  ! tracker_dep_cleared "$dep" "$(jqf -r '.issue // empty' <<<"$1")" || return 1
   printf '%s' "$dep"
 }
 dep_has_unit() { # issue → 0 when the ledger has rows and none is settled: with no delivery, a closed state there is work given up or a stale read, not work done. A wontfix, duplicate, done or parked row will not move on its own, and the sweep could never prove it.
@@ -413,6 +438,11 @@ release_dependency_blocks() {
       dep_blocker_forget "$issue" "$dep"
       if [[ "$state" == MERGED ]]; then dep_release_delivered "$id" "$dep" "$has_note"; else unblock_unit "$id" "#$dep delivered"; fi
       continue
+    fi
+    # A tracker whose other children are all delivered is delivered for this unit, even when real_wait latched (dead_blocker_resolve below only runs without it).
+    if [[ "$state" == OPEN ]] && tracker_dep_cleared "$dep" "$issue"; then
+      dep_blocker_forget "$issue" "$dep"
+      unblock_unit "$id" "#$dep tracker: every other child delivered"; continue
     fi
     if [[ "$state" == OPEN && "$real_wait" != true ]] && dead_blocker_resolve "$id" "$dep" "$issue"; then
       dep_blocker_forget "$issue" "$dep"; continue

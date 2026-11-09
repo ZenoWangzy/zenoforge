@@ -39,6 +39,9 @@ scheduler_issue_state() { # the dead-blocker cases name their state by predecess
     110) printf '{"state":"tracker"}' ;;
     111) printf '{"state":"ready-for-agent"}' ;;
     140) printf '{"state":"tracker"}' ;;
+    9510) printf '{"state":"tracker","recut_children":[9781,9782]}' ;;                  # tracker parent, both children delivered
+    9512) printf '{\n  "state": "tracker",\n  "recut_children": [9514, 9522, 9523]\n}' ;; # own parent of 9514, pretty-printed like the state file
+    9530) printf '{"tracker_parent":true,"state":"tracker","recut_children":[9531,9532]}' ;; # one child still live
     *) printf '{"state":"ready-for-agent"}' ;;
   esac
 }
@@ -155,4 +158,38 @@ expected="$script_dir/dependencies-onepass.expected"
 if [[ "${DEP_ONEPASS_WRITE_EXPECTED:-}" == 1 ]]; then printf '%s\n' "$out" > "$expected"; echo "wrote $expected"; exit 0; fi
 printf '%s\n' "$out" > "$fixture/actual"
 cmp -s "$fixture/actual" "$expected" || { diff "$expected" "$fixture/actual" | head -40 >&2; fail 'ledger, log or gh calls differ from the row-by-row version'; }
+# ---- tracker blockers (queue rows 151 + 152 family: a tracker is delivered when its children are; a child never waits on its own parent) ----
+# The asserts below read the ledger and the log only, so they sit after the snapshot comparison and leave the expected file alone.
+tracker_fixture() { # edits: 9511 waits on tracker 9510 (real_wait latched); 9514 on its own parent 9512; 9540 on tracker 9530 with a live child
+  local -a rows=()
+  rows+=("$(unit issue-9781 9781 merged)" "$(unit issue-9782 9782 awaiting-live-event)")
+  rows+=("$(unit issue-9511 9511 blocked-external '.blocked_on=9510 | .dep_wait_delivery=9510 | .body_blocked_by=[9510]')")
+  rows+=("$(unit issue-9522 9522 merged)" "$(unit issue-9523 9523 "${SIBLING_STAGE:-implement-pending}")")
+  rows+=("$(unit issue-9514 9514 blocked-external '.blocked_on=9512 | .body_blocked_by=[9512]')")
+  rows+=("$(unit issue-9531 9531 merged)" "$(unit issue-9532 9532 implement-pending)")
+  rows+=("$(unit issue-9540 9540 blocked-external '.blocked_on=9530 | .dep_wait_delivery=9530 | .body_blocked_by=[9530]')")
+  printf '%s\n' "${rows[@]}" | jq -cs '{units: .}' > "$UNITS"
+  printf '{"workers":[]}\n' > "$A/workers.json"
+  DEP_DELIVERED_CACHE=(); CACHE_ROWS=([9510]=$'OPEN\t' [9512]=$'OPEN\t' [9530]=$'OPEN\t')
+}
+stage_of() { jq -r --arg id "$1" '.units[] | select(.id == $id) | .stage' "$UNITS"; }
+unit_json() { jq -c --arg id "$1" '.units[] | select(.id == $id)' "$UNITS"; }
+tracker_fixture; reset_run; run_counted
+[[ "$(stage_of issue-9511)" == implement-pending ]] || fail "case A: a latched wait on a tracker whose children are delivered must free the unit, got $(stage_of issue-9511)"
+grep -q 'unit issue-9511 unblocked: #9510 tracker' "$LOG" || fail 'case A: the release must log the tracker unblock'
+[[ "$(jq -r '.units[] | select(.id == "issue-9511") | .dep_wait_delivery // "none"' "$UNITS")" == none ]] || fail 'case A: the delivery marker must end with the release'
+dep_delivered_snapshot
+dep_cleared "$(unit_json issue-9511)" 9510 || fail 'case A: dispatch must not re-park the freed unit (dep_cleared)'
+! park_if_body_blocked "$(unit_json issue-9511)" || fail 'case A: park_if_body_blocked parked the freed unit again'
+[[ "$(stage_of issue-9514)" == blocked-external ]] || fail "case B: a child waits on its live sibling 9523, got $(stage_of issue-9514)"
+dep_cleared "$(unit_json issue-9514)" 9512 && fail 'case B: dep_cleared must hold while sibling 9523 is undelivered'
+[[ "$(stage_of issue-9540)" == blocked-external ]] || fail 'negative: a tracker with an undelivered child must still block'
+dep_cleared "$(unit_json issue-9540)" 9530 && fail 'negative: dep_cleared must hold on a tracker with a live child'
+SIBLING_STAGE=merged tracker_fixture; reset_run; run_counted
+[[ "$(stage_of issue-9514)" == implement-pending ]] || fail "case B: once its siblings are delivered the child must not wait on its own parent, got $(stage_of issue-9514)"
+grep -q 'unit issue-9514 unblocked: #9512 tracker' "$LOG" || fail 'case B: the release must log the unblock'
+[[ "$(stage_of issue-9540)" == blocked-external ]] || fail 'negative: the live child 9532 still blocks 9540 after the second pass'
+SIBLING_STAGE=merged tracker_fixture; dep_delivered_snapshot
+dep_cleared "$(unit_json issue-9514)" 9512 || fail 'case B: dispatch must see the siblings delivered (dep_cleared)'
+grep -q 'issue #9514 waits on tracker #9512, its own parent' "$LOG" || fail 'case B: the rewrite must name itself in the log'
 echo 'dependencies-onepass.test.sh: ok'
