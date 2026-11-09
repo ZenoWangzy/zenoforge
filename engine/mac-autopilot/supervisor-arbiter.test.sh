@@ -285,16 +285,22 @@ REJECTED: close'
 [[ "$(field pr-616 .stage)" == parked ]] || fail "park must land in parked"
 jq -e '.units[]|select(.id=="pr-616")|has("arbiter_left_mark")|not' "$UNITS" >/dev/null || fail "a decision that moved the unit must not hold it"
 
-# A tracker flag on a ticket that still has an open task-list child refuses the requeue, so the unit parks with that failure recorded.
+# A tracker flag on a ticket that still has an open task-list child refuses the requeue, so the unit parks with that refusal recorded.
 units "$(jq -cn '{units:[{id:"pr-698",issue:698,pr:698,lane:"pr",branch:"agent/issue-698",stage:"supervisor-review",history:[{stage:"review-request-changes",result:"F1",at:"2026-10-27T00:00:00Z"},{stage:"supervisor-escalated",result:"stop-loss",at:"2026-10-27T00:01:00Z"}]}]}')"
 jq -n '{state:"on-hold",tracker_parent:true,hold:{kind:"stop-loss",holder:"scheduler-stop-loss"},recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/698.json"
+parent_reason="$(scheduler_issue_intake_parent_reason 698 '{"title":"fixture parent","body":"- [ ] #797","subIssuesSummary":{"total":0}}')" \
+  || fail "the #698 fixture must be refused because open task-list child #797 is still open"
+[[ "$parent_reason" == 'task list references open child #797' ]] \
+  || fail "the #698 fixture must identify open task-list child #797 as the refusal reason, got: $parent_reason"
 harvest_with_reply pr-698 'ACTION: requeue
 REASON: stop-loss hold reviewed, resume the approved repair
 EVIDENCE: supervisor-escalated stop-loss
 REJECTED: park（仍有可重试的修复）
 GUIDANCE: 恢复修复并提交' || :  # the scheduler runs without errexit
 [[ "$(field pr-698 .stage)" == parked ]] || fail "a refused requeue must park the unit"
-[[ "$(field pr-698 .note)" == *'could not be requeued to ready-for-agent'* ]] || fail "the durable park must record the transition failure"
+[[ "$parent_reason" == 'task list references open child #797' \
+   && "$(field pr-698 .note)" == *'issue_transition: refused tracker parent #698'* ]] \
+  || fail "the durable park must preserve the refusal caused by open task-list child #797"
 jq -e '.tracker_parent == true and .state == "on-hold"' "$AGENT_HOME/state/698.json" >/dev/null || fail "a real parent must keep its flag"
 
 # The #4879 and #5329 shape: on-hold, flag set, no child of any kind. The requeue clears the flag and goes through.
@@ -843,7 +849,7 @@ issue_states="$fixture/issue-states"; mkdir -p "$issue_states"
 scheduler_issue_state() { cat "$issue_states/$1.json"; }
 
 # A requeue that observes a tracker parent closes by the shared recut path;
-# ready-for-agent is already the desired state; every other failed transition parks durably.
+# ready-for-agent is already the desired state; only an explicit transition refusal parks.
 saved_requeue_transition="$(declare -f scheduler_issue_transition)"
 saved_requeue_repo="${REPO:-}"
 REPO=ZenoWangzy/zenoforge
@@ -901,6 +907,38 @@ jq -e '.units[] | select(.id=="arbiter-failure") | .parked_reason=="supervisor-b
 jq -e '.units[] | select(.id=="arbiter-failure") | .note|contains("issue_transition: refused #9403")' "$UNITS" >/dev/null \
   || fail "the durable park must preserve the transition refusal"
 grep -Fq '9403:ready-for-agent' "$REQUEUE_TRANSITIONS" || fail "the other-state case must exercise a failed transition"
+
+# A GitHub read failure is retryable: it leaves the arbitration unit in review.
+printf '%s\n' '{"state":"needs-advisor"}' > "$issue_states/9406.json"
+saved_requeue_gh="$(declare -f gh)"
+gh() { printf 'gh %s\n' "$*" >> "$GH_CALLS"; return 1; }
+requeue_test_unit arbiter-read-failed 9406 99406
+supervisor_requeue_unit arbiter-read-failed requeue "resume the repair" "$requeue_decision" || :
+eval "$saved_requeue_gh"
+[[ "$(field arbiter-read-failed .stage)" == supervisor-review ]] \
+  || fail "a failed gh issue view must leave the unit at supervisor-review for retry"
+jq -e '.units[] | select(.id=="arbiter-read-failed") | all(.history[]; .stage != "supervisor-requeue-failed")' "$UNITS" >/dev/null \
+  || fail "a failed gh issue view must not record a durable requeue-failure park"
+grep -Fq 'gh issue view 9406 --repo ZenoWangzy/zenoforge --json number,title,body,state,labels' "$GH_CALLS" \
+  || fail "the retry case must exercise gh issue view rc 1"
+! grep -Fq '9406:ready-for-agent' "$REQUEUE_TRANSITIONS" \
+  || fail "a failed gh issue view must not attempt the issue transition"
+
+# A deterministic requeue-failure park is eligible for the existing daily dead-park recut.
+saved_dead_park_tick_prs="$(declare -f tick_prs)"
+saved_dead_park_budget_recut="$(declare -f supervisor_budget_recut)"
+DEAD_RECUT_CALLS="$fixture/dead-recut-calls"; : > "$DEAD_RECUT_CALLS"
+tick_prs() { printf '%s\n' '[]'; }
+supervisor_budget_recut() { printf '%s\t%s\n' "$1" "$2" >> "$DEAD_RECUT_CALLS"; }
+units "$(jq -cn '{units:[{id:"arbiter-failed-park",issue:9403,pr:99403,lane:"pr",branch:"agent/arbiter-failed-park",stage:"parked",parked_reason:"supervisor-budget",note:"supervisor requeue failed",history:[{stage:"supervisor-requeue-failed",result:"issue #9403 could not be requeued to ready-for-agent: issue_transition: refused #9403 needs-advisor",at:"2026-11-08T00:00:00Z"}]}]}')"
+dead_park_exit
+[[ "$(cat "$DEAD_RECUT_CALLS")" == $'arbiter-failed-park\tdead park exit (budget-park)' ]] \
+  || fail "a supervisor-requeue-failed park must use the existing dead-park recut route"
+[[ "$(field arbiter-failed-park '.history[-1].stage')" == dead-park-exit ]] \
+  || fail "the daily recovery attempt must be recorded in unit history"
+eval "$saved_dead_park_tick_prs"
+eval "$saved_dead_park_budget_recut"
+
 eval "$saved_requeue_transition"
 REPO="$saved_requeue_repo"
 

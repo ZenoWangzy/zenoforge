@@ -340,9 +340,8 @@ supervisor_requeue_followup_cites_pr() { # unit-json → 0 when its open split c
   ' <<<"$json" >/dev/null 2>&1
 }
 
-supervisor_requeue_park_failure() { # id failure decision → durable park; the failure remains visible in the unit note/history
-  supervisor_budget_park "$1" "$2" "$3" "supervisor requeue failed" "supervisor-requeue-failed" || { say "supervisor arbitration unit=$1: requeue failed ($2) and durable park failed"; return 1; }
-}
+supervisor_requeue_retry() { say "supervisor arbitration unit=$1: $2; leaving the unit at supervisor-review"; return 1; }
+supervisor_requeue_park_failure() { supervisor_budget_park "$1" "$2" "$3" "supervisor requeue failed" "supervisor-requeue-failed" || { say "supervisor arbitration unit=$1: requeue failed ($2) and durable park failed"; return 1; }; }
 
 supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute 落地：选一个工作环节放回去
   local id="$1" action="$2" guidance="$3" decision="$4" u target extra="" issue issue_json issue_state issue_stage issue_reason issue_repo="${REPO:-${ZF_REPO:-}}" transition_error failure
@@ -384,8 +383,8 @@ Supervisor ruling: dependency #$dropped is resolved for this unit (dropped_deps)
   fi
   issue="$(jqf -r '.issue // empty' <<<"$u")"
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
-    issue_state="$(scheduler_issue_state "$issue")" || { supervisor_requeue_park_failure "$id" "issue #$issue state is unreadable for requeue" "$decision"; return $?; }
-    issue_stage="$(jqf -r '.state // empty' <<<"$issue_state")" || { supervisor_requeue_park_failure "$id" "issue #$issue state is malformed for requeue" "$decision"; return $?; }
+    issue_state="$(scheduler_issue_state "$issue")" || { supervisor_requeue_retry "$id" "issue #$issue state is unreadable for requeue"; return $?; }
+    issue_stage="$(jqf -r 'if type == "object" and (.state | type) == "string" and (.state | length) > 0 then .state else error("invalid issue state") end' <<<"$issue_state")" || { supervisor_requeue_retry "$id" "issue #$issue state is malformed for requeue"; return $?; }
     if [[ "$issue_stage" == tracker ]]; then
       local pr tracker_log followup cite_status
       pr="$(jqf -r '.pr // empty' <<<"$u")"
@@ -394,22 +393,25 @@ Supervisor ruling: dependency #$dropped is resolved for this unit (dropped_deps)
         say "supervisor arbitration unit=$id: issue #$issue became a tracker; continuation issue #$followup cites open PR #$pr, carrying it to $target"
       else
         cite_status=$?
-        (( cite_status != 2 )) || { supervisor_requeue_park_failure "$id" "could not verify continuation issue #$followup for open PR #$pr" "$decision"; return $?; }
+        (( cite_status != 2 )) || { supervisor_requeue_retry "$id" "could not verify continuation issue #$followup for open PR #$pr"; return $?; }
         if [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then tracker_log="supervisor arbitration unit=$id: issue #$issue became a tracker; closed the recut unit and left open PR #$pr for head to decide"; else tracker_log="supervisor arbitration unit=$id: issue #$issue became a tracker; closed the recut unit"; fi
         supervisor_close_recut_parent "$id" "issue #$issue became a tracker" "$tracker_log" \
-          || { supervisor_requeue_park_failure "$id" "issue #$issue is a tracker but the unit could not be closed" "$decision"; return $?; }
+          || { supervisor_requeue_retry "$id" "issue #$issue is a tracker but the unit could not be closed"; return $?; }
         return 0
       fi
     elif [[ "$issue_stage" == ready-for-agent ]]; then
       say "supervisor arbitration unit=$id: issue #$issue is already ready-for-agent; requeue treated as complete"
     else
-      [[ -n "$issue_repo" ]] || { supervisor_requeue_park_failure "$id" "repository is unavailable for issue #$issue requeue" "$decision"; return $?; }
-      if [[ "$issue_stage" == on-hold ]]; then [[ "$(jqf -r '.hold.holder // empty' <<<"$issue_state")" == scheduler-stop-loss ]] || { supervisor_requeue_park_failure "$id" "issue #$issue has a non-stop-loss hold" "$decision"; return $?; }; issue_reason=hold-requeue; else issue_reason=supervisor-requeue; fi
-      issue_json="$(gh issue view "$issue" --repo "$issue_repo" --json number,title,body,state,labels 2>/dev/null)" || { supervisor_requeue_park_failure "$id" "issue #$issue could not be refreshed for requeue" "$decision"; return $?; }
-      if ! transition_error="$(scheduler_issue_transition "$issue" ready-for-agent "$issue_reason" . 0 "$issue_json" 2>&1)"; then failure="issue #$issue could not be requeued to ready-for-agent"; transition_error="${transition_error//$'\n'/ }"; [[ -z "$transition_error" ]] || failure="$failure: ${transition_error:0:400}"; supervisor_requeue_park_failure "$id" "$failure" "$decision"; return $?; fi
+      [[ -n "$issue_repo" ]] || { supervisor_requeue_retry "$id" "repository is unavailable for issue #$issue requeue"; return $?; }
+      if [[ "$issue_stage" == on-hold ]]; then [[ "$(jqf -r '.hold.holder // empty' <<<"$issue_state")" == scheduler-stop-loss ]] || { supervisor_requeue_retry "$id" "issue #$issue has a non-stop-loss hold"; return $?; }; issue_reason=hold-requeue; else issue_reason=supervisor-requeue; fi
+      issue_json="$(gh issue view "$issue" --repo "$issue_repo" --json number,title,body,state,labels 2>/dev/null)" || { supervisor_requeue_retry "$id" "issue #$issue could not be refreshed for requeue"; return $?; }
+      if ! transition_error="$(scheduler_issue_transition "$issue" ready-for-agent "$issue_reason" . 0 "$issue_json" 2>&1)"; then
+        transition_error="${transition_error//$'\n'/ }"; if [[ "$transition_error" == *"issue_transition: refused "* ]]; then failure="issue #$issue could not be requeued to ready-for-agent"; [[ -z "$transition_error" ]] || failure="$failure: ${transition_error:0:400}"; supervisor_requeue_park_failure "$id" "$failure" "$decision"; return $?; fi
+        supervisor_requeue_retry "$id" "issue #$issue requeue transition did not complete"; return $?
+      fi
     fi
   fi
-  set_unit "$id" "$(hist "supervisor-$action" "$guidance" "$decision") | .stage=\"$target\"$extra" || { supervisor_requeue_park_failure "$id" "unit stage update failed after the requeue verdict" "$decision"; return $?; }
+  set_unit "$id" "$(hist "supervisor-$action" "$guidance" "$decision") | .stage=\"$target\"$extra" || { supervisor_requeue_retry "$id" "unit stage update failed after the requeue verdict"; return $?; }
   say "supervisor arbitration unit=$id: $action -> $target"
 }
 
