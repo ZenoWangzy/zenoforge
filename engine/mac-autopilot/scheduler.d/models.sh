@@ -269,6 +269,29 @@ unit_hard_escalated() { # unit JSON -> true after the two-repair cap or supervis
 # scheduler.sh runs once per tick; this process-local cache avoids repeating provider probes across units.
 declare -A IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
 
+implement_route_review_identity_available() { # identity role author-family -> check route reviewability without starting a recovery probe
+  local identity="$1" role="$2" author_family="$3" provider="${1%%:*}" model="${1#*:}"; model="${model%:*}"
+  if [[ "$provider" == codex ]]; then
+    model_policy_model_allowed_for_role "$model" "$role" || { IMPLEMENT_REVIEWER_REASON=policy-refused; return 1; }
+    cooling codex && { IMPLEMENT_REVIEWER_REASON=codex-hold; return 1; }
+    [[ -e "${CODEX_PROVIDER_PROBE_REQUIRED_FILE:-}" ]] && { IMPLEMENT_REVIEWER_REASON=codex-probe-required; return 1; }
+    if provider_quota_exhausted codex && { [[ "$author_family" != glm ]] || ! codex_credits_open review; }; then
+      IMPLEMENT_REVIEWER_REASON=codex-hold
+      return 1
+    fi
+    codex_probe_ok || { IMPLEMENT_REVIEWER_REASON=codex-probe-missing; return 1; }
+    command -v codex >/dev/null 2>&1 || { IMPLEMENT_REVIEWER_REASON=codex-cli-missing; return 1; }
+    IMPLEMENT_REVIEWER_REASON=""
+    return 0
+  fi
+  if review_identity_available "$identity" "$role" "$author_family"; then
+    IMPLEMENT_REVIEWER_REASON=""
+    return 0
+  fi
+  IMPLEMENT_REVIEWER_REASON="$(review_identity_unavailable_reason "$identity" "$role")"
+  return 1
+}
+
 implement_family_has_other_reviewer() { # family -> 0 when review dispatch can select another family now
   local family="$1" codex_identity glm_identity sonnet_identity cross other="" candidate candidate_family candidate_role reason first_reason=""
   codex_identity="$(review_identity_for_model "$(model_tuple_field review 0)" "$(model_tuple_field review 1)" 2>/dev/null || true)"
@@ -286,8 +309,8 @@ implement_family_has_other_reviewer() { # family -> 0 when review dispatch can s
   for candidate in "$cross" "$other" "$sonnet_identity"; do
     candidate_family="$(review_identity_family "$candidate" 2>/dev/null || true)"; [[ -n "$candidate_family" && "$candidate_family" != "$family" ]] && candidate_role=review || continue
     if [[ "$candidate_family" == claude ]]; then candidate_role=review_fallback; [[ "$family" != claude && "$candidate" =~ ^claude:claude-(haiku|sonnet)- ]] || continue; fi
-    if review_identity_available "$candidate" "$candidate_role" "$family"; then IMPLEMENT_REVIEWER_REASON=""; return 0; fi
-    reason="$(review_identity_unavailable_reason "$candidate" "$candidate_role")"; [[ -z "$first_reason" && -n "$reason" ]] && first_reason="${reason// /-}"
+    if implement_route_review_identity_available "$candidate" "$candidate_role" "$family"; then return 0; fi
+    reason="$IMPLEMENT_REVIEWER_REASON"; [[ -z "$first_reason" && -n "$reason" ]] && first_reason="${reason// /-}"
   done
   IMPLEMENT_REVIEWER_REASON="${first_reason:-review-config}"
   return 1
@@ -317,7 +340,7 @@ implement_route_family_reviewable() { # family -> log the skip and alert head-wa
 
 pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota failover
   local u="$1" assigned actual preferred reason issue hash bucket zcode_share claude_share codex_share sum=0 status arbiter=false
-  local route_start route_candidate route_share selected="" IMPLEMENT_ROUTE_SKIPS="" preferred_unreviewable=false
+  local route_start route_candidate route_share selected="" IMPLEMENT_ROUTE_SKIPS=""
   local -a route_order=(zcode claude codex)
   if unit_hard_escalated "$u"; then
     hard_implementer_fields || { say "no hard implementation identity available"; return 1; }
@@ -386,13 +409,20 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
     for route_candidate in "${route_order[@]:route_start}" "${route_order[@]:0:route_start}"; do
       [[ "$route_candidate" == "$preferred" || "$sum" == 100 ]] || continue
       route_share="${route_shares[$route_candidate]}"
-      [[ "$route_share" =~ ^[0-9]+$ ]] && (( route_share > 0 )) || continue
+      if [[ "$route_candidate" != "$preferred" ]]; then
+        [[ "$route_share" =~ ^[0-9]+$ ]] && (( route_share > 0 )) || continue
+      fi
       if implement_route_family_reviewable "$route_candidate"; then selected="$route_candidate"; break; fi
-      [[ "$route_candidate" != "$preferred" ]] || preferred_unreviewable=true
     done
   fi
-  [[ -n "$selected" ]] || { say "no implementation family has an eligible other-family reviewer"; return 1; }
-  [[ "$selected" == "$preferred" ]] || { assigned="$selected"; preferred="$selected"; [[ "$preferred_unreviewable" == true ]] && reason="reviewer-fallback-$selected" || true; }
+  if [[ -z "$selected" ]]; then
+    reason="${IMPLEMENT_REVIEWER_REASON:-review-config}"; reason="${reason// /-}"
+    say "no implementation family has an eligible other-family reviewer reason=$reason"
+    return 1
+  fi
+  if [[ "$selected" != "$preferred" ]]; then
+    assigned="$selected"; preferred="$selected"; reason="reviewer-fallback-$selected"
+  fi
   PICK_ROUTE_PROVIDER="$assigned"; PICK_HARD=false
 
   if [[ "$preferred" == claude && "$claude_share" != 0 ]]; then

@@ -88,11 +88,22 @@ CFG="$(jq '.models.implement_share={claude:0,codex:50,zcode:0}' <<<"$CFG")"
 week 80 $((NOW_EPOCH + 3600))
 review_checks=0; review_identity_available() { review_checks=$((review_checks+1)); [[ "$3" != claude ]]; }
 review_identity_unavailable_reason() { echo 'codex hold'; }; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+claude_alerts_before="$(grep -Fc 'IMPLEMENT-ROUTE-UNREVIEWABLE family=claude' "$AGENT_HOME/logs/head-watch.alerts" 2>/dev/null || true)"
 for id in share-off-one share-off-two; do
   pick_implementer "{\"id\":\"$id\",\"implement_provider\":\"claude\"}" || fail 'share-off Claude had no Codex route'
   [[ "$PICK_PROVIDER" == codex && "$PICK_REASON" == claude-share-off-codex ]] || fail "share-off route went to $PICK_PROVIDER/$PICK_REASON"
 done
 [[ "$review_checks" == 1 ]] || fail "reviewability checked $review_checks times in one tick"
+claude_alerts_after="$(grep -Fc 'IMPLEMENT-ROUTE-UNREVIEWABLE family=claude' "$AGENT_HOME/logs/head-watch.alerts" 2>/dev/null || true)"
+[[ "$claude_alerts_after" == "$claude_alerts_before" ]] || fail 'share-off Claude route emitted an alert for an unavailable Claude reviewer'
+
+CFG="$(jq '.models.implement_share={claude:0,codex:100,zcode:0}' <<<"$CFG")"; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+review_identity_available() { return 0; }
+pick_implementer '{"id":"sticky-zcode-zero-share","implement_provider":"zcode"}' || fail 'reviewable sticky ZCode had no route at share 0'
+[[ "$PICK_PROVIDER" == zcode && "$PICK_REASON" == sticky-zcode ]] || fail "reviewable sticky ZCode went to $PICK_PROVIDER/$PICK_REASON"
+review_identity_available() { [[ "$3" != glm ]]; }; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+pick_implementer '{"id":"sticky-zcode-reviewer-fallback","implement_provider":"zcode"}' || fail 'unreviewable sticky ZCode had no Codex fallback'
+[[ "$PICK_PROVIDER" == codex && "$PICK_REASON" == reviewer-fallback-codex ]] || fail "reviewer fallback went to $PICK_PROVIDER/$PICK_REASON"
 
 CODEX_PROVIDER_BACKOFF_SECONDS=3600; CODEX_PROVIDER_PROBE_NOTICE_FILE="$A/probe-notice"; CODEX_PROVIDER_FAILURE_EVENTS_FILE="$A/probe-events"; CODEX_SANDBOX_MODE=read-only; REPO_DIR="$script_dir"; model_policy() { [[ "$1" == tier ]]; }; provider_quota_write_until() { return 0; }; premium_call_provider_outage_kind() { return 0; }; supervisor_inbox_append() { return 0; }
 probe_calls=0; probe_due_during_call=''
@@ -102,3 +113,18 @@ if codex_provider_recovery_probe_if_due codex:gpt-6-luna:max; then fail 'failed 
 [[ "$probe_due_during_call" =~ ^[0-9]+$ ]] && (( probe_due_during_call > $(date +%s) )) || fail 'probe-due stamp was not future-dated before the probe'
 if codex_provider_recovery_probe_if_due codex:gpt-6-luna:max; then fail 'held recovery probe was reported as a pass'; fi
 [[ "$probe_calls" == 1 ]] || fail 'failed recovery probe repeated before its next-due time'
+
+# Route reviewability must treat the recovery latch as read-only and never launch its bounded probe.
+route_probe_calls=0
+codex_provider_recovery_probe_if_due() { route_probe_calls=$((route_probe_calls+1)); return 1; }
+review_identity_available() {
+  if [[ "$1" == codex:* ]]; then codex_quota_exhausted "$1" && return 1; fi
+  return 0
+}
+CFG="$(jq '.models.implement_share={claude:0,codex:0,zcode:100}' <<<"$CFG")"; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+if pick_implementer '{"id":"probe-latched-zcode","implement_provider":"zcode"}'; then fail 'route picked ZCode without an available independent reviewer'; fi
+[[ "$route_probe_calls" == 0 ]] || fail "route selection started the Codex recovery probe $route_probe_calls times"
+grep -Fq 'no implementation family has an eligible other-family reviewer reason=codex-probe-required' "$LOG" \
+  || fail 'route refusal omitted the Codex probe-latch reason'
+
+printf 'ok - codex weekly fallback preserves sticky routes, reviewer independence, and nonblocking recovery checks\n'
