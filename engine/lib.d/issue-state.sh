@@ -525,7 +525,7 @@ issue_transition_allowed() {
       case "$reason" in
         recut-parent-retired) ;;
         intake-parent:roadmap-container:*)
-          case "$from" in untracked|ready-for-agent) ;; *) return 1 ;; esac
+          case "$from:$reason" in untracked:*|ready-for-agent:*|needs-recut:intake-parent:roadmap-container:split-delivery) ;; *) return 1 ;; esac
           ;;
         *) return 1 ;;
       esac

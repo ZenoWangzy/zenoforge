@@ -436,6 +436,8 @@ AGENT_HOME="$BLOCKED_CHECKS_HOME" AGENT_DRY_RUN=0 DRY_RUN=0 REPO=test/repo \
     issue_transition_allowed untracked tracker intake-parent:roadmap-container:spec/ADR-pilot || exit 16
     issue_transition_allowed ready-for-agent tracker intake-parent:roadmap-container:has-sub-issues || exit 17
     if issue_transition_allowed needs-triage tracker intake-parent:roadmap-container:spec/ADR-pilot; then exit 18; fi
+    issue_transition_allowed needs-recut tracker intake-parent:roadmap-container:split-delivery || exit 19
+    if issue_transition_allowed needs-recut tracker intake-parent:roadmap-container:has-sub-issues; then exit 20; fi
     guarded_write() { printf "%s\n" "$*" >> "$BLOCKED_CHECKS_GH_LOG"; }
     record_implement_blocked_checks "$1" "$0" "$BLOCKED_CHECKS_LOG"
     record_implement_blocked_checks "$1" "$0" "$BLOCKED_CHECKS_LOG"
