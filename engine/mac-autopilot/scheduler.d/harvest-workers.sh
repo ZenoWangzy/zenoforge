@@ -37,7 +37,7 @@ dispatch_incident_report_resume() { # worker-json source-report gate-reason → 
 }
 
 incident_report_pre_review() { # implement/repair worker-json report-name report-path → start one report-only continuation when needed; rc 1 = one is now running
-  local w="$1" report_name="$2" report_path="$3" unit wtype incident_unit_json reason
+  local w="$1" report_name="$2" report_path="$3" unit wtype incident_unit_json reason n
   wtype="$(jqf -r '.type // empty' <<<"$w")"
   [[ "$wtype" == implement || "$wtype" == repair ]] || return 0
   [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" != true ]] || return 0
@@ -45,7 +45,11 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
   incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   [[ "$wtype" != repair ]] || report_name="$(jqf -r --arg n "$report_name" '.implementation_report // $n' <<<"$incident_unit_json")" # a repair edits the unit's own report in place; its worker report is only the fix note
   reason="$(incident_report_gate_reason "$incident_unit_json" "$SUP/$report_name")"
-  [[ -n "$reason" ]] || return 0
+  [[ -n "$reason" ]] || { [[ "$(jqf -r 'has("report_gate_fail")' <<<"$incident_unit_json")" == false ]] || set_unit "$unit" 'del(.report_gate_fail)'; return 0; }
+  # The same gate reason twice in a row means another repair writes the same kind of report: stop instead of looping (4741).
+  n=1; [[ "$(jqf -r '.report_gate_fail.reason // empty' <<<"$incident_unit_json")" != "$reason" ]] || n=$(( $(jqf -r '.report_gate_fail.n // 0' <<<"$incident_unit_json") + 1 ))
+  set_unit "$unit" ".report_gate_fail={reason:$(js "$reason"),n:$n}"
+  if (( n >= 2 )); then to_supervisor "$unit" "incident report gate failed ${n} times in a row with the same reason: $reason (report $report_name)"; return 0; fi
   ! dispatch_incident_report_resume "$w" "$report_name" "$reason" || return 1
   say "incident report resume unavailable unit=$unit; review will use the existing report"
 }
@@ -210,7 +214,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
       incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json" "$rep")"
       if [[ -z "$incident_gate_reason" && -s "$rep" ]]; then
-        set_unit "$unit" ".implementation_report=$(js "$report") | .stage=$(js "$report_resume_stage")"
+        set_unit "$unit" ".implementation_report=$(js "$report") | del(.report_gate_fail) | .stage=$(js "$report_resume_stage")"
         say "incident report resume passed unit=$unit report=$report; sending to review"
       else
         [[ -n "$incident_gate_reason" ]] || incident_gate_reason='resumed session did not produce a report'
