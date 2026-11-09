@@ -143,8 +143,8 @@ size_admission_write_start() { # unit workdir unit-json → block before worker 
   fi
   head="$(git -C "$2" rev-parse -q --verify HEAD 2>/dev/null || true)"
   limit="$(size_admission_limit_for "$3")"
-  # An unwaived ticket whose estimate passes 60% of the limit is cut before a worker starts; a waiver already means the recut ran out.
-  est_limit="$limit"; (( limit != SIZE_ADMISSION_LINES )) || est_limit=$((limit * 60 / 100))
+  # An unwaived ticket whose estimate passes 80% of the limit is cut before a worker starts (row 117: 41.2% of 641-800 estimates needed a size recut later, only 20.9% of 481-640); a waiver already means the recut ran out.
+  est_limit="$limit"; (( limit != SIZE_ADMISSION_LINES )) || est_limit=$((limit * 80 / 100))
   if [[ "$estimate" =~ ^[0-9]+$ ]] && (( estimate > est_limit )); then
     lines="$estimate"; source=estimate
   fi
