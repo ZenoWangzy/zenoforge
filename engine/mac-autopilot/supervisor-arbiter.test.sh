@@ -891,4 +891,8 @@ for i in $(seq 1 "$n_cand"); do
   grep -qx "pr-91$i" "$fixture/starve-picks" || fail "pr-91$i starved: not picked in $(( (n_cand + slots - 1) / slots )) ticks, picks: $(tr '\n' ' ' < "$fixture/starve-picks")"
 done
 
+# Two candidates equally old: the one holding more waiting dependents goes first, whatever the array order.
+jq -cn '{units:[range(1;4) as $i | {id:("pr-92\($i)"),issue:(9200+$i),pr:(9200+$i),lane:"pr",stage:(if $i == 2 then "parked" else "supervisor-review" end),parked_reason:"supervisor-cap-founder",held_dependents:([1,3,2][$i-1]),history:[{stage:"supervisor-escalated",result:"x",at:"2026-11-08T01:00:00Z"}]}]}' > "$UNITS"
+[[ "$(supervisor_arbiter_candidates | jq -r .id | tr '\n' ' ')" == "pr-922 pr-923 pr-921 " ]] || fail "equal-age candidates must go by held dependents, higher first: $(supervisor_arbiter_candidates | jq -r .id | tr '\n' ' ')"
+
 echo 'supervisor-arbiter.test.sh: all assertions passed'

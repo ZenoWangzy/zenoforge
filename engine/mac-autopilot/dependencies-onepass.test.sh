@@ -79,7 +79,7 @@ scale_fixture() { # N state: N waiters, blocker i is a live unit whose GitHub st
   done
   printf '%s' "$rows" | jq -cs '{units: .}' > "$UNITS"
   printf '{"workers":[]}\n' > "$A/workers.json"
-  DEP_DELIVERED_CACHE=(); DEP_PARKED_CACHE=()
+  DEP_DELIVERED_CACHE=()
 }
 measure() { # N state → "<ledger reads> <writes> <all jq>"
   scale_fixture "$1" "$2"; reset_run
@@ -134,7 +134,7 @@ mixed_fixture() {
   add "$(unit issue-140 140 closed)"; add "$(W 26 140 '.dep_wait_delivery=140')"         # dead predecessor reaches the arbiter
   printf '%s\n' "${rows[@]}" | jq -cs '{units: .}' > "$UNITS"
   printf '{"workers":[]}\n' > "$A/workers.json"
-  DEP_DELIVERED_CACHE=(); DEP_PARKED_CACHE=()
+  DEP_DELIVERED_CACHE=()
   CACHE_ROWS=([102]=$'CLOSED\t' [101]=$'MERGED\t' [103]=$'OPEN\t' [106]=$'OPEN\t' [105]=$'OPEN\t' [107]=$'OPEN\t' [108]=$'OPEN\t' [110]=$'OPEN\t'
     [111]=$'OPEN\t' [112]=$'OPEN\troadmap-epic' [113]=$'OPEN\t' [115]=$'CLOSED\t' [116]=$'CLOSED\t' [117]=$'OPEN\t' [118]=$'OPEN\t' [119]=$'MERGED\t'
     [120]=$'OPEN\t' [121]=$'CLOSED\t' [131]=$'OPEN\t' [140]=$'OPEN\t' [130]=$'CLOSED\t' [133]=$'CLOSED\t' [132]=$'CLOSED\t\tCLOSED\tNOT_PLANNED' [150]=$'CLOSED\t')

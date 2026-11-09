@@ -123,6 +123,7 @@
     },
     {
       "branch": "agent/issue-107",
+      "held_dependents": 2,
       "history": [],
       "id": "issue-107",
       "issue": 107,
@@ -132,22 +133,16 @@
       "unpark_condition": "a supervisor decision"
     },
     {
+      "blocked_on": 107,
       "body_blocked_by": [
         107
       ],
       "branch": "agent/issue-7",
-      "history": [
-        {
-          "at": "2026-11-08T10:47:12Z",
-          "result": "stopped waiting on #107: blocker is parked or waits on a parked unit",
-          "stage": "unblocked"
-        }
-      ],
+      "history": [],
       "id": "issue-7",
       "issue": 7,
-      "note": null,
-      "stage": "implement-pending",
-      "task": "t\n\nScheduler note: predecessor #107 is parked or can never deliver (blocker is parked or waits on a parked unit), so this unit no longer waits for it. Do not report BLOCKED-ON #107. Implement what you can; if the dependency is real in code, say so in the report and let review decide."
+      "stage": "blocked-external",
+      "task": "t"
     },
     {
       "blocked_on": 107,
@@ -159,27 +154,11 @@
         {
           "result": "stopped waiting on #107: x",
           "stage": "unblocked"
-        },
-        {
-          "at": "2026-11-08T10:47:12Z",
-          "decision": {
-            "decision": "Hand off to supervisor",
-            "evidence": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide",
-            "owner": "scheduler",
-            "rejected": [
-              "Continue automated handling"
-            ],
-            "why": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide"
-          },
-          "result": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide",
-          "stage": "supervisor-escalated"
         }
       ],
       "id": "issue-8",
       "issue": 8,
-      "note": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide",
-      "stage": "supervisor-review",
-      "supervisor_cap_return_stage": "implement-pending",
+      "stage": "blocked-external",
       "task": "t"
     },
     {
@@ -641,8 +620,6 @@
 [2026-11-08T10:47:12Z] unit issue-2 unblocked: #101 delivered
 [2026-11-08T10:47:12Z] unit issue-3 unblocked: #102 delivered
 [2026-11-08T10:47:12Z] unit issue-105 unblocked: #106 waits on #105: dependency cycle broken here
-[2026-11-08T10:47:12Z] unit issue-7 unblocked: stopped waiting on #107: blocker is parked or waits on a parked unit
-[2026-11-08T10:47:12Z] supervisor-review unit=issue-8: blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide
 [2026-11-08T10:47:12Z] unit issue-9 blocker #108 dead (recut): repointed to child #109
 [2026-11-08T10:47:12Z] unit issue-10 unblocked: #110 closed on purpose (tracker/spec parent)
 [2026-11-08T10:47:12Z] supervisor-review unit=issue-11: blocker #111 is closed in the ledger but its issue is open with no recut children: decide
@@ -929,6 +906,7 @@ api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
     },
     {
       "branch": "agent/issue-107",
+      "held_dependents": 2,
       "history": [],
       "id": "issue-107",
       "issue": 107,
@@ -938,22 +916,16 @@ api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
       "unpark_condition": "a supervisor decision"
     },
     {
+      "blocked_on": 107,
       "body_blocked_by": [
         107
       ],
       "branch": "agent/issue-7",
-      "history": [
-        {
-          "at": "2026-11-08T10:47:12Z",
-          "result": "stopped waiting on #107: blocker is parked or waits on a parked unit",
-          "stage": "unblocked"
-        }
-      ],
+      "history": [],
       "id": "issue-7",
       "issue": 7,
-      "note": null,
-      "stage": "implement-pending",
-      "task": "t\n\nScheduler note: predecessor #107 is parked or can never deliver (blocker is parked or waits on a parked unit), so this unit no longer waits for it. Do not report BLOCKED-ON #107. Implement what you can; if the dependency is real in code, say so in the report and let review decide."
+      "stage": "blocked-external",
+      "task": "t"
     },
     {
       "blocked_on": 107,
@@ -965,27 +937,11 @@ api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
         {
           "result": "stopped waiting on #107: x",
           "stage": "unblocked"
-        },
-        {
-          "at": "2026-11-08T10:47:12Z",
-          "decision": {
-            "decision": "Hand off to supervisor",
-            "evidence": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide",
-            "owner": "scheduler",
-            "rejected": [
-              "Continue automated handling"
-            ],
-            "why": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide"
-          },
-          "result": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide",
-          "stage": "supervisor-escalated"
         }
       ],
       "id": "issue-8",
       "issue": 8,
-      "note": "blocked again on #107 after the scheduler stopped waiting on it (blocker is parked): decide",
-      "stage": "supervisor-review",
-      "supervisor_cap_return_stage": "implement-pending",
+      "stage": "blocked-external",
       "task": "t"
     },
     {

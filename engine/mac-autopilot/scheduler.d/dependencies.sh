@@ -79,7 +79,6 @@ dep_cleared() { # unit-json predecessor → 0 when the ledger and the cached Git
   local info state labels
   dep_delivered_in_ledger "$2" && return 0
   ! dep_dead_ruled "$1" "$2" || return 0
-  ! dep_blocker_parked "$2" || return 0 # the release loop stops waiting on a parked blocker; the gate must not park the unit again
   info="$(dep_cache_info "$2")"
   state="$(jqf -r '.state // empty' <<<"$info")"
   [[ "$state" == CLOSED || "$state" == MERGED ]] && return 0
@@ -207,18 +206,6 @@ dead_blocker_resolve() { # unit-id blocker-issue dependent-issue
   fi
   dep_now to_supervisor "$id" "blocker #$dep is closed in the ledger but its issue is open with no recut children: decide"
 }
-dep_parked_snapshot() { # one ledger read per tick, so a chain is judged before its first waiter leaves it; no GitHub call
-  local n
-  DEP_PARKED_CACHE=()
-  while IFS= read -r n; do
-    [[ "$n" =~ ^[0-9]+$ ]] && DEP_PARKED_CACHE["$n"]=1
-  done < <(jqf -r '. as $root | def dead($n; $seen): if ($seen | index($n)) != null then false else [$root.units[] | select(.issue == $n)] as $r
-    | ($r | length) > 0 and all($r[]; .stage == "parked" or (.stage == "blocked-external" and (.blocked_on | type) == "number" and dead(.blocked_on; $seen + [$n]))) end;
-    [.units[] | .issue | numbers] | unique | .[] | select(dead(.; []))' "$UNITS")
-}
-dep_blocker_parked() { # issue → 0 when every ledger row of it is parked or waits on such a blocker
-  [[ "${DEP_PARKED_CACHE[$1]:-}" == 1 ]]
-}
 dep_stopped_waiting_on() { # unit-id blocker [true|false, when the caller already read it] → 0 when the scheduler already released this unit from that blocker once
   [[ -z "${3:-}" ]] || { [[ "$3" == true ]]; return; }
   jqf -e --arg id "$1" --arg p "stopped waiting on #$2:" 'any(.units[]; .id == $id and any(.history[]?; .stage == "unblocked" and ((.result // "") | startswith($p))))' "$UNITS" >/dev/null
@@ -324,13 +311,12 @@ dep_now() { # run a command that reads the ledger it just wrote (to_supervisor c
 }
 release_dependency_blocks() {
   local id dep issue state labels gh_due=1 last decision dep_results dep_states_json dep_cache_file dep_cache u line
-  local blocker_issue pair_key real_wait recut stacked bb has_info pilot stopped has_note epic_seen marked pilot_label delivered_note
+  local blocker_issue pair_key real_wait recut stacked bb has_info pilot has_note epic_seen marked pilot_label delivered_note
   local -a deps=() unique_deps=()
   local -A DEP_BLOCKED_PAIR_COUNTS=() intake_step_secs=() intake_step_counts=()
   local intake_step_at=$SECONDS US=$'\x1f'
   tick_prs_prime
   dep_delivered_snapshot
-  dep_parked_snapshot
   while IFS=$'\t' read -r blocker_issue dep; do
     [[ "$blocker_issue" =~ ^[0-9]+$ && "$dep" =~ ^[0-9]+$ ]] || continue
     pair_key="$blocker_issue:$dep"
@@ -398,7 +384,7 @@ release_dependency_blocks() {
   intake_mark retire_not_planned
   pilot_label="$(stack_pilot_label)"; delivered_note="$(dep_delivered_note '@@')"
   # One row per blocked unit with everything the decisions below read; \x1f keeps empty fields, the unit json only rides along when a helper needs it.
-  while IFS="$US" read -r id dep issue recut stacked bb real_wait state labels has_info pilot stopped has_note epic_seen u; do
+  while IFS="$US" read -r id dep issue recut stacked bb real_wait state labels has_info pilot has_note epic_seen u; do
     intake_mark release_row
     [[ "$dep" =~ ^[0-9]+$ ]] || continue
     if [[ "$recut" == true ]]; then continue; fi
@@ -412,16 +398,6 @@ release_dependency_blocks() {
     if [[ "$real_wait" != true && "$issue" =~ ^[0-9]+$ && "${DEP_BLOCKED_PAIR_COUNTS[$pair_key]:-0}" =~ ^[1-9][0-9]*$ ]]; then
       dep_blocker_forget "$issue" "$dep"
       unblock_unit "$id" "#$dep waits on #$issue: dependency cycle broken here"; continue
-    fi
-    # A parked blocker, or one that waits on a parked unit, will not deliver soon: stop waiting. A second block on it goes to the supervisor, so a refusing worker cannot loop.
-    if dep_blocker_parked "$dep"; then
-      dep_blocker_forget "$issue" "$dep"
-      if dep_stopped_waiting_on "$id" "$dep" "$stopped"; then
-        dep_now to_supervisor "$id" "blocked again on #$dep after the scheduler stopped waiting on it (blocker is parked): decide"
-      else
-        dep_stop_waiting "$id" "$dep" "blocker is parked or waits on a parked unit"
-      fi
-      continue
     fi
     [[ "$has_info" == true ]] || continue
     if (( gh_due )) && [[ "$state" == OPEN && "$real_wait" != true && "$pilot" == true ]] && ! dep_body_declares "$bb" "$u" "$dep" \
@@ -459,7 +435,6 @@ release_dependency_blocks() {
        (((.dep_wait_delivery // "") | tostring) == $d),
        (if ($x | type) == "object" then ($x.state // "") else "" end), (if ($x | type) == "object" then (($x.labels // "") | tostring) else "" end),
        ($x != null and $x != false), $pilot,
-       (try any(.history[]?; .stage == "unblocked" and ((.result // "") | startswith("stopped waiting on #" + $d + ":"))) catch false),
        (try (((.task // "") | contains($note | gsub("@@"; $d)))) catch false),
        (try any(.history[]?; .stage == "epic-not-predecessor" and .result == ("#" + $d)) catch false),
        (if $bb == "?" or $pilot then tojson else "" end)]
@@ -483,6 +458,7 @@ release_dependency_blocks() {
     to_supervisor "$id" "blocked-external without a predecessor: nothing can release it"
   done
   intake_mark no_blocker_escalate
+  dep_hold_parked; intake_mark hold_parked
   if (( gh_due )); then
     reconcile_stacked_units; intake_mark reconcile_stacked
     DEP_SWEEP=1; dep_rows_prime
@@ -564,6 +540,33 @@ dep_dead_unpark() { # a unit parked dep-dead-repeat before the one release exist
     (( ! DEP_SWEEP )) || dep_rows_prime # a released waiter can be another waiter's predecessor row
     echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=released reason=parked-before-release" >> "$A/alerts/events.md"
   done < <(jqf -c '.units[] | select(.stage=="parked" and .parked_reason=="dep-dead-repeat" and (.dep_wait_delivery | type)=="number")' "$UNITS")
+}
+# A parked blocker holds its dependents (2026-11-08: five released ones ran against prerequisites that never shipped, 5 implement + 5 review rounds lost).
+# Two ledger-only passes per tick, both idempotent (the ledger decides, no marker): units the old release rule freed while they have no PR wait on
+# the blocker again, then every parked or supervisor-review unit carries the count of units waiting on it, and a supervisor-park one is escalated once.
+dep_hold_parked() {
+  local id n note
+  while IFS=$'\t' read -r id n; do
+    dep_delivered_in_ledger "$n" && continue
+    set_unit "$id" "$(hist blocker-held "released while #$n is parked or open and nothing was built; waiting again") | .blocked_on=$n | .note=$(js "waiting for predecessor #$n") | .stage=\"blocked-external\" | .task |= (. // \"\" | sub(\"\\n\\nScheduler note: predecessor #$n is parked or can never deliver \\\\([^)]*\\\\)[^\\n]*\"; \"\"))"
+    say "unit $id blocked again on #$n: the scheduler had stopped waiting on a blocker that is parked or open"
+  done < <(jqf -r '. as $r | .units[] | select(.stage == "implement-pending" and .pr == null and .blocked_on == null and .size_recut_pending != true)
+    | ((.history // []) | map(select(.stage == "unblocked")) | last // {}) as $e
+    | select(($e.result // "") | test("^stopped waiting on #[0-9]+:"))
+    | ($e.result | capture("^stopped waiting on #(?<n>[0-9]+):").n | tonumber) as $n
+    | select([$r.units[] | select(.issue == $n)] | length > 0 and all(.[]; .stage | IN("closed", "wontfix", "duplicate", "done") | not))
+    | select(.history | (map(.stage) | rindex("unblocked")) as $at | all(.[$at + 1:][]; (.stage | IN("supervisor-requeue", "supervisor-reroute", "supervisor-cap-rule")) | not))
+    | [.id, $n] | @tsv' "$UNITS")
+  while IFS=$'\t' read -r id n note; do
+    set_unit "$id" "$(if [[ "$n" == 0 ]]; then printf 'del(.held_dependents)'; else printf '.held_dependents=%s' "$n"; fi)"
+    [[ -z "$note" ]] || to_supervisor "$id" "parked blocker holds $n dependents: deliver it, recut it, close it or rule it obsolete"
+  done < <(jqf -r '. as $r | def reaches($u; $n; $seen): ($u.blocked_on) as $b
+      | if ($b | type) != "number" then false elif $b == $n then true elif ($seen | index($b)) != null then false
+        else any($r.units[]; .stage == "blocked-external" and .issue == $b and reaches(.; $n; $seen + [$b])) end;
+    .units[] | select((.stage == "parked" or .stage == "supervisor-review") and (.issue | type) == "number") | . as $p
+    | ([$r.units[] | select(.stage == "blocked-external" and .size_recut_pending != true and reaches(.; $p.issue; []))] | length) as $n
+    | select($n != (.held_dependents // 0))
+    | [.id, $n, (if $p.stage == "parked" and $p.parked_reason == "supervisor-park" and $p.held_dependents == null and $n > 0 then "escalate" else "" end)] | @tsv' "$UNITS")
 }
 dep_blocker_forget() { # dynamic local map: keep mutual-cycle checks current as units leave blocked-external
   local key="$1:$2" count
