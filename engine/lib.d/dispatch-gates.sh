@@ -517,3 +517,12 @@ cap_slots_remaining() {
   [ "$slots" -lt 0 ] && slots=0
   echo "$slots"
 }
+
+# run-release.sh refuses with 75 when the production Deployment record is unreadable (baseline selection), so a unit
+# launched on an unreadable record only ends in a refusal. Read it with the runner's own reader first; an empty list
+# is readable (the runner bootstraps its baseline). Returns 75 so dispatch_release_batch leaves the anchor pending.
+release_deployment_record_readable() {
+  bash "${ZF_ENGINE_DIR:?}/production-deployment-read.sh" "$REPO" >/dev/null 2>&1 && return 0
+  echo "issue-pipeline: production Deployment record is unreadable; release batch not dispatched" >&2
+  return 75
+}

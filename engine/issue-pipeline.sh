@@ -765,10 +765,10 @@ dispatch_release_batch() {
     record_env_fault "env:leg-not-executable:release-batch" release "$anchor" "$script is not executable (git mode bit)"
     return 0
   fi
-  if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-batch --collect \
+  if release_deployment_record_readable && guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-batch --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY \
     -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" \
-    -p "RuntimeMaxSec=$RELEASE_RUNTIME_MAX_SEC" \
+    -p "RuntimeMaxSec=$RELEASE_RUNTIME_MAX_SEC" -p SuccessExitStatus=75 \
     "${runtime_env[@]}" \
     "$script" "$anchor" "$batch_sha"; then
     release_batch_cadence_mark
