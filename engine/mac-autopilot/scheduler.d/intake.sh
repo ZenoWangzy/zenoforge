@@ -257,7 +257,7 @@ register_new_issues() {
   local episode existing_id existing_pr prior_pr pr_changed pr_state lane_policy handoff_all handoff_pr handoff_branch recovery_sha
   local cached_prs busy_prs issue64
   local existing_only="${1:-0}" only_pred=0 ids lookup handoff_rows matches ids_state pr_number known_prs known_failed hotfix_prs prior_worktree prior_reason episode_hash related_id related_hash unsafe_clones
-  local issue_json parent_reason parent_status parent_transition_status intake_footprint_owners='[]' intake_candidate_json intake_candidate_scope intake_candidate_stage intake_conflict state_read_status state_read_value
+  local issue_json parent_reason parent_status parent_step parent_transition_status intake_footprint_owners='[]' intake_candidate_json intake_candidate_scope intake_candidate_stage intake_conflict state_read_status state_read_value
   local refill_mode="${2:-false}" free_slots ready_buffer target_pending max_refill upstream_room
   local intake_budget intake_left intake_started=$SECONDS step_started=$SECONDS candidate_started full_at now fresh_seconds existing_issue
   local l_ambiguous wait_ops='' wait_ops_on=1 ix_sig='' ix_ok=0 cx_src=$'\001' cx_ok=0 lookup_fast=0 known_prs known_list=() hotfix_prs l_amb l_hot l_count l_first_pr l_first_head l_ids l_hotpath row_consumed lookup_rc
@@ -637,7 +637,9 @@ register_new_issues() {
       else
         parent_status=$?
         if (( parent_status != 1 )); then
-          say "intake issue #$n deferred: could not verify parent status"
+          parent_step="$(sed -n 's/^parent-check-failure step=//p' <<<"$parent_reason" | head -n 1)"
+          [[ -n "$parent_step" ]] || parent_step=unknown
+          say "intake issue #$n deferred: could not verify parent status rc=$parent_status step=$parent_step"
           intake_skip parent_unverified; continue
         fi
         intake_parent_retry_clear "$n"

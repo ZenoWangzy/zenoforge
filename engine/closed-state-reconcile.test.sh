@@ -41,6 +41,20 @@ issue_reconcile_closed_state 5306 '{"number":5306,"state":"CLOSED","stateReason"
 grep -Fq -- '--add-label released' "$GH_WRITES"
 echo 'ok - released close keeps concluded and released stage labels'
 
+state_merge 5310 '{"state":"ready-for-agent","state_changed_at":"2026-10-01T00:00:00Z"}'
+jq '.state_changed_at="2026-10-01T00:00:00Z"' "$(state_file 5310)" > "$AGENT_HOME/state/5310.json.tmp"
+mv "$AGENT_HOME/state/5310.json.tmp" "$(state_file 5310)"
+gh_q() {
+  [[ "$*" == "issue list --repo $REPO --state closed --label ready-for-agent --limit 1000 --json number,state,stateReason,closedAt,labels" ]] || return 1
+  printf '%s\n' '[{"number":5310,"state":"CLOSED","stateReason":"COMPLETED","closedAt":"2026-10-12T12:00:00Z","labels":[{"name":"ready-for-agent"}]}]'
+}
+closed_state_snapshot="$(outcomes_closed_state_reconciliation_snapshot "$AGENT_HOME" "$REPO" '[]' '2026-11-08T00:00:00Z')"
+jq -e 'length == 1 and .[0].number == 5310 and .[0].state == "CLOSED"' <<< "$closed_state_snapshot" >/dev/null
+outcomes_reconcile_closed_states "$AGENT_HOME" "$closed_state_snapshot"
+[[ "$(state_read 5310 | jq -r .state)" == concluded ]]
+echo 'ok - closed ready-for-agent issues reconcile from the closed-label sweep'
+unset -f gh_q
+
 state_merge 5307 '{"state":"on-hold","hold":{"kind":"supervisor-inbox","reason":"protected owner decision"}}'
 cp "$(state_file 5307)" "$AGENT_HOME/before-observation.json"
 cp "$GH_WRITES" "$AGENT_HOME/before-observation-writes"

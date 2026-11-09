@@ -66,6 +66,85 @@ issue_label_read_live() {
 }
 
 
+outcomes_closed_state_reconciliation_snapshot() { # home repo recent-closed-json cutoff → recent plus older local ready-for-agent closes
+  local home="$1" repo="$2" recent_json="$3" cutoff_iso="$4" ready_ids="" ready_ids_json ready_json row issue state_file local_state
+  local OUTCOMES_GH_TIMEOUT_SECONDS=10
+  jq -e 'type == "array" and all(.[]; (.number | type) == "number" and (.labels | type) == "array")' \
+    <<< "$recent_json" >/dev/null 2>&1 || return 1
+  ready_json="$(gh_q issue list --repo "$repo" --state closed --label ready-for-agent --limit 1000 \
+    --json number,state,stateReason,closedAt,labels)" || return 1
+  jq -e 'type == "array" and all(.[];
+    (.number | type) == "number" and
+    (.labels | type) == "array" and
+    ((.closedAt == null) or (.closedAt | type == "string")) and
+    ((.stateReason == null) or (.stateReason | type == "string")))' \
+    <<< "$ready_json" >/dev/null 2>&1 || return 1
+  while IFS= read -r row; do
+    issue="$(jq -r '.number' <<< "$row")" || return 1
+    state_file="$home/state/$issue.json"
+    [[ -f "$state_file" ]] || continue
+    local_state="$(jq -er --arg cutoff "$cutoff_iso" '
+      if type != "object" then error("invalid issue state")
+      elif .state == "ready-for-agent" and ((.state_changed_at // "") | tostring) <= $cutoff then "ready"
+      else "other" end
+    ' "$state_file" 2>/dev/null)" || return 1
+    [[ "$local_state" == ready ]] && ready_ids+="$issue"$'\n'
+  done < <(jq -c '.[]' <<< "$ready_json")
+  ready_ids_json="$(jq -Rn '[inputs | select(test("^[1-9][0-9]*$")) | tonumber]' <<< "$ready_ids")" || return 1
+  jq -cn --argjson recent "$recent_json" --argjson ids "$ready_ids_json" --argjson stale "$ready_json" '
+    ($recent + [$stale[] | select(.number as $n | $ids | index($n))])
+    | group_by(.number) | map(last)
+  '
+}
+
+
+# GitHub UI and PR auto-closes do not pass through conclude_run. Repair only
+# tracked tickets from the closed-issue snapshot, through the shared transition.
+outcomes_reconcile_closed_states() {
+  local home="$1" closed_json="$2" row issue issue_json state_file dry_run="${OUTCOMES_RECONCILE_DRY_RUN:-0}" failure=0
+  local mode="${3:-reconcile}" state metadata hold_present held=0
+  local -a pending=()
+  [[ "$mode" == reconcile || "$mode" == observe ]] || return 1
+  [[ "$dry_run" == 0 || "$dry_run" == 1 ]] || return 1
+  jq -e 'type == "array" and all(.[];
+    (.number | type) == "number" and (.labels | type) == "array" and
+    ((.closedAt == null) or (.closedAt | type == "string")) and
+    ((.stateReason == null) or (.stateReason | type == "string")))' \
+    <<< "$closed_json" >/dev/null 2>&1 || return 1
+  [[ "$mode" == observe || "$dry_run" != 1 ]] || return 0
+  while IFS= read -r row; do
+    issue="$(jq -r '.number' <<< "$row")" || return 1
+    [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
+    state_file="$home/state/$issue.json"
+    [ -f "$state_file" ] || continue
+    if [[ "$mode" == observe ]]; then
+      # Preserve the complete local lifecycle/hold record. Report drift rather
+      # than publishing a terminal state whose protected hold was not released.
+      metadata="$(jq -er 'select(type == "object" and (.state | type == "string" and length > 0))
+        | [.state, (.hold != null)] | @tsv' "$state_file")" || return 1
+      IFS=$'\t' read -r state hold_present <<< "$metadata"
+      if [[ "$hold_present" == true ]]; then held=$((held + 1)); fi
+      case "$state" in
+        concluded|duplicate|wontfix|released|closed) [[ "$hold_present" == true ]] || continue ;;
+      esac
+      pending+=("#$issue")
+      continue
+    fi
+    issue_json="$(jq -c '. + {state:"CLOSED"}' <<< "$row")" || return 1
+    if ! issue_reconcile_closed_state "$issue" "$issue_json"; then
+      echo "outcomes_reconcile_closed_states: could not reconcile closed issue #$issue" >&2
+      failure=1
+    fi
+  done < <(jq -c '.[]' <<< "$closed_json")
+  if [[ "$mode" == observe ]]; then
+    local issues=none
+    if ((${#pending[@]})); then issues="$(IFS=,; printf '%s' "${pending[*]}")"; fi
+    printf 'pending=%s issues=%s held=%s' "${#pending[@]}" "$issues" "$held"
+  fi
+  return "$failure"
+}
+
+
 # cached_issue_has_label <issue> <label> -- 0 present, 1 absent, 2 unknown.
 # Exactly-full batches may be truncated, so absent IDs fall back to a point read.
 cached_issue_has_label() {
