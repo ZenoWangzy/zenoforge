@@ -3745,14 +3745,18 @@ web_advisor_provider_start_job_unit() { return 0; }
 printf "question\n" > "$AGENT_HOME/question"
 printf "%s" "$ZF_QUARANTINE_CANARY_SCOPES" | tr "\n" "," > "$ADVISOR_CHILD_SCOPES"
 web_advisor_provider_dispatch_question_async child "$AGENT_HOME/question"
+jq -r .canaries "$(quarantine_file advisor)" > "$ADVISOR_FIRST_CANARIES"
+web_advisor_provider_dispatch_question_async child-reask "$AGENT_HOME/question"
+jq -r .canaries "$(quarantine_file advisor)" > "$ADVISOR_REASK_CANARIES"
 EOF
     chmod +x "$ZF_ENGINE_DIR/run-triage.sh" "$ZF_ENGINE_DIR/run-advisor.sh"
+    ln -s run-triage.sh "$ZF_ENGINE_DIR/run-implement.sh"
     cat > "$TEST_BIN/systemd-run" <<"EOF"
 #!/usr/bin/env bash
 args=("$@"); script=-1
 for ((i=0; i<${#args[@]}; i++)); do
   if [[ "${args[$i]}" == -E ]]; then next=$((i + 1)); [[ "${args[$next]}" != ZF_QUARANTINE_CANARY_SCOPES=* ]] || export "${args[$next]}"; fi
-  [[ "${args[$i]}" != */run-triage.sh && "${args[$i]}" != */run-advisor.sh ]] || { script=$i; break; }
+  [[ "${args[$i]}" != */run-triage.sh && "${args[$i]}" != */run-advisor.sh && "${args[$i]}" != */run-implement.sh ]] || { script=$i; break; }
 done
 (( script >= 0 )) || exit 97
 exec "${args[@]:$script}"
@@ -3768,10 +3772,12 @@ EOF
     coord_assert_owned() { return 0; }
     pipeline_claim_drop() { PIPELINE_CLAIM_KEY=""; PIPELINE_CLAIM_STAGE=""; PIPELINE_CLAIM_UNIT=""; PIPELINE_CLAIM_OWNER=""; }
     pipeline_claim_keep() { pipeline_claim_drop; }
+    # This fixture needs the normal no-OOM result; issue-pipeline.test.sh covers the memory retry branch.
     consume_unit_memory_oom() { return 1; }
     record_env_fault() { :; }
     guarded_write() { "$@"; }
-    UNIT_PREFIX_TRANSIENT=zf TRIAGE_RUNTIME_MAX_SEC=60 ADVISOR_RUNTIME_MAX_SEC=60
+    UNIT_PREFIX_TRANSIENT=zf TRIAGE_RUNTIME_MAX_SEC=60 ADVISOR_RUNTIME_MAX_SEC=60 IMPLEMENT_RUNTIME_MAX_SEC=60
+    PIPELINE_CLAIM_KEY="" PIPELINE_CLAIM_UNIT="" PIPELINE_CLAIM_STAGE="" PIPELINE_CLAIM_OWNER=""
     dispatch_status=0; RUN_RC=124; export RUN_RC; dispatch triage 929 || dispatch_status=$?
     echo "dispatch_124_status=$dispatch_status"
     echo "dispatch_124_mark_calls=$(wc -l < "$MARK_LOG" 2>/dev/null || echo 0)"
@@ -3781,7 +3787,10 @@ EOF
     quarantine_open advisor env:test-gate:advisor "d" 2 "$tq" 2>/dev/null
     quarantine_open advisor@packages/advisor-test env:test-gate:advisor "d" 2 "$tq" 2>/dev/null
     stage_dispatch_allowed advisor "[\"packages/advisor-test\"]" $((tq + 16 * 60)) >/dev/null 2>&1
-    ADVISOR_CHILD_SCOPES="$AGENT_HOME/advisor-child-scopes"; export ADVISOR_CHILD_SCOPES
+    ADVISOR_CHILD_SCOPES="$AGENT_HOME/advisor-child-scopes"
+    ADVISOR_FIRST_CANARIES="$AGENT_HOME/advisor-first-canaries"
+    ADVISOR_REASK_CANARIES="$AGENT_HOME/advisor-reask-canaries"
+    export ADVISOR_CHILD_SCOPES ADVISOR_FIRST_CANARIES ADVISOR_REASK_CANARIES
     dispatch_status=0; dispatch advisor 930 || dispatch_status=$?
     echo "advisor_child_status=$dispatch_status"
     echo "advisor_child_scopes=$(cat "$ADVISOR_CHILD_SCOPES")"
@@ -3797,6 +3806,23 @@ EOF
     echo "second_same_tick=$(stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) 2>/dev/null && echo yes || echo no)"
     echo "real_job_canaries=$(jq -r .canaries "$(quarantine_file triage)")"
     echo "next_canary_in=$(( $(jq -r .next_canary_at "$(quarantine_file triage)") - (tq + 16 * 60) ))"
+    echo "advisor_reask_stage_canaries=$(cat "$ADVISOR_REASK_CANARIES")"
+    echo "advisor_reask_first_canaries=$(cat "$ADVISOR_FIRST_CANARIES")"
+    # Trace requeue persistence, issue-pipeline launch, and scheduler bridge in one shell.
+    now="$(date +%s)"; quarantine_open implement env:test-gate:requeue fixture 2 "$now" >/dev/null 2>&1; qf="$(quarantine_file implement)"
+    jq --argjson now "$now" ".next_canary_at = \$now" "$qf" > "$qf.tmp" && mv "$qf.tmp" "$qf"
+    printf '%s\n' '{"attempts":0,"unit_memory_ooms":{},"run":{"conclusion":{}}}' > "$AGENT_HOME/state/932.json"
+    STAGE_DISPATCH_CANARY_SCOPES=""; quarantine_stage_canary_reserve implement
+    state_merge 932 ".run.conclusion.canary_reserved_scopes = \"$(quarantine_canary_scope_list_for_stage implement)\""
+    quarantine_stage_canary_forget_stage implement; implement_runs_since_last_hold_lift() { IMPLEMENT_REPEAT_RUN_COUNT=0; }
+    RUN_RC=0; export RUN_RC; dispatch implement 932 || :
+    ROOT="$ZF_REPO_DIR" SCHEDULER_AGENT_LIB="$ENV_FAULT_LIB_DIR/lib.sh" SCHEDULER_SCOPE_LIB_DIR="$ENV_FAULT_LIB_DIR/lib.d"; scheduler_issue_state() { state_read "$1"; }
+    eval "$(sed -n "/^scheduler_mark_canary_after_worker_start() (/,/^)/p" "$ENV_FAULT_LIB_DIR/mac-autopilot/scheduler.d/lib-bridge.sh")"; scheduler_mark_canary_after_worker_start 932
+    echo "requeue_scheduler_canaries=$(jq -r .canaries "$qf")"; echo "requeue_scheduler_reservation=$(state_read 932 | jq -r ".run.conclusion.canary_reserved_scopes // empty")"
+    state_merge 932 '.run.conclusion.canary_reserved_scopes = "implement"'; STAGE_DISPATCH_CANARY_SCOPES=implement
+    RUN_RC=1; export RUN_RC; dispatch implement 932 || :
+    echo "failed_launch_canaries=$(jq -r .canaries "$qf")"; echo "failed_launch_memory_reserved=$(quarantine_stage_canary_pending implement && echo yes || echo no)"
+    echo "failed_launch_state_reserved=$(state_read 932 | jq -r ".run.conclusion.canary_reserved_scopes // empty")"
     # canary survived (no new fault within grace) -> lifted
     reconcile_quarantines "$((tq + 16 * 60 + 31 * 60))" 2>/dev/null
     echo "triage_lifted=$([ -f "$(quarantine_file triage)" ] && echo no || echo yes)"
@@ -3822,8 +3848,8 @@ EOF
     rc=0; env_fault_probe env:nothing-known || rc=$?; echo "probe_unknown_rc=$rc"
     rc=0; env_fault_repair env:nothing-known || rc=$?; echo "repair_unknown_rc=$rc"
     echo "key_sanitized=$(env_fault_key "env:test-gate:../../x y")"
-  ' 2>&1
-)"
+    ' 2>&1
+  )"
 rm -rf "$EF_HOME" "$EF_BIN"
 ef() { printf '%s\n' "$EF_OUT" | grep -m1 "^$1=" | cut -d= -f2-; }
 assert_eq "env_fault_is_systemic: nothing recorded is not systemic" "no" "$(ef 'systemic(empty)')"
@@ -3857,11 +3883,20 @@ assert_eq "advisor child receives only advisor canary scopes" "advisor,advisor@p
 assert_eq "advisor child leaves a reserved triage scope uncharged" "0" "$(ef advisor_child_triage_canaries)"
 assert_eq "advisor child marks its stage canary" "1" "$(ef advisor_child_stage_canaries)"
 assert_eq "advisor child marks its package canary" "1" "$(ef advisor_child_package_canaries)"
+assert_eq "advisor re-ask does not charge its inherited canary again" "1" "$(ef advisor_reask_stage_canaries)"
+assert_eq "advisor first job charges its canary once" "1" "$(ef advisor_reask_first_canaries)"
 assert_eq "a real job starts with canaries at zero before the mark" "0" "$(ef real_job_canaries_before)"
 assert_eq "a real job start increments the canary count once" "1" "$(ef real_job_canaries_after)"
 assert_eq "quarantine_mark_canary: the next canary waits twice as long" "1800" "$(ef next_canary_in)"
+assert_eq "same-process requeue and issue-pipeline plus scheduler charge one canary" "1" "$(ef requeue_scheduler_canaries)"
+assert_eq "scheduler consumes the persisted canary reservation" "" "$(ef requeue_scheduler_reservation)"
+assert_eq "failed issue-pipeline launch leaves the canary uncharged" "1" "$(ef failed_launch_canaries)"
+assert_eq "failed issue-pipeline launch clears in-memory canary reservation" "no" "$(ef failed_launch_memory_reserved)"
+assert_eq "failed issue-pipeline launch clears persisted canary reservation" "" "$(ef failed_launch_state_reserved)"
 ADVISOR_BATCH_DISPATCH_BODY="$(sed -n '/^dispatch_advisor_batch() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
-assert_contains "advisor batch forwards its reserved scopes" "$ADVISOR_BATCH_DISPATCH_BODY" 'quarantine_canary_scope_list_for_stage advisor'
+assert_contains "advisor batch forwards its reserved scopes" "$ADVISOR_BATCH_DISPATCH_BODY" 'ZF_QUARANTINE_CANARY_SCOPES=$canary_scopes'
+ADVISOR_BATCH_REASK_BODY="$(sed -n '/^advisor_batch_dispatch_plan_reask() {/,/^}/p' "$SCRIPT_DIR/run-advisor-batch.sh")"
+assert_contains "advisor batch re-ask consumes canary scopes" "$ADVISOR_BATCH_REASK_BODY" 'unset ZF_QUARANTINE_CANARY_SCOPES'
 PROVIDER_DISPATCH_BODY="$(sed -n '/^web_advisor_provider_dispatch_question_async() {/,/^}/p' "$SCRIPT_DIR/providers/web-advisor-provider.sh")"
 assert_contains "advisor provider uses the shared canary mark" "$PROVIDER_DISPATCH_BODY" 'quarantine_mark_canary_scope_list'
 assert_contains "advisor provider reports a failed canary mark" "$PROVIDER_DISPATCH_BODY" 'quarantine canary mark failed'
@@ -3869,6 +3904,7 @@ QUARANTINE_MARK_BODY="$(sed -n '/^quarantine_mark_canary() {/,/^}/p' "$SCRIPT_DI
 assert_contains "canary read-modify-write takes a per-scope flock" "$QUARANTINE_MARK_BODY" 'flock -x'
 BLOCKER_REQUEUE_BODY="$(sed -n '/^reconcile_blocking_issue_root() {/,/^}/p' "$SCRIPT_DIR/lib.d/blockers.sh")"
 assert_contains "blocker requeue persists its canary reservation" "$BLOCKER_REQUEUE_BODY" 'canary_reserved_scopes'
+assert_contains "blocker requeue clears its in-memory reservation after persistence" "$BLOCKER_REQUEUE_BODY" 'quarantine_stage_canary_forget_stage implement'
 assert_contains "scheduler consumes blocker reservations in the worker-start bridge" "$(cat "$SCRIPT_DIR/mac-autopilot/scheduler.d/lib-bridge.sh")" 'quarantine_mark_canary_scope_list "$scope"'
 assert_eq "reconcile: a canary with no new fault inside the grace period lifts the quarantine" "yes" "$(ef triage_lifted)"
 assert_eq "reconcile: a canary followed by the same fault keeps it" "yes" "$(ef docker_still_quarantined)"

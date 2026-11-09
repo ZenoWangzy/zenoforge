@@ -235,11 +235,13 @@ record_web_advisor_provider_fault() {
 # shared browser lease; the tick must not require it to be free at dispatch.
 web_advisor_provider_dispatch_allowed() {
   local now="${1:-$(date +%s)}"
+  web_advisor_provider_usable || { STAGE_DISPATCH_BLOCKING_SCOPES=advisor; return 1; }
   if model_config_fault_blocked advisor "$(model_policy identity advisor)"; then
     STAGE_DISPATCH_BLOCKING_SCOPES=advisor
     return 1
   fi
-  stage_dispatch_allowed advisor "[]" "$now"
+  stage_dispatch_allowed advisor "[]" "$now" || return $?
+  quarantine_canary_scope_list_for_stage advisor
 }
 
 # WEB_ADVISOR_PROVIDER_SCRIPT -- env-first, same convention as other
@@ -565,7 +567,7 @@ web_advisor_provider_resume_job_if_stopped() {
 }
 
 web_advisor_provider_dispatch_question_async() {
-  local job_id="$1" question_file="$2" mode="${3:-single}"
+  local job_id="$1" question_file="$2" mode="${3:-single}" canary_scopes="${ZF_QUARANTINE_CANARY_SCOPES:-}" start_status
   local job_dir="$WEB_ADVISOR_PROVIDER_JOB_DIR/$job_id"
   case "$mode" in
     single|single-request-ndjson) ;;
@@ -576,9 +578,15 @@ web_advisor_provider_dispatch_question_async() {
   cp "$question_file" "$job_dir/question.txt"
   printf '%s\n' "$mode" > "$job_dir/mode"
   printf '%s\n' "$(( $(date +%s) + WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS ))" > "$job_dir/deadline"
-  web_advisor_provider_start_job_unit "$job_id" || return $?
-  if declare -F quarantine_mark_canary_scope_list >/dev/null; then
-    quarantine_mark_canary_scope_list "${ZF_QUARANTINE_CANARY_SCOPES:-}" || echo "web-advisor-provider: quarantine canary mark failed" >&2
+  if web_advisor_provider_start_job_unit "$job_id"; then :; else
+    start_status=$?
+    unset ZF_QUARANTINE_CANARY_SCOPES
+    return "$start_status"
+  fi
+  unset ZF_QUARANTINE_CANARY_SCOPES
+  if [ -n "$canary_scopes" ]; then
+    declare -F quarantine_mark_canary_scope_list >/dev/null && quarantine_mark_canary_scope_list "$canary_scopes" \
+      || { echo "web-advisor-provider: quarantine canary mark failed" >&2; return 1; }
   fi
 }
 

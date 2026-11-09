@@ -728,6 +728,8 @@ dispatch() {
     if [[ "$stage" != advisor ]] && declare -F quarantine_mark_stage_dispatch_canaries >/dev/null; then quarantine_mark_stage_dispatch_canaries "$stage"; fi
   else
     dispatch_status=$?
+    quarantine_stage_canary_forget_stage "$stage"
+    [[ "$stage" != implement || ! "$n" =~ ^[1-9][0-9]*$ ]] || state_merge "$n" 'del(.run.conclusion.canary_reserved_scopes)' || { pipeline_claim_drop; return 1; }
     if [ "$dispatch_status" -eq 75 ]; then
       echo "issue-pipeline: $stage #$n admission deferred; leaving it queued" >&2
       pipeline_claim_drop
@@ -789,7 +791,7 @@ dispatch_release_batch() {
 # batch keeps its persisted member list. Unit name still shares the advisor
 # capacity ledger.
 dispatch_advisor_batch() {
-  local script="" poll_only="${1:-0}" n budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status
+  local script="" poll_only="${1:-0}" canary_scopes="${2:-}" n budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status
   local -a issue_ids=()
   if ! script="$(zf_advisor_batch_runner)"; then
     echo "issue-pipeline: advisor batch runner is invalid in advisor.json -- not dispatching" >&2
@@ -840,7 +842,7 @@ dispatch_advisor_batch() {
     fi
   fi
   if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect \
-    "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" -E "ZF_QUARANTINE_CANARY_SCOPES=$(quarantine_canary_scope_list_for_stage advisor)" \
+    "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" -E "ZF_QUARANTINE_CANARY_SCOPES=$canary_scopes" \
     -p "RuntimeMaxSec=$ADVISOR_RUNTIME_MAX_SEC" \
     "$script" $([ "$poll_only" = 1 ] && echo --poll-only) --scheduled "${issue_ids[@]}"; then
     if [ "${#issue_ids[@]}" -gt 0 ]; then
@@ -2883,6 +2885,7 @@ elif advisor_batch_job_active; then
     dispatch_advisor_batch 1 || exit "$?"
   fi
 else
+  advisor_canary_scopes=""
   if [ "$advisor_slots" -gt 0 ]; then
     advisor_dispatch_stored_verdict_pool
   fi
@@ -2892,9 +2895,9 @@ else
   if [ "$ADVISOR_QUEUE_COUNT" -ge "$ADVISOR_BATCH_MIN" ]; then
     if [ -n "$ADVISOR_PENDING_JOB_IDS" ]; then
       : # recorded above as batch-pending; the batch starts once they drain
-    elif [ "$advisor_slots" -gt 0 ] && web_advisor_provider_dispatch_allowed; then
+    elif [ "$advisor_slots" -gt 0 ] && advisor_canary_scopes="$(web_advisor_provider_dispatch_allowed)"; then
       echo "issue-pipeline: $ADVISOR_QUEUE_COUNT needs-advisor tickets meet batch threshold $ADVISOR_BATCH_MIN; dispatching one batch job" >&2
-      dispatch_advisor_batch || exit "$?"
+      dispatch_advisor_batch 0 "$advisor_canary_scopes" || exit "$?"
     elif [ "$advisor_slots" -gt 0 ] && [ -n "${STAGE_DISPATCH_BLOCKING_SCOPES:-}" ]; then
       record_advisor_decision skipped quarantine \
         "Advisor rung remains queued because advisor quarantine blocks dispatch: $STAGE_DISPATCH_BLOCKING_SCOPES" "$NEEDS_ADVISOR_IDS"

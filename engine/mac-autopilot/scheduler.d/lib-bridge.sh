@@ -24,6 +24,12 @@ scheduler_mark_canary_after_worker_start() ( # issue; consume a blocker-route ca
   state_merge "$1" 'del(.run.conclusion.canary_reserved_scopes)' || return 1
   quarantine_mark_canary_scope_list "$scope"
 )
+scheduler_clear_canary_after_failed_start() (
+  [[ "$1" =~ ^[1-9][0-9]*$ ]] || return 0
+  REPO_DIR="$ROOT"
+  source "$SCHEDULER_AGENT_LIB" || return 1
+  state_merge "$1" 'del(.run.conclusion.canary_reserved_scopes)'
+)
 scheduler_jq_arg_file() (
   REPO_DIR="$ROOT"
   source "$SCHEDULER_AGENT_LIB" || return 1

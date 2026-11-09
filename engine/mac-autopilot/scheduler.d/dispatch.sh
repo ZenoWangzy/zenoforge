@@ -98,10 +98,10 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   local worker_pid_file WORKER_PIDFILE WORKER_COST_TAG # not exported: the worker must not inherit them; worker_scope_launch reads them
   WORKER_PIDFILE="$(worker_pidfile "$unit")"
   WORKER_COST_TAG="type=$type unit=$unit"
-  worker_pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
+  worker_pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || { [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :; return 1; }
   rm -f -- "$worker_pid_file"
   worker_scope_launch "$worker_pid_file" "$workdir" "$SUP/$log" "${launcher[@]}" -- \
-    "${worker_env[@]}" "${launch_command[@]}" || { rm -f -- "$worker_pid_file"; return 1; }
+    "${worker_env[@]}" "${launch_command[@]}" || { rm -f -- "$worker_pid_file"; [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :; return 1; }
   pid="$WORKER_SCOPE_PID"
   rm -f -- "$worker_pid_file"
   local pid_started
@@ -109,12 +109,14 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   [[ "$pid_started" =~ ^[0-9]+$ ]] || pid_started="$(coord_process_start_ticks "$pid" 2>/dev/null)" || {
     stuck_worker_stop "$pid" || :
     if ! kill -0 "$pid" 2>/dev/null; then coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :; fi
+    [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :
     say "dispatch stopped unit=$unit reason=worker-start-identity-unavailable"
     return 1
   }
   if ! coord_renew "$claim_key" "$claim_owner" "$pid" "$pid_started"; then
     stuck_worker_stop "$pid" || :
     if ! alive "$pid"; then coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :; fi
+    [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :
     say "dispatch stopped unit=$unit reason=claim-lost-after-launch"
     return 1
   fi

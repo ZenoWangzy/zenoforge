@@ -194,6 +194,10 @@ quarantine_stage_canary_reserve() { quarantine_stage_canary_pending "$1" && retu
   STAGE_DISPATCH_CANARY_SCOPES="${STAGE_DISPATCH_CANARY_SCOPES:+$STAGE_DISPATCH_CANARY_SCOPES$'\n'}$1"
 }
 
+quarantine_stage_canary_forget_stage() {
+  STAGE_DISPATCH_CANARY_SCOPES="$(printf '%s\n' "${STAGE_DISPATCH_CANARY_SCOPES:-}" | awk -v s="$1" '$0 != s && index($0, s "@") != 1')"
+}
+
 quarantine_mark_canary_scope_list() {
   local now="${2:-$(date +%s)}" scope
   while IFS= read -r scope; do [ -z "$scope" ] || quarantine_mark_canary "$scope" "$now" || return $?; done <<< "${1:-}"
