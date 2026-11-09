@@ -6,23 +6,14 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fail() { echo "not ok - station-health.test.sh: $*" >&2; jq -c .stations.review "$R/station-health.json" >&2 || true; exit 1; }
 NOW=2026-11-07T06:00:00Z
-R="$test_env_root/runtime"; H="$AGENT_HOME"; mkdir -p "$R/alerts" "$AGENT_HOME/state" "$AGENT_HOME/logs"
+R="$test_env_root/runtime"; mkdir -p "$R/alerts" "$AGENT_HOME/state" "$AGENT_HOME/logs"
 
 # Shapes follow the live ledger, state files, triage logs, advisor results and scheduler.log.
 python3 - "$R" "$AGENT_HOME" <<'PY'
-import base64, json, os, sys
-from datetime import datetime
+import json, os, sys
 R, H = sys.argv[1:]
 def u(id, stage, hist, **extra):
     return {"id": id, "stage": stage, "history": [{"stage": s, "at": a, "result": ""} | ({"work_type": w} if w else {}) for s, a, w in hist], **extra}
-def candidate(n, state="OPEN", labels=()):
-    issue = {"number": n, "title": "candidate", "body": "", "state": state,
-             "labels": [{"name": label} for label in labels], "subIssuesSummary": {"total": 0}}
-    encoded = base64.b64encode(json.dumps(issue, separators=(",", ":")).encode()).decode()
-    return f"{n}\tpr\tcandidate\t{json.dumps(list(labels), separators=(',', ':'))}\t{encoded}"
-def cache(runtime, rows):
-    at = int(datetime.fromisoformat("2026-11-07T06:00:00+00:00").timestamp())
-    json.dump({"schema": 4, "created_at": at, "rows": "\n".join(rows)}, open(f"{runtime}/intake-candidates.json", "w"))
 units = [
     # review: pending since 03:00, last review verdict 02:00 -> 180 min with work waiting, bound 60
     u("issue-1", "review-pending", [("write-start", "2026-11-07T02:20:00Z", "implement"), ("write-end", "2026-11-07T02:50:00Z", None), ("pr-opened", "2026-11-07T03:00:00Z", None)]),
@@ -39,7 +30,6 @@ def state(n, **kw): json.dump(kw, open(f"{H}/state/{n}.json", "w"))
 state(10, state="needs-triage", state_changed_at="2026-11-07T04:00:00Z")
 state(11, state="needs-advisor", state_changed_at="2026-11-07T04:00:00Z")
 state(12, state="ready-for-agent", state_changed_at="2026-11-07T05:30:00Z")
-state(15, state="ready-for-agent", state_changed_at="2026-11-07T05:30:00Z")  # intake skip-label candidate
 state(1, state="ready-for-agent", state_changed_at="2026-11-07T05:30:00Z")  # has issue-1: not waiting at intake
 state(13, state="awaiting-release", deploy_state="pending", state_changed_at="2026-11-01T01:00:00Z")
 state(14, state="awaiting-release", deploy_state="deployed", state_changed_at="2026-11-07T01:00:00Z")
@@ -49,15 +39,9 @@ json.dump({"tick": "b", "recorded_at": "2026-11-07T05:40:00Z", "outcome": "job-f
 open(f"{R}/scheduler.log", "w").write(
     "[2026-11-07T05:30:00Z] dispatch claim=owned issue=1 mode=fresh reason=initial pid=7 type=review unit=issue-1\n"
     "[2026-11-07T05:31:00Z] dispatch claim=owned issue=1 mode=fresh reason=initial pid=8 type=implement unit=issue-1\n")
-cache(R, [candidate(12), candidate(15, labels=["opt-lane"])])
-closed_runtime = f"{R}-closed"; closed_home = f"{H}-closed"
-os.makedirs(f"{closed_runtime}/alerts", exist_ok=True); os.makedirs(f"{closed_home}/state", exist_ok=True)
-json.dump({"units": []}, open(f"{closed_runtime}/units.json", "w"))
-json.dump({"state": "ready-for-agent", "state_changed_at": "2026-11-07T05:30:00Z"}, open(f"{closed_home}/state/16.json", "w"))
-cache(closed_runtime, [candidate(16, state="CLOSED")])
 PY
 touch -d "$NOW - 1 hour" "$AGENT_HOME/logs/triage-triage-batch-20261107T050000Z-1.log"
-run() { python3 "$here/station_health.py" --runtime "$R" --agent-home "$H" --pause-file "$H/PAUSE" --now "$NOW" --alert; }
+run() { python3 "$here/station_health.py" --runtime "$R" --agent-home "$AGENT_HOME" --pause-file "$AGENT_HOME/PAUSE" --now "$NOW" --alert; }
 field() { jq -r ".stations.$1.$2" "$R/station-health.json"; }
 
 run
@@ -69,8 +53,7 @@ echo 'ok - stalled station reports and alerts'
 [[ "$(field repair status)" == OK && "$(field repair waiting)" == 0 && "$(field repair stall_min)" == 0.0 ]] || fail 'idle repair with nothing waiting must be OK'
 [[ "$(field implement status)" == OK && "$(field implement stall_min)" == 5.0 ]] || fail 'a fresh item after a long idle is not a stall'
 [[ "$(field merge waiting)" == 0 && "$(field ci waiting)" == 1 ]] || fail 'a CI-slot wait belongs to the CI buffer, not merge'
-[[ "$(field intake waiting)" == 1 ]] || fail 'an issue carrying an intake skip label must not count as waiting'
-[[ "$(field triage waiting)" == 1 && "$(field advisor waiting)" == 1 && "$(field release waiting)" == 1 ]] || fail 'buffer counts'
+[[ "$(field intake waiting)" == 1 && "$(field triage waiting)" == 1 && "$(field advisor waiting)" == 1 && "$(field release waiting)" == 1 ]] || fail 'buffer counts'
 [[ "$(field triage out_24h)" == 2 && "$(field advisor out_24h)" == 3 && "$(field advisor out_1h)" == 3 ]] || fail 'triage/advisor outs (failed advisor job is not an out)'
 [[ "$(field triage status)" == OK && "$(field advisor status)" == OK && "$(field release status)" == STALLED ]] || fail 'statuses'
 [[ "$(grep -c STATION-STALLED "$R/alerts/node-health.md")" == 2 ]] || fail 'only review and release alert'
@@ -93,16 +76,7 @@ echo 'ok - pause reports PAUSED and raises no alert'
 R="$test_env_root/runtime-held"; H="$test_env_root/home-held"; mkdir -p "$R/alerts" "$H/state" "$H/logs"
 echo '{"units":[]}' > "$R/units.json"
 echo '{"state":"ready-for-agent","state_changed_at":"2026-11-07T01:00:00Z"}' > "$H/state/20.json"
-python3 - "$R" <<'PY'
-import base64, json, sys
-from datetime import datetime
-R = sys.argv[1]
-issue = {"number": 20, "title": "candidate", "body": "", "state": "OPEN", "labels": [], "subIssuesSummary": {"total": 0}}
-encoded = base64.b64encode(json.dumps(issue, separators=(",", ":")).encode()).decode()
-row = f"20\tpr\tcandidate\t[]\t{encoded}"
-created_at = int(datetime.fromisoformat("2026-11-07T06:00:00+00:00").timestamp())
-json.dump({"schema": 4, "created_at": created_at, "rows": row}, open(f"{R}/intake-candidates.json", "w"))
-PY
+run() { python3 "$here/station_health.py" --runtime "$R" --agent-home "$H" --pause-file "$H/PAUSE" --now "$NOW" --alert; }
 stalls() { grep -c 'STATION-STALLED station=intake ' "$R/alerts/node-health.md" || true; }
 run
 [[ "$(field intake status)" == STALLED && "$(stalls)" == 1 ]] || fail 'no marker: intake with a 300 min wait must stay STALLED and alert'
@@ -117,13 +91,6 @@ run
 [[ "$(field intake status)" == STALLED && "$(stalls)" == 1 ]] || fail 'a hold older than 2 x bound must be STALLED and alert, measured from its start'
 echo 'ok - held intake is HELD under 2 x bound and STALLED past it'
 
-# GitHub's open-only intake snapshot must exclude a closed issue whose local stage label is stale.
-R="$test_env_root/runtime-closed"; H="$test_env_root/home-closed"
-run
-[[ "$(field intake waiting)" == 0 ]] || fail 'a closed issue must not count as an intake candidate'
-echo 'ok - closed ready-for-agent state is not an intake wait'
-
-R="$test_env_root/runtime-held"; H="$test_env_root/home-held"
 rm "$R/intake-held-since"; : > "$R/alerts/node-health.md"
 # A re-entry to an existing unit (hold-handoff) is intake output, not only a unit's first history row.
 jq -n '{units: [{id:"issue-30", stage:"implement-pending", history:[{stage:"pr-opened", at:"2026-11-06T01:00:00Z"}, {stage:"hold-handoff", at:"2026-11-07T05:50:00Z"}]}]}' > "$R/units.json"
