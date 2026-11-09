@@ -12,7 +12,7 @@ SOURCE = {ID: "scheduler.log 相邻两条 harvest-station done 的间隔"}
 
 def metrics(log, since, now, ts, pct):
     starts = []
-    lines, _ = ledger_history.scheduler_log_lines(log, now)
+    lines, _ = ledger_history.scheduler_log_lines(log, now) if isinstance(log, str) else (log, 0)
     if lines is None:
         return {ID: None}
     for raw in lines:

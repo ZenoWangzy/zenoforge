@@ -31,8 +31,9 @@ from datetime import datetime,timezone,timedelta
 print((datetime.now(timezone.utc)-timedelta(minutes=7)).strftime("%Y-%m-%dT%H:%M:%SZ"))
 PY
 )"
+future_tick="2099-01-01T00:00:00Z"
 printf '[%s] SLOW worker pid=123 unit=unit-worker 10min\n[%s] BUDGET-STOP token spent>100, unit=unit-budget not dispatched\n[%s] [pipeline suites] FAILED suite=engine/run-advisor-batch.test.sh exit_code=1\n' "$old_tick" "$old_tick" "$old_tick" > "$autopi/scheduler.log"
-printf '[%s] tick done units=3 live=1 secs=200 slow: release_dependency_blocks=58s\n' "$old_tick" >> "$autopi/scheduler.log"
+printf '[%s] tick done units=3 live=1 secs=200 slow: release_dependency_blocks=58s\n[%s] tick done future-stamp-fixture\n' "$old_tick" "$future_tick" >> "$autopi/scheduler.log"
 touch -d "@$(( $(date +%s) - 420 ))" "$autopi/scheduler.log"
 printf 'new alert line\n' >> "$autopi/alerts/gate.md"
 printf '[%s] [pipeline suites] FAILED suite=engine/run-advisor-batch.test.sh exit_code=1\n' "$old_tick" >> "$autopi/alerts/gate.md"

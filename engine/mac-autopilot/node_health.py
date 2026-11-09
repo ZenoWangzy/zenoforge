@@ -16,6 +16,7 @@ unhealthy episode (triaged onto a root-cause ticket) is not re-filed until the m
 import argparse, glob, json, os, re, socket, subprocess, urllib.parse, urllib.request
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
+from contextlib import nullcontext
 from pathlib import Path
 import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait, metric_windows
 import line_holds
@@ -337,7 +338,7 @@ def time_sinks(units, log_path, since, now):
     Also returns the queue wait intervals (phase, trigger, dispatch) behind those samples —
     dispatched or still open — for the flow slot-idle metric."""
     disp = {}
-    log_rows, _ = ledger_history.scheduler_log_lines(log_path, now)
+    log_rows, _ = ledger_history.scheduler_log_lines(log_path, now) if isinstance(log_path, str) else (log_path, 0)
     for raw in log_rows or []:
         m = DISPATCH_RE.match(raw)
         if m and (t := ts(m.group(1))):
@@ -1032,16 +1033,29 @@ def gated_agent_pr_share(repo):
 
 
 RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{7,40}) closed=\[([0-9,\s]*)\]")
-def release_acceptances(runtime):
+_SCHEDULER_ROWS_UNSET = object()
+
+
+def release_acceptances(runtime, now=None, scheduler_rows=_SCHEDULER_ROWS_UNSET):
     """Read the batch close event, which names the accepted deployed SHA and issue IDs."""
-    paths = [os.path.join(runtime, "alerts", "events.md"), os.path.join(runtime, "scheduler.log")]
+    scheduler_path = os.path.join(runtime, "scheduler.log")
+    paths = [os.path.join(runtime, "alerts", "events.md"), scheduler_path]
     events, seen = [], set()
     found_source = False
     for path in paths:
         try:
-            with open(path, errors="ignore") as source:
+            if path == scheduler_path:
+                rows = scheduler_rows
+                if rows is _SCHEDULER_ROWS_UNSET:
+                    rows, _ = ledger_history.scheduler_log_lines(path, now or datetime.now(timezone.utc))
+                if rows is None:
+                    continue
+                source = nullcontext(rows)
+            else:
+                source = open(path, errors="ignore")
+            with source as lines:
                 found_source = True
-                for raw in source:
+                for raw in lines:
                     match = RELEASE_CLOSER_RE.search(raw)
                     at = ts(raw[1:21]) if raw.startswith("[") else None
                     if not match or not at:
@@ -1469,7 +1483,9 @@ def main():
     # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
     metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]
     repo = os.environ.get("ZF_REPO", "")
-    release_events = release_acceptances(a)
+    log = os.path.join(a, "scheduler.log")
+    log_rows, future_stamped = ledger_history.scheduler_log_lines(log, now)
+    release_events = release_acceptances(a, now=now, scheduler_rows=log_rows)
     issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events)
     incidents = load_prod_incidents(agent_home)
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
@@ -1527,9 +1543,7 @@ def main():
     nontest_added = size_doc.get("nontest_added") or {}
     by_size, metrics["review.large_pr_pct"] = rework_by_size(
         units, sizes, nontest_added, now - timedelta(days=LARGE_PR_WINDOW_DAYS), now)
-    log = os.path.join(a, "scheduler.log")
-    _, future_stamped = ledger_history.scheduler_log_lines(log, now)
-    sinks, queue_waits = time_sinks(units, log,
+    sinks, queue_waits = time_sinks(units, log_rows,
                                     now - timedelta(hours=TIME_SINK_HOURS), now)
     metrics["flow.merge_rate_per_hour"] = merge_flow(units, now - timedelta(hours=24), now)[0]
     _, entered, merged = merge_flow(units, since, now)
@@ -1548,13 +1562,12 @@ def main():
     _, metrics["ci.priority_hold_runs_48h"] = cancel_metrics(audit, now - timedelta(hours=48), now)
     metrics["ci.gated_pr_pct"] = gated_agent_pr_share(repo)
     ticks = []
-    log_rows, _ = ledger_history.scheduler_log_lines(log, now)
     for raw in log_rows or []:
         m = LINE_RE.match(raw)
         if m and (t := ts(m.group(1))) and t >= since:
             ticks.append(t)
     metrics["scheduler.tick_gap_p50"] = pct([(b - x).total_seconds() for x, b in zip(ticks, ticks[1:])], .5)
-    metrics.update({"scheduler.merge_pass_gap_min": merge_pass_gap_min(units, ledger_history.live_ledger_readable(a), a, now), **harvest_health.metrics(log, since, now, ts, pct), **existing_walk_health.metrics(log, since, now, ts, pct)})
+    metrics.update({"scheduler.merge_pass_gap_min": merge_pass_gap_min(units, ledger_history.live_ledger_readable(a), a, now), **harvest_health.metrics(log_rows, since, now, ts, pct), **existing_walk_health.metrics(log_rows, since, now, ts, pct)})
 
     train = read_json(os.path.join(a, "release-train.json"))
     if not train:
