@@ -221,8 +221,8 @@ jq -e '
 # Dashboard aggregation must attach print-mode provider usage before building its ledger/KPIs.
 provider_log="impl-issue-7199-$(date -u -d '5 minutes ago' +%Y%m%dT%H%M%S)Z.worker.log"
 printf 'ZCode Built-in (skipped)\n' > "$token_sup/$provider_log"
-jq --arg log "$provider_log" \
-  '.units += [{id:"issue-7199",issue:7199,stage:"implementing",history:[]}]' \
+jq --arg at "$impl_end" \
+  '.units += [{id:"issue-7199",issue:7199,stage:"merged",history:[{stage:"merged",at:$at}]}]' \
   "$token_a/units.json" > "$token_a/units.json.tmp" && mv "$token_a/units.json.tmp" "$token_a/units.json"
 jq --arg log "$provider_log" \
   '.workers += [{pid:0,log:$log,unit:"issue-7199",type:"implement"}]' \
@@ -243,8 +243,24 @@ token_dashboard="$(sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUT
 jq -e '
   ([.cost_ledger.by_unit[] | select(.unit == "issue-7199")][0]
    | .runs == 1 and .tokens == 1100 and .fresh == 700)
-  and .summary.token_efficiency.fresh_tokens_per_merged == 1500' \
-  <<<"$token_dashboard" >/dev/null || fail 'dashboard omitted provider-record usage from its cost ledger'
+  and .summary.token_efficiency.merged_units == 3
+  and .summary.token_efficiency.merged_fresh_tokens == 3700
+  and .summary.token_efficiency.fresh_tokens_per_merged == (3700 / 3)
+  and .summary.token_efficiency.merged_raw_tokens == 5100
+  and .summary.token_efficiency.raw_tokens_per_merged == 1700
+  and .summary.token_efficiency.waste_pct == (100 * 1100 / 6200)
+  and .summary.token_efficiency.first_pass_pct == (200 / 3)
+  and .summary.token_efficiency.repair_pct == (100 * 1700 / 6200)' \
+  <<<"$token_dashboard" >/dev/null || fail 'dashboard omitted provider-record usage from the token-efficiency KPIs'
+PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$token_a" \
+  --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 --now "$token_now" \
+  --json "$token_a/node-health.json" >/dev/null || fail 'node_health failed with provider-usage fixture'
+jq -e '
+  ([.metrics[] | select(.id == "efficiency.fresh_tokens_per_merged_7d")][0] | .value == (3700 / 3))
+  and ([.metrics[] | select(.id == "efficiency.unmerged_waste_pct_7d")][0] | .value == (100 * 1100 / 6200))
+  and ([.metrics[] | select(.id == "efficiency.first_pass_yield_pct_7d")][0] | .value == (200 / 3))
+  and ([.metrics[] | select(.id == "efficiency.repair_phase_pct_7d")][0] | .value == (100 * 1700 / 6200))' \
+  "$token_a/node-health.json" >/dev/null || fail 'provider-record usage did not reach the node-health KPIs'
 
 # An unmeasured invocation must make token-based KPIs NO-DATA rather than count as zero.
 unknown_log="impl-issue-7105-${tok_stamp_5}Z.worker.log"
@@ -261,17 +277,17 @@ PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$token
 jq -e '
   ([.metrics[] | select(.id == "efficiency.fresh_tokens_per_merged_7d")][0] | .value == null and .status == "NO-DATA")
   and ([.metrics[] | select(.id == "efficiency.unmerged_waste_pct_7d")][0] | .value == null and .status == "NO-DATA")
-  and ([.metrics[] | select(.id == "efficiency.first_pass_yield_pct_7d")][0] | .value == 200 / 3)
+  and ([.metrics[] | select(.id == "efficiency.first_pass_yield_pct_7d")][0] | .value == 75)
   and ([.metrics[] | select(.id == "efficiency.repair_phase_pct_7d")][0] | .value == null and .status == "NO-DATA")' \
   "$token_a/node-health.json" >/dev/null || fail 'unknown usage was silently counted as zero in node-health KPIs'
 PATH="$fixture/bin:$PATH" python3 "$script_dir/gen_dashboard.py" || fail 'gen_dashboard failed with unknown usage in the KPI cohort'
 token_dashboard="$(sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT")"
 jq -e '
   .summary.token_efficiency.fresh_tokens_per_merged == null
-  and .summary.token_efficiency.merged_fresh_measured_units == 2
+  and .summary.token_efficiency.merged_fresh_measured_units == 3
   and .summary.token_efficiency.merged_raw_tokens == null
   and .summary.token_efficiency.waste_pct == null
-  and .summary.token_efficiency.first_pass_pct == (200 / 3)
+  and .summary.token_efficiency.first_pass_pct == 75
   and .summary.token_efficiency.repair_pct == null
   and ([.cost_ledger.by_unit[] | select(.unit == "issue-7105")][0]
        | .unknown_runs == 1 and .tokens == 0)' \
