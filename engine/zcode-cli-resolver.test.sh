@@ -73,9 +73,13 @@ resolve "an empty config value falls back to the bundle" \
 # review identity must be available (this is the exact 2026-11-03 incident shape).
 review_home="$fixture/review-home"
 review_agent="$fixture/review-agent"
+review_quota="$fixture/review-quota.json"
 mkdir -p "$review_home/.zcode/v2" "$review_agent/state"
 jq -n '{config:{defaultModelSelection:{modelId:"GLM-5.3"}}}' > "$review_home/.zcode/v2/provider_config.json"
+jq -n --argjson read_at "$(date +%s)" \
+  '{freshness:"fresh",read_at:$read_at,max_age_seconds:900,five_h_pct:0,week_pct:0,cap_5h:60,cap_week:100}' > "$review_quota"
 REVIEW_OUT="$(env HOME="$review_home" AGENT_HOME="$review_agent" PATH="$strict_path" \
+  ZCODE_QUOTA_SNAPSHOT_FILE="$review_quota" \
   WORKER_SCRATCH_ROOT="$bundle" bash -c '
     source "$0/lib.sh"
     review_identity_available "zcode:GLM-5.3:max" review && echo "glm-available"
