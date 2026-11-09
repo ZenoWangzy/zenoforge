@@ -150,3 +150,31 @@ for case in "$turn_error|30" 'Reading the file next|300'; do
   kill "$hung_pid"; wait "$hung_pid" 2>/dev/null || :; backend=''
 done
 echo 'ok - hung ZCode worker is stopped only when its log ends in the turn error and is quiet'
+
+# A recorded non-product test-guard refusal is an outcome, not a worker death.
+guard_marker='non-product-test-guard: refused unit=issue-guard command=bash reason=test-file recorded=1'
+guard_run() { # log path → harvest one refused review
+  printf '%s\n' "$guard_marker" > "$sup/$1"
+  rm -f "$sup/guard.md" "$sup/guard.md.partial"
+  jq -n '{units:[{id:"issue-guard",stage:"review",history:[]}]}' > "$UNITS"
+  jq -n --arg log "$1" '{workers:[{pid:999999999,unit:"issue-guard",type:"review",provider:"fixture",log:$log,report:"guard.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+  harvest_workers
+}
+guard_run guard-first.log
+jq -e '[.units[0].history[] | select(.stage == "worker-guard-refused" and .result == "command=bash reason=test-file")] | length == 1' "$UNITS" >/dev/null \
+  || { echo 'guard refusal was not recorded as an explicit worker outcome' >&2; exit 1; }
+jq -e 'all(.units[0].history[]; .stage != "worker-no-output") and .workers[0].harvested == true' \
+  < <(jq -s '{units:.[0].units,workers:.[1].workers}' "$UNITS" "$WORKERS") >/dev/null \
+  || { echo 'guard refusal was counted as a worker death or left unharvested' >&2; exit 1; }
+
+# The same refusal on the next run parks the unit with the guard reason.
+printf '%s\n' "$guard_marker" > "$sup/guard-second.log"
+jq -n '{workers:[{pid:999999998,unit:"issue-guard",type:"review",provider:"fixture",log:"guard-second.log",report:"guard.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+harvest_workers
+jq -e '.units[0] | .stage == "parked" and .parked_reason == "non-product-test-guard: command=bash reason=test-file" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 2) and all(.history[]; .stage != "worker-no-output")' "$UNITS" >/dev/null \
+  || { echo "a repeated identical guard refusal did not park the unit cleanly: $(jq -c '.units[0]' "$UNITS")" >&2; exit 1; }
+
+guard_review_rule="$(lane_rule direct-main test-head)"
+[[ "$guard_review_rule" == *'评审阶段不得运行测试命令'* && "$guard_review_rule" == *'测试文件可只读检查'* ]] \
+  || { echo 'direct-main review does not tell reviewers to inspect tests without running them' >&2; exit 1; }
+echo 'ok - test-guard refusal is harvested, repeated refusals park, and direct-main review stays read-only'

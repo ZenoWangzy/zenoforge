@@ -55,7 +55,7 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
 }
 
 harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers; pid:unit limits the pass to that one worker (harvest station)
-  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage
+  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"; [[ -z "$only" || "$pid:$unit" == "$only" ]] || continue
@@ -454,7 +454,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
         jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
         continue
       fi
-      handle_worker_death "$w" "$unit" "$wtype" "$lg"
+      handle_worker_no_output "$w" "$unit" "$wtype" "$lg"
     fi
     jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
   done < <(jqf -c '.workers[]' "$WORKERS")
