@@ -64,7 +64,7 @@ printf 'PASS worker-scope logs wall and cpu: %s\n' "$(grep 'worker cost' "$root/
 AGENT_WORKER_CPU_QUOTA=150% AGENT_WORKER_CPU_WEIGHT=5 AGENT_WORKER_MEM_HIGH=1G launch_scope override
 assert_cpu_props 'worker-scope override' 150% 5
 assert_mem_props 'worker-scope override' 1G 500 nomax
-# The task limit stays the existing engine.worker_tasks_max knob (config.template.json: 2000); worker-tasksmax.test.sh pins that.
+# The task limit stays the existing engine.worker_tasks_max knob (config.template.json: 500); worker-tasksmax.test.sh pins that.
 unset WORKER_SCOPE_EVENTS_FILE LOG SYSTEMD_RUN_EXEC WORKER_COST_TAG
 
 # --- bin/luna and bin/zc: LUNA_CPU_QUOTA still wins, hotfix keeps 1000 ---
