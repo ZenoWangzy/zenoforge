@@ -80,16 +80,26 @@ printf '[2026-11-02T10:00:00Z] merged PR#50 merge=abc\n' > "$log"
 alert="$(run_alert)"
 assert_empty "$alert" 'supervisor-owned filtering'
 
-# A young ready item still reports when the configurable no-output window elapses.
+# A ready item with unknown age still reports when the no-output window elapses.
 cat > "$units" <<'JSON'
 {"units":[
- {"id":"pr-61","pr":61,"stage":"ready-to-merge","history":[{"stage":"review-approve","at":"2026-11-02T11:30:00Z"}]}
+ {"id":"pr-61","pr":61,"stage":"ready-to-merge","history":[]}
 ]}
 JSON
 : > "$log"
 alert="$(run_alert)"
 assert_contains "$alert" 'throughput idle' 'no-output alert'
 assert_contains "$alert" 'ready-to-merge=1' 'no-output ready count'
+
+# A fresh history epoch inside stuckMinutes does not count as throughput idle.
+cat > "$units" <<'JSON'
+{"units":[
+ {"id":"pr-62","pr":62,"stage":"ready-to-merge","history":[{"stage":"review-approve","at":"2026-11-02T11:30:00Z"}]}
+]}
+JSON
+: > "$log"
+alert="$(run_alert)"
+assert_empty "$alert" 'fresh ready item'
 
 # A rotation moves the last merge to scheduler.log.1 and leaves the live log missing or fresh.
 cat > "$log.1" <<'LOG'
