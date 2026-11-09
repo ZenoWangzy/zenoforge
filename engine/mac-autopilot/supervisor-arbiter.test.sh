@@ -752,14 +752,18 @@ SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 
 [[ "$(cap_default_history pr-633 supervisor-cap-default)" == 1 ]] || fail "the default decision must run once per unit"
 ! jq -e 'any(.workers[]; .unit=="pr-633")' "$WORKERS" >/dev/null || fail "a handled capped unit must never dispatch again"
 
-# Row 150 (issue-4879): a unit that re-enters supervisor-review after its default is capped with no arbiter run left; it gets the route again, then stays parked.
+# Row 150 (issue-4879): after its default, a capped unit that re-enters supervisor-review closes with a durable hold.
+cap_hold_stub="$fixture/cap-hold-stub"; cap_hold_calls="$fixture/cap-hold-calls"; mkdir -p "$cap_hold_stub"; : > "$cap_hold_calls"
+printf '#!/usr/bin/env bash\nprintf "hold %%s\\n" "$*" >> %q\n' "$cap_hold_calls" > "$cap_hold_stub/hold.sh"
 jq '(.units[0] |= (.stage = "supervisor-review" | .history += [{stage:"supervisor-escalated",result:"ci cancelled again",at:"2026-10-27T05:00:00Z"}]))' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
-SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
-[[ "$(cap_default_stage pr-633)" == parked && "$(cap_default_history pr-633 supervisor-cap-default)" == 2 ]] \
-  || fail "a capped unit back at supervisor-review after its default must get the route again: $(jq -c '.units[0]' "$UNITS")"
+ZF_ENGINE_DIR="$cap_hold_stub" SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_stage pr-633)" == closed && "$(cap_default_history pr-633 supervisor-cap-default)" == 1 \
+  && "$(cap_default_history pr-633 supervisor-close)" == 1 ]] \
+  || fail "a capped unit back at supervisor-review after its default must close durably: $(jq -c '.units[0]' "$UNITS")"
+grep -q '^hold --hold 633 ' "$cap_hold_calls" || fail "a repeated cap must hold issue 633: $(cat "$cap_hold_calls")"
 ! jq -e 'any(.workers[]; .unit=="pr-633")' "$WORKERS" >/dev/null || fail "the re-entry default must cost no model run"
 SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
-[[ "$(cap_default_history pr-633 supervisor-cap-default)" == 2 ]] || fail "the re-entry default must run once per stay"
+[[ "$(cap_default_history pr-633 supervisor-cap-default)" == 1 ]] || fail "the repeated cap must not add a second default decision"
 
 # A held issue gets no default and no model run; the default applies on the first tick after the hold ends.
 default_unit pr-642 642 '{}' '[]' 4
