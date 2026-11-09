@@ -228,6 +228,24 @@ decision_entry() { # decision why evidence rejected-json owner -> history decisi
 last_review_blocked() { # unit-json → 0 when the latest review verdict in its history is review-block
   jqf -e '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last.stage == "review-block"' <<<"$1" >/dev/null 2>&1
 }
+no_finding_repair_route() { # unit-json → "ready-to-merge <head>" (head approved), "review-pending" (no current approval), or nothing (a repair is right)
+  # A repair with no red check and no open P0/P1 finding has nothing to fix (2026-11-08: issue-5306 went to repair three times on cancelled checks).
+  # Other failures keep repair: a merge conflict, a land/precheck/CI red stage, or any lookup that fails.
+  local u="$1" pr head rows
+  pr="$(jqf -r '.pr // empty' <<<"$u")"
+  [[ "$pr" =~ ^[0-9]+$ ]] || return 0
+  [[ ! "$(jqf -r '.history[-1].stage // ""' <<<"$u")" =~ ^(land-failed|merge-reverted|merge-conflict|precheck-red|ci-red|ci-test-red)$ ]] || return 0
+  [[ "$(tick_pr_mergeable "$pr")" != CONFLICTING ]] || return 0
+  head="$(tick_pr_head "$pr")"; [[ "$head" =~ $SHA_RE ]] || return 0
+  rows="$(repair_check_rows "$pr")" || return 0
+  jqf -e 'any(.[]; .bucket == "fail")' <<<"$rows" >/dev/null && return 0
+  jqf -e '((.review_findings // []) | last // {}) | (.findings // []) | any(.status == "open" and (.severity == "P0" or .severity == "P1"))' <<<"$u" >/dev/null && return 0
+  if jqf -e --arg h "$head" '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last | (.stage == "review-approve" and .result == $h)' <<<"$u" >/dev/null; then
+    printf 'ready-to-merge %s\n' "$head"
+  else
+    printf 'review-pending\n'
+  fi
+}
 supervisor_return_stage() { # unit-json [stage-before-supervisor] → pending stage for a RULE decision
   local u="$1" stage="${2:-}"
   [[ -n "$stage" ]] || stage="$(jqf -r '.stage // empty' <<<"$u")"

@@ -345,7 +345,7 @@ supervisor_requeue_retry() { arbiter_retry=true; say "supervisor arbitration uni
 supervisor_requeue_park_failure() { supervisor_budget_park "$1" "$2" "$3" "supervisor requeue failed" "supervisor-requeue-failed" || { arbiter_retry=true; say "supervisor arbitration unit=$1: requeue failed ($2) and durable park failed"; return 1; }; }
 
 supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute 落地：选一个工作环节放回去
-  local id="$1" action="$2" guidance="$3" decision="$4" u target extra="" issue issue_json issue_state issue_stage issue_reason issue_repo="${REPO:-${ZF_REPO:-}}" transition_error failure
+  local id="$1" action="$2" guidance="$3" decision="$4" u target extra="" issue issue_json issue_state issue_reason issue_repo="${REPO:-${ZF_REPO:-}}" transition_error failure route approved_head
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
   if jqf -e 'any((.history // [])[]?; (.stage | test("^review")) or .stage == "repair-delivered" or .stage == "delivered")' <<<"$u" >/dev/null \
      && { [[ "$(jqf -r '.pr // empty' <<<"$u")" =~ ^[0-9]+$ ]] \
@@ -359,6 +359,12 @@ supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute
     else
       target="repair-pending"
       extra=" | .repair_hint=$(js "$guidance")"
+      read -r route approved_head <<<"$(no_finding_repair_route "$u")" || true
+      if [[ "$route" == ready-to-merge ]]; then
+        target=ready-to-merge; extra=" | .approved_sha=$(js "$approved_head") | .repair_hint=null"
+      elif [[ "$route" == review-pending ]]; then
+        target=review-pending; extra=' | .reviewed_sha=null | .reviewed_pr_head=null | .repair_hint=null'
+      fi
     fi
   elif [[ -n "$(jqf -r '.task // empty' <<<"$u")" && -n "$(jqf -r '.branch // empty' <<<"$u")" ]]; then
     target="implement-pending"

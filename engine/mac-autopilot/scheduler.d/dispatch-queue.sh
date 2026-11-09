@@ -62,7 +62,7 @@ dispatch_pending() {
   TICK_PRIORITY_HOLD_EXPIRED=()
   TICK_PRIORITY_ADMISSION_CACHE=()
   TICK_CONTAINER_RUNTIME=""
-  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
+  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha route route_head resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started
   local -A dispatch_step_secs=() dispatch_step_counts=(); local dispatch_step_at=${EPOCHREALTIME/[.,]/} dispatch_step_last=start
   # A full tick's first pass: past the walk deadline room_for refuses every start, so the tail still gets its parks and holds.
@@ -277,6 +277,14 @@ dispatch_pending() {
     case "$stage" in
       repair-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || { to_supervisor "$id" "repair-pending without a PR"; continue; }
+        read -r route route_head <<<"$(no_finding_repair_route "$u")" || true
+        if [[ "$route" == ready-to-merge ]]; then
+          set_unit "$id" "$(hist repair-rerouted "no red check and no open finding; approved head $route_head -> CI admission") | .approved_sha=$(js "$route_head") | .stage=\"ready-to-merge\""
+          say "repair-pending unit=$id: no red check and no open finding -> ready-to-merge"; continue
+        elif [[ "$route" == review-pending ]]; then
+          set_unit "$id" "$(hist repair-rerouted "no red check and no open finding; the current head needs a review") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
+          say "repair-pending unit=$id: no red check and no open finding -> review-pending"; continue
+        fi
         if [[ -n "$(jqf -r '.hold_handoff_episode // empty' <<<"$u")" ]] && dstep body_block park_if_body_blocked "$u"; then
           [[ "$(unit_field "$id" .stage)" != blocked-external ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
           dispatch_skip body-blocked; continue
