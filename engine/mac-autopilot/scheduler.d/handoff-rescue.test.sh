@@ -92,6 +92,22 @@ printf 'dirty\n' >> "$wt/a.txt"
 git -C "$wt" remote set-url origin "$fixture/missing.git"
 refused_intact "a failed commit push" "rescue push failed"
 
+# An active hand/ worktree belongs to the handoff, not the old clone's unpushed branches.
+new_clone
+base_sha="$(git -C "$wt" rev-parse HEAD)"
+git -C "$wt" checkout -q -b agent/issue-70
+printf 'unpublished old clone work\n' > "$wt/prior.txt"
+git -C "$wt" add prior.txt; git -C "$wt" commit -qm 'unpublished old clone work'
+git -C "$wt" worktree add -q -b hand/issue-70 "$fixture/hand-70" "$base_sha"
+printf 'active handoff work\n' > "$fixture/hand-70/handoff.txt"
+git -C "$fixture/hand-70" add handoff.txt; git -C "$fixture/hand-70" commit -qm 'active handoff work'
+handoff_sha="$(git -C "$fixture/hand-70" rev-parse HEAD)"
+git -C "$wt" remote set-url origin "$fixture/missing.git"
+refused_intact "an active handoff worktree" "rescue push failed"
+if preserve_refused_clone 70 issue-70 "$wt"; then fail "the active hand/ branch caused the old clone to be moved aside"; fi
+[[ -d "$wt" && "$(git -C "$fixture/hand-70" rev-parse HEAD)" == "$handoff_sha" \
+  && "$(cat "$fixture/hand-70/handoff.txt")" == 'active handoff work' ]] || fail "the active handoff worktree changed"
+
 # Deletes, renames, modes and symlinks all reach the rescue commit, and the clone ends clean.
 new_clone
 git -C "$wt" config core.fileMode true; printf 'two\n' > "$wt/b.txt"; printf 'x\n' > "$wt/d.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm more; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin

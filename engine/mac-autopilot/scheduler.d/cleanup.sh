@@ -113,7 +113,8 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
   # A leak does not go away by retrying: skip the scan until the clone changes.
   marker="$A/rescue-refused-$n"; key="$(printf '%s\n' "$head" "$status" "$stash_out" | sha256sum)"
   [[ "$(cat "$marker" 2>/dev/null)" != "$key" ]] || { RESCUE_REFUSED="secret scan refused an earlier pass"; return 1; }
-  other="$(git -C "$wt" rev-list -n1 --branches --not --remotes "$head" 2>/dev/null)" || { RESCUE_REFUSED="unreadable branches"; return 1; }
+  # Active handoff worktrees are owned by the current handoff, not unpublished work in the old clone.
+  other="$(git -C "$wt" rev-list -n1 --exclude='hand/*' --branches --not --remotes "$head" 2>/dev/null)" || { RESCUE_REFUSED="unreadable branches"; return 1; }
   [[ -z "$other" ]] || { RESCUE_REFUSED="unpushed commits on another branch"; return 1; }
   # What the private index below cannot see: conflicted entries, flagged files, and a staged version later edited in the worktree.
   [[ -z "$(git -C "$wt" ls-files -u)" ]] || { RESCUE_REFUSED="unmerged index"; return 1; }
