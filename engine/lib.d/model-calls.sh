@@ -683,8 +683,6 @@ process.stdin.on("end", () => {
 # (engine/night/dispatch.sh): prompt through -p, --cwd, --mode yolo,
 # NODE_USE_ENV_PROXY=1 for proxied egress. Model and effort come from the
 # policy-resolved review identity; nothing here names a model.
-source "$(dirname -- "${BASH_SOURCE[0]}")/model-calls-zcode-valid.sh"
-
 run_zcode_json() {
   local cwd="$1" identity="$2" timeout_minutes="$3" schema_file="$4" prompt_file="$5" role="${6:-review}"
   local zcode_id model effort status=0 started_at elapsed timeout_detail out_file transcript reply verdict_json
