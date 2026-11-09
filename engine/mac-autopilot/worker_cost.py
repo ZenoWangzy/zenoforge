@@ -34,7 +34,7 @@ import json
 import os
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from usage_reader import Usage, claude_unit_responses, codex_stream_facts, zcode_stream_usage, Unavailable
 
@@ -395,6 +395,167 @@ def aggregate(rows, units, now):
             "by_backend": {k: _finish(v) for k, v in sorted(by_backend.items())},
             "last_24h": _finish(window),
             "unknown_runs": sum(t["unknown_runs"] for t in by_unit.values())}
+
+
+def token_efficiency_kpis(rows, units, now):
+    """Seven-day completed-unit token KPIs from the cost ledger and full unit history.
+
+    The window selects units by their merge/terminal history event. Each selected unit carries
+    its lifetime worker spend, so all four measures share the same completed-unit cohort. Raw
+    PR-number keys resolve through the unit's PR; ambiguous or missing keys stay in 未归属.
+    """
+    stop = now if isinstance(now, datetime) else datetime.fromtimestamp(now, timezone.utc)
+    if stop.tzinfo is None:
+        stop = stop.replace(tzinfo=timezone.utc)
+    stop = stop.astimezone(timezone.utc)
+    start = stop - timedelta(days=7)
+    ledger = aggregate(rows, units, stop.timestamp())
+
+    by_id = {str(u.get("id")): u for u in units if isinstance(u, dict) and u.get("id")}
+    by_pr, by_issue = {}, {}
+    issue_ids = {}
+    for unit_id, unit in by_id.items():
+        pr = unit.get("pr")
+        if pr is not None:
+            by_pr.setdefault(str(pr), unit)
+        issue = unit.get("issue")
+        if issue is not None:
+            issue_ids.setdefault(str(issue), set()).add(unit_id)
+    for issue, unit_ids in issue_ids.items():
+        if len(unit_ids) == 1:
+            by_issue[issue] = by_id[next(iter(unit_ids))]
+
+    def resolve(key, ticket=None):
+        key = str(key or "")
+        if key in by_id:
+            return by_id[key]
+        if key.startswith("pr-"):
+            return by_pr.get(key[3:])
+        if key.isdigit():
+            return by_pr.get(key) or by_issue.get(key)
+        if ticket is not None:
+            return by_issue.get(str(ticket))
+        return None
+
+    unit_cost = {}
+    unattributed = []
+    for item in ledger["by_unit"]:
+        unit = resolve(item.get("unit"), item.get("ticket"))
+        if unit is None:
+            unattributed.append(item)
+            continue
+        total = unit_cost.setdefault(str(unit["id"]), {
+            "tokens": 0, "raw": 0, "fresh": 0, "fresh_known": True, "ledger_keys": 0,
+        })
+        total["tokens"] += item.get("tokens") or 0
+        total["raw"] += item.get("raw") or 0
+        total["ledger_keys"] += 1
+        if item.get("fresh") is None:
+            total["fresh_known"] = False
+        else:
+            total["fresh"] += item["fresh"]
+
+    merged_ids, waste_ids = set(), set()
+    first_pass_ids = set()
+    merge_stages = {"merged", "landed"}
+    waste_stages = {"closed", "parked"}
+    for unit_id, unit in by_id.items():
+        history = [event for event in (unit.get("history") or []) if isinstance(event, dict)]
+        parsed = []
+        for event in history:
+            value = event.get("at")
+            try:
+                at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if at.tzinfo is not None:
+                    parsed.append((at.astimezone(timezone.utc), event.get("stage") or ""))
+            except (TypeError, ValueError, OverflowError):
+                continue
+        merge_events = [(at, stage) for at, stage in parsed if stage in merge_stages]
+        if any(start <= at <= stop for at, _ in merge_events):
+            merged_ids.add(unit_id)
+            if not any(event.get("stage") in ("review-request-changes", "review-block") for event in history):
+                first_pass_ids.add(unit_id)
+        elif not merge_events:
+            stage = str(unit.get("stage") or "")
+            end_at = max((at for at, _ in parsed), default=None)
+            if (stage in waste_stages or stage.startswith("blocked")) and end_at and start <= end_at <= stop:
+                waste_ids.add(unit_id)
+
+    cohort_ids = merged_ids | waste_ids
+    merged_tokens = sum(unit_cost.get(unit_id, {}).get("tokens", 0) for unit_id in merged_ids)
+    merged_raw = sum(unit_cost.get(unit_id, {}).get("raw", 0) for unit_id in merged_ids)
+    merged_fresh_known = sum(unit_cost.get(unit_id, {}).get("fresh", 0) for unit_id in merged_ids)
+    measured_merged = sum(
+        unit_id in unit_cost and unit_cost[unit_id]["fresh_known"] for unit_id in merged_ids
+    )
+    merged_fresh_complete = bool(merged_ids) and measured_merged == len(merged_ids)
+    window_tokens = sum(unit_cost.get(unit_id, {}).get("tokens", 0) for unit_id in cohort_ids)
+    waste_tokens = sum(unit_cost.get(unit_id, {}).get("tokens", 0) for unit_id in waste_ids)
+    repair_tokens = 0
+    for row in rows:
+        unit = resolve(row.get("unit"))
+        if unit is None or str(unit["id"]) not in cohort_ids or row.get("phase") != "repair":
+            continue
+        usage = row.get("usage")
+        if usage is not None:
+            repair_tokens += usage.raw
+        elif row.get("footer_tokens") is not None:
+            repair_tokens += row["footer_tokens"]
+
+    all_tokens = sum(item.get("tokens") or 0 for item in ledger["by_unit"])
+    unattributed_fresh = sum(item.get("fresh") or 0 for item in unattributed)
+    unattributed_fresh_known = sum(item.get("fresh") is not None for item in unattributed)
+    unattributed_count = len(unattributed)
+    merged_count = len(merged_ids)
+    return {
+        "window_days": 7,
+        "window_start": start.isoformat().replace("+00:00", "Z"),
+        "window_end": stop.isoformat().replace("+00:00", "Z"),
+        "merged_units": merged_count,
+        "merged_fresh_tokens": merged_fresh_known if merged_fresh_complete else None,
+        "merged_fresh_known_tokens": merged_fresh_known,
+        "merged_fresh_measured_units": measured_merged,
+        "fresh_tokens_per_merged": merged_fresh_known / merged_count if merged_fresh_complete else None,
+        "merged_raw_tokens": merged_tokens,
+        "raw_tokens_per_merged": merged_tokens / merged_count if merged_count else None,
+        "waste_units": len(waste_ids),
+        "waste_tokens": waste_tokens,
+        "window_tokens": window_tokens,
+        "waste_pct": 100 * waste_tokens / window_tokens if window_tokens else None,
+        "first_pass_units": len(first_pass_ids),
+        "first_pass_pct": 100 * len(first_pass_ids) / merged_count if merged_count else None,
+        "repair_tokens": repair_tokens,
+        "repair_pct": 100 * repair_tokens / window_tokens if window_tokens else None,
+        "matched_ledger_tokens": all_tokens - sum(item.get("tokens") or 0 for item in unattributed),
+        "all_ledger_tokens": all_tokens,
+        "unattributed": {
+            "ledger_keys": unattributed_count,
+            "tokens": sum(item.get("tokens") or 0 for item in unattributed),
+            "raw_tokens": sum(item.get("raw") or 0 for item in unattributed),
+            "fresh_tokens": unattributed_fresh if unattributed_fresh_known == unattributed_count else None,
+            "fresh_measured_keys": unattributed_fresh_known,
+        },
+    }
+
+
+TOKEN_EFFICIENCY_CRITERIA = {
+    "efficiency.fresh_tokens_per_merged_7d": ("efficiency", "fresh tokens per merged unit, rolling 7 d", 800_000, 4_800_000, False),
+    "efficiency.unmerged_waste_pct_7d": ("efficiency", "tokens on unmerged terminal units / terminal cohort tokens, rolling 7 d %", 35, 50, False),
+    "efficiency.first_pass_yield_pct_7d": ("efficiency", "merged units with no review changes or blocks, rolling 7 d %", 65, 50, True),
+    "efficiency.repair_phase_pct_7d": ("efficiency", "repair phase share of terminal cohort tokens, rolling 7 d %", 30, 45, False),
+}
+TOKEN_EFFICIENCY_MEANING = {
+    "efficiency.fresh_tokens_per_merged_7d": "近 7 天合并单元的生命周期 fresh token（未缓存输入 + 输出）均值；cache split 不完整时为 NO-DATA。健康线沿用工作单 fresh token p90 的静态尺度 800k，异常线为历史 p90 的两倍 4.8M。",
+    "efficiency.unmerged_waste_pct_7d": "近 7 天终态单元 cohort 中，closed / parked / blocked 且从未合并的 token 占比；越低越好。健康线 35% 要比已测匹配台账 43% 少 8 个百分点；50% 比基线高 7 个百分点，作为异常线。",
+    "efficiency.first_pass_yield_pct_7d": "近 7 天合并单元中，历史从未出现 review-request-changes 或 review-block 的比例；高说明少返工。健康线 65% 接近最近窗口的 67% / 前一窗口的 71%；异常线 50% 低于 58% 的全时基线。",
+    "efficiency.repair_phase_pct_7d": "近 7 天终态单元 cohort 中 repair phase token ÷ 全部 token；越低越好。健康线 30% 比已测全时 36.4% 少 6.4 个百分点；45% 高于基线 8.6 个百分点，作为异常线。",
+}
+TOKEN_EFFICIENCY_SOURCE = {
+    "efficiency.fresh_tokens_per_merged_7d": "cost_ledger.by_unit 的 lifetime fresh（缓存读取除外）按 units.json + units-archive.json 的 merged/landed 历史事件筛选近 7 天，再除以窗口合并单元数。",
+    "efficiency.unmerged_waste_pct_7d": "cost_ledger.by_unit 按 units.json + units-archive.json 的终态历史筛选近 7 天；从未合并的 closed / parked / blocked token ÷ 同 cohort 全部 token。未归属 key 单列，不并入分子或分母。",
+    "efficiency.first_pass_yield_pct_7d": "units.json + units-archive.json 的 merged/landed 事件筛选近 7 天；合并单元全历史中没有 review-request-changes / review-block 的比例。",
+    "efficiency.repair_phase_pct_7d": "worker_cost repair phase 用量 + units.json / units-archive.json 的近 7 天终态单元 cohort；repair token ÷ 同 cohort cost_ledger token。",
+}
 
 
 def ticket_spend(rows, units):

@@ -1474,10 +1474,32 @@ function vOverview(D) {
   const mrows = [...bad, ...warn].slice(0, 6).map(anomRow).join(""), more = bad.length + warn.length - 6;
   const CAP = 6, shown = rows.slice(0, CAP);
   const pbody = rows.length ? `<div>${shown.map(pbRow).join("")}${rows.length > CAP ? `<div class="pb more" data-tip="${esc(rows.slice(CAP).map(r => r.who + " " + r.what + " " + r.val).join("\n"))}">另有 ${rows.length - CAP} 项</div>` : ""}</div>` : emptyMsg(vs === "none" ? "无数据" : "没有要处理的");
+  const TE = S.token_efficiency || {}, teMetrics = Object.fromEntries(ms.map(m => [m.id, m]));
+  const pct = v => v == null ? "—" : `${Number(v).toFixed(1)}%`;
+  const teCard = (icon, label, value, sub, id, tip) => kcard(icon, label, value,
+    `<div class="sub">${sub}</div>`, teMetrics[id]?.status || "", tip);
+  const tePanel = panel("workers", "Token 效率 · 滚动 7 天", `<div class="kcs">
+    ${teCard("workers", "每合并单元新鲜 token", ft(TE.fresh_tokens_per_merged),
+      `原始总量 ${ft(TE.merged_raw_tokens)}；${ft(TE.raw_tokens_per_merged)} / 单；fresh 覆盖 ${num(TE.merged_fresh_measured_units || 0)} / ${num(TE.merged_units || 0)} 单`,
+      "efficiency.fresh_tokens_per_merged_7d", "cost_ledger.by_unit 的 fresh（缓存读已剔除）按 units.json 与 units-archive.json 的近 7 天合并单元计算。")}
+    ${teCard("warn", "未合并终态 token 占比", pct(TE.waste_pct),
+      `${num(TE.waste_units || 0)} 个未合并终态单元 / ${ft(TE.window_tokens)} tokens`,
+      "efficiency.unmerged_waste_pct_7d", "同一 7 天终态单元 cohort：cost_ledger.by_unit 中 closed、parked、blocked 且从未合并的 tokens ÷ cohort 全部 tokens。")}
+    ${teCard("review", "一次通过率", pct(TE.first_pass_pct),
+      `${num(TE.first_pass_units || 0)} / ${num(TE.merged_units || 0)} 个合并单元`,
+      "efficiency.first_pass_yield_pct_7d", "units.json 与 units-archive.json 的近 7 天合并单元；全历史 0 次 review-request-changes 与 review-block。")}
+    ${teCard("repair", "返工阶段 token 占比", pct(TE.repair_pct),
+      `${ft(TE.repair_tokens)} / ${ft(TE.window_tokens)} tokens`,
+      "efficiency.repair_phase_pct_7d", "worker_cost repair phase 与同一 7 天终态单元 cohort；repair tokens ÷ cohort 全部 tokens。")}
+    ${kcard("layers", "未归属", `${num(TE.unattributed?.ledger_keys || 0)} 条`,
+      `<div class="sub">raw ${ft(TE.unattributed?.tokens)} tokens</div>`, TE.unattributed?.ledger_keys ? "warn" : "ok",
+      "cost_ledger.by_unit 中无法关联到 units.json / units-archive.json 的 key 独立计数和汇总，不混入近 7 天 cohort。")}
+    </div>`);
   return `<div class="stack16">${verdict}<div class="hks">${t1}${t2}${t3}${t4}${t5}${t6}${t7}</div>
     ${panel("warn", "要处理", pbody)}
     <div id="ov-workers">${livePanel(D)}</div>
     ${panel("arrow", "流水线", pipeStrip(D), (F.errors || {}).stages ? stChip("bad", "阶段计数不可用") : "")}
+    ${tePanel}
     ${panel("health", "健康指标", (mrows ? mrows + (more > 0 ? `<div class="anom more" data-m="health">另有 ${more} 项</div>` : "") : emptyMsg("全部正常")), aside)}</div>`;
 }
 function vReqs(D) { return `<div class="stack16">${founderPanel(D)}</div>`; }

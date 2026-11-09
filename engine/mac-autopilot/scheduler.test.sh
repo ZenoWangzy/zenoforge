@@ -470,7 +470,7 @@ jq -e '(.ci_live.values | has("runners_online") and has("queued_runs") and has("
   || { echo "dashboard lacks the CI runner pools or control knobs: $(jq -c '{ci_live, knobs}' <<<"$dashboard_data")" >&2; exit 1; }
 jq -e '.summary.focus_mode == "release"
   and .summary.real_daily_tokens == 16000000
-  and .summary.tokens_per_merged == 16000000
+  and .summary.tokens_per_merged == .summary.token_efficiency.fresh_tokens_per_merged
   and .totals.merged_today == [501,502]
   and .summary.dollars_per_merged > 0.90999 and .summary.dollars_per_merged < 0.91001
   and .cost.today.tokens == 16000000

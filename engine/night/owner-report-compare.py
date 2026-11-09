@@ -46,15 +46,17 @@ PATH_HINTS = {"intake": r"intake", "triage": r"triage", "advisor": r"advisor", "
 # the report time (and at most 5 min after it, for clock skew). An older row, a since more than 5 min ahead, a row with no parseable
 # since and a bare string (undated) all print 原因超过一天没有更新 instead.
 # Line key -> row ids, first match first; a line prints the notes of the rows that exist, verbatim, at most two.
-# Lines with no row (finished, rollbacks, money, intake, triage, advisor, review) read 未查明; scorecard rows with no line:
+# Lines with no row (finished, rollbacks, money, intake, triage, advisor) read 未查明; scorecard rows with no line:
 # scheduler.tick_gap_p50, scheduler.merge_pass_gap_min, scheduler.harvest_gap_p50, delivery.unlinked_units_30d, delivery.issue_to_accept_p50_30d_hours, delivery.issue_to_accept_p95_30d_hours.
 OWNER_ROWS = {
     "shipped": ["delivery.merged_not_live", "delivery.issue_to_accept_p50_7d_hours", "delivery.issue_to_accept_p95_7d_hours"],
     "stock": ["flow.wait_stage_p90_hours", "delivery.merged_not_live"],
     "incidents": ["delivery.unlinked_incidents_30d"],
-    "tokens": ["workorders.ticket_tokens_p90", "workorders.over_standard"],
+    "tokens": ["efficiency.fresh_tokens_per_merged_7d", "efficiency.unmerged_waste_pct_7d",
+               "workorders.ticket_tokens_p90", "workorders.over_standard"],
+    "station:review": ["efficiency.first_pass_yield_pct_7d", "review.first_pass_pct"],
     "station:implement": ["merge.conflict_repairs_per_day"],
-    "station:repair": ["loop.rework_token_pct", "repair.unchanged_head_token_pct"],
+    "station:repair": ["efficiency.repair_phase_pct_7d", "loop.rework_token_pct", "repair.unchanged_head_token_pct"],
     "station:merge": ["flow.merge_rate_per_hour"],
     "station:ci": ["ci.red_after_approve_pct", "ci.shared_append_rebase_conflict_pct"],
     "station:release": ["release.hours_waiting", "delivery.merged_not_live"],

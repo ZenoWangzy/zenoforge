@@ -265,9 +265,9 @@ SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **merge_wait.SOURCE,
     "delivery.unlinked_incidents_30d": "night/founder-health-mail.json incidents (issue joined to accepted issue IDs) plus logs/head-watch.alerts PROD-DB-TIMEOUT episodes, which name no issue",
 }
 # Line-hold rows (holds.*) live in line_holds.py: node_health.py is at its size-ratchet baseline.
-CRITERIA.update({**line_holds.CRITERIA, **station_standards.CRITERIA})
-MEANING.update({**line_holds.MEANING, **station_standards.MEANING})
-SOURCE.update({**line_holds.SOURCE, **station_standards.SOURCE})
+CRITERIA.update({**line_holds.CRITERIA, **station_standards.CRITERIA, **worker_cost.TOKEN_EFFICIENCY_CRITERIA})
+MEANING.update({**line_holds.MEANING, **station_standards.MEANING, **worker_cost.TOKEN_EFFICIENCY_MEANING})
+SOURCE.update({**line_holds.SOURCE, **station_standards.SOURCE, **worker_cost.TOKEN_EFFICIENCY_SOURCE})
 # release.hours_since_release lives in release_age.py, rulings.copies_differ in rulings_copies.py, for the same size-ratchet reason.
 CRITERIA.update(release_age.CRITERIA); MEANING.update(release_age.MEANING); SOURCE.update(release_age.SOURCE)
 CRITERIA.update(release_retained.CRITERIA); MEANING.update(release_retained.MEANING); SOURCE.update(release_retained.SOURCE)
@@ -1441,10 +1441,10 @@ def main():
             criteria[mid] = (node, desc, bounds[0], bounds[1], higher)
 
     units = ledger_history.load_units(a)
-    cost_rows = worker_cost.run_rows(sup)
+    cost_rows = worker_cost.run_rows(sup); token_efficiency = worker_cost.token_efficiency_kpis(cost_rows, units, now)
     worker_cost.attach_provider_usage(cost_rows, units)  # every row: a ticket's fresh total needs all its runs
     runs = worker_runs(cost_rows, since, now)
-    metrics = {}
+    metrics = {"efficiency.fresh_tokens_per_merged_7d": token_efficiency["fresh_tokens_per_merged"], "efficiency.unmerged_waste_pct_7d": token_efficiency["waste_pct"], "efficiency.first_pass_yield_pct_7d": token_efficiency["first_pass_pct"], "efficiency.repair_phase_pct_7d": token_efficiency["repair_pct"]}
     # Implement and repair run minutes are per-run samples (no time weighting): a 5 h window held 20 to 45 runs
     # and swung on the model mix, so they read the 24 h window.
     day_runs = worker_runs(cost_rows, now - timedelta(hours=WALL_WINDOW_HOURS), now)

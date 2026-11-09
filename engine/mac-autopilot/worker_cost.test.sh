@@ -136,6 +136,85 @@ jq -e '
   <<<"$dashboard_data" >/dev/null \
   || fail "cost_ledger missing or wrong: $(jq -c '.cost_ledger | {last_24h, by_unit, by_backend}' <<<"$dashboard_data")"
 
+# ---------- gen_dashboard: 同一 7 天单元窗口的 token 效率 KPI ----------
+token_sup="$fixture/token-supervisor"; token_a="$token_sup/autopi"
+mkdir -p "$token_a"
+cp "$script_dir/config.template.json" "$token_a/config.json"
+cat > "$token_a/units.json" <<JSON
+{"units":[
+ {"id":"issue-7101","issue":7101,"pr":7101,"stage":"merged","history":[{"stage":"review-approve","at":"$impl_end"},{"stage":"merged","at":"$impl_end"}]},
+ {"id":"issue-7103","issue":7103,"stage":"closed","history":[{"stage":"issue-closed","at":"$impl_end"}]},
+ {"id":"issue-7104","issue":7104,"stage":"merged","history":[{"stage":"merged","at":"$(date -u -d '10 days ago' +%Y-%m-%dT%H:%M:%SZ)"}]}
+]}
+JSON
+cat > "$token_a/units-archive.json" <<JSON
+{"units":[{"id":"issue-7102","issue":7102,"pr":7102,"stage":"merged","history":[
+ {"stage":"review-request-changes","at":"$review_end"},{"stage":"review-approve","at":"$review_end"},{"stage":"merged","at":"$review_end"}]}]}
+JSON
+token_logs=()
+token_ids=(cccccccc-0000-0000-0000-000000000001 cccccccc-0000-0000-0000-000000000002 cccccccc-0000-0000-0000-000000000003 cccccccc-0000-0000-0000-000000000004 cccccccc-0000-0000-0000-000000000005 cccccccc-0000-0000-0000-000000000006)
+write_token_log() {
+  local name="$1" session_id="$2" input="$3" cached="$4" output="$5"
+  printf '{"type":"thread.started","thread_id":"%s"}\n{"type":"turn.completed","usage":{"input_tokens":%s,"cached_input_tokens":%s,"output_tokens":%s}}\n' \
+    "$session_id" "$input" "$cached" "$output" > "$token_sup/$name"
+  token_logs+=("$name")
+}
+tok_stamp_1="$(date -u -d '40 minutes ago' +%Y%m%dT%H%M%S)"
+tok_stamp_2="$(date -u -d '35 minutes ago' +%Y%m%dT%H%M%S)"
+tok_stamp_3="$(date -u -d '30 minutes ago' +%Y%m%dT%H%M%S)"
+tok_stamp_4="$(date -u -d '25 minutes ago' +%Y%m%dT%H%M%S)"
+tok_stamp_5="$(date -u -d '20 minutes ago' +%Y%m%dT%H%M%S)"
+tok_stamp_6="$(date -u -d '10 days ago' +%Y%m%dT%H%M%S)"
+write_token_log "impl-issue-7101-${tok_stamp_1}Z.worker.log" "${token_ids[0]}" 1000 400 200
+write_token_log "impl-issue-7101-fix-${tok_stamp_2}Z.worker.log" "${token_ids[1]}" 500 100 100
+write_token_log "impl-7102-${tok_stamp_3}Z.worker.log" "${token_ids[2]}" 2000 500 200
+write_token_log "impl-issue-7103-fix-${tok_stamp_4}Z.worker.log" "${token_ids[3]}" 1000 500 100
+write_token_log "impl-unmatched-fixture-${tok_stamp_5}Z.worker.log" "${token_ids[4]}" 40 5 10
+write_token_log "impl-issue-7104-${tok_stamp_6}Z.worker.log" "${token_ids[5]}" 9000000 8900000 100000
+jq -n --arg a "${token_logs[0]}" --arg b "${token_logs[1]}" --arg c "${token_logs[2]}" \
+  --arg d "${token_logs[3]}" --arg e "${token_logs[4]}" --arg f "${token_logs[5]}" \
+  '{workers:[
+    {pid:0,log:$a,unit:"issue-7101",type:"implement"},
+    {pid:0,log:$b,unit:"issue-7101",type:"repair"},
+    {pid:0,log:$c,unit:"issue-7102",type:"implement"},
+    {pid:0,log:$d,unit:"issue-7103",type:"repair"},
+    {pid:0,log:$e,unit:"unmatched-fixture",type:"implement"},
+    {pid:0,log:$f,unit:"issue-7104",type:"implement"}]}' > "$token_a/workers.json"
+export MAC_AUTOPILOT_SUPERVISOR_DIR="$token_sup" MAC_AUTOPILOT_RUNTIME_DIR="$token_a"
+export MAC_AUTOPILOT_DASHBOARD_OUTPUT="$token_a/dashboard.data.js" MAC_AUTOPILOT_COST_CACHE="$token_sup/.cost-cache.json"
+token_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$token_a" \
+  --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 --now "$token_now" \
+  --json "$token_a/node-health.json" >/dev/null || fail 'node_health failed on token-efficiency fixture'
+jq -e '
+  ([.metrics[] | select(.id == "efficiency.fresh_tokens_per_merged_7d")][0] | .value == 1500 and .healthy == 800000 and .unhealthy == 4800000 and .source != "")
+  and ([.metrics[] | select(.id == "efficiency.unmerged_waste_pct_7d")][0] | (.value - (100 * 1100 / 5100) | abs) < 0.0001 and .healthy == 35 and .unhealthy == 50)
+  and ([.metrics[] | select(.id == "efficiency.first_pass_yield_pct_7d")][0] | .value == 50 and .healthy == 65 and .unhealthy == 50)
+  and ([.metrics[] | select(.id == "efficiency.repair_phase_pct_7d")][0] | (.value - (100 * 1700 / 5100) | abs) < 0.0001 and .healthy == 30 and .unhealthy == 45)' \
+  "$token_a/node-health.json" >/dev/null || fail 'node_health omitted the token-efficiency scorecard rows'
+PATH="$fixture/bin:$PATH" python3 "$script_dir/gen_dashboard.py" || fail 'gen_dashboard failed on token-efficiency fixture'
+token_dashboard="$(sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT")"
+jq -e '
+  .summary.token_efficiency.window_days == 7
+  and .summary.token_efficiency.merged_units == 2
+  and .summary.token_efficiency.merged_fresh_tokens == 3000
+  and .summary.token_efficiency.fresh_tokens_per_merged == 1500
+  and .summary.token_efficiency.merged_raw_tokens == 4000
+  and .summary.token_efficiency.raw_tokens_per_merged == 2000
+  and .summary.token_efficiency.waste_tokens == 1100
+  and .summary.token_efficiency.window_tokens == 5100
+  and ((.summary.token_efficiency.waste_pct - (100 * 1100 / 5100) | abs) < 0.0001)
+  and .summary.token_efficiency.first_pass_units == 1
+  and .summary.token_efficiency.first_pass_pct == 50
+  and .summary.token_efficiency.repair_tokens == 1700
+  and ((.summary.token_efficiency.repair_pct - (100 * 1700 / 5100) | abs) < 0.0001)
+  and .summary.token_efficiency.unattributed.ledger_keys == 1
+  and .summary.token_efficiency.unattributed.tokens == 50
+  and .summary.tokens_per_merged == 1500
+  and .summary.tokens_per_merged != (.summary.real_daily_tokens / .summary.merged)' \
+  <<<"$token_dashboard" >/dev/null \
+  || fail "token-efficiency KPIs did not use the 7-day unit cohort: $(jq -c '.summary | {token_efficiency, tokens_per_merged, real_daily_tokens, merged}' <<<"$token_dashboard")"
+
 # 每票 fresh p90 无缓存拆分时是 NO-DATA（不是 0，也不是旧的 580k）：票的 run 没有用量记录
 nd="$test_env_root/cost-nodata"; nda="$nd/supervisor/autopi"; mkdir -p "$nda"
 cat > "$nda/units.json" <<'JSON'
