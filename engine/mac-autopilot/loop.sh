@@ -154,9 +154,18 @@ sync_from_main() {
   fi
 }
 [[ "${AUTOPI_LOOP_LIBRARY_ONLY:-false}" == true ]] && return 0
+loop_start_checksum="$(cksum "$LIVE/loop.sh" 2>/dev/null)"
 bash "$HERE/wait-scheduler-lock.sh" || : # a restart keeps the old tick (KillMode=process); do not start a tick that must skip on its lock
 n=0
 while true; do
+  if [[ "$(cksum "$LIVE/loop.sh" 2>/dev/null || :)" != "$loop_start_checksum" ]]; then
+    if [[ -n "${REFILL_PID:-}" ]]; then
+      while refill_running; do sleep 1; done
+      wait "$REFILL_PID" || :
+    fi
+    echo "[$(date -u +%FT%TZ)] loop: autopi-live/loop.sh changed since start, exiting for systemd to restart" >> "$A/scheduler.log"
+    exit 0
+  fi
   sync_from_main
   run_tick & slow_pid=$!
   tick="$(jq -r '.tick_seconds // 120' "$A/config.json" 2>/dev/null)"
