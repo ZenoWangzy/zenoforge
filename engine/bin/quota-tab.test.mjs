@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
+import test from 'node:test';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,13 +12,13 @@ import { fileURLToPath } from 'node:url';
 const bin = path.dirname(fileURLToPath(import.meta.url));
 
 // The quota reply a script reads: zc-quota the GLM limit list, codex-quota the ChatGPT rate_limit windows.
-function quotaReply(script, week, codexWindows) {
+function quotaReply(script, week, codexWindows, limitReached = false) {
   if (script === 'codex-quota') {
     const rateLimit = codexWindows === undefined ? {
       primary_window: { limit_window_seconds: 18000, used_percent: 10, reset_at: 1800000000 },
       secondary_window: { limit_window_seconds: 604800, used_percent: week, reset_at: 1800000000 },
     } : { primary_window: codexWindows[0] ?? null, secondary_window: codexWindows[1] ?? null };
-    return { hit: 'https://chatgpt.com/backend-api/wham/usage', body: JSON.stringify({ rate_limit: rateLimit }) };
+    return { hit: 'https://chatgpt.com/backend-api/wham/usage', body: JSON.stringify({ rate_limit: { ...rateLimit, limit_reached: limitReached } }) };
   }
   const limits = [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 10 }, { type: 'TOKENS_LIMIT', unit: 6, percentage: week, nextResetTime: 1800000000000 }];
   return { hit: 'https://bigmodel.cn/api/monitor/usage/quota/limit', body: JSON.stringify({ data: { limits } }) };
@@ -55,7 +56,7 @@ function answerCdp(socket, reply, seen) {
   });
 }
 
-async function run(script, tabs, files = {}, { week, windows, miss, atUrl, env = {}, home: reuse } = {}) {
+async function run(script, tabs, files = {}, { week, windows, limitReached = false, miss, atUrl, env = {}, home: reuse } = {}) {
   const seen = [];
   const server = http.createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
@@ -71,7 +72,7 @@ async function run(script, tabs, files = {}, { week, windows, miss, atUrl, env =
     const accept = createHash('sha1').update(`${req.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
     socket.on('error', () => {});
-    if (week !== undefined || windows !== undefined) answerCdp(socket, { ...quotaReply(script, week, windows), miss, atUrl }, seen);
+    if (week !== undefined || windows !== undefined) answerCdp(socket, { ...quotaReply(script, week, windows, limitReached), miss, atUrl }, seen);
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const home = reuse ?? fs.mkdtempSync(path.join(os.tmpdir(), 'quota-tab-'));
@@ -153,6 +154,56 @@ assert.equal(monthlySnapshot.reset_at, 1800000000);
 assert.equal(monthlySnapshot.week_pct, 62, 'legacy week_pct remains populated for a lone pacing window');
 assert.equal(monthlySnapshot.week_reset, 1800000000, 'legacy week_reset remains populated for a lone pacing window');
 assert.equal(monthlySnapshot.five_h_pct, null);
+
+test('a 30-day pacing window at 100% does not hold Codex', async t => {
+  const monthlyAtCapHome = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-monthly-cap-'));
+  const monthlyAtCap = await run('codex-quota', codexUsageTab, {}, { home: monthlyAtCapHome, limitReached: true, windows: [
+    { limit_window_seconds: 2592000, used_percent: 100, reset_at: 1800000000 },
+  ] });
+  assert.equal(monthlyAtCap.code, 0, monthlyAtCap.out);
+  const marker = path.join(monthlyAtCapHome, '.zenoforge/codex-exhausted-until');
+  await t.test('does not write a hold marker', () => {
+    assert.equal(fs.existsSync(marker), false, monthlyAtCap.out);
+  });
+  await t.test('logs once that credits continue', () => {
+    assert.equal(monthlyAtCap.out.match(/credits continue/gi)?.length, 1, monthlyAtCap.out);
+  });
+});
+
+test('a marker from the old pacing-window rule is released on the next run', async t => {
+  const oldWindowHome = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-old-window-hold-'));
+  const oldWindowReset = 1800000000;
+  const oldWindowMarker = path.join(oldWindowHome, '.zenoforge/codex-exhausted-until');
+  const released = await run('codex-quota', codexUsageTab, {
+    '.zenoforge/codex-quota-state.json': JSON.stringify({ tab_id: 'read', hold_written: oldWindowReset }) + '\n',
+    '.zenoforge/codex-exhausted-until': `${oldWindowReset}\n`,
+  }, { home: oldWindowHome, limitReached: true, windows: [
+    { limit_window_seconds: 2592000, used_percent: 100, reset_at: oldWindowReset },
+  ] });
+  assert.equal(released.code, 0, released.out);
+  await t.test('removes the owned marker', () => {
+    assert.equal(fs.existsSync(oldWindowMarker), false, released.out);
+  });
+  await t.test('logs the release once', () => {
+    assert.equal(released.out.match(/release Codex hold/g)?.length, 1, released.out);
+  });
+});
+
+test('a reported 5-hour window at its cap still holds Codex', async t => {
+  const fiveHourHome = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-five-hour-cap-'));
+  const fiveHourReset = 1800003600;
+  const fiveHour = await run('codex-quota', codexUsageTab, {}, { home: fiveHourHome, windows: [
+    { limit_window_seconds: 18000, used_percent: 85, reset_at: fiveHourReset },
+  ] });
+  assert.equal(fiveHour.code, 0, fiveHour.out);
+  const marker = path.join(fiveHourHome, '.zenoforge/codex-exhausted-until');
+  await t.test('writes the 5-hour reset marker', () => {
+    assert.equal(Number(fs.readFileSync(marker, 'utf8').trim()), fiveHourReset, fiveHour.out);
+  });
+  await t.test('logs the hold', () => {
+    assert.match(fiveHour.out, /hold Codex until/);
+  });
+});
 
 const heldHome = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-held-'));
 const alerts = path.join(heldHome, 'alerts');
