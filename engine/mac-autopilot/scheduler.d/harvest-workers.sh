@@ -59,7 +59,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"; [[ -z "$only" || "$pid:$unit" == "$only" ]] || continue
-    report="$(jqf -r .report <<<"$w")"; rep="$SUP/$report"; lg="$SUP/$(jqf -r .log <<<"$w")"
+    report="$(jqf -r .report <<<"$w")"; rep="$SUP/$report"; lg="$SUP/$(jqf -r .log <<<"$w")"; model_not_found_cache_observe_worker "$w" "$lg" || true
     if [[ "$local_only" == true ]]; then
       if [[ "$wtype" =~ ^(review|rereview|repair)$ || ( "$wtype" == implement && "$(unit_field "$unit" '.lane // empty')" == pr ) ]]; then
         # Finished worker with a report: harvest now so its slot frees and the next stage dispatches in this refill. Land, eval, supervise and report-less deaths stay on the slow tick.

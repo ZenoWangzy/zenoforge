@@ -16,6 +16,7 @@ if [[ -r "$HOME/.zenoforge/capacity.env" ]]; then
   cp "$HOME/.zenoforge/capacity.env" "$AGENT_HOME/capacity.env"
 fi
 source "$repo/engine/lib.sh"
+source "$repo/engine/lib.d/model-not-found-cache.bash"
 N=$(jq -r '.issue.number' "$input")
 export N
 mkdir -p "$STATE_DIR"
@@ -112,14 +113,24 @@ case "$stage" in
     cat "$artifact/report.md"
     ;;
   supervisor)
-    # #4369: the same terra-profile invocation the live scheduler dispatches (codex exec -p terra
-    # in dispatch_supervisor_arbiters). The arbitration reads only the frozen record, so there is
-    # no provider or model resolution here.
+    # Keep the configured profile, but honor the shared model-not-found cache just like the scheduler.
     profile="${ZF_SUPERVISOR_PROFILE:-terra}"
-    record_identity "codex:profile:$profile"
-    pipeline_execution_run timeout 45m codex exec -p "$profile" --sandbox "$CODEX_SANDBOX_MODE" \
+    profile_model="$(codex_model_for_profile "$profile" 2>/dev/null || true)"
+    attempt_model="$profile_model"; model_args=(); swap_log=""
+    if [[ -n "$profile_model" ]] && model_not_found_cache_has "$profile_model"; then
+      attempt_model=gpt-6-luna; model_args=(-m gpt-6-luna -c model_reasoning_effort=max)
+      swap_log="model-not-found cache swap eval-supervisor profile=$profile from=$profile_model to=$attempt_model effort=max"
+      record_identity "codex:$attempt_model:max"
+    else
+      record_identity "codex:profile:$profile"
+    fi
+    status=0
+    pipeline_execution_run timeout 45m codex exec -p "$profile" "${model_args[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
       --skip-git-repo-check --ephemeral --json \
-      --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1
+      --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1 || status=$?
+    [[ -z "$swap_log" ]] || printf '%s\n' "$swap_log" >> "$artifact/worker.log"
+    if (( status != 0 )) && [[ -n "$attempt_model" ]]; then model_not_found_cache_observe_log "$attempt_model" "$artifact/worker.log" || true; fi
+    (( status == 0 )) || exit "$status"
     cat "$artifact/report.md"
     ;;
 esac
