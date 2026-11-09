@@ -158,7 +158,7 @@ quarantine_decision() {
 }
 
 
-# quarantine_mark_canary <scope> [now] -- one dispatch was let through;
+# quarantine_mark_canary <scope> [now] -- one dispatched job really started;
 # the next canary is due after an exponentially longer wait (capped), so a
 # second candidate this same tick already sees "open".
 quarantine_mark_canary() {
@@ -173,6 +173,33 @@ quarantine_mark_canary() {
   jq --argjson now "$now" --argjson wait "$wait" \
     '.canaries = ((.canaries // 0) + 1) | .last_canary_at = $now | .next_canary_at = ($now + $wait)' \
     "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+
+quarantine_stage_canary_pending() {
+  case $'\n'"${STAGE_DISPATCH_CANARY_SCOPES:-}"$'\n' in *$'\n'"$1"$'\n'*) return 0 ;; esac
+  return 1
+}
+
+quarantine_stage_canary_reserve() { quarantine_stage_canary_pending "$1" && return 0
+  STAGE_DISPATCH_CANARY_SCOPES="${STAGE_DISPATCH_CANARY_SCOPES:+$STAGE_DISPATCH_CANARY_SCOPES$'\n'}$1"
+}
+
+quarantine_mark_canary_scope_list() {
+  local now="${2:-$(date +%s)}" scope
+  while IFS= read -r scope; do [ -z "$scope" ] || quarantine_mark_canary "$scope" "$now" || return $?; done <<< "${1:-}"
+}
+
+quarantine_mark_stage_dispatch_canaries() {
+  local stage="$1" now="${2:-$(date +%s)}" scope started="" remaining=""
+  while IFS= read -r scope; do
+    [ -n "$scope" ] || continue
+    case "$scope" in
+      "$stage"|"$stage@"*) started="${started:+$started$'\n'}$scope" ;;
+      *) remaining="${remaining:+$remaining$'\n'}$scope" ;;
+    esac
+  done <<< "${STAGE_DISPATCH_CANARY_SCOPES:-}"
+  STAGE_DISPATCH_CANARY_SCOPES="$remaining"; quarantine_mark_canary_scope_list "$started" "$now"
 }
 
 
@@ -196,10 +223,8 @@ quarantine_scopes_for() {
 }
 
 
-# stage_dispatch_allowed <stage> [expected_packages_json] [now] [red_surface_json] [roadmap_epic] -> 0 if the
-# scheduler may dispatch this candidate now (marking a canary when that is
-# what lets it through), 1 if a quarantine blocks it. Logs once per
-# blocked candidate.
+# stage_dispatch_allowed <stage> [expected_packages_json] [now] [red_surface_json] [roadmap_epic] -> 0 if permitted;
+# a canary stays reserved until its job starts. Returns 1 when blocked and logs once per candidate.
 stage_dispatch_allowed() {
   local stage="$1" expected_json="${2:-[]}" now="${3:-$(date +%s)}" red_surface="${4:-${2:-[]}}" epic="${5:-}" scope decision blocked=0
   local -a canary_scopes=()
@@ -211,6 +236,11 @@ stage_dispatch_allowed() {
       if main_ci_red_candidate_allowed "$red_surface" "$epic"; then
         continue
       fi
+      blocked=1
+      STAGE_DISPATCH_BLOCKING_SCOPES="${STAGE_DISPATCH_BLOCKING_SCOPES:+${STAGE_DISPATCH_BLOCKING_SCOPES}、}$scope"
+      continue
+    fi
+    if quarantine_stage_canary_pending "$scope"; then
       blocked=1
       STAGE_DISPATCH_BLOCKING_SCOPES="${STAGE_DISPATCH_BLOCKING_SCOPES:+${STAGE_DISPATCH_BLOCKING_SCOPES}、}$scope"
       continue
@@ -231,7 +261,7 @@ stage_dispatch_allowed() {
   for scope in "${canary_scopes[@]:-}"; do
     [ -z "$scope" ] && continue
     echo "issue-pipeline: $stage dispatch let through as a canary for quarantine $scope" >&2
-    quarantine_mark_canary "$scope" "$now"
+    quarantine_stage_canary_reserve "$scope"
   done
   return 0
 }

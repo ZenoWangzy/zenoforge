@@ -3727,14 +3727,16 @@ EF_OUT="$(
     echo "other_free=$(stage_dispatch_allowed implement "[\"packages/other\"]" $((t0 + 130)) 2>/dev/null && echo yes || echo no)"
     echo "triage_blocked=$(stage_dispatch_allowed triage "[]" $((t0 + 130)) 2>/dev/null && echo no || echo yes)"
     echo "advisor_free=$(stage_dispatch_allowed advisor "[]" $((t0 + 130)) 2>/dev/null && echo yes || echo no)"
-    # canary: the triage quarantine opened at the reconcile above (t0+120s),
-    # so its first canary is due 15 minutes after THAT; exactly one goes
-    # through, then the backoff doubles
+    # A slice that stops before a job exists must not spend the canary.
     tq=$((t0 + 120))
+    echo "canary_let_through=$(stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) 2>/dev/null && echo yes || echo no)"
+    slice_status=124; if [ "$slice_status" -eq 124 ]; then STAGE_DISPATCH_CANARY_SCOPES=""; fi
+    echo "canary_overrun_unchanged=$(jq -e --argjson next "$((tq + QUARANTINE_CANARY_INITIAL_SECONDS))" ".canaries == 0 and .next_canary_at == \$next" "$(quarantine_file triage)" >/dev/null && echo yes || echo no)"
     echo "before_canary=$(quarantine_decision triage $((tq + 14 * 60)))"
     echo "canary_due=$(quarantine_decision triage $((tq + 16 * 60)))"
-    echo "canary_let_through=$(stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) 2>/dev/null && echo yes || echo no)"
+    echo "real_job_started=$(stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) 2>/dev/null && quarantine_mark_stage_dispatch_canaries triage "$((tq + 16 * 60))" && echo marked || echo not-marked)"
     echo "second_same_tick=$(stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) 2>/dev/null && echo yes || echo no)"
+    echo "real_job_canaries=$(jq -r .canaries "$(quarantine_file triage)")"
     echo "next_canary_in=$(( $(jq -r .next_canary_at "$(quarantine_file triage)") - (tq + 16 * 60) ))"
     # canary survived (no new fault within grace) -> lifted
     reconcile_quarantines "$((tq + 16 * 60 + 31 * 60))" 2>/dev/null
@@ -3786,8 +3788,11 @@ assert_eq "stage_dispatch_allowed: the quarantined stage is blocked" "yes" "$(ef
 assert_eq "stage_dispatch_allowed: an unrelated stage keeps running" "yes" "$(ef advisor_free)"
 assert_eq "quarantine_decision: open before the first canary is due" "open" "$(ef before_canary)"
 assert_eq "quarantine_decision: canary due after 15 minutes" "canary" "$(ef canary_due)"
+assert_eq "a canary slice overrun before job creation leaves its schedule unchanged" "yes" "$(ef canary_overrun_unchanged)"
 assert_eq "stage_dispatch_allowed: the canary goes through" "yes" "$(ef canary_let_through)"
+assert_eq "stage dispatch charges the canary after a real job starts" "marked" "$(ef real_job_started)"
 assert_eq "stage_dispatch_allowed: a second candidate the same tick does not" "no" "$(ef second_same_tick)"
+assert_eq "a real job start increments the canary count once" "1" "$(ef real_job_canaries)"
 assert_eq "quarantine_mark_canary: the next canary waits twice as long" "1800" "$(ef next_canary_in)"
 assert_eq "reconcile: a canary with no new fault inside the grace period lifts the quarantine" "yes" "$(ef triage_lifted)"
 assert_eq "reconcile: a canary followed by the same fault keeps it" "yes" "$(ef docker_still_quarantined)"

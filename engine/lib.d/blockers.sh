@@ -178,8 +178,8 @@ reconcile_blocking_issue_root() {
         conclusion_hold "$n" issue-pipeline || { blocker_root_fail "conclusion hold failed for #$n"; return 1; }
         return 0
       fi
-      [ "$scope_decision" != canary ] || quarantine_mark_canary "$matching_scope" \
-        || { blocker_root_fail "canary quarantine mark failed for #$n"; return 1; }
+      # The worker dispatch spends this reservation after the job starts.
+      [ "$scope_decision" != canary ] || quarantine_stage_canary_reserve "$matching_scope"
       if [ "$conclusion_owner" = release ]; then
         return 0
       fi

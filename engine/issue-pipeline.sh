@@ -670,7 +670,7 @@ dispatch() {
   # Release is exempt: an OOM kill mid-deploy would leave production half-rolled.
   local -a memory_args=() result_args=() advisor_env=()
   if [[ "$stage" == advisor ]]; then
-    advisor_env=(-E ZF_WEB_ADVISOR_PROVIDER_JOB_DIR)
+    advisor_env=(-E ZF_WEB_ADVISOR_PROVIDER_JOB_DIR -E "ZF_QUARANTINE_CANARY_SCOPES=${STAGE_DISPATCH_CANARY_SCOPES:-}")
   fi
   case "$stage" in
     implement|triage|recut)
@@ -725,7 +725,7 @@ dispatch() {
     "${memory_args[@]}" "${result_args[@]}" \
     "$@" \
     "$ZF_ENGINE_DIR/run-$stage.sh" "$n"; then
-    :
+    if [[ "$stage" != advisor ]] && declare -F quarantine_mark_stage_dispatch_canaries >/dev/null; then quarantine_mark_stage_dispatch_canaries "$stage"; fi
   else
     dispatch_status=$?
     if [ "$dispatch_status" -eq 75 ]; then
@@ -771,7 +771,7 @@ dispatch_release_batch() {
     -p "RuntimeMaxSec=$RELEASE_RUNTIME_MAX_SEC" -p SuccessExitStatus=75 \
     "${runtime_env[@]}" \
     "$script" "$anchor" "$batch_sha"; then
-    release_batch_cadence_mark
+    release_batch_cadence_mark; if declare -F quarantine_mark_stage_dispatch_canaries >/dev/null; then quarantine_mark_stage_dispatch_canaries release; fi
     return 0
   else
     local launch_status=$?
@@ -929,7 +929,7 @@ dispatch_triage_batch() {
     -p "RuntimeMaxSec=$TRIAGE_RUNTIME_MAX_SEC" \
     "${memory_args[@]}" "${result_args[@]}" \
     "$script" --scheduled "${issue_ids[@]}"; then
-    pipeline_batch_claim_keep "$claim_owner" "$claim_unit" "${issue_ids[@]}"
+    if declare -F quarantine_mark_stage_dispatch_canaries >/dev/null; then quarantine_mark_stage_dispatch_canaries triage; fi; pipeline_batch_claim_keep "$claim_owner" "$claim_unit" "${issue_ids[@]}"
   else
     local launch_status=$?
     [ -z "$active_tmp" ] || rm -f "$AGENT_HOME/triage-batch-active.json"
