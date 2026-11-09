@@ -73,11 +73,20 @@ launch_harvest_station() {
   setsid timeout -k 30 "${AUTOPI_HARVEST_STATION_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --harvest-station >> "$A/loop.out" 2>&1 < /dev/null &
 }
 # #4628: the slow tick runs beside the refill controller. The scheduler yields the same ledger lock
-# around slow GitHub phases; a busy refill returns 75 and is retried five seconds later.
+# around slow GitHub phases; a busy refill returns 75 and is retried five seconds later. Refills run
+# in the background so this five-second loop keeps launching the independent stations while they run.
+refill_running() {
+  local pid
+  [[ -n "${REFILL_PID:-}" ]] || return 1
+  while IFS= read -r pid; do [[ "$pid" == "$REFILL_PID" ]] && return 0; done < <(jobs -pr)
+  return 1
+}
 refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一拍前的补派窗口
   local cadence="${AUTOPI_REFILL_SECONDS:-30}" signature rc started=$SECONDS
   REFILL_SINCE="${REFILL_SINCE:-0}"
   REFILL_LAST_EXIT="${REFILL_LAST_EXIT:-}"
+  REFILL_PID="${REFILL_PID:-}"
+  REFILL_ACTIVE_SIGNATURE="${REFILL_ACTIVE_SIGNATURE:-}"
   while :; do
     if [[ -n "${2:-}" ]]; then
       pid_running "$2" || break
@@ -92,12 +101,18 @@ refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一�
     launch_harvest_station
     signature="$(exited_worker_signature "$A/workers.json")"
     [[ -n "$signature" ]] || REFILL_LAST_EXIT=""
-    if [[ -n "$signature" && "$signature" != "$REFILL_LAST_EXIT" ]] || (( REFILL_SINCE >= cadence )); then
-      rc=0; run_refill || rc=$?
+    if [[ -n "$REFILL_PID" ]] && ! refill_running; then
+      rc=0; wait "$REFILL_PID" || rc=$?
+      REFILL_PID=""
       if (( rc != 75 )); then
         REFILL_SINCE=0
-        [[ -z "$signature" ]] || REFILL_LAST_EXIT="$signature"
+        [[ -z "$REFILL_ACTIVE_SIGNATURE" ]] || REFILL_LAST_EXIT="$REFILL_ACTIVE_SIGNATURE"
       fi
+      REFILL_ACTIVE_SIGNATURE=""
+    fi
+    if [[ -z "$REFILL_PID" ]] && { [[ -n "$signature" && "$signature" != "$REFILL_LAST_EXIT" ]] || (( REFILL_SINCE >= cadence )); }; then
+      REFILL_ACTIVE_SIGNATURE="$signature"
+      run_refill & REFILL_PID=$!
     fi
   done
 }
