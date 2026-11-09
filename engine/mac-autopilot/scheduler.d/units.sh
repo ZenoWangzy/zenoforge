@@ -306,26 +306,53 @@ supervisor_budget_park() { # id evidence → parked，留给 supervisor，不发
 SUPERVISOR_CAP_PARK_RESULT_RE='^(third entry into supervisor-review; arbitration cap is 2|arbitration budget exhausted for )'
 
 # RECUT cannot finish over unpushed work, so triaging the same head again only spends a run: 148 of 625 dispatches on 11-06.
-supervisor_recut_refuse() { # id evidence decision worktree [notify-supervisor]
-  local id="$1" evidence="$2" decision="$3" wt="$4" notify_supervisor="${5:-true}" head note key
+supervisor_recut_refuse() { # id evidence decision worktree [resume-work]
+  local id="$1" evidence="$2" decision="$3" wt="$4" resume_work="${5:-false}" head note u resumed runs
   head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
   note="RECUT refused: unpushed work at ${head:0:12}. Unparks when that head changes or the worktree is gone."
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  resumed="$(jqf -r '.recut_refused_resume_head // empty' <<<"$u")"
+  runs="$(jqf -r '[.history[]? | select(.stage=="supervisor-arbiter")] | length' <<<"$u")"
+  if [[ "$resume_work" == true && "$resumed" != "$head" && "$runs" =~ ^[0-9]+$ ]] \
+    && (( runs < SUPERVISOR_ARBITER_UNIT_CAP )); then
+    supervisor_recut_refused_resume "$id" "$head" "$evidence" "$decision"
+    return $?
+  fi
   cap_set_unit "$id" park "$note $evidence" "" "$(hist supervisor-recut-refused "$evidence" "$decision") | .stage=\"parked\" | .parked_reason=\"recut-refused-unpushed\" | .unpark_condition=\"the unit head changes\" | .recut_refused_head=$(js "$head") | .recut_refused_verdict=\"RECUT\" | .note=$(js "$note $evidence")" \
     || return 1
   say "supervisor recut refused unit=$id head=${head:0:12}: unpushed work"
-  [[ "$notify_supervisor" == true ]] || return 0
-  key="recut-refused:$id:$head"
-  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "$key" "recut-refused unit=$id: $note") \
-    || say "recut refused unit=$id: escalation not delivered"
 }
 
-supervisor_recut_refused_hold() { # unit-json → 0 while the refused head is still what its worktree holds
-  local id refused d
+supervisor_recut_refused_resume() { # id head evidence [decision] → let the existing worker publish the work before another RECUT
+  local id="$1" head="$2" evidence="$3" decision="${4:-null}" u pr stage hint note
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  pr="$(jqf -r '.pr // empty' <<<"$u")"
+  if [[ "$pr" =~ ^[0-9]+$ ]]; then
+    stage=repair-pending
+    hint="Preserve the existing unpushed work, commit and push the new head, then retry the refused RECUT."
+  else
+    stage=implement-pending
+    hint="Preserve the existing unpushed work, finish and push it, then retry the refused RECUT."
+  fi
+  note="RECUT refused because existing work at ${head:0:12} is unpushed. Resume it and publish the resulting head before another RECUT attempt. $evidence"
+  cap_set_unit "$id" "resume existing work" "$note" "" \
+    "$(hist supervisor-recut-refused "$evidence" "$decision") | $(hist supervisor-recut-resume "$head") | .stage=$(js "$stage") | .note=$(js "$note") | .recut_refused_head=$(js "$head") | .recut_refused_verdict=\"RECUT\" | .recut_refused_resume_head=$(js "$head") | .repair_hint=$(js "$hint") | del(.parked_reason,.unpark_condition)" \
+    || return 1
+  say "supervisor recut refusal unit=$id head=${head:0:12}: resumed $stage to publish existing work"
+}
+
+supervisor_recut_refused_hold() { # unit-json → 0 while the refused head is unchanged; resume it once while arbitration budget remains
+  local id refused d resumed
   [[ "$(jqf -r '.parked_reason // empty' <<<"$1")" == recut-refused-unpushed ]] || return 1
   id="$(jqf -r .id <<<"$1")"; refused="$(jqf -r '.recut_refused_head // empty' <<<"$1")"
+  resumed="$(jqf -r '.recut_refused_resume_head // empty' <<<"$1")"
   [[ -n "$refused" ]] || return 1
   for d in "$WT_ROOT/wt-$id" "/tmp/wt-$id"; do
-    [[ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" != "$refused" ]] || return 0
+    [[ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" == "$refused" ]] || continue
+    if [[ "$resumed" != "$refused" ]] && (( "$(jqf -r '[.history[]? | select(.stage=="supervisor-arbiter")] | length' <<<"$1")" < SUPERVISOR_ARBITER_UNIT_CAP )); then
+      supervisor_recut_refused_resume "$id" "$refused" "legacy RECUT refusal has unchanged unpushed work" || return 1
+    fi
+    return 0
   done
   return 1
 }
@@ -422,7 +449,7 @@ supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [bud
     reason="$limit_reason; recut the unit once"
     supervisor_budget_recut "$id" "$tag: $reason" "$decision" \
       "$tag could not complete the recut route" "$tag recut" \
-      "$park_stage" "$recut_stage" false false || return 1
+      "$park_stage" "$recut_stage" false || return 1
     branch=park
     [[ "$(unit_field "$id" '.stage')" != closed ]] || branch=recut
   else
@@ -510,6 +537,7 @@ supervisor_cap_parked_unit() { # unit-json → whether this is a retryable arbit
       .parked_reason == "supervisor-arbitration-cap" or
       .parked_reason == "supervisor-cap-triage-reask" or
       .parked_reason == "recut-refused-unpushed" or
+      .parked_reason == "repair-breaker" or
       any((.history // [])[]?; .stage == "supervisor-budget-park" and
         ((.result // "") | test($cap_park_result_re))) or
       any((.history // [])[]?; .stage == "supervisor-cap-triage-park")
@@ -528,18 +556,18 @@ supervisor_cap_triage_park() { # id evidence → durable retry marker swept by t
 }
 
 # 轮数或墙钟止损已用尽且仍没有 PR：交给 recut 拆成可交付的子票。
-# 走 lib.sh 唯一的 needs-recut 入口 route_to_recut；有未提交、stash 或未推送改动时不关单元，照旧 park。
-supervisor_budget_recut() { # id evidence decision park-reason recut-reason park-stage recut-stage allow-pr-close notify-refusal
+# 走 lib.sh 唯一的 needs-recut 入口 route_to_recut；cap triage 遇到未推送改动时先让原单元继续提交，触顶默认仍停放。
+supervisor_budget_recut() { # id evidence decision park-reason recut-reason park-stage recut-stage allow-pr-close
   local id="$1" evidence="$2" decision="${3:-null}" park_reason="${4:-supervisor budget exhausted}"
   local recut_reason="${5:-ticket stop-loss reached}" park_stage="${6:-supervisor-budget-park}" recut_stage="${7:-supervisor-budget-recut}"
-  local allow_pr_close="${8:-false}" notify_refusal="${9:-true}" issue pr err note pr_comment pr_state
+  local allow_pr_close="${8:-false}" issue pr err note pr_comment pr_state
   issue="$(unit_field "$id" '.issue // empty')"; pr="$(unit_field "$id" '.pr // empty')"
   local d
   for d in "$WT_ROOT/wt-$id" "/tmp/wt-$id"; do # cleanup_tick 删的两个位置；stash 是 ensure_clone 收起的未提交进度
     if [[ -d "$d" ]] && { [[ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]] || [[ -n "$(git -C "$d" stash list 2>/dev/null)" ]] \
         || [[ -z "$(git -C "$d" branch -r --contains HEAD 2>/dev/null)" ]]; }; then
       if [[ "$park_stage" == supervisor-cap-triage-park ]]; then
-        supervisor_recut_refuse "$id" "$evidence" "$decision" "$d" "$notify_refusal"; return 0
+        supervisor_recut_refuse "$id" "$evidence" "$decision" "$d" "$allow_pr_close"; return 0
       fi
       supervisor_budget_park "$id" "$evidence (worktree has unpushed work; not sent to recut)" "$decision" "$park_reason" "$park_stage"; return 0
     fi

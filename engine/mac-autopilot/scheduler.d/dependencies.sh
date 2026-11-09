@@ -555,31 +555,38 @@ dep_predecessor_dead() { # waiter-unit-json predecessor
   printf 'predecessor #%s can never deliver (%s), no open PR, no live worker, no live child; branches:%s' \
     "$dep" "$(jqf -r 'if length == 0 then "open tracker with no unit" else "unit closed undelivered: " + (last.note // "no note" | .[0:200]) end' <<<"$rows")" "$branches"
 }
-dep_dead_sweep() { # at most one marked unit per sweep reaches the arbiter; no state, so nothing can wedge it
+dep_dead_sweep() { # at most one unit per sweep reaches the arbiter; no state, so nothing can wedge it
   local u id dep evidence
   while IFS= read -r u; do
-    id="$(jqf -r .id <<<"$u")"; dep="$(jqf -r .dep_wait_delivery <<<"$u")"
+    id="$(jqf -r .id <<<"$u")"; dep="$(jqf -r '.dep_wait_delivery // .blocked_on' <<<"$u")"
     evidence="$(dep_predecessor_dead "$u" "$dep")" || continue
     if [[ "$(jqf -r '.dep_dead_proved // empty' <<<"$u")" == "$dep" ]] && ! dep_stopped_waiting_on "$id" "$dep"; then
       dep_stop_waiting "$id" "$dep" "dead predecessor blocked it again after arbitration"
       echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=released reason=repeat" >> "$A/alerts/events.md"
     elif [[ "$(jqf -r '.dep_dead_proved // empty' <<<"$u")" == "$dep" ]]; then
-      set_unit "$id" "$(hist supervisor-park "blocked on dead predecessor #$dep again after arbitration") | del(.blocked_on) | .stage=\"parked\" | .parked_reason=\"dep-dead-repeat\" | .note=$(js "$evidence") | .unpark_condition=$(js "#$dep delivered in the ledger or closed on GitHub")"
+      set_unit "$id" "$(hist supervisor-park "blocked on dead predecessor #$dep again after arbitration") | .dep_wait_delivery=$dep | del(.blocked_on) | .stage=\"parked\" | .parked_reason=\"dep-dead-repeat\" | .note=$(js "$evidence") | .unpark_condition=$(js "#$dep delivered in the ledger")"
       echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=parked reason=repeat" >> "$A/alerts/events.md"
     else
-      set_unit "$id" "$(hist dep-dead-proved "#$dep") | .dep_dead_proved=$dep | del(.blocked_on)"
+      set_unit "$id" "$(hist dep-dead-proved "#$dep") | .dep_dead_proved=$dep | .dep_wait_delivery=$dep | del(.blocked_on, .unpark_condition)"
       to_supervisor "$id" "$evidence. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #$dep"
     fi
     return 0
-  done < <(jqf -c '[.units[] | select(.stage=="blocked-external" and .size_recut_pending != true and .dep_wait_delivery != null and .dep_wait_delivery == .blocked_on)] | sort_by(-.issue) | .[]' "$UNITS")
+  done < <(jqf -c '[.units[] | select(.size_recut_pending != true and ((.stage=="blocked-external" and .dep_wait_delivery != null and .dep_wait_delivery == .blocked_on) or (.stage=="parked" and .parked_reason=="waiting-predecessor" and (.blocked_on | type)=="number")))] | sort_by(-.issue) | .[]' "$UNITS")
 }
-dep_dead_unpark() { # a unit parked dep-dead-repeat before the one release existed (#609) is owed it; one that already had it stays parked, or a refusing worker loops
+dep_dead_unpark() { # delivery clears every repeat park; a dead undelivered blocker gets only the one pre-repeat release, so a refusing worker cannot loop
   local u id dep
   while IFS= read -r u; do
     id="$(jqf -r .id <<<"$u")"; dep="$(jqf -r .dep_wait_delivery <<<"$u")"
+    if dep_delivered_in_ledger "$dep"; then
+      set_unit "$id" ".blocked_on=$dep | del(.parked_reason, .unpark_condition)"
+      dep_release_delivered "$id" "$dep" true
+      (( ! DEP_SWEEP )) || dep_rows_prime # a released waiter can be another waiter's predecessor row
+      echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=released reason=delivered" >> "$A/alerts/events.md"
+      continue
+    fi
     dep_stopped_waiting_on "$id" "$dep" && continue
     dep_predecessor_dead "$u" "$dep" >/dev/null || continue # fail closed: closed on GitHub is not delivered, and not proven dead stays parked
-    set_unit "$id" 'del(.parked_reason, .unpark_condition)'
+    set_unit "$id" ".blocked_on=$dep | del(.parked_reason, .unpark_condition)"
     dep_stop_waiting "$id" "$dep" "it was closed without delivering, its work is not in main"
     (( ! DEP_SWEEP )) || dep_rows_prime # a released waiter can be another waiter's predecessor row
     echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=released reason=parked-before-release" >> "$A/alerts/events.md"

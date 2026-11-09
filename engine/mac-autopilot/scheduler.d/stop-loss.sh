@@ -399,8 +399,8 @@ repair_run_filter() { # unit class head fresh-tokens [worker-log report] -> jq f
   fi
 }
 # Circuit breaker on repeated identical outcomes (Nygard, Release It!): REPAIR_BREAKER_RUNS repair runs in a row that end on one
-# head leave a further run nothing new to try (issue-5573: four terra repairs on e145d3f0, none pushed), so the unit parks and
-# one supervisor inbox entry carries the head, the run count and the last evidence line of the final report.
+# head leave a further run nothing new to try (issue-5573: four terra repairs on e145d3f0, none pushed), so the unit parks for
+# the next automatic arbiter pass, with the head, run count and final report evidence in its ledger note.
 REPAIR_BREAKER_RUNS="${REPAIR_BREAKER_RUNS:-2}"
 repair_breaker() { # unit report-file → parks the unit when its last repair runs all ended repair-no-push on the same head
   local u head n evidence result
@@ -414,8 +414,6 @@ repair_breaker() { # unit report-file → parks the unit when its last repair ru
   result="head $head: $n consecutive repair runs ended on it without a push; last evidence: ${evidence:-none recorded}"
   cap_set_unit "$1" park "$result" "" "$(hist repair-breaker "$result") | .stage=\"parked\" | .parked_reason=\"repair-breaker\" | .unpark_condition=\"a supervisor decision\" | .note=$(js "$result")" || return 1
   say "repair breaker unit=$1 head=${head:0:12} runs=$n -> parked"
-  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "repair-breaker:$1:$head" "repair-breaker unit=$1: $result") \
-    || say "repair breaker unit=$1: inbox entry not delivered"
 }
 # Admission: a repair on package code runs the Dagger gate, which needs the host's container runtime. The probe is the
 # env-fault ledger's own (env:test-gate:docker); rc 1 or 127 means missing, anything else (unknown, timeout) admits. The

@@ -8,12 +8,16 @@ CLASS_INFO = {
     "no-blocker-recorded": ("未记录前置", "没有可等待的前置事项；下次调度会恢复派发。"),
     "chain-on-ready-issue": ("依赖另一张待实现票", "前置票交付后自动继续；链尾开始实现后会逐级释放。"),
     "blocker-state-unavailable": ("前置状态文件缺失", "缺少本地状态文件；前置票在 GitHub 交付或关闭后自动继续。"),
-    "other-predecessor": ("等待前置交付", "前置票交付或关闭后自动继续；调度器会持续检查。"),
-    "waiting-predecessor": ("等待前置交付", "前置票交付或关闭后自动继续。"),
-    "recut-refused-unpushed": ("拆票被未推送改动挡住", "工作区改动推送或清理、单元 head 改变后重试。"),
+    "other-predecessor": ("等待前置交付", "前置票交付或关闭后自动继续；确认无法交付时转自动裁决。"),
+    "waiting-predecessor": ("等待前置交付", "前置票交付后自动继续；确认无法交付时转自动裁决。"),
+    "recut-refused-unpushed": ("拆票被未推送改动挡住", "仲裁上限内自动派回原单元提交改动；触顶时按默认路由停放。"),
     "ticket-stop-loss": ("达到单票止损", "票据更新或预算提高后自动恢复一次派发。"),
     "recut-children": ("等待拆出的子票", "所有子票交付后自动完成父票。"),
-    "dep-dead-repeat": ("前置票重复失效", "前置票交付或关闭后解除；否则等待自动仲裁。"),
+    "dep-dead-repeat": ("前置票重复失效", "前置票交付后自动解除；再次阻塞前保持停放。"),
+    "repair-breaker": ("连续修复未产出提交", "自动仲裁重新评估；可继续修复或重拆，仍受仲裁上限约束。"),
+    "supervisor-arbitration-cap": ("等待终局自动裁决", "调度器继续终局裁决并按结果恢复、重拆或停放。"),
+    "supervisor-cap-triage-reask": ("重问一次终局裁决", "调度器自动重问一次；仍无效时采用默认路由。"),
+    "supervisor-cap-exhausted": ("自动仲裁预算耗尽", "已按默认路由停放；不会再消耗仲裁轮次。"),
     "token-hard-park": ("达到硬令牌上限", "永久停放；没有自动释放事件。"),
     "session-owned": ("由现有会话持有", "持有该 PR 的会话合入或关闭 PR 后继续。"),
     "supervisor-budget": ("仲裁预算耗尽", "已按自动默认决策停放；不再消耗仲裁轮次。"),
@@ -120,14 +124,18 @@ def _parked_class(unit):
 
 def summarize(total, ready_issue_numbers, units, read_json, agent_home):
     """Return the ready queue split; count each issue once even if it has duplicate units."""
-    if not isinstance(total, int) or isinstance(total, bool) or not isinstance(ready_issue_numbers, list):
+    if (not isinstance(total, int) or isinstance(total, bool) or total < 0
+            or not isinstance(ready_issue_numbers, list)):
         return None
-    ready_numbers = {_issue_number(value) for value in ready_issue_numbers}
-    ready_numbers.discard(None)
+    issue_numbers = [_issue_number(value) for value in ready_issue_numbers]
+    ready_numbers = set(issue_numbers)
+    if None in ready_numbers or len(issue_numbers) != total or len(ready_numbers) != total:
+        return None
     held = {}
+    active = set()
     for unit in units:
         issue = _issue_number(unit.get("issue"))
-        if issue not in ready_numbers or issue in held:
+        if issue not in ready_numbers:
             continue
         stage = unit.get("stage")
         if stage == "blocked-external":
@@ -135,12 +143,16 @@ def summarize(total, ready_issue_numbers, units, read_json, agent_home):
         elif stage == "parked":
             key = _parked_class(unit)
         else:
+            active.add(issue)
             continue
-        held[issue] = key
+        held.setdefault(issue, key)
+    active.difference_update(held)
     counts = {}
     for key in held.values():
         counts[key] = counts.get(key, 0) + 1
     classes = [{"key": key, "name": CLASS_INFO[key][0], "count": counts[key], "reason": CLASS_INFO[key][1]}
                for key in CLASS_INFO if counts.get(key)]
     held_count = len(held)
-    return {"total": total, "dispatchable": max(0, total - held_count), "held": held_count, "classes": classes}
+    active_count = len(active)
+    return {"total": total, "dispatchable": total - held_count - active_count,
+            "active": active_count, "held": held_count, "classes": classes}

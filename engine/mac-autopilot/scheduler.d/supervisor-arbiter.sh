@@ -58,6 +58,7 @@ supervisor_arbiter_candidates() {
       and (.hold_handoff_waiting // false)==false and (.supervisor_owned // false)==false
       and (.stage!="parked" or .parked_reason=="supervisor-arbitration-cap"
         or .parked_reason=="supervisor-cap-triage-reask" or .parked_reason=="recut-refused-unpushed"
+        or .parked_reason=="repair-breaker"
         or .parked_reason=="supervisor-cap-founder" or .parked_reason=="supervisor-cap-exhausted"
         or any((.history // [])[]?; .stage=="supervisor-budget-park" and ((.result // "") | test($cap_park_result_re)))
         or any((.history // [])[]?; .stage=="supervisor-cap-triage-park")
