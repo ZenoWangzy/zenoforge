@@ -43,7 +43,8 @@ PATH_HINTS = {"intake": r"intake", "triage": r"triage", "advisor": r"advisor", "
               "review": r"review", "repair": r"repair|self-check", "merge": r"merge", "ci": r"ci[-_]admission|/ci", "release": r"release"}
 # The one table that ties a report line to rows of anomaly-owners.json (the head's plain-Chinese note per scorecard metric).
 # A row is {"cause": plain-Chinese note, "owner": who, "since": ISO 8601 UTC}; its cause prints only while since is at most 24 h before
-# the report time. An older row, a row with no parseable since and a bare string (undated) all print 原因超过一天没有更新 instead.
+# the report time (and at most 5 min after it, for clock skew). An older row, a since more than 5 min ahead, a row with no parseable
+# since and a bare string (undated) all print 原因超过一天没有更新 instead.
 # Line key -> row ids, first match first; a line prints the notes of the rows that exist, verbatim, at most two.
 # Lines with no row (finished, rollbacks, money, intake, triage, advisor, review) read 未查明; scorecard rows with no line:
 # scheduler.tick_gap_p50, scheduler.merge_pass_gap_min, delivery.unlinked_units_30d, delivery.issue_to_accept_p50_30d_hours, delivery.issue_to_accept_p95_30d_hours.
@@ -259,7 +260,7 @@ def fresh_note(row, now):
         age = now - since.timestamp()
     except ValueError:
         return STALE_CAUSE
-    return row.get("cause") if age <= DAY else STALE_CAUSE
+    return row.get("cause") if -300 <= age <= DAY else STALE_CAUSE  # a since over 5 min ahead of now is undated; less is clock skew
 
 
 def owner_cause(owners, key, now):

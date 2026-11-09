@@ -175,6 +175,8 @@ iso = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M
 row = lambda **kw: {"owner": "head", "cause": "测试原因", **kw}
 cases = {"fresh dict": (row(since=iso(now - 3600)), "测试原因"),
          "dict older than 24 h": (row(since=iso(now - 86400 - 60)), orc.STALE_CAUSE),
+         "since 600 s ahead": (row(since=iso(now + 600)), orc.STALE_CAUSE),
+         "since 60 s ahead": (row(since=iso(now + 60)), "测试原因"),
          "bare string": ("测试原因", orc.STALE_CAUSE),
          "dict with bad since": (row(since="昨天"), orc.STALE_CAUSE),
          "dict without since": (row(), orc.STALE_CAUSE),
