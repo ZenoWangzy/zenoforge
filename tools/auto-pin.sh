@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Pins each new zenoforge main commit, oldest first, one pin per merge (ruling zenoforge-instant-effect-2026-11-05).
+# Pins the newest zenoforge main commit as soon as main moves (rulings zenoforge-instant-effect-2026-11-05, zenoforge-batch-land-2026-11-08:
+# "Pin follows the batch at once"). Commits merged together are pinned once, at main's head: walking them one by one cost ~500 s each.
 # A failed pin waits for the next main commit, then moves on; one refused for a dirty checkout is retried once that clears. Stop by hand: touch "$ZF_AUTO_PIN_HOME/auto-pin.stop"
 # Run a copy, not the clone's file: the loop checks out new commits in its clone (see tools/zf-auto-pin.service).
 # State and stop file live in ZF_AUTO_PIN_HOME; engine/mac-autopilot/pin-lag.sh (bell) reads auto-pin.last to alert on a stall.
@@ -40,7 +41,7 @@ auto_pin_pass() {
   local last next merged log rc
   git -C "$C" fetch -q origin main || { sleep "$idle"; return 0; }
   last=$(cat "$state")
-  next=$(git -C "$C" rev-list --reverse --first-parent "$last..origin/main" | head -1)
+  next=$(git -C "$C" rev-list -1 --first-parent "$last..origin/main")
   if [[ -z $next ]]; then sleep "$idle"; return 0; fi
   git -C "$C" checkout -q --detach "$next" || return 1
   merged=$(git -C "$C" log -1 --format=%cI "$next"); log="$logdir/${next:0:12}.log"

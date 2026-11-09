@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
-# tools/auto-pin.sh: the pass pins oldest first, one commit per pass; a failed pin neither exits nor loops on the same commit.
+# tools/auto-pin.sh: a pass pins main's newest commit (a batch is pinned once); a failed pin neither exits nor loops on the same commit.
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/auto-pin-test.XXXXXX"); trap 'kill $(jobs -p) 2>/dev/null || :; rm -rf "$tmp"' EXIT
 fail() { echo "auto-pin.test.sh: $*" >&2; exit 1; }
@@ -31,15 +31,19 @@ auto_pin_pass > "$tmp/out" & pass=$!
 sleep 2
 kill -0 "$pass" 2>/dev/null || fail 'daemon exited after a failed pin'
 [[ $(last) == "$c1" ]] || fail 'state moved before main advanced'
-# main advances twice: the waiting pass moves on, then each later pass pins exactly one commit, oldest first
+# main advances twice: the waiting pass moves on, then one pass pins main's head; the commit between is not pinned on its own
 c3=$(commit three); c4=$(commit four); echo 0 > "$PIN_RC"
 wait "$pass" || fail 'pass returned non-zero'
 grep -q PIN-FAILED "$tmp/out" || fail 'no PIN-FAILED line'
 [[ $(last) == "$c2" ]] || fail "failed commit not skipped: $(last)"
-auto_pin_pass > /dev/null; [[ $(last) == "$c3" ]] || fail "second pass did not pin the oldest: $(last)"
-auto_pin_pass > /dev/null; [[ $(last) == "$c4" ]] || fail "third pass did not pin the next: $(last)"
+auto_pin_pass > /dev/null; [[ $(last) == "$c4" ]] || fail "second pass did not pin main's head: $(last)"
 auto_pin_pass > /dev/null; [[ $(last) == "$c4" ]] || fail 'idle pass moved state'
-[[ $(tr '\n' ' ' < "$PIN_CALLS") == "$c2 $c3 converge $c4 converge " ]] || fail "calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+[[ $(tr '\n' ' ' < "$PIN_CALLS") == "$c2 $c4 converge " ]] || fail "calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+# a batch of three merges since the last pin is pinned once, at the newest (ruling zenoforge-batch-land-2026-11-08)
+: > "$PIN_CALLS"; b1=$(commit batch1); b2=$(commit batch2); b3=$(commit batch3)
+auto_pin_pass > /dev/null; [[ $(last) == "$b3" ]] || fail "batch pass did not pin the newest: $(last)"
+[[ $(tr '\n' ' ' < "$PIN_CALLS") == "$b3 converge " ]] || fail "batch calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+c4=$b3  # later cases continue from the batch head
 
 # a pin refused for a dirty checkout is retried once the tree clears, with no new main commit
 g -C "$tmp/agent/checkout" init -q
