@@ -236,7 +236,7 @@ jq --argjson t "$(( $(date +%s) - 600 ))" '.github.fetched_epoch = $t' "$cache" 
 FAKE_GH_FAIL=1 run
 front | jq -e '.github.stale == true and (.github.error | contains("502")) and .errors == {} and .stages[5].count == 9
   and .ready_queue.dispatchable == 2 and .ready_queue.held == 6 and .values["ready_queue.dispatchable"] == 2' >/dev/null \
-  || fail "stale cache fallback wrong: $(front | jq -c '{github, errors}')"
+  || fail "stale cache fallback wrong: $(front | jq -c '{github, errors, ready_queue, dispatchable_value: .values["ready_queue.dispatchable"]}')"
 
 # 4. 缓存也太旧且 GitHub 失败：只有阶段块"数据不可用"，顾问 / triage / 发布与整页数据照常
 jq --argjson t "$(( $(date +%s) - 4000 ))" '.github.fetched_epoch = $t' "$cache" > "$cache.new" && mv "$cache.new" "$cache"
