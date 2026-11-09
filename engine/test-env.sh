@@ -26,7 +26,14 @@ case "${TMPDIR:-}" in
     fi
     ;;
 esac
+# A run killed before its exit trap leaves its root behind; roots older than a day are never live.
+test_env_prune_old_roots() {
+  local parent="${1:-}"
+  [[ -n "$parent" && "$parent" != / && "$parent" != "$test_host_home" && "$parent" != "${HOME:-}" ]] || return 0
+  find "$parent" -mindepth 1 -maxdepth 1 -type d -name 'zenoforge-agent-test-*' -mmin +1440 -exec rm -rf -- {} + 2>/dev/null || :
+}
 mkdir -p -- "$test_env_parent"
+test_env_prune_old_roots "$test_env_parent"
 test_env_root="$(mktemp -d "$test_env_parent/zenoforge-agent-test-XXXXXX")"
 # The root goes on exit. A caller's EXIT trap set before this file runs first, so it keeps working.
 eval "test_env_prior_exit=$(trap -p EXIT | sed -n 's/^trap -- //; s/ EXIT$//p')"
