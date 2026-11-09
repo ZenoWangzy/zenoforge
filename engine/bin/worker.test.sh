@@ -289,6 +289,11 @@ printf 'PASS session gate override admits after the default bound\n'
 LUNA_AGE_ADMIT_SECONDS=0 run_case late-gate-default 75 gated success 1 10 zc gpt-6-luna
 [[ $(cat "$CASE_DIR/rc") == 75 ]] || fail 'unset gate queue override changed the default timeout'
 printf 'PASS unset session gate override keeps the default timeout\n'
+for invalid_queue_seconds in 0 -5 abc 99999999999999999999; do
+  LUNA_AGE_ADMIT_SECONDS=0 run_case "late-gate-invalid-$invalid_queue_seconds" 75 gated success 1 10 zc gpt-6-luna '' '' '' "$invalid_queue_seconds"
+  [[ $(cat "$CASE_DIR/rc") == 75 ]] || fail "invalid queue override $invalid_queue_seconds did not keep the default timeout"
+done
+printf 'PASS invalid session gate overrides keep the default timeout\n'
 
 LUNA_AGE_ADMIT_SECONDS=0 run_case queued 75 queued success 1 8
 queued_dir=$CASE_DIR
