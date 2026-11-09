@@ -71,7 +71,7 @@ pick_configured_model review '{}' && [[ "$PICK_PROVIDER" == codex ]] || fail 're
 
 # Implementation stops at 95 and moves to ZCode; reviews stay on Codex up to the wall. With Claude off, every path that used it reaches ZCode.
 pick_zcode_implementer() { PICK_PROVIDER=zcode; PICK_MODEL=GLM-5.3; PICK_EFFORT=max; PICK_HARD=false; }
-CFG="$(jq '.models.implement_share.claude=0 | .models.review_cross=[\"GLM-5.3\",\"max\"] | del(.models.review_fallback)' <<<"$CFG")"; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+CFG="$(jq '.models.implement_share.claude=0 | .models.review_cross=["GLM-5.3","max"] | del(.models.review_fallback)' <<<"$CFG")"; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
 review_identity_available() { return 0; }
 week 98 $((NOW_EPOCH + 3600))
 pick_configured_model review '{}' && [[ "$PICK_PROVIDER" == codex ]] || fail 'review left Codex below the wall'
