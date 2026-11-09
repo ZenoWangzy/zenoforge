@@ -16,7 +16,6 @@ unhealthy episode (triaged onto a root-cause ticket) is not re-filed until the m
 import argparse, glob, json, os, re, socket, subprocess, urllib.parse, urllib.request
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
-from contextlib import nullcontext
 from pathlib import Path
 import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait, metric_windows
 import line_holds
@@ -1032,45 +1031,6 @@ def gated_agent_pr_share(repo):
         return None
 
 
-RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{7,40}) closed=\[([0-9,\s]*)\]")
-_SCHEDULER_ROWS_UNSET = object()
-
-
-def release_acceptances(runtime, now=None, scheduler_rows=_SCHEDULER_ROWS_UNSET):
-    """Read the batch close event, which names the accepted deployed SHA and issue IDs."""
-    scheduler_path = os.path.join(runtime, "scheduler.log")
-    paths = [os.path.join(runtime, "alerts", "events.md"), scheduler_path]
-    events, seen = [], set()
-    found_source = False
-    for path in paths:
-        try:
-            if path == scheduler_path:
-                rows = scheduler_rows
-                if rows is _SCHEDULER_ROWS_UNSET:
-                    rows, _ = ledger_history.scheduler_log_lines(path, now or datetime.now(timezone.utc))
-                if rows is None:
-                    continue
-                source = nullcontext(rows)
-            else:
-                source = open(path, errors="ignore")
-            with source as lines:
-                found_source = True
-                for raw in lines:
-                    match = RELEASE_CLOSER_RE.search(raw)
-                    at = ts(raw[1:21]) if raw.startswith("[") else None
-                    if not match or not at:
-                        continue
-                    for number in re.findall(r"\d+", match.group(2)):
-                        event = {"issue": int(number), "sha": match.group(1), "at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}
-                        key = (event["issue"], event["sha"], event["at"])
-                        if key not in seen:
-                            seen.add(key)
-                            events.append(event)
-        except OSError:
-            continue
-    return events if found_source else None
-
-
 def gh_delivery_rows(repo, now, units=None, release_events=None):
     """Fetch issue creation times and recent merged-PR review activity for delivery metrics."""
     cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -1485,7 +1445,7 @@ def main():
     repo = os.environ.get("ZF_REPO", "")
     log = os.path.join(a, "scheduler.log")
     log_rows, future_stamped = ledger_history.scheduler_log_lines(log, now)
-    release_events = release_acceptances(a, now=now, scheduler_rows=log_rows)
+    release_events = ledger_history.release_acceptances(a, now=now, scheduler_rows=log_rows)
     issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events)
     incidents = load_prod_incidents(agent_home)
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))

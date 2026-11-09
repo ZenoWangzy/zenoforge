@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import ledger_history
-import node_health
 import waste_report
 
 
@@ -38,7 +37,7 @@ class SchedulerLogLinesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             future = datetime.now(timezone.utc) + timedelta(minutes=10)
             (Path(directory) / "scheduler.log").write_text(f"[{future:%Y-%m-%dT%H:%M:%SZ}] release-closer: deployed=abc1234 closed=[101]\n")
-            self.assertEqual(node_health.release_acceptances(directory), [])
+            self.assertEqual(ledger_history.release_acceptances(directory), [])
 
 
 if __name__ == "__main__":
