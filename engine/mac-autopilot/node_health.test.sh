@@ -292,6 +292,31 @@ echo '{"status":"delegated"}' > "$a/release-train.json"
 python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-28T20:12:00Z --json "$a/node-health.json" >/dev/null
 jq -e '[.metrics[] | select(.id=="release.hours_waiting")][0].value == null' "$a/node-health.json" >/dev/null \
   || fail 'missing active batch start reused historical release acceptance'
+# release.batch_minutes: start to verdict of the latest batch; a running batch reads its age; a batch that ended
+# with no verdict is not counted; the verdict belongs to the latest start at or before it.
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'release batch duration wrong'
+import os, sys, tempfile; sys.path.insert(0, sys.argv[1]); import release_batch as RB
+from datetime import datetime
+at = lambda s: datetime.fromisoformat(s)
+now = at("2026-11-09T03:42:50+00:00")
+# finished batch 23:56Z -> verdict 03:40:44Z is 224.6 min; nothing running
+assert round(RB.batch_minutes([at("2026-11-08T23:56:06+00:00")], [at("2026-11-09T03:40:44+00:00")], now, False), 1) == 224.6
+# finished batch plus a running one: the running batch reads its age (120 min), not a duration
+assert RB.batch_minutes([at("2026-11-08T15:00:00+00:00"), at("2026-11-08T23:00:00+00:00")],
+                        [at("2026-11-08T16:10:00+00:00")], at("2026-11-09T01:00:00+00:00"), True) == 120.0
+# batches 10:00, 14:00, 18:00 with one verdict at 11:00: that verdict belongs to 10:00; the others ended with no release
+assert RB.batch_minutes([at("2026-11-08T10:00:00+00:00"), at("2026-11-08T14:00:00+00:00"), at("2026-11-08T18:00:00+00:00")],
+                        [at("2026-11-08T11:00:00+00:00")], now, False) == 60.0
+# no verdict and not running: nothing to score
+assert RB.batch_minutes([at("2026-11-08T23:56:06+00:00")], [], now, False) is None
+# collect reads events.md for the verdict and the injected starts for the start
+R = tempfile.mkdtemp(); os.makedirs(os.path.join(R, "alerts"))
+open(os.path.join(R, "alerts", "events.md"), "w").write("[2026-11-09T03:40:44Z] release-retained: deployed=%040d tracker=#5955 held=[1]\n" % 0)
+m = {}; RB.collect(m, R, now, starts=[at("2026-11-08T23:56:06+00:00")], active=False)
+assert round(m[RB.METRIC], 1) == 224.6, m
+m = {}; RB.collect(m, tempfile.mkdtemp(), now, starts=[at("2026-11-08T23:56:06+00:00")], active=False)
+assert m[RB.METRIC] is None, "missing events.md is no data, never 0"
+CHECK
 # 持续 3 小时 UNHEALTHY 才开 issue；同一指标 6 小时内不重复；恢复后清掉记录
 mkdir -p "$test_env_root/bin"; : > "$test_env_root/gh.calls"
 cat > "$test_env_root/roadmap-tree.json" <<'JSON'

@@ -21,6 +21,7 @@ from pathlib import Path
 import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait, metric_windows
 import line_holds
 import release_age
+import release_batch
 import release_retained
 import rulings_copies
 import station_standards
@@ -277,8 +278,7 @@ CRITERIA.update({**line_holds.CRITERIA, **station_standards.CRITERIA, **worker_c
 MEANING.update({**line_holds.MEANING, **station_standards.MEANING, **worker_cost.TOKEN_EFFICIENCY_MEANING})
 SOURCE.update({**line_holds.SOURCE, **station_standards.SOURCE, **worker_cost.TOKEN_EFFICIENCY_SOURCE})
 # release.hours_since_release lives in release_age.py, rulings.copies_differ in rulings_copies.py, for the same size-ratchet reason.
-CRITERIA.update(release_age.CRITERIA); MEANING.update(release_age.MEANING); SOURCE.update(release_age.SOURCE)
-CRITERIA.update(release_retained.CRITERIA); MEANING.update(release_retained.MEANING); SOURCE.update(release_retained.SOURCE)
+for part in (release_age, release_retained, release_batch): CRITERIA.update(part.CRITERIA); MEANING.update(part.MEANING); SOURCE.update(part.SOURCE)
 CRITERIA.update(rulings_copies.CRITERIA); MEANING.update(rulings_copies.MEANING); SOURCE.update(rulings_copies.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
@@ -1545,7 +1545,7 @@ def main():
         metrics["release.hours_waiting"] = (
             max(0, (now - waiting_since).total_seconds() / 3600) if waiting_since else None
         )
-    release_retained.collect(metrics, a, now, ts(train.get("started_at")) if train else None)
+    release_retained.collect(metrics, a, now, ts(train.get("started_at")) if train else None); release_batch.collect(metrics, a, now)
     blockers = read_json(os.path.join(a, "release-blockers.json"))
     metrics["release.hotpatch_blockers"] = len(blockers["blockers"]) if isinstance(blockers.get("blockers"), list) else None
     line_holds.collect(metrics, a, agent_home, now)
