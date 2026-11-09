@@ -149,8 +149,9 @@ rescue_push_failed() { # unit dir sha
     || say "handoff rescue unit=$1: could not notify supervisor about $2"
 }
 rescue_push_unpushed() { # clone unit dir -> 0 once all are on the remote; else RESCUE_REFUSED says why
-  local wt="$1" id="$2" dir="$3" name sha ref unpushed head_sha i=0
+  local wt="$1" id="$2" dir="$3" name sha ref unpushed head_sha head_branch i=0
   head_sha="$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null)" || { RESCUE_REFUSED="unreadable HEAD"; return 1; }
+  head_branch="$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
   while read -r name sha; do
     unpushed="$(git -C "$wt" rev-list -n1 "$sha" --not --remotes 2>/dev/null)" || { RESCUE_REFUSED="unreadable branches"; return 1; }
     [[ -n "$unpushed" ]] || continue
@@ -160,7 +161,7 @@ rescue_push_unpushed() { # clone unit dir -> 0 once all are on the remote; else 
     i=$((i + 1))
     git -C "$wt" format-patch -q -o "$dir/unpushed-$i" "$sha" --not --remotes >/dev/null 2>&1 || { RESCUE_REFUSED="could not copy the unpushed commits"; return 1; }
     rescue_push_verified "$wt" "$sha" "$ref" || { RESCUE_REFUSED="rescue push failed"; rescue_push_failed "$id" "$dir" "$sha"; return 1; }
-  done < <({ printf 'HEAD %s\n' "$head_sha"; git -C "$wt" for-each-ref --format='%(refname:short) %(objectname)' refs/heads; })
+  done < <({ [[ "$head_branch" == hand/* ]] || printf 'HEAD %s\n' "$head_sha"; git -C "$wt" for-each-ref --format='%(refname:short) %(objectname)' refs/heads; } | awk '$1 !~ /^hand\//')
   rm -f -- "$dir/push-pending"
 }
 # Unpushed commits on another branch block the handoff for good. With no live owner they are pushed first; the stash then goes

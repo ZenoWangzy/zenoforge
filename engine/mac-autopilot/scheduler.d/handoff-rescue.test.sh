@@ -363,6 +363,22 @@ for out in "$fixture/say.log" "$fixture/inbox" "$comments" "$fixture/scans" "$fi
   [[ ! -e "$out" ]] || ! grep -Fq "$trigger_content" "$out" || fail "uncommitted content reached $out"
 done
 
+# The active handoff owns hand/* refs; rescue another local branch without publishing that worktree.
+new_clone
+base_sha="$(git -C "$wt" rev-parse HEAD)"
+git -C "$wt" checkout -q -b other; printf 'other\n' > "$wt/o.txt"; git -C "$wt" add o.txt; git -C "$wt" commit -qm other
+other_sha="$(git -C "$wt" rev-parse HEAD)"; git -C "$wt" checkout -q -
+git -C "$wt" worktree add -q -b hand/issue-70 "$fixture/hand-unpublished-70" "$base_sha"
+printf 'active handoff work\n' > "$fixture/hand-unpublished-70/handoff.txt"
+git -C "$fixture/hand-unpublished-70" add handoff.txt; git -C "$fixture/hand-unpublished-70" commit -qm 'active handoff work'
+hand_sha="$(git -C "$fixture/hand-unpublished-70" rev-parse HEAD)"
+rescue_handoff_clone 70 "$wt" || fail "other branch rescue blocked by active hand work: $RESCUE_REFUSED"
+remote_rescues | grep -q "^rescued/wt-[^ ]*-other $other_sha$" || fail "the unrelated branch was not rescued"
+if remote_rescues | grep -q -- '-hand/'; then fail "the active hand branch was pushed as rescue work"; fi
+if git --git-dir="$origin" cat-file -e "$hand_sha" 2>/dev/null; then fail "the active hand commit reached the remote"; fi
+[[ "$(git -C "$fixture/hand-unpublished-70" rev-parse HEAD)" == "$hand_sha" \
+  && "$(cat "$fixture/hand-unpublished-70/handoff.txt")" == 'active handoff work' ]] || fail "the active handoff worktree changed"
+
 # The marker of an earlier pass counts as the scan's refusal too.
 aside_clone
 printf 'dirty\n' >> "$wt/a.txt"; touch "$fixture/leak"
