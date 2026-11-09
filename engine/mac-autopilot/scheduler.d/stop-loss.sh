@@ -176,7 +176,8 @@ record_run_spend() { # → one spend_runs record on the unit of each finished wo
   rm -f -- "$err"
   [[ -n "$out" ]] || return 0
   units_update --slurpfile runs <(printf '%s\n' "$out") 'reduce $runs[] as $r (.;
-    (.units[] | select(.id == $r.unit)) |= (.spend_runs = (if any((.spend_runs // [])[]; .log == $r.run.log) then .spend_runs else (.spend_runs // []) + [$r.run] end)))' \
+    (.units[] | select(.id == $r.unit)) |= (.spend_runs = (if any((.spend_runs // [])[]; .log == $r.run.log) then .spend_runs else (.spend_runs // []) + [$r.run] end)
+      | .history = [(.history // [])[] | if .stage == "write-start" and .attempt == $r.run.log then . + {fresh_tokens: $r.run.fresh_tokens, raw_tokens: $r.run.raw_tokens} else . end]))' \
     && say "spend ledger recorded $(grep -c . <<<"$out") run(s)" || say "spend ledger write failed"
 }
 

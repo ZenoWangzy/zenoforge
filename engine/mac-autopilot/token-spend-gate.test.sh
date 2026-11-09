@@ -233,4 +233,30 @@ assert n.MEANING["supervisor.spend_ledger_blind"] and n.SOURCE["supervisor.spend
 PY
 grep -q 'supervisor.spend_ledger_blind' "$script_dir/NODE-HEALTH.md" || fail "NODE-HEALTH.md lacks the liveness row"
 
+# ---- 11. an attempt is its write-start: dispatch estimate, model and the run's tokens share the attempt id; a recut names the attempt before it ----
+att1=impl-issue-9-20261106T100000Z.worker.log; att2=impl-issue-9-20261106T120000Z.worker.log
+codex_run "$att1" 1000000 600000 50000    # fresh 450000, raw 1050000
+codex_run "$att2" 1500000 900000 80000    # fresh 680000, raw 1580000
+for f in "$att1" "$att2"; do touch -d 2026-11-06T16:00:00Z "$sup/$f"; done
+jq -n --arg a "$att1" --arg b "$att2" '{workers:[
+ {pid:0,log:$a,unit:"issue-9",type:"implement",mode:"fresh",harvested:true,started:"2026-11-06T10:00:00Z"},
+ {pid:0,log:$b,unit:"issue-9",type:"implement",mode:"fresh",harvested:true,started:"2026-11-06T12:00:00Z"}]}' > "$WORKERS"
+echo '{"units":[{"id":"issue-9","issue":9,"stage":"implement-pending","history":[]}]}' > "$UNITS"
+# The write-start entries carry the shape dispatch_if_room writes (dispatch_attempt_fields), spelled out here.
+set_unit issue-9 "$(STAMP=2026-11-06T10:00:00Z hist write-start '[]') | .history[-1].attempt=\"$att1\" | .history[-1].model=\"gpt-6-luna\" | .history[-1].estimate_lines=420 | .history[-1].estimate_band=\"301-480\""
+set_unit issue-9 "$(STAMP=2026-11-06T12:00:00Z hist write-start '[]') | .history[-1].attempt=\"$att2\" | .history[-1].model=\"gpt-6-luna\" | .history[-1].estimate_lines=700 | .history[-1].estimate_band=\"641-800\""
+record_run_spend
+ws='[.history[] | select(.stage == "write-start")]'
+[[ "$(field issue-9 "$ws | map(.attempt) | join(\",\")")" == "$att1,$att2" ]] || fail "two attempts, each named by its log: $(field issue-9 "$ws | map(.attempt)")"
+[[ "$(field issue-9 "$ws | map(.estimate_lines) | join(\",\")")" == "420,700" ]] || fail "each attempt keeps its dispatch estimate: $(field issue-9 "$ws | map(.estimate_lines)")"
+[[ "$(field issue-9 "$ws | map(.fresh_tokens) | join(\",\")")" == "450000,680000" ]] || fail "each attempt carries its own fresh tokens: $(field issue-9 "$ws | map(.fresh_tokens)")"
+[[ "$(field issue-9 "$ws | map(.raw_tokens) | join(\",\")")" == "1050000,1580000" ]] || fail "each attempt carries its own raw tokens: $(field issue-9 "$ws | map(.raw_tokens)")"
+set_unit issue-9 "$(hist size-recut 'issue #9: 700 lines exceed 640; head=abc') | .stage=\"blocked-external\""
+[[ "$(field issue-9 '.history[-1].attempt')" == "$att2" ]] || fail "the recut names the attempt before it: $(field issue-9 '.history[-1].attempt')"
+# The helper that writes those fields: band edges, and no estimate is unknown, never zero.
+band() { dispatch_attempt_fields x m "{\"estimated_changed_lines\":$1}"; }
+[[ "$(band 300)" == *'estimate_band="<=300"'* && "$(band 301)" == *'estimate_band="301-480"'* && "$(band 640)" == *'estimate_band="481-640"'* \
+  && "$(band 800)" == *'estimate_band="641-800"'* && "$(band 801)" == *'estimate_band=">800"'* ]] || fail "band edges 300/301/640/800/801"
+[[ "$(dispatch_attempt_fields x m '{}')" == *'estimate_band="unknown"'* ]] || fail "no estimate = unknown band, not zero"
+
 echo 'token-spend-gate.test.sh: PASS'

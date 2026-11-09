@@ -54,7 +54,9 @@ def new_runs(sup, units, limit=25):
             "log": row["log"], "start": row["start"].strftime("%Y-%m-%dT%H:%M:%SZ"), "phase": phase_of(row),
             "backend": row["backend"] or "unknown", "minutes": round(row["minutes"], 1),
             # unit_spend is the dashboard's own function: a run with no cache split adds 0 there and here.
-            "fresh_tokens": workorder_cost.unit_spend([row])[row["unit"]][0]}))
+            "fresh_tokens": workorder_cost.unit_spend([row])[row["unit"]][0],
+            # raw = input + output, the dashboard's raw column; None when the run's usage cannot be read
+            "raw_tokens": row["usage"].raw if row["usage"] is not None else None}))
     return out
 
 

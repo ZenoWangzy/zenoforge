@@ -336,6 +336,36 @@ footprint_recurrence_brief() { # unit JSON → up to 3 ranked CATALOG rules, bou
   return 0
 }
 
+# Each write-start entry names its attempt (the worker log, the key spend_runs and the run's tokens share), the model and the
+# dispatch size estimate size_admission_write_start gated on (unit field, else issue state). Recorded for measurement only.
+attempt_estimate() { # unit-json → estimated changed lines, empty when unknown
+  local issue state est
+  est="$(jqf -r '.estimated_changed_lines // empty' <<<"$1")"
+  if [[ ! "$est" =~ ^[0-9]+$ ]]; then
+    issue="$(jqf -r '.issue // empty' <<<"$1")"
+    if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+      state="$(scheduler_issue_state "$issue" 2>/dev/null || true)"
+      est="$(jqf -r '.estimated_changed_lines // empty' <<<"$state")"
+    fi
+  fi
+  printf '%s\n' "$est"
+}
+dispatch_attempt_fields() { # log model unit-json → jq fields for the write-start entry just appended (.history[-1])
+  local est band=unknown
+  est="$(attempt_estimate "$3")"
+  if [[ "$est" =~ ^[0-9]+$ ]]; then
+    if (( est <= 300 )); then band='<=300'
+    elif (( est <= 480 )); then band='301-480'
+    elif (( est <= 640 )); then band='481-640'
+    elif (( est <= 800 )); then band='641-800'
+    else band='>800'; fi
+  else
+    est=null
+  fi
+  printf '.history[-1].attempt=%s | .history[-1].model=%s | .history[-1].estimate_lines=%s | .history[-1].estimate_band=%s' \
+    "$(js "$(basename "$1")")" "$(js "$2")" "$est" "$(js "$band")"
+}
+
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider] [worker-context-json]
   local ledger_filter="" unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter repair_head \
     check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
@@ -383,6 +413,7 @@ $(tail -80 "$check_output" 2>/dev/null)"
     fi
     write_start_filter="$(STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" hist write-start "$footprint")"
     write_start_filter+=" | .history[-1].work_type=$(js "$3") | .history[-1].provider=$(js "$provider") | .history[-1].hard_escalation=$hard_escalation"
+    write_start_filter+=" | $(dispatch_attempt_fields "$4" "$6" "$unit_json")"
     # The PR head a repair starts from, so harvest can tell a run that pushed nothing (repair_head_class); unreadable = unclassified.
     if [[ "$3" == repair && "$report_only" != true && "$(unit_field "$1" '.lane // "pr"')" != direct-main && "$(unit_field "$1" '.pr // empty')" =~ ^[0-9]+$ ]] \
       && repair_head="$(tick_pr_head "$(unit_field "$1" .pr)" 2>/dev/null)"; then write_start_filter+=" | .history[-1].pr_head=$(js "$repair_head")"; fi

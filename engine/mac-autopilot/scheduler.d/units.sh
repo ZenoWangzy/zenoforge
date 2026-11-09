@@ -195,7 +195,11 @@ hist() {
   local entry
   entry="$(jqf -cn --arg stage "$1" --arg result "${2:-}" --arg at "$STAMP" --argjson decision "${3:-null}" \
     '{stage:$stage,result:$result,at:$at} + (if $decision == null then {} else {decision:$decision} end)')"
-  echo ".history += [$entry]"
+  # A recut or park event names the attempt before it: the unit's latest write-start (null before any launch).
+  case "$1" in
+    *recut*|*park*) echo ".history += [$entry + {attempt: ((.history // []) | map(select(.stage == \"write-start\")) | last | .attempt // null)}]" ;;
+    *) echo ".history += [$entry]" ;;
+  esac
 }
 decision_entry() { # decision why evidence rejected-json owner -> history decision object
   jqf -cn --arg decision "$1" --arg why "$2" --arg evidence "$3" --argjson rejected "$4" --arg owner "$5" \
