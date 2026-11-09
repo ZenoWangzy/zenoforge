@@ -95,9 +95,9 @@ cat > "$FAKE_BIN/claude" <<'EOF'
 printf '%s\n' "$*" >> "$FAKE_CLAUDE_ARGS"
 cat > /dev/null
 if [[ " $* " == *" --json-schema "* ]]; then
-  jq -nc --slurpfile so "$FAKE_CLAUDE_STRUCTURED" '{type:"result",is_error:false,result:"",structured_output:$so[0],total_cost_usd:0.01}'
+  jq -nc --slurpfile so "$FAKE_CLAUDE_STRUCTURED" '{type:"result",is_error:false,result:"",structured_output:$so[0],total_cost_usd:0.01,usage:{input_tokens:1000,cache_read_input_tokens:5000,cache_creation_input_tokens:300,output_tokens:200}}'
 else
-  jq -nc --rawfile r "$FAKE_CLAUDE_RESULT" '{type:"result",is_error:false,result:$r,total_cost_usd:0.01}'
+  jq -nc --rawfile r "$FAKE_CLAUDE_RESULT" '{type:"result",is_error:false,result:$r,total_cost_usd:0.01,usage:{input_tokens:1000,cache_read_input_tokens:5000,cache_creation_input_tokens:300,output_tokens:200}}'
 fi
 EOF
 chmod +x "$FAKE_BIN"/*
@@ -118,6 +118,8 @@ assert_eq "batch over the stop makes no Codex call" 0 "$(wc -l < "$FAKE_CODEX_AR
 assert_eq "batch over the stop makes one Claude call" 1 "$(wc -l < "$FAKE_CLAUDE_ARGS" | tr -d ' ')"
 assert_contains "batch Claude call uses haiku" "$(cat "$FAKE_CLAUDE_ARGS")" '--model claude-haiku-5-5'
 assert_eq "batch haiku result is applied" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/920101.json")"
+# Fresh tokens = input + output (1000 + 200); the cache counters stay out, as the Codex record keeps them.
+assert_contains "batch over the stop reports the Claude fresh token count" "$OUT" 'tokens=1200'
 
 # Over the stop: single-issue run-triage.sh parses the haiku structured output like Codex output.
 : > "$FAKE_CODEX_ARGS"; : > "$FAKE_CLAUDE_ARGS"; : > "$FAKE_GH_LOG"
@@ -126,6 +128,7 @@ assert_eq "run-triage over the stop makes no Codex call" 0 "$(wc -l < "$FAKE_COD
 assert_contains "run-triage Claude call uses haiku and the triage schema" "$(cat "$FAKE_CLAUDE_ARGS")" '--model claude-haiku-5-5'
 assert_contains "run-triage Claude call is schema-constrained" "$(cat "$FAKE_CLAUDE_ARGS")" '--json-schema'
 assert_eq "run-triage haiku verdict is applied" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/920102.json")"
+assert_eq "run-triage records the Claude fresh token count on its spend row" 1200 "$(cat "$AGENT_HOME"/spend/*.log | awk -F'\t' '$2 == "triage" && $4 == 920102 { print $6 }')"
 
 # Under the stop: Codex runs, Claude does not.
 week 50
