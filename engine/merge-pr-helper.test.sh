@@ -484,18 +484,21 @@ merge_pr_review_family() { return 0; }
     failures=$((failures + 1))
   fi
   PR_FILES='["engine/mac-autopilot/scheduler.d/models.sh"]'
+  PR_CI_ROLLUP='[]'
   if merge_pr_scheduler_prelude_ok 17 >"$fixture/no-git-tree" 2>&1; then
     printf 'merge-pr-helper.test.sh: tree gate passed without a checkout\n' >&2
     failures=$((failures + 1))
-  elif [[ "$(cat "$fixture/no-git-tree")" != *'refusing to merge PR #17: scheduler.test.sh prelude failed: no git checkout: cannot run merge_pr_prelude_in on the PR head'* ]]; then
+  elif [[ "$(cat "$fixture/no-git-tree")" != *'refusing to merge PR #17: scheduler.test.sh prelude failed rc=1: no git checkout: cannot run merge_pr_prelude_in on the PR head'* ]]; then
     printf 'merge-pr-helper.test.sh: tree gate lost its no-checkout refusal: %s\n' "$(cat "$fixture/no-git-tree")" >&2
     failures=$((failures + 1))
   fi
   (( failures == 0 ))
 ) || fail 'a gate passed or lost its refusal without a git checkout'
 
-# A scheduler change runs the scheduler.test.sh prelude; a red prelude refuses, other changes skip it.
-merge_pr_scheduler_prelude() { echo called >> "$fixture/prelude-calls"; echo 'not ok - stale grep'; return 1; }
+# A scheduler change runs the scheduler.test.sh prelude; all-green checks at the head skip it.
+PRELUDE_RC=1
+PRELUDE_OUT='not ok - stale grep'
+merge_pr_scheduler_prelude() { echo called >> "$fixture/prelude-calls"; printf '%s\n' "$PRELUDE_OUT"; return "$PRELUDE_RC"; }
 : > "$fixture/prelude-calls"
 PR_CHECKS='[]' PR_FILES='["tools/quick-land.sh"]' PR_BODY=$'## prior-art\nno external prior art: test fixture'
 merge_pr_scheduler_prelude_ok 17 || fail 'a non-scheduler PR was refused by the prelude check'
@@ -505,10 +508,36 @@ if merge_pr_scheduler_prelude_ok 17 >"$fixture/check-output" 2>&1; then fail 'an
 [[ "$(cat "$fixture/check-output")" == *'could not read PR files'* ]] || fail "unreadable PR refusal lost its reason: $(cat "$fixture/check-output")"
 PR_BODY=$'## prior-art\nno external prior art: test fixture'
 PR_FILES='["engine/mac-autopilot/scheduler.d/models.sh"]'
+PRELUDE_RC=0
+PRELUDE_OUT='prelude passed'
+PR_CI_ROLLUP="$(jq -cn '[{name:"cla"},{name:"cli"}] + [range(0;8) | {name:"suites (\(.))"}] | map(. + {status:"COMPLETED",conclusion:"SUCCESS"})')"
 : > "$fixture/gh-calls"
-if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail 'a red prelude did not refuse the merge'; fi
-[[ "$(cat "$fixture/check-output")" == *'prelude failed: not ok - stale grep'* ]] || fail "prelude refusal lost its reason: $(cat "$fixture/check-output")"
-! grep -q '^merge:' "$fixture/gh-calls" || fail 'a red prelude still merged'
+if ! merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail "green checks at the head did not proceed to merge: $(cat "$fixture/check-output")"; fi
+[[ ! -s "$fixture/prelude-calls" ]] || fail 'all-green head checks still ran the prelude'
+[[ "$(cat "$fixture/check-output")" == *"prelude: ci-green 10 checks at ${sha:0:12}"* ]] || fail "green prelude skip was not logged: $(cat "$fixture/check-output")"
+grep -q '^merge:' "$fixture/gh-calls" || fail 'all-green head checks did not merge'
+
+# Any failed PR check keeps the local prelude in the merge path.
+PR_CI_ROLLUP="$(jq -cn '[{name:"cla"},{name:"cli"}] + [range(0;8) | {name:"suites (\(.))"}] | map(. + {status:"COMPLETED",conclusion:(if .name == "suites (3)" then "FAILURE" else "SUCCESS" end)})')"
+: > "$fixture/prelude-calls"
+merge_pr_scheduler_prelude_ok 17 || fail 'a failed PR check stopped the local prelude'
+[[ -s "$fixture/prelude-calls" ]] || fail 'a failed PR check skipped the local prelude'
+
+# A skipped check is green for receipts but does not satisfy the prelude's SUCCESS contract.
+PR_CI_ROLLUP="$(jq -cn '[{name:"cla"},{name:"cli"}] + [range(0;8) | {name:"suites (\(.))"}] | map(. + {status:"COMPLETED",conclusion:(if .name == "suites (3)" then "SKIPPED" else "SUCCESS" end)})')"
+: > "$fixture/prelude-calls"
+merge_pr_scheduler_prelude_ok 17 || fail 'a skipped PR check stopped the local prelude'
+[[ -s "$fixture/prelude-calls" ]] || fail 'a skipped PR check incorrectly skipped the prelude'
+
+# A timed-out prelude refusal reports both the exit code and timeout bound.
+PR_CI_ROLLUP='[]'
+PRELUDE_RC=124
+PRELUDE_OUT='not ok - timed out'
+: > "$fixture/prelude-calls"
+: > "$fixture/gh-calls"
+if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail 'a timed-out prelude did not refuse the merge'; fi
+[[ "$(cat "$fixture/check-output")" == *'scheduler.test.sh prelude failed rc=124 (timeout 300s): not ok - timed out'* ]] || fail "prelude refusal lost its rc or timeout: $(cat "$fixture/check-output")"
+! grep -q '^merge:' "$fixture/gh-calls" || fail 'a timed-out prelude still merged'
 
 # A gate file waits for its suites; other files keep merging on pending checks.
 PR_CHECKS='[{"name":"cla","bucket":"pass"},{"name":"suites (0)","bucket":"pending"}]' PR_FILES='["tools/merge-pr.sh"]'

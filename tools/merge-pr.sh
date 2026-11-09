@@ -105,15 +105,16 @@ merge_pr_prior_art_ok() {
 # has no test run to prove, and a green full-suite result for the same SHA
 # (merge_pr_main) is itself a receipt.
 merge_pr_ci_green_check_count() {
-  local pr="$1" head_sha="$2" view count
+  local pr="$1" head_sha="$2" success_only="${3:-false}" view count
   view="$(gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null)" || return 1
-  # headRefOid anchors the whole rollup to the checked commit; CheckRuns have no per-check SHA.
-  count="$(jq -er --arg sha "$head_sha" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
+  # headRefOid anchors the rollup to this commit; GitHub CheckRuns have no per-check SHA.
+  count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
     def completed_success:
       if .__typename == "CheckRun" then
         .status == "COMPLETED"
-        and (.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL")
-      elif .__typename == "StatusContext" then .state == "SUCCESS"
+        and (if $strict == "true" then .conclusion == "SUCCESS"
+          else (.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL") end)
+      elif .__typename == "StatusContext" then .state == "SUCCESS" and $strict == "false"
       else false end;
     def required_check($need):
       .__typename == "CheckRun"
@@ -244,15 +245,21 @@ merge_pr_prelude_in() {
 }
 merge_pr_scheduler_prelude() { merge_pr_with_tree "$1" merge_pr_prelude_in; }
 merge_pr_scheduler_prelude_ok() {
-  local pr="$1" out touched
+  local pr="$1" out touched head_sha green rc timeout_note=
   touched="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq '[.files[].path | select(test("^engine/mac-autopilot/(scheduler(\\.sh|\\.d/|\\.test\\.sh)|config\\.template\\.json)"))] | length')" || touched=
   if [[ -z "$touched" ]]; then
     merge_pr_refuse "$pr" 'could not read PR files for the scheduler prelude check'
     return 1
   fi
   (( touched > 0 )) || return 0
-  out="$(merge_pr_scheduler_prelude "$pr")" && return 0
-  merge_pr_refuse "$pr" "scheduler.test.sh prelude failed: $out"
+  if head_sha="$(gh pr view "$pr" --json headRefOid 2>/dev/null | jq -er '.headRefOid | select(type == "string" and length >= 12)' 2>/dev/null)" \
+    && green="$(merge_pr_ci_green_check_count "$pr" "$head_sha" true)"; then
+    printf 'prelude: ci-green %s checks at %.12s\n' "$green" "$head_sha"
+    return 0
+  fi
+  if out="$(merge_pr_scheduler_prelude "$pr")"; then return 0; else rc=$?; fi
+  if [[ "$rc" == 124 ]]; then timeout_note=' (timeout 300s)'; fi
+  merge_pr_refuse "$pr" "scheduler.test.sh prelude failed rc=$rc$timeout_note: $out"
 }
 # These scans take seconds, so they run here and hold no merge on CI: #502 reached main past jq-arg-safety.
 merge_pr_static_scans_in() {
