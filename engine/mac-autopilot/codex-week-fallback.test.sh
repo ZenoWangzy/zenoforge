@@ -12,7 +12,7 @@ NOW_EPOCH=1793836800
 export CODEX_QUOTA_SNAPSHOT_FILE="$A/codex-quota.json" CODEX_EXHAUSTED_MARKER_FILE="$A/codex-exhausted-until" CODEX_PROVIDER_PROBE_REQUIRED_FILE="$A/probe-required"
 export CODEX_WEEK_STOP_PCT=100 CODEX_IMPLEMENT_STOP_PCT=95
 source "$script_dir/scheduler.d/core.sh"
-source "$script_dir/../lib.d/codex-budget.sh" && source "$script_dir/../lib.d/model-policy.sh"
+source "$script_dir/../lib.d/codex-budget.sh" && source "$script_dir/../lib.d/model-policy.sh" && source "$script_dir/../lib.d/locks.sh"
 source "$script_dir/scheduler.d/models.sh"
 
 fail() { echo "not ok - $*" >&2; cat "$LOG" >&2; exit 1; }
@@ -94,7 +94,7 @@ for id in share-off-one share-off-two; do
 done
 [[ "$review_checks" == 1 ]] || fail "reviewability checked $review_checks times in one tick"
 
-CODEX_PROVIDER_BACKOFF_SECONDS=3600; CODEX_PROVIDER_PROBE_NOTICE_FILE="$A/probe-notice"; CODEX_PROVIDER_FAILURE_EVENTS_FILE="$A/probe-events"; CODEX_SANDBOX_MODE=read-only; REPO_DIR="$script_dir"; model_policy() { [[ "$1" == tier ]]; }
+CODEX_PROVIDER_BACKOFF_SECONDS=3600; CODEX_PROVIDER_PROBE_NOTICE_FILE="$A/probe-notice"; CODEX_PROVIDER_FAILURE_EVENTS_FILE="$A/probe-events"; CODEX_SANDBOX_MODE=read-only; REPO_DIR="$script_dir"; model_policy() { [[ "$1" == tier ]]; }; provider_quota_write_until() { return 0; }; premium_call_provider_outage_kind() { return 0; }; supervisor_inbox_append() { return 0; }
 probe_calls=0; probe_due_during_call=''
 pipeline_execution_run() { probe_calls=$((probe_calls+1)); probe_due_during_call="$(<"$CODEX_PROVIDER_PROBE_REQUIRED_FILE")"; return 1; }
 printf '0\n' > "$CODEX_PROVIDER_PROBE_REQUIRED_FILE"
