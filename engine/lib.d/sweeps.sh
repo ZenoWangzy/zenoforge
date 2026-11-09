@@ -67,26 +67,10 @@ issue_label_read_live() {
 
 
 outcomes_closed_state_reconciliation_snapshot() { # home repo recent-closed-json cutoff → recent plus older local ready-for-agent closes
-  local home="$1" repo="$2" recent_json="$3" cutoff_iso="$4" ready_ids="" ready_ids_json ready_json
-  local state_file
-  local -a state_files=()
+  local home="$1" repo="$2" recent_json="$3" cutoff_iso="$4" ready_ids="" ready_ids_json ready_json row issue state_file local_state
   local OUTCOMES_GH_TIMEOUT_SECONDS=10
   jq -e 'type == "array" and all(.[]; (.number | type) == "number" and (.labels | type) == "array")' \
     <<< "$recent_json" >/dev/null 2>&1 || return 1
-  for state_file in "$home"/state/*.json; do
-    [[ -f "$state_file" ]] && state_files+=("$state_file")
-  done
-  if ((${#state_files[@]})); then
-    ready_ids="$(jq -r --arg cutoff "$cutoff_iso" '
-      select(.state == "ready-for-agent" and ((.state_changed_at // "") | tostring) <= $cutoff)
-      | input_filename | split("/")[-1] | rtrimstr(".json") | select(test("^[1-9][0-9]*$"))
-    ' "${state_files[@]}")" || return 1
-  fi
-  ready_ids_json="$(jq -Rn '[inputs | select(test("^[1-9][0-9]*$")) | tonumber]' <<< "$ready_ids")" || return 1
-  if [[ "$ready_ids_json" == '[]' ]]; then
-    printf '%s\n' "$recent_json"
-    return 0
-  fi
   ready_json="$(gh_q issue list --repo "$repo" --state closed --label ready-for-agent --limit 1000 \
     --json number,state,stateReason,closedAt,labels)" || return 1
   jq -e 'type == "array" and all(.[];
@@ -95,6 +79,18 @@ outcomes_closed_state_reconciliation_snapshot() { # home repo recent-closed-json
     ((.closedAt == null) or (.closedAt | type == "string")) and
     ((.stateReason == null) or (.stateReason | type == "string")))' \
     <<< "$ready_json" >/dev/null 2>&1 || return 1
+  while IFS= read -r row; do
+    issue="$(jq -r '.number' <<< "$row")" || return 1
+    state_file="$home/state/$issue.json"
+    [[ -f "$state_file" ]] || continue
+    local_state="$(jq -er --arg cutoff "$cutoff_iso" '
+      if type != "object" then error("invalid issue state")
+      elif .state == "ready-for-agent" and ((.state_changed_at // "") | tostring) <= $cutoff then "ready"
+      else "other" end
+    ' "$state_file" 2>/dev/null)" || return 1
+    [[ "$local_state" == ready ]] && ready_ids+="$issue"$'\n'
+  done < <(jq -c '.[]' <<< "$ready_json")
+  ready_ids_json="$(jq -Rn '[inputs | select(test("^[1-9][0-9]*$")) | tonumber]' <<< "$ready_ids")" || return 1
   jq -cn --argjson recent "$recent_json" --argjson ids "$ready_ids_json" --argjson stale "$ready_json" '
     ($recent + [$stale[] | select(.number as $n | $ids | index($n))])
     | group_by(.number) | map(last)
