@@ -430,13 +430,25 @@ class Ledger(unittest.TestCase):
         kpis = wc.token_efficiency_kpis(rows, units, self.now)
         self.assertEqual((kpis["fresh_tokens_per_merged"], kpis["waste_pct"], kpis["repair_pct"]), (70, 0, 100*660/3190))
         self.assertEqual(kpis["coverage_pct"], dict.fromkeys(("fresh_tokens_per_merged", "waste_pct", "repair_pct"), 96.7))
+        self.assertEqual(kpis["coverage_status"], dict.fromkeys(("fresh_tokens_per_merged", "waste_pct", "repair_pct"), None))
         self.assertEqual(kpis["unknown_by"], "luna-no-footer:1")
 
-    def test_token_efficiency_is_no_data_below_95_percent_coverage(self):
-        units, rows = self.efficiency_fixture(20, {18, 19})
+    def test_token_efficiency_warns_with_values_and_coverage_label_at_93_6_percent(self):
+        units, rows = self.efficiency_fixture(47, {44, 45, 46})
         kpis = wc.token_efficiency_kpis(rows, units, self.now)
-        self.assertEqual(kpis["coverage_pct"], dict.fromkeys(("fresh_tokens_per_merged", "waste_pct", "repair_pct"), 90.0))
+        keys = ("fresh_tokens_per_merged", "waste_pct", "repair_pct")
+        self.assertEqual(kpis["coverage_pct"], dict.fromkeys(keys, 93.6))
+        self.assertEqual((kpis["fresh_tokens_per_merged"], kpis["waste_pct"], kpis["repair_pct"]), (70, 0, 0))
+        self.assertEqual(kpis["coverage_status"], dict.fromkeys(keys, "WARN"))
+        self.assertEqual(kpis["coverage_label"], dict.fromkeys(keys, "覆盖 93.6%"))
+
+    def test_token_efficiency_is_no_data_below_90_percent_coverage(self):
+        units, rows = self.efficiency_fixture(89, set(range(80, 89)))
+        kpis = wc.token_efficiency_kpis(rows, units, self.now)
+        keys = ("fresh_tokens_per_merged", "waste_pct", "repair_pct")
+        self.assertEqual(kpis["coverage_pct"], dict.fromkeys(keys, 89.9))
         self.assertEqual((kpis["fresh_tokens_per_merged"], kpis["waste_pct"], kpis["repair_pct"]), (None, None, None))
+        self.assertEqual(kpis["coverage_status"], dict.fromkeys(keys, "NO-DATA"))
 
 
 class Eval(unittest.TestCase):

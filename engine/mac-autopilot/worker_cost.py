@@ -47,7 +47,8 @@ FOOTER_RE = re.compile(r"tokens used\n([\d,]+)")
 FAILOVER_REASONS = frozenset(("provider-changed", "model-changed", "session-files-missing",
                               "resume-startup-failed"))
 UNKNOWN = "unattributed"
-TOKEN_EFFICIENCY_MIN_COVERAGE_PCT = 95.0  # Row 202 requires 95% run coverage for these KPIs.
+TOKEN_EFFICIENCY_MIN_COVERAGE_PCT = 95.0  # Complete-data bar.
+TOKEN_EFFICIENCY_MIN_DISPLAY_COVERAGE_PCT = 90.0
 
 
 def _read_workers(sup):
@@ -534,8 +535,16 @@ def token_efficiency_kpis(rows, units, now):
         if (unit := resolve(row.get("unit"))) is not None
         and str(unit["id"]) in measured_cohort_ids and row.get("phase") == "repair"
     )
-    fresh_available = fresh_coverage >= TOKEN_EFFICIENCY_MIN_COVERAGE_PCT and measured_merged > 0
-    token_metrics_available = token_coverage >= TOKEN_EFFICIENCY_MIN_COVERAGE_PCT and bool(measured_cohort_ids)
+    fresh_available = fresh_coverage >= TOKEN_EFFICIENCY_MIN_DISPLAY_COVERAGE_PCT and measured_merged > 0
+    token_metrics_available = token_coverage >= TOKEN_EFFICIENCY_MIN_DISPLAY_COVERAGE_PCT and bool(measured_cohort_ids)
+    coverage_pct = {"fresh_tokens_per_merged": fresh_coverage,
+                    "waste_pct": token_coverage, "repair_pct": token_coverage}
+    coverage_status = {
+        key: "NO-DATA" if value < TOKEN_EFFICIENCY_MIN_DISPLAY_COVERAGE_PCT
+        else "WARN" if value < TOKEN_EFFICIENCY_MIN_COVERAGE_PCT else None
+        for key, value in coverage_pct.items()
+    }
+    coverage_label = {key: f"覆盖 {value:.1f}%" for key, value in coverage_pct.items()}
 
     all_tokens = sum(item.get("tokens") or 0 for item in ledger["by_unit"])
     unattributed_fresh = sum(item.get("fresh") or 0 for item in unattributed)
@@ -551,8 +560,9 @@ def token_efficiency_kpis(rows, units, now):
         "merged_fresh_known_tokens": merged_fresh_known,
         "merged_fresh_measured_units": measured_merged,
         "fresh_tokens_per_merged": merged_fresh_known / measured_merged if fresh_available else None,
-        "coverage_pct": {"fresh_tokens_per_merged": fresh_coverage,
-                         "waste_pct": token_coverage, "repair_pct": token_coverage},
+        "coverage_pct": coverage_pct,
+        "coverage_status": coverage_status,
+        "coverage_label": coverage_label,
         "unknown_by": unknown_by(rows),
         "merged_raw_tokens": merged_tokens if merged_tokens_complete else None,
         "raw_tokens_per_merged": merged_raw / merged_count if merged_count and merged_tokens_complete else None,
@@ -585,10 +595,10 @@ TOKEN_EFFICIENCY_CRITERIA = {
     "efficiency.repair_phase_pct_7d": ("efficiency", "repair phase share of terminal cohort tokens, rolling 7 d %", 30, 45, False),
 }
 TOKEN_EFFICIENCY_MEANING = {
-    "efficiency.fresh_tokens_per_merged_7d": "近 7 天合并单元中所有 run 均测得的单元，其生命周期 fresh token（未缓存输入 + 输出）均值；run 覆盖率低于 95% 时为 NO-DATA。健康线沿用工作单 fresh token p90 的静态尺度 800k，异常线为历史 p90 的两倍 4.8M。",
-    "efficiency.unmerged_waste_pct_7d": "近 7 天终态单元中所有 run 均测得的单元里，closed / parked / blocked 且从未合并的 token 占比；run 覆盖率低于 95% 时为 NO-DATA，越低越好。健康线 35% 要比已测匹配台账 43% 少 8 个百分点；50% 比基线高 7 个百分点，作为异常线。",
+    "efficiency.fresh_tokens_per_merged_7d": "近 7 天合并单元中所有 run 均测得的单元，其生命周期 fresh token（未缓存输入 + 输出）均值；run 覆盖率低于 90% 时为 NO-DATA，90% ≤ 覆盖率 < 95% 时展示并标 WARN，95% 及以上按完整数据判定。健康线沿用工作单 fresh token p90 的静态尺度 800k，异常线为历史 p90 的两倍 4.8M。",
+    "efficiency.unmerged_waste_pct_7d": "近 7 天终态单元中所有 run 均测得的单元里，closed / parked / blocked 且从未合并的 token 占比；run 覆盖率低于 90% 时为 NO-DATA，90% ≤ 覆盖率 < 95% 时展示并标 WARN，95% 及以上按完整数据判定，越低越好。健康线 35% 要比已测匹配台账 43% 少 8 个百分点；50% 比基线高 7 个百分点，作为异常线。",
     "efficiency.first_pass_yield_pct_7d": "近 7 天合并单元中，历史从未出现 review-request-changes 或 review-block 的比例；高说明少返工。健康线 65% 接近最近窗口的 67% / 前一窗口的 71%；异常线 50% 低于 58% 的全时基线。",
-    "efficiency.repair_phase_pct_7d": "近 7 天终态单元中所有 run 均测得的单元里，repair phase token ÷ 全部 token；run 覆盖率低于 95% 时为 NO-DATA，越低越好。健康线 30% 比已测全时 36.4% 少 6.4 个百分点；45% 高于基线 8.6 个百分点，作为异常线。",
+    "efficiency.repair_phase_pct_7d": "近 7 天终态单元中所有 run 均测得的单元里，repair phase token ÷ 全部 token；run 覆盖率低于 90% 时为 NO-DATA，90% ≤ 覆盖率 < 95% 时展示并标 WARN，95% 及以上按完整数据判定，越低越好。健康线 30% 比已测全时 36.4% 少 6.4 个百分点；45% 高于基线 8.6 个百分点，作为异常线。",
 }
 TOKEN_EFFICIENCY_SOURCE = {
     "efficiency.fresh_tokens_per_merged_7d": "cost_ledger.by_unit 的 lifetime fresh（缓存读取除外）按 units.json + units-archive.json 的 merged/landed 历史事件筛选近 7 天，再除以窗口合并单元数。",
