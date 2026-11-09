@@ -98,16 +98,68 @@ rescue_flagged_files_clean() { # clone -> 0 unless a flagged file hides an edit
   rm -f "$index" "$index.lock"
   return "$rc"
 }
+# A merge whose owner died leaves MERGE_HEAD and blocks the handoff forever. A finished one (no unmerged path, no live owner,
+# older than a tick) is saved as diffs in the clone's preserved dir, then aborted. Anything else stays, and its log line names the owner.
+rescue_merge_head() { # clone -> 0 once no merge is in progress; else RESCUE_REFUSED says why
+  local wt="$1" mh id sha unmerged owner dir tick once="$A/merge-head-once" key
+  mh="$(git -C "$wt" rev-parse --absolute-git-dir)/MERGE_HEAD"
+  [[ -e "$mh" ]] || return 0
+  id="$(basename -- "$wt")"; id="${id#wt-}"
+  sha="$(git -C "$wt" rev-parse -q --verify MERGE_HEAD 2>/dev/null)" || { RESCUE_REFUSED="unreadable MERGE_HEAD"; return 1; }
+  unmerged="$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" || { RESCUE_REFUSED="unreadable merge state"; return 1; }
+  clone_worktree_owner_live "$id"; owner=$? # 0 live worker, 1 none, 3 unknown: the check clone_dirty_recovery uses for an open merge
+  if [[ -n "$unmerged" ]]; then
+    RESCUE_REFUSED="MERGE_HEAD with unmerged paths"; key="$id $sha"
+    if ! grep -Fqx -- "$key" "$once" 2>/dev/null; then
+      printf '%s\n' "$key" >> "$once"
+      say "handoff rescue unit=$id MERGE_HEAD with unmerged paths; owner=$([[ $owner == 0 ]] && echo worker || echo head)"
+    fi
+    return 1
+  fi
+  tick="$(jq -r '.tick_seconds // 120' "$A/config.json" 2>/dev/null)"; [[ "$tick" =~ ^[0-9]+$ ]] || tick=120
+  if (( owner != 1 )) || (( ${NOW_EPOCH:-$(date +%s)} - $(stat -c %Y "$mh") <= tick )); then
+    RESCUE_REFUSED="MERGE_HEAD in progress"; return 1
+  fi
+  dir="$WT_ROOT/wt-$id.preserved-$(date -u +%Y%m%dT%H%MZ)"
+  mkdir -m 700 -- "$dir" 2>/dev/null || { RESCUE_REFUSED="could not save the merge"; return 1; }
+  git -C "$wt" diff --cached --binary > "$dir/staged.patch" && git -C "$wt" diff --binary > "$dir/unstaged.patch" \
+    && printf '%s\n' "$sha" > "$dir/MERGE_HEAD" && git -C "$wt" merge --abort >/dev/null 2>&1 && [[ ! -e "$mh" ]] \
+    || { RESCUE_REFUSED="could not abort the finished merge"; return 1; }
+  say "handoff rescue unit=$id merge aborted: saved $dir"
+}
+# Unpushed commits on another branch block the handoff for good. With no live owner they go out as patches and each stash as a diff,
+# both in the clone's preserved dir, then the stash is cleared. A stash with untracked or ignored files still refuses (preserve_refused_clone takes it).
+rescue_unpushed_local() { # clone head -> 0 once saved; else RESCUE_REFUSED says why
+  local wt="$1" head="$2" id dir s i=0 owner
+  id="$(basename -- "$wt")"; id="${id#wt-}"
+  clone_worktree_owner_live "$id"; owner=$?
+  (( owner == 1 )) || { RESCUE_REFUSED="unpushed commits on another branch"; return 1; }
+  while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    git -C "$wt" rev-parse -q --verify "$s^3" >/dev/null 2>&1 && { RESCUE_REFUSED="unpushed commits on another branch"; return 1; }
+  done < <(git -C "$wt" stash list --format=%H 2>/dev/null)
+  dir="$WT_ROOT/wt-$id.preserved-$(date -u +%Y%m%dT%H%MZ)"
+  mkdir -p -m 700 -- "$dir" 2>/dev/null || { RESCUE_REFUSED="could not save the unpushed commits"; return 1; }
+  git -C "$wt" format-patch -q -o "$dir/unpushed" --branches --not --remotes "$head" >/dev/null 2>&1 || { RESCUE_REFUSED="could not save the unpushed commits"; return 1; }
+  while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    i=$((i + 1))
+    git -C "$wt" diff --binary "$s^1" "$s" > "$dir/stash-$i.patch" 2>/dev/null || { RESCUE_REFUSED="could not save a stash"; return 1; }
+  done < <(git -C "$wt" stash list --format=%H 2>/dev/null)
+  git -C "$wt" stash clear >/dev/null 2>&1 || { RESCUE_REFUSED="could not clear stashes"; return 1; }
+  say "handoff rescue unit=$id stash/unpushed saved $dir"
+}
 rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescued; else RESCUE_REFUSED says why
   local n="$1" wt="$2" status head commit tree raw index leftover ref="" stash stash_out stash_list="" scan=0 marker key objects sizes other path
   local -a stashes=()
   RESCUE_REFUSED=""; RESCUE_START_REF=""; RESCUE_START_SHA=""
   [[ -e "$wt/.git" ]] || { RESCUE_REFUSED="no clone"; return 1; }
+  rescue_merge_head "$wt" || return 1
   status="$(git -C "$wt" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || { RESCUE_REFUSED="unreadable status"; return 1; }
   head="$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null)" || { RESCUE_REFUSED="unreadable HEAD"; return 1; }
   stash_out="$(git -C "$wt" stash list --format=%H 2>/dev/null)" || { RESCUE_REFUSED="unreadable stash list"; return 1; }
   [[ -z "$stash_out" ]] || mapfile -t stashes <<<"$stash_out"
-  for path in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG rebase-merge rebase-apply; do
+  for path in CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG rebase-merge rebase-apply; do
     [[ ! -e "$(git -C "$wt" rev-parse --absolute-git-dir)/$path" ]] || { RESCUE_REFUSED="$path in progress"; return 1; }
   done
   # A leak does not go away by retrying: skip the scan until the clone changes.
@@ -115,7 +167,7 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
   [[ "$(cat "$marker" 2>/dev/null)" != "$key" ]] || { RESCUE_REFUSED="secret scan refused an earlier pass"; return 1; }
   # Active handoff worktrees are owned by the current handoff, not unpublished work in the old clone.
   other="$(git -C "$wt" rev-list -n1 --exclude='hand/*' --branches --not --remotes "$head" 2>/dev/null)" || { RESCUE_REFUSED="unreadable branches"; return 1; }
-  [[ -z "$other" ]] || { RESCUE_REFUSED="unpushed commits on another branch"; return 1; }
+  if [[ -n "$other" ]]; then rescue_unpushed_local "$wt" "$head" || return 1; stashes=(); fi
   # What the private index below cannot see: conflicted entries, flagged files, and a staged version later edited in the worktree.
   [[ -z "$(git -C "$wt" ls-files -u)" ]] || { RESCUE_REFUSED="unmerged index"; return 1; }
   rescue_flagged_files_clean "$wt" || { RESCUE_REFUSED="assume-unchanged or skip-worktree edit"; return 1; }
