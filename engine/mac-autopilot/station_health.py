@@ -52,12 +52,17 @@ def read_states(agent_home):
             yield int(os.path.basename(path)[:-5]), state
 
 
-def intake_open(runtime):
+def intake_open(runtime, now, bound):
     """Issue numbers intake's last candidate walk kept (open, ready-for-agent, no skip label). None when the cache is
-    absent, so the intake count falls back to the state files alone."""
+    absent or older than the intake stall bound (intake itself stopped writing it), so the count falls back to every
+    ready-for-agent state file: a dead intake must still raise its stall."""
     try:
-        rows = json.load(open(os.path.join(runtime, "intake-candidates.json"))).get("rows") or ""
-    except (OSError, ValueError, AttributeError):
+        doc = json.load(open(os.path.join(runtime, "intake-candidates.json")))
+        written = datetime.fromtimestamp(float(doc["created_at"]), timezone.utc)
+        rows = doc.get("rows") or ""
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if minutes(now, written) > bound:
         return None
     return {int(line.split("\t", 1)[0]) for line in rows.splitlines() if line.split("\t", 1)[0].isdigit()}
 
@@ -238,7 +243,7 @@ def main():
         held_since = None
     paused = os.path.exists(args.pause_file)
     doc = {"at": f"{now:%Y-%m-%dT%H:%M:%SZ}", "paused": paused,
-           "stations": station_rows(waiting(units, list(read_states(args.agent_home)), intake_open(args.runtime)),
+           "stations": station_rows(waiting(units, list(read_states(args.agent_home)), intake_open(args.runtime, now, bounds["intake"])),
                                     outs(units, args.runtime, args.agent_home),
                                     now, bounds, paused, held_since),
            "admission_gaps": admission_gaps(units, args.runtime, now - timedelta(hours=24))}

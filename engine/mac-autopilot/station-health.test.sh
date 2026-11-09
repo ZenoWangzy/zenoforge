@@ -117,7 +117,14 @@ echo '{"state":"ready-for-agent","state_changed_at":"2026-11-07T01:00:00Z"}' > "
 run() { python3 "$here/station_health.py" --runtime "$R" --agent-home "$H" --pause-file "$H/PAUSE" --now "$NOW"; }
 run
 [[ "$(field intake waiting)" == 3 ]] || fail 'without an intake candidate cache every ready-for-agent state must count'
-jq -cn '{created_at: 1, schema: 4, rows: "5563\tpr\tTitle\t[\"enhancement\",\"ready-for-agent\"]\tZ2Fyb2Jh"}' > "$R/intake-candidates.json"
+jq -cn --argjson at 1794030600 '{created_at: $at, schema: 4, rows: "5563\tpr\tTitle\t[\"enhancement\",\"ready-for-agent\"]\tZ2Fyb2Jh"}' > "$R/intake-candidates.json"
 run
 [[ "$(field intake waiting)" == 1 && "$(field intake oldest_wait_min)" == 300.0 ]] || fail 'only the open, eligible #5563 may count as intake waiting'
 echo 'ok - intake waiting counts only the candidates intake walks'
+
+# A candidates file older than the intake stall bound (90 min) means intake stopped writing it: the count falls back to
+# every ready-for-agent state, so a dead intake still raises its stall.
+jq -cn --argjson at 1794024000 '{created_at: $at, schema: 4, rows: "5563\tpr\tTitle\t[\"enhancement\",\"ready-for-agent\"]\tZ2Fyb2Jh"}' > "$R/intake-candidates.json"
+run
+[[ "$(field intake waiting)" == 3 ]] || fail 'a stale candidates file must fall back to the full ready-for-agent count'
+echo 'ok - a stale intake candidates file falls back to every ready-for-agent state'
