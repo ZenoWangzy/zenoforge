@@ -270,8 +270,16 @@ refused_intact "ignored files in a stash" "ignored files"
 
 # Commits on another local branch would be lost with the clone.
 new_clone
-git -C "$wt" checkout -q -b other; git -C "$wt" commit -q --allow-empty -m other; git -C "$wt" checkout -q -
-refused_intact "another branch's commits" "another branch"
+git -C "$wt" checkout -q -b other; printf 'other\n' > "$wt/o.txt"; git -C "$wt" add o.txt; git -C "$wt" commit -qm other; git -C "$wt" checkout -q -
+printf 'stashed\n' >> "$wt/a.txt"; git -C "$wt" stash -q; stash_sha="$(git -C "$wt" rev-parse stash@{0})"
+rescue_handoff_clone 70 "$wt" || fail "another branch's commits were refused: $RESCUE_REFUSED"
+remote_rescues | grep -q "^rescued/wt-[^ ]*-other " || fail "the unpushed branch did not reach the remote"
+remote_rescues | grep -q "^rescued/stash-of-70-$stash_sha $stash_sha$" || fail "the stash did not reach the remote"
+saved=("$WT_ROOT"/wt-wt.preserved-*); [[ ${#saved[@]} == 1 && -d "${saved[0]}" && ! -e "${saved[0]}/push-pending" ]] || fail "expected one pushed local copy, got ${saved[*]}"
+grep -q '^Subject: \[PATCH.*other' "${saved[0]}"/unpushed-1/*.patch || fail "the unpushed commit was not kept as a patch"
+[[ -z "$(git -C "$wt" stash list)" ]] || fail "the stash was not cleared"
+[[ "$(cat "$fixture/say.log")" == "handoff rescue unit=wt stash/unpushed saved ${saved[0]}" ]] || fail "the log line is wrong: $(cat "$fixture/say.log")"
+rm -rf "${saved[0]}" "$fixture/say.log"
 
 # A conflicted merge is not a state to snapshot.
 new_clone
@@ -279,7 +287,7 @@ git -C "$wt" checkout -q -b side; printf 'side\n' > "$wt/a.txt"; git -C "$wt" co
 printf 'other\n' > "$wt/a.txt"; git -C "$wt" commit -qam other
 git -C "$wt" merge -q side >/dev/null 2>&1 || true
 if rescue_handoff_clone 70 "$wt"; then fail "a merge in progress was rescued"; fi
-[[ "$RESCUE_REFUSED" == "MERGE_HEAD in progress" ]] || fail "said '$RESCUE_REFUSED'"
+[[ "$RESCUE_REFUSED" == "MERGE_HEAD with unmerged paths" ]] || fail "said '$RESCUE_REFUSED'"
 
 # A clone the secret scan refused is set aside, so its handoff goes on; nothing else is moved.
 aside_clone() { # fresh clone at the unit's path under WT_ROOT, logs emptied
@@ -345,16 +353,31 @@ branch_sha="$(git -C "$wt" rev-parse HEAD)"
 git -C "$wt" checkout -q -
 printf '%s\n' "$trigger_content" > "$wt/work-in-progress.txt"
 [[ "$(worktree_cleanup_block_reason "$wt")" == "uncommitted changes" ]] || fail "the uncommitted work did not block cleanup"
-if rescue_handoff_clone 70 "$wt"; then fail "an unpushed branch was rescued"; fi
-[[ "$RESCUE_REFUSED" == "unpushed commits on another branch" ]] || fail "said '$RESCUE_REFUSED' for unpushed branch work"
-assert_refused_clone_aside 70 issue-70 "$branch_content"
-aside=("$WT_ROOT"/wt-issue-70.preserved-*)
-[[ "$(git -C "${aside[0]}" rev-parse other)" == "$branch_sha" ]] || fail "the unpushed branch changed in the preserved clone"
-[[ "$(git -C "${aside[0]}" show "$branch_sha:branch-work.txt")" == "$branch_content" ]] || fail "unpushed branch data left the preserved clone"
-[[ "$(cat "${aside[0]}/work-in-progress.txt")" == "$trigger_content" ]] || fail "the uncommitted trigger left the preserved clone"
+rescue_handoff_clone 70 "$wt" || fail "unpushed branch work was refused: $RESCUE_REFUSED"
+saved=("$WT_ROOT"/wt-issue-70.preserved-*); [[ ${#saved[@]} == 1 && -d "${saved[0]}" ]] || fail "expected one saved dir, got ${saved[*]}"
+grep -rqF "$branch_content" "${saved[0]}" || fail "the unpushed branch patch was not saved"
+git --git-dir="$origin" for-each-ref --format='%(refname)' refs/heads/rescued/ | grep -q "^refs/heads/rescued/issue-70-[^ ]*-other$" || fail "the unpushed branch did not reach the remote"
+[[ "$(cat "$fixture/say.log")" == "handoff rescue unit=issue-70 stash/unpushed saved ${saved[0]}" ]] || fail "the log line is wrong"
+[[ "$(git --git-dir="$origin" show "$RESCUE_START_SHA:work-in-progress.txt")" == "$trigger_content" ]] || fail "the uncommitted trigger was not handed on"
 for out in "$fixture/say.log" "$fixture/inbox" "$comments" "$fixture/scans" "$fixture/state-merges"; do
   [[ ! -e "$out" ]] || ! grep -Fq "$trigger_content" "$out" || fail "uncommitted content reached $out"
 done
+
+# The active handoff owns hand/* refs; rescue another local branch without publishing that worktree.
+new_clone
+base_sha="$(git -C "$wt" rev-parse HEAD)"
+git -C "$wt" checkout -q -b other; printf 'other\n' > "$wt/o.txt"; git -C "$wt" add o.txt; git -C "$wt" commit -qm other
+other_sha="$(git -C "$wt" rev-parse HEAD)"; git -C "$wt" checkout -q -
+git -C "$wt" worktree add -q -b hand/issue-70 "$fixture/hand-unpublished-70" "$base_sha"
+printf 'active handoff work\n' > "$fixture/hand-unpublished-70/handoff.txt"
+git -C "$fixture/hand-unpublished-70" add handoff.txt; git -C "$fixture/hand-unpublished-70" commit -qm 'active handoff work'
+hand_sha="$(git -C "$fixture/hand-unpublished-70" rev-parse HEAD)"
+rescue_handoff_clone 70 "$wt" || fail "other branch rescue blocked by active hand work: $RESCUE_REFUSED"
+remote_rescues | grep -q "^rescued/wt-[^ ]*-other $other_sha$" || fail "the unrelated branch was not rescued"
+if remote_rescues | grep -q -- '-hand/'; then fail "the active hand branch was pushed as rescue work"; fi
+if git --git-dir="$origin" cat-file -e "$hand_sha" 2>/dev/null; then fail "the active hand commit reached the remote"; fi
+[[ "$(git -C "$fixture/hand-unpublished-70" rev-parse HEAD)" == "$hand_sha" \
+  && "$(cat "$fixture/hand-unpublished-70/handoff.txt")" == 'active handoff work' ]] || fail "the active handoff worktree changed"
 
 # The marker of an earlier pass counts as the scan's refusal too.
 aside_clone
@@ -371,6 +394,79 @@ rescue_handoff_clone 70 "$wt" && fail "a broken scan was rescued"; rm -f "$fixtu
 [[ "$RESCUE_REFUSED" == *"could not run"* ]] || fail "said '$RESCUE_REFUSED'"
 if preserve_refused_clone 70 issue-70 "$wt"; then fail "a scan that did not run was set aside"; fi
 [[ -d "$wt" ]] || fail "a scan that did not run moved the clone"
+
+# A merge left open by a dead owner. Clean and older than a tick: diffs saved, merge aborted, handoff goes on.
+finished_merge() { # open a clean merge of side (staged b.txt) with one unstaged edit to a.txt
+  git -C "$wt" checkout -q -b side; printf 'side\n' > "$wt/b.txt"; git -C "$wt" add b.txt; git -C "$wt" commit -qm side; git -C "$wt" checkout -q -
+  git -C "$wt" merge -q --no-commit --no-ff side || fail "could not open the finished merge"
+  git -C "$wt" branch -q -D side; printf 'unstaged\n' >> "$wt/a.txt"
+}
+rm -f "$A/merge-head-once"
+aside_clone
+printf 'local\n' > "$wt/c.txt"; git -C "$wt" add c.txt; git -C "$wt" commit -qm local; local_sha="$(git -C "$wt" rev-parse HEAD)"
+finished_merge; gitdir="$(git -C "$wt" rev-parse --absolute-git-dir)"
+touch -d '10 minutes ago' "$gitdir/MERGE_HEAD"; merge_sha="$(git -C "$wt" rev-parse MERGE_HEAD)"
+# Record the remote's rescued refs at the moment of the abort: the unpushed commit must already be there.
+git() { if [[ "$*" == *"merge --abort"* ]]; then command git --git-dir="$origin" for-each-ref --format='%(objectname)' refs/heads/rescued/ > "$fixture/abort-refs"; fi; command git "$@"; }
+rescue_handoff_clone 70 "$wt" || fail "a finished merge was not aborted: $RESCUE_REFUSED"
+unset -f git
+grep -qx "$local_sha" "$fixture/abort-refs" || fail "the unpushed commit was not on the remote before the abort"
+[[ -n "$(remote_rescues | grep "^rescued/issue-70-[^ ]* $local_sha$")" ]] || fail "no rescued ref for the unpushed commit"
+[[ ! -e "$gitdir/MERGE_HEAD" ]] || fail "MERGE_HEAD survived the abort"
+saved=("$WT_ROOT"/wt-issue-70.preserved-*); [[ ${#saved[@]} == 1 && -d "${saved[0]}" ]] || fail "expected one saved dir, got ${saved[*]}"
+[[ ! -e "${saved[0]}/push-pending" ]] || fail "the pushed copy is still marked pending"
+[[ "$(stat -c %a "${saved[0]}")" == 700 && "$(cat "${saved[0]}/MERGE_HEAD")" == "$merge_sha" ]] || fail "the saved dir or MERGE_HEAD sha is wrong"
+grep -q '^+side$' "${saved[0]}/staged.patch" && grep -q '^+unstaged$' "${saved[0]}/unstaged.patch" || fail "the staged or unstaged diff was not saved"
+[[ "$(cat "$fixture/say.log")" == "handoff rescue unit=issue-70 merge aborted: saved ${saved[0]}" ]] || fail "the log line is wrong: $(cat "$fixture/say.log")"
+# reset --merge keeps the unstaged edit, so the normal handoff rescues it; the staged merge itself is only in the saved diff.
+[[ -z "$(git -C "$wt" status --porcelain=v1)" && -n "$RESCUE_START_REF" ]] || fail "the clone was not left clean for the handoff"
+[[ "$(git --git-dir="$origin" show "$RESCUE_START_SHA:a.txt")" == $'one\nunstaged' ]] || fail "the unstaged edit was not handed on"
+
+# A push the remote refuses: the merge and the stash stay where they are, the local copy is kept past expiry.
+rm -f "$A/rescue-push-failed.once"
+aside_clone
+printf 'local\n' > "$wt/c.txt"; git -C "$wt" add c.txt; git -C "$wt" commit -qm local
+finished_merge; gitdir="$(git -C "$wt" rev-parse --absolute-git-dir)"; touch -d '10 minutes ago' "$gitdir/MERGE_HEAD"
+touch "$fixture/hook-refuses"
+refused_intact "a merge whose push was refused" "rescue push failed"
+[[ -e "$gitdir/MERGE_HEAD" ]] || fail "the merge was aborted after a failed push"
+kept=("$WT_ROOT"/wt-issue-70.preserved-*); [[ ${#kept[@]} == 1 && -e "${kept[0]}/push-pending" ]] || fail "the failed push left no pending local copy"
+[[ "$(cat "$fixture/say.log")" == "handoff rescue unit=issue-70 push failed: kept ${kept[0]}; owner=head" ]] || fail "the push-failed line is wrong: $(cat "$fixture/say.log")"
+[[ "$(cat "$fixture/inbox")" == "rescue-push-failed unit=issue-70 path=${kept[0]}" ]] || fail "the supervisor inbox line is wrong: $(cat "$fixture/inbox")"
+# A second tick with the same push still refused: no repeat of the log line or the inbox entry.
+rescue_handoff_clone 70 "$wt" && fail "the second tick's push did not refuse"
+[[ "$(wc -l < "$fixture/say.log")" == 1 && "$(wc -l < "$fixture/inbox")" == 1 ]] || fail "the second tick repeated the push-failed line or the inbox entry"
+rm -f "$fixture/hook-refuses"
+NOW_EPOCH=$(( $(date +%s) + 8 * 86400 )) expire_preserved_clones
+[[ -d "${kept[0]}" ]] || fail "a copy whose push failed was expired"
+aside_clone
+printf 'local\n' > "$wt/c.txt"; git -C "$wt" add c.txt; git -C "$wt" commit -qm local
+git -C "$wt" checkout -q -b other; printf 'other\n' > "$wt/o.txt"; git -C "$wt" add o.txt; git -C "$wt" commit -qm other; git -C "$wt" checkout -q -
+printf 'stashed\n' >> "$wt/a.txt"; git -C "$wt" stash -q
+touch "$fixture/hook-refuses"
+refused_intact "an unpushed branch whose push was refused" "rescue push failed"
+rm -f "$fixture/hook-refuses"
+[[ -n "$(git -C "$wt" stash list)" ]] || fail "the stash was cleared after a failed push"
+[[ -z "$(remote_rescues)" ]] || fail "a ref reached the remote after a refused push"
+
+# Unmerged paths: left alone, one log line per MERGE_HEAD naming the owner.
+aside_clone
+git -C "$wt" checkout -q -b side; printf 'side\n' > "$wt/a.txt"; git -C "$wt" commit -qam side; git -C "$wt" checkout -q -
+printf 'other\n' > "$wt/a.txt"; git -C "$wt" commit -qam other
+git -C "$wt" merge -q side >/dev/null 2>&1 || true
+gitdir="$(git -C "$wt" rev-parse --absolute-git-dir)"; touch -d '10 minutes ago' "$gitdir/MERGE_HEAD"
+refused_intact "a merge with unmerged paths" "MERGE_HEAD with unmerged paths"
+rescue_handoff_clone 70 "$wt" && fail "a merge with unmerged paths was rescued"
+[[ "$(cat "$fixture/say.log")" == "handoff rescue unit=issue-70 MERGE_HEAD with unmerged paths; owner=head" ]] || fail "the owner line is wrong: $(cat "$fixture/say.log")"
+[[ -e "$gitdir/MERGE_HEAD" ]] || fail "the unmerged merge was touched"
+saved=("$WT_ROOT"/wt-issue-70.preserved-*); [[ ! -e "${saved[0]}" ]] || fail "an unmerged merge was saved"
+
+# A finished merge younger than a tick is left for its owner to finish.
+aside_clone
+finished_merge; gitdir="$(git -C "$wt" rev-parse --absolute-git-dir)"
+refused_intact "a fresh finished merge" "MERGE_HEAD in progress"
+[[ -e "$gitdir/MERGE_HEAD" && ! -s "$fixture/say.log" ]] || fail "a fresh merge was touched or logged"
+saved=("$WT_ROOT"/wt-issue-70.preserved-*); [[ ! -e "${saved[0]}" ]] || fail "a fresh merge was saved"
 
 # Expiry: 7 days after the stamp, that exact name pattern only.
 rm -rf "$WT_ROOT"/*; : > "$fixture/say.log"

@@ -98,16 +98,94 @@ rescue_flagged_files_clean() { # clone -> 0 unless a flagged file hides an edit
   rm -f "$index" "$index.lock"
   return "$rc"
 }
+# A merge whose owner died leaves MERGE_HEAD and blocks the handoff forever. A finished one (no unmerged path, no live owner,
+# older than a tick) is saved as diffs and its unpushed commits are pushed to rescued/*, then it is aborted. A failed push keeps
+# everything in place. Anything else stays, and its log line names the owner.
+rescue_merge_head() { # clone -> 0 once no merge is in progress; else RESCUE_REFUSED says why
+  local wt="$1" mh id sha unmerged owner tick once="$A/merge-head-once" key
+  mh="$(git -C "$wt" rev-parse --absolute-git-dir)/MERGE_HEAD"
+  [[ -e "$mh" ]] || return 0
+  id="$(basename -- "$wt")"; id="${id#wt-}"
+  sha="$(git -C "$wt" rev-parse -q --verify MERGE_HEAD 2>/dev/null)" || { RESCUE_REFUSED="unreadable MERGE_HEAD"; return 1; }
+  unmerged="$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" || { RESCUE_REFUSED="unreadable merge state"; return 1; }
+  clone_worktree_owner_live "$id"; owner=$? # 0 live worker, 1 none, 3 unknown: the check clone_dirty_recovery uses for an open merge
+  if [[ -n "$unmerged" ]]; then
+    RESCUE_REFUSED="MERGE_HEAD with unmerged paths"; key="$id $sha"
+    if ! grep -Fqx -- "$key" "$once" 2>/dev/null; then
+      printf '%s\n' "$key" >> "$once"
+      say "handoff rescue unit=$id MERGE_HEAD with unmerged paths; owner=$([[ $owner == 0 ]] && echo worker || echo head)"
+    fi
+    return 1
+  fi
+  tick="$(jq -r '.tick_seconds // 120' "$A/config.json" 2>/dev/null)"; [[ "$tick" =~ ^[0-9]+$ ]] || tick=120
+  if (( owner != 1 )) || (( ${NOW_EPOCH:-$(date +%s)} - $(stat -c %Y "$mh") <= tick )); then
+    RESCUE_REFUSED="MERGE_HEAD in progress"; return 1
+  fi
+  rescue_keep_dir "$id" || { RESCUE_REFUSED="could not save the merge"; return 1; }
+  git -C "$wt" diff --cached --binary > "$RESCUE_DIR/staged.patch" && git -C "$wt" diff --binary > "$RESCUE_DIR/unstaged.patch" \
+    && printf '%s\n' "$sha" > "$RESCUE_DIR/MERGE_HEAD" || { RESCUE_REFUSED="could not save the merge diffs"; return 1; }
+  rescue_push_unpushed "$wt" "$id" "$RESCUE_DIR" || return 1 # the commits reach the remote before the merge is aborted
+  git -C "$wt" merge --abort >/dev/null 2>&1 && [[ ! -e "$mh" ]] || { RESCUE_REFUSED="could not abort the finished merge"; return 1; }
+  say "handoff rescue unit=$id merge aborted: saved $RESCUE_DIR"
+}
+# A local copy of a rescue lives in the unit's preserved dir, marked push-pending until its commits are on the remote (expire_preserved_clones
+# keeps a marked dir). RESCUE_DIR is the dir: the unit's pending one when a push failed earlier, else a new one.
+rescue_keep_dir() { # unit -> 0 with RESCUE_DIR set
+  local id="$1" d
+  RESCUE_DIR=""
+  for d in "$WT_ROOT"/wt-"$id".preserved-*; do [[ -e "$d/push-pending" ]] && { RESCUE_DIR="$d"; break; }; done
+  [[ -n "$RESCUE_DIR" ]] || RESCUE_DIR="$WT_ROOT/wt-$id.preserved-$(date -u +%Y%m%dT%H%MZ)"
+  mkdir -p -m 700 -- "$RESCUE_DIR" 2>/dev/null && : > "$RESCUE_DIR/push-pending"
+}
+# Every commit no remote holds goes to rescued/<unit>-<stamp> (HEAD) or rescued/<unit>-<stamp>-<branch>, with a patch copy in dir.
+# A failed push keeps dir and its push-pending mark, and refuses without touching stashes or merge state (rescue_push_failed reports it).
+# rescue_push_failed: one log line and one supervisor inbox line per path+SHA; the once file (clones.sh pattern) gates both on every tick.
+rescue_push_failed() { # unit dir sha
+  local key="$2 $3" once="$A/rescue-push-failed.once"
+  grep -Fqx -- "$key" "$once" 2>/dev/null && return 0
+  printf '%s\n' "$key" >> "$once"
+  say "handoff rescue unit=$1 push failed: kept $2; owner=head"
+  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "rescue-push-failed:$1:$3" "rescue-push-failed unit=$1 path=$2") \
+    || say "handoff rescue unit=$1: could not notify supervisor about $2"
+}
+rescue_push_unpushed() { # clone unit dir -> 0 once all are on the remote; else RESCUE_REFUSED says why
+  local wt="$1" id="$2" dir="$3" name sha ref unpushed head_sha head_branch i=0
+  head_sha="$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null)" || { RESCUE_REFUSED="unreadable HEAD"; return 1; }
+  head_branch="$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  while read -r name sha; do
+    unpushed="$(git -C "$wt" rev-list -n1 "$sha" --not --remotes 2>/dev/null)" || { RESCUE_REFUSED="unreadable branches"; return 1; }
+    [[ -n "$unpushed" ]] || continue
+    if [[ "$name" == HEAD ]]; then ref="rescued/$id-${dir##*.preserved-}"
+    elif [[ "$sha" == "$head_sha" ]]; then continue
+    else ref="rescued/$id-${dir##*.preserved-}-$name"; fi
+    i=$((i + 1))
+    git -C "$wt" format-patch -q -o "$dir/unpushed-$i" "$sha" --not --remotes >/dev/null 2>&1 || { RESCUE_REFUSED="could not copy the unpushed commits"; return 1; }
+    rescue_push_verified "$wt" "$sha" "$ref" || { RESCUE_REFUSED="rescue push failed"; rescue_push_failed "$id" "$dir" "$sha"; return 1; }
+  done < <({ [[ "$head_branch" == hand/* ]] || printf 'HEAD %s\n' "$head_sha"; git -C "$wt" for-each-ref --format='%(refname:short) %(objectname)' refs/heads; } | awk '$1 !~ /^hand\//')
+  rm -f -- "$dir/push-pending"
+}
+# Unpushed commits on another branch block the handoff for good. With no live owner they are pushed first; the stash then goes
+# through the normal rescued/stash-of-* push. A stash with untracked or ignored files still refuses (preserve_refused_clone takes it).
+rescue_unpushed_local() { # clone -> 0 once every unpushed commit is on the remote; else RESCUE_REFUSED says why
+  local wt="$1" id owner
+  id="$(basename -- "$wt")"; id="${id#wt-}"
+  clone_worktree_owner_live "$id"; owner=$?
+  (( owner == 1 )) || { RESCUE_REFUSED="unpushed commits on another branch"; return 1; }
+  rescue_keep_dir "$id" || { RESCUE_REFUSED="could not save the unpushed commits"; return 1; }
+  rescue_push_unpushed "$wt" "$id" "$RESCUE_DIR" || return 1
+  say "handoff rescue unit=$id stash/unpushed saved $RESCUE_DIR"
+}
 rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescued; else RESCUE_REFUSED says why
   local n="$1" wt="$2" status head commit tree raw index leftover ref="" stash stash_out stash_list="" scan=0 marker key objects sizes other path
   local -a stashes=()
   RESCUE_REFUSED=""; RESCUE_START_REF=""; RESCUE_START_SHA=""
   [[ -e "$wt/.git" ]] || { RESCUE_REFUSED="no clone"; return 1; }
+  rescue_merge_head "$wt" || return 1
   status="$(git -C "$wt" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || { RESCUE_REFUSED="unreadable status"; return 1; }
   head="$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null)" || { RESCUE_REFUSED="unreadable HEAD"; return 1; }
   stash_out="$(git -C "$wt" stash list --format=%H 2>/dev/null)" || { RESCUE_REFUSED="unreadable stash list"; return 1; }
   [[ -z "$stash_out" ]] || mapfile -t stashes <<<"$stash_out"
-  for path in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG rebase-merge rebase-apply; do
+  for path in CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG rebase-merge rebase-apply; do
     [[ ! -e "$(git -C "$wt" rev-parse --absolute-git-dir)/$path" ]] || { RESCUE_REFUSED="$path in progress"; return 1; }
   done
   # A leak does not go away by retrying: skip the scan until the clone changes.
@@ -115,7 +193,7 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
   [[ "$(cat "$marker" 2>/dev/null)" != "$key" ]] || { RESCUE_REFUSED="secret scan refused an earlier pass"; return 1; }
   # Active handoff worktrees are owned by the current handoff, not unpublished work in the old clone.
   other="$(git -C "$wt" rev-list -n1 --exclude='hand/*' --branches --not --remotes "$head" 2>/dev/null)" || { RESCUE_REFUSED="unreadable branches"; return 1; }
-  [[ -z "$other" ]] || { RESCUE_REFUSED="unpushed commits on another branch"; return 1; }
+  if [[ -n "$other" ]]; then rescue_unpushed_local "$wt" || return 1; fi
   # What the private index below cannot see: conflicted entries, flagged files, and a staged version later edited in the worktree.
   [[ -z "$(git -C "$wt" ls-files -u)" ]] || { RESCUE_REFUSED="unmerged index"; return 1; }
   rescue_flagged_files_clean "$wt" || { RESCUE_REFUSED="assume-unchanged or skip-worktree edit"; return 1; }
@@ -192,6 +270,7 @@ expire_preserved_clones() { # *.preserved-* dirs 7 days after the stamp in their
   for d in "$WT_ROOT"/wt-*.preserved-*; do
     name="${d##*/}"
     [[ "$name" =~ ^wt-[A-Za-z0-9._-]+\.preserved-([0-9]{8})T([0-9]{2})([0-9]{2})Z$ && -d "$d" && ! -L "$d" ]] || continue
+    [[ ! -e "$d/push-pending" ]] || continue # its commits never reached the remote: kept until a push lands
     epoch="$(date -u -d "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}:${BASH_REMATCH[3]}" +%s 2>/dev/null)" || continue
     (( ${NOW_EPOCH:-$(date +%s)} - epoch > 604800 )) || continue
     remove_readonly_tree "$d" && say "cleanup preserved clone $d (older than 7 days)"
