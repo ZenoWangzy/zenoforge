@@ -284,7 +284,7 @@ token_spend_park() { # id unit-json soft|hard
   else set_unit "$id" "$(park_fields token-hard-park 'never: no ruling refills a unit past the hard token line')"; fi
 }
 
-# An approved head whose only red is runner infra is no reason to close its PR (5389: approved on 3f8165138818, red was "A task was canceled" in Set up job).
+# An approved head whose only red is runner infra is no reason to close its PR.
 # No existing helper reads "approved on this head" alone (approved_ci_repair_unchanged also wants repair-delivered), so this mirrors its jq and land-lane.sh:31.
 # ci_infra_red makes gh calls, as the park path already does (cancel_unit_runs, the PR close); an unreadable head or run list means no exemption.
 token_hard_infra_approved() { # unit-json → 0 when the PR is approved on its current head and every failed step on that head is runner infra
