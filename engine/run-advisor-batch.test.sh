@@ -63,7 +63,7 @@ advisor_plan_contract() { printf 'plan contract'; }; record_premium_spend() { :;
 run_with_fd_closed() { while [[ "$1" != -- ]]; do shift; done; shift; "$@"; }; web_advisor_provider_dispatch_question_async() { printf '%s' "${ZF_QUARANTINE_CANARY_SCOPES:-}" > "$tmp/reask-scopes"; }
 ZF_QUARANTINE_CANARY_SCOPES=advisor
 advisor_batch_dispatch_plan_reask '[]' '[930001]'
-[[ ! -s "$tmp/reask-scopes" ]]
+[[ ! -s "$tmp/reask-scopes" ]]; BATCH_JOB_ID=fixture-job
 # Exercise the real batch poller through the runner adapter, including pending
 # evidence retention and recovery of only complete records on timeout.
 web_advisor_provider_resume_job_if_stopped() { :; }

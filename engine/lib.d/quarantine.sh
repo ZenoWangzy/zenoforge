@@ -215,12 +215,6 @@ quarantine_mark_stage_dispatch_canaries() {
   STAGE_DISPATCH_CANARY_SCOPES="$remaining"; quarantine_mark_canary_scope_list "$started" "$now"
 }
 
-quarantine_mark_stage_dispatch_canaries_loudly() {
-  local stage="$1" caller="$2"
-  declare -F quarantine_mark_stage_dispatch_canaries >/dev/null || { echo "$caller: canary marker missing after $stage start" >&2; return 0; }
-  quarantine_mark_stage_dispatch_canaries "$stage" || echo "$caller: canary mark failed after $stage start" >&2
-}
-
 quarantine_finish_advisor_canary_reservation() {
   local scopes="${ZF_QUARANTINE_CANARY_SCOPES:-}"; [ -n "$scopes" ] || return 0
   unset ZF_QUARANTINE_CANARY_SCOPES; quarantine_mark_canary_scope_list "$scopes" || echo "quarantine: advisor canary mark failed at run exit scopes=$scopes" >&2

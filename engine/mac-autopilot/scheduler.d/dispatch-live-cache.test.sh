@@ -72,7 +72,7 @@ small="$(pass_refreshes 5)"; large="$(pass_refreshes 20)"
 (( large == 1 )) || fail "expected a single refresh with the TTL pinned, got $large"
 
 # A failed worker launch must clear the issue reservation without charging it.
-issue=930101; ROOT="$fixture/repo" A="$fixture/agent" SUP="$fixture/supervisor" AGENT_HOME="$fixture/agent"
+issue=930101; ROOT="$fixture/repo" A="$fixture/agent" SUP="$fixture/supervisor" AGENT_HOME="$fixture/agent" CODEX_MODE=exec CODEX_PATH_REASON=fixture CODEX_SESSION_ID=fixture CODEX_USAGE_START=0
 QUARANTINE_DIR="$AGENT_HOME/quarantine" SCHEDULER_AGENT_LIB="$engine_dir/../lib.sh"; export AGENT_HOME
 mkdir -p "$A" "$SUP" "$AGENT_HOME/state" "$QUARANTINE_DIR"
 printf '%s\n' '{"units":[{"id":"issue-930101","issue":930101,"lane":"pr"}]}' > "$UNITS"; printf '%s\n' '{"run":{"conclusion":{"canary_reserved_scopes":"implement"}}}' > "$AGENT_HOME/state/$issue.json"

@@ -3812,9 +3812,8 @@ EOF
     eval "$(sed -n "/^dispatch_advisor_batch() {/,/^}/p" "$ENV_FAULT_LIB_DIR/issue-pipeline.sh")"
     zf_advisor_batch_runner() { printf "%s\n" "$ZF_ENGINE_DIR/run-advisor.sh"; }
     agent_memory_floor_allows() { return 0; }; stage_unit_active() { return 1; }
-    NEEDS_ADVISOR_IDS="" ZF_ADVISOR_BATCH_UNIT_ENV=() ADVISOR_RUNTIME_MAX_SEC=60 UNIT_PREFIX_TRANSIENT=zf
-    dispatch_advisor_batch 1 "advisor,advisor@packages/advisor-test"
-    echo "advisor_batch_child_scopes=$(cat "$ADVISOR_CHILD_SCOPES")"
+    NEEDS_ADVISOR_IDS=""; ZF_ADVISOR_BATCH_UNIT_ENV=(); ADVISOR_RUNTIME_MAX_SEC=60; UNIT_PREFIX_TRANSIENT=zf
+    dispatch_advisor_batch 1 "advisor,advisor@packages/advisor-test"; echo "advisor_batch_child_scopes=$(cat "$ADVISOR_CHILD_SCOPES")"
     # Trace requeue persistence, issue-pipeline launch, and scheduler bridge in one shell.
     now="$(date +%s)"; quarantine_open implement env:test-gate:requeue fixture 2 "$now" >/dev/null 2>&1; qf="$(quarantine_file implement)"
     jq --argjson now "$now" ".next_canary_at = \$now" "$qf" > "$qf.tmp" && mv "$qf.tmp" "$qf"
