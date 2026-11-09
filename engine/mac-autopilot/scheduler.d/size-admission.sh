@@ -2,7 +2,7 @@
 # 尺寸准入的计数：分支相对 PR 基线（普通 PR 为 main，堆叠 PR 为父分支）的代码加删行数；文档、生成物、锁文件与测试快照不计，
 # 避免这些内容单独变大就触发重切。数不出来（clone 丢了、fetch 失败）返回空，不挡评审。
 changed_lines_count() {
-  awk -F'\t' '$3 !~ /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$/ && $3 !~ /^(docs|lessons|\.trellis)\// && $3 !~ /(^|\/)[^/]+\.md$/ && $3 !~ /(^|\/)(__snapshots__|generated|dist|build|coverage)(\/|$)/ && $3 !~ /(^|\/)[^/]*\.generated\.[^/]+$/ && $3 !~ /\.snap$/ { n += $1 + $2 } END { print n }'
+  awk -F'\t' '$3 ~ /(^|\/)fixtures?\/.*\.json$/ { f += $1 + $2; next } $3 !~ /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$/ && $3 !~ /^(docs|lessons|\.trellis)\// && $3 !~ /(^|\/)[^/]+\.md$/ && $3 !~ /(^|\/)(__snapshots__|generated|dist|build|coverage)(\/|$)/ && $3 !~ /(^|\/)[^/]*\.generated\.[^/]+$/ && $3 !~ /\.snap$/ { n += $1 + $2 } END { if (f > 500) n += f; print n }'  # shortcut: fixture JSON counts only past 500 lines (then in full), hardcoded; move to config if it needs tuning
 }
 changed_lines_of() { # dir branch base-branch [refs-current] → 行数或空
   local base base_branch="${3:-main}" refs_current="${4:-false}"
@@ -128,7 +128,7 @@ size_admission_recheck() { # Keep the per-candidate diff+fetch visible inside di
   return "$rc"
 }
 size_admission_write_start() { # unit workdir unit-json → block before worker launch when estimate or current diff is oversized
-  local issue estimate actual="" lines="" source="" branch base_branch head state limit
+  local issue estimate actual="" lines="" source="" branch base_branch head state limit est_limit reject_limit
   size_admission_exempt_unit "$3" && return 0
   issue="$(jqf -r '.issue // empty' <<<"$3")"
   estimate="$(jqf -r '.estimated_changed_lines // empty' <<<"$3")"
@@ -143,19 +143,22 @@ size_admission_write_start() { # unit workdir unit-json → block before worker 
   fi
   head="$(git -C "$2" rev-parse -q --verify HEAD 2>/dev/null || true)"
   limit="$(size_admission_limit_for "$3")"
-  if [[ "$estimate" =~ ^[0-9]+$ ]] && (( estimate > limit )); then
+  # An unwaived ticket whose estimate passes 60% of the limit is cut before a worker starts; a waiver already means the recut ran out.
+  est_limit="$limit"; (( limit != SIZE_ADMISSION_LINES )) || est_limit=$((limit * 60 / 100))
+  if [[ "$estimate" =~ ^[0-9]+$ ]] && (( estimate > est_limit )); then
     lines="$estimate"; source=estimate
   fi
   if [[ "$actual" =~ ^[0-9]+$ ]] && (( actual > limit )) && (( actual > ${lines:-0} )); then
     lines="$actual"; source=diff
   fi
+  reject_limit="$limit"; [[ "$source" != estimate ]] || reject_limit="$est_limit"
   [[ -n "$lines" ]] || return 0
   [[ "$source" != estimate || ! "$actual" =~ ^[0-9]+$ ]] || (( actual > limit )) || (( $(unit_history_count "$1" size-split-admitted) == 0 )) || return 0
   # The 30-second refill may start implement workers using local data only. It
   # defers an oversized ticket for the slow tick, which owns the existing recut
   # issue transition and records the decision once.
   [[ "${TICK_DISPATCH_LOCAL_REFILL:-false}" != true ]] || return 1
-  size_admission_reject "$1" "$lines" "$branch" "write-start ($source)" "$head" "${estimate:-unknown}" "${actual:-unknown}" write-start "$limit"
+  size_admission_reject "$1" "$lines" "$branch" "write-start ($source)" "$head" "${estimate:-unknown}" "${actual:-unknown}" write-start "$reject_limit"
 }
 pre_dispatch_pr_admission() { # unit branch PR context → prepared clone; nonzero means defer or recut
   local id="$1" branch="$2" pr="$3" context="$4" head dir
