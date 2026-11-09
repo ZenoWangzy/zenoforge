@@ -110,6 +110,24 @@ if (!overviewButton || !overviewButton[0].includes('title="总览，2 项异常�
 for (const label of ["2 项异常", "3 项需留意"])
   if (!badgeView.els.view.innerHTML.includes(label)) throw new Error(`overview chip lacks nav count label ${label}`);
 
+// Long-window delivery quality stays visible in its trend panel; the overview count uses the
+// recovering one-hour value and excludes the 30-day metric even while its long value is red.
+const recovering = {id:"merge.wait_p50_min", node:"merge", desc:"merge wait p50, 24 h", meaning:"merge wait",
+  value:60, healthy:31, unhealthy:41, higher_is_better:false, status:"UNHEALTHY",
+  value_1h:10, trend_1h:{delta:-50,direction:"down"}, short_window:"1h"};
+const longTrend = {id:"delivery.revert_rate_30d_pct", node:"delivery", desc:"reverts in 30 d", meaning:"revert rate",
+  value:12, healthy:5, unhealthy:10, higher_is_better:false, status:"UNHEALTHY",
+  value_1h:4, trend_1h:{delta:-2,direction:"down"}, short_window:"1h"};
+const fastData = {generated:new Date().toISOString(), standards:{metrics:[recovering,longTrend],trend_metrics:[longTrend]}};
+const fastView = load(fastData); fastView.ctx.__dash.renderModule("overview");
+const fastBadge = fastView.els.nav.innerHTML.match(/<button[^>]*data-m="overview"[^>]*>[\s\S]*?<\/button>/);
+if (!fastBadge || fastBadge[0].includes('class="nv-n s-bad"') || fastBadge[0].includes('class="nv-n s-warn"'))
+  throw new Error(`overview counted recovered or 30-day metrics: ${fastBadge && fastBadge[0]}`);
+const fastHealth = fastView.ctx.__dash.MODULES.find(m=>m.id==="health").render(fastData);
+if (!fastHealth.includes("30 天趋势") || !fastHealth.includes("delivery.revert_rate_30d_pct") ||
+    !fastHealth.includes("长窗 UNHEALTHY") || !fastHealth.includes("1h 10"))
+  throw new Error("health view must show the red long value beside the green one-hour reading and isolate 30-day data");
+
 // 2. 每一块都"数据不可用"：分支都能画，且带原因
 const broken = {front: {errors: {stages: "HTTP 502", advisor: "lib.sh missing", advisor_loop: "units.json unreadable", triage: "ledger gone", release: "git failed"}}};
 const b = renderAll("unavailable", broken).out;

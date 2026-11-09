@@ -355,6 +355,8 @@ printf '%s\n' "{\"units\":[{\"id\":\"fp-archived\",\"stage\":\"closed\",\"histor
 : > "$f/audit.jsonl"
 python3 "$script_dir/node_health.py" --runtime "$a" --audit "$f/audit.jsonl" --hours 5 --now "$now" --json "$a/node-health.json" >/dev/null \
   || fail "node_health --json failed"
+jq -e '(.metrics | length > 0) and (.metrics | all(has("value_1h") and has("trend_1h") and has("short_window"))) and (.trend_metrics | type == "array")' "$a/node-health.json" >/dev/null \
+  || fail "node_health scorecard omitted short-window fields or trend panel data"
 run >/dev/null
 dash_fp="$(sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -c '.efficiency.review_first_pass')"
 nh_fp="$(jq -c '.metrics[] | select(.id == "review.first_pass_pct") | .value' "$a/node-health.json")"
@@ -363,4 +365,12 @@ nh_fp="$(jq -c '.metrics[] | select(.id == "review.first_pass_pct") | .value' "$
 python3 -c 'import sys; assert abs(float(sys.argv[1]) - 100 * 2 / 3) < 1e-6, sys.argv[1]' "$nh_fp" \
   || fail "first_pass $nh_fp is not 2 of 3 counted"
 echo "dashboard first_pass equals node_health on one fixture: PASS"
+
+# The generator keeps 30-day standards in a separate trend-panel data list.
+cat > "$a/node-health.json" <<'JSON'
+{"generated":"2026-11-07T12:00:00Z","metrics":[{"id":"delivery.revert_rate_30d_pct","node":"delivery","desc":"revert rate 30 d","meaning":"reverts","value":12,"value_1h":4,"trend_1h":{"delta":-2,"direction":"down"},"short_window":"1h","healthy":5,"unhealthy":10,"higher_is_better":false,"status":"UNHEALTHY","source":"release records"}],"trend_metrics":[{"id":"delivery.revert_rate_30d_pct","node":"delivery","desc":"revert rate 30 d","meaning":"reverts","value":12,"value_1h":4,"trend_1h":{"delta":-2,"direction":"down"},"short_window":"1h","healthy":5,"unhealthy":10,"higher_is_better":false,"status":"UNHEALTHY","source":"release records"}]}
+JSON
+run >/dev/null
+sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e '.standards.trend_metrics | length == 1 and .[0].id == "delivery.revert_rate_30d_pct" and .[0].value > .[0].unhealthy' >/dev/null \
+  || fail "30-day metric did not reach the dashboard trend-panel data"
 echo "dashboard-front.test.sh: PASS"
