@@ -192,7 +192,7 @@ BELL_OUT="$(env HOME="$bell_home" AGENT_HOME="$bell_agent" ZF_CONFIG_ROOT="$bell
 check "every fallback decision still selects the Sonnet reviewer" \
   "$(grep -c '^claude:claude-sonnet-4-5:high$' <<<"$BELL_OUT")" "5"
 check "all five decisions logged the glm cli missing fallback" \
-  "$(grep -c 'review-family fallback .*reviewer=sonnet reason=glm cli missing' "$bell/stderr.log")" "5"
+  "$(grep -c 'review-family fallback .*reviewer=claude-sonnet-4-5 reason=glm cli missing' "$bell/stderr.log")" "5"
 check "the bell filed exactly once" \
   "$(grep -c 'glm fallback bell: filed glm-cli-fallback incident after 3 consecutive' "$bell/stderr.log")" "1"
 check "exactly one issue create reached gh" "$(grep -c '^issue create' "$FAKE_GH_LOG")" "1"
