@@ -47,6 +47,8 @@ got="$(ZF_BREW_PREFIXES="$t/arm" run darwin24.0 "$t/fakebin:$t/arm/bin:/usr/bin"
 # Defaults and overrides.
 [[ "$(ZF_BREW_PREFIXES="$t/arm" run darwin24.0 "$base" 'printf "%s %s %s" "$ZF_OS" "$ZF_RUNNER" "$ZF_TIMERS"')" == 'darwin pidfile launchd' ]] || fail 'macOS defaults wrong'
 [[ "$(ZF_RUNNER=systemd ZF_BREW_PREFIXES="$t/arm" run darwin24.0 "$base" 'printf %s "$ZF_RUNNER"')" == systemd ]] || fail 'explicit ZF_RUNNER lost on macOS'
+explicit_engine="$t/caller-engine"
+[[ "$(ZF_ENGINE_DIR="$explicit_engine" ZF_BREW_PREFIXES="$t/arm" run darwin24.0 "$base" 'printf %s "$ZF_ENGINE_DIR"')" == "$explicit_engine" ]] || fail 'explicit ZF_ENGINE_DIR lost on macOS'
 [[ "$(ZF_BREW_PREFIXES="$t/arm" run darwin24.0 "$base" 'env | grep -c "^ZF_OS="')" == 1 ]] || fail 'ZF_OS not exported on macOS'
 
 # platform_require: passes where the tools exist, names every missing one, exits 78, prints the install command.
