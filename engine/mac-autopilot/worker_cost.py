@@ -42,6 +42,7 @@ from usage_reader import Usage, claude_unit_responses, codex_stream_facts, zcode
 LOG_RE = re.compile(r"^(impl|review|land|triage|supervise)-(.+?)-(\d{8}T\d{6})Z\.worker\.log$")
 UNIT_KEY_RE = re.compile(r"-(?:selfcheck[0-9]+-)?(?:fix|r)$")
 FOOTER_RE = re.compile(r"tokens used\n([\d,]+)")
+NO_BACKEND_RE = re.compile(r"^worker: .*no backend process started\b", re.IGNORECASE | re.MULTILINE)
 # build_codex_command's reasons for not taking the preferred path; initial, no-recorded-session,
 # no-new-failure and session-too-large are ordinary dispatches, not switches.
 FAILOVER_REASONS = frozenset(("provider-changed", "model-changed", "session-files-missing",
@@ -105,6 +106,66 @@ def _usage_delta(last, baseline):
                  cache_write=_counter_delta(last.cache_write, baseline.cache_write))
 
 
+def _pre_backend_exit(worker, text):
+    rc = worker.get("rc", worker.get("exit_code"))
+    try:
+        rc = int(rc)
+    except (TypeError, ValueError):
+        rc = None
+    pid = worker.get("backend_run_pid")
+    no_pid = "backend_run_pid" in worker and not (str(pid).isdigit() and int(pid) > 0)
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and record and record.get("type") != "pipeline.execution":
+            return False
+    return rc == 75 or no_pid or bool(NO_BACKEND_RE.search(text))
+
+
+def _snapshot_usage(value):
+    if not isinstance(value, dict):
+        return None
+    input_tokens = value.get("input_tokens", value.get("inputTokens"))
+    cached = value.get("cached_input_tokens", value.get("cacheReadTokens"))
+    output = value.get("output_tokens", value.get("outputTokens"))
+    if type(input_tokens) is not int or input_tokens < 0 or type(output) is not int or output < 0:
+        return None
+    reasoning = value.get("reasoning_output_tokens", value.get("reasoningTokens"))
+    cache_write = value.get("cache_write_input_tokens", value.get("cacheWriteTokens"))
+    return Usage(input_tokens, cached if type(cached) is int and 0 <= cached <= input_tokens else None, output,
+                 reasoning=reasoning if type(reasoning) is int and reasoning >= 0 else None,
+                 cache_write=cache_write if type(cache_write) is int and cache_write >= 0 else None)
+
+
+def _event_usage_snapshots(text):
+    codex, zcode = None, Usage(0, 0, 0)
+    zcode_seen = zcode_incomplete = False
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        if record.get("type") == "turn.completed":
+            codex = _snapshot_usage(record.get("usage") or payload.get("usage")) or codex
+        if record.get("type") == "event_msg" and isinstance(payload, dict) and payload.get("type") == "token_count":
+            codex = _snapshot_usage((payload.get("info") or {}).get("total_token_usage")) or codex
+        if isinstance(payload, dict) and payload.get("type") == "model_request_completed":
+            snapshot = _snapshot_usage(payload.get("usage"))
+            if snapshot is None:
+                zcode_incomplete = True
+            else:
+                zcode += snapshot
+                zcode_seen = True
+    return codex, zcode if zcode_seen and not zcode_incomplete else None
+
+
 def measure(path, worker):
     """One worker log's facts: phase, unit key, wall clock, that invocation's own usage, failover.
 
@@ -148,12 +209,14 @@ def measure(path, worker):
                 text = source.read()
         except OSError:
             text = None
-    if text and ('"turn.completed"' in text or '"thread.started"' in text):
+    codex_snapshot, zcode_snapshot = _event_usage_snapshots(text or "")
+    if text and any(marker in text for marker in ('"turn.completed"', '"thread.started"', '"event_msg"', '"token_count"')):
         backend = "codex"
         json_stream = True
         marker = _marker(text)
         facts = codex_stream_facts(path)
-        session, last = facts["session_id"], facts["snapshots"][-1] if facts["snapshots"] else None
+        last = codex_snapshot or (facts["snapshots"][-1] if facts["snapshots"] else None)
+        session = facts["session_id"]
         if last is not None:
             # A resume stream's counters carry the whole thread: only the delta past the
             # dispatch baseline is this invocation. The mode comes from the log's own
@@ -180,7 +243,9 @@ def measure(path, worker):
         try:
             usage, backend = zcode_stream_usage(path), "zcode"
         except Exception:
-            usage, backend = None, None
+            usage, backend = zcode_snapshot, "zcode" if zcode_snapshot is not None else None
+    if usage is None and footer is None and _pre_backend_exit(worker, text or ""):
+        usage = Usage(0, 0, 0)
     # workers.json trims old harvested rows; the dispatch marker is durable in the log and
     # carries the selected model for those rows. Prefer the live worker record when present.
     model = worker.get("model") or (marker or {}).get("model") or ""
