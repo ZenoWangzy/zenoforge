@@ -419,6 +419,25 @@ class Ledger(unittest.TestCase):
         self.assertIsNone(spend[6]["fresh"])  # a blended footer has no cache split
         self.assertIsNone(wc.ticket_bound([spend[6]["fresh"]]))  # cacheless history falls back
 
+    def efficiency_fixture(self, count, unknown, repairs=()):
+        at = (self.now - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        units = [{"id": f"issue-{i+1}", "issue": i+1, "stage": "merged", "history": [{"stage": "merged", "at": at}]} for i in range(count)]
+        rows = [{"unit": f"issue-{i+1}", "phase": "repair" if i in repairs else "implement", "backend": "codex", "model": "gpt-6-luna", "end": self.now, "minutes": 1, "usage": None if i in unknown else wc.Usage(100, 40, 10), "footer_tokens": None, "failover": False} for i in range(count)]
+        return units, rows
+
+    def test_token_efficiency_uses_measured_units_and_reports_run_coverage(self):
+        units, rows = self.efficiency_fixture(30, {29}, set(range(6)))
+        kpis = wc.token_efficiency_kpis(rows, units, self.now)
+        self.assertEqual((kpis["fresh_tokens_per_merged"], kpis["waste_pct"], kpis["repair_pct"]), (70, 0, 100*660/3190))
+        self.assertEqual(kpis["coverage_pct"], dict.fromkeys(("fresh_tokens_per_merged", "waste_pct", "repair_pct"), 96.7))
+        self.assertEqual(kpis["unknown_by"], "luna-no-footer:1")
+
+    def test_token_efficiency_is_no_data_below_95_percent_coverage(self):
+        units, rows = self.efficiency_fixture(20, {18, 19})
+        kpis = wc.token_efficiency_kpis(rows, units, self.now)
+        self.assertEqual(kpis["coverage_pct"], dict.fromkeys(("fresh_tokens_per_merged", "waste_pct", "repair_pct"), 90.0))
+        self.assertEqual((kpis["fresh_tokens_per_merged"], kpis["waste_pct"], kpis["repair_pct"]), (None, None, None))
+
 
 class Eval(unittest.TestCase):
     def setUp(self):
