@@ -266,18 +266,59 @@ unit_hard_escalated() { # unit JSON -> true after the two-repair cap or supervis
     <<<"$1" >/dev/null 2>&1
 }
 
+implement_family_has_other_reviewer() { # family -> 0 when review dispatch can select another family now
+  local family="$1" codex_identity glm_identity sonnet_identity cross other="" candidate candidate_family candidate_role reason first_reason=""
+  codex_identity="$(review_identity_for_model "$(model_tuple_field review 0)" "$(model_tuple_field review 1)" 2>/dev/null || true)"
+  glm_identity="$(review_identity_for_model "$(model_tuple_field review_cross 0)" "$(model_tuple_field review_cross 1)" 2>/dev/null || true)"
+  sonnet_identity="$(review_identity_for_model "$(model_tuple_field review_fallback 0)" "$(model_tuple_field review_fallback 1)" 2>/dev/null || true)"
+  case "$family" in
+    codex) cross="$glm_identity" ;; glm) cross="$codex_identity" ;;
+    claude)
+      cross="${glm_identity:-$codex_identity}"
+      case "$(review_identity_family "$cross" 2>/dev/null || true)" in glm) other="$codex_identity" ;; codex) other="$glm_identity" ;; esac
+      [[ "$other" == "$cross" ]] && other=""
+      ;;
+    *) IMPLEMENT_REVIEWER_REASON=review-config; return 1 ;;
+  esac
+  for candidate in "$cross" "$other" "$sonnet_identity"; do
+    candidate_family="$(review_identity_family "$candidate" 2>/dev/null || true)"; [[ -n "$candidate_family" && "$candidate_family" != "$family" ]] && candidate_role=review || continue
+    if [[ "$candidate_family" == claude ]]; then candidate_role=review_fallback; [[ "$family" != claude && "$candidate" =~ ^claude:claude-(haiku|sonnet)- ]] || continue; fi
+    if review_identity_available "$candidate" "$candidate_role" "$family"; then IMPLEMENT_REVIEWER_REASON=""; return 0; fi
+    reason="$(review_identity_unavailable_reason "$candidate" "$candidate_role")"; [[ -z "$first_reason" && -n "$reason" ]] && first_reason="${reason// /-}"
+  done
+  IMPLEMENT_REVIEWER_REASON="${first_reason:-review-config}"
+  return 1
+}
+
+implement_route_family_reviewable() { # family -> log the skip and alert head-watch once per family/hour
+  local family="${1/zcode/glm}" reason
+  zcode_paced implement_family_has_other_reviewer "$family" && return 0
+  if [[ " ${IMPLEMENT_ROUTE_SKIPS:-} " != *" $family "* ]]; then
+    IMPLEMENT_ROUTE_SKIPS="${IMPLEMENT_ROUTE_SKIPS:-} $family"
+    reason="${IMPLEMENT_REVIEWER_REASON:-review-config}"; reason="${reason// /-}"
+    say "implement-route unreviewable family=$family reason=$reason"
+    mkdir -p "$AGENT_HOME/logs"
+    grep -F "${STAMP:0:13}" "$AGENT_HOME/logs/head-watch.alerts" 2>/dev/null | grep -Fq "IMPLEMENT-ROUTE-UNREVIEWABLE family=$family " \
+      || printf '%s IMPLEMENT-ROUTE-UNREVIEWABLE family=%s reason=%s\n' "$STAMP" "$family" "$reason" >> "$AGENT_HOME/logs/head-watch.alerts"
+  fi
+  return 1
+}
+
 pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota failover
-  local u="$1" assigned actual preferred reason issue hash bucket zcode_share claude_share codex_share sum status arbiter=false
+  local u="$1" assigned actual preferred reason issue hash bucket zcode_share claude_share codex_share sum=0 status arbiter=false
+  local route_start route_candidate route_share selected="" IMPLEMENT_ROUTE_SKIPS=""
+  local -a route_order=(zcode claude codex)
   if unit_hard_escalated "$u"; then
     hard_implementer_fields || { say "no hard implementation identity available"; return 1; }
     actual="$PICK_PROVIDER"
     [[ "$(command jq -r '.hard_escalated // false' <<<"$u")" == true ]] || arbiter=true
-    provider_runtime_ready "$actual" "$PICK_MODEL" production "$u" || {
-      if [[ "$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")" != 0 ]] && pick_claude_implementer; then
+    implement_route_family_reviewable "$actual" && provider_runtime_ready "$actual" "$PICK_MODEL" production "$u" || {
+      if [[ "$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")" != 0 ]] \
+          && implement_route_family_reviewable claude && pick_claude_implementer; then
         PICK_ROUTE_PROVIDER=claude; PICK_HARD=true; PICK_REASON=hard-fallback-claude
         return 0
       fi
-      if pick_zcode_implementer "$u"; then
+      if implement_route_family_reviewable glm && pick_zcode_implementer "$u"; then
         PICK_ROUTE_PROVIDER=zcode; PICK_HARD=true; PICK_REASON=hard-fallback-zcode
         return 0
       fi
@@ -292,19 +333,17 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
   assigned="$(jqf -r '.implement_route_provider // empty' <<<"$u")"
   actual="$(jqf -r '.implement_provider // empty' <<<"$u")"
   claude_share="$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")"  # absent = off: an engine upgrade alone never routes to Claude
+  zcode_share="$(jqf -r '.models.implement_share.zcode // 0' <<<"$CFG")"
+  codex_share="$(jqf -r '.models.implement_share.codex // 100' <<<"$CFG")"
+  if [[ "$zcode_share" =~ ^[0-9]+$ && "$claude_share" =~ ^[0-9]+$ && "$codex_share" =~ ^[0-9]+$ ]] \
+      && (( zcode_share <= 100 && claude_share <= 100 && codex_share <= 100 )); then
+    sum=$((zcode_share + claude_share + codex_share))
+  fi
   if [[ "$assigned" != codex && "$assigned" != zcode && "$assigned" != claude ]]; then
     if [[ "$actual" == codex || "$actual" == zcode || "$actual" == claude ]]; then
       assigned="$actual"
       reason="sticky-$actual"
     else
-      zcode_share="$(jqf -r '.models.implement_share.zcode // 0' <<<"$CFG")"
-      codex_share="$(jqf -r '.models.implement_share.codex // 100' <<<"$CFG")"
-      if [[ "$zcode_share" =~ ^[0-9]+$ && "$claude_share" =~ ^[0-9]+$ && "$codex_share" =~ ^[0-9]+$ ]] \
-          && (( zcode_share <= 100 && claude_share <= 100 && codex_share <= 100 )); then
-        sum=$((zcode_share + claude_share + codex_share))
-      else
-        sum=0
-      fi
       if (( sum == 100 )); then
         issue="$(jqf -r '.issue // .id // empty' <<<"$u")"
         hash="$(printf '%s' "$issue" | cksum | awk '{print $1 % 100}')"
@@ -325,36 +364,51 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
     preferred="$actual"
     reason="sticky-$actual"
   fi
+  case "$preferred" in
+    zcode) route_start=0 ;; claude) route_start=1 ;; codex) route_start=2 ;;
+    *) say "no implementation family with an eligible other-family reviewer"; return 1 ;;
+  esac
+  local -A route_shares=([zcode]="$zcode_share" [claude]="$claude_share" [codex]="$codex_share")
+  for route_candidate in "${route_order[@]:route_start}" "${route_order[@]:0:route_start}"; do
+    if [[ "$route_candidate" != "$preferred" ]]; then
+      (( sum == 100 )) || continue
+      route_share="${route_shares[$route_candidate]}"
+      [[ "$route_share" =~ ^[0-9]+$ ]] && (( route_share > 0 )) || continue
+    fi
+    if implement_route_family_reviewable "$route_candidate"; then selected="$route_candidate"; break; fi
+  done
+  [[ -n "$selected" ]] || { say "no implementation family has an eligible other-family reviewer"; return 1; }
+  [[ "$selected" == "$preferred" ]] || { assigned="$selected"; preferred="$selected"; reason="reviewer-fallback-$selected"; }
   PICK_ROUTE_PROVIDER="$assigned"; PICK_HARD=false
 
   if [[ "$preferred" == claude && "$claude_share" != 0 ]]; then
     if pick_claude_implementer; then PICK_REASON="$reason"; return 0; fi
     if provider_quota_exhausted claude || cooling claude; then reason=quota-fallback-claude-to-codex
     else reason=claude-unavailable-fallback-to-codex; fi
-    if pick_codex_work_identity "$u"; then PICK_REASON="$reason"; return 0; fi
+    if implement_route_family_reviewable codex && pick_codex_work_identity "$u"; then PICK_REASON="$reason"; return 0; fi
   elif [[ "$preferred" == claude ]]; then
     # Share 0 is the kill switch: sticky Claude units go to Codex, or ZCode over its stop (a fresh session; repair never resumes across providers).
     reason=claude-share-off-codex
-    pick_codex_work_identity "$u" && { PICK_REASON="$reason"; return 0; }
-    pick_zcode_implementer "$u" && { PICK_REASON=claude-share-off-zcode; return 0; }
+    implement_route_family_reviewable codex && pick_codex_work_identity "$u" && { PICK_REASON="$reason"; return 0; }
+    implement_route_family_reviewable glm && pick_zcode_implementer "$u" && { PICK_REASON=claude-share-off-zcode; return 0; }
   elif [[ "$preferred" == zcode ]]; then
     status="$(zcode_quota_status)"
     if pick_zcode_implementer "$u"; then PICK_REASON="$reason"; return 0; fi
     if [[ "$status" == exhausted ]]; then reason=quota-fallback-zcode-to-codex
     elif [[ "$status" == unknown ]]; then reason=quota-unknown-zcode-to-codex
     else reason=zcode-unavailable-fallback-to-codex; fi
-    if pick_codex_work_identity "$u"; then PICK_REASON="$reason"; return 0; fi
+    if implement_route_family_reviewable codex && pick_codex_work_identity "$u"; then PICK_REASON="$reason"; return 0; fi
   else
     if pick_codex_work_identity "$u"; then PICK_REASON="$reason"; return 0; fi
     status="$(zcode_quota_status)"
-    if pick_zcode_implementer "$u"; then
+    if implement_route_family_reviewable glm && pick_zcode_implementer "$u"; then
       if provider_quota_exhausted codex; then reason=quota-fallback-codex-to-zcode
       else reason=codex-unavailable-fallback-to-zcode; fi
       PICK_REASON="$reason"; return 0
     fi
     [[ "$status" == exhausted ]] || say "zcode implement route unavailable status=$status"
   fi
-  if [[ "$claude_share" != 0 ]] && pick_claude_implementer; then PICK_REASON=quota-fallback-to-claude; return 0; fi
+  if [[ "$claude_share" != 0 ]] && implement_route_family_reviewable claude && pick_claude_implementer; then PICK_REASON=quota-fallback-to-claude; return 0; fi
   say "no implementation provider available (quota, snapshot freshness, or runtime/config unavailable)"
   return 1
 }
