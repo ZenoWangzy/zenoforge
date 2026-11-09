@@ -1020,7 +1020,6 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/notify.sh"
 IMPLEMENT_FAILURE_STREAK=0
 
 # Every pipeline child sources lib.sh; disabled profiling needs no helper file.
-ZF_PIPELINE_CALL_PROFILE_ENABLED=0
 ZF_CALL_PROFILE_ENABLED=0
 if [[ -v ZF_CALL_PROFILE_FILE || -v ZF_PIPELINE_CALL_PROFILE_FILE ]]; then
   # shellcheck source=./call-profile.sh

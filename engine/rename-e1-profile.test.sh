@@ -33,6 +33,19 @@ EOF
 chmod +x "$fake_bin/gh" "$fake_bin/date" "$fake_bin/systemd-run" "$test_env_root/stage"
 export PATH="$fake_bin:$PATH"
 
+default_profile_flags() (
+  unset ZF_CALL_PROFILE_FILE ZF_PIPELINE_CALL_PROFILE_FILE ZF_CALL_PROFILE_ENABLED ZF_PIPELINE_CALL_PROFILE_ENABLED
+  source "$SCRIPT_DIR/lib.sh"
+  PATH="$fake_bin:$PATH"
+  export PATH
+  gh issue list --repo fixture --limit 1 >/dev/null
+)
+default_profile_flags 2> "$test_env_root/default-flags.err"
+if grep -q 'legacy ZF_PIPELINE_CALL_PROFILE_ENABLED read by transport' "$test_env_root/default-flags.err"; then
+  echo 'not ok - default profiling state was reported as a legacy read' >&2; exit 1
+fi
+echo 'ok - default profiling state does not report a legacy flag read'
+
 profile_case() (
   local name="$1" file_case="$2" flag_case="$3" expected="$4"
   local dest="$AGENT_HOME/secret-profile-target-$name.tsv"
