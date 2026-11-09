@@ -3759,6 +3759,7 @@ exec "${args[@]:$script}"
 EOF
     chmod +x "$TEST_BIN/systemd-run"
     eval "$(sed -n "/^dispatch() {/,/^}/p" "$ENV_FAULT_LIB_DIR/issue-pipeline.sh")"
+    SCRIPT_DIR="$ENV_FAULT_LIB_DIR"
     eval "$(declare -f quarantine_mark_stage_dispatch_canaries | sed -e s/quarantine_mark_stage_dispatch_canaries/real_quarantine_mark_stage_dispatch_canaries/g)"
     MARK_LOG="$AGENT_HOME/mark-calls"
     quarantine_mark_stage_dispatch_canaries() { printf "%s\n" "$1" >> "$MARK_LOG"; real_quarantine_mark_stage_dispatch_canaries "$1" "$((tq + 16 * 60))"; }
