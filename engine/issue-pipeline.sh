@@ -785,11 +785,18 @@ dispatch_release_batch() {
   fi
 }
 
+# An admission deferral reaches scheduler.log (head-watch reads it); the journal keeps its own copy.
+admission_deferral_log() { # <batch kind> <launch stderr file> <issue ids...>
+  local reason issues="${*:3}"
+  reason="$(sed -n 's/^.*execution admission deferred: //p' "$2" | tail -n 1)"
+  maintenance_scheduler_log "$1 batch admission deferred reason=${reason:-unknown} issues=${issues// /,}"
+}
+
 # A fresh batch receives this tick's filtered issue snapshot; a poll-only
 # batch keeps its persisted member list. Unit name still shares the advisor
 # capacity ledger.
 dispatch_advisor_batch() {
-  local script="" poll_only="${1:-0}" n budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status
+  local script="" poll_only="${1:-0}" n budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status launch_err
   local -a issue_ids=()
   if ! script="$(zf_advisor_batch_runner)"; then
     echo "issue-pipeline: advisor batch runner is invalid in advisor.json -- not dispatching" >&2
@@ -839,16 +846,22 @@ dispatch_advisor_batch() {
       return 75
     fi
   fi
+  launch_err="$(mktemp)"
   if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect \
     "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" \
     -p "RuntimeMaxSec=$ADVISOR_RUNTIME_MAX_SEC" \
-    "$script" $([ "$poll_only" = 1 ] && echo --poll-only) --scheduled "${issue_ids[@]}"; then
+    "$script" $([ "$poll_only" = 1 ] && echo --poll-only) --scheduled "${issue_ids[@]}" 2>"$launch_err"; then
+    cat -- "$launch_err" >&2
+    rm -f -- "$launch_err"
     if [ "${#issue_ids[@]}" -gt 0 ]; then
       pipeline_batch_claim_keep "$claim_owner" "$claim_unit" "${issue_ids[@]}" || return $?
     fi
     return 0
   else
     local launch_status=$?
+    cat -- "$launch_err" >&2
+    if [ "$launch_status" -eq 75 ]; then admission_deferral_log advisor "$launch_err" "${issue_ids[@]}"; fi
+    rm -f -- "$launch_err"
     if [ "${#issue_ids[@]}" -gt 0 ]; then
       pipeline_batch_claim_drop "$claim_owner" "${issue_ids[@]}"
     fi
@@ -865,7 +878,7 @@ dispatch_advisor_batch() {
 # One transient unit carries the selected issue IDs; the batch wrapper owns
 # one Codex call and isolates result application per issue.
 dispatch_triage_batch() {
-  local script="$ZF_ENGINE_DIR/run-triage-batch.sh" active_tmp="" issues_json="" n memory_max oom_count consume_status budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status
+  local script="$ZF_ENGINE_DIR/run-triage-batch.sh" active_tmp="" issues_json="" n memory_max oom_count consume_status budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status launch_err
   local -a issue_ids=() memory_args=() result_args=()
   for n in "$@"; do
     [[ "$n" =~ ^[0-9]+$ ]] || continue
@@ -924,14 +937,20 @@ dispatch_triage_batch() {
       return 1
     fi
   fi
+  launch_err="$(mktemp)"
   if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-triage-batch --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE \
     -p "RuntimeMaxSec=$TRIAGE_RUNTIME_MAX_SEC" \
     "${memory_args[@]}" "${result_args[@]}" \
-    "$script" --scheduled "${issue_ids[@]}"; then
+    "$script" --scheduled "${issue_ids[@]}" 2>"$launch_err"; then
+    cat -- "$launch_err" >&2
+    rm -f -- "$launch_err"
     pipeline_batch_claim_keep "$claim_owner" "$claim_unit" "${issue_ids[@]}"
   else
     local launch_status=$?
+    cat -- "$launch_err" >&2
+    if [ "$launch_status" -eq 75 ]; then admission_deferral_log triage "$launch_err" "${issue_ids[@]}"; fi
+    rm -f -- "$launch_err"
     [ -z "$active_tmp" ] || rm -f "$AGENT_HOME/triage-batch-active.json"
     pipeline_batch_claim_drop "$claim_owner" "${issue_ids[@]}"
     if [ "$launch_status" -eq 75 ]; then
@@ -2570,7 +2589,9 @@ if [ "${#TRIAGE_BATCH_IDS[@]}" -eq 0 ]; then
   for triage_skip_reason in "${!TRIAGE_SKIPS[@]}"; do
     TRIAGE_SKIP_SUMMARY+="${TRIAGE_SKIP_SUMMARY:+,}$triage_skip_reason:${TRIAGE_SKIPS[$triage_skip_reason]}"
   done
-  echo "issue-pipeline: triage batch empty: needs_triage=$(jq 'length' <<< "$NEEDS_TRIAGE_JSON") ordered=$TRIAGE_ORDERED_COUNT selectable=$(wc -w <<< "$NEEDS_TRIAGE_IDS") measure=$(wc -w <<< "${READY_MEASURE_IDS:-}") slots=$triage_slots batch_active=$TRIAGE_BATCH_ACTIVE query_failed=$TRIAGE_CANDIDATE_QUERY_FAILED/$READY_MEASURE_QUERY_FAILED cut=$TRIAGE_SELECT_CUT skips=${TRIAGE_SKIP_SUMMARY:-none}" >&2
+  triage_empty_line="triage batch empty: needs_triage=$(jq 'length' <<< "$NEEDS_TRIAGE_JSON") ordered=$TRIAGE_ORDERED_COUNT selectable=$(wc -w <<< "$NEEDS_TRIAGE_IDS") measure=$(wc -w <<< "${READY_MEASURE_IDS:-}") slots=$triage_slots batch_active=$TRIAGE_BATCH_ACTIVE query_failed=$TRIAGE_CANDIDATE_QUERY_FAILED/$READY_MEASURE_QUERY_FAILED cut=$TRIAGE_SELECT_CUT skips=${TRIAGE_SKIP_SUMMARY:-none}"
+  echo "issue-pipeline: $triage_empty_line" >&2
+  maintenance_scheduler_log "$triage_empty_line"
 fi
 if [ "${#TRIAGE_BATCH_IDS[@]}" -gt 0 ]; then
   TRIAGE_DISPATCH_IDS=()
