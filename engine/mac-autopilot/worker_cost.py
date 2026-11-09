@@ -483,7 +483,7 @@ def token_efficiency_kpis(rows, units, now):
 
     cohort_ids = merged_ids | waste_ids
     merged_tokens = sum(unit_cost.get(unit_id, {}).get("tokens", 0) for unit_id in merged_ids)
-    merged_raw = sum(unit_cost.get(unit_id, {}).get("raw", 0) for unit_id in merged_ids)
+    merged_raw = merged_tokens
     merged_fresh_known = sum(unit_cost.get(unit_id, {}).get("fresh", 0) for unit_id in merged_ids)
     measured_merged = sum(
         unit_id in unit_cost and unit_cost[unit_id]["fresh_known"] for unit_id in merged_ids
@@ -517,7 +517,7 @@ def token_efficiency_kpis(rows, units, now):
         "merged_fresh_measured_units": measured_merged,
         "fresh_tokens_per_merged": merged_fresh_known / merged_count if merged_fresh_complete else None,
         "merged_raw_tokens": merged_tokens,
-        "raw_tokens_per_merged": merged_tokens / merged_count if merged_count else None,
+        "raw_tokens_per_merged": merged_raw / merged_count if merged_count else None,
         "waste_units": len(waste_ids),
         "waste_tokens": waste_tokens,
         "window_tokens": window_tokens,
@@ -531,7 +531,7 @@ def token_efficiency_kpis(rows, units, now):
         "unattributed": {
             "ledger_keys": unattributed_count,
             "tokens": sum(item.get("tokens") or 0 for item in unattributed),
-            "raw_tokens": sum(item.get("raw") or 0 for item in unattributed),
+            "raw_tokens": sum(item.get("tokens") or 0 for item in unattributed),
             "fresh_tokens": unattributed_fresh if unattributed_fresh_known == unattributed_count else None,
             "fresh_measured_keys": unattributed_fresh_known,
         },

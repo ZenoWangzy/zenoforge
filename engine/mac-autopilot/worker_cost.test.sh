@@ -152,7 +152,7 @@ cat > "$token_a/units-archive.json" <<JSON
  {"stage":"review-request-changes","at":"$review_end"},{"stage":"review-approve","at":"$review_end"},{"stage":"merged","at":"$review_end"}]}]}
 JSON
 token_logs=()
-token_ids=(cccccccc-0000-0000-0000-000000000001 cccccccc-0000-0000-0000-000000000002 cccccccc-0000-0000-0000-000000000003 cccccccc-0000-0000-0000-000000000004 cccccccc-0000-0000-0000-000000000005 cccccccc-0000-0000-0000-000000000006)
+token_ids=(cccccccc-0000-0000-0000-000000000001 cccccccc-0000-0000-0000-000000000002 cccccccc-0000-0000-0000-000000000003 cccccccc-0000-0000-0000-000000000004 cccccccc-0000-0000-0000-000000000006)
 write_token_log() {
   local name="$1" session_id="$2" input="$3" cached="$4" output="$5"
   printf '{"type":"thread.started","thread_id":"%s"}\n{"type":"turn.completed","usage":{"input_tokens":%s,"cached_input_tokens":%s,"output_tokens":%s}}\n' \
@@ -169,8 +169,10 @@ write_token_log "impl-issue-7101-${tok_stamp_1}Z.worker.log" "${token_ids[0]}" 1
 write_token_log "impl-issue-7101-fix-${tok_stamp_2}Z.worker.log" "${token_ids[1]}" 500 100 100
 write_token_log "impl-7102-${tok_stamp_3}Z.worker.log" "${token_ids[2]}" 2000 500 200
 write_token_log "impl-issue-7103-fix-${tok_stamp_4}Z.worker.log" "${token_ids[3]}" 1000 500 100
-write_token_log "impl-unmatched-fixture-${tok_stamp_5}Z.worker.log" "${token_ids[4]}" 40 5 10
-write_token_log "impl-issue-7104-${tok_stamp_6}Z.worker.log" "${token_ids[5]}" 9000000 8900000 100000
+unmatched_log="impl-unmatched-fixture-${tok_stamp_5}Z.worker.log"
+printf 'tokens used\n50\n' > "$token_sup/$unmatched_log"
+token_logs+=("$unmatched_log")
+write_token_log "impl-issue-7104-${tok_stamp_6}Z.worker.log" "${token_ids[4]}" 9000000 8900000 100000
 jq -n --arg a "${token_logs[0]}" --arg b "${token_logs[1]}" --arg c "${token_logs[2]}" \
   --arg d "${token_logs[3]}" --arg e "${token_logs[4]}" --arg f "${token_logs[5]}" \
   '{workers:[
@@ -210,6 +212,7 @@ jq -e '
   and ((.summary.token_efficiency.repair_pct - (100 * 1700 / 5100) | abs) < 0.0001)
   and .summary.token_efficiency.unattributed.ledger_keys == 1
   and .summary.token_efficiency.unattributed.tokens == 50
+  and .summary.token_efficiency.unattributed.raw_tokens == 50
   and .summary.tokens_per_merged == 1500
   and .summary.tokens_per_merged != (.summary.real_daily_tokens / .summary.merged)' \
   <<<"$token_dashboard" >/dev/null \
