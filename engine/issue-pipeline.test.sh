@@ -2565,6 +2565,49 @@ assert_eq 'an expired hold lets the advisor leg dispatch as before' 1 "$expired_
 assert_eq 'an expired hold logs nothing' 0 "$(wc -l < "$HOLD_HOME/held.log")"
 assert_eq 'the held gate precedes every advisor dispatch call in the leg' yes \
   "$(gate_line="$(grep -n '^if advisor_held_codex_unavailable; then' "$PIPELINE_SRC" | cut -d: -f1)"; pending_line="$(grep -n '^    advisor_dispatch_pending_job_pool$' "$PIPELINE_SRC" | cut -d: -f1)"; [ -n "$gate_line" ] && [ -n "$pending_line" ] && [ "$gate_line" -lt "$pending_line" ] && echo yes || echo no)"
+# Hold time is not spent: a verdict's age, a job's deadline and a job's age all subtract the recorded hold, and the first
+# tick after a hold charges it. The unit-stopped resume is the path that times a job out; it must restart, not time out.
+CODEX_UNAVAILABLE_HOLD_LEDGER="$HOLD_HOME/held.ledger"
+CODEX_UNAVAILABLE_TICK_FILE="$HOLD_HOME/tick"
+eval "$(sed -n '/^codex_hold_overlap() {/,/^}/p' "$SCRIPT_DIR/lib.d/codex-budget.sh")"
+eval "$(sed -n '/^codex_unavailable() {/p' "$SCRIPT_DIR/lib.d/codex-budget.sh")"
+eval "$(sed -n '/^advisor_hold_clock() {/,/^}/p; /^advisor_pending_verdict_age_seconds() {/,/^}/p; /^advisor_stored_verdict_disposition() {/,/^}/p' "$PIPELINE_SRC")"
+eval "$(sed -n '/^web_advisor_provider_resume_job_if_stopped() {/,/^}/p' "$SCRIPT_DIR/providers/web-advisor-provider.sh")"
+ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS=43200
+WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS=3600
+ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX=zf
+JOBS="$HOLD_HOME/jobs"; mkdir -p "$JOBS/job-1"; : > "$JOBS/job-1/question.txt"
+WEB_ADVISOR_PROVIDER_JOB_DIR="$JOBS"
+systemctl() { return 1; }
+web_advisor_provider_start_job_unit() { echo restarted > "$HOLD_HOME/restarted"; }
+DISPATCH=$(( $(date +%s) - 3700 ))
+printf '%s\n' "$(( DISPATCH + 3600 ))" > "$JOBS/job-1/deadline"
+printf '%s %s\n' "$(( DISPATCH + 1000 ))" "$(( DISPATCH + 1600 ))" > "$CODEX_UNAVAILABLE_HOLD_LEDGER"  # 600 s of hold
+web_advisor_provider_resume_job_if_stopped job-1 || true
+assert_eq 'a job whose unit stopped during a ten-minute hold is restarted, not timed out' yes \
+  "$([ -f "$HOLD_HOME/restarted" ] && [ ! -f "$JOBS/job-1/done" ] && echo yes || echo no)"
+rm -f "$HOLD_HOME/restarted" "$CODEX_UNAVAILABLE_HOLD_LEDGER"
+web_advisor_provider_resume_job_if_stopped job-1 || true
+assert_eq 'without a recorded hold the same job is timed out (control)' 124 "$(cat "$JOBS/job-1/done" 2>/dev/null)"
+rm -f "$JOBS/job-1/done"
+printf '%s %s\n' "$(( DISPATCH + 1000 ))" "$(( DISPATCH + 1600 ))" > "$CODEX_UNAVAILABLE_HOLD_LEDGER"
+verdict_json="$(jq -nc --arg at "$(date -u -d "@$(( $(date +%s) - 43300 ))" +%Y-%m-%dT%H:%M:%SZ)" '{pending_advisor_verdict:{computed_at:$at}}')"
+printf '%s %s\n' "$(( $(date +%s) - 43300 ))" "$(( $(date +%s) - 43100 ))" > "$CODEX_UNAVAILABLE_HOLD_LEDGER"
+assert_eq 'a stored verdict older than 12 h by hold time alone is resumed, not discarded' resume \
+  "$(advisor_stored_verdict_disposition 1 "$verdict_json")"
+rm -f "$CODEX_UNAVAILABLE_HOLD_LEDGER"
+assert_eq 'the same stored verdict with no hold recorded is discarded (control)' discard-age \
+  "$(advisor_stored_verdict_disposition 1 "$verdict_json")"
+rm -f "$CODEX_UNAVAILABLE_TICK_FILE" "$CODEX_UNAVAILABLE_HOLD_LEDGER"
+printf '%s 0\n' "$(( $(date +%s) - 600 ))" > "$CODEX_UNAVAILABLE_TICK_FILE"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$CODEX_UNAVAILABLE_MARKER_FILE"
+clock_rc=0; advisor_hold_clock || clock_rc=$?
+assert_eq 'a tick that finds the hold charges the ten minutes since the last tick' 0 "$clock_rc"
+hold_s="$(codex_hold_overlap 0 9999999999)"
+assert_eq 'the charged hold is about ten minutes' yes "$([ "$hold_s" -ge 600 ] && [ "$hold_s" -le 602 ] && echo yes || echo no)"
+rm -f "$CODEX_UNAVAILABLE_MARKER_FILE"
+clock_rc=0; advisor_hold_clock || clock_rc=$?
+assert_eq 'the first tick after the hold ends still charges its last interval' 2 "$(wc -l < "$CODEX_UNAVAILABLE_HOLD_LEDGER")"
 rm -rf "$HOLD_HOME"
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL PASSED"

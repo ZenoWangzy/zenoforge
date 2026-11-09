@@ -2296,7 +2296,7 @@ advisor_pending_verdict_age_seconds() {
   computed_at="$(jq -r '.pending_advisor_verdict.computed_at // empty' <<< "$1" 2>/dev/null || true)"
   [ -n "$computed_at" ] || return 1
   epoch="$(agent_epoch -u "$computed_at" 2>/dev/null)" || return 1
-  echo $(( $(date +%s) - epoch ))
+  echo $(( $(date +%s) - epoch - $(codex_hold_overlap "$epoch" "$(date +%s)") ))
 }
 
 # advisor_stored_verdict_disposition <n> <state-json> -- prints "resume" when
@@ -2883,12 +2883,24 @@ advisor_held_codex_unavailable() {
   echo "advisor held: codex-unavailable-until $(date -u -d "@$until" +%Y-%m-%dT%H:%M:%SZ)" >&2
 }
 
+# advisor_hold_clock -- once per tick, before the stuck sweep: record the interval since the last tick in the hold ledger
+# when either end of it was held. Over-counts at most one tick at each edge, which only gives jobs more time.
+advisor_hold_clock() {
+  local now prev_at prev_held=0 held=0
+  now="$(date +%s)"
+  read -r prev_at prev_held < "$CODEX_UNAVAILABLE_TICK_FILE" 2>/dev/null || prev_at="$now"
+  codex_unavailable && held=1
+  if [ "$held" = 1 ] || [ "$prev_held" = 1 ]; then printf '%s %s\n' "$prev_at" "$now" >> "$CODEX_UNAVAILABLE_HOLD_LEDGER"; fi
+  printf '%s %s\n' "$now" "$held" > "$CODEX_UNAVAILABLE_TICK_FILE"
+}
+
 # One tick chooses exactly one web-advisor mode. Every fresh question, even a
 # one-ticket queue, uses one batch dialogue. Existing single jobs are polled;
 # stored verdicts resume through their one owning pool without a model call.
 # Deferred batch members lead the next batch (one dialogue asks all questions
 # at once). The stuck sweep is not a dispatch mode: it only signals, so it
 # runs regardless of which mode this tick landed in.
+advisor_hold_clock
 advisor_stored_verdict_stuck_sweep
 if advisor_held_codex_unavailable; then
   : # head's hold: no advisor dispatch, quarantine, canary or backoff; the line above is the record

@@ -54,7 +54,7 @@ web_advisor_provider_job_candidates() {
     case "$started_at" in
       ''|*[!0-9]*) continue ;;
     esac
-    if [ "$((now - started_at))" -gt "$WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS" ]; then
+    if [ "$((now - started_at - $(codex_hold_overlap "$started_at" "$now")))" -gt "$WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS" ]; then
       continue
     fi
     job_dir="$WEB_ADVISOR_PROVIDER_JOB_DIR/$job_id"
@@ -554,7 +554,8 @@ web_advisor_provider_resume_job_if_stopped() {
   if systemctl --user is-active --quiet "$unit" >/dev/null 2>&1; then return 0; fi
   [[ "$deadline" =~ ^[0-9]+$ ]] || return 0
   phase="$(jq -r '.phase // empty' "$job_dir/state.json" 2>/dev/null || true)"
-  if [ "$phase" != answered ] && [ "$(date +%s)" -ge "$deadline" ]; then
+  # The deadline is dispatch + timeout; hold time inside that window does not count against it.
+  if [ "$phase" != answered ] && [ "$(( $(date +%s) - $(codex_hold_overlap "$((deadline - WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS))" "$(date +%s)") ))" -ge "$deadline" ]; then
     printf 'web-advisor-provider advisor job %s answer deadline exceeded while its unit was stopped\n' "$job_id" >> "$job_dir/answer.err"
     printf '124\n' > "$job_dir/done.$$.tmp"
     mv "$job_dir/done.$$.tmp" "$job_dir/done"
@@ -740,7 +741,7 @@ reconcile_stale_web_advisor_provider_jobs() {
             case "$started_at" in
               ''|*[!0-9]*) continue ;;
             esac
-            age=$((now - started_at))
+            age=$((now - started_at - $(codex_hold_overlap "$started_at" "$now")))
             [ "$age" -gt "$WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS" ] || continue
             reason="job age ${age}s exceeds timeout ${WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS}s"
             ;;

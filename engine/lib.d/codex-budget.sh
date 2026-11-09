@@ -368,6 +368,12 @@ codex_unavailable_until() { # -> prints the hold's epoch while it is in force, e
   printf '%s\n' "$until"
 }
 codex_unavailable() { codex_unavailable_until >/dev/null; }
+# codex_hold_overlap <from> <to> -> seconds of recorded hold inside [from, to]; timers subtract it so a hold never spends them.
+codex_hold_overlap() {
+  local ledger="${CODEX_UNAVAILABLE_HOLD_LEDGER:-${AGENT_HOME:-$HOME/.zenoforge}/codex-unavailable-held.log}"
+  [ -f "$ledger" ] || { echo 0; return 0; }
+  awk -v f="$1" -v t="$2" '{ s = ($1 > f ? $1 : f); e = ($2 < t ? $2 : t); if (e > s) sum += e - s } END { print sum + 0 }' "$ledger"
+}
 
 # Weekly Codex stop, off by default: Codex credits carry on past the weekly limit, and a real refusal still sets the exhausted
 # marker. Set CODEX_WEEK_STOP_PCT, or CODEX_IMPLEMENT_STOP_PCT for implementation alone, to bring a stop back. The snapshot's
