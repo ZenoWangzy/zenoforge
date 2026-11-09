@@ -3817,7 +3817,7 @@ EOF
     # Trace requeue persistence, issue-pipeline launch, and scheduler bridge in one shell.
     now="$(date +%s)"; quarantine_open implement env:test-gate:requeue fixture 2 "$now" >/dev/null 2>&1; qf="$(quarantine_file implement)"
     jq --argjson now "$now" ".next_canary_at = \$now" "$qf" > "$qf.tmp" && mv "$qf.tmp" "$qf"
-    printf '%s\n' '{"attempts":0,"unit_memory_ooms":{},"run":{"conclusion":{}}}' > "$AGENT_HOME/state/932.json"
+    printf "%s\n" "{\"attempts\":0,\"unit_memory_ooms\":{},\"run\":{\"conclusion\":{}}}" > "$AGENT_HOME/state/932.json"
     STAGE_DISPATCH_CANARY_SCOPES=""; quarantine_stage_canary_reserve implement
     state_merge 932 ".run.conclusion.canary_reserved_scopes = \"$(quarantine_canary_scope_list_for_stage implement)\""
     quarantine_stage_canary_forget_stage implement; implement_runs_since_last_hold_lift() { IMPLEMENT_REPEAT_RUN_COUNT=0; }
