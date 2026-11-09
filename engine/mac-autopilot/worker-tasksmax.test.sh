@@ -124,8 +124,8 @@ reset_tick
 start_worker defaulted setsid
 grep -Fxq 'TasksMax=2000' "$SCOPE_CALLS" || fail 'missing config key did not use the 2000 default'
 stop_worker "$TEST_WORKER_PID" "$TEST_LAUNCHER_PID" "$TEST_CHILD_PID"
-[[ "$(jq -r '.engine.worker_tasks_max' "$script_dir/config.template.json")" == 2000 ]] \
-  || fail 'config.template.json does not set engine.worker_tasks_max to 2000'
+[[ "$(jq -r '.engine.worker_tasks_max' "$script_dir/config.template.json")" == 500 ]] \
+  || fail 'config.template.json does not set engine.worker_tasks_max to 500'
 printf '%s\n' 'PASS worker task limit defaults to 2000'
 
 worker_scope_systemd_run_path() { return 1; }

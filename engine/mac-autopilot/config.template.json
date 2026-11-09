@@ -4,7 +4,7 @@
   "tick_seconds": 120,
   "engine": {
     "canary_ticks": 2,
-    "worker_tasks_max": 2000,
+    "worker_tasks_max": 500,
     "mem_admission": {
       "calibrate": false,
       "estimates_mb": {
