@@ -101,7 +101,7 @@ CFG="$(jq '.models.implement_share={claude:0,codex:100,zcode:0}' <<<"$CFG")"; IM
 review_identity_available() { return 0; }
 pick_implementer '{"id":"sticky-zcode-zero-share","implement_provider":"zcode"}' || fail 'reviewable sticky ZCode had no route at share 0'
 [[ "$PICK_PROVIDER" == zcode && "$PICK_REASON" == sticky-zcode ]] || fail "reviewable sticky ZCode went to $PICK_PROVIDER/$PICK_REASON"
-review_identity_available() { [[ "$3" != glm ]]; }; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+codex_probe_ok() { return 1; }; review_identity_available() { [[ "$3" != glm ]]; }; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
 pick_implementer '{"id":"sticky-zcode-reviewer-fallback","implement_provider":"zcode"}' || fail 'unreviewable sticky ZCode had no Codex fallback'
 [[ "$PICK_PROVIDER" == codex && "$PICK_REASON" == reviewer-fallback-codex ]] || fail "reviewer fallback went to $PICK_PROVIDER/$PICK_REASON"
 
@@ -114,7 +114,6 @@ if codex_provider_recovery_probe_if_due codex:gpt-6-luna:max; then fail 'failed 
 if codex_provider_recovery_probe_if_due codex:gpt-6-luna:max; then fail 'held recovery probe was reported as a pass'; fi
 [[ "$probe_calls" == 1 ]] || fail 'failed recovery probe repeated before its next-due time'
 
-# Route reviewability must treat the recovery latch as read-only and never launch its bounded probe.
 route_probe_calls=0
 codex_provider_recovery_probe_if_due() { route_probe_calls=$((route_probe_calls+1)); return 1; }
 review_identity_available() {
