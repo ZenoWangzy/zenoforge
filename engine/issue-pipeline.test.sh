@@ -89,6 +89,7 @@ if [[ "${1:-}" == "--advisor-runner-only" ]]; then
   unset -f stage_unit_active
   guarded_write() { printf '<%s>\n' "$@" >> "$AGENT_HOME/advisor-runner-dispatch.args"; }
   release_batch_cadence_mark() { :; }
+  release_deployment_record_readable() { return 0; }
   eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p' "$PIPELINE_SRC")"
   RELEASE_RUNTIME_MAX_SEC=60
   dispatch_release_batch 4928 deadbeef
@@ -96,6 +97,8 @@ if [[ "${1:-}" == "--advisor-runner-only" ]]; then
     "$(grep -Fx "<$runner_target/scripts/release/run-release.sh>" "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
   assert_eq 'release dispatch carries the config root into its transient unit' yes \
     "$(grep -Fx "<ZF_CONFIG_ROOT=$runner_target/.zenoforge>" "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
+  assert_eq 'release unit counts the runner exit 75 as success, not a failed unit' yes \
+    "$(grep -Fx '<SuccessExitStatus=75>' "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
   [ "$FAILED" -eq 0 ] || exit 1
   echo 'issue-pipeline.test.sh: configured runners PASS'
   exit 0
@@ -1822,6 +1825,7 @@ run_batch_admission_case() (
   model_config_fault_blocked() { return 1; }
   consume_unit_memory_oom() { return 1; }
   state_read() { echo '{}'; }
+  release_deployment_record_readable() { return 0; }
   guarded_write() {
     if [ "$launch_status" -eq 0 ]; then printf 'unit-created\n'; fi
     return "$launch_status"
@@ -1901,14 +1905,38 @@ PRODUCTION_DEPLOYMENT_SHA_FN="$(sed -n '/^latest_production_deployment_sha() {/,
 mkdir -p "$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh"
 cat > "$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh/gh" <<'GH'
 #!/usr/bin/env bash
+[ "${FAKE_DEPLOYMENT_FAIL:-0}" != 1 ] || exit 1
 case "$2" in
   repos/*/deployments\?environment=production\&per_page=20)
+    [ "${FAKE_DEPLOYMENT_EMPTY:-0}" != 1 ] || { echo '[]'; exit 0; }
     jq -cn --arg sha "$FAKE_DEPLOYMENT_SHA" '[{id:1,sha:$sha,payload:{sha:$sha,images:{"example-admin":"sha256:test"},image_shas:{"example-admin":$sha}}}]' ;;
   repos/*/deployments/1/statuses) echo '[{"state":"success","created_at":"2026-10-24T00:00:00Z"}]' ;;
   *) echo "unexpected fake deployment API call: $*" >&2; exit 2 ;;
 esac
 GH
 chmod +x "$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh/gh"
+# The runner refuses with 75 when the production Deployment record is unreadable, so dispatch reads it first and
+# leaves the anchor pending. A record that already covers the batch still dispatches: the runner closes its tickets.
+run_release_predispatch_case() (
+  local status=0 sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf REPO=test/repo RELEASE_RUNTIME_MAX_SEC=60
+  PATH="$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh:$PATH"
+  eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p' "$PIPELINE_SRC")"
+  zf_release_runner() { echo /bin/true; }
+  release_batch_cadence_mark() { :; }
+  record_env_fault() { printf 'fault:%s\n' "$1"; }
+  guarded_write() { case " $* " in *" -p SuccessExitStatus=75 "*) echo unit-with-75 ;; *) echo unit-without-75 ;; esac; }
+  dispatch_release_batch 910101 "$sha" 2>/dev/null || status=$?
+  printf 'status:%s\n' "$status"
+)
+assert_eq 'release dispatch leaves the anchor pending when the Deployment record is unreadable' \
+  'status:75' "$(FAKE_DEPLOYMENT_SHA=x FAKE_DEPLOYMENT_FAIL=1 run_release_predispatch_case)"
+assert_eq 'release dispatch launches one unit when the Deployment record is older than the batch' \
+  $'unit-with-75\nstatus:0' "$(FAKE_DEPLOYMENT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run_release_predispatch_case)"
+assert_eq 'release dispatch still launches when the Deployment record already covers the batch' \
+  $'unit-with-75\nstatus:0' "$(FAKE_DEPLOYMENT_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb run_release_predispatch_case)"
+assert_eq 'release dispatch launches when no Deployment record exists yet' \
+  $'unit-with-75\nstatus:0' "$(FAKE_DEPLOYMENT_SHA=x FAKE_DEPLOYMENT_EMPTY=1 run_release_predispatch_case)"
 run_release_selection() (
   local issue_json="$1" state_issue="${2:-}" on_hold="${3:-}" label_rc="${4:-1}" released="${5:-}" deploy_blocked="${6:-1}" state_pr="${7:-910201}" fleet_issue="${8:-}" missing_pr_issue="${9:-}" slot_count="${10:-10}" invalid_pr_issue="${11:-}" invalid_ancestor_issue="${12:-}" stage_rc="${13:-0}" memory_rc="${14:-0}" active_issue="${15:-}" run_outcome="${16:-merged}" deploy_status="${17:-pending}" pipeline_system_issue="${18:-}" timing_wait_sha="${19:-}"
   if [[ "${RELEASE_CADENCE_TEST_NOW:-}" =~ ^[0-9]+$ ]]; then
