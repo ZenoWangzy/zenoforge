@@ -97,7 +97,11 @@ bell_ghbin="$bell/ghbin"
 bell_claude="$bell/claudebin"
 bell_cfg="$bell/cfg"
 bell_locks="$bell/issue-locks"
-mkdir -p "$bell_home" "$bell_agent/state" "$bell_ghbin" "$bell_claude" "$bell_cfg" "$bell_locks"
+bell_quota="$bell/quota.json"
+mkdir -p "$bell_home/.zcode/v2" "$bell_agent/state" "$bell_ghbin" "$bell_claude" "$bell_cfg" "$bell_locks"
+jq -n '{config:{defaultModelSelection:{modelId:"GLM-5.3"}}}' > "$bell_home/.zcode/v2/provider_config.json"
+jq -n --argjson read_at "$(date +%s)" \
+  '{freshness:"fresh",read_at:$read_at,max_age_seconds:900,five_h_pct:0,week_pct:0,cap_5h:60,cap_week:100}' > "$bell_quota"
 # Policy: the default plus the Sonnet fallback permission the live claude-saving mode runs.
 # roadmap-order off: the upsert attaches created issues to the seeded roadmap tree like
 # pipeline-issue-upsert.test.sh does, without ordering side quests.
@@ -183,6 +187,7 @@ printf '5001\n' > "$FAKE_NEXT_NUMBER"
 
 # Five fallback decisions with threshold 3: one filing at the third, streak back to 2.
 BELL_OUT="$(env HOME="$bell_home" AGENT_HOME="$bell_agent" ZF_CONFIG_ROOT="$bell_cfg" \
+  ZCODE_QUOTA_SNAPSHOT_FILE="$bell_quota" \
   ZF_ISSUE_LOCK_DIR="$bell_locks" ZF_GH_REAL_CLI="$bell_ghbin/gh" \
   ZF_ROADMAP_TREE_CACHE_FILE="$bell/roadmap-tree.json" \
   PATH="$SCRIPT_DIR/gh-shim:$bell_claude:$strict_path" \
