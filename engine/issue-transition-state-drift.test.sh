@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Cache/label drift reconcile in issue_transition: a writer that edits stage
 # labels out of band (2026-11-03 head-proxy arbiter ADMIT applies) moves the
-# live GitHub label without $STATE_DIR/<n>.json, and the next
-# mark_awaiting_release refused needs-advisor -> awaiting-release
-# (reason=merged-pr) on the stale cached "from" while the live label was
-# already ready-for-agent -- a row the table allows. On refusal the live
-# label is the authority: continue from it, log one drift line, and leave
+# live GitHub label without $STATE_DIR/<n>.json. needs-advisor ->
+# ready-for-human remains refused by ISSUE_TRANSITION_TABLE, while the live
+# ready-for-agent -> ready-for-human transition is allowed. On refusal the
+# live label is the authority: continue from it, log one drift line, and leave
 # cache and label equal through the ordinary state and label writes.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
@@ -36,13 +35,12 @@ gh() {
   return 1
 }
 
-# mark_awaiting_release (conclude-run.sh) is the production caller whose
-# refusal stranded the merged issues; exercise the drift through it.
+# Exercise the transition refusal path directly with a table-refused pair.
 LIVE_LABELS[5310]="enhancement,ready-for-agent,focus"
 state_merge 5310 '{"state":"needs-advisor"}'
 drift_err="$(mktemp)"
-if ! mark_awaiting_release 5310 5264 2>"$drift_err"; then
-  echo 'not ok - merged-pr transition still refused while the live label allows it' >&2
+if ! issue_transition 5310 ready-for-human supervisor-reconcile 2>"$drift_err"; then
+  echo 'not ok - table-refused transition still refused while the live label allows it' >&2
   cat "$drift_err" >&2
   exit 1
 fi
@@ -51,15 +49,15 @@ grep -Fq 'issue_transition: state drift #5310 cached=needs-advisor label=ready-f
   cat "$drift_err" >&2
   exit 1
 }
-[[ "$(state_read 5310 | jq -r .state)" == awaiting-release ]]
-grep -Fq -- '--add-label awaiting-release' "$GH_WRITES"
+[[ "$(state_read 5310 | jq -r .state)" == ready-for-human ]]
+grep -Fq -- '--add-label ready-for-human' "$GH_WRITES"
 grep -Fq -- '--remove-label ready-for-agent' "$GH_WRITES"
 grep -Fq -- '--remove-label needs-advisor' "$GH_WRITES"
-echo 'ok - merged-pr -> awaiting-release succeeds from the live label and logs the drift'
+echo 'ok - table-refused -> ready-for-human succeeds from the live label and logs the drift'
 
 # The reconciled writer must leave the two surfaces equal: GitHub now shows
 # exactly the stage label the state file caches.
-LIVE_LABELS[5310]="enhancement,awaiting-release,focus"
+LIVE_LABELS[5310]="enhancement,ready-for-human,focus"
 [[ "$(issue_transition_live_label_state 5310)" == "$(state_read 5310 | jq -r .state)" ]] || {
   echo 'not ok - cached state and live label disagree after the reconciled transition' >&2
   exit 1
@@ -67,15 +65,15 @@ LIVE_LABELS[5310]="enhancement,awaiting-release,focus"
 echo 'ok - reconciled transition leaves cache and live label equal'
 
 # No drift -> no escape hatch: with the live label agreeing with the cache,
-# the unsupported needs-advisor -> awaiting-release transition stays refused.
+# needs-advisor -> ready-for-human stays refused by ISSUE_TRANSITION_TABLE.
 LIVE_LABELS[5311]="needs-advisor"
 state_merge 5311 '{"state":"needs-advisor"}'
 refuse_err="$(mktemp)"
-if mark_awaiting_release 5311 5265 2>"$refuse_err"; then
+if issue_transition 5311 ready-for-human supervisor-reconcile 2>"$refuse_err"; then
   echo 'not ok - transition allowed from needs-advisor without drift' >&2
   exit 1
 fi
-grep -Fq 'issue_transition: refused #5311 needs-advisor -> awaiting-release (reason=merged-pr)' "$refuse_err" || {
+grep -Fq 'issue_transition: refused #5311 needs-advisor -> ready-for-human (reason=supervisor-reconcile)' "$refuse_err" || {
   echo 'not ok - plain refusal line missing' >&2
   cat "$refuse_err" >&2
   exit 1
@@ -92,14 +90,14 @@ fi
 echo 'ok - agreeing live label keeps the refusal and writes nothing'
 
 # Drift whose live origin is ALSO not allowed for this reason must not pass.
-LIVE_LABELS[5312]="ready-for-human"
+LIVE_LABELS[5312]="checks-blocked"
 state_merge 5312 '{"state":"needs-advisor"}'
 stay_err="$(mktemp)"
-if mark_awaiting_release 5312 5266 2>"$stay_err"; then
+if issue_transition 5312 ready-for-human supervisor-reconcile 2>"$stay_err"; then
   echo 'not ok - transition allowed from a live label the table forbids' >&2
   exit 1
 fi
-grep -Fq 'issue_transition: refused #5312 needs-advisor -> awaiting-release (reason=merged-pr)' "$stay_err" || {
+grep -Fq 'issue_transition: refused #5312 needs-advisor -> ready-for-human (reason=supervisor-reconcile)' "$stay_err" || {
   echo 'not ok - refusal line missing for disallowed live origin' >&2
   cat "$stay_err" >&2
   exit 1
