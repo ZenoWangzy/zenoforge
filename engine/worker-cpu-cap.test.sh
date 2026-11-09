@@ -48,7 +48,7 @@ launch_scope() { # label
   WORKER_SCOPE_PREPARED=false WORKER_SCOPE_WARNED=false WORKER_SCOPE_MODE='' WORKER_SCOPE_SYSTEMD_RUN=''
   : > "$calls"; : > "$root/scheduler.log"
   CFG='{"engine":{"worker_tasks_max":500}}'
-  mkdir -p "$root/cg"; : > "$root/cg/pids.events"; printf 'usage_usec 2543210\nuser_usec 1\n' > "$root/cg/cpu.stat"
+  mkdir -p "$root/cg"; printf '%s\n' "${PIDS_EVENTS:-}" > "$root/cg/pids.events"; printf 'usage_usec 2543210\nuser_usec 1\n' > "$root/cg/cpu.stat"
   export WORKER_SCOPE_EVENTS_FILE="$root/cg/pids.events" LOG="$root/scheduler.log" SYSTEMD_RUN_EXEC=1
   WORKER_COST_TAG='type=implement unit=issue-9'
   worker_scope_launch "$root/$1.pid" "$root" "$root/$1.out" setsid -- bash -c 'sleep 1.2'
@@ -64,6 +64,14 @@ stamp="$(sed -n 's/^\[\([0-9T:-]*Z\)\] worker cost .*/\1/p' "$root/scheduler.log
 skew=$(( $(date -u +%s) - $(date -u -d "$stamp" +%s) )); skew=${skew#-}
 (( skew < 60 )) || fail "worker cost stamp $stamp is ${skew}s off UTC now: the scope's TZ leaked into a Z stamp"
 printf 'PASS worker-scope logs wall and cpu: %s\n' "$(grep 'worker cost' "$root/scheduler.log")"
+# The TasksMax refusal stamps its own row from the watcher's other printf site; "max 3" is a refused fork count.
+PIDS_EVENTS='max 3' TZ=Asia/Shanghai launch_scope tasksmax
+for _ in {1..150}; do grep -q 'worker-tasksmax-hit' "$root/scheduler.log" && grep -q 'worker cost' "$root/scheduler.log" && break; sleep 0.1; done
+stamp="$(sed -n 's/^\[\([0-9T:-]*Z\)\] worker-tasksmax-hit .*/\1/p' "$root/scheduler.log" | head -1)"
+[[ -n $stamp ]] || fail "worker-tasksmax-hit row missing or malformed: $(cat "$root/scheduler.log")"
+skew=$(( $(date -u +%s) - $(date -u -d "$stamp" +%s) )); skew=${skew#-}
+(( skew < 60 )) || fail "worker-tasksmax-hit stamp $stamp is ${skew}s off UTC now: the scope's TZ leaked into a Z stamp"
+printf 'PASS worker-scope tasksmax-hit stamp is UTC: %s\n' "$stamp"
 AGENT_WORKER_CPU_QUOTA=150% AGENT_WORKER_CPU_WEIGHT=5 AGENT_WORKER_MEM_HIGH=1G launch_scope override
 assert_cpu_props 'worker-scope override' 150% 5
 assert_mem_props 'worker-scope override' 1G 500 nomax
