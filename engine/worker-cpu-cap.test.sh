@@ -18,8 +18,16 @@ while (($#)); do [[ "$1" == -- ]] && { shift; (($#)) && [[ -n "${SYSTEMD_RUN_EXE
 exit 0
 SH
 printf '#!/usr/bin/env bash\nexit 0\n' > "$fake_bin/pgrep"
-chmod +x "$fake_bin/systemd-run" "$fake_bin/pgrep"
-export SYSTEMD_RUN_CALLS="$calls" PATH="$fake_bin:$PATH"
+# Records each systemctl call and whether the run's rc file already exists (bin/luna and bin/zc stop their scope after writing it).
+sctl="$root/systemctl.calls"
+cat > "$fake_bin/systemctl" <<'SH'
+#!/usr/bin/env bash
+rc=absent; [[ -f "$WORKER_SCRATCH_ROOT/luna/k1/rc" || -f "$WORKER_SCRATCH_ROOT/zc/k1/rc" ]] && rc=present
+printf '%s rc=%s\n' "$*" "$rc" >> "$SYSTEMCTL_CALLS"
+exit 0
+SH
+chmod +x "$fake_bin/systemd-run" "$fake_bin/pgrep" "$fake_bin/systemctl"
+export SYSTEMD_RUN_CALLS="$calls" SYSTEMCTL_CALLS="$sctl" PATH="$fake_bin:$PATH"
 
 # Each recorded call must carry both properties; $2 and $3 are the expected quota and weight.
 assert_cpu_props() { # label quota weight
@@ -39,6 +47,12 @@ assert_mem_props() { # label memoryhigh tasksmax [nomax]
 assert_inline_props() { # label quota weight: the property pair as one -p each, as bin/luna and friends pass them
   grep -Fxq "CPUQuota=$2" "$calls" && grep -Fxq "CPUWeight=$3" "$calls" || fail "$1: expected CPUQuota=$2 CPUWeight=$3, got: $(tr '\n' ' ' < "$calls")"
   printf 'PASS %s: CPUQuota=%s CPUWeight=%s\n' "$1" "$2" "$3"
+}
+assert_scope_stop() { # label: the run's own scope (--unit of its systemd-run) is stopped after its rc file is written
+  local unit; unit="$(sed -n 's/^--unit=//p' "$calls" | head -1)"
+  [[ -n "$unit" ]] || fail "$1: systemd-run got no --unit"
+  [[ "$(cat "$sctl")" == "--user stop $unit.scope rc=present" ]] || fail "$1: systemctl got '$(cat "$sctl")', want '--user stop $unit.scope rc=present'"
+  printf 'PASS %s: stops %s.scope after rc is written\n' "$1" "$unit"
 }
 
 # --- scheduler worker scope (every worker_scope_launch caller) ---
@@ -75,9 +89,11 @@ export WORKER_SCRATCH_ROOT="$root/scratch"; mkdir -p "$WORKER_SCRATCH_ROOT"
 export AGENT_HOME="$root/agent-home"; mkdir -p "$AGENT_HOME"   # no hold marker here, so the live one cannot leak in
 : > "$root/prompt.md"
 for backend in luna zc; do
-  : > "$calls"; "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
+  : > "$calls"; : > "$sctl"; rm -f "$WORKER_SCRATCH_ROOT"/luna/k1/rc "$WORKER_SCRATCH_ROOT"/zc/k1/rc
+  "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
   assert_inline_props "bin/$backend default" 200% 10
   assert_mem_props "bin/$backend default" 2G 500
+  assert_scope_stop "bin/$backend default"
   : > "$calls"; LUNA_CPU_QUOTA=300% AGENT_WORKER_CPU_WEIGHT=7 "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
   assert_inline_props "bin/$backend LUNA_CPU_QUOTA" 300% 7
   : > "$calls"; LUNA_PRIORITY=hotfix "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :

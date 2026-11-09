@@ -78,5 +78,7 @@ wait "$zpid"; rc=$?
 # 27 healthy zc runs at 600 s, 10-27); the closing {"type":"result"} line carries the same .response.
 jq -Rr 'fromjson? | select(.type=="result") | .response // empty' "$out/events.jsonl" >"$out/last.md" 2>/dev/null
 echo "$rc" >"$out/rc"
+# Leftover processes (e.g. a test database) would keep the scope alive after zcode exits; stop it once rc is recorded.
+systemctl --user stop "$scope.scope" >/dev/null 2>&1 || true
 exit "$rc"
 }
