@@ -445,12 +445,14 @@ def token_efficiency_kpis(rows, units, now):
             unattributed.append(item)
             continue
         total = unit_cost.setdefault(str(unit["id"]), {
-            "tokens": 0, "raw": 0, "fresh": 0, "fresh_known": True, "ledger_keys": 0,
+            "tokens": 0, "raw": 0, "fresh": 0, "fresh_known": True,
+            "unknown_runs": 0, "ledger_keys": 0,
         })
         total["tokens"] += item.get("tokens") or 0
         total["raw"] += item.get("raw") or 0
+        total["unknown_runs"] += item.get("unknown_runs") or 0
         total["ledger_keys"] += 1
-        if item.get("fresh") is None:
+        if item.get("fresh") is None or item.get("unknown_runs"):
             total["fresh_known"] = False
         else:
             total["fresh"] += item["fresh"]
@@ -491,7 +493,17 @@ def token_efficiency_kpis(rows, units, now):
     merged_fresh_complete = bool(merged_ids) and measured_merged == len(merged_ids)
     window_tokens = sum(unit_cost.get(unit_id, {}).get("tokens", 0) for unit_id in cohort_ids)
     waste_tokens = sum(unit_cost.get(unit_id, {}).get("tokens", 0) for unit_id in waste_ids)
+    cohort_tokens_complete = all(
+        unit_cost.get(unit_id, {}).get("unknown_runs", 0) == 0 for unit_id in cohort_ids
+    )
+    merged_tokens_complete = all(
+        unit_cost.get(unit_id, {}).get("unknown_runs", 0) == 0 for unit_id in merged_ids
+    )
+    waste_tokens_complete = all(
+        unit_cost.get(unit_id, {}).get("unknown_runs", 0) == 0 for unit_id in waste_ids
+    )
     repair_tokens = 0
+    repair_complete = True
     for row in rows:
         unit = resolve(row.get("unit"))
         if unit is None or str(unit["id"]) not in cohort_ids or row.get("phase") != "repair":
@@ -501,6 +513,8 @@ def token_efficiency_kpis(rows, units, now):
             repair_tokens += usage.raw
         elif row.get("footer_tokens") is not None:
             repair_tokens += row["footer_tokens"]
+        else:
+            repair_complete = False
 
     all_tokens = sum(item.get("tokens") or 0 for item in ledger["by_unit"])
     unattributed_fresh = sum(item.get("fresh") or 0 for item in unattributed)
@@ -516,16 +530,18 @@ def token_efficiency_kpis(rows, units, now):
         "merged_fresh_known_tokens": merged_fresh_known,
         "merged_fresh_measured_units": measured_merged,
         "fresh_tokens_per_merged": merged_fresh_known / merged_count if merged_fresh_complete else None,
-        "merged_raw_tokens": merged_tokens,
-        "raw_tokens_per_merged": merged_raw / merged_count if merged_count else None,
+        "merged_raw_tokens": merged_tokens if merged_tokens_complete else None,
+        "raw_tokens_per_merged": merged_raw / merged_count if merged_count and merged_tokens_complete else None,
         "waste_units": len(waste_ids),
         "waste_tokens": waste_tokens,
         "window_tokens": window_tokens,
-        "waste_pct": 100 * waste_tokens / window_tokens if window_tokens else None,
+        "waste_pct": 100 * waste_tokens / window_tokens
+        if window_tokens and cohort_tokens_complete and waste_tokens_complete else None,
         "first_pass_units": len(first_pass_ids),
         "first_pass_pct": 100 * len(first_pass_ids) / merged_count if merged_count else None,
-        "repair_tokens": repair_tokens,
-        "repair_pct": 100 * repair_tokens / window_tokens if window_tokens else None,
+        "repair_tokens": repair_tokens if repair_complete else None,
+        "repair_pct": 100 * repair_tokens / window_tokens
+        if window_tokens and cohort_tokens_complete and repair_complete else None,
         "matched_ledger_tokens": all_tokens - sum(item.get("tokens") or 0 for item in unattributed),
         "all_ledger_tokens": all_tokens,
         "unattributed": {
@@ -545,7 +561,7 @@ TOKEN_EFFICIENCY_CRITERIA = {
     "efficiency.repair_phase_pct_7d": ("efficiency", "repair phase share of terminal cohort tokens, rolling 7 d %", 30, 45, False),
 }
 TOKEN_EFFICIENCY_MEANING = {
-    "efficiency.fresh_tokens_per_merged_7d": "近 7 天合并单元的生命周期 fresh token（未缓存输入 + 输出）均值；cache split 不完整时为 NO-DATA。健康线沿用工作单 fresh token p90 的静态尺度 800k，异常线为历史 p90 的两倍 4.8M。",
+    "efficiency.fresh_tokens_per_merged_7d": "近 7 天合并单元的生命周期 fresh token（未缓存输入 + 输出）均值；缓存拆分不完整或有未测 run 时为 NO-DATA。健康线沿用工作单 fresh token p90 的静态尺度 800k，异常线为历史 p90 的两倍 4.8M。",
     "efficiency.unmerged_waste_pct_7d": "近 7 天终态单元 cohort 中，closed / parked / blocked 且从未合并的 token 占比；越低越好。健康线 35% 要比已测匹配台账 43% 少 8 个百分点；50% 比基线高 7 个百分点，作为异常线。",
     "efficiency.first_pass_yield_pct_7d": "近 7 天合并单元中，历史从未出现 review-request-changes 或 review-block 的比例；高说明少返工。健康线 65% 接近最近窗口的 67% / 前一窗口的 71%；异常线 50% 低于 58% 的全时基线。",
     "efficiency.repair_phase_pct_7d": "近 7 天终态单元 cohort 中 repair phase token ÷ 全部 token；越低越好。健康线 30% 比已测全时 36.4% 少 6.4 个百分点；45% 高于基线 8.6 个百分点，作为异常线。",

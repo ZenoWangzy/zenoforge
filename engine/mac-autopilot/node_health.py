@@ -1441,8 +1441,8 @@ def main():
             criteria[mid] = (node, desc, bounds[0], bounds[1], higher)
 
     units = ledger_history.load_units(a)
-    cost_rows = worker_cost.run_rows(sup); token_efficiency = worker_cost.token_efficiency_kpis(cost_rows, units, now)
-    worker_cost.attach_provider_usage(cost_rows, units)  # every row: a ticket's fresh total needs all its runs
+    cost_rows = worker_cost.run_rows(sup); worker_cost.attach_provider_usage(cost_rows, units)  # every row: a ticket's fresh total needs all its runs
+    token_efficiency = worker_cost.token_efficiency_kpis(cost_rows, units, now)
     runs = worker_runs(cost_rows, since, now)
     metrics = {"efficiency.fresh_tokens_per_merged_7d": token_efficiency["fresh_tokens_per_merged"], "efficiency.unmerged_waste_pct_7d": token_efficiency["waste_pct"], "efficiency.first_pass_yield_pct_7d": token_efficiency["first_pass_pct"], "efficiency.repair_phase_pct_7d": token_efficiency["repair_pct"]}
     # Implement and repair run minutes are per-run samples (no time weighting): a 5 h window held 20 to 45 runs

@@ -218,6 +218,66 @@ jq -e '
   <<<"$token_dashboard" >/dev/null \
   || fail "token-efficiency KPIs did not use the 7-day unit cohort: $(jq -c '.summary | {token_efficiency, tokens_per_merged, real_daily_tokens, merged}' <<<"$token_dashboard")"
 
+# Dashboard aggregation must attach print-mode provider usage before building its ledger/KPIs.
+provider_log="impl-issue-7199-$(date -u -d '5 minutes ago' +%Y%m%dT%H%M%S)Z.worker.log"
+printf 'ZCode Built-in (skipped)\n' > "$token_sup/$provider_log"
+jq --arg log "$provider_log" \
+  '.units += [{id:"issue-7199",issue:7199,stage:"implementing",history:[]}]' \
+  "$token_a/units.json" > "$token_a/units.json.tmp" && mv "$token_a/units.json.tmp" "$token_a/units.json"
+jq --arg log "$provider_log" \
+  '.workers += [{pid:0,log:$log,unit:"issue-7199",type:"implement"}]' \
+  "$token_a/workers.json" > "$token_a/workers.json.tmp" && mv "$token_a/workers.json.tmp" "$token_a/workers.json"
+export MAC_AUTOPILOT_WT_ROOT="$token_sup/wt" ZCODE_DB="$token_a/zcode.sqlite"
+python3 - "$ZCODE_DB" "$MAC_AUTOPILOT_WT_ROOT/wt-issue-7199" <<'PY'
+import sqlite3, sys
+from datetime import datetime, timedelta, timezone
+with sqlite3.connect(sys.argv[1]) as con:
+    con.execute("create table session (id text, directory text)")
+    con.execute("create table turn_usage (session_id text, started_at integer, input_tokens integer, cache_read_input_tokens integer, output_tokens integer, reasoning_tokens integer, cache_creation_input_tokens integer)")
+    started = int((datetime.now(timezone.utc) - timedelta(minutes=2)).timestamp() * 1000)
+    con.execute("insert into session values ('provider-fixture', ?)", (sys.argv[2],))
+    con.execute("insert into turn_usage values ('provider-fixture', ?, 1000, 400, 100, 0, 0)", (started,))
+PY
+PATH="$fixture/bin:$PATH" python3 "$script_dir/gen_dashboard.py" || fail 'gen_dashboard failed with provider-usage fixture'
+token_dashboard="$(sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT")"
+jq -e '
+  ([.cost_ledger.by_unit[] | select(.unit == "issue-7199")][0]
+   | .runs == 1 and .tokens == 1100 and .fresh == 700)
+  and .summary.token_efficiency.fresh_tokens_per_merged == 1500' \
+  <<<"$token_dashboard" >/dev/null || fail 'dashboard omitted provider-record usage from its cost ledger'
+
+# An unmeasured invocation must make token-based KPIs NO-DATA rather than count as zero.
+unknown_log="impl-issue-7105-${tok_stamp_5}Z.worker.log"
+printf 'usage unavailable\n' > "$token_sup/$unknown_log"
+jq --arg log "$unknown_log" --arg at "$impl_end" \
+  '.units += [{id:"issue-7105",issue:7105,stage:"merged",history:[{stage:"merged",at:$at}]}]' \
+  "$token_a/units.json" > "$token_a/units.json.tmp" && mv "$token_a/units.json.tmp" "$token_a/units.json"
+jq --arg log "$unknown_log" \
+  '.workers += [{pid:0,log:$log,unit:"issue-7105",type:"implement"}]' \
+  "$token_a/workers.json" > "$token_a/workers.json.tmp" && mv "$token_a/workers.json.tmp" "$token_a/workers.json"
+PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$token_a" \
+  --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 --now "$token_now" \
+  --json "$token_a/node-health.json" >/dev/null || fail 'node_health failed with unknown usage in the KPI cohort'
+jq -e '
+  ([.metrics[] | select(.id == "efficiency.fresh_tokens_per_merged_7d")][0] | .value == null and .status == "NO-DATA")
+  and ([.metrics[] | select(.id == "efficiency.unmerged_waste_pct_7d")][0] | .value == null and .status == "NO-DATA")
+  and ([.metrics[] | select(.id == "efficiency.first_pass_yield_pct_7d")][0] | .value == 200 / 3)
+  and ([.metrics[] | select(.id == "efficiency.repair_phase_pct_7d")][0] | .value == null and .status == "NO-DATA")' \
+  "$token_a/node-health.json" >/dev/null || fail 'unknown usage was silently counted as zero in node-health KPIs'
+PATH="$fixture/bin:$PATH" python3 "$script_dir/gen_dashboard.py" || fail 'gen_dashboard failed with unknown usage in the KPI cohort'
+token_dashboard="$(sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT")"
+jq -e '
+  .summary.token_efficiency.fresh_tokens_per_merged == null
+  and .summary.token_efficiency.merged_fresh_measured_units == 2
+  and .summary.token_efficiency.merged_raw_tokens == null
+  and .summary.token_efficiency.waste_pct == null
+  and .summary.token_efficiency.first_pass_pct == (200 / 3)
+  and .summary.token_efficiency.repair_pct == null
+  and ([.cost_ledger.by_unit[] | select(.unit == "issue-7105")][0]
+       | .unknown_runs == 1 and .tokens == 0)' \
+  <<<"$token_dashboard" >/dev/null \
+  || fail 'dashboard did not keep unknown usage out of token KPI denominators'
+
 # 每票 fresh p90 无缓存拆分时是 NO-DATA（不是 0，也不是旧的 580k）：票的 run 没有用量记录
 nd="$test_env_root/cost-nodata"; nda="$nd/supervisor/autopi"; mkdir -p "$nda"
 cat > "$nda/units.json" <<'JSON'

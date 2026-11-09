@@ -387,7 +387,7 @@ traffic = {
 
 # ---- worker 成本账（worker_cost.py：单元 / ticket / 阶段 / 后端 + 最近 24h + eval 栏） ----
 # 无状态：每拍从 worker 事件流重读一遍，同一文件重读不重复计数；eval 用 runner 自己的 results.json。
-cost_rows = worker_cost.run_rows(SUP); cost_now = time.time()
+cost_rows = worker_cost.run_rows(SUP); cost_now = time.time(); worker_cost.attach_provider_usage(cost_rows, units)
 cost_ledger = worker_cost.aggregate(cost_rows, units, cost_now); token_efficiency = worker_cost.token_efficiency_kpis(cost_rows, units, cost_now)
 cost_ledger["eval"] = worker_cost.eval_costs(os.path.join(AGENT_HOME, "eval"), time.time())
 
