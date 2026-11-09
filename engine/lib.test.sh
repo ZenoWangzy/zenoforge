@@ -915,6 +915,8 @@ ISSUE_TRANSITION_OUTPUT="$(AGENT_HOME="$ISSUE_TRANSITION_HOME" REPO=test/repo \
     if issue_transition_allowed finish-first awaiting-release pipeline-requeue; then exit 28; fi
     issue_transition_allowed needs-advisor released all-children-released || exit 25
     if issue_transition_allowed needs-advisor released unrelated; then exit 26; fi
+    issue_transition_allowed needs-advisor awaiting-release merged-pr || exit 29
+    if issue_transition_allowed needs-advisor awaiting-release unrelated; then exit 30; fi
     printf "all-state-tracker=allowed unrelated-reason=refused\n"
     printf "%s\n" '\''{"state":"ready-for-agent","labels":[{"name":"ready-for-agent"},{"name":"priority:top"}]}'\'' > "$ISSUE_TRANSITION_ISSUE"
     printf "%s\n" '\''{"state":"ready-for-agent","run":{"implement_started_at":"2026-10-07T08:00:00Z"}}'\'' > "$AGENT_HOME/state/740030.json"
