@@ -171,15 +171,18 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
     || say "handoff issue #$n: could not post the rescue refs: ${ref}${stash_list}"
 }
 
-# A clone the secret scan refused can never be pushed, and left in place it blocks its handoff for good (#5791 waited 11 h): set it aside, mode 700,
-# and let the handoff start fresh from the pushed branch. Only the scan's refusals come here. No sweep, scan or upload may read a *.preserved-* dir.
+# A refused clone left in place blocks its handoff for good (#5791 waited 11 h): set it aside, mode 700, and let the handoff start fresh.
+# Keep scan refusals plus ignored stash data and unpushed branch commits out of scans and uploads. No sweep, scan or upload may read a *.preserved-* dir.
 preserve_refused_clone() { # issue unit clone -> 0 once the clone is set aside; the inbox line names the unit and the path, never content
   local n="$1" id="$2" wt="$3" dest
-  [[ "$RESCUE_REFUSED" == "secret scan found a leak" || "$RESCUE_REFUSED" == "secret scan refused an earlier pass" ]] || return 1
+  case "$RESCUE_REFUSED" in
+    "secret scan found a leak"|"secret scan refused an earlier pass"|"stash holds ignored files"|"unpushed commits on another branch") ;;
+    *) return 1 ;;
+  esac
   dest="$WT_ROOT/wt-$id.preserved-$(date -u +%Y%m%dT%H%MZ)"
   [[ "$wt" == "$WT_ROOT/wt-$id" && ! -e "$dest" ]] && chmod 700 "$wt" && mv -- "$wt" "$dest" || return 1
   rm -f "$A/rescue-refused-$n"
-  say "handoff issue #$n: secret scan refused the clone of $id; moved to $dest (mode 700, never pushed or scanned again, deleted after 7 days)"
+  say "handoff issue #$n: rescue refused the clone of $id; moved to $dest (mode 700, never pushed or scanned again, deleted after 7 days)"
   (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "handoff-preserved-clone-aside:$n:$id:${dest##*.preserved-}" \
     "handoff-preserved-clone-aside unit=$id path=$dest") || say "handoff issue #$n: could not notify supervisor about $dest"
 }
