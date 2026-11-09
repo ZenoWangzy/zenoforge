@@ -58,6 +58,12 @@ ROWS="$cancel_row"; supervisor_requeue_unit pr-approved-cancel requeue 'resume' 
 [[ "$(field pr-approved-cancel .stage)" == ready-to-merge ]] \
   || fail "cancelled checks with no finding and the current head approved must go to CI admission, not repair (got: $(field pr-approved-cancel .stage))"
 [[ "$(field pr-approved-cancel .approved_sha)" == "$head_now" ]] || fail 'CI admission must carry the approved head'
+# The cancelled runs are rerun by the merge lane's ci_cancelled on ready-to-merge units: exactly one rerun call for this head.
+reruns="$fixture/reruns"; : > "$reruns"
+gh() { if [[ "$1 $2" == "run list" ]]; then echo 555; elif [[ "$1 $2" == "run rerun" ]]; then echo "$3" >> "$reruns"; fi; }
+ci_cancelled pr-approved-cancel 7 "$head_now" gate
+[[ "$(wc -l < "$reruns")" == 1 && "$(cat "$reruns")" == 555 ]] || fail "a cancelled ready-to-merge head must get exactly one rerun (got: $(cat "$reruns"))"
+unset -f gh
 
 # 2. Cancelled checks, approval only on an older head: the current head needs a review first.
 ROWS="$cancel_row"; supervisor_requeue_unit pr-stale-approval requeue 'resume' null

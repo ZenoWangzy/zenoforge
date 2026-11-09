@@ -240,6 +240,7 @@ no_finding_repair_route() { # unit-json → "ready-to-merge <head>" (head approv
   rows="$(repair_check_rows "$pr")" || return 0
   jqf -e 'any(.[]; .bucket == "fail")' <<<"$rows" >/dev/null && return 0
   jqf -e '((.review_findings // []) | last // {}) | (.findings // []) | any(.status == "open" and (.severity == "P0" or .severity == "P1"))' <<<"$u" >/dev/null && return 0
+  jqf -e '((.review_findings // []) | length == 0) and ((.review_report // "") != "" or ([(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last | .stage) == "review-request-changes")' <<<"$u" >/dev/null && return 0
   if jqf -e --arg h "$head" '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last | (.stage == "review-approve" and .result == $h)' <<<"$u" >/dev/null; then
     printf 'ready-to-merge %s\n' "$head"
   else
