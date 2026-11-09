@@ -152,7 +152,7 @@ assert comparison is not None and ["合入", "3", "2", "4"] in comparison
 print("ok - the daily comparison shows merge counts for the three periods")
 PY
 assert_not_contains 'the daily comparison does not label a rate as a merge count' "$html" '合入速度'
-assert_contains 'the model chart explains its two measures' "$html" '蓝色为令牌用量，橙色为调用金额'
+assert_contains 'the model chart explains its two measures' "$html" '蓝色为令牌用量，橙色为已记录的调用金额'
 if python3 -c 'import sys; s=sys.argv[1]; assert s.index("一句话结论") < s.index("<h2>异常情况</h2>") < s.index("<table")' "$html"; then
   echo 'ok - the verdict precedes the anomaly table'
 else
