@@ -2786,6 +2786,32 @@ assert_eq "the X-Zenoforge-Agent-Issue marker header is stamped with the issue n
 assert_eq "no From header is set -- the Gmail API fills in the authenticated account" \
   "" "$(mime_get_header "$RAW_MSG" From)"
 
+INLINE_PNG_B64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/otcAAAAASUVORK5CYII='
+INLINE_IMAGES="$(jq -cn --arg data "$INLINE_PNG_B64" '[{cid:"owner-chart",filename:"owner-chart.png",data:$data}]')"
+CHART_MSG="$(build_gmail_raw_message 'someone@example.com' '工厂日报' '纯文本备用内容' '' 'fixture' \
+  '<html><body><img src="cid:owner-chart"></body></html>' "$INLINE_IMAGES")"
+assert_eq 'inline PNG is nested inside the HTML alternative as multipart/related' \
+  multipart/related "$(python3 -c '
+import base64, sys
+from email import policy
+from email.parser import BytesParser
+raw = sys.argv[1]
+msg = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
+sys.stdout.write(msg.get_payload()[1].get_content_type())
+' "$CHART_MSG")"
+assert_eq 'inline PNG keeps the requested CID and image/png type' \
+  'owner-chart:image/png:inline' "$(python3 -c '
+import base64, sys
+from email import policy
+from email.parser import BytesParser
+raw = sys.argv[1]
+msg = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
+part = msg.get_payload()[1].get_payload()[1]
+sys.stdout.write(": ".join((part["Content-ID"].strip("<>"), part.get_content_type(), part.get_content_disposition())))
+' "$CHART_MSG" | tr -d ' ')"
+assert_contains 'inline-image mail preserves its plain-text fallback' \
+  "$(mime_get_part "$CHART_MSG" plain)" '纯文本备用内容'
+
 # --- Defect 7, 2026-09-13: Gmail credential self-check ----------------------
 # gmail_credential_alert_reason (notify.sh): pure decision logic, no gcloud/
 # curl/network. notify.test.sh exercises the probe with fake gcloud and curl.

@@ -115,8 +115,8 @@ ok 'every figure shows direction against the day and the same weekday, and drops
 
 # --- Causes -------------------------------------------------------------------------
 causes="$(jq -r '.causes[]' <<< "$compare")"
-[[ "$causes" == *'- 做完比昨天多 4 个：未查明。'* ]] || fail 'a line with no mapped row reads 未查明'
-[[ "$causes" == *'- 写代码比昨天少 40 次：未查明。'* ]] || fail 'an untraced station change reads 未查明'
+[[ "$causes" == *'- 做完比昨天多 4 个：原因未查明。'* ]] || fail 'a line with no mapped row says its cause is unknown'
+[[ "$causes" == *'- 写代码比昨天少 40 次：原因未查明。'* ]] || fail 'an untraced station change says its cause is unknown'
 [[ "$causes" != *评审* ]] || fail 'a change under the material bound gets no cause line'
 since_fresh="$(date -u -d "@$((now - 3600))" +%Y-%m-%dT%H:%M:%SZ)"
 jq -n --arg s "$since_fresh" '{"merge.conflict_repairs_per_day":{cause:"提前预测会改同一文件就互相等待，正在换成成熟做法",owner:"head",since:$s},"release.hours_waiting":{cause:"head: roll fix, #1147",owner:"head",since:$s}}' > "$tmp/owners.json"
@@ -126,7 +126,7 @@ causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" 
 jq -n --argjson at "$yesterday_at" '{schema:1,day:"2026-11-07",at:$at,figures:{"station:release":10}}' > "$snaps/2026-11-07.json"
 release_facts="$(jq -c '.stations=[{"key":"release","name":"发布","metric":"release.hours_waiting","unit":"小时","phrase":"当前这批已等 ","value":30,"healthy":4,"higher":false,"status":"UNHEALTHY","stall_hours":null}]' <<< "$facts")"
 causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$release_facts" "$home" "$now" "")")"
-[[ "$causes" == *'- 发布比昨天多 20 小时：已登记原因，但内容含不能直接发送的字符，没有转述。'* && "$causes" != *1147* && "$causes" != *head* ]] || fail 'a note with Latin text or a tracker id is not printed'
+[[ "$causes" == *'- 发布比昨天多 20 小时：原因未查明。'* && "$causes" != *1147* && "$causes" != *head* ]] || fail 'a note with Latin text or a tracker id is not printed'
 # Every mapped line prints its note and never 未查明; every line with no row reads 未查明 (the table is OWNER_ROWS).
 python3 - "$SCRIPT_DIR/owner-report-compare.py" "$tmp" "$now" <<'PY' || fail 'every mapped line prints its owner note, every unmapped line reads 未查明'
 import importlib.util, json, os, sys
@@ -191,7 +191,7 @@ for name, (value, want) in cases.items():
     got = orc.owner_cause({"merge.conflict_repairs_per_day": value}, "station:implement", now)
     assert got == want, f"{name}: {got!r}"
 PY
-# What landed between the two days is a hint beside 未查明, never the cause.
+# A timing-only match is not a cause and is not rendered as a hint.
 repo="$tmp/repo"
 git init -q "$repo"
 mkdir -p "$repo/engine"
@@ -203,13 +203,13 @@ git -C "$repo" update-ref refs/remotes/origin/main HEAD
 jq -n --argjson at "$yesterday_at" '{schema:1,day:"2026-11-07",at:$at,figures:{"station:implement":100}}' > "$snaps/2026-11-07.json"
 export ZF_ANOMALY_OWNERS_FILE="$tmp/none.json"
 causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "$repo")")"
-[[ "$causes" == *'- 写代码比昨天少 40 次：未查明。线索，未核实：同期有 1 项改动合入了该环节的代码。'* ]] || fail 'landed changes read as a separate hint after 未查明'
-[[ "$causes" != *'次：线索'* && "$causes" != *'次：同期'* && "$causes" != *'个：线索'* && "$causes" != *'个：同期'* ]] || fail 'the hint never stands where the cause goes'
+[[ "$causes" == *'- 写代码比昨天少 40 次：原因未查明。'* && "$causes" != *线索* ]] || fail 'a landed change is not presented as a cause or hint'
+[[ "$causes" != *'次：同期'* && "$causes" != *'个：同期'* ]] || fail 'a timing reference never appears as a cause'
 export ZF_ANOMALY_OWNERS_FILE="$tmp/owners.json"
 causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "$repo")")"
 [[ "$causes" == *'- 写代码比昨天少 40 次：提前预测会改同一文件就互相等待，正在换成成熟做法。'* && "$causes" != *线索* ]] || fail 'a mapped owner note is the cause and no hint rides beside it'
 export ZF_ANOMALY_OWNERS_FILE="$tmp/none.json"
-ok 'causes are the mapped owner note or 未查明; timing is only a separate hint'
+ok 'causes are verified notes or 原因未查明, without timing hints'
 
 # --- Worker causes: behind one switch, off by default, and only rows with evidence ----------
 export ZF_OWNER_REPORT_CAUSES_DIR="$tmp/causes"
@@ -220,15 +220,15 @@ jq -n '{day:"2026-11-08",generated_at:1,rows:[
   {line:"stock",cause:"同期有发版，所以等上线的需求变多",evidence:"~/scheduler.log: 3 lines",basis:"read"}]}' > "$tmp/causes/owner-report-causes-2026-11-08.json"
 unset ZF_OWNER_REPORT_CAUSES
 causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "")")"
-[[ "$causes" != *合并队列* && "$causes" == *'- 做完比昨天多 4 个：未查明。'* ]] || fail 'with the switch off nothing from the causes file is printed'
+[[ "$causes" != *合并队列* && "$causes" == *'- 做完比昨天多 4 个：原因未查明。'* ]] || fail 'with the switch off nothing from the causes file is printed'
 export ZF_OWNER_REPORT_CAUSES=1
 causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "")")"
 [[ "$causes" != *合并队列* ]] || fail 'the switch is exactly on, not any value'
 export ZF_OWNER_REPORT_CAUSES=on
 causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "")")"
 [[ "$causes" == *'- 做完比昨天多 4 个：合并队列停了九个小时，所以做完的需求变多后又补回。'* ]] || fail 'a row with a source and numbers is printed as the cause'
-[[ "$causes" == *'- 写代码比昨天少 40 次：未查明。'* ]] || fail 'a row without an evidence field stays 未查明'
-[[ "$causes" == *'- 做完等上线的需求比昨天多 1 个：未查明。'* ]] || fail 'a cause worded as timing stays 未查明'
+[[ "$causes" == *'- 写代码比昨天少 40 次：原因未查明。'* ]] || fail 'a row without an evidence field stays untraced'
+[[ "$causes" == *'- 做完等上线的需求比昨天多 1 个：原因未查明。'* ]] || fail 'a cause worded as timing stays untraced'
 python3 - "$SCRIPT_DIR/owner-report-compare.py" <<'PY' || fail 'the evidence rule is a code check'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("orc", sys.argv[1]); orc = importlib.util.module_from_spec(spec); spec.loader.exec_module(orc)
