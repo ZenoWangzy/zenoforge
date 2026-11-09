@@ -57,13 +57,18 @@ unit_body_blockers() { # unit-json → stored full-body IDs, or fallback IDs fro
   } | grep -vxF -f <(jqf -r '(.dropped_deps // [])[] | tostring' <<<"$1") || true
 }
 dep_delivered_snapshot() {
-  local dep
-  DEP_DELIVERED_CACHE=()
-  while IFS= read -r dep; do
-    [[ "$dep" =~ ^[0-9]+$ ]] && DEP_DELIVERED_CACHE["$dep"]=1
+  local dep pr sha
+  DEP_DELIVERED_CACHE=() DEP_DELIVERED_PR=()
+  while IFS=$'\t' read -r dep pr sha; do
+    [[ "$dep" =~ ^[0-9]+$ ]] || continue
+    DEP_DELIVERED_CACHE["$dep"]=1
+    # the PR and merge sha ride along so the review prompt can name them (review-rules.sh supervisor_rule)
+    if [[ "$pr" =~ ^[0-9]+$ && "$sha" =~ ^[0-9a-f]{7,40}$ ]]; then DEP_DELIVERED_PR["$dep"]="PR #$pr merged at ${sha:0:12}"; fi
   done < <(jqf -r '.units[] | select(.stage | IN("merged","landed","awaiting-live-event"))
+    | ((.pr // "") | tostring) as $p | (.merge_sha // .land_sha // "") as $s
     | ((.issue | select(type == "number")),
-       (if ((.branch // "") | test("^agent/issue-[0-9]+$")) then (.branch | sub("^agent/issue-"; "") | tonumber) else empty end))' <(units_history_index))
+       (if ((.branch // "") | test("^agent/issue-[0-9]+$")) then (.branch | sub("^agent/issue-"; "") | tonumber) else empty end))
+    | "\(.)\t\($p)\t\($s)"' <(units_history_index))
 }
 dep_delivered_in_ledger() { # release_dependency_blocks 从台账建一次快照，避免每个 blocker 重读全文件
   [[ "${DEP_DELIVERED_CACHE[$1]:-}" == 1 ]]
@@ -222,7 +227,7 @@ dep_release_delivered() { # unit-id blocker [true|false, when the caller already
   note="$(dep_delivered_note "$2")"
   if [[ -n "${3:-}" ]]; then [[ "$3" == true ]] || dep_task_note "$1" "$note"
   else jqf -e --arg id "$1" --arg n "$note" 'any(.units[]; .id == $id and ((.task // "") | contains($n)))' "$UNITS" >/dev/null || dep_task_note "$1" "$note"; fi
-  unblock_unit "$1" "#$2 delivered"
+  unblock_unit "$1" "#$2 delivered" "$2" delivered "#$2 delivered: ${DEP_DELIVERED_PR[$2]:-PR merged to main}"
 }
 # One pass over the blocked units (2026-11-08: 349 s on a ledger of 59 blocked units, the 10:47Z tick then died in dispatch_pending).
 # A row used to cost ~14 jq calls plus one parse of the merged hot+archive ledger (13 MB, ~0.4 s) for the dead-blocker and
@@ -577,8 +582,10 @@ dep_blocker_forget() { # dynamic local map: keep mutual-cycle checks current as 
     unset "DEP_BLOCKED_PAIR_COUNTS[$key]"
   fi
 }
-unblock_unit() { # unit reason
-  set_unit "$1" "$(hist unblocked "$2") | (if .dep_wait_delivery != null and .dep_wait_delivery == .blocked_on then del(.dep_wait_delivery, .unpark_condition) else . end) | del(.blocked_on) | .note=null | .stage=(if .blocked_resume_stage == \"repair-pending\" then \"repair-pending\" elif .pr != null then \"review-pending\" else \"implement-pending\" end) | del(.blocked_resume_stage)"
+unblock_unit() { # unit reason [released-issue kind why]: the triple lands in .released_deps so the review prompt can say the scheduler released it (review-rules.sh)
+  local rel=""
+  [[ "${3:-}" =~ ^[0-9]+$ ]] && rel=" | .released_deps = (((.released_deps // []) | map(select(.issue != $3))) + [{issue: $3, kind: $(js "$4"), reason: $(js "$5")}])"
+  set_unit "$1" "$(hist unblocked "$2")$rel | (if .dep_wait_delivery != null and .dep_wait_delivery == .blocked_on then del(.dep_wait_delivery, .unpark_condition) else . end) | del(.blocked_on) | .note=null | .stage=(if .blocked_resume_stage == \"repair-pending\" then \"repair-pending\" elif .pr != null then \"review-pending\" else \"implement-pending\" end) | del(.blocked_resume_stage)"
   say "unit $1 unblocked: $2"
 }
 

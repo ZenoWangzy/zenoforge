@@ -315,7 +315,8 @@ supervisor 裁决（${action}）后重排：$guidance"))"
     local dropped; dropped="$(jqf -r 'if (.blocked_on | type) == "number" then .blocked_on else empty end' <<<"$u")"
     if [[ -n "$dropped" ]]; then # the body reader re-derives blockers from the issue text; dependencies.sh skips dropped_deps
       extra=" | .dropped_deps=((.dropped_deps // []) + [$dropped] | unique) | .task += ($(js "
-Supervisor ruling: dependency #$dropped is resolved for this unit (dropped_deps); do not report blocked on it."))$extra"
+Supervisor ruling: dependency #$dropped is resolved for this unit (dropped_deps); do not report blocked on it."))
+        | .released_deps = (((.released_deps // []) | map(select(.issue != $dropped))) + [{issue: $dropped, kind: \"ruling\", reason: $(js "#$dropped ruled resolved by supervisor (${guidance:0:400})")}])$extra"
       guidance="$guidance (dropped blocker #$dropped)"
     fi
     extra=" | del(.blocked_on)$extra"

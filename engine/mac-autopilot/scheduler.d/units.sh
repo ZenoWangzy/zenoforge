@@ -25,7 +25,7 @@ units_history_doc() { _units_history_view doc; }
 units_history_index() { _units_history_view index; }
 # 合并视图缓存：键为两个文件的 mtime(ns)+大小，任一文件被写就换键重建；所以一拍内的几十次查找只付一次合并。
 _units_history_view() { # doc|index
-  local kind="$1" key dir f g proj='{units: [.units[] | {id, issue, branch, pr, stage, hold_handoff_episode}]}'
+  local kind="$1" key dir f g proj='{units: [.units[] | {id, issue, branch, pr, stage, hold_handoff_episode, merge_sha, land_sha}]}'
   if [[ ! -s "$UNITS_ARCHIVE" ]]; then
     if [[ "$kind" == doc ]]; then cat "$UNITS"; else jqf "$proj" "$UNITS"; fi
     return

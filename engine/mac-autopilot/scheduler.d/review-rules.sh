@@ -5,6 +5,11 @@ supervisor_rule() {
   while IFS= read -r r; do
     [[ -n "$r" && "$r" != "$note" ]] && printf '\n【supervisor 裁决（必须遵守，不得据此 BLOCK 或打回）】%s' "$r"
   done < <(jqf -r "$(cto_rulings_norm)[]" <<<"$1")
+  # Prerequisites the scheduler released without the issue being closed (.released_deps, dependencies.sh / supervisor-arbiter.sh).
+  while IFS= read -r r; do
+    printf '\n【调度器放行（必须遵守，不得据此 BLOCK 或返回 INPUT_INCOMPLETE）】%s' "$r"
+  done < <(jqf -r '(.released_deps // [])[] | "前置 " + .reason + "。调度器已放行本单元；请只按本单元自身范围评审，不得因 #\(.issue) 返回 INPUT_INCOMPLETE 或 BLOCKED-ON #\(.issue)。"
+    + (if .kind == "delivered" then "合并到 main 即算交付：产品 PR 用 Refs，issue 在发布前保持 OPEN 是正常的，不得因 issue 仍 OPEN 判前置未交付。" else "" end)' <<<"$1")
   return 0
 }
 decision_scope() { # unit-json -> prior decisions in history, for the next implementation worker

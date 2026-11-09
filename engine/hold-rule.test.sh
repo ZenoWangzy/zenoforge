@@ -59,6 +59,7 @@ printf 'ok - hold.sh --rule accepts --reroute\n'
   source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
   rule_entry issue-12 reroute u "dead blocker" ""
   [ "$(jq -r '.units[0] | .stage+"|"+(has("blocked_on")|tostring)+"|"+(.dropped_deps|tostring)+"|"+.history[-1].result' "$UNITS")" = "implement-pending|false|[5388]|supervisor ruling u: dead blocker (dropped blocker #5388)" ] || { echo "FAIL: reroute did not record the dropped blocker" >&2; exit 1; }
+  [ "$(jq -r '.units[0].released_deps[0] | "\(.issue)|\(.kind)|\(.reason)"' "$UNITS")" = "5388|ruling|#5388 ruled resolved by supervisor (supervisor ruling u: dead blocker)" ] || { echo "FAIL: reroute did not record the ruling in released_deps" >&2; exit 1; }
   park_if_body_blocked "$(jq -c '.units[0]' "$UNITS")" || :
   [ "$(jq -r '.units[0].stage' "$UNITS")" = implement-pending ] || { echo "FAIL: body reader re-blocked a rerouted unit" >&2; exit 1; }
   [ -z "$(unit_body_blockers "$(jq -c '.units[0]' "$UNITS")")" ] || { echo "FAIL: body reader still derives #5388" >&2; exit 1; }

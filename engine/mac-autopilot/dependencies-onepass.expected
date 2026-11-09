@@ -24,6 +24,13 @@
       "id": "issue-1",
       "issue": 1,
       "note": null,
+      "released_deps": [
+        {
+          "issue": 100,
+          "kind": "delivered",
+          "reason": "#100 delivered: PR merged to main"
+        }
+      ],
       "stage": "implement-pending",
       "task": "t\n\nScheduler note: predecessor #100 is delivered (its change is merged into main; an issue stays open until release). Do not report BLOCKED-ON #100."
     },
@@ -50,6 +57,13 @@
       "id": "issue-2",
       "issue": 2,
       "note": null,
+      "released_deps": [
+        {
+          "issue": 101,
+          "kind": "delivered",
+          "reason": "#101 delivered: PR merged to main"
+        }
+      ],
       "stage": "implement-pending",
       "task": "t\n\nScheduler note: predecessor #101 is delivered (its change is merged into main; an issue stays open until release). Do not report BLOCKED-ON #101."
     },
@@ -807,6 +821,13 @@ api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
       "id": "issue-1",
       "issue": 1,
       "note": null,
+      "released_deps": [
+        {
+          "issue": 100,
+          "kind": "delivered",
+          "reason": "#100 delivered: PR merged to main"
+        }
+      ],
       "stage": "implement-pending",
       "task": "t\n\nScheduler note: predecessor #100 is delivered (its change is merged into main; an issue stays open until release). Do not report BLOCKED-ON #100."
     },
@@ -833,6 +854,13 @@ api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
       "id": "issue-2",
       "issue": 2,
       "note": null,
+      "released_deps": [
+        {
+          "issue": 101,
+          "kind": "delivered",
+          "reason": "#101 delivered: PR merged to main"
+        }
+      ],
       "stage": "implement-pending",
       "task": "t\n\nScheduler note: predecessor #101 is delivered (its change is merged into main; an issue stays open until release). Do not report BLOCKED-ON #101."
     },
