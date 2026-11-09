@@ -77,7 +77,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
   cap_contract_file="${ZF_ENGINE_DIR:-$ROOT/engine}/prompts/supervisor-cap-triage.md"
   local token_context mark u id report log q pid w pid_file converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
   local -a launcher=() worker_command=()
-  local over_stop=false arbiter_profile="$SUPERVISOR_ARBITER_PROFILE" arbiter_effort="" arbiter_source_model="" arbiter_model_override="" arbiter_effort_override=""
+  local over_stop=false arbiter_profile="$SUPERVISOR_ARBITER_PROFILE" arbiter_effort="" arbiter_source_model="" arbiter_model_override="" arbiter_effort_override="" fallback_tuple=""
   # Apply terminal defaults before prompt availability, the in-flight ceiling, or dispatch budgets can
   # return from this tick. Active arbitration workers keep their own result; all other capped units stop now.
   while IFS= read -r u; do
@@ -186,7 +186,8 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     if [[ "$over_stop" != true ]]; then
       arbiter_source_model="$(codex_model_for_profile "$arbiter_profile" 2>/dev/null || true)"
       if [[ -n "$arbiter_source_model" ]] && model_not_found_cache_has "$arbiter_source_model"; then
-        arbiter_model_override=gpt-6-luna; arbiter_effort_override=max
+        fallback_tuple="$(model_not_found_fallback_tuple)" || { say "supervisor arbitration pending unit=$id: cached profile model unavailable and no policy fallback is available"; continue; }
+        IFS=$'\t' read -r arbiter_model_override arbiter_effort_override <<<"$fallback_tuple"
         say "model-not-found cache swap arbiter profile=$arbiter_profile from=$arbiter_source_model to=$arbiter_model_override effort=$arbiter_effort_override"
       fi
     fi

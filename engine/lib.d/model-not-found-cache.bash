@@ -19,8 +19,39 @@ model_not_found_cache_record() { # append model<TAB>expiry once per 24h outage w
   printf '%s\t%s\n' "$model" "$((now + 86400))" >> "$cache"
   flock -u "$lock_fd"; exec {lock_fd}>&-
 }
-codex_model_for_profile() { # active configured supervisor profile → its Codex model id
-  case "$1" in terra|gpt-6.1-terra) printf '%s\n' gpt-6.1-terra ;; *) return 1 ;; esac
+model_not_found_fallback_tuple() { # current policy work identity -> fallback model<TAB>effort
+  local identity provider model effort
+  identity="$(model_policy identity work 2>/dev/null)" || return 1
+  IFS=: read -r provider model effort <<<"$identity"
+  [[ "$provider" == codex && -n "$model" && -n "$effort" ]] || return 1
+  printf '%s\t%s\n' "$model" "$effort"
+}
+codex_model_for_profile() { # active configured supervisor profile -> its Codex model id
+  local profile="$1" config="${CODEX_HOME:-${HOME:-}/.codex}/config.toml" model
+  [[ -n "$profile" && "$profile" != *$'\n'* && -r "$config" ]] || return 1
+  model="$(awk -v profile="$profile" '
+    /^[[:space:]]*\[/ {
+      header=$0
+      sub(/^[[:space:]]*/, "", header)
+      sub(/[[:space:]]*$/, "", header)
+      if (header == "[profiles." profile "]") { active=1; next }
+      if (active) exit
+      active=0
+      next
+    }
+    active && /^[[:space:]]*model[[:space:]]*=/ {
+      value=$0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      if (value ~ /^"[^"]+"/) {
+        sub(/^"/, "", value)
+        sub(/".*$/, "", value)
+        if (value ~ /^[A-Za-z0-9._-]+$/) print value
+      }
+      exit
+    }
+  ' "$config")"
+  [[ -n "$model" ]] || return 1
+  printf '%s\n' "$model"
 }
 model_not_found_cache_observe_log() { # model log → record only an explicit model_not_found response
   [[ -r "$2" ]] && grep -Eiq 'model_not_found' "$2" || return 0

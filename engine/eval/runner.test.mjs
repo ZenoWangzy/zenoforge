@@ -235,6 +235,9 @@ test('supervisor stage-call keeps terra configured and uses luna max while its s
     const bin = join(dir, 'bin'), home = join(dir, 'home'), workerScratch = join(dir, 'worker-scratch');
     const firstArtifact = join(dir, 'first'), cachedArtifact = join(dir, 'cached'), calls = join(dir, 'codex.calls');
     for (const path of [bin, home, firstArtifact, cachedArtifact, workerScratch]) mkdirSync(path, { recursive: true });
+    const codexHome = join(home, '.codex');
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, 'config.toml'), '[profiles.terra]\nmodel = "gpt-6.1-terra"\n');
     const fakeCodex = `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "$CODEX_CALLS"
@@ -247,7 +250,7 @@ printf 'ACTION: requeue\\n' > "$out"
     const input = join(dir, 'input.json'), prompt = join(dir, 'prompt.md');
     writeFileSync(input, JSON.stringify({ issue: { number: 4367 }, priorState: {}, failure: '' })); writeFileSync(prompt, 'fixture');
     const run = artifact => execFileSync('bash', ['engine/eval/stage-call.sh', 'supervisor', resolve('.'), resolve('.'), prompt, artifact, input], {
-      encoding: 'utf8', env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, CODEX_CALLS: calls,
+      encoding: 'utf8', env: { ...process.env, HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:${process.env.PATH}`, CODEX_CALLS: calls,
         WORKER_SCRATCH_ROOT: workerScratch, ZF_SUPERVISOR_PROFILE: 'terra', EVAL_POLICY_FILE: resolve('engine/model-policy.default.json'),
         ZF_AGENT_TEST_MODE: '1', ZF_AGENT_TEST_ROOT: dir, AGENT_EXECUTION_MIN_MEM_MB: '1', AGENT_EXECUTION_MAX_LOAD: '1000000' },
     });

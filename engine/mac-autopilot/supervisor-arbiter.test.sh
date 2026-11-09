@@ -16,6 +16,12 @@ jq '.auto_merge = false | .advisor = false | .precheck = false | .supervisor_arb
 echo '{"units":[]}' > "$sup/autopi/units.json"
 echo '{"workers":[]}' > "$sup/autopi/workers.json"
 export MAC_AUTOPILOT_ROOT="$fixture/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$sup/autopi" WORKER_SCRATCH_ROOT="$fixture/worker-scratch"
+export CODEX_HOME="$fixture/codex-home"
+mkdir -p "$CODEX_HOME"
+cat > "$CODEX_HOME/config.toml" <<'TOML'
+[profiles.terra]
+model = "gpt-6.1-terra"
+TOML
 export ZF_CONFIG_ROOT="$fixture/repo/.zenoforge"
 mkdir -p "$ZF_CONFIG_ROOT/prompts"
 cp "$script_dir/../prompts/supervisor-arbiter.md" "$ZF_CONFIG_ROOT/prompts/supervisor-arbiter.md"

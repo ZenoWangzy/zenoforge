@@ -118,9 +118,11 @@ case "$stage" in
     profile_model="$(codex_model_for_profile "$profile" 2>/dev/null || true)"
     attempt_model="$profile_model"; model_args=(); swap_log=""
     if [[ -n "$profile_model" ]] && model_not_found_cache_has "$profile_model"; then
-      attempt_model=gpt-6-luna; model_args=(-m gpt-6-luna -c model_reasoning_effort=max)
-      swap_log="model-not-found cache swap eval-supervisor profile=$profile from=$profile_model to=$attempt_model effort=max"
-      record_identity "codex:$attempt_model:max"
+      fallback_tuple="$(model_not_found_fallback_tuple)" || exit 1
+      IFS=$'\t' read -r attempt_model fallback_effort <<<"$fallback_tuple"
+      model_args=(-m "$attempt_model" -c "model_reasoning_effort=$fallback_effort")
+      swap_log="model-not-found cache swap eval-supervisor profile=$profile from=$profile_model to=$attempt_model effort=$fallback_effort"
+      record_identity "codex:$attempt_model:$fallback_effort"
     else
       record_identity "codex:profile:$profile"
     fi
