@@ -3825,7 +3825,7 @@ EOF
     ROOT="$ZF_REPO_DIR" SCHEDULER_AGENT_LIB="$ENV_FAULT_LIB_DIR/lib.sh" SCHEDULER_SCOPE_LIB_DIR="$ENV_FAULT_LIB_DIR/lib.d"; scheduler_issue_state() { state_read "$1"; }
     eval "$(sed -n "/^scheduler_mark_canary_after_worker_start() (/,/^)/p" "$ENV_FAULT_LIB_DIR/mac-autopilot/scheduler.d/lib-bridge.sh")"; scheduler_mark_canary_after_worker_start 932
     echo "requeue_scheduler_canaries=$(jq -r .canaries "$qf")"; echo "requeue_scheduler_reservation=$(state_read 932 | jq -r ".run.conclusion.canary_reserved_scopes // empty")"
-    state_merge 932 '.run.conclusion.canary_reserved_scopes = "implement"'; STAGE_DISPATCH_CANARY_SCOPES=implement
+    state_merge 932 ".run.conclusion.canary_reserved_scopes = \"implement\""; STAGE_DISPATCH_CANARY_SCOPES=implement
     FAIL_SYSTEMD_LAUNCH=1; RUN_RC=0; export FAIL_SYSTEMD_LAUNCH RUN_RC; dispatch implement 932 || :
     unset FAIL_SYSTEMD_LAUNCH
     echo "failed_launch_canaries=$(jq -r .canaries "$qf")"; echo "failed_launch_memory_reserved=$(quarantine_stage_canary_pending implement && echo yes || echo no)"
