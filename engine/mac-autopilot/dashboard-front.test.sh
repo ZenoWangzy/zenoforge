@@ -313,4 +313,23 @@ assert rows[0]["task"] == "fs-triage-default", rows
 assert rows[1]["task"] == "Real issue title", rows
 print("dashboard fill_titles skips issue-less cards: PASS")
 CHECK
+# 8e. 首评通过率只有一个计算：看板 efficiency.review_first_pass 读 node-health.json 里 node_health 的同一个值。
+# Fixture: live approve; blocked-then-approved (first verdict counts); archived approve; expected 2 approved of 3 counted.
+now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$a/units.json" <<JSON
+{"units":[{"id":"fp-live","stage":"merged","history":[{"stage":"review-approve","at":"$(iso '-2 hours')"}]},
+ {"id":"fp-blocked","stage":"repair-pending","history":[{"stage":"review-block","at":"$(iso '-3 hours')"},{"stage":"review-approve","at":"$(iso '-1 hours')"}]}]}
+JSON
+printf '%s\n' "{\"units\":[{\"id\":\"fp-archived\",\"stage\":\"closed\",\"history\":[{\"stage\":\"review-approve\",\"at\":\"$(iso '-10 hours')\"}]}]}" > "$a/units-archive.json"
+: > "$f/audit.jsonl"
+python3 "$script_dir/node_health.py" --runtime "$a" --audit "$f/audit.jsonl" --hours 5 --now "$now" --json "$a/node-health.json" >/dev/null \
+  || fail "node_health --json failed"
+run >/dev/null
+dash_fp="$(sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -c '.efficiency.review_first_pass')"
+nh_fp="$(jq -c '.metrics[] | select(.id == "review.first_pass_pct") | .value' "$a/node-health.json")"
+[[ "$nh_fp" != "null" && -n "$nh_fp" ]] || fail "node_health emitted no review.first_pass_pct"
+[[ "$dash_fp" == "$nh_fp" ]] || fail "dashboard first_pass $dash_fp differs from node_health $nh_fp"
+python3 -c 'import sys; assert abs(float(sys.argv[1]) - 100 * 2 / 3) < 1e-6, sys.argv[1]' "$nh_fp" \
+  || fail "first_pass $nh_fp is not 2 of 3 counted"
+echo "dashboard first_pass equals node_health on one fixture: PASS"
 echo "dashboard-front.test.sh: PASS"

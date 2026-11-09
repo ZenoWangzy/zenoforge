@@ -639,7 +639,7 @@ except Exception:
 funnel = {}
 for u in units:
     funnel[u["stage"]] = funnel.get(u["stage"], 0) + 1
-first_pass = sum(1 for u in units for h in u.get("history", []) if h.get("result") == "APPROVE")
+first_pass = next((m.get("value") for m in ((read_json(f"{A}/node-health.json") or {}).get("metrics") or []) if m.get("id") == "review.first_pass_pct"), None)  # node_health's value: one computation
 rc = sum(1 for u in units for h in u.get("history", []) if h.get("result") == "REQUEST-CHANGES")
 def stage_minutes(u):
     h = u.get("history") or []
