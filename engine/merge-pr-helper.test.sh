@@ -349,6 +349,30 @@ if merge_pr_review_family_ok 17 >"$fixture/check-output" 2>&1; then fail 'a red 
 [[ "$(cat "$fixture/check-output")" == *'review-family.test.sh failed: not ok - dispatch line'* ]] || fail "review-family refusal lost its reason: $(cat "$fixture/check-output")"
 merge_pr_review_family() { return 0; }
 
+# Missing checkouts refuse both the size gate and the scheduler prelude.
+(
+  mkdir -p "$fixture/no-git"
+  cd "$fixture/no-git"
+  merge_pr_root() { git rev-parse --show-toplevel 2>/dev/null; }
+  failures=0
+  if merge_pr_size_ok 17 >"$fixture/no-git-size" 2>&1; then
+    printf 'merge-pr-helper.test.sh: size gate passed without a checkout\n' >&2
+    failures=$((failures + 1))
+  elif [[ "$(cat "$fixture/no-git-size")" != *'refusing to merge PR #17: no git checkout: cannot run size-ratchet'* ]]; then
+    printf 'merge-pr-helper.test.sh: size gate lost its no-checkout refusal: %s\n' "$(cat "$fixture/no-git-size")" >&2
+    failures=$((failures + 1))
+  fi
+  PR_FILES='["engine/mac-autopilot/scheduler.d/models.sh"]'
+  if merge_pr_scheduler_prelude_ok 17 >"$fixture/no-git-tree" 2>&1; then
+    printf 'merge-pr-helper.test.sh: tree gate passed without a checkout\n' >&2
+    failures=$((failures + 1))
+  elif [[ "$(cat "$fixture/no-git-tree")" != *'refusing to merge PR #17: scheduler.test.sh prelude failed: no git checkout: cannot run merge_pr_prelude_in on the PR head'* ]]; then
+    printf 'merge-pr-helper.test.sh: tree gate lost its no-checkout refusal: %s\n' "$(cat "$fixture/no-git-tree")" >&2
+    failures=$((failures + 1))
+  fi
+  (( failures == 0 ))
+) || fail 'a gate passed or lost its refusal without a git checkout'
+
 # A scheduler change runs the scheduler.test.sh prelude; a red prelude refuses, other changes skip it.
 merge_pr_scheduler_prelude() { echo called >> "$fixture/prelude-calls"; echo 'not ok - stale grep'; return 1; }
 : > "$fixture/prelude-calls"

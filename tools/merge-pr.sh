@@ -154,7 +154,10 @@ merge_pr_test_receipt_ok() {
 # Only this PR's own files: a main already over its baseline must not stop other merges.
 merge_pr_size_ok() {
   local pr="$1" root files over
-  root="$(merge_pr_root)" || return 0
+  root="$(merge_pr_root)" || {
+    merge_pr_refuse "$pr" 'no git checkout: cannot run size-ratchet'
+    return 1
+  }
   over="$({ bash "$root/tools/size-ratchet.sh" 2>&1 || true; } | grep '^FAIL ')" || return 0
   [[ "$(git -C "$root" rev-parse HEAD 2>/dev/null)" == "$(gh pr view "$pr" --json headRefOid 2>/dev/null | jq -r .headRefOid)" ]] || return 0
   files="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq -r '.files[].path')"
@@ -168,7 +171,10 @@ merge_pr_size_ok() {
 # The prelude of scheduler.test.sh holds the text assertions every shard runs, so one stale grep turns all eight red.
 merge_pr_with_tree() { # pr function: run function on an export of the PR's head
   local pr="$1" fn="$2" root tree ref="refs/zf-merge-pr/$1" rc=0
-  root="$(merge_pr_root)" || return 0
+  root="$(merge_pr_root)" || {
+    printf 'no git checkout: cannot run %s on the PR head\n' "$fn"
+    return 1
+  }
   git -C "$root" fetch -q origin "+pull/$pr/head:$ref" 2>&1 || return
   tree="$(mktemp -d)"
   if git -C "$root" archive "$ref" | tar -x -C "$tree"; then
