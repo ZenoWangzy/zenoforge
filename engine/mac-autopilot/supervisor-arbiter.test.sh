@@ -849,10 +849,11 @@ REPO=ZenoWangzy/zenoforge
 REQUEUE_TRANSITIONS="$fixture/requeue-transitions"; : > "$REQUEUE_TRANSITIONS"
 scheduler_issue_transition() {
   printf '%s:%s\n' "$1" "$2" >> "$REQUEUE_TRANSITIONS"
+  [[ "$1" != 9403 ]] || printf 'issue_transition: refused #9403 needs-advisor -> active state ready-for-agent (reason=supervisor-requeue)\n' >&2
   return 1
 }
 requeue_test_unit() {
-  units "$(jq -cn --arg id "$1" --argjson issue "$2" --argjson pr "$3" '{units:[{id:$id,issue:$issue,pr:$pr,lane:"pr",branch:("agent/"+$id),stage:"supervisor-review",history:[{stage:"review-request-changes",result:"F1",at:"2026-11-08T00:00:00Z"},{stage:"supervisor-escalated",result:"test requeue",at:"2026-11-08T00:01:00Z"}]}]}')"
+  units "$(jq -cn --arg id "$1" --argjson issue "$2" --argjson pr "$3" --argjson followup "${4:-null}" '{units:[{id:$id,issue:$issue,pr:$pr,split_followup:$followup,lane:"pr",branch:("agent/"+$id),stage:"supervisor-review",history:[{stage:"review-request-changes",result:"F1",at:"2026-11-08T00:00:00Z"},{stage:"supervisor-escalated",result:"test requeue",at:"2026-11-08T00:01:00Z"}]}]}')"
 }
 requeue_decision="$(decision_entry 'Supervisor arbitration: requeue' 'resume work' 'synthetic requeue failure case' '[]' supervisor)"
 
@@ -865,6 +866,23 @@ jq -e '.units[] | select(.id=="arbiter-tracker") | .history[-1].stage=="size-rec
 grep -Fq 'supervisor arbitration unit=arbiter-tracker: issue #9401 became a tracker; closed the recut unit and left open PR #99401 for head to decide' "$LOG" \
   || fail "a tracker requeue must name its open PR for head"
 [[ ! -s "$REQUEUE_TRANSITIONS" ]] || fail "a tracker requeue must not attempt an active-state transition"
+
+# A tracked size-admission continuation keeps the first-slice PR in its normal
+# requeue stage instead of closing it with the tracker parent.
+followup_json="$(jq -cn --arg body '由 #9404 按尺寸准入拆分出的续作票：第一个可独立交付切片在 PR #99404 送评审。' '{number:9405,title:"continuation",body:$body,state:"OPEN",labels:[]}')"
+followup_encoded="$(printf '%s' "$followup_json" | base64 | tr -d '\n')"
+followup_rows="$(printf '9405\tpr\tcontinuation\t[]\t%s' "$followup_encoded")"
+jq -cn --arg rows "$followup_rows" '{schema:4,created_at:(now|floor),rows:$rows}' > "$A/intake-candidates.json"
+gh_calls_before="$(wc -l < "$GH_CALLS")"
+printf '%s\n' '{"state":"tracker","recut_children":[9406]}' > "$issue_states/9404.json"
+requeue_test_unit arbiter-cited 9404 99404 9405
+supervisor_requeue_unit arbiter-cited requeue "resume the first slice" "$requeue_decision" || :
+[[ "$(field arbiter-cited .stage)" == repair-pending ]] || fail "a cited first-slice PR must continue through the normal requeue target"
+jq -e '.units[] | select(.id=="arbiter-cited") | .pr==99404 and .split_followup==9405 and .history[-1].stage=="supervisor-requeue"' "$UNITS" >/dev/null \
+  || fail "a cited first-slice PR must stay attached to its requeued unit"
+grep -Fq 'supervisor arbitration unit=arbiter-cited: issue #9404 became a tracker; continuation issue #9405 cites open PR #99404, carrying it to repair-pending' "$LOG" \
+  || fail "a cited first-slice PR must log why it is being carried forward"
+[[ "$(wc -l < "$GH_CALLS")" == "$gh_calls_before" ]] || fail "a fresh continuation cache must avoid an extra GitHub read"
 
 printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/9402.json"
 requeue_test_unit arbiter-ready 9402 99402
@@ -879,6 +897,8 @@ supervisor_requeue_unit arbiter-failure requeue "resume the repair" "$requeue_de
 [[ "$(field arbiter-failure .stage)" == parked ]] || fail "a failed requeue transition must durably park the unit"
 jq -e '.units[] | select(.id=="arbiter-failure") | .parked_reason=="supervisor-budget" and (.note|contains("issue #9403 could not be requeued to ready-for-agent")) and .history[-1].stage=="supervisor-requeue-failed"' "$UNITS" >/dev/null \
   || fail "the durable park must retain the transition failure as its reason"
+jq -e '.units[] | select(.id=="arbiter-failure") | .note|contains("issue_transition: refused #9403")' "$UNITS" >/dev/null \
+  || fail "the durable park must preserve the transition refusal"
 grep -Fq '9403:ready-for-agent' "$REQUEUE_TRANSITIONS" || fail "the other-state case must exercise a failed transition"
 eval "$saved_requeue_transition"
 REPO="$saved_requeue_repo"
