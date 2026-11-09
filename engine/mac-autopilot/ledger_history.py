@@ -204,7 +204,9 @@ def unchanged_head_token_pct(units, now, ts, window_hours=None):
     return 100 * wasted / spent if spent else None
 
 
-def metrics(units, now, ts, window_hours=None):
+def metrics(units, now, ts, window_hours=None, sample_counts=None):
     waits = sorted(first_review_waits(units, now, ts, window_hours))
+    if sample_counts is not None:
+        sample_counts[ID] = len(waits)
     return {ID: waits[min(len(waits) - 1, int(round(.9 * (len(waits) - 1))))] if waits else None,
             UNCHANGED: unchanged_head_token_pct(units, now, ts, window_hours)}

@@ -109,8 +109,8 @@ SOURCE = {
     "ci.out_per_day": "7 daily counts: p25 28, p10 13",
     "approve.out_per_day": "7 daily counts of review-approve events: p25 35, p10 30",
     "rereview.runs_per_day": "7 daily counts of rereview worker runs from worker cost rows: p25 35, p10 10",
-    "rereview.wall_p50": "7 d: 364 rereview runs with output, minutes p75 12.3, p90 16.1 (rounded up)",
-    "rereview.tokens_p50": "7 d: 6 rereview runs with measured tokens of 376 (small n, provisional): p75 199,330, p90 199,330. Healthy equals unhealthy, so no WARN band",
+    "rereview.wall_p50": "7 d ending 2026-11-09T17:58Z: 450 rereview runs with output, minutes p75 11.9, p90 15.8 (rounded up)",
+    "rereview.tokens_p50": "7 d ending 2026-11-09T17:58Z: 18 rereview runs with measured tokens: p75 270,358, p90 301,796. Healthy equals unhealthy, so no WARN band",
 }
 
 
@@ -234,7 +234,8 @@ def collect_windows(now, units, runs, runtime, agent_home, cost_rows=()):
             delta = round(current - prior, 2)
             trend = {"delta": delta, "direction": "up" if delta > 0 else "down" if delta < 0 else "flat"}
         result[key] = {"value_1h": periods[short][0][key] if short else None,
-                       "trend_1h": trend, "short_window": f"{short}h" if short else None}
+                       "trend_1h": trend, "short_window": f"{short}h" if short else None,
+                       "sample_n": periods[24][1][key]}
     return result
 
 

@@ -545,7 +545,7 @@ const ic = (n, cls="") => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidde
 
 /* ============ 状态 ============ */
 // node_health.py / gen_dashboard.py 给出的状态词 → 页面的四种颜色键
-const SK = {OK:"ok", WARN:"warn", UNHEALTHY:"bad", "NO-DATA":"none", "N/A":"none", ok:"ok", warn:"warn", bad:"bad", none:"none"};
+const SK = {OK:"ok", WARN:"warn", UNHEALTHY:"bad", "STANDARD-INVALID":"bad", "LOW-N":"warn", "NO-DATA":"none", "N/A":"none", ok:"ok", warn:"warn", bad:"bad", none:"none"};
 const SL = {ok:"健康", warn:"警告", bad:"不健康", none:"无数据"};
 const RANK = {none:0, ok:1, warn:2, bad:3};
 const sk = s => SK[s] || "none";
@@ -564,8 +564,8 @@ function bullet(o) {
   const pct = x => Math.max(0, Math.min(100, 100 * x / top));
   const zones = hib ? [[0,u,"bad"],[u,h,"warn"],[h,top,"ok"]] : [[0,h,"ok"],[h,u,"warn"],[u,top,"bad"]];
   const v = o.value==null ? null : Number(o.value), nl = !String(o.label||"").trim();
-  const short = (o.long_status ? ` · 长窗 ${o.long_status}` : "") + (Object.prototype.hasOwnProperty.call(o,"value_1h") ? ` · ${o.value_1h==null?"短窗无数据":`${o.short_window||"1h"} ${num(o.value_1h)} ${o.trend_1h?`${o.trend_1h.direction==="up"?"↑":o.trend_1h.direction==="down"?"↓":"→"}${o.trend_1h.delta>0?"+":""}${num(o.trend_1h.delta)}`:"趋势无数据"}`}` : "");
-  const tip = [o.label, o.desc, o.meaning, o.budget ? "预算 "+num(u) : (hib?"健康 ≥ ":"健康 ≤ ")+num(h)+(hib?"，不健康 ≤ ":"，不健康 ≥ ")+num(u), o.id].filter(Boolean).join("\n");
+  const short = (o.long_status ? ` · 长窗 ${o.long_status}` : "") + (o.status==="LOW-N" && o.sample_n!=null ? ` · n=${o.sample_n}` : "") + (Object.prototype.hasOwnProperty.call(o,"value_1h") ? ` · ${o.value_1h==null?"短窗无数据":`${o.short_window||"1h"} ${num(o.value_1h)} ${o.trend_1h?`${o.trend_1h.direction==="up"?"↑":o.trend_1h.direction==="down"?"↓":"→"}${o.trend_1h.delta>0?"+":""}${num(o.trend_1h.delta)}`:"趋势无数据"}`}` : "");
+  const tip = [o.label, o.desc, o.meaning, o.standard_basis, o.budget ? "预算 "+num(u) : (hib?"健康 ≥ ":"健康 ≤ ")+num(h)+(hib?"，不健康 ≤ ":"，不健康 ≥ ")+num(u), o.id].filter(Boolean).join("\n");
   return `<div class="bul zr s-${s}${nl?" nl":""}" data-tip="${esc(tip)}">${nl?"":`<i class="ad s-${s}"></i><span class="bul-l">${esc(o.label)}</span>`}
     <span class="a-t">${zones.filter(z=>pct(z[1])>pct(z[0])).map(z=>`<i class="z-${z[2]}" style="left:${pct(z[0])}%;width:${pct(z[1])-pct(z[0])}%"></i>`).join("")}${v==null?"":`<b style="left:${Math.min(pct(v),99)}%"></b>`}</span>
     <span class="bul-v"><b>${o.shown ?? num(v)}</b><small>${esc(o.unit||"")}${short}</small></span></div>`;
@@ -641,10 +641,10 @@ const NODE_MOD = {implement:"workers", review:"workers", repair:"workers", "revi
   pipeline:"workers", "ci+merge":"ci", release:"release", delivery:"release", "work-orders":"orders", host:"host", scheduler:"host"};
 const nodeMetrics = D => ((D.standards||{}).metrics||[]);
 const isTrendMetric = m => String(m.id||"").includes("_30d");
-const metricStatus = m => Object.prototype.hasOwnProperty.call(m,"value_1h") ? judge(m.value_1h,m) : m.status;
+const metricStatus = m => m.status==="STANDARD-INVALID" || m.status==="LOW-N" ? m.status : Object.prototype.hasOwnProperty.call(m,"value_1h") ? judge(m.value_1h,m) : m.status;
 const modMetrics = (D, mod) => nodeMetrics(D).filter(m => !isTrendMetric(m) && (ID_MOD[m.id] || NODE_MOD[m.node]) === mod);
 const bNode = m => { const lb = LABELS[m.id] || [/[\u4e00-\u9fff]/.test(m.desc || "") ? m.desc : ((PLAIN[m.id] || [])[0] || firstSentence(m.meaning) || m.desc), ""];
-  return bullet({id:m.id, label:lb[0], unit:lb[1], value:m.value, value_1h:m.value_1h, trend_1h:m.trend_1h, short_window:m.short_window, long_status:m.status, healthy:m.healthy, unhealthy:m.unhealthy, hib:m.higher_is_better, status:metricStatus(m), desc:m.desc, meaning:m.meaning, source:m.source}); };
+  return bullet({id:m.id, label:lb[0], unit:lb[1], value:m.value, value_1h:m.value_1h, trend_1h:m.trend_1h, short_window:m.short_window, long_status:m.status, sample_n:m.sample_n, standard_basis:m.standard_basis, healthy:m.healthy, unhealthy:m.unhealthy, hib:m.higher_is_better, status:metricStatus(m), desc:m.desc, meaning:m.meaning, source:m.source}); };
 const FR = D => D.front || {};
 // 指标行列表：异常、警告、无数据的行直接显示，正常的折成一行
 const isOk = h => /^<div class="bul zr s-ok/.test(h);
@@ -1349,7 +1349,7 @@ const ZF_NAMES = {"approve-after-green":"绿灯后自动批准", "maintenance-bu
 const zfName = k => { const x = String(k).replace(/^zf-/, ""); return ZF_NAMES[x] || x.replace(/-/g, " "); };
 function anomRow(m) { const lb = LABELS[m.id], st = sk(metricStatus(m)), hib = !!m.higher_is_better, h = +m.healthy, u = +m.unhealthy, top = Math.max(Math.abs(h), Math.abs(u)) * (hib ? 1.4 : 1.6) || 1;
     const pc = x => Math.max(0, Math.min(100, 100 * x / top)), v = m.value == null ? null : +m.value, unit = lb ? lb[1] : "", pl = PLAIN[m.id] || [lb ? lb[0] : firstSentence(m.meaning) || m.desc, ""];
-    const fv = v == null ? "—" : (Math.abs(v) >= 100 ? Math.round(v) : +v.toFixed(1)) + (unit ? " " + unit : ""), short = Object.prototype.hasOwnProperty.call(m,"value_1h") ? (m.value_1h==null?"短窗无数据":`${m.short_window||"1h"} ${num(m.value_1h)}${m.trend_1h?` · ${m.trend_1h.direction==="up"?"↑":m.trend_1h.direction==="down"?"↓":"→"}${m.trend_1h.delta>0?"+":""}${num(m.trend_1h.delta)}`:" · 趋势无数据"}`) : "";
+    const fv = v == null ? "—" : (Math.abs(v) >= 100 ? Math.round(v) : +v.toFixed(1)) + (unit ? " " + unit : "") + (m.status==="LOW-N" && m.sample_n!=null ? ` (n=${m.sample_n})` : ""), short = Object.prototype.hasOwnProperty.call(m,"value_1h") ? (m.value_1h==null?"短窗无数据":`${m.short_window||"1h"} ${num(m.value_1h)}${m.trend_1h?` · ${m.trend_1h.direction==="up"?"↑":m.trend_1h.direction==="down"?"↓":"→"}${m.trend_1h.delta>0?"+":""}${num(m.trend_1h.delta)}`:" · 趋势无数据"}`) : "";
     const zones = hib ? [[0,u,"bad"],[u,h,"warn"],[h,top,"ok"]] : [[0,h,"ok"],[h,u,"warn"],[u,top,"bad"]];
     return `<div class="anom" data-m="${metricMod(m)}" data-tip="${esc(m.meaning || "")}"><i class="ad s-${st}"></i><span class="a-n">${esc(PLAIN_NODE[m.node] || m.node)}</span><span class="a-l">${esc(pl[0])}<small>${esc(pl[1])}</small></span>
       <span class="a-t">${zones.filter(z => pc(z[1]) > pc(z[0])).map(z => `<i class="z-${z[2]}" style="left:${pc(z[0])}%;width:${pc(z[1]) - pc(z[0])}%"></i>`).join("")}${v == null ? "" : `<b style="left:${Math.min(pc(v), 99)}%"></b>`}</span><span class="a-v">${esc(fv)}<small>${m.status?`长窗 ${esc(m.status)}`:""}${short?` · ${esc(short)}`:""}</small></span></div>`; }

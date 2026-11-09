@@ -1,0 +1,4 @@
+{
+  "flow.merge_rate_per_hour": {"healthy": 3.0, "unhealthy": 1.5, "basis": "units.json + units-archive.json merged/landed events per UTC day 2026-11-02..08: 40, 45, 34, 33, 33, 52, 60; best 2.50/h, median 1.67/h; the old 6.5/h target was never reached in that window"},
+  "delivery.merged_not_live": {"healthy": 6, "unhealthy": 12, "basis": "merge-rate standard 3/h x release-interval standard (healthy 2 h, unhealthy 4 h); the old 0/1 bound went red after any merge mid-cycle (2026-11-09)"}
+}

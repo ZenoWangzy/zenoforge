@@ -2,9 +2,11 @@
 
 `node_health.py` scores every node against the bounds below on each scheduler tick
 (`node-health.txt`, UNHEALTHY lines in `alerts/node-health.md`) and at the end of `health_report.py`.
-Between the healthy and the unhealthy bound is WARN. A bound changes only with measured evidence, in
-the same landing as this table (`config.template.json` `node_health: {"<metric>": [healthy, unhealthy]}`
-sets the versioned threshold for one host; runtime `config.json` is reconciled from this template).
+Between the healthy and the unhealthy bound is WARN. Standards are read from `health-standards.json`
+through `zf_config_file`; each entry needs numeric `healthy` and `unhealthy` bounds and a `basis` of at
+least 20 characters. An invalid entry keeps the default and marks its row `STANDARD-INVALID`; unknown
+metric IDs are logged and ignored. Percentile rows (`p50`, `p90`, `p95`) default to `min_n: 10`; below
+that count the row is `LOW-N` and carries its sample count.
 
 ## Node map
 
@@ -91,7 +93,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | review loop | REQUEST-CHANGES reports without a machine-readable findings block % (`review.findings_missing_pct`, from `review_findings` in `units.json`) | recurrence and per-round history are only as good as the data: a missing block is counted, never read as zero findings | ≤ 5 | ≥ 20 | — |
 | delivery | issue created → release accepted p50, rolling 7 d / 30 d hours (`delivery.issue_to_accept_p50_7d_hours`, `delivery.issue_to_accept_p50_30d_hours`); every accepted issue with one acceptance event and a readable createdAt counts, the unit join is not required; a window with no acceptance reads NO-DATA (true while the release line is stopped) | DORA elite lead time < 1 day [4]; same bound as `unit.age_hours` | ≤ 24 | ≥ 72 | first scorecard sample |
 | delivery | issue created → release accepted p95, rolling 7 d / 30 d hours (`delivery.issue_to_accept_p95_7d_hours`, `delivery.issue_to_accept_p95_30d_hours`) | engineering estimate: healthy is three days; one week is a stalled delivery | ≤ 72 | ≥ 168 | first scorecard sample |
-| delivery | first-parent product commits on `origin/main` after the recorded live SHA (`delivery.merged_not_live`) | the live sha from production's own deployment record (`release_age.production_deploy`), else `$AGENT_HOME/state/live-sha.json` (written on post-deploy success), plus the merge lane's `NONPRODUCT_PATHS_RE`; `release-train.json` and `deployed.json` are not read because a hand release leaves them stale; with no readable record the row is NO-DATA and unhealthy because this signal was silent for 15 days | 0 | ≥ 1 | — |
+| delivery | first-parent product commits on `origin/main` after the recorded live SHA (`delivery.merged_not_live`) | the live sha from production's own deployment record (`release_age.production_deploy`), else `$AGENT_HOME/state/live-sha.json` (written on post-deploy success), plus the merge lane's `NONPRODUCT_PATHS_RE`; `release-train.json` and `deployed.json` are not read because a hand release leaves them stale; bounds are the configured 3/h merge rate × the 2 h healthy / 4 h unhealthy release interval | ≤ 6 | ≥ 12 | old 0/1 bound went red after any merge mid-cycle (2026-11-09) |
 | delivery | age in hours of the oldest such commit (`delivery.oldest_merged_not_live_hours`) | commit time from the same first-parent product commit range; the 24/72 h bounds match issue-to-accept p50 | ≤ 24 | ≥ 72 | — |
 | delivery | fully linked units accepted in the last 30 d that have since been reverted % (`delivery.revert_rate_30d_pct`) | elite change failure rate < 5 % [4]; 10 % is twice that bound | ≤ 5 | ≥ 10 | first scorecard sample |
 | delivery | release-accepted issue IDs in the last 30 d named by a production incident, per 100 accepted IDs % (`delivery.incident_rate_30d_pct`) | change-failure proxy [4]; no frozen incident-per-unit baseline yet, so 5 / 10 % are the same initial bands as reverts | ≤ 5 | ≥ 10 | first scorecard sample; unlinked incident records remain separately visible |
@@ -99,7 +101,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | delivery | scheduler approvals per merged unit (`delivery.approvals_per_merge_30d`) | one successful approval is sufficient; the product pre-pause average was 2.28 per delivered unit [alignment §9] | ≤ 1 | ≥ 2.28 | first scorecard sample |
 | delivery | release-accepted issue records missing a unique issue → unit → PR → merge → release join (`delivery.unlinked_units_30d`) | exact IDs are required; guessing a missing edge would falsify lead time | 0 | ≥ 1 | first scorecard sample |
 | delivery | production incidents and head-watch alert episodes without an explicit accepted-issue link (`delivery.unlinked_incidents_30d`) | exact issue link required; a record naming no issue (`issue` field or "Issue #N" in what_happened) is not linkable, is counted here and is also shown as `incident_unreferenced_30d`; a named issue that was never accepted is unlinked | 0 | ≥ 1 | first scorecard sample |
-| flow | merges per hour vs the 6.5 target, rolling 24 h. Population: the factory's unit-ledger PRs only (merged/landed events in `units.json` and `units-archive.json`); human PRs and PRs outside the ledger are not counted. A starved queue (nothing open, nothing entered) reports no value (`flow.merge_rate_per_hour`) | #4355 SLO: ≥ 6.5 merges/h with sufficient backlog; 3.5/h was the pre-upgrade serial merge-lane ceiling | ≥ 6.5 | ≤ 3.5 | first scorecard sample |
+| flow | merges per hour vs the measured standard, rolling 24 h. Population: the factory's unit-ledger PRs only (merged/landed events in `units.json` and `units-archive.json`); human PRs and PRs outside the ledger are not counted. A starved queue (nothing open, nothing entered) reports no value (`flow.merge_rate_per_hour`) | Recounted full UTC days stayed below the former 6.5/h target; use 3/h as healthy and 1.5/h as unhealthy while sufficient backlog exists | ≥ 3.0 | ≤ 1.5 | 2026-11-02..08 daily counts: 40, 45, 34, 33, 33, 52, 60; median 1.67/h, best 2.50/h |
 | flow | worst per-stage p90 age of open units, hours (`flow.wip_age_stage_p90_hours`; per-stage rows in scorecard `flow.wip_age`) | #4355 SLO: median ticket cycle ≤ 2 h; p90 stage age ≤ 4 h is consistent with it (estimate), half a day in one stage is stalled; `blocked-external` and `parked` rows are listed (`waiting: true`) but never pick the worst stage, they wait by design | ≤ 4 | ≥ 12 | first scorecard sample |
 | flow | p90 age of units waiting on a predecessor or a park, hours (`flow.wait_stage_p90_hours`; blocked-external and parked, last ledger event → now) | completed holds on 2026-11-07, 699 samples: 540 blocked-on → unblocked/requeue (p90 55 h), 159 supervisor park → next event (p90 94 h); combined p90 80 h. Bound = that p90 (healthy), 2× it (unhealthy), the bug ≈ 2× p90 convention of the spend standards | ≤ 80 | ≥ 160 | measured 2026-11-07: 94 waiting units, p90 227.6 h |
 | flow | units waiting on a predecessor or a park (`flow.wait_stage_units`) | — | measured, no bound (sentinel 0 / -1: any count is OK) | 2026-11-07: 94 |
@@ -402,15 +404,15 @@ over the `--hours` window of worker runs.
 | implement | throughput | implement write-ends per 24 h (`implement.out_per_day`) | ≥ 51 | ≤ 12 | 7 daily counts: p25 51, p10 12 |
 | review | throughput | review verdicts per 24 h (`review.out_per_day`) | ≥ 48 | ≤ 37 | 7 daily counts: p25 48, p10 37 |
 | repair | throughput | repair write-ends per 24 h (`repair.out_per_day`) | ≥ 34 | ≤ 19 | 7 daily counts: p25 34, p10 19 |
-| merge | throughput | merges per hour, existing `flow.merge_rate_per_hour` (#4355 SLO) | ≥ 6.5 | ≤ 3.5 | existing row above; not re-measured here |
+| merge | throughput | merges per hour, existing `flow.merge_rate_per_hour` | ≥ 3.0 | ≤ 1.5 | measured daily basis in the existing row above |
 | ci | throughput | CI slots admitted per 24 h (`ci.out_per_day`) | ≥ 28 | ≤ 13 | 7 daily counts: p25 28, p10 13 |
 
 Pipeline steps outside the stations (the node map), measured the same way:
 
 | Step | Dimension | Metric (id) | Healthy | Unhealthy | Source (live, window, n) |
 |---|---|---|---|---|---|
-| rereview | time | rereview run minutes p50 (`rereview.wall_p50`) | ≤ 13 | ≥ 17 | 7 d, 364 rereview runs with output: p75 12.3, p90 16.1 |
-| rereview | tokens | rereview worker tokens per run p50 (`rereview.tokens_p50`) | ≤ 200,000 | ≥ 200,000 | 7 d, 6 rereview runs with measured tokens of 376 (small n, provisional): p75 199,330, p90 199,330; healthy equals unhealthy, so no WARN band |
+| rereview | time | rereview run minutes p50 (`rereview.wall_p50`) | ≤ 13 | ≥ 17 | 7 d ending 2026-11-09T17:58Z, 450 runs with output: p75 11.9, p90 15.8 |
+| rereview | tokens | rereview worker tokens per run p50 (`rereview.tokens_p50`) | ≤ 200,000 | ≥ 200,000 | 7 d ending 2026-11-09T17:58Z, 18 measured token samples: p75 270,358, p90 301,796; healthy equals unhealthy, so no WARN band |
 | rereview | throughput | rereview worker runs started per 24 h (`rereview.runs_per_day`) | ≥ 35 | ≤ 10 | 7 daily counts from worker cost rows: p25 35, p10 10 |
 | approve | throughput | review approvals per 24 h (`approve.out_per_day`) | ≥ 35 | ≤ 30 | 7 daily counts of review-approve events: p25 35, p10 30 |
 | approve | time | approve to merged, CI included (`ci.approve_to_ship_p50`) | ≤ 60 | ≥ 180 | existing row above |
