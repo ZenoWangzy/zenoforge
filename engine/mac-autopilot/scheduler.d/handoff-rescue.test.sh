@@ -407,15 +407,20 @@ grep -q '^+side$' "${saved[0]}/staged.patch" && grep -q '^+unstaged$' "${saved[0
 [[ "$(git --git-dir="$origin" show "$RESCUE_START_SHA:a.txt")" == $'one\nunstaged' ]] || fail "the unstaged edit was not handed on"
 
 # A push the remote refuses: the merge and the stash stay where they are, the local copy is kept past expiry.
+rm -f "$A/rescue-push-failed.once"
 aside_clone
 printf 'local\n' > "$wt/c.txt"; git -C "$wt" add c.txt; git -C "$wt" commit -qm local
 finished_merge; gitdir="$(git -C "$wt" rev-parse --absolute-git-dir)"; touch -d '10 minutes ago' "$gitdir/MERGE_HEAD"
 touch "$fixture/hook-refuses"
 refused_intact "a merge whose push was refused" "rescue push failed"
-rm -f "$fixture/hook-refuses"
 [[ -e "$gitdir/MERGE_HEAD" ]] || fail "the merge was aborted after a failed push"
 kept=("$WT_ROOT"/wt-issue-70.preserved-*); [[ ${#kept[@]} == 1 && -e "${kept[0]}/push-pending" ]] || fail "the failed push left no pending local copy"
 [[ "$(cat "$fixture/say.log")" == "handoff rescue unit=issue-70 push failed: kept ${kept[0]}; owner=head" ]] || fail "the push-failed line is wrong: $(cat "$fixture/say.log")"
+[[ "$(cat "$fixture/inbox")" == "rescue-push-failed unit=issue-70 path=${kept[0]}" ]] || fail "the supervisor inbox line is wrong: $(cat "$fixture/inbox")"
+# A second tick with the same push still refused: no repeat of the log line or the inbox entry.
+rescue_handoff_clone 70 "$wt" && fail "the second tick's push did not refuse"
+[[ "$(wc -l < "$fixture/say.log")" == 1 && "$(wc -l < "$fixture/inbox")" == 1 ]] || fail "the second tick repeated the push-failed line or the inbox entry"
+rm -f "$fixture/hook-refuses"
 NOW_EPOCH=$(( $(date +%s) + 8 * 86400 )) expire_preserved_clones
 [[ -d "${kept[0]}" ]] || fail "a copy whose push failed was expired"
 aside_clone

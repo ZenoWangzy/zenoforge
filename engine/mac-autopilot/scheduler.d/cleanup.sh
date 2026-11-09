@@ -138,7 +138,16 @@ rescue_keep_dir() { # unit -> 0 with RESCUE_DIR set
   mkdir -p -m 700 -- "$RESCUE_DIR" 2>/dev/null && : > "$RESCUE_DIR/push-pending"
 }
 # Every commit no remote holds goes to rescued/<unit>-<stamp> (HEAD) or rescued/<unit>-<stamp>-<branch>, with a patch copy in dir.
-# A failed push keeps dir and its push-pending mark, logs one line, and refuses without touching stashes or merge state.
+# A failed push keeps dir and its push-pending mark, and refuses without touching stashes or merge state (rescue_push_failed reports it).
+# rescue_push_failed: one log line and one supervisor inbox line per path+SHA; the once file (clones.sh pattern) gates both on every tick.
+rescue_push_failed() { # unit dir sha
+  local key="$2 $3" once="$A/rescue-push-failed.once"
+  grep -Fqx -- "$key" "$once" 2>/dev/null && return 0
+  printf '%s\n' "$key" >> "$once"
+  say "handoff rescue unit=$1 push failed: kept $2; owner=head"
+  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "rescue-push-failed:$1:$3" "rescue-push-failed unit=$1 path=$2") \
+    || say "handoff rescue unit=$1: could not notify supervisor about $2"
+}
 rescue_push_unpushed() { # clone unit dir -> 0 once all are on the remote; else RESCUE_REFUSED says why
   local wt="$1" id="$2" dir="$3" name sha ref unpushed head_sha i=0
   head_sha="$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null)" || { RESCUE_REFUSED="unreadable HEAD"; return 1; }
@@ -150,10 +159,7 @@ rescue_push_unpushed() { # clone unit dir -> 0 once all are on the remote; else 
     else ref="rescued/$id-${dir##*.preserved-}-$name"; fi
     i=$((i + 1))
     git -C "$wt" format-patch -q -o "$dir/unpushed-$i" "$sha" --not --remotes >/dev/null 2>&1 || { RESCUE_REFUSED="could not copy the unpushed commits"; return 1; }
-    rescue_push_verified "$wt" "$sha" "$ref" || {
-      RESCUE_REFUSED="rescue push failed"
-      say "handoff rescue unit=$id push failed: kept $dir; owner=head"; return 1
-    }
+    rescue_push_verified "$wt" "$sha" "$ref" || { RESCUE_REFUSED="rescue push failed"; rescue_push_failed "$id" "$dir" "$sha"; return 1; }
   done < <({ printf 'HEAD %s\n' "$head_sha"; git -C "$wt" for-each-ref --format='%(refname:short) %(objectname)' refs/heads; })
   rm -f -- "$dir/push-pending"
 }
