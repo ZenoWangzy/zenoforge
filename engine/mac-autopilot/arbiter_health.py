@@ -41,9 +41,9 @@ SPEND_WORKER_STAGES = {"pr-opened", "repair-delivered", "repair-no-push", "self-
                        "implement-no-changes", "review-approve", "review-request-changes", "review-block", "worker-no-output"}
 
 
-def ledger_metrics(units, now, timestamp):
+def ledger_metrics(units, now, timestamp, window_hours=None):
     """Count arbitration dispatches and defaults over a fixed rolling 24-hour window."""
-    day = now - timedelta(hours=24)
+    day = now - timedelta(hours=window_hours or 24)
     counts = {"supervisor.arbiter_dispatches_24h": 0, "supervisor.cap_default_24h": 0, "supervisor.repeat_guard_24h": 0,
               "supervisor.token_parks_24h": 0, "supervisor.spend_ledger_blind": 0, "supervisor.stop_loss_same_failure_parked": 0}
     stages = {"supervisor-arbiter": "supervisor.arbiter_dispatches_24h",
@@ -59,7 +59,7 @@ def ledger_metrics(units, now, timestamp):
             at = timestamp(event.get("at")) if metric else None
             if at is not None and day <= at <= now:
                 counts[metric] += 1
-    window = now - timedelta(hours=6)
+    window = now - timedelta(hours=min(window_hours or 6, 6))
     ran = recorded = False
     for unit in units:
         ran = ran or any(e.get("stage") in SPEND_WORKER_STAGES and (timestamp(e.get("at")) or window) > window for e in unit.get("history") or [])

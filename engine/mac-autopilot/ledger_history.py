@@ -83,9 +83,9 @@ MEANING = {ID: "PR 开出到第一个评审结论的 p90 分钟，滚动 7 天�
 SOURCE = {ID: "units.json 每个 pr-opened → 之后第一个 review-approve / review-request-changes / review-block；停在 review-pending 的最新 PR 按 now 计"}
 
 
-def first_review_waits(units, now, ts):
+def first_review_waits(units, now, ts, window_hours=None):
     """Minutes from each pr-opened to its first review verdict over 7 days; a PR still in review-pending counts its age."""
-    since, waits = now - timedelta(days=7), []
+    since, waits = now - (timedelta(hours=window_hours) if window_hours else timedelta(days=7)), []
     for u in units:
         kinds = sorted((ts(h["at"]), h.get("stage") or "") for h in u.get("history") or [] if ts(h.get("at")))
         opens = [i for i, (_, k) in enumerate(kinds) if k == "pr-opened"]
@@ -106,9 +106,9 @@ MEANING[UNCHANGED] = "过去 24 小时内，返工运行里「PR head 没有变�
 SOURCE[UNCHANGED] = "units.json（含 units-archive.json）单元历史里 repair-delivered / repair-no-push 事件的 head_class 与 fresh_tokens（harvest 写入：派发时记的 PR head 对比结束时 origin 分支 head），事件时间固定滚动 24h；没有 head_class 的旧事件不读"
 
 
-def unchanged_head_token_pct(units, now, ts):
+def unchanged_head_token_pct(units, now, ts, window_hours=None):
     """Share of fresh tokens spent on repair runs whose PR head did not move; None while no run in the window is classified."""
-    since, spent, wasted = now - timedelta(hours=24), 0, 0
+    since, spent, wasted = now - timedelta(hours=window_hours or 24), 0, 0
     for u in units:
         for h in u.get("history") or []:
             tokens, at = h.get("fresh_tokens"), ts(h.get("at"))
@@ -119,7 +119,7 @@ def unchanged_head_token_pct(units, now, ts):
     return 100 * wasted / spent if spent else None
 
 
-def metrics(units, now, ts):
-    waits = sorted(first_review_waits(units, now, ts))
+def metrics(units, now, ts, window_hours=None):
+    waits = sorted(first_review_waits(units, now, ts, window_hours))
     return {ID: waits[min(len(waits) - 1, int(round(.9 * (len(waits) - 1))))] if waits else None,
-            UNCHANGED: unchanged_head_token_pct(units, now, ts)}
+            UNCHANGED: unchanged_head_token_pct(units, now, ts, window_hours)}

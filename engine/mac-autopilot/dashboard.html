@@ -564,10 +564,11 @@ function bullet(o) {
   const pct = x => Math.max(0, Math.min(100, 100 * x / top));
   const zones = hib ? [[0,u,"bad"],[u,h,"warn"],[h,top,"ok"]] : [[0,h,"ok"],[h,u,"warn"],[u,top,"bad"]];
   const v = o.value==null ? null : Number(o.value), nl = !String(o.label||"").trim();
+  const short = (o.long_status ? ` · 长窗 ${o.long_status}` : "") + (Object.prototype.hasOwnProperty.call(o,"value_1h") ? ` · ${o.value_1h==null?"短窗无数据":`${o.short_window||"1h"} ${num(o.value_1h)} ${o.trend_1h?`${o.trend_1h.direction==="up"?"↑":o.trend_1h.direction==="down"?"↓":"→"}${o.trend_1h.delta>0?"+":""}${num(o.trend_1h.delta)}`:"趋势无数据"}`}` : "");
   const tip = [o.label, o.desc, o.meaning, o.budget ? "预算 "+num(u) : (hib?"健康 ≥ ":"健康 ≤ ")+num(h)+(hib?"，不健康 ≤ ":"，不健康 ≥ ")+num(u), o.id].filter(Boolean).join("\n");
   return `<div class="bul zr s-${s}${nl?" nl":""}" data-tip="${esc(tip)}">${nl?"":`<i class="ad s-${s}"></i><span class="bul-l">${esc(o.label)}</span>`}
     <span class="a-t">${zones.filter(z=>pct(z[1])>pct(z[0])).map(z=>`<i class="z-${z[2]}" style="left:${pct(z[0])}%;width:${pct(z[1])-pct(z[0])}%"></i>`).join("")}${v==null?"":`<b style="left:${Math.min(pct(v),99)}%"></b>`}</span>
-    <span class="bul-v"><b>${o.shown ?? num(v)}</b><small>${esc(o.unit||"")}</small></span></div>`;
+    <span class="bul-v"><b>${o.shown ?? num(v)}</b><small>${esc(o.unit||"")}${short}</small></span></div>`;
 }
 // 环形量表：pct 0–100；marks 是界线位置（百分比）
 function ring(pct, s, size=84, center="", marks=[]) {
@@ -639,9 +640,11 @@ const ID_MOD = {"loop.advisor_fail_pct":"advisor"};
 const NODE_MOD = {implement:"workers", review:"workers", repair:"workers", "review-loop":"workers", workers:"workers", supervisor:"workers",
   pipeline:"workers", "ci+merge":"ci", release:"release", delivery:"release", "work-orders":"orders", host:"host", scheduler:"host"};
 const nodeMetrics = D => ((D.standards||{}).metrics||[]);
-const modMetrics = (D, mod) => nodeMetrics(D).filter(m => (ID_MOD[m.id] || NODE_MOD[m.node]) === mod);
+const isTrendMetric = m => String(m.id||"").includes("_30d");
+const metricStatus = m => Object.prototype.hasOwnProperty.call(m,"value_1h") ? judge(m.value_1h,m) : m.status;
+const modMetrics = (D, mod) => nodeMetrics(D).filter(m => !isTrendMetric(m) && (ID_MOD[m.id] || NODE_MOD[m.node]) === mod);
 const bNode = m => { const lb = LABELS[m.id] || [/[\u4e00-\u9fff]/.test(m.desc || "") ? m.desc : ((PLAIN[m.id] || [])[0] || firstSentence(m.meaning) || m.desc), ""];
-  return bullet({id:m.id, label:lb[0], unit:lb[1], value:m.value, healthy:m.healthy, unhealthy:m.unhealthy, hib:m.higher_is_better, status:m.status, desc:m.desc, meaning:m.meaning, source:m.source}); };
+  return bullet({id:m.id, label:lb[0], unit:lb[1], value:m.value, value_1h:m.value_1h, trend_1h:m.trend_1h, short_window:m.short_window, long_status:m.status, healthy:m.healthy, unhealthy:m.unhealthy, hib:m.higher_is_better, status:metricStatus(m), desc:m.desc, meaning:m.meaning, source:m.source}); };
 const FR = D => D.front || {};
 // 指标行列表：异常、警告、无数据的行直接显示，正常的折成一行
 const isOk = h => /^<div class="bul zr s-ok/.test(h);
@@ -980,7 +983,7 @@ function vRelease(D) {
 const STSK = {OK:"ok", STALLED:"bad", PAUSED:"none", HELD:"none"};
 function allStatuses(D) {
   const F = FR(D);
-  return [...nodeMetrics(D).map(m=>sk(m.status)), ...Object.values(F.status||{}).map(sk), ...Object.keys(ciStd(D)).map(k=>sk(ciStatus(D,k))),
+  return [...nodeMetrics(D).filter(m=>!isTrendMetric(m)).map(m=>sk(metricStatus(m))), ...Object.values(F.status||{}).map(sk), ...Object.keys(ciStd(D)).map(k=>sk(ciStatus(D,k))),
     ...(((D.standards||{}).time_sinks)||[]).map(r=>sk(r.status)), ...Object.values(((D.stations||{}).stations)||{}).map(r=>STSK[r.status]||"none")];
 }
 function sumHealth(D) {
@@ -1005,7 +1008,7 @@ const bMech = m => bullet({id:m.id, label:m.desc, unit:"", value:m.silent_hours,
   meaning:m.not_operating?`未运行：${m.not_operating}。事件不代表它在工作，负责人 ${m.supervisor}`:`最近事件 ${m.last_event_at?utc(m.last_event_at):"从未"}，负责人 ${m.supervisor}${m.held?"，已暂停（运行配置里该机制的开关为 false，有意关停，不算沉默）":m.expected_idle?"，允许长期无事件（expected_idle，不报警）":""}\n沉默上限 ${num(m.bound_hours)} 时；事件模式见 engine/state/mechanism-registry.json`,
   source:"机制登记表（state/mechanism-registry.json）的事件模式"});
 function vHealth(D) {
-  const STD = D.standards || {}, a = allStatuses(D), ms = nodeMetrics(D);
+  const STD = D.standards || {}, a = allStatuses(D), ms = nodeMetrics(D).filter(m=>!isTrendMetric(m)), tm = STD.trend_metrics || nodeMetrics(D).filter(isTrendMetric);
   const cnt = s => a.filter(x=>x===s).length;
   const groups = {};
   ms.forEach(m => (groups[m.node] = groups[m.node] || []).push(m));
@@ -1013,11 +1016,11 @@ function vHealth(D) {
   const MK = STD.mechanisms || [];
   const COL = {ok:"var(--ok)", warn:"var(--warn)", bad:"var(--bad)", none:"var(--none)"};
   const cs = D.cost || {};
-  const abn = m => ["bad","warn"].includes(sk(m.status));
-  const order = m => sk(m.status)==="bad" ? 0 : 1;
+  const abn = m => ["bad","warn"].includes(sk(metricStatus(m)));
+  const order = m => sk(metricStatus(m))==="bad" ? 0 : 1;
   const bad = Object.entries(groups).map(([node, g]) => [node, g.filter(abn).sort((x, y) => order(x) - order(y))]).filter(([, g]) => g.length);
   const okNodes = Object.entries(groups).filter(([, g]) => !g.some(abn)).map(([node]) => node);
-  const abnPanels = bad.map(([node, g]) => panel(NODE_ICON[node]||"health", PLAIN_NODE[node]||node, g.map(anomRow).join(""), stChip(worst(g.map(m=>m.status))))).join("");
+  const abnPanels = bad.map(([node, g]) => panel(NODE_ICON[node]||"health", PLAIN_NODE[node]||node, g.map(anomRow).join(""), stChip(worst(g.map(metricStatus))))).join("");
   const SRows = Object.entries(((D.stations||{}).stations)||{});
   const stationPanel = SRows.length ? panel("layers", "车站：等待、产出与停顿（24 h）", `<div class="buls">${SRows.map(([s, r]) => `<div><span class="bul-l">${esc(PLAIN_NODE[s]||s)} · ${esc(r.status)}</span><span class="bul-v">等待 ${num(r.waiting)} · 产出 ${num(r.out_24h)} · 停顿 ${num(r.stall_min)} / 上限 ${num(r.stall_bound_min)} 分</span></div>`).join("")}</div>`, `${SRows.filter(([,r]) => STSK[r.status] === "bad").length} 停顿`) : "";
   const okChips = okNodes.length ? panel("ok", "正常的环节", `<div class="lg">${okNodes.map(n => stChip("ok", PLAIN_NODE[n]||n)).join("")}</div>`) : "";
@@ -1026,9 +1029,10 @@ function vHealth(D) {
         <div style="flex:1;min-width:0">${stack([{label:"健康",value:cnt("ok"),color:COL.ok},{label:"警告",value:cnt("warn"),color:COL.warn},{label:"不健康",value:cnt("bad"),color:COL.bad},{label:"无数据",value:cnt("none"),color:COL.none}])}</div></div>`)}
     ${STD.metrics ? abnPanels + okChips : panel("health","节点评分", emptyMsg("尚无评分"))}
     ${stationPanel}
+    ${tm.length ? panel("arrow", "30 天趋势", `<div class="buls">${tm.map(bNode).join("")}</div>`, `${tm.length} 项长期指标`) : ""}
     ${panel("bell","需要注意的事", alertList(D) + (cs.budget_tokens_match===false ? `<div class="al s-warn"><span class="si">${ic("warn")}</span><span class="t">今日</span><span class="x">token 对账不一致：sessions ${num(cs.today&&cs.today.tokens)}，budget.json ${num(cs.budget_tokens)}（${esc(cs.budget_date||"未知")}）</span></div>` : ""), `${(D.alerts_tail||[]).length} 条`)}
     <details class="panel"><summary class="ph" style="cursor:pointer">指标明细、后台机制、时间分布</summary><div class="stack16" style="margin-top:14px">
-      ${STD.metrics ? `<div class="masonry">${Object.entries(groups).map(([node, g]) => panel(NODE_ICON[node]||"health", PLAIN_NODE[node]||node, `<div class="buls">${g.map(bNode).join("")}</div>`, stChip(worst(g.map(m=>m.status))))).join("")}</div>` : ""}
+      ${STD.metrics ? `<div class="masonry">${Object.entries(groups).map(([node, g]) => panel(NODE_ICON[node]||"health", PLAIN_NODE[node]||node, `<div class="buls">${g.map(bNode).join("")}</div>`, stChip(worst(g.map(metricStatus))))).join("")}</div>` : ""}
       ${MK.length ? panel("layers","后台机制", `<div class="buls">${MK.map(bMech).join("")}</div>`, `${MK.filter(m=>m.silent).length}/${MK.length} 沉默`) : ""}
       ${panel("timer","时间分布（近 "+num(STD.time_sink_hours||24)+" 小时）", SKs.length ? `${hbars(SKs.map(r=>({label:r.desc, value:r.total_hours, shown:num(r.total_hours)+" 时", color:COL[sk(r.status)], tip:`${r.desc}：合计 ${num(r.total_hours)} 时\n${r.meaning}\n${r.stat} = ${num(r.value)} 分（健康 ≤ ${r.healthy}，不健康 ≥ ${r.unhealthy}）`})), maxH)}
         <div class="buls" style="margin-top:20px">${SKs.map(bSink).join("")}</div>` : emptyMsg("尚无数据"))}</div></details>
@@ -1310,8 +1314,8 @@ const metricMod = m => ID_MOD[m.id] || NODE_MOD[m.node] || "health";
 const PLAIN_NODE = Object.assign({}, NODE_NM, {flow:"整体流转", delivery:"交付质量", host:"服务器"});
 const firstSentence = t => String(t || "").split(/[。；;]/)[0];
 const metricStatusGroups = ms => ({
-  bad: ms.filter(m => sk(m.status)==="bad"),
-  warn: ms.filter(m => sk(m.status)==="warn")
+  bad: ms.filter(m => !isTrendMetric(m) && sk(metricStatus(m))==="bad"),
+  warn: ms.filter(m => !isTrendMetric(m) && sk(metricStatus(m))==="warn")
 });
 const metricStatusText = (status, count) => `${count} ${status==="bad" ? "项异常" : "项需留意"}`;
 // 白话名称与原因，按指标 id 手写；没有的回退到指标自带解释的第一句。名称由英文标识推断，改错了在这里改。
@@ -1343,12 +1347,12 @@ const PLAIN = {
 const ZF_NAMES = {"approve-after-green":"绿灯后自动批准", "maintenance-budget":"维护额度", "ci-waste":"减少 CI 浪费", "eval-on-pin":"版本固定后自动评测", "footprint-convoy":"减少资源占用堆积", "jqf-argv":"队列参数修复",
   "pin-preflight":"版本固定前预检", "tick-latency":"缩短调度延迟", "glm-share":"模型额度共享", "incident-prior-art":"事故先例检索", "main-red":"主线变红处理", "slice-isolation":"任务切片隔离"};
 const zfName = k => { const x = String(k).replace(/^zf-/, ""); return ZF_NAMES[x] || x.replace(/-/g, " "); };
-function anomRow(m) { const lb = LABELS[m.id], st = sk(m.status), hib = !!m.higher_is_better, h = +m.healthy, u = +m.unhealthy, top = Math.max(Math.abs(h), Math.abs(u)) * (hib ? 1.4 : 1.6) || 1;
+function anomRow(m) { const lb = LABELS[m.id], st = sk(metricStatus(m)), hib = !!m.higher_is_better, h = +m.healthy, u = +m.unhealthy, top = Math.max(Math.abs(h), Math.abs(u)) * (hib ? 1.4 : 1.6) || 1;
     const pc = x => Math.max(0, Math.min(100, 100 * x / top)), v = m.value == null ? null : +m.value, unit = lb ? lb[1] : "", pl = PLAIN[m.id] || [lb ? lb[0] : firstSentence(m.meaning) || m.desc, ""];
-    const fv = v == null ? "—" : (Math.abs(v) >= 100 ? Math.round(v) : +v.toFixed(1)) + (unit ? " " + unit : "");
+    const fv = v == null ? "—" : (Math.abs(v) >= 100 ? Math.round(v) : +v.toFixed(1)) + (unit ? " " + unit : ""), short = Object.prototype.hasOwnProperty.call(m,"value_1h") ? (m.value_1h==null?"短窗无数据":`${m.short_window||"1h"} ${num(m.value_1h)}${m.trend_1h?` · ${m.trend_1h.direction==="up"?"↑":m.trend_1h.direction==="down"?"↓":"→"}${m.trend_1h.delta>0?"+":""}${num(m.trend_1h.delta)}`:" · 趋势无数据"}`) : "";
     const zones = hib ? [[0,u,"bad"],[u,h,"warn"],[h,top,"ok"]] : [[0,h,"ok"],[h,u,"warn"],[u,top,"bad"]];
     return `<div class="anom" data-m="${metricMod(m)}" data-tip="${esc(m.meaning || "")}"><i class="ad s-${st}"></i><span class="a-n">${esc(PLAIN_NODE[m.node] || m.node)}</span><span class="a-l">${esc(pl[0])}<small>${esc(pl[1])}</small></span>
-      <span class="a-t">${zones.filter(z => pc(z[1]) > pc(z[0])).map(z => `<i class="z-${z[2]}" style="left:${pc(z[0])}%;width:${pc(z[1]) - pc(z[0])}%"></i>`).join("")}${v == null ? "" : `<b style="left:${Math.min(pc(v), 99)}%"></b>`}</span><span class="a-v">${esc(fv)}</span></div>`; }
+      <span class="a-t">${zones.filter(z => pc(z[1]) > pc(z[0])).map(z => `<i class="z-${z[2]}" style="left:${pc(z[0])}%;width:${pc(z[1]) - pc(z[0])}%"></i>`).join("")}${v == null ? "" : `<b style="left:${Math.min(pc(v), 99)}%"></b>`}</span><span class="a-v">${esc(fv)}<small>${m.status?`长窗 ${esc(m.status)}`:""}${short?` · ${esc(short)}`:""}</small></span></div>`; }
 /* 总览设计（dashboard-design 步骤 1 到 4）
    屏幕只回答一个问题：「工厂现在正常吗？卡在哪？谁来处理？」
    6 个数：员工在岗 | 可启动 / 卡住 | 今日完成 | 主线 CI | 负载 | 额度（估）。

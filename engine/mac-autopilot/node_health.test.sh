@@ -917,6 +917,12 @@ incidents = [{"id":"incident-1", "date":"2026-10-25", "issue":101},
 result = n.delivery_metrics(units, issues, prs, releases, incidents, now, repo="example-maintainer/example-repo",
                             reverted_merge_times={f"{1001:040x}": n.ts("2026-10-25T10:00:00Z")})
 values, details = result["values"], result["details"]
+delivery_windows = n.metric_windows.delivery(n.delivery_metrics,
+    (units, issues, prs, releases, incidents, now, "example-maintainer/example-repo",
+     {f"{1001:040x}": n.ts("2026-10-25T10:00:00Z")}))
+assert delivery_windows["delivery.issue_to_accept_p50_30d_hours"]["value_1h"] == 96, delivery_windows
+assert delivery_windows["delivery.issue_to_accept_p50_30d_hours"]["short_window"] == "7d", delivery_windows
+assert delivery_windows["delivery.issue_to_accept_p50_30d_hours"]["trend_1h"] is None, delivery_windows
 # Lead time counts all 8 accepted issues, including the 2 whose join is broken: 24 48 72 96 120 120 120 240.
 assert values["delivery.issue_to_accept_p50_30d_hours"] == 120, values
 assert values["delivery.issue_to_accept_p95_30d_hours"] == 240, values

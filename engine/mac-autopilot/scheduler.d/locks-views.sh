@@ -94,7 +94,7 @@ views_entry() { # scheduler.sh --views <mode>：分离进程入口，自己持�
     mkdir "$VIEWS_LOCK" 2>/dev/null || return 0
   fi
   echo "$$" > "$VIEWS_LOCK/pid"
-  chain_exit_trap 'rm -rf "$VIEWS_LOCK"'
+  chain_exit_trap 'if [[ "$(cat "$VIEWS_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then rm -rf -- "$VIEWS_LOCK"; fi'
   run_views "${1:-dashboard}"
 }
 launch_views() { # mode；AUTOPI_VIEWS_INLINE=true 时就地跑完（测试与排障）
