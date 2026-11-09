@@ -292,13 +292,15 @@ echo '{"status":"delegated"}' > "$a/release-train.json"
 python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-28T20:12:00Z --json "$a/node-health.json" >/dev/null
 jq -e '[.metrics[] | select(.id=="release.hours_waiting")][0].value == null' "$a/node-health.json" >/dev/null \
   || fail 'missing active batch start reused historical release acceptance'
-# release.batch_minutes: start to verdict of the latest batch; a running batch reads its age; a batch that ended
-# with no verdict is not counted; the verdict belongs to the latest start at or before it.
+# release.batch_minutes: start to verdict of the latest batch; a running batch reads its age; a batch that ended with no
+# verdict is not counted; the verdict belongs to the latest start at or before it. release.batch_failed_no_verdict counts
+# the no-verdict batches whose unit run ended with "Failed with result" (count 0 is OK, 1 or more is UNHEALTHY).
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'release batch duration wrong'
 import os, sys, tempfile; sys.path.insert(0, sys.argv[1]); import release_batch as RB
 from datetime import datetime
 at = lambda s: datetime.fromisoformat(s)
 now = at("2026-11-09T03:42:50+00:00")
+start = lambda s: (at(s), "start")
 # finished batch 23:56Z -> verdict 03:40:44Z is 224.6 min; nothing running
 assert round(RB.batch_minutes([at("2026-11-08T23:56:06+00:00")], [at("2026-11-09T03:40:44+00:00")], now, False), 1) == 224.6
 # finished batch plus a running one: the running batch reads its age (120 min), not a duration
@@ -309,13 +311,24 @@ assert RB.batch_minutes([at("2026-11-08T10:00:00+00:00"), at("2026-11-08T14:00:0
                         [at("2026-11-08T11:00:00+00:00")], now, False) == 60.0
 # no verdict and not running: nothing to score
 assert RB.batch_minutes([at("2026-11-08T23:56:06+00:00")], [], now, False) is None
-# collect reads events.md for the verdict and the injected starts for the start
+# one no-verdict run that failed and one that deactivated successfully: count 1; no failed run: count 0
+runs = [start("2026-11-08T10:00:00+00:00"), (at("2026-11-08T10:30:00+00:00"), "failed"),
+        start("2026-11-08T14:00:00+00:00"), (at("2026-11-08T14:20:00+00:00"), "ok"),
+        start("2026-11-08T18:00:00+00:00"), (at("2026-11-08T18:05:00+00:00"), "ok")]
+assert RB.failed_no_verdict(runs, [at("2026-11-08T19:00:00+00:00")]) == 1
+assert RB.failed_no_verdict(runs[2:], [at("2026-11-08T19:00:00+00:00")]) == 0
+# a failed run that has a verdict in its window is not a no-verdict failure
+assert RB.failed_no_verdict(runs, [at("2026-11-08T10:40:00+00:00")]) == 0
+# collect reads events.md for the verdict and injected runs for the start and the end results
 R = tempfile.mkdtemp(); os.makedirs(os.path.join(R, "alerts"))
 open(os.path.join(R, "alerts", "events.md"), "w").write("[2026-11-09T03:40:44Z] release-retained: deployed=%040d tracker=#5955 held=[1]\n" % 0)
-m = {}; RB.collect(m, R, now, starts=[at("2026-11-08T23:56:06+00:00")], active=False)
-assert round(m[RB.METRIC], 1) == 224.6, m
-m = {}; RB.collect(m, tempfile.mkdtemp(), now, starts=[at("2026-11-08T23:56:06+00:00")], active=False)
-assert m[RB.METRIC] is None, "missing events.md is no data, never 0"
+m = {}; RB.collect(m, R, now, runs=[start("2026-11-08T23:56:06+00:00")], active=False)
+assert round(m[RB.METRIC], 1) == 224.6 and m[RB.FAILED] == 0, m
+m = {}; RB.collect(m, R, now, runs=runs, active=False)
+assert m[RB.FAILED] == 1, m  # the 10:00 failed run has no verdict; the 18:00 run owns the 03:40Z verdict
+m = {}; RB.collect(m, tempfile.mkdtemp(), now, runs=[], active=False)
+assert m[RB.METRIC] is None and m[RB.FAILED] is None, "missing events.md is no data, never 0"
+assert RB.CRITERIA[RB.FAILED][2:4] == (0, 1)
 CHECK
 # 持续 3 小时 UNHEALTHY 才开 issue；同一指标 6 小时内不重复；恢复后清掉记录
 mkdir -p "$test_env_root/bin"; : > "$test_env_root/gh.calls"

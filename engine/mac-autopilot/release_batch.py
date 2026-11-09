@@ -1,10 +1,12 @@
 """Release batch duration: minutes from a release-batch unit start to its verdict, for the latest batch.
 
-issue-pipeline.sh dispatch_release_batch starts the transient unit `<ZF_UNIT_PREFIX>-release-batch`; its start is the
-journal's `Started <unit>.service` line. Its verdict is the first release-retained or release-closer line in
-alerts/events.md after that start (release_retained.read). A batch still active with no verdict reads as its age so
-far, not as a duration. A batch that ended with no verdict (no release) is not counted. Bounds are TENTATIVE
-(head, 2026-11-08): re-derive after 10 batches with a verdict.
+issue-pipeline.sh dispatch_release_batch starts the transient unit `<ZF_UNIT_PREFIX>-release-batch`. One journal read
+gives each run's start (`Started <unit>.service`) and its end (`Failed with result` or `Deactivated successfully`).
+A run's verdict is the first release-retained or release-closer line in alerts/events.md after its start
+(release_retained.read); a verdict belongs to the latest start at or before it. A batch still active with no verdict
+reads as its age so far. A batch that ended with no verdict is not counted in minutes; the failed ones among them are
+counted in release.batch_failed_no_verdict (0 is OK, 1 or more is UNHEALTHY and goes to the node-health alert).
+Bounds are TENTATIVE (head, 2026-11-08): re-derive after 10 batches with a verdict.
 """
 import bisect, os, subprocess
 from datetime import datetime
@@ -12,30 +14,46 @@ from datetime import datetime
 import release_retained
 
 METRIC = "release.batch_minutes"
-CRITERIA = {METRIC: ("release", "minutes of the latest release batch, start to verdict (running: age so far)", 120, 240, False)}
-MEANING = {METRIC: "最近一次发布批次从启动到结论（release-retained 或 release-closer）的分钟数；批次仍在运行时显示已经跑了多少分钟。暂定标准（2026-11-08 head），满 10 个有结论的批次后重新校准。"}
-SOURCE = {METRIC: "journalctl --user 的 <前缀>-release-batch 单元 Started 行（启动）；alerts/events.md 的 release-retained / release-closer 行（结论）；systemctl --user is-active（是否仍在运行）"}
+FAILED = "release.batch_failed_no_verdict"
+CRITERIA = {
+    METRIC: ("release", "minutes of the latest release batch, start to verdict (running: age so far)", 120, 240, False),
+    FAILED: ("release", "release batches with no verdict whose unit run failed, 14 days", 0, 1, False),
+}
+MEANING = {
+    METRIC: "最近一次发布批次从启动到结论（release-retained 或 release-closer）的分钟数；批次仍在运行时显示已经跑了多少分钟。暂定标准（2026-11-08 head），满 10 个有结论的批次后重新校准。",
+    FAILED: "过去 14 天内没有结论、且单元运行以失败结束的发布批次数；大于 0 即 UNHEALTHY，会进入节点体检告警。",
+}
+SOURCE = {
+    METRIC: "journalctl --user 的 <前缀>-release-batch 单元 Started 行（启动）；alerts/events.md 的 release-retained / release-closer 行（结论）；systemctl --user is-active（是否仍在运行）",
+    FAILED: "同一份 journalctl 读取的单元结束行（Failed with result 为失败，Deactivated successfully 为正常）对照 events.md 的结论行",
+}
 JOURNAL_SINCE = "14 days ago"
 
 
-def _journal_starts(unit):
-    """Start times of the unit from the user journal (aware datetimes), or None when it cannot be read."""
+def _journal_runs(unit):
+    """[(time, kind)] with kind 'start', 'failed' or 'ok', from one user-journal read; None when unreadable."""
+    pattern = f"Started {unit}\\.service|{unit}\\.service: (Failed with result|Deactivated successfully)"
     try:
         out = subprocess.run(["journalctl", "--user", "--no-pager", "-o", "short-iso", "--since", JOURNAL_SINCE,
-                              "-u", f"{unit}*", "-g", f"Started {unit}.service"],
+                              "-u", f"{unit}*", "-g", pattern],
                              capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if out.returncode != 0:
         return None
-    starts = []
+    runs = []
     for line in out.stdout.splitlines():
-        stamp = line.split(" ", 1)[0]
         try:
-            starts.append(datetime.fromisoformat(stamp))
+            at = datetime.fromisoformat(line.split(" ", 1)[0])
         except ValueError:
             continue
-    return starts
+        if "Started " in line:
+            runs.append((at, "start"))
+        elif "Failed with result" in line:
+            runs.append((at, "failed"))
+        elif "Deactivated successfully" in line:
+            runs.append((at, "ok"))
+    return runs
 
 
 def _active(unit):
@@ -43,6 +61,10 @@ def _active(unit):
         return subprocess.run(["systemctl", "--user", "is-active", "--quiet", f"{unit}.service"], timeout=30).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def _starts(runs):
+    return sorted(at for at, kind in runs if kind == "start")
 
 
 def batch_minutes(starts, verdicts, now, active):
@@ -66,15 +88,31 @@ def batch_minutes(starts, verdicts, now, active):
     return (first_verdict[s] - s).total_seconds() / 60
 
 
-def collect(metrics, runtime, now, starts=None, active=None):
-    """Score METRIC (None = no data: journal, events.md or the unit state unreadable, or no batch yet)."""
+def failed_no_verdict(runs, verdicts):
+    """Batches with no verdict whose unit run ended failed. A run's end is its first end line before the next start."""
+    starts = _starts(runs)
+    ends = sorted((at, kind) for at, kind in runs if kind != "start")
+    count = 0
+    for i, s in enumerate(starts):
+        nxt = starts[i + 1] if i + 1 < len(starts) else None
+        if any(s <= v and (nxt is None or v < nxt) for v in verdicts):
+            continue
+        end = next(((at, kind) for at, kind in ends if at >= s and (nxt is None or at < nxt)), None)
+        if end and end[1] == "failed":
+            count += 1
+    return count
+
+
+def collect(metrics, runtime, now, runs=None, active=None):
+    """Score METRIC and FAILED (None = no data: journal, events.md or the unit state unreadable)."""
     unit = f"{os.environ.get('ZF_UNIT_PREFIX') or 'zf'}-release-batch"
     events = release_retained.read(runtime)
-    starts = _journal_starts(unit) if starts is None else starts
-    if events is None or starts is None:
-        metrics[METRIC] = None
+    runs = _journal_runs(unit) if runs is None else runs
+    if events is None or runs is None:
+        metrics[METRIC] = metrics[FAILED] = None
         return
     retained, closed = events
     verdicts = [at for at, _, _ in retained] + [at for at, _ in closed]
     active = _active(unit) if active is None else active
-    metrics[METRIC] = batch_minutes(starts, verdicts, now, active)
+    metrics[METRIC] = batch_minutes(_starts(runs), verdicts, now, active)
+    metrics[FAILED] = failed_no_verdict(runs, verdicts)
