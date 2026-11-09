@@ -9,7 +9,7 @@ STAGES = ["提出", "热修生效", "进 main", "上线", "真人验收"]  # 上
 MERGED = {"merged", "landed", "done"}
 STUCK = {"blocked-external", "parked", "needs-human", "supervisor-review"}
 ACCEPTED_KEEP_S = 3 * 86400  # an accepted requirement stays listed for 3 days
-ISSUE_LIMIT = 1000  # gh search returns at most 1000 rows; a result at this count is truncated, so build marks it partial
+ISSUE_LIMIT = 1000  # gh search returns at most 1000 rows; a search result at this count is truncated (result partial)
 
 
 def configured_anomaly_prefix():
@@ -75,7 +75,7 @@ def stage_of(unit, labels, accepted_at, hotfix_live_at=None, live_merge_shas=Non
     return 0, None
 
 
-def build(units, issues, rulings, accepted, now, hotfix_live=None, live_merge_shas=None, retained=None):
+def build(units, issues, rulings, accepted, now, hotfix_live=None, live_merge_shas=None, retained=None, truncated=False):
     """Pure core. issues: gh rows {number,title,state,labels:[{name}]} or None when GitHub was unreachable (units only)."""
     words = {}
     for r in rulings or []:
@@ -110,7 +110,7 @@ def build(units, issues, rulings, accepted, now, hotfix_live=None, live_merge_sh
                       "blocker": f"等 #{blocked}" if blocked else (u or {}).get("stage") if (u or {}).get("stage") in STUCK else "",
                       "verified_epoch": _epoch(at or "")})
     items.sort(key=lambda x: (x["stage"] == len(STAGES) - 1, -x["issue"]))
-    return {"stages": STAGES, "items": items, "partial": issues is None or len(issues) >= ISSUE_LIMIT}
+    return {"stages": STAGES, "items": items, "partial": issues is None or truncated}
 
 
 def push_changes(items, state_path, lib, agent_home):
@@ -137,22 +137,80 @@ def push_changes(items, state_path, lib, agent_home):
         os.replace(state_path + ".tmp", state_path)
 
 
-def _fetch_issues(repo, cache_path):
-    """One GitHub call for all three labels (comma = OR), cached 15 minutes; a stale cache beats nothing."""
-    try:
-        if time.time() - os.path.getmtime(cache_path) < 900: return json.load(open(cache_path))
-    except (OSError, ValueError): pass
+def _load_cache(cache_path):
+    """{rows, truncated} from the one cache file; a bare list is the older format (truncated when it hit the limit)."""
+    try: doc = json.load(open(cache_path))
+    except (OSError, ValueError): return None
+    if isinstance(doc, list): return {"rows": doc, "truncated": len(doc) >= ISSUE_LIMIT}
+    return doc if isinstance(doc, dict) and isinstance(doc.get("rows"), list) else None
+
+
+def _write_cache(cache_path, cache):
+    with open(cache_path + ".tmp", "w") as f: json.dump(cache, f)
+    os.replace(cache_path + ".tmp", cache_path)
+
+
+def _search_rows(repo, cache_path):
+    """The label search (capped at ISSUE_LIMIT by gh); a stale cache beats nothing."""
     try:
         out = subprocess.run(["gh", "issue", "list", *(["--repo", repo] if repo else []), "--state", "all", "--limit", str(ISSUE_LIMIT), "--json", "number,title,state,labels",
                               "--search", "label:" + ",".join(LABELS) + " sort:updated-desc"], capture_output=True, text=True, timeout=60)
         if out.returncode: raise RuntimeError(out.stderr[-200:])
         rows = json.loads(out.stdout)
     except Exception:
-        try: return json.load(open(cache_path))
-        except (OSError, ValueError): return None
-    with open(cache_path + ".tmp", "w") as f: json.dump(rows, f)
-    os.replace(cache_path + ".tmp", cache_path)
+        return _load_cache(cache_path)
+    cache = {"rows": rows, "truncated": len(rows) >= ISSUE_LIMIT}
+    _write_cache(cache_path, cache)
+    return cache
+
+
+def _fetch_by_number(repo, numbers):
+    """Rows for the numbers the search window missed: GraphQL aliases in batches of 100 when repo is owner/name,
+    else one `gh issue view` each. Failures drop only the affected rows."""
+    rows = []
+    if re.fullmatch(r"[\w.-]+/[\w.-]+", repo or ""):
+        for start in range(0, len(numbers), 100):
+            chunk = numbers[start:start + 100]
+            fields = " ".join(f"i{n}: issue(number: {n}) {{ number title state labels(first: 50) {{ nodes {{ name }} }} }}" for n in chunk)
+            owner, name = repo.split("/", 1)
+            query = f'query {{ repository(owner: "{owner}", name: "{name}") {{ {fields} }} }}'
+            try:
+                out = subprocess.run(["gh", "api", "graphql", "-f", "query=" + query], capture_output=True, text=True, timeout=60)
+                data = json.loads(out.stdout).get("data", {}).get("repository") or {}
+            except Exception:
+                continue
+            for n in chunk:
+                node = data.get(f"i{n}")
+                if node: rows.append({"number": node["number"], "title": node["title"], "state": node["state"],
+                                      "labels": [{"name": x["name"]} for x in (node.get("labels") or {}).get("nodes") or []]})
+        return rows
+    for n in numbers:
+        try:
+            out = subprocess.run(["gh", "issue", "view", str(n), "--json", "number,title,state,labels"], capture_output=True, text=True, timeout=60)
+            if out.returncode == 0: rows.append(json.loads(out.stdout))
+        except Exception:
+            pass
     return rows
+
+
+def _fetch_issues(repo, cache_path, needed=()):
+    """(rows, truncated). Search rows are cached 15 minutes in one cache file. Numbers in `needed` (held or open-unit tickets)
+    that the rows lack are fetched by number and merged into the cache, so the ladder never depends on the search window.
+    None rows when GitHub and the cache are both unavailable."""
+    cache = None
+    try:
+        if time.time() - os.path.getmtime(cache_path) < 900: cache = _load_cache(cache_path)
+    except OSError: pass
+    if cache is None: cache = _search_rows(repo, cache_path)
+    if cache is None: return None, False
+    have = {r.get("number") for r in cache["rows"]}
+    missing = sorted(set(needed) - have)
+    if missing:
+        fetched = _fetch_by_number(repo, missing)
+        if fetched:
+            cache = {"rows": cache["rows"] + fetched, "truncated": cache["truncated"]}
+            _write_cache(cache_path, cache)
+    return cache["rows"], cache["truncated"]
 
 
 def collect(units, repo, rulings_path, runtime, agent_home, lib):
@@ -161,7 +219,11 @@ def collect(units, repo, rulings_path, runtime, agent_home, lib):
     except (OSError, ValueError): rulings = []
     live = live_delivery.read_live_sha(agent_home)
     live_merge_shas = live_delivery.ancestor_shas(live_delivery.repository_root(), live["sha"]) if live else set()
-    out = build(units, _fetch_issues(repo, os.path.join(runtime, "founder-reqs.cache.json")), rulings, node_health.release_acceptances(runtime), time.time(),
-                _hotfix_live(os.path.join(agent_home, "hotfix-live.jsonl")), live_merge_shas, release_retained.held_at(runtime))
+    held = release_retained.held_at(runtime)
+    needed = set(held) | {int(u["issue"]) for u in units if set(u.get("labels") or []) & set(LABELS) and u.get("stage") != "closed"
+                          and str(u.get("issue", "")).isdigit()}
+    rows, truncated = _fetch_issues(repo, os.path.join(runtime, "founder-reqs.cache.json"), needed)
+    out = build(units, rows, rulings, node_health.release_acceptances(runtime), time.time(),
+                _hotfix_live(os.path.join(agent_home, "hotfix-live.jsonl")), live_merge_shas, held, truncated=truncated)
     push_changes(out["items"], os.path.join(agent_home, "founder-req-stage.json"), lib, agent_home)
     return out

@@ -100,24 +100,48 @@ F.push_changes(partial_items, partial_st, lib, partial_home)
 assert json.load(open(partial_st)) == {"1": 1, "2": 1, "3": 1}
 assert [line.split("\t")[0] for line in open(partial_home + "/inbox")] == ["freq-1-1", "freq-3-1", "freq-2-1"]
 assert not os.path.exists(home + "/mail-attempts") and not os.path.exists(partial_home + "/mail-attempts")
-# A result at ISSUE_LIMIT rows is truncated: build marks it partial, and #50 (absent from the rows, unit-only) keeps its recorded 上线.
+# Search window: a full result (ISSUE_LIMIT rows) is truncated; a held or open-unit ticket outside the rows is fetched by number.
 import subprocess
-calls = []
-real_run = subprocess.run
-subprocess.run = lambda argv, **kw: calls.append(argv) or subprocess.CompletedProcess(argv, 0, "[]", "")
-F._fetch_issues("", home + "/absent-cache.json")
+fake = {"search": [], "by_number": {}, "graphql_fail": False}
+def fake_gh(argv, **kw):
+    if argv[0] != "gh": return real_run(argv, **kw)
+    if argv[:3] == ["gh", "api", "graphql"]:
+        if fake["graphql_fail"]: return subprocess.CompletedProcess(argv, 1, "", "boom")
+        import re as _re
+        nums = [int(n) for n in _re.findall(r"i(\d+): issue", argv[-1])]
+        return subprocess.CompletedProcess(argv, 0, json.dumps({"data": {"repository": {f"i{n}": fake["by_number"].get(n) for n in nums}}}), "")
+    assert argv[:2] == ["gh", "issue"] and "--limit" in argv and argv[argv.index("--limit") + 1] == str(F.ISSUE_LIMIT), argv
+    return subprocess.CompletedProcess(argv, 0, json.dumps(fake["search"]), "")
+real_run = subprocess.run; subprocess.run = fake_gh  # gh calls only; the inbox append runs for real
+fresh_cache = lambda: tempfile.mkdtemp() + "/founder-reqs.cache.json"
+fake["search"] = [{"number": n, "title": f"row{n}", "state": "OPEN", "labels": lab("focus")} for n in range(51, 51 + F.ISSUE_LIMIT)]
+full_rows, full = F._fetch_issues("o/r", fresh_cache())
+assert full and len(full_rows) == F.ISSUE_LIMIT and F.build([], full_rows, [], [], now, truncated=full)["partial"], "a full search result is partial"
+# (a) a held ticket missing from the search rows is fetched by number and stays at 上线.
+fake["search"] = [{"number": 1, "title": "t1", "state": "OPEN", "labels": lab("focus")}]
+fake["by_number"] = {60: {"number": 60, "title": "t60", "state": "OPEN", "labels": {"nodes": [{"name": "focus"}]}}}
+held_rows, held_trunc = F._fetch_issues("o/r", fresh_cache(), needed={60})
+assert sorted(r["number"] for r in held_rows) == [1, 60] and not held_trunc
+held_units = [{"id": "issue-60", "issue": 60, "title": "t60", "stage": "merged", "labels": ["focus"], "history": []}]
+assert [(i["issue"], i["stage"]) for i in F.build(held_units, held_rows, [], [], now, retained={60: iso(60)})["items"] if i["issue"] == 60] == [(60, 3)]
+# (b) a ticket present in the rows that was really downgraded steps down with its inbox line.
+down_rows = [{"number": 70, "title": "t70", "state": "OPEN", "labels": lab("focus")}]
+down_units = [{"id": "issue-70", "issue": 70, "title": "t70", "stage": "merged", "labels": ["focus"], "history": []}]
+down = [i for i in F.build(down_units, down_rows, [], [], now)["items"] if i["issue"] == 70]
+assert down[0]["stage"] == 2 and down[0]["github_row"]
+down_home = tempfile.mkdtemp(); down_st = down_home + "/founder-req-stage.json"; json.dump({"70": 3}, open(down_st, "w"))
+F.push_changes(down, down_st, lib, down_home)
+assert open(down_home + "/inbox").read().startswith("freq-70-2") and json.load(open(down_st)) == {"70": 2}, "a real downgrade steps down"
+# (c) the missing-only backstop: #80 is outside the rows and the direct fetch fails, so its recorded 上线 never steps down.
+fake["graphql_fail"] = True
+fail_rows, _ = F._fetch_issues("o/r", fresh_cache(), needed={80})
+assert sorted(r["number"] for r in fail_rows) == [1]
+bk_units = [{"id": "issue-80", "issue": 80, "title": "t80", "stage": "merged", "labels": ["focus"], "history": []}]
+bk_items = [i for i in F.build(bk_units, fail_rows, [], [], now)["items"] if i["issue"] == 80]
+bk_home = tempfile.mkdtemp(); bk_st = bk_home + "/founder-req-stage.json"; json.dump({"80": 3}, open(bk_st, "w"))
+F.push_changes(bk_items, bk_st, lib, bk_home)
+assert not os.path.exists(bk_home + "/inbox") and json.load(open(bk_st)) == {"80": 3}, "a ticket missing from the rows keeps its recorded stage"
 subprocess.run = real_run
-assert calls[0][calls[0].index("--limit") + 1] == str(F.ISSUE_LIMIT), calls
-trunc_rows = [{"number": n, "title": f"row{n}", "state": "OPEN", "labels": lab("focus")} for n in range(51, 51 + F.ISSUE_LIMIT)]
-trunc_units = [{"id": "issue-50", "issue": 50, "title": "t50", "stage": "merged", "labels": ["focus"], "history": []}]
-tr = F.build(trunc_units, trunc_rows, [], [], now)
-assert tr["partial"], "a result at ISSUE_LIMIT rows must be flagged partial"
-t50 = next(i for i in tr["items"] if i["issue"] == 50)
-assert t50["stage"] == 2 and not t50["github_row"], t50
-tr_home = tempfile.mkdtemp(); tr_st = tr_home + "/founder-req-stage.json"
-json.dump({"50": 3}, open(tr_st, "w"))
-F.push_changes([t50], tr_st, lib, tr_home)
-assert not os.path.exists(tr_home + "/inbox") and json.load(open(tr_st)) == {"50": 3}, "a unit-label fallback must not step down a recorded stage"
 # Founder ruling 2026-11-07: this file must not grow a mail path back.
 source = open(os.path.join(sys.argv[1], "founder_reqs.py")).read()
 assert not any(word in source for word in ("send_email", "需求进展", "PushNotification"))
