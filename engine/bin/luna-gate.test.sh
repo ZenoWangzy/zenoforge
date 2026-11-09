@@ -14,7 +14,7 @@ gate() {
   printf 'some avg10=32 avg60=35 avg300=36 total=1\nfull avg10=%s avg60=4 avg300=4.6 total=1\n' "$3" >"$d/psi"
   src=$(awk '/^box_has_room\(\)/,/^}$/' "$file"); [[ -n $src ]] || fail "no box_has_room in $file"
   (
-    export LUNA_PROC_MEMINFO="$d/meminfo" LUNA_PROC_PSI_MEMORY="$d/psi" LUNA_PRIORITY="$4" LUNA_MIN=0 LUNA_MAX=10
+    export LUNA_PROC_MEMINFO="$d/meminfo" LUNA_PROC_PSI_MEMORY="$d/psi" LUNA_PRIORITY="$4" LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328
     export LUNA_AGE_ADMIT_SECONDS="$5" CPU_BUSY="$6"
     codex_runs() { echo 0; }
     cpu_busy() { echo "$CPU_BUSY"; }
@@ -29,14 +29,18 @@ expect() {
 }
 
 for f in "$bin/luna" "$bin/zc"; do
+  d="$root/cleanup-$(basename "$f")"; mkdir -p "$d/out"; : >"$d/wait"; : >"$d/out/gate-wait"; ( wait_f="$d/wait"; out="$d/out"; eval "$(awk '/^chain_exit_trap\(\)/,/^}/; /^chain_exit_trap /' "$f")" )
+  [[ ! -e "$d/wait" && ! -e "$d/out/gate-wait" ]] || fail "$(basename "$f") did not clear gate markers on exit"
   #            file avail full prio   age  cpu want
   expect "$f"  4600   2   hotfix   999999 0   admitted # hotfix tier: 3 GB floor, full < 10
   expect "$f"  4600  12   hotfix   999999 0   refused  # full 12: refused for every tier
   expect "$f"  2500   2   hotfix   999999 0   refused  # hotfix below 3 GB
-  expect "$f"  4600   2   normal   999999 0   refused  # normal needs 5 GB: 4600 is under
+  expect "$f"  3400   0   normal   999999 0   admitted # normal tier: measured floor, full < 10
+  expect "$f"  3000   0   normal   999999 0   refused  # normal below measured floor
+  expect "$f"  3400  12   normal   999999 0   refused  # normal, full 12
   expect "$f"  6000   2   normal   999999 0   admitted # normal tier: cpu under target, full < 10, 5 GB free
   expect "$f"  6000  12   normal   999999 0   refused  # normal, full 12
-  expect "$f"  6000   2   normal        0 100  admitted # aging tier alone: cpu busy, aged, 5 GB free
+  expect "$f"  3400   0   normal        0 100  admitted # aging tier alone: cpu busy, aged, measured floor
   expect "$f"  6000  12   normal        0 100  refused  # aging, full 12
 done
-echo "ok - hotfix admits at 3 GB with full < 10; normal and aging admit at 5 GB with full < 10; full 12 refused; in luna and zc"
+echo "ok - hotfix admits at 3 GB with full < 10; normal and aging admit at the 3328 MB floor with full < 10; full 12 refused; in luna and zc"
