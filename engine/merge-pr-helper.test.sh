@@ -43,6 +43,7 @@ PR_HEAD_REF=parent-branch
 PR_CHILDREN='[]'
 PR_CI_VIEW_ERROR=0
 PR_CI_VIEW_OUTPUT=''
+PR_FILES_API_ERROR=0
 gh() {
   case "$1 $2" in
     'pr view')
@@ -54,7 +55,7 @@ gh() {
       if [[ "$*" == *headRefOid,statusCheckRollup* ]]; then
         [[ "$PR_CI_VIEW_ERROR" == 0 ]] || return 1
         if [[ -n "$PR_CI_VIEW_OUTPUT" ]]; then printf '%s\n' "$PR_CI_VIEW_OUTPUT"; return; fi
-        printf '{"headRefOid":"%s","statusCheckRollup":%s,"files":%s}\n' "${PR_CI_HEAD:-$PR_HEAD}" "$PR_CI_ROLLUP" "$(jq -cn --argjson files "$PR_FILES" '$files | map({path:.})')"
+        printf '{"headRefOid":"%s","statusCheckRollup":%s,"files":%s}\n' "${PR_CI_HEAD:-$PR_HEAD}" "$PR_CI_ROLLUP" "$(jq -cn --argjson files "$PR_FILES" '$files[:100] | map({path:.})')"
       elif [[ "$*" == *body,files* ]]; then
         [[ "$PR_BODY" != gh-error ]] || return 1
         jq -cn --arg body "$PR_BODY" --argjson files "$PR_FILES" --arg at "${PR_HEAD_DATE:-}" \
@@ -100,6 +101,12 @@ gh() {
       printf '%s\n' "$3" >> "$fixture/cancelled"
       ;;
     'api '*)
+      if [[ "$*" == *' -q .[].filename' ]]; then
+        printf 'api:%s\n' "$*" >> "$fixture/gh-calls"
+        [[ "$PR_FILES_API_ERROR" == 0 ]] || return 1
+        jq -r '.[]' <<<"$PR_FILES"
+        return
+      fi
       local path="${!#}" num
       case "$path" in
         'repos/{owner}/{repo}/pulls/17')
@@ -334,6 +341,9 @@ PR_CI_ROLLUP="$(ci_rollup)"
 ci_set_workflow cli engine-tests
 expect_receipt_refusal 'cli check from engine-tests workflow' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
 PR_CI_ROLLUP="$(ci_rollup)"
+ci_set_workflow 'suites (0)' cli-tests
+expect_receipt_refusal 'suite check from cli-tests workflow' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup)"
 ci_set cla COMPLETED FAILURE
 expect_receipt_refusal 'failed non-required check' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
 PR_CI_ROLLUP="$(ci_rollup)"
@@ -380,11 +390,18 @@ expect_receipt_refusal 'null rollup' "no test receipt exists for $rsha: run the 
 PR_CI_ROLLUP="$(ci_rollup)"
 PR_FILES='[".github/workflows/engine-tests.yml"]'
 expect_receipt_refusal 'workflow-editing PR' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
-[[ "$(cat "$fixture/gh-calls")" == *statusCheckRollup,files* ]] || fail 'workflow-editing PR did not use the shared CI file guard'
 for path in tools/run-engine-tests.sh .zenoforge/ci.json; do
   PR_FILES="$(jq -cn --arg path "$path" '[$path]')"
   expect_receipt_refusal "CI suite-selection file $path" "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
 done
+PR_FILES="$(jq -cn '[range(0;119) | "safe/file-\(.).txt"] + [".github/workflows/x.yml"] + [range(120;150) | "safe/file-\(.).txt"]')"
+expect_receipt_refusal 'workflow file past the first 100 entries' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+[[ "$(cat "$fixture/gh-calls")" == *'api --paginate repos/{owner}/{repo}/pulls/17/files -q .[].filename'* ]] \
+  || fail 'workflow-editing PR did not use the paginated CI file guard'
+PR_FILES='["tools/quick-land.sh"]'
+PR_FILES_API_ERROR=1
+expect_receipt_refusal 'paginated PR file read fails' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_FILES_API_ERROR=0
 PR_FILES='["tools/quick-land.sh"]'
 red_result="$(merge_pr_result_file "$repo" "$rsha")"
 mkdir -p "$(dirname "$red_result")"

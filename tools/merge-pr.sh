@@ -105,16 +105,16 @@ merge_pr_prior_art_ok() {
 # has no test run to prove, and a green full-suite result for the same SHA
 # (merge_pr_main) is itself a receipt.
 merge_pr_ci_green_check_count() {
-  local pr="$1" head_sha="$2" success_only="${3:-false}" view count
-  view="$(gh pr view "$pr" --json headRefOid,statusCheckRollup,files 2>/dev/null)" || return 1
-  jq -e '
-    (.files | type == "array" and length > 0)
-    and all(.files[];
-      (.path | type == "string")
-      and ((.path | startswith(".github/")) | not)
-      and .path != "tools/run-engine-tests.sh"
-      and .path != ".zenoforge/ci.json")
-  ' <<<"$view" >/dev/null 2>&1 || return 1
+  local pr="$1" head_sha="$2" success_only="${3:-false}" view count files path
+  view="$(gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null)" || return 1
+  files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" -q '.[].filename' 2>/dev/null)" || return 1
+  [[ -n "$files" ]] || return 1
+  while IFS= read -r path; do
+    case "$path" in
+      .github/*|tools/run-engine-tests.sh|.zenoforge/ci.json) return 1 ;;
+      '') return 1 ;;
+    esac
+  done <<<"$files"
   # headRefOid anchors the rollup to this commit; GitHub CheckRuns have no per-check SHA.
   count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
     def completed_success:
