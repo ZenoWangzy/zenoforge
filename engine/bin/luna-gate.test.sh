@@ -27,6 +27,19 @@ expect() {
   local got; got=$(gate "$1" "$2" "$3" "$4" "$5" "$6")
   [[ $got == "$7" ]] || fail "$(basename "$1") avail=$2 full=$3 prio=$4 age=$5 cpu=$6: got $got, want $7"
 }
+wait_file_case() {
+  local f=$1 scratch="$root/$(basename "$1").scratch" slots="$root/$(basename "$1").slots" pid
+  mkdir -p "$scratch" "$slots"; printf 'MemAvailable: 1024 kB\n' >"$root/meminfo"; printf 'some avg10=32 avg60=35 avg300=36 total=1\nfull avg10=12 avg60=12 avg300=12 total=1\n' >"$root/psi"; : >"$root/prompt"
+  env WORKER_SCRATCH_ROOT="$scratch" LUNA_SLOTS="$slots" LUNA_PRIORITY=opt LUNA_MIN=0 LUNA_MAX=0 LUNA_PROC_MEMINFO="$root/meminfo" LUNA_PROC_PSI_MEMORY="$root/psi" "$f" gate "$root" "$root/prompt" &
+  pid=$!
+  for _ in {1..100}; do
+    [[ -e "$slots/wait-opt-$pid" ]] && { kill "$pid"; wait "$pid" 2>/dev/null || :; return; }
+    if [[ -e "$scratch/tmp/luna-slots/wait-opt-$pid" ]]; then kill "$pid"; wait "$pid" 2>/dev/null || :; fail "$(basename "$f") ignored LUNA_SLOTS"; fi
+    kill -0 "$pid" 2>/dev/null || { wait "$pid" || :; fail "$(basename "$f") exited before publishing a wait file"; }
+    sleep .05
+  done
+  kill "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; fail "$(basename "$f") did not publish wait file in LUNA_SLOTS"
+}
 
 for f in "$bin/luna" "$bin/zc"; do
   d="$root/cleanup-$(basename "$f")"; mkdir -p "$d/out"; : >"$d/wait"; : >"$d/out/gate-wait"; ( wait_f="$d/wait"; out="$d/out"; eval "$(awk '/^chain_exit_trap\(\)/,/^}/; /^chain_exit_trap /' "$f")" )
@@ -42,5 +55,6 @@ for f in "$bin/luna" "$bin/zc"; do
   expect "$f"  6000  12   normal   999999 0   refused  # normal, full 12
   expect "$f"  3400   0   normal        0 100  admitted # aging tier alone: cpu busy, aged, measured floor
   expect "$f"  6000  12   normal        0 100  refused  # aging, full 12
+  wait_file_case "$f"
 done
 echo "ok - hotfix admits at 3 GB with full < 10; normal and aging admit at the 3328 MB floor with full < 10; full 12 refused; in luna and zc"

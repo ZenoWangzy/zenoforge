@@ -24,7 +24,7 @@ zsrc="$root/zc-src"
 mkdir -p "$out" "$root/tmp/$key"
 rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch reads these
 # Same capacity gate and mutex as luna. Runs = top-level codex processes + top-level zcode processes, so both lanes share LUNA_MAX.
-slots="$root/tmp/luna-slots"; mkdir -p "$slots"
+slots="${LUNA_SLOTS:-$root/tmp/luna-slots}"; mkdir -p "$slots"
 top_runs() { local c=$1 p n=0; for p in $(pgrep -x "$c"); do [[ "$(ps -o comm= -p "$(ps -o ppid= -p "$p" | tr -d ' ')" 2>/dev/null)" == "$c" ]] || n=$((n+1)); done; echo "$n"; }
 codex_runs() { echo $(( $(top_runs codex) + $(top_runs zcode-cli) )); }
 cpu_busy() { local a b; a=($(head -1 /proc/stat)); sleep 2; b=($(head -1 /proc/stat))
