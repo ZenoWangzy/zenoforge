@@ -817,7 +817,7 @@ review_identity_unavailable_reason() {
       else echo 'codex unavailable'; fi
       ;;
     zcode)
-      if provider_quota_exhausted zcode; then echo 'glm hold'
+      if ! zcode_review_open; then echo 'glm hold'
       elif ! zf_zcode_bin_argv >/dev/null 2>&1; then echo 'glm cli missing'
       elif ! zcode_provider_config_model_matches "$identity"; then echo 'glm config mismatch'
       else echo 'glm unavailable'; fi
@@ -845,7 +845,7 @@ review_identity_available() {
       command -v codex >/dev/null 2>&1
       ;;
     zcode)
-      provider_quota_exhausted zcode && return 1
+      zcode_review_open || return 1
       zf_zcode_bin_argv >/dev/null 2>&1 || return 1
       zcode_provider_config_model_matches "$identity"
       ;;
