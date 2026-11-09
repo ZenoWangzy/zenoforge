@@ -852,22 +852,25 @@ def front_unit_active(pattern):
     return [line.split()[0] for line in out.splitlines() if line.strip()]
 
 def front_cache_get(now, max_age):
-    cached = (read_json(FRONT_CACHE_PATH) or {}).get("github")
-    if isinstance(cached, dict) and isinstance(cached.get("stages"), list) and isinstance(cached.get("fetched_epoch"), (int, float)):
-        age = now - cached["fetched_epoch"]
-        if 0 <= age < max_age:
-            return cached, age
-    return None, None
+    cached = (read_json(FRONT_CACHE_PATH) or {}).get("github"); epoch = cached.get("fetched_epoch") if isinstance(cached, dict) else None
+    if not isinstance(epoch, (int, float)) or not isinstance(cached.get("stages"), list): return None, None
+    age = now - epoch
+    return (cached, age) if 0 <= age < max_age else (None, None)
 
 def front_github_stages(now):
     cached, age = front_cache_get(now, FRONT_CACHE_SECONDS)
-    if cached:
-        return cached["stages"], {"cached": True, "stale": False, "age_s": int(age), "error": None}
+    if cached and isinstance(cached.get("search_counts"), dict):
+        return cached["stages"], cached["search_counts"], {"cached": True, "stale": False, "age_s": int(age), "error": None}
     try:
-        query = ("query($owner:String!,$name:String!){repository(owner:$owner,name:$name){" +
-                 "".join(f'a{i}:issues(states:OPEN,labels:["{row[0]}"],first:10,orderBy:{{field:UPDATED_AT,direction:ASC}})'
-                         "{totalCount nodes{number title createdAt updatedAt}} " for i, row in enumerate(FRONT_STAGES)) + "}}")
-        payload = json.loads(front_run(["gh", "api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", "query=" + query], 30))
+        repo_slug = os.environ.get("ZF_REPO", "")
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo_slug): raise RuntimeError("ZF_REPO 必须是 owner/repo")
+        owner, name = repo_slug.split("/", 1)
+        repo_queries = [("issues_open", "is:issue is:open"), ("issues_closed", "is:issue is:closed"), ("prs_open", "is:pr is:open"), ("prs_merged", "is:pr is:merged"), ("prs_closed_unmerged", "is:pr is:closed is:unmerged")]; stage_queries = [(row[0], f"is:issue is:open label:{row[0]}") for row in FRONT_STAGES]; terms = [term for _, term in repo_queries + stage_queries]; vars = "$owner:String!,$name:String!," + ",".join(f"$q{i}:String!" for i in range(len(terms)))
+        stage_fields = "".join(f'a{i}:issues(states:OPEN,labels:["{row[0]}"],first:10,orderBy:{{field:UPDATED_AT,direction:ASC}}){{totalCount nodes{{number title createdAt updatedAt}}}} ' for i, row in enumerate(FRONT_STAGES))
+        query = ("query(" + vars + "){repository(owner:$owner,name:$name){" + stage_fields + "}" +
+                 "".join(f"c{i}:search(query:$q{i},type:ISSUE,first:1){{issueCount}}" for i in range(len(terms))) + "}")
+        args = ["gh", "api", "graphql", "-F", f"owner={owner}", "-F", f"name={name}", *[arg for i, term in enumerate(terms) for arg in ("-F", f"q{i}=repo:{repo_slug} {term}")]]
+        payload = json.loads(front_run(args + ["-f", "query=" + query], 30))
         repo = ((payload or {}).get("data") or {}).get("repository") if isinstance(payload, dict) else None
         if not isinstance(repo, dict):
             first = ((payload.get("errors") or [{}])[0].get("message") if isinstance(payload, dict) else None) or "GitHub 返回无数据"
@@ -876,43 +879,39 @@ def front_github_stages(now):
         for i, row in enumerate(FRONT_STAGES):
             block = repo.get(f"a{i}") or {}
             node = (block.get("nodes") or [None])[0] or {}
-            stages.append({"label": row[0], "count": block.get("totalCount"),
-                           "oldest": {"number": node.get("number"), "created_at": node.get("createdAt"), "updated_at": node.get("updatedAt")} if node else None,
-                           # 总览阶段卡：最久没动的 10 张，标题 + 距上次更新
+            stages.append({"label": row[0], "count": block.get("totalCount"), "oldest": {"number": node.get("number"), "created_at": node.get("createdAt"), "updated_at": node.get("updatedAt")} if node else None,
                            "items": [{"number": n.get("number"), "title": (n.get("title") or "")[:60], "updated_at": n.get("updatedAt")} for n in block.get("nodes") or []]})
-        if all(s["count"] is None for s in stages):
-            raise RuntimeError("GitHub 返回的阶段计数为空")
+        if all(s["count"] is None for s in stages): raise RuntimeError("GitHub 返回的阶段计数为空")
+        data = (payload or {}).get("data") or {}
+        search_counts = {key: (data.get(f"c{i}") or {}).get("issueCount") for i, (key, _) in enumerate(repo_queries)}
+        search_counts["stages"] = {label: (data.get(f"c{i + len(repo_queries)}") or {}).get("issueCount") for i, (label, _) in enumerate(stage_queries)}
+        search_count_error = "; ".join(str(e.get("message") or "") for e in (payload.get("errors") or []) if isinstance(e, dict))[:200] or "GitHub 搜索未返回计数"
+        search_counts["errors"] = {**{key: search_count_error for key, value in search_counts.items() if key != "stages" and not isinstance(value, int)}, **{f"stages.{key}": search_count_error for key, value in search_counts["stages"].items() if not isinstance(value, int)}}
         try:
             tmp = FRONT_CACHE_PATH + ".tmp"
             with open(tmp, "w", encoding="utf-8") as out:
-                json.dump({"github": {"fetched_epoch": now, "stages": stages}}, out, ensure_ascii=False)
+                json.dump({"github": {"fetched_epoch": now, "stages": stages, "search_counts": search_counts}}, out, ensure_ascii=False)
             os.replace(tmp, FRONT_CACHE_PATH)
         except OSError:
             pass
-        return stages, {"cached": False, "stale": False, "age_s": 0, "error": None}
+        return stages, search_counts, {"cached": False, "stale": False, "age_s": 0, "error": None}
     except Exception as ex:
         stale, age = front_cache_get(now, FRONT_STALE_SECONDS)
         if stale:
-            return stale["stages"], {"cached": True, "stale": True, "age_s": int(age), "error": front_error(ex)}
+            return stale["stages"], stale.get("search_counts"), {"cached": True, "stale": True, "age_s": int(age), "error": front_error(ex)}
         raise
 
 def front_stage_rows(now):
-    raw, meta = front_github_stages(now)
-    by_label = {s["label"]: s for s in raw}
-    rows = []
+    raw, counts, meta = front_github_stages(now); by_label = {s["label"]: s for s in raw}; rows = []
     for label, name, c_ok, c_bad, i_ok, i_bad, meaning in FRONT_STAGES:
         s = by_label.get(label) or {}
         oldest, count = s.get("oldest"), s.get("count")
         idle = 0 if count == 0 else front_hours_since(epoch_of(oldest.get("updated_at") or "") if oldest else None, now)
         rows.append({"label": label, "name": name, "count": count, "oldest": oldest, "idle_hours": idle, "items": s.get("items") or []})
-        front_std(f"stage.{label}.count", f"{name}（{label}）数量", c_ok, c_bad, False, "个", meaning,
-                  "GitHub GraphQL：该标签的开放 issue 数")
-        front_std(f"stage.{label}.idle_hours", f"{name}最久滞留", i_ok, i_bad, False, "小时",
-                  "该阶段里最久没动的那张票，距上次更新多久（label 变化或评论都会刷新，是时间下限）。" + meaning,
-                  "GitHub GraphQL：该标签下 updatedAt 最早的 issue")
-        front_values[f"stage.{label}.count"] = count
-        front_values[f"stage.{label}.idle_hours"] = idle
-    return rows, meta
+        front_std(f"stage.{label}.count", f"{name}（{label}）数量", c_ok, c_bad, False, "个", meaning, "GitHub GraphQL：该标签的开放 issue 数")
+        front_std(f"stage.{label}.idle_hours", f"{name}最久滞留", i_ok, i_bad, False, "小时", "该阶段里最久没动的那张票，距上次更新多久（label 变化或评论都会刷新，是时间下限）。" + meaning, "GitHub GraphQL：该标签下 updatedAt 最早的 issue")
+        front_values[f"stage.{label}.count"] = count; front_values[f"stage.{label}.idle_hours"] = idle
+    return rows, counts, meta
 
 def front_advisor_snapshot():
     script = ('source "$1/lib.sh" >/dev/null 2>&1 || { echo "cannot source engine/lib.sh" >&2; exit 3; }\n'
@@ -1107,9 +1106,9 @@ release_train_state = read_json(f"{A}/release-train.json") or {}
 front = {"errors": {}}
 front_now = front_started = time.time()
 try:
-    front["stages"], front["github"] = front_stage_rows(front_now)
+    front["stages"], front["search_counts"], front["github"] = front_stage_rows(front_now)
 except Exception as ex:
-    front["stages"], front["github"] = [], None
+    front["stages"], front["search_counts"], front["github"] = [], None, None
     front["errors"]["stages"] = front_error(ex)
 def front_count(label):
     return next((s["count"] for s in front["stages"] if s["label"] == label), None)
