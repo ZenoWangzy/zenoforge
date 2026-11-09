@@ -309,7 +309,7 @@ dispatch_pending() {
 $(matt_method_rule "$wt")
 0. 先看 git stash list：若有「autopilot: kept before redispatch」，那是上一轮未推送的修复，先 git stash pop 恢复并在其基础上继续。
 0b. 先合入最新 main：git merge --no-edit origin/main（不 rebase、不 force；有冲突按两边意图解决）。push preflight 的 freshness 门禁拒绝落后 main 过多的分支，不合就永远推不上。
-1. 读评审报告 $SUP/${prev_report}，逐条处理其中的阻断发现（${title}）。不得为凑绿弱化断言。按缺陷类别修，不按单点修：每条发现先归纳成一类问题（例：单位码被显示名覆盖、幂等键缺字段），在本 PR 全部改动里搜出同类位置一并处理，每一类补一条回归测试；只修被点名的那一行，下一轮评审会在同类的另一处再打回。${hint}
+1. 读评审报告 $SUP/${prev_report}，逐条处理其中的阻断发现（${title}）。不得为凑绿弱化断言。按缺陷类别修，不按单点修：每条发现先归纳成一类问题（例：单位码被显示名覆盖、幂等键缺字段），在本 PR 全部改动里搜出同类位置一并处理，每一类补一条回归测试；只修被点名的那一行，下一轮评审会在同类的另一处再打回。同一函数的兄弟出口也要枚举：评审点名某函数的一个 return、throw、提前 continue 或错误分支时，先列出该函数的全部出口，每个出口修同一缺陷类别并各补一条回归测试，本轮一次做完，不留到下一轮；报告里列出已检查的出口。${hint}
 1b. 修复报告必须按 $REVIEW_CONTRACT_MD 中的 author-disposition schema，为上一轮每个 finding ID 记录处置和一行理由；复审会从单元历史读取这些处置。
 2. 补/改回归测试，定向跑受影响测试与 typecheck 全绿。${INTEGRATION_RULE}
 3. ${deliver}

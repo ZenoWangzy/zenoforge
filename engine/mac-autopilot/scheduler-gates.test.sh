@@ -1309,6 +1309,8 @@ DISPATCHED=(); DISPATCH_PROMPT=""
 units '{"units":[{"id":"pr-14","pr":14,"stage":"repair-pending","review_report":"review-14.md","history":[]}]}'
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == repair:pr-14:* && "$DISPATCH_PROMPT" == *"git merge --no-edit origin/main"* && "$DISPATCH_PROMPT" != *"禁止：动主 checkout、merge"* ]] || fail 'repair prompt does not merge origin/main before pushing (or still forbids merge)'
+# 兄弟出口：评审点名一个出口时，repair 必须枚举该函数全部出口并各补一条回归测试（issue-5928 四轮逐个补出口）
+[[ "$DISPATCH_PROMPT" == *"同一函数的兄弟出口也要枚举"*"各补一条回归测试"* ]] || fail 'repair prompt lacks the sibling-exit rule'
 
 # ---------- 合并门：批准必须等于当前 head，merge 带 --match-head-commit ----------
 MAIN_HEAD="$M1"
