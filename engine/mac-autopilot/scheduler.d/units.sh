@@ -398,7 +398,7 @@ supervisor_arbiter_capped_default() { # id unit-json → the lifetime cap's rout
   fi
   jqf -e --argjson wait "$SUPERVISOR_CAP_WAIT_S" --argjson now "$(date +%s)" '([(.history // [])[] | select(.stage == "supervisor-arbiter") | .at] | last // "1970-01-01T00:00:00Z" | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) + $wait <= $now' <<<"$u" >/dev/null || return 0
   if jqf -e 'any((.history // [])[]?; .stage == "supervisor-cap-default" and ((.result // "") | test("arbitration cap")))' <<<"$u" >/dev/null; then
-    supervisor_close_with_hold "$id" arbitration-cap-again "the cap came back after its default decision and no head ruling" \
+    supervisor_cap_second_close "$id" arbitration-cap-again "the cap came back after its default decision and no head ruling" \
       "$(decision_entry 'Supervisor cap close' 'the cap came back after one default decision and no head ruling' 'supervisor-arbiter history events' '[]' scheduler)"
     return
   fi
@@ -417,6 +417,28 @@ supervisor_close_with_hold() { # id token detail decision
   fi
   cap_set_unit "$id" close "$detail" "" "$(hist supervisor-close "$detail" "$decision") | .stage=\"closed\" | .note=$(js "$detail") | del(.parked_reason, .unpark_condition)" \
     && say "supervisor close unit=$id reason=$token: closed with a durable hold"
+}
+# Second cap: the hold on the issue first, then the open PR under it (see supervisor_cap_close_pr).
+supervisor_cap_second_close() { # id token detail decision
+  supervisor_close_with_hold "$@" && supervisor_cap_close_pr "$1" "$2" "$3"
+}
+# The cap close takes the unit's open PR too, under the hold it links, unless the PR is session-owned or an open issue cites it as its first slice
+# (the pr-close guard). One read per close: open PR state and labels, open issue bodies; nothing polls.
+supervisor_cap_close_pr() { # id token detail
+  local id="$1" token="$2" detail="$3" pr issue repo state cited
+  pr="$(unit_field "$id" '.pr // empty')"; issue="$(unit_field "$id" '.issue // empty')"; repo="${REPO:-${ZF_REPO:-}}"
+  [[ "$pr" =~ ^[1-9][0-9]*$ ]] || return 0
+  state="$(gh pr view "$pr" --json state,labels --jq '.state + " " + ([.labels[].name] | join(","))' 2>/dev/null)" || state=""
+  [[ "$state" == OPEN\ * ]] || return 0
+  [[ "$state" != *session-owned* ]] || { say "supervisor close unit=$id reason=$token: PR #$pr kept open, session-owned"; return 0; }
+  [[ "$issue" =~ ^[1-9][0-9]*$ && -n "$repo" ]] || { say "supervisor close unit=$id reason=$token: PR #$pr kept open, no issue hold to link"; return 0; }
+  cited="$(gh issue list --repo "$repo" --state open --limit 1000 --json number,body --jq ".[] | select((.body // \"\") | test(\"PR #$pr(?![0-9])\")) | .number" 2>/dev/null)" \
+    || { say "supervisor close unit=$id reason=$token: PR #$pr kept open, open-issue read failed"; return 0; }
+  if [[ -n "$cited" ]]; then say "supervisor close unit=$id reason=$token: PR #$pr kept open, first slice cited by open issue #${cited%%$'\n'*}"; return 0; fi
+  gh pr close "$pr" --comment "Autopilot cap close: unit $id is closed. Its issue #$issue is on hold (hold.sh, holder scheduler-stop-loss): $detail. A recurrence of that issue reopens the work." >/dev/null 2>&1 \
+    && say "supervisor close unit=$id reason=$token: PR #$pr closed, hold on issue #$issue" \
+    || say "supervisor close unit=$id reason=$token: could not close PR #$pr; left open"
+  return 0
 }
 # An arbiter park waits for a state change or 24 h; one more arbitration then sees the earlier verdict in its history. A park that repeats is the repeat
 # verdict: the unit closes with a durable hold and is never parked again.

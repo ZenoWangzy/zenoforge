@@ -1207,4 +1207,31 @@ SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 
 [[ "$(cap_default_stage pr-663)" == closed ]] || fail "a second cap must close durably: $(jq -c '.units[0]' "$UNITS")"
 grep -q '^hold --hold 663 ' "$hold_calls" || fail "the second cap must hold issue 663: $(cat "$hold_calls")"
 
+# ---- 行 172b 第二轮：cap 关闭时挂着的 PR 一并关闭（有 hold 链接），session-owned 与被 open issue 引用的 PR 不关 ----
+pr_calls="$fixture/pr-close-calls"; : > "$pr_calls"; PR_STATE="OPEN factory"; CITED_ISSUES=""
+eval "$(declare -f gh | sed '1s/^gh ()/gh_before_pr ()/')"
+gh() {
+  case "$1 $2" in
+    'pr view') printf '%s\n' "$PR_STATE"; return 0 ;;
+    'issue list') printf '%s\n' "$CITED_ISSUES"; return 0 ;;
+    'pr close') printf 'pr-close %s\n' "$*" >> "$pr_calls"; return 0 ;;
+  esac
+  gh_before_pr "$@"
+}
+units "$(jq -cn '{units:[{id:"issue-6801",issue:6801,pr:6811,stage:"closed",history:[]}]}')"
+: > "$hold_calls"; : > "$pr_calls"
+supervisor_cap_close_pr issue-6801 arbitration-cap-again "cap again, no ruling"
+grep -q 'pr close 6811 ' "$pr_calls" || fail "an unlabeled open PR must close with the cap close: $(cat "$pr_calls")"
+grep -q 'issue #6801 is on hold (hold.sh, holder scheduler-stop-loss): cap again, no ruling' "$pr_calls" || fail "the PR close must link the hold: $(cat "$pr_calls")"
+grep -q 'supervisor close unit=issue-6801 reason=arbitration-cap-again: PR #6811 closed, hold on issue #6801' "$LOG" || fail "the PR close must log its unit, reason and hold issue"
+
+PR_STATE="OPEN session-owned,factory"; : > "$pr_calls"
+supervisor_cap_close_pr issue-6801 arbitration-cap-again "cap again, no ruling"
+[[ ! -s "$pr_calls" ]] || fail "a session-owned PR must stay open: $(cat "$pr_calls")"
+
+PR_STATE="OPEN factory"; CITED_ISSUES="6900"; : > "$pr_calls"
+supervisor_cap_close_pr issue-6801 arbitration-cap-again "cap again, no ruling"
+[[ ! -s "$pr_calls" ]] || fail "a PR cited by an open issue (first slice) must stay open: $(cat "$pr_calls")"
+grep -q 'first slice cited by open issue #6900' "$LOG" || fail "the first-slice keep must log one line"
+
 echo 'supervisor-arbiter.test.sh: all assertions passed'
