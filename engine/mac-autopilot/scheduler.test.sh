@@ -5934,7 +5934,7 @@ command jq -e '(.intake_parent_retry // {}) | has("4279") | not' "$TF/supervisor
 # A parent check that answers 1 (leaf) clears a backoff entry left by earlier unverified checks.
 new_tick_fixture parent-leaf-clears-unverified
 mkdir -p "$TF/issues"
-command jq '.max_workers=1 | .release_train.enabled=false | .issue_intake={enabled:true,max_upstream:2,max_ready:30,labels:["pipeline-system"],product_labels:["ready-for-agent"]}' \
+command jq '.max_workers=1 | .implement_cap=0 | .release_train.enabled=false | .issue_intake={enabled:true,max_upstream:2,max_ready:30,labels:["pipeline-system"],product_labels:["ready-for-agent"]}' \
   "$template" > "$TF/supervisor/autopi/config.json"
 command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-external",blocked_on:4279,history:[]}]}' \
   > "$TF/supervisor/autopi/units.json"
