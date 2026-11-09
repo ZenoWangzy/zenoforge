@@ -670,7 +670,7 @@ dispatch() {
   # Release is exempt: an OOM kill mid-deploy would leave production half-rolled.
   local -a memory_args=() result_args=() advisor_env=()
   if [[ "$stage" == advisor ]]; then
-    advisor_env=(-E ZF_WEB_ADVISOR_PROVIDER_JOB_DIR -E "ZF_QUARANTINE_CANARY_SCOPES=${STAGE_DISPATCH_CANARY_SCOPES:-}")
+    advisor_env=(-E ZF_WEB_ADVISOR_PROVIDER_JOB_DIR -E "ZF_QUARANTINE_CANARY_SCOPES=$(quarantine_canary_scope_list_for_stage advisor)")
   fi
   case "$stage" in
     implement|triage|recut)
@@ -840,7 +840,7 @@ dispatch_advisor_batch() {
     fi
   fi
   if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect \
-    "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" \
+    "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" -E "ZF_QUARANTINE_CANARY_SCOPES=$(quarantine_canary_scope_list_for_stage advisor)" \
     -p "RuntimeMaxSec=$ADVISOR_RUNTIME_MAX_SEC" \
     "$script" $([ "$poll_only" = 1 ] && echo --poll-only) --scheduled "${issue_ids[@]}"; then
     if [ "${#issue_ids[@]}" -gt 0 ]; then

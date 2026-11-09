@@ -577,7 +577,9 @@ web_advisor_provider_dispatch_question_async() {
   printf '%s\n' "$mode" > "$job_dir/mode"
   printf '%s\n' "$(( $(date +%s) + WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS ))" > "$job_dir/deadline"
   web_advisor_provider_start_job_unit "$job_id" || return $?
-  if declare -F quarantine_mark_canary_scope_list >/dev/null; then quarantine_mark_canary_scope_list "${ZF_QUARANTINE_CANARY_SCOPES:-}"; fi
+  if declare -F quarantine_mark_canary_scope_list >/dev/null; then
+    quarantine_mark_canary_scope_list "${ZF_QUARANTINE_CANARY_SCOPES:-}" || echo "web-advisor-provider: quarantine canary mark failed" >&2
+  fi
 }
 
 web_advisor_provider_dispatch_async() {

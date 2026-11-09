@@ -162,17 +162,26 @@ quarantine_decision() {
 # the next canary is due after an exponentially longer wait (capped), so a
 # second candidate this same tick already sees "open".
 quarantine_mark_canary() {
-  local scope="$1" now="${2:-$(date +%s)}" f canaries wait
+  local scope="$1" now="${2:-$(date +%s)}" f canaries wait lock_fd
   agent_pipeline_write_guard quarantine_mark_canary "$AGENT_HOME" "$QUARANTINE_DIR" || return 1
   f="$(quarantine_file "$scope")"
   [ -f "$f" ] || return 0
   [ "$DRY_RUN" = "1" ] && { echo "[dry-run] quarantine_mark_canary scope=$scope" >&2; return 0; }
-  canaries="$(jq -r '.canaries // 0' "$f")"
+  mkdir -p "$QUARANTINE_DIR" || return 1
+  exec {lock_fd}>"$f.lock" || return 1
+  flock -x "$lock_fd" || { exec {lock_fd}>&-; return 1; }
+  if [ ! -f "$f" ]; then unlock_fd "$lock_fd"; return 0; fi
+  canaries="$(jq -r '.canaries // 0' "$f")" || { unlock_fd "$lock_fd"; return 1; }
   wait=$((QUARANTINE_CANARY_INITIAL_SECONDS * (1 << (canaries + 1))))
   [ "$wait" -gt "$QUARANTINE_CANARY_MAX_SECONDS" ] && wait="$QUARANTINE_CANARY_MAX_SECONDS"
-  jq --argjson now "$now" --argjson wait "$wait" \
+  if ! jq --argjson now "$now" --argjson wait "$wait" \
     '.canaries = ((.canaries // 0) + 1) | .last_canary_at = $now | .next_canary_at = ($now + $wait)' \
-    "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    "$f" > "$f.tmp" || ! mv "$f.tmp" "$f"; then
+    rm -f "$f.tmp"
+    unlock_fd "$lock_fd"
+    return 1
+  fi
+  unlock_fd "$lock_fd"
 }
 
 
@@ -200,6 +209,12 @@ quarantine_mark_stage_dispatch_canaries() {
     esac
   done <<< "${STAGE_DISPATCH_CANARY_SCOPES:-}"
   STAGE_DISPATCH_CANARY_SCOPES="$remaining"; quarantine_mark_canary_scope_list "$started" "$now"
+}
+
+quarantine_canary_scope_list_for_stage() {
+  local stage="$1" scope
+  while IFS= read -r scope; do case "$scope" in "$stage"|"$stage"@*) printf '%s\n' "$scope" ;; esac; done \
+    <<< "${STAGE_DISPATCH_CANARY_SCOPES:-}"
 }
 
 

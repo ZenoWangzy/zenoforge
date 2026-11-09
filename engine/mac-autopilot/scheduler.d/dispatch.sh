@@ -118,7 +118,7 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
     say "dispatch stopped unit=$unit reason=claim-lost-after-launch"
     return 1
   fi
-  if declare -F quarantine_mark_stage_dispatch_canaries >/dev/null; then quarantine_mark_stage_dispatch_canaries "$type"; fi
+  if [[ "$type" == implement && "$issue" =~ ^[1-9][0-9]*$ ]] && ! scheduler_mark_canary_after_worker_start "$issue"; then say "dispatch canary mark failed unit=$unit issue=$issue"; fi
   local w; w="$(jqf -cn --argjson pid "${pid:-0}" --argjson pid_start "$pid_started" --arg unit "$unit" --arg type "$type" --arg log "$log" --arg report "$report" --arg at "$STAMP" --arg mode "$CODEX_MODE" --arg session_id "$CODEX_SESSION_ID" --arg sha "$sha" --arg pr_head "$pr_head" --arg workdir "$workdir" --arg model "$model" --arg provider "$provider" --arg effort "$effort" --arg route_reason "$route_reason" --argjson hard_escalation "$hard_escalation" --arg issue "$issue" --arg claim_key "$claim_key" --arg claim_owner "$claim_owner" --argjson usage_start "$CODEX_USAGE_START" \
     '{pid:$pid,pid_start:$pid_start,unit:$unit,type:$type,log:$log,report:$report,started:$at,mode:$mode,session_id:$session_id,sha:$sha,pr_head:$pr_head,workdir:$workdir,provider:$provider,model:$model,effort:$effort,hard_escalation:$hard_escalation,route_reason:$route_reason,token_usage_start:$usage_start,issue:$issue,claim_key:$claim_key,claim_owner:$claim_owner}')"
   [[ -z "$worker_context" ]] || w="$(jqf --argjson context "$worker_context" '. + $context' <<<"$w")"

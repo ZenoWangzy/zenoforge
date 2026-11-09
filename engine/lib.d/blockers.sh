@@ -12,10 +12,10 @@ blocker_root_fail() {
 reconcile_blocking_issue_root() {
   local issue_json="$1" open_issues_json="$2" n issue_state state owner_state dependents_json has_state_label
   local children_json child child_state dependent dependent_json existing_child_edges recut_status
-  local exit_count recut_parent=0 episode reason latest_reason reason_text action reason_class escalated_episode blockers pipeline_system_status=0
+  local exit_count recut_parent=0 episode reason latest_reason reason_text action reason_class escalated_episode blockers pipeline_system_status=0 requeue_patch=.
   local last_episode last_action delivery_failed_episode retry_failed_route=0 thread_id question thread_json inbox state_labels_json child_list pr_number
   local terminal_candidate conclusion_owned_hold conclusion_json conclusion_class="" conclusion_route="" conclusion_owner="" conclusion_signature conclusion_reason expected_scope comment_marker matching_scope scope_decision risk_class_escalation
-  local recut_reason recut_reason_text recut_reason_file recut_reason_json attempts_before_reset reset_record reset_reason reset_reason_file prerequisite_index prerequisite_number prerequisite_state prerequisite_record prerequisite_disqualified prerequisite_state_reason prerequisite_reason_file prerequisite_repeat_status
+  local recut_reason recut_reason_text recut_reason_file recut_reason_json attempts_before_reset reset_record reset_reason reset_reason_file prerequisite_index prerequisite_number prerequisite_state prerequisite_record prerequisite_disqualified prerequisite_state_reason prerequisite_reason_file prerequisite_repeat_status canary_scope_list
   local prerequisite_marker prerequisite_title prerequisite_body prerequisite_body_file prerequisite_url prerequisite_json issue_title
   local -a edit_args=() live_children=()
 
@@ -162,6 +162,7 @@ reconcile_blocking_issue_root() {
       return 0
     fi
     if [ "$conclusion_route" = requeue ]; then
+      [ "$conclusion_owner" = release ] && return 0
       expected_scope="$(selection_scope_json <<< "$state")" || expected_scope='[]'
       matching_scope="$(jq -r '.run.conclusion.scope // empty' <<< "$state")"
       scope_decision=clear
@@ -178,19 +179,16 @@ reconcile_blocking_issue_root() {
         conclusion_hold "$n" issue-pipeline || { blocker_root_fail "conclusion hold failed for #$n"; return 1; }
         return 0
       fi
-      # The worker dispatch spends this reservation after the job starts.
-      [ "$scope_decision" != canary ] || quarantine_stage_canary_reserve "$matching_scope"
-      if [ "$conclusion_owner" = release ]; then
-        return 0
-      fi
+      canary_scope_list="$(quarantine_canary_scope_list_for_stage implement)"
+      [ -z "$canary_scope_list" ] || requeue_patch=".run.conclusion.canary_reserved_scopes = $(jq -Rn --arg scopes "$canary_scope_list" '$scopes')"
       if [ "$conclusion_class" = infrastructure ]; then
         conclusion_requeue_comment_once "$n" || { blocker_root_fail "infrastructure requeue comment failed for #$n"; return 1; }
       fi
       if [ "$conclusion_owned_hold" = true ]; then
-        state_requeue "$n" release-hold hold-requeue \
+        state_requeue "$n" release-hold hold-requeue "$requeue_patch" \
           || { blocker_root_fail "release-hold requeue failed for #$n"; return 1; }
       else
-        state_requeue "$n" "" conclusion-requeue \
+        state_requeue "$n" "" conclusion-requeue "$requeue_patch" \
           || { blocker_root_fail "conclusion requeue failed for #$n"; return 1; }
       fi
       if [ "$pipeline_system_status" = 0 ]; then

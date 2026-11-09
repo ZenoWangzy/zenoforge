@@ -3677,7 +3677,7 @@ EOF
 chmod +x "$EF_BIN/curl"
 T0=1800000000
 EF_OUT="$(
-  PATH="$EF_BIN:$PATH" AGENT_HOME="$EF_HOME" AGENT_DRY_RUN=0 ENV_FAULT_LIB_DIR="$SCRIPT_DIR" ENV_FAULT_ENV_FILE="$EF_ENV" REPO="test/repo" EF_NETWORK_PROBE_STATUS=0 \
+  PATH="$EF_BIN:$PATH" TEST_BIN="$EF_BIN" AGENT_HOME="$EF_HOME" AGENT_DRY_RUN=0 ENV_FAULT_LIB_DIR="$SCRIPT_DIR" ENV_FAULT_ENV_FILE="$EF_ENV" REPO="test/repo" EF_NETWORK_PROBE_STATUS=0 \
   ZF_REPO_DIR="$EF_REPO" ZF_ENGINE_DIR="$EF_REPO/engine" \
   ZF_GCLOUD_BIN=/nonexistent/gcloud bash -c '
     # No set -e here on purpose: this block OBSERVES non-zero return codes
@@ -3730,11 +3730,68 @@ EF_OUT="$(
     # A slice that stops before a job exists must not spend the canary.
     tq=$((t0 + 120))
     echo "canary_let_through=$(stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) 2>/dev/null && echo yes || echo no)"
-    slice_status=124; if [ "$slice_status" -eq 124 ]; then STAGE_DISPATCH_CANARY_SCOPES=""; fi
+    mkdir -p "$ZF_ENGINE_DIR"
+    cat > "$ZF_ENGINE_DIR/run-triage.sh" <<"EOF"
+#!/usr/bin/env bash
+exit "${RUN_RC:-0}"
+EOF
+    cat > "$ZF_ENGINE_DIR/run-advisor.sh" <<"EOF"
+#!/usr/bin/env bash
+source "$ENV_FAULT_LIB_DIR/lib.sh"
+eval "$(sed -n "/^web_advisor_provider_dispatch_question_async() {/,/^}/p" "$ENV_FAULT_LIB_DIR/providers/web-advisor-provider.sh")"
+WEB_ADVISOR_PROVIDER_JOB_DIR="$AGENT_HOME/jobs"
+WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS=600
+web_advisor_provider_start_job_unit() { return 0; }
+printf "question\n" > "$AGENT_HOME/question"
+printf "%s" "$ZF_QUARANTINE_CANARY_SCOPES" | tr "\n" "," > "$ADVISOR_CHILD_SCOPES"
+web_advisor_provider_dispatch_question_async child "$AGENT_HOME/question"
+EOF
+    chmod +x "$ZF_ENGINE_DIR/run-triage.sh" "$ZF_ENGINE_DIR/run-advisor.sh"
+    cat > "$TEST_BIN/systemd-run" <<"EOF"
+#!/usr/bin/env bash
+args=("$@"); script=-1
+for ((i=0; i<${#args[@]}; i++)); do
+  if [[ "${args[$i]}" == -E ]]; then next=$((i + 1)); [[ "${args[$next]}" != ZF_QUARANTINE_CANARY_SCOPES=* ]] || export "${args[$next]}"; fi
+  [[ "${args[$i]}" != */run-triage.sh && "${args[$i]}" != */run-advisor.sh ]] || { script=$i; break; }
+done
+(( script >= 0 )) || exit 97
+exec "${args[@]:$script}"
+EOF
+    chmod +x "$TEST_BIN/systemd-run"
+    eval "$(sed -n "/^dispatch() {/,/^}/p" "$ENV_FAULT_LIB_DIR/issue-pipeline.sh")"
+    eval "$(declare -f quarantine_mark_stage_dispatch_canaries | sed -e s/quarantine_mark_stage_dispatch_canaries/real_quarantine_mark_stage_dispatch_canaries/g)"
+    MARK_LOG="$AGENT_HOME/mark-calls"
+    quarantine_mark_stage_dispatch_canaries() { printf "%s\n" "$1" >> "$MARK_LOG"; real_quarantine_mark_stage_dispatch_canaries "$1" "$((tq + 16 * 60))"; }
+    coord_issue_key() { printf "issue:%s\n" "$1"; }
+    pipeline_claim_begin() { PIPELINE_CLAIM_KEY="issue:$1"; PIPELINE_CLAIM_STAGE="$2"; PIPELINE_CLAIM_UNIT="$3"; PIPELINE_CLAIM_OWNER=fixture; }
+    coord_assert_owned() { return 0; }
+    pipeline_claim_drop() { PIPELINE_CLAIM_KEY=""; PIPELINE_CLAIM_STAGE=""; PIPELINE_CLAIM_UNIT=""; PIPELINE_CLAIM_OWNER=""; }
+    pipeline_claim_keep() { pipeline_claim_drop; }
+    record_env_fault() { :; }
+    guarded_write() { "$@"; }
+    UNIT_PREFIX_TRANSIENT=zf TRIAGE_RUNTIME_MAX_SEC=60 ADVISOR_RUNTIME_MAX_SEC=60
+    dispatch_status=0; RUN_RC=124; export RUN_RC; dispatch triage 929 || dispatch_status=$?
+    echo "dispatch_124_status=$dispatch_status"
+    echo "dispatch_124_mark_calls=$(wc -l < "$MARK_LOG" 2>/dev/null || echo 0)"
     echo "canary_overrun_unchanged=$(jq -e --argjson next "$((tq + QUARANTINE_CANARY_INITIAL_SECONDS))" ".canaries == 0 and .next_canary_at == \$next" "$(quarantine_file triage)" >/dev/null && echo yes || echo no)"
     echo "before_canary=$(quarantine_decision triage $((tq + 14 * 60)))"
     echo "canary_due=$(quarantine_decision triage $((tq + 16 * 60)))"
-    echo "real_job_started=$(stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) 2>/dev/null && quarantine_mark_stage_dispatch_canaries triage "$((tq + 16 * 60))" && echo marked || echo not-marked)"
+    quarantine_open advisor env:test-gate:advisor "d" 2 "$tq" 2>/dev/null
+    quarantine_open advisor@packages/advisor-test env:test-gate:advisor "d" 2 "$tq" 2>/dev/null
+    stage_dispatch_allowed advisor "[\"packages/advisor-test\"]" $((tq + 16 * 60)) >/dev/null 2>&1
+    ADVISOR_CHILD_SCOPES="$AGENT_HOME/advisor-child-scopes"; export ADVISOR_CHILD_SCOPES
+    dispatch_status=0; dispatch advisor 930 || dispatch_status=$?
+    echo "advisor_child_status=$dispatch_status"
+    echo "advisor_child_scopes=$(cat "$ADVISOR_CHILD_SCOPES")"
+    echo "advisor_child_triage_canaries=$(jq -r .canaries "$(quarantine_file triage)")"
+    echo "advisor_child_stage_canaries=$(jq -r .canaries "$(quarantine_file advisor)")"
+    echo "advisor_child_package_canaries=$(jq -r .canaries "$(quarantine_file advisor@packages/advisor-test)")"
+    STAGE_DISPATCH_CANARY_SCOPES=""
+    stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) >/dev/null 2>&1
+    echo "real_job_canaries_before=$(jq -r .canaries "$(quarantine_file triage)")"
+    dispatch_status=0; RUN_RC=0; export RUN_RC; dispatch triage 931 || dispatch_status=$?
+    echo "real_job_started=$(if [ "$dispatch_status" -eq 0 ]; then echo marked; else echo not-marked; fi)"
+    echo "real_job_canaries_after=$(jq -r .canaries "$(quarantine_file triage)")"
     echo "second_same_tick=$(stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) 2>/dev/null && echo yes || echo no)"
     echo "real_job_canaries=$(jq -r .canaries "$(quarantine_file triage)")"
     echo "next_canary_in=$(( $(jq -r .next_canary_at "$(quarantine_file triage)") - (tq + 16 * 60) ))"
@@ -3789,11 +3846,28 @@ assert_eq "stage_dispatch_allowed: an unrelated stage keeps running" "yes" "$(ef
 assert_eq "quarantine_decision: open before the first canary is due" "open" "$(ef before_canary)"
 assert_eq "quarantine_decision: canary due after 15 minutes" "canary" "$(ef canary_due)"
 assert_eq "a canary slice overrun before job creation leaves its schedule unchanged" "yes" "$(ef canary_overrun_unchanged)"
+assert_eq "dispatch() sees the run-triage stub return 124" "1" "$(ef dispatch_124_status)"
+assert_eq "dispatch() does not mark a canary when run-triage returns 124" "0" "$(ef dispatch_124_mark_calls)"
 assert_eq "stage_dispatch_allowed: the canary goes through" "yes" "$(ef canary_let_through)"
 assert_eq "stage dispatch charges the canary after a real job starts" "marked" "$(ef real_job_started)"
 assert_eq "stage_dispatch_allowed: a second candidate the same tick does not" "no" "$(ef second_same_tick)"
-assert_eq "a real job start increments the canary count once" "1" "$(ef real_job_canaries)"
+assert_eq "advisor child receives only advisor canary scopes" "advisor,advisor@packages/advisor-test" "$(ef advisor_child_scopes)"
+assert_eq "advisor child leaves a reserved triage scope uncharged" "0" "$(ef advisor_child_triage_canaries)"
+assert_eq "advisor child marks its stage canary" "1" "$(ef advisor_child_stage_canaries)"
+assert_eq "advisor child marks its package canary" "1" "$(ef advisor_child_package_canaries)"
+assert_eq "a real job starts with canaries at zero before the mark" "0" "$(ef real_job_canaries_before)"
+assert_eq "a real job start increments the canary count once" "1" "$(ef real_job_canaries_after)"
 assert_eq "quarantine_mark_canary: the next canary waits twice as long" "1800" "$(ef next_canary_in)"
+ADVISOR_BATCH_DISPATCH_BODY="$(sed -n '/^dispatch_advisor_batch() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+assert_contains "advisor batch forwards its reserved scopes" "$ADVISOR_BATCH_DISPATCH_BODY" 'quarantine_canary_scope_list_for_stage advisor'
+PROVIDER_DISPATCH_BODY="$(sed -n '/^web_advisor_provider_dispatch_question_async() {/,/^}/p' "$SCRIPT_DIR/providers/web-advisor-provider.sh")"
+assert_contains "advisor provider uses the shared canary mark" "$PROVIDER_DISPATCH_BODY" 'quarantine_mark_canary_scope_list'
+assert_contains "advisor provider reports a failed canary mark" "$PROVIDER_DISPATCH_BODY" 'quarantine canary mark failed'
+QUARANTINE_MARK_BODY="$(sed -n '/^quarantine_mark_canary() {/,/^}/p' "$SCRIPT_DIR/lib.d/quarantine.sh")"
+assert_contains "canary read-modify-write takes a per-scope flock" "$QUARANTINE_MARK_BODY" 'flock -x'
+BLOCKER_REQUEUE_BODY="$(sed -n '/^reconcile_blocking_issue_root() {/,/^}/p' "$SCRIPT_DIR/lib.d/blockers.sh")"
+assert_contains "blocker requeue persists its canary reservation" "$BLOCKER_REQUEUE_BODY" 'canary_reserved_scopes'
+assert_contains "scheduler consumes blocker reservations in the worker-start bridge" "$(cat "$SCRIPT_DIR/mac-autopilot/scheduler.d/lib-bridge.sh")" 'quarantine_mark_canary_scope_list "$scope"'
 assert_eq "reconcile: a canary with no new fault inside the grace period lifts the quarantine" "yes" "$(ef triage_lifted)"
 assert_eq "reconcile: a canary followed by the same fault keeps it" "yes" "$(ef docker_still_quarantined)"
 assert_eq "env_fault_probe: git identity fails against an env file without the keys" "fail" "$(ef probe_before)"
