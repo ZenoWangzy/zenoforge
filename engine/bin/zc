@@ -9,6 +9,15 @@ unset GH_TOKEN GITHUB_TOKEN
 # Whole body is one { ... } block (see luna): replace this file atomically with a temp file + mv, never edit in place.
 {
 key="$1" cwd="$2" prompt="$3"
+B=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) # as bin/worker: the hold marker is read the same way
+hold_home=${AGENT_HOME:-${ZF_HOME:-$( [[ -f $B/../deploy.env ]] && (source "$B/../deploy.env" >/dev/null 2>&1; printf '%s' "${AGENT_HOME:-${ZF_HOME:-}}") )}}
+hold_home=${hold_home:-$HOME/.zenoforge}
+# Founder ruling glm_factory_hold_until_reset_2026_11_09: no factory ZCode start while the marker is in the future (bin/worker checks it too).
+held_until=$(cat "$hold_home/zcode-exhausted-until" 2>/dev/null || echo 0)
+if (( held_until > $(date +%s) )) && [[ "${ZC_IGNORE_HOLD:-0}" != 1 ]]; then
+  echo "zc: ZCode held until $(date -u -d "@$held_until" +%FT%TZ) (zcode-exhausted-until); set ZC_IGNORE_HOLD=1 to override" >&2
+  exit 75
+fi
 root=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}
 out="${ZC_OUT_ROOT:-$root/zc}/$key"   # bin/worker sets ZC_OUT_ROOT=.scratch/luna so every backend reports in one place
 zsrc="$root/zc-src"

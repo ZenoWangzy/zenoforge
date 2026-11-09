@@ -72,6 +72,7 @@ unset WORKER_SCOPE_EVENTS_FILE LOG SYSTEMD_RUN_EXEC WORKER_COST_TAG
 
 # --- bin/luna and bin/zc: LUNA_CPU_QUOTA still wins, hotfix keeps 1000 ---
 export WORKER_SCRATCH_ROOT="$root/scratch"; mkdir -p "$WORKER_SCRATCH_ROOT"
+export AGENT_HOME="$root/agent-home"; mkdir -p "$AGENT_HOME"   # no hold marker here, so the live one cannot leak in
 : > "$root/prompt.md"
 for backend in luna zc; do
   : > "$calls"; "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
@@ -84,6 +85,22 @@ for backend in luna zc; do
   : > "$calls"; AGENT_WORKER_MEM_HIGH=3G AGENT_WORKER_TASKS_MAX=900 "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
   assert_mem_props "bin/$backend knobs" 3G 900
 done
+
+# --- bin/zc honours the ZCode hold marker (bin/worker reads the same file) ---
+hold_home="$root/hold-home"; mkdir -p "$hold_home"
+echo $(( $(date +%s) + 3600 )) > "$hold_home/zcode-exhausted-until"
+rc=0; : > "$calls"; AGENT_HOME="$hold_home" "$engine/bin/zc" k1 "$root" "$root/prompt.md" >/dev/null 2>"$root/zc-hold.err" || rc=$?
+[[ "$rc" == 75 ]] || fail "bin/zc held: rc $rc, want 75"
+grep -Eq '^zc: ZCode held until [0-9T:-]+Z \(zcode-exhausted-until\); set ZC_IGNORE_HOLD=1 to override$' "$root/zc-hold.err" \
+  || fail "bin/zc held: stderr line missing: $(cat "$root/zc-hold.err")"
+! grep -q '^BEGIN$' "$calls" || fail "bin/zc held: systemd-run was called"
+printf 'PASS bin/zc held marker: rc 75, no systemd-run\n'
+: > "$calls"; ZC_IGNORE_HOLD=1 AGENT_HOME="$hold_home" "$engine/bin/zc" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
+assert_inline_props 'bin/zc ZC_IGNORE_HOLD=1' 200% 10
+echo $(( $(date +%s) - 60 )) > "$hold_home/zcode-exhausted-until"
+: > "$calls"; AGENT_HOME="$hold_home" "$engine/bin/zc" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
+assert_inline_props 'bin/zc expired marker' 200% 10
+unset AGENT_HOME
 
 # --- factory/launch.sh ---
 fhome="$root/home"; mkdir -p "$fhome/.zenoforge/checkout-wt/f1" "$fhome/.zenoforge/scratch/factory" "$fhome/.zenoforge/scratch/luna/briefs"
