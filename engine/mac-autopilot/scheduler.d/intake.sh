@@ -31,7 +31,7 @@ intake_gh_read() {
 }
 issue_skip_labels() {
   jqf -cn --arg hotfix "$(hotfix_lane_label)" \
-    '["on-hold","needs-info","awaiting-release","ready-for-human","needs-owner","needs-advisor","needs-triage","roadmap-epic","roadmap-theme","roadmap","concluded","needs-recut","checks-blocked","awaiting-pipeline-sync","hotfix","opt-lane",$hotfix] | unique'
+    '["on-hold","needs-info","awaiting-release","ready-for-human","needs-owner","needs-advisor","needs-triage","roadmap-epic","roadmap-theme","roadmap","concluded","needs-recut","checks-blocked","awaiting-pipeline-sync","hotfix","opt-lane","session-owned",$hotfix] | unique'
 }
 issue_unit_task() { # issue [fetched issue JSON | require-ready] → implement 任务文本
   local json body task body_blocked_by skip_labels labels
