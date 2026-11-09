@@ -118,7 +118,8 @@ causes="$(jq -r '.causes[]' <<< "$compare")"
 [[ "$causes" == *'- 做完比昨天多 4 个：未查明。'* ]] || fail 'a line with no mapped row reads 未查明'
 [[ "$causes" == *'- 写代码比昨天少 40 次：未查明。'* ]] || fail 'an untraced station change reads 未查明'
 [[ "$causes" != *评审* ]] || fail 'a change under the material bound gets no cause line'
-printf '%s\n' '{"dispatch.collisions_per_day":"提前预测会改同一文件就互相等待，正在换成成熟做法","release.hours_waiting":"head: roll fix, #1147"}' > "$tmp/owners.json"
+since_fresh="$(date -u -d "@$((now - 3600))" +%Y-%m-%dT%H:%M:%SZ)"
+jq -n --arg s "$since_fresh" '{"dispatch.collisions_per_day":{cause:"提前预测会改同一文件就互相等待，正在换成成熟做法",owner:"head",since:$s},"release.hours_waiting":{cause:"head: roll fix, #1147",owner:"head",since:$s}}' > "$tmp/owners.json"
 export ZF_ANOMALY_OWNERS_FILE="$tmp/owners.json"
 causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$facts" "$home" "$now" "")")"
 [[ "$causes" == *'- 写代码比昨天少 40 次：提前预测会改同一文件就互相等待，正在换成成熟做法。'* ]] || fail 'the mapped owner note is the cause, verbatim'
@@ -129,13 +130,15 @@ causes="$(jq -r '.causes[]' <<< "$(owner_report_compare "$release_facts" "$home"
 # Every mapped line prints its note and never 未查明; every line with no row reads 未查明 (the table is OWNER_ROWS).
 python3 - "$SCRIPT_DIR/owner-report-compare.py" "$tmp" "$now" <<'PY' || fail 'every mapped line prints its owner note, every unmapped line reads 未查明'
 import importlib.util, json, os, sys
+from datetime import datetime, timezone
 spec = importlib.util.spec_from_file_location("orc", sys.argv[1]); orc = importlib.util.module_from_spec(spec); spec.loader.exec_module(orc)
 tmp, now = sys.argv[2], int(sys.argv[3])
 snap = os.path.join(tmp, "map-snaps"); os.makedirs(snap, exist_ok=True)
 keys = list(orc.FIGURES) + ["station:" + s[0] for s in orc.STATIONS]
 json.dump({"schema": 1, "day": orc.beijing_day(now - 86400), "at": now - 86400, "figures": {k: 10 for k in keys}}, open(os.path.join(snap, orc.beijing_day(now - 86400) + ".json"), "w"))
+iso = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 every_row = {row: "测试原因" + str(i) for i, row in enumerate(sorted({r for rows in orc.OWNER_ROWS.values() for r in rows}))}
-owners = os.path.join(tmp, "map-owners.json"); json.dump(every_row, open(owners, "w"))
+owners = os.path.join(tmp, "map-owners.json"); json.dump({r: {"cause": c, "owner": "head", "since": iso(now - 60)} for r, c in every_row.items()}, open(owners, "w"))
 def facts_for(key):
     f = {"output": {}, "quality": {}, "spend": {"day": {}}, "stations": []}
     if key == "finished": f["output"]["finished"] = {"day": 30}
@@ -157,10 +160,29 @@ for key in keys:
     if mapped and ("未查明" in causes[0] or every_row[mapped[0]] not in causes[0]): problems.append(f"{key}: mapped line did not print its note: {causes[0]}")
     if not mapped and "未查明" not in causes[0]: problems.append(f"{key}: unmapped line did not read 未查明: {causes[0]}")
 # The repair line also reads the repair no-change row: with only that row noted, its note is the cause.
-only = os.path.join(tmp, "repair-owners.json"); json.dump({"repair.unchanged_head_token_pct": "返工没推出新提交"}, open(only, "w"))
+only = os.path.join(tmp, "repair-owners.json"); json.dump({"repair.unchanged_head_token_pct": {"cause": "返工没推出新提交", "owner": "head", "since": iso(now - 60)}}, open(only, "w"))
 text = orc.compare(facts_for("station:repair"), snap, now, "", only)["causes"][0]
 if "返工没推出新提交" not in text: problems.append(f"station:repair did not print the repair no-change row note: {text}")
 print("\n".join(problems)); sys.exit(1 if problems else 0)
+PY
+# Age rule: a dict row older than 24 h, a bare string and a dict with no parseable since all print the stale line, never their text.
+python3 - "$SCRIPT_DIR/owner-report-compare.py" "$now" <<'PY' || fail 'an owners row prints its cause only while fresh'
+import importlib.util, sys
+from datetime import datetime, timezone
+spec = importlib.util.spec_from_file_location("orc", sys.argv[1]); orc = importlib.util.module_from_spec(spec); spec.loader.exec_module(orc)
+now = int(sys.argv[2])
+iso = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+row = lambda **kw: {"owner": "head", "cause": "测试原因", **kw}
+cases = {"fresh dict": (row(since=iso(now - 3600)), "测试原因"),
+         "dict older than 24 h": (row(since=iso(now - 86400 - 60)), orc.STALE_CAUSE),
+         "bare string": ("测试原因", orc.STALE_CAUSE),
+         "dict with bad since": (row(since="昨天"), orc.STALE_CAUSE),
+         "dict without since": (row(), orc.STALE_CAUSE),
+         "forbidden characters": (row(since=iso(now - 60), cause="head: roll fix, #1147"), "已登记原因，但内容含不能直接发送的字符，没有转述")}
+assert orc.STALE_CAUSE == "原因超过一天没有更新"
+for name, (value, want) in cases.items():
+    got = orc.owner_cause({"dispatch.collisions_per_day": value}, "station:implement", now)
+    assert got == want, f"{name}: {got!r}"
 PY
 # What landed between the two days is a hint beside 未查明, never the cause.
 repo="$tmp/repo"
