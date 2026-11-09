@@ -627,4 +627,38 @@ jq -se '.[0].number == 6100 and (.[0].body | contains("Occurrence count: 2") and
 [[ "$(grep -c '^issue create ' "$INCIDENT_GH_CALLS")" == 1 ]]
 grep -Fq 'incident filed class=verdicts-backlog-stale count=2' "$incident_autopi/bell.log"
 
+watch_home="$tmp/advisor-watch-home"
+mkdir -p "$watch_home/logs"
+watch_now="$(python3 -c 'import time; print(int(time.time()))')"
+watch_old="$(python3 - "$watch_now" <<'PY'
+from datetime import datetime, timezone
+import sys
+print(datetime.fromtimestamp(int(sys.argv[1]) - 1860, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+)"
+jq -n --argjson started "$((watch_now - 1860))" '{job:{job_id:"advisor-batch-fixture",started_at:$started}}' > "$watch_home/advisor-batch.json"
+jq -n --arg at "$watch_old" '{recorded_at:$at}' > "$watch_home/logs/advisor-batch-fixture.result.json"
+python3 "$script_dir/advisor-batch-watchdog.py" "$watch_home" "$watch_now"
+[[ "$(grep -c 'ADVISOR-BATCH-NO-RESULT' "$watch_home/logs/head-watch.alerts")" == 1 ]]
+python3 "$script_dir/advisor-batch-watchdog.py" "$watch_home" "$watch_now"
+[[ "$(grep -c 'ADVISOR-BATCH-NO-RESULT' "$watch_home/logs/head-watch.alerts")" == 1 ]]
+watch_recent="$(python3 - "$watch_now" <<'PY'
+from datetime import datetime, timezone
+import sys
+print(datetime.fromtimestamp(int(sys.argv[1]) - 1740, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+)"
+jq -n --arg at "$watch_recent" '{recorded_at:$at}' > "$watch_home/logs/advisor-batch-fixture.result.json"
+python3 "$script_dir/advisor-batch-watchdog.py" "$watch_home" "$watch_now"
+[[ "$(grep -c 'ADVISOR-BATCH-NO-RESULT' "$watch_home/logs/head-watch.alerts")" == 1 ]]
+
+empty_watch_home="$tmp/advisor-watch-empty"
+mkdir -p "$empty_watch_home/logs"
+jq -n --argjson started "$((watch_now - 1740))" '{job:{job_id:"advisor-batch-empty-history",started_at:$started}}' > "$empty_watch_home/advisor-batch.json"
+python3 "$script_dir/advisor-batch-watchdog.py" "$empty_watch_home" "$watch_now"
+[[ ! -e "$empty_watch_home/logs/head-watch.alerts" ]]
+jq -n --argjson started "$((watch_now - 1860))" '{job:{job_id:"advisor-batch-empty-history",started_at:$started}}' > "$empty_watch_home/advisor-batch.json"
+python3 "$script_dir/advisor-batch-watchdog.py" "$empty_watch_home" "$watch_now"
+[[ "$(grep -c 'ADVISOR-BATCH-NO-RESULT' "$empty_watch_home/logs/head-watch.alerts")" == 1 ]]
+
 echo 'bell.test.sh: PASS'
