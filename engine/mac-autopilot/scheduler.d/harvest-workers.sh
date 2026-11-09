@@ -53,8 +53,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
   local pr_harvested=0 local_only="${1:-false}" only="${2:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
-    pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"
-    [[ -z "$only" || "$pid:$unit" == "$only" ]] || continue
+    pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"; [[ -z "$only" || "$pid:$unit" == "$only" ]] || continue
     report="$(jqf -r .report <<<"$w")"; rep="$SUP/$report"; lg="$SUP/$(jqf -r .log <<<"$w")"
     if [[ "$local_only" == true ]]; then
       if [[ "$wtype" =~ ^(review|rereview|repair)$ || ( "$wtype" == implement && "$(unit_field "$unit" '.lane // empty')" == pr ) ]]; then

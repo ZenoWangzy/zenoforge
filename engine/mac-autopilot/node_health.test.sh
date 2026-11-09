@@ -120,6 +120,8 @@ grep -Eq ' 300 .*WARN$' <<<"$(row 'between tick starts')" || fail "tick gap wron
 grep -Eq ' 120 .*OK$' <<<"$(row 'between harvest station pass starts')" || fail "harvest gap wrong: $(row 'harvest station pass starts')"
 jq -e '.metrics[] | select(.id == "scheduler.harvest_gap_p50") | .value == 120 and .healthy == 120 and .unhealthy == 300 and .source != ""' \
   "$a/node-health.json" >/dev/null || fail 'harvest gap row lacks its bounds or source'
+# harvest_health.py: no scheduler.log gives no value, never 0
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import harvest_health as h; assert h.metrics("/nonexistent/scheduler.log", None, None, None, None) == {h.ID: None}' "$script_dir" || fail 'harvest_health with no log wrong'
 # 打回报告缺发现块的比例：窗口内 3 次打回记录里 2 次 missing（窗口外那条不算）；窗口内没有记录时为空，不算 0
 grep -Eq ' 67 .*UNHEALTHY$' <<<"$(row 'without a findings block')" || fail "findings-block gap wrong: $(row 'findings block')"
 # 仲裁调度与触顶默认决定：固定滚动 24h（pr-12/pr-14 的 10-17 事件在窗外，pr-13 的 06:30 在 5h 窗外仍在 24h 内）

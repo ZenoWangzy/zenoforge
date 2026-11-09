@@ -1,0 +1,22 @@
+"""Harvest station scorecard row: seconds between station pass starts (scheduler.sh --harvest-station), p50."""
+import re
+
+ID = "scheduler.harvest_gap_p50"
+# The line's stamp is the pass start, as the tick's is.
+LINE_RE = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\] harvest-station done")
+CRITERIA = {ID: ("scheduler", "seconds between harvest station pass starts p50", 120, 300, False)}
+MEANING = {ID: "收割站两次运行之间的秒数（中位）：越长，做完的 worker 越晚被收走、槽位越晚空出。"}
+SOURCE = {ID: "scheduler.log 相邻两条 harvest-station done 的间隔"}
+
+
+def metrics(log, since, now, ts, pct):
+    starts = []
+    try:
+        lines = open(log, errors="ignore")
+    except OSError:
+        return {ID: None}
+    for raw in lines:
+        m = LINE_RE.match(raw)
+        if m and (t := ts(m.group(1))) and since <= t <= now:
+            starts.append(t)
+    return {ID: pct([(b - a).total_seconds() for a, b in zip(starts, starts[1:])], .5)}
