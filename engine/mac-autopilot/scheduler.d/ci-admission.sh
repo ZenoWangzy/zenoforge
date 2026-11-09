@@ -313,6 +313,57 @@ ci_slot_starve_watch() {
   return 0
 }
 
+ci_defer_unapproved() {
+  # 一次批量取未结束的 PR run 再按分支对上单元：逐分支 gh run list 让这一步占了一拍 44–97 秒（10-21 09:10）。
+  # 评审中的单元沿用保守规则：没 job 在跑才取消——同 head 获批时已跑完的绿检查还能复用。
+  # 返工（repair/implement）与搁置中的 PR 取消其 PR/PR-target run，包括在跑的 job：
+  # 返工 head 必被交付 push 取代；搁置 head 要等 main 恢复后再跑，这两类旧 run 都改不了当前结论。
+  # 直接转换处先取消；这里也扫一次作准入后备，避免遗漏或取消失败后仍占 runner。
+  local id br sha r st ev jobs n=0 m=0 p=0
+  local -a jobs_to_load=()
+  local -A unit_of=() rework_of=() parked_of=()
+  while IFS=$'\t' read -r id br; do [[ -n "$br" ]] && unit_of["$br"]="$id"; done \
+    < <(jqf -r --slurpfile hot <(printf '%s' "${CI_HOTFIX_BRANCHES:-[]}") '.units[] | select((.hold_handoff_waiting // false) == false and (.hotpatch // false) != true
+      and ((.branch // "") as $br | $hot[0] | index($br) == null)
+      and (.stage | IN("review","review-pending","rereview","rereview-pending")) and (.branch // "") != "") | [.id, .branch] | @tsv' "$UNITS")
+  while IFS=$'\t' read -r id br; do [[ -n "$br" ]] && rework_of["$br"]="$id"; done \
+    < <(jqf -r --argjson hot "${CI_HOTFIX_BRANCHES:-[]}" '.units[] | select((.hold_handoff_waiting // false) == false and (.hotpatch // false) != true
+      and ((.branch // "") as $br | $hot | index($br) == null)
+      and (.stage | IN("repair","repair-pending","implement","implement-pending")) and (.branch // "") != "") | [.id, .branch] | @tsv' "$UNITS")
+  while IFS=$'\t' read -r id br; do [[ -n "$br" ]] && parked_of["$br"]="$id"; done \
+    < <(jqf -r --argjson hot "${CI_HOTFIX_BRANCHES:-[]}" '.units[] | select((.hold_handoff_waiting // false) == false and (.hotpatch // false) != true
+      and ((.branch // "") as $br | $hot | index($br) == null)
+      and .stage == "parked" and (.pr // null) != null and (.branch // "") != "") | [.id, .branch] | @tsv' "$UNITS")
+  (( ${#unit_of[@]} + ${#rework_of[@]} + ${#parked_of[@]} > 0 )) || return 0
+  while IFS=$'\t' read -r r sha st br; do
+    [[ "$st" != queued && -n "${unit_of[$br]:-}" ]] && jobs_to_load+=("$r")
+  done < <(unfinished_runs | jqf -r '.[] | select(.event == "pull_request") | [.databaseId, .headSha, .status, .headBranch] | @tsv' 2>/dev/null)
+  ci_jobs_prefetch "${jobs_to_load[@]}" || :
+  while IFS=$'\t' read -r r sha st br ev; do
+    if [[ -n "${parked_of[$br]:-}" ]]; then
+      ci_cancel_run_once "$r" "parked for main recovery" || continue
+      p=$((p+1))
+      continue
+    fi
+    if [[ -n "${rework_of[$br]:-}" ]]; then
+      ci_cancel_run_once "$r" "repair dispatched; head will change" || continue
+      m=$((m+1)); set_unit "${rework_of[$br]}" ".ci_deferred_sha=$(js "$sha")"
+      continue
+    fi
+    [[ -n "$r" && -n "${unit_of[$br]:-}" && "$ev" == pull_request ]] || continue
+    if [[ "$st" != queued ]]; then
+      jobs="$(ci_jobs_status "$r")" || continue
+      jqf -e 'all(.[]; . != "in_progress")' <<<"$jobs" >/dev/null 2>&1 || continue
+    fi
+    ci_cancel_run_once "$r" "ci deferred" || continue
+    n=$((n+1)); set_unit "${unit_of[$br]}" ".ci_deferred_sha=$(js "$sha")"
+  done < <(unfinished_runs | jqf -r '.[] | select(.event == "pull_request" or .event == "pull_request_target") | [.databaseId, .headSha, .status, .headBranch, .event] | @tsv' 2>/dev/null)
+  (( n > 0 )) && say "ci deferred: cancelled $n PR run(s) on heads still in review (CI starts on approval)"
+  (( m > 0 )) && say "ci deferred: cancelled $m PR run(s) at once on heads under repair (the delivery push will replace the head)"
+  (( p > 0 )) && say "ci deferred: cancelled $p PR run(s) at once on parked heads (main verdict must recover first)"
+  return 0
+}
+
 # Sole CI admission decision point for a scheduler tick. Gate-managed hotfixes are readied first; then
 # review deferral and WIP slots apply, both exempting hotfix branches. The shared cancel set makes the
 # first selected action authoritative for the rest of this pass.
