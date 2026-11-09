@@ -141,4 +141,25 @@ unset GH_PR_TABLE
 TICK_PRS=""; TICK_UNFINISHED=""
 eval "$gh_prio_saved"; GH_RUNS='[]'; GH_RERUNS=()
 
+rm -f "$LUNA_SLOTS"/wait-*
+: > "$LOG" "$A/alerts/waste.md" "$LUNA_SLOTS/wait-opt-$$"
+units "$(jq -cn --argjson since "$(( $(date +%s) - 1201 ))" '{units:[{id:"review",stage:"review-pending"},{id:"normal-a",stage:"implement"},{id:"normal-b",stage:"implement"},{id:"starved",stage:"implement",priority_hold:{since_epoch:$since,alerted:false}}]}')"
+priority_failures=()
+if room_for review review "$(jq -c '.units[] | select(.id=="review")' "$UNITS")"; then :; else priority_failures+=(review); fi
+touch -d "@$(($(date +%s) - 1300))" "$LUNA_SLOTS/wait-opt-$$"
+TICK_PRIORITY_HOLD_EXPIRED=()
+for id in normal-a normal-b; do
+  unit="$(jq -c --arg id "$id" '.units[] | select(.id==$id)' "$UNITS")"
+  if room_for "$id" implement "$unit" true false; then :; else priority_failures+=(stale); fi
+done
+[[ "$(grep -c 'priority hold expired for wait-opt-.* after .*s; normal dispatch resumes' "$LOG")" == 1 ]] || priority_failures+=(expiry-log)
+touch -d "@$(($(date +%s) - 60))" "$LUNA_SLOTS/wait-opt-$$"
+unit="$(jq -c '.units[] | select(.id=="normal-a")' "$UNITS")"
+if room_for normal-a implement "$unit" true false; then priority_failures+=(fresh); fi
+if room_for starved implement "" true false; then priority_failures+=(starve-admitted); fi
+if room_for starved implement "" true false; then priority_failures+=(starve-admitted); fi
+[[ "$(grep -c 'PRIORITY-HOLD-STARVE unit=starved waiter=wait-opt-' "$LOG")" == 1 ]] || priority_failures+=(starve-log)
+[[ "$(grep -c 'PRIORITY-HOLD-STARVE unit=starved waiter=wait-opt-' "$A/alerts/waste.md")" == 1 ]] || priority_failures+=(starve-alert)
+(( ${#priority_failures[@]} == 0 )) || fail "dispatch priority regressions: ${priority_failures[*]}"
+
 echo 'scheduler-gates-priority.test.sh: PASS'

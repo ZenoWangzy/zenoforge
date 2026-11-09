@@ -249,13 +249,28 @@ unit_dispatch_priority() { # unit-json → hotfix|opt|normal
   elif [[ "$(jqf -r '.lane // empty' <<<"$1")" == direct-main ]]; then printf 'opt\n'
   else printf 'normal\n'; fi
 }
-higher_priority_waiting() { # priority → higher-priority live waiter (stdout); always drops stale files
-  local priority="$1" f pid name hotfix="" opt=""
+higher_priority_waiting() { # priority → sets PRIORITY_WAITING_WAITER; always drops stale files
+  local priority="$1" f pid name hotfix="" opt="" max age mtime now=""
+  max="${AUTOPI_PRIORITY_HOLD_MAX_SECONDS:-1200}"
+  [[ "$max" =~ ^[0-9]+$ ]] || max=1200
+  PRIORITY_WAITING_WAITER=""
   for f in "$LUNA_SLOTS"/wait-hotfix-* "$LUNA_SLOTS"/wait-opt-*; do
     [[ -e "$f" ]] || continue
     pid="${f##*-}"
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       name="${f##*/}"
+      mtime="$(stat -c %Y -- "$f" 2>/dev/null)" || mtime=""
+      if [[ "$mtime" =~ ^[0-9]+$ ]]; then
+        [[ -n "$now" ]] || now="$(date +%s)"
+        age=$((now - mtime)); if (( age < 0 )); then age=0; fi
+        if (( age > max )); then
+          if [[ -z "${TICK_PRIORITY_HOLD_EXPIRED[$name]:-}" ]]; then
+            say "priority hold expired for $name after ${age}s; normal dispatch resumes"
+            TICK_PRIORITY_HOLD_EXPIRED[$name]=1
+          fi
+          continue
+        fi
+      fi
       case "$name" in
         wait-hotfix-*) [[ -n "$hotfix" ]] || hotfix="$name" ;;
         wait-opt-*) [[ -n "$opt" ]] || opt="$name" ;;
@@ -266,10 +281,10 @@ higher_priority_waiting() { # priority → higher-priority live waiter (stdout);
   done
   case "$priority" in
     hotfix) return 1 ;;
-    opt) [[ -n "$hotfix" ]] && { printf '%s\n' "$hotfix"; return 0; } ;;
+    opt) [[ -n "$hotfix" ]] && { PRIORITY_WAITING_WAITER="$hotfix"; return 0; } ;;
     *)
-      [[ -n "$hotfix" ]] && { printf '%s\n' "$hotfix"; return 0; }
-      [[ -n "$opt" ]] && { printf '%s\n' "$opt"; return 0; }
+      [[ -n "$hotfix" ]] && { PRIORITY_WAITING_WAITER="$hotfix"; return 0; }
+      [[ -n "$opt" ]] && { PRIORITY_WAITING_WAITER="$opt"; return 0; }
       ;;
   esac
   return 1
@@ -283,6 +298,7 @@ dispatch_capacity_free() { # worker slot available; the same predicate room_for 
 dispatch_walk_full() { ! dispatch_capacity_free; }
 # Walk passes that drop a pending unit without a log line are counted by reason; the refill and tick summaries name them.
 declare -gA TICK_DISPATCH_SKIPS=()
+declare -gA TICK_PRIORITY_HOLD_EXPIRED=()
 dispatch_skip() { TICK_DISPATCH_SKIPS[$1]=$(( ${TICK_DISPATCH_SKIPS[$1]:-0} + 1 )); }
 dispatch_skip_summary() { # name:count,... for the reasons that fired this pass, sorted; empty when none
   local k out=""
@@ -291,7 +307,7 @@ dispatch_skip_summary() { # name:count,... for the reasons that fired this pass,
   printf '%s' "$out"
 }
 room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=true] [report-only=false]：焦点与并发检查
-  local u="${3:-}" priority waiter impl_cap n_impl fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false
+  local u="${3:-}" priority waiter impl_cap n_impl hold_now hold_since hold_elapsed hold_alerted hold_line fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"
   # A report-only continuation writes no code and starts no write-start: the repair round cap and the Dagger runtime gate do not apply to it.
   if [[ "$2" == repair && "${6:-false}" != true ]]; then repair_cap_admission "$1" "$u" || { dispatch_skip repair-cap; return 1; }; fi
@@ -307,7 +323,24 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
   fi
   priority="$(unit_dispatch_priority "$u")"
   gate_started=$SECONDS
-  if waiter="$(higher_priority_waiting "$priority")"; then gate_waiting=true; fi
+  if [[ "$2" != review && "$2" != rereview && "$2" != repair ]] && higher_priority_waiting "$priority"; then
+    waiter="$PRIORITY_WAITING_WAITER"; hold_now="$(date +%s)"
+    hold_since="$(jqf -r '.priority_hold.since_epoch // 0' <<<"$u")"; hold_alerted="$(jqf -r '.priority_hold.alerted // false' <<<"$u")"
+    if ! [[ "$hold_since" =~ ^[0-9]+$ ]] || (( hold_since == 0 )); then
+      hold_since="$hold_now"; hold_alerted=false
+      set_unit "$1" ".priority_hold={since_epoch:$hold_since,alerted:false}" || :
+    fi
+    hold_elapsed=$((hold_now - hold_since))
+    if (( hold_elapsed > 1200 )) && [[ "$hold_alerted" != true ]]; then
+      hold_line="PRIORITY-HOLD-STARVE unit=$1 waiter=$waiter secs=$hold_elapsed"
+      say "$hold_line"
+      [[ -f "$A/alerts/waste.md" ]] && echo "[$STAMP] $hold_line" >> "$A/alerts/waste.md"
+      set_unit "$1" '.priority_hold.alerted=true' || :
+    fi
+    gate_waiting=true
+  elif [[ "$u" == *'"priority_hold":'* ]]; then
+    set_unit "$1" 'del(.priority_hold)' || return 1
+  fi
   gate_elapsed=$((SECONDS - gate_started))
   [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || (( gate_elapsed < 2 )) || say "dispatch detail priority_gate unit=$1 secs=${gate_elapsed}s"
   if [[ "$gate_waiting" == true ]]; then
