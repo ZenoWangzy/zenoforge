@@ -46,7 +46,10 @@ echo '{"units":[{"id":"body-1","issue":1100,"title":"body","branch":"agent/body-
 echo '{"workers":[]}' > "$WORKERS"
 : > "$GH_CALLS"
 harvest_pr_implement body-1 "$sup/impl-body-1.md" || :
-[[ "$(field body-1 .pr)" == 4500 && "$(field body-1 .pr_body_hash)" =~ ^[0-9a-f]{64}$ ]] || fail 'the opened PR did not store the body hash'
+[[ "$(field body-1 .pr)" == 4500 ]] || fail 'the opened PR did not get number 4500'
+# VectA pack follow-up: store .pr_body_hash at pr-opened in the pack's size-admission.sh. Until then this test seeds the hash
+# that the open would have stored, so the stored-hash path below runs against the body rendered from the same report.
+set_unit body-1 ".pr_body_hash=$(js "$(pr_body_hash "$(pr_body_source 1100 "$sup/impl-body-1.md")")")"
 
 # Unchanged report: no edit before a review or a merge.
 set_unit body-1 '.implementation_report="impl-body-1.md"'

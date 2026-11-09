@@ -185,61 +185,8 @@ pr_create_failure_transient() { # gh output rc → true for retryable server/tra
   [[ "$rc" == 124 ]] && return 0
   grep -Eiq 'HTTP([[:space:]]|/[0-9.]+[[:space:]])5[0-9]{2}|GraphQL:[[:space:]]*Something went wrong|ECONNRESET|ETIMEDOUT|timeout|timed[[:space:]]+out|deadline exceeded' <<<"$output"
 }
-# The PR body is derived from the unit's report, rendered here once for the open and again for the refresh (PR 5650, 2026-11-08: a
-# report that gained ## prior-art never reached the body, and the next review round was spent on the missing section).
-pr_body_source() { # issue report-path → the body text before closing keywords are scrubbed
-  printf '%s%s' "${1:+Refs #$1
-
-}" "Implemented by the the product autopilot. Implementer report (first lines):
-
-$(head -40 "$2")"
-}
-pr_body_hash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
-pr_body_append_missing() { # unit pr report hash → a legacy PR (opened before .pr_body_hash) keeps its body; only the incident sections it lacks are appended
-  local body new file h sec added=false missing=false
-  body="$(gh pr view "$2" --json body -q .body 2>/dev/null)" || return 0
-  new="$body"
-  for h in root-cause recurrence-guard prior-art; do
-    grep -qE "^## $h[[:space:]]*\$" <<<"$body" && continue
-    sec="$(awk -v h="## $h" '$0 ~ "^" h "[ \t]*$" { p = 1; print; next } /^## / { p = 0 } p' "$3")"
-    if [[ -n "$sec" ]]; then new+=$'\n\n'"$sec"; added=true; else missing=true; fi
-  done
-  if [[ "$added" == true ]]; then
-    file="$(mktemp)" || return 0
-    scrub_closing_keywords <<<"$new" > "$file"
-    if gh pr edit "$2" --body-file "$file" >/dev/null 2>&1 && set_unit "$1" ".pr_body_hash=$(js "$4")"; then
-      say "unit $1 PR#$2 legacy body: appended the sections it lacked from ${3##*/}"
-    else
-      say "unit $1 PR#$2 legacy body append failed; tried again at the next review or land"
-    fi
-    rm -f -- "$file"
-  elif [[ "$missing" == false ]]; then
-    set_unit "$1" ".pr_body_hash=$(js "$4")" # complete as it is: the normal path takes over, one gh read less per pass
-  fi
-}
-pr_body_refresh() { # unit-json → one gh pr edit --body-file when the current report renders a body other than the one stored at open
-  local id pr rep src hash stored file
-  id="$(jqf -r '.id // empty' <<<"$1")"; pr="$(jqf -r '.pr // empty' <<<"$1")"
-  rep="$(jqf -r '.implementation_report // empty' <<<"$1")"; stored="$(jqf -r '.pr_body_hash // empty' <<<"$1")"
-  [[ "$pr" =~ ^[0-9]+$ && -n "$rep" ]] || return 0
-  [[ "$rep" == /* ]] || rep="$SUP/$rep"
-  [[ -s "$rep" ]] || return 0
-  src="$(pr_body_source "$(jqf -r '.issue // empty' <<<"$1")" "$rep")"
-  hash="$(pr_body_hash "$src")"
-  # No stored hash: the PR opened before the hash existed and its body may carry hand edits, so it is never re-rendered, only completed.
-  [[ -n "$stored" ]] || { pr_body_append_missing "$id" "$pr" "$rep" "$hash"; return 0; }
-  [[ "$hash" != "$stored" ]] || return 0
-  file="$(mktemp)" || return 0
-  scrub_closing_keywords <<<"$src" > "$file"
-  if gh pr edit "$pr" --body-file "$file" >/dev/null 2>&1 && set_unit "$id" ".pr_body_hash=$(js "$hash")"; then
-    say "unit $id PR#$pr body re-rendered from ${rep##*/}"
-  else
-    say "unit $id PR#$pr body refresh failed; tried again at the next review or land"
-  fi
-  rm -f -- "$file"
-}
 harvest_pr_implement() { # unit report-path
-  local first issue branch dir head title pr out base body_src local_head ahead dirty push_out create_error create_rc retry_limit retry_count adopt_rc
+  local first issue branch dir head title pr out base local_head ahead dirty push_out create_error create_rc retry_limit retry_count adopt_rc
   first="$(grep -m1 -v '^[[:space:]]*$' "$2" 2>/dev/null)"
   issue="$(unit_field "$1" .issue)"; branch="$(unit_field "$1" .branch)"; dir="$WT_ROOT/wt-$1"
   local dep; dep="$(blocked_on_of "$2")"
@@ -298,8 +245,11 @@ harvest_pr_implement() { # unit report-path
   size_admission_recheck "$1" "$dir" "$branch" "on $branch" "$head" || return 0
   title="$(unit_field "$1" .title)"
   base="$(unit_field "$1" '.stacked_on_branch // "main"')"
-  body_src="$(pr_body_source "$issue" "$2")"
-  scheduler_pr_open "$branch" "${title:-$1}${issue:+ (#$issue)}" "$body_src" "$base"
+  scheduler_pr_open "$branch" "${title:-$1}${issue:+ (#$issue)}" "${issue:+Refs #$issue
+
+}Implemented by the the product autopilot. Implementer report (first lines):
+
+$(head -40 "$2")" "$base"
   pr="$SCHED_PR_NUM"; out="$SCHED_PR_OUT"
   if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
     create_rc="${SCHED_PR_RC:-0}"
@@ -335,7 +285,7 @@ harvest_pr_implement() { # unit report-path
       return 0
     fi
   fi
-  set_unit "$1" "$(hist pr-opened "PR#$pr $head") | .pr=$pr | .pr_body_hash=$(js "$(pr_body_hash "$body_src")") | .lane=\"pr\" | .stage=\"review-pending\"$([[ "$branch" =~ $GATED_BRANCH_RE ]] && printf ' | .gated=true')"
+  set_unit "$1" "$(hist pr-opened "PR#$pr $head") | .pr=$pr | .lane=\"pr\" | .stage=\"review-pending\"$([[ "$branch" =~ $GATED_BRANCH_RE ]] && printf ' | .gated=true')"
   say "unit $1 implemented on $branch -> PR#$pr review-pending"
   # SPLIT 交付（#4482）：尺寸契约在派发简报里前置后，worker 交第一个可独立交付切片 +
   # SPLIT 首行声明剩余范围；切片 PR 进评审的同时，剩余范围落成续作票（needs-triage，
