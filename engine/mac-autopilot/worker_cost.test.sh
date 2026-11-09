@@ -95,12 +95,6 @@ grep -Eq 'per-ticket worker fresh tokens p90.* 700000 .*<=800000.*>=4800000.*LOW
   || fail "per-ticket fresh tokens p90 or its fallback bounds are wrong: $(row 'per-ticket worker fresh tokens p90')"
 grep -Eq 'per-ticket worker wall minutes p90.* 30 .*<=38.*>=180.*LOW-N' <<<"$(row 'per-ticket worker wall minutes p90')" \
   || fail "per-ticket wall p90 or static bounds are wrong: $(row 'per-ticket worker wall minutes p90')"
-jq -e '.metrics[] | select(.id == "workorders.ticket_tokens_p90")
-  | .value == 700000 and .healthy == 800000 and .unhealthy == 4800000 and .status == "LOW-N" and .sample_n > 0 and .sample_n < 10' \
-  "$a/node-health.json" >/dev/null || fail 'per-ticket fresh-token p90 LOW-N sample count or fallback bounds are wrong'
-jq -e '.metrics[] | select(.id == "workorders.ticket_wall_p90")
-  | .value == 30 and .healthy == 38 and .unhealthy == 180 and .status == "LOW-N" and .sample_n > 0 and .sample_n < 10' \
-  "$a/node-health.json" >/dev/null || fail 'per-ticket wall p90 LOW-N sample count or fallback bounds are wrong'
 jq -e '.ticket_bounds.token.samples == 1 and .ticket_bounds.token.provisional == true
   and .ticket_bounds.token.healthy == 314776 and .ticket_bounds.token.unhealthy == 419702
   and .ticket_bounds.wall.samples == 1 and .ticket_bounds.wall.provisional == true
@@ -112,10 +106,12 @@ jq -e '.ticket_bounds.token.samples == 1 and .ticket_bounds.token.provisional ==
   and ([.ticket_spend[] | select(.ticket == 4366)][0] | .tokens == 155000)' \
   "$a/node-health.json" >/dev/null || fail "ticket spend or bounds missing from the scorecard: $(jq -c '.ticket_bounds, .ticket_spend' "$a/node-health.json")"
 jq -e '.metrics[] | select(.id == "workorders.ticket_tokens_p90")
-  | .value == 700000 and .healthy == 800000 and .unhealthy == 4800000 and .status == "OK" and .source != ""' \
+  | .value == 700000 and .healthy == 800000 and .unhealthy == 4800000 and .status == "LOW-N"
+    and .sample_n > 0 and .sample_n < 10 and .source != ""' \
   "$a/node-health.json" >/dev/null || fail "ticket tokens metric missing its value, static bounds or source"
 jq -e '.metrics[] | select(.id == "workorders.ticket_wall_p90")
-  | .value == 30 and .healthy == 38 and .unhealthy == 180 and .status == "OK"' \
+  | .value == 30 and .healthy == 38 and .unhealthy == 180 and .status == "LOW-N"
+    and .sample_n > 0 and .sample_n < 10' \
   "$a/node-health.json" >/dev/null || fail "ticket wall metric did not retain its static bounds"
 # unit_spend 经共享成本行走 --json 流：旧实现只读页脚时这张票是 0
 jq -e '[.work_orders[] | select(.id == "issue-4355")][0].tokens == 700000' "$a/node-health.json" >/dev/null \
