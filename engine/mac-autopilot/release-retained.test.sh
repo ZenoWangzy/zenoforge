@@ -41,7 +41,7 @@ m = {}; RR.collect(m, R, now); assert m[RR.METRIC] == 0.0, m
 # Every release-closer reader ignores the retained line.
 write(retained(10, "101,102"))
 assert LH.release_acceptances(R) == [], LH.release_acceptances(R)
-assert not S.RELEASE_RE.match(retained(10, "101")) and not N.RELEASE_CLOSER_RE.search(retained(10, "101"))
+assert not S.RELEASE_RE.match(retained(10, "101")) and not LH.RELEASE_CLOSER_RE.search(retained(10, "101"))
 assert "release-closer: deployed=" not in retained(10, "101"), "mechanism-registry f3 pattern must not match"
 # The release station counts it as one deploy out, not one per held ticket.
 import tempfile
