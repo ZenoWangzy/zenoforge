@@ -9,6 +9,7 @@ STAGES = ["提出", "热修生效", "进 main", "上线", "真人验收"]  # 上
 MERGED = {"merged", "landed", "done"}
 STUCK = {"blocked-external", "parked", "needs-human", "supervisor-review"}
 ACCEPTED_KEEP_S = 3 * 86400  # an accepted requirement stays listed for 3 days
+ISSUE_LIMIT = 1000  # gh search returns at most 1000 rows; a result at this count is truncated, so build marks it partial
 
 
 def configured_anomaly_prefix():
@@ -59,13 +60,13 @@ def _hotfix_live(path):
 
 def stage_of(unit, labels, accepted_at, hotfix_live_at=None, live_merge_shas=None, retained_at=None):
     """(stage index, ISO time of the event that set it). Acceptance = release-closer event only; 上线 = `released` plus live merge ancestry,
-    or a release-retained deploy that holds the ticket while it is still awaiting-release (deployed, acceptance failed);
+    or a release-retained deploy that holds the ticket (retained_at, from an unclosed release-retained line; labels may lag the unit);
     进 main = unit merged; 热修生效 = a `hotfix-live` history event or the issue's line in hotfix-live.jsonl."""
     hist = (unit or {}).get("history") or []
     at_of = lambda names: next((h.get("at") for h in reversed(hist) if h.get("stage") in names), None)
     merged_at = at_of({"merged", "pr-merged"})
     if accepted_at: return 4, accepted_at
-    if retained_at and "awaiting-release" in labels: return 3, retained_at
+    if retained_at: return 3, retained_at
     merge_sha = (unit or {}).get("merge_sha") or (unit or {}).get("land_sha")
     if "released" in labels and merge_sha in (live_merge_shas or ()): return 3, None
     if unit and (unit.get("stage") in MERGED or merged_at): return 2, merged_at
@@ -104,12 +105,12 @@ def build(units, issues, rulings, accepted, now, hotfix_live=None, live_merge_sh
         stage, at = stage_of(u, labels, done.get(n), (hotfix_live or {}).get(n), live_merge_shas, (retained or {}).get(n))
         blocked = (u or {}).get("blocked_on")
         items.append({"issue": n, "title": title[:120], "text": (words.get(n) or title)[:300], "from_ruling": n in words,
-                      "labels": sorted(labels & set(LABELS)), "stage": stage,
+                      "labels": sorted(labels & set(LABELS)), "stage": stage, "github_row": n in known,
                       "owner": (u or {}).get("handed_off_to") or ("热修值班" if "hotfix" in labels else "pipeline" if u else "未接单"),
                       "blocker": f"等 #{blocked}" if blocked else (u or {}).get("stage") if (u or {}).get("stage") in STUCK else "",
                       "verified_epoch": _epoch(at or "")})
     items.sort(key=lambda x: (x["stage"] == len(STAGES) - 1, -x["issue"]))
-    return {"stages": STAGES, "items": items, "partial": issues is None}
+    return {"stages": STAGES, "items": items, "partial": issues is None or len(issues) >= ISSUE_LIMIT}
 
 
 def push_changes(items, state_path, lib, agent_home):
@@ -120,6 +121,8 @@ def push_changes(items, state_path, lib, agent_home):
     new = dict(old or {})
     for it in items:
         k = str(it["issue"])
+        recorded = (old or {}).get(k)
+        if not it.get("github_row", True) and isinstance(recorded, int) and recorded > it["stage"]: continue  # unit-label fallback never steps down
         if old is not None and old.get(k) != it["stage"]:
             was = STAGES[old[k]] if isinstance(old.get(k), int) and old[k] < len(STAGES) else "新增"
             msg = f"founder-req #{k} {was} → {STAGES[it['stage']]}：{it['title'][:80]}"
@@ -140,7 +143,7 @@ def _fetch_issues(repo, cache_path):
         if time.time() - os.path.getmtime(cache_path) < 900: return json.load(open(cache_path))
     except (OSError, ValueError): pass
     try:
-        out = subprocess.run(["gh", "issue", "list", *(["--repo", repo] if repo else []), "--state", "all", "--limit", "300", "--json", "number,title,state,labels",
+        out = subprocess.run(["gh", "issue", "list", *(["--repo", repo] if repo else []), "--state", "all", "--limit", str(ISSUE_LIMIT), "--json", "number,title,state,labels",
                               "--search", "label:" + ",".join(LABELS) + " sort:updated-desc"], capture_output=True, text=True, timeout=60)
         if out.returncode: raise RuntimeError(out.stderr[-200:])
         rows = json.loads(out.stdout)

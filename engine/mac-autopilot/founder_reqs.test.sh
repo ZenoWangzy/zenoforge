@@ -38,7 +38,10 @@ retained_issues = [{"number": 31, "title": "t31", "state": "OPEN", "labels": lab
                    {"number": 33, "title": "t33", "state": "CLOSED", "labels": lab("focus", "awaiting-release")}]
 retained_units = [{"id": "issue-%d" % n, "issue": n, "stage": "merged", "history": []} for n in (31, 32, 33)]
 stages = lambda **kw: {i["issue"]: i["stage"] for i in F.build(retained_units, retained_issues, [], kw.pop("acc", []), now, **kw)["items"]}
-assert stages(retained={31: iso(60), 32: iso(60)}) == {31: 3, 32: 2}, "retained reaches 上线 only while still awaiting-release"
+assert stages(retained={31: iso(60), 32: iso(60)}) == {31: 3, 32: 3}, "a retained hold reaches 上线 even when its labels lack awaiting-release"
+# Incident 2026-11-09: #4530 was outside the truncated GitHub rows, so its unit labels (no awaiting-release) decided the stage.
+stale_units = [{"id": "issue-34", "issue": 34, "title": "t34", "stage": "merged", "labels": ["focus"], "history": []}]
+assert [(i["issue"], i["stage"]) for i in F.build(stale_units, [], [], [], now, retained={34: iso(60)})["items"]] == [(34, 3)]
 assert stages(retained={31: iso(60)}, acc=[{"issue": 31, "sha": "a" * 40, "at": iso(30)}])[31] == 4, "release-closer reaches 验收"
 assert stages()[31] == 2, "no retained event leaves 进 main"
 # Auto-filed tickets leave the founder ledger even when they carry a founder label.
@@ -97,6 +100,24 @@ F.push_changes(partial_items, partial_st, lib, partial_home)
 assert json.load(open(partial_st)) == {"1": 1, "2": 1, "3": 1}
 assert [line.split("\t")[0] for line in open(partial_home + "/inbox")] == ["freq-1-1", "freq-3-1", "freq-2-1"]
 assert not os.path.exists(home + "/mail-attempts") and not os.path.exists(partial_home + "/mail-attempts")
+# A result at ISSUE_LIMIT rows is truncated: build marks it partial, and #50 (absent from the rows, unit-only) keeps its recorded 上线.
+import subprocess
+calls = []
+real_run = subprocess.run
+subprocess.run = lambda argv, **kw: calls.append(argv) or subprocess.CompletedProcess(argv, 0, "[]", "")
+F._fetch_issues("", home + "/absent-cache.json")
+subprocess.run = real_run
+assert calls[0][calls[0].index("--limit") + 1] == str(F.ISSUE_LIMIT), calls
+trunc_rows = [{"number": n, "title": f"row{n}", "state": "OPEN", "labels": lab("focus")} for n in range(51, 51 + F.ISSUE_LIMIT)]
+trunc_units = [{"id": "issue-50", "issue": 50, "title": "t50", "stage": "merged", "labels": ["focus"], "history": []}]
+tr = F.build(trunc_units, trunc_rows, [], [], now)
+assert tr["partial"], "a result at ISSUE_LIMIT rows must be flagged partial"
+t50 = next(i for i in tr["items"] if i["issue"] == 50)
+assert t50["stage"] == 2 and not t50["github_row"], t50
+tr_home = tempfile.mkdtemp(); tr_st = tr_home + "/founder-req-stage.json"
+json.dump({"50": 3}, open(tr_st, "w"))
+F.push_changes([t50], tr_st, lib, tr_home)
+assert not os.path.exists(tr_home + "/inbox") and json.load(open(tr_st)) == {"50": 3}, "a unit-label fallback must not step down a recorded stage"
 # Founder ruling 2026-11-07: this file must not grow a mail path back.
 source = open(os.path.join(sys.argv[1], "founder_reqs.py")).read()
 assert not any(word in source for word in ("send_email", "需求进展", "PushNotification"))
