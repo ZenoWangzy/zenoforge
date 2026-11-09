@@ -4738,7 +4738,7 @@ sched_case_hold_handoff_scan_refused_clone() {
   command git -C "$clone" checkout -q -b agent/issue-781
   printf 'key=AKIAFAKEFIXTURE\n' >> "$clone/a.txt"; command git -C "$clone" stash -q
   touch "$TF/real-clone-git"
-  mkdir -p "$TF/bin"; printf '#!/usr/bin/env bash\n[[ "$1" != stdin ]]\n' > "$TF/bin/gitleaks"; chmod +x "$TF/bin/gitleaks"
+  mkdir -p "$TF/bin"; printf '#!/usr/bin/env bash\n[[ "${1:-}" == stdin ]] || exit 2\ngrep -qF "AKIAFAKEFIXTURE" && exit 3\nexit 0\n' > "$TF/bin/gitleaks"; chmod +x "$TF/bin/gitleaks"
   mkdir -p "$TF/repo/scripts/hooks"; printf '#!/usr/bin/env bash\nexit 0\n' > "$TF/repo/scripts/hooks/pre-push"; chmod +x "$TF/repo/scripts/hooks/pre-push"
   command jq -n '{state:"ready-for-agent",scheduler_handoff:{episode:"hold-781"}}' > "$TF/agent-home/state/781.json"
   command jq -n '{number:781,title:"resume held work",body:"finish",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
