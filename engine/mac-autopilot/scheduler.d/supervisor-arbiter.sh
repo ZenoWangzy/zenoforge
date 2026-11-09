@@ -317,8 +317,22 @@ supervisor_requeue_rereview() { # unit-json → true when the latest unchanged r
   ' <<<"$1" >/dev/null 2>&1
 }
 
+supervisor_close_recut_parent() { # id history-result log-line → existing tracker/recut close path
+  local id="$1" result="$2" message="$3"
+  set_unit "$id" "$(hist size-recut-completed "$result") | .stage=\"closed\" | .note=null | del(.size_recut_pending)" || return 1
+  say "$message"
+}
+
+supervisor_requeue_park_failure() { # id failure decision → durable park; the failure remains visible in the unit note/history
+  local id="$1" failure="$2" decision="$3"
+  supervisor_budget_park "$id" "$failure" "$decision" "supervisor requeue failed" "supervisor-requeue-failed" || {
+    say "supervisor arbitration unit=$id: requeue failed ($failure) and durable park failed"
+    return 1
+  }
+}
+
 supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute 落地：选一个工作环节放回去
-  local id="$1" action="$2" guidance="$3" decision="$4" u target extra="" issue issue_json issue_state issue_reason issue_repo="${REPO:-${ZF_REPO:-}}"
+  local id="$1" action="$2" guidance="$3" decision="$4" u target extra="" issue issue_json issue_state issue_stage issue_reason issue_repo="${REPO:-${ZF_REPO:-}}" transition_error transition_detail failure
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
   if jqf -e 'any((.history // [])[]?; (.stage | test("^review")) or .stage == "repair-delivered" or .stage == "delivered")' <<<"$u" >/dev/null \
      && { [[ "$(jqf -r '.pr // empty' <<<"$u")" =~ ^[0-9]+$ ]] \
@@ -357,24 +371,49 @@ Supervisor ruling: dependency #$dropped is resolved for this unit (dropped_deps)
   fi
   issue="$(jqf -r '.issue // empty' <<<"$u")"
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
-    [[ -n "$issue_repo" ]] || { say "supervisor arbitration unit=$id: repository is unavailable for issue #$issue requeue"; return 1; }
-    issue_json="$(gh issue view "$issue" --repo "$issue_repo" --json number,title,body,state,labels 2>/dev/null)" \
-      || { say "supervisor arbitration unit=$id: issue #$issue could not be refreshed for requeue; leaving the unit at supervisor-review"; return 1; }
     issue_state="$(scheduler_issue_state "$issue")" \
-      || { say "supervisor arbitration unit=$id: issue #$issue state is unreadable for requeue; leaving the unit at supervisor-review"; return 1; }
-    if [[ "$(jqf -r '.state // empty' <<<"$issue_state")" == on-hold ]]; then
-      [[ "$(jqf -r '.hold.holder // empty' <<<"$issue_state")" == scheduler-stop-loss ]] \
-        || { say "supervisor arbitration unit=$id: issue #$issue has a non-stop-loss hold; leaving the unit at supervisor-review"; return 1; }
-      issue_reason=hold-requeue
+      || { supervisor_requeue_park_failure "$id" "issue #$issue state is unreadable for requeue" "$decision"; return $?; }
+    issue_stage="$(jqf -r '.state // empty' <<<"$issue_state")" \
+      || { supervisor_requeue_park_failure "$id" "issue #$issue state is malformed for requeue" "$decision"; return $?; }
+    if [[ "$issue_stage" == tracker ]]; then
+      local pr tracker_log
+      pr="$(jqf -r '.pr // empty' <<<"$u")"
+      if [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then
+        tracker_log="supervisor arbitration unit=$id: issue #$issue became a tracker; closed the recut unit and left open PR #$pr for head to decide"
+      else
+        tracker_log="supervisor arbitration unit=$id: issue #$issue became a tracker; closed the recut unit"
+      fi
+      supervisor_close_recut_parent "$id" "issue #$issue became a tracker" "$tracker_log" \
+        || { supervisor_requeue_park_failure "$id" "issue #$issue is a tracker but the unit could not be closed" "$decision"; return $?; }
+      return 0
+    elif [[ "$issue_stage" == ready-for-agent ]]; then
+      say "supervisor arbitration unit=$id: issue #$issue is already ready-for-agent; requeue treated as complete"
     else
-      issue_reason=supervisor-requeue
-    fi
-    if ! scheduler_issue_transition "$issue" ready-for-agent "$issue_reason" . 0 "$issue_json"; then
-      say "supervisor arbitration unit=$id: issue #$issue could not be requeued to ready-for-agent; leaving the unit at supervisor-review"
-      return 1
+      [[ -n "$issue_repo" ]] \
+        || { supervisor_requeue_park_failure "$id" "repository is unavailable for issue #$issue requeue" "$decision"; return $?; }
+      if [[ "$issue_stage" == on-hold ]]; then
+        [[ "$(jqf -r '.hold.holder // empty' <<<"$issue_state")" == scheduler-stop-loss ]] \
+          || { supervisor_requeue_park_failure "$id" "issue #$issue has a non-stop-loss hold" "$decision"; return $?; }
+        issue_reason=hold-requeue
+      else
+        issue_reason=supervisor-requeue
+      fi
+      issue_json="$(gh issue view "$issue" --repo "$issue_repo" --json number,title,body,state,labels 2>/dev/null)" \
+        || { supervisor_requeue_park_failure "$id" "issue #$issue could not be refreshed for requeue" "$decision"; return $?; }
+      if ! transition_error="$(scheduler_issue_transition "$issue" ready-for-agent "$issue_reason" . 0 "$issue_json" 2>&1)"; then
+        failure="issue #$issue could not be requeued to ready-for-agent"
+        transition_detail="${transition_error//$'\n'/ }"
+        transition_detail="${transition_detail:0:400}"
+        [[ -z "$transition_detail" ]] || failure="$failure: $transition_detail"
+        supervisor_requeue_park_failure "$id" "$failure" "$decision" || return 1
+        return 0
+      fi
     fi
   fi
-  set_unit "$id" "$(hist "supervisor-$action" "$guidance" "$decision") | .stage=\"$target\"$extra"
+  if ! set_unit "$id" "$(hist "supervisor-$action" "$guidance" "$decision") | .stage=\"$target\"$extra"; then
+    supervisor_requeue_park_failure "$id" "unit stage update failed after the requeue verdict" "$decision" || return 1
+    return 0
+  fi
   say "supervisor arbitration unit=$id: $action -> $target"
 }
 
@@ -384,8 +423,8 @@ reconcile_size_recuts() {
     id="$(jqf -r .id <<<"$u")"; issue="$(jqf -r '.issue // empty' <<<"$u")"
     state="$(scheduler_issue_state "$issue")" || continue
     if jqf -e '.state == "tracker" or (.state == "released" and (has("recut_children") or .tracker_parent == true)) or (.state == "concluded" and .run.outcome == "duplicate" and .closed_by_pipeline == true)' <<<"$state" >/dev/null; then
-      set_unit "$id" "$(hist size-recut-completed "issue #$issue became a tracker or a closed duplicate") | .stage=\"closed\" | .note=null | del(.size_recut_pending)"
-      say "unit $id recut completed; parent is a tracker or closed duplicate"
+      supervisor_close_recut_parent "$id" "issue #$issue became a tracker or a closed duplicate" \
+        "unit $id recut completed; parent is a tracker or closed duplicate" || continue
     elif [[ "$(jqf -r '.stage // empty' <<<"$u")" == supervisor-review ]]; then
       # The arbiter owns a supervisor-review unit: only the completed recut above may move it here.
       continue
