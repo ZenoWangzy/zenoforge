@@ -254,8 +254,12 @@ WORKER_OOM_RE='(out of memory|cannot allocate memory|oom-kill|memory cgroup)'
 WORKER_DEATH_ERROR_RE='error:|panic\(|has crashed|fatal|EAGAIN|out of memory|cannot allocate'
 
 worker_death_of() { # log-path → compact JSON {rc,signal,error,at}（fields may be absent）
-  local lg="$1" rc="" sig="" err=""
-  rc="$(jq -Rsc '[split("\n")[] | fromjson? | select(.type=="pipeline.exit") | .rc] | last // empty' "$lg" 2>/dev/null || true)"
+  local lg="$1" rc="" sig="" err="" exit_file="${1}.pipeline-exit"
+  rc="$(jq -r '.rc // empty' "$exit_file" 2>/dev/null || true)"
+  if ! [[ "$rc" =~ ^[0-9]+$ ]]; then
+    # Read older logs that carried the footer in the merged provider stream.
+    rc="$(jq -Rsc '[split("\n")[] | fromjson? | select(.type=="pipeline.exit") | .rc] | last // empty' "$lg" 2>/dev/null || true)"
+  fi
   if ! [[ "$rc" =~ ^[0-9]+$ ]]; then
     case "$(tail -n 80 "$lg" 2>/dev/null | grep -aoE 'Aborted|Segmentation fault|Killed|Terminated' | tail -1 || true)" in
       Aborted) rc=134 ;;

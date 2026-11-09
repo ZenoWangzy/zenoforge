@@ -40,10 +40,12 @@ scheduler_issue_state() {
   [[ -f "$state_file" ]] && cat "$state_file" || printf '{}\n'
 }
 
-# ---- 0. dispatch 三个启动路径都写退出足迹（pipeline.exit） -----------------------------------
-grep -Fq 'rc=0; "$@" || rc=$?; printf "{\"type\":\"pipeline.exit\"' "$script_dir/scheduler.d/dispatch.sh" \
+# ---- 0. dispatch 三个启动路径都把退出足迹写到独立 sidecar（pipeline.exit） --------------------
+grep -Fq 'exit_file=$1; shift; rc=0; "$@" || rc=$?; printf "{\"type\":\"pipeline.exit\"' "$script_dir/scheduler.d/dispatch.sh" \
   || fail "dispatch must wrap each launch path with a worker exit footer"
-footer_line="$(grep -nF 'rc=0; "$@" || rc=$?; printf "{\"type\":\"pipeline.exit\"' "$script_dir/scheduler.d/dispatch.sh" | cut -d: -f1)"
+grep -Fq '> "$exit_file"; exit "$rc"' "$script_dir/scheduler.d/dispatch.sh" \
+  || fail "dispatch must write the exit footer outside the provider output log"
+footer_line="$(grep -nF 'exit_file=$1; shift; rc=0; "$@" || rc=$?; printf "{\"type\":\"pipeline.exit\"' "$script_dir/scheduler.d/dispatch.sh" | cut -d: -f1)"
 launch_line="$(grep -nF 'worker_scope_launch "$worker_pid_file"' "$script_dir/scheduler.d/dispatch.sh" | cut -d: -f1)"
 [[ "$footer_line" =~ ^[0-9]+$ && "$launch_line" =~ ^[0-9]+$ && "$footer_line" -lt "$launch_line" ]] \
   || fail "all dispatch branches must pass through the footer before worker launch"
@@ -156,17 +158,28 @@ jq -e '.rc == 134 and .signal == "ABRT"' <<<"$death_json" >/dev/null \
 
 # ---- 5. 退出足迹包装的落盘行为：成功留报告，信号死亡只留 footer 与 partial -----------------
 # 模拟 dispatch 的 WORKER_STDOUT_REPORT 包装（同一条 bash -c）在一个假 CLI 上执行。
-out="$fixture/stdout-report.md"; log="$fixture/wrapped.worker.log"
+out="$fixture/stdout-report.md"; log="$fixture/wrapped.worker.log"; exit_file="$fixture/wrapped.worker.pipeline-exit"
 rm -f -- "$out" "$out.partial"
-( bash -c 'out="$1"; shift; rc=0; "$@" > "$out.partial" && [ -s "$out.partial" ] && mv -f "$out.partial" "$out" || rc=$?; printf "{\"type\":\"pipeline.exit\",\"rc\":%s}\n" "$rc" >&2; exit "$rc"' \
-    autopilot-worker "$out" printf 'VERDICT: READY\n' ) > "$log" 2>&1
+( bash -c 'exit_file=$1; out=$2; shift 2; rc=0; "$@" > "$out.partial" && [ -s "$out.partial" ] && mv -f "$out.partial" "$out" || rc=$?; printf "{\"type\":\"pipeline.exit\",\"rc\":%s}\n" "$rc" > "$exit_file"; exit "$rc"' \
+    autopilot-worker "$exit_file" "$out" printf 'VERDICT: READY\n' ) > "$log" 2>&1
 grep -Fq 'VERDICT: READY' "$out" || fail "a successful stdout-report worker must still land its report"
-tail -n 1 "$log" | jq -e '.type == "pipeline.exit" and .rc == 0' >/dev/null || fail "success must leave an rc=0 footer"
+(jq -e '.type == "pipeline.exit" and .rc == 0' "$exit_file" >/dev/null) || fail "success must leave an rc=0 exit sidecar"
+! grep -Fq 'pipeline.exit' "$log" || fail "exit sidecar must not contaminate provider output"
 rm -f -- "$out" "$out.partial"
-( bash -c 'out="$1"; shift; rc=0; "$@" > "$out.partial" && [ -s "$out.partial" ] && mv -f "$out.partial" "$out" || rc=$?; printf "{\"type\":\"pipeline.exit\",\"rc\":%s}\n" "$rc" >&2; exit "$rc"' \
-    autopilot-worker "$out" bash -c 'echo partial text; kill -ABRT $$' ) > "$log" 2>&1 || test $? -eq 134
+( bash -c 'exit_file=$1; out=$2; shift 2; rc=0; "$@" > "$out.partial" && [ -s "$out.partial" ] && mv -f "$out.partial" "$out" || rc=$?; printf "{\"type\":\"pipeline.exit\",\"rc\":%s}\n" "$rc" > "$exit_file"; exit "$rc"' \
+    autopilot-worker "$exit_file" "$out" bash -c 'echo partial text; kill -ABRT $$' ) > "$log" 2>&1 || test $? -eq 134
 [[ ! -f "$out" ]] || fail "a killed stdout-report worker must not land a report"
 [[ -s "$out.partial" ]] || fail "the killed worker's partial output must stay for the provider-limit check"
-tail -n 1 "$log" | jq -e '.type == "pipeline.exit" and .rc == 134' >/dev/null || fail "a signal death must leave the exit footer (rc=134)"
+jq -e '.type == "pipeline.exit" and .rc == 134' "$exit_file" >/dev/null || fail "a signal death must leave the exit sidecar (rc=134)"
+
+# The provider can still flush a line after its launcher returns; the exit marker must not split JSONL.
+json_log="$fixture/provider-json.worker.log"; json_exit="$fixture/provider-json.worker.pipeline-exit"
+( bash -c 'exit_file=$1; shift; rc=0; "$@" || rc=$?; printf "{\"type\":\"pipeline.exit\",\"rc\":%s}\n" "$rc" > "$exit_file"; exit "$rc"' \
+    autopilot-worker "$json_exit" bash -c 'printf "%s" "{\"type\":\"thread.started\",\"thread_id\":"; (sleep 0.2; printf "%s\n" "\"sid\"}") &' ) > "$json_log" 2>&1
+sleep 0.25
+jq -se 'length == 1 and .[0].type == "thread.started" and .[0].thread_id == "sid"' "$json_log" >/dev/null \
+  || fail "provider JSONL must stay parseable when its child flushes after the launcher exits"
+jq -e '.type == "pipeline.exit" and .rc == 0' "$json_exit" >/dev/null \
+  || fail "the delayed provider case must still record the worker exit"
 
 echo "ok - worker-death-diagnosis.test.sh"
