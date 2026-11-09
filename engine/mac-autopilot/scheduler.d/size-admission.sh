@@ -321,6 +321,10 @@ $(head -n 200 "$rep" 2>/dev/null)"
   if [[ -n "$url" ]]; then
     num="${url##*/}"
     set_unit "$unit" "$(hist split-followup "issue #$num: $remainder") | .split_followup=$num"
+    if ! scheduler_issue_transition "$issue" tracker "intake-parent:roadmap-container:split-delivery" '.tracker_parent = true'; then
+      to_supervisor "$unit" "split remainder #$num filed but parent #$issue could not transition to tracker"
+      return 0
+    fi
     say "unit $unit split delivery: remainder #$num filed; slice in PR #$pr"
   else
     # 切片 PR 已在评审，失败只报 supervisor inbox，不把单元踢出评审队列；剩余范围仍在 worker 报告与 PR 描述里。

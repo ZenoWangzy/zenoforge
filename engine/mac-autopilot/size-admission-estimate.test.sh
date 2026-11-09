@@ -35,4 +35,19 @@ ws 641; [[ "$rejects" == 1 && "$rejected_lines" == 641 && "$rejected_limit" == 6
 rejects=0; size_admission_write_start u "" '{"id":"u","estimated_changed_lines":null}' || :; [[ "$rejects" == 0 ]] || fail 'a null estimate was refused'
 ws 700 '"size_waiver":{"max_lines":1000}'; [[ "$rejects" == 0 ]] || fail 'a waived ticket was cut at 80% of the configured limit'
 ws 1001 '"size_waiver":{"max_lines":1000}'; [[ "$rejects" == 1 && "$rejected_limit" == 1000 ]] || fail 'a waived ticket was not refused at its waiver'
+# A split delivery moves its parent to tracker; a failed move goes to the supervisor and the split still returns 0.
+gh() { return 1; }
+scheduler_auto_filed_issue_create() { echo "https://github.com/o/r/issues/41"; }
+unit_field() { echo t; }
+hist() { echo '{}'; }
+set_unit() { :; }
+say() { :; }
+transitions='' supervisor_msg=''
+scheduler_issue_transition() { transitions="$1|$2|$3|$4"; return "${TRANSITION_RC:-0}"; }
+to_supervisor() { supervisor_msg="$1|$2"; }
+printf 'slice report\n' > "$fixture/split-report"
+split_followup_issue issue-40 40 50 'SPLIT: the rest' "$fixture/split-report"
+[[ "$transitions" == '40|tracker|intake-parent:roadmap-container:split-delivery|.tracker_parent = true' ]] || fail "a split did not move the parent to tracker ($transitions)"
+TRANSITION_RC=1; rc=0; split_followup_issue issue-40 40 50 'SPLIT: the rest' "$fixture/split-report" || rc=$?
+[[ "$rc" == 0 && "$supervisor_msg" == 'issue-40|split remainder #41 filed but parent #40 could not transition to tracker' ]] || fail "a failed tracker move was not sent to the supervisor with rc 0 (rc=$rc $supervisor_msg)"
 echo "size-admission-estimate.test.sh: all assertions passed"
