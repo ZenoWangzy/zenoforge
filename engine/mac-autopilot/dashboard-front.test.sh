@@ -195,7 +195,9 @@ sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e \
 
 # 2. 5 分钟缓存：再跑一次不再调 GitHub
 run
-[[ "$(wc -l < "$FAKE_GH_LOG")" == 1 ]] || fail "graphql called again inside the cache window: $(cat "$FAKE_GH_LOG")"
+# Two calls from the first run: the dashboard query and founder_reqs' by-number fetch of unit #555 (the fake label search
+# returns no rows, #771). Neither may repeat inside the cache window: a third line is the per-beat refetch that turned main red.
+[[ "$(wc -l < "$FAKE_GH_LOG")" == 2 ]] || fail "graphql called again inside the cache window: $(cat "$FAKE_GH_LOG")"
 front | jq -e '.github.cached == true and .github.stale == false and .stages[5].count == 9' >/dev/null || fail "cached run not marked cached"
 
 # 3. 缓存过期而 GitHub 失败：沿用旧缓存并标明失败原因（最长 30 分钟）

@@ -205,13 +205,12 @@ def _fetch_issues(repo, cache_path, needed=()):
     except OSError: pass
     if cache is None: cache = _search_rows(repo, cache_path)
     if cache is None: return None, False
-    have = {r.get("number") for r in cache["rows"]}
-    missing = sorted(set(needed) - have)
+    # A number asked once stays asked for the cache's 15 minutes, found or not: re-asking every beat broke the dashboard cache (main red 6e00d18).
+    asked = set(cache.get("asked") or [])
+    missing = sorted(set(needed) - {r.get("number") for r in cache["rows"]} - asked)
     if missing:
-        fetched = _fetch_by_number(repo, missing)
-        if fetched:
-            cache = {"rows": cache["rows"] + fetched, "truncated": cache["truncated"]}
-            _write_cache(cache_path, cache)
+        cache = {"rows": cache["rows"] + _fetch_by_number(repo, missing), "truncated": cache["truncated"], "asked": sorted(asked | set(missing))}
+        _write_cache(cache_path, cache)
     return cache["rows"], cache["truncated"]
 
 
