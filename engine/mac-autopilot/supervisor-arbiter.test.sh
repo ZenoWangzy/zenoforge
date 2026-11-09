@@ -895,4 +895,42 @@ done
 jq -cn '{units:[range(1;4) as $i | {id:("pr-92\($i)"),issue:(9200+$i),pr:(9200+$i),lane:"pr",stage:(if $i == 2 then "parked" else "supervisor-review" end),parked_reason:"supervisor-cap-founder",held_dependents:([1,3,2][$i-1]),history:[{stage:"supervisor-escalated",result:"x",at:"2026-11-08T01:00:00Z"}]}]}' > "$UNITS"
 [[ "$(supervisor_arbiter_candidates | jq -r .id | tr '\n' ' ')" == "pr-922 pr-923 pr-921 " ]] || fail "equal-age candidates must go by held dependents, higher first: $(supervisor_arbiter_candidates | jq -r .id | tr '\n' ' ')"
 
+# ---- 决策类 park（"a supervisor decision"，非 cap park）：repair-breaker 与无 PR 的 stop-loss 进仲裁 ----
+# A repair-breaker whose no-push rounds died in the backend is requeued by the existing path, with no model run.
+units "$(jq -cn --arg sha "$SHA1" '{units:[{id:"pr-7101",lane:"pr",pr:7101,branch:"agent/issue-7101",stage:"parked",parked_reason:"repair-breaker",unpark_condition:"a supervisor decision",
+  reviewed_sha:$sha,reviewed_pr_head:$sha,note:"breaker",history:[{stage:"review-request-changes",result:"F1",at:"2026-11-09T08:00:00Z"},
+  {stage:"repair-no-push",result:("head "+$sha+" unchanged after repair"),backend_failure:"worker: both backends failed: luna: fatal stderr pattern: authentication or quota error",at:"2026-11-09T08:10:00Z"},
+  {stage:"repair-no-push",result:("head "+$sha+" unchanged after repair"),backend_failure:"worker: both backends failed: luna: fatal stderr pattern: authentication or quota error",at:"2026-11-09T08:20:00Z"},
+  {stage:"repair-breaker",result:("head "+$sha+": 2 consecutive repair runs ended on it without a push"),at:"2026-11-09T08:20:00Z"}]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-7101") | not' "$WORKERS" >/dev/null || fail "a backend-failed repair-breaker must not get a model run: $(jq -c '.workers' "$WORKERS")"
+[[ "$(field pr-7101 '[.history[].stage] | contains(["supervisor-requeue"])')" == true ]] || fail "a backend-failed repair-breaker must be requeued: $(jq -c '.units[0].history[-3:]' "$UNITS")"
+[[ "$(field pr-7101 .parked_reason)" == null && "$(field pr-7101 .stage)" != parked ]] || fail "the requeued unit must leave the park: $(jq -c '.units[0] | {stage,parked_reason}' "$UNITS")"
+
+# A repair-breaker without a backend failure takes the normal verdict: selected, dispatched to a supervise worker, back at supervisor-review.
+units "$(jq -cn --arg sha "$SHA2" '{units:[{id:"pr-7102",lane:"pr",pr:7102,branch:"agent/issue-7102",stage:"parked",parked_reason:"repair-breaker",unpark_condition:"a supervisor decision",
+  reviewed_sha:$sha,reviewed_pr_head:$sha,note:"breaker",history:[{stage:"review-request-changes",result:"F1",at:"2026-11-09T08:00:00Z"},
+  {stage:"repair-no-push",result:("head "+$sha+" unchanged after repair"),at:"2026-11-09T08:10:00Z"},
+  {stage:"repair-no-push",result:("head "+$sha+" unchanged after repair"),at:"2026-11-09T08:20:00Z"},
+  {stage:"repair-breaker",result:("head "+$sha+": 2 consecutive repair runs ended on it without a push"),at:"2026-11-09T08:20:00Z"}]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-7102")' "$WORKERS" >/dev/null || fail "a repair-breaker without a backend failure must get the normal arbitration: $(jq -c '.workers' "$WORKERS")"
+[[ "$(field pr-7102 .stage)" == supervisor-review && "$(field pr-7102 .parked_reason)" == null ]] || fail "the arbitrated repair-breaker must be at supervisor-review: $(jq -c '.units[0] | {stage,parked_reason}' "$UNITS")"
+
+# A stop-loss same failure with no PR waits for a supervisor decision: it is selected and arbitrated.
+units "$(jq -cn '{units:[{id:"issue-7103",lane:"pr",branch:"agent/issue-7103",stage:"parked",parked_reason:"stop-loss same failure: ci-tests",unpark_condition:"a supervisor decision",
+  note:"stop-loss",history:[{stage:"stop-loss",result:"ci-tests failed twice",at:"2026-11-09T08:00:00Z"}]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+jq -e 'any(.workers[]; .type=="supervise" and .unit=="issue-7103")' "$WORKERS" >/dev/null || fail "a stop-loss same-failure park with no PR must get the normal arbitration: $(jq -c '.workers' "$WORKERS")"
+
+# The harvest records a backend failure on the no-push row only when the round's log shows the worker's own failure line.
+units "$(jq -cn '{units:[{id:"pr-7104",lane:"pr",pr:7104,stage:"repair-pending",history:[]}]}')"
+bf_log="$fixture/repair-backend-fail.log"; ok_log="$fixture/repair-prose.log"
+printf 'worker: both backends failed: luna: fatal stderr pattern: authentication or quota error\n' > "$bf_log"
+printf 'the docs say the authentication flow needs a quota check\n' > "$ok_log"
+rr="$(printf '{"history":[]}' | jq -c "$(repair_run_filter pr-7104 unchanged "$SHA1" 5 "$bf_log" /dev/null)")"
+jq -e '.history[-1] | .stage == "repair-no-push" and (.backend_failure | contains("both backends failed"))' <<<"$rr" >/dev/null || fail "a no-push round with a worker failure line must record backend_failure: $rr"
+rr="$(printf '{"history":[]}' | jq -c "$(repair_run_filter pr-7104 unchanged "$SHA1" 5 "$ok_log" /dev/null)")"
+jq -e '.history[-1] | has("backend_failure") | not' <<<"$rr" >/dev/null || fail "prose about auth or quota is not a backend failure: $rr"
+
 echo 'supervisor-arbiter.test.sh: all assertions passed'

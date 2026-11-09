@@ -356,7 +356,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
               disposition_update=""
             fi
             read -r head_class head_base <<<"$(repair_head_class "$unit" "$(jqf -r '.workdir // empty' <<<"$w")")"
-            set_unit "$unit" "$(repair_run_filter "$unit" "$head_class" "$head_base" "$tk") $disposition_update | .author_dispositions_pending=false"
+            set_unit "$unit" "$(repair_run_filter "$unit" "$head_class" "$head_base" "$tk" "$lg" "$rep") $disposition_update | .author_dispositions_pending=false"
           fi
           # f6 复查（#4482）：repair/self-fix 推的新 head 重新过尺寸准入；超线同样转 supervisor 拆分
           local recheck_dir recheck_branch

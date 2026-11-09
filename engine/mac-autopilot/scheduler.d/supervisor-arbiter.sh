@@ -30,17 +30,38 @@ supervisor_arbiter_input() { # unit-json [cap-triage] → frozen record JSON
     }' <<<"$u"
 }
 
+# Parks that wait for "a supervisor decision" but are not arbitration-cap parks: repair-breaker (stop-loss.sh) and a stop-loss same failure with no PR.
+# The arbiter takes them with its normal verdict. The arbiter's own verdict parks (supervisor-park, main-red-guard, requeue-target-missing) are not listed: re-arbitrating them repeats that verdict.
+SUPERVISOR_DECISION_PARK_RE='^(repair-breaker$|stop-loss same failure: )'
+supervisor_decision_park() { # unit-json → 0 for a supervisor-decision park (not a cap park)
+  jqf -e --arg re "$SUPERVISOR_DECISION_PARK_RE" '.stage == "parked" and .unpark_condition == "a supervisor decision" and ((.parked_reason // "") | test($re))' <<<"$1" >/dev/null
+}
+# A repair-breaker whose no-push rounds since the last delivery recorded a backend failure (harvest: repair_backend_failure) died in the backend, not in the work.
+supervisor_backend_failure_park() { # unit-json → 0 when a no-push round since the last delivery has backend_failure
+  jqf -e '[(.history // [])[] | select(.stage == "repair-no-push" or .stage == "repair-delivered")] as $rounds
+    | ([$rounds | to_entries[] | select(.value.stage == "repair-delivered") | .key] | last // -1) as $cut
+    | any($rounds[$cut + 1:][]; .stage == "repair-no-push" and ((.backend_failure // "") != ""))' <<<"$1" >/dev/null
+}
+supervisor_requeue_backend_failure() { # id unit-json → requeue through the existing path (it refills the stop-loss budget); the arbiter runs no model
+  local id="$1" u="$2" bf guidance decision
+  bf="$(jqf -r '[(.history // [])[] | select(.stage == "repair-no-push" and ((.backend_failure // "") != "")) | .backend_failure] | last' <<<"$u")"
+  guidance="repair-breaker: the no-push repair rounds failed in the backend ($bf); repair the same head again"
+  decision="$(decision_entry "Supervisor arbitration: requeue" "$guidance" "repair-breaker backend failure" '[]' supervisor)"
+  supervisor_requeue_unit "$id" requeue "$guidance" "$decision"
+}
+
 # Oldest-waiting first (when it last entered supervisor-review or a cap park; ties go to the unit holding more waiting dependents, then units.json order): in array order the front
 # units that return here after a failed repair took every slot and 5389 waited 14.5 h on 2026-11-08 with 55 of 55 picks ahead of it.
 supervisor_arbiter_candidates() {
-  jqf -c --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '[.units[]
+  jqf -c --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" --arg decision_re "$SUPERVISOR_DECISION_PARK_RE" '[.units[]
     | select((.stage=="supervisor-review" or .stage=="parked")
       and (.hold_handoff_waiting // false)==false and (.supervisor_owned // false)==false
       and (.stage!="parked" or .parked_reason=="supervisor-arbitration-cap"
         or .parked_reason=="supervisor-cap-triage-reask" or .parked_reason=="recut-refused-unpushed"
         or .parked_reason=="supervisor-cap-founder" or .parked_reason=="supervisor-cap-exhausted"
         or any((.history // [])[]?; .stage=="supervisor-budget-park" and ((.result // "") | test($cap_park_result_re)))
-        or any((.history // [])[]?; .stage=="supervisor-cap-triage-park")))]
+        or any((.history // [])[]?; .stage=="supervisor-cap-triage-park")
+        or (.unpark_condition == "a supervisor decision" and ((.parked_reason // "") | test($decision_re)))))]
     | sort_by(. as $u | [(([$u.history[]? | select(.at != null and (.stage | IN("supervisor-escalated", "supervisor-review", "supervisor-budget-park", "supervisor-cap-triage-park"))) | .at] | max)
         // ([$u.history[]?.at | select(. != null)] | max) // ""), -($u.held_dependents // 0)])
     | .[]' "$UNITS"
@@ -99,6 +120,17 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     supervisor_arbiter_over_daily_max "$u" && continue
     (( "$(jqf -r '.arbiter_retry_after // 0' <<<"$u")" <= "$(date +%s)" )) || continue
     supervisor_arbiter_no_change_hold "$u" && continue
+    if supervisor_decision_park "$u"; then
+      # Not a cap park: it returns to supervisor-review; a backend-failed repair-breaker is then requeued without a model run.
+      backend_failed=false
+      [[ "$(jqf -r '.parked_reason' <<<"$u")" == repair-breaker ]] && supervisor_backend_failure_park "$u" && backend_failed=true
+      set_unit "$id" '.stage="supervisor-review" | del(.parked_reason, .unpark_condition)'
+      u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+      if [[ "$backend_failed" == true ]]; then
+        supervisor_requeue_backend_failure "$id" "$u" || say "supervisor backend-failure requeue unit=$id: not applied; the unit stays at supervisor-review"
+        continue
+      fi
+    fi
     is_swept=false
     if [[ "$(jqf -r '.stage // empty' <<<"$u")" == parked ]]; then
       [[ "${SUPERVISOR_CAP_TRIAGE:-true}" == true ]] || continue
