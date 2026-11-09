@@ -24,7 +24,7 @@ rotate_loop_out() {
 worktree_cleanup_block_reason() { # dir -> reason when deleting it could lose recoverable Git work
   local wt="$1" status stash head remote_refs pushed_refs
   [[ -e "$wt/.git" ]] || return 1
-  if ! status="$(git -C "$wt" status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
+  if ! status="$(git -C "$wt" status --porcelain=v1 --untracked-files=normal 2>/dev/null)"; then
     printf 'could not inspect Git status'
     return 0
   fi

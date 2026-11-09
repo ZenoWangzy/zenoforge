@@ -412,6 +412,10 @@ register_new_issues() {
     if (( ! existing_only )) && intake_row_terminal "$n" "$episode"; then
       intake_terminal_rows+=("$n"); intake_skip terminal; continue
     fi; intake_mark terminal_check
+    if (( existing_only )) && [[ -n "$episode" ]]; then
+      intake_unit_for_row "$n" "$handoff_pr"; intake_mark recut_refused_precheck
+      [[ -z "$existing_id" ]] || ! intake_recut_refused "$existing_id" || { intake_skip_refused_recut "$n" "$existing_id"; continue; }
+    fi
     # The existing-only walk already took this row through the block below this tick, with the same ledger, census and state file, and the
     # new-issue walk adds nothing for an issue that has a unit (it ends at skip_existing): a repeat would be 6 gh/jq/ledger calls per row for nothing.
     # A unit found only by the recorded PR still goes the long way: handoff_pr is rewritten inside the block.
@@ -527,7 +531,7 @@ register_new_issues() {
       [[ -n "$episode" ]] || { intake_skip no_episode; continue; }
       # Recut refused and the one reopen is spent: this door must not undo that, or each refusal buys another pass through stop-loss and recut.
       if intake_recut_refused "$existing_id"; then
-        say "intake hold handoff issue #$n: unit=$existing_id stays closed, recut refused and its reopen is spent"; intake_skip recut_refused; continue
+        intake_skip_refused_recut "$n" "$existing_id"; continue
       fi
       if intake_row_units "$n" "$handoff_pr" "$episode"; then :; else
         ids="$(jqf -c --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)) | .id]' "$(intake_units_view)")"
