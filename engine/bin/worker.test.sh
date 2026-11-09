@@ -52,6 +52,20 @@ if [[ $mode == builtin_info ]]; then
   sleep 0.3
   mode=success
 fi
+if [[ $mode == models_manager_401 ]]; then
+  printf 'codex_models_manager: failed to refresh available models: unexpected status 401\n' >> "$d/stderr.log"
+  sleep 0.3
+  mode=success
+fi
+if [[ $mode == auth_turn_failed ]]; then
+  printf 'codex_models_manager: failed to refresh available models: unexpected status 401\n' >> "$d/stderr.log"
+  printf '%s\n' '{"type":"turn.failed","error":{"code":"authentication_error","message":"Authentication failed: token expired (401)"}}' > "$d/events.jsonl"
+  exit 1
+fi
+if [[ $mode == model_not_found ]]; then
+  printf '%s\n' '{"type":"turn.failed","error":{"code":"model_not_found","message":"The requested model is not supported"}}' > "$d/events.jsonl"
+  exit 1
+fi
 [[ $mode == gated ]] && { sleep 7; mode=success; }   # queued at the capacity gate past the stall threshold
 [[ $mode == hang || $mode == builtin_noise || $mode == queued ]] || echo $$ > "$d/codex.pid"   # real backends write it once past the capacity gate
 case "$mode" in
@@ -376,6 +390,29 @@ assert_file_contains "$turn_dir/failover" 'backend=zc failed; next=luna; reason=
 [[ -f "$test_root/turn-failed/.scratch/tmp/zc-breaker" ]] || fail 'Turn execution failed did not open the zc breaker'
 assert_file_contains "$turn_dir/last.md" 'success from luna'
 printf 'PASS zc Turn execution failed -> luna failover with reason; partial worktree preserved\n'
+
+run_case models-manager-401 0 success models_manager_401 8 4 luna
+[[ $(cat "$CASE_DIR/backend") == luna ]] || fail 'models_manager refresh 401 was treated as fatal'
+[[ ! -e $CASE_DIR/failover ]] || fail 'models_manager refresh 401 started backend failover'
+printf 'PASS models_manager refresh 401 is ignored without hiding other fatal turn events\n'
+
+run_case auth-turn-failed 0 success auth_turn_failed 8 4 luna
+assert_file_contains "$CASE_DIR/failover" 'reason=fatal event pattern: turn.failed'
+[[ $(cat "$CASE_DIR/backend") == zc ]] || fail 'authentication turn.failed did not trigger backend failover'
+printf 'PASS authentication turn.failed remains fatal after filtering models_manager stderr\n'
+
+history=$'2026-11-09T00:00:00Z go1-9169 gpt-6-luna rc=1\n2026-11-09T01:00:00Z go2-9169 gpt-6-luna rc=75'
+run_case terra-cache 1 success model_not_found 8 4 luna gpt-6-luna go3-9169 "$history"
+[[ $(cat "$CASE_DIR/models") == gpt-6.1-terra ]] || fail 'the first eligible escalation did not try terra'
+model_cache="${CASE_DIR%/*}/model-not-found.cache"
+assert_file_contains "$model_cache" 'gpt-6.1-terra'
+cache_expiry=$(awk -F '\t' '$1 == "gpt-6.1-terra" { print $2 }' "$model_cache")
+cache_now=$(date +%s)
+[[ $cache_expiry =~ ^[0-9]+$ ]] || fail 'unsupported-model cache has no numeric expiry'
+(( cache_expiry > cache_now && cache_expiry <= cache_now + 86400 )) || fail 'unsupported-model cache expiry is not within 24 hours'
+run_case terra-cache 0 success success 8 4 luna gpt-6-luna go4-9169 "$history"
+[[ $(cat "$CASE_DIR/models") == gpt-6-luna ]] || fail 'a cached model_not_found did not suppress terra escalation'
+printf 'PASS model_not_found caches terra for 24 hours and suppresses later escalation\n'
 
 run_case success 0 success success 2 6
 success_dir=$CASE_DIR

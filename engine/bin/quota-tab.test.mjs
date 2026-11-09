@@ -11,10 +11,14 @@ import { fileURLToPath } from 'node:url';
 const bin = path.dirname(fileURLToPath(import.meta.url));
 
 // The quota reply a script reads: zc-quota the GLM limit list, codex-quota the ChatGPT rate_limit windows.
-function quotaReply(script, week) {
-  if (script === 'codex-quota') return { hit: 'https://chatgpt.com/backend-api/wham/usage', body: JSON.stringify({ rate_limit: {
-    primary_window: { limit_window_seconds: 18000, used_percent: 10, reset_at: 1800000000 },
-    secondary_window: { limit_window_seconds: 604800, used_percent: week, reset_at: 1800000000 } } }) };
+function quotaReply(script, week, codexWindows) {
+  if (script === 'codex-quota') {
+    const rateLimit = codexWindows === undefined ? {
+      primary_window: { limit_window_seconds: 18000, used_percent: 10, reset_at: 1800000000 },
+      secondary_window: { limit_window_seconds: 604800, used_percent: week, reset_at: 1800000000 },
+    } : { primary_window: codexWindows[0] ?? null, secondary_window: codexWindows[1] ?? null };
+    return { hit: 'https://chatgpt.com/backend-api/wham/usage', body: JSON.stringify({ rate_limit: rateLimit }) };
+  }
   const limits = [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 10 }, { type: 'TOKENS_LIMIT', unit: 6, percentage: week, nextResetTime: 1800000000000 }];
   return { hit: 'https://bigmodel.cn/api/monitor/usage/quota/limit', body: JSON.stringify({ data: { limits } }) };
 }
@@ -51,7 +55,7 @@ function answerCdp(socket, reply, seen) {
   });
 }
 
-async function run(script, tabs, files = {}, { week, miss, atUrl, env = {}, home: reuse } = {}) {
+async function run(script, tabs, files = {}, { week, windows, miss, atUrl, env = {}, home: reuse } = {}) {
   const seen = [];
   const server = http.createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
@@ -67,7 +71,7 @@ async function run(script, tabs, files = {}, { week, miss, atUrl, env = {}, home
     const accept = createHash('sha1').update(`${req.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
     socket.on('error', () => {});
-    if (week !== undefined) answerCdp(socket, { ...quotaReply(script, week), miss, atUrl }, seen);
+    if (week !== undefined || windows !== undefined) answerCdp(socket, { ...quotaReply(script, week, windows), miss, atUrl }, seen);
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const home = reuse ?? fs.mkdtempSync(path.join(os.tmpdir(), 'quota-tab-'));
@@ -134,6 +138,22 @@ assert.ok(!reused.seen.includes('GET /json/close/mine'), reused.seen.join());
 // Reset line above 100: at 98% nothing is spent, and head hears once for this weekly window.
 const usageTab = port => [{ id: 'read', type: 'page', url: 'https://bigmodel.cn/coding-plan/personal/usage',
   webSocketDebuggerUrl: `ws://127.0.0.1:${port}/tab` }];
+const codexUsageTab = port => [{ id: 'read', type: 'page', url: 'https://chatgpt.com/settings/usage',
+  webSocketDebuggerUrl: `ws://127.0.0.1:${port}/tab` }];
+
+const monthlyHome = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-monthly-'));
+const monthly = await run('codex-quota', codexUsageTab, {}, { home: monthlyHome, windows: [
+  { limit_window_seconds: 2592000, used_percent: 62, reset_at: 1800000000 },
+] });
+assert.equal(monthly.code, 0, monthly.out);
+const monthlySnapshot = JSON.parse(fs.readFileSync(path.join(monthlyHome, '.zenoforge/codex-quota.json')));
+assert.equal(monthlySnapshot.window_seconds, 2592000);
+assert.equal(monthlySnapshot.used_percent, 62);
+assert.equal(monthlySnapshot.reset_at, 1800000000);
+assert.equal(monthlySnapshot.week_pct, 62, 'legacy week_pct remains populated for a lone pacing window');
+assert.equal(monthlySnapshot.week_reset, 1800000000, 'legacy week_reset remains populated for a lone pacing window');
+assert.equal(monthlySnapshot.five_h_pct, null);
+
 const heldHome = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-held-'));
 const alerts = path.join(heldHome, 'alerts');
 const held = { week: 98, home: heldHome, env: { ZC_WEEK_RESET_AT: '101', ZC_ALERT_FILE: alerts } };
