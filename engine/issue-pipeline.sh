@@ -2287,18 +2287,7 @@ triage_slice_seconds_left() {
   echo $(( (ZF_GH_CALL_DEADLINE_EPOCH_MS - now_ms) / 1000 ))
 }
 
-# These stay outside run_intake_dispatch: its queue filter calls them before any nested definition below it runs.
-# advisor_pending_verdict_age_seconds <state-json> -- seconds since the stored
-# verdict was computed, or nothing when it carries no parseable computed_at
-# (a legacy verdict predating the field; age checks then tie toward resume).
-advisor_pending_verdict_age_seconds() {
-  local computed_at epoch
-  computed_at="$(jq -r '.pending_advisor_verdict.computed_at // empty' <<< "$1" 2>/dev/null || true)"
-  [ -n "$computed_at" ] || return 1
-  epoch="$(agent_epoch -u "$computed_at" 2>/dev/null)" || return 1
-  echo $(( $(date +%s) - epoch - $(codex_hold_overlap "$epoch" "$(date +%s)") ))
-}
-
+# Keep the queue filter's disposition helper outside run_intake_dispatch: it runs before nested definitions below.
 # advisor_stored_verdict_disposition <n> <state-json> -- prints "resume" when
 # the stored verdict is fresh (within ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS)
 # and its Apply has never failed; "discard-age" or "discard-apply-failed" when
@@ -2875,25 +2864,6 @@ if [ "$ADVISOR_QUEUE_COUNT" -ge "$ADVISOR_BATCH_MIN" ]; then
       "batch threshold met but pending single-ticket jobs take priority" "$ADVISOR_PENDING_JOB_IDS"
   fi
 fi
-# advisor_held_codex_unavailable -> 0 after one log line while head's codex-unavailable-until hold is in force. The
-# advisor leg then dispatches nothing, opens no quarantine, runs no canary and records no model failure backoff.
-advisor_held_codex_unavailable() {
-  local until
-  until="$(codex_unavailable_until)" || return 1
-  echo "advisor held: codex-unavailable-until $(date -u -d "@$until" +%Y-%m-%dT%H:%M:%SZ)" >&2
-}
-
-# advisor_hold_clock -- once per tick, before the stuck sweep: record the interval since the last tick in the hold ledger
-# when either end of it was held. Over-counts at most one tick at each edge, which only gives jobs more time.
-advisor_hold_clock() {
-  local now prev_at prev_held=0 held=0
-  now="$(date +%s)"
-  read -r prev_at prev_held < "$CODEX_UNAVAILABLE_TICK_FILE" 2>/dev/null || prev_at="$now"
-  codex_unavailable && held=1
-  if [ "$held" = 1 ] || [ "$prev_held" = 1 ]; then printf '%s %s\n' "$prev_at" "$now" >> "$CODEX_UNAVAILABLE_HOLD_LEDGER"; fi
-  printf '%s %s\n' "$now" "$held" > "$CODEX_UNAVAILABLE_TICK_FILE"
-}
-
 # One tick chooses exactly one web-advisor mode. Every fresh question, even a
 # one-ticket queue, uses one batch dialogue. Existing single jobs are polled;
 # stored verdicts resume through their one owning pool without a model call.

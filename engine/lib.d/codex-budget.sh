@@ -1,5 +1,11 @@
 _AGENT_LIB_DIR="${_AGENT_LIB_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}" # a module sourced without lib.sh (land snapshot) still finds the lib dir
 
+# Head-only Codex account hold; codex-quota's separate marker leaves credits open under quota holds.
+CODEX_UNAVAILABLE_MARKER_FILE="$AGENT_HOME/codex-unavailable-until"
+# Advisor hold ledger and tick clock; timers subtract the overlap recorded per tick.
+CODEX_UNAVAILABLE_HOLD_LEDGER="$AGENT_HOME/codex-unavailable-held.log"
+CODEX_UNAVAILABLE_TICK_FILE="$AGENT_HOME/codex-unavailable-tick"
+
 # codex_tokens_used <transcript text or file> -> the last complete Codex
 # usage count, normalized to decimal digits, or empty. Codex prints the
 # literal marker on one line and its count on the immediately following line;

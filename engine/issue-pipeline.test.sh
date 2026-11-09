@@ -2551,7 +2551,7 @@ rm -rf "$MERGED_REOPEN_HOME"
 HOLD_HOME="$(mktemp -d)"
 CODEX_UNAVAILABLE_MARKER_FILE="$HOLD_HOME/codex-unavailable-until"
 eval "$(sed -n '/^codex_unavailable_until() {/,/^}/p' "$SCRIPT_DIR/lib.d/codex-budget.sh")"
-eval "$(sed -n '/^advisor_held_codex_unavailable() {/,/^}/p' "$PIPELINE_SRC")"
+eval "$(sed -n '/^advisor_held_codex_unavailable() {/,/^}/p' "$SCRIPT_DIR/lib.d/advisor-batch.sh")"
 hold_future=$(( $(date +%s) + 3600 ))
 printf '%s\n' "$hold_future" > "$CODEX_UNAVAILABLE_MARKER_FILE"
 held_rc=0; advisor_held_codex_unavailable 2> "$HOLD_HOME/held.log" || held_rc=$?
@@ -2571,7 +2571,8 @@ CODEX_UNAVAILABLE_HOLD_LEDGER="$HOLD_HOME/held.ledger"
 CODEX_UNAVAILABLE_TICK_FILE="$HOLD_HOME/tick"
 eval "$(sed -n '/^codex_hold_overlap() {/,/^}/p' "$SCRIPT_DIR/lib.d/codex-budget.sh")"
 eval "$(sed -n '/^codex_unavailable() {/p' "$SCRIPT_DIR/lib.d/codex-budget.sh")"
-eval "$(sed -n '/^advisor_hold_clock() {/,/^}/p; /^advisor_pending_verdict_age_seconds() {/,/^}/p; /^advisor_stored_verdict_disposition() {/,/^}/p' "$PIPELINE_SRC")"
+eval "$(sed -n '/^advisor_hold_clock() {/,/^}/p; /^advisor_pending_verdict_age_seconds() {/,/^}/p' "$SCRIPT_DIR/lib.d/advisor-batch.sh")"
+eval "$(sed -n '/^advisor_stored_verdict_disposition() {/,/^}/p' "$PIPELINE_SRC")"
 eval "$(sed -n '/^web_advisor_provider_resume_job_if_stopped() {/,/^}/p' "$SCRIPT_DIR/providers/web-advisor-provider.sh")"
 ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS=43200
 WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS=3600
