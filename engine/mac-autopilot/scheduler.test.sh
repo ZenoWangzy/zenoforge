@@ -4721,6 +4721,42 @@ sched_case_hold_handoff_rescued_clone() {
 }
 sched_run_case hold_handoff_rescued_clone
 
+# A clone the secret scan refuses is set aside (mode 700) and the same pass resumes the handoff; no stash content reaches a log or the inbox.
+sched_case_hold_handoff_scan_refused_clone() {
+  local clone origin aside
+  new_tick_fixture hold-handoff-scan-refused-clone
+  clone="$TF/clones/wt-issue-781"; origin="$TF/origin-781.git"
+  mkdir -p "$TF/agent-home/state" "$TF/clones"
+  command git init -q --bare "$origin"
+  command git init -q -b main "$clone"
+  command git -C "$clone" config user.name test
+  command git -C "$clone" config user.email test@example.invalid
+  printf 'one\n' > "$clone/a.txt"; command git -C "$clone" add a.txt; command git -C "$clone" commit -q -m base
+  command git -C "$clone" remote add origin "$origin"
+  command git -C "$clone" push -q origin main
+  command git -C "$clone" fetch -q origin
+  command git -C "$clone" checkout -q -b agent/issue-781
+  printf 'key=AKIAFAKEFIXTURE\n' >> "$clone/a.txt"; command git -C "$clone" stash -q
+  touch "$TF/real-clone-git"
+  mkdir -p "$TF/bin"; printf '#!/usr/bin/env bash\n[[ "${1:-}" == stdin ]] || exit 2\ngrep -qF "AKIAFAKEFIXTURE" && exit 3\nexit 0\n' > "$TF/bin/gitleaks"; chmod +x "$TF/bin/gitleaks"
+  mkdir -p "$TF/repo/scripts/hooks"; printf '#!/usr/bin/env bash\nexit 0\n' > "$TF/repo/scripts/hooks/pre-push"; chmod +x "$TF/repo/scripts/hooks/pre-push"
+  command jq -n '{state:"ready-for-agent",scheduler_handoff:{episode:"hold-781"}}' > "$TF/agent-home/state/781.json"
+  command jq -n '{number:781,title:"resume held work",body:"finish",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+  command jq '.max_workers=1 | .implement_cap=0 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  command jq -n '{units:[{id:"issue-781",issue:781,branch:"agent/issue-781",lane:"pr",stage:"closed",history:[]}]}' > "$TF/supervisor/autopi/units.json"
+  PATH="$TF/bin:$PATH" tick
+  command jq -e '.units[0].stage=="implement-pending" and .units[0].hold_handoff_episode=="hold-781"' "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - the handoff stayed blocked by a clone the secret scan refused' >&2; exit 1; }
+  [[ ! -e "$clone" ]] || { echo 'not ok - the refused clone stayed in place' >&2; exit 1; }
+  aside=("$TF"/clones/wt-issue-781.preserved-*)
+  [[ ${#aside[@]} == 1 && -d "${aside[0]}" && "$(stat -c %a "${aside[0]}")" == 700 ]] || { echo 'not ok - the refused clone is not one mode-700 preserved dir' >&2; exit 1; }
+  grep -Fq "handoff-preserved-clone-aside unit=issue-781 path=${aside[0]}" "$TF/agent-home/supervisor-inbox" \
+    || { echo 'not ok - the supervisor inbox does not name the preserved path' >&2; exit 1; }
+  ! grep -rqF 'AKIAFAKEFIXTURE' "$TF/agent-home/supervisor-inbox" "$TF/supervisor/autopi/scheduler.log" "$TF/tick.out" \
+    || { echo 'not ok - stash content reached a log or the inbox' >&2; exit 1; }
+}
+sched_run_case hold_handoff_scan_refused_clone
+
 sched_case_hold_handoff_preserved_clone() {
   local clone owner base_sha old_sha handoff_sha today i
   new_tick_fixture hold-handoff-preserved-clone

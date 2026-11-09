@@ -628,7 +628,7 @@ else:
 
 # ---- worktree / branch ----
 wt_root = cfg.get("worktree_root") or os.path.join(os.path.expanduser("~"), ".zenoforge", "autopilot-wt")
-tmp_wts = sorted(d for d in glob.glob(os.path.join(wt_root, "wt-*")) + glob.glob("/tmp/wt-pr*") if os.path.isdir(d))
+tmp_wts = sorted(d for d in glob.glob(os.path.join(wt_root, "wt-*")) + glob.glob("/tmp/wt-pr*") if os.path.isdir(d) and ".preserved-" not in d)
 try:
     branches = subprocess.run(["git", "-C", ROOT, "branch", "--format", "%(refname:short)"],
                               capture_output=True, text=True, timeout=15).stdout.split()
