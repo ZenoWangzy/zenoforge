@@ -203,6 +203,46 @@ class Ledger(unittest.TestCase):
         self.assertIsNone(rows["impl-issue-7-20261020T120100Z.worker.log"]["usage"])
         self.assertIsNone(rows["impl-issue-7-20261020T120100Z.worker.log"]["footer_tokens"])
 
+    def test_gate_exit_is_zero_and_killed_runs_keep_the_last_usage_snapshot(self):
+        gate = "impl-issue-8-20261020T120200Z.worker.log"
+        codex = "impl-issue-9-20261020T120300Z.worker.log"
+        luna_codex = "impl-issue-10-20261020T120350Z.worker.log"
+        usage_event = "impl-issue-10-20261020T120400Z.worker.log"
+        killed = "impl-issue-11-20261020T120500Z.worker.log"
+        self.workers([
+            {"log": gate, "unit": "issue-8", "type": "implement", "rc": 75, "backend_run_pid": None},
+            {"log": codex, "unit": "issue-9", "type": "implement", "mode": "fresh"},
+            {"log": luna_codex, "unit": "issue-10", "type": "implement", "mode": "fresh"},
+            {"log": usage_event, "unit": "issue-10", "type": "implement", "provider": "zcode", "rc": 143,
+             "backend_run_pid": 1234},
+            {"log": killed, "unit": "issue-11", "type": "implement", "rc": 143, "backend_run_pid": 4321},
+        ])
+        self.log(gate, ["worker: queued at capacity gate for 1s: no backend process started (codex.pid absent; see gate-wait)"])
+        self.log(codex, [
+            json.dumps({"type": "pipeline.execution", "mode": "fresh"}),
+            json.dumps({"type": "thread.started", "thread_id": "aaaaaaaa-0000-0000-0000-000000000009"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {
+                "total_token_usage": {"input_tokens": 321, "cached_input_tokens": 123,
+                                      "output_tokens": 45}}}}),
+        ])
+        self.log(luna_codex, [json.dumps({"type": "turn.completed", "payload": {"usage": {
+            "inputTokens": 222, "cacheReadTokens": 22, "cacheWriteTokens": 0,
+            "outputTokens": 33, "totalTokens": 255}}})])
+        self.log(usage_event, [json.dumps({"payload": {"type": "model_request_completed", "usage": {
+            "inputTokens": 100, "cacheReadTokens": 40, "cacheWriteTokens": 0,
+            "outputTokens": 25, "totalTokens": 125}}})])
+        self.log(killed, [json.dumps({"type": "thread.started", "thread_id": "bbbbbbbb-0000-0000-0000-000000000011"}),
+                          json.dumps({"type": "turn.started"})])
+        rows = {row["log"]: row for row in wc.run_rows(self.sup)}
+        counts = lambda name: None if rows[name]["usage"] is None else (
+            rows[name]["usage"].input, rows[name]["usage"].cached, rows[name]["usage"].output)
+        self.assertEqual(counts(gate), (0, 0, 0))
+        self.assertEqual(counts(codex), (321, 123, 45))
+        self.assertEqual(counts(luna_codex), (222, 22, 33))
+        self.assertEqual(counts(usage_event), (100, 40, 25))
+        self.assertIsNone(rows[killed]["usage"])
+
     # ---------- failover: an overwritten stream is counted exactly once ----------
 
     def test_stream_overwritten_after_failed_resume_counts_only_the_cold_run(self):
