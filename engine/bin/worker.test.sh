@@ -143,6 +143,9 @@ run_case() {
   local name=$1 expected_rc=$2 zc_mode=$3 luna_mode=$4 stall_seconds=$5 timeout_seconds=$6
   local initial_backend=${7-zc}
   local initial_model=${8:-gpt-6-luna} history=${10:-}
+  local gate_queue_seconds=${12:-}
+  local -a queue_override=()
+  [[ -z $gate_queue_seconds ]] || queue_override=(WORKER_GATE_QUEUE_SECONDS="$gate_queue_seconds")
   local root="$test_root/$name/.scratch" wt="$test_root/$name/worktree" prompt="$test_root/$name/brief.md"
   local agent_home="$test_root/$name/agent-home" home="$test_root/$name/home" hold=${11:-}
   local key=${9:-test-$name} d rc schema=''
@@ -162,9 +165,9 @@ run_case() {
   [[ -z $history ]] || printf '%s\n' "$history" > "$root/luna/rounds.log"
 
   if timeout --signal=TERM --kill-after=1 "${WORKER_TEST_RUN_TIMEOUT:-$timeout_seconds}" \
-    env HOME="$home" AGENT_HOME="$agent_home" CODEX_MODEL="$initial_model" WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND="$initial_backend" \
+    env -u WORKER_GATE_QUEUE_SECONDS HOME="$home" AGENT_HOME="$agent_home" CODEX_MODEL="$initial_model" WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND="$initial_backend" \
       WORKER_STALL_SECONDS="$stall_seconds" WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
-      FAKE_ZC_MODE="$zc_mode" FAKE_LUNA_MODE="$luna_mode" \
+      FAKE_ZC_MODE="$zc_mode" FAKE_LUNA_MODE="$luna_mode" "${queue_override[@]}" \
       bash "$worker_script" "$key" "$wt" "$prompt" "$schema" > "$test_root/$name.stdout" 2> "$test_root/$name.stderr"; then
     rc=0
   else
@@ -278,6 +281,19 @@ assert_file_contains "$fatal_dir/failover" 'repeated AI_APICallError'
 [[ $(cat "$fatal_dir/backend") == luna ]] || fail 'fatal case did not finish on luna'
 assert_file_contains "$fatal_dir/briefs" 'Resume after backend failover'
 printf 'PASS fatal stderr pattern -> immediate failover\n'
+
+LUNA_AGE_ADMIT_SECONDS=0 run_case late-gate-session 0 gated success 1 25 zc gpt-6-luna '' '' '' 20
+late_gate_dir=$CASE_DIR
+[[ -s "$late_gate_dir/codex.pid" && $(cat "$late_gate_dir/rc") == 0 && ! -e "$late_gate_dir/failover" ]] || fail 'session gate override did not wait through late admission'
+printf 'PASS session gate override admits after the default bound\n'
+LUNA_AGE_ADMIT_SECONDS=0 run_case late-gate-default 75 gated success 1 10 zc gpt-6-luna
+[[ $(cat "$CASE_DIR/rc") == 75 ]] || fail 'unset gate queue override changed the default timeout'
+printf 'PASS unset session gate override keeps the default timeout\n'
+for invalid_queue_seconds in 0 -5 abc 99999999999999999999; do
+  LUNA_AGE_ADMIT_SECONDS=0 run_case "late-gate-invalid-$invalid_queue_seconds" 75 gated success 1 10 zc gpt-6-luna '' '' '' "$invalid_queue_seconds"
+  [[ $(cat "$CASE_DIR/rc") == 75 ]] || fail "invalid queue override $invalid_queue_seconds did not keep the default timeout"
+done
+printf 'PASS invalid session gate overrides keep the default timeout\n'
 
 LUNA_AGE_ADMIT_SECONDS=0 run_case queued 75 queued success 1 8
 queued_dir=$CASE_DIR

@@ -3,6 +3,8 @@
 # Same interface as luna: worker <key> <cwd> <prompt-file> [output-schema.json]
 # Every backend reports in .scratch/luna/<key>/ (last.md = the final JSON, rc, backend). WORKER_BACKEND=luna|zc
 # selects the initial backend; a health failure can still fail over once. WORKER_STALL_MINUTES defaults to 10.
+# WORKER_GATE_QUEUE_SECONDS is for callers outside the engine; supervisor zf-launch sets 21600 after this merges.
+# Engine units never set it.
 # A backend that never passes the capacity gate fails after LUNA_AGE_ADMIT_SECONDS + the stall bound (rc=75, no failover: both backends share the gate).
 # Both backends share luna's capacity gate (LUNA_MAX runs in total, started only while CPU < 85%).
 set -uo pipefail
@@ -85,6 +87,10 @@ if [[ ! $age_admit =~ ^[0-9]+$ || ! $stall_after =~ ^[0-9]+$ || ! $health_interv
   printf 'worker: invalid health timeout or interval\n' >&2; echo 2 > "$d/rc"; exit 2
 fi
 queue_after=$((age_admit + stall_after))
+gate_queue_seconds=${WORKER_GATE_QUEUE_SECONDS:-}
+if [[ $gate_queue_seconds =~ ^[1-9][0-9]{0,6}$ ]]; then
+  queue_after=$((10#$gate_queue_seconds))
+fi
 
 worktree_state() {
   local status head
