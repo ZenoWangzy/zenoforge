@@ -263,6 +263,18 @@ if ((rq.match(/class="frq"/g)||[]).length !== 2 || !rq.includes("founder words h
   throw new Error("requirements module lacks the founder rows, overview still has them, or the ROI module lacks the daily ROI line");
 const frBadAll = renderAll("founder-roi-bad", {founder_reqs: {error: "x"}, factory: {error: "y"}}).out;
 if (!frBadAll.reqs.includes("需求台账不可用") || !frBadAll.roi.includes("ROI 数据不可用")) throw new Error("founder ledger / ROI line error state missing");
+const readyQueue = renderAll("ready-queue", {front: {stages: [{label: "ready-for-agent", name: "待实现队列", count: 9}], ready_queue: {
+  total: 9, dispatchable: 1, held: 8, classes: [
+    {key: "tracker", name: "前置跟踪票", count: 1, reason: "等待跟踪票或相关 PR 合入后继续。"},
+    {key: "no-blocker-recorded", name: "未记录前置", count: 1, reason: "没有可等待的前置事项；下次调度会恢复派发。"},
+    {key: "chain-on-ready-issue", name: "链式依赖", count: 1, reason: "另一张待实现票交付后自动继续。"},
+    {key: "blocker-state-unavailable", name: "前置状态文件缺失", count: 1, reason: "缺少本地状态文件；前置票在 GitHub 交付或关闭后自动继续。"},
+    {key: "recut-refused-unpushed", name: "未推送改动挡住重拆", count: 1, reason: "工作区恢复或清理后再试。"},
+    {key: "ticket-stop-loss", name: "达到单票止损", count: 1, reason: "票据更新或预算提高后自动恢复一次派发。"},
+    {key: "supervisor-budget", name: "仲裁预算耗尽", count: 1, reason: "已按自动默认决策停放；不再消耗仲裁轮次。"},
+    {key: "token-hard-park", name: "达到硬令牌上限", count: 1, reason: "永久停放；没有自动释放事件。"}]}}}).out.intake;
+for (const detail of ["可派发", "1", "8", "前置跟踪票", "等待跟踪票或相关 PR 合入后继续。", "未记录前置", "链式依赖", "前置状态文件缺失", "未推送改动挡住重拆", "票据更新或预算提高后自动恢复一次派发。", "仲裁预算耗尽", "永久停放；没有自动释放事件。"])
+  if (!readyQueue.includes(detail)) throw new Error(`ready queue headline/breakdown lacks ${detail}: ${readyQueue}`);
 // 需求分页 + 排序：每页 8 条；卡点在最前，其次待验收（上线），再按阶段从近完成到刚提出，已验收垫底
 const pg = renderAll("reqs-paged", {founder_reqs: {stages: ["提出","热修生效","进 main","上线","真人验收"], partial: false, items: [
   ...[1,2,3,4,5,6,7,8].map(n => ({issue: 100 + n, title: "t", text: "plain-" + n, from_ruling: false, labels: [], stage: 0, owner: "pipeline", blocker: "", verified_epoch: null})),

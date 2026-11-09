@@ -172,7 +172,7 @@ dep_states() { # issue/PR 号… → 每行 "号<TAB>STATE<TAB>标签,…"；一
   (( $# > 0 )) || return 0
   local q="" d
   for d in "$@"; do
-    q+=" i$d: issueOrPullRequest(number: $d) { ... on Issue { state stateReason labels(first: 30) { nodes { name } } } ... on PullRequest { state labels(first: 30) { nodes { name } } } }"
+    q+=" i$d: issueOrPullRequest(number: $d) { ... on Issue { state stateReason updatedAt labels(first: 30) { nodes { name } } } ... on PullRequest { state updatedAt labels(first: 30) { nodes { name } } } }"
     q+=" p$d: pullRequests(headRefName: \"agent/issue-$d\", states: MERGED, first: 1) { totalCount }"
   done
   # awaiting-release is only set after a verified merge into main (AGENTS.md), so it counts as delivered here too, whatever the PR branch is called.
@@ -180,7 +180,7 @@ dep_states() { # issue/PR 号… → 每行 "号<TAB>STATE<TAB>标签,…"；一
   # （10-22 #3122/#3431 已合并、后继仍停着）。流水线的实现分支是 agent/issue-N：它的 PR 合并即交付。
   gh api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q } }" \
     --jq '.data.repository | . as $r | to_entries[] | select((.key | startswith("i")) and .value != null) | .key[1:] as $d
-      | "\($d)\t\(if ($r["p" + $d].totalCount // 0) > 0 or ([.value.labels.nodes[].name] | index("awaiting-release")) != null then "MERGED" else .value.state end)\t\([.value.labels.nodes[].name] | join(","))\t\(.value.state)\t\(.value.stateReason // "")"' 2>/dev/null
+      | "\($d)\t\(if ($r["p" + $d].totalCount // 0) > 0 or ([.value.labels.nodes[].name] | index("awaiting-release")) != null then "MERGED" else .value.state end)\t\([.value.labels.nodes[].name] | join(","))\t\(.value.state)\t\(.value.stateReason // "")\t\(.value.updatedAt // "")"' 2>/dev/null
 }
 stack_pilot_label() { jqf -r 'if .stacking.enabled == false then "" else (.stacking.pilot_label // "stack-pilot") end' <<<"$CFG"; }
 unit_has_stack_pilot() { # unit-json
@@ -384,7 +384,8 @@ release_dependency_blocks() {
       dep_results="$(dep_states "${unique_deps[@]}" 2>/dev/null || true)"
       dep_states_json="$(printf '%s\n' "$dep_results" | jqf -Rn '
         [inputs | split("\t") | select(length >= 2 and .[0] != "" and .[1] != "")]
-        | map({key:.[0],value:{state:.[1],labels:(.[2] // ""),issue_state:(.[3] // ""),state_reason:(.[4] // "")}}) | from_entries')"
+        | map({key:.[0],value:({state:.[1],labels:(.[2] // ""),issue_state:(.[3] // ""),state_reason:(.[4] // "")}
+          + (if (.[5] // "") == "" then {} else {updated_at:.[5]} end))}) | from_entries')"
     else
       dep_states_json='{}'
     fi
@@ -488,10 +489,18 @@ release_dependency_blocks() {
   dep_q_flush
   DEP_ROWS_PASS=0 SET_UNIT_QUEUE=0
   intake_mark parked_release
-  # 停在 blocked-external 却没有前置号的单元没有任何机制会放开它（issue-2536）：交 supervisor。
-  for id in $(jqf -r '.units[] | select(.stage=="blocked-external" and .blocked_on == null and .size_recut_pending != true) | .id' "$UNITS"); do
-    to_supervisor "$id" "blocked-external without a predecessor: nothing can release it"
-  done
+  # A ready issue without a recorded predecessor has no release event to wait for. If GitHub
+  # still labels it ready, release it; keep non-ready issues on the supervisor route.
+  while IFS="$US" read -r id ready; do
+    if [[ "$ready" == true ]]; then
+      unblock_unit "$id" "no predecessor recorded; issue remains ready-for-agent"
+    else
+      to_supervisor "$id" "blocked-external without a predecessor: nothing can release it"
+    fi
+  done < <(jqf -r --slurpfile c <(printf '%s' "$dep_cache") '.units[]
+    | select(.stage=="blocked-external" and .blocked_on == null and .size_recut_pending != true)
+    | [ .id, (((($c[0][(.issue | tostring)].labels // "") | split(",")) | index("ready-for-agent")) != null) ]
+    | map(tostring) | join("\u001f")' "$UNITS")
   intake_mark no_blocker_escalate
   dep_hold_parked; intake_mark hold_parked
   if (( gh_due )); then

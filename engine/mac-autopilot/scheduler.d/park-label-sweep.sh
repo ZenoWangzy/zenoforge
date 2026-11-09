@@ -26,12 +26,34 @@ park_sweep_hold_lifted() { # issue unit-episode → 0 when the issue state shows
 }
 
 park_label_sweep() {
-  local u id issue reason unpark n unit_episode
+  local u id issue reason unpark n unit_episode state labels updated parked_at budget release cache US=$'\x1f'
   while IFS= read -r u; do
     id="$(jqf -r .id <<<"$u")"
     IFS=$'\t' read -r reason unpark < <(park_sweep_class "$u")
     set_unit "$id" ".parked_reason=$(js "$reason") | .unpark_condition=$(js "$unpark")" && park_sweep_log "$id" "label $reason"
   done < <(jqf -c '.units[] | select(.stage == "parked" and .parked_reason == null)' "$UNITS")
+  # Ticket stop-loss records an issue-change / budget-refill exit; detect both from the batched GitHub snapshot.
+  cache="$(jqf_optional_file "$A/dep-check.cache.json" -c 'if (.states|type)=="object" then .states else {} end' 2>/dev/null || true)"
+  [[ -n "$cache" ]] || cache='{}'
+  while IFS="$US" read -r id issue state labels updated parked_at; do
+    [[ "$state" == OPEN && ",$labels," == *,ready-for-agent,* && -n "$updated" ]] || continue
+    u="$(jqf -c --arg id "$id" '.units[] | select(.id==$id)' "$UNITS")"
+    budget="$(ticket_budget_reason "$u" 2>/dev/null || true)"
+    release=""
+    if [[ -z "$budget" ]]; then
+      release="ticket budget is available again"
+    elif [[ -n "$parked_at" && "$updated" > "$parked_at" ]]; then
+      release="issue updated after the stop-loss park"
+    fi
+    [[ -n "$release" ]] || continue
+    set_unit "$id" "$(hist supervisor-requeue "$release; the issue is ready-for-agent") | .stage=\"implement-pending\" | .note=null | del(.parked_reason, .unpark_condition)" \
+      && park_sweep_log "$id" "ticket-stop-loss-resume ($release)"
+  done < <(jqf -r --argjson c "$cache" '
+    .units[] | select(.stage=="parked" and .parked_reason=="ticket-stop-loss" and (.issue|type)=="number")
+    | ($c[(.issue|tostring)] // {}) as $x
+    | [.id,.issue,($x.state // ""),($x.labels // ""),($x.updated_at // ""),
+       ([.history[]? | select(.stage=="supervisor-budget-park") | .at] | last // "")]
+    | map(tostring) | join("\u001f")' "$UNITS")
   # The same return as the issue-3015 ruling below, for any unit whose stop-loss hold is gone. The retry mark is what the arbiter's own
   # swept route sets for this park: one more triage run, and a second cap ends terminal instead of asking again.
   while IFS=$'\t' read -r id issue unit_episode; do

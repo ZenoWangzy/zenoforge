@@ -152,4 +152,16 @@ park_label_sweep
 for n in 7002 7003 7004 7005 7006; do [[ "$(field issue-$n .stage)" == parked ]] || fail "issue-$n must stay parked"; done
 [[ "$(field issue-7001 '[.history[] | select(.stage == "park-sweep-hold-lifted")] | length')" == 1 ]] || fail 'the return must add exactly one history entry'
 
+# Ticket stop-loss parks resume once after an issue edit or a ticket-budget refill.
+ticket_budget_reason() { [[ "$(jqf -r .issue <<<"$1")" == 921 ]] || printf 'rounds 3 of 3'; }
+{ unit 920 'ticket stop-loss' | jq -c '.parked_reason="ticket-stop-loss" | .unpark_condition="the issue changes or the ticket budget is raised" | .history=[{stage:"supervisor-budget-park",at:"2026-11-01T00:00:00Z"}]'
+  unit 921 'ticket stop-loss' | jq -c '.parked_reason="ticket-stop-loss" | .unpark_condition="the issue changes or the ticket budget is raised" | .history=[{stage:"supervisor-budget-park",at:"2026-11-01T00:00:00Z"}]'; } | ledger
+jq -n '{epoch:1,states:{"920":{state:"OPEN",labels:"ready-for-agent",updated_at:"2026-11-02T00:00:00Z"},"921":{state:"OPEN",labels:"ready-for-agent",updated_at:"2026-11-01T00:00:00Z"}}}' > "$A/dep-check.cache.json"
+park_label_sweep
+for n in 920 921; do
+  [[ "$(field issue-$n .stage)" == implement-pending ]] || fail "issue-$n must resume after its stop-loss exit"
+  [[ "$(field issue-$n '[.history[] | select(.stage=="supervisor-requeue")] | length')" == 1 ]] || fail "issue-$n must refill its budget exactly once"
+done
+rm -f "$A/dep-check.cache.json"
+
 echo 'park-reason.test.sh: PASS'
