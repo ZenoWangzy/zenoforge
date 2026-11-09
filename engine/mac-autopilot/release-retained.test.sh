@@ -2,7 +2,7 @@
 # release_retained.py: a `release-retained` line (deployed, acceptance failed) holds tickets until a later
 # `release-closer` line closes them. It scores release.hours_acceptance_failed, zeroes release.hours_waiting for
 # the batch it deployed, counts as one deploy out of the release station, and is ignored by every
-# `release-closer` reader (node_health.release_acceptances feeds delivery.* and factory_trend).
+# `release-closer` reader (ledger_history.release_acceptances feeds delivery.* and factory_trend).
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -10,7 +10,7 @@ R="$test_env_root/release-retained"; rm -rf "$R"; mkdir -p "$R/alerts"
 python3 -I - "$here" "$R" <<'PY' || { echo "not ok - release-retained.test.sh: python checks failed" >&2; exit 1; }
 import sys, os, re; sys.path.insert(0, sys.argv[1]); R = sys.argv[2]
 from datetime import datetime, timedelta, timezone
-import release_retained as RR, node_health as N, station_health as S
+import release_retained as RR, node_health as N, ledger_history as LH, station_health as S
 events = os.path.join(R, "alerts", "events.md")
 now = datetime(2026, 11, 7, 12, 0, tzinfo=timezone.utc)
 at = lambda h: (now - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -40,7 +40,7 @@ m = {}; RR.collect(m, R, now); assert m[RR.METRIC] == 0.0, m
 
 # Every release-closer reader ignores the retained line.
 write(retained(10, "101,102"))
-assert N.release_acceptances(R) == [], N.release_acceptances(R)
+assert LH.release_acceptances(R) == [], LH.release_acceptances(R)
 assert not S.RELEASE_RE.match(retained(10, "101")) and not N.RELEASE_CLOSER_RE.search(retained(10, "101"))
 assert "release-closer: deployed=" not in retained(10, "101"), "mechanism-registry f3 pattern must not match"
 # The release station counts it as one deploy out, not one per held ticket.

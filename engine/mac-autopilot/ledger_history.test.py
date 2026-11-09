@@ -39,6 +39,15 @@ class SchedulerLogLinesTest(unittest.TestCase):
             (Path(directory) / "scheduler.log").write_text(f"[{future:%Y-%m-%dT%H:%M:%SZ}] release-closer: deployed=abc1234 closed=[101]\n")
             self.assertEqual(ledger_history.release_acceptances(directory), [])
 
+    def test_release_acceptances_ignores_far_future_events_markdown_rows(self):
+        future = NOW + timedelta(minutes=10)
+        with tempfile.TemporaryDirectory() as directory:
+            alerts = Path(directory) / "alerts"
+            alerts.mkdir()
+            (alerts / "events.md").write_text(
+                f"[{future:%Y-%m-%dT%H:%M:%SZ}] release-closer: deployed=abc1234 closed=[101]\n")
+            self.assertEqual(ledger_history.release_acceptances(directory, now=NOW), [])
+
 
 if __name__ == "__main__":
     unittest.main()

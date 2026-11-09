@@ -64,6 +64,7 @@ def _scheduler_event_time(raw):
 
 def release_acceptances(runtime, now=None, scheduler_rows=_SCHEDULER_ROWS_UNSET):
     """Read batch close events from event notes and the filtered scheduler log."""
+    now = now or datetime.now(timezone.utc)
     scheduler_path = os.path.join(runtime, "scheduler.log")
     paths = [os.path.join(runtime, "alerts", "events.md"), scheduler_path]
     events, seen = [], set()
@@ -73,7 +74,7 @@ def release_acceptances(runtime, now=None, scheduler_rows=_SCHEDULER_ROWS_UNSET)
             if path == scheduler_path:
                 rows = scheduler_rows
                 if rows is _SCHEDULER_ROWS_UNSET:
-                    rows, _ = scheduler_log_lines(path, now or datetime.now(timezone.utc))
+                    rows, _ = scheduler_log_lines(path, now)
                 if rows is None:
                     continue
                 source = nullcontext(rows)
@@ -84,7 +85,7 @@ def release_acceptances(runtime, now=None, scheduler_rows=_SCHEDULER_ROWS_UNSET)
                 for raw in lines:
                     match = RELEASE_CLOSER_RE.search(raw)
                     at = _scheduler_event_time(raw)
-                    if not match or not at:
+                    if not match or not at or at > now + SCHEDULER_FUTURE_TOLERANCE:
                         continue
                     for number in re.findall(r"\d+", match.group(2)):
                         event = {"issue": int(number), "sha": match.group(1), "at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}

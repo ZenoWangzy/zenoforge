@@ -301,8 +301,7 @@ def collect(home, units, live_units, versions_dir, cache_path, now=None, traffic
     worktree_root = worktree_root or os.environ.get("MAC_AUTOPILOT_WT_ROOT") \
         or os.path.join(home, "autopilot-wt")
     repo_root = repo_root or os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.join(home, "checkout")
-    import node_health
-    releases = node_health.release_acceptances(runtime, now=now) or []
+    releases = ledger_history.release_acceptances(runtime, now=now) or []
     worktrees, branch_refs = _workspace_snapshot(units, worktree_root, repo_root)
     cleanup_times = _cleanup_times(runtime, now)
     accepted = accepted_requirements(releases, units, worktrees, branch_refs, cleanup_times)
