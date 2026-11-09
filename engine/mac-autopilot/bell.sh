@@ -687,10 +687,9 @@ if [[ "$MONITOR_INITIALIZED" == true ]]; then
     merges="$(printf '%s\n' "${merge_keys[@]}" | jq -Rsc 'split("\n") | map(select(length > 0)) | reduce .[] as $k ({}; .[$k]=true)' 2>/dev/null || echo '{}')"
   fi
 fi
-
-tick_epoch=""
+tick=""; tick_epoch=""
 if [[ -s "$A/scheduler.log" ]]; then
-  tick_epoch="$(to_epoch "$(python3 - "$A/scheduler.log" "$((now + 300))" <<'PY'
+  tick="$(python3 - "$A/scheduler.log" "$((now + 300))" <<'PY'
 from datetime import datetime, timezone
 import sys
 selected = None
@@ -702,7 +701,8 @@ with open(sys.argv[1], errors="ignore") as source:
         if epoch <= int(sys.argv[2]): selected = line[1:21]
 print("" if selected is None else selected)
 PY
-)")"
+  )"
+  tick_epoch="$(to_epoch "$tick")"
   # 行首时间是该拍开始的 STAMP：一拍 6 分钟 + sleep 120s 后最后一行看着有 8 分钟旧，其实刚写完。
   # 日志最后写入时刻才是存活信号（2026-10-21 02:07–02:20 连续三次误判重启）。
   log_epoch="$(mtime_epoch "$A/scheduler.log" 2>/dev/null || echo 0)"
