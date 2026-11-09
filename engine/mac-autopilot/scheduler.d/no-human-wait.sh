@@ -39,6 +39,29 @@ supervisor_close_with_hold() { # id token detail decision
 supervisor_cap_second_close() { # id token detail decision
   supervisor_close_with_hold "$@" && supervisor_cap_close_pr "$1" "$2" "$3"
 }
+# Cap-exhausted parks (supervisor_cap_exhausted, reask-exhausted) leave without a human: a head ruling after the park releases it to one arbiter run (the
+# +1 rule); else six hours after the park, the recut default once; a second exhaustion with no ruling closes durably (supervisor_cap_second_close).
+supervisor_cap_exhausted_sweep() { # each tick
+  local id at u
+  while IFS=$'\t' read -r id at; do
+    u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+    if supervisor_arbiter_owner_ruling_pending "$u"; then
+      set_unit "$id" 'del(.cap_exhausted_mark, .unpark_condition) | .parked_reason="supervisor-arbitration-cap"' \
+        && say "supervisor cap-exhausted unit=$id reason=supervisor-cap-exhausted: released by a head ruling (one arbiter run)"
+      continue
+    fi
+    (( ${NOW_EPOCH:-$(date +%s)} - $(date -d "$at" +%s 2>/dev/null || echo 0) >= SUPERVISOR_CAP_WAIT_S )) || continue
+    if jqf -e 'any((.history // [])[]?; .stage == "supervisor-cap-default" and ((.result // "") | test("arbitration cap")))' <<<"$u" >/dev/null; then
+      supervisor_cap_second_close "$id" cap-exhausted-again "exhausted again after its recut default and no head ruling" \
+        "$(decision_entry 'Supervisor cap close' 'exhausted again after its default decision and no head ruling' 'supervisor-arbiter history events' '[]' scheduler)"
+    else
+      say "supervisor cap-exhausted unit=$id reason=supervisor-cap-exhausted: six hours without a ruling, recut default once"
+      supervisor_cap_default "$id" "$u" lifetime || :
+    fi
+  done < <(jqf -r '.units[] | select(.stage == "parked" and .parked_reason == "supervisor-cap-exhausted" and (.cap_exhausted_by // "") != "no-answer" and any((.history // [])[]?; .stage == "supervisor-cap-exhausted"))
+    | [.id, ([(.history // [])[] | select(.stage == "supervisor-cap-exhausted") | .at] | last)] | @tsv' "$UNITS")
+  return 0
+}
 # Close the open PR under its issue hold unless session-owned or cited by an open issue; one state/label/body read per close, no polling.
 supervisor_cap_close_pr() { # id token detail
   local id="$1" token="$2" detail="$3" pr issue repo state cited
