@@ -381,12 +381,19 @@ repair_head_class() { # unit workdir -> "<class> <head before the run>": changed
   elif repair_unchanged_expected "$u" "$base"; then echo "unchanged-expected $base"
   else echo "unchanged $base"; fi
 }
-repair_run_filter() { # unit class head fresh-tokens -> jq filter: record the run; an unchanged head is repair-no-push, retried twice per head, then to the arbiter route
-  local stage=rereview-pending n
+# A no-push round whose worker log or report shows the backend died (auth, quota, model_not_found, a failed turn): not the work's fault.
+repair_backend_failure() { # worker-log report → the first matching line, empty when none
+  # The worker's own classifier (bin/worker fatal_reason) prints "worker: fatal stderr pattern: ..."; prose about auth or quota in agent output does not match.
+  { grep -hE -m1 '^(worker: )?(fatal stderr pattern|both backends failed)|model_not_found|AI_APICallError' "$1" 2>/dev/null
+    grep -hE -m1 '^(worker: )?(fatal stderr pattern|both backends failed)|model_not_found' "$2" 2>/dev/null; } | head -1 | cut -c1-200
+}
+repair_run_filter() { # unit class head fresh-tokens [worker-log report] -> jq filter: record the run; an unchanged head is repair-no-push, retried twice per head, then to the arbiter route
+  local stage=rereview-pending n bf=""
   if [[ "$2" == unchanged ]]; then
     n="$(jqf -r --arg id "$1" --arg h "head $3 " '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage=="repair-no-push" and ((.result // "") | startswith($h)))] | length' "$UNITS")"
     (( n < 2 )) && stage=repair-pending
-    echo "$(hist repair-no-push "head $3 unchanged after repair") | .history[-1].head_class=\"unchanged\" | .history[-1].fresh_tokens=${4:-null} | .stage=\"$stage\""
+    bf="$(repair_backend_failure "${5:-/dev/null}" "${6:-/dev/null}")"
+    echo "$(hist repair-no-push "head $3 unchanged after repair") | .history[-1].head_class=\"unchanged\" | .history[-1].fresh_tokens=${4:-null}${bf:+ | .history[-1].backend_failure=$(js "$bf")} | .stage=\"$stage\""
   else
     echo "$(hist repair-delivered) | .history[-1].head_class=$(js "$2") | .history[-1].fresh_tokens=${4:-null} | .repair_hint=null | .stage=\"$stage\""
   fi
