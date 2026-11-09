@@ -156,6 +156,13 @@ death_json="$(worker_death_of "$sup/review-legacy.worker.log")"
 jq -e '.rc == 134 and .signal == "ABRT"' <<<"$death_json" >/dev/null \
   || fail "legacy logs without a footer must still diagnose the signal from the bash job message: $death_json"
 
+# New dispatches keep exit metadata in a sidecar, so parsing provider output needs no footer.
+printf 'provider JSON remains in the worker log\n' > "$sup/review-sidecar.worker.log"
+printf '{"type":"pipeline.exit","rc":134}\n' > "$sup/review-sidecar.worker.log.pipeline-exit"
+death_json="$(worker_death_of "$sup/review-sidecar.worker.log")"
+jq -e '.rc == 134 and .signal == "ABRT"' <<<"$death_json" >/dev/null \
+  || fail "the exit sidecar must supply the worker status without a footer in provider output: $death_json"
+
 # ---- 5. 退出足迹包装的落盘行为：成功留报告，信号死亡只留 footer 与 partial -----------------
 # 模拟 dispatch 的 WORKER_STDOUT_REPORT 包装（同一条 bash -c）在一个假 CLI 上执行。
 out="$fixture/stdout-report.md"; log="$fixture/wrapped.worker.log"; exit_file="$fixture/wrapped.worker.pipeline-exit"
@@ -171,15 +178,5 @@ rm -f -- "$out" "$out.partial"
 [[ ! -f "$out" ]] || fail "a killed stdout-report worker must not land a report"
 [[ -s "$out.partial" ]] || fail "the killed worker's partial output must stay for the provider-limit check"
 jq -e '.type == "pipeline.exit" and .rc == 134' "$exit_file" >/dev/null || fail "a signal death must leave the exit sidecar (rc=134)"
-
-# The provider can still flush a line after its launcher returns; the exit marker must not split JSONL.
-json_log="$fixture/provider-json.worker.log"; json_exit="$fixture/provider-json.worker.pipeline-exit"
-( bash -c 'exit_file=$1; shift; rc=0; "$@" || rc=$?; printf "{\"type\":\"pipeline.exit\",\"rc\":%s}\n" "$rc" > "$exit_file"; exit "$rc"' \
-    autopilot-worker "$json_exit" bash -c 'printf "%s" "{\"type\":\"thread.started\",\"thread_id\":"; (sleep 0.2; printf "%s\n" "\"sid\"}") &' ) > "$json_log" 2>&1
-sleep 0.25
-jq -se 'length == 1 and .[0].type == "thread.started" and .[0].thread_id == "sid"' "$json_log" >/dev/null \
-  || fail "provider JSONL must stay parseable when its child flushes after the launcher exits"
-jq -e '.type == "pipeline.exit" and .rc == 0' "$json_exit" >/dev/null \
-  || fail "the delayed provider case must still record the worker exit"
 
 echo "ok - worker-death-diagnosis.test.sh"
