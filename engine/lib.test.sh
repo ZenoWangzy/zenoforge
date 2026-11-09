@@ -3767,6 +3767,7 @@ EOF
     coord_assert_owned() { return 0; }
     pipeline_claim_drop() { PIPELINE_CLAIM_KEY=""; PIPELINE_CLAIM_STAGE=""; PIPELINE_CLAIM_UNIT=""; PIPELINE_CLAIM_OWNER=""; }
     pipeline_claim_keep() { pipeline_claim_drop; }
+    consume_unit_memory_oom() { return 1; }
     record_env_fault() { :; }
     guarded_write() { "$@"; }
     UNIT_PREFIX_TRANSIENT=zf TRIAGE_RUNTIME_MAX_SEC=60 ADVISOR_RUNTIME_MAX_SEC=60
