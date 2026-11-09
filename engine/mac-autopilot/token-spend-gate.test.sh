@@ -33,7 +33,17 @@ calls="$fixture/calls"; : > "$calls"; ROUTE_RC=1
 scheduler_route_to_recut() { printf 'route:%s\n' "$1" >> "$calls"; [[ "$ROUTE_RC" == 0 ]] || { echo 'refused' >&2; return 1; }; }
 tick_prs_changed() { :; }
 tick_pr_state() { printf 'OPEN\n'; }
-gh() { [[ "$1 $2" != 'pr close' ]] || printf 'pr-close:%s\n' "$3" >> "$calls"; return 0; }
+# The PR head and the failed steps of its red run: PR_HEAD empty means no census hit, RED_STEP is the failed step of run 42559071520.
+PR_HEAD=""; RED_STEP="Set up job"
+tick_pr_head() { printf '%s\n' "$PR_HEAD"; }
+gh() {
+  case "$1 $2" in
+    'pr close') printf 'pr-close:%s\n' "$3" >> "$calls" ;;
+    'run list') echo 42559071520 ;;
+    'api repos/'*/jobs) echo "$RED_STEP" ;;
+  esac
+  return 0
+}
 decision_eval_stages() { printf '\n'; }
 printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture/bin/codex"; chmod +x "$fixture/bin/codex"; export PATH="$fixture/bin:$PATH"
 INBOX="$fixture/inbox"; : > "$INBOX"
@@ -185,6 +195,35 @@ echo "{\"units\":[$(hard_unit issue-7 7 77)]}" > "$UNITS"
 token_spend_gate issue-7 "$(jq -c '.units[0]' "$UNITS")" && fail "past the hard line the unit is held" || true
 [[ "$(field issue-7 .stage)" == closed && "$(cat "$calls")" == $'route:7\npr-close:77' ]] || fail "a hard park 8 days ago recuts: stage=$(field issue-7 .stage) calls=$(cat "$calls")"
 rm -f "$UNITS_ARCHIVE"; ROUTE_RC=1
+
+# Unit issue-5389 (snapshot 2026-11-09, trimmed to its review and CI events): approved on 3f8165138818 at 03:55:53Z, then run 42559071520 failed
+# "Touched packages PR gate" with "A task was canceled." in "Set up job", before any step. Approved on the current head with infra-only red:
+# no recut and no PR close, the unit stays at the plain hard park.
+H5389=3f8165138818c133f94b0280b49dd2c1c681a83c
+hist5389='[{"stage":"review-request-changes","result":"f8ad0c9e60c110918064b65f963a501990276fa3","at":"2026-11-08T23:13:35Z"},{"stage":"review-approve","result":"2520a46a755987dac0a7f1e59776c0a67504fe59","at":"2026-11-08T23:48:21Z"},{"stage":"ci-ready","result":"PR#5920 readied on 2520a46a7","at":"2026-11-08T23:50:41Z"},{"stage":"ci-test-red","result":"Fruit industry pack PR gate","at":"2026-11-09T00:06:10Z"},{"stage":"review-approve","result":"912d3a6bb90a6215cd8b40b97a4896ba253e738a","at":"2026-11-09T01:30:50Z"},{"stage":"ci-ready","result":"PR#5920 readied on 912d3a6bb","at":"2026-11-09T01:34:28Z"},{"stage":"ci-test-red","result":"Touched packages PR gate","at":"2026-11-09T01:54:14Z"},{"stage":"review-request-changes","result":"439c969b845ad773a8dd26d25acbb0308f174707","at":"2026-11-09T02:21:38Z"},{"stage":"review-request-changes","result":"439c969b845ad773a8dd26d25acbb0308f174707","at":"2026-11-09T02:46:06Z"},{"stage":"review-approve","result":"bbdeecea21c4ca04120fbb301eaf10f0f2708c0e","at":"2026-11-09T03:28:49Z"},{"stage":"ci-ready","result":"PR#5920 readied on bbdeecea2","at":"2026-11-09T03:30:12Z"},{"stage":"review-approve","result":"3f8165138818c133f94b0280b49dd2c1c681a83c","at":"2026-11-09T03:55:53Z"},{"stage":"ci-ready","result":"PR#5920 readied on 3f8165138","at":"2026-11-09T03:55:53Z"},{"stage":"ci-test-red","result":"Touched packages PR gate","at":"2026-11-09T04:12:14Z"}]'
+unit5389() { # extra-history-json → the 5389 unit at the hard line, with its PR head at 3f8165138818
+  jq -cn --argjson h "$hist5389" --argjson extra "$1" --argjson a "$(run a.log 2026-11-05T10:00:00Z implement 2500000)" --arg sha "$H5389" \
+    '{units:[{id:"issue-5389",issue:5389,pr:5920,stage:"implement-pending",branch:"agent/issue-5389",spend_runs:[$a],reviewed_sha:$sha,reviewed_pr_head:$sha,history:($h + $extra)}]}'
+}
+infra_case() { # extra-history-json → gate the 5389 unit; calls and the stage tell what happened
+  : > "$calls"; unit5389 "$1" > "$UNITS"; rm -f "$UNITS_ARCHIVE"
+  token_spend_gate issue-5389 "$(jq -c '.units[0]' "$UNITS")" && fail "past the hard line the unit is held" || true
+}
+ROUTE_RC=0; PR_HEAD="$H5389"; RED_STEP="Set up job"
+infra_case '[]'
+[[ "$(field issue-5389 .stage)" == parked && "$(field issue-5389 .parked_reason)" == token-hard-park ]] || fail "approved head with infra-only red stays hard-parked, got $(field issue-5389 .stage)"
+[[ ! -s "$calls" ]] || fail "approved head with infra-only red: no route, no PR close: $(cat "$calls")"
+[[ "$(field issue-5389 '[.history[] | select(.stage == "token-park" and (.result | startswith("hard")))] | length')" == 1 ]] || fail "the token-park event stays"
+# A request-changes on the current head after the approval: not approved, so it recuts.
+infra_case '[{"stage":"review-request-changes","result":"3f8165138818c133f94b0280b49dd2c1c681a83c","at":"2026-11-09T04:20:00Z"}]'
+[[ "$(field issue-5389 .stage)" == closed && "$(cat "$calls")" == $'route:5389\npr-close:5920' ]] || fail "request-changes on the head recuts: stage=$(field issue-5389 .stage) calls=$(cat "$calls")"
+# Approved, but the red is a real test step: recut as before.
+RED_STEP="Run touched package tests"; infra_case '[]'
+[[ "$(field issue-5389 .stage)" == closed && "$(cat "$calls")" == $'route:5389\npr-close:5920' ]] || fail "a code red recuts: stage=$(field issue-5389 .stage) calls=$(cat "$calls")"
+# Infra-only red, but the PR head moved past the approved one: not approved on the current head, so it recuts.
+RED_STEP="Set up job"; PR_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; infra_case '[]'
+[[ "$(field issue-5389 .stage)" == closed && "$(cat "$calls")" == $'route:5389\npr-close:5920' ]] || fail "a moved head recuts: stage=$(field issue-5389 .stage) calls=$(cat "$calls")"
+PR_HEAD=""; ROUTE_RC=1
 
 # ---- 6. the gate sits in dispatch, ahead of the stop-loss budget ----
 grep -q 'token_spend_gate "$id" "$u" check-only' "$script_dir/scheduler.d/dispatch-queue.sh" || fail "refill must not dispatch past a token line"

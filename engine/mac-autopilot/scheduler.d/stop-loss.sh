@@ -277,10 +277,23 @@ token_spend_park() { # id unit-json soft|hard
   say "token hard park unit=$id fresh=$total line=$TOKEN_PARK_HARD_TOKENS class=$class"
   hard_inbox
   [[ "$repeat" != true ]] || return 0
+  if token_hard_infra_approved "$u"; then say "token hard park unit=$id: PR approved on its current head and the only red is runner infra; no recut, the unit stays hard-parked"; return 0; fi
   # First hard park of the issue: leave the park through the budget-recut path (its fallbacks park the unit, so the park above stays the safe state).
   supervisor_budget_recut "$id" "token hard park: $note" null "token hard park could not recut" "token hard park" supervisor-budget-park supervisor-budget-recut true false
   if [[ "$(unit_field "$id" '.stage // empty')" == closed ]]; then set_unit "$id" 'del(.parked_reason, .unpark_condition)'
   else set_unit "$id" "$(park_fields token-hard-park 'never: no ruling refills a unit past the hard token line')"; fi
+}
+
+# An approved head whose only red is runner infra is no reason to close its PR (5389: approved on 3f8165138818, red was "A task was canceled" in Set up job).
+# No existing helper reads "approved on this head" alone (approved_ci_repair_unchanged also wants repair-delivered), so this mirrors its jq and land-lane.sh:31.
+# ci_infra_red makes gh calls, as the park path already does (cancel_unit_runs, the PR close); an unreadable head or run list means no exemption.
+token_hard_infra_approved() { # unit-json → 0 when the PR is approved on its current head and every failed step on that head is runner infra
+  local pr head; pr="$(jqf -r '.pr // empty' <<<"$1")"
+  [[ "$pr" =~ ^[0-9]+$ ]] && head="$(tick_pr_head "$pr" 2>/dev/null)" && [[ "$head" =~ $SHA_RE ]] || return 1
+  jqf -e --arg head "$head" '(.history // []) as $h
+    | ([$h | to_entries[] | select(.value.stage | IN("review-approve", "review-request-changes", "review-block")) | .key] | max // -1) as $i
+    | .reviewed_pr_head == $head and $i >= 0 and $h[$i].stage == "review-approve" and $h[$i].result == .reviewed_sha' <<<"$1" >/dev/null || return 1
+  ci_infra_red "$head"
 }
 
 token_hard_park_recent() { # unit-json → 0 when any unit of its issue (ledger and archive) hard-parked within 7 days
