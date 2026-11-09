@@ -36,7 +36,7 @@ done
 N="${ARGS[0]:?usage: run-advisor.sh [--dry-run] <issue-number>}"; [[ "$N" =~ ^[0-9]+$ ]] || { echo "usage: run-advisor.sh [--dry-run] <issue-number>" >&2; exit 64; } # --help or a stray word must not reach state or gh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
-source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/lib.sh"; trap 'quarantine_finish_advisor_canary_reservation' EXIT
 source "$SCRIPT_DIR/advisor-config.sh"
 advisor_provider_ready || exit 0
 MODEL_BACKOFF_REMAINING="$(issue_model_failure_backoff_remaining "$N")"

@@ -1338,7 +1338,7 @@ check_release_reconciliation() {
   # discovery, the next pass finds the run instead of issuing a second SHA pin.
   release_record_write "$live_sha" dispatching "" "" "" "" "" "$live_sha" || return 0
   if guarded_write gh workflow run "$ZF_INFRA_BUILD_WORKFLOW" -R "$ZF_INFRA_REPO" \
-    -f "source_sha=$live_sha" -f source_branch=main; then if declare -F quarantine_mark_stage_dispatch_canaries >/dev/null; then quarantine_mark_stage_dispatch_canaries release; fi
+    -f "source_sha=$live_sha" -f source_branch=main; then quarantine_mark_stage_dispatch_canaries_loudly release supervise-pipeline
   else release_record_write "$live_sha" dispatch-failed "" "" environment:dispatch "" "" "$live_sha" || true; fi
 }
 

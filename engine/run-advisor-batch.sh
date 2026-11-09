@@ -16,7 +16,7 @@ for arg in "$@"; do
   esac
 done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/lib.sh"; trap 'quarantine_finish_advisor_canary_reservation' EXIT
 source "$SCRIPT_DIR/advisor-config.sh"
 advisor_provider_ready || exit 0
 source "$SCRIPT_DIR/advisor-core.sh"

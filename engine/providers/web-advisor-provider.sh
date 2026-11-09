@@ -573,6 +573,8 @@ web_advisor_provider_dispatch_question_async() {
     single|single-request-ndjson) ;;
     *) echo "web_advisor_provider_dispatch_question_async: unsupported mode '$mode'" >&2; return 2 ;;
   esac
+  [ -z "$canary_scopes" ] || declare -F quarantine_mark_canary_scope_list >/dev/null \
+    || { echo "web-advisor-provider: cannot start canary job without quarantine marker" >&2; return 1; }
   mkdir -p "$job_dir"
   rm -f "$job_dir/answer.out" "$job_dir/answer.err" "$job_dir/done" "$job_dir/state.json"
   cp "$question_file" "$job_dir/question.txt"
@@ -584,9 +586,8 @@ web_advisor_provider_dispatch_question_async() {
     return "$start_status"
   fi
   unset ZF_QUARANTINE_CANARY_SCOPES
-  if [ -n "$canary_scopes" ]; then
-    declare -F quarantine_mark_canary_scope_list >/dev/null && quarantine_mark_canary_scope_list "$canary_scopes" \
-      || { echo "web-advisor-provider: quarantine canary mark failed" >&2; return 1; }
+  if [ -n "$canary_scopes" ] && ! quarantine_mark_canary_scope_list "$canary_scopes"; then
+    echo "web-advisor-provider: quarantine canary mark failed after job start job=$job_id scopes=$canary_scopes" >&2
   fi
 }
 

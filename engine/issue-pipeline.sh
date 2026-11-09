@@ -773,7 +773,7 @@ dispatch_release_batch() {
     -p "RuntimeMaxSec=$RELEASE_RUNTIME_MAX_SEC" -p SuccessExitStatus=75 \
     "${runtime_env[@]}" \
     "$script" "$anchor" "$batch_sha"; then
-    release_batch_cadence_mark; if declare -F quarantine_mark_stage_dispatch_canaries >/dev/null; then quarantine_mark_stage_dispatch_canaries release; fi
+    release_batch_cadence_mark; quarantine_mark_stage_dispatch_canaries_loudly release issue-pipeline
     return 0
   else
     local launch_status=$?
@@ -931,7 +931,7 @@ dispatch_triage_batch() {
     -p "RuntimeMaxSec=$TRIAGE_RUNTIME_MAX_SEC" \
     "${memory_args[@]}" "${result_args[@]}" \
     "$script" --scheduled "${issue_ids[@]}"; then
-    if declare -F quarantine_mark_stage_dispatch_canaries >/dev/null; then quarantine_mark_stage_dispatch_canaries triage; fi; pipeline_batch_claim_keep "$claim_owner" "$claim_unit" "${issue_ids[@]}"
+    quarantine_mark_stage_dispatch_canaries_loudly triage issue-pipeline; pipeline_batch_claim_keep "$claim_owner" "$claim_unit" "${issue_ids[@]}"
   else
     local launch_status=$?
     [ -z "$active_tmp" ] || rm -f "$AGENT_HOME/triage-batch-active.json"

@@ -70,4 +70,19 @@ pass_refreshes() { # pending units -> refreshes in one full-tick pass, 3 of 8 sl
 small="$(pass_refreshes 5)"; large="$(pass_refreshes 20)"
 [[ "$small" == "$large" ]] || fail "refreshes grew with the pending units: 5 units $small, 20 units $large"
 (( large == 1 )) || fail "expected a single refresh with the TTL pinned, got $large"
+
+# A failed worker launch must clear the issue reservation without charging it.
+issue=930101; ROOT="$fixture/repo" A="$fixture/agent" SUP="$fixture/supervisor" AGENT_HOME="$fixture/agent"
+QUARANTINE_DIR="$AGENT_HOME/quarantine" SCHEDULER_AGENT_LIB="$engine_dir/../lib.sh"; export AGENT_HOME
+mkdir -p "$A" "$SUP" "$AGENT_HOME/state" "$QUARANTINE_DIR"
+printf '%s\n' '{"units":[{"id":"issue-930101","issue":930101,"lane":"pr"}]}' > "$UNITS"; printf '%s\n' '{"run":{"conclusion":{"canary_reserved_scopes":"implement"}}}' > "$AGENT_HOME/state/$issue.json"
+printf '%s\n' '{"canaries":0,"next_canary_at":0}' > "$QUARANTINE_DIR/implement.json"
+build_codex_command() { CODEX_COMMAND=(true); }; worker_write_guard_env() { :; }; worker_pidfile() { printf '%s\n' "$fixture/worker.pid"; }; worker_scope_launch() { return 1; }
+coord_issue_key() { printf 'issue:%s\n' "$1"; }; coord_new_owner() { printf 'fixture\n'; }; coord_acquire() { return 0; }
+coord_assert_owned() { return 0; }; coord_scheduler_live_worker() { return 1; }
+dispatch_status=0
+dispatch implement codex high "issue-$issue" worker.log report.md prompt || dispatch_status=$?
+[[ "$dispatch_status" == 1 ]] || fail "failed worker start returned $dispatch_status"
+jq -e '.run.conclusion.canary_reserved_scopes == null' "$AGENT_HOME/state/$issue.json" >/dev/null && jq -e '.canaries == 0' "$QUARANTINE_DIR/implement.json" >/dev/null \
+  || fail 'failed worker start left a reservation or charged the canary'
 echo "dispatch-live-cache.test.sh: pass (live-worker refreshes per pass: $small for 5 pending units, $large for 20)"
