@@ -90,10 +90,14 @@ row() { grep -F "$1" <<<"$out" | head -1; }
 # 近窗（7 天）关闭的票：4355 = 700k fresh（690k uncached input + 10k output），输入缓存率 97%；
 # 4366 也有 cache split。窗口前只有 4103 一张 cache-split 历史票：209851 fresh tokens 给出 provisional
 # 314776 / 419702 边界，10 分钟 wall 给出 15 / 20；两项都应保留静态边界，近期值仍然健康。
-grep -Eq 'per-ticket worker fresh tokens p90.* 700000 .*<=800000.*>=4800000.*OK' <<<"$(row 'per-ticket worker fresh tokens p90')" \
+# Only one recent fresh-token ticket is in this fixture: keep the fallback bounds and expect LOW-N under min_n=10.
+grep -Eq 'per-ticket worker fresh tokens p90.* 700000 .*<=800000.*>=4800000.*LOW-N' <<<"$(row 'per-ticket worker fresh tokens p90')" \
   || fail "per-ticket fresh tokens p90 or its fallback bounds are wrong: $(row 'per-ticket worker fresh tokens p90')"
 grep -Eq 'per-ticket worker wall minutes p90.* 30 .*<=38.*>=180.*OK' <<<"$(row 'per-ticket worker wall minutes p90')" \
   || fail "per-ticket wall p90 or static bounds are wrong: $(row 'per-ticket worker wall minutes p90')"
+jq -e '.metrics[] | select(.id == "workorders.ticket_tokens_p90")
+  | .value == 700000 and .healthy == 800000 and .unhealthy == 4800000 and .status == "LOW-N" and .sample_n == 1' \
+  "$a/node-health.json" >/dev/null || fail 'per-ticket fresh-token p90 LOW-N sample count or fallback bounds are wrong'
 jq -e '.ticket_bounds.token.samples == 1 and .ticket_bounds.token.provisional == true
   and .ticket_bounds.token.healthy == 314776 and .ticket_bounds.token.unhealthy == 419702
   and .ticket_bounds.wall.samples == 1 and .ticket_bounds.wall.provisional == true
