@@ -244,6 +244,8 @@ $(matt_method_rule "$dir")"
     return 1
   fi
 }
+source "${ZF_ENGINE_DIR:-$ENGINE_ROOT/engine}/bin/luna-capacity.sh"
+
 unit_dispatch_priority() { # unit-json → hotfix|opt|normal
   if [[ "$(jqf -r '.hotpatch // false' <<<"$1")" == true ]]; then printf 'hotfix\n'
   elif [[ "$(jqf -r '.lane // empty' <<<"$1")" == direct-main ]]; then printf 'opt\n'
@@ -290,6 +292,10 @@ higher_priority_waiting() { # priority → sets PRIORITY_WAITING_WAITER; always 
   return 1
 }
 
+priority_wait_should_hold() { # an opt waiter at its class cap cannot reserve unused total slots
+  [[ "$1" != normal || "$2" == wait-hotfix-* ]] || luna_total_capacity_full
+}
+
 dispatch_capacity_free() { # worker slot available; the same predicate room_for enforces per unit
   local cur; cur="$(live_workers)"
   (( cur < MAX ))
@@ -323,7 +329,8 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
   fi
   priority="$(unit_dispatch_priority "$u")"
   gate_started=$SECONDS
-  if [[ "$2" != review && "$2" != rereview && "$2" != repair ]] && higher_priority_waiting "$priority"; then
+  if [[ "$2" != review && "$2" != rereview && "$2" != repair ]] && higher_priority_waiting "$priority" \
+    && priority_wait_should_hold "$priority" "$PRIORITY_WAITING_WAITER"; then
     waiter="$PRIORITY_WAITING_WAITER"; hold_now="$(date +%s)"
     hold_since="$(jqf -r '.priority_hold.since_epoch // 0' <<<"$u")"; hold_alerted="$(jqf -r '.priority_hold.alerted // false' <<<"$u")"
     if ! [[ "$hold_since" =~ ^[0-9]+$ ]] || (( hold_since == 0 )); then

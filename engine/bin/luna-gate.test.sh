@@ -16,6 +16,7 @@ gate() {
   (
     export LUNA_PROC_MEMINFO="$d/meminfo" LUNA_PROC_PSI_MEMORY="$d/psi" LUNA_PRIORITY="$4" LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328
     export LUNA_AGE_ADMIT_SECONDS="$5" CPU_BUSY="$6"
+    source "$bin/luna-capacity.sh"
     codex_runs() { echo 0; }
     cpu_busy() { echo "$CPU_BUSY"; }
     eval "$src"

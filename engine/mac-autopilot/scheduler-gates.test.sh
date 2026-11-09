@@ -6,6 +6,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../bin" && pwd -P)/luna-capacity.sh"
 
 # 合并门评估链：越过 [skip ci] 与只改产品路径的提交，停在第一个改流水线路径的非 skip 提交（含）
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
@@ -3119,12 +3120,18 @@ eval "$retire_saved_tick_prs"; eval "$retire_saved_pr_view"
 # ---------- #4621：按 hotfix > opt > 普通 pipeline 让位；旧 waiter 不挡派发 ----------
 rm -f "$LUNA_SLOTS"/wait-*
 units '{"units":[{"id":"issue-9","stage":"review-pending","history":[]},{"id":"issue-opt","lane":"direct-main","stage":"review-pending","history":[]},{"id":"issue-hp","hotpatch":true,"stage":"review-pending","history":[]}]}'
+priority_gate_codex_runs_real="$(declare -f codex_runs)"; priority_gate_total_cap="$(luna_run_cap)"
+PRIORITY_GATE_RUNS="$priority_gate_total_cap"; codex_runs() { printf '%s\n' "$PRIORITY_GATE_RUNS"; }
 : > "$LUNA_SLOTS/wait-opt-$$"   # 本测试 shell 的 pid，即存活等待者
-room_for issue-9 implement "" true false && fail 'ordinary dispatch admitted while an opt run waits at the luna/zc gate'
+room_for issue-9 implement "" true false && fail 'ordinary dispatch admitted while total capacity is full and an opt run waits'
 grep -q 'skip dispatch unit=issue-9 priority=normal (higher-priority run waiting at luna/zc gate: wait-opt-' "$A/scheduler.log" \
   || fail 'the priority hold left no record in scheduler.log'
 room_for issue-opt review || fail 'an opt dispatch was held behind another opt waiter'
 room_for issue-hp review || fail 'a hotpatch dispatch was held behind an opt waiter'
+PRIORITY_GATE_RUNS=$((priority_gate_total_cap - 1))
+room_for issue-9 implement "" true false || fail 'an opt waiter at its full class cap blocked normal dispatch with total capacity free'
+PRIORITY_GATE_RUNS="$priority_gate_total_cap"
+room_for issue-9 implement "" true false && fail 'an opt waiter did not hold normal dispatch when total capacity was full'
 rm -f "$LUNA_SLOTS/wait-opt-$$"
 : > "$LUNA_SLOTS/wait-hotfix-$$"
 room_for issue-9 implement "" true false && fail 'ordinary dispatch admitted while a hotfix run waits at the luna/zc gate'
@@ -3156,6 +3163,7 @@ set_unit issue-9 ".priority_hold={since_epoch:$(( $(date +%s) - 1201 )),alerted:
 for pass in 1 2; do if room_for issue-9 implement "" true false; then fail 'a starved unit was admitted'; fi; done
 [[ "$(grep -c 'PRIORITY-HOLD-STARVE unit=issue-9 waiter=wait-opt-' "$A/scheduler.log")" == 1 && "$(grep -c 'PRIORITY-HOLD-STARVE unit=issue-9 waiter=wait-opt-' "$A/alerts/waste.md")" == 1 ]] || fail 'starvation alert was not written once to both paths'
 rm -f "$LUNA_SLOTS"/wait-*
+unset PRIORITY_GATE_RUNS; eval "$priority_gate_codex_runs_real"
 
 # factory_prs_only: sessions' PRs leave the ledger before any acting phase, and the orphan pass neither adopts nor closes them.
 cfg_saved="$CFG"; CFG="$(jq '.factory_prs_only=true' <<<"$CFG")"
