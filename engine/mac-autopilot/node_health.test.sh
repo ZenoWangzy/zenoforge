@@ -1141,7 +1141,7 @@ JSON
 python3 - "$fa/units.json" <<'PY'
 import json, sys
 path=sys.argv[1]; doc=json.load(open(path))
-doc["units"].extend({"id":f"wait-{i}","stage":"blocked-external","history":[{"stage":"blocked-on","at":"2026-10-10T06:00:00Z"}]} for i in range(8))
+doc["units"].extend({"id":f"wait-{i}","stage":"blocked-external","history":[{"stage":"blocked-on","at":"2026-10-10T18:00:00Z"}]} for i in range(8))
 json.dump(doc,open(path,"w"))
 PY
 printf '[2026-10-19T09:00:00Z] dispatch mode=fresh pid=1 type=repair unit=pr-26\n[2026-10-19T11:00:00Z] dispatch mode=fresh pid=2 type=repair unit=pr-27\n' > "$fa/scheduler.log"
@@ -1174,7 +1174,7 @@ flowval() { jq -r --arg id "$1" '.metrics[] | select(.id == $id) | "\(.value) \(
 jq -e '.flow.entered == 2 and .flow.merged == 3
   and (.flow.wip_age[] | select(.stage == "implement") | .count == 1 and .p90_hours == 13)
   and (.flow.wip_age[] | select(.stage == "ready-to-merge") | .p90_hours == 0.2)
-  and (.flow.wip_age[] | select(.stage == "blocked-external") | .waiting == true and .p90_hours == 228)
+  and (.flow.wip_age[] | select(.stage == "blocked-external") | .waiting == true and .p90_hours == 210)
   and (.flow.wip_age[] | select(.stage == "parked") | .waiting == true and .p90_hours == 204)
   and (.flow.wip_age[] | select(.stage == "implement") | .waiting == false)' \
   "$fa/node-health.json" >/dev/null || fail "flow details wrong: $(jq -c .flow "$fa/node-health.json")"
