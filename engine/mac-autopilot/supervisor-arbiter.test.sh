@@ -375,12 +375,12 @@ REASON: 无前置可等
 GUIDANCE: git merge origin/main 后重新评审'
 [[ "$(field pr-620 .stage)" == repair-pending ]] || fail "requeue of a reviewed PR unit must return to repair-pending, got $(field pr-620 .stage)"
 
-# 没有可放回工作环节的 requeue：不猜，落 parked。
+# 没有可放回工作环节的 requeue：不猜，持久关闭（不再停车等人）。
 units "$(jq -cn '{units:[{id:"misc-621",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"delivered with no transition",at:"2026-10-27T00:00:00Z"}]}]}')"
 harvest_with_reply misc-621 'ACTION: requeue
 REASON: 交付结果需要人定的后续
 GUIDANCE: 重新评估交付'
-[[ "$(field misc-621 .stage)" == parked ]] || fail "requeue without a work stage must park instead of guessing"
+[[ "$(field misc-621 .stage)" == closed ]] || fail "requeue without a work stage must close durably instead of guessing"
 
 # ---- 两轮裁决上限与第 3 次升级 ----
 units "$(jq -cn '{units:[{id:"pr-622",issue:622,stage:"supervisor-review",
@@ -1123,4 +1123,88 @@ jq -e '.history[-1] | has("backend_failure") | not' <<<"$rr" >/dev/null || fail 
 jq -cn '{units:[{id:"issue-4865",issue:4865,stage:"parked",parked_reason:"repair-breaker",note:"same head after repeated no-push repair",history:[{stage:"repair-breaker",result:"same head"}]}]}' > "$UNITS"
 [[ "$(supervisor_arbiter_candidates | jq -r .id)" == issue-4865 ]] \
   || fail "a repair-breaker park must enter the automatic arbiter queue: $(supervisor_arbiter_candidates | jq -r .id)"
+# ---- 行 172b：仲裁裁决的停车没有无限期的人工等待（每条路径一行可 grep 的日志，单元与原因都在行内）----
+hold_stub="$fixture/hold-stub"; hold_calls="$fixture/hold-calls"; mkdir -p "$hold_stub"; : > "$hold_calls"
+printf '#!/usr/bin/env bash\nprintf "hold %%s\\n" "$*" >> %q\n' "$hold_calls" > "$hold_stub/hold.sh"
+export ZF_ENGINE_DIR="$hold_stub"
+ci_runs_at() { jq -cn --arg at "$1" --arg sha "$2" '{workflow_runs:[{status:"completed",conclusion:"success",created_at:$at,id:9,run_attempt:1,head_sha:$sha,event:"push"}]}'; }
+# The real main-CI verdict reads one Actions list through gh api: answer that read from CI_RUNS, everything else from the earlier gh double.
+eval "$(declare -f gh | sed '1s/^gh ()/gh_prev ()/')"
+gh() { if [[ "$1" == api ]]; then printf '%s\n' "$CI_RUNS"; return 0; fi; gh_prev "$@"; }
+main_gh() { gh "$@"; }
+export REPO=ZenoWangzy/zenoforge
+hist_park_at() { jq -cn --arg at "$1" '[{stage:"supervisor-park",result:"approve refused",at:$at}]'; }
+
+# main-red-guard：只有park之后出现的绿色 main run 才放行；park之前的绿色不算。
+units "$(jq -cn --argjson h "$(hist_park_at 2026-11-09T02:00:00Z)" '{units:[{id:"pr-901",pr:901,stage:"parked",parked_reason:"main-red-guard",unpark_condition:"main of this repo is green again",history:$h}]}')"
+CI_RUNS="$(ci_runs_at 2026-11-09T01:00:00Z 1111111111111111111111111111111111111111)"
+supervisor_parked_unpark_sweeps
+[[ "$(field pr-901 .stage)" == parked ]] || fail "a green run older than the park must not release it: $(jq -c '.units[0]' "$UNITS")"
+CI_RUNS="$(ci_runs_at 2026-11-09T03:00:00Z 3333333333333333333333333333333333333333)"
+supervisor_parked_unpark_sweeps
+[[ "$(field pr-901 .stage)" == supervisor-review && "$(field pr-901 .parked_reason)" == null ]] \
+  || fail "green main after the park must release it to review: $(jq -c '.units[0]' "$UNITS")"
+grep -q 'supervisor park unit=pr-901 reason=main-red-guard released: main green at 333333333' "$LOG" || fail "the release must log its unit and reason"
+
+# requeue-target-missing：没有工作环节可放回，单元以持久 hold 关闭（issue 上 hold.sh --hold），不是评论式停车。
+: > "$hold_calls"
+units "$(jq -cn '{units:[{id:"issue-6401",issue:6401,stage:"supervisor-review",history:[]}]}')"
+supervisor_requeue_unit issue-6401 requeue "guidance" '{"decision":"x"}'
+[[ "$(field issue-6401 .stage)" == closed && "$(field issue-6401 .parked_reason)" == null ]] \
+  || fail "a missing requeue target must close, not park: $(jq -c '.units[0]' "$UNITS")"
+grep -q '^hold --hold 6401 ' "$hold_calls" || fail "the close must hold its issue through hold.sh: $(cat "$hold_calls")"
+grep -q 'supervisor close unit=issue-6401 reason=requeue-target-missing: closed with a durable hold' "$LOG" || fail "the close must log its unit and reason"
+
+# supervisor-park：第一次停车等 main 或 PR head 变化（或 24 h）；变化后只重仲裁一次；重复的同类裁决直接关闭并 hold。
+: > "$hold_calls"
+units "$(jq -cn '{units:[{id:"issue-6402",issue:6402,stage:"supervisor-review",history:[]}]}')"
+MAIN_HEAD=1111111111111111111111111111111111111111 supervisor_park_verdict issue-6402 "stuck on review" '{"decision":"x"}'
+[[ "$(field issue-6402 .stage)" == parked && "$(field issue-6402 .parked_reason)" == supervisor-park && "$(field issue-6402 .unpark_condition)" == "a state change or 24 h" ]] \
+  || fail "the first park must wait for a state change or 24 h: $(jq -c '.units[0]' "$UNITS")"
+supervisor_parked_unpark_sweeps
+[[ "$(field issue-6402 .stage)" == parked ]] || fail "no state change: the park must keep waiting"
+MAIN_HEAD=2222222222222222222222222222222222222222 supervisor_parked_unpark_sweeps
+[[ "$(field issue-6402 .stage)" == supervisor-review ]] || fail "a main move must re-arbitrate the park once: $(jq -c '.units[0]' "$UNITS")"
+supervisor_park_verdict issue-6402 "stuck on review" '{"decision":"x"}'
+[[ "$(field issue-6402 .stage)" == closed ]] || fail "a repeated park must close, never park again: $(jq -c '.units[0]' "$UNITS")"
+grep -q '^hold --hold 6402 ' "$hold_calls" || fail "the repeat close must hold issue 6402"
+
+# 上限：只打一次日志（owner=head），且之后不再派模型。
+: > "$LOG"
+default_unit pr-660 660 '{}' '[]' 4
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(grep -c 'arbiter cap reached unit=pr-660 runs=4 owner=head' "$LOG")" == 1 ]] \
+  || fail "the cap must log once per unit: $(grep 'arbiter cap' "$LOG")"
+
+# 上限之内的 head 裁决：一条 supervisor-requeue 裁决（带 owner 评论 id）恰好再给一次仲裁；消耗后再次触顶。
+default_unit pr-661 661 '{}' '[{"stage":"supervisor-requeue","result":"supervisor ruling 6736537359: one luna repair round","at":"2026-10-27T01:00:00Z"}]' 4
+echo '{"workers":[]}' > "$WORKERS"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-661")' "$WORKERS" >/dev/null \
+  || fail "an owner ruling must buy one arbiter run past the cap: $(jq -c '.units[0].history[-3:]' "$UNITS")"
+echo '{"workers":[]}' > "$WORKERS"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+! jq -e 'any(.workers[]; .unit=="pr-661")' "$WORKERS" >/dev/null || fail "one ruling is exactly one run"
+
+# 普通 requeue（没有评论 id）不给额外仲裁。
+default_unit pr-665 665 '{}' '[{"stage":"supervisor-requeue","result":"plain requeue without an owner comment","at":"2026-10-27T01:00:00Z"}]' 4
+echo '{"workers":[]}' > "$WORKERS"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+! jq -e 'any(.workers[]; .unit=="pr-665")' "$WORKERS" >/dev/null || fail "a plain requeue must grant no run past the cap"
+
+# 6 小时之内没有裁决：不派、不动；超过 6 小时：走一次既有 recut/park 路线。
+units "$(jq -cn --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{units:[{id:"pr-662",issue:662,pr:662,lane:"pr",stage:"supervisor-review",history:[range(4) | {stage:"supervisor-arbiter",result:"dispatched",at:$at}]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_history pr-662 supervisor-cap-default)" == 0 && "$(cap_default_stage pr-662)" == supervisor-review ]] \
+  || fail "inside the six-hour wait the cap must neither default nor move the unit: $(jq -c '.units[0]' "$UNITS")"
+
+# 第二次触顶（已有一次默认决定）：持久关闭，issue 上 hold。
+: > "$hold_calls"
+default_unit pr-663 663 '{}' '[{"stage":"supervisor-cap-default","result":"branch=park: arbitration cap (4 lifetime dispatches) reached; recut already tried","at":"2026-10-26T00:02:00Z"}]' 4
+drop_unit_pr
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_stage pr-663)" == closed ]] || fail "a second cap must close durably: $(jq -c '.units[0]' "$UNITS")"
+grep -q '^hold --hold 663 ' "$hold_calls" || fail "the second cap must hold issue 663: $(cat "$hold_calls")"
+
 echo 'supervisor-arbiter.test.sh: all assertions passed'

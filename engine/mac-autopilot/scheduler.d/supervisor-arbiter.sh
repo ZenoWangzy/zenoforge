@@ -70,6 +70,7 @@ supervisor_arbiter_candidates() {
 dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 worker；在途上限 SUPERVISOR_ARBITER_MAX，两轮上限
   dead_park_exit || : # runs before the arbiter gate: these parks never reach the arbiter
   [[ "$SUPERVISOR_ARBITER" == true ]] || return 0
+  supervisor_parked_unpark_sweeps
   local prompt_file cap_contract_file
   prompt_file="$(sched_config_file prompts/supervisor-arbiter.md)"
   # 终局裁决的动词契约由引擎自带文件保证（不走 sched_config_file）：目标配置可以把六动作 prompt
@@ -84,8 +85,8 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     [[ -n "$u" ]] || continue
     id="$(jqf -r .id <<<"$u")"
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
-    if (( "$(supervisor_arbiter_lifetime_runs "$u")" >= SUPERVISOR_ARBITER_UNIT_CAP )); then
-      supervisor_cap_default "$id" "$u" lifetime || :
+    if (( "$(supervisor_arbiter_lifetime_runs "$u")" >= SUPERVISOR_ARBITER_UNIT_CAP )) && ! supervisor_arbiter_owner_ruling_pending "$u"; then
+      supervisor_arbiter_capped_default "$id" "$u" || :
     elif supervisor_arbiter_over_daily_max "$u"; then
       supervisor_cap_default "$id" "$u" daily || :
     fi
@@ -99,7 +100,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     id="$(jqf -r .id <<<"$u")"
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
     # The prepass applies the default; retain a hard dispatch guard if a state write failed there.
-    (( "$(supervisor_arbiter_lifetime_runs "$u")" < SUPERVISOR_ARBITER_UNIT_CAP )) || continue
+    (( "$(supervisor_arbiter_lifetime_runs "$u")" < SUPERVISOR_ARBITER_UNIT_CAP )) || supervisor_arbiter_owner_ruling_pending "$u" || continue
     if supervisor_arbiter_over_daily_max "$u"; then
       continue
     fi
@@ -365,8 +366,7 @@ supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute
 supervisor 裁决（${action}）后重排：$guidance"))"
   else
     # 没有可放回的工作环节：搁置并留原因，不猜。
-    set_unit "$id" "$(hist supervisor-park "requeue target missing: no review history and no task/branch" "$decision") | .stage=\"parked\" | .note=$(js "requeue had no work stage to return to") | $(park_fields requeue-target-missing 'a supervisor decision')"
-    say "supervisor arbitration unit=$id: $action has no work stage -> parked"
+    supervisor_close_with_hold "$id" requeue-target-missing "requeue target missing: no review history and no task/branch" "$decision"
     return 0
   fi
   if [[ "$action" == reroute ]]; then
@@ -432,7 +432,7 @@ supervisor_apply_action() { # id action report-path —— 六动作落地，决
         say "supervisor arbitration unit=$id: approve refused until the handoff is transferred -> parked"
       elif [[ "$(jqf -r '.main_red // false' <<<"$u")" == true ]] \
          || jqf -e '(.history // []) as $h | ([$h | to_entries[] | select(.value.stage=="review-approve") | .key] | max // -1) as $i | any($h[($i + 1):][]; .stage == "merge-reverted")' <<<"$u" >/dev/null; then
-        set_unit "$id" "$(hist supervisor-park "approve refused: record shows main-red or post-approval revert evidence" "$decision") | .stage=\"parked\" | .note=$(js "approve refused by the main-red/revert guard") | $(park_fields main-red-guard 'a supervisor decision')"
+        set_unit "$id" "$(hist supervisor-park "approve refused: record shows main-red or post-approval revert evidence" "$decision") | .stage=\"parked\" | .note=$(js "approve refused by the main-red/revert guard") | $(park_fields main-red-guard 'main of this repo is green again')"
         say "supervisor arbitration unit=$id: approve refused by the main-red/revert guard -> parked"
       else
         reviewed_sha="$(jqf -r '.reviewed_sha // empty' <<<"$u")"; reviewed_pr_head="$(jqf -r '.reviewed_pr_head // empty' <<<"$u")"
@@ -447,7 +447,7 @@ supervisor_apply_action() { # id action report-path —— 六动作落地，决
         fi
       fi ;;
     park)
-      set_unit "$id" "$(hist supervisor-park "$reason" "$decision") | .stage=\"parked\" | .note=$(js "${reason:-parked by supervisor arbitration}") | $(park_fields supervisor-park 'a supervisor decision')"
+      supervisor_park_verdict "$id" "${reason:-parked by supervisor arbitration}" "$decision"
       say "supervisor arbitration unit=$id: park" ;;
     close)
       pr="$(unit_field "$id" '.pr // empty')"
@@ -723,8 +723,7 @@ supervisor_apply_jev_action() { # id action confidence event-id → mature, conf
       question="$(supervisor_needs_info_question "$u")"
       supervisor_needs_info "$id" "$question" "$evidence" ;;
     park)
-      note="$(js "$reason")"
-      set_unit "$id" "$(hist supervisor-park "$reason" "$decision") | .stage=\"parked\" | .note=$note | $(park_fields supervisor-park 'a supervisor decision')"
+      supervisor_park_verdict "$id" "$reason" "$decision"
       say "supervisor arbitration unit=$id: Jev park" ;;
     *) return 1 ;;
   esac
