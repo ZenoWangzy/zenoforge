@@ -106,7 +106,15 @@ merge_pr_prior_art_ok() {
 # (merge_pr_main) is itself a receipt.
 merge_pr_ci_green_check_count() {
   local pr="$1" head_sha="$2" success_only="${3:-false}" view count
-  view="$(gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null)" || return 1
+  view="$(gh pr view "$pr" --json headRefOid,statusCheckRollup,files 2>/dev/null)" || return 1
+  jq -e '
+    (.files | type == "array" and length > 0)
+    and all(.files[];
+      (.path | type == "string")
+      and ((.path | startswith(".github/")) | not)
+      and .path != "tools/run-engine-tests.sh"
+      and .path != ".zenoforge/ci.json")
+  ' <<<"$view" >/dev/null 2>&1 || return 1
   # headRefOid anchors the rollup to this commit; GitHub CheckRuns have no per-check SHA.
   count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
     def completed_success:
@@ -173,12 +181,10 @@ merge_pr_test_receipt_ok() {
     merge_pr_refuse "$pr" 'cannot locate the repository test-receipt directory'
     return 1
   }
-  if [[ ! -e "$receipt" && ! -L "$receipt" ]]; then
-    if ! jq -e 'any(.files[]?; (.path // "") | startswith(".github/"))' <<<"$view" >/dev/null 2>&1; then
-      if count="$(merge_pr_ci_green_check_count "$pr" "$head_sha")"; then
-        printf 'merge-pr: receipt: ci-green %s checks at %.12s\n' "$count" "$head_sha" >&2
-        return 0
-      fi
+  if [[ ! -s "$receipt" ]]; then
+    if count="$(merge_pr_ci_green_check_count "$pr" "$head_sha")"; then
+      printf 'merge-pr: receipt: ci-green %s checks at %.12s\n' "$count" "$head_sha" >&2
+      return 0
     fi
     merge_pr_refuse "$pr" "no test receipt exists for $head_sha: run the tests at that HEAD through tools/test-receipt.sh <command...>"
     return 1
