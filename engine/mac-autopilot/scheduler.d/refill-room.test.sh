@@ -157,7 +157,7 @@ await_rc() { # rc-file: poll for the waiter's exit code
 }
 SCHED_LOCK_HELD=false
 mkdir "$SCHED_LOCK"; sleep 300 >/dev/null 2>&1 & holder=$!; echo "$holder" > "$SCHED_LOCK/pid" # a live foreign owner
-trap 'kill "$holder" 2>/dev/null || :' EXIT
+trap 'kill "$holder" 2>/dev/null || :; test_env_chain_exit "$test_env_root" "$test_env_prior_exit"' EXIT
 lock_rc="$A/.lock-wait-rc"; rm -f "$lock_rc"; : > "$LOG"
 TICK_LOCAL_REFILL=true; SECONDS=$((limit - 5))
 ( rc=0; acquire_scheduler_lock_wait || rc=$?; echo "$rc" > "$lock_rc" ) & waiter=$!
