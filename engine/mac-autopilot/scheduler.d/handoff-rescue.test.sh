@@ -19,6 +19,9 @@ unset AUTOPI_TEST_LIBRARY_ONLY
 fail() { echo "handoff-rescue.test.sh: $*" >&2; exit 1; }
 SCHEDULER_AGENT_LIB="$fixture/lib.sh"
 printf '%s\n' 'state_merge() { [[ -z "${STATE_MERGE_FAILS:-}" ]] || return 1; printf "%s %s\n" "$1" "$2" >> "'"$fixture"'/state-merges"; }' > "$SCHEDULER_AGENT_LIB"
+printf '%s\n' 'supervisor_inbox_append_once() { printf "%s\n" "$2" >> "'"$fixture"'/inbox"; }' >> "$SCHEDULER_AGENT_LIB"
+say() { printf '%s\n' "$*" >> "$fixture/say.log"; }
+WT_ROOT="$fixture/wtroot"; mkdir -p "$WT_ROOT"
 real_gitleaks="$(command -v gitleaks || true)"
 # The stub reads the same text a real scan would, so these cases prove what reaches the scanner.
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/scans"\nif [[ "$1" == stdin ]] && grep -q AKIAFAKE; then exit 3; fi\n[[ ! -e "%s/leak" ]] || exit 3\n[[ ! -e "%s/scan-broken" ]]\n' "$fixture" "$fixture" "$fixture" > "$fixture/bin/gitleaks"; chmod +x "$fixture/bin/gitleaks"
@@ -261,5 +264,62 @@ printf 'other\n' > "$wt/a.txt"; git -C "$wt" commit -qam other
 git -C "$wt" merge -q side >/dev/null 2>&1 || true
 if rescue_handoff_clone 70 "$wt"; then fail "a merge in progress was rescued"; fi
 [[ "$RESCUE_REFUSED" == "MERGE_HEAD in progress" ]] || fail "said '$RESCUE_REFUSED'"
+
+# A clone the secret scan refused is set aside, so its handoff goes on; nothing else is moved.
+aside_clone() { # fresh clone at the unit's path under WT_ROOT, logs emptied
+  new_clone; rm -rf "$WT_ROOT"/wt-issue-70*; mv "$fixture/wt" "$WT_ROOT/wt-issue-70"; wt="$WT_ROOT/wt-issue-70"
+  rm -f "$fixture/inbox" "$fixture/say.log" "$comments" "$fixture/scans"; : > "$comments"
+}
+aside_clone
+printf 'key=AKIAFAKE\n' >> "$wt/a.txt"; git -C "$wt" stash -q
+if rescue_handoff_clone 70 "$wt"; then fail "a leak was rescued"; fi
+[[ -d "$wt" ]] || fail "rescue_handoff_clone itself must leave the clone"
+preserve_refused_clone 70 issue-70 "$wt" || fail "a scan refusal was not set aside"
+[[ ! -e "$wt" ]] || fail "the clone is still in place"
+aside=("$WT_ROOT"/wt-issue-70.preserved-*); [[ ${#aside[@]} == 1 && -d "${aside[0]}" ]] || fail "expected one preserved dir, got ${aside[*]}"
+[[ "${aside[0]##*.preserved-}" =~ ^[0-9]{8}T[0-9]{4}Z$ ]] || fail "bad stamp in ${aside[0]}"
+[[ "$(stat -c %a "${aside[0]}")" == 700 ]] || fail "the preserved dir is mode $(stat -c %a "${aside[0]}")"
+[[ -n "$(git -C "${aside[0]}" stash list)" ]] || fail "the stash left the preserved clone"
+[[ -z "$(remote_rescues)" && ! -e "$fixture/supervisor/autopi/rescue-refused-70" ]] || fail "something was pushed, or the marker stayed"
+[[ "$(wc -l < "$fixture/say.log")" == 1 && "$(cat "$fixture/inbox")" == "handoff-preserved-clone-aside unit=issue-70 path=${aside[0]}" ]] || fail "log or inbox line is wrong"
+# The clone is gone, so the next pass finds nothing to rescue or hold.
+[[ -z "$(worktree_cleanup_block_reason "$wt" 2>/dev/null)" ]] || fail "the handoff would still wait"
+for out in "$fixture/say.log" "$fixture/inbox" "$comments" "$fixture/scans" "$fixture/state-merges"; do
+  [[ ! -e "$out" ]] || ! grep -q 'AKIAFAKE\|key=' "$out" || fail "stash content reached $out"
+done
+# The marker of an earlier pass counts as the scan's refusal too.
+aside_clone
+printf 'dirty\n' >> "$wt/a.txt"; touch "$fixture/leak"
+rescue_handoff_clone 70 "$wt" && fail "a leak was rescued"; rm -f "$fixture/leak"
+rescue_handoff_clone 70 "$wt" && fail "a leak was retried"
+[[ "$RESCUE_REFUSED" == *"earlier pass"* ]] || fail "said '$RESCUE_REFUSED'"
+preserve_refused_clone 70 issue-70 "$wt" || fail "the earlier-pass refusal was not set aside"
+[[ ! -e "$wt" && ! -e "$fixture/supervisor/autopi/rescue-refused-70" ]] || fail "marker or clone left"
+# Other refusals keep today's behaviour: the clone stays where it is, in its own mode.
+aside_clone
+git -C "$wt" checkout -q -b other; printf 'x\n' > "$wt/b.txt"; git -C "$wt" add b.txt; git -C "$wt" commit -qm x; git -C "$wt" checkout -q -
+if rescue_handoff_clone 70 "$wt"; then fail "another branch's commit was rescued"; fi
+before="$(snapshot)"; mode="$(stat -c %a "$wt")"
+if preserve_refused_clone 70 issue-70 "$wt"; then fail "a non-scan refusal was set aside"; fi
+[[ "$(snapshot)" == "$before" && "$(stat -c %a "$wt")" == "$mode" && ! -e "$fixture/inbox" ]] || fail "a non-scan refusal changed something"
+aside_clone
+printf 'dirty\n' >> "$wt/a.txt"; touch "$fixture/scan-broken"
+rescue_handoff_clone 70 "$wt" && fail "a broken scan was rescued"; rm -f "$fixture/scan-broken"
+[[ "$RESCUE_REFUSED" == *"could not run"* ]] || fail "said '$RESCUE_REFUSED'"
+if preserve_refused_clone 70 issue-70 "$wt"; then fail "a scan that did not run was set aside"; fi
+[[ -d "$wt" ]] || fail "a scan that did not run moved the clone"
+
+# Expiry: 7 days after the stamp, that exact name pattern only.
+rm -rf "$WT_ROOT"/*; : > "$fixture/say.log"
+stamp() { date -u -d "$1 ago" +%Y%m%dT%H%MZ; }
+mkdir -p "$WT_ROOT/wt-a.preserved-$(stamp '8 days')/sub" "$WT_ROOT/wt-b.preserved-$(stamp '6 days')" "$WT_ROOT/wt-c.preserved-soon" "$WT_ROOT/wt-d" "$fixture/outside"
+chmod 500 "$WT_ROOT/wt-a.preserved-$(stamp '8 days')/sub"
+ln -s "$fixture/outside" "$WT_ROOT/wt-e.preserved-$(stamp '9 days')"
+touch "$fixture/outside/keep"; touch -d '30 days ago' "$WT_ROOT/wt-d"
+expire_preserved_clones
+[[ ! -e "$WT_ROOT/wt-a.preserved-$(stamp '8 days')" ]] || fail "the 8-day-old dir was kept"
+[[ -d "$WT_ROOT/wt-b.preserved-$(stamp '6 days')" && -d "$WT_ROOT/wt-c.preserved-soon" && -d "$WT_ROOT/wt-d" ]] || fail "a young or non-matching dir was removed"
+[[ -L "$WT_ROOT/wt-e.preserved-$(stamp '9 days')" && -e "$fixture/outside/keep" ]] || fail "a symlink was followed"
+[[ "$(wc -l < "$fixture/say.log")" == 1 ]] || fail "expected one log line per removed dir"
 
 echo "handoff-rescue.test.sh: all assertions passed"
