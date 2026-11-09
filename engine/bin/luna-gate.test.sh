@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 bin=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-root=$(mktemp -d); trap 'rm -rf "$root"' EXIT
+root=$(mktemp -d); trap 'rm -rf "$root" "$test_env_root"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # gate <file> <avail_mb> <psi_full> <priority> <age_seconds> <cpu_busy>: prints admitted or refused.
