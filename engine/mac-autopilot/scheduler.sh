@@ -102,6 +102,7 @@ source "$HERE/scheduler.d/dispatch-queue.sh"
 source "$HERE/scheduler.d/ci-status.sh"
 source "$HERE/scheduler.d/ci-admission.sh"
 source "$HERE/scheduler.d/harvest-station.sh"
+source "$HERE/scheduler.d/existing-walk-station.sh"
 source "$HERE/scheduler.d/merge-prep.sh"
 source "$HERE/scheduler.d/merge-lane.sh"
 source "$HERE/scheduler.d/conflict-resolve.sh"
@@ -119,7 +120,7 @@ source "$HERE/scheduler.d/health-release.sh"
 source "$HERE/scheduler.d/locks-views.sh"
 mkdir -p "$A/alerts"
 
-if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --rule ]]; then
+if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --rule ]]; then
   if ! reconcile_event="$(reconcile_runtime_config "$(sched_config_file mac-autopilot/config.template.json)" "$A/config.json" "${ZF_ENGINE_DIR:-$ROOT/engine}/lib.sh")"; then
     say "config-reconcile failed; tick stopped before reading config"
     exit 1
@@ -462,6 +463,8 @@ VIEWS_LOCK="$A/.views.lock"
 CI_STATION_LOCK="$A/.ci-station.lock"
 # The harvest group as its own station (harvest_station_tick, scheduler.d/harvest-station.sh): its own lock, the ledger lock one worker at a time.
 HARVEST_STATION_LOCK="$A/.harvest-station.lock"
+# The intake existing walk as its own station (existing_walk_tick, scheduler.d/existing-walk-station.sh): its own lock, the ledger lock per write.
+EXISTING_WALK_LOCK="$A/.existing-walk-station.lock"
 
 # 补派循环入口（#4628）：loop.sh 与慢 tick 并行检查本地台账，30 秒一次或发现新退出的 worker 时触发。
 # 慢阶段只在等待 GitHub 时让出同一 SCHED_LOCK；补派本地收割 direct-main 实现结果，另每次最多收割 2 个已结束且带报告的 PR 车道 implement/review/rereview/repair worker（释放槽位，有少量 GitHub 调用）、回收孤儿记录，
@@ -478,7 +481,8 @@ paused_midrun() {
 }
 run_issue_intake_phases() {
   local rc=0
-  phase register_new_issues 1 || rc=$?
+  # A live station walks the existing units; the tick then only primes the census the new-issue walk reads and loads the rows the station walked.
+  if existing_walk_fresh; then intake_census_prime; existing_walked_load; else phase register_new_issues 1 || rc=$?; fi
   phase register_new_issues || rc=$?
   return "$rc"
 }
@@ -661,6 +665,7 @@ case "${1:-}" in
   --ci-admission) ci_station_tick ;;
   --merge) merge_entry ;;
   --harvest-station) harvest_station_tick ;;
+  --existing-walk) existing_walk_tick ;;
   --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; unretire_rc=$?; release_scheduler_lock; exit "$unretire_rc" ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick
   --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;; # hold.sh --rule: record the supervisor ruling that refills the stop-loss budget
   *) main "$@" ;;

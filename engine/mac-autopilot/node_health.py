@@ -17,7 +17,7 @@ import argparse, glob, json, os, re, socket, subprocess, urllib.parse, urllib.re
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import arbiter_health, harvest_health, ledger_history, live_delivery, merge_wait
+import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait
 import line_holds
 import release_age
 import release_retained
@@ -48,7 +48,7 @@ def health_doc_reference():
 
 
 # metric id: (node, description, healthy bound, unhealthy bound, higher_is_better)
-CRITERIA = {**arbiter_health.CRITERIA, **harvest_health.CRITERIA, **merge_wait.CRITERIA, **live_delivery.CRITERIA, **ledger_history.CRITERIA,
+CRITERIA = {**arbiter_health.CRITERIA, **harvest_health.CRITERIA, **existing_walk_health.CRITERIA, **merge_wait.CRITERIA, **live_delivery.CRITERIA, **ledger_history.CRITERIA,
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
     "implement.no_output_pct": ("implement", "implement runs with no report %", 5, 15, False),
     "merge.conflict_repairs_per_day": ("ci+merge", "merge conflicts that a repair run followed, in 24 h", 20, 27, False),
@@ -129,7 +129,7 @@ GH_DELIVERY_CALL_TIMEOUT = 15
 GH_DELIVERY_CENSUS_TIMEOUT = 30
 GH_DELIVERY_BATCH_TIMEOUT = 60
 # What each number means, in the dashboard's words. Every metric above needs one (node_health.test.sh).
-MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **merge_wait.MEANING, **live_delivery.MEANING, **ledger_history.MEANING,
+MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **existing_walk_health.MEANING, **merge_wait.MEANING, **live_delivery.MEANING, **ledger_history.MEANING,
     "implement.wall_p50": "一次开发从派出到交付的中位时长。偏长多半是任务太大，或卡在环境上。",
     "implement.no_output_pct": "开发员跑完却没交报告的比例：这些 token 全白花，多是进程被杀或崩溃。",
     "merge.conflict_repairs_per_day": "过去 24 小时内发生了合并冲突（merge-conflict）、随后由修复运行接手的次数。多个任务可以同时改同一个文件，撞上了由原任务自己修；这个数偏高说明撞得太多，修复拖慢交付。24 小时值 20 以内健康，27 以上不健康；这两个界来自 9 个有效日的账本均值 15.6、标准差 5.5。",
@@ -197,7 +197,7 @@ MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **merge_wait.MEAN
     "delivery.unlinked_incidents_30d": "过去 30 天线上事故账本（与负责人邮件同源）里未关联接受单元的事故，加上 head-watch 的线上告警次数（PROD-DB-TIMEOUT，间隔 30 分钟内算一次，与负责人邮件线上告警同口径）；告警不带 issue，一律未关联。告警日志只从 2026-11-04 开始，所以这是下限而非完整 30 天；不会猜测归属。",
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
-SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **merge_wait.SOURCE, **live_delivery.SOURCE, **ledger_history.SOURCE,
+SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **existing_walk_health.SOURCE, **merge_wait.SOURCE, **live_delivery.SOURCE, **ledger_history.SOURCE,
     "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮；24 h 窗口",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "merge.conflict_repairs_per_day": "units.json（含 units-archive.json）单元历史：merge-conflict 事件之后出现 write-start（修复运行）的次数，固定滚动 24h。",
@@ -1553,7 +1553,7 @@ def main():
             if m and (t := ts(m.group(1))) and since <= t <= now:
                 ticks.append(t)
     metrics["scheduler.tick_gap_p50"] = pct([(b - x).total_seconds() for x, b in zip(ticks, ticks[1:])], .5)
-    metrics.update({"scheduler.merge_pass_gap_min": merge_pass_gap_min(units, ledger_history.live_ledger_readable(a), a, now), **harvest_health.metrics(log, since, now, ts, pct)})
+    metrics.update({"scheduler.merge_pass_gap_min": merge_pass_gap_min(units, ledger_history.live_ledger_readable(a), a, now), **harvest_health.metrics(log, since, now, ts, pct), **existing_walk_health.metrics(log, since, now, ts, pct)})
 
     train = read_json(os.path.join(a, "release-train.json"))
     if not train:

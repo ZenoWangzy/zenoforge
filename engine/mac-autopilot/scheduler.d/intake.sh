@@ -234,6 +234,24 @@ startable_pending_count() { # pending units eligible to start under intake's #15
 # time (a long hold is measured from its start) and goes when a pass gets past the held checks, which is when intake can add.
 intake_hold_mark() { [[ -e "$A/intake-held-since" ]] || date -u +%Y-%m-%dT%H:%M:%SZ > "$A/intake-held-since"; }
 intake_skip() { intake_skip_counts[$1]=$(( ${intake_skip_counts[$1]:-0} + 1 )); intake_mark "skip_$1"; } # bumps register_new_issues' local intake_skip_counts (dynamic scope); a skipped row's time goes to skip_<reason>
+intake_census_prime() { # the open-PR census the handoff block reads; register_new_issues calls it, and so does a tick that left the walk to the existing-walk station
+  local cached_prs pr_number
+  HANDOFF_CENSUS_PARTIAL=0; HANDOFF_WAIT_PRS='[]'; HANDOFF_WAIT_BRANCHES='[]'
+  tick_prs_prime
+  cached_prs="$(tick_prs 2>/dev/null || true)"
+  if [[ -n "$cached_prs" ]] && jqf -e 'type=="array" and length < 300' <<<"$cached_prs" >/dev/null; then
+    HANDOFF_PR_CENSUS="$(jqf -c '[.[] | {number,headRefName,title,body,labels}]' <<<"$cached_prs")"
+  else
+    HANDOFF_PR_CENSUS="$(intake_gh_read pr list --state open --limit 500 --json number,headRefName,title,body,labels 2>/dev/null)" || HANDOFF_PR_CENSUS=""
+  fi
+  jqf -e 'type == "array" and all(.[]; (.number | type)=="number" and (.labels | type)=="array" and all(.labels[]; (.name | type)=="string"))' <<<"${HANDOFF_PR_CENSUS:-}" >/dev/null || HANDOFF_PR_CENSUS=""
+  if [[ -z "$HANDOFF_PR_CENSUS" ]]; then
+    HANDOFF_CENSUS_PARTIAL=1; HANDOFF_PR_CENSUS='[]'
+    while read -r pr_number; do handoff_include_pr "$pr_number" || true; done < <(jqf -r '[.units[] | select((.stage | IN("merged","landed","closed","done","wontfix","duplicate")) | not) | .pr | select(type=="number")] | unique | .[]' "$UNITS")
+  else
+    units_update '.units |= map(if .hold_handoff_lookup_pending == true then del(.hold_handoff_lookup_pending) | if ((.hold_handoff_wait_issues // []) | length) == 0 then del(.hold_handoff_waiting) else . end else . end)'
+  fi
+}
 register_new_issues() {
   local enabled live pending upstream total_upstream total_room max_up ready_q max_ready want added=0 n lane title labels task_record task body_blocked_by branch busy handoff state_file acceptance
   local episode existing_id existing_pr prior_pr pr_changed pr_state lane_policy handoff_all handoff_pr handoff_branch recovery_sha
@@ -273,7 +291,7 @@ register_new_issues() {
   if (( existing_only )); then
     # Existing units may consume their handoff at the normal cap, subject to the total ceiling.
     handoff_rows="$(existing_handoff_candidates)"
-    [[ -n "$handoff_rows" ]] || return 0
+    [[ -n "$handoff_rows" ]] || { INTAKE_WALK_LAP=true; return 0; }
     # Numeric order, so a stored cursor resumes at the first row at or after it even when that row is gone; the rows before it come last (wrap).
     handoff_rows="$(sort -s -n -k1,1 <<<"$handoff_rows")"
     walk_from="$(cat "$walk_cursor" 2>/dev/null || true)"
@@ -282,23 +300,7 @@ register_new_issues() {
     fi
     walk_start="${handoff_rows%%$'\t'*}"
     INTAKE_EXISTING_WALKED=()
-    if [[ "${2:-}" != reuse ]]; then
-      HANDOFF_CENSUS_PARTIAL=0; HANDOFF_WAIT_PRS='[]'; HANDOFF_WAIT_BRANCHES='[]'
-      tick_prs_prime
-      cached_prs="$(tick_prs 2>/dev/null || true)"
-      if [[ -n "$cached_prs" ]] && jqf -e 'type=="array" and length < 300' <<<"$cached_prs" >/dev/null; then
-        HANDOFF_PR_CENSUS="$(jqf -c '[.[] | {number,headRefName,title,body,labels}]' <<<"$cached_prs")"
-      else
-        HANDOFF_PR_CENSUS="$(intake_gh_read pr list --state open --limit 500 --json number,headRefName,title,body,labels 2>/dev/null)" || HANDOFF_PR_CENSUS=""
-      fi
-      jqf -e 'type == "array" and all(.[]; (.number | type)=="number" and (.labels | type)=="array" and all(.labels[]; (.name | type)=="string"))' <<<"${HANDOFF_PR_CENSUS:-}" >/dev/null || HANDOFF_PR_CENSUS=""
-      if [[ -z "$HANDOFF_PR_CENSUS" ]]; then
-        HANDOFF_CENSUS_PARTIAL=1; HANDOFF_PR_CENSUS='[]'
-        while read -r pr_number; do handoff_include_pr "$pr_number" || true; done < <(jqf -r '[.units[] | select((.stage | IN("merged","landed","closed","done","wontfix","duplicate")) | not) | .pr | select(type=="number")] | unique | .[]' "$UNITS")
-      else
-        units_update '.units |= map(if .hold_handoff_lookup_pending == true then del(.hold_handoff_lookup_pending) | if ((.hold_handoff_wait_issues // []) | length) == 0 then del(.hold_handoff_waiting) else . end else . end)'
-      fi
-    fi
+    [[ "${2:-}" == reuse ]] || intake_census_prime # the open-PR census the handoff block reads (also primed by the tick when the station walked)
     want=1000000000; busy=""
   else
   live="$(live_workers)"
@@ -767,7 +769,8 @@ register_new_issues() {
   intake_ops_flush
   if (( existing_only )); then
     if [[ -n "$walk_broke" ]]; then printf '%s\n' "$walk_broke" > "$walk_cursor"; else rm -f -- "$walk_cursor"; fi
-    say "intake detail existing_walk start=#$walk_start rows=$walk_rows lap_done=$([[ -z "$walk_broke" ]] && echo true || echo false)"
+    INTAKE_WALK_ROWS=$walk_rows; INTAKE_WALK_LAP=$([[ -z "$walk_broke" ]] && echo true || echo false) # the station's done line reads these
+    say "intake detail existing_walk start=#$walk_start rows=$walk_rows lap_done=$INTAKE_WALK_LAP"
   fi
   if (( ${#intake_terminal_rows[@]} )); then
     say "intake closed units under open issues count=${#intake_terminal_rows[@]} ids=$(IFS=,; printf '%s' "${intake_terminal_rows[*]}")"

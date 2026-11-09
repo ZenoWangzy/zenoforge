@@ -48,6 +48,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | scheduler | seconds between tick starts p50 (`scheduler.tick_gap_p50`) | — | ≤ 240 | ≥ 420 | — |
 | scheduler | minutes since the last merge pass while ready-to-merge units wait (`scheduler.merge_pass_gap_min`; the pass is `run_merge_lane` holding the lane, run by the merge station, the refill or the tick; the time is `.merge-pass-epoch`; 0 when no unit the lane would take is ready, NO-DATA until the first pass is recorded). TENTATIVE bounds, 10/30 min from the merge station's 60 s cadence plus up to one 300 s refill that can delay a launch; no live samples yet, re-measure after 10 days of data | no merge pass ran 10:11Z-after on 2026-11-08 with two CLEAN PRs waiting | ≤ 10 | ≥ 30 | — |
 | scheduler | seconds between harvest station pass starts p50 (`scheduler.harvest_gap_p50`); the station's stall bound | — | ≤ 120 | ≥ 300 | — |
+| scheduler | seconds between existing-walk station pass starts p50 (`scheduler.existing_walk_gap_p50`); the station's stall bound | — | ≤ 120 | ≥ 300 | — |
 | release | current release batch wait in hours, not yet deployed (`release.hours_waiting`; 0 once a `release-retained` deploy came after the batch started) | elite: deploy on demand, lead time < 1 day [4] | ≤ 4 | ≥ 12 | — |
 | release | hours since the oldest deploy whose acceptance failed under FIX-FORWARD and still holds tickets no later `release-closer` line closed (`release.hours_acceptance_failed`; 0 when none; PROVISIONAL bounds, maintainer to confirm) | the next release's acceptance should clear the tracker: 24 h is about 6 missed 4 h release cycles (`release.hours_since_release` bound) | ≤ 24 | ≥ 72 | — |
 | release | hours since production last changed, formal or hand release (`release.hours_since_release`; source: GitHub production Deployments, the live sha (newest success record via `engine/production-deployment-read.sh`) and its earliest real deployment record, not `release-train.json` `released_at`; ruling `release-overdue-2026-11-07`: two 2 h batch cycles with no formal release is a stop, repeated hourly) | two batch cycles (2 h) per release; 4 h without one is a stalled line | ≤ 2 | ≥ 4 | — |
@@ -223,6 +224,19 @@ alert lines stay one per sweep. Each pass logs `harvest-station done secs= gh_ca
 deferred= limit= ended= phases=` (the stamp is the pass start); `scheduler.harvest_gap_p50` is the median gap between those stamps. Its
 bounds are 120 / 300 (maintainer decision: the station runs every 60 s, so a median above 2 min means it lags), not measured: re-measure on the first 7 live days, and change them only with that
 measurement and this table. Before the split the tick spent 128-215 s in `harvest_workers` (9-19 gh calls) on 2026-11-08.
+
+The intake existing walk is a station process too (`scheduler.sh --existing-walk`, `scheduler.d/existing-walk-station.sh`): `loop.sh`
+starts a detached pass every 60 s (`AUTOPI_EXISTING_WALK_SECONDS`, minimum 30, kill at 600 s) that runs `register_new_issues 1`, the walk
+that takes units already in the ledger through the handoff block, with a 240 s bound (`AUTOPI_EXISTING_WALK_LIMIT_SECONDS`). It does not
+hold the ledger lock across a row's GitHub reads; each ledger write takes the lock for that one write, and the pass line sums those waits
+and holds. The full tick runs the walk itself only while no pass started within 600 s (`AUTOPI_EXISTING_WALK_FRESH_SECONDS`); while the
+station is live the tick loads the rows the last pass walked (`.existing-walked`), so the new-issue walk still skips them. A PAUSE stops
+the station, as it stops the tick's intake. Each pass logs `existing-walk done secs= rows= lock_wait= lock_hold= lap_done= walked=
+gh_calls= rc= limit= ended=` (the stamp is the pass start); `scheduler.existing_walk_gap_p50` is the median gap between those stamps.
+Its bounds are 120 / 300 as for the harvest station (the pass runs every 60 s, so a median above 2 min means it lags), not measured:
+re-measure on the first 7 live days, and change them only with that measurement and this table. Before the split the walk was the
+first `register_new_issues` phase of the full tick: 43 s median, 104 s p90 over 95 ticks (38 rows, always a full lap), and a row waited
+a tick gap for its next walk (636 s median, 1151 s p90), measured 2026-11-08 07:34Z to 2026-11-09 07:34Z.
 
 Status: `STALLED` when the buffer is not empty and the stall exceeds the bound, `PAUSED` while the pipeline pause
 file exists (no alert), else `OK`. Stall minutes are `min(now - last out, oldest wait)` while something waits and 0

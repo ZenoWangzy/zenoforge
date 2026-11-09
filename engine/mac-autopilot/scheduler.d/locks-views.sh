@@ -1,3 +1,4 @@
+lock_us_now() { LOCK_US="${EPOCHREALTIME:-0}"; LOCK_US="${LOCK_US//[.,]/}"; } # microseconds since the epoch; 0 where bash has no EPOCHREALTIME
 acquire_scheduler_lock() {
   local old owner="$BASHPID"
   if ! mkdir "$SCHED_LOCK" 2>/dev/null; then
@@ -8,6 +9,7 @@ acquire_scheduler_lock() {
   fi
   echo "$owner" > "$SCHED_LOCK/pid"
   SCHED_LOCK_HELD=true
+  lock_us_now; SCHED_LOCK_AT_US=$LOCK_US # the existing-walk station sums holds and waits per pass
   chain_exit_trap 'release_scheduler_lock'
 }
 release_scheduler_lock() {
@@ -15,6 +17,7 @@ release_scheduler_lock() {
   if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$BASHPID" ]]; then
     rm -rf -- "$SCHED_LOCK"
   fi
+  lock_us_now; LOCK_HOLD_US=$((${LOCK_HOLD_US:-0} + LOCK_US - ${SCHED_LOCK_AT_US:-$LOCK_US}))
   SCHED_LOCK_HELD=false
 }
 # A refill waits for the ledger lock only until its own deadline, like a lock_timeout under a statement deadline: the full tick holds the lock for
@@ -32,7 +35,9 @@ refill_stopped() {
 acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it the wait returns 1 and the caller decides
   local t0=$SECONDS
   refill_stopped && return 1
+  lock_us_now; local w0=$LOCK_US
   until acquire_scheduler_lock; do
+    lock_us_now; LOCK_WAIT_US=$((${LOCK_WAIT_US:-0} + LOCK_US - w0)); w0=$LOCK_US # waited so far, to the last refused try
     if refill_lock_wait_spent; then
       : > "$A/.refill-stop"
       say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): the refill limit is near, the refill ends here and the next one resumes"

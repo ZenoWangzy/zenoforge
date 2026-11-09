@@ -54,6 +54,7 @@ walk1="$(awk '!s[$0]++' "$visits" | paste -sd, -)"
 [[ "$walk1" == 1,2,3 ]] || { echo "not ok - first walk visited $walk1, want 1,2,3" >&2; exit 1; }
 [[ "$(cat "$cursor")" == 4 ]] || { echo 'not ok - cursor is not 4 after the budget break' >&2; exit 1; }
 grep -Fq 'intake detail existing_walk start=#1 rows=3 lap_done=false' "$LOG" || { echo 'not ok - first walk line' >&2; cat "$LOG" >&2; exit 1; }
+[[ "$INTAKE_WALK_ROWS $INTAKE_WALK_LAP" == '3 false' ]] || { echo "not ok - the station's walk result is $INTAKE_WALK_ROWS $INTAKE_WALK_LAP, want 3 false" >&2; exit 1; }
 
 : > "$visits"
 register_new_issues 1
@@ -61,6 +62,7 @@ walk2="$(awk '!s[$0]++' "$visits" | paste -sd, -)"
 [[ "$walk2" == 4,5,1,2,3 ]] || { echo "not ok - second walk visited $walk2, want 4,5,1,2,3" >&2; exit 1; }
 [[ ! -e "$cursor" ]] || { echo 'not ok - a full lap left the cursor' >&2; exit 1; }
 grep -Fq 'intake detail existing_walk start=#4 rows=5 lap_done=true' "$LOG" || { echo 'not ok - second walk line' >&2; cat "$LOG" >&2; exit 1; }
+[[ "$INTAKE_WALK_ROWS $INTAKE_WALK_LAP" == '5 true' ]] || { echo "not ok - the station's walk result is $INTAKE_WALK_ROWS $INTAKE_WALK_LAP, want 5 true" >&2; exit 1; }
 
 echo 'ok - existing intake walk resumes at its cursor, wraps, and clears it after a lap'
 

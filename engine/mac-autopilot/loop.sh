@@ -72,6 +72,16 @@ launch_harvest_station() {
   HARVEST_STATION_NEXT=$((SECONDS + every))
   setsid timeout -k 30 "${AUTOPI_HARVEST_STATION_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --harvest-station >> "$A/loop.out" 2>&1 < /dev/null &
 }
+# The intake existing walk as its own station (scheduler.sh --existing-walk): units already in the ledger must not wait for the tick to be walked
+# through intake's handoff block. Same pacing and fallback as the harvest station; the tick walks itself while no pass started recently.
+launch_existing_walk() {
+  local every="${AUTOPI_EXISTING_WALK_SECONDS:-60}"
+  [[ "$every" =~ ^[0-9]+$ ]] && (( every >= 30 )) || every=60
+  EXISTING_WALK_NEXT="${EXISTING_WALK_NEXT:-$((SECONDS + every))}"
+  (( SECONDS >= EXISTING_WALK_NEXT )) || return 0
+  EXISTING_WALK_NEXT=$((SECONDS + every))
+  setsid timeout -k 30 "${AUTOPI_EXISTING_WALK_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --existing-walk >> "$A/loop.out" 2>&1 < /dev/null &
+}
 # #4628: the slow tick runs beside the refill controller. The scheduler yields the same ledger lock
 # around slow GitHub phases; a busy refill returns 75 and is retried five seconds later.
 refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一拍前的补派窗口
@@ -90,6 +100,7 @@ refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一�
     launch_ci_admission
     launch_merge_station
     launch_harvest_station
+    launch_existing_walk
     signature="$(exited_worker_signature "$A/workers.json")"
     [[ -n "$signature" ]] || REFILL_LAST_EXIT=""
     if [[ -n "$signature" && "$signature" != "$REFILL_LAST_EXIT" ]] || (( REFILL_SINCE >= cadence )); then
