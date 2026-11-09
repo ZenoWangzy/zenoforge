@@ -313,6 +313,7 @@ minutes), not yet from a month of data. Change the number here and in the code t
 | `stage.needs-advisor.count` / `.idle_hours` | ≤ 10 / ≤ 12 h | ≥ 30 / ≥ 48 h | same |
 | `stage.needs-recut.count` / `.idle_hours` | ≤ 5 / ≤ 24 h | ≥ 15 / ≥ 72 h | same |
 | `stage.ready-for-agent.count` / `.idle_hours` | ≤ 60 / ≤ 168 h | ≥ 150 / ≥ 336 h | same |
+| `ready_queue.dispatchable` | ≤ 60 | ≥ 150 | GitHub ready issue list minus active, blocked, and parked units in `units.json` |
 | `stage.awaiting-release.count` / `.idle_hours` | ≤ 40 / ≤ 24 h | ≥ 80 / ≥ 72 h | same |
 | `stage.awaiting-pipeline-sync.count` / `.idle_hours` | ≤ 3 / ≤ 2 h | ≥ 10 / ≥ 12 h | same |
 | `advisor.job_age_min` | ≤ 20 | ≥ 60 | `advisor_batch_job_json` `started_at` (lib.sh) |
