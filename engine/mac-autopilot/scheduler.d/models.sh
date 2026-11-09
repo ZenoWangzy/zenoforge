@@ -266,6 +266,9 @@ unit_hard_escalated() { # unit JSON -> true after the two-repair cap or supervis
     <<<"$1" >/dev/null 2>&1
 }
 
+# scheduler.sh runs once per tick; this process-local cache avoids repeating provider probes across units.
+declare -A IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+
 implement_family_has_other_reviewer() { # family -> 0 when review dispatch can select another family now
   local family="$1" codex_identity glm_identity sonnet_identity cross other="" candidate candidate_family candidate_role reason first_reason=""
   codex_identity="$(review_identity_for_model "$(model_tuple_field review 0)" "$(model_tuple_field review 1)" 2>/dev/null || true)"
@@ -292,7 +295,15 @@ implement_family_has_other_reviewer() { # family -> 0 when review dispatch can s
 
 implement_route_family_reviewable() { # family -> log the skip and alert head-watch once per family/hour
   local family="${1/zcode/glm}" reason
-  zcode_paced implement_family_has_other_reviewer "$family" && return 0
+  if [[ -n "${IMPLEMENT_ROUTE_REVIEWABILITY_CACHE[$family]+x}" ]]; then
+    IMPLEMENT_REVIEWER_REASON="${IMPLEMENT_ROUTE_REVIEWABILITY_CACHE[$family]}"
+  elif zcode_paced implement_family_has_other_reviewer "$family"; then
+    IMPLEMENT_ROUTE_REVIEWABILITY_CACHE[$family]=available
+    IMPLEMENT_REVIEWER_REASON=available
+  else
+    IMPLEMENT_ROUTE_REVIEWABILITY_CACHE[$family]="${IMPLEMENT_REVIEWER_REASON:-review-config}"
+  fi
+  [[ "$IMPLEMENT_REVIEWER_REASON" == available ]] && return 0
   if [[ " ${IMPLEMENT_ROUTE_SKIPS:-} " != *" $family "* ]]; then
     IMPLEMENT_ROUTE_SKIPS="${IMPLEMENT_ROUTE_SKIPS:-} $family"
     reason="${IMPLEMENT_REVIEWER_REASON:-review-config}"; reason="${reason// /-}"
@@ -306,7 +317,7 @@ implement_route_family_reviewable() { # family -> log the skip and alert head-wa
 
 pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota failover
   local u="$1" assigned actual preferred reason issue hash bucket zcode_share claude_share codex_share sum=0 status arbiter=false
-  local route_start route_candidate route_share selected="" IMPLEMENT_ROUTE_SKIPS=""
+  local route_start route_candidate route_share selected="" IMPLEMENT_ROUTE_SKIPS="" preferred_unreviewable=false
   local -a route_order=(zcode claude codex)
   if unit_hard_escalated "$u"; then
     hard_implementer_fields || { say "no hard implementation identity available"; return 1; }
@@ -369,16 +380,19 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
     *) say "no implementation family with an eligible other-family reviewer"; return 1 ;;
   esac
   local -A route_shares=([zcode]="$zcode_share" [claude]="$claude_share" [codex]="$codex_share")
-  for route_candidate in "${route_order[@]:route_start}" "${route_order[@]:0:route_start}"; do
-    if [[ "$route_candidate" != "$preferred" ]]; then
-      (( sum == 100 )) || continue
+  if [[ "$preferred" == claude && "$claude_share" == 0 ]]; then
+    selected="$preferred" # the share-off branch below checks only its Codex/GLM fallbacks
+  else
+    for route_candidate in "${route_order[@]:route_start}" "${route_order[@]:0:route_start}"; do
+      [[ "$route_candidate" == "$preferred" || "$sum" == 100 ]] || continue
       route_share="${route_shares[$route_candidate]}"
       [[ "$route_share" =~ ^[0-9]+$ ]] && (( route_share > 0 )) || continue
-    fi
-    if implement_route_family_reviewable "$route_candidate"; then selected="$route_candidate"; break; fi
-  done
+      if implement_route_family_reviewable "$route_candidate"; then selected="$route_candidate"; break; fi
+      [[ "$route_candidate" != "$preferred" ]] || preferred_unreviewable=true
+    done
+  fi
   [[ -n "$selected" ]] || { say "no implementation family has an eligible other-family reviewer"; return 1; }
-  [[ "$selected" == "$preferred" ]] || { assigned="$selected"; preferred="$selected"; reason="reviewer-fallback-$selected"; }
+  [[ "$selected" == "$preferred" ]] || { assigned="$selected"; preferred="$selected"; [[ "$preferred_unreviewable" == true ]] && reason="reviewer-fallback-$selected" || true; }
   PICK_ROUTE_PROVIDER="$assigned"; PICK_HARD=false
 
   if [[ "$preferred" == claude && "$claude_share" != 0 ]]; then
