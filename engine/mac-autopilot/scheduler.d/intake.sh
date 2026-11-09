@@ -412,7 +412,7 @@ register_new_issues() {
     if (( ! existing_only )) && intake_row_terminal "$n" "$episode"; then
       intake_terminal_rows+=("$n"); intake_skip terminal; continue
     fi; intake_mark terminal_check
-    if (( existing_only )) && [[ -n "$episode" ]]; then
+    if (( existing_only )); then
       intake_unit_for_row "$n" "$handoff_pr"; intake_mark recut_refused_precheck
       [[ -z "$existing_id" ]] || ! intake_recut_refused "$existing_id" || { intake_skip_refused_recut "$n" "$existing_id"; continue; }
     fi
