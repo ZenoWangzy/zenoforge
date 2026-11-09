@@ -7,7 +7,8 @@ Each node is scored against the criteria in NODE-HEALTH.md (healthy / unhealthy 
 them is WARN). Sources: worker logs in the supervisor dir (exact start from the file name, end from
 mtime, tokens from the shared native reader or legacy "tokens used" footer), ledger history (rounds, yield, waits) and
 scheduler.log tick lines. `health-standards.json` overrides bounds only when each metric entry carries its measured basis.
---alert appends UNHEALTHY nodes to alerts/node-health.md (once per metric per hour).
+--alert appends UNHEALTHY and STANDARD-INVALID rows to alerts/node-health.md (once per metric per hour);
+STANDARD-INVALID also appends a head-watch.alerts event for the running session.
 --file-issues: a metric UNHEALTHY for ESCALATE_HOURS files (or comments on) a pipeline-system issue so the
 pipeline repairs itself; at most once per REFILE_HOURS per metric (state in node-health-state.json). The
 issue body routes the worker to the behavioural root cause (#4487); an issue closed during the current
@@ -1283,6 +1284,8 @@ def file_issues(a, rows, now):
         # until a complete sample establishes whether the metric recovered.
         if mid == "review.large_pr_pct" and status == "NO-DATA":
             continue
+        if status == "STANDARD-INVALID":
+            continue
         if status != "UNHEALTHY":
             state.pop(mid, None)
             continue
@@ -1344,21 +1347,23 @@ def flow_inbox(a, rows, now, agent_home, repo_root):
     metric recovers, so the next crossing emits again."""
     state_path = os.path.join(a, "flow-inbox-state.json")
     state = read_json(state_path)
-    bad = {row[1]: row for row in rows if row[1].startswith("flow.") and row[7] == "UNHEALTHY"}
+    bad = {row[1]: row for row in rows if row[1].startswith("flow.") and row[7] in ("UNHEALTHY", "STANDARD-INVALID")}
     for mid in list(state):
-        if mid not in bad:
+        previous = state[mid].get("status", "UNHEALTHY") if isinstance(state[mid], dict) else "UNHEALTHY"
+        if mid not in bad or previous != bad[mid][7]:
             del state[mid]
     lib = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib.sh")
     for mid, (node, _, desc, v, healthy, unhealthy, higher, status) in sorted(bad.items()):
         if mid in state:
             continue
-        text = (f"flow metric={mid} status=UNHEALTHY value={v:.1f} bound={unhealthy:g} "
+        bound = f"bound={unhealthy:g}" if status == "UNHEALTHY" else "standard=invalid"
+        text = (f"flow metric={mid} status={status} value={live_delivery.display_value(v)} {bound} "
                 f"{desc}; thresholds and sources: {health_doc_reference()}")
         done = subprocess.run(["bash", "-c", 'source "$1" && supervisor_inbox_append flow-metric "$2"',
                                "bash", lib, text],
                               capture_output=True, env={**os.environ, "AGENT_HOME": agent_home})
         if done.returncode == 0:
-            state[mid] = f"{now:%Y-%m-%dT%H:%M:%SZ}"
+            state[mid] = {"status": status, "at": f"{now:%Y-%m-%dT%H:%M:%SZ}"}
     tmp = state_path + ".tmp"
     with open(tmp, "w") as out:
         json.dump(state, out, indent=1)
@@ -1601,17 +1606,8 @@ def main():
             json.dump(doc, out, ensure_ascii=False)
         os.replace(tmp, args.json)
 
-    if args.alert and bad:
-        path = os.path.join(a, "alerts", "node-health.md")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        hour = f"{now:%Y-%m-%dT%H}"
-        seen = open(path, errors="ignore").read() if os.path.exists(path) else ""
-        with open(path, "a") as out:
-            for node, mid, desc, v, healthy, unhealthy, higher, status in bad:
-                if f"[{hour}" in seen and f"NODE-UNHEALTHY metric={mid} " in seen.split(f"[{hour}", 1)[1]:
-                    continue
-                out.write(f"[{now:%Y-%m-%dT%H:%M:%SZ}] NODE-UNHEALTHY metric={mid} node={node} value={live_delivery.display_value(v)} "
-                          f"unhealthy-bound={unhealthy} ({desc}; see {health_doc_reference()})\n")
+    if args.alert:
+        health_standards.write_health_alerts(a, agent_home, rows, now, live_delivery.display_value, health_doc_reference)
 
 
 if __name__ == "__main__":

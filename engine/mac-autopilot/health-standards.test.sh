@@ -6,19 +6,41 @@ export ZF_CONFIG_ROOT="$test_env_root/config/.zenoforge" PYTHONPATH="$script_dir
 mkdir -p "$ZF_CONFIG_ROOT/mac-autopilot"
 python3 - <<'PY'
 import contextlib, io, json, os
+from datetime import datetime, timezone
 import node_health as nh
 path = os.path.join(os.environ["ZF_CONFIG_ROOT"], "mac-autopilot", "health-standards.json")
 def write(doc): json.dump(doc, open(path, "w"))
 def standard(mid, value=2):
     criteria, minimums, bases, invalid = nh.resolve_health_standards()
     return criteria, minimums, bases, invalid, next(r for r in nh.score({mid: value}, criteria, {}, minimums, invalid) if r[1] == mid)
+assert nh.CRITERIA["delivery.merged_not_live"][2:4] == (6, 12)
 write({"flow.merge_rate_per_hour":{"healthy":1.5,"unhealthy":1,"basis":"measured fixture values over a seven day window"}})
 criteria, minimums, bases, invalid, row = standard("flow.merge_rate_per_hour")
 assert row[4:6] == (1.5, 1) and row[7] == "OK" and "seven day window" in bases[row[1]]
-write({"flow.merge_rate_per_hour":{"healthy":99,"unhealthy":1}})
-err = io.StringIO()
+valid_basis = "measured fixture values over a seven day window"
+bad_entries = ({"healthy":3,"unhealthy":1.5}, {"healthy":3,"unhealthy":1.5,"basis":"short"},
+               {"healthy":1.5,"unhealthy":3,"basis":valid_basis}, {"healthy":"3","unhealthy":1.5,"basis":valid_basis},
+               {"healthy":True,"unhealthy":1.5,"basis":valid_basis}, [])
+for entry in bad_entries:
+    write({"flow.merge_rate_per_hour":entry}); err = io.StringIO()
+    with contextlib.redirect_stderr(err): criteria, minimums, bases, invalid, row = standard("flow.merge_rate_per_hour")
+    assert row[4:6] == (3, 1.5) and row[7] == "STANDARD-INVALID" and "metric=flow.merge_rate_per_hour" in err.getvalue()
+open(path, "w").write("[]")
+assert standard("flow.merge_rate_per_hour")[4][7] == "STANDARD-INVALID"
+os.unlink(path); os.mkdir(path)
+assert standard("flow.merge_rate_per_hour")[4][7] == "STANDARD-INVALID"
+os.rmdir(path)
+open(path, "w").write("{"); err = io.StringIO()
 with contextlib.redirect_stderr(err): criteria, minimums, bases, invalid, row = standard("flow.merge_rate_per_hour")
-assert row[4:6] == (3, 1.5) and row[7] == "STANDARD-INVALID" and err.getvalue().count("metric=flow.merge_rate_per_hour") == 1
+assert row[7] == "STANDARD-INVALID" and "all metrics STANDARD-INVALID" in err.getvalue()
+runtime, agent_home = os.path.join(os.environ["ZF_CONFIG_ROOT"], "runtime"), os.environ["AGENT_HOME"]
+now = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
+nh.health_standards.write_health_alerts(runtime, agent_home, [row], now, nh.live_delivery.display_value, nh.health_doc_reference)
+alert = open(os.path.join(runtime, "alerts", "node-health.md")).read()
+watch = open(os.path.join(agent_home, "logs", "head-watch.alerts")).read()
+assert "NODE-STANDARD-INVALID metric=flow.merge_rate_per_hour" in alert and "NODE-STANDARD-INVALID" in watch
+nh.flow_inbox(runtime, [row], now, agent_home, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+assert "flow metric=flow.merge_rate_per_hour status=STANDARD-INVALID" in open(os.path.join(agent_home, "supervisor-inbox")).read()
 write({"unknown.metric":{"healthy":1,"unhealthy":2,"basis":"measured fixture values over a seven day window"}})
 err = io.StringIO()
 with contextlib.redirect_stderr(err): criteria, minimums, bases, invalid, row = standard("flow.merge_rate_per_hour")
