@@ -169,6 +169,7 @@ jq -e 'all(.units[0].history[]; .stage != "worker-no-output") and .workers[0].ha
 
 # The same refusal on the next run parks the unit with the guard reason.
 printf '%s\n' "$guard_marker" > "$sup/guard-second.log"
+jq '.units[0].history += [{stage:"write-start",work_type:"implement"}]' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
 jq -n '{workers:[{pid:999999998,unit:"issue-guard",type:"review",provider:"fixture",log:"guard-second.log",report:"guard.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
 harvest_workers
 jq -e '.units[0] | .stage == "parked" and .parked_reason == "non-product-test-guard: command=bash reason=test-file" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 2) and all(.history[]; .stage != "worker-no-output")' "$UNITS" >/dev/null \
