@@ -180,7 +180,7 @@ seed_units '{"units":[{"id":"a8","issue":801,"stage":"review","history":[1,2,3]}
 printf '%s\n' '{"units":[{"id":"b8","issue":802,"stage":"merged","pr":88,"note":"n","history":[]}]}' > "$UNITS_ARCHIVE"
 units_history_doc >/dev/null
 [[ "$(ls "$A"/.units-history-doc.*.json | wc -l)" == 1 ]] || fail "doc cache file missing"
-[[ "$(jqf -c '.units[1] | keys' <(units_history_index))" == '["branch","hold_handoff_episode","id","issue","pr","stage"]' ]] || fail "index must carry only lookup fields"
+[[ "$(jqf -c '.units[1] | keys' <(units_history_index))" == '["branch","hold_handoff_episode","id","issue","land_sha","merge_sha","pr","stage"]' ]] || fail "index must carry only lookup fields"
 sleep 0.05
 seed_units '{"units":[{"id":"a8","issue":801,"stage":"review","history":[1,2,3]},{"id":"c8","issue":803,"stage":"review","history":[]}]}'
 jqf -e 'any(.units[]; .id == "c8")' <(units_history_doc) >/dev/null || fail "cache must rebuild after units.json changes"
