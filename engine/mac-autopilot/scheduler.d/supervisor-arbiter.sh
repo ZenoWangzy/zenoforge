@@ -340,8 +340,8 @@ supervisor_requeue_followup_cites_pr() { # unit-json → 0 when its open split c
   ' <<<"$json" >/dev/null 2>&1
 }
 
-supervisor_requeue_retry() { say "supervisor arbitration unit=$1: $2; leaving the unit at supervisor-review"; return 1; }
-supervisor_requeue_park_failure() { supervisor_budget_park "$1" "$2" "$3" "supervisor requeue failed" "supervisor-requeue-failed" || { say "supervisor arbitration unit=$1: requeue failed ($2) and durable park failed"; return 1; }; }
+supervisor_requeue_retry() { arbiter_retry=true; say "supervisor arbitration unit=$1: $2; leaving the unit at supervisor-review"; return 1; }
+supervisor_requeue_park_failure() { supervisor_budget_park "$1" "$2" "$3" "supervisor requeue failed" "supervisor-requeue-failed" || { arbiter_retry=true; say "supervisor arbitration unit=$1: requeue failed ($2) and durable park failed"; return 1; }; }
 
 supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute 落地：选一个工作环节放回去
   local id="$1" action="$2" guidance="$3" decision="$4" u target extra="" issue issue_json issue_state issue_stage issue_reason issue_repo="${REPO:-${ZF_REPO:-}}" transition_error failure
@@ -403,7 +403,7 @@ Supervisor ruling: dependency #$dropped is resolved for this unit (dropped_deps)
       say "supervisor arbitration unit=$id: issue #$issue is already ready-for-agent; requeue treated as complete"
     else
       [[ -n "$issue_repo" ]] || { supervisor_requeue_retry "$id" "repository is unavailable for issue #$issue requeue"; return $?; }
-      if [[ "$issue_stage" == on-hold ]]; then [[ "$(jqf -r '.hold.holder // empty' <<<"$issue_state")" == scheduler-stop-loss ]] || { supervisor_requeue_retry "$id" "issue #$issue has a non-stop-loss hold"; return $?; }; issue_reason=hold-requeue; else issue_reason=supervisor-requeue; fi
+      if [[ "$issue_stage" == on-hold ]]; then [[ "$(jqf -r '.hold.holder // empty' <<<"$issue_state")" == scheduler-stop-loss ]] || { supervisor_requeue_park_failure "$id" "issue #$issue has a non-stop-loss hold" "$decision"; return $?; }; issue_reason=hold-requeue; else issue_reason=supervisor-requeue; fi
       issue_json="$(gh issue view "$issue" --repo "$issue_repo" --json number,title,body,state,labels 2>/dev/null)" || { supervisor_requeue_retry "$id" "issue #$issue could not be refreshed for requeue"; return $?; }
       if ! transition_error="$(scheduler_issue_transition "$issue" ready-for-agent "$issue_reason" . 0 "$issue_json" 2>&1)"; then
         transition_error="${transition_error//$'\n'/ }"; if [[ "$transition_error" == *"issue_transition: refused "* ]]; then failure="issue #$issue could not be requeued to ready-for-agent"; [[ -z "$transition_error" ]] || failure="$failure: ${transition_error:0:400}"; supervisor_requeue_park_failure "$id" "$failure" "$decision"; return $?; fi
@@ -751,7 +751,7 @@ supervisor_record_jev_comparison() { # worker-json terra-action → shadow compa
 }
 
 harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or final cap-triage report
-  local w="$1" unit pid report log action stream tk session_id cap_triage decided=false
+  local w="$1" unit pid report log action stream tk session_id cap_triage decided=false arbiter_retry=false
   unit="$(jqf -r .unit <<<"$w")"; pid="$(jqf -r .pid <<<"$w")"; report="$(jqf -r .report <<<"$w")"; log="$SUP/$(jqf -r .log <<<"$w")"
   cap_triage="$(jqf -r '.cap_triage // false' <<<"$w")"
   stream="$(python3 "$USAGE_READER" codex-stream "$log" 2>/dev/null || true)"
@@ -789,10 +789,10 @@ harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or fin
       supervisor_arbiter_no_answer "$unit" "no ACTION line in $report" false
     fi
   fi
-  # A run with no answer decided nothing: only a decision holds the next run, and it ends a no-answer streak.
+  # A valid answer ends a no-answer streak; a retry must not hold the next tick at the same head/state mark.
   if [[ "$decided" == true ]]; then
     set_unit "$unit" 'del(.arbiter_no_answer, .arbiter_no_answer_since, .arbiter_retry_after)'
-    supervisor_arbiter_record_left "$unit"
+    [[ "$arbiter_retry" == true ]] || supervisor_arbiter_record_left "$unit"
   fi
   jqf --argjson pid "$pid" --arg finished "$STAMP" \
     '(.workers[] |= (if .pid==$pid and .type=="supervise" and .harvested!=true then .harvested=true | .finished_at=$finished else . end))' "$WORKERS" | write_state "$WORKERS"

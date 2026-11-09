@@ -913,16 +913,38 @@ printf '%s\n' '{"state":"needs-advisor"}' > "$issue_states/9406.json"
 saved_requeue_gh="$(declare -f gh)"
 gh() { printf 'gh %s\n' "$*" >> "$GH_CALLS"; return 1; }
 requeue_test_unit arbiter-read-failed 9406 99406
-supervisor_requeue_unit arbiter-read-failed requeue "resume the repair" "$requeue_decision" || :
+harvest_with_reply arbiter-read-failed 'ACTION: requeue
+REASON: resume reviewed work
+EVIDENCE: synthetic transient GitHub read failure
+REJECTED: park
+GUIDANCE: retry the requeue' || :
 eval "$saved_requeue_gh"
 [[ "$(field arbiter-read-failed .stage)" == supervisor-review ]] \
   || fail "a failed gh issue view must leave the unit at supervisor-review for retry"
+jq -e '.units[] | select(.id=="arbiter-read-failed") | has("arbiter_left_mark") | not' "$UNITS" >/dev/null \
+  || fail "a failed gh issue view must not hold the next tick"
 jq -e '.units[] | select(.id=="arbiter-read-failed") | all(.history[]; .stage != "supervisor-requeue-failed")' "$UNITS" >/dev/null \
   || fail "a failed gh issue view must not record a durable requeue-failure park"
 grep -Fq 'gh issue view 9406 --repo ZenoWangzy/zenoforge --json number,title,body,state,labels' "$GH_CALLS" \
   || fail "the retry case must exercise gh issue view rc 1"
 ! grep -Fq '9406:ready-for-agent' "$REQUEUE_TRANSITIONS" \
   || fail "a failed gh issue view must not attempt the issue transition"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+jq -e 'any(.workers[]; .type=="supervise" and .unit=="arbiter-read-failed")' "$WORKERS" >/dev/null \
+  || fail "tick two must dispatch the unit again after its transient requeue failure"
+
+# A non-stop-loss hold is a deterministic refusal and must park for the regular dead-park recovery route.
+printf '%s\n' '{"state":"on-hold","hold":{"kind":"manual","holder":"head"}}' > "$issue_states/9407.json"
+requeue_test_unit arbiter-nonstoploss 9407 99407
+harvest_with_reply arbiter-nonstoploss 'ACTION: requeue
+REASON: resume reviewed work
+EVIDENCE: manual on-hold state
+REJECTED: park
+GUIDANCE: resume after the hold' || :
+[[ "$(field arbiter-nonstoploss .stage)" == parked ]] \
+  || fail "a non-stop-loss hold must durably park the requeue"
+jq -e '.units[] | select(.id=="arbiter-nonstoploss") | .parked_reason=="supervisor-budget" and (.note|contains("issue #9407 has a non-stop-loss hold")) and .history[-1].stage=="supervisor-requeue-failed"' "$UNITS" >/dev/null \
+  || fail "the non-stop-loss hold park must retain its reason"
 
 # A deterministic requeue-failure park is eligible for the existing daily dead-park recut.
 saved_dead_park_tick_prs="$(declare -f tick_prs)"
