@@ -639,7 +639,21 @@ register_new_issues() {
         if (( parent_status != 1 )); then
           parent_step="$(sed -n 's/^parent-check-failure step=//p' <<<"$parent_reason" | head -n 1)"
           [[ -n "$parent_step" ]] || parent_step=unknown
-          say "intake issue #$n deferred: could not verify parent status rc=$parent_status step=$parent_step"
+          # rc 2 backs off like the label-write failures; the third failed check
+          # parks the issue for triage instead of deferring forever.
+          local retry_step parent_attempts
+          retry_step="$(intake_parent_retry_failed "$n")" || retry_step="? ?"
+          parent_attempts="${retry_step% *}"
+          if [[ "$parent_attempts" =~ ^[0-9]+$ ]] && (( parent_attempts >= 3 )); then
+            if scheduler_issue_transition "$n" needs-triage "intake-parent:unverified-after-$parent_attempts" . 0 "$issue_json"; then
+              say "intake issue #$n -> needs-triage (parent status unverified after $parent_attempts attempts, rc=$parent_status, step=$parent_step)"
+              intake_parent_retry_clear "$n"
+            else
+              say "intake issue #$n held: parent status unverified (rc=$parent_status, step=$parent_step); needs-triage update failed (attempt $parent_attempts)"
+            fi
+          else
+            say "intake issue #$n deferred: could not verify parent status rc=$parent_status step=$parent_step"
+          fi
           intake_skip parent_unverified; continue
         fi
         intake_parent_retry_clear "$n"
