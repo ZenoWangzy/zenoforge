@@ -91,8 +91,10 @@ def build(units, issues, rulings, accepted, now, hotfix_live=None, live_merge_sh
     for i in issues or []:
         n = i["number"]
         at = _epoch(done.get(n) or "")
-        if i["state"] == "OPEN" or (at is not None and now - at < ACCEPTED_KEEP_S):
-            cand[n] = (i["title"], {l["name"] for l in i.get("labels") or []})
+        labels = {l["name"] for l in i.get("labels") or []}
+        # Rows fetched by number (held and open-unit tickets, #771) include ops tickets: only founder labels make a requirement.
+        if labels & set(LABELS) and (i["state"] == "OPEN" or (at is not None and now - at < ACCEPTED_KEEP_S)):
+            cand[n] = (i["title"], labels)
     known = {i["number"] for i in issues or []}
     for n, u in by_issue.items():
         if n not in known and set(u.get("labels") or []) & set(LABELS) and u.get("stage") != "closed":

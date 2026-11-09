@@ -44,6 +44,11 @@ stale_units = [{"id": "issue-34", "issue": 34, "title": "t34", "stage": "merged"
 assert [(i["issue"], i["stage"]) for i in F.build(stale_units, [], [], [], now, retained={34: iso(60)})["items"]] == [(34, 3)]
 assert stages(retained={31: iso(60)}, acc=[{"issue": 31, "sha": "a" * 40, "at": iso(30)}])[31] == 4, "release-closer reaches 验收"
 assert stages()[31] == 2, "no retained event leaves 进 main"
+# Incident 2026-11-09 (after #771): by-number rows brought ops tickets (bug,awaiting-release, filed by github-actions) onto the ladder.
+ops = [{"number": 35, "title": "post-land red", "state": "OPEN", "labels": lab("bug", "awaiting-release")}]
+held_ft = [{"number": 36, "title": "t36", "state": "OPEN", "labels": lab("founder-test", "awaiting-release")}]
+got = {i["issue"]: i["stage"] for i in F.build([], ops + held_ft, [], [], now, retained={35: iso(60), 36: iso(60)})["items"]}
+assert got == {36: 3}, f"an ops row fetched by number is not a founder requirement; a held founder-test row reads 上线: {got}"
 # Auto-filed tickets leave the founder ledger even when they carry a founder label.
 config_root = tempfile.mkdtemp()
 os.makedirs(config_root, exist_ok=True)
