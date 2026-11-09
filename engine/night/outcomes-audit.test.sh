@@ -95,6 +95,7 @@ jq -n --arg at "$recent_label" '{state:"awaiting-release",run:{outcome:"merged",
   >"$tmp/home/state/110.json"
 
 GH_FAIL=""
+CLOSED_READY_JSON='[]'
 MERGED_PRS_JSON='{"data":{"recent":{"nodes":[],"pageInfo":{"hasNextPage":false}},"boundary":{"nodes":[],"pageInfo":{"hasNextPage":false}},"refs":{"nodes":[],"pageInfo":{"hasNextPage":false}},"implements":{"nodes":[],"pageInfo":{"hasNextPage":false}},"titles":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}'
 OPEN_ISSUES_JSON='[]'
 ISSUE_VIEW_OVERRIDES='{}'
@@ -223,7 +224,9 @@ gh_q() {
     [ "$SCALE_GH_DELAY_SECONDS" -eq 0 ] || sleep "$SCALE_GH_DELAY_SECONDS"
   fi
   if [[ -n "$GH_FAIL" && "$args" == *" $GH_FAIL "* ]]; then return 1; fi
-  if [[ "$args" == *" issue list "* && "$args" == *" --state closed "* ]]; then
+  if [[ "$args" == *" issue list "* && "$args" == *" --state closed "* && "$args" == *" --label ready-for-agent "* ]]; then
+    printf '%s\n' "$CLOSED_READY_JSON"
+  elif [[ "$args" == *" issue list "* && "$args" == *" --state closed "* ]]; then
     printf '%s\n' "$CLOSED_JSON"
   elif [[ "$args" == *" issue view "* ]]; then
     local previous=""

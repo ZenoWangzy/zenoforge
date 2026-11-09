@@ -312,52 +312,6 @@ outcomes_refresh_state_label_drift() {
   printf '%s\n' "$issues_json"
 }
 
-# GitHub UI and PR auto-closes do not pass through conclude_run. Repair only
-# tracked tickets from the closed-issue snapshot, through the shared transition.
-outcomes_reconcile_closed_states() {
-  local home="$1" closed_json="$2" row issue issue_json state_file dry_run="${OUTCOMES_RECONCILE_DRY_RUN:-0}" failure=0
-  local mode="${3:-reconcile}" state metadata hold_present held=0
-  local -a pending=()
-  [[ "$mode" == reconcile || "$mode" == observe ]] || return 1
-  [[ "$dry_run" == 0 || "$dry_run" == 1 ]] || return 1
-  jq -e 'type == "array" and all(.[];
-    (.number | type) == "number" and (.labels | type) == "array" and
-    ((.closedAt == null) or (.closedAt | type) == "string") and
-    ((.stateReason == null) or (.stateReason | type) == "string"))' \
-    <<< "$closed_json" >/dev/null 2>&1 || return 1
-  [[ "$mode" == observe || "$dry_run" != 1 ]] || return 0
-  while IFS= read -r row; do
-    issue="$(jq -r '.number' <<< "$row")" || return 1
-    [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
-    state_file="$home/state/$issue.json"
-    [ -f "$state_file" ] || continue
-    if [[ "$mode" == observe ]]; then
-      # Preserve the complete local lifecycle/hold record. Report drift rather
-      # than publishing a terminal state whose protected hold was not released.
-      metadata="$(jq -er 'select(type == "object" and (.state | type == "string" and length > 0))
-        | [.state, (.hold != null)] | @tsv' "$state_file")" || return 1
-      IFS=$'\t' read -r state hold_present <<< "$metadata"
-      if [[ "$hold_present" == true ]]; then held=$((held + 1)); fi
-      case "$state" in
-        concluded|duplicate|wontfix|released|closed) [[ "$hold_present" == true ]] || continue ;;
-      esac
-      pending+=("#$issue")
-      continue
-    fi
-    issue_json="$(jq -c '. + {state:"CLOSED"}' <<< "$row")" || return 1
-    if ! issue_reconcile_closed_state "$issue" "$issue_json"; then
-      echo "outcomes_reconcile_closed_states: could not reconcile closed issue #$issue" >&2
-      failure=1
-    fi
-  done < <(jq -c '.[]' <<< "$closed_json")
-  if [[ "$mode" == observe ]]; then
-    local issues=none
-    if ((${#pending[@]})); then issues="$(IFS=,; printf '%s' "${pending[*]}")"; fi
-    printf 'pending=%s issues=%s held=%s' "${#pending[@]}" "$issues" "$held"
-  fi
-  return "$failure"
-}
-
 outcomes_report_merged_pr_ambiguity() {
   local home="$1" issue="$2" prs="$3" reason="$4" marker seen
   marker="merged-pr-association-ambiguous issue=#$issue"
