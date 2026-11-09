@@ -189,8 +189,10 @@ stop_loss_unpark_sweep() { # requeue (refilled budget) when the PR head changed 
 # Token spend gate. Every finished worker log is one `spend_runs` record on its unit (spend_ledger.py; fresh tokens come from the
 # dashboard's own unit_spend, so this gate and `workorders` agree). Lifetime fresh tokens past the soft line park the unit once and
 # send it to one arbiter decision whose prompt carries the per-run table and a class; the first return to dispatch after that is the
-# single refill (a `token-refill` event). Past the hard line the unit parks for good: the check reads only spend, so no ruling kind
-# (supervisor-requeue, cap-budget-refill, advisor-ruling, arbiter) can refill it, and the head hears of it once through the inbox.
+# single refill (a `token-refill` event). Past the hard line no ruling kind (supervisor-requeue, cap-budget-refill, advisor-ruling,
+# arbiter) can refill the unit: the check reads only spend. Its issue leaves through the budget-recut path (route to needs-recut, PR
+# closed, unit closed; the children start with no spend); where that falls back the unit stays parked, and an issue that already
+# hard-parked in the last 7 days goes to the arbiter once instead of a second recut. The head hears of it once through the inbox.
 record_run_spend() { # → one spend_runs record on the unit of each finished worker log not yet recorded; one ledger write for the lot
   local out rc=0 err
   err="$(mktemp "$A/.spend-sweep.XXXXXX")" || return 0
@@ -243,7 +245,7 @@ token_park_context() { # unit-json → the arbiter prompt block for a unit parke
 }
 
 token_spend_park() { # id unit-json soft|hard
-  local id="$1" u="$2" level="$3" total class rec note ev=""
+  local id="$1" u="$2" level="$3" total class rec note ev="" repeat
   total="$(unit_fresh_tokens "$u")"; class="$(token_park_class "$u")"
   note="$level token line: $total lifetime fresh tokens (class $class)"
   # The table is built inside the filter from the unit's own records: a unit with many runs must not ride on a command line.
@@ -256,12 +258,36 @@ token_spend_park() { # id unit-json soft|hard
     return 0
   fi
   cancel_unit_runs "$id" "parked at the hard token line"
+  repeat=false; ! token_hard_park_recent "$u" || repeat=true # read before this park writes its own event
   # The park event is recorded once per unit: a later requeue that the gate parks again only repeats the state, not the count.
   jqf -e 'any((.history // [])[]; .stage == "token-park" and ((.result // "") | startswith("hard")))' <<<"$u" >/dev/null 2>&1 || ev="$(hist token-park "hard: $note") | "
+  hard_inbox() { (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "token-hard-park:$id" "token-hard-park unit=$id: $total lifetime fresh tokens passed the hard line $TOKEN_PARK_HARD_TOKENS (class $class); no ruling refills it") \
+    || say "token hard park unit=$id: inbox entry not delivered"; }
+  # Same issue already hard-parked in the last 7 days: another recut would spend the same tokens again, so the arbiter decides, once per unit.
+  if [[ "$repeat" == true && "$(unit_field "$id" 'any((.history // [])[]; .stage == "supervisor-escalated" and ((.result // "") | startswith("token hard park repeat")))')" != true ]]; then
+    set_unit "$id" "${ev}.token_park=($rec)" || return 1
+    say "token hard park unit=$id fresh=$total line=$TOKEN_PARK_HARD_TOKENS class=$class: repeat, to the arbiter"
+    hard_inbox
+    to_supervisor "$id" "token hard park repeat: $note; issue #$(jqf -r '.issue' <<<"$u") already hard-parked in the last 7 days, so no second recut" \
+      'Arbiter decides: a second recut of this issue would spend the same tokens again' 'the same issue passed the hard token line twice within 7 days' \
+      "$total fresh tokens against the $TOKEN_PARK_HARD_TOKENS line, class $class" '["Recut the issue again"]'
+    return 0
+  fi
   set_unit "$id" "${ev}.token_park=($rec) | .stage=\"parked\" | .note=$(js "token hard park: $note") | $(park_fields token-hard-park 'never: no ruling refills a unit past the hard token line')" || return 1
   say "token hard park unit=$id fresh=$total line=$TOKEN_PARK_HARD_TOKENS class=$class"
-  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "token-hard-park:$id" "token-hard-park unit=$id: $total lifetime fresh tokens passed the hard line $TOKEN_PARK_HARD_TOKENS (class $class); no ruling refills it") \
-    || say "token hard park unit=$id: inbox entry not delivered"
+  hard_inbox
+  [[ "$repeat" != true ]] || return 0
+  # First hard park of the issue: leave the park through the budget-recut path (its fallbacks park the unit, so the park above stays the safe state).
+  supervisor_budget_recut "$id" "token hard park: $note" null "token hard park could not recut" "token hard park" supervisor-budget-park supervisor-budget-recut true false
+  if [[ "$(unit_field "$id" '.stage // empty')" == closed ]]; then set_unit "$id" 'del(.parked_reason, .unpark_condition)'
+  else set_unit "$id" "$(park_fields token-hard-park 'never: no ruling refills a unit past the hard token line')"; fi
+}
+
+token_hard_park_recent() { # unit-json → 0 when any unit of its issue (ledger and archive) hard-parked within 7 days
+  local issue; issue="$(jqf -r '.issue // empty' <<<"$1")"
+  [[ "$issue" =~ ^[0-9]+$ ]] || return 1
+  jqf -e --argjson n "$issue" --argjson now "${NOW_EPOCH:-$(date +%s)}" 'any(.units[] | select(.issue == $n) | (.history // [])[];
+    .stage == "token-park" and ((.result // "") | startswith("hard")) and ((try (.at | fromdateiso8601) catch 0) >= $now - 604800))' <(units_history_doc) >/dev/null 2>&1
 }
 
 token_spend_gate() { # id unit-json [check-only] → 0 when the unit may dispatch, 1 when it is held (parked, or the full tick decides)
