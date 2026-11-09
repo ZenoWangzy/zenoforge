@@ -563,6 +563,7 @@ register_new_issues() {
               [[ -z "$RESCUE_START_REF" ]] || handoff="$(jqf -c --arg ref "$RESCUE_START_REF" --arg sha "$RESCUE_START_SHA" '.start_ref = $ref | .start_sha = $sha' <<<"$handoff")"
               continue
             fi
+            if preserve_refused_clone "$n" "$related_id" "$prior_worktree"; then continue; fi
             prior_reason+="; not rescued: $RESCUE_REFUSED"
             say "handoff issue #$n: $prior_reason" # the inbox line is once per episode, so a later refusal shows only here
           fi

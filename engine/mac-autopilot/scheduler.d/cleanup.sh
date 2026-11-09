@@ -171,6 +171,29 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
     || say "handoff issue #$n: could not post the rescue refs: ${ref}${stash_list}"
 }
 
+# A clone the secret scan refused can never be pushed, and left in place it blocks its handoff for good (#5791 waited 11 h): set it aside, mode 700,
+# and let the handoff start fresh from the pushed branch. Only the scan's refusals come here. No sweep, scan or upload may read a *.preserved-* dir.
+preserve_refused_clone() { # issue unit clone -> 0 once the clone is set aside; the inbox line names the unit and the path, never content
+  local n="$1" id="$2" wt="$3" dest
+  [[ "$RESCUE_REFUSED" == "secret scan found a leak" || "$RESCUE_REFUSED" == "secret scan refused an earlier pass" ]] || return 1
+  dest="$WT_ROOT/wt-$id.preserved-$(date -u +%Y%m%dT%H%MZ)"
+  [[ "$wt" == "$WT_ROOT/wt-$id" && ! -e "$dest" ]] && chmod 700 "$wt" && mv -- "$wt" "$dest" || return 1
+  rm -f "$A/rescue-refused-$n"
+  say "handoff issue #$n: secret scan refused the clone of $id; moved to $dest (mode 700, never pushed or scanned again, deleted after 7 days)"
+  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "handoff-preserved-clone-aside:$n:$id:${dest##*.preserved-}" \
+    "handoff-preserved-clone-aside unit=$id path=$dest") || say "handoff issue #$n: could not notify supervisor about $dest"
+}
+expire_preserved_clones() { # *.preserved-* dirs 7 days after the stamp in their name; only that exact name pattern under WT_ROOT is removed
+  local d name epoch
+  for d in "$WT_ROOT"/wt-*.preserved-*; do
+    name="${d##*/}"
+    [[ "$name" =~ ^wt-[A-Za-z0-9._-]+\.preserved-([0-9]{8})T([0-9]{2})([0-9]{2})Z$ && -d "$d" && ! -L "$d" ]] || continue
+    epoch="$(date -u -d "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}:${BASH_REMATCH[3]}" +%s 2>/dev/null)" || continue
+    (( ${NOW_EPOCH:-$(date +%s)} - epoch > 604800 )) || continue
+    remove_readonly_tree "$d" && say "cleanup preserved clone $d (older than 7 days)"
+  done
+}
+
 # Engine version trees are read-only, and plain rm -rf cannot empty a read-only directory.
 remove_readonly_tree() {
   find "$1" -type d ! -perm -u=w -exec chmod u+w -- {} + 2>/dev/null
@@ -224,6 +247,7 @@ cleanup_tick() {
     done < <(jqf -r --slurpfile live "$UNITS" '.units[] | select((.eval_gate.status // "") | IN("pending","running") | not) | select(.id as $i | any($live[0].units[]; .id == $i) | not) | .id' "$UNITS_ARCHIVE" 2>/dev/null) # a restored unit is live again: its worktree is not cleanup's
   fi
   for preserve_path in "${!PRESERVE_KEEP[@]}"; do printf '%s\t%s\n' "${PRESERVE_KEEP[$preserve_path]}" "$preserve_path"; done > "$preserve_file.tmp" 2>/dev/null && mv -f -- "$preserve_file.tmp" "$preserve_file"
+  (( SECONDS >= CLEANUP_DEADLINE )) || expire_preserved_clones
   (( CLEANUP_LEFT == 0 )) || say "cleanup worktree walk stopped at ${SECONDS}s: left $CLEANUP_LEFT worktrees for the next tick"
   n_total="$(jqf '.workers | length' "$WORKERS" 2>/dev/null || echo 0)"
   if (( n_total > 60 )); then
