@@ -322,6 +322,8 @@ ci_slot_starve_watch() {
 ci_cancel_stale_watch() {
   local rows id pr head stage runs age chk now minutes="${CI_CANCEL_STALE_MIN:-30}"
   [[ "$minutes" =~ ^[1-9][0-9]*$ ]] || minutes=30
+  # A pass with no watched unit makes no PR census: tick_prs is a gh call whenever the tick cache is empty.
+  [[ -n "$(jqf -r '.units[] | select(.stage | IN("supervisor-review", "parked", "needs-human")) | select((.pr | type) == "number" and (.hotpatch // false) != true) | .id' "$UNITS" 2>/dev/null | head -n 1)" ]] || return 0
   now="$(date -u +%s)"
   rows="$(tick_prs | jqf -r --slurpfile units "$UNITS" '. as $prs | $units[0].units[]
       | select((.stage | IN("supervisor-review", "parked", "needs-human")) and (.pr | type) == "number" and (.hotpatch // false) != true)
