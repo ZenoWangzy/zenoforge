@@ -328,7 +328,7 @@ dispatch_walk_full() { ! dispatch_capacity_free; }
 # Walk passes that drop a pending unit without a log line are counted by reason; the refill and tick summaries name them.
 declare -gA TICK_DISPATCH_SKIPS=()
 declare -gA TICK_PRIORITY_HOLD_EXPIRED=()
-dispatch_skip() { TICK_DISPATCH_SKIPS[$1]=$(( ${TICK_DISPATCH_SKIPS[$1]:-0} + 1 )); }
+dispatch_skip() { TICK_DISPATCH_SKIPS[$1]=$(( ${TICK_DISPATCH_SKIPS[$1]:-0} + 1 )); dispatch_why "${why_unit:-}" "$1"; }
 dispatch_skip_summary() { # name:count,... for the reasons that fired this pass, sorted; empty when none
   local k out=""
   (( ${#TICK_DISPATCH_SKIPS[@]} )) || return 0
@@ -336,7 +336,7 @@ dispatch_skip_summary() { # name:count,... for the reasons that fired this pass,
   printf '%s' "$out"
 }
 room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=true] [report-only=false]：焦点与并发检查
-  local u="${3:-}" priority waiter impl_cap n_impl hold_now hold_since hold_elapsed hold_alerted hold_line hold_max fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false
+  local u="${3:-}" priority waiter impl_cap n_impl hold_now hold_since hold_elapsed hold_alerted hold_line hold_max fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false why_unit="$1"
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"
   # A report-only continuation writes no code and starts no write-start: the repair round cap and the Dagger runtime gate do not apply to it.
   if [[ "$2" == repair && "${6:-false}" != true ]]; then repair_cap_admission "$1" "$u" || { dispatch_skip repair-cap; return 1; }; fi
@@ -348,6 +348,7 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
   if [[ "$FOCUS_MODE" == "release" && "$(unit_is_critical "$u")" != "true" && "$(critical_pending_count)" -gt 0 ]]; then
     FOCUS_SKIPPED+=("$1")
     say "skip dispatch unit=$1 focus=release critical=false"
+    dispatch_why "$1" focus-release
     return 1
   fi
   priority="$(unit_dispatch_priority "$u")"
@@ -377,16 +378,17 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
   [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || (( gate_elapsed < 2 )) || say "dispatch detail priority_gate unit=$1 secs=${gate_elapsed}s"
   if [[ "$gate_waiting" == true ]]; then
     say "skip dispatch unit=$1 priority=$priority (higher-priority run waiting at luna/zc gate: $waiter)"
+    dispatch_why "$1" priority-wait
     return 1
   fi
-  if ! dispatch_capacity_free; then say "skip dispatch unit=$1 (capacity $(live_workers)/$MAX)"; return 1; fi
+  if ! dispatch_capacity_free; then say "skip dispatch unit=$1 (capacity $(live_workers)/$MAX)"; dispatch_why "$1" capacity; return 1; fi
   impl_cap="$IMPLEMENT_CAP"
   if [[ ( "$2" == "implement" || "$2" == "repair" ) && "$check_footprint" == true ]]; then
     footprint_room "$1" "$u" "$fresh_footprint" || return 1
   fi
   if [[ "$2" == "implement" || "$2" == "repair" ]]; then
     n_impl=$(live_by_type "implement|repair")
-    if (( n_impl >= impl_cap )); then say "skip dispatch unit=$1 (implement at cap $n_impl/$impl_cap)"; return 1; fi
+    if (( n_impl >= impl_cap )); then say "skip dispatch unit=$1 (implement at cap $n_impl/$impl_cap)"; dispatch_why "$1" implement-cap; return 1; fi
   fi
 }
 
@@ -445,7 +447,7 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
   [[ "$report_only" != true ]] || failure_prompt="$prompt"
   room_for "$1" "$3" "$unit_json" true "$check_footprint" "$report_only" || return 1
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
-    size_admission_write_start "$1" "${10:-}" "$unit_json" || return 1
+    size_admission_write_start "$1" "${10:-}" "$unit_json" || { dispatch_why "$1" size-admission-start; return 1; }
   fi
   if [[ "$3" == implement ]]; then
     lesson_brief="$(footprint_recurrence_brief "$unit_json")"
@@ -463,6 +465,7 @@ $(tail -80 "$check_output" 2>/dev/null)"
   dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || return 1
   # A successful start can change whether later candidates fit; only reuse admission samples between starts.
   TICK_PRIORITY_ADMISSION_CACHE=()
+  dispatch_why_clear "$1"
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     if [[ "$3" == repair ]]; then
       # A repair worker edits the unit's existing report in place; its own report path only holds the fix note.
