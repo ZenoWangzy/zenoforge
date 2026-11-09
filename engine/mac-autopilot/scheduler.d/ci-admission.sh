@@ -313,6 +313,39 @@ ci_slot_starve_watch() {
   return 0
 }
 
+# 2026-11-08 #5937 (unit issue-5306): to_supervisor cancelled the PR's runs the moment the PR opened (cancel_unit_runs,
+# "parked for the supervisor"). Every rerun owner (ci_assign_wip, ci_cancelled) only looks at ready-to-merge units, and this
+# unit went supervisor-review -> repair -> parked on an unchanged head, so nothing reran CI for ~3 h until head did it by hand.
+# Rerunning here would spend CI on a head no stage will merge, so this raises one alert per head instead. Review stages are
+# not scanned (their cancelled CI is deliberate, ci_defer_unapproved) and neither is ready-to-merge (its owners rerun).
+# A negative lookup is remembered for 30 min per head:stage so a pass costs one gh call per unit at most that often.
+ci_cancel_stale_watch() {
+  local rows id pr head stage runs age chk now minutes="${CI_CANCEL_STALE_MIN:-30}"
+  [[ "$minutes" =~ ^[1-9][0-9]*$ ]] || minutes=30
+  # A pass with no watched unit makes no PR census: tick_prs is a gh call whenever the tick cache is empty.
+  [[ -n "$(jqf -r '.units[] | select(.stage | IN("supervisor-review", "parked", "needs-human")) | select((.pr | type) == "number" and (.hotpatch // false) != true) | .id' "$UNITS" 2>/dev/null | head -n 1)" ]] || return 0
+  now="$(date -u +%s)"
+  rows="$(tick_prs | jqf -r --slurpfile units "$UNITS" '. as $prs | $units[0].units[]
+      | select((.stage | IN("supervisor-review", "parked", "needs-human")) and (.pr | type) == "number" and (.hotpatch // false) != true)
+      | . as $u | ($prs[] | select(.number == $u.pr and (.headRefOid // "") != "")) | [$u.id, ($u.pr | tostring), .headRefOid, $u.stage] | @tsv')" || return 0
+  while IFS=$'\t' read -r id pr head stage; do
+    [[ -n "$id" && "$(unit_field "$id" '.ci_cancel_stale_alerted // empty')" != "$head" ]] || continue
+    chk="$(unit_field "$id" '.ci_cancel_stale_chk // empty')"
+    [[ "$chk" != "$head:$stage:"* ]] || (( now - ${chk##*:} >= minutes * 60 )) || continue
+    runs="$(gh run list --commit "$head" --json conclusion,event,updatedAt 2>/dev/null)" || { say "ci cancel watch unit=$id: could not list runs for head $head"; continue; }
+    age="$(jqf -r --argjson now "$now" '[.[] | select(.event == "pull_request" and .conclusion != "skipped")] as $r
+      | if ($r | length) > 0 and all($r[]; .conclusion == "cancelled") then (($now - ([$r[] | .updatedAt | fromdateiso8601] | max)) / 60 | floor) else -1 end' <<<"$runs" 2>/dev/null)" || continue
+    if [[ ! "$age" =~ ^[0-9]+$ ]]; then
+      set_unit "$id" ".ci_cancel_stale_chk=$(js "$head:$stage:$now")" || :
+    elif (( age >= minutes )); then
+      say "ci cancelled stale unit=$id PR#$pr head=${head:0:9} stage=$stage: every PR run cancelled for ${age} min, nothing readmits it"
+      echo "[$STAMP] CI-CANCELLED-STALE unit=$id PR#$pr head=$head stage=$stage cancelled_for=${age}m" >> "$A/alerts/gate.md" \
+        && set_unit "$id" ".ci_cancel_stale_alerted=$(js "$head")" || :
+    fi
+  done <<<"$rows"
+  return 0
+}
+
 # Sole CI admission decision point for a scheduler tick. Gate-managed hotfixes are readied first; then
 # review deferral and WIP slots apply, both exempting hotfix branches. The shared cancel set makes the
 # first selected action authoritative for the rest of this pass.
@@ -338,6 +371,7 @@ ci_admission() {
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "ci admission detail wip_assignment=${detail_elapsed}s"
   ci_slot_starve_watch
+  ci_cancel_stale_watch
 }
 
 # ---------- CI admission station (scheduler.sh --ci-admission) ----------
