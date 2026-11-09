@@ -1022,3 +1022,48 @@ test('a grown engine or tools source file selects the size ratchet; tests and ve
     assert.ok(!focusedTestPaths([path], tracked).includes(ratchet), path);
   }
 });
+
+test('a changed sourced fixture maps to the tests that source it, never to itself', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'focused-fixture-'));
+  const fixture = 'engine/mac-autopilot/test-scheduler-gates-fixture.sh';
+  const script = 'engine/mac-autopilot/scheduler.sh';
+  try {
+    const git = (...args) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' });
+    mkdirSync(join(repo, 'engine/mac-autopilot'), { recursive: true });
+    // The fixture names scheduler.sh, which is how a change to that script reached the fixture before.
+    const base = {
+      [fixture]: 'ci_tick_reset() { CI_RUN_JOBS_CACHE=(); }\n# Stubs the gates scheduler.sh sources.\n',
+      'engine/mac-autopilot/scheduler-gates.test.sh': 'source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"\nci_tick_reset\n',
+      [script]: 'echo sched\n',
+      'engine/mac-autopilot/scheduler.test.sh': 'echo sched-test\n',
+    };
+    for (const [path, text] of Object.entries(base)) writeFileSync(join(repo, path), text);
+    git('init', '-q');
+    git('add', '.');
+    git('commit', '-q', '-m', 'base');
+    writeFileSync(join(repo, fixture), base[fixture].replace('CI_RUN_JOBS_CACHE=();', 'CI_RUN_JOBS_CACHE=(); CI_ADMISSION_CANCELLED=();'));
+    writeFileSync(join(repo, script), 'echo sched v2\n');
+    git('commit', '-q', '-am', 'change');
+    const tracked = new Set(git('ls-files').trim().split('\n'));
+    assert.deepEqual(focusedTestPaths([fixture, script], tracked, { baseRef: 'HEAD~1', headRef: 'HEAD', cwd: repo }), [
+      'engine/mac-autopilot/scheduler-gates.test.sh',
+      'engine/mac-autopilot/scheduler.test.sh',
+    ]);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('a test-*.sh suite under a configured pipeline root is still selected', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'focused-suite-root-'));
+  const suite = 'project-tests/test-advisor-convergence.sh';
+  try {
+    writeFileSync(join(process.env.ZF_CONFIG_ROOT, 'ci.json'), JSON.stringify({ pipeline_suite_roots: ['project-tests'] }));
+    mkdirSync(join(repo, 'project-tests'), { recursive: true });
+    writeFileSync(join(repo, suite), 'source project-tests/advisor-helper.sh\n');
+    assert.deepEqual(focusedTestPaths(['project-tests/advisor-helper.sh'], new Set([suite]), { cwd: repo }), [suite]);
+  } finally {
+    rmSync(join(process.env.ZF_CONFIG_ROOT, 'ci.json'), { force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});

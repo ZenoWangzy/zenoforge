@@ -626,9 +626,13 @@ function sourcesHelper(source, helperPath) {
 
 const REFERENCE_SOURCE_PATTERN = /\.(?:sh|[cm]?js|ts|py|json|ya?ml)$/;
 
-function isSelectableTestPath(path) {
-  return !path.startsWith('packages/') && !path.startsWith('apps/')
-    && (/\.test\.(?:sh|mjs)$/.test(path) || /(^|\/)test-[^/]+\.sh$/.test(path));
+function configuredSuiteRoots(repoRoot) {
+  const roots = zfConfigJson('ci.json', repoRoot)?.pipeline_suite_roots;
+  return Array.isArray(roots) ? roots.filter((root) => typeof root === 'string' && root.length > 0).map((root) => root.replace(/\/+$/, '')) : [];
+}
+function isSelectableTestPath(path, suiteRoots = []) {
+  return !path.startsWith('packages/') && !path.startsWith('apps/') && (/\.test\.(?:sh|mjs)$/.test(path)
+    || (/(^|\/)test-[^/]+\.sh$/.test(path) && path.split('/').at(-1) !== 'test-env.sh' && suiteRoots.some((root) => root === '.' || path.startsWith(`${root}/`))));
 }
 
 // Generic mappings keep the suite's default path. If a target moved that suite,
@@ -636,16 +640,12 @@ function isSelectableTestPath(path) {
 export function resolveTrackedSuitePaths(candidates, trackedPaths, repoRoot = process.cwd()) {
   const tracked = trackedPaths instanceof Set ? trackedPaths : new Set(trackedPaths);
   const resolved = new Set(candidates.filter((candidate) => tracked.has(candidate)));
-  const roots = zfConfigJson('ci.json', repoRoot)?.pipeline_suite_roots;
-  if (!Array.isArray(roots)) return [...resolved].sort();
-
-  const configuredRoots = roots.filter((root) => typeof root === 'string' && root.length > 0)
-    .map((root) => root.replace(/\/+$/, ''));
+  const configuredRoots = configuredSuiteRoots(repoRoot);
   for (const candidate of candidates) {
     if (tracked.has(candidate)) continue;
     const basename = candidate.split('/').at(-1);
     for (const path of tracked) {
-      if (!isSelectableTestPath(path) || path.split('/').at(-1) !== basename) continue;
+      if (!isSelectableTestPath(path, configuredRoots) || path.split('/').at(-1) !== basename) continue;
       if (configuredRoots.some((root) => root === '.' || path.startsWith(`${root}/`))) resolved.add(path);
     }
   }
@@ -671,7 +671,7 @@ function readTracked(path, cwd) {
   }
 }
 
-function referencingPaths(filename, tracked, { suiteRef, cwd }) {
+function referencingPaths(filename, tracked, { suiteRef, cwd, suiteRoots }) {
   if (suiteRef) {
     return gitText(['grep', '-l', '-I', '-F', filename, suiteRef, '--'], cwd)
       .split('\n')
@@ -681,26 +681,26 @@ function referencingPaths(filename, tracked, { suiteRef, cwd }) {
   // Without refs, select against the working tree (staged files count) by
   // reading the tracked tests and the tracked scripts that own one.
   return [...tracked].filter((path) => (
-    (isSelectableTestPath(path) || sameNameOwnerTests(path, tracked).length > 0)
+    (isSelectableTestPath(path, suiteRoots) || sameNameOwnerTests(path, tracked).length > 0)
     && (readTracked(path, cwd) ?? '').includes(filename)
   ));
 }
 
 function filenameReferencedTests(changedPaths, tracked, { headRef, mappingRef, cwd }) {
-  const suiteRef = mappingRef ?? headRef;
+  const suiteRef = mappingRef ?? headRef, suiteRoots = configuredSuiteRoots(cwd);
   const testsByScript = new Map();
 
   for (const changedPath of changedPaths) {
     if (
       !REFERENCE_SOURCE_PATTERN.test(changedPath)
-      || isSelectableTestPath(changedPath)
+      || isSelectableTestPath(changedPath, suiteRoots)
     ) continue;
 
     const filename = changedPath.split('/').at(-1);
-    const references = referencingPaths(filename, tracked, { suiteRef, cwd });
-    const tests = new Set(references.filter(isSelectableTestPath));
+    const references = referencingPaths(filename, tracked, { suiteRef, cwd, suiteRoots });
+    const tests = new Set(references.filter((path) => isSelectableTestPath(path, suiteRoots)));
     for (const reference of references) {
-      if (isSelectableTestPath(reference)) continue;
+      if (isSelectableTestPath(reference, suiteRoots)) continue;
       for (const owner of sameNameOwnerTests(reference, tracked)) tests.add(owner);
     }
 
