@@ -92,6 +92,22 @@ printf 'dirty\n' >> "$wt/a.txt"
 git -C "$wt" remote set-url origin "$fixture/missing.git"
 refused_intact "a failed commit push" "rescue push failed"
 
+# An active hand/ worktree belongs to the handoff, not the old clone's unpushed branches.
+new_clone
+base_sha="$(git -C "$wt" rev-parse HEAD)"
+git -C "$wt" checkout -q -b agent/issue-70
+printf 'unpublished old clone work\n' > "$wt/prior.txt"
+git -C "$wt" add prior.txt; git -C "$wt" commit -qm 'unpublished old clone work'
+git -C "$wt" worktree add -q -b hand/issue-70 "$fixture/hand-70" "$base_sha"
+printf 'active handoff work\n' > "$fixture/hand-70/handoff.txt"
+git -C "$fixture/hand-70" add handoff.txt; git -C "$fixture/hand-70" commit -qm 'active handoff work'
+handoff_sha="$(git -C "$fixture/hand-70" rev-parse HEAD)"
+git -C "$wt" remote set-url origin "$fixture/missing.git"
+refused_intact "an active handoff worktree" "rescue push failed"
+if preserve_refused_clone 70 issue-70 "$wt"; then fail "the active hand/ branch caused the old clone to be moved aside"; fi
+[[ -d "$wt" && "$(git -C "$fixture/hand-70" rev-parse HEAD)" == "$handoff_sha" \
+  && "$(cat "$fixture/hand-70/handoff.txt")" == 'active handoff work' ]] || fail "the active handoff worktree changed"
+
 # Deletes, renames, modes and symlinks all reach the rescue commit, and the clone ends clean.
 new_clone
 git -C "$wt" config core.fileMode true; printf 'two\n' > "$wt/b.txt"; printf 'x\n' > "$wt/d.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm more; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
@@ -270,6 +286,24 @@ aside_clone() { # fresh clone at the unit's path under WT_ROOT, logs emptied
   new_clone; rm -rf "$WT_ROOT"/wt-issue-70*; mv "$fixture/wt" "$WT_ROOT/wt-issue-70"; wt="$WT_ROOT/wt-issue-70"
   rm -f "$fixture/inbox" "$fixture/say.log" "$comments" "$fixture/scans"; : > "$comments"
 }
+assert_refused_clone_aside() { # issue id content marker -> the intake caller can continue with a private, retained clone
+  local n="$1" id="$2" marker="$3" handoff_continued=0 out
+  local -a aside
+  if preserve_refused_clone "$n" "$id" "$wt"; then handoff_continued=1; else fail "the refused clone was not set aside"; fi
+  [[ "$handoff_continued" == 1 && ! -e "$wt" ]] || fail "the handoff stayed blocked by the refused clone"
+  aside=("$WT_ROOT"/wt-"$id".preserved-*)
+  [[ ${#aside[@]} == 1 && -d "${aside[0]}" ]] || fail "expected one preserved dir, got ${aside[*]}"
+  [[ "${aside[0]##*.preserved-}" =~ ^[0-9]{8}T[0-9]{4}Z$ ]] || fail "bad stamp in ${aside[0]}"
+  [[ "$(stat -c %a "${aside[0]}")" == 700 ]] || fail "the preserved dir is not mode 700"
+  [[ "$(cat "$fixture/inbox")" == "handoff-preserved-clone-aside unit=$id path=${aside[0]}" ]] || fail "the inbox line is wrong"
+  [[ -z "$(remote_rescues)" && ! -e "$fixture/supervisor/autopi/rescue-refused-$n" ]] || fail "the clone was pushed or its refusal marker stayed"
+  [[ ! -e "$fixture/scans" ]] || fail "the preserved clone was scanned"
+  # The cleanup walk names wt-$id exactly; the suffixed preserved path is left to seven-day expiry.
+  [[ "${aside[0]}" != "$WT_ROOT/wt-$id" && -d "${aside[0]}" ]] || fail "the cleanup path includes the preserved clone"
+  for out in "$fixture/say.log" "$fixture/inbox" "$comments" "$fixture/scans" "$fixture/state-merges"; do
+    [[ ! -e "$out" ]] || ! grep -Fq "$marker" "$out" || fail "preserved content reached $out"
+  done
+}
 aside_clone
 printf 'key=AKIAFAKE\n' >> "$wt/a.txt"; git -C "$wt" stash -q
 if rescue_handoff_clone 70 "$wt"; then fail "a leak was rescued"; fi
@@ -287,6 +321,41 @@ aside=("$WT_ROOT"/wt-issue-70.preserved-*); [[ ${#aside[@]} == 1 && -d "${aside[
 for out in "$fixture/say.log" "$fixture/inbox" "$comments" "$fixture/scans" "$fixture/state-merges"; do
   [[ ! -e "$out" ]] || ! grep -q 'AKIAFAKE\|key=' "$out" || fail "stash content reached $out"
 done
+# A stash with ignored data and unpushed commits both stay in the moved clone, and the handoff can continue.
+aside_clone
+stash_content='preserved-stash-fixture-content'
+printf '%s\n' "$stash_content" > "$wt/ignored.log"
+git -C "$wt" stash -q --all
+stash_sha="$(git -C "$wt" rev-parse stash@{0})"
+[[ "$(worktree_cleanup_block_reason "$wt")" == "Git stash exists" ]] || fail "the stash did not block cleanup"
+if rescue_handoff_clone 70 "$wt"; then fail "ignored files in a stash were rescued"; fi
+[[ "$RESCUE_REFUSED" == "stash holds ignored files" ]] || fail "said '$RESCUE_REFUSED' for ignored stash data"
+assert_refused_clone_aside 70 issue-70 "$stash_content"
+aside=("$WT_ROOT"/wt-issue-70.preserved-*)
+[[ "$(git -C "${aside[0]}" rev-parse stash@{0})" == "$stash_sha" ]] || fail "the stash changed in the preserved clone"
+[[ "$(git -C "${aside[0]}" show "$stash_sha^3:ignored.log")" == "$stash_content" ]] || fail "ignored stash data left the preserved clone"
+
+aside_clone
+branch_content='preserved-unpushed-branch-fixture-content'
+trigger_content='preserved-uncommitted-trigger-fixture-content'
+git -C "$wt" checkout -q -b other
+printf '%s\n' "$branch_content" > "$wt/branch-work.txt"
+git -C "$wt" add branch-work.txt; git -C "$wt" commit -qm 'synthetic unpushed branch work'
+branch_sha="$(git -C "$wt" rev-parse HEAD)"
+git -C "$wt" checkout -q -
+printf '%s\n' "$trigger_content" > "$wt/work-in-progress.txt"
+[[ "$(worktree_cleanup_block_reason "$wt")" == "uncommitted changes" ]] || fail "the uncommitted work did not block cleanup"
+if rescue_handoff_clone 70 "$wt"; then fail "an unpushed branch was rescued"; fi
+[[ "$RESCUE_REFUSED" == "unpushed commits on another branch" ]] || fail "said '$RESCUE_REFUSED' for unpushed branch work"
+assert_refused_clone_aside 70 issue-70 "$branch_content"
+aside=("$WT_ROOT"/wt-issue-70.preserved-*)
+[[ "$(git -C "${aside[0]}" rev-parse other)" == "$branch_sha" ]] || fail "the unpushed branch changed in the preserved clone"
+[[ "$(git -C "${aside[0]}" show "$branch_sha:branch-work.txt")" == "$branch_content" ]] || fail "unpushed branch data left the preserved clone"
+[[ "$(cat "${aside[0]}/work-in-progress.txt")" == "$trigger_content" ]] || fail "the uncommitted trigger left the preserved clone"
+for out in "$fixture/say.log" "$fixture/inbox" "$comments" "$fixture/scans" "$fixture/state-merges"; do
+  [[ ! -e "$out" ]] || ! grep -Fq "$trigger_content" "$out" || fail "uncommitted content reached $out"
+done
+
 # The marker of an earlier pass counts as the scan's refusal too.
 aside_clone
 printf 'dirty\n' >> "$wt/a.txt"; touch "$fixture/leak"
@@ -295,13 +364,7 @@ rescue_handoff_clone 70 "$wt" && fail "a leak was retried"
 [[ "$RESCUE_REFUSED" == *"earlier pass"* ]] || fail "said '$RESCUE_REFUSED'"
 preserve_refused_clone 70 issue-70 "$wt" || fail "the earlier-pass refusal was not set aside"
 [[ ! -e "$wt" && ! -e "$fixture/supervisor/autopi/rescue-refused-70" ]] || fail "marker or clone left"
-# Other refusals keep today's behaviour: the clone stays where it is, in its own mode.
-aside_clone
-git -C "$wt" checkout -q -b other; printf 'x\n' > "$wt/b.txt"; git -C "$wt" add b.txt; git -C "$wt" commit -qm x; git -C "$wt" checkout -q -
-if rescue_handoff_clone 70 "$wt"; then fail "another branch's commit was rescued"; fi
-before="$(snapshot)"; mode="$(stat -c %a "$wt")"
-if preserve_refused_clone 70 issue-70 "$wt"; then fail "a non-scan refusal was set aside"; fi
-[[ "$(snapshot)" == "$before" && "$(stat -c %a "$wt")" == "$mode" && ! -e "$fixture/inbox" ]] || fail "a non-scan refusal changed something"
+# A scan that did not run stays in place; it is not treated as a content finding.
 aside_clone
 printf 'dirty\n' >> "$wt/a.txt"; touch "$fixture/scan-broken"
 rescue_handoff_clone 70 "$wt" && fail "a broken scan was rescued"; rm -f "$fixture/scan-broken"
