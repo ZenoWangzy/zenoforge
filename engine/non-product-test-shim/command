@@ -81,8 +81,15 @@ if os.environ.get("ZF_NON_PRODUCT_UNIT") == "1":
     if reason:
         recorded = record_violation(reason)
         unit = os.environ.get("ZF_PIPELINE_UNIT", "unknown")
+        line = f"non-product-test-guard: refused unit={unit} command={COMMAND} reason={reason} recorded={int(recorded)}"
+        if guard_file := os.environ.get("ZF_NON_PRODUCT_GUARD_FILE"):
+            try:
+                with open(guard_file, "a", encoding="utf-8") as stream:
+                    stream.write(line + "\n")
+            except OSError:
+                pass
         print(
-            f"non-product-test-guard: refused unit={unit} command={COMMAND} reason={reason} recorded={int(recorded)}",
+            line,
             file=sys.stderr,
         )
         sys.exit(78)

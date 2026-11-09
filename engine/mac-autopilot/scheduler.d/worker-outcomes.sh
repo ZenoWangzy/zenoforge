@@ -1,22 +1,21 @@
-handle_worker_guard_refusal() { # unit log → explicit refusal outcome; identical consecutive refusals park
-  local unit="$1" log="$2" marker signature previous re
+handle_worker_guard_refusal() { # unit refusal-file head → explicit refusal outcome; two refusals on one head go to supervisor
+  local unit="$1" refusal_file="$2" head="${3:-}" marker signature refusals re
   re="^non-product-test-guard: refused unit=$unit command=[[:alnum:]_-]+ reason=[[:alnum:]_-]+ recorded=[01]$"
-  marker="$(if [[ "$(head -n 1 -- "$log" 2>/dev/null || true)" == \{* ]]; then jqf -r '[.. | strings] | .[]' "$log" 2>/dev/null; else cat -- "$log" 2>/dev/null; fi | grep -E "$re" | tail -n 1 || true)"
+  marker="$(grep -E "$re" "$refusal_file" 2>/dev/null | tail -n 1 || true)"
   [[ -n "$marker" ]] || return 1
   signature="${marker#* unit=$unit }"; signature="${signature% recorded=*}"
-  previous="$(unit_field "$unit" '[(.history // [])[] | select(.stage != "write-start")] | last | select(.stage == "worker-guard-refused") | .result // empty')"
-  if [[ "$previous" == "$signature" ]]; then
-    set_unit "$unit" "$(hist worker-guard-refused "$signature") | .stage=\"parked\" | .note=$(js "repeated non-product-test-guard refusal: $signature") | $(park_fields "non-product-test-guard: $signature" "a supervisor decision")"
-    say "worker-guard-refused unit=$unit repeated=$signature -> parked"
+  refusals="$(jqf -r --arg id "$unit" --arg head "$head" '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage=="worker-guard-refused" and (.head // "")==$head)] | length' "$UNITS")"
+  set_unit "$unit" "$(hist worker-guard-refused "$signature") | .history[-1].head=$(js "$head")"
+  if (( refusals >= 1 )); then
+    to_supervisor "$unit" "repeated non-product-test-guard refusal on head ${head:-unknown}: $signature"
   else
-    set_unit "$unit" "$(hist worker-guard-refused "$signature")"
     say "worker-guard-refused unit=$unit $signature"
   fi
   return 0
 }
 
-handle_worker_no_output() { # worker-json unit type log: a guard refusal is an outcome, otherwise diagnose the worker death
-  local w="$1" unit="$2" wtype="$3" lg="$4"
-  if handle_worker_guard_refusal "$unit" "$lg"; then return 0; fi
+handle_worker_no_output() {
+  local w="$1" unit="$2" wtype="$3" lg="$4" pid="$5" head="${6:-}"
+  if handle_worker_guard_refusal "$unit" "$lg.guard-refusals" "$head"; then return 0; fi
   handle_worker_death "$w" "$unit" "$wtype" "$lg"
 }

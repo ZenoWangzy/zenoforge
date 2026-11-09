@@ -454,7 +454,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
         jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
         continue
       fi
-      handle_worker_no_output "$w" "$unit" "$wtype" "$lg"
+      handle_worker_no_output "$w" "$unit" "$wtype" "$lg" "$pid" "$(jqf -r 'if (.pr_head // "") != "" then .pr_head else .sha // "" end' <<<"$w")"
     fi
     jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
   done < <(jqf -c '.workers[]' "$WORKERS")

@@ -25,7 +25,9 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   fi
   (( SECONDS < LIVE_WORKER_CACHE_UNTIL )) && cache_fresh=true
   if [[ "$(unit_field "$unit" '.lane // empty')" == direct-main ]]; then
+    rm -f -- "$SUP/$log.guard-refusals"
     worker_env=(env ZF_NON_PRODUCT_UNIT=1 "ZF_PIPELINE_UNIT=$unit" \
+      "ZF_NON_PRODUCT_GUARD_FILE=$SUP/$log.guard-refusals" \
       "PATH=${ZF_ENGINE_DIR:-$ROOT/engine}/non-product-test-shim:$PATH")
   fi
   # Worker write guard: a node or python write into the deployment checkout fails loudly (2026-11-07).
