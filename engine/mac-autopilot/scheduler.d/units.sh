@@ -339,7 +339,7 @@ supervisor_arbiter_lifetime_runs() { # unit-json → supervisor-arbiter 事件�
 # b. 最近一次有效终局裁决是 RECUT，或该单元从未走过 recut → 既有 recut 路线一次，不关 PR：单元有 PR 时改为停车；
 # c. 其余 → 停车，只记录原因。
 # on-hold 的 issue 不给默认决定：hold 结束后下一拍再判；issue 状态读不出来也不判。派发仍被硬上限挡住。
-# 每个单元只执行一次：历史里已有 supervisor-cap-default 就直接返回。
+# 每个停留只执行一次：历史里已有 supervisor-cap-default 且单元不在 supervisor-review（默认决定之后才重新进入）就直接返回。
 supervisor_cap_default_issue() { # unit-json → linked issue, canonical id/branch, or PR issue number
   local issue id branch pr
   issue="$(jqf -r '.issue // empty' <<<"$1")"
@@ -363,8 +363,12 @@ supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [bud
   # repeat：同一原因的第二次仲裁（supervisor_repeat_arbitration）走同一条路线，但不占「每单元一次」的终身默认决定，
   # 也不追加 supervisor-cap-default 事件；路线自己的事件（recut/park/obsolete）以 "supervisor repeat guard:" 开头，供 supervisor.repeat_guard_24h 计数。
   [[ "$trigger" == repeat ]] && tag="supervisor repeat guard"
+  # A default always leaves the unit parked or closed, so a capped unit found at supervisor-review that already has one re-entered after it
+  # (CI, stop-loss, hold lift): it gets the route again. Skipping it left it with no arbiter run and no exit (row 150, issue-4879).
+  local reentered=false
+  [[ "$trigger" =~ ^(lifetime|daily)$ && "$(jqf -r '.stage // empty' <<<"$u")" == supervisor-review ]] && reentered=true
   # A stop-loss park that was requeued by its timed retry (.stop_loss_timed_requeue) gets one more default decision: the second same failure parks again.
-  [[ "$trigger" == repeat ]] || { jqf -e --argjson limit "$([[ "$trigger" == stop-loss ]] && [[ "$(jqf -r '.stop_loss_timed_requeue // empty' <<<"$u")" == true ]] && echo 2 || echo 1)" \
+  [[ "$trigger" == repeat || "$reentered" == true ]] || { jqf -e --argjson limit "$([[ "$trigger" == stop-loss ]] && [[ "$(jqf -r '.stop_loss_timed_requeue // empty' <<<"$u")" == true ]] && echo 2 || echo 1)" \
     '[(.history // [])[]? | select(.stage == "supervisor-cap-default")] | length >= $limit' <<<"$u" >/dev/null && return 0; }
   issue="$(supervisor_cap_default_issue "$u" || true)"; pr="$(jqf -r '.pr // empty' <<<"$u")"
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
