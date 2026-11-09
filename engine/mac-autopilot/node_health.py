@@ -17,7 +17,7 @@ import argparse, glob, json, os, re, socket, subprocess, urllib.parse, urllib.re
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait
+import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait, metric_windows
 import line_holds
 import release_age
 import release_retained
@@ -825,14 +825,14 @@ def red_after_approve(units, since):
     return approved, rows
 
 
-def ledger_metrics(units, since, now):
+def ledger_metrics(units, since, now, window_hours=None):
     first_reviews, rounds, approve_to_ship, sup_lat, deaths = [], [], [], [], 0
     for u in units:
         hist = [h for h in u.get("history") or [] if ts(h.get("at"))]
         kinds = [(h.get("stage") or h.get("ev") or "", ts(h["at"])) for h in hist]
         deaths += sum(1 for k, t in kinds if k == "worker-no-output" and t >= since)
         verdicts = [(k, t) for k, t in kinds if k in ("review-approve", "review-request-changes", "review-block")]
-        if verdicts and now - timedelta(hours=24) <= verdicts[0][1] <= now:  # fixed 24 h: the caller's 5 h window read 25 %
+        if verdicts and now - timedelta(hours=window_hours or 24) <= verdicts[0][1] <= now:  # fixed 24 h unless short-cohort scoring was requested
             first_reviews.append(verdicts[0][0] == "review-approve")
         n = 0
         for i, (k, t) in enumerate(kinds):
@@ -866,7 +866,7 @@ def ledger_metrics(units, since, now):
     approved, red_units = red_after_approve(units, since)
     rejections = [r.get("block") == "missing" for u in units for r in u.get("review_findings") or []
                   if (t := ts(r.get("at"))) and t >= since]
-    return {**arbiter_health.ledger_metrics(units, now, ts), **ledger_history.metrics(units, now, ts),
+    return {**arbiter_health.ledger_metrics(units, now, ts, window_hours), **ledger_history.metrics(units, now, ts, window_hours),
         "review.findings_missing_pct": 100 * sum(rejections) / len(rejections) if rejections else None,
         "loop.advisor_fail_pct": 100 * asked.count("advisor-unavailable") / len(asked) if asked else None,
         "review.first_pass_pct": 100 * sum(first_reviews) / len(first_reviews) if first_reviews else None,
@@ -1155,9 +1155,9 @@ def git_revert_times(root, tip="HEAD"):
 
 
 def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo="",
-                     reverted_merge_times=None):
+                     reverted_merge_times=None, window_hours=None):
     """Join recorded issue/unit/PR/merge/release IDs and summarize the last 7/30 days."""
-    since_7d, since_30d = now - timedelta(days=7), now - timedelta(days=30)
+    since_7d, since_30d = (now - timedelta(hours=window_hours),) * 2 if window_hours else (now - timedelta(days=7), now - timedelta(days=30))
     values = {key: None for key in CRITERIA if key.startswith("delivery.")}
     details = {
         "accepted_units_7d": None, "accepted_units_30d": None, "merged_units_30d": None,
@@ -1465,7 +1465,7 @@ def main():
                 for r in runs if r["node"] == "repair" and r["output"] and not r["self_fix"]]
     followed = [n for n in followed if n]
     metrics["loop.incremental_rereview_pct"] = 100 * followed.count("rereview") / len(followed) if followed else None
-    metrics.update({**ledger_metrics(units, since, now), **station_standards.collect(now, units, runs, a, agent_home, cost_rows)})
+    station_windows = station_standards.collect_windows(now, units, runs, a, agent_home, cost_rows); ledger_windows = metric_windows.ledger(ledger_metrics, units, now); metrics.update({**ledger_metrics(units, since, now), **station_standards.collect(now, units, runs, a, agent_home, cost_rows)})
     # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
     metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]
     repo = os.environ.get("ZF_REPO", "")
@@ -1474,7 +1474,7 @@ def main():
     incidents = load_prod_incidents(agent_home)
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
-    delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)
+    delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times); delivery_windows = metric_windows.delivery(delivery_metrics, (units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)); short_windows = {**station_windows, **ledger_windows, **delivery_windows}
     metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); merge_metrics, merge_details = merge_wait.collect(repo, now, here, _gh_json); metrics.update(merge_metrics)
     metrics["merge.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
     sa_attempts, sa_conflict = shared_append_rebase_metrics(
@@ -1582,7 +1582,7 @@ def main():
     except OSError:
         metrics["pipeline.orphan_prs"] = None
 
-    rows = score(metrics, criteria)
+    short_windows = metric_windows.fill(metrics, short_windows, criteria, SOURCE, args.hours); rows = score(metrics, criteria)
     print(f"node health {now:%Y-%m-%dT%H:%MZ} window={args.hours:g}h tokens={tokens} runs={len(runs)}")
     print(f"  {'node':<12} {'metric':<48} {'value':>7}  healthy  unhealthy  status")
     for node, mid, desc, v, healthy, unhealthy, higher, status in rows:
@@ -1605,14 +1605,13 @@ def main():
         release_age.alert(a, agent_home, repo_root, now, release_found)
 
     if args.json:
-        sampled_at = f"{now:%Y-%m-%dT%H:%M:%SZ}"
+        sampled_at = f"{now:%Y-%m-%dT%H:%M:%SZ}"; scorecard_metrics = [{"id": mid, "node": node, "desc": desc, "meaning": MEANING.get(mid, ""), "value": v,
+            "healthy": healthy, "unhealthy": unhealthy, "higher_is_better": higher, "status": status, "source": SOURCE.get(mid, ""), **short_windows[mid]}
+            for node, mid, desc, v, healthy, unhealthy, higher, status in rows]
         doc = {"generated": sampled_at, "generated_at": sampled_at,
                "source_commit": source_commit(here), "paused": line_holds.pause_state(agent_home),
                "window_hours": args.hours,
-               "metrics": [{"id": mid, "node": node, "desc": desc, "meaning": MEANING.get(mid, ""), "value": v,
-                            "healthy": healthy, "unhealthy": unhealthy, "higher_is_better": higher, "status": status,
-                            "source": SOURCE.get(mid, "")}
-                           for node, mid, desc, v, healthy, unhealthy, higher, status in rows],
+               "metrics": scorecard_metrics, "trend_metrics": [m for m in scorecard_metrics if "_30d" in m["id"]],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
                "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],
                "delivery": delivery["details"], "red_after_approve": red_after_approve(units, since)[1], "merge_wait": merge_details, "flow": flow_details, "mechanisms": mechanism_rows,
