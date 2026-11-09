@@ -360,12 +360,14 @@ provider_quota_exhausted() {
 
 # codex_unavailable -> exit 0 while head's hold on an unusable Codex account (lapsed, outage) is in force. Only head writes
 # that file; codex-quota writes codex-exhausted-until for 5h/weekly limits, and credits keep running past those.
-codex_unavailable() {
+codex_unavailable_until() { # -> prints the hold's epoch while it is in force, else returns 1
   local until
   until="$(cat "${CODEX_UNAVAILABLE_MARKER_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/codex-unavailable-until}" 2>/dev/null || true)"
   case "$until" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$(date +%s)" -lt "$until" ]
+  [ "$(date +%s)" -lt "$until" ] || return 1
+  printf '%s\n' "$until"
 }
+codex_unavailable() { codex_unavailable_until >/dev/null; }
 
 # Weekly Codex stop, off by default: Codex credits carry on past the weekly limit, and a real refusal still sets the exhausted
 # marker. Set CODEX_WEEK_STOP_PCT, or CODEX_IMPLEMENT_STOP_PCT for implementation alone, to bring a stop back. The snapshot's

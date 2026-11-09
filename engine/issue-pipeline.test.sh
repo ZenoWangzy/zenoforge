@@ -2546,6 +2546,26 @@ assert_contains "reconciliation recognizes the existing legacy comment and does 
 assert_contains "a different merged PR gets its own waiting-release comment" \
   "$MERGED_REOPEN_OUT" 'different-pr-comment-writes=1 comments=2'
 rm -rf "$MERGED_REOPEN_HOME"
+# head's codex-unavailable-until hold: the advisor leg is held with one log line, and it runs before any dispatch,
+# quarantine or canary. A temp marker only; the real ~/.vecta-agent file is never touched.
+HOLD_HOME="$(mktemp -d)"
+CODEX_UNAVAILABLE_MARKER_FILE="$HOLD_HOME/codex-unavailable-until"
+eval "$(sed -n '/^codex_unavailable_until() {/,/^}/p' "$SCRIPT_DIR/lib.d/codex-budget.sh")"
+eval "$(sed -n '/^advisor_held_codex_unavailable() {/,/^}/p' "$PIPELINE_SRC")"
+hold_future=$(( $(date +%s) + 3600 ))
+printf '%s\n' "$hold_future" > "$CODEX_UNAVAILABLE_MARKER_FILE"
+held_rc=0; advisor_held_codex_unavailable 2> "$HOLD_HOME/held.log" || held_rc=$?
+assert_eq 'a future codex-unavailable-until holds the advisor leg' 0 "$held_rc"
+assert_eq 'a held tick logs exactly one line' 1 "$(wc -l < "$HOLD_HOME/held.log")"
+assert_contains 'the held line names the hold expiry' "$(cat "$HOLD_HOME/held.log")" \
+  "advisor held: codex-unavailable-until $(date -u -d "@$hold_future" +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "$(( $(date +%s) - 1 ))" > "$CODEX_UNAVAILABLE_MARKER_FILE"
+expired_rc=0; advisor_held_codex_unavailable 2> "$HOLD_HOME/held.log" || expired_rc=$?
+assert_eq 'an expired hold lets the advisor leg dispatch as before' 1 "$expired_rc"
+assert_eq 'an expired hold logs nothing' 0 "$(wc -l < "$HOLD_HOME/held.log")"
+assert_eq 'the held gate precedes every advisor dispatch call in the leg' yes \
+  "$(gate_line="$(grep -n '^if advisor_held_codex_unavailable; then' "$PIPELINE_SRC" | cut -d: -f1)"; pending_line="$(grep -n '^    advisor_dispatch_pending_job_pool$' "$PIPELINE_SRC" | cut -d: -f1)"; [ -n "$gate_line" ] && [ -n "$pending_line" ] && [ "$gate_line" -lt "$pending_line" ] && echo yes || echo no)"
+rm -rf "$HOLD_HOME"
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL PASSED"
 else

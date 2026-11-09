@@ -2875,6 +2875,14 @@ if [ "$ADVISOR_QUEUE_COUNT" -ge "$ADVISOR_BATCH_MIN" ]; then
       "batch threshold met but pending single-ticket jobs take priority" "$ADVISOR_PENDING_JOB_IDS"
   fi
 fi
+# advisor_held_codex_unavailable -> 0 after one log line while head's codex-unavailable-until hold is in force. The
+# advisor leg then dispatches nothing, opens no quarantine, runs no canary and records no model failure backoff.
+advisor_held_codex_unavailable() {
+  local until
+  until="$(codex_unavailable_until)" || return 1
+  echo "advisor held: codex-unavailable-until $(date -u -d "@$until" +%Y-%m-%dT%H:%M:%SZ)" >&2
+}
+
 # One tick chooses exactly one web-advisor mode. Every fresh question, even a
 # one-ticket queue, uses one batch dialogue. Existing single jobs are polled;
 # stored verdicts resume through their one owning pool without a model call.
@@ -2882,7 +2890,9 @@ fi
 # at once). The stuck sweep is not a dispatch mode: it only signals, so it
 # runs regardless of which mode this tick landed in.
 advisor_stored_verdict_stuck_sweep
-if [ "$ADVISOR_QUEUE_READ_FAILED" = "1" ]; then
+if advisor_held_codex_unavailable; then
+  : # head's hold: no advisor dispatch, quarantine, canary or backoff; the line above is the record
+elif [ "$ADVISOR_QUEUE_READ_FAILED" = "1" ]; then
   : # A failed snapshot is not an empty queue; keep unrelated pipeline legs running.
 elif [ "$ADVISOR_BATCH_UNIT_ACTIVE" = "1" ]; then
   echo "issue-pipeline: batch advisor wrapper is already active; no new advisor question dispatch this tick" >&2
