@@ -17,7 +17,7 @@ capture_worker_stdout_report() { # report-path command...
 }
 
 dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason] [worker-context-json]
-  local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census guard_env_word
+  local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census guard_env_word worker_exit_file
   local -a launcher=() worker_env=() launch_command=()
   if [[ -n "$worker_context" ]]; then
     report_only="$(jqf -r '.incident_report_resume // false' <<<"$worker_context")"
@@ -89,6 +89,10 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
       && shift 4 && exec "$@"' autopilot-worker "$CODEX_MODE" "$CODEX_PATH_REASON" "$model" \
       '{type:"pipeline.execution",mode:$mode,reason:$reason,model:$model}' "${CODEX_COMMAND[@]}")
   fi
+  # Keep exit metadata out of the combined provider stream: child processes can finish flushing that log later.
+  worker_exit_file="$SUP/$log.pipeline-exit"
+  rm -f -- "$worker_exit_file"
+  launch_command=(bash -c 'exit_file=$1; shift; rc=0; "$@" || rc=$?; printf "{\"type\":\"pipeline.exit\",\"rc\":%s}\\n" "$rc" > "$exit_file"; exit "$rc"' autopilot-worker "$worker_exit_file" "${launch_command[@]}")
   local worker_pid_file WORKER_PIDFILE WORKER_COST_TAG # not exported: the worker must not inherit them; worker_scope_launch reads them
   WORKER_PIDFILE="$(worker_pidfile "$unit")"
   WORKER_COST_TAG="type=$type unit=$unit"
