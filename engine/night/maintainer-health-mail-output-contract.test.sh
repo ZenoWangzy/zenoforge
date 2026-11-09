@@ -115,7 +115,42 @@ assert_contains 'the model table uses the named model fact' "$html" 'codex:test'
 assert_contains 'the model table uses its token fact' "$html" '1000'
 assert_contains 'the model table uses its cost fact' "$html" '0.25'
 assert_contains 'the daily chart explains its period colors' "$html" '蓝色为今天，绿色为昨天，橙色为上周同日'
-assert_contains 'the daily comparison shows merge counts for the three periods' "$html" '<td>合入</td><td>3</td><td>2</td><td>4</td>'
+python3 - "$html" <<'PY'
+from html.parser import HTMLParser
+import sys
+
+class Tables(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.tables, self.table, self.row, self.cell = [], None, None, None
+    def handle_starttag(self, tag, attrs):
+        if tag == "table":
+            self.table = []
+        elif self.table is not None and tag == "tr":
+            self.row = []
+        elif self.row is not None and tag in ("th", "td"):
+            self.cell = ""
+    def handle_data(self, data):
+        if self.cell is not None:
+            self.cell += data
+    def handle_endtag(self, tag):
+        if tag in ("th", "td") and self.cell is not None:
+            self.row.append(self.cell.strip())
+            self.cell = None
+        elif tag == "tr" and self.row is not None:
+            self.table.append(self.row)
+            self.row = None
+        elif tag == "table" and self.table is not None:
+            self.tables.append(self.table)
+            self.table = None
+
+tables = Tables()
+tables.feed(sys.argv[1])
+comparison = next((table for table in tables.tables
+                   if table and table[0] == ["项目", "今天", "昨天", "上周同日"]), None)
+assert comparison is not None and ["合入", "3", "2", "4"] in comparison
+print("ok - the daily comparison shows merge counts for the three periods")
+PY
 assert_not_contains 'the daily comparison does not label a rate as a merge count' "$html" '合入速度'
 assert_contains 'the model chart explains its two measures' "$html" '蓝色为令牌用量，橙色为调用金额'
 if python3 -c 'import sys; s=sys.argv[1]; assert s.index("一句话结论") < s.index("<h2>异常情况</h2>") < s.index("<table")' "$html"; then
