@@ -349,12 +349,22 @@ provider_quota_exhausted() {
   if [ "$provider" = claude ] && snapshot_week_at "${CLAUDE_WEEK_STOP_PCT:-95}" "${CLAUDE_QUOTA_SNAPSHOT_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/claude-quota.json}"; then
     return 0
   fi
+  if [ "$provider" = codex ] && codex_unavailable; then return 0; fi
   marker="$(_quota_marker_file "$provider")" || return 1
   [ -f "$marker" ] || return 1
   until="$(cat "$marker" 2>/dev/null || true)"
   case "$until" in ''|*[!0-9]*) return 1 ;; esac
   now="$(date +%s)"
   [ "$now" -lt "$until" ]
+}
+
+# codex_unavailable -> exit 0 while head's hold on an unusable Codex account (lapsed, outage) is in force. Only head writes
+# that file; codex-quota writes codex-exhausted-until for 5h/weekly limits, and credits keep running past those.
+codex_unavailable() {
+  local until
+  until="$(cat "${CODEX_UNAVAILABLE_MARKER_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/codex-unavailable-until}" 2>/dev/null || true)"
+  case "$until" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$(date +%s)" -lt "$until" ]
 }
 
 # Weekly Codex stop, off by default: Codex credits carry on past the weekly limit, and a real refusal still sets the exhausted
@@ -384,6 +394,7 @@ codex_credits_spent() { # -> whole credits spent since the start balance, rounde
 
 codex_credits_open() { # role -> 0 while that role may spend credits
   local role="$1" spent
+  codex_unavailable && return 1
   [[ " ${CODEX_CREDITS_ROLES:-} " == *" $role "* ]] || return 1
   [[ "${CODEX_CREDITS_CAP:-}" =~ ^[0-9]+$ && "${CODEX_CREDITS_START_BALANCE:-}" =~ ^[0-9]+$ ]] || return 1
   spent="$(codex_credits_spent)" || return 1

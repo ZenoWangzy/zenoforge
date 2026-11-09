@@ -954,6 +954,8 @@ fi
 # after 7 days with no warning anywhere in this pipeline. One heartbeat a
 # day makes silence itself the alert.
 CODEX_EXHAUSTED_MARKER_FILE="$AGENT_HOME/codex-exhausted-until"
+# Head-only hold on an unusable Codex account (lapsed, outage). codex-quota never writes it, so credits stay open under 5h/weekly holds.
+CODEX_UNAVAILABLE_MARKER_FILE="$AGENT_HOME/codex-unavailable-until"
 CODEX_PROVIDER_FAILURE_THRESHOLD=3
 CODEX_PROVIDER_FAILURE_WINDOW_SECONDS=900
 CODEX_PROVIDER_BACKOFF_SECONDS=90
