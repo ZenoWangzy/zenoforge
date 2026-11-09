@@ -23,7 +23,7 @@ dispatch_incident_report_resume() { # worker-json source-report gate-reason → 
   [[ "$provider" == codex && "$session_id" =~ $SESSION_RE && -n "$model" && -n "$workdir" ]] || return 1
   [[ "$(unit_field "$unit" '.sessions.repair.id // empty')" == "$session_id" ]] || return 1
   pending_stage="$(unit_field "$unit" .stage)"
-  [[ "$pending_stage" == review-pending || "$pending_stage" == rereview-pending ]] || return 1
+  [[ "$pending_stage" == review-pending || "$pending_stage" == rereview-pending || "$pending_stage" == repair-pending ]] || return 1 # repair-pending: a repair that pushed nothing; the harvest sends the fixed report to rereview
   unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   safe_id="$(tr -c 'A-Za-z0-9._-' '-' <<<"$unit" | sed 's/-$//')"
   output_report="incident-report-${safe_id}-${TAG}.md"
@@ -36,7 +36,7 @@ dispatch_incident_report_resume() { # worker-json source-report gate-reason → 
   say "incident report resume dispatched unit=$unit source=$source_report output=$output_report"
 }
 
-incident_report_pre_review() { # implement/repair worker-json report-name report-path → start one report-only continuation when needed
+incident_report_pre_review() { # implement/repair worker-json report-name report-path → start one report-only continuation when needed; rc 1 = one is now running
   local w="$1" report_name="$2" report_path="$3" unit wtype incident_unit_json reason
   wtype="$(jqf -r '.type // empty' <<<"$w")"
   [[ "$wtype" == implement || "$wtype" == repair ]] || return 0
@@ -46,7 +46,8 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
   [[ "$wtype" != repair ]] || report_name="$(jqf -r --arg n "$report_name" '.implementation_report // $n' <<<"$incident_unit_json")" # a repair edits the unit's own report in place; its worker report is only the fix note
   reason="$(incident_report_gate_reason "$incident_unit_json" "$SUP/$report_name")"
   [[ -n "$reason" ]] || return 0
-  dispatch_incident_report_resume "$w" "$report_name" "$reason" || say "incident report resume unavailable unit=$unit; review will use the existing report"
+  ! dispatch_incident_report_resume "$w" "$report_name" "$reason" || return 1
+  say "incident report resume unavailable unit=$unit; review will use the existing report"
 }
 
 harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers; pid:unit limits the pass to that one worker (harvest station)
@@ -362,7 +363,9 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
           recheck_dir="$(jqf -r '.workdir // empty' <<<"$w")"; recheck_branch="$(unit_field "$unit" '.branch // empty')"
           if [[ "$(unit_field "$unit" '.history[-1].stage // empty')" != repair-no-push && "$(unit_field "$unit" '.lane // "pr"')" != direct-main ]] && [[ "$(unit_field "$unit" '.pr // empty')" =~ ^[0-9]+$ ]]; then
             size_admission_recheck "$unit" "$recheck_dir" "$recheck_branch" "on $recheck_branch after repair" "${recheck_dir:+$(git -C "$recheck_dir" rev-parse -q --verify HEAD 2>/dev/null)}" || :
-          fi; repair_breaker "$unit" "$rep" || : ;;
+          fi
+          # The report check runs before the breaker: a continuation fixing the report is part of this round, so the breaker waits for the next one.
+          incident_report_pre_review "$w" "$report" "$rep" && { repair_breaker "$unit" "$rep" || :; } ;;
         land)
           local land_result; land_result="$(head -1 "$rep")"
           case "$land_result" in
@@ -412,9 +415,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
             echo "[$STAMP] IMPL-DELIVERED unit=$unit report=$(basename "$rep")" >> "$A/alerts/events.md"
           fi ;;
       esac
-      if [[ "$wtype" == implement || "$wtype" == repair ]]; then
-        incident_report_pre_review "$w" "$report" "$rep"
-      fi
+      [[ "$wtype" != implement ]] || incident_report_pre_review "$w" "$report" "$rep" || :
     else
       if [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" == true ]]; then
         report_resume_source="$(jqf -r '.incident_report_resume_source_report // empty' <<<"$w")"

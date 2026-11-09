@@ -19,7 +19,6 @@ REVIEW_DISPATCHES=0
 LAST_CONTEXT=''
 LAST_PROMPT=''
 
-room_for() { return 0; }
 tick_prs_changed() { :; }
 tick_prs_prime() { :; }
 dispatch_capacity_free() { return 0; }
@@ -173,5 +172,37 @@ harvest_workers
 dispatch_pending
 [[ "$(jqf -r '.units[0].stage' "$UNITS")" == review && "$REVIEW_DISPATCHES" == 3 ]] \
   || fail "empty continuation did not fall through to review (stage=$(jqf -r '.units[0].stage' "$UNITS") reviews=$REVIEW_DISPATCHES)"
+
+# A repair round that ends with a failing report gets the same continuation. The repair-only admissions (round cap, Dagger runtime)
+# do not apply to a read-only continuation, and a repair that pushed nothing (repair-pending) or sits at the breaker line is still in this round.
+pr_view() { printf '%s\n' "$head_sha"; } # the PR head did not move
+supervisor_inbox_append_once() { :; }
+repair_cap_admission() { return 1; }
+repair_runtime_admission() { return 1; }
+repair_note=impl-71001-fix-round.md
+write_repair_round() { # prior repair-no-push runs on this head
+  local prior="$1" i history='[{"stage":"write-start","work_type":"repair","pr_head":"'"$head_sha"'"}]'
+  for ((i = 0; i < prior; i++)); do
+    history="$(jqf -c --arg r "head $head_sha unchanged after repair" '. + [{stage:"repair-no-push",result:$r}]' <<<"$history")"
+  done
+  write_unit "$missing_report_name"
+  jqf --argjson h "$history" '.units[0].pr=71001 | .units[0].stage="repair" | .units[0].history=$h' "$UNITS" | write_state "$UNITS"
+  printf 'See report impl-71001-fix-source.md for the details.\n\nVERDICT: READY\n' > "$sup/$repair_note"
+  write_worker repair "$repair_note" impl-71001-fix-round.worker.log
+}
+before_resumes=$RESUME_DISPATCHES
+write_repair_round 0 # first no-push: stage repair-pending
+harvest_workers
+[[ "$(jqf -r '.units[0].stage' "$UNITS")" == repair && "$RESUME_DISPATCHES" == $((before_resumes + 1)) ]] \
+  || fail "a repair that pushed nothing, with the cap and runtime gates closed, did not get the report continuation (stage=$(jqf -r '.units[0].stage' "$UNITS") resumes=$RESUME_DISPATCHES)"
+jqf -e '.incident_report_resume_source_type == "repair" and .incident_report_resume_pending_stage == "repair-pending"' <<<"$LAST_CONTEXT" >/dev/null \
+  || fail 'the repair continuation did not record its source type and pending stage'
+
+before_resumes=$RESUME_DISPATCHES
+write_repair_round 1 # second no-push on the head: the breaker line
+harvest_workers
+[[ "$(jqf -r '.units[0].stage' "$UNITS")" == repair && "$RESUME_DISPATCHES" == $((before_resumes + 1)) ]] \
+  || fail "the breaker parked the unit instead of letting the continuation finish the round (stage=$(jqf -r '.units[0].stage' "$UNITS") resumes=$RESUME_DISPATCHES)"
+[[ "$(jqf -r '[.units[0].history[] | select(.stage=="repair-breaker")] | length' "$UNITS")" == 0 ]] || fail 'the breaker fired while a continuation was running'
 
 echo 'ok - incident report failures get at most one read-only same-session resume before review'

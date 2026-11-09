@@ -290,11 +290,12 @@ dispatch_skip_summary() { # name:count,... for the reasons that fired this pass,
   for k in $(printf '%s\n' "${!TICK_DISPATCH_SKIPS[@]}" | sort); do out+="${out:+,}$k:${TICK_DISPATCH_SKIPS[$k]}"; done
   printf '%s' "$out"
 }
-room_for() { # unit-id type [unit-json] [fresh-footprint=true]：焦点与并发检查
+room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=true] [report-only=false]：焦点与并发检查
   local u="${3:-}" priority waiter impl_cap n_impl fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"
-  if [[ "$2" == repair ]]; then repair_cap_admission "$1" "$u" || { dispatch_skip repair-cap; return 1; }; fi
-  if [[ "$2" == repair ]]; then repair_runtime_admission "$1" "$u" || { dispatch_skip repair-runtime; return 1; }; fi
+  # A report-only continuation writes no code and starts no write-start: the repair round cap and the Dagger runtime gate do not apply to it.
+  if [[ "$2" == repair && "${6:-false}" != true ]]; then repair_cap_admission "$1" "$u" || { dispatch_skip repair-cap; return 1; }; fi
+  if [[ "$2" == repair && "${6:-false}" != true ]]; then repair_runtime_admission "$1" "$u" || { dispatch_skip repair-runtime; return 1; }; fi
   if [[ "$2" == review || "$2" == rereview ]]; then
     jqf -e '(.self_check_pid // null)==null and (.self_fix_pending // false)!=true' <<<"$u" >/dev/null || { dispatch_skip self-check; return 1; }
   fi
@@ -347,7 +348,7 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
   fi
   prompt="$(incident_worker_prompt "$3" "$unit_json" "$prompt")"
   [[ "$report_only" != true ]] || failure_prompt="$prompt"
-  room_for "$1" "$3" "$unit_json" true "$check_footprint" || return 1
+  room_for "$1" "$3" "$unit_json" true "$check_footprint" "$report_only" || return 1
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     size_admission_write_start "$1" "${10:-}" "$unit_json" || return 1
   fi
