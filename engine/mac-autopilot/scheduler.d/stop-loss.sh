@@ -270,7 +270,7 @@ token_spend_park() { # id unit-json soft|hard
     hard_inbox
     to_supervisor "$id" "token hard park repeat: $note; issue #$(jqf -r '.issue' <<<"$u") already hard-parked in the last 7 days, so no second recut" \
       'Arbiter decides: a second recut of this issue would spend the same tokens again' 'the same issue passed the hard token line twice within 7 days' \
-      "$total fresh tokens against the $TOKEN_PARK_HARD_TOKENS line, class $class" '["Recut the issue again"]'
+      "$total fresh tokens against the $TOKEN_PARK_HARD_TOKENS line, class $class; a requeue re-parks at once because the token gate stays hard, so the options are a recut with narrower scope, or close" '["Recut the issue again"]'
     return 0
   fi
   set_unit "$id" "${ev}.token_park=($rec) | .stage=\"parked\" | .note=$(js "token hard park: $note") | $(park_fields token-hard-park 'never: no ruling refills a unit past the hard token line')" || return 1
