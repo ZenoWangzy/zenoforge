@@ -55,7 +55,7 @@ export function renderConfigTemplate(templateText, { maxWorkers, dailyTokenBudge
   cfg.release_train = { ...(cfg.release_train ?? {}), enabled: false };
   cfg.supervisor_arbiter = { ...(cfg.supervisor_arbiter ?? {}), enabled: false };
   if (reviewProvider === 'codex') cfg.models.review = [...cfg.models.implement];
-  // The template keeps the independent-family candidate and named fallback together.
+  // Claude keeps the template's primary review configuration, including its independent-family candidate and named fallback.
   return `${JSON.stringify(cfg, null, 2)}\n`;
 }
 

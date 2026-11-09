@@ -13,6 +13,11 @@
         "review": 1024,
         "advisor": 1024
       }
+    },
+    "eval_on_pin": {
+      "enabled": true,
+      "stages": null,
+      "timeout_minutes": 45
     }
   },
   "station_health": {
