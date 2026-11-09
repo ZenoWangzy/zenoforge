@@ -1303,6 +1303,14 @@ dispatch_pending || :
 [[ "$(review_prompt 1 t "$H1" r.md)" == *".agents/skills/code-review/SKILL.md"* ]] || fail 'review prompt lacks the canonical contract reference'
 [[ "$(review_prompt 1 t "$H1" r.md direct-main)" == *"直落 main"*"$H1"* || "$(review_prompt 1 t "$H1" r.md direct-main)" == *"$H1"*"直落 main"* ]] || fail 'direct-main review prompt lacks the lane rule'
 [[ "$(review_prompt 1 t "$H1" r.md pr)" != *"非产品快车道"* ]] || fail 'PR-lane review prompt got the fast-lane rule'
+# 红测试证据：只列本 head 或上一 head 的 ci-test-red 测试名；无红或只在更早 head 红则不加段
+declare -F ci_red_evidence_rule >/dev/null || fail 'no ci_red_evidence_rule for the review prompt'
+OLD=2222222222222222222222222222222222222222
+red_unit() { jq -cn --arg h "$1" '{history:[{stage:"ci-test-red",head:$h,tests:["a.test.ts","does x"]}]}'; }
+[[ "$(ci_red_evidence_rule "$(red_unit "$H1")" "$H1")" == *"CI on this head (or the previous head) failed these tests: a.test.ts, does x."* ]] || fail 'red on the current head did not reach the review prompt'
+[[ -z "$(ci_red_evidence_rule '{"history":[]}' "$H1")" ]] || fail 'a unit without red got a CI evidence block'
+[[ -z "$(ci_red_evidence_rule "$(red_unit "$OLD")" "$H1")" ]] || fail 'red only on an older head got a CI evidence block'
+[[ "$(ci_red_evidence_rule "$(red_unit "$OLD")" "$H1" "$OLD")" == *"does x."* ]] || fail 'red on the previous head was left out'
 
 # repair 先合入最新 main：落后过多的分支过不了 push preflight 的 freshness 门禁（#3859 三轮修复都没推上）
 DISPATCHED=(); DISPATCH_PROMPT=""
