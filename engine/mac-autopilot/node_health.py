@@ -1357,7 +1357,8 @@ def flow_inbox(a, rows, now, agent_home, repo_root):
         if mid in state:
             continue
         bound = f"bound={unhealthy:g}" if status == "UNHEALTHY" else "standard=invalid"
-        text = (f"flow metric={mid} status={status} value={live_delivery.display_value(v)} {bound} "
+        value = live_delivery.display_value(v) if v is None else f"{v:.1f}"
+        text = (f"flow metric={mid} status={status} value={value} {bound} "
                 f"{desc}; thresholds and sources: {health_doc_reference()}")
         done = subprocess.run(["bash", "-c", 'source "$1" && supervisor_inbox_append flow-metric "$2"',
                                "bash", lib, text],
