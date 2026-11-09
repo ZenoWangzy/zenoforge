@@ -5912,7 +5912,7 @@ command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-exte
 command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
   > "$TF/issues/4279.json"
 seed_roadmap_tree 4279
-parent_unverified_lines() { grep -c 'intake issue #4279 deferred: could not verify parent status (rc=2)' "$TF/supervisor/autopi/scheduler.log" || true; }
+parent_unverified_lines() { grep -c 'intake issue #4279 deferred: could not verify parent status rc=2 step=' "$TF/supervisor/autopi/scheduler.log" || true; }
 tick
 [[ "$(parent_unverified_lines)" == 1 ]] \
   || { echo "scheduler.test.sh: rc 2 parent check was not logged with its rc: $(cat "$TF/supervisor/autopi/scheduler.log")" >&2; exit 1; }
@@ -5926,7 +5926,7 @@ command jq '.intake_parent_retry["4279"].next_at = 0' "$TF/supervisor/autopi/uni
 tick
 grep -Eq '^issue edit 4279 --repo [^ ]+ .*--remove-label ready-for-agent .*--add-label needs-triage$' "$TF/actions" \
   || { echo "scheduler.test.sh: third unverified parent check did not route #4279 to needs-triage: $(cat "$TF/actions")" >&2; exit 1; }
-grep -Fq 'intake issue #4279 -> needs-triage (parent status unverified after 3 attempts, rc=2)' "$TF/supervisor/autopi/scheduler.log" \
+grep -Fq 'intake issue #4279 -> needs-triage (parent status unverified after 3 attempts, rc=2, step=' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: capped parent check did not log its needs-triage disposition' >&2; exit 1; }
 command jq -e '(.intake_parent_retry // {}) | has("4279") | not' "$TF/supervisor/autopi/units.json" >/dev/null \
   || { echo 'scheduler.test.sh: capped parent check left its backoff entry behind' >&2; exit 1; }
