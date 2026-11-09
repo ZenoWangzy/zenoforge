@@ -54,12 +54,15 @@ launch_scope() { # label
   worker_scope_launch "$root/$1.pid" "$root" "$root/$1.out" setsid -- bash -c 'sleep 1.2'
   [[ "$WORKER_SCOPE_MODE" == scope ]] || fail "$1: scope mode not used ($WORKER_SCOPE_MODE)"
 }
-launch_scope default
+TZ=Asia/Shanghai launch_scope default # the scope's local TZ must not leak into the Z stamps
 assert_cpu_props 'worker-scope default' 200% 10
 assert_mem_props 'worker-scope default' 2G 500 nomax
 for _ in {1..150}; do grep -q 'worker cost' "$root/scheduler.log" && break; sleep 0.1; done
 grep -Eq '^\[[0-9TZ:-]+\] worker cost type=implement unit=issue-9 wall=[0-9]+ cpu=2\.5$' "$root/scheduler.log" \
   || fail "worker cost line missing or malformed: $(cat "$root/scheduler.log")"
+stamp="$(sed -n 's/^\[\([0-9T:-]*Z\)\] worker cost .*/\1/p' "$root/scheduler.log" | head -1)"
+skew=$(( $(date -u +%s) - $(date -u -d "$stamp" +%s) )); skew=${skew#-}
+(( skew < 60 )) || fail "worker cost stamp $stamp is ${skew}s off UTC now: the scope's TZ leaked into a Z stamp"
 printf 'PASS worker-scope logs wall and cpu: %s\n' "$(grep 'worker cost' "$root/scheduler.log")"
 AGENT_WORKER_CPU_QUOTA=150% AGENT_WORKER_CPU_WEIGHT=5 AGENT_WORKER_MEM_HIGH=1G launch_scope override
 assert_cpu_props 'worker-scope override' 150% 5

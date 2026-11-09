@@ -70,7 +70,8 @@ worker_scope_prepare() { # config/systemd probe, cached for this scheduler tick
 # Runs beside the worker in its scope (own session, so a group kill of the worker does not take it down) and
 # reports the first fork the scope's TasksMax refused (pids.events "max"). Builtins only: a fork-bound scope cannot spawn `sleep`.
 read -r -d '' WORKER_SCOPE_WATCH <<'WATCH' || :
-leader=$1 max=$2 label=$3 sched_log=$4 tag=${5:-log=$3} hit=0 ev=${WORKER_SCOPE_EVENTS_FILE:-}
+# The stamps end in Z: format them in UTC whatever TZ the worker scope inherits (Asia/Shanghai put them 8 h ahead).
+TZ=UTC0 leader=$1 max=$2 label=$3 sched_log=$4 tag=${5:-log=$3} hit=0 ev=${WORKER_SCOPE_EVENTS_FILE:-}
 if [[ -z $ev ]]; then read -r ev < /proc/self/cgroup && ev=/sys/fs/cgroup${ev#0::}/pids.events; fi
 [[ -r $ev ]] || exit 0
 cs=${ev%/*}/cpu.stat
