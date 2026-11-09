@@ -1,4 +1,5 @@
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)/codex-mcp.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)/worker-output-cap.sh"
 
 product_boundary_rule() { # 整块取得才输出；CLAUDE.md 缺失或被改写到某组关键词消失，就什么都不输出并返回 1
   local kws lines block=""
@@ -84,6 +85,7 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
 build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider] [report-only-resume] [expected-session-id]
   local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" usage prompt_arg role tier self_fix prior config_arg
   local -a tier_args=() codex_config_args=()
+  local output_tokens
   CODEX_MODE=fresh
   CODEX_SESSION_ID=""
   CODEX_PATH_REASON=initial
@@ -101,7 +103,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     [[ "$type" == implement || "$type" == repair || "$type" == review || "$type" == rereview ]] || return 1
     WORKER_STDOUT_REPORT=1
     CODEX_USAGE_START=null
-    CODEX_COMMAND=(env -u GH_TOKEN -u GITHUB_TOKEN NODE_USE_ENV_PROXY=1 zcode -p "$prompt_arg" --cwd "$workdir" --mode yolo)
+    CODEX_COMMAND=(env -u GH_TOKEN -u GITHUB_TOKEN NODE_USE_ENV_PROXY=1 "BASH_MAX_OUTPUT_LENGTH=$(worker_output_cap_chars)" zcode -p "$prompt_arg" --cwd "$workdir" --mode yolo)
     return 0
   fi
   if [[ "$provider" == claude && ( "$type" == implement || "$type" == repair ) ]]; then
@@ -127,7 +129,10 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   [[ -n "$tier" ]] || tier="${PICK_SERVICE_TIER:-}"
   [[ -n "$tier" ]] && tier_args=(--config "service_tier=\"$tier\"")
   while IFS= read -r config_arg; do codex_config_args+=("$config_arg"); done < <(codex_mcp_disable_args)
-  [[ "$type" != implement ]] || codex_config_args+=(-c tool_output_token_limit=8000)
+  # Every codex type gets the cap; implement keeps its older, tighter 8000.
+  output_tokens="$(worker_output_cap_tokens)"
+  [[ "$type" != implement ]] || (( output_tokens <= 8000 )) || output_tokens=8000
+  codex_config_args+=(-c "tool_output_token_limit=$output_tokens")
   # Persistent implementer sessions: never add --ephemeral here.
   CODEX_FRESH_COMMAND=(codex exec -m "$model" -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
     ${codex_config_args[@]+"${codex_config_args[@]}"} -s "$sandbox_mode" --json "$prompt_arg")
