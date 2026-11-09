@@ -256,6 +256,12 @@ review_inputs_rule() { # unit-json workdir → copies the two inputs, git-ignore
   return 0
 }
 
+ci_red_evidence_rule() { # unit-json head previous-head → tests CI failed on those heads (ci-test-red events carry .head); empty when none
+  local u="$1" head="$2" prev="${3:-}" tests
+  tests="$(jqf -r --arg h "$head" --arg p "$prev" '[(.history // [])[] | select(.stage == "ci-test-red" and ((.head // "") == $h or ($p != "" and (.head // "") == $p))) | (.tests // [])[]] | unique | join(", ")' <<<"$u" 2>/dev/null)" || return 0
+  [[ -n "$tests" ]] || return 0
+  printf '\nCI on this head (or the previous head) failed these tests: %s. A red test that the diff'"'"'s files touch is a finding candidate; check it. Infra failures and tests the diff does not touch are not findings.' "$tests"
+}
 pr_view() { gh pr view "$1" --json "$2" --jq ".$2" 2>/dev/null; }
 tick_pr_head() { # PR → head SHA from this tick's open-PR census, with a direct fallback for a census miss
   local pr="$1" prs="" head=""
