@@ -13,7 +13,6 @@
 1188	engine/mac-autopilot/gen_dashboard.py
 1643	engine/mac-autopilot/node_health.py
 850	engine/mac-autopilot/scheduler.d/harvest-workers.sh
-801	engine/mac-autopilot/scheduler.d/supervisor-arbiter.sh
 983	engine/mac-autopilot/usage_reader.py
 2628	engine/night/efficiency-regression.mjs
 1035	engine/night/main-ci-recovery.sh

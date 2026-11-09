@@ -35,6 +35,7 @@ decision_eval_stages() { printf '\n'; }
 fail() { echo "supervisor-arbiter.test.sh: $*" >&2; exit 1; }
 units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
+grep -Fq 'reconcile_size_recuts() {' "$script_dir/scheduler.d/size-recuts.sh" || fail 'size-recuts must own size-recut reconciliation'
 
 GH_CALLS="$fixture/gh.calls"; : > "$GH_CALLS"
 gh() {
