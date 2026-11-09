@@ -337,11 +337,11 @@ def time_sinks(units, log_path, since, now):
     Also returns the queue wait intervals (phase, trigger, dispatch) behind those samples —
     dispatched or still open — for the flow slot-idle metric."""
     disp = {}
-    if os.path.exists(log_path):
-        for raw in open(log_path, errors="ignore"):
-            m = DISPATCH_RE.match(raw)
-            if m and (t := ts(m.group(1))):
-                disp.setdefault((m.group(3), m.group(2)), []).append(t)
+    log_rows, _ = ledger_history.scheduler_log_lines(log_path, now)
+    for raw in log_rows or []:
+        m = DISPATCH_RE.match(raw)
+        if m and (t := ts(m.group(1))):
+            disp.setdefault((m.group(3), m.group(2)), []).append(t)
     out = {k: [] for k in TIME_SINKS}
     waits = []
     trig = ("review-request-changes", "review-block", "ci-red", "ci-test-red", "merge-conflict")
@@ -1527,7 +1527,9 @@ def main():
     nontest_added = size_doc.get("nontest_added") or {}
     by_size, metrics["review.large_pr_pct"] = rework_by_size(
         units, sizes, nontest_added, now - timedelta(days=LARGE_PR_WINDOW_DAYS), now)
-    sinks, queue_waits = time_sinks(units, os.path.join(a, "scheduler.log"),
+    log = os.path.join(a, "scheduler.log")
+    _, future_stamped = ledger_history.scheduler_log_lines(log, now)
+    sinks, queue_waits = time_sinks(units, log,
                                     now - timedelta(hours=TIME_SINK_HOURS), now)
     metrics["flow.merge_rate_per_hour"] = merge_flow(units, now - timedelta(hours=24), now)[0]
     _, entered, merged = merge_flow(units, since, now)
@@ -1546,12 +1548,11 @@ def main():
     _, metrics["ci.priority_hold_runs_48h"] = cancel_metrics(audit, now - timedelta(hours=48), now)
     metrics["ci.gated_pr_pct"] = gated_agent_pr_share(repo)
     ticks = []
-    log = os.path.join(a, "scheduler.log")
-    if os.path.exists(log):
-        for raw in open(log, errors="ignore"):
-            m = LINE_RE.match(raw)
-            if m and (t := ts(m.group(1))) and since <= t <= now:
-                ticks.append(t)
+    log_rows, _ = ledger_history.scheduler_log_lines(log, now)
+    for raw in log_rows or []:
+        m = LINE_RE.match(raw)
+        if m and (t := ts(m.group(1))) and t >= since:
+            ticks.append(t)
     metrics["scheduler.tick_gap_p50"] = pct([(b - x).total_seconds() for x, b in zip(ticks, ticks[1:])], .5)
     metrics.update({"scheduler.merge_pass_gap_min": merge_pass_gap_min(units, ledger_history.live_ledger_readable(a), a, now), **harvest_health.metrics(log, since, now, ts, pct), **existing_walk_health.metrics(log, since, now, ts, pct)})
 
@@ -1583,7 +1584,8 @@ def main():
         metrics["pipeline.orphan_prs"] = None
 
     short_windows = metric_windows.fill(metrics, short_windows, criteria, SOURCE, args.hours); rows = score(metrics, criteria)
-    print(f"node health {now:%Y-%m-%dT%H:%MZ} window={args.hours:g}h tokens={tokens} runs={len(runs)}")
+    future_note = f" future_stamped={future_stamped}" if future_stamped else ""
+    print(f"node health {now:%Y-%m-%dT%H:%MZ} window={args.hours:g}h tokens={tokens} runs={len(runs)}{future_note}")
     print(f"  {'node':<12} {'metric':<48} {'value':>7}  healthy  unhealthy  status")
     for node, mid, desc, v, healthy, unhealthy, higher, status in rows:
         shown = "-" if v is None else f"{v:.0f}"
@@ -1610,7 +1612,7 @@ def main():
             for node, mid, desc, v, healthy, unhealthy, higher, status in rows]
         doc = {"generated": sampled_at, "generated_at": sampled_at,
                "source_commit": source_commit(here), "paused": line_holds.pause_state(agent_home),
-               "window_hours": args.hours,
+               "window_hours": args.hours, "future_stamped": future_stamped,
                "metrics": scorecard_metrics, "trend_metrics": [m for m in scorecard_metrics if "_30d" in m["id"]],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
                "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],

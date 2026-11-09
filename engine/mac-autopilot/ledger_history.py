@@ -8,9 +8,33 @@ both places), then the archive. Duplicate ids collapse to the live row.
 """
 import json
 import os
-from datetime import timedelta
+import re
+from datetime import datetime, timedelta, timezone
 
 LEDGER_FILES = ("units.json", "units-archive.json")
+SCHEDULER_LINE_RE = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\]")
+SCHEDULER_FUTURE_TOLERANCE = timedelta(seconds=300)
+
+
+def scheduler_log_lines(path, now):
+    """Read scheduler rows, skipping stamps over five minutes ahead; return rows and the skip count."""
+    rows, future_stamped = [], 0
+    try:
+        with open(path, errors="ignore") as source:
+            for raw in source:
+                match = SCHEDULER_LINE_RE.match(raw)
+                if match:
+                    try:
+                        at = datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        at = None
+                    if at and at > now + SCHEDULER_FUTURE_TOLERANCE:
+                        future_stamped += 1
+                        continue
+                rows.append(raw)
+    except OSError:
+        return None, 0
+    return rows, future_stamped
 
 
 def load_units(runtime_dir):

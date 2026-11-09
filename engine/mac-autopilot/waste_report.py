@@ -65,12 +65,13 @@ def nearest_rank(values, p):
     return values[max(0, math.ceil(p / 100 * len(values)) - 1)]
 
 
-def read_log(path):
-    """[(timestamp text, message)] of a timestamped log, or None when the file is absent."""
+def read_log(path, now=None):
+    """[(timestamp text, message)] and future-stamp count, or (None, 0) when absent."""
     if not os.path.exists(path):
-        return None
-    with open(path, errors="replace") as handle:
-        return [(m.group(1), m.group(2)) for m in map(LINE_RE.match, handle.read().splitlines()) if m]
+        return None, 0
+    now = now or datetime.now(timezone.utc)
+    rows, future_stamped = ledger_history.scheduler_log_lines(path, now)
+    return [(m.group(1), m.group(2)) for m in map(LINE_RE.match, rows or []) if m], future_stamped
 
 
 def norm_ts(value):
@@ -582,15 +583,19 @@ def main():
     if args.lesson_zero_hit_days < 1:
         ap.error("--lesson-zero-hit-days must be at least 1")
 
+    now = datetime.now(timezone.utc)
+    future_stamped = 0
     covered = []  # (file, what was read) for the "read" lines: which files and which time range the report covers
 
     def path(name):
         return os.path.join(args.runtime, name)
 
     def read_logs(*names):  # the rotated file, then the live one
+        nonlocal future_stamped
         merged = []
         for name in names:
-            lines = read_log(path(name))
+            lines, skipped = read_log(path(name), now)
+            future_stamped += skipped
             if lines is None:
                 covered.append((name, "absent"))
                 continue
@@ -602,6 +607,8 @@ def main():
         covered.append((name, "absent" if not found else f"{count:>3} {unit}  {first} .. {last}" if count else f"  0 {unit}"))
 
     sched = read_logs("scheduler.log.1", "scheduler.log")
+    if future_stamped:
+        covered.append(("scheduler log", f"future_stamped={future_stamped}"))
     units_doc = read_json(path("units.json"))
     # 事件历史跨活台账与退休归档（retire_terminal_units 只移动行，不删历史）。
     units = ledger_history.load_units(args.runtime)
