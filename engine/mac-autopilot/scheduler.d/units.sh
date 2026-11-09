@@ -548,6 +548,38 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
     && say "supervisor budget-recut unit=$id issue=#$issue: $evidence"
 }
 
+# Row 131: three parks had no exit a machine could meet (cap default, repair breaker, budget park; 21 units, the oldest 229 h on 11-09).
+# Each takes the existing budget-recut route once per 24h, read from its own dead-park-exit event; a unit that parks again in a class gets another recut, never a requeue.
+# Left alone: session-owned (PR label) and supervisor_owned units, and every other park reason (on-hold, recut-refused, token hard park, arbiter-owned cap triage).
+DEAD_PARK_EXIT_PER_TICK="${DEAD_PARK_EXIT_PER_TICK:-3}"
+dead_park_exit() {
+  local prs id class n=0
+  prs="$(tick_prs)" || return 0 # without the census a session-owned label cannot be read
+  while IFS=$'\t' read -r id class; do
+    (( n < DEAD_PARK_EXIT_PER_TICK )) || break
+    n=$((n + 1))
+    set_unit "$id" "$(hist dead-park-exit "$class park has no automatic exit; sent to recut")" || continue
+    say "dead park exit unit=$id class=$class"
+    supervisor_budget_recut "$id" "dead park exit ($class)" null "dead park exit could not complete the recut route" "dead park exit recut" \
+      supervisor-budget-park supervisor-budget-recut true false
+  done < <(jqf -r --slurpfile census <(printf '%s' "$prs") --arg owned "$SESSION_OWNED_LABEL" --arg re "$SUPERVISOR_CAP_PARK_RESULT_RE" \
+    --argjson since "$(($(date +%s) - 86400))" '
+    [$census[0][] | select(any(.labels[]?; .name == $owned)) | .number] as $claimed
+    | .units[]
+    | (.history // []) as $h
+    | ($h | map(select(.stage != "supervisor-cap-default")) | last // {}) as $l
+    | select(.stage == "parked" and (.supervisor_owned // false) == false and (.hold_handoff_waiting // false) == false
+        and ((.pr | type) != "number" or (.pr as $p | $claimed | index($p)) == null)
+        and all($h[]; .stage != "dead-park-exit" or (((.at // "") | sub("\\.[0-9]+Z$"; "Z") | (fromdateiso8601? // 0)) < $since)))
+    | (if .parked_reason == "repair-breaker" and $l.stage == "repair-breaker" then "repair-breaker"
+       elif (.parked_reason | IN("supervisor-budget", "ticket-stop-loss")) and ($l.stage | IN("supervisor-budget-park", "supervisor-cap-triage-park")) then
+         (if any($h[]; .stage == "supervisor-cap-default") then "cap-default"
+          elif $l.stage == "supervisor-budget-park" and (($l.result // "") | test($re) | not) then "budget-park"
+          else empty end)
+       else empty end) as $class
+    | [.id, $class] | @tsv' "$UNITS")
+}
+
 supervisor_needs_info() { # id question evidence —— needs-info：给提需求的人发一个澄清问题并打标签（唯一回到人的出口）
   local id="$1" question="$2" evidence="$3" issue pr decision posted=no
   issue="$(unit_field "$id" '.issue // empty')"; pr="$(unit_field "$id" '.pr // empty')"

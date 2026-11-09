@@ -47,6 +47,7 @@ supervisor_arbiter_candidates() {
 }
 
 dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 worker；在途上限 SUPERVISOR_ARBITER_MAX，两轮上限
+  dead_park_exit || : # runs before the arbiter gate: these parks never reach the arbiter
   [[ "$SUPERVISOR_ARBITER" == true ]] || return 0
   local prompt_file cap_contract_file
   prompt_file="$(sched_config_file prompts/supervisor-arbiter.md)"
