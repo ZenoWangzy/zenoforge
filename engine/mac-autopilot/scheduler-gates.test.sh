@@ -3120,15 +3120,15 @@ eval "$retire_saved_tick_prs"; eval "$retire_saved_pr_view"
 rm -f "$LUNA_SLOTS"/wait-*
 units '{"units":[{"id":"issue-9","stage":"review-pending","history":[]},{"id":"issue-opt","lane":"direct-main","stage":"review-pending","history":[]},{"id":"issue-hp","hotpatch":true,"stage":"review-pending","history":[]}]}'
 : > "$LUNA_SLOTS/wait-opt-$$"   # 本测试 shell 的 pid，即存活等待者
-room_for issue-9 review && fail 'ordinary dispatch admitted while an opt run waits at the luna/zc gate'
+room_for issue-9 implement "" true false && fail 'ordinary dispatch admitted while an opt run waits at the luna/zc gate'
 grep -q 'skip dispatch unit=issue-9 priority=normal (higher-priority run waiting at luna/zc gate: wait-opt-' "$A/scheduler.log" \
   || fail 'the priority hold left no record in scheduler.log'
 room_for issue-opt review || fail 'an opt dispatch was held behind another opt waiter'
 room_for issue-hp review || fail 'a hotpatch dispatch was held behind an opt waiter'
 rm -f "$LUNA_SLOTS/wait-opt-$$"
 : > "$LUNA_SLOTS/wait-hotfix-$$"
-room_for issue-9 review && fail 'ordinary dispatch admitted while a hotfix run waits at the luna/zc gate'
-room_for issue-opt review && fail 'an opt dispatch was admitted while a higher-priority hotfix waits'
+room_for issue-9 implement "" true false && fail 'ordinary dispatch admitted while a hotfix run waits at the luna/zc gate'
+room_for issue-opt implement "" true false && fail 'an opt dispatch was admitted while a higher-priority hotfix waits'
 room_for issue-hp review || fail 'a hotpatch dispatch was held behind another hotfix waiter'
 grep -q 'skip dispatch unit=issue-opt priority=opt (higher-priority run waiting at luna/zc gate: wait-hotfix-' "$A/scheduler.log" \
   || fail 'the hotfix hold of opt work left no record in scheduler.log'
@@ -3139,8 +3139,22 @@ room_for issue-9 review || fail 'a normal waiter must not hold other normal disp
 sleep 0.1 & gate_dead=$!; wait "$gate_dead"
 kill -0 "$gate_dead" 2>/dev/null && fail "test setup: pid $gate_dead still alive"
 : > "$LUNA_SLOTS/wait-hotfix-$gate_dead"
-room_for issue-9 review || fail 'a stale wait file of a dead wrapper blocked dispatch'
+room_for issue-9 implement "" true false || fail 'a stale wait file of a dead wrapper blocked dispatch'
 [[ -e "$LUNA_SLOTS/wait-hotfix-$gate_dead" ]] && fail 'a stale wait file was not dropped'
+rm -f "$LUNA_SLOTS"/wait-*
+
+: > "$A/scheduler.log"; : > "$A/alerts/waste.md"; : > "$LUNA_SLOTS/wait-opt-$$"
+room_for issue-9 review || fail 'a live opt waiter held review'
+touch -d "@$(($(date +%s) - 1300))" "$LUNA_SLOTS/wait-opt-$$"
+TICK_PRIORITY_HOLD_EXPIRED=()
+for pass in 1 2; do room_for issue-9 implement "" true false || fail 'an old opt waiter held dispatch'; done
+[[ "$(grep -c 'priority hold expired for wait-opt-.* after .*s; normal dispatch resumes' "$A/scheduler.log")" == 1 ]] || fail 'expired waiter was not logged once per pass'
+touch -d "@$(($(date +%s) - 60))" "$LUNA_SLOTS/wait-opt-$$"
+room_for issue-9 implement "" true false && fail 'a fresh opt waiter did not hold dispatch'
+set_unit issue-9 ".priority_hold={since_epoch:$(( $(date +%s) - 1201 )),alerted:false}"
+: > "$A/scheduler.log"; : > "$A/alerts/waste.md"
+for pass in 1 2; do if room_for issue-9 implement "" true false; then fail 'a starved unit was admitted'; fi; done
+[[ "$(grep -c 'PRIORITY-HOLD-STARVE unit=issue-9 waiter=wait-opt-' "$A/scheduler.log")" == 1 && "$(grep -c 'PRIORITY-HOLD-STARVE unit=issue-9 waiter=wait-opt-' "$A/alerts/waste.md")" == 1 ]] || fail 'starvation alert was not written once to both paths'
 rm -f "$LUNA_SLOTS"/wait-*
 
 # factory_prs_only: sessions' PRs leave the ledger before any acting phase, and the orphan pass neither adopts nor closes them.
