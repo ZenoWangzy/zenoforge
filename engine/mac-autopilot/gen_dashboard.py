@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles
+import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, triage_split
 import ledger_history
 from config_paths import zf_config_file
 
@@ -865,21 +865,14 @@ def front_github_stages(now):
         return cached["stages"], {"cached": True, "stale": False, "age_s": int(age), "error": None}
     try:
         query = ("query($owner:String!,$name:String!){repository(owner:$owner,name:$name){" +
-                 "".join(f'a{i}:issues(states:OPEN,labels:["{row[0]}"],first:10,orderBy:{{field:UPDATED_AT,direction:ASC}})'
-                         "{totalCount nodes{number title createdAt updatedAt}} " for i, row in enumerate(FRONT_STAGES)) + "}}")
+                 "".join(f'a{i}:issues(states:OPEN,labels:["{row[0]}"],first:{100 if row[0] == "needs-triage" else 10},orderBy:{{field:UPDATED_AT,direction:ASC}})'
+                         "{totalCount nodes{number title createdAt updatedAt labels(first:30){nodes{name}}}} " for i, row in enumerate(FRONT_STAGES)) + "}}")
         payload = json.loads(front_run(["gh", "api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", "query=" + query], 30))
         repo = ((payload or {}).get("data") or {}).get("repository") if isinstance(payload, dict) else None
         if not isinstance(repo, dict):
             first = ((payload.get("errors") or [{}])[0].get("message") if isinstance(payload, dict) else None) or "GitHub 返回无数据"
             raise RuntimeError(str(first)[:200])
-        stages = []
-        for i, row in enumerate(FRONT_STAGES):
-            block = repo.get(f"a{i}") or {}
-            node = (block.get("nodes") or [None])[0] or {}
-            stages.append({"label": row[0], "count": block.get("totalCount"),
-                           "oldest": {"number": node.get("number"), "created_at": node.get("createdAt"), "updated_at": node.get("updatedAt")} if node else None,
-                           # 总览阶段卡：最久没动的 10 张，标题 + 距上次更新
-                           "items": [{"number": n.get("number"), "title": (n.get("title") or "")[:60], "updated_at": n.get("updatedAt")} for n in block.get("nodes") or []]})
+        stages = [triage_split.stage(row[0], repo.get(f"a{i}") or {}) for i, row in enumerate(FRONT_STAGES)]
         if all(s["count"] is None for s in stages):
             raise RuntimeError("GitHub 返回的阶段计数为空")
         try:
@@ -904,7 +897,7 @@ def front_stage_rows(now):
         s = by_label.get(label) or {}
         oldest, count = s.get("oldest"), s.get("count")
         idle = 0 if count == 0 else front_hours_since(epoch_of(oldest.get("updated_at") or "") if oldest else None, now)
-        rows.append({"label": label, "name": name, "count": count, "oldest": oldest, "idle_hours": idle, "items": s.get("items") or []})
+        rows.append({"label": label, "name": name, "count": count, "oldest": oldest, "idle_hours": idle, "items": s.get("items") or [], "excluded": s.get("excluded")})
         front_std(f"stage.{label}.count", f"{name}（{label}）数量", c_ok, c_bad, False, "个", meaning,
                   "GitHub GraphQL：该标签的开放 issue 数")
         front_std(f"stage.{label}.idle_hours", f"{name}最久滞留", i_ok, i_bad, False, "小时",

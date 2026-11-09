@@ -44,7 +44,7 @@ cat > "$a/units.json" <<JSON
   {"stage":"advisor-unavailable","at":"$(iso '-40 hours')"}]},
  {"id":"pr-2","stage":"repair-pending","history":[{"stage":"advisor-ruling","at":"$(iso '-1 hours')"}]}]}
 JSON
-printf '{"rulings":[{"references":["#555"],"verbatim":"config override wording"}]}\n' \
+printf '{"rulings":[{"references":["#555"],"verbatim":"config override wording"},{"id":"nonproduct-lane-routing","references":[],"verbatim":"system lane","membership":{"labels":["pipeline-system"]}}]}\n' \
   > "$root/.zenoforge/state/rulings.json"
 printf '{"rulings":[{"references":["#555"],"verbatim":"engine fallback wording"}]}\n' \
   > "$root/engine/state/rulings.json"
@@ -83,12 +83,13 @@ jq -n --argjson started "$(date -u -d '-45 minutes' +%s)" \
   '{deferred_issue_ids:[7],job:{job_id:"advisor-batch-J1",started_at:$started,input_bytes:2048,members:[{issue:101,input:{body:"x"}},{issue:102,input:{body:"y"}}]}}' > "$FRONT_BATCH_STATE"
 
 printf '%s' '{"data":{"repository":{
- "a0":{"totalCount":4,"nodes":[{"number":9,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}]},
+ "a0":{"totalCount":3,"nodes":[{"number":10,"createdAt":"2025-12-01T00:00:00Z","updatedAt":"2025-12-01T00:00:00Z","labels":{"nodes":[{"name":"needs-triage"},{"name":"roadmap"}]}},{"number":11,"createdAt":"2025-12-15T00:00:00Z","updatedAt":"2025-12-15T00:00:00Z","labels":{"nodes":[{"name":"needs-triage"},{"name":"pipeline-system"}]}},{"number":9,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z","labels":{"nodes":[{"name":"needs-triage"}]}}]},
  "a1":{"totalCount":0,"nodes":[]},"a2":{"totalCount":2,"nodes":[{"number":5,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"__RECENT__"}]},
  "a3":{"totalCount":3,"nodes":[{"number":6,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"__RECENT__"}]},
  "a4":{"totalCount":0,"nodes":[]},"a5":{"totalCount":9,"nodes":[{"number":8,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"__RECENT__"}]},
  "a6":{"totalCount":5,"nodes":[{"number":3,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"__RECENT__"}]},
  "a7":{"totalCount":0,"nodes":[]}}}}' | sed "s/__RECENT__/$(iso '-2 hours')/g" > "$f/graphql.json"
+printf '{"switches":{"roadmap-order":true}}\n' > "$AGENT_HOME/model-policy.json"
 cat > "$f/bin/gh" <<'GH'
 #!/usr/bin/env bash
 if [[ "$1 $2" == "api graphql" ]]; then
@@ -151,10 +152,20 @@ sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e --arg 
   || fail 'partial daily usage or incomplete sessions did not reach dashboard data'
 [[ ! -e "$a/deployed.json" ]] || fail 'dashboard recreated host-local deployed.json'
 jq -e '.errors == {}
-  and ([.stages[] | {(.label): .count}] | add) == {"needs-triage":4,"finish-first":0,"needs-info":2,"needs-advisor":3,"needs-recut":0,"ready-for-agent":9,"awaiting-release":5,"awaiting-pipeline-sync":0}
+  and ([.stages[] | {(.label): .count}] | add) == {"needs-triage":1,"finish-first":0,"needs-info":2,"needs-advisor":3,"needs-recut":0,"ready-for-agent":9,"awaiting-release":5,"awaiting-pipeline-sync":0}
   and (.stages[0].idle_hours > 24 and .stages[0].oldest.number == 9)
   and (.stages[1].idle_hours == 0) and (.stages[2].idle_hours > 1.9 and .stages[2].idle_hours < 2.2)
   and .github.cached == false' <<<"$out" >/dev/null || fail "stage rows wrong: $(jq -c '{errors, stages, github}' <<<"$out")"
+jq -e '(.stages[0].excluded | map({key, name, count}) == [{"key":"roadmap","name":"路线图排序","count":1},{"key":"system","name":"系统通道","count":1}])
+  and (.stages[0].excluded | all(.tooltip | contains("不计入待分诊")))' <<<"$out" >/dev/null \
+  || fail "excluded triage figures wrong: $(jq -c '.stages[0] | {count, oldest, excluded}' <<<"$out")"
+# triage_split.py: with roadmap-order off, a roadmap-labelled ticket is eligible again
+printf '{"switches":{"roadmap-order":false}}\n' > "$f/model-policy-off.json"
+MODEL_POLICY_FILE="$f/model-policy-off.json" PYTHONPATH="$script_dir" python3 -c '
+import triage_split as t
+row = t.stage("needs-triage", {"totalCount": 1, "nodes": [{"number": 10, "updatedAt": "2025-12-01T00:00:00Z", "labels": {"nodes": [{"name": "needs-triage"}, {"name": "roadmap"}]}}]})
+assert row["count"] == 1 and row["excluded"][0]["count"] == 0 and row["excluded"][1]["count"] == 0, row
+' || fail 'roadmap switch off did not count the roadmap ticket as eligible'
 jq -e '.status["stage.needs-triage.count"] == "OK" and .status["stage.needs-triage.idle_hours"] == "UNHEALTHY"
   and .status["stage.needs-advisor.count"] == "OK" and .status["stage.finish-first.count"] == "OK"' <<<"$out" >/dev/null \
   || fail "stage status wrong: $(jq -c '.status' <<<"$out")"
@@ -166,7 +177,7 @@ jq -e '.advisor.job.job_id == "advisor-batch-J1" and .advisor.job.members == [10
   and .status["advisor.job_age_min"] == "WARN" and .status["advisor.failures_today"] == "OK"
   and .advisor_loop.rulings_today == 2 and .advisor_loop.unavailable_today == 1 and .values["advisor_loop.fail_pct_today"] == 33
   and .status["advisor_loop.fail_pct_today"] == "WARN"' <<<"$out" >/dev/null || fail "advisor panel wrong: $(jq -c '{advisor, advisor_loop, values}' <<<"$out" | cut -c1-1500)"
-jq -e '.triage.done_today == 2 and .triage.running == true and .triage.backlog == 4
+jq -e '.triage.done_today == 2 and .triage.running == true and .triage.backlog == 1
   and .triage.routed_today == {"needs-advisor":1,"ready-for-agent":1}
   and .values["triage.last_done_age_min"] >= 9 and .values["triage.last_done_age_min"] <= 12
   and .status["triage.last_done_age_min"] == "OK" and .status["triage.done_today"] == "UNHEALTHY"
