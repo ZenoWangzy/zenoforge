@@ -3,6 +3,7 @@
 # codes under .git, then merge only if GitHub still reports the tested SHA.
 set -uo pipefail
 
+# Must match the shard matrix in .github/workflows/engine-tests.yml.
 MERGE_PR_ENGINE_SHARDS=8
 MERGE_PR_MAX_PARALLEL=4
 
@@ -103,8 +104,35 @@ merge_pr_prior_art_ok() {
 # command's last recorded run green. A Markdown-only PR (the quick-land path)
 # has no test run to prove, and a green full-suite result for the same SHA
 # (merge_pr_main) is itself a receipt.
+merge_pr_ci_green_check_count() {
+  local pr="$1" head_sha="$2" view count
+  view="$(gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null)" || return 1
+  # headRefOid anchors the whole rollup to the checked commit; CheckRuns have no per-check SHA.
+  count="$(jq -er --arg sha "$head_sha" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
+    def completed_success:
+      if .__typename == "CheckRun" then
+        .status == "COMPLETED"
+        and (.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL")
+      elif .__typename == "StatusContext" then .state == "SUCCESS"
+      else false end;
+    def required_check($need):
+      .__typename == "CheckRun"
+      and (.workflowName | type == "string" and length > 0)
+      and .name == $need and .status == "COMPLETED" and .conclusion == "SUCCESS";
+    . as $view
+    | ($view.statusCheckRollup // null) as $checks
+    | select($view.headRefOid == $sha)
+    | select($checks | type == "array" and length > 0)
+    | select(all($checks[]; completed_success))
+    | (["cli"] + [range(0;$shards) | "suites (\(.))"]) as $required
+    | select(all($required[]; . as $need | any($checks[]; required_check($need))))
+    | $checks | length
+  ' <<<"$view" 2>/dev/null)" || return 1
+  printf '%s\n' "$count"
+}
+
 merge_pr_test_receipt_ok() {
-  local pr="$1" view head_sha root result_file receipt bad
+  local pr="$1" view head_sha root result_file='' receipt bad
   if ! view="$(gh pr view "$pr" --json body,files,commits 2>/dev/null)" \
     || ! jq -e '.files | type == "array" and length > 0' <<<"$view" >/dev/null 2>&1; then
     merge_pr_refuse "$pr" 'could not read the PR file list for the test receipt'
@@ -124,13 +152,28 @@ merge_pr_test_receipt_ok() {
   }
   if result_file="$(merge_pr_result_file "$root" "$head_sha")" \
     && [[ -f "$result_file" ]] && merge_pr_result_is_green "$result_file" "$head_sha"; then
+    printf 'merge-pr: receipt: local\n' >&2
     return 0
+  fi
+  if [[ -n "$result_file" && -f "$result_file" ]] && jq -e --arg sha "$head_sha" '
+    .sha == $sha and (.green == false
+      or .cli_exit_code != 0
+      or any(.engine_shards[]?; .exit_code != 0))
+  ' "$result_file" >/dev/null 2>&1; then
+    merge_pr_refuse "$pr" "full local suites are red for SHA $head_sha"
+    return 1
   fi
   receipt="$(merge_pr_receipt_file "$root" "$head_sha")" || {
     merge_pr_refuse "$pr" 'cannot locate the repository test-receipt directory'
     return 1
   }
   if [[ ! -s "$receipt" ]]; then
+    if ! jq -e 'any(.files[]?; (.path // "") | startswith(".github/"))' <<<"$view" >/dev/null 2>&1; then
+      if count="$(merge_pr_ci_green_check_count "$pr" "$head_sha")"; then
+        printf 'merge-pr: receipt: ci-green %s checks at %.12s\n' "$count" "$head_sha" >&2
+        return 0
+      fi
+    fi
     merge_pr_refuse "$pr" "no test receipt exists for $head_sha: run the tests at that HEAD through tools/test-receipt.sh <command...>"
     return 1
   fi
@@ -149,6 +192,7 @@ merge_pr_test_receipt_ok() {
     merge_pr_refuse "$pr" "test receipt for $head_sha has a failed last run: $bad"
     return 1
   }
+  printf 'merge-pr: receipt: local\n' >&2
 }
 
 # Only this PR's own files: a main already over its baseline must not stop other merges.
