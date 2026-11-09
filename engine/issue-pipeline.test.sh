@@ -2,10 +2,11 @@
 # issue-pipeline.test.sh -- batch-only fresh advisor questions, sent-job
 # polling, and stored-verdict recovery.
 set -euo pipefail
-if [[ "${1:-}" == --rename-e1 ]]; then
-  exec bash "$(dirname "$0")/rename-e1-mode.test.sh"
-fi
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
+if [[ "${1:-}" == --rename-e1 ]]; then
+  bash "$(dirname "$0")/rename-e1-mode.test.sh"
+  exit
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PIPELINE_SRC="$SCRIPT_DIR/issue-pipeline.sh"

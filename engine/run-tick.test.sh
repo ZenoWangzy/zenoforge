@@ -8,10 +8,11 @@
 # checkout either has no scheduler or uses a tiny fixture stub, so no unit
 # dispatch or real email can happen.
 set -euo pipefail
-if [[ "${1:-}" == --rename-e1 ]]; then
-  exec bash "$(dirname "$0")/run-tick-slice-isolation.test.sh"
-fi
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
+if [[ "${1:-}" == --rename-e1 ]]; then
+  bash "$(dirname "$0")/run-tick-slice-isolation.test.sh"
+  exit
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAUNCHER_SRC="$SCRIPT_DIR/run-tick.sh"

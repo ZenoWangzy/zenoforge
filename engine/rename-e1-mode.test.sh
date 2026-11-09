@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Exercise the actual feeder gate and slice runner using isolated gh replies.
 set -euo pipefail
-if [[ "${1:-}" == --race-only ]]; then
-  exec bash "$(dirname "$0")/rename-e1-race.test.sh"
-fi
 source "$(dirname "$0")/test-env.sh"
+if [[ "${1:-}" == --race-only ]]; then
+  bash "$(dirname "$0")/rename-e1-race.test.sh"
+  exit
+fi
 SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd -P)"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/issue-pipeline-slices.sh"
