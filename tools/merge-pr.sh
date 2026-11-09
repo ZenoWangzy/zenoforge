@@ -118,6 +118,7 @@ merge_pr_ci_green_check_count() {
     def required_check($need):
       .__typename == "CheckRun"
       and (.workflowName | type == "string" and length > 0)
+      and .workflowName == (if $need == "cli" then "cli-tests" else "engine-tests" end)
       and .name == $need and .status == "COMPLETED" and .conclusion == "SUCCESS";
     . as $view
     | ($view.statusCheckRollup // null) as $checks
@@ -151,23 +152,27 @@ merge_pr_test_receipt_ok() {
     return 1
   }
   if result_file="$(merge_pr_result_file "$root" "$head_sha")" \
-    && [[ -f "$result_file" ]] && merge_pr_result_is_green "$result_file" "$head_sha"; then
-    printf 'merge-pr: receipt: local\n' >&2
-    return 0
-  fi
-  if [[ -n "$result_file" && -f "$result_file" ]] && jq -e --arg sha "$head_sha" '
-    .sha == $sha and (.green == false
-      or .cli_exit_code != 0
-      or any(.engine_shards[]?; .exit_code != 0))
-  ' "$result_file" >/dev/null 2>&1; then
-    merge_pr_refuse "$pr" "full local suites are red for SHA $head_sha"
+    && [[ -e "$result_file" || -L "$result_file" ]]; then
+    if merge_pr_result_is_green "$result_file" "$head_sha"; then
+      printf 'merge-pr: receipt: local\n' >&2
+      return 0
+    fi
+    if [[ -f "$result_file" ]] && jq -e --arg sha "$head_sha" '
+      .sha == $sha and (.green == false
+        or .cli_exit_code != 0
+        or any(.engine_shards[]?; .exit_code != 0))
+    ' "$result_file" >/dev/null 2>&1; then
+      merge_pr_refuse "$pr" "full local suites are red for SHA $head_sha"
+    else
+      merge_pr_refuse "$pr" "the full-suite result for SHA $head_sha is incomplete or invalid"
+    fi
     return 1
   fi
   receipt="$(merge_pr_receipt_file "$root" "$head_sha")" || {
     merge_pr_refuse "$pr" 'cannot locate the repository test-receipt directory'
     return 1
   }
-  if [[ ! -s "$receipt" ]]; then
+  if [[ ! -e "$receipt" && ! -L "$receipt" ]]; then
     if ! jq -e 'any(.files[]?; (.path // "") | startswith(".github/"))' <<<"$view" >/dev/null 2>&1; then
       if count="$(merge_pr_ci_green_check_count "$pr" "$head_sha")"; then
         printf 'merge-pr: receipt: ci-green %s checks at %.12s\n' "$count" "$head_sha" >&2
@@ -175,6 +180,10 @@ merge_pr_test_receipt_ok() {
       fi
     fi
     merge_pr_refuse "$pr" "no test receipt exists for $head_sha: run the tests at that HEAD through tools/test-receipt.sh <command...>"
+    return 1
+  fi
+  if [[ ! -f "$receipt" || ! -s "$receipt" ]]; then
+    merge_pr_refuse "$pr" "test receipt for $head_sha is empty or invalid"
     return 1
   fi
   bad="$(awk '

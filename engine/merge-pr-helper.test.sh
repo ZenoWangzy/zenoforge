@@ -312,9 +312,9 @@ rm -rf "$receipt_dir"
 expect_receipt_refusal 'no test receipt' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
 ci_rollup() {
   jq -cn '
-    ([{name:"cla"},{name:"cli"}]
-      + [range(0;8) | {name:("suites (" + tostring + ")")}])
-    | map(. + {__typename:"CheckRun",workflowName:"engine-tests.yml",status:"COMPLETED",conclusion:"SUCCESS"})'
+    ([{name:"cla",workflowName:"CLA"},{name:"cli",workflowName:"cli-tests"}]
+      + [range(0;8) | {name:("suites (" + tostring + ")"),workflowName:"engine-tests"}])
+    | map(. + {__typename:"CheckRun",status:"COMPLETED",conclusion:"SUCCESS"})'
 }
 ci_set() {
   PR_CI_ROLLUP="$(jq -c --arg name "$1" --arg status "$2" --arg conclusion "$3" '
@@ -322,10 +322,20 @@ ci_set() {
       | (if $conclusion == "" then del(.conclusion) else .conclusion=$conclusion end)
       else . end)' <<<"$PR_CI_ROLLUP")"
 }
+ci_set_workflow() {
+  PR_CI_ROLLUP="$(jq -c --arg name "$1" --arg workflow "$2" '
+    map(if .name == $name then .workflowName=$workflow else . end)' <<<"$PR_CI_ROLLUP")"
+}
 PR_CI_ROLLUP="$(ci_rollup)"
 expect_receipt_merge 'all-green CI checks at the head'
 [[ "$(cat "$fixture/check-output")" == *"receipt: ci-green 10 checks at ${rsha:0:12}"* ]] \
   || fail "green CI receipt path was not logged: $(cat "$fixture/check-output")"
+PR_CI_ROLLUP="$(ci_rollup)"
+ci_set_workflow cli engine-tests
+expect_receipt_refusal 'cli check from engine-tests workflow' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup)"
+ci_set cla COMPLETED FAILURE
+expect_receipt_refusal 'failed non-required check' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
 PR_CI_ROLLUP="$(ci_rollup)"
 ci_set 'suites (3)' COMPLETED SKIPPED
 expect_receipt_refusal 'skipped required suite' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
@@ -379,6 +389,39 @@ PR_CI_ROLLUP="$(ci_rollup)"
 expect_receipt_refusal 'local red result with green CI' "full local suites are red for SHA $rsha"
 [[ "$(cat "$fixture/gh-calls")" != *statusCheckRollup* ]] || fail 'CI was consulted despite a local red result'
 rm -f "$red_result"
+jq -n --arg sha "$rsha" '{sha:$sha,green:true,cli_exit_code:0,engine_shards:[range(0;7) as $shard | {shard:$shard,exit_code:0}]}' >"$red_result"
+expect_receipt_refusal 'short local green result with green CI' "the full-suite result for SHA $rsha is incomplete or invalid"
+[[ "$(cat "$fixture/gh-calls")" != *statusCheckRollup* ]] || fail 'CI was consulted despite an incomplete local result'
+printf '{\n' >"$red_result"
+expect_receipt_refusal 'malformed local result with green CI' "the full-suite result for SHA $rsha is incomplete or invalid"
+[[ "$(cat "$fixture/gh-calls")" != *statusCheckRollup* ]] || fail 'CI was consulted despite a malformed local result'
+jq -n --arg sha "$rsha" '{sha:$sha,green:true,cli_exit_code:0,engine_shards:[range(0;8) as $shard | {shard:$shard,exit_code:0}]}' >"$red_result"
+expect_unreadable_result_refusal() {
+  : > "$fixture/gh-calls"
+  if (
+    jq() {
+      local arg
+      for arg in "$@"; do
+        [[ "$arg" == "$red_result" ]] && return 2
+      done
+      command jq "$@"
+    }
+    merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1
+  ); then
+    fail 'unreadable local result reached merge'
+  fi
+  [[ "$(cat "$fixture/check-output")" == *"the full-suite result for SHA $rsha is incomplete or invalid"* ]] \
+    || fail "unreadable local result wrong refusal: $(cat "$fixture/check-output")"
+  [[ "$(cat "$fixture/gh-calls")" != *statusCheckRollup* ]] || fail 'CI was consulted despite an unreadable local result'
+}
+expect_unreadable_result_refusal
+rm -f "$red_result"
+mkdir -p "$receipt_dir"
+: >"$receipt_dir/$rsha"
+PR_CI_ROLLUP="$(ci_rollup)"
+expect_receipt_refusal 'empty local receipt with green CI' "test receipt for $rsha is empty or invalid"
+[[ "$(cat "$fixture/gh-calls")" != *statusCheckRollup* ]] || fail 'CI was consulted despite a local receipt'
+rm -f "$receipt_dir/$rsha"
 mkdir -p "$receipt_dir"
 printf '0\tbash engine/quick-land.test.sh\n1\tbash engine/merge-pr-helper.test.sh\n' >"$receipt_dir/$rsha"
 expect_receipt_refusal 'failed last run' 'bash engine/merge-pr-helper.test.sh (exit 1)'
