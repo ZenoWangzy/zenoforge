@@ -150,3 +150,45 @@ for case in "$turn_error|30" 'Reading the file next|300'; do
   kill "$hung_pid"; wait "$hung_pid" 2>/dev/null || :; backend=''
 done
 echo 'ok - hung ZCode worker is stopped only when its log ends in the turn error and is quiet'
+
+# A recorded non-product test-guard refusal is an outcome, not a worker death.
+guard_marker='non-product-test-guard: refused unit=issue-guard command=bash reason=test-file recorded=1'
+guard_run() { # log path mode [keep-history] → harvest one guard review
+  local guard_file="$sup/$1.guard-refusals" target
+  case "$2" in
+    json) jq -cn --arg text "$guard_marker"$'\n' '{type:"assistant",message:{content:[{type:"text",text:$text}]}}' > "$sup/$1" ;;
+    tool-result) jq -cn --arg text "$guard_marker"$'\n' '{type:"tool_result",content:[{type:"text",text:$text}]}' > "$sup/$1" ;;
+    file) printf 'reviewer read harvest-late-report.test.sh: %s\n' "$guard_marker" > "$sup/$1" ;;
+    bash|python3)
+      : > "$sup/$1"
+      target="$script_dir/harvest-late-report.test.sh"; [[ "$2" != python3 ]] || target="$sup/guard.test.py"
+      env ZF_NON_PRODUCT_UNIT=1 ZF_PIPELINE_UNIT=issue-guard "ZF_NON_PRODUCT_GUARD_FILE=$guard_file" \
+        "$script_dir/../non-product-test-shim/$2" "$target" >/dev/null 2>&1 || [[ "$?" == 78 ]] || { echo "test shim did not refuse $2 test-file" >&2; exit 1; }
+      ;;
+    *) printf '%s\n' "$guard_marker" > "$sup/$1" ;;
+  esac
+  rm -f "$sup/guard.md" "$sup/guard.md.partial"
+  [[ "${3:-reset}" == keep ]] || jq -n '{units:[{id:"issue-guard",stage:"review",lane:"direct-main",history:[]}]}' > "$UNITS"
+  jq -n --arg log "$1" '{workers:[{pid:999999999,unit:"issue-guard",type:"review",provider:"fixture",log:$log,report:"guard.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+  harvest_workers
+}
+guard_run guard-first.log bash
+jq -e '.units[0] | .stage == "review" and ([.history[] | select(.stage == "worker-guard-refused" and .result == "command=bash reason=test-file")] | length == 1) and ([.history[] | select(.stage == "worker-no-output")] | length == 0)' "$UNITS" >/dev/null \
+  || { echo 'guard refusal was not recorded as an explicit worker outcome' >&2; exit 1; }
+jq -e '.workers[0].harvested == true' "$WORKERS" >/dev/null \
+  || { echo 'guard refusal was counted as a worker death or left unharvested' >&2; exit 1; }
+
+guard_run reviewer-output.log tool-result keep
+jq -e '([.units[0].history[] | select(.stage == "worker-guard-refused")] | length == 1) and ([.units[0].history[] | select(.stage == "worker-no-output")] | length == 1)' "$UNITS" >/dev/null \
+  || { echo 'tool_result marker without a shim refusal file was not counted as worker-no-output' >&2; exit 1; }
+
+jq -n '{units:[{id:"issue-guard",stage:"review",lane:"direct-main",history:[]}]}' > "$UNITS"
+guard_run guard-repeat-first.log bash keep
+guard_run guard-repeat-second.log python3 keep
+jq -e '.units[0] | .stage == "supervisor-review" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 2) and any(.history[]; .stage == "worker-guard-refused" and .result == "command=bash reason=test-file") and any(.history[]; .stage == "worker-guard-refused" and .result == "command=python3 reason=test-file") and ([.history[] | select(.stage == "supervisor-escalated")] | length == 1) and all(.history[]; .stage != "worker-no-output")' "$UNITS" >/dev/null \
+  || { echo "alternating guard refusals did not reach the supervisor: $(jq -c '.units[0]' "$UNITS")" >&2; exit 1; }
+
+guard_review_rule="$(lane_rule direct-main test-head)"
+[[ "$guard_review_rule" == *'评审阶段不得运行测试命令'* && "$guard_review_rule" == *'测试文件可只读检查'* && "$guard_review_rule" == *'Focused 检查在 land 后的 Pipeline 运行'* && "$guard_review_rule" == *'test evidence: not run, post-land'* ]] \
+  || { echo 'direct-main review does not tell reviewers to inspect tests without running them' >&2; exit 1; }
+echo 'ok - test-guard outcomes, repeated refusals, and direct-main review evidence'
