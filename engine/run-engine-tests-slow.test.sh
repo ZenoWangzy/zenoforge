@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "$script_dir/.." && pwd -P)"
-source "$script_dir/test-env.sh"
 source "$repo_root/tools/run-engine-tests-helpers.sh"
 
 slow_line="$(engine_test_log_if_slow engine/example.test.sh 301 600)"
