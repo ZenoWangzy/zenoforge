@@ -291,12 +291,26 @@ parent_log="$fixture/parent-gh.log"
 gh() { printf '%s|%s\n' "$PWD" "$*" >> "$parent_log"; case "$*" in
   'issue view 71 '*) echo OPEN ;; 'issue view 72 '*) echo CLOSED ;; 'api repos/'*/issues/55/sub_issues*) echo '[{"number":1}]' ;;
   'api repos/'*/sub_issues*) echo '[]' ;; *) return 1 ;; esac; }
+saved_parent_lib="$SCHEDULER_AGENT_LIB"; saved_parent_context="${SCHEDULER_LIB_CONTEXT_FOR:-}"
+SCHEDULER_AGENT_LIB="$fixture/missing-lib.sh"; SCHEDULER_LIB_CONTEXT_FOR=""
+leaf_5563='{"number":5563,"title":"Leaf issue","body":"No task references.","subIssuesSummary":{"total":0}}'
+leaf_status=0; leaf_out="$(scheduler_issue_intake_parent_reason 5563 "$leaf_5563" 2>/dev/null)" || leaf_status=$?
+[[ "$leaf_status" == 1 ]] || fail "leaf issue with subIssuesSummary.total=0 should be decided without lib context; got rc=$leaf_status [$leaf_out]"
+context_status=0; context_out="$(scheduler_issue_intake_parent_reason 5564 '{"number":5564,"title":"Leaf issue","body":"No summary."}' 2>/dev/null)" || context_status=$?
+[[ "$context_status" == 2 && "$context_out" == 'parent-check-failure step=lib-context' ]] \
+  || fail "parent check must report the failing setup step; got rc=$context_status [$context_out]"
+SCHEDULER_AGENT_LIB="$saved_parent_lib"; SCHEDULER_LIB_CONTEXT_FOR="$saved_parent_context"
 parent_case() { # issue json
   : > "$parent_log"; local old_rc=0 new_rc=0 old_out new_out old_gh new_gh
   old_out="$(legacy_parent_reason 55 "$1" 2>/dev/null)" || old_rc=$?; old_gh="$(cat "$parent_log")"; : > "$parent_log"
   new_out="$(scheduler_issue_intake_parent_reason 55 "$1" 2>/dev/null)" || new_rc=$?; new_gh="$(cat "$parent_log")"
-  [[ "$old_rc" == "$new_rc" && "$old_out" == "$new_out" && "$old_gh" == "$new_gh" ]] \
-    || fail "parent reason differs for $1: old rc=$old_rc [$old_out] gh [$old_gh]; new rc=$new_rc [$new_out] gh [$new_gh]"
+  if [[ "$new_rc" == 2 ]]; then
+    [[ "$old_rc" == "$new_rc" && "$new_out" == parent-check-failure\ step=* && "$old_gh" == "$new_gh" ]] \
+      || fail "parent failure differs for $1: old rc=$old_rc [$old_out] gh [$old_gh]; new rc=$new_rc [$new_out] gh [$new_gh]"
+  else
+    [[ "$old_rc" == "$new_rc" && "$old_out" == "$new_out" && "$old_gh" == "$new_gh" ]] \
+      || fail "parent reason differs for $1: old rc=$old_rc [$old_out] gh [$old_gh]; new rc=$new_rc [$new_out] gh [$new_gh]"
+  fi
   parity_cases=$((parity_cases + 1))
 }
 for json in '{"title":"Add a spec","body":"","subIssuesSummary":{"total":0}}' '{"title":"t","body":"b","subIssuesSummary":{"total":2}}' \

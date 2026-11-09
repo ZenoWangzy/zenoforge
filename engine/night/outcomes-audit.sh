@@ -1043,7 +1043,7 @@ outcomes_audit() {
   esac
   local OUTCOMES_GH_TIMEOUT_SECONDS=10
   local outcomes_deadline=$(( ${ZF_OUTCOMES_SECTION_TIMEOUT_SECONDS:-75} - 5 ))
-  local cutoff_epoch cutoff_iso cutoff_date founder_login closed_json awaiting_json open_json open_prs_json state_label_detail
+  local cutoff_epoch cutoff_iso cutoff_date founder_login closed_json closed_state_json awaiting_json open_json open_prs_json state_label_detail
   local row issue title closed_at close_epoch labels state_reason comments_json comment_since evidence_status
   local prs_for_issue timeline_json commit_id state_file state pr_number outcome merged_at merged_epoch closed_linked_rows
   local closed_timeline_ids_json closed_timelines_json awaiting_timeline_ids_json awaiting_timelines_json
@@ -1072,6 +1072,10 @@ outcomes_audit() {
       outcomes_audit_error 'recent closed issue list unreadable'
       return 2
     }
+  closed_state_json="$(outcomes_closed_state_reconciliation_snapshot "$home" "$repo" "$closed_json" "$cutoff_iso")" || {
+    outcomes_audit_error 'closed issue lifecycle snapshot unreadable'
+    return 2
+  }
   outcomes_stage_mark awaiting-release-snapshot || outcomes_audit_error 'cannot mark awaiting-release issue read' || return 2
   awaiting_json="$(gh_q issue list --repo "$repo" --state all --label awaiting-release \
     --limit 1000 --json number,title,state,labels)" || {
@@ -1341,7 +1345,7 @@ outcomes_audit() {
   fi
 
   if [[ "$mode" == observe ]]; then
-    if ! closed_observation_detail="$(outcomes_reconcile_closed_states "$home" "$closed_json" observe)"; then
+    if ! closed_observation_detail="$(outcomes_reconcile_closed_states "$home" "$closed_state_json" observe)"; then
       outcomes_audit_error 'closed-issue state observation unreadable'
       return 2
     fi
@@ -1362,7 +1366,7 @@ outcomes_audit() {
       fi
     fi
     reconciliation_detail+="; closed-state-observation=$closed_observation_detail"
-  elif ! outcomes_reconcile_closed_states "$home" "$closed_json"; then
+  elif ! outcomes_reconcile_closed_states "$home" "$closed_state_json"; then
     outcomes_audit_error 'closed-issue state reconciliation failed'
     return 2
   fi
