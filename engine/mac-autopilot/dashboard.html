@@ -1479,9 +1479,9 @@ function vOverview(D) {
   const CAP = 6, shown = rows.slice(0, CAP);
   const pbody = rows.length ? `<div>${shown.map(pbRow).join("")}${rows.length > CAP ? `<div class="pb more" data-tip="${esc(rows.slice(CAP).map(r => r.who + " " + r.what + " " + r.val).join("\n"))}">另有 ${rows.length - CAP} 项</div>` : ""}</div>` : emptyMsg(vs === "none" ? "无数据" : "没有要处理的");
   const TE = S.token_efficiency || {}, teMetrics = Object.fromEntries(ms.map(m => [m.id, m]));
-  const pct = v => v == null ? "—" : `${Number(v).toFixed(1)}%`;
+  const pct = v => v == null ? "—" : `${Number(v).toFixed(1)}%`; const coverageKey = id => ({"efficiency.fresh_tokens_per_merged_7d":"fresh_tokens_per_merged", "efficiency.unmerged_waste_pct_7d":"waste_pct", "efficiency.repair_phase_pct_7d":"repair_pct"})[id]; const coverageLabel = id => { const key = coverageKey(id); return key ? (TE.coverage_label?.[key] || `覆盖 ${pct(TE.coverage_pct?.[key])}`) : ""; }; const coverageStatus = id => { const key = coverageKey(id); return (key && TE.coverage_status?.[key]) || teMetrics[id]?.status || ""; };
   const teCard = (icon, label, value, sub, id, tip) => kcard(icon, label, value,
-    `<div class="sub">${sub}</div>`, teMetrics[id]?.status || "", tip);
+    `<div class="sub">${sub}${coverageKey(id) ? ` · ${coverageLabel(id)} · unknown_by=${TE.unknown_by || "none"}` : ""}</div>`, coverageStatus(id), tip);
   const tePanel = panel("workers", "Token 效率 · 滚动 7 天", `<div class="kcs">
     ${teCard("workers", "每合并单元新鲜 token", ft(TE.fresh_tokens_per_merged),
       `原始总量 ${ft(TE.merged_raw_tokens)}；${ft(TE.raw_tokens_per_merged)} / 单；fresh 覆盖 ${num(TE.merged_fresh_measured_units || 0)} / ${num(TE.merged_units || 0)} 单`,
