@@ -637,9 +637,7 @@ register_new_issues() {
       else
         parent_status=$?
         if (( parent_status != 1 )); then
-          parent_step="$(sed -n 's/^parent-check-failure step=//p' <<<"$parent_reason" | head -n 1)"
-          [[ -n "$parent_step" ]] || parent_step=unknown
-          say "intake issue #$n deferred: could not verify parent status rc=$parent_status step=$parent_step"
+          intake_parent_unverified "$n" "$parent_status" "$issue_json" "$parent_reason"
           intake_skip parent_unverified; continue
         fi
         intake_parent_retry_clear "$n"
