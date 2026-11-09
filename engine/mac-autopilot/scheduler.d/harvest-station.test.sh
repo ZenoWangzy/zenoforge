@@ -167,4 +167,51 @@ SH
 for _ in $(seq 50); do [[ -s "$hl/calls" ]] && break; command sleep 0.1; done
 [[ "$(cat "$hl/calls")" == '--harvest-station' ]] || fail "the harvest station was not launched once on cadence ($(cat "$hl/calls" 2>/dev/null))"
 
+# --- case 10: a slow refill does not block a due harvest station launch. ---
+rf="$hl/refill"; mkdir -p "$rf/live" "$rf/state"
+cat > "$rf/live/scheduler.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HL_CALLS"
+SH
+chmod +x "$rf/live/scheduler.sh"
+(
+  AUTOPI_LOOP_LIBRARY_ONLY=true; source "$engine_dir/mac-autopilot/loop.sh"
+  A="$rf/state"; LIVE="$rf/live"
+  export HL_CALLS="$rf/calls" HL_REFILL_ACTIVE="$rf/refill-active" HL_DURING_REFILL="$rf/during-refill" HL_TICKS="$rf/ticks"
+  : > "$HL_CALLS"
+  echo 0 > "$HL_TICKS"
+  export AUTOPI_HARVEST_STATION_SECONDS=60 AUTOPI_REFILL_SECONDS=30 \
+    AUTOPI_DASHBOARD_SECONDS=2147483647 AUTOPI_CI_ADMISSION_SECONDS=2147483647 AUTOPI_MERGE_STATION_SECONDS=2147483647
+  echo '{"workers":[]}' > "$A/workers.json"
+  unset REFILL_PID REFILL_ACTIVE_SIGNATURE
+  sleep() {
+    command sleep 0.005
+    local ticks; ticks="$(cat "$HL_TICKS")"
+    echo "$((ticks + ${1:-5}))" > "$HL_TICKS"
+    SECONDS=$((SECONDS + ${1:-5}))
+  }
+  setsid() {
+    if [[ " $* " == *" --harvest-station "* && -e "$HL_REFILL_ACTIVE" && ! -e "$HL_DURING_REFILL" ]]; then
+      cat "$HL_TICKS" > "$HL_DURING_REFILL"
+    fi
+    command setsid "$@"
+  }
+  run_refill() {
+    echo "$SECONDS" >> "$rf/refill-calls"
+    : > "$HL_REFILL_ACTIVE"
+    local remaining=120
+    while (( remaining > 0 )); do
+      command sleep 0.1
+      SECONDS=$((SECONDS + 5)); remaining=$((remaining - 5))
+    done
+    rm -f "$HL_REFILL_ACTIVE"
+  }
+  refill_window 140
+  [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID"
+) || fail 'refill-window setup failed during the slow-refill case'
+[[ -e "$rf/during-refill" ]] || fail 'the harvest station launch waited for the 120-second refill to finish'
+[[ "$(cat "$rf/during-refill")" -le 120 ]] || fail "the harvest station launched after two 60-second cadences ($(cat "$rf/during-refill")s)"
+[[ "$(wc -l < "$rf/refill-calls")" == 1 ]] || fail 'a slow refill was started more than once while it remained in flight'
+grep -Fxq -- '--harvest-station' "$rf/calls" || fail 'the harvest station launch was not recorded'
+
 echo 'harvest-station.test.sh: pass (station harvests without a tick, one lock hold per worker, no double harvest, defers on a busy lock, one pass at a time, tick gate, loop cadence)'
