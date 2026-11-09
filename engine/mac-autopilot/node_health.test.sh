@@ -57,7 +57,7 @@ run review-11-r-20261019T110000Z 11:00 4 50000 1
 run review-11-r-20261019T111500Z 11:15 3 1000 1   # arbiter rereview without a repair before it: must not push the share past 100
 run review-11-20260101T100000Z 10:00 6 999999 1   # outside the window
 run impl-issue-3-20261019T114000Z 11:40 15 1000 0   # still running at 12:00 (log touched 11:55): not a no-report run
-for n in {1..7}; do run "impl-fixture-$n-20261019T101000Z" 10:10 20 0 1; done
+for n in {1..8}; do run "impl-fixture-$n-20261019T061000Z" 06:10 20 0 1; done
 cat > "$a/units.json" <<'JSON'
 {"units":[
  {"id":"pr-11","stage":"merged","review_findings":[

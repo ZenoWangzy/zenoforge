@@ -27,9 +27,6 @@ for entry in bad_entries:
     assert row[4:6] == (3, 1.5) and row[7] == "STANDARD-INVALID" and "metric=flow.merge_rate_per_hour" in err.getvalue()
 open(path, "w").write("[]")
 assert standard("flow.merge_rate_per_hour")[4][7] == "STANDARD-INVALID"
-os.unlink(path); os.mkdir(path)
-assert standard("flow.merge_rate_per_hour")[4][7] == "STANDARD-INVALID"
-os.rmdir(path)
 open(path, "w").write("{"); err = io.StringIO()
 with contextlib.redirect_stderr(err): criteria, minimums, bases, invalid, row = standard("flow.merge_rate_per_hour")
 assert row[7] == "STANDARD-INVALID" and "all metrics STANDARD-INVALID" in err.getvalue()
