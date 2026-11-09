@@ -331,7 +331,12 @@ issue_intake_parent_json_reason() { # issue number, fetched issue JSON -> local 
 
   while IFS= read -r child; do
     [[ "$child" =~ ^[1-9][0-9]*$ && "$child" != "$n" ]] || continue
-    return 2
+    state="$(gh issue view "$child" --json state --jq .state 2>/dev/null)" || return 2
+    case "$state" in
+      OPEN|open) printf 'task list references open child #%s\n' "$child"; return 0 ;;
+      CLOSED|closed|MERGED|merged) ;; # a merged PR named in the task list is finished work, not an open parent (#5563)
+      *) return 2 ;;
+    esac
   done < <(issue_intake_parent_child_refs "$body")
 
   if jq -e '((.subIssuesSummary.total // 0) > 0) or ((.subIssues.totalCount // 0) > 0) or (((.subIssues.nodes // []) | length) > 0)' \

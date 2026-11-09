@@ -175,6 +175,25 @@ intake_parent_retry_clear() { # issue
   jqf -e --arg n "$1" '(.intake_parent_retry // {}) | has($n)' "$UNITS" >/dev/null 2>&1 || return 0
   units_update --arg n "$1" 'del(.intake_parent_retry[$n])'
 }
+# A parent check that could not answer (rc 2) backs off like a failed label write; the third failed check parks the
+# issue for triage instead of deferring it every tick.
+intake_parent_unverified() { # issue, check rc, issue JSON, check reason
+  local n="$1" rc="$2" json="$3" reason="${4:-}" retry_step attempts parent_step
+  parent_step="$(sed -n 's/^parent-check-failure step=//p' <<<"$reason" | head -n 1)"
+  [[ -n "$parent_step" ]] || parent_step=unknown
+  retry_step="$(intake_parent_retry_failed "$n")" || retry_step="? ?"
+  attempts="${retry_step% *}"
+  if [[ "$attempts" =~ ^[0-9]+$ ]] && (( attempts >= 3 )); then
+    if scheduler_issue_transition "$n" needs-triage "intake-parent:unverified-after-$attempts" . 0 "$json"; then
+      say "intake issue #$n -> needs-triage (parent status unverified after $attempts attempts, rc=$rc, step=$parent_step)"
+      intake_parent_retry_clear "$n"
+    else
+      say "intake issue #$n held: parent status unverified (rc=$rc, step=$parent_step); needs-triage update failed (attempt $attempts)"
+    fi
+  else
+    say "intake issue #$n deferred: could not verify parent status rc=$rc step=$parent_step"
+  fi
+}
 unit_field() { jqf -r --arg id "$1" "[.units[] | select(.id==\$id) | ($2 // empty)][0] // empty" "$UNITS"; }
 # hold_handoff_waiting outlives its hold when the issue leaves ready-for-agent (tracker, closed) with its episode unconsumed:
 # register_new_issues clears the flag only for ready-for-agent rows, so such a unit never dispatches again.

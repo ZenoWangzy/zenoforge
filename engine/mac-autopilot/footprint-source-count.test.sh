@@ -289,7 +289,7 @@ for issue in 9111 9112; do same_result "scheduler_issue_state $issue" legacy_sch
 # parent reason: same verdicts, same gh arguments (REPO) from the same working directory.
 parent_log="$fixture/parent-gh.log"
 gh() { printf '%s|%s\n' "$PWD" "$*" >> "$parent_log"; case "$*" in
-  'issue view 71 '*) echo OPEN ;; 'issue view 72 '*) echo CLOSED ;; 'api repos/'*/issues/55/sub_issues*) echo '[{"number":1}]' ;;
+  'issue view 71 '*) echo OPEN ;; 'issue view 72 '*) echo CLOSED ;; 'issue view 74 '*) echo MERGED ;; 'api repos/'*/issues/55/sub_issues*) echo '[{"number":1}]' ;;
   'api repos/'*/sub_issues*) echo '[]' ;; *) return 1 ;; esac; }
 saved_parent_lib="$SCHEDULER_AGENT_LIB"; saved_parent_context="${SCHEDULER_LIB_CONTEXT_FOR:-}"
 SCHEDULER_AGENT_LIB="$fixture/missing-lib.sh"; SCHEDULER_LIB_CONTEXT_FOR=""
@@ -319,6 +319,11 @@ for json in '{"title":"Add a spec","body":"","subIssuesSummary":{"total":0}}' '{
   scheduler_lib_context
   parent_case "$json"
 done
+# A task-list reference that resolves to a merged PR is no parent: the check goes on to the sub-issue lookup (leaf, rc 1).
+merged_json='{"title":"t","body":"- [ ] acceptance uses #74","subIssuesSummary":{"total":0}}'
+scheduler_lib_context
+merged_rc=0; scheduler_issue_intake_parent_reason 56 "$merged_json" >/dev/null 2>&1 || merged_rc=$?
+[[ "$merged_rc" == 1 ]] || fail "a task-list reference to a merged PR gave parent rc $merged_rc, want 1 (leaf)"
 unset -f gh
 
 # ---- Part 2: lib.sh loads must not scale with the number of candidates. ----
