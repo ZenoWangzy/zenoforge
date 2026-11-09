@@ -284,6 +284,20 @@ reconcile_recut_parent_children() {
   done < <(jq -r '.[]' <<< "$dependents_json")
 }
 
+# recut_marker_blocks -- stdin: an issue's state JSON; exit 0 when a recut
+# verdict already blocks a new recut. Shared by issue-pipeline.sh's needs-recut
+# pre-filter and run-recut.sh's idempotency check. A recut_refused_at older than
+# state_changed_at on a needs-recut issue is a prior episode: the label was
+# re-applied without route_to_recut() clearing the marker (#5139, 2026-11-05).
+# recut_children always blocks.
+recut_marker_blocks() {
+  jq -e '
+    has("recut_children") or (has("recut_refused_at") and ((
+      .state == "needs-recut" and ((.recut_refused_at | type) == "string")
+      and ((.state_changed_at | type) == "string") and .recut_refused_at < .state_changed_at
+    ) | not))
+  ' >/dev/null 2>&1
+}
 
 # route_to_recut <n> -- the one write path for sending an issue into a NEW
 # recut episode. All writers that apply needs-recut come here so the state

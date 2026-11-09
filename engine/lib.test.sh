@@ -3492,6 +3492,25 @@ assert_eq "route_to_recut rejects a recut_children ticket instead of reapplying 
 assert_eq "route_to_recut never edits labels for a child-completed parent" \
   "0" "$(grep -c "gh issue edit 800002" <<< "$ROUTE_RECUT_GH_LOG_CONTENT")"
 
+# --- recut_marker_blocks: the one predicate both needs-recut skip sites use --
+# Live shape (row 148, synthetic ids; run-recut.test.sh runs the whole path).
+# A stale refusal is ignored only on needs-recut, when the label came after it.
+recut_marker_rc() { bash -c 'source "$0/lib.sh"; printf "%s" "$1" | recut_marker_blocks; echo $?' "$SCRIPT_DIR" "$1" 2>/dev/null; }
+assert_eq "recut_marker_blocks: needs-recut re-applied after a refusal does not block (#5139 live shape)" \
+  "1" "$(recut_marker_rc '{"state":"needs-recut","attempts":1,"recut_refused_at":"2026-11-04T18:10:45Z","state_changed_at":"2026-11-05T05:25:05Z"}')"
+assert_eq "recut_marker_blocks: refusal not older than the needs-recut label still blocks" \
+  "0" "$(recut_marker_rc '{"state":"needs-recut","recut_refused_at":"2026-11-05T06:00:00Z","state_changed_at":"2026-11-05T05:25:05Z"}')"
+assert_eq "recut_marker_blocks: stale refusal on a non-needs-recut state still blocks" \
+  "0" "$(recut_marker_rc '{"state":"ready-for-agent","recut_refused_at":"2026-11-04T18:10:45Z","state_changed_at":"2026-11-05T05:25:05Z"}')"
+assert_eq "recut_marker_blocks: refusal with no state_changed_at still blocks" \
+  "0" "$(recut_marker_rc '{"state":"needs-recut","recut_refused_at":"2026-11-04T18:10:45Z"}')"
+assert_eq "recut_marker_blocks: recut_children blocks even past a stale refusal" \
+  "0" "$(recut_marker_rc '{"state":"needs-recut","recut_refused_at":"2026-11-04T18:10:45Z","state_changed_at":"2026-11-05T05:25:05Z","recut_children":[900,901]}')"
+assert_eq "recut_marker_blocks: no marker does not block" \
+  "1" "$(recut_marker_rc '{"state":"needs-recut","attempts":0}')"
+assert_eq "issue-pipeline.sh needs-recut pre-filter calls recut_marker_blocks" \
+  "1" "$(grep -cF 'state_read "$next_recut" | recut_marker_blocks && continue' "$SCRIPT_DIR/issue-pipeline.sh" || true)"
+
 # Static guard: no script may add needs-recut outside issue_transition.
 # Exclude *.test.sh (which asserts on resulting gh-log strings, not call sites).
 BARE_NEEDS_RECUT_SITES="$(grep -rn -- '--add-label needs-recut' "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/lib.d/*.sh \
