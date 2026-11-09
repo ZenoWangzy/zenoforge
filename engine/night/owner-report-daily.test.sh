@@ -160,7 +160,8 @@ for key in keys:
     if mapped and ("未查明" in causes[0] or every_row[mapped[0]] not in causes[0]): problems.append(f"{key}: mapped line did not print its note: {causes[0]}")
     if not mapped and "未查明" not in causes[0]: problems.append(f"{key}: unmapped line did not read 未查明: {causes[0]}")
 # Every id in OWNER_ROWS is a live scorecard metric (node_health.CRITERIA, readable without the host), so a retired id cannot sit in the table.
-nh_spec = importlib.util.spec_from_file_location("nh", os.path.join(os.path.dirname(sys.argv[1]), "..", "mac-autopilot", "node_health.py"))
+sys.path.insert(0, os.path.join(os.path.dirname(sys.argv[1]), "..", "mac-autopilot"))  # node_health imports its sibling modules
+nh_spec = importlib.util.spec_from_file_location("nh", os.path.join(sys.path[0], "node_health.py"))
 nh = importlib.util.module_from_spec(nh_spec); nh_spec.loader.exec_module(nh)
 for row in sorted(set(every_row) - set(nh.CRITERIA)): problems.append(f"OWNER_ROWS id {row} is not in node_health.CRITERIA")
 # The repair line also reads the repair no-change row: with only that row noted, its note is the cause.
