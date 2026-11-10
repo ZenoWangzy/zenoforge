@@ -6276,7 +6276,7 @@ SH
 exit 0
 SH
   chmod +x "$TF/bin/codex" "$TF/bin/zcode"
-  ln -s zcode "$TF/bin/claude"
+  ln -sfn zcode "$TF/bin/claude"
   export PATH="$TF/bin:$PATH" ZCODE_PROVIDER_CONFIG_FILE ZCODE_QUOTA_SNAPSHOT_FILE CODEX_PROBE_MARKER
   SCHED_MODEL_POLICY_JSON="$(command jq '.roles["hand-zcode"].disabled=false | .roles["hand-zcode"].model="GLM-5.3" | .roles.production.model="gpt-6.1-terra" | .roles.production.effort="high"' "$repo_root/engine/model-policy.default.json")"
 }
