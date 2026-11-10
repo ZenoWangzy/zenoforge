@@ -570,6 +570,9 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
   issue="$(unit_field "$id" '.issue // empty')"; pr="$(unit_field "$id" '.pr // empty')"
   local d
   for d in "$WT_ROOT/wt-$id" "/tmp/wt-$id"; do # cleanup_tick 删的两个位置；stash 是 ensure_clone 收起的未提交进度
+    if [[ -d "$d" && "$dead_park_salvage" == true && "$park_stage" == supervisor-budget-park && "$recut_stage" == supervisor-budget-recut ]]; then
+      err="$(git -C "$d" fetch -q --prune origin 2>&1)" || { supervisor_budget_park "$id" "$evidence (worktree origin ref refresh failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0; }
+    fi
     if [[ -d "$d" ]] && { [[ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]] || [[ -n "$(git -C "$d" stash list 2>/dev/null)" ]] \
         || [[ -z "$(git -C "$d" branch -r --contains HEAD 2>/dev/null)" ]]; }; then
       if [[ "$park_stage" == supervisor-cap-triage-park ]]; then

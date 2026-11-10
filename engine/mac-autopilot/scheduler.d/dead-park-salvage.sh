@@ -5,9 +5,6 @@ dead_park_salvage_worktree() { # unit-id worktree -> comma-separated refs; push 
   local -a refs=()
   stamp="$(date -u +%Y%m%dT%H%M%SZ)" || return 1
   base="salvage/$id-$stamp"
-  if git -C "$wt" remote get-url origin >/dev/null 2>&1; then
-    remote_branches="$(git -C "$wt" fetch -q --prune origin 2>&1)" || { printf 'could not refresh origin refs: %s\n' "$remote_branches" >&2; return 1; }
-  fi
   remote_branches="$(git -C "$wt" branch -r --contains HEAD 2>&1)" || { printf 'could not inspect remote branches: %s\n' "$remote_branches" >&2; return 1; }
   if [[ -z "$remote_branches" ]]; then
     sha="$(git -C "$wt" rev-parse HEAD 2>&1)" || { printf 'could not read HEAD: %s\n' "$sha" >&2; return 1; }
