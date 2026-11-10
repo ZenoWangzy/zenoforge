@@ -471,14 +471,17 @@ saved=("$WT_ROOT"/wt-issue-70.preserved-*); [[ ! -e "${saved[0]}" ]] || fail "a 
 # Expiry: 7 days after the stamp, that exact name pattern only.
 rm -rf "$WT_ROOT"/*; : > "$fixture/say.log"
 stamp() { date -u -d "$1 ago" +%Y%m%dT%H%MZ; }
-mkdir -p "$WT_ROOT/wt-a.preserved-$(stamp '8 days')/sub" "$WT_ROOT/wt-b.preserved-$(stamp '6 days')" "$WT_ROOT/wt-c.preserved-soon" "$WT_ROOT/wt-d" "$fixture/outside"
-chmod 500 "$WT_ROOT/wt-a.preserved-$(stamp '8 days')/sub"
-ln -s "$fixture/outside" "$WT_ROOT/wt-e.preserved-$(stamp '9 days')"
+stamp_8_days="$(stamp '8 days')"
+stamp_6_days="$(stamp '6 days')"
+stamp_9_days="$(stamp '9 days')"
+mkdir -p "$WT_ROOT/wt-a.preserved-$stamp_8_days/sub" "$WT_ROOT/wt-b.preserved-$stamp_6_days" "$WT_ROOT/wt-c.preserved-soon" "$WT_ROOT/wt-d" "$fixture/outside"
+chmod 500 "$WT_ROOT/wt-a.preserved-$stamp_8_days/sub"
+ln -s "$fixture/outside" "$WT_ROOT/wt-e.preserved-$stamp_9_days"
 touch "$fixture/outside/keep"; touch -d '30 days ago' "$WT_ROOT/wt-d"
 expire_preserved_clones
-[[ ! -e "$WT_ROOT/wt-a.preserved-$(stamp '8 days')" ]] || fail "the 8-day-old dir was kept"
-[[ -d "$WT_ROOT/wt-b.preserved-$(stamp '6 days')" && -d "$WT_ROOT/wt-c.preserved-soon" && -d "$WT_ROOT/wt-d" ]] || fail "a young or non-matching dir was removed"
-[[ -L "$WT_ROOT/wt-e.preserved-$(stamp '9 days')" && -e "$fixture/outside/keep" ]] || fail "a symlink was followed"
+[[ ! -e "$WT_ROOT/wt-a.preserved-$stamp_8_days" ]] || fail "the 8-day-old dir was kept"
+[[ -d "$WT_ROOT/wt-b.preserved-$stamp_6_days" && -d "$WT_ROOT/wt-c.preserved-soon" && -d "$WT_ROOT/wt-d" ]] || fail "a young or non-matching dir was removed"
+[[ -L "$WT_ROOT/wt-e.preserved-$stamp_9_days" && -e "$fixture/outside/keep" ]] || fail "a symlink was followed"
 [[ "$(wc -l < "$fixture/say.log")" == 1 ]] || fail "expected one log line per removed dir"
 
 echo "handoff-rescue.test.sh: all assertions passed"
