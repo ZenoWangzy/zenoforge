@@ -129,7 +129,7 @@ guarded_write() {
   if [[ "${SALVAGE_FAIL:-false}" == true ]]; then echo 'stubbed salvage push failure' >&2; return 1; fi
 }
 make_salvage_worktree() {
-  local id="$1" wt="$WT_ROOT/wt-$1"
+  local id="$1" wt="$WT_ROOT/wt-issue-$1"
   mkdir -p "$wt"
   git -C "$wt" -c init.defaultBranch=main init -q
   git -C "$wt" config user.name 'Scheduler Test'
