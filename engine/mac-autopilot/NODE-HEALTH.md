@@ -5,8 +5,9 @@
 Between the healthy and the unhealthy bound is WARN. Standards are read from `health-standards.json`
 through `zf_config_file`; each entry needs numeric `healthy` and `unhealthy` bounds and a `basis` of at
 least 20 characters. An invalid entry keeps the default and marks its row `STANDARD-INVALID`; unknown
-metric IDs are logged and ignored. Percentile rows (`p50`, `p90`, `p95`) default to `min_n: 10`; below
-that count the row is `LOW-N` and carries its sample count.
+metric IDs are logged and ignored. Only metric IDs with a sample count are gated by `min_n`; percentile
+IDs (`p50`, `p90`, `p95`) default to 10, unless a standard sets another minimum. Below that count,
+`LOW-N` may replace `OK` or `WARN`, but never `UNHEALTHY`; the row carries its sample count.
 
 ## Node map
 

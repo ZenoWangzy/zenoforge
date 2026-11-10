@@ -5,13 +5,17 @@ from pathlib import Path
 from config_paths import zf_config_file
 
 
-def resolve(criteria):
+def resolve(criteria, default_path=None):
     resolved = dict(criteria)
     minimums = {mid: 10 for mid in resolved if re.search(r"_p(?:50|90|95)(?:_|$)", mid)}
     bases, invalid, unknown = {}, set(), set()
-    default = Path(__file__).with_name("health-standards.json")
+    default = Path(default_path) if default_path is not None else Path(__file__).with_name("health-standards.json")
     target = zf_config_file("mac-autopilot/health-standards.json")
-    paths = [default] if default.is_file() else []
+    paths = []
+    if default.is_file(): paths.append(default)
+    else:
+        invalid.update(resolved)
+        print(f"health standards missing file={default.name}; all metrics STANDARD-INVALID", file=sys.stderr)
     target = Path(target) if target else None
     if target and target.resolve() != default.resolve() and (target.exists() or target.is_symlink()): paths.append(target)
     for path in paths:
@@ -45,7 +49,7 @@ def score(metrics, criteria, sample_counts, minimums, invalid_standards, status_
     for mid, (node, desc, healthy, unhealthy, higher) in criteria.items():
         v = metrics.get(mid)
         status = "STANDARD-INVALID" if mid in invalid_standards else no_data_status(mid, v) or ("N/A" if v is None and mid in not_applicable else status_of(v, healthy, unhealthy, higher))
-        if status != "STANDARD-INVALID" and v is not None and mid in minimums and (n := sample_counts.get(mid)) is not None and n < minimums[mid]: status = "LOW-N"
+        if status in ("OK", "WARN") and v is not None and mid in minimums and (n := sample_counts.get(mid)) is not None and n < minimums[mid]: status = "LOW-N"
         rows.append((node, mid, desc, v, healthy, unhealthy, higher, status))
     return rows
 

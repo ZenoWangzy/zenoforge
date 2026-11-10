@@ -1168,7 +1168,7 @@ flowrun "$fa" --json "$fa/node-health.json" >/dev/null
 flowval() { jq -r --arg id "$1" '.metrics[] | select(.id == $id) | "\(.value) \(.status)"' "$fa/node-health.json"; }
 [[ "$(flowval flow.merge_rate_per_hour)" == "0.125 UNHEALTHY" ]] || fail "merge rate wrong: $(flowval flow.merge_rate_per_hour)（3 merged / 24h，有积压）"
 [[ "$(flowval flow.in_out_imbalance)" == "1 OK" ]] || fail "in/out imbalance wrong: $(flowval flow.in_out_imbalance)（entered 2, merged 3）"
-[[ "$(flowval flow.wip_age_stage_p90_hours)" == "13.0 LOW-N" ]] || fail "wip stage age/sample guard wrong: $(flowval flow.wip_age_stage_p90_hours)"
+[[ "$(flowval flow.wip_age_stage_p90_hours)" == "13.0 UNHEALTHY" ]] || fail "wip stage age/sample guard wrong: $(flowval flow.wip_age_stage_p90_hours)"
 [[ "$(flowval flow.slot_idle_hours)" == "1.83 UNHEALTHY" ]] || fail "slot idle wrong: $(flowval flow.slot_idle_hours)"
 [[ "$(flowval flow.main_red_hours)" == "4.17 UNHEALTHY" ]] || fail "main-red hours wrong: $(flowval flow.main_red_hours)（flaky 0.67 + recovered 0.5 + 未终结 3.0，与未终结重叠的 flaky 只算一次，窗口外 reverted 不算，空闲超 6 小时的未终结只算到最后一次转移）"
 jq -e '.flow.entered == 2 and .flow.merged == 3
@@ -1206,23 +1206,24 @@ state_file="$fa/flow-inbox-state.json"
 rm -f "$inbox" "$state_file" "$AGENT_HOME"/logs/supervisor-alert-seen-*.tsv
 flowrun "$fa" --inbox >/dev/null
 flowlines() { grep -c 'flow metric=flow\.' "$inbox" 2>/dev/null || printf '0\n'; }
-# Three flow rows plus the 10-sample waiting age are unhealthy; only the non-waiting p90 stays LOW-N.
-[[ "$(flowlines)" == 4 ]] || fail "expected one inbox event per unhealthy flow metric, got $(flowlines): $(cat "$inbox" 2>/dev/null)"
+# Three flow rows plus both over-bound p90 ages are unhealthy, including the low-sample non-waiting row.
+[[ "$(flowlines)" == 5 ]] || fail "expected one inbox event per unhealthy flow metric, got $(flowlines): $(cat "$inbox" 2>/dev/null)"
 grep -Fq 'flow metric=flow.merge_rate_per_hour status=UNHEALTHY value=0.1' "$inbox" || fail "inbox event lacks metric id and value: $(cat "$inbox")"
+grep -Fq 'flow metric=flow.wip_age_stage_p90_hours status=UNHEALTHY value=13.0' "$inbox" || fail "low-sample flow breach did not reach inbox: $(cat "$inbox")"
 flowrun "$fa" --inbox >/dev/null
-[[ "$(flowlines)" == 4 ]] || fail "same unhealthy episode emitted again: $(flowlines)"
+[[ "$(flowlines)" == 5 ]] || fail "same unhealthy episode emitted again: $(flowlines)"
 # 恢复：同一 runtime 换回健康账本（无越限 flow 指标）→ 越限记录清空，不再发事件
 mv "$fa/units.json" "$fa/units.busy.json"
 mv "$fa/main-red" "$fa/main-red.busy"
 cp "$ra/units.json" "$fa/units.json"
 flowrun "$fa" --inbox >/dev/null
 jq -e 'length == 0' "$state_file" >/dev/null || fail "recovered metrics still recorded as alerted: $(cat "$state_file")"
-[[ "$(flowlines)" == 4 ]] || fail "healthy run emitted events: $(flowlines)"
+[[ "$(flowlines)" == 5 ]] || fail "healthy run emitted events: $(flowlines)"
 # 再越限：恢复后状态已重新武装；lib.sh 的同文去重按天滚动（supervisor-alert-seen-<day>.tsv），跨天后可重发
 rm -f "$fa/units.json"; mv "$fa/units.busy.json" "$fa/units.json"; mv "$fa/main-red.busy" "$fa/main-red"
 rm -f "$AGENT_HOME"/logs/supervisor-alert-seen-*.tsv
 flowrun "$fa" --inbox >/dev/null
-[[ "$(flowlines)" == 8 ]] || fail "re-armed crossing did not emit again after recovery: $(flowlines)"
+[[ "$(flowlines)" == 10 ]] || fail "re-armed crossing did not emit again after recovery: $(flowlines)"
 
 # --- 线级 hold：release_train.enabled=false 或有效 PAUSE 是把整条线停住的 hold，和 issue 级 hold
 # （hold_issue 的 --holder/--release/--expires）欠同样的元数据。缺 owner、缺到期或已过期计入

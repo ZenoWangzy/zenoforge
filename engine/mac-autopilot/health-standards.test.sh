@@ -8,6 +8,7 @@ python3 - <<'PY'
 import contextlib, io, json, os
 from datetime import datetime, timezone
 import node_health as nh
+import health_standards as hs
 path = os.path.join(os.environ["ZF_CONFIG_ROOT"], "mac-autopilot", "health-standards.json")
 def write(doc): json.dump(doc, open(path, "w"))
 def standard(mid, value=2):
@@ -38,14 +39,21 @@ watch = open(os.path.join(agent_home, "logs", "head-watch.alerts")).read()
 assert "NODE-STANDARD-INVALID metric=flow.merge_rate_per_hour" in alert and "NODE-STANDARD-INVALID" in watch
 nh.flow_inbox(runtime, [row], now, agent_home, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 assert "flow metric=flow.merge_rate_per_hour status=STANDARD-INVALID" in open(os.path.join(agent_home, "supervisor-inbox")).read()
+write({}); missing = os.path.join(os.path.dirname(path), "missing-built-in-health-standards.json"); err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    criteria, minimums, bases, invalid = hs.resolve(nh.CRITERIA, default_path=missing)
+    row = next(r for r in nh.score({"flow.merge_rate_per_hour":2}, criteria, {}, minimums, invalid) if r[1] == "flow.merge_rate_per_hour")
+assert row[7] == "STANDARD-INVALID" and "missing file=missing-built-in-health-standards.json" in err.getvalue()
 write({"unknown.metric":{"healthy":1,"unhealthy":2,"basis":"measured fixture values over a seven day window"}})
 err = io.StringIO()
 with contextlib.redirect_stderr(err): criteria, minimums, bases, invalid, row = standard("flow.merge_rate_per_hour")
 assert row[4:6] == (3, 1.5) and err.getvalue().count("metric=unknown.metric") == 1
 write({})
-criteria, minimums, bases, invalid, row = standard("rereview.wall_p50", 27.5)
-row = next(r for r in nh.score({"rereview.wall_p50":27.5}, criteria, {"rereview.wall_p50":3}, minimums, invalid) if r[1] == "rereview.wall_p50")
+criteria, minimums, bases, invalid, row = standard("rereview.wall_p50", 15)
+row = next(r for r in nh.score({"rereview.wall_p50":15}, criteria, {"rereview.wall_p50":3}, minimums, invalid) if r[1] == "rereview.wall_p50")
 assert row[7] == "LOW-N" and minimums[row[1]] == 10
+row = next(r for r in nh.score({"rereview.wall_p50":27.5}, criteria, {"rereview.wall_p50":3}, minimums, invalid) if r[1] == "rereview.wall_p50")
+assert row[7] == "UNHEALTHY"
 html = open(os.path.join(os.environ["PYTHONPATH"], "dashboard.html")).read()
 assert '"STANDARD-INVALID":"bad"' in html and '"LOW-N":"warn"' in html and 'sample_n:m.sample_n' in html and 'n=${o.sample_n}' in html
 print("health-standards.test.sh: PASS")
