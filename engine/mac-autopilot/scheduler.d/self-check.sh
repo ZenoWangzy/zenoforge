@@ -295,16 +295,17 @@ higher_priority_waiting() { # priority → sets waiter and age; always drops sta
 }
 
 declare -gA TICK_PRIORITY_ADMISSION_CACHE=()
-priority_admission_has_room() { # priority age; dispatch_pending caches one resource sample per class for this scheduler tick
-  local priority="$1" age="$2" result
+priority_admission_has_room() { # priority age; dispatch_pending caches one resource sample per priority and waiter age between starts
+  local priority="$1" age="$2" result cache_key
   if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]]; then
     LUNA_PRIORITY="$priority" box_has_room "$age"
     return $?
   fi
-  result="${TICK_PRIORITY_ADMISSION_CACHE[$priority]:-}"
+  cache_key="$priority:$age"
+  result="${TICK_PRIORITY_ADMISSION_CACHE[$cache_key]:-}"
   if [[ -z "$result" ]]; then
     if LUNA_PRIORITY="$priority" box_has_room "$age"; then result=admit; else result=hold; fi
-    TICK_PRIORITY_ADMISSION_CACHE[$priority]="$result"
+    TICK_PRIORITY_ADMISSION_CACHE[$cache_key]="$result"
   fi
   [[ "$result" == admit ]]
 }
@@ -460,6 +461,8 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
 $(tail -80 "$check_output" 2>/dev/null)"
   fi
   dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || return 1
+  # A successful start can change whether later candidates fit; only reuse admission samples between starts.
+  TICK_PRIORITY_ADMISSION_CACHE=()
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     if [[ "$3" == repair ]]; then
       # A repair worker edits the unit's existing report in place; its own report path only holds the fix note.

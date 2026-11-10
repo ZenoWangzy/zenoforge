@@ -76,7 +76,7 @@ priority_memory_case() {
   local mem="$fixture/priority-memory-meminfo" psi="$fixture/priority-memory-psi"
   local LUNA_MIN=0 LUNA_MAX=10 LUNA_AGE_ADMIT_SECONDS=1200 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85
   local LUNA_PROC_MEMINFO="$mem" LUNA_PROC_PSI_MEMORY="$psi" AUTOPI_PRIORITY_HOLD_MAX_SECONDS=1200
-  local PRIORITY_GATE_RUNS=0 PRIORITY_GATE_CPU_BUSY=0 runs_fn cpu_fn box_fn box_calls=0
+  local PRIORITY_GATE_RUNS=0 PRIORITY_GATE_CPU_BUSY=0 PRIORITY_GATE_WAITER=wait-opt-test PRIORITY_GATE_AGE=0 runs_fn cpu_fn box_fn higher_priority_fn dispatch_fn size_start_fn prompt_fn footprint_brief_fn dispatch_attempt_fn set_unit_fn box_calls=0 dispatch_calls=0
   local TICK_DISPATCH_PENDING_ACTIVE=true
   local -A TICK_PRIORITY_ADMISSION_CACHE=()
   runs_fn="$(declare -f codex_runs)"; cpu_fn="$(declare -f cpu_busy)"; box_fn="$(declare -f box_has_room)"
@@ -84,6 +84,8 @@ priority_memory_case() {
   codex_runs() { printf '%s\n' "$PRIORITY_GATE_RUNS"; }
   cpu_busy() { printf '%s\n' "$PRIORITY_GATE_CPU_BUSY"; }
   box_has_room() { box_calls=$((box_calls + 1)); box_has_room_uncached "$@"; }
+  higher_priority_fn="$(declare -f higher_priority_waiting)"
+  higher_priority_waiting() { PRIORITY_WAITING_WAITER="$PRIORITY_GATE_WAITER"; PRIORITY_WAITING_AGE_SECONDS="$PRIORITY_GATE_AGE"; return 0; }
   units '{"units":[{"id":"issue-9","stage":"implement-pending","history":[]},{"id":"issue-10","stage":"implement-pending","history":[]}]}'
   printf 'MemAvailable: 3072000 kB\n' > "$mem" # 3000 MB, below the 3328 MB normal floor; runs remain below LUNA_MAX.
   printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
@@ -92,13 +94,42 @@ priority_memory_case() {
   room_for issue-10 implement "" true false && fail 'low-memory opt waiter released a second normal dispatch'
   [[ "$PRIORITY_GATE_RUNS" -lt "$(luna_run_cap)" && "$box_calls" == 1 ]] \
     || fail "low-memory opt admission was not sampled once under the cap (runs=$PRIORITY_GATE_RUNS calls=$box_calls)"
+  TICK_PRIORITY_ADMISSION_CACHE=(); box_calls=0
+  priority_admission_has_room normal 0 && fail 'low-memory normal admission unexpectedly opened for a fresh waiter'
+  priority_admission_has_room normal 1200 && fail 'low-memory normal admission unexpectedly opened for an aged waiter'
+  [[ "$box_calls" == 2 ]] || fail "normal admission reused a sample across waiter ages (calls=$box_calls)"
+
+  # A successful normal start invalidates the sample before the next unit; without it, this waiter sees stale `admit`.
+  printf 'MemAvailable: 6291456 kB\n' > "$mem"
+  TICK_PRIORITY_ADMISSION_CACHE=(); box_calls=0; dispatch_calls=0
+  dispatch_fn="$(declare -f dispatch)"; size_start_fn="$(declare -f size_admission_write_start)"
+  prompt_fn="$(declare -f incident_worker_prompt)"; footprint_brief_fn="$(declare -f footprint_recurrence_brief)"
+  dispatch_attempt_fn="$(declare -f dispatch_attempt_fields)"; set_unit_fn="$(declare -f set_unit)"
+  dispatch() { dispatch_calls=$((dispatch_calls + 1)); return 0; }
+  size_admission_write_start() { return 0; }
+  incident_worker_prompt() { printf '%s' "${3:-}"; }
+  footprint_recurrence_brief() { :; }
+  dispatch_attempt_fields() { :; }
+  set_unit() { return 0; }
+  dispatch_if_room issue-9 implement implement priority.log priority.md GLM-5.3 max 'test prompt' '' "$fixture/repo" '' '' \
+    '{"id":"issue-9","stage":"implement-pending","history":[]}' false codex || fail 'first normal unit did not dispatch'
+  [[ "$dispatch_calls" == 1 && "$box_calls" == 1 ]] || fail "first normal dispatch did not use one admission sample (dispatches=$dispatch_calls calls=$box_calls)"
+  printf 'MemAvailable: 3072000 kB\n' > "$mem"
+  : > "$A/scheduler.log"
+  room_for issue-10 implement "" true false && fail 'second normal unit reused admission after the first dispatch'
+  [[ "$box_calls" == 2 ]] || fail "admission was not resampled after dispatch (calls=$box_calls)"
+  grep -q 'higher-priority run waiting' "$A/scheduler.log" || fail 'second normal unit was not held by the priority yield gate'
+  eval "$dispatch_fn"; eval "$size_start_fn"; eval "$prompt_fn"; eval "$footprint_brief_fn"
+  eval "$dispatch_attempt_fn"; eval "$set_unit_fn"
+
+  PRIORITY_GATE_WAITER=wait-hotfix-test
   rm -f "$LUNA_SLOTS/wait-opt-$$"; : > "$LUNA_SLOTS/wait-hotfix-$$"
   TICK_PRIORITY_ADMISSION_CACHE=(); box_calls=0
   room_for issue-9 implement "" true false && fail 'low-memory hotfix waiter released normal dispatch'
   room_for issue-10 implement "" true false && fail 'low-memory hotfix waiter released a second normal dispatch'
   [[ "$box_calls" == 2 ]] || fail "hotfix and normal admission were not each sampled once per tick (calls=$box_calls)"
   rm -f "$LUNA_SLOTS"/wait-*
-  eval "$box_fn"; eval "$runs_fn"; eval "$cpu_fn"
+  eval "$higher_priority_fn"; eval "$box_fn"; eval "$runs_fn"; eval "$cpu_fn"
 }
 
 if [[ -n "${SCHED_TEST_CASE:-}" ]]; then
