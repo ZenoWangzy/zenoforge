@@ -114,7 +114,8 @@ stop_loss_fresh_requeue() { # id unit-json budget-reason
   local id="$1" signal count rate
   [[ "$3" == rounds* ]] && ! stop_loss_same_failure "$2" >/dev/null || return 1
   IFS=$'\t' read -r signal count < <(jqf -er --arg prefix "$STOP_LOSS_FRESH_PREFIX" "$STOP_LOSS_WINDOW_JQ"'
-    | select($front != null and ($front.stage | IN("ci-test-red", "ci-red", "self-check-red", "merge-conflict", "review-request-changes")))
+    | select($front != null and (($front.stage | IN("ci-test-red", "ci-red", "self-check-red", "merge-conflict"))
+        or ($front.stage == "review-request-changes" and ([$w[] | select(.stage == "review-request-changes")] | length) == 1)))
     | [(if $front | red then $reds[-1][0] + " " + $reds[-1][2][0:100] else $front.stage end), ([$w[] | select(sched)] | length)] | @tsv' <<<"$2" 2>/dev/null) || return 1
   (( count < 2 )) || return 1
   rate="$(jqf -r --arg id "$STOP_LOSS_FRESH_METRIC" '.metrics[]? | select(.id == $id) | .value // empty' "$A/node-health.json" 2>/dev/null || true)"

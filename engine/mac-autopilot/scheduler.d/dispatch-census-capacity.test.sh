@@ -310,6 +310,10 @@ stop_loss_case issue-4921 "[$rework]" 521 repair-pending
 [[ "$stop_loss_calls" == 0 && "$(case_stage issue-4921)" == repair-pending ]] || fail "a fresh signal was not requeued in place (calls=$stop_loss_calls stage=$(case_stage issue-4921))"
 [[ "$(fresh_events issue-4921 | tail -1)" == "supervisor-requeue ${fresh_prefix}review-request-changes" ]] || fail "the requeue event does not name the signal: $(fresh_events issue-4921)"
 [[ "$(case_events issue-4921)" != *supervisor-review* && "$(case_events issue-4921)" != *supervisor-escalated* && "$(case_events issue-4921)" != *supervisor-arbiter* ]] || fail "a fresh signal reached the arbiter: $(case_events issue-4921)"
+# Repeated review requests already in the ruling window are not fresh; they use the existing supervisor stop-loss route.
+stop_loss_case issue-4934 "[$rework,$rework,$rework]" 534 repair-pending
+[[ "$stop_loss_calls" == 1 && "$(fresh_events issue-4934 | grep -c "$fresh_prefix")" == 0 ]] \
+  || fail "repeated review requests were requeued as fresh (calls=$stop_loss_calls stage=$(case_stage issue-4934) events=$(case_events issue-4934))"
 stop_loss_case issue-4922 "$(red_history 'Pipeline suites' 'Pipeline suites' | jq -c '.[0:1]')" '' implement-pending
 [[ "$stop_loss_calls" == 0 && "$(fresh_events issue-4922 | tail -1)" == "supervisor-requeue ${fresh_prefix}self-check-red Pipeline suites" ]] || fail "a first-time red was not requeued with its check named: $(fresh_events issue-4922)"
 # Same signal again after the requeue: the same-failure route (park, an open PR is never closed by it), no second requeue and no arbiter.
