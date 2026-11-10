@@ -110,6 +110,7 @@ done
 : > "$ROUTES"
 DEAD_PARK_EXIT_PER_TICK=2 dead_park_exit
 [[ "$(wc -l < "$ROUTES")" == 2 ]] || fail "per-tick cap not held: $(cat "$ROUTES")"
+set_unit issue-9133 '.supervisor_owned=true' # isolate the one intentionally left queued by the cap case
 
 # Only the dead-park route salvages commits, dirty tracked work and every stash before recutting.
 WT_ROOT="$fixture/worktrees"; mkdir -p "$WT_ROOT"
