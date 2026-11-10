@@ -1230,6 +1230,26 @@ test_cli_requires_complete_hold_metadata() {
   assert_contains "hold CLI explains required arguments" "$(cat "$test_env_root/hold.out")" 'expires'
 }
 
+test_hold_expiry_resolve_durations_and_timestamps() {
+  local pair spec seconds before expiry actual status
+  for pair in 14d:1209600 24h:86400; do
+    spec="${pair%%:*}"
+    seconds="${pair#*:}"
+    before="$(date -u +%s)"
+    if ! expiry="$(hold_expiry_resolve "$spec")"; then fail "hold expiry accepts $spec"; continue; fi
+    actual="$(agent_epoch -u "$expiry")"
+    if (( actual < before + seconds - 60 || actual > before + seconds + 60 )); then
+      fail "hold expiry $spec is within one minute of now plus $seconds seconds"
+    fi
+  done
+  expiry="$(hold_expiry_resolve 2099-01-01T00:00:00Z)" || fail "hold expiry accepts an absolute timestamp"
+  assert_eq "absolute hold expiry is preserved" 2099-01-01T00:00:00Z "$expiry"
+  for spec in 14x tomorrow; do
+    if hold_expiry_resolve "$spec" >/dev/null 2>&1; then status=0; else status=$?; fi
+    assert_eq "hold expiry refuses $spec" 1 "$status"
+  done
+}
+
 test_cli_rejects_unknown_holder() {
   reset_fixture
   write_issue 4105 '[{"name":"ready-for-agent"}]' '[]'
@@ -1706,6 +1726,7 @@ run_case "spend-budget hold expires and records repeat" test_spend_budget_hold_e
 run_case "spend-budget window leaves existing hold unchanged" test_spend_budget_window_leaves_existing_hold_unchanged
 run_case "ownerless refusal is remembered until the issue changes" test_ownerless_refusal_is_remembered_until_the_issue_changes
 run_case "CLI refuses incomplete hold" test_cli_requires_complete_hold_metadata
+run_case "hold expiry accepts day and hour durations and absolute timestamps" test_hold_expiry_resolve_durations_and_timestamps
 run_case "CLI rejects unknown holder" test_cli_rejects_unknown_holder
 run_case "CLI creates owned expiring hold" test_cli_records_and_applies_hold
 run_case "out-of-tick CLI hold fetches and cleans roadmap cache" test_out_of_tick_cli_hold_fetches_and_cleans_roadmap_cache

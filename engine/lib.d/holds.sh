@@ -29,12 +29,12 @@ hold_stage_before() {
 
 
 hold_expiry_resolve() {
-  local spec="$1" now_epoch expiry_epoch
+  local spec="$1" now_epoch expiry_epoch multiplier
   now_epoch="$(date -u +%s)" || return 1
-  if [[ "$spec" =~ ^([1-9][0-9]*)h$ ]]; then
-    expiry_epoch=$((now_epoch + BASH_REMATCH[1] * 3600))
+  if [[ "$spec" =~ ^([1-9][0-9]*)([hd])$ ]]; then
+    multiplier=3600; [[ "${BASH_REMATCH[2]}" != d ]] || multiplier=86400; expiry_epoch=$((now_epoch + BASH_REMATCH[1] * multiplier))
   else
-    expiry_epoch="$(agent_epoch -u "$spec" 2>/dev/null)" || return 1
+    [[ "$spec" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2} ]] || return 1; expiry_epoch="$(agent_epoch -u "$spec" 2>/dev/null)" || return 1
   fi
   (( expiry_epoch > now_epoch )) || return 1
   date -u -d "@$expiry_epoch" +%Y-%m-%dT%H:%M:%SZ
