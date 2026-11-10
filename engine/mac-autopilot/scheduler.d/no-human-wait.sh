@@ -131,11 +131,11 @@ supervisor_parked_unpark_sweeps() {
     if [[ -z "$why" ]] && { [[ "$at" == - ]] || (( ${NOW_EPOCH:-$(date +%s)} - $(date -d "$at" +%s 2>/dev/null || echo 0) >= 86400 )); }; then why="24 h since the park"; fi
     [[ -n "$why" ]] || continue
     jqf -e --arg id "$id" --arg at "$at" --arg main "$main" --arg head "$head" --arg pr "$pr" \
-      'any(.units[]; .id==$id and .stage=="parked" and .parked_reason=="supervisor-park" and (([(.history // [])[] | select(.stage=="supervisor-park") | .at] | last // "-") == $at) and (.supervisor_park_main // "-")==$main and (.supervisor_park_head // "-")==$head and (((.pr // "-") | tostring)==$pr))' "$UNITS" >/dev/null || continue
+      'any(.units[]; .id==$id and .stage=="parked" and .parked_reason=="supervisor-park" and (([(.history // [])[] | select(.stage=="supervisor-park") | .at] | last // "-") == $at) and (.supervisor_park_main // "-")==$main and (if (.supervisor_park_head // "") == "" then "-" else .supervisor_park_head end)==$head and (((.pr // "-") | tostring)==$pr))' "$UNITS" >/dev/null || continue
     set_unit "$id" "$(hist supervisor-park-recheck "re-arbitrate once: $why") | .stage=\"supervisor-review\" | del(.parked_reason, .unpark_condition)" \
       && say "supervisor park unit=$id reason=supervisor-park re-arbitrate once: $why"
   # park-label-sweep can infer this generic reason for legacy parks; require a recorded arbiter park before rechecking it.
-  done < <(jqf -r '.units[] | select(.stage == "parked" and .parked_reason == "supervisor-park" and any((.history // [])[]?; .stage == "supervisor-park")) | [.id, (([(.history // [])[] | select(.stage == "supervisor-park") | .at] | last) // "-"), (.supervisor_park_main // "-"), (.supervisor_park_head // "-"), (.pr // "-")] | @tsv' "$UNITS")
+  done < <(jqf -r '.units[] | select(.stage == "parked" and .parked_reason == "supervisor-park" and any((.history // [])[]?; .stage == "supervisor-park")) | [.id, (([(.history // [])[] | select(.stage == "supervisor-park") | .at] | last) // "-"), (.supervisor_park_main // "-"), (if (.supervisor_park_head // "") == "" then "-" else .supervisor_park_head end), (.pr // "-")] | @tsv' "$UNITS")
   return 0
 }
 
