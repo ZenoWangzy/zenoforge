@@ -179,8 +179,7 @@ reconcile_blocking_issue_root() {
         return 0
       fi
       if [ "$conclusion_owner" = release ]; then
-        quarantine_stage_canary_forget_stage implement
-        return 0
+        quarantine_stage_canary_forget_stage implement; return 0
       fi
       canary_scope_list="$(quarantine_canary_scope_list_for_stage implement)"
       [ -z "$canary_scope_list" ] || requeue_patch=".run.conclusion.canary_reserved_scopes = $(jq -Rn --arg scopes "$canary_scope_list" '$scopes')"
@@ -194,8 +193,7 @@ reconcile_blocking_issue_root() {
         state_requeue "$n" "" conclusion-requeue "$requeue_patch" \
           || { blocker_root_fail "conclusion requeue failed for #$n"; return 1; }
       fi
-      quarantine_stage_canary_forget_stage implement
-      if [ "$pipeline_system_status" = 0 ]; then
+      quarantine_stage_canary_forget_stage implement; if [ "$pipeline_system_status" = 0 ]; then
         state_merge "$n" '.run.conclusion.owner = "issue-pipeline"' \
           || { blocker_root_fail "conclusion owner write failed for #$n"; return 1; }
       else

@@ -3730,6 +3730,7 @@ EF_OUT="$(
     # A slice that stops before a job exists must not spend the canary.
     tq=$((t0 + 120))
     echo "canary_let_through=$(stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) 2>/dev/null && echo yes || echo no)"
+    (
     mkdir -p "$ZF_ENGINE_DIR"
     cat > "$ZF_ENGINE_DIR/run-triage.sh" <<"EOF"
 #!/usr/bin/env bash
@@ -3823,13 +3824,17 @@ EOF
     quarantine_stage_canary_forget_stage implement; implement_runs_since_last_hold_lift() { IMPLEMENT_REPEAT_RUN_COUNT=0; }
     RUN_RC=0; export RUN_RC; dispatch implement 932 || :
     ROOT="$ZF_REPO_DIR" SCHEDULER_AGENT_LIB="$ENV_FAULT_LIB_DIR/lib.sh" SCHEDULER_SCOPE_LIB_DIR="$ENV_FAULT_LIB_DIR/lib.d"; scheduler_issue_state() { state_read "$1"; }
-    eval "$(sed -n "/^scheduler_mark_canary_after_worker_start() (/,/^)/p" "$ENV_FAULT_LIB_DIR/mac-autopilot/scheduler.d/dispatch.sh")"; scheduler_mark_canary_after_worker_start 932
+    jqf() { command jq "$@"; }
+    eval "$(sed -n "/^scheduler_mark_canary_after_worker_start() (/,/^)/p" "$ENV_FAULT_LIB_DIR/mac-autopilot/scheduler.d/dispatch.sh")"
+    scheduler_bridge_status=0; scheduler_mark_canary_after_worker_start 932 || scheduler_bridge_status=$?
+    echo "scheduler_bridge_status=$scheduler_bridge_status"
     echo "requeue_scheduler_canaries=$(jq -r .canaries "$qf")"; echo "requeue_scheduler_reservation=$(state_read 932 | jq -r ".run.conclusion.canary_reserved_scopes // empty")"
     state_merge 932 ".run.conclusion.canary_reserved_scopes = \"implement\""; STAGE_DISPATCH_CANARY_SCOPES=implement
     FAIL_SYSTEMD_LAUNCH=1; RUN_RC=0; export FAIL_SYSTEMD_LAUNCH RUN_RC; dispatch implement 932 || :
     unset FAIL_SYSTEMD_LAUNCH
     echo "failed_launch_canaries=$(jq -r .canaries "$qf")"; echo "failed_launch_memory_reserved=$(quarantine_stage_canary_pending implement && echo yes || echo no)"
     echo "failed_launch_state_reserved=$(state_read 932 | jq -r ".run.conclusion.canary_reserved_scopes // empty")"
+    )
     # canary survived (no new fault within grace) -> lifted
     reconcile_quarantines "$((tq + 16 * 60 + 31 * 60))" 2>/dev/null
     echo "triage_lifted=$([ -f "$(quarantine_file triage)" ] && echo no || echo yes)"
@@ -3897,6 +3902,7 @@ assert_eq "a real job start increments the canary count once" "1" "$(ef real_job
 assert_eq "quarantine_mark_canary: the next canary waits twice as long" "1800" "$(ef next_canary_in)"
 assert_eq "same-process requeue and issue-pipeline plus scheduler charge one canary" "1" "$(ef requeue_scheduler_canaries)"
 assert_eq "scheduler consumes the persisted canary reservation" "" "$(ef requeue_scheduler_reservation)"
+assert_eq "scheduler canary bridge runs successfully in its fixture" "0" "$(ef scheduler_bridge_status)"
 assert_eq "failed issue-pipeline launch leaves the canary uncharged" "1" "$(ef failed_launch_canaries)"
 assert_eq "failed issue-pipeline launch clears in-memory canary reservation" "no" "$(ef failed_launch_memory_reserved)"
 assert_eq "failed issue-pipeline launch clears persisted canary reservation" "" "$(ef failed_launch_state_reserved)"
