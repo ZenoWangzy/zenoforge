@@ -244,8 +244,6 @@ $(matt_method_rule "$dir")"
     return 1
   fi
 }
-source "${ZF_ENGINE_DIR:-$ENGINE_ROOT/engine}/bin/luna-capacity.sh"
-
 unit_dispatch_priority() { # unit-json → hotfix|opt|normal
   if [[ "$(jqf -r '.hotpatch // false' <<<"$1")" == true ]]; then printf 'hotfix\n'
   elif [[ "$(jqf -r '.lane // empty' <<<"$1")" == direct-main ]]; then printf 'opt\n'
@@ -296,12 +294,27 @@ higher_priority_waiting() { # priority → sets waiter and age; always drops sta
   return 1
 }
 
+declare -gA TICK_PRIORITY_ADMISSION_CACHE=()
+priority_admission_has_room() { # priority age; dispatch_pending caches one resource sample per class for this scheduler tick
+  local priority="$1" age="$2" result
+  if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]]; then
+    LUNA_PRIORITY="$priority" box_has_room "$age"
+    return $?
+  fi
+  result="${TICK_PRIORITY_ADMISSION_CACHE[$priority]:-}"
+  if [[ -z "$result" ]]; then
+    if LUNA_PRIORITY="$priority" box_has_room "$age"; then result=admit; else result=hold; fi
+    TICK_PRIORITY_ADMISSION_CACHE[$priority]="$result"
+  fi
+  [[ "$result" == admit ]]
+}
+
 priority_wait_should_hold() { # normal dispatch yields only while the selected waiter is also blocked
   local priority="$1" waiter="$2" waiter_priority age="${PRIORITY_WAITING_AGE_SECONDS:-0}"
   [[ "$priority" == normal ]] || return 0 # preserve strict hotfix-over-opt ordering
   waiter_priority="${waiter#wait-}"; waiter_priority="${waiter_priority%%-*}"
-  if [[ "$waiter_priority" == hotfix ]] && LUNA_PRIORITY=hotfix box_has_room "$age"; then return 1; fi
-  LUNA_PRIORITY=normal box_has_room "$age" || return 0
+  if [[ "$waiter_priority" == hotfix ]] && priority_admission_has_room hotfix "$age"; then return 1; fi
+  priority_admission_has_room normal "$age" || return 0
   return 1
 }
 

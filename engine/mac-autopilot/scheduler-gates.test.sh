@@ -72,9 +72,39 @@ priority_admission_case() {
   eval "$runs_fn"; eval "$cpu_fn"
 }
 
+priority_memory_case() {
+  local mem="$fixture/priority-memory-meminfo" psi="$fixture/priority-memory-psi"
+  local LUNA_MIN=0 LUNA_MAX=10 LUNA_AGE_ADMIT_SECONDS=1200 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85
+  local LUNA_PROC_MEMINFO="$mem" LUNA_PROC_PSI_MEMORY="$psi" AUTOPI_PRIORITY_HOLD_MAX_SECONDS=1200
+  local PRIORITY_GATE_RUNS=0 PRIORITY_GATE_CPU_BUSY=0 runs_fn cpu_fn box_fn box_calls=0
+  local TICK_DISPATCH_PENDING_ACTIVE=true
+  local -A TICK_PRIORITY_ADMISSION_CACHE=()
+  runs_fn="$(declare -f codex_runs)"; cpu_fn="$(declare -f cpu_busy)"; box_fn="$(declare -f box_has_room)"
+  eval "$(sed '1s/^box_has_room ()/box_has_room_uncached ()/' <<<"$box_fn")"
+  codex_runs() { printf '%s\n' "$PRIORITY_GATE_RUNS"; }
+  cpu_busy() { printf '%s\n' "$PRIORITY_GATE_CPU_BUSY"; }
+  box_has_room() { box_calls=$((box_calls + 1)); box_has_room_uncached "$@"; }
+  units '{"units":[{"id":"issue-9","stage":"implement-pending","history":[]},{"id":"issue-10","stage":"implement-pending","history":[]}]}'
+  printf 'MemAvailable: 3072000 kB\n' > "$mem" # 3000 MB, below the 3328 MB normal floor; runs remain below LUNA_MAX.
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
+  : > "$LUNA_SLOTS/wait-opt-$$"
+  room_for issue-9 implement "" true false && fail 'low-memory opt waiter released normal dispatch below the run cap'
+  room_for issue-10 implement "" true false && fail 'low-memory opt waiter released a second normal dispatch'
+  [[ "$PRIORITY_GATE_RUNS" -lt "$(luna_run_cap)" && "$box_calls" == 1 ]] \
+    || fail "low-memory opt admission was not sampled once under the cap (runs=$PRIORITY_GATE_RUNS calls=$box_calls)"
+  rm -f "$LUNA_SLOTS/wait-opt-$$"; : > "$LUNA_SLOTS/wait-hotfix-$$"
+  TICK_PRIORITY_ADMISSION_CACHE=(); box_calls=0
+  room_for issue-9 implement "" true false && fail 'low-memory hotfix waiter released normal dispatch'
+  room_for issue-10 implement "" true false && fail 'low-memory hotfix waiter released a second normal dispatch'
+  [[ "$box_calls" == 2 ]] || fail "hotfix and normal admission were not each sampled once per tick (calls=$box_calls)"
+  rm -f "$LUNA_SLOTS"/wait-*
+  eval "$box_fn"; eval "$runs_fn"; eval "$cpu_fn"
+}
+
 if [[ -n "${SCHED_TEST_CASE:-}" ]]; then
   case "$SCHED_TEST_CASE" in
     priority_hold_admission) priority_admission_case; echo 'scheduler-gates.test.sh: priority_hold_admission PASS'; exit 0 ;;
+    priority_hold_memory) priority_memory_case; echo 'scheduler-gates.test.sh: priority_hold_memory PASS'; exit 0 ;;
     *) fail "unknown SCHED_TEST_CASE='$SCHED_TEST_CASE'" ;;
   esac
 fi
@@ -3168,6 +3198,7 @@ eval "$retire_saved_tick_prs"; eval "$retire_saved_pr_view"
 
 # ---------- #4621：按 hotfix > opt > 普通 pipeline 让位；旧 waiter 不挡派发 ----------
 priority_admission_case
+priority_memory_case
 rm -f "$LUNA_SLOTS"/wait-*
 units '{"units":[{"id":"issue-9","stage":"review-pending","history":[]},{"id":"issue-opt","lane":"direct-main","stage":"review-pending","history":[]},{"id":"issue-hp","hotpatch":true,"stage":"review-pending","history":[]}]}'
 priority_gate_cpu_busy_real="$(declare -f cpu_busy)"
