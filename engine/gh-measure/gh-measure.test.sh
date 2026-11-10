@@ -39,14 +39,16 @@ python3 "$dir/summary.py" "$t/calls.tsv" | grep -q '^3 gh calls' || fail 'summar
 now=1800000000; ts() { date -u -d "@$1" +%FT%TZ; }
 : > "$t/spike.tsv"
 row() { printf '%s\tu\tc.sh\t%s\t\t%s\t5\n' "$(ts "$1")" "$2" "$3" >> "$t/spike.tsv"; }
-for i in 1 2 3 4; do row $((now - 600 * i)) "pr view" 1; row $((now - 7200 * i)) "pr view" 0; done
+for i in 1 2 3 4 5; do row $((now - 600 * i)) "pr view" 1; row $((now - 7200 * i)) "pr view" 0; done
+row $((now - 300)) "pr view" 0
+printf '%s\tu\tscheduler.sh\tapi\tGET\t1\t5\n' "$(ts "$((now - 300))")" >> "$t/spike.tsv"
 for i in 1 2 3 4; do row $((now - 600 * i)) "issue list" 1; row $((now - 7200 * i)) "issue list" 1; done
 for i in 1 2 3 4; do row $((now - 600 * i)) "run list" 0; done
 for i in 1 2 3; do
   printf '%s\tu\tscheduler.sh\tapi\tIf-None-Match: W/"etag-%s"\t1\t5\n' "$(ts "$((now - 100 * i))")" "$i" >> "$t/spike.tsv"
 done
 spikes="$(python3 "$dir/summary.py" spikes "$t/spike.tsv" "$now")"
-[ "$spikes" = $'c.sh pr view\t100%' ] || fail "spike detection wrong: $spikes"
+[ "$spikes" = $'c.sh pr view\t83%' ] || fail "spike detection wrong: $spikes"
 python3 "$dir/summary.py" "$t/spike.tsv" > "$t/summary.out"
 call_sites="$(sed -n '/^by call site:/,$p' "$t/summary.out")"
 [ "$(grep -c 'scheduler.sh api If-None-Match$' <<< "$call_sites")" = 1 ] || fail 'call-site table did not normalize ETag headers'
