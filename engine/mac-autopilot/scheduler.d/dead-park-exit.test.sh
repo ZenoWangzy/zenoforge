@@ -112,8 +112,10 @@ DEAD_PARK_EXIT_PER_TICK=2 dead_park_exit
 [[ "$(wc -l < "$ROUTES")" == 2 ]] || fail "per-tick cap not held: $(cat "$ROUTES")"
 set_unit issue-9133 '.supervisor_owned=true' # isolate the one intentionally left queued by the cap case
 
-# Only the dead-park route salvages commits, dirty tracked work and every stash before recutting.
+# Only the dead-park route salvages commits, dirty work and every stash before recutting.
 WT_ROOT="$fixture/worktrees"; mkdir -p "$WT_ROOT"
+SALVAGE_ORIGIN="$fixture/origin.git"
+git init --bare -q "$SALVAGE_ORIGIN"
 PUSHES="$fixture/pushes"; SAYS="$fixture/says"; INBOX="$fixture/inbox"
 : > "$PUSHES"; : > "$SAYS"; : > "$INBOX"
 export INBOX
@@ -137,11 +139,18 @@ make_salvage_worktree() {
   printf 'base\n' > "$wt/tracked.txt"
   git -C "$wt" add tracked.txt
   git -C "$wt" -c user.name='Scheduler Test' -c user.email='scheduler-test@example.invalid' commit -qm base
+  git -C "$wt" remote add origin "$SALVAGE_ORIGIN"
+  git -C "$wt" push -q --force origin HEAD:refs/heads/main
+  git -C "$wt" fetch -q origin
+  printf 'unpublished head\n' > "$wt/head.txt"
+  git -C "$wt" add head.txt
+  git -C "$wt" -c user.name='Scheduler Test' -c user.email='scheduler-test@example.invalid' commit -qm unpublished
+  git -C "$wt" update-ref refs/remotes/origin/stale HEAD
   printf 'stashed one\n' > "$wt/tracked.txt"
   git -C "$wt" stash push -qm 'saved work one'
   printf 'stashed two\n' > "$wt/tracked.txt"
   git -C "$wt" stash push -qm 'saved work two'
-  printf 'dirty\n' > "$wt/tracked.txt"
+  printf 'untracked dirty work\n' > "$wt/untracked.txt"
   jq -c --arg id "issue-$id" --argjson issue "$id" '.units += [{id:$id,issue:$issue,branch:("agent/"+$id),stage:"parked",parked_reason:"supervisor-budget",history:[{stage:"supervisor-budget-park",result:"stop-loss budget",at:"2026-11-01T01:00:00Z"}]}]' "$UNITS" | write_state "$UNITS"
 }
 make_salvage_worktree 9116

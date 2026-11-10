@@ -1,8 +1,11 @@
 dead_park_salvage_worktree() { # unit-id worktree -> comma-separated refs; push failures go to stderr
-  local id="$1" wt="$2" stamp base remote_branches status stash_list stash_ref stash_index sha ref err
+  local id="$1" wt="$2" stamp base remote_branches status stash_list stash_ref stash_index sha ref err tmp_index snapshot_rc
   local -a refs=()
   stamp="$(date -u +%Y%m%dT%H%M%SZ)" || return 1
   base="salvage/$id-$stamp"
+  if git -C "$wt" remote get-url origin >/dev/null 2>&1; then
+    remote_branches="$(git -C "$wt" fetch -q --prune origin 2>&1)" || { printf 'could not refresh origin refs: %s\n' "$remote_branches" >&2; return 1; }
+  fi
   remote_branches="$(git -C "$wt" branch -r --contains HEAD 2>&1)" || { printf 'could not inspect remote branches: %s\n' "$remote_branches" >&2; return 1; }
   if [[ -z "$remote_branches" ]]; then
     sha="$(git -C "$wt" rev-parse HEAD 2>&1)" || { printf 'could not read HEAD: %s\n' "$sha" >&2; return 1; }
@@ -12,7 +15,11 @@ dead_park_salvage_worktree() { # unit-id worktree -> comma-separated refs; push 
   fi
   status="$(git -C "$wt" status --porcelain 2>&1)" || { printf 'could not inspect worktree status: %s\n' "$status" >&2; return 1; }
   if [[ -n "$status" ]]; then
-    sha="$(git -C "$wt" stash create 2>&1)" || { printf 'git stash create failed: %s\n' "$sha" >&2; return 1; }
+    tmp_index="$(mktemp)" || { printf 'could not create temporary index for dirty worktree\n' >&2; return 1; }
+    sha="$(GIT_INDEX_FILE="$tmp_index" git -C "$wt" read-tree HEAD 2>&1 && GIT_INDEX_FILE="$tmp_index" git -C "$wt" add -A 2>&1 && GIT_INDEX_FILE="$tmp_index" git -C "$wt" stash create 2>&1)"
+    snapshot_rc=$?
+    rm -f "$tmp_index"
+    (( snapshot_rc == 0 )) || { printf 'git stash create failed: %s\n' "$sha" >&2; return 1; }
     if [[ ! "$sha" =~ ^[[:xdigit:]]{40,64}$ ]]; then
       printf 'git stash create did not produce a commit for dirty worktree\n' >&2
       return 1
