@@ -15,6 +15,7 @@ intake_skip_note() {
   say "intake skip issue #$1: $2"
   { awk -F'\t' -v k="$1 $2" -v now="$now" '$1!=k && now-$2<21600' "$f" 2>/dev/null; printf '%s %s\t%s\n' "$1" "$2" "$now"; } > "$f.tmp.$$" && mv -f -- "$f.tmp.$$" "$f"
 }
+intake_skip_refused_recut() { intake_skip_note "$1" "unit=$2 stays closed, recut refused and its reopen is spent"; intake_skip recut_refused; }
 intake_skip_label_report() { # candidate rows JSON, skip labels JSON
   local n hit
   [[ -s "$1" ]] || return 0
