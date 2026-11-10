@@ -684,6 +684,11 @@ codex_provider_recovery_probe_if_due() {
   fi
   probe_out="$(mktemp)" || { unlock_fd "$lock_fd"; return 1; }
   probe_log="$(mktemp)" || { rm -f "$probe_out"; unlock_fd "$lock_fd"; return 1; }
+  due="$((now + timeout_seconds + CODEX_PROVIDER_BACKOFF_SECONDS))"; printf '%s\n' "$due" > "$CODEX_PROVIDER_PROBE_REQUIRED_FILE" || {
+    rm -f "$probe_out" "$probe_log"
+    unlock_fd "$lock_fd"
+    return 1
+  }
   pipeline_execution_run timeout "${timeout_seconds}s" env -u GH_TOKEN -u GITHUB_TOKEN codex exec \
     --sandbox "$CODEX_SANDBOX_MODE" --cd "$REPO_DIR" --skip-git-repo-check --ephemeral \
     -m "$model" -c model_reasoning_effort=low "${service_tier_args[@]}" \

@@ -698,12 +698,16 @@ dispatch() { DISPATCHED+=("$1:$4:$8"); DISPATCH_PR_HEAD="${10:-}"; DISPATCH_PROM
 # The implement dispatch passes the approved predecessor ref and SHA to the isolated clone.
 stack_ensure_clone_real="$(declare -f ensure_clone)"; STACK_ENSURE_ARGS=()
 ensure_clone() { printf '%s\n' "$@" > "$fixture/stack-ensure.args"; printf '%s' "$fixture/repo"; }
+# This case isolates stacked-clone dispatch; reviewer availability has focused coverage elsewhere.
+review_identity_available_real="$(declare -f review_identity_available)"
+review_identity_available() { return 0; }
 units "$(jq -cn --arg sha "$H2" '{units:[{id:"issue-23",issue:23,lane:"pr",branch:"agent/issue-23",stage:"implement-pending",task:"continue the dependent unit",stacked_on:"issue-1@sha",stacked_on_unit:"issue-1",stacked_on_branch:"agent/issue-1",stacked_on_sha:$sha,history:[]}]}')"
 dispatch_pending || :
 mapfile -t STACK_ENSURE_ARGS < "$fixture/stack-ensure.args"
 [[ "${DISPATCHED[0]:-}" == implement:issue-23:* && ${#STACK_ENSURE_ARGS[@]} == 6 \
   && "${STACK_ENSURE_ARGS[4]}" == agent/issue-1 && "${STACK_ENSURE_ARGS[5]}" == "$H2" ]] \
   || fail "stacked implement dispatch did not start its clone at the approved predecessor head (dispatch=${DISPATCHED[*]:-none} args=${STACK_ENSURE_ARGS[*]:-none} stage=$(field issue-23 .stage))"
+eval "$review_identity_available_real"
 eval "$stack_ensure_clone_real"
 DISPATCHED=(); STACK_ENSURE_ARGS=(); rm -f "$fixture/stack-ensure.args"
 
