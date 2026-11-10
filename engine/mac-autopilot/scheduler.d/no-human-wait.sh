@@ -9,9 +9,19 @@ supervisor_arbiter_owner_ruling_pending() { # unit-json → 0 when an owner ruli
 SUPERVISOR_CAP_WAIT_S=21600
 supervisor_arbiter_capped_default() { # id unit-json → the lifetime cap's route; dispatches no run
   local id="$1" u="$2" runs
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+  [[ -n "$u" && "$u" != null ]] || return 0
   runs="$(supervisor_arbiter_lifetime_runs "$u")"
+  (( runs >= SUPERVISOR_ARBITER_UNIT_CAP )) || return 0
+  supervisor_arbiter_owner_ruling_pending "$u" && return 0
   if [[ "$(jqf -r '.arbiter_cap_logged // 0' <<<"$u")" != "$runs" ]]; then
     set_unit "$id" ".arbiter_cap_logged=$runs" || :
+    u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+    [[ -n "$u" && "$u" != null ]] || return 0
+    runs="$(supervisor_arbiter_lifetime_runs "$u")"
+    (( runs >= SUPERVISOR_ARBITER_UNIT_CAP )) || return 0
+    supervisor_arbiter_owner_ruling_pending "$u" && return 0
+    [[ "$(jqf -r '.arbiter_cap_logged // 0' <<<"$u")" == "$runs" ]] || return 0
     say "arbiter cap reached unit=$id runs=$runs owner=head"
   fi
   jqf -e --argjson wait "$SUPERVISOR_CAP_WAIT_S" --argjson now "$(date +%s)" '([(.history // [])[] | select(.stage == "supervisor-arbiter") | .at] | last // "1970-01-01T00:00:00Z" | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) + $wait <= $now' <<<"$u" >/dev/null || return 0
@@ -105,6 +115,7 @@ supervisor_parked_unpark_sweeps() {
       sha="$(jqf -r '.head_sha // ""' <<<"$run")"
       while IFS=$'\t' read -r id at; do
         [[ "$at" == - || "$(jqf -r '.created_at // ""' <<<"$run")" > "$at" ]] || continue
+        jqf -e --arg id "$id" --arg at "$at" 'any(.units[]; .id==$id and .stage=="parked" and .parked_reason=="main-red-guard" and (([(.history // [])[] | select(.stage=="supervisor-park") | .at] | last // "-") == $at))' "$UNITS" >/dev/null || continue
         set_unit "$id" "$(hist supervisor-main-green "main green at ${sha:0:9}: released from the main-red-guard park") | .stage=\"supervisor-review\" | del(.parked_reason, .unpark_condition)" \
           && say "supervisor park unit=$id reason=main-red-guard released: main green at ${sha:0:9}"
       done <<<"$rows"
@@ -119,6 +130,8 @@ supervisor_parked_unpark_sweeps() {
     fi
     if [[ -z "$why" ]] && { [[ "$at" == - ]] || (( ${NOW_EPOCH:-$(date +%s)} - $(date -d "$at" +%s 2>/dev/null || echo 0) >= 86400 )); }; then why="24 h since the park"; fi
     [[ -n "$why" ]] || continue
+    jqf -e --arg id "$id" --arg at "$at" --arg main "$main" --arg head "$head" --arg pr "$pr" \
+      'any(.units[]; .id==$id and .stage=="parked" and .parked_reason=="supervisor-park" and (([(.history // [])[] | select(.stage=="supervisor-park") | .at] | last // "-") == $at) and (.supervisor_park_main // "-")==$main and (.supervisor_park_head // "-")==$head and (((.pr // "-") | tostring)==$pr))' "$UNITS" >/dev/null || continue
     set_unit "$id" "$(hist supervisor-park-recheck "re-arbitrate once: $why") | .stage=\"supervisor-review\" | del(.parked_reason, .unpark_condition)" \
       && say "supervisor park unit=$id reason=supervisor-park re-arbitrate once: $why"
   # park-label-sweep can infer this generic reason for legacy parks; require a recorded arbiter park before rechecking it.
