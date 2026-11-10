@@ -69,8 +69,14 @@ if grep -Fq 'jqf error' "$LOG"; then fail "named tuple lookup logged a jq error:
 
 # Hard repairs keep the configured terra identity until its shared model-not-found cache says to use luna max.
 saved_policy="$SCHED_MODEL_POLICY_JSON"
+saved_model_policy_file="${MODEL_POLICY_FILE:-}"
 SCHED_MODEL_POLICY_JSON="$(jq '.roles.production.model="gpt-6.1-terra" | .roles.production.effort="high"' "$script_dir/../model-policy.default.json")"
-CFG="$(jq '.models.hard=null | .models.implement_hotfix=["gpt-6.1-terra","high"]' "$template")"
+MODEL_POLICY_FILE="$fixture/review-model-policy.json"
+printf '%s\n' '{"allow_roles":{"sonnet":["review_fallback"]}}' > "$MODEL_POLICY_FILE"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture/bin/claude"
+chmod +x "$fixture/bin/claude"
+CFG="$(jq '.models.hard=null | .models.implement_hotfix=["gpt-6.1-terra","high"]
+  | .models.review_fallback=["claude-sonnet-5-5","high"]' "$template")"
 cache="$WORKER_SCRATCH_ROOT/luna/model-not-found.cache"; rm -f "$cache"
 pick_implementer '{"id":"terra-hard-repair","hard_escalated":true}' || fail 'hard repair has no configured model without a cache'
 [[ "$PICK_MODEL" == gpt-6.1-terra && "$PICK_EFFORT" == high ]] || fail "hard repair changed its configured model without a cache ($PICK_MODEL/$PICK_EFFORT)"
@@ -88,6 +94,7 @@ harvest_workers
 awk -F '\t' -v now="$(date +%s)" '$1 == "gpt-6.1-terra" && $2 ~ /^[0-9]+$/ && $2 > now && $2 <= now + 86400 {found=1} END {exit !found}' "$cache" \
   || fail 'hard repair model_not_found must append the shared model/epoch TSV cache entry'
 SCHED_MODEL_POLICY_JSON="$saved_policy"
+if [[ -n "$saved_model_policy_file" ]]; then MODEL_POLICY_FILE="$saved_model_policy_file"; else unset MODEL_POLICY_FILE; fi
 printf '{"workers":[{"pid":%s,"unit":"synthetic","type":"review","log":"missing.log"}]}\n' "$$" > "$WORKERS"
 
 # The Python generator must carry object-shaped implement_share through its normal config output.
