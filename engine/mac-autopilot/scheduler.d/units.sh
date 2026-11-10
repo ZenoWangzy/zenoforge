@@ -699,3 +699,5 @@ live_workers() {
   (( SECONDS < LIVE_WORKER_CACHE_UNTIL )) || refresh_live_worker_cache
   echo "$LIVE_WORKER_CACHE_TOTAL"
 }
+
+source "${BASH_SOURCE[0]%/*}/no-human-wait.sh"
