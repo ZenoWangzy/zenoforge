@@ -183,15 +183,19 @@ jq -e 'any(.workers[]; .unit=="pr-652")' "$WORKERS" >/dev/null || fail "old disp
 echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
 
 # A run that left the unit here holds it until head, state or ruling moves.
-jq -cn '{units:[{id:"pr-661",stage:"supervisor-review",reviewed_pr_head:"aaa",history:[]},{id:"pr-662",stage:"supervisor-review",reviewed_pr_head:"bbb",history:[]},{id:"pr-663",stage:"supervisor-review",reviewed_pr_head:"ccc",cto_rulings:["new"],history:[]}]}' > "$UNITS"
+jq -cn '{units:[{id:"pr-661",stage:"supervisor-review",reviewed_pr_head:"aaa",history:[]},{id:"pr-662",stage:"supervisor-review",reviewed_pr_head:"bbb",history:[]},{id:"pr-663",stage:"supervisor-review",reviewed_pr_head:"ccc",cto_rulings:["new"],history:[]},
+  {id:"pr-664",stage:"supervisor-review",reviewed_pr_head:"ddd",history:[{stage:"supervisor-arbiter",result:"dispatched to profile terra"}]}]}' > "$UNITS"
 set_unit pr-661 ".arbiter_left_mark=$(js "$(supervisor_arbiter_mark "$(jq -c '.units[0]' "$UNITS")")")"
 set_unit pr-662 '.arbiter_left_mark="aaa||0"'
 set_unit pr-663 '.arbiter_left_mark="ccc||0"'
+set_unit pr-664 ".arbiter_left_mark=$(js "$(supervisor_arbiter_mark "$(jq -c '.units[3]' "$UNITS")")")"
 echo '{"workers":[]}' > "$WORKERS"
 dispatch_supervisor_arbiters
 ! jq -e 'any(.workers[]; .unit=="pr-661")' "$WORKERS" >/dev/null || fail "an unchanged unit must not dispatch again"
 jq -e 'any(.workers[]; .unit=="pr-662")' "$WORKERS" >/dev/null || fail "a new head must reopen arbitration"
 jq -e 'any(.workers[]; .unit=="pr-663")' "$WORKERS" >/dev/null || fail "a new ruling must reopen arbitration"
+jq -e 'any(.workers[]; .unit=="pr-664")' "$WORKERS" >/dev/null || fail "a dispatch without a decision must reopen arbitration"
+jq -e '.units[]|select(.id=="pr-664")|has("arbiter_left_mark")|not' "$UNITS" >/dev/null || fail "a stale dispatch-only hold mark must be cleared"
 grep -Fq 'arbiter-no-change unit=pr-661' "$AGENT_HOME/supervisor-inbox" || fail "a held unit must reach the supervisor"
 echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
 
