@@ -16,6 +16,16 @@ B=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) # backends ship beside this s
 hold_home=${AGENT_HOME:-${ZF_HOME:-$( [[ -f $B/../deploy.env ]] && (source "$B/../deploy.env" >/dev/null 2>&1; printf '%s' "${AGENT_HOME:-${ZF_HOME:-}}") )}}
 hold_home=${hold_home:-$HOME/.zenoforge}
 [[ -f $prompt ]] || { echo "worker: prompt file not found: ${prompt:0:80}" >&2; exit 2; }  # 10-31: brief text passed as a path; workers exited silently
+if [[ -n ${HOME:-} ]]; then
+  case "$prompt" in
+    "$HOME"/.zenoforge/briefs/*|"$HOME"/.zenoforge/state/work/briefs/*)
+      grep -Eq '^Existing path: .{8,}' "$prompt" || {
+        printf '%s\n' 'worker: brief lacks "Existing path: <file:line of how main already handles the nearest sibling case>" (or "Existing path: none, <why>")' >&2
+        exit 2
+      }
+      ;;
+  esac
+fi
 S=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}; d="$S/luna/$key"
 mkdir -p "$S/tmp" "$d"
 model=${CODEX_MODEL:-gpt-6-luna}
