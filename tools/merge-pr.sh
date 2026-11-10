@@ -117,6 +117,7 @@ merge_pr_ci_green_check_count() {
   done <<<"$files"
   # headRefOid anchors the rollup to this commit; GitHub CheckRuns have no per-check SHA.
   count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
+    def check_run_time: .startedAt // .completedAt;
     def completed_success:
       if .__typename == "CheckRun" then
         .status == "COMPLETED"
@@ -133,9 +134,14 @@ merge_pr_ci_green_check_count() {
     | ($view.statusCheckRollup // null) as $checks
     | select($view.headRefOid == $sha)
     | select($checks | type == "array" and length > 0)
-    | select(all($checks[]; completed_success))
+    | ([$checks[] | select(.__typename == "CheckRun" and check_run_time != null)]
+      | group_by([.workflowName, .name])
+      | map(max_by(check_run_time))) as $newest_check_runs
+    | ([$checks[] | select(.__typename != "CheckRun" or check_run_time == null)]) as $single_checks
+    | ($newest_check_runs + $single_checks) as $current_checks
+    | select(all($current_checks[]; completed_success))
     | (["cli"] + [range(0;$shards) | "suites (\(.))"]) as $required
-    | select(all($required[]; . as $need | any($checks[]; required_check($need))))
+    | select(all($required[]; . as $need | any($current_checks[]; required_check($need))))
     | $checks | length
   ' <<<"$view" 2>/dev/null)" || return 1
   printf '%s\n' "$count"
