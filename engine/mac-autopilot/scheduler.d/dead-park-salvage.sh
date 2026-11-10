@@ -1,3 +1,5 @@
+dead_park_guarded_push() { ( source "$SCHEDULER_AGENT_LIB" && guarded_write git -C "$1" push -q origin "$2:refs/heads/$3" ); }
+
 dead_park_salvage_worktree() { # unit-id worktree -> comma-separated refs; push failures go to stderr
   local id="$1" wt="$2" stamp base remote_branches status stash_list stash_ref stash_index sha ref err tmp_index snapshot_rc
   local -a refs=()
@@ -10,7 +12,7 @@ dead_park_salvage_worktree() { # unit-id worktree -> comma-separated refs; push 
   if [[ -z "$remote_branches" ]]; then
     sha="$(git -C "$wt" rev-parse HEAD 2>&1)" || { printf 'could not read HEAD: %s\n' "$sha" >&2; return 1; }
     ref="$base"
-    err="$(guarded_write git -C "$wt" push -q origin "$sha:refs/heads/$ref" 2>&1)" || { printf 'push refs/heads/%s failed: %s\n' "$ref" "${err:-git push failed}" >&2; return 1; }
+    err="$(dead_park_guarded_push "$wt" "$sha" "$ref" 2>&1)" || { printf 'push refs/heads/%s failed: %s\n' "$ref" "${err:-git push failed}" >&2; return 1; }
     refs+=("refs/heads/$ref")
   fi
   status="$(git -C "$wt" status --porcelain 2>&1)" || { printf 'could not inspect worktree status: %s\n' "$status" >&2; return 1; }
@@ -25,7 +27,7 @@ dead_park_salvage_worktree() { # unit-id worktree -> comma-separated refs; push 
       return 1
     fi
     ref="$base-dirty"
-    err="$(guarded_write git -C "$wt" push -q origin "$sha:refs/heads/$ref" 2>&1)" || { printf 'push refs/heads/%s failed: %s\n' "$ref" "${err:-git push failed}" >&2; return 1; }
+    err="$(dead_park_guarded_push "$wt" "$sha" "$ref" 2>&1)" || { printf 'push refs/heads/%s failed: %s\n' "$ref" "${err:-git push failed}" >&2; return 1; }
     refs+=("refs/heads/$ref")
   fi
   stash_list="$(git -C "$wt" stash list --format='%gd' 2>&1)" || { printf 'could not list stashes: %s\n' "$stash_list" >&2; return 1; }
@@ -34,7 +36,7 @@ dead_park_salvage_worktree() { # unit-id worktree -> comma-separated refs; push 
     stash_index="${stash_ref#stash@\{}"; stash_index="${stash_index%\}}"
     sha="$(git -C "$wt" rev-parse "$stash_ref" 2>&1)" || { printf 'could not read %s: %s\n' "$stash_ref" "$sha" >&2; return 1; }
     ref="$base-stash$stash_index"
-    err="$(guarded_write git -C "$wt" push -q origin "$sha:refs/heads/$ref" 2>&1)" || { printf 'push refs/heads/%s failed: %s\n' "$ref" "${err:-git push failed}" >&2; return 1; }
+    err="$(dead_park_guarded_push "$wt" "$sha" "$ref" 2>&1)" || { printf 'push refs/heads/%s failed: %s\n' "$ref" "${err:-git push failed}" >&2; return 1; }
     refs+=("refs/heads/$ref")
   done <<<"$stash_list"
   ((${#refs[@]} > 0)) || { printf 'no salvage ref was required for unpushed worktree\n' >&2; return 1; }
