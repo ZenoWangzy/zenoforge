@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles
+import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue
 import ledger_history
 from config_paths import zf_config_file
 
@@ -775,7 +775,7 @@ FRONT_STAGES = [
     ("needs-info", "等提单人回复", 10, 30, 72, 168, "等提单人回答问题（人的时间，允许以天计）。久 = 该催或关。"),
     ("needs-advisor", "待顾问裁决", 10, 30, 12, 48, "分诊 / 实现判断不了的票等 advisor 批处理裁决。久 = 顾问批处理没产出。"),
     ("needs-recut", "待拆票", 5, 15, 24, 72, "顾问判定过大，等拆成子票。"),
-    ("ready-for-agent", "待实现队列", 60, 150, 168, 336, "已就绪、等 autopilot 接单实现的票（约 2 天 / 5 天产能）。久 = 低优先级被饿死或接单口径过窄。"),
+    ("ready-for-agent", "待实现总量", 60, 150, 168, 336, "开放且带 ready 标签的总票数，包含已有单元、阻塞和停放；可派发数见队列拆分。"),
     ("awaiting-release", "已合并等发布", 40, 80, 24, 72, "代码已合并、还没有生产验收证据的票。久 = 发布列车挡住了或验收没跑。"),
     ("awaiting-pipeline-sync", "直落等入库", 3, 10, 2, 12, "非产品票的提交已推送，等流水线检出看到它。久 = 同步停了。"),
 ]
@@ -901,7 +901,7 @@ def front_github_stages(now):
             return stale["stages"], stale.get("search_counts"), {"cached": True, "stale": True, "age_s": int(age), "error": front_error(ex)}
         raise
 
-def front_stage_rows(now):
+def front_stage_rows(now, front):
     raw, counts, meta = front_github_stages(now); by_label = {s["label"]: s for s in raw}; rows = []
     for label, name, c_ok, c_bad, i_ok, i_bad, meaning in FRONT_STAGES:
         s = by_label.get(label) or {}
@@ -911,6 +911,7 @@ def front_stage_rows(now):
         front_std(f"stage.{label}.count", f"{name}（{label}）数量", c_ok, c_bad, False, "个", meaning, "GitHub GraphQL：该标签的开放 issue 数")
         front_std(f"stage.{label}.idle_hours", f"{name}最久滞留", i_ok, i_bad, False, "小时", "该阶段里最久没动的那张票，距上次更新多久（label 变化或评论都会刷新，是时间下限）。" + meaning, "GitHub GraphQL：该标签下 updatedAt 最早的 issue")
         front_values[f"stage.{label}.count"] = count; front_values[f"stage.{label}.idle_hours"] = idle
+    dashboard_ready_queue.add_front_data(front, now, by_label.get("ready-for-agent", {}).get("count"), FRONT_STAGES, FRONT_CACHE_PATH, ROOT, front_run, front_error, FRONT_CACHE_SECONDS, FRONT_STALE_SECONDS, units, read_json, AGENT_HOME, front_std, front_values)
     return rows, counts, meta
 
 def front_advisor_snapshot():
@@ -1106,9 +1107,9 @@ release_train_state = read_json(f"{A}/release-train.json") or {}
 front = {"errors": {}}
 front_now = front_started = time.time()
 try:
-    front["stages"], front["search_counts"], front["github"] = front_stage_rows(front_now)
+    front["stages"], front["search_counts"], front["github"] = front_stage_rows(front_now, front)
 except Exception as ex:
-    front["stages"], front["search_counts"], front["github"] = [], None, None
+    front["stages"], front["search_counts"], front["github"], front["ready_queue"] = [], None, None, None
     front["errors"]["stages"] = front_error(ex)
 def front_count(label):
     return next((s["count"] for s in front["stages"] if s["label"] == label), None)

@@ -192,4 +192,18 @@ grep -q 'unit issue-9514 unblocked: #9512 tracker' "$LOG" || fail 'case B: the r
 SIBLING_STAGE=merged tracker_fixture; dep_delivered_snapshot
 dep_cleared "$(unit_json issue-9514)" 9512 || fail 'case B: dispatch must see the siblings delivered (dep_cleared)'
 grep -q 'issue #9514 waits on tracker #9512, its own parent' "$LOG" || fail 'case B: the rewrite must name itself in the log'
+
+# No blocker means there is no event to wait for. Resume only when the current
+# GitHub label cache still says ready-for-agent; stale ledger labels do not count.
+CACHE_ROWS=(); reset_run
+CACHE_ROWS=([25]=$'OPEN\tready-for-agent\tOPEN\t' [26]=$'OPEN\tready-for-agent\tOPEN\t' [27]=$'OPEN\tneeds-recut\tOPEN\t')
+{
+  unit issue-25 25 blocked-external '.labels=["ready-for-agent"]'
+  unit issue-26 26 blocked-external '.labels=["ready-for-agent"]'
+  unit issue-27 27 blocked-external '.labels=["ready-for-agent"]'
+} | jq -cs '{units:.}' > "$UNITS"
+run_counted
+[[ "$(jq -r '.units[] | select(.id=="issue-25") | .stage' "$UNITS")" == implement-pending ]] || fail 'a ready unit with no recorded blocker must resume'
+[[ "$(jq -r '.units[] | select(.id=="issue-26") | .stage' "$UNITS")" == implement-pending ]] || fail 'a second ready unit with no recorded blocker must resume'
+[[ "$(jq -r '.units[] | select(.id=="issue-27") | .stage' "$UNITS")" == supervisor-review ]] || fail 'a stale ready label must not release a non-ready issue'
 echo 'dependencies-onepass.test.sh: ok'

@@ -139,7 +139,7 @@ dispatch_supervisor_arbiters
 [[ "$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == "$before" ]] || fail "no arbitration may dispatch at the in-flight cap"
 SUPERVISOR_ARBITER_MAX="$saved_max"; rm -f "$WORKER_SCRATCH_ROOT/luna/model-not-found.cache"
 
-# RECUT refused for unpushed work: recorded, not triaged again until the head moves.
+# An under-cap RECUT refusal resumes existing work once; a legacy refusal does too, and a moved head can return to cap triage.
 WT_ROOT="$fixture/clones"; mkdir -p "$WT_ROOT/wt-pr-650"
 git -C "$WT_ROOT/wt-pr-650" init -q
 git -C "$WT_ROOT/wt-pr-650" -c user.name=t -c user.email=t@t commit -q --allow-empty -m first
@@ -147,14 +147,19 @@ refused_sha="$(git -C "$WT_ROOT/wt-pr-650" rev-parse HEAD)"
 printf '%s\n' "$(jq -cn '{units:[{id:"pr-650",issue:650,pr:650,stage:"parked",history:[{stage:"supervisor-cap-triage-park",result:"x",at:"2026-10-27T00:00:00Z"}]}]}')" > "$UNITS"
 echo '{"workers":[]}' > "$WORKERS"; : > "$GH_CALLS"
 supervisor_budget_recut pr-650 "cap triage: too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
-[[ "$(field pr-650 .parked_reason)" == recut-refused-unpushed && "$(field pr-650 .recut_refused_head)" == "$refused_sha" && "$(field pr-650 .recut_refused_verdict)" == RECUT ]] \
-  || fail "a refused RECUT must record its reason, head and verdict"
-[[ "$(field pr-650 .note)" == *'Unparks when that head changes'* ]] || fail "a refused RECUT must state its unpark condition"
+[[ "$(field pr-650 .stage)" == repair-pending && "$(field pr-650 .parked_reason)" == null \
+  && "$(field pr-650 .recut_refused_head)" == "$refused_sha" && "$(field pr-650 .recut_refused_verdict)" == RECUT ]] \
+  || fail "a refused RECUT must resume the existing PR work and record its head and verdict"
+[[ "$(field pr-650 .repair_hint)" == *'commit and push'* ]] || fail "a refused RECUT must tell the worker to publish its existing work"
 ! grep -Fq 'pr close' "$GH_CALLS" || fail "a refused RECUT must not close the PR"
 saved_cap_triage="$SUPERVISOR_CAP_TRIAGE"; SUPERVISOR_CAP_TRIAGE=true
 dispatch_supervisor_arbiters
-[[ "$(jq '.workers | length' "$WORKERS")" == 0 ]] || fail "the same head must not be triaged again"
+[[ "$(jq '.workers | length' "$WORKERS")" == 0 && "$(field pr-650 .stage)" == repair-pending ]] || fail "resume must dispatch the existing work before another RECUT attempt"
+printf '%s\n' "$(jq -cn --arg h "$refused_sha" '{units:[{id:"pr-650",issue:650,pr:650,branch:"agent/issue-650",stage:"parked",parked_reason:"recut-refused-unpushed",recut_refused_head:$h,recut_refused_verdict:"RECUT",history:[{stage:"supervisor-recut-refused",result:"legacy park"}]}]}')" > "$UNITS"
+dispatch_supervisor_arbiters
+[[ "$(field pr-650 .stage)" == repair-pending && "$(jq '.workers | length' "$WORKERS")" == 0 ]] || fail "a legacy refused-RECUT park must resume its existing work once"
 git -C "$WT_ROOT/wt-pr-650" -c user.name=t -c user.email=t@t commit -q --allow-empty -m second
+printf '%s\n' "$(jq -cn --arg h "$refused_sha" '{units:[{id:"pr-650",issue:650,pr:650,branch:"agent/issue-650",stage:"parked",parked_reason:"recut-refused-unpushed",recut_refused_head:$h,recut_refused_verdict:"RECUT",recut_refused_resume_head:$h,history:[{stage:"supervisor-recut-refused",result:"legacy park"}]}]}')" > "$UNITS"
 ZF_ENGINE_DIR="$script_dir/.." dispatch_supervisor_arbiters
 [[ "$(jq '[.workers[] | select(.unit=="pr-650")] | length' "$WORKERS")" == 1 ]] || fail "a moved head must reach cap triage again"
 SUPERVISOR_CAP_TRIAGE="$saved_cap_triage"
@@ -415,6 +420,8 @@ dispatch_supervisor_arbiters
 # A founder question that names a fact ends cap triage even when old history still shows a budget park; sweeping it again re-asks forever.
 budget_park='{"stage":"supervisor-budget-park","result":"arbitration budget exhausted for x"}'
 supervisor_cap_parked_unit "{\"stage\":\"parked\",\"history\":[$budget_park]}" || fail "a legacy budget park must stay swept"
+supervisor_cap_parked_unit '{"stage":"parked","parked_reason":"repair-breaker","history":[{"stage":"repair-breaker","result":"same head"}]}' \
+  || fail "a repair-breaker park must reach automatic arbitration"
 if supervisor_cap_parked_unit "{\"stage\":\"parked\",\"parked_reason\":\"supervisor-cap-founder\",\"supervisor_cap_question\":\"这批单据要对接哪个外部系统？\",\"history\":[$budget_park]}"; then
   fail "a founder park with a real question must not be swept back into cap triage"
 fi
@@ -1084,4 +1091,7 @@ jq -e '.history[-1] | .stage == "repair-no-push" and (.backend_failure | contain
 rr="$(printf '{"history":[]}' | jq -c "$(repair_run_filter pr-7104 unchanged "$SHA1" 5 "$ok_log" /dev/null)")"
 jq -e '.history[-1] | has("backend_failure") | not' <<<"$rr" >/dev/null || fail "prose about auth or quota is not a backend failure: $rr"
 
+jq -cn '{units:[{id:"issue-4865",issue:4865,stage:"parked",parked_reason:"repair-breaker",note:"same head after repeated no-push repair",history:[{stage:"repair-breaker",result:"same head"}]}]}' > "$UNITS"
+[[ "$(supervisor_arbiter_candidates | jq -r .id)" == issue-4865 ]] \
+  || fail "a repair-breaker park must enter the automatic arbiter queue: $(supervisor_arbiter_candidates | jq -r .id)"
 echo 'supervisor-arbiter.test.sh: all assertions passed'
