@@ -607,7 +607,10 @@ supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
       issue="$(jqf -r '.issue // empty' <<<"$u")"
       if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
         release=0; supervisor_release_stop_loss_hold "$id" "$issue" || release=$?
-        (( release != 2 )) || return 0 # decided: the no-change mark waits for that holder to let go, with no run in between
+        if (( release == 2 )); then
+          set_unit "$id" "$(hist supervisor-cap-rule-held "issue #$issue held by another holder: $reason" "$decision")" || return 1
+          return 0 # decided: the no-change mark waits for that holder to let go, with no run in between
+        fi
         (( release == 0 )) || return 1
       fi
       # One refill per unit, like recut-reopen: the marker keeps RULE, fail, RULE from outrunning the stop-loss budget.
