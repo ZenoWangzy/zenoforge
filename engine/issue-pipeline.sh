@@ -2895,7 +2895,8 @@ else
   if [ "$ADVISOR_QUEUE_COUNT" -ge "$ADVISOR_BATCH_MIN" ]; then
     if [ -n "$ADVISOR_PENDING_JOB_IDS" ]; then
       : # recorded above as batch-pending; the batch starts once they drain
-    elif [ "$advisor_slots" -gt 0 ] && advisor_canary_scopes="$(web_advisor_provider_dispatch_allowed)"; then
+    elif [ "$advisor_slots" -gt 0 ] && web_advisor_provider_dispatch_allowed >/dev/null; then
+      advisor_canary_scopes="$(quarantine_canary_scope_list_for_stage advisor)"
       echo "issue-pipeline: $ADVISOR_QUEUE_COUNT needs-advisor tickets meet batch threshold $ADVISOR_BATCH_MIN; dispatching one batch job" >&2
       dispatch_advisor_batch 0 "$advisor_canary_scopes" || exit "$?"
     elif [ "$advisor_slots" -gt 0 ] && [ -n "${STAGE_DISPATCH_BLOCKING_SCOPES:-}" ]; then
