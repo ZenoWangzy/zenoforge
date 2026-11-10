@@ -178,6 +178,7 @@ git -C "$recovered_wt" add tracked.txt
 git -C "$recovered_wt" -c user.name='Scheduler Test' -c user.email='scheduler-test@example.invalid' commit -qm published
 git -C "$recovered_wt" remote add origin "$SALVAGE_ORIGIN"
 git -C "$recovered_wt" push -q --force origin HEAD:refs/heads/main
+git -C "$recovered_wt" update-ref -d refs/remotes/origin/main
 [[ -z "$(git -C "$recovered_wt" branch -r --contains HEAD)" ]] || fail 'stale-ref fixture unexpectedly has a current remote-tracking ref'
 jq -c --arg id "$recovered_unit" --argjson issue "$recovered_issue" '.units += [{id:$id,issue:$issue,branch:("agent/"+$id),stage:"parked",parked_reason:"supervisor-budget",history:[{stage:"supervisor-budget-park",result:"stop-loss budget",at:"2026-11-01T01:00:00Z"}]}]' "$UNITS" | write_state "$UNITS"
 : > "$ROUTES"; : > "$PUSHES"; : > "$SAYS"; : > "$INBOX"
