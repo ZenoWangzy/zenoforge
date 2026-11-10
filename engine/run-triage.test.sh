@@ -84,8 +84,10 @@ assert_contains "unresolved L2 takes the default with the impact marked unconfir
 assert_contains "only the three advisor_reason values route to the advisor" "$TRIAGE_PROMPT_CONTENT" '`irreversible`, `production-data` or `security`'
 assert_contains "the prompt names the advisor_reason gate for ready-for-human" "$TRIAGE_PROMPT_CONTENT" 'never a human park'
 
-TRIAGE_SCHEMA_MISSING_REQUIRED="$(jq -c '(.required // []) as $required | [(.properties // {} | keys[]) as $key | select(($required | index($key)) == null) | $key]' "$SCRIPT_DIR/prompts/triage.schema.json")"
+TRIAGE_SCHEMA_MISSING_REQUIRED="$(jq -c '(.required // []) as $required | [(.properties // {} | keys[]) as $key | select(($required | index($key)) == null and $key != "related" and $key != "suspected_shared_cause") | $key]' "$SCRIPT_DIR/prompts/triage.schema.json")"
 assert_eq "triage schema requires every key for Codex structured output" '[]' "$TRIAGE_SCHEMA_MISSING_REQUIRED"
+jq -e '(.required | index("related")) == null and (.required | index("suspected_shared_cause")) == null' \
+  "$SCRIPT_DIR/prompts/triage.schema.json" >/dev/null
 
 # --- fake gh/codex/gitnexus, shadowing the real binaries on PATH -----------
 FAKE_BIN="$(mktemp -d)"
