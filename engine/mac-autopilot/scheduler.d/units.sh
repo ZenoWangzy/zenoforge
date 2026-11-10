@@ -420,6 +420,7 @@ supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [bud
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
     raw="$(scheduler_issue_state "$issue" 2>/dev/null)" || return 1
     state="$(jqf -r '.state // empty' <<<"$raw")" || return 1
+    jqf -e '(.hold.kind == "guarded-recut-repeat") or ((try (.recut_refused_at | fromdateiso8601) catch 0) >= now - 604800)' <<<"$raw" >/dev/null && recut_done=true
   fi
   [[ "$state" != on-hold ]] || return 0
   if [[ "$trigger" == daily ]]; then
