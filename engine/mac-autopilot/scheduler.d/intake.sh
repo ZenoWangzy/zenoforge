@@ -293,7 +293,7 @@ register_new_issues() {
     handoff_rows="$(existing_handoff_candidates)"
     [[ -n "$handoff_rows" ]] || { INTAKE_WALK_LAP=true; return 0; }
     # Numeric order, so a stored cursor resumes at the first row at or after it even when that row is gone; the rows before it come last (wrap).
-    handoff_rows="$(sort -s -n -k1,1 <<<"$handoff_rows")"
+    handoff_rows="$(sort -s -n -k1,1 <<<"$handoff_rows")"; rm -f -- "$UNITS.view"; intake_units_view >/dev/null
     walk_from="$(cat "$walk_cursor" 2>/dev/null || true)"
     if [[ "$walk_from" =~ ^[0-9]+$ ]]; then
       handoff_rows="$(awk -F'\t' -v c="$walk_from" '$1+0 >= c' <<<"$handoff_rows"; awk -F'\t' -v c="$walk_from" '$1+0 < c' <<<"$handoff_rows")"
