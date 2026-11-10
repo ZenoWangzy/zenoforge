@@ -599,9 +599,9 @@ dead_park_exit() {
         and ((.pr | type) != "number" or (.pr as $p | $claimed | index($p)) == null)
         and all($h[]; .stage != "dead-park-exit" or (((.at // "") | sub("\\.[0-9]+Z$"; "Z") | (fromdateiso8601? // 0)) < $since)))
     | (if .parked_reason == "repair-breaker" and $l.stage == "repair-breaker" then "repair-breaker"
-       elif (.parked_reason | IN("supervisor-budget", "ticket-stop-loss")) and ($l.stage | IN("supervisor-budget-park", "supervisor-cap-triage-park")) then
+       elif (.parked_reason | IN("supervisor-budget", "ticket-stop-loss")) and ($l.stage | IN("supervisor-budget-park", "supervisor-cap-triage-park", "supervisor-requeue-failed")) then
          (if any($h[]; .stage == "supervisor-cap-default") then "cap-default"
-          elif $l.stage == "supervisor-budget-park" and (($l.result // "") | test($re) | not) then "budget-park"
+          elif ($l.stage | IN("supervisor-budget-park", "supervisor-requeue-failed")) and (($l.result // "") | test($re) | not) then "budget-park"
           else empty end)
        else empty end) as $class
     | [.id, $class] | @tsv' "$UNITS")

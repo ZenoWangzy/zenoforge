@@ -317,8 +317,34 @@ supervisor_requeue_rereview() { # unit-json → true when the latest unchanged r
   ' <<<"$1" >/dev/null 2>&1
 }
 
+supervisor_close_recut_parent() { # id history-result log-line → existing tracker/recut close path
+  local id="$1" result="$2" message="$3"
+  set_unit "$id" "$(hist size-recut-completed "$result") | .stage=\"closed\" | .note=null | del(.size_recut_pending)" || return 1; say "$message"
+}
+
+supervisor_requeue_followup_cites_pr() { # unit-json → 0 when its open split continuation cites the unit PR; 1 no citation; 2 unreadable
+  local unit="$1" issue pr followup repo="${REPO:-${ZF_REPO:-}}" encoded json cache_status
+  issue="$(jqf -r '.issue // empty' <<<"$unit")"; pr="$(jqf -r '.pr // empty' <<<"$unit")"; followup="$(jqf -r '.split_followup // empty' <<<"$unit")"
+  [[ "$issue" =~ ^[1-9][0-9]*$ && "$pr" =~ ^[1-9][0-9]*$ && "$followup" =~ ^[1-9][0-9]*$ ]] || return 1
+  encoded="$(jqf_optional_file "$A/intake-candidates.json" -r --arg issue "$followup" 'select(.schema==4 and (.created_at|type)=="number" and now >= .created_at and now-.created_at <= 600) | .rows|split("\n")|map(split("\t"))|map(select(length>=5 and .[0]==$issue))|.[0][4] // empty')" || { cache_status=$?; (( cache_status == 64 )) || return 2; }
+  json="$(base64 -d <<<"$encoded" 2>/dev/null)" || json=""
+  jqf -e --argjson issue "$followup" 'type=="object" and .number==$issue and ((.state // "")|type)=="string" and (.body|type)=="string"' <<<"$json" >/dev/null 2>&1 || {
+    [[ -n "$repo" ]] || return 2
+    json="$(gh issue view "$followup" --repo "$repo" --json number,state,body 2>/dev/null)" || return 2
+    jqf -e --argjson issue "$followup" 'type=="object" and .number==$issue and ((.state // "")|type)=="string" and (.body|type)=="string"' <<<"$json" >/dev/null 2>&1 || return 2
+  }
+  jqf -e --arg issue "$issue" --arg pr "$pr" '
+    ((.state // "") | ascii_upcase) == "OPEN"
+    and (.body | test("(^|[^0-9])#" + $issue + "([^0-9]|$)"))
+    and (.body | test("PR[[:space:]]+#" + $pr + "([^0-9]|$)"; "i"))
+  ' <<<"$json" >/dev/null 2>&1
+}
+
+supervisor_requeue_retry() { arbiter_retry=true; say "supervisor arbitration unit=$1: $2; leaving the unit at supervisor-review"; return 1; }
+supervisor_requeue_park_failure() { supervisor_budget_park "$1" "$2" "$3" "supervisor requeue failed" "supervisor-requeue-failed" || { arbiter_retry=true; say "supervisor arbitration unit=$1: requeue failed ($2) and durable park failed"; return 1; }; }
+
 supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute 落地：选一个工作环节放回去
-  local id="$1" action="$2" guidance="$3" decision="$4" u target extra="" issue issue_json issue_state issue_reason issue_repo="${REPO:-${ZF_REPO:-}}"
+  local id="$1" action="$2" guidance="$3" decision="$4" u target extra="" issue issue_json issue_state issue_stage issue_reason issue_repo="${REPO:-${ZF_REPO:-}}" transition_error failure
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
   if jqf -e 'any((.history // [])[]?; (.stage | test("^review")) or .stage == "repair-delivered" or .stage == "delivered")' <<<"$u" >/dev/null \
      && { [[ "$(jqf -r '.pr // empty' <<<"$u")" =~ ^[0-9]+$ ]] \
@@ -357,64 +383,36 @@ Supervisor ruling: dependency #$dropped is resolved for this unit (dropped_deps)
   fi
   issue="$(jqf -r '.issue // empty' <<<"$u")"
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
-    [[ -n "$issue_repo" ]] || { say "supervisor arbitration unit=$id: repository is unavailable for issue #$issue requeue"; return 1; }
-    issue_json="$(gh issue view "$issue" --repo "$issue_repo" --json number,title,body,state,labels 2>/dev/null)" \
-      || { say "supervisor arbitration unit=$id: issue #$issue could not be refreshed for requeue; leaving the unit at supervisor-review"; return 1; }
-    issue_state="$(scheduler_issue_state "$issue")" \
-      || { say "supervisor arbitration unit=$id: issue #$issue state is unreadable for requeue; leaving the unit at supervisor-review"; return 1; }
-    if [[ "$(jqf -r '.state // empty' <<<"$issue_state")" == on-hold ]]; then
-      [[ "$(jqf -r '.hold.holder // empty' <<<"$issue_state")" == scheduler-stop-loss ]] \
-        || { say "supervisor arbitration unit=$id: issue #$issue has a non-stop-loss hold; leaving the unit at supervisor-review"; return 1; }
-      issue_reason=hold-requeue
+    issue_state="$(scheduler_issue_state "$issue")" || { supervisor_requeue_retry "$id" "issue #$issue state is unreadable for requeue"; return $?; }
+    issue_stage="$(jqf -r 'if type == "object" and (.state | type) == "string" and (.state | length) > 0 then .state else error("invalid issue state") end' <<<"$issue_state")" || { supervisor_requeue_retry "$id" "issue #$issue state is malformed for requeue"; return $?; }
+    if [[ "$issue_stage" == tracker ]]; then
+      local pr tracker_log followup cite_status
+      pr="$(jqf -r '.pr // empty' <<<"$u")"
+      followup="$(jqf -r '.split_followup // empty' <<<"$u")"
+      if supervisor_requeue_followup_cites_pr "$u"; then
+        say "supervisor arbitration unit=$id: issue #$issue became a tracker; continuation issue #$followup cites open PR #$pr, carrying it to $target"
+      else
+        cite_status=$?
+        (( cite_status != 2 )) || { supervisor_requeue_retry "$id" "could not verify continuation issue #$followup for open PR #$pr"; return $?; }
+        if [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then tracker_log="supervisor arbitration unit=$id: issue #$issue became a tracker; closed the recut unit and left open PR #$pr for head to decide"; else tracker_log="supervisor arbitration unit=$id: issue #$issue became a tracker; closed the recut unit"; fi
+        supervisor_close_recut_parent "$id" "issue #$issue became a tracker" "$tracker_log" \
+          || { supervisor_requeue_retry "$id" "issue #$issue is a tracker but the unit could not be closed"; return $?; }
+        return 0
+      fi
+    elif [[ "$issue_stage" == ready-for-agent ]]; then
+      say "supervisor arbitration unit=$id: issue #$issue is already ready-for-agent; requeue treated as complete"
     else
-      issue_reason=supervisor-requeue
-    fi
-    if ! scheduler_issue_transition "$issue" ready-for-agent "$issue_reason" . 0 "$issue_json"; then
-      say "supervisor arbitration unit=$id: issue #$issue could not be requeued to ready-for-agent; leaving the unit at supervisor-review"
-      return 1
+      [[ -n "$issue_repo" ]] || { supervisor_requeue_retry "$id" "repository is unavailable for issue #$issue requeue"; return $?; }
+      if [[ "$issue_stage" == on-hold ]]; then [[ "$(jqf -r '.hold.holder // empty' <<<"$issue_state")" == scheduler-stop-loss ]] || { supervisor_requeue_park_failure "$id" "issue #$issue has a non-stop-loss hold" "$decision"; return $?; }; issue_reason=hold-requeue; else issue_reason=supervisor-requeue; fi
+      issue_json="$(gh issue view "$issue" --repo "$issue_repo" --json number,title,body,state,labels 2>/dev/null)" || { supervisor_requeue_retry "$id" "issue #$issue could not be refreshed for requeue"; return $?; }
+      if ! transition_error="$(scheduler_issue_transition "$issue" ready-for-agent "$issue_reason" . 0 "$issue_json" 2>&1)"; then
+        transition_error="${transition_error//$'\n'/ }"; if [[ "$transition_error" == *"issue_transition: refused "* ]]; then failure="issue #$issue could not be requeued to ready-for-agent"; [[ -z "$transition_error" ]] || failure="$failure: ${transition_error:0:400}"; supervisor_requeue_park_failure "$id" "$failure" "$decision"; return $?; fi
+        supervisor_requeue_retry "$id" "issue #$issue requeue transition did not complete"; return $?
+      fi
     fi
   fi
-  set_unit "$id" "$(hist "supervisor-$action" "$guidance" "$decision") | .stage=\"$target\"$extra"
+  set_unit "$id" "$(hist "supervisor-$action" "$guidance" "$decision") | .stage=\"$target\"$extra" || { supervisor_requeue_retry "$id" "unit stage update failed after the requeue verdict"; return $?; }
   say "supervisor arbitration unit=$id: $action -> $target"
-}
-
-reconcile_size_recuts() {
-  local u id issue state hold_note reconcile_note
-  while IFS= read -r u; do
-    id="$(jqf -r .id <<<"$u")"; issue="$(jqf -r '.issue // empty' <<<"$u")"
-    state="$(scheduler_issue_state "$issue")" || continue
-    if jqf -e '.state == "tracker" or (.state == "released" and (has("recut_children") or .tracker_parent == true)) or (.state == "concluded" and .run.outcome == "duplicate" and .closed_by_pipeline == true)' <<<"$state" >/dev/null; then
-      set_unit "$id" "$(hist size-recut-completed "issue #$issue became a tracker or a closed duplicate") | .stage=\"closed\" | .note=null | del(.size_recut_pending)"
-      say "unit $id recut completed; parent is a tracker or closed duplicate"
-    elif [[ "$(jqf -r '.stage // empty' <<<"$u")" == supervisor-review ]]; then
-      # The arbiter owns a supervisor-review unit: only the completed recut above may move it here.
-      continue
-    elif jqf -e '.state == "on-hold" or .hold != null' <<<"$state" >/dev/null; then
-      hold_note="issue #$issue recut is on hold"
-      if [[ "$(jqf -r '.note // ""' <<<"$u")" != "$hold_note" ]]; then
-        set_unit "$id" "$(hist size-recut-held "$hold_note") | .stage=\"parked\" | .note=$(js "$hold_note") | $(park_fields on-hold 'the on-hold label lifts')"
-      fi
-    elif jqf -e '.state == "ready-for-agent"' <<<"$state" >/dev/null; then
-      # Refusal, advisor recovery, and release-hold all requeue through the
-      # shared issue state machine. Resume the existing unit, not a duplicate.
-      set_unit "$id" "$(hist size-recut-resumed "issue #$issue returned to implementation") | .stage=\"implement-pending\" | .note=null | del(.size_recut_pending)"
-    elif jqf -e '.state == "needs-recut" and (has("recut_children") or has("recut_refused_at"))' <<<"$state" >/dev/null; then
-      # A label-write failure can leave a completed marker in the active
-      # queue, whose prefilter will never dispatch it again. Park until the
-      # issue state and label are reconciled; automated unit requeue alone
-      # would allow the parent to race its already-created children.
-      reconcile_note="issue #$issue needs state/label reconciliation before this unit can resume"
-      if ! scheduler_size_recut_active "$issue" && [[ "$(jqf -r '.note // ""' <<<"$u")" != "$reconcile_note" ]]; then
-        set_unit "$id" "$(hist size-recut-reconcile "issue #$issue has a completed marker but remains needs-recut") | .stage=\"parked\" | .note=$(js "$reconcile_note") | $(park_fields state-reconcile 'the issue state and labels agree')"
-        echo "[$STAMP] size-recut issue=#$issue action=parked reason=state-label-reconciliation-required" >> "$A/alerts/events.md"
-        say "unit $id parked for issue #$issue recut state/label reconciliation"
-      fi
-    elif [[ "$(jqf -r '.stage // empty' <<<"$u")" == parked && "$(jqf -r '.note // ""' <<<"$u")" == "issue #$issue recut is on hold" ]]; then
-      # The hold is gone and no branch above claimed the state: size-recut-held lifts on its own.
-      set_unit "$id" "$(hist size-recut-unheld "issue #$issue hold lifted") | .stage=\"blocked-external\" | .note=null | del(.parked_reason, .unpark_condition)"
-      say "unit $id recut hold lifted; back to waiting for issue #$issue recut"
-    fi
-  done < <(jqf -c '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review") and .size_recut_pending==true)' "$UNITS")
 }
 
 supervisor_apply_action() { # id action report-path —— 六动作落地，决定/理由/证据/否掉选项写进单元
@@ -753,7 +751,7 @@ supervisor_record_jev_comparison() { # worker-json terra-action → shadow compa
 }
 
 harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or final cap-triage report
-  local w="$1" unit pid report log action stream tk session_id cap_triage decided=false
+  local w="$1" unit pid report log action stream tk session_id cap_triage decided=false arbiter_retry=false
   unit="$(jqf -r .unit <<<"$w")"; pid="$(jqf -r .pid <<<"$w")"; report="$(jqf -r .report <<<"$w")"; log="$SUP/$(jqf -r .log <<<"$w")"
   cap_triage="$(jqf -r '.cap_triage // false' <<<"$w")"
   stream="$(python3 "$USAGE_READER" codex-stream "$log" 2>/dev/null || true)"
@@ -791,10 +789,10 @@ harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or fin
       supervisor_arbiter_no_answer "$unit" "no ACTION line in $report" false
     fi
   fi
-  # A run with no answer decided nothing: only a decision holds the next run, and it ends a no-answer streak.
+  # A valid answer ends a no-answer streak; a retry must not hold the next tick at the same head/state mark.
   if [[ "$decided" == true ]]; then
     set_unit "$unit" 'del(.arbiter_no_answer, .arbiter_no_answer_since, .arbiter_retry_after)'
-    supervisor_arbiter_record_left "$unit"
+    [[ "$arbiter_retry" == true ]] || supervisor_arbiter_record_left "$unit"
   fi
   jqf --argjson pid "$pid" --arg finished "$STAMP" \
     '(.workers[] |= (if .pid==$pid and .type=="supervise" and .harvested!=true then .harvested=true | .finished_at=$finished else . end))' "$WORKERS" | write_state "$WORKERS"
