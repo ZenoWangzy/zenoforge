@@ -415,13 +415,8 @@ main_red_paused_discovery() {
 # the red SHA: main recovered after it (a same-SHA green is the flaky path).
 # The sweep closes such an open session (not revert-open) as the terminal status
 # `recovered`, with recovered_by_sha and closed_at.
-main_red_green_after() { # runs_json red_sha workflow [with_post_land [session_json]] ; prints green head SHA
-  local sha run_id run_json
-  if [ "${4:-0}" = 1 ] && [ -n "${5:-}" ]; then
-    run_id="$(jq -er '.red_run_id | tonumber | select(. > 0 and . == floor)' <<< "$5")" || return 1
-    run_json="$(main_gh api "repos/$REPO/actions/runs/$run_id" 2>/dev/null)" || return 1
-    jq -e --arg sha "$2" '.head_sha == $sha and .path == ".github/workflows/pipeline-suites.yml" and .event == "workflow_dispatch" and ((.display_title // "") | startswith("Pipeline suites post-land "))' <<< "$run_json" >/dev/null 2>&1 || return 1
-  fi
+main_red_green_after() { # runs_json red_sha workflow [with_post_land] ; prints the green head SHA
+  local sha
   while IFS= read -r sha; do
     [[ "$sha" =~ ^[0-9a-f]{40}$ && "$sha" != "$2" ]] || continue
     if git -C "$REPO_DIR" merge-base --is-ancestor "$2" "$sha" 2>/dev/null; then
@@ -435,11 +430,11 @@ main_red_green_after() { # runs_json red_sha workflow [with_post_land [session_j
   return 1
 }
 
-# When a post-land green cannot close a pipeline-suites session, re-run the session's focused range
-# against a descendant of the red SHA and pass the same suites on code that includes the fix-forward.
-# This is the fallback proof for sessions whose red did not come from a post-land run; otherwise it
-# could close on a run that only proves its own range. Pipeline suites never runs the full set on main,
-# and ci.yml does not run these suites. Returns 0 only when it wrote `recovered`.
+# A post-land run is green only for the suites its own range maps to, so it alone never closes a
+# pipeline-suites session. This closes it once the session's own range (focused_base..focused_head) is
+# re-run against a descendant of the red SHA and passes: the same focused suites, on code that includes
+# the fix-forward. Pipeline suites never runs the full set on main and ci.yml does not run these suites,
+# so no other green proves it. Returns 0 only when it wrote `recovered`.
 main_red_recover_by_probe() { # red_sha session_json runs_json
   local red_sha="$1" session="$2" base head probe attempts age verdict
   base="$(jq -r '.focused_base_sha // empty' <<< "$session")"
@@ -565,10 +560,8 @@ main_red_bisect_sweep() {
     if [ "$status" != revert-open ]; then
       [ "$fetched" = 1 ] || { git_fetch_bounded "$REPO_DIR" main >/dev/null 2>&1 || true; fetched=1; }
       if green_sha="$(main_red_green_after "$runs" "$red_sha" "$workflow")" \
-          || { [[ "$workflow" == pipeline-suites.yml ]] \
-            && green_sha="$(main_red_green_after "$runs" "$red_sha" "$workflow" 1 "$session")"; } \
           && main_red_session_write "$red_sha" recovered \
-          ".recovered_by_sha = \"$green_sha\" | .closed_at = \$now"; then
+            ".recovered_by_sha = \"$green_sha\" | .closed_at = \$now"; then
         main_red_log "red ${red_sha:0:12}: main green again at ${green_sha:0:12}; closed $status session as recovered"
         continue
       fi
