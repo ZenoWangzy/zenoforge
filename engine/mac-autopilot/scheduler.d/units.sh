@@ -618,9 +618,8 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
   if [[ -n "$pr" && "$allow_pr_close" != true ]]; then
     supervisor_budget_park "$id" "$evidence (unit already has PR #$pr)" "$decision" "$park_reason" "$park_stage"; return 0
   fi
-  # Route first: a refused route must leave the PR open, or the slice has no owner (#1167 and #4840 lost theirs this way).
-  # A retry after a failed close has already routed; the route guard would refuse it and strand the PR. An older split's recut_children proves nothing here.
-  if [[ "$(unit_field "$id" '.recut_routed // empty')" != true ]] && ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
+  # The route return code verifies needs-recut; a stale marker cannot skip that check.
+  if ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
     supervisor_budget_park "$id" "$evidence (recut route failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
   fi
   if [[ -n "$pr" ]]; then
