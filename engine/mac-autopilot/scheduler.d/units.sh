@@ -402,7 +402,9 @@ supervisor_cap_default_issue() { # unit-json → linked issue, canonical id/bran
 }
 
 supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [budget] → 0 当该单元已有、刚得到或暂不该有默认决定
-  local id="$1" u="$2" trigger="${3:-lifetime}" issue pr raw state="" delivered=false verdict recut_done branch reason decision limit_reason tag="supervisor cap default"
+  local id="$1" u="$2" trigger="${3:-lifetime}" issue pr raw state="" pr_state="" delivered=false verdict recut_done branch reason decision limit_reason tag="supervisor cap default" current_issue current_pr current_stage
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+  [[ -n "$u" && "$u" != null ]] || return 1
   # stop-loss：止损遇到同一失败（stop_loss_same_failure）不派 arbiter，用止损自己的 park/recut 阶段：cap-triage-park 会被 arbiter 清扫成一次模型 cap triage。
   local park_stage=supervisor-cap-triage-park recut_stage=supervisor-cap-triage-recut
   [[ "$trigger" != stop-loss ]] || { park_stage=supervisor-budget-park; recut_stage=supervisor-budget-recut; }
@@ -436,8 +438,22 @@ supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [bud
   # merge-reverted 在 merged 之后意味着交付已被撤回：那不是「已交付」，不进分支 a。
   [[ "$(jqf -r '[(.history // [])[] | select(.stage == "merged" or .stage == "landed" or .stage == "merge-reverted") | .stage] | last // ""' <<<"$u")" =~ ^(merged|landed)$ ]] && delivered=true
   if [[ "$delivered" != true && "$pr" =~ ^[0-9]+$ ]]; then
-    [[ "$(tick_pr_state "$pr" 2>/dev/null || true)" == MERGED ]] && delivered=true
+    pr_state="$(tick_pr_state "$pr" 2>/dev/null || true)"
+    [[ "$pr_state" == MERGED ]] && delivered=true
   fi
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+  [[ -n "$u" && "$u" != null ]] || return 1
+  current_issue="$(supervisor_cap_default_issue "$u" || true)"
+  current_pr="$(jqf -r '.pr // empty' <<<"$u")"
+  [[ "$current_issue" == "$issue" && "$current_pr" == "$pr" ]] || return 1
+  if [[ "$trigger" =~ ^(lifetime|daily|repeat)$ ]]; then
+    current_stage="$(jqf -r '.stage // empty' <<<"$u")"
+    [[ "$current_stage" == supervisor-review || "$current_stage" == parked ]] || return 0
+  fi
+  delivered=false
+  [[ "$state" =~ ^(closed|awaiting-release|released|concluded|tracker)$ ]] && delivered=true
+  [[ "$(jqf -r '[(.history // [])[] | select(.stage == "merged" or .stage == "landed" or .stage == "merge-reverted") | .stage] | last // ""' <<<"$u")" =~ ^(merged|landed)$ ]] && delivered=true
+  if [[ "$delivered" != true && "$pr_state" == MERGED ]]; then delivered=true; fi
   verdict="$(jqf -r '.supervisor_cap_verdict // .recut_refused_verdict // ""' <<<"$u")" || verdict=""
   recut_done="$(jqf -r 'any((.history // [])[]?; .stage == "supervisor-budget-recut" or .stage == "supervisor-cap-triage-recut") or .recut_routed == true' <<<"$u")"
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]] \
@@ -476,14 +492,17 @@ supervisor_arbiter_mark() { # unit-json → what must differ before another run:
 }
 
 supervisor_arbiter_no_change_hold() { # unit-json → 0 when a past run left it here and nothing changed: another run would repeat that one
-  local id mark
-  [[ "$(jqf -r '.stage // empty' <<<"$1")" == supervisor-review ]] || return 1
-  [[ -n "$(jqf -r '.arbiter_left_mark // empty' <<<"$1")" ]] || return 1
-  mark="$(supervisor_arbiter_mark "$1")"
-  [[ "$mark" == "$(jqf -r .arbiter_left_mark <<<"$1")" ]] || return 1
+  local id mark u
   id="$(jqf -r .id <<<"$1")"
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+  [[ -n "$u" && "$(jqf -r '.stage // empty' <<<"$u")" == supervisor-review ]] || return 1
+  [[ -n "$(jqf -r '.arbiter_left_mark // empty' <<<"$u")" ]] || return 1
+  mark="$(supervisor_arbiter_mark "$u")"
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+  [[ -n "$u" && "$(jqf -r '.stage // empty' <<<"$u")" == supervisor-review ]] || return 1
+  [[ "$mark" == "$(jqf -r .arbiter_left_mark <<<"$u")" ]] || return 1
   # Applied decisions write supervisor-* history; a trailing dispatch alone never applied one.
-  if jqf -e '((.history // [])[-1].stage // "") == "supervisor-arbiter"' <<<"$1" >/dev/null; then
+  if jqf -e '((.history // [])[-1].stage // "") == "supervisor-arbiter"' <<<"$u" >/dev/null; then
     set_unit "$id" 'del(.arbiter_left_mark)'
     say "supervisor arbitration retry unit=$id: last history entry is dispatch only"
     return 1

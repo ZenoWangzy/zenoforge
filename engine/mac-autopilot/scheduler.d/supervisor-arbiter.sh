@@ -84,7 +84,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
   # return from this tick. Active arbitration workers keep their own result; all other capped units stop now.
   while IFS= read -r u; do
     [[ -n "$u" ]] || continue
-    id="$(jqf -r .id <<<"$u")"
+    IFS=$'\t' read -r id u < <(supervisor_arbiter_live_candidate "$u") || continue
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
     if (( "$(supervisor_arbiter_lifetime_runs "$u")" >= SUPERVISOR_ARBITER_UNIT_CAP )) && ! supervisor_arbiter_owner_ruling_pending "$u"; then
       supervisor_arbiter_capped_default "$id" "$u" || :
@@ -98,7 +98,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
   [[ -r "$prompt_file" ]] || return 0
   while IFS= read -r u; do
     [[ -n "$u" ]] || continue
-    id="$(jqf -r .id <<<"$u")"
+    IFS=$'\t' read -r id u < <(supervisor_arbiter_live_candidate "$u") || continue
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
     # The prepass applies the default; retain a hard dispatch guard if a state write failed there.
     (( "$(supervisor_arbiter_lifetime_runs "$u")" < SUPERVISOR_ARBITER_UNIT_CAP )) || supervisor_arbiter_owner_ruling_pending "$u" || continue

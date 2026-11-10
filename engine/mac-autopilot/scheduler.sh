@@ -704,7 +704,7 @@ main() {
       record_run_spend || :  # a plain call: phase() primes the PR cache first, which dispatch_pending does itself
       phase_yield_lock dispatch_pending
       if ! paused_midrun "acting phases"; then
-        phase dispatch_supervisor_arbiters
+        phase_yield_lock dispatch_supervisor_arbiters
         phase dispatch_prompt_evals
         phase fast_land_lane
         tick_prs_changed # Dispatched workers can push while earlier phases run.
