@@ -289,13 +289,70 @@ NOW_EPOCH=$((park_now + 10 * 86400)); MAIN_HEAD=$m3; stop_loss_unpark_sweep
 [[ "$(case_stage issue-4918)" == parked && "$rebases" == 1 ]] || fail "the second park lifted on a timer (rebases=$rebases)"
 NOW_EPOCH=$(date +%s); MAIN_HEAD=""
 
-# A fresh failure, a different red kind, a ruling between the reds, or a cap default already given: the supervisor as before.
-stop_loss_case issue-4914 "$(red_history "$same_a" 'self-check failed at 77be0e3a: 15 tests, 1 failed (lib/other)')" 140 repair-pending
-[[ "$stop_loss_calls" == 1 && "$(case_events issue-4914)" != *supervisor-cap-default* ]] || fail "a fresh failure skipped the supervisor (calls=$stop_loss_calls)"
+# A first-time red is a fresh signal now: the scheduler requeues it once (see below). A ruling between the reds, or a cap default already given: as before.
 stop_loss_case issue-4915 "$(red_history "$same_a" "$same_b" '[]' | jq -c '.[0:2] + [{stage:"supervisor-requeue",at:"2026-11-08T10:45:00Z"}] + .[2:]')" 150 repair-pending
-[[ "$stop_loss_calls" == 1 ]] || fail "a red from before a ruling counted as an earlier round (calls=$stop_loss_calls)"
+[[ "$stop_loss_calls" == 0 && "$(case_events issue-4915)" == *,supervisor-requeue,self-check-red,supervisor-requeue ]] || fail "a red from before a ruling counted as an earlier round (calls=$stop_loss_calls $(case_events issue-4915))"
 stop_loss_case issue-4916 "$(red_history "$same_a" "$same_b" '[{"stage":"supervisor-cap-default","result":"branch=park: earlier","at":"2026-11-07T10:00:00Z"}]')" 160 repair-pending
 [[ "$stop_loss_calls" == 1 && "$(case_stage issue-4916)" == repair-pending ]] || fail "a unit that already had its cap default must still go to the supervisor (calls=$stop_loss_calls)"
+
+# A fresh signal (review request-changes, merge conflict, a first-time red) at rounds 3 of 3 is requeued by the scheduler with no model run (row 94: the arbiter
+# requeued 30 of 31 and 16 of 22 delivered). The event names the signal. A repeat of that signal is the same failure; a different one requeues once more; a third goes to the arbiter.
+fresh_prefix='scheduler fresh-signal requeue: '
+fresh_events() { # stages and results of the unit's history, one per line
+  jq -r --arg id "$1" '.units[] | select(.id == $id) | .history[] | .stage + " " + (.result // "")' "$UNITS"
+}
+rework='{"stage":"review-request-changes","result":"2 findings","at":"2026-11-08T10:00:00Z"}'
+sched_rework="{\"stage\":\"supervisor-requeue\",\"result\":\"${fresh_prefix}review-request-changes\",\"at\":\"2026-11-08T10:30:00Z\"}"
+conflict='{"stage":"merge-conflict","result":"main moved","at":"2026-11-08T11:00:00Z"}'
+sched_conflict="{\"stage\":\"supervisor-requeue\",\"result\":\"${fresh_prefix}merge-conflict\",\"at\":\"2026-11-08T11:30:00Z\"}"
+rm -f "$MAC_AUTOPILOT_RUNTIME_DIR/node-health.json"
+stop_loss_case issue-4921 "[$rework]" 521 repair-pending
+[[ "$stop_loss_calls" == 0 && "$(case_stage issue-4921)" == repair-pending ]] || fail "a fresh signal was not requeued in place (calls=$stop_loss_calls stage=$(case_stage issue-4921))"
+[[ "$(fresh_events issue-4921 | tail -1)" == "supervisor-requeue ${fresh_prefix}review-request-changes" ]] || fail "the requeue event does not name the signal: $(fresh_events issue-4921)"
+[[ "$(case_events issue-4921)" != *supervisor-review* && "$(case_events issue-4921)" != *supervisor-escalated* && "$(case_events issue-4921)" != *supervisor-arbiter* ]] || fail "a fresh signal reached the arbiter: $(case_events issue-4921)"
+# Repeated review requests already in the ruling window are not fresh; they use the existing supervisor stop-loss route.
+stop_loss_case issue-4934 "[$rework,$rework,$rework]" 534 repair-pending
+[[ "$stop_loss_calls" == 1 && "$(fresh_events issue-4934 | grep -c "$fresh_prefix")" == 0 ]] \
+  || fail "repeated review requests were requeued as fresh (calls=$stop_loss_calls stage=$(case_stage issue-4934) events=$(case_events issue-4934))"
+stop_loss_case issue-4922 "$(red_history 'Pipeline suites' 'Pipeline suites' | jq -c '.[0:1]')" '' implement-pending
+[[ "$stop_loss_calls" == 0 && "$(fresh_events issue-4922 | tail -1)" == "supervisor-requeue ${fresh_prefix}self-check-red Pipeline suites" ]] || fail "a first-time red was not requeued with its check named: $(fresh_events issue-4922)"
+# Same signal again after the requeue: the same-failure route (park, an open PR is never closed by it), no second requeue and no arbiter.
+stop_loss_case issue-4923 "[$rework,$sched_rework,$rework]" 523 repair-pending
+[[ "$stop_loss_calls" == 0 && "$(case_stage issue-4923)" == parked && "$(jq -r '.units[0].parked_reason' "$UNITS")" == 'stop-loss same failure: review-request-changes' ]] \
+  || fail "the same signal after a requeue did not take the same-failure route (calls=$stop_loss_calls stage=$(case_stage issue-4923) $(jq -c '.units[0] | [.parked_reason]' "$UNITS"))"
+[[ "$(fresh_events issue-4923 | grep -c "$fresh_prefix")" == 1 ]] || fail "a repeated signal was requeued again: $(fresh_events issue-4923)"
+stop_loss_case issue-4924 "$(red_history 'Pipeline suites' 'Pipeline suites' | jq -c --argjson s "{\"stage\":\"supervisor-requeue\",\"result\":\"${fresh_prefix}self-check-red Pipeline suites\",\"at\":\"2026-11-08T10:45:00Z\"}" '.[0:2] + [$s] + .[2:]')" 524 repair-pending
+[[ "$stop_loss_calls" == 0 && "$(case_stage issue-4924)" == parked && "$(jq -r '.units[0].parked_reason' "$UNITS")" == 'stop-loss same failure: Pipeline suites' ]] \
+  || fail "a red repeating the requeued one did not take the same-failure route (calls=$stop_loss_calls stage=$(case_stage issue-4924))"
+# A different fresh signal requeues once more; the third requeue-worthy stop-loss since the ruling goes to the arbiter.
+stop_loss_case issue-4925 "[$rework,$sched_rework,$conflict]" 525 repair-pending
+[[ "$stop_loss_calls" == 0 && "$(fresh_events issue-4925 | tail -1)" == "supervisor-requeue ${fresh_prefix}merge-conflict" ]] || fail "a different fresh signal was not requeued: $(fresh_events issue-4925)"
+stop_loss_case issue-4926 "[$rework,$sched_rework,$conflict,$sched_conflict,{\"stage\":\"ci-test-red\",\"result\":\"Other suite\",\"at\":\"2026-11-08T12:00:00Z\"}]" 526 repair-pending
+[[ "$stop_loss_calls" == 1 && "$(fresh_events issue-4926 | grep -c "$fresh_prefix")" == 2 ]] || fail "a third stop-loss was not left to the arbiter (calls=$stop_loss_calls $(fresh_events issue-4926))"
+# A real ruling in between starts the count over.
+stop_loss_case issue-4927 "[$rework,$sched_rework,$conflict,$sched_conflict,{\"stage\":\"supervisor-requeue\",\"result\":\"arbiter\",\"at\":\"2026-11-08T11:45:00Z\"},$rework]" 527 repair-pending
+[[ "$stop_loss_calls" == 0 && "$(fresh_events issue-4927 | tail -1)" == "supervisor-requeue ${fresh_prefix}review-request-changes" ]] || fail "an arbiter ruling did not restart the fresh-requeue count (calls=$stop_loss_calls)"
+# A front that is not a fresh signal, and a wall budget, stay with the arbiter.
+stop_loss_case issue-4928 '[{"stage":"repair-no-push","result":"head unchanged","at":"2026-11-08T10:00:00Z"}]' 528 repair-pending
+[[ "$stop_loss_calls" == 1 && "$(fresh_events issue-4928 | grep -c "$fresh_prefix")" == 0 ]] || fail "a non-fresh front was requeued by the scheduler (calls=$stop_loss_calls)"
+ticket_budget_reason() { printf 'wall 300min of 240min after 3 rounds\n'; }
+stop_loss_case issue-4929 "[$rework]" 529 repair-pending
+[[ "$stop_loss_calls" == 1 && "$(fresh_events issue-4929 | grep -c "$fresh_prefix")" == 0 ]] || fail "a wall-budget stop-loss was requeued by the scheduler (calls=$stop_loss_calls)"
+ticket_budget_reason() { printf 'rounds 3 of 3\n'; }
+# Delivery rate: under 50% on the scorecard (it is null below 6 outcomes) sends fresh signals back to the arbiter; 50% or null requeues.
+fresh_rate() { printf '{"metrics":[{"id":"supervisor.fresh_requeue_delivery_24h","value":%s}]}\n' "$1" > "$MAC_AUTOPILOT_RUNTIME_DIR/node-health.json"; }
+fresh_rate 33.3
+stop_loss_case issue-4931 "[$rework]" 531 repair-pending
+[[ "$stop_loss_calls" == 1 && "$(fresh_events issue-4931 | grep -c "$fresh_prefix")" == 0 ]] || fail "a delivery rate of 33.3% still requeued in the scheduler (calls=$stop_loss_calls)"
+fresh_rate 50
+stop_loss_case issue-4932 "[$rework]" 532 repair-pending
+[[ "$stop_loss_calls" == 0 && "$(fresh_events issue-4932 | grep -c "$fresh_prefix")" == 1 ]] || fail "a delivery rate of 50% did not requeue (calls=$stop_loss_calls)"
+fresh_rate null
+stop_loss_case issue-4933 "[$rework]" 533 repair-pending
+[[ "$stop_loss_calls" == 0 && "$(fresh_events issue-4933 | grep -c "$fresh_prefix")" == 1 ]] || fail "no rate (under 6 outcomes) did not requeue (calls=$stop_loss_calls)"
+rm -f "$MAC_AUTOPILOT_RUNTIME_DIR/node-health.json"
+unset -f fresh_events fresh_rate
+unset -f red_history stop_loss_case case_stage case_events
 
 unset -f red_history stop_loss_case case_stage case_events red_check_history ci_update_branch
 echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; CONFLICTING census row repaired not reviewed; refill deadline; silent skip named)'

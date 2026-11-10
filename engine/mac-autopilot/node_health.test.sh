@@ -194,6 +194,31 @@ assert n.MEANING["supervisor.stop_loss_same_failure_parked"] and n.SOURCE["super
 assert "supervisor.stop_loss_same_failure_parked" in open(sys.argv[1] + "/NODE-HEALTH.md").read()
 print("node_health supervisor arbitration metrics: PASS")
 CHECK
+python3 - "$script_dir" <<'CHECK' || fail 'fresh-signal requeue delivery metric wrong at the seam'
+import datetime as dt, sys; sys.path.insert(0, sys.argv[1]); import node_health as n
+now = n.ts("2026-11-08T12:00:00Z")
+P = "scheduler fresh-signal requeue: "
+def rq(at, signal="review-request-changes"): return {"stage": "supervisor-requeue", "result": P + signal, "at": at}
+def unit(*events): return {"id": "u", "history": list(events)}
+def ev(stage, at): return {"stage": stage, "at": at}
+def metric(units): return n.ledger_metrics(units, now - dt.timedelta(hours=5), now)["supervisor.fresh_requeue_delivery_24h"]
+delivered = [unit(rq("2026-11-08T01:00:00Z"), ev(s, "2026-11-08T02:00:00Z")) for s in ("review-approve", "ci-ready", "merged")]
+failed = [unit(rq("2026-11-08T01:00:00Z"), ev(s, "2026-11-08T02:00:00Z")) for s in ("supervisor-review", "supervisor-budget-park", "closed")]
+assert metric(delivered + failed[:2]) is None            # 5 outcomes: not enough to judge
+assert metric(delivered + failed) == 50.0, metric(delivered + failed)
+assert metric(delivered[:2] + failed + failed[:2]) == 28.6   # 2 of 7
+# not counted: still waiting, an arbiter requeue (no prefix), a requeue older than 24 h
+noise = [unit(rq("2026-11-08T11:00:00Z")), unit({"stage": "supervisor-requeue", "result": "arbiter", "at": "2026-11-08T01:00:00Z"}, ev("supervisor-review", "2026-11-08T02:00:00Z")),
+         unit(rq("2026-11-07T11:59:00Z"), ev("supervisor-review", "2026-11-07T13:00:00Z"))]
+assert metric(delivered + failed + noise) == 50.0
+# a second fresh requeue without a delivery ends the first as failed; the second then waits (not counted), or delivers
+twice = unit(rq("2026-11-08T01:00:00Z"), rq("2026-11-08T02:00:00Z", "merge-conflict"), ev("review-approve", "2026-11-08T03:00:00Z"))
+assert metric(delivered + failed[:2] + [twice]) == 57.1   # twice adds one failed (the first) and one delivered: 4 of 7
+crit = n.CRITERIA["supervisor.fresh_requeue_delivery_24h"]
+assert [n.status_of(v, crit[2], crit[3], crit[4]) for v in (None, 100, 50.0, 49.9, 0)] == ["NO-DATA", "OK", "OK", "UNHEALTHY", "UNHEALTHY"]
+assert n.MEANING["supervisor.fresh_requeue_delivery_24h"] and n.SOURCE["supervisor.fresh_requeue_delivery_24h"]
+print("node_health fresh-signal requeue delivery metric: PASS")
+CHECK
 python3 - "$script_dir" <<'CHECK' || fail 'parked-cancel bound must come from the measured 7-day p50/p90 (healthy 3, bug 6), not the frozen M1 baseline'
 import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
 parked = n.CRITERIA["ci.cancel_parked_per_day"]
