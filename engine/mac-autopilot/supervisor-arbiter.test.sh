@@ -39,6 +39,8 @@ decision_eval_stages() { printf '\n'; }
   || { echo 'supervisor-arbiter.test.sh: review contract must use target config override' >&2; exit 1; }
 
 fail() { echo "supervisor-arbiter.test.sh: $*" >&2; exit 1; }
+declare -F supervisor_arbiter_owner_ruling_pending >/dev/null \
+  || fail 'units.sh must load the no-human-wait helpers'
 units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 grep -Fq 'reconcile_size_recuts() {' "$script_dir/scheduler.d/size-recuts.sh" || fail 'size-recuts must own size-recut reconciliation'
