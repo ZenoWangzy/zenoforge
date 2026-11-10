@@ -938,7 +938,17 @@ seed_roadmap_tree() {
 
 new_tick_fixture() {
   TF="$test_env_root/tick-$1"; export TF
-  mkdir -p "$TF/repo" "$TF/supervisor/autopi/alerts" "$TF/sessions" "$TF/bin"
+  mkdir -p "$TF/repo" "$TF/supervisor/autopi/alerts" "$TF/sessions" "$TF/bin" "$TF/agent-home"
+  export CODEX_PROBE_MARKER="$TF/agent-home/codex-probe-passed"
+  export CODEX_EXHAUSTED_MARKER_FILE="$TF/agent-home/codex-exhausted-until"
+  export CODEX_PROVIDER_PROBE_REQUIRED_FILE="$TF/agent-home/codex-exhausted-until.probe-required"
+  export ZCODE_EXHAUSTED_MARKER_FILE="$TF/agent-home/zcode-exhausted-until"
+  export ZCODE_PROVIDER_CONFIG_FILE="$TF/zcode-provider.json" ZCODE_QUOTA_SNAPSHOT_FILE="$TF/zcode-quota.json"
+  export MODEL_POLICY_FILE="$TF/agent-home/model-policy.json"
+  touch "$CODEX_PROBE_MARKER"
+  command jq -n '{config:{defaultModelSelection:{modelId:"GLM-5.3"}}}' > "$ZCODE_PROVIDER_CONFIG_FILE"
+  command jq -n --argjson now "$(date +%s)" '{five_h_pct:1,week_pct:1,cap_5h:85,max_age_seconds:900,freshness:"fresh",read_at:$now}' > "$ZCODE_QUOTA_SNAPSHOT_FILE"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TF/bin/zcode"
   command jq --arg wt "$TF/clones" '.engine.worker_tasks_max=0 | .release_train.enabled=false | .max_workers=0 | .auto_merge=false | .auto_dispatch_new_prs=false | .issue_intake.enabled=false | .focus_mode="all" | .worktree_root=$wt' "$tick_template" > "$TF/supervisor/autopi/config.json"
   echo '{"units":[]}' > "$TF/supervisor/autopi/units.json"
   echo '{"workers":[]}' > "$TF/supervisor/autopi/workers.json"
@@ -6236,7 +6246,7 @@ grep -Fq 'live-event close issue=97' "$TF/supervisor/autopi/scheduler.log" \
 sched_run_case m5_live_event_timeout
 
 glm_share_fixture() {
-  CFG="$(command jq '.models.implement_share={zcode:50,codex:50} | .models.hard=["gpt-6.1-terra","high"]' "$template")"
+  CFG="$(command jq '.models.implement_share={zcode:50,codex:50} | .models.hard=["gpt-6.1-terra","high"] | .models.review_fallback=["claude-sonnet-5-5","high"]' "$template")"
   A="$TF/supervisor/autopi"
   SUP="$A"
   UNITS="$A/units.json"
@@ -6247,6 +6257,7 @@ glm_share_fixture() {
   ZCODE_QUOTA_SNAPSHOT_FILE="$TF/zc-quota.json"
   ZCODE_PROVIDER_CONFIG_FILE="$TF/provider-config.json"
   CODEX_PROBE_MARKER="$AGENT_HOME/codex-probe-passed"
+  MODEL_POLICY_FILE="$TF/model-policy.json"
   NOW_EPOCH="$(date +%s)"
   STAMP='2026-11-03T00:00:00Z'
   SCHED_LOCK_HELD=true
@@ -6255,6 +6266,7 @@ glm_share_fixture() {
   printf '%s\n' '{}' > "$COOLDOWN"
   command jq -n '{config:{defaultModelSelection:{modelId:"GLM-5.3"}}}' > "$ZCODE_PROVIDER_CONFIG_FILE"
   command jq -n --argjson now "$NOW_EPOCH" '{five_h_pct:1,week_pct:1,cap_5h:85,max_age_seconds:900,freshness:"fresh",read_at:$now}' > "$ZCODE_QUOTA_SNAPSHOT_FILE"
+  printf '%s\n' '{"allow_roles":{"sonnet":["review_fallback"]}}' > "$MODEL_POLICY_FILE"
   cat > "$TF/bin/codex" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -6264,6 +6276,7 @@ SH
 exit 0
 SH
   chmod +x "$TF/bin/codex" "$TF/bin/zcode"
+  ln -s zcode "$TF/bin/claude"
   export PATH="$TF/bin:$PATH" ZCODE_PROVIDER_CONFIG_FILE ZCODE_QUOTA_SNAPSHOT_FILE CODEX_PROBE_MARKER
   SCHED_MODEL_POLICY_JSON="$(command jq '.roles["hand-zcode"].disabled=false | .roles["hand-zcode"].model="GLM-5.3" | .roles.production.model="gpt-6.1-terra" | .roles.production.effort="high"' "$repo_root/engine/model-policy.default.json")"
 }
