@@ -651,16 +651,16 @@ sweep_blocking_issue_roots() {
           continue
         fi
       fi
-      # One root that fails must not starve every root after it.
-      BLOCKER_ROOT_FAIL_REASON="owner-admission deadline"
-      if ! gh_tick_attempt_timeout_sec >/dev/null || ! reconcile_blocking_issue_root "$issue_json" "$graph_json"; then
-        if [[ "${BLOCKER_ROOT_FAIL_REASON:-}" == *"owner-admission deadline"* ]]; then
-          printf '%s\n' "${last_done:-$cursor}" > "$cursor_file"
-          echo "blocker-root sweep: tick gh deadline exhausted after ${roots_done}/${roots_total} roots; resuming at #${n} next tick" >&2; return "$sweep_failed"
-        fi
-        sweep_failed=1
-        supervisor_inbox_append_once "blocker-root-failed issue=#$n" \
+      if ! gh_tick_attempt_timeout_sec >/dev/null; then
+        BLOCKER_ROOT_FAIL_REASON="owner-admission deadline"
+      elif ! reconcile_blocking_issue_root "$issue_json" "$graph_json" \
+        && [[ "${BLOCKER_ROOT_FAIL_REASON:-}" != *"owner-admission deadline"* ]]; then # Other failures alert and continue.
+        sweep_failed=1; supervisor_inbox_append_once "blocker-root-failed issue=#$n" \
           "blocker-root-failed issue=#$n reason=${BLOCKER_ROOT_FAIL_REASON:-reconcile_blocking_issue_root exited non-zero without recording a reason}; the sweep continued with the remaining roots" || true
+      fi
+      if [[ "${BLOCKER_ROOT_FAIL_REASON:-}" == *"owner-admission deadline"* ]]; then
+        printf '%s\n' "${last_done:-$cursor}" > "$cursor_file"
+        echo "blocker-root sweep: tick gh deadline exhausted after ${roots_done}/${roots_total} roots; resuming at #${n} next tick" >&2; return "$sweep_failed"
       fi
       last_done="$n"
       roots_done=$((roots_done + 1))
