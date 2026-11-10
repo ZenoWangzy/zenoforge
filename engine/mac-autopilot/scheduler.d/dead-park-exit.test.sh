@@ -27,7 +27,9 @@ unit_json() { jq -c --arg id "$1" '.units[] | select(.id == $id)' "$UNITS"; }
 events() { jq -r --arg id "$1" '[.units[] | select(.id == $id) | .history[].stage] | join(",")' "$UNITS"; }
 stage() { jq -r --arg id "$1" '.units[] | select(.id == $id) | .stage' "$UNITS"; }
 
-ROUTES="$fixture/routes"; CLOSES="$fixture/closes"; : > "$ROUTES"; : > "$CLOSES"
+ROUTES="$fixture/routes"; CLOSES="$fixture/closes"; STALE_HELPER_LOOKUPS="$fixture/stale-helper-lookups"
+OPEN_CHILD_LOOKUPS="$fixture/open-child-lookups"
+: > "$ROUTES"; : > "$CLOSES"; : > "$STALE_HELPER_LOOKUPS"; : > "$OPEN_CHILD_LOOKUPS"
 scheduler_route_to_recut() { echo "$1" >> "$ROUTES"; }
 tick_pr_state() { echo OPEN; }
 tick_prs_changed() { :; }
@@ -35,7 +37,22 @@ ISSUE_LABELS='{}'; ISSUE_STATES='{}'; export REPO=fixture/repo
 scheduler_issue_state() { jq -cn --argjson states "$ISSUE_STATES" --arg number "$1" '$states[$number] // {state:"ready-for-agent"}'; }
 gh() {
   if [[ "$1 $2" == 'pr close' ]]; then echo "$3" >> "$CLOSES"; return 0; fi
-  if [[ "$1 $2" == 'issue view' ]]; then jq -cn --argjson labels "$ISSUE_LABELS" --arg number "$3" '{labels:($labels[$number] // [])}'; return 0; fi
+  if [[ "$1 $2" == 'issue view' ]]; then
+    if [[ "${6:-}" == '--jq' && "${7:-}" == '.state' ]]; then
+      echo "$3" >> "$OPEN_CHILD_LOOKUPS"; echo OPEN; return 0
+    fi
+    if [[ "${7:-}" == 'title,body,subIssuesSummary' ]]; then
+      echo "$3" >> "$STALE_HELPER_LOOKUPS"
+      if [[ "$3" == "${TRACKER_PARENT_ISSUE:-}" ]]; then
+        jq -cn --arg child "$TRACKER_OPEN_CHILD" \
+          '{title:"tracking issue",body:("- [ ] follow-up #"+$child),subIssuesSummary:{total:0,completed:0}}'
+        return 0
+      fi
+      printf '%s\n' '{"title":"leaf","body":"","subIssuesSummary":{"total":0,"completed":0}}'
+      return 0
+    fi
+    jq -cn --argjson labels "$ISSUE_LABELS" --arg number "$3" '{labels:($labels[$number] // [])}'; return 0
+  fi
   return 97
 }
 PRS='[{"number":9102,"labels":[{"name":"session-owned"}]}]'
@@ -121,7 +138,10 @@ PUSHES="$fixture/pushes"; SAYS="$fixture/says"; INBOX="$fixture/inbox"
 export INBOX
 SCHEDULER_AGENT_LIB="$fixture/agent-lib.sh"
 cat > "$SCHEDULER_AGENT_LIB" <<'EOF'
-supervisor_inbox_append_once() { printf '%s\t%s\n' "$1" "$2" >> "$INBOX"; }
+supervisor_inbox_append_once() {
+  if [[ -s "$INBOX" ]] && grep -Fq -- "$1"$'\t' "$INBOX"; then return 0; fi
+  printf '%s\t%s\n' "$1" "$2" >> "$INBOX"
+}
 EOF
 say() { printf '%s\n' "$*" >> "$SAYS"; }
 guarded_write() {
@@ -166,6 +186,43 @@ salvage_line="$(grep -F 'dead-park salvage unit=issue-9116 refs=' "$SAYS")"
 [[ "$(grep -Fc 'dead-park salvage unit=issue-9116 refs=' "$SAYS")" == 1 && "$salvage_line" == *"$base_ref"* && "$salvage_line" == *"$base_ref-dirty"* && "$salvage_line" == *"$base_ref-stash0"* && "$salvage_line" == *"$base_ref-stash1"* ]] || fail "missing one salvage say line with refs: $(cat "$SAYS")"
 inbox_line="$(cat "$INBOX")"
 [[ "$(wc -l < "$INBOX")" == 1 && "$inbox_line" == *$'dead-park-salvage:issue-9116\tdead-park-salvage unit=issue-9116 refs='* && "$inbox_line" == *"$base_ref"* && "$inbox_line" == *"$base_ref-dirty"* && "$inbox_line" == *"$base_ref-stash0"* && "$inbox_line" == *"$base_ref-stash1"* ]] || fail "missing salvage inbox line: $inbox_line"
+
+# Non-stale tracker parents stay parked and get one idempotent inbox notice with their slice PR.
+tracker_issue=9141; tracker_child=9142; tracker_pr=9143; tracker_unit="issue-$tracker_issue"
+TRACKER_PARENT_ISSUE="$tracker_issue"; TRACKER_OPEN_CHILD="$tracker_child"
+jq -c --arg id "$tracker_unit" --argjson issue "$tracker_issue" --argjson pr "$tracker_pr" \
+  '.units += [{id:$id,issue:$issue,pr:$pr,branch:("agent/"+$id),stage:"parked",parked_reason:"repair-breaker",history:[{stage:"repair-breaker",result:"repeat repairs",at:"2026-11-01T00:00:00Z"}]}]' "$UNITS" | write_state "$UNITS"
+ISSUE_STATES="$(jq -cn --argjson issue "$tracker_issue" \
+  '{($issue|tostring):{state:"ready-for-agent",tracker_parent:true,recut_children:[]}}')"
+: > "$ROUTES"; : > "$INBOX"
+dead_park_exit
+tracker_key="dead-park-tracker-parent:$tracker_unit"
+tracker_line="$(grep -F -- "$tracker_key"$'\t' "$INBOX" || true)"
+[[ "$(cat "$STALE_HELPER_LOOKUPS")" == "$tracker_issue" && "$(cat "$OPEN_CHILD_LOOKUPS")" == "$tracker_child" ]] \
+  || fail "tracker fixture did not verify its open child: helper=$(cat "$STALE_HELPER_LOOKUPS") child=$(cat "$OPEN_CHILD_LOOKUPS")"
+[[ "$(stage "$tracker_unit")" == parked && "$(events "$tracker_unit")" == repair-breaker ]] \
+  || fail "tracker parent got a dead-park exit: $(unit_json "$tracker_unit")"
+if grep -Fxq -- "$tracker_issue" "$ROUTES"; then fail "tracker parent was routed: $(cat "$ROUTES")"; fi
+[[ "$(grep -Fc -- "$tracker_key"$'\t' "$INBOX" || true)" == 1 && "$tracker_line" == "$tracker_key"$'\t'* \
+    && "$tracker_line" == *"issue=#$tracker_issue"* && "$tracker_line" == *"slice-pr=$tracker_pr"* ]] \
+  || fail "tracker parent inbox line missing unit, issue or slice PR: $tracker_line"
+dead_park_exit
+[[ "$(grep -Fc -- "$tracker_key"$'\t' "$INBOX" || true)" == 1 && "$(events "$tracker_unit")" == repair-breaker ]] \
+  || fail "tracker parent notice repeated or unit was routed: $(cat "$INBOX")"
+if grep -Fxq -- "$tracker_issue" "$ROUTES"; then fail "tracker parent was routed on a second pass: $(cat "$ROUTES")"; fi
+set_unit "$tracker_unit" '.supervisor_owned=true'
+
+# A stale tracker flag that the shared helper proves leaf state must still recut.
+stale_tracker_issue=9144; stale_tracker_unit="issue-$stale_tracker_issue"
+jq -c --arg id "$stale_tracker_unit" --argjson issue "$stale_tracker_issue" \
+  '.units += [{id:$id,issue:$issue,branch:("agent/"+$id),stage:"parked",parked_reason:"repair-breaker",history:[{stage:"repair-breaker",result:"repeat repairs",at:"2026-11-01T00:00:00Z"}]}]' "$UNITS" | write_state "$UNITS"
+ISSUE_STATES="$(jq -cn --argjson parent "$tracker_issue" --argjson child "$tracker_child" --argjson issue "$stale_tracker_issue" \
+  '{($parent|tostring):{state:"tracker",tracker_parent:true,recut_children:[$child]},($issue|tostring):{state:"ready-for-agent",tracker_parent:true,recut_children:[]}}')"
+: > "$ROUTES"; : > "$STALE_HELPER_LOOKUPS"
+dead_park_exit
+[[ "$(stage "$stale_tracker_unit")" == closed && "$(cat "$STALE_HELPER_LOOKUPS")" == "$stale_tracker_issue" ]] \
+  || fail "stale tracker flag did not pass the helper and recut: $(unit_json "$stale_tracker_unit")"
+if ! grep -Fxq -- "$stale_tracker_issue" "$ROUTES"; then fail "stale tracker flag did not recut: $(cat "$ROUTES")"; fi
 
 # A stale tracking ref that still contains an unpushed HEAD is pruned before the selector decides to skip it.
 stale_issue="$((BASHPID + 101))"; stale_unit="issue-$stale_issue"; stale_wt="$WT_ROOT/wt-issue-$stale_issue"

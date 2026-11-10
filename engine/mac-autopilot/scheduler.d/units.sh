@@ -647,10 +647,11 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
 
 # Row 131: three parks had no exit a machine could meet (cap default, repair breaker, budget park; 21 units, the oldest 229 h on 11-09).
 # Each takes the existing budget-recut route once per 24h, read from its own dead-park-exit event; a unit that parks again in a class gets another recut, never a requeue.
-# Left alone: session-owned issues/PRs, supervisor_owned units, non-stop-loss issue holds, and other park reasons (recut-refused, token hard park, arbiter-owned cap triage).
+# Left alone: session-owned issues/PRs, supervisor_owned units, non-stop-loss holds, non-stale tracker parents,
+# and other park reasons (recut-refused, token hard park, arbiter-owned cap triage).
 DEAD_PARK_EXIT_PER_TICK="${DEAD_PARK_EXIT_PER_TICK:-3}"
 dead_park_exit() {
-  local prs id class n=0 issue issue_state issue_json issue_repo="${REPO:-${ZF_REPO:-}}"
+  local prs id class n=0 issue issue_state issue_json pr issue_repo="${REPO:-${ZF_REPO:-}}"
   prs="$(tick_prs)" || return 0 # without the census a PR's session-owned label cannot be read
   while IFS=$'\t' read -r id class; do
     (( n < DEAD_PARK_EXIT_PER_TICK )) || break
@@ -659,6 +660,13 @@ dead_park_exit() {
       issue_state="$(scheduler_issue_state "$issue" 2>/dev/null)" || continue
       jqf -e 'type == "object"' <<<"$issue_state" >/dev/null 2>&1 || continue
       if jqf -e '.state == "on-hold" and (.hold.holder // "") != "scheduler-stop-loss"' <<<"$issue_state" >/dev/null 2>&1; then continue; fi
+      if jqf -e '.tracker_parent == true or .state == "tracker"' <<<"$issue_state" >/dev/null 2>&1 \
+          && ! (REPO="$issue_repo"; scheduler_scope_lib selection-scope && tracker_parent_flag_is_stale "$issue" "$issue_state"); then
+        pr="$(unit_field "$id" '.pr // empty')"; [[ -n "$pr" ]] || pr=none
+        ( source "$SCHEDULER_AGENT_LIB" && supervisor_inbox_append_once "dead-park-tracker-parent:$id" \
+          "dead-park-tracker-parent unit=$id issue=#$issue slice-pr=$pr" ) >/dev/null 2>&1 || true
+        continue
+      fi
       [[ -n "$issue_repo" ]] || continue
       issue_json="$(gh issue view "$issue" --repo "$issue_repo" --json labels 2>/dev/null)" || continue
       jqf -e 'type == "object" and (.labels | type == "array")' <<<"$issue_json" >/dev/null 2>&1 || continue
