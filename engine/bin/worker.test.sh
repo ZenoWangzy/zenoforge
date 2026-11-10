@@ -179,6 +179,24 @@ run_case() {
   CASE_DIR=$d
 }
 
+run_prompt_case() {
+  local name=$1 prompt=$2 home=$3 expected_rc=$4
+  local root="$test_root/$name/.scratch" agent_home="$test_root/$name/agent-home" rc=0
+  mkdir -p "$root/tmp" "$home" "$agent_home"
+  if timeout --signal=TERM --kill-after=1 "${WORKER_TEST_RUN_TIMEOUT:-10}" \
+    env HOME="$home" AGENT_HOME="$agent_home" CODEX_MODEL=gpt-6-luna \
+      WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND=luna \
+      WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+      FAKE_ZC_MODE=success FAKE_LUNA_MODE=success \
+      bash "$worker_script" "$name" "$test_root" "$prompt" \
+      > "$test_root/$name.stdout" 2> "$test_root/$name.stderr"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [[ $rc == "$expected_rc" ]] || fail "$name returned rc=$rc, expected rc=$expected_rc (details: $test_root/$name.stderr)"
+}
+
 run_case explicit-zc-hold 0 success success 8 4 zc gpt-6-luna '' '' active
 [[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'explicit zc ignored the active quota hold'
 [[ $(wc -l < "$test_root/explicit-zc-hold.stderr") == 1 ]] || fail 'explicit zc hold did not write exactly one stderr line'
@@ -207,6 +225,37 @@ env HOME="$test_root/missing-home" WORKER_SCRATCH_ROOT="$test_root/missing/.scra
 [[ $missing_rc == 2 ]] || fail "missing prompt file returned rc=$missing_rc, expected 2"
 assert_file_contains "$test_root/missing.stderr" 'worker: prompt file not found: brief text, not a path'
 printf 'PASS a prompt that is not a file fails with rc=2\n'
+
+brief_home="$test_root/session-home"
+brief_prompt="$brief_home/.zenoforge/briefs/deny.md"
+mkdir -p "${brief_prompt%/*}"
+cat > "$brief_prompt" <<'BRIEF'
+Issue: #6039
+STOP: use the existing main behavior for unknown products.
+BRIEF
+run_prompt_case brief-missing-existing-path "$brief_prompt" "$brief_home" 2
+assert_file_contains "$test_root/brief-missing-existing-path.stderr" 'worker: brief lacks "Existing path: <file:line of how main already handles the nearest sibling case>" (or "Existing path: none, <why>")'
+printf 'PASS a session brief without Existing path fails with rc=2\n'
+
+brief_prompt="$brief_home/.zenoforge/briefs/allow.md"
+cat > "$brief_prompt" <<'BRIEF'
+Issue: #6039
+STOP: use the existing main behavior for unknown products.
+Existing path: receipt-document-entry.ts:3405 new-SKU on confirm
+BRIEF
+run_prompt_case brief-with-existing-path "$brief_prompt" "$brief_home" 0
+[[ $(cat "$test_root/brief-with-existing-path/.scratch/luna/brief-with-existing-path/backend") == luna ]] || fail 'valid session brief did not reach the backend'
+printf 'PASS a session brief with Existing path reaches the backend\n'
+
+outside_prompt="$test_root/outside-brief-path/prompt.md"
+mkdir -p "${outside_prompt%/*}"
+cat > "$outside_prompt" <<'PROMPT'
+Issue: generated workflow prompt
+STOP: continue the existing workflow.
+PROMPT
+run_prompt_case outside-session-brief "$outside_prompt" "$brief_home" 0
+[[ $(cat "$test_root/outside-session-brief/.scratch/luna/outside-session-brief/backend") == luna ]] || fail 'prompt outside the session brief paths did not reach the backend'
+printf 'PASS a prompt outside the session brief paths needs no Existing path\n'
 
 run_case capacity 0 success capacity 8 4 luna gpt-6.1-terra
 [[ $(cat "$CASE_DIR/models") == $'gpt-6.1-terra\ngpt-6-luna' ]] || fail 'terra capacity did not retry on default exactly once'
