@@ -73,11 +73,25 @@ maintainer_health_mail_build_body() {
 # maintainer_health_mail_build_html <facts> <plain-body> -> {html,images}
 # PNGs are written with Python's standard library so mail needs no host image package.
 maintainer_health_mail_build_html() {
-  { printf '%s\n' "$1"; printf '%s' "$2"; } | python3 -c '
+  local decision_flags_file="" agent_home="${3:-${AGENT_HOME:-}}"
+  [[ -z "$agent_home" ]] || decision_flags_file="$agent_home/checkout/.scratch-supervisor/decision-log-flags.jsonl"
+  { printf '%s\n' "$1"; printf '%s' "$2"; } | ZF_DECISION_LOG_FLAGS_FILE="$decision_flags_file" python3 -c '
 import base64, datetime, html, json, math, struct, sys, zlib
+import os
 raw = sys.stdin.read()
 facts_text, body = raw.split("\n", 1)
 facts = json.loads(facts_text)
+decision_flags=[]
+flags_file=os.environ.get("ZF_DECISION_LOG_FLAGS_FILE")
+if flags_file:
+    try:
+        with open(flags_file, encoding="utf-8") as source:
+            for line in source:
+                try:
+                    flag=json.loads(line)
+                    if isinstance(flag,dict) and isinstance(flag.get("entry"),str) and isinstance(flag.get("reason"),str): decision_flags.append(flag)
+                except json.JSONDecodeError: pass
+    except FileNotFoundError: pass
 charts = (facts.get("compare") or {}).get("charts") or {}
 images = []
 parts = ["<!doctype html><html><body style=\"font-family:Arial,sans-serif;color:#18212f;line-height:1.5\">",
@@ -86,6 +100,8 @@ esc = lambda value: html.escape(str(value), quote=True)
 number = lambda value: str(int(value)) if float(value).is_integer() else f"{value:.1f}"
 money = lambda value: f"{value:.2f}"
 show = lambda value: esc(number(value)) if isinstance(value,(int,float)) and math.isfinite(value) else ""
+parts.append("<h2>决策日志复核（"+str(len(decision_flags))+" 条）</h2>")
+parts.append("<ul>"+"".join("<li><strong>记录：</strong>"+esc(x["entry"])+" <strong>原因：</strong>"+esc(x["reason"])+"</li>" for x in decision_flags)+"</ul>" if decision_flags else "<p>没有需关注的条目。</p>")
 colors = {"blue": (48, 100, 180), "green": (48, 145, 105), "orange": (225, 145, 35),
           "red": (205, 65, 65), "gray": (220, 226, 235), "ink": (75, 88, 105), "white": (255, 255, 255)}
 font = {"0":("111","101","101","101","111"),"1":("010","110","010","010","111"),

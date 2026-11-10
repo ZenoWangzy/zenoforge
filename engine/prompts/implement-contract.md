@@ -86,3 +86,6 @@ that category has no items.
 Keep each entry specific enough for a reviewer to compare with the issue and
 diff. The contract describes intended work; it does not authorize behavior that
 conflicts with the issue.
+
+Every implement report must also include a non-empty `## decision-log` section:
+what was tried, what failed and why, the final choice, and how it was verified.
