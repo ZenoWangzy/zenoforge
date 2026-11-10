@@ -67,7 +67,6 @@ supervisor_arbiter_candidates() {
         // ([$u.history[]?.at | select(. != null)] | max) // ""), -($u.held_dependents // 0)])
     | .[]' "$UNITS"
 }
-
 dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 worker；在途上限 SUPERVISOR_ARBITER_MAX，两轮上限
   dead_park_exit || : # runs before the arbiter gate: these parks never reach the arbiter
   [[ "$SUPERVISOR_ARBITER" == true ]] || return 0
@@ -317,7 +316,6 @@ supervisor_requeue_rereview() { # unit-json → true when the latest unchanged r
       end
   ' <<<"$1" >/dev/null 2>&1
 }
-
 supervisor_close_recut_parent() { # id history-result log-line → existing tracker/recut close path
   local id="$1" result="$2" message="$3"
   set_unit "$id" "$(hist size-recut-completed "$result") | .stage=\"closed\" | .note=null | del(.size_recut_pending)" || return 1; say "$message"
@@ -415,7 +413,6 @@ Supervisor ruling: dependency #$dropped is resolved for this unit (dropped_deps)
   set_unit "$id" "$(hist "supervisor-$action" "$guidance" "$decision") | .stage=\"$target\"$extra" || { supervisor_requeue_retry "$id" "unit stage update failed after the requeue verdict"; return $?; }
   say "supervisor arbitration unit=$id: $action -> $target"
 }
-
 supervisor_apply_action() { # id action report-path —— 六动作落地，决定/理由/证据/否掉选项写进单元
   local id="$1" action="$2" rep="$3" reason rejected evidence decision guidance question u reviewed_sha reviewed_pr_head pr
   reason="$(supervisor_section_of "$rep" REASON | head -c 2000)"
@@ -607,7 +604,10 @@ supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
       issue="$(jqf -r '.issue // empty' <<<"$u")"
       if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
         release=0; supervisor_release_stop_loss_hold "$id" "$issue" || release=$?
-        (( release != 2 )) || return 0 # decided: the no-change mark waits for that holder to let go, with no run in between
+        if (( release == 2 )); then
+          set_unit "$id" "$(hist supervisor-cap-rule-held "issue #$issue held by another holder: $reason" "$decision")" || return 1
+          return 0 # decided: the no-change mark waits for that holder to let go, with no run in between
+        fi
         (( release == 0 )) || return 1
       fi
       # One refill per unit, like recut-reopen: the marker keeps RULE, fail, RULE from outrunning the stop-loss budget.
@@ -750,7 +750,6 @@ supervisor_record_jev_comparison() { # worker-json terra-action → shadow compa
     '{event_id:$event_id,candidate:$candidate,currentDecision:$current,confidence:$confidence,force_shadow:$force_shadow}')"
   printf '%s\n' "$input" | node "${ZF_ENGINE_DIR:-$ROOT/engine}/ts-judge.mjs" record f12 >/dev/null 2>&1 || true
 }
-
 harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or final cap-triage report
   local w="$1" unit pid report log action stream tk session_id cap_triage decided=false arbiter_retry=false
   unit="$(jqf -r .unit <<<"$w")"; pid="$(jqf -r .pid <<<"$w")"; report="$(jqf -r .report <<<"$w")"; log="$SUP/$(jqf -r .log <<<"$w")"

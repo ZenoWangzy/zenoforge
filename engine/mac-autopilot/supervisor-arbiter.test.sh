@@ -183,15 +183,19 @@ jq -e 'any(.workers[]; .unit=="pr-652")' "$WORKERS" >/dev/null || fail "old disp
 echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
 
 # A run that left the unit here holds it until head, state or ruling moves.
-jq -cn '{units:[{id:"pr-661",stage:"supervisor-review",reviewed_pr_head:"aaa",history:[]},{id:"pr-662",stage:"supervisor-review",reviewed_pr_head:"bbb",history:[]},{id:"pr-663",stage:"supervisor-review",reviewed_pr_head:"ccc",cto_rulings:["new"],history:[]}]}' > "$UNITS"
+jq -cn '{units:[{id:"pr-661",stage:"supervisor-review",reviewed_pr_head:"aaa",history:[]},{id:"pr-662",stage:"supervisor-review",reviewed_pr_head:"bbb",history:[]},{id:"pr-663",stage:"supervisor-review",reviewed_pr_head:"ccc",cto_rulings:["new"],history:[]},
+  {id:"pr-664",stage:"supervisor-review",reviewed_pr_head:"ddd",history:[{stage:"supervisor-arbiter",result:"dispatched to profile terra"}]}]}' > "$UNITS"
 set_unit pr-661 ".arbiter_left_mark=$(js "$(supervisor_arbiter_mark "$(jq -c '.units[0]' "$UNITS")")")"
 set_unit pr-662 '.arbiter_left_mark="aaa||0"'
 set_unit pr-663 '.arbiter_left_mark="ccc||0"'
+set_unit pr-664 ".arbiter_left_mark=$(js "$(supervisor_arbiter_mark "$(jq -c '.units[3]' "$UNITS")")")"
 echo '{"workers":[]}' > "$WORKERS"
 dispatch_supervisor_arbiters
 ! jq -e 'any(.workers[]; .unit=="pr-661")' "$WORKERS" >/dev/null || fail "an unchanged unit must not dispatch again"
 jq -e 'any(.workers[]; .unit=="pr-662")' "$WORKERS" >/dev/null || fail "a new head must reopen arbitration"
 jq -e 'any(.workers[]; .unit=="pr-663")' "$WORKERS" >/dev/null || fail "a new ruling must reopen arbitration"
+jq -e 'any(.workers[]; .unit=="pr-664")' "$WORKERS" >/dev/null || fail "a dispatch without a decision must reopen arbitration"
+jq -e '.units[]|select(.id=="pr-664")|has("arbiter_left_mark")|not' "$UNITS" >/dev/null || fail "a stale dispatch-only hold mark must be cleared"
 grep -Fq 'arbiter-no-change unit=pr-661' "$AGENT_HOME/supervisor-inbox" || fail "a held unit must reach the supervisor"
 echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
 
@@ -583,6 +587,18 @@ printf 'REASON: r\nEVIDENCE: e\nVERDICT: RULE\n' > "$report"
 supervisor_apply_cap_verdict pr-683 "$report" RULE
 [[ "$(field pr-683 .stage)" == supervisor-review ]] || fail "a RULE must not send work past another holder's hold"
 jq -e '.hold.holder == "head-hold"' "$AGENT_HOME/state/683.json" >/dev/null || fail "another holder's hold must stay"
+# A held RULE is a recorded decision so the dispatch-only mark guard keeps it from spending another arbiter run.
+units "$(jq -cn '{units:[{id:"pr-682",issue:683,pr:682,lane:"pr",branch:"agent/issue-682",stage:"supervisor-review",supervisor_cap_return_stage:"repair-pending",history:[{stage:"supervisor-arbiter",result:"dispatched to profile terra"}]}]}')"
+printf '%s\n' '{"state":"on-hold","hold":{"kind":"manual","holder":"head-hold"}}' > "$AGENT_HOME/state/683.json"
+printf 'REASON: r\nEVIDENCE: e\nVERDICT: RULE\n' > "$sup/supervise-pr-682-held-rule.md"
+harvest_supervisor_arbiter "$(jq -cn '{pid:99999997,unit:"pr-682",type:"supervise",log:"none.log",report:"supervise-pr-682-held-rule.md",started:"2026-10-27T00:00:00Z",cap_triage:true}')"
+[[ "$(field pr-682 .stage)" == supervisor-review ]] || fail "a held RULE must leave the unit in supervisor-review"
+[[ "$(field pr-682 '.history[-1].stage')" == supervisor-cap-rule-held ]] || fail "a held RULE must write the decision history entry"
+held_mark="$(field pr-682 .arbiter_left_mark)"
+[[ -n "$held_mark" ]] || fail "a held RULE must record its left mark"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+! jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-682")' "$WORKERS" >/dev/null || fail "a held RULE must not dispatch again while its mark is unchanged"
+[[ "$(field pr-682 .arbiter_left_mark)" == "$held_mark" ]] || fail "a held RULE must retain its mark"
 # Only a RULE releases the hold.
 unrun_unit pr-688 688
 founder_report "Please decide this?"

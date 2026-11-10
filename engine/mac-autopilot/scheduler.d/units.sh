@@ -478,6 +478,12 @@ supervisor_arbiter_no_change_hold() { # unit-json → 0 when a past run left it 
   mark="$(supervisor_arbiter_mark "$1")"
   [[ "$mark" == "$(jqf -r .arbiter_left_mark <<<"$1")" ]] || return 1
   id="$(jqf -r .id <<<"$1")"
+  # Applied decisions write supervisor-* history; a trailing dispatch alone never applied one.
+  if jqf -e '((.history // [])[-1].stage // "") == "supervisor-arbiter"' <<<"$1" >/dev/null; then
+    set_unit "$id" 'del(.arbiter_left_mark)'
+    say "supervisor arbitration retry unit=$id: last history entry is dispatch only"
+    return 1
+  fi
   say "supervisor arbitration held unit=$id: no head, state or ruling change since its last run"
   (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "arbiter-no-change:$id:$mark" \
     "arbiter-no-change unit=$id: its last run left it at supervisor-review; held until head, state or ruling changes") \
