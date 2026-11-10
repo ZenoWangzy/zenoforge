@@ -2287,18 +2287,7 @@ triage_slice_seconds_left() {
   echo $(( (ZF_GH_CALL_DEADLINE_EPOCH_MS - now_ms) / 1000 ))
 }
 
-# These stay outside run_intake_dispatch: its queue filter calls them before any nested definition below it runs.
-# advisor_pending_verdict_age_seconds <state-json> -- seconds since the stored
-# verdict was computed, or nothing when it carries no parseable computed_at
-# (a legacy verdict predating the field; age checks then tie toward resume).
-advisor_pending_verdict_age_seconds() {
-  local computed_at epoch
-  computed_at="$(jq -r '.pending_advisor_verdict.computed_at // empty' <<< "$1" 2>/dev/null || true)"
-  [ -n "$computed_at" ] || return 1
-  epoch="$(agent_epoch -u "$computed_at" 2>/dev/null)" || return 1
-  echo $(( $(date +%s) - epoch ))
-}
-
+# Keep the queue filter's disposition helper outside run_intake_dispatch: it runs before nested definitions below.
 # advisor_stored_verdict_disposition <n> <state-json> -- prints "resume" when
 # the stored verdict is fresh (within ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS)
 # and its Apply has never failed; "discard-age" or "discard-apply-failed" when
@@ -2881,8 +2870,11 @@ fi
 # Deferred batch members lead the next batch (one dialogue asks all questions
 # at once). The stuck sweep is not a dispatch mode: it only signals, so it
 # runs regardless of which mode this tick landed in.
+advisor_hold_clock
 advisor_stored_verdict_stuck_sweep
-if [ "$ADVISOR_QUEUE_READ_FAILED" = "1" ]; then
+if advisor_held_codex_unavailable; then
+  : # head's hold: no advisor dispatch, quarantine, canary or backoff; the line above is the record
+elif [ "$ADVISOR_QUEUE_READ_FAILED" = "1" ]; then
   : # A failed snapshot is not an empty queue; keep unrelated pipeline legs running.
 elif [ "$ADVISOR_BATCH_UNIT_ACTIVE" = "1" ]; then
   echo "issue-pipeline: batch advisor wrapper is already active; no new advisor question dispatch this tick" >&2

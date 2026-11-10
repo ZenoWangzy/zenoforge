@@ -294,6 +294,7 @@ reconcile_quarantines() {
       fi
       scope="$(env_fault_latest_scope "$signature")"
       [ -n "$scope" ] || continue
+      [ "$scope" = advisor ] && codex_unavailable && continue # head's hold: no advisor quarantine
       hits="$(env_fault_lines_since "$signature" "$((now - ENV_FAULT_WINDOW_SECONDS))" | wc -l)"
       detail="$(tail -n 1 "$f" | cut -f5)"
       quarantine_open "$scope" "$signature" "$detail" "$hits" "$now"
@@ -307,6 +308,7 @@ reconcile_quarantines() {
     last_canary="$(jq -r '.last_canary_at // empty' "$f")"
     repair_tried="$(jq -r '.repair_tried // false' "$f")"
     [ -n "$scope" ] && [ -n "$signature" ] || continue
+    [ "$scope" = advisor ] && codex_unavailable && continue # head's hold: no advisor canary probe
     # `|| probe_rc=$?` on purpose: the callers run under `set -e`, and a
     # bare probe returning 1 ("still broken", the common case) would
     # otherwise abort the whole tick.
