@@ -67,8 +67,6 @@ gh() {
         printf '%s\n' '{"number":611,"title":"fixture issue 611","body":"","state":"OPEN","labels":[{"name":"needs-advisor"}]}'
       elif [[ "$*" == *'--json labels -q .labels[].name'* ]]; then
         if [[ "$*" == *'issue view 615'* ]]; then printf '%s\n' needs-advisor on-hold; else printf '%s\n' needs-advisor; fi
-      elif [[ "$*" == *'issue view 9403'* && "$*" == *'--json labels'* ]]; then
-        printf '%s\n' '{"labels":[]}'
       else
         echo "supervisor-arbiter.test.sh: unexpected gh call: $*" >&2
         return 97
@@ -1000,12 +998,22 @@ jq -e '.units[] | select(.id=="arbiter-nonstoploss") | .parked_reason=="supervis
 # A deterministic requeue-failure park is eligible for the existing daily dead-park recut.
 saved_dead_park_tick_prs="$(declare -f tick_prs)"
 saved_dead_park_budget_recut="$(declare -f supervisor_budget_recut)"
+saved_dead_park_gh="$(declare -f gh)"
 DEAD_RECUT_CALLS="$fixture/dead-recut-calls"; : > "$DEAD_RECUT_CALLS"
 tick_prs() { printf '%s\n' '[]'; }
 supervisor_budget_recut() { printf '%s\t%s\n' "$1" "$2" >> "$DEAD_RECUT_CALLS"; }
+gh() {
+  if [[ "$*" == *'issue view 9403'* && "$*" == *'--json labels'* ]]; then
+    printf 'gh %s\n' "$*" >> "$GH_CALLS"
+    printf '%s\n' '{"labels":[]}'
+    return 0
+  fi
+  return 97
+}
 printf '%s\n' '{"state":"needs-advisor","hold":null}' > "$issue_states/9403.json"
 units "$(jq -cn '{units:[{id:"arbiter-failed-park",issue:9403,pr:99403,lane:"pr",branch:"agent/arbiter-failed-park",stage:"parked",parked_reason:"supervisor-budget",note:"supervisor requeue failed",history:[{stage:"supervisor-requeue-failed",result:"issue #9403 could not be requeued to ready-for-agent: issue_transition: refused #9403 needs-advisor",at:"2026-11-08T00:00:00Z"}]}]}')"
 dead_park_exit
+eval "$saved_dead_park_gh"
 grep -Eq '^gh issue view 9403 --repo [^ ]+ --json labels$' "$GH_CALLS" \
   || fail "dead-park exit must read issue labels before routing"
 [[ "$(cat "$DEAD_RECUT_CALLS")" == $'arbiter-failed-park\tdead park exit (budget-park)' ]] \
