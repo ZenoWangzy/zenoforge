@@ -1007,7 +1007,7 @@ SH
   chmod +x "$TF/bin/"*
   mkdir -p "$TF/repo/engine"
   cp -a "$script_dir" "$TF/repo/engine/mac-autopilot"
-  copy_agent_library "$TF/repo/engine" lib.d/codex-mcp.sh
+  copy_agent_library "$TF/repo/engine" lib.d/codex-mcp.sh lib.d/model-not-found-cache.bash
   cp "$TF/supervisor/autopi/config.json" "$TF/repo/engine/mac-autopilot/config.template.json"
   # merge_candidates 每拍经 $HERE/../../ci/ 调 pr-required-aggregate.mjs（16e097913 起按 run/时间
   # 取同 head 最新检查行）；夹具 repo 是 engine 子集，需一并带上。
