@@ -106,7 +106,7 @@ fi
 case "${1:-} ${2:-}" in
   "run rerun") printf 'rerun %s\n' "$3" >> "$state/actions.log"; exit 0 ;;
   "workflow run")
-    if [ "${FAKE_FAIL_WORKFLOW_DISPATCH:-0}" = 1 ]; then exit 1; fi
+    if [ "${FAKE_FAIL_WORKFLOW_DISPATCH:-0}" = 1 ]; then printf '%s\n' "${FAKE_GH_WORKFLOW_ERROR:-fake workflow dispatch failed}" >&2; exit 1; fi
     printf 'dispatch %s %s %s\n' "$3" "$7" "${9#source_sha=}" >> "$state/actions.log"
     exit 0 ;;
   "pr create")
@@ -639,6 +639,22 @@ ps_runs
 main_red_bisect_sweep
 assert_eq "a session with no recorded range stays open on a post-land green" bisecting "$(jq -r .status "$PS_FILE")"
 assert_not_contains "no probe is dispatched without a recorded range" "$(cat "$FAKE_GH_STATE/actions.log")" "dispatch"
+
+# Red run 912 was post-land for GREEN_SHA..PS_RED; this green covers the separate PS_RED..PS_DESC landing.
+main_red_session_write "$PS_RED" rerun-requested ".red_run_id = \"912\" | .red_workflow = \"pipeline-suites.yml\" | .focused_base_sha = \"$GREEN_SHA\" | .focused_head_sha = \"$PS_RED\""
+ps_runs
+main_red_bisect_sweep
+assert_eq "a different descendant post-land landing does not close the red session" rerun-requested "$(jq -r .status "$PS_FILE")"
+
+# A failed focused probe reports gh's first error line once and keeps the current attempt cap.
+main_red_session_write "$PS_DESC" bisecting ".red_run_id = \"913\" | .red_workflow = \"pipeline-suites.yml\" | .focused_base_sha = \"$PS_RED\" | .focused_head_sha = \"$PS_DESC\" | .recovery_probe_sha = \"$PS_RED\" | .recovery_probe_attempts = 0"
+ps_runs; : > "$FAKE_GH_STATE/actions.log"
+export FAKE_FAIL_WORKFLOW_DISPATCH=1 FAKE_GH_WORKFLOW_ERROR=$'gh: HTTP 422: Unexpected inputs: post_land_probe_sha\nsecond error line'
+main_red_bisect_sweep
+assert_eq "failed probe dispatch spends only its current attempt" 1 "$(jq -r .recovery_probe_attempts "$AGENT_HOME/main-red/$PS_DESC.json")"
+assert_contains "failed probe dispatch logs gh's first error line" "$(cat "$AGENT_HOME/logs/main-red.log")" "probe dispatch failed workflow=pipeline-suites.yml error=gh: HTTP 422: Unexpected inputs: post_land_probe_sha"
+assert_contains "failed probe dispatch reaches the supervisor inbox" "$(cat "$AGENT_HOME/supervisor-inbox")" "main-red-probe-dispatch-failed:pipeline-suites.yml: gh: HTTP 422: Unexpected inputs: post_land_probe_sha"
+assert_eq "failed probe dispatch writes one inbox line" 1 "$(grep -Fc 'main-red-probe-dispatch-failed:pipeline-suites.yml' "$AGENT_HOME/supervisor-inbox")"
 
 if [ "$FAILED" -eq 1 ]; then
   printf 'FAILED\n' >&2
