@@ -4,6 +4,8 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 
+MIN_RECENT_CALLS = 5  # Avoid treating a small sample as a call-site spike.
+
 
 def p50(values):
     values = sorted(values)
@@ -37,7 +39,7 @@ def spikes(path, now=None):
             bucket[site][1] += 1
     for site, (calls, bad) in sorted(recent.items()):
         p_calls, p_bad = prior[site]
-        if 2 * bad >= calls and (p_calls == 0 or 20 * p_bad < p_calls):
+        if calls >= MIN_RECENT_CALLS and 2 * bad >= calls and (p_calls == 0 or 20 * p_bad < p_calls):
             print(" ".join(x for x in site if x), f"{100 * bad // calls}%", sep="\t")
     return 0
 
