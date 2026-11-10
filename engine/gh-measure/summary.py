@@ -10,6 +10,11 @@ def p50(values):
     return values[len(values) // 2] if values else 0
 
 
+def call_site(unit, command, argument):
+    header, separator, _ = argument.partition(": ")
+    return unit, command, header if separator else argument
+
+
 def spikes(path, now=None):
     """Call sites with >=50% failures in the last hour whose prior 24 h failure rate was below 5%."""
     now = now or datetime.now().astimezone().timestamp()
@@ -25,8 +30,11 @@ def spikes(path, now=None):
         if not 0 <= age < 25 * 3600:
             continue
         bucket = recent if age < 3600 else prior
-        bucket[(f[2], f[3], f[4])][0] += 1
-        bucket[(f[2], f[3], f[4])][1] += f[5] != "0"
+        site = call_site(f[2], f[3], f[4])
+        bucket[site][0] += 1
+        # gh's exit code cannot distinguish a valid conditional 304 from an API failure.
+        if f[5] != "0" and site[2].lower() != "if-none-match":
+            bucket[site][1] += 1
     for site, (calls, bad) in sorted(recent.items()):
         p_calls, p_bad = prior[site]
         if 2 * bad >= calls and (p_calls == 0 or 20 * p_bad < p_calls):
@@ -48,7 +56,7 @@ def main(path, top=25):
     fails = sum(1 for r in rows if r[5] != 0)
     print(f"{len(rows)} gh calls over {hours:.1f} h = {len(rows) / hours:.0f}/h; "
           f"failed {fails} ({100 * fails / len(rows):.1f}%); gh wall time {sum(r[6] for r in rows) / 3600000:.2f} h")
-    for title, key in (("by unit", lambda r: r[1]), ("by call site", lambda r: (r[2], r[3], r[4]))):
+    for title, key in (("by unit", lambda r: r[1]), ("by call site", lambda r: call_site(r[2], r[3], r[4]))):
         groups = defaultdict(list)
         for r in rows:
             groups[key(r)].append(r)
