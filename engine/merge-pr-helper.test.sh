@@ -323,6 +323,9 @@ ci_rollup() {
       + [range(0;8) | {name:("suites (" + tostring + ")"),workflowName:"engine-tests"}])
     | map(. + {__typename:"CheckRun",status:"COMPLETED",conclusion:"SUCCESS"})'
 }
+ci_rollup_with_times() {
+  ci_rollup | jq -c 'map(. + {startedAt:"2026-11-10T09:55:10Z",completedAt:"2026-11-10T10:14:00Z"})'
+}
 ci_set() {
   PR_CI_ROLLUP="$(jq -c --arg name "$1" --arg status "$2" --arg conclusion "$3" '
     map(if .name == $name then .status=$status
@@ -337,6 +340,16 @@ PR_CI_ROLLUP="$(ci_rollup)"
 expect_receipt_merge 'all-green CI checks at the head'
 [[ "$(cat "$fixture/check-output")" == *"receipt: ci-green 10 checks at ${rsha:0:12}"* ]] \
   || fail "green CI receipt path was not logged: $(cat "$fixture/check-output")"
+PR_CI_ROLLUP="$(ci_rollup_with_times | jq -c '. + [
+  {__typename:"CheckRun",name:"suites (0)",workflowName:"engine-tests",status:"COMPLETED",conclusion:"FAILURE",startedAt:"2026-11-10T09:55:13Z",completedAt:"2026-11-10T10:08:17Z"},
+  {__typename:"CheckRun",name:"suites (0)",workflowName:"engine-tests",status:"COMPLETED",conclusion:"SUCCESS",startedAt:"2026-11-10T10:24:56Z",completedAt:"2026-11-10T10:40:50Z"}
+]')"
+expect_receipt_merge 'stale same-name failure followed by success'
+PR_CI_ROLLUP="$(ci_rollup_with_times | jq -c '. + [
+  {__typename:"CheckRun",name:"suites (0)",workflowName:"engine-tests",status:"COMPLETED",conclusion:"SUCCESS",startedAt:"2026-11-10T09:55:13Z",completedAt:"2026-11-10T10:08:17Z"},
+  {__typename:"CheckRun",name:"suites (0)",workflowName:"engine-tests",status:"COMPLETED",conclusion:"CANCELLED",startedAt:"2026-11-10T10:24:56Z",completedAt:"2026-11-10T10:40:50Z"}
+]')"
+expect_receipt_refusal 'newest cancelled same-name run' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
 PR_CI_ROLLUP="$(ci_rollup)"
 ci_set_workflow cli engine-tests
 expect_receipt_refusal 'cli check from engine-tests workflow' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
