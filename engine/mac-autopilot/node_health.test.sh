@@ -713,15 +713,15 @@ CHECK
 # The release-closer log writes a 9- or 12-character sha: the acceptance regex must read it, or 30 d delivery stays empty.
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'short release-closer sha not read as an acceptance'
 import pathlib, sys
-sys.path.insert(0, sys.argv[1]); import node_health as n
+sys.path.insert(0, sys.argv[1]); import ledger_history as lh
 runtime = pathlib.Path(sys.argv[2]) / "short-sha-events"
 (runtime / "alerts").mkdir(parents=True)
 (runtime / "alerts" / "events.md").write_text(
     "[2026-10-26T11:59:00Z] release-closer: deployed=abc123def closed=[101]\n"
     "[2026-10-26T12:00:00Z] release-closer: deployed=abc123def456 closed=[102]\n")
-assert n.release_acceptances(str(runtime)) == [
+assert lh.release_acceptances(str(runtime)) == [
     {"issue":101,"sha":"abc123def","at":"2026-10-26T11:59:00Z"},
-    {"issue":102,"sha":"abc123def456","at":"2026-10-26T12:00:00Z"}], n.release_acceptances(str(runtime))
+    {"issue":102,"sha":"abc123def456","at":"2026-10-26T12:00:00Z"}], lh.release_acceptances(str(runtime))
 print("node_health short release-closer sha: PASS")
 CHECK
 
@@ -854,14 +854,14 @@ jq -e '.metrics[] | select(.id == "scheduler.merge_pass_gap_min") | .healthy == 
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'delivery metrics join or percentiles are wrong'
 import datetime as dt, json, os, pathlib, sys
-sys.path.insert(0, sys.argv[1]); import node_health as n
+sys.path.insert(0, sys.argv[1]); import node_health as n, ledger_history as lh
 now = n.ts("2026-10-26T12:00:00Z")
 runtime = pathlib.Path(sys.argv[2]) / "release-events"
 (runtime / "alerts").mkdir(parents=True)
 line = "[2026-10-26T11:59:00Z] release-closer: deployed=" + "a"*40 + " closed=[101, 102] awaiting-release=[]\n"
 (runtime / "alerts" / "events.md").write_text(line)
 (runtime / "scheduler.log").write_text(line)
-assert n.release_acceptances(str(runtime)) == [
+assert lh.release_acceptances(str(runtime)) == [
     {"issue":101,"sha":"a"*40,"at":"2026-10-26T11:59:00Z"},
     {"issue":102,"sha":"a"*40,"at":"2026-10-26T11:59:00Z"}]
 issues, prs, units, releases = [], [], [], []

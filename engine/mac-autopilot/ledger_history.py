@@ -8,9 +8,94 @@ both places), then the archive. Duplicate ids collapse to the live row.
 """
 import json
 import os
-from datetime import timedelta
+import re
+from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
 
 LEDGER_FILES = ("units.json", "units-archive.json")
+SCHEDULER_LINE_RE = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\]")
+SCHEDULER_FUTURE_TOLERANCE = timedelta(seconds=300)
+
+
+def scheduler_log_lines(path, now):
+    """Read scheduler rows, skipping stamps over five minutes ahead; return rows and the skip count."""
+    rows, future_stamped = [], 0
+    try:
+        with open(path, errors="ignore") as source:
+            for raw in source:
+                match = SCHEDULER_LINE_RE.match(raw)
+                if match:
+                    try:
+                        at = datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        at = None
+                    if at and at > now + SCHEDULER_FUTURE_TOLERANCE:
+                        future_stamped += 1
+                        continue
+                rows.append(raw)
+    except OSError:
+        return None, 0
+    return rows, future_stamped
+
+
+def latest_scheduler_tick(path, now):
+    """Return the newest retained scheduler timestamp, or an empty string."""
+    rows, _ = scheduler_log_lines(path, now)
+    tick = ""
+    for raw in rows or []:
+        match = SCHEDULER_LINE_RE.match(raw)
+        if match:
+            tick = match.group(1)
+    return tick
+
+
+RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{7,40}) closed=\[([0-9,\s]*)\]")
+_SCHEDULER_ROWS_UNSET = object()
+
+
+def _scheduler_event_time(raw):
+    if not raw.startswith("["):
+        return None
+    try:
+        return datetime.strptime(raw[1:21], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def release_acceptances(runtime, now=None, scheduler_rows=_SCHEDULER_ROWS_UNSET):
+    """Read batch close events from event notes and the filtered scheduler log."""
+    now = now or datetime.now(timezone.utc)
+    scheduler_path = os.path.join(runtime, "scheduler.log")
+    paths = [os.path.join(runtime, "alerts", "events.md"), scheduler_path]
+    events, seen = [], set()
+    found_source = False
+    for path in paths:
+        try:
+            if path == scheduler_path:
+                rows = scheduler_rows
+                if rows is _SCHEDULER_ROWS_UNSET:
+                    rows, _ = scheduler_log_lines(path, now)
+                if rows is None:
+                    continue
+                source = nullcontext(rows)
+            else:
+                source = open(path, errors="ignore")
+            with source as lines:
+                found_source = True
+                for raw in lines:
+                    match = RELEASE_CLOSER_RE.search(raw)
+                    at = _scheduler_event_time(raw)
+                    if not match or not at or at > now + SCHEDULER_FUTURE_TOLERANCE:
+                        continue
+                    for number in re.findall(r"\d+", match.group(2)):
+                        event = {"issue": int(number), "sha": match.group(1), "at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}
+                        key = (event["issue"], event["sha"], event["at"])
+                        if key not in seen:
+                            seen.add(key)
+                            events.append(event)
+        except OSError:
+            continue
+    return events if found_source else None
 
 
 def load_units(runtime_dir):

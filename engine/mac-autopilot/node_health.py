@@ -337,11 +337,11 @@ def time_sinks(units, log_path, since, now):
     Also returns the queue wait intervals (phase, trigger, dispatch) behind those samples —
     dispatched or still open — for the flow slot-idle metric."""
     disp = {}
-    if os.path.exists(log_path):
-        for raw in open(log_path, errors="ignore"):
-            m = DISPATCH_RE.match(raw)
-            if m and (t := ts(m.group(1))):
-                disp.setdefault((m.group(3), m.group(2)), []).append(t)
+    log_rows, _ = ledger_history.scheduler_log_lines(log_path, now) if isinstance(log_path, str) else (log_path, 0)
+    for raw in log_rows or []:
+        m = DISPATCH_RE.match(raw)
+        if m and (t := ts(m.group(1))):
+            disp.setdefault((m.group(3), m.group(2)), []).append(t)
     out = {k: [] for k in TIME_SINKS}
     waits = []
     trig = ("review-request-changes", "review-block", "ci-red", "ci-test-red", "merge-conflict")
@@ -1031,32 +1031,6 @@ def gated_agent_pr_share(repo):
         return None
 
 
-RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{7,40}) closed=\[([0-9,\s]*)\]")
-def release_acceptances(runtime):
-    """Read the batch close event, which names the accepted deployed SHA and issue IDs."""
-    paths = [os.path.join(runtime, "alerts", "events.md"), os.path.join(runtime, "scheduler.log")]
-    events, seen = [], set()
-    found_source = False
-    for path in paths:
-        try:
-            with open(path, errors="ignore") as source:
-                found_source = True
-                for raw in source:
-                    match = RELEASE_CLOSER_RE.search(raw)
-                    at = ts(raw[1:21]) if raw.startswith("[") else None
-                    if not match or not at:
-                        continue
-                    for number in re.findall(r"\d+", match.group(2)):
-                        event = {"issue": int(number), "sha": match.group(1), "at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}
-                        key = (event["issue"], event["sha"], event["at"])
-                        if key not in seen:
-                            seen.add(key)
-                            events.append(event)
-        except OSError:
-            continue
-    return events if found_source else None
-
-
 def gh_delivery_rows(repo, now, units=None, release_events=None):
     """Fetch issue creation times and recent merged-PR review activity for delivery metrics."""
     cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -1469,7 +1443,9 @@ def main():
     # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
     metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]
     repo = os.environ.get("ZF_REPO", "")
-    release_events = release_acceptances(a)
+    log = os.path.join(a, "scheduler.log")
+    log_rows, future_stamped = ledger_history.scheduler_log_lines(log, now)
+    release_events = ledger_history.release_acceptances(a, now=now, scheduler_rows=log_rows)
     issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events)
     incidents = load_prod_incidents(agent_home)
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
@@ -1527,7 +1503,7 @@ def main():
     nontest_added = size_doc.get("nontest_added") or {}
     by_size, metrics["review.large_pr_pct"] = rework_by_size(
         units, sizes, nontest_added, now - timedelta(days=LARGE_PR_WINDOW_DAYS), now)
-    sinks, queue_waits = time_sinks(units, os.path.join(a, "scheduler.log"),
+    sinks, queue_waits = time_sinks(units, log_rows,
                                     now - timedelta(hours=TIME_SINK_HOURS), now)
     metrics["flow.merge_rate_per_hour"] = merge_flow(units, now - timedelta(hours=24), now)[0]
     _, entered, merged = merge_flow(units, since, now)
@@ -1546,14 +1522,12 @@ def main():
     _, metrics["ci.priority_hold_runs_48h"] = cancel_metrics(audit, now - timedelta(hours=48), now)
     metrics["ci.gated_pr_pct"] = gated_agent_pr_share(repo)
     ticks = []
-    log = os.path.join(a, "scheduler.log")
-    if os.path.exists(log):
-        for raw in open(log, errors="ignore"):
-            m = LINE_RE.match(raw)
-            if m and (t := ts(m.group(1))) and since <= t <= now:
-                ticks.append(t)
+    for raw in log_rows or []:
+        m = LINE_RE.match(raw)
+        if m and (t := ts(m.group(1))) and t >= since:
+            ticks.append(t)
     metrics["scheduler.tick_gap_p50"] = pct([(b - x).total_seconds() for x, b in zip(ticks, ticks[1:])], .5)
-    metrics.update({"scheduler.merge_pass_gap_min": merge_pass_gap_min(units, ledger_history.live_ledger_readable(a), a, now), **harvest_health.metrics(log, since, now, ts, pct), **existing_walk_health.metrics(log, since, now, ts, pct)})
+    metrics.update({"scheduler.merge_pass_gap_min": merge_pass_gap_min(units, ledger_history.live_ledger_readable(a), a, now), **harvest_health.metrics(log_rows, since, now, ts, pct), **existing_walk_health.metrics(log_rows, since, now, ts, pct)})
 
     train = read_json(os.path.join(a, "release-train.json"))
     if not train:
@@ -1583,7 +1557,8 @@ def main():
         metrics["pipeline.orphan_prs"] = None
 
     short_windows = metric_windows.fill(metrics, short_windows, criteria, SOURCE, args.hours); rows = score(metrics, criteria)
-    print(f"node health {now:%Y-%m-%dT%H:%MZ} window={args.hours:g}h tokens={tokens} runs={len(runs)}")
+    future_note = f" future_stamped={future_stamped}" if future_stamped else ""
+    print(f"node health {now:%Y-%m-%dT%H:%MZ} window={args.hours:g}h tokens={tokens} runs={len(runs)}{future_note}")
     print(f"  {'node':<12} {'metric':<48} {'value':>7}  healthy  unhealthy  status")
     for node, mid, desc, v, healthy, unhealthy, higher, status in rows:
         shown = "-" if v is None else f"{v:.0f}"
@@ -1610,7 +1585,7 @@ def main():
             for node, mid, desc, v, healthy, unhealthy, higher, status in rows]
         doc = {"generated": sampled_at, "generated_at": sampled_at,
                "source_commit": source_commit(here), "paused": line_holds.pause_state(agent_home),
-               "window_hours": args.hours,
+               "window_hours": args.hours, "future_stamped": future_stamped,
                "metrics": scorecard_metrics, "trend_metrics": [m for m in scorecard_metrics if "_30d" in m["id"]],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
                "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],
