@@ -692,11 +692,18 @@ sys.path.insert(0, sys.argv[1]); import node_health as n
 now = n.ts("2026-10-24T12:00:00Z")
 ap = lambda m: {"stage":"review-approve","at":f"2026-10-24T11:{m}:00Z"}
 red = {"stage":"ci-test-red","result":"Touched packages PR gate","tests":["a.test.ts","does x"],"at":"2026-10-24T11:05:00Z"}
+# The gate label alone can accompany a cancelled run; it has no recorded failing test.
+cancelled = {"stage":"ci-test-red","result":"Touched packages PR gate","tests":[],"at":"2026-10-24T11:05:00Z"}
+check_red = {"stage":"ci-red-rerun","result":"Required CI gates","at":"2026-10-24T11:05:00Z"}
 units = [{"id":"twice", "history":[ap("00"), red, ap("10"), {**red, "at":"2026-10-24T11:15:00Z"}]},
+         {"id":"cancelled", "history":[ap("00"), cancelled]}, {"id":"check-red", "history":[ap("00"), check_red]},
          {"id":"clean", "history":[ap("00")]}, {"id":"clean-twice", "history":[ap("00"), ap("10")]}]
-assert n.ledger_metrics(units, now-n.timedelta(hours=5), now)["ci.red_after_approve_pct"] == 100 / 3
+assert n.ledger_metrics(units, now-n.timedelta(hours=5), now)["ci.red_after_approve_pct"] == 40
 approved, rows = n.red_after_approve(units, now-n.timedelta(hours=5))
-assert approved == 3 and rows == [{"unit":"twice", "reds":2, "stage":"ci-test-red", "checks":"Touched packages PR gate", "tests":["a.test.ts","does x"]}], rows
+assert approved == 5 and rows == [
+    {"unit":"twice", "reds":2, "stage":"ci-test-red", "checks":"Touched packages PR gate", "tests":["a.test.ts","does x"]},
+    {"unit":"check-red", "reds":1, "stage":"ci-red-rerun", "checks":"Required CI gates", "tests":[]},
+], rows
 CHECK
 # A metric that reads None only because no event happened shows N/A, not NO-DATA; other None rows stay NO-DATA.
 python3 - "$script_dir" <<'CHECK'

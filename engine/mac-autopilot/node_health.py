@@ -812,10 +812,18 @@ def post_land_runs_ratio(requests_dir, repo, since, now, gh_json):
 RED_STAGES = ("ci-red", "ci-test-red", "ci-red-rerun")
 
 
+def red_event_has_evidence(stage, event):
+    if stage == "ci-test-red":
+        tests = event.get("tests")
+        return isinstance(tests, list) and bool(tests)
+    result = event.get("result")
+    return isinstance(result, str) and bool(result.strip())
+
+
 def red_after_approve(units, since):
     """(approved unit count, one row per unit) for units approved in the window that saw CI red after
-    an approve and before the next verdict. A unit counts once however many approves it had; the row
-    names the failed checks and, for ci-test-red, the failing tests recorded on the event."""
+    an approve and before the next verdict. A unit counts once however many approves it had; a red
+    needs recorded failed-check names or, for ci-test-red, recorded failing tests."""
     approved, rows = 0, []
     for u in units:
         events = [(h.get("stage") or h.get("ev") or "", ts(h["at"]), h) for h in u.get("history") or [] if ts(h.get("at"))]
@@ -825,7 +833,7 @@ def red_after_approve(units, since):
                 seen = True
                 rest = events[i + 1:]
                 stop = next((j for j, x in enumerate(rest) if x[0] in ("review-request-changes", "review-approve")), len(rest))
-                red += [x[2] for x in rest[:stop] if x[0] in RED_STAGES]
+                red += [x[2] for x in rest[:stop] if x[0] in RED_STAGES and red_event_has_evidence(x[0], x[2])]
         approved += seen
         if red:
             rows.append({"unit": u.get("id"), "reds": len(red), "stage": red[-1].get("stage"),
