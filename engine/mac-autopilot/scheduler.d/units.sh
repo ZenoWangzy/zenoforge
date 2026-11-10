@@ -379,9 +379,8 @@ supervisor_arbiter_lifetime_runs() { # unit-json → supervisor-arbiter 事件�
   jqf -r '[(.history // [])[] | select(.stage == "supervisor-arbiter")] | length' <<<"$1"
 }
 
-# Head ruling after the unit's last supervisor-arbiter run: hold.sh --rule requeue on a parked unit writes a supervisor-requeue row whose result starts
-# with the owner comment id (issue-5742: "supervisor ruling 6736537359: ...", 09:21:50Z, decision null). A plain requeue has no comment id and grants nothing.
-# The run it allows writes a supervisor-arbiter row, which consumes the ruling: one ruling is exactly +1 run and the lifetime count is never reset.
+# hold.sh --rule requeue records the owner's comment id (issue 5742: "supervisor ruling 6736537359: ...", decision null); plain requeue has no id.
+# The next supervisor-arbiter row consumes that ruling, granting one run without resetting lifetime spend.
 supervisor_arbiter_owner_ruling_pending() { # unit-json → 0 when an owner ruling came after the unit's last supervisor-arbiter run
   jqf -e '(.history // []) as $h
     | ([$h | to_entries[] | select(.value.stage == "supervisor-arbiter") | .key] | last // -1) as $last
@@ -404,8 +403,7 @@ supervisor_arbiter_capped_default() { # id unit-json → the lifetime cap's rout
   fi
   supervisor_cap_default "$id" "$u" lifetime
 }
-# Durable close: the unit closes with its reason and its issue gets a hold through hold.sh (the only on-hold writer), so a recurrence reopens the work.
-# A hold that does not apply leaves the unit open for the next tick.
+# Close with hold.sh (the on-hold writer) so recurrence reopens work; if the hold fails, leave the unit open for the next tick.
 supervisor_close_with_hold() { # id token detail decision
   local id="$1" token="$2" detail="$3" decision="$4" issue hold_cli
   issue="$(unit_field "$id" '.issue // empty')"
@@ -422,8 +420,7 @@ supervisor_close_with_hold() { # id token detail decision
 supervisor_cap_second_close() { # id token detail decision
   supervisor_close_with_hold "$@" && supervisor_cap_close_pr "$1" "$2" "$3"
 }
-# The cap close takes the unit's open PR too, under the hold it links, unless the PR is session-owned or an open issue cites it as its first slice
-# (the pr-close guard). One read per close: open PR state and labels, open issue bodies; nothing polls.
+# Close the open PR under its issue hold unless session-owned or cited by an open issue; one state/label/body read per close, no polling.
 supervisor_cap_close_pr() { # id token detail
   local id="$1" token="$2" detail="$3" pr issue repo state cited
   pr="$(unit_field "$id" '.pr // empty')"; issue="$(unit_field "$id" '.issue // empty')"; repo="${REPO:-${ZF_REPO:-}}"
