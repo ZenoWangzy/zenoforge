@@ -653,7 +653,7 @@ sweep_blocking_issue_roots() {
       fi
       if ! gh_tick_attempt_timeout_sec >/dev/null; then
         BLOCKER_ROOT_FAIL_REASON="owner-admission deadline"
-      elif ! reconcile_blocking_issue_root "$issue_json" "$graph_json" \
+      elif BLOCKER_ROOT_FAIL_REASON="" && ! reconcile_blocking_issue_root "$issue_json" "$graph_json" \
         && [[ "${BLOCKER_ROOT_FAIL_REASON:-}" != *"owner-admission deadline"* ]]; then # Other failures alert and continue.
         sweep_failed=1; supervisor_inbox_append_once "blocker-root-failed issue=#$n" \
           "blocker-root-failed issue=#$n reason=${BLOCKER_ROOT_FAIL_REASON:-reconcile_blocking_issue_root exited non-zero without recording a reason}; the sweep continued with the remaining roots" || true
