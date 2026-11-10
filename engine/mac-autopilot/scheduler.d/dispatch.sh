@@ -16,6 +16,23 @@ capture_worker_stdout_report() { # report-path command...
   fi
 }
 
+scheduler_mark_canary_after_worker_start() ( # issue; consume a blocker-route canary reservation after dispatch starts
+  local state scope
+  state="$(scheduler_issue_state "$1")" || return 1
+  scope="$(jqf -r '.run.conclusion.canary_reserved_scopes // empty' <<<"$state")" || return 1
+  [[ -n "$scope" ]] || return 0
+  REPO_DIR="$ROOT"
+  source "$SCHEDULER_AGENT_LIB" || return 1
+  state_merge "$1" 'del(.run.conclusion.canary_reserved_scopes)' || return 1
+  quarantine_mark_canary_scope_list "$scope"
+)
+scheduler_clear_canary_after_failed_start() (
+  [[ "$1" =~ ^[1-9][0-9]*$ ]] || return 0
+  REPO_DIR="$ROOT"
+  source "$SCHEDULER_AGENT_LIB" || return 1
+  state_merge "$1" 'del(.run.conclusion.canary_reserved_scopes)'
+)
+
 dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason] [worker-context-json]
   local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census guard_env_word worker_exit_file
   local -a launcher=() worker_env=() launch_command=()
@@ -98,10 +115,10 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   local worker_pid_file WORKER_PIDFILE WORKER_COST_TAG # not exported: the worker must not inherit them; worker_scope_launch reads them
   WORKER_PIDFILE="$(worker_pidfile "$unit")"
   WORKER_COST_TAG="type=$type unit=$unit"
-  worker_pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
+  worker_pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || { [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :; return 1; }
   rm -f -- "$worker_pid_file"
   worker_scope_launch "$worker_pid_file" "$workdir" "$SUP/$log" "${launcher[@]}" -- \
-    "${worker_env[@]}" "${launch_command[@]}" || { rm -f -- "$worker_pid_file"; return 1; }
+    "${worker_env[@]}" "${launch_command[@]}" || { rm -f -- "$worker_pid_file"; [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :; return 1; }
   pid="$WORKER_SCOPE_PID"
   rm -f -- "$worker_pid_file"
   local pid_started
@@ -109,15 +126,18 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   [[ "$pid_started" =~ ^[0-9]+$ ]] || pid_started="$(coord_process_start_ticks "$pid" 2>/dev/null)" || {
     stuck_worker_stop "$pid" || :
     if ! kill -0 "$pid" 2>/dev/null; then coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :; fi
+    [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :
     say "dispatch stopped unit=$unit reason=worker-start-identity-unavailable"
     return 1
   }
   if ! coord_renew "$claim_key" "$claim_owner" "$pid" "$pid_started"; then
     stuck_worker_stop "$pid" || :
     if ! alive "$pid"; then coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :; fi
+    [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :
     say "dispatch stopped unit=$unit reason=claim-lost-after-launch"
     return 1
   fi
+  if [[ "$type" == implement && "$issue" =~ ^[1-9][0-9]*$ ]] && ! scheduler_mark_canary_after_worker_start "$issue"; then say "dispatch canary mark failed unit=$unit issue=$issue"; fi
   local w; w="$(jqf -cn --argjson pid "${pid:-0}" --argjson pid_start "$pid_started" --arg unit "$unit" --arg type "$type" --arg log "$log" --arg report "$report" --arg at "$STAMP" --arg mode "$CODEX_MODE" --arg session_id "$CODEX_SESSION_ID" --arg sha "$sha" --arg pr_head "$pr_head" --arg workdir "$workdir" --arg model "$model" --arg provider "$provider" --arg effort "$effort" --arg route_reason "$route_reason" --argjson hard_escalation "$hard_escalation" --arg issue "$issue" --arg claim_key "$claim_key" --arg claim_owner "$claim_owner" --argjson usage_start "$CODEX_USAGE_START" \
     '{pid:$pid,pid_start:$pid_start,unit:$unit,type:$type,log:$log,report:$report,started:$at,mode:$mode,session_id:$session_id,sha:$sha,pr_head:$pr_head,workdir:$workdir,provider:$provider,model:$model,effort:$effort,hard_escalation:$hard_escalation,route_reason:$route_reason,token_usage_start:$usage_start,issue:$issue,claim_key:$claim_key,claim_owner:$claim_owner}')"
   [[ -z "$worker_context" ]] || w="$(jqf --argjson context "$worker_context" '. + $context' <<<"$w")"

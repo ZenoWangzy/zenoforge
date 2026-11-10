@@ -625,7 +625,7 @@ advisor_batch_dispatch_plan_reask() {
     '. + {job_id:$job,topic:$topic,started_at:$started,plan_reask_attempted:true,plan_reask_issues:$issues}' \
     <<< "$ACTIVE_BATCH_JOB")" || { rm -f "$reask_question"; return 1; }
 
-  record_premium_spend advisor-batch "$ADVISOR_MODEL_USED" "batch:$INCLUDED" "" "" "" "$ADVISOR_MODEL_FALLBACK"
+  record_premium_spend advisor-batch "$ADVISOR_MODEL_USED" "batch:$INCLUDED" "" "" "" "$ADVISOR_MODEL_FALLBACK"; unset ZF_QUARANTINE_CANARY_SCOPES
   if ! run_with_fd_closed "${ADVISOR_TICKET_LOCK_FDS[@]}" "$BATCH_LOCK_FD" -- \
     web_advisor_provider_dispatch_question_async "$new_job_id" "$reask_question" single-request-ndjson; then
     rm -f "$reask_question"

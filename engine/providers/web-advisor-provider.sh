@@ -235,11 +235,13 @@ record_web_advisor_provider_fault() {
 # shared browser lease; the tick must not require it to be free at dispatch.
 web_advisor_provider_dispatch_allowed() {
   local now="${1:-$(date +%s)}"
+  web_advisor_provider_usable || { STAGE_DISPATCH_BLOCKING_SCOPES=advisor; return 1; }
   if model_config_fault_blocked advisor "$(model_policy identity advisor)"; then
     STAGE_DISPATCH_BLOCKING_SCOPES=advisor
     return 1
   fi
-  stage_dispatch_allowed advisor "[]" "$now"
+  stage_dispatch_allowed advisor "[]" "$now" || return $?
+  quarantine_canary_scope_list_for_stage advisor
 }
 
 # WEB_ADVISOR_PROVIDER_SCRIPT -- env-first, same convention as other
@@ -565,18 +567,28 @@ web_advisor_provider_resume_job_if_stopped() {
 }
 
 web_advisor_provider_dispatch_question_async() {
-  local job_id="$1" question_file="$2" mode="${3:-single}"
+  local job_id="$1" question_file="$2" mode="${3:-single}" canary_scopes="${ZF_QUARANTINE_CANARY_SCOPES:-}" start_status
   local job_dir="$WEB_ADVISOR_PROVIDER_JOB_DIR/$job_id"
   case "$mode" in
     single|single-request-ndjson) ;;
     *) echo "web_advisor_provider_dispatch_question_async: unsupported mode '$mode'" >&2; return 2 ;;
   esac
+  [ -z "$canary_scopes" ] || declare -F quarantine_mark_canary_scope_list >/dev/null \
+    || { echo "web-advisor-provider: cannot start canary job without quarantine marker" >&2; return 1; }
   mkdir -p "$job_dir"
   rm -f "$job_dir/answer.out" "$job_dir/answer.err" "$job_dir/done" "$job_dir/state.json"
   cp "$question_file" "$job_dir/question.txt"
   printf '%s\n' "$mode" > "$job_dir/mode"
   printf '%s\n' "$(( $(date +%s) + WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS ))" > "$job_dir/deadline"
-  web_advisor_provider_start_job_unit "$job_id"
+  if web_advisor_provider_start_job_unit "$job_id"; then :; else
+    start_status=$?
+    unset ZF_QUARANTINE_CANARY_SCOPES
+    return "$start_status"
+  fi
+  unset ZF_QUARANTINE_CANARY_SCOPES
+  if [ -n "$canary_scopes" ] && ! quarantine_mark_canary_scope_list "$canary_scopes"; then
+    echo "web-advisor-provider: quarantine canary mark failed after job start job=$job_id scopes=$canary_scopes" >&2
+  fi
 }
 
 web_advisor_provider_dispatch_async() {
