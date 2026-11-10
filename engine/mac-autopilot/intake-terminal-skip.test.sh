@@ -101,7 +101,7 @@ rm -f "$UNITS.view" "$A/intake-skip-noted.tsv"
 printf '%s\n' '{"state":"ready-for-agent","scheduler_handoff":{"episode":"new"}}' > "$AGENT_HOME/state/4932.json"
 : > "$LOG"
 register_new_issues 1
-first_notes="$(grep -Fc 'intake skip issue #4932: closed unit issue-4932 recut refused and its reopen is spent' "$LOG" || true)"
+first_notes="$(grep -Fc 'intake skip issue #4932: unit=issue-4932 stays closed, recut refused and its reopen is spent' "$LOG" || true)"
 : > "$LOG"; : > "$handoff_reads"
 register_new_issues 1
 [[ ! -s "$handoff_reads" ]] || fail "second pass performed handoff lookup: $(cat "$handoff_reads")"
