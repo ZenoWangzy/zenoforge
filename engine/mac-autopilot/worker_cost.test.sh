@@ -90,9 +90,10 @@ row() { grep -F "$1" <<<"$out" | head -1; }
 # 近窗（7 天）关闭的票：4355 = 700k fresh（690k uncached input + 10k output），输入缓存率 97%；
 # 4366 也有 cache split。窗口前只有 4103 一张 cache-split 历史票：209851 fresh tokens 给出 provisional
 # 314776 / 419702 边界，10 分钟 wall 给出 15 / 20；两项都应保留静态边界，近期值仍然健康。
-grep -Eq 'per-ticket worker fresh tokens p90.* 700000 .*<=800000.*>=4800000.*OK' <<<"$(row 'per-ticket worker fresh tokens p90')" \
+# The small recent sample keeps the fallback bounds; the under-bound p90 stays LOW-N below min_n.
+grep -Eq 'per-ticket worker fresh tokens p90.* 700000 .*<=800000.*>=4800000.*LOW-N' <<<"$(row 'per-ticket worker fresh tokens p90')" \
   || fail "per-ticket fresh tokens p90 or its fallback bounds are wrong: $(row 'per-ticket worker fresh tokens p90')"
-grep -Eq 'per-ticket worker wall minutes p90.* 30 .*<=38.*>=180.*OK' <<<"$(row 'per-ticket worker wall minutes p90')" \
+grep -Eq 'per-ticket worker wall minutes p90.* 30 .*<=38.*>=180.*LOW-N' <<<"$(row 'per-ticket worker wall minutes p90')" \
   || fail "per-ticket wall p90 or static bounds are wrong: $(row 'per-ticket worker wall minutes p90')"
 jq -e '.ticket_bounds.token.samples == 1 and .ticket_bounds.token.provisional == true
   and .ticket_bounds.token.healthy == 314776 and .ticket_bounds.token.unhealthy == 419702
@@ -105,14 +106,66 @@ jq -e '.ticket_bounds.token.samples == 1 and .ticket_bounds.token.provisional ==
   and ([.ticket_spend[] | select(.ticket == 4366)][0] | .tokens == 155000)' \
   "$a/node-health.json" >/dev/null || fail "ticket spend or bounds missing from the scorecard: $(jq -c '.ticket_bounds, .ticket_spend' "$a/node-health.json")"
 jq -e '.metrics[] | select(.id == "workorders.ticket_tokens_p90")
-  | .value == 700000 and .healthy == 800000 and .unhealthy == 4800000 and .status == "OK" and .source != ""' \
+  | .value == 700000 and .healthy == 800000 and .unhealthy == 4800000 and .status == "LOW-N"
+    and .sample_n > 0 and .sample_n < 10 and .source != ""' \
   "$a/node-health.json" >/dev/null || fail "ticket tokens metric missing its value, static bounds or source"
 jq -e '.metrics[] | select(.id == "workorders.ticket_wall_p90")
-  | .value == 30 and .healthy == 38 and .unhealthy == 180 and .status == "OK"' \
+  | .value == 30 and .healthy == 38 and .unhealthy == 180 and .status == "LOW-N"
+    and .sample_n > 0 and .sample_n < 10' \
   "$a/node-health.json" >/dev/null || fail "ticket wall metric did not retain its static bounds"
 # unit_spend 经共享成本行走 --json 流：旧实现只读页脚时这张票是 0
 jq -e '[.work_orders[] | select(.id == "issue-4355")][0].tokens == 700000' "$a/node-health.json" >/dev/null \
   || fail "a --json codex worker's tokens did not reach the work-order spend: $(jq -c '.work_orders' "$a/node-health.json")"
+
+# Ten complete recent tickets prove an under-bound p90 is OK once min_n is met.
+sample_sup="$fixture/p90-samples/supervisor"; sample="$sample_sup/autopi"; mkdir -p "$sample"
+python3 - "$sample_sup" "$sample" <<'PY'
+import json, pathlib, sys
+supervisor, runtime = map(pathlib.Path, sys.argv[1:])
+units = []
+for issue in range(4400, 4410):
+    name = f"impl-issue-{issue}-20261020T110000Z.worker.log"
+    (supervisor / name).write_text(
+        '{"type":"pipeline.execution","mode":"fresh","model":"gpt-6-luna"}\n'
+        f'{{"type":"thread.started","thread_id":"fixture-{issue}"}}\n'
+        '{"type":"turn.completed","usage":{"input_tokens":700000,"cached_input_tokens":0,"output_tokens":0}}\n'
+    )
+    units.append({"id": f"issue-{issue}", "issue": issue, "stage": "merged",
+                  "history": [{"stage": "merged", "at": "2026-10-20T11:50:00Z"}]})
+(runtime / "units.json").write_text(json.dumps({"units": units}))
+PY
+for issue in {4400..4409}; do touch -d 2026-10-20T11:30:00Z "$sample_sup/impl-issue-$issue-20261020T110000Z.worker.log"; done
+cp "$script_dir/config.template.json" "$sample/config.json"
+sample_out="$(MAC_AUTOPILOT_SUPERVISOR_DIR="$sample_sup" MAC_AUTOPILOT_RUNTIME_DIR="$sample" \
+  PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$sample" \
+    --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 \
+    --now 2026-10-20T12:00:00Z --json "$sample/node-health.json")"
+grep -Eq 'per-ticket worker fresh tokens p90.* 700000 .*<=800000.*>=4800000.*OK' <<<"$sample_out" \
+  || fail "ten-ticket fresh token p90 did not report its healthy status: $(grep -F 'per-ticket worker fresh tokens p90' <<<"$sample_out")"
+jq -e '[.metrics[] | select(.id == "workorders.ticket_tokens_p90")][0]
+  | .value == 700000 and .healthy == 800000 and .unhealthy == 4800000 and .status == "OK" and .sample_n == 10' \
+  "$sample/node-health.json" >/dev/null || fail "ten-ticket token p90 did not meet min_n: $(jq -c '.metrics[] | select(.id == "workorders.ticket_tokens_p90")' "$sample/node-health.json")"
+jq -e '[.metrics[] | select(.id == "workorders.ticket_wall_p90")][0]
+  | .value == 30 and .healthy == 38 and .unhealthy == 180 and .status == "OK" and .sample_n == 10' \
+  "$sample/node-health.json" >/dev/null || fail "ten-ticket wall p90 did not meet min_n: $(jq -c '.metrics[] | select(.id == "workorders.ticket_wall_p90")' "$sample/node-health.json")"
+
+# An over-bound p90 stays actionable even when the single-ticket sample is below min_n.
+hi_sup="$fixture/low-n-high/supervisor"; hi="$hi_sup/autopi"; mkdir -p "$hi"
+cat > "$hi/units.json" <<'JSON'
+{"units":[{"id":"issue-4444","issue":4444,"stage":"merged","history":[{"stage":"merged","at":"2026-10-20T11:50:00Z"}]}]}
+JSON
+printf '%s\n' '{"type":"pipeline.execution","mode":"fresh","model":"gpt-6-luna"}' '{"type":"thread.started","thread_id":"high-sample"}' '{"type":"turn.completed","usage":{"input_tokens":5000000,"cached_input_tokens":0,"output_tokens":0}}' \
+  > "$hi_sup/impl-issue-4444-20261020T110000Z.worker.log"
+touch -d 2026-10-20T11:30:00Z "$hi_sup/impl-issue-4444-20261020T110000Z.worker.log"
+cp "$a/config.json" "$hi/config.json"
+MAC_AUTOPILOT_SUPERVISOR_DIR="$hi_sup" MAC_AUTOPILOT_RUNTIME_DIR="$hi" \
+  PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$hi" \
+    --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 \
+    --now 2026-10-20T12:00:00Z --json "$hi/node-health.json" >/dev/null
+jq -e '.metrics[] | select(.id == "workorders.ticket_tokens_p90")
+  | .value == 5000000 and .healthy == 800000 and .unhealthy == 4800000
+    and .sample_n == 1 and .sample_n < 10 and .status == "UNHEALTHY"' "$hi/node-health.json" >/dev/null \
+  || fail "an over-bound low-sample ticket p90 was hidden: $(jq -c '.metrics[] | select(.id == "workorders.ticket_tokens_p90")' "$hi/node-health.json")"
 
 # ---------- gen_dashboard：同一份账进 cost_ledger（单元 / ticket / 阶段 / 后端 / 24h / eval） ----------
 export CODEX_SESSIONS_DIR="$fixture/sessions" AGENT_HOME="$agent_home"

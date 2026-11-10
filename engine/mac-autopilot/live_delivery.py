@@ -14,7 +14,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 NONPRODUCT_PATHS_RE = re.compile(r"^(scripts|lessons|docs|ops|[.]agents|[.]trellis|[.]github)/|^[^/]+[.]md$")
 NO_DATA_UNHEALTHY = frozenset(("delivery.merged_not_live",))
 CRITERIA = {
-    "delivery.merged_not_live": ("delivery", "merged product commits not in production", 0, 1, False),
+    "delivery.merged_not_live": ("delivery", "merged product commits not in production", 6, 12, False),
     "delivery.oldest_merged_not_live_hours": ("delivery", "age of oldest merged product commit not in production hours", 24, 72, False),
 }
 MEANING = {

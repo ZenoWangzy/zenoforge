@@ -57,6 +57,7 @@ run review-11-r-20261019T110000Z 11:00 4 50000 1
 run review-11-r-20261019T111500Z 11:15 3 1000 1   # arbiter rereview without a repair before it: must not push the share past 100
 run review-11-20260101T100000Z 10:00 6 999999 1   # outside the window
 run impl-issue-3-20261019T114000Z 11:40 15 1000 0   # still running at 12:00 (log touched 11:55): not a no-report run
+for n in {1..9}; do run "impl-fixture-$n-20261019T061000Z" 06:10 20 0 1; done
 cat > "$a/units.json" <<'JSON'
 {"units":[
  {"id":"pr-11","stage":"merged","review_findings":[
@@ -88,42 +89,55 @@ cat > "$a/units.json" <<'JSON'
 ]}
 JSON
 printf '[2026-10-19T11:00:00Z] tick done units=3 live=1\n[2026-10-19T11:05:00Z] tick done units=3 live=1\n[2026-10-19T11:12:00Z] tick done units=3 live=1\n[2026-10-19T11:00:00Z] harvest-station done secs=9 gh_calls=2 lock_wait=0 lock_hold=7 workers=1 harvested=1 deferred=0 limit=240s ended=11:00:09Z phases=harvest_workers:7s/2gh\n[2026-10-19T11:02:00Z] harvest-station done secs=3 gh_calls=0 lock_wait=0 lock_hold=0 workers=0 harvested=0 deferred=0 limit=240s ended=11:02:03Z phases=none\n[2026-10-19T11:04:00Z] harvest-station done secs=3 gh_calls=0 lock_wait=0 lock_hold=0 workers=0 harvested=0 deferred=0 limit=240s ended=11:04:03Z phases=none\n[2026-10-19T11:10:00Z] harvest-station done secs=3 gh_calls=0 lock_wait=0 lock_hold=0 workers=0 harvested=0 deferred=0 limit=240s ended=11:10:03Z phases=none\n[2026-10-19T11:01:00Z] existing-walk done secs=40 rows=38 lock_wait=0.0 lock_hold=0.3 lap_done=true walked=38 gh_calls=3 rc=0 limit=240s ended=11:01:40Z\n[2026-10-19T11:02:30Z] existing-walk done secs=40 rows=38 lock_wait=0.0 lock_hold=0.3 lap_done=true walked=38 gh_calls=3 rc=0 limit=240s ended=11:02:40Z\n[2026-10-19T11:04:00Z] existing-walk done secs=40 rows=38 lock_wait=0.0 lock_hold=0.3 lap_done=true walked=38 gh_calls=3 rc=0 limit=240s ended=11:04:40Z\n[2026-10-19T11:09:00Z] existing-walk done secs=40 rows=38 lock_wait=0.0 lock_hold=0.3 lap_done=true walked=38 gh_calls=3 rc=0 limit=240s ended=11:09:40Z\n' > "$a/scheduler.log"
-echo '{"node_health":{"review.first_pass_pct":[40,10]}}' > "$a/config.json"
+printf '%s\n' '{"review.first_pass_pct":{"healthy":40,"unhealthy":10,"basis":"fixture bound used to verify configured scoring"}}' > "$config_root/mac-autopilot/health-standards.json"
 
+python3 - "$a/units.json" <<'PY'
+import json, sys
+path=sys.argv[1]; doc=json.load(open(path))
+for i in range(20,29):
+    events=[{"stage":"created","at":"2026-10-19T07:00:00Z"},{"stage":"supervisor-escalated","at":"2026-10-19T08:00:00Z"},
+            {"stage":"supervisor-decision","at":"2026-10-19T10:00:00Z"},{"stage":"review-approve","at":"2026-10-19T10:00:00Z"}]
+    if i < 26: events.append({"stage":"ci-red","at":"2026-10-19T10:10:00Z"})
+    doc["units"].append({"id":f"pr-{i}","stage":"ready-to-merge","history":events})
+json.dump(doc,open(path,"w"))
+PY
+for minute in 17 22 27 32 37 42 47 52; do printf '[2026-10-19T11:%s:00Z] tick done units=3 live=1\n' "$minute"; done >> "$a/scheduler.log"
+for minute in 12 14 16 18 20 22 24; do printf '[2026-10-19T11:%s:00Z] harvest-station done\n' "$minute"; done >> "$a/scheduler.log"
+for stamp in 11:10:30 11:12:00 11:13:30 11:15:00 11:16:30 11:18:00 11:19:30; do printf '[2026-10-19T%sZ] existing-walk done\n' "$stamp"; done >> "$a/scheduler.log"
 pause_since="2026-10-19T11:50:00Z"
 mkdir -p "$AGENT_HOME"
 # owner + future expires_at: this PAUSE is a held line WITH hold metadata, so it must not count as a violation
 jq -n --arg timestamp "$pause_since" --arg expires "2026-10-26T00:00:00Z" \
   '{reason:"refactor",caller:"operator",issue:"none",provider:"none",model:"none",timestamp:$timestamp,owner:"founder",expires_at:$expires}' > "$AGENT_HOME/PAUSE"
-out="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z --alert --json "$a/node-health.json")"
+out="$(ZF_CONFIG_ROOT="$config_root" python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z --alert --json "$a/node-health.json")"
 source_commit="$(git -C "$repo_root" rev-parse HEAD)"
 jq -e --arg sampled_at '2026-10-19T12:00:00Z' --arg source_commit "$source_commit" --arg pause_since "$pause_since" \
   '.generated == $sampled_at and .generated_at == $sampled_at and .source_commit == $source_commit
    and .paused == {since:$pause_since,reason:"refactor"}' \
   "$a/node-health.json" >/dev/null || fail 'scorecard JSON lacks its sample time, source commit or PAUSE details'
 row() { grep -F "$1" <<<"$out" | head -1; }
-grep -Eq ' 20 .*OK$' <<<"$(row 'implement run minutes p50')" || fail "implement wall time wrong: $(row 'implement run minutes')"
+grep -Eq ' 20 .*OK$' <<<"$(row 'implement run minutes p50')" || fail "implement wall time status wrong: $(row 'implement run minutes')"
 grep -Eq ' 50 .*UNHEALTHY$' <<<"$(row 'implement runs with no report')" || fail "no-report rate wrong: $(row 'no report')"
-grep -Eq ' 67 +>=40 .*OK$' <<<"$(row 'approved on their first review')" || fail "first-pass yield or override wrong: $(row 'first review %')"
-grep -Eq ' 1 .*OK$' <<<"$(row 'rounds before approve')" || fail "rounds wrong: $(row 'rounds')"
+grep -Eq ' 92 +>=40 .*OK$' <<<"$(row 'approved on their first review')" || fail "first-pass yield or override wrong: $(row 'first review %')"
+grep -Eq ' 0 .*OK$' <<<"$(row 'rounds before approve')" || fail "rounds p90 status wrong: $(row 'rounds')"
 grep -Eq ' 58 .*UNHEALTHY$' <<<"$(row 'share of worker tokens')" || fail "rework token share wrong: $(row 'share of worker tokens')"
 grep -Eq ' 100 .*OK$' <<<"$(row 'followed by an incremental rereview')" || fail "incremental rereview share wrong: $(row 'incremental rereview')"
-grep -Eq ' 120 .*WARN$' <<<"$(row 'approve -> merged')" || fail "waiting unit not counted at its age (30, 120, 150 -> p50 120): $(row 'approve -> merged')"
+grep -Eq ' 120 .*WARN$' <<<"$(row 'approve -> merged')" || fail "approve-to-merge status wrong: $(row 'approve -> merged')"
 # ci-test-red（L75 起 CI 红的主类）也算批准后 CI 红：漏掉它看板曾报 2%，实际 24h 内 74 单
 grep -Eq ' 67 .*UNHEALTHY$' <<<"$(row 'then saw CI red')" || fail "red-after-approve wrong (ci-test-red must count): $(row 'CI red')"
 grep -Eq ' 1 .*UNHEALTHY$' <<<"$(row 'local prechecks skipped by package selector')" || fail "precheck package-selection failure not guarded: $(row 'local prechecks skipped by package selector')"
-grep -Eq ' 120 .*WARN$' <<<"$(row 'escalation -> supervisor')" || fail "supervisor latency wrong: $(row 'escalation')"
+grep -Eq ' 120 .*WARN$' <<<"$(row 'escalation -> supervisor')" || fail "supervisor latency status wrong: $(row 'escalation')"
 grep -Eq ' 1 .*OK$' <<<"$(row 'worker-no-output events')" || fail "deaths wrong: $(row 'worker-no-output')"
 grep -Eq ' 50 .*UNHEALTHY$' <<<"$(row 'advisor asks that got no ruling')" || fail "advisor failure share wrong: $(row 'advisor asks')"
-grep -Eq ' 300 .*WARN$' <<<"$(row 'between tick starts')" || fail "tick gap wrong: $(row 'tick starts')"
+grep -Eq ' 300 .*WARN$' <<<"$(row 'between tick starts')" || fail "tick gap status wrong: $(row 'tick starts')"
 # harvest station: the gaps of the four pass starts are 120, 120 and 360 s, so the median is 120 (the tick lines do not count)
-grep -Eq ' 120 .*OK$' <<<"$(row 'between harvest station pass starts')" || fail "harvest gap wrong: $(row 'harvest station pass starts')"
+grep -Eq ' 120 .*OK$' <<<"$(row 'between harvest station pass starts')" || fail "harvest gap status wrong: $(row 'harvest station pass starts')"
 jq -e '.metrics[] | select(.id == "scheduler.harvest_gap_p50") | .value == 120 and .healthy == 120 and .unhealthy == 300 and .source != ""' \
   "$a/node-health.json" >/dev/null || fail 'harvest gap row lacks its bounds or source'
 # harvest_health.py: no scheduler.log gives no value, never 0
 python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import harvest_health as h; assert h.metrics("/nonexistent/scheduler.log", None, None, None, None) == {h.ID: None}' "$script_dir" || fail 'harvest_health with no log wrong'
 # existing-walk station: pass starts 90, 90 and 300 s apart, so the median is 90 (the harvest and tick lines do not count)
-grep -Eq ' 90 .*OK$' <<<"$(row 'between existing-walk station pass starts')" || fail "existing-walk gap wrong: $(row 'existing-walk station pass starts')"
+grep -Eq ' 90 .*OK$' <<<"$(row 'between existing-walk station pass starts')" || fail "existing-walk gap status wrong: $(row 'existing-walk station pass starts')"
 jq -e '.metrics[] | select(.id == "scheduler.existing_walk_gap_p50") | .value == 90 and .healthy == 120 and .unhealthy == 300 and .source != ""' \
   "$a/node-health.json" >/dev/null || fail 'existing-walk gap row lacks its bounds or source'
 # existing_walk_health.py: no scheduler.log gives no value, never 0
@@ -521,7 +535,7 @@ jq -e '.metrics[] | select(.id == "delivery.cycles_to_pass_30d") | .value == 2 a
 jq -e '.metrics[] | select(.id == "delivery.issue_to_accept_p50_30d_hours") | .value == null and .source != "" and .healthy == 24 and .unhealthy == 72' "$a/node-health.json" >/dev/null || fail 'delivery lead-time standard missing when there are no acceptance records'
 jq -e '[.metrics[].id | select(test("^delivery[.]human_actions"))] == []' "$a/node-health.json" >/dev/null || fail 'removed human-action rows are still published'
 jq -e '.metrics[] | select(.id == "delivery.issue_to_accept_p95_7d_hours") | .value == null and .status == "NO-DATA" and .healthy == 72 and .unhealthy == 168' "$a/node-health.json" >/dev/null || fail 'the 7 d lead-time row must stay published as NO-DATA without acceptances'
-jq -e '.metrics[] | select(.id == "delivery.merged_not_live") | .value == null and .status == "UNHEALTHY" and .healthy == 0 and .unhealthy == 1 and .source != ""' "$a/node-health.json" >/dev/null || fail 'missing live SHA must be unhealthy NO-DATA for merged-not-live count'
+jq -e '.metrics[] | select(.id == "delivery.merged_not_live") | .value == null and .status == "UNHEALTHY" and .healthy == 6 and .unhealthy == 12 and .source != ""' "$a/node-health.json" >/dev/null || fail 'missing live SHA must be unhealthy NO-DATA for merged-not-live count'
 jq -e '.metrics[] | select(.id == "delivery.oldest_merged_not_live_hours") | .value == null and .status == "NO-DATA" and .healthy == 24 and .unhealthy == 72 and .source != ""' "$a/node-health.json" >/dev/null || fail 'oldest merged-not-live age must publish the delivery bounds'
 grep -Fq 'NODE-UNHEALTHY metric=delivery.merged_not_live node=delivery value=NO-DATA' "$a/alerts/node-health.md" || fail 'missing live SHA did not write an unhealthy alert'
 echo 'node_health.test.sh: PASS'
@@ -1124,6 +1138,12 @@ cat > "$fa/units.json" <<'JSON'
  {"id":"pr-29","stage":"parked","history":[{"stage":"supervisor-budget-park","at":"2026-10-11T00:00:00Z"}]}
 ]}
 JSON
+python3 - "$fa/units.json" <<'PY'
+import json, sys
+path=sys.argv[1]; doc=json.load(open(path))
+doc["units"].extend({"id":f"wait-{i}","stage":"blocked-external","history":[{"stage":"blocked-on","at":"2026-10-10T18:00:00Z"}]} for i in range(8))
+json.dump(doc,open(path,"w"))
+PY
 printf '[2026-10-19T09:00:00Z] dispatch mode=fresh pid=1 type=repair unit=pr-26\n[2026-10-19T11:00:00Z] dispatch mode=fresh pid=2 type=repair unit=pr-27\n' > "$fa/scheduler.log"
 flowrun() { # <runtime-dir> <extra-args...> —— 统一窗口与固定 now
   local rt="$1"; shift
@@ -1148,27 +1168,27 @@ flowrun "$fa" --json "$fa/node-health.json" >/dev/null
 flowval() { jq -r --arg id "$1" '.metrics[] | select(.id == $id) | "\(.value) \(.status)"' "$fa/node-health.json"; }
 [[ "$(flowval flow.merge_rate_per_hour)" == "0.125 UNHEALTHY" ]] || fail "merge rate wrong: $(flowval flow.merge_rate_per_hour)（3 merged / 24h，有积压）"
 [[ "$(flowval flow.in_out_imbalance)" == "1 OK" ]] || fail "in/out imbalance wrong: $(flowval flow.in_out_imbalance)（entered 2, merged 3）"
-[[ "$(flowval flow.wip_age_stage_p90_hours)" == "13.0 UNHEALTHY" ]] || fail "wip stage age wrong: $(flowval flow.wip_age_stage_p90_hours)"
+[[ "$(flowval flow.wip_age_stage_p90_hours)" == "13.0 UNHEALTHY" ]] || fail "wip stage age/sample guard wrong: $(flowval flow.wip_age_stage_p90_hours)"
 [[ "$(flowval flow.slot_idle_hours)" == "1.83 UNHEALTHY" ]] || fail "slot idle wrong: $(flowval flow.slot_idle_hours)"
 [[ "$(flowval flow.main_red_hours)" == "4.17 UNHEALTHY" ]] || fail "main-red hours wrong: $(flowval flow.main_red_hours)（flaky 0.67 + recovered 0.5 + 未终结 3.0，与未终结重叠的 flaky 只算一次，窗口外 reverted 不算，空闲超 6 小时的未终结只算到最后一次转移）"
 jq -e '.flow.entered == 2 and .flow.merged == 3
   and (.flow.wip_age[] | select(.stage == "implement") | .count == 1 and .p90_hours == 13)
   and (.flow.wip_age[] | select(.stage == "ready-to-merge") | .p90_hours == 0.2)
-  and (.flow.wip_age[] | select(.stage == "blocked-external") | .waiting == true and .p90_hours == 228)
+  and (.flow.wip_age[] | select(.stage == "blocked-external") | .waiting == true and .p90_hours == 210)
   and (.flow.wip_age[] | select(.stage == "parked") | .waiting == true and .p90_hours == 204)
   and (.flow.wip_age[] | select(.stage == "implement") | .waiting == false)' \
   "$fa/node-health.json" >/dev/null || fail "flow details wrong: $(jq -c .flow "$fa/node-health.json")"
 # 等待阶段单独成行：计数 = blocked-external + parked 的单数，p90 落在两阶段最老的单之间（指标行不进最差阶段）。
 [[ "$(flowval flow.wait_stage_units)" == "$(jq -r '[.flow.wip_age[] | select(.waiting) | .count] | add' "$fa/node-health.json") OK" ]] \
   || fail "waiting unit count wrong: $(flowval flow.wait_stage_units) vs $(jq -c '[.flow.wip_age[] | select(.waiting)]' "$fa/node-health.json")"
-[[ "$(flowval flow.wait_stage_p90_hours)" =~ ^(204|20[5-9]|21[0-9]|22[0-8])(\.[0-9])?\ UNHEALTHY$ ]] \
-  || fail "waiting age p90 wrong: $(flowval flow.wait_stage_p90_hours)"
+[[ "$(flowval flow.wait_stage_p90_hours)" == "210.0 UNHEALTHY" ]] \
+  || fail "waiting age p90/sample guard wrong: $(flowval flow.wait_stage_p90_hours)"
 # 无积压（全部终态且在窗口前）：合入速率不计值，不读成 0
 ssup="$test_env_root/starve-sup"; sa="$ssup/autopi"; mkdir -p "$sa" "$ssup"
 printf '{"units":[{"id":"pr-31","stage":"merged","history":[{"stage":"created","at":"2026-10-18T10:00:00Z"},{"stage":"merged","at":"2026-10-18T11:00:00Z"}]}]}' > "$sa/units.json"
 out="$(flowrun "$sa")"
-grep -F '6.5 target' <<<"$out" | grep -Eq ' - +>=6.5 .*NO-DATA$' || fail "starved queue must show no value, not 0: $(grep -F '6.5 target' <<<"$out")"
-# 阈值内（157 单 / 24h = 6.54/h，全部当天完成）：全 OK，且不发事件
+grep -F 'measured 3/h healthy standard' <<<"$out" | grep -Eq ' - +>=3\.0 .*NO-DATA$' || fail "starved queue must show no value, not 0: $(grep -F 'measured 3/h healthy standard' <<<"$out")"
+# 阈值内（157 单 / 24h = 6.54/h，超过配置的 3/h 健康线）：全 OK，且不发事件
 rsup="$test_env_root/rate-sup"; ra="$rsup/autopi"; mkdir -p "$ra" "$rsup"
 python3 - "$ra" <<'PY'
 import json, sys
@@ -1178,7 +1198,7 @@ units = [{"id": f"pr-{i}", "stage": "merged",
 json.dump({"units": units}, open(sys.argv[1] + "/units.json", "w"))
 PY
 flowrun "$ra" --json "$ra/node-health.json" >/dev/null
-jq -e '.metrics[] | select(.id == "flow.merge_rate_per_hour") | .value > 6.5 and .status == "OK"' "$ra/node-health.json" >/dev/null \
+jq -e '.metrics[] | select(.id == "flow.merge_rate_per_hour") | .value > 3 and .status == "OK"' "$ra/node-health.json" >/dev/null \
   || fail "healthy merge rate wrong: $(jq '.metrics[] | select(.id == "flow.merge_rate_per_hour")' "$ra/node-health.json")"
 # 事件：越限每个 flow 指标只发一条；同一越限期内重跑不再发；恢复清记录；再越限重新可发
 inbox="$AGENT_HOME/supervisor-inbox"
@@ -1186,9 +1206,10 @@ state_file="$fa/flow-inbox-state.json"
 rm -f "$inbox" "$state_file" "$AGENT_HOME"/logs/supervisor-alert-seen-*.tsv
 flowrun "$fa" --inbox >/dev/null
 flowlines() { grep -c 'flow metric=flow\.' "$inbox" 2>/dev/null || printf '0\n'; }
-# 5 = the fixture's four flow rows plus wait_stage_p90_hours (228 h > 160 h); a healthy run has none (no waiting units)
+# Three flow rows plus both over-bound p90 ages are unhealthy, including the low-sample non-waiting row.
 [[ "$(flowlines)" == 5 ]] || fail "expected one inbox event per unhealthy flow metric, got $(flowlines): $(cat "$inbox" 2>/dev/null)"
 grep -Fq 'flow metric=flow.merge_rate_per_hour status=UNHEALTHY value=0.1' "$inbox" || fail "inbox event lacks metric id and value: $(cat "$inbox")"
+grep -Fq 'flow metric=flow.wip_age_stage_p90_hours status=UNHEALTHY value=13.0' "$inbox" || fail "low-sample flow breach did not reach inbox: $(cat "$inbox")"
 flowrun "$fa" --inbox >/dev/null
 [[ "$(flowlines)" == 5 ]] || fail "same unhealthy episode emitted again: $(flowlines)"
 # 恢复：同一 runtime 换回健康账本（无越限 flow 指标）→ 越限记录清空，不再发事件

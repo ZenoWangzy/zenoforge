@@ -127,6 +127,14 @@ const fastHealth = fastView.ctx.__dash.MODULES.find(m=>m.id==="health").render(f
 if (!fastHealth.includes("30 天趋势") || !fastHealth.includes("delivery.revert_rate_30d_pct") ||
     !fastHealth.includes("长窗 UNHEALTHY") || !fastHealth.includes("1h 10"))
   throw new Error("health view must show the red long value beside the green one-hour reading and isolate 30-day data");
+const sampledBreach = {generated:new Date().toISOString(), standards:{metrics:[{
+  id:"flow.wip_age_stage_p90_hours", node:"flow", desc:"stage age p90", meaning:"stage age",
+  value:13, healthy:4, unhealthy:12, higher_is_better:false, status:"UNHEALTHY", sample_n:1
+}]}};
+const sampledOverview = load(sampledBreach);
+sampledOverview.ctx.__dash.renderModule("overview");
+if (!sampledOverview.els.view.innerHTML.includes("(n=1)") || !sampledOverview.els.view.innerHTML.includes("长窗 UNHEALTHY"))
+  throw new Error("overview hides a low-sample count beside an unhealthy breach");
 
 // 2. 每一块都"数据不可用"：分支都能画，且带原因
 const broken = {front: {errors: {stages: "HTTP 502", advisor: "lib.sh missing", advisor_loop: "units.json unreadable", triage: "ledger gone", release: "git failed"}}};
