@@ -167,6 +167,23 @@ salvage_line="$(rg 'dead-park salvage unit=issue-9116 refs=' "$SAYS")"
 inbox_line="$(cat "$INBOX")"
 [[ "$(wc -l < "$INBOX")" == 1 && "$inbox_line" == *$'dead-park-salvage:issue-9116\tdead-park-salvage unit=issue-9116 refs='* && "$inbox_line" == *"$base_ref"* && "$inbox_line" == *"$base_ref-dirty"* && "$inbox_line" == *"$base_ref-stash0"* && "$inbox_line" == *"$base_ref-stash1"* ]] || fail "missing salvage inbox line: $inbox_line"
 
+# A stale local remote-tracking view that refreshes to show HEAD already on origin needs no salvage ref, then recuts.
+recovered_issue="$BASHPID"; recovered_unit="issue-$recovered_issue"; recovered_wt="$WT_ROOT/wt-$recovered_unit"
+mkdir -p "$recovered_wt"
+git -C "$recovered_wt" -c init.defaultBranch=main init -q
+git -C "$recovered_wt" config user.name 'Scheduler Test'
+git -C "$recovered_wt" config user.email 'scheduler-test@example.invalid'
+printf 'already on origin\n' > "$recovered_wt/tracked.txt"
+git -C "$recovered_wt" add tracked.txt
+git -C "$recovered_wt" -c user.name='Scheduler Test' -c user.email='scheduler-test@example.invalid' commit -qm published
+git -C "$recovered_wt" remote add origin "$SALVAGE_ORIGIN"
+git -C "$recovered_wt" push -q --force origin HEAD:refs/heads/main
+[[ -z "$(git -C "$recovered_wt" branch -r --contains HEAD)" ]] || fail 'stale-ref fixture unexpectedly has a current remote-tracking ref'
+jq -c --arg id "$recovered_unit" --argjson issue "$recovered_issue" '.units += [{id:$id,issue:$issue,branch:("agent/"+$id),stage:"parked",parked_reason:"supervisor-budget",history:[{stage:"supervisor-budget-park",result:"stop-loss budget",at:"2026-11-01T01:00:00Z"}]}]' "$UNITS" | write_state "$UNITS"
+: > "$ROUTES"; : > "$PUSHES"; : > "$SAYS"; : > "$INBOX"
+dead_park_exit
+[[ "$(stage "$recovered_unit")" == closed && "$(cat "$ROUTES")" == "$recovered_issue" && ! -s "$PUSHES" && ! -s "$INBOX" ]] || fail "refreshed remote HEAD did not recut without salvage: $(unit_json "$recovered_unit")"
+
 # A failed salvage push records its error in the park and never routes the issue.
 make_salvage_worktree 9117
 : > "$ROUTES"; : > "$PUSHES"; : > "$SAYS"; : > "$INBOX"

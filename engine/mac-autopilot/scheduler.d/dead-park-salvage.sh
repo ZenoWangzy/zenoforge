@@ -39,7 +39,6 @@ dead_park_salvage_worktree() { # unit-id worktree -> comma-separated refs; push 
     err="$(dead_park_guarded_push "$wt" "$sha" "$ref" 2>&1)" || { printf 'push refs/heads/%s failed: %s\n' "$ref" "${err:-git push failed}" >&2; return 1; }
     refs+=("refs/heads/$ref")
   done <<<"$stash_list"
-  ((${#refs[@]} > 0)) || { printf 'no salvage ref was required for unpushed worktree\n' >&2; return 1; }
   local IFS=,
   printf '%s\n' "${refs[*]}"
 }
