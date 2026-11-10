@@ -817,6 +817,16 @@ SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 
   || fail "unpushed cap recut must park: $(jq -c '.units[0]' "$UNITS")"
 ! grep -q 'recut-refused unit=pr-639' "$AGENT_HOME/supervisor-inbox" || fail "unpushed cap default must not create a founder handoff"
 
+# An issue-level recut refusal survives a new unit and makes the cap default park without routing recut again.
+default_unit pr-644 644 '{}' '[]' 4
+drop_unit_pr
+refused_at="$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ)"
+jq -n --arg refused_at "$refused_at" '{state:"ready-for-agent",guarded:true,recut_refused_at:$refused_at}' > "$AGENT_HOME/state/644.json"
+: > "$route2"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ ! -s "$route2" && "$(cap_default_stage pr-644)" == parked && "$(field pr-644 '.history[-1].result')" == branch=park:* ]] \
+  || fail "a recent issue-level recut refusal must park a fresh capped unit without routing recut"
+
 # Legacy issue units recover their ticket number, so a hold on the issue still protects them.
 [[ "$(supervisor_cap_default_issue '{"id":"issue-641"}')" == 641 ]] || fail "the canonical issue unit id must recover its issue number"
 [[ "$(supervisor_cap_default_issue '{"id":"pr-1641","branch":"agent/issue-641-fix"}')" == 641 ]] \

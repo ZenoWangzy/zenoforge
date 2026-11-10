@@ -440,6 +440,10 @@ supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [bud
   fi
   verdict="$(jqf -r '.supervisor_cap_verdict // .recut_refused_verdict // ""' <<<"$u")" || verdict=""
   recut_done="$(jqf -r 'any((.history // [])[]?; .stage == "supervisor-budget-recut" or .stage == "supervisor-cap-triage-recut") or .recut_routed == true' <<<"$u")"
+  if [[ "$issue" =~ ^[1-9][0-9]*$ ]] \
+    && jqf -e '(.hold.kind == "guarded-recut-repeat") or ((try (.recut_refused_at | fromdateiso8601) catch 0) >= now - 604800)' <<<"$raw" >/dev/null; then
+    recut_done=true
+  fi
   if [[ "$delivered" == true ]]; then
     branch=obsolete
     reason="issue state ${state:-unknown} or the work is already merged elsewhere"
