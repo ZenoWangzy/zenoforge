@@ -116,7 +116,7 @@ grep -Fq 'phase_yield_lock_batch run_refill_intake_dispatch_phases' "$script_dir
     [[ ! -e "$SCHED_LOCK" ]] || fail 'full-tick arbiter dispatch still holds the ledger lock'
     (
       acquire_scheduler_lock || exit 1
-      : > "$arbiter_lock_taken"
+      printf 'taken\n' > "$arbiter_lock_taken"
       release_scheduler_lock
     ) &
     arbiter_pid=$!
