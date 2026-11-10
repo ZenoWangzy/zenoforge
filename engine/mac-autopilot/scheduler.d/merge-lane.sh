@@ -261,22 +261,22 @@ pass_steps_line() { # "name=<secs>s/<count> ..." slowest first
 }
 # The PR body is derived from the unit's report, rendered here once for the open and again for the refresh (PR 5650, 2026-11-08: a
 # report that gained ## prior-art never reached the body, and the next review round was spent on the missing section).
-pr_body_source() { # issue report-path → the body text before closing keywords are scrubbed
-  printf '%s%s' "${1:+Refs #$1
+pr_body_source() { # issue report-path [unit-json] → the body text before closing keywords are scrubbed
+  printf '%s%s%s' "${1:+Refs #$1
 
 }" "Implemented by the the product autopilot. Implementer report (first lines):
 
-$(head -40 "$2")"
+$(head -40 "$2")" "$(self_check_verification_body "${3:-}")"
 }
 pr_body_hash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
-pr_body_append_missing() { # unit pr report hash → a legacy PR (opened before .pr_body_hash) keeps its body; only the incident sections it lacks are appended
-  local body new file h sec added=false missing=false
+pr_body_append_missing() { # unit pr report hash unit-json → a legacy PR (opened before .pr_body_hash) keeps its body; missing report and verification sections are appended
+  local body new file h sec added=false missing=false unit="${5:-}"
   body="$(gh pr view "$2" --json body -q .body 2>/dev/null)" || return 0
   new="$body"
-  for h in root-cause recurrence-guard prior-art; do
+  for h in root-cause recurrence-guard prior-art verification; do
     grep -qE "^## $h[[:space:]]*\$" <<<"$body" && continue
-    sec="$(awk -v h="## $h" '$0 ~ "^" h "[ \t]*$" { p = 1; print; next } /^## / { p = 0 } p' "$3")"
-    if [[ -n "$sec" ]]; then new+=$'\n\n'"$sec"; added=true; else missing=true; fi
+    if [[ "$h" == verification ]]; then sec="$(self_check_verification_body "$unit")"; else sec="$(awk -v h="## $h" '$0 ~ "^" h "[ \t]*$" { p = 1; print; next } /^## / { p = 0 } p' "$3")"; fi
+    if [[ -n "$sec" ]]; then new+=$'\n\n'"$sec"; added=true; else [[ "$h" == verification ]] || missing=true; fi
   done
   if [[ "$added" == true ]]; then
     file="$(mktemp)" || return 0
@@ -298,10 +298,10 @@ pr_body_refresh() { # unit-json → one gh pr edit --body-file when the current 
   [[ "$pr" =~ ^[0-9]+$ && -n "$rep" ]] || return 0
   [[ "$rep" == /* ]] || rep="$SUP/$rep"
   [[ -s "$rep" ]] || return 0
-  src="$(pr_body_source "$(jqf -r '.issue // empty' <<<"$1")" "$rep")"
+  src="$(pr_body_source "$(jqf -r '.issue // empty' <<<"$1")" "$rep" "$1")"
   hash="$(pr_body_hash "$src")"
   # No stored hash: the PR opened before the hash existed and its body may carry hand edits, so it is never re-rendered, only completed.
-  [[ -n "$stored" ]] || { pr_body_append_missing "$id" "$pr" "$rep" "$hash"; return 0; }
+  [[ -n "$stored" ]] || { pr_body_append_missing "$id" "$pr" "$rep" "$hash" "$1"; return 0; }
   [[ "$hash" != "$stored" ]] || return 0
   file="$(mktemp)" || return 0
   scrub_closing_keywords <<<"$src" > "$file"

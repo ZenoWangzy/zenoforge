@@ -145,8 +145,45 @@ self_check_run() (
 )
 
 pid_start() { pid_start_id "$1"; } # start ticks: tells a reused pid from the gate
+self_check_verification_run() ( # unit head clone config output metadata; success writes the verification evidence record
+  local id="$1" sha="$2" dir="$3" config="$4" command_output="$5" metadata="$6" argv_json timeout_s evidence_dir files_json rc=0 arg
+  local -a argv=() evidence_files=()
+  set -o pipefail
+  if [[ ! -r "$config" ]]; then printf 'verification refused unit=%s: config is unreadable\n' "$id"; return 1; fi
+  if ! jq . "$config" >/dev/null 2>&1; then printf 'verification refused unit=%s: state/verification.json is not valid JSON\n' "$id"; return 1; fi
+  if ! jq -e 'type=="object" and (.argv|type=="array" and length>0 and all(.[]; type=="string" and (contains("\u0000")|not)))' "$config" >/dev/null 2>&1; then
+    printf 'verification refused unit=%s: argv must be a non-empty array of strings\n' "$id"; return 1
+  fi
+  if ! jq -e 'has("timeout_s") and (.timeout_s|type=="number" and .>0 and floor==.)' "$config" >/dev/null 2>&1; then
+    printf 'verification refused unit=%s: timeout_s must be a positive integer\n' "$id"; return 1
+  fi
+  if ! jq -e '(.evidence_dir|type=="string" and length>0 and (startswith("/")|not) and (split("/")|index("..") == null) and (contains("\u0000")|not))' "$config" >/dev/null 2>&1; then
+    printf 'verification refused unit=%s: evidence_dir must be a relative path inside the clone\n' "$id"; return 1
+  fi
+  argv_json="$(jq -c '.argv' "$config")"; timeout_s="$(jq -r '.timeout_s|floor' "$config")"; evidence_dir="$(jq -r '.evidence_dir' "$config")"
+  while IFS= read -r -d '' arg; do argv+=("$arg"); done < <(jq -j '.argv[] | ., "\u0000"' "$config")
+  if (cd "$dir" && timeout -k 10 "$timeout_s" "${argv[@]}") 2>&1 | awk 'NR <= 20' > "$command_output"; then rc=0; else rc=$?; fi
+  if (( rc != 0 )); then
+    printf 'verification failed unit=%s exit_code=%s argv=%s evidence=%s\n' "$id" "$rc" "$argv_json" "$evidence_dir"
+    if [[ -s "$command_output" ]]; then sed -n '1,20p' "$command_output"; else printf '(no command output)\n'; fi
+    return 1
+  fi
+  while IFS= read -r -d '' arg; do evidence_files+=("$arg"); done < <(git -C "$dir" ls-files -z --cached --others -- "$evidence_dir")
+  files_json='[]'
+  if (( ${#evidence_files[@]} )); then files_json="$(printf '%s\0' "${evidence_files[@]}" | jq -Rs 'split("\u0000")[:-1]')" || return 1; fi
+  jq -cn --argjson argv "$argv_json" --argjson files "$files_json" --arg dir "$evidence_dir" --arg sha "$sha" \
+    '{argv:$argv,exit_code:0,evidence_dir:$dir,evidence_files:$files,sha:$sha}' > "$metadata" \
+    || { printf 'verification failed unit=%s: could not record evidence path=%s\n' "$id" "$evidence_dir"; return 1; }
+  printf 'verification passed unit=%s exit_code=0 argv=%s evidence=%s files=%s\n' "$id" "$argv_json" "$evidence_dir" "$files_json"
+)
+self_check_verification_body() { # unit JSON → the PR's verification section when this head passed
+  [[ -n "$1" ]] || return 0
+  jq -e '.self_check_status=="pass" and .verification.exit_code==0 and .verification.sha==.self_check_sha' <<<"$1" >/dev/null 2>&1 || return 0
+  printf '\n\n## verification\nCommand argv (JSON): %s\nExit code: %s\nEvidence files (relative to clone): %s\n' \
+    "$(jq -c '.verification.argv' <<<"$1")" "$(jq -r '.verification.exit_code' <<<"$1")" "$(jq -c '.verification.evidence_files' <<<"$1")"
+}
 self_check_before_review() { # unit sha clone; false means wait for the gate/self-fix
-  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base=""
+  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base="" config_file incident_reason
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   lane="$(jqf -r '.lane // empty' <<<"$u")"
   if [[ "$lane" == pr ]]; then
@@ -156,12 +193,23 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
   if [[ "$(jqf -r '.self_check_sha // empty' <<<"$u")" == "$sha" && -n "$(jqf -r '.self_check_status // empty' <<<"$u")" \
       && "$(jqf -r '.self_check_lane // empty' <<<"$u")" == "$lane" \
       && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" ]]; then return 0; fi
+  config_file="$(ZF_CONFIG_ROOT="$dir/.zenoforge" sched_config_file state/verification.json 2>/dev/null || true)"
+  if [[ -z "$config_file" && "$(jqf -r '.verification_skip_logged // false' <<<"$u")" != true ]]; then
+    incident_reason="$(incident_report_gate_reason "$u")"
+    if [[ -z "$incident_reason" ]]; then
+      set_unit "$id" '.verification_skip_logged=true' || return 1
+      say "verification: skipped unit=$id (no state/verification.json)"
+    fi
+  fi
   out="$SUP/self-check-$id-$sha-$(jqf -r '.self_check_fixes // 0' <<<"$u")-$TAG.log"; result="$out.result"
+  rm -f "$out.verification.json" "$out.verification-output"
   (
     # Same check as the review-time incident report gate (review-rules.sh), run here so the original session can repair the report via self-fix.
     reason="$(incident_report_gate_reason "$u")"
     if [[ -n "$reason" ]]; then
       printf 'incident report check failed: %s\nreport: %s\n' "$reason" "$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
+      printf 'red\n' > "$result"
+    elif [[ -n "$config_file" ]] && ! self_check_verification_run "$id" "$sha" "$dir" "$config_file" "$out.verification-output" "$out.verification.json"; then
       printf 'red\n' > "$result"
     elif self_check_run "$dir" "$sha" "$lane" "$pr_base"; then printf 'pass\n' > "$result"
     else
@@ -176,7 +224,7 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
   return 1
 }
 self_check_harvest() {
-  local id pid out start status fixes sid model
+  local id pid out start status fixes sid model verification_json verification_update
   while IFS=$'\t' read -r id pid out start; do
     if [[ ! -s "$out.result" ]]; then
       if kill -0 "$pid" 2>/dev/null && { [[ -z "$start" || "$(pid_start "$pid")" == "$start" ]]; }; then continue; fi
@@ -191,7 +239,11 @@ self_check_harvest() {
       set_unit "$id" "$(hist self-check-deferred "$out") | del(.self_check_pid, .self_check_start, .self_check_sha, .self_check_status)"
       continue
     fi
-    set_unit "$id" "$(hist "self-check-$status" "$out") | del(.self_check_pid, .self_check_start) | .self_check_status=$(js "$status")"
+    verification_update=""
+    if [[ "$status" == pass && -s "$out.verification.json" ]] && verification_json="$(jq -c . "$out.verification.json" 2>/dev/null)"; then
+      verification_update=" | .verification=$verification_json"
+    fi
+    set_unit "$id" "$(hist "self-check-$status" "$out") | del(.self_check_pid, .self_check_start) | .self_check_status=$(js "$status")$verification_update"
     [[ "$status" == red ]] || continue
     fixes="$(unit_field "$id" '.self_check_fixes // 0')"
     sid="$(unit_field "$id" '.session_ids.repair')"; model="$(unit_field "$id" .implement_model)"
