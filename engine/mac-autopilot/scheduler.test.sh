@@ -131,13 +131,13 @@ unlabelled_implement_prompt="$(incident_worker_prompt implement "$unlabelled_uni
 [[ "$unlabelled_implement_prompt" == 'base implement prompt' ]] \
   || { echo 'not ok - scheduler.test.sh: unlabelled issue received INCIDENT_RULE' >&2; exit 1; }
 missing_guard_report="$test_env_root/incident-missing-guard.md"
-printf '## root-cause\nworker input selected the wrong state\n' > "$missing_guard_report"
+printf '## decision-log\nTried the report check, preserved the incident guard, and verified the result.\n\n## root-cause\nworker input selected the wrong state\n' > "$missing_guard_report"
 gate_reason="$(incident_report_gate_reason "$bug_unit_json" "$missing_guard_report")"
 gate_verdict="$(incident_review_verdict "$bug_unit_json" READY "$missing_guard_report")"
 [[ "$gate_verdict" == NOT_READY && "$gate_reason" == *'missing ## recurrence-guard'* ]] \
   || { echo "not ok - scheduler.test.sh: missing recurrence-guard did not request changes (verdict=$gate_verdict reason=$gate_reason)" >&2; exit 1; }
 prose_guard_report="$test_env_root/incident-prose-guard.md"
-printf '## root-cause\nworker input selected the wrong state\n## recurrence-guard\nkind: prose\n## prior-art\nSource: https://example.invalid/reference\n' > "$prose_guard_report"
+printf '## decision-log\nTried the report check, preserved the incident guard, and verified the result.\n\n## root-cause\nworker input selected the wrong state\n## recurrence-guard\nkind: prose\n## prior-art\nSource: https://example.invalid/reference\n' > "$prose_guard_report"
 gate_reason="$(incident_report_gate_reason "$bug_unit_json" "$prose_guard_report")"
 gate_verdict="$(incident_review_verdict "$bug_unit_json" READY "$prose_guard_report")"
 [[ "$gate_verdict" == NOT_READY && "$gate_reason" == *'guard kind prose is not allowed'* ]] \

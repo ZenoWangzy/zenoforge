@@ -92,6 +92,13 @@ decision_log_gate_reason() { # unit-json [implementation report] → missing or 
   section="$(awk '/^## decision-log[[:space:]]*$/{inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
   [[ -n "${section//[[:space:]]/}" ]] || printf 'empty ## decision-log'
 }
+incident_review_verdict() { # unit READY|other [implementation report] → READY or forced NOT_READY
+  local unit_json="$1" verdict="$2" report="${3:-}" reason
+  [[ "$verdict" == READY ]] || { printf '%s' "$verdict"; return 0; }
+  reason="$(decision_log_gate_reason "$unit_json" "$report")"
+  [[ -n "$reason" ]] || reason="$(incident_report_gate_reason "$unit_json" "$report")"
+  [[ -z "$reason" ]] && printf 'READY' || printf 'NOT_READY'
+}
 # 引擎覆盖守卫（2026-11-03：产品 PR 通过 .zenoforge/build/overrides.tsv fork 引擎文件，评审时无人拒绝，只有 converge
 # 的 override guard 在合并后才拦截并卡死全部 pin）。评审时用与 converge override guard 相同的引擎文件分类——
 # build.json pin 所指引擎树里存在的路径，不维护第二份清单——拒绝「新增/变更 overrides.tsv 行」或「新增 pack 文件遮蔽

@@ -10,7 +10,7 @@ source "$repo_root/engine/mac-autopilot/scheduler.d/review-rules.sh"
 incident_unit='{"id":"incident-prior-art","issue":164,"labels":["bug"]}'
 ordinary_unit='{"id":"ordinary-change","issue":165,"labels":[]}'
 report="$test_env_root/incident-prior-art.md"
-base_body=$'## root-cause\nThe gate required only two headings.\n\n## recurrence-guard\nkind: test\nfile: engine/mac-autopilot/incident-prior-art-gate.test.sh:57\n'
+base_body=$'## decision-log\nTried the existing report shape, kept the tested guard, and verified the report gate.\n\n## root-cause\nThe gate required only two headings.\n\n## recurrence-guard\nkind: test\nfile: engine/mac-autopilot/incident-prior-art-gate.test.sh:57\n'
 
 assert_case() {
   local expected="$1" label="$2" unit="$3" body="$4" expected_reason="${5:-}" verdict reason
@@ -60,6 +60,11 @@ assert_case NOT_READY 'prior-art without a URL is rejected' "$incident_unit" \
   'http(s) source URL'
 assert_case READY 'prior-art with source URLs is accepted' "$incident_unit" \
   "$base_body"$'\n## prior-art\nClassic problem: incomplete incident postmortem. Experts recommend preventive follow-up.\nSources: https://sre.google/workbook/postmortem-culture/ and https://doi.org/10.6028/NIST.IR.8428\n'
+no_decision_log=$'## root-cause\nThe persisted state was selected incorrectly.\n\n## recurrence-guard\nkind: test\n\n## prior-art\nSource: https://example.invalid/incident-reference\n'
+printf '%s' "$no_decision_log" > "$report"
+[[ "$(incident_review_verdict "$incident_unit" READY "$report")" == NOT_READY ]] \
+  || { echo 'not ok - READY review passed without a decision-log section' >&2; exit 1; }
+printf 'ok - READY review without decision-log is rejected\n'
 assert_case NOT_READY 'escalation note without a reference is rejected' "$incident_unit" \
   "$base_body"$'\n## prior-art\nClassic problem: incomplete incident postmortem.\nUncertain sources were escalated to advisor (CTO) and the head.\nSource: https://sre.google/workbook/postmortem-culture/\n' \
   'escalation reference'
