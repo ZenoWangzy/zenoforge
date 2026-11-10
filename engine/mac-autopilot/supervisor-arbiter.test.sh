@@ -1139,6 +1139,15 @@ main_gh() { gh "$@"; }
 export REPO=ZenoWangzy/zenoforge
 hist_park_at() { jq -cn --arg at "$1" '[{stage:"supervisor-park",result:"approve refused",at:$at}]'; }
 
+# park-label-sweep may label a legacy cap park supervisor-park without a supervisor-park history row.
+units "$(jq -cn '{units:[{id:"legacy-cap-park",issue:769,stage:"parked",parked_reason:"supervisor-park",unpark_condition:"a supervisor decision",history:[{stage:"supervisor-budget-park",result:"third entry into supervisor-review; arbitration cap is 2 (#4369)",at:"2026-10-27T00:02:00Z"}]}]}')"
+supervisor_parked_unpark_sweeps
+legacy_cap_unit="$(jq -c '.units[0]' "$UNITS")"
+[[ "$(jq -r '.stage' <<<"$legacy_cap_unit")" == parked ]] \
+  || fail "a migrated legacy cap park without supervisor-park history must stay parked: $legacy_cap_unit"
+supervisor_cap_parked_unit "$legacy_cap_unit" \
+  || fail "a migrated legacy cap park must remain eligible for final cap triage: $legacy_cap_unit"
+
 # main-red-guard：只有park之后出现的绿色 main run 才放行；park之前的绿色不算。
 units "$(jq -cn --argjson h "$(hist_park_at 2026-11-09T02:00:00Z)" '{units:[{id:"pr-901",pr:901,stage:"parked",parked_reason:"main-red-guard",unpark_condition:"main of this repo is green again",history:$h}]}')"
 CI_RUNS="$(ci_runs_at 2026-11-09T01:00:00Z 1111111111111111111111111111111111111111)"

@@ -482,7 +482,8 @@ supervisor_parked_unpark_sweeps() {
     [[ -n "$why" ]] || continue
     set_unit "$id" "$(hist supervisor-park-recheck "re-arbitrate once: $why") | .stage=\"supervisor-review\" | del(.parked_reason, .unpark_condition)" \
       && say "supervisor park unit=$id reason=supervisor-park re-arbitrate once: $why"
-  done < <(jqf -r '.units[] | select(.stage == "parked" and .parked_reason == "supervisor-park") | [.id, (([(.history // [])[] | select(.stage == "supervisor-park") | .at] | last) // "-"), (.supervisor_park_main // "-"), (.supervisor_park_head // "-"), (.pr // "-")] | @tsv' "$UNITS")
+  # park-label-sweep can infer this generic reason for legacy parks; require a recorded arbiter park before rechecking it.
+  done < <(jqf -r '.units[] | select(.stage == "parked" and .parked_reason == "supervisor-park" and any((.history // [])[]?; .stage == "supervisor-park")) | [.id, (([(.history // [])[] | select(.stage == "supervisor-park") | .at] | last) // "-"), (.supervisor_park_main // "-"), (.supervisor_park_head // "-"), (.pr // "-")] | @tsv' "$UNITS")
   return 0
 }
 
