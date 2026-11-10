@@ -81,6 +81,7 @@ if [[ -z "${REQUIRED_PR_CHECKS_FILE:-}" ]]; then
 fi
 source "$HERE/scheduler.d/reports.sh"
 source "$HERE/scheduler.d/units.sh"
+source "$HERE/scheduler.d/dead-park-salvage.sh"
 source "$HERE/scheduler.d/worker-outcomes.sh"
 source "$HERE/scheduler.d/usage-sessions.sh"
 source "$HERE/scheduler.d/models.sh"

@@ -586,21 +586,34 @@ supervisor_cap_triage_park() { # id evidence → durable retry marker swept by t
 
 # 轮数或墙钟止损已用尽且仍没有 PR：交给 recut 拆成可交付的子票。
 # 走 lib.sh 唯一的 needs-recut 入口 route_to_recut；cap triage 遇到未推送改动时先让原单元继续提交，触顶默认仍停放。
-supervisor_budget_recut() { # id evidence decision park-reason recut-reason park-stage recut-stage allow-pr-close
+supervisor_budget_recut() { # id evidence decision park-reason recut-reason park-stage recut-stage allow-pr-close dead-park-salvage
   local id="$1" evidence="$2" decision="${3:-null}" park_reason="${4:-supervisor budget exhausted}"
   local recut_reason="${5:-ticket stop-loss reached}" park_stage="${6:-supervisor-budget-park}" recut_stage="${7:-supervisor-budget-recut}"
-  local allow_pr_close="${8:-false}" issue pr err note pr_comment pr_state
+  local allow_pr_close="${8:-false}" dead_park_salvage="${9:-false}" issue pr err note pr_comment pr_state salvage_refs salvage_error salvage_refs_all=""
   issue="$(unit_field "$id" '.issue // empty')"; pr="$(unit_field "$id" '.pr // empty')"
   local d
   for d in "$WT_ROOT/wt-$id" "/tmp/wt-$id"; do # cleanup_tick 删的两个位置；stash 是 ensure_clone 收起的未提交进度
+    if [[ -d "$d" && "$dead_park_salvage" == true && "$park_stage" == supervisor-budget-park && "$recut_stage" == supervisor-budget-recut ]]; then
+      err="$(git -C "$d" fetch -q --prune origin 2>&1)" || { supervisor_budget_park "$id" "$evidence (worktree origin ref refresh failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0; }
+    fi
     if [[ -d "$d" ]] && { [[ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]] || [[ -n "$(git -C "$d" stash list 2>/dev/null)" ]] \
         || [[ -z "$(git -C "$d" branch -r --contains HEAD 2>/dev/null)" ]]; }; then
       if [[ "$park_stage" == supervisor-cap-triage-park ]]; then
         supervisor_recut_refuse "$id" "$evidence" "$decision" "$d" "$allow_pr_close"; return 0
       fi
+      if [[ "$dead_park_salvage" == true && "$park_stage" == supervisor-budget-park && "$recut_stage" == supervisor-budget-recut ]]; then
+        [[ -z "$salvage_refs_all" ]] || sleep 1
+        if salvage_refs="$(dead_park_salvage_worktree "$id" "$d" 2>&1)"; then
+          salvage_refs_all="${salvage_refs_all:+$salvage_refs_all,}$salvage_refs"
+          continue
+        fi
+        salvage_error="${salvage_refs//$'\n'/ }"
+        supervisor_budget_park "$id" "$evidence (worktree has unpushed work; salvage push failed: ${salvage_error:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
+      fi
       supervisor_budget_park "$id" "$evidence (worktree has unpushed work; not sent to recut)" "$decision" "$park_reason" "$park_stage"; return 0
     fi
   done
+  [[ -z "$salvage_refs_all" ]] || dead_park_salvage_notice "$id" "$salvage_refs_all"
   [[ "$issue" =~ ^[0-9]+$ ]] || { supervisor_budget_park "$id" "$evidence" "$decision" "$park_reason" "$park_stage"; return 0; }
   if [[ -n "$pr" && "$allow_pr_close" != true ]]; then
     supervisor_budget_park "$id" "$evidence (unit already has PR #$pr)" "$decision" "$park_reason" "$park_stage"; return 0
@@ -634,18 +647,28 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
 
 # Row 131: three parks had no exit a machine could meet (cap default, repair breaker, budget park; 21 units, the oldest 229 h on 11-09).
 # Each takes the existing budget-recut route once per 24h, read from its own dead-park-exit event; a unit that parks again in a class gets another recut, never a requeue.
-# Left alone: session-owned (PR label) and supervisor_owned units, and every other park reason (on-hold, recut-refused, token hard park, arbiter-owned cap triage).
+# Left alone: session-owned issues/PRs, supervisor_owned units, non-stop-loss issue holds, and other park reasons (recut-refused, token hard park, arbiter-owned cap triage).
 DEAD_PARK_EXIT_PER_TICK="${DEAD_PARK_EXIT_PER_TICK:-3}"
 dead_park_exit() {
-  local prs id class n=0
-  prs="$(tick_prs)" || return 0 # without the census a session-owned label cannot be read
+  local prs id class n=0 issue issue_state issue_json issue_repo="${REPO:-${ZF_REPO:-}}"
+  prs="$(tick_prs)" || return 0 # without the census a PR's session-owned label cannot be read
   while IFS=$'\t' read -r id class; do
     (( n < DEAD_PARK_EXIT_PER_TICK )) || break
+    issue="$(unit_field "$id" '.issue // empty')"
+    if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+      issue_state="$(scheduler_issue_state "$issue" 2>/dev/null)" || continue
+      jqf -e 'type == "object"' <<<"$issue_state" >/dev/null 2>&1 || continue
+      if jqf -e '.state == "on-hold" and (.hold.holder // "") != "scheduler-stop-loss"' <<<"$issue_state" >/dev/null 2>&1; then continue; fi
+      [[ -n "$issue_repo" ]] || continue
+      issue_json="$(gh issue view "$issue" --repo "$issue_repo" --json labels 2>/dev/null)" || continue
+      jqf -e 'type == "object" and (.labels | type == "array")' <<<"$issue_json" >/dev/null 2>&1 || continue
+      if jqf -e --arg owned "$SESSION_OWNED_LABEL" 'any(.labels[]?; .name == $owned)' <<<"$issue_json" >/dev/null 2>&1; then continue; fi
+    fi
     n=$((n + 1))
     set_unit "$id" "$(hist dead-park-exit "$class park has no automatic exit; sent to recut")" || continue
     say "dead park exit unit=$id class=$class"
     supervisor_budget_recut "$id" "dead park exit ($class)" null "dead park exit could not complete the recut route" "dead park exit recut" \
-      supervisor-budget-park supervisor-budget-recut true false
+      supervisor-budget-park supervisor-budget-recut true true
   done < <(jqf -r --slurpfile census <(printf '%s' "$prs") --arg owned "$SESSION_OWNED_LABEL" --arg re "$SUPERVISOR_CAP_PARK_RESULT_RE" \
     --argjson since "$(($(date +%s) - 86400))" '
     [$census[0][] | select(any(.labels[]?; .name == $owned)) | .number] as $claimed
