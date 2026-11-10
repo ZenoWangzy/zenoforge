@@ -71,11 +71,11 @@ cat > "$a/units.json" <<'JSON'
    {"stage":"merged","at":"2026-10-19T11:34:00Z"}]},
  {"id":"pr-12","stage":"ready-to-merge","history":[
    {"stage":"review-approve","at":"2026-10-19T10:00:00Z"},
-   {"stage":"ci-red","at":"2026-10-19T10:30:00Z"},
+   {"stage":"ci-red","result":"Required CI gates","at":"2026-10-19T10:30:00Z"},
    {"stage":"supervisor-arbiter","at":"2026-10-17T10:00:00Z"}]},
  {"id":"pr-14","stage":"ready-to-merge","history":[{"stage":"review-approve","at":"2026-10-19T09:30:00Z"},
    {"stage":"precheck","result":"PRECHECK: SKIP workspace package selection failed","at":"2026-10-19T09:35:00Z"},
-   {"stage":"ci-test-red","at":"2026-10-19T09:40:00Z"},
+   {"stage":"ci-test-red","tests":["a.test.ts"],"at":"2026-10-19T09:40:00Z"},
    {"stage":"supervisor-cap-default","at":"2026-10-17T09:00:00Z"}]},
  {"id":"pr-11b","stage":"closed","history":[{"stage":"supervisor-arbiter","at":"2026-10-19T10:40:00Z"}]},
  {"id":"pr-13","stage":"supervisor-review","history":[
@@ -97,7 +97,7 @@ path=sys.argv[1]; doc=json.load(open(path))
 for i in range(20,29):
     events=[{"stage":"created","at":"2026-10-19T07:00:00Z"},{"stage":"supervisor-escalated","at":"2026-10-19T08:00:00Z"},
             {"stage":"supervisor-decision","at":"2026-10-19T10:00:00Z"},{"stage":"review-approve","at":"2026-10-19T10:00:00Z"}]
-    if i < 26: events.append({"stage":"ci-red","at":"2026-10-19T10:10:00Z"})
+    if i < 26: events.append({"stage":"ci-red","result":"Required CI gates","at":"2026-10-19T10:10:00Z"})
     doc["units"].append({"id":f"pr-{i}","stage":"ready-to-merge","history":events})
 json.dump(doc,open(path,"w"))
 PY
