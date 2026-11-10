@@ -3823,7 +3823,7 @@ EOF
     quarantine_stage_canary_forget_stage implement; implement_runs_since_last_hold_lift() { IMPLEMENT_REPEAT_RUN_COUNT=0; }
     RUN_RC=0; export RUN_RC; dispatch implement 932 || :
     ROOT="$ZF_REPO_DIR" SCHEDULER_AGENT_LIB="$ENV_FAULT_LIB_DIR/lib.sh" SCHEDULER_SCOPE_LIB_DIR="$ENV_FAULT_LIB_DIR/lib.d"; scheduler_issue_state() { state_read "$1"; }
-    eval "$(sed -n "/^scheduler_mark_canary_after_worker_start() (/,/^)/p" "$ENV_FAULT_LIB_DIR/mac-autopilot/scheduler.d/lib-bridge.sh")"; scheduler_mark_canary_after_worker_start 932
+    eval "$(sed -n "/^scheduler_mark_canary_after_worker_start() (/,/^)/p" "$ENV_FAULT_LIB_DIR/mac-autopilot/scheduler.d/dispatch.sh")"; scheduler_mark_canary_after_worker_start 932
     echo "requeue_scheduler_canaries=$(jq -r .canaries "$qf")"; echo "requeue_scheduler_reservation=$(state_read 932 | jq -r ".run.conclusion.canary_reserved_scopes // empty")"
     state_merge 932 ".run.conclusion.canary_reserved_scopes = \"implement\""; STAGE_DISPATCH_CANARY_SCOPES=implement
     FAIL_SYSTEMD_LAUNCH=1; RUN_RC=0; export FAIL_SYSTEMD_LAUNCH RUN_RC; dispatch implement 932 || :
@@ -3909,7 +3909,7 @@ assert_contains "canary read-modify-write takes a per-scope flock" "$QUARANTINE_
 BLOCKER_REQUEUE_BODY="$(sed -n '/^reconcile_blocking_issue_root() {/,/^}/p' "$SCRIPT_DIR/lib.d/blockers.sh")"
 assert_contains "blocker requeue persists its canary reservation" "$BLOCKER_REQUEUE_BODY" 'canary_reserved_scopes'
 assert_contains "blocker requeue clears its in-memory reservation after persistence" "$BLOCKER_REQUEUE_BODY" 'quarantine_stage_canary_forget_stage implement'
-assert_contains "scheduler consumes blocker reservations in the worker-start bridge" "$(cat "$SCRIPT_DIR/mac-autopilot/scheduler.d/lib-bridge.sh")" 'quarantine_mark_canary_scope_list "$scope"'
+assert_contains "scheduler consumes blocker reservations in the worker-start bridge" "$(cat "$SCRIPT_DIR/mac-autopilot/scheduler.d/dispatch.sh")" 'quarantine_mark_canary_scope_list "$scope"'
 assert_eq "reconcile: a canary with no new fault inside the grace period lifts the quarantine" "yes" "$(ef triage_lifted)"
 assert_eq "reconcile: a canary followed by the same fault keeps it" "yes" "$(ef docker_still_quarantined)"
 assert_eq "env_fault_probe: git identity fails against an env file without the keys" "fail" "$(ef probe_before)"

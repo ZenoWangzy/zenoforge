@@ -14,22 +14,6 @@ scheduler_lib_context() {
   { IFS= read -r SCHEDULER_LIB_REPO; IFS= read -r SCHEDULER_LIB_REPO_DIR; } <<<"$out"
   SCHEDULER_LIB_CONTEXT_FOR="$SCHEDULER_AGENT_LIB"
 }
-scheduler_mark_canary_after_worker_start() ( # issue; consume a blocker-route canary reservation after dispatch starts
-  local state scope
-  state="$(scheduler_issue_state "$1")" || return 1
-  scope="$(jqf -r '.run.conclusion.canary_reserved_scopes // empty' <<<"$state")" || return 1
-  [[ -n "$scope" ]] || return 0
-  REPO_DIR="$ROOT"
-  source "$SCHEDULER_AGENT_LIB" || return 1
-  state_merge "$1" 'del(.run.conclusion.canary_reserved_scopes)' || return 1
-  quarantine_mark_canary_scope_list "$scope"
-)
-scheduler_clear_canary_after_failed_start() (
-  [[ "$1" =~ ^[1-9][0-9]*$ ]] || return 0
-  REPO_DIR="$ROOT"
-  source "$SCHEDULER_AGENT_LIB" || return 1
-  state_merge "$1" 'del(.run.conclusion.canary_reserved_scopes)'
-)
 scheduler_jq_arg_file() (
   REPO_DIR="$ROOT"
   source "$SCHEDULER_AGENT_LIB" || return 1

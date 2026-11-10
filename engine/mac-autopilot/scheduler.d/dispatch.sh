@@ -16,6 +16,23 @@ capture_worker_stdout_report() { # report-path command...
   fi
 }
 
+scheduler_mark_canary_after_worker_start() ( # issue; consume a blocker-route canary reservation after dispatch starts
+  local state scope
+  state="$(scheduler_issue_state "$1")" || return 1
+  scope="$(jqf -r '.run.conclusion.canary_reserved_scopes // empty' <<<"$state")" || return 1
+  [[ -n "$scope" ]] || return 0
+  REPO_DIR="$ROOT"
+  source "$SCHEDULER_AGENT_LIB" || return 1
+  state_merge "$1" 'del(.run.conclusion.canary_reserved_scopes)' || return 1
+  quarantine_mark_canary_scope_list "$scope"
+)
+scheduler_clear_canary_after_failed_start() (
+  [[ "$1" =~ ^[1-9][0-9]*$ ]] || return 0
+  REPO_DIR="$ROOT"
+  source "$SCHEDULER_AGENT_LIB" || return 1
+  state_merge "$1" 'del(.run.conclusion.canary_reserved_scopes)'
+)
+
 dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason] [worker-context-json]
   local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census guard_env_word worker_exit_file
   local -a launcher=() worker_env=() launch_command=()
