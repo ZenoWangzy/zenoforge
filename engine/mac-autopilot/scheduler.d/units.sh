@@ -566,7 +566,7 @@ supervisor_cap_triage_park() { # id evidence → durable retry marker swept by t
 supervisor_budget_recut() { # id evidence decision park-reason recut-reason park-stage recut-stage allow-pr-close dead-park-salvage
   local id="$1" evidence="$2" decision="${3:-null}" park_reason="${4:-supervisor budget exhausted}"
   local recut_reason="${5:-ticket stop-loss reached}" park_stage="${6:-supervisor-budget-park}" recut_stage="${7:-supervisor-budget-recut}"
-  local allow_pr_close="${8:-false}" dead_park_salvage="${9:-false}" issue pr err note pr_comment pr_state salvage_refs salvage_error
+  local allow_pr_close="${8:-false}" dead_park_salvage="${9:-false}" issue pr err note pr_comment pr_state salvage_refs salvage_error salvage_refs_all
   issue="$(unit_field "$id" '.issue // empty')"; pr="$(unit_field "$id" '.pr // empty')"
   local d
   for d in "$WT_ROOT/wt-$id" "/tmp/wt-$id"; do # cleanup_tick 删的两个位置；stash 是 ensure_clone 收起的未提交进度
@@ -576,8 +576,9 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
         supervisor_recut_refuse "$id" "$evidence" "$decision" "$d" "$allow_pr_close"; return 0
       fi
       if [[ "$dead_park_salvage" == true && "$park_stage" == supervisor-budget-park && "$recut_stage" == supervisor-budget-recut ]]; then
+        [[ -z "$salvage_refs_all" ]] || sleep 1
         if salvage_refs="$(dead_park_salvage_worktree "$id" "$d" 2>&1)"; then
-          dead_park_salvage_notice "$id" "$salvage_refs"
+          salvage_refs_all="${salvage_refs_all:+$salvage_refs_all,}$salvage_refs"
           continue
         fi
         salvage_error="${salvage_refs//$'\n'/ }"
@@ -586,6 +587,7 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
       supervisor_budget_park "$id" "$evidence (worktree has unpushed work; not sent to recut)" "$decision" "$park_reason" "$park_stage"; return 0
     fi
   done
+  [[ -z "$salvage_refs_all" ]] || dead_park_salvage_notice "$id" "$salvage_refs_all"
   [[ "$issue" =~ ^[0-9]+$ ]] || { supervisor_budget_park "$id" "$evidence" "$decision" "$park_reason" "$park_stage"; return 0; }
   if [[ -n "$pr" && "$allow_pr_close" != true ]]; then
     supervisor_budget_park "$id" "$evidence (unit already has PR #$pr)" "$decision" "$park_reason" "$park_stage"; return 0
