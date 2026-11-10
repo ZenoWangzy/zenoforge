@@ -162,8 +162,8 @@ dead_park_exit
 base_ref="$(sed -n '1p' "$PUSHES")"
 [[ "$base_ref" =~ ^refs/heads/salvage/issue-9116-[0-9]{8}T[0-9]{6}Z$ ]] || fail "unexpected HEAD salvage ref: $base_ref"
 [[ "$(sed -n '2p' "$PUSHES")" == "$base_ref-dirty" && "$(sed -n '3p' "$PUSHES")" == "$base_ref-stash0" && "$(sed -n '4p' "$PUSHES")" == "$base_ref-stash1" ]] || fail "unexpected dirty/stash refs: $(cat "$PUSHES")"
-salvage_line="$(rg 'dead-park salvage unit=issue-9116 refs=' "$SAYS")"
-[[ "$(rg -c 'dead-park salvage unit=issue-9116 refs=' "$SAYS")" == 1 && "$salvage_line" == *"$base_ref"* && "$salvage_line" == *"$base_ref-dirty"* && "$salvage_line" == *"$base_ref-stash0"* && "$salvage_line" == *"$base_ref-stash1"* ]] || fail "missing one salvage say line with refs: $(cat "$SAYS")"
+salvage_line="$(grep -F 'dead-park salvage unit=issue-9116 refs=' "$SAYS")"
+[[ "$(grep -Fc 'dead-park salvage unit=issue-9116 refs=' "$SAYS")" == 1 && "$salvage_line" == *"$base_ref"* && "$salvage_line" == *"$base_ref-dirty"* && "$salvage_line" == *"$base_ref-stash0"* && "$salvage_line" == *"$base_ref-stash1"* ]] || fail "missing one salvage say line with refs: $(cat "$SAYS")"
 inbox_line="$(cat "$INBOX")"
 [[ "$(wc -l < "$INBOX")" == 1 && "$inbox_line" == *$'dead-park-salvage:issue-9116\tdead-park-salvage unit=issue-9116 refs='* && "$inbox_line" == *"$base_ref"* && "$inbox_line" == *"$base_ref-dirty"* && "$inbox_line" == *"$base_ref-stash0"* && "$inbox_line" == *"$base_ref-stash1"* ]] || fail "missing salvage inbox line: $inbox_line"
 
