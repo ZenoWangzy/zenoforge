@@ -183,7 +183,7 @@ self_check_verification_body() { # unit JSON → the PR's verification section w
     "$(jq -c '.verification.argv' <<<"$1")" "$(jq -r '.verification.exit_code' <<<"$1")" "$(jq -c '.verification.evidence_files' <<<"$1")"
 }
 self_check_before_review() { # unit sha clone; false means wait for the gate/self-fix
-  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base="" config_file incident_reason
+  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base="" config_file="" config_base="" config_temp="" incident_reason
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   lane="$(jqf -r '.lane // empty' <<<"$u")"
   if [[ "$lane" == pr ]]; then
@@ -193,7 +193,21 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
   if [[ "$(jqf -r '.self_check_sha // empty' <<<"$u")" == "$sha" && -n "$(jqf -r '.self_check_status // empty' <<<"$u")" \
       && "$(jqf -r '.self_check_lane // empty' <<<"$u")" == "$lane" \
       && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" ]]; then return 0; fi
-  config_file="$(ZF_CONFIG_ROOT="$dir/.zenoforge" sched_config_file state/verification.json 2>/dev/null || true)"
+  out="$SUP/self-check-$id-$sha-$(jqf -r '.self_check_fixes // 0' <<<"$u")-$TAG.log"; result="$out.result"
+  config_base=origin/main
+  [[ "$lane" == pr ]] && config_base="$pr_base"
+  if [[ -n "$config_base" ]] && git -C "$dir" rev-parse --verify "$config_base^{commit}" >/dev/null 2>&1; then
+    config_temp="$(mktemp "${out}.verification-config.XXXXXX")" || return 1
+    if git -C "$dir" show "$config_base:.zenoforge/state/verification.json" > "$config_temp" 2>/dev/null; then
+      config_file="$config_temp"
+    else
+      rm -f "$config_temp"; config_temp=""
+    fi
+    if ! git -C "$dir" diff --quiet "$config_base" "$sha" -- .zenoforge/state/verification.json; then
+      say "verification: ignored head copy for this run unit=$id path=.zenoforge/state/verification.json"
+    fi
+  fi
+  [[ -n "$config_file" ]] || config_file="$( (unset ZF_CONFIG_ROOT; sched_config_file state/verification.json 2>/dev/null) || true)"
   if [[ -z "$config_file" && "$(jqf -r '.verification_skip_logged // false' <<<"$u")" != true ]]; then
     incident_reason="$(incident_report_gate_reason "$u")"
     if [[ -z "$incident_reason" ]]; then
@@ -201,9 +215,9 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
       say "verification: skipped unit=$id (no state/verification.json)"
     fi
   fi
-  out="$SUP/self-check-$id-$sha-$(jqf -r '.self_check_fixes // 0' <<<"$u")-$TAG.log"; result="$out.result"
   rm -f "$out.verification.json" "$out.verification-output"
   (
+    [[ -z "$config_temp" ]] || trap 'rm -f "$config_temp"' EXIT
     # Same check as the review-time incident report gate (review-rules.sh), run here so the original session can repair the report via self-fix.
     reason="$(incident_report_gate_reason "$u")"
     if [[ -n "$reason" ]]; then

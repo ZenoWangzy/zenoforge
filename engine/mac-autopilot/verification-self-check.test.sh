@@ -8,7 +8,7 @@ fail() { echo "verification-self-check.test.sh: $*" >&2; exit 1; }
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$script_dir/scheduler.d/self-check.sh"
 
-sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+sha=""
 session_id=11111111-2222-3333-4444-555555555555
 TAG=20261110T000000Z
 fixture="$test_env_root/verification"
@@ -28,6 +28,11 @@ write_unit() { # id issue report
   jqf -cn --arg id "$1" --argjson issue "$2" --arg report "$3" --arg sid "$session_id" \
     '{units:[{id:$id,issue:$issue,lane:"pr",pr:$issue,branch:("agent/"+$id),stage:"review-pending",labels:[],implement_model:"gpt-6-luna",session_ids:{repair:$sid},implementation_report:$report,self_check_fixes:0,history:[]}]}' > "$UNITS"
   printf '## root-cause\nverification case\n\n## recurrence-guard\nkind: test\n\n## prior-art\nno external prior art: test fixture\n' > "$sup/$3"
+}
+commit_config_as_base() {
+  git -C "$repo" add -A -- .zenoforge/state/verification.json
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm 'verification config base'
+  sha="$(git -C "$repo" rev-parse HEAD)"
 }
 run_gate() { # id issue report → harvest the real pre-review gate
   local id="$1" issue="$2" report="$3"
@@ -67,6 +72,7 @@ SH
 chmod +x "$green"
 mkdir -p "$repo/.zenoforge/state"
 jqf -cn --arg exe "$green" '{argv:[$exe,"--green"],timeout_s:5,evidence_dir:"evidence"}' > "$repo/.zenoforge/state/verification.json"
+commit_config_as_base
 write_unit issue-87001 87001 impl-87001.md
 set_unit issue-87001 '.implementation_report="impl-87001.md"'
 run_gate issue-87001 87001 impl-87001.md
@@ -95,6 +101,7 @@ exit 17
 SH
 chmod +x "$red"
 jqf -cn --arg exe "$red" '{argv:[$exe],timeout_s:5,evidence_dir:"evidence"}' > "$repo/.zenoforge/state/verification.json"
+commit_config_as_base
 write_unit issue-87002 87002 impl-87002.md
 run_gate issue-87002 87002 impl-87002.md
 [[ "$(field issue-87002 .self_check_status)" == red ]] || fail 'nonzero verification was not red'
@@ -108,6 +115,7 @@ dispatch_if_room issue-87002 review-pending review review.log impl-87002.md gpt-
 
 # No config keeps today's self-check behavior and logs one skip per unit across two ticks.
 rm -f "$repo/.zenoforge/state/verification.json"
+commit_config_as_base
 write_unit issue-87003 87003 impl-87003.md
 run_gate issue-87003 87003 impl-87003.md
 self_check_before_review issue-87003 "$sha" "$repo" "$(jqf -c '.units[0]' "$UNITS")" || fail 'no-config second tick did not reuse the pass'
@@ -130,11 +138,44 @@ for invalid in malformed string-argv; do
   else
     jqf -cn --arg command "$repo/mark-ran $marker" '{argv:$command,timeout_s:5,evidence_dir:"evidence"}' > "$repo/.zenoforge/state/verification.json"
   fi
+  commit_config_as_base
   run_gate "issue-87004-$invalid" 87004 "impl-87004-$invalid.md"
   [[ "$(field "issue-87004-$invalid" .self_check_status)" == red ]] || fail "$invalid config was not red"
   out="$(field "issue-87004-$invalid" .self_check_output)"
   grep -Fq 'verification refused' "$out" || fail "$invalid config was not refused with a reason"
   [[ ! -e "$marker" ]] || fail "$invalid config ran the marker command"
 done
+
+# A worker deletion cannot hide the failing config committed at the PR base.
+git -C "$repo" switch -q main
+jqf -cn --arg exe "$red" '{argv:[$exe],timeout_s:5,evidence_dir:"evidence"}' > "$repo/.zenoforge/state/verification.json"
+commit_config_as_base
+git -C "$repo" switch -q -c head-delete-verification
+rm -f "$repo/.zenoforge/state/verification.json"
+git -C "$repo" add -A -- .zenoforge/state/verification.json
+git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm 'worker deletes verification config'
+sha="$(git -C "$repo" rev-parse HEAD)"
+write_unit issue-87005 87005 impl-87005.md
+run_gate issue-87005 87005 impl-87005.md
+[[ "$(field issue-87005 .self_check_status)" == red ]] || fail 'worker deletion hid the failing base verification config'
+out="$(field issue-87005 .self_check_output)"
+grep -Fq 'verification failed unit=issue-87005 exit_code=17' "$out" || fail 'failing base verification command did not run'
+! grep -Fq 'verification: skipped unit=issue-87005 (no state/verification.json)' "$LOG" || fail 'worker deletion was treated as a verification skip'
+[[ "$(grep -Fc 'verification: ignored head copy for this run unit=issue-87005 path=.zenoforge/state/verification.json' "$LOG")" == 1 ]] || fail 'deleted head config was not logged as ignored'
+
+# A worker addition cannot introduce a config when the base has none.
+git -C "$repo" switch -q main
+rm -f "$repo/.zenoforge/state/verification.json"
+commit_config_as_base
+git -C "$repo" switch -q -c head-add-verification
+jqf -cn --arg exe "$repo/mark-ran" --arg marker "$marker" '{argv:[$exe,$marker],timeout_s:5,evidence_dir:"evidence"}' > "$repo/.zenoforge/state/verification.json"
+git -C "$repo" add -- .zenoforge/state/verification.json
+git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm 'worker adds verification config'
+sha="$(git -C "$repo" rev-parse HEAD)"
+write_unit issue-87006 87006 impl-87006.md
+run_gate issue-87006 87006 impl-87006.md
+[[ "$(grep -Fc 'verification: skipped unit=issue-87006 (no state/verification.json)' "$LOG")" == 1 ]] || fail 'base without config did not skip verification'
+[[ "$(grep -Fc 'verification: ignored head copy for this run unit=issue-87006 path=.zenoforge/state/verification.json' "$LOG")" == 1 ]] || fail 'added head config was not logged as ignored'
+[[ ! -e "$marker" ]] || fail 'head-only verification config ran its marker command'
 
 echo 'verification-self-check.test.sh: ok'
