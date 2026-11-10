@@ -1249,4 +1249,48 @@ supervisor_cap_close_pr issue-6801 arbitration-cap-again "cap again, no ruling"
 [[ ! -s "$pr_calls" ]] || fail "a PR cited by an open issue (first slice) must stay open: $(cat "$pr_calls")"
 grep -q 'first slice cited by open issue #6900' "$LOG" || fail "the first-slice keep must log one line"
 
+# ---- 行 172c：cap-exhausted 停放也有机械出口：owner 裁决 +1；6 h 无裁决 recut 一次；再次触顶 durable close ----
+cx_hist() { # exhausted-at [extra-json] → arbiter history (4 runs, old) + the cap-exhausted park row + extra rows
+  jq -cn --arg at "$1" --argjson extra "${2:-[]}" \
+    '[range(4) | {stage:"supervisor-arbiter",result:"dispatched",at:"2026-10-26T00:00:00Z"}]
+     + [{stage:"supervisor-cap-exhausted",result:"capped again after its one retry",at:$at}] + $extra'
+}
+cx_unit() { # id issue hist-json → a parked cap-exhausted unit
+  jq -cn --arg id "$1" --argjson issue "$2" --argjson h "$3" \
+    '{units:[{id:$id,issue:$issue,stage:"parked",parked_reason:"supervisor-cap-exhausted",unpark_condition:"a new issue state or supervisor ruling",history:$h}]}'
+}
+cx_stage() { jq -r --arg id "$1" '.units[] | select(.id==$id) | .stage' "$UNITS"; }
+cx_reason() { jq -r --arg id "$1" '.units[] | select(.id==$id) | .parked_reason' "$UNITS"; }
+
+# The issue-state reader is not what these cases test: it reads ready-for-agent for every issue here.
+scheduler_issue_state() { printf '{"state":"ready-for-agent"}\n'; }
+# owner ruling after the park: +1 release, the unit re-enters the arbitration-cap park (the one run is then dispatched by the existing path)
+units "$(cx_unit issue-671 671 "$(cx_hist 2026-10-27T01:00:00Z '[{"stage":"supervisor-requeue","result":"supervisor ruling 6737000001: one more run","at":"2026-10-27T02:00:00Z"}]')")"
+supervisor_cap_exhausted_sweep
+[[ "$(cx_reason issue-671)" == supervisor-arbitration-cap ]] || fail "an owner ruling after the cap-exhausted park must release it: $(jq -c '.units[0]' "$UNITS")"
+grep -q 'supervisor cap-exhausted unit=issue-671 reason=supervisor-cap-exhausted: released by a head ruling' "$LOG" || fail "the ruling release must log its unit and reason"
+
+# no ruling, six hours: recut default once (the existing recut route; the unit closes on the route)
+echo '{"state":"ready-for-agent","recut_children":[],"recut_comment_scanned":true}' > "$AGENT_HOME/state/672.json"
+: > "$route2"; units "$(cx_unit issue-672 672 "$(cx_hist 2026-10-26T00:00:00Z)")"
+supervisor_cap_exhausted_sweep
+[[ "$(cat "$route2")" == 'route ' && "$(cx_stage issue-672)" == closed ]] \
+  || fail "six hours without a ruling must take the recut route once: calls=$(cat "$route2") $(jq -c '.units[0]' "$UNITS")"
+grep -q 'supervisor cap-exhausted unit=issue-672 reason=supervisor-cap-exhausted: six hours without a ruling, recut default once' "$LOG" || fail "the recut exit must log its unit and reason"
+
+# no ruling, six hours, the cap came back after its recut default: durable close with the issue hold
+echo '{"state":"ready-for-agent","recut_children":[],"recut_comment_scanned":true}' > "$AGENT_HOME/state/673.json"
+: > "$hold_calls"
+units "$(cx_unit issue-673 673 "$(cx_hist 2026-10-26T00:00:00Z '[{"stage":"supervisor-cap-default","result":"branch=recut: arbitration cap (4 lifetime dispatches) reached; recut the unit once","at":"2026-10-26T00:01:00Z"}]')")"
+supervisor_cap_exhausted_sweep
+[[ "$(cx_stage issue-673)" == closed ]] || fail "a second cap with no ruling must close durably: $(jq -c '.units[0]' "$UNITS")"
+grep -q '^hold --hold 673 ' "$hold_calls" || fail "the second-cap close must hold issue 673: $(cat "$hold_calls")"
+
+# inside the six-hour wait (no ruling): nothing moves, nothing is held
+: > "$hold_calls"; : > "$route2"
+units "$(cx_unit issue-674 674 "$(cx_hist "$(date -u +%Y-%m-%dT%H:%M:%SZ)")")"
+supervisor_cap_exhausted_sweep
+[[ "$(cx_stage issue-674)" == parked && "$(cx_reason issue-674)" == supervisor-cap-exhausted && ! -s "$hold_calls" && ! -s "$route2" ]] \
+  || fail "inside the six-hour wait the cap-exhausted park must stay put: $(jq -c '.units[0]' "$UNITS")"
+
 echo 'supervisor-arbiter.test.sh: all assertions passed'
