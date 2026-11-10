@@ -383,7 +383,7 @@ Supervisor ruling: dependency #$dropped is resolved for this unit (dropped_deps)
   issue="$(jqf -r '.issue // empty' <<<"$u")"
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
     issue_state="$(scheduler_issue_state "$issue")" || { supervisor_requeue_retry "$id" "issue #$issue state is unreadable for requeue"; return $?; }
-    issue_stage="$(jqf -r 'if type == "object" and (.state | type) == "string" and (.state | length) > 0 then .state else error("invalid issue state") end' <<<"$issue_state")" || { supervisor_requeue_retry "$id" "issue #$issue state is malformed for requeue"; return $?; }
+    issue_stage="$(jqf -r 'if type == "object" and (has("state")|not) then "untracked" elif type == "object" and (.state|type) == "string" and (.state|length) > 0 then .state else error("invalid issue state") end' <<<"$issue_state")" || { supervisor_requeue_retry "$id" "issue #$issue state is malformed for requeue"; return $?; }
     if [[ "$issue_stage" == tracker ]]; then
       local pr tracker_log followup cite_status
       pr="$(jqf -r '.pr // empty' <<<"$u")"

@@ -886,6 +886,7 @@ REPO=ZenoWangzy/zenoforge
 REQUEUE_TRANSITIONS="$fixture/requeue-transitions"; : > "$REQUEUE_TRANSITIONS"
 scheduler_issue_transition() {
   printf '%s:%s\n' "$1" "$2" >> "$REQUEUE_TRANSITIONS"
+  if [[ "$1" == 9407 ]]; then return 0; fi
   [[ "$1" != 9403 ]] || printf 'issue_transition: refused #9403 needs-advisor -> active state ready-for-agent (reason=supervisor-requeue)\n' >&2
   return 1
 }
@@ -937,6 +938,18 @@ jq -e '.units[] | select(.id=="arbiter-failure") | .parked_reason=="supervisor-b
 jq -e '.units[] | select(.id=="arbiter-failure") | .note|contains("issue_transition: refused #9403")' "$UNITS" >/dev/null \
   || fail "the durable park must preserve the transition refusal"
 grep -Fq '9403:ready-for-agent' "$REQUEUE_TRANSITIONS" || fail "the other-state case must exercise a failed transition"
+
+printf '%s\n' '{"attempts":0}' > "$issue_states/9407.json"
+requeue_test_unit arbiter-untracked 9407 99407
+supervisor_requeue_unit arbiter-untracked requeue "resume the repair" "$requeue_decision" || :
+[[ "$(field arbiter-untracked .stage)" == repair-pending ]] || fail "a missing issue state must continue the requeue"
+grep -Fq '9407:ready-for-agent' "$REQUEUE_TRANSITIONS" || fail "a missing issue state must transition to ready-for-agent"
+
+printf '%s\n' '{"state":""}' > "$issue_states/9408.json"
+requeue_test_unit arbiter-empty-state 9408 99408
+supervisor_requeue_unit arbiter-empty-state requeue "resume the repair" "$requeue_decision" || :
+[[ "$(field arbiter-empty-state .stage)" == supervisor-review ]] || fail "an empty issue state must retry requeue"
+! grep -Fq '9408:ready-for-agent' "$REQUEUE_TRANSITIONS" || fail "an empty issue state must not attempt the issue transition"
 
 # A GitHub read failure is retryable: it leaves the arbitration unit in review.
 printf '%s\n' '{"state":"needs-advisor"}' > "$issue_states/9406.json"
