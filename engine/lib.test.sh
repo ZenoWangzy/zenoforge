@@ -3788,6 +3788,7 @@ EOF
     echo "canary_due=$(quarantine_decision triage $((tq + 16 * 60)))"
     quarantine_open advisor env:test-gate:advisor "d" 2 "$tq" 2>/dev/null
     quarantine_open advisor@packages/advisor-test env:test-gate:advisor "d" 2 "$tq" 2>/dev/null
+    stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) >/dev/null 2>&1
     stage_dispatch_allowed advisor "[\"packages/advisor-test\"]" $((tq + 16 * 60)) >/dev/null 2>&1
     ADVISOR_CHILD_SCOPES="$AGENT_HOME/advisor-child-scopes"
     ADVISOR_FIRST_CANARIES="$AGENT_HOME/advisor-first-canaries"

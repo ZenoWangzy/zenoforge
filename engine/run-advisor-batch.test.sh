@@ -56,6 +56,17 @@ mkdir -p "$LOG_DIR" "$WEB_ADVISOR_PROVIDER_JOB_DIR"
   web_advisor_provider_dispatch_question_async charge-failure "$tmp/provider-question" 2>"$tmp/provider-charge.log" || status=$?
   [[ "$status" == 0 && -f "$started" ]] && grep -Fq 'canary mark failed after job start' "$tmp/provider-charge.log"
 )
+eval "$(sed -n '/^advisor_batch_web_dispatch() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+(
+  quarantine_open advisor env:test-gate:advisor 'batch canary fixture' 2 "$(date +%s)" >/dev/null 2>&1
+  canary_file="$(quarantine_file advisor)"; before="$(jq -r '.canaries' "$canary_file")"
+  started="$tmp/batch-provider-started"; web_advisor_provider_start_job_unit() { : > "$started"; }
+  model_policy() { [[ "$1 $2" == 'identity advisor' ]] && printf 'web:fixture-model\n'; }
+  ZF_QUARANTINE_CANARY_SCOPES=advisor
+  advisor_batch_web_dispatch batch-canary "$tmp/provider-question"
+  after="$(jq -r '.canaries' "$canary_file")"
+  [[ -f "$started" && "$before:$after" == '0:1' ]]
+)
 eval "$(sed -n '/^advisor_batch_dispatch_plan_reask() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
 mkdir -p "$WEB_ADVISOR_PROVIDER_JOB_DIR/fixture-job"; printf 'saved question\n' > "$WEB_ADVISOR_PROVIDER_JOB_DIR/fixture-job/question.txt"
 BATCH_TOPIC=fixture WEB_ADVISOR_PROVIDER_TOPIC=fixture ACTIVE_BATCH_JOB='{}' ADVISOR_MODEL_USED=fixture INCLUDED=1 ADVISOR_MODEL_FALLBACK= ADVISOR_TICKET_LOCK_FDS=() BATCH_LOCK_FD=9

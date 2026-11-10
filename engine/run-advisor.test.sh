@@ -44,6 +44,6 @@ printf '{"advisor":{"provider":""}}\n' > "$tmp/disabled/.zenoforge/night.json"
 runner_home="$tmp/runner-home"; mkdir -p "$runner_home/quarantine"; printf '%s\n' '{"canaries":0,"next_canary_at":0}' > "$runner_home/quarantine/advisor.json"
 runner_output="$(AGENT_HOME="$runner_home" AGENT_DRY_RUN=0 ZF_QUARANTINE_CANARY_SCOPES=advisor ZF_CONFIG_ROOT="$tmp/disabled/.zenoforge" ZF_PACK_DIR='' ZF_REPO_DIR="$PWD" bash "$script_dir/run-advisor.sh" 930001 2>&1)"
 grep -Fq 'skip: advisor provider is not configured' <<< "$runner_output"
-jq -e '.canaries == 1' "$runner_home/quarantine/advisor.json" >/dev/null
+jq -e '.canaries == 0' "$runner_home/quarantine/advisor.json" >/dev/null
 
 echo 'ok - advisor settings use the target config override and skip when the provider is unset'
