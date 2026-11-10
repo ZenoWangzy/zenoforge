@@ -245,6 +245,7 @@ re-measure on the first 7 live days, and change them only with that measurement 
 first `register_new_issues` phase of the full tick: 43 s median, 104 s p90 over 95 ticks (38 rows, always a full lap), and a row waited
 a tick gap for its next walk (636 s median, 1151 s p90), measured 2026-11-08 07:34Z to 2026-11-09 07:34Z.
 
+A pinned `autopi-live/loop.sh` change takes effect at the next tick boundary.
 Status: `STALLED` when the buffer is not empty and the stall exceeds the bound, `PAUSED` while the pipeline pause
 file exists (no alert), else `OK`. Stall minutes are `min(now - last out, oldest wait)` while something waits and 0
 when nothing waits: a station that sat idle for days is not stalled by a ticket that arrived five minutes ago.
