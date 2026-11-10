@@ -131,6 +131,7 @@ before="$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")"
 saved_max="$SUPERVISOR_ARBITER_MAX"; SUPERVISOR_ARBITER_MAX=2; printf 'gpt-6.1-terra\t%s\n' "$(( $(date +%s) + 86400 ))" > "$WORKER_SCRATCH_ROOT/luna/model-not-found.cache"
 dispatch_supervisor_arbiters
 for _ in {1..50}; do grep -Fq ' -m gpt-6-luna -c model_reasoning_effort=max ' "$fixture/codex.calls" 2>/dev/null && break; sleep 0.02; done; [[ "$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == "$((before + 1))" ]] && grep -Fq ' -m gpt-6-luna -c model_reasoning_effort=max ' "$fixture/codex.calls" || fail "cached terra must dispatch the arbiter on luna max (calls=$(cat "$fixture/codex.calls" 2>/dev/null || true))"
+grep -Fq 'model-not-found cache swap arbiter profile=terra from=gpt-6.1-terra to=gpt-6-luna effort=max' "$LOG" || fail 'cached terra arbiter swap must be recorded'
 jq -e '[.workers[] | select(.type=="supervise" and .unit=="pr-601")] | length == 1' "$WORKERS" >/dev/null || fail "a unit already under arbitration must not get a second worker"
 jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-602")' "$WORKERS" >/dev/null || fail "the next unit in order must be dispatched"
 before="$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")"

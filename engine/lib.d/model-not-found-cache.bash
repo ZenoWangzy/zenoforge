@@ -53,6 +53,16 @@ codex_model_for_profile() { # active configured supervisor profile -> its Codex 
   [[ -n "$model" ]] || return 1
   printf '%s\n' "$model"
 }
+model_not_found_arbiter_prepare() { # profile stopped unit → model/effort overrides and cache decision log
+  local profile="$1" stopped="$2" unit="$3" source_model fallback_tuple
+  MODEL_NOT_FOUND_ARBITER_MODEL=; MODEL_NOT_FOUND_ARBITER_EFFORT=
+  [[ "$stopped" != true ]] || return 0
+  source_model="$(codex_model_for_profile "$profile" 2>/dev/null || true)"
+  [[ -n "$source_model" ]] && model_not_found_cache_has "$source_model" || return 0
+  fallback_tuple="$(model_not_found_fallback_tuple)" || { say "supervisor arbitration pending unit=$unit: cached profile model unavailable and no policy fallback is available"; return 1; }
+  IFS=$'\t' read -r MODEL_NOT_FOUND_ARBITER_MODEL MODEL_NOT_FOUND_ARBITER_EFFORT <<<"$fallback_tuple"
+  say "model-not-found cache swap arbiter profile=$profile from=$source_model to=$MODEL_NOT_FOUND_ARBITER_MODEL effort=$MODEL_NOT_FOUND_ARBITER_EFFORT"
+}
 model_not_found_cache_observe_log() { # model log → record only an explicit model_not_found response
   [[ -r "$2" ]] && grep -Eiq 'model_not_found' "$2" || return 0
   model_not_found_cache_record "$1" || true

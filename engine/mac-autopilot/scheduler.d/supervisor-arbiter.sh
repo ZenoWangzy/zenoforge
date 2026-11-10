@@ -77,7 +77,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
   cap_contract_file="${ZF_ENGINE_DIR:-$ROOT/engine}/prompts/supervisor-cap-triage.md"
   local token_context mark u id report log q pid w pid_file converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
   local -a launcher=() worker_command=()
-  local over_stop=false arbiter_profile="$SUPERVISOR_ARBITER_PROFILE" arbiter_effort="" arbiter_source_model="" arbiter_model_override="" arbiter_effort_override="" fallback_tuple=""
+  local over_stop=false arbiter_profile="$SUPERVISOR_ARBITER_PROFILE" arbiter_effort=""
   # Apply terminal defaults before prompt availability, the in-flight ceiling, or dispatch budgets can
   # return from this tick. Active arbitration workers keep their own result; all other capped units stop now.
   while IFS= read -r u; do
@@ -165,8 +165,6 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       continue
     fi
     (( $(live_workers) < MAX )) || { say "supervisor arbitration pending unit=$id: worker capacity full"; return 0; }
-    arbiter_profile="$SUPERVISOR_ARBITER_PROFILE"
-    arbiter_source_model=""; arbiter_model_override=""; arbiter_effort_override=""
     if [[ "$over_stop" == true ]]; then
       # Weekly Codex stop: the arbiter runs on the hand-claude role. No Claude share or a Claude hold defers the unit to a later tick.
       if [[ "$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")" != 0 ]] && pick_claude_implementer; then
@@ -183,14 +181,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       say "supervisor cap triage unit=$id: engine contract missing; not dispatched"
       continue
     fi
-    if [[ "$over_stop" != true ]]; then
-      arbiter_source_model="$(codex_model_for_profile "$arbiter_profile" 2>/dev/null || true)"
-      if [[ -n "$arbiter_source_model" ]] && model_not_found_cache_has "$arbiter_source_model"; then
-        fallback_tuple="$(model_not_found_fallback_tuple)" || { say "supervisor arbitration pending unit=$id: cached profile model unavailable and no policy fallback is available"; continue; }
-        IFS=$'\t' read -r arbiter_model_override arbiter_effort_override <<<"$fallback_tuple"
-        say "model-not-found cache swap arbiter profile=$arbiter_profile from=$arbiter_source_model to=$arbiter_model_override effort=$arbiter_effort_override"
-      fi
-    fi
+    model_not_found_arbiter_prepare "$arbiter_profile" "$over_stop" "$id" || continue
     if [[ "$is_swept" == true ]]; then
       return_stage="$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")"
       [[ -n "$return_stage" ]] || return_stage="$(supervisor_return_stage "$u")"
@@ -247,7 +238,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     launcher=(); command -v setsid >/dev/null 2>&1 && launcher=(setsid)
     worker_command=(bash -c 'extra=(); [[ -z "$4" ]] || extra=(-m "$4" -c "model_reasoning_effort=$5"); exec timeout -k 30 900 codex exec -p "$1" "${extra[@]}" \
       --skip-git-repo-check -s read-only --json --output-last-message "$2" - < "$3"' \
-      supervisor-arbiter "$arbiter_profile" "$SUP/$report" "$SUP/$q" "$arbiter_model_override" "$arbiter_effort_override")
+      supervisor-arbiter "$arbiter_profile" "$SUP/$report" "$SUP/$q" "$MODEL_NOT_FOUND_ARBITER_MODEL" "$MODEL_NOT_FOUND_ARBITER_EFFORT")
     # Same report file as the Codex path: the prompt carries the frozen record, so the Claude run gets no tools.
     # --safe-mode --setting-sources "" as in build_claude_implement_command: no project CLAUDE.md or settings may reshape the ACTION/VERDICT lines.
     # An empty effort drops --effort (the CLI default applies).
