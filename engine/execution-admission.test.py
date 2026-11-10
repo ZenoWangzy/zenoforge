@@ -105,13 +105,32 @@ class ExecutionAdmission(unittest.TestCase):
         (proc / "pressure").mkdir(parents=True)
         (proc / "meminfo").write_text("MemAvailable: 9999999 kB\n")
         (proc / "loadavg").write_text("1 0 0 1/2 3\n")
-        self.assertEqual(guard.resources(proc, 6144, 12)["available_mb"], 9999999 // 1024)
-        (proc / "pressure/memory").write_text("some avg10=0 avg60=30 avg300=0 total=1\nfull avg10=0.00 avg60=9.99 avg300=0 total=1\n")
-        self.assertEqual(guard.resources(proc, 6144, 12)["memory_full_avg60"], 9.99)
-        (proc / "pressure/memory").write_text("some avg10=0 avg60=30 avg300=0 total=1\nfull avg10=0.00 avg60=10.00 avg300=0 total=1\n")
-        with self.assertRaises(guard.Deferred):
-            guard.resources(proc, 6144, 12)
-        self.assertEqual(guard.resources(proc, 6144, 12, priority="hotfix")["memory_full_avg60"], 10.0)
+        with patch.object(guard, "MEMORY_FULL_AVG60_LIMIT", 10.0):
+            self.assertEqual(guard.resources(proc, 6144, 12)["available_mb"], 9999999 // 1024)
+            (proc / "pressure/memory").write_text("some avg10=0 avg60=30 avg300=0 total=1\nfull avg10=0.00 avg60=9.99 avg300=0 total=1\n")
+            self.assertEqual(guard.resources(proc, 6144, 12)["memory_full_avg60"], 9.99)
+            (proc / "pressure/memory").write_text("some avg10=0 avg60=30 avg300=0 total=1\nfull avg10=0.00 avg60=10.00 avg300=0 total=1\n")
+            with self.assertRaises(guard.Deferred):
+                guard.resources(proc, 6144, 12)
+            self.assertEqual(guard.resources(proc, 6144, 12, priority="hotfix")["memory_full_avg60"], 10.0)
+
+    def test_memory_pressure_limit_env_seam(self):
+        proc = self.home / "pressure-seam-proc"
+        (proc / "pressure").mkdir(parents=True)
+        (proc / "meminfo").write_text("MemAvailable: 9999999 kB\n")
+        (proc / "loadavg").write_text("1 0 0 1/2 3\n")
+        (proc / "pressure/memory").write_text("some avg10=0 avg60=30 avg300=0 total=1\nfull avg10=0.00 avg60=12.00 avg300=0 total=1\n")
+        code = ("import importlib.util,pathlib\n"
+                f"s=importlib.util.spec_from_file_location('g',{str(ROOT / 'execution-admission.py')!r})\n"
+                "g=importlib.util.module_from_spec(s);s.loader.exec_module(g)\n"
+                f"try: g.resources(pathlib.Path({str(proc)!r}),6144,12); print('admitted')\n"
+                "except g.Deferred: print('deferred')\n")
+        for env_value, expected in ((None, "deferred"), ("1000", "admitted"), ("not-a-number", "deferred"), ("nan", "deferred")):
+            env = dict(self.env, AGENT_EXECUTION_MEMORY_FULL_AVG60_LIMIT=env_value) if env_value else {k: v for k, v in self.env.items() if k != "AGENT_EXECUTION_MEMORY_FULL_AVG60_LIMIT"}
+            result = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+            self.assertEqual(result.stdout.strip(), expected, result.stderr)
+            if env_value in ("not-a-number", "nan"):
+                self.assertEqual(result.stderr.count("AGENT_EXECUTION_MEMORY_FULL_AVG60_LIMIT"), 1, result.stderr)
 
     def test_cpu_threshold_memory_and_wait_are_not_idle(self):
         proc = self.home / "cpu-resources"
