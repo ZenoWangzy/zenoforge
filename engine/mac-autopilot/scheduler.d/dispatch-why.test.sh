@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Dispatch why-log: a unit's skip gate is logged once per change of gate, a start clears its entry, and the refill's tick-phases line names the steps phase() did not time.
-set -uo pipefail
+set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 set +e # test-env.sh turns errexit on; the scheduler runs without it, and refill_tick reads a ref that a fixture lacks
 
