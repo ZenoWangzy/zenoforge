@@ -658,6 +658,11 @@ sweep_blocking_issue_roots() {
       fi
       # One root that fails must not starve every root after it.
       if ! reconcile_blocking_issue_root "$issue_json" "$graph_json"; then
+        if [[ "${BLOCKER_ROOT_FAIL_REASON:-}" == *"owner-admission deadline"* ]]; then
+          printf '%s\n' "${last_done:-$cursor}" > "$cursor_file"
+          echo "blocker-root sweep: tick gh deadline exhausted after ${roots_done}/${roots_total} roots; resuming at #${n} next tick" >&2
+          return "$sweep_failed"
+        fi
         sweep_failed=1
         supervisor_inbox_append_once "blocker-root-failed issue=#$n" \
           "blocker-root-failed issue=#$n reason=${BLOCKER_ROOT_FAIL_REASON:-reconcile_blocking_issue_root exited non-zero without recording a reason}; the sweep continued with the remaining roots" || true

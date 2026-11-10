@@ -988,4 +988,42 @@ assert_eq "next tick resumes at roots 3-5 then wraps to roots 1-2" \
 eval "$deadline_real_reconcile"
 eval "$deadline_real_helper"
 
+# If the tick GH deadline expires during a root read, leave the cursor on the
+# prior root so the next tick resumes at the root whose read could not finish.
+root_deadline_real_reconcile="$(declare -f reconcile_blocking_issue_root)"
+root_deadline_real_helper="$(declare -f gh_tick_attempt_timeout_sec)"
+ROOT_DEADLINE_FAIL=1
+ROOT_DEADLINE_SWEPT=""
+gh_tick_attempt_timeout_sec() { printf '1\n'; }
+reconcile_blocking_issue_root() {
+  local n; n="$(jq -r '.number' <<< "$1")"
+  ROOT_DEADLINE_SWEPT+="$n "
+  BLOCKER_ROOT_FAIL_REASON=""
+  if [ "$n" = 500102 ] && [ "$ROOT_DEADLINE_FAIL" = 1 ]; then
+    BLOCKER_ROOT_FAIL_REASON="gh api sub_issues failed for #$n: gh: refusing read because the owner-admission deadline cannot fit one bounded attempt"
+    return 1
+  fi
+  return 0
+}
+BLOCKER_GRAPH_JSON='[{"number":500101,"state":"OPEN","labels":[{"name":"concluded"}],"blocking":{"nodes":[]}},{"number":500102,"state":"OPEN","labels":[{"name":"concluded"}],"blocking":{"nodes":[]}},{"number":500103,"state":"OPEN","labels":[{"name":"concluded"}],"blocking":{"nodes":[]}}]'
+rm -f "$AGENT_HOME/blocker-root-sweep.cursor"
+: > "$AGENT_HOME/supervisor-inbox"
+root_deadline_stderr="$TEST_HOME/blocker-root-read-deadline.stderr"
+root_deadline_rc=0
+sweep_blocking_issue_roots 2> "$root_deadline_stderr" || root_deadline_rc=$?
+assert_eq "deadline during root read does not fail the sweep" 0 "$root_deadline_rc"
+assert_eq "deadline during root read writes no inbox lines" 0 "$(wc -l < "$AGENT_HOME/supervisor-inbox" | tr -d ' ')"
+assert_eq "deadline during root read leaves the prior root in the cursor" 500101 "$(cat "$AGENT_HOME/blocker-root-sweep.cursor")"
+assert_eq "deadline during root read names its resume root and progress" \
+  "blocker-root sweep: tick gh deadline exhausted after 1/3 roots; resuming at #500102 next tick" \
+  "$(cat "$root_deadline_stderr")"
+ROOT_DEADLINE_FAIL=0
+ROOT_DEADLINE_SWEPT=""
+root_deadline_rc=0
+sweep_blocking_issue_roots 2>/dev/null || root_deadline_rc=$?
+assert_eq "next sweep after an in-root deadline succeeds" 0 "$root_deadline_rc"
+assert_eq "next sweep starts with the root whose read hit the deadline" "500102 500103 500101 " "$ROOT_DEADLINE_SWEPT"
+eval "$root_deadline_real_reconcile"
+eval "$root_deadline_real_helper"
+
 exit "$FAILED"
