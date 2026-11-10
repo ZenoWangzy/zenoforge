@@ -657,7 +657,7 @@ _footprint_room() {
   footprint_shadow_old_rule "$id" "$active"
 }
 footprint_room() { # unit type; report checks that materially delay dispatch
-  local started=$SECONDS rc=0 elapsed room_start="${EPOCHREALTIME:-0}" room_end
+  local started=$SECONDS rc=0 elapsed room_start="${EPOCHREALTIME:-0}" room_end why_unit="$1"
   FOOTPRINT_CACHE_STATE=''
   # Repair reaches this twice (room_for, then the handler); the walk is sequential, so one unit is one candidate.
   if [[ -n "${TICK_FOOTPRINT_CAP:-}" && "${TICK_FOOTPRINT_DEFER:-false}" == true && "$1" != "$TICK_FOOTPRINT_CAP_LAST" ]]; then
@@ -672,7 +672,8 @@ footprint_room() { # unit type; report checks that materially delay dispatch
   # No room left in the refill: the unit keeps waiting untouched, and the walk ends here.
   if (( rc == 75 )); then dispatch_skip refill-room; TICK_FOOTPRINT_CAP_HIT=true; rc=1
   # A wait with an owner is already counted by the footprint skip; any other refusal is an error path.
-  elif (( rc != 0 )) && [[ -z "$(unit_field "$1" '.footprint_wait_owner // empty')" ]]; then dispatch_skip footprint-error; fi
+  elif (( rc != 0 )) && [[ -z "$(unit_field "$1" '.footprint_wait_owner // empty')" ]]; then dispatch_skip footprint-error
+  elif (( rc != 0 )); then dispatch_why "$1" footprint-wait; fi
   room_end="${EPOCHREALTIME:-0}"
   TICK_FOOTPRINT_ROOM_USEC=$((${TICK_FOOTPRINT_ROOM_USEC:-0} + 10#${room_end/./} - 10#${room_start/./}))
   TICK_FOOTPRINT_ROOM_CALLS=$((${TICK_FOOTPRINT_ROOM_CALLS:-0} + 1)); (( rc == 0 )) || TICK_FOOTPRINT_ROOM_WAITS=$((${TICK_FOOTPRINT_ROOM_WAITS:-0} + 1))

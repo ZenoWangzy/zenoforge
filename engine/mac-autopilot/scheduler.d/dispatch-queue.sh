@@ -24,13 +24,45 @@ dispatch_steps_say() {
   done < <(for step_name in "${!dispatch_step_secs[@]}"; do printf '%s %s\n' "${dispatch_step_secs[$step_name]}" "$step_name"; done | sort -k1,1nr -k2,2 | cut -d' ' -f2)
   say "$step_line"
 }
+# Why a unit did not start: one `dispatch why` line when its gate differs from the last gate logged for it. dispatch_skip, room_for and
+# footprint_room pass the unit as why_unit (dynamic scope). The last gate per unit lives in $A/.dispatch-why (unit TAB gate); a start clears it.
+declare -gA DISPATCH_WHY_LAST=()
+DISPATCH_WHY_DIRTY=false
+dispatch_why() { # unit gate [detail]
+  [[ -n "${1:-}" && -n "${2:-}" && "${DISPATCH_WHY_LAST[$1]:-}" != "$2" ]] || return 0
+  DISPATCH_WHY_LAST[$1]="$2"; DISPATCH_WHY_DIRTY=true
+  say "dispatch why unit=$1 gate=$2${3:+ detail=$3}"
+}
+dispatch_why_clear() { # unit: it started, so its next skip is news again
+  [[ -n "${1:-}" && -n "${DISPATCH_WHY_LAST[$1]:-}" ]] || return 0
+  unset "DISPATCH_WHY_LAST[$1]"; DISPATCH_WHY_DIRTY=true
+}
+dispatch_why_load() {
+  local unit gate
+  DISPATCH_WHY_LAST=(); DISPATCH_WHY_DIRTY=false
+  [[ -n "${A:-}" && -r "$A/.dispatch-why" ]] || return 0
+  while IFS=$'\t' read -r unit gate; do [[ -n "$unit" && -n "$gate" ]] && DISPATCH_WHY_LAST[$unit]="$gate"; done < "$A/.dispatch-why"
+  return 0
+}
+dispatch_why_save() { # prunes units that left units.json; rewrites the file only when a gate or a prune changed it
+  local unit ids
+  [[ -n "${A:-}" && -n "${UNITS:-}" ]] || return 0 # a caller without a state dir (a pack stub test) keeps no file
+  ids="$(jqf -r '.units[].id' "$UNITS" 2>/dev/null)" || return 0
+  for unit in "${!DISPATCH_WHY_LAST[@]}"; do
+    grep -qxF -- "$unit" <<<"$ids" || { unset "DISPATCH_WHY_LAST[$unit]"; DISPATCH_WHY_DIRTY=true; }
+  done
+  [[ "$DISPATCH_WHY_DIRTY" == true ]] || return 0
+  for unit in "${!DISPATCH_WHY_LAST[@]}"; do printf '%s\t%s\n' "$unit" "${DISPATCH_WHY_LAST[$unit]}"; done > "$A/.dispatch-why.tmp" \
+    && mv -f -- "$A/.dispatch-why.tmp" "$A/.dispatch-why" || :
+  DISPATCH_WHY_DIRTY=false
+}
 
 dispatch_pending() {
   TICK_DISPATCH_SKIPS=()
   TICK_PRIORITY_HOLD_EXPIRED=()
   TICK_PRIORITY_ADMISSION_CACHE=()
   TICK_CONTAINER_RUNTIME=""
-  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
+  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started
   local -A dispatch_step_secs=() dispatch_step_counts=(); local dispatch_step_at=${EPOCHREALTIME/[.,]/} dispatch_step_last=start
   # A full tick's first pass: past the walk deadline room_for refuses every start, so the tail still gets its parks and holds.
@@ -55,6 +87,7 @@ dispatch_pending() {
     dispatch_capacity_free && tick_prs_prime
   fi
   dmark census
+  dispatch_why_load
   TICK_DISPATCH_LOCAL_REFILL="$local_refill"
   if [[ "$local_refill" != true ]] && declare -F advisor_harvest >/dev/null; then
     step_started=$SECONDS
@@ -76,7 +109,7 @@ dispatch_pending() {
     dispatch_live_prime
     paused_midrun dispatch && break
     [[ "$TICK_FOOTPRINT_CAP_HIT" != true ]] || break # footprint_room said why
-    id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"
+    id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"; why_unit="$id"
     # The kill counts from the refill's start, and one start can take a minute under load. 90 matches the merge pass stop.
     if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 90 )); then
       say "dispatch deadline after ${SECONDS}s: units from $id wait for the next refill"
@@ -110,7 +143,7 @@ dispatch_pending() {
       set_unit "$id" 'del(.dep_wait_delivery, .unpark_condition)' # satisfied: a later cache read must not park on it again
     fi
     dmark dep_marker
-    [[ "$(jqf -r '.hold_handoff_waiting // false' <<<"$u")" != false ]] && ! handoff_wait_stale "$id" && continue
+    [[ "$(jqf -r '.hold_handoff_waiting // false' <<<"$u")" != false ]] && ! handoff_wait_stale "$id" && { dispatch_why "$id" hold-handoff; continue; }
     # A run that ended blocked-on with no commit starts again only once its blocker clears: a hold handoff or requeue that frees it earlier
     # sends it back to blocked-external, where release_dependency_blocks frees it on delivery or routes a dead blocker (dead_blocker_resolve, dep_dead_sweep).
     if [[ "$stage" == implement-pending || "$stage" == repair-pending ]] && blocked_dep="$(unit_blocked_run_dep "$u")" \
@@ -548,5 +581,6 @@ $deliver"
   { (( SECONDS - pending_started < 10 )) && [[ -z "$TICK_REVIEW_WAITS" ]]; } || say "dispatch detail pending_summary secs=$((SECONDS - pending_started)) revalidate_secs=$revalidate_secs loop_secs=$((SECONDS - loop_started)) units=$(grep -c . <<<"$ordered") footprint_room_ms=$((TICK_FOOTPRINT_ROOM_USEC / 1000)) footprint_room_calls=$TICK_FOOTPRINT_ROOM_CALLS footprint_waits=$TICK_FOOTPRINT_ROOM_WAITS $(review_wait_summary)"
   footprint_convoy_alert || say 'footprint-convoy alert check failed'
   dmark convoy_alert
+  dispatch_why_save
   dispatch_steps_say
 }

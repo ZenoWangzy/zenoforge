@@ -576,8 +576,8 @@ run_issue_intake_phases() {
 run_refill_intake_dispatch_phases() {
   # Dispatch first: a refill exists to fill free slots, and 8 of the 33 refill kills of 2026-11-06/07 died in the merge pass that
   # used to run in front of it, so those refills dispatched nothing. The merge pass and intake run on the time left.
-  dep_delivered_snapshot # release_dependency_blocks fills this on a full tick; the body gate reads it on both
-  record_run_spend || : # the gate in dispatch_pending reads spend_runs; a refill used to dispatch on whatever the last full tick left
+  step_timed dep_snapshot dep_delivered_snapshot # release_dependency_blocks fills this on a full tick; the body gate reads it on both
+  step_timed record_run_spend record_run_spend || : # the gate in dispatch_pending reads spend_runs; a refill used to dispatch on whatever the last full tick left
   phase dispatch_pending true
   paused_midrun "refill merge" || { phase refill_merge_pass; tick_prs_changed; } # a merge changes the PRs intake reads next
   INTAKE_ADDED=0
@@ -594,7 +594,7 @@ refill_tick() {
   fi
   acquire_scheduler_lock || return 75
   rm -f -- "$A/.refill-stop" # left by a refill that was killed after a refused lock wait
-  if ! state_schema_ok; then
+  if ! step_timed state_schema state_schema_ok; then
     say "state schema invalid; refill stopped before external actions"
     echo "[$STAMP] invalid units/workers schema; supervisor recovery required" >> "$A/alerts/state.md"
     return 2
@@ -603,9 +603,9 @@ refill_tick() {
   tick_roadmap_cache_begin
   MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   phase harvest_workers true
-  coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
-  coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
-  coord_reconcile_scheduler_workers
+  step_timed coord_reap coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
+  step_timed coord_systemd coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
+  step_timed coord_scheduler coord_reconcile_scheduler_workers
   # 与慢拍同序：门收割先于 dispatch_pending，本拍收完本拍就派评审；harvest 类阶段要求补派同跑
   # （scheduler.test.sh refill_harvest_coverage），缺一个就是又一类「空等慢拍」回归。
   phase self_check_harvest
