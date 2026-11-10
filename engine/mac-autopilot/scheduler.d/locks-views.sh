@@ -40,7 +40,10 @@ acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it th
     lock_us_now; LOCK_WAIT_US=$((${LOCK_WAIT_US:-0} + LOCK_US - w0)); w0=$LOCK_US # waited so far, to the last refused try
     if refill_lock_wait_spent; then
       : > "$A/.refill-stop"
-      say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): the refill limit is near, the refill ends here and the next one resumes"
+      local holder holder_phase
+      holder="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"; holder="${holder:-none}"
+      holder_phase="$(cat "$A/.tick-phase" 2>/dev/null || true)"; holder_phase="${holder_phase:-unknown}"
+      say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): holder=$holder holder_phase=$holder_phase: the refill limit is near, the refill ends here and the next one resumes"
       return 1
     fi
     if [[ -n "${1:-}" ]] && (( SECONDS - t0 >= $1 )); then return 1; fi
