@@ -2533,7 +2533,8 @@ start_tick_worker() {
     < /dev/null > /dev/null 2>&1 &
   local pid=$!
   printf '%s\n' "$pid" > "$TF/$1-worker.pid"
-  for _ in {1..50}; do [[ -s "$backend" ]] && break; sleep 0.01; done
+  for _ in {1..500}; do [[ -s "$backend" ]] && break; sleep 0.01; done
+  [[ -s "$backend" ]] || { echo 'not ok - scheduler.test.sh: timed out waiting for backend pid file' >&2; return 1; }
   printf '%s' "$pid"
 }
 worker_stopped() {
