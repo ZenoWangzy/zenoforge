@@ -229,6 +229,47 @@ test('supervisor execution uses an isolated historical context and the six-actio
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('supervisor stage-call keeps terra configured and uses luna max while its shared cache is active', () => {
+  const dir = mkdtempSync(join(scratch, 'eval-supervisor-cache-test-'));
+  try {
+    const bin = join(dir, 'bin'), home = join(dir, 'home'), workerScratch = join(dir, 'worker-scratch');
+    const firstArtifact = join(dir, 'first'), cachedArtifact = join(dir, 'cached'), calls = join(dir, 'codex.calls');
+    for (const path of [bin, home, firstArtifact, cachedArtifact, workerScratch]) mkdirSync(path, { recursive: true });
+    const codexHome = join(home, '.codex');
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, 'config.toml'), '[profiles.terra]\nmodel = "gpt-6.1-terra"\n');
+    const fakeCodex = `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$CODEX_CALLS"
+out="" prev=""
+for arg in "$@"; do [[ "$prev" != --output-last-message ]] || out="$arg"; prev="$arg"; done
+cat >/dev/null
+printf 'ACTION: requeue\\n' > "$out"
+`;
+    writeFileSync(join(bin, 'codex'), fakeCodex, { mode: 0o755 });
+    const input = join(dir, 'input.json'), prompt = join(dir, 'prompt.md');
+    writeFileSync(input, JSON.stringify({ issue: { number: 4367 }, priorState: {}, failure: '' })); writeFileSync(prompt, 'fixture');
+    const run = artifact => execFileSync('bash', ['engine/eval/stage-call.sh', 'supervisor', resolve('.'), resolve('.'), prompt, artifact, input], {
+      encoding: 'utf8', env: { ...process.env, HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:${process.env.PATH}`, CODEX_CALLS: calls,
+        WORKER_SCRATCH_ROOT: workerScratch, ZF_SUPERVISOR_PROFILE: 'terra', EVAL_POLICY_FILE: resolve('engine/model-policy.default.json'),
+        ZF_AGENT_TEST_MODE: '1', ZF_AGENT_TEST_ROOT: dir, AGENT_EXECUTION_MIN_MEM_MB: '1', AGENT_EXECUTION_MAX_LOAD: '1000000' },
+    });
+    assert.match(run(firstArtifact), /^ACTION: requeue/);
+    const originalCall = readFileSync(calls, 'utf8');
+    assert.match(originalCall, /exec -p terra/);
+    assert.doesNotMatch(originalCall, /gpt-6-luna/);
+    assert.equal(readFileSync(join(firstArtifact, 'identity.txt'), 'utf8').trim(), 'codex:profile:terra');
+
+    mkdirSync(join(workerScratch, 'luna'), { recursive: true });
+    writeFileSync(join(workerScratch, 'luna/model-not-found.cache'), `gpt-6.1-terra\t${Math.floor(Date.now() / 1000) + 86400}\n`);
+    assert.match(run(cachedArtifact), /^ACTION: requeue/);
+    const cachedCall = readFileSync(calls, 'utf8').split('\n').at(-2);
+    assert.match(cachedCall, /exec -p terra -m gpt-6-luna -c model_reasoning_effort=max/);
+    assert.equal(readFileSync(join(cachedArtifact, 'identity.txt'), 'utf8').trim(), 'codex:gpt-6-luna:max');
+    assert.match(readFileSync(join(cachedArtifact, 'worker.log'), 'utf8'), /model-not-found cache swap eval-supervisor profile=terra from=gpt-6\.1-terra to=gpt-6-luna effort=max/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('repair arm arguments are opt-in and compare-arms takes a label', async () => {
   const { parseEvalArgs } = await import('./run-eval.mjs');
   assert.equal(parseEvalArgs(['--label', 'plain']).values['repair-arms'], undefined);

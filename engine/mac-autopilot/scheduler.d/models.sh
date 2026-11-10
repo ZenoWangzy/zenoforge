@@ -1,3 +1,4 @@
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)/model-not-found-cache.bash"
 
 unit_is_critical() {
   jqf -r 'if .critical == true then "true" else "false" end' <<<"$1"
@@ -111,7 +112,7 @@ model_tuple_field() { # models key + tuple index → field; non-array model sett
 pick_configured_model() { # role [unit-json] → PICK_MODEL/PICK_EFFORT；主模型不可用（禁用族或提供方冷却）时按序用下一个键；都不可用返回 1
   # 带 hotfix 标签的单元先用 models.<role>_hotfix（维护者 2026-10-29：生产热修单都给 terra high 做）。
   # 键序固定（hotfix → role → role_fallback），禁用族键永远跳过并记日志：同一配置每次解析到同一个模型。
-  local key m keys=("$1" "$1_fallback") forbidden_hit=""
+  local key m effort service_tier fallback_tuple fallback_model fallback_effort keys=("$1" "$1_fallback") forbidden_hit=""
   jqf -e 'any(.labels[]?; . == "hotfix")' <<<"${2:-"{}"}" >/dev/null 2>&1 && keys=("$1_hotfix" "${keys[@]}")
   for key in "${keys[@]}"; do
     m="$(model_tuple_field "$key" 0)"
@@ -125,9 +126,16 @@ pick_configured_model() { # role [unit-json] → PICK_MODEL/PICK_EFFORT；主模
     fi
     cooling "$(provider_of "$m")" && continue
     [[ "$(provider_of "$m")" != codex ]] || ! codex_week_stopped || continue
-    PICK_MODEL="$m"; PICK_EFFORT="$(model_tuple_field "$key" 1)"
+    effort="$(model_tuple_field "$key" 1)"; service_tier="$(model_tuple_field "$key" 2)"
+    if [[ "$key" == implement_hotfix ]] && model_not_found_cache_has "$m"; then
+      fallback_tuple="$(model_not_found_fallback_tuple)" || continue
+      IFS=$'\t' read -r fallback_model fallback_effort <<<"$fallback_tuple"
+      say "model-not-found cache swap key=$key from=$m to=$fallback_model effort=$fallback_effort"
+      m="$fallback_model"; effort="$fallback_effort"; service_tier=""
+    fi
+    PICK_MODEL="$m"; PICK_EFFORT="$effort"
     PICK_PROVIDER="$(provider_of "$m")"; PICK_HARD=false; PICK_REASON="configured-$key"
-    PICK_SERVICE_TIER="$(model_tuple_field "$key" 2)"
+    PICK_SERVICE_TIER="$service_tier"
     return 0
   done
   if [[ -n "$forbidden_hit" ]]; then
@@ -212,7 +220,7 @@ pick_codex_work_identity() { # work policy role, with legacy models.implement as
 }
 
 hard_implementer_fields() { # optional models.hard; otherwise use the production policy role
-  local hard model effort provider tier fields
+  local hard model effort provider tier fields fallback_tuple fallback_model fallback_effort
   hard="$(jqf -c '.models.hard // empty' <<<"$CFG")"
   if [[ -n "$hard" ]]; then
     case "$(command jq -r 'type' <<<"$hard")" in
@@ -238,6 +246,12 @@ hard_implementer_fields() { # optional models.hard; otherwise use the production
     fields="$(model_policy_role_fields production 2>/dev/null || true)"
     [[ -n "$fields" ]] || return 1
     IFS=$'\t' read -r provider model effort tier <<<"$fields"
+  fi
+  if model_not_found_cache_has "$model"; then
+    fallback_tuple="$(model_not_found_fallback_tuple)" || return 1
+    IFS=$'\t' read -r fallback_model fallback_effort <<<"$fallback_tuple"
+    say "model-not-found cache swap hard-tier from=$model to=$fallback_model effort=$fallback_effort"
+    model="$fallback_model"; effort="$fallback_effort"; provider=codex; tier=""
   fi
   [[ "$provider" == codex || "$provider" == zcode || "$provider" == claude ]] || return 1
   PICK_PROVIDER="$provider"; PICK_MODEL="$model"; PICK_EFFORT="$effort"; PICK_SERVICE_TIER="${tier:-}"

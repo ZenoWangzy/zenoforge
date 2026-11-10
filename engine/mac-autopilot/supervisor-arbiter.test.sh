@@ -7,7 +7,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fixture="$test_env_root/sup-arbiter"
 sup="$fixture/supervisor"
-mkdir -p "$sup/autopi/alerts" "$fixture/repo" "$fixture/bin"
+mkdir -p "$sup/autopi/alerts" "$fixture/repo" "$fixture/bin" "$fixture/worker-scratch/luna"
 # Stage-transition fixtures are already roadmap leaves; this suite covers arbitration effects.
 export ZF_ROADMAP_TREE_CACHE_FILE="$fixture/roadmap-tree.json"
 jq -cn '{roots:[611,615,618,622,623,683,684,686,687,688,689,690,699] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
@@ -15,7 +15,13 @@ jq -cn '{roots:[611,615,618,622,623,683,684,686,687,688,689,690,699] | map({numb
 jq '.auto_merge = false | .advisor = false | .precheck = false | .supervisor_arbiter.enabled = true | .supervisor_arbiter.cap_triage = false' "$script_dir/config.template.json" > "$sup/autopi/config.json"
 echo '{"units":[]}' > "$sup/autopi/units.json"
 echo '{"workers":[]}' > "$sup/autopi/workers.json"
-export MAC_AUTOPILOT_ROOT="$fixture/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$sup/autopi"
+export MAC_AUTOPILOT_ROOT="$fixture/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$sup/autopi" WORKER_SCRATCH_ROOT="$fixture/worker-scratch"
+export CODEX_HOME="$fixture/codex-home"
+mkdir -p "$CODEX_HOME"
+cat > "$CODEX_HOME/config.toml" <<'TOML'
+[profiles.terra]
+model = "gpt-6.1-terra"
+TOML
 export ZF_CONFIG_ROOT="$fixture/repo/.zenoforge"
 mkdir -p "$ZF_CONFIG_ROOT/prompts"
 cp "$script_dir/../prompts/supervisor-arbiter.md" "$ZF_CONFIG_ROOT/prompts/supervisor-arbiter.md"
@@ -78,16 +84,16 @@ gh() {
 export -f gh 2>/dev/null || true
 
 # codex 桩：记录调用，把预设裁决报告写到 --output-last-message。
-ARBITRATION_REPLY="$fixture/arbitration-reply.md"
+ARBITRATION_REPLY="$fixture/arbitration-reply.md" CODEX_CALLS="$fixture/codex.calls"
 codex_fake() {
-  printf 'codex %s\n' "$*" >> "$fixture/codex.calls"
+  printf 'codex %s\n' "$*" >> "$CODEX_CALLS"
   local out="" prev=""
   local a
   for a in "$@"; do [[ "$prev" == --output-last-message ]] && out="$a"; prev="$a"; done
   [[ -n "$out" && -f "$ARBITRATION_REPLY" ]] || return 0
   cat "$ARBITRATION_REPLY" > "$out"
 }
-export ARBITRATION_REPLY
+export ARBITRATION_REPLY CODEX_CALLS
 export -f codex_fake
 printf '#!/usr/bin/env bash\ncodex_fake "$@"\n' > "$fixture/bin/codex"
 chmod +x "$fixture/bin/codex"
@@ -107,7 +113,7 @@ printf 'VERDICT: REQUEST-CHANGES\nF1 缺回归测试\n' > "$sup/review-601.md"
 : > "$fixture/codex.calls"
 dispatch_supervisor_arbiters
 [[ "$(jq -r '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == 1 ]] || fail "gate on: no supervise worker dispatched"
-jq -e --arg unit pr-601 'any(.workers[]; .unit == $unit and .type == "supervise" and (.model == "profile:terra"))' "$WORKERS" >/dev/null || fail "supervise worker model must record the terra profile"
+jq -e --arg unit pr-601 'any(.workers[]; .unit == $unit and .type == "supervise" and (.model == "profile:terra"))' "$WORKERS" >/dev/null || fail "without a cache the arbiter must record the configured terra profile"
 [[ "$(field pr-601 .stage)" == supervisor-review ]] || fail "dispatch must leave the unit in supervisor-review while arbitrating"
 [[ "$(field pr-601 '.history[-1].stage')" == supervisor-arbiter ]] || fail "dispatch must consume one arbitration budget slot in history"
 q_file="$(ls -t "$sup"/supervise-pr-601-*.q.md | head -1)"
@@ -122,15 +128,16 @@ printf '%s\n' "$(jq -cn '{units:[{id:"pr-601",stage:"supervisor-review",history:
   {id:"pr-602",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"x",at:"2026-10-27T00:00:00Z"}]},
   {id:"pr-603",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"y",at:"2026-10-27T00:00:00Z"}]}]}')" > "$UNITS"
 before="$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")"
-saved_max="$SUPERVISOR_ARBITER_MAX"; SUPERVISOR_ARBITER_MAX=2
+saved_max="$SUPERVISOR_ARBITER_MAX"; SUPERVISOR_ARBITER_MAX=2; printf 'gpt-6.1-terra\t%s\n' "$(( $(date +%s) + 86400 ))" > "$WORKER_SCRATCH_ROOT/luna/model-not-found.cache"
 dispatch_supervisor_arbiters
-[[ "$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == "$((before + 1))" ]] || fail "arbitration must fill up to the in-flight cap"
+for _ in {1..50}; do grep -Fq ' -m gpt-6-luna -c model_reasoning_effort=max ' "$fixture/codex.calls" 2>/dev/null && break; sleep 0.02; done; [[ "$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == "$((before + 1))" ]] && grep -Fq ' -m gpt-6-luna -c model_reasoning_effort=max ' "$fixture/codex.calls" || fail "cached terra must dispatch the arbiter on luna max (calls=$(cat "$fixture/codex.calls" 2>/dev/null || true))"
+grep -Fq 'model-not-found cache swap arbiter profile=terra from=gpt-6.1-terra to=gpt-6-luna effort=max' "$LOG" || fail 'cached terra arbiter swap must be recorded'
 jq -e '[.workers[] | select(.type=="supervise" and .unit=="pr-601")] | length == 1' "$WORKERS" >/dev/null || fail "a unit already under arbitration must not get a second worker"
 jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-602")' "$WORKERS" >/dev/null || fail "the next unit in order must be dispatched"
 before="$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")"
 dispatch_supervisor_arbiters
 [[ "$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == "$before" ]] || fail "no arbitration may dispatch at the in-flight cap"
-SUPERVISOR_ARBITER_MAX="$saved_max"
+SUPERVISOR_ARBITER_MAX="$saved_max"; rm -f "$WORKER_SCRATCH_ROOT/luna/model-not-found.cache"
 
 # RECUT refused for unpushed work: recorded, not triaged again until the head moves.
 WT_ROOT="$fixture/clones"; mkdir -p "$WT_ROOT/wt-pr-650"
@@ -349,8 +356,8 @@ harvest_with_reply pr-619 '我觉得应该再修一轮。'
 [[ "$(field pr-619 .stage)" == supervisor-review && "$(field pr-619 '.history[-1].stage')" == supervisor-arbiter-invalid ]] \
   || fail "an unparseable reply must record supervisor-arbiter-invalid and keep the unit parked in supervisor-review"
 units "$(jq -cn '{units:[{id:"pr-620",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"x",at:"2026-10-27T00:00:00Z"}]}]}')"
-harvest_supervisor_arbiter "$(jq -cn '{pid:99999999,unit:"pr-620",type:"supervise",log:"supervise-pr-620.worker.log",report:"supervise-pr-620-missing.md",started:"2026-10-27T00:00:00Z"}')"
-[[ "$(field pr-620 '.history[-1].stage')" == supervisor-arbiter-no-output ]] || fail "a report-less worker must record supervisor-arbiter-no-output"
+printf '%s\n' '{"error":{"code":"model_not_found"}}' > "$sup/supervise-pr-620.worker.log"; harvest_supervisor_arbiter "$(jq -cn '{pid:99999999,unit:"pr-620",type:"supervise",log:"supervise-pr-620.worker.log",report:"supervise-pr-620-missing.md",started:"2026-10-27T00:00:00Z",model:"profile:terra"}')"
+[[ "$(field pr-620 '.history[-1].stage')" == supervisor-arbiter-no-output ]] && grep -Eq '^gpt-6\.1-terra[[:space:]]+[0-9]+$' "$WORKER_SCRATCH_ROOT/luna/model-not-found.cache" || fail "a report-less terra arbiter must record its model-not-found cache entry"
 
 # 历史里先有非评审记录再有评审记录（真实单元的形状）：requeue 回 repair，不因 jq 优先级报错落 parked。
 units "$(jq -cn '{units:[{id:"pr-620",pr:620,lane:"pr",branch:"fix/x",stage:"supervisor-review",history:[{stage:"self-check-red",result:"x",at:"2026-10-27T00:00:00Z"},{stage:"review-request-changes",result:"y",at:"2026-10-27T00:01:00Z"},{stage:"supervisor-escalated",result:"blocked-external without a predecessor",at:"2026-10-27T00:02:00Z"}]}]}')"
