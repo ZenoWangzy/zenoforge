@@ -9,16 +9,16 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # Loads the real box_has_room from the file. PSI some is fixed at 32 (the live value that used to block hotfix).
 # LUNA_MIN=0 keeps the first tier out, and age and cpu are set so only the tier under test can admit.
 gate() {
-  local file=$1 d src; d=$(mktemp -d -p "$root")
+  local file=$1 d; d=$(mktemp -d -p "$root")
   printf 'MemAvailable: %s kB\n' "$(( $2 * 1024 ))" >"$d/meminfo"
   printf 'some avg10=32 avg60=35 avg300=36 total=1\nfull avg10=%s avg60=4 avg300=4.6 total=1\n' "$3" >"$d/psi"
-  src=$(awk '/^box_has_room\(\)/,/^}$/' "$file"); [[ -n $src ]] || fail "no box_has_room in $file"
+  grep -Fq 'luna-capacity.sh' "$file" || fail "$(basename "$file") does not source shared capacity admission"
   (
     export LUNA_PROC_MEMINFO="$d/meminfo" LUNA_PROC_PSI_MEMORY="$d/psi" LUNA_PRIORITY="$4" LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328
     export LUNA_AGE_ADMIT_SECONDS="$5" CPU_BUSY="$6"
+    source "$bin/luna-capacity.sh"
     codex_runs() { echo 0; }
     cpu_busy() { echo "$CPU_BUSY"; }
-    eval "$src"
     if box_has_room; then echo admitted; else echo refused; fi
   )
 }
@@ -52,6 +52,7 @@ for f in "$bin/luna" "$bin/zc"; do
   expect "$f"  3000   0   normal   999999 0   refused  # normal below measured floor
   expect "$f"  3400  12   normal   999999 0   refused  # normal, full 12
   expect "$f"  6000   2   normal   999999 0   admitted # normal tier: cpu under target, full < 10, 5 GB free
+  expect "$f"  6000   2   normal   999999 100 refused  # CPU-full with runs below cap
   expect "$f"  6000  12   normal   999999 0   refused  # normal, full 12
   expect "$f"  3400   0   normal        0 100  admitted # aging tier alone: cpu busy, aged, measured floor
   expect "$f"  6000  12   normal        0 100  refused  # aging, full 12

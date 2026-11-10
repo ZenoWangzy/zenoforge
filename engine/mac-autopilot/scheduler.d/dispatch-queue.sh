@@ -27,6 +27,8 @@ dispatch_steps_say() {
 
 dispatch_pending() {
   TICK_DISPATCH_SKIPS=()
+  TICK_PRIORITY_HOLD_EXPIRED=()
+  TICK_PRIORITY_ADMISSION_CACHE=()
   TICK_CONTAINER_RUNTIME=""
   local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started

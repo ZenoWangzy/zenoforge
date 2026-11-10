@@ -6,6 +6,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../bin" && pwd -P)/luna-capacity.sh"
 
 # 合并门评估链：越过 [skip ci] 与只改产品路径的提交，停在第一个改流水线路径的非 skip 提交（含）
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
@@ -28,6 +29,116 @@ command git -C "$gr" update-ref refs/remotes/origin/main "$g3"
 fail() { echo "scheduler-gates.test.sh: $*" >&2; exit 1; }
 units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
+
+priority_admission_case() {
+  local mem="$fixture/priority-meminfo" psi="$fixture/priority-psi"
+  local LUNA_MIN=0 LUNA_MAX=10 LUNA_AGE_ADMIT_SECONDS=1200 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85
+  local LUNA_PROC_MEMINFO="$mem" LUNA_PROC_PSI_MEMORY="$psi" AUTOPI_PRIORITY_HOLD_MAX_SECONDS=1200
+  local PRIORITY_GATE_RUNS=0 PRIORITY_GATE_CPU_BUSY=100 runs_fn cpu_fn
+  runs_fn="$(declare -f codex_runs)"; cpu_fn="$(declare -f cpu_busy)"
+  codex_runs() { printf '%s\n' "$PRIORITY_GATE_RUNS"; }
+  cpu_busy() { printf '%s\n' "$PRIORITY_GATE_CPU_BUSY"; }
+  units '{"units":[{"id":"issue-9","stage":"review-pending","history":[]}]}'
+  printf 'MemAvailable: 6291456 kB\n' > "$mem"
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
+  : > "$LUNA_SLOTS/wait-opt-$$"
+  room_for issue-9 implement "" true false && fail 'CPU-full opt waiter released normal dispatch below the run cap'
+  room_for issue-9 repair "" true false true && fail 'CPU-full opt waiter released repair dispatch'
+  room_for issue-9 review || fail 'priority waiter held review'
+  room_for issue-9 rereview || fail 'priority waiter held rereview'
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=12 avg60=12 avg300=12 total=12\n' > "$psi"
+  room_for issue-9 implement "" true false && fail 'memory-full opt waiter released normal dispatch below the run cap'
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
+  PRIORITY_GATE_CPU_BUSY=0; PRIORITY_GATE_RUNS=$((LUNA_RUNS_HARD_CAP - 1))
+  room_for issue-9 implement "" true false || fail 'opt waiter held normal dispatch while shared capacity was available'
+  PRIORITY_GATE_RUNS="$(luna_run_cap)"
+  room_for issue-9 implement "" true false && fail 'opt waiter did not hold normal dispatch at the shared run cap'
+  rm -f "$LUNA_SLOTS/wait-opt-$$"; : > "$LUNA_SLOTS/wait-hotfix-$$"
+  room_for issue-9 implement "" true false || fail 'normal dispatch held while hotfix admission was open'
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=12 avg60=12 avg300=12 total=12\n' > "$psi"
+  room_for issue-9 implement "" true false && fail 'memory-full hotfix waiter released normal dispatch'
+  rm -f "$LUNA_SLOTS/wait-hotfix-$$"; : > "$LUNA_SLOTS/wait-opt-$$"
+  AUTOPI_PRIORITY_HOLD_MAX_SECONDS=1800; PRIORITY_GATE_RUNS=0; PRIORITY_GATE_CPU_BUSY=100
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
+  touch -d "@$(($(date +%s) - 1300))" "$LUNA_SLOTS/wait-opt-$$"
+  room_for issue-9 implement "" true false || fail 'aged opt waiter remained held after shared age admission opened'
+  touch "$LUNA_SLOTS/wait-opt-$$"; AUTOPI_PRIORITY_HOLD_MAX_SECONDS=60
+  set_unit issue-9 ".priority_hold={since_epoch:$(( $(date +%s) - 61 )),alerted:false}"
+  : > "$A/scheduler.log"; : > "$A/alerts/waste.md"
+  room_for issue-9 implement "" true false && fail 'CPU-full priority hold unexpectedly admitted normal dispatch'
+  grep -q 'PRIORITY-HOLD-STARVE unit=issue-9 waiter=wait-opt-' "$A/scheduler.log" \
+    || fail 'starvation threshold ignored AUTOPI_PRIORITY_HOLD_MAX_SECONDS'
+  rm -f "$LUNA_SLOTS"/wait-*
+  eval "$runs_fn"; eval "$cpu_fn"
+}
+
+priority_memory_case() {
+  local mem="$fixture/priority-memory-meminfo" psi="$fixture/priority-memory-psi"
+  local LUNA_MIN=0 LUNA_MAX=10 LUNA_AGE_ADMIT_SECONDS=1200 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85
+  local LUNA_PROC_MEMINFO="$mem" LUNA_PROC_PSI_MEMORY="$psi" AUTOPI_PRIORITY_HOLD_MAX_SECONDS=1200
+  local PRIORITY_GATE_RUNS=0 PRIORITY_GATE_CPU_BUSY=0 PRIORITY_GATE_WAITER=wait-opt-test PRIORITY_GATE_AGE=0 runs_fn cpu_fn box_fn higher_priority_fn dispatch_fn size_start_fn prompt_fn footprint_brief_fn dispatch_attempt_fn set_unit_fn box_calls=0 dispatch_calls=0
+  local TICK_DISPATCH_PENDING_ACTIVE=true
+  local -A TICK_PRIORITY_ADMISSION_CACHE=()
+  runs_fn="$(declare -f codex_runs)"; cpu_fn="$(declare -f cpu_busy)"; box_fn="$(declare -f box_has_room)"
+  eval "$(sed '1s/^box_has_room ()/box_has_room_uncached ()/' <<<"$box_fn")"
+  codex_runs() { printf '%s\n' "$PRIORITY_GATE_RUNS"; }
+  cpu_busy() { printf '%s\n' "$PRIORITY_GATE_CPU_BUSY"; }
+  box_has_room() { box_calls=$((box_calls + 1)); box_has_room_uncached "$@"; }
+  higher_priority_fn="$(declare -f higher_priority_waiting)"
+  higher_priority_waiting() { PRIORITY_WAITING_WAITER="$PRIORITY_GATE_WAITER"; PRIORITY_WAITING_AGE_SECONDS="$PRIORITY_GATE_AGE"; return 0; }
+  units '{"units":[{"id":"issue-9","stage":"implement-pending","history":[]},{"id":"issue-10","stage":"implement-pending","history":[]}]}'
+  printf 'MemAvailable: 3072000 kB\n' > "$mem" # 3000 MB, below the 3328 MB normal floor; runs remain below LUNA_MAX.
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
+  : > "$LUNA_SLOTS/wait-opt-$$"
+  room_for issue-9 implement "" true false && fail 'low-memory opt waiter released normal dispatch below the run cap'
+  room_for issue-10 implement "" true false && fail 'low-memory opt waiter released a second normal dispatch'
+  [[ "$PRIORITY_GATE_RUNS" -lt "$(luna_run_cap)" && "$box_calls" == 1 ]] \
+    || fail "low-memory opt admission was not sampled once under the cap (runs=$PRIORITY_GATE_RUNS calls=$box_calls)"
+  TICK_PRIORITY_ADMISSION_CACHE=(); box_calls=0
+  priority_admission_has_room normal 0 && fail 'low-memory normal admission unexpectedly opened for a fresh waiter'
+  priority_admission_has_room normal 1200 && fail 'low-memory normal admission unexpectedly opened for an aged waiter'
+  [[ "$box_calls" == 2 ]] || fail "normal admission reused a sample across waiter ages (calls=$box_calls)"
+
+  # A successful normal start invalidates the sample before the next unit; without it, this waiter sees stale `admit`.
+  printf 'MemAvailable: 6291456 kB\n' > "$mem"
+  TICK_PRIORITY_ADMISSION_CACHE=(); box_calls=0; dispatch_calls=0
+  dispatch_fn="$(declare -f dispatch)"; size_start_fn="$(declare -f size_admission_write_start)"
+  prompt_fn="$(declare -f incident_worker_prompt)"; footprint_brief_fn="$(declare -f footprint_recurrence_brief)"
+  dispatch_attempt_fn="$(declare -f dispatch_attempt_fields)"; set_unit_fn="$(declare -f set_unit)"
+  dispatch() { dispatch_calls=$((dispatch_calls + 1)); return 0; }
+  size_admission_write_start() { return 0; }
+  incident_worker_prompt() { printf '%s' "${3:-}"; }
+  footprint_recurrence_brief() { :; }
+  dispatch_attempt_fields() { :; }
+  set_unit() { return 0; }
+  dispatch_if_room issue-9 implement implement priority.log priority.md GLM-5.3 max 'test prompt' '' "$fixture/repo" '' '' \
+    '{"id":"issue-9","stage":"implement-pending","history":[]}' false codex || fail 'first normal unit did not dispatch'
+  [[ "$dispatch_calls" == 1 && "$box_calls" == 1 ]] || fail "first normal dispatch did not use one admission sample (dispatches=$dispatch_calls calls=$box_calls)"
+  printf 'MemAvailable: 3072000 kB\n' > "$mem"
+  : > "$A/scheduler.log"
+  room_for issue-10 implement "" true false && fail 'second normal unit reused admission after the first dispatch'
+  [[ "$box_calls" == 2 ]] || fail "admission was not resampled after dispatch (calls=$box_calls)"
+  grep -q 'higher-priority run waiting' "$A/scheduler.log" || fail 'second normal unit was not held by the priority yield gate'
+  eval "$dispatch_fn"; eval "$size_start_fn"; eval "$prompt_fn"; eval "$footprint_brief_fn"
+  eval "$dispatch_attempt_fn"; eval "$set_unit_fn"
+
+  PRIORITY_GATE_WAITER=wait-hotfix-test
+  rm -f "$LUNA_SLOTS/wait-opt-$$"; : > "$LUNA_SLOTS/wait-hotfix-$$"
+  TICK_PRIORITY_ADMISSION_CACHE=(); box_calls=0
+  room_for issue-9 implement "" true false && fail 'low-memory hotfix waiter released normal dispatch'
+  room_for issue-10 implement "" true false && fail 'low-memory hotfix waiter released a second normal dispatch'
+  [[ "$box_calls" == 2 ]] || fail "hotfix and normal admission were not each sampled once per tick (calls=$box_calls)"
+  rm -f "$LUNA_SLOTS"/wait-*
+  eval "$higher_priority_fn"; eval "$box_fn"; eval "$runs_fn"; eval "$cpu_fn"
+}
+
+if [[ -n "${SCHED_TEST_CASE:-}" ]]; then
+  case "$SCHED_TEST_CASE" in
+    priority_hold_admission) priority_admission_case; echo 'scheduler-gates.test.sh: priority_hold_admission PASS'; exit 0 ;;
+    priority_hold_memory) priority_memory_case; echo 'scheduler-gates.test.sh: priority_hold_memory PASS'; exit 0 ;;
+    *) fail "unknown SCHED_TEST_CASE='$SCHED_TEST_CASE'" ;;
+  esac
+fi
 
 # An approved predecessor can release a labelled dependent onto its PR head.
 stack_sha=0123456789012345678901234567890123456789
@@ -3117,18 +3228,34 @@ retire_landed_pr_units
 eval "$retire_saved_tick_prs"; eval "$retire_saved_pr_view"
 
 # ---------- #4621：按 hotfix > opt > 普通 pipeline 让位；旧 waiter 不挡派发 ----------
+priority_admission_case
+priority_memory_case
 rm -f "$LUNA_SLOTS"/wait-*
 units '{"units":[{"id":"issue-9","stage":"review-pending","history":[]},{"id":"issue-opt","lane":"direct-main","stage":"review-pending","history":[]},{"id":"issue-hp","hotpatch":true,"stage":"review-pending","history":[]}]}'
+priority_gate_cpu_busy_real="$(declare -f cpu_busy)"
+priority_gate_meminfo="$fixture/priority-gate-meminfo"; priority_gate_psi="$fixture/priority-gate-psi"
+printf 'MemAvailable: 6291456 kB\n' > "$priority_gate_meminfo"
+printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$priority_gate_psi"
+LUNA_PROC_MEMINFO="$priority_gate_meminfo"; LUNA_PROC_PSI_MEMORY="$priority_gate_psi"
+LUNA_ADMIT_AVAIL_MB=3328; LUNA_CPU_TARGET=85; LUNA_MIN=0; LUNA_MAX=10; LUNA_AGE_ADMIT_SECONDS=1200
+AUTOPI_PRIORITY_HOLD_MAX_SECONDS=1200
+cpu_busy() { echo 0; }
+priority_gate_codex_runs_real="$(declare -f codex_runs)"; priority_gate_total_cap="$(luna_run_cap)"
+PRIORITY_GATE_RUNS="$priority_gate_total_cap"; codex_runs() { printf '%s\n' "$PRIORITY_GATE_RUNS"; }
 : > "$LUNA_SLOTS/wait-opt-$$"   # 本测试 shell 的 pid，即存活等待者
-room_for issue-9 review && fail 'ordinary dispatch admitted while an opt run waits at the luna/zc gate'
+room_for issue-9 implement "" true false && fail 'ordinary dispatch admitted while total capacity is full and an opt run waits'
 grep -q 'skip dispatch unit=issue-9 priority=normal (higher-priority run waiting at luna/zc gate: wait-opt-' "$A/scheduler.log" \
   || fail 'the priority hold left no record in scheduler.log'
 room_for issue-opt review || fail 'an opt dispatch was held behind another opt waiter'
 room_for issue-hp review || fail 'a hotpatch dispatch was held behind an opt waiter'
+PRIORITY_GATE_RUNS=$((priority_gate_total_cap - 1))
+room_for issue-9 implement "" true false || fail 'an opt waiter blocked normal dispatch while shared capacity was available'
+PRIORITY_GATE_RUNS="$priority_gate_total_cap"
+room_for issue-9 implement "" true false && fail 'an opt waiter did not hold normal dispatch when total capacity was full'
 rm -f "$LUNA_SLOTS/wait-opt-$$"
 : > "$LUNA_SLOTS/wait-hotfix-$$"
-room_for issue-9 review && fail 'ordinary dispatch admitted while a hotfix run waits at the luna/zc gate'
-room_for issue-opt review && fail 'an opt dispatch was admitted while a higher-priority hotfix waits'
+room_for issue-9 implement "" true false || fail 'normal dispatch was held while hotfix admission was open'
+room_for issue-opt implement "" true false && fail 'an opt dispatch was admitted while a higher-priority hotfix waits'
 room_for issue-hp review || fail 'a hotpatch dispatch was held behind another hotfix waiter'
 grep -q 'skip dispatch unit=issue-opt priority=opt (higher-priority run waiting at luna/zc gate: wait-hotfix-' "$A/scheduler.log" \
   || fail 'the hotfix hold of opt work left no record in scheduler.log'
@@ -3139,9 +3266,25 @@ room_for issue-9 review || fail 'a normal waiter must not hold other normal disp
 sleep 0.1 & gate_dead=$!; wait "$gate_dead"
 kill -0 "$gate_dead" 2>/dev/null && fail "test setup: pid $gate_dead still alive"
 : > "$LUNA_SLOTS/wait-hotfix-$gate_dead"
-room_for issue-9 review || fail 'a stale wait file of a dead wrapper blocked dispatch'
+room_for issue-9 implement "" true false || fail 'a stale wait file of a dead wrapper blocked dispatch'
 [[ -e "$LUNA_SLOTS/wait-hotfix-$gate_dead" ]] && fail 'a stale wait file was not dropped'
 rm -f "$LUNA_SLOTS"/wait-*
+
+: > "$A/scheduler.log"; : > "$A/alerts/waste.md"; : > "$LUNA_SLOTS/wait-opt-$$"
+room_for issue-9 review || fail 'a live opt waiter held review'
+touch -d "@$(($(date +%s) - 1300))" "$LUNA_SLOTS/wait-opt-$$"
+TICK_PRIORITY_HOLD_EXPIRED=()
+for pass in 1 2; do room_for issue-9 implement "" true false || fail 'an old opt waiter held dispatch'; done
+[[ "$(grep -c 'priority hold expired for wait-opt-.* after .*s; normal dispatch resumes' "$A/scheduler.log")" == 1 ]] || fail 'expired waiter was not logged once per pass'
+touch -d "@$(($(date +%s) - 60))" "$LUNA_SLOTS/wait-opt-$$"
+room_for issue-9 implement "" true false && fail 'a fresh opt waiter did not hold dispatch'
+set_unit issue-9 ".priority_hold={since_epoch:$(( $(date +%s) - 1201 )),alerted:false}"
+: > "$A/scheduler.log"; : > "$A/alerts/waste.md"
+for pass in 1 2; do if room_for issue-9 implement "" true false; then fail 'a starved unit was admitted'; fi; done
+[[ "$(grep -c 'PRIORITY-HOLD-STARVE unit=issue-9 waiter=wait-opt-' "$A/scheduler.log")" == 1 && "$(grep -c 'PRIORITY-HOLD-STARVE unit=issue-9 waiter=wait-opt-' "$A/alerts/waste.md")" == 1 ]] || fail 'starvation alert was not written once to both paths'
+rm -f "$LUNA_SLOTS"/wait-*
+unset PRIORITY_GATE_RUNS LUNA_PROC_MEMINFO LUNA_PROC_PSI_MEMORY LUNA_ADMIT_AVAIL_MB LUNA_CPU_TARGET LUNA_MIN LUNA_MAX LUNA_AGE_ADMIT_SECONDS AUTOPI_PRIORITY_HOLD_MAX_SECONDS
+eval "$priority_gate_cpu_busy_real"; eval "$priority_gate_codex_runs_real"
 
 # factory_prs_only: sessions' PRs leave the ledger before any acting phase, and the orphan pass neither adopts nor closes them.
 cfg_saved="$CFG"; CFG="$(jq '.factory_prs_only=true' <<<"$CFG")"
