@@ -20,6 +20,40 @@ add_issue_blocked_by() {
 }
 
 
+# add_issue_related <issue> <related> -- create a native GitHub related edge.
+add_issue_related() {
+  local issue="$1" related="$2" related_json related_id relations endpoint
+  endpoint="repos/$REPO/issues/$issue/relates_to"
+  related_json="$(gh api "repos/$REPO/issues/$related")" || return 1
+  related_id="$(jq -er '.id | numbers | select(. > 0 and . == floor)' <<< "$related_json")" || return 1
+  relations="$(gh api --paginate --slurp "$endpoint?per_page=100")" || return 1
+  jq -e 'type == "array"' <<< "$relations" >/dev/null 2>&1 || return 1
+  if jq -e --argjson id "$related_id" --argjson number "$related" \
+    'flatten | any(.[]; .id == $id or .number == $number)' <<< "$relations" >/dev/null 2>&1; then
+    return 0
+  fi
+  guarded_write gh api --method POST "$endpoint" -F "issue_id=$related_id"
+}
+
+
+# record_triage_related_issues <issue> <triage-result-json> -- persist the
+# group, then create each native relation idempotently.
+record_triage_related_issues() {
+  local issue="$1" result="$2" related_json cause_json entry related written_ids=$'\n'
+  related_json="$(jq -c '.related // []' <<< "$result")" || return 1
+  cause_json="$(jq -c '.suspected_shared_cause // null' <<< "$result")" || return 1
+  state_merge "$issue" ".related = $related_json | .suspected_shared_cause = $cause_json" || return 1
+  [ "$(jq -r 'length' <<< "$related_json")" -gt 0 ] || return 0
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    related="$(jq -er '.issue | numbers | select(. > 0 and . == floor)' <<< "$entry")" || return 1
+    [[ "$written_ids" == *$'\n'"$related"$'\n'* ]] && continue
+    add_issue_related "$issue" "$related" || return 1
+    written_ids+="$related"$'\n'
+  done < <(jq -c '.[]' <<< "$related_json")
+}
+
+
 # hand_report_blocked_on_dependency <name> <report-file> <owned-issues>
 # A hand agent tied to issue N (run-recut.sh's guarded flow queues them as
 # hand-<N>) ends a blocked run by writing `STATUS: BLOCKED-ON issue M` as the

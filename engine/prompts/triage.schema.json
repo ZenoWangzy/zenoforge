@@ -51,6 +51,23 @@
       "items": { "type": "string" },
       "description": "Exact repository-relative file or directory prefixes known from evidence. Used only to schedule concurrent work inside an expected package; return an empty array when exact paths are uncertain."
     },
+    "related": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "issue": { "type": "integer", "minimum": 1 },
+          "reason": { "type": "string" }
+        },
+        "required": ["issue", "reason"],
+        "additionalProperties": false
+      },
+      "description": "Other open issues related by module, symptom, or failing check, with a reason for each."
+    },
+    "suspected_shared_cause": {
+      "type": "string",
+      "description": "The shared cause suspected across the related issues, when one is apparent."
+    },
     "estimated_changed_lines": {
       "type": "integer",
       "minimum": 0,
