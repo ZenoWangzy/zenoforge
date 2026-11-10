@@ -1574,9 +1574,20 @@ run_advisor_selection() (
   ADVISOR_STALE_PENDING_JOB_IDS="$stale"
   ADVISOR_BATCH_UNIT_ACTIVE="$active"
   ADVISOR_QUEUE_READ_FAILED="$queue_failed"
+  NEEDS_ADVISOR_IDS=930102
   advisor_slots=1
+  STAGE_DISPATCH_BLOCKING_SCOPES=""
+  STAGE_DISPATCH_CANARY_SCOPES=""
   advisor_batch_job_active() { return 1; }
-  web_advisor_provider_dispatch_allowed() { return 0; }
+  web_advisor_provider_dispatch_allowed() {
+    if [[ "${ADVISOR_CANARY_BLOCKED:-0}" == 1 ]]; then
+      STAGE_DISPATCH_BLOCKING_SCOPES=advisor
+      return 1
+    fi
+    STAGE_DISPATCH_CANARY_SCOPES=advisor
+    return 0
+  }
+  consume_unit_memory_oom() { return 1; }
   dispatch_advisor_batch() {
     [ "${ADVISOR_BATCH_LAUNCH_STATUS:-0}" -eq 0 ] || return "$ADVISOR_BATCH_LAUNCH_STATUS"
     echo batch-dispatch
@@ -1589,6 +1600,10 @@ run_advisor_selection() (
 )
 
 SINGLE_QUEUE_SELECTION="$(run_advisor_selection '' '' 1 0 2>&1)"
+ADVISOR_QUARANTINE_BLOCKED="$(ADVISOR_CANARY_BLOCKED=1 run_advisor_selection '' '' 1 0 2>&1)"
+assert_eq 'blocked advisor scope is recorded from the parent-shell dispatch check' \
+  'quarantine:skipped' \
+  "$(jq -r '[(.advisor_tick_decision.gate // "missing"),(.advisor_tick_decision.outcome // "missing")] | join(":")' "$ADVISOR_LEDGER_HOME/state/930102.json")"
 ADVISOR_CALL_FAILURE_STATUS=0
 ADVISOR_CALL_FAILURE_OUT="$(ADVISOR_BATCH_LAUNCH_STATUS=1 run_advisor_selection '' '' 1 0 2>&1)" || ADVISOR_CALL_FAILURE_STATUS=$?
 assert_eq 'advisor caller explicitly propagates real launch failure' 1 "$ADVISOR_CALL_FAILURE_STATUS"

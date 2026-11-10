@@ -86,6 +86,7 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   fi
   if ! coord_assert_owned "$claim_key" "$claim_owner" >/dev/null; then
     coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :
+    [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :
     say "dispatch held unit=$unit reason=claim-lost-before-launch"
     return 1
   fi
@@ -125,15 +126,19 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   pid_started="${WORKER_SCOPE_PID_START:-}"
   [[ "$pid_started" =~ ^[0-9]+$ ]] || pid_started="$(coord_process_start_ticks "$pid" 2>/dev/null)" || {
     stuck_worker_stop "$pid" || :
-    if ! kill -0 "$pid" 2>/dev/null; then coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :; fi
-    [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :
+    if ! kill -0 "$pid" 2>/dev/null; then
+      coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :
+      [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :
+    fi
     say "dispatch stopped unit=$unit reason=worker-start-identity-unavailable"
     return 1
   }
   if ! coord_renew "$claim_key" "$claim_owner" "$pid" "$pid_started"; then
     stuck_worker_stop "$pid" || :
-    if ! alive "$pid"; then coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :; fi
-    [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :
+    if ! alive "$pid"; then
+      coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :
+      [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :
+    fi
     say "dispatch stopped unit=$unit reason=claim-lost-after-launch"
     return 1
   fi
