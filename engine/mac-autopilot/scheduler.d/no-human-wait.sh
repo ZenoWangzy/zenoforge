@@ -5,6 +5,15 @@ supervisor_arbiter_owner_ruling_pending() { # unit-json → 0 when an owner ruli
     | ([$h | to_entries[] | select(.value.stage == "supervisor-arbiter") | .key] | last // -1) as $last
     | any($h[$last + 1:][]?; .stage == "supervisor-requeue" and ((.result // "") | test("^supervisor ruling [0-9]+: ")))' <<<"$1" >/dev/null
 }
+# Re-read an arbiter candidate after a phase boundary; output id<TAB>current JSON, or nothing if it is no longer eligible.
+supervisor_arbiter_live_candidate() { # stale unit-json → id<TAB>current candidate JSON
+  local candidate_id candidate_unit
+  candidate_id="$(jqf -r .id <<<"$1")"
+  candidate_unit="$(jqf -c --arg id "$candidate_id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+  [[ -n "$candidate_unit" && "$candidate_unit" != null ]] || return 1
+  jqf -e '(.stage == "supervisor-review" or .stage == "parked") and (.hold_handoff_waiting // false)==false and (.supervisor_owned // false)==false' <<<"$candidate_unit" >/dev/null || return 1
+  printf '%s\t%s\n' "$candidate_id" "$candidate_unit"
+}
 # At the lifetime cap with no ruling, head gets SUPERVISOR_CAP_WAIT_S from the last run; then one default decision (the recut route once), and a second cap closes durably.
 SUPERVISOR_CAP_WAIT_S=21600
 supervisor_arbiter_capped_default() { # id unit-json → the lifetime cap's route; dispatches no run

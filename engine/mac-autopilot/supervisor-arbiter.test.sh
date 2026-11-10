@@ -201,6 +201,31 @@ jq -e '.units[]|select(.id=="pr-664")|has("arbiter_left_mark")|not' "$UNITS" >/d
 grep -Fq 'arbiter-no-change unit=pr-661' "$AGENT_HOME/supervisor-inbox" || fail "a held unit must reach the supervisor"
 echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
 
+# If a candidate stops being eligible after the first snapshot, dispatch must use the live ledger state.
+(
+  UNITS="$fixture/stale-candidate-units.json"
+  WORKERS="$fixture/stale-candidate-workers.json"
+  candidate_calls_file="$fixture/stale-candidate-calls"
+  printf '0\n' > "$candidate_calls_file"
+  jq -cn '{units:[{id:"pr-665",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"fixture",at:"2026-10-27T00:00:00Z"}]}]}' > "$UNITS"
+  printf '%s\n' '{"workers":[]}' > "$WORKERS"
+  supervisor_arbiter_candidates() {
+    local calls candidate
+    calls="$(cat "$candidate_calls_file")"
+    calls=$((calls + 1))
+    printf '%s\n' "$calls" > "$candidate_calls_file"
+    candidate="$(jq -c '.units[]' "$UNITS")"
+    if (( calls == 2 )); then
+      jq '.units[0].stage="closed"' "$UNITS" > "$UNITS.next"
+      mv "$UNITS.next" "$UNITS"
+    fi
+    printf '%s\n' "$candidate"
+  }
+  SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+  [[ "$(jq '[.workers[] | select(.unit=="pr-665")] | length' "$WORKERS")" == 0 ]] \
+    || fail 'a candidate that became closed must not dispatch from its stale snapshot'
+)
+
 # ---- 回收：六个动作逐个断言对外效果 ----
 harvest_with_reply() { # unit report-body → 用一个已死 worker 回收
   local unit="$1" reply="$2"
