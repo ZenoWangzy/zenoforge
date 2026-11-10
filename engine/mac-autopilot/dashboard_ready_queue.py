@@ -158,3 +158,17 @@ def summarize(total, ready_issue_numbers, units, read_json, agent_home):
     active_count = len(active)
     return {"total": total, "dispatchable": total - held_count - active_count,
             "active": active_count, "held": held_count, "classes": classes}
+
+
+def add_front_data(front, now, ready_total, front_stages, cache_path, root, run, error,
+                   cache_seconds, stale_seconds, units, read_json, agent_home, front_std, front_values):
+    """Attach the ready queue split and its health metric to the front dashboard."""
+    _, ready_numbers, meta = github_stages(now, front_stages, cache_path, root, run, error, cache_seconds, stale_seconds)
+    ready = summarize(ready_total, ready_numbers, units, read_json, agent_home)
+    front["ready_queue"] = ready
+    if ready is None:
+        front["errors"]["ready_queue"] = meta.get("ready_error") or "ready issue labels unavailable"
+    front_std("ready_queue.dispatchable", "待实现可派发票数量", 60, 150, False, "个",
+              "ready 标签下没有现有单元、阻塞或停放的开放票数；这是可以新开工的积压。",
+              "GitHub ready issue list 与 units.json 的派发状态拆分")
+    front_values["ready_queue.dispatchable"] = ready.get("dispatchable") if ready else None

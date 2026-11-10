@@ -901,11 +901,8 @@ def front_github_stages(now):
             return stale["stages"], stale.get("search_counts"), {"cached": True, "stale": True, "age_s": int(age), "error": front_error(ex)}
         raise
 
-def front_stage_rows(now):
+def front_stage_rows(now, front):
     raw, counts, meta = front_github_stages(now); by_label = {s["label"]: s for s in raw}; rows = []
-    _, ready_numbers, ready_meta = dashboard_ready_queue.github_stages(
-        now, FRONT_STAGES, FRONT_CACHE_PATH, ROOT, front_run, front_error, FRONT_CACHE_SECONDS, FRONT_STALE_SECONDS)
-    meta["ready_error"] = ready_meta.get("ready_error")
     for label, name, c_ok, c_bad, i_ok, i_bad, meaning in FRONT_STAGES:
         s = by_label.get(label) or {}
         oldest, count = s.get("oldest"), s.get("count")
@@ -914,12 +911,8 @@ def front_stage_rows(now):
         front_std(f"stage.{label}.count", f"{name}（{label}）数量", c_ok, c_bad, False, "个", meaning, "GitHub GraphQL：该标签的开放 issue 数")
         front_std(f"stage.{label}.idle_hours", f"{name}最久滞留", i_ok, i_bad, False, "小时", "该阶段里最久没动的那张票，距上次更新多久（label 变化或评论都会刷新，是时间下限）。" + meaning, "GitHub GraphQL：该标签下 updatedAt 最早的 issue")
         front_values[f"stage.{label}.count"] = count; front_values[f"stage.{label}.idle_hours"] = idle
-    ready = dashboard_ready_queue.summarize(by_label.get("ready-for-agent", {}).get("count"), ready_numbers, units, read_json, AGENT_HOME)
-    front_std("ready_queue.dispatchable", "待实现可派发票数量", 60, 150, False, "个",
-              "ready 标签下没有现有单元、阻塞或停放的开放票数；这是可以新开工的积压。",
-              "GitHub ready issue list 与 units.json 的派发状态拆分")
-    front_values["ready_queue.dispatchable"] = ready.get("dispatchable") if ready else None
-    return rows, counts, meta, ready
+    dashboard_ready_queue.add_front_data(front, now, by_label.get("ready-for-agent", {}).get("count"), FRONT_STAGES, FRONT_CACHE_PATH, ROOT, front_run, front_error, FRONT_CACHE_SECONDS, FRONT_STALE_SECONDS, units, read_json, AGENT_HOME, front_std, front_values)
+    return rows, counts, meta
 
 def front_advisor_snapshot():
     script = ('source "$1/lib.sh" >/dev/null 2>&1 || { echo "cannot source engine/lib.sh" >&2; exit 3; }\n'
@@ -1114,9 +1107,7 @@ release_train_state = read_json(f"{A}/release-train.json") or {}
 front = {"errors": {}}
 front_now = front_started = time.time()
 try:
-    front["stages"], front["search_counts"], front["github"], front["ready_queue"] = front_stage_rows(front_now)
-    if front["ready_queue"] is None:
-        front["errors"]["ready_queue"] = front["github"].get("ready_error") or "ready issue labels unavailable"
+    front["stages"], front["search_counts"], front["github"] = front_stage_rows(front_now, front)
 except Exception as ex:
     front["stages"], front["search_counts"], front["github"], front["ready_queue"] = [], None, None, None
     front["errors"]["stages"] = front_error(ex)
