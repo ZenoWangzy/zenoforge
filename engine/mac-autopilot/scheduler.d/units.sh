@@ -270,12 +270,10 @@ supervisor_requeue_repair_route() { # unit-json guidance → target<TAB>jq updat
 supervisor_return_stage() { # unit-json [stage-before-supervisor] → pending stage for a RULE decision
   local u="$1" stage="${2:-}"
   [[ -n "$stage" ]] || stage="$(jqf -r '.stage // empty' <<<"$u")"
+  if [[ -n "$(jqf -r '.handoff_integration_sha // empty' <<<"$u")" && -z "$(jqf -r '.handoff_delivery_verified_sha // empty' <<<"$u")" && "$(jqf -r '.pr // empty' <<<"$u")" =~ ^[0-9]+$ ]]; then printf 'repair-pending\n'; return 0; fi
   case "$stage" in
     implement-pending|repair-pending|review-pending|rereview-pending) printf '%s\n' "$stage" ;;
-    implement) printf 'implement-pending\n' ;;
-    repair) printf 'repair-pending\n' ;;
-    review) printf 'review-pending\n' ;;
-    rereview) printf 'rereview-pending\n' ;;
+    implement|repair|review|rereview) printf '%s-pending\n' "$stage" ;;
     blocked-external)
       local resume
       resume="$(jqf -r '.blocked_resume_stage // empty' <<<"$u")"
