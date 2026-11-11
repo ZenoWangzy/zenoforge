@@ -395,20 +395,6 @@ issue_intake_parent_reason() { # issue number, fetched issue JSON -> reason; 1=l
 }
 
 
-# A ticket that left the tracker state with no child left is not a parent, and a
-# flag it still carries must not refuse its way back to work. Any read that does
-# not prove a leaf keeps the refusal.
-tracker_parent_flag_is_stale() { # issue number, state JSON
-  local n="$1" state_json="$2" json rc=0
-  jq -e '.tracker_parent == true and .state != "tracker" and ((.recut_children // []) | length) == 0' \
-    <<< "$state_json" >/dev/null 2>&1 || return 1
-  json="$(gh issue view "$n" --repo "$REPO" --json title,body,subIssuesSummary 2>/dev/null)" || return 1
-  issue_intake_parent_reason "$n" "$json" >/dev/null || rc=$?
-  [ "$rc" = 1 ] || return 1
-  echo "issue_transition: cleared stale tracker_parent on #$n" >&2
-}
-
-
 issue_body_is_direct_main_lane() {
   local text="${1:-}" paths
   if issue_body_mentions_product_scope "$text"; then return 1; fi

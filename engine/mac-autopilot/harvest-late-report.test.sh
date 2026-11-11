@@ -194,6 +194,74 @@ shim_run() {
   (cd "$shim_work" && env ZF_NON_PRODUCT_UNIT=1 ZF_PIPELINE_UNIT=issue-shim \
     "ZF_NON_PRODUCT_GUARD_FILE=$shim_guard" "PATH=$shim_dir:$PATH" "$@") > "$output" 2>&1
 }
+shim_home="$sup/non-product-shim-login-home"
+shim_profile_bin="$sup/non-product-shim-login-bin"
+shim_login_bash_output="$sup/non-product-shim-login-bash.output"
+shim_login_sh_output="$sup/non-product-shim-login-sh.output"
+shim_login_elc_output="$sup/non-product-shim-login-elc.output"
+shim_login_separated_output="$sup/non-product-shim-login-separated.output"
+shim_login_long_output="$sup/non-product-shim-login-long.output"
+shim_login_nonlogin_output="$sup/non-product-shim-nonlogin.output"
+mkdir -p "$shim_home" "$shim_profile_bin"
+printf '#!/bin/sh\nprintf "REAL-NODE\\n"\nexit 0\n' > "$shim_profile_bin/node"
+chmod +x "$shim_profile_bin/node"
+printf 'export PATH=%q:"$PATH"\n' "$shim_profile_bin" > "$shim_home/.profile"
+shim_run_home_path() {
+  local output="$1" home="$2" path="$3"
+  shift 3
+  (cd "$shim_work" && env "HOME=$home" ZF_NON_PRODUCT_UNIT=1 ZF_PIPELINE_UNIT=issue-shim \
+    "ZF_NON_PRODUCT_GUARD_FILE=$shim_guard" "PATH=$path" "$@") > "$output" 2>&1
+}
+shim_run_home() {
+  local output="$1" home="$2"
+  shift 2
+  shim_run_home_path "$output" "$home" "$shim_dir:$PATH" "$@"
+}
+shim_login_bash_status=0
+shim_run_home "$shim_login_bash_output" "$shim_home" "$shim_dir/bash" -lc 'node a/x.test.mjs' || shim_login_bash_status=$?
+shim_login_sh_status=0
+shim_run_home "$shim_login_sh_output" "$shim_home" "$shim_dir/sh" -lc 'node a/x.test.mjs' || shim_login_sh_status=$?
+shim_sh_login_supported=1
+if [[ "$shim_login_sh_status" != 78 ]] && grep -Eiq 'illegal option.*-l|bad option.*-l' "$shim_login_sh_output"; then
+  shim_sh_login_supported=0
+  shim_login_sh_status=0
+  shim_run_home "$shim_login_sh_output" "$shim_home" "$shim_dir/sh" -c 'node a/x.test.mjs' || shim_login_sh_status=$?
+fi
+shim_login_elc_status=0
+shim_run_home "$shim_login_elc_output" "$shim_home" "$shim_dir/bash" -elc 'node a/x.test.mjs' || shim_login_elc_status=$?
+shim_login_separated_status=0
+shim_run_home "$shim_login_separated_output" "$shim_home" "$shim_dir/bash" -l -c 'node a/x.test.mjs' || shim_login_separated_status=$?
+shim_login_long_status=0
+shim_run_home "$shim_login_long_output" "$shim_home" "$shim_dir/bash" --login -c 'node a/x.test.mjs' || shim_login_long_status=$?
+shim_login_nonlogin_status=0
+shim_run_home_path "$shim_login_nonlogin_output" "$shim_home" "$shim_profile_bin:$shim_dir:$PATH" \
+  "$shim_dir/bash" -c 'node a/x.test.mjs' || shim_login_nonlogin_status=$?
+shim_login_git_status=0
+shim_run_home "$shim_output" "$shim_home" "$shim_dir/bash" -lc 'git add a/x.test.mjs' || shim_login_git_status=$?
+shim_login_sed_status=0
+shim_run_home "$shim_output" "$shim_home" "$shim_dir/bash" -lc 'sed -n 1p a/x.test.mjs' || shim_login_sed_status=$?
+login_guard_failed=0
+shim_assert_login_guard() {
+  local label="$1" status="$2" command="$3" output="$4"
+  if [[ "$status" != 78 ]] || ! grep -Fq "command=$command reason=test-file" "$output" || grep -Fq 'REAL-NODE' "$output"; then
+    echo "login shim case $label failed (rc=$status)" >&2
+    cat "$output" >&2
+    login_guard_failed=1
+  fi
+}
+shim_assert_login_guard 'bash -lc' "$shim_login_bash_status" node "$shim_login_bash_output"
+shim_sh_label='sh -c fallback'
+[[ "$shim_sh_login_supported" == 0 ]] || shim_sh_label='sh -lc'
+shim_assert_login_guard "$shim_sh_label" "$shim_login_sh_status" node "$shim_login_sh_output"
+shim_assert_login_guard 'bash -elc' "$shim_login_elc_status" node "$shim_login_elc_output"
+shim_assert_login_guard 'bash -l -c' "$shim_login_separated_status" node "$shim_login_separated_output"
+shim_assert_login_guard 'bash --login -c' "$shim_login_long_status" node "$shim_login_long_output"
+[[ "$shim_login_git_status" == 0 ]] || { echo "bash -lc staging a test file with the profile fixture failed (rc=$shim_login_git_status)" >&2; exit 1; }
+[[ "$shim_login_sed_status" == 0 ]] || { echo "bash -lc reading a test file with the profile fixture failed (rc=$shim_login_sed_status)" >&2; exit 1; }
+[[ "$shim_login_nonlogin_status" == 0 ]] && grep -Fq 'REAL-NODE' "$shim_login_nonlogin_output" \
+  || { cat "$shim_login_nonlogin_output" >&2; echo "non-login bash -c was rewritten (rc=$shim_login_nonlogin_status)" >&2; exit 1; }
+echo "login shim reproduction rcs: bash -lc=$shim_login_bash_status sh=$shim_login_sh_status bash -elc=$shim_login_elc_status bash -l -c=$shim_login_separated_status bash --login -c=$shim_login_long_status; non-login bash -c=$shim_login_nonlogin_status; sh_login_supported=$shim_sh_login_supported"
+[[ "$login_guard_failed" == 0 ]] || exit 1
 shim_status=0
 shim_run "$shim_output" "$shim_dir/bash" -lc 'git add a/x.test.mjs' || shim_status=$?
 [[ "$shim_status" == 0 ]] || { cat "$shim_output" >&2; echo "bash -lc staging a test file was refused (rc=$shim_status)" >&2; exit 1; }

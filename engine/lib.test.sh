@@ -6427,14 +6427,34 @@ if [ "$1" = issue ] && [ "$2" = comment ]; then
     fi
   done
 fi
-if [ "$1" = issue ] && [ "$2" = view ]; then printf '%s\n' '{"state":"OPEN"}'; fi
+if [ "$1" = issue ] && [ "$2" = view ]; then
+  case "$*" in
+    *'--json state'*) printf '%s\n' OPEN ;;
+    *'--json title,body,subIssuesSummary'*)
+      case "$3" in
+        991007) printf '%s\n' '{"title":"tracker umbrella","body":"","subIssuesSummary":{"total":1,"completed":0}}' ;;
+        *) printf '%s\n' '{"title":"tracker leaf","body":"","subIssuesSummary":{"total":0,"completed":0}}' ;;
+      esac ;;
+    *) printf '%s\n' '{"state":"OPEN"}' ;;
+  esac
+fi
 if [ "$1" = api ] && [[ "${2:-}" == repos/test/repo/pulls/* ]]; then
   pr_number="${2##*/}"
   case "$pr_number" in
     991005) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_LINKED_SHA" ;;
     991006) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
     991007) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merged_at":"2026-10-12T18:01:06Z","merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
+    991010) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merged_at":"2026-10-12T18:01:06Z","merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
   esac
+fi
+if [ "$1" = api ] && [[ "${2:-}" == repos/test/repo/issues/*/sub_issues?per_page=100 ]]; then
+  issue_number="${2#repos/test/repo/issues/}"
+  issue_number="${issue_number%%/*}"
+  if [ "$issue_number" = 991007 ]; then
+    printf '%s\n' '[{"number":991009,"state":"open","closed_at":null,"labels":[]}]'
+  else
+    printf '%s\n' '[]'
+  fi
 fi
 if [ "$1" = api ] && [[ " $* " == *"/comments?"* ]]; then printf '[[]]\n'; fi
 EOF
@@ -6481,7 +6501,7 @@ assert_not_contains "unlinked PR close evidence does not close issue" \
   "$(cat "$PIPELINE_GH_LOG")" 'issue close 991006'
 
 mkdir -p "$PIPELINE_CLOSE_FIXTURE/home/state"
-jq -n '{state:"tracker",tracker_parent:true,run:{outcome:"not-completed",evidence:{}}}' \
+jq -n '{state:"tracker",tracker_parent:true,recut_children:[],run:{outcome:"not-completed",evidence:{}}}' \
   > "$PIPELINE_CLOSE_FIXTURE/home/state/991007.json"
 TRACKER_GH_LOG="$PIPELINE_CLOSE_FIXTURE/tracker-gh.log"
 PIPELINE_TRACKER_MERGED_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
@@ -6494,13 +6514,35 @@ PIPELINE_TRACKER_MERGED_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
     state_read 991007 | jq -r --arg result "$result" \
       "[\$result,.state,.tracker_parent,.run.outcome,.run.evidence.pr_number,.run.evidence.merged_pr.number,.run.evidence.merged_pr.merge_sha,.run.evidence.merged_pr.merged_at] | @tsv"
   ' _ "$SCRIPT_DIR")"
-assert_eq "tracker parent records exact merged PR without entering release state" \
+assert_eq "tracker with an open GitHub sub-issue records exact merge without entering release state" \
   $'0\ttracker\ttrue\tnot-completed\t991007\t991007\t'"$PIPELINE_CLOSE_UNLINKED_SHA"$'\t2026-10-12T18:01:06Z' \
   "$PIPELINE_TRACKER_MERGED_OUT"
 assert_not_contains "tracker parent merge evidence does not mutate issue labels or close" \
   "$(cat "$TRACKER_GH_LOG")" 'issue edit'
 assert_not_contains "tracker parent merge evidence does not close the issue" \
   "$(cat "$TRACKER_GH_LOG")" 'issue close'
+
+jq -n '{state:"tracker",tracker_parent:true,recut_children:[],run:{outcome:"not-completed",evidence:{}}}' \
+  > "$PIPELINE_CLOSE_FIXTURE/home/state/991010.json"
+TRACKER_LEAF_GH_LOG="$PIPELINE_CLOSE_FIXTURE/tracker-leaf-gh.log"
+PIPELINE_TRACKER_LEAF_MERGED_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
+  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" ZF_REPO=test/repo \
+  PIPELINE_GH_LOG="$TRACKER_LEAF_GH_LOG" PIPELINE_CLOSE_UNLINKED_SHA="$PIPELINE_CLOSE_UNLINKED_SHA" \
+  PATH="$PIPELINE_CLOSE_FIXTURE/bin:$PATH" bash -c '
+    set -euo pipefail
+    source "$1/lib.sh"
+    roadmap_ensure_issue_parent() { :; }
+    conclude_merged_run 991010 991010 "PR #991010 merged"
+    state_read 991010 | jq -r "[.state,(.tracker_parent // false),.run.outcome,.run.evidence.pr_number,.deploy_state]|@tsv"
+  ' _ "$SCRIPT_DIR")"
+assert_eq "merged childless tracker enters awaiting-release and clears its parent flag" \
+  $'awaiting-release\tfalse\tmerged\t991010\tpending' "$PIPELINE_TRACKER_LEAF_MERGED_OUT"
+assert_contains "merged tracker leaf removes the tracker label" \
+  "$(cat "$TRACKER_LEAF_GH_LOG")" '--remove-label tracker'
+assert_contains "merged tracker leaf adds the awaiting-release label" \
+  "$(cat "$TRACKER_LEAF_GH_LOG")" '--add-label awaiting-release'
+assert_not_contains "merged tracker leaf does not close the issue" \
+  "$(cat "$TRACKER_LEAF_GH_LOG")" 'issue close 991010'
 
 PIPELINE_CLOSE_SUCCESS_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
   ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" REPO=test/repo \
@@ -6610,6 +6652,21 @@ assert_eq "recut umbrella with open child is not implement-eligible" 0 \
   "$(recut_parent_has_open_child 991201 '[{"number":991202,"state":"OPEN"}]' && echo 0 || echo $?)"
 assert_eq "recut umbrella with closed child reports completed parent" 3 \
   "$(gh() { echo CLOSED; }; recut_parent_has_open_child 991201 '[]' && echo 0 || echo $?)"
+printf '{"state":"needs-advisor","recut_children":[]}\n' > "$(state_file 991205)"
+gh() { return 64; }
+assert_eq "ordinary empty recut list tolerates an unavailable live child read" 3 \
+  "$(recut_parent_has_open_child 991205 '[]' && echo 0 || echo $?)"
+printf '{"state":"needs-advisor"}\n' > "$(state_file 991206)"
+assert_eq "ordinary issue without recut children tolerates an unavailable live child read" 3 \
+  "$(recut_parent_has_open_child 991206 '[]' && echo 0 || echo $?)"
+printf '{"state":"tracker","tracker_parent":true,"recut_children":[]}\n' > "$(state_file 991204)"
+gh() {
+  if [ "${1:-}" = api ]; then printf '[]\n'
+  elif [ "${1:-} ${2:-}" = "issue view" ]; then printf '{"body":"","comments":[]}\n'
+  else return 64; fi
+}
+assert_eq "empty recut child list is checked against live sub-issues" 1 \
+  "$(recut_parent_has_open_child 991204 '[]' && echo 0 || echo $?)"
 unset -f gh
 printf '{}' > "$(state_file 991203)"
 gh() {
@@ -6639,7 +6696,7 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
   NATIVE_CHILD_RELEASED_LABEL='[{"name":"released"}]' \
   bash -c '
     set -euo pipefail
-    source "$1/lib.sh"
+    source "$ZF_EXECUTION_MODULE_DIR/lib.sh"
     roadmap_ensure_issue_parent() { :; }
     REPO=test/repo
     is_on_hold() { return 1; }
@@ -6651,12 +6708,13 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
         printf "api %s\n" "$2" >> "$NATIVE_PARENT_LOG"
         number="${2#repos/test/repo/issues/}"
         number="${number%%/*}"
-        child_labels='[]'
+        child_labels="[]"
         case "$number" in
           991210) child=991211; child_state=open; closed_at=null ;;
           991212) child=991213; child_state=open; closed_at=null ;;
           991214) child=991215; child_state=open; closed_at=null ;;
           991218) child=991219; child_state=open; closed_at=null ;;
+          991220) printf "%s\n" "[]"; return 0 ;;
           991216)
             child=991217
             child_state="${NATIVE_CHILD_STATE:-closed}"
@@ -6667,6 +6725,8 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
         esac
         printf "[{\"number\":%s,\"state\":\"%s\",\"closed_at\":%s,\"labels\":%s}]\n" \
           "$child" "$child_state" "$closed_at" "$child_labels"
+      elif [ "${1:-} ${2:-}" = "issue view" ]; then
+        printf "%s\n" "{\"body\":\"\",\"comments\":[]}"
       elif [ "${1:-} ${2:-}" = "issue edit" ] || [ "${1:-} ${2:-}" = "issue close" ]; then
         printf "%s\n" "$*" >> "$NATIVE_PARENT_LOG"
       elif [ "${1:-} ${2:-}" = "issue list" ]; then
@@ -6691,6 +6751,12 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
       "$(state_read 991212 | jq -r .state)" "$(state_attempts 991212)" \
       "$(state_read 991212 | jq -r ".native_subissue_parent // false")"
 
+    NATIVE_PARENT_SUBISSUES_CACHE[991220]="[]"
+    printf "%s\n" "{\"state\":\"tracker\",\"tracker_parent\":true,\"recut_children\":[]}" > "$STATE_DIR/991220.json"
+    state_requeue 991220 "" pipeline-requeue
+    printf "tracker-requeue=%s parent=%s\n" \
+      "$(state_read 991220 | jq -r .state)" "$(state_read 991220 | jq -r ".tracker_parent // false")"
+
     printf "%s\n" "{\"attempts\":2,\"state\":\"needs-advisor\",\"pipeline_system\":{\"enabled\":true},\"model_policy\":{\"unit\":\"implement\",\"step\":\"advisor\"}}" \
       > "$STATE_DIR/991214.json"
     pipeline_system_return_to_implement 991214 needs-advisor
@@ -6708,7 +6774,7 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
     printf "sweep-closed=%s marker=%s\n" \
       "$(grep -c "issue close 991216" "$NATIVE_PARENT_LOG" || true)" \
       "$(state_read 991216 | jq -r ".native_subissue_parent // false")"
-  ' _ "$SCRIPT_DIR" 2>&1)" || {
+  ' 2>&1)" || {
   echo "native parent fixture exited non-zero:" >&2
   echo "$NATIVE_PARENT_OUTPUT" >&2
   FAILED=1
@@ -6717,6 +6783,8 @@ assert_contains "native children are discovered without recut state" \
   "$NATIVE_PARENT_OUTPUT" 'native-children=[991211] open-status=0 parent-reads=1'
 assert_contains "requeue keeps native parent out of ready-for-agent" \
   "$NATIVE_PARENT_OUTPUT" 'requeue-state=needs-advisor attempts=3 marker=true'
+assert_contains "childless tracker can requeue when its recorded child list is empty" \
+  "$NATIVE_PARENT_OUTPUT" 'tracker-requeue=ready-for-agent parent=false'
 assert_contains "advisor return keeps native parent in its current lane" \
   "$NATIVE_PARENT_OUTPUT" 'advisor-state=needs-advisor'
 assert_contains "advisor return does not write ready-for-agent" \

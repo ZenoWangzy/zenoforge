@@ -49,6 +49,10 @@ make_census
 gh() {
   printf '%s\n' "$*" >> "$GH_CALLS"
   case "${1:-} ${2:-}" in
+    'api --allow-escape-sequences')
+      [[ "${3:-}" == 'repos/{owner}/{repo}/actions/jobs/123/logs' ]] || return 98
+      cat "$GH_JOB_LOG"
+      ;;
     'pr list') cat "$CENSUS" ;;
     'pr view') printf 'src/fixture.ts\n' ;;
     'run list') printf '[]\n' ;;
@@ -80,6 +84,34 @@ prepare_tick() {
 call_count() { awk -v a="$1" -v b="${2:-}" '$1 == a && (b == "" || $2 == b) { n++ } END { print n+0 }' "$GH_CALLS"; }
 per_pr_read_count() {
   awk '($1 == "pr" && $2 == "view") || ($1 == "run" && $2 == "list" && $3 == "--commit") { n++ } END { print n+0 }' "$GH_CALLS"
+}
+
+run_ci_facts_case() {
+  local output facts i
+  GH_JOB_LOG="$fixture/no-marker-job.log"
+  : > "$GH_JOB_LOG"
+  for ((i = 1; i <= 13; i++)); do
+    printf '2026-11-11T20:13:58.0919699Z 291 : ┆ [5m29s] |  FAIL  tests/a.test.ts > suite > test-%02d\n' "$i" >> "$GH_JOB_LOG"
+  done
+  output="$(ci_test_red_checks '[{"bucket":"fail","name":"Touched packages PR gate","link":"https://example.invalid/job/123"}]')"
+  [[ "$(head -n 1 <<<"$output")" == 'Touched packages PR gate' ]] || fail "raw Dagger test failures were not recognized ($(head -n 1 <<<"$output"))"
+  facts="$(tail -n +2 <<<"$output")"
+  jq -e '(.suites | length) == 1
+    and .suites[0].file == "tests/a.test.ts"
+    and (.suites[0].tests | length) == 12
+    and .suites[0].tests[0].name == "suite > test-01"
+    and .suites[0].tests[11].name == "suite > test-12"' <<<"$facts" >/dev/null \
+    || fail "raw Dagger test facts did not include the stripped file/test paths with a 12-test cap ($facts)"
+
+  GH_JOB_LOG="$fixture/marker-job.log"
+  cat > "$GH_JOB_LOG" <<'LOG'
+2026-11-11T20:13:58.0919699Z 291 : ┆ [5m29s] |  FAIL  tests/fallback.test.ts > suite > ignored fallback
+ZENOFORGE-FAIL-FACTS {"suites":[{"file":"tests/marked.test.ts","tests":[{"name":"marked test"}]}]}
+LOG
+  output="$(ci_test_red_checks '[{"bucket":"fail","name":"Fruit industry pack PR gate","link":"https://example.invalid/job/123"}]')"
+  facts="$(tail -n +2 <<<"$output")"
+  [[ "$facts" == '{"suites":[{"file":"tests/marked.test.ts","tests":[{"name":"marked test"}]}]}' ]] \
+    || fail "existing ZENOFORGE-FAIL-FACTS marker did not retain precedence ($facts)"
 }
 
 run_ci_batch_case() {
@@ -271,12 +303,18 @@ case "${1:-all}" in
     run_stuck_unqueued_case
     echo 'ci-merge-admission-batch.test.sh stuck-unqueued: pass (stale empty queued runs retrigger once per head; young/job-bearing runs wait; second stuck head escalates)'
     ;;
+  ci-facts)
+    run_ci_facts_case
+    echo 'ci-merge-admission-batch.test.sh ci-facts: pass (Dagger raw failures become bounded facts; explicit marker remains authoritative)'
+    ;;
   all)
     run_ci_batch_case
     run_ci_zero_slot_case
     run_merge_empty_case
     run_stuck_unqueued_case
     echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls; stuck unqueued CI retriggers once per head)'
+    run_ci_facts_case
+    echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls; Dagger failures produce bounded facts)'
     ;;
   *) fail "unknown test mode: $1" ;;
 esac

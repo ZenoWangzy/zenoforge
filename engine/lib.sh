@@ -243,7 +243,7 @@ declare -gA ISSUE_TRANSITION_TABLE=(
   [released]="released concluded ready-for-agent needs-triage on-hold tracker"
   [concluded]="concluded awaiting-release released needs-triage ready-for-agent needs-info needs-advisor needs-recut duplicate finish-first wontfix on-hold tracker"
   [on-hold]="on-hold needs-triage needs-info ready-for-agent ready-for-human needs-owner checks-blocked duplicate finish-first wontfix needs-advisor needs-recut awaiting-release awaiting-pipeline-sync awaiting-pipeline-health released concluded tracker"
-  [tracker]="tracker needs-triage ready-for-agent released concluded on-hold"
+  [tracker]="tracker needs-triage ready-for-agent awaiting-release released concluded on-hold"
 )
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/holds.sh"
@@ -396,10 +396,6 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/route-advisor.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/model-units.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/recut.sh"
-
-# One REST read gives this process the live native child list for each parent.
-# GitHub caps native children at 100, matching the endpoint's per-page maximum.
-declare -gA NATIVE_PARENT_SUBISSUES_CACHE=()
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/release-close.sh"
 
