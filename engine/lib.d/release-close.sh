@@ -137,10 +137,8 @@ release_feature_evidence_valid() {
 if [[ -z "${ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR+x}" && -n "${REPO_DIR:-}" ]]; then
   _zf_deployment_cache_root="${MAC_AUTOPILOT_RUNTIME_DIR:-$REPO_DIR/.scratch-supervisor/autopi}"
   _zf_deployment_cache_dir="$_zf_deployment_cache_root/deployment-status.$BASHPID"
-  if mkdir -p -- "$_zf_deployment_cache_dir" 2>/dev/null; then
-    ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR="$_zf_deployment_cache_dir"
-    export ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR
-  fi
+  ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR="$_zf_deployment_cache_dir"
+  export ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR
   unset _zf_deployment_cache_root _zf_deployment_cache_dir
 fi
 
