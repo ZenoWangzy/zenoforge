@@ -9,7 +9,8 @@ ci_stuck_unqueued_pending() { # unit-id pr head branch → 0 when this head was 
   command git check-ref-format "refs/heads/$branch" >/dev/null 2>&1 || return 1
 
   runs="$(unfinished_runs | jqf -c --arg head "$head" --arg branch "$branch" \
-    '[.[] | select(.event == "pull_request" and .headSha == $head and .headBranch == $branch)]')" || return 1
+    '[.[] | select((.event == "pull_request" or .event == "pull_request_target")
+      and .headSha == $head and .headBranch == $branch)]')" || return 1
   count="$(jqf -r 'length' <<<"$runs")"
   [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 )) || return 1
   jqf -e 'all(.[]; .status == "queued")' <<<"$runs" >/dev/null || return 1

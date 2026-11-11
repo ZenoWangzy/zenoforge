@@ -175,6 +175,17 @@ stuck_runs() {
   CI_RUN_JOBS_CACHE[7301]='[]'; CI_RUN_JOBS_CACHE[7302]='[]'
 }
 
+stuck_target_run() {
+  local completed_at="$1" target_at="$2"
+  TICK_UNFINISHED="$(jq -cn --arg head "$STUCK_HEAD" --arg branch "$STUCK_BRANCH" \
+    --arg completed_at "$completed_at" --arg target_at "$target_at" \
+    '[{databaseId:7303,event:"pull_request",headSha:$head,headBranch:$branch,status:"completed",createdAt:$completed_at},
+      {databaseId:7304,event:"pull_request_target",headSha:$head,headBranch:$branch,status:"queued",createdAt:$target_at}]')"
+  CI_RUN_JOBS_CACHE=()
+  CI_RUN_JOBS_CACHE[7304]='[]'
+  unfinished_runs() { command jq -c '[.[] | select(.status != "completed")]' <<<"$TICK_UNFINISHED"; }
+}
+
 run_stuck_unqueued_case() {
   stuck_setup
   stuck_runs "$(date -u -d "$STAMP - 45 minutes" +%Y-%m-%dT%H:%M:%SZ)" \
@@ -196,6 +207,19 @@ run_stuck_unqueued_case() {
   : > "$GH_CALLS"; : > "$LOG"
   run_merge_lane_pass
   [[ ! -s "$GH_CALLS" ]] || fail "same head retriggered twice: $(cat "$GH_CALLS")"
+
+  stuck_setup
+  stuck_target_run "$(date -u -d "$STAMP - 45 minutes" +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(date -u -d "$STAMP - 40 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  run_merge_lane_pass
+  grep -Fq 'STUCK-UNQUEUED unit=unit-6001 PR#6001' "$LOG" \
+    || fail 'stale pull_request_target run was not retriggered after pull_request completed'
+  grep -Fq "run_ids=7304" "$LOG" || fail 'completed pull_request run was included in the retrigger'
+  [[ "$(awk '$1 == "api" && $2 == "--method" && $3 == "POST" && $4 == "repos/{owner}/{repo}/git/commits" { n++ } END { print n+0 }' "$GH_CALLS")" == 1 ]] \
+    || fail "pull_request_target retrigger did not create exactly one empty commit: $(cat "$GH_CALLS")"
+  [[ "$(awk -v endpoint="repos/{owner}/{repo}/git/refs/heads/$STUCK_BRANCH" \
+    '$1 == "api" && $2 == "--method" && $3 == "PATCH" && $4 == endpoint && index($0, "force=false") > 0 { n++ } END { print n+0 }' "$GH_CALLS")" == 1 ]] \
+    || fail "pull_request_target retrigger did not make exactly one force=false ref update: $(cat "$GH_CALLS")"
 
   stuck_setup
   stuck_runs "$(date -u -d "$STAMP - 10 minutes" +%Y-%m-%dT%H:%M:%SZ)"
