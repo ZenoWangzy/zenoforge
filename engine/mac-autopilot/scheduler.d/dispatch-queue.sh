@@ -48,7 +48,7 @@ direct_main_worker_head() { # worktree → checked-out commit used to key direct
 }
 feature_verification_prompt() { # lane brief → product feature evidence instructions; direct-main work has no worker-run test commands
   if [[ "$1" == direct-main ]]; then
-    printf '%s' 'Feature verification plan: Direct-main pipeline work does not use product feature verification commands.'
+    printf '%s' 'Feature verification plan (direct-main): no product feature verification commands; the lander runs the tests.'
   else
     cat <<EOF
 Feature verification plan (advisory, from ticket-declared paths): $2
