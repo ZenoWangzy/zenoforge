@@ -106,6 +106,31 @@ dispatch_pending false >/dev/null
 [[ "$captured_type" == repair && "$captured_prompt" == *"$direct_rule"* && "$captured_head" == "$(git -C "$ROOT" rev-parse --verify HEAD)" ]] \
   || { echo 'not ok - actual direct-main repair dispatch lacks the no-tests line or source head' >&2; exit 1; }
 
+# A direct-main unit still dispatches if its mocked worktree has no readable HEAD.
+missing_head_root="$fixture/no-head-worktree"
+mkdir -p "$missing_head_root"
+missing_head_ensure_clone="$(declare -f ensure_clone)"
+ensure_clone() { printf '%s' "$missing_head_root"; }
+for missing_head_work in implement repair; do
+  case "$missing_head_work" in
+    implement)
+      jq -n '{units:[{id:"issue-prompt-implement-no-head",issue:903,task:"direct-main implementation",branch:"agent/issue-prompt-implement",stage:"implement-pending",lane:"direct-main",title:"prompt fixture",history:[]}]}' > "$UNITS"
+      ;;
+    repair)
+      jq -n '{units:[{id:"issue-prompt-repair-no-head",issue:904,review_report:"review-904.md",branch:"agent/issue-prompt-repair",stage:"repair-pending",lane:"direct-main",title:"prompt fixture",history:[{stage:"review-request-changes"}]}]}' > "$UNITS"
+      ;;
+  esac
+  captured_type=''; captured_head='missing-dispatch'
+  dispatch_pending false >/dev/null
+  [[ "$captured_type" == "$missing_head_work" && -z "$captured_head" && "$(jq -r '.units[0].stage' "$UNITS")" == review-pending ]] \
+    || { echo "not ok - direct-main $missing_head_work dispatch stalled when the worktree HEAD was unavailable" >&2; exit 1; }
+done
+eval "$missing_head_ensure_clone"
+missing_head_sha="$(direct_main_worker_head "$missing_head_root")" \
+  || { echo 'not ok - missing direct-main worktree HEAD did not fall back successfully' >&2; exit 1; }
+[[ -z "$missing_head_sha" ]] \
+  || { echo "not ok - missing direct-main worktree HEAD was not empty: $missing_head_sha" >&2; exit 1; }
+
 two_labels="$(incident_match_line '{"labels":[{"name":"bug"},{"name":"incident"},{"name":"enhancement"}]}' '["bug","incident","production-anomaly"]')"
 [[ "$two_labels" == 'This unit IS an incident unit: its label bug, incident is in incident.labels, so every requirement below applies to your report.' ]] \
   || { echo "not ok - two matched labels are not named comma-separated: $two_labels" >&2; exit 1; }

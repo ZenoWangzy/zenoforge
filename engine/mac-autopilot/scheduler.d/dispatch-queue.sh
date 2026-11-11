@@ -42,8 +42,8 @@ direct_main_worker_prompt() { # prompt unit-json → append the worker-side test
 }
 direct_main_worker_head() { # worktree → checked-out commit used to key direct-main worker outcomes
   local head
-  head="$(git -C "$1" rev-parse --verify HEAD 2>/dev/null)" || return 1
-  [[ "$head" =~ $SHA_RE ]] || return 1
+  head="$(git -C "$1" rev-parse --verify HEAD 2>/dev/null)" || head=''
+  [[ "$head" =~ $SHA_RE ]] || head=''
   printf '%s' "$head"
 }
 feature_verification_prompt() { # lane brief → product feature evidence instructions; direct-main work has no worker-run test commands
