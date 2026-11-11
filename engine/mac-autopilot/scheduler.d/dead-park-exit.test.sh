@@ -231,6 +231,7 @@ jq -c --arg id "$unavailable_tracker_unit" --argjson issue "$unavailable_tracker
 ISSUE_STATES="$(jq -cn --argjson issue "$unavailable_tracker_issue" \
   '{($issue|tostring):{state:"tracker",tracker_parent:true,recut_children:[]}}')"
 NATIVE_FAIL_ISSUE="$unavailable_tracker_issue"
+export NATIVE_FAIL_ISSUE
 : > "$ROUTES"; : > "$NATIVE_SUBISSUE_LOOKUPS"
 dead_park_exit
 [[ "$(stage "$unavailable_tracker_unit")" == parked \
