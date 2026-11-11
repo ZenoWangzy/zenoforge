@@ -787,7 +787,7 @@ hold_answer() (
 # unit history (refills the stop-loss/arbitration budgets; a parked unit is moved by scheduler.sh --rule) and releases a
 # scheduler-stop-loss hold if the issue has one. COMMENT must be an owner comment on the issue (or the PR for pr-N).
 hold_rule() {
-  local target="${1:-}" action="${2:-}" comment_id="${3:-}" blocker="${4:-}" unit n state="" comment sched
+  local target="${1:-}" action="${2:-}" comment_id="${3:-}" blocker="${4:-}" unit n state="" current_state comment sched
   [[ "$target" =~ ^[1-9][0-9]*$ ]] && target="issue-$target"
   [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock)$ && "$comment_id" =~ ^[1-9][0-9]*$ ]] || return 64
   unit="$target"; n="${unit#*-}"
@@ -810,8 +810,8 @@ hold_rule() {
     state=""
   fi
   bash "$sched" --rule "$unit" "$action" "$(jq -r .html_url <<< "$comment")" "$(jq -r '.body[0:4000]' <<< "$comment")" "$blocker" || return 1
-  if [[ -n "$state" ]] && jq -e '.state == "on-hold"' <<< "$state" >/dev/null; then
-    state_requeue "$n" release-hold hold-requeue . "$(jq -c .hold <<< "$state")"
+  if [[ -n "$state" ]] && jq -e '.state == "on-hold"' <<< "$state" >/dev/null; then current_state="$(state_read "$n")" || return 1
+    jq -e '.state != "on-hold" and .hold == null' <<< "$current_state" >/dev/null || state_requeue "$n" release-hold hold-requeue . "$(jq -c .hold <<< "$state")"
   fi
 }
 

@@ -17,6 +17,51 @@ echo '{"state":"on-hold","hold":{"holder":"other"}}' > "$AGENT_HOME/state/6.json
 ! hold_rule 6 requeue 7 2>/dev/null || { echo "FAIL: foreign hold accepted" >&2; exit 1; }
 ! hold_rule 5 requeue 7 2>/dev/null || { echo "FAIL: non-owner comment accepted" >&2; exit 1; }
 ! hold_rule pr-9 recut 7 2>/dev/null || { echo "FAIL: comment on another number accepted for pr-9" >&2; exit 1; }
+(
+  fixture_engine="$test_env_root/hold-rule-engine"
+  fixture_runtime="$test_env_root/hold-rule-autopi"
+  fixture_bin="$test_env_root/hold-rule-bin"
+  mkdir -p "$fixture_engine/mac-autopilot" "$fixture_runtime" "$fixture_bin" "$AGENT_HOME/state"
+  cat > "$fixture_engine/mac-autopilot/scheduler.sh" <<'EOT'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == --rule && "${3:-}" == requeue ]] || exit 64
+if [[ "${HOLD_RULE_FAKE_FAIL:-0}" == 1 ]]; then exit 1; fi
+jq '.state = "ready-for-agent" | .hold = null' "$AGENT_HOME/state/7.json" > "$AGENT_HOME/state/7.json.tmp"
+mv "$AGENT_HOME/state/7.json.tmp" "$AGENT_HOME/state/7.json"
+jq --arg id "$2" '(.units[] | select(.id == $id) | .stage) = "rereview-pending" | (.units[] | select(.id == $id) | .history) += [{"stage":"supervisor-requeue"}]' "$MAC_AUTOPILOT_RUNTIME_DIR/units.json" > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json.tmp"
+mv "$MAC_AUTOPILOT_RUNTIME_DIR/units.json.tmp" "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
+EOT
+  cat > "$fixture_bin/gh" <<'EOT'
+#!/usr/bin/env bash
+[[ "$1:${2:-}" == api:repos/test/repo/issues/comments/9 ]] || exit 64
+printf '%s\n' '{"issue_url":"https://api.github.com/repos/test/repo/issues/7","author_association":"OWNER","html_url":"https://github.com/test/repo/issues/7#issuecomment-9","body":"requeue"}'
+EOT
+  chmod +x "$fixture_engine/mac-autopilot/scheduler.sh" "$fixture_bin/gh"
+  PATH="$fixture_bin:$PATH"
+  _AGENT_LIB_DIR="$fixture_engine"
+  export MAC_AUTOPILOT_RUNTIME_DIR="$fixture_runtime" OPEN_ISSUE_BLOCKER_GRAPH_JSON='[]'
+  printf '%s\n' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss","kind":"conclusion","created_at":"before"},"recut_children":[]}' > "$AGENT_HOME/state/7.json"
+  printf '%s\n' '{"units":[{"id":"issue-7","issue":7,"stage":"supervisor-review","pr":12,"lane":"pr","branch":"agent/issue-7","history":[{"stage":"review-request-changes"}]}]}' > "$fixture_runtime/units.json"
+  rc=0
+  hold_rule 7 requeue 9 > "$test_env_root/hold-rule-requeue.out" 2>&1 || rc=$?
+  [ "$rc" = 0 ] && jq -e '.state == "ready-for-agent" and .hold == null' "$AGENT_HOME/state/7.json" >/dev/null && jq -e '.units[0].stage == "rereview-pending" and .units[0].history[-1].stage == "supervisor-requeue"' "$fixture_runtime/units.json" >/dev/null || {
+    echo "FAIL: successful requeue did not return success with the unit requeued" >&2
+    cat "$test_env_root/hold-rule-requeue.out" >&2
+    exit 1
+  }
+  printf 'ok - hold --rule returns success when requeue already released the hold\n'
+  printf '%s\n' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss","kind":"conclusion","created_at":"before"},"recut_children":[]}' > "$AGENT_HOME/state/7.json"
+  printf '%s\n' '{"units":[{"id":"issue-7","issue":7,"stage":"supervisor-review","pr":12,"lane":"pr","branch":"agent/issue-7","history":[{"stage":"review-request-changes"}]}]}' > "$fixture_runtime/units.json"
+  export HOLD_RULE_FAKE_FAIL=1
+  rc=0
+  hold_rule 7 requeue 9 > "$test_env_root/hold-rule-failed-requeue.out" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] && jq -e '.state == "on-hold" and .hold.holder == "scheduler-stop-loss"' "$AGENT_HOME/state/7.json" >/dev/null && jq -e '.units[0].stage == "supervisor-review"' "$fixture_runtime/units.json" >/dev/null || {
+    echo "FAIL: failed requeue did not remain non-zero with the unit unchanged" >&2
+    exit 1
+  }
+  printf 'ok - hold --rule remains non-zero when scheduler requeue fails\n'
+)
 printf 'ok - hold --rule refuses foreign holds and non-owner comments\n'
 # --reblock returns a unit to dependency wait, naming the blocker when the unit has none.
 (
