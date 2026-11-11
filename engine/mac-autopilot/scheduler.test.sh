@@ -647,6 +647,11 @@ tick_gh() {
     'run view') [[ ! -f "$TF/log-unavailable" ]] || return 1; cat "$TF/failed.log" ;;
     'run rerun') echo "rerun $3" >> "$TF/actions"; [[ ! -f "$TF/rerun-unconfirmed" ]] ;;
     'issue view')
+      if [[ "$*" == *'--json state'* ]]; then
+        [[ -f "$TF/issues/$3.json" ]] || { echo "missing issue fixture #$3" >&2; return 97; }
+        command jq -r '.state // empty' "$TF/issues/$3.json"
+        return 0
+      fi
       if [[ -f "$TF/size-recut-mode" && "$*" == *'--json number,labels'* ]]; then
         command jq -cn --argjson n "$3" '{number:$n,labels:[{name:"ready-for-agent"}]}'
         return 0
@@ -2783,6 +2788,44 @@ command jq -e '.state=="awaiting-release" and .run.outcome=="merged"
 command grep -q 'issue edit 4470 .*--add-label awaiting-release' "$TF/actions"
 command grep -q 'issue comment 4470 ' "$TF/actions"
 command grep -q 'entered awaiting-release at merge of PR#77' "$TF/supervisor/autopi/scheduler.log"
+
+# A tracker with an open recut child records the merge but remains a tracker;
+# the merge lane must report its state instead of claiming release handoff.
+new_tick_fixture merge-release-tracker-child
+enable_rule_lane_fixture
+command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+command jq '.conclusion="success"' "$TF/run.json" > "$TF/run.tmp"; mv "$TF/run.tmp" "$TF/run.json"
+unset ZF_ROADMAP_TREE_CACHE_FILE
+command git -C "$TF/repo" checkout -qb release-tracker-child-79
+mkdir -p "$TF/repo/packages/fixture/src"
+printf 'export const trackerChild = true\n' > "$TF/repo/packages/fixture/src/index.ts"
+command git -C "$TF/repo" add packages/fixture/src/index.ts
+command git -C "$TF/repo" commit -qm 'tracker child merge fixture'
+tracker_child_sha="$(command git -C "$TF/repo" rev-parse HEAD)"
+command git -C "$TF/repo" push -q origin "$tracker_child_sha:refs/pull/79/head"
+printf '%s\n' "$tracker_child_sha" > "$TF/pr-head-79"
+command git -C "$TF/repo" checkout -q main
+mkdir -p "$TF/issues" "$TF/agent-home/state"
+command jq -n '{state:"tracker",tracker_parent:true,recut_children:[4472],run:{outcome:"not-completed",evidence:{}}}' \
+  > "$TF/agent-home/state/4471.json"
+command jq -n '{number:4472,state:"OPEN",title:"tracker child",body:"",labels:[]}' > "$TF/issues/4472.json"
+command jq -n --arg sha "$tracker_child_sha" \
+  '{units:[{id:"pr-79",pr:79,issue:4471,lane:"pr",branch:"agent/issue-4471",stage:"ready-to-merge",approved_sha:$sha,ready_since:1,history:[]}]}' \
+  > "$TF/supervisor/autopi/units.json"
+tick
+command grep -q '^merge 79' "$TF/actions"
+command jq -e '.state=="tracker" and .tracker_parent==true
+  and .run.evidence.pr_number=="79" and .deploy_state==null' "$TF/agent-home/state/4471.json" >/dev/null
+if command grep -q 'entered awaiting-release at merge of PR#79' "$TF/supervisor/autopi/scheduler.log"; then
+  echo 'scheduler.test.sh: open-child tracker was falsely logged as entering awaiting-release' >&2
+  exit 1
+fi
+command grep -Fq 'issue #4471 release handoff state=tracker (previous=tracker) after merge of PR#79' \
+  "$TF/supervisor/autopi/scheduler.log"
+if command grep -q 'issue edit 4471 .*--add-label awaiting-release' "$TF/actions"; then
+  echo 'scheduler.test.sh: open-child tracker received awaiting-release label' >&2
+  exit 1
+fi
 # 无 issue 的单元合入时无事可写，也不产生告警。
 new_tick_fixture merge-release-unlinked
 enable_rule_lane_fixture
