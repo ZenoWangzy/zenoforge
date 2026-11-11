@@ -94,3 +94,6 @@ hex characters) and linked issues as `#N` where available.
 
 Every implement report must also include a non-empty `## decision-log` section:
 what was tried, what failed and why, the final choice, and how it was verified.
+
+When the incident rule applies, include its exact `## root-cause`,
+`## recurrence-guard`, and `## prior-art` sections too.
