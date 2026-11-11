@@ -235,6 +235,7 @@ dead_park_exit
 [[ "$(stage "$unavailable_tracker_unit")" == parked \
     && "$(cat "$NATIVE_SUBISSUE_LOOKUPS")" == "$unavailable_tracker_issue" \
     && ! -s "$ROUTES" ]] || fail "unavailable tracker child read changed the parked route: $(unit_json "$unavailable_tracker_unit")"
+set_unit "$unavailable_tracker_unit" '.supervisor_owned=true'
 # A stale tracking ref that still contains an unpushed HEAD is pruned before the selector decides to skip it.
 stale_issue="$((BASHPID + 101))"; stale_unit="issue-$stale_issue"; stale_wt="$WT_ROOT/wt-issue-$stale_issue"
 mkdir -p "$stale_wt"
