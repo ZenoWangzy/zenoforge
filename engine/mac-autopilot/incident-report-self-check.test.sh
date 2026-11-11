@@ -38,15 +38,29 @@ run_self_check_keep() { # like run_self_check on the unit already in $UNITS
 }
 
 bad=impl-71002-bad.md
-printf '## root-cause\nx\n\n## recurrence-guard\nkind: test\n' > "$sup/$bad"
+printf '## decision-log\nTried the change and verified the test.\n\n## root-cause\nx\n\n## recurrence-guard\nkind: test\n' > "$sup/$bad"
 [[ "$(run_self_check "$bad")" == red && "$(self_check_runs)" == 0 ]] || fail 'report without prior-art did not turn the self-check red before the test run'
 jqf -e '.units[0].self_fix_pending == true' "$UNITS" >/dev/null || fail 'failing report did not queue a self-fix'
 out="$(jqf -r '.units[0].self_check_output' "$UNITS")"
 grep -q '^incident report check failed: missing ## prior-art' "$out" || fail "self-check output does not name the report failure: $(cat "$out")"
 
+decision_missing=impl-71002-decision-missing.md
+printf '## Summary\nTried and verified.\n' > "$sup/$decision_missing"
+[[ "$(run_self_check "$decision_missing")" == red && "$(self_check_runs)" == 0 ]] || fail 'a report missing decision-log reached the checks instead of self-fix'
+jqf -e '.units[0].self_fix_pending == true' "$UNITS" >/dev/null || fail 'a missing decision-log did not queue self-fix'
+out="$(jqf -r '.units[0].self_check_output' "$UNITS")"
+grep -q '^decision-log check failed: missing ## decision-log' "$out" || fail 'self-check output did not name the missing decision-log'
+
+decision_empty=impl-71002-decision-empty.md
+printf '## decision-log\n  \n## Summary\nTried and verified.\n' > "$sup/$decision_empty"
+[[ "$(run_self_check "$decision_empty")" == red && "$(self_check_runs)" == 0 ]] || fail 'an empty decision-log reached the checks instead of self-fix'
+jqf -e '.units[0].self_fix_pending == true' "$UNITS" >/dev/null || fail 'an empty decision-log did not queue self-fix'
+out="$(jqf -r '.units[0].self_check_output' "$UNITS")"
+grep -q '^decision-log check failed: empty ## decision-log' "$out" || fail 'self-check output did not name the empty decision-log'
+
 # The exact phrase from the false-positive rejection passes the same check.
 good=impl-71002-good.md
-printf '## root-cause\nx\n\n## recurrence-guard\nkind: test\n\n## prior-art\nThe sources agree, so no escalation was needed.\nSource: https://example.invalid/ref\n' > "$sup/$good"
+printf '## decision-log\nTried the fix, rejected the first approach because it failed, chose the second, and verified it.\n\n## root-cause\nx\n\n## recurrence-guard\nkind: test\n\n## prior-art\nThe sources agree, so no escalation was needed.\nSource: https://example.invalid/ref\n' > "$sup/$good"
 [[ "$(run_self_check "$good")" == pass && "$(self_check_runs)" == 1 ]] || fail 'compliant report did not reach the normal self-check'
 
 # A repair worker edits the original report in place and leaves only a fix note at its own path (issue 5527): the unit keeps pointing at the edited report.
@@ -63,7 +77,7 @@ cp "$sup/$good" "$sup/$bad" # the worker added the three headings to the origina
 [[ "$(run_self_check_keep)" == pass ]] || fail 'incident sections edited in place were not accepted next to a fix note'
 dispatch_if_room issue-71002 implement implement r.log impl-71002-new.md GPT-5 high prompt "" "$fixture/repo" "" "" "" false codex false configured codex || fail 'implement dispatch failed'
 jqf -e --arg new impl-71002-new.md '.units[0] | .implementation_report == $new and has("repair_note_report") == false' "$UNITS" >/dev/null || fail 'a new implementation kept the repair note field'
-printf '## root-cause\nx\n\n## recurrence-guard\nkind: test\n' > "$sup/$bad"
+printf '## decision-log\nTried the fix and verified it.\n\n## root-cause\nx\n\n## recurrence-guard\nkind: test\n' > "$sup/$bad"
 
 # The self-fix prompt tells the worker to edit the implementation report in place and keep the fix note separate.
 captured=''
@@ -78,5 +92,12 @@ command git -C "$fixture/repo" branch -f agent/issue-71002 HEAD
 self_fix_dispatch "$(jqf -c '.units[0]' "$UNITS")" || fail 'self-fix did not dispatch'
 [[ "$captured" == *'事故报告结构检查'* && "$captured" == *'incident report check failed'* ]] || fail 'self-fix prompt lacks the incident report instruction'
 [[ "$captured" == *"$sup/$bad"* ]] || fail 'self-fix prompt does not name the report to edit in place'
+
+decision_bad=impl-71002-decision-self-fix.md
+printf '## Summary\nImplementation complete.\n' > "$sup/$decision_bad"
+[[ "$(run_self_check "$decision_bad")" == red ]] || fail 'missing decision-log was not red before its self-fix'
+self_fix_dispatch "$(jqf -c '.units[0]' "$UNITS")" || fail 'decision-log self-fix did not dispatch'
+[[ "$captured" == *'决策日志结构检查'* && "$captured" == *'decision-log check failed'* && "$captured" == *'失败原因'* && "$captured" == *"$sup/$decision_bad"* ]] \
+  || fail 'self-fix prompt lacks the decision-log requirements or in-place report path'
 
 echo 'ok - incident report failure is caught in the self-check and repaired by self-fix before review'

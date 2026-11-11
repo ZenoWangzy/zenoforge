@@ -183,7 +183,7 @@ self_check_verification_body() { # unit JSON → the PR's verification section w
     "$(jq -c '.verification.argv' <<<"$1")" "$(jq -r '.verification.exit_code' <<<"$1")" "$(jq -c '.verification.evidence_files' <<<"$1")"
 }
 self_check_before_review() { # unit sha clone; false means wait for the gate/self-fix
-  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base="" config_file="" config_base="" config_temp="" incident_reason
+  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base="" reason gate config_file="" config_base="" config_temp="" incident_reason
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   lane="$(jqf -r '.lane // empty' <<<"$u")"
   if [[ "$lane" == pr ]]; then
@@ -217,10 +217,10 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
   fi
   rm -f "$out.verification.json" "$out.verification-output"
   (
-    # Same check as the review-time incident report gate (review-rules.sh), run here so the original session can repair the report via self-fix.
-    reason="$(incident_report_gate_reason "$u")"
+    # Run report gates before checks so the original session can repair the report via self-fix.
+    reason="$(decision_log_gate_reason "$u")"; if [[ -n "$reason" ]]; then gate=decision-log; else gate='incident report'; reason="$(incident_report_gate_reason "$u")"; fi
     if [[ -n "$reason" ]]; then
-      printf 'incident report check failed: %s\nreport: %s\n' "$reason" "$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
+      printf '%s check failed: %s\nreport: %s\n' "$gate" "$reason" "$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
       printf 'red\n' > "$result"
     elif [[ -n "$config_file" ]] && ! self_check_verification_run "$id" "$sha" "$dir" "$config_file" "$out.verification-output" "$out.verification.json"; then
       printf 'red\n' > "$result"
@@ -295,6 +295,10 @@ $(matt_method_rule "$dir")"
     impl_report="$(jqf -r '.implementation_report // empty' <<<"$u")"
     prompt+="
 失败项是事故报告结构检查：请就地修改原实现报告 $SUP/${impl_report:-$rep}（保留原有内容，补齐 ## root-cause、带 kind: 行的 ## recurrence-guard、带 http(s) 来源 URL 的 ## prior-art），不要另写一份替代它；$SUP/${rep} 只写修复说明。"
+  elif grep -q '^decision-log check failed' "$out"; then
+    impl_report="$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
+    prompt+="
+失败项是决策日志结构检查：请就地修改原实现报告 $SUP/${impl_report:-$rep}，在 ## decision-log 中简要写明试过什么、失败原因、最终选择和验证方式；保留原有内容，不要另写替代报告。$SUP/${rep} 只写修复说明。"
   fi
   if [[ "$(jqf -r '.implement_model // empty' <<<"$u")" == "$model" \
       && "$(jqf -r '.implement_effort // empty' <<<"$u")" == "$effort" \

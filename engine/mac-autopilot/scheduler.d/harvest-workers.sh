@@ -3,9 +3,9 @@
 incident_report_resume_prompt() { # gate reason source report destination report → read-only replacement-report prompt
   local reason="$1" source_report="$2" destination_report="$3" body
   body="$(cat -- "$source_report")" || return 1
-  printf 'Continue the same implementer session only to complete its incident report.\n'
+  printf 'Continue the same implementer session only to complete its required report sections.\n'
   printf 'The implementation report failed this structural check: %s\n' "$reason"
-  printf 'Return a complete replacement report for %s. Preserve all existing content and change only the report parts needed to satisfy that check.\n' "$destination_report"
+  printf 'Return a complete replacement report for %s. Preserve existing content and satisfy the check, including a non-empty ## decision-log with attempts, failure reasons, final choice, and verification.\n' "$destination_report"
   printf 'Do not edit source, tests, configuration, Git state, or any other file. Do not run tests, commit, push, or call GitHub write operations. The scheduler saves your final answer as the replacement report.\n\n'
   printf '%s\n' 'Existing report:' "$body"
 }
@@ -33,7 +33,7 @@ dispatch_incident_report_resume() { # worker-json source-report gate-reason → 
     --arg pending_stage "$pending_stage" --arg session_id "$session_id" \
     '{incident_report_resume:true,incident_report_resume_source_type:$source_type,incident_report_resume_source_report:$source_report,incident_report_resume_pending_stage:$pending_stage,incident_report_resume_session_id:$session_id}')"
   dispatch_if_room "$unit" repair repair "$output_log" "$output_report" "$model" "$effort" "$prompt" "$sha" "$workdir" "$pr_head" "$prompt" "$unit_json" false "$provider" "$hard" incident-report-resume "$route_provider" "$context" || return 1
-  say "incident report resume dispatched unit=$unit source=$source_report output=$output_report"
+  say "report resume dispatched unit=$unit source=$source_report output=$output_report"
 }
 
 incident_report_pre_review() { # implement/repair worker-json report-name report-path → start one report-only continuation when needed; rc 1 = one is now running
@@ -44,14 +44,14 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
   unit="$(jqf -r '.unit // empty' <<<"$w")"
   incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   [[ "$wtype" != repair ]] || report_name="$(jqf -r --arg n "$report_name" '.implementation_report // $n' <<<"$incident_unit_json")" # a repair edits the unit's own report in place; its worker report is only the fix note
-  reason="$(incident_report_gate_reason "$incident_unit_json" "$SUP/$report_name")"
+  reason="$(decision_log_gate_reason "$incident_unit_json" "$SUP/$report_name")"; [[ -n "$reason" ]] || reason="$(incident_report_gate_reason "$incident_unit_json" "$SUP/$report_name")"
   [[ -n "$reason" ]] || { [[ "$(jqf -r 'has("report_gate_fail")' <<<"$incident_unit_json")" == false ]] || set_unit "$unit" 'del(.report_gate_fail)'; return 0; }
   # The same gate reason twice in a row means another repair writes the same kind of report: stop instead of looping (4741).
   n=1; [[ "$(jqf -r '.report_gate_fail.reason // empty' <<<"$incident_unit_json")" != "$reason" ]] || n=$(( $(jqf -r '.report_gate_fail.n // 0' <<<"$incident_unit_json") + 1 ))
   set_unit "$unit" ".report_gate_fail={reason:$(js "$reason"),n:$n}"
-  if (( n >= 2 )); then to_supervisor "$unit" "incident report gate failed ${n} times in a row with the same reason: $reason (report $report_name)"; return 0; fi
+  if (( n >= 2 )); then to_supervisor "$unit" "implementation report gate failed ${n} times in a row with the same reason: $reason (report $report_name)"; return 0; fi
   ! dispatch_incident_report_resume "$w" "$report_name" "$reason" || return 1
-  say "incident report resume unavailable unit=$unit; review will use the existing report"
+  say "report resume unavailable unit=$unit; review will use the existing report"
 }
 
 harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers; pid:unit limits the pass to that one worker (harvest station)
@@ -212,15 +212,15 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
         esac
       }
       incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
-      incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json" "$rep")"
+      incident_gate_reason="$(decision_log_gate_reason "$incident_unit_json" "$rep")"; [[ -n "$incident_gate_reason" ]] || incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json" "$rep")"
       if [[ -z "$incident_gate_reason" && -s "$rep" ]]; then
         set_unit "$unit" ".implementation_report=$(js "$report") | del(.report_gate_fail) | .stage=$(js "$report_resume_stage")"
-        say "incident report resume passed unit=$unit report=$report; sending to review"
+        say "report resume passed unit=$unit report=$report; sending to review"
       else
         [[ -n "$incident_gate_reason" ]] || incident_gate_reason='resumed session did not produce a report'
         [[ -n "$report_resume_source" ]] && set_unit "$unit" ".implementation_report=$(js "$report_resume_source")"
         set_unit "$unit" ".stage=$(js "$report_resume_stage")"
-        say "incident report resume failed unit=$unit reason=$incident_gate_reason; sending to review with the existing report"
+        say "report resume failed unit=$unit reason=$incident_gate_reason; sending to review with the existing report"
       fi
       jqf --argjson accounting "$accounting" --arg finished "$STAMP" \
         --argjson pid "$pid" --arg unit "$unit" \
@@ -229,23 +229,23 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       continue
     fi
     if [[ -s "$rep" ]]; then
-      v="$(verdict_of "$rep")"
+      v="$(verdict_of "$rep")"; [[ "$wtype" != review && "$wtype" != rereview ]] || review_decision_log_flags_append "$rep" "$unit"
       if [[ "$wtype" == review || "$wtype" == rereview ]] && [[ "$v" == READY ]]; then
         incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
-        incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json")"
-        v="$(incident_review_verdict "$incident_unit_json" "$v")"
+        incident_gate_reason="$(decision_log_gate_reason "$incident_unit_json")"; [[ -n "$incident_gate_reason" ]] || incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json")"
+        [[ -z "$incident_gate_reason" ]] || v=NOT_READY
         if [[ "$v" == NOT_READY ]]; then
           original_report="$report"
           gate_id="$(tr -c 'A-Za-z0-9._-' '-' <<<"$unit" | sed 's/-$//')"
-          report="incident-gate-${gate_id}-${TAG}.md"
+          report="report-gate-${gate_id}-${TAG}.md"
           rep="$SUP/$report"
           {
-            printf '# Incident report gate\n\n'
-            printf 'The reviewer returned READY in %s, but the incident implementation report failed the required structural check.\n\n' "$original_report"
+            printf '# Implementation report gate\n\n'
+            printf 'The reviewer returned READY in %s, but the implementation report failed the required structural check.\n\n' "$original_report"
             printf 'REQUEST-CHANGES: %s\n\n' "$incident_gate_reason"
             printf 'VERDICT: NOT_READY\n\n```review-findings\n{"findings":[],"dispositions":[]}\n```\n'
           } > "$rep"
-          say "incident report gate requested changes unit=$unit reason=$incident_gate_reason"
+          say "implementation report gate requested changes unit=$unit reason=$incident_gate_reason"
         fi
       fi
       if [[ "$wtype" == review || "$wtype" == rereview ]] && [[ "$v" == READY ]]; then

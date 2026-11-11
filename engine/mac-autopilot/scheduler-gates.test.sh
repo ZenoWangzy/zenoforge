@@ -27,7 +27,7 @@ command git -C "$gr" update-ref refs/remotes/origin/main "$g3"
 [[ "$(ROOT="$gr" gate_eval_sha | tr '\n' ' ')" == "$g3 $g2 $g1 " ]] || fail "gate chain did not walk past product commits: $(ROOT="$gr" gate_eval_sha | tr '\n' ' ')"
 
 fail() { echo "scheduler-gates.test.sh: $*" >&2; exit 1; }
-units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
+units() { local report="$sup/review-implementation.md"; printf '## decision-log\nTried the scheduler fixture, kept the expected state transition, and verified the result.\n' > "$report"; jq --arg report "$report" '.units |= map(if has("implementation_report") then . else . + {implementation_report:$report} end)' <<<"$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 
 priority_admission_case() {

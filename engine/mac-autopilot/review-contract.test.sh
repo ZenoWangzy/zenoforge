@@ -4,6 +4,8 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$script_dir/review-contract.sh"
+source "$script_dir/scheduler.d/reports.sh"
+source "$script_dir/../night/owner-report-render.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -45,6 +47,27 @@ enriched="$(review_findings_with_contract_relation "$findings")" || fail 'findin
 [[ "$(jq -r '.[1].contract_relation' <<<"$enriched")" == out-of-contract ]] || fail 'out-of-contract blocker was not classified'
 [[ "$(jq -r '.[2].contract_relation' <<<"$enriched")" == unclassified ]] || fail 'legacy finding did not remain readable'
 [[ "$(jq -r '.[0].summary' <<<"$enriched")" == '[contract: in] Required behavior is missing.' ]] || fail 'the source summary marker was not retained'
+
+AGENT_HOME="$tmp/agent"
+SUP="$AGENT_HOME/checkout/.scratch-supervisor"
+STAMP=2026-11-10T23:30:00Z
+mkdir -p "$SUP"
+cat >"$tmp/review.md" <<'EOF'
+```review-findings
+{"findings":[],"dispositions":[],"decision_log_flags":[{"entry":"Tried cache-first; verification covered only the mock.","reason":"The report has no live-path verification."}]}
+```
+EOF
+parsed="$(findings_block_of "$tmp/review.md")" || fail 'review findings with optional decision-log flags were rejected'
+[[ "$(jq -r '.decision_log_flags[0].entry' <<<"$parsed")" == 'Tried cache-first; verification covered only the mock.' ]] \
+  || fail 'the optional decision-log flag was not kept by the review parser'
+review_decision_log_flags_append "$tmp/review.md" issue-876 || fail 'decision-log flags did not append'
+[[ "$(jq -r '[.entry,.reason,.unit,.at] | join("|")' "$SUP/decision-log-flags.jsonl")" == \
+  'Tried cache-first; verification covered only the mock.|The report has no live-path verification.|issue-876|2026-11-10T23:30:00Z' ]] \
+  || fail 'the marked entry did not reach the supervisor JSONL file'
+daily_html="$(maintainer_health_mail_build_html '{}' 'plain report' "$AGENT_HOME")"
+daily_html="$(jq -r '.html' <<<"$daily_html")"
+[[ "$daily_html" == *'决策日志复核（1 条）'* && "$daily_html" == *'Tried cache-first; verification covered only the mock.'* ]] \
+  || fail 'the marked entry did not reach the daily report that reads the supervisor JSONL file'
 
 # Review prompt ownership and scheduler wiring are exercised by scheduler-gates.test.sh.
 

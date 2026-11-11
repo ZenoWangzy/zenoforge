@@ -889,7 +889,7 @@ maintainer_health_mail_deliver() {
     fi
   fi
   if [ -n "$facts" ]; then
-    rendered="$(maintainer_health_mail_build_html "$facts" "$body")" || return 1
+    rendered="$(maintainer_health_mail_build_html "$facts" "$body" "$home")" || return 1
     html_body="$(jq -r '.html // empty' <<< "$rendered")" || return 1
     images="$(jq -c '.images // []' <<< "$rendered")" || return 1
   fi
