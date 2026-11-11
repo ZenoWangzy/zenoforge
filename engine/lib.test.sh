@@ -6689,7 +6689,7 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
   NATIVE_CHILD_RELEASED_LABEL='[{"name":"released"}]' \
   bash -c '
     set -euo pipefail
-    source "$1/lib.sh"
+    source "$MODEL_POLICY_TEST_ENGINE/lib.sh"
     roadmap_ensure_issue_parent() { :; }
     REPO=test/repo
     is_on_hold() { return 1; }
@@ -6766,7 +6766,7 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
     printf "sweep-closed=%s marker=%s\n" \
       "$(grep -c "issue close 991216" "$NATIVE_PARENT_LOG" || true)" \
       "$(state_read 991216 | jq -r ".native_subissue_parent // false")"
-  ' _ "$SCRIPT_DIR" 2>&1)" || {
+  ' 2>&1)" || {
   echo "native parent fixture exited non-zero:" >&2
   echo "$NATIVE_PARENT_OUTPUT" >&2
   FAILED=1
