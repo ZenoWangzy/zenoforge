@@ -83,7 +83,9 @@ intake_closed_unit_rows() { # issue...
     units="$(jqf -c --argjson n "$n" --argjson row "$row" '[.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))] as $us
       | (($us | map((.history // [])[-1].at // "") | max) // "") as $at
       | {ids: [$us[].id],
-         closed_by_recut: (($us | length) == 1 and $us[0].stage == "closed" and ((($us[0].history // []) | map(select(.stage != "supervisor-cap-default")) | last | .stage) | IN("supervisor-budget-recut", "supervisor-cap-triage-recut"))),
+         closed_by_recut: (($us | length) == 1 and $us[0].stage == "closed" and (($us[0].history // []) as $h
+           | ([$h | to_entries[] | select(.value.stage | IN("supervisor-budget-recut", "supervisor-cap-triage-recut")) | .key] | max // -1) as $recut
+           | $recut >= 0 and all($h[($recut + 1):][]; .stage | IN("supervisor-requeue", "pr-closed", "supervisor-cap-default")))),
          spent: any($us[]; .closed_units_restored_at != null),
          skip: (($row.episode != "" and any($us[]; (.hold_handoff_episode // "") != $row.episode))
            or (($row.from | IN("needs-advisor", "needs-triage")) and $row.at > $at))}' <(units_history_doc))" || continue
