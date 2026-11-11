@@ -222,7 +222,7 @@ fi
 grep -Fq -- '--remove-label tracker' "$GH_LOG" || fail 'triage transition did not remove the tracker label'
 
 : > "$GH_LOG"
-seed_state 5331 '{"state":"tracker","tracker_parent":true,"recut_children":[],"run":{"outcome":"merged"},"deploy_state":"pending"}'
+seed_state 5331 '{"state":"tracker","tracker_parent":true,"recut_children":[],"run":{"outcome":"merged","evidence":{"pr_number":"5331"}},"deploy_state":"pending"}'
 if ! out="$(bash "$CLI" 5331 awaiting-release merged-pr 2>"$err")"; then
   cat "$err" >&2
   fail 'childless tracker could not enter awaiting-release'

@@ -6689,7 +6689,7 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
   NATIVE_CHILD_RELEASED_LABEL='[{"name":"released"}]' \
   bash -c '
     set -euo pipefail
-    source "$MODEL_POLICY_TEST_ENGINE/lib.sh"
+    source "$ZF_EXECUTION_MODULE_DIR/lib.sh"
     roadmap_ensure_issue_parent() { :; }
     REPO=test/repo
     is_on_hold() { return 1; }
