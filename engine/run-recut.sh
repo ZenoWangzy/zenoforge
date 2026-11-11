@@ -493,9 +493,9 @@ $BODY"
 $(echo "$BLOCKERS" | tr ',' '\n' | sed 's/^/- #/')"
   fi
 
-  CREATE_ARGS=(gh issue create --repo "$REPO" --title "$TITLE" --body "$FULL_BODY" --label "$CATEGORY")
+  CREATE_ARGS=(gh issue create --repo "$REPO" --title "$TITLE" --body "$FULL_BODY" --label "$CATEGORY" --label needs-triage)
   if [[ "$(roadmap_switch_value)" != true || "$DRY_RUN" == 1 ]]; then
-    CREATE_ARGS+=(--label needs-triage --parent "$N")
+    CREATE_ARGS+=(--parent "$N")
   fi
   for INHERITED_LABEL in $INHERITED_LABELS; do CREATE_ARGS+=(--label "$INHERITED_LABEL"); done
   [ -n "$BLOCKERS" ] && CREATE_ARGS+=(--blocked-by "$BLOCKERS")
@@ -508,7 +508,7 @@ $(echo "$BLOCKERS" | tr ',' '\n' | sed 's/^/- #/')"
   CHILD_NUM_BY_INDEX[$i]="$CHILD_NUM"
   if [[ "$(roadmap_switch_value)" == true && "$DRY_RUN" != 1 ]]; then
     child_issue_json="$(jq -cn --argjson number "$CHILD_NUM" --arg title "$TITLE" --arg body "$FULL_BODY" --arg category "$CATEGORY" \
-      '{number:$number,title:$title,body:$body,state:"OPEN",labels:[{name:$category}]}')" || fail_attempt "could not prepare roadmap intake for child $((i + 1)) of #$N" 0
+      '{number:$number,title:$title,body:$body,state:"OPEN",labels:[{name:$category},{name:"needs-triage"}]}')" || fail_attempt "could not prepare roadmap intake for child $((i + 1)) of #$N" 0
     issue_transition "$CHILD_NUM" needs-triage recut-child-created . 0 "$child_issue_json" "$N" \
       || fail_attempt "could not place or label child $((i + 1)) of #$N in roadmap" 0
   fi

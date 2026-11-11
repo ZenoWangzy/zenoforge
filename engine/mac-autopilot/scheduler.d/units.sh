@@ -176,7 +176,7 @@ intake_parent_retry_failed() { # issue -> prints "<attempt> <delay-secs>" after 
   local now step; now="$(date +%s)"
   step="$(jqf -r --arg n "$1" '((.intake_parent_retry[$n].fails // 0) + 1) as $k | "\($k) \([300 * pow(2; ([$k - 1, 6] | min)), 21600] | min)"' "$UNITS")" || return 1
   units_update --arg n "$1" --argjson now "$now" --argjson k "${step% *}" --argjson d "${step#* }" \
-    '.intake_parent_retry[$n] = {fails: $k, next_at: ($now + $d)}' || return 1
+    '.intake_parent_retry[$n] = {fails: $k, next_at: ($now + $d), escalated: (.intake_parent_retry[$n].escalated // false)}' || return 1
   printf '%s\n' "$step"
 }
 intake_parent_retry_clear() { # issue

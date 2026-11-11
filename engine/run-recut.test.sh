@@ -116,6 +116,8 @@ if [ "${1:-}" = api ]; then
     else
       jq -r "${query:-.[].created_at}" <<< "${FAKE_ISSUE_TIMELINE_JSON:-[]}"
     fi
+  elif [[ "${2:-}" == repos/*/issues/"${FAKE_NEXT_CHILD_ISSUE:-90099}" ]]; then
+    printf '%s\n' "${FAKE_NEXT_CHILD_ISSUE:-90099}"
   else
     echo '[]'
   fi
@@ -183,6 +185,10 @@ case "$sub" in
     ;;
   "issue edit"|"issue comment"|"issue create")
     echo "gh $*" >> "$FAKE_GH_LOG"
+    if [ "$sub" = "issue create" ]; then
+      printf '%q ' "$@" >> "$FAKE_GH_CREATE_LOG"
+      printf '\n' >> "$FAKE_GH_CREATE_LOG"
+    fi
     previous=""
     for arg in "$@"; do
       if [ "$previous" = "--body-file" ]; then
@@ -192,6 +198,9 @@ case "$sub" in
       fi
       previous="$arg"
     done
+    if [ "$sub" = "issue create" ]; then
+      echo "https://github.com/test/repo/issues/${FAKE_NEXT_CHILD_ISSUE:-90099}"
+    fi
     ;;
   "pr checks") printf '%s\n' '[{"name":"fixture","bucket":"fail"}]'; exit 1 ;;
   *) : ;;
@@ -199,8 +208,8 @@ esac
 exit 0
 EOF
 
-# Fake Codex: a domain_verified=false refusal every time -- these tests
-# cover the label change, not the model's own cut-vs-refuse judgement.
+# Fake Codex: refusals cover the error paths; one opt-in verified cut covers
+# the live child-create label contract without testing model judgement.
 cat > "$FAKE_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 set -u
@@ -216,7 +225,9 @@ cat > "${FAKE_RECUIT_INPUT:-/dev/null}"
 if [ -n "$schema" ] && [ -n "${FAKE_RECUIT_SCHEMA_FILE:-}" ]; then
   cp "$schema" "$FAKE_RECUIT_SCHEMA_FILE"
 fi
-if [ -n "${FAKE_RECUIT_REASON_FILE:-}" ]; then
+if [ "${FAKE_RECUIT_ACCEPT_CHILDREN:-0}" = 1 ]; then
+  jq -cn '{domain_verified:true,refuse_reason:"",needs_production_access:false,how:"The recut runner verifies child files and symbols against the checkout.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A child is filed with its initial workflow label."],children:[{title:"verified child",body_md:"## What to build\n\nImplement the verified slice.",files:["seed.txt"],symbols:["seed"],blocked_by_child_indices:[]}]}' > "$out"
+elif [ -n "${FAKE_RECUIT_REASON_FILE:-}" ]; then
   jq -cn --rawfile reason "$FAKE_RECUIT_REASON_FILE" \
     --arg production_access "${FAKE_RECUIT_PRODUCTION_ACCESS:-__omit__}" \
     '{domain_verified:false,refuse_reason:$reason,needs_production_access:($production_access == "true"),how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[]}' > "$out"
@@ -288,6 +299,9 @@ run_once() {
       --arg identity "$MODEL_POLICY_TEST_WORK_IDENTITY" \
       '{role:"work",identity:$identity,config:$config}' > "$agent_home/model-config-work.json"
   fi
+  if [ "${9:-}" = roadmap ]; then
+    jq '.switches["roadmap-order"] = true' "$SCRIPT_DIR/model-policy.default.json" > "$agent_home/model-policy.json"
+  fi
   ROADMAP_TEST_ISSUE="$hand_issue" ROADMAP_TEST_TITLE="$HAND_TEST_TITLE" \
     python3 - "$agent_home/roadmap-tree.json" <<'PY'
 import json, os, sys
@@ -317,7 +331,10 @@ PY
   export FAKE_RECUIT_REASON_FILE="$fake_reason_file"
   export ZF_ROADMAP_TREE_CACHE_FILE="${agent_home}/roadmap-tree.json"
   export FAKE_RECUIT_PRODUCTION_ACCESS="${6:-__omit__}"
+  export FAKE_RECUIT_ACCEPT_CHILDREN="${10:-0}"
+  export FAKE_NEXT_CHILD_ISSUE=90099
   export FAKE_GH_LOG="$agent_home/gh.log"
+  export FAKE_GH_CREATE_LOG="$agent_home/gh.create.log"
   export FAKE_RECUIT_SCHEMA_FILE="$agent_home/recut-schema.json"
   export FAKE_RECUIT_ARGS_FILE="$agent_home/recut-args.txt"
   export FAKE_RECUIT_INPUT="$agent_home/recut-input.txt"
@@ -357,6 +374,7 @@ OWNER
       ;;
   esac
   : > "$FAKE_GH_LOG"
+  : > "$FAKE_GH_CREATE_LOG"
   : > "${FAKE_GH_LOG}.state-views"
   : > "$FAKE_HAND_ENQUEUE_LOG"
 
@@ -373,6 +391,7 @@ OWNER
     printf 'debug - run-recut issue=%s failed: %s\n' "$hand_issue" "$RUN_OUTPUT"
   fi
   GH_LOG_CONTENT="$(cat "$FAKE_GH_LOG" 2>/dev/null || true)"
+  GH_CREATE_CONTENT="$(cat "$FAKE_GH_CREATE_LOG" 2>/dev/null || true)"
   STATE_CONTENT="$(cat "$agent_home/state/$hand_issue.json" 2>/dev/null || true)"
   INBOX_CONTENT="$(cat "$agent_home/supervisor-inbox" 2>/dev/null || true)"
   SCHEMA_CONTENT="$(cat "$FAKE_RECUIT_SCHEMA_FILE" 2>/dev/null || true)"
@@ -685,6 +704,13 @@ assert_eq "schema-invalid recut output records the failure stage" recut \
   "$(jq -r '.model_policy.failures[-1].stage // empty' <<< "$STATE_CONTENT")"
 assert_eq "every recut schema property is required" true \
   "$(jq -e 'all(.. | objects | select(has("properties")); ((.properties | keys) - (.required // [])) == [])' "$SCRIPT_DIR/prompts/recut.schema.json" >/dev/null && echo true || echo false)"
+
+# Bypass the outer roadmap-create normalizer here so this assertion exercises
+# run-recut's own create arguments; the child must carry its entry label itself.
+ROADMAP_ISSUE_CREATE_INNER=1 run_once "needs-recut enhancement" '{"attempts":0}' 0 0 "" "" 90081 "" roadmap 1
+assert_eq "roadmap-mode recut creates its child successfully: $RUN_OUTPUT" 0 "$RUN_STATUS"
+assert_contains "roadmap-mode recut adds needs-triage in the child create request" \
+  "$GH_CREATE_CONTENT" '--label needs-triage'
 
 if [ "$FAILED" -eq 1 ]; then
   echo "FAILED"
