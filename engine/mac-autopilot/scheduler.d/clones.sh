@@ -317,11 +317,13 @@ Rescue ref: $rescue_ref
 
 Dropped rescue diff stat (git diff --stat $candidate $integrated):
 $stat"
-    if [[ "$pr" =~ ^[0-9]+$ ]]; then
-      gh pr comment "$pr" --body "$body" >/dev/null 2>&1 \
-        || say "handoff history drop comment failed unit=$id pr=$pr integrated=$integrated rescue_ref=$rescue_ref"
-    else
+    if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
       say "handoff history drop comment skipped unit=$id: no PR for integrated=$integrated rescue_ref=$rescue_ref"
+      return 1
+    fi
+    if ! gh pr comment "$pr" --body "$body" >/dev/null 2>&1; then
+      say "handoff history drop comment failed unit=$id pr=$pr integrated=$integrated rescue_ref=$rescue_ref"
+      return 1
     fi
     set_unit "$id" "$(hist handoff-history-dropped "integrated SHA $integrated; rescue ref $rescue_ref; candidate $candidate; diff stat: $stat") | .handoff_integration_sha=null | .handoff_delivery_verified_sha=null" || return 1
     say "handoff history dropped unit=$id candidate=$candidate integrated=$integrated rescue_ref=$rescue_ref; reviewing current PR head"
