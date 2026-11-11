@@ -53,7 +53,7 @@ direct_repair_prompt="$(direct_main_worker_prompt 'GOAL: repair the direct-main 
 [[ "$(grep -cF 'direct_main_worker_prompt "$prompt" "$u"' "$queue_source" || true)" == 2 ]] \
   || { echo 'not ok - direct-main prompt rule is not applied to both implement and repair assembly' >&2; exit 1; }
 direct_feature_prompt="$(feature_verification_prompt direct-main 'pipeline scripts')"
-[[ "$direct_feature_prompt" == *'Direct-main pipeline work'* && "$direct_feature_prompt" != *'Run node scripts/e2e/'* ]] \
+[[ "$direct_feature_prompt" == *'Feature verification plan (direct-main): no product feature verification commands; the lander runs the tests.'* && "$direct_feature_prompt" != *'Run node scripts/e2e/'* ]] \
   || { echo 'not ok - direct-main implement prompt includes a product feature test command' >&2; exit 1; }
 
 git -C "$ROOT" init -q -b main
