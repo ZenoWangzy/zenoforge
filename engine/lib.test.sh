@@ -6652,7 +6652,14 @@ assert_eq "recut umbrella with open child is not implement-eligible" 0 \
   "$(recut_parent_has_open_child 991201 '[{"number":991202,"state":"OPEN"}]' && echo 0 || echo $?)"
 assert_eq "recut umbrella with closed child reports completed parent" 3 \
   "$(gh() { echo CLOSED; }; recut_parent_has_open_child 991201 '[]' && echo 0 || echo $?)"
-printf '{"recut_children":[]}\n' > "$(state_file 991204)"
+printf '{"state":"needs-advisor","recut_children":[]}\n' > "$(state_file 991205)"
+gh() { return 64; }
+assert_eq "ordinary empty recut list tolerates an unavailable live child read" 3 \
+  "$(recut_parent_has_open_child 991205 '[]' && echo 0 || echo $?)"
+printf '{"state":"needs-advisor"}\n' > "$(state_file 991206)"
+assert_eq "ordinary issue without recut children tolerates an unavailable live child read" 3 \
+  "$(recut_parent_has_open_child 991206 '[]' && echo 0 || echo $?)"
+printf '{"state":"tracker","tracker_parent":true,"recut_children":[]}\n' > "$(state_file 991204)"
 gh() {
   if [ "${1:-}" = api ]; then printf '[]\n'
   elif [ "${1:-} ${2:-}" = "issue view" ]; then printf '{"body":"","comments":[]}\n'

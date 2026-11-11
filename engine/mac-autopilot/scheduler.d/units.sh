@@ -702,7 +702,7 @@ dead_park_exit() {
       jqf -e 'type == "object"' <<<"$issue_state" >/dev/null 2>&1 || continue
       if jqf -e '.state == "on-hold" and (.hold.holder // "") != "scheduler-stop-loss"' <<<"$issue_state" >/dev/null 2>&1; then continue; fi
       if jqf -e '.tracker_parent == true or .state == "tracker"' <<<"$issue_state" >/dev/null 2>&1 \
-          && ! (REPO="$issue_repo"; scheduler_scope_lib selection-scope && tracker_parent_flag_is_stale "$issue" "$issue_state"); then
+          && ! (REPO="$issue_repo"; scheduler_scope_lib recut blockers && tracker_parent_flag_is_stale "$issue" "$issue_state"); then
         pr="$(unit_field "$id" '.pr // empty')"; [[ -n "$pr" ]] || pr=none
         ( source "$SCHEDULER_AGENT_LIB" && supervisor_inbox_append_once "dead-park-tracker-parent:$id" \
           "dead-park-tracker-parent unit=$id issue=#$issue slice-pr=$pr" ) >/dev/null 2>&1 || true

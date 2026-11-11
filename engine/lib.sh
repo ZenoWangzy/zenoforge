@@ -397,10 +397,6 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/model-units.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/recut.sh"
 
-# One REST read gives this process the live native child list for each parent.
-# GitHub caps native children at 100, matching the endpoint's per-page maximum.
-declare -gA NATIVE_PARENT_SUBISSUES_CACHE=()
-
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/release-close.sh"
 
 # The bound every conclude_run "not-completed" refusal is measured against --

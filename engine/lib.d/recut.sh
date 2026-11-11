@@ -13,6 +13,10 @@
 # change the label; if the label edit fails, return non-zero so the caller
 # leaves a visible failure and the reconciliation sweep can retry the one
 # safe remaining operation without creating another set of children.
+# Native child state is cached once per process/tick. Keep the module usable
+# when a scheduler scope loads it without the full lib.sh wrapper.
+declare -p NATIVE_PARENT_SUBISSUES_CACHE >/dev/null 2>&1 || declare -gA NATIVE_PARENT_SUBISSUES_CACHE=()
+
 retire_recut_parent() {
   local n="$1"
   issue_transition "$n" tracker recut-parent-retired
@@ -70,8 +74,11 @@ native_parent_subissues_json() {
 # Read permanent recut evidence from local state first. Otherwise, reuse the
 # same parent path for native GitHub sub-issues, then try legacy split comments.
 recut_parent_children_json() {
-  local n="$1" state="${2:-}" allow_comment_fallback="${3:-1}" issue_json marker_text native_json children_json requeued_at last_child_closed_at
+  local n="$1" state="${2:-}" allow_comment_fallback="${3:-1}" issue_json marker_text native_json children_json requeued_at last_child_closed_at known_parent=0
   [ -n "$state" ] || state="$(state_read "$n")" || return 2
+  jq -e 'type == "object"' <<< "$state" >/dev/null 2>&1 || return 2
+  if jq -e '.state == "tracker" or .tracker_parent == true or .native_subissue_parent == true' \
+    <<< "$state" >/dev/null 2>&1; then known_parent=1; fi
   if jq -e 'type == "object" and has("recut_children")' <<< "$state" >/dev/null 2>&1; then
     jq -e '(.recut_children | type) == "array" and all(.recut_children[]; type == "number" and . > 0 and . == floor)' \
       <<< "$state" >/dev/null 2>&1 || return 2
@@ -79,8 +86,22 @@ recut_parent_children_json() {
       jq -c '.recut_children | unique' <<< "$state"
       return 0
     fi
+    if (( known_parent == 0 )); then
+      # An explicit empty recut list is the recorded leaf state for ordinary
+      # work. Do not turn an unrelated requeue into a live child-list gate.
+      printf '[]\n'
+      return 0
+    fi
   fi
-  native_parent_subissues_json "$n" >/dev/null || return 2
+  if ! declare -F native_parent_subissues_json >/dev/null || ! native_parent_subissues_json "$n" >/dev/null; then
+    if (( known_parent == 0 )); then
+      # The child read is an admission check only for a known parent. If GitHub
+      # cannot answer for an ordinary issue, preserve its existing requeue path.
+      printf '[]\n'
+      return 0
+    fi
+    return 2
+  fi
   native_json="${NATIVE_PARENT_SUBISSUES_CACHE[$n]}"
   children_json="$(jq -ce '[.[].number] | unique' <<< "$native_json")" || return 2
   if [ "$(jq 'length' <<< "$children_json")" -gt 0 ]; then
@@ -137,9 +158,6 @@ recut_parent_children_json() {
 recut_parent_has_open_child() {
   local n="$1" open_issues_json="${2:-[]}" state_json="${3:-}" allow_comment_fallback="${4:-1}" children child state native_json
   [ -n "$state_json" ] || state_json="$(state_read "$n")" || return 2
-  if ! jq -e 'type == "object" and has("recut_children")' <<< "$state_json" >/dev/null 2>&1; then
-    native_parent_subissues_json "$n" >/dev/null || return $?
-  fi
   children="$(recut_parent_children_json "$n" "$state_json" "$allow_comment_fallback")" || return $?
   native_json="${NATIVE_PARENT_SUBISSUES_CACHE[$n]:-}"
   while IFS= read -r child; do
@@ -158,6 +176,29 @@ recut_parent_has_open_child() {
     case "${state^^}" in OPEN) return 0 ;; CLOSED) ;; *) return 2 ;; esac
   done < <(jq -r '.[]' <<< "$children")
   return 3
+}
+
+
+# A tracker label or flag is stale only when its recorded and live children are
+# both verified closed or absent. Any read that does not prove a leaf keeps it.
+tracker_parent_flag_is_stale() { # issue number, state JSON
+  local n="$1" state_json="$2" children child_status sub_issues
+  jq -e '.tracker_parent == true or .state == "tracker"' <<< "$state_json" >/dev/null 2>&1 || return 1
+  children="$(jq -ce '(.recut_children // []) as $children
+    | if ($children | type) == "array" and all($children[]; type == "number" and . > 0 and . == floor)
+      then $children else error("invalid recut children") end' <<< "$state_json")" || return 1
+  if jq -e 'length > 0' <<< "$children" >/dev/null; then
+    if recut_parent_has_open_child "$n" "${OPEN_ISSUE_BLOCKER_GRAPH_JSON:-[]}" "$state_json" 0; then
+      return 1
+    else
+      child_status=$?
+    fi
+    [ "$child_status" = 3 ] || return 1
+  fi
+  sub_issues="$(native_parent_subissues_json "$n")" || return 1
+  jq -e 'type == "array" and (any(.[]; (.state | ascii_downcase) == "open") | not)' \
+    <<< "$sub_issues" >/dev/null 2>&1 || return 1
+  echo "issue_transition: cleared stale tracker_parent on #$n" >&2
 }
 
 
