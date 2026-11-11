@@ -9,20 +9,21 @@ CRITERIA = {
 }
 MEANING = {
     "intake.laneless_open_issues": (
-        "创建超过 60 分钟、仍开放且没有处理车道标签的产品工单数；路线图容器不计入。"),
+        "创建超过 60 分钟、仍开放且没有处理车道标签的产品工单数；路线图容器及仍有开放重切子票的父项不计入。"),
 }
 SOURCE = {
     "intake.laneless_open_issues": (
         "GitHub REST GET issues?state=open&per_page=100，用 --paginate 读完所有页；读取失败为 NO-DATA。"
-        "结果缓存在 runtime，每 DEP_CHECK_SECONDS（默认 600 秒）最多请求一次"),
+        "仅带 recut_children 的 tracker 按子票判断，路线图容器先排除；子票号与同一份开放 issue 列表匹配；结果缓存在 runtime，每 DEP_CHECK_SECONDS（默认 600 秒）最多请求一次"),
 }
 
 LANE_LABELS = frozenset({
     "needs-triage", "ready-for-agent", "on-hold", "awaiting-release", "needs-recut", "needs-info",
-    "needs-advisor", "needs-owner", "ready-for-human", "awaiting-pipeline-sync", "hotfix",
+    "needs-advisor", "needs-owner", "ready-for-human", "awaiting-pipeline-sync", "hotfix", "finish-first",
 })
-# Roadmap labels mark planning containers, not product issues that can enter an intake lane.
-CONTAINER_LABELS = frozenset({"roadmap-epic", "roadmap-theme", "roadmap"})
+# Roadmap labels mark planning containers even when sweep transitions also add tracker.
+ROADMAP_CONTAINER_LABELS = frozenset({"roadmap-epic", "roadmap-theme", "roadmap"})
+CONTAINER_LABELS = ROADMAP_CONTAINER_LABELS | {"tracker"}
 
 
 def _read_cache(path):
@@ -48,7 +49,27 @@ def _write_cache(path, value):
         return False
 
 
-def open_laneless_count(runtime, repo, now, gh_json):
+def _tracker_has_open_children(agent_home, issue_number, open_issue_numbers):
+    path = Path(agent_home) / "state" / f"{issue_number}.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict):
+        return None
+    if "recut_children" not in state:
+        return False
+    children = state["recut_children"]
+    if not isinstance(children, list) or any(
+        not isinstance(child, int) or isinstance(child, bool) or child <= 0 for child in children
+    ):
+        return None
+    return any(child in open_issue_numbers for child in children)
+
+
+def open_laneless_count(runtime, repo, now, gh_json, agent_home):
     """Count mature laneless product issues from a cached, paginated REST list read."""
     if not isinstance(repo, str) or not repo.strip():
         return None
@@ -77,17 +98,28 @@ def open_laneless_count(runtime, repo, now, gh_json):
     ], 30)
     count = None
     if isinstance(response, list) and response and all(isinstance(page, list) for page in response):
-        count = 0
+        open_issues = []
         for page in response:
             for issue in page:
                 if not isinstance(issue, dict):
-                    count = None
+                    open_issues = None
                     break
                 if "pull_request" in issue:
                     continue
                 if issue.get("state") != "open":
-                    count = None
+                    open_issues = None
                     break
+                number = issue.get("number")
+                if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+                    open_issues = None
+                    break
+                open_issues.append(issue)
+            if open_issues is None:
+                break
+        if open_issues is not None:
+            open_issue_numbers = {issue["number"] for issue in open_issues}
+            count = 0
+            for issue in open_issues:
                 labels = issue.get("labels")
                 if not isinstance(labels, list):
                     count = None
@@ -101,8 +133,18 @@ def open_laneless_count(runtime, repo, now, gh_json):
                     names.add(name)
                 if count is None:
                     break
-                if names.intersection(CONTAINER_LABELS) or names.intersection(LANE_LABELS):
+                if names.intersection(ROADMAP_CONTAINER_LABELS):
                     continue
+                if names.intersection(LANE_LABELS):
+                    continue
+                if "tracker" in names.intersection(CONTAINER_LABELS):
+                    has_open_children = _tracker_has_open_children(
+                        agent_home, issue["number"], open_issue_numbers)
+                    if has_open_children is None:
+                        count = None
+                        break
+                    if has_open_children:
+                        continue
                 try:
                     created_at = datetime.fromisoformat(issue["created_at"].replace("Z", "+00:00"))
                     if created_at.tzinfo is None:
@@ -112,7 +154,5 @@ def open_laneless_count(runtime, repo, now, gh_json):
                     break
                 if created_at <= cutoff:
                     count += 1
-            if count is None:
-                break
     snapshot["count"] = count
     return count if _write_cache(path, snapshot) else None

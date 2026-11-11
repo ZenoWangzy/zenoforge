@@ -442,10 +442,11 @@ gaps += [f"source:{m}" for m in n.CRITERIA if not n.SOURCE.get(m)] + [f"source:{
 gaps += [k for k in list(n.TIME_SINKS) + list(n.CI_STANDARDS) if f"`{k}`" not in doc]
 sys.exit(print("missing:", gaps) or 1 if gaps else 0)
 CHECK
-mkdir -p "$test_env_root/laneless-runtime"
+mkdir -p "$test_env_root/laneless-runtime/state"
 PYTHONPATH="$script_dir" python3 - "$test_env_root/laneless-runtime" "$script_dir" <<'CHECK_LANELESS' || fail 'laneless intake health metric failed'
-import os, sys
+import json, os, sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 sys.path.insert(0, sys.argv[2])
 import intake_laneless_health as laneless
 import node_health
@@ -458,27 +459,49 @@ assert node_health.MEANING.get(metric) and node_health.SOURCE.get(metric)
 ready = {"number": 10, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": [{"name": "ready-for-agent"}]}
 recent = {"number": 11, "state": "open", "created_at": "2026-10-19T11:30:00Z", "labels": []}
 pull = {"number": 12, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": [], "pull_request": {}}
-unlabelled = {"number": 13, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": []}
-theme = {"number": 14, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": [{"name": "roadmap-theme"}]}
-responses = [[[ready], [recent, pull]], [[ready], [unlabelled]], [[theme]], None]
+finish_first = {"number": 13, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": [{"name": "finish-first"}]}
+tracker_open = {"number": 14, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": [{"name": "tracker"}]}
+open_child = {"number": 15, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": [{"name": "ready-for-agent"}]}
+tracker_closed = {"number": 16, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": [{"name": "tracker"}]}
+unlabelled = {"number": 20, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": []}
+theme = {"number": 19, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": [{"name": "roadmap-theme"}]}
+epic_tracker = {"number": 21, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": [{"name": "roadmap-epic"}, {"name": "tracker"}]}
+Path(runtime, "state", "14.json").write_text(json.dumps({"state": "tracker", "recut_children": [15]}))
+Path(runtime, "state", "16.json").write_text(json.dumps({"state": "tracker", "recut_children": [17, 18]}))
+Path(runtime, "state", "21.json").write_text(json.dumps({"state": "tracker"}))
+responses = [
+    [[ready, recent, pull, finish_first]],
+    [[tracker_open, open_child]],
+    [[tracker_open, tracker_closed, open_child]],
+    [[epic_tracker]],
+    [[ready], [unlabelled]],
+    [[theme]],
+    None,
+]
 calls = []
 def fake_gh(command, timeout):
     calls.append((command, timeout))
     return responses.pop(0)
 os.environ["DEP_CHECK_SECONDS"] = "600"
-count = laneless.open_laneless_count(runtime, "test/repo", now, fake_gh)
-assert count == 0 and node_health.status_of(count, *criteria[2:]) == "OK"
-assert laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=5), fake_gh) == 0
+count = laneless.open_laneless_count(runtime, "test/repo", now, fake_gh, runtime)
+assert count == 0 and node_health.status_of(count, *criteria[2:]) == "OK", "finish-first is a lane label"
+assert laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=5), fake_gh, runtime) == 0
 assert len(calls) == 1, "cached count made another request before DEP_CHECK_SECONDS"
-count = laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=10), fake_gh)
+count = laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=10), fake_gh, runtime)
+assert count == 0, "a tracker with an open recut child must be excluded"
+count = laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=20), fake_gh, runtime)
+assert count == 1, "only the tracker whose recut children are closed should count beside a tracker with an open child"
+count = laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=30), fake_gh, runtime)
+assert count == 0, "a roadmap epic stays a container when it also has tracker but no recut_children"
+count = laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=40), fake_gh, runtime)
 assert count == 1 and node_health.status_of(count, *criteria[2:]) == "UNHEALTHY"
-assert len(calls) == 2, "an older unlabeled issue on a later page was missed"
-count = laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=20), fake_gh)
+assert len(calls) == 5, "an older unlabeled issue on a later page was missed"
+count = laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=50), fake_gh, runtime)
 assert count == 0, "a roadmap-theme container must be excluded"
-count = laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=30), fake_gh)
+count = laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=60), fake_gh, runtime)
 assert count is None and node_health.status_of(count, *criteria[2:]) == "NO-DATA"
-assert laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=31), fake_gh) is None
-assert len(calls) == 4, "failed reads must be NO-DATA and stay cached for the dependency interval"
+assert laneless.open_laneless_count(runtime, "test/repo", now + timedelta(minutes=61), fake_gh, runtime) is None
+assert len(calls) == 7, "failed reads must be NO-DATA and stay cached for the dependency interval"
 command = calls[0][0]
 assert command[0] == "api" and "--paginate" in command and "--slurp" in command
 assert command[-1] == "repos/test/repo/issues?state=open&per_page=100" and "graphql" not in command

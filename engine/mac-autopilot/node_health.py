@@ -1479,7 +1479,7 @@ def main():
     metrics["host.github_net_failures_per_hour"] = github_net_failures_per_hour(since, now)
     metrics["host.stale_worktrees"] = stale_worktrees(now)
     closed_open = ledger_history.closed_units_open_issues(a, agent_home, units)
-    metrics["intake.closed_units_open_issues"] = None if closed_open is None else len(closed_open); metrics["intake.laneless_open_issues"] = intake_laneless_health.open_laneless_count(a, repo, now, _gh_json)
+    metrics["intake.closed_units_open_issues"] = None if closed_open is None else len(closed_open); metrics["intake.laneless_open_issues"] = intake_laneless_health.open_laneless_count(a, repo, now, _gh_json, agent_home)
     metrics["engine.follow_lag_hours"] = engine_follow_lag_hours(agent_home, now)
     orders = work_orders(units, unit_spend(cost_rows), now, workorder_cost.recent_units(cost_rows, since),
                          unit_spend(cost_rows, since))
