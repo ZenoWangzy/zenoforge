@@ -49,6 +49,12 @@ GH_CALLS="$fixture/gh.calls"; : > "$GH_CALLS"
 gh() {
   printf 'gh %s\n' "$*" >> "$GH_CALLS"
   if [[ "$1" == api && "${2:-}" == *"/sub_issues?per_page=100" ]]; then
+    local parent="${2#*/issues/}"
+    parent="${parent%%/*}"
+    if [[ "$parent" == 698 ]]; then
+      echo 'fixture native child read unavailable' >&2
+      return 1
+    fi
     printf '[]\n'
     return 0
   fi
