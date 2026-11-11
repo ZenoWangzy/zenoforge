@@ -193,6 +193,19 @@ SIBLING_STAGE=merged tracker_fixture; dep_delivered_snapshot
 dep_cleared "$(unit_json issue-9514)" 9512 || fail 'case B: dispatch must see the siblings delivered (dep_cleared)'
 grep -q 'issue #9514 waits on tracker #9512, its own parent' "$LOG" || fail 'case B: the rewrite must name itself in the log'
 
+# A closed GitHub issue retires an unchanged supervisor-review unit once.
+CACHE_ROWS=([5974]=$'CLOSED\t')
+unit issue-5974 5974 supervisor-review | jq -s '{units:.}' > "$UNITS"
+printf '{"workers":[]}\n' > "$A/workers.json"
+DEP_DELIVERED_CACHE=(); reset_run; run_counted
+[[ "$(jq -r '.units[0].stage' "$UNITS")" == closed ]] || fail 'a closed GitHub issue did not retire its supervisor-review unit'
+[[ "$(jq '[.units[0].history[] | select(.stage == "issue-closed" and (.result | contains("issue #5974")))] | length' "$UNITS")" == 1 ]] \
+  || fail 'retiring the unit did not record one issue-naming history event'
+writes_after_close="$(count "$writes")"
+run_counted
+[[ "$(count "$writes")" == "$writes_after_close" ]] || fail 'a rerun wrote the already retired unit again'
+[[ "$(jq '[.units[0].history[] | select(.stage == "issue-closed")] | length' "$UNITS")" == 1 ]] || fail 'a rerun added a second issue-closed event'
+
 # No blocker means there is no event to wait for. Resume only when the current
 # GitHub label cache still says ready-for-agent; stale ledger labels do not count.
 CACHE_ROWS=(); reset_run

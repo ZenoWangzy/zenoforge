@@ -363,7 +363,7 @@ release_dependency_blocks() {
     done < <(jqf -r '[.units[] | select((.stage=="blocked-external" or (.stage=="parked" and (.parked_reason == null or .parked_reason == "waiting-predecessor"))) and .blocked_on != null) | .blocked_on | numbers] | unique | .[]' "$UNITS")
     while IFS= read -r dep; do # 自己的 issue 已关的单元要能被收掉（带 PR 的也查，not_planned 时关 PR）：并入同一次批量查询
       [[ "$dep" =~ ^[0-9]+$ ]] && deps+=("$dep")
-    done < <(jqf -r '.units[] | select((.stage=="blocked-external" or .stage=="parked") and (.issue | type)=="number") | .issue' "$UNITS")
+    done < <(jqf -r '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review") and (.issue | type)=="number") | .issue' "$UNITS")
     # a blocked unit goes pending this tick: its other predecessors must already be cached, or it blocks on one that is closed.
     # Two jq runs for all units: stored body lists as numbers, and the saved task text of an older unit without a list (RS-separated; awk parses it).
     while IFS= read -r dep; do
@@ -398,7 +398,7 @@ release_dependency_blocks() {
   while IFS=$'\t' read -r id issue; do # 自己的 issue 已关或已交付：单元作废（2026-10-30 issue-3681 等 5 个）
     set_unit "$id" "$(hist issue-closed "issue #$issue already closed on GitHub") | .stage=\"closed\" | del(.blocked_on) | .note=null"
     say "unit=$id issue #$issue already closed on GitHub; retired"
-  done < <(jqf -r --slurpfile c <(printf '%s' "$dep_cache") '.units[] | select((.stage=="blocked-external" or .stage=="parked") and .pr == null and (.issue | type)=="number"
+  done < <(jqf -r --slurpfile c <(printf '%s' "$dep_cache") '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review") and .pr == null and (.issue | type)=="number"
     and ((($c[0][(.issue | tostring)].state) // "") | IN("CLOSED","MERGED"))) | [.id, .issue] | @tsv' "$UNITS")
   dep_q_flush
   intake_mark retire_closed

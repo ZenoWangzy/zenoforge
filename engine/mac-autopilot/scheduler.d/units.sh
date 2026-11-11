@@ -620,7 +620,7 @@ supervisor_cap_triage_park() { # id evidence → durable retry marker swept by t
 supervisor_budget_recut() { # id evidence decision park-reason recut-reason park-stage recut-stage allow-pr-close dead-park-salvage
   local id="$1" evidence="$2" decision="${3:-null}" park_reason="${4:-supervisor budget exhausted}"
   local recut_reason="${5:-ticket stop-loss reached}" park_stage="${6:-supervisor-budget-park}" recut_stage="${7:-supervisor-budget-recut}"
-  local allow_pr_close="${8:-false}" dead_park_salvage="${9:-false}" issue pr err note pr_comment pr_state salvage_refs salvage_error salvage_refs_all=""
+  local allow_pr_close="${8:-false}" dead_park_salvage="${9:-false}" issue pr err note pr_comment pr_state issue_state salvage_refs salvage_error salvage_refs_all=""
   issue="$(unit_field "$id" '.issue // empty')"; pr="$(unit_field "$id" '.pr // empty')"
   local d
   for d in "$WT_ROOT/wt-$id" "/tmp/wt-$id"; do # cleanup_tick 删的两个位置；stash 是 ensure_clone 收起的未提交进度
@@ -649,9 +649,12 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
   if [[ -n "$pr" && "$allow_pr_close" != true ]]; then
     supervisor_budget_park "$id" "$evidence (unit already has PR #$pr)" "$decision" "$park_reason" "$park_stage"; return 0
   fi
-  # Route first: a refused route must leave the PR open, or the slice has no owner (#1167 and #4840 lost theirs this way).
-  # A retry after a failed close has already routed; the route guard would refuse it and strand the PR. An older split's recut_children proves nothing here.
-  if [[ "$(unit_field "$id" '.recut_routed // empty')" != true ]] && ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
+  # Once this unit's route created children, a close retry must bypass the permanent guard (#1167/#4840).
+  if [[ "$(unit_field "$id" '.recut_routed // empty')" == true ]] \
+      && issue_state="$(scheduler_issue_state "$issue" 2>/dev/null)" \
+      && jqf -e 'type == "object" and has("recut_children")' <<<"$issue_state" >/dev/null 2>&1; then
+    :
+  elif ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
     supervisor_budget_park "$id" "$evidence (recut route failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
   fi
   if [[ -n "$pr" ]]; then

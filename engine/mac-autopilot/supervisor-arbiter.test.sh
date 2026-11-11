@@ -656,7 +656,13 @@ jq -e '.units[0] | .parked_reason=="supervisor-arbitration-cap" and (has("superv
 
 # Route first: a refused recut route must leave the PR open, or the slice is left with no owner.
 route_calls="$fixture/route-calls"; : > "$route_calls"
-scheduler_route_to_recut() { printf 'route ' >> "$route_calls"; [[ "$ROUTE_RC" == 0 ]] || { echo 'refused tracker parent' >&2; return 1; }; }
+route_done="$fixture/route-done"; rm -f "$route_done"
+scheduler_route_to_recut() {
+  [[ -e "$route_done" ]] && return 0
+  printf 'route ' >> "$route_calls"
+  [[ "$ROUTE_RC" == 0 ]] || { echo 'refused tracker parent' >&2; return 1; }
+  : > "$route_done"
+}
 tick_prs_changed() { :; }
 tick_pr_state() { printf 'OPEN\n'; }
 gh() { [[ "$1 $2" != 'pr close' ]] || printf 'close ' >> "$route_calls"; return 0; }
@@ -670,8 +676,9 @@ printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor
 ROUTE_RC=0 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
 [[ "$(cat "$route_calls")" == 'route close ' && "$(field pr-651 .stage)" == closed ]] || fail "the PR closes only after the route: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
 
-# A failed close keeps the route on record, and the retry on that unit skips the refused route and closes.
+# A failed close keeps the route on record; the idempotent route helper succeeds again before the PR close retry.
 : > "$route_calls"
+rm -f "$route_done"
 gh() { [[ "$1 $2" != 'pr close' ]] || { printf 'close ' >> "$route_calls"; [[ "${CLOSE_RC:-0}" == 0 ]]; return; }; return 0; }
 printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",history:[]}]}')" > "$UNITS"
 ROUTE_RC=0 CLOSE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
@@ -679,6 +686,26 @@ ROUTE_RC=0 CLOSE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triag
 : > "$route_calls"
 ROUTE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
 [[ "$(cat "$route_calls")" == 'close ' && "$(field pr-651 .stage)" == closed ]] || fail "the retry must skip the route and close: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
+
+: > "$route_calls"
+rm -f "$route_done"
+RECUT_RETRY_ISSUE_STATE='{"state":"needs-recut","recut_children":[652]}'
+printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",recut_routed:true,history:[]}]}')" > "$UNITS"
+(
+  scheduler_issue_state() { printf '%s\n' "$RECUT_RETRY_ISSUE_STATE"; }
+  ROUTE_RC=1 CLOSE_RC=0 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
+)
+[[ "$(cat "$route_calls")" == 'close ' && "$(field pr-651 .stage)" == closed ]] || fail "a retry after this route created recut children must close without parking: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
+
+: > "$route_calls"
+rm -f "$route_done"
+RECUT_RETRY_ISSUE_STATE='{"state":"ready-for-agent"}'
+printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",recut_routed:true,history:[]}]}')" > "$UNITS"
+(
+  scheduler_issue_state() { printf '%s\n' "$RECUT_RETRY_ISSUE_STATE"; }
+  ROUTE_RC=1 CLOSE_RC=0 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
+)
+[[ "$(cat "$route_calls")" == 'route ' && "$(field pr-651 .stage)" == parked ]] || fail "a retry without recut children must retry the route and keep the PR open on failure: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
 
 # ---- 终身仲裁上限（supervisor_arbiter.unit_cap，默认 4）：触顶不派模型，调度器当拍自己给默认决定 ----
 # 上限按整份历史数 supervisor-arbiter 事件（忽略 supervisor-arbiter-round 轮标记），先于两轮预算与
