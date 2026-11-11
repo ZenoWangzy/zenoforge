@@ -46,9 +46,9 @@ harvest_report() { # new report name
 }
 
 good=impl-71003-good.md
-printf '## decision-log\nTried the report gate, kept the passing report, and verified the test.\n\n## root-cause\nx\n\n## recurrence-guard\nkind: test\n\n## prior-art\nSource: https://example.invalid/ref\n\nVERDICT: READY\n' > "$sup/$good"
+printf '## decision-log\nTried the report gate, kept the passing report, and verified the test.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n\n## root-cause\nx\n\n## recurrence-guard\nkind: test\n\n## prior-art\nSource: https://example.invalid/ref\n\nVERDICT: READY\n' > "$sup/$good"
 short=impl-71003-short.md
-printf '## decision-log\nTried the short report, kept its available details, and verified the test.\n\n## root-cause\nmerge conflict resolved\n\nVERDICT: READY\n' > "$sup/$short"
+printf '## decision-log\nTried the short report, kept its available details, and verified the test.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n\n## root-cause\nmerge conflict resolved\n\nVERDICT: READY\n' > "$sup/$short"
 
 # A failing short worker report after a passing implementation report: the unit keeps the passing one and no report resume starts.
 write_unit "$good"

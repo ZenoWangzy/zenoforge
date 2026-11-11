@@ -27,7 +27,7 @@ tick_pr_base() { echo main; }
 write_unit() { # id issue report
   jqf -cn --arg id "$1" --argjson issue "$2" --arg report "$3" --arg sid "$session_id" \
     '{units:[{id:$id,issue:$issue,lane:"pr",pr:$issue,branch:("agent/"+$id),stage:"review-pending",labels:[],implement_model:"gpt-6-luna",session_ids:{repair:$sid},implementation_report:$report,self_check_fixes:0,history:[]}]}' > "$UNITS"
-  printf '## decision-log\nTried the verification path and confirmed its evidence.\n\n## root-cause\nverification case\n\n## recurrence-guard\nkind: test\n\n## prior-art\nno external prior art: test fixture\n' > "$sup/$3"
+  printf '## decision-log\nTried the verification path and confirmed its evidence.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n\n## root-cause\nverification case\n\n## recurrence-guard\nkind: test\n\n## prior-art\nno external prior art: test fixture\n' > "$sup/$3"
 }
 commit_config_as_base() {
   git -C "$repo" add -A -- .zenoforge/state/verification.json
@@ -95,7 +95,7 @@ grep -Fq 'Evidence files (relative to clone): ["evidence/user-path.log"]' "$edit
 # A missing decision-log blocks a configured verification command before the normal checks run.
 : > "$runs_file"
 write_unit issue-87007 87007 impl-87007.md
-printf '## root-cause\nmissing decision-log case\n\n## recurrence-guard\nkind: test\n\n## prior-art\nno external prior art: test fixture\n' > "$sup/impl-87007.md"
+printf '## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n\n## root-cause\nmissing decision-log case\n\n## recurrence-guard\nkind: test\n\n## prior-art\nno external prior art: test fixture\n' > "$sup/impl-87007.md"
 run_gate issue-87007 87007 impl-87007.md
 [[ "$(field issue-87007 .self_check_status)" == red ]] || fail 'missing decision-log did not turn the configured verification gate red'
 [[ "$(self_check_runs)" == 0 ]] || fail 'missing decision-log reached the normal self-check'
