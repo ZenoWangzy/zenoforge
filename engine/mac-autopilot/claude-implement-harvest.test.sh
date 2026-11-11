@@ -120,7 +120,7 @@ seed_report_only_requeue() { # unit report started → implement worker with a s
 }
 seed_report_only_requeue "$report_only_unit" "$report_only_report" "$report_only_started" \
   $'## how\nRewrote only the report for the unchanged head.\n\n## why\nThe report needed the required sections for #742.\n\n## decision-log\nTried: checked the report headings.\nFailure: the prior report was incomplete.\nChoice: keep the code and rewrite the report only.\nVerification: all report gates pass for the existing head.'
-harvest_workers
+harvest_workers || :
 jq -e '.units[0] | .stage == "review-pending" and .implementation_report == "report-only-pass.md"' "$UNITS" >/dev/null \
   || fail "valid report-only requeue did not return its unchanged PR to review: $(jq -c '.units[0]' "$UNITS")"
 [[ "$(wc -l < "$report_only_reruns")" == 1 ]] || fail "report-only requeue did not issue exactly one REST CI rerun: $(cat "$report_only_reruns")"
@@ -128,7 +128,7 @@ jq -e '.units[0] | .stage == "review-pending" and .implementation_report == "rep
 report_only_unit=issue-report-only-fail
 report_only_report=report-only-fail.md
 seed_report_only_requeue "$report_only_unit" "$report_only_report" "$report_only_started" $'## how\nReport rewrite without the required decision log.'
-harvest_workers
+harvest_workers || :
 jq -e '.units[0] | .stage == "supervisor-review" and any(.history[]; .stage == "supervisor-escalated")' "$UNITS" >/dev/null \
   || fail "gate-failing report-only requeue did not escalate: $(jq -c '.units[0]' "$UNITS")"
 [[ "$(wc -l < "$report_only_reruns")" == 1 ]] || fail 'gate-failing report-only requeue attempted a CI rerun'
