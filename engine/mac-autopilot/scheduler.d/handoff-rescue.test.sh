@@ -28,7 +28,14 @@ printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/scans"\nif [[ "$1" == s
 mkdir -p "$ROOT/scripts/hooks"; printf '#!/usr/bin/env bash\n[[ ! -e "%s/hook-refuses" ]]\n' "$fixture" > "$ROOT/scripts/hooks/pre-push"; chmod +x "$ROOT/scripts/hooks/pre-push"
 export PATH="$fixture/bin:$PATH"
 comments="$fixture/comments"; : > "$comments"
-gh() { [[ "$1 $2" == "issue comment" ]] && printf '%s\n' "$*" >> "$comments"; }
+pr_comments="$fixture/pr-comments"; : > "$pr_comments"
+gh() {
+  case "${1:-} ${2:-}" in
+    "issue comment") printf '%s\n' "$*" >> "$comments" ;;
+    "pr comment") printf '%s\n' "$(jq -cn --arg pr "${3:-}" --arg body "${5:-}" '{pr:$pr,body:$body}')" >> "$pr_comments" ;;
+    *) return 0 ;;
+  esac
+}
 
 origin="$fixture/origin.git"
 new_clone() { # fresh remote and clone with a clean pushed main
@@ -483,5 +490,58 @@ expire_preserved_clones
 [[ -d "$WT_ROOT/wt-b.preserved-$stamp_6_days" && -d "$WT_ROOT/wt-c.preserved-soon" && -d "$WT_ROOT/wt-d" ]] || fail "a young or non-matching dir was removed"
 [[ -L "$WT_ROOT/wt-e.preserved-$stamp_9_days" && -e "$fixture/outside/keep" ]] || fail "a symlink was followed"
 [[ "$(wc -l < "$fixture/say.log")" == 1 ]] || fail "expected one log line per removed dir"
+
+# A RULE after a failed handoff check returns to repair, where the worker clone
+# resumes from the integrated rescue commit instead of checking the old PR head.
+new_clone
+handoff_pr_head="$(git -C "$wt" rev-parse HEAD)"
+git -C "$wt" checkout -q -b agent/issue-72 "$handoff_pr_head"
+git -C "$wt" push -q origin HEAD:refs/heads/agent/issue-72
+printf 'rescued line one\nrescued line two\n' > "$wt/rescued.txt"
+git -C "$wt" add rescued.txt; git -C "$wt" commit -qm 'preserved handoff history'
+handoff_integrated="$(git -C "$wt" rev-parse HEAD)"
+handoff_ref72="rescued/agent-issue-72-$handoff_integrated"
+git -C "$wt" push -q origin "HEAD:refs/heads/$handoff_ref72"
+git -C "$wt" push -q origin "$handoff_pr_head:refs/heads/agent/issue-71"
+handoff_ref71="rescued/agent-issue-71-$handoff_integrated"
+git -C "$wt" push -q origin "$handoff_integrated:refs/heads/$handoff_ref71"
+for id in 71 72; do
+  branch="agent/issue-$id"
+  git clone -q "$origin" "$WT_ROOT/wt-issue-$id"
+  git -C "$WT_ROOT/wt-issue-$id" checkout -q -b "$branch" "refs/remotes/origin/$branch"
+done
+
+command jq -n --arg head "$handoff_pr_head" --arg integrated "$handoff_integrated" --arg ref "$handoff_ref72" '{units:[{
+  id:"issue-72",pr:712,branch:"agent/issue-72",stage:"review-pending",history:[],
+  handoff_integration_sha:$integrated,handoff_original_pr_head:$head,handoff_delivery_verified_sha:null,
+  handoff_start_ref:$ref,handoff_start_applied:true}]}' > "$UNITS"
+if verify_handoff_delivery issue-72 712 agent/issue-72 "$handoff_pr_head"; then fail 'the first missing-history check did not escalate'; fi
+[[ "$(jq -r '.units[0].stage' "$UNITS")" == supervisor-review ]] || fail 'the first missing-history check did not keep its escalation'
+printf 'REASON: retry delivery of the preserved handoff\nEVIDENCE: fixture rescue ref\nVERDICT: RULE\n' > "$fixture/cap-report.md"
+supervisor_apply_cap_verdict issue-72 "$fixture/cap-report.md" RULE
+[[ "$(jq -r '.units[0].stage' "$UNITS")" == repair-pending ]] || fail 'RULE returned an undelivered handoff to review instead of repair'
+resume_handoff_integration issue-72 "$WT_ROOT/wt-issue-72"
+[[ "$(git -C "$WT_ROOT/wt-issue-72" rev-parse HEAD)" == "$handoff_integrated" ]] || fail 'the ruled repair clone did not start from the integrated rescue commit'
+
+# The same candidate with no write-start since the first failure falls back once,
+# preserves rescue visibility in history/logs, and comments the dropped diffstat on the PR.
+: > "$pr_comments"; : > "$fixture/say.log"
+command jq -n --arg head "$handoff_pr_head" --arg integrated "$handoff_integrated" --arg ref "$handoff_ref71" '{units:[{
+  id:"issue-71",pr:711,branch:"agent/issue-71",stage:"review-pending",history:[],
+  handoff_integration_sha:$integrated,handoff_original_pr_head:$head,handoff_delivery_verified_sha:null,
+  handoff_start_ref:$ref,handoff_start_applied:true}]}' > "$UNITS"
+if verify_handoff_delivery issue-71 711 agent/issue-71 "$handoff_pr_head"; then fail 'the first missing-history check did not escalate'; fi
+[[ "$(jq -r '[.units[0].history[] | select(.stage=="supervisor-escalated")] | length' "$UNITS")" == 1 ]] || fail 'the first handoff-history failure must keep today’s escalation'
+verify_handoff_delivery issue-71 711 agent/issue-71 "$handoff_pr_head" || fail 'the repeated unchanged candidate did not fall back'
+jq -e --arg integrated "$handoff_integrated" --arg ref "$handoff_ref71" '
+  .units[0].handoff_integration_sha == null
+  and ([.units[0].history[] | select(.stage=="handoff-history-dropped" and (.result|contains($integrated)) and (.result|contains($ref)))] | length)==1
+  and ([.units[0].history[] | select(.stage=="supervisor-escalated")] | length)==1' "$UNITS" >/dev/null \
+  || fail 'the unchanged second failure did not drop history once without another escalation'
+grep -F "$handoff_integrated" "$fixture/say.log" | grep -F "$handoff_ref71" >/dev/null || fail 'the fallback log did not name the integrated SHA and rescue ref'
+jq -s -e --arg integrated "$handoff_integrated" --arg ref "$handoff_ref71" '
+  length==1 and .[0].pr=="711" and (.[0].body|contains("rescued.txt | 2 ++"))
+  and (.[0].body|contains($integrated)) and (.[0].body|contains($ref))' "$pr_comments" >/dev/null \
+  || fail "the PR did not receive exactly one comment carrying the dropped rescue diffstat ($(cat "$pr_comments"))"
 
 echo "handoff-rescue.test.sh: all assertions passed"

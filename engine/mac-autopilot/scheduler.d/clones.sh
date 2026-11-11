@@ -290,6 +290,48 @@ resume_handoff_integration() { # unit clone: preserve the recorded snapshot if t
   return 1
 }
 
+handoff_delivery_failed_without_write() { # unit candidate → same last failed candidate with no later worker write-start
+  local id="$1" candidate="$2" u
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")" || return 1
+  jqf -e --arg candidate "$candidate" '
+    (.history // []) as $history
+    | ([$history | to_entries[] | select(.value.stage == "handoff-delivery-failed")] | last // null) as $failure
+    | if $failure == null then false
+      else $failure.value.result == $candidate
+        and all($history[($failure.key + 1):][]; .stage != "write-start")
+      end
+  ' <<<"$u" >/dev/null
+}
+
+handoff_delivery_failure() { # unit PR candidate reason → escalate once; repeated no-write failure drops the integration
+  local id="$1" pr="$2" candidate="$3" reason="$4" integrated rescue_ref dir stat body u
+  if handoff_delivery_failed_without_write "$id" "$candidate"; then
+    integrated="$(unit_field "$id" '.handoff_integration_sha // empty')"
+    rescue_ref="$(unit_field "$id" '.handoff_start_ref // empty')"
+    [[ -n "$rescue_ref" ]] || rescue_ref='(no rescue ref recorded)'
+    dir="$WT_ROOT/wt-$id"
+    stat="$(git -C "$dir" diff --stat "$candidate" "$integrated" 2>/dev/null)" || stat='(diff stat unavailable)'
+    body="Preserved handoff history was dropped from review candidate $candidate.
+Integrated SHA: $integrated
+Rescue ref: $rescue_ref
+
+Dropped rescue diff stat (git diff --stat $candidate $integrated):
+$stat"
+    if [[ "$pr" =~ ^[0-9]+$ ]]; then
+      gh pr comment "$pr" --body "$body" >/dev/null 2>&1 \
+        || say "handoff history drop comment failed unit=$id pr=$pr integrated=$integrated rescue_ref=$rescue_ref"
+    else
+      say "handoff history drop comment skipped unit=$id: no PR for integrated=$integrated rescue_ref=$rescue_ref"
+    fi
+    set_unit "$id" "$(hist handoff-history-dropped "integrated SHA $integrated; rescue ref $rescue_ref; candidate $candidate; diff stat: $stat") | .handoff_integration_sha=null | .handoff_delivery_verified_sha=null" || return 1
+    say "handoff history dropped unit=$id candidate=$candidate integrated=$integrated rescue_ref=$rescue_ref; reviewing current PR head"
+    return 0
+  fi
+  set_unit "$id" "$(hist handoff-delivery-failed "$candidate")" || return 1
+  to_supervisor "$id" "$reason"
+  return 1
+}
+
 verify_handoff_delivery() { # unit PR branch reviewed-candidate
   local id="$1" pr="$2" branch="$3" candidate="$4" integrated original dirty dir
   integrated="$(unit_field "$id" '.handoff_integration_sha // empty')"
@@ -299,15 +341,15 @@ verify_handoff_delivery() { # unit PR branch reviewed-candidate
   dirty="$(unit_field "$id" '.handoff_worktree_dirty // false')"
   dir="$WT_ROOT/wt-$id"
   if [[ "$dirty" == true && -n "$original" && "$candidate" == "$original" ]]; then
-    to_supervisor "$id" "handoff repair did not deliver the preserved uncommitted work"
-    return 1
+    handoff_delivery_failure "$id" "$pr" "$candidate" 'handoff repair did not deliver the preserved uncommitted work'
+    return $?
   fi
   if [[ "$pr" =~ ^[0-9]+$ ]]; then
     git -C "$dir" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null || return 1
   fi
   if ! git -C "$dir" merge-base --is-ancestor "$integrated" "$candidate" 2>/dev/null; then
-    to_supervisor "$id" "handoff repair did not deliver the preserved commit history"
-    return 1
+    handoff_delivery_failure "$id" "$pr" "$candidate" 'handoff repair did not deliver the preserved commit history'
+    return $?
   fi
   set_unit "$id" ".handoff_delivery_verified_sha=$(js "$candidate")"
 }

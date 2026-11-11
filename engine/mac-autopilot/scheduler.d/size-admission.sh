@@ -202,6 +202,26 @@ harvest_pr_implement() { # unit report-path
     needs_direct_route "$1" "$first"; return 0
   fi
   head="$(git -C "$dir" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}')"
+  if [[ "$head" =~ $SHA_RE ]]; then
+    local_head="$(git -C "$dir" rev-parse -q --verify "refs/heads/$branch" 2>/dev/null || true)"
+    if [[ "$local_head" =~ $SHA_RE && "$local_head" != "$head" ]] \
+      && git -C "$dir" merge-base --is-ancestor "$head" "$local_head" 2>/dev/null; then
+      # A handoff can leave a committed rescue descendant in the worker clone while
+      # the PR branch already exists at its older head. Publish the same topic ref
+      # with a fast-forward before opening/reusing the PR; the missing-branch path
+      # below cannot recover this common case because ls-remote already succeeded.
+      if push_out="$(git -C "$dir" push origin "refs/heads/$branch:refs/heads/$branch" 2>&1)"; then
+        head="$local_head"
+        set_unit "$1" "$(hist implement-push-recovered "engine pushed worker commit $local_head to $branch")"
+        say "implement-no-push unit=$1: engine pushed committed work $local_head -> $branch"
+      else
+        push_out="$(grep -am1 -E '(! \[remote rejected\]|^error:|^fatal:|^remote:)' <<<"$push_out" | cut -c1-160)"
+        [[ -n "$push_out" ]] || push_out="git push exited nonzero"
+        to_supervisor "$1" "implement committed $local_head on $branch but publishing it failed: ${push_out} (report $(basename "$2"))"
+        return 0
+      fi
+    fi
+  fi
   if [[ ! "$head" =~ $SHA_RE ]]; then
     # 远端没有分支时先诊断 worktree，再决定是否值得再跑一轮 implement（#5180/#5071/#5246）。
     local_head=""; ahead=""; dirty=""
