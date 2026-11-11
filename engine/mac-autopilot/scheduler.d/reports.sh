@@ -209,16 +209,18 @@ verdict_reask_rule() { # unit-json → prompt 片段
 }
 # 一次打回在 .review_findings 里追加一条：round 是它在 history 里的第几次打回，findings 只含阻断级（P0/P1，
 # 含 resolved 状态，由复发规则排除）；块缺失或畸形记 block=missing（node_health 的 review.findings_missing_pct 数它）。
-# 不写 history：顾问触发读 history 的最后一条是否为 review-request-changes。
+# 不追加 history：分类附在已有的打回事件上，顾问仍按最后一条 stage 识别 REQUEST-CHANGES。
 review_findings_update() { # report-path report-name → set_unit 表达式片段（以 " | " 开头）
-  local rec block
+  local rec block reason
   if block="$(findings_block_of "$1")"; then
     rec="$(jq -c '{block:"ok", findings:[.findings[] | select(.severity=="P0" or .severity=="P1")], all_findings:.findings, dispositions:[], dropped, dropped_findings}' <<<"$block")"
   else
     rec='{"block":"missing","findings":[],"dispositions":[]}'
   fi
+  reason="$(jq -r '([.findings[0].rule?, .findings[0].severity?] | map(select(type=="string" and length>0)) | first // "")[:48]' <<<"$rec")"
   printf ' | .review_findings = ((.review_findings // []) + [{round:((.history // []) | map(select(.stage=="review-request-changes")) | length), at:%s, report:%s} + %s])' \
     "$(js "$STAMP")" "$(js "$2")" "$rec"
+  if [[ -n "$reason" ]]; then printf ' | .history[-1].reason=%s' "$(js "$reason")"; fi
 }
 
 review_dispositions_update() { # repair-report → attach author dispositions to the latest finding record

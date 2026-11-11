@@ -206,8 +206,10 @@ ci_test_red_checks() { # checks_json → 第一行：失败日志含测试失败
   printf '%s' "$facts" | grep -a '^{' || true
 }
 
-ci_red_tests() { # facts lines (ci_test_red_checks, line 2 on) → JSON array of failing suite files and test names, for the ci-test-red history entry
-  jqf -sc '[.[] | (.suites[]? | .file, (.tests[]?.name)), (.pipelineSuites[]?)] | map(.[:120]) | .[:12]' <<<"$1" 2>/dev/null || echo '[]'
+ci_red_tests() { # facts lines (ci_test_red_checks, line 2 on) → failing suites/tests, or the failed check labels when facts are unavailable
+  local tests
+  tests="$(jqf -sc '[.[] | (.suites[]? | .file, (.tests[]?.name)), (.pipelineSuites[]?)] | map(.[:120]) | .[:12]' <<<"$1" 2>/dev/null)" || tests='[]'
+  jqf -cn --argjson tests "$tests" --arg fallback "${2:-}" '$tests | if length > 0 then . elif $fallback != "" then [$fallback[:120]] else [] end'
 }
 
 # 分诊（只出结论，不路由、不写台账）：stale-base / attributable / unknown。失败套件取自 ci_test_red_checks 的事实，

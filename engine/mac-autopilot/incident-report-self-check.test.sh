@@ -43,6 +43,7 @@ printf '## decision-log\nTried the change and verified the test.\n\n## how\nThe 
 jqf -e '.units[0].self_fix_pending == true' "$UNITS" >/dev/null || fail 'failing report did not queue a self-fix'
 out="$(jqf -r '.units[0].self_check_output' "$UNITS")"
 grep -q '^incident report check failed: missing ## prior-art' "$out" || fail "self-check output does not name the report failure: $(cat "$out")"
+[[ "$(jqf -r '.units[0].history[-1].reason // empty' "$UNITS")" == 'incident report check failed' ]] || fail 'self-check history lacks the failure class'
 
 decision_missing=impl-71002-decision-missing.md
 printf '## Summary\nTried and verified.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n' > "$sup/$decision_missing"
