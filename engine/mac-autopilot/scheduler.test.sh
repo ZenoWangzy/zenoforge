@@ -5951,13 +5951,13 @@ grep -Fq 'attempt 3, retry in 1200s' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: third failed parent label write stopped retrying' >&2; exit 1; }
 command jq -e '.intake_parent_retry["4279"].escalated == true' "$TF/supervisor/autopi/units.json" >/dev/null \
   || { echo 'scheduler.test.sh: third failed parent label write was not marked escalated' >&2; exit 1; }
-[[ "$(grep -c 'INTAKE-PARENT-LABEL-FAILED issue=#4279 ' "$AGENT_HOME/logs/head-watch.alerts")" == 1 ]] \
+[[ "$(grep -c 'INTAKE-PARENT-LABEL-FAILED issue=#4279 ' "$TF/agent-home/logs/head-watch.alerts")" == 1 ]] \
   || { echo 'scheduler.test.sh: parent label failure did not alert the session once' >&2; exit 1; }
 command jq '.intake_parent_retry["4279"].next_at = 0' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
 tick
 grep -Fq 'attempt 4, retry in 2400s' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: parent label retries stopped after escalation' >&2; exit 1; }
-[[ "$(grep -c 'INTAKE-PARENT-LABEL-FAILED issue=#4279 ' "$AGENT_HOME/logs/head-watch.alerts")" == 1 ]] \
+[[ "$(grep -c 'INTAKE-PARENT-LABEL-FAILED issue=#4279 ' "$TF/agent-home/logs/head-watch.alerts")" == 1 ]] \
   || { echo 'scheduler.test.sh: repeated parent label failures duplicated the session alert' >&2; exit 1; }
 rm -f "$TF/fail-issue-edit"
 command jq '.intake_parent_retry["4279"].next_at = 0' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"

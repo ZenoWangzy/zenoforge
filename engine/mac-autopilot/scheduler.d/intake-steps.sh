@@ -1,3 +1,12 @@
+intake_parent_retry_escalate() { # issue, attempt -> one session-visible alert per retry episode
+  local n="$1" attempt="$2" already stamp alerts="$AGENT_HOME/logs/head-watch.alerts"
+  already="$(jqf -r --arg n "$n" '.intake_parent_retry[$n].escalated // false' "$UNITS")" || return 1
+  [[ "$already" != true ]] || return 0
+  mkdir -p "${alerts%/*}" || return 1
+  stamp="${STAMP:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  printf '%s INTAKE-PARENT-LABEL-FAILED issue=#%s attempts=%s retry=backoff\n' "$stamp" "$n" "$attempt" >> "$alerts" || return 1
+  units_update --arg n "$n" '.intake_parent_retry[$n].escalated = true'
+}
 # Per-candidate step timing for register_new_issues: intake_mark charges the seconds since the last mark to a named step,
 # intake_steps_say logs the pass's `intake detail steps` line. Both use register_new_issues' locals (dynamic scope, like intake_skip).
 intake_mark() { intake_step_secs[$1]=$(( ${intake_step_secs[$1]:-0} + SECONDS - intake_step_at )); intake_step_counts[$1]=$(( ${intake_step_counts[$1]:-0} + 1 )); intake_step_at=$SECONDS; }
