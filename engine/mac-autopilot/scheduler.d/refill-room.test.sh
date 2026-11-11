@@ -183,7 +183,7 @@ rm -f "$lock_rc" "$A/.refill-stop"
 rm -rf "$SCHED_LOCK"; : > "$LOG"; SECONDS=50; started=""; export AUTOPI_REFILL_LOCK_MARGIN_SECONDS=200
 jq -n '{units:[range(0;2) | {id:"u\(.)",stage:"implement-pending",task:"t",branch:"agent/u\(.)",history:[]}]}' > "$UNITS"
 dispatch_order() { jqf -c '.units[]' "$UNITS"; }
-ticket_budget_reason() { return 0; }; loop_rounds() { echo 0; }; blocking_body_dependency() { return 0; }; room_for() { return 0; }
+ticket_budget_reason() { return 0; }; loop_rounds() { echo 0; }; blocking_body_dependency() { return 1; }; room_for() { return 0; }
 pick() { PICK_MODEL=fixture; PICK_EFFORT=high; return 0; }; footprint_room() { return 0; }
 ensure_clone() { printf '%s\n' "$ROOT"; }; resume_handoff_integration() { return 0; }; size_admission_write_start() { return 0; }
 verification_plan_for_state() { echo '{}'; }; verification_plan_brief() { echo focused; }; matt_method_rule() { :; }; decision_scope() { :; }

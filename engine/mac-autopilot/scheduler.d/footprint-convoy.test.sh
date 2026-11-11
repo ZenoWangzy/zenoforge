@@ -34,7 +34,7 @@ pending_fixture_stubs() {
   dispatch_order() { jqf -c '.units[] | select(.stage | test("-pending$"))' "$UNITS"; }
   ticket_budget_reason() { return 0; }
   loop_rounds() { echo 0; }
-  blocking_body_dependency() { return 0; }
+  blocking_body_dependency() { return 1; }
   room_for() { return 0; }
   pick() { PICK_MODEL=fixture; PICK_EFFORT=high; return 0; }
   # Stands in for the real check: a live owner defers the unit only while the walk's first pass asks for a verdict.
@@ -183,6 +183,29 @@ jqf -e '.units[] | select(.id=="stale-waiter") | has("footprint_wait_owner") | n
 pending_fixture_stubs
 dispatch_pending true
 [[ "$dispatch_calls" == 1 ]] || fail "stale waiter did not reach dispatch (calls=$dispatch_calls)"
+
+# A refill that finds an open body blocker must park it, so intake capacity excludes it.
+write_units '{units:[{id:"body-blocked-refill",issue:901,stage:"implement-pending",task:"fixture task",branch:"agent/issue-901",body_blocked_by:[900],history:[]}]}'
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+pending_fixture_stubs
+blocking_body_dependency() {
+  [[ "$(jqf -r '.id' <<<"$1")" == body-blocked-refill ]] || return 1
+  printf '900\n'
+}
+dispatch_pending true
+jqf -e '.units[] | select(.id=="body-blocked-refill") | .stage=="blocked-external" and .blocked_on==900' "$UNITS" >/dev/null \
+  || fail 'refill left a body-blocked unit in the pending capacity count'
+[[ "$(startable_pending_count)" == 0 ]] || fail 'refill counted a parked body blocker as startable'
+
+# An empty body-blocker result must not park a unit that the native gate allowed through.
+write_units '{units:[{id:"clear-body-block-refill",issue:902,stage:"implement-pending",task:"fixture task",branch:"agent/issue-902",body_blocked_by:[],history:[]}]}'
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+pending_fixture_stubs
+blocking_body_dependency() { return 0; }
+dispatch_pending true
+[[ "$dispatch_calls" == 1 ]] || fail "empty body-blocker result parked a clear unit (calls=$dispatch_calls)"
+jqf -e '.units[] | select(.id=="clear-body-block-refill") | .stage=="implement-pending" and (.blocked_on // null)==null' "$UNITS" >/dev/null \
+  || fail 'empty body-blocker result changed the unit stage'
 
 # A live owner retains the wait and its age; leaving the writer set clears its waiters.
 write_units '{units:[

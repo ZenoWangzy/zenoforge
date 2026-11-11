@@ -162,6 +162,7 @@ park_if_body_blocked() { # unit-json → 0 当按正文前置停住（不派发�
   local id dep
   id="$(jqf -r .id <<<"$1")"
   dep="$(blocking_body_dependency "$1")" || return 1
+  [[ "$dep" =~ ^[0-9]+$ ]] || return 1
   park_blocked "$id" "$dep"
 }
 # 前置状态每 DEP_CHECK_SECONDS（默认 600）向 GitHub 刷新一次，同一前置每拍只查一次：逐单元 gh issue view
