@@ -113,7 +113,9 @@ report_only_pr_requeue_harvest() { # unit worker-json report-name report-path ty
     (.history // []) as $h |
     ([$h | to_entries[] | select(.value.stage=="supervisor-requeue") | .key] | last // -1) as $r |
     ([$h | to_entries[] | select(.value.stage=="write-start" and .value.work_type==$type and .value.at==$started) | .key] | last // -1) as $w |
-    $r >= 0 and $w > $r and (($h[$r].value.result // "") | test("requeue[^\\n]*report[ -]only"; "i"))
+    $r >= 0 and $w > $r
+    and (($h[$r].result // "") | ascii_downcase | contains("requeue"))
+    and (($h[$r].result // "") | ascii_downcase | test("report[ -]only"))
   ' <<<"$unit_json" >/dev/null 2>&1 || return 1
   current_head="$(jqf -r --argjson pr "$pr" '[.[] | select(.number==$pr) | .headRefOid][0] // empty' <<<"${TICK_PRS:-[]}" 2>/dev/null || true)"
   [[ "$current_head" == "$head" ]] || return 1
