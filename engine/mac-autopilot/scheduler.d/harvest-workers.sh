@@ -57,7 +57,7 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
 }
 
 harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers; pid:unit limits the pass to that one worker (harvest station)
-  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage
+  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage report_only_requeue_handled
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"; [[ -z "$only" || "$pid:$unit" == "$only" ]] || continue
@@ -284,6 +284,8 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       wsha="$(jqf -r '.sha // empty' <<<"$w")"; [[ "$wsha" =~ $SHA_RE ]] || wsha=""
       wprhead="$(jqf -r '.pr_head // empty' <<<"$w")"; [[ "$wprhead" =~ $SHA_RE ]] || wprhead=""
       say "harvest unit=$unit type=$wtype verdict=${v:-none} mode=$wmode tokens=${tk:-unavailable} session_id=${session_id:-none} session_tokens=$dispatch_usage_count session_total_tokens=$session_usage_count"
+      report_only_requeue_handled=false
+      if ! report_only_pr_requeue_harvest "$unit" "$w" "$report" "$rep" "$wtype"; then
       case "$wtype" in
         review|rereview)
           local reviewed=".reviewed_sha=$(js "$wsha") | .reviewed_pr_head=$(js "$wprhead") | .review_report=$(js "$report")"
@@ -416,18 +418,10 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
             *) # 冲突、预检失败、落地卡死：改动本身要修，交给 repair 并附落地日志
                set_unit "$unit" "$(hist land-failed "$land_result") | .approved_sha=null | .repair_hint=$(js "直落 main 失败：${land_result}。落地日志 $SUP/${report}.land.log；与 main 冲突就 merge origin/main 解决；检查失败或卡死就修复根因并补回归测试。") | .stage=\"repair-pending\"" ;;
           esac ;;
-        implement|triage)
-          if [[ "$wtype" == implement && -z "$(unit_field "$unit" .pr)" && "$(unit_field "$unit" .lane)" == direct-main ]]; then
-            harvest_prless_implement "$unit" "$rep" "$local_only"
-          elif [[ "$wtype" == implement && -z "$(unit_field "$unit" .pr)" && "$(unit_field "$unit" .lane)" == pr ]]; then
-            harvest_pr_implement "$unit" "$rep"
-          else
-            decision="$(decision_entry 'Hand off delivered worker result to supervisor' 'the current unit state has no automatic delivery transition' "$report" '["Advance the unit without supervisor handling"]' scheduler)"
-            set_unit "$unit" "$(hist delivered "" "$decision") | (.stage=\"supervisor-review\")"
-            echo "[$STAMP] IMPL-DELIVERED unit=$unit report=$(basename "$rep")" >> "$A/alerts/events.md"
-          fi ;;
+        implement|triage) harvest_implement_worker_result "$unit" "$wtype" "$rep" "$report" "$local_only" ;;
       esac
-      [[ "$wtype" != implement ]] || incident_report_pre_review "$w" "$report" "$rep" || :
+      fi
+      [[ "$wtype" != implement || "$report_only_requeue_handled" == true ]] || incident_report_pre_review "$w" "$report" "$rep" || :
     else
       if [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" == true ]]; then
         report_resume_source="$(jqf -r '.incident_report_resume_source_report // empty' <<<"$w")"

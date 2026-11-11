@@ -99,3 +99,71 @@ harvest_station_tick() {
   fi
   [[ "$(cat "$HARVEST_STATION_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$HARVEST_STATION_LOCK"
 }
+
+report_only_pr_requeue_harvest() { # unit worker-json report-name report-path type → handle a report-only supervisor requeue or return 1
+  local unit="$1" worker="$2" report_name="$3" report_path="$4" type="$5" pr head started unit_json current_head gate_report_name gate_report_path reason runs run run_count repo
+  [[ "$type" == implement || "$type" == repair ]] || return 1
+  [[ "$(jqf -r '.incident_report_resume // false' <<<"$worker")" != true ]] || return 1
+  pr="$(unit_field "$unit" '.pr // empty')"
+  [[ "$pr" =~ ^[1-9][0-9]*$ ]] || return 1
+  head="$(jqf -r '.pr_head // empty' <<<"$worker")"; started="$(jqf -r '.started // empty' <<<"$worker")"
+  [[ "$head" =~ $SHA_RE && -n "$started" ]] || return 1
+  unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  jqf -e --arg type "$type" --arg started "$started" '
+    (.history // []) as $h |
+    ([$h | to_entries[] | select(.value.stage=="supervisor-requeue") | .key] | last // -1) as $r |
+    ([$h | to_entries[] | select(.value.stage=="write-start" and .value.work_type==$type and .value.at==$started) | .key] | last // -1) as $w |
+    $r >= 0 and $w > $r and (($h[$r].value.result // "") | test("requeue[^\\n]*report[ -]only"; "i"))
+  ' <<<"$unit_json" >/dev/null 2>&1 || return 1
+  current_head="$(jqf -r --argjson pr "$pr" '[.[] | select(.number==$pr) | .headRefOid][0] // empty' <<<"${TICK_PRS:-[]}" 2>/dev/null || true)"
+  [[ "$current_head" == "$head" ]] || return 1
+  report_only_requeue_handled=true
+  gate_report_name="$report_name"; gate_report_path="$report_path"
+  if [[ "$type" == repair ]]; then
+    gate_report_name="$(jqf -r --arg n "$report_name" '.implementation_report // $n' <<<"$unit_json")"
+    gate_report_path="$SUP/$gate_report_name"
+  fi
+  set_unit "$unit" ".implementation_report=$(js "$gate_report_name")" || { to_supervisor "$unit" "could not save report-only requeue report $gate_report_name"; return 0; }
+  reason="$(decision_log_gate_reason "$unit_json" "$gate_report_path")"
+  [[ -n "$reason" ]] || reason="$(how_why_gate_reason "$unit_json" "$gate_report_path")"
+  [[ -n "$reason" ]] || reason="$(incident_report_gate_reason "$unit_json" "$gate_report_path")"
+  if [[ -n "$reason" ]]; then
+    to_supervisor "$unit" "report-only requeue report $gate_report_name failed the report gate: $reason"
+    return 0
+  fi
+  if [[ "$(unit_field "$unit" '.ci_rerun_sha // empty')" != "$head" ]]; then
+    runs="$(gh run list --commit "$head" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
+      || { to_supervisor "$unit" "could not list failed or cancelled CI runs for unchanged head $head"; return 0; }
+    if [[ -n "$runs" ]]; then
+      run_count=0
+      for run in $runs; do
+        [[ "$run" =~ ^[0-9]+$ ]] || { to_supervisor "$unit" "invalid CI run id for unchanged head $head"; return 0; }
+        run_count=$((run_count + 1))
+      done
+      repo="${REPO:-}"; [[ -n "$repo" ]] || repo='{owner}/{repo}'
+      set_unit "$unit" "$(hist report-only-ci-rerun "head $head runs=$run_count") | .ci_rerun_sha=$(js "$head")" \
+        || { to_supervisor "$unit" "could not record CI rerun for unchanged head $head"; return 0; }
+      for run in $runs; do
+        if ! gh api -X POST "repos/$repo/actions/runs/$run/rerun" >/dev/null 2>&1; then
+          to_supervisor "$unit" "report-only requeue CI rerun failed for unchanged head $head run $run"
+          return 0
+        fi
+      done
+    fi
+  fi
+  set_unit "$unit" "$(hist report-only-requeue-delivered "$head") | .implementation_report=$(js "$gate_report_name") | .approved_sha=null | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
+  say "report-only requeue unit=$unit PR#$pr passed the report gate; sent unchanged head $head to review"
+}
+
+harvest_implement_worker_result() { # unit worker-type report-path report-name local-only → preserve the existing direct-main/PR/fallback routes
+  local unit="$1" type="$2" report_path="$3" report_name="$4" local_only="$5" decision
+  if [[ "$type" == implement && -z "$(unit_field "$unit" .pr)" && "$(unit_field "$unit" .lane)" == direct-main ]]; then
+    harvest_prless_implement "$unit" "$report_path" "$local_only"
+  elif [[ "$type" == implement && -z "$(unit_field "$unit" .pr)" && "$(unit_field "$unit" .lane)" == pr ]]; then
+    harvest_pr_implement "$unit" "$report_path"
+  else
+    decision="$(decision_entry 'Hand off delivered worker result to supervisor' 'the current unit state has no automatic delivery transition' "$report_name" '["Advance the unit without supervisor handling"]' scheduler)"
+    set_unit "$unit" "$(hist delivered "" "$decision") | (.stage=\"supervisor-review\")"
+    echo "[$STAMP] IMPL-DELIVERED unit=$unit report=$(basename "$report_path")" >> "$A/alerts/events.md"
+  fi
+}
