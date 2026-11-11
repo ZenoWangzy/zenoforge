@@ -51,7 +51,7 @@ codex_run "$sv" 400000 250000 20000
 codex_run "$live" 9000000 0 9000000                           # still running: never recorded
 for f in "$impl" "$rev" "$fix" "$self" "$sv" "$live"; do touch -d 2026-11-05T16:00:00Z "$sup/$f"; done
 jq -n --arg i "$impl" --arg f "$fix" --arg s "$self" --arg v "$sv" --arg l "$live" '{workers:[
- {pid:0,log:$i,unit:"issue-1",type:"implement",mode:"fresh",harvested:true,started:"2026-11-05T10:00:00Z"},
+ {pid:0,log:$i,unit:"issue-1",type:"implement",model:"gpt-6-luna",mode:"fresh",harvested:true,started:"2026-11-05T10:00:00Z"},
  {pid:0,log:$f,unit:"issue-1",type:"repair",mode:"fresh",harvested:true,started:"2026-11-05T12:00:00Z"},
  {pid:0,log:$s,unit:"issue-1",type:"repair",mode:"fresh",harvested:true,started:"2026-11-05T13:00:00Z"},
  {pid:0,log:$v,unit:"issue-1",type:"supervise",mode:"fresh",harvested:true,started:"2026-11-05T14:00:00Z"},
@@ -60,6 +60,8 @@ jq -cn '{units:[{id:"issue-1",issue:1,pr:11,stage:"implement-pending",history:[{
 record_run_spend
 record_run_spend   # a second sweep adds nothing
 [[ "$(field issue-1 '.spend_runs | length')" == 5 ]] || fail "five finished logs must be recorded once each: $(field issue-1 '.spend_runs | map(.log)')"
+[[ "$(field issue-1 "[.spend_runs[] | select(.log == \"$impl\")][0].model // empty")" == "gpt-6-luna" ]] \
+  || fail "spend ledger did not preserve the dispatched model"
 [[ "$(field issue-1 '[.spend_runs[].phase] | sort | join(",")')" == "implement,repair,review,self-fix,supervise" ]] \
   || fail "every phase must be recorded: $(field issue-1 '[.spend_runs[].phase]')"
 gate_total="$(unit_fresh_tokens "$(jq -c '.units[0]' "$UNITS")")"

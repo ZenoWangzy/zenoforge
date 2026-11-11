@@ -506,6 +506,7 @@ harvest_rc pr-f1 rf-1-T1.md
   && "$(field pr-f1 '.review_findings[0].all_findings[2].severity')" == P3 ]] \
   || fail "blocking and complete finding IDs were not recorded per round: $(field pr-f1 '.review_findings | tojson')"
 [[ "$(field pr-f1 '.review_findings[0].at')" == "$STAMP" ]] || fail 'findings record lacks the rejection time'
+[[ "$(field pr-f1 '.history[-1].reason // empty')" == Defect ]] || fail 'review-request-changes history lacks its finding category'
 findings_report rf-2-T1.md "$good_block"
 harvest_rc pr-f2 rf-2-T1.md rereview
 [[ "$(field pr-f2 '.review_findings[0].block')" == ok && "$(field pr-f2 .stage)" == repair-pending ]] || fail 'a rereview rejection was not recorded like a review rejection'
@@ -1240,6 +1241,7 @@ for round in 1 2 3; do
   dispatch_pending || :
   if (( round < 3 )); then
     [[ "$(field pr-5b .stage)" == repair-pending ]] || fail "repair-no-push round $round was not retried"
+    [[ "$(field pr-5b '.history[-1].head_class // empty')" == unchanged ]] || fail 'dispatch no-push did not record its unchanged head class'
   else
     [[ "$(field pr-5b .stage)" == rereview-pending && "$(field pr-5b .arbiter)" == true ]] || fail 'repair-no-push retried more than twice (expected one arbiter review)'
   fi
@@ -1306,7 +1308,9 @@ dispatch_pending || :
   || fail "ci-test-red repair with a cancelled run did not rerun within the bound (stage=$(field pr-5ci-cancelled .stage), reruns=${GH_RERUNS[*]:-none})"
 # The ci-test-red entry names the failing suites and tests: vitest facts and engine suite lines, bounded.
 [[ "$(ci_red_tests "$(printf '%s\n%s\n' '{"suites":[{"file":"a/b.test.ts","tests":[{"name":"does x","msg":"m"}],"more":0}],"more":0}' '{"pipelineSuites":["engine/x.test.sh"]}')")" == '["a/b.test.ts","does x","engine/x.test.sh"]' \
-  && "$(ci_red_tests "")" == '[]' ]] || fail "ci_red_tests did not list the failing suites and tests"
+  && "$(ci_red_tests "")" == '[]' \
+  && "$(ci_red_tests "" "required check")" == '["required check"]' \
+  && "$(ci_red_tests "not-json" "required check")" == '["required check"]' ]] || fail "ci_red_tests did not list the failing suites and tests"
 GH_RUN_JSON=
 GH_RUNS=777; GH_RERUN_FAIL_ID=
 eval "$cancel_unit_runs_saved"; GH_HEAD="$gh_head_saved"; GH_RUNS="$gh_runs_saved"; GH_RERUNS=()

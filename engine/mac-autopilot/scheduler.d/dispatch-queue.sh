@@ -417,7 +417,7 @@ $(decision_scope "$u")"
           # repair 交付了报告却没推出新 head（多为 GitHub 间歇断连，改动留在 clone/stash）：自动重试 repair 两次再转人工。
           if [[ "$(jqf -r '(.history // [])[-1].stage // ""' <<<"$u")" == repair-delivered ]] \
             && (( $(jqf -r --arg h "head $sha " '[(.history // [])[] | select(.stage=="repair-no-push" and ((.result // "") | startswith($h)))] | length' <<<"$u") < 2 )); then
-            set_unit "$id" "$(hist repair-no-push "head $sha unchanged after repair") | .stage=\"repair-pending\""
+            set_unit "$id" "$(hist repair-no-push "head $sha unchanged after repair") | .history[-1].head_class=\"unchanged\" | .stage=\"repair-pending\""
             say "repair-no-push unit=$id: head $sha unchanged after repair -> retry repair"
             continue
           fi

@@ -241,8 +241,22 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
   say "self-check pid=$pid unit=$id head=$sha (before review)"
   return 1
 }
+self_check_failure_class() { # log → short class of the first failure line
+  local line
+  line="$(grep -a -m1 -E '^[^:]{1,80} check failed:|^verification failed|AssertionError|^not ok [0-9]+|^FAIL([[:space:]]|$)|ERR_PNPM|ELIFECYCLE|timed out|(^|[[:space:]])error:' "$1" 2>/dev/null || true)"
+  case "$line" in
+    *" check failed:"*) printf '%s\n' "${line%%:*}" ;;
+    'verification failed'*) printf 'verification failed\n' ;;
+    *AssertionError*) printf 'assertion failure\n' ;;
+    *'not ok '*|FAIL*) printf 'test failure\n' ;;
+    *ERR_PNPM*|*ELIFECYCLE*) printf 'package script failure\n' ;;
+    *'timed out'*) printf 'timeout\n' ;;
+    *error:*|*Error:*) printf 'command error\n' ;;
+    *) printf 'self-check failure\n' ;;
+  esac
+}
 self_check_harvest() {
-  local id pid out start status fixes sid model verification_json verification_update
+  local id pid out start status fixes sid model verification_json verification_update reason_update
   while IFS=$'\t' read -r id pid out start; do
     if [[ ! -s "$out.result" ]]; then
       if kill -0 "$pid" 2>/dev/null && { [[ -z "$start" || "$(pid_start "$pid")" == "$start" ]]; }; then continue; fi
@@ -261,7 +275,8 @@ self_check_harvest() {
     if [[ "$status" == pass && -s "$out.verification.json" ]] && verification_json="$(jq -c . "$out.verification.json" 2>/dev/null)"; then
       verification_update=" | .verification=$verification_json"
     fi
-    set_unit "$id" "$(hist "self-check-$status" "$out") | del(.self_check_pid, .self_check_start) | .self_check_status=$(js "$status")$verification_update"
+    reason_update=""; [[ "$status" != red ]] || reason_update=" | .history[-1].reason=$(js "$(self_check_failure_class "$out")")"
+    set_unit "$id" "$(hist "self-check-$status" "$out") | del(.self_check_pid, .self_check_start) | .self_check_status=$(js "$status")$verification_update$reason_update"
     [[ "$status" == red ]] || continue
     fixes="$(unit_field "$id" '.self_check_fixes // 0')"
     sid="$(unit_field "$id" '.session_ids.repair')"; model="$(unit_field "$id" .implement_model)"
