@@ -411,15 +411,16 @@ repair_backend_failure() { # worker-log report → the first matching line, empt
   { grep -hE -m1 '^(worker: )?(fatal stderr pattern|both backends failed)|model_not_found|AI_APICallError' "$1" 2>/dev/null
     grep -hE -m1 '^(worker: )?(fatal stderr pattern|both backends failed)|model_not_found' "$2" 2>/dev/null; } | head -1 | cut -c1-200
 }
-repair_run_filter() { # unit class head fresh-tokens [worker-log report] -> jq filter: record the run; an unchanged head is repair-no-push, retried twice per head, then to the arbiter route
-  local stage=rereview-pending n bf=""
+repair_run_filter() { # unit class head fresh-tokens [worker-log report delivered-head] -> jq filter: record the run; an unchanged head is repair-no-push, retried twice per head, then to the arbiter route
+  local stage=rereview-pending n bf="" delivered_head="${7:-}" head_update=""
   if [[ "$2" == unchanged ]]; then
     n="$(jqf -r --arg id "$1" --arg h "head $3 " '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage=="repair-no-push" and ((.result // "") | startswith($h)))] | length' "$UNITS")"
     (( n < 2 )) && stage=repair-pending
     bf="$(repair_backend_failure "${5:-/dev/null}" "${6:-/dev/null}")"
     echo "$(hist repair-no-push "head $3 unchanged after repair") | .history[-1].head_class=\"unchanged\" | .history[-1].fresh_tokens=${4:-null}${bf:+ | .history[-1].backend_failure=$(js "$bf")} | .stage=\"$stage\""
   else
-    echo "$(hist repair-delivered) | .history[-1].head_class=$(js "$2") | .history[-1].fresh_tokens=${4:-null} | .repair_hint=null | .stage=\"$stage\""
+    [[ "$delivered_head" =~ $SHA_RE ]] && head_update=" | .history[-1].head=$(js "$delivered_head")"
+    echo "$(hist repair-delivered) | .history[-1].head_class=$(js "$2") | .history[-1].fresh_tokens=${4:-null}$head_update | .repair_hint=null | .stage=\"$stage\""
   fi
 }
 # Circuit breaker on repeated identical outcomes (Nygard, Release It!): REPAIR_BREAKER_RUNS repair runs in a row that end on one

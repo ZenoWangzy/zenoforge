@@ -117,7 +117,7 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut ref [guidance]：记裁�
   [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock <ref> [guidance]" >&2; return 64; }
   restore_archived_unit "$1" || :
   [[ -n "$(unit_field "$1" .id)" ]] || { echo "rule: no unit $1" >&2; return 1; }
-  local issue
+  local issue stage
   case "$2" in
     reblock) issue="${5:-$(unit_field "$1" '.blocked_on // empty')}" # back to dependency wait; $5 names the blocker when the unit has none
       [[ "$issue" =~ ^[0-9]+$ ]] || { echo "rule: $1 has no blocker; pass --blocked-on N" >&2; return 1; }
@@ -129,8 +129,12 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut ref [guidance]：记裁�
       set_unit "$1" "$(hist supervisor-recut "supervisor ruling: $3") | .stage=\"closed\" | .note=$(js "supervisor ruling sent issue #$issue to recut: $3")" ;;
     reroute) [[ "$(unit_field "$1" .stage)" != closed ]] || { echo "rule: $1 is closed" >&2; return 1; }
       supervisor_requeue_unit "$1" reroute "supervisor ruling $3: ${4:-see ruling}" null ;; # releases blocked_on and moves the unit back to its work stage, parked or not
-    *) if [[ "$(unit_field "$1" .stage)" == parked && "$2" == requeue ]]; then
-         supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null
+    *) if [[ "$2" == requeue ]]; then
+         stage="$(unit_field "$1" .stage)"
+         case "$stage" in
+           parked|supervisor-review) supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null ;;
+           *) echo "rule: $1 is in $stage; use --reroute to move it" >&2; return 1 ;;
+         esac
        else
          set_unit "$1" "$(hist "supervisor-$2" "supervisor ruling via hold.sh --rule: $3")"
        fi ;;
