@@ -191,6 +191,28 @@ recut_parent_has_open_child() {
 }
 
 
+# Returns 0 when a tracker has children or childlessness cannot be proved.
+tracker_children_present_or_unknown() { # issue number, state JSON
+  local n="$1" state_json="$2" children native
+  children="$(jq -ce '(.recut_children // []) as $children
+    | if ($children | type) == "array" and all($children[]; type == "number" and . > 0 and . == floor)
+      then $children else error("invalid recut children") end' <<< "$state_json")" || return 0
+  jq -e 'length > 0' <<< "$children" >/dev/null && return 0
+  native="$(native_parent_subissues_json "$n")" || return 0
+  jq -e 'length > 0' <<< "$native" >/dev/null 2>&1
+}
+
+
+# Active tracker re-entry is blocked by any child; all other tracker targets
+# retain the stale-parent check that also allows release handoff.
+tracker_parent_transition_is_blocked() { # issue number, from, target, state JSON
+  local n="$1" from="$2" to="$3" state_json="$4"
+  { [ "$from" = tracker ] && [ "$to" != awaiting-release ] \
+    && tracker_children_present_or_unknown "$n" "$state_json"; } \
+    || ! tracker_parent_flag_is_stale "$n" "$state_json"
+}
+
+
 # A tracker label or flag is stale only when its recorded and live children are
 # both verified closed or absent. Any read that does not prove a leaf keeps it.
 tracker_parent_flag_is_stale() { # issue number, state JSON
