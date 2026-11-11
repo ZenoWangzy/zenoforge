@@ -41,7 +41,7 @@ gh() {
     local parent="${2#repos/fixture/repo/issues/}"
     parent="${parent%%/*}"
     echo "$parent" >> "$NATIVE_SUBISSUE_LOOKUPS"
-    if [[ "$parent" == "${NATIVE_FAIL_ISSUE:-}" ]]; then
+    if [[ "$parent" == 9145 ]]; then
       echo 'fixture native child read unavailable' >&2
       return 1
     fi
@@ -230,15 +230,11 @@ jq -c --arg id "$unavailable_tracker_unit" --argjson issue "$unavailable_tracker
   '.units += [{id:$id,issue:$issue,branch:("agent/"+$id),stage:"parked",parked_reason:"repair-breaker",history:[{stage:"repair-breaker",result:"repeat repairs",at:"2026-11-01T00:00:00Z"}]}]' "$UNITS" | write_state "$UNITS"
 ISSUE_STATES="$(jq -cn --argjson issue "$unavailable_tracker_issue" \
   '{($issue|tostring):{state:"tracker",tracker_parent:true,recut_children:[]}}')"
-NATIVE_FAIL_ISSUE="$unavailable_tracker_issue"
-export NATIVE_FAIL_ISSUE
 : > "$ROUTES"; : > "$NATIVE_SUBISSUE_LOOKUPS"
 dead_park_exit
 [[ "$(stage "$unavailable_tracker_unit")" == parked \
     && "$(cat "$NATIVE_SUBISSUE_LOOKUPS")" == "$unavailable_tracker_issue" \
     && ! -s "$ROUTES" ]] || fail "unavailable tracker child read changed the parked route: $(unit_json "$unavailable_tracker_unit")"
-unset NATIVE_FAIL_ISSUE
-
 # A stale tracking ref that still contains an unpushed HEAD is pruned before the selector decides to skip it.
 stale_issue="$((BASHPID + 101))"; stale_unit="issue-$stale_issue"; stale_wt="$WT_ROOT/wt-issue-$stale_issue"
 mkdir -p "$stale_wt"
