@@ -357,8 +357,7 @@ supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute
       target="review-pending"
       extra=' | .reviewed_sha=null | .reviewed_pr_head=null | .repair_hint=null'
     else
-      target="repair-pending"
-      extra=" | .repair_hint=$(js "$guidance")"
+      IFS=$'\t' read -r target extra < <(supervisor_requeue_repair_route "$u" "$guidance")
     fi
   elif [[ -n "$(jqf -r '.task // empty' <<<"$u")" && -n "$(jqf -r '.branch // empty' <<<"$u")" ]]; then
     target="implement-pending"
