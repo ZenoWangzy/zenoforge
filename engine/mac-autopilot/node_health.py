@@ -1195,17 +1195,17 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
                 lead_hours.append((accepted_at, (accepted_at - created_at).total_seconds() / 3600))
             candidates = units_by_issue.get(issue_number, [])
             unit = candidates[0] if len(candidates) == 1 else None
-            merge_at = _merge_time(unit) if unit else None
             pr_number = _number((unit or {}).get("pr"))
             pr = prs.get(pr_number)
             pr_merge_at = ts((pr or {}).get("mergedAt") or (pr or {}).get("merged_at"))
+            # The exact PR row supplies merge time; recovered unit histories can lack its terminal event.
             unit_merge_sha = (unit or {}).get("merge_sha") or (unit or {}).get("land_sha")
             pr_merge_sha = ((pr or {}).get("mergeCommit") or {}).get("oid")
             release_sha = (acceptance_event or {}).get("sha")
             if (len(events) != 1 or not created_at or not accepted_at or created_at > accepted_at or
-                    not unit or pr_number is None or not pr or not merge_at or not pr_merge_at or
+                    not unit or pr_number is None or not pr or not pr_merge_at or
                     not re.fullmatch(r"[0-9a-f]{40}", str(unit_merge_sha or "")) or
-                    unit_merge_sha != pr_merge_sha or merge_at > accepted_at or pr_merge_at > accepted_at or
+                    unit_merge_sha != pr_merge_sha or pr_merge_at > accepted_at or
                     not release_sha):
                 unlinked += 1
                 continue
