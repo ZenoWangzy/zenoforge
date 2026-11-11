@@ -521,7 +521,8 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
   if [[ -n "$worker_context" ]]; then
     report_only="$(jqf -r '.incident_report_resume // false' <<<"$worker_context")"
   fi
-  prompt="$(incident_worker_prompt "$3" "$unit_json" "$prompt")"
+  prompt="$(incident_worker_prompt "$3" "$unit_json" "$prompt")" \
+    || { say "dispatch held unit=$1 reason=worker-prompt-contract-unavailable"; return 1; }
   [[ "$report_only" != true ]] || failure_prompt="$prompt"
   room_for "$1" "$3" "$unit_json" true "$check_footprint" "$report_only" || return 1
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
