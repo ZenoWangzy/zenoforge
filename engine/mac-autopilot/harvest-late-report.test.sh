@@ -176,6 +176,43 @@ guard_run() { # log path mode [keep-history] [head] [worker-type] → harvest on
   jq -n --arg log "$1" --arg head "${4:-}" --arg type "$worker_type" '{workers:[{pid:999999999,unit:"issue-guard",type:$type,provider:"fixture",log:$log,report:"guard.md",sha:$head,started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
   harvest_workers
 }
+
+# bash/sh -c scripts are opaque to the outer shim; commands launched inside
+# those scripts still resolve through PATH and keep their own test guard.
+shim_dir="$script_dir/../non-product-test-shim"
+shim_work="$sup/non-product-shim-command"
+shim_guard="$sup/non-product-shim-command.guard-refusals"
+shim_output="$sup/non-product-shim-command.output"
+mkdir -p "$shim_work/a"
+printf 'shim-readable\n' > "$shim_work/a/x.test.mjs"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$shim_work/a/x.test.sh"
+git -C "$shim_work" init -q
+printf 'export PATH=%q:"$PATH"\n' "$shim_dir" > "$HOME/.bash_profile"
+shim_run() {
+  local output="$1"
+  shift
+  (cd "$shim_work" && env ZF_NON_PRODUCT_UNIT=1 ZF_PIPELINE_UNIT=issue-shim \
+    "ZF_NON_PRODUCT_GUARD_FILE=$shim_guard" "PATH=$shim_dir:$PATH" "$@") > "$output" 2>&1
+}
+shim_status=0
+shim_run "$shim_output" "$shim_dir/bash" -lc 'git add a/x.test.mjs' || shim_status=$?
+[[ "$shim_status" == 0 ]] || { cat "$shim_output" >&2; echo "bash -lc staging a test file was refused (rc=$shim_status)" >&2; exit 1; }
+shim_status=0
+shim_run "$shim_output" "$shim_dir/bash" -lc 'sed -n 1p a/x.test.mjs' || shim_status=$?
+[[ "$shim_status" == 0 ]] || { cat "$shim_output" >&2; echo "bash -lc reading a test file with sed was refused (rc=$shim_status)" >&2; exit 1; }
+shim_status=0
+shim_run "$shim_output" "$shim_dir/sh" -c 'cat a/x.test.mjs' || shim_status=$?
+[[ "$shim_status" == 0 ]] || { cat "$shim_output" >&2; echo "sh -c reading a test file with cat was refused (rc=$shim_status)" >&2; exit 1; }
+shim_status=0
+shim_run "$shim_output" "$shim_dir/bash" a/x.test.sh || shim_status=$?
+[[ "$shim_status" == 78 ]] && grep -Fq 'command=bash reason=test-file' "$shim_output" \
+  || { cat "$shim_output" >&2; echo "direct bash test execution was not refused as test-file (rc=$shim_status)" >&2; exit 1; }
+shim_status=0
+shim_run "$shim_output" "$shim_dir/bash" -lc 'node a/x.test.mjs' || shim_status=$?
+[[ "$shim_status" == 78 ]] && grep -Fq 'command=node reason=test-file' "$shim_output" \
+  || { cat "$shim_output" >&2; echo "nested node test execution was not refused by the node shim (rc=$shim_status)" >&2; exit 1; }
+echo 'ok - bash/sh -c scripts skip outer test-file scanning while nested commands stay guarded'
+
 guard_run guard-first.log bash
 jq -e '.units[0] | .stage == "review-pending" and ([.history[] | select(.stage == "worker-guard-refused" and .result == "command=bash reason=test-file")] | length == 1) and ([.history[] | select(.stage == "worker-no-output")] | length == 0)' "$UNITS" >/dev/null \
   || { echo 'guard refusal was not recorded as an explicit worker outcome' >&2; exit 1; }

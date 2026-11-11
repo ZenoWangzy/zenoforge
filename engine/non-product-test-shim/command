@@ -59,8 +59,29 @@ def blocked_reason():
         if "--check" not in ARGS and any(test_file(arg) for arg in ARGS):
             return "test-file"
         return ""
-    if COMMAND in {"bash", "sh"} and any(arg == "-n" for arg in ARGS):
-        return ""
+    if COMMAND in {"bash", "sh"}:
+        if any(arg == "-n" for arg in ARGS):
+            return ""
+        i = 0
+        while i < len(ARGS):
+            arg = ARGS[i]
+            if arg == "--" or arg == "-" or not arg.startswith("-"):
+                break
+            if arg.startswith("--"):
+                if COMMAND != "bash":
+                    break
+                i += 2 if arg in {"--init-file", "--rcfile"} else 1
+                continue
+            cluster = arg[1:]
+            while cluster:
+                option, cluster = cluster[0], cluster[1:]
+                if option == "c":
+                    return ""
+                if option in {"o", "O"}:
+                    i += 1 if cluster else 2
+                    break
+            else:
+                i += 1
     if COMMAND in {"python", "python3"} and len(ARGS) >= 2 and ARGS[:2] == ["-m", "py_compile"]:
         return ""
     return "test-file" if any(test_file(arg) for arg in ARGS) else ""
