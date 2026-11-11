@@ -476,14 +476,12 @@ $(decision_scope "$u")"
         [[ -z "$task" ]] && { say "implement-pending unit=$id has no .task; supervisor required"; continue; }
         [[ -z "$branch" ]] && { say "implement-pending unit=$id has no .branch; supervisor required"; continue; }
         wt=""
+        park_if_body_blocked "$u" && { dispatch_skip body-blocked; continue; }
         if [[ "$local_refill" == true ]]; then
-          [[ -z "$(blocking_body_dependency "$u")" ]] || { dispatch_skip body-blocked; continue; }
           if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]] \
             || [[ -n "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; then
             dispatch_skip handoff-pending; continue
           fi
-        else
-          park_if_body_blocked "$u" && { dispatch_skip body-blocked; continue; }
         fi
         dmark body_block
         dstep room_for room_for "$id" implement "$u" false || continue
