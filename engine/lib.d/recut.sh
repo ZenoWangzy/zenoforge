@@ -156,8 +156,20 @@ recut_parent_children_json() {
 
 
 recut_parent_has_open_child() {
-  local n="$1" open_issues_json="${2:-[]}" state_json="${3:-}" allow_comment_fallback="${4:-1}" children child state native_json
+  local n="$1" open_issues_json="${2:-[]}" state_json="${3:-}" allow_comment_fallback="${4:-1}" children child state native_json known_parent=0
   [ -n "$state_json" ] || state_json="$(state_read "$n")" || return 2
+  jq -e 'type == "object"' <<< "$state_json" >/dev/null 2>&1 || return 2
+  if jq -e '.state == "tracker" or .tracker_parent == true or .native_subissue_parent == true' \
+    <<< "$state_json" >/dev/null 2>&1; then known_parent=1; fi
+  if ! jq -e 'type == "object" and has("recut_children")' <<< "$state_json" >/dev/null 2>&1; then
+    if declare -F native_parent_subissues_json >/dev/null; then
+      if ! native_parent_subissues_json "$n" >/dev/null; then
+        (( known_parent == 0 )) || return 2
+      fi
+    elif (( known_parent == 1 )); then
+      return 2
+    fi
+  fi
   children="$(recut_parent_children_json "$n" "$state_json" "$allow_comment_fallback")" || return $?
   native_json="${NATIVE_PARENT_SUBISSUES_CACHE[$n]:-}"
   while IFS= read -r child; do
