@@ -977,8 +977,12 @@ ISSUE_TRANSITION_OUTPUT="$(AGENT_HOME="$ISSUE_TRANSITION_HOME" REPO=test/repo \
       test "$(jq -r .tracker_parent "$AGENT_HOME/state/740030.json")" = true
       test "$(jq -r .hold "$AGENT_HOME/state/740030.json")" = null
       test "$(jq -r .advisor_ruled_at "$AGENT_HOME/state/740030.json")" = null
-      test "$(jq -r .labels[].name "$ISSUE_TRANSITION_ISSUE" | sort | paste -sd, -)" = priority:top
+      test "$(jq -r .labels[].name "$ISSUE_TRANSITION_ISSUE" | sort | paste -sd, -)" = priority:top,tracker
     done
+    printf "%s\n" '\''{"state":"tracker","labels":[{"name":"priority:top"}]}'\'' > "$ISSUE_TRANSITION_ISSUE"
+    printf "%s\n" '\''{"state":"tracker"}'\'' > "$AGENT_HOME/state/740030.json"
+    issue_transition 740030 tracker recut-parent-retired
+    test "$(jq -r .labels[].name "$ISSUE_TRANSITION_ISSUE" | sort | paste -sd, -)" = priority:top,tracker
     printf "retired-finish-first-needs-info-awaiting-release=local-and-github\\n"
   ' _ "$SCRIPT_DIR" 2>&1)"
 assert_not_contains "state transitions reject illegal merged requeue" "$ISSUE_TRANSITION_OUTPUT" "unexpected fake gh args"

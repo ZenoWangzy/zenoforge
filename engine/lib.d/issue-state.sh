@@ -21,12 +21,12 @@ _AGENT_LIB_DIR="${_AGENT_LIB_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 # created label is visible on the repo) rather than silently tolerating a
 # missing one at removal time.
 ensure_state_labels() {
-  local existing name
+  local existing name labels=("${ALL_STATE_LABELS[@]}"); [ "${1:-}" != tracker ] || labels+=(tracker)
   existing="$(gh label list --repo "$REPO" --limit 200 --json name -q '.[].name' 2>/dev/null)" || existing=""
-  for name in "${ALL_STATE_LABELS[@]}"; do
+  for name in "${labels[@]}"; do
     grep -qx -- "$name" <<< "$existing" && continue
     guarded_write gh label create "$name" --repo "$REPO" --color ededed \
-      --description "the product issue pipeline state label" >/dev/null 2>&1 || true
+      --description "$([[ "$name" == tracker ]] && echo 'the product issue tracker container label' || echo 'the product issue pipeline state label')" >/dev/null 2>&1 || true
   done
 }
 
@@ -511,9 +511,9 @@ issue_transition_allowed() {
       return 0
       ;;
   esac
-  # Last-child release retires umbrella parents from their current lane.
-  if [ "$to" = released ] && [ "$reason" = all-children-released ]; then return 0; fi
-  [[ " ${ISSUE_TRANSITION_TABLE[$from]} " == *" $to "* ]] || return 1
+  # Last-child release retires umbrella parents from their current lane; same-state label repairs leave the state untouched.
+  if { [ "$to" = released ] && [ "$reason" = all-children-released ]; } || { [ "$from" = "$to" ] && [ "$reason" = pr-closed-label-reconcile ]; }; then return 0; fi
+  [[ ( "$from" == tracker && "$to" == tracker && "$reason" == recut-parent-retired ) || " ${ISSUE_TRANSITION_TABLE[$from]} " == *" $to "* ]] || return 1
   case "$from:$to" in
     on-hold:awaiting-release)
       case "$reason" in ops-acceptance-passed|merged-pr) ;; *) return 1 ;; esac
@@ -638,7 +638,7 @@ issue_transition_rest_label_write() {
   else
     desired_labels='[]'
   fi
-  state_labels="$(printf '%s\n' "${ALL_STATE_LABELS[@]}" | jq -R . | jq -s .)" || return 1
+  state_labels="$(printf '%s\n' "${ALL_STATE_LABELS[@]}" tracker | jq -R . | jq -s .)" || return 1
   next_labels="$(jq -cn --argjson current "$current_labels" --argjson desired "$desired_labels" \
     --argjson state_labels "$state_labels" --argjson remove_hold "$remove_hold" \
     --argjson remove_evidence "$remove_evidence" '
@@ -820,10 +820,10 @@ issue_transition() (
     concluded:conclude:duplicate) add_labels=(concluded duplicate) ;;
     concluded:close-reconcile:deployed) add_labels=(concluded released) ;;
     concluded:*) add_labels=(concluded) ;;
-    tracker:*) add_labels=() ;;
+    tracker:*) add_labels=(tracker) ;;
     *) add_labels=("$to") ;;
   esac
-  [ "$DRY_RUN" = 1 ] || ensure_state_labels
+  [ "$DRY_RUN" = 1 ] || { if [ "$to" = tracker ]; then ensure_state_labels tracker; else ensure_state_labels; fi; }
   local target_json
   target_json="$(jq -cn --arg state "$to" '$state')" || { echo "issue_transition: could not encode target state $to for #$n" >&2; return 1; }
   local filter="$patch | .state = $target_json"
@@ -860,7 +860,7 @@ issue_transition() (
   [ "$skip_label_write" != 1 ] || return 0
 
   edit_args=(gh issue edit "$n" --repo "$REPO")
-  for label in "${ALL_STATE_LABELS[@]}" on-hold; do
+  for label in "${ALL_STATE_LABELS[@]}" on-hold tracker; do
     [ "$label" != on-hold ] || [ "$from" = on-hold ] || [ "$release_hold_overlay" = 1 ] || continue
     local keep=0
     for add_label in "${add_labels[@]}"; do [ "$label" != "$add_label" ] || keep=1; done
@@ -886,7 +886,7 @@ issue_transition() (
           ;;
       esac
       local state_label is_state_label=0
-      for state_label in "${ALL_STATE_LABELS[@]}"; do [ "$label" != "$state_label" ] || is_state_label=1; done
+      for state_label in "${ALL_STATE_LABELS[@]}" tracker; do [ "$label" != "$state_label" ] || is_state_label=1; done
       if [ "$is_state_label" = 0 ]; then issue_labels+=("$label"); fi
     done < <(jq -r '.labels[]?.name // empty' <<< "$intake_json")
     issue_labels+=("${add_labels[@]}")
