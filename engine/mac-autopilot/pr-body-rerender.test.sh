@@ -41,6 +41,27 @@ gh() {
 }
 edits() { grep -c '^pr edit' "$GH_CALLS" || true; }
 
+# Both sections survive when the decision log falls beyond the first 40 report lines.
+long_report="$sup/impl-decision-log.md"
+{
+  printf '%s\n' '## summary'
+  for ((line=1; line<=45; line++)); do printf 'report line %s\n' "$line"; done
+  printf '%s\n' '## decision-log' 'Tried the longer report path and verified the chosen result.'
+} > "$long_report"
+decision_log_unit='{"self_check_status":"pass","self_check_sha":"sha","verification":{"exit_code":0,"sha":"sha","argv":["verify"],"evidence_files":["evidence/path"]}}'
+rendered="$(pr_body_source 1100 "$long_report" "$decision_log_unit")"
+grep -q '^## decision-log$' <<<"$rendered" && grep -q 'verified the chosen result' <<<"$rendered" || fail 'the rendered PR body lost the decision-log section'
+grep -q '^## verification$' <<<"$rendered" || fail 'the rendered PR body lost the verification section'
+
+# A decision-log that starts on line 40 is rendered in full instead of being truncated.
+{
+  printf '%s\n' '## summary'
+  for ((line=1; line<=37; line++)); do printf 'report line %s\n' "$line"; done
+  printf '%s\n' '## decision-log' 'First decision line.' 'Second decision line.'
+} > "$long_report"
+rendered="$(pr_body_source 1100 "$long_report" "$decision_log_unit")"
+grep -q '^Second decision line\.$' <<<"$rendered" || fail 'the rendered PR body truncated a decision-log crossing the first 40 lines'
+
 printf '%s\n' '## root-cause' 'a' > "$sup/impl-body-1.md"
 echo '{"units":[{"id":"body-1","issue":1100,"title":"body","branch":"agent/body-1","lane":"pr","stage":"implement","history":[]}]}' > "$UNITS"
 echo '{"workers":[]}' > "$WORKERS"
@@ -72,18 +93,20 @@ dispatch_if_room body-1 review-pending review log.md rep.md model high "prompt" 
 [[ "$(edits)" == 2 ]] || fail 'the review dispatch did not refresh the body'
 
 # A legacy unit (no stored hash) keeps its body: only the sections it lacks are appended, from the report, hand text verbatim.
-printf '%s\n' '## root-cause' 'rc text' '## recurrence-guard' 'guard text' '## prior-art' 'https://example.com/z' 'more art' '## blast-radius' 'not appended' > "$sup/impl-body-1.md"
-set_unit body-1 'del(.pr_body_hash)'
+printf '%s\n' '## root-cause' 'rc text' '## recurrence-guard' 'guard text' '## prior-art' 'https://example.com/z' 'more art' '## decision-log' 'Tried the legacy body path and verified the result.' '## blast-radius' 'not appended' > "$sup/impl-body-1.md"
+set_unit body-1 'del(.pr_body_hash) | .self_check_status="pass" | .self_check_sha="sha" | .verification={exit_code:0,sha:"sha",argv:["verify"],evidence_files:["evidence/path"]}'
 GH_BODY=$'HAND EDIT KEEP\n\n## root-cause\nhand rc\n\n## recurrence-guard\nhand guard'
 pr_body_refresh "$(jq -c '.units[0]' "$UNITS")"
-[[ "$(edits)" == 3 ]] || fail 'a legacy body lacking prior-art was not edited once'
+[[ "$(edits)" == 3 ]] || fail 'a legacy body lacking report and verification sections was not edited once'
 grep -qx 'HAND EDIT KEEP' "$fixture/edited-body" && grep -qx 'hand guard' "$fixture/edited-body" || fail 'the legacy edit lost the hand-written text'
 [[ "$(grep -c '^## root-cause' "$fixture/edited-body")" == 1 && "$(grep -c '^## prior-art' "$fixture/edited-body")" == 1 ]] || fail 'the legacy edit repeated or missed a section'
+grep -q '^## decision-log$' "$fixture/edited-body" && grep -q 'verified the result' "$fixture/edited-body" || fail 'the legacy edit lost the decision-log section'
+grep -q '^## verification$' "$fixture/edited-body" || fail 'the legacy edit lost the verification section'
 grep -qx 'more art' "$fixture/edited-body" && ! grep -q 'not appended' "$fixture/edited-body" || fail 'the appended section does not run exactly to the next ## heading'
 [[ "$(field body-1 .pr_body_hash)" =~ ^[0-9a-f]{64}$ ]] || fail 'the legacy append did not store the hash'
-# A legacy body that has all three gets no edit, and the hash is stored.
+# A legacy body that has all five gets no edit, and the hash is stored.
 set_unit body-1 'del(.pr_body_hash)'
-GH_BODY=$'## root-cause\nx\n## recurrence-guard\ny\n## prior-art\nz'
+GH_BODY=$'## root-cause\nx\n## recurrence-guard\ny\n## prior-art\nz\n## decision-log\nworked and verified\n## verification\nExit code: 0'
 pr_body_refresh "$(jq -c '.units[0]' "$UNITS")"
 [[ "$(edits)" == 3 && "$(field body-1 .pr_body_hash)" =~ ^[0-9a-f]{64}$ ]] || fail 'a complete legacy body was edited or left without a hash'
 echo 'pr-body-rerender.test.sh: ok'

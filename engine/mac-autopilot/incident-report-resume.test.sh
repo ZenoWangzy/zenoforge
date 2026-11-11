@@ -69,6 +69,9 @@ write_worker() { # type report log context-json
 missing_report_name=impl-71001-fix-source.md
 missing_report="$sup/$missing_report_name"
 cat > "$missing_report" <<'REPORT'
+## decision-log
+Tried the incident report, retained the root-cause summary, and verified the resume path.
+
 ## root-cause
 The persisted state was selected incorrectly.
 
@@ -103,6 +106,9 @@ fi
 passing_report_name=impl-71001-fix-passing.md
 passing_report="$sup/$passing_report_name"
 cat > "$passing_report" <<'REPORT'
+## decision-log
+Tried the incident report, retained the recurrence guard, and verified the final report.
+
 ## root-cause
 The persisted state was selected incorrectly.
 

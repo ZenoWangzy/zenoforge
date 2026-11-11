@@ -153,7 +153,7 @@ echo 'ok - hung ZCode worker is stopped only when its log ends in the turn error
 
 # A recorded non-product test-guard refusal is an outcome, not a worker death.
 guard_marker='non-product-test-guard: refused unit=issue-guard command=bash reason=test-file recorded=1'
-guard_run() { # log path mode [keep-history] → harvest one guard review
+guard_run() { # log path mode [keep-history] [head] → harvest one guard review
   local guard_file="$sup/$1.guard-refusals" target
   case "$2" in
     json) jq -cn --arg text "$guard_marker"$'\n' '{type:"assistant",message:{content:[{type:"text",text:$text}]}}' > "$sup/$1" ;;
@@ -169,7 +169,7 @@ guard_run() { # log path mode [keep-history] → harvest one guard review
   esac
   rm -f "$sup/guard.md" "$sup/guard.md.partial"
   [[ "${3:-reset}" == keep ]] || jq -n '{units:[{id:"issue-guard",stage:"review",lane:"direct-main",history:[]}]}' > "$UNITS"
-  jq -n --arg log "$1" '{workers:[{pid:999999999,unit:"issue-guard",type:"review",provider:"fixture",log:$log,report:"guard.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+  jq -n --arg log "$1" --arg head "${4:-}" '{workers:[{pid:999999999,unit:"issue-guard",type:"review",provider:"fixture",log:$log,report:"guard.md",sha:$head,started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
   harvest_workers
 }
 guard_run guard-first.log bash
@@ -181,6 +181,16 @@ jq -e '.workers[0].harvested == true' "$WORKERS" >/dev/null \
 guard_run reviewer-output.log tool-result keep
 jq -e '([.units[0].history[] | select(.stage == "worker-guard-refused")] | length == 1) and ([.units[0].history[] | select(.stage == "worker-no-output")] | length == 1)' "$UNITS" >/dev/null \
   || { echo 'tool_result marker without a shim refusal file was not counted as worker-no-output' >&2; exit 1; }
+
+delivered_guard_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+jq -n --arg head "$delivered_guard_head" '{units:[{id:"issue-guard",stage:"rereview-pending",lane:"direct-main",history:[{stage:"repair-delivered",head:$head}]}]}' > "$UNITS"
+guard_run guard-delivered-first.log bash keep "$delivered_guard_head"
+guard_run guard-delivered-second.log python3 keep "$delivered_guard_head"
+jq -e --arg head "$delivered_guard_head" '.units[0] | .stage == "rereview-pending" and ([.history[] | select(.stage == "worker-guard-refused" and .head == $head)] | length == 2) and ([.history[] | select(.stage == "supervisor-escalated")] | length == 0)' "$UNITS" >/dev/null \
+  || { echo "guard refusals overrode a delivered repair on the same head: $(jq -c '.units[0]' "$UNITS")" >&2; exit 1; }
+delivered_repair="$(jq -cn '{history:[]}' | jq -c "$(repair_run_filter issue-guard unknown - 0 /dev/null /dev/null "$delivered_guard_head")")"
+jq -e --arg head "$delivered_guard_head" '.stage == "rereview-pending" and .history[-1].stage == "repair-delivered" and .history[-1].head == $head' <<<"$delivered_repair" >/dev/null \
+  || { echo 'repair delivery did not record its head for matching later guard refusals' >&2; exit 1; }
 
 jq -n '{units:[{id:"issue-guard",stage:"review",lane:"direct-main",history:[]}]}' > "$UNITS"
 guard_run guard-repeat-first.log bash keep

@@ -70,6 +70,16 @@ maintainer_health_mail_daily_facts "$fresh" "$fresh/night/founder-health-mail.js
 [[ ! -e "$fresh/night/owner-report-snapshots" ]] || fail 'render must not write the snapshot store'
 ok 'render writes nothing'
 
+flags_home="$tmp/flags-home"
+mkdir -p "$flags_home/checkout/.scratch-supervisor"
+printf '%s\n' '{"unit":"issue-876","entry":"Tried cache-first; verification covered only the mock.","reason":"The report has no live-path verification."}' \
+  > "$flags_home/checkout/.scratch-supervisor/decision-log-flags.jsonl"
+flags_html="$(maintainer_health_mail_build_html '{}' 'plain report' "$flags_home")"
+flags_html="$(jq -r '.html' <<< "$flags_html")"
+[[ "$flags_html" == *'决策日志复核（1 条）'* && "$flags_html" == *'Tried cache-first; verification covered only the mock.'* \
+  && "$flags_html" == *'The report has no live-path verification.'* ]] || fail 'the daily report did not read and print the decision-log flag count and entry'
+ok 'the daily report reads marked decision-log entries from the supervisor file'
+
 # --- Stations -----------------------------------------------------------------------
 runtime="$tmp/runtime"
 mkdir -p "$runtime"

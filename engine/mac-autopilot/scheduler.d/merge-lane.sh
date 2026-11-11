@@ -262,18 +262,25 @@ pass_steps_line() { # "name=<secs>s/<count> ..." slowest first
 # The PR body is derived from the unit's report, rendered here once for the open and again for the refresh (PR 5650, 2026-11-08: a
 # report that gained ## prior-art never reached the body, and the next review round was spent on the missing section).
 pr_body_source() { # issue report-path [unit-json] → the body text before closing keywords are scrubbed
+  local report sec
+  report="$(head -40 "$2")"
+  sec="$(awk -v h="## decision-log" '$0 ~ "^" h "[ \t]*$" { p = 1; print; next } /^## / { p = 0 } p' "$2")"
+  if [[ -n "$sec" ]]; then
+    report="$(awk '/^## decision-log[[:space:]]*$/{skip=1; next} /^##[[:space:]]/{skip=0} !skip' <<<"$report")"
+    report+=$'\n\n'"$sec"
+  fi
   printf '%s%s%s' "${1:+Refs #$1
 
 }" "Implemented by the the product autopilot. Implementer report (first lines):
 
-$(head -40 "$2")" "$(self_check_verification_body "${3:-}")"
+${report}" "$(self_check_verification_body "${3:-}")"
 }
 pr_body_hash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
-pr_body_append_missing() { # unit pr report hash unit-json → a legacy PR (opened before .pr_body_hash) keeps its body; missing report and verification sections are appended
+pr_body_append_missing() { # unit pr report hash unit-json → a legacy PR (opened before .pr_body_hash) keeps its body; missing report, decision-log, and verification sections are appended
   local body new file h sec added=false missing=false unit="${5:-}"
   body="$(gh pr view "$2" --json body -q .body 2>/dev/null)" || return 0
   new="$body"
-  for h in root-cause recurrence-guard prior-art verification; do
+  for h in root-cause recurrence-guard prior-art decision-log verification; do
     grep -qE "^## $h[[:space:]]*\$" <<<"$body" && continue
     if [[ "$h" == verification ]]; then sec="$(self_check_verification_body "$unit")"; else sec="$(awk -v h="## $h" '$0 ~ "^" h "[ \t]*$" { p = 1; print; next } /^## / { p = 0 } p' "$3")"; fi
     if [[ -n "$sec" ]]; then new+=$'\n\n'"$sec"; added=true; else [[ "$h" == verification ]] || missing=true; fi

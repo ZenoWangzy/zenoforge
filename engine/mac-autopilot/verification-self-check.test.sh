@@ -27,7 +27,7 @@ tick_pr_base() { echo main; }
 write_unit() { # id issue report
   jqf -cn --arg id "$1" --argjson issue "$2" --arg report "$3" --arg sid "$session_id" \
     '{units:[{id:$id,issue:$issue,lane:"pr",pr:$issue,branch:("agent/"+$id),stage:"review-pending",labels:[],implement_model:"gpt-6-luna",session_ids:{repair:$sid},implementation_report:$report,self_check_fixes:0,history:[]}]}' > "$UNITS"
-  printf '## root-cause\nverification case\n\n## recurrence-guard\nkind: test\n\n## prior-art\nno external prior art: test fixture\n' > "$sup/$3"
+  printf '## decision-log\nTried the verification path and confirmed its evidence.\n\n## root-cause\nverification case\n\n## recurrence-guard\nkind: test\n\n## prior-art\nno external prior art: test fixture\n' > "$sup/$3"
 }
 commit_config_as_base() {
   git -C "$repo" add -A -- .zenoforge/state/verification.json
@@ -91,6 +91,16 @@ grep -qx '## verification' "$edited_body" || fail 'PR body lacks ## verification
 grep -Fq "Command argv (JSON): [\"$green\",\"--green\"]" "$edited_body" || fail 'PR body does not name the verification command'
 grep -qx 'Exit code: 0' "$edited_body" || fail 'PR body does not name the verification exit code'
 grep -Fq 'Evidence files (relative to clone): ["evidence/user-path.log"]' "$edited_body" || fail 'PR body does not name the evidence file'
+
+# A missing decision-log blocks a configured verification command before the normal checks run.
+: > "$runs_file"
+write_unit issue-87007 87007 impl-87007.md
+printf '## root-cause\nmissing decision-log case\n\n## recurrence-guard\nkind: test\n\n## prior-art\nno external prior art: test fixture\n' > "$sup/impl-87007.md"
+run_gate issue-87007 87007 impl-87007.md
+[[ "$(field issue-87007 .self_check_status)" == red ]] || fail 'missing decision-log did not turn the configured verification gate red'
+[[ "$(self_check_runs)" == 0 ]] || fail 'missing decision-log reached the normal self-check'
+out="$(field issue-87007 .self_check_output)"
+grep -Fq 'decision-log check failed: missing ## decision-log' "$out" || fail 'missing decision-log did not retain its gate reason'
 
 # A nonzero verification exits before self_check_run and room_for keeps review from dispatching while self-fix is pending.
 red="$repo/verify-red"

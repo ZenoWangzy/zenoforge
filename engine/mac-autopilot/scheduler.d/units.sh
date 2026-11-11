@@ -228,6 +228,37 @@ decision_entry() { # decision why evidence rejected-json owner -> history decisi
 last_review_blocked() { # unit-json → 0 when the latest review verdict in its history is review-block
   jqf -e '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last.stage == "review-block"' <<<"$1" >/dev/null 2>&1
 }
+no_finding_repair_route() { # unit-json → "ready-to-merge <head>" (head approved), "review-pending" (no current approval), or nothing (a repair is right)
+  # A repair with no red check and no open P0/P1 finding has nothing to fix (2026-11-08: issue-5306 went to repair three times on cancelled checks).
+  # Other failures keep repair: a merge conflict, a land/precheck/CI red stage, or any lookup that fails.
+  local u="$1" pr head rows
+  pr="$(jqf -r '.pr // empty' <<<"$u")"
+  [[ "$pr" =~ ^[0-9]+$ ]] || return 0
+  # A handoff (hold episode or handoff worktree/ref) must be integrated by the repair worker first.
+  [[ "$(jqf -r '[.hold_handoff_episode, .handoff_start_ref, .handoff_worktree_sha] | map(select(. != null and . != "")) | length' <<<"$u")" == 0 ]] || return 0
+  [[ ! "$(jqf -r '.history[-1].stage // ""' <<<"$u")" =~ ^(land-failed|merge-reverted|merge-conflict|precheck-red|ci-red|ci-test-red)$ ]] || return 0
+  [[ "$(tick_pr_mergeable "$pr")" != CONFLICTING ]] || return 0
+  head="$(tick_pr_head "$pr")"; [[ "$head" =~ $SHA_RE ]] || return 0
+  rows="$(repair_check_rows "$pr")" || return 0
+  jqf -e 'any(.[]; .bucket == "fail")' <<<"$rows" >/dev/null && return 0
+  jqf -e '((.review_findings // []) | last // {}) | (.findings // []) | any(.status == "open" and (.severity == "P0" or .severity == "P1"))' <<<"$u" >/dev/null && return 0
+  jqf -e '((.review_findings // []) | length == 0) and ((.review_report // "") != "" or ([(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last | .stage) == "review-request-changes")' <<<"$u" >/dev/null && return 0
+  if jqf -e --arg h "$head" '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last | (.stage == "review-approve" and .result == $h)' <<<"$u" >/dev/null; then
+    printf 'ready-to-merge %s\n' "$head"
+  else
+    printf 'review-pending\n'
+  fi
+}
+supervisor_requeue_repair_route() { # unit-json guidance → target<TAB>jq update for a supervisor repair requeue
+  local u="$1" route="" head="" target=repair-pending extra
+  extra=" | .repair_hint=$(js "$2")"
+  read -r route head <<<"$(no_finding_repair_route "$u")" || true
+  case "$route" in
+    ready-to-merge) target=ready-to-merge; extra=" | .approved_sha=$(js "$head") | .repair_hint=null" ;;
+    review-pending) target=review-pending; extra=' | .reviewed_sha=null | .reviewed_pr_head=null | .repair_hint=null' ;;
+  esac
+  printf '%s\t%s\n' "$target" "$extra"
+}
 supervisor_return_stage() { # unit-json [stage-before-supervisor] → pending stage for a RULE decision
   local u="$1" stage="${2:-}"
   [[ -n "$stage" ]] || stage="$(jqf -r '.stage // empty' <<<"$u")"
