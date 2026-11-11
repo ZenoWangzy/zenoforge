@@ -34,7 +34,7 @@ pending_fixture_stubs() {
   dispatch_order() { jqf -c '.units[] | select(.stage | test("-pending$"))' "$UNITS"; }
   ticket_budget_reason() { return 0; }
   loop_rounds() { echo 0; }
-  blocking_body_dependency() { return 0; }
+  blocking_body_dependency() { return 1; }
   room_for() { return 0; }
   pick() { PICK_MODEL=fixture; PICK_EFFORT=high; return 0; }
   # Stands in for the real check: a live owner defers the unit only while the walk's first pass asks for a verdict.
@@ -168,6 +168,19 @@ grep -Fq 'footprint-shadow-old-rule-would-block unit=candidate owner=owner' "$LO
   merge_conflict_to_repair fixture 123 'conflicts with main' hint ''
 )
 grep -Fq 'merge-conflict-attribution unit=fixture pr=123 pr_head=unknown main_sha=fixture-main-sha conflicting_files=unavailable' "$LOG" || fail 'merge attribution missing'
+
+# A refill that finds an open body blocker must park it, so intake capacity excludes it.
+write_units '{units:[{id:"body-blocked-refill",issue:901,stage:"implement-pending",task:"fixture task",branch:"agent/issue-901",body_blocked_by:[900],history:[]}]}'
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+pending_fixture_stubs
+blocking_body_dependency() {
+  [[ "$(jqf -r '.id' <<<"$1")" == body-blocked-refill ]] || return 1
+  printf '900\n'
+}
+dispatch_pending true
+jqf -e '.units[] | select(.id=="body-blocked-refill") | .stage=="blocked-external" and .blocked_on==900' "$UNITS" >/dev/null \
+  || fail 'refill left a native-blocked unit in the pending capacity count'
+[[ "$(startable_pending_count)" == 0 ]] || fail 'refill counted a parked native blocker as startable'
 
 # Stale owner stage must stop suppressing the pending unit from intake and dispatch.
 write_units '{units:[
