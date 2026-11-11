@@ -829,7 +829,7 @@ hold_cli_main() {
     (($# == 2)) || { echo "usage: hold.sh --restore <issue>" >&2; return 64; }
     hold_restore "$2"
   elif [ "${1:-}" = --rule ]; then
-    (($# == 5 || $# == 7)) && [[ "$3" =~ ^--(requeue|reroute|approve|arbiter|recut|reblock)$ && "$4" = --comment ]] && { (($# == 5)) || [ "$6" = --blocked-on ]; } || { echo "usage: hold.sh --rule <issue|issue-N|pr-N> --requeue|--reroute|--approve|--arbiter|--recut|--reblock --comment <id> [--blocked-on <N>]" >&2; return 64; }
+    (($# == 5 || $# == 7)) && [[ "$3" =~ ^--(requeue|reroute|approve|arbiter|recut|reblock)$ && "$4" = --comment ]] && { (($# == 5)) || [ "$6" = --blocked-on ]; } || { echo "usage: hold.sh --rule <issue|issue-N|pr-N> --requeue|--reroute|--approve|--arbiter|--recut|--reblock --comment <id> [--blocked-on <N>]" >&2; echo 'A report-only --requeue on an unchanged PR head needs a comment body containing "report only" or "report-only"; report_only_pr_requeue_harvest matches that text.' >&2; return 64; }
     hold_rule "$2" "${3#--}" "$5" "${7:-}"
   elif [ "${1:-}" = --answer ]; then
     (($# == 4)) && [ "$3" = --comment ] || { echo "usage: hold.sh --answer <issue> --comment <id>" >&2; return 64; }
