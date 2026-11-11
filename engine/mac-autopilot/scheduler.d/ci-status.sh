@@ -174,12 +174,17 @@ ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不
   say "merge skipped PR#$2 (checks cancelled, not failed: $4) -> restarted $n run(s), approval and rerun credit kept"
 }
 
-# 停线：测试断言红了就派修复；Dagger 日志也可直接提供有界的 Vitest 文件/用例事实。
-ci_test_red_checks() { # checks_json → failing check names, then structured test facts
+# 停线（Jidoka）：失败 job 的日志里已有测试断言失败（vitest FAIL / AssertionError / TAP not ok），就是确定性的代码结论。
+# 以前要等其余检查全部跑完、再整体重跑一次才派修复：热修 #3860 04:15 测试已红，按旧路径约 2 小时后才会开始修（L62）。
+ci_test_red_checks() { # checks_json → 第一行：失败日志含测试失败的检查名（逗号分隔，没有则空）；其后每行是该检查日志里 vitest 标记行的结构化事实
   local name link job hits="" logfile facts="" marker fallback i pid
   local -a names=() logfiles=() pids=()
+  # 失败 job 日志有界并行抓（GH_PARALLEL）。
   while IFS=$'\t' read -r name link; do
     job="${link##*/job/}"; [[ "$job" =~ ^[0-9]+$ ]] || continue
+    # Dagger 里的 vitest 输出带 ANSI 颜色（ESC[41m FAIL ESC[49m），不去色就匹配不到：热修 #3860 的确定性测试红
+    # 三次被当成"旧 base 的红"走 update-branch，每次多耗一整轮 CI（L75）。
+    # 一次日志抓取同时给出红判定和 scripts/ci/vitest-fail-facts.mjs 打印的标记行；没有标记行的检查回退到 ` FAIL  <file> > <test>` 行（至多 12 条）。
     logfile="$(mktemp)" || continue
     names+=("$name"); logfiles+=("$logfile")
     { gh api --allow-escape-sequences "repos/{owner}/{repo}/actions/jobs/$job/logs" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' > "$logfile"; } &
