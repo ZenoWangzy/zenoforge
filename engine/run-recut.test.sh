@@ -36,6 +36,8 @@ HAND_TEST_ENQUEUE_EXIT=0
 HAND_TEST_OWNER_MODE=''
 HAND_TEST_TITLE='recut test issue'
 HAND_TEST_BODY=''
+HAND_TEST_COMMENTS='[]'
+export FAKE_RECUIT_RESPONSE_JSON=''
 cleanup() {
   local d
   local wt
@@ -116,8 +118,15 @@ if [ "${1:-}" = api ]; then
     else
       jq -r "${query:-.[].created_at}" <<< "${FAKE_ISSUE_TIMELINE_JSON:-[]}"
     fi
-  elif [[ "${2:-}" == repos/*/issues/"${FAKE_NEXT_CHILD_ISSUE:-90099}" ]]; then
-    printf '%s\n' "${FAKE_NEXT_CHILD_ISSUE:-90099}"
+  elif [[ "${2:-}" =~ ^repos/[^/]+/[^/]+/issues/([0-9]+)$ ]]; then
+    requested="${BASH_REMATCH[1]}"
+    first_child="${FAKE_NEXT_CHILD_ISSUE:-90099}"
+    created="$(cat "${FAKE_GH_LOG:-/dev/null}.issue-create-count" 2>/dev/null || echo 0)"
+    if [ "$requested" -ge "$first_child" ] && [ "$requested" -lt "$((first_child + created))" ]; then
+      printf '%s\n' "$requested"
+    else
+      echo '[]'
+    fi
   else
     echo '[]'
   fi
@@ -162,8 +171,9 @@ case "$sub" in
       labels_json='[{"name":"priority:top"},{"name":"released"}]'
     fi
     obj="$(jq -n --arg state "$state" --argjson labels "$labels_json" \
-      --arg title "${FAKE_ISSUE_TITLE:-recut test issue}" --arg body "${FAKE_ISSUE_BODY:-}" \
-      '{number: 1, title: $title, body: $body, author: {login: "testuser"}, comments: [], createdAt: "2026-01-01T00:00:00Z", state: $state, labels: $labels}')"
+      --argjson comments "$FAKE_ISSUE_COMMENTS_JSON" \
+      --arg title "$FAKE_ISSUE_TITLE" --arg body "$FAKE_ISSUE_BODY" \
+      '{number: 1, title: $title, body: $body, author: {login: "testuser"}, comments: $comments, createdAt: "2026-01-01T00:00:00Z", state: $state, labels: $labels}')"
     if [ -n "$query" ]; then
       echo "$obj" | jq -r "$query"
     else
@@ -199,7 +209,11 @@ case "$sub" in
       previous="$arg"
     done
     if [ "$sub" = "issue create" ]; then
-      echo "https://github.com/test/repo/issues/${FAKE_NEXT_CHILD_ISSUE:-90099}"
+      counter_file="$FAKE_GH_LOG.issue-create-count"
+      created="$(cat "$counter_file" 2>/dev/null || echo 0)"
+      created=$((created + 1))
+      printf '%s\n' "$created" > "$counter_file"
+      printf 'https://github.com/test/repo/issues/%s\n' "$(( ${FAKE_NEXT_CHILD_ISSUE:-90099} + created - 1 ))"
     fi
     ;;
   "pr checks") printf '%s\n' '[{"name":"fixture","bucket":"fail"}]'; exit 1 ;;
@@ -227,6 +241,8 @@ if [ -n "$schema" ] && [ -n "${FAKE_RECUIT_SCHEMA_FILE:-}" ]; then
 fi
 if [ "${FAKE_RECUIT_ACCEPT_CHILDREN:-0}" = 1 ]; then
   jq -cn '{domain_verified:true,refuse_reason:"",needs_production_access:false,how:"The recut runner verifies child files and symbols against the checkout.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A child is filed with its initial workflow label."],children:[{title:"verified child",body_md:"## What to build\n\nImplement the verified slice.",files:["seed.txt"],symbols:["seed"],blocked_by_child_indices:[]}]}' > "$out"
+elif [ -n "${FAKE_RECUIT_RESPONSE_JSON:-}" ]; then
+  printf '%s\n' "$FAKE_RECUIT_RESPONSE_JSON" > "$out"
 elif [ -n "${FAKE_RECUIT_REASON_FILE:-}" ]; then
   jq -cn --rawfile reason "$FAKE_RECUIT_REASON_FILE" \
     --arg production_access "${FAKE_RECUIT_PRODUCTION_ACCESS:-__omit__}" \
@@ -324,6 +340,7 @@ PY
   export FAKE_ISSUE_NUMBER="$hand_issue"
   export FAKE_ISSUE_TITLE="$HAND_TEST_TITLE"
   export FAKE_ISSUE_BODY="$HAND_TEST_BODY"
+  export FAKE_ISSUE_COMMENTS_JSON="$HAND_TEST_COMMENTS"
   export FAKE_HAND_PR_JSON="$HAND_TEST_PR_JSON"
   export FAKE_HAND_PR_HEAD="$HAND_TEST_PR_HEAD"
   export FAKE_HAND_ENQUEUE_EXIT="$HAND_TEST_ENQUEUE_EXIT"
@@ -376,6 +393,7 @@ OWNER
   : > "$FAKE_GH_LOG"
   : > "$FAKE_GH_CREATE_LOG"
   : > "${FAKE_GH_LOG}.state-views"
+  : > "$FAKE_GH_LOG.issue-create-count"
   : > "$FAKE_HAND_ENQUEUE_LOG"
 
   # Start from the persisted failure state an advisor receives, then apply
@@ -711,6 +729,55 @@ ROADMAP_ISSUE_CREATE_INNER=1 run_once "needs-recut enhancement" '{"attempts":0}'
 assert_eq "roadmap-mode recut creates its child successfully: $RUN_OUTPUT" 0 "$RUN_STATUS"
 assert_contains "roadmap-mode recut adds needs-triage in the child create request" \
   "$GH_CREATE_CONTENT" '--label needs-triage'
+
+HAND_TEST_COMMENTS='[]'
+export ROADMAP_ISSUE_CREATE_INNER=1
+RECUT_NO_ROADMAP_POLICY="$(mktemp)"
+TMP_DIRS+=("$RECUT_NO_ROADMAP_POLICY")
+jq '.switches["roadmap-order"] = false' "$SCRIPT_DIR/model-policy.default.json" > "$RECUT_NO_ROADMAP_POLICY"
+MODEL_POLICY_FILE="$RECUT_NO_ROADMAP_POLICY"
+export MODEL_POLICY_FILE
+FAKE_RECUIT_RESPONSE_JSON="$(jq -cn \
+  '{domain_verified:true,refuse_reason:"model says this slice is unsupported",needs_production_access:false,how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[{title:"Slice B: wrapper exit reporting",body_md:"Report the unexpected child exit.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]}]}')"
+run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'
+assert_eq "refusal plus a child escalates cleanly" 0 "$RUN_STATUS"
+assert_contains "partial cut records the model refusal" "$STATE_CONTENT" "model says this slice is unsupported"
+assert_eq "partial cut does not complete the parent with children" false \
+  "$(jq 'has("recut_children")' <<< "$STATE_CONTENT")"
+assert_contains "partial cut enters supervisor hold" \
+  "$(jq -r '.hold.holder // empty' <<< "$STATE_CONTENT")" "supervisor"
+assert_contains "partial cut tells the supervisor the refusal" "$INBOX_CONTENT" "model says this slice is unsupported"
+assert_contains "partial cut lists its planned child and creates none" "$INBOX_CONTENT" \
+  "planned children=Slice B: wrapper exit reporting; children created=none"
+assert_not_contains "partial refusal creates no child issue" "$GH_LOG_CONTENT" "gh issue create"
+
+HAND_TEST_COMMENTS="$(jq -cn \
+  '[{createdAt:"2026-11-10T10:00:00Z",body:"Supervisor ruling (head): recut into one slice.\nB. Wrapper reports a killed child."},{createdAt:"2026-11-11T15:48:14Z",body:"Supervisor ruling (head): recut into two fresh slices.\nA. Open WebUI memory on long chats.\nB. Wrapper reports a killed child."}]')"
+FAKE_RECUIT_RESPONSE_JSON="$(jq -cn \
+  '{domain_verified:true,refuse_reason:"",needs_production_access:false,how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[{title:"B. Wrapper reports a killed child",body_md:"Report the unexpected child exit.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]}]}')"
+run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'
+assert_eq "short plan against the latest ruling escalates cleanly" 0 "$RUN_STATUS"
+assert_contains "short plan names missing slice A" "$INBOX_CONTENT" "missing slices: A"
+assert_eq "short plan enters supervisor hold" supervisor \
+  "$(jq -r '.hold.holder // empty' <<< "$STATE_CONTENT")"
+assert_not_contains "short plan creates no child issue" "$GH_LOG_CONTENT" "gh issue create"
+assert_eq "short plan does not record a completed recut" false \
+  "$(jq 'has("recut_children")' <<< "$STATE_CONTENT")"
+
+FAKE_RECUIT_RESPONSE_JSON="$(jq -cn \
+  '{domain_verified:true,refuse_reason:"",needs_production_access:false,how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[{title:"A. Open WebUI memory on long chats",body_md:"Measure and remove repeated history work.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]},{title:"B. Wrapper reports a killed child",body_md:"Report the unexpected child exit.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]}]}')"
+run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'
+assert_eq "complete lettered plan exits successfully" 0 "$RUN_STATUS"
+assert_eq "complete lettered plan creates both children" 2 \
+  "$(grep -c '^gh issue create ' <<< "$GH_LOG_CONTENT" || true)"
+assert_eq "complete lettered plan records both children" 2 \
+  "$(jq '.recut_children | length' <<< "$STATE_CONTENT")"
+assert_eq "complete lettered plan does not escalate" false \
+  "$(jq 'has("hold") and .hold != null' <<< "$STATE_CONTENT")"
+FAKE_RECUIT_RESPONSE_JSON=''
+HAND_TEST_COMMENTS='[]'
+unset ROADMAP_ISSUE_CREATE_INNER
+unset MODEL_POLICY_FILE
 
 if [ "$FAILED" -eq 1 ]; then
   echo "FAILED"

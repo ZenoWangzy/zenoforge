@@ -178,6 +178,47 @@ VERDICT
   exit 0
 }
 
+recut_slice_letters() {
+  python3 -c '
+import re
+import sys
+
+letters = set()
+for line in sys.stdin:
+    match = re.match(r"^\s*([A-Za-z])[.)](?:\s|$)", line)
+    if match:
+        letters.add(match.group(1).upper())
+    letters.update(letter.upper() for letter in re.findall(r"\bslice\s+([A-Za-z])\b", line, re.I))
+print("\n".join(sorted(letters)))
+'
+}
+
+escalate_partial_recut() {
+  local reason="$1" planned_children="$2" missing_slices="$3"
+  local reason_file reason_json detail
+  detail="reason=$reason; planned children=$planned_children; children created=none"
+  [ -z "$missing_slices" ] || detail="$detail; missing slices: $missing_slices"
+  detail="$(printf '%s' "$detail" | tr '\r\n\t' '   ' | cut -c1-1800)"
+  echo "run-recut: #$N -- escalating partial recut to supervisor: $detail" >&2
+  if [ "$DRY_RUN" = 1 ]; then
+    printf 'issue: #%s\nrefused: yes\nreason: %s\n' "$N" "$detail"
+    exit 0
+  fi
+  web_advisor_provider_clear_job_state "$N" || exit 1
+  reason_file="$(jq_arg_file "$reason")" || exit 1
+  reason_json="$(jq -cn --rawfile reason "$reason_file" '$reason')" || {
+    rm -f -- "$reason_file"
+    exit 1
+  }
+  rm -f -- "$reason_file"
+  state_merge "$N" ". + {recut_refused_at: (now | todate), recut_refused_reason: $reason_json, recut_needs_production_access: false}" || exit 1
+  hold_issue "$N" --holder supervisor --release "$detail" \
+    --expires 168h --kind recut-partial-cut || exit 1
+  supervisor_inbox_append_once "recut-partial-cut:$N" \
+    "recut-partial-cut issue=#$N $detail" || exit 1
+  exit 0
+}
+
 # --- Cheap guards, before spending a worktree or a model call ---------------
 
 is_on_hold "$N" && { echo "run-recut: #$N is on-hold, skipping" >&2; exit 0; }
@@ -353,6 +394,50 @@ DOMAIN_VERIFIED="$(echo "$RESULT" | jq -r '.domain_verified')"
 REFUSE_REASON="$(echo "$RESULT" | jq -r '.refuse_reason' | scrub_git_object_ids | scrub_closing_keywords)"
 NEEDS_PRODUCTION_ACCESS="$(echo "$RESULT" | jq -r '.needs_production_access == true')"
 CHILD_COUNT="$(echo "$RESULT" | jq '.children | length')"
+RECUT_STATE_REFUSAL_REASON="$(jq -r '.recut_refused_reason // empty' <<< "$PARENT_STATE")"
+RECUT_LATEST_SUPERVISOR_RULING="$(jq -r '
+  [.comments[]? | select((.body // "") | test("(?im)^\\s*Supervisor ruling"))]
+  | sort_by(.createdAt // "")
+  | last
+  | .body // ""
+' <<< "$ISSUE_JSON")"
+RECUT_REQUIRED_SLICE_LETTERS="$(printf '%s\n' "$RECUT_LATEST_SUPERVISOR_RULING" | recut_slice_letters)"
+RECUT_REQUIRED_SLICE_COUNT="$(awk 'NF { count++ } END { print count + 0 }' <<< "$RECUT_REQUIRED_SLICE_LETTERS")"
+RECUT_PLANNED_SLICE_LETTERS="$(jq -r '.children[]?.title // empty' <<< "$RESULT" | recut_slice_letters)"
+RECUT_MISSING_SLICE_LETTERS=""
+while IFS= read -r letter; do
+  [ -n "$letter" ] || continue
+  if ! grep -Fqx -- "$letter" <<< "$RECUT_PLANNED_SLICE_LETTERS"; then
+    RECUT_MISSING_SLICE_LETTERS="${RECUT_MISSING_SLICE_LETTERS:+$RECUT_MISSING_SLICE_LETTERS,}$letter"
+  fi
+done <<< "$RECUT_REQUIRED_SLICE_LETTERS"
+if [ "$CHILD_COUNT" -lt "$RECUT_REQUIRED_SLICE_COUNT" ] \
+  && [ -z "$RECUT_MISSING_SLICE_LETTERS" ]; then
+  RECUT_MISSING_SLICE_LETTERS="$(printf '%s\n' "$RECUT_REQUIRED_SLICE_LETTERS" \
+    | tail -n "$((RECUT_REQUIRED_SLICE_COUNT - CHILD_COUNT))" | paste -sd, -)"
+fi
+RECUT_PARTIAL_REFUSAL_REASON=""
+if [ -n "$REFUSE_REASON" ]; then
+  RECUT_PARTIAL_REFUSAL_REASON="model refusal: $REFUSE_REASON"
+fi
+if [ -n "$RECUT_STATE_REFUSAL_REASON" ]; then
+  RECUT_PARTIAL_REFUSAL_REASON="${RECUT_PARTIAL_REFUSAL_REASON:+$RECUT_PARTIAL_REFUSAL_REASON; }stored recut refusal: $RECUT_STATE_REFUSAL_REASON"
+fi
+RECUT_SLICE_SHORTFALL_REASON=""
+if [ "$CHILD_COUNT" -lt "$RECUT_REQUIRED_SLICE_COUNT" ]; then
+  RECUT_SLICE_SHORTFALL_REASON="latest supervisor ruling named slices $RECUT_REQUIRED_SLICE_LETTERS; the model planned $CHILD_COUNT child(ren); missing slices: $RECUT_MISSING_SLICE_LETTERS"
+fi
+if { [ "$CHILD_COUNT" -gt 0 ] && [ -n "$RECUT_PARTIAL_REFUSAL_REASON" ]; } \
+  || [ -n "$RECUT_SLICE_SHORTFALL_REASON" ]; then
+  RECUT_ESCALATION_REASON="$RECUT_PARTIAL_REFUSAL_REASON"
+  if [ -n "$RECUT_SLICE_SHORTFALL_REASON" ]; then
+    RECUT_ESCALATION_REASON="${RECUT_ESCALATION_REASON:+$RECUT_ESCALATION_REASON; }$RECUT_SLICE_SHORTFALL_REASON"
+  fi
+  RECUT_PLANNED_CHILDREN="$(jq -r '[.children[]?.title // empty] | join("; ")' <<< "$RESULT" \
+    | scrub_git_object_ids | scrub_closing_keywords | tr '\r\n\t' '   ' | cut -c1-800)"
+  [ -n "$RECUT_PLANNED_CHILDREN" ] || RECUT_PLANNED_CHILDREN=none
+  escalate_partial_recut "$RECUT_ESCALATION_REASON" "$RECUT_PLANNED_CHILDREN" "$RECUT_MISSING_SLICE_LETTERS"
+fi
 
 RECUT_BASELINE="refuse"
 if [ "$DOMAIN_VERIFIED" = "true" ] && [ "$NEEDS_PRODUCTION_ACCESS" = "false" ] && [ "$CHILD_COUNT" -gt 0 ]; then
