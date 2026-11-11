@@ -52,6 +52,10 @@ printf 'ok - rule_entry reroute releases a blocker; requeue moves supervisor-rev
 rc=0; hold_cli_main --rule issue-5 --reroute --comment 7 2>/dev/null || rc=$?
 [ "$rc" != 64 ] || { echo "FAIL: hold.sh rejects --reroute" >&2; exit 1; }
 printf 'ok - hold.sh --rule accepts --reroute\n'
+# --rule usage tells supervisors which wording the unchanged-head report-only harvest recognizes.
+rc=0; bash "$SCRIPT_DIR/hold.sh" --rule >"$test_env_root/hold-rule-usage.out" 2>&1 || rc=$?
+[ "$rc" = 64 ] && grep -Fq 'report only' "$test_env_root/hold-rule-usage.out" || { echo "FAIL: hold.sh --rule usage omits report-only requeue wording" >&2; exit 1; }
+printf 'ok - hold.sh --rule usage names report-only requeue wording\n'
 # A reroute drops the cleared blocker: the body reader does not re-derive it until a reblock names it again.
 (
   export AUTOPI_TEST_LIBRARY_ONLY=true MAC_AUTOPILOT_ROOT="$test_env_root/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/sup" MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/sup/autopi"
