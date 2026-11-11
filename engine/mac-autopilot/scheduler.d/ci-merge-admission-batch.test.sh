@@ -311,10 +311,10 @@ case "${1:-all}" in
     run_ci_batch_case
     run_ci_zero_slot_case
     run_merge_empty_case
-    run_stuck_unqueued_case
-    echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls; stuck unqueued CI retriggers once per head)'
     run_ci_facts_case
     echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls; Dagger failures produce bounded facts)'
+    run_stuck_unqueued_case
+    echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls; stuck unqueued CI retriggers once per head)'
     ;;
   *) fail "unknown test mode: $1" ;;
 esac
