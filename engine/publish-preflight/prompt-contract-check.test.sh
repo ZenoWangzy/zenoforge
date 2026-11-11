@@ -33,7 +33,7 @@ for index, match in enumerate(starts):
     body = source[match.end():end]
     required.update(re.findall(r'\^##[ \t]+([a-z0-9-]+)', body))
 tokens = set(contract['prompts']['implement-contract.md'].get('tokens', []))
-missing = sorted(required - tokens)
+missing = sorted('## ' + name for name in required if '## ' + name not in tokens)
 if missing:
     sys.exit(f'gate-required sections missing from implement-contract.md tokens: {missing}')
 E
@@ -68,6 +68,12 @@ restore advisor-batch.md; commit restored
 sed -i 's/OBSOLETE/RETIRED/g' "$prompts/implement-contract.md"; commit obsolete-renamed
 rc=0; out=$(run 2>&1) || rc=$?
 [[ $rc == 1 ]] && grep -q 'implement-contract.md never names OBSOLETE' <<<"$out" || fail "a fork that renamed the OBSOLETE first line passed: $out"
+restore implement-contract.md; commit restored
+
+# A fork that mentions "how" in prose still has to request the ## how section.
+sed -i 's/## how/how/g' "$prompts/implement-contract.md"; commit bare-how
+rc=0; out=$(run 2>&1) || rc=$?
+[[ $rc == 1 ]] && grep -q 'implement-contract.md never names ## how' <<<"$out" || fail "a fork with prose but no ## how section passed: $out"
 restore implement-contract.md; commit restored
 
 python3 -I - "$prompts/triage.schema.json" <<'E'

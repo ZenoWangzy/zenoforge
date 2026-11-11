@@ -7,7 +7,7 @@
     "supervisor-arbiter.md": {"tokens": ["ACTION", "REASON", "GUIDANCE", "QUESTION", "REJECTED"]},
     "review-contract.md": {"tokens": ["VERDICT", "READY", "NOT_READY", "INPUT_INCOMPLETE", "BLOCKED-ON", "review-findings", "decision_log_flags"]},
     "guarded-recut-hand.md": {"tokens": ["STATUS", "BLOCKED-ON"]},
-    "implement-contract.md": {"tokens": ["OBSOLETE", "decision-log", "how", "prior-art", "recurrence-guard", "root-cause", "why"]}
+    "implement-contract.md": {"tokens": ["OBSOLETE", "## decision-log", "## how", "## prior-art", "## recurrence-guard", "## root-cause", "## why"]}
   },
   "schemas": {
     "advisor.schema.json": {"aliases": {"maintainer": "founder"}},
