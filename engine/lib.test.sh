@@ -6701,13 +6701,13 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
         printf "api %s\n" "$2" >> "$NATIVE_PARENT_LOG"
         number="${2#repos/test/repo/issues/}"
         number="${number%%/*}"
-        child_labels='[]'
+        child_labels="[]"
         case "$number" in
           991210) child=991211; child_state=open; closed_at=null ;;
           991212) child=991213; child_state=open; closed_at=null ;;
           991214) child=991215; child_state=open; closed_at=null ;;
           991218) child=991219; child_state=open; closed_at=null ;;
-          991220) printf '[]\n'; return 0 ;;
+          991220) printf "%s\n" "[]"; return 0 ;;
           991216)
             child=991217
             child_state="${NATIVE_CHILD_STATE:-closed}"
@@ -6719,7 +6719,7 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
         printf "[{\"number\":%s,\"state\":\"%s\",\"closed_at\":%s,\"labels\":%s}]\n" \
           "$child" "$child_state" "$closed_at" "$child_labels"
       elif [ "${1:-} ${2:-}" = "issue view" ]; then
-        printf '{"body":"","comments":[]}\n'
+        printf "%s\n" "{\"body\":\"\",\"comments\":[]}"
       elif [ "${1:-} ${2:-}" = "issue edit" ] || [ "${1:-} ${2:-}" = "issue close" ]; then
         printf "%s\n" "$*" >> "$NATIVE_PARENT_LOG"
       elif [ "${1:-} ${2:-}" = "issue list" ]; then
