@@ -687,6 +687,26 @@ ROUTE_RC=0 CLOSE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triag
 ROUTE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
 [[ "$(cat "$route_calls")" == 'close ' && "$(field pr-651 .stage)" == closed ]] || fail "the retry must skip the route and close: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
 
+: > "$route_calls"
+rm -f "$route_done"
+RECUT_RETRY_ISSUE_STATE='{"state":"needs-recut","recut_children":[652]}'
+printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",recut_routed:true,history:[]}]}')" > "$UNITS"
+(
+  scheduler_issue_state() { printf '%s\n' "$RECUT_RETRY_ISSUE_STATE"; }
+  ROUTE_RC=1 CLOSE_RC=0 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
+)
+[[ "$(cat "$route_calls")" == 'close ' && "$(field pr-651 .stage)" == closed ]] || fail "a retry after this route created recut children must close without parking: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
+
+: > "$route_calls"
+rm -f "$route_done"
+RECUT_RETRY_ISSUE_STATE='{"state":"ready-for-agent"}'
+printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",recut_routed:true,history:[]}]}')" > "$UNITS"
+(
+  scheduler_issue_state() { printf '%s\n' "$RECUT_RETRY_ISSUE_STATE"; }
+  ROUTE_RC=1 CLOSE_RC=0 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
+)
+[[ "$(cat "$route_calls")" == 'route ' && "$(field pr-651 .stage)" == parked ]] || fail "a retry without recut children must retry the route and keep the PR open on failure: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
+
 # ---- 终身仲裁上限（supervisor_arbiter.unit_cap，默认 4）：触顶不派模型，调度器当拍自己给默认决定 ----
 # 上限按整份历史数 supervisor-arbiter 事件（忽略 supervisor-arbiter-round 轮标记），先于两轮预算与
 # 每日天花板；已给过默认决定（历史有 supervisor-cap-default）的单元不再来第二次。
