@@ -73,10 +73,12 @@ recut_parent_children_json() {
   local n="$1" state="${2:-}" allow_comment_fallback="${3:-1}" issue_json marker_text native_json children_json requeued_at last_child_closed_at
   [ -n "$state" ] || state="$(state_read "$n")" || return 2
   if jq -e 'type == "object" and has("recut_children")' <<< "$state" >/dev/null 2>&1; then
-    jq -e '(.recut_children | type) == "array" and length > 0 and all(.recut_children[]; type == "number" and . > 0 and . == floor)' \
+    jq -e '(.recut_children | type) == "array" and all(.recut_children[]; type == "number" and . > 0 and . == floor)' \
       <<< "$state" >/dev/null 2>&1 || return 2
-    jq -c '.recut_children | unique' <<< "$state"
-    return 0
+    if jq -e '.recut_children | length > 0' <<< "$state" >/dev/null; then
+      jq -c '.recut_children | unique' <<< "$state"
+      return 0
+    fi
   fi
   native_parent_subissues_json "$n" >/dev/null || return 2
   native_json="${NATIVE_PARENT_SUBISSUES_CACHE[$n]}"

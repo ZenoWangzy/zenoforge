@@ -123,12 +123,18 @@ review_conflict_to_repair() { # id pr head
 # 不读 PR 正文。无 issue 的单元（外部 PR，关闭词由 GitHub 在合并时自动关票）无事可写。
 # 写失败不回滚合入（PR 已在 main 上），告警到 alerts/merge.md 人工补 conclude_merged_run。
 merge_lane_awaiting_release() { # ready-unit-json pr
-  local issue
+  local issue before_state="" after_state=""
   issue="$(jqf -r '.issue // empty' <<<"$1")"
   [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 0
+  before_state="$(scheduler_issue_state "$issue" 2>/dev/null | jqf -r '.state // "untracked"')" || before_state=""
   if scheduler_conclude_merged_pr "$issue" "$2" >>"$LOG" 2>&1; then
+    after_state="$(scheduler_issue_state "$issue" 2>/dev/null | jqf -r '.state // "untracked"')" || after_state=""
     set_unit "$(jqf -r .id <<<"$1")" 'del(.awaiting_release_pending) | del(.awaiting_release_tries)'
-    say "issue #$issue entered awaiting-release at merge of PR#$2"
+    if [[ "$after_state" == awaiting-release && -n "$before_state" && "$before_state" != "$after_state" ]]; then
+      say "issue #$issue entered awaiting-release at merge of PR#$2"
+    else
+      say "issue #$issue release handoff state=${after_state:-unknown} (previous=${before_state:-unknown}) after merge of PR#$2"
+    fi
   else
     echo "[$STAMP] merged PR#$2 but the awaiting-release write for issue #$issue failed; rerun conclude_merged_run #$issue $2" >> "$A/alerts/merge.md"
     say "awaiting-release write failed for issue #$issue after PR#$2 merge"

@@ -395,16 +395,25 @@ issue_intake_parent_reason() { # issue number, fetched issue JSON -> reason; 1=l
 }
 
 
-# A ticket that left the tracker state with no child left is not a parent, and a
-# flag it still carries must not refuse its way back to work. Any read that does
-# not prove a leaf keeps the refusal.
+# A tracker label or flag is stale only when its recorded and live children are
+# both verified closed or absent. Any read that does not prove a leaf keeps it.
 tracker_parent_flag_is_stale() { # issue number, state JSON
-  local n="$1" state_json="$2" json rc=0
-  jq -e '.tracker_parent == true and .state != "tracker" and ((.recut_children // []) | length) == 0' \
-    <<< "$state_json" >/dev/null 2>&1 || return 1
-  json="$(gh issue view "$n" --repo "$REPO" --json title,body,subIssuesSummary 2>/dev/null)" || return 1
-  issue_intake_parent_reason "$n" "$json" >/dev/null || rc=$?
-  [ "$rc" = 1 ] || return 1
+  local n="$1" state_json="$2" children child_status sub_issues
+  jq -e '.tracker_parent == true or .state == "tracker"' <<< "$state_json" >/dev/null 2>&1 || return 1
+  children="$(jq -ce '(.recut_children // []) as $children
+    | if ($children | type) == "array" and all($children[]; type == "number" and . > 0 and . == floor)
+      then $children else error("invalid recut children") end' <<< "$state_json")" || return 1
+  if jq -e 'length > 0' <<< "$children" >/dev/null; then
+    if recut_parent_has_open_child "$n" "${OPEN_ISSUE_BLOCKER_GRAPH_JSON:-[]}" "$state_json" 0; then
+      return 1
+    else
+      child_status=$?
+    fi
+    [ "$child_status" = 3 ] || return 1
+  fi
+  sub_issues="$(native_parent_subissues_json "$n")" || return 1
+  jq -e 'type == "array" and (any(.[]; (.state | ascii_downcase) == "open") | not)' \
+    <<< "$sub_issues" >/dev/null 2>&1 || return 1
   echo "issue_transition: cleared stale tracker_parent on #$n" >&2
 }
 

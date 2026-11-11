@@ -36,6 +36,8 @@ printf 'gh %s\n' "$*" >> "${ZF_GH_LOG:?}"
 if [ "${1:-}" = issue ] && [ "${2:-}" = view ]; then
   case "$*" in
     *"--json comments"*) cat "${ZF_GH_LIVE_LABELS:?}/${3}.comments" 2>/dev/null || printf '{"comments":[]}\n'; exit 0 ;;
+    *"--json state"*) cat "${ZF_GH_LIVE_LABELS:?}/${3}.state" 2>/dev/null || printf 'CLOSED\n'; exit 0 ;;
+    *"--json title,body,subIssuesSummary"*) cat "${ZF_GH_LIVE_LABELS:?}/${3}.parent" 2>/dev/null || printf '{"title":"fixture leaf","body":"","subIssuesSummary":{"total":0,"completed":0}}\n'; exit 0 ;;
   esac
   cat "${ZF_GH_LIVE_LABELS:?}/${3}.labels" 2>/dev/null || true
   exit 0
@@ -198,5 +200,64 @@ bash "$CLI" 5323 needs-triage supervisor-batch >/dev/null 2>"$err" || refuse_rc=
 [ "$refuse_rc" -ne 0 ] || fail 'a live-held issue was moved'
 rm -f "$LIVE_LABELS_DIR/stale-on-hold"
 echo 'ok - a lagging on-hold snapshot does not refuse a live-unheld issue'
+
+# A state=tracker leaf can return to triage or dispatch, and a merged leaf can
+# enter release state. The same transition guard keeps a tracker with an open
+# recut child out of active lanes.
+for issue in 5330 5331 5332 5334; do
+  live_labels "$issue" tracker
+  seed_state "$issue" '{"state":"tracker","tracker_parent":true,"recut_children":[]}'
+done
+: > "$GH_LOG"
+if ! out="$(bash "$CLI" 5330 needs-triage supervisor-batch 2>"$err")"; then
+  cat "$err" >&2
+  fail 'childless tracker could not return to needs-triage'
+fi
+[ "$out" = 'transition #5330 tracker -> needs-triage (reason=supervisor-batch)' ] \
+  || fail "unexpected childless tracker triage line: $out"
+[ "$(jq -r '.state' "$AGENT_HOME/state/5330.json")" = needs-triage ] \
+  || fail 'childless tracker did not leave tracker for needs-triage'
+[ "$(jq -r '.tracker_parent // false' "$AGENT_HOME/state/5330.json")" = false ] \
+  || fail 'childless tracker kept its parent flag after triage transition'
+grep -Fq -- '--remove-label tracker' "$GH_LOG" || fail 'triage transition did not remove the tracker label'
+
+: > "$GH_LOG"
+seed_state 5331 '{"state":"tracker","tracker_parent":true,"recut_children":[],"run":{"outcome":"merged"},"deploy_state":"pending"}'
+if ! out="$(bash "$CLI" 5331 awaiting-release merged-pr 2>"$err")"; then
+  cat "$err" >&2
+  fail 'childless tracker could not enter awaiting-release'
+fi
+[ "$out" = 'transition #5331 tracker -> awaiting-release (reason=merged-pr)' ] \
+  || fail "unexpected childless tracker release line: $out"
+[ "$(jq -r '.state' "$AGENT_HOME/state/5331.json")" = awaiting-release ] \
+  || fail 'childless tracker did not enter awaiting-release'
+[ "$(jq -r '.tracker_parent // false' "$AGENT_HOME/state/5331.json")" = false ] \
+  || fail 'childless tracker kept its parent flag after release transition'
+grep -Fq -- '--remove-label tracker' "$GH_LOG" || fail 'release transition did not remove the tracker label'
+grep -Fq -- '--add-label awaiting-release' "$GH_LOG" || fail 'release transition did not add the awaiting-release label'
+
+: > "$GH_LOG"
+if ! out="$(bash "$CLI" 5332 ready-for-agent pipeline-requeue 2>"$err")"; then
+  cat "$err" >&2
+  fail 'childless tracker could not return to ready-for-agent for a new unit'
+fi
+[ "$(jq -r '.state' "$AGENT_HOME/state/5332.json")" = ready-for-agent ] \
+  || fail 'new unit dispatch left childless issue in tracker'
+[ "$(jq -r '.tracker_parent // false' "$AGENT_HOME/state/5332.json")" = false ] \
+  || fail 'new unit dispatch kept the tracker parent flag'
+grep -Fq -- '--remove-label tracker' "$GH_LOG" || fail 'new unit dispatch did not remove the tracker label'
+
+seed_state 5334 '{"state":"tracker","tracker_parent":true,"recut_children":[5335]}'
+printf 'OPEN\n' > "$LIVE_LABELS_DIR/5335.state"
+: > "$GH_LOG"
+refuse_rc=0
+bash "$CLI" 5334 needs-triage supervisor-batch >/dev/null 2>"$err" || refuse_rc=$?
+[ "$refuse_rc" -ne 0 ] || fail 'tracker with an open recut child left tracker'
+grep -Fq 'issue_transition: refused tracker parent #5334 -> active state needs-triage' "$err" \
+  || fail "open-child tracker refusal line missing: $(cat "$err")"
+[ "$(jq -r '.state' "$AGENT_HOME/state/5334.json")" = tracker ] \
+  || fail 'open-child tracker state changed after refusal'
+[ "$(edit_count 5334)" -eq 0 ] || fail 'open-child tracker refusal wrote labels'
+echo 'ok - childless trackers return to work or release, while a tracker with an open child stays parked'
 
 echo 'ok - all zf-issue-transition checks passed'
