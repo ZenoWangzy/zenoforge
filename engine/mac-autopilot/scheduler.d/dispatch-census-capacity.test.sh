@@ -198,6 +198,53 @@ dispatch_pending true
 [[ "$(dispatch_skip_summary)" == *footprint-cap:1* ]] || fail "the cap was not counted: $(dispatch_skip_summary)"
 CFG="$saved_cfg"
 
+# Active footprint waiters do not spend the refill cap ahead of a free unit.
+(
+  jq -n '{units:[
+    {id:"issue-4899",issue:4899,stage:"implement",branch:"agent/issue-4899",lane:"pr",footprint:["src/shared"]},
+    {id:"issue-4900",issue:4900,stage:"implement-pending",task:"fixture task",branch:"agent/issue-4900",lane:"pr",footprint_wait_owner:"issue-4899",footprint_wait_since:"2026-11-11T18:00:00Z",history:[]},
+    {id:"issue-4901",issue:4901,stage:"implement-pending",task:"fixture task",branch:"agent/issue-4901",lane:"pr",footprint_wait_owner:"issue-4899",footprint_wait_since:"2026-11-11T18:00:00Z",history:[]},
+    {id:"issue-4902",issue:4902,stage:"implement-pending",task:"fixture task",branch:"agent/issue-4902",lane:"pr",footprint_wait_owner:"issue-4899",footprint_wait_since:"2026-11-11T18:00:00Z",history:[]},
+    {id:"issue-4903",issue:4903,stage:"implement-pending",task:"fixture task",branch:"agent/issue-4903",lane:"pr",history:[]}]}' > "$UNITS"
+  jq -n '{workers:[{pid:100001,unit:"issue-4899",type:"implement"},
+    {pid:100002,unit:"busy-1",type:"implement"},{pid:100003,unit:"busy-2",type:"implement"},{pid:100004,unit:"busy-3",type:"implement"}]}' > "$WORKERS"
+  LIVE_WORKER_CACHE_UNTIL=0; TICK_LOCAL_REFILL=true; TICK_PRS=''
+  CFG="$(jq -c '.issue_intake.refill_max_footprint_candidates = 2' <<<"$CFG")"
+  SIZE_ADMISSION_LINES=100; INTEGRATION_RULE=''; OPT_PREMISE_RULE=''; BLAST_RADIUS_RULE=''
+  dispatch_order() { jqf -c '.units[] | select(.stage | test("-pending$"))' "$UNITS"; }
+  room_for() { return 0; }
+  park_if_body_blocked() { return 1; }
+  pick() { PICK_MODEL=fixture; PICK_EFFORT=high; PICK_PROVIDER=fixture; PICK_HARD=false; PICK_REASON=fixture; PICK_ROUTE_PROVIDER=fixture; }
+  ensure_clone() { printf '%s\n' "$fixture/repo"; }
+  resume_handoff_integration() { return 0; }
+  matt_method_rule() { :; }; decision_scope() { :; }; feature_verification_prompt() { :; }
+  verification_plan_for_state() { printf '{}'; }; verification_plan_brief() { :; }
+  implement_report_sections() { printf 'fixture'; }; direct_main_worker_prompt() { printf '%s' "$1"; }
+  footprint_checked=(); dispatches=()
+  _footprint_room() { footprint_checked+=("$1"); [[ "$1" == issue-4903 ]]; }
+  dispatch_if_room() { dispatches+=("$1"); return 0; }
+  : > "$LOG"; SECONDS=0
+  dispatch_pending true
+  [[ "${dispatches[*]}" == issue-4903 ]] || fail "the free unit did not dispatch past active waiters: [${dispatches[*]}]"
+  [[ "${footprint_checked[*]}" == issue-4903 ]] || fail "active waiters reached _footprint_room: [${footprint_checked[*]}]"
+)
+
+# A stale owner follows the ordinary footprint path and clears its wait markers after admission.
+(
+  jq -n '{units:[{id:"released-owner",stage:"rereview"},
+    {id:"stale-waiter",stage:"implement-pending",footprint_wait_owner:"released-owner",footprint_wait_since:"2026-11-11T18:00:00Z",history:[]}]}' > "$UNITS"
+  printf '%s\n' '{"workers":[]}' > "$WORKERS"
+  TICK_FOOTPRINT_CAP=2; TICK_FOOTPRINT_CAP_SEEN=0; TICK_FOOTPRINT_CAP_LAST=''; TICK_FOOTPRINT_CAP_HIT=false
+  TICK_FOOTPRINT_DEFER=true; TICK_FOOTPRINT_PREFLIGHT_STATUS=ready; TICK_DISPATCH_SKIPS=()
+  footprint_checked=0
+  _footprint_room() { footprint_checked=$((footprint_checked + 1)); return 0; }
+  unit="$(jqf -c '.units[] | select(.id=="stale-waiter")' "$UNITS")"
+  footprint_room stale-waiter "$unit" false || fail 'stale owner should follow the normal footprint path'
+  [[ "$footprint_checked" == 1 ]] || fail 'stale owner was not checked by _footprint_room'
+  jqf -e '.units[] | select(.id=="stale-waiter") | (has("footprint_wait_owner") or has("footprint_wait_since")) | not' "$UNITS" >/dev/null \
+    || fail 'stale owner wait markers were not cleared after admission'
+)
+
 # A stop-loss that repeats an earlier round's failure is decided by the cap-default route, not sent to the arbiter (row 93: row 90 saw 0 of 4 requeues deliver).
 # Hash and number noise must not hide the repeat; a fresh failure and a unit already given a cap default still go to the supervisor.
 scheduler_issue_state() { printf '{"state":"in-progress"}\n'; }

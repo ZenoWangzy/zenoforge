@@ -664,8 +664,11 @@ _footprint_room() {
   footprint_shadow_old_rule "$id" "$active"
 }
 footprint_room() { # unit type; report checks that materially delay dispatch
-  local started=$SECONDS rc=0 elapsed room_start="${EPOCHREALTIME:-0}" room_end why_unit="$1"
-  FOOTPRINT_CACHE_STATE=''
+  local started=$SECONDS rc=0 elapsed room_start="${EPOCHREALTIME:-0}" room_end wait_owner why_unit="$1"
+  FOOTPRINT_CACHE_STATE=''; wait_owner="$(jqf -r '.footprint_wait_owner // empty' <<<"${2:-null}")"
+  if [[ -n "${TICK_FOOTPRINT_CAP:-}" && "${TICK_FOOTPRINT_DEFER:-false}" == true && -n "$wait_owner" ]] \
+    && footprint_wait_owner_active "$wait_owner"; then
+    dispatch_why "$1" footprint-wait; return 1; fi
   # Repair reaches this twice (room_for, then the handler); the walk is sequential, so one unit is one candidate.
   if [[ -n "${TICK_FOOTPRINT_CAP:-}" && "${TICK_FOOTPRINT_DEFER:-false}" == true && "$1" != "$TICK_FOOTPRINT_CAP_LAST" ]]; then
     TICK_FOOTPRINT_CAP_LAST="$1"
