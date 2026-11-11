@@ -27,8 +27,7 @@ source = open(sys.argv[2], encoding='utf-8').read()
 starts = list(re.finditer(r'(?m)^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{', source))
 required = set()
 for index, match in enumerate(starts):
-    # Incident-only sections come from the injected INCIDENT_RULE, outside the shared prompt contract.
-    if not match.group(1).endswith('_gate_reason') or match.group(1) == 'incident_report_gate_reason':
+    if not match.group(1).endswith('_gate_reason'):
         continue
     end = starts[index + 1].start() if index + 1 < len(starts) else len(source)
     body = source[match.end():end]
