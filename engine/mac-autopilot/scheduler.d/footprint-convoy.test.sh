@@ -156,15 +156,12 @@ write_units --argjson scope "$candidate_scope" '{units:[
   {id:"hot-candidate",stage:"implement-pending",footprint:$scope},
   {id:"cold-candidate",stage:"implement-pending",footprint:$scope}]}'
 : > "$LOG"
-if declare -F footprint_hot_conflict_paths_load >/dev/null; then
-  TICK_FOOTPRINT_HOT_CONFLICT_PATHS='[]'
-  TICK_FOOTPRINT_HOT_CONFLICT_PATHS_LOADED=false
-  footprint_hot_conflict_paths_load || fail 'hot conflict paths did not load'
-  [[ "$TICK_FOOTPRINT_HOT_CONFLICT_PATHS" == '["packages/fixture/src/hot.ts"]' ]] || fail "three events did not select only the hot path: $TICK_FOOTPRINT_HOT_CONFLICT_PATHS"
-else
-  # On origin/main the hot matcher is absent; seed its input so the ordering assertion fails for the behavior.
-  TICK_FOOTPRINT_HOT_CONFLICT_PATHS='["packages/fixture/src/hot.ts"]'
-fi
+TICK_FOOTPRINT_HOT_CONFLICT_PATHS='[]'
+TICK_FOOTPRINT_HOT_CONFLICT_PATHS_LOADED=false
+TICK_FOOTPRINT_PREFLIGHT_STATUS=ready; TICK_FOOTPRINT_CONFLICT_VALID=true
+footprint_preflight_snapshot || fail 'hot conflict paths did not load through preflight'
+[[ "$TICK_FOOTPRINT_HOT_CONFLICT_PATHS_LOADED" == true ]] || fail 'per-tick footprint preflight did not load hot conflict paths'
+[[ "$TICK_FOOTPRINT_HOT_CONFLICT_PATHS" == '["packages/fixture/src/hot.ts"]' ]] || fail "three events did not select only the hot path: $TICK_FOOTPRINT_HOT_CONFLICT_PATHS"
 hot_owner='[{"id":"hot-owner","stage":"implement","footprint":["packages/fixture/src/hot.ts","packages/fixture/owner-marker.ts"]}]'
 hot_rows=$'hot-candidate\t'"$candidate_scope"$'\t'"$candidate_scope"
 hot_conflict="$(active_footprint_conflicts_batch "$hot_owner" "$hot_rows")"

@@ -410,6 +410,7 @@ footprint_expand_rows() { # rows [{id,scope,head}], fresh -> TICK_CHECK_SCOPE/OL
   return 0
 }
 footprint_preflight_snapshot() {
+  footprint_hot_conflict_paths_load || return 1
   if [[ "$TICK_FOOTPRINT_PREFLIGHT_STATUS" == ready ]]; then
     [[ "$TICK_FOOTPRINT_CONFLICT_VALID" == true ]] && return 0
     footprint_refresh_conflicts true || return 1

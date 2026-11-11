@@ -69,7 +69,6 @@ dispatch_why_save() { # prunes units that left units.json; rewrites the file onl
 }
 
 dispatch_pending() {
-  footprint_hot_conflict_paths_load || return 1
   TICK_DISPATCH_SKIPS=()
   TICK_PRIORITY_HOLD_EXPIRED=()
   TICK_PRIORITY_ADMISSION_CACHE=()
