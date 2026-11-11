@@ -6744,6 +6744,7 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
       "$(state_read 991212 | jq -r .state)" "$(state_attempts 991212)" \
       "$(state_read 991212 | jq -r ".native_subissue_parent // false")"
 
+    NATIVE_PARENT_SUBISSUES_CACHE[991220]="[]"
     printf "%s\n" "{\"state\":\"tracker\",\"tracker_parent\":true,\"recut_children\":[]}" > "$STATE_DIR/991220.json"
     state_requeue 991220 "" pipeline-requeue
     printf "tracker-requeue=%s parent=%s\n" \
@@ -6787,7 +6788,7 @@ assert_contains "advisor guarded admission does not write ready-for-agent" \
   "$NATIVE_PARENT_OUTPUT" 'guarded-admission-writes=0'
 assert_contains "tracked native parent closes after its released children are closed" \
   "$NATIVE_PARENT_OUTPUT" 'sweep-closed=1 marker=false'
-assert_eq "native parent status and closure use one sub-issue read per tick" 6 \
+assert_eq "native parent status and closure use one sub-issue read per tick" 5 \
   "$(grep -c '^api repos/test/repo/issues/' "$NATIVE_PARENT_LOG" | tr -d ' ')"
 rm -rf -- "$NATIVE_PARENT_HOME"
 HOME="$PIPELINE_TEST_HOME"
