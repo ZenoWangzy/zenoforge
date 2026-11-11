@@ -256,7 +256,7 @@ jq -c --arg id "$stale_unit" --argjson issue "$stale_issue" '.units += [{id:$id,
 : > "$ROUTES"; : > "$PUSHES"; : > "$SAYS"; : > "$INBOX"
 dead_park_exit
 stale_ref="$(cat "$PUSHES")"
-[[ "$(stage "$stale_unit")" == closed && "$(cat "$ROUTES")" == "$stale_issue" && "$stale_ref" =~ ^refs/heads/salvage/$stale_unit-[0-9]{8}T[0-9]{6}Z$ && "$(wc -l < "$INBOX")" == 1 ]] || fail "stale remote-tracking ref skipped salvage: $(unit_json "$stale_unit") pushes=$stale_ref"
+[[ "$(stage "$stale_unit")" == closed && "$(cat "$ROUTES")" == "$stale_issue" && "$stale_ref" =~ ^refs/heads/salvage/$stale_unit-[0-9]{8}T[0-9]{6}Z$ && "$(wc -l < "$INBOX")" == 1 ]] || fail "stale remote-tracking ref skipped salvage: $(unit_json "$stale_unit") route=$(cat "$ROUTES") expected=$stale_issue inbox_lines=$(wc -l < "$INBOX") pushes=$stale_ref"
 
 # A stale local remote-tracking view that refreshes to show HEAD already on origin needs no salvage ref, then recuts.
 recovered_issue="$BASHPID"; recovered_unit="issue-$recovered_issue"; recovered_wt="$WT_ROOT/wt-$recovered_unit"
