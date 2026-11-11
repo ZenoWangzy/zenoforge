@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pins the newest zenoforge main commit as soon as main moves (rulings zenoforge-instant-effect-2026-11-05, zenoforge-batch-land-2026-11-08:
 # "Pin follows the batch at once"). Commits merged together are pinned once, at main's head: walking them one by one cost ~500 s each.
-# A failed pin waits for the next main commit, then moves on; one refused for a dirty checkout is retried once that clears. Stop by hand: touch "$ZF_AUTO_PIN_HOME/auto-pin.stop"
+# A failed pin waits for the next main commit, then moves on; dirty-checkout and changed-VectA-head refusals retry once per fix. Stop by hand: touch "$ZF_AUTO_PIN_HOME/auto-pin.stop"
 # Run a copy, not the clone's file: the loop checks out new commits in its clone (see tools/zf-auto-pin.service).
 # State and stop file live in ZF_AUTO_PIN_HOME; engine/mac-autopilot/pin-lag.sh (bell) reads auto-pin.last to alert on a stall.
 set -u
@@ -38,7 +38,7 @@ merge_override_pin() { # log -> 0 merged, 1 leave for head
 
 # One pass: fetch, pin the oldest unpinned main commit. Returns 1 only when the checkout fails (the unit restarts the daemon).
 auto_pin_pass() {
-  local last next merged log rc
+  local last next merged log rc vecta_failed_head vecta_head
   git -C "$C" fetch -q origin main || { sleep "$idle"; return 0; }
   last=$(cat "$state")
   next=$(git -C "$C" rev-list -1 --first-parent "$last..origin/main")
@@ -55,6 +55,7 @@ auto_pin_pass() {
     AGENT_HOME=$AGENT_HOME timeout 280 "$AGENT_HOME/checkout/.zenoforge/build/engine-sync.sh" --converge "$AGENT_HOME/checkout" "$AGENT_HOME" >>"$log" 2>&1 || echo "$(date -u +%H:%M:%S) CONVERGE-FAILED ${next:0:12}"  # live now, not at the next timer run
     echo "$next" > "$state"; echo "$(date -u +%H:%M:%S) PINNED ${next:0:12} committed=$merged $(git -C "$C" log -1 --format=%s "$next" | cut -c1-70)"
   else
+    vecta_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse HEAD 2>/dev/null || :)
     echo "$(date -u +%H:%M:%S) PIN-FAILED ${next:0:12} log=$log"; grep -E 'pin-vecta:|refus|add this row' "$log" | tail -4 | cut -c1-200
     # Fix forward: a failed pin must not stop the daemon, the next main commit carries the repair.
     while [[ ! -e $stop ]]; do
@@ -66,6 +67,14 @@ auto_pin_pass() {
       if grep -q 'add this row' "$log" && [[ ! -e $log.row-retried ]] \
         && grep -q "$next" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv" 2>/dev/null; then
         : > "$log.row-retried"; return 0
+      fi
+      # A moved VectA checkout may fix a refusal; retry this commit once for each new checkout head.
+      vecta_head=$(git -C "$AGENT_HOME/checkout" rev-parse HEAD 2>/dev/null || :)
+      if [[ -n $vecta_failed_head && -n $vecta_head && $vecta_head != "$vecta_failed_head" \
+        && ! -e $log.vecta-head-$vecta_head-retried ]]; then
+        : > "$log.vecta-head-$vecta_head-retried"
+        echo "$(date -u +%H:%M:%S) RETRY-VECTA-HEAD from=$vecta_failed_head to=$vecta_head commit=$next"
+        return 0
       fi
     done
     echo "$next" > "$state"
