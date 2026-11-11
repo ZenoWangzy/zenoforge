@@ -389,8 +389,8 @@ release_dependency_blocks() {
     else
       dep_states_json='{}'
     fi
-    jqf -cn --argjson epoch "$NOW_EPOCH" --slurpfile states <(printf '%s' "$dep_states_json") \
-      '{epoch:$epoch,states:$states[0]}' > "$dep_cache_file.tmp" && mv "$dep_cache_file.tmp" "$dep_cache_file"
+    sched_dep_cache_refresh_merge "$dep_cache_file" "$NOW_EPOCH" "$dep_states_json" \
+      || say "dep cache refresh failed; preserving the prior snapshot"
   fi
   intake_mark gh_batch
   dep_cache="$(jqf_optional_file "$dep_cache_file" -c 'if (.states|type)=="object" then .states else {} end' 2>/dev/null || echo '{}')"

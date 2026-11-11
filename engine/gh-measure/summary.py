@@ -17,13 +17,19 @@ def call_site(unit, command, argument):
     return unit, command, header if separator else argument
 
 
+def is_failure(row):
+    # gh exits nonzero for conditional HTTP 304 responses; those are cache hits.
+    site = call_site(row[2], row[3], row[4])
+    return str(row[5]) != "0" and (len(row) < 8 or row[7] != "304") and site[2].lower() != "if-none-match"
+
+
 def spikes(path, now=None):
     """Call sites with >=50% failures in the last hour whose prior 24 h failure rate was below 5%."""
     now = now or datetime.now().astimezone().timestamp()
     recent, prior = defaultdict(lambda: [0, 0]), defaultdict(lambda: [0, 0])
     for line in open(path, encoding="utf-8", errors="replace"):
         f = line.rstrip("\n").split("\t")
-        if len(f) != 7 or not f[5].lstrip("-").isdigit():
+        if len(f) < 7 or not f[5].lstrip("-").isdigit():
             continue
         try:
             age = now - datetime.fromisoformat(f[0].replace("Z", "+00:00")).timestamp()
@@ -35,7 +41,7 @@ def spikes(path, now=None):
         site = call_site(f[2], f[3], f[4])
         bucket[site][0] += 1
         # gh's exit code cannot distinguish a valid conditional 304 from an API failure.
-        if f[5] != "0" and site[2].lower() != "if-none-match":
+        if is_failure(f):
             bucket[site][1] += 1
     for site, (calls, bad) in sorted(recent.items()):
         p_calls, p_bad = prior[site]
@@ -48,14 +54,14 @@ def main(path, top=25):
     rows = []
     for line in open(path, encoding="utf-8", errors="replace"):
         f = line.rstrip("\n").split("\t")
-        if len(f) == 7 and f[5].lstrip("-").isdigit() and f[6].lstrip("-").isdigit():
-            rows.append((f[0], f[1], f[2], f[3], f[4], int(f[5]), int(f[6])))
+        if len(f) >= 7 and f[5].lstrip("-").isdigit() and f[6].lstrip("-").isdigit():
+            rows.append((f[0], f[1], f[2], f[3], f[4], int(f[5]), int(f[6]), f[7] if len(f) > 7 else ""))
     if not rows:
         print("no rows")
         return 1
     first, last = (datetime.fromisoformat(r.replace("Z", "+00:00")) for r in (rows[0][0], rows[-1][0]))
     hours = max((last - first).total_seconds() / 3600, 1 / 60)
-    fails = sum(1 for r in rows if r[5] != 0)
+    fails = sum(1 for r in rows if is_failure(r))
     print(f"{len(rows)} gh calls over {hours:.1f} h = {len(rows) / hours:.0f}/h; "
           f"failed {fails} ({100 * fails / len(rows):.1f}%); gh wall time {sum(r[6] for r in rows) / 3600000:.2f} h")
     for title, key in (("by unit", lambda r: r[1]), ("by call site", lambda r: call_site(r[2], r[3], r[4]))):
@@ -64,7 +70,7 @@ def main(path, top=25):
             groups[key(r)].append(r)
         print(f"\n{title}: calls/h  fail%  p50ms  total_min  key")
         for k, g in sorted(groups.items(), key=lambda kv: -len(kv[1]))[:top]:
-            bad = sum(1 for r in g if r[5] != 0)
+            bad = sum(1 for r in g if is_failure(r))
             label = k if isinstance(k, str) else " ".join(x for x in k if x)
             print(f"  {len(g) / hours:8.1f}  {100 * bad / len(g):5.1f}  {p50([r[6] for r in g]):5d}  "
                   f"{sum(r[6] for r in g) / 60000:9.1f}  {label}")

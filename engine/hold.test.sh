@@ -7,6 +7,8 @@ export ZF_REPO=test/repo
 export ZF_REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 export AGENT_DRY_RUN=0
 export ZF_WORKTREE_ROOT="$test_env_root/worktrees"
+A="$test_env_root/supervisor/autopi"
+export MAC_AUTOPILOT_RUNTIME_DIR="$A"
 jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$SCRIPT_DIR/model-policy.default.json" > "$AGENT_HOME/model-policy.json"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/night/outcomes-audit.sh"
@@ -37,7 +39,11 @@ case "$command:$subcommand" in
             rm "$FAKE_GH_ROOT/blocker-replacement-$number.json"
           fi
         fi
-        printf '[]\n' ;;
+        if [[ "$subcommand" == */dependencies/blocked_by && -n "${FAKE_OPS_BLOCKER_IDS:-}" ]]; then
+          jq -cn --arg ids "$FAKE_OPS_BLOCKER_IDS" '$ids | split(",") | map(select(length > 0) | tonumber) | map({number:.,state:"open",labels:[]})'
+        else
+          printf '[]\n'
+        fi ;;
       *) echo "unexpected fake gh API call: $subcommand $*" >&2; exit 64 ;;
     esac
     ;;
@@ -157,12 +163,12 @@ git() { return 0; }
 FAILURES=0
 LAST_STATUS=0
 reset_fixture() {
-  rm -rf -- "$FAKE_GH_ROOT" "$AGENT_HOME/state" "$AGENT_HOME/locks" "$AGENT_HOME/night" "$AGENT_HOME/logs" "$AGENT_HOME/land-queue" "$ZF_WORKTREE_ROOT"
+  rm -rf -- "$FAKE_GH_ROOT" "$AGENT_HOME/state" "$AGENT_HOME/locks" "$AGENT_HOME/night" "$AGENT_HOME/logs" "$AGENT_HOME/land-queue" "$ZF_WORKTREE_ROOT" "$A"
   rm -f -- "$AGENT_HOME/supervisor-inbox"
-  mkdir -p "$FAKE_GH_ROOT/issues" "$AGENT_HOME/state" "$AGENT_HOME/locks" "$AGENT_HOME/night" "$ZF_WORKTREE_ROOT"
+  mkdir -p "$FAKE_GH_ROOT/issues" "$AGENT_HOME/state" "$AGENT_HOME/locks" "$AGENT_HOME/night" "$ZF_WORKTREE_ROOT" "$A"
   : > "$AGENT_HOME/supervisor-inbox"
   FAKE_PR_LIST_RESPONSE='[]'
-  unset FAKE_HOLD_OPEN_PRS FAKE_HOLD_MERGED_PRS FAKE_HOLD_PR_CHECKS FAKE_HOLD_PR_CHECKS_STATUS FAKE_HOLD_ISSUE_LIST_FAILURE FAKE_HOLD_VIEW_FAILURES FAKE_GH_VIEW_FAILURES FAKE_HOLD_EDIT_FAILURE FAKE_HOLD_COMMENT_FAILURE
+  unset FAKE_HOLD_OPEN_PRS FAKE_HOLD_MERGED_PRS FAKE_HOLD_PR_CHECKS FAKE_HOLD_PR_CHECKS_STATUS FAKE_HOLD_ISSUE_LIST_FAILURE FAKE_HOLD_VIEW_FAILURES FAKE_GH_VIEW_FAILURES FAKE_HOLD_EDIT_FAILURE FAKE_HOLD_COMMENT_FAILURE FAKE_OPS_BLOCKER_IDS
   : > "$FAKE_GH_LOG"
 }
 write_issue() {
@@ -1491,11 +1497,19 @@ test_routed_ops_dispatch_respects_blockers_and_live_owner() {
   created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   write_issue 4140 '[{"name":"on-hold"}]' '[]' 'routed external task'
   write_state 4140 "$(jq -cn --arg created "$created" '{state:"on-hold",external_deliverable:{required:true,location:"host report",reason:"Write report"},hold:{holder:"supervisor",kind:"external-deliverable",created_at:$created,release_condition:"ops complete",expires_at:(now+604800|todate)}}')"
-  has_open_blocker() { OPEN_BLOCKER_IDS="${FAKE_OPS_BLOCKER_IDS:-}"; OPEN_BLOCKER_QUERY_FAILED=0; [ -n "$OPEN_BLOCKER_IDS" ]; }
+  jqf() { command jq "$@"; }
+  jqf_optional_file() {
+    local file="$1"
+    shift
+    [[ -e "$file" || -L "$file" ]] || return 64
+    jqf "$@" "$file"
+  }
   export FAKE_OPS_BLOCKER_IDS=4149
   supervisor_hold_sweep 4140
   assert_eq "native blocker preserves hold" on-hold "$(state_read 4140 | jq -r '.state')"
+  assert_eq "native blocker cache is keyed by the held issue" 4149 "$(jq -r '.blocked_by["4140"].ids | join(",")' "$A/dep-check.cache.json" 2>/dev/null || true)"
   export FAKE_OPS_BLOCKER_IDS=''
+  rm -f -- "$A/dep-check.cache.json"
   supervisor_hold_sweep 4140
   supervisor_hold_sweep 4140
   labels="$(jq -r '[.labels[].name]|join(",")' "$FAKE_GH_ROOT/issues/4140.json")"
@@ -1504,6 +1518,7 @@ test_routed_ops_dispatch_respects_blockers_and_live_owner() {
   assert_not_contains "unblocked external hold is cleared" "$labels" on-hold
   assert_contains "handoff carries external evidence requirement" "$comments" 'host report'
   assert_eq "external handoff is recorded once" 1 "$(grep -c 'vecta-scheduler-handoff issue=4140' <<< "$comments")"
+  unset -f jqf jqf_optional_file
 }
 test_scheduler_handoff_retries_failed_writes() {
   local created status failing
