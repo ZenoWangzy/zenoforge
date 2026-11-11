@@ -22,17 +22,23 @@ add_issue_blocked_by() {
 
 # add_issue_related <issue> <related> -- create a native GitHub related edge.
 add_issue_related() {
-  local issue="$1" related="$2" related_json related_id relations endpoint
+  local issue="$1" related="$2" related_json related_id relations endpoint related_state
   endpoint="repos/$REPO/issues/$issue/relates_to"
-  related_json="$(gh api "repos/$REPO/issues/$related")" || return 1
-  related_id="$(jq -er '.id | numbers | select(. > 0 and . == floor)' <<< "$related_json")" || return 1
-  relations="$(gh api --paginate --slurp "$endpoint?per_page=100")" || return 1
+  [[ "$issue" == "$related" ]] && return 0
+  TRIAGE_RELATED_FAILURE_REASON="GitHub issue lookup failed"
+  related_json="$(gh api "repos/$REPO/issues/$related" 2>/dev/null)" || return 1
+  related_id="$(jq -er '.id | numbers | select(. > 0 and . == floor)' <<< "$related_json" 2>/dev/null)" || return 1
+  related_state="$(jq -r '.state // empty' <<< "$related_json" 2>/dev/null)"
+  [[ "$related_state" == open ]] || return 0
+  TRIAGE_RELATED_FAILURE_REASON="GitHub relation lookup failed"
+  relations="$(gh api --paginate --slurp "$endpoint?per_page=100" 2>/dev/null)" || return 1
   jq -e 'type == "array"' <<< "$relations" >/dev/null 2>&1 || return 1
   if jq -e --argjson id "$related_id" --argjson number "$related" \
     'flatten | any(.[]; .id == $id or .number == $number)' <<< "$relations" >/dev/null 2>&1; then
     return 0
   fi
-  guarded_write gh api --method POST "$endpoint" -F "issue_id=$related_id"
+  TRIAGE_RELATED_FAILURE_REASON="GitHub relation write failed"
+  guarded_write gh api --method POST "$endpoint" -F "issue_id=$related_id" >/dev/null 2>&1 || return 1
 }
 
 
@@ -47,9 +53,10 @@ record_triage_related_issues() {
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
     related="$(jq -er '.issue | numbers | select(. > 0 and . == floor)' <<< "$entry")" || return 1
-    [[ "$written_ids" == *$'\n'"$related"$'\n'* ]] && continue
-    add_issue_related "$issue" "$related" || return 1
+    [[ "$related" == "$issue" || "$written_ids" == *$'\n'"$related"$'\n'* ]] && continue
     written_ids+="$related"$'\n'
+    add_issue_related "$issue" "$related" || printf 'run-triage: #%s related #%s not written: %s\n' \
+      "$issue" "$related" "$TRIAGE_RELATED_FAILURE_REASON" >&2
   done < <(jq -c '.[]' <<< "$related_json")
 }
 
