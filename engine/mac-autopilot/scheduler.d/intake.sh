@@ -634,7 +634,7 @@ register_new_issues() {
               say "intake issue #$n held: roadmap container parent tracker update failed (attempt ${retry_step% *}, retry in ${retry_step#* }s)"
             fi
           else
-            retry_step="$(intake_parent_retry_failed "$n")" || retry_step="? ?"
+            retry_step="$(intake_parent_retry_failed "$n")" || retry_step="? ?"; if [[ "${retry_step% *}" =~ ^[0-9]+$ ]] && (( ${retry_step% *} >= 3 )); then intake_parent_retry_escalate "$n" "${retry_step% *}" || say "intake issue #$n parent label retry escalation could not be recorded; backoff continues"; fi
             say "intake issue #$n held: parent detected but needs-triage label update failed (attempt ${retry_step% *}, retry in ${retry_step#* }s)"
           fi
         fi

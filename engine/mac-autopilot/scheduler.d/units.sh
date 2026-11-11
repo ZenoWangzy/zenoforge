@@ -176,8 +176,17 @@ intake_parent_retry_failed() { # issue -> prints "<attempt> <delay-secs>" after 
   local now step; now="$(date +%s)"
   step="$(jqf -r --arg n "$1" '((.intake_parent_retry[$n].fails // 0) + 1) as $k | "\($k) \([300 * pow(2; ([$k - 1, 6] | min)), 21600] | min)"' "$UNITS")" || return 1
   units_update --arg n "$1" --argjson now "$now" --argjson k "${step% *}" --argjson d "${step#* }" \
-    '.intake_parent_retry[$n] = {fails: $k, next_at: ($now + $d)}' || return 1
+    '.intake_parent_retry[$n] = {fails: $k, next_at: ($now + $d), escalated: (.intake_parent_retry[$n].escalated // false)}' || return 1
   printf '%s\n' "$step"
+}
+intake_parent_retry_escalate() { # issue, attempt -> one session-visible alert per retry episode
+  local n="$1" attempt="$2" already stamp alerts="$AGENT_HOME/logs/head-watch.alerts"
+  already="$(jqf -r --arg n "$n" '.intake_parent_retry[$n].escalated // false' "$UNITS")" || return 1
+  [[ "$already" != true ]] || return 0
+  mkdir -p "${alerts%/*}" || return 1
+  stamp="${STAMP:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  printf '%s INTAKE-PARENT-LABEL-FAILED issue=#%s attempts=%s retry=backoff\n' "$stamp" "$n" "$attempt" >> "$alerts" || return 1
+  units_update --arg n "$n" '.intake_parent_retry[$n].escalated = true'
 }
 intake_parent_retry_clear() { # issue
   jqf -e --arg n "$1" '(.intake_parent_retry // {}) | has($n)' "$UNITS" >/dev/null 2>&1 || return 0
