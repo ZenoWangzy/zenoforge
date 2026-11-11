@@ -954,7 +954,7 @@ REPO=ZenoWangzy/zenoforge
 REQUEUE_TRANSITIONS="$fixture/requeue-transitions"; : > "$REQUEUE_TRANSITIONS"
 scheduler_issue_transition() {
   printf '%s:%s\n' "$1" "$2" >> "$REQUEUE_TRANSITIONS"
-  if [[ "$1" == 9407 ]]; then return 0; fi
+  if [[ "$1" == 9401 || "$1" == 9407 ]]; then return 0; fi
   [[ "$1" != 9403 ]] || printf 'issue_transition: refused #9403 needs-advisor -> active state ready-for-agent (reason=supervisor-requeue)\n' >&2
   return 1
 }
@@ -971,7 +971,8 @@ jq -e '.units[] | select(.id=="arbiter-tracker") | .history[-1].stage=="size-rec
   || fail "a tracker requeue must use the existing recut completion path"
 grep -Fq 'supervisor arbitration unit=arbiter-tracker: issue #9401 became a tracker; closed the recut unit and left open PR #99401 for head to decide' "$LOG" \
   || fail "a tracker requeue must name its open PR for head"
-[[ ! -s "$REQUEUE_TRANSITIONS" ]] || fail "a tracker requeue must not attempt an active-state transition"
+[[ "$(cat "$REQUEUE_TRANSITIONS")" == '9401:tracker' ]] || fail "a tracker requeue must reconcile its container label, got $(cat "$REQUEUE_TRANSITIONS")"
+: > "$REQUEUE_TRANSITIONS"
 
 # A tracked size-admission continuation keeps the first-slice PR in its normal
 # requeue stage instead of closing it with the tracker parent.

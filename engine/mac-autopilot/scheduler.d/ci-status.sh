@@ -644,6 +644,7 @@ retire_landed_pr_units() {
       release_mark="$(awaiting_release_mark "$pr")"
       [[ ! "$merge_sha" =~ $SHA_RE ]] || release_mark+=" | .merge_sha=$(js "$merge_sha")"
     fi
+    [[ "$state" != closed ]] || closed_unit_issue_route "$id" pr-closed || continue
     set_unit "$id" "$(hist pr-"$state" "PR $state outside the pipeline") | .stage=\"$state\" | $release_mark"
     say "unit=$id PR#$pr already $state on GitHub; retired before dispatch"
   done < "$rows_file"

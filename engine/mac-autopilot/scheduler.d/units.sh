@@ -18,6 +18,14 @@ restore_archived_unit() { # id；rc 0 = 该单元现在在热台账里
 # 解阻或重排，必须留在热台账。退休只移动台账行，历史读者经 units_history_doc 继续可见。
 UNIT_RETIRE_STAGES='["merged","landed","closed","done","wontfix","duplicate"]'
 
+closed_unit_issue_route() { # id [pr-closed] → keep tracker marker or restore the current lane after an external PR close
+  local issue state snapshot repo
+  issue="$(unit_field "$1" '.issue // empty')"; [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 0; [[ "${2:-}" != pr-closed || "$(unit_field "$1" '.lane // empty')" == pr ]] || return 0; state="$(scheduler_issue_state "$issue")" || return 1; state="$(jqf -r '.state // "untracked"' <<<"$state")" || return 1
+  if [[ "${2:-}" == pr-closed ]]; then repo="${REPO:-${ZF_REPO:-}}"; [[ -n "$repo" ]] || return 1; snapshot="$(gh issue view "$issue" --repo "$repo" --json number,state,title,body,labels)" || return 1; [[ "$(jqf -r '.state | ascii_downcase' <<<"$snapshot")" == open ]] || return 0; fi
+  if [[ "$state" == tracker ]]; then scheduler_issue_transition "$issue" tracker recut-parent-retired; return $?; fi
+  [[ "${2:-}" == pr-closed ]] || return 0; case "$state" in untracked) scheduler_issue_transition "$issue" needs-triage pr-closed-requeue . 0 "$snapshot" ;; on-hold) return 0 ;; *) scheduler_issue_transition "$issue" "$state" pr-closed-label-reconcile . 0 "$snapshot" ;; esac
+}
+
 # 需要历史（终态）记录的读者用这个合并视图：活台账 + 归档，按 id 去重。同一 id 同时出现在
 # 两处（退休两步写之间崩溃的窗口）时以 units.json 的行较新为准（reduce 后写覆盖，活台账行排在后面）。
 units_history_doc() { _units_history_view doc; }
@@ -657,6 +665,7 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
   elif ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
     supervisor_budget_park "$id" "$evidence (recut route failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
   fi
+  closed_unit_issue_route "$id" || { supervisor_budget_park "$id" "$evidence (tracker label reconciliation failed)" "$decision" "$park_reason" "$park_stage"; return 0; }
   if [[ -n "$pr" ]]; then
     set_unit "$id" '.recut_routed=true' || return 1
     pr_comment="Cap triage is sending issue #$issue to recut: $evidence"

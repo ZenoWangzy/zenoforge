@@ -6023,8 +6023,8 @@ command jq -e '.state == "tracker" and .tracker_parent == true' "$TF/agent-home/
 tracker_edit="$(grep -E '^issue edit 4279 --repo ' "$TF/actions" || true)"
 [[ "$(grep -Ec '^issue edit 4279 --repo ' "$TF/actions")" == 1 ]] \
   || { echo "scheduler.test.sh: tracker transition did not make exactly one issue edit: $(cat "$TF/actions")" >&2; exit 1; }
-[[ "$tracker_edit" == *'--remove-label ready-for-agent'* && "$tracker_edit" != *'--add-label'* ]] \
-  || { echo "scheduler.test.sh: tracker transition did not clear ready-for-agent without adding a stage label: $tracker_edit" >&2; exit 1; }
+[[ "$tracker_edit" == *'--remove-label ready-for-agent'* && "$tracker_edit" == *'--add-label tracker'* && "$tracker_edit" != *'--add-label ready-for-agent'* ]] \
+  || { echo "scheduler.test.sh: tracker transition did not replace the lane label with its container marker: $tracker_edit" >&2; exit 1; }
 grep -Fq 'intake issue #4279 -> tracker (roadmap container parent: spec/ADR pilot)' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: roadmap container tracker disposition was not logged' >&2; exit 1; }
 

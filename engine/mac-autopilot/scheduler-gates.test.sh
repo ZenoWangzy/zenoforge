@@ -914,6 +914,17 @@ grep -Fq 'issue edit 713 --repo' "$recut_gh_log" \
   && grep -Fq -- '--add-label needs-recut' "$recut_gh_log" \
   || fail "the no-PR budget route did not write the needs-recut label through lib.sh ($(cat "$recut_gh_log" 2>/dev/null))"
 
+recut_tracker_routes="$fixture/recut-tracker-routes"; : > "$recut_tracker_routes"
+recut_state_real="$(declare -f scheduler_issue_state)"; recut_transition_real="$(declare -f scheduler_issue_transition)"
+scheduler_issue_state() { cat "$AGENT_HOME/state/$1.json"; }
+scheduler_issue_transition() { printf '%s:%s:%s\n' "$1" "$2" "$3" >> "$recut_tracker_routes"; }
+printf '%s\n' '{"state":"tracker","recut_children":[7171]}' > "$AGENT_HOME/state/717.json"
+units '{"units":[{"id":"issue-717","issue":717,"lane":"pr","stage":"parked","recut_routed":true,"history":[]}]}'
+supervisor_budget_recut issue-717 'already split tracker parent' || fail 'a previously routed tracker parent should close cleanly'
+[[ "$(field issue-717 .stage)" == closed && "$(cat "$recut_tracker_routes")" == '717:tracker:recut-parent-retired' ]] \
+  || fail "budget recut closed a tracker without its container label: $(cat "$recut_tracker_routes")"
+eval "$recut_state_real"; eval "$recut_transition_real"
+
 # Preserve unfinished work before recut: cleanup must not discard uncommitted worktree contents.
 WT_ROOT_SAVED="$WT_ROOT"; WT_ROOT="$fixture/budget-wt"; budget_wip_unit="issue-716-$$"; mkdir -p "$WT_ROOT/wt-$budget_wip_unit"
 command git -C "$WT_ROOT/wt-$budget_wip_unit" init -q
@@ -3226,15 +3237,28 @@ eval "$stack_dep_states_real"
 ROOT="$stack_saved_root"; WT_ROOT="$stack_saved_wt_root"; MAIN_HEAD="$stack_saved_main_head"
 # ---------- PR 在 GitHub 已合并/关闭：派活前收掉（10-28 #4039/#4040 被重复派活）----------
 retire_saved_tick_prs="$(declare -f tick_prs)"; retire_saved_pr_view="$(declare -f pr_view)"
+retire_saved_issue_state="$(declare -f scheduler_issue_state)"; retire_saved_issue_transition="$(declare -f scheduler_issue_transition)"; retire_saved_gh="$(declare -f gh)"
+retire_repo_saved="${REPO:-}"
+retire_routes="$fixture/pr-close-routes"; : > "$retire_routes"
 tick_prs() { printf '[{"number":9001}]'; }
-pr_view() { case "$1" in 9002) echo MERGED ;; 9003) echo CLOSED ;; *) echo OPEN ;; esac; }
-units '{"units":[{"id":"pr-9001","pr":9001,"stage":"repair-pending","history":[]},{"id":"pr-9002","pr":9002,"stage":"repair-pending","history":[]},{"id":"issue-77","pr":9003,"stage":"rereview-pending","history":[]},{"id":"pr-9004","pr":9004,"stage":"review-pending","history":[]},{"id":"pr-9005","pr":9005,"stage":"merged","history":[]}]}'
+pr_view() { case "$1" in 9002) echo MERGED ;; 9003|9006|9007) echo CLOSED ;; *) echo OPEN ;; esac; }
+scheduler_issue_state() { case "$1" in 77) echo '{"state":"finish-first"}' ;; 78) echo '{"state":"tracker"}' ;; 79) echo '{"attempts":0}' ;; esac; }
+scheduler_issue_transition() { printf '%s:%s:%s\n' "$1" "$2" "$3" >> "$retire_routes"; return 0; }
+gh() { [[ "$1 $2" == 'issue view' ]] && jq -cn --argjson n "$3" '{number:$n,state:"OPEN",title:"test",body:"test",labels:[]}'; }
+REPO=test/repo
+units '{"units":[{"id":"pr-9001","pr":9001,"stage":"repair-pending","history":[]},{"id":"pr-9002","pr":9002,"stage":"repair-pending","history":[]},{"id":"issue-77","issue":77,"lane":"pr","pr":9003,"stage":"rereview-pending","history":[]},{"id":"issue-78","issue":78,"lane":"pr","pr":9006,"stage":"repair-pending","history":[]},{"id":"issue-79","issue":79,"lane":"pr","pr":9007,"stage":"review-pending","history":[]},{"id":"pr-9004","pr":9004,"stage":"review-pending","history":[]},{"id":"pr-9005","pr":9005,"stage":"merged","history":[]}]}'
 retire_landed_pr_units
 [[ "$(field pr-9001 .stage)" == repair-pending ]] || fail 'an open PR unit must stay in its work stage'
 [[ "$(field pr-9002 .stage)" == merged ]] || fail 'a PR merged outside the pipeline must retire as merged'
 [[ "$(field issue-77 .stage)" == closed ]] || fail 'a PR closed outside the pipeline must retire as closed'
+grep -Fqx '77:finish-first:pr-closed-label-reconcile' "$retire_routes" \
+  && grep -Fqx '78:tracker:recut-parent-retired' "$retire_routes" \
+  && grep -Fqx '79:needs-triage:pr-closed-requeue' "$retire_routes" \
+  && ! grep -Fqx '79:ready-for-agent:pr-closed-requeue' "$retire_routes" \
+  || fail "closed PR retirement did not restore the issue lane or tracker marker: $(cat "$retire_routes")"
 [[ "$(field pr-9004 .stage)" == review-pending ]] || fail 'a PR missing from the open list but still OPEN must stay'
-eval "$retire_saved_tick_prs"; eval "$retire_saved_pr_view"
+eval "$retire_saved_tick_prs"; eval "$retire_saved_pr_view"; eval "$retire_saved_issue_state"; eval "$retire_saved_issue_transition"; eval "$retire_saved_gh"
+REPO="$retire_repo_saved"
 
 # ---------- #4621：按 hotfix > opt > 普通 pipeline 让位；旧 waiter 不挡派发 ----------
 priority_admission_case

@@ -320,6 +320,7 @@ supervisor_requeue_rereview() { # unit-json → true when the latest unchanged r
 }
 supervisor_close_recut_parent() { # id history-result log-line → existing tracker/recut close path
   local id="$1" result="$2" message="$3"
+  closed_unit_issue_route "$id" || return 1
   set_unit "$id" "$(hist size-recut-completed "$result") | .stage=\"closed\" | .note=null | del(.size_recut_pending)" || return 1; say "$message"
 }
 
