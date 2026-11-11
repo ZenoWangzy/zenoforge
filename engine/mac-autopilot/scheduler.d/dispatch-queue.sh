@@ -24,6 +24,17 @@ dispatch_steps_say() {
   done < <(for step_name in "${!dispatch_step_secs[@]}"; do printf '%s %s\n' "${dispatch_step_secs[$step_name]}" "$step_name"; done | sort -k1,1nr -k2,2 | cut -d' ' -f2)
   say "$step_line"
 }
+implement_report_sections() {
+  cat <<'EOF'
+报告必须包含以下章节：
+## how
+说明触及代码目前如何工作。
+## why
+说明当初如此编写的原因，引用至少一个 7 位以上十六进制提交 SHA 或 #N issue。
+## decision-log
+非空，记录本次实现采取的决定。
+EOF
+}
 # Why a unit did not start: one `dispatch why` line when its gate differs from the last gate logged for it. dispatch_skip, room_for and
 # footprint_room pass the unit as why_unit (dynamic scope). The last gate per unit lives in $A/.dispatch-why (unit TAB gate); a start clears it.
 declare -gA DISPATCH_WHY_LAST=()
@@ -537,6 +548,7 @@ VERIFY：
 FORBIDDEN：
 只改非产品路径（scripts/、lessons/、docs/、.agents/ 等）；修复必须改产品代码（packages/、apps/、services/）或 .github/workflows 时不要改，报告第一行写 NEEDS-PR: <原因>。不要 push、不开 PR；禁止 merge PR/部署/改 GitHub 状态。
 REPORT：
+$(implement_report_sections)
 产出说明写到 $SUP/${rep}（根因、改动、验证输出摘要、本地提交 SHA）。交付完即结束。"
         else
           deliver="ACCEPTANCE：
@@ -547,6 +559,7 @@ VERIFY：
 FORBIDDEN：
 不 push main、不 force、不开 PR——流水线会开 PR 并派评审；禁止 merge PR/部署/改 GitHub 状态。push preflight 判定这份改动只能走 direct-main 时不要自己落地，报告第一行写 NEEDS-DIRECT: <原因>。
 REPORT：
+$(implement_report_sections)
 产出说明写到 $SUP/${rep}（根因、改动、验证输出摘要、push SHA；SPLIT 时写清已交付切片的边界和剩余范围）。交付完即结束。"
         fi
         feature_issue="$(jqf -r '.issue // empty' <<<"$u")"

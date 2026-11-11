@@ -25,18 +25,8 @@ incident_rule_for_unit() {
   incident_labels_match_json "$1" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}" || return 0
   printf '\n%s\n%s' "$(incident_match_line "$1" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}")" "${INCIDENT_RULE:-$(incident_rule_text)}"
 }
-implement_contract_text() { # load the configured shared implement contract for the first-pass worker prompt
-  local contract_file
-  contract_file="$(sched_config_file prompts/implement-contract.md)" || return 1
-  [[ -r "$contract_file" ]] || return 1
-  cat "$contract_file"
-}
-incident_worker_prompt() { # worker type unit JSON prompt → implement contract plus any shared incident rule
-  local type="$1" unit_json="$2" prompt="$3" contract
-  if [[ "$type" == implement ]]; then
-    contract="$(implement_contract_text)" || return 1
-    prompt+=$'\n'"$contract"
-  fi
+incident_worker_prompt() { # worker type unit JSON prompt → prompt with the shared incident rule when applicable
+  local type="$1" unit_json="$2" prompt="$3"
   case "$type" in
     implement|repair|review|rereview) prompt+="$(incident_rule_for_unit "$unit_json")" ;;
   esac
