@@ -49,6 +49,29 @@ grep -q 'ci wip: 1 free PR runner slot(s)' "$LOG" || fail 'slot count was not si
 GH_CHECKS='[{"name":"suites","bucket":"cancel"}]'
 run_merge_lane || :
 grep -q 'merge skipped PR#31 (CI waits for a WIP slot)' "$LOG" && [[ "$(field pr-31 '.ci_cancel_reruns // 0')" == 0 ]] || fail 'merge lane restarted CI of a unit waiting for a WIP slot'
+draft_saved_units="$(cat "$UNITS")"; draft_saved_workers="$(cat "$WORKERS")"
+(
+  GH_PR_TABLE="$fixture/draft-approval.json"; echo '[]' > "$GH_PR_TABLE"
+  GH_HEAD="$H2"; approval_carries() { return 1; }
+  gh_pr_open 86 "$H2" true MERGEABLE agent/issue-86 '[]'
+  units "$(jq -cn --arg approved "$H1" '{units:[{id:"draft-stale",pr:86,branch:"agent/issue-86",stage:"ready-to-merge",approved_sha:$approved,gated:true,history:[]}]}' )"
+  tick_prs_changed; GH_MERGES=(); : > "$LOG"
+  run_merge_lane || :
+  [[ "$(field draft-stale .stage)" == rereview-pending \
+    && "$(field draft-stale '.history[-1].stage')" == approval-stale \
+    && ${#GH_MERGES[@]} == 0 ]] || fail 'a draft with a stale, non-carried approval did not return to rereview after one pass'
+
+  echo '[]' > "$GH_PR_TABLE"; gh_pr_open 86 "$H1" true MERGEABLE agent/issue-86 '[]'
+  GH_HEAD="$H1"
+  units "$(jq -cn --arg approved "$H1" '{units:[{id:"draft-current",pr:86,branch:"agent/issue-86",stage:"ready-to-merge",approved_sha:$approved,gated:true,history:[]}]}' )"
+  tick_prs_changed; GH_MERGES=(); : > "$LOG"
+  run_merge_lane || :
+  [[ "$(field draft-current .stage)" == ready-to-merge && ${#GH_MERGES[@]} == 0 ]] \
+    || fail 'a draft approved at its current head did not remain ready while waiting for its CI slot'
+  grep -Fq 'merge skipped PR#86 (draft, waiting for its CI slot)' "$LOG" \
+    || fail 'a draft approved at its current head did not log the CI slot wait'
+)
+printf '%s\n' "$draft_saved_units" > "$UNITS"; printf '%s\n' "$draft_saved_workers" > "$WORKERS"
 set_unit pr-30 '.stage="merged"'; set_unit pr-31 '.ci_cancel_reruns=2'; TICK_UNFINISHED='[]'; GH_RERUNS=()
 GH_RUN_JSON='[{"databaseId":99,"conclusion":"cancelled"}]'
 root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
