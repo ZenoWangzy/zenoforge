@@ -249,6 +249,16 @@ no_finding_repair_route() { # unit-json → "ready-to-merge <head>" (head approv
     printf 'review-pending\n'
   fi
 }
+supervisor_requeue_repair_route() { # unit-json guidance → target<TAB>jq update for a supervisor repair requeue
+  local u="$1" route="" head="" target=repair-pending extra
+  extra=" | .repair_hint=$(js "$2")"
+  read -r route head <<<"$(no_finding_repair_route "$u")" || true
+  case "$route" in
+    ready-to-merge) target=ready-to-merge; extra=" | .approved_sha=$(js "$head") | .repair_hint=null" ;;
+    review-pending) target=review-pending; extra=' | .reviewed_sha=null | .reviewed_pr_head=null | .repair_hint=null' ;;
+  esac
+  printf '%s\t%s\n' "$target" "$extra"
+}
 supervisor_return_stage() { # unit-json [stage-before-supervisor] → pending stage for a RULE decision
   local u="$1" stage="${2:-}"
   [[ -n "$stage" ]] || stage="$(jqf -r '.stage // empty' <<<"$u")"
