@@ -1,3 +1,4 @@
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/ci-stuck-unqueued.sh"
 
 # 打开 PR census 的归一化：同名检查去重（--latest-checks）→ 以 PR 号为键的对象（head/draft/bucket 化的检查行与
 # ci 档位）。merge_candidates 的排序输入与 start.sh 的 pin 切换自检共用这一条链，自检跑的正是合并车道要用的管线。
@@ -605,6 +606,7 @@ run_merge_lane_pass() {
         merge_conflict_to_repair "$id" "$pr" "conflicts with main; CI cannot start" "PR 与最新 main 冲突，GitHub 不会跑 CI 也拒绝合并。git merge --no-edit origin/main，按两边意图解决冲突（热修回迁以生产已验证行为为准），跑受影响测试，推送。" "$head"
         pass_step_end conflict-repair "$pr"; continue
       fi
+      if ci_stuck_unqueued_pending "$id" "$pr" "$head" "$branch"; then pass_step_end stuck-unqueued "$pr"; continue; fi
       # A completed failure is a failure even while other checks still run; only pending or unreadable rows are "pending or unavailable".
       if [[ -n "$fails" ]]; then say "merge skipped PR#$pr (check failed: $fails; other checks still pending)"
       else say "merge skipped PR#$pr (checks pending or unavailable)"; fi
