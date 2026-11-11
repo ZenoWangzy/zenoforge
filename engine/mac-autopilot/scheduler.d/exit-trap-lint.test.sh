@@ -5,6 +5,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 bad="$(grep -nE "trap +['\"].*EXIT" "$dir"/*.sh | grep -v '\.test\.sh:' | grep -v 'lint-exempt' || true)"
 [[ -z "$bad" ]] || { printf 'exit-trap-lint.test.sh: bare EXIT trap, use chain_exit_trap:\n%s\n' "$bad" >&2; exit 1; }
+awk '/^    \[\[ -z "\$config_temp" \]\] \|\| rm -f "\$config_temp"$/ { if (prev == "    fi") found=1 } { prev=$0 } END { exit !found }' "$dir/self-check.sh" || { echo 'exit-trap-lint.test.sh: config cleanup must follow the verdict inside the subshell' >&2; exit 1; }
 # Test files that source test-env.sh: a bare EXIT trap that never names the root replaces its cleanup. The baseline only shrinks.
 root="${EXIT_TRAP_ROOT:-$(cd -- "$dir/../../.." && pwd -P)}"
 base="${EXIT_TRAP_BASELINE:-$dir/exit-trap-baseline.txt}"
