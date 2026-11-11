@@ -1,6 +1,148 @@
 # Shared supervisor-hold owner detection and sweep.
 # Sourced by lib.sh after common agent paths and state helpers are available.
 
+supervisor_hold_record_blocker_fallback() {
+  local n="$1" checked_at="$2" failed="$3" ids="$4" lock_file="$5"
+  SUPERVISOR_HOLD_BLOCKER_FALLBACK[$n]="$checked_at"$'\t'"$failed"$'\t'"$ids"
+  printf 'fallback\t%s\t%s\t%s\t%s\n' "$n" "$checked_at" "$failed" "$ids" >> "$lock_file" || true
+}
+
+supervisor_hold_cached_open_blocker() {
+  local n="$1" cache_root="${A:-${MAC_AUTOPILOT_RUNTIME_DIR:-}}" cache_file="" cache_lock_file="" cache_lock_fd="" now ttl entry checked_at ids_json failed ids cache_json updated tmp fallback_entry cache_saved=0
+  OPEN_BLOCKER_IDS=""
+  OPEN_BLOCKER_QUERY_FAILED=0
+  if [[ "${OPEN_BLOCKER_SNAPSHOT_ACTIVE:-0}" == 1 ]]; then
+    case "${OPEN_BLOCKER_SNAPSHOT_STATE[$n]:-fallback}" in
+      blocked|clear) has_open_blocker "$n"; return $? ;;
+    esac
+  fi
+  if ! declare -p SUPERVISOR_HOLD_BLOCKER_FALLBACK >/dev/null 2>&1; then
+    declare -gA SUPERVISOR_HOLD_BLOCKER_FALLBACK=()
+  fi
+  fallback_entry="${SUPERVISOR_HOLD_BLOCKER_FALLBACK[$n]:-}"
+  if [[ -n "$fallback_entry" ]]; then
+    IFS=$'\t' read -r checked_at failed OPEN_BLOCKER_IDS <<< "$fallback_entry"
+    now="${NOW_EPOCH:-$(date +%s)}"; ttl="${DEP_CHECK_SECONDS:-600}"
+    [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+    [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=600
+    if [[ "$checked_at" =~ ^[0-9]+$ && ( "$failed" == true || "$failed" == false ) ]] \
+      && (( checked_at <= now && now - checked_at < ttl )); then
+      [[ "$failed" != true ]] || OPEN_BLOCKER_QUERY_FAILED=1
+      [[ "$failed" == true || -n "$OPEN_BLOCKER_IDS" ]]
+      return $?
+    fi
+    OPEN_BLOCKER_IDS=""
+  fi
+  if [[ -z "$cache_root" && -n "${REPO_DIR:-}" ]]; then cache_root="$REPO_DIR/.scratch-supervisor/autopi"; fi
+  if [[ -z "$cache_root" ]] || ! declare -F jqf_optional_file >/dev/null || ! declare -F jqf >/dev/null \
+    || [[ ! "$n" =~ ^[1-9][0-9]*$ ]]; then
+    has_open_blocker "$n"
+    return $?
+  fi
+  if ! mkdir -p -- "$cache_root" 2>/dev/null; then
+    OPEN_BLOCKER_QUERY_FAILED=1
+    return 0
+  fi
+  cache_file="$cache_root/dep-check.cache.json"
+  cache_lock_file="$cache_root/dep-check.cache.lock"
+  if ! exec {cache_lock_fd}>>"$cache_lock_file" || ! flock -x "$cache_lock_fd"; then
+    [[ -z "$cache_lock_fd" ]] || exec {cache_lock_fd}>&-
+    OPEN_BLOCKER_QUERY_FAILED=1
+    return 0
+  fi
+  now="${NOW_EPOCH:-$(date +%s)}"; ttl="${DEP_CHECK_SECONDS:-600}"
+  [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+  [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=600
+  entry="$(jqf_optional_file "$cache_file" -c --arg n "$n" '.blocked_by[$n] // {}' 2>/dev/null || echo '{}')"
+  checked_at="$(jqf -r '.checked_at // empty' <<< "$entry" 2>/dev/null || true)"
+  if [[ "$checked_at" =~ ^[0-9]+$ ]] && (( checked_at <= now && now - checked_at < ttl )) \
+    && jqf -e '(.checked_at | type) == "number" and (.failed | type) == "boolean" and (.ids | type) == "array" and all(.ids[]; type == "number")' \
+      <<< "$entry" >/dev/null 2>&1; then
+    failed="$(jqf -r '.failed' <<< "$entry" 2>/dev/null || true)"
+    if [[ "$failed" == true ]]; then
+      OPEN_BLOCKER_QUERY_FAILED=1
+      flock -u "$cache_lock_fd" || true
+      exec {cache_lock_fd}>&-
+      return 0
+    fi
+    OPEN_BLOCKER_IDS="$(jqf -r '(.ids // []) | map(tostring) | join(", ")' <<< "$entry" 2>/dev/null || true)"
+    flock -u "$cache_lock_fd" || true
+    exec {cache_lock_fd}>&-
+    [[ -n "$OPEN_BLOCKER_IDS" ]]
+    return $?
+  fi
+  fallback_entry="$(awk -F '\t' -v n="$n" '$1 == "fallback" && $2 == n { entry=$3 "\t" $4 "\t" $5 } END { print entry }' \
+    "$cache_lock_file" 2>/dev/null || true)"
+  if [[ -n "$fallback_entry" ]]; then
+    IFS=$'\t' read -r checked_at failed OPEN_BLOCKER_IDS <<< "$fallback_entry"
+    if [[ "$checked_at" =~ ^[0-9]+$ && ( "$failed" == true || "$failed" == false ) ]] \
+      && (( checked_at <= now && now - checked_at < ttl )); then
+      [[ "$failed" != true ]] || OPEN_BLOCKER_QUERY_FAILED=1
+      flock -u "$cache_lock_fd" || true
+      exec {cache_lock_fd}>&-
+      [[ "$failed" == true || -n "$OPEN_BLOCKER_IDS" ]]
+      return $?
+    fi
+    OPEN_BLOCKER_IDS=""
+  fi
+
+  if ids="$(gh api "repos/$REPO/issues/$n/dependencies/blocked_by" 2>/dev/null)"; then
+    if OPEN_BLOCKER_IDS="$(open_blocker_ids_from_rest_json "$ids" 2>/dev/null)"; then
+      if ids_json="$(jqf -Rn --arg ids "$OPEN_BLOCKER_IDS" '$ids | split(", ") | map(select(test("^[0-9]+$")) | tonumber)')"; then
+        failed=false
+      else
+        OPEN_BLOCKER_IDS=""
+        OPEN_BLOCKER_QUERY_FAILED=1
+        ids_json='[]'
+        failed=true
+      fi
+    else
+      OPEN_BLOCKER_IDS=""
+      OPEN_BLOCKER_QUERY_FAILED=1
+      ids_json='[]'
+      failed=true
+    fi
+  else
+    OPEN_BLOCKER_QUERY_FAILED=1
+    OPEN_BLOCKER_IDS=""
+    ids_json='[]'
+    failed=true
+  fi
+  entry="$(jqf -cn --argjson checked_at "$now" --argjson ids "$ids_json" --argjson failed "$failed" \
+    '{checked_at:$checked_at,ids:$ids,failed:$failed}')" || {
+      OPEN_BLOCKER_IDS=""
+      OPEN_BLOCKER_QUERY_FAILED=1
+      supervisor_hold_record_blocker_fallback "$n" "$now" true "" "$cache_lock_file"
+      flock -u "$cache_lock_fd" || true
+      exec {cache_lock_fd}>&-
+      return 0
+    }
+  cache_json="$(jqf_optional_file "$cache_file" -c 'if type == "object" then . else {} end' 2>/dev/null || echo '{}')"
+  updated="$(jqf -c --arg n "$n" --argjson entry "$entry" \
+    '.blocked_by = (if (.blocked_by | type) == "object" then .blocked_by else {} end) | .blocked_by[$n] = $entry' \
+    <<< "$cache_json")" || {
+      OPEN_BLOCKER_IDS=""
+      OPEN_BLOCKER_QUERY_FAILED=1
+      supervisor_hold_record_blocker_fallback "$n" "$now" true "" "$cache_lock_file"
+      flock -u "$cache_lock_fd" || true
+      exec {cache_lock_fd}>&-
+      return 0
+    }
+  tmp="$cache_file.tmp.$BASHPID"
+  if printf '%s\n' "$updated" > "$tmp" && mv -f -- "$tmp" "$cache_file"; then
+    cache_saved=1
+  else
+    rm -f -- "$tmp"
+  fi
+  if (( ! cache_saved )); then
+    supervisor_hold_record_blocker_fallback "$n" "$now" "$failed" "$OPEN_BLOCKER_IDS" "$cache_lock_file"
+  fi
+  flock -u "$cache_lock_fd" || true
+  exec {cache_lock_fd}>&-
+  [[ "$failed" == true ]] && return 0
+  [ -n "$OPEN_BLOCKER_IDS" ]
+}
+
 supervisor_hold_landing_rows() {
   local requests="${ZF_LAND_QUEUE_DIR:-$AGENT_HOME/land-queue}/requests"
   local -a files=()
@@ -145,7 +287,7 @@ supervisor_hold_owner_state() {
 
   case "$hold_kind" in
     external-deliverable|ops-acceptance-after-release)
-      if has_open_blocker "$n"; then
+      if supervisor_hold_cached_open_blocker "$n"; then
         if [ "${OPEN_BLOCKER_QUERY_FAILED:-0}" = 1 ]; then
           SUPERVISOR_HOLD_OWNER_STATE=unknown
           SUPERVISOR_HOLD_OWNER_DETAIL="native blocker state unreadable"
