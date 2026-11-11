@@ -86,6 +86,8 @@ assert_contains "the prompt names the advisor_reason gate for ready-for-human" "
 
 TRIAGE_SCHEMA_MISSING_REQUIRED="$(jq -c '(.required // []) as $required | [(.properties // {} | keys[]) as $key | select(($required | index($key)) == null) | $key]' "$SCRIPT_DIR/prompts/triage.schema.json")"
 assert_eq "triage schema requires every key for Codex structured output" '[]' "$TRIAGE_SCHEMA_MISSING_REQUIRED"
+jq -e '(.required | index("related")) != null and (.required | index("suspected_shared_cause")) != null and .properties.suspected_shared_cause.type == ["string", "null"]' \
+  "$SCRIPT_DIR/prompts/triage.schema.json" >/dev/null
 
 # --- fake gh/codex/gitnexus, shadowing the real binaries on PATH -----------
 FAKE_BIN="$(mktemp -d)"
@@ -99,6 +101,20 @@ cat > "$FAKE_BIN/gh" <<'EOF'
 # Native sub-issue reads (issue 2046): these fixtures have none.
 if [ "${1:-}" = api ] && [[ "${2:-}" == */sub_issues* ]]; then echo '[]'; exit 0; fi
 if [ "${1:-}" = api ] && [[ "${2:-}" == *'/comments?per_page=100'* ]]; then echo '[]'; exit 0; fi
+if [ "${1:-}" = api ] && [[ "$*" == *'/relates_to'* ]]; then
+  if [[ " $* " == *' --method POST '* ]]; then
+    [ "${FAKE_TRIAGE_RELATION_POST_FAIL:-0}" = 1 ] && exit 1
+    exit 0
+  fi
+  echo '[]'
+  exit 0
+fi
+if [ "${1:-}" = api ] && [[ "${2:-}" =~ ^repos/.*/issues/[0-9]+$ ]]; then
+  related="${2##*/}"
+  [ "${FAKE_TRIAGE_RELATED_404:-}" = "$related" ] && exit 1
+  jq -n --argjson related "$related" '{id:($related * 10),number:$related,state:"open"}'
+  exit 0
+fi
 set -u
 sub="$1 ${2:-}"
 case "$sub" in
@@ -329,9 +345,11 @@ run_once() {
   fi
 
   set +e
-  RUN_OUTPUT="$(bash "$TRIAGE_SRC" "$N" 2>&1)"
+  bash "$TRIAGE_SRC" "$N" > "$agent_home/run-triage.stdout" 2> "$agent_home/run-triage.stderr"
   RUN_STATUS=$?
   set -e
+  RUN_STDERR_CONTENT="$(cat "$agent_home/run-triage.stderr")"
+  RUN_OUTPUT="$(cat "$agent_home/run-triage.stdout"; cat "$agent_home/run-triage.stderr")"
 
   GH_LOG_CONTENT="$(cat "$FAKE_GH_LOG" 2>/dev/null || true)"
   BENNY_LOG_CONTENT="$(cat "$FAKE_BENNY_LOG" 2>/dev/null || true)"
@@ -350,8 +368,8 @@ verdict() {
   local reason_json="null"
   if [ -n "${5:-}" ]; then reason_json="$(jq -nc --arg r "$5" '$r')"; fi
   jq -nc --arg s "$1" --arg r "$2" --arg l "$3" --arg c "${4:-enhancement}" \
-    --argjson advisor_reason "$reason_json" \
-    '{category: $c, state: $s, risk_class: $r, level: $l, entry_surface: "Web /chat/", acceptor: "maintainer", brief_md: "**Summary:** 测量简报。", notes_md: "有几个问题想确认。", expected_packages: ["packages/react-example"], expected_paths: [], estimated_changed_lines: 0, external_deliverable: {required:false, location:"", reason:""}} + (if $advisor_reason == null then {} else {advisor_reason: $advisor_reason} end)'
+    --argjson advisor_reason "$reason_json" --argjson related "${6:-[]}" --argjson cause "${7:-null}" \
+    '{category: $c, state: $s, risk_class: $r, level: $l, entry_surface: "Web /chat/", acceptor: "maintainer", brief_md: "**Summary:** 测量简报。", notes_md: "有几个问题想确认。", expected_packages: ["packages/react-example"], expected_paths: [], related:$related, suspected_shared_cause:$cause, estimated_changed_lines: 0, external_deliverable: {required:false, location:"", reason:""}} + (if $advisor_reason == null then {} else {advisor_reason: $advisor_reason} end)'
 }
 
 # --- precut, model says ready-for-human (the #1193 shape): measured, never -
@@ -402,6 +420,26 @@ export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-human P1 L1)"
 run_once "$PRECUT_BODY"
 assert_eq "precut + admissible measurement: exits 0" "0" "$RUN_STATUS"
 assert_contains "...label is ready-for-agent" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
+
+export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L1 enhancement none '[{"issue":900001,"reason":"same symptom"}]' '"shared regression"')"
+export FAKE_TRIAGE_RELATION_POST_FAIL=1
+run_once "$RAW_BODY"
+unset FAKE_TRIAGE_RELATION_POST_FAIL
+assert_eq "failed related-issue POST does not abort triage" 0 "$RUN_STATUS"
+assert_contains "failed related-issue POST logs the skipped edge on stderr" "$RUN_STDERR_CONTENT" "run-triage: #$N related #900001 not written: GitHub relation write failed"
+assert_eq "failed related-issue POST keeps the group in state" '[{"issue":900001,"reason":"same symptom"}]' "$(echo "$STATE_CONTENT" | jq -c '.related')"
+assert_eq "failed related-issue POST still advances the stage" ready-for-agent "$(echo "$STATE_CONTENT" | jq -r '.state')"
+assert_contains "failed related-issue POST still writes the stage label" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
+
+export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L1 enhancement none '[{"issue":900002,"reason":"same module"}]' 'null')"
+export FAKE_TRIAGE_RELATED_404=900002
+run_once "$RAW_BODY"
+unset FAKE_TRIAGE_RELATED_404
+assert_eq "missing related issue does not abort triage" 0 "$RUN_STATUS"
+assert_contains "missing related issue logs the skipped edge on stderr" "$RUN_STDERR_CONTENT" "run-triage: #$N related #900002 not written: GitHub issue lookup failed"
+assert_eq "missing related issue still keeps the group in state" '[{"issue":900002,"reason":"same module"}]' "$(echo "$STATE_CONTENT" | jq -c '.related')"
+assert_eq "missing related issue still advances the stage" ready-for-agent "$(echo "$STATE_CONTENT" | jq -r '.state')"
+assert_contains "missing related issue still writes the stage label" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
 
 # Configured non-product issues get lightweight classification. Even a
 # founder-authored question does not enter the product triage/advisor queue.

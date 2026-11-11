@@ -322,7 +322,7 @@ triage_result_matches_schema() {
           (if $s.type == "integer" then
              ($v | type) == "number" and $v == ($v | floor)
            else
-             ($v | type) == $s.type
+             (if ($s.type | type) == "array" then any($s.type[]; . == ($v | type)) else ($v | type) == $s.type end)
            end))
       and ((($s.enum // null) == null) or any($s.enum[]; . == $v))
       and (if $s.minimum == null then true
