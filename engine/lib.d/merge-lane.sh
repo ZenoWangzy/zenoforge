@@ -164,13 +164,13 @@ merge_pr_and_reconcile() {
 merged_pr_main_row() {
   local pr_number="$1" n="${2:-}" pr_json row merge_evidence
   [[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
-  pr_json="$(gh pr view "$pr_number" --repo "$REPO" --json number,state,baseRefName,mergeCommit,mergedAt)" || return 1
+  pr_json="$(gh api "repos/$REPO/pulls/$pr_number")" || return 1
   row="$(jq -er --arg p "$pr_number" '
-    select((.number | tostring) == $p and .state == "MERGED" and .baseRefName == "main" and (.mergeCommit.oid // "") != "")
-    | "\(.number)\t\(.mergeCommit.oid)"
+    select((.number | tostring) == $p and .merged == true and .base.ref == "main" and (.merge_commit_sha // "") != "")
+    | "\(.number)\t\(.merge_commit_sha)"
   ' <<< "$pr_json")" || return 1
   if [ -n "$n" ]; then
-    merge_evidence="$(jq -c '{number,merge_sha:.mergeCommit.oid,merged_at:.mergedAt}' <<< "$pr_json")" || return 1
+    merge_evidence="$(jq -c '{number,merge_sha:.merge_commit_sha,merged_at:.merged_at}' <<< "$pr_json")" || return 1
     state_merge "$n" ".run.evidence.pr_number = $(jq -n --arg p "$pr_number" '$p') | .run.evidence.merged_pr = $merge_evidence | if (($merge_evidence.merged_at // \"\") | type == \"string\" and length > 0) then .run.merged_at = $merge_evidence.merged_at else del(.run.merged_at) end" || return 1
     efficiency_metrics_sync_issue_lifecycle "$n"
   fi

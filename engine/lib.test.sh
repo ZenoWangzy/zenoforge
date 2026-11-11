@@ -217,13 +217,16 @@ if [ "${LIB_TEST_STALE_HOLD_REQUEUE_ONLY:-0}" = 1 ] || [ "${LIB_TEST_HOLD_REQUEU
 # Release conclusions use the exact PR's actual merge time, not handoff time.
 RELEASE_CLOSE_HOME="$INBOX_HELPER_HOME/release-close"
 mkdir -p "$RELEASE_CLOSE_HOME/state"
-RELEASE_CLOSE_OUT="$(AGENT_HOME="$RELEASE_CLOSE_HOME" DRY_RUN=0 AGENT_DRY_RUN=0 REPO=test/repo bash -c '
+RELEASE_CLOSE_OUT="$(AGENT_HOME="$RELEASE_CLOSE_HOME" DRY_RUN=0 AGENT_DRY_RUN=0 ZF_REPO=test/repo bash -c '
   set -euo pipefail
   source "$1/lib.sh"
   ensure_state_labels() { :; }
   is_on_hold() { return 1; }
   guarded_write() { :; }
-  gh() { printf "%s\n" '\''{"number":795,"state":"MERGED","baseRefName":"main","mergeCommit":{"oid":"0123456789abcdef0123456789abcdef01234567"},"mergedAt":"2026-10-07T10:00:00Z"}'\''; }
+  gh() {
+    [[ "$1" == api && "$2" == repos/test/repo/pulls/795 ]] || return 1
+    printf "%s\n" '\''{"number":795,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"0123456789abcdef0123456789abcdef01234567","merged_at":"2026-10-07T10:00:00Z"}'\''
+  }
   seed='\''{"state":"awaiting-release","deploy_state":"deployed","requeued_at":"2026-10-07T09:00:00Z","run":{"outcome":"merged","merged_at":"2026-10-07T11:00:00Z","evidence":{"pr_number":795}}}'\''
   for started in null '\''"2026-10-07T08:00:00Z"'\''; do
     jq --argjson started "$started" '\''.run.implement_started_at = $started'\'' <<< "$seed" > "$STATE_DIR/740050.json"
@@ -501,23 +504,40 @@ PY
 )"
 assert_eq 'production inbox writes use shared helper or the lib-unavailable fallback' '' "$INBOX_WRITER_VIOLATIONS"
 # Only main-targeted merged PRs may enter release state.
-MERGED_PR_BASE_OUT="$(REPO=test/repo bash -c '
+MERGED_PR_BASE_OUT="$(ZF_REPO=test/repo bash -c '
   set -euo pipefail
   source "$1/lib.sh"
-  gh() { printf "%s\n" '\''{"number":795,"state":"MERGED","baseRefName":"main","mergeCommit":{"oid":"main-sha"}}'\''; }
+  gh() {
+    [[ "$1" == api && "$#" -eq 2 ]] || return 1
+    case "$2" in
+      repos/test/repo/pulls/795)
+        printf "%s\n" '\''{"number":795,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"main-sha","merged_at":"2026-11-04T19:54:15Z"}'\''
+        ;;
+      repos/test/repo/pulls/796)
+        printf "%s\n" '\''{"number":796,"merged":true,"base":{"ref":"agent/issue-795"},"merge_commit_sha":"feature-sha","merged_at":"2026-11-04T19:54:15Z"}'\''
+        ;;
+      repos/test/repo/pulls/797)
+        printf "%s\n" '\''{"number":797,"merged":false,"base":{"ref":"main"},"merge_commit_sha":"test-merge-sha","merged_at":null}'\''
+        ;;
+      *) return 1 ;;
+    esac
+  }
   printf "main=%s\n" "$(merged_pr_main_row 795)"
-  gh() { printf "%s\n" '\''{"number":796,"state":"MERGED","baseRefName":"agent/issue-795","mergeCommit":{"oid":"feature-sha"}}'\''; }
   if merged_pr_main_row 796 >/dev/null; then echo feature=accepted; else echo feature=rejected; fi
+  if merged_pr_main_row 797 >/dev/null; then echo unmerged=accepted; else echo unmerged=rejected; fi
 ' _ "$SCRIPT_DIR")"
-assert_eq 'merged PR resolver requires base main' $'main=795\tmain-sha\nfeature=rejected' "$MERGED_PR_BASE_OUT"
+assert_eq 'merged PR resolver requires a merged PR targeting main' $'main=795\tmain-sha\nfeature=rejected\nunmerged=rejected' "$MERGED_PR_BASE_OUT"
 
 MERGED_PR_GUARD_HOME="$(mktemp -d)"
 mkdir -p "$MERGED_PR_GUARD_HOME/state"
 printf '%s\n' '{"state":"implement","attempts":1}' > "$MERGED_PR_GUARD_HOME/state/510008.json"
-MERGED_PR_GUARD_OUT="$(AGENT_HOME="$MERGED_PR_GUARD_HOME" REPO=test/repo bash -c '
+MERGED_PR_GUARD_OUT="$(AGENT_HOME="$MERGED_PR_GUARD_HOME" ZF_REPO=test/repo bash -c '
   set -euo pipefail
   source "$1/lib.sh"
-  gh() { printf "%s\n" '\''{"number":796,"state":"MERGED","baseRefName":"agent/issue-795","mergeCommit":{"oid":"feature-sha"}}'\''; }
+  gh() {
+    [[ "$1" == api && "$2" == repos/test/repo/pulls/796 ]] || return 1
+    printf "%s\n" '\''{"number":796,"merged":true,"base":{"ref":"agent/issue-795"},"merge_commit_sha":"feature-sha","merged_at":"2026-11-04T19:54:15Z"}'\''
+  }
   if conclude_merged_run 510008 796; then echo accepted; else echo rejected; fi
   jq -c . "$STATE_DIR/510008.json"
 ' _ "$SCRIPT_DIR")"
@@ -6404,11 +6424,12 @@ if [ "$1" = issue ] && [ "$2" = comment ]; then
   done
 fi
 if [ "$1" = issue ] && [ "$2" = view ]; then printf '%s\n' '{"state":"OPEN"}'; fi
-if [ "$1" = pr ] && [ "$2" = view ]; then
-  case "$3" in
-    991005) printf '{"number":%s,"state":"MERGED","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$3" "$PIPELINE_CLOSE_LINKED_SHA" ;;
-    991006) printf '{"number":%s,"state":"MERGED","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$3" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
-    991007) printf '{"number":%s,"state":"MERGED","baseRefName":"main","mergedAt":"2026-10-12T18:01:06Z","mergeCommit":{"oid":"%s"}}\n' "$3" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
+if [ "$1" = api ] && [[ "${2:-}" == repos/test/repo/pulls/* ]]; then
+  pr_number="${2##*/}"
+  case "$pr_number" in
+    991005) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_LINKED_SHA" ;;
+    991006) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
+    991007) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merged_at":"2026-10-12T18:01:06Z","merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
   esac
 fi
 if [ "$1" = api ] && [[ " $* " == *"/comments?"* ]]; then printf '[[]]\n'; fi
@@ -6422,7 +6443,7 @@ git -C "$PIPELINE_CLOSE_FIXTURE/repo" commit --allow-empty -m 'fix(agent): unrel
 PIPELINE_CLOSE_UNLINKED_SHA="$(git -C "$PIPELINE_CLOSE_FIXTURE/repo" rev-parse HEAD)"
 git -C "$PIPELINE_CLOSE_FIXTURE/repo" update-ref refs/remotes/origin/main "$PIPELINE_CLOSE_UNLINKED_SHA"
 PIPELINE_MERGED_LINKED_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
-  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" REPO=test/repo \
+  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" ZF_REPO=test/repo \
   PIPELINE_GH_LOG="$PIPELINE_GH_LOG" PIPELINE_CLOSE_LINKED_SHA="$PIPELINE_CLOSE_LINKED_SHA" \
   PIPELINE_CLOSE_UNLINKED_SHA="$PIPELINE_CLOSE_UNLINKED_SHA" PATH="$PIPELINE_CLOSE_FIXTURE/bin:$PATH" \
   bash -c '
@@ -6438,7 +6459,7 @@ assert_eq "merged pipeline-system PR closes as pipeline-system when commit cites
   $'pipeline-system\tconcluded\t'"$PIPELINE_CLOSE_LINKED_SHA"$'\tconcluded\ttrue' "$PIPELINE_MERGED_LINKED_OUT"
 
 PIPELINE_MERGED_UNLINKED_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
-  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" REPO=test/repo \
+  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" ZF_REPO=test/repo \
   PIPELINE_GH_LOG="$PIPELINE_GH_LOG" PIPELINE_CLOSE_LINKED_SHA="$PIPELINE_CLOSE_LINKED_SHA" \
   PIPELINE_CLOSE_UNLINKED_SHA="$PIPELINE_CLOSE_UNLINKED_SHA" PATH="$PIPELINE_CLOSE_FIXTURE/bin:$PATH" \
   bash -c '
@@ -6460,7 +6481,7 @@ jq -n '{state:"tracker",tracker_parent:true,run:{outcome:"not-completed",evidenc
   > "$PIPELINE_CLOSE_FIXTURE/home/state/991007.json"
 TRACKER_GH_LOG="$PIPELINE_CLOSE_FIXTURE/tracker-gh.log"
 PIPELINE_TRACKER_MERGED_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
-  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" REPO=test/repo \
+  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" ZF_REPO=test/repo \
   PIPELINE_GH_LOG="$TRACKER_GH_LOG" PIPELINE_CLOSE_UNLINKED_SHA="$PIPELINE_CLOSE_UNLINKED_SHA" \
   PATH="$PIPELINE_CLOSE_FIXTURE/bin:$PATH" bash -c '
     set -euo pipefail

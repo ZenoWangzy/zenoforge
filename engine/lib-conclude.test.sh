@@ -665,12 +665,12 @@ jq -n \
   '{attempts:1,run:{evidence:{pr_head_sha:"0123456789abcdef0123456789abcdef01234567",mandatory_checks:{status:"passed",head_sha:"0123456789abcdef0123456789abcdef01234567"}}}}' \
   > "$CLEAR_HOME/state/510005.json"
 CLEAR_OUT="$(
-  AGENT_HOME="$CLEAR_HOME" AGENT_DRY_RUN=0 REPO="test/repo" bash -c '
+  AGENT_HOME="$CLEAR_HOME" AGENT_DRY_RUN=0 REPO="test/repo" ZF_REPO="test/repo" bash -c '
     source "$0/lib.sh"
     roadmap_ensure_issue_parent() { :; }
   gh() {
-    if [ "$1 ${2:-}" = "pr view" ]; then
-      printf "%s\n" '\''{"number":795,"state":"MERGED","baseRefName":"main","mergeCommit":{"oid":"main-sha"}}'\''
+    if [ "$1 ${2:-}" = "api repos/test/repo/pulls/795" ]; then
+      printf "%s\n" '\''{"number":795,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"main-sha","merged_at":"2026-11-04T19:54:15Z"}'\''
     elif [ "$1 ${2:-}" = "issue view" ]; then
       printf "%s\n" '\''{"state":"OPEN","labels":[],"comments":[]}'\''
     elif [ "$1" = api ] && [[ " $* " == *"/comments?"* ]]; then

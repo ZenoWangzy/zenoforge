@@ -155,6 +155,11 @@ case "$sub" in
   "pr view")
     [ -n "${FAKE_PR_VIEW_JSON:-}" ] || exit 1
     printf '%s\n' "$FAKE_PR_VIEW_JSON" ;;
+  "api repos/"*"/pulls/"*)
+    [[ "$2" =~ ^repos/.+/pulls/[0-9]+$ ]] || exit 1
+    echo "gh $*" >> "$FAKE_GH_LOG"
+    [ -n "${FAKE_PR_REST_JSON:-}" ] || exit 1
+    printf '%s\n' "$FAKE_PR_REST_JSON" ;;
   "api") exit 1 ;;
   "issue comment")
     echo "gh $*" >> "$FAKE_GH_LOG"
@@ -492,8 +497,8 @@ DELIVERY_PR=99001
 export FAKE_PR_LIST_JSON="$(jq -cn --argjson number "$DELIVERY_PR" --arg head "agent/issue-$N" \
   '[{number:$number,state:"MERGED",isDraft:false,headRefName:$head,baseRefName:"main"},
     {number:($number + 1),state:"MERGED",isDraft:false,headRefName:"agent/related-work",baseRefName:"main"}]')"
-export FAKE_PR_VIEW_JSON="$(jq -cn --argjson number "$DELIVERY_PR" \
-  '{number:$number,state:"MERGED",baseRefName:"main",mergeCommit:{oid:"0123456789abcdef0123456789abcdef01234567"},mergedAt:"2026-11-04T16:00:00Z"}')"
+export FAKE_PR_REST_JSON="$(jq -cn --argjson number "$DELIVERY_PR" \
+  '{number:$number,merged:true,base:{ref:"main"},merge_commit_sha:"0123456789abcdef0123456789abcdef01234567",merged_at:"2026-11-04T16:00:00Z"}')"
 export FAKE_TRIAGE_STRUCTURED="$(verdict awaiting-release P1 L1 | jq --arg pr "$DELIVERY_PR" \
   '.brief_md = ("Already delivered in PR #" + $pr + ".") | .notes_md = "The requested behavior is already available."')"
 SEED_STATE_JSON='{"state":"needs-triage"}' run_once "$RAW_BODY"
@@ -502,19 +507,21 @@ assert_eq "already-delivered triage enters awaiting-release" awaiting-release "$
 assert_eq "already-delivered triage records the delivering PR" "$DELIVERY_PR" "$(echo "$STATE_CONTENT" | jq -r '.run.evidence.pr_number')"
 assert_eq "already-delivered triage records merged outcome" merged "$(echo "$STATE_CONTENT" | jq -r '.run.outcome')"
 assert_not_contains "already-delivered triage does not close the issue" "$GH_LOG_CONTENT" "issue close $N"
+assert_contains "already-delivered triage verifies the linked PR through REST" "$GH_LOG_CONTENT" "gh api repos/$REPO/pulls/$DELIVERY_PR"
 assert_contains "already-delivered prompt reports the linked merged PR" "$PROMPT_CONTENT" 'MERGED, base branch `main`'
-unset FAKE_PR_LIST_JSON FAKE_PR_VIEW_JSON
+unset FAKE_PR_LIST_JSON FAKE_PR_REST_JSON
 
 # The persistent run evidence is another source for an issue's known PR link.
 DELIVERY_PR=99002
-export FAKE_PR_VIEW_JSON="$(jq -cn --argjson number "$DELIVERY_PR" \
-  '{number:$number,state:"MERGED",baseRefName:"main",mergeCommit:{oid:"1123456789abcdef0123456789abcdef01234567"},mergedAt:"2026-11-04T16:00:00Z"}')"
+export FAKE_PR_REST_JSON="$(jq -cn --argjson number "$DELIVERY_PR" \
+  '{number:$number,merged:true,base:{ref:"main"},merge_commit_sha:"1123456789abcdef0123456789abcdef01234567",merged_at:"2026-11-04T16:00:00Z"}')"
 export FAKE_TRIAGE_STRUCTURED="$(verdict awaiting-release P1 L1)"
 SEED_STATE_JSON="$(jq -cn --argjson pr "$DELIVERY_PR" \
   '{state:"needs-triage",run:{evidence:{pr_number:($pr|tostring)}}}')" run_once "$RAW_BODY"
 assert_eq "already-delivered triage resolves PR from persisted run evidence" awaiting-release "$(echo "$STATE_CONTENT" | jq -r '.state')"
 assert_eq "persisted run evidence retains the delivering PR" "$DELIVERY_PR" "$(echo "$STATE_CONTENT" | jq -r '.run.evidence.pr_number')"
-unset FAKE_PR_VIEW_JSON
+assert_contains "persisted run evidence verifies the PR through REST" "$GH_LOG_CONTENT" "gh api repos/$REPO/pulls/$DELIVERY_PR"
+unset FAKE_PR_REST_JSON
 
 export FAKE_TRIAGE_STRUCTURED="$(verdict duplicate P1 L1)"
 run_once "$RAW_BODY" testuser 0 1
