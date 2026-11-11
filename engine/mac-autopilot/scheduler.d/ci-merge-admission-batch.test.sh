@@ -115,6 +115,121 @@ run_merge_empty_case() {
   [[ ! -s "$GH_CALLS" ]] || fail "empty merge lane made GitHub calls: $(cat "$GH_CALLS")"
 }
 
+stuck_setup() {
+  STUCK_PR=6001
+  STUCK_HEAD="$(printf '%040x' "$STUCK_PR")"
+  STUCK_BRANCH="agent/issue-$STUCK_PR"
+  STUCK_NEW_HEAD="$(printf '%040x' 7001)"
+  STUCK_TREE="$(printf '%040x' 7002)"
+  STAMP=2026-11-11T22:00:00Z
+  NOW_EPOCH="$(date -u -d "$STAMP" +%s)"
+  CI_STUCK_UNQUEUED_SECONDS=1800
+  ROOT="$fixture/repo"; MAIN_HEAD="$(printf '%040x' 7003)"
+  CFG="$(jq -c . "$supervisor/autopi/config.json")"
+  TICK_PR_STATE=(); TICK_PR_CHECK_CENSUS='{}'; TICK_PRS='[]'
+  TICK_HOTFIX_ISSUES='[]'; TICK_HOTFIX_ISSUES_LOADED=true
+  TICK_UNFINISHED_LOADED=true; TICK_UNFINISHED='[]'; TICK_UNFINISHED_ALL_OK=true
+  CI_RUN_JOBS_CACHE=()
+  SCHED_LOCK_HELD=true
+  GH_CALLS="$fixture/stuck-gh-calls"; : > "$GH_CALLS"
+  LOG="$fixture/stuck-scheduler.log"; : > "$LOG"
+  command jq -cn --arg head "$STUCK_HEAD" --arg branch "$STUCK_BRANCH" \
+    '{units:[{id:"unit-6001",pr:6001,branch:$branch,lane:"pr",stage:"ready-to-merge",approved_sha:$head,history:[]}]}' > "$UNITS"
+  STUCK_READY="$(jq -cn --arg head "$STUCK_HEAD" --arg branch "$STUCK_BRANCH" \
+    '{id:"unit-6001",pr:6001,branch:$branch,lane:"pr",stage:"ready-to-merge",approved_sha:$head,
+      pr_open_head:$head,pr_open_draft:false,pr_open_mergeable:"MERGEABLE",pr_open_checks:[{name:"CI",bucket:"pending"}] }')"
+  merge_candidates() { printf '%s\n' "$STUCK_READY"; }
+  merge_gate_suites_active() { MERGE_GATE_SUITES_NOTE=""; return 1; }
+  ci_classify_run() { :; }
+  tick_prs_prime() { :; }
+  merge_census_retry() { :; }
+  tick_pr_mergeable() { printf 'MERGEABLE\n'; }
+  unfinished_runs() { printf '%s' "$TICK_UNFINISHED"; }
+  guarded_write() { "$@"; }
+  git() {
+    case " $* " in
+      *" fetch -q origin main "*) return 0 ;;
+      *" fetch -q --no-tags origin "*) return 0 ;;
+      *" rev-parse -q --verify refs/remotes/origin/main "*) printf '%s\n' "$MAIN_HEAD" ;;
+      *" rev-parse --verify refs/autopi/merge-candidates/"*) printf '%s\n' "$STUCK_HEAD" ;;
+      *) command git "$@" ;;
+    esac
+  }
+  gh() {
+    printf '%s\n' "$*" >> "$GH_CALLS"
+    case "$*" in
+      *'--method GET repos/{owner}/{repo}/git/commits/'*) printf '%s\n' "$STUCK_TREE" ;;
+      *'--method POST repos/{owner}/{repo}/git/commits'*) printf '%s\n' "$STUCK_NEW_HEAD" ;;
+      *'--method PATCH repos/{owner}/{repo}/git/refs/heads/'*) printf '%s\n' "$STUCK_NEW_HEAD" ;;
+      *) return 97 ;;
+    esac
+  }
+}
+
+stuck_runs() {
+  local first_at="$1" second_at="${2:-$1}"
+  TICK_UNFINISHED="$(jq -cn --arg head "$STUCK_HEAD" --arg branch "$STUCK_BRANCH" \
+    --arg a "$first_at" --arg b "$second_at" \
+    '[{databaseId:7301,event:"pull_request",headSha:$head,headBranch:$branch,status:"queued",createdAt:$a},
+      {databaseId:7302,event:"pull_request",headSha:$head,headBranch:$branch,status:"queued",createdAt:$b}]')"
+  CI_RUN_JOBS_CACHE[7301]='[]'; CI_RUN_JOBS_CACHE[7302]='[]'
+}
+
+run_stuck_unqueued_case() {
+  stuck_setup
+  stuck_runs "$(date -u -d "$STAMP - 45 minutes" +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(date -u -d "$STAMP - 40 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  run_merge_lane_pass
+  [[ "$(call_count api --method)" == 3 ]] || fail "stale zero-job runs did not make the tree GET, commit POST and ref PATCH: $(cat "$GH_CALLS")"
+  grep -Fq 'STUCK-UNQUEUED unit=unit-6001 PR#6001' "$LOG" || fail 'stale zero-job run was not logged with its unit and PR'
+  grep -Fq "head=$STUCK_HEAD" "$LOG" && grep -Fq 'run_ids=7301,7302' "$LOG" \
+    || fail 'STUCK-UNQUEUED did not name the head and all run ids'
+  grep -Fq -- '--method POST repos/{owner}/{repo}/git/commits' "$GH_CALLS" \
+    || fail 'retrigger did not create an empty commit through the git API'
+  grep -Fq "tree=$STUCK_TREE" "$GH_CALLS" && grep -Fq "parents[]=$STUCK_HEAD" "$GH_CALLS" \
+    || fail 'commit POST did not reuse the head tree and parent'
+  grep -Fq -- "--method PATCH repos/{owner}/{repo}/git/refs/heads/$STUCK_BRANCH" "$GH_CALLS" \
+    && grep -Fq 'force=false' "$GH_CALLS" || fail 'retrigger did not update the branch without force'
+  command jq -e --arg head "$STUCK_HEAD" '.units[0].ci_unqueued_retrigger_head == $head
+    and any(.units[0].history[]; .stage == "ci-stuck-unqueued")' "$UNITS" >/dev/null \
+    || fail 'unit did not record the retriggered head and history'
+  : > "$GH_CALLS"; : > "$LOG"
+  run_merge_lane_pass
+  [[ ! -s "$GH_CALLS" ]] || fail "same head retriggered twice: $(cat "$GH_CALLS")"
+
+  stuck_setup
+  stuck_runs "$(date -u -d "$STAMP - 10 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  run_merge_lane_pass
+  [[ ! -s "$GH_CALLS" ]] || fail "young queued runs were retriggered: $(cat "$GH_CALLS")"
+
+  stuck_setup
+  stuck_runs "$(date -u -d "$STAMP - 45 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  CI_RUN_JOBS_CACHE[7302]='[{"status":"queued"}]'
+  run_merge_lane_pass
+  [[ ! -s "$GH_CALLS" ]] || fail "a queued run with jobs was retriggered: $(cat "$GH_CALLS")"
+
+  stuck_setup
+  STUCK_BRANCH=main
+  STUCK_READY="$(jq -c --arg head "$STUCK_HEAD" '.branch="main" | .ci_adopt_head=$head' <<<"$STUCK_READY")"
+  command jq --arg head "$STUCK_HEAD" '.units[0].branch="main" | .units[0].ci_adopt_head=$head' "$UNITS" > "$fixture/main-branch-units.json"
+  mv "$fixture/main-branch-units.json" "$UNITS"
+  stuck_runs "$(date -u -d "$STAMP - 45 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  run_merge_lane_pass
+  [[ ! -s "$GH_CALLS" ]] || fail "main branch was retriggered: $(cat "$GH_CALLS")"
+
+  stuck_setup
+  STUCK_READY="$(jq -c --arg old "$(printf '%040x' 6999)" '.ci_unqueued_retrigger_head=$old' <<<"$STUCK_READY")"
+  command jq --arg old "$(printf '%040x' 6999)" '.units[0].ci_unqueued_retrigger_head=$old' "$UNITS" > "$fixture/old-head-units.json"
+  mv "$fixture/old-head-units.json" "$UNITS"
+  stuck_runs "$(date -u -d "$STAMP - 45 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  cancel_unit_runs() { :; }
+  run_merge_lane_pass
+  [[ ! -s "$GH_CALLS" ]] || fail "second stuck head was retriggered instead of escalated: $(cat "$GH_CALLS")"
+  command jq -e '.units[0].stage == "supervisor-review"
+    and any(.units[0].history[]; .stage == "supervisor-escalated")' "$UNITS" >/dev/null \
+    || fail 'second stuck head did not escalate to supervisor-review'
+}
+
 case "${1:-all}" in
   ci-batch)
     run_ci_batch_case
@@ -128,11 +243,16 @@ case "${1:-all}" in
     run_merge_empty_case
     echo 'ci-merge-admission-batch.test.sh merge-empty: pass (no merge-ready PRs means no GitHub calls)'
     ;;
+  stuck-unqueued)
+    run_stuck_unqueued_case
+    echo 'ci-merge-admission-batch.test.sh stuck-unqueued: pass (stale empty queued runs retrigger once per head; young/job-bearing runs wait; second stuck head escalates)'
+    ;;
   all)
     run_ci_batch_case
     run_ci_zero_slot_case
     run_merge_empty_case
-    echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls)'
+    run_stuck_unqueued_case
+    echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls; stuck unqueued CI retriggers once per head)'
     ;;
   *) fail "unknown test mode: $1" ;;
 esac
