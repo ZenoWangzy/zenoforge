@@ -106,4 +106,46 @@ ROWS="$cancel_row"; supervisor_requeue_unit pr-report-only requeue 'repair the r
 [[ "$(field pr-report-only .stage)" == repair-pending ]] \
   || fail "a findingless review report must stay in repair (got: $(field pr-report-only .stage))"
 
+# 9. Dispatch consults the route only after the room gate admits a repair.
+dispatch_trace="$fixture/dispatch-route-order"
+dispatch_unit='{"units":[{"id":"dispatch-no-finding","pr":15,"lane":"pr","branch":"agent/dispatch-route","stage":"repair-pending","review_report":"review-15.md","review_findings":[{"round":1,"block":"ok","findings":[],"all_findings":[]}],"history":[{"stage":"review-request-changes","result":"2222222222222222222222222222222222222222"}]}]}'
+footprint_waiters_revalidate() { :; }
+dispatch_live_prime() { :; }
+tick_prs_changed() { :; }
+tick_prs_prime() { :; }
+dispatch_capacity_free() { return 0; }
+dispatch_why_load() { :; }
+advisor_harvest() { :; }
+dispatch_order() { printf '%s\n' "$dispatch_unit" | jq -c '.units[]'; }
+paused_midrun() { return 1; }
+unit_blocked_run_dep() { return 1; }
+token_spend_gate() { return 0; }
+ticket_budget_reason() { return 0; }
+loop_rounds() { printf '0\n'; }
+subject_of() { printf 'fixture repair'; }
+dispatch_why() { :; }
+pick() { return 1; }
+ROOM_ADMISSION=1
+room_for() { printf 'room\n' >> "$dispatch_trace"; return "$ROOM_ADMISSION"; }
+tick_pr_mergeable() { printf 'lookup\n' >> "$dispatch_trace"; printf '%s' MERGEABLE; }
+tick_pr_head() { printf '%s' "$head_now"; }
+repair_check_rows() { printf '%s' "$cancel_row"; }
+
+printf '%s\n' "$dispatch_unit" > "$UNITS"
+: > "$dispatch_trace"
+dispatch_pending false
+[[ "$(cat "$dispatch_trace")" == room ]] \
+  || fail "a room-blocked repair looked up its reroute before admission (trace: $(tr '\n' ';' < "$dispatch_trace"))"
+[[ "$(field dispatch-no-finding .stage)" == repair-pending ]] \
+  || fail "a room-blocked repair changed stage before a slot was available"
+
+ROOM_ADMISSION=0
+printf '%s\n' "$dispatch_unit" > "$UNITS"
+: > "$dispatch_trace"
+dispatch_pending false
+[[ "$(cat "$dispatch_trace")" == $'room\nlookup' ]] \
+  || fail "an admitted repair did not check room before its reroute lookup (trace: $(tr '\n' ';' < "$dispatch_trace"))"
+[[ "$(field dispatch-no-finding .stage)" == review-pending ]] \
+  || fail "an admitted findingless repair did not reroute to review (got: $(field dispatch-no-finding .stage))"
+
 echo 'no-finding-repair-route.test.sh: ok'

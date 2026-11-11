@@ -277,6 +277,11 @@ dispatch_pending() {
     case "$stage" in
       repair-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || { to_supervisor "$id" "repair-pending without a PR"; continue; }
+        if [[ -n "$(jqf -r '.hold_handoff_episode // empty' <<<"$u")" ]] && dstep body_block park_if_body_blocked "$u"; then
+          [[ "$(unit_field "$id" .stage)" != blocked-external ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
+          dispatch_skip body-blocked; continue
+        fi
+        dstep room_for room_for "$id" repair "$u" false || continue
         read -r route route_head <<<"$(no_finding_repair_route "$u")" || true
         if [[ "$route" == ready-to-merge ]]; then
           set_unit "$id" "$(hist repair-rerouted "no red check and no open finding; approved head $route_head -> CI admission") | .approved_sha=$(js "$route_head") | .stage=\"ready-to-merge\""
@@ -285,11 +290,6 @@ dispatch_pending() {
           set_unit "$id" "$(hist repair-rerouted "no red check and no open finding; the current head needs a review") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
           say "repair-pending unit=$id: no red check and no open finding -> review-pending"; continue
         fi
-        if [[ -n "$(jqf -r '.hold_handoff_episode // empty' <<<"$u")" ]] && dstep body_block park_if_body_blocked "$u"; then
-          [[ "$(unit_field "$id" .stage)" != blocked-external ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
-          dispatch_skip body-blocked; continue
-        fi
-        dstep room_for room_for "$id" repair "$u" false || continue
         # refill 首个通过 room_for 的 PR 车道候选才取一次 census；满载时上面的 room_for 已跳过，一次都不取。
         [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }; dmark census_prime
         # repair_cap_admission may have just moved this unit onto the hard tier.
