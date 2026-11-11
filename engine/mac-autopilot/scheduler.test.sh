@@ -613,6 +613,12 @@ tick_gh() {
       body="$(tick_gh "${rest[@]}")" || return $?
       printf 'HTTP/2.0 200 OK\nEtag: "stub"\n\n%s\n' "$body"
       return 0 ;;
+    'api repos/example-maintainer/example-repo/pulls/'*)
+      local pr_number="${2##*/}"
+      [[ "$#" -eq 2 && "$pr_number" =~ ^[0-9]+$ ]] || return 97
+      command jq -cn --argjson n "$pr_number" --arg oid "$(printf '%040x' "$pr_number")" \
+        '{number:$n,merged:true,base:{ref:"main"},merge_commit_sha:$oid,merged_at:"2026-10-29T00:00:00Z"}'
+      ;;
     'run list')
       if [[ -f "$TF/ci-admission-runs.json" && "$*" == *'--limit 300 --json databaseId,status,event,headBranch,headSha,workflowName'* ]]; then
         cat "$TF/ci-admission-runs.json"
@@ -723,9 +729,6 @@ tick_gh() {
             command jq -cn --argjson n "$3" --arg branch "${fixture_branch:-agent/issue-$3}" '{number:$n,headRefName:$branch,title:"fixture",body:"",state:"OPEN",labels:[]}'
           fi ;;
         *files*) printf 'packages/fixture/src/index.ts\n' ;;
-        *number,state,baseRefName,mergeCommit,mergedAt*)
-          command jq -cn --argjson n "$3" --arg oid "$(printf '%040x' "$3")" \
-            '{number:$n,state:"MERGED",baseRefName:"main",mergeCommit:{oid:$oid},mergedAt:"2026-10-29T00:00:00Z"}' ;;
         *mergeCommit*)
           if [[ -f "$TF/no-merge-sha" ]]; then echo ''
           elif [[ -f "$TF/pr-head-$3" ]]; then cat "$TF/pr-head-$3"
@@ -2772,6 +2775,8 @@ command git -C "$TF/repo" checkout -q main
 command jq -n --arg sha "$sha" '{units:[{id:"pr-77",pr:77,issue:4470,lane:"pr",branch:"agent/issue-4470",stage:"ready-to-merge",approved_sha:$sha,ready_since:1,history:[]}]}' > "$TF/supervisor/autopi/units.json"
 tick
 command grep -q '^merge 77' "$TF/actions"
+command grep -Fq 'gh api repos/example-maintainer/example-repo/pulls/77' "$TF/calls" \
+  || { cat "$TF/calls" >&2; echo 'scheduler.test.sh: merged PR release evidence did not use the REST endpoint' >&2; exit 1; }
 command jq -e '.state=="awaiting-release" and .run.outcome=="merged"
   and .run.evidence.pr_number=="77" and .deploy_state=="pending"' \
   "$TF/agent-home/state/4470.json" >/dev/null
