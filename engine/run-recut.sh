@@ -196,6 +196,10 @@ print("\n".join(sorted(letters)))
 escalate_partial_recut() {
   local reason="$1" planned_children="$2" missing_slices="$3"
   local reason_file reason_json detail
+  if [ "$DRY_RUN" != "1" ] && ! issue_verdict_snapshot_guard "$N" "${ISSUE_JSON:-}"; then
+    echo "run-recut: #$N -- $ISSUE_VERDICT_GUARD_REASON; skipping stale partial recut verdict" >&2
+    exit 0
+  fi
   detail="reason=$reason; planned children=$planned_children; children created=none"
   [ -z "$missing_slices" ] || detail="$detail; missing slices: $missing_slices"
   detail="$(printf '%s' "$detail" | tr '\r\n\t' '   ' | cut -c1-1800)"

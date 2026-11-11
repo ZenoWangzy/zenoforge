@@ -751,9 +751,9 @@ assert_contains "partial cut says it created no children" "$INBOX_CONTENT" "chil
 assert_not_contains "partial refusal creates no child issue" "$GH_LOG_CONTENT" "gh issue create"
 
 HAND_TEST_COMMENTS="$(jq -cn \
-  '[{createdAt:"2026-11-10T10:00:00Z",body:"Supervisor ruling (head): recut into one slice.\nB. Wrapper reports a killed child."},{createdAt:"2026-11-11T15:48:14Z",body:"Supervisor ruling (head): recut into two fresh slices.\nA. Open WebUI memory on long chats.\nB. Wrapper reports a killed child."}]')"
+  '[{createdAt:"2026-11-10T10:00:00Z",body:"Supervisor ruling (head): recut into one slice.\nB. Child exit reporting."},{createdAt:"2026-11-11T15:48:14Z",body:"Supervisor ruling (head): recut into two fresh slices.\nA. Long message history.\nB. Child exit reporting."}]')"
 FAKE_RECUIT_RESPONSE_JSON="$(jq -cn \
-  '{domain_verified:true,refuse_reason:"",needs_production_access:false,how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[{title:"B. Wrapper reports a killed child",body_md:"Report the unexpected child exit.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]}]}')"
+  '{domain_verified:true,refuse_reason:"",needs_production_access:false,how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[{title:"B. Child exit reporting",body_md:"Report the unexpected child exit.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]}]}')"
 run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'
 assert_eq "short plan against the latest ruling escalates cleanly" 0 "$RUN_STATUS"
 assert_contains "short plan names missing slice A" "$INBOX_CONTENT" "missing slices: A"
@@ -764,7 +764,7 @@ assert_eq "short plan does not record a completed recut" false \
   "$(jq 'has("recut_children")' <<< "$STATE_CONTENT")"
 
 FAKE_RECUIT_RESPONSE_JSON="$(jq -cn \
-  '{domain_verified:true,refuse_reason:"",needs_production_access:false,how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[{title:"A. Open WebUI memory on long chats",body_md:"Measure and remove repeated history work.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]},{title:"B. Wrapper reports a killed child",body_md:"Report the unexpected child exit.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]}]}')"
+  '{domain_verified:true,refuse_reason:"",needs_production_access:false,how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[{title:"A. Long message history",body_md:"Measure and remove repeated history work.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]},{title:"B. Child exit reporting",body_md:"Report the unexpected child exit.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]}]}')"
 run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'
 assert_eq "complete lettered plan exits successfully" 0 "$RUN_STATUS"
 assert_eq "complete lettered plan creates both children" 2 \
