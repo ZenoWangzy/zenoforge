@@ -1448,6 +1448,7 @@ units '{"units":[{"id":"pr-14","pr":14,"lane":"direct-main","stage":"repair-pend
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == repair:pr-14:* && "$DISPATCH_PROMPT" == *"git merge --no-edit origin/main"* && "$DISPATCH_PROMPT" != *"禁止：动主 checkout、merge"* ]] || fail 'repair prompt does not merge origin/main before pushing (or still forbids merge)'
 [[ "$DISPATCH_PROMPT" == *"Do not run *.test.* files; the lander runs the tests."* ]] || fail 'direct-main repair prompt does not leave test execution to the lander'
+[[ "$DISPATCH_PROMPT" == *"Do not run any test file or test command. The engine runs tests after delivery. A refused test command is not a failure; finish the change and deliver."* ]] || fail 'direct-main repair prompt omits the worker test-refusal rule'
 # 兄弟出口：评审点名一个出口时，repair 必须枚举该函数全部出口并各补一条回归测试（issue-5928 四轮逐个补出口）
 [[ "$DISPATCH_PROMPT" == *"同一函数的兄弟出口也要枚举"*"各补一条回归测试"* ]] || fail 'repair prompt lacks the sibling-exit rule'
 

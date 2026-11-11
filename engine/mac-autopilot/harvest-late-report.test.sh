@@ -153,8 +153,8 @@ echo 'ok - hung ZCode worker is stopped only when its log ends in the turn error
 
 # A recorded non-product test-guard refusal is an outcome, not a worker death.
 guard_marker='non-product-test-guard: refused unit=issue-guard command=bash reason=test-file recorded=1'
-guard_run() { # log path mode [keep-history] [head] → harvest one guard review
-  local guard_file="$sup/$1.guard-refusals" target
+guard_run() { # log path mode [keep-history] [head] [worker-type] → harvest one guarded worker
+  local guard_file="$sup/$1.guard-refusals" target worker_type="${5:-review}" attempt
   case "$2" in
     json) jq -cn --arg text "$guard_marker"$'\n' '{type:"assistant",message:{content:[{type:"text",text:$text}]}}' > "$sup/$1" ;;
     tool-result) jq -cn --arg text "$guard_marker"$'\n' '{type:"tool_result",content:[{type:"text",text:$text}]}' > "$sup/$1" ;;
@@ -169,11 +169,15 @@ guard_run() { # log path mode [keep-history] [head] → harvest one guard review
   esac
   rm -f "$sup/guard.md" "$sup/guard.md.partial"
   [[ "${3:-reset}" == keep ]] || jq -n '{units:[{id:"issue-guard",stage:"review",lane:"direct-main",history:[]}]}' > "$UNITS"
-  jq -n --arg log "$1" --arg head "${4:-}" '{workers:[{pid:999999999,unit:"issue-guard",type:"review",provider:"fixture",log:$log,report:"guard.md",sha:$head,started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+  if [[ "$worker_type" == repair ]]; then
+    attempt="${1##*/}"
+    set_unit issue-guard "$(STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" hist write-start '[]') | .history[-1].work_type=\"repair\" | .history[-1].attempt=$(js "$attempt") | .stage=\"repair\""
+  fi
+  jq -n --arg log "$1" --arg head "${4:-}" --arg type "$worker_type" '{workers:[{pid:999999999,unit:"issue-guard",type:$type,provider:"fixture",log:$log,report:"guard.md",sha:$head,started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
   harvest_workers
 }
 guard_run guard-first.log bash
-jq -e '.units[0] | .stage == "review" and ([.history[] | select(.stage == "worker-guard-refused" and .result == "command=bash reason=test-file")] | length == 1) and ([.history[] | select(.stage == "worker-no-output")] | length == 0)' "$UNITS" >/dev/null \
+jq -e '.units[0] | .stage == "review-pending" and ([.history[] | select(.stage == "worker-guard-refused" and .result == "command=bash reason=test-file")] | length == 1) and ([.history[] | select(.stage == "worker-no-output")] | length == 0)' "$UNITS" >/dev/null \
   || { echo 'guard refusal was not recorded as an explicit worker outcome' >&2; exit 1; }
 jq -e '.workers[0].harvested == true' "$WORKERS" >/dev/null \
   || { echo 'guard refusal was counted as a worker death or left unharvested' >&2; exit 1; }
@@ -184,8 +188,8 @@ jq -e '([.units[0].history[] | select(.stage == "worker-guard-refused")] | lengt
 
 delivered_guard_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 jq -n --arg head "$delivered_guard_head" '{units:[{id:"issue-guard",stage:"rereview-pending",lane:"direct-main",history:[{stage:"repair-delivered",head:$head}]}]}' > "$UNITS"
-guard_run guard-delivered-first.log bash keep "$delivered_guard_head"
-guard_run guard-delivered-second.log python3 keep "$delivered_guard_head"
+guard_run guard-delivered-first.log bash keep "$delivered_guard_head" rereview
+guard_run guard-delivered-second.log python3 keep "$delivered_guard_head" rereview
 jq -e --arg head "$delivered_guard_head" '.units[0] | .stage == "rereview-pending" and ([.history[] | select(.stage == "worker-guard-refused" and .head == $head)] | length == 2) and ([.history[] | select(.stage == "supervisor-escalated")] | length == 0)' "$UNITS" >/dev/null \
   || { echo "guard refusals overrode a delivered repair on the same head: $(jq -c '.units[0]' "$UNITS")" >&2; exit 1; }
 delivered_repair="$(jq -cn '{history:[]}' | jq -c "$(repair_run_filter issue-guard unknown - 0 /dev/null /dev/null "$delivered_guard_head")")"
@@ -195,8 +199,50 @@ jq -e --arg head "$delivered_guard_head" '.stage == "rereview-pending" and .hist
 jq -n '{units:[{id:"issue-guard",stage:"review",lane:"direct-main",history:[]}]}' > "$UNITS"
 guard_run guard-repeat-first.log bash keep
 guard_run guard-repeat-second.log python3 keep
-jq -e '.units[0] | .stage == "supervisor-review" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 2) and any(.history[]; .stage == "worker-guard-refused" and .result == "command=bash reason=test-file") and any(.history[]; .stage == "worker-guard-refused" and .result == "command=python3 reason=test-file") and ([.history[] | select(.stage == "supervisor-escalated")] | length == 1) and all(.history[]; .stage != "worker-no-output")' "$UNITS" >/dev/null \
+jq -e '.units[0] | .stage == "review-pending" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 2) and any(.history[]; .stage == "worker-guard-refused" and .result == "command=bash reason=test-file") and any(.history[]; .stage == "worker-guard-refused" and .result == "command=python3 reason=test-file") and ([.history[] | select(.stage == "supervisor-escalated")] | length == 0) and all(.history[]; .stage != "worker-no-output")' "$UNITS" >/dev/null \
+  || { echo 'the second same-head guard refusal escalated instead of requeueing' >&2; exit 1; }
+guard_run guard-repeat-third.log bash keep
+jq -e '.units[0] | .stage == "supervisor-review" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 3) and ([.history[] | select(.stage == "supervisor-escalated")] | length == 1) and any(.history[]; .stage == "supervisor-escalated" and ((.result // "") | contains("test-shim refusal loop"))) and all(.history[]; .stage != "worker-no-output")' "$UNITS" >/dev/null \
   || { echo "alternating guard refusals did not reach the supervisor: $(jq -c '.units[0]' "$UNITS")" >&2; exit 1; }
+
+git -C "$MAC_AUTOPILOT_ROOT" init -q -b main
+git -C "$MAC_AUTOPILOT_ROOT" -c user.name='Test' -c user.email='test@example.invalid' commit --allow-empty -qm 'direct-main refusal base one'
+refusal_head="$(git -C "$MAC_AUTOPILOT_ROOT" rev-parse --verify HEAD)"
+jq -n --arg head "$refusal_head" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{units:[{id:"issue-guard",stage:"repair-pending",lane:"direct-main",history:[
+  {stage:"write-start",work_type:"repair",attempt:"before-ruling.worker.log"},
+  {stage:"supervisor-requeue",at:$now}
+]}]}' > "$UNITS"
+guard_run guard-repair-first.log bash keep "$refusal_head" repair
+guard_repair_budget_unchanged() {
+  local label="$1" expected_stage="${2:-repair-pending}" expected_escalations="${3:-0}" unit rounds stop_loss budget
+  unit="$(jq -c '.units[0]' "$UNITS")"
+  rounds="$(repair_rounds_since_ruling "$unit")"
+  stop_loss="$(effective_write_starts_since_ruling "$unit" '["supervisor-requeue"]' | jq 'length')"
+  budget="$(ticket_budget_reason "$unit")"
+  [[ "$(jq -r '.stage' <<<"$unit")" == "$expected_stage" && "$rounds" == 0 && "$stop_loss" == 0 \
+    && -z "$budget" \
+    && "$(jq -r '[.history[] | select(.stage=="supervisor-escalated")] | length' <<<"$unit")" == "$expected_escalations" \
+    && "$(jq -r '[.history[] | select(.stage=="hard-escalation")] | length' <<<"$unit")" == 0 ]] \
+    || { echo "guard refusal $label spent a round/budget or did not requeue: $unit (repair=$rounds stop-loss=$stop_loss reason=$budget)" >&2; exit 1; }
+}
+guard_repair_budget_unchanged first
+guard_run guard-repair-second.log bash keep "$refusal_head" repair
+guard_repair_budget_unchanged second
+guard_run guard-repair-third.log bash keep "$refusal_head" repair
+jq -e '.units[0] | .stage == "supervisor-review" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 3) and ([.history[] | select(.stage == "supervisor-escalated")] | length == 1) and any(.history[]; .stage == "supervisor-escalated" and ((.result // "") | contains("test-shim refusal loop")))' "$UNITS" >/dev/null \
+  || { echo 'third same-head repair refusal did not escalate as a test-shim refusal loop' >&2; exit 1; }
+guard_repair_budget_unchanged third supervisor-review 1
+
+next_refusal_head="$(git -C "$MAC_AUTOPILOT_ROOT" -c user.name='Test' -c user.email='test@example.invalid' commit --allow-empty -qm 'direct-main refusal base two' && git -C "$MAC_AUTOPILOT_ROOT" rev-parse --verify HEAD)"
+jq -n --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{units:[{id:"issue-guard",stage:"repair-pending",lane:"direct-main",history:[{stage:"supervisor-requeue",at:$now}]}]}' > "$UNITS"
+guard_run guard-repair-old-head.log bash keep "$refusal_head" repair
+guard_run guard-repair-new-head-first.log bash keep "$next_refusal_head" repair
+guard_repair_budget_unchanged 'head change first refusal'
+guard_run guard-repair-new-head-second.log python3 keep "$next_refusal_head" repair
+guard_repair_budget_unchanged 'head change second refusal'
+guard_run guard-repair-new-head-third.log bash keep "$next_refusal_head" repair
+jq -e --arg head "$next_refusal_head" '.units[0] | .stage == "supervisor-review" and ([.history[] | select(.stage == "worker-guard-refused" and .head == $head)] | length == 3) and any(.history[]; .stage == "supervisor-escalated" and ((.result // "") | contains("test-shim refusal loop")))' "$UNITS" >/dev/null \
+  || { echo 'refusals on different heads were combined or the third refusal on the new head did not escalate' >&2; exit 1; }
 
 guard_review_rule="$(lane_rule direct-main test-head)"
 [[ "$guard_review_rule" == *'评审阶段不得运行测试命令'* && "$guard_review_rule" == *'测试文件可只读检查'* && "$guard_review_rule" == *'Focused 检查在 land 后的 Pipeline 运行'* && "$guard_review_rule" == *'test evidence: not run, post-land'* ]] \
