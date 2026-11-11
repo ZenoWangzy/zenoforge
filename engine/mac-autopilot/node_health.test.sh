@@ -1047,6 +1047,14 @@ by_branch = n.delivery_metrics(
     [{"number":201, "mergedAt":"2026-10-24T20:00:00Z", "mergeCommit":{"oid":"a"*40}, "reviews":[]}],
     [{"issue":101, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}], [], now)
 assert by_branch["values"]["delivery.unlinked_units_30d"] == 0, by_branch
+# A missing terminal history event must not defeat the exact PR merge timestamp and SHA.
+recovered = n.delivery_metrics(
+    [{"id":"issue-197", "issue":197, "pr":297, "merge_sha":"d"*40, "stage":"merged",
+      "history":[{"stage":"merge-issued", "at":"2026-10-24T20:00:00Z"}]}],
+    [{"number":197, "createdAt":"2026-10-20T00:00:00Z"}],
+    [{"number":297, "mergedAt":"2026-10-24T20:00:00Z", "mergeCommit":{"oid":"d"*40}}],
+    [{"issue":197, "sha":"e"*40, "at":"2026-10-25T00:00:00Z"}], [], now)
+assert recovered["values"]["delivery.unlinked_units_30d"] == 0, recovered
 # An accepted issue whose unit left the ledger still counts for lead time; it only raises unlinked_units.
 unitless = n.delivery_metrics(
     [{"id":"pr-201", "issue":101, "pr":201, "merge_sha":"a"*40,
