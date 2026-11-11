@@ -178,19 +178,22 @@ VERDICT
   exit 0
 }
 
+# Slice-letter rule: bare A./A) ruling markers count only when the ruling
+# says "slice"/"切片"; explicit "slice A"/"切片 A" names always count.
 recut_slice_letters() {
+  local context="${1:-ruling}"
   python3 -c '
 import re
 import sys
 
+context = sys.argv[1]
+text = sys.stdin.read()
 letters = set()
-for line in sys.stdin:
-    match = re.match(r"^\s*([A-Za-z])[.)](?:\s|$)", line)
-    if match:
-        letters.add(match.group(1).upper())
-    letters.update(letter.upper() for letter in re.findall(r"\bslice\s+([A-Za-z])\b", line, re.I))
+letters.update(letter.upper() for letter in re.findall(r"(?:\bslices?\s+|切片\s*)([A-Za-z])\b", text, re.I))
+if context == "planned" or re.search(r"\bslices?\b|切片", text, re.I):
+    letters.update(letter.upper() for letter in re.findall(r"(?m)^\s*([A-Za-z])[.)](?:\s|$)", text))
 print("\n".join(sorted(letters)))
-'
+' "$context"
 }
 
 escalate_partial_recut() {
@@ -398,16 +401,15 @@ DOMAIN_VERIFIED="$(echo "$RESULT" | jq -r '.domain_verified')"
 REFUSE_REASON="$(echo "$RESULT" | jq -r '.refuse_reason' | scrub_git_object_ids | scrub_closing_keywords)"
 NEEDS_PRODUCTION_ACCESS="$(echo "$RESULT" | jq -r '.needs_production_access == true')"
 CHILD_COUNT="$(echo "$RESULT" | jq '.children | length')"
-RECUT_STATE_REFUSAL_REASON="$(jq -r '.recut_refused_reason // empty' <<< "$PARENT_STATE")"
 RECUT_LATEST_SUPERVISOR_RULING="$(jq -r '
   [.comments[]? | select((.body // "") | test("(?im)^\\s*Supervisor ruling"))]
   | sort_by(.createdAt // "")
   | last
   | .body // ""
 ' <<< "$ISSUE_JSON")"
-RECUT_REQUIRED_SLICE_LETTERS="$(printf '%s\n' "$RECUT_LATEST_SUPERVISOR_RULING" | recut_slice_letters)"
+RECUT_REQUIRED_SLICE_LETTERS="$(printf '%s\n' "$RECUT_LATEST_SUPERVISOR_RULING" | recut_slice_letters ruling)"
 RECUT_REQUIRED_SLICE_COUNT="$(awk 'NF { count++ } END { print count + 0 }' <<< "$RECUT_REQUIRED_SLICE_LETTERS")"
-RECUT_PLANNED_SLICE_LETTERS="$(jq -r '.children[]?.title // empty' <<< "$RESULT" | recut_slice_letters)"
+RECUT_PLANNED_SLICE_LETTERS="$(jq -r '.children[]?.title // empty' <<< "$RESULT" | recut_slice_letters planned)"
 RECUT_MISSING_SLICE_LETTERS=""
 while IFS= read -r letter; do
   [ -n "$letter" ] || continue
@@ -423,9 +425,6 @@ fi
 RECUT_PARTIAL_REFUSAL_REASON=""
 if [ -n "$REFUSE_REASON" ]; then
   RECUT_PARTIAL_REFUSAL_REASON="model refusal: $REFUSE_REASON"
-fi
-if [ -n "$RECUT_STATE_REFUSAL_REASON" ]; then
-  RECUT_PARTIAL_REFUSAL_REASON="${RECUT_PARTIAL_REFUSAL_REASON:+$RECUT_PARTIAL_REFUSAL_REASON; }stored recut refusal: $RECUT_STATE_REFUSAL_REASON"
 fi
 RECUT_SLICE_SHORTFALL_REASON=""
 if [ "$CHILD_COUNT" -lt "$RECUT_REQUIRED_SLICE_COUNT" ]; then

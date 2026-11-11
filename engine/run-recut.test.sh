@@ -750,6 +750,19 @@ assert_contains "partial cut lists its planned child" "$INBOX_CONTENT" "planned 
 assert_contains "partial cut says it created no children" "$INBOX_CONTENT" "children created=none"
 assert_not_contains "partial refusal creates no child issue" "$GH_LOG_CONTENT" "gh issue create"
 
+# A refusal reason can outlive its timestamp after route_to_recut. It is not
+# a refusal from this run, so a complete fresh plan must still be applied.
+HAND_TEST_COMMENTS='[]'
+FAKE_RECUIT_RESPONSE_JSON="$(jq -cn \
+  '{domain_verified:true,refuse_reason:"",needs_production_access:false,how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[{title:"First delivery",body_md:"Implement the first verified part.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]},{title:"Second delivery",body_md:"Implement the second verified part.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]}]}' )"
+run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4","recut_refused_reason":"older refusal"}'
+assert_eq "stale stored refusal allows both children to complete" 2 \
+  "$(jq '.recut_children | length' <<< "$STATE_CONTENT")"
+assert_eq "stale stored refusal does not escalate" false \
+  "$(jq 'has("hold") and .hold != null' <<< "$STATE_CONTENT")"
+assert_eq "stale stored refusal creates both children" 2 \
+  "$(grep -c '^gh issue create ' <<< "$GH_LOG_CONTENT" || true)"
+
 HAND_TEST_COMMENTS="$(jq -cn \
   '[{createdAt:"2026-11-10T10:00:00Z",body:"Supervisor ruling (head): recut into one slice.\nB. Child exit reporting."},{createdAt:"2026-11-11T15:48:14Z",body:"Supervisor ruling (head): recut into two fresh slices.\nA. Long message history.\nB. Child exit reporting."}]')"
 FAKE_RECUIT_RESPONSE_JSON="$(jq -cn \
@@ -763,6 +776,28 @@ assert_not_contains "short plan creates no child issue" "$GH_LOG_CONTENT" "gh is
 assert_eq "short plan does not record a completed recut" false \
   "$(jq 'has("recut_children")' <<< "$STATE_CONTENT")"
 
+# Explicit Chinese slice names have the same shortfall semantics as English.
+HAND_TEST_COMMENTS="$(jq -cn \
+  '[{createdAt:"2026-11-11T15:48:14Z",body:"Supervisor ruling (head): implement 切片 A and 切片 B."}]')"
+FAKE_RECUIT_RESPONSE_JSON="$(jq -cn \
+  '{domain_verified:true,refuse_reason:"",needs_production_access:false,how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[{title:"切片 B: Child exit reporting",body_md:"Report the unexpected child exit.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]}]}' )"
+run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'
+assert_eq "explicit Chinese slice shortfall enters supervisor hold" supervisor \
+  "$(jq -r '.hold.holder // empty' <<< "$STATE_CONTENT")"
+assert_contains "explicit Chinese slice shortfall names missing A" "$INBOX_CONTENT" "missing slices: A"
+
+# An ordinary lettered ruling list is not a slice contract without slice wording.
+HAND_TEST_COMMENTS="$(jq -cn \
+  '[{createdAt:"2026-11-11T15:48:14Z",body:"Supervisor ruling (head): keep these notes in order.\nA. Context\nB. Result"}]')"
+FAKE_RECUIT_RESPONSE_JSON="$(jq -cn \
+  '{domain_verified:true,refuse_reason:"",needs_production_access:false,how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[{title:"Implementation summary",body_md:"Summarize the implementation.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]}]}' )"
+run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'
+assert_eq "ordinary ruling list does not trigger slice shortfall" false \
+  "$(jq 'has("hold") and .hold != null' <<< "$STATE_CONTENT")"
+assert_eq "ordinary ruling list completes the planned child" 1 \
+  "$(jq '.recut_children | length' <<< "$STATE_CONTENT")"
+
+HAND_TEST_COMMENTS='[]'
 FAKE_RECUIT_RESPONSE_JSON="$(jq -cn \
   '{domain_verified:true,refuse_reason:"",needs_production_access:false,how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[{title:"A. Long message history",body_md:"Measure and remove repeated history work.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]},{title:"B. Child exit reporting",body_md:"Report the unexpected child exit.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]}]}')"
 run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'
