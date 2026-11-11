@@ -15,20 +15,15 @@
     },
     "how": {
       "type": "string",
-      "minLength": 1,
-      "pattern": "\\S",
       "description": "How the touched code works today."
     },
     "why": {
       "type": "string",
-      "minLength": 1,
-      "pattern": "\\S",
       "description": "Why the touched code was written that way, citing commit history and issue numbers."
     },
     "acceptance_criteria": {
       "type": "array",
-      "minItems": 1,
-      "items": { "type": "string", "minLength": 1, "pattern": "\\S" },
+      "items": { "type": "string" },
       "description": "Objective criteria a top domain expert would use to judge the proposed work."
     },
     "children": {

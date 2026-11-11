@@ -644,7 +644,9 @@ cat > "$FAKE_BIN/zcode" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$AGENT_HOME/zcode-args.txt"
 printf '%s\n' '```json'
-if [[ "${FAKE_ZCODE_MISSING_WHY:-0}" == 1 ]]; then
+if [[ "${FAKE_ZCODE_EMPTY_HOW:-0}" == 1 ]]; then
+  printf '%s\n' '{"domain_verified":false,"needs_production_access":false,"refuse_reason":"glm refusal","children":[],"how":" ","why":"Commit 97ed8be added the decision gate for issue #880.","acceptance_criteria":[]}'
+elif [[ "${FAKE_ZCODE_MISSING_WHY:-0}" == 1 ]]; then
   printf '%s\n' '{"domain_verified":false,"needs_production_access":false,"refuse_reason":"glm refusal","children":[],"how":"The code handles this work in the recut runner.","acceptance_criteria":["A reviewer can check the behavior."]}'
 else
   printf '%s\n' '{"domain_verified":false,"needs_production_access":false,"refuse_reason":"glm refusal","children":[],"how":"The code handles this work in the recut runner.","why":"Commit 97ed8be added the decision gate for issue #880.","acceptance_criteria":["A reviewer can check the behavior."]}'
@@ -661,6 +663,17 @@ assert_eq "exhausted Codex recut never calls codex" "" "$(cat "$FAKE_RECUIT_ARGS
 assert_contains "exhausted Codex recut reaches zcode" "$(cat "$AGENT_HOME/zcode-args.txt")" '--mode yolo'
 assert_eq "GLM recut reply lands through the refusal path" "glm refusal" "$(jq -r '.recut_refused_reason' <<< "$STATE_CONTENT")"
 assert_not_contains "GLM recut prompt is not the reviewer prompt" "$(cat "$AGENT_HOME/zcode-args.txt")" 'cross-provider reviewer'
+
+FAKE_ZCODE_EMPTY_HOW=1 RECUT_TEST_EXHAUST_CODEX=1 ZCODE_QUOTA_SNAPSHOT_FILE="$RECUT_GLM_QUOTA" \
+  run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'
+assert_eq "empty recut fields bump attempts once" 1 "$(jq -r '.attempts' <<< "$STATE_CONTENT")"
+assert_eq "empty recut fields record a recut model-policy failure" recut \
+  "$(jq -r '.model_policy.failures[-1].unit // empty' <<< "$STATE_CONTENT")"
+assert_contains "empty recut failure names how" \
+  "$(jq -r '.model_policy.failures[-1].reason // empty' <<< "$STATE_CONTENT")" "how"
+assert_contains "empty recut failure names acceptance_criteria" \
+  "$(jq -r '.model_policy.failures[-1].reason // empty' <<< "$STATE_CONTENT")" "acceptance_criteria"
+assert_not_contains "empty recut fields create no child issue" "$GH_LOG_CONTENT" "issue create"
 
 FAKE_ZCODE_MISSING_WHY=1 RECUT_TEST_EXHAUST_CODEX=1 ZCODE_QUOTA_SNAPSHOT_FILE="$RECUT_GLM_QUOTA" \
   run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'

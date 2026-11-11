@@ -301,15 +301,42 @@ codex_budget_release "$CODEX_BUDGET_RESERVATION_ID" || true
 CODEX_BUDGET_RESERVATION_ID=""
 rm -f "$PROMPT_FILE"
 
-if [ $STATUS -ne 0 ] || [ "$(echo "$OUTPUT" | jq -r '.is_error' 2>/dev/null || echo true)" = "true" ]; then
+RECUT_MODEL_IS_ERROR="$(echo "$OUTPUT" | jq -r '.is_error' 2>/dev/null || echo true)"
+RECUT_EMPTY_FIELDS=""
+if [ "$STATUS" -eq 0 ] && [ "$RECUT_MODEL_IS_ERROR" != true ]; then
+  RECUT_EMPTY_FIELDS="$(jq -r '
+    (.structured_output // {}) as $result
+    | [
+        if (($result.how // "") | type) != "string" then "how"
+        elif (($result.how // "") | test("\\S") | not) then "how"
+        else empty end,
+        if (($result.why // "") | type) != "string" then "why"
+        elif (($result.why // "") | test("\\S") | not) then "why"
+        else empty end,
+        if (($result.acceptance_criteria // null) | type) != "array" then "acceptance_criteria"
+        elif ($result.acceptance_criteria | length) == 0 then "acceptance_criteria"
+        elif any($result.acceptance_criteria[]; if type == "string" then (test("\\S") | not) else true end) then "acceptance_criteria"
+        else empty end
+      ]
+    | unique
+    | join(", ")
+  ' <<< "$OUTPUT" 2>/dev/null || true)"
+  [ -z "$RECUT_EMPTY_FIELDS" ] || STATUS=1
+fi
+
+if [ $STATUS -ne 0 ] || [ "$RECUT_MODEL_IS_ERROR" = "true" ]; then
   LOG_FILE="$(log_model_failure "recut-$N" "$OUTPUT" "$STATUS")"
   echo "run-recut: worktree kept for inspection: $WT" >&2
   POLICY_STATUS="$STATUS"
   [ "$POLICY_STATUS" -ne 0 ] || POLICY_STATUS=1
   state_bump_attempts "$N"
   pause_for_backoff "$N" "$OUTPUT" "$STATUS" 0 "$(provider_quota_provider_for_model "$MODEL_POLICY_IDENTITY")" "$MODEL_POLICY_IDENTITY" run-recut:recut || true
+  FAILURE_DETAIL="Recut run failed (exit $STATUS); full output in $LOG_FILE"
+  if [ -n "$RECUT_EMPTY_FIELDS" ]; then
+    FAILURE_DETAIL="Recut output has empty field(s): $RECUT_EMPTY_FIELDS; full output in $LOG_FILE"
+  fi
   model_policy_record_failure "$N" "$MODEL_POLICY_STEP" recut \
-    "Recut run failed (exit $STATUS); full output in $LOG_FILE" "$(tail -n 80 "$LOG_FILE")" \
+    "$FAILURE_DETAIL" "$(tail -n 80 "$LOG_FILE")" \
     "$POLICY_STATUS" needs-recut recut "$([ "$STATUS" -eq 124 ] && echo 1 || echo 0)" "$ISSUE_JSON" || exit 1
   exit 0
 fi
