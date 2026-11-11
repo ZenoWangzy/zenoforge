@@ -3253,7 +3253,8 @@ retire_landed_pr_units
 [[ "$(field issue-77 .stage)" == closed ]] || fail 'a PR closed outside the pipeline must retire as closed'
 grep -Fqx '77:finish-first:pr-closed-label-reconcile' "$retire_routes" \
   && grep -Fqx '78:tracker:recut-parent-retired' "$retire_routes" \
-  && grep -Fqx '79:ready-for-agent:pr-closed-requeue' "$retire_routes" \
+  && grep -Fqx '79:needs-triage:pr-closed-requeue' "$retire_routes" \
+  && ! grep -Fqx '79:ready-for-agent:pr-closed-requeue' "$retire_routes" \
   || fail "closed PR retirement did not restore the issue lane or tracker marker: $(cat "$retire_routes")"
 [[ "$(field pr-9004 .stage)" == review-pending ]] || fail 'a PR missing from the open list but still OPEN must stay'
 eval "$retire_saved_tick_prs"; eval "$retire_saved_pr_view"; eval "$retire_saved_issue_state"; eval "$retire_saved_issue_transition"; eval "$retire_saved_gh"
