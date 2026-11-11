@@ -1,18 +1,21 @@
 handle_worker_guard_refusal() { # unit refusal-file head work-type attempt → requeue twice; escalate a third same-head refusal unless delivered
-  local unit="$1" refusal_file="$2" head="${3:-}" work_type="${4:-}" attempt="${5:-}" marker signature refusals delivered re pending_stage filter
+  local unit="$1" refusal_file="$2" head="${3:-}" work_type="${4:-}" attempt="${5:-}" marker signature refusals re pending_stage filter
   re="^non-product-test-guard: refused unit=$unit command=[[:alnum:]_-]+ reason=[[:alnum:]_-]+ recorded=[01]$"
   marker="$(grep -E "$re" "$refusal_file" 2>/dev/null | tail -n 1 || true)"
   [[ -n "$marker" ]] || return 1
   signature="${marker#* unit=$unit }"; signature="${signature% recorded=*}"
-  refusals="$(jqf -r --arg id "$unit" --arg head "$head" '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage=="worker-guard-refused" and (.head // "")==$head)] | length' "$UNITS")"
-  delivered="$(jqf -r --arg id "$unit" --arg head "$head" '[.units[] | select(.id==$id) | (.history // [])[] | select($head!="" and .stage=="repair-delivered" and (.head // "")==$head)] | length' "$UNITS")"
+  refusals="$(jqf -r --arg id "$unit" --arg head "$head" '
+    [.units[] | select(.id==$id) | (.history // []) as $history
+      | ([$history | to_entries[] | select(.value.stage=="repair-delivered" and (.value.head // "")==$head) | .key] | last // -1) as $delivery
+      | [$history | to_entries[] | select(.key > $delivery and .value.stage=="worker-guard-refused" and (.value.head // "")==$head)] | length
+    ] | first // 0' "$UNITS")"
   filter="$(hist worker-guard-refused "$signature") | .history[-1].head=$(js "$head")"
   [[ -z "$work_type" ]] || filter+=" | .history[-1].work_type=$(js "$work_type")"
   if [[ -n "$attempt" ]]; then
     filter+=" | .history[-1].attempt=$(js "$attempt") | .history |= map(if .stage == \"write-start\" and .attempt == $(js "$attempt") then . + {worker_guard_refused:true} else . end)"
   fi
   set_unit "$unit" "$filter"
-  if (( refusals >= 2 && delivered == 0 )); then
+  if (( refusals >= 2 )); then
     to_supervisor "$unit" "test-shim refusal loop after 3 refusals on head ${head:-unknown}: $signature"
   else
     case "$work_type" in

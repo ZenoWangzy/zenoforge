@@ -6,10 +6,18 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 repo_root="$MAC_AUTOPILOT_ENV_ROOT"
 HERE="$repo_root/engine/mac-autopilot"
 queue_source="$HERE/scheduler.d/dispatch-queue.sh"
-source "$queue_source"
-source "$repo_root/engine/incident-rule.sh"
-jqf() { jq "$@"; }
-source "$repo_root/engine/mac-autopilot/scheduler.d/review-rules.sh"
+fixture="$test_env_root/incident-rule-label"
+sup="$fixture/supervisor"
+mkdir -p "$sup/autopi/alerts" "$fixture/repo"
+jq '.auto_merge=false | .advisor=false | .precheck=false' "$HERE/config.template.json" > "$sup/autopi/config.json"
+printf '%s\n' '{"units":[]}' > "$sup/autopi/units.json"
+printf '%s\n' '{"workers":[]}' > "$sup/autopi/workers.json"
+export MAC_AUTOPILOT_ROOT="$fixture/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$sup/autopi"
+export REQUIRED_PR_CHECKS_FILE="$fixture/required-pr-checks.json"
+printf '%s\n' '{"required":[],"current_regression":"","legacy_regression":[]}' > "$REQUIRED_PR_CHECKS_FILE"
+export AUTOPI_TEST_LIBRARY_ONLY=true
+source "$HERE/scheduler.sh"
+unset AUTOPI_TEST_LIBRARY_ONLY
 
 bug_unit='{"id":"incident-bug","issue":5389,"labels":["bug"]}'
 plain_unit='{"id":"ordinary","issue":5390,"labels":["enhancement"]}'
@@ -47,6 +55,56 @@ direct_repair_prompt="$(direct_main_worker_prompt 'GOAL: repair the direct-main 
 direct_feature_prompt="$(feature_verification_prompt direct-main 'pipeline scripts')"
 [[ "$direct_feature_prompt" == *'Direct-main pipeline work'* && "$direct_feature_prompt" != *'Run node scripts/e2e/'* ]] \
   || { echo 'not ok - direct-main implement prompt includes a product feature test command' >&2; exit 1; }
+
+git -C "$ROOT" init -q -b main
+git -C "$ROOT" -c user.name='Test' -c user.email='test@example.invalid' commit --allow-empty -qm 'prompt test base'
+git -C "$ROOT" branch -f agent/issue-prompt-implement HEAD
+git -C "$ROOT" branch -f agent/issue-prompt-repair HEAD
+footprint_waiters_revalidate() { :; }
+dispatch_live_prime() { :; }
+tick_prs_changed() { :; }
+dispatch_capacity_free() { return 0; }
+tick_prs_prime() { :; }
+dispatch_why_load() { :; }
+advisor_harvest() { :; }
+dispatch_order() { jq -c '.units[]' "$UNITS"; }
+paused_midrun() { return 1; }
+unit_blocked_run_dep() { return 1; }
+token_spend_gate() { return 0; }
+ticket_budget_reason() { :; }
+loop_rounds() { printf '0\n'; }
+dispatch_why() { :; }
+pick() { PICK_MODEL=fixture; PICK_EFFORT=high; PICK_PROVIDER=codex; PICK_HARD=false; PICK_REASON=configured; PICK_ROUTE_PROVIDER=codex; }
+room_for() { return 0; }
+footprint_room() { return 0; }
+repair_cap_admission() { :; }
+park_if_body_blocked() { return 1; }
+no_finding_repair_route() { return 1; }
+ensure_clone() { printf '%s' "$ROOT"; }
+resume_handoff_integration() { return 0; }
+repair_failure_prompt() { printf 'fixture review findings'; }
+matt_method_rule() { printf 'Method requirements.'; }
+decision_scope() { :; }
+sweep_rule() { :; }
+supervisor_rule() { :; }
+verification_plan_for_state() { printf '{}'; }
+verification_plan_brief() { printf 'pipeline scripts'; }
+subject_of() { printf 'fixture issue %s' "$2"; }
+captured_type=''; captured_prompt=''; captured_head=''
+dispatch_if_room() {
+  captured_type="$3"; captured_prompt="$8"; captured_head="${9:-}"
+  set_unit "$1" '.stage="review-pending"'
+  return 0
+}
+SCHED_LOCK_HELD=true
+jq -n '{units:[{id:"issue-prompt-implement",issue:901,task:"direct-main implementation",branch:"agent/issue-prompt-implement",stage:"implement-pending",lane:"direct-main",title:"prompt fixture",history:[]}]}' > "$UNITS"
+dispatch_pending false >/dev/null
+[[ "$captured_type" == implement && "$captured_prompt" == *"$direct_rule"* && "$captured_head" == "$(git -C "$ROOT" rev-parse --verify HEAD)" ]] \
+  || { echo 'not ok - actual direct-main implement dispatch lacks the no-tests line or source head' >&2; exit 1; }
+jq -n '{units:[{id:"issue-prompt-repair",issue:902,review_report:"review-902.md",branch:"agent/issue-prompt-repair",stage:"repair-pending",lane:"direct-main",title:"prompt fixture",history:[{stage:"review-request-changes"}]}]}' > "$UNITS"
+dispatch_pending false >/dev/null
+[[ "$captured_type" == repair && "$captured_prompt" == *"$direct_rule"* && "$captured_head" == "$(git -C "$ROOT" rev-parse --verify HEAD)" ]] \
+  || { echo 'not ok - actual direct-main repair dispatch lacks the no-tests line or source head' >&2; exit 1; }
 
 two_labels="$(incident_match_line '{"labels":[{"name":"bug"},{"name":"incident"},{"name":"enhancement"}]}' '["bug","incident","production-anomaly"]')"
 [[ "$two_labels" == 'This unit IS an incident unit: its label bug, incident is in incident.labels, so every requirement below applies to your report.' ]] \

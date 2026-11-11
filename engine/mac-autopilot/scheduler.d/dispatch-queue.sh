@@ -40,6 +40,12 @@ direct_main_worker_prompt() { # prompt unit-json → append the worker-side test
   [[ "$(jqf -r '.lane // empty' <<<"$unit")" == direct-main ]] || { printf '%s' "$prompt"; return 0; }
   printf '%s\n%s' "$prompt" 'Do not run any test file or test command. The engine runs tests after delivery. A refused test command is not a failure; finish the change and deliver.'
 }
+direct_main_worker_head() { # worktree → checked-out commit used to key direct-main worker outcomes
+  local head
+  head="$(git -C "$1" rev-parse --verify HEAD 2>/dev/null)" || return 1
+  [[ "$head" =~ $SHA_RE ]] || return 1
+  printf '%s' "$head"
+}
 feature_verification_prompt() { # lane brief → product feature evidence instructions; direct-main work has no worker-run test commands
   if [[ "$1" == direct-main ]]; then
     printf '%s' 'Direct-main pipeline work does not use product feature verification commands.'
@@ -391,9 +397,13 @@ ${verify_rule}
 5. 修复说明写到 $SUP/${rep}，包含改动、验证摘要、交付 SHA 和非空的 ## decision-log（试过什么、失败原因、最终选择、如何验证）；同时就地更新单元实现报告的该节，供复审读取，交付完即结束。
 $(decision_scope "$u")"
         prompt="$(direct_main_worker_prompt "$prompt" "$u")"
+        sha=""
+        if [[ "$lane" == direct-main ]]; then
+          sha="$(direct_main_worker_head "$wt")" || { say "repair-pending unit=$id: direct-main worktree head unavailable"; continue; }
+        fi
         dmark prompt
         dispatch_if_room "$id" "repair" "repair" "${rep%.md}.worker.log" "$rep" \
-          "$PICK_MODEL" "$PICK_EFFORT" "$prompt$(sweep_rule "$u")$(supervisor_rule "$u")" "" "$wt" "" "$failure" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" && [[ -n "$pr_num" ]] && repair_demote "$id" "$pr_num" "$branch"
+          "$PICK_MODEL" "$PICK_EFFORT" "$prompt$(sweep_rule "$u")$(supervisor_rule "$u")" "$sha" "$wt" "" "$failure" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" && [[ -n "$pr_num" ]] && repair_demote "$id" "$pr_num" "$branch"
         dmark dispatch; true ;;
       rereview-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || { to_supervisor "$id" "rereview-pending without a PR"; continue; }
@@ -605,9 +615,13 @@ $(feature_verification_prompt "$lane" "$feature_brief")
 
 $deliver"
         prompt="$(direct_main_worker_prompt "$prompt" "$u")"
+        sha=""
+        if [[ "$lane" == direct-main ]]; then
+          sha="$(direct_main_worker_head "$wt")" || { say "implement-pending unit=$id: direct-main worktree head unavailable"; continue; }
+        fi
         dmark prompt
         dispatch_if_room "$id" "implement" "implement" "${rep%.md}.worker.log" "$rep" \
-          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "" "$wt" "" "$prompt" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" || true; dmark dispatch ;;
+          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "" "$prompt" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" || true; dmark dispatch ;;
     esac
   done <<<"$ordered"
   (( dispatch_pass == 1 && ${#TICK_FOOTPRINT_DEFERRED[@]} > 0 )) || break

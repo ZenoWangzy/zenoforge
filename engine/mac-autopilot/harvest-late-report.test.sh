@@ -205,7 +205,9 @@ guard_run guard-repeat-third.log bash keep
 jq -e '.units[0] | .stage == "supervisor-review" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 3) and ([.history[] | select(.stage == "supervisor-escalated")] | length == 1) and any(.history[]; .stage == "supervisor-escalated" and ((.result // "") | contains("test-shim refusal loop"))) and all(.history[]; .stage != "worker-no-output")' "$UNITS" >/dev/null \
   || { echo "alternating guard refusals did not reach the supervisor: $(jq -c '.units[0]' "$UNITS")" >&2; exit 1; }
 
-refusal_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+git -C "$MAC_AUTOPILOT_ROOT" init -q -b main
+git -C "$MAC_AUTOPILOT_ROOT" -c user.name='Test' -c user.email='test@example.invalid' commit --allow-empty -qm 'direct-main refusal base one'
+refusal_head="$(git -C "$MAC_AUTOPILOT_ROOT" rev-parse --verify HEAD)"
 jq -n --arg head "$refusal_head" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{units:[{id:"issue-guard",stage:"repair-pending",lane:"direct-main",history:[
   {stage:"write-start",work_type:"repair",attempt:"before-ruling.worker.log"},
   {stage:"supervisor-requeue",at:$now}
@@ -230,6 +232,17 @@ guard_run guard-repair-third.log bash keep "$refusal_head" repair
 jq -e '.units[0] | .stage == "supervisor-review" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 3) and ([.history[] | select(.stage == "supervisor-escalated")] | length == 1) and any(.history[]; .stage == "supervisor-escalated" and ((.result // "") | contains("test-shim refusal loop")))' "$UNITS" >/dev/null \
   || { echo 'third same-head repair refusal did not escalate as a test-shim refusal loop' >&2; exit 1; }
 guard_repair_budget_unchanged third supervisor-review 1
+
+next_refusal_head="$(git -C "$MAC_AUTOPILOT_ROOT" -c user.name='Test' -c user.email='test@example.invalid' commit --allow-empty -qm 'direct-main refusal base two' && git -C "$MAC_AUTOPILOT_ROOT" rev-parse --verify HEAD)"
+jq -n --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{units:[{id:"issue-guard",stage:"repair-pending",lane:"direct-main",history:[{stage:"supervisor-requeue",at:$now}]}]}' > "$UNITS"
+guard_run guard-repair-old-head.log bash keep "$refusal_head" repair
+guard_run guard-repair-new-head-first.log bash keep "$next_refusal_head" repair
+guard_repair_budget_unchanged 'head change first refusal'
+guard_run guard-repair-new-head-second.log python3 keep "$next_refusal_head" repair
+guard_repair_budget_unchanged 'head change second refusal'
+guard_run guard-repair-new-head-third.log bash keep "$next_refusal_head" repair
+jq -e --arg head "$next_refusal_head" '.units[0] | .stage == "supervisor-review" and ([.history[] | select(.stage == "worker-guard-refused" and .head == $head)] | length == 3) and any(.history[]; .stage == "supervisor-escalated" and ((.result // "") | contains("test-shim refusal loop")))' "$UNITS" >/dev/null \
+  || { echo 'refusals on different heads were combined or the third refusal on the new head did not escalate' >&2; exit 1; }
 
 guard_review_rule="$(lane_rule direct-main test-head)"
 [[ "$guard_review_rule" == *'评审阶段不得运行测试命令'* && "$guard_review_rule" == *'测试文件可只读检查'* && "$guard_review_rule" == *'Focused 检查在 land 后的 Pipeline 运行'* && "$guard_review_rule" == *'test evidence: not run, post-land'* ]] \
