@@ -37,6 +37,7 @@ HAND_TEST_OWNER_MODE=''
 HAND_TEST_TITLE='recut test issue'
 HAND_TEST_BODY=''
 HAND_TEST_COMMENTS='[]'
+HAND_TEST_DISABLE_ROADMAP=0
 export FAKE_RECUIT_RESPONSE_JSON=''
 cleanup() {
   local d
@@ -317,6 +318,8 @@ run_once() {
   fi
   if [ "${9:-}" = roadmap ]; then
     jq '.switches["roadmap-order"] = true' "$SCRIPT_DIR/model-policy.default.json" > "$agent_home/model-policy.json"
+  elif [ "$HAND_TEST_DISABLE_ROADMAP" = 1 ]; then
+    jq '.switches["roadmap-order"] = false' "$SCRIPT_DIR/model-policy.default.json" > "$agent_home/model-policy.json"
   fi
   ROADMAP_TEST_ISSUE="$hand_issue" ROADMAP_TEST_TITLE="$HAND_TEST_TITLE" \
     python3 - "$agent_home/roadmap-tree.json" <<'PY'
@@ -732,11 +735,7 @@ assert_contains "roadmap-mode recut adds needs-triage in the child create reques
 
 HAND_TEST_COMMENTS='[]'
 export ROADMAP_ISSUE_CREATE_INNER=1
-RECUT_NO_ROADMAP_POLICY="$(mktemp)"
-TMP_DIRS+=("$RECUT_NO_ROADMAP_POLICY")
-jq '.switches["roadmap-order"] = false' "$SCRIPT_DIR/model-policy.default.json" > "$RECUT_NO_ROADMAP_POLICY"
-MODEL_POLICY_FILE="$RECUT_NO_ROADMAP_POLICY"
-export MODEL_POLICY_FILE
+HAND_TEST_DISABLE_ROADMAP=1
 FAKE_RECUIT_RESPONSE_JSON="$(jq -cn \
   '{domain_verified:true,refuse_reason:"model says this slice is unsupported",needs_production_access:false,how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[{title:"Slice B: wrapper exit reporting",body_md:"Report the unexpected child exit.",files:["seed.txt"],symbols:[],blocked_by_child_indices:[]}]}')"
 run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'
@@ -747,8 +746,8 @@ assert_eq "partial cut does not complete the parent with children" false \
 assert_contains "partial cut enters supervisor hold" \
   "$(jq -r '.hold.holder // empty' <<< "$STATE_CONTENT")" "supervisor"
 assert_contains "partial cut tells the supervisor the refusal" "$INBOX_CONTENT" "model says this slice is unsupported"
-assert_contains "partial cut lists its planned child and creates none" "$INBOX_CONTENT" \
-  "planned children=Slice B: wrapper exit reporting; children created=none"
+assert_contains "partial cut lists its planned child" "$INBOX_CONTENT" "planned children=Slice B: wrapper exit reporting"
+assert_contains "partial cut says it created no children" "$INBOX_CONTENT" "children created=none"
 assert_not_contains "partial refusal creates no child issue" "$GH_LOG_CONTENT" "gh issue create"
 
 HAND_TEST_COMMENTS="$(jq -cn \
@@ -777,7 +776,7 @@ assert_eq "complete lettered plan does not escalate" false \
 FAKE_RECUIT_RESPONSE_JSON=''
 HAND_TEST_COMMENTS='[]'
 unset ROADMAP_ISSUE_CREATE_INNER
-unset MODEL_POLICY_FILE
+HAND_TEST_DISABLE_ROADMAP=0
 
 if [ "$FAILED" -eq 1 ]; then
   echo "FAILED"
