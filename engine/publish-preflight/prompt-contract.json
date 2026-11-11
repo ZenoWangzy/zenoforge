@@ -5,9 +5,9 @@
     "triage.md": {"schema": "triage.schema.json", "tokens": ["awaiting-release"]},
     "recut.md": {"schema": "recut.schema.json"},
     "supervisor-arbiter.md": {"tokens": ["ACTION", "REASON", "GUIDANCE", "QUESTION", "REJECTED"]},
-    "review-contract.md": {"tokens": ["VERDICT", "READY", "NOT_READY", "INPUT_INCOMPLETE", "BLOCKED-ON", "review-findings"]},
+    "review-contract.md": {"tokens": ["VERDICT", "READY", "NOT_READY", "INPUT_INCOMPLETE", "BLOCKED-ON", "review-findings", "decision_log_flags"]},
     "guarded-recut-hand.md": {"tokens": ["STATUS", "BLOCKED-ON"]},
-    "implement-contract.md": {"tokens": ["OBSOLETE"]}
+    "implement-contract.md": {"tokens": ["OBSOLETE", "decision-log", "how", "why"]}
   },
   "schemas": {
     "advisor.schema.json": {"aliases": {"maintainer": "founder"}},

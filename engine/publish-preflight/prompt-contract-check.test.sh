@@ -19,6 +19,26 @@ commit forks
 
 run | grep -q 'prompt-contract: OK' || fail 'the engine copies must meet their own contract'
 
+python3 -I - "$here/prompt-contract.json" "$engine/mac-autopilot/scheduler.d/review-rules.sh" <<'E' || fail 'an implementation report gate section is missing from the prompt contract'
+import json, re, sys
+
+contract = json.load(open(sys.argv[1], encoding='utf-8'))
+source = open(sys.argv[2], encoding='utf-8').read()
+starts = list(re.finditer(r'(?m)^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{', source))
+required = set()
+for index, match in enumerate(starts):
+    # Incident-only sections come from the injected INCIDENT_RULE, outside the shared prompt contract.
+    if not match.group(1).endswith('_gate_reason') or match.group(1) == 'incident_report_gate_reason':
+        continue
+    end = starts[index + 1].start() if index + 1 < len(starts) else len(source)
+    body = source[match.end():end]
+    required.update(re.findall(r'\^##[ \t]+([a-z0-9-]+)', body))
+tokens = set(contract['prompts']['implement-contract.md'].get('tokens', []))
+missing = sorted(required - tokens)
+if missing:
+    sys.exit(f'gate-required sections missing from implement-contract.md tokens: {missing}')
+E
+
 python3 -I - "$here/prompt-contract.json" "$engine" <<'E' || fail 'a contract token no engine code reads is wording, not a contract'
 import json, os, re, sys
 contract = json.load(open(sys.argv[1]))
@@ -97,7 +117,7 @@ restore advisor.schema.json; commit restored
 
 # A fork may delegate its contract to a skill it names, and the skill must then carry it.
 mkdir -p "$t/repo/.agents/skills/review"
-printf 'VERDICT READY NOT_READY INPUT_INCOMPLETE BLOCKED-ON review-findings\n' > "$t/repo/.agents/skills/review/SKILL.md"
+printf 'VERDICT READY NOT_READY INPUT_INCOMPLETE BLOCKED-ON review-findings decision_log_flags\n' > "$t/repo/.agents/skills/review/SKILL.md"
 printf 'Follow `.agents/skills/review/SKILL.md`.\n' > "$prompts/review-contract.md"; commit delegated
 run | grep -q 'prompt-contract: OK' || fail 'a delegated contract was not followed'
 printf 'VERDICT READY\n' > "$t/repo/.agents/skills/review/SKILL.md"; commit thin-skill
