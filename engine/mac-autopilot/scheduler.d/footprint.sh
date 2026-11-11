@@ -211,7 +211,7 @@ footprint_scopes_collide() { # scope, scope -> collision paths in EXPECTED_SCOPE
 # active_footprint_conflict (one candidate) and active_footprint_conflicts_batch are subshell bodies around these.
 declare -gA FOOTPRINT_CLASSIFY_MEMO=()
 declare -ga FOOTPRINT_OWNER_IDS=() FOOTPRINT_OWNER_SCOPES=()
-FOOTPRINT_OWNERS_DOC='[]'
+FOOTPRINT_OWNERS_DOC='[]' FOOTPRINT_OWNER_LIVE_DOC='[]'
 FOOTPRINT_CONFLICT_OWNER=''
 footprint_classify_memo() { # scope -> FOOTPRINT_CLASSIFIED; call in the batch shell, never inside $( )
   if [[ -z "${FOOTPRINT_CLASSIFY_MEMO[$1]+set}" ]]; then
@@ -219,18 +219,19 @@ footprint_classify_memo() { # scope -> FOOTPRINT_CLASSIFIED; call in the batch s
   fi
   FOOTPRINT_CLASSIFIED="${FOOTPRINT_CLASSIFY_MEMO[$1]}"
 }
-footprint_owners_prepare() { # owners-json: ids, stripped scopes and classified rows (null when classify failed), memo reset
-  local id scope sep=''
-  FOOTPRINT_CLASSIFY_MEMO=(); FOOTPRINT_OWNER_IDS=(); FOOTPRINT_OWNER_SCOPES=(); FOOTPRINT_OWNERS_DOC='['
-  while IFS= read -r -d '' id && IFS= read -r -d '' scope; do
+footprint_owners_prepare() { # owners-json: ids, stages, stripped scopes and classified rows (null when classify failed), memo reset
+  local id scope stage sep='' live_sep=''
+  FOOTPRINT_CLASSIFY_MEMO=(); FOOTPRINT_OWNER_IDS=(); FOOTPRINT_OWNER_SCOPES=(); FOOTPRINT_OWNER_LIVE_DOC='['; FOOTPRINT_OWNERS_DOC='['
+  while IFS= read -r -d '' id && IFS= read -r -d '' scope && IFS= read -r -d '' stage; do
     scope="$(footprint_strip_shared_append "$scope")"
     FOOTPRINT_OWNER_IDS+=("$id"); FOOTPRINT_OWNER_SCOPES+=("$scope")
+    FOOTPRINT_OWNER_LIVE_DOC+="${live_sep}$(if footprint_owner_stage_live "$stage"; then printf true; else printf false; fi)"; live_sep=,
     if [[ "${ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING:-0}" != 1 ]]; then
       if footprint_classify_memo "$scope"; then FOOTPRINT_OWNERS_DOC+="$sep$FOOTPRINT_CLASSIFIED"; else FOOTPRINT_OWNERS_DOC+="${sep}null"; fi
       sep=,
     fi
-  done < <(jq -j '.[] | (.id | if type == "string" then . else tojson end), "\u0000", ((.footprint // []) | tojson), "\u0000"' <<<"$1")
-  FOOTPRINT_OWNERS_DOC+=']'
+  done < <(jq -j '.[] | (.id | if type == "string" then . else tojson end), "\u0000", ((.footprint // []) | tojson), "\u0000", (.stage // ""), "\u0000"' <<<"$1")
+  FOOTPRINT_OWNER_LIVE_DOC+=']'; FOOTPRINT_OWNERS_DOC+=']'
 }
 footprint_owner_conflict() { # candidate scope, self id, original scope -> FOOTPRINT_CONFLICT_OWNER; rc 0 or 2 as the legacy pair loop
   local candidate original i first=-1 flags='' sep='' c k hit rc
@@ -258,15 +259,18 @@ footprint_owner_conflict() { # candidate scope, self id, original scope -> FOOTP
     say "footprint comparison failed candidate=$2 owner=${FOOTPRINT_OWNER_IDS[$first]} step=classify rc=2"; return 2
   fi
   # By file: argv holds 128KiB per value, and one owner over that fails every comparison against it.
-  hit="$(jq -rn --slurpfile c <(printf '%s' "$c") --slurpfile k <(printf '%s' "$k") --slurpfile o <(printf '%s' "$FOOTPRINT_OWNERS_DOC") --argjson skip "[$flags]" '
+  hit="$(jq -rn --slurpfile c <(printf '%s' "$c") --slurpfile k <(printf '%s' "$k") --slurpfile o <(printf '%s' "$FOOTPRINT_OWNERS_DOC") --argjson skip "[$flags]" --argjson live "$FOOTPRINT_OWNER_LIVE_DOC" --argjson hot "$TICK_FOOTPRINT_HOT_CONFLICT_PATHS" '
     def overlaps($a; $b): $a == $b or ($a | startswith($b + "/")) or ($b | startswith($a + "/"));
+    def includes_hot($scope; $path): any($scope[]; . as $entry | $entry.path == $path or ($entry.type == "directory" and ($path | startswith($entry.path + "/"))));
     (any($k[0][]; .type == "file")) as $cf
     | first(range($o[0] | length) as $i | select($skip[$i] | not) | $o[0][$i] as $e
       | if $e == null then "F\($i)" else
           (any($e[]; .type == "file")) as $of
-          | select(any($c[0][] as $a | $e[] as $b | select(overlaps($a.path; $b.path))
-            | select(($a.type == "file" and $b.type == "file") or ($cf | not) or ($of | not)
-              or ($a.path | test("(^|/)migrations/meta/_journal\\.json$")) or ($b.path | test("(^|/)migrations/meta/_journal\\.json$"))); true))
+          | (any($c[0][] as $a | $e[] as $b | select(overlaps($a.path; $b.path))
+              | select(($a.type == "file" and $b.type == "file") or ($cf | not) or ($of | not)
+                or ($a.path | test("(^|/)migrations/meta/_journal\\.json$")) or ($b.path | test("(^|/)migrations/meta/_journal\\.json$"))); true)) as $collides
+          | select($collides or ($live[$i] and any($hot[] as $path
+              | select((includes_hot($c[0]; $path) or includes_hot($k[0]; $path)) and includes_hot($e; $path)); true)))
           | "\($i)" end)')" \
     || { say "footprint comparison failed candidate=$2 owner=${FOOTPRINT_OWNER_IDS[$first]} step=compare rc=2"; return 2; }
   if [[ "$hit" == F* ]]; then
@@ -276,6 +280,7 @@ footprint_owner_conflict() { # candidate scope, self id, original scope -> FOOTP
   return 0
 }
 active_footprint_conflict() (
+  footprint_hot_conflict_paths_load || exit $?
   scheduler_scope_lib open-pr-collision || { say "footprint comparison failed candidate=$3 step=load-lib rc=2"; exit 2; }
   footprint_owners_prepare "$2"
   footprint_owner_conflict "$1" "$3" "${4:-$1}" || exit $?
@@ -286,6 +291,7 @@ active_footprint_conflicts_batch() ( # one memo and one owner pass for every can
   while IFS=$'\t' read -r id scope original; do
     [[ -n "$id" ]] || continue
     if [[ "$prepared" != true ]]; then
+      footprint_hot_conflict_paths_load || return 1
       scheduler_scope_lib open-pr-collision || { say "footprint comparison failed candidate=$id step=load-lib rc=2"; return 1; }
       footprint_owners_prepare "$active"; prepared=true
     fi
@@ -516,7 +522,7 @@ footprint_strip_shared_append() { # scope_json -> 去掉 shared-append 精确路
   local scope="$1"
   local shared="${SHARED_APPEND:-[]}"
   [[ "$shared" != '[]' ]] || { printf '%s\n' "$scope"; return; }
-  jqf -c --slurpfile sa <(printf '%s' "$shared") 'map(select(test("(^|/)migrations/meta/_journal\\.json$") or (. as $x | any($sa[0][]; . == $x) | not)))' <<<"$scope"
+  jqf -c --slurpfile sa <(printf '%s' "$shared") --argjson hot "${TICK_FOOTPRINT_HOT_CONFLICT_PATHS:-[]}" 'map(. as $x | select(test("(^|/)migrations/meta/_journal\\.json$") or (($sa[0] | index($x)) == null) or (($hot | index($x)) != null)))' <<<"$scope"
 }
 footprint_match_detail() ( # candidate scope, original scope, owner scope, count map
   scheduler_scope_lib open-pr-collision || exit 2
