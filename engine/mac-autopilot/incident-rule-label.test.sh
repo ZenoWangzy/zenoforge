@@ -33,6 +33,21 @@ for section in '## how' '## why' '## decision-log'; do
     || { echo "not ok - ordinary implement prompt lacks gate-required $section" >&2; exit 1; }
 done
 
+direct_rule='Do not run any test file or test command. The engine runs tests after delivery. A refused test command is not a failure; finish the change and deliver.'
+declare -F direct_main_worker_prompt >/dev/null \
+  || { echo 'not ok - direct-main worker prompt helper is missing' >&2; exit 1; }
+direct_implement_prompt="$(direct_main_worker_prompt 'GOAL: implement the direct-main change.' '{"lane":"direct-main"}')"
+direct_repair_prompt="$(direct_main_worker_prompt 'GOAL: repair the direct-main change.' '{"lane":"direct-main"}')"
+[[ "$direct_implement_prompt" == *"$direct_rule"* && "$direct_repair_prompt" == *"$direct_rule"* ]] \
+  || { echo 'not ok - direct-main implement or repair prompt lacks the no-test/refusal instruction' >&2; exit 1; }
+[[ "$(direct_main_worker_prompt 'GOAL: ordinary PR change.' '{"lane":"pr"}')" == 'GOAL: ordinary PR change.' ]] \
+  || { echo 'not ok - direct-main test instruction leaked into a PR prompt' >&2; exit 1; }
+[[ "$(grep -cF 'direct_main_worker_prompt "$prompt" "$u"' "$queue_source" || true)" == 2 ]] \
+  || { echo 'not ok - direct-main prompt rule is not applied to both implement and repair assembly' >&2; exit 1; }
+direct_feature_prompt="$(feature_verification_prompt direct-main 'pipeline scripts')"
+[[ "$direct_feature_prompt" == *'Direct-main pipeline work'* && "$direct_feature_prompt" != *'Run node scripts/e2e/'* ]] \
+  || { echo 'not ok - direct-main implement prompt includes a product feature test command' >&2; exit 1; }
+
 two_labels="$(incident_match_line '{"labels":[{"name":"bug"},{"name":"incident"},{"name":"enhancement"}]}' '["bug","incident","production-anomaly"]')"
 [[ "$two_labels" == 'This unit IS an incident unit: its label bug, incident is in incident.labels, so every requirement below applies to your report.' ]] \
   || { echo "not ok - two matched labels are not named comma-separated: $two_labels" >&2; exit 1; }

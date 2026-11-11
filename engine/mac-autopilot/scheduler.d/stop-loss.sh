@@ -17,10 +17,10 @@ loop_rounds() { # 只数最近一次 supervisor 裁决（requeue/approve）或�
 }
 
 # 止损预算（#4363）：自最近一次裁决（supervisor requeue/approve 或顾问裁决）起，
-# 已花费的 implement/repair 轮数（每个有效 write-start 一轮）与第一轮至今的墙钟。经记录确认的空发现、同 head 无推送修复不计轮；
+# 已花费的 implement/repair 轮数（每个有效 write-start 一轮）与第一轮至今的墙钟。经记录确认的空发现、同 head 无推送修复和测试 shim 拒绝不计轮；
 # 裁决重置预算，让既有顾问收敛通道完整跑完；没有任何裁决拦得住的单元才止损转 supervisor。
 # 预算内输出空；超轮数输出 "rounds N of B"，超墙钟输出 "wall Xmin of Ymin after N rounds"。
-effective_write_starts_since_ruling() { # unit-json ruling-stages-json → write-start records excluding verified empty repair no-ops
+effective_write_starts_since_ruling() { # unit-json ruling-stages-json → billable starts, excluding empty no-ops and shim refusals
   jqf -c --argjson ruling_stages "$2" '
     def empty_findings_noop($index; $history; $records):
       ([$history | to_entries[]
@@ -47,7 +47,7 @@ effective_write_starts_since_ruling() { # unit-json ruling-stages-json → write
         | select(.value.stage as $stage | ($ruling_stages | index($stage)) != null)
         | .key] | max // -1) as $ruling
     | [$history | to_entries[]
-      | select(.key > $ruling and .value.stage == "write-start")
+      | select(.key > $ruling and .value.stage == "write-start" and .value.worker_guard_refused != true)
       | select(.value.work_type != "repair" or (empty_findings_noop(.key; $history; $records) | not))
       | .value]
   ' <<<"$1"

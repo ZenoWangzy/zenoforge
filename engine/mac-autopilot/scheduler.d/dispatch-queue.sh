@@ -35,6 +35,21 @@ implement_report_sections() {
 非空，记录本次实现采取的决定。
 EOF
 }
+direct_main_worker_prompt() { # prompt unit-json → append the worker-side test policy only on the direct-main lane
+  local prompt="$1" unit="$2"
+  [[ "$(jqf -r '.lane // empty' <<<"$unit")" == direct-main ]] || { printf '%s' "$prompt"; return 0; }
+  printf '%s\n%s' "$prompt" 'Do not run any test file or test command. The engine runs tests after delivery. A refused test command is not a failure; finish the change and deliver.'
+}
+feature_verification_prompt() { # lane brief → product feature evidence instructions; direct-main work has no worker-run test commands
+  if [[ "$1" == direct-main ]]; then
+    printf '%s' 'Direct-main pipeline work does not use product feature verification commands.'
+  else
+    cat <<EOF
+Feature verification plan (advisory, from ticket-declared paths): $2
+After implementation, refresh IDs from the actual changed paths with node engine/verification-plan.mjs --root . --base origin/main --head HEAD. Run node scripts/e2e/yangfeng-regression/verify-feature.mjs --feature <IDs> --target <base-url> --json only when a candidate target already serves this build. Record the JSON output path. If no candidate target exists, say so; do not build a local stack. This is worker evidence, not a merge gate.
+EOF
+  fi
+}
 # Why a unit did not start: one `dispatch why` line when its gate differs from the last gate logged for it. dispatch_skip, room_for and
 # footprint_room pass the unit as why_unit (dynamic scope). The last gate per unit lives in $A/.dispatch-why (unit TAB gate); a start clears it.
 declare -gA DISPATCH_WHY_LAST=()
@@ -73,7 +88,7 @@ dispatch_pending() {
   TICK_PRIORITY_HOLD_EXPIRED=()
   TICK_PRIORITY_ADMISSION_CACHE=()
   TICK_CONTAINER_RUNTIME=""
-  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha route route_head resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
+  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver verify_rule issue key subject prless stack_branch stack_sha route route_head resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started
   local -A dispatch_step_secs=() dispatch_step_counts=(); local dispatch_step_at=${EPOCHREALTIME/[.,]/} dispatch_step_last=start
   # A full tick's first pass: past the walk deadline room_for refuses every start, so the tail still gets its parks and holds.
@@ -357,8 +372,10 @@ dispatch_pending() {
         [[ -n "$hint" ]] && hint="
 本轮额外阻断（优先处理；评审报告若已 READY，只需处理这一条）：$hint"
         if [[ "$lane" == direct-main ]]; then
+          verify_rule='2. 补/改回归测试。'
           deliver="node scripts/branch-delivery-preflight.mjs --mode commit 通过后在本地分支 ${branch} 提交即可，【不要 push】：这是非产品快车道，复审通过后流水线会把它压成一个提交经 land-direct-main.sh 直落 main。提交信息不要带 [skip ci]。"
         else
+          verify_rule="2. 补/改回归测试，定向跑受影响测试与 typecheck 全绿。${INTEGRATION_RULE}"
           deliver="node scripts/branch-delivery-preflight.mjs --mode push --publish-topic 通过后 push 到 origin ${branch}（绝不推 main、不 force）。"
         fi
         prompt="你是 the product 流水线的实现 subagent，修复 ${subject} 的评审阻断发现。当前目录是隔离 clone：${wt}（分支 ${branch}，已同步 origin）。
@@ -367,13 +384,13 @@ $(matt_method_rule "$wt")
 0b. 先合入最新 main：git merge --no-edit origin/main（不 rebase、不 force；有冲突按两边意图解决）。push preflight 的 freshness 门禁拒绝落后 main 过多的分支，不合就永远推不上。
 1. 读评审报告 $SUP/${prev_report}，逐条处理其中的阻断发现（${title}）。不得为凑绿弱化断言。按缺陷类别修，不按单点修：每条发现先归纳成一类问题（例：单位码被显示名覆盖、幂等键缺字段），在本 PR 全部改动里搜出同类位置一并处理，每一类补一条回归测试；只修被点名的那一行，下一轮评审会在同类的另一处再打回。同一函数的兄弟出口也要枚举：评审点名某函数的一个 return、throw、提前 continue 或错误分支时，先列出该函数的全部出口，每个出口修同一缺陷类别并各补一条回归测试，本轮一次做完，不留到下一轮；报告里列出已检查的出口。${hint}
 1b. 修复报告必须按 $REVIEW_CONTRACT_MD 中的 author-disposition schema，为上一轮每个 finding ID 记录处置和一行理由；复审会从单元历史读取这些处置。
-2. 补/改回归测试，定向跑受影响测试与 typecheck 全绿。${INTEGRATION_RULE}
+${verify_rule}
 3. ${deliver}
    若本地分支已有上一轮未推送的提交（git log origin/${branch}..HEAD 非空），在其基础上继续，不要重做。
 4. 禁止：动主 checkout、合并 PR（gh pr merge）、改 GitHub 状态、部署。0b 的 git merge origin/main 不在此列。
 5. 修复说明写到 $SUP/${rep}，包含改动、验证摘要、交付 SHA 和非空的 ## decision-log（试过什么、失败原因、最终选择、如何验证）；同时就地更新单元实现报告的该节，供复审读取，交付完即结束。
 $(decision_scope "$u")"
-        if [[ "$lane" == direct-main ]]; then prompt+=$'\nDo not run *.test.* files; the lander runs the tests.'; fi
+        prompt="$(direct_main_worker_prompt "$prompt" "$u")"
         dmark prompt
         dispatch_if_room "$id" "repair" "repair" "${rep%.md}.worker.log" "$rep" \
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt$(sweep_rule "$u")$(supervisor_rule "$u")" "" "$wt" "" "$failure" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" && [[ -n "$pr_num" ]] && repair_demote "$id" "$pr_num" "$branch"
@@ -544,7 +561,7 @@ $(decision_scope "$u")"
           deliver="ACCEPTANCE：
 先确认问题在当前 main 上仍存在：已被修复或不再适用就不改代码，报告第一行写 OBSOLETE: <证据：写明当前 main 上的 file:line、commit 或 run 链接；没有数据不算 OBSOLETE>。${OPT_PREMISE_RULE}${BLAST_RADIUS_RULE}
 VERIFY：
-本地定向验证全绿；node scripts/branch-delivery-preflight.mjs --mode commit 通过后在本地分支 ${branch} 提交（提交信息不带 [skip ci]）——这是非产品快车道，评审通过后流水线把它压成一个提交经 land-direct-main.sh 直落 main。
+node scripts/branch-delivery-preflight.mjs --mode commit 通过后在本地分支 ${branch} 提交（提交信息不带 [skip ci]）——这是非产品快车道，评审通过后流水线把它压成一个提交经 land-direct-main.sh 直落 main。
 FORBIDDEN：
 只改非产品路径（scripts/、lessons/、docs/、.agents/ 等）；修复必须改产品代码（packages/、apps/、services/）或 .github/workflows 时不要改，报告第一行写 NEEDS-PR: <原因>。不要 push、不开 PR；禁止 merge PR/部署/改 GitHub 状态。
 REPORT：
@@ -582,12 +599,12 @@ issue 写明的前置 issue 尚未交付（仍 open、没有已合并的修复�
 当前目录是隔离 clone：${wt}（分支 ${branch}，基于最新 main 或该分支已有的进度）。若 git stash list 有「autopilot: kept before redispatch」，是上一轮未提交的进度，先 git stash pop 恢复。
 $(matt_method_rule "$wt")
 $(decision_scope "$u")
-Feature verification plan (advisory, from ticket-declared paths): $feature_brief
-After implementation, refresh IDs from the actual changed paths with node engine/verification-plan.mjs --root . --base origin/main --head HEAD. Run node scripts/e2e/yangfeng-regression/verify-feature.mjs --feature <IDs> --target <base-url> --json only when a candidate target already serves this build. Record the JSON output path. If no candidate target exists, say so; do not build a local stack. This is worker evidence, not a merge gate.
+$(feature_verification_prompt "$lane" "$feature_brief")
 
 优先用有界读取：用 rg -l 或 rg -m 20 缩小搜索结果，再用 sed -n '起,止p' 读取指定行区间；大文件不要整份 cat。
 
 $deliver"
+        prompt="$(direct_main_worker_prompt "$prompt" "$u")"
         dmark prompt
         dispatch_if_room "$id" "implement" "implement" "${rep%.md}.worker.log" "$rep" \
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "" "$wt" "" "$prompt" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" || true; dmark dispatch ;;
