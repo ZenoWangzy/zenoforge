@@ -177,7 +177,7 @@ ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不
 # 停线（Jidoka）：失败 job 的日志里已有测试断言失败（vitest FAIL / AssertionError / TAP not ok），就是确定性的代码结论。
 # 以前要等其余检查全部跑完、再整体重跑一次才派修复：热修 #3860 04:15 测试已红，按旧路径约 2 小时后才会开始修（L62）。
 ci_test_red_checks() { # checks_json → 第一行：失败日志含测试失败的检查名（逗号分隔，没有则空）；其后每行是该检查日志里 vitest 标记行的结构化事实
-  local name link job hits="" logfile facts="" marker fallback i pid
+  local name link job hits="" logfile facts="" marker i pid
   local -a names=() logfiles=() pids=()
   # 失败 job 日志有界并行抓（GH_PARALLEL）。
   while IFS=$'\t' read -r name link; do
@@ -196,11 +196,8 @@ ci_test_red_checks() { # checks_json → 第一行：失败日志含测试失败
     if grep -qaE ' FAIL  .* > |AssertionError|not ok [0-9]+ -' "$logfile"; then
       name="${names[$i]}"
       hits="${hits:+$hits, }$name"
-      marker="$({ grep -a -m1 -oE 'ZENOFORGE-FAIL-FACTS \{.*' "$logfile" || :; } | sed 's/^ZENOFORGE-FAIL-FACTS //')"
-      if [[ -n "$marker" ]]; then facts="${facts}${marker}"$'\n'; else
-        fallback="$({ grep -a -oE ' FAIL  [^[:space:]]+ > .*' "$logfile" || :; } | sed 's/^ FAIL  //' | jq -Rsc 'split("\n") | map(select(. != ""))[:12] | group_by(split(" > ")[0]) | map({file: (.[0] | split(" > ")[0]), tests: map({name: (split(" > ")[1:] | join(" > "))})}) | select(length > 0) | {suites: .}' 2>/dev/null)"
-        if [[ -n "$fallback" ]]; then facts="${facts}${fallback}"$'\n'; fi
-      fi
+      marker="$({ grep -a -m1 -oE 'ZENOFORGE-FAIL-FACTS \{.*' "$logfile" || :; } | sed 's/^ZENOFORGE-FAIL-FACTS //')"; [[ -n "$marker" ]] || marker="$({ grep -a -oE ' FAIL  [^[:space:]]+ > .*' "$logfile" || :; } | sed 's/^ FAIL  //' | jq -Rsc 'split("\n") | map(select(. != ""))[:12] | group_by(split(" > ")[0]) | map({file: (.[0] | split(" > ")[0]), tests: map({name: (split(" > ")[1:] | join(" > "))})}) | select(length > 0) | {suites: .}' 2>/dev/null)"
+      [[ -z "$marker" ]] || facts="${facts}${marker}"$'\n'
       # run-ci-suites.sh 已为每个失败的 engine 套件打印 "[pipeline suites] FAILED suite=<path>"；同一次抓取里取出，供分诊用
       facts="${facts}$(grep -a -oE '^\[pipeline suites\] FAILED suite=[^ ]+' "$logfile" | sed 's/.*suite=//' | jq -Rsc 'split("\n") | map(select(. != "")) | select(length > 0) | {pipelineSuites: .}' 2>/dev/null)"$'\n'
     fi
