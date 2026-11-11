@@ -48,7 +48,7 @@ direct_main_worker_head() { # worktree → checked-out commit used to key direct
 }
 feature_verification_prompt() { # lane brief → product feature evidence instructions; direct-main work has no worker-run test commands
   if [[ "$1" == direct-main ]]; then
-    printf '%s' 'Direct-main pipeline work does not use product feature verification commands.'
+    printf '%s' 'Feature verification plan: Direct-main pipeline work does not use product feature verification commands.'
   else
     cat <<EOF
 Feature verification plan (advisory, from ticket-declared paths): $2
@@ -396,6 +396,7 @@ ${verify_rule}
 4. 禁止：动主 checkout、合并 PR（gh pr merge）、改 GitHub 状态、部署。0b 的 git merge origin/main 不在此列。
 5. 修复说明写到 $SUP/${rep}，包含改动、验证摘要、交付 SHA 和非空的 ## decision-log（试过什么、失败原因、最终选择、如何验证）；同时就地更新单元实现报告的该节，供复审读取，交付完即结束。
 $(decision_scope "$u")"
+        if [[ "$lane" == direct-main ]]; then prompt+=$'\nDo not run *.test.* files; the lander runs the tests.'; fi
         prompt="$(direct_main_worker_prompt "$prompt" "$u")"
         sha=""
         if [[ "$lane" == direct-main ]]; then
