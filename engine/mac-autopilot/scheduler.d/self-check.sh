@@ -218,7 +218,11 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
   rm -f "$out.verification.json" "$out.verification-output"
   (
     # Run report gates before checks so the original session can repair the report via self-fix.
-    reason="$(decision_log_gate_reason "$u")"; if [[ -n "$reason" ]]; then gate=decision-log; else gate='incident report'; reason="$(incident_report_gate_reason "$u")"; fi
+    reason="$(decision_log_gate_reason "$u")"
+    if [[ -n "$reason" ]]; then gate=decision-log; else
+      reason="$(how_why_gate_reason "$u")"
+      if [[ -n "$reason" ]]; then gate='how/why'; else gate='incident report'; reason="$(incident_report_gate_reason "$u")"; fi
+    fi
     if [[ -n "$reason" ]]; then
       printf '%s check failed: %s\nreport: %s\n' "$gate" "$reason" "$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
       printf 'red\n' > "$result"
@@ -299,6 +303,10 @@ $(matt_method_rule "$dir")"
     impl_report="$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
     prompt+="
 失败项是决策日志结构检查：请就地修改原实现报告 $SUP/${impl_report:-$rep}，在 ## decision-log 中简要写明试过什么、失败原因、最终选择和验证方式；保留原有内容，不要另写替代报告。$SUP/${rep} 只写修复说明。"
+  elif grep -q '^how/why check failed' "$out"; then
+    impl_report="$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
+    prompt+="
+失败项是 how/why 结构检查：请就地修改原实现报告 $SUP/${impl_report:-$rep}，补齐非空 ## how（说明触及代码当前如何工作）和 ## why（说明设计原因，并引用至少一个 7 位以上十六进制 commit SHA 或 #N issue）；保留原有内容，不要另写替代报告。$SUP/${rep} 只写修复说明。"
   fi
   if [[ "$(jqf -r '.implement_model // empty' <<<"$u")" == "$model" \
       && "$(jqf -r '.implement_effort // empty' <<<"$u")" == "$effort" \

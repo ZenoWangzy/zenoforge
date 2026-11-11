@@ -72,6 +72,12 @@ cat > "$missing_report" <<'REPORT'
 ## decision-log
 Tried the incident report, retained the root-cause summary, and verified the resume path.
 
+## how
+The scheduler checks implementation reports before review.
+
+## why
+Commit 97ed8be added this report gate for issue #880.
+
 ## root-cause
 The persisted state was selected incorrectly.
 
@@ -89,6 +95,8 @@ jqf -e '.incident_report_resume == true and .incident_report_resume_session_id =
   <<<"$LAST_CONTEXT" >/dev/null || fail 'resume context did not retain the source report and exact session id'
 [[ "$LAST_PROMPT" == *'missing ## prior-art'* && "$LAST_PROMPT" == *'Existing report:'* ]] \
   || fail 'resume prompt did not name the structural failure and include the existing report'
+[[ "$LAST_PROMPT" == *'## how'* && "$LAST_PROMPT" == *'## why'* ]] \
+  || fail 'resume prompt did not remind the continuation to include how and why'
 
 # The resumed command is the same session and has a read-only sandbox, so it
 # cannot write code while returning the completed report in its final message.
@@ -108,6 +116,12 @@ passing_report="$sup/$passing_report_name"
 cat > "$passing_report" <<'REPORT'
 ## decision-log
 Tried the incident report, retained the recurrence guard, and verified the final report.
+
+## how
+The scheduler checks implementation reports before review.
+
+## why
+Commit 97ed8be added this report gate for issue #880.
 
 ## root-cause
 The persisted state was selected incorrectly.
@@ -210,5 +224,35 @@ harvest_workers
 [[ "$(jqf -r '.units[0].stage' "$UNITS")" == repair && "$RESUME_DISPATCHES" == $((before_resumes + 1)) ]] \
   || fail "the breaker parked the unit instead of letting the continuation finish the round (stage=$(jqf -r '.units[0].stage' "$UNITS") resumes=$RESUME_DISPATCHES)"
 [[ "$(jqf -r '[.units[0].history[] | select(.stage=="repair-breaker")] | length' "$UNITS")" == 0 ]] || fail 'the breaker fired while a continuation was running'
+
+how_why_report_name=impl-71001-how-why.md
+cat > "$sup/$how_why_report_name" <<'REPORT'
+## decision-log
+Tried the report path and verified the required sections.
+
+## how
+The scheduler checks implementation reports before review.
+
+## why
+The report gate preserves the expected structure.
+
+## root-cause
+The report did not cite its design history.
+
+## recurrence-guard
+kind: test
+
+## prior-art
+Source: https://example.invalid/report-gate
+
+VERDICT: READY
+REPORT
+before_resumes=$RESUME_DISPATCHES
+write_unit "$how_why_report_name"
+write_worker implement "$how_why_report_name" impl-71001-how-why.worker.log
+harvest_workers
+[[ "$(jqf -r '.units[0].stage' "$UNITS")" == repair && "$RESUME_DISPATCHES" == $((before_resumes + 1)) \
+  && "$LAST_PROMPT" == *'## why lacks a commit SHA'* ]] \
+  || fail 'a missing how/why citation did not enter the existing one-session report continuation'
 
 echo 'ok - incident report failures get at most one read-only same-session resume before review'

@@ -5,7 +5,7 @@ incident_report_resume_prompt() { # gate reason source report destination report
   body="$(cat -- "$source_report")" || return 1
   printf 'Continue the same implementer session only to complete its required report sections.\n'
   printf 'The implementation report failed this structural check: %s\n' "$reason"
-  printf 'Return a complete replacement report for %s. Preserve existing content and satisfy the check, including a non-empty ## decision-log with attempts, failure reasons, final choice, and verification.\n' "$destination_report"
+  printf 'Return a complete replacement report for %s. Preserve existing content and satisfy the check, including non-empty ## how and ## why sections (with a commit SHA or #N issue citation) and a non-empty ## decision-log with attempts, failure reasons, final choice, and verification.\n' "$destination_report"
   printf 'Do not edit source, tests, configuration, Git state, or any other file. Do not run tests, commit, push, or call GitHub write operations. The scheduler saves your final answer as the replacement report.\n\n'
   printf '%s\n' 'Existing report:' "$body"
 }
@@ -44,7 +44,9 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
   unit="$(jqf -r '.unit // empty' <<<"$w")"
   incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   [[ "$wtype" != repair ]] || report_name="$(jqf -r --arg n "$report_name" '.implementation_report // $n' <<<"$incident_unit_json")" # a repair edits the unit's own report in place; its worker report is only the fix note
-  reason="$(decision_log_gate_reason "$incident_unit_json" "$SUP/$report_name")"; [[ -n "$reason" ]] || reason="$(incident_report_gate_reason "$incident_unit_json" "$SUP/$report_name")"
+  reason="$(decision_log_gate_reason "$incident_unit_json" "$SUP/$report_name")"
+  [[ -n "$reason" ]] || reason="$(how_why_gate_reason "$incident_unit_json" "$SUP/$report_name")"
+  [[ -n "$reason" ]] || reason="$(incident_report_gate_reason "$incident_unit_json" "$SUP/$report_name")"
   [[ -n "$reason" ]] || { [[ "$(jqf -r 'has("report_gate_fail")' <<<"$incident_unit_json")" == false ]] || set_unit "$unit" 'del(.report_gate_fail)'; return 0; }
   # The same gate reason twice in a row means another repair writes the same kind of report: stop instead of looping (4741).
   n=1; [[ "$(jqf -r '.report_gate_fail.reason // empty' <<<"$incident_unit_json")" != "$reason" ]] || n=$(( $(jqf -r '.report_gate_fail.n // 0' <<<"$incident_unit_json") + 1 ))
@@ -212,7 +214,9 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
         esac
       }
       incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
-      incident_gate_reason="$(decision_log_gate_reason "$incident_unit_json" "$rep")"; [[ -n "$incident_gate_reason" ]] || incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json" "$rep")"
+      incident_gate_reason="$(decision_log_gate_reason "$incident_unit_json" "$rep")"
+      [[ -n "$incident_gate_reason" ]] || incident_gate_reason="$(how_why_gate_reason "$incident_unit_json" "$rep")"
+      [[ -n "$incident_gate_reason" ]] || incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json" "$rep")"
       if [[ -z "$incident_gate_reason" && -s "$rep" ]]; then
         set_unit "$unit" ".implementation_report=$(js "$report") | del(.report_gate_fail) | .stage=$(js "$report_resume_stage")"
         say "report resume passed unit=$unit report=$report; sending to review"
@@ -232,7 +236,9 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       v="$(verdict_of "$rep")"; [[ "$wtype" != review && "$wtype" != rereview ]] || review_decision_log_flags_append "$rep" "$unit"
       if [[ "$wtype" == review || "$wtype" == rereview ]] && [[ "$v" == READY ]]; then
         incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
-        incident_gate_reason="$(decision_log_gate_reason "$incident_unit_json")"; [[ -n "$incident_gate_reason" ]] || incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json")"
+        incident_gate_reason="$(decision_log_gate_reason "$incident_unit_json")"
+        [[ -n "$incident_gate_reason" ]] || incident_gate_reason="$(how_why_gate_reason "$incident_unit_json")"
+        [[ -n "$incident_gate_reason" ]] || incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json")"
         [[ -z "$incident_gate_reason" ]] || v=NOT_READY
         if [[ "$v" == NOT_READY ]]; then
           original_report="$report"

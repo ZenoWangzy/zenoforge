@@ -13,6 +13,24 @@
       "type": "boolean",
       "description": "Set true when refusing because the work requires actions outside this repository checkout, such as operating production hosts or containers, accessing production credentials, or using provider consoles. False for other refusals and when not refusing."
     },
+    "how": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "How the touched code works today."
+    },
+    "why": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "Why the touched code was written that way, citing commit history and issue numbers."
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1, "pattern": "\\S" },
+      "description": "Objective criteria a top domain expert would use to judge the proposed work."
+    },
     "children": {
       "type": "array",
       "description": "Proposed slices. Empty when refusing.",
@@ -48,6 +66,6 @@
       }
     }
   },
-  "required": ["domain_verified", "refuse_reason", "needs_production_access", "children"],
+  "required": ["domain_verified", "refuse_reason", "needs_production_access", "how", "why", "acceptance_criteria", "children"],
   "additionalProperties": false
 }

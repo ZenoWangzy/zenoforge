@@ -92,10 +92,26 @@ decision_log_gate_reason() { # unit-json [implementation report] → missing or 
   section="$(awk '/^## decision-log[[:space:]]*$/{inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
   [[ -n "${section//[[:space:]]/}" ]] || printf 'empty ## decision-log'
 }
+how_why_gate_reason() { # unit-json [implementation report] → missing/empty how or why reason, or missing why citation
+  local unit_json="$1" report="${2:-}" how_section why_section
+  [[ -n "$report" ]] || report="$(jqf -r '.implementation_report // .report // empty' <<<"$unit_json")"
+  [[ -n "$report" ]] || { printf 'missing ## how and ## why (implementation report is unavailable)'; return 0; }
+  [[ "$report" == /* ]] || report="$SUP/$report"
+  [[ -s "$report" ]] || { printf 'missing ## how and ## why (implementation report is unavailable: %s)' "${report##*/}"; return 0; }
+  grep -qE '^## how[[:space:]]*$' "$report" || { printf 'missing ## how'; return 0; }
+  grep -qE '^## why[[:space:]]*$' "$report" || { printf 'missing ## why'; return 0; }
+  how_section="$(awk '/^## how[[:space:]]*$/{inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
+  [[ -n "${how_section//[[:space:]]/}" ]] || { printf 'empty ## how'; return 0; }
+  why_section="$(awk '/^## why[[:space:]]*$/{inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
+  [[ -n "${why_section//[[:space:]]/}" ]] || { printf 'empty ## why'; return 0; }
+  grep -Eq '(^|[^[:xdigit:]])[[:xdigit:]]{7,}([^[:xdigit:]]|$)|#[0-9]+' <<<"$why_section" \
+    || printf '## why lacks a commit SHA (7+ hex characters) or #N issue reference'
+}
 incident_review_verdict() { # unit READY|other [implementation report] → READY or forced NOT_READY
   local unit_json="$1" verdict="$2" report="${3:-}" reason
   [[ "$verdict" == READY ]] || { printf '%s' "$verdict"; return 0; }
   reason="$(decision_log_gate_reason "$unit_json" "$report")"
+  [[ -n "$reason" ]] || reason="$(how_why_gate_reason "$unit_json" "$report")"
   [[ -n "$reason" ]] || reason="$(incident_report_gate_reason "$unit_json" "$report")"
   [[ -z "$reason" ]] && printf 'READY' || printf 'NOT_READY'
 }

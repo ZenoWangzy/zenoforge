@@ -219,10 +219,10 @@ fi
 if [ -n "${FAKE_RECUIT_REASON_FILE:-}" ]; then
   jq -cn --rawfile reason "$FAKE_RECUIT_REASON_FILE" \
     --arg production_access "${FAKE_RECUIT_PRODUCTION_ACCESS:-__omit__}" \
-    '{domain_verified:false,refuse_reason:$reason,children:[]} + (if $production_access == "true" then {needs_production_access:true} elif $production_access == "false" then {needs_production_access:false} else {} end)' > "$out"
+    '{domain_verified:false,refuse_reason:$reason,needs_production_access:($production_access == "true"),how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[]}' > "$out"
 else
   jq -cn --arg production_access "${FAKE_RECUIT_PRODUCTION_ACCESS:-__omit__}" \
-    '{domain_verified:false,refuse_reason:"没有找到对应的真实实现，无法据此拆票。",children:[]} + (if $production_access == "true" then {needs_production_access:true} elif $production_access == "false" then {needs_production_access:false} else {} end)' > "$out"
+    '{domain_verified:false,refuse_reason:"没有找到对应的真实实现，无法据此拆票。",needs_production_access:($production_access == "true"),how:"The recut runner checks the issue and its code domain.",why:"Commit 97ed8be added the decision gate for issue #880.",acceptance_criteria:["A reviewer can judge whether the proposed slice is buildable."],children:[]}' > "$out"
 fi
 printf '%s\n' 'tokens used' '1' >&2
 EOF
@@ -438,6 +438,9 @@ assert_contains "schema string sent to model includes production access flag" \
   "$SCHEMA_CONTENT" '"needs_production_access"'
 assert_contains "recut schema uses the target config override" "$RECUIT_ARGS_CONTENT" "$ZF_CONFIG_ROOT/prompts/recut.schema.json"
 assert_contains "recut prompt uses the target config override" "$RECUIT_INPUT_CONTENT" 'CONFIG_RECUT_PROMPT_OVERRIDE'
+assert_contains "recut prompt asks how the touched code works today" "$RECUIT_INPUT_CONTENT" 'how the touched code works today'
+assert_contains "recut prompt asks why with commit and issue citations" "$RECUIT_INPUT_CONTENT" 'commit SHAs from `git log`'
+assert_contains "recut prompt asks for expert acceptance criteria" "$RECUIT_INPUT_CONTENT" 'top domain expert would use to check the work'
 assert_contains "schema describes work outside repository checkout" \
   "$SCHEMA_CONTENT" "outside this repository checkout"
 assert_contains "...removes needs-recut" "$GH_LOG_CONTENT" "--remove-label needs-recut"
@@ -640,7 +643,13 @@ assert_eq "budget-refused recut does not bump issue attempts" 0 "$(jq -r '.attem
 cat > "$FAKE_BIN/zcode" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$AGENT_HOME/zcode-args.txt"
-printf '%s\n' '```json' '{"domain_verified":false,"needs_production_access":false,"refuse_reason":"glm refusal","children":[]}' '```'
+printf '%s\n' '```json'
+if [[ "${FAKE_ZCODE_MISSING_WHY:-0}" == 1 ]]; then
+  printf '%s\n' '{"domain_verified":false,"needs_production_access":false,"refuse_reason":"glm refusal","children":[],"how":"The code handles this work in the recut runner.","acceptance_criteria":["A reviewer can check the behavior."]}'
+else
+  printf '%s\n' '{"domain_verified":false,"needs_production_access":false,"refuse_reason":"glm refusal","children":[],"how":"The code handles this work in the recut runner.","why":"Commit 97ed8be added the decision gate for issue #880.","acceptance_criteria":["A reviewer can check the behavior."]}'
+fi
+printf '%s\n' '```'
 EOF
 chmod +x "$FAKE_BIN/zcode"
 RECUT_GLM_QUOTA="$(mktemp)"
@@ -652,6 +661,17 @@ assert_eq "exhausted Codex recut never calls codex" "" "$(cat "$FAKE_RECUIT_ARGS
 assert_contains "exhausted Codex recut reaches zcode" "$(cat "$AGENT_HOME/zcode-args.txt")" '--mode yolo'
 assert_eq "GLM recut reply lands through the refusal path" "glm refusal" "$(jq -r '.recut_refused_reason' <<< "$STATE_CONTENT")"
 assert_not_contains "GLM recut prompt is not the reviewer prompt" "$(cat "$AGENT_HOME/zcode-args.txt")" 'cross-provider reviewer'
+
+FAKE_ZCODE_MISSING_WHY=1 RECUT_TEST_EXHAUST_CODEX=1 ZCODE_QUOTA_SNAPSHOT_FILE="$RECUT_GLM_QUOTA" \
+  run_once "needs-recut" '{"attempts":0,"risk_class":"P2","level":"L4"}'
+assert_eq "schema-invalid recut output exits through model-policy failure handling" 0 "$RUN_STATUS"
+assert_eq "schema-invalid recut output bumps attempts once" 1 "$(jq -r '.attempts' <<< "$STATE_CONTENT")"
+assert_eq "schema-invalid recut output records a recut model-policy failure" recut \
+  "$(jq -r '.model_policy.failures[-1].unit // empty' <<< "$STATE_CONTENT")"
+assert_eq "schema-invalid recut output records the failure stage" recut \
+  "$(jq -r '.model_policy.failures[-1].stage // empty' <<< "$STATE_CONTENT")"
+assert_eq "every recut schema property is required" true \
+  "$(jq -e 'all(.. | objects | select(has("properties")); ((.properties | keys) - (.required // [])) == [])' "$SCRIPT_DIR/prompts/recut.schema.json" >/dev/null && echo true || echo false)"
 
 if [ "$FAILED" -eq 1 ]; then
   echo "FAILED"
