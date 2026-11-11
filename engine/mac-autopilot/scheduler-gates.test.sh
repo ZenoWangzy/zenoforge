@@ -1429,9 +1429,10 @@ red_unit() { jq -cn --arg h "$1" '{history:[{stage:"ci-test-red",head:$h,tests:[
 
 # repair 先合入最新 main：落后过多的分支过不了 push preflight 的 freshness 门禁（#3859 三轮修复都没推上）
 DISPATCHED=(); DISPATCH_PROMPT=""
-units '{"units":[{"id":"pr-14","pr":14,"stage":"repair-pending","review_report":"review-14.md","history":[]}]}'
+units '{"units":[{"id":"pr-14","pr":14,"lane":"direct-main","stage":"repair-pending","review_report":"review-14.md","history":[]}]}'
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == repair:pr-14:* && "$DISPATCH_PROMPT" == *"git merge --no-edit origin/main"* && "$DISPATCH_PROMPT" != *"禁止：动主 checkout、merge"* ]] || fail 'repair prompt does not merge origin/main before pushing (or still forbids merge)'
+[[ "$DISPATCH_PROMPT" == *"Do not run *.test.* files; the lander runs the tests."* ]] || fail 'direct-main repair prompt does not leave test execution to the lander'
 # 兄弟出口：评审点名一个出口时，repair 必须枚举该函数全部出口并各补一条回归测试（issue-5928 四轮逐个补出口）
 [[ "$DISPATCH_PROMPT" == *"同一函数的兄弟出口也要枚举"*"各补一条回归测试"* ]] || fail 'repair prompt lacks the sibling-exit rule'
 

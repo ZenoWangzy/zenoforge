@@ -31,20 +31,23 @@ printf 'ok - hold --rule refuses foreign holds and non-owner comments\n'
   [ "$(jq -r '[.units[]|.stage+(.blocked_on|tostring)]|join(",")' "$UNITS")" = "blocked-external3,blocked-external4" ] || { echo "FAIL: reblock" >&2; exit 1; }
 )
 printf 'ok - rule_entry reblock returns units to dependency wait\n'
-# --reroute releases blocked_on and returns a supervisor-review unit to its work stage; --requeue on the same unit only logs.
+# --reroute releases blocked_on; requeue moves supervisor-review back to work and rejects other active stages.
 (
   export AUTOPI_TEST_LIBRARY_ONLY=true MAC_AUTOPILOT_ROOT="$test_env_root/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/sup" MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/sup/autopi"
   mkdir -p "$test_env_root/repo" "$test_env_root/sup/autopi/alerts"
   cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$test_env_root/sup/autopi/config.json"
-  echo '{"units":[{"id":"issue-10","stage":"supervisor-review","blocked_on":3,"task":"t","branch":"b","history":[]},{"id":"issue-11","stage":"supervisor-review","blocked_on":3,"task":"t","branch":"b","history":[]}]}' > "$test_env_root/sup/autopi/units.json"
+  echo '{"units":[{"id":"issue-10","stage":"supervisor-review","blocked_on":3,"task":"t","branch":"b","history":[]},{"id":"issue-11","stage":"supervisor-review","lane":"direct-main","branch":"agent/issue-11","history":[{"stage":"repair-delivered"}]},{"id":"issue-12","stage":"implement-pending","task":"t","branch":"b","history":[]}]}' > "$test_env_root/sup/autopi/units.json"
   echo '{"workers":[]}' > "$test_env_root/sup/autopi/workers.json"
   source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
   rule_entry issue-10 reroute u "dependency dead" ""
   [ "$(jq -r '.units[]|select(.id=="issue-10")|.stage+"|"+(has("blocked_on")|tostring)+"|"+.history[-1].stage' "$UNITS")" = "implement-pending|false|supervisor-reroute" ] || { echo "FAIL: reroute" >&2; exit 1; }
   rule_entry issue-11 requeue u "" ""
-  [ "$(jq -r '.units[]|select(.id=="issue-11")|.stage+"|"+(.blocked_on|tostring)+"|"+.history[-1].stage' "$UNITS")" = "supervisor-review|3|supervisor-requeue" ] || { echo "FAIL: requeue changed a non-parked unit" >&2; exit 1; }
+  [ "$(jq -r '.units[]|select(.id=="issue-11")|.stage+"|"+.history[-1].stage' "$UNITS")" = "repair-pending|supervisor-requeue" ] || { echo "FAIL: requeue did not move delivered supervisor-review work to repair" >&2; exit 1; }
+  rc=0; rule_entry issue-12 requeue u "" "" > "$test_env_root/requeue.out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q -- '--reroute' "$test_env_root/requeue.out" || { echo "FAIL: non-supervisor requeue did not name --reroute" >&2; exit 1; }
+  [ "$(jq -r '.units[]|select(.id=="issue-12")|.stage+"|"+(.history|length|tostring)' "$UNITS")" = "implement-pending|0" ] || { echo "FAIL: refused requeue changed the unit" >&2; exit 1; }
 )
-printf 'ok - rule_entry reroute releases a blocked supervisor-review unit; requeue still only logs\n'
+printf 'ok - rule_entry reroute releases a blocker; requeue moves supervisor-review and rejects other active stages\n'
 # hold.sh --rule accepts --reroute: it gets past the usage check (64) and stops at the owner-comment check.
 rc=0; hold_cli_main --rule issue-5 --reroute --comment 7 2>/dev/null || rc=$?
 [ "$rc" != 64 ] || { echo "FAIL: hold.sh rejects --reroute" >&2; exit 1; }

@@ -354,6 +354,7 @@ $(matt_method_rule "$wt")
 4. 禁止：动主 checkout、合并 PR（gh pr merge）、改 GitHub 状态、部署。0b 的 git merge origin/main 不在此列。
 5. 修复说明（改动、验证输出摘要、push SHA 或本地提交 SHA）写到 $SUP/${rep}，交付完即结束。
 $(decision_scope "$u")"
+        if [[ "$lane" == direct-main ]]; then prompt+=$'\nDo not run *.test.* files; the lander runs the tests.'; fi
         dmark prompt
         dispatch_if_room "$id" "repair" "repair" "${rep%.md}.worker.log" "$rep" \
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt$(sweep_rule "$u")$(supervisor_rule "$u")" "" "$wt" "" "$failure" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" && [[ -n "$pr_num" ]] && repair_demote "$id" "$pr_num" "$branch"
