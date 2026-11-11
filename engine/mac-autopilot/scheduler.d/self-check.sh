@@ -217,7 +217,6 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
   fi
   rm -f "$out.verification.json" "$out.verification-output"
   (
-    [[ -z "$config_temp" ]] || trap 'rm -f "$config_temp"' EXIT
     # Same check as the review-time incident report gate (review-rules.sh), run here so the original session can repair the report via self-fix.
     reason="$(incident_report_gate_reason "$u")"
     if [[ -n "$reason" ]]; then
@@ -231,6 +230,7 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
       # 75 (cihost admission queue) and 125 (transfer/setup) are not verdicts.
       if (( rc == 75 || rc == 125 )); then printf 'defer\n' > "$result"; else printf 'red\n' > "$result"; fi
     fi
+    [[ -z "$config_temp" ]] || rm -f "$config_temp"
   ) > "$out" 2>&1 < /dev/null &
   pid=$!
   set_unit "$id" ".self_check_pid=$pid | .self_check_start=$(js "$(pid_start "$pid")") | .self_check_sha=$(js "$sha") | .self_check_lane=$(js "$lane") | .self_check_base=$(js "$pr_base") | .self_check_status=null | .self_check_output=$(js "$out") | .self_check_workdir=$(js "$dir") | .self_check_return_stage=.stage"
