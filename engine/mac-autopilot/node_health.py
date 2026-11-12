@@ -1464,7 +1464,7 @@ def main():
     followed = [n for n in followed if n]
     metrics["loop.incremental_rereview_pct"] = 100 * followed.count("rereview") / len(followed) if followed else None
     station_windows = station_standards.collect_windows(now, units, day_runs, a, agent_home, cost_rows); sample_counts.update({mid: row["sample_n"] for mid, row in station_windows.items() if "sample_n" in row})
-    ledger_windows = metric_windows.ledger(ledger_metrics, units, now); metrics.update({**ledger_metrics(units, since, now, sample_counts=sample_counts), **station_standards.collect(now, units, day_runs, a, agent_home, cost_rows)})
+    ledger_windows = metric_windows.ledger(ledger_metrics, units, now); metrics.update({**ledger_metrics(units, since, now, sample_counts=sample_counts), **station_standards.collect(now, units, day_runs, a, agent_home, cost_rows, alert=args.alert)})
     # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
     metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]
     repo = os.environ.get("ZF_REPO", "")
