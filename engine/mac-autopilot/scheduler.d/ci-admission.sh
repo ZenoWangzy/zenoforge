@@ -320,16 +320,18 @@ ci_slot_starve_watch() {
 # not scanned (their cancelled CI is deliberate, ci_defer_unapproved) and neither is ready-to-merge (its owners rerun).
 # A negative lookup is remembered for 30 min per head:stage so a pass costs one gh call per unit at most that often.
 ci_cancel_stale_watch() {
-  local rows id pr head stage runs age chk now minutes="${CI_CANCEL_STALE_MIN:-30}"
+  local rows id pr head stage draft runs age chk now note minutes="${CI_CANCEL_STALE_MIN:-30}"
   [[ "$minutes" =~ ^[1-9][0-9]*$ ]] || minutes=30
   # A pass with no watched unit makes no PR census: tick_prs is a gh call whenever the tick cache is empty.
   [[ -n "$(jqf -r '.units[] | select(.stage | IN("supervisor-review", "parked", "needs-human")) | select((.pr | type) == "number" and (.hotpatch // false) != true) | .id' "$UNITS" 2>/dev/null | head -n 1)" ]] || return 0
   now="$(date -u +%s)"
   rows="$(tick_prs | jqf -r --slurpfile units "$UNITS" '. as $prs | $units[0].units[]
       | select((.stage | IN("supervisor-review", "parked", "needs-human")) and (.pr | type) == "number" and (.hotpatch // false) != true)
-      | . as $u | ($prs[] | select(.number == $u.pr and (.headRefOid // "") != "")) | [$u.id, ($u.pr | tostring), .headRefOid, $u.stage] | @tsv')" || return 0
-  while IFS=$'\t' read -r id pr head stage; do
+      | . as $u | ($prs[] | select(.number == $u.pr and (.headRefOid // "") != "")) | [$u.id, ($u.pr | tostring), .headRefOid, $u.stage, ((.isDraft // false) | tostring)] | @tsv')" || return 0
+  while IFS=$'\t' read -r id pr head stage draft; do
     [[ -n "$id" && "$(unit_field "$id" '.ci_cancel_stale_alerted // empty')" != "$head" ]] || continue
+    # A draft head has its gates skipped by design: say so, so the alert does not read as a stuck ready-to-merge PR.
+    note="nothing readmits it"; [[ "$draft" == true ]] && note="draft, gates skipped"
     chk="$(unit_field "$id" '.ci_cancel_stale_chk // empty')"
     [[ "$chk" != "$head:$stage:"* ]] || (( now - ${chk##*:} >= minutes * 60 )) || continue
     runs="$(gh run list --commit "$head" --json conclusion,event,updatedAt 2>/dev/null)" || { say "ci cancel watch unit=$id: could not list runs for head $head"; continue; }
@@ -338,8 +340,8 @@ ci_cancel_stale_watch() {
     if [[ ! "$age" =~ ^[0-9]+$ ]]; then
       set_unit "$id" ".ci_cancel_stale_chk=$(js "$head:$stage:$now")" || :
     elif (( age >= minutes )); then
-      say "ci cancelled stale unit=$id PR#$pr head=${head:0:9} stage=$stage: every PR run cancelled for ${age} min, nothing readmits it"
-      echo "[$STAMP] CI-CANCELLED-STALE unit=$id PR#$pr head=$head stage=$stage cancelled_for=${age}m" >> "$A/alerts/gate.md" \
+      say "ci cancelled stale unit=$id PR#$pr head=${head:0:9} stage=$stage: every PR run cancelled for ${age} min, $note"
+      echo "[$STAMP] CI-CANCELLED-STALE unit=$id PR#$pr head=$head stage=$stage cancelled_for=${age}m ($note)" >> "$A/alerts/gate.md" \
         && set_unit "$id" ".ci_cancel_stale_alerted=$(js "$head")" || :
     fi
   done <<<"$rows"
