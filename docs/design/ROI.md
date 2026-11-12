@@ -1,6 +1,6 @@
 # Zenoforge cost and return: measuring traffic, tokens, money and time, and computing ROI continuously
 
-Status: design, not implemented. Written 2026-10-29 (US Pacific; the ledgers it cites run to 2026-10-30 UTC) against the exported engine tree (`engine/`) and the origin deployment's live copy and ledgers. Nothing in this document was changed on the host that was probed; the only things created were transient systemd units that removed themselves (section 2.3).
+Status: partly implemented, checked against `origin/main` on 2026-11-12. Done: RT-1 (price table `engine/state/roi-prices.json`, `roi_ledger.py`, `roi_collect.py`, the first cost report in `roi_rollup.py`) and RT-2 (cost per delivered ticket, lead time, per-stage time and waste share in the `roi_rollup.py` report). Not implemented: RT-3 to RT-13 (issue-loop and batch units, CI-run rows, CPU and memory, GitHub API calls, network bytes, node-health rows, the dashboard Economics panel, the daily report section, `zenoforge roi`, per-host ledger merge, the optional worker meter). `roi_ledger.py` reserves the `ci-run-end` and `gh-quota` event types, but nothing writes them yet.
 
 
 ## Maintainer decisions (2026-10-30)
@@ -521,21 +521,21 @@ Module level; paths are in section 9.
 
 Format: `to-tickets` issue template. Sizes: S under about 150 changed lines with tests, M 150-500, L over 500. Each ticket fits one fresh context. "Files" is listed because the maintainer asked for it; the descriptions do not depend on it. Flags: **RULE-LANE** = the file is in `engine/state/rule-files.json` and must land through the supervisor rule channel with a `Rule-Replay:` trailer (report from `rule-replay.mjs`, schema `zf-control-rule-replay/v1`, `falseStops` 0); **HOLD** = `engine/mac-autopilot/scheduler.sh` and `engine/run-release.sh` are on hold for another owner's landing. No ticket below touches a HOLD file. Exactly one (RT-8) touches RULE-LANE files.
 
-| # | Title | Size | Blocked by | RULE-LANE | HOLD |
-|---|---|---|---|---|---|
-| RT-1 | Price table, ledger and the first cost report (unit-loop workers) | M | none | no | no |
-| RT-2 | Value, waste and ROI in the rollup | M | RT-1 | no | no |
-| RT-3 | Issue-loop and batch units in the ledger | M | RT-1 | no | no |
-| RT-4 | CI runs in the ledger | M | RT-1 | no | no |
-| RT-5 | CPU and memory per unit | M | RT-1 | no | no |
-| RT-6 | GitHub API calls per unit and the shared quota | S | RT-1 | no | no |
-| RT-7 | Network bytes per unit, with `n/a` where unsupported | M | RT-5 | no | no |
-| RT-8 | Node-health rows, standards and mechanism heartbeat | M | RT-2 | **yes** | no |
-| RT-9 | Dashboard "Economics" panel | M | RT-2 | no | no |
-| RT-10 | Daily report "Cost and return" section | S | RT-2 | no | no |
-| RT-11 | `zenoforge roi` in the npm CLI | S | RT-2 | no | no |
-| RT-12 | Merge per-host ledgers | S | RT-2 | no | no |
-| RT-13 | Unit-loop worker meter (optional) | M | RT-5, RT-7 | no | no (see note) |
+| # | Title | Size | Blocked by | RULE-LANE | HOLD | Status (origin/main, 2026-11-12) |
+|---|---|---|---|---|---|---|
+| RT-1 | Price table, ledger and the first cost report (unit-loop workers) | M | none | no | no | on main |
+| RT-2 | Value, waste and ROI in the rollup | M | RT-1 | no | no | on main |
+| RT-3 | Issue-loop and batch units in the ledger | M | RT-1 | no | no | not started |
+| RT-4 | CI runs in the ledger | M | RT-1 | no | no | not started |
+| RT-5 | CPU and memory per unit | M | RT-1 | no | no | not started |
+| RT-6 | GitHub API calls per unit and the shared quota | S | RT-1 | no | no | not started |
+| RT-7 | Network bytes per unit, with `n/a` where unsupported | M | RT-5 | no | no | not started |
+| RT-8 | Node-health rows, standards and mechanism heartbeat | M | RT-2 | **yes** | no | not started |
+| RT-9 | Dashboard "Economics" panel | M | RT-2 | no | no | not started |
+| RT-10 | Daily report "Cost and return" section | S | RT-2 | no | no | not started |
+| RT-11 | `zenoforge roi` in the npm CLI | S | RT-2 | no | no | not started |
+| RT-12 | Merge per-host ledgers | S | RT-2 | no | no | not started |
+| RT-13 | Unit-loop worker meter (optional) | M | RT-5, RT-7 | no | no (see note) | not started (optional) |
 
 Order of landing: RT-1, RT-2 first (a person can then run one command and see per-ticket ROI from real worker tokens); then RT-3 to RT-6 in any order; RT-7 after RT-5; the four surfaces RT-8 to RT-12 after RT-2 in any order; RT-13 last and only if the numbers justify it.
 
