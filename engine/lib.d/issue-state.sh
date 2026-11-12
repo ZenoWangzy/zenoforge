@@ -85,13 +85,17 @@ state_lock_take() {
   held="ZF_STATE_LOCK_FD_${n//[^A-Za-z0-9]/_}"
   f="$(state_file "$n")" || return 1
   if [[ "${!held:-}" =~ ^[0-9]+$ ]] && [ "/dev/fd/${!held}" -ef "$f.lock" ] 2>/dev/null; then
+    # Re-lock: a no-op while the holder still has it, a fresh wait if it was flock -u'd.
+    flock -x "${!held}" || return 1
     printf -v "$fd_var" '%s' "${!held}"
     return 0
   fi
   exec {fd}>"$f.lock" || return 1
   flock -x "$fd" || { exec {fd}>&-; return 1; }
   printf -v "$fd_var" '%s' "$fd"
+  # Exported so a child bash process (hold.sh, a script) can reuse the fd too.
   printf -v "$held" '%s' "$fd"
+  export "$held"
 }
 
 
