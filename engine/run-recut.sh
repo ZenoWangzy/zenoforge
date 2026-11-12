@@ -246,7 +246,7 @@ SIZE_ADMISSION="$(jq -c '.size_admission | select(.kind == "size-admission" and 
 # Idempotency: don't re-cut (or re-refuse) a parent recut has already
 # reached a verdict on. Cheap, avoids double-creating children on an
 # accidental second invocation.
-if echo "$PARENT_STATE" | jq -e 'has("recut_children") or has("recut_refused_at")' > /dev/null 2>&1; then
+if echo "$PARENT_STATE" | recut_marker_blocks; then
   echo "run-recut: #$N already has a recut verdict recorded, not re-running" >&2
   model_policy_complete_unit "$N" recut || exit 1
   exit 0

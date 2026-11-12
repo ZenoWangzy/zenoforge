@@ -2927,7 +2927,7 @@ if [ "$recut_slots" -gt 0 ]; then
     # markers too (recut_children/recut_refused_at), but there's no reason
     # to spend a worktree + model call dispatching a run whose own first
     # check would just exit 0 immediately.
-    state_read "$next_recut" | jq -e 'has("recut_children") or has("recut_refused_at")' >/dev/null 2>&1 && continue
+    state_read "$next_recut" | recut_marker_blocks && continue
     # Not safe against a triage/advisor run on the SAME parent issue (both
     # would race the parent's own state_merge) -- this is that guard, same
     # shape as stage_unit_active triage "$n" above.

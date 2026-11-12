@@ -447,6 +447,13 @@ run_once "needs-recut" '{"attempts":0,"recut_refused_at":"2026-01-01T00:00:00Z"}
 assert_eq "already-refused parent: exits 0 (skip, not re-run)" "0" "$RUN_STATUS"
 assert_eq "...no gh mutation" "" "$GH_LOG_CONTENT"
 
+# --- a refusal from a prior needs-recut episode does not block a new one ----
+# Live shape (row 148, synthetic id): refused 11-04, label re-applied 11-05
+# by the arbiter without the marker cleared (#5139 stuck for days).
+run_once "needs-recut" '{"state":"needs-recut","attempts":0,"risk_class":"P1","level":"L2","recut_refused_at":"2026-11-04T18:10:45Z","state_changed_at":"2026-11-05T05:25:05Z","size_admission":{"kind":"size-admission","lines":801,"limit":800,"branch":"agent/issue-90044","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}'
+assert_eq "stale refusal from a prior episode: not skipped as a recorded verdict" "0" "$(grep -c 'already has a recut verdict' <<< "$RUN_OUTPUT" || true)"
+assert_contains "stale refusal from a prior episode: runs recut" "$SPEND_CONTENT" $'\trecut\t'
+
 # --- a refusal or a recorded verdict completes the recut unit (issue 2040) --
 ACTIVE_RECUT='"model_policy":{"unit":"recut","step":"work","active":{"unit":"recut","step":"work","dispatched_at":"2026-10-03T15:28:52Z"}}'
 run_once "needs-recut" "{\"attempts\":0,\"recut_refused_at\":\"2026-01-01T00:00:00Z\",$ACTIVE_RECUT}"
