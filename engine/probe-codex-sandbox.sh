@@ -57,7 +57,7 @@ PROMPT="This is a sandbox probe. Do exactly these four things, in order, and the
 Report as four numbered lines."
 
 set +e
-CODEX_ARGS=(exec --sandbox read-only --cd "$PROBE_DIR" --skip-git-repo-check --ephemeral
+CODEX_ARGS=(exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --sandbox read-only --cd "$PROBE_DIR" --skip-git-repo-check --ephemeral
   -m "$MODEL" -c "model_reasoning_effort=$EFFORT" "${SERVICE_TIER_ARGS[@]}"
   --output-last-message "$OUT_FILE"
   -c mcp_servers.gitnexus.enabled=false)
