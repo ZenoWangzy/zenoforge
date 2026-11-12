@@ -6,12 +6,10 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 fail() { echo "pr-ci-gate-paths.test.sh: $*" >&2; exit 1; }
 
-# Gate regex straight from merge-pr.sh; jq's "\\." is ERE "\.". The override exists only for the mutation case below.
+# Gate regex straight from merge-pr.sh (MERGE_PR_GATE_RE, an ERE). The override exists only for the mutation case below.
 merge_pr="${PR_CI_GATE_MERGE_PR:-$root/tools/merge-pr.sh}"
-raw="$(grep -oE 'test\("\^\([^"]*\)\$"\)' "$merge_pr" | head -1)"
-[[ -n "$raw" ]] || fail "no gate regex found in tools/merge-pr.sh"
-raw="${raw#*\"}"; raw="${raw%\"*}"
-regex="$(sed 's/\\\\/\\/g' <<<"$raw")"
+regex="$(sed -n "s/^MERGE_PR_GATE_RE='\(.*\)'\$/\1/p" "$merge_pr" | head -1)"
+[[ -n "$regex" ]] || fail "no gate regex found in tools/merge-pr.sh"
 
 # Every item the regex can match, expanded from the regex itself (a sample for .*). Checked against the workflows below.
 mapfile -t derived < <(node -e '
