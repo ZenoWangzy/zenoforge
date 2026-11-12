@@ -1,6 +1,6 @@
 # hold_rule and its supervisor ruling kinds. Split out of holds.sh to stay under that file's size baseline.
 
-# hold_rule N|issue-N|pr-N requeue|approve|arbiter|recut COMMENT: a supervisor ruling. Records supervisor-<action> in the
+# hold_rule N|issue-N|pr-N requeue|approve|arbiter|recut|ready COMMENT: a supervisor ruling. Records supervisor-<action> in the
 # unit history (refills the stop-loss/arbitration budgets; a parked unit is moved by scheduler.sh --rule) and releases a
 # scheduler-stop-loss hold if the issue has one. COMMENT must be an owner comment on the issue (or the PR for pr-N).
 hold_rule() {
