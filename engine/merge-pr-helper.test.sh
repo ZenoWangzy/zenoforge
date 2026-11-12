@@ -65,7 +65,7 @@ gh() {
         if [[ -n "$PR_CI_VIEW_OUTPUT" ]]; then printf '%s\n' "$PR_CI_VIEW_OUTPUT"; return; fi
         printf '{"headRefOid":"%s","statusCheckRollup":%s,"files":%s}\n' "${PR_CI_HEAD:-$PR_HEAD}" "$PR_CI_ROLLUP" "$(jq -cn --argjson files "$PR_FILES" '$files[:100] | map({path:.})')"
       elif [[ "$*" == *body,files* ]]; then
-        [[ "$PR_BODY" != gh-error ]] || return 1
+        [[ "$PR_BODY" != gh-error && "${PR_FILES_VIEW_DOWN:-0}" != 1 ]] || return 1
         jq -cn --arg body "$PR_BODY" --argjson files "$PR_FILES" --arg at "${PR_HEAD_DATE:-}" \
           '{body:$body,files:($files | map({path:.})),commits:(if $at == "" then [] else [{committedDate:$at}] end)}'
       else
@@ -134,6 +134,9 @@ gh() {
           ;;
         'repos/{owner}/{repo}/commits/'*'/status')
           printf '%s\n' "$PR_REST_STATUS"
+          ;;
+        'repos/{owner}/{repo}/pulls/17/files?per_page=100')
+          jq -c '[.[] | {filename: .}]' <<<"$PR_FILES"
           ;;
         'repos/{owner}/{repo}/actions/runs?head_sha='*)
           printf '%s\n' "$PR_REST_ACTIONS"
@@ -211,6 +214,16 @@ if merge_pr_ci_green_check_count 17 "$sha" true >/dev/null 2>&1; then fail 'a fa
 PR_GRAPHQL_DOWN=0
 PR_REST_RUNS='{"check_runs":[]}'
 PR_REST_ACTIONS='{"workflow_runs":[]}'
+
+# GraphQL refuses `gh pr view --json files` for the test receipt: the same paths come from REST pulls/<n>/files, and an empty list still refuses.
+PR_FILES_VIEW_DOWN=1
+PR_FILES='["docs/notes.md"]'
+merge_pr_test_receipt_ok 17 >"$fixture/receipt-rest-output" 2>&1 || fail "REST file list did not pass the receipt check: $(cat "$fixture/receipt-rest-output")"
+PR_FILES='[]'
+if merge_pr_test_receipt_ok 17 >"$fixture/receipt-rest-output" 2>&1; then fail 'an empty REST file list passed the receipt check'; fi
+[[ "$(cat "$fixture/receipt-rest-output")" == *'could not read the PR file list for the test receipt'* ]] || fail "empty REST file list gave the wrong refusal: $(cat "$fixture/receipt-rest-output")"
+PR_FILES_VIEW_DOWN=0
+PR_FILES='["tools/quick-land.sh"]'
 
 # Stacked child: deleting the parent's head branch closes open PRs based on it, so the child is retargeted before the merge.
 PR_CHILDREN='[{"number":21}]'

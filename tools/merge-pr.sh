@@ -147,12 +147,23 @@ merge_pr_ci_green_check_count() {
   printf '%s\n' "$count"
 }
 
+# {files: [{path}]} from REST pulls/<n>/files, the shape the GraphQL `gh pr view --json files` read gives.
+merge_pr_files_rest() {
+  local pr="$1"
+  gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files?per_page=100" 2>/dev/null \
+    | jq -cs '{files: [.[][] | {path: .filename}]}'
+}
+
 merge_pr_test_receipt_ok() {
   local pr="$1" view head_sha root result_file='' receipt bad
   if ! view="$(gh pr view "$pr" --json body,files,commits 2>/dev/null)" \
     || ! jq -e '.files | type == "array" and length > 0' <<<"$view" >/dev/null 2>&1; then
-    merge_pr_refuse "$pr" 'could not read the PR file list for the test receipt'
-    return 1
+    # GraphQL refused the file list (rate limit): read the same paths over REST.
+    view="$(merge_pr_files_rest "$pr" 2>/dev/null)" || view=
+    if ! jq -e '.files | type == "array" and length > 0' <<<"$view" >/dev/null 2>&1; then
+      merge_pr_refuse "$pr" 'could not read the PR file list for the test receipt'
+      return 1
+    fi
   fi
   if jq -e 'all(.files[].path; test("\\.md$"))' <<<"$view" >/dev/null 2>&1; then
     return 0
