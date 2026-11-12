@@ -135,4 +135,11 @@ set_unit issue-29 '.stage = "closed"'
 cu_state 29 needs-hold
 intake_closed_unit_rows 29
 [[ "$(cu_episode 29)" == none && "$(unit_json issue-29 | jq -r '.closed_units_restore_refused // false')" == true ]] || fail "recut restore must not happen twice"
+# hold.sh --rule --ready on a tracker parent (vecta#6299 shape) is a ruling: one episode, from the tracker state.
+jq --argjson u "$(closed_unit 31 supervisor-budget-recut 2026-01-02T00:00:00Z)" '.units += [$u]' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+cu_state 31 tracker '{"state_changed_at":"2026-01-03T00:00:00Z"}'
+intake_ruling_episodes 31
+[[ "$(cu_episode 31)" == "ruling-2026-01-03T00:00:00Z" ]] || fail "a ready ruling from tracker must record a ruling episode"
+intake_ruling_episodes 31
+[[ "$(cu_episode 31)" == "ruling-2026-01-03T00:00:00Z" ]] || fail "a repeated tick must not move the ruling episode"
 echo "recut-reopen.test.sh ok"

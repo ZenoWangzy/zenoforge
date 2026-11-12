@@ -62,8 +62,9 @@ intake_attempt_cap() { # → CONCLUDE_RUN_ATTEMPT_CAP read from lib.sh; empty wh
 intake_ruling_episodes() { # issue...
   local n at cap
   cap="$(intake_attempt_cap)"; [[ "$cap" =~ ^[0-9]+$ ]] || return 0
+  # tracker: hold.sh --rule --ready on a tracker parent (vecta#6299) is the same ruling as needs-advisor or needs-triage.
   for n; do
-    at="$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -r --argjson cap "$cap" 'select(.state == "ready-for-agent" and (.state_changed_from | IN("needs-advisor", "needs-triage"))
+    at="$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -r --argjson cap "$cap" 'select(.state == "ready-for-agent" and (.state_changed_from | IN("needs-advisor", "needs-triage", "tracker"))
       and .hold == null and (.attempts // 0) < $cap and .external_deliverable.required != true) | .state_changed_at // empty' 2>/dev/null)" || continue
     [[ -z "$at" ]] || intake_reopen_episode "$n" "$at" ruling
   done

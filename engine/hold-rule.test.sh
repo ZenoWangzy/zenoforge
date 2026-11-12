@@ -268,3 +268,65 @@ EOT
   jq -e '.units[0].history[-1].stage == "supervisor-approve"' "$fixture_runtime/units.json" >/dev/null || { echo 'FAIL: supervisor approve still refused after supersede-handoff' >&2; exit 1; }
 )
 printf 'ok - supersede-handoff clears the snapshot, records the ruling and current head, and leaves the rescued ref intact\n'
+# hold.sh --rule --ready (vecta#6299 shape): a tracker parent with a closed recut unit and an owner ruling moves to ready-for-agent
+# with its from-state recorded. needs-advisor and needs-triage move too; ready-for-agent, another hold, and a closed issue are refused.
+(
+  fixture_engine="$test_env_root/ready-engine"
+  fixture_runtime="$test_env_root/ready-autopi"
+  ready_calls="$test_env_root/ready-calls.log"
+  mkdir -p "$fixture_engine/mac-autopilot" "$fixture_runtime/alerts" "$test_env_root/ready-repo" "$test_env_root/ready-sup" "$AGENT_HOME/state"
+  cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$fixture_runtime/config.json"
+  printf '%s\n' '{"workers":[]}' > "$fixture_runtime/workers.json"
+  cat > "$fixture_engine/mac-autopilot/scheduler.sh" <<'EOT2'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$TEST_ENGINE/mac-autopilot/scheduler.sh"
+rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}"
+EOT2
+  chmod +x "$fixture_engine/mac-autopilot/scheduler.sh"
+  export TEST_ENGINE="$SCRIPT_DIR" AUTOPI_TEST_LIBRARY_ONLY=true MAC_AUTOPILOT_ROOT="$test_env_root/ready-repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/ready-sup" MAC_AUTOPILOT_RUNTIME_DIR="$fixture_runtime"
+  export READY_CALLS="$ready_calls"
+  _AGENT_LIB_DIR="$fixture_engine"
+  # Stubs for the GitHub writes and the tracker-children gate, which has its own tests.
+  gh() {
+    printf 'gh %s\n' "$*" >> "$READY_CALLS"
+    case "$*" in
+      'api repos/test/repo/issues/comments/9') printf '%s\n' '{"issue_url":"https://api.github.com/repos/test/repo/issues/6299","author_association":"OWNER","html_url":"https://github.com/test/repo/issues/6299#issuecomment-9","body":"ready for the agent"}' ;;
+      'issue view 6299 --repo test/repo --json state -q .state') printf '%s\n' "$READY_ISSUE_STATE" ;;
+      *) return 0 ;;
+    esac
+  }
+  guarded_write() { printf 'guarded %s\n' "$*" >> "$READY_CALLS"; }
+  ensure_state_labels() { :; }
+  roadmap_ensure_issue_parent() { :; }
+  tracker_parent_transition_is_blocked() { return 1; }
+  reset() { # state-json issue-state
+    printf '%s\n' "$1" > "$AGENT_HOME/state/6299.json"
+    jq -cn '{units:[{id:"issue-6299",issue:6299,stage:"closed",branch:"agent/issue-6299",history:[{stage:"supervisor-budget-recut",at:"2026-11-10T00:00:00Z"},{stage:"size-recut-completed",at:"2026-11-11T00:00:00Z"}]}]}' > "$fixture_runtime/units.json"
+    : > "$READY_CALLS"
+    READY_ISSUE_STATE="$2"
+  }
+  reset '{"state":"tracker"}' OPEN
+  rc=0; hold_cli_main --rule 6299 --ready --comment 9 > "$test_env_root/ready.out" 2>&1 || rc=$?
+  [ "$rc" = 0 ] || { echo "FAIL: --ready refused a tracker ruling" >&2; cat "$test_env_root/ready.out" >&2; exit 1; }
+  jq -e '.state == "ready-for-agent" and .state_changed_from == "tracker" and (.state_changed_at // "") != ""' "$AGENT_HOME/state/6299.json" >/dev/null || { echo "FAIL: --ready did not record the tracker from-state" >&2; exit 1; }
+  jq -e '.units[0].history[-1].stage == "supervisor-ready" and .units[0].stage == "closed"' "$fixture_runtime/units.json" >/dev/null || { echo "FAIL: --ready did not record the ruling in unit history" >&2; exit 1; }
+  grep -Fq -- 'ready-for-agent' "$READY_CALLS" || { echo "FAIL: --ready did not write the ready-for-agent label" >&2; exit 1; }
+  printf 'ok - hold --rule --ready moves a tracker parent to ready-for-agent with its from-state recorded\n'
+  for from in needs-advisor needs-triage; do
+    reset "{\"state\":\"$from\"}" OPEN
+    hold_rule 6299 ready 9 >/dev/null 2>&1 || { echo "FAIL: --ready refused $from" >&2; exit 1; }
+    jq -e --arg from "$from" '.state == "ready-for-agent" and .state_changed_from == $from' "$AGENT_HOME/state/6299.json" >/dev/null || { echo "FAIL: --ready did not record $from" >&2; exit 1; }
+  done
+  for case in '{"state":"ready-for-agent"}|OPEN' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss"}}|OPEN' '{"state":"tracker"}|CLOSED' '{"state":"needs-info"}|OPEN'; do
+    reset "${case%|*}" "${case##*|}"
+    state_before="$(cat "$AGENT_HOME/state/6299.json")"; units_before="$(cat "$fixture_runtime/units.json")"
+    rc=0; hold_rule 6299 ready 9 >/dev/null 2>&1 || rc=$?
+    [ "$rc" != 0 ] && [ "$(cat "$AGENT_HOME/state/6299.json")" = "$state_before" ] && [ "$(cat "$fixture_runtime/units.json")" = "$units_before" ] \
+      || { echo "FAIL: --ready accepted or wrote for ${case%|*} issue ${case##*|}" >&2; exit 1; }
+  done
+  printf 'ok - hold --rule --ready refuses ready-for-agent, on-hold, other states and closed issues without writing\n'
+)
+rc=0; bash "$SCRIPT_DIR/hold.sh" --rule >"$test_env_root/hold-rule-ready-usage.out" 2>&1 || rc=$?
+[ "$rc" = 64 ] && grep -Fq -- '--ready' "$test_env_root/hold-rule-ready-usage.out" || { echo "FAIL: hold.sh --rule usage omits --ready" >&2; exit 1; }
+printf 'ok - hold.sh --rule usage names --ready\n'
