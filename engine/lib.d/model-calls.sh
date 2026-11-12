@@ -1,4 +1,6 @@
 
+source "$(dirname -- "${BASH_SOURCE[0]}")/codex-mcp.sh"
+
 # model_timeout_for_attempt <base_minutes> [issue] -- a wall-clock kill means
 # the next attempt needs more room, not a refunded attempt. Keep escalation
 # bounded to one step: a later timeout gets the same larger budget instead of
@@ -570,7 +572,7 @@ run_codex_json() {
   # idiom instead: self-contained, works identically whether or not the
   # caller has `set -e` active, and never mutates shared shell state.
   started_at="$(date +%s)"
-  pipeline_execution_run timeout "${timeout_seconds}s" codex exec \
+  pipeline_execution_run timeout "${timeout_seconds}s" codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
     --sandbox "$CODEX_SANDBOX_MODE" --cd "$cwd" --skip-git-repo-check --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c mcp_servers.gitnexus.enabled=false \
@@ -805,7 +807,7 @@ run_codex_text() {
   # caller's shell from this toggle regardless, but matching the sibling
   # function's idiom keeps the two functions safe to read the same way.
   started_at="$(date +%s)"
-  pipeline_execution_run timeout "${timeout_minutes}m" codex exec \
+  pipeline_execution_run timeout "${timeout_minutes}m" codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
     --sandbox "$CODEX_SANDBOX_MODE" --cd "$cwd" --skip-git-repo-check --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c mcp_servers.gitnexus.enabled=false \
@@ -917,7 +919,7 @@ run_codex_implement() {
   # Admission diagnostics are not model output. Capture them separately until
   # transcript emptiness is determined, then retain them in the same log.
   pipeline_execution_run bash -c 'log=$1; shift; exec "$@" > "$log" 2>&1' _ "$log_file" \
-    timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN codex exec \
+    timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
     --sandbox "$CODEX_SANDBOX_MODE" --cd "$cwd" --skip-git-repo-check --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c sandbox_workspace_write.network_access=true \

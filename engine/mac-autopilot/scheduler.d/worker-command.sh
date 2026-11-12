@@ -133,6 +133,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   [[ -n "$tier" ]] || tier="${PICK_SERVICE_TIER:-}"
   [[ -n "$tier" ]] && tier_args=(--config "service_tier=\"$tier\"")
   while IFS= read -r config_arg; do codex_config_args+=("$config_arg"); done < <(codex_mcp_disable_args)
+  codex_config_args+=("${CODEX_PLUGINS_OFF_ARGS[@]}")
   # Every codex type gets the cap; implement keeps its older, tighter 8000.
   output_tokens="$(worker_output_cap_tokens)"
   [[ "$type" != implement ]] || (( output_tokens <= 8000 )) || output_tokens=8000

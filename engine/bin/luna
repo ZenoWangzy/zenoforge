@@ -50,7 +50,7 @@ done
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d" && pwd -P)/codex-mcp.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d" && pwd -P)/worker-output-cap.sh"
 mcp_off=(); while IFS= read -r arg; do mcp_off+=("$arg"); done < <(codex_mcp_disable_args)
-args=(exec -C "$cwd" "${mcp_off[@]}" -m "${CODEX_MODEL:-gpt-6-luna}" -c "model_reasoning_effort=\"${CODEX_EFFORT:-max}\"" -c shell_environment_policy.inherit=all
+args=(exec -C "$cwd" "${mcp_off[@]}" "${CODEX_PLUGINS_OFF_ARGS[@]}" -m "${CODEX_MODEL:-gpt-6-luna}" -c "model_reasoning_effort=\"${CODEX_EFFORT:-max}\"" -c shell_environment_policy.inherit=all
   -c "tool_output_token_limit=$(worker_output_cap_tokens)" -s danger-full-access --skip-git-repo-check -o "$out/last.md" --json)
 [[ -n "$schema" ]] && args+=(--output-schema "$schema")
 # Each run lives in its own cgroup scope with a memory cap, so one runaway tool (2026-10-24: three shellcheck runs

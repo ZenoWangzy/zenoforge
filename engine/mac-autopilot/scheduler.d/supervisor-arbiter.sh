@@ -238,7 +238,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       fi
     } > "$SUP/$q"
     launcher=(); command -v setsid >/dev/null 2>&1 && launcher=(setsid)
-    worker_command=(bash -c 'extra=(); [[ -z "$4" ]] || extra=(-m "$4" -c "model_reasoning_effort=$5"); exec timeout -k 30 900 codex exec -p "$1" "${extra[@]}" \
+    worker_command=(bash -c 'extra=(); [[ -z "$4" ]] || extra=(-m "$4" -c "model_reasoning_effort=$5"); exec timeout -k 30 900 codex exec -p "$1" -c features.plugins=false "${extra[@]}" \
       --skip-git-repo-check -s read-only --json --output-last-message "$2" - < "$3"' \
       supervisor-arbiter "$arbiter_profile" "$SUP/$report" "$SUP/$q" "$MODEL_NOT_FOUND_ARBITER_MODEL" "$MODEL_NOT_FOUND_ARBITER_EFFORT")
     # Same report file as the Codex path: the prompt carries the frozen record, so the Claude run gets no tools.

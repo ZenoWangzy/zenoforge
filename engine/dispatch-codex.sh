@@ -32,6 +32,7 @@ MAX_AGENTS="${MAX_AGENTS:-10}"
 
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/lib.d/codex-mcp.sh"
 source "$SCRIPT_DIR/redact-secrets.sh"
 if [[ "${1:-}" != --owner-session ]] || ! python3 "$(pipeline_execution_guard)" inherited; then
   pipeline_execution_admit || exit $?
@@ -332,7 +333,7 @@ dispatch_owner_session() {
   agent_thread_budget
   OWNER_SESSION_BUDGET_STARTED_AT="$(date +%s)"
   set +e
-  pipeline_execution_run codex exec --json --model "$model" --config "model_reasoning_effort=\"$effort\"" "${service_tier_args[@]}" \
+  pipeline_execution_run codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json --model "$model" --config "model_reasoning_effort=\"$effort\"" "${service_tier_args[@]}" \
     --config mcp_servers.gitnexus.enabled=false \
     --cd "$worktree" "${sandbox_args[@]}" - <&3 2>&1 | dispatch_log_output "$final_log"
   exit_code="${PIPESTATUS[0]}"
