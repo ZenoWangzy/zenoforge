@@ -21,6 +21,18 @@ const quietLogger = Object.freeze({
   error() {},
 });
 
+// Hot-path sets (merge, arbiter, main-ci) keep the 800 ms, no-retry budget; intake-priority runs off the hot path.
+export function typesafeClientOptions(questionSet, env = process.env) {
+  const raw = env.ZF_TS_JUDGE_TIMEOUT_MS ?? "";
+  const override = Number(raw);
+  const validOverride = /^\d+$/.test(raw) && override >= 100 && override <= 60000;
+  const offHotPath = questionSet === "intake-priority";
+  return {
+    timeout: validOverride ? override : offHotPath ? 15000 : 800,
+    retry: { maxRetries: offHotPath ? 1 : 0 },
+  };
+}
+
 function mainRedCandidates(state) {
   const candidates = Array.isArray(state.candidates) ? state.candidates : [];
   if (candidates.length < 2 || candidates.length > 20) throw new Error("invalid candidate set");
@@ -363,8 +375,7 @@ export async function judge({
   try {
     const { questions, extract } = questionFor(questionSet, safeState);
     const sdk = client ?? new TypeSafeClient({
-      timeout: 800,
-      retry: { maxRetries: 0 },
+      ...typesafeClientOptions(questionSet),
       logger: quietLogger,
     });
     const response = await sdk.systemOne({ state: safeState, questions, model: "jev-latest" });

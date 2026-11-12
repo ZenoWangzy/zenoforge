@@ -3,7 +3,7 @@ import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { judge, questionFor, recordShadowComparison, SHADOW_EVENTS_REQUIRED } from "./ts-judge.mjs";
+import { judge, questionFor, recordShadowComparison, SHADOW_EVENTS_REQUIRED, typesafeClientOptions } from "./ts-judge.mjs";
 
 async function fixture(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "ts-judge-test-"));
@@ -315,4 +315,26 @@ test("a missing TYPESAFE_ENV_FILE falls back with missing-api-key", async (t) =>
   assert.equal(result.status, "fallback");
   assert.equal(result.reason, "missing-api-key");
   assert.equal(result.decision, "code");
+});
+
+test("intake-priority builds its client with a 15 s timeout and one retry", () => {
+  assert.deepEqual(typesafeClientOptions("intake-priority", {}), { timeout: 15000, retry: { maxRetries: 1 } });
+});
+
+test("hot-path question sets keep the 800 ms timeout and no retry", () => {
+  for (const set of ["ci-failure", "main-red", "f12", "triage-size", "recut"]) {
+    assert.deepEqual(typesafeClientOptions(set, {}), { timeout: 800, retry: { maxRetries: 0 } }, set);
+  }
+});
+
+test("a valid ZF_TS_JUDGE_TIMEOUT_MS overrides the timeout for every set and keeps its retry count", () => {
+  const env = { ZF_TS_JUDGE_TIMEOUT_MS: "30000" };
+  assert.deepEqual(typesafeClientOptions("f12", env), { timeout: 30000, retry: { maxRetries: 0 } });
+  assert.deepEqual(typesafeClientOptions("intake-priority", env), { timeout: 30000, retry: { maxRetries: 1 } });
+});
+
+test("an invalid ZF_TS_JUDGE_TIMEOUT_MS is ignored", () => {
+  for (const raw of ["99", "60001", "1.5", "-200", "abc", ""]) {
+    assert.deepEqual(typesafeClientOptions("f12", { ZF_TS_JUDGE_TIMEOUT_MS: raw }), { timeout: 800, retry: { maxRetries: 0 } }, raw);
+  }
 });
