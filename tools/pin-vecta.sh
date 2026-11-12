@@ -297,6 +297,14 @@ fi
 preflight_status=0
 run_bounded_step preflight "${preflight_runner[@]}" || preflight_status=$?
 
+vecta_gate_status=0
+vecta_gate_test="$worktree/.zenoforge/build/pack/scripts/zenoforge-pack/merge-lane-vecta-gate.test.sh"
+if [[ -f "$vecta_gate_test" ]]; then
+  (cd -- "$worktree" && run_bounded_step vecta-gate bash "$vecta_gate_test") || vecta_gate_status=$?
+else
+  echo "pin-vecta: skipping VectA merge-lane gate; test missing: $vecta_gate_test"
+fi
+
 print_override_diagnostics() {
   local table="$worktree/$overrides_rel" live_dir pack_map mismatch_file path expected actual orig pack_path diff_file lines_file pack_file shared_count changed_count
   [[ -f "$table" ]] || return 0
@@ -371,9 +379,9 @@ if ((build_status != 0)) && { grep -q 'override guard failed\|override changed:'
 fi
 if ((preflight_status != 0)); then print_intended_rows; fi
 
-if ((build_status != 0 || check_status != 0 || preflight_status != 0)); then
-  printf 'pin-vecta: refusing publication build_status=%s check_status=%s preflight_status=%s\n' \
-    "$build_status" "$check_status" "$preflight_status" >&2
+if ((build_status != 0 || check_status != 0 || preflight_status != 0 || vecta_gate_status != 0)); then
+  printf 'pin-vecta: refusing publication build_status=%s check_status=%s preflight_status=%s vecta_gate_status=%s\n' \
+    "$build_status" "$check_status" "$preflight_status" "$vecta_gate_status" >&2
   exit 1
 fi
 
