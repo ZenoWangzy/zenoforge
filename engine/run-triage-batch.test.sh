@@ -650,6 +650,7 @@ advisor.md 23552
 guarded-recut-hand.md 3072
 implement-contract.md 6144
 recut.md 10240
+retro.md 2048
 review-contract.md 8192
 supervisor-arbiter.md 8192
 supervisor-cap-triage.md 3072
