@@ -17,6 +17,12 @@ wait_lock; (( elapsed < 2 )) || fail 'lock of a dead holder was not treated as f
 echo garbage > "$lock/pid"
 wait_lock; (( elapsed < 2 )) || fail 'lock with an unreadable pid was not treated as free'
 [[ ! -s "$log" ]] || fail 'a free lock logged a line'
+# A live pid whose start ticks name another process is a reused pid: the lock is free, not a holder.
+command sleep 30 & reused=$!; rm -rf "$lock"; mkdir "$lock"; echo "$reused" > "$lock/pid"; echo 1 > "$lock/start"
+AUTOPI_LOCK_WAIT_SECONDS=30 wait_lock
+kill "$reused" 2>/dev/null || :; wait "$reused" 2>/dev/null || :; rm -rf "$lock"; mkdir "$lock"
+(( elapsed < 2 )) || fail 'reused pid was waited on as a live holder'
+[[ ! -s "$log" ]] || fail 'a reused pid logged a wait line'
 
 # Live holder that exits after 2s: the wait ends when it is gone, well inside the bound.
 command sleep 2 & holder=$!; echo "$holder" > "$lock/pid"

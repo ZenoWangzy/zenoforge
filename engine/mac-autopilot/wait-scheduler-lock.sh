@@ -2,7 +2,8 @@
 # loop.sh runs this once at start. KillMode=process keeps the old loop's tick children alive across a
 # restart; they still hold .scheduler.lock, so the new loop's first tick would skip on the lock. Wait,
 # bounded, until the holder is gone. "Held" is exactly acquire_scheduler_lock's test (scheduler.d/locks-views.sh):
-# the lock dir exists and its pid file names a live process; a missing or dead pid is a stale lock, i.e. free.
+# the lock dir exists and its pid file names a live process whose start ticks match the recorded start (a reused pid is free);
+# a missing or dead pid is a stale lock, i.e. free.
 # Fail open: when the bound expires, log and return 0 so a crashed scheduler always comes back.
 # Not an ExecStartPre: the host unit is not in this repo, and systemd bounds ExecStartPre by TimeoutStartSec
 # (90s default) and blocks `systemctl restart` for the whole wait. loop.sh is the one path every unit and nohup start passes.
@@ -12,9 +13,15 @@ lock="$MAC_AUTOPILOT_RUNTIME_DIR/.scheduler.lock"
 limit="${AUTOPI_LOCK_WAIT_SECONDS:-300}"
 [[ "$limit" =~ ^[0-9]+$ ]] || limit=300
 holder() { # prints the live holder pid, fails when the lock is free or stale
-  local pid
+  local pid want now
   pid="$(cat "$lock/pid" 2>/dev/null || true)"
-  [[ -d "$lock" && "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && printf '%s' "$pid"
+  [[ -d "$lock" && "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || return 1
+  want="$(cat "$lock/start" 2>/dev/null || true)" # same /proc start ticks as coord_process_start_ticks
+  if [[ "$want" =~ ^[0-9]+$ ]]; then
+    now="$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $20}')"
+    [[ "$now" =~ ^[0-9]+$ && "$now" != "$want" ]] && return 1
+  fi
+  printf '%s' "$pid"
 }
 # A running tick lets go of the lock at every phase_yield_lock, so a free lock does not mean the old tick is gone:
 # on 2026-11-07 the new loop started a second full tick beside one with 9 minutes left (528 s of two ticks on one ledger).

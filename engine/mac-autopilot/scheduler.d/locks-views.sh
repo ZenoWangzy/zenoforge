@@ -1,13 +1,24 @@
 lock_us_now() { LOCK_US="${EPOCHREALTIME:-0}"; LOCK_US="${LOCK_US//[.,]/}"; } # microseconds since the epoch; 0 where bash has no EPOCHREALTIME
+scheduler_lock_pid_reused() { # $1: live pid in the lock -> 0 when the owner's start ticks name another process (PID reuse)
+  local want now
+  want="$(cat "$SCHED_LOCK/start" 2>/dev/null || true)"
+  [[ "$want" =~ ^[0-9]+$ ]] || return 1 # no start recorded (older lock): the pid test alone decides
+  now="$(coord_process_start_ticks "$1" 2>/dev/null)" || return 1 # unreadable: keep the pid test
+  [[ "$now" != "$want" ]]
+}
 acquire_scheduler_lock() {
-  local old owner="$BASHPID"
+  local old start owner="$BASHPID"
   if ! mkdir "$SCHED_LOCK" 2>/dev/null; then
     old="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"
-    if [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" 2>/dev/null; then return 1; fi
+    if [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" 2>/dev/null; then
+      scheduler_lock_pid_reused "$old" || return 1
+      say "scheduler lock: reclaimed from pid $old, its start time does not match the lock (pid reused)"
+    fi
     rm -rf -- "$SCHED_LOCK"
     mkdir "$SCHED_LOCK" 2>/dev/null || return 1
   fi
   echo "$owner" > "$SCHED_LOCK/pid"
+  if start="$(coord_process_start_ticks "$owner" 2>/dev/null)"; then printf '%s\n' "$start" > "$SCHED_LOCK/start"; fi
   SCHED_LOCK_HELD=true
   lock_us_now; SCHED_LOCK_AT_US=$LOCK_US # the existing-walk station sums holds and waits per pass
   chain_exit_trap 'release_scheduler_lock'
