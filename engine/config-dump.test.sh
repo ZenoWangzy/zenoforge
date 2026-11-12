@@ -23,17 +23,19 @@ dump() {
 }
 files_of() { sed '/^$/q' | sed '$d'; }
 
-check 'target beats pack and engine, pack beats engine, engine-only and pack-only are hidden' \
+check 'target beats pack and engine, pack beats engine; target-only, engine-only and pack-only are hidden' \
   "$(dump | files_of)" \
-  "$(printf 'all.json\ttarget\tpack,engine\npack-eng.json\tpack\tengine\nsub/new.json\ttarget\t-')"
+  "$(printf 'all.json\ttarget\tpack,engine\npack-eng.json\tpack\tengine')"
 check 'a missing pack dir still works' \
   "$(dump ZF_PACK_DIR="$root/missing" | files_of)" \
-  "$(printf 'all.json\ttarget\tengine\nsub/new.json\ttarget\t-')"
+  "$(printf 'all.json\ttarget\tengine')"
 
 check 'single path: target wins' "$(dump all.json)" \
   "$(printf 'target\t%s\twinner\npack\t%s\t\nengine\t%s\t' "$target/all.json" "$pack/all.json" "$engine/all.json")"
 check 'single path: pack wins' "$(dump pack-eng.json)" \
   "$(printf 'target\t-\t\npack\t%s\twinner\nengine\t%s\t' "$pack/pack-eng.json" "$engine/pack-eng.json")"
+check 'single path: a target-only file is still answered' "$(dump sub/new.json)" \
+  "$(printf 'target\t%s\twinner\npack\t-\t\nengine\t-\t' "$target/sub/new.json")"
 check 'single path: engine only' "$(dump engine-only.json)" \
   "$(printf 'target\t-\t\npack\t-\t\nengine\t%s\twinner' "$engine/engine-only.json")"
 
@@ -49,6 +51,11 @@ check 'ZF-only variable' "$(grep '^ONLY' <<<"$env_part")" "$(printf 'ONLY\tZF\tz
 check 'secret-looking values are masked' "$(grep -E '^(API_TOKEN|DB_PASSWORD)' <<<"$env_part")" \
   "$(printf 'API_TOKEN\tprefix\t<set>\nDB_PASSWORD\tZF\t<set>')"
 if grep -q -e hunter2 -e pw9 <<<"$env_part"; then fail 'secret value leaked'; fi
+
+# config.sh derives and exports these (CONFIG_ROOT is caller-set here, so it does appear); only variables the caller exported may appear.
+if grep -q -e '^GH_RETRY_MAX_ATTEMPTS' -e '^PACK_REL' <<<"$env_part"; then fail 'derived default listed'; fi
+check 'caller-set variable of a derived name is listed' "$(dump ZF_GH_RETRY_MAX_ATTEMPTS=7 | sed '1,/^$/d' | grep '^GH_RETRY_MAX')" \
+  "$(printf 'GH_RETRY_MAX_ATTEMPTS\tZF\t7')"
 
 before="$(find "$root" "$AGENT_HOME" -type f 2>/dev/null | sort | xargs cat | cksum)"
 dump >/dev/null

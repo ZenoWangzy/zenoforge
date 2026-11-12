@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Read-only: print which config layer wins. No argument: every overriding file, then the ZF_/prefix environment.
-# One <relative path> argument: its target, pack and engine copies and the winner.
+# Read-only: print which config layer wins. No argument: every file that covers a lower layer (target-only files are not
+# listed; ask for one by path), then the ZF_/prefix variables the caller exported. The environment section is this shell's
+# environment, not that of a running service process. One <relative path> argument: its target, pack and engine copies and the winner.
 set -euo pipefail
 # config.sh writes the host-id file when ZF_HOST_ID is unset; a placeholder keeps this command read-only.
 : "${ZF_HOST_ID:=config-dump}"
+# Names exported before config.sh runs: the ones it derives and exports itself are defaults, not caller overrides.
+mapfile -t caller_exported < <(compgen -e)
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/config.sh"
 
 layer_names=(target pack engine)
@@ -43,7 +46,7 @@ env_names() {
   while IFS= read -r v; do
     if [[ -n $prefix && $v == "$prefix"* ]]; then printf '%s\n' "${v#"$prefix"}"
     elif [[ $v == ZF_* ]]; then printf '%s\n' "${v#ZF_}"; fi
-  done < <(compgen -e)
+  done < <(printf '%s\n' ${caller_exported[@]+"${caller_exported[@]}"})
 }
 
 if (( $# > 1 )); then echo 'usage: config-dump.sh [relative-path]' >&2; exit 2; fi
@@ -64,7 +67,8 @@ while IFS= read -r rel; do
   for i in 0 1 2; do
     if (( i != winner )) && [[ ${layer_paths[i]} != - ]]; then shadowed+="${shadowed:+,}${layer_names[i]}"; fi
   done
-  printf '%s\t%s\t%s\n' "$rel" "${layer_names[winner]}" "${shadowed:--}"
+  [[ -n $shadowed ]] || continue
+  printf '%s\t%s\t%s\n' "$rel" "${layer_names[winner]}" "$shadowed"
 done < <({ list_files "${ZF_CONFIG_ROOT-}"; list_files "${ZF_PACK_DIR-}" "$ZF_ENGINE_DIR"; } | LC_ALL=C sort -u)
 
 echo
