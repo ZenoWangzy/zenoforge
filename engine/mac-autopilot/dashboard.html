@@ -1441,7 +1441,13 @@ function problems(D, nowMs = Date.now()) {
     add({s, kind: "queue", who: l === "needs-advisor" ? "顾问" : "入口", what: r.name || l, val: r.count, rule: idleBad ? `最久 ${fAge(r.idle_hours)}${ub != null ? " ≥ " + fAge(ub) : ""}` : `积压 ≥ ${num(((F.standards || {})[`stage.${l}.count`] || {}).unhealthy)}`, mod: l === "needs-advisor" ? "advisor" : "intake", act: "查看"}); }
   const q = workQueue(D), cap = S.max_workers || 8, np = LW.filter(w => w.owner === "pipeline").length;
   if (q && q.startable > 0 && LW.length && np < cap) add({s: "warn", kind: "slot", who: "调度", what: "有活没人接", val: q.startable, rule: `产线空位 ${cap - np}`, mod: "workers", act: "查看"});
-  return rows.sort((a, b) => RANK[b.s] - RANK[a.s] || PB_ORDER.indexOf(a.kind) - PB_ORDER.indexOf(b.kind));
+  // 等人处理：等提单人回复、已合并等发布的票排在问题之后，最久在前；只用 stage 已有的 items，不做新查询。s 用 none，不改总览颜色。
+  const WAIT = {"needs-info": ["提单人", "等提单人回复"], "awaiting-release": ["发布", "已合并等发布"]}, person = [];
+  for (const [l, [who, why]] of Object.entries(WAIT)) for (const it of ((stageRow(D, l) || {}).items || []))
+    person.push({t: Date.parse(it.updated_at) || nowMs, who, why, n: it.number, title: it.title});
+  return [...rows.sort((a, b) => RANK[b.s] - RANK[a.s] || PB_ORDER.indexOf(a.kind) - PB_ORDER.indexOf(b.kind)),
+    ...person.sort((a, b) => a.t - b.t).map(p => ({s: "none", kind: "person", who: p.who, what: `#${p.n} ${p.title || ""}`, val: fAge((nowMs - p.t) / 3600000),
+      rule: p.why, href: `${repoUrl()}/issues/${encodeURIComponent(p.n)}`, act: "查看"}))];
 }
 const pbRow = r => `<div class="pb s-${r.s}"${r.tip ? ` data-tip="${esc(r.tip)}"` : ""}><i class="ad"></i><span class="pb-w">${esc(r.who)}</span><span class="pb-n">${esc(r.what)}</span><span class="pb-v">${esc(r.val)}</span><span class="pb-r">${esc(r.rule)}</span>${r.href ? `<a class="pb-a" href="${r.href}">${r.act}</a>` : `<button class="pb-a" type="button" data-m="${r.mod}">${r.act}</button>`}</div>`;
 function hk(icon, label, vis, st, mod, tip, sub = "") {
@@ -1456,7 +1462,7 @@ function vOverview(D) {
   const nNoData = ms.filter(m => m.status === "NO-DATA").length;
   const vsRaw = f.age == null && !ms.length && !LWok ? "none" : worst([metricVs, ...rows.map(r => r.s)]);
   const vs = vsRaw === "ok" && nNoData ? "none" : vsRaw;
-  const nBad = rows.filter(r => r.s === "bad").length, nWarn = rows.length - nBad;
+  const nBad = rows.filter(r => r.s === "bad").length, nWarn = rows.filter(r => r.s === "warn").length;
   const verdict = `<div class="ov-vd s-${vs}" data-m="health">${bigIcon(vs)}<b>${{ok:"正常", warn:"需留意", bad:"异常", none:"无数据"}[vs]}</b><span class="aside">${nBad ? stChip("bad", `${nBad} 项要处理`) : ""}${nWarn ? stChip("warn", `${nWarn} 项需留意`) : ""}${nNoData ? stChip("none", `${nNoData} 项无数据`) : ""}${STD.paused ? stChip("bad", "已暂停") : ""}${f.s === "bad" ? stChip("bad", "数据过期") : ""}</span></div>`;
   // 数 1 员工
   const cap = S.max_workers || 8, np = (LWM.pipeline || []).length, wst = LW.map(w => workerState(w, nowS)), waitN = wst.filter(x => x.h === "bad" || x.h === "warn").length;
