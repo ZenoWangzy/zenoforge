@@ -80,6 +80,7 @@ if [[ -z "${REQUIRED_PR_CHECKS_FILE:-}" ]]; then
     || REQUIRED_PR_CHECKS_FILE="$HERE/required-pr-checks.json"
 fi
 source "$HERE/scheduler.d/reports.sh"
+source "$HERE/review-contract.sh"
 source "$HERE/scheduler.d/units.sh"
 source "$HERE/scheduler.d/dead-park-salvage.sh"
 source "$HERE/scheduler.d/worker-outcomes.sh"
