@@ -391,7 +391,7 @@ roadmap_choose_epic() {
             and (($labels | index("pipeline-system")) == null
               or $inherited.theme_milestone == "开发流水线与运行稳定") then $inherited
           else
-            ([$candidate_epics[] | . + {score:score($text_words;$text_bigrams;.title)} | select(.score >= 3)]
+            ([$candidate_epics[] | . + {score:score($text_words;$text_bigrams;.title)} | select(.score >= 2)]
              | sort_by([-.score,.order]) | .[0]) as $best
             | ($candidate_epics | map(select(.title == "待归类")) | (map(select(.theme_milestone != "开发流水线与运行稳定")) + .) | .[0]) as $fallback
             | $best // $fallback
