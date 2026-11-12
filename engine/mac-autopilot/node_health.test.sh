@@ -1421,6 +1421,25 @@ jq -e '.flow.entered == 2 and .flow.merged == 3
   || fail "waiting unit count wrong: $(flowval flow.wait_stage_units) vs $(jq -c '[.flow.wip_age[] | select(.waiting)]' "$fa/node-health.json")"
 [[ "$(flowval flow.wait_stage_p90_hours)" == "210.0 UNHEALTHY" ]] \
   || fail "waiting age p90/sample guard wrong: $(flowval flow.wait_stage_p90_hours)"
+# 从未开工的 ready-for-agent 与 supervisor-review 最老单（队列行 78）：候选快照里已开工的 502 不计；无快照时为空
+usup="$test_env_root/unstarted-sup"; ua="$usup/autopi"; uh="$usup/home"; mkdir -p "$ua" "$uh/state"
+cat > "$ua/units.json" <<'JSON'
+{"units":[
+ {"id":"pr-601","issue":601,"stage":"supervisor-review","history":[{"stage":"review-request-changes","at":"2026-10-19T06:00:00Z"}]},
+ {"id":"pr-602","issue":502,"stage":"implement","history":[{"stage":"implement-started","at":"2026-10-19T11:00:00Z"}]}
+]}
+JSON
+printf '{"schema":4,"rows":"501\\tpr\\tnever started\\t[]\\t\\n502\\tpr\\tstarted\\t[]\\t\\n503\\tpr\\tnever started, newer\\t[]\\t\\n"}' > "$ua/intake-candidates.json"
+printf '{"state":"ready-for-agent","state_changed_at":"2026-10-17T12:00:00Z"}' > "$uh/state/501.json"
+printf '{"state":"ready-for-agent","state_changed_at":"2026-10-18T12:00:00Z"}' > "$uh/state/502.json"
+printf '{"state":"ready-for-agent","state_changed_at":"2026-10-19T08:00:00Z"}' > "$uh/state/503.json"
+AGENT_HOME="$uh" flowrun "$ua" --json "$ua/node-health.json" >/dev/null
+jq -e '.metrics[] | select(.id == "flow.ready_unstarted_age_hours") | .value == 48 and .status == "UNHEALTHY"' "$ua/node-health.json" >/dev/null \
+  || fail "oldest never-started ready-for-agent wrong: $(jq -c '.metrics[] | select(.id == "flow.ready_unstarted_age_hours")' "$ua/node-health.json")"
+jq -e '.metrics[] | select(.id == "flow.supervisor_review_oldest_hours") | .value == 6 and .status == "UNHEALTHY"' "$ua/node-health.json" >/dev/null \
+  || fail "supervisor-review oldest wrong: $(jq -c '.metrics[] | select(.id == "flow.supervisor_review_oldest_hours")' "$ua/node-health.json")"
+jq -e '.metrics[] | select(.id == "flow.ready_unstarted_age_hours") | .value == null' "$fa/node-health.json" >/dev/null \
+  || fail "no census must leave the unstarted age empty: $(jq -c '.metrics[] | select(.id == "flow.ready_unstarted_age_hours")' "$fa/node-health.json")"
 # 无积压（全部终态且在窗口前）：合入速率不计值，不读成 0
 ssup="$test_env_root/starve-sup"; sa="$ssup/autopi"; mkdir -p "$sa" "$ssup"
 printf '{"units":[{"id":"pr-31","stage":"merged","history":[{"stage":"created","at":"2026-10-18T10:00:00Z"},{"stage":"merged","at":"2026-10-18T11:00:00Z"}]}]}' > "$sa/units.json"

@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait, metric_windows
-import line_holds, intake_laneless_health
+import line_holds, intake_laneless_health, flow_unstarted_health
 import release_age
 import release_batch
 import release_retained
@@ -274,9 +274,9 @@ SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **existing_walk_heal
     "delivery.unlinked_incidents_30d": "night/founder-health-mail.json incidents (issue joined to accepted issue IDs) plus logs/head-watch.alerts PROD-DB-TIMEOUT episodes, which name no issue",
 }
 # Line-hold rows (holds.*) live in line_holds.py: node_health.py is at its size-ratchet baseline.
-CRITERIA.update({**line_holds.CRITERIA, **intake_laneless_health.CRITERIA, **station_standards.CRITERIA, **worker_cost.TOKEN_EFFICIENCY_CRITERIA})
-MEANING.update({**line_holds.MEANING, **intake_laneless_health.MEANING, **station_standards.MEANING, **worker_cost.TOKEN_EFFICIENCY_MEANING})
-SOURCE.update({**line_holds.SOURCE, **intake_laneless_health.SOURCE, **station_standards.SOURCE, **worker_cost.TOKEN_EFFICIENCY_SOURCE})
+CRITERIA.update({**line_holds.CRITERIA, **intake_laneless_health.CRITERIA, **flow_unstarted_health.CRITERIA, **station_standards.CRITERIA, **worker_cost.TOKEN_EFFICIENCY_CRITERIA})
+MEANING.update({**line_holds.MEANING, **intake_laneless_health.MEANING, **flow_unstarted_health.MEANING, **station_standards.MEANING, **worker_cost.TOKEN_EFFICIENCY_MEANING})
+SOURCE.update({**line_holds.SOURCE, **intake_laneless_health.SOURCE, **flow_unstarted_health.SOURCE, **station_standards.SOURCE, **worker_cost.TOKEN_EFFICIENCY_SOURCE})
 # release.hours_since_release lives in release_age.py, rulings.copies_differ in rulings_copies.py, for the same size-ratchet reason.
 for part in (release_age, release_retained, release_batch): CRITERIA.update(part.CRITERIA); MEANING.update(part.MEANING); SOURCE.update(part.SOURCE)
 CRITERIA.update(rulings_copies.CRITERIA); MEANING.update(rulings_copies.MEANING); SOURCE.update(rulings_copies.SOURCE)
@@ -1538,6 +1538,8 @@ def main():
     wip_rows, metrics["flow.wip_age_stage_p90_hours"] = wip_stage_ages(units, now); sample_counts["flow.wip_age_stage_p90_hours"] = max((row for row in wip_rows if not row["waiting"]), key=lambda row: row["p90_hours"], default={"count": 0})["count"]
     metrics["flow.wait_stage_p90_hours"], metrics["flow.wait_stage_units"] = wait_stage(units, now); sample_counts["flow.wait_stage_p90_hours"] = metrics["flow.wait_stage_units"]
     metrics["flow.slot_idle_hours"] = slot_idle_hours(queue_waits, cost_rows, since)
+    metrics["flow.ready_unstarted_age_hours"] = flow_unstarted_health.ready_unstarted_age(a, agent_home, units, now, ts, read_json)
+    metrics["flow.supervisor_review_oldest_hours"] = flow_unstarted_health.supervisor_review_oldest(wip_rows)
     metrics["flow.main_red_hours"] = main_red_hours(args.main_red_dir, since, now)
     flow_details = {"entered": entered, "merged": merged, "wip_age": wip_rows}
     metrics["ci.held_ready_pct"] = held_ready_pct(units, ledger_history.live_ledger_readable(a))
