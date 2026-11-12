@@ -511,6 +511,17 @@ repair_failure_prompt() { # unit-json review-report -> only this repair's failur
   local -a names=() links=() step_files=() log_files=() pids=()
   hint="$(jqf -r '.repair_hint // empty' <<<"$u")"
   [[ -z "$hint" ]] || printf '%s\n' "$hint"
+  # Direct-main (non-product) units get the lander failure and its log tail, never CI test logs or a test request. Same lane test as dispatch-queue.sh.
+  if [[ "$(jqf -r '.lane // empty' <<<"$u")" == direct-main ]]; then
+    local land_result land_log log_ok=false
+    land_result="$(jqf -r '[.history // [] | .[] | select(.stage=="land-failed")] | last | .result // empty' <<<"$u")"
+    land_log="$(jqf -r '.land_log // empty' <<<"$u")"
+    [[ -n "$land_log" && -r "$SUP/$land_log" ]] && log_ok=true
+    [[ -n "$land_result" || "$log_ok" == true ]] || return 1
+    [[ -z "$land_result" ]] || printf '\n直落 main 失败：%s\n' "$land_result"
+    if [[ "$log_ok" == true ]]; then printf '落地日志末尾（%s）：\n' "$land_log"; tail -80 "$SUP/$land_log"; fi
+    return 0
+  fi
   case "$(jqf -r '.history[-1].stage // empty' <<<"$u")" in
     ci-red|ci-test-red)
       pr="$(jqf -r '.pr // empty' <<<"$u")"
