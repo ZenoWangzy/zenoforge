@@ -18,7 +18,7 @@ holder() { # prints the live holder pid, fails when the lock is free or stale
   [[ -d "$lock" && "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || return 1
   want="$(cat "$lock/start" 2>/dev/null || true)" # same /proc start ticks as coord_process_start_ticks
   if [[ "$want" =~ ^[0-9]+$ ]]; then
-    now="$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $20}')"
+    now="$(pid_start_id "$pid" 2>/dev/null || true)" # proc.sh: /proc on Linux, ps on macOS
     [[ "$now" =~ ^[0-9]+$ && "$now" != "$want" ]] && return 1
   fi
   printf '%s' "$pid"

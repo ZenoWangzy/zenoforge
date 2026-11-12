@@ -31,6 +31,13 @@ PATH="$tmp/bin:$PATH" bash -eu -c '
 event_dir="$(hand_completion_event_dir)"
 [[ "$(jq -r .phase "$event_dir/99999999-123.json")" == done ]]
 echo 'PASS terminal watcher publishes durable event and completes cleanup'
+# Real live process, not the pid_live stub above: same identity and alive is not terminal; a reused pid is.
+sleep 60 & live=$!; live_ticks="$(pid_start_id "$live")"
+status=0; hand_completion_identity_terminal "$live" "$live_ticks" || status=$?
+reused=0; hand_completion_identity_terminal "$live" "$((live_ticks + 1))" || reused=$?
+kill "$live"; wait "$live" 2>/dev/null || true
+[[ "$status" == 75 && "$reused" == 0 ]]
+echo 'PASS live identity is not terminal and a reused pid is terminal'
 : > "$REFILL_TRACE"
 hand_completion_event_publish 99999999 123 /fixture/worktree
 PATH="$tmp/bin:$PATH" hand_completion_event_run "$tmp/repo" "$HAND_COMPLETION_EVENT"
