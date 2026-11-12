@@ -51,15 +51,15 @@ PR_REST_ACTIONS='{"workflow_runs":[]}'
 gh() {
   case "$1 $2" in
     'pr view')
+      if [[ "$PR_GRAPHQL_DOWN" == 1 ]]; then
+        printf 'GraphQL: API rate limit already exceeded\n' >&2
+        return 1
+      fi
       if [[ "$*" == *headRefName* ]]; then
         printf '{"headRefName":"%s"}\n' "$PR_HEAD_REF"
         return
       fi
       printf 'view:%s\n' "$*" >> "$fixture/gh-calls"
-      if [[ "$PR_GRAPHQL_DOWN" == 1 && "$*" == *headRefOid* ]]; then
-        printf 'GraphQL: API rate limit already exceeded\n' >&2
-        return 1
-      fi
       if [[ "$*" == *headRefOid,statusCheckRollup* ]]; then
         [[ "$PR_CI_VIEW_ERROR" == 0 ]] || return 1
         if [[ -n "$PR_CI_VIEW_OUTPUT" ]]; then printf '%s\n' "$PR_CI_VIEW_OUTPUT"; return; fi
@@ -94,25 +94,35 @@ gh() {
       fi
       ;;
     'pr merge')
+      [[ "$PR_GRAPHQL_DOWN" != 1 ]] || { printf 'GraphQL: API rate limit already exceeded\n' >&2; return 1; }
       printf 'merge:%s\n' "$*" >> "$fixture/gh-calls"
       ;;
     'pr edit')
+      [[ "$PR_GRAPHQL_DOWN" != 1 ]] || { printf 'GraphQL: API rate limit already exceeded\n' >&2; return 1; }
       printf 'edit:%s\n' "$*" >> "$fixture/gh-calls"
       [[ "${PR_EDIT_ERROR:-}" != 1 ]] || return 1
       ;;
     'pr list')
+      [[ "$PR_GRAPHQL_DOWN" != 1 ]] || { printf 'GraphQL: API rate limit already exceeded\n' >&2; return 1; }
       printf '%s\n' "$PR_CHILDREN"
       ;;
     'repo view')
+      [[ "$PR_GRAPHQL_DOWN" != 1 ]] || { printf 'GraphQL: API rate limit already exceeded\n' >&2; return 1; }
       printf '{"defaultBranchRef":{"name":"main"}}\n'
       ;;
     'run list')
+      [[ "$PR_GRAPHQL_DOWN" != 1 ]] || { printf 'GraphQL: API rate limit already exceeded\n' >&2; return 1; }
       printf '[{"databaseId":7,"status":"queued"},{"databaseId":8,"status":"completed"}]\n'
       ;;
     'run cancel')
       printf '%s\n' "$3" >> "$fixture/cancelled"
       ;;
     'api '*)
+      case "$*" in
+        *'-X PATCH'*) printf 'edit-rest:%s\n' "$*" >> "$fixture/gh-calls"; [[ "${PR_EDIT_ERROR:-}" != 1 ]] || return 1; return ;;
+        *'-X PUT'*) printf 'merge:rest %s\n' "$*" >> "$fixture/gh-calls"; return ;;
+        *'-X DELETE'*) printf 'delete-ref:%s\n' "$*" >> "$fixture/gh-calls"; return ;;
+      esac
       if [[ "$*" == *' -q .head.sha' ]]; then
         printf '%s\n' "$PR_HEAD"
         return
@@ -126,8 +136,25 @@ gh() {
       local path="${!#}" num
       case "$path" in
         'repos/{owner}/{repo}/pulls/17')
-          [[ "${PR_META_ERROR:-}" != 1 ]] || return 1
+          [[ "${PR_META_ERROR:-}" != 1 && "$PR_BODY" != gh-error ]] || return 1
+          if [[ "$PR_GRAPHQL_DOWN" == 1 ]]; then
+            jq -cn --arg body "$PR_BODY" --arg ref "$PR_HEAD_REF" '{title:"fixture", body:$body, head:{ref:$ref}}'
+            return
+          fi
           printf '%s\n' "$PR_META"
+          ;;
+        'repos/{owner}/{repo}/pulls/17/commits?per_page=100')
+          if [[ -n "${PR_HEAD_DATE:-}" ]]; then
+            jq -cn --arg sha "$PR_HEAD" --arg at "$PR_HEAD_DATE" '[{sha:$sha, commit:{message:"fixture head", committer:{date:$at}}}]'
+          else
+            printf '[]\n'
+          fi
+          ;;
+        'repos/{owner}/{repo}')
+          printf '{"default_branch":"main"}\n'
+          ;;
+        'repos/{owner}/{repo}/pulls?state=open&base='*)
+          printf '%s\n' "$PR_CHILDREN"
           ;;
         'repos/{owner}/{repo}/commits/'*'/check-runs?per_page=100')
           printf '%s\n' "$PR_REST_RUNS"
@@ -194,10 +221,13 @@ merge_pr_gate 17 "$sha" "$repo" >/dev/null
 PR_GRAPHQL_DOWN=1
 PR_REST_RUNS='{"check_runs":[{"name":"unit","check_suite":{"id":11},"status":"completed","conclusion":"success","started_at":"2026-11-12T10:00:00Z"}]}'
 PR_REST_STATUS='{"statuses":[{"context":"cla","state":"success"}]}'
-PR_REST_ACTIONS='{"workflow_runs":[{"check_suite_id":11,"name":"cli-tests"}]}'
+PR_REST_ACTIONS='{"workflow_runs":[{"check_suite_id":11,"name":"cli-tests","id":5,"status":"completed"}]}'
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >"$fixture/rest-gate-output" 2>&1 || fail "green PR did not merge with GraphQL down: $(cat "$fixture/rest-gate-output")"
-grep -q '^merge:pr merge 17 --squash --delete-branch' "$fixture/gh-calls" || fail "REST-only green PR did not squash merge: $(cat "$fixture/gh-calls")"
+[[ "$(cat "$fixture/rest-gate-output")" != *'could not'* ]] || fail "a REST read refused with GraphQL down: $(cat "$fixture/rest-gate-output")"
+grep -q "^merge:rest .*repos/{owner}/{repo}/pulls/17/merge.*sha=$sha" "$fixture/gh-calls" || fail "REST-only green PR did not squash merge at its head: $(cat "$fixture/gh-calls")"
+grep -q '^delete-ref:.*git/refs/heads/parent-branch' "$fixture/gh-calls" || fail "REST merge did not drop the head branch: $(cat "$fixture/gh-calls")"
+! grep -q '^merge:pr merge' "$fixture/gh-calls" || fail 'the GraphQL merge was recorded with GraphQL down'
 PR_GRAPHQL_DOWN=0
 PR_REST_RUNS='{"check_runs":[]}'
 PR_REST_STATUS='{"statuses":[]}'
@@ -821,7 +851,7 @@ PR_REST_STATUS='{"statuses":[{"context":"cla","state":"success"}]}'
 : > "$fixture/gh-calls"
 check_output="$(merge_pr_checks_and_merge 17 2>&1)" || fail "green REST checks did not merge after the GraphQL refusal: $check_output"
 [[ "$check_output" != *'could not read PR checks'* ]] || fail "GraphQL refusal stopped the REST fallback: $check_output"
-grep -q '^merge:pr merge 17' "$fixture/gh-calls" || fail "green REST checks did not reach merge: $(cat "$fixture/gh-calls")"
+grep -q '^merge:rest ' "$fixture/gh-calls" || fail "green REST checks did not reach merge: $(cat "$fixture/gh-calls")"
 PR_REST_RUNS='{"check_runs":[{"name":"unit","status":"completed","conclusion":"failure","started_at":"2026-11-12T10:00:00Z"}]}'
 : > "$fixture/gh-calls"
 if check_output="$(merge_pr_checks_and_merge 17 2>&1)"; then fail 'a failed REST check run merged after the GraphQL refusal'; fi
