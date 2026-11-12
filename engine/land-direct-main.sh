@@ -225,10 +225,7 @@ land_phase() {
 }
 
 land_process_start_ticks() {
-  local stat_line rest
-  IFS= read -r stat_line < "/proc/$BASHPID/stat" || return 1
-  rest="${stat_line##*) }"
-  awk '{print $20}' <<< "$rest"
+  pid_start_id "$BASHPID"
 }
 
 land_register_post_push_range() {

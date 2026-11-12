@@ -50,7 +50,7 @@ gate_files=(
   engine/systemd/zenoforge-health-mail.service engine/systemd/zenoforge-health-maintenance.service
   engine/systemd/zenoforge-label-churn.service engine/systemd/zenoforge-memory-check.service
   engine/systemd/zenoforge-owner-report-causes.service engine/systemd/zenoforge-roi-collector.service
-  engine/systemd/zenoforge-supervisor.service
+  engine/systemd/zenoforge-retro.service engine/systemd/zenoforge-supervisor.service
 )
 
 for f in "${gate_files[@]}"; do
