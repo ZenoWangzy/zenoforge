@@ -49,7 +49,6 @@ fail() { printf 'not ok - %s\n' "$*" >&2; printf -- '--- tick log\n' >&2; cat "$
 ok() { printf 'ok - %s\n' "$*"; }
 say() { printf '%s\n' "$*" >> "$LOG"; }
 hand_agent_role_is_supported() { case "$1" in work|hand-zcode|production) return 0 ;; esac; return 1; }
-hand_agent_role_for_identity() { printf 'work\n'; }
 
 # ---- fakes: GitHub issue state and the hand dispatcher.
 cat > "$test_env_bin/gh" <<'EOF'
@@ -201,3 +200,14 @@ assert_no_ownerless 'repeat exits'
   || fail 'repeat exit escalates once per owner to the supervisor inbox'
 ok 'repeat exit on the same unresolved step escalates once instead of looping'
 
+
+# ---- 5. a registry record with no role is escalated, never resumed with a guessed role.
+exited_hand hand-legacy 'STATUS: DONE'
+printf 'legacy fix\n' >> "$WORKTREE_ROOT/hand-legacy/file.txt"
+restamp_exit hand-legacy
+jq 'del(.role)' "$NIGHT/hand-registry/hand-legacy.json" > "$test_env_root/legacy.json" && mv -- "$test_env_root/legacy.json" "$NIGHT/hand-registry/hand-legacy.json"
+run_handoff
+assert_no_ownerless 'legacy record'
+[ "$(count "$CALLS" $'^hand-legacy\t')" = 0 ] || fail '5: a record with no role is not resumed with a guessed role'
+[ "$(count "$AGENT_HOME/supervisor-inbox" 'hand-exit-handoff name=hand-legacy ')" = 1 ] || fail '5: a record with no role escalates once to the supervisor'
+ok '5: a record with no role escalates instead of resuming with a guessed role'

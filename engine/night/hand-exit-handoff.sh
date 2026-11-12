@@ -290,6 +290,8 @@ hand_exit_handoff_open() {
       escalate_reason="resumed once for this step and exited again without resolving it"
     elif blocked_hand_agent_report_expired "$report"; then
       escalate_reason="report older than 24h; past the automatic resume window"
+    elif [ -z "$(jq -r '.role // empty' <<< "$entry")" ]; then
+      escalate_reason="registry record has no role, so no role to resume it with"
     fi
     if [ -n "$escalate_reason" ]; then
       if AGENT_HOME="${AGENT_HOME:-$H}" supervisor_inbox_append_once "hand-exit-handoff:$name:$key" \
@@ -303,9 +305,6 @@ hand_exit_handoff_open() {
       continue
     fi
     role="$(jq -r '.role // empty' <<< "$entry")"
-    if [ -z "$role" ]; then
-      role="$(hand_agent_role_for_identity "$(jq -r '.model // empty' <<< "$entry")" "$(jq -r '.effort // empty' <<< "$entry")" 2>/dev/null || true)"
-    fi
     if blocked_hand_agent_upsert "$pid" "$name" "$role" "$worktree" \
       "$(jq -r '.brief // empty' <<< "$entry")" "$report" "$(jq -r '.log // empty' <<< "$entry")" \
       "$(jq -r '.attempt // 0' <<< "$entry")" "$dependency" "$ticks" \
@@ -427,6 +426,7 @@ capture_blocked_hand_agents() {
   done < "$NIGHT/agents.txt"
   for name in "${!latest_rows[@]}"; do
     row="${latest_rows[$name]}"
+    role=""
     if [[ "$row" == *$'\t'* ]]; then
       IFS=$'\x1f' read -r pid name model effort worktree brief report log attempt started_at role start_ticks owned_issues owned_nodes \
         <<< "${row//$'\t'/$'\x1f'}"
@@ -440,7 +440,6 @@ capture_blocked_hand_agents() {
     case "$header" in
       'STATUS: BLOCKED-ON '*)
         dependency="${header#STATUS: BLOCKED-ON }"
-        [ -n "${role:-}" ] || role="$(hand_agent_role_for_identity "$model" "$effort" 2>/dev/null || true)"
         if blocked_hand_agent_report_expired "$report"; then
           blocked_hand_agent_remove "$name" || say "HAND-AGENT-BLOCKED-REMOVE-FAILED $name"
           say "HAND-AGENT-BLOCKED-EXPIRED $name report-older-than=24h"
@@ -512,18 +511,13 @@ blocked_hand_agent_dependency_landed() {
 }
 
 redispatch_landed_blocked_hand_agents() {
-  local entry pid name role legacy_model legacy_effort worktree brief report log attempt dependency start_ticks owned_issues owned_nodes dependency_satisfied resume_worktree
+  local entry pid name role worktree brief report log attempt dependency start_ticks owned_issues owned_nodes dependency_satisfied resume_worktree
   [ -f "$BLOCKED_HAND_AGENTS" ] || return 0
   jq -e 'type=="array"' "$BLOCKED_HAND_AGENTS" >/dev/null 2>&1 || { say "HAND-AGENT-BLOCKED-LIST-INVALID; redispatch skipped"; return 0; }
   while IFS= read -r entry; do
     pid="$(jq -r '.pid' <<< "$entry")"
     name="$(jq -r '.name' <<< "$entry")"
     role="$(jq -r '.role // empty' <<< "$entry")"
-    if [ -z "$role" ]; then
-      legacy_model="$(jq -r '.model // empty' <<< "$entry")"
-      legacy_effort="$(jq -r '.effort // empty' <<< "$entry")"
-      role="$(hand_agent_role_for_identity "$legacy_model" "$legacy_effort" 2>/dev/null || true)"
-    fi
     worktree="$(jq -r '.worktree' <<< "$entry")"
     brief="$(jq -r '.brief' <<< "$entry")"
     report="$(jq -r '.report' <<< "$entry")"
