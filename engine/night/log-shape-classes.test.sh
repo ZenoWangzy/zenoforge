@@ -4,7 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 
 script="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/log-shape-classes.sh"
 tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 export ZF_GH_REPO=test/repo
 export ZF_LOG_SHAPE_CONFIG="$tmp/log-shapes.json"
 export GH_FAKE_STATE="$tmp/gh"
