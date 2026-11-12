@@ -102,6 +102,14 @@ done
 for failure in TREE EDIT; do
   reset_case
   export "ANSWER_${failure}_FAILURE=1"
+  if [ "$failure" = TREE ]; then
+    # #933: a roadmap tree read error fails open here; dispatch re-checks the parent (issue-pipeline.sh ensure_issue_roadmap_parent_for_dispatch, return 79).
+    out="$(answer 2>&1)" || { echo 'TREE failure refused the answer' >&2; exit 1; }
+    [[ "$out" == *'roadmap: tree fetch failed for #2867'* ]] || { echo 'TREE failure printed no tree-fetch warning' >&2; exit 1; }
+    jq -e '.state=="ready-for-agent" and .hold==null and .implement_decision.answer.id==99' "$STATE_DIR/2867.json" >/dev/null
+    echo 'PASS TREE failure fails open: answer accepted, hold released, dispatch re-checks'
+    continue
+  fi
   if answer; then echo "$failure failure accepted" >&2; exit 1; fi
   assert_held
   echo "PASS $failure failure keeps unanswered hold and attempt budget"

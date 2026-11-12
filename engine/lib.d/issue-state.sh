@@ -828,7 +828,7 @@ issue_transition() (
   case "$reason" in *requeue*|revert|failed-deploy|main-red-revert) requeue_transition=1 ;; esac
 
   if declare -F roadmap_ensure_issue_parent >/dev/null; then
-    roadmap_ensure_issue_parent "$n" "$to" "$intake_json" "$source_issue" || { restore_status=$?; [ "$restore_status" = 3 ] || echo "issue_transition: roadmap parent check failed for #$n -> $to (rc=$restore_status)" >&2; return "$restore_status"; }
+    roadmap_ensure_issue_parent "$n" "$to" "$intake_json" "$source_issue" || { local roadmap_rc=$?; [ "$roadmap_rc" = 4 ] || { [ "$roadmap_rc" = 3 ] || echo "issue_transition: roadmap parent check failed for #$n -> $to (rc=$roadmap_rc)" >&2; return "$roadmap_rc"; }; }  # rc 4: tree read failed (rate limit, network), not a refusal; dispatch re-checks and fails closed
   fi
 
   case "$to:$reason" in
