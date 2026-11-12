@@ -191,6 +191,9 @@ jq -e '(.stages[0].excluded | map({key, name, count}) == [{"key":"roadmap","name
 printf '{"switches":{"roadmap-order":false}}\n' > "$f/model-policy-off.json"
 MODEL_POLICY_FILE="$f/model-policy-off.json" PYTHONPATH="$script_dir" python3 -c '
 import triage_split as t
+field = t.graphql_stage_fields([("needs-triage",)])
+expected = "a0:issues(states:OPEN,labels:[\"needs-triage\"],first:100,orderBy:{field:UPDATED_AT,direction:ASC}){totalCount nodes{number title createdAt updatedAt labels(first:100){nodes{name}}} pageInfo{endCursor hasNextPage}}"
+assert field == expected, field
 row = t.stage("needs-triage", {"totalCount": 1, "nodes": [{"number": 10, "updatedAt": "2025-12-01T00:00:00Z", "labels": {"nodes": [{"name": "needs-triage"}, {"name": "roadmap"}]}}]})
 assert row["count"] == 1 and row["excluded"][0]["count"] == 0 and row["excluded"][1]["count"] == 0, row
 ' || fail 'roadmap switch off did not count the roadmap ticket as eligible'

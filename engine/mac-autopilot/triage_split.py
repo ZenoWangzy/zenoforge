@@ -17,11 +17,16 @@ TRIAGE_PAGE_QUERY = ('query($owner:String!,$name:String!,$after:String!){reposit
 
 
 def graphql_stage_fields(stages):
-    return "".join(
-        f'a{i}:issues(states:OPEN,labels:["{row[0]}"],first:{100 if row[0] == "needs-triage" else 10},'
-        f'orderBy:{{field:UPDATED_AT,direction:ASC}}){{totalCount nodes{{number title createdAt updatedAt labels(first:100){{nodes{{name}}}}}}}}'
-        f'{" pageInfo{endCursor hasNextPage}" if row[0] == "needs-triage" else ""}}} '
-        for i, row in enumerate(stages))
+    fields = []
+    for i, row in enumerate(stages):
+        label = row[0]
+        page_size = 100 if label == "needs-triage" else 10
+        page_info = " pageInfo{endCursor hasNextPage}" if label == "needs-triage" else ""
+        fields.append(f'a{i}:issues(states:OPEN,labels:["{label}"],first:{page_size},'
+                      'orderBy:{field:UPDATED_AT,direction:ASC})'
+                      '{totalCount nodes{number title createdAt updatedAt labels(first:100){nodes{name}}}'
+                      + page_info + '}')
+    return " ".join(fields)
 
 
 def complete_needs_triage_pages(block, owner, name, run):
