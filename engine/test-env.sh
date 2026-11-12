@@ -131,6 +131,8 @@ copy_agent_library() {
     while IFS= read -r token; do
       rel="$token"
       while [[ "$rel" == */* && ! -f "$src/$rel" ]]; do rel="${rel#*/}"; done
+      # a bare name beside the including file (sweeps.sh sources "$(dirname ...)/closed-ready-sweep.sh") resolves in that file's directory
+      [[ -f "$src/$rel" || "$file" != */* || ! -f "$src/${file%/*}/$token" ]] || rel="${file%/*}/$token"
       [[ -f "$src/$rel" ]] || continue
       [[ "$rel" == *.test.* ]] && continue
       [[ -n "${queued[$rel]:-}" ]] || queue+=("$rel")

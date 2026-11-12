@@ -657,7 +657,7 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
   if [[ -n "$pr" && "$allow_pr_close" != true ]]; then
     supervisor_budget_park "$id" "$evidence (unit already has PR #$pr)" "$decision" "$park_reason" "$park_stage"; return 0
   fi
-  # Once this unit's route created children, a close retry must bypass the permanent guard (#1167/#4840).
+  # Route first: a refused route must leave the PR open, or the slice has no owner. Once this unit's route created children, a close retry must bypass the permanent guard (#1167/#4840).
   if [[ "$(unit_field "$id" '.recut_routed // empty')" == true ]] \
       && issue_state="$(scheduler_issue_state "$issue" 2>/dev/null)" \
       && jqf -e 'type == "object" and has("recut_children")' <<<"$issue_state" >/dev/null 2>&1; then

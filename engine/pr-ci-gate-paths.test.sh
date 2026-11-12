@@ -6,12 +6,10 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 fail() { echo "pr-ci-gate-paths.test.sh: $*" >&2; exit 1; }
 
-# Gate regex straight from merge-pr.sh; jq's "\\." is ERE "\.". The override exists only for the mutation case below.
+# Gate regex straight from merge-pr.sh (MERGE_PR_GATE_RE, an ERE). The override exists only for the mutation case below.
 merge_pr="${PR_CI_GATE_MERGE_PR:-$root/tools/merge-pr.sh}"
-raw="$(grep -oE 'test\("\^\([^"]*\)\$"\)' "$merge_pr" | head -1)"
-[[ -n "$raw" ]] || fail "no gate regex found in tools/merge-pr.sh"
-raw="${raw#*\"}"; raw="${raw%\"*}"
-regex="$(sed 's/\\\\/\\/g' <<<"$raw")"
+regex="$(sed -n "s/^MERGE_PR_GATE_RE='\(.*\)'\$/\1/p" "$merge_pr" | head -1)"
+[[ -n "$regex" ]] || fail "no gate regex found in tools/merge-pr.sh"
 
 # Every item the regex can match, expanded from the regex itself (a sample for .*). Checked against the workflows below.
 mapfile -t derived < <(node -e '
@@ -37,7 +35,7 @@ mapfile -t derived < <(node -e '
 
 # Hand-written list of gate files; the derived check below catches a regex item missing from it or from the workflows.
 gate_files=(
-  tools/merge-pr.sh tools/pin-vecta.sh tools/auto-pin.sh
+  tools/merge-pr.sh tools/merge-pr-bootstrap.sh tools/pin-vecta.sh tools/auto-pin.sh
   engine/eval/some-eval.sh
   engine/mac-autopilot/bell.sh engine/mac-autopilot/bell-loop.sh engine/mac-autopilot/pin-lag.sh
   engine/lib.d/main-red.sh engine/lib.d/main-red-bisect.sh
@@ -52,7 +50,7 @@ gate_files=(
   engine/systemd/zenoforge-health-mail.service engine/systemd/zenoforge-health-maintenance.service
   engine/systemd/zenoforge-label-churn.service engine/systemd/zenoforge-memory-check.service
   engine/systemd/zenoforge-owner-report-causes.service engine/systemd/zenoforge-roi-collector.service
-  engine/systemd/zenoforge-supervisor.service
+  engine/systemd/zenoforge-retro.service engine/systemd/zenoforge-supervisor.service
 )
 
 for f in "${gate_files[@]}"; do
@@ -96,7 +94,7 @@ done
 # Mutation: add one regex alternative that no workflow lists. The guard must go red.
 if [[ -z "${PR_CI_GATE_MUTANT_RUN:-}" ]]; then
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp" "$test_env_root"' EXIT
-  sed 's/(merge-pr|pin-vecta|auto-pin)/(merge-pr|pin-vecta|auto-pin|zz-mutant)/' "$merge_pr" > "$tmp/merge-pr.sh"
+  sed 's/(merge-pr|merge-pr-bootstrap|pin-vecta|auto-pin)/(merge-pr|merge-pr-bootstrap|pin-vecta|auto-pin|zz-mutant)/' "$merge_pr" > "$tmp/merge-pr.sh"
   [[ "$(grep -c 'zz-mutant' "$tmp/merge-pr.sh")" == 1 ]] || fail "mutation did not apply to the regex"
   set +e
   out="$(PR_CI_GATE_MERGE_PR="$tmp/merge-pr.sh" PR_CI_GATE_MUTANT_RUN=1 bash "${BASH_SOURCE[0]}" 2>&1)"

@@ -697,11 +697,11 @@ hand_dispatch_pid_state() {
     [ -e "/proc/$pid" ] && echo unknown || echo dead
     return 0
   fi
-  if ! [ -r "/proc/$pid/stat" ] || ! [ -r "/proc/$pid/cmdline" ]; then
+  if ! [ -r "/proc/$pid/cmdline" ]; then
     echo unknown
     return 0
   fi
-  observed_ticks="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
+  observed_ticks="$(pid_start_id "$pid" 2>/dev/null || true)"
   [ "$observed_ticks" = "$expected_ticks" ] || { echo unknown; return 0; }
   sid="$(ps -o sid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
   [ "$sid" = "$pid" ] || { echo unknown; return 0; }

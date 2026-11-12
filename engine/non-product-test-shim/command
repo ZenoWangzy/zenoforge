@@ -29,6 +29,9 @@ def real_command():
 
 
 def test_file(value):
+    # Whitespace means prompt text, not a path: worker argv carries the whole prompt as one element.
+    if re.search(r"\s", value):
+        return False
     return bool(re.search(r"(?:^|[/\\])[^/\\]+\.test\.[^/\\]+$", value))
 
 

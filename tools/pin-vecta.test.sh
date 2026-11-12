@@ -66,7 +66,8 @@ case "${1:-}" in
 set -euo pipefail
 printf 'candidate:%s\n' "$*" >> "${PIN_CALLS:?}"
 if [[ "${1:-}" == --preflight && "${PIN_PREFLIGHT_FAIL:-0}" == 1 ]]; then
-  echo 'resolved-config-check: CHANGED hotfix.json: live aaaa -> new bbbb' >&2
+  echo 'resolved-config-check: CHANGED hotfix.json: live engine aaaaaaaaaaaa -> new engine bbbbbbbbbbbb' >&2
+  echo 'resolved-config-check: CHANGED gone.json: live engine aaaaaaaaaaaa -> new missing -' >&2
   echo 'publish-preflight: resolved-config check failed' >&2
   exit 1
 fi
@@ -366,8 +367,10 @@ pack_subject=$(git -C "$pack_target" log -1 --format=%s "$pack_branch")
 [[ "$pack_subject" != '[skip ci]'* ]] || fail "pack-touching PR commit unexpectedly has [skip ci]: $pack_subject"
 grep -Fq 'candidate:--preflight ' "$pack_calls" || fail 'publish preflight was skipped for the PR route'
 grep -Fq 'resolved-config-check: CHANGED hotfix.json' "$tmp/pack.out" || fail 'fixture did not reach the intended publish-preflight failure'
-expected_row=$(printf 'hotfix.json\tengine pin %s changes resolved config\t%s' "${new_engine:0:12}" "$new_engine")
-grep -Fq "$expected_row" "$tmp/pack.out" || fail 'preflight failure did not print the exact intended-changes row'
+expected_row=$(printf 'hotfix.json\tengine pin %s changes resolved config\tsha256:bbbbbbbbbbbb' "${new_engine:0:12}")
+grep -Fq "$expected_row" "$tmp/pack.out" || fail 'preflight failure did not print the exact content-hash intended-changes row'
+expected_row=$(printf 'gone.json\tengine pin %s changes resolved config\t%s' "${new_engine:0:12}" "$new_engine")
+grep -Fq "$expected_row" "$tmp/pack.out" || fail 'a path with no new hash did not fall back to the engine SHA row'
 if [[ -e "$pack_calls" ]]; then ! grep -q '^gh:pr create ' "$pack_calls" || fail 'failed preflight still created a PR'; fi
 [[ "$(git --git-dir="$tmp/pack-origin.git" for-each-ref --format='%(refname)' refs/heads | wc -l | tr -d '[:space:]')" == 1 ]] \
   || fail 'failed preflight pushed a topic branch'

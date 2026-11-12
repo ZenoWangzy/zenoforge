@@ -10,7 +10,7 @@ awk '/^    \[\[ -z "\$config_temp" \]\] \|\| rm -f "\$config_temp"$/ { if (prev 
 root="${EXIT_TRAP_ROOT:-$(cd -- "$dir/../../.." && pwd -P)}"
 base="${EXIT_TRAP_BASELINE:-$dir/exit-trap-baseline.txt}"
 clean() { sed '/^$/d' | sort -u; }
-now="$(cd -- "$root" && grep -rl --include='*.test.sh' 'test-env\.sh' engine | xargs -r grep -EH "trap +['\"].*EXIT" | grep -v test_env_root | cut -d: -f1 | sort -u || :)"
+now="$(cd -- "$root" && grep -rl --include='*.test.sh' 'test-env\.sh' engine | xargs -r bash "$dir/../../test-exit-trap-check.sh" | sort -u || :)"
 new_bad="$(comm -23 <(printf '%s\n' "$now" | clean) <(clean < "$base"))"
 stale="$(comm -13 <(printf '%s\n' "$now" | clean) <(clean < "$base"))"
 [[ -z "$new_bad" ]] || { printf 'exit-trap-lint.test.sh: bare EXIT trap in a test, name $test_env_root in the trap:\n%s\n' "$new_bad" >&2; exit 1; }

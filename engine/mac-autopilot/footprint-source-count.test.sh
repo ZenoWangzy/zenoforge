@@ -286,6 +286,13 @@ for issue in 9111 9112; do same_result "scheduler_issue_state $issue" legacy_sch
 ( exec 8>"$AGENT_HOME/state/9111.json.lock"; flock -x 8
   same_result 'scheduler_issue_state while locked' legacy_scheduler_issue_state scheduler_issue_state 9111 )
 [[ "$(scheduler_issue_state 9111)" == '{"state":"on-hold","attempts":2}' ]] || fail 'scheduler_issue_state did not return the stored state'
+# A transition that releases its lock within the retry window is waited for, not refused.
+rm -f "$fixture/lock-held"
+( exec 8>"$AGENT_HOME/state/9111.json.lock"; flock -x 8; touch "$fixture/lock-held"; sleep 0.4 ) &
+lock_holder=$!
+for _ in $(seq 50); do [[ -e "$fixture/lock-held" ]] && break; sleep 0.02; done
+[[ "$(scheduler_issue_state 9111)" == '{"state":"on-hold","attempts":2}' ]] || fail 'scheduler_issue_state refused a lock released within the retry window'
+wait "$lock_holder"
 
 # parent reason: same verdicts, same gh arguments (REPO) from the same working directory.
 parent_log="$fixture/parent-gh.log"
