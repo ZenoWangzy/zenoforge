@@ -65,7 +65,7 @@ log="$report.land.log"
 # 改了落地机制本身的 PR 可能把落地器卡死（#3985 自锁 75 分钟）；超时整组杀掉，不留任何东西等下一次落地。
 land_timeout="${LAND_PR_TIMEOUT_SECONDS:-1500}"
 ZF_LAND_GIT_TIMEOUT_SECONDS="${ZF_LAND_GIT_TIMEOUT_SECONDS:-900}" timeout -k 30 "$land_timeout" \
-  bash "${LAND_PR_LANDER:-engine/land-direct-main.sh}" > "$log" 2>&1
+  bash "${LAND_PR_LANDER:-$script_dir/../land-direct-main.sh}" > "$log" 2>&1
 case $? in
   0) ;;
   124|137) finish "FAILED land-direct-main timed out after ${land_timeout}s (wedged lander; killed)" ;;
