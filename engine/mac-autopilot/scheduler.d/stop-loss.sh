@@ -512,17 +512,23 @@ repair_failure_prompt() { # unit-json review-report -> only this repair's failur
   hint="$(jqf -r '.repair_hint // empty' <<<"$u")"
   [[ -z "$hint" ]] || printf '%s\n' "$hint"
   # Direct-main (non-product) units get the lander failure and its log tail, never CI test logs or a test request. Same lane test as dispatch-queue.sh.
+  local direct=false stage=''
   if [[ "$(jqf -r '.lane // empty' <<<"$u")" == direct-main ]]; then
+    direct=true
     local land_result land_log log_ok=false
     land_result="$(jqf -r '[.history // [] | .[] | select(.stage=="land-failed")] | last | .result // empty' <<<"$u")"
     land_log="$(jqf -r '.land_log // empty' <<<"$u")"
     [[ -n "$land_log" && -r "$SUP/$land_log" ]] && log_ok=true
-    [[ -n "$land_result" || "$log_ok" == true ]] || return 1
-    [[ -z "$land_result" ]] || printf '\n直落 main 失败：%s\n' "$land_result"
-    if [[ "$log_ok" == true ]]; then printf '落地日志末尾（%s）：\n' "$land_log"; tail -80 "$SUP/$land_log"; fi
-    return 0
+    # No land evidence: fall through to the review report path below, so the repair still gets the findings.
+    if [[ -n "$land_result" || "$log_ok" == true ]]; then
+      [[ -z "$land_result" ]] || printf '\n直落 main 失败：%s\n' "$land_result"
+      if [[ "$log_ok" == true ]]; then printf '落地日志末尾（%s）：\n' "$land_log"; tail -80 "$SUP/$land_log"; fi
+      return 0
+    fi
   fi
-  case "$(jqf -r '.history[-1].stage // empty' <<<"$u")" in
+  # Direct-main never takes the CI log branch: without land evidence it falls through to the review report only.
+  [[ "$direct" == true ]] || stage="$(jqf -r '.history[-1].stage // empty' <<<"$u")"
+  case "$stage" in
     ci-red|ci-test-red)
       pr="$(jqf -r '.pr // empty' <<<"$u")"
       checks="$(repair_check_rows "$pr")" || checks='[]'

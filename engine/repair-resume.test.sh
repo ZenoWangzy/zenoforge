@@ -186,8 +186,15 @@ land_unit='{"lane":"direct-main","land_log":"prior.md.land.log","repair_hint":"�
 failure="$(repair_failure_prompt "$land_unit" prior.md)" || fail "direct-main lander failure rejected"
 [[ "$failure" == *'FAILED x'* && "$failure" == *'LANDER FAILED: pre-land check'* ]] || fail "direct-main prompt lost the lander failure: $failure"
 [[ "$failure" != *'Test suite'* && "$failure" != *'Run affected regression tests'* && "$failure" != *'Failing CI check'* ]] || fail "direct-main prompt carried CI logs: $failure"
-[[ "$failure" != *'测试'* && "$failure" != *'自检'* && "$failure" != *'started=0'* ]] || fail "direct-main prompt asked for a test or self-check: $failure"
+[[ "$failure" != *'测试'* && "$failure" != *'自检'* && "$failure" != *'self-check'* && "$failure" != *'run the tests'* && "$failure" != *'started=0'* ]] || fail "direct-main prompt asked for a test or self-check: $failure"
 echo 'PASS direct-main repair gets the lander failure, no CI logs or test request'
+# Direct-main with no land evidence (empty history, no land log) falls through to the review report.
+printf 'DIRECT MAIN REVIEW FINDINGS\n' > "$SUP/direct-review.md"
+failure="$(repair_failure_prompt '{"lane":"direct-main","history":[{"stage":"ci-test-red"}],"pr":1}' direct-review.md)" || fail "direct-main review report rejected without land evidence"
+[[ "$failure" == *'DIRECT MAIN REVIEW FINDINGS'* ]] || fail "direct-main review report lost: $failure"
+[[ "$failure" != *'Failing CI'* && "$failure" != *'Test suite'* && "$failure" != *'Run affected regression tests'* ]] || fail "direct-main fall-through carried CI logs: $failure"
+for banned in 'self-check' 'Self-check' 'run the tests' 'Run the tests' '跑测试' '自检'; do [[ "$failure" != *"$banned"* ]] || fail "direct-main fall-through asked for '$banned': $failure"; done
+echo 'PASS direct-main without land evidence falls back to the review report, no CI logs or test request'
 # A hint-carrying unit (hotpatch) that then gets REQUEST-CHANGES: the findings travel with the hint.
 printf 'HOTPATCH FINDINGS\n' > "$SUP/hot.md"
 failure="$(repair_failure_prompt '{"repair_hint":"HOTPATCH HINT","history":[{"stage":"review-request-changes"}]}' hot.md)"
