@@ -8,9 +8,9 @@ hand_completion_event_dir() {
 hand_completion_identity_terminal() {
   local pid="$1" ticks="$2" current
   [[ "$pid" =~ ^[1-9][0-9]*$ && "$ticks" =~ ^[0-9]+$ ]] || return 2
-  if current="$(pid_start_id "$pid" 2>/dev/null)"; then
-    [[ "$current" == "$ticks" ]] && pid_live "$pid" || return 75
-  fi
+  # Same identity and alive is still live (75); a reused, zombie or gone pid is terminal (0).
+  if current="$(pid_start_id "$pid" 2>/dev/null)" && [[ "$current" == "$ticks" ]] && pid_live "$pid"; then return 75; fi
+  return 0
 }
 
 # Atomic first publication precedes every heavy admission; duplicates cannot
