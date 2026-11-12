@@ -70,11 +70,43 @@ eval "$(sed -n '/^advisor_batch_web_dispatch() {/,/^}/p' "$script_dir/run-adviso
 eval "$(sed -n '/^advisor_batch_dispatch_plan_reask() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
 mkdir -p "$WEB_ADVISOR_PROVIDER_JOB_DIR/fixture-job"; printf 'saved question\n' > "$WEB_ADVISOR_PROVIDER_JOB_DIR/fixture-job/question.txt"
 BATCH_TOPIC=fixture WEB_ADVISOR_PROVIDER_TOPIC=fixture ACTIVE_BATCH_JOB='{}' ADVISOR_MODEL_USED=fixture INCLUDED=1 ADVISOR_MODEL_FALLBACK= ADVISOR_TICKET_LOCK_FDS=() BATCH_LOCK_FD=9
-advisor_plan_contract() { printf 'plan contract'; }; record_premium_spend() { :; }; advisor_batch_state_set_job() { :; }; advisor_batch_forget_provider_job() { :; }
+advisor_plan_contract() { printf 'plan contract'; }; record_premium_spend() { :; }; advisor_batch_state_set_job() { :; }; advisor_batch_forget_provider_job() { :; }; advisor_batch_state_read() { printf '{}\n'; }
 run_with_fd_closed() { while [[ "$1" != -- ]]; do shift; done; shift; "$@"; }; web_advisor_provider_dispatch_question_async() { printf '%s' "${ZF_QUARANTINE_CANARY_SCOPES:-}" > "$tmp/reask-scopes"; }
 ZF_QUARANTINE_CANARY_SCOPES=advisor
 advisor_batch_dispatch_plan_reask '[]' '[930001]'
 [[ ! -s "$tmp/reask-scopes" ]]; BATCH_JOB_ID=fixture-job
+# 548: an over-limit plan re-ask drops the quoted rulings and sends nothing if still over; the job records the bytes sent.
+(
+  rulings="$(printf 'r%.0s' {1..2000})"
+  advisor_batch_state_set_job() { printf '%s' "$1" > "$tmp/reask-job"; }
+  web_advisor_provider_dispatch_question_async() { cp "$2" "$tmp/reask-sent"; }
+  advisor_batch_state_read() { printf '{"max_safe_input_bytes":1000}\n'; }
+  BATCH_JOB_ID=fixture-job; advisor_batch_dispatch_plan_reask "[\"$rulings\"]" '[930001]'
+  sent_bytes="$(wc -c < "$tmp/reask-sent")"
+  ! grep -Fq "$rulings" "$tmp/reask-sent"
+  [[ "$sent_bytes" -le 1000 && "$(jq -r '.input_bytes' "$tmp/reask-job")" == "$sent_bytes" ]]
+  rm -f "$tmp/reask-sent"; advisor_batch_state_read() { printf '{"max_safe_input_bytes":100}\n'; }
+  BATCH_JOB_ID=fixture-job; ! advisor_batch_dispatch_plan_reask "[\"$rulings\"]" '[930001]' 2>/dev/null
+  [[ ! -e "$tmp/reask-sent" ]]
+  rm -f "$tmp/reask-sent"; advisor_batch_state_read() { return 1; }
+  BATCH_JOB_ID=fixture-job; ! advisor_batch_dispatch_plan_reask "[\"$rulings\"]" '[930001]' 2>/dev/null
+  [[ ! -e "$tmp/reask-sent" ]]
+  advisor_batch_state_read() { printf '{}\n'; }
+  BATCH_JOB_ID=fixture-job; advisor_batch_dispatch_plan_reask "[\"$rulings\"]" '[930001]'
+  grep -Fq "$rulings" "$tmp/reask-sent"
+)
+# 555: a one-ticket canary keeps the rest of its size-split group active until a job covers the whole group.
+(
+  split_state="$tmp/split-state.json"
+  eval "$(sed -n '/^advisor_batch_size_split_record_success() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+  advisor_batch_state_read() { cat "$split_state"; }
+  advisor_batch_state_write() { printf '%s\n' "$1" > "$split_state"; }
+  printf '%s\n' '{"size_split":{"active_issue_ids":[930001,930002],"pending_issue_groups":[[930003]]}}' > "$split_state"
+  advisor_batch_size_split_record_success '{"input_bytes":100,"members":[{"issue":930001}]}'
+  jq -e '.size_split.active_issue_ids == [930001,930002] and .size_split.pending_issue_groups == [[930003]]' "$split_state" >/dev/null
+  advisor_batch_size_split_record_success '{"input_bytes":200,"members":[{"issue":930002},{"issue":930001}]}'
+  jq -e '.size_split.active_issue_ids == [930003] and .size_split.pending_issue_groups == [] and .max_safe_input_bytes == 200' "$split_state" >/dev/null
+)
 # Exercise the real batch poller through the runner adapter, including pending
 # evidence retention and recovery of only complete records on timeout.
 web_advisor_provider_resume_job_if_stopped() { :; }
