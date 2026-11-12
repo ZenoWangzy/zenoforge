@@ -69,6 +69,56 @@ daily_html="$(jq -r '.html' <<<"$daily_html")"
 [[ "$daily_html" == *'决策日志复核（1 条）'* && "$daily_html" == *'Tried cache-first; verification covered only the mock.'* ]] \
   || fail 'the marked entry did not reach the daily report that reads the supervisor JSONL file'
 
+recur_finding='{"id":"F4","severity":"P1","file":"src/d.ts","line":3,"rule":"Defect","status":"open","summary":"[contract: out] Null guard missing on the write path."}'
+[[ "$(review_finding_class_key "$recur_finding")" == defect-null-guard-missing-on-the-write ]] || fail 'class key was not derived from the rule and summary words'
+zh_a='{"id":"Z1","severity":"P1","rule":"Defect","status":"open","summary":"空指针：写入路径缺少判空"}'
+zh_b='{"id":"Z2","severity":"P1","rule":"Defect","status":"open","summary":"并发写入没有加锁"}'
+[[ "$(review_finding_class_key "$zh_a")" == finding-* ]] || fail 'a Chinese-only summary did not get a hashed class key'
+[[ "$(review_finding_class_key "$zh_a")" != "$(review_finding_class_key "$zh_b")" ]] || fail 'two Chinese-only findings share one class key'
+[[ "$(review_finding_class_key "$zh_a")" == "$(review_finding_class_key "$zh_a")" ]] || fail 'the hashed class key is not stable'
+mixed_a='{"id":"M1","severity":"P1","rule":"Defect","status":"open","summary":"写入 null 判空"}'
+mixed_b='{"id":"M2","severity":"P1","rule":"Defect","status":"open","summary":"读取 null 判空"}'
+[[ "$(review_finding_class_key "$mixed_a")" == finding-* ]] || fail 'a mixed-language summary kept its ASCII words as the class key'
+[[ "$(review_finding_class_key "$mixed_a")" != "$(review_finding_class_key "$mixed_b")" ]] || fail 'mixed-language findings sharing ASCII words share one class key'
+empty_s='{"id":"E1","severity":"P1","rule":"Defect","status":"open","summary":""}'
+[[ -z "$(review_finding_class_key "$empty_s")" ]] || fail 'an empty summary got a shared class key'
+[[ "$(review_finding_class_key '{"id":"E2","severity":"P1","rule":"Defect","class":"null-guard","summary":""}')" == null-guard ]] || fail 'a reviewer class was dropped for an empty summary'
+recur_findings="[$recur_finding,{\"id\":\"F5\",\"severity\":\"P2\",\"rule\":\"Defect\",\"status\":\"open\",\"summary\":\"Minor naming nit.\"}]"
+recur_state="$tmp/recur/state.json"
+recur_upsert="$tmp/recur/upsert.sh"
+recur_log="$tmp/recur/upsert.log"
+mkdir -p "$tmp/recur"
+cat >"$recur_upsert" <<EOF
+#!/usr/bin/env bash
+[[ ! -f "$tmp/recur/fail" ]] || exit 1
+printf '%s\n' "\$*" >>"$recur_log"
+EOF
+chmod +x "$recur_upsert"
+review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" unit-a || fail 'first sighting failed'
+[[ ! -s "$recur_log" ]] || fail 'a first sighting opened a rule ticket'
+[[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$recur_state")" == 1 ]] || fail 'first sighting was not counted'
+review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" unit-b || fail 'second sighting failed'
+[[ "$(wc -l <"$recur_log")" == 1 ]] || fail 'second sighting did not open exactly one rule ticket'
+grep -q -- '--class review-defect-null-guard-missing-on-the-write' "$recur_log" || fail 'rule ticket class was not the repeated class'
+review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" unit-c || fail 'third sighting failed'
+[[ "$(wc -l <"$recur_log")" == 1 ]] || fail 'a third sighting opened another rule ticket'
+[[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$recur_state")" == 3 ]] || fail 'third sighting was not counted'
+[[ "$(jq -r 'keys|length' "$recur_state")" == 1 ]] || fail 'a non-blocking finding was counted'
+touch "$tmp/recur/fail"
+review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$recur_upsert" unit-d || fail 'first sighting of the fresh state failed'
+if review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$recur_upsert" unit-e; then fail 'a failed rule ticket write reported success'; fi
+[[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$tmp/recur/fresh.json")" == 1 ]] || fail 'a failed rule ticket write was counted'
+rm -f "$tmp/recur/fail"
+review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$recur_upsert" unit-f || fail 'retry after a failed write did not open the ticket'
+[[ "$(wc -l <"$recur_log")" == 2 ]] || fail 'retry after a failed write did not open exactly one ticket'
+
+review_findings_record_classes "[$zh_a,$zh_b]" "$tmp/recur/zh.json" "$recur_upsert" unit-g || fail 'Chinese-only findings did not record'
+[[ "$(jq -r 'keys|length' "$tmp/recur/zh.json")" == 2 ]] || fail 'distinct Chinese-only findings were counted as one class'
+review_findings_record_classes "[$empty_s,$empty_s]" "$tmp/recur/empty.json" "$recur_upsert" unit-h || fail 'empty-summary findings failed to record'
+[[ "$(jq -r 'keys|length' "$tmp/recur/empty.json")" == 0 ]] || fail 'empty-summary findings were counted'
+review_findings_record_classes "[$mixed_a,$mixed_b]" "$tmp/recur/mixed.json" "$recur_upsert" unit-i || fail 'mixed-language findings failed to record'
+[[ "$(jq -r 'keys|length' "$tmp/recur/mixed.json")" == 2 ]] || fail 'distinct mixed-language findings were counted as one class'
+
 # Review prompt ownership and scheduler wiring are exercised by scheduler-gates.test.sh.
 
 echo 'review-contract.test.sh: PASS'
