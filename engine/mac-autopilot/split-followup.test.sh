@@ -64,6 +64,18 @@ SA_ACTUAL=28; rc=0; size_admission_write_start issue-60 "$sa/wt" "$sa_unit" || r
 SA_ACTUAL=900; rc=0; size_admission_write_start issue-60 "$sa/wt" "$sa_unit" || rc=$?
 [[ "$rc" == 1 && "$(jqf -r '[.units[0].history[] | select(.stage=="size-split-admitted")] | length' "$UNITS")" == 1 ]] \
   || fail "an oversized real diff must still be refused, and the admission is once only (rc=$rc)"
+# A verified owner ruling after that admission opens one more SPLIT attempt; its result carries the comment URL.
+set_unit issue-60 '.history += [{stage:"supervisor-requeue",result:"supervisor ruling https://github.com/o/r/issues/60#issuecomment-12345: schema first",at:"t3"}]'
+SA_ACTUAL=28; rc=0; size_admission_write_start issue-60 "$sa/wt" "$sa_unit" || rc=$?
+[[ "$rc" == 0 && "$(jqf -r '[.units[0].history[] | select(.stage=="size-split-admitted")] | length' "$UNITS")" == 2 ]] \
+  || fail "a real ruling did not open a second admission for the same refused branch (rc=$rc)"
+# Re-escalating without another ruling must not grant a third admission.
+SA_ACTUAL=900; rc=0; size_admission_write_start issue-60 "$sa/wt" "$sa_unit" || rc=$?
+[[ "$rc" == 1 && "$(jqf -r '[.units[0].history[] | select(.stage=="size-split-admitted")] | length' "$UNITS")" == 2 ]] \
+  || fail "a second escalation without a ruling granted another admission (rc=$rc)"
+rc=0; size_admission_write_start issue-60 "$sa/wt" "$sa_unit" || rc=$?
+[[ "$rc" == 1 && "$(jqf -r '[.units[0].history[] | select(.stage=="size-split-admitted")] | length' "$UNITS")" == 2 ]] \
+  || fail "a repeated escalation without a ruling granted another admission (rc=$rc)"
 # Repair-pending (issue 5374 live shape): an 802-line repair head is refused, then admitted once on the same refused head, then refused again.
 printf '%s\n' '{"units":[{"id":"issue-61","issue":61,"stage":"repair-pending","history":['"$sa_hist"']}]}' > "$UNITS"
 rc=0; size_admission_reject issue-61 802 agent/issue-61 "repair-pending before dispatch" "$sa_head" "" 802 admission 800 || rc=$?
@@ -74,4 +86,17 @@ rc=0; size_admission_reject issue-61 802 agent/issue-61 "repair-pending before d
 rc=0; size_admission_reject issue-61 802 agent/issue-61 "repair-pending before dispatch" "$sa_head" "" 802 admission 800 || rc=$?
 [[ "$rc" == 1 && "$(jqf -r '[.units[0].history[] | select(.stage=="size-split-admitted")] | length' "$UNITS")" == 1 ]] \
   || fail "a still-oversized repair after the one admission must be refused (rc=$rc)"
+automatic_requeues=(
+  'scheduler fresh-signal requeue: review-request-changes'
+  'stop-loss same failure: unparked, repeated red; budget refilled'
+  'recut refused at 2026-11-06T00:00:00Z; reopened with a refilled stop-loss budget'
+  'guarded recut refused; resumed with a refilled budget (round trip 1 of 1)'
+  'ticket budget is available again; the issue is ready-for-agent'
+)
+for automatic_result in "${automatic_requeues[@]}"; do
+  set_unit issue-61 "$(hist supervisor-requeue "$automatic_result")"
+  rc=0; size_admission_reject issue-61 802 agent/issue-61 "repair-pending before dispatch" "$sa_head" "" 802 admission 800 || rc=$?
+  [[ "$rc" == 1 && "$(jqf -r '[.units[0].history[] | select(.stage=="size-split-admitted")] | length' "$UNITS")" == 1 ]] \
+    || fail "automatic requeue reset the split admission: $automatic_result (rc=$rc)"
+done
 echo "split-followup.test.sh: all assertions passed"
