@@ -1156,6 +1156,12 @@ release = [{"issue":101, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}]
 issue_rows, pr_rows = n.gh_delivery_rows("example-maintainer/example-repo", now, old_closed_issue, release)
 fetched = n.delivery_metrics(old_closed_issue, issue_rows, pr_rows, release, [], now)
 assert fetched["values"]["delivery.issue_to_accept_p50_30d_hours"] == 1296, fetched
+# The join already recognizes an older unit by its issue branch; its PR fetch must use that same exact issue edge.
+branch_only_unit = [{"id":"pr-201", "pr":201, "branch":"agent/issue-101", "merge_sha":"a"*40,
+                    "history":[{"stage":"merged", "at":"2026-10-24T20:00:00Z"}]}]
+issue_rows, pr_rows = n.gh_delivery_rows("example-maintainer/example-repo", now, branch_only_unit, release)
+branch_fetched = n.delivery_metrics(branch_only_unit, issue_rows, pr_rows, release, [], now)
+assert branch_fetched["values"]["delivery.unlinked_units_30d"] == 0, branch_fetched
 concurrent_bin = pathlib.Path(sys.argv[2]) / "delivery-concurrency-gh"
 concurrent_bin.mkdir()
 concurrency_state = pathlib.Path(sys.argv[2]) / "delivery-concurrency.json"

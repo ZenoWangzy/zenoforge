@@ -1068,8 +1068,8 @@ def gh_delivery_rows(repo, now, units=None, release_events=None):
         for number in sorted(accepted_issues - available_issues):
             fallback_commands.append(("issues", number,
                                       ["issue", "view", str(number), "--repo", repo, "--json", "number,createdAt"]))
-        required_prs = {_number(unit.get("pr")) for unit in units
-                        if _number(unit.get("issue")) in accepted_issues and _number(unit.get("pr")) is not None}
+        required_prs = {pr for unit in units if (pr := _number(unit.get("pr"))) is not None and
+                        (_number(unit.get("issue")) in accepted_issues or (m := re.fullmatch(r"agent/issue-(\d+)", str(unit.get("branch") or ""))) and int(m[1]) in accepted_issues)}
         available_prs = {_number(pr.get("number")) for pr in rows["prs"] if _number(pr.get("number")) is not None}
         for number in sorted(required_prs - available_prs):
             fallback_commands.append(("prs", number,
