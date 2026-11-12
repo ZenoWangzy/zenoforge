@@ -7,6 +7,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../bin" && pwd -P)/luna-capacity.sh"
+intake_author_gate() { return 0; } # the author gate has its own test (intake-author.test.sh)
 
 # 合并门评估链：越过 [skip ci] 与只改产品路径的提交，停在第一个改流水线路径的非 skip 提交（含）
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
