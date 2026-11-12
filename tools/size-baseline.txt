@@ -22,5 +22,5 @@
 1945	engine/run-advisor-batch.sh
 1140	engine/run-advisor.sh
 899	engine/run-triage.sh
-1373	engine/supervise-pipeline.sh
+1372	engine/supervise-pipeline.sh
 3062	engine/worktree-lifecycle.sh
