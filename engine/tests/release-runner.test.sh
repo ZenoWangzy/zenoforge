@@ -70,6 +70,12 @@ assert_line 'argument=<>'
 assert_line 'argument=<last>'
 if grep -q '^leak=' "$trace"; then fail 'config.sh defaults leaked into the target runner environment'; fi
 
+# issue-pipeline calls the runner with --recheck-deploy-block; the option guard must let it through.
+: > "$trace"
+if output="$(dispatch --recheck-deploy-block 2>&1)"; then :; else fail "recheck dispatch failed: $output"; fi
+assert_line 'argc=1'
+assert_line 'argument=<--recheck-deploy-block>'
+
 expect_failure() {
   local expected="$1" before after output status
   before="$(trace_lines)"

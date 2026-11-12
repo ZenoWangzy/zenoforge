@@ -9,6 +9,15 @@ die() {
   exit 1
 }
 
+# --help or an unknown option must not reach the release runner or any effect (#612).
+# Positional args (issue number, or anchor and merge SHA) pass through: the runner validates them.
+for arg in "$@"; do
+  case "$arg" in
+    --recheck-deploy-block) ;;
+    -*) printf 'usage: run-release.sh [<issue-number> | <anchor> <sha> | --recheck-deploy-block]\n' >&2; exit 64 ;;
+  esac
+done
+
 # Resolve config in a subshell so config.sh's defaults do not become part of
 # the target runner's startup environment.
 if ! dispatch_context="$(
