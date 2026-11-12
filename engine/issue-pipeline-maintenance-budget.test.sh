@@ -344,7 +344,7 @@ check 'the next tick logs its one-time skip for the killed step' \
 check 'the next tick continues with the following prefix step' \
   "$(grep -Fc 'supervisor-hold-sweep' "$AGENT_HOME/night/slice-calls" || true)" 1
 check 'the next tick does not repeat the killed step' \
-  "$(grep -Fc 'hold-sweep' "$AGENT_HOME/night/slice-calls" || true)" 0
+  "$(grep -Fxc 'hold-sweep' "$AGENT_HOME/night/slice-calls" || true)" 0
 check 'the next tick reaches the suffix after skipping the killed step' \
   "$(grep -Fc 'needs-info-blocker-roots' "$AGENT_HOME/night/slice-calls" || true)" 1
 
