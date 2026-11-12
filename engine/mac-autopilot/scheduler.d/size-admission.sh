@@ -58,9 +58,21 @@ size_recut_refused_on_head() { # unit head issue
 unit_history_count() { # unit stage [result-regex] → history entries of that stage whose result matches
   jqf -r --arg id "$1" --arg st "$2" --arg re "${3:-}" '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage==$st and ((.result // "") | test($re)))] | length' "$UNITS"
 }
+unit_history_count_since_ruling() { # unit stage → history entries after the latest supervisor/advisor ruling
+  jqf -r --arg id "$1" --arg st "$2" '
+    ([.units[] | select(.id==$id) | (.history // [])][0] // []) as $h
+    | ([$h | to_entries[] | select(
+        .value.stage == "advisor-ruling" or .value.stage == "review-approve"
+        or (((.value.stage // "") | startswith("supervisor-")) and (
+          .value.decision.owner == "supervisor"
+          or ((.value.result // "") | startswith("supervisor ruling"))
+        ))
+      ) | .key] | max // -1) as $ruling
+    | [$h[($ruling + 1):][] | select(.stage==$st)] | length' "$UNITS"
+}
 # A refused recut leaves the issue at the same scope, so escalating a second time cannot change the outcome (28 lines over
 # 11 units in 24 h). The implement brief already carries the SPLIT contract (first independent slice, remainder filed as a
-# needs-triage ticket, see dispatch-queue.sh); admit the worker once on that contract. Harvest still recounts the real diff, so the limit holds.
+# needs-triage ticket, see dispatch-queue.sh); admit the worker once per ruling on that contract. Harvest still recounts the real diff, so the limit holds.
 size_split_admit() { # unit issue lines limit → 0 after recording the one admission
   set_unit "$1" "$(hist size-split-admitted "issue #$2: $3 lines exceed $4 and recut refused; one worker run on the SPLIT contract")"
 }
@@ -73,7 +85,7 @@ size_admission_reject() { # unit lines branch context head estimate actual check
   # Repair-pending dispatch (5374: the repair that trims the PR was refused on every tick) gets the same one admission.
   if [[ ( "$8" == write-start || "$4" == repair-pending* ) && "$refused" == true ]] \
     && (( $(unit_history_count "$1" supervisor-escalated '^size admission:') >= 1 )) \
-    && (( $(unit_history_count "$1" size-split-admitted) == 0 )) \
+    && (( $(unit_history_count_since_ruling "$1" size-split-admitted) == 0 )) \
     && size_split_admit "$1" "$issue" "$2" "$limit"; then
     say "size admission write-start unit=$1 issue=#$issue estimate=${6:-unknown} actual=${7:-unknown} limit=$limit -> admitted once for a SPLIT delivery"
     return 0
@@ -154,7 +166,7 @@ size_admission_write_start() { # unit workdir unit-json → block before worker 
   fi
   reject_limit="$limit"; [[ "$source" != estimate ]] || reject_limit="$est_limit"
   [[ -n "$lines" ]] || return 0
-  [[ "$source" != estimate || ! "$actual" =~ ^[0-9]+$ ]] || (( actual > limit )) || (( $(unit_history_count "$1" size-split-admitted) == 0 )) || return 0
+  [[ "$source" != estimate || ! "$actual" =~ ^[0-9]+$ ]] || (( actual > limit )) || (( $(unit_history_count_since_ruling "$1" size-split-admitted) == 0 )) || return 0
   # The 30-second refill may start implement workers using local data only. It
   # defers an oversized ticket for the slow tick, which owns the existing recut
   # issue transition and records the decision once.
