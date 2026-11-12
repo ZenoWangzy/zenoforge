@@ -247,7 +247,7 @@ jq '(.github.stages) |= map(if .label == "needs-triage" then del(.excluded) else
 run
 front | jq -e '.github.cached == false and .stages[0].count == 2 and (.stages[0].excluded | length == 2)' >/dev/null \
   || fail "pre-split cache kept the raw needs-triage count: $(front | jq -c '{github, stage: .stages[0]}')"
-[[ "$(wc -l < "$FAKE_GH_LOG")" == 4 ]] || fail "pre-split cache was not refreshed: $(cat "$FAKE_GH_LOG")"
+[[ "$(wc -l < "$FAKE_GH_LOG")" == 5 ]] || fail "pre-split cache was not refreshed: $(cat "$FAKE_GH_LOG")"
 
 # 3. 缓存过期而 GitHub 失败：沿用旧缓存并标明失败原因（最长 30 分钟）
 [[ -s "$cache" ]] || fail "front cache file not written next to dashboard.data.js"
