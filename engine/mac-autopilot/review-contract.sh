@@ -35,18 +35,26 @@ review_findings_with_contract_relation() { # normalized findings JSON → enrich
 # rule plus the first six summary words stands in for it.
 # shortcut: summary wording drifts between reviews, so near-duplicates may miss; upgrade when the review prompt emits `class`.
 review_finding_class_key() { # normalized finding JSON → stable slug, at most 50 chars
-  local finding="$1" slug
-  slug="$(jq -r '. as $f
-    | (($f.summary // "") | sub("^\\[contract: (in|out)\\] "; "") | split(" ") | .[0:6] | join(" ")
-      | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "")) as $words
-    | if ($f.class|type)=="string" and ($f.class|test("^[a-z0-9][a-z0-9-]{0,49}$")) then $f.class
-      elif $words == "" then ""
-      else ((($f.rule // "finding") | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "")) + "-" + $words)
-        | gsub("^-+|-+$"; "") | .[0:50] | gsub("-+$"; "")
-      end' <<<"$finding" 2>/dev/null)" || return 0
-  # A summary with no ASCII words (e.g. Chinese-only) gives no slug; hash the rule and summary so distinct findings stay distinct.
+  local finding="$1" slug text
+  slug="$(jq -r 'if (.class|type)=="string" and (.class|test("^[a-z0-9][a-z0-9-]{0,49}$")) then .class else "" end' <<<"$finding" 2>/dev/null)" || return 0
   if [[ -z "$slug" ]]; then
-    slug="finding-$(jq -r '(.rule // "") + "|" + (.summary // "")' <<<"$finding" 2>/dev/null | sha1sum | cut -c1-12)"
+    text="$(jq -r '(.summary // "") | sub("^\\[contract: (in|out)\\] "; "") | gsub("^\\s+|\\s+$"; "")' <<<"$finding" 2>/dev/null)" || return 0
+    # An empty summary has nothing to key on; a shared hash would merge unrelated findings into one ticket.
+    [[ -n "$text" ]] || return 0
+    # Non-ASCII text is dropped from the words, so `写入 null 判空` and `读取 null 判空` would collide: hash the whole text instead.
+    if ! LC_ALL=C grep -q '[^ -~]' <<<"$text"; then
+      slug="$(jq -r '. as $f
+        | (($f.summary // "") | sub("^\\[contract: (in|out)\\] "; "") | split(" ") | .[0:6] | join(" ")
+          | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "")) as $words
+        | if $words == "" then ""
+          else ((($f.rule // "finding") | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "")) + "-" + $words)
+            | gsub("^-+|-+$"; "") | .[0:50] | gsub("-+$"; "")
+          end' <<<"$finding" 2>/dev/null)" || return 0
+    fi
+    # shortcut: no ASCII words or non-ASCII text falls back to an exact-text hash, so a reworded Chinese summary misses its recurrence; upgrade when the prompt emits `class`.
+    if [[ -z "$slug" ]]; then
+      slug="finding-$(printf '%s|%s' "$(jq -r '.rule // ""' <<<"$finding" 2>/dev/null)" "$text" | sha1sum | cut -c1-12)"
+    fi
   fi
   printf '%s\n' "$slug"
 }

@@ -76,6 +76,13 @@ zh_b='{"id":"Z2","severity":"P1","rule":"Defect","status":"open","summary":"并�
 [[ "$(review_finding_class_key "$zh_a")" == finding-* ]] || fail 'a Chinese-only summary did not get a hashed class key'
 [[ "$(review_finding_class_key "$zh_a")" != "$(review_finding_class_key "$zh_b")" ]] || fail 'two Chinese-only findings share one class key'
 [[ "$(review_finding_class_key "$zh_a")" == "$(review_finding_class_key "$zh_a")" ]] || fail 'the hashed class key is not stable'
+mixed_a='{"id":"M1","severity":"P1","rule":"Defect","status":"open","summary":"写入 null 判空"}'
+mixed_b='{"id":"M2","severity":"P1","rule":"Defect","status":"open","summary":"读取 null 判空"}'
+[[ "$(review_finding_class_key "$mixed_a")" == finding-* ]] || fail 'a mixed-language summary kept its ASCII words as the class key'
+[[ "$(review_finding_class_key "$mixed_a")" != "$(review_finding_class_key "$mixed_b")" ]] || fail 'mixed-language findings sharing ASCII words share one class key'
+empty_s='{"id":"E1","severity":"P1","rule":"Defect","status":"open","summary":""}'
+[[ -z "$(review_finding_class_key "$empty_s")" ]] || fail 'an empty summary got a shared class key'
+[[ "$(review_finding_class_key '{"id":"E2","severity":"P1","rule":"Defect","class":"null-guard","summary":""}')" == null-guard ]] || fail 'a reviewer class was dropped for an empty summary'
 recur_findings="[$recur_finding,{\"id\":\"F5\",\"severity\":\"P2\",\"rule\":\"Defect\",\"status\":\"open\",\"summary\":\"Minor naming nit.\"}]"
 recur_state="$tmp/recur/state.json"
 recur_upsert="$tmp/recur/upsert.sh"
@@ -107,6 +114,10 @@ review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$recur
 
 review_findings_record_classes "[$zh_a,$zh_b]" "$tmp/recur/zh.json" "$recur_upsert" unit-g || fail 'Chinese-only findings did not record'
 [[ "$(jq -r 'keys|length' "$tmp/recur/zh.json")" == 2 ]] || fail 'distinct Chinese-only findings were counted as one class'
+review_findings_record_classes "[$empty_s,$empty_s]" "$tmp/recur/empty.json" "$recur_upsert" unit-h || fail 'empty-summary findings failed to record'
+[[ "$(jq -r 'keys|length' "$tmp/recur/empty.json")" == 0 ]] || fail 'empty-summary findings were counted'
+review_findings_record_classes "[$mixed_a,$mixed_b]" "$tmp/recur/mixed.json" "$recur_upsert" unit-i || fail 'mixed-language findings failed to record'
+[[ "$(jq -r 'keys|length' "$tmp/recur/mixed.json")" == 2 ]] || fail 'distinct mixed-language findings were counted as one class'
 
 # Review prompt ownership and scheduler wiring are exercised by scheduler-gates.test.sh.
 
