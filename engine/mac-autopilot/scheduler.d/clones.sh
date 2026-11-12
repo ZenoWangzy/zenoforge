@@ -209,6 +209,11 @@ handoff_worktree_clone_impl() { # id branch old-worktree old-head dirty [require
       # Keep the existing branch, owner commit and rescue when they diverge.
       if ! git -C "$dir" -c user.name=zenoforge-agent -c user.email=zenoforge-agent@users.noreply.github.com merge -q --no-edit "$handoff_head"; then
         git -C "$dir" merge --abort >/dev/null 2>&1 || true
+        # shortcut: a ruling-* branch name is the only mark of a fresh ruling branch; the rescued ref is not compared by age. Upgrade if rulings reuse an older branch name.
+        if [[ -n "$old_ref" && "$handoff_head" == "$rescue_sha" && "$branch" == *-ruling-* ]]; then
+          say "handoff unit=$id: rescued ref $old_ref ($rescue_sha) kept, not applied: conflicts with the fresh ruling branch $branch"
+          continue
+        fi
         return 73
       fi
     fi
