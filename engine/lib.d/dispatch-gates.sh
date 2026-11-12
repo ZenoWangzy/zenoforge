@@ -526,5 +526,3 @@ release_deployment_record_readable() {
   echo "issue-pipeline: production Deployment record is unreadable; release batch not dispatched" >&2
   return 75
 }
-
-
