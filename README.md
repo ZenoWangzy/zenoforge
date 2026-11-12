@@ -1,47 +1,55 @@
-<h1 align="center">Zenoforge</h1>
-
-<p align="center">A self-hosted software factory. Coding agents take your GitHub issues through triage, implementation, review, CI repair and merge, and it is built to run unattended.</p>
+<p align="center">
+  <img src=".github/assets/hero.svg" alt="Zenoforge: a self-hosted software factory. GitHub issues flow into a glowing forge and come out as merged pull requests." width="100%">
+</p>
 
 <p align="center">
-  <a href="https://github.com/ZenoWangzy/zenoforge/actions/workflows/engine-tests.yml"><img alt="engine-tests" src="https://github.com/ZenoWangzy/zenoforge/actions/workflows/engine-tests.yml/badge.svg?branch=main"></a>
-  <a href="LICENSE"><img alt="License: PolyForm Noncommercial 1.0.0" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue"></a>
-  <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
+  <a href="https://www.npmjs.com/package/zenoforge"><img alt="npm version" src="https://img.shields.io/npm/v/zenoforge?style=for-the-badge&color=ff7a1a&labelColor=161b22"></a>
+  <a href="LICENSE"><img alt="License: PolyForm Noncommercial 1.0.0" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-ff7a1a?style=for-the-badge&labelColor=161b22"></a>
+  <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-ffb02e?style=for-the-badge&labelColor=161b22">
 </p>
 
 <p align="center"><a href="#quickstart">Quickstart</a> · <a href="#how-it-works">How it works</a> · <a href="#what-it-does">What it does</a> · <a href="#before-you-run-it">Security</a> · <a href="#documentation">Docs</a></p>
 
-Zenoforge runs the coding-agent CLIs you already have (`codex`, `claude`, `zcode`) against one GitHub repository. Labels on an issue carry it through a fixed chain of stages, and the engine reviews, repairs and merges the result. The goal is a factory that runs unattended and heals itself. Today some tickets are still routed to a person, which is a gap to remove, and the maintainer gets mail for decisions.
+<p align="center"><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <a href="README.es.md">Español</a></p>
+
+Zenoforge is a self-hosted software factory. The coding-agent CLIs you already have (`codex`, `claude`, `zcode`) take issues in one GitHub repository through triage, implementation, review, CI repair and merge.
+
+It is built to run unattended and heal itself. Today some tickets are still routed to a person, which is a gap to remove.
 
 ## Quickstart
 
-You need Node 20+, `git`, the GitHub CLI (`gh auth login` done), `jq`, `python3`, `bash` 4+, and at least one coding-agent CLI (`codex`, `claude` or `zcode`). Linux, WSL2 and macOS work (on macOS the CLI installs the unit loop only, see [docs/install.md](docs/install.md)); Windows needs WSL2.
+<p align="center">
+  <img src=".github/assets/terminal.svg" alt="Animated terminal: npx zenoforge doctor prints a PASS line for node, git, gh, bash, jq, python3 and an agent CLI, then All required items present." width="100%">
+</p>
 
 ```bash
-npx github:ZenoWangzy/zenoforge doctor   # check the host first
-npx github:ZenoWangzy/zenoforge init     # guided setup for one repository
+npx zenoforge doctor   # check the host first
+npx zenoforge init     # guided setup for one repository
 ```
 
-`doctor` prints one line per requirement, and the exact fix command for anything missing:
+Then label an issue `needs-triage` to hand it to the factory. You need Node 20+, `git`, an authenticated `gh`, `jq`, `python3`, `bash` 4+ and one agent CLI; `doctor` checks them all.
 
-```
-PASS  node >= 20 (found 22.23.2)
-PASS  gh installed
-...
-All required items present.
-```
+<details>
+<summary>Platforms, what <code>init</code> does, operator commands</summary>
+
+Linux, WSL2 and macOS work (on macOS the CLI installs the unit loop only, see [docs/install.md](docs/install.md)); Windows needs WSL2.
+
+`doctor` prints one line per requirement, and the exact fix command for anything missing.
 
 `init` asks which repository to use and which agent does which job. It then creates a dedicated checkout, installs the engine under `~/.zenoforge/`, writes the config with safe defaults (2 workers, auto-merge only when your branch protection names required checks) and sets up the scheduler. [docs/install.md](docs/install.md) lists every step and the manual path.
 
-Then label an issue `needs-triage` to hand it to the factory. `init` does not put `zenoforge` on your PATH, so run the operator commands through `npx` as well:
+`init` does not put `zenoforge` on your PATH, so run the operator commands through `npx` as well:
 
 ```bash
-npx github:ZenoWangzy/zenoforge status      # scheduler, engine version, pipeline switches
-npx github:ZenoWangzy/zenoforge logs -f     # follow the engine logs
-npx github:ZenoWangzy/zenoforge stop        # scheduler off (start switches it on)
-npx github:ZenoWangzy/zenoforge rollback    # back to the previous engine version
+npx zenoforge status      # scheduler, engine version, pipeline switches
+npx zenoforge logs -f     # follow the engine logs
+npx zenoforge stop        # scheduler off (start switches it on)
+npx zenoforge rollback    # back to the previous engine version
 ```
 
 `upgrade` and `uninstall` (`--purge` also deletes `~/.zenoforge`) work the same way. For scripts and CI, use `init --repo owner/name --yes`; `--dry-run` prints every file it would write and every command it would run, and changes nothing.
+
+</details>
 
 ## Before you run it
 
@@ -52,23 +60,20 @@ npx github:ZenoWangzy/zenoforge rollback    # back to the previous engine versio
 
 ## How it works
 
-```mermaid
-flowchart LR
-  A[needs-triage] --> B[triage]
-  B --> C[implement]
-  B --> D[recut]
-  D -->|child issues| C
-  C --> E[PR]
-  E --> F[review]
-  F --> G[repair]
-  G --> H[merge]
-  H -->|main goes red| I[main-red-bisect]
-  I -->|revert PR| H
-```
+<p align="center">
+  <img src=".github/assets/pipeline.svg" alt="Pipeline diagram. Issue loop: needs-triage, triage, recut, and main-red-bisect. Unit loop: implement, PR, review, repair, merge. Triage hands ready issues to implement, recut hands child issues to implement. When main goes red, main-red-bisect sends a revert PR back to merge." width="100%">
+</p>
 
-Two loops share GitHub labels and per-issue state. The issue loop (`engine/run-tick.sh`, every 5 minutes) decides stage changes and never merges. The unit loop (`engine/mac-autopilot/loop.sh`) runs the workers and owns the serial merge queue. A tick only decides and starts detached workers, then exits; the next tick reads what they left behind. See [docs/architecture.md](docs/architecture.md).
+Two loops share GitHub labels and per-issue state. The issue loop (`engine/run-tick.sh`, every 5 minutes) decides stage changes and never merges. The unit loop (`engine/mac-autopilot/loop.sh`) runs the workers and owns the serial merge queue. A tick only decides and starts detached workers, then exits; the next tick reads what they left. See [docs/architecture.md](docs/architecture.md).
 
 ## What it does
+
+<p align="center">
+  <img src=".github/assets/features.svg" alt="Eight feature cards: issue to merge, Matt Pocock's method, cross-provider review, survives quota limits, capacity admission, serial merge queue, health and cost, learns from incidents." width="100%">
+</p>
+
+<details>
+<summary>Details</summary>
 
 - **Takes an issue to a merge.** Issues move through a fixed stage chain: triage, recut, implement, self-check, review, repair, and merge. GitHub labels carry the state.
 - **Uses Matt Pocock's skills as its method.** Every stage follows [Matt Pocock's skills](https://github.com/mattpocock/skills), entered through `ask-matt`: triage, to-tickets, implement with tdd, diagnosing-bugs, code-review. They are vendored byte-identical under `.agents/skills/` and stay MIT ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); see [Architecture](docs/architecture.md#23-method-matt-skills).
@@ -79,19 +84,30 @@ Two loops share GitHub labels and per-issue state. The issue loop (`engine/run-t
 - **Reports health and cost.** A node health scorecard with healthy and unhealthy bounds, a dashboard, and per-ticket cost and CI-spend accounting.
 - **Learns from incidents.** Incidents can become lessons in the target repository, and the engine can generate enforcement checks from them.
 
+</details>
+
 ## Why Zenoforge
 
-Zenoforge is not another coding agent. It is the factory around the agent CLIs you already run: work units dispatched under capacity limits, review by a second provider where one is available, a serial merge queue, and automatic culprit search and revert when main turns red.
+Zenoforge is not another coding agent. It is the factory around the agent CLIs you already run: capacity limits, a second-provider review where one is available, a serial merge queue, and automatic revert when main turns red.
 
-It is **not for you** if you want an assistant inside your editor, if you cannot accept agents running without a sandbox, or if you need commercial use without buying a commercial license (see [License](#license)).
+It is **not for you** if you want an assistant inside your editor, if you cannot accept agents running without a sandbox, or if you need commercial use without a commercial license (see [License](#license)).
 
 ## Status
 
 **Alpha.** Zenoforge was extracted from the pipeline that builds a production product, where it lands dozens of agent-written changes a day. The engine is real and running; the packaging for other repositories is new. Expect rough edges and Bash.
 
-The release, acceptance and advisor stages are not shipped. Their runners (for example `engine/run-release.sh`) are absent, and the advisor provider does not ship. The stage chain therefore ends at merge.
+The release, acceptance and advisor stages are not shipped, so the stage chain ends at merge.
+
+<details>
+<summary>What is missing, and the Chinese-language parts</summary>
+
+The runners for the release, acceptance and advisor stages (for example `engine/run-release.sh`) are absent, and the advisor provider does not ship.
 
 Parts of the project are in Chinese: the dashboard UI, the maintainer mail, some worker prompt modules (for example `engine/factory/common.md`), and many code comments and strings. About 50 of the 230 non-test files under `engine/` and `tools/` contain Chinese text. English translation is planned.
+
+The maintainer gets mail for decisions.
+
+</details>
 
 ## Documentation
 
@@ -100,12 +116,17 @@ Parts of the project are in Chinese: the dashboard UI, the maintainer mail, some
 - [Security](SECURITY.md): the threat model. Agents run unsandboxed and act on issue text.
 - Source: `engine/` is the pipeline, `cli/` is the `zenoforge` command, `tools/` is repository tooling.
 
-Run the tests (`npm ci` first):
+<details>
+<summary>Run the tests</summary>
+
+Run `npm ci` first.
 
 ```bash
 bash tools/run-engine-tests.sh      # all engine suites; add "0 8" for shard 0 of 8
 node --test cli/*.test.mjs          # the zenoforge CLI
 ```
+
+</details>
 
 ## Contributing
 
@@ -113,7 +134,7 @@ Contributions are welcome under the [Contributor License Agreement](CLA.md). See
 
 ## License
 
-Zenoforge is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). It is **source-available**, not OSI open source.
+Zenoforge is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). It is **source-available**, not OSI-approved.
 
 - Free for personal, noncommercial use.
 - Commercial use requires a commercial license from the maintainer. To ask, open a GitHub issue titled "Commercial license" in [ZenoWangzy/zenoforge](https://github.com/ZenoWangzy/zenoforge/issues), or contact the maintainer through the maintainer's [GitHub profile](https://github.com/ZenoWangzy).

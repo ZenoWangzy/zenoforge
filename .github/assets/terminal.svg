@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 482" width="960" height="482" role="img" aria-labelledby="t d">
+  <title id="t">zenoforge doctor in a terminal</title>
+  <desc id="d">Animated terminal: npx zenoforge doctor is typed, then PASS lines appear for node, git, gh installed, gh authenticated, bash, jq, python3 and at least one agent CLI, ending with All required items present.</desc>
+  <defs><pattern id="dots" width="32" height="32" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.5" fill="#ffffff" fill-opacity="0.05"/></pattern></defs>
+  <style>
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.t{font-size:24px;fill:#e6e9ef}
+.pr{fill:#ff8a1f;font-weight:700}
+.ok{fill:#3ddc97;font-weight:700}
+.tx{fill:#c4cbd8}
+.done{fill:#ffb24a;font-weight:700}
+.cov{transform:translateX(289.0px);animation:type 12.0s linear infinite both}
+.cur{opacity:0;animation:cur 12.0s linear infinite both}
+.blink{animation:blink 1s steps(1) infinite}
+.cmdt{animation:cmd 12.0s linear infinite both}
+.o{animation-duration:12.0s;animation-iteration-count:infinite;animation-timing-function:linear;animation-fill-mode:both}
+.l0{animation-name:l0}
+.l1{animation-name:l1}
+.l2{animation-name:l2}
+.l3{animation-name:l3}
+.l4{animation-name:l4}
+.l5{animation-name:l5}
+.l6{animation-name:l6}
+.l7{animation-name:l7}
+.l8{animation-name:l8}
+@keyframes l0{0%,21.667%{opacity:0;transform:translateY(6px)}23.167%,91.667%{opacity:1;transform:none}96.667%,100%{opacity:0;transform:none}}
+@keyframes l1{0%,25.167%{opacity:0;transform:translateY(6px)}26.667%,91.667%{opacity:1;transform:none}96.667%,100%{opacity:0;transform:none}}
+@keyframes l2{0%,28.667%{opacity:0;transform:translateY(6px)}30.167%,91.667%{opacity:1;transform:none}96.667%,100%{opacity:0;transform:none}}
+@keyframes l3{0%,32.167%{opacity:0;transform:translateY(6px)}33.667%,91.667%{opacity:1;transform:none}96.667%,100%{opacity:0;transform:none}}
+@keyframes l4{0%,35.667%{opacity:0;transform:translateY(6px)}37.167%,91.667%{opacity:1;transform:none}96.667%,100%{opacity:0;transform:none}}
+@keyframes l5{0%,39.167%{opacity:0;transform:translateY(6px)}40.667%,91.667%{opacity:1;transform:none}96.667%,100%{opacity:0;transform:none}}
+@keyframes l6{0%,42.667%{opacity:0;transform:translateY(6px)}44.167%,91.667%{opacity:1;transform:none}96.667%,100%{opacity:0;transform:none}}
+@keyframes l7{0%,46.167%{opacity:0;transform:translateY(6px)}47.667%,91.667%{opacity:1;transform:none}96.667%,100%{opacity:0;transform:none}}
+@keyframes l8{0%,51.667%{opacity:0;transform:translateY(6px)}53.167%,91.667%{opacity:1;transform:none}96.667%,100%{opacity:0;transform:none}}
+@keyframes type{0%,4.167%{transform:translateX(0);animation-timing-function:steps(20)}16.667%,91.667%{transform:translateX(289.0px)}96.667%,100%{transform:translateX(289.0px)}}
+@keyframes cur{0%,21.25%{opacity:1}21.667%,100%{opacity:0}}
+@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@keyframes cmd{0%,91.667%{opacity:1}96.667%,100%{opacity:0}}
+@media (prefers-reduced-motion:reduce){.cov,.cur,.blink,.cmdt,.o{animation:none}.cov,.cur{opacity:0}}
+  </style>
+  <rect width="960" height="482" rx="22" fill="#0b0e13"/>
+  <path d="M0 22A22 22 0 0 1 22 0H938A22 22 0 0 1 960 22V56H0Z" fill="#141a23"/>
+  <rect y="56" width="960" height="2" fill="#2a3140"/>
+  <circle cx="40" cy="29" r="8" fill="#ff5f57"/><circle cx="68" cy="29" r="8" fill="#febc2e"/><circle cx="96" cy="29" r="8" fill="#28c840"/>
+  <text class="mono" x="480" y="36" text-anchor="middle" font-size="20" fill="#7c8696">~/your-repo</text>
+  <g transform="translate(0 0)">
+    <g class="cmdg"><text class="mono t pr" x="40" y="108">$</text><g class="cmdt"><text class="mono t" x="68.90" y="108">npx zenoforge doctor</text><g class="cov"><rect x="68.90" y="80" width="380" height="42" fill="#0b0e13"/><g class="cur"><rect class="blink" x="68.90" y="85" width="13" height="30" rx="2" fill="#ff9a2e"/></g></g></g></g>
+  <text class="mono t o l0" x="40" y="144"><tspan class="ok">PASS</tspan>&#160;&#160;<tspan class="tx">node &gt;= 20 (found 22.23.2)</tspan></text>
+  <text class="mono t o l1" x="40" y="180"><tspan class="ok">PASS</tspan>&#160;&#160;<tspan class="tx">git</tspan></text>
+  <text class="mono t o l2" x="40" y="216"><tspan class="ok">PASS</tspan>&#160;&#160;<tspan class="tx">gh installed</tspan></text>
+  <text class="mono t o l3" x="40" y="252"><tspan class="ok">PASS</tspan>&#160;&#160;<tspan class="tx">gh authenticated</tspan></text>
+  <text class="mono t o l4" x="40" y="288"><tspan class="ok">PASS</tspan>&#160;&#160;<tspan class="tx">bash &gt;= 4 (found 5.2.37)</tspan></text>
+  <text class="mono t o l5" x="40" y="324"><tspan class="ok">PASS</tspan>&#160;&#160;<tspan class="tx">jq</tspan></text>
+  <text class="mono t o l6" x="40" y="360"><tspan class="ok">PASS</tspan>&#160;&#160;<tspan class="tx">python3</tspan></text>
+  <text class="mono t o l7" x="40" y="396"><tspan class="ok">PASS</tspan>&#160;&#160;<tspan class="tx">at least one agent CLI (found: codex, claude, zcode)</tspan></text>
+  <text class="mono t o l8" x="40" y="438"><tspan class="done">All required items present.</tspan></text>
+  </g>
+  <rect x="1" y="1" width="958" height="480" rx="21" fill="none" stroke="#2a3140" stroke-width="2"/>
+</svg>

@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 668" width="1280" height="668" role="img" aria-labelledby="t d">
+  <title id="t">What Zenoforge does</title>
+  <desc id="d">Eight feature cards: issue to merge through a fixed stage chain carried by labels; Matt Pocock's skills as the method; review by a different model provider; failover when a quota runs out; capacity admission before a worker starts; a serial merge queue that pins the reviewed commit and reverts a red main; health and cost reporting; learning from incidents.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0d1218"/><stop offset="1" stop-color="#0a0d12"/></linearGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff5a1f" stop-opacity="0.22"/><stop offset="1" stop-color="#ffc23d" stop-opacity="0.08"/></linearGradient>
+    <pattern id="dots" width="32" height="32" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.5" fill="#ffffff" fill-opacity="0.06"/></pattern>
+  </defs>
+  <style>
+    .sans{font-family:ui-sans-serif,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif}
+    .card{fill:#121720;stroke:#2a3140;stroke-width:2}
+    .tile{fill:url(#tile);stroke:#5a3a24;stroke-width:2}
+    .ti{font-size:33px;font-weight:700;fill:#f4f6fa}
+    .ds{font-size:24px;fill:#aab3c2}
+    .ic{fill:none;stroke:#ffa133;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+  </style>
+  <rect width="1280" height="668" rx="28" fill="url(#bg)"/>
+  <rect width="1280" height="668" rx="28" fill="url(#dots)"/>
+  <g transform="translate(24 24)">
+    <rect class="card" width="604" height="140" rx="20"/>
+    <rect class="tile" x="28" y="32" width="76" height="76" rx="18"/>
+    <g class="ic" transform="translate(38 42) scale(1.3)"><circle cx="20" cy="20" r="9"/><path d="M3 20H11M29 20H37M16 20.5l3 3 5.5-6.5"/></g>
+    <text class="sans ti" x="128" y="72">Issue to merge</text>
+    <text class="sans ds" x="128" y="106">Labels carry the stage chain</text>
+  </g>
+  <g transform="translate(652 24)">
+    <rect class="card" width="604" height="140" rx="20"/>
+    <rect class="tile" x="28" y="32" width="76" height="76" rx="18"/>
+    <g class="ic" transform="translate(38 42) scale(1.3)"><path d="M20 10C14 7 8 7 4 8V31C8 30 14 30 20 33C26 30 32 30 36 31V8C32 7 26 7 20 10ZM20 10V33"/></g>
+    <text class="sans ti" x="128" y="72">Matt Pocock's method</text>
+    <text class="sans ds" x="128" y="106">ask-matt skills, vendored, MIT</text>
+  </g>
+  <g transform="translate(24 184)">
+    <rect class="card" width="604" height="140" rx="20"/>
+    <rect class="tile" x="28" y="32" width="76" height="76" rx="18"/>
+    <g class="ic" transform="translate(38 42) scale(1.3)"><path d="M2 20C8 9 14 6 20 6C26 6 32 9 38 20C32 31 26 34 20 34C14 34 8 31 2 20Z"/><circle cx="20" cy="20" r="6"/></g>
+    <text class="sans ti" x="128" y="72">Cross-provider review</text>
+    <text class="sans ds" x="128" y="106">Reviewer from another provider</text>
+  </g>
+  <g transform="translate(652 184)">
+    <rect class="card" width="604" height="140" rx="20"/>
+    <rect class="tile" x="28" y="32" width="76" height="76" rx="18"/>
+    <g class="ic" transform="translate(38 42) scale(1.3)"><path d="M33 15A14 14 0 0 0 9 11M8 4V11H15M7 25A14 14 0 0 0 31 29M32 36V29H25"/></g>
+    <text class="sans ti" x="128" y="72">Survives quota limits</text>
+    <text class="sans ds" x="128" y="106">Failover and stronger escalation</text>
+  </g>
+  <g transform="translate(24 344)">
+    <rect class="card" width="604" height="140" rx="20"/>
+    <rect class="tile" x="28" y="32" width="76" height="76" rx="18"/>
+    <g class="ic" transform="translate(38 42) scale(1.3)"><path d="M4 30A16 16 0 0 1 36 30M20 30L28 17M10 30H5M35 30H30M9 18L12.5 20.5M31 18L27.5 20.5"/><circle cx="20" cy="30" r="2.5"/></g>
+    <text class="sans ti" x="128" y="72">Capacity admission</text>
+    <text class="sans ds" x="128" y="106">Checks CPU and memory first</text>
+  </g>
+  <g transform="translate(652 344)">
+    <rect class="card" width="604" height="140" rx="20"/>
+    <rect class="tile" x="28" y="32" width="76" height="76" rx="18"/>
+    <g class="ic" transform="translate(38 42) scale(1.3)"><circle cx="9" cy="8" r="4"/><circle cx="9" cy="32" r="4"/><circle cx="31" cy="24" r="4"/><path d="M9 12V28M9 14C9 24 16 24 27 24"/></g>
+    <text class="sans ti" x="128" y="72">Serial merge queue</text>
+    <text class="sans ds" x="128" y="106">Pinned head, auto-revert on red</text>
+  </g>
+  <g transform="translate(24 504)">
+    <rect class="card" width="604" height="140" rx="20"/>
+    <rect class="tile" x="28" y="32" width="76" height="76" rx="18"/>
+    <g class="ic" transform="translate(38 42) scale(1.3)"><path d="M5 35V23M15 35V13M25 35V19M35 35V6"/></g>
+    <text class="sans ti" x="128" y="72">Health and cost</text>
+    <text class="sans ds" x="128" y="106">Scorecard, dashboard, spend</text>
+  </g>
+  <g transform="translate(652 504)">
+    <rect class="card" width="604" height="140" rx="20"/>
+    <rect class="tile" x="28" y="32" width="76" height="76" rx="18"/>
+    <g class="ic" transform="translate(38 42) scale(1.3)"><path d="M12 25C7 21 8 12 15 8C19 6 23 6 27 8C34 12 33 21 28 25C26 27 26 29 26 31H14C14 29 14 27 12 25ZM16 36H24"/></g>
+    <text class="sans ti" x="128" y="72">Learns from incidents</text>
+    <text class="sans ds" x="128" y="106">Incidents become lessons, checks</text>
+  </g>
+  <rect x="1" y="1" width="1278" height="666" rx="27" fill="none" stroke="#2a3140" stroke-width="2"/>
+</svg>
