@@ -1445,7 +1445,7 @@ assert_contains "triage stop hook records stage and issue" \
 RECUT_MEMORY_FIRST="$(run_memory_capped_dispatch recut 0 7G)"
 assert_contains "recut first attempt stays capped at 4G" "$RECUT_MEMORY_FIRST" 'MemoryMax=4G'
 
-TRIAGE_BATCH_DISPATCH_FN="$(sed -n '/^dispatch_triage_batch() {/,/^}/p' "$PIPELINE_SRC"; sed -n '/^pipeline_batch_launch() {/,/^}/p' "$SCRIPT_DIR/lib.d/dispatch-gates.sh")"
+TRIAGE_BATCH_DISPATCH_FN="$(sed -n '/^dispatch_triage_batch() {/,/^}/p; /^pipeline_batch_launch() {/,/^}/p' "$PIPELINE_SRC")"
 run_fake_triage_batch_dispatch() (
   local oom_count="$1" retry_cap="$2"
   ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf \
@@ -1843,8 +1843,7 @@ run_batch_admission_case() (
   ADVISOR_RUNTIME_MAX_SEC=60
   TRIAGE_RUNTIME_MAX_SEC=60
   IMPLEMENT_RUNTIME_MAX_SEC=60
-  eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p; /^dispatch_advisor_batch() {/,/^}/p; /^dispatch_triage_batch() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p' "$PIPELINE_SRC")"
-  eval "$(sed -n '/^pipeline_batch_launch() {/,/^}/p' "$SCRIPT_DIR/lib.d/dispatch-gates.sh")"
+  eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p; /^dispatch_advisor_batch() {/,/^}/p; /^dispatch_triage_batch() {/,/^}/p; /^pipeline_batch_launch() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p' "$PIPELINE_SRC")"
   systemctl() { return 3; }
   hand_agent_issue_is_live_owned() { return 1; }
   issue_spend_budget_status() { printf 'clear\t0\t0\n'; }
