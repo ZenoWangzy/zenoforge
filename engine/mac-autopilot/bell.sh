@@ -197,6 +197,11 @@ scheduler_signature_class() {
   fi
 }
 
+# Superset of every substring scheduler_signature_class matches. The 24h history
+# scan greps for these first: a bash read of the whole log per signature line
+# (about 2.4 s per 17k lines in a bench) was the suspected cost of #366.
+SCHEDULER_SIGNATURE_HINT='jqf error|unbound variable|TICK-TIMEOUT|REFILL-TIMEOUT|refusing to run this tick|slice-failed|advisor provider missing|review-family wait unit=|maintenance deferred streak'
+
 scheduler_history_consider() {
   local line="$1" ts class
   [[ "$line" =~ ^\[([^]]+)\] ]] || return 0
@@ -227,9 +232,10 @@ PY
     if [[ "$file" == "$A/scheduler.log" ]]; then
       (( before_line > 1 )) || continue
       while IFS= read -r history_line; do scheduler_history_consider "$history_line"; done \
-        < <(sed -n "1,$((before_line - 1))p" "$file" 2>/dev/null)
+        < <(sed -n "1,$((before_line - 1))p" "$file" 2>/dev/null | grep -E -- "$SCHEDULER_SIGNATURE_HINT")
     else
-      while IFS= read -r history_line; do scheduler_history_consider "$history_line"; done < "$file"
+      while IFS= read -r history_line; do scheduler_history_consider "$history_line"; done \
+        < <(grep -E -- "$SCHEDULER_SIGNATURE_HINT" "$file" 2>/dev/null)
     fi
   done
   if [[ -n "$SCHEDULER_HISTORY_STAMP" ]]; then
