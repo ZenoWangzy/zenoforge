@@ -1,3 +1,12 @@
+intake_parent_retry_escalate() { # issue, attempt -> one session-visible alert per retry episode
+  local n="$1" attempt="$2" already stamp alerts="$AGENT_HOME/logs/head-watch.alerts"
+  already="$(jqf -r --arg n "$n" '.intake_parent_retry[$n].escalated // false' "$UNITS")" || return 1
+  [[ "$already" != true ]] || return 0
+  mkdir -p "${alerts%/*}" || return 1
+  stamp="${STAMP:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  printf '%s INTAKE-PARENT-LABEL-FAILED issue=#%s attempts=%s retry=backoff\n' "$stamp" "$n" "$attempt" >> "$alerts" || return 1
+  units_update --arg n "$n" '.intake_parent_retry[$n].escalated = true'
+}
 # Per-candidate step timing for register_new_issues: intake_mark charges the seconds since the last mark to a named step,
 # intake_steps_say logs the pass's `intake detail steps` line. Both use register_new_issues' locals (dynamic scope, like intake_skip).
 intake_mark() { intake_step_secs[$1]=$(( ${intake_step_secs[$1]:-0} + SECONDS - intake_step_at )); intake_step_counts[$1]=$(( ${intake_step_counts[$1]:-0} + 1 )); intake_step_at=$SECONDS; }
@@ -15,6 +24,7 @@ intake_skip_note() {
   say "intake skip issue #$1: $2"
   { awk -F'\t' -v k="$1 $2" -v now="$now" '$1!=k && now-$2<21600' "$f" 2>/dev/null; printf '%s %s\t%s\n' "$1" "$2" "$now"; } > "$f.tmp.$$" && mv -f -- "$f.tmp.$$" "$f"
 }
+intake_skip_refused_recut() { intake_skip_note "$1" "unit=$2 stays closed, recut refused and its reopen is spent"; intake_skip recut_refused; }
 intake_skip_label_report() { # candidate rows JSON, skip labels JSON
   local n hit
   [[ -s "$1" ]] || return 0

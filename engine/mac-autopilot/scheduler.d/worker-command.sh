@@ -84,7 +84,7 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
 # models.<role> = [model, effort, service_tier?]；provider selects codex, claude, or zcode CLI.
 build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider] [report-only-resume] [expected-session-id]
   local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" usage prompt_arg role tier self_fix prior config_arg
-  local -a tier_args=() codex_config_args=()
+  local -a tier_args=() codex_config_args=() zcode_cmd=()
   local output_tokens
   CODEX_MODE=fresh
   CODEX_SESSION_ID=""
@@ -103,7 +103,11 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     [[ "$type" == implement || "$type" == repair || "$type" == review || "$type" == rereview ]] || return 1
     WORKER_STDOUT_REPORT=1
     CODEX_USAGE_START=null
-    CODEX_COMMAND=(env -u GH_TOKEN -u GITHUB_TOKEN NODE_USE_ENV_PROXY=1 "BASH_MAX_OUTPUT_LENGTH=$(worker_output_cap_chars)" zcode -p "$prompt_arg" --cwd "$workdir" --mode yolo)
+    # The GLM CLI comes from the shared resolver (config engine.zcode_bin / bundle / PATH),
+    # never a bare `zcode` on PATH: the host may only carry the worker bundle.
+    mapfile -t zcode_cmd < <(zf_zcode_bin_argv 2>/dev/null)
+    (( ${#zcode_cmd[@]} > 0 )) || return 1
+    CODEX_COMMAND=(env -u GH_TOKEN -u GITHUB_TOKEN NODE_USE_ENV_PROXY=1 "BASH_MAX_OUTPUT_LENGTH=$(worker_output_cap_chars)" "${zcode_cmd[@]}" -p "$prompt_arg" --cwd "$workdir" --mode yolo)
     return 0
   fi
   if [[ "$provider" == claude && ( "$type" == implement || "$type" == repair ) ]]; then

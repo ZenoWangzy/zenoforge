@@ -3,6 +3,7 @@
 # codes under .git, then merge only if GitHub still reports the tested SHA.
 set -uo pipefail
 
+# Must match the shard matrix in .github/workflows/engine-tests.yml.
 MERGE_PR_ENGINE_SHARDS=8
 MERGE_PR_MAX_PARALLEL=4
 
@@ -103,8 +104,51 @@ merge_pr_prior_art_ok() {
 # command's last recorded run green. A Markdown-only PR (the quick-land path)
 # has no test run to prove, and a green full-suite result for the same SHA
 # (merge_pr_main) is itself a receipt.
+merge_pr_ci_green_check_count() {
+  local pr="$1" head_sha="$2" success_only="${3:-false}" view count files path
+  view="$(gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null)" || return 1
+  files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" -q '.[].filename' 2>/dev/null)" || return 1
+  [[ -n "$files" ]] || return 1
+  while IFS= read -r path; do
+    case "$path" in
+      .github/*|tools/run-engine-tests.sh|.zenoforge/ci.json) return 1 ;;
+      '') return 1 ;;
+    esac
+  done <<<"$files"
+  # headRefOid anchors the rollup to this commit; GitHub CheckRuns have no per-check SHA.
+  count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
+    def check_run_time: .startedAt // .completedAt;
+    def completed_success:
+      if .__typename == "CheckRun" then
+        .status == "COMPLETED"
+        and (if $strict == "true" then .conclusion == "SUCCESS"
+          else (.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL") end)
+      elif .__typename == "StatusContext" then .state == "SUCCESS" and $strict == "false"
+      else false end;
+    def required_check($need):
+      .__typename == "CheckRun"
+      and (.workflowName | type == "string" and length > 0)
+      and .workflowName == (if $need == "cli" then "cli-tests" else "engine-tests" end)
+      and .name == $need and .status == "COMPLETED" and .conclusion == "SUCCESS";
+    . as $view
+    | ($view.statusCheckRollup // null) as $checks
+    | select($view.headRefOid == $sha)
+    | select($checks | type == "array" and length > 0)
+    | ([$checks[] | select(.__typename == "CheckRun" and check_run_time != null)]
+      | group_by([.workflowName, .name])
+      | map(max_by(check_run_time))) as $newest_check_runs
+    | ([$checks[] | select(.__typename != "CheckRun" or check_run_time == null)]) as $single_checks
+    | ($newest_check_runs + $single_checks) as $current_checks
+    | select(all($current_checks[]; completed_success))
+    | (["cli"] + [range(0;$shards) | "suites (\(.))"]) as $required
+    | select(all($required[]; . as $need | any($current_checks[]; required_check($need))))
+    | $checks | length
+  ' <<<"$view" 2>/dev/null)" || return 1
+  printf '%s\n' "$count"
+}
+
 merge_pr_test_receipt_ok() {
-  local pr="$1" view head_sha root result_file receipt bad
+  local pr="$1" view head_sha root result_file='' receipt bad
   if ! view="$(gh pr view "$pr" --json body,files,commits 2>/dev/null)" \
     || ! jq -e '.files | type == "array" and length > 0' <<<"$view" >/dev/null 2>&1; then
     merge_pr_refuse "$pr" 'could not read the PR file list for the test receipt'
@@ -123,15 +167,36 @@ merge_pr_test_receipt_ok() {
     return 1
   }
   if result_file="$(merge_pr_result_file "$root" "$head_sha")" \
-    && [[ -f "$result_file" ]] && merge_pr_result_is_green "$result_file" "$head_sha"; then
-    return 0
+    && [[ -e "$result_file" || -L "$result_file" ]]; then
+    if merge_pr_result_is_green "$result_file" "$head_sha"; then
+      printf 'merge-pr: receipt: local\n' >&2
+      return 0
+    fi
+    if [[ -f "$result_file" ]] && jq -e --arg sha "$head_sha" '
+      .sha == $sha and (.green == false
+        or .cli_exit_code != 0
+        or any(.engine_shards[]?; .exit_code != 0))
+    ' "$result_file" >/dev/null 2>&1; then
+      merge_pr_refuse "$pr" "full local suites are red for SHA $head_sha"
+    else
+      merge_pr_refuse "$pr" "the full-suite result for SHA $head_sha is incomplete or invalid"
+    fi
+    return 1
   fi
   receipt="$(merge_pr_receipt_file "$root" "$head_sha")" || {
     merge_pr_refuse "$pr" 'cannot locate the repository test-receipt directory'
     return 1
   }
   if [[ ! -s "$receipt" ]]; then
+    if count="$(merge_pr_ci_green_check_count "$pr" "$head_sha")"; then
+      printf 'merge-pr: receipt: ci-green %s checks at %.12s\n' "$count" "$head_sha" >&2
+      return 0
+    fi
     merge_pr_refuse "$pr" "no test receipt exists for $head_sha: run the tests at that HEAD through tools/test-receipt.sh <command...>"
+    return 1
+  fi
+  if [[ ! -f "$receipt" || ! -s "$receipt" ]]; then
+    merge_pr_refuse "$pr" "test receipt for $head_sha is empty or invalid"
     return 1
   fi
   bad="$(awk '
@@ -149,12 +214,16 @@ merge_pr_test_receipt_ok() {
     merge_pr_refuse "$pr" "test receipt for $head_sha has a failed last run: $bad"
     return 1
   }
+  printf 'merge-pr: receipt: local\n' >&2
 }
 
 # Only this PR's own files: a main already over its baseline must not stop other merges.
 merge_pr_size_ok() {
   local pr="$1" root files over
-  root="$(merge_pr_root)" || return 0
+  root="$(merge_pr_root)" || {
+    merge_pr_refuse "$pr" 'no git checkout: cannot run size-ratchet'
+    return 1
+  }
   over="$({ bash "$root/tools/size-ratchet.sh" 2>&1 || true; } | grep '^FAIL ')" || return 0
   [[ "$(git -C "$root" rev-parse HEAD 2>/dev/null)" == "$(gh pr view "$pr" --json headRefOid 2>/dev/null | jq -r .headRefOid)" ]] || return 0
   files="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq -r '.files[].path')"
@@ -168,7 +237,10 @@ merge_pr_size_ok() {
 # The prelude of scheduler.test.sh holds the text assertions every shard runs, so one stale grep turns all eight red.
 merge_pr_with_tree() { # pr function: run function on an export of the PR's head
   local pr="$1" fn="$2" root tree ref="refs/zf-merge-pr/$1" rc=0
-  root="$(merge_pr_root)" || return 0
+  root="$(merge_pr_root)" || {
+    printf 'no git checkout: cannot run %s on the PR head\n' "$fn"
+    return 1
+  }
   git -C "$root" fetch -q origin "+pull/$pr/head:$ref" 2>&1 || return
   tree="$(mktemp -d)"
   if git -C "$root" archive "$ref" | tar -x -C "$tree"; then
@@ -185,15 +257,21 @@ merge_pr_prelude_in() {
 }
 merge_pr_scheduler_prelude() { merge_pr_with_tree "$1" merge_pr_prelude_in; }
 merge_pr_scheduler_prelude_ok() {
-  local pr="$1" out touched
+  local pr="$1" out touched head_sha green rc timeout_note=
   touched="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq '[.files[].path | select(test("^engine/mac-autopilot/(scheduler(\\.sh|\\.d/|\\.test\\.sh)|config\\.template\\.json)"))] | length')" || touched=
   if [[ -z "$touched" ]]; then
     merge_pr_refuse "$pr" 'could not read PR files for the scheduler prelude check'
     return 1
   fi
   (( touched > 0 )) || return 0
-  out="$(merge_pr_scheduler_prelude "$pr")" && return 0
-  merge_pr_refuse "$pr" "scheduler.test.sh prelude failed: $out"
+  if head_sha="$(gh pr view "$pr" --json headRefOid 2>/dev/null | jq -er '.headRefOid | select(type == "string" and length >= 12)' 2>/dev/null)" \
+    && green="$(merge_pr_ci_green_check_count "$pr" "$head_sha" true)"; then
+    printf 'prelude: ci-green %s checks at %.12s\n' "$green" "$head_sha"
+    return 0
+  fi
+  if out="$(merge_pr_scheduler_prelude "$pr")"; then return 0; else rc=$?; fi
+  if [[ "$rc" == 124 ]]; then timeout_note=' (timeout 300s)'; fi
+  merge_pr_refuse "$pr" "scheduler.test.sh prelude failed rc=$rc$timeout_note: $out"
 }
 # These scans take seconds, so they run here and hold no merge on CI: #502 reached main past jq-arg-safety.
 merge_pr_static_scans_in() {

@@ -84,4 +84,53 @@ harvest_workers || :
 grep -q ' harvest unit=issue-3 .* tokens=1500 ' "$LOG" \
   || fail "fresh codex run did not record its stream fresh tokens: $(grep 'unit=issue-3' "$LOG" || true)"
 
+# A supervisor requeue limited to the report returns an unchanged open PR to review and restarts its red CI once.
+report_only_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+report_only_started=2026-11-11T13:01:00Z
+report_only_reruns="$sup/report-only-reruns.log"
+report_only_unit=issue-report-only-pass
+report_only_report=report-only-pass.md
+report_only_pr=742
+REPO=example/repo
+: > "$report_only_reruns"
+gh() {
+  case "$1 $2" in
+    'run list')
+      [[ "$3" == --commit && "$4" == "$report_only_head" ]] || fail "CI run list used the wrong head: $*"
+      printf '77\n'
+      ;;
+    'api -X')
+      [[ "$3" == POST && "$4" == "repos/$REPO/actions/runs/77/rerun" ]] || fail "unexpected run rerun endpoint: $*"
+      printf '%s\n' "$*" >> "$report_only_reruns"
+      ;;
+    *) fail "unexpected gh call in report-only harvest: $*" ;;
+  esac
+}
+seed_report_only_requeue() { # unit report started → implement worker with a supervisor report-only marker and unchanged PR head
+  local unit="$1" report="$2" started="$3" pid
+  printf '%s\n' "$4" > "$sup/$report"
+  printf '{"units":[{"id":"%s","pr":%s,"branch":"agent/%s","lane":"pr","stage":"implement","implementation_report":"old-report.md","history":[{"stage":"pr-opened","result":"PR#%s %s"},{"stage":"supervisor-requeue","result":"Supervisor ruling (head): requeue for the report only.","at":"2026-11-11T13:00:00Z"},{"stage":"write-start","work_type":"implement","at":"%s"}]}]}' \
+    "$unit" "$report_only_pr" "$unit" "$report_only_pr" "$report_only_head" "$started" > "$UNITS"
+  pid="$(dead_pid)"
+  jq -n --argjson pid "$pid" --arg unit "$unit" --arg report "$report" --arg started "$started" --arg head "$report_only_head" \
+    '{workers:[{pid:$pid,pid_start:1,claim_owner:"o",unit:$unit,type:"implement",provider:"fixture",log:"report-only.log",report:$report,
+      started:$started,mode:"fresh",sha:$head,pr_head:$head,workdir:"/nonexistent",token_usage_start:{input_tokens:0,cached_input_tokens:0,output_tokens:0}}]}' > "$WORKERS"
+  : > "$sup/report-only.log"
+  TICK_PRS="$(jq -cn --argjson pr "$report_only_pr" --arg head "$report_only_head" '[{number:$pr,headRefOid:$head,headRefName:"agent/report-only",isDraft:false}]')"
+}
+seed_report_only_requeue "$report_only_unit" "$report_only_report" "$report_only_started" \
+  $'## how\nRewrote only the report for the unchanged head.\n\n## why\nThe report needed the required sections for #742.\n\n## decision-log\nTried: checked the report headings.\nFailure: the prior report was incomplete.\nChoice: keep the code and rewrite the report only.\nVerification: all report gates pass for the existing head.'
+harvest_workers || :
+jq -e '.units[0] | .stage == "review-pending" and .implementation_report == "report-only-pass.md"' "$UNITS" >/dev/null \
+  || fail "valid report-only requeue did not return its unchanged PR to review: $(jq -c '.units[0]' "$UNITS")"
+[[ "$(wc -l < "$report_only_reruns")" == 1 ]] || fail "report-only requeue did not issue exactly one REST CI rerun: $(cat "$report_only_reruns")"
+
+report_only_unit=issue-report-only-fail
+report_only_report=report-only-fail.md
+seed_report_only_requeue "$report_only_unit" "$report_only_report" "$report_only_started" $'## how\nReport rewrite without the required decision log.'
+harvest_workers || :
+jq -e '.units[0] | .stage == "supervisor-review" and any(.history[]; .stage == "supervisor-escalated")' "$UNITS" >/dev/null \
+  || fail "gate-failing report-only requeue did not escalate: $(jq -c '.units[0]' "$UNITS")"
+[[ "$(wc -l < "$report_only_reruns")" == 1 ]] || fail 'gate-failing report-only requeue attempted a CI rerun'
+
 echo 'claude-implement-harvest.test.sh: PASS'

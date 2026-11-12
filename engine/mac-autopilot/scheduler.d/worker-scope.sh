@@ -80,7 +80,7 @@ while :; do
   alive=1; [[ -d /proc/$leader ]] || alive=0
   n=0; while read -r k v; do [[ $k == max ]] && n=$v; done < "$ev"
   if (( n > 0 && !hit )); then
-    hit=1; printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+    hit=1; TZ=UTC0 printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1
     echo "[worker-scope] TasksMax=$max reached ($n refused forks): this worker failed on its own task limit, not a host problem" >&2
     [[ -z $sched_log ]] || echo "[$now] worker-tasksmax-hit pid=$leader tasksmax=$max refused_forks=$n log=$label" >> "$sched_log"
   fi
@@ -89,7 +89,7 @@ while :; do
 done
 # The scope outlives its leader while this watcher runs, so cpu.stat still holds the whole worker tree's CPU time.
 u=0; while read -r k v; do [[ $k == usage_usec ]] && u=$v; done 2>/dev/null < "$cs"
-printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+TZ=UTC0 printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1
 [[ -z $sched_log ]] || echo "[$now] worker cost $tag wall=${SECONDS} cpu=$((u / 1000000)).$((u / 100000 % 10))" >> "$sched_log"
 WATCH
 

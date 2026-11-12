@@ -307,8 +307,16 @@ issue_is_parent_tracker() {
 }
 
 
-issue_intake_parent_reason() { # issue number, fetched issue JSON -> reason; 1=leaf, 2=parent lookup unavailable
-  local n="$1" json="$2" title body child state sub_issues
+issue_intake_parent_child_refs() { # issue body -> linked issues in task-list rows
+  printf '%s\n' "${1:-}" \
+    | awk '/^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]/ { print }' \
+    | { grep -Eo '(#[1-9][0-9]*|/issues/[1-9][0-9]*)' || [[ $? == 1 ]]; } \
+    | sed -E 's#^.*/issues/##; s/^#//' | sort -u
+}
+
+
+issue_intake_parent_json_reason() { # issue number, fetched issue JSON -> local reason; 1=leaf, 2=needs GitHub reads
+  local n="$1" json="$2" title body child
   title="$(jq -r '.title // ""' <<< "$json")"
   body="$(jq -r '.body // ""' <<< "$json")"
   if grep -Eiq '(^|[^[:alnum:]_-])(spec|specification)([^[:alnum:]_-]|$)' <<< "$title" \
@@ -326,24 +334,57 @@ issue_intake_parent_reason() { # issue number, fetched issue JSON -> reason; 1=l
     state="$(gh issue view "$child" --json state --jq .state 2>/dev/null)" || return 2
     case "$state" in
       OPEN|open) printf 'task list references open child #%s\n' "$child"; return 0 ;;
-      CLOSED|closed) ;;
+      CLOSED|closed|MERGED|merged) ;; # a merged PR named in the task list is finished work, not an open parent (#5563)
       *) return 2 ;;
     esac
-  done < <(printf '%s\n' "$body" \
-    | awk '/^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]/ { print }' \
-    | { grep -Eo '(#[1-9][0-9]*|/issues/[1-9][0-9]*)' || [[ $? == 1 ]]; } \
-    | sed -E 's#^.*/issues/##; s/^#//' | sort -u)
+  done < <(issue_intake_parent_child_refs "$body")
 
   if jq -e '((.subIssuesSummary.total // 0) > 0) or ((.subIssues.totalCount // 0) > 0) or (((.subIssues.nodes // []) | length) > 0)' \
       <<< "$json" >/dev/null; then
     printf 'has GitHub sub-issues\n'
     return 0
   fi
+
   if jq -e 'has("subIssuesSummary") or has("subIssues")' <<< "$json" >/dev/null; then
     return 1
   fi
-  if ! sub_issues="$(gh api "repos/$REPO/issues/$n/sub_issues?per_page=100" 2>/dev/null)" \
-      || ! jq -e 'type == "array"' <<< "$sub_issues" >/dev/null; then
+  return 2
+}
+
+
+issue_intake_parent_reason() { # issue number, fetched issue JSON -> reason; 1=leaf, 2=parent lookup unavailable
+  local n="$1" json="$2" body child state sub_issues local_reason local_status=0
+  local_reason="$(issue_intake_parent_json_reason "$n" "$json")" || local_status=$?
+  case "$local_status" in
+    0) printf '%s' "$local_reason"; return 0 ;;
+    1) return 1 ;;
+    2) ;;
+    *) return 2 ;;
+  esac
+  body="$(jq -r '.body // ""' <<< "$json")"
+
+  while IFS= read -r child; do
+    [[ "$child" =~ ^[1-9][0-9]*$ && "$child" != "$n" ]] || continue
+    state="$(gh issue view "$child" --json state --jq .state 2>/dev/null)" || {
+      printf 'parent-check-failure step=gh-child-state\n'
+      return 2
+    }
+    case "$state" in
+      OPEN|open) printf 'task list references open child #%s\n' "$child"; return 0 ;;
+      CLOSED|closed) ;;
+      *) printf 'parent-check-failure step=gh-child-state-shape\n'; return 2 ;;
+    esac
+  done < <(issue_intake_parent_child_refs "$body")
+
+  if jq -e 'has("subIssuesSummary") or has("subIssues")' <<< "$json" >/dev/null; then
+    return 1
+  fi
+  if ! sub_issues="$(gh api "repos/$REPO/issues/$n/sub_issues?per_page=100" 2>/dev/null)"; then
+    printf 'parent-check-failure step=gh-sub-issues-read\n'
+    return 2
+  fi
+  if ! jq -e 'type == "array"' <<< "$sub_issues" >/dev/null; then
+    printf 'parent-check-failure step=gh-sub-issues-shape\n'
     return 2
   fi
   if jq -e 'length > 0' <<< "$sub_issues" >/dev/null; then
@@ -351,20 +392,6 @@ issue_intake_parent_reason() { # issue number, fetched issue JSON -> reason; 1=l
     return 0
   fi
   return 1
-}
-
-
-# A ticket that left the tracker state with no child left is not a parent, and a
-# flag it still carries must not refuse its way back to work. Any read that does
-# not prove a leaf keeps the refusal.
-tracker_parent_flag_is_stale() { # issue number, state JSON
-  local n="$1" state_json="$2" json rc=0
-  jq -e '.tracker_parent == true and .state != "tracker" and ((.recut_children // []) | length) == 0' \
-    <<< "$state_json" >/dev/null 2>&1 || return 1
-  json="$(gh issue view "$n" --repo "$REPO" --json title,body,subIssuesSummary 2>/dev/null)" || return 1
-  issue_intake_parent_reason "$n" "$json" >/dev/null || rc=$?
-  [ "$rc" = 1 ] || return 1
-  echo "issue_transition: cleared stale tracker_parent on #$n" >&2
 }
 
 

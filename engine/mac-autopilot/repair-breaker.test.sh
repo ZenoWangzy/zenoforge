@@ -88,7 +88,7 @@ run_repair "$H1" "$(jq -cn --argjson n "$(nopush_hist "$H1" 1)" --argjson rc "$R
 res="$(field issue-9 '.history[-1].result')"
 [[ "$(field issue-9 '.history[-1].stage')" == repair-breaker && "$res" == *"head $H1"* && "$res" == *"2 consecutive"* && "$res" == *"本机 Dagger 因缺少容器运行时无法启动"* ]] \
   || fail "breaker event lacks head, count or evidence ($res)"
-[[ "$(wc -l < "$INBOX")" == 1 && "$(cat "$INBOX")" == *"repair-breaker unit=issue-9"* ]] || fail "expected one inbox entry ($(cat "$INBOX"))"
+[[ "$(supervisor_arbiter_candidates | jq -r .id)" == issue-9 ]] || fail "a repair-breaker park must be picked up by the automatic arbiter"
 run_repair "$H1" "$(jq -cn --arg h "$H1" --argjson rc "$RC" '$rc + [{stage:"repair-no-push",result:("head "+$h+" unchanged after repair")},{stage:"repair-delivered",result:"x"}]')"
 [[ "$(field issue-9 .stage)" == repair-pending ]] || fail "a delivered run between must reset the count ($(field issue-9 .stage))"
 

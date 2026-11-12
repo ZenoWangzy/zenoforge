@@ -235,7 +235,7 @@ declare -gA ISSUE_TRANSITION_TABLE=(
   [duplicate]="duplicate concluded needs-triage ready-for-agent on-hold tracker"
   [finish-first]="finish-first concluded needs-triage needs-info ready-for-agent awaiting-release on-hold tracker"
   [wontfix]="wontfix concluded needs-triage ready-for-agent on-hold tracker"
-  [needs-advisor]="needs-advisor ready-for-agent needs-triage needs-info needs-recut tracker checks-blocked concluded on-hold"
+  [needs-advisor]="needs-advisor ready-for-agent needs-triage needs-info needs-recut awaiting-release tracker checks-blocked concluded on-hold"
   [needs-recut]="needs-recut ready-for-agent needs-advisor needs-triage needs-info tracker released concluded on-hold"
   [awaiting-release]="awaiting-release released concluded duplicate finish-first wontfix on-hold ready-for-agent tracker"
   [awaiting-pipeline-sync]="awaiting-pipeline-sync ready-for-agent awaiting-pipeline-health concluded on-hold tracker"
@@ -243,7 +243,7 @@ declare -gA ISSUE_TRANSITION_TABLE=(
   [released]="released concluded ready-for-agent needs-triage on-hold tracker"
   [concluded]="concluded awaiting-release released needs-triage ready-for-agent needs-info needs-advisor needs-recut duplicate finish-first wontfix on-hold tracker"
   [on-hold]="on-hold needs-triage needs-info ready-for-agent ready-for-human needs-owner checks-blocked duplicate finish-first wontfix needs-advisor needs-recut awaiting-release awaiting-pipeline-sync awaiting-pipeline-health released concluded tracker"
-  [tracker]="tracker needs-triage ready-for-agent released concluded on-hold"
+  [tracker]="tracker needs-triage ready-for-agent awaiting-release released concluded on-hold"
 )
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/holds.sh"
@@ -396,10 +396,6 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/route-advisor.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/model-units.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/recut.sh"
-
-# One REST read gives this process the live native child list for each parent.
-# GitHub caps native children at 100, matching the endpoint's per-page maximum.
-declare -gA NATIVE_PARENT_SUBISSUES_CACHE=()
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/release-close.sh"
 

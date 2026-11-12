@@ -90,9 +90,10 @@ row() { grep -F "$1" <<<"$out" | head -1; }
 # 近窗（7 天）关闭的票：4355 = 700k fresh（690k uncached input + 10k output），输入缓存率 97%；
 # 4366 也有 cache split。窗口前只有 4103 一张 cache-split 历史票：209851 fresh tokens 给出 provisional
 # 314776 / 419702 边界，10 分钟 wall 给出 15 / 20；两项都应保留静态边界，近期值仍然健康。
-grep -Eq 'per-ticket worker fresh tokens p90.* 700000 .*<=800000.*>=4800000.*OK' <<<"$(row 'per-ticket worker fresh tokens p90')" \
+# The small recent sample keeps the fallback bounds; the under-bound p90 stays LOW-N below min_n.
+grep -Eq 'per-ticket worker fresh tokens p90.* 700000 .*<=800000.*>=4800000.*LOW-N' <<<"$(row 'per-ticket worker fresh tokens p90')" \
   || fail "per-ticket fresh tokens p90 or its fallback bounds are wrong: $(row 'per-ticket worker fresh tokens p90')"
-grep -Eq 'per-ticket worker wall minutes p90.* 30 .*<=38.*>=180.*OK' <<<"$(row 'per-ticket worker wall minutes p90')" \
+grep -Eq 'per-ticket worker wall minutes p90.* 30 .*<=38.*>=180.*LOW-N' <<<"$(row 'per-ticket worker wall minutes p90')" \
   || fail "per-ticket wall p90 or static bounds are wrong: $(row 'per-ticket worker wall minutes p90')"
 jq -e '.ticket_bounds.token.samples == 1 and .ticket_bounds.token.provisional == true
   and .ticket_bounds.token.healthy == 314776 and .ticket_bounds.token.unhealthy == 419702
@@ -105,14 +106,66 @@ jq -e '.ticket_bounds.token.samples == 1 and .ticket_bounds.token.provisional ==
   and ([.ticket_spend[] | select(.ticket == 4366)][0] | .tokens == 155000)' \
   "$a/node-health.json" >/dev/null || fail "ticket spend or bounds missing from the scorecard: $(jq -c '.ticket_bounds, .ticket_spend' "$a/node-health.json")"
 jq -e '.metrics[] | select(.id == "workorders.ticket_tokens_p90")
-  | .value == 700000 and .healthy == 800000 and .unhealthy == 4800000 and .status == "OK" and .source != ""' \
+  | .value == 700000 and .healthy == 800000 and .unhealthy == 4800000 and .status == "LOW-N"
+    and .sample_n > 0 and .sample_n < 10 and .source != ""' \
   "$a/node-health.json" >/dev/null || fail "ticket tokens metric missing its value, static bounds or source"
 jq -e '.metrics[] | select(.id == "workorders.ticket_wall_p90")
-  | .value == 30 and .healthy == 38 and .unhealthy == 180 and .status == "OK"' \
+  | .value == 30 and .healthy == 38 and .unhealthy == 180 and .status == "LOW-N"
+    and .sample_n > 0 and .sample_n < 10' \
   "$a/node-health.json" >/dev/null || fail "ticket wall metric did not retain its static bounds"
 # unit_spend 经共享成本行走 --json 流：旧实现只读页脚时这张票是 0
 jq -e '[.work_orders[] | select(.id == "issue-4355")][0].tokens == 700000' "$a/node-health.json" >/dev/null \
   || fail "a --json codex worker's tokens did not reach the work-order spend: $(jq -c '.work_orders' "$a/node-health.json")"
+
+# Ten complete recent tickets prove an under-bound p90 is OK once min_n is met.
+sample_sup="$fixture/p90-samples/supervisor"; sample="$sample_sup/autopi"; mkdir -p "$sample"
+python3 - "$sample_sup" "$sample" <<'PY'
+import json, pathlib, sys
+supervisor, runtime = map(pathlib.Path, sys.argv[1:])
+units = []
+for issue in range(4400, 4410):
+    name = f"impl-issue-{issue}-20261020T110000Z.worker.log"
+    (supervisor / name).write_text(
+        '{"type":"pipeline.execution","mode":"fresh","model":"gpt-6-luna"}\n'
+        f'{{"type":"thread.started","thread_id":"fixture-{issue}"}}\n'
+        '{"type":"turn.completed","usage":{"input_tokens":700000,"cached_input_tokens":0,"output_tokens":0}}\n'
+    )
+    units.append({"id": f"issue-{issue}", "issue": issue, "stage": "merged",
+                  "history": [{"stage": "merged", "at": "2026-10-20T11:50:00Z"}]})
+(runtime / "units.json").write_text(json.dumps({"units": units}))
+PY
+for issue in {4400..4409}; do touch -d 2026-10-20T11:30:00Z "$sample_sup/impl-issue-$issue-20261020T110000Z.worker.log"; done
+cp "$script_dir/config.template.json" "$sample/config.json"
+sample_out="$(MAC_AUTOPILOT_SUPERVISOR_DIR="$sample_sup" MAC_AUTOPILOT_RUNTIME_DIR="$sample" \
+  PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$sample" \
+    --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 \
+    --now 2026-10-20T12:00:00Z --json "$sample/node-health.json")"
+grep -Eq 'per-ticket worker fresh tokens p90.* 700000 .*<=800000.*>=4800000.*OK' <<<"$sample_out" \
+  || fail "ten-ticket fresh token p90 did not report its healthy status: $(grep -F 'per-ticket worker fresh tokens p90' <<<"$sample_out")"
+jq -e '[.metrics[] | select(.id == "workorders.ticket_tokens_p90")][0]
+  | .value == 700000 and .healthy == 800000 and .unhealthy == 4800000 and .status == "OK" and .sample_n == 10' \
+  "$sample/node-health.json" >/dev/null || fail "ten-ticket token p90 did not meet min_n: $(jq -c '.metrics[] | select(.id == "workorders.ticket_tokens_p90")' "$sample/node-health.json")"
+jq -e '[.metrics[] | select(.id == "workorders.ticket_wall_p90")][0]
+  | .value == 30 and .healthy == 38 and .unhealthy == 180 and .status == "OK" and .sample_n == 10' \
+  "$sample/node-health.json" >/dev/null || fail "ten-ticket wall p90 did not meet min_n: $(jq -c '.metrics[] | select(.id == "workorders.ticket_wall_p90")' "$sample/node-health.json")"
+
+# An over-bound p90 stays actionable even when the single-ticket sample is below min_n.
+hi_sup="$fixture/low-n-high/supervisor"; hi="$hi_sup/autopi"; mkdir -p "$hi"
+cat > "$hi/units.json" <<'JSON'
+{"units":[{"id":"issue-4444","issue":4444,"stage":"merged","history":[{"stage":"merged","at":"2026-10-20T11:50:00Z"}]}]}
+JSON
+printf '%s\n' '{"type":"pipeline.execution","mode":"fresh","model":"gpt-6-luna"}' '{"type":"thread.started","thread_id":"high-sample"}' '{"type":"turn.completed","usage":{"input_tokens":5000000,"cached_input_tokens":0,"output_tokens":0}}' \
+  > "$hi_sup/impl-issue-4444-20261020T110000Z.worker.log"
+touch -d 2026-10-20T11:30:00Z "$hi_sup/impl-issue-4444-20261020T110000Z.worker.log"
+cp "$a/config.json" "$hi/config.json"
+MAC_AUTOPILOT_SUPERVISOR_DIR="$hi_sup" MAC_AUTOPILOT_RUNTIME_DIR="$hi" \
+  PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$hi" \
+    --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 \
+    --now 2026-10-20T12:00:00Z --json "$hi/node-health.json" >/dev/null
+jq -e '.metrics[] | select(.id == "workorders.ticket_tokens_p90")
+  | .value == 5000000 and .healthy == 800000 and .unhealthy == 4800000
+    and .sample_n == 1 and .sample_n < 10 and .status == "UNHEALTHY"' "$hi/node-health.json" >/dev/null \
+  || fail "an over-bound low-sample ticket p90 was hidden: $(jq -c '.metrics[] | select(.id == "workorders.ticket_tokens_p90")' "$hi/node-health.json")"
 
 # ---------- gen_dashboard：同一份账进 cost_ledger（单元 / ticket / 阶段 / 后端 / 24h / eval） ----------
 export CODEX_SESSIONS_DIR="$fixture/sessions" AGENT_HOME="$agent_home"
@@ -135,6 +188,164 @@ jq -e '
   and ([.cost_ledger.by_unit[] | select(.unit == "101")][0].tokens == 200000)' \
   <<<"$dashboard_data" >/dev/null \
   || fail "cost_ledger missing or wrong: $(jq -c '.cost_ledger | {last_24h, by_unit, by_backend}' <<<"$dashboard_data")"
+
+# ---------- gen_dashboard: 同一 7 天单元窗口的 token 效率 KPI ----------
+token_sup="$fixture/token-supervisor"; token_a="$token_sup/autopi"
+mkdir -p "$token_a"
+cp "$script_dir/config.template.json" "$token_a/config.json"
+cat > "$token_a/units.json" <<JSON
+{"units":[
+ {"id":"issue-7101","issue":7101,"pr":7101,"stage":"merged","history":[{"stage":"review-approve","at":"$impl_end"},{"stage":"merged","at":"$impl_end"}]},
+ {"id":"issue-7103","issue":7103,"stage":"closed","history":[{"stage":"issue-closed","at":"$impl_end"}]},
+ {"id":"issue-7104","issue":7104,"stage":"merged","history":[{"stage":"merged","at":"$(date -u -d '10 days ago' +%Y-%m-%dT%H:%M:%SZ)"}]}
+]}
+JSON
+cat > "$token_a/units-archive.json" <<JSON
+{"units":[{"id":"issue-7102","issue":7102,"pr":7102,"stage":"merged","history":[
+ {"stage":"review-request-changes","at":"$review_end"},{"stage":"review-approve","at":"$review_end"},{"stage":"merged","at":"$review_end"}]}]}
+JSON
+token_logs=()
+token_ids=(cccccccc-0000-0000-0000-000000000001 cccccccc-0000-0000-0000-000000000002 cccccccc-0000-0000-0000-000000000003 cccccccc-0000-0000-0000-000000000004 cccccccc-0000-0000-0000-000000000006)
+write_token_log() {
+  local name="$1" session_id="$2" input="$3" cached="$4" output="$5"
+  printf '{"type":"thread.started","thread_id":"%s"}\n{"type":"turn.completed","usage":{"input_tokens":%s,"cached_input_tokens":%s,"output_tokens":%s}}\n' \
+    "$session_id" "$input" "$cached" "$output" > "$token_sup/$name"
+  token_logs+=("$name")
+}
+tok_stamp_1="$(date -u -d '40 minutes ago' +%Y%m%dT%H%M%S)"
+tok_stamp_2="$(date -u -d '35 minutes ago' +%Y%m%dT%H%M%S)"
+tok_stamp_3="$(date -u -d '30 minutes ago' +%Y%m%dT%H%M%S)"
+tok_stamp_4="$(date -u -d '25 minutes ago' +%Y%m%dT%H%M%S)"
+tok_stamp_5="$(date -u -d '20 minutes ago' +%Y%m%dT%H%M%S)"
+tok_stamp_6="$(date -u -d '10 days ago' +%Y%m%dT%H%M%S)"
+write_token_log "impl-issue-7101-${tok_stamp_1}Z.worker.log" "${token_ids[0]}" 1000 400 200
+write_token_log "impl-issue-7101-fix-${tok_stamp_2}Z.worker.log" "${token_ids[1]}" 500 100 100
+write_token_log "impl-7102-${tok_stamp_3}Z.worker.log" "${token_ids[2]}" 2000 500 200
+write_token_log "impl-issue-7103-fix-${tok_stamp_4}Z.worker.log" "${token_ids[3]}" 1000 500 100
+unmatched_log="impl-unmatched-fixture-${tok_stamp_5}Z.worker.log"
+printf 'tokens used\n50\n' > "$token_sup/$unmatched_log"
+token_logs+=("$unmatched_log")
+write_token_log "impl-issue-7104-${tok_stamp_6}Z.worker.log" "${token_ids[4]}" 9000000 8900000 100000
+jq -n --arg a "${token_logs[0]}" --arg b "${token_logs[1]}" --arg c "${token_logs[2]}" \
+  --arg d "${token_logs[3]}" --arg e "${token_logs[4]}" --arg f "${token_logs[5]}" \
+  '{workers:[
+    {pid:0,log:$a,unit:"issue-7101",type:"implement"},
+    {pid:0,log:$b,unit:"issue-7101",type:"repair"},
+    {pid:0,log:$c,unit:"issue-7102",type:"implement"},
+    {pid:0,log:$d,unit:"issue-7103",type:"repair"},
+    {pid:0,log:$e,unit:"unmatched-fixture",type:"implement"},
+    {pid:0,log:$f,unit:"issue-7104",type:"implement"}]}' > "$token_a/workers.json"
+export MAC_AUTOPILOT_SUPERVISOR_DIR="$token_sup" MAC_AUTOPILOT_RUNTIME_DIR="$token_a"
+export MAC_AUTOPILOT_DASHBOARD_OUTPUT="$token_a/dashboard.data.js" MAC_AUTOPILOT_COST_CACHE="$token_sup/.cost-cache.json"
+token_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$token_a" \
+  --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 --now "$token_now" \
+  --json "$token_a/node-health.json" >/dev/null || fail 'node_health failed on token-efficiency fixture'
+jq -e '
+  ([.metrics[] | select(.id == "efficiency.fresh_tokens_per_merged_7d")][0] | .value == 1500 and .healthy == 800000 and .unhealthy == 4800000 and .source != "")
+  and ([.metrics[] | select(.id == "efficiency.unmerged_waste_pct_7d")][0] | (.value - (100 * 1100 / 5100) | abs) < 0.0001 and .healthy == 35 and .unhealthy == 50)
+  and ([.metrics[] | select(.id == "efficiency.first_pass_yield_pct_7d")][0] | .value == 50 and .healthy == 65 and .unhealthy == 50)
+  and ([.metrics[] | select(.id == "efficiency.repair_phase_pct_7d")][0] | (.value - (100 * 1700 / 5100) | abs) < 0.0001 and .healthy == 30 and .unhealthy == 45)' \
+  "$token_a/node-health.json" >/dev/null || fail 'node_health omitted the token-efficiency scorecard rows'
+PATH="$fixture/bin:$PATH" python3 "$script_dir/gen_dashboard.py" || fail 'gen_dashboard failed on token-efficiency fixture'
+token_dashboard="$(sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT")"
+jq -e '
+  .summary.token_efficiency.window_days == 7
+  and .summary.token_efficiency.merged_units == 2
+  and .summary.token_efficiency.merged_fresh_tokens == 3000
+  and .summary.token_efficiency.fresh_tokens_per_merged == 1500
+  and .summary.token_efficiency.merged_raw_tokens == 4000
+  and .summary.token_efficiency.raw_tokens_per_merged == 2000
+  and .summary.token_efficiency.waste_tokens == 1100
+  and .summary.token_efficiency.window_tokens == 5100
+  and ((.summary.token_efficiency.waste_pct - (100 * 1100 / 5100) | abs) < 0.0001)
+  and .summary.token_efficiency.first_pass_units == 1
+  and .summary.token_efficiency.first_pass_pct == 50
+  and .summary.token_efficiency.repair_tokens == 1700
+  and ((.summary.token_efficiency.repair_pct - (100 * 1700 / 5100) | abs) < 0.0001)
+  and .summary.token_efficiency.unattributed.ledger_keys == 1
+  and .summary.token_efficiency.unattributed.tokens == 50
+  and .summary.token_efficiency.unattributed.raw_tokens == 50
+  and .summary.tokens_per_merged == 1500
+  and .summary.tokens_per_merged != (.summary.real_daily_tokens / .summary.merged)' \
+  <<<"$token_dashboard" >/dev/null \
+  || fail "token-efficiency KPIs did not use the 7-day unit cohort: $(jq -c '.summary | {token_efficiency, tokens_per_merged, real_daily_tokens, merged}' <<<"$token_dashboard")"
+
+# Dashboard aggregation must attach print-mode provider usage before building its ledger/KPIs.
+provider_log="impl-issue-7199-$(date -u -d '5 minutes ago' +%Y%m%dT%H%M%S)Z.worker.log"
+printf 'ZCode Built-in (skipped)\n' > "$token_sup/$provider_log"
+jq --arg at "$impl_end" \
+  '.units += [{id:"issue-7199",issue:7199,stage:"merged",history:[{stage:"merged",at:$at}]}]' \
+  "$token_a/units.json" > "$token_a/units.json.tmp" && mv "$token_a/units.json.tmp" "$token_a/units.json"
+jq --arg log "$provider_log" \
+  '.workers += [{pid:0,log:$log,unit:"issue-7199",type:"implement"}]' \
+  "$token_a/workers.json" > "$token_a/workers.json.tmp" && mv "$token_a/workers.json.tmp" "$token_a/workers.json"
+export MAC_AUTOPILOT_WT_ROOT="$token_sup/wt" ZCODE_DB="$token_a/zcode.sqlite"
+python3 - "$ZCODE_DB" "$MAC_AUTOPILOT_WT_ROOT/wt-issue-7199" <<'PY'
+import sqlite3, sys
+from datetime import datetime, timedelta, timezone
+with sqlite3.connect(sys.argv[1]) as con:
+    con.execute("create table session (id text, directory text)")
+    con.execute("create table turn_usage (session_id text, started_at integer, input_tokens integer, cache_read_input_tokens integer, output_tokens integer, reasoning_tokens integer, cache_creation_input_tokens integer)")
+    started = int((datetime.now(timezone.utc) - timedelta(minutes=2)).timestamp() * 1000)
+    con.execute("insert into session values ('provider-fixture', ?)", (sys.argv[2],))
+    con.execute("insert into turn_usage values ('provider-fixture', ?, 1000, 400, 100, 0, 0)", (started,))
+PY
+PATH="$fixture/bin:$PATH" python3 "$script_dir/gen_dashboard.py" || fail 'gen_dashboard failed with provider-usage fixture'
+token_dashboard="$(sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT")"
+jq -e '
+  ([.cost_ledger.by_unit[] | select(.unit == "issue-7199")][0]
+   | .runs == 1 and .tokens == 1100 and .fresh == 700)
+  and .summary.token_efficiency.merged_units == 3
+  and .summary.token_efficiency.merged_fresh_tokens == 3700
+  and .summary.token_efficiency.fresh_tokens_per_merged == (3700 / 3)
+  and .summary.token_efficiency.merged_raw_tokens == 5100
+  and .summary.token_efficiency.raw_tokens_per_merged == 1700
+  and .summary.token_efficiency.waste_pct == (100 * 1100 / 6200)
+  and .summary.token_efficiency.first_pass_pct == (200 / 3)
+  and .summary.token_efficiency.repair_pct == (100 * 1700 / 6200)' \
+  <<<"$token_dashboard" >/dev/null || fail 'dashboard omitted provider-record usage from the token-efficiency KPIs'
+PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$token_a" \
+  --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 --now "$token_now" \
+  --json "$token_a/node-health.json" >/dev/null || fail 'node_health failed with provider-usage fixture'
+jq -e '
+  ([.metrics[] | select(.id == "efficiency.fresh_tokens_per_merged_7d")][0] | .value == (3700 / 3))
+  and ([.metrics[] | select(.id == "efficiency.unmerged_waste_pct_7d")][0] | .value == (100 * 1100 / 6200))
+  and ([.metrics[] | select(.id == "efficiency.first_pass_yield_pct_7d")][0] | .value == (200 / 3))
+  and ([.metrics[] | select(.id == "efficiency.repair_phase_pct_7d")][0] | .value == (100 * 1700 / 6200))' \
+  "$token_a/node-health.json" >/dev/null || fail 'provider-record usage did not reach the node-health KPIs'
+
+# An unmeasured invocation must make token-based KPIs NO-DATA rather than count as zero.
+unknown_log="impl-issue-7105-${tok_stamp_5}Z.worker.log"
+printf 'usage unavailable\n' > "$token_sup/$unknown_log"
+jq --arg log "$unknown_log" --arg at "$impl_end" \
+  '.units += [{id:"issue-7105",issue:7105,stage:"merged",history:[{stage:"merged",at:$at}]}]' \
+  "$token_a/units.json" > "$token_a/units.json.tmp" && mv "$token_a/units.json.tmp" "$token_a/units.json"
+jq --arg log "$unknown_log" \
+  '.workers += [{pid:0,log:$log,unit:"issue-7105",type:"implement"}]' \
+  "$token_a/workers.json" > "$token_a/workers.json.tmp" && mv "$token_a/workers.json.tmp" "$token_a/workers.json"
+PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$token_a" \
+  --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 --now "$token_now" \
+  --json "$token_a/node-health.json" >/dev/null || fail 'node_health failed with unknown usage in the KPI cohort'
+jq -e '
+  ([.metrics[] | select(.id == "efficiency.fresh_tokens_per_merged_7d")][0] | .value == null and .status == "NO-DATA")
+  and ([.metrics[] | select(.id == "efficiency.unmerged_waste_pct_7d")][0] | .value == null and .status == "NO-DATA")
+  and ([.metrics[] | select(.id == "efficiency.first_pass_yield_pct_7d")][0] | .value == 75)
+  and ([.metrics[] | select(.id == "efficiency.repair_phase_pct_7d")][0] | .value == null and .status == "NO-DATA")' \
+  "$token_a/node-health.json" >/dev/null || fail 'unknown usage was silently counted as zero in node-health KPIs'
+PATH="$fixture/bin:$PATH" python3 "$script_dir/gen_dashboard.py" || fail 'gen_dashboard failed with unknown usage in the KPI cohort'
+token_dashboard="$(sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT")"
+jq -e '
+  .summary.token_efficiency.fresh_tokens_per_merged == null
+  and .summary.token_efficiency.merged_fresh_measured_units == 3
+  and .summary.token_efficiency.merged_raw_tokens == null
+  and .summary.token_efficiency.waste_pct == null
+  and .summary.token_efficiency.first_pass_pct == 75
+  and .summary.token_efficiency.repair_pct == null
+  and ([.cost_ledger.by_unit[] | select(.unit == "issue-7105")][0]
+       | .unknown_runs == 1 and .tokens == 0)' \
+  <<<"$token_dashboard" >/dev/null \
+  || fail 'dashboard did not keep unknown usage out of token KPI denominators'
 
 # 每票 fresh p90 无缓存拆分时是 NO-DATA（不是 0，也不是旧的 580k）：票的 run 没有用量记录
 nd="$test_env_root/cost-nodata"; nda="$nd/supervisor/autopi"; mkdir -p "$nda"

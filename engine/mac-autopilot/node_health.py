@@ -6,8 +6,9 @@ Usage: node_health.py [--hours N] [--runtime DIR] [--audit FILE] [--now ISO] [--
 Each node is scored against the criteria in NODE-HEALTH.md (healthy / unhealthy bounds; between
 them is WARN). Sources: worker logs in the supervisor dir (exact start from the file name, end from
 mtime, tokens from the shared native reader or legacy "tokens used" footer), ledger history (rounds, yield, waits) and
-scheduler.log tick lines. `config.json` key `node_health` overrides any bound by metric id.
---alert appends UNHEALTHY nodes to alerts/node-health.md (once per metric per hour).
+scheduler.log tick lines. `health-standards.json` overrides bounds only when each metric entry carries its measured basis.
+--alert appends UNHEALTHY and STANDARD-INVALID rows to alerts/node-health.md (once per metric per hour);
+STANDARD-INVALID also appends a head-watch.alerts event for the running session.
 --file-issues: a metric UNHEALTHY for ESCALATE_HOURS files (or comments on) a pipeline-system issue so the
 pipeline repairs itself; at most once per REFILE_HOURS per metric (state in node-health-state.json). The
 issue body routes the worker to the behavioural root cause (#4487); an issue closed during the current
@@ -17,14 +18,16 @@ import argparse, glob, json, os, re, socket, subprocess, urllib.parse, urllib.re
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import arbiter_health, harvest_health, ledger_history, live_delivery, merge_wait
-import line_holds
+import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait, metric_windows
+import line_holds, intake_laneless_health
 import release_age
+import release_batch
 import release_retained
 import rulings_copies
 import station_standards
 import pr_census
 import watch_alerts
+import health_standards
 import worker_cost
 import workorder_cost
 import usage_reader
@@ -48,7 +51,7 @@ def health_doc_reference():
 
 
 # metric id: (node, description, healthy bound, unhealthy bound, higher_is_better)
-CRITERIA = {**arbiter_health.CRITERIA, **harvest_health.CRITERIA, **merge_wait.CRITERIA, **live_delivery.CRITERIA, **ledger_history.CRITERIA,
+CRITERIA = {**arbiter_health.CRITERIA, **harvest_health.CRITERIA, **existing_walk_health.CRITERIA, **merge_wait.CRITERIA, **live_delivery.CRITERIA, **ledger_history.CRITERIA,
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
     "implement.no_output_pct": ("implement", "implement runs with no report %", 5, 15, False),
     "merge.conflict_repairs_per_day": ("ci+merge", "merge conflicts that a repair run followed, in 24 h", 20, 27, False),
@@ -108,10 +111,10 @@ CRITERIA = {**arbiter_health.CRITERIA, **harvest_health.CRITERIA, **merge_wait.C
     "host.stale_worktrees":    ("host", "worktrees under ~/wt older than 2 h", 10, 40, False),
     "intake.closed_units_open_issues": ("intake", "open ready-for-agent issues whose units all ended", 0, 10, False),
     "engine.follow_lag_hours": ("host", "hours the live engine has not followed example HEAD:scripts", 0.5, 2, False),
-    # Factory flow metrics (#4366): throughput vs the 6.5/h SLO, staged WIP age, dispatch
+    # Factory flow metrics (#4366): throughput vs its measured 3/h healthy standard, staged WIP age, dispatch
     # stalls, main-red duration and in/out conservation. Crossing the unhealthy bound sends
     # one supervisor-inbox event per episode (--inbox); regular samples reach the dashboard.
-    "flow.merge_rate_per_hour": ("flow", "merges per hour vs the 6.5 target over 24 h (starved queue has no value)", 6.5, 3.5, True),
+    "flow.merge_rate_per_hour": ("flow", "merges per hour vs the measured 3/h healthy standard over 24 h (starved queue has no value)", 3.0, 1.5, True),
     "flow.wip_age_stage_p90_hours": ("flow", "worst per-stage p90 age of open units, hours", 4, 12, False),
     # Units parked on purpose (blocked-external, parked) stay out of the worst-stage pick; their own row
     # shows how long they have waited. Bounds: 699 completed holds (2026-11-07), p90 80 h and 2x it.
@@ -128,8 +131,14 @@ GH_DELIVERY_FANOUT = 8
 GH_DELIVERY_CALL_TIMEOUT = 15
 GH_DELIVERY_CENSUS_TIMEOUT = 30
 GH_DELIVERY_BATCH_TIMEOUT = 60
+
+
+def resolve_health_standards(criteria=None):
+    return health_standards.resolve(CRITERIA if criteria is None else criteria)
+
+
 # What each number means, in the dashboard's words. Every metric above needs one (node_health.test.sh).
-MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **merge_wait.MEANING, **live_delivery.MEANING, **ledger_history.MEANING,
+MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **existing_walk_health.MEANING, **merge_wait.MEANING, **live_delivery.MEANING, **ledger_history.MEANING,
     "implement.wall_p50": "一次开发从派出到交付的中位时长。偏长多半是任务太大，或卡在环境上。",
     "implement.no_output_pct": "开发员跑完却没交报告的比例：这些 token 全白花，多是进程被杀或崩溃。",
     "merge.conflict_repairs_per_day": "过去 24 小时内发生了合并冲突（merge-conflict）、随后由修复运行接手的次数。多个任务可以同时改同一个文件，撞上了由原任务自己修；这个数偏高说明撞得太多，修复拖慢交付。24 小时值 20 以内健康，27 以上不健康；这两个界来自 9 个有效日的账本均值 15.6、标准差 5.5。",
@@ -176,7 +185,7 @@ MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **merge_wait.MEAN
     "engine.follow_lag_hours": "live 引擎没跟上 example HEAD:scripts 的小时数。converge 导出、构建或自检失败时开始计时，跟上后清零。高 = 落地了但没上线。",
     "host.stale_worktrees": "~/wt 下建立超过 2 小时还没删的工作目录数。分诊、顾问、hand 每轮结束就该删掉；堆积 = 收尾清理坏了（10-21/22 收尾先 fetch，代理一卡就全部保留，26 小时堆到 287 个）。",
     "intake.closed_units_open_issues": "issue 开着且 ready-for-agent、但单元都已结束的张数。intake 的 terminal 跳过不派 worker，也不逐行报，所以这类票会静默停住；非 0 时看体检输出列出的号（11-06 查出 8 张）。",
-    "flow.merge_rate_per_hour": "过去 24 小时内 merged/landed 的工厂单元数（不含人工 PR 与账本外的 PR）÷ 24，对照 6.5/h 的吞吐目标（#4355）。窗口里没有在制品也没进单（无积压）时不计值；跌破 3.5/h 是升级前串行合并道的上限，工厂没在产出。",
+    "flow.merge_rate_per_hour": "过去 24 小时内 merged/landed 的工厂单元数（不含人工 PR 与账本外的 PR）÷ 24，对照实测标准：健康 ≥ 3/h，不健康 ≤ 1.5/h。窗口里没有在制品也没进单（无积压）时不计值。",
     "flow.wip_age_stage_p90_hours": "每张在途单在当前阶段已停留的小时（按阶段分组取 p90，取最差阶段；分组明细在 scorecard 的 flow.wip_age）。高 = 流动卡在某个阶段，去单元表找是哪几张。",
     "flow.wait_stage_p90_hours": "units.json 中 blocked-external（等前序单）与 parked（止损挂起）的在途单，自进入该阶段的最后事件起算的 p90 小时；不计入上一行的最差阶段。高 = 有一串单长期等同一个前序，去单元表找前序。",
     "flow.wait_stage_units": "同上两个阶段的在途单数，只计数，不设阈值。",
@@ -197,7 +206,7 @@ MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **merge_wait.MEAN
     "delivery.unlinked_incidents_30d": "过去 30 天线上事故账本（与负责人邮件同源）里未关联接受单元的事故，加上 head-watch 的线上告警次数（PROD-DB-TIMEOUT，间隔 30 分钟内算一次，与负责人邮件线上告警同口径）；告警不带 issue，一律未关联。告警日志只从 2026-11-04 开始，所以这是下限而非完整 30 天；不会猜测归属。",
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
-SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **merge_wait.SOURCE, **live_delivery.SOURCE, **ledger_history.SOURCE,
+SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **existing_walk_health.SOURCE, **merge_wait.SOURCE, **live_delivery.SOURCE, **ledger_history.SOURCE,
     "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮；24 h 窗口",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "merge.conflict_repairs_per_day": "units.json（含 units-archive.json）单元历史：merge-conflict 事件之后出现 write-start（修复运行）的次数，固定滚动 24h。",
@@ -265,12 +274,11 @@ SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **merge_wait.SOURCE,
     "delivery.unlinked_incidents_30d": "night/founder-health-mail.json incidents (issue joined to accepted issue IDs) plus logs/head-watch.alerts PROD-DB-TIMEOUT episodes, which name no issue",
 }
 # Line-hold rows (holds.*) live in line_holds.py: node_health.py is at its size-ratchet baseline.
-CRITERIA.update({**line_holds.CRITERIA, **station_standards.CRITERIA})
-MEANING.update({**line_holds.MEANING, **station_standards.MEANING})
-SOURCE.update({**line_holds.SOURCE, **station_standards.SOURCE})
+CRITERIA.update({**line_holds.CRITERIA, **intake_laneless_health.CRITERIA, **station_standards.CRITERIA, **worker_cost.TOKEN_EFFICIENCY_CRITERIA})
+MEANING.update({**line_holds.MEANING, **intake_laneless_health.MEANING, **station_standards.MEANING, **worker_cost.TOKEN_EFFICIENCY_MEANING})
+SOURCE.update({**line_holds.SOURCE, **intake_laneless_health.SOURCE, **station_standards.SOURCE, **worker_cost.TOKEN_EFFICIENCY_SOURCE})
 # release.hours_since_release lives in release_age.py, rulings.copies_differ in rulings_copies.py, for the same size-ratchet reason.
-CRITERIA.update(release_age.CRITERIA); MEANING.update(release_age.MEANING); SOURCE.update(release_age.SOURCE)
-CRITERIA.update(release_retained.CRITERIA); MEANING.update(release_retained.MEANING); SOURCE.update(release_retained.SOURCE)
+for part in (release_age, release_retained, release_batch): CRITERIA.update(part.CRITERIA); MEANING.update(part.MEANING); SOURCE.update(part.SOURCE)
 CRITERIA.update(rulings_copies.CRITERIA); MEANING.update(rulings_copies.MEANING); SOURCE.update(rulings_copies.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
@@ -337,11 +345,11 @@ def time_sinks(units, log_path, since, now):
     Also returns the queue wait intervals (phase, trigger, dispatch) behind those samples —
     dispatched or still open — for the flow slot-idle metric."""
     disp = {}
-    if os.path.exists(log_path):
-        for raw in open(log_path, errors="ignore"):
-            m = DISPATCH_RE.match(raw)
-            if m and (t := ts(m.group(1))):
-                disp.setdefault((m.group(3), m.group(2)), []).append(t)
+    log_rows, _ = ledger_history.scheduler_log_lines(log_path, now) if isinstance(log_path, str) else (log_path, 0)
+    for raw in log_rows or []:
+        m = DISPATCH_RE.match(raw)
+        if m and (t := ts(m.group(1))):
+            disp.setdefault((m.group(3), m.group(2)), []).append(t)
     out = {k: [] for k in TIME_SINKS}
     waits = []
     trig = ("review-request-changes", "review-block", "ci-red", "ci-test-red", "merge-conflict")
@@ -387,7 +395,7 @@ def time_sinks(units, log_path, since, now):
 
 
 def merge_flow(units, since, now):
-    """Merges per hour against the 6.5/h SLO (#4355), plus the in/out conservation counts.
+    """Merges per hour against the configured 3/h healthy and 1.5/h unhealthy defaults, plus conservation counts.
 
     The rate has no value on a starved queue (nothing open, nothing entered): the SLO binds
     'with sufficient backlog', so an empty factory is not a throughput defect."""
@@ -804,10 +812,18 @@ def post_land_runs_ratio(requests_dir, repo, since, now, gh_json):
 RED_STAGES = ("ci-red", "ci-test-red", "ci-red-rerun")
 
 
+def red_event_has_evidence(stage, event):
+    if stage == "ci-test-red":
+        tests = event.get("tests")
+        return isinstance(tests, list) and bool(tests)
+    result = event.get("result")
+    return isinstance(result, str) and bool(result.strip())
+
+
 def red_after_approve(units, since):
     """(approved unit count, one row per unit) for units approved in the window that saw CI red after
-    an approve and before the next verdict. A unit counts once however many approves it had; the row
-    names the failed checks and, for ci-test-red, the failing tests recorded on the event."""
+    an approve and before the next verdict. A unit counts once however many approves it had; a red
+    needs recorded failed-check names or, for ci-test-red, recorded failing tests."""
     approved, rows = 0, []
     for u in units:
         events = [(h.get("stage") or h.get("ev") or "", ts(h["at"]), h) for h in u.get("history") or [] if ts(h.get("at"))]
@@ -817,7 +833,7 @@ def red_after_approve(units, since):
                 seen = True
                 rest = events[i + 1:]
                 stop = next((j for j, x in enumerate(rest) if x[0] in ("review-request-changes", "review-approve")), len(rest))
-                red += [x[2] for x in rest[:stop] if x[0] in RED_STAGES]
+                red += [x[2] for x in rest[:stop] if x[0] in RED_STAGES and red_event_has_evidence(x[0], x[2])]
         approved += seen
         if red:
             rows.append({"unit": u.get("id"), "reds": len(red), "stage": red[-1].get("stage"),
@@ -825,14 +841,14 @@ def red_after_approve(units, since):
     return approved, rows
 
 
-def ledger_metrics(units, since, now):
+def ledger_metrics(units, since, now, window_hours=None, sample_counts=None):
     first_reviews, rounds, approve_to_ship, sup_lat, deaths = [], [], [], [], 0
     for u in units:
         hist = [h for h in u.get("history") or [] if ts(h.get("at"))]
         kinds = [(h.get("stage") or h.get("ev") or "", ts(h["at"])) for h in hist]
         deaths += sum(1 for k, t in kinds if k == "worker-no-output" and t >= since)
         verdicts = [(k, t) for k, t in kinds if k in ("review-approve", "review-request-changes", "review-block")]
-        if verdicts and now - timedelta(hours=24) <= verdicts[0][1] <= now:  # fixed 24 h: the caller's 5 h window read 25 %
+        if verdicts and now - timedelta(hours=window_hours or 24) <= verdicts[0][1] <= now:  # fixed 24 h unless short-cohort scoring was requested
             first_reviews.append(verdicts[0][0] == "review-approve")
         n = 0
         for i, (k, t) in enumerate(kinds):
@@ -866,7 +882,10 @@ def ledger_metrics(units, since, now):
     approved, red_units = red_after_approve(units, since)
     rejections = [r.get("block") == "missing" for u in units for r in u.get("review_findings") or []
                   if (t := ts(r.get("at"))) and t >= since]
-    return {**arbiter_health.ledger_metrics(units, now, ts), **ledger_history.metrics(units, now, ts),
+    if sample_counts is not None:
+        sample_counts.update({"loop.rounds_p90": len(rounds), "ci.approve_to_ship_p50": len(approve_to_ship),
+                              "supervisor.latency_p50": len(sup_lat)})
+    return {**arbiter_health.ledger_metrics(units, now, ts, window_hours), **ledger_history.metrics(units, now, ts, window_hours, sample_counts),
         "review.findings_missing_pct": 100 * sum(rejections) / len(rejections) if rejections else None,
         "loop.advisor_fail_pct": 100 * asked.count("advisor-unavailable") / len(asked) if asked else None,
         "review.first_pass_pct": 100 * sum(first_reviews) / len(first_reviews) if first_reviews else None,
@@ -1031,32 +1050,6 @@ def gated_agent_pr_share(repo):
         return None
 
 
-RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{7,40}) closed=\[([0-9,\s]*)\]")
-def release_acceptances(runtime):
-    """Read the batch close event, which names the accepted deployed SHA and issue IDs."""
-    paths = [os.path.join(runtime, "alerts", "events.md"), os.path.join(runtime, "scheduler.log")]
-    events, seen = [], set()
-    found_source = False
-    for path in paths:
-        try:
-            with open(path, errors="ignore") as source:
-                found_source = True
-                for raw in source:
-                    match = RELEASE_CLOSER_RE.search(raw)
-                    at = ts(raw[1:21]) if raw.startswith("[") else None
-                    if not match or not at:
-                        continue
-                    for number in re.findall(r"\d+", match.group(2)):
-                        event = {"issue": int(number), "sha": match.group(1), "at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}
-                        key = (event["issue"], event["sha"], event["at"])
-                        if key not in seen:
-                            seen.add(key)
-                            events.append(event)
-        except OSError:
-            continue
-    return events if found_source else None
-
-
 def gh_delivery_rows(repo, now, units=None, release_events=None):
     """Fetch issue creation times and recent merged-PR review activity for delivery metrics."""
     cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -1155,13 +1148,13 @@ def git_revert_times(root, tip="HEAD"):
 
 
 def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo="",
-                     reverted_merge_times=None):
+                     reverted_merge_times=None, window_hours=None):
     """Join recorded issue/unit/PR/merge/release IDs and summarize the last 7/30 days."""
-    since_7d, since_30d = now - timedelta(days=7), now - timedelta(days=30)
+    since_7d, since_30d = (now - timedelta(hours=window_hours),) * 2 if window_hours else (now - timedelta(days=7), now - timedelta(days=30))
     values = {key: None for key in CRITERIA if key.startswith("delivery.")}
     details = {
         "accepted_units_7d": None, "accepted_units_30d": None, "merged_units_30d": None,
-        "unlinked_units_30d": None, "incident_records_30d": None, "unlinked_incidents_30d": None,
+        "unlinked_units_30d": None, "incident_records_30d": None, "unlinked_incidents_30d": None, "lead_time_samples_7d": None, "lead_time_samples_30d": None,
     }
 
     accepted = []
@@ -1202,17 +1195,17 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
                 lead_hours.append((accepted_at, (accepted_at - created_at).total_seconds() / 3600))
             candidates = units_by_issue.get(issue_number, [])
             unit = candidates[0] if len(candidates) == 1 else None
-            merge_at = _merge_time(unit) if unit else None
             pr_number = _number((unit or {}).get("pr"))
             pr = prs.get(pr_number)
             pr_merge_at = ts((pr or {}).get("mergedAt") or (pr or {}).get("merged_at"))
+            # The exact PR row supplies merge time; recovered unit histories can lack its terminal event.
             unit_merge_sha = (unit or {}).get("merge_sha") or (unit or {}).get("land_sha")
             pr_merge_sha = ((pr or {}).get("mergeCommit") or {}).get("oid")
             release_sha = (acceptance_event or {}).get("sha")
             if (len(events) != 1 or not created_at or not accepted_at or created_at > accepted_at or
-                    not unit or pr_number is None or not pr or not merge_at or not pr_merge_at or
+                    not unit or pr_number is None or not pr or not pr_merge_at or
                     not re.fullmatch(r"[0-9a-f]{40}", str(unit_merge_sha or "")) or
-                    unit_merge_sha != pr_merge_sha or merge_at > accepted_at or pr_merge_at > accepted_at or
+                    unit_merge_sha != pr_merge_sha or pr_merge_at > accepted_at or
                     not release_sha):
                 unlinked += 1
                 continue
@@ -1224,7 +1217,7 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
         for since, target in ((since_7d, "7d"), (since_30d, "30d")):
             window = [hours for at, hours in lead_hours if at >= since]
             values[f"delivery.issue_to_accept_p50_{target}_hours"] = pct(window, .5)
-            values[f"delivery.issue_to_accept_p95_{target}_hours"] = pct(window, .95)
+            values[f"delivery.issue_to_accept_p95_{target}_hours"] = pct(window, .95); details[f"lead_time_samples_{target}"] = len(window)
         if accepted and reverted_merge_times is not None:
             reverted = 0
             for row in accepted:
@@ -1299,6 +1292,8 @@ def file_issues(a, rows, now):
         # until a complete sample establishes whether the metric recovered.
         if mid == "review.large_pr_pct" and status == "NO-DATA":
             continue
+        if status == "STANDARD-INVALID":
+            continue
         if status != "UNHEALTHY":
             state.pop(mid, None)
             continue
@@ -1360,21 +1355,24 @@ def flow_inbox(a, rows, now, agent_home, repo_root):
     metric recovers, so the next crossing emits again."""
     state_path = os.path.join(a, "flow-inbox-state.json")
     state = read_json(state_path)
-    bad = {row[1]: row for row in rows if row[1].startswith("flow.") and row[7] == "UNHEALTHY"}
+    bad = {row[1]: row for row in rows if row[1].startswith("flow.") and row[7] in ("UNHEALTHY", "STANDARD-INVALID")}
     for mid in list(state):
-        if mid not in bad:
+        previous = state[mid].get("status", "UNHEALTHY") if isinstance(state[mid], dict) else "UNHEALTHY"
+        if mid not in bad or previous != bad[mid][7]:
             del state[mid]
     lib = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib.sh")
     for mid, (node, _, desc, v, healthy, unhealthy, higher, status) in sorted(bad.items()):
         if mid in state:
             continue
-        text = (f"flow metric={mid} status=UNHEALTHY value={v:.1f} bound={unhealthy:g} "
+        bound = f"bound={unhealthy:g}" if status == "UNHEALTHY" else "standard=invalid"
+        value = live_delivery.display_value(v) if v is None else f"{v:.1f}"
+        text = (f"flow metric={mid} status={status} value={value} {bound} "
                 f"{desc}; thresholds and sources: {health_doc_reference()}")
         done = subprocess.run(["bash", "-c", 'source "$1" && supervisor_inbox_append flow-metric "$2"',
                                "bash", lib, text],
                               capture_output=True, env={**os.environ, "AGENT_HOME": agent_home})
         if done.returncode == 0:
-            state[mid] = f"{now:%Y-%m-%dT%H:%M:%SZ}"
+            state[mid] = {"status": status, "at": f"{now:%Y-%m-%dT%H:%M:%SZ}"}
     tmp = state_path + ".tmp"
     with open(tmp, "w") as out:
         json.dump(state, out, indent=1)
@@ -1386,14 +1384,9 @@ def flow_inbox(a, rows, now, agent_home, repo_root):
 NOT_APPLICABLE_WITHOUT_EVENTS = frozenset({"ci.shared_append_rebase_conflict_pct", "landing.post_land_runs_ratio"})
 
 
-def score(metrics, criteria):
-    rows = []
-    for mid, (node, desc, healthy, unhealthy, higher) in criteria.items():
-        v = metrics.get(mid)
-        status = live_delivery.no_data_status(mid, v) or (
-            "N/A" if v is None and mid in NOT_APPLICABLE_WITHOUT_EVENTS else status_of(v, healthy, unhealthy, higher))
-        rows.append((node, mid, desc, v, healthy, unhealthy, higher, status))
-    return rows
+def score(metrics, criteria, sample_counts=None, minimums=None, invalid_standards=None):
+    return health_standards.score(metrics, criteria, sample_counts or {}, minimums or {}, invalid_standards or set(),
+                                  status_of, live_delivery.no_data_status, NOT_APPLICABLE_WITHOUT_EVENTS)
 
 
 def source_commit(here):
@@ -1430,28 +1423,20 @@ def main():
     now = ts(args.now) if args.now else datetime.now(timezone.utc)
     since = now - timedelta(hours=args.hours)
 
-    criteria = dict(CRITERIA)
-    try:
-        overrides = json.load(open(os.path.join(a, "config.json"))).get("node_health") or {}
-    except (OSError, ValueError):
-        overrides = {}
-    for mid, bounds in overrides.items():
-        if mid in criteria and isinstance(bounds, list) and len(bounds) == 2:
-            node, desc, _, _, higher = criteria[mid]
-            criteria[mid] = (node, desc, bounds[0], bounds[1], higher)
+    criteria, minimums, standard_bases, invalid_standards = resolve_health_standards(); sample_counts = {}
 
     units = ledger_history.load_units(a)
-    cost_rows = worker_cost.run_rows(sup)
-    worker_cost.attach_provider_usage(cost_rows, units)  # every row: a ticket's fresh total needs all its runs
+    cost_rows = worker_cost.run_rows(sup); worker_cost.attach_provider_usage(cost_rows, units)  # every row: a ticket's fresh total needs all its runs
+    token_efficiency = worker_cost.token_efficiency_kpis(cost_rows, units, now)
     runs = worker_runs(cost_rows, since, now)
-    metrics = {}
+    metrics = {"efficiency.fresh_tokens_per_merged_7d": token_efficiency["fresh_tokens_per_merged"], "efficiency.unmerged_waste_pct_7d": token_efficiency["waste_pct"], "efficiency.first_pass_yield_pct_7d": token_efficiency["first_pass_pct"], "efficiency.repair_phase_pct_7d": token_efficiency["repair_pct"]}
     # Implement and repair run minutes are per-run samples (no time weighting): a 5 h window held 20 to 45 runs
     # and swung on the model mix, so they read the 24 h window.
     day_runs = worker_runs(cost_rows, now - timedelta(hours=WALL_WINDOW_HOURS), now)
     for node in ("implement", "review", "repair"):
         pool = runs if node == "review" else day_runs
         done = [r["minutes"] for r in pool if r["node"] == node and r["output"]]
-        metrics[f"{node}.wall_p50"] = pct(done, .5)
+        metrics[f"{node}.wall_p50"] = pct(done, .5); sample_counts[f"{node}.wall_p50"] = len(done)
     impl = [r for r in runs if r["node"] == "implement"]
     impl = [r for r in impl if not r["running"]]
     metrics["implement.no_output_pct"] = 100 * sum(not r["output"] for r in impl) / len(impl) if impl else None
@@ -1465,16 +1450,20 @@ def main():
                 for r in runs if r["node"] == "repair" and r["output"] and not r["self_fix"]]
     followed = [n for n in followed if n]
     metrics["loop.incremental_rereview_pct"] = 100 * followed.count("rereview") / len(followed) if followed else None
-    metrics.update({**ledger_metrics(units, since, now), **station_standards.collect(now, units, runs, a, agent_home, cost_rows)})
+    station_windows = station_standards.collect_windows(now, units, day_runs, a, agent_home, cost_rows); sample_counts.update({mid: row["sample_n"] for mid, row in station_windows.items() if "sample_n" in row})
+    ledger_windows = metric_windows.ledger(ledger_metrics, units, now); metrics.update({**ledger_metrics(units, since, now, sample_counts=sample_counts), **station_standards.collect(now, units, day_runs, a, agent_home, cost_rows)})
     # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
     metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]
     repo = os.environ.get("ZF_REPO", "")
-    release_events = release_acceptances(a)
+    log = os.path.join(a, "scheduler.log")
+    log_rows, future_stamped = ledger_history.scheduler_log_lines(log, now)
+    release_events = ledger_history.release_acceptances(a, now=now, scheduler_rows=log_rows)
     issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events)
     incidents = load_prod_incidents(agent_home)
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
-    delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)
+    delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")})
+    delivery_windows = metric_windows.delivery(delivery_metrics, (units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)); short_windows = {**station_windows, **ledger_windows, **delivery_windows}
     metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); merge_metrics, merge_details = merge_wait.collect(repo, now, here, _gh_json); metrics.update(merge_metrics)
     metrics["merge.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
     sa_attempts, sa_conflict = shared_append_rebase_metrics(
@@ -1490,7 +1479,7 @@ def main():
     metrics["host.github_net_failures_per_hour"] = github_net_failures_per_hour(since, now)
     metrics["host.stale_worktrees"] = stale_worktrees(now)
     closed_open = ledger_history.closed_units_open_issues(a, agent_home, units)
-    metrics["intake.closed_units_open_issues"] = None if closed_open is None else len(closed_open)
+    metrics["intake.closed_units_open_issues"] = None if closed_open is None else len(closed_open); metrics["intake.laneless_open_issues"] = intake_laneless_health.open_laneless_count(a, repo, now, _gh_json, agent_home)
     metrics["engine.follow_lag_hours"] = engine_follow_lag_hours(agent_home, now)
     orders = work_orders(units, unit_spend(cost_rows), now, workorder_cost.recent_units(cost_rows, since),
                          unit_spend(cost_rows, since))
@@ -1517,8 +1506,9 @@ def main():
                 history.append(value)
         metrics[mid] = pct(recent, .9)
         ticket_bounds[key] = worker_cost.ticket_bound(history)
+        sample_counts[mid] = len(recent)
         if (ticket_bounds[key] and not ticket_bounds[key]["provisional"]
-                and ticket_bounds[key]["samples"] >= 10 and mid not in overrides):
+                and ticket_bounds[key]["samples"] >= 10 and mid not in standard_bases):
             node, desc, _, _, higher = criteria[mid]
             criteria[mid] = (node, desc, ticket_bounds[key]["healthy"],
                              ticket_bounds[key]["unhealthy"], higher)
@@ -1527,13 +1517,13 @@ def main():
     nontest_added = size_doc.get("nontest_added") or {}
     by_size, metrics["review.large_pr_pct"] = rework_by_size(
         units, sizes, nontest_added, now - timedelta(days=LARGE_PR_WINDOW_DAYS), now)
-    sinks, queue_waits = time_sinks(units, os.path.join(a, "scheduler.log"),
+    sinks, queue_waits = time_sinks(units, log_rows,
                                     now - timedelta(hours=TIME_SINK_HOURS), now)
     metrics["flow.merge_rate_per_hour"] = merge_flow(units, now - timedelta(hours=24), now)[0]
     _, entered, merged = merge_flow(units, since, now)
     metrics["flow.in_out_imbalance"] = abs(entered - merged)
-    wip_rows, metrics["flow.wip_age_stage_p90_hours"] = wip_stage_ages(units, now)
-    metrics["flow.wait_stage_p90_hours"], metrics["flow.wait_stage_units"] = wait_stage(units, now)
+    wip_rows, metrics["flow.wip_age_stage_p90_hours"] = wip_stage_ages(units, now); sample_counts["flow.wip_age_stage_p90_hours"] = max((row for row in wip_rows if not row["waiting"]), key=lambda row: row["p90_hours"], default={"count": 0})["count"]
+    metrics["flow.wait_stage_p90_hours"], metrics["flow.wait_stage_units"] = wait_stage(units, now); sample_counts["flow.wait_stage_p90_hours"] = metrics["flow.wait_stage_units"]
     metrics["flow.slot_idle_hours"] = slot_idle_hours(queue_waits, cost_rows, since)
     metrics["flow.main_red_hours"] = main_red_hours(args.main_red_dir, since, now)
     flow_details = {"entered": entered, "merged": merged, "wip_age": wip_rows}
@@ -1546,14 +1536,12 @@ def main():
     _, metrics["ci.priority_hold_runs_48h"] = cancel_metrics(audit, now - timedelta(hours=48), now)
     metrics["ci.gated_pr_pct"] = gated_agent_pr_share(repo)
     ticks = []
-    log = os.path.join(a, "scheduler.log")
-    if os.path.exists(log):
-        for raw in open(log, errors="ignore"):
-            m = LINE_RE.match(raw)
-            if m and (t := ts(m.group(1))) and since <= t <= now:
-                ticks.append(t)
-    metrics["scheduler.tick_gap_p50"] = pct([(b - x).total_seconds() for x, b in zip(ticks, ticks[1:])], .5)
-    metrics.update({"scheduler.merge_pass_gap_min": merge_pass_gap_min(units, ledger_history.live_ledger_readable(a), a, now), **harvest_health.metrics(log, since, now, ts, pct)})
+    for raw in log_rows or []:
+        m = LINE_RE.match(raw)
+        if m and (t := ts(m.group(1))) and t >= since:
+            ticks.append(t)
+    metrics["scheduler.tick_gap_p50"] = pct([(b - x).total_seconds() for x, b in zip(ticks, ticks[1:])], .5); sample_counts["scheduler.tick_gap_p50"] = max(0, len(ticks) - 1)
+    metrics.update({"scheduler.merge_pass_gap_min": merge_pass_gap_min(units, ledger_history.live_ledger_readable(a), a, now), **harvest_health.metrics(log_rows, since, now, ts, pct, sample_counts), **existing_walk_health.metrics(log_rows, since, now, ts, pct, sample_counts)})
 
     train = read_json(os.path.join(a, "release-train.json"))
     if not train:
@@ -1565,7 +1553,7 @@ def main():
         metrics["release.hours_waiting"] = (
             max(0, (now - waiting_since).total_seconds() / 3600) if waiting_since else None
         )
-    release_retained.collect(metrics, a, now, ts(train.get("started_at")) if train else None)
+    release_retained.collect(metrics, a, now, ts(train.get("started_at")) if train else None); release_batch.collect(metrics, a, now)
     blockers = read_json(os.path.join(a, "release-blockers.json"))
     metrics["release.hotpatch_blockers"] = len(blockers["blockers"]) if isinstance(blockers.get("blockers"), list) else None
     line_holds.collect(metrics, a, agent_home, now)
@@ -1582,8 +1570,9 @@ def main():
     except OSError:
         metrics["pipeline.orphan_prs"] = None
 
-    rows = score(metrics, criteria)
-    print(f"node health {now:%Y-%m-%dT%H:%MZ} window={args.hours:g}h tokens={tokens} runs={len(runs)}")
+    short_windows = metric_windows.fill(metrics, short_windows, criteria, SOURCE, args.hours); rows = score(metrics, criteria, sample_counts, minimums, invalid_standards)
+    future_note = f" future_stamped={future_stamped}" if future_stamped else ""
+    print(f"node health {now:%Y-%m-%dT%H:%MZ} window={args.hours:g}h tokens={tokens} runs={len(runs)}{future_note}")
     print(f"  {'node':<12} {'metric':<48} {'value':>7}  healthy  unhealthy  status")
     for node, mid, desc, v, healthy, unhealthy, higher, status in rows:
         shown = "-" if v is None else f"{v:.0f}"
@@ -1605,14 +1594,15 @@ def main():
         release_age.alert(a, agent_home, repo_root, now, release_found)
 
     if args.json:
-        sampled_at = f"{now:%Y-%m-%dT%H:%M:%SZ}"
+        sampled_at = f"{now:%Y-%m-%dT%H:%M:%SZ}"; scorecard_metrics = [{"id": mid, "node": node, "desc": desc, "meaning": MEANING.get(mid, ""), "value": v,
+            "healthy": healthy, "unhealthy": unhealthy, "higher_is_better": higher, "status": status, "source": SOURCE.get(mid, ""),
+            "sample_n": sample_counts.get(mid), "standard_basis": standard_bases.get(mid), **short_windows[mid]}
+            for node, mid, desc, v, healthy, unhealthy, higher, status in rows]
         doc = {"generated": sampled_at, "generated_at": sampled_at,
                "source_commit": source_commit(here), "paused": line_holds.pause_state(agent_home),
-               "window_hours": args.hours,
-               "metrics": [{"id": mid, "node": node, "desc": desc, "meaning": MEANING.get(mid, ""), "value": v,
-                            "healthy": healthy, "unhealthy": unhealthy, "higher_is_better": higher, "status": status,
-                            "source": SOURCE.get(mid, "")}
-                           for node, mid, desc, v, healthy, unhealthy, higher, status in rows],
+               "window_hours": args.hours, "release_batch_info": {"failed_14d": metrics.get(release_batch.FAILED_14D)},
+               "future_stamped": future_stamped,
+               "metrics": scorecard_metrics, "trend_metrics": [m for m in scorecard_metrics if "_30d" in m["id"]],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
                "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],
                "delivery": delivery["details"], "red_after_approve": red_after_approve(units, since)[1], "merge_wait": merge_details, "flow": flow_details, "mechanisms": mechanism_rows,
@@ -1626,17 +1616,8 @@ def main():
             json.dump(doc, out, ensure_ascii=False)
         os.replace(tmp, args.json)
 
-    if args.alert and bad:
-        path = os.path.join(a, "alerts", "node-health.md")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        hour = f"{now:%Y-%m-%dT%H}"
-        seen = open(path, errors="ignore").read() if os.path.exists(path) else ""
-        with open(path, "a") as out:
-            for node, mid, desc, v, healthy, unhealthy, higher, status in bad:
-                if f"[{hour}" in seen and f"NODE-UNHEALTHY metric={mid} " in seen.split(f"[{hour}", 1)[1]:
-                    continue
-                out.write(f"[{now:%Y-%m-%dT%H:%M:%SZ}] NODE-UNHEALTHY metric={mid} node={node} value={live_delivery.display_value(v)} "
-                          f"unhealthy-bound={unhealthy} ({desc}; see {health_doc_reference()})\n")
+    if args.alert:
+        health_standards.write_health_alerts(a, agent_home, rows, now, live_delivery.display_value, health_doc_reference)
 
 
 if __name__ == "__main__":

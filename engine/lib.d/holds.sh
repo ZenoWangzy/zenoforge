@@ -29,12 +29,12 @@ hold_stage_before() {
 
 
 hold_expiry_resolve() {
-  local spec="$1" now_epoch expiry_epoch
+  local spec="$1" now_epoch expiry_epoch multiplier
   now_epoch="$(date -u +%s)" || return 1
-  if [[ "$spec" =~ ^([1-9][0-9]*)h$ ]]; then
-    expiry_epoch=$((now_epoch + BASH_REMATCH[1] * 3600))
+  if [[ "$spec" =~ ^([1-9][0-9]*)([hd])$ ]]; then
+    multiplier=3600; [[ "${BASH_REMATCH[2]}" != d ]] || multiplier=86400; expiry_epoch=$((now_epoch + BASH_REMATCH[1] * multiplier))
   else
-    expiry_epoch="$(agent_epoch -u "$spec" 2>/dev/null)" || return 1
+    [[ "$spec" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2} ]] || return 1; expiry_epoch="$(agent_epoch -u "$spec" 2>/dev/null)" || return 1
   fi
   (( expiry_epoch > now_epoch )) || return 1
   date -u -d "@$expiry_epoch" +%Y-%m-%dT%H:%M:%SZ
@@ -787,7 +787,7 @@ hold_answer() (
 # unit history (refills the stop-loss/arbitration budgets; a parked unit is moved by scheduler.sh --rule) and releases a
 # scheduler-stop-loss hold if the issue has one. COMMENT must be an owner comment on the issue (or the PR for pr-N).
 hold_rule() {
-  local target="${1:-}" action="${2:-}" comment_id="${3:-}" blocker="${4:-}" unit n state="" comment sched
+  local target="${1:-}" action="${2:-}" comment_id="${3:-}" blocker="${4:-}" unit n state="" current_state comment sched
   [[ "$target" =~ ^[1-9][0-9]*$ ]] && target="issue-$target"
   [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock)$ && "$comment_id" =~ ^[1-9][0-9]*$ ]] || return 64
   unit="$target"; n="${unit#*-}"
@@ -810,8 +810,8 @@ hold_rule() {
     state=""
   fi
   bash "$sched" --rule "$unit" "$action" "$(jq -r .html_url <<< "$comment")" "$(jq -r '.body[0:4000]' <<< "$comment")" "$blocker" || return 1
-  if [[ -n "$state" ]] && jq -e '.state == "on-hold"' <<< "$state" >/dev/null; then
-    state_requeue "$n" release-hold hold-requeue . "$(jq -c .hold <<< "$state")"
+  if [[ -n "$state" ]] && jq -e '.state == "on-hold"' <<< "$state" >/dev/null; then current_state="$(state_read "$n")" || return 1
+    jq -e '.state != "on-hold" and .hold == null' <<< "$current_state" >/dev/null || state_requeue "$n" release-hold hold-requeue . "$(jq -c .hold <<< "$state")"
   fi
 }
 
@@ -829,7 +829,7 @@ hold_cli_main() {
     (($# == 2)) || { echo "usage: hold.sh --restore <issue>" >&2; return 64; }
     hold_restore "$2"
   elif [ "${1:-}" = --rule ]; then
-    (($# == 5 || $# == 7)) && [[ "$3" =~ ^--(requeue|reroute|approve|arbiter|recut|reblock)$ && "$4" = --comment ]] && { (($# == 5)) || [ "$6" = --blocked-on ]; } || { echo "usage: hold.sh --rule <issue|issue-N|pr-N> --requeue|--reroute|--approve|--arbiter|--recut|--reblock --comment <id> [--blocked-on <N>]" >&2; return 64; }
+    (($# == 5 || $# == 7)) && [[ "$3" =~ ^--(requeue|reroute|approve|arbiter|recut|reblock)$ && "$4" = --comment ]] && { (($# == 5)) || [ "$6" = --blocked-on ]; } || { echo "usage: hold.sh --rule <issue|issue-N|pr-N> --requeue|--reroute|--approve|--arbiter|--recut|--reblock --comment <id> [--blocked-on <N>]" >&2; echo 'A report-only --requeue on an unchanged PR head needs a comment body containing "report only" or "report-only"; report_only_pr_requeue_harvest matches that text.' >&2; return 64; }
     hold_rule "$2" "${3#--}" "$5" "${7:-}"
   elif [ "${1:-}" = --answer ]; then
     (($# == 4)) && [ "$3" = --comment ] || { echo "usage: hold.sh --answer <issue> --comment <id>" >&2; return 64; }

@@ -62,12 +62,194 @@ maintainer_health_mail_build_body() {
     + section("资源"; [
         (if $f.spend.day == null then null
          else "- 令牌用量：过去一天 \(wan($f.spend.day.tokens))" + inl("tokens") + "。" end),
-        (if $f.spend.day == null or $f.spend.day.money_usd == 0 then null
+        (if $f.spend.day == null or $f.spend.day.money_usd == null or $f.spend.day.money_usd == 0 then null
          else "- 按美元计价的调用：过去一天 \(money($f.spend.day.money_usd))" + inl("money") + "；与令牌分开记账，没有相加。" end)])
     + section("各环节效率"; $f.compare.station_lines // [])
     + section("变化原因"; $f.compare.causes // [])
     | join("\n")
   ' <<< "$1"
+}
+
+# maintainer_health_mail_build_html <facts> <plain-body> -> {html,images}
+# PNGs are written with Python's standard library so mail needs no host image package.
+maintainer_health_mail_build_html() {
+  local decision_flags_file="" agent_home="${3:-${AGENT_HOME:-}}"
+  [[ -z "$agent_home" ]] || decision_flags_file="$agent_home/checkout/.scratch-supervisor/decision-log-flags.jsonl"
+  { printf '%s\n' "$1"; printf '%s' "$2"; } | ZF_DECISION_LOG_FLAGS_FILE="$decision_flags_file" python3 -c '
+import base64, datetime, html, json, math, struct, sys, zlib
+import os
+raw = sys.stdin.read()
+facts_text, body = raw.split("\n", 1)
+facts = json.loads(facts_text)
+decision_flags=[]
+flags_file=os.environ.get("ZF_DECISION_LOG_FLAGS_FILE")
+if flags_file:
+    try:
+        with open(flags_file, encoding="utf-8") as source:
+            for line in source:
+                try:
+                    flag=json.loads(line)
+                    if isinstance(flag,dict) and isinstance(flag.get("entry"),str) and isinstance(flag.get("reason"),str): decision_flags.append(flag)
+                except json.JSONDecodeError: pass
+    except FileNotFoundError: pass
+charts = (facts.get("compare") or {}).get("charts") or {}
+images = []
+parts = ["<!doctype html><html><body style=\"font-family:Arial,sans-serif;color:#18212f;line-height:1.5\">",
+         "<h1>工厂日报</h1>"]
+esc = lambda value: html.escape(str(value), quote=True)
+number = lambda value: str(int(value)) if float(value).is_integer() else f"{value:.1f}"
+money = lambda value: f"{value:.2f}"
+show = lambda value: esc(number(value)) if isinstance(value,(int,float)) and math.isfinite(value) else ""
+parts.append("<h2>决策日志复核（"+str(len(decision_flags))+" 条）</h2>")
+parts.append("<ul>"+"".join("<li><strong>记录：</strong>"+esc(x["entry"])+" <strong>原因：</strong>"+esc(x["reason"])+"</li>" for x in decision_flags)+"</ul>" if decision_flags else "<p>没有需关注的条目。</p>")
+colors = {"blue": (48, 100, 180), "green": (48, 145, 105), "orange": (225, 145, 35),
+          "red": (205, 65, 65), "gray": (220, 226, 235), "ink": (75, 88, 105), "white": (255, 255, 255)}
+font = {"0":("111","101","101","101","111"),"1":("010","110","010","010","111"),
+        "2":("111","001","111","100","111"),"3":("110","001","011","001","110"),
+        "4":("101","101","111","001","001"),"5":("111","100","111","001","111"),
+        "6":("111","100","111","101","111"),"7":("111","001","010","010","010"),
+        "8":("111","101","111","101","111"),"9":("111","101","111","001","111"),
+        ".":("000","000","000","000","010"),"-":("000","000","111","000","000"),
+        "%":("101","001","010","100","101")}
+def canvas(height): return bytearray(bytes(colors["white"]) * (720 * height)), height
+def pixel(c, h, x, y, color):
+    if 0 <= x < 720 and 0 <= y < h: c[(y * 720 + x) * 3:(y * 720 + x) * 3 + 3] = bytes(color)
+def line(c, h, x0, y0, x1, y1, color, dashed=False):
+    dx, sx = abs(x1-x0), 1 if x0 < x1 else -1
+    dy, sy = -abs(y1-y0), 1 if y0 < y1 else -1
+    err, step = dx + dy, 0
+    while True:
+        if not dashed or step % 8 < 4: pixel(c, h, x0, y0, color)
+        if x0 == x1 and y0 == y1: break
+        twice = 2 * err
+        if twice >= dy: err += dy; x0 += sx
+        if twice <= dx: err += dx; y0 += sy
+        step += 1
+def rect(c, h, x, y, width, height, color):
+    for yy in range(max(0,y), min(h,y+height)):
+        for xx in range(max(0,x), min(720,x+width)): pixel(c,h,xx,yy,color)
+def text(c, h, x, y, value, color=colors["ink"]):
+    for char in str(value):
+        glyph = font.get(char)
+        if glyph:
+            for yy, row in enumerate(glyph):
+                for xx, bit in enumerate(row):
+                    if bit == "1": pixel(c,h,x+xx,y+yy,color)
+        x += 5
+def png(c, h):
+    def chunk(kind, data): return struct.pack(">I",len(data)) + kind + data + struct.pack(">I",zlib.crc32(kind+data)&0xffffffff)
+    stride = 720 * 3
+    scan = b"".join(b"\0" + c[y*stride:(y+1)*stride] for y in range(h))
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR",struct.pack(">IIBBBBB",720,h,8,2,0,0,0)) + chunk(b"IDAT",zlib.compress(scan,6)) + chunk(b"IEND",b"")
+def attach(cid, data, alt, caption):
+    images.append({"cid":cid,"filename":cid+".png","data":base64.b64encode(data).decode("ascii")})
+    parts.append("<figure style=\"margin:20px 0\"><figcaption><b>"+esc(caption)+"</b></figcaption><img style=\"max-width:100%;height:auto\" src=\"cid:"+cid+"\" alt=\""+esc(alt)+"\"></figure>")
+def valid_rows(rows, fields):
+    return [row for row in rows if isinstance(row,dict) and all(isinstance(row.get(k),(int,float)) and math.isfinite(row[k]) for k in fields)]
+def station_png(rows):
+    rows = [r for r in valid_rows(rows,["value","healthy"]) if r["healthy"] > 0]
+    if not rows: return None
+    h, x0, plot = 42 + 34*len(rows), 95, 550
+    c, h = canvas(h); scale = max(150, math.ceil(max(abs(r["value"]/r["healthy"]*100) for r in rows)/50)*50)
+    for tick in range(0,scale+1,50):
+        x=x0+round(plot*tick/scale); line(c,h,x,22,x,h-12,colors["gray"]); text(c,h,x-7,8,str(tick)+"%")
+    line(c,h,x0+round(plot*100/scale),18,x0+round(plot*100/scale),h-10,colors["red"],True)
+    for i,r in enumerate(rows):
+        y=31+i*34; ratio=r["value"]/r["healthy"]*100
+        width=round(plot*min(scale,abs(ratio))/scale)
+        text(c,h,42,y+3,str(i+1)); rect(c,h,x0,y,width,15,colors["red"] if r.get("status")=="UNHEALTHY" else colors["orange"] if r.get("status")=="WARN" else colors["blue"])
+        text(c,h,min(650,x0+width+5),y+4,str(round(ratio))+"%")
+    return png(c,h), rows
+def period_png(data):
+    periods={p["key"]:p["label"] for p in data.get("periods",[]) if isinstance(p,dict) and "key" in p and "label" in p}
+    rows=[r for r in data.get("metrics",[]) if isinstance(r,dict) and len([p for p in r.get("points",[]) if isinstance(p,dict) and isinstance(p.get("value"),(int,float))])>=2]
+    if not rows: return None
+    h,x0,plot=42+48*len(rows),120,515; c,h=canvas(h)
+    palette={"today":colors["blue"],"yesterday":colors["green"],"last_week":colors["orange"]}
+    for i,r in enumerate(rows):
+        points=[p for p in r["points"] if isinstance(p,dict) and isinstance(p.get("value"),(int,float)) and math.isfinite(p["value"])]
+        if len(points)<2: continue
+        maxv=max(abs(p["value"]) for p in points) or 1; y0=24+i*48
+        text(c,h,30,y0+8,str(i+1))
+        for j,p in enumerate(points):
+            y=y0+j*11; width=round(plot*abs(p["value"])/maxv)
+            rect(c,h,x0,y,width,7,palette.get(p["period"],colors["blue"]))
+            text(c,h,min(642,x0+width+5),y,str(round(p["value"]*10)/10))
+    return png(c,h), rows, periods
+def station_trend_png(rows, end):
+    rows=[r for r in rows if isinstance(r,dict) and isinstance(r.get("healthy"),(int,float)) and r["healthy"]>0
+          and len([p for p in r.get("points",[]) if isinstance(p,dict) and isinstance(p.get("value"),(int,float))])>=2]
+    if not rows: return None
+    h,x0,plot=44+38*len(rows),90,560; c,h=canvas(h)
+    current=datetime.datetime.fromtimestamp(end,datetime.timezone(datetime.timedelta(hours=8))).date() if isinstance(end,(int,float)) else None
+    scale=max(200,math.ceil(max(abs(p["value"]/r["healthy"]*100) for r in rows for p in r["points"] if isinstance(p,dict) and isinstance(p.get("value"),(int,float)))/50)*50)
+    for i,r in enumerate(rows):
+        y0=24+i*38; baseline=y0+28-round(100/scale*25); line(c,h,x0,baseline,x0+plot,baseline,colors["red"],True)
+        points=[]
+        for n,p in enumerate(r["points"]):
+            if not isinstance(p.get("value"),(int,float)): continue
+            try: xday=(datetime.date.fromisoformat(p["day"])-current).days+6
+            except (ValueError,TypeError): xday=n
+            if 0<=xday<=6: points.append((x0+round(plot*xday/6),y0+28-round(min(scale,abs(p["value"]/r["healthy"]*100))/scale*25)))
+        for a,b in zip(points,points[1:]): line(c,h,*a,*b,colors["blue"])
+        for x,y in points: rect(c,h,x-2,y-2,5,5,colors["blue"])
+        text(c,h,35,y0+8,str(i+1))
+    for i in range(7): text(c,h,x0+round(plot*i/6)-3,h-12,str(i+1))
+    return png(c,h), rows
+def model_png(rows):
+    rows=[r for r in rows if isinstance(r,dict) and isinstance(r.get("model"),str)
+          and any(isinstance(r.get(k),(int,float)) and math.isfinite(r[k]) for k in ("tokens","money_usd"))]
+    if not rows or not any((r.get("tokens") if isinstance(r.get("tokens"),(int,float)) else 0)>0 or (r.get("money_usd") if isinstance(r.get("money_usd"),(int,float)) else 0)>0 for r in rows): return None
+    h,x0,plot=42+42*len(rows),115,520; c,h=canvas(h)
+    maxt=max([r.get("tokens",0) or 0 for r in rows]+[1])
+    maxu=max([r["money_usd"] for r in rows if isinstance(r.get("money_usd"),(int,float)) and math.isfinite(r["money_usd"])]+[1])
+    for i,r in enumerate(rows):
+        y=23+i*42; tokens=r.get("tokens") if isinstance(r.get("tokens"),(int,float)) else 0
+        rect(c,h,x0,y,round(plot*tokens/maxt),10,colors["blue"]); text(c,h,min(645,x0+round(plot*tokens/maxt)+5),y+2,str(round(tokens)))
+        money=r.get("money_usd")
+        if isinstance(money,(int,float)) and math.isfinite(money):
+            rect(c,h,x0,y+14,round(plot*money/maxu),10,colors["orange"]); text(c,h,min(645,x0+round(plot*money/maxu)+5),y+16,str(round(money*100)/100))
+        text(c,h,35,y+6,str(i+1))
+    return png(c,h), rows
+def table(headers, rows):
+    out=["<table style=\"border-collapse:collapse;width:100%;margin:10px 0\"><thead><tr>"]
+    out += ["<th style=\"text-align:left;border-bottom:1px solid #cbd5e1;padding:6px\">"+esc(h)+"</th>" for h in headers]
+    out.append("</tr></thead><tbody>")
+    for row in rows:
+        out.append("<tr>"+"".join("<td style=\"border-bottom:1px solid #e2e8f0;padding:6px\">"+str(cell)+"</td>" for cell in row)+"</tr>")
+    return "".join(out+["</tbody></table>"])
+verdict=(facts.get("conclusion") or {}).get("reason")
+if isinstance(verdict,str) and verdict.strip(): parts.append("<p style=\"font-size:18px;font-weight:bold\">一句话结论："+esc(verdict)+"。</p>")
+parts.append("<h2>异常情况</h2>")
+anomalies=[]
+for r in charts.get("anomalies",[]):
+    if isinstance(r,dict) and isinstance(r.get("value"),(int,float)) and isinstance(r.get("standard"),(int,float)):
+        unit=esc(r.get("unit", "")); anomalies.append([esc(r.get("label","")),esc(number(r["value"])+" "+unit),esc(number(r["standard"])+" "+unit),esc(r.get("owner") or "未登记"),esc(r.get("cause") or "原因未查明")])
+parts.append(table(["项目","现值","标准","负责人","原因"],anomalies))
+station=station_png(charts.get("station_standards",[]))
+if station:
+    data,rows=station; attach("owner-station-standard",data,"各环节当前数值与标准线对比","环节流转和等待（标准线为100%）")
+    parts.append("<p>图例：红色虚线为标准；蓝色达标，橙色偏离标准，红色未达标。</p>")
+    parts.append(table(["环节","现值","标准"],[[esc(r["name"]),esc(number(r["value"])+" "+r["unit"]),esc(number(r["healthy"])+" "+r["unit"])] for r in rows]))
+daily=period_png(charts.get("period_comparison") or {})
+if daily:
+    data,rows,periods=daily; attach("owner-daily-comparison",data,"合入、做完和正式上线的日期对比","今天、昨天和上周同日")
+    parts.append("<p>图例：蓝色为今天，绿色为昨天，橙色为上周同日。</p>")
+    parts.append(table(["项目"]+[periods.get(k,k) for k in ("today","yesterday","last_week")],
+      [[esc(r["label"])]+[show(next((p["value"] for p in r["points"] if p["period"]==k),None)) for k in ("today","yesterday","last_week")] for r in rows]))
+trend=station_trend_png(charts.get("station_series",[]),(facts.get("window") or {}).get("end"))
+if trend:
+    data,rows=trend; attach("owner-station-trend",data,"最近七天各环节相对标准的变化","近七天环节趋势（标准线为100%）")
+    parts.append("<p>图例：蓝线为每日实际值，红色虚线为标准。</p>")
+    parts.append("<p>序号对应环节：</p>"+"；".join(str(i+1)+"："+esc(r["name"]) for i,r in enumerate(rows)))
+models=model_png(charts.get("model_spend",[]))
+if models:
+    data,rows=models; attach("owner-model-spend",data,"各模型的令牌用量和可读取的调用金额","按模型查看令牌和调用金额")
+    parts.append("<p>图例：蓝色为令牌用量，橙色为已记录的调用金额（美元）。</p>")
+    parts.append(table(["模型","令牌","调用金额（美元）"],[[esc(r["model"]),esc(number(r["tokens"])) if isinstance(r.get("tokens"),(int,float)) else "",esc(money(r["money_usd"])) if isinstance(r.get("money_usd"),(int,float)) else ""] for r in rows]))
+parts.append("<h2>文字版</h2><pre style=\"white-space:pre-wrap;font-family:inherit\">"+esc(body)+"</pre></body></html>")
+print(json.dumps({"html":"".join(parts),"images":images},ensure_ascii=False,separators=(",",":")))
+'
 }
 
 

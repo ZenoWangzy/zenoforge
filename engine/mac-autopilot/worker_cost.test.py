@@ -203,6 +203,46 @@ class Ledger(unittest.TestCase):
         self.assertIsNone(rows["impl-issue-7-20261020T120100Z.worker.log"]["usage"])
         self.assertIsNone(rows["impl-issue-7-20261020T120100Z.worker.log"]["footer_tokens"])
 
+    def test_gate_exit_is_zero_and_killed_runs_keep_the_last_usage_snapshot(self):
+        gate = "impl-issue-8-20261020T120200Z.worker.log"
+        codex = "impl-issue-9-20261020T120300Z.worker.log"
+        luna_codex = "impl-issue-10-20261020T120350Z.worker.log"
+        usage_event = "impl-issue-10-20261020T120400Z.worker.log"
+        killed = "impl-issue-11-20261020T120500Z.worker.log"
+        self.workers([
+            {"log": gate, "unit": "issue-8", "type": "implement", "rc": 75, "backend_run_pid": None},
+            {"log": codex, "unit": "issue-9", "type": "implement", "mode": "fresh"},
+            {"log": luna_codex, "unit": "issue-10", "type": "implement", "mode": "fresh"},
+            {"log": usage_event, "unit": "issue-10", "type": "implement", "provider": "zcode", "rc": 143,
+             "backend_run_pid": 1234},
+            {"log": killed, "unit": "issue-11", "type": "implement", "rc": 143, "backend_run_pid": 4321},
+        ])
+        self.log(gate, ["worker: queued at capacity gate for 1s: no backend process started (codex.pid absent; see gate-wait)"])
+        self.log(codex, [
+            json.dumps({"type": "pipeline.execution", "mode": "fresh"}),
+            json.dumps({"type": "thread.started", "thread_id": "aaaaaaaa-0000-0000-0000-000000000009"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {
+                "total_token_usage": {"input_tokens": 321, "cached_input_tokens": 123,
+                                      "output_tokens": 45}}}}),
+        ])
+        self.log(luna_codex, [json.dumps({"type": "turn.completed", "payload": {"usage": {
+            "inputTokens": 222, "cacheReadTokens": 22, "cacheWriteTokens": 0,
+            "outputTokens": 33, "totalTokens": 255}}})])
+        self.log(usage_event, [json.dumps({"payload": {"type": "model_request_completed", "usage": {
+            "inputTokens": 100, "cacheReadTokens": 40, "cacheWriteTokens": 0,
+            "outputTokens": 25, "totalTokens": 125}}})])
+        self.log(killed, [json.dumps({"type": "thread.started", "thread_id": "bbbbbbbb-0000-0000-0000-000000000011"}),
+                          json.dumps({"type": "turn.started"})])
+        rows = {row["log"]: row for row in wc.run_rows(self.sup)}
+        counts = lambda name: None if rows[name]["usage"] is None else (
+            rows[name]["usage"].input, rows[name]["usage"].cached, rows[name]["usage"].output)
+        self.assertEqual(counts(gate), (0, 0, 0))
+        self.assertEqual(counts(codex), (321, 123, 45))
+        self.assertEqual(counts(luna_codex), (222, 22, 33))
+        self.assertEqual(counts(usage_event), (100, 40, 25))
+        self.assertIsNone(rows[killed]["usage"])
+
     # ---------- failover: an overwritten stream is counted exactly once ----------
 
     def test_stream_overwritten_after_failed_resume_counts_only_the_cold_run(self):
@@ -418,6 +458,37 @@ class Ledger(unittest.TestCase):
         self.assertEqual(spend[5]["fresh"], 700_000)  # 690k uncached input + 10k output
         self.assertIsNone(spend[6]["fresh"])  # a blended footer has no cache split
         self.assertIsNone(wc.ticket_bound([spend[6]["fresh"]]))  # cacheless history falls back
+
+    def efficiency_fixture(self, count, unknown, repairs=()):
+        at = (self.now - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        units = [{"id": f"issue-{i+1}", "issue": i+1, "stage": "merged", "history": [{"stage": "merged", "at": at}]} for i in range(count)]
+        rows = [{"unit": f"issue-{i+1}", "phase": "repair" if i in repairs else "implement", "backend": "codex", "model": "gpt-6-luna", "end": self.now, "minutes": 1, "usage": None if i in unknown else wc.Usage(100, 40, 10), "footer_tokens": None, "failover": False} for i in range(count)]
+        return units, rows
+
+    def test_token_efficiency_uses_measured_units_and_reports_run_coverage(self):
+        units, rows = self.efficiency_fixture(30, {29}, set(range(6)))
+        kpis = wc.token_efficiency_kpis(rows, units, self.now)
+        self.assertEqual((kpis["fresh_tokens_per_merged"], kpis["waste_pct"], kpis["repair_pct"]), (70, 0, 100*660/3190))
+        self.assertEqual(kpis["coverage_pct"], dict.fromkeys(("fresh_tokens_per_merged", "waste_pct", "repair_pct"), 96.7))
+        self.assertEqual(kpis["coverage_status"], dict.fromkeys(("fresh_tokens_per_merged", "waste_pct", "repair_pct"), None))
+        self.assertEqual(kpis["unknown_by"], "luna-no-footer:1")
+
+    def test_token_efficiency_warns_with_values_and_coverage_label_at_93_6_percent(self):
+        units, rows = self.efficiency_fixture(47, {44, 45, 46})
+        kpis = wc.token_efficiency_kpis(rows, units, self.now)
+        keys = ("fresh_tokens_per_merged", "waste_pct", "repair_pct")
+        self.assertEqual(kpis["coverage_pct"], dict.fromkeys(keys, 93.6))
+        self.assertEqual((kpis["fresh_tokens_per_merged"], kpis["waste_pct"], kpis["repair_pct"]), (70, 0, 0))
+        self.assertEqual(kpis["coverage_status"], dict.fromkeys(keys, "WARN"))
+        self.assertEqual(kpis["coverage_label"], dict.fromkeys(keys, "覆盖 93.6%"))
+
+    def test_token_efficiency_is_no_data_below_90_percent_coverage(self):
+        units, rows = self.efficiency_fixture(89, set(range(80, 89)))
+        kpis = wc.token_efficiency_kpis(rows, units, self.now)
+        keys = ("fresh_tokens_per_merged", "waste_pct", "repair_pct")
+        self.assertEqual(kpis["coverage_pct"], dict.fromkeys(keys, 89.9))
+        self.assertEqual((kpis["fresh_tokens_per_merged"], kpis["waste_pct"], kpis["repair_pct"]), (None, None, None))
+        self.assertEqual(kpis["coverage_status"], dict.fromkeys(keys, "NO-DATA"))
 
 
 class Eval(unittest.TestCase):

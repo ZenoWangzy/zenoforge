@@ -40,6 +40,7 @@ out="$(python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-
 got="$(jq -c '[.total_min, .waste_min, .by_reason.superseded_unapproved, .by_reason.cancelled, .by_reason.nonproduct_postsubmit]' "$a/ci-spend.json")"
 [[ "$got" == '[127,47,10,5,32]' ]] || fail "classification wrong: $got ($out)"
 [[ "$(jq -r .waste_pct "$a/ci-spend.json")" == 37.0 ]] || fail "waste share wrong: $(jq -r .waste_pct "$a/ci-spend.json")"
+grep -Fxq '  success main CI 72min' <<<"$out" && grep -Fxq '  cancelled agent/a CI 5min' <<<"$out" || fail "breakdown rows wrong: $out"
 # 已完成 run 的 job 分钟进缓存，下一次采样不再取
 jq -e 'has("1") and has("6")' "$a/ci-spend-cache.json" >/dev/null || fail 'completed runs not cached'
 jq '.jobs = {}' "$a/fixture.json" > "$a/fixture2.json"
@@ -102,7 +103,16 @@ from pathlib import Path
 root = Path(os.environ["SIZE_TEST_ROOT"])
 args = sys.argv[1:]
 if args[:3] == ["api", "--paginate", "--slurp"]:
-    print(json.dumps([{"workflow_runs": []}]))
+    path = args[3]
+    with (root / "api.log").open("a") as out:
+        out.write(path + "\n")
+    job = re.search(r"actions/runs/(\d+)/jobs", path)
+    if job:
+        print(json.dumps([{"jobs": json.loads((root / f"jobs-{job.group(1)}.json").read_text())}]))
+    elif (root / "runs.json").exists():
+        print((root / "runs.json").read_text())
+    else:
+        print(json.dumps([{"workflow_runs": []}]))
 elif args[:2] == ["api", "graphql"]:
     numbers = re.findall(r"p(\d+):pullRequest\(number:\d+\)", " ".join(args))
     with (root / "queries.log").open("a") as out:
@@ -132,6 +142,21 @@ python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-21T12:3
 jq -e '.lines == {"201":400,"202":100,"203":500} and .nontest_added == {"201":400,"202":50,"203":200}' "$a/pr-sizes.json" >/dev/null \
   || fail 'open PR size was not refreshed or merged size was not reused'
 [[ "$(tail -1 "$a/queries.log")" == '202' ]] || fail 'the second sample fetched immutable PR sizes again'
+# --repo names the repo in the runs, jobs and GraphQL calls; cold job fetches run in parallel and feed the breakdown.
+: > "$a/api.log"
+cat > "$a/runs.json" <<JSON
+[{"workflow_runs":[$(run 901 CI pull_request agent/x "$A1" 12:10 "feat: x"),$(run 902 CI pull_request agent/y "$A2" 12:20 "fix: y")]}]
+JSON
+echo "[$(job success 13)]" > "$a/jobs-901.json"
+echo "[$(job failure 04)]" > "$a/jobs-902.json"
+python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-21T12:30:00Z --repo test/product > "$a/repo.out"
+grep -qx 'repos/test/product/actions/runs/901/jobs?filter=all&per_page=100' "$a/api.log" && grep -q '^repos/test/product/actions/runs?' "$a/api.log" \
+  || fail "--repo not used for the runs and jobs calls: $(cat "$a/api.log")"
+grep -q 'repository(owner:"test",name:"product")' "$a/fields.log" || fail '--repo not used for PR size queries'
+grep -Fxq '  success agent/x CI 13min' "$a/repo.out" && grep -Fxq '  failure agent/y CI 4min' "$a/repo.out" || fail "breakdown rows missing: $(cat "$a/repo.out")"
+[[ "$(jq -r .total_min "$a/ci-spend.json")" == 17 ]] || fail "parallel job minutes wrong: $(jq -r .total_min "$a/ci-spend.json")"
+if python3 "$script_dir/ci_spend.py" --runtime "$a" --repo 'bad/../x' >/dev/null 2>&1; then fail '--repo accepted a path'; fi
+rm -f "$a/runs.json"
 touch "$a/query-failed"
 python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-21T13:00:00Z >/dev/null
 jq -e '(.lines | has("202") | not) and (.nontest_added | has("202") | not) and .lines["201"] == 400 and .lines["203"] == 500' "$a/pr-sizes.json" >/dev/null \

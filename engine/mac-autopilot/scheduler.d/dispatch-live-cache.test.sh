@@ -70,4 +70,48 @@ pass_refreshes() { # pending units -> refreshes in one full-tick pass, 3 of 8 sl
 small="$(pass_refreshes 5)"; large="$(pass_refreshes 20)"
 [[ "$small" == "$large" ]] || fail "refreshes grew with the pending units: 5 units $small, 20 units $large"
 (( large == 1 )) || fail "expected a single refresh with the TTL pinned, got $large"
+
+# A failed worker launch must clear the issue reservation without charging it.
+issue=930101; ROOT="$fixture/repo" A="$fixture/agent" SUP="$fixture/supervisor" AGENT_HOME="$fixture/agent" CODEX_MODE=exec CODEX_PATH_REASON=fixture CODEX_SESSION_ID=fixture CODEX_USAGE_START=0
+QUARANTINE_DIR="$AGENT_HOME/quarantine" SCHEDULER_AGENT_LIB="$engine_dir/lib.sh"; export AGENT_HOME
+mkdir -p "$A" "$SUP" "$AGENT_HOME/state" "$QUARANTINE_DIR"
+printf '%s\n' '{"units":[{"id":"issue-930101","issue":930101,"lane":"pr"}]}' > "$UNITS"; printf '%s\n' '{"run":{"conclusion":{"canary_reserved_scopes":"implement"}}}' > "$AGENT_HOME/state/$issue.json"
+printf '%s\n' '{"canaries":0,"next_canary_at":0}' > "$QUARANTINE_DIR/implement.json"
+build_codex_command() { CODEX_COMMAND=(true); }; worker_write_guard_env() { :; }; worker_pidfile() { printf '%s\n' "$fixture/worker.pid"; }; worker_scope_launch() { return 1; }
+coord_issue_key() { printf 'issue:%s\n' "$1"; }; coord_new_owner() { printf 'fixture\n'; }; coord_acquire() { return 0; }
+coord_assert_owned() { return 0; }; coord_scheduler_live_worker() { return 1; }
+dispatch_status=0
+dispatch implement codex high "issue-$issue" worker.log report.md prompt || dispatch_status=$?
+[[ "$dispatch_status" == 1 ]] || fail "failed worker start returned $dispatch_status"
+jq -e '.run.conclusion.canary_reserved_scopes == null' "$AGENT_HOME/state/$issue.json" >/dev/null && jq -e '.canaries == 0' "$QUARANTINE_DIR/implement.json" >/dev/null \
+  || fail 'failed worker start left a reservation or charged the canary'
+
+run_canary_claim_failure_case() (
+  local mode="$1" status=0
+  printf '%s\n' '{"run":{"conclusion":{"canary_reserved_scopes":"implement"}}}' > "$AGENT_HOME/state/$issue.json"
+  coord_acquire() { return 0; }; coord_release() { :; }
+  coord_assert_owned() { [[ "$mode" != before-launch ]]; }
+  coord_renew() { return 1; }
+  worker_scope_launch() {
+    WORKER_SCOPE_PID=$$
+    case "$mode" in start-identity) WORKER_SCOPE_PID_START="" ;; *) WORKER_SCOPE_PID_START=1 ;; esac
+  }
+  coord_process_start_ticks() { return 1; }
+  stuck_worker_stop() { return 1; }
+  alive() { return 0; }
+  dispatch implement codex high "issue-$issue" worker.log report.md prompt || status=$?
+  [[ "$status" == 1 ]] || fail "$mode returned $status"
+  if [[ "$mode" == before-launch ]]; then
+    jq -e '.run.conclusion.canary_reserved_scopes == null' "$AGENT_HOME/state/$issue.json" >/dev/null \
+      || fail 'claim lost before launch left a reservation'
+  else
+    jq -e '.run.conclusion.canary_reserved_scopes == "implement"' "$AGENT_HOME/state/$issue.json" >/dev/null \
+      || fail "$mode cleared a reservation while the worker may still be alive"
+  fi
+)
+claim_failure_status=0
+run_canary_claim_failure_case before-launch || claim_failure_status=1
+run_canary_claim_failure_case start-identity || claim_failure_status=1
+run_canary_claim_failure_case claim-lost || claim_failure_status=1
+[[ "$claim_failure_status" == 0 ]] || fail 'claim failure reservation cases failed'
 echo "dispatch-live-cache.test.sh: pass (live-worker refreshes per pass: $small for 5 pending units, $large for 20)"

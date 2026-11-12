@@ -84,6 +84,7 @@ if (stuck.length && !recentMerge(stuckMinutes * 60)) {
   process.exit(0);
 }
 
-if (ready.length && !recentMerge(noOutputHours * 3600)) {
-  process.stdout.write(`throughput idle: ready-to-merge=${ready.length}, no merged PR# in ${noOutputHours}h\n`);
+const idleCount = ready.map(historyEpoch).filter(at => at === null || now - at > stuckMinutes * 60).length;
+if (idleCount && !recentMerge(noOutputHours * 3600)) {
+  process.stdout.write(`throughput idle: ready-to-merge=${idleCount}, no merged PR# in ${noOutputHours}h\n`);
 }

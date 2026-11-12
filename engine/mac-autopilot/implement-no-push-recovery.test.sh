@@ -46,6 +46,23 @@ harvest_pr_implement issue-901 "$sup/impl-901.md" || :
 [[ "$(stage_of issue-901 implement-push-recovered)" == 1 && "$(field issue-901 '.history[] | select(.stage=="implement-push-recovered") | .result')" == *"engine pushed worker commit $np_local_head"* ]] \
   || fail 'recovery is not recorded with its cause in history'
 
+# 1b) A handoff commit is local-ahead of an existing PR branch. Recovery must publish it
+# before scheduler_pr_open records the PR head; otherwise the PR silently stays on the old ref.
+command git clone -q "$np/origin.git" "$WT_ROOT/wt-issue-907"
+np_wt issue-907 checkout -q -b agent/issue-907
+printf 'existing PR head\n' >> "$WT_ROOT/wt-issue-907/f"; np_wt issue-907 add -A; np_wt issue-907 commit -qm 'existing PR head'
+np_wt issue-907 push -q -u origin agent/issue-907
+np_pr_head="$(np_wt issue-907 rev-parse HEAD)"
+printf 'preserved rescue history\n' >> "$WT_ROOT/wt-issue-907/f"; np_wt issue-907 add -A; np_wt issue-907 commit -qm 'preserved handoff history'
+np_local_head="$(np_wt issue-907 rev-parse HEAD)"
+units '{"units":[{"id":"issue-907","issue":907,"title":"handoff delivery","branch":"agent/issue-907","lane":"pr","stage":"implement","handoff_integration_sha":"'"$np_local_head"'","handoff_original_pr_head":"'"$np_pr_head"'","handoff_start_ref":"rescued/agent-issue-907-test","history":[]}]}'
+printf 'handoff work delivered\n' > "$sup/impl-907.md"
+harvest_pr_implement issue-907 "$sup/impl-907.md" || :
+[[ "$(np_origin rev-parse refs/heads/agent/issue-907)" == "$np_local_head" ]] \
+  || fail "existing PR branch stayed at its old head instead of publishing integrated history (got $(np_origin rev-parse refs/heads/agent/issue-907), want $np_local_head)"
+[[ "$(field issue-907 '.history[] | select(.stage=="pr-opened") | .result')" == "PR#4200 $np_local_head" ]] \
+  || fail 'the PR was not recorded at the published integrated head'
+
 # 2) 空交付（#5246：改动落在别的 checkout/远端，指定 worktree 既无提交也无未提交改动）。
 command git clone -q "$np/origin.git" "$WT_ROOT/wt-issue-902"
 np_wt issue-902 checkout -q -b agent/issue-902

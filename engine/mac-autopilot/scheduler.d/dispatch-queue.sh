@@ -24,11 +24,77 @@ dispatch_steps_say() {
   done < <(for step_name in "${!dispatch_step_secs[@]}"; do printf '%s %s\n' "${dispatch_step_secs[$step_name]}" "$step_name"; done | sort -k1,1nr -k2,2 | cut -d' ' -f2)
   say "$step_line"
 }
+implement_report_sections() {
+  cat <<'EOF'
+报告必须包含以下章节：
+## how
+说明触及代码目前如何工作。
+## why
+说明当初如此编写的原因，引用至少一个 7 位以上十六进制提交 SHA 或 #N issue。
+## decision-log
+非空，记录本次实现采取的决定。
+EOF
+}
+direct_main_worker_prompt() { # prompt unit-json → append the worker-side test policy only on the direct-main lane
+  local prompt="$1" unit="$2"
+  [[ "$(jqf -r '.lane // empty' <<<"$unit")" == direct-main ]] || { printf '%s' "$prompt"; return 0; }
+  printf '%s\n%s' "$prompt" 'Do not run any test file or test command. The engine runs tests after delivery. A refused test command is not a failure; finish the change and deliver.'
+}
+direct_main_worker_head() { # worktree → checked-out commit used to key direct-main worker outcomes
+  local head
+  head="$(git -C "$1" rev-parse --verify HEAD 2>/dev/null)" || head=''
+  [[ "$head" =~ $SHA_RE ]] || head=''
+  printf '%s' "$head"
+}
+feature_verification_prompt() { # lane brief → product feature evidence instructions; direct-main work has no worker-run test commands
+  if [[ "$1" == direct-main ]]; then
+    printf '%s' 'Feature verification plan (direct-main): no product feature verification commands; the lander runs the tests.'
+  else
+    cat <<EOF
+Feature verification plan (advisory, from ticket-declared paths): $2
+After implementation, refresh IDs from the actual changed paths with node engine/verification-plan.mjs --root . --base origin/main --head HEAD. Run node scripts/e2e/yangfeng-regression/verify-feature.mjs --feature <IDs> --target <base-url> --json only when a candidate target already serves this build. Record the JSON output path. If no candidate target exists, say so; do not build a local stack. This is worker evidence, not a merge gate.
+EOF
+  fi
+}
+# Why a unit did not start: one `dispatch why` line when its gate differs from the last gate logged for it. dispatch_skip, room_for and
+# footprint_room pass the unit as why_unit (dynamic scope). The last gate per unit lives in $A/.dispatch-why (unit TAB gate); a start clears it.
+declare -gA DISPATCH_WHY_LAST=()
+DISPATCH_WHY_DIRTY=false
+dispatch_why() { # unit gate [detail]
+  [[ -n "${1:-}" && -n "${2:-}" && "${DISPATCH_WHY_LAST[$1]:-}" != "$2" ]] || return 0
+  DISPATCH_WHY_LAST[$1]="$2"; DISPATCH_WHY_DIRTY=true
+  say "dispatch why unit=$1 gate=$2${3:+ detail=$3}"
+}
+dispatch_why_clear() { # unit: it started, so its next skip is news again
+  [[ -n "${1:-}" && -n "${DISPATCH_WHY_LAST[$1]:-}" ]] || return 0
+  unset "DISPATCH_WHY_LAST[$1]"; DISPATCH_WHY_DIRTY=true
+}
+dispatch_why_load() {
+  local unit gate
+  DISPATCH_WHY_LAST=(); DISPATCH_WHY_DIRTY=false
+  [[ -n "${A:-}" && -r "$A/.dispatch-why" ]] || return 0
+  while IFS=$'\t' read -r unit gate; do [[ -n "$unit" && -n "$gate" ]] && DISPATCH_WHY_LAST[$unit]="$gate"; done < "$A/.dispatch-why"
+  return 0
+}
+dispatch_why_save() { # prunes units that left units.json; rewrites the file only when a gate or a prune changed it
+  local unit ids
+  [[ -n "${A:-}" && -n "${UNITS:-}" ]] || return 0 # a caller without a state dir (a pack stub test) keeps no file
+  ids="$(jqf -r '.units[].id' "$UNITS" 2>/dev/null)" || return 0
+  for unit in "${!DISPATCH_WHY_LAST[@]}"; do
+    grep -qxF -- "$unit" <<<"$ids" || { unset "DISPATCH_WHY_LAST[$unit]"; DISPATCH_WHY_DIRTY=true; }
+  done
+  [[ "$DISPATCH_WHY_DIRTY" == true ]] || return 0
+  for unit in "${!DISPATCH_WHY_LAST[@]}"; do printf '%s\t%s\n' "$unit" "${DISPATCH_WHY_LAST[$unit]}"; done > "$A/.dispatch-why.tmp" \
+    && mv -f -- "$A/.dispatch-why.tmp" "$A/.dispatch-why" || :
+  DISPATCH_WHY_DIRTY=false
+}
 
 dispatch_pending() {
   TICK_DISPATCH_SKIPS=()
+  TICK_PRIORITY_HOLD_EXPIRED=()
+  TICK_PRIORITY_ADMISSION_CACHE=()
   TICK_CONTAINER_RUNTIME=""
-  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
+  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver verify_rule issue key subject prless stack_branch stack_sha route route_head resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started
   local -A dispatch_step_secs=() dispatch_step_counts=(); local dispatch_step_at=${EPOCHREALTIME/[.,]/} dispatch_step_last=start
   # A full tick's first pass: past the walk deadline room_for refuses every start, so the tail still gets its parks and holds.
@@ -53,6 +119,7 @@ dispatch_pending() {
     dispatch_capacity_free && tick_prs_prime
   fi
   dmark census
+  dispatch_why_load
   TICK_DISPATCH_LOCAL_REFILL="$local_refill"
   if [[ "$local_refill" != true ]] && declare -F advisor_harvest >/dev/null; then
     step_started=$SECONDS
@@ -74,7 +141,7 @@ dispatch_pending() {
     dispatch_live_prime
     paused_midrun dispatch && break
     [[ "$TICK_FOOTPRINT_CAP_HIT" != true ]] || break # footprint_room said why
-    id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"
+    id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"; why_unit="$id"
     # The kill counts from the refill's start, and one start can take a minute under load. 90 matches the merge pass stop.
     if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 90 )); then
       say "dispatch deadline after ${SECONDS}s: units from $id wait for the next refill"
@@ -108,7 +175,7 @@ dispatch_pending() {
       set_unit "$id" 'del(.dep_wait_delivery, .unpark_condition)' # satisfied: a later cache read must not park on it again
     fi
     dmark dep_marker
-    [[ "$(jqf -r '.hold_handoff_waiting // false' <<<"$u")" != false ]] && ! handoff_wait_stale "$id" && continue
+    [[ "$(jqf -r '.hold_handoff_waiting // false' <<<"$u")" != false ]] && ! handoff_wait_stale "$id" && { dispatch_why "$id" hold-handoff; continue; }
     # A run that ended blocked-on with no commit starts again only once its blocker clears: a hold handoff or requeue that frees it earlier
     # sends it back to blocked-external, where release_dependency_blocks frees it on delivery or routes a dead blocker (dead_blocker_resolve, dep_dead_sweep).
     if [[ "$stage" == implement-pending || "$stage" == repair-pending ]] && blocked_dep="$(unit_blocked_run_dep "$u")" \
@@ -164,6 +231,8 @@ dispatch_pending() {
             continue
           fi
         fi
+        # A fresh signal (not a repeat) is requeued here, at most twice per ruling and while those requeues deliver; otherwise on to the arbiter as before.
+        if stop_loss_fresh_requeue "$id" "$u" "$budget"; then dmark stop_loss_escalate; continue; fi
         if [[ "$issue" =~ ^[0-9]+$ && -z "$pr" ]]; then
           supervisor_budget_recut "$id" "ticket stop-loss budget: $budget"
           (( SECONDS - escalate_started < 2 )) || say "dispatch detail stop_loss_escalate unit=$id secs=$((SECONDS - escalate_started))s"
@@ -245,6 +314,14 @@ dispatch_pending() {
           dispatch_skip body-blocked; continue
         fi
         dstep room_for room_for "$id" repair "$u" false || continue
+        read -r route route_head <<<"$(no_finding_repair_route "$u")" || true
+        if [[ "$route" == ready-to-merge ]]; then
+          set_unit "$id" "$(hist repair-rerouted "no red check and no open finding; approved head $route_head -> CI admission") | .approved_sha=$(js "$route_head") | .stage=\"ready-to-merge\""
+          say "repair-pending unit=$id: no red check and no open finding -> ready-to-merge"; continue
+        elif [[ "$route" == review-pending ]]; then
+          set_unit "$id" "$(hist repair-rerouted "no red check and no open finding; the current head needs a review") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
+          say "repair-pending unit=$id: no red check and no open finding -> review-pending"; continue
+        fi
         # refill 首个通过 room_for 的 PR 车道候选才取一次 census；满载时上面的 room_for 已跳过，一次都不取。
         [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }; dmark census_prime
         # repair_cap_admission may have just moved this unit onto the hard tier.
@@ -301,8 +378,10 @@ dispatch_pending() {
         [[ -n "$hint" ]] && hint="
 本轮额外阻断（优先处理；评审报告若已 READY，只需处理这一条）：$hint"
         if [[ "$lane" == direct-main ]]; then
+          verify_rule='2. 补/改回归测试。'
           deliver="node scripts/branch-delivery-preflight.mjs --mode commit 通过后在本地分支 ${branch} 提交即可，【不要 push】：这是非产品快车道，复审通过后流水线会把它压成一个提交经 land-direct-main.sh 直落 main。提交信息不要带 [skip ci]。"
         else
+          verify_rule="2. 补/改回归测试，定向跑受影响测试与 typecheck 全绿。${INTEGRATION_RULE}"
           deliver="node scripts/branch-delivery-preflight.mjs --mode push --publish-topic 通过后 push 到 origin ${branch}（绝不推 main、不 force）。"
         fi
         prompt="你是 the product 流水线的实现 subagent，修复 ${subject} 的评审阻断发现。当前目录是隔离 clone：${wt}（分支 ${branch}，已同步 origin）。
@@ -311,15 +390,21 @@ $(matt_method_rule "$wt")
 0b. 先合入最新 main：git merge --no-edit origin/main（不 rebase、不 force；有冲突按两边意图解决）。push preflight 的 freshness 门禁拒绝落后 main 过多的分支，不合就永远推不上。
 1. 读评审报告 $SUP/${prev_report}，逐条处理其中的阻断发现（${title}）。不得为凑绿弱化断言。按缺陷类别修，不按单点修：每条发现先归纳成一类问题（例：单位码被显示名覆盖、幂等键缺字段），在本 PR 全部改动里搜出同类位置一并处理，每一类补一条回归测试；只修被点名的那一行，下一轮评审会在同类的另一处再打回。同一函数的兄弟出口也要枚举：评审点名某函数的一个 return、throw、提前 continue 或错误分支时，先列出该函数的全部出口，每个出口修同一缺陷类别并各补一条回归测试，本轮一次做完，不留到下一轮；报告里列出已检查的出口。${hint}
 1b. 修复报告必须按 $REVIEW_CONTRACT_MD 中的 author-disposition schema，为上一轮每个 finding ID 记录处置和一行理由；复审会从单元历史读取这些处置。
-2. 补/改回归测试，定向跑受影响测试与 typecheck 全绿。${INTEGRATION_RULE}
+${verify_rule}
 3. ${deliver}
    若本地分支已有上一轮未推送的提交（git log origin/${branch}..HEAD 非空），在其基础上继续，不要重做。
 4. 禁止：动主 checkout、合并 PR（gh pr merge）、改 GitHub 状态、部署。0b 的 git merge origin/main 不在此列。
-5. 修复说明（改动、验证输出摘要、push SHA 或本地提交 SHA）写到 $SUP/${rep}，交付完即结束。
+5. 修复说明写到 $SUP/${rep}，包含改动、验证摘要、交付 SHA 和非空的 ## decision-log（试过什么、失败原因、最终选择、如何验证）；同时就地更新单元实现报告的该节，供复审读取，交付完即结束。
 $(decision_scope "$u")"
+        if [[ "$lane" == direct-main ]]; then prompt+=$'\nDo not run *.test.* files; the lander runs the tests.'; fi
+        prompt="$(direct_main_worker_prompt "$prompt" "$u")"
+        sha=""
+        if [[ "$lane" == direct-main ]]; then
+          sha="$(direct_main_worker_head "$wt")" || { say "repair-pending unit=$id: direct-main worktree head unavailable"; continue; }
+        fi
         dmark prompt
         dispatch_if_room "$id" "repair" "repair" "${rep%.md}.worker.log" "$rep" \
-          "$PICK_MODEL" "$PICK_EFFORT" "$prompt$(sweep_rule "$u")$(supervisor_rule "$u")" "" "$wt" "" "$failure" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" && [[ -n "$pr_num" ]] && repair_demote "$id" "$pr_num" "$branch"
+          "$PICK_MODEL" "$PICK_EFFORT" "$prompt$(sweep_rule "$u")$(supervisor_rule "$u")" "$sha" "$wt" "" "$failure" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" && [[ -n "$pr_num" ]] && repair_demote "$id" "$pr_num" "$branch"
         dmark dispatch; true ;;
       rereview-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || { to_supervisor "$id" "rereview-pending without a PR"; continue; }
@@ -360,7 +445,7 @@ $(decision_scope "$u")"
           # repair 交付了报告却没推出新 head（多为 GitHub 间歇断连，改动留在 clone/stash）：自动重试 repair 两次再转人工。
           if [[ "$(jqf -r '(.history // [])[-1].stage // ""' <<<"$u")" == repair-delivered ]] \
             && (( $(jqf -r --arg h "head $sha " '[(.history // [])[] | select(.stage=="repair-no-push" and ((.result // "") | startswith($h)))] | length' <<<"$u") < 2 )); then
-            set_unit "$id" "$(hist repair-no-push "head $sha unchanged after repair") | .stage=\"repair-pending\""
+            set_unit "$id" "$(hist repair-no-push "head $sha unchanged after repair") | .history[-1].head_class=\"unchanged\" | .stage=\"repair-pending\""
             say "repair-no-push unit=$id: head $sha unchanged after repair -> retry repair"
             continue
           fi
@@ -387,6 +472,7 @@ $(decision_scope "$u")"
           # 没有可核销的上一轮基线：做一次完整评审，不允许空 diff 的"增量复审"放行。
           rep="review-${key}-${TAG}.md"
           prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt")$(sweep_rule "$u" "$sha")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+          prompt+="$(ci_red_evidence_rule "$u" "$sha" "$prev_sha")"
         dmark prompt
         dispatch_if_room "$id" "review" "review" "${rep%.md}.worker.log" "$rep" \
             "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true; dmark dispatch
@@ -397,6 +483,7 @@ $(decision_scope "$u")"
 复审 ${subject}（${title}）当前 head ${sha}，上轮 head ${prev_sha}。按正式契约中的 Targeted re-review 流程，仅检查 ${prev_sha}..${sha} 的 PR 增量及其直接依赖闭包；报告写到 $SUP/${rep}。
 读取上轮报告 $SUP/${prev_report} 和单元历史中的作者处置，再按处置逐条核验。$(review_contract_rule)
 只读边界：不编辑/commit/push/merge/评论。$(review_dispositions_context "$u")$(review_inputs_rule "$u" "$wt")$(risk_class_safety_rule "$wt")$(lane_rule "$lane" "$sha")$(sweep_rule "$u" "$sha")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+        prompt+="$(ci_red_evidence_rule "$u" "$sha" "$prev_sha")"
         dmark prompt
         dispatch_if_room "$id" "rereview" "rereview" "${rep%.md}.worker.log" "$rep" \
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "$pr_head" "$prompt" "$u" || true; dmark dispatch ;;
@@ -414,6 +501,7 @@ $(decision_scope "$u")"
         dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "review-pending unit=$id: PR head $sha unavailable"; continue; }
         rep="review-${key}-${TAG}.md"
         prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+        prompt+="$(ci_red_evidence_rule "$u" "$sha" "$(jqf -r '.reviewed_sha // empty' <<<"$u")")"
         # 打回报告缺可解析发现块后的同 head 重问：history 尾事件就是重问标记（重交合规报告后即被新事件取代）。
         [[ "$(jqf -r '(.history // [])[-1].stage // empty' <<<"$u")" == review-findings-missing ]] && prompt+="$(findings_reask_rule "$u")"
         # 结论行不可解析后的同 head 格式重问：评审员读回自己的报告只补独立 VERDICT 行，不整场重评。
@@ -427,14 +515,12 @@ $(decision_scope "$u")"
         [[ -z "$task" ]] && { say "implement-pending unit=$id has no .task; supervisor required"; continue; }
         [[ -z "$branch" ]] && { say "implement-pending unit=$id has no .branch; supervisor required"; continue; }
         wt=""
+        park_if_body_blocked "$u" && { dispatch_skip body-blocked; continue; }
         if [[ "$local_refill" == true ]]; then
-          [[ -z "$(blocking_body_dependency "$u")" ]] || { dispatch_skip body-blocked; continue; }
           if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]] \
             || [[ -n "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; then
             dispatch_skip handoff-pending; continue
           fi
-        else
-          park_if_body_blocked "$u" && { dispatch_skip body-blocked; continue; }
         fi
         dmark body_block
         dstep room_for room_for "$id" implement "$u" false || continue
@@ -486,10 +572,11 @@ $(decision_scope "$u")"
           deliver="ACCEPTANCE：
 先确认问题在当前 main 上仍存在：已被修复或不再适用就不改代码，报告第一行写 OBSOLETE: <证据：写明当前 main 上的 file:line、commit 或 run 链接；没有数据不算 OBSOLETE>。${OPT_PREMISE_RULE}${BLAST_RADIUS_RULE}
 VERIFY：
-本地定向验证全绿；node scripts/branch-delivery-preflight.mjs --mode commit 通过后在本地分支 ${branch} 提交（提交信息不带 [skip ci]）——这是非产品快车道，评审通过后流水线把它压成一个提交经 land-direct-main.sh 直落 main。
+node scripts/branch-delivery-preflight.mjs --mode commit 通过后在本地分支 ${branch} 提交（提交信息不带 [skip ci]）——这是非产品快车道，评审通过后流水线把它压成一个提交经 land-direct-main.sh 直落 main。
 FORBIDDEN：
 只改非产品路径（scripts/、lessons/、docs/、.agents/ 等）；修复必须改产品代码（packages/、apps/、services/）或 .github/workflows 时不要改，报告第一行写 NEEDS-PR: <原因>。不要 push、不开 PR；禁止 merge PR/部署/改 GitHub 状态。
 REPORT：
+$(implement_report_sections)
 产出说明写到 $SUP/${rep}（根因、改动、验证输出摘要、本地提交 SHA）。交付完即结束。"
         else
           deliver="ACCEPTANCE：
@@ -500,6 +587,7 @@ VERIFY：
 FORBIDDEN：
 不 push main、不 force、不开 PR——流水线会开 PR 并派评审；禁止 merge PR/部署/改 GitHub 状态。push preflight 判定这份改动只能走 direct-main 时不要自己落地，报告第一行写 NEEDS-DIRECT: <原因>。
 REPORT：
+$(implement_report_sections)
 产出说明写到 $SUP/${rep}（根因、改动、验证输出摘要、push SHA；SPLIT 时写清已交付切片的边界和剩余范围）。交付完即结束。"
         fi
         feature_issue="$(jqf -r '.issue // empty' <<<"$u")"
@@ -522,15 +610,19 @@ issue 写明的前置 issue 尚未交付（仍 open、没有已合并的修复�
 当前目录是隔离 clone：${wt}（分支 ${branch}，基于最新 main 或该分支已有的进度）。若 git stash list 有「autopilot: kept before redispatch」，是上一轮未提交的进度，先 git stash pop 恢复。
 $(matt_method_rule "$wt")
 $(decision_scope "$u")
-Feature verification plan (advisory, from ticket-declared paths): $feature_brief
-After implementation, refresh IDs from the actual changed paths with node engine/verification-plan.mjs --root . --base origin/main --head HEAD. Run node scripts/e2e/yangfeng-regression/verify-feature.mjs --feature <IDs> --target <base-url> --json only when a candidate target already serves this build. Record the JSON output path. If no candidate target exists, say so; do not build a local stack. This is worker evidence, not a merge gate.
+$(feature_verification_prompt "$lane" "$feature_brief")
 
 优先用有界读取：用 rg -l 或 rg -m 20 缩小搜索结果，再用 sed -n '起,止p' 读取指定行区间；大文件不要整份 cat。
 
 $deliver"
+        prompt="$(direct_main_worker_prompt "$prompt" "$u")"
+        sha=""
+        if [[ "$lane" == direct-main ]]; then
+          sha="$(direct_main_worker_head "$wt")" || { say "implement-pending unit=$id: direct-main worktree head unavailable"; continue; }
+        fi
         dmark prompt
         dispatch_if_room "$id" "implement" "implement" "${rep%.md}.worker.log" "$rep" \
-          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "" "$wt" "" "$prompt" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" || true; dmark dispatch ;;
+          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "" "$prompt" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" || true; dmark dispatch ;;
     esac
   done <<<"$ordered"
   (( dispatch_pass == 1 && ${#TICK_FOOTPRINT_DEFERRED[@]} > 0 )) || break
@@ -543,5 +635,6 @@ $deliver"
   { (( SECONDS - pending_started < 10 )) && [[ -z "$TICK_REVIEW_WAITS" ]]; } || say "dispatch detail pending_summary secs=$((SECONDS - pending_started)) revalidate_secs=$revalidate_secs loop_secs=$((SECONDS - loop_started)) units=$(grep -c . <<<"$ordered") footprint_room_ms=$((TICK_FOOTPRINT_ROOM_USEC / 1000)) footprint_room_calls=$TICK_FOOTPRINT_ROOM_CALLS footprint_waits=$TICK_FOOTPRINT_ROOM_WAITS $(review_wait_summary)"
   footprint_convoy_alert || say 'footprint-convoy alert check failed'
   dmark convoy_alert
+  dispatch_why_save
   dispatch_steps_say
 }

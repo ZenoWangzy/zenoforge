@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gen_dashboard.py 的 front（收单 → triage → advisor → 发布等待）：阶段计数与滞留时间、顾问批处理（lib.sh 读状态 + 结果日志）、
+# gen_dashboard.py 的 front（收单 → triage → advisor → 发布等待）：阶段 / 仓库总量与滞留时间、需求阶梯、顾问批处理（lib.sh 读状态 + 结果日志）、
 # triage 流水线效率账、发布列车被挡；GitHub 计数缓存 5 分钟；任何一块失败只让那一块"数据不可用"，看板其余照常。
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
@@ -20,7 +20,7 @@ stamp() { date -u -d "$1" +%Y%m%dT%H%M%SZ; }
 utc_hour=$((10#$(date -u +%H))); off=$((12 - utc_hour))
 if (( off > 0 )); then tz="Etc/GMT-$off"; elif (( off < 0 )); then tz="Etc/GMT+$((-off))"; else tz="Etc/GMT"; fi
 export SESSION_TZ="$tz" CODEX_SESSIONS_DIR="$f/sessions" MAC_AUTOPILOT_ROOT="$root" \
-  MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$a" ZF_REPO_DIR="$root"
+  MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$a" ZF_REPO_DIR="$root" ZF_REPO="example/fixture-repo"
 export MAC_AUTOPILOT_COST_CACHE="$f/cost.json" MAC_AUTOPILOT_DASHBOARD_OUTPUT="$f/out.js"
 export FAKE_DEPLOYMENTS="$f/deployments.json" FAKE_DEPLOYMENT_WRITES="$f/deployment-writes"
 export FAKE_SSH_LOG="$f/ssh.log"
@@ -42,8 +42,17 @@ cat > "$a/units.json" <<JSON
 {"units":[{"id":"pr-1","issue":555,"title":"fixture title","labels":["focus"],"stage":"repair-pending","history":[
   {"stage":"advisor-ruling","at":"$(iso '-3 hours')"},{"stage":"advisor-unavailable","at":"$(iso '-2 hours')"},
   {"stage":"advisor-unavailable","at":"$(iso '-40 hours')"}]},
- {"id":"pr-2","stage":"repair-pending","history":[{"stage":"advisor-ruling","at":"$(iso '-1 hours')"}]}]}
+ {"id":"pr-2","stage":"repair-pending","history":[{"stage":"advisor-ruling","at":"$(iso '-1 hours')"}]},
+ {"id":"issue-801","issue":801,"title":"ready chain","labels":["ready-for-agent"],"stage":"blocked-external","blocked_on":802,"history":[]},
+ {"id":"issue-802","issue":802,"title":"parked recut","labels":["ready-for-agent"],"stage":"parked","parked_reason":"recut-refused-unpushed","history":[]},
+ {"id":"issue-803","issue":803,"title":"missing blocker","labels":["ready-for-agent"],"stage":"blocked-external","history":[]},
+ {"id":"issue-804","issue":804,"title":"tracker blocker","labels":["ready-for-agent"],"stage":"blocked-external","blocked_on":900,"history":[]},
+ {"id":"issue-805","issue":805,"title":"already dispatching","labels":["ready-for-agent"],"stage":"implement-pending","history":[]},
+ {"id":"issue-807","issue":807,"title":"repair breaker","labels":["ready-for-agent"],"stage":"parked","parked_reason":"repair-breaker","history":[]},
+ {"id":"issue-806","issue":806,"title":"missing blocker state","labels":["ready-for-agent"],"stage":"blocked-external","blocked_on":901,"history":[]}]}
 JSON
+mkdir -p "$AGENT_HOME/state"
+printf '{"state":"tracker"}\n' > "$AGENT_HOME/state/900.json"
 printf '{"rulings":[{"references":["#555"],"verbatim":"config override wording"}]}\n' \
   > "$root/.zenoforge/state/rulings.json"
 printf '{"rulings":[{"references":["#555"],"verbatim":"engine fallback wording"}]}\n' \
@@ -88,13 +97,22 @@ printf '%s' '{"data":{"repository":{
  "a3":{"totalCount":3,"nodes":[{"number":6,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"__RECENT__"}]},
  "a4":{"totalCount":0,"nodes":[]},"a5":{"totalCount":9,"nodes":[{"number":8,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"__RECENT__"}]},
  "a6":{"totalCount":5,"nodes":[{"number":3,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"__RECENT__"}]},
- "a7":{"totalCount":0,"nodes":[]}}}}' | sed "s/__RECENT__/$(iso '-2 hours')/g" > "$f/graphql.json"
+ "a7":{"totalCount":0,"nodes":[]}},
+ "c0":{"issueCount":30},"c1":{"issueCount":31},"c2":{"issueCount":2},"c3":{"issueCount":3},"c4":{"issueCount":4},
+ "c5":{"issueCount":4},"c6":{"issueCount":0},"c7":{"issueCount":2},"c8":{"issueCount":3},"c9":{"issueCount":0},
+ "c10":{"issueCount":9},"c11":{"issueCount":5},"c12":{"issueCount":0}}}' | sed "s/__RECENT__/$(iso '-2 hours')/g" > "$f/graphql.json"
+jq -n '[8,801,802,803,804,805,806,807,808] | map({number:.})' > "$f/ready-issues.json"
 cat > "$f/bin/gh" <<'GH'
 #!/usr/bin/env bash
 if [[ "$1 $2" == "api graphql" ]]; then
   echo graphql >> "$FAKE_GH_LOG"
   if [[ -n "${FAKE_GH_FAIL:-}" ]]; then echo 'HTTP 502: bad gateway' >&2; exit 1; fi
   cat "$FAKE_GRAPHQL"
+elif [[ "$1 $2" == "issue list" && " $* " == *" --label ready-for-agent "* ]]; then
+  echo issue-list >> "$FAKE_GH_LOG"
+  cat "$FAKE_READY_ISSUES"
+elif [[ "$1 $2" == "issue list" ]]; then
+  echo '[]'
 elif [[ "$1 $2" == "api repos/"* ]]; then
   case "$2" in
     repos/*/deployments\?environment=production\&per_page=20) cat "$FAKE_DEPLOYMENTS" ;;
@@ -125,7 +143,7 @@ case "$*" in
 esac
 SH
 chmod +x "$f/bin/gh" "$f/bin/ssh" "$f/bin/systemctl"
-export FAKE_GH_LOG="$f/gh.log" FAKE_GRAPHQL="$f/graphql.json"; : > "$FAKE_GH_LOG"
+export FAKE_GH_LOG="$f/gh.log" FAKE_GRAPHQL="$f/graphql.json" FAKE_READY_ISSUES="$f/ready-issues.json"; : > "$FAKE_GH_LOG"
 export FAKE_OBSERVED_SHA="$deployed" FAKE_OBSERVED_IMAGE=sha256:observed
 export PATH="$f/bin:$PATH"
 front() { sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -c '.front'; }
@@ -150,11 +168,22 @@ sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e --arg 
   '.cost.budget_status=="partial" and .cost.budget_incomplete_sessions==[$sid] and .summary.real_daily_tokens==3600' >/dev/null \
   || fail 'partial daily usage or incomplete sessions did not reach dashboard data'
 [[ ! -e "$a/deployed.json" ]] || fail 'dashboard recreated host-local deployed.json'
+cp "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" "$f/out-success.js"
 jq -e '.errors == {}
   and ([.stages[] | {(.label): .count}] | add) == {"needs-triage":4,"finish-first":0,"needs-info":2,"needs-advisor":3,"needs-recut":0,"ready-for-agent":9,"awaiting-release":5,"awaiting-pipeline-sync":0}
   and (.stages[0].idle_hours > 24 and .stages[0].oldest.number == 9)
   and (.stages[1].idle_hours == 0) and (.stages[2].idle_hours > 1.9 and .stages[2].idle_hours < 2.2)
   and .github.cached == false' <<<"$out" >/dev/null || fail "stage rows wrong: $(jq -c '{errors, stages, github}' <<<"$out")"
+jq -e '.search_counts.issues_open == 30 and .search_counts.issues_closed == 31
+  and .search_counts.prs_open == 2 and .search_counts.prs_merged == 3 and .search_counts.prs_closed_unmerged == 4
+  and .search_counts.stages["needs-triage"] == 4 and .search_counts.stages["awaiting-release"] == 5' <<<"$out" >/dev/null \
+  || fail "cached repository search counts wrong: $(jq -c '.search_counts' <<<"$out")"
+jq -e '.ready_queue.total == 9 and .ready_queue.dispatchable == 2 and .ready_queue.active == 1 and .ready_queue.held == 6
+  and ([.ready_queue.classes[] | {key, value: .count}] | from_entries) == {"chain-on-ready-issue":1,"recut-refused-unpushed":1,"no-blocker-recorded":1,"tracker":1,"blocker-state-unavailable":1,"repair-breaker":1}' <<<"$out" >/dev/null \
+  || fail "ready queue split wrong: $(jq -c '.ready_queue' <<<"$out")"
+jq -e '.values["ready_queue.dispatchable"] == 2 and .status["ready_queue.dispatchable"] == "OK"
+  and .standards["ready_queue.dispatchable"].desc == "待实现可派发票数量"' <<<"$out" >/dev/null \
+  || fail "dispatchable headline metric is missing: $(jq -c '{values,status,standards}' <<<"$out")"
 jq -e '.status["stage.needs-triage.count"] == "OK" and .status["stage.needs-triage.idle_hours"] == "UNHEALTHY"
   and .status["stage.needs-advisor.count"] == "OK" and .status["stage.finish-first.count"] == "OK"' <<<"$out" >/dev/null \
   || fail "stage status wrong: $(jq -c '.status' <<<"$out")"
@@ -186,7 +215,7 @@ while IFS= read -r id; do
   grep -Fq "\`$key" "$health_doc" || fail "NODE-HEALTH.md lacks front standard $id"
 done < <(jq -r '.standards | keys[]' <<<"$out")
 # 整个看板数据仍是完整的
-sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e '.units | length == 2' >/dev/null || fail "dashboard lost its units"
+sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e '.units | length == 9' >/dev/null || fail "dashboard lost its units"
 sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e \
   --arg sampled_at "$scorecard_sampled_at" --arg pause_since "$pause_since" \
   '.standards.generated_at == $sampled_at and .standards.source_commit == "a1b2c3d4e5f6"
@@ -195,27 +224,51 @@ sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e \
 
 # 2. 5 分钟缓存：再跑一次不再调 GitHub
 run
-# Two calls from the first run: the dashboard query and founder_reqs' by-number fetch of unit #555 (the fake label search
-# returns no rows, #771). Neither may repeat inside the cache window: a third line is the per-beat refetch that turned main red.
-[[ "$(wc -l < "$FAKE_GH_LOG")" == 2 ]] || fail "graphql called again inside the cache window: $(cat "$FAKE_GH_LOG")"
-front | jq -e '.github.cached == true and .github.stale == false and .stages[5].count == 9' >/dev/null || fail "cached run not marked cached"
+# Three calls from the first run: the dashboard query, ready issue list, and founder_reqs' by-number fetch for #555.
+# None may repeat inside the cache window.
+[[ "$(wc -l < "$FAKE_GH_LOG")" == 3 ]] || fail "GitHub reads repeated inside the cache window: $(cat "$FAKE_GH_LOG")"
+front | jq -e '.github.cached == true and .github.stale == false and .stages[5].count == 9 and .search_counts.issues_open == 30' >/dev/null || fail "cached run not marked cached"
 
 # 3. 缓存过期而 GitHub 失败：沿用旧缓存并标明失败原因（最长 30 分钟）
 cache="$MAC_AUTOPILOT_DASHBOARD_OUTPUT"; cache="$(dirname "$cache")/front-cache.json"
 [[ -s "$cache" ]] || fail "front cache file not written next to dashboard.data.js"
 jq --argjson t "$(( $(date +%s) - 600 ))" '.github.fetched_epoch = $t' "$cache" > "$cache.new" && mv "$cache.new" "$cache"
 FAKE_GH_FAIL=1 run
-front | jq -e '.github.stale == true and (.github.error | contains("502")) and .errors == {} and .stages[5].count == 9' >/dev/null \
-  || fail "stale cache fallback wrong: $(front | jq -c '{github, errors}')"
+front | jq -e '.github.stale == true and (.github.error | contains("502")) and .errors == {} and .stages[5].count == 9
+  and .ready_queue.dispatchable == 2 and .ready_queue.held == 6 and .values["ready_queue.dispatchable"] == 2' >/dev/null \
+  || fail "stale cache fallback wrong: $(front | jq -c '{github, errors, ready_queue, dispatchable_value: .values["ready_queue.dispatchable"]}')"
 
 # 4. 缓存也太旧且 GitHub 失败：只有阶段块"数据不可用"，顾问 / triage / 发布与整页数据照常
 jq --argjson t "$(( $(date +%s) - 4000 ))" '.github.fetched_epoch = $t' "$cache" > "$cache.new" && mv "$cache.new" "$cache"
 FAKE_GH_FAIL=1 run
 out="$(front)"
-jq -e '(.errors | keys) == ["stages"] and (.errors.stages | contains("502")) and .stages == []
+jq -e '(.errors | keys) == ["stages"] and (.errors.stages | contains("502")) and .stages == [] and .search_counts == null
   and .advisor.job.job_id == "advisor-batch-J1" and .triage.done_today == 2 and .release.held == true' <<<"$out" >/dev/null \
   || fail "GitHub failure leaked beyond the stage block: $(jq -c '{errors, stages}' <<<"$out")"
-sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e '.units | length == 2' >/dev/null || fail "GitHub failure broke the dashboard"
+sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e '.units | length == 9' >/dev/null || fail "GitHub failure broke the dashboard"
+node - "$script_dir/dashboard.html" "$f/out-success.js" "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" <<'JS' || fail "intake totals partition or unread rendering was wrong"
+const fs = require("fs"), vm = require("vm");
+const [htmlPath, successPath, failedPath] = process.argv.slice(2), src = fs.readFileSync(htmlPath, "utf8");
+const inline = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+function render(dataPath) {
+  const raw = fs.readFileSync(dataPath, "utf8").replace(/^window\.DASH=/, "").replace(/;\s*$/, ""), D = JSON.parse(raw);
+  const el = () => ({innerHTML:"",textContent:"",classList:{add(){},remove(){},contains(){return false}},style:{},addEventListener(){},setAttribute(){},removeAttribute(){},appendChild(){},remove(){},dataset:{}});
+  const els = {}, storage = {getItem(){return null},setItem(){}}, document = {getElementById:id => els[id] ||= el(),addEventListener(){},createElement:el,head:el(),documentElement:el(),title:""};
+  const ctx = {document,localStorage:storage,sessionStorage:storage,setInterval(){},setTimeout(){},innerWidth:1440,innerHeight:900,location:{reload(){}},console,Date,Math,JSON,Number,String,Object,Array,Set,encodeURIComponent};
+  ctx.window = ctx; ctx.scrollTo = () => {}; ctx.DASH = D; vm.createContext(ctx); vm.runInContext(inline[0], ctx, {filename:"dashboard.html"});
+  return ctx.__dash.MODULES.find(m => m.id === "intake").render(D);
+}
+const good = render(successPath), bad = render(failedPath), cells = [...good.matchAll(/<div class="ts-m" data-total="([^"]+)" title="([^"]*)"><span>[^<]*<\/span><b>([^<]*)<\/b><\/div>/g)];
+const values = new Map(cells.map(([,id,tip,value]) => [id,{tip,value}]));
+const stages = ["needs-triage","finish-first","needs-info","needs-advisor","needs-recut","ready-for-agent","awaiting-release","awaiting-pipeline-sync"];
+const open = values.get("issues.open"), stageTotal = stages.reduce((n,label) => n + Number(values.get(`tickets.${label}`).value), 0) + Number(values.get("tickets.unclassified").value);
+if (!open || stageTotal !== Number(open.value) || values.get("tickets.unclassified").value !== "7") throw new Error("stage buckets do not add to open issues");
+if (values.get("requirements.total").value !== "1" || values.get("requirements.提出").value !== "1") throw new Error("founder requirement ledger counts were not rendered");
+if (!good.includes("Issue 与 PR 共用同一编号序列") || !good.includes("#5975")) throw new Error("shared issue/PR sequence explanation was not rendered");
+if (cells.some(([, , tip]) => !tip)) throw new Error("a total has no source tooltip");
+const failedOpen = bad.match(/<div class="ts-m" data-total="issues\.open" title="([^"]*)"><span>[^<]*<\/span><b>([^<]*)<\/b><\/div>/);
+if (!failedOpen || failedOpen[2] !== "未读取" || !failedOpen[1].includes("HTTP 502")) throw new Error(failedOpen && failedOpen[0]);
+JS
 
 # 5. lib.sh 读不了：只有顾问批处理块失败，错误带原因
 rm -f "$cache"; mv "$root/engine/lib.sh" "$root/engine/lib.sh.off"
@@ -324,6 +377,8 @@ printf '%s\n' "{\"units\":[{\"id\":\"fp-archived\",\"stage\":\"closed\",\"histor
 : > "$f/audit.jsonl"
 python3 "$script_dir/node_health.py" --runtime "$a" --audit "$f/audit.jsonl" --hours 5 --now "$now" --json "$a/node-health.json" >/dev/null \
   || fail "node_health --json failed"
+jq -e '(.metrics | length > 0) and (.metrics | all(has("value_1h") and has("trend_1h") and has("short_window"))) and (.trend_metrics | type == "array")' "$a/node-health.json" >/dev/null \
+  || fail "node_health scorecard omitted short-window fields or trend panel data"
 run >/dev/null
 dash_fp="$(sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -c '.efficiency.review_first_pass')"
 nh_fp="$(jq -c '.metrics[] | select(.id == "review.first_pass_pct") | .value' "$a/node-health.json")"
@@ -332,4 +387,12 @@ nh_fp="$(jq -c '.metrics[] | select(.id == "review.first_pass_pct") | .value' "$
 python3 -c 'import sys; assert abs(float(sys.argv[1]) - 100 * 2 / 3) < 1e-6, sys.argv[1]' "$nh_fp" \
   || fail "first_pass $nh_fp is not 2 of 3 counted"
 echo "dashboard first_pass equals node_health on one fixture: PASS"
+
+# The generator keeps 30-day standards in a separate trend-panel data list.
+cat > "$a/node-health.json" <<'JSON'
+{"generated":"2026-11-07T12:00:00Z","metrics":[{"id":"delivery.revert_rate_30d_pct","node":"delivery","desc":"revert rate 30 d","meaning":"reverts","value":12,"value_1h":4,"trend_1h":{"delta":-2,"direction":"down"},"short_window":"1h","healthy":5,"unhealthy":10,"higher_is_better":false,"status":"UNHEALTHY","source":"release records"}],"trend_metrics":[{"id":"delivery.revert_rate_30d_pct","node":"delivery","desc":"revert rate 30 d","meaning":"reverts","value":12,"value_1h":4,"trend_1h":{"delta":-2,"direction":"down"},"short_window":"1h","healthy":5,"unhealthy":10,"higher_is_better":false,"status":"UNHEALTHY","source":"release records"}]}
+JSON
+run >/dev/null
+sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e '.standards.trend_metrics | length == 1 and .[0].id == "delivery.revert_rate_30d_pct" and .[0].value > .[0].unhealthy' >/dev/null \
+  || fail "30-day metric did not reach the dashboard trend-panel data"
 echo "dashboard-front.test.sh: PASS"

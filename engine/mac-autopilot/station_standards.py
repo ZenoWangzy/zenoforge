@@ -109,8 +109,8 @@ SOURCE = {
     "ci.out_per_day": "7 daily counts: p25 28, p10 13",
     "approve.out_per_day": "7 daily counts of review-approve events: p25 35, p10 30",
     "rereview.runs_per_day": "7 daily counts of rereview worker runs from worker cost rows: p25 35, p10 10",
-    "rereview.wall_p50": "7 d: 364 rereview runs with output, minutes p75 12.3, p90 16.1 (rounded up)",
-    "rereview.tokens_p50": "7 d: 6 rereview runs with measured tokens of 376 (small n, provisional): p75 199,330, p90 199,330. Healthy equals unhealthy, so no WARN band",
+    "rereview.wall_p50": "7 d ending 2026-11-09T17:58Z: 450 rereview runs with output, minutes p75 11.9, p90 15.8 (rounded up)",
+    "rereview.tokens_p50": "7 d ending 2026-11-09T17:58Z: 18 rereview runs with measured tokens: p75 270,358, p90 301,796. Healthy equals unhealthy, so no WARN band",
 }
 
 
@@ -178,22 +178,65 @@ def out_count(events, now, hours=WINDOW_HOURS):
     return sum(c for t, c in events if since <= t <= now)
 
 
-def collect(now, units, runs, runtime, agent_home, cost_rows=()):
-    """The station metric values for one tick: time and tokens over the last 24 h, throughput as out events in 24 h."""
-    import station_health  # lazy: station_health imports node_health, which imports this module
-    since = now - timedelta(hours=WINDOW_HOURS)
-    outs = station_health.outs(units, runtime, agent_home)
-    values = {f"{s}.out_per_day": out_count(outs[s], now) for s in STATIONS}
-    values["merge.wait_p50_min"] = _pct(gap_samples(units, since, now, GAP_EVENTS["merge"]), .5)
-    values["ci.admission_p50_min"] = _pct(gap_samples(units, since, now, GAP_EVENTS["ci"]), .5)
+def _window_values(until, hours, units, runs, runtime, agent_home, cost_rows, outs):
+    since = until - timedelta(hours=hours)
+    scale = 24 / hours
+    values, samples = {}, {}
+    for station in STATIONS:
+        events = [(t, c) for t, c in outs[station] if since <= t <= until]
+        key = f"{station}.out_per_day"
+        values[key], samples[key] = sum(c for _, c in events) * scale, len(events)
+    for key, event_names in (("merge.wait_p50_min", GAP_EVENTS["merge"]),
+                             ("ci.admission_p50_min", GAP_EVENTS["ci"])):
+        rows = gap_samples(units, since, until, event_names)
+        values[key], samples[key] = _pct(rows, .5), len(rows)
+    if cost_rows:
+        from node_health import worker_runs
+        window_runs = worker_runs(cost_rows, since, until)
+    else:
+        window_runs = [r for r in runs if since <= r["start"] <= until]
     for station, node in RUN_NODE.items():
-        values[f"{station}.tokens_p50"] = _pct(run_tokens(runs, node), .5)
-    values["triage.tokens_per_issue_p50"] = _pct(triage_tokens_per_issue(agent_home, since, now), .5)
-    values["approve.out_per_day"] = count_between(event_times(units, ("review-approve",)), since, now)
-    values["rereview.runs_per_day"] = count_between([r["start"] for r in cost_rows if r["phase"] == "rereview"], since, now)
-    values["rereview.wall_p50"] = _pct([r["minutes"] for r in runs if r["node"] == "rereview" and r["output"]], .5)
-    values["rereview.tokens_p50"] = _pct(run_tokens(runs, "rereview"), .5)
-    return values
+        rows = run_tokens(window_runs, node)
+        key = f"{station}.tokens_p50"
+        values[key], samples[key] = _pct(rows, .5), len(rows)
+    rows = triage_tokens_per_issue(agent_home, since, until)
+    values["triage.tokens_per_issue_p50"], samples["triage.tokens_per_issue_p50"] = _pct(rows, .5), len(rows)
+    approvals = [t for t in event_times(units, ("review-approve",)) if since <= t <= until]
+    values["approve.out_per_day"], samples["approve.out_per_day"] = len(approvals) * scale, len(approvals)
+    rereviews = [r for r in cost_rows if r["phase"] == "rereview" and since <= r["start"] <= until]
+    values["rereview.runs_per_day"], samples["rereview.runs_per_day"] = len(rereviews) * scale, len(rereviews)
+    for key, rows in (("rereview.wall_p50", [r["minutes"] for r in window_runs if r["node"] == "rereview" and r["output"]]),
+                      ("rereview.tokens_p50", run_tokens(window_runs, "rereview"))):
+        values[key], samples[key] = _pct(rows, .5), len(rows)
+    return values, samples
+
+
+def collect(now, units, runs, runtime, agent_home, cost_rows=()):
+    """The station metric values for one tick: time and tokens over 24 h, throughput per 24 h."""
+    import station_health  # lazy: station_health imports node_health, which imports this module
+    return _window_values(now, WINDOW_HOURS, units, runs, runtime, agent_home, cost_rows,
+                          station_health.outs(units, runtime, agent_home))[0]
+
+
+def collect_windows(now, units, runs, runtime, agent_home, cost_rows=()):
+    """Short readings and one-hour change from the same station event, log and worker records."""
+    import station_health
+    outs = station_health.outs(units, runtime, agent_home)
+    periods = {hours: _window_values(now, hours, units, runs, runtime, agent_home, cost_rows, outs)
+               for hours in (1, 6, 24)}
+    previous = _window_values(now - timedelta(hours=1), 1, units, runs, runtime, agent_home, cost_rows, outs)
+    result = {}
+    for key in CRITERIA:
+        short = next((hours for hours in (1, 6, 24) if periods[hours][1][key] and periods[hours][0][key] is not None), None)
+        current, prior = periods[1][0][key], previous[0][key]
+        trend = None
+        if periods[1][1][key] and previous[1][key] and current is not None and prior is not None:
+            delta = round(current - prior, 2)
+            trend = {"delta": delta, "direction": "up" if delta > 0 else "down" if delta < 0 else "flat"}
+        result[key] = {"value_1h": periods[short][0][key] if short else None,
+                       "trend_1h": trend, "short_window": f"{short}h" if short else None,
+                       "sample_n": periods[24][1][key]}
+    return result
 
 
 def samples(now, hours, units, runs, agent_home, runtime):

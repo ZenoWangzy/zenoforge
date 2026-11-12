@@ -3,17 +3,19 @@
 
 Subcommands (facts JSON on stdin where noted; every answer is JSON on stdout):
   station <runtime_dir> <now>                          rows from node-health.json and station-health.json, or null
-  compare <snapshot_dir> <now> <repo_root> <owners>    facts -> {inline, note, station_lines, causes, material}
+  compare <snapshot_dir> <now> <repo_root> <owners>    facts -> readable lines and structured chart facts
+  spend <agent_home> <start> <end>                    recorded totals by model, or null
+  merges <agent_home> <now>                          product merge counts for three report periods
   write <snapshot_dir> <now>                           facts -> store today's snapshot unless one exists
   backfill <snapshot_dir> <T> <agent_home> <runtime>   facts at T -> store that day's snapshot unless one exists
 
 A snapshot is one file per Beijing day: <snapshot_dir>/YYYY-MM-DD.json = {schema, day, at, figures}.
-Nothing here guesses: a base that is absent drops that comparison, and a change nobody traced reads 未查明.
+Missing comparisons are dropped; a cause without evidence reads 原因未查明.
 """
 import json
+import glob
 import os
 import re
-import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -38,23 +40,22 @@ STATIONS = [
     ("ci", "自动检查", "ci.out_per_day", "次", "过去一天放行 "),
     ("release", "发布", "release.hours_waiting", "小时", "当前这批已等 "),
 ]
-# Files whose change between two days is named as context (never as the cause) beside an untraced station change.
-PATH_HINTS = {"intake": r"intake", "triage": r"triage", "advisor": r"advisor", "implement": r"dispatch|worker-command|implement",
-              "review": r"review", "repair": r"repair|self-check", "merge": r"merge", "ci": r"ci[-_]admission|/ci", "release": r"release"}
 # The one table that ties a report line to rows of anomaly-owners.json (the head's plain-Chinese note per scorecard metric).
 # A row is {"cause": plain-Chinese note, "owner": who, "since": ISO 8601 UTC}; its cause prints only while since is at most 24 h before
 # the report time (and at most 5 min after it, for clock skew). An older row, a since more than 5 min ahead, a row with no parseable
 # since and a bare string (undated) all print 原因超过一天没有更新 instead.
 # Line key -> row ids, first match first; a line prints the notes of the rows that exist, verbatim, at most two.
-# Lines with no row (finished, rollbacks, money, intake, triage, advisor, review) read 未查明; scorecard rows with no line:
+# Lines with no row (finished, rollbacks, money, intake, triage, advisor) read 未查明; scorecard rows with no line:
 # scheduler.tick_gap_p50, scheduler.merge_pass_gap_min, scheduler.harvest_gap_p50, delivery.unlinked_units_30d, delivery.issue_to_accept_p50_30d_hours, delivery.issue_to_accept_p95_30d_hours.
 OWNER_ROWS = {
     "shipped": ["delivery.merged_not_live", "delivery.issue_to_accept_p50_7d_hours", "delivery.issue_to_accept_p95_7d_hours"],
     "stock": ["flow.wait_stage_p90_hours", "delivery.merged_not_live"],
     "incidents": ["delivery.unlinked_incidents_30d"],
-    "tokens": ["workorders.ticket_tokens_p90", "workorders.over_standard"],
+    "tokens": ["efficiency.fresh_tokens_per_merged_7d", "efficiency.unmerged_waste_pct_7d",
+               "workorders.ticket_tokens_p90", "workorders.over_standard"],
+    "station:review": ["efficiency.first_pass_yield_pct_7d", "review.first_pass_pct"],
     "station:implement": ["merge.conflict_repairs_per_day"],
-    "station:repair": ["loop.rework_token_pct", "repair.unchanged_head_token_pct"],
+    "station:repair": ["efficiency.repair_phase_pct_7d", "loop.rework_token_pct", "repair.unchanged_head_token_pct"],
     "station:merge": ["flow.merge_rate_per_hour"],
     "station:ci": ["ci.red_after_approve_pct", "ci.shared_append_rebase_conflict_pct"],
     "station:release": ["release.hours_waiting", "delivery.merged_not_live"],
@@ -155,6 +156,109 @@ def figures(facts):
     return out
 
 
+def spend_facts(home, start, end):
+    """Sum recorded token and price meters; explicit unobservable costs stay unknown."""
+    first = datetime.fromtimestamp(start, timezone.utc).strftime("%Y-%m-%d")
+    last = datetime.fromtimestamp(max(start, end - 1), timezone.utc).strftime("%Y-%m-%d")
+    paths = sorted(path for path in glob.glob(os.path.join(home, "spend", "????-??-??.log"))
+                   if first <= os.path.basename(path)[:10] <= last)
+    tokens, money, rows, models, money_complete, money_seen = 0, 0.0, 0, {}, True, False
+    try:
+        for path in paths:
+            with open(path, encoding="utf-8") as source:
+                for line in source:
+                    fields = line.rstrip("\r\n").split("\t")
+                    if not fields[0].isdigit() or not start <= int(fields[0]) < end:
+                        continue
+                    rows += 1
+                    model = fields[2].strip() if len(fields) > 2 else ""
+                    split = models.setdefault(model, {"model": model, "tokens": 0, "_money_usd": 0.0,
+                                                      "_money_complete": True, "_money_seen": False}) if model else None
+                    count = int(fields[5]) if len(fields) > 5 and fields[5].isdigit() else 0
+                    tokens += count
+                    if split is not None:
+                        split["tokens"] += count
+                    try:
+                        raw_price = fields[4].strip() if len(fields) > 4 else ""
+                        price = float(raw_price) if raw_price else None
+                    except (ValueError, OverflowError):
+                        price = None
+                    if price is not None and 0 <= price < float("inf"):
+                        money_seen = True
+                        money += price
+                        if split is not None:
+                            split["_money_seen"] = True
+                            split["_money_usd"] += price
+                    elif raw_price:
+                        money_complete = False
+                        if split is not None:
+                            split["_money_complete"] = False
+    except OSError:
+        return None
+    if not rows:
+        return None
+    by_model = sorted(models.values(), key=lambda row: (-row["tokens"], -row["_money_usd"], row["model"]))
+    for row in by_model:
+        complete, seen = row.pop("_money_complete"), row.pop("_money_seen")
+        if complete and seen:
+            row["money_usd"] = round(row.pop("_money_usd"), 2)
+        else:
+            row.pop("_money_usd")
+    return {"tokens": tokens, "money_usd": round(money, 2) if money_complete and money_seen else None,
+            "by_model": by_model}
+
+
+def merge_counts(home, now):
+    """Count distinct product pull requests merged in the report's three 24-hour periods."""
+    periods = {"today": (now - DAY, now), "yesterday": (now - 2 * DAY, now - DAY),
+               "last_week": (now - 8 * DAY, now - 7 * DAY)}
+
+    def month_for(at):
+        return datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m")
+
+    needed = {month_for(at) for start, end in periods.values() for at in (start, end - 1)}
+    loaded, events = {}, {}
+    for month in sorted(needed):
+        path = os.path.join(home, "metrics", f"efficiency-{month}.jsonl")
+        month_events, saw_record, invalid = {}, False, False
+        try:
+            with open(path, encoding="utf-8") as source:
+                for line in source:
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        invalid = True
+                        break
+                    if not isinstance(row, dict):
+                        invalid = True
+                        break
+                    saw_record = True
+                    if (row.get("record_type") != "event" or row.get("event_type") != "merged"
+                            or row.get("delivery_path") != "product-release"):
+                        continue
+                    at = parse_utc(row.get("ts"))
+                    number = row.get("pr_number")
+                    if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+                        number = str(number)
+                    if at is None or not isinstance(number, str) or not re.fullmatch(r"[1-9][0-9]*", number):
+                        invalid = True
+                        break
+                    month_events[number] = min(at, month_events.get(number, at))
+        except OSError:
+            invalid = True
+        loaded[month] = saw_record and not invalid
+        events.update(month_events)
+
+    result = {}
+    for key, (start, end) in periods.items():
+        months = {month_for(at) for at in (start, end - 1)}
+        result[key] = (sum(start <= at < end for at in events.values())
+                       if all(loaded.get(month, False) for month in months) else None)
+    return result
+
+
 def snapshot_path(directory, day):
     return os.path.join(directory, day + ".json")
 
@@ -188,19 +292,6 @@ def plain(text):
     """The owner-readable part of a free-text note: ticket numbers and long hashes dropped; empty unless Chinese only."""
     text = re.sub(r"\s+", " ", re.sub(r"[0-9a-fA-F]{7,}", "", re.sub(r"#\s*[0-9]+", "", str(text)))).strip()
     return text if re.search(r"[一-龥]", text) and not re.search(r"[A-Za-z]", text) else ""
-
-
-def landed(repo, since, until, pattern):
-    """Commits on origin/main between two times that touched a file matching pattern; None if unreadable."""
-    try:
-        done = subprocess.run(["git", "-C", repo, "log", "origin/main", f"--since=@{int(since)}", f"--until=@{int(until)}",
-                               "--name-only", "--format=%x01"], capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if done.returncode != 0:
-        return None
-    commits = done.stdout.split("\x01")[1:]
-    return sum(any(re.search(pattern, p) for p in c.splitlines() if p.strip()) for c in commits)
 
 
 def printable(text):
@@ -276,6 +367,28 @@ def owner_cause(owners, key, now):
     return "；".join(safe) if safe else "已登记原因，但内容含不能直接发送的字符，没有转述"
 
 
+def cause_owner(owners, key, now, worker, subjects):
+    """Return a recorded Chinese cause and owner, or say explicitly that either is unknown."""
+    causes, names = [], []
+    for row_id in OWNER_ROWS.get(key, []):
+        row = owners.get(row_id)
+        if not isinstance(row, dict):
+            continue
+        note = fresh_note(row, now)
+        cause, owner = plain(note), plain(row.get("owner"))
+        if note != STALE_CAUSE and printable(note) and cause and cause not in causes:
+            causes.append(cause.rstrip("。"))
+            if owner and owner not in names:
+                names.append(owner)
+    if causes:
+        return {"owner": "、".join(names) or "未登记", "cause": "；".join(causes[:2])}
+    if key in worker:
+        return {"owner": "未登记", "cause": worker[key]}
+    if key == "incidents" and subjects:
+        return {"owner": "未登记", "cause": "线上有告警还没解决：" + "、".join(subjects[:2])}
+    return {"owner": "未登记", "cause": "原因未查明"}
+
+
 def compare(facts, directory, now, repo, owners_path):
     today = datetime.fromtimestamp(now, BEIJING)
     snaps = {"昨天": read_snapshot(directory, (today - timedelta(days=1)).strftime("%Y-%m-%d")),
@@ -327,28 +440,59 @@ def compare(facts, directory, now, repo, owners_path):
         note = ("- 对比说明：比昨天是环比，比上周同日是同比（同一个星期几）；没有去年的数据，所以没有按年的同比；"
                 "缺记录的那天不比较。")
 
-    causes, changes = [], []
+    causes, changes, cause_rows = [], [], []
     worker = worker_causes(today.strftime("%Y-%m-%d"))
+    subjects = [s for s in (plain(x) for x in (facts.get("quality") or {}).get("open_subjects") or []) if s]
     for _, key in sorted(material, reverse=True)[:MAX_CAUSE_LINES]:
         label, kind, unit = meta[key]
         yesterday = base_value("昨天", key)
         head = f"- {label}比昨天{moved(kind, unit, current[key], yesterday)}："
         changes.append({"line": key, "label": label, "now": amount(kind, unit, current[key]), "yesterday": amount(kind, unit, yesterday),
                         "change": moved(kind, unit, current[key], yesterday), "scorecard_rows": OWNER_ROWS.get(key, [])})
-        station = stations.get(key[8:]) if key.startswith("station:") else None
-        subjects = [s for s in (plain(x) for x in (facts.get("quality") or {}).get("open_subjects") or []) if s]
-        found = owner_cause(owners, key, now)
-        if found is not None:
-            causes.append(head + found + ("" if found.endswith("。") else "。"))
-        elif key in worker:
-            causes.append(head + worker[key] + "。")
-        elif key == "incidents" and current[key] > yesterday and subjects:
-            causes.append(head + "线上有告警还没解决：" + "、".join(subjects[:2]) + "。")
-        else:
-            # Timing is not a cause: what landed between the two days is only a hint beside 未查明.
-            n = landed(repo, (snaps["昨天"] or {}).get("at", now - DAY), now, PATH_HINTS[key[8:]]) if station and repo else None
-            causes.append(head + "未查明。" + (f"线索，未核实：同期有 {n} 项改动合入了该环节的代码。" if n else ""))
-    return {"inline": inline, "note": note, "station_lines": station_lines, "causes": causes, "material": changes}
+        cause = cause_owner(owners, key, now, worker, subjects)
+        causes.append(head + cause["cause"] + "。")
+        cause_rows.append({"line": key, "label": label, **cause})
+
+    station_standards, anomalies, station_series = [], [], []
+    days = [(today - timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(6, -1, -1)]
+    history = {day: read_snapshot(directory, day) for day in days[:-1]}
+    for key, name, _, unit, _ in STATIONS:
+        row = stations.get(key)
+        if not row or not is_number(row.get("value")) or not is_number(row.get("healthy")):
+            continue
+        standard = {"key": key, "name": name, "value": row["value"], "healthy": row["healthy"],
+                    "higher": row["higher"], "unit": unit, "status": row.get("status")}
+        station_standards.append(standard)
+        if row.get("status") in ("WARN", "UNHEALTHY"):
+            anomalies.append({"line": "station:" + key, "label": name, "value": row["value"], "standard": row["healthy"],
+                              "unit": unit, **cause_owner(owners, "station:" + key, now, worker, subjects)})
+        points = []
+        for day in days:
+            value = current.get("station:" + key) if day == days[-1] else (history.get(day) or {}).get("figures", {}).get("station:" + key)
+            if is_number(value):
+                points.append({"day": day, "value": value})
+        if points:
+            station_series.append({**standard, "points": points})
+
+    periods = [{"key": "today", "label": "今天"}, {"key": "yesterday", "label": "昨天"},
+               {"key": "last_week", "label": "上周同日"}]
+    chart_metrics = []
+    for key, label, unit, values in (
+            ("merges", "合入", "个", [(facts.get("merges") or {}).get(period) for period in ("today", "yesterday", "last_week")]),
+            ("finished", "做完", "个", [current.get("finished"), base_value("昨天", "finished"), base_value("上周同日", "finished")]),
+            ("shipped", "正式上线", "个", [current.get("shipped"), base_value("昨天", "shipped"), base_value("上周同日", "shipped")])):
+        points = [{"period": period["key"], "value": value} for period, value in zip(periods, values) if is_number(value)]
+        if points:
+            chart_metrics.append({"key": key, "label": label, "unit": unit, "points": points})
+    spend = (facts.get("spend") or {}).get("day") or {}
+    model_spend = [row for row in spend.get("by_model", []) if isinstance(row, dict)
+                   and isinstance(row.get("model"), str) and row["model"]
+                   and any(is_number(row.get(field)) for field in ("tokens", "money_usd"))]
+    charts = {"anomalies": anomalies, "station_standards": station_standards, "station_series": station_series,
+              "period_comparison": {"periods": periods, "metrics": chart_metrics},
+              "model_spend": model_spend, "causes": cause_rows}
+    return {"inline": inline, "note": note, "station_lines": station_lines, "causes": causes,
+            "material": changes, "charts": charts}
 
 
 def station_counts_at(agent_home, runtime, at):
@@ -378,6 +522,10 @@ def main(argv):
         print(json.dumps(station_facts(argv[2], int(argv[3])), ensure_ascii=False, separators=(",", ":")))
     elif cmd == "compare":
         print(json.dumps(compare(json.load(sys.stdin), argv[2], int(argv[3]), argv[4], argv[5]), ensure_ascii=False, separators=(",", ":")))
+    elif cmd == "spend":
+        print(json.dumps(spend_facts(argv[2], int(argv[3]), int(argv[4])), ensure_ascii=False, separators=(",", ":")))
+    elif cmd == "merges":
+        print(json.dumps(merge_counts(argv[2], int(argv[3])), ensure_ascii=False, separators=(",", ":")))
     elif cmd == "write":
         print(store_snapshot(argv[2], int(argv[3]), figures(json.load(sys.stdin))))
     elif cmd == "backfill":

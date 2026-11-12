@@ -110,6 +110,32 @@ if (!overviewButton || !overviewButton[0].includes('title="总览，2 项异常�
 for (const label of ["2 项异常", "3 项需留意"])
   if (!badgeView.els.view.innerHTML.includes(label)) throw new Error(`overview chip lacks nav count label ${label}`);
 
+// Long-window delivery quality stays visible in its trend panel; the overview count uses the
+// recovering one-hour value and excludes the 30-day metric even while its long value is red.
+const recovering = {id:"merge.wait_p50_min", node:"merge", desc:"merge wait p50, 24 h", meaning:"merge wait",
+  value:60, healthy:31, unhealthy:41, higher_is_better:false, status:"UNHEALTHY",
+  value_1h:10, trend_1h:{delta:-50,direction:"down"}, short_window:"1h"};
+const longTrend = {id:"delivery.revert_rate_30d_pct", node:"delivery", desc:"reverts in 30 d", meaning:"revert rate",
+  value:12, healthy:5, unhealthy:10, higher_is_better:false, status:"UNHEALTHY",
+  value_1h:4, trend_1h:{delta:-2,direction:"down"}, short_window:"1h"};
+const fastData = {generated:new Date().toISOString(), standards:{metrics:[recovering,longTrend],trend_metrics:[longTrend]}};
+const fastView = load(fastData); fastView.ctx.__dash.renderModule("overview");
+const fastBadge = fastView.els.nav.innerHTML.match(/<button[^>]*data-m="overview"[^>]*>[\s\S]*?<\/button>/);
+if (!fastBadge || fastBadge[0].includes('class="nv-n s-bad"') || fastBadge[0].includes('class="nv-n s-warn"'))
+  throw new Error(`overview counted recovered or 30-day metrics: ${fastBadge && fastBadge[0]}`);
+const fastHealth = fastView.ctx.__dash.MODULES.find(m=>m.id==="health").render(fastData);
+if (!fastHealth.includes("30 天趋势") || !fastHealth.includes("delivery.revert_rate_30d_pct") ||
+    !fastHealth.includes("长窗 UNHEALTHY") || !fastHealth.includes("1h 10"))
+  throw new Error("health view must show the red long value beside the green one-hour reading and isolate 30-day data");
+const sampledBreach = {generated:new Date().toISOString(), standards:{metrics:[{
+  id:"flow.wip_age_stage_p90_hours", node:"flow", desc:"stage age p90", meaning:"stage age",
+  value:13, healthy:4, unhealthy:12, higher_is_better:false, status:"UNHEALTHY", sample_n:1
+}]}};
+const sampledOverview = load(sampledBreach);
+sampledOverview.ctx.__dash.renderModule("overview");
+if (!sampledOverview.els.view.innerHTML.includes("(n=1)") || !sampledOverview.els.view.innerHTML.includes("长窗 UNHEALTHY"))
+  throw new Error("overview hides a low-sample count beside an unhealthy breach");
+
 // 2. 每一块都"数据不可用"：分支都能画，且带原因
 const broken = {front: {errors: {stages: "HTTP 502", advisor: "lib.sh missing", advisor_loop: "units.json unreadable", triage: "ledger gone", release: "git failed"}}};
 const b = renderAll("unavailable", broken).out;
@@ -237,6 +263,18 @@ if ((rq.match(/class="frq"/g)||[]).length !== 2 || !rq.includes("founder words h
   throw new Error("requirements module lacks the founder rows, overview still has them, or the ROI module lacks the daily ROI line");
 const frBadAll = renderAll("founder-roi-bad", {founder_reqs: {error: "x"}, factory: {error: "y"}}).out;
 if (!frBadAll.reqs.includes("需求台账不可用") || !frBadAll.roi.includes("ROI 数据不可用")) throw new Error("founder ledger / ROI line error state missing");
+const readyQueue = renderAll("ready-queue", {front: {stages: [{label: "ready-for-agent", name: "待实现总量", count: 9}], ready_queue: {
+  total: 9, dispatchable: 0, active: 1, held: 8, classes: [
+    {key: "tracker", name: "前置跟踪票", count: 1, reason: "等待跟踪票或相关 PR 合入后继续。"},
+    {key: "no-blocker-recorded", name: "未记录前置", count: 1, reason: "没有可等待的前置事项；下次调度会恢复派发。"},
+    {key: "chain-on-ready-issue", name: "链式依赖", count: 1, reason: "另一张待实现票交付后自动继续。"},
+    {key: "blocker-state-unavailable", name: "前置状态文件缺失", count: 1, reason: "缺少本地状态文件；前置票在 GitHub 交付或关闭后自动继续。"},
+    {key: "recut-refused-unpushed", name: "未推送改动挡住重拆", count: 1, reason: "工作区恢复或清理后再试。"},
+    {key: "ticket-stop-loss", name: "达到单票止损", count: 1, reason: "票据更新或预算提高后自动恢复一次派发。"},
+    {key: "supervisor-arbitration-cap", name: "等待终局自动裁决", count: 1, reason: "调度器继续终局裁决并按结果恢复、重拆或停放。"},
+    {key: "token-hard-park", name: "达到硬令牌上限", count: 1, reason: "永久停放；没有自动释放事件。"}]}}}).out.intake;
+for (const detail of ["可派发", "0", "1 张已有单元", "8 张阻塞或停放", "前置跟踪票", "等待跟踪票或相关 PR 合入后继续。", "未记录前置", "链式依赖", "前置状态文件缺失", "未推送改动挡住重拆", "票据更新或预算提高后自动恢复一次派发。", "等待终局自动裁决", "永久停放；没有自动释放事件。"])
+  if (!readyQueue.includes(detail)) throw new Error(`ready queue headline/breakdown lacks ${detail}: ${readyQueue}`);
 // 需求分页 + 排序：每页 8 条；卡点在最前，其次待验收（上线），再按阶段从近完成到刚提出，已验收垫底
 const pg = renderAll("reqs-paged", {founder_reqs: {stages: ["提出","热修生效","进 main","上线","真人验收"], partial: false, items: [
   ...[1,2,3,4,5,6,7,8].map(n => ({issue: 100 + n, title: "t", text: "plain-" + n, from_ruling: false, labels: [], stage: 0, owner: "pipeline", blocker: "", verified_epoch: null})),

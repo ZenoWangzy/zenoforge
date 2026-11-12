@@ -3,6 +3,8 @@
 # Same interface as luna: worker <key> <cwd> <prompt-file> [output-schema.json]
 # Every backend reports in .scratch/luna/<key>/ (last.md = the final JSON, rc, backend). WORKER_BACKEND=luna|zc
 # selects the initial backend; a health failure can still fail over once. WORKER_STALL_MINUTES defaults to 10.
+# WORKER_GATE_QUEUE_SECONDS is for callers outside the engine; supervisor zf-launch sets 21600 after this merges.
+# Engine units never set it.
 # A backend that never passes the capacity gate fails after LUNA_AGE_ADMIT_SECONDS + the stall bound (rc=75, no failover: both backends share the gate).
 # Both backends share luna's capacity gate (LUNA_MAX runs in total, started only while CPU < 85%).
 set -uo pipefail
@@ -14,6 +16,16 @@ B=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) # backends ship beside this s
 hold_home=${AGENT_HOME:-${ZF_HOME:-$( [[ -f $B/../deploy.env ]] && (source "$B/../deploy.env" >/dev/null 2>&1; printf '%s' "${AGENT_HOME:-${ZF_HOME:-}}") )}}
 hold_home=${hold_home:-$HOME/.zenoforge}
 [[ -f $prompt ]] || { echo "worker: prompt file not found: ${prompt:0:80}" >&2; exit 2; }  # 10-31: brief text passed as a path; workers exited silently
+if [[ -n ${HOME:-} ]]; then
+  case "$prompt" in
+    "$HOME"/.zenoforge/briefs/*|"$HOME"/.zenoforge/state/work/briefs/*)
+      grep -Eq '^Existing path: .{8,}' "$prompt" || {
+        printf '%s\n' 'worker: brief lacks "Existing path: <file:line of how main already handles the nearest sibling case>" (or "Existing path: none, <why>")' >&2
+        exit 2
+      }
+      ;;
+  esac
+fi
 S=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}; d="$S/luna/$key"
 mkdir -p "$S/tmp" "$d"
 model=${CODEX_MODEL:-gpt-6-luna}
@@ -23,6 +35,36 @@ trap 'round_rc=$?
   [[ -z $model_fallback ]] || printf "%s\n" "$model_fallback" >> "$d/stderr.log"
   printf "%s %s %s rc=%s\n" "$(date -u +%FT%TZ)" "$key" "$round_model" "$round_rc" >> "$S/luna/rounds.log"
 ' EXIT
+model_not_found_cache="$S/luna/model-not-found.cache"
+model_not_found_cached() {
+  local candidate=$1 now
+  [[ -r $model_not_found_cache ]] || return 1
+  now=$(date +%s)
+  awk -F '\t' -v candidate="$candidate" -v now="$now" \
+    '$1 == candidate && $2 ~ /^[0-9]+$/ && $2 > now { found=1 } END { exit !found }' "$model_not_found_cache"
+}
+cache_model_not_found() {
+  local candidate=$1 now expires temp lock_fd
+  [[ $candidate =~ ^[A-Za-z0-9._-]+$ ]] || return 0
+  now=$(date +%s); expires=$((now + 86400))
+  exec {lock_fd}>"$S/tmp/model-not-found-cache.lock"
+  flock "$lock_fd"
+  temp="$model_not_found_cache.$$"
+  if [[ -f $model_not_found_cache ]]; then
+    awk -F '\t' -v now="$now" -v candidate="$candidate" \
+      '$1 ~ /^[A-Za-z0-9._-]+$/ && $2 ~ /^[0-9]+$/ && $2 > now && $1 != candidate { print $1 "\t" $2 }' \
+      "$model_not_found_cache" > "$temp"
+  else
+    : > "$temp"
+  fi
+  printf '%s\t%s\n' "$candidate" "$expires" >> "$temp"
+  mv "$temp" "$model_not_found_cache"
+  flock -u "$lock_fd"
+  exec {lock_fd}>&-
+}
+fatal_stderr_without_model_refresh() {
+  grep -ivE 'codex_models_manager.*failed to refresh available models' "$1" || true
+}
 # Use the last numeric group: go3-3861 and review-3861 refer to the same ticket.
 if [[ -f $S/luna/rounds.log ]] && awk -v key="$key" '
   function ticket(k) { sub(/[^0-9]*$/, "", k); sub(/^.*[^0-9]/, "", k); return k }
@@ -30,7 +72,7 @@ if [[ -f $S/luna/rounds.log ]] && awk -v key="$key" '
   wanted != "" && ticket($2) == wanted && $4 ~ /^rc=[0-9]+$/ && $4 != "rc=0" { failed++ }
   END { exit !(failed >= 2) }
 ' "$S/luna/rounds.log"; then
-  model=gpt-6.1-terra  # maintainer 10-29: no sol, escalate to terra
+  model_not_found_cached gpt-6.1-terra || model=gpt-6.1-terra  # maintainer 10-29: no sol, escalate unless cached unsupported
 fi
 b=${WORKER_BACKEND:-}  # 10-28: zc's 84% failure was our wrapper (json output, Built-in fatal), fixed
 inflight() { local n=0 f; for f in "$S"/luna/*/backend; do [[ $(cat "$f" 2>/dev/null) == "$1" && ! -f ${f%/backend}/rc ]] && n=$((n+1)); done; echo "$n"; }
@@ -40,6 +82,7 @@ breaker_open_for() {
   # 10-30 maintainer: bin/zc-quota holds ZCode before the 5h window runs out; same marker lib.sh's provider_quota_exhausted reads.
   [[ $1 == zc ]] && (( $(cat "$hold_home/zcode-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
   [[ $1 == luna ]] && (( $(cat "$hold_home/codex-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
+  [[ $1 == luna ]] && (( $(cat "$hold_home/codex-unavailable-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
   file=$(breaker_path "$1"); [[ -f $file ]] || return 1
   now=$(date +%s); touched=$(stat -c %Y "$file" 2>/dev/null) || return 1
   (( now - touched < ${WORKER_BREAKER_SECONDS:-1800} ))
@@ -85,6 +128,10 @@ if [[ ! $age_admit =~ ^[0-9]+$ || ! $stall_after =~ ^[0-9]+$ || ! $health_interv
   printf 'worker: invalid health timeout or interval\n' >&2; echo 2 > "$d/rc"; exit 2
 fi
 queue_after=$((age_admit + stall_after))
+gate_queue_seconds=${WORKER_GATE_QUEUE_SECONDS:-}
+if [[ $gate_queue_seconds =~ ^[1-9][0-9]{0,6}$ ]]; then
+  queue_after=$((10#$gate_queue_seconds))
+fi
 
 worktree_state() {
   local status head
@@ -103,16 +150,25 @@ fatal_reason() {
   local log count
   for log in "$d/stderr.log" "$d/backend-run.stderr.log"; do
     [[ -f $log ]] || continue
-    if grep -qiE 'authentication failed|authentication[_ -]error|auth[_ -]error|unauthorized|not[[:space:]]+authorized|invalid[_ -]api[_ -]key|incorrect.{0,20}api key|api key.{0,40}(invalid|not valid|expired|incorrect)|invalid[_ -]token|token.{0,30}(invalid|expired)|insufficient[_ -]quota|quota.{0,20}(exceeded|exhausted|limit)|exceeded.{0,20}quota|billing.{0,30}(disabled|limit|exceeded)|payment required|resource[_ -]exhausted|rate[_ -]limit|(^|[^0-9])(401|403|429)([^0-9]|$)|too many requests' "$log"; then
+    if fatal_stderr_without_model_refresh "$log" | grep -qiE 'authentication failed|authentication[_ -]error|auth[_ -]error|unauthorized|not[[:space:]]+authorized|invalid[_ -]api[_ -]key|incorrect.{0,20}api key|api key.{0,40}(invalid|not valid|expired|incorrect)|invalid[_ -]token|token.{0,30}(invalid|expired)|insufficient[_ -]quota|quota.{0,20}(exceeded|exhausted|limit)|exceeded.{0,20}quota|billing.{0,30}(disabled|limit|exceeded)|payment required|resource[_ -]exhausted|rate[_ -]limit|(^|[^0-9])(401|403|429)([^0-9]|$)|too many requests'; then
       echo 'fatal stderr pattern: authentication or quota error'; return 0
     fi
     # 10-28 factory-mainfix r1: zc's terminal `Error: Turn execution failed` (events.jsonl closes with turn.failed)
     # exits rc=1 with no last.md; fail over to the other backend on the same dirty worktree instead of ending the round.
-    if grep -qiF 'Turn execution failed' "$log"; then
+    if fatal_stderr_without_model_refresh "$log" | grep -qiF 'Turn execution failed'; then
       echo 'fatal stderr pattern: Turn execution failed'; return 0
     fi
   done
-  count=$(grep -ic 'AI_APICallError' "$d/stderr.log" "$d/backend-run.stderr.log" 2>/dev/null | awk -F: '{n += $NF} END {print n+0}')
+  if [[ -f $d/events.jsonl ]] && grep -Eiq '"type"[[:space:]]*:[[:space:]]*"turn\.failed"' "$d/events.jsonl" &&
+    grep -Eiq 'authentication[_ -]error|authentication failed|auth[_ -]error|unauthorized|not[[:space:]]+authorized|invalid[_ -]token|token.{0,30}(invalid|expired)|(^|[^0-9])(401|403|429)([^0-9]|$)' "$d/events.jsonl"; then
+    echo 'fatal event pattern: turn.failed'; return 0
+  fi
+  count=$(
+    for log in "$d/stderr.log" "$d/backend-run.stderr.log"; do
+      [[ -f $log ]] || continue
+      fatal_stderr_without_model_refresh "$log" | grep -ic 'AI_APICallError' || true
+    done | awk '{ n += $1 } END { print n+0 }'
+  )
   if (( count >= 2 )); then echo "fatal stderr pattern: repeated AI_APICallError ($count occurrences)"; return 0; fi
   return 1
 }
@@ -213,6 +269,9 @@ run_backend() {
   wait "$pid"; run_rc=$?
   trap - TERM INT HUP
   rm -f "$d/backend-run.pid"
+  if [[ $backend == luna ]] && grep -qiF 'model_not_found' "$d/events.jsonl" 2>/dev/null; then
+    cache_model_not_found "$round_model"
+  fi
   if [[ -n $monitor_reason ]]; then run_reason=$monitor_reason
   else run_reason=$(fatal_reason || true); fi
   printf '%s\n' "$run_rc" > "$d/rc"

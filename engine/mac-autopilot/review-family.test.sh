@@ -230,6 +230,20 @@ if codex_credits_open review; then fail 'an unreadable balance must close the ro
 rm -f "$(_quota_marker_file codex)"
 pick_review_for_unit "$glm_unit" || fail 'after the reset a ZCode unit must get normal Codex'
 [[ "$PICK_PROVIDER" == codex ]] || fail 'after the reset the reviewer must be Codex'
+# Head's unavailable marker closes credits and reads as a Codex hold; codex-quota's exhausted marker (5h/weekly) keeps them open.
+CODEX_CREDITS_ROLES="arbiter"; CODEX_CREDITS_CAP=5000; CODEX_CREDITS_START_BALANCE=29582
+balance 29000.5
+rm -f "$(_quota_marker_file codex)" "$AGENT_HOME/codex-unavailable-until"
+printf '%s\n' "$(($(date +%s) + 3600))" > "$AGENT_HOME/codex-unavailable-until"
+if codex_credits_open arbiter; then fail 'an unavailable Codex account must close credits'; fi
+provider_quota_exhausted codex || fail 'an unavailable Codex account must read as a Codex hold'
+rm -f "$AGENT_HOME/codex-unavailable-until"
+printf '%s\n' "$(($(date +%s) + 3600))" > "$(_quota_marker_file codex)"
+codex_credits_open arbiter || fail 'a 5h or weekly hold must keep credits open'
+rm -f "$(_quota_marker_file codex)"
+printf '%s\n' "$(($(date +%s) - 1))" > "$AGENT_HOME/codex-unavailable-until"
+codex_credits_open arbiter || fail 'an expired unavailable marker must keep credits open'
+rm -f "$AGENT_HOME/codex-unavailable-until"
 CODEX_CREDITS_ROLES=""; CODEX_CREDITS_CAP=""; CODEX_CREDITS_START_BALANCE=""
 
 # GLM takes work up to the provider cap with no pacing, and a bad quota read closes the route.

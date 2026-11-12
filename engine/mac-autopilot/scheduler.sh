@@ -81,6 +81,8 @@ if [[ -z "${REQUIRED_PR_CHECKS_FILE:-}" ]]; then
 fi
 source "$HERE/scheduler.d/reports.sh"
 source "$HERE/scheduler.d/units.sh"
+source "$HERE/scheduler.d/dead-park-salvage.sh"
+source "$HERE/scheduler.d/worker-outcomes.sh"
 source "$HERE/scheduler.d/usage-sessions.sh"
 source "$HERE/scheduler.d/models.sh"
 source "$HERE/scheduler.d/worker-command.sh"
@@ -92,6 +94,7 @@ source "$HERE/scheduler.d/footprint.sh"
 source "$HERE/scheduler.d/self-check.sh"
 source "$HERE/scheduler.d/evals-arbiter.sh"
 source "$HERE/scheduler.d/supervisor-arbiter.sh"
+source "$HERE/scheduler.d/size-recuts.sh"
 source "$HERE/scheduler.d/review-rules.sh"
 source "$HERE/scheduler.d/land-lane.sh"
 source "$HERE/scheduler.d/dependencies.sh"
@@ -102,6 +105,7 @@ source "$HERE/scheduler.d/dispatch-queue.sh"
 source "$HERE/scheduler.d/ci-status.sh"
 source "$HERE/scheduler.d/ci-admission.sh"
 source "$HERE/scheduler.d/harvest-station.sh"
+source "$HERE/scheduler.d/existing-walk-station.sh"
 source "$HERE/scheduler.d/merge-prep.sh"
 source "$HERE/scheduler.d/merge-lane.sh"
 source "$HERE/scheduler.d/conflict-resolve.sh"
@@ -119,7 +123,7 @@ source "$HERE/scheduler.d/health-release.sh"
 source "$HERE/scheduler.d/locks-views.sh"
 mkdir -p "$A/alerts"
 
-if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --rule ]]; then
+if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --rule ]]; then
   if ! reconcile_event="$(reconcile_runtime_config "$(sched_config_file mac-autopilot/config.template.json)" "$A/config.json" "${ZF_ENGINE_DIR:-$ROOT/engine}/lib.sh")"; then
     say "config-reconcile failed; tick stopped before reading config"
     exit 1
@@ -242,6 +246,88 @@ SCHED_MODEL_POLICY_JSON="$(cat "$SCHED_MODEL_POLICY_FILE" 2>/dev/null || echo '{
 # 只认提供方错误行的措辞，且只看日志尾部：worker 日志里满是代码/文档/测试输出（曾因技能说明里的
 # "an overloaded word" 误判整个 codex 冷却 30 分钟）。
 PROVIDER_LIMIT_RE='hit your (session|usage) limit|^ERROR: .*(at capacity|rate limit|usage limit|overloaded|quota)|overloaded_error|rate_limit_error|429 Too Many Requests'
+# 无产出死亡的死因辨认（11-03：两个评审单元 3 次死亡只留下 "died without a report"，死因——claude CLI
+# 的 Bun 运行时 SIGABRT、主机线程上限 EAGAIN——全在 worker 日志里没人读，supervisor 拿到的是零信息理由）。
+# 同样只认措辞、只扫日志尾部：start-limit 是 worker 根本没跑起来（主机瞬时容量，不是单元失败）；
+# oom 是内存打尽/整组被杀（单元太胖，按尺寸止损重切而不是继续压死 worker）。
+WORKER_START_LIMIT_RE='(thread: EAGAIN|process or thread limit|pids limit)'
+WORKER_OOM_RE='(out of memory|cannot allocate memory|oom-kill|memory cgroup)'
+# 末条错误行匹配：退出码/信号之外再留一行人类可读死因（截 200 字符入库）。只认错误措辞，
+# 不收 Aborted/Killed 这类 bash 作业消息——信号已有 signal= 字段，别让作业消息盖掉真正的错误行。
+WORKER_DEATH_ERROR_RE='error:|panic\(|has crashed|fatal|EAGAIN|out of memory|cannot allocate'
+
+worker_death_of() { # log-path → compact JSON {rc,signal,error,at}（fields may be absent）
+  local lg="$1" rc="" sig="" err="" exit_file="${1}.pipeline-exit"
+  rc="$(jq -r '.rc // empty' "$exit_file" 2>/dev/null || true)"
+  if ! [[ "$rc" =~ ^[0-9]+$ ]]; then
+    # Read older logs that carried the footer in the merged provider stream.
+    rc="$(jq -Rsc '[split("\n")[] | fromjson? | select(.type=="pipeline.exit") | .rc] | last // empty' "$lg" 2>/dev/null || true)"
+  fi
+  if ! [[ "$rc" =~ ^[0-9]+$ ]]; then
+    case "$(tail -n 80 "$lg" 2>/dev/null | grep -aoE 'Aborted|Segmentation fault|Killed|Terminated' | tail -1 || true)" in
+      Aborted) rc=134 ;;
+      'Segmentation fault') rc=139 ;;
+      Killed) rc=137 ;;
+      Terminated) rc=143 ;;
+    esac
+  fi
+  if [[ "$rc" =~ ^[0-9]+$ ]] && (( rc > 128 )); then sig="$(kill -l "$((rc - 128))" 2>/dev/null || true)"; fi
+  err="$(tail -n 80 "$lg" 2>/dev/null | grep -aiE "$WORKER_DEATH_ERROR_RE" | tail -1 | tr -d '\r' | cut -c1-200 || true)"
+  jq -cn --argjson rc "${rc:-null}" --arg signal "${sig:-}" --arg error "${err:-}" --arg at "$STAMP" \
+    '(if $rc == null then {} else {rc:$rc} end) + (if $signal == "" then {} else {signal:$signal} end) + (if $error == "" then {} else {error:$error} end) + {at:$at}'
+}
+
+worker_death_summary() { # death-json → compact text for history and supervisor reason
+  local d="$1" rc sig err out
+  rc="$(jqf -r '.rc // "unknown"' <<<"$d")"; sig="$(jqf -r '.signal // empty' <<<"$d")"; err="$(jqf -r '.error // empty' <<<"$d")"
+  out="rc=$rc"
+  if [[ -n "$sig" ]]; then out+=" signal=$sig"; fi
+  if [[ -n "$err" ]]; then out+=" error: $err"; fi
+  printf '%s' "$out"
+}
+
+handle_worker_death() { # worker-json unit type log-path → diagnose and route a no-report worker exit
+  local w="$1" unit="$2" wtype="$3" lg="$4" death death_summary death_sig death_class death_tail worker_provider no_output
+  death="$(worker_death_of "$lg")"
+  death_summary="$(worker_death_summary "$death")"
+  death_sig="$(jqf -r '.signal // empty' <<<"$death")"
+  death_tail="$(tail -n 80 "$lg" 2>/dev/null || true)"
+  death_class=""
+  if grep -aqE "$WORKER_START_LIMIT_RE" <<<"$death_tail"; then
+    death_class=start-limit
+  elif [[ "$death_sig" == KILL ]] || grep -aqiE "$WORKER_OOM_RE" <<<"$death_tail"; then
+    death_class=oom-kill
+  fi
+  if [[ "$death_class" == start-limit ]]; then
+    worker_provider="$(jqf -r '.provider // empty' <<<"$w")"
+    [[ -n "$worker_provider" ]] || worker_provider="$(provider_of "$(jqf -r '.model // ""' <<<"$w")")"
+    start_cooldown "$worker_provider" "worker start failed (host thread/process limit) unit=$unit $death_summary"
+    set_unit "$unit" "$(hist worker-start-failed "$death_summary") | .worker_death=$death"
+    say "worker start failed unit=$unit provider=$worker_provider $death_summary"
+    if [[ "$(unit_retries "$unit" worker-start-failed)" =~ ^[0-9]+$ ]] \
+      && (( $(unit_retries "$unit" worker-start-failed) >= MAX_NO_OUTPUT )); then
+      to_supervisor "$unit" "$(unit_retries "$unit" worker-start-failed) workers in a row could not even start (host thread/process limit), last log $(basename "$lg"); $death_summary"
+    fi
+    return 0
+  fi
+  echo "[$STAMP] WASTE zero-output worker pid=$(jqf -r '.pid // 0' <<<"$w") unit=$unit log=$(basename "$lg") $death_summary" >> "$A/alerts/waste.md"
+  say "WASTE zero-output pid=$(jqf -r '.pid // 0' <<<"$w") unit=$unit $death_summary"
+  set_unit "$unit" "$(hist worker-no-output "$wtype $death_summary") | .worker_death=$death"
+  no_output="$(jqf -r --arg id "$unit" '[.units[] | select(.id==$id) | (.history // []) | map(select(.stage=="worker-no-output")) | length][0] // 0' "$UNITS")"
+  if [[ "$(unit_field "$unit" '.self_fix_active // false')" != true && "$no_output" =~ ^[0-9]+$ ]] && (( no_output >= MAX_NO_OUTPUT )); then
+    if [[ "$death_class" == oom-kill ]] && [[ "$(unit_field "$unit" '.issue // empty')" =~ ^[1-9][0-9]*$ ]] \
+      && scheduler_recut_route "$(unit_field "$unit" '.issue')" "$(jq -cn --arg unit "$unit" --arg log "$(basename "$lg")" --argjson death "$death" '{kind:"worker-oom-death",unit:$unit,log:$log,death:$death}')" \
+      && scheduler_issue_state "$(unit_field "$unit" '.issue')" | jq -e '.state == "needs-recut"' >/dev/null; then
+      set_unit "$unit" "$(hist worker-oom-recut "$death_summary") | .stage=\"blocked-external\" | .size_recut_pending=true"
+      say "unit=$unit worker died $death_summary -> needs-recut"
+    elif [[ "$wtype" =~ ^(review|rereview|repair|implement)$ && "$(unit_retries "$unit" fresh-session-retry)" == 0 ]]; then
+      set_unit "$unit" "$(hist fresh-session-retry "$no_output deaths") | .session_ids={} | .sessions={} | .session_id=null | .stage=\"${wtype}-pending\""
+      say "unit=$unit: $no_output workers died -> one fresh-session retry"
+    else
+      to_supervisor "$unit" "$no_output workers died without a report, fresh session too (last log $(basename "$lg")); $death_summary"
+    fi
+  fi
+}
 
 # Claude 评审 worker 的只读工具白名单（--permission-mode dontAsk：白名单外一律拒绝）。
 CLAUDE_REVIEW_TOOLS="Read,Grep,Glob,Bash(cd:*),Bash(pwd),Bash(git fetch:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git ls-remote:*),Bash(git status:*),Bash(git ls-files:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(cat:*),Bash(ls:*),Bash(grep:*),Bash(rg:*),Bash(jq:*),Bash(sort:*),Bash(uniq:*),Bash(pnpm:*),Bash(npx vitest:*),Bash(node --test:*),Bash(bash *.test.sh)"
@@ -465,6 +551,8 @@ VIEWS_LOCK="$A/.views.lock"
 CI_STATION_LOCK="$A/.ci-station.lock"
 # The harvest group as its own station (harvest_station_tick, scheduler.d/harvest-station.sh): its own lock, the ledger lock one worker at a time.
 HARVEST_STATION_LOCK="$A/.harvest-station.lock"
+# The intake existing walk as its own station (existing_walk_tick, scheduler.d/existing-walk-station.sh): its own lock, the ledger lock per write.
+EXISTING_WALK_LOCK="$A/.existing-walk-station.lock"
 
 # 补派循环入口（#4628）：loop.sh 与慢 tick 并行检查本地台账，30 秒一次或发现新退出的 worker 时触发。
 # 慢阶段只在等待 GitHub 时让出同一 SCHED_LOCK；补派本地收割 direct-main 实现结果，另每次最多收割 2 个已结束且带报告的 PR 车道 implement/review/rereview/repair worker（释放槽位，有少量 GitHub 调用）、回收孤儿记录，
@@ -481,15 +569,16 @@ paused_midrun() {
 }
 run_issue_intake_phases() {
   local rc=0
-  phase register_new_issues 1 || rc=$?
+  # A live station walks the existing units; the tick then only primes the census the new-issue walk reads and loads the rows the station walked.
+  if existing_walk_fresh; then intake_census_prime; existing_walked_load; else phase register_new_issues 1 || rc=$?; fi
   phase register_new_issues || rc=$?
   return "$rc"
 }
 run_refill_intake_dispatch_phases() {
   # Dispatch first: a refill exists to fill free slots, and 8 of the 33 refill kills of 2026-11-06/07 died in the merge pass that
   # used to run in front of it, so those refills dispatched nothing. The merge pass and intake run on the time left.
-  dep_delivered_snapshot # release_dependency_blocks fills this on a full tick; the body gate reads it on both
-  record_run_spend || : # the gate in dispatch_pending reads spend_runs; a refill used to dispatch on whatever the last full tick left
+  step_timed dep_snapshot dep_delivered_snapshot # release_dependency_blocks fills this on a full tick; the body gate reads it on both
+  step_timed record_run_spend record_run_spend || : # the gate in dispatch_pending reads spend_runs; a refill used to dispatch on whatever the last full tick left
   phase dispatch_pending true
   paused_midrun "refill merge" || { phase refill_merge_pass; tick_prs_changed; } # a merge changes the PRs intake reads next
   INTAKE_ADDED=0
@@ -506,7 +595,7 @@ refill_tick() {
   fi
   acquire_scheduler_lock || return 75
   rm -f -- "$A/.refill-stop" # left by a refill that was killed after a refused lock wait
-  if ! state_schema_ok; then
+  if ! step_timed state_schema state_schema_ok; then
     say "state schema invalid; refill stopped before external actions"
     echo "[$STAMP] invalid units/workers schema; supervisor recovery required" >> "$A/alerts/state.md"
     return 2
@@ -515,9 +604,9 @@ refill_tick() {
   tick_roadmap_cache_begin
   MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   phase harvest_workers true
-  coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
-  coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
-  coord_reconcile_scheduler_workers
+  step_timed coord_reap coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
+  step_timed coord_systemd coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
+  step_timed coord_scheduler coord_reconcile_scheduler_workers
   # 与慢拍同序：门收割先于 dispatch_pending，本拍收完本拍就派评审；harvest 类阶段要求补派同跑
   # （scheduler.test.sh refill_harvest_coverage），缺一个就是又一类「空等慢拍」回归。
   phase self_check_harvest
@@ -616,7 +705,7 @@ main() {
       record_run_spend || :  # a plain call: phase() primes the PR cache first, which dispatch_pending does itself
       phase_yield_lock dispatch_pending
       if ! paused_midrun "acting phases"; then
-        phase dispatch_supervisor_arbiters
+        phase_yield_lock dispatch_supervisor_arbiters
         phase dispatch_prompt_evals
         phase fast_land_lane
         tick_prs_changed # Dispatched workers can push while earlier phases run.
@@ -664,6 +753,7 @@ case "${1:-}" in
   --ci-admission) ci_station_tick ;;
   --merge) merge_entry ;;
   --harvest-station) harvest_station_tick ;;
+  --existing-walk) existing_walk_tick ;;
   --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; unretire_rc=$?; release_scheduler_lock; exit "$unretire_rc" ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick
   --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;; # hold.sh --rule: record the supervisor ruling that refills the stop-loss budget
   *) main "$@" ;;

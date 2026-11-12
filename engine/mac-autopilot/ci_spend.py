@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CI runner minutes, and the share that could not change a verdict (writes ci-spend.json for node_health).
 
-Usage: ci_spend.py [--runtime DIR] [--hours N] [--fixture FILE]
+Usage: ci_spend.py [--runtime DIR] [--hours N] [--fixture FILE] [--repo OWNER/NAME]
 
 Waste is runner time on work whose result nobody can use:
   cancelled            a job that held a runner and was then cancelled (L64: mostly our own cancellations)
@@ -11,12 +11,15 @@ Completed runs never change, so their job minutes are cached (ci-spend-cache.jso
 fetches jobs of runs that completed since the last one. --fixture reads {"runs": [...], "jobs": {id: [...]}}
 instead of calling gh (tests); its optional "prs" list stands in for the PR sizes (pr-sizes.json).
 """
-import argparse, importlib.util, json, os, subprocess
+import argparse, importlib.util, json, os, re, subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 import ledger_history
 from node_health import LARGE_PR_WINDOW_DAYS, is_test_path, size_window_units
 
 PR_EVENTS = ("pull_request", "pull_request_target")
+JOB_WORKERS = 8  # bounded: a serial job fetch per run took longer than the 300 s sampler limit on a cold cache
+BREAKDOWN_ROWS = 15
 
 
 def ts(value):
@@ -54,7 +57,33 @@ def _nontest_added(total_additions, total_count, nodes):
     return product_additions
 
 
-def gh_pr_sizes(units, now, previous):
+def fetch_job_minutes(runs, base):
+    """{run id: {created, jobs}} for completed runs; JOB_WORKERS calls at a time. A failed call aborts the sample, as before."""
+    def one(r):
+        key = str(r["id"])
+        jobs = [j for page in gh_json(f"{base}/actions/runs/{key}/jobs?filter=all&per_page=100") for j in page.get("jobs", [])]
+        return key, {"created": r["created"], "jobs": job_minutes(jobs)}
+    with ThreadPoolExecutor(max_workers=JOB_WORKERS) as pool:
+        futures = [pool.submit(one, r) for r in runs]
+        try:
+            return [f.result() for f in futures]
+        except Exception:
+            for f in futures:
+                f.cancel()
+            raise
+
+
+def breakdown(runs, minutes):
+    """(conclusion, branch, workflow) -> job minutes, largest first."""
+    by = {}
+    for r in runs:
+        for conclusion, m in minutes.get(str(r["id"]), []):
+            key = (conclusion or "none", r["branch"], r["name"])
+            by[key] = by.get(key, 0.0) + m
+    return sorted(by.items(), key=lambda kv: -kv[1])
+
+
+def gh_pr_sizes(units, now, previous, repo):
     """Fetch the window's ledger PRs in batches; completed PR sizes are reusable."""
     selected = list(size_window_units(units, now - timedelta(days=LARGE_PR_WINDOW_DAYS), now))
     ids = {str(u["pr"]) for u in selected if str(u.get("pr", "")).isdigit()}
@@ -70,7 +99,7 @@ def gh_pr_sizes(units, now, previous):
     spec = importlib.util.spec_from_file_location("open_pr_snapshot", os.path.join(os.path.dirname(__file__), "..", "open-pr-snapshot.py"))
     snapshot = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(snapshot)
-    client = snapshot.Snapshot(os.environ.get("ZF_REPO", ""))
+    client = snapshot.Snapshot(repo or os.environ.get("ZF_REPO", ""))
     for start in range(0, len(needed), 25):
         batch = needed[start:start + 25]
         fields = " ".join(
@@ -156,7 +185,12 @@ def main():
     ap.add_argument("--hours", type=float, default=5)
     ap.add_argument("--fixture")
     ap.add_argument("--now")
+    ap.add_argument("--repo", help="OWNER/NAME; default: the repo of the current directory")
     args = ap.parse_args()
+    if args.repo and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo):
+        ap.error("--repo must be OWNER/NAME")
+    # gh api has no -R, so the repo goes into the path; the default keeps gh's {owner}/{repo} from cwd.
+    base = f"repos/{args.repo}" if args.repo else "repos/{owner}/{repo}"
     a = args.runtime
     now = ts(args.now) if args.now else datetime.now(timezone.utc)
     since = now - timedelta(hours=args.hours)
@@ -170,26 +204,26 @@ def main():
     if fixture:
         raw = fixture["runs"]
     else:
-        pages = gh_json(f"repos/{{owner}}/{{repo}}/actions/runs?per_page=100&created=>={since:%Y-%m-%dT%H:%M:%SZ}")
+        pages = gh_json(f"{base}/actions/runs?per_page=100&created=>={since:%Y-%m-%dT%H:%M:%SZ}")
         raw = [r for page in pages for r in page.get("workflow_runs", [])]
     runs = sorted(({"id": r["id"], "name": r.get("name") or "", "event": r.get("event") or "",
                     "branch": r.get("head_branch") or "", "head": r.get("head_sha") or "",
                     "created": r.get("created_at") or "", "status": r.get("status"),
                     "skip_ci": ((r.get("head_commit") or {}).get("message") or "").startswith("[skip ci]")}
                    for r in raw), key=lambda r: r["created"], reverse=True)
-    for r in runs:
-        key = str(r["id"])
-        if r["status"] != "completed" or key in cache:
-            continue
-        jobs = (fixture["jobs"].get(key, []) if fixture else
-                [j for page in gh_json(f"repos/{{owner}}/{{repo}}/actions/runs/{key}/jobs?filter=all&per_page=100")
-                 for j in page.get("jobs", [])])
-        cache[key] = {"created": r["created"], "jobs": job_minutes(jobs)}
+    todo = [r for r in runs if r["status"] == "completed" and str(r["id"]) not in cache]
+    if fixture:
+        for r in todo:
+            key = str(r["id"])
+            cache[key] = {"created": r["created"], "jobs": job_minutes(fixture["jobs"].get(key, []))}
+    else:
+        cache.update(fetch_job_minutes(todo, base))
     keep = now - timedelta(hours=max(24, args.hours))
     cache = {k: v for k, v in cache.items() if (ts(v.get("created")) or now) >= keep}
 
     units = ledger_history.load_units(a)
-    doc = classify(runs, {k: v["jobs"] for k, v in cache.items()}, approved_heads(units))
+    minutes = {k: v["jobs"] for k, v in cache.items()}
+    doc = classify(runs, minutes, approved_heads(units))
     doc.update({"sampled_at": f"{now:%Y-%m-%dT%H:%M:%SZ}", "window_hours": args.hours, "runs": len(runs)})
     outputs = [(cache_path, cache), (os.path.join(a, "ci-spend.json"), doc)]
     # PR sizes for node_health's rework-by-size table (bigger PRs need more repair rounds).
@@ -215,7 +249,7 @@ def main():
             previous = json.load(open(size_path))
         except (OSError, ValueError):
             previous = {}
-        sizes = gh_pr_sizes(units, now, previous)
+        sizes = gh_pr_sizes(units, now, previous, args.repo)
     if sizes is not None:
         outputs.append((size_path, {"sampled_at": doc["sampled_at"], **sizes}))
     for path, value in outputs:
@@ -224,6 +258,11 @@ def main():
         os.replace(path + ".tmp", path)
     print(f"ci spend {doc['sampled_at']} window={args.hours:g}h total={doc['total_min']}min "
           f"waste={doc['waste_min']}min ({doc['waste_pct']}%) {doc['by_reason']}")
+    rows = breakdown(runs, minutes)
+    for (conclusion, branch, name), m in rows[:BREAKDOWN_ROWS]:
+        print(f"  {conclusion} {branch} {name} {round(m)}min")
+    if len(rows) > BREAKDOWN_ROWS:
+        print(f"  ... {len(rows) - BREAKDOWN_ROWS} more rows")
 
 
 if __name__ == "__main__":

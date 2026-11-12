@@ -382,6 +382,29 @@ export function exactSecondFailures(files, readSource) {
   return failures;
 }
 
+// A %(...Z)T or date +...Z stamp formats in the process TZ but ends in a literal Z, so Asia/Shanghai scopes wrote worker cost rows 8 h ahead (worker-scope.sh, 11-09).
+export const utcStampLint = {
+  classTag: 'local-tz-z-stamp',
+  pattern: /%\(.*Z\)T|\bdate\s+(?!-u\b)[^|;&]*\+[^\s'"]*Z\b/,
+  guidance: 'Put TZ=UTC0 on the stamp\'s own line (TZ=UTC0 printf -v now \'%(%Y-%m-%dT%H:%M:%SZ)T\' -1 in a builtin-only watcher) or use date -u +%Y-%m-%dT%H:%M:%SZ. The lint reads one line at a time, so a TZ set on an earlier line does not count.',
+};
+
+export function utcStampFailures(files, readSource) {
+  const failures = [];
+  for (const file of files.filter((p) => p.endsWith('.sh'))) {
+    let source;
+    try {
+      source = readSource(file);
+    } catch {
+      continue; // deleted at head
+    }
+    source.split(/\r?\n/).forEach((line, index) => {
+      if (utcStampLint.pattern.test(line) && !/\bTZ=UTC0?\b/.test(line)) failures.push(`${file}:${index + 1}`);
+    });
+  }
+  return failures;
+}
+
 export function lintPaths(lint) {
   return lint.gate ?? [...Object.keys(lint.files), lintPath, rankingPath];
 }
@@ -471,6 +494,10 @@ export function runLessonLints({ repo, base, head, log = (line) => console.log(l
   for (const hit of entryChecks) log(`lesson-lint: lesson=none incident_class=${entryCheckLint.classTag} verdict=fail at=${hit}`);
   if (entryChecks.length) log(`lesson-lint: fix: ${entryCheckLint.guidance}`);
   failed += entryChecks.length;
+  const utcStamps = utcStampFailures(paths, readSource);
+  for (const hit of utcStamps) log(`lesson-lint: lesson=none incident_class=${utcStampLint.classTag} verdict=fail at=${hit}`);
+  if (utcStamps.length) log(`lesson-lint: fix: ${utcStampLint.guidance}`);
+  failed += utcStamps.length;
   return failed;
 }
 

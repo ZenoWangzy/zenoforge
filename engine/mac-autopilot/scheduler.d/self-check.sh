@@ -145,8 +145,45 @@ self_check_run() (
 )
 
 pid_start() { pid_start_id "$1"; } # start ticks: tells a reused pid from the gate
+self_check_verification_run() ( # unit head clone config output metadata; success writes the verification evidence record
+  local id="$1" sha="$2" dir="$3" config="$4" command_output="$5" metadata="$6" argv_json timeout_s evidence_dir files_json rc=0 arg
+  local -a argv=() evidence_files=()
+  set -o pipefail
+  if [[ ! -r "$config" ]]; then printf 'verification refused unit=%s: config is unreadable\n' "$id"; return 1; fi
+  if ! jq . "$config" >/dev/null 2>&1; then printf 'verification refused unit=%s: state/verification.json is not valid JSON\n' "$id"; return 1; fi
+  if ! jq -e 'type=="object" and (.argv|type=="array" and length>0 and all(.[]; type=="string" and (contains("\u0000")|not)))' "$config" >/dev/null 2>&1; then
+    printf 'verification refused unit=%s: argv must be a non-empty array of strings\n' "$id"; return 1
+  fi
+  if ! jq -e 'has("timeout_s") and (.timeout_s|type=="number" and .>0 and floor==.)' "$config" >/dev/null 2>&1; then
+    printf 'verification refused unit=%s: timeout_s must be a positive integer\n' "$id"; return 1
+  fi
+  if ! jq -e '(.evidence_dir|type=="string" and length>0 and (startswith("/")|not) and (split("/")|index("..") == null) and (contains("\u0000")|not))' "$config" >/dev/null 2>&1; then
+    printf 'verification refused unit=%s: evidence_dir must be a relative path inside the clone\n' "$id"; return 1
+  fi
+  argv_json="$(jq -c '.argv' "$config")"; timeout_s="$(jq -r '.timeout_s|floor' "$config")"; evidence_dir="$(jq -r '.evidence_dir' "$config")"
+  while IFS= read -r -d '' arg; do argv+=("$arg"); done < <(jq -j '.argv[] | ., "\u0000"' "$config")
+  if (cd "$dir" && timeout -k 10 "$timeout_s" "${argv[@]}") 2>&1 | awk 'NR <= 20' > "$command_output"; then rc=0; else rc=$?; fi
+  if (( rc != 0 )); then
+    printf 'verification failed unit=%s exit_code=%s argv=%s evidence=%s\n' "$id" "$rc" "$argv_json" "$evidence_dir"
+    if [[ -s "$command_output" ]]; then sed -n '1,20p' "$command_output"; else printf '(no command output)\n'; fi
+    return 1
+  fi
+  while IFS= read -r -d '' arg; do evidence_files+=("$arg"); done < <(git -C "$dir" ls-files -z --cached --others -- "$evidence_dir")
+  files_json='[]'
+  if (( ${#evidence_files[@]} )); then files_json="$(printf '%s\0' "${evidence_files[@]}" | jq -Rs 'split("\u0000")[:-1]')" || return 1; fi
+  jq -cn --argjson argv "$argv_json" --argjson files "$files_json" --arg dir "$evidence_dir" --arg sha "$sha" \
+    '{argv:$argv,exit_code:0,evidence_dir:$dir,evidence_files:$files,sha:$sha}' > "$metadata" \
+    || { printf 'verification failed unit=%s: could not record evidence path=%s\n' "$id" "$evidence_dir"; return 1; }
+  printf 'verification passed unit=%s exit_code=0 argv=%s evidence=%s files=%s\n' "$id" "$argv_json" "$evidence_dir" "$files_json"
+)
+self_check_verification_body() { # unit JSON → the PR's verification section when this head passed
+  [[ -n "$1" ]] || return 0
+  jq -e '.self_check_status=="pass" and .verification.exit_code==0 and .verification.sha==.self_check_sha' <<<"$1" >/dev/null 2>&1 || return 0
+  printf '\n\n## verification\nCommand argv (JSON): %s\nExit code: %s\nEvidence files (relative to clone): %s\n' \
+    "$(jq -c '.verification.argv' <<<"$1")" "$(jq -r '.verification.exit_code' <<<"$1")" "$(jq -c '.verification.evidence_files' <<<"$1")"
+}
 self_check_before_review() { # unit sha clone; false means wait for the gate/self-fix
-  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base=""
+  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base="" reason gate config_file="" config_base="" config_temp="" incident_reason
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   lane="$(jqf -r '.lane // empty' <<<"$u")"
   if [[ "$lane" == pr ]]; then
@@ -157,11 +194,39 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
       && "$(jqf -r '.self_check_lane // empty' <<<"$u")" == "$lane" \
       && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" ]]; then return 0; fi
   out="$SUP/self-check-$id-$sha-$(jqf -r '.self_check_fixes // 0' <<<"$u")-$TAG.log"; result="$out.result"
+  config_base=origin/main
+  [[ "$lane" == pr ]] && config_base="$pr_base"
+  if [[ -n "$config_base" ]] && git -C "$dir" rev-parse --verify "$config_base^{commit}" >/dev/null 2>&1; then
+    config_temp="$(mktemp "${out}.verification-config.XXXXXX")" || return 1
+    if git -C "$dir" show "$config_base:.zenoforge/state/verification.json" > "$config_temp" 2>/dev/null; then
+      config_file="$config_temp"
+    else
+      rm -f "$config_temp"; config_temp=""
+    fi
+    if ! git -C "$dir" diff --quiet "$config_base" "$sha" -- .zenoforge/state/verification.json; then
+      say "verification: ignored head copy for this run unit=$id path=.zenoforge/state/verification.json"
+    fi
+  fi
+  [[ -n "$config_file" ]] || config_file="$( (unset ZF_CONFIG_ROOT; sched_config_file state/verification.json 2>/dev/null) || true)"
+  if [[ -z "$config_file" && "$(jqf -r '.verification_skip_logged // false' <<<"$u")" != true ]]; then
+    incident_reason="$(incident_report_gate_reason "$u")"
+    if [[ -z "$incident_reason" ]]; then
+      set_unit "$id" '.verification_skip_logged=true' || return 1
+      say "verification: skipped unit=$id (no state/verification.json)"
+    fi
+  fi
+  rm -f "$out.verification.json" "$out.verification-output"
   (
-    # Same check as the review-time incident report gate (review-rules.sh), run here so the original session can repair the report via self-fix.
-    reason="$(incident_report_gate_reason "$u")"
+    # Run report gates before checks so the original session can repair the report via self-fix.
+    reason="$(decision_log_gate_reason "$u")"
+    if [[ -n "$reason" ]]; then gate=decision-log; else
+      reason="$(how_why_gate_reason "$u")"
+      if [[ -n "$reason" ]]; then gate='how/why'; else gate='incident report'; reason="$(incident_report_gate_reason "$u")"; fi
+    fi
     if [[ -n "$reason" ]]; then
-      printf 'incident report check failed: %s\nreport: %s\n' "$reason" "$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
+      printf '%s check failed: %s\nreport: %s\n' "$gate" "$reason" "$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
+      printf 'red\n' > "$result"
+    elif [[ -n "$config_file" ]] && ! self_check_verification_run "$id" "$sha" "$dir" "$config_file" "$out.verification-output" "$out.verification.json"; then
       printf 'red\n' > "$result"
     elif self_check_run "$dir" "$sha" "$lane" "$pr_base"; then printf 'pass\n' > "$result"
     else
@@ -169,14 +234,29 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
       # 75 (cihost admission queue) and 125 (transfer/setup) are not verdicts.
       if (( rc == 75 || rc == 125 )); then printf 'defer\n' > "$result"; else printf 'red\n' > "$result"; fi
     fi
+    [[ -z "$config_temp" ]] || rm -f "$config_temp"
   ) > "$out" 2>&1 < /dev/null &
   pid=$!
   set_unit "$id" ".self_check_pid=$pid | .self_check_start=$(js "$(pid_start "$pid")") | .self_check_sha=$(js "$sha") | .self_check_lane=$(js "$lane") | .self_check_base=$(js "$pr_base") | .self_check_status=null | .self_check_output=$(js "$out") | .self_check_workdir=$(js "$dir") | .self_check_return_stage=.stage"
   say "self-check pid=$pid unit=$id head=$sha (before review)"
   return 1
 }
+self_check_failure_class() { # log → short class of the first failure line
+  local line
+  line="$(grep -a -m1 -E '^[^:]{1,80} check failed:|^verification failed|AssertionError|^not ok [0-9]+|^FAIL([[:space:]]|$)|ERR_PNPM|ELIFECYCLE|timed out|(^|[[:space:]])error:' "$1" 2>/dev/null || true)"
+  case "$line" in
+    *" check failed:"*) printf '%s\n' "${line%%:*}" ;;
+    'verification failed'*) printf 'verification failed\n' ;;
+    *AssertionError*) printf 'assertion failure\n' ;;
+    *'not ok '*|FAIL*) printf 'test failure\n' ;;
+    *ERR_PNPM*|*ELIFECYCLE*) printf 'package script failure\n' ;;
+    *'timed out'*) printf 'timeout\n' ;;
+    *error:*|*Error:*) printf 'command error\n' ;;
+    *) printf 'self-check failure\n' ;;
+  esac
+}
 self_check_harvest() {
-  local id pid out start status fixes sid model
+  local id pid out start status fixes sid model verification_json verification_update reason_update
   while IFS=$'\t' read -r id pid out start; do
     if [[ ! -s "$out.result" ]]; then
       if kill -0 "$pid" 2>/dev/null && { [[ -z "$start" || "$(pid_start "$pid")" == "$start" ]]; }; then continue; fi
@@ -191,7 +271,12 @@ self_check_harvest() {
       set_unit "$id" "$(hist self-check-deferred "$out") | del(.self_check_pid, .self_check_start, .self_check_sha, .self_check_status)"
       continue
     fi
-    set_unit "$id" "$(hist "self-check-$status" "$out") | del(.self_check_pid, .self_check_start) | .self_check_status=$(js "$status")"
+    verification_update=""
+    if [[ "$status" == pass && -s "$out.verification.json" ]] && verification_json="$(jq -c . "$out.verification.json" 2>/dev/null)"; then
+      verification_update=" | .verification=$verification_json"
+    fi
+    reason_update=""; [[ "$status" != red ]] || reason_update=" | .history[-1].reason=$(js "$(self_check_failure_class "$out")")"
+    set_unit "$id" "$(hist "self-check-$status" "$out") | del(.self_check_pid, .self_check_start) | .self_check_status=$(js "$status")$verification_update$reason_update"
     [[ "$status" == red ]] || continue
     fixes="$(unit_field "$id" '.self_check_fixes // 0')"
     sid="$(unit_field "$id" '.session_ids.repair')"; model="$(unit_field "$id" .implement_model)"
@@ -229,6 +314,14 @@ $(matt_method_rule "$dir")"
     impl_report="$(jqf -r '.implementation_report // empty' <<<"$u")"
     prompt+="
 失败项是事故报告结构检查：请就地修改原实现报告 $SUP/${impl_report:-$rep}（保留原有内容，补齐 ## root-cause、带 kind: 行的 ## recurrence-guard、带 http(s) 来源 URL 的 ## prior-art），不要另写一份替代它；$SUP/${rep} 只写修复说明。"
+  elif grep -q '^decision-log check failed' "$out"; then
+    impl_report="$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
+    prompt+="
+失败项是决策日志结构检查：请就地修改原实现报告 $SUP/${impl_report:-$rep}，在 ## decision-log 中简要写明试过什么、失败原因、最终选择和验证方式；保留原有内容，不要另写替代报告。$SUP/${rep} 只写修复说明。"
+  elif grep -q '^how/why check failed' "$out"; then
+    impl_report="$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
+    prompt+="
+失败项是 how/why 结构检查：请就地修改原实现报告 $SUP/${impl_report:-$rep}，补齐非空 ## how（说明触及代码当前如何工作）和 ## why（说明设计原因，并引用至少一个 7 位以上十六进制 commit SHA 或 #N issue）；保留原有内容，不要另写替代报告。$SUP/${rep} 只写修复说明。"
   fi
   if [[ "$(jqf -r '.implement_model // empty' <<<"$u")" == "$model" \
       && "$(jqf -r '.implement_effort // empty' <<<"$u")" == "$effort" \
@@ -249,16 +342,35 @@ unit_dispatch_priority() { # unit-json → hotfix|opt|normal
   elif [[ "$(jqf -r '.lane // empty' <<<"$1")" == direct-main ]]; then printf 'opt\n'
   else printf 'normal\n'; fi
 }
-higher_priority_waiting() { # priority → higher-priority live waiter (stdout); always drops stale files
-  local priority="$1" f pid name hotfix="" opt=""
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../bin" && pwd -P)/luna-capacity.sh"
+
+higher_priority_waiting() { # priority → sets waiter and age; always drops stale files
+  local priority="$1" f pid name hotfix="" opt="" hotfix_age=0 opt_age=0 max age mtime now=""
+  max="${AUTOPI_PRIORITY_HOLD_MAX_SECONDS:-1200}"
+  [[ "$max" =~ ^[0-9]+$ ]] || max=1200
+  PRIORITY_WAITING_WAITER=""
+  PRIORITY_WAITING_AGE_SECONDS=0
   for f in "$LUNA_SLOTS"/wait-hotfix-* "$LUNA_SLOTS"/wait-opt-*; do
     [[ -e "$f" ]] || continue
     pid="${f##*-}"
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       name="${f##*/}"
+      age=0
+      mtime="$(stat -c %Y -- "$f" 2>/dev/null)" || mtime=""
+      if [[ "$mtime" =~ ^[0-9]+$ ]]; then
+        [[ -n "$now" ]] || now="$(date +%s)"
+        age=$((now - mtime)); if (( age < 0 )); then age=0; fi
+        if (( age > max )); then
+          if [[ -z "${TICK_PRIORITY_HOLD_EXPIRED[$name]:-}" ]]; then
+            say "priority hold expired for $name after ${age}s; normal dispatch resumes"
+            TICK_PRIORITY_HOLD_EXPIRED[$name]=1
+          fi
+          continue
+        fi
+      fi
       case "$name" in
-        wait-hotfix-*) [[ -n "$hotfix" ]] || hotfix="$name" ;;
-        wait-opt-*) [[ -n "$opt" ]] || opt="$name" ;;
+        wait-hotfix-*) if [[ -z "$hotfix" ]]; then hotfix="$name"; hotfix_age="$age"; fi ;;
+        wait-opt-*) if [[ -z "$opt" ]]; then opt="$name"; opt_age="$age"; fi ;;
       esac
     else
       rm -f -- "$f"
@@ -266,12 +378,37 @@ higher_priority_waiting() { # priority → higher-priority live waiter (stdout);
   done
   case "$priority" in
     hotfix) return 1 ;;
-    opt) [[ -n "$hotfix" ]] && { printf '%s\n' "$hotfix"; return 0; } ;;
+    opt) [[ -n "$hotfix" ]] && { PRIORITY_WAITING_WAITER="$hotfix"; PRIORITY_WAITING_AGE_SECONDS="$hotfix_age"; return 0; } ;;
     *)
-      [[ -n "$hotfix" ]] && { printf '%s\n' "$hotfix"; return 0; }
-      [[ -n "$opt" ]] && { printf '%s\n' "$opt"; return 0; }
+      [[ -n "$hotfix" ]] && { PRIORITY_WAITING_WAITER="$hotfix"; PRIORITY_WAITING_AGE_SECONDS="$hotfix_age"; return 0; }
+      [[ -n "$opt" ]] && { PRIORITY_WAITING_WAITER="$opt"; PRIORITY_WAITING_AGE_SECONDS="$opt_age"; return 0; }
       ;;
   esac
+  return 1
+}
+
+declare -gA TICK_PRIORITY_ADMISSION_CACHE=()
+priority_admission_has_room() { # priority age; dispatch_pending caches one resource sample per priority and waiter age between starts
+  local priority="$1" age="$2" result cache_key
+  if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]]; then
+    LUNA_PRIORITY="$priority" box_has_room "$age"
+    return $?
+  fi
+  cache_key="$priority:$age"
+  result="${TICK_PRIORITY_ADMISSION_CACHE[$cache_key]:-}"
+  if [[ -z "$result" ]]; then
+    if LUNA_PRIORITY="$priority" box_has_room "$age"; then result=admit; else result=hold; fi
+    TICK_PRIORITY_ADMISSION_CACHE[$cache_key]="$result"
+  fi
+  [[ "$result" == admit ]]
+}
+
+priority_wait_should_hold() { # normal dispatch yields only while the selected waiter is also blocked
+  local priority="$1" waiter="$2" waiter_priority age="${PRIORITY_WAITING_AGE_SECONDS:-0}"
+  [[ "$priority" == normal ]] || return 0 # preserve strict hotfix-over-opt ordering
+  waiter_priority="${waiter#wait-}"; waiter_priority="${waiter_priority%%-*}"
+  if [[ "$waiter_priority" == hotfix ]] && priority_admission_has_room hotfix "$age"; then return 1; fi
+  priority_admission_has_room normal "$age" || return 0
   return 1
 }
 
@@ -283,7 +420,8 @@ dispatch_capacity_free() { # worker slot available; the same predicate room_for 
 dispatch_walk_full() { ! dispatch_capacity_free; }
 # Walk passes that drop a pending unit without a log line are counted by reason; the refill and tick summaries name them.
 declare -gA TICK_DISPATCH_SKIPS=()
-dispatch_skip() { TICK_DISPATCH_SKIPS[$1]=$(( ${TICK_DISPATCH_SKIPS[$1]:-0} + 1 )); }
+declare -gA TICK_PRIORITY_HOLD_EXPIRED=()
+dispatch_skip() { TICK_DISPATCH_SKIPS[$1]=$(( ${TICK_DISPATCH_SKIPS[$1]:-0} + 1 )); dispatch_why "${why_unit:-}" "$1"; }
 dispatch_skip_summary() { # name:count,... for the reasons that fired this pass, sorted; empty when none
   local k out=""
   (( ${#TICK_DISPATCH_SKIPS[@]} )) || return 0
@@ -291,7 +429,7 @@ dispatch_skip_summary() { # name:count,... for the reasons that fired this pass,
   printf '%s' "$out"
 }
 room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=true] [report-only=false]：焦点与并发检查
-  local u="${3:-}" priority waiter impl_cap n_impl fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false
+  local u="${3:-}" priority waiter impl_cap n_impl hold_now hold_since hold_elapsed hold_alerted hold_line hold_max fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false why_unit="$1"
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"
   # A report-only continuation writes no code and starts no write-start: the repair round cap and the Dagger runtime gate do not apply to it.
   if [[ "$2" == repair && "${6:-false}" != true ]]; then repair_cap_admission "$1" "$u" || { dispatch_skip repair-cap; return 1; }; fi
@@ -303,25 +441,47 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
   if [[ "$FOCUS_MODE" == "release" && "$(unit_is_critical "$u")" != "true" && "$(critical_pending_count)" -gt 0 ]]; then
     FOCUS_SKIPPED+=("$1")
     say "skip dispatch unit=$1 focus=release critical=false"
+    dispatch_why "$1" focus-release
     return 1
   fi
   priority="$(unit_dispatch_priority "$u")"
   gate_started=$SECONDS
-  if waiter="$(higher_priority_waiting "$priority")"; then gate_waiting=true; fi
+  if [[ "$2" != review && "$2" != rereview ]] && higher_priority_waiting "$priority" \
+    && priority_wait_should_hold "$priority" "$PRIORITY_WAITING_WAITER"; then
+    waiter="$PRIORITY_WAITING_WAITER"; hold_now="$(date +%s)"
+    hold_since="$(jqf -r '.priority_hold.since_epoch // 0' <<<"$u")"; hold_alerted="$(jqf -r '.priority_hold.alerted // false' <<<"$u")"
+    if ! [[ "$hold_since" =~ ^[0-9]+$ ]] || (( hold_since == 0 )); then
+      hold_since="$hold_now"; hold_alerted=false
+      set_unit "$1" ".priority_hold={since_epoch:$hold_since,alerted:false}" || :
+    fi
+    hold_elapsed=$((hold_now - hold_since))
+    hold_max="${AUTOPI_PRIORITY_HOLD_MAX_SECONDS:-1200}"
+    [[ "$hold_max" =~ ^[0-9]+$ ]] || hold_max=1200
+    if (( hold_elapsed > hold_max )) && [[ "$hold_alerted" != true ]]; then
+      hold_line="PRIORITY-HOLD-STARVE unit=$1 waiter=$waiter secs=$hold_elapsed"
+      say "$hold_line"
+      [[ -f "$A/alerts/waste.md" ]] && echo "[$STAMP] $hold_line" >> "$A/alerts/waste.md"
+      set_unit "$1" '.priority_hold.alerted=true' || :
+    fi
+    gate_waiting=true
+  elif [[ "$u" == *'"priority_hold":'* ]]; then
+    set_unit "$1" 'del(.priority_hold)' || return 1
+  fi
   gate_elapsed=$((SECONDS - gate_started))
   [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || (( gate_elapsed < 2 )) || say "dispatch detail priority_gate unit=$1 secs=${gate_elapsed}s"
   if [[ "$gate_waiting" == true ]]; then
     say "skip dispatch unit=$1 priority=$priority (higher-priority run waiting at luna/zc gate: $waiter)"
+    dispatch_why "$1" priority-wait
     return 1
   fi
-  if ! dispatch_capacity_free; then say "skip dispatch unit=$1 (capacity $(live_workers)/$MAX)"; return 1; fi
+  if ! dispatch_capacity_free; then say "skip dispatch unit=$1 (capacity $(live_workers)/$MAX)"; dispatch_why "$1" capacity; return 1; fi
   impl_cap="$IMPLEMENT_CAP"
   if [[ ( "$2" == "implement" || "$2" == "repair" ) && "$check_footprint" == true ]]; then
     footprint_room "$1" "$u" "$fresh_footprint" || return 1
   fi
   if [[ "$2" == "implement" || "$2" == "repair" ]]; then
     n_impl=$(live_by_type "implement|repair")
-    if (( n_impl >= impl_cap )); then say "skip dispatch unit=$1 (implement at cap $n_impl/$impl_cap)"; return 1; fi
+    if (( n_impl >= impl_cap )); then say "skip dispatch unit=$1 (implement at cap $n_impl/$impl_cap)"; dispatch_why "$1" implement-cap; return 1; fi
   fi
 }
 
@@ -334,6 +494,36 @@ footprint_recurrence_brief() { # unit JSON → up to 3 ranked CATALOG rules, bou
     [[ -z "$brief" ]] || printf '%s\n' "$brief"
   fi
   return 0
+}
+
+# Each write-start entry names its attempt (the worker log, the key spend_runs and the run's tokens share), the model and the
+# dispatch size estimate size_admission_write_start gated on (unit field, else issue state). Recorded for measurement only.
+attempt_estimate() { # unit-json → estimated changed lines, empty when unknown
+  local issue state est
+  est="$(jqf -r '.estimated_changed_lines // empty' <<<"$1")"
+  if [[ ! "$est" =~ ^[0-9]+$ ]]; then
+    issue="$(jqf -r '.issue // empty' <<<"$1")"
+    if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+      state="$(scheduler_issue_state "$issue" 2>/dev/null || true)"
+      est="$(jqf -r '.estimated_changed_lines // empty' <<<"$state")"
+    fi
+  fi
+  printf '%s\n' "$est"
+}
+dispatch_attempt_fields() { # log model unit-json → jq fields for the write-start entry just appended (.history[-1])
+  local est band=unknown
+  est="$(attempt_estimate "$3")"
+  if [[ "$est" =~ ^[0-9]+$ ]]; then
+    if (( est <= 300 )); then band='<=300'
+    elif (( est <= 480 )); then band='301-480'
+    elif (( est <= 640 )); then band='481-640'
+    elif (( est <= 800 )); then band='641-800'
+    else band='>800'; fi
+  else
+    est=null
+  fi
+  printf '.history[-1].attempt=%s | .history[-1].model=%s | .history[-1].estimate_lines=%s | .history[-1].estimate_band=%s' \
+    "$(js "$(basename "$1")")" "$(js "$2")" "$est" "$(js "$band")"
 }
 
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider] [worker-context-json]
@@ -350,7 +540,7 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
   [[ "$report_only" != true ]] || failure_prompt="$prompt"
   room_for "$1" "$3" "$unit_json" true "$check_footprint" "$report_only" || return 1
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
-    size_admission_write_start "$1" "${10:-}" "$unit_json" || return 1
+    size_admission_write_start "$1" "${10:-}" "$unit_json" || { dispatch_why "$1" size-admission-start; return 1; }
   fi
   if [[ "$3" == implement ]]; then
     lesson_brief="$(footprint_recurrence_brief "$unit_json")"
@@ -366,6 +556,9 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
 $(tail -80 "$check_output" 2>/dev/null)"
   fi
   dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || return 1
+  # A successful start can change whether later candidates fit; only reuse admission samples between starts.
+  TICK_PRIORITY_ADMISSION_CACHE=()
+  dispatch_why_clear "$1"
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     if [[ "$3" == repair ]]; then
       # A repair worker edits the unit's existing report in place; its own report path only holds the fix note.
@@ -383,6 +576,7 @@ $(tail -80 "$check_output" 2>/dev/null)"
     fi
     write_start_filter="$(STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" hist write-start "$footprint")"
     write_start_filter+=" | .history[-1].work_type=$(js "$3") | .history[-1].provider=$(js "$provider") | .history[-1].hard_escalation=$hard_escalation"
+    write_start_filter+=" | $(dispatch_attempt_fields "$4" "$6" "$unit_json")"
     # The PR head a repair starts from, so harvest can tell a run that pushed nothing (repair_head_class); unreadable = unclassified.
     if [[ "$3" == repair && "$report_only" != true && "$(unit_field "$1" '.lane // "pr"')" != direct-main && "$(unit_field "$1" '.pr // empty')" =~ ^[0-9]+$ ]] \
       && repair_head="$(tick_pr_head "$(unit_field "$1" .pr)" 2>/dev/null)"; then write_start_filter+=" | .history[-1].pr_head=$(js "$repair_head")"; fi

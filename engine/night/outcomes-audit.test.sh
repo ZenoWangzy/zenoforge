@@ -95,6 +95,7 @@ jq -n --arg at "$recent_label" '{state:"awaiting-release",run:{outcome:"merged",
   >"$tmp/home/state/110.json"
 
 GH_FAIL=""
+CLOSED_READY_JSON='[]'
 MERGED_PRS_JSON='{"data":{"recent":{"nodes":[],"pageInfo":{"hasNextPage":false}},"boundary":{"nodes":[],"pageInfo":{"hasNextPage":false}},"refs":{"nodes":[],"pageInfo":{"hasNextPage":false}},"implements":{"nodes":[],"pageInfo":{"hasNextPage":false}},"titles":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}'
 OPEN_ISSUES_JSON='[]'
 ISSUE_VIEW_OVERRIDES='{}'
@@ -223,7 +224,9 @@ gh_q() {
     [ "$SCALE_GH_DELAY_SECONDS" -eq 0 ] || sleep "$SCALE_GH_DELAY_SECONDS"
   fi
   if [[ -n "$GH_FAIL" && "$args" == *" $GH_FAIL "* ]]; then return 1; fi
-  if [[ "$args" == *" issue list "* && "$args" == *" --state closed "* ]]; then
+  if [[ "$args" == *" issue list "* && "$args" == *" --state closed "* && "$args" == *" --label ready-for-agent "* ]]; then
+    printf '%s\n' "$CLOSED_READY_JSON"
+  elif [[ "$args" == *" issue list "* && "$args" == *" --state closed "* ]]; then
     printf '%s\n' "$CLOSED_JSON"
   elif [[ "$args" == *" issue view "* ]]; then
     local previous=""
@@ -967,7 +970,7 @@ assert_eq 0 "$(wc -l <"$timeline_rest_calls" | tr -d ' ')" 'scale audit makes no
   echo "not ok - scale audit batches timeline requests (got $(wc -l <"$timeline_graphql_calls" | tr -d ' ') calls)" >&2
   exit 1
 }
-assert_eq 11 "$(wc -l <"$scale_gh_calls" | tr -d ' ')" 'scale audit performs 11 GitHub calls with paginated timelines'
+assert_eq 12 "$(wc -l <"$scale_gh_calls" | tr -d ' ')" 'scale audit performs 12 GitHub calls with paginated timelines (11 + closed ready-for-agent snapshot)'
 [[ "$audit_elapsed" -lt 60 ]] || {
   echo "not ok - delayed scale audit took ${audit_elapsed}s (budget 60s)" >&2
   exit 1

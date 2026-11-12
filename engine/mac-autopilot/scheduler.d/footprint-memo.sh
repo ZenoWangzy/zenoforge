@@ -5,6 +5,46 @@
 # empty anywhere else, which bypasses the memo) keys the rows to the main they were filtered against.
 declare -gA TICK_FOOTPRINT_SCOPE_MEMO=()
 TICK_FOOTPRINT_MAIN=''
+TICK_FOOTPRINT_HOT_CONFLICT_PATHS='[]'
+TICK_FOOTPRINT_HOT_CONFLICT_PATHS_LOADED=false
+footprint_hot_conflict_paths_load() {
+  [[ "$TICK_FOOTPRINT_HOT_CONFLICT_PATHS_LOADED" == true ]] && return 0
+  local archive_file now rc paths
+  archive_file="$(mktemp)" || return 1
+  if jqf_optional_file "${UNITS_ARCHIVE:-}" -c 'if type == "object" and (.units | type) == "array" then . else error("invalid archive") end' > "$archive_file"; then
+    :
+  else
+    rc=$?
+    rm -f -- "$archive_file"
+    if (( rc == 64 )); then
+      archive_file="$(mktemp)" || return 1
+      printf '%s\n' '{"units":[]}' > "$archive_file" || { rm -f -- "$archive_file"; return 1; }
+    else
+      TICK_FOOTPRINT_HOT_CONFLICT_PATHS='[]'; TICK_FOOTPRINT_HOT_CONFLICT_PATHS_LOADED=true
+      say "footprint hot-conflict paths unavailable rc=$rc paths=none"
+      return 0
+    fi
+  fi
+  now="$(date -u +%s)" || { rm -f -- "$archive_file"; return 1; }
+  TICK_FOOTPRINT_HOT_CONFLICT_PATHS="$(jqf -c --argjson now "$now" --slurpfile live "$UNITS" --slurpfile archive "$archive_file" '
+    (reduce (($archive[0].units // []) + ($live[0].units // []))[] as $unit ({}; .[$unit.id] = $unit) | [.[]]) as $units
+    | [$units[] | (.history // [])[]? | select(.stage == "merge-conflict")
+        | (try (.at | fromdateiso8601) catch null) as $at | select($at != null and $now - 86400 <= $at and $at <= $now)
+        | (.conflict_files // "") as $files | select(($files | type) == "string")
+        | select(($files | startswith("unavailable") or startswith("none ")) | not)
+        | ($files | sub(" count=[0-9]+$"; "") | split(",") | map(gsub("^\\s+|\\s+$"; "")) | unique[]) as $path
+        | select($path != "") | $path]
+    | group_by(.) | map(select(length >= 3) | .[0]) | sort' <<< '{}')" || {
+      rc=$?; rm -f -- "$archive_file"
+      TICK_FOOTPRINT_HOT_CONFLICT_PATHS='[]'; TICK_FOOTPRINT_HOT_CONFLICT_PATHS_LOADED=true
+      say "footprint hot-conflict paths unavailable rc=$rc paths=none"
+      return 0
+    }
+  rm -f -- "$archive_file"
+  TICK_FOOTPRINT_HOT_CONFLICT_PATHS_LOADED=true
+  paths="$(jqf -r 'if length == 0 then "none" else join(",") end' <<<"$TICK_FOOTPRINT_HOT_CONFLICT_PATHS")" || paths=unavailable
+  say "footprint hot-conflict paths window=24h threshold=3 paths=$paths"
+}
 footprint_scope_for() { # unit-json var-name -> sets the variable to scheduler_footprint's scope; fills the memo only in the caller's shell
   local key="$TICK_FOOTPRINT_MAIN|$1" out
   if [[ -z "$TICK_FOOTPRINT_MAIN" ]]; then

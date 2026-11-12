@@ -86,6 +86,8 @@ assert_contains "the prompt names the advisor_reason gate for ready-for-human" "
 
 TRIAGE_SCHEMA_MISSING_REQUIRED="$(jq -c '(.required // []) as $required | [(.properties // {} | keys[]) as $key | select(($required | index($key)) == null) | $key]' "$SCRIPT_DIR/prompts/triage.schema.json")"
 assert_eq "triage schema requires every key for Codex structured output" '[]' "$TRIAGE_SCHEMA_MISSING_REQUIRED"
+jq -e '(.required | index("related")) != null and (.required | index("suspected_shared_cause")) != null and .properties.suspected_shared_cause.type == ["string", "null"]' \
+  "$SCRIPT_DIR/prompts/triage.schema.json" >/dev/null
 
 # --- fake gh/codex/gitnexus, shadowing the real binaries on PATH -----------
 FAKE_BIN="$(mktemp -d)"
@@ -99,6 +101,20 @@ cat > "$FAKE_BIN/gh" <<'EOF'
 # Native sub-issue reads (issue 2046): these fixtures have none.
 if [ "${1:-}" = api ] && [[ "${2:-}" == */sub_issues* ]]; then echo '[]'; exit 0; fi
 if [ "${1:-}" = api ] && [[ "${2:-}" == *'/comments?per_page=100'* ]]; then echo '[]'; exit 0; fi
+if [ "${1:-}" = api ] && [[ "$*" == *'/relates_to'* ]]; then
+  if [[ " $* " == *' --method POST '* ]]; then
+    [ "${FAKE_TRIAGE_RELATION_POST_FAIL:-0}" = 1 ] && exit 1
+    exit 0
+  fi
+  echo '[]'
+  exit 0
+fi
+if [ "${1:-}" = api ] && [[ "${2:-}" =~ ^repos/.*/issues/[0-9]+$ ]]; then
+  related="${2##*/}"
+  [ "${FAKE_TRIAGE_RELATED_404:-}" = "$related" ] && exit 1
+  jq -n --argjson related "$related" '{id:($related * 10),number:$related,state:"open"}'
+  exit 0
+fi
 set -u
 sub="$1 ${2:-}"
 case "$sub" in
@@ -139,6 +155,11 @@ case "$sub" in
   "pr view")
     [ -n "${FAKE_PR_VIEW_JSON:-}" ] || exit 1
     printf '%s\n' "$FAKE_PR_VIEW_JSON" ;;
+  "api repos/"*"/pulls/"*)
+    [[ "$2" =~ ^repos/.+/pulls/[0-9]+$ ]] || exit 1
+    echo "gh $*" >> "$FAKE_GH_LOG"
+    [ -n "${FAKE_PR_REST_JSON:-}" ] || exit 1
+    printf '%s\n' "$FAKE_PR_REST_JSON" ;;
   "api") exit 1 ;;
   "issue comment")
     echo "gh $*" >> "$FAKE_GH_LOG"
@@ -329,9 +350,11 @@ run_once() {
   fi
 
   set +e
-  RUN_OUTPUT="$(bash "$TRIAGE_SRC" "$N" 2>&1)"
+  bash "$TRIAGE_SRC" "$N" > "$agent_home/run-triage.stdout" 2> "$agent_home/run-triage.stderr"
   RUN_STATUS=$?
   set -e
+  RUN_STDERR_CONTENT="$(cat "$agent_home/run-triage.stderr")"
+  RUN_OUTPUT="$(cat "$agent_home/run-triage.stdout"; cat "$agent_home/run-triage.stderr")"
 
   GH_LOG_CONTENT="$(cat "$FAKE_GH_LOG" 2>/dev/null || true)"
   BENNY_LOG_CONTENT="$(cat "$FAKE_BENNY_LOG" 2>/dev/null || true)"
@@ -350,8 +373,8 @@ verdict() {
   local reason_json="null"
   if [ -n "${5:-}" ]; then reason_json="$(jq -nc --arg r "$5" '$r')"; fi
   jq -nc --arg s "$1" --arg r "$2" --arg l "$3" --arg c "${4:-enhancement}" \
-    --argjson advisor_reason "$reason_json" \
-    '{category: $c, state: $s, risk_class: $r, level: $l, entry_surface: "Web /chat/", acceptor: "maintainer", brief_md: "**Summary:** 测量简报。", notes_md: "有几个问题想确认。", expected_packages: ["packages/react-example"], expected_paths: [], estimated_changed_lines: 0, external_deliverable: {required:false, location:"", reason:""}} + (if $advisor_reason == null then {} else {advisor_reason: $advisor_reason} end)'
+    --argjson advisor_reason "$reason_json" --argjson related "${6:-[]}" --argjson cause "${7:-null}" \
+    '{category: $c, state: $s, risk_class: $r, level: $l, entry_surface: "Web /chat/", acceptor: "maintainer", brief_md: "**Summary:** 测量简报。", notes_md: "有几个问题想确认。", expected_packages: ["packages/react-example"], expected_paths: [], related:$related, suspected_shared_cause:$cause, estimated_changed_lines: 0, external_deliverable: {required:false, location:"", reason:""}} + (if $advisor_reason == null then {} else {advisor_reason: $advisor_reason} end)'
 }
 
 # --- precut, model says ready-for-human (the #1193 shape): measured, never -
@@ -402,6 +425,26 @@ export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-human P1 L1)"
 run_once "$PRECUT_BODY"
 assert_eq "precut + admissible measurement: exits 0" "0" "$RUN_STATUS"
 assert_contains "...label is ready-for-agent" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
+
+export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L1 enhancement none '[{"issue":900001,"reason":"same symptom"}]' '"shared regression"')"
+export FAKE_TRIAGE_RELATION_POST_FAIL=1
+run_once "$RAW_BODY"
+unset FAKE_TRIAGE_RELATION_POST_FAIL
+assert_eq "failed related-issue POST does not abort triage" 0 "$RUN_STATUS"
+assert_contains "failed related-issue POST logs the skipped edge on stderr" "$RUN_STDERR_CONTENT" "run-triage: #$N related #900001 not written: GitHub relation write failed"
+assert_eq "failed related-issue POST keeps the group in state" '[{"issue":900001,"reason":"same symptom"}]' "$(echo "$STATE_CONTENT" | jq -c '.related')"
+assert_eq "failed related-issue POST still advances the stage" ready-for-agent "$(echo "$STATE_CONTENT" | jq -r '.state')"
+assert_contains "failed related-issue POST still writes the stage label" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
+
+export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L1 enhancement none '[{"issue":900002,"reason":"same module"}]' 'null')"
+export FAKE_TRIAGE_RELATED_404=900002
+run_once "$RAW_BODY"
+unset FAKE_TRIAGE_RELATED_404
+assert_eq "missing related issue does not abort triage" 0 "$RUN_STATUS"
+assert_contains "missing related issue logs the skipped edge on stderr" "$RUN_STDERR_CONTENT" "run-triage: #$N related #900002 not written: GitHub issue lookup failed"
+assert_eq "missing related issue still keeps the group in state" '[{"issue":900002,"reason":"same module"}]' "$(echo "$STATE_CONTENT" | jq -c '.related')"
+assert_eq "missing related issue still advances the stage" ready-for-agent "$(echo "$STATE_CONTENT" | jq -r '.state')"
+assert_contains "missing related issue still writes the stage label" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
 
 # Configured non-product issues get lightweight classification. Even a
 # founder-authored question does not enter the product triage/advisor queue.
@@ -454,8 +497,8 @@ DELIVERY_PR=99001
 export FAKE_PR_LIST_JSON="$(jq -cn --argjson number "$DELIVERY_PR" --arg head "agent/issue-$N" \
   '[{number:$number,state:"MERGED",isDraft:false,headRefName:$head,baseRefName:"main"},
     {number:($number + 1),state:"MERGED",isDraft:false,headRefName:"agent/related-work",baseRefName:"main"}]')"
-export FAKE_PR_VIEW_JSON="$(jq -cn --argjson number "$DELIVERY_PR" \
-  '{number:$number,state:"MERGED",baseRefName:"main",mergeCommit:{oid:"0123456789abcdef0123456789abcdef01234567"},mergedAt:"2026-11-04T16:00:00Z"}')"
+export FAKE_PR_REST_JSON="$(jq -cn --argjson number "$DELIVERY_PR" \
+  '{number:$number,merged:true,base:{ref:"main"},merge_commit_sha:"0123456789abcdef0123456789abcdef01234567",merged_at:"2026-11-04T16:00:00Z"}')"
 export FAKE_TRIAGE_STRUCTURED="$(verdict awaiting-release P1 L1 | jq --arg pr "$DELIVERY_PR" \
   '.brief_md = ("Already delivered in PR #" + $pr + ".") | .notes_md = "The requested behavior is already available."')"
 SEED_STATE_JSON='{"state":"needs-triage"}' run_once "$RAW_BODY"
@@ -464,19 +507,21 @@ assert_eq "already-delivered triage enters awaiting-release" awaiting-release "$
 assert_eq "already-delivered triage records the delivering PR" "$DELIVERY_PR" "$(echo "$STATE_CONTENT" | jq -r '.run.evidence.pr_number')"
 assert_eq "already-delivered triage records merged outcome" merged "$(echo "$STATE_CONTENT" | jq -r '.run.outcome')"
 assert_not_contains "already-delivered triage does not close the issue" "$GH_LOG_CONTENT" "issue close $N"
+assert_contains "already-delivered triage verifies the linked PR through REST" "$GH_LOG_CONTENT" "gh api repos/$REPO/pulls/$DELIVERY_PR"
 assert_contains "already-delivered prompt reports the linked merged PR" "$PROMPT_CONTENT" 'MERGED, base branch `main`'
-unset FAKE_PR_LIST_JSON FAKE_PR_VIEW_JSON
+unset FAKE_PR_LIST_JSON FAKE_PR_REST_JSON
 
 # The persistent run evidence is another source for an issue's known PR link.
 DELIVERY_PR=99002
-export FAKE_PR_VIEW_JSON="$(jq -cn --argjson number "$DELIVERY_PR" \
-  '{number:$number,state:"MERGED",baseRefName:"main",mergeCommit:{oid:"1123456789abcdef0123456789abcdef01234567"},mergedAt:"2026-11-04T16:00:00Z"}')"
+export FAKE_PR_REST_JSON="$(jq -cn --argjson number "$DELIVERY_PR" \
+  '{number:$number,merged:true,base:{ref:"main"},merge_commit_sha:"1123456789abcdef0123456789abcdef01234567",merged_at:"2026-11-04T16:00:00Z"}')"
 export FAKE_TRIAGE_STRUCTURED="$(verdict awaiting-release P1 L1)"
 SEED_STATE_JSON="$(jq -cn --argjson pr "$DELIVERY_PR" \
   '{state:"needs-triage",run:{evidence:{pr_number:($pr|tostring)}}}')" run_once "$RAW_BODY"
 assert_eq "already-delivered triage resolves PR from persisted run evidence" awaiting-release "$(echo "$STATE_CONTENT" | jq -r '.state')"
 assert_eq "persisted run evidence retains the delivering PR" "$DELIVERY_PR" "$(echo "$STATE_CONTENT" | jq -r '.run.evidence.pr_number')"
-unset FAKE_PR_VIEW_JSON
+assert_contains "persisted run evidence verifies the PR through REST" "$GH_LOG_CONTENT" "gh api repos/$REPO/pulls/$DELIVERY_PR"
+unset FAKE_PR_REST_JSON
 
 export FAKE_TRIAGE_STRUCTURED="$(verdict duplicate P1 L1)"
 run_once "$RAW_BODY" testuser 0 1

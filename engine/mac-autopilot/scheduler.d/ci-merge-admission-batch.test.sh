@@ -49,6 +49,10 @@ make_census
 gh() {
   printf '%s\n' "$*" >> "$GH_CALLS"
   case "${1:-} ${2:-}" in
+    'api --allow-escape-sequences')
+      [[ "${3:-}" == 'repos/{owner}/{repo}/actions/jobs/123/logs' ]] || return 98
+      cat "$GH_JOB_LOG"
+      ;;
     'pr list') cat "$CENSUS" ;;
     'pr view') printf 'src/fixture.ts\n' ;;
     'run list') printf '[]\n' ;;
@@ -80,6 +84,34 @@ prepare_tick() {
 call_count() { awk -v a="$1" -v b="${2:-}" '$1 == a && (b == "" || $2 == b) { n++ } END { print n+0 }' "$GH_CALLS"; }
 per_pr_read_count() {
   awk '($1 == "pr" && $2 == "view") || ($1 == "run" && $2 == "list" && $3 == "--commit") { n++ } END { print n+0 }' "$GH_CALLS"
+}
+
+run_ci_facts_case() {
+  local output facts i
+  GH_JOB_LOG="$fixture/no-marker-job.log"
+  : > "$GH_JOB_LOG"
+  for ((i = 1; i <= 13; i++)); do
+    printf '2026-11-11T20:13:58.0919699Z 291 : ┆ [5m29s] |  FAIL  tests/a.test.ts > suite > test-%02d\n' "$i" >> "$GH_JOB_LOG"
+  done
+  output="$(ci_test_red_checks '[{"bucket":"fail","name":"Touched packages PR gate","link":"https://example.invalid/job/123"}]')"
+  [[ "$(head -n 1 <<<"$output")" == 'Touched packages PR gate' ]] || fail "raw Dagger test failures were not recognized ($(head -n 1 <<<"$output"))"
+  facts="$(tail -n +2 <<<"$output")"
+  jq -e '(.suites | length) == 1
+    and .suites[0].file == "tests/a.test.ts"
+    and (.suites[0].tests | length) == 12
+    and .suites[0].tests[0].name == "suite > test-01"
+    and .suites[0].tests[11].name == "suite > test-12"' <<<"$facts" >/dev/null \
+    || fail "raw Dagger test facts did not include the stripped file/test paths with a 12-test cap ($facts)"
+
+  GH_JOB_LOG="$fixture/marker-job.log"
+  cat > "$GH_JOB_LOG" <<'LOG'
+2026-11-11T20:13:58.0919699Z 291 : ┆ [5m29s] |  FAIL  tests/fallback.test.ts > suite > ignored fallback
+ZENOFORGE-FAIL-FACTS {"suites":[{"file":"tests/marked.test.ts","tests":[{"name":"marked test"}]}]}
+LOG
+  output="$(ci_test_red_checks '[{"bucket":"fail","name":"Fruit industry pack PR gate","link":"https://example.invalid/job/123"}]')"
+  facts="$(tail -n +2 <<<"$output")"
+  [[ "$facts" == '{"suites":[{"file":"tests/marked.test.ts","tests":[{"name":"marked test"}]}]}' ]] \
+    || fail "existing ZENOFORGE-FAIL-FACTS marker did not retain precedence ($facts)"
 }
 
 run_ci_batch_case() {
@@ -115,6 +147,145 @@ run_merge_empty_case() {
   [[ ! -s "$GH_CALLS" ]] || fail "empty merge lane made GitHub calls: $(cat "$GH_CALLS")"
 }
 
+stuck_setup() {
+  STUCK_PR=6001
+  STUCK_HEAD="$(printf '%040x' "$STUCK_PR")"
+  STUCK_BRANCH="agent/issue-$STUCK_PR"
+  STUCK_NEW_HEAD="$(printf '%040x' 7001)"
+  STUCK_TREE="$(printf '%040x' 7002)"
+  STAMP=2026-11-11T22:00:00Z
+  NOW_EPOCH="$(date -u -d "$STAMP" +%s)"
+  CI_STUCK_UNQUEUED_SECONDS=1800
+  ROOT="$fixture/repo"; MAIN_HEAD="$(printf '%040x' 7003)"
+  CFG="$(jq -c . "$supervisor/autopi/config.json")"
+  TICK_PR_STATE=(); TICK_PR_CHECK_CENSUS='{}'; TICK_PRS='[]'
+  TICK_HOTFIX_ISSUES='[]'; TICK_HOTFIX_ISSUES_LOADED=true
+  TICK_UNFINISHED_LOADED=true; TICK_UNFINISHED='[]'; TICK_UNFINISHED_ALL_OK=true
+  CI_RUN_JOBS_CACHE=()
+  SCHED_LOCK_HELD=true
+  GH_CALLS="$fixture/stuck-gh-calls"; : > "$GH_CALLS"
+  LOG="$fixture/stuck-scheduler.log"; : > "$LOG"
+  command jq -cn --arg head "$STUCK_HEAD" --arg branch "$STUCK_BRANCH" \
+    '{units:[{id:"unit-6001",pr:6001,branch:$branch,lane:"pr",stage:"ready-to-merge",approved_sha:$head,history:[]}]}' > "$UNITS"
+  STUCK_READY="$(jq -cn --arg head "$STUCK_HEAD" --arg branch "$STUCK_BRANCH" \
+    '{id:"unit-6001",pr:6001,branch:$branch,lane:"pr",stage:"ready-to-merge",approved_sha:$head,
+      pr_open_head:$head,pr_open_draft:false,pr_open_mergeable:"MERGEABLE",pr_open_checks:[{name:"CI",bucket:"pending"}] }')"
+  merge_candidates() { printf '%s\n' "$STUCK_READY"; }
+  merge_gate_suites_active() { MERGE_GATE_SUITES_NOTE=""; return 1; }
+  ci_classify_run() { :; }
+  tick_prs_prime() { :; }
+  merge_census_retry() { :; }
+  tick_pr_mergeable() { printf 'MERGEABLE\n'; }
+  unfinished_runs() { printf '%s' "$TICK_UNFINISHED"; }
+  guarded_write() { "$@"; }
+  git() {
+    case " $* " in
+      *" fetch -q origin main "*) return 0 ;;
+      *" fetch -q --no-tags origin "*) return 0 ;;
+      *" rev-parse -q --verify refs/remotes/origin/main "*) printf '%s\n' "$MAIN_HEAD" ;;
+      *" rev-parse --verify refs/autopi/merge-candidates/"*) printf '%s\n' "$STUCK_HEAD" ;;
+      *) command git "$@" ;;
+    esac
+  }
+  gh() {
+    printf '%s\n' "$*" >> "$GH_CALLS"
+    case "$*" in
+      *'--method GET repos/{owner}/{repo}/git/commits/'*) printf '%s\n' "$STUCK_TREE" ;;
+      *'--method POST repos/{owner}/{repo}/git/commits'*) printf '%s\n' "$STUCK_NEW_HEAD" ;;
+      *'--method PATCH repos/{owner}/{repo}/git/refs/heads/'*) printf '%s\n' "$STUCK_NEW_HEAD" ;;
+      *) return 97 ;;
+    esac
+  }
+}
+
+stuck_runs() {
+  local first_at="$1" second_at="${2:-$1}"
+  TICK_UNFINISHED="$(jq -cn --arg head "$STUCK_HEAD" --arg branch "$STUCK_BRANCH" \
+    --arg a "$first_at" --arg b "$second_at" \
+    '[{databaseId:7301,event:"pull_request",headSha:$head,headBranch:$branch,status:"queued",createdAt:$a},
+      {databaseId:7302,event:"pull_request",headSha:$head,headBranch:$branch,status:"queued",createdAt:$b}]')"
+  CI_RUN_JOBS_CACHE[7301]='[]'; CI_RUN_JOBS_CACHE[7302]='[]'
+}
+
+stuck_target_run() {
+  local completed_at="$1" target_at="$2"
+  TICK_UNFINISHED="$(jq -cn --arg head "$STUCK_HEAD" --arg branch "$STUCK_BRANCH" \
+    --arg completed_at "$completed_at" --arg target_at "$target_at" \
+    '[{databaseId:7303,event:"pull_request",headSha:$head,headBranch:$branch,status:"completed",createdAt:$completed_at},
+      {databaseId:7304,event:"pull_request_target",headSha:$head,headBranch:$branch,status:"queued",createdAt:$target_at}]')"
+  CI_RUN_JOBS_CACHE=()
+  CI_RUN_JOBS_CACHE[7304]='[]'
+  unfinished_runs() { command jq -c '[.[] | select(.status != "completed")]' <<<"$TICK_UNFINISHED"; }
+}
+
+run_stuck_unqueued_case() {
+  stuck_setup
+  stuck_runs "$(date -u -d "$STAMP - 45 minutes" +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(date -u -d "$STAMP - 40 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  run_merge_lane_pass
+  [[ "$(call_count api --method)" == 3 ]] || fail "stale zero-job runs did not make the tree GET, commit POST and ref PATCH: $(cat "$GH_CALLS")"
+  grep -Fq 'STUCK-UNQUEUED unit=unit-6001 PR#6001' "$LOG" || fail 'stale zero-job run was not logged with its unit and PR'
+  grep -Fq "head=$STUCK_HEAD" "$LOG" && grep -Fq 'run_ids=7301,7302' "$LOG" \
+    || fail 'STUCK-UNQUEUED did not name the head and all run ids'
+  grep -Fq -- '--method POST repos/{owner}/{repo}/git/commits' "$GH_CALLS" \
+    || fail 'retrigger did not create an empty commit through the git API'
+  grep -Fq "tree=$STUCK_TREE" "$GH_CALLS" && grep -Fq "parents[]=$STUCK_HEAD" "$GH_CALLS" \
+    || fail 'commit POST did not reuse the head tree and parent'
+  grep -Fq -- "--method PATCH repos/{owner}/{repo}/git/refs/heads/$STUCK_BRANCH" "$GH_CALLS" \
+    && grep -Fq 'force=false' "$GH_CALLS" || fail 'retrigger did not update the branch without force'
+  command jq -e --arg head "$STUCK_HEAD" '.units[0].ci_unqueued_retrigger_head == $head
+    and any(.units[0].history[]; .stage == "ci-stuck-unqueued")' "$UNITS" >/dev/null \
+    || fail 'unit did not record the retriggered head and history'
+  : > "$GH_CALLS"; : > "$LOG"
+  run_merge_lane_pass
+  [[ ! -s "$GH_CALLS" ]] || fail "same head retriggered twice: $(cat "$GH_CALLS")"
+
+  stuck_setup
+  stuck_target_run "$(date -u -d "$STAMP - 45 minutes" +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(date -u -d "$STAMP - 40 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  run_merge_lane_pass
+  grep -Fq 'STUCK-UNQUEUED unit=unit-6001 PR#6001' "$LOG" \
+    || fail 'stale pull_request_target run was not retriggered after pull_request completed'
+  grep -Fq "run_ids=7304" "$LOG" || fail 'completed pull_request run was included in the retrigger'
+  [[ "$(awk '$1 == "api" && $2 == "--method" && $3 == "POST" && $4 == "repos/{owner}/{repo}/git/commits" { n++ } END { print n+0 }' "$GH_CALLS")" == 1 ]] \
+    || fail "pull_request_target retrigger did not create exactly one empty commit: $(cat "$GH_CALLS")"
+  [[ "$(awk -v endpoint="repos/{owner}/{repo}/git/refs/heads/$STUCK_BRANCH" \
+    '$1 == "api" && $2 == "--method" && $3 == "PATCH" && $4 == endpoint && index($0, "force=false") > 0 { n++ } END { print n+0 }' "$GH_CALLS")" == 1 ]] \
+    || fail "pull_request_target retrigger did not make exactly one force=false ref update: $(cat "$GH_CALLS")"
+
+  stuck_setup
+  stuck_runs "$(date -u -d "$STAMP - 10 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  run_merge_lane_pass
+  [[ ! -s "$GH_CALLS" ]] || fail "young queued runs were retriggered: $(cat "$GH_CALLS")"
+
+  stuck_setup
+  stuck_runs "$(date -u -d "$STAMP - 45 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  CI_RUN_JOBS_CACHE[7302]='[{"status":"queued"}]'
+  run_merge_lane_pass
+  [[ ! -s "$GH_CALLS" ]] || fail "a queued run with jobs was retriggered: $(cat "$GH_CALLS")"
+
+  stuck_setup
+  STUCK_BRANCH=main
+  STUCK_READY="$(jq -c --arg head "$STUCK_HEAD" '.branch="main" | .ci_adopt_head=$head' <<<"$STUCK_READY")"
+  command jq --arg head "$STUCK_HEAD" '.units[0].branch="main" | .units[0].ci_adopt_head=$head' "$UNITS" > "$fixture/main-branch-units.json"
+  mv "$fixture/main-branch-units.json" "$UNITS"
+  stuck_runs "$(date -u -d "$STAMP - 45 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  run_merge_lane_pass
+  [[ ! -s "$GH_CALLS" ]] || fail "main branch was retriggered: $(cat "$GH_CALLS")"
+
+  stuck_setup
+  STUCK_READY="$(jq -c --arg old "$(printf '%040x' 6999)" '.ci_unqueued_retrigger_head=$old' <<<"$STUCK_READY")"
+  command jq --arg old "$(printf '%040x' 6999)" '.units[0].ci_unqueued_retrigger_head=$old' "$UNITS" > "$fixture/old-head-units.json"
+  mv "$fixture/old-head-units.json" "$UNITS"
+  stuck_runs "$(date -u -d "$STAMP - 45 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  cancel_unit_runs() { :; }
+  run_merge_lane_pass
+  [[ ! -s "$GH_CALLS" ]] || fail "second stuck head was retriggered instead of escalated: $(cat "$GH_CALLS")"
+  command jq -e '.units[0].stage == "supervisor-review"
+    and any(.units[0].history[]; .stage == "supervisor-escalated")' "$UNITS" >/dev/null \
+    || fail 'second stuck head did not escalate to supervisor-review'
+}
+
 case "${1:-all}" in
   ci-batch)
     run_ci_batch_case
@@ -128,11 +299,22 @@ case "${1:-all}" in
     run_merge_empty_case
     echo 'ci-merge-admission-batch.test.sh merge-empty: pass (no merge-ready PRs means no GitHub calls)'
     ;;
+  stuck-unqueued)
+    run_stuck_unqueued_case
+    echo 'ci-merge-admission-batch.test.sh stuck-unqueued: pass (stale empty queued runs retrigger once per head; young/job-bearing runs wait; second stuck head escalates)'
+    ;;
+  ci-facts)
+    run_ci_facts_case
+    echo 'ci-merge-admission-batch.test.sh ci-facts: pass (Dagger raw failures become bounded facts; explicit marker remains authoritative)'
+    ;;
   all)
     run_ci_batch_case
     run_ci_zero_slot_case
     run_merge_empty_case
-    echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls)'
+    run_ci_facts_case
+    echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls; Dagger failures produce bounded facts)'
+    run_stuck_unqueued_case
+    echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls; stuck unqueued CI retriggers once per head)'
     ;;
   *) fail "unknown test mode: $1" ;;
 esac

@@ -72,12 +72,31 @@ launch_harvest_station() {
   HARVEST_STATION_NEXT=$((SECONDS + every))
   setsid timeout -k 30 "${AUTOPI_HARVEST_STATION_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --harvest-station >> "$A/loop.out" 2>&1 < /dev/null &
 }
+# The intake existing walk as its own station (scheduler.sh --existing-walk): units already in the ledger must not wait for the tick to be walked
+# through intake's handoff block. Same pacing and fallback as the harvest station; the tick walks itself while no pass started recently.
+launch_existing_walk() {
+  local every="${AUTOPI_EXISTING_WALK_SECONDS:-60}"
+  [[ "$every" =~ ^[0-9]+$ ]] && (( every >= 30 )) || every=60
+  EXISTING_WALK_NEXT="${EXISTING_WALK_NEXT:-$((SECONDS + every))}"
+  (( SECONDS >= EXISTING_WALK_NEXT )) || return 0
+  EXISTING_WALK_NEXT=$((SECONDS + every))
+  setsid timeout -k 30 "${AUTOPI_EXISTING_WALK_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --existing-walk >> "$A/loop.out" 2>&1 < /dev/null &
+}
 # #4628: the slow tick runs beside the refill controller. The scheduler yields the same ledger lock
-# around slow GitHub phases; a busy refill returns 75 and is retried five seconds later.
+# around slow GitHub phases; a busy refill returns 75 and is retried five seconds later. Refills run
+# in the background so this five-second loop keeps launching the independent stations while they run.
+refill_running() {
+  local pid
+  [[ -n "${REFILL_PID:-}" ]] || return 1
+  while IFS= read -r pid; do [[ "$pid" == "$REFILL_PID" ]] && return 0; done < <(jobs -pr)
+  return 1
+}
 refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一拍前的补派窗口
   local cadence="${AUTOPI_REFILL_SECONDS:-30}" signature rc started=$SECONDS
   REFILL_SINCE="${REFILL_SINCE:-0}"
   REFILL_LAST_EXIT="${REFILL_LAST_EXIT:-}"
+  REFILL_PID="${REFILL_PID:-}"
+  REFILL_ACTIVE_SIGNATURE="${REFILL_ACTIVE_SIGNATURE:-}"
   while :; do
     if [[ -n "${2:-}" ]]; then
       pid_running "$2" || break
@@ -90,14 +109,21 @@ refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一�
     launch_ci_admission
     launch_merge_station
     launch_harvest_station
+    launch_existing_walk
     signature="$(exited_worker_signature "$A/workers.json")"
     [[ -n "$signature" ]] || REFILL_LAST_EXIT=""
-    if [[ -n "$signature" && "$signature" != "$REFILL_LAST_EXIT" ]] || (( REFILL_SINCE >= cadence )); then
-      rc=0; run_refill || rc=$?
+    if [[ -n "$REFILL_PID" ]] && ! refill_running; then
+      rc=0; wait "$REFILL_PID" || rc=$?
+      REFILL_PID=""
       if (( rc != 75 )); then
         REFILL_SINCE=0
-        [[ -z "$signature" ]] || REFILL_LAST_EXIT="$signature"
+        [[ -z "$REFILL_ACTIVE_SIGNATURE" ]] || REFILL_LAST_EXIT="$REFILL_ACTIVE_SIGNATURE"
       fi
+      REFILL_ACTIVE_SIGNATURE=""
+    fi
+    if [[ -z "$REFILL_PID" ]] && { [[ -n "$signature" && "$signature" != "$REFILL_LAST_EXIT" ]] || (( REFILL_SINCE >= cadence )); }; then
+      REFILL_ACTIVE_SIGNATURE="$signature"
+      run_refill & REFILL_PID=$!
     fi
   done
 }
@@ -115,6 +141,10 @@ pid_running() { # read /proc directly: the 5s refill poll spawned one ps per wor
 # 它的 HEAD 变了就发布 pinned 版本并切换 live 指针。10-22 之前只能手工 start.sh --sync-only，修好的 advisor 与冷却晚生效一小时。
 sync_from_main() {
   local src="$MAC_AUTOPILOT_ROOT/engine/mac-autopilot" head
+  # Immutable 部署在 checkout 里不留 engine 副本（版本目录 + engine-live 才是部署物，2026-10-30 起）：这里的
+  # 早退让 .synced-head 冻结在旧 head，每拍空转。没有 checkout 副本时，用 live runtime 自己的 start.sh 同步
+  # （经 ZF_ENGINE_DIR 走 engine-versions 版本目录）。
+  [[ -f "$src/start.sh" ]] || src="$LIVE"
   [[ -f "$src/start.sh" ]] || return 0
   head="$(git -C "$MAC_AUTOPILOT_ROOT" rev-parse HEAD 2>/dev/null)" || return 0
   [[ "$head" == "$(cat "$A/.synced-head" 2>/dev/null)" ]] && return 0
@@ -124,9 +154,18 @@ sync_from_main() {
   fi
 }
 [[ "${AUTOPI_LOOP_LIBRARY_ONLY:-false}" == true ]] && return 0
+loop_start_checksum="$(cksum "$LIVE/loop.sh" 2>/dev/null)"
 bash "$HERE/wait-scheduler-lock.sh" || : # a restart keeps the old tick (KillMode=process); do not start a tick that must skip on its lock
 n=0
 while true; do
+  if [[ "$(cksum "$LIVE/loop.sh" 2>/dev/null || :)" != "$loop_start_checksum" ]]; then
+    if [[ -n "${REFILL_PID:-}" ]]; then
+      while refill_running; do sleep 1; done
+      wait "$REFILL_PID" || :
+    fi
+    echo "[$(date -u +%FT%TZ)] loop: autopi-live/loop.sh changed since start, exiting for systemd to restart" >> "$A/scheduler.log"
+    exit 0
+  fi
   sync_from_main
   run_tick & slow_pid=$!
   tick="$(jq -r '.tick_seconds // 120' "$A/config.json" 2>/dev/null)"

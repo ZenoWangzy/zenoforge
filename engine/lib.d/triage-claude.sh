@@ -25,13 +25,21 @@ claude_triage_call() {
       --strict-mcp-config --permission-mode dontAsk --tools "Read,Grep,Glob,Bash" ${schema_args[@]+"${schema_args[@]}"} < "$prompt_file" )
 }
 
+# claude_tokens_used < <claude json result> -> fresh tokens of that call (input + output; cache read and creation stay out,
+# as the Codex record keeps them), or empty when the result carries no usage object. Never zero for a missing usage.
+claude_tokens_used() {
+  jq -r 'if (.usage.input_tokens | type) == "number" and (.usage.output_tokens | type) == "number"
+    then .usage.input_tokens + .usage.output_tokens else empty end' 2>/dev/null | tail -n 1
+}
+
 # Same {is_error, structured_output, tokens_used} envelope as run_codex_json, so run-triage.sh parses both alike.
 run_claude_json() {
-  local cwd="$1" identity="$2" timeout_minutes="$3" schema_file="$4" prompt_file="$5" settings_file="$6" raw status=0
+  local cwd="$1" identity="$2" timeout_minutes="$3" schema_file="$4" prompt_file="$5" settings_file="$6" raw status=0 tokens
   timeout_minutes="$(model_timeout_for_attempt "$timeout_minutes" "${N:-}")"
   raw="$(claude_triage_call "$cwd" "$identity" "$timeout_minutes" "$settings_file" "$prompt_file" "$schema_file")" || status=$?
   if [ "$status" -eq 0 ] && jq -e '.is_error == false and (.structured_output | type) == "object"' <<< "$raw" >/dev/null 2>&1; then
-    jq -c '{is_error: false, structured_output: .structured_output, tokens_used: "", total_cost_usd: .total_cost_usd}' <<< "$raw"
+    tokens="$(claude_tokens_used <<< "$raw")"
+    jq -c --arg tokens "$tokens" '{is_error: false, structured_output: .structured_output, tokens_used: $tokens, total_cost_usd: .total_cost_usd}' <<< "$raw"
   else
     jq -nc --arg result "$(tail -c 2000 <<< "$raw")" --arg status "$status" \
       '{is_error: true, subtype: "claude_exec_failure", result: $result, claude_exit_status: ($status|tonumber)}'
