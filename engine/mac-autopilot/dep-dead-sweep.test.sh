@@ -112,6 +112,16 @@ reset; closed_state MERGED; release_dependency_blocks
 reset; closed_state CLOSED; printf '{"units":[%s]}\n' "$(marked 20)" > "$UNITS"; release_dependency_blocks
 [[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'a closed predecessor with no unit row was closed by hand and must release'
 ! dep_marker_open "$(marked 20)" >/dev/null || fail 'a closed predecessor with no unit row must end the marker'
+# A stale closed cache with no unit row frees nothing until one fresh read says closed (#536): open or unreadable holds.
+nounit() { printf '{"units":[%s]}\n' "$(marked 20)" > "$UNITS"; }
+reset; nounit; closed_state CLOSED; CHILD=OPEN
+[[ "$(dep_marker_open "$(marked 20)")" == 10 ]] || fail 'a stale closed cache with a fresh OPEN read must hold the marker'
+reset; nounit; closed_state CLOSED; CHILD=''
+[[ "$(dep_marker_open "$(marked 20)")" == 10 ]] || fail 'a stale closed cache with an unreadable fresh read must hold the marker'
+reset; nounit; closed_state CLOSED; CHILD=OPEN; release_dependency_blocks
+[[ "$(field issue-20 .stage):$(field issue-20 .blocked_on)" == blocked-external:10 ]] || fail "a fresh OPEN read must keep a marked unit waiting on a stale closed cache: $(field issue-20 .stage)"
+reset; nounit; closed_state CLOSED; release_dependency_blocks
+[[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'a fresh CLOSED read still releases a marked unit with no unit row'
 reset; closed_state CLOSED; printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20 | jq -c 'del(.dep_wait_delivery)')" > "$UNITS"; release_dependency_blocks
 [[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'an unmarked unit keeps the old release on a closed predecessor'
 reset; closed_state CLOSED; printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20 | jq -c '.stage="parked"')" > "$UNITS"; release_dependency_blocks
