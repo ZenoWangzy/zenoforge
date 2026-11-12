@@ -1182,6 +1182,26 @@ assert_cond "pipeline-system triage uses lightweight classification before model
   "$(classify_line="$(grep -nF 'prepare_pipeline_system_issue "$N" "$ISSUE_JSON"' "$SCRIPT_DIR/run-triage.sh" | cut -d: -f1)"; prompt_line="$(grep -nF 'cat "$(zf_config_file prompts/triage.md)"' "$SCRIPT_DIR/run-triage.sh" | cut -d: -f1)"; [ -n "$classify_line" ] && [ -n "$prompt_line" ] && [ "$classify_line" -lt "$prompt_line" ] && echo 1 || echo 0)"
 assert_cond "technical advisor routes return pipeline-system tickets to implementation" \
   "$(grep -qF '.pipeline_system.enabled // false' "$SCRIPT_DIR"/lib.d/*.sh && grep -qF 'pipeline_system_return_to_implement' "$SCRIPT_DIR"/lib.d/*.sh && echo 1 || echo 0)"
+# Row 183b: session-owned tickets are never the factory's to triage or advise; a supervisor-created label alone still is.
+# The three selector filters are read from the script itself and run on the same fixture.
+SO_LANES='["pipeline-system"]'
+SO_FIXTURE='[
+  {"number":1,"createdAt":"2026-11-01T00:00:00Z","labels":[{"name":"needs-triage"},{"name":"needs-advisor"}]},
+  {"number":2,"createdAt":"2026-11-02T00:00:00Z","labels":[{"name":"needs-triage"},{"name":"needs-advisor"},{"name":"session-owned"}]},
+  {"number":3,"createdAt":"2026-11-03T00:00:00Z","labels":[{"name":"needs-triage"},{"name":"needs-advisor"},{"name":"supervisor-created"}]},
+  {"number":4,"createdAt":"2026-11-04T00:00:00Z","labels":[{"name":"needs-triage"},{"name":"needs-advisor"},{"name":"pipeline-system"}]}
+]'
+so_roadmap_line="$(grep -F -A1 'ROADMAP_TRIAGE_CANDIDATES="$(jq' "$PIPELINE_SRC" | tail -n 1)"
+so_roadmap="${so_roadmap_line#*\'}"; so_roadmap="${so_roadmap%\' <<<*}"
+so_legacy="$(awk '/^elif ! NEEDS_TRIAGE_IDS=/{f=1;next} f && /^  . <<< /{exit} f' "$PIPELINE_SRC")"
+so_advisor_line="$(grep -F -A1 -- '--label needs-advisor --state open \' "$PIPELINE_SRC" | tail -n 1)"
+so_advisor="${so_advisor_line#*\'}"; so_advisor="${so_advisor%\'\)\"; then}"
+assert_eq "roadmap needs-triage selector skips session-owned tickets" $'1\n3' \
+  "$(jq -r --argjson lane_labels "$SO_LANES" "$so_roadmap | .[].number" <<< "$SO_FIXTURE")"
+assert_eq "legacy needs-triage selector skips session-owned tickets" $'1\n3' \
+  "$(jq -r --argjson lane_labels "$SO_LANES" "$so_legacy" <<< "$SO_FIXTURE")"
+assert_eq "needs-advisor pool skips session-owned tickets" $'1\n3' \
+  "$(jq -r --argjson lane_labels "$SO_LANES" "$so_advisor" <<< "$SO_FIXTURE")"
 assert_cond "advisor entry points skip and reconcile pipeline-system tickets" \
   "$(grep -qF 'pipeline_system_issue_matches' "$SCRIPT_DIR/run-advisor.sh" && echo 1 || echo 0)"
 assert_cond "recut wrapper classifies pipeline-system tickets before model call" \

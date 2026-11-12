@@ -2371,7 +2371,7 @@ elif [ "$ROADMAP_ORDER_ENABLED" = true ] && [ "$ROADMAP_TREE_READY" != 1 ]; then
   echo "issue-pipeline: roadmap tree unavailable; skipping triage dispatch this tick" >&2
 elif [ "$ROADMAP_ORDER_ENABLED" = true ]; then
   ROADMAP_TRIAGE_CANDIDATES="$(jq -c --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" \
-    '[.[] | select((any(.labels[]?; .name as $name | ($lane_labels | index($name)) != null)) | not)]' <<< "$NEEDS_TRIAGE_JSON")"
+    '[.[] | select((any(.labels[]?; .name as $name | (($lane_labels + ["session-owned"]) | index($name)) != null)) | not)]' <<< "$NEEDS_TRIAGE_JSON")"
   NEEDS_TRIAGE_IDS="$(roadmap_order_candidates "$ROADMAP_TREE_JSON" "$ROADMAP_TRIAGE_CANDIDATES" '[]' false)" || { # classifying starts nothing: intake holds a declared blocker
     TRIAGE_CANDIDATE_QUERY_FAILED=1
     echo "issue-pipeline: could not order needs-triage candidates by roadmap; skipping dispatch" >&2
@@ -2387,7 +2387,7 @@ elif ! NEEDS_TRIAGE_IDS="$(jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_
       (if any(.labels[]?; .name == "legacy") then 1 else 0 end),
       .createdAt
     ])
-    | map(select((any(.labels[]?; .name as $label_name | ($lane_labels | index($label_name)) != null)) | not))
+    | map(select((any(.labels[]?; .name as $label_name | (($lane_labels + ["session-owned"]) | index($label_name)) != null)) | not))
     | .[].number
   ' <<< "$NEEDS_TRIAGE_JSON")"; then
   TRIAGE_CANDIDATE_QUERY_FAILED=1
@@ -2643,7 +2643,7 @@ profile_mark advisor
 # the ownership comment further down).
 ADVISOR_QUEUE_READ_FAILED=0
 if ! NEEDS_ADVISOR_IDS="$(gh issue list --repo "$REPO" --limit 1000 --label needs-advisor --state open \
-    --json number,createdAt,labels | jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" 'sort_by([(if any(.labels[]?; .name == "focus") then 0 else 1 end), (if any(.labels[]?; .name == "priority:top") then 0 else 1 end), .createdAt]) | map(select((any(.labels[]?; .name as $label_name | ($lane_labels | index($label_name)) != null)) | not)) | .[].number')"; then
+    --json number,createdAt,labels | jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" 'sort_by([(if any(.labels[]?; .name == "focus") then 0 else 1 end), (if any(.labels[]?; .name == "priority:top") then 0 else 1 end), .createdAt]) | map(select((any(.labels[]?; .name as $label_name | (($lane_labels + ["session-owned"]) | index($label_name)) != null)) | not)) | .[].number')"; then
   ADVISOR_QUEUE_READ_FAILED=1
   NEEDS_ADVISOR_IDS=""
   echo "issue-pipeline: needs-advisor queue could not be read; queue is unknown, so only advisor dispatch is skipped this tick and retried next tick" >&2
