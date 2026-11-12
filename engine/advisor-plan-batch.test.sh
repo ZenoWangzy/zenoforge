@@ -17,6 +17,8 @@ ADVISOR_MODEL_FALLBACK=
 INCLUDED=1
 BATCH_LOCK_FD=9
 declare -A ADVISOR_TICKET_LOCK_FDS=()
+source "$script_dir/lib.d/advisor-batch.sh" # real writer; the stubs below override its state helpers
+advisor_batch_state_read() { printf '{}\n'; }
 
 record_premium_spend() { printf 'spend\n' >> "$tmp/calls"; }
 run_with_fd_closed() {

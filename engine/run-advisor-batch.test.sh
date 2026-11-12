@@ -88,6 +88,9 @@ advisor_batch_dispatch_plan_reask '[]' '[930001]'
   rm -f "$tmp/reask-sent"; advisor_batch_state_read() { printf '{"max_safe_input_bytes":100}\n'; }
   BATCH_JOB_ID=fixture-job; ! advisor_batch_dispatch_plan_reask "[\"$rulings\"]" '[930001]' 2>/dev/null
   [[ ! -e "$tmp/reask-sent" ]]
+  rm -f "$tmp/reask-sent"; advisor_batch_state_read() { return 1; }
+  BATCH_JOB_ID=fixture-job; ! advisor_batch_dispatch_plan_reask "[\"$rulings\"]" '[930001]' 2>/dev/null
+  [[ ! -e "$tmp/reask-sent" ]]
   advisor_batch_state_read() { printf '{}\n'; }
   BATCH_JOB_ID=fixture-job; advisor_batch_dispatch_plan_reask "[\"$rulings\"]" '[930001]'
   grep -Fq "$rulings" "$tmp/reask-sent"

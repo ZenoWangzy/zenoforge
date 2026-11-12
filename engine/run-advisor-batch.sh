@@ -602,13 +602,13 @@ advisor_batch_web_dispatch() {
 advisor_batch_dispatch_plan_reask() {
   local missing_rulings_json="$1" issue_ids_json="$2"
   local source_question="$WEB_ADVISOR_PROVIDER_JOB_DIR/$BATCH_JOB_ID/question.txt"
-  local reask_question new_job_id new_topic new_job_json reask_bytes safe_bytes
+  local reask_question new_job_id new_topic new_job_json reask_bytes state_json safe_bytes
   [ -r "$source_question" ] || { echo "run-advisor-batch: completed job $BATCH_JOB_ID has no saved question for plan re-ask" >&2; return 1; }
   mkdir -p "$AGENT_HOME/logs" || return 1
   reask_question="$(mktemp "$AGENT_HOME/logs/advisor-plan-reask.XXXXXX")" || return 1
   advisor_batch_plan_reask_write "$source_question" "$reask_question" "$missing_rulings_json" "$issue_ids_json" || { rm -f "$reask_question"; return 1; }
   reask_bytes="$(wc -c < "$reask_question")"
-  safe_bytes="$(advisor_batch_state_read | jq -r '.max_safe_input_bytes // 0')" || { rm -f "$reask_question"; return 1; }
+  state_json="$(advisor_batch_state_read)" && safe_bytes="$(jq -r '.max_safe_input_bytes // 0' <<< "$state_json")" && [[ "$safe_bytes" =~ ^[0-9]+$ ]] || { rm -f "$reask_question"; echo "run-advisor-batch: advisor batch state unreadable; plan re-ask not sent" >&2; return 1; }
   # Over the proven limit the cohort has no split route, so only the quoted rulings are dropped; send nothing if still over.
   if [[ "$safe_bytes" =~ ^[0-9]+$ ]] && [ "$safe_bytes" -gt 0 ] && [ "$reask_bytes" -gt "$safe_bytes" ]; then
     advisor_batch_plan_reask_write "$source_question" "$reask_question" '' "$issue_ids_json" || { rm -f "$reask_question"; return 1; }
