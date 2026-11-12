@@ -483,6 +483,28 @@ merge_pr_retarget_children() {
   done < <(jq -r '.[].number' <<<"$children_json")
 }
 
+# Same {name, bucket} shape as `gh pr checks --json bucket,name`, from REST check runs (newest per name) and commit statuses.
+merge_pr_checks_valid() {
+  jq -e 'type == "array" and all(.[];
+      type == "object" and (.name | type == "string" and length > 0)
+      and (.bucket | type == "string"))' <<<"$1" >/dev/null 2>&1
+}
+merge_pr_checks_rest() {
+  local pr="$1" head runs statuses
+  head="$(gh api "repos/{owner}/{repo}/pulls/$pr" -q .head.sha 2>/dev/null)" || return 1
+  [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
+  runs="$(gh api --paginate "repos/{owner}/{repo}/commits/$head/check-runs?per_page=100" 2>/dev/null)" || return 1
+  statuses="$(gh api "repos/{owner}/{repo}/commits/$head/status" 2>/dev/null)" || return 1
+  printf '%s\n%s\n' "$runs" "$statuses" | jq -se '
+    ([.[] | .check_runs? // empty | .[]] | group_by(.name) | map(max_by(.started_at // ""))
+      | map({name, bucket: (if .status != "completed" then "pending"
+          else (.conclusion | if . == "success" then "pass" elif . == "neutral" or . == "skipped" then "skipping"
+            elif . == "cancelled" then "cancel" else "fail" end) end)}))
+    + ([.[] | .statuses? // empty | .[]] | map({name: .context, bucket: (if .state == "success" then "pass"
+          elif .state == "pending" then "pending" else "fail" end)}))
+    | if length == 0 then error("no checks") else . end'
+}
+
 merge_pr_checks_and_merge() {
   local pr="${1:-}" checks_json check_name override_name matched
   local -a override_names=() failed_names=() blocked_names=() overridden_names=()
@@ -504,9 +526,9 @@ merge_pr_checks_and_merge() {
     waited=$((waited + 10))
   done
   rm -f "$checks_err"
-  if ! jq -e 'type == "array" and all(.[];
-      type == "object" and (.name | type == "string" and length > 0)
-      and (.bucket | type == "string"))' <<<"$checks_json" >/dev/null 2>&1; then
+  # GraphQL refuses `gh pr checks` under a shared-account rate limit: read the same buckets over REST.
+  merge_pr_checks_valid "$checks_json" || checks_json="$(merge_pr_checks_rest "$pr" 2>/dev/null)" || checks_json=
+  if ! merge_pr_checks_valid "$checks_json"; then
     merge_pr_refuse "$pr" 'could not read PR checks as JSON'
     return 1
   fi
