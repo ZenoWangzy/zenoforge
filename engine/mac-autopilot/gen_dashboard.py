@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue
+import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, triage_split
 import ledger_history
 from config_paths import zf_config_file
 
@@ -857,16 +857,20 @@ def front_cache_get(now, max_age):
     age = now - epoch
     return (cached, age) if 0 <= age < max_age else (None, None)
 
+def front_cache_has_triage_split(cached):
+    return any(isinstance(stage, dict) and stage.get("label") == "needs-triage"
+               and isinstance(stage.get("excluded"), list) for stage in cached.get("stages") or [])
+
 def front_github_stages(now):
     cached, age = front_cache_get(now, FRONT_CACHE_SECONDS)
-    if cached and isinstance(cached.get("search_counts"), dict):
+    if cached and isinstance(cached.get("search_counts"), dict) and front_cache_has_triage_split(cached):
         return cached["stages"], cached["search_counts"], {"cached": True, "stale": False, "age_s": int(age), "error": None}
     try:
         repo_slug = os.environ.get("ZF_REPO", "")
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo_slug): raise RuntimeError("ZF_REPO 必须是 owner/repo")
         owner, name = repo_slug.split("/", 1)
         repo_queries = [("issues_open", "is:issue is:open"), ("issues_closed", "is:issue is:closed"), ("prs_open", "is:pr is:open"), ("prs_merged", "is:pr is:merged"), ("prs_closed_unmerged", "is:pr is:closed is:unmerged")]; stage_queries = [(row[0], f"is:issue is:open label:{row[0]}") for row in FRONT_STAGES]; terms = [term for _, term in repo_queries + stage_queries]; vars = "$owner:String!,$name:String!," + ",".join(f"$q{i}:String!" for i in range(len(terms)))
-        stage_fields = "".join(f'a{i}:issues(states:OPEN,labels:["{row[0]}"],first:10,orderBy:{{field:UPDATED_AT,direction:ASC}}){{totalCount nodes{{number title createdAt updatedAt}}}} ' for i, row in enumerate(FRONT_STAGES))
+        stage_fields = triage_split.graphql_stage_fields(FRONT_STAGES)
         query = ("query(" + vars + "){repository(owner:$owner,name:$name){" + stage_fields + "}" +
                  "".join(f"c{i}:search(query:$q{i},type:ISSUE,first:1){{issueCount}}" for i in range(len(terms))) + "}")
         args = ["gh", "api", "graphql", "-F", f"owner={owner}", "-F", f"name={name}", *[arg for i, term in enumerate(terms) for arg in ("-F", f"q{i}=repo:{repo_slug} {term}")]]
@@ -875,12 +879,8 @@ def front_github_stages(now):
         if not isinstance(repo, dict):
             first = ((payload.get("errors") or [{}])[0].get("message") if isinstance(payload, dict) else None) or "GitHub 返回无数据"
             raise RuntimeError(str(first)[:200])
-        stages = []
-        for i, row in enumerate(FRONT_STAGES):
-            block = repo.get(f"a{i}") or {}
-            node = (block.get("nodes") or [None])[0] or {}
-            stages.append({"label": row[0], "count": block.get("totalCount"), "oldest": {"number": node.get("number"), "created_at": node.get("createdAt"), "updated_at": node.get("updatedAt")} if node else None,
-                           "items": [{"number": n.get("number"), "title": (n.get("title") or "")[:60], "updated_at": n.get("updatedAt")} for n in block.get("nodes") or []]})
+        repo["a0"] = triage_split.complete_needs_triage_pages(repo.get("a0") or {}, owner, name, front_run)
+        stages = [triage_split.stage(row[0], repo.get(f"a{i}") or {}) for i, row in enumerate(FRONT_STAGES)]
         if all(s["count"] is None for s in stages): raise RuntimeError("GitHub 返回的阶段计数为空")
         data = (payload or {}).get("data") or {}
         search_counts = {key: (data.get(f"c{i}") or {}).get("issueCount") for i, (key, _) in enumerate(repo_queries)}
@@ -897,7 +897,7 @@ def front_github_stages(now):
         return stages, search_counts, {"cached": False, "stale": False, "age_s": 0, "error": None}
     except Exception as ex:
         stale, age = front_cache_get(now, FRONT_STALE_SECONDS)
-        if stale:
+        if stale and front_cache_has_triage_split(stale):
             return stale["stages"], stale.get("search_counts"), {"cached": True, "stale": True, "age_s": int(age), "error": front_error(ex)}
         raise
 
@@ -907,7 +907,7 @@ def front_stage_rows(now, front):
         s = by_label.get(label) or {}
         oldest, count = s.get("oldest"), s.get("count")
         idle = 0 if count == 0 else front_hours_since(epoch_of(oldest.get("updated_at") or "") if oldest else None, now)
-        rows.append({"label": label, "name": name, "count": count, "oldest": oldest, "idle_hours": idle, "items": s.get("items") or []})
+        rows.append({"label": label, "name": name, "count": count, "oldest": oldest, "idle_hours": idle, "items": s.get("items") or [], "excluded": s.get("excluded")})
         front_std(f"stage.{label}.count", f"{name}（{label}）数量", c_ok, c_bad, False, "个", meaning, "GitHub GraphQL：该标签的开放 issue 数")
         front_std(f"stage.{label}.idle_hours", f"{name}最久滞留", i_ok, i_bad, False, "小时", "该阶段里最久没动的那张票，距上次更新多久（label 变化或评论都会刷新，是时间下限）。" + meaning, "GitHub GraphQL：该标签下 updatedAt 最早的 issue")
         front_values[f"stage.{label}.count"] = count; front_values[f"stage.{label}.idle_hours"] = idle

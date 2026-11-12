@@ -682,7 +682,7 @@ const scorecardFreshness = (D, STD) => {
 
 /* ============ 模块 ============ */
 // 1. 入口与分诊（前段：收单 → triage → advisor → 实现队列 的收单与分诊部分）
-const INTAKE_STAGES = ["needs-triage","finish-first","needs-info","needs-recut","ready-for-agent"], TICKET_TOTAL_STAGES = [["needs-triage","待分诊"],["finish-first","先等已有 PR"],["needs-info","等提单人回复"],["needs-advisor","待顾问裁决"],["needs-recut","待拆票"],["ready-for-agent","待实现队列"],["awaiting-release","已合并等发布"],["awaiting-pipeline-sync","直落等入库"]], REQ_TOTAL_STAGES = ["提出","热修生效","进 main","上线","真人验收"];
+const INTAKE_STAGES = ["needs-triage","finish-first","needs-info","needs-recut","ready-for-agent"], TICKET_TOTAL_STAGES = [["needs-triage","待分诊标签"],["finish-first","先等已有 PR"],["needs-info","等提单人回复"],["needs-advisor","待顾问裁决"],["needs-recut","待拆票"],["ready-for-agent","待实现队列"],["awaiting-release","已合并等发布"],["awaiting-pipeline-sync","直落等入库"]], REQ_TOTAL_STAGES = ["提出","热修生效","进 main","上线","真人验收"];
 function sumIntake(D) {
   const r = stageRow(D, "needs-triage");
   const st = frontStatus(D, k => INTAKE_STAGES.some(l => k.startsWith("stage."+l+".")) || k.startsWith("triage."));
@@ -693,7 +693,7 @@ function stageMatrix(D, labels) {
   if ((F.errors||{}).stages) return unavailable("GitHub 阶段计数", F.errors.stages);
   const rows = (F.stages||[]).filter(r => !labels || labels.includes(r.label));
   if (!rows.length) return emptyMsg("没有阶段计数");
-  return `<div class="rows">${rows.map(r => `<div class="srow"><div class="nm">${esc(r.name)}</div>
+  return `<div class="rows">${rows.map(r => `<div class="srow"><div class="nm">${esc(r.name)}${Array.isArray(r.excluded) && r.excluded.some(e => e.count > 0) ? `<div class="sub">${r.excluded.filter(e => e.count > 0).map(e => `<span title="${esc(e.tooltip || "")}">${esc(e.name)} ${num(e.count)}</span>`).join("；")}</div>` : ""}</div>
     ${bFront(D, `stage.${r.label}.count`, " ")}${bFront(D, `stage.${r.label}.idle_hours`, " ", r.count ? (r.idle_hours==null?"—":num(r.idle_hours)) : "—")}
     <div class="old">${r.oldest && r.oldest.number ? issueLink(r.oldest.number) : '<span class="sub">—</span>'}</div></div>`).join("")}</div>`;
 }
