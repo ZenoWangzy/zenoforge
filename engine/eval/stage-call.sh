@@ -2,7 +2,6 @@
 # Lower, side-effect-free stage seam. No stage wrapper or GitHub operation.
 set -euo pipefail
 unset GH_TOKEN GITHUB_TOKEN
-source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/codex-mcp.sh"
 stage=$1; repo=$2; wt=$3; prompt=$4; artifact=$5; input=$6
 export ZF_REPO_DIR="${ZF_REPO_DIR:-$repo}"
 source "$repo/engine/config.sh"
@@ -67,7 +66,7 @@ case "$stage" in
       tier_args=(); [[ -z "$tier" ]] || tier_args=(-c "service_tier=\"$tier\"")
       # The end-to-end implementer must persist its session; the usual text
       # seam is ephemeral. Resume uses the scheduler's exec ... resume ID shape.
-      codex_args=(exec --sandbox "$CODEX_SANDBOX_MODE" "${CODEX_PLUGINS_OFF_ARGS[@]}")
+      codex_args=(exec --sandbox "$CODEX_SANDBOX_MODE")
       if [[ -n "$session_id" ]]; then
         codex_args+=(resume "$session_id")
       else
@@ -95,7 +94,7 @@ case "$stage" in
       codex)
         tier=$(model_policy tier "$identity")
         tier_args=(); [[ -z "$tier" ]] || tier_args=(-c "service_tier=\"$tier\"")
-        pipeline_execution_run timeout 45m codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE" --cd "$wt" \
+        pipeline_execution_run timeout 45m codex exec --sandbox "$CODEX_SANDBOX_MODE" --cd "$wt" \
           --skip-git-repo-check --ephemeral -m "$model" -c "model_reasoning_effort=$effort" \
           "${tier_args[@]}" -c mcp_servers.gitnexus.enabled=false \
           --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1
@@ -128,7 +127,7 @@ case "$stage" in
       record_identity "codex:profile:$profile"
     fi
     status=0
-    pipeline_execution_run timeout 45m codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" -p "$profile" "${model_args[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
+    pipeline_execution_run timeout 45m codex exec -p "$profile" "${model_args[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
       --skip-git-repo-check --ephemeral --json \
       --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1 || status=$?
     [[ -z "$swap_log" ]] || printf '%s\n' "$swap_log" >> "$artifact/worker.log"
