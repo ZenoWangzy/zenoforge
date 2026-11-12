@@ -35,7 +35,7 @@ mapfile -t derived < <(node -e '
 
 # Hand-written list of gate files; the derived check below catches a regex item missing from it or from the workflows.
 gate_files=(
-  tools/merge-pr.sh tools/pin-vecta.sh tools/auto-pin.sh
+  tools/merge-pr.sh tools/merge-pr-bootstrap.sh tools/pin-vecta.sh tools/auto-pin.sh
   engine/eval/some-eval.sh
   engine/mac-autopilot/bell.sh engine/mac-autopilot/bell-loop.sh engine/mac-autopilot/pin-lag.sh
   engine/lib.d/main-red.sh engine/lib.d/main-red-bisect.sh
@@ -94,7 +94,7 @@ done
 # Mutation: add one regex alternative that no workflow lists. The guard must go red.
 if [[ -z "${PR_CI_GATE_MUTANT_RUN:-}" ]]; then
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp" "$test_env_root"' EXIT
-  sed 's/(merge-pr|pin-vecta|auto-pin)/(merge-pr|pin-vecta|auto-pin|zz-mutant)/' "$merge_pr" > "$tmp/merge-pr.sh"
+  sed 's/(merge-pr|merge-pr-bootstrap|pin-vecta|auto-pin)/(merge-pr|merge-pr-bootstrap|pin-vecta|auto-pin|zz-mutant)/' "$merge_pr" > "$tmp/merge-pr.sh"
   [[ "$(grep -c 'zz-mutant' "$tmp/merge-pr.sh")" == 1 ]] || fail "mutation did not apply to the regex"
   set +e
   out="$(PR_CI_GATE_MERGE_PR="$tmp/merge-pr.sh" PR_CI_GATE_MUTANT_RUN=1 bash "${BASH_SOURCE[0]}" 2>&1)"

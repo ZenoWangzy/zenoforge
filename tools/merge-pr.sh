@@ -5,10 +5,9 @@ set -uo pipefail
 # Must match the shard matrix in .github/workflows/engine-tests.yml.
 MERGE_PR_ENGINE_SHARDS=8
 MERGE_PR_MAX_PARALLEL=4
+source "$(dirname -- "${BASH_SOURCE[0]}")/merge-pr-bootstrap.sh"
 
-merge_pr_root() {
-  git rev-parse --show-toplevel 2>/dev/null
-}
+merge_pr_root() { git rev-parse --show-toplevel 2>/dev/null; }
 
 merge_pr_result_dir() {
   local repo="$1" git_dir
@@ -454,7 +453,7 @@ merge_pr_revert_ok() {
   return 0
 }
 # Paths that keep CI before merge; tools/quick-land.sh refuses them too and sends the change through a PR.
-MERGE_PR_GATE_RE='^(tools/(merge-pr|pin-vecta|auto-pin)\.sh|engine/eval/.*|engine/mac-autopilot/(bell|bell-loop|pin-lag)\.sh|engine/lib\.d/main-red(-bisect)?\.sh|engine/deploy-culprit\.sh|engine/worktree-lifecycle\.sh|engine/mac-autopilot/rescued_gc\.sh|engine/mac-autopilot/scheduler\.d/(cleanup|units)\.sh|engine/mac-autopilot/scheduler\.d/review-rules\.sh|engine/prompts/review-contract\.md|engine/notify\.sh|engine/ts-judge\.sh|engine/redact-secrets\.sh|engine/night/(authorization-readonly|production-tenant-marker-readonly|node-health-rules|maintainer-health-mail)\.sh|engine/night/acceptance-login-probe\.mjs|engine/systemd/zenoforge-(agent|daily-perf-report|health-mail|health-maintenance|label-churn|memory-check|owner-report-causes|retro|roi-collector|supervisor)\.service)$'
+MERGE_PR_GATE_RE='^(tools/(merge-pr|merge-pr-bootstrap|pin-vecta|auto-pin)\.sh|engine/eval/.*|engine/mac-autopilot/(bell|bell-loop|pin-lag)\.sh|engine/lib\.d/main-red(-bisect)?\.sh|engine/deploy-culprit\.sh|engine/worktree-lifecycle\.sh|engine/mac-autopilot/rescued_gc\.sh|engine/mac-autopilot/scheduler\.d/(cleanup|units)\.sh|engine/mac-autopilot/scheduler\.d/review-rules\.sh|engine/prompts/review-contract\.md|engine/notify\.sh|engine/ts-judge\.sh|engine/redact-secrets\.sh|engine/night/(authorization-readonly|production-tenant-marker-readonly|node-health-rules|maintainer-health-mail)\.sh|engine/night/acceptance-login-probe\.mjs|engine/systemd/zenoforge-(agent|daily-perf-report|health-mail|health-maintenance|label-churn|memory-check|owner-report-causes|retro|roi-collector|supervisor)\.service)$'
 # Ruling zenoforge-instant-effect-2026-11-05: gates, evaluators, the pin, the watchdog and rollback keep CI before merge.
 # Code that deletes clones and refs is held the same way: #485 reached main 95s into a CI run that then failed.
 merge_pr_gate_ci_ok() {
@@ -609,6 +608,7 @@ merge_pr_checks_and_merge() {
   else
     merge_pr_prior_art_ok "$pr" || return 1
   fi
+  merge_pr_bootstrap_ok "$pr" || return 1
   merge_pr_test_receipt_ok "$pr" || return 1
   merge_pr_size_ok "$pr" || return 1
   merge_pr_gate_ci_ok "$pr" "$checks_json" || return 1
