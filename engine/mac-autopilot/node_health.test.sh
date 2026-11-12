@@ -226,7 +226,7 @@ assert parked[2:4] == (3, 6), parked
 assert [n.status_of(v, parked[2], parked[3], parked[4]) for v in (0, 3, 5, 6)] == ["OK", "OK", "WARN", "UNHEALTHY"]
 CHECK
 quiet="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 0.2 --now 2026-10-19T12:00:00Z)"
-grep -Eq 'findings block % +-  .*NO-DATA' <<<"$quiet" || fail "no rejection records in the window must show no value, not 0: $(grep -F 'findings block' <<<"$quiet")"
+grep -Eq 'findings block % +0 +<=5' <<<"$quiet" || fail "no rejection records in the window must show 0, not NO-DATA: $(grep -F 'findings block' <<<"$quiet")"
 grep -Eq ' 1 .*WARN$' <<<"$(row 'M1 audited cancelled runs/day: ci deferred')" || fail "M1 did not count one unique audited deferred run: $(row 'ci deferred')"
 grep -Eq ' 1 .*OK$' <<<"$(row 'M1 audited cancelled runs/day: repair dispatched')" || fail "M1 did not retain the cause for a duplicate no-reason audit: $(row 'repair dispatched')"
 grep -Eq ' 1 .*OK$' <<<"$(row 'M1 audited cancelled runs/day: superseded main run')" || fail "superseded main run not classed as a known cause: $(row 'superseded main run')"
@@ -836,6 +836,12 @@ units = [{"id":"twice", "history":[ap("00"), red, ap("10"), {**red, "at":"2026-1
          {"id":"cancelled", "history":[ap("00"), cancelled]}, {"id":"check-red", "history":[ap("00"), check_red]},
          {"id":"clean", "history":[ap("00")]}, {"id":"clean-twice", "history":[ap("00"), ap("10")]}]
 assert n.ledger_metrics(units, now-n.timedelta(hours=5), now)["ci.red_after_approve_pct"] == 40
+# No request-changes in the window is 0 with n=0 when units.json was read; no units at all is NO-DATA.
+findings_counts = {}
+assert n.ledger_metrics([{"id":"quiet", "history":[ap("00")]}], now-n.timedelta(hours=5), now, sample_counts=findings_counts)["review.findings_missing_pct"] == 0
+assert findings_counts["review.findings_missing_pct"] == 0
+assert n.ledger_metrics([], now-n.timedelta(hours=5), now)["review.findings_missing_pct"] is None
+assert n.ledger_metrics([{"id":"f", "history":[ap("00")], "review_findings":[{"at":"2026-10-24T11:05:00Z","block":"missing"},{"at":"2026-10-24T11:06:00Z","block":"ok"}]}], now-n.timedelta(hours=5), now)["review.findings_missing_pct"] == 50
 approved, rows = n.red_after_approve(units, now-n.timedelta(hours=5))
 assert approved == 5 and rows == [
     {"unit":"twice", "reds":2, "stage":"ci-test-red", "checks":"Touched packages PR gate", "tests":["a.test.ts","does x"]},

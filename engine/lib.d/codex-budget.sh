@@ -63,11 +63,8 @@ zcode_tokens_used() {
 
 
 _codex_budget_proc_start_ticks() {
-  local line rest ticks
-  [ -r "/proc/$1/stat" ] || return 1
-  IFS= read -r line < "/proc/$1/stat" || return 1
-  rest="${line##*) }"
-  ticks="$(awk '{print $20}' <<< "$rest")"
+  local ticks
+  ticks="$(pid_start_id "$1")" || return 1
   [[ "$ticks" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$ticks"
 }

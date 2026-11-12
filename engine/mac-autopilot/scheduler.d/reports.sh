@@ -223,6 +223,18 @@ review_findings_update() { # report-path report-name → set_unit 表达式片�
   if [[ -n "$reason" ]]; then printf ' | .history[-1].reason=%s' "$(js "$reason")"; fi
 }
 
+# 同一发现类别的复现计数（只记 NOT_READY 的阻断级发现；合成门禁报告不记）。失败只记日志，下一次评审重试。
+review_class_recurrence_record() { # report-path unit: never blocks the harvest
+  local block repo="${REPO:-${ZF_REPO:-}}"
+  [[ "${1##*/}" =~ ^(incident|engine-override)-gate- ]] && return 0
+  block="$(findings_block_of "$1")" || return 0
+  ( export ZF_GH_REPO="$repo" ZF_REPO="$repo"
+    review_findings_record_classes "$(jq -c '.findings' <<<"$block")" "${REVIEW_CLASS_STATE:-$SUP/review-class-state.json}" \
+      "${REVIEW_CLASS_UPSERT:-$HERE/../pipeline-issue-upsert.sh}" "$2" ) \
+    || say "review class recurrence: rule ticket write failed unit=$2; retried on the next review"
+  return 0
+}
+
 review_dispositions_update() { # repair-report → attach author dispositions to the latest finding record
   local block record
   if block="$(findings_block_of "$1")" && [[ "$(jqf -r '.legacy // false' <<<"$block")" == false ]]; then

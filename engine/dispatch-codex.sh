@@ -318,7 +318,7 @@ dispatch_owner_session() {
 
   exec 3<"$prompt_file" || return 1
   pid="$$"
-  ticks="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
+  ticks="$(pid_start_id "$pid" 2>/dev/null || true)"
   case "$ticks" in ''|*[!0-9]*) return 1 ;; esac
   final_log="$log_root/$pid.log"
   mv -- "$pending_log" "$final_log" || return 1
@@ -741,7 +741,7 @@ if [ "$VERIFIED" -ne 1 ]; then
   die "detachment verification failed: pid=$AGENT_PID sid=${OBSERVED_SID:-missing} parent=${OBSERVED_PPID:-missing}; agent terminated; log=$PENDING_LOG"
 fi
 
-PID_START_TICKS="$(awk '{print $22}' "/proc/$AGENT_PID/stat" 2>/dev/null || true)"
+PID_START_TICKS="$(pid_start_id "$AGENT_PID" 2>/dev/null || true)"
 case "$PID_START_TICKS" in
   ''|*[!0-9]*)
     kill "$AGENT_PID" 2>/dev/null || true

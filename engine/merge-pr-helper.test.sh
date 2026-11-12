@@ -303,6 +303,7 @@ fi
 check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'failed checks: cla, unit'* && "$check_output" == *'checks without a matching ZF_MERGE_OVERRIDE: unit'* ]] \
   || fail "failed check names or unmatched override were not reported: $check_output"
+[[ "${check_output%%ZF_MERGE_OVERRIDE*}" == *'fix: read each failing check'* ]] || fail "failed-checks refusal does not name the corrective action before the override: $check_output"
 [[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
   || fail "an unmatched failed check reached merge: $(cat "$fixture/gh-calls")"
 
@@ -323,6 +324,7 @@ fi
 check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'could not read PR checks as JSON'* ]] \
   || fail "gh pr checks error was not reported: $check_output"
+[[ "$check_output" == *'fix: retry'* ]] || fail "default fix missing: $check_output"
 [[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json headRefOid' ]] \
   || fail "gh pr checks error made unexpected gh calls: $(cat "$fixture/gh-calls")"
 ! grep -q '^merge:' "$fixture/gh-calls" || fail 'gh pr checks error reached merge'
@@ -879,6 +881,7 @@ PR_FILE_STATUSES="$(files_json tools/quick-land.sh)"
 AGENT_HOME="$ov_dir/missing" expect_override 'PR with no engine file reads no target' pass
 PR_FILE_STATUSES="$(files_json engine/state/rulings.json)"
 AGENT_HOME="$ov_dir/missing" expect_override 'unreadable target' refuse 'could not read the target'
+out="$(AGENT_HOME="$ov_dir/missing" merge_pr_override_ok 17 2>&1 || true)"; [[ "${out%%ZF_MERGE_OVERRIDE*}" == *'fix: make the target checkout readable'* ]] || fail "unreadable-target refusal names the override before the fix: $out"
 # A hand merge from a session has no AGENT_HOME: the check must find the same default checkout as auto-pin.
 (unset AGENT_HOME ZF_HOME; HOME="$ov_dir/default-home"; mkdir -p "$HOME/.vecta-agent"; ln -s "$tgt" "$HOME/.vecta-agent/checkout"; export HOME; expect_override 'no AGENT_HOME reads the default checkout' refuse 'override state/rulings.json')
 [[ "$(ZF_MERGE_OVERRIDE=override-merge AGENT_HOME="$ov_dir/missing" merge_pr_override_ok 17 2>&1)" == *'skips the override merge check'* ]] || fail 'override-merge did not skip and log'

@@ -22,6 +22,7 @@ printf '%s\n' '{"workers":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$engine_dir/mac-autopilot/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
+intake_author_gate() { return 0; } # the author gate has its own test (intake-author.test.sh)
 
 LOG="$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"; UNITS="$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
 WORKERS="$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"; A="$MAC_AUTOPILOT_RUNTIME_DIR"
