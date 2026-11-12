@@ -3,9 +3,10 @@
 #   pid_live PID               success when PID exists and is not a zombie
 #   pid_start_id PID           opaque number that changes when a pid is reused: callers only compare it for equality
 #   host_boot_id               string that changes on reboot
-#   pids_with_cwd_under DIR    pids (one per line) whose working directory is DIR or below it
+#   process_cwds               one NUL-terminated "PID<TAB>CWD" record per process with a known working directory
+#   pids_with_cwd_under DIR    pids (one per line) whose working directory is DIR or below it (filters process_cwds)
 # Linux bodies are the /proc code the engine already had, moved here (worktree-lifecycle: pid_live, pid_start_ticks,
-# load_process_cwds; lib: the boot id read). They must stay /proc reads and must not become `ps`: one ps per worker per
+# process_cwds; lib: the boot id read). They must stay /proc reads and must not become `ps`: one ps per worker per
 # poll drove the origin deployment to load 39 (see pid_running in the unit loop). macOS has no /proc, so those bodies use
 # ps, sysctl and lsof.
 if [[ ${OSTYPE:-} == darwin* ]]; then
@@ -29,12 +30,12 @@ if [[ ${OSTYPE:-} == darwin* ]]; then
 
   # shortcut: lsof -F newline mode, so a cwd containing a newline never matches; lsof sees only the caller's own processes
   # without root, which covers worktree owners. Upgrade to -F0 if a path with a newline ever appears.
-  pids_with_cwd_under() {
-    local dir="${1%/}" line pid=""
+  process_cwds() {
+    local line pid=""
     while IFS= read -r line; do
       case "$line" in
         p*) pid="${line#p}" ;;
-        n*) if [[ "${line#n}" == "$dir" || "${line#n}" == "$dir"/* ]]; then printf '%s\n' "$pid"; fi ;;
+        n*) printf '%s\t%s\0' "$pid" "${line#n}" ;;
       esac
     done < <(lsof -a -d cwd -Fpn 2>/dev/null)
     return 0
@@ -64,8 +65,9 @@ else
     printf '%s\n' "$id"
   }
 
-  pids_with_cwd_under() {
-    local dir="${1%/}" entry pid cwd
+  # One find for all processes: callers that check many owner paths per pass read this once.
+  process_cwds() {
+    local entry pid cwd
     while IFS= read -r -d '' entry; do
       [[ "$entry" == *' -> '* ]] || continue
       pid="${entry#/proc/}"
@@ -73,8 +75,18 @@ else
       cwd="${entry#* -> }"
       [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
       cwd="${cwd% (deleted)}"
-      if [[ "$cwd" == "$dir" || "$cwd" == "$dir"/* ]]; then printf '%s\n' "$pid"; fi
+      [ -n "$cwd" ] && printf '%s\t%s\0' "$pid" "$cwd"
     done < <(find /proc/[0-9]*/cwd -maxdepth 0 -type l -printf '%p -> %l\0' 2>/dev/null)
     return 0
   }
 fi
+
+pids_with_cwd_under() {
+  local dir="${1%/}" row pid cwd
+  while IFS= read -r -d '' row; do
+    pid="${row%%$'\t'*}"
+    cwd="${row#*$'\t'}"
+    if [[ "$cwd" == "$dir" || "$cwd" == "$dir"/* ]]; then printf '%s\n' "$pid"; fi
+  done < <(process_cwds)
+  return 0
+}
