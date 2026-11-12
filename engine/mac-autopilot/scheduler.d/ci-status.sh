@@ -351,11 +351,11 @@ repair_demote() { # unit pr branch：repair 派出成功后，门控 PR 和符�
   fi
   cancel_branch_runs "$3" "$reason" || :
 }
+tick_prs_head_row() { [[ -n "$TICK_PRS" ]] && jqf -er --arg b "$1" '(map(select(.headRefName == $b))[0]) as $p | if $p != null then "\($p.number) \($p.isDraft)" elif length >= 300 then empty else "" end' <<<"$TICK_PRS" 2>/dev/null; } # census row "number isDraft", empty = no PR; rc 1 = not loaded or cut at --limit 300 (#1038)
 scheduler_pr_adopt_open() { # branch [base] [skip-base-update] → adopt an open PR; 1=no PR, 2=base update failed
   local row pr draft gate=0 base="${2:-main}" skip_base_update="${3:-false}"
-  SCHED_PR_NUM=""
-  [[ "$1" =~ $GATED_BRANCH_RE ]] && gate=1
-  row="$(gh pr list --head "$1" --state open --json number,isDraft --jq '.[0] | select(. != null) | "\(.number) \(.isDraft)"' 2>/dev/null)"
+  SCHED_PR_NUM=""; [[ "$1" =~ $GATED_BRANCH_RE ]] && gate=1
+  row="$(tick_prs_head_row "$1" || gh pr list --head "$1" --state open --json number,isDraft --jq '.[0] | select(. != null) | "\(.number) \(.isDraft)"' 2>/dev/null)"
   read -r pr draft <<<"$row"
   [[ "$pr" =~ ^[0-9]+$ ]] || return 1
   if [[ "$base" != main && "$skip_base_update" != true ]]; then
