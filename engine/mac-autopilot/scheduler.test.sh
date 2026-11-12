@@ -852,6 +852,8 @@ tick_gh() {
         if [[ -f "$TF/pr-files" ]]; then cat "$TF/pr-files"; else echo 'packages/fixture/src/index.ts'; fi
       elif [[ "$*" == *'commits/'*'/status'* ]]; then echo 1
       elif [[ "$*" == *'/comments'* ]]; then echo '[]'
+      elif [[ "$*" == *'/pulls/'*'/reviews' ]]; then echo '[]' # human PR feedback (#957) fails closed on an unreadable review list
+      elif [[ "$*" =~ ' repos/{owner}/{repo}/issues/'[0-9]+$ ]]; then echo '{"author_association":"OWNER","user":{"login":"fixture"}}' # the intake author gate (#114); its own test is intake-author.test.sh
       else echo '{}'; fi ;;
     *) echo "unexpected gh call: $*" >&2; return 97 ;;
   esac
@@ -3147,6 +3149,7 @@ pick() { PICK_MODEL=fixture-model; PICK_EFFORT=high; }
 # This suite checks scheduler behavior; family availability is covered by
 # review-family.test.sh.
 pick_review_for_unit() { PICK_MODEL=fixture-model; PICK_EFFORT=high; return 0; }
+human_feedback_block() { :; } # human PR feedback (#957) has its own tests; the fixture has no gh
 footprint_room() { return 0; }
 unit_review_target() { printf '%s %s' 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567; }
 verify_handoff_delivery() { return 0; }
