@@ -256,4 +256,26 @@ jq -e '.[0].body | contains("<!-- vecta-incident-class:slow-phase-dispatch-pendi
 grep -Fq 'dispatch_pending was slow in 5 of the last 10' "$repeat_autopi/BELL-QUEUE.md"
 echo 'ok - five slow ticks out of ten file one engine incident'
 
+# 6. Routine lowercase words (blocked, unblocked, blocker, no-kill, blocked_pr_recheck) file nothing;
+# an uppercase BLOCK still files a high event (#266, #314, #320).
+routine_autopi="$(make_runtime routine-words)"
+reset_gh_fixture routine-words
+routine_stamp="$(tick_stamps 1)"
+printf '[%s] unit issue-2612 blocked on predecessor #2610\n[%s] unit issue-2612 unblocked: #2610 delivered\n[%s] supervisor-review unit=issue-5261: blocker #3201 is closed in the ledger but its issue is open with no recut children: decide\n[%s] STUCK-DECISION named=12 live=0 action=no-kill killed=0\n[%s] merge detail blocked_pr_recheck=12s\n[%s] demoted: approval gone (blocked-external)\n' \
+  "$routine_stamp" "$routine_stamp" "$routine_stamp" "$routine_stamp" "$routine_stamp" "$routine_stamp" > "$routine_autopi/scheduler.log"
+run_bell "$routine_autopi" "$tmp/routine-words-sup"
+if [[ -e "$routine_autopi/BELL-QUEUE.md" ]] && grep -Eq 'blocked on predecessor|unblocked:|blocker #|no-kill|blocked_pr_recheck|blocked-external' "$routine_autopi/BELL-QUEUE.md"; then
+  echo 'bell-incident-routing.test.sh: a lowercase routine line was queued as an event' >&2
+  exit 1
+fi
+[[ "$(jq 'length' "$INCIDENT_ISSUES")" == 0 ]] || { echo 'bell-incident-routing.test.sh: routine lines filed an incident' >&2; exit 1; }
+echo 'ok - lowercase routine lines file no event'
+
+block_autopi="$(make_runtime block-verdict)"
+reset_gh_fixture block-verdict
+printf '[%s] unit issue-2700 verdict=BLOCK from review\n' "$(tick_stamps 1)" > "$block_autopi/scheduler.log"
+run_bell "$block_autopi" "$tmp/block-verdict-sup"
+grep -Fq 'verdict=BLOCK from review' "$block_autopi/BELL-QUEUE.md" || { echo 'bell-incident-routing.test.sh: uppercase verdict=BLOCK was not queued' >&2; exit 1; }
+echo 'ok - uppercase verdict=BLOCK still files an event'
+
 echo 'bell-incident-routing.test.sh: PASS'

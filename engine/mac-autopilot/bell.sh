@@ -11,7 +11,7 @@ source "$HERE/runtime-env.sh"
 ROOT="$MAC_AUTOPILOT_ROOT"
 ENGINE_DIR="${ZF_ENGINE_DIR:-$ROOT/engine}"
 source "$ENGINE_DIR/lib.d/transport.sh"
-source "$ENGINE_DIR/lib.d/ci-checks.sh"; source "$HERE/pin-lag.sh"; source "$HERE/zf-main-ci.sh"
+source "$ENGINE_DIR/lib.d/ci-checks.sh"; source "$HERE/pin-lag.sh"; source "$HERE/zf-main-ci.sh"; source "$HERE/bell-guards.sh"
 A="${BELL_AUTOPI_DIR:-$MAC_AUTOPILOT_RUNTIME_DIR}"
 CHECK_ONLY=0
 for arg in "$@"; do
@@ -640,10 +640,11 @@ if [[ "$MONITOR_INITIALIZED" == true ]]; then
         STATE_JSON="$(jq -c --arg c "$event_class" --argjson seen "$now" '.scheduler_signature_seen[$c]=$seen' <<<"$STATE_JSON")"
         continue
       fi
-      printf '%s\n' "$line" | grep -Eiq 'SLOW|KILL|BLOCK|orphan-recover|budget|merge-revert|verdict=BLOCK|error' || continue
+      # KILL/BLOCK 必须大小写敏感：小写的 blocked/unblocked/no-kill 是常规行，不是事故（#266 #314 #320）。
+      printf '%s\n' "$line" | grep -Eiq 'SLOW|orphan-recover|budget|merge-revert|error' || printf '%s\n' "$line" | grep -Eq 'KILL|BLOCK' || continue
       clean_line="$(printf '%s\n' "$line" | sed -E 's/^\[[^]]+\][[:space:]]*//' | tr '\t\r\n' '   ')"
       sev=medium
-      printf '%s\n' "$clean_line" | grep -Eiq 'KILL|BLOCK|verdict=BLOCK|merge-revert|error' && sev=high
+      { printf '%s\n' "$clean_line" | grep -Eq 'KILL|BLOCK' || printf '%s\n' "$clean_line" | grep -Eiq 'merge-revert|error'; } && sev=high
       if printf '%s\n' "$clean_line" | grep -Eiq 'merge-reverted'; then
         unit="$(printf '%s\n' "$clean_line" | sed -nE 's/.*merge-reverted unit=([^ ]+).*/\1/p')"
         [[ -n "$unit" ]] || unit=unknown
@@ -712,6 +713,7 @@ if [[ "$stale" == 1 ]]; then
   sev=high
   if [[ "$CHECK_ONLY" != 1 ]] && autopilot_manual_pause_is_valid; then
     restart="paused, not restarting"
+  elif [[ "$CHECK_ONLY" != 1 ]] && ! restart_allowed; then restart="restart cap: 3 per hour with backoff, not restarting"; sev=critical
   elif [[ "$CHECK_ONLY" != 1 && -n "${AUTOPILOT_LOOP_UNIT:-}" ]]; then
     # systemd 托管时由 systemd 重启，避免与 Restart=always 叠出第二个 loop。
     if systemctl --user restart "$AUTOPILOT_LOOP_UNIT" 2>/dev/null; then restart="loop restarted via systemd unit $AUTOPILOT_LOOP_UNIT"; else restart="systemd restart of $AUTOPILOT_LOOP_UNIT failed"; sev=critical; fi
@@ -738,7 +740,7 @@ if [[ -r "$A/workers.json" && -r "$A/units.json" ]]; then
   while IFS=$'\t' read -r pid unit harvested log report; do
     [[ "$pid" =~ ^[0-9]+$ && -n "$unit" ]] || continue
     [[ "$harvested" == true ]] && continue
-    kill -0 "$pid" 2>/dev/null && continue
+    kill -0 "$pid" 2>/dev/null || worker_log_fresh "$log" && continue
     # 已交付报告的 worker 是正常结束、等下一拍回收，不是死亡（每次误报都会拉起一次付费调查）。
     [[ "$report" =~ ^[A-Za-z0-9._/-]+$ && "$report" != *".."* && -s "$SUPERVISOR_DIR/$report" ]] && continue
     stage="$(jq -r --arg id "$unit" '.units[]?|select(.id==$id)|.stage//empty' "$A/units.json" 2>/dev/null | head -n 1)"
