@@ -6,7 +6,7 @@ if [[ $# == 0 ]]; then
   exit
 fi
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-scratch="$(mktemp -d "$repo/.git/host-ops-test.XXXXXX")"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/host-ops-test.XXXXXX")"
 export HOME="$scratch/home" AGENT_HOME="$scratch/agent" ZF_ENGINE_DIR="$scratch/engine"
 mkdir -p "$HOME" "$AGENT_HOME/host-ops/scripts/agent" "$ZF_ENGINE_DIR" "$scratch/custom/scripts/agent"
 printf engine > "$ZF_ENGINE_DIR/tool"

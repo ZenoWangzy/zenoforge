@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-tmp="$(mktemp -d "$root/.git/release-runner-test.XXXXXX")"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/release-runner-test.XXXXXX")"
 trap 'rm -rf -- "$tmp"' EXIT
 trace="$tmp/runner.trace"
 config="$tmp/repo/.zenoforge/release.json"

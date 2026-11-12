@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const launcher = resolve('engine/migration-script.mjs');
 function exercise(key, fallback) {
-  const root = mkdtempSync(join(process.cwd(), '.git/migration-script-'));
+  const root = mkdtempSync(join(tmpdir(), 'migration-script-'));
   const config = join(root, 'config');
   const pack = join(root, 'pack');
   mkdirSync(config); mkdirSync(pack);
