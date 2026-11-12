@@ -56,6 +56,12 @@ reconcile_blocking_issue_root() {
   else
     recut_status=$?
     [ "$recut_status" -ne 2 ] || { blocker_root_fail "recut evidence read failed (status $recut_status) for #$n"; return 1; }
+    if [ "$recut_status" -eq 1 ] && jq -e '.state == "tracker" or .tracker_parent == true' <<< "$state" >/dev/null 2>&1 \
+      && ! jq -e 'any(.labels[]?; .name == "concluded" or .name == "on-hold")' <<< "$issue_json" >/dev/null; then
+      tracker_childless_to_triage "$n" "$state" || { blocker_root_fail "childless tracker triage failed for #$n"; return 1; }
+      echo "issue-pipeline: childless-tracker issue=#$n action=needs-triage" >&2
+      return 0
+    fi
   fi
   if [ "$conclusion_owned_hold" != true ] && jq -e 'any(.labels[]?; .name == "on-hold")' <<< "$issue_json" >/dev/null; then
     return 0
@@ -644,6 +650,7 @@ sweep_blocking_issue_roots() {
         if { [ ! -r "$state_file_path" ] || ! jq -e '
           ((.recut_children | type) == "array" and (.recut_children | length) > 0)
           or .native_subissue_parent == true
+          or .state == "tracker" or .tracker_parent == true
         ' "$state_file_path" >/dev/null 2>&1; } \
           && ! jq -e 'any(.labels[]?; .name == "concluded" or .name == "on-hold")' <<< "$issue_json" >/dev/null; then
           last_done="$n"

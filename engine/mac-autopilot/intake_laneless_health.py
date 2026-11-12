@@ -1,5 +1,5 @@
 """Intake health for open product issues that have no lane, priority, or route label."""
-import json, os
+import json, os, sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,7 +14,7 @@ MEANING = {
 SOURCE = {
     "intake.laneless_open_issues": (
         "GitHub REST GET issues?state=open&per_page=100，用 --paginate 读完所有页；读取失败为 NO-DATA。"
-        "仅带 recut_children 的 tracker 按子票判断，路线图容器先排除；子票号与同一份开放 issue 列表匹配；结果缓存在 runtime，每 DEP_CHECK_SECONDS（默认 600 秒）最多请求一次"),
+        "tracker 按 recut_children 与 GitHub 原生子票判断（读取失败按仍有开放子票处理），路线图容器先排除；子票号与同一份开放 issue 列表匹配；结果缓存在 runtime，每 DEP_CHECK_SECONDS（默认 600 秒）最多请求一次"),
 }
 
 LANE_LABELS = frozenset({
@@ -51,24 +51,42 @@ def _write_cache(path, value):
         return False
 
 
-def _tracker_has_open_children(agent_home, issue_number, open_issue_numbers):
+def _native_sub_issue_open(gh_json, repo, issue_number):
+    """True when GitHub lists an open native sub-issue, or when that read cannot prove there is none."""
+    try:
+        pages = gh_json(["api", "--paginate", "--slurp", "--method", "GET",
+                         f"repos/{repo}/issues/{issue_number}/sub_issues?per_page=100"], 30)
+    except Exception:
+        pages = None
+    children = [child for page in pages for child in page] if isinstance(pages, list) and all(
+        isinstance(page, list) for page in pages) else None
+    if children is None or any(not isinstance(child, dict) or child.get("state") not in ("open", "closed")
+                                for child in children):
+        print(f"intake-laneless: sub-issue read unavailable for #{issue_number}; keeping it out of laneless",
+              file=sys.stderr)
+        return True
+    return any(child["state"] == "open" for child in children)
+
+
+def _tracker_has_open_children(agent_home, issue_number, open_issue_numbers, gh_json, repo):
     path = Path(agent_home) / "state" / f"{issue_number}.json"
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return False
+        state = {}
     except (OSError, ValueError):
         return None
     if not isinstance(state, dict):
         return None
-    if "recut_children" not in state:
-        return False
-    children = state["recut_children"]
-    if not isinstance(children, list) or any(
-        not isinstance(child, int) or isinstance(child, bool) or child <= 0 for child in children
-    ):
-        return None
-    return any(child in open_issue_numbers for child in children)
+    children = state.get("recut_children")
+    if children is not None:
+        if not isinstance(children, list) or any(
+            not isinstance(child, int) or isinstance(child, bool) or child <= 0 for child in children
+        ):
+            return None
+        if any(child in open_issue_numbers for child in children):
+            return True
+    return _native_sub_issue_open(gh_json, repo, issue_number)
 
 
 def _priority_route_config(runtime):
@@ -191,7 +209,7 @@ def _open_issue_snapshot(runtime, repo, now, gh_json, agent_home):
                     continue
                 if "tracker" in names.intersection(CONTAINER_LABELS):
                     has_open_children = _tracker_has_open_children(
-                        agent_home, issue["number"], open_issue_numbers)
+                        agent_home, issue["number"], open_issue_numbers, gh_json, repo)
                     if has_open_children is None:
                         count = None
                         break
