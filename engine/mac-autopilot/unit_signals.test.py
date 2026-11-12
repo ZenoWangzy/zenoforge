@@ -52,7 +52,7 @@ class UnitSignalsTests(unittest.TestCase):
         self.assertEqual(out["prompt"], "fixture-prompt")
         self.assertEqual(out["signals"], {"overturned": None, "repair": None, "rereview": None, "reverted": None})
         out = unit_signals({"id": "issue-4", "stage": "merged", "history": [], "merge_sha": SHA}, {OTHER: None})
-        self.assertEqual(out["signals"], {"overturned": False, "repair": False, "rereview": False, "reverted": False})
+        self.assertEqual(out["signals"], {"overturned": None, "repair": None, "rereview": None, "reverted": False})
 
     def test_no_sha_leaves_reverted_null(self):
         self.assertIsNone(unit_signals(stages("review-approve"), {})["signals"]["reverted"])

@@ -20,7 +20,7 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 def _history_stages(unit):
     history = unit.get("history")
-    if not isinstance(history, list):
+    if not isinstance(history, list) or not history:
         return None
     return [entry.get("stage") for entry in history if isinstance(entry, dict)]
 
@@ -58,6 +58,9 @@ def main(argv=None):
     parser.add_argument("--runtime", default=os.environ.get("MAC_AUTOPILOT_RUNTIME_DIR", ""))
     parser.add_argument("--repo", default="", help="git checkout for the reverted signal; unset leaves it null")
     args = parser.parse_args(argv)
+    if not args.runtime:
+        print(json.dumps({"unit": args.unit_id, "error": "runtime dir unset"}), file=sys.stderr)
+        return 2
     units = [unit for unit in ledger_history.load_units(args.runtime) if unit.get("id") == args.unit_id]
     if not units:
         print(json.dumps({"unit": args.unit_id, "error": "unit not found"}), file=sys.stderr)
