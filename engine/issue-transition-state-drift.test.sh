@@ -121,4 +121,63 @@ grep -Fq 'issue_transition: roadmap parent check failed for #5313 -> needs-triag
 }
 echo 'ok - a failed roadmap parent check prints the issue and the reason'
 
+# A rate-limited tree read is not a refusal (queue row 346: one GitHub burst
+# limit on the graphql read held a ruling-released transition). The real
+# roadmap_ensure_issue_parent runs against a gh that refuses the read.
+unset -f roadmap_ensure_issue_parent
+source "$SCRIPT_DIR/roadmap.sh"
+export REPO=fixture/repo MODEL_POLICY_FILE="$AGENT_HOME/model-policy.json"
+unset ZF_ROADMAP_TREE_CACHE_FILE
+printf '{"switches":{"roadmap-order":true}}\n' > "$MODEL_POLICY_FILE"
+export PARENT_GH_RESPONSE="$AGENT_HOME/parent-response.json" PARENT_GH_FAIL="$AGENT_HOME/parent-gh-fail"
+cat > "$test_env_bin/gh" <<'GH'
+#!/usr/bin/env bash
+[[ "${1:-}" == api ]] || exit 0
+if [[ -f "$PARENT_GH_FAIL" ]]; then
+  echo 'gh: API rate limit already exceeded for user ID 1.' >&2
+  exit 1
+fi
+cat "$PARENT_GH_RESPONSE"
+GH
+chmod +x "$test_env_bin/gh"
+jq -cn '[{data:{repository:{issues:{nodes:[
+  {number:1,title:"Roadmap",state:"OPEN",labels:{nodes:[{name:"roadmap"}]},subIssues:{nodes:[{number:2}]}},
+  {number:2,title:"Ready",state:"OPEN",labels:{nodes:[]},subIssues:{nodes:[]}}
+]}}}}]' > "$PARENT_GH_RESPONSE"
+
+: > "$PARENT_GH_FAIL"
+state_merge 5314 '{"state":"needs-advisor"}'
+rate_err="$(mktemp)"
+if ! issue_transition 5314 needs-triage supervisor-reconcile 2>"$rate_err"; then
+  echo 'not ok - a rate-limited tree read refused the transition' >&2
+  cat "$rate_err" >&2
+  exit 1
+fi
+grep -Fq 'roadmap: tree fetch failed for #5314 (stage needs-triage, gh api graphql): gh: API rate limit already exceeded' "$rate_err" || {
+  echo 'not ok - rate-limited tree read has no warning naming the call and the limit' >&2
+  cat "$rate_err" >&2
+  exit 1
+}
+[[ "$(state_read 5314 | jq -r .state)" == needs-triage ]]
+echo 'ok - a rate-limited tree read warns and lets the transition continue'
+
+# A real refusal stays one: a confirmed roadmap container is refused with rc 3
+# and the state is untouched, even though the tree read itself now succeeds.
+rm -f -- "$PARENT_GH_FAIL"
+state_merge 1 '{"state":"needs-advisor"}'
+container_err="$(mktemp)"
+rc=0
+issue_transition 1 needs-triage supervisor-reconcile 2>"$container_err" || rc=$?
+[[ "$rc" == 3 ]] || {
+  echo "not ok - confirmed container transition rc=$rc, want 3" >&2
+  cat "$container_err" >&2
+  exit 1
+}
+[[ "$(state_read 1 | jq -r .state)" == needs-advisor ]]
+grep -Fq 'roadmap: refusing stage needs-triage on container #1' "$container_err" || {
+  echo 'not ok - container refusal has no reason line' >&2
+  exit 1
+}
+echo 'ok - a confirmed roadmap container is still refused with rc 3'
+
 echo 'ok - all issue_transition drift reconcile checks passed'

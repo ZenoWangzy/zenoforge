@@ -661,7 +661,7 @@ roadmap_issue_is_container() {
 }
 
 roadmap_ensure_issue_parent() (
-  local number="$1" state="$2" issue_json="${3:-}" source="${4:-}" cache_file tree flat node scratch="" rc
+  local number="$1" state="$2" issue_json="${3:-}" source="${4:-}" cache_file tree flat node scratch="" rc fetch_err limit
   [[ "$(roadmap_switch_value)" == true ]] || return 0
   roadmap_stage_requires_parent "$state" || return 0
   cache_file="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
@@ -672,8 +672,14 @@ roadmap_ensure_issue_parent() (
     cache_file="$scratch/tree.json"
   fi
   # A named but unwritten cache (the scheduler's per-tick file) takes the first fetch; a failed fetch writes nothing.
+  # rc 4 = tree read failed (rate limit, network): not a refusal. issue_transition goes on and dispatch re-checks, failing closed.
   if [[ ! -r "$cache_file" ]]; then
-    roadmap_fetch_tree "$cache_file" "$REPO" || { echo "roadmap: tree fetch failed for #$number (stage $state)" >&2; return 1; }
+    if ! fetch_err="$(roadmap_fetch_tree "$cache_file" "$REPO" 2>&1)"; then
+      [[ -z "$fetch_err" ]] || printf '%s\n' "$fetch_err" >&2
+      limit="$(grep -im1 'rate limit' <<< "$fetch_err" || true)"
+      echo "roadmap: tree fetch failed for #$number (stage $state, gh api graphql)${limit:+: $limit}; placement deferred" >&2
+      return 4
+    fi
   fi
   tree="$(cat -- "$cache_file")" || { echo "roadmap: could not read tree cache for #$number" >&2; return 1; }
   flat="$(roadmap_flatten "$tree")" || { echo "roadmap: tree flatten failed for #$number" >&2; return 1; }
