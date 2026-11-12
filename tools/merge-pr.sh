@@ -2,7 +2,6 @@
 # Run the CI-equivalent local suites for this exact HEAD, record their exit
 # codes under .git, then merge only if GitHub still reports the tested SHA.
 set -uo pipefail
-
 # Must match the shard matrix in .github/workflows/engine-tests.yml.
 MERGE_PR_ENGINE_SHARDS=8
 MERGE_PR_MAX_PARALLEL=4
@@ -252,7 +251,6 @@ merge_pr_size_ok() {
   merge_pr_refuse "$pr" "$over"
 }
 
-
 # The prelude of scheduler.test.sh holds the text assertions every shard runs, so one stale grep turns all eight red.
 merge_pr_with_tree() { # pr function: run function on an export of the PR's head
   local pr="$1" fn="$2" root tree ref="refs/zf-merge-pr/$1" rc=0
@@ -454,12 +452,14 @@ merge_pr_revert_ok() {
   done
   return 0
 }
+# Paths that keep CI before merge; tools/quick-land.sh refuses them too and sends the change through a PR.
+MERGE_PR_GATE_RE='^(tools/(merge-pr|merge-pr-bootstrap|pin-vecta|auto-pin)\.sh|engine/eval/.*|engine/mac-autopilot/(bell|bell-loop|pin-lag)\.sh|engine/lib\.d/main-red(-bisect)?\.sh|engine/deploy-culprit\.sh|engine/worktree-lifecycle\.sh|engine/mac-autopilot/rescued_gc\.sh|engine/mac-autopilot/scheduler\.d/(cleanup|units)\.sh|engine/mac-autopilot/scheduler\.d/review-rules\.sh|engine/prompts/review-contract\.md|engine/notify\.sh|engine/ts-judge\.sh|engine/redact-secrets\.sh|engine/night/(authorization-readonly|production-tenant-marker-readonly|node-health-rules|maintainer-health-mail)\.sh|engine/night/acceptance-login-probe\.mjs|engine/systemd/zenoforge-(agent|daily-perf-report|health-mail|health-maintenance|label-churn|memory-check|owner-report-causes|retro|roi-collector|supervisor)\.service)$'
 # Ruling zenoforge-instant-effect-2026-11-05: gates, evaluators, the pin, the watchdog and rollback keep CI before merge.
 # Code that deletes clones and refs is held the same way: #485 reached main 95s into a CI run that then failed.
 merge_pr_gate_ci_ok() {
   local pr="$1" checks_json="$2" gate waiting
   [[ ",${ZF_MERGE_OVERRIDE:-}," != *,gate-ci,* ]] || return 0
-  gate="$(merge_pr_view "$pr" body,files,commits 2>/dev/null | jq -r '[.files[].path | select(test("^(tools/(merge-pr|merge-pr-bootstrap|pin-vecta|auto-pin)\\.sh|engine/eval/.*|engine/mac-autopilot/(bell|bell-loop|pin-lag)\\.sh|engine/lib\\.d/main-red(-bisect)?\\.sh|engine/deploy-culprit\\.sh|engine/worktree-lifecycle\\.sh|engine/mac-autopilot/rescued_gc\\.sh|engine/mac-autopilot/scheduler\\.d/(cleanup|units)\\.sh|engine/mac-autopilot/scheduler\\.d/review-rules\\.sh|engine/prompts/review-contract\\.md|engine/notify\\.sh|engine/ts-judge\\.sh|engine/redact-secrets\\.sh|engine/night/(authorization-readonly|production-tenant-marker-readonly|node-health-rules|maintainer-health-mail)\\.sh|engine/night/acceptance-login-probe\\.mjs|engine/systemd/zenoforge-(agent|daily-perf-report|health-mail|health-maintenance|label-churn|memory-check|owner-report-causes|retro|roi-collector|supervisor)\\.service)$"))] | .[0] // ""')" || gate=unreadable
+  gate="$(merge_pr_view "$pr" body,files,commits 2>/dev/null | jq -r --arg re "$MERGE_PR_GATE_RE" '[.files[].path | select(test($re))] | .[0] // ""')" || gate=unreadable
   [[ -n "$gate" ]] || return 0
   waiting="$(jq -r '[.[] | select(.bucket == "pending" or ((.name | startswith("suites")) and .bucket != "pass")) | .name] + (if any(.[]; .name | startswith("suites")) then [] else ["suites not started"] end) | join(", ")' <<<"$checks_json")"
   [[ -n "$waiting" ]] || return 0

@@ -113,14 +113,15 @@ def main(argv):
         print(__doc__, file=sys.stderr)
         return 2
     bver, brepo, bref, nver, nrepo, nref = argv[1:7]
+    bhave, nhave = target_files(brepo, bref), target_files(nrepo, nref)
     intended = {}
     if len(argv) == 8:
         try:
-            intended = intended_changes.load(argv[7], nver)
+            # Content rows match the sha256 of the resolved new file (target first, else version engine/), the same n[1] compared below.
+            intended = intended_changes.load(argv[7], nver, lambda rel: resolve(nver, nrepo, nref, nhave, rel)[1])
         except (OSError, ValueError) as err:
             print(str(err), file=sys.stderr)
             return 2
-    bhave, nhave = target_files(brepo, bref), target_files(nrepo, nref)
     candidates = bhave | nhave
     for v in (bver, nver):
         for root, _, files in os.walk(os.path.join(v, 'engine'), onerror=_raise):
