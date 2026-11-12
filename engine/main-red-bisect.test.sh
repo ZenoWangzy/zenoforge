@@ -106,7 +106,7 @@ fi
 case "${1:-} ${2:-}" in
   "run rerun") printf 'rerun %s\n' "$3" >> "$state/actions.log"; exit 0 ;;
   "workflow run")
-    if [ "${FAKE_FAIL_WORKFLOW_DISPATCH:-0}" = 1 ]; then exit 1; fi
+    if [ "${FAKE_FAIL_WORKFLOW_DISPATCH:-0}" = 1 ]; then printf '%s\n' "${FAKE_GH_WORKFLOW_ERROR:-fake workflow dispatch failed}" >&2; exit 1; fi
     printf 'dispatch %s %s %s\n' "$3" "$7" "${9#source_sha=}" >> "$state/actions.log"
     exit 0 ;;
   "pr create")
@@ -598,6 +598,63 @@ assert_eq "a rerun cancelled again closes the session unattributed" unattributed
 assert_eq "the exhausted cap does not re-request again" 1 "$(grep -c '^rerun 701$' "$FAKE_GH_STATE/actions.log")"
 assert_contains "the closed session reaches the supervisor" "$(cat "$EVENTS")" \
   "red=${CANCEL_SHA:0:12} status=unattributed reason=rerun-no-verdict run=701"
+
+# --- Pipeline-suites session: a post-land run is green only for the suites its own range maps to, so a green post-land run on a descendant alone does not close it.
+# The session's own range is re-run on the descendant (a probe); only that probe going green closes it as recovered.
+rm -rf "$AGENT_HOME/main-red"
+: > "$FAKE_GH_STATE/actions.log"
+commit "fix(#4107): suites red tip"
+PS_RED="$(git -C "$repo" rev-parse HEAD)"
+commit "fix(#4107): suites fix forward"
+PS_DESC="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" push -q origin main
+printf '{"workflow_runs":[]}\n' > "$FAKE_GH_STATE/completed-runs.json"
+ps_runs() { # <probe-conclusion or empty> ; green post-land run on the descendant, plus an optional finished probe of the red range
+  jq -cn --arg red "$PS_RED" --arg desc "$PS_DESC" --arg pc "${1:-}" \
+    '{workflow_runs:([{id:910,head_sha:$desc,head_branch:"main",event:"workflow_dispatch",path:".github/workflows/pipeline-suites.yml",status:"completed",conclusion:"success",created_at:"2026-11-09T04:00:00Z",display_title:("Pipeline suites post-land " + $desc + " " + $red)}]
+      + (if $pc == "" then [] else [{id:911,head_sha:$desc,head_branch:"main",event:"workflow_dispatch",path:".github/workflows/pipeline-suites.yml",status:"completed",conclusion:$pc,created_at:"2026-11-09T04:10:00Z",display_title:("Pipeline suites post-land probe " + $desc + " " + $red)}] end))}' \
+    > "$FAKE_GH_STATE/pipeline-suites-runs.json"
+}
+PS_FILE="$AGENT_HOME/main-red/$PS_RED.json"
+main_red_session_write "$PS_RED" bisecting ".red_workflow = \"pipeline-suites.yml\" | .focused_base_sha = \"$GREEN_SHA\" | .focused_head_sha = \"$PS_RED\""
+ps_runs
+main_red_bisect_sweep
+assert_eq "a green post-land run alone does not close a pipeline-suites session" bisecting "$(jq -r .status "$PS_FILE")"
+assert_contains "the session's own range is re-run on the descendant" "$(cat "$FAKE_GH_STATE/actions.log")" \
+  "dispatch pipeline-suites.yml main post_land_base_sha=$GREEN_SHA"
+assert_eq "the recovery probe names the descendant" "$PS_DESC" "$(jq -r .recovery_probe_sha "$PS_FILE")"
+main_red_bisect_sweep
+assert_eq "the probe is not dispatched twice inside the retry delay" 1 "$(grep -c '^dispatch pipeline-suites.yml' "$FAKE_GH_STATE/actions.log")"
+ps_runs failure
+main_red_bisect_sweep
+assert_eq "a red probe keeps the session open" bisecting "$(jq -r .status "$PS_FILE")"
+ps_runs success
+main_red_bisect_sweep
+assert_eq "a green probe of the session's range closes it recovered" recovered "$(jq -r .status "$PS_FILE")"
+assert_eq "the recovered session names the probed descendant" "$PS_DESC" "$(jq -r .recovered_by_sha "$PS_FILE")"
+# A session with no recorded range cannot be re-run, so a post-land green still never closes it.
+main_red_session_write "$PS_RED" bisecting ".red_workflow = \"pipeline-suites.yml\" | del(.focused_base_sha, .focused_head_sha, .recovered_by_sha, .recovery_probe_sha)"
+: > "$FAKE_GH_STATE/actions.log"
+ps_runs
+main_red_bisect_sweep
+assert_eq "a session with no recorded range stays open on a post-land green" bisecting "$(jq -r .status "$PS_FILE")"
+assert_not_contains "no probe is dispatched without a recorded range" "$(cat "$FAKE_GH_STATE/actions.log")" "dispatch"
+
+# Red run 912 was post-land for GREEN_SHA..PS_RED; this green covers the separate PS_RED..PS_DESC landing.
+main_red_session_write "$PS_RED" rerun-requested ".red_run_id = \"912\" | .red_workflow = \"pipeline-suites.yml\" | .focused_base_sha = \"$GREEN_SHA\" | .focused_head_sha = \"$PS_RED\""
+ps_runs
+main_red_bisect_sweep
+assert_eq "a different descendant post-land landing does not close the red session" rerun-requested "$(jq -r .status "$PS_FILE")"
+
+# A failed focused probe reports gh's first error line once and keeps the current attempt cap.
+main_red_session_write "$PS_DESC" bisecting ".red_run_id = \"913\" | .red_workflow = \"pipeline-suites.yml\" | .focused_base_sha = \"$PS_RED\" | .focused_head_sha = \"$PS_DESC\" | .recovery_probe_sha = \"$PS_RED\" | .recovery_probe_attempts = 0"
+ps_runs; : > "$FAKE_GH_STATE/actions.log"
+export FAKE_FAIL_WORKFLOW_DISPATCH=1 FAKE_GH_WORKFLOW_ERROR=$'gh: HTTP 422: Unexpected inputs: post_land_probe_sha\nsecond error line'
+main_red_bisect_sweep
+assert_eq "failed probe dispatch spends only its current attempt" 1 "$(jq -r .recovery_probe_attempts "$AGENT_HOME/main-red/$PS_DESC.json")"
+assert_contains "failed probe dispatch logs gh's first error line" "$(cat "$AGENT_HOME/logs/main-red.log")" "probe dispatch failed workflow=pipeline-suites.yml error=gh: HTTP 422: Unexpected inputs: post_land_probe_sha"
+assert_contains "failed probe dispatch reaches the supervisor inbox" "$(cat "$AGENT_HOME/supervisor-inbox")" "main-red-probe-dispatch-failed:pipeline-suites.yml: gh: HTTP 422: Unexpected inputs: post_land_probe_sha"
+assert_eq "failed probe dispatch writes one inbox line" 1 "$(grep -Fc 'main-red-probe-dispatch-failed:pipeline-suites.yml' "$AGENT_HOME/supervisor-inbox")"
 
 if [ "$FAILED" -eq 1 ]; then
   printf 'FAILED\n' >&2

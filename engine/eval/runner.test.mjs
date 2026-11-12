@@ -125,7 +125,7 @@ test('the real lower stage seam uses policy and records usage without a model ca
   try {
     const bin = join(dir, 'bin'), home = join(dir, 'home'), artifact = join(dir, 'artifacts');
     for (const path of [bin, home, artifact]) mkdirSync(path);
-    const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', advisor_reason: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
+    const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', advisor_reason: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], related: [], suspected_shared_cause: null, estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
     const outputFile = join(dir, 'fake-output.json'); writeFileSync(outputFile, JSON.stringify(output));
     const fake = join(bin, 'codex');
     writeFileSync(fake, '#!/usr/bin/env bash\nset -euo pipefail\noutput=""\nwhile (($#)); do if [[ "$1" == --output-last-message ]]; then output=$2; shift; fi; shift; done\ncat > /dev/null\ncp "$EVAL_FAKE_OUTPUT_FILE" "$output"\nprintf "tokens used\\n1,234\\n"\n', { mode: 0o755 });
@@ -226,6 +226,47 @@ test('supervisor execution uses an isolated historical context and the six-actio
     assert.equal(failed.action, null);
     assert.equal(failed.expectedAction, 'requeue');
     assert.equal(failed.calls.length, 1, 'failed model calls remain represented in the result denominator');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('supervisor stage-call keeps terra configured and uses luna max while its shared cache is active', () => {
+  const dir = mkdtempSync(join(scratch, 'eval-supervisor-cache-test-'));
+  try {
+    const bin = join(dir, 'bin'), home = join(dir, 'home'), workerScratch = join(dir, 'worker-scratch');
+    const firstArtifact = join(dir, 'first'), cachedArtifact = join(dir, 'cached'), calls = join(dir, 'codex.calls');
+    for (const path of [bin, home, firstArtifact, cachedArtifact, workerScratch]) mkdirSync(path, { recursive: true });
+    const codexHome = join(home, '.codex');
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, 'config.toml'), '[profiles.terra]\nmodel = "gpt-6.1-terra"\n');
+    const fakeCodex = `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$CODEX_CALLS"
+out="" prev=""
+for arg in "$@"; do [[ "$prev" != --output-last-message ]] || out="$arg"; prev="$arg"; done
+cat >/dev/null
+printf 'ACTION: requeue\\n' > "$out"
+`;
+    writeFileSync(join(bin, 'codex'), fakeCodex, { mode: 0o755 });
+    const input = join(dir, 'input.json'), prompt = join(dir, 'prompt.md');
+    writeFileSync(input, JSON.stringify({ issue: { number: 4367 }, priorState: {}, failure: '' })); writeFileSync(prompt, 'fixture');
+    const run = artifact => execFileSync('bash', ['engine/eval/stage-call.sh', 'supervisor', resolve('.'), resolve('.'), prompt, artifact, input], {
+      encoding: 'utf8', env: { ...process.env, HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:${process.env.PATH}`, CODEX_CALLS: calls,
+        WORKER_SCRATCH_ROOT: workerScratch, ZF_SUPERVISOR_PROFILE: 'terra', EVAL_POLICY_FILE: resolve('engine/model-policy.default.json'),
+        ZF_AGENT_TEST_MODE: '1', ZF_AGENT_TEST_ROOT: dir, AGENT_EXECUTION_MIN_MEM_MB: '1', AGENT_EXECUTION_MAX_LOAD: '1000000' },
+    });
+    assert.match(run(firstArtifact), /^ACTION: requeue/);
+    const originalCall = readFileSync(calls, 'utf8');
+    assert.match(originalCall, /exec -p terra/);
+    assert.doesNotMatch(originalCall, /gpt-6-luna/);
+    assert.equal(readFileSync(join(firstArtifact, 'identity.txt'), 'utf8').trim(), 'codex:profile:terra');
+
+    mkdirSync(join(workerScratch, 'luna'), { recursive: true });
+    writeFileSync(join(workerScratch, 'luna/model-not-found.cache'), `gpt-6.1-terra\t${Math.floor(Date.now() / 1000) + 86400}\n`);
+    assert.match(run(cachedArtifact), /^ACTION: requeue/);
+    const cachedCall = readFileSync(calls, 'utf8').split('\n').at(-2);
+    assert.match(cachedCall, /exec -p terra -m gpt-6-luna -c model_reasoning_effort=max/);
+    assert.equal(readFileSync(join(cachedArtifact, 'identity.txt'), 'utf8').trim(), 'codex:gpt-6-luna:max');
+    assert.match(readFileSync(join(cachedArtifact, 'worker.log'), 'utf8'), /model-not-found cache swap eval-supervisor profile=terra from=gpt-6\.1-terra to=gpt-6-luna effort=max/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -333,7 +374,7 @@ function cliFixture() {
   const bin = join(dir, 'bin'), home = join(dir, 'home');
   mkdirSync(bin); mkdirSync(home);
   const events = join(dir, 'codex-events.log');
-  const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', advisor_reason: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
+  const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', advisor_reason: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], related: [], suspected_shared_cause: null, estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
   const outputFile = join(dir, 'triage-output.json');
   writeFileSync(outputFile, JSON.stringify(output));
   writeFileSync(join(bin, 'codex'), `#!/usr/bin/env bash
@@ -513,7 +554,7 @@ function pairedFixture({ identity = 'codex:fixture:high', session = 'fixture-ses
   git('add', '.'); git('commit', '-qm', 'base'); const baseSha = git('rev-parse', 'HEAD');
   const stub = join(dir, 'stage-call.sh'), script = join(dir, 'stage-call.mjs');
   writeFileSync(stub, '#!/usr/bin/env bash\nexec node "$(dirname "$0")/stage-call.mjs" "$@"\n');
-  const triage = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', advisor_reason: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
+  const triage = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', advisor_reason: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], related: [], suspected_shared_cause: null, estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
   const readyReview = 'VERDICT: READY\n\n```review-findings\n{"findings":[],"dispositions":[]}\n```';
   const rejectedReview = 'VERDICT: NOT_READY\n\n```review-findings\n{"findings":[{"id":"F1","severity":"P1","file":"value.mjs","line":1,"rule":"Defect","status":"open","summary":"The known value defect remains.","introduced_by":"candidate","base_evidence":"The base value at value.mjs:1 is zero.","rerun_command":"node value.test.mjs","rerun_output":"FAIL value is 1"}],"dispositions":[]}\n```';
   writeFileSync(script, `

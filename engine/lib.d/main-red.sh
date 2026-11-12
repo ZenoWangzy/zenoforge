@@ -608,6 +608,17 @@ main_red_probe_verdict() {
 # ci.yml requires source_sha to equal it; focused Pipeline suites probes use
 # the current main workflow definition, carry the train ref only as their
 # concurrency key, and check out the exact probe SHA in the test job.
+main_red_dispatch_gh() { # workflow, gh workflow-run arguments...
+  local workflow="$1" error
+  shift
+  if error="$(guarded_write gh workflow run "$@" 2>&1)"; then return 0; fi
+  error="${error%%$'\n'*}"
+  main_red_log "probe dispatch failed workflow=$workflow error=${error:-no gh error output}"
+  supervisor_inbox_append_once "main-red-probe-dispatch-failed:$workflow" "main-red-probe-dispatch-failed:$workflow: ${error:-no gh error output}" || true
+  return 1
+}
+
+
 main_red_dispatch_probe() {
   local mid_sha="$1" red_sha="$2" workflow="${3:-ci.yml}" focused_base="${4:-}" focused_head="${5:-}" branch="train/bisect-${2:0:12}"
   if ! guarded_write git -C "$REPO_DIR" push -q origin "+${mid_sha}:refs/heads/$branch"; then
@@ -615,13 +626,13 @@ main_red_dispatch_probe() {
   fi
   if [ "$workflow" = pipeline-suites.yml ]; then
     if [[ "$focused_base" =~ ^[0-9a-f]{40}$ && "$focused_head" =~ ^[0-9a-f]{40}$ ]]; then
-      guarded_write gh workflow run pipeline-suites.yml --repo "$REPO" --ref main \
+      main_red_dispatch_gh "$workflow" pipeline-suites.yml --repo "$REPO" --ref main \
         -f "post_land_base_sha=$focused_base" -f "post_land_head_sha=$focused_head" \
         -f "post_land_probe_sha=$mid_sha" -f "post_land_probe_ref=$branch" || return 1
     else
-      guarded_write gh workflow run pipeline-suites.yml --repo "$REPO" --ref "$branch" || return 1
+      main_red_dispatch_gh "$workflow" pipeline-suites.yml --repo "$REPO" --ref "$branch" || return 1
     fi
-  elif ! guarded_write gh workflow run ci.yml --repo "$REPO" --ref "$branch" -f "source_sha=$mid_sha"; then
+  elif ! main_red_dispatch_gh "$workflow" ci.yml --repo "$REPO" --ref "$branch" -f "source_sha=$mid_sha"; then
     return 1
   fi
   main_red_log "probe dispatched sha=${mid_sha:0:12} workflow=$workflow branch=$branch red=${red_sha:0:12}"

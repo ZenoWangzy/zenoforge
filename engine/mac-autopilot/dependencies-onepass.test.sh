@@ -16,10 +16,12 @@ cp "$engine_dir/mac-autopilot/config.template.json" "$MAC_AUTOPILOT_RUNTIME_DIR/
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$engine_dir/mac-autopilot/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
+source "$engine_dir/lib.d/blockers.sh"
+source "$engine_dir/supervisor-holds.sh"
 UNITS="$MAC_AUTOPILOT_RUNTIME_DIR/units.json"; LOG="$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"; A="$MAC_AUTOPILOT_RUNTIME_DIR"
 STAMP=2026-11-08T10:47:12Z; NOW_EPOCH=1794221232
 real_jq="$(command -v jq)"
-reads="$fixture/jq-reads"; writes="$fixture/writes"; ghlog="$fixture/gh-calls"
+reads="$fixture/jq-reads"; writes="$fixture/writes"; ghlog="$fixture/gh-calls"; blocked_by_calls="$fixture/native-blocker-calls"
 
 # A shim counts the jq runs that read the ledger or a history view (a file argument or a process substitution); hist/js build small strings and do not count.
 cat > "$fixture/shim/jq" <<SHIM
@@ -27,6 +29,11 @@ cat > "$fixture/shim/jq" <<SHIM
 last="\${*: -1}"
 case "\$last" in "$UNITS"|/dev/fd/*|/proc/self/fd/*) echo r >> "$reads" ;; esac
 echo all >> "$reads.all"
+case "\${ZF_TEST_JQ_FAIL:-}" in
+  ids-json) [[ " \$* " != *' -Rn '* ]] || exit 91 ;;
+  entry-json) [[ " \$* " != *' --argjson checked_at '* ]] || exit 92 ;;
+  update-json) [[ " \$* " != *' --argjson entry '* ]] || exit 93 ;;
+esac
 exec "$real_jq" "\$@"
 SHIM
 chmod +x "$fixture/shim/jq"
@@ -39,6 +46,9 @@ scheduler_issue_state() { # the dead-blocker cases name their state by predecess
     110) printf '{"state":"tracker"}' ;;
     111) printf '{"state":"ready-for-agent"}' ;;
     140) printf '{"state":"tracker"}' ;;
+    9510) printf '{"state":"tracker","recut_children":[9781,9782]}' ;;                  # tracker parent, both children delivered
+    9512) printf '{\n  "state": "tracker",\n  "recut_children": [9514, 9522, 9523]\n}' ;; # own parent of 9514, pretty-printed like the state file
+    9530) printf '{"tracker_parent":true,"state":"tracker","recut_children":[9531,9532]}' ;; # one child still live
     *) printf '{"state":"ready-for-agent"}' ;;
   esac
 }
@@ -51,6 +61,20 @@ dep_states() { # number → state<TAB>labels<TAB>issue state<TAB>reason, from th
 }
 gh() {
   printf '%s\n' "$*" >> "$ghlog"
+  if [[ "$*" == *"/dependencies/blocked_by"* ]]; then
+    printf 'x\n' >> "$blocked_by_calls"
+    if [[ -n "${BLOCKER_GH_BARRIER:-}" ]]; then
+      printf 'x\n' >> "$BLOCKER_GH_BARRIER"
+      for _ in {1..100}; do
+        [[ "$(wc -l < "$BLOCKER_GH_BARRIER")" -ge 2 ]] && break
+        sleep 0.01
+      done
+      [[ "$(wc -l < "$BLOCKER_GH_BARRIER")" -ge 2 ]] || return 1
+    fi
+    if [[ "${FAKE_BLOCKER_JSON_ERROR:-0}" == 1 ]]; then printf 'not-json\n'; return 0; fi
+    printf '[{"number":91001131,"state":"open","labels":[]},{"number":91001132,"state":"open","labels":[]},{"number":91001133,"state":"closed","labels":[]}]\n'
+    return 0
+  fi
   case "$*" in
     "pr close"*) return 0 ;;
     *sub_issues*) return 0 ;;
@@ -155,4 +179,197 @@ expected="$script_dir/dependencies-onepass.expected"
 if [[ "${DEP_ONEPASS_WRITE_EXPECTED:-}" == 1 ]]; then printf '%s\n' "$out" > "$expected"; echo "wrote $expected"; exit 0; fi
 printf '%s\n' "$out" > "$fixture/actual"
 cmp -s "$fixture/actual" "$expected" || { diff "$expected" "$fixture/actual" | head -40 >&2; fail 'ledger, log or gh calls differ from the row-by-row version'; }
+# ---- tracker blockers (queue rows 151 + 152 family: a tracker is delivered when its children are; a child never waits on its own parent) ----
+# The asserts below read the ledger and the log only, so they sit after the snapshot comparison and leave the expected file alone.
+tracker_fixture() { # edits: 9511 waits on tracker 9510 (real_wait latched); 9514 on its own parent 9512; 9540 on tracker 9530 with a live child
+  local -a rows=()
+  rows+=("$(unit issue-9781 9781 merged)" "$(unit issue-9782 9782 awaiting-live-event)")
+  rows+=("$(unit issue-9511 9511 blocked-external '.blocked_on=9510 | .dep_wait_delivery=9510 | .body_blocked_by=[9510]')")
+  rows+=("$(unit issue-9522 9522 merged)" "$(unit issue-9523 9523 "${SIBLING_STAGE:-implement-pending}")")
+  rows+=("$(unit issue-9514 9514 blocked-external '.blocked_on=9512 | .body_blocked_by=[9512]')")
+  rows+=("$(unit issue-9531 9531 merged)" "$(unit issue-9532 9532 implement-pending)")
+  rows+=("$(unit issue-9540 9540 blocked-external '.blocked_on=9530 | .dep_wait_delivery=9530 | .body_blocked_by=[9530]')")
+  printf '%s\n' "${rows[@]}" | jq -cs '{units: .}' > "$UNITS"
+  printf '{"workers":[]}\n' > "$A/workers.json"
+  DEP_DELIVERED_CACHE=(); CACHE_ROWS=([9510]=$'OPEN\t' [9512]=$'OPEN\t' [9530]=$'OPEN\t')
+}
+stage_of() { jq -r --arg id "$1" '.units[] | select(.id == $id) | .stage' "$UNITS"; }
+unit_json() { jq -c --arg id "$1" '.units[] | select(.id == $id)' "$UNITS"; }
+tracker_fixture; reset_run; run_counted
+[[ "$(stage_of issue-9511)" == implement-pending ]] || fail "case A: a latched wait on a tracker whose children are delivered must free the unit, got $(stage_of issue-9511)"
+grep -q 'unit issue-9511 unblocked: #9510 tracker' "$LOG" || fail 'case A: the release must log the tracker unblock'
+[[ "$(jq -r '.units[] | select(.id == "issue-9511") | .dep_wait_delivery // "none"' "$UNITS")" == none ]] || fail 'case A: the delivery marker must end with the release'
+dep_delivered_snapshot
+dep_cleared "$(unit_json issue-9511)" 9510 || fail 'case A: dispatch must not re-park the freed unit (dep_cleared)'
+! park_if_body_blocked "$(unit_json issue-9511)" || fail 'case A: park_if_body_blocked parked the freed unit again'
+[[ "$(stage_of issue-9514)" == blocked-external ]] || fail "case B: a child waits on its live sibling 9523, got $(stage_of issue-9514)"
+dep_cleared "$(unit_json issue-9514)" 9512 && fail 'case B: dep_cleared must hold while sibling 9523 is undelivered'
+[[ "$(stage_of issue-9540)" == blocked-external ]] || fail 'negative: a tracker with an undelivered child must still block'
+dep_cleared "$(unit_json issue-9540)" 9530 && fail 'negative: dep_cleared must hold on a tracker with a live child'
+SIBLING_STAGE=merged tracker_fixture; reset_run; run_counted
+[[ "$(stage_of issue-9514)" == implement-pending ]] || fail "case B: once its siblings are delivered the child must not wait on its own parent, got $(stage_of issue-9514)"
+grep -q 'unit issue-9514 unblocked: #9512 tracker' "$LOG" || fail 'case B: the release must log the unblock'
+[[ "$(stage_of issue-9540)" == blocked-external ]] || fail 'negative: the live child 9532 still blocks 9540 after the second pass'
+SIBLING_STAGE=merged tracker_fixture; dep_delivered_snapshot
+dep_cleared "$(unit_json issue-9514)" 9512 || fail 'case B: dispatch must see the siblings delivered (dep_cleared)'
+grep -q 'issue #9514 waits on tracker #9512, its own parent' "$LOG" || fail 'case B: the rewrite must name itself in the log'
+
+# A closed GitHub issue retires an unchanged supervisor-review unit once.
+CACHE_ROWS=([5974]=$'CLOSED\t')
+unit issue-5974 5974 supervisor-review | jq -s '{units:.}' > "$UNITS"
+printf '{"workers":[]}\n' > "$A/workers.json"
+DEP_DELIVERED_CACHE=(); reset_run; run_counted
+[[ "$(jq -r '.units[0].stage' "$UNITS")" == closed ]] || fail 'a closed GitHub issue did not retire its supervisor-review unit'
+[[ "$(jq '[.units[0].history[] | select(.stage == "issue-closed" and (.result | contains("issue #5974")))] | length' "$UNITS")" == 1 ]] \
+  || fail 'retiring the unit did not record one issue-naming history event'
+writes_after_close="$(count "$writes")"
+run_counted
+[[ "$(count "$writes")" == "$writes_after_close" ]] || fail 'a rerun wrote the already retired unit again'
+[[ "$(jq '[.units[0].history[] | select(.stage == "issue-closed")] | length' "$UNITS")" == 1 ]] || fail 'a rerun added a second issue-closed event'
+
+# No blocker means there is no event to wait for. Resume only when the current
+# GitHub label cache still says ready-for-agent; stale ledger labels do not count.
+CACHE_ROWS=(); reset_run
+CACHE_ROWS=([25]=$'OPEN\tready-for-agent\tOPEN\t' [26]=$'OPEN\tready-for-agent\tOPEN\t' [27]=$'OPEN\tneeds-recut\tOPEN\t')
+{
+  unit issue-25 25 blocked-external '.labels=["ready-for-agent"]'
+  unit issue-26 26 blocked-external '.labels=["ready-for-agent"]'
+  unit issue-27 27 blocked-external '.labels=["ready-for-agent"]'
+} | jq -cs '{units:.}' > "$UNITS"
+run_counted
+[[ "$(jq -r '.units[] | select(.id=="issue-25") | .stage' "$UNITS")" == implement-pending ]] || fail 'a ready unit with no recorded blocker must resume'
+[[ "$(jq -r '.units[] | select(.id=="issue-26") | .stage' "$UNITS")" == implement-pending ]] || fail 'a second ready unit with no recorded blocker must resume'
+[[ "$(jq -r '.units[] | select(.id=="issue-27") | .stage' "$UNITS")" == supervisor-review ]] || fail 'a stale ready label must not release a non-ready issue'
+
+# Native blocked_by reads share the existing DEP_CHECK_SECONDS cache, including
+# across a dep-check refresh that rewrites the state snapshot in the same file.
+reset_run
+NOW_EPOCH=1794221232; DEP_CHECK_SECONDS=600; REPO=test/repo
+: > "$blocked_by_calls"
+printf '{"units":[]}\n' > "$UNITS"
+printf '{"workers":[]}\n' > "$A/workers.json"
+hand_agent_worktree_pid() { return 1; }
+for _ in 1 2; do
+  supervisor_hold_owner_state 9000100 external-deliverable || fail 'native blocker check failed'
+  [[ "$SUPERVISOR_HOLD_OWNER_STATE" == blocked ]] || fail 'native blocker cache changed the blocked decision'
+done
+[[ "$(count "$blocked_by_calls")" == 1 ]] || fail "two reads in one DEP_CHECK_SECONDS window made $(count "$blocked_by_calls") native API calls"
+[[ "$(jq -r '.blocked_by["9000100"].ids | join(", ")' "$A/dep-check.cache.json")" == '91001131, 91001132' ]] || fail 'native blocker cache lost one of multiple open blockers'
+rm -f "$A/dep-check.epoch"
+run_counted
+supervisor_hold_owner_state 9000100 external-deliverable || fail 'native blocker check after dep refresh failed'
+[[ "$(count "$blocked_by_calls")" == 1 ]] || fail 'release_dependency_blocks dropped the native blocker cache'
+NOW_EPOCH=$((NOW_EPOCH + DEP_CHECK_SECONDS))
+supervisor_hold_owner_state 9000100 external-deliverable || fail 'native blocker refresh failed'
+[[ "$(count "$blocked_by_calls")" == 2 ]] || fail 'native blocker cache did not refresh at DEP_CHECK_SECONDS'
+: > "$fixture/blocker-gh-barrier"
+export BLOCKER_GH_BARRIER="$fixture/blocker-gh-barrier"
+(
+  supervisor_hold_owner_state 9000101 external-deliverable || exit 1
+  [[ "$SUPERVISOR_HOLD_OWNER_STATE" == blocked ]]
+) &
+first_reader=$!
+(
+  supervisor_hold_owner_state 9000101 external-deliverable || exit 1
+  [[ "$SUPERVISOR_HOLD_OWNER_STATE" == blocked ]]
+) &
+second_reader=$!
+wait "$first_reader" || fail 'first concurrent native blocker reader failed'
+wait "$second_reader" || fail 'second concurrent native blocker reader failed'
+unset BLOCKER_GH_BARRIER
+[[ "$(count "$blocked_by_calls")" == 4 ]] || fail 'cache lock was held across the concurrent native blocker API calls'
+(
+  supervisor_hold_owner_state 9000102 external-deliverable || exit 1
+  [[ "$SUPERVISOR_HOLD_OWNER_STATE" == blocked ]]
+) &
+first_issue_reader=$!
+(
+  supervisor_hold_owner_state 9000103 external-deliverable || exit 1
+  [[ "$SUPERVISOR_HOLD_OWNER_STATE" == blocked ]]
+) &
+second_issue_reader=$!
+wait "$first_issue_reader" || fail 'first concurrent distinct-issue reader failed'
+wait "$second_issue_reader" || fail 'second concurrent distinct-issue reader failed'
+[[ "$(count "$blocked_by_calls")" == 6 ]] || fail 'concurrent reads of distinct issues did not each make one API call'
+[[ "$(jq -r '.blocked_by["9000102"].ids | join(", ")' "$A/dep-check.cache.json")" == '91001131, 91001132' ]] \
+  || fail 'first concurrent distinct-issue cache entry was lost'
+[[ "$(jq -r '.blocked_by["9000103"].ids | join(", ")' "$A/dep-check.cache.json")" == '91001131, 91001132' ]] \
+  || fail 'second concurrent distinct-issue cache entry was lost'
+mv() { return 1; }
+write_failure_calls_before="$(count "$blocked_by_calls")"
+supervisor_hold_owner_state 9000104 external-deliverable || fail 'native blocker cache-write failure changed the blocked decision'
+[[ "$SUPERVISOR_HOLD_OWNER_STATE" == blocked ]] || fail 'cache-write failure changed the fresh blocker result'
+supervisor_hold_owner_state 9000104 external-deliverable || fail 'second native blocker check after cache-write failure failed'
+[[ "$SUPERVISOR_HOLD_OWNER_STATE" == blocked ]] || fail 'second native blocker check after cache-write failure lost the fresh result'
+unset -f mv
+write_failure_calls_after="$(count "$blocked_by_calls")"
+[[ "$((write_failure_calls_after - write_failure_calls_before))" == 2 ]] || fail 'cache-write failure did not let the next call refetch'
+[[ ! -s "$A/dep-check.cache.lock" ]] || fail 'cache lock file contains fallback records'
+unset DEP_CHECK_SECONDS
+
+# lib.sh callers have no scheduler-local A; use the repo runtime cache if no
+# scheduler runtime directory was forwarded either.
+reset_run
+REPO_DIR="$fixture/fallback-repo"; mkdir -p "$REPO_DIR"; unset A MAC_AUTOPILOT_RUNTIME_DIR
+NOW_EPOCH=1794221232; DEP_CHECK_SECONDS=600
+: > "$blocked_by_calls"
+for _ in 1 2; do
+  supervisor_hold_owner_state 9000100 external-deliverable || fail 'native blocker check without scheduler A failed'
+  [[ "$SUPERVISOR_HOLD_OWNER_STATE" == blocked ]] || fail 'fallback native blocker cache changed the blocked decision'
+done
+[[ "$(count "$blocked_by_calls")" == 1 ]] || fail "two reads without scheduler A made $(count "$blocked_by_calls") native API calls"
+[[ "$(jq -r '.blocked_by["9000100"].ids | join(", ")' "$REPO_DIR/.scratch-supervisor/autopi/dep-check.cache.json")" == '91001131, 91001132' ]] \
+  || fail 'fallback native blocker cache did not persist the open blocker IDs'
+unset DEP_CHECK_SECONDS
+
+# Malformed API data stays fail closed and is cached for the same window.
+assert_blocker_query_failure_cached() {
+  local issue="$1" rc
+  A="$fixture/supervisor/autopi/blocker-error-malformed"; mkdir -p "$A"
+  NOW_EPOCH=1794221232; DEP_CHECK_SECONDS=600; REPO=test/repo
+  rm -f "$A/dep-check.cache.json" "$A/dep-check.cache.lock"
+  : > "$blocked_by_calls"
+  FAKE_BLOCKER_JSON_ERROR=1
+  unset ZF_TEST_JQ_FAIL
+  if PATH="$fixture/shim:$PATH" supervisor_hold_owner_state "$issue" external-deliverable; then
+    fail 'malformed blocker response unexpectedly returned a known owner state'
+  else
+    rc=$?
+  fi
+  [[ "$rc" == 2 && "$SUPERVISOR_HOLD_OWNER_STATE" == unknown ]] || fail 'malformed blocker response did not fail closed'
+  (
+    if PATH="$fixture/shim:$PATH" supervisor_hold_owner_state "$issue" external-deliverable; then exit 1; else rc=$?; fi
+    [[ "$rc" == 2 && "$SUPERVISOR_HOLD_OWNER_STATE" == unknown ]]
+  ) || fail 'cached malformed blocker response was not fail closed in a second process'
+  [[ "$(count "$blocked_by_calls")" == 1 ]] || fail 'cached malformed blocker response caused more than one REST read'
+  unset FAKE_BLOCKER_JSON_ERROR DEP_CHECK_SECONDS
+}
+assert_blocker_query_failure_cached 9000105
+
+# Cache JSON or disk write failures preserve the fresh result and force the next call to refetch.
+assert_blocker_cache_write_failure_refetches() {
+  local issue="$1" mode="$2" calls_before calls_after
+  A="$fixture/supervisor/autopi/blocker-write-$mode"; mkdir -p "$A"
+  NOW_EPOCH=1794221232; DEP_CHECK_SECONDS=600; REPO=test/repo
+  rm -f "$A/dep-check.cache.json" "$A/dep-check.cache.lock"
+  : > "$blocked_by_calls"
+  unset FAKE_BLOCKER_JSON_ERROR
+  export ZF_TEST_JQ_FAIL="$mode"
+  PATH="$fixture/shim:$PATH" supervisor_hold_owner_state "$issue" external-deliverable \
+    || fail "$mode cache-write failure discarded the fresh blocker result"
+  [[ "$SUPERVISOR_HOLD_OWNER_STATE" == blocked ]] || fail "$mode cache-write failure changed the fresh blocker state"
+  [[ "$OPEN_BLOCKER_IDS" == '91001131, 91001132' ]] || fail "$mode cache-write failure discarded fresh blocker IDs"
+  calls_before="$(count "$blocked_by_calls")"
+  PATH="$fixture/shim:$PATH" supervisor_hold_owner_state "$issue" external-deliverable \
+    || fail "$mode second blocker check failed"
+  [[ "$SUPERVISOR_HOLD_OWNER_STATE" == blocked ]] || fail "$mode second blocker check lost the fresh result"
+  calls_after="$(count "$blocked_by_calls")"
+  [[ "$((calls_after - calls_before))" == 1 ]] || fail "$mode cache-write failure did not let the next call refetch"
+  [[ ! -s "$A/dep-check.cache.lock" ]] || fail "$mode cache lock file contains fallback records"
+  unset ZF_TEST_JQ_FAIL DEP_CHECK_SECONDS
+}
+assert_blocker_cache_write_failure_refetches 9000106 ids-json
+assert_blocker_cache_write_failure_refetches 9000107 entry-json
+assert_blocker_cache_write_failure_refetches 9000108 update-json
+
 echo 'dependencies-onepass.test.sh: ok'

@@ -11,9 +11,16 @@ fail() { echo "release-age.test.sh: $*" >&2; exit 1; }
 work="$test_env_root/release-age"
 rm -rf "$work"
 mkdir -p "$work/repo" "$work/agent" "$work/runtime/alerts" "$work/fakebin" "$work/gh"
+cache_dir="$(env -u ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR REPO_DIR="$work/repo" MAC_AUTOPILOT_RUNTIME_DIR="$work/runtime/autopi" \
+  bash -ec 'source "$1"; printf "%s" "${ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR:-}"' _ "$script_dir/../lib.d/release-close.sh")" \
+  || fail 'release reader cache path setup failed'
+[[ -n "$cache_dir" ]] || fail 'release reader cache path was not configured'
+[[ ! -e "$cache_dir" ]] || fail "sourcing lib.sh created the production deployment cache directory: $cache_dir"
+export ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR="$cache_dir"
 # Fake gh: serves the deployment list and each record's statuses from FAKE_GH_DIR; FAKE_GH_FAIL=1 makes it fail.
 cat > "$work/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
+printf '%s\n' "${2:-}" >> "$FAKE_GH_LOG"
 [[ "${FAKE_GH_FAIL:-}" != 1 ]] || exit 1
 [[ "$1" == api ]] || exit 1
 path="$2"
@@ -39,6 +46,7 @@ SHA_LIVE = "8866f3996" + "0" * 31
 SHA_NEW = "2d75caf3a" + "0" * 31
 REPO = "maintainer/example"
 reader = os.path.join(os.path.dirname(os.path.abspath(release_age.__file__)), "..", "production-deployment-read.sh")
+os.environ["FAKE_GH_LOG"] = os.path.join(work, "gh-calls.log")
 
 def fixture(rows):
     """rows: (id, sha, created_at, reconciled). Every record's newest status is success."""
@@ -60,6 +68,7 @@ events = os.path.join(runtime, "alerts", "events.md")
 inbox = os.path.join(agent, "supervisor-inbox")
 once = os.path.join(agent, "supervisor-inbox.once")
 repo_root = os.path.join(work, "repo")
+cache_root = os.path.join(runtime, "autopi")
 
 def check(cond, msg):
     if not cond:
@@ -76,6 +85,26 @@ def score(at, repo=REPO):
     metrics = {}
     found = release_age.collect(metrics, at, repo=repo, reader=reader)
     return metrics[release_age.METRIC], found
+
+# Two reader invocations in one scheduler tick fetch each deployment's statuses once;
+# a fresh tick directory causes them to be checked again.
+fixture([(301, SHA_LIVE, ago(1), False), (302, SHA_NEW, ago(2), False)])
+cache_one = os.environ["ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR"]
+cache_two = os.path.join(work, "deployment-status.tick-two")
+for _ in range(2):
+    done = subprocess.run(["bash", reader, REPO], capture_output=True, text=True,
+                          env=os.environ.copy())
+    check(done.returncode == 0, f"cached reader failed: {done.stderr}")
+check(os.path.isdir(cache_one), f"reader did not lazily create deployment cache: {cache_one}")
+check(len(os.listdir(cache_one)) == 2, "reader did not cache both deployment status results")
+status_calls = [line for line in open(os.environ["FAKE_GH_LOG"]).read().splitlines() if line.endswith("/statuses")]
+check(len(status_calls) == 2, f"same tick read statuses {len(status_calls)} times for two deployments")
+done = subprocess.run(["bash", reader, REPO], capture_output=True, text=True,
+                      env={**os.environ, "ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR": cache_two})
+check(done.returncode == 0, f"next tick reader failed: {done.stderr}")
+status_calls = [line for line in open(os.environ["FAKE_GH_LOG"]).read().splitlines() if line.endswith("/statuses")]
+check(len(status_calls) == 4, f"next tick did not refresh each deployment status: {len(status_calls)} calls")
+os.remove(os.environ["FAKE_GH_LOG"])
 
 # Healthy: one hour since the live deployment is under the 2 h bound.
 fixture([(101, SHA_LIVE, ago(1), False)])

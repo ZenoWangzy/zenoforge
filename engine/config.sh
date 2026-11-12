@@ -10,6 +10,9 @@
 #                     state/risk-paths.json, ...), looked up by relative path. Default = ZF_ENGINE_DIR, where the
 #                     the product pack lives today. Empty = no pack: every seam falls back to its generic default.
 #   ZF_HOST_OPS_DIR root of host-owned files. Default = $AGENT_HOME/host-ops; use zf_host_ops_file to resolve a file.
+#   ZF_ZCODE_BIN   the GLM (ZCode) CLI executable for review calls and hand dispatch. Not set here: zf_zcode_bin_argv()
+#                     resolves it per call (env override -> config.json engine.zcode_bin -> the worker bundle bin/zc
+#                     runs -> a zcode found on PATH), so every consumer shares one resolution.
 #   ZF_CDP_BROWSER_LEASE_SCRIPT  the host-provided CDP lease executable; default = cdp-browser-lease.sh beside this engine.
 #   ZF_WEB_ADVISOR_PROVIDER_SCRIPT  the advisor request executable in the bundled skill.
 #   ZF_WEB_ADVISOR_PROVIDER_CDP_PORT  local CDP endpoint port; default = 9224.
@@ -260,6 +263,43 @@ zf_config_file() {
 zf_incident_guards_read() {
   [[ $# -eq 1 ]] || return 2
   node "$ZF_ENGINE_DIR/incident-guards.mjs" read "$1"
+}
+
+# Resolve the GLM (ZCode) CLI command. Prints one argv word per line, nothing at all when
+# no usable CLI exists (empty output == unavailable, so `zf_zcode_bin_argv >/dev/null` is
+# the availability check). The bundle default is the same two-word command bin/zc runs:
+# the bundled Node binary plus the CLI entry script. An explicitly configured path that is
+# not an executable absolute file resolves to nothing instead of silently falling through
+# to another candidate -- a typo must surface as 'glm cli missing', not run something else.
+# Order: env override ZF_ZCODE_BIN (deployment prefix applies), then config.json
+# engine.zcode_bin, then the worker bundle, then a zcode found on PATH.
+zf_zcode_bin_path_argv() {
+  local path="$1"
+  [[ "$path" == /* && "$path" != *\\* ]] || return 1
+  case "/$path/" in */../*) return 1 ;; esac
+  [[ -f "$path" && -x "$path" ]] || return 1
+  printf '%s\n' "$path"
+}
+
+zf_zcode_bin_argv() {
+  local candidate root entry
+  if candidate="$(zf_env_get ZCODE_BIN 2>/dev/null)" && [[ -n "$candidate" ]]; then
+    zf_zcode_bin_path_argv "$candidate" && return 0
+    return 1
+  fi
+  if [[ -n "${ZF_CONFIG_ROOT:-}" && -f "$ZF_CONFIG_ROOT/config.json" ]] \
+    && candidate="$(jq -r '.engine.zcode_bin // empty | select(type == "string" and length > 0)' "$ZF_CONFIG_ROOT/config.json" 2>/dev/null)" \
+    && [[ -n "$candidate" ]]; then
+    zf_zcode_bin_path_argv "$candidate" && return 0
+    return 1
+  fi
+  root="${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}/zc-src"
+  entry="$root/repo/apps/zcode-cli/packages/cli/dist/zcode.cjs"
+  if [[ -x "$root/bin/zcode" && -r "$entry" ]]; then
+    printf '%s\n%s\n' "$root/bin/zcode" "$entry"
+    return 0
+  fi
+  command -v zcode 2>/dev/null || return 1
 }
 
 # Resolve the target's release runner, retaining the engine runner as fallback.

@@ -105,7 +105,16 @@ for tick in 1 2; do
   grep -Fq 'intake held: startable pending' "$LOG" || fail "tick $tick: full pass was not held"
   [[ "$(cat "$marker")" == 2026-11-07T00:00:00Z ]] || fail "tick $tick: the held pass moved the hold start"
 done
-station() { python3 "$script_dir/station_health.py" --runtime "$A" --agent-home "$AGENT_HOME" --pause-file "$AGENT_HOME/PAUSE" --now "$1" >/dev/null; jq -r .stations.intake.status "$A/station-health.json"; }
+station() {
+  local now="$1" created_at issue encoded row
+  created_at="$(date -u -d "$now" +%s)"
+  issue='{"number":906,"title":"held wait","body":"","state":"OPEN","labels":[{"name":"ready-for-agent"}],"subIssuesSummary":{"total":0}}'
+  encoded="$(printf '%s' "$issue" | base64 -w0)"
+  printf -v row '906\tpr\theld wait\t["ready-for-agent"]\t%s' "$encoded"
+  jq -cn --argjson created_at "$created_at" --arg rows "$row" '{schema:4,created_at:$created_at,rows:$rows}' > "$A/intake-candidates.json"
+  python3 "$script_dir/station_health.py" --runtime "$A" --agent-home "$AGENT_HOME" --pause-file "$AGENT_HOME/PAUSE" --now "$now" >/dev/null
+  jq -r .stations.intake.status "$A/station-health.json"
+}
 [[ "$(station 2026-11-07T01:40:00Z)" == HELD ]] || fail 'a hold under 2 x bound must be HELD'
 [[ "$(station 2026-11-07T03:10:00Z)" == STALLED ]] || fail 'a hold past 2 x bound must be STALLED'
 # units_update: a no-op writes nothing (mtime and inode kept, so the history view cache lives), a change writes, a jq failure keeps the ledger.

@@ -82,10 +82,37 @@ incident_report_gate_reason() { # incident unit [implementation report path] →
   esac
   return 0
 }
-incident_review_verdict() { # incident unit READY|other [implementation report] → READY or forced NOT_READY
+decision_log_gate_reason() { # unit-json [implementation report] → missing or empty decision-log reason
+  local unit_json="$1" report="${2:-}" section
+  [[ -n "$report" ]] || report="$(jqf -r '.implementation_report // .report // empty' <<<"$unit_json")"
+  [[ -n "$report" ]] || { printf 'missing ## decision-log (implementation report is unavailable)'; return 0; }
+  [[ "$report" == /* ]] || report="$SUP/$report"
+  [[ -s "$report" ]] || { printf 'missing ## decision-log (implementation report is unavailable: %s)' "${report##*/}"; return 0; }
+  grep -qE '^## decision-log[[:space:]]*$' "$report" || { printf 'missing ## decision-log'; return 0; }
+  section="$(awk '/^## decision-log[[:space:]]*$/{inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
+  [[ -n "${section//[[:space:]]/}" ]] || printf 'empty ## decision-log'
+}
+how_why_gate_reason() { # unit-json [implementation report] → missing/empty how or why reason, or missing why citation
+  local unit_json="$1" report="${2:-}" how_section why_section
+  [[ -n "$report" ]] || report="$(jqf -r '.implementation_report // .report // empty' <<<"$unit_json")"
+  [[ -n "$report" ]] || { printf 'missing ## how and ## why (implementation report is unavailable)'; return 0; }
+  [[ "$report" == /* ]] || report="$SUP/$report"
+  [[ -s "$report" ]] || { printf 'missing ## how and ## why (implementation report is unavailable: %s)' "${report##*/}"; return 0; }
+  grep -qE '^## how[[:space:]]*$' "$report" || { printf 'missing ## how'; return 0; }
+  grep -qE '^## why[[:space:]]*$' "$report" || { printf 'missing ## why'; return 0; }
+  how_section="$(awk '/^## how[[:space:]]*$/{inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
+  [[ -n "${how_section//[[:space:]]/}" ]] || { printf 'empty ## how'; return 0; }
+  why_section="$(awk '/^## why[[:space:]]*$/{inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
+  [[ -n "${why_section//[[:space:]]/}" ]] || { printf 'empty ## why'; return 0; }
+  grep -Eq '(^|[^[:xdigit:]])[[:xdigit:]]{7,}([^[:xdigit:]]|$)|#[0-9]+' <<<"$why_section" \
+    || printf '## why lacks a commit SHA (7+ hex characters) or #N issue reference'
+}
+incident_review_verdict() { # unit READY|other [implementation report] → READY or forced NOT_READY
   local unit_json="$1" verdict="$2" report="${3:-}" reason
   [[ "$verdict" == READY ]] || { printf '%s' "$verdict"; return 0; }
-  reason="$(incident_report_gate_reason "$unit_json" "$report")"
+  reason="$(decision_log_gate_reason "$unit_json" "$report")"
+  [[ -n "$reason" ]] || reason="$(how_why_gate_reason "$unit_json" "$report")"
+  [[ -n "$reason" ]] || reason="$(incident_report_gate_reason "$unit_json" "$report")"
   [[ -z "$reason" ]] && printf 'READY' || printf 'NOT_READY'
 }
 # 引擎覆盖守卫（2026-11-03：产品 PR 通过 .zenoforge/build/overrides.tsv fork 引擎文件，评审时无人拒绝，只有 converge
@@ -222,7 +249,7 @@ risk_class_safety_rule() { # checkout → safety prompt for risk classes found b
 lane_rule() { # lane sha
   [[ "$1" == direct-main ]] || return 0
   printf '%s' "
-本单元走非产品快车道（direct-main）：评审对象是本 clone 当前检出的提交 $2，它可能只在本地、尚未推到 PR 或根本没有 PR（非产品改动不开 PR、不推 topic），GitHub 上的 PR head、PR diff 与 CI 状态因此不同步属正常——diff 以本地 git 为准，不用 gh pr diff。批准后流水线把它压成一个提交经 land-direct-main.sh 直落 main（落地时跑 focused 检查，suites 在落地后跑）。PR head 不同步、无 CI run、交付路径都不是阻断理由。"
+本单元走非产品快车道（direct-main）：评审对象是本 clone 当前检出的提交 $2，它可能只在本地、尚未推到 PR 或根本没有 PR（非产品改动不开 PR、不推 topic），GitHub 上的 PR head、PR diff 与 CI 状态因此不同步属正常——diff 以本地 git 为准，不用 gh pr diff。评审阶段不得运行测试命令；测试文件可只读检查。Focused 检查在 land 后的 Pipeline 运行，评审可写 'test evidence: not run, post-land'，不因此阻断审批。批准后流水线把它压成一个提交经 land-direct-main.sh 直落 main（suites 在落地后跑）。PR head 不同步、无 CI run、交付路径都不是阻断理由。"
 }
 subject_of() { # pr issue → 评审/修复对象的称呼（无 PR 的直落单元用 issue 或单元 id）
   if [[ -n "$1" ]]; then printf 'PR #%s' "$1"; elif [[ -n "$2" ]]; then printf 'issue #%s 的本地实现（无 PR）' "$2"; else printf '本地实现（无 PR）'; fi
@@ -256,6 +283,12 @@ review_inputs_rule() { # unit-json workdir → copies the two inputs, git-ignore
   return 0
 }
 
+ci_red_evidence_rule() { # unit-json head previous-head → tests CI failed on those heads (ci-test-red events carry .head); empty when none
+  local u="$1" head="$2" prev="${3:-}" tests
+  tests="$(jqf -r --arg h "$head" --arg p "$prev" '[(.history // [])[] | select(.stage == "ci-test-red" and ((.head // "") == $h or ($p != "" and (.head // "") == $p))) | (.tests // [])[]] | unique | join(", ")' <<<"$u" 2>/dev/null)" || return 0
+  [[ -n "$tests" ]] || return 0
+  printf '\nCI on this head (or the previous head) failed these tests: %s. A red test that the diff'"'"'s files touch is a finding candidate; check it. Infra failures and tests the diff does not touch are not findings.' "$tests"
+}
 pr_view() { gh pr view "$1" --json "$2" --jq ".$2" 2>/dev/null; }
 tick_pr_head() { # PR → head SHA from this tick's open-PR census, with a direct fallback for a census miss
   local pr="$1" prs="" head=""

@@ -137,6 +137,36 @@ park_label_sweep
 park_label_sweep
 [[ "$(wc -l < "$fixture/recut-calls")" == 1 ]] || fail 'the recut record must run once'
 grep -q 'park-sweep unit=issue-4508 action=children' "$A/alerts/events.md" || fail 'each action must print'
+
+# Parents outside the legacy list still complete when every recorded recut child is delivered.
+mkdir -p "$AGENT_HOME/state"
+printf '%s\n' '{"recut_children":[5315,5316]}' > "$AGENT_HOME/state/4509.json"
+unit 4509 'recut into child issues' | jq -c '.parked_reason="recut-children"' | ledger
+DEP_DELIVERED_CACHE=([5315]=1 [5316]=1)
+park_label_sweep
+[[ "$(tail -n 1 "$fixture/recut-calls")" == '4509 [5315,5316]' ]] || fail 'a non-legacy recut parent must finish after all recorded children deliver'
+[[ "$(field issue-4509 '[.history[] | select(.stage == "park-sweep-children")] | length')" == 1 ]] || fail 'a generic recut parent must be completed once'
+
+# A child retired after a live event remains delivered even after its current stage becomes closed.
+printf '%s\n' '{"recut_children":[5317]}' > "$AGENT_HOME/state/4510.json"
+{ unit 4510 'recut into child issues' | jq -c '.parked_reason="recut-children"'
+  unit 5317 'delivered child' | jq -c '.stage="closed" | .history=[{"stage":"live-event-closed"}]'; } | ledger
+DEP_DELIVERED_CACHE=()
+park_label_sweep
+[[ "$(tail -n 1 "$fixture/recut-calls")" == '4510 [5317]' ]] || fail 'a closed child with a recorded live event must release its recut parent'
+printf '%s\n' '{"recut_children":[5318]}' > "$AGENT_HOME/state/4511.json"
+{ unit 4511 'recut into child issues' | jq -c '.parked_reason="recut-children"'
+  unit 5318 'closed without delivery' | jq -c '.stage="closed"'; } | ledger
+before_recut_calls="$(wc -l < "$fixture/recut-calls")"
+park_label_sweep
+[[ "$(wc -l < "$fixture/recut-calls")" == "$before_recut_calls" ]] || fail 'a closed child without delivery proof must not release its recut parent'
+printf '%s\n' '{"recut_children":[5319]}' > "$AGENT_HOME/state/4512.json"
+{ unit 4512 'recut into child issues' | jq -c '.parked_reason="recut-children"'
+  unit 5319 'reverted child' | jq -c '.stage="closed" | .merge_sha="abcd" | .history=[{"stage":"merged"},{"stage":"merge-reverted"}]'; } | ledger
+before_recut_calls="$(wc -l < "$fixture/recut-calls")"
+park_label_sweep
+[[ "$(wc -l < "$fixture/recut-calls")" == "$before_recut_calls" ]] || fail 'a later merge-reverted event must cancel earlier delivery proof'
+
 # A cap-triage founder park returns once its stop-loss hold is gone, and only then: a live hold, another reason, a spent retry or a pending handoff episode keep the park.
 mkdir -p "$AGENT_HOME/state"
 issue_state() { printf '%s\n' "$2" > "$AGENT_HOME/state/$1.json"; }
@@ -151,5 +181,17 @@ park_label_sweep
 [[ "$(field issue-7001 .stage):$(field issue-7001 .parked_reason):$(field issue-7001 .supervisor_cap_retry)" == supervisor-review:null:pending ]] || fail 'a lifted stop-loss hold must return the founder park with one retry'
 for n in 7002 7003 7004 7005 7006; do [[ "$(field issue-$n .stage)" == parked ]] || fail "issue-$n must stay parked"; done
 [[ "$(field issue-7001 '[.history[] | select(.stage == "park-sweep-hold-lifted")] | length')" == 1 ]] || fail 'the return must add exactly one history entry'
+
+# Ticket stop-loss parks resume once after an issue edit or a ticket-budget refill.
+ticket_budget_reason() { [[ "$(jqf -r .issue <<<"$1")" == 921 ]] || printf 'rounds 3 of 3'; }
+{ unit 920 'ticket stop-loss' | jq -c '.parked_reason="ticket-stop-loss" | .unpark_condition="the issue changes or the ticket budget is raised" | .history=[{stage:"supervisor-budget-park",at:"2026-11-01T00:00:00Z"}]'
+  unit 921 'ticket stop-loss' | jq -c '.parked_reason="ticket-stop-loss" | .unpark_condition="the issue changes or the ticket budget is raised" | .history=[{stage:"supervisor-budget-park",at:"2026-11-01T00:00:00Z"}]'; } | ledger
+jq -n '{epoch:1,states:{"920":{state:"OPEN",labels:"ready-for-agent",updated_at:"2026-11-02T00:00:00Z"},"921":{state:"OPEN",labels:"ready-for-agent",updated_at:"2026-11-01T00:00:00Z"}}}' > "$A/dep-check.cache.json"
+park_label_sweep
+for n in 920 921; do
+  [[ "$(field issue-$n .stage)" == implement-pending ]] || fail "issue-$n must resume after its stop-loss exit"
+  [[ "$(field issue-$n '[.history[] | select(.stage=="supervisor-requeue")] | length')" == 1 ]] || fail "issue-$n must refill its budget exactly once"
+done
+rm -f "$A/dep-check.cache.json"
 
 echo 'park-reason.test.sh: PASS'

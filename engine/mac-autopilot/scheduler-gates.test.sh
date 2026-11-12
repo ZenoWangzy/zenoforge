@@ -6,6 +6,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../bin" && pwd -P)/luna-capacity.sh"
 
 # 合并门评估链：越过 [skip ci] 与只改产品路径的提交，停在第一个改流水线路径的非 skip 提交（含）
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
@@ -26,8 +27,118 @@ command git -C "$gr" update-ref refs/remotes/origin/main "$g3"
 [[ "$(ROOT="$gr" gate_eval_sha | tr '\n' ' ')" == "$g3 $g2 $g1 " ]] || fail "gate chain did not walk past product commits: $(ROOT="$gr" gate_eval_sha | tr '\n' ' ')"
 
 fail() { echo "scheduler-gates.test.sh: $*" >&2; exit 1; }
-units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
+units() { local report="$sup/review-implementation.md"; printf '## decision-log\nTried the scheduler fixture, kept the expected state transition, and verified the result.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n' > "$report"; jq --arg report "$report" '.units |= map(if has("implementation_report") then . else . + {implementation_report:$report} end)' <<<"$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
+
+priority_admission_case() {
+  local mem="$fixture/priority-meminfo" psi="$fixture/priority-psi"
+  local LUNA_MIN=0 LUNA_MAX=10 LUNA_AGE_ADMIT_SECONDS=1200 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85
+  local LUNA_PROC_MEMINFO="$mem" LUNA_PROC_PSI_MEMORY="$psi" AUTOPI_PRIORITY_HOLD_MAX_SECONDS=1200
+  local PRIORITY_GATE_RUNS=0 PRIORITY_GATE_CPU_BUSY=100 runs_fn cpu_fn
+  runs_fn="$(declare -f codex_runs)"; cpu_fn="$(declare -f cpu_busy)"
+  codex_runs() { printf '%s\n' "$PRIORITY_GATE_RUNS"; }
+  cpu_busy() { printf '%s\n' "$PRIORITY_GATE_CPU_BUSY"; }
+  units '{"units":[{"id":"issue-9","stage":"review-pending","history":[]}]}'
+  printf 'MemAvailable: 6291456 kB\n' > "$mem"
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
+  : > "$LUNA_SLOTS/wait-opt-$$"
+  room_for issue-9 implement "" true false && fail 'CPU-full opt waiter released normal dispatch below the run cap'
+  room_for issue-9 repair "" true false true && fail 'CPU-full opt waiter released repair dispatch'
+  room_for issue-9 review || fail 'priority waiter held review'
+  room_for issue-9 rereview || fail 'priority waiter held rereview'
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=12 avg60=12 avg300=12 total=12\n' > "$psi"
+  room_for issue-9 implement "" true false && fail 'memory-full opt waiter released normal dispatch below the run cap'
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
+  PRIORITY_GATE_CPU_BUSY=0; PRIORITY_GATE_RUNS=$((LUNA_RUNS_HARD_CAP - 1))
+  room_for issue-9 implement "" true false || fail 'opt waiter held normal dispatch while shared capacity was available'
+  PRIORITY_GATE_RUNS="$(luna_run_cap)"
+  room_for issue-9 implement "" true false && fail 'opt waiter did not hold normal dispatch at the shared run cap'
+  rm -f "$LUNA_SLOTS/wait-opt-$$"; : > "$LUNA_SLOTS/wait-hotfix-$$"
+  room_for issue-9 implement "" true false || fail 'normal dispatch held while hotfix admission was open'
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=12 avg60=12 avg300=12 total=12\n' > "$psi"
+  room_for issue-9 implement "" true false && fail 'memory-full hotfix waiter released normal dispatch'
+  rm -f "$LUNA_SLOTS/wait-hotfix-$$"; : > "$LUNA_SLOTS/wait-opt-$$"
+  AUTOPI_PRIORITY_HOLD_MAX_SECONDS=1800; PRIORITY_GATE_RUNS=0; PRIORITY_GATE_CPU_BUSY=100
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
+  touch -d "@$(($(date +%s) - 1300))" "$LUNA_SLOTS/wait-opt-$$"
+  room_for issue-9 implement "" true false || fail 'aged opt waiter remained held after shared age admission opened'
+  touch "$LUNA_SLOTS/wait-opt-$$"; AUTOPI_PRIORITY_HOLD_MAX_SECONDS=60
+  set_unit issue-9 ".priority_hold={since_epoch:$(( $(date +%s) - 61 )),alerted:false}"
+  : > "$A/scheduler.log"; : > "$A/alerts/waste.md"
+  room_for issue-9 implement "" true false && fail 'CPU-full priority hold unexpectedly admitted normal dispatch'
+  grep -q 'PRIORITY-HOLD-STARVE unit=issue-9 waiter=wait-opt-' "$A/scheduler.log" \
+    || fail 'starvation threshold ignored AUTOPI_PRIORITY_HOLD_MAX_SECONDS'
+  rm -f "$LUNA_SLOTS"/wait-*
+  eval "$runs_fn"; eval "$cpu_fn"
+}
+
+priority_memory_case() {
+  local mem="$fixture/priority-memory-meminfo" psi="$fixture/priority-memory-psi"
+  local LUNA_MIN=0 LUNA_MAX=10 LUNA_AGE_ADMIT_SECONDS=1200 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85
+  local LUNA_PROC_MEMINFO="$mem" LUNA_PROC_PSI_MEMORY="$psi" AUTOPI_PRIORITY_HOLD_MAX_SECONDS=1200
+  local PRIORITY_GATE_RUNS=0 PRIORITY_GATE_CPU_BUSY=0 PRIORITY_GATE_WAITER=wait-opt-test PRIORITY_GATE_AGE=0 runs_fn cpu_fn box_fn higher_priority_fn dispatch_fn size_start_fn prompt_fn footprint_brief_fn dispatch_attempt_fn set_unit_fn box_calls=0 dispatch_calls=0
+  local TICK_DISPATCH_PENDING_ACTIVE=true
+  local -A TICK_PRIORITY_ADMISSION_CACHE=()
+  runs_fn="$(declare -f codex_runs)"; cpu_fn="$(declare -f cpu_busy)"; box_fn="$(declare -f box_has_room)"
+  eval "$(sed '1s/^box_has_room ()/box_has_room_uncached ()/' <<<"$box_fn")"
+  codex_runs() { printf '%s\n' "$PRIORITY_GATE_RUNS"; }
+  cpu_busy() { printf '%s\n' "$PRIORITY_GATE_CPU_BUSY"; }
+  box_has_room() { box_calls=$((box_calls + 1)); box_has_room_uncached "$@"; }
+  higher_priority_fn="$(declare -f higher_priority_waiting)"
+  higher_priority_waiting() { PRIORITY_WAITING_WAITER="$PRIORITY_GATE_WAITER"; PRIORITY_WAITING_AGE_SECONDS="$PRIORITY_GATE_AGE"; return 0; }
+  units '{"units":[{"id":"issue-9","stage":"implement-pending","history":[]},{"id":"issue-10","stage":"implement-pending","history":[]}]}'
+  printf 'MemAvailable: 3072000 kB\n' > "$mem" # 3000 MB, below the 3328 MB normal floor; runs remain below LUNA_MAX.
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
+  : > "$LUNA_SLOTS/wait-opt-$$"
+  room_for issue-9 implement "" true false && fail 'low-memory opt waiter released normal dispatch below the run cap'
+  room_for issue-10 implement "" true false && fail 'low-memory opt waiter released a second normal dispatch'
+  [[ "$PRIORITY_GATE_RUNS" -lt "$(luna_run_cap)" && "$box_calls" == 1 ]] \
+    || fail "low-memory opt admission was not sampled once under the cap (runs=$PRIORITY_GATE_RUNS calls=$box_calls)"
+  TICK_PRIORITY_ADMISSION_CACHE=(); box_calls=0
+  priority_admission_has_room normal 0 && fail 'low-memory normal admission unexpectedly opened for a fresh waiter'
+  priority_admission_has_room normal 1200 && fail 'low-memory normal admission unexpectedly opened for an aged waiter'
+  [[ "$box_calls" == 2 ]] || fail "normal admission reused a sample across waiter ages (calls=$box_calls)"
+
+  # A successful normal start invalidates the sample before the next unit; without it, this waiter sees stale `admit`.
+  printf 'MemAvailable: 6291456 kB\n' > "$mem"
+  TICK_PRIORITY_ADMISSION_CACHE=(); box_calls=0; dispatch_calls=0
+  dispatch_fn="$(declare -f dispatch)"; size_start_fn="$(declare -f size_admission_write_start)"
+  prompt_fn="$(declare -f incident_worker_prompt)"; footprint_brief_fn="$(declare -f footprint_recurrence_brief)"
+  dispatch_attempt_fn="$(declare -f dispatch_attempt_fields)"; set_unit_fn="$(declare -f set_unit)"
+  dispatch() { dispatch_calls=$((dispatch_calls + 1)); return 0; }
+  size_admission_write_start() { return 0; }
+  incident_worker_prompt() { printf '%s' "${3:-}"; }
+  footprint_recurrence_brief() { :; }
+  dispatch_attempt_fields() { :; }
+  set_unit() { return 0; }
+  dispatch_if_room issue-9 implement implement priority.log priority.md GLM-5.3 max 'test prompt' '' "$fixture/repo" '' '' \
+    '{"id":"issue-9","stage":"implement-pending","history":[]}' false codex || fail 'first normal unit did not dispatch'
+  [[ "$dispatch_calls" == 1 && "$box_calls" == 1 ]] || fail "first normal dispatch did not use one admission sample (dispatches=$dispatch_calls calls=$box_calls)"
+  printf 'MemAvailable: 3072000 kB\n' > "$mem"
+  : > "$A/scheduler.log"
+  room_for issue-10 implement "" true false && fail 'second normal unit reused admission after the first dispatch'
+  [[ "$box_calls" == 2 ]] || fail "admission was not resampled after dispatch (calls=$box_calls)"
+  grep -q 'higher-priority run waiting' "$A/scheduler.log" || fail 'second normal unit was not held by the priority yield gate'
+  eval "$dispatch_fn"; eval "$size_start_fn"; eval "$prompt_fn"; eval "$footprint_brief_fn"
+  eval "$dispatch_attempt_fn"; eval "$set_unit_fn"
+
+  PRIORITY_GATE_WAITER=wait-hotfix-test
+  rm -f "$LUNA_SLOTS/wait-opt-$$"; : > "$LUNA_SLOTS/wait-hotfix-$$"
+  TICK_PRIORITY_ADMISSION_CACHE=(); box_calls=0
+  room_for issue-9 implement "" true false && fail 'low-memory hotfix waiter released normal dispatch'
+  room_for issue-10 implement "" true false && fail 'low-memory hotfix waiter released a second normal dispatch'
+  [[ "$box_calls" == 2 ]] || fail "hotfix and normal admission were not each sampled once per tick (calls=$box_calls)"
+  rm -f "$LUNA_SLOTS"/wait-*
+  eval "$higher_priority_fn"; eval "$box_fn"; eval "$runs_fn"; eval "$cpu_fn"
+}
+
+if [[ -n "${SCHED_TEST_CASE:-}" ]]; then
+  case "$SCHED_TEST_CASE" in
+    priority_hold_admission) priority_admission_case; echo 'scheduler-gates.test.sh: priority_hold_admission PASS'; exit 0 ;;
+    priority_hold_memory) priority_memory_case; echo 'scheduler-gates.test.sh: priority_hold_memory PASS'; exit 0 ;;
+    *) fail "unknown SCHED_TEST_CASE='$SCHED_TEST_CASE'" ;;
+  esac
+fi
 
 # An approved predecessor can release a labelled dependent onto its PR head.
 stack_sha=0123456789012345678901234567890123456789
@@ -395,6 +506,7 @@ harvest_rc pr-f1 rf-1-T1.md
   && "$(field pr-f1 '.review_findings[0].all_findings[2].severity')" == P3 ]] \
   || fail "blocking and complete finding IDs were not recorded per round: $(field pr-f1 '.review_findings | tojson')"
 [[ "$(field pr-f1 '.review_findings[0].at')" == "$STAMP" ]] || fail 'findings record lacks the rejection time'
+[[ "$(field pr-f1 '.history[-1].reason // empty')" == Defect ]] || fail 'review-request-changes history lacks its finding category'
 findings_report rf-2-T1.md "$good_block"
 harvest_rc pr-f2 rf-2-T1.md rereview
 [[ "$(field pr-f2 '.review_findings[0].block')" == ok && "$(field pr-f2 .stage)" == repair-pending ]] || fail 'a rereview rejection was not recorded like a review rejection'
@@ -587,12 +699,16 @@ dispatch() { DISPATCHED+=("$1:$4:$8"); DISPATCH_PR_HEAD="${10:-}"; DISPATCH_PROM
 # The implement dispatch passes the approved predecessor ref and SHA to the isolated clone.
 stack_ensure_clone_real="$(declare -f ensure_clone)"; STACK_ENSURE_ARGS=()
 ensure_clone() { printf '%s\n' "$@" > "$fixture/stack-ensure.args"; printf '%s' "$fixture/repo"; }
+# This case isolates stacked-clone dispatch; reviewer availability has focused coverage elsewhere.
+review_identity_available_real="$(declare -f review_identity_available)"
+review_identity_available() { return 0; }
 units "$(jq -cn --arg sha "$H2" '{units:[{id:"issue-23",issue:23,lane:"pr",branch:"agent/issue-23",stage:"implement-pending",task:"continue the dependent unit",stacked_on:"issue-1@sha",stacked_on_unit:"issue-1",stacked_on_branch:"agent/issue-1",stacked_on_sha:$sha,history:[]}]}')"
 dispatch_pending || :
 mapfile -t STACK_ENSURE_ARGS < "$fixture/stack-ensure.args"
 [[ "${DISPATCHED[0]:-}" == implement:issue-23:* && ${#STACK_ENSURE_ARGS[@]} == 6 \
   && "${STACK_ENSURE_ARGS[4]}" == agent/issue-1 && "${STACK_ENSURE_ARGS[5]}" == "$H2" ]] \
   || fail "stacked implement dispatch did not start its clone at the approved predecessor head (dispatch=${DISPATCHED[*]:-none} args=${STACK_ENSURE_ARGS[*]:-none} stage=$(field issue-23 .stage))"
+eval "$review_identity_available_real"
 eval "$stack_ensure_clone_real"
 DISPATCHED=(); STACK_ENSURE_ARGS=(); rm -f "$fixture/stack-ensure.args"
 
@@ -797,6 +913,17 @@ dispatch_pending || :
 grep -Fq 'issue edit 713 --repo' "$recut_gh_log" \
   && grep -Fq -- '--add-label needs-recut' "$recut_gh_log" \
   || fail "the no-PR budget route did not write the needs-recut label through lib.sh ($(cat "$recut_gh_log" 2>/dev/null))"
+
+recut_tracker_routes="$fixture/recut-tracker-routes"; : > "$recut_tracker_routes"
+recut_state_real="$(declare -f scheduler_issue_state)"; recut_transition_real="$(declare -f scheduler_issue_transition)"
+scheduler_issue_state() { cat "$AGENT_HOME/state/$1.json"; }
+scheduler_issue_transition() { printf '%s:%s:%s\n' "$1" "$2" "$3" >> "$recut_tracker_routes"; }
+printf '%s\n' '{"state":"tracker","recut_children":[7171]}' > "$AGENT_HOME/state/717.json"
+units '{"units":[{"id":"issue-717","issue":717,"lane":"pr","stage":"parked","recut_routed":true,"history":[]}]}'
+supervisor_budget_recut issue-717 'already split tracker parent' || fail 'a previously routed tracker parent should close cleanly'
+[[ "$(field issue-717 .stage)" == closed && "$(cat "$recut_tracker_routes")" == '717:tracker:recut-parent-retired' ]] \
+  || fail "budget recut closed a tracker without its container label: $(cat "$recut_tracker_routes")"
+eval "$recut_state_real"; eval "$recut_transition_real"
 
 # Preserve unfinished work before recut: cleanup must not discard uncommitted worktree contents.
 WT_ROOT_SAVED="$WT_ROOT"; WT_ROOT="$fixture/budget-wt"; budget_wip_unit="issue-716-$$"; mkdir -p "$WT_ROOT/wt-$budget_wip_unit"
@@ -1125,6 +1252,7 @@ for round in 1 2 3; do
   dispatch_pending || :
   if (( round < 3 )); then
     [[ "$(field pr-5b .stage)" == repair-pending ]] || fail "repair-no-push round $round was not retried"
+    [[ "$(field pr-5b '.history[-1].head_class // empty')" == unchanged ]] || fail 'dispatch no-push did not record its unchanged head class'
   else
     [[ "$(field pr-5b .stage)" == rereview-pending && "$(field pr-5b .arbiter)" == true ]] || fail 'repair-no-push retried more than twice (expected one arbiter review)'
   fi
@@ -1191,7 +1319,9 @@ dispatch_pending || :
   || fail "ci-test-red repair with a cancelled run did not rerun within the bound (stage=$(field pr-5ci-cancelled .stage), reruns=${GH_RERUNS[*]:-none})"
 # The ci-test-red entry names the failing suites and tests: vitest facts and engine suite lines, bounded.
 [[ "$(ci_red_tests "$(printf '%s\n%s\n' '{"suites":[{"file":"a/b.test.ts","tests":[{"name":"does x","msg":"m"}],"more":0}],"more":0}' '{"pipelineSuites":["engine/x.test.sh"]}')")" == '["a/b.test.ts","does x","engine/x.test.sh"]' \
-  && "$(ci_red_tests "")" == '[]' ]] || fail "ci_red_tests did not list the failing suites and tests"
+  && "$(ci_red_tests "")" == '[]' \
+  && "$(ci_red_tests "" "required check")" == '["required check"]' \
+  && "$(ci_red_tests "not-json" "required check")" == '["required check"]' ]] || fail "ci_red_tests did not list the failing suites and tests"
 GH_RUN_JSON=
 GH_RUNS=777; GH_RERUN_FAIL_ID=
 eval "$cancel_unit_runs_saved"; GH_HEAD="$gh_head_saved"; GH_RUNS="$gh_runs_saved"; GH_RERUNS=()
@@ -1303,12 +1433,24 @@ dispatch_pending || :
 [[ "$(review_prompt 1 t "$H1" r.md)" == *".agents/skills/code-review/SKILL.md"* ]] || fail 'review prompt lacks the canonical contract reference'
 [[ "$(review_prompt 1 t "$H1" r.md direct-main)" == *"直落 main"*"$H1"* || "$(review_prompt 1 t "$H1" r.md direct-main)" == *"$H1"*"直落 main"* ]] || fail 'direct-main review prompt lacks the lane rule'
 [[ "$(review_prompt 1 t "$H1" r.md pr)" != *"非产品快车道"* ]] || fail 'PR-lane review prompt got the fast-lane rule'
+# 红测试证据：只列本 head 或上一 head 的 ci-test-red 测试名；无红或只在更早 head 红则不加段
+declare -F ci_red_evidence_rule >/dev/null || fail 'no ci_red_evidence_rule for the review prompt'
+OLD=2222222222222222222222222222222222222222
+red_unit() { jq -cn --arg h "$1" '{history:[{stage:"ci-test-red",head:$h,tests:["a.test.ts","does x"]}]}'; }
+[[ "$(ci_red_evidence_rule "$(red_unit "$H1")" "$H1")" == *"CI on this head (or the previous head) failed these tests: a.test.ts, does x."* ]] || fail 'red on the current head did not reach the review prompt'
+[[ -z "$(ci_red_evidence_rule '{"history":[]}' "$H1")" ]] || fail 'a unit without red got a CI evidence block'
+[[ -z "$(ci_red_evidence_rule "$(red_unit "$OLD")" "$H1")" ]] || fail 'red only on an older head got a CI evidence block'
+[[ "$(ci_red_evidence_rule "$(red_unit "$OLD")" "$H1" "$OLD")" == *"does x."* ]] || fail 'red on the previous head was left out'
 
 # repair 先合入最新 main：落后过多的分支过不了 push preflight 的 freshness 门禁（#3859 三轮修复都没推上）
 DISPATCHED=(); DISPATCH_PROMPT=""
-units '{"units":[{"id":"pr-14","pr":14,"stage":"repair-pending","review_report":"review-14.md","history":[]}]}'
+units '{"units":[{"id":"pr-14","pr":14,"lane":"direct-main","stage":"repair-pending","review_report":"review-14.md","history":[]}]}'
 dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == repair:pr-14:* && "$DISPATCH_PROMPT" == *"git merge --no-edit origin/main"* && "$DISPATCH_PROMPT" != *"禁止：动主 checkout、merge"* ]] || fail 'repair prompt does not merge origin/main before pushing (or still forbids merge)'
+[[ "$DISPATCH_PROMPT" == *"Do not run *.test.* files; the lander runs the tests."* ]] || fail 'direct-main repair prompt does not leave test execution to the lander'
+[[ "$DISPATCH_PROMPT" == *"Do not run any test file or test command. The engine runs tests after delivery. A refused test command is not a failure; finish the change and deliver."* ]] || fail 'direct-main repair prompt omits the worker test-refusal rule'
+# 兄弟出口：评审点名一个出口时，repair 必须枚举该函数全部出口并各补一条回归测试（issue-5928 四轮逐个补出口）
+[[ "$DISPATCH_PROMPT" == *"同一函数的兄弟出口也要枚举"*"各补一条回归测试"* ]] || fail 'repair prompt lacks the sibling-exit rule'
 
 # ---------- 合并门：批准必须等于当前 head，merge 带 --match-head-commit ----------
 MAIN_HEAD="$M1"
@@ -3096,29 +3238,58 @@ eval "$stack_dep_states_real"
 ROOT="$stack_saved_root"; WT_ROOT="$stack_saved_wt_root"; MAIN_HEAD="$stack_saved_main_head"
 # ---------- PR 在 GitHub 已合并/关闭：派活前收掉（10-28 #4039/#4040 被重复派活）----------
 retire_saved_tick_prs="$(declare -f tick_prs)"; retire_saved_pr_view="$(declare -f pr_view)"
+retire_saved_issue_state="$(declare -f scheduler_issue_state)"; retire_saved_issue_transition="$(declare -f scheduler_issue_transition)"; retire_saved_gh="$(declare -f gh)"
+retire_repo_saved="${REPO:-}"
+retire_routes="$fixture/pr-close-routes"; : > "$retire_routes"
 tick_prs() { printf '[{"number":9001}]'; }
-pr_view() { case "$1" in 9002) echo MERGED ;; 9003) echo CLOSED ;; *) echo OPEN ;; esac; }
-units '{"units":[{"id":"pr-9001","pr":9001,"stage":"repair-pending","history":[]},{"id":"pr-9002","pr":9002,"stage":"repair-pending","history":[]},{"id":"issue-77","pr":9003,"stage":"rereview-pending","history":[]},{"id":"pr-9004","pr":9004,"stage":"review-pending","history":[]},{"id":"pr-9005","pr":9005,"stage":"merged","history":[]}]}'
+pr_view() { case "$1" in 9002) echo MERGED ;; 9003|9006|9007) echo CLOSED ;; *) echo OPEN ;; esac; }
+scheduler_issue_state() { case "$1" in 77) echo '{"state":"finish-first"}' ;; 78) echo '{"state":"tracker"}' ;; 79) echo '{"attempts":0}' ;; esac; }
+scheduler_issue_transition() { printf '%s:%s:%s\n' "$1" "$2" "$3" >> "$retire_routes"; return 0; }
+gh() { [[ "$1 $2" == 'issue view' ]] && jq -cn --argjson n "$3" '{number:$n,state:"OPEN",title:"test",body:"test",labels:[]}'; }
+REPO=test/repo
+units '{"units":[{"id":"pr-9001","pr":9001,"stage":"repair-pending","history":[]},{"id":"pr-9002","pr":9002,"stage":"repair-pending","history":[]},{"id":"issue-77","issue":77,"lane":"pr","pr":9003,"stage":"rereview-pending","history":[]},{"id":"issue-78","issue":78,"lane":"pr","pr":9006,"stage":"repair-pending","history":[]},{"id":"issue-79","issue":79,"lane":"pr","pr":9007,"stage":"review-pending","history":[]},{"id":"pr-9004","pr":9004,"stage":"review-pending","history":[]},{"id":"pr-9005","pr":9005,"stage":"merged","history":[]}]}'
 retire_landed_pr_units
 [[ "$(field pr-9001 .stage)" == repair-pending ]] || fail 'an open PR unit must stay in its work stage'
 [[ "$(field pr-9002 .stage)" == merged ]] || fail 'a PR merged outside the pipeline must retire as merged'
 [[ "$(field issue-77 .stage)" == closed ]] || fail 'a PR closed outside the pipeline must retire as closed'
+grep -Fqx '77:finish-first:pr-closed-label-reconcile' "$retire_routes" \
+  && grep -Fqx '78:tracker:recut-parent-retired' "$retire_routes" \
+  && grep -Fqx '79:needs-triage:pr-closed-requeue' "$retire_routes" \
+  && ! grep -Fqx '79:ready-for-agent:pr-closed-requeue' "$retire_routes" \
+  || fail "closed PR retirement did not restore the issue lane or tracker marker: $(cat "$retire_routes")"
 [[ "$(field pr-9004 .stage)" == review-pending ]] || fail 'a PR missing from the open list but still OPEN must stay'
-eval "$retire_saved_tick_prs"; eval "$retire_saved_pr_view"
+eval "$retire_saved_tick_prs"; eval "$retire_saved_pr_view"; eval "$retire_saved_issue_state"; eval "$retire_saved_issue_transition"; eval "$retire_saved_gh"
+REPO="$retire_repo_saved"
 
 # ---------- #4621：按 hotfix > opt > 普通 pipeline 让位；旧 waiter 不挡派发 ----------
+priority_admission_case
+priority_memory_case
 rm -f "$LUNA_SLOTS"/wait-*
 units '{"units":[{"id":"issue-9","stage":"review-pending","history":[]},{"id":"issue-opt","lane":"direct-main","stage":"review-pending","history":[]},{"id":"issue-hp","hotpatch":true,"stage":"review-pending","history":[]}]}'
+priority_gate_cpu_busy_real="$(declare -f cpu_busy)"
+priority_gate_meminfo="$fixture/priority-gate-meminfo"; priority_gate_psi="$fixture/priority-gate-psi"
+printf 'MemAvailable: 6291456 kB\n' > "$priority_gate_meminfo"
+printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$priority_gate_psi"
+LUNA_PROC_MEMINFO="$priority_gate_meminfo"; LUNA_PROC_PSI_MEMORY="$priority_gate_psi"
+LUNA_ADMIT_AVAIL_MB=3328; LUNA_CPU_TARGET=85; LUNA_MIN=0; LUNA_MAX=10; LUNA_AGE_ADMIT_SECONDS=1200
+AUTOPI_PRIORITY_HOLD_MAX_SECONDS=1200
+cpu_busy() { echo 0; }
+priority_gate_codex_runs_real="$(declare -f codex_runs)"; priority_gate_total_cap="$(luna_run_cap)"
+PRIORITY_GATE_RUNS="$priority_gate_total_cap"; codex_runs() { printf '%s\n' "$PRIORITY_GATE_RUNS"; }
 : > "$LUNA_SLOTS/wait-opt-$$"   # 本测试 shell 的 pid，即存活等待者
-room_for issue-9 review && fail 'ordinary dispatch admitted while an opt run waits at the luna/zc gate'
+room_for issue-9 implement "" true false && fail 'ordinary dispatch admitted while total capacity is full and an opt run waits'
 grep -q 'skip dispatch unit=issue-9 priority=normal (higher-priority run waiting at luna/zc gate: wait-opt-' "$A/scheduler.log" \
   || fail 'the priority hold left no record in scheduler.log'
 room_for issue-opt review || fail 'an opt dispatch was held behind another opt waiter'
 room_for issue-hp review || fail 'a hotpatch dispatch was held behind an opt waiter'
+PRIORITY_GATE_RUNS=$((priority_gate_total_cap - 1))
+room_for issue-9 implement "" true false || fail 'an opt waiter blocked normal dispatch while shared capacity was available'
+PRIORITY_GATE_RUNS="$priority_gate_total_cap"
+room_for issue-9 implement "" true false && fail 'an opt waiter did not hold normal dispatch when total capacity was full'
 rm -f "$LUNA_SLOTS/wait-opt-$$"
 : > "$LUNA_SLOTS/wait-hotfix-$$"
-room_for issue-9 review && fail 'ordinary dispatch admitted while a hotfix run waits at the luna/zc gate'
-room_for issue-opt review && fail 'an opt dispatch was admitted while a higher-priority hotfix waits'
+room_for issue-9 implement "" true false || fail 'normal dispatch was held while hotfix admission was open'
+room_for issue-opt implement "" true false && fail 'an opt dispatch was admitted while a higher-priority hotfix waits'
 room_for issue-hp review || fail 'a hotpatch dispatch was held behind another hotfix waiter'
 grep -q 'skip dispatch unit=issue-opt priority=opt (higher-priority run waiting at luna/zc gate: wait-hotfix-' "$A/scheduler.log" \
   || fail 'the hotfix hold of opt work left no record in scheduler.log'
@@ -3129,9 +3300,25 @@ room_for issue-9 review || fail 'a normal waiter must not hold other normal disp
 sleep 0.1 & gate_dead=$!; wait "$gate_dead"
 kill -0 "$gate_dead" 2>/dev/null && fail "test setup: pid $gate_dead still alive"
 : > "$LUNA_SLOTS/wait-hotfix-$gate_dead"
-room_for issue-9 review || fail 'a stale wait file of a dead wrapper blocked dispatch'
+room_for issue-9 implement "" true false || fail 'a stale wait file of a dead wrapper blocked dispatch'
 [[ -e "$LUNA_SLOTS/wait-hotfix-$gate_dead" ]] && fail 'a stale wait file was not dropped'
 rm -f "$LUNA_SLOTS"/wait-*
+
+: > "$A/scheduler.log"; : > "$A/alerts/waste.md"; : > "$LUNA_SLOTS/wait-opt-$$"
+room_for issue-9 review || fail 'a live opt waiter held review'
+touch -d "@$(($(date +%s) - 1300))" "$LUNA_SLOTS/wait-opt-$$"
+TICK_PRIORITY_HOLD_EXPIRED=()
+for pass in 1 2; do room_for issue-9 implement "" true false || fail 'an old opt waiter held dispatch'; done
+[[ "$(grep -c 'priority hold expired for wait-opt-.* after .*s; normal dispatch resumes' "$A/scheduler.log")" == 1 ]] || fail 'expired waiter was not logged once per pass'
+touch -d "@$(($(date +%s) - 60))" "$LUNA_SLOTS/wait-opt-$$"
+room_for issue-9 implement "" true false && fail 'a fresh opt waiter did not hold dispatch'
+set_unit issue-9 ".priority_hold={since_epoch:$(( $(date +%s) - 1201 )),alerted:false}"
+: > "$A/scheduler.log"; : > "$A/alerts/waste.md"
+for pass in 1 2; do if room_for issue-9 implement "" true false; then fail 'a starved unit was admitted'; fi; done
+[[ "$(grep -c 'PRIORITY-HOLD-STARVE unit=issue-9 waiter=wait-opt-' "$A/scheduler.log")" == 1 && "$(grep -c 'PRIORITY-HOLD-STARVE unit=issue-9 waiter=wait-opt-' "$A/alerts/waste.md")" == 1 ]] || fail 'starvation alert was not written once to both paths'
+rm -f "$LUNA_SLOTS"/wait-*
+unset PRIORITY_GATE_RUNS LUNA_PROC_MEMINFO LUNA_PROC_PSI_MEMORY LUNA_ADMIT_AVAIL_MB LUNA_CPU_TARGET LUNA_MIN LUNA_MAX LUNA_AGE_ADMIT_SECONDS AUTOPI_PRIORITY_HOLD_MAX_SECONDS
+eval "$priority_gate_cpu_busy_real"; eval "$priority_gate_codex_runs_real"
 
 # factory_prs_only: sessions' PRs leave the ledger before any acting phase, and the orphan pass neither adopts nor closes them.
 cfg_saved="$CFG"; CFG="$(jq '.factory_prs_only=true' <<<"$CFG")"

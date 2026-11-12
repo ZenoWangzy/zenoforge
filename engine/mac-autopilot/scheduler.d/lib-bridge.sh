@@ -20,18 +20,32 @@ scheduler_jq_arg_file() (
   jq_arg_file "$1"
 )
 scheduler_issue_intake_parent_reason() (
-  local preserved_gh=""
+  local preserved_gh="" module local_reason local_status=0 parent_reason parent_status=0
   declare -F gh >/dev/null 2>&1 && preserved_gh="$(declare -f gh | sed '1s/^gh ()/scheduler_gh ()/')"
-  scheduler_lib_context || return 2
+  module="$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d/selection-scope.sh"
+  source "$module" || { printf 'parent-check-failure step=selection-scope\n'; return 2; }
+  local_reason="$(issue_intake_parent_json_reason "$@")" || local_status=$?
+  case "$local_status" in
+    0) printf '%s' "$local_reason"; return 0 ;;
+    1) return 1 ;;
+    2) ;;
+    *) printf 'parent-check-failure step=local-classification\n'; return 2 ;;
+  esac
+  scheduler_lib_context || { printf 'parent-check-failure step=lib-context\n'; return 2; }
   REPO="$SCHEDULER_LIB_REPO"
-  cd "$SCHEDULER_LIB_REPO_DIR" || return 2
-  scheduler_scope_lib selection-scope || return 2
+  cd "$SCHEDULER_LIB_REPO_DIR" || { printf 'parent-check-failure step=repo-cd\n'; return 2; }
   if [[ -n "$preserved_gh" ]]; then
     eval "$preserved_gh"
     TICK_INTAKE_GH_INVOKE=scheduler_gh
     gh() { intake_gh_read "$@"; }
   fi
-  issue_intake_parent_reason "$@"
+  parent_reason="$(issue_intake_parent_reason "$@")" || parent_status=$?
+  if (( parent_status == 2 )) && [[ "$parent_reason" != parent-check-failure\ step=* ]]; then
+    printf 'parent-check-failure step=parent-reason\n'
+    return 2
+  fi
+  printf '%s' "$parent_reason"
+  return "$parent_status"
 )
 scheduler_jq_arg_file() (
   REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1

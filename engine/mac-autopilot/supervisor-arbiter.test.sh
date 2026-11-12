@@ -7,7 +7,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fixture="$test_env_root/sup-arbiter"
 sup="$fixture/supervisor"
-mkdir -p "$sup/autopi/alerts" "$fixture/repo" "$fixture/bin"
+mkdir -p "$sup/autopi/alerts" "$fixture/repo" "$fixture/bin" "$fixture/worker-scratch/luna"
 # Stage-transition fixtures are already roadmap leaves; this suite covers arbitration effects.
 export ZF_ROADMAP_TREE_CACHE_FILE="$fixture/roadmap-tree.json"
 jq -cn '{roots:[611,615,618,622,623,683,684,686,687,688,689,690,699] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
@@ -15,7 +15,13 @@ jq -cn '{roots:[611,615,618,622,623,683,684,686,687,688,689,690,699] | map({numb
 jq '.auto_merge = false | .advisor = false | .precheck = false | .supervisor_arbiter.enabled = true | .supervisor_arbiter.cap_triage = false' "$script_dir/config.template.json" > "$sup/autopi/config.json"
 echo '{"units":[]}' > "$sup/autopi/units.json"
 echo '{"workers":[]}' > "$sup/autopi/workers.json"
-export MAC_AUTOPILOT_ROOT="$fixture/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$sup/autopi"
+export MAC_AUTOPILOT_ROOT="$fixture/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$sup/autopi" WORKER_SCRATCH_ROOT="$fixture/worker-scratch"
+export CODEX_HOME="$fixture/codex-home"
+mkdir -p "$CODEX_HOME"
+cat > "$CODEX_HOME/config.toml" <<'TOML'
+[profiles.terra]
+model = "gpt-6.1-terra"
+TOML
 export ZF_CONFIG_ROOT="$fixture/repo/.zenoforge"
 mkdir -p "$ZF_CONFIG_ROOT/prompts"
 cp "$script_dir/../prompts/supervisor-arbiter.md" "$ZF_CONFIG_ROOT/prompts/supervisor-arbiter.md"
@@ -33,12 +39,25 @@ decision_eval_stages() { printf '\n'; }
   || { echo 'supervisor-arbiter.test.sh: review contract must use target config override' >&2; exit 1; }
 
 fail() { echo "supervisor-arbiter.test.sh: $*" >&2; exit 1; }
+declare -F supervisor_arbiter_owner_ruling_pending >/dev/null \
+  || fail 'units.sh must load the no-human-wait helpers'
 units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
+grep -Fq 'reconcile_size_recuts() {' "$script_dir/scheduler.d/size-recuts.sh" || fail 'size-recuts must own size-recut reconciliation'
 
 GH_CALLS="$fixture/gh.calls"; : > "$GH_CALLS"
 gh() {
   printf 'gh %s\n' "$*" >> "$GH_CALLS"
+  if [[ "$1" == api && "${2:-}" == *"/sub_issues?per_page=100" ]]; then
+    local parent="${2#*/issues/}"
+    parent="${parent%%/*}"
+    if [[ "$parent" == 698 ]]; then
+      echo 'fixture native child read unavailable' >&2
+      return 1
+    fi
+    printf '[]\n'
+    return 0
+  fi
   case "$1 $2" in
     'issue view')
       if [[ "$*" == *'issue view 615'* && "$*" == *'--json number,title,body,state,labels'* ]]; then
@@ -77,16 +96,16 @@ gh() {
 export -f gh 2>/dev/null || true
 
 # codex 桩：记录调用，把预设裁决报告写到 --output-last-message。
-ARBITRATION_REPLY="$fixture/arbitration-reply.md"
+ARBITRATION_REPLY="$fixture/arbitration-reply.md" CODEX_CALLS="$fixture/codex.calls"
 codex_fake() {
-  printf 'codex %s\n' "$*" >> "$fixture/codex.calls"
+  printf 'codex %s\n' "$*" >> "$CODEX_CALLS"
   local out="" prev=""
   local a
   for a in "$@"; do [[ "$prev" == --output-last-message ]] && out="$a"; prev="$a"; done
   [[ -n "$out" && -f "$ARBITRATION_REPLY" ]] || return 0
   cat "$ARBITRATION_REPLY" > "$out"
 }
-export ARBITRATION_REPLY
+export ARBITRATION_REPLY CODEX_CALLS
 export -f codex_fake
 printf '#!/usr/bin/env bash\ncodex_fake "$@"\n' > "$fixture/bin/codex"
 chmod +x "$fixture/bin/codex"
@@ -106,7 +125,7 @@ printf 'VERDICT: REQUEST-CHANGES\nF1 缺回归测试\n' > "$sup/review-601.md"
 : > "$fixture/codex.calls"
 dispatch_supervisor_arbiters
 [[ "$(jq -r '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == 1 ]] || fail "gate on: no supervise worker dispatched"
-jq -e --arg unit pr-601 'any(.workers[]; .unit == $unit and .type == "supervise" and (.model == "profile:terra"))' "$WORKERS" >/dev/null || fail "supervise worker model must record the terra profile"
+jq -e --arg unit pr-601 'any(.workers[]; .unit == $unit and .type == "supervise" and (.model == "profile:terra"))' "$WORKERS" >/dev/null || fail "without a cache the arbiter must record the configured terra profile"
 [[ "$(field pr-601 .stage)" == supervisor-review ]] || fail "dispatch must leave the unit in supervisor-review while arbitrating"
 [[ "$(field pr-601 '.history[-1].stage')" == supervisor-arbiter ]] || fail "dispatch must consume one arbitration budget slot in history"
 q_file="$(ls -t "$sup"/supervise-pr-601-*.q.md | head -1)"
@@ -121,17 +140,18 @@ printf '%s\n' "$(jq -cn '{units:[{id:"pr-601",stage:"supervisor-review",history:
   {id:"pr-602",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"x",at:"2026-10-27T00:00:00Z"}]},
   {id:"pr-603",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"y",at:"2026-10-27T00:00:00Z"}]}]}')" > "$UNITS"
 before="$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")"
-saved_max="$SUPERVISOR_ARBITER_MAX"; SUPERVISOR_ARBITER_MAX=2
+saved_max="$SUPERVISOR_ARBITER_MAX"; SUPERVISOR_ARBITER_MAX=2; printf 'gpt-6.1-terra\t%s\n' "$(( $(date +%s) + 86400 ))" > "$WORKER_SCRATCH_ROOT/luna/model-not-found.cache"
 dispatch_supervisor_arbiters
-[[ "$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == "$((before + 1))" ]] || fail "arbitration must fill up to the in-flight cap"
+for _ in {1..50}; do grep -Fq ' -m gpt-6-luna -c model_reasoning_effort=max ' "$fixture/codex.calls" 2>/dev/null && break; sleep 0.02; done; [[ "$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == "$((before + 1))" ]] && grep -Fq ' -m gpt-6-luna -c model_reasoning_effort=max ' "$fixture/codex.calls" || fail "cached terra must dispatch the arbiter on luna max (calls=$(cat "$fixture/codex.calls" 2>/dev/null || true))"
+grep -Fq 'model-not-found cache swap arbiter profile=terra from=gpt-6.1-terra to=gpt-6-luna effort=max' "$LOG" || fail 'cached terra arbiter swap must be recorded'
 jq -e '[.workers[] | select(.type=="supervise" and .unit=="pr-601")] | length == 1' "$WORKERS" >/dev/null || fail "a unit already under arbitration must not get a second worker"
 jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-602")' "$WORKERS" >/dev/null || fail "the next unit in order must be dispatched"
 before="$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")"
 dispatch_supervisor_arbiters
 [[ "$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == "$before" ]] || fail "no arbitration may dispatch at the in-flight cap"
-SUPERVISOR_ARBITER_MAX="$saved_max"
+SUPERVISOR_ARBITER_MAX="$saved_max"; rm -f "$WORKER_SCRATCH_ROOT/luna/model-not-found.cache"
 
-# RECUT refused for unpushed work: recorded, not triaged again until the head moves.
+# An under-cap RECUT refusal resumes existing work once; a legacy refusal does too, and a moved head can return to cap triage.
 WT_ROOT="$fixture/clones"; mkdir -p "$WT_ROOT/wt-pr-650"
 git -C "$WT_ROOT/wt-pr-650" init -q
 git -C "$WT_ROOT/wt-pr-650" -c user.name=t -c user.email=t@t commit -q --allow-empty -m first
@@ -139,14 +159,19 @@ refused_sha="$(git -C "$WT_ROOT/wt-pr-650" rev-parse HEAD)"
 printf '%s\n' "$(jq -cn '{units:[{id:"pr-650",issue:650,pr:650,stage:"parked",history:[{stage:"supervisor-cap-triage-park",result:"x",at:"2026-10-27T00:00:00Z"}]}]}')" > "$UNITS"
 echo '{"workers":[]}' > "$WORKERS"; : > "$GH_CALLS"
 supervisor_budget_recut pr-650 "cap triage: too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
-[[ "$(field pr-650 .parked_reason)" == recut-refused-unpushed && "$(field pr-650 .recut_refused_head)" == "$refused_sha" && "$(field pr-650 .recut_refused_verdict)" == RECUT ]] \
-  || fail "a refused RECUT must record its reason, head and verdict"
-[[ "$(field pr-650 .note)" == *'Unparks when that head changes'* ]] || fail "a refused RECUT must state its unpark condition"
+[[ "$(field pr-650 .stage)" == repair-pending && "$(field pr-650 .parked_reason)" == null \
+  && "$(field pr-650 .recut_refused_head)" == "$refused_sha" && "$(field pr-650 .recut_refused_verdict)" == RECUT ]] \
+  || fail "a refused RECUT must resume the existing PR work and record its head and verdict"
+[[ "$(field pr-650 .repair_hint)" == *'commit and push'* ]] || fail "a refused RECUT must tell the worker to publish its existing work"
 ! grep -Fq 'pr close' "$GH_CALLS" || fail "a refused RECUT must not close the PR"
 saved_cap_triage="$SUPERVISOR_CAP_TRIAGE"; SUPERVISOR_CAP_TRIAGE=true
 dispatch_supervisor_arbiters
-[[ "$(jq '.workers | length' "$WORKERS")" == 0 ]] || fail "the same head must not be triaged again"
+[[ "$(jq '.workers | length' "$WORKERS")" == 0 && "$(field pr-650 .stage)" == repair-pending ]] || fail "resume must dispatch the existing work before another RECUT attempt"
+printf '%s\n' "$(jq -cn --arg h "$refused_sha" '{units:[{id:"pr-650",issue:650,pr:650,branch:"agent/issue-650",stage:"parked",parked_reason:"recut-refused-unpushed",recut_refused_head:$h,recut_refused_verdict:"RECUT",history:[{stage:"supervisor-recut-refused",result:"legacy park"}]}]}')" > "$UNITS"
+dispatch_supervisor_arbiters
+[[ "$(field pr-650 .stage)" == repair-pending && "$(jq '.workers | length' "$WORKERS")" == 0 ]] || fail "a legacy refused-RECUT park must resume its existing work once"
 git -C "$WT_ROOT/wt-pr-650" -c user.name=t -c user.email=t@t commit -q --allow-empty -m second
+printf '%s\n' "$(jq -cn --arg h "$refused_sha" '{units:[{id:"pr-650",issue:650,pr:650,branch:"agent/issue-650",stage:"parked",parked_reason:"recut-refused-unpushed",recut_refused_head:$h,recut_refused_verdict:"RECUT",recut_refused_resume_head:$h,history:[{stage:"supervisor-recut-refused",result:"legacy park"}]}]}')" > "$UNITS"
 ZF_ENGINE_DIR="$script_dir/.." dispatch_supervisor_arbiters
 [[ "$(jq '[.workers[] | select(.unit=="pr-650")] | length' "$WORKERS")" == 1 ]] || fail "a moved head must reach cap triage again"
 SUPERVISOR_CAP_TRIAGE="$saved_cap_triage"
@@ -170,17 +195,46 @@ jq -e 'any(.workers[]; .unit=="pr-652")' "$WORKERS" >/dev/null || fail "old disp
 echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
 
 # A run that left the unit here holds it until head, state or ruling moves.
-jq -cn '{units:[{id:"pr-661",stage:"supervisor-review",reviewed_pr_head:"aaa",history:[]},{id:"pr-662",stage:"supervisor-review",reviewed_pr_head:"bbb",history:[]},{id:"pr-663",stage:"supervisor-review",reviewed_pr_head:"ccc",cto_rulings:["new"],history:[]}]}' > "$UNITS"
+jq -cn '{units:[{id:"pr-661",stage:"supervisor-review",reviewed_pr_head:"aaa",history:[]},{id:"pr-662",stage:"supervisor-review",reviewed_pr_head:"bbb",history:[]},{id:"pr-663",stage:"supervisor-review",reviewed_pr_head:"ccc",cto_rulings:["new"],history:[]},
+  {id:"pr-664",stage:"supervisor-review",reviewed_pr_head:"ddd",history:[{stage:"supervisor-arbiter",result:"dispatched to profile terra"}]}]}' > "$UNITS"
 set_unit pr-661 ".arbiter_left_mark=$(js "$(supervisor_arbiter_mark "$(jq -c '.units[0]' "$UNITS")")")"
 set_unit pr-662 '.arbiter_left_mark="aaa||0"'
 set_unit pr-663 '.arbiter_left_mark="ccc||0"'
+set_unit pr-664 ".arbiter_left_mark=$(js "$(supervisor_arbiter_mark "$(jq -c '.units[3]' "$UNITS")")")"
 echo '{"workers":[]}' > "$WORKERS"
 dispatch_supervisor_arbiters
 ! jq -e 'any(.workers[]; .unit=="pr-661")' "$WORKERS" >/dev/null || fail "an unchanged unit must not dispatch again"
 jq -e 'any(.workers[]; .unit=="pr-662")' "$WORKERS" >/dev/null || fail "a new head must reopen arbitration"
 jq -e 'any(.workers[]; .unit=="pr-663")' "$WORKERS" >/dev/null || fail "a new ruling must reopen arbitration"
+jq -e 'any(.workers[]; .unit=="pr-664")' "$WORKERS" >/dev/null || fail "a dispatch without a decision must reopen arbitration"
+jq -e '.units[]|select(.id=="pr-664")|has("arbiter_left_mark")|not' "$UNITS" >/dev/null || fail "a stale dispatch-only hold mark must be cleared"
 grep -Fq 'arbiter-no-change unit=pr-661' "$AGENT_HOME/supervisor-inbox" || fail "a held unit must reach the supervisor"
 echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
+
+# If a candidate stops being eligible after the first snapshot, dispatch must use the live ledger state.
+(
+  UNITS="$fixture/stale-candidate-units.json"
+  WORKERS="$fixture/stale-candidate-workers.json"
+  candidate_calls_file="$fixture/stale-candidate-calls"
+  printf '0\n' > "$candidate_calls_file"
+  jq -cn '{units:[{id:"pr-665",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"fixture",at:"2026-10-27T00:00:00Z"}]}]}' > "$UNITS"
+  printf '%s\n' '{"workers":[]}' > "$WORKERS"
+  supervisor_arbiter_candidates() {
+    local calls candidate
+    calls="$(cat "$candidate_calls_file")"
+    calls=$((calls + 1))
+    printf '%s\n' "$calls" > "$candidate_calls_file"
+    candidate="$(jq -c '.units[]' "$UNITS")"
+    if (( calls == 2 )); then
+      jq '.units[0].stage="closed"' "$UNITS" > "$UNITS.next"
+      mv "$UNITS.next" "$UNITS"
+    fi
+    printf '%s\n' "$candidate"
+  }
+  SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+  [[ "$(jq '[.workers[] | select(.unit=="pr-665")] | length' "$WORKERS")" == 0 ]] \
+    || fail 'a candidate that became closed must not dispatch from its stale snapshot'
+)
 
 # ---- 回收：六个动作逐个断言对外效果 ----
 harvest_with_reply() { # unit report-body → 用一个已死 worker 回收
@@ -284,16 +338,22 @@ REJECTED: close'
 [[ "$(field pr-616 .stage)" == parked ]] || fail "park must land in parked"
 jq -e '.units[]|select(.id=="pr-616")|has("arbiter_left_mark")|not' "$UNITS" >/dev/null || fail "a decision that moved the unit must not hold it"
 
-# A tracker flag on a ticket that still has an open task-list child refuses the requeue, so the decision leaves the unit in review.
+# A tracker flag on a ticket that still has an open task-list child refuses the requeue, so the unit parks with that refusal recorded.
 units "$(jq -cn '{units:[{id:"pr-698",issue:698,pr:698,lane:"pr",branch:"agent/issue-698",stage:"supervisor-review",history:[{stage:"review-request-changes",result:"F1",at:"2026-10-27T00:00:00Z"},{stage:"supervisor-escalated",result:"stop-loss",at:"2026-10-27T00:01:00Z"}]}]}')"
 jq -n '{state:"on-hold",tracker_parent:true,hold:{kind:"stop-loss",holder:"scheduler-stop-loss"},recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/698.json"
+parent_reason="$(scheduler_issue_intake_parent_reason 698 '{"title":"fixture parent","body":"- [ ] #797","subIssuesSummary":{"total":0}}')" \
+  || fail "the #698 fixture must be refused because open task-list child #797 is still open"
+[[ "$parent_reason" == 'task list references open child #797' ]] \
+  || fail "the #698 fixture must identify open task-list child #797 as the refusal reason, got: $parent_reason"
 harvest_with_reply pr-698 'ACTION: requeue
 REASON: stop-loss hold reviewed, resume the approved repair
 EVIDENCE: supervisor-escalated stop-loss
 REJECTED: park（仍有可重试的修复）
 GUIDANCE: 恢复修复并提交' || :  # the scheduler runs without errexit
-[[ "$(field pr-698 .stage)" == supervisor-review ]] || fail "a refused requeue must stay in review"
-[[ -n "$(field pr-698 .arbiter_left_mark)" ]] || fail "a decision that left the unit in review must hold it"
+[[ "$(field pr-698 .stage)" == parked ]] || fail "a refused requeue must park the unit"
+[[ "$parent_reason" == 'task list references open child #797' \
+   && "$(field pr-698 .note)" == *'issue_transition: refused tracker parent #698'* ]] \
+  || fail "the durable park must preserve the refusal caused by open task-list child #797"
 jq -e '.tracker_parent == true and .state == "on-hold"' "$AGENT_HOME/state/698.json" >/dev/null || fail "a real parent must keep its flag"
 
 # The #4879 and #5329 shape: on-hold, flag set, no child of any kind. The requeue clears the flag and goes through.
@@ -342,8 +402,8 @@ harvest_with_reply pr-619 '我觉得应该再修一轮。'
 [[ "$(field pr-619 .stage)" == supervisor-review && "$(field pr-619 '.history[-1].stage')" == supervisor-arbiter-invalid ]] \
   || fail "an unparseable reply must record supervisor-arbiter-invalid and keep the unit parked in supervisor-review"
 units "$(jq -cn '{units:[{id:"pr-620",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"x",at:"2026-10-27T00:00:00Z"}]}]}')"
-harvest_supervisor_arbiter "$(jq -cn '{pid:99999999,unit:"pr-620",type:"supervise",log:"supervise-pr-620.worker.log",report:"supervise-pr-620-missing.md",started:"2026-10-27T00:00:00Z"}')"
-[[ "$(field pr-620 '.history[-1].stage')" == supervisor-arbiter-no-output ]] || fail "a report-less worker must record supervisor-arbiter-no-output"
+printf '%s\n' '{"error":{"code":"model_not_found"}}' > "$sup/supervise-pr-620.worker.log"; harvest_supervisor_arbiter "$(jq -cn '{pid:99999999,unit:"pr-620",type:"supervise",log:"supervise-pr-620.worker.log",report:"supervise-pr-620-missing.md",started:"2026-10-27T00:00:00Z",model:"profile:terra"}')"
+[[ "$(field pr-620 '.history[-1].stage')" == supervisor-arbiter-no-output ]] && grep -Eq '^gpt-6\.1-terra[[:space:]]+[0-9]+$' "$WORKER_SCRATCH_ROOT/luna/model-not-found.cache" || fail "a report-less terra arbiter must record its model-not-found cache entry"
 
 # 历史里先有非评审记录再有评审记录（真实单元的形状）：requeue 回 repair，不因 jq 优先级报错落 parked。
 units "$(jq -cn '{units:[{id:"pr-620",pr:620,lane:"pr",branch:"fix/x",stage:"supervisor-review",history:[{stage:"self-check-red",result:"x",at:"2026-10-27T00:00:00Z"},{stage:"review-request-changes",result:"y",at:"2026-10-27T00:01:00Z"},{stage:"supervisor-escalated",result:"blocked-external without a predecessor",at:"2026-10-27T00:02:00Z"}]}]}')"
@@ -352,12 +412,12 @@ REASON: 无前置可等
 GUIDANCE: git merge origin/main 后重新评审'
 [[ "$(field pr-620 .stage)" == repair-pending ]] || fail "requeue of a reviewed PR unit must return to repair-pending, got $(field pr-620 .stage)"
 
-# 没有可放回工作环节的 requeue：不猜，落 parked。
+# 没有可放回工作环节的 requeue：不猜，持久关闭（不再停车等人）。
 units "$(jq -cn '{units:[{id:"misc-621",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"delivered with no transition",at:"2026-10-27T00:00:00Z"}]}]}')"
 harvest_with_reply misc-621 'ACTION: requeue
 REASON: 交付结果需要人定的后续
 GUIDANCE: 重新评估交付'
-[[ "$(field misc-621 .stage)" == parked ]] || fail "requeue without a work stage must park instead of guessing"
+[[ "$(field misc-621 .stage)" == closed ]] || fail "requeue without a work stage must close durably instead of guessing"
 
 # ---- 两轮裁决上限与第 3 次升级 ----
 units "$(jq -cn '{units:[{id:"pr-622",issue:622,stage:"supervisor-review",
@@ -401,6 +461,8 @@ dispatch_supervisor_arbiters
 # A founder question that names a fact ends cap triage even when old history still shows a budget park; sweeping it again re-asks forever.
 budget_park='{"stage":"supervisor-budget-park","result":"arbitration budget exhausted for x"}'
 supervisor_cap_parked_unit "{\"stage\":\"parked\",\"history\":[$budget_park]}" || fail "a legacy budget park must stay swept"
+supervisor_cap_parked_unit '{"stage":"parked","parked_reason":"repair-breaker","history":[{"stage":"repair-breaker","result":"same head"}]}' \
+  || fail "a repair-breaker park must reach automatic arbitration"
 if supervisor_cap_parked_unit "{\"stage\":\"parked\",\"parked_reason\":\"supervisor-cap-founder\",\"supervisor_cap_question\":\"这批单据要对接哪个外部系统？\",\"history\":[$budget_park]}"; then
   fail "a founder park with a real question must not be swept back into cap triage"
 fi
@@ -562,6 +624,18 @@ printf 'REASON: r\nEVIDENCE: e\nVERDICT: RULE\n' > "$report"
 supervisor_apply_cap_verdict pr-683 "$report" RULE
 [[ "$(field pr-683 .stage)" == supervisor-review ]] || fail "a RULE must not send work past another holder's hold"
 jq -e '.hold.holder == "head-hold"' "$AGENT_HOME/state/683.json" >/dev/null || fail "another holder's hold must stay"
+# A held RULE is a recorded decision so the dispatch-only mark guard keeps it from spending another arbiter run.
+units "$(jq -cn '{units:[{id:"pr-682",issue:683,pr:682,lane:"pr",branch:"agent/issue-682",stage:"supervisor-review",supervisor_cap_return_stage:"repair-pending",history:[{stage:"supervisor-arbiter",result:"dispatched to profile terra"}]}]}')"
+printf '%s\n' '{"state":"on-hold","hold":{"kind":"manual","holder":"head-hold"}}' > "$AGENT_HOME/state/683.json"
+printf 'REASON: r\nEVIDENCE: e\nVERDICT: RULE\n' > "$sup/supervise-pr-682-held-rule.md"
+harvest_supervisor_arbiter "$(jq -cn '{pid:99999997,unit:"pr-682",type:"supervise",log:"none.log",report:"supervise-pr-682-held-rule.md",started:"2026-10-27T00:00:00Z",cap_triage:true}')"
+[[ "$(field pr-682 .stage)" == supervisor-review ]] || fail "a held RULE must leave the unit in supervisor-review"
+[[ "$(field pr-682 '.history[-1].stage')" == supervisor-cap-rule-held ]] || fail "a held RULE must write the decision history entry"
+held_mark="$(field pr-682 .arbiter_left_mark)"
+[[ -n "$held_mark" ]] || fail "a held RULE must record its left mark"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+! jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-682")' "$WORKERS" >/dev/null || fail "a held RULE must not dispatch again while its mark is unchanged"
+[[ "$(field pr-682 .arbiter_left_mark)" == "$held_mark" ]] || fail "a held RULE must retain its mark"
 # Only a RULE releases the hold.
 unrun_unit pr-688 688
 founder_report "Please decide this?"
@@ -592,7 +666,13 @@ jq -e '.units[0] | .parked_reason=="supervisor-arbitration-cap" and (has("superv
 
 # Route first: a refused recut route must leave the PR open, or the slice is left with no owner.
 route_calls="$fixture/route-calls"; : > "$route_calls"
-scheduler_route_to_recut() { printf 'route ' >> "$route_calls"; [[ "$ROUTE_RC" == 0 ]] || { echo 'refused tracker parent' >&2; return 1; }; }
+route_done="$fixture/route-done"; rm -f "$route_done"
+scheduler_route_to_recut() {
+  [[ -e "$route_done" ]] && return 0
+  printf 'route ' >> "$route_calls"
+  [[ "$ROUTE_RC" == 0 ]] || { echo 'refused tracker parent' >&2; return 1; }
+  : > "$route_done"
+}
 tick_prs_changed() { :; }
 tick_pr_state() { printf 'OPEN\n'; }
 gh() { [[ "$1 $2" != 'pr close' ]] || printf 'close ' >> "$route_calls"; return 0; }
@@ -606,8 +686,9 @@ printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor
 ROUTE_RC=0 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
 [[ "$(cat "$route_calls")" == 'route close ' && "$(field pr-651 .stage)" == closed ]] || fail "the PR closes only after the route: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
 
-# A failed close keeps the route on record, and the retry on that unit skips the refused route and closes.
+# A failed close keeps the route on record; the idempotent route helper succeeds again before the PR close retry.
 : > "$route_calls"
+rm -f "$route_done"
 gh() { [[ "$1 $2" != 'pr close' ]] || { printf 'close ' >> "$route_calls"; [[ "${CLOSE_RC:-0}" == 0 ]]; return; }; return 0; }
 printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",history:[]}]}')" > "$UNITS"
 ROUTE_RC=0 CLOSE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
@@ -615,6 +696,26 @@ ROUTE_RC=0 CLOSE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triag
 : > "$route_calls"
 ROUTE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
 [[ "$(cat "$route_calls")" == 'close ' && "$(field pr-651 .stage)" == closed ]] || fail "the retry must skip the route and close: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
+
+: > "$route_calls"
+rm -f "$route_done"
+RECUT_RETRY_ISSUE_STATE='{"state":"needs-recut","recut_children":[652]}'
+printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",recut_routed:true,history:[]}]}')" > "$UNITS"
+(
+  scheduler_issue_state() { printf '%s\n' "$RECUT_RETRY_ISSUE_STATE"; }
+  ROUTE_RC=1 CLOSE_RC=0 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
+)
+[[ "$(cat "$route_calls")" == 'close ' && "$(field pr-651 .stage)" == closed ]] || fail "a retry after this route created recut children must close without parking: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
+
+: > "$route_calls"
+rm -f "$route_done"
+RECUT_RETRY_ISSUE_STATE='{"state":"ready-for-agent"}'
+printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",recut_routed:true,history:[]}]}')" > "$UNITS"
+(
+  scheduler_issue_state() { printf '%s\n' "$RECUT_RETRY_ISSUE_STATE"; }
+  ROUTE_RC=1 CLOSE_RC=0 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
+)
+[[ "$(cat "$route_calls")" == 'route ' && "$(field pr-651 .stage)" == parked ]] || fail "a retry without recut children must retry the route and keep the PR open on failure: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
 
 # ---- 终身仲裁上限（supervisor_arbiter.unit_cap，默认 4）：触顶不派模型，调度器当拍自己给默认决定 ----
 # 上限按整份历史数 supervisor-arbiter 事件（忽略 supervisor-arbiter-round 轮标记），先于两轮预算与
@@ -715,6 +816,19 @@ SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 
 [[ "$(cap_default_history pr-633 supervisor-cap-default)" == 1 ]] || fail "the default decision must run once per unit"
 ! jq -e 'any(.workers[]; .unit=="pr-633")' "$WORKERS" >/dev/null || fail "a handled capped unit must never dispatch again"
 
+# Row 150 (issue-4879): after its default, a capped unit that re-enters supervisor-review closes with a durable hold.
+cap_hold_stub="$fixture/cap-hold-stub"; cap_hold_calls="$fixture/cap-hold-calls"; mkdir -p "$cap_hold_stub"; : > "$cap_hold_calls"
+printf '#!/usr/bin/env bash\nprintf "hold %%s\\n" "$*" >> %q\n' "$cap_hold_calls" > "$cap_hold_stub/hold.sh"
+jq '(.units[0] |= (.stage = "supervisor-review" | .history += [{stage:"supervisor-escalated",result:"ci cancelled again",at:"2026-10-27T05:00:00Z"}]))' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+ZF_ENGINE_DIR="$cap_hold_stub" SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_stage pr-633)" == closed && "$(cap_default_history pr-633 supervisor-cap-default)" == 1 \
+  && "$(cap_default_history pr-633 supervisor-close)" == 1 ]] \
+  || fail "a capped unit back at supervisor-review after its default must close durably: $(jq -c '.units[0]' "$UNITS")"
+grep -q '^hold --hold 633 ' "$cap_hold_calls" || fail "a repeated cap must hold issue 633: $(cat "$cap_hold_calls")"
+! jq -e 'any(.workers[]; .unit=="pr-633")' "$WORKERS" >/dev/null || fail "the re-entry default must cost no model run"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_history pr-633 supervisor-cap-default)" == 1 ]] || fail "the repeated cap must not add a second default decision"
+
 # A held issue gets no default and no model run; the default applies on the first tick after the hold ends.
 default_unit pr-642 642 '{}' '[]' 4
 jq -n '{state:"on-hold",hold:{kind:"stop-loss",expires_at:"2099-01-01T00:00:00Z"}}' > "$AGENT_HOME/state/642.json"
@@ -764,6 +878,16 @@ SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 
 [[ "$(cap_default_stage pr-639)" == parked && "$(field pr-639 '.history[-1].result')" == branch=park:* ]] \
   || fail "unpushed cap recut must park: $(jq -c '.units[0]' "$UNITS")"
 ! grep -q 'recut-refused unit=pr-639' "$AGENT_HOME/supervisor-inbox" || fail "unpushed cap default must not create a founder handoff"
+
+# An issue-level recut refusal survives a new unit and makes the cap default park without routing recut again.
+default_unit pr-644 644 '{}' '[]' 4
+drop_unit_pr
+refused_at="$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ)"
+jq -n --arg refused_at "$refused_at" '{state:"ready-for-agent",guarded:true,recut_refused_at:$refused_at}' > "$AGENT_HOME/state/644.json"
+: > "$route2"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ ! -s "$route2" && "$(cap_default_stage pr-644)" == parked && "$(field pr-644 '.history[-1].result')" == branch=park:* ]] \
+  || fail "a recent issue-level recut refusal must park a fresh capped unit without routing recut"
 
 # Legacy issue units recover their ticket number, so a hold on the issue still protects them.
 [[ "$(supervisor_cap_default_issue '{"id":"issue-641"}')" == 641 ]] || fail "the canonical issue unit id must recover its issue number"
@@ -831,6 +955,150 @@ jq -cn '{units:[{id:"pr-9005",stage:"supervisor-review",history:[{stage:"supervi
 # supervisor. (3) A head sent to recut before routes again, unless that recut was refused.
 issue_states="$fixture/issue-states"; mkdir -p "$issue_states"
 scheduler_issue_state() { cat "$issue_states/$1.json"; }
+
+# A requeue that observes a tracker parent closes by the shared recut path;
+# ready-for-agent is already the desired state; only an explicit transition refusal parks.
+saved_requeue_transition="$(declare -f scheduler_issue_transition)"
+saved_requeue_repo="${REPO:-}"
+REPO=ZenoWangzy/zenoforge
+REQUEUE_TRANSITIONS="$fixture/requeue-transitions"; : > "$REQUEUE_TRANSITIONS"
+scheduler_issue_transition() {
+  printf '%s:%s\n' "$1" "$2" >> "$REQUEUE_TRANSITIONS"
+  if [[ "$1" == 9401 || "$1" == 9407 ]]; then return 0; fi
+  [[ "$1" != 9403 ]] || printf 'issue_transition: refused #9403 needs-advisor -> active state ready-for-agent (reason=supervisor-requeue)\n' >&2
+  return 1
+}
+requeue_test_unit() {
+  units "$(jq -cn --arg id "$1" --argjson issue "$2" --argjson pr "$3" --argjson followup "${4:-null}" '{units:[{id:$id,issue:$issue,pr:$pr,split_followup:$followup,lane:"pr",branch:("agent/"+$id),stage:"supervisor-review",history:[{stage:"review-request-changes",result:"F1",at:"2026-11-08T00:00:00Z"},{stage:"supervisor-escalated",result:"test requeue",at:"2026-11-08T00:01:00Z"}]}]}')"
+}
+requeue_decision="$(decision_entry 'Supervisor arbitration: requeue' 'resume work' 'synthetic requeue failure case' '[]' supervisor)"
+
+printf '%s\n' '{"state":"tracker","recut_children":[9404]}' > "$issue_states/9401.json"
+requeue_test_unit arbiter-tracker 9401 99401
+supervisor_requeue_unit arbiter-tracker requeue "resume the child work" "$requeue_decision" || :
+[[ "$(field arbiter-tracker .stage)" == closed ]] || fail "a tracker requeue must close the parent unit"
+jq -e '.units[] | select(.id=="arbiter-tracker") | .history[-1].stage=="size-recut-completed" and (has("size_recut_pending")|not)' "$UNITS" >/dev/null \
+  || fail "a tracker requeue must use the existing recut completion path"
+grep -Fq 'supervisor arbitration unit=arbiter-tracker: issue #9401 became a tracker; closed the recut unit and left open PR #99401 for head to decide' "$LOG" \
+  || fail "a tracker requeue must name its open PR for head"
+[[ "$(cat "$REQUEUE_TRANSITIONS")" == '9401:tracker' ]] || fail "a tracker requeue must reconcile its container label, got $(cat "$REQUEUE_TRANSITIONS")"
+: > "$REQUEUE_TRANSITIONS"
+
+# A tracked size-admission continuation keeps the first-slice PR in its normal
+# requeue stage instead of closing it with the tracker parent.
+followup_json="$(jq -cn --arg body '由 #9404 按尺寸准入拆分出的续作票：第一个可独立交付切片在 PR #99404 送评审。' '{number:9405,title:"continuation",body:$body,state:"OPEN",labels:[]}')"
+followup_encoded="$(printf '%s' "$followup_json" | base64 | tr -d '\n')"
+followup_rows="$(printf '9405\tpr\tcontinuation\t[]\t%s' "$followup_encoded")"
+jq -cn --arg rows "$followup_rows" '{schema:4,created_at:(now|floor),rows:$rows}' > "$A/intake-candidates.json"
+gh_calls_before="$(wc -l < "$GH_CALLS")"
+printf '%s\n' '{"state":"tracker","recut_children":[9406]}' > "$issue_states/9404.json"
+requeue_test_unit arbiter-cited 9404 99404 9405
+supervisor_requeue_unit arbiter-cited requeue "resume the first slice" "$requeue_decision" || :
+[[ "$(field arbiter-cited .stage)" == repair-pending ]] || fail "a cited first-slice PR must continue through the normal requeue target"
+jq -e '.units[] | select(.id=="arbiter-cited") | .pr==99404 and .split_followup==9405 and .history[-1].stage=="supervisor-requeue"' "$UNITS" >/dev/null \
+  || fail "a cited first-slice PR must stay attached to its requeued unit"
+grep -Fq 'supervisor arbitration unit=arbiter-cited: issue #9404 became a tracker; continuation issue #9405 cites open PR #99404, carrying it to repair-pending' "$LOG" \
+  || fail "a cited first-slice PR must log why it is being carried forward"
+[[ "$(wc -l < "$GH_CALLS")" == "$gh_calls_before" ]] || fail "a fresh continuation cache must avoid an extra GitHub read"
+
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/9402.json"
+requeue_test_unit arbiter-ready 9402 99402
+supervisor_requeue_unit arbiter-ready requeue "resume the repair" "$requeue_decision" || :
+[[ "$(field arbiter-ready .stage)" == repair-pending ]] || fail "an already-ready issue must complete the unit requeue"
+[[ "$(field arbiter-ready '.history[-1].stage')" == supervisor-requeue ]] || fail "an already-ready issue must record the requeue verdict"
+[[ ! -s "$REQUEUE_TRANSITIONS" ]] || fail "an already-ready issue must not retry a same-state transition"
+
+printf '%s\n' '{"state":"needs-advisor"}' > "$issue_states/9403.json"
+requeue_test_unit arbiter-failure 9403 99403
+supervisor_requeue_unit arbiter-failure requeue "resume the repair" "$requeue_decision" || :
+[[ "$(field arbiter-failure .stage)" == parked ]] || fail "a failed requeue transition must durably park the unit"
+jq -e '.units[] | select(.id=="arbiter-failure") | .parked_reason=="supervisor-budget" and (.note|contains("issue #9403 could not be requeued to ready-for-agent")) and .history[-1].stage=="supervisor-requeue-failed"' "$UNITS" >/dev/null \
+  || fail "the durable park must retain the transition failure as its reason"
+jq -e '.units[] | select(.id=="arbiter-failure") | .note|contains("issue_transition: refused #9403")' "$UNITS" >/dev/null \
+  || fail "the durable park must preserve the transition refusal"
+grep -Fq '9403:ready-for-agent' "$REQUEUE_TRANSITIONS" || fail "the other-state case must exercise a failed transition"
+
+printf '%s\n' '{"attempts":0}' > "$issue_states/9407.json"
+requeue_test_unit arbiter-untracked 9407 99407
+supervisor_requeue_unit arbiter-untracked requeue "resume the repair" "$requeue_decision" || :
+[[ "$(field arbiter-untracked .stage)" == repair-pending ]] || fail "a missing issue state must continue the requeue"
+grep -Fq '9407:ready-for-agent' "$REQUEUE_TRANSITIONS" || fail "a missing issue state must transition to ready-for-agent"
+
+printf '%s\n' '{"state":""}' > "$issue_states/9408.json"
+requeue_test_unit arbiter-empty-state 9408 99408
+supervisor_requeue_unit arbiter-empty-state requeue "resume the repair" "$requeue_decision" || :
+[[ "$(field arbiter-empty-state .stage)" == supervisor-review ]] || fail "an empty issue state must retry requeue"
+! grep -Fq '9408:ready-for-agent' "$REQUEUE_TRANSITIONS" || fail "an empty issue state must not attempt the issue transition"
+
+# A GitHub read failure is retryable: it leaves the arbitration unit in review.
+printf '%s\n' '{"state":"needs-advisor"}' > "$issue_states/9406.json"
+saved_requeue_gh="$(declare -f gh)"
+gh() { printf 'gh %s\n' "$*" >> "$GH_CALLS"; return 1; }
+requeue_test_unit arbiter-read-failed 9406 99406
+harvest_with_reply arbiter-read-failed 'ACTION: requeue
+REASON: resume reviewed work
+EVIDENCE: synthetic transient GitHub read failure
+REJECTED: park
+GUIDANCE: retry the requeue' || :
+eval "$saved_requeue_gh"
+[[ "$(field arbiter-read-failed .stage)" == supervisor-review ]] \
+  || fail "a failed gh issue view must leave the unit at supervisor-review for retry"
+jq -e '.units[] | select(.id=="arbiter-read-failed") | has("arbiter_left_mark") | not' "$UNITS" >/dev/null \
+  || fail "a failed gh issue view must not hold the next tick"
+jq -e '.units[] | select(.id=="arbiter-read-failed") | all(.history[]; .stage != "supervisor-requeue-failed")' "$UNITS" >/dev/null \
+  || fail "a failed gh issue view must not record a durable requeue-failure park"
+grep -Fq 'gh issue view 9406 --repo ZenoWangzy/zenoforge --json number,title,body,state,labels' "$GH_CALLS" \
+  || fail "the retry case must exercise gh issue view rc 1"
+! grep -Fq '9406:ready-for-agent' "$REQUEUE_TRANSITIONS" \
+  || fail "a failed gh issue view must not attempt the issue transition"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+jq -e 'any(.workers[]; .type=="supervise" and .unit=="arbiter-read-failed")' "$WORKERS" >/dev/null \
+  || fail "tick two must dispatch the unit again after its transient requeue failure"
+
+# A non-stop-loss hold is a deterministic refusal and must park for the regular dead-park recovery route.
+printf '%s\n' '{"state":"on-hold","hold":{"kind":"manual","holder":"head"}}' > "$issue_states/9407.json"
+requeue_test_unit arbiter-nonstoploss 9407 99407
+harvest_with_reply arbiter-nonstoploss 'ACTION: requeue
+REASON: resume reviewed work
+EVIDENCE: manual on-hold state
+REJECTED: park
+GUIDANCE: resume after the hold' || :
+[[ "$(field arbiter-nonstoploss .stage)" == parked ]] \
+  || fail "a non-stop-loss hold must durably park the requeue"
+jq -e '.units[] | select(.id=="arbiter-nonstoploss") | .parked_reason=="supervisor-budget" and (.note|contains("issue #9407 has a non-stop-loss hold")) and .history[-1].stage=="supervisor-requeue-failed"' "$UNITS" >/dev/null \
+  || fail "the non-stop-loss hold park must retain its reason"
+
+# A deterministic requeue-failure park is eligible for the existing daily dead-park recut.
+saved_dead_park_tick_prs="$(declare -f tick_prs)"
+saved_dead_park_budget_recut="$(declare -f supervisor_budget_recut)"
+saved_dead_park_gh="$(declare -f gh)"
+DEAD_RECUT_CALLS="$fixture/dead-recut-calls"; : > "$DEAD_RECUT_CALLS"
+tick_prs() { printf '%s\n' '[]'; }
+supervisor_budget_recut() { printf '%s\t%s\n' "$1" "$2" >> "$DEAD_RECUT_CALLS"; }
+gh() {
+  if [[ "$*" == *'issue view 9403'* && "$*" == *'--json labels'* ]]; then
+    printf 'gh %s\n' "$*" >> "$GH_CALLS"
+    printf '%s\n' '{"labels":[]}'
+    return 0
+  fi
+  return 97
+}
+printf '%s\n' '{"state":"needs-advisor","hold":null}' > "$issue_states/9403.json"
+units "$(jq -cn '{units:[{id:"arbiter-failed-park",issue:9403,pr:99403,lane:"pr",branch:"agent/arbiter-failed-park",stage:"parked",parked_reason:"supervisor-budget",note:"supervisor requeue failed",history:[{stage:"supervisor-requeue-failed",result:"issue #9403 could not be requeued to ready-for-agent: issue_transition: refused #9403 needs-advisor",at:"2026-11-08T00:00:00Z"}]}]}')"
+dead_park_exit
+eval "$saved_dead_park_gh"
+grep -Eq '^gh issue view 9403 --repo [^ ]+ --json labels$' "$GH_CALLS" \
+  || fail "dead-park exit must read issue labels before routing"
+[[ "$(cat "$DEAD_RECUT_CALLS")" == $'arbiter-failed-park\tdead park exit (budget-park)' ]] \
+  || fail "a supervisor-requeue-failed park must use the existing dead-park recut route"
+[[ "$(field arbiter-failed-park '.history[-1].stage')" == dead-park-exit ]] \
+  || fail "the daily recovery attempt must be recorded in unit history"
+eval "$saved_dead_park_tick_prs"
+eval "$saved_dead_park_budget_recut"
+
+eval "$saved_requeue_transition"
+REPO="$saved_requeue_repo"
+
 printf '%s\n' '{"state":"on-hold","hold":{"kind":"stop-loss"}}' > "$issue_states/701.json"
 printf '%s\n' '{"state":"needs-recut","hold":null}' > "$issue_states/702.json"
 printf '%s\n' '{"state":"needs-triage","hold":null}' > "$issue_states/703.json"
@@ -841,6 +1109,17 @@ for u in issue-702 issue-703; do
   jq -e --arg id "$u" '.units[] | select(.id == $id) | .stage == "blocked-external" and .note == null and .size_recut_pending == true and (has("parked_reason") | not) and ([.history[].stage] | index("size-recut-unheld") != null)' "$UNITS" >/dev/null \
     || fail "$u: a lifted hold did not release the size recut: $(jq -c --arg id "$u" '.units[] | select(.id == $id)' "$UNITS")"
 done
+
+# A supervisor-review unit whose issue became a tracker closes (the arbiter cannot requeue a tracker, and its no-change hold
+# would repeat that failure forever). Only that branch applies there: a ready issue leaves the unit with the arbiter.
+printf '%s\n' '{"state":"tracker"}' > "$issue_states/704.json"
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/705.json"
+units "$(jq -cn '{units:[704,705] | map({id:("issue-"+tostring),issue:.,stage:"supervisor-review",size_recut_pending:true,history:[]})}')"
+reconcile_size_recuts
+[[ "$(field issue-704 .stage)" == closed && "$(field issue-704 .size_recut_pending)" == null ]] \
+  || fail "a tracker issue must close its supervisor-review size recut: $(jq -c '.units' "$UNITS")"
+[[ "$(field issue-705 .stage)" == supervisor-review && "$(field issue-705 .size_recut_pending)" == true ]] \
+  || fail "a supervisor-review unit with a ready issue must stay with the arbiter: $(jq -c '.units' "$UNITS")"
 
 printf '%s\n' '{"state":"on-hold","hold":{"kind":"stop-loss"},"size_admission":{"lines":802,"limit":800}}' > "$fixture/recut-agent-state.json"
 cat > "$fixture/recut-agent-lib.sh" <<LIB
@@ -894,5 +1173,210 @@ done
 # Two candidates equally old: the one holding more waiting dependents goes first, whatever the array order.
 jq -cn '{units:[range(1;4) as $i | {id:("pr-92\($i)"),issue:(9200+$i),pr:(9200+$i),lane:"pr",stage:(if $i == 2 then "parked" else "supervisor-review" end),parked_reason:"supervisor-cap-founder",held_dependents:([1,3,2][$i-1]),history:[{stage:"supervisor-escalated",result:"x",at:"2026-11-08T01:00:00Z"}]}]}' > "$UNITS"
 [[ "$(supervisor_arbiter_candidates | jq -r .id | tr '\n' ' ')" == "pr-922 pr-923 pr-921 " ]] || fail "equal-age candidates must go by held dependents, higher first: $(supervisor_arbiter_candidates | jq -r .id | tr '\n' ' ')"
+
+# ---- 决策类 park（"a supervisor decision"，非 cap park）：repair-breaker 与无 PR 的 stop-loss 进仲裁 ----
+# A repair-breaker whose no-push rounds died in the backend is requeued by the existing path, with no model run.
+units "$(jq -cn --arg sha "$SHA1" '{units:[{id:"pr-7101",lane:"pr",pr:7101,branch:"agent/issue-7101",stage:"parked",parked_reason:"repair-breaker",unpark_condition:"a supervisor decision",
+  reviewed_sha:$sha,reviewed_pr_head:$sha,note:"breaker",history:[{stage:"review-request-changes",result:"F1",at:"2026-11-09T08:00:00Z"},
+  {stage:"repair-no-push",result:("head "+$sha+" unchanged after repair"),backend_failure:"worker: both backends failed: luna: fatal stderr pattern: authentication or quota error",at:"2026-11-09T08:10:00Z"},
+  {stage:"repair-no-push",result:("head "+$sha+" unchanged after repair"),backend_failure:"worker: both backends failed: luna: fatal stderr pattern: authentication or quota error",at:"2026-11-09T08:20:00Z"},
+  {stage:"repair-breaker",result:("head "+$sha+": 2 consecutive repair runs ended on it without a push"),at:"2026-11-09T08:20:00Z"}]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-7101") | not' "$WORKERS" >/dev/null || fail "a backend-failed repair-breaker must not get a model run: $(jq -c '.workers' "$WORKERS")"
+[[ "$(field pr-7101 '[.history[].stage] | contains(["supervisor-requeue"])')" == true ]] || fail "a backend-failed repair-breaker must be requeued: $(jq -c '.units[0].history[-3:]' "$UNITS")"
+[[ "$(field pr-7101 .parked_reason)" == null && "$(field pr-7101 .stage)" != parked ]] || fail "the requeued unit must leave the park: $(jq -c '.units[0] | {stage,parked_reason}' "$UNITS")"
+
+# A repair-breaker without a backend failure takes the normal verdict: selected, dispatched to a supervise worker, back at supervisor-review.
+units "$(jq -cn --arg sha "$SHA2" '{units:[{id:"pr-7102",lane:"pr",pr:7102,branch:"agent/issue-7102",stage:"parked",parked_reason:"repair-breaker",unpark_condition:"a supervisor decision",
+  reviewed_sha:$sha,reviewed_pr_head:$sha,note:"breaker",history:[{stage:"review-request-changes",result:"F1",at:"2026-11-09T08:00:00Z"},
+  {stage:"repair-no-push",result:("head "+$sha+" unchanged after repair"),at:"2026-11-09T08:10:00Z"},
+  {stage:"repair-no-push",result:("head "+$sha+" unchanged after repair"),at:"2026-11-09T08:20:00Z"},
+  {stage:"repair-breaker",result:("head "+$sha+": 2 consecutive repair runs ended on it without a push"),at:"2026-11-09T08:20:00Z"}]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-7102")' "$WORKERS" >/dev/null || fail "a repair-breaker without a backend failure must get the normal arbitration: $(jq -c '.workers' "$WORKERS")"
+[[ "$(field pr-7102 .stage)" == supervisor-review && "$(field pr-7102 .parked_reason)" == null ]] || fail "the arbitrated repair-breaker must be at supervisor-review: $(jq -c '.units[0] | {stage,parked_reason}' "$UNITS")"
+
+# A stop-loss same failure with no PR waits for a supervisor decision: it is selected and arbitrated.
+units "$(jq -cn '{units:[{id:"issue-7103",lane:"pr",branch:"agent/issue-7103",stage:"parked",parked_reason:"stop-loss same failure: ci-tests",unpark_condition:"a supervisor decision",
+  note:"stop-loss",history:[{stage:"stop-loss",result:"ci-tests failed twice",at:"2026-11-09T08:00:00Z"}]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+jq -e 'any(.workers[]; .type=="supervise" and .unit=="issue-7103")' "$WORKERS" >/dev/null || fail "a stop-loss same-failure park with no PR must get the normal arbitration: $(jq -c '.workers' "$WORKERS")"
+
+# The harvest records a backend failure on the no-push row only when the round's log shows the worker's own failure line.
+units "$(jq -cn '{units:[{id:"pr-7104",lane:"pr",pr:7104,stage:"repair-pending",history:[]}]}')"
+bf_log="$fixture/repair-backend-fail.log"; ok_log="$fixture/repair-prose.log"
+printf 'worker: both backends failed: luna: fatal stderr pattern: authentication or quota error\n' > "$bf_log"
+printf 'the docs say the authentication flow needs a quota check\n' > "$ok_log"
+rr="$(printf '{"history":[]}' | jq -c "$(repair_run_filter pr-7104 unchanged "$SHA1" 5 "$bf_log" /dev/null)")"
+jq -e '.history[-1] | .stage == "repair-no-push" and (.backend_failure | contains("both backends failed"))' <<<"$rr" >/dev/null || fail "a no-push round with a worker failure line must record backend_failure: $rr"
+rr="$(printf '{"history":[]}' | jq -c "$(repair_run_filter pr-7104 unchanged "$SHA1" 5 "$ok_log" /dev/null)")"
+jq -e '.history[-1] | has("backend_failure") | not' <<<"$rr" >/dev/null || fail "prose about auth or quota is not a backend failure: $rr"
+
+jq -cn '{units:[{id:"issue-4865",issue:4865,stage:"parked",parked_reason:"repair-breaker",note:"same head after repeated no-push repair",history:[{stage:"repair-breaker",result:"same head"}]}]}' > "$UNITS"
+[[ "$(supervisor_arbiter_candidates | jq -r .id)" == issue-4865 ]] \
+  || fail "a repair-breaker park must enter the automatic arbiter queue: $(supervisor_arbiter_candidates | jq -r .id)"
+# ---- 行 172b：仲裁裁决的停车没有无限期的人工等待（每条路径一行可 grep 的日志，单元与原因都在行内）----
+hold_stub="$fixture/hold-stub"; hold_calls="$fixture/hold-calls"; mkdir -p "$hold_stub"; : > "$hold_calls"
+printf '#!/usr/bin/env bash\nprintf "hold %%s\\n" "$*" >> %q\n' "$hold_calls" > "$hold_stub/hold.sh"
+export ZF_ENGINE_DIR="$hold_stub"
+ci_runs_at() { jq -cn --arg at "$1" --arg sha "$2" '{workflow_runs:[{status:"completed",conclusion:"success",created_at:$at,id:9,run_attempt:1,head_sha:$sha,event:"push"}]}'; }
+# The real main-CI verdict reads one Actions list through gh api: answer that read from CI_RUNS, everything else from the earlier gh double.
+eval "$(declare -f gh | sed '1s/^gh ()/gh_prev ()/')"
+gh() { if [[ "$1" == api ]]; then printf '%s\n' "$CI_RUNS"; return 0; fi; gh_prev "$@"; }
+main_gh() { gh "$@"; }
+export REPO=ZenoWangzy/zenoforge
+hist_park_at() { jq -cn --arg at "$1" '[{stage:"supervisor-park",result:"approve refused",at:$at}]'; }
+
+# park-label-sweep may label a legacy cap park supervisor-park without a supervisor-park history row.
+units "$(jq -cn '{units:[{id:"legacy-cap-park",issue:769,stage:"parked",parked_reason:"supervisor-park",unpark_condition:"a supervisor decision",history:[{stage:"supervisor-budget-park",result:"third entry into supervisor-review; arbitration cap is 2 (#4369)",at:"2026-10-27T00:02:00Z"}]}]}')"
+supervisor_parked_unpark_sweeps
+legacy_cap_unit="$(jq -c '.units[0]' "$UNITS")"
+[[ "$(jq -r '.stage' <<<"$legacy_cap_unit")" == parked ]] \
+  || fail "a migrated legacy cap park without supervisor-park history must stay parked: $legacy_cap_unit"
+supervisor_cap_parked_unit "$legacy_cap_unit" \
+  || fail "a migrated legacy cap park must remain eligible for final cap triage: $legacy_cap_unit"
+
+# main-red-guard：只有park之后出现的绿色 main run 才放行；park之前的绿色不算。
+units "$(jq -cn --argjson h "$(hist_park_at 2026-11-09T02:00:00Z)" '{units:[{id:"pr-901",pr:901,stage:"parked",parked_reason:"main-red-guard",unpark_condition:"main of this repo is green again",history:$h}]}')"
+CI_RUNS="$(ci_runs_at 2026-11-09T01:00:00Z 1111111111111111111111111111111111111111)"
+supervisor_parked_unpark_sweeps
+[[ "$(field pr-901 .stage)" == parked ]] || fail "a green run older than the park must not release it: $(jq -c '.units[0]' "$UNITS")"
+CI_RUNS="$(ci_runs_at 2026-11-09T03:00:00Z 3333333333333333333333333333333333333333)"
+supervisor_parked_unpark_sweeps
+[[ "$(field pr-901 .stage)" == supervisor-review && "$(field pr-901 .parked_reason)" == null ]] \
+  || fail "green main after the park must release it to review: $(jq -c '.units[0]' "$UNITS")"
+grep -q 'supervisor park unit=pr-901 reason=main-red-guard released: main green at 333333333' "$LOG" || fail "the release must log its unit and reason"
+
+# requeue-target-missing：没有工作环节可放回，单元以持久 hold 关闭（issue 上 hold.sh --hold），不是评论式停车。
+: > "$hold_calls"
+units "$(jq -cn '{units:[{id:"issue-6401",issue:6401,stage:"supervisor-review",history:[]}]}')"
+supervisor_requeue_unit issue-6401 requeue "guidance" '{"decision":"x"}'
+[[ "$(field issue-6401 .stage)" == closed && "$(field issue-6401 .parked_reason)" == null ]] \
+  || fail "a missing requeue target must close, not park: $(jq -c '.units[0]' "$UNITS")"
+grep -q '^hold --hold 6401 ' "$hold_calls" || fail "the close must hold its issue through hold.sh: $(cat "$hold_calls")"
+grep -q 'supervisor close unit=issue-6401 reason=requeue-target-missing: closed with a durable hold' "$LOG" || fail "the close must log its unit and reason"
+
+# supervisor-park：第一次停车等 main 或 PR head 变化（或 24 h）；变化后只重仲裁一次；重复的同类裁决直接关闭并 hold。
+: > "$hold_calls"
+units "$(jq -cn '{units:[{id:"issue-6402",issue:6402,stage:"supervisor-review",history:[]}]}')"
+MAIN_HEAD=1111111111111111111111111111111111111111 supervisor_park_verdict issue-6402 "stuck on review" '{"decision":"x"}'
+[[ "$(field issue-6402 .stage)" == parked && "$(field issue-6402 .parked_reason)" == supervisor-park && "$(field issue-6402 .unpark_condition)" == "a state change or 24 h" ]] \
+  || fail "the first park must wait for a state change or 24 h: $(jq -c '.units[0]' "$UNITS")"
+supervisor_parked_unpark_sweeps
+[[ "$(field issue-6402 .stage)" == parked ]] || fail "no state change: the park must keep waiting"
+MAIN_HEAD=2222222222222222222222222222222222222222 supervisor_parked_unpark_sweeps
+[[ "$(field issue-6402 .stage)" == supervisor-review ]] || fail "a main move must re-arbitrate the park once: $(jq -c '.units[0]' "$UNITS")"
+supervisor_park_verdict issue-6402 "stuck on review" '{"decision":"x"}'
+[[ "$(field issue-6402 .stage)" == closed ]] || fail "a repeated park must close, never park again: $(jq -c '.units[0]' "$UNITS")"
+grep -q '^hold --hold 6402 ' "$hold_calls" || fail "the repeat close must hold issue 6402"
+
+# 上限：只打一次日志（owner=head），且之后不再派模型。
+: > "$LOG"
+default_unit pr-660 660 '{}' '[]' 4
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(grep -c 'arbiter cap reached unit=pr-660 runs=4 owner=head' "$LOG")" == 1 ]] \
+  || fail "the cap must log once per unit: $(grep 'arbiter cap' "$LOG")"
+
+# 上限之内的 head 裁决：一条 supervisor-requeue 裁决（带 owner 评论 id）恰好再给一次仲裁；消耗后再次触顶。
+default_unit pr-661 661 '{}' '[{"stage":"supervisor-requeue","result":"supervisor ruling 6736537359: one luna repair round","at":"2026-10-27T01:00:00Z"}]' 4
+echo '{"workers":[]}' > "$WORKERS"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-661")' "$WORKERS" >/dev/null \
+  || fail "an owner ruling must buy one arbiter run past the cap: $(jq -c '.units[0].history[-3:]' "$UNITS")"
+echo '{"workers":[]}' > "$WORKERS"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+! jq -e 'any(.workers[]; .unit=="pr-661")' "$WORKERS" >/dev/null || fail "one ruling is exactly one run"
+
+# 普通 requeue（没有评论 id）不给额外仲裁。
+default_unit pr-665 665 '{}' '[{"stage":"supervisor-requeue","result":"plain requeue without an owner comment","at":"2026-10-27T01:00:00Z"}]' 4
+echo '{"workers":[]}' > "$WORKERS"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+! jq -e 'any(.workers[]; .unit=="pr-665")' "$WORKERS" >/dev/null || fail "a plain requeue must grant no run past the cap"
+
+# 6 小时之内没有裁决：不派、不动；超过 6 小时：走一次既有 recut/park 路线。
+units "$(jq -cn --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{units:[{id:"pr-662",issue:662,pr:662,lane:"pr",stage:"supervisor-review",history:[range(4) | {stage:"supervisor-arbiter",result:"dispatched",at:$at}]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_history pr-662 supervisor-cap-default)" == 0 && "$(cap_default_stage pr-662)" == supervisor-review ]] \
+  || fail "inside the six-hour wait the cap must neither default nor move the unit: $(jq -c '.units[0]' "$UNITS")"
+
+# 第二次触顶（已有一次默认决定）：持久关闭，issue 上 hold。
+: > "$hold_calls"
+default_unit pr-663 663 '{}' '[{"stage":"supervisor-cap-default","result":"branch=park: arbitration cap (4 lifetime dispatches) reached; recut already tried","at":"2026-10-26T00:02:00Z"}]' 4
+drop_unit_pr
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_stage pr-663)" == closed ]] || fail "a second cap must close durably: $(jq -c '.units[0]' "$UNITS")"
+grep -q '^hold --hold 663 ' "$hold_calls" || fail "the second cap must hold issue 663: $(cat "$hold_calls")"
+
+# ---- 行 172b 第二轮：cap 关闭时挂着的 PR 一并关闭（有 hold 链接），session-owned 与被 open issue 引用的 PR 不关 ----
+pr_calls="$fixture/pr-close-calls"; : > "$pr_calls"; PR_STATE="OPEN factory"; CITED_ISSUES=""
+eval "$(declare -f gh | sed '1s/^gh ()/gh_before_pr ()/')"
+gh() {
+  case "$1 $2" in
+    'pr view') printf '%s\n' "$PR_STATE"; return 0 ;;
+    'issue list') printf '%s\n' "$CITED_ISSUES"; return 0 ;;
+    'pr close') printf 'pr-close %s\n' "$*" >> "$pr_calls"; return 0 ;;
+  esac
+  gh_before_pr "$@"
+}
+units "$(jq -cn '{units:[{id:"issue-6801",issue:6801,pr:6811,stage:"closed",history:[]}]}')"
+: > "$hold_calls"; : > "$pr_calls"
+supervisor_cap_close_pr issue-6801 arbitration-cap-again "cap again, no ruling"
+grep -q 'pr close 6811 ' "$pr_calls" || fail "an unlabeled open PR must close with the cap close: $(cat "$pr_calls")"
+grep -q 'issue #6801 is on hold (hold.sh, holder scheduler-stop-loss): cap again, no ruling' "$pr_calls" || fail "the PR close must link the hold: $(cat "$pr_calls")"
+grep -q 'supervisor close unit=issue-6801 reason=arbitration-cap-again: PR #6811 closed, hold on issue #6801' "$LOG" || fail "the PR close must log its unit, reason and hold issue"
+
+PR_STATE="OPEN session-owned,factory"; : > "$pr_calls"
+supervisor_cap_close_pr issue-6801 arbitration-cap-again "cap again, no ruling"
+[[ ! -s "$pr_calls" ]] || fail "a session-owned PR must stay open: $(cat "$pr_calls")"
+
+PR_STATE="OPEN factory"; CITED_ISSUES="6900"; : > "$pr_calls"
+supervisor_cap_close_pr issue-6801 arbitration-cap-again "cap again, no ruling"
+[[ ! -s "$pr_calls" ]] || fail "a PR cited by an open issue (first slice) must stay open: $(cat "$pr_calls")"
+grep -q 'first slice cited by open issue #6900' "$LOG" || fail "the first-slice keep must log one line"
+
+# ---- 行 172c：cap-exhausted 停放也有机械出口：owner 裁决 +1；6 h 无裁决 recut 一次；再次触顶 durable close ----
+cx_hist() { # exhausted-at [extra-json] → arbiter history (4 runs, old) + the cap-exhausted park row + extra rows
+  jq -cn --arg at "$1" --argjson extra "${2:-[]}" \
+    '[range(4) | {stage:"supervisor-arbiter",result:"dispatched",at:"2026-10-26T00:00:00Z"}]
+     + [{stage:"supervisor-cap-exhausted",result:"capped again after its one retry",at:$at}] + $extra'
+}
+cx_unit() { # id issue hist-json → a parked cap-exhausted unit
+  jq -cn --arg id "$1" --argjson issue "$2" --argjson h "$3" \
+    '{units:[{id:$id,issue:$issue,stage:"parked",parked_reason:"supervisor-cap-exhausted",unpark_condition:"a new issue state or supervisor ruling",history:$h}]}'
+}
+cx_stage() { jq -r --arg id "$1" '.units[] | select(.id==$id) | .stage' "$UNITS"; }
+cx_reason() { jq -r --arg id "$1" '.units[] | select(.id==$id) | .parked_reason' "$UNITS"; }
+
+# The issue-state reader is not what these cases test: it reads ready-for-agent for every issue here.
+scheduler_issue_state() { printf '{"state":"ready-for-agent"}\n'; }
+# owner ruling after the park: +1 release, the unit re-enters the arbitration-cap park (the one run is then dispatched by the existing path)
+units "$(cx_unit issue-671 671 "$(cx_hist 2026-10-27T01:00:00Z '[{"stage":"supervisor-requeue","result":"supervisor ruling 6737000001: one more run","at":"2026-10-27T02:00:00Z"}]')")"
+supervisor_cap_exhausted_sweep
+[[ "$(cx_reason issue-671)" == supervisor-arbitration-cap ]] || fail "an owner ruling after the cap-exhausted park must release it: $(jq -c '.units[0]' "$UNITS")"
+grep -q 'supervisor cap-exhausted unit=issue-671 reason=supervisor-cap-exhausted: released by a head ruling' "$LOG" || fail "the ruling release must log its unit and reason"
+
+# no ruling, six hours: recut default once (the existing recut route; the unit closes on the route)
+echo '{"state":"ready-for-agent","recut_children":[],"recut_comment_scanned":true}' > "$AGENT_HOME/state/672.json"
+: > "$route2"; units "$(cx_unit issue-672 672 "$(cx_hist 2026-10-26T00:00:00Z)")"
+supervisor_cap_exhausted_sweep
+[[ "$(cat "$route2")" == 'route ' && "$(cx_stage issue-672)" == closed ]] \
+  || fail "six hours without a ruling must take the recut route once: calls=$(cat "$route2") $(jq -c '.units[0]' "$UNITS")"
+grep -q 'supervisor cap-exhausted unit=issue-672 reason=supervisor-cap-exhausted: six hours without a ruling, recut default once' "$LOG" || fail "the recut exit must log its unit and reason"
+
+# no ruling, six hours, the cap came back after its recut default: durable close with the issue hold
+echo '{"state":"ready-for-agent","recut_children":[],"recut_comment_scanned":true}' > "$AGENT_HOME/state/673.json"
+: > "$hold_calls"
+units "$(cx_unit issue-673 673 "$(cx_hist 2026-10-26T00:00:00Z '[{"stage":"supervisor-cap-default","result":"branch=recut: arbitration cap (4 lifetime dispatches) reached; recut the unit once","at":"2026-10-26T00:01:00Z"}]')")"
+supervisor_cap_exhausted_sweep
+[[ "$(cx_stage issue-673)" == closed ]] || fail "a second cap with no ruling must close durably: $(jq -c '.units[0]' "$UNITS")"
+grep -q '^hold --hold 673 ' "$hold_calls" || fail "the second-cap close must hold issue 673: $(cat "$hold_calls")"
+
+# inside the six-hour wait (no ruling): nothing moves, nothing is held
+: > "$hold_calls"; : > "$route2"
+units "$(cx_unit issue-674 674 "$(cx_hist "$(date -u +%Y-%m-%dT%H:%M:%SZ)")")"
+supervisor_cap_exhausted_sweep
+[[ "$(cx_stage issue-674)" == parked && "$(cx_reason issue-674)" == supervisor-cap-exhausted && ! -s "$hold_calls" && ! -s "$route2" ]] \
+  || fail "inside the six-hour wait the cap-exhausted park must stay put: $(jq -c '.units[0]' "$UNITS")"
 
 echo 'supervisor-arbiter.test.sh: all assertions passed'

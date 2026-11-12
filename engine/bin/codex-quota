@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// codex-quota: read the ChatGPT Codex usage (weekly, and 5h when the account reports one) from the maintainer's signed-in
+// codex-quota: read the ChatGPT Codex usage (its pacing window, and 5h when the account reports one) from the signed-in
 // ChatGPT tab in the shared Chrome (127.0.0.1:9222, https://chatgpt.com/settings/usage). Holds Codex when the 5h
 // window reaches CODEX_5H_CAP, the same way zc-quota paces ZCode. Run by vecta-codex-quota.timer.
 // The page's own /backend-api/wham/usage response is read through CDP Network events, so no token passes through this script.
@@ -72,13 +72,15 @@ try {
     }
     if (!h) throw new Error('wham/usage response not seen after reload (signed out?)');
     const rl = JSON.parse(await body(h)).rate_limit || {};
-    // Windows are matched by length: 18000 s = 5h, 604800 s = weekly. This account currently reports weekly only.
+    // Windows are matched by length when the account provides the usual pair. A lone window paces whichever period the account reports.
     const wins = [rl.primary_window, rl.secondary_window].filter(Boolean);
     const five = wins.find(w => w.limit_window_seconds === 18000);
     const week = wins.find(w => w.limit_window_seconds === 604800);
-    if (!week) throw new Error(`no weekly window in rate_limit: window lengths ${JSON.stringify(wins.map(w => w.limit_window_seconds))}`);
+    const pace = week || (wins.length === 1 ? wins[0] : null);
+    if (!pace) throw new Error(`no pacing window in rate_limit: window lengths ${JSON.stringify(wins.map(w => w.limit_window_seconds))}`);
     return { five_h_pct: five?.used_percent ?? null, five_h_reset: five?.reset_at ?? null,
-             week_pct: week.used_percent, week_reset: week.reset_at ?? null, limit_reached: rl.limit_reached === true };
+             week_pct: week?.used_percent ?? pace.used_percent, week_reset: week?.reset_at ?? pace.reset_at ?? null,
+             window_seconds: pace.limit_window_seconds, used_percent: pace.used_percent, reset_at: pace.reset_at ?? null };
   }
 
   try {
@@ -88,23 +90,31 @@ try {
       log('closed the unresponsive usage tab');
       throw e;
     });
-    const { limit_reached, ...q } = await readQuota();
+    const q = await readQuota();
     const now = Math.floor(Date.now() / 1000);
     const marker = (() => { try { return Number(fs.readFileSync(MARKER, 'utf8').trim()); } catch { return 0; } })();
-    // 5h at the cap holds until the 5h window resets; a reached weekly limit holds until the weekly reset.
-    const until = q.five_h_pct >= CAP_5H ? q.five_h_reset : limit_reached ? q.week_reset : null;
+    // Credits continue past the pacing window. Only a reported 5h window at its cap holds Codex.
+    const until = q.five_h_pct >= CAP_5H ? q.five_h_reset : null;
+    const ownsMarker = book.hold_written && marker === book.hold_written;
     if (until) {
-      if (until > marker) { fs.writeFileSync(MARKER, `${until}\n`); book.hold_written = until; }
-      log(`hold Codex until ${new Date(Math.max(until, marker) * 1000).toISOString()}: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
-    } else if (book.hold_written && marker === book.hold_written && marker > now) {
+      // Shorten an owned marker left by the old pacing-window rule to this 5h reset.
+      let heldUntil = Math.max(until, marker);
+      if (until > marker || (ownsMarker && marker !== until)) {
+        fs.writeFileSync(MARKER, `${until}\n`);
+        book.hold_written = until;
+        heldUntil = until;
+      }
+      log(`hold Codex until ${new Date(heldUntil * 1000).toISOString()}: 5h ${q.five_h_pct}% window ${q.used_percent}%`);
+    } else if (ownsMarker) {
       fs.rmSync(MARKER, { force: true });  // only clear a hold this script wrote; a provider refusal's marker stays
       delete book.hold_written;
-      log(`release Codex hold: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
+      log(`release Codex hold: window ${q.used_percent}% 5h ${q.five_h_pct}%`);
     }
+    if (q.used_percent >= 100) log(`Codex pacing window ${q.window_seconds}s at ${q.used_percent}%; credits continue past this window`);
     fs.writeFileSync(BOOK, JSON.stringify(book) + '\n');
     fs.writeFileSync(STATE, JSON.stringify({ ...q, read_at: now, cap_5h: CAP_5H }) + '\n');
     const iso = t => t ? new Date(t * 1000).toISOString() : 'not reported';
-    log(`5h ${q.five_h_pct ?? 'n/a'}% (reset ${iso(q.five_h_reset)}) weekly ${q.week_pct}% (reset ${iso(q.week_reset)})`);
+    log(`window ${q.window_seconds}s ${q.used_percent}% (reset ${iso(q.reset_at)}) 5h ${q.five_h_pct ?? 'n/a'}% (reset ${iso(q.five_h_reset)})`);
   } finally { ws.close(); }
 } catch (e) {
   log('codex-quota failed:', e.message); process.exitCode = 1;

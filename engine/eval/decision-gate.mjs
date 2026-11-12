@@ -11,6 +11,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 // The full-coverage universe for gate labels. 'supervisor' is a selectable extra stage (the
 // six-action arbitration prompt, #4369) but never part of the required full coverage: accepted
 // labels predate it, and its terra calls are only spent when a diff actually touches it.
+// --subset (the engine-pin gate, engine-sync.sh) keeps only the selected stages' cases at one
+// run: a pin must not pay the full twice-run suite to compare the stages its diff touches.
 const stages = ['triage', 'advisor', 'implement', 'review', 'end-to-end'];
 const selectableStages = [...stages, 'supervisor'];
 const evalHome = join(process.env.AGENT_HOME || process.env.ZF_HOME || join(homedir(), '.zenoforge'), 'eval');
@@ -23,10 +25,12 @@ function loadCases(repo, stage) {
 
 function parseArgs(args) {
   const values = {};
-  for (let index = 0; index < args.length; index += 2) {
+  for (let index = 0; index < args.length; index++) {
     const key = args[index];
+    if (key === '--subset') { values.subset = true; continue; }
     if (!key?.startsWith('--') || args[index + 1] === undefined) throw new Error(`invalid argument: ${key ?? ''}`);
     values[key.slice(2)] = args[index + 1];
+    index += 1;
   }
   for (const key of ['repo', 'sha', 'tree', 'stages', 'baseline', 'label', 'output']) {
     if (!values[key]) throw new Error(`--${key} is required`);
@@ -61,7 +65,10 @@ function requireFullCandidate(candidate, repo) {
 
 function requireComparableBaseline(baseline, repo) {
   const expected = new Set();
-  for (const stage of stages) {
+  const baselineStages = baseline.results.some((row) => row.stage === 'supervisor')
+    ? [...stages, 'supervisor']
+    : stages;
+  for (const stage of baselineStages) {
     const cases = loadCases(repo, stage);
     for (const c of cases) for (let run = 1; run <= 2; run++) expected.add(`${stage}/${c.id}/${run}`);
   }
@@ -82,6 +89,20 @@ function writeReport(path, value) {
   renameSync(temporary, path);
 }
 
+function mergeAcceptedSubset(baseline, candidate) {
+  // A pin label becomes the accepted baseline for its version id. Keep accepted rows
+  // for untouched stages so the next pin can compare a different stage against the
+  // current live engine rather than an empty overlap. Candidate rows replace the
+  // prior row for the same stage/case/run after they pass this gate.
+  const key = (row) => `${row.stage}/${row.caseId}/${row.run}`;
+  const rows = new Map((baseline.results ?? []).map((row) => [key(row), row]));
+  for (const row of candidate.results ?? []) rows.set(key(row), row);
+  return {
+    ...candidate,
+    results: [...rows.values()].sort((a, b) => key(a).localeCompare(key(b))),
+  };
+}
+
 async function main() {
   const values = parseArgs(process.argv.slice(2));
   const repo = resolve(values.repo);
@@ -97,7 +118,9 @@ async function main() {
   if (actualTree.status !== 0 || actualTree.stdout.trim() !== values.tree) throw new Error('candidate SHA/tree mismatch');
   const actualHead = spawnSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
   if (actualHead.status !== 0 || actualHead.stdout.trim() !== values.sha) throw new Error('candidate checkout is not at the reviewed SHA');
-  const dirty = spawnSync('git', ['-C', repo, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' });
+  // The pin gate runs from a built version directory, where BUILD-INFO and gate artifacts sit
+  // untracked beside the engine; tracked-content drift still fails in both modes.
+  const dirty = spawnSync('git', ['-C', repo, 'status', '--porcelain', values.subset ? '--untracked-files=no' : '--untracked-files=normal'], { encoding: 'utf8' });
   if (dirty.status !== 0 || dirty.stdout.trim()) throw new Error('candidate checkout has uncommitted changes');
 
   const baselinePath = join(evalHome, values.baseline, 'results.json');
@@ -117,15 +140,21 @@ async function main() {
   }
   // The final full run stays scoped to the product stages: run-eval's own stage list also carries
   // 'supervisor', whose 141 terra arbitrations are not part of a full gate label (see stages above).
-  for (const stage of stages) {
-    runEval(repo, ['--stage', stage, '--resume', '--concurrency', String(concurrency), '--label', values.label]);
+  // A subset label skips the completion entirely: only the selected stages' single runs exist,
+  // and compareResults pairs just the case/runs both labels hold.
+  if (!values.subset) {
+    for (const stage of stages) {
+      runEval(repo, ['--stage', stage, '--resume', '--concurrency', String(concurrency), '--label', values.label]);
+    }
   }
   const candidate = json(candidatePath);
-  requireFullCandidate(candidate, repo);
+  if (!values.subset) requireFullCandidate(candidate, repo);
   const compareOutput = runEval(repo, ['--compare', values.baseline, values.label]).trim();
   const comparison = compareResults(baseline, candidate);
-  const criticalIds = new Set(loadCases(repo, 'review')
-    .filter((c) => c.kind === 'introduced-incident').map((c) => c.id));
+  // Introduced-incident review cases gate only a label that ran review; a subset without it has no review rows to fail.
+  const criticalIds = selectedStages.includes('review')
+    ? new Set(loadCases(repo, 'review').filter((c) => c.kind === 'introduced-incident').map((c) => c.id))
+    : new Set();
   const criticalFailures = candidate.results
     .filter((row) => row.stage === 'review' && criticalIds.has(row.caseId) && row.pass !== true)
     .map((row) => `${row.caseId}/run-${row.run}`);
@@ -142,12 +171,14 @@ async function main() {
   }
   const regressions = comparison.regressions.map((row) => `${row.stage}/${row.caseId}/run-${row.run}`);
   const passed = regressions.length === 0 && criticalFailures.length === 0 && supervisorFailures.length === 0;
+  if (passed && values.subset) writeReport(candidatePath, mergeAcceptedSubset(baseline, candidate));
   writeReport(output, {
     status: passed ? 'passed' : 'failed',
     tree: values.tree,
     label: values.label,
     baseline: values.baseline,
     stages: selectedStages,
+    ...(values.subset ? { subset: true } : {}),
     regressions,
     criticalFailures,
     ...(supervisor.total ? { supervisor: { overall: supervisor.byAction, alwaysRequeue: supervisor.alwaysRequeue, unsafeApproves: supervisor.unsafeApproves, failures: supervisorFailures } } : {}),

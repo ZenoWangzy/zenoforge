@@ -34,18 +34,22 @@ import json
 import os
 import re
 import sqlite3
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 
 from usage_reader import Usage, claude_unit_responses, codex_stream_facts, zcode_stream_usage, Unavailable
 
 LOG_RE = re.compile(r"^(impl|review|land|triage|supervise)-(.+?)-(\d{8}T\d{6})Z\.worker\.log$")
 UNIT_KEY_RE = re.compile(r"-(?:selfcheck[0-9]+-)?(?:fix|r)$")
 FOOTER_RE = re.compile(r"tokens used\n([\d,]+)")
+NO_BACKEND_RE = re.compile(r"^worker: .*no backend process started\b", re.IGNORECASE | re.MULTILINE)
 # build_codex_command's reasons for not taking the preferred path; initial, no-recorded-session,
 # no-new-failure and session-too-large are ordinary dispatches, not switches.
 FAILOVER_REASONS = frozenset(("provider-changed", "model-changed", "session-files-missing",
                               "resume-startup-failed"))
 UNKNOWN = "unattributed"
+TOKEN_EFFICIENCY_MIN_COVERAGE_PCT = 95.0  # Complete-data bar.
+TOKEN_EFFICIENCY_MIN_DISPLAY_COVERAGE_PCT = 90.0
 
 
 def _read_workers(sup):
@@ -102,6 +106,66 @@ def _usage_delta(last, baseline):
                  cache_write=_counter_delta(last.cache_write, baseline.cache_write))
 
 
+def _pre_backend_exit(worker, text):
+    rc = worker.get("rc", worker.get("exit_code"))
+    try:
+        rc = int(rc)
+    except (TypeError, ValueError):
+        rc = None
+    pid = worker.get("backend_run_pid")
+    no_pid = "backend_run_pid" in worker and not (str(pid).isdigit() and int(pid) > 0)
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and record and record.get("type") != "pipeline.execution":
+            return False
+    return rc == 75 or no_pid or bool(NO_BACKEND_RE.search(text))
+
+
+def _snapshot_usage(value):
+    if not isinstance(value, dict):
+        return None
+    input_tokens = value.get("input_tokens", value.get("inputTokens"))
+    cached = value.get("cached_input_tokens", value.get("cacheReadTokens"))
+    output = value.get("output_tokens", value.get("outputTokens"))
+    if type(input_tokens) is not int or input_tokens < 0 or type(output) is not int or output < 0:
+        return None
+    reasoning = value.get("reasoning_output_tokens", value.get("reasoningTokens"))
+    cache_write = value.get("cache_write_input_tokens", value.get("cacheWriteTokens"))
+    return Usage(input_tokens, cached if type(cached) is int and 0 <= cached <= input_tokens else None, output,
+                 reasoning=reasoning if type(reasoning) is int and reasoning >= 0 else None,
+                 cache_write=cache_write if type(cache_write) is int and cache_write >= 0 else None)
+
+
+def _event_usage_snapshots(text):
+    codex, zcode = None, Usage(0, 0, 0)
+    zcode_seen = zcode_incomplete = False
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        if record.get("type") == "turn.completed":
+            codex = _snapshot_usage(record.get("usage") or payload.get("usage")) or codex
+        if record.get("type") == "event_msg" and isinstance(payload, dict) and payload.get("type") == "token_count":
+            codex = _snapshot_usage((payload.get("info") or {}).get("total_token_usage")) or codex
+        if isinstance(payload, dict) and payload.get("type") == "model_request_completed":
+            snapshot = _snapshot_usage(payload.get("usage"))
+            if snapshot is None:
+                zcode_incomplete = True
+            else:
+                zcode += snapshot
+                zcode_seen = True
+    return codex, zcode if zcode_seen and not zcode_incomplete else None
+
+
 def measure(path, worker):
     """One worker log's facts: phase, unit key, wall clock, that invocation's own usage, failover.
 
@@ -145,12 +209,14 @@ def measure(path, worker):
                 text = source.read()
         except OSError:
             text = None
-    if text and ('"turn.completed"' in text or '"thread.started"' in text):
+    codex_snapshot, zcode_snapshot = _event_usage_snapshots(text or "")
+    if text and any(marker in text for marker in ('"turn.completed"', '"thread.started"', '"event_msg"', '"token_count"')):
         backend = "codex"
         json_stream = True
         marker = _marker(text)
         facts = codex_stream_facts(path)
-        session, last = facts["session_id"], facts["snapshots"][-1] if facts["snapshots"] else None
+        last = codex_snapshot or (facts["snapshots"][-1] if facts["snapshots"] else None)
+        session = facts["session_id"]
         if last is not None:
             # A resume stream's counters carry the whole thread: only the delta past the
             # dispatch baseline is this invocation. The mode comes from the log's own
@@ -177,7 +243,9 @@ def measure(path, worker):
         try:
             usage, backend = zcode_stream_usage(path), "zcode"
         except Exception:
-            usage, backend = None, None
+            usage, backend = zcode_snapshot, "zcode" if zcode_snapshot is not None else None
+    if usage is None and footer is None and _pre_backend_exit(worker, text or ""):
+        usage = Usage(0, 0, 0)
     # workers.json trims old harvested rows; the dispatch marker is durable in the log and
     # carries the selected model for those rows. Prefer the live worker record when present.
     model = worker.get("model") or (marker or {}).get("model") or ""
@@ -363,6 +431,25 @@ def ticket_of(unit_key, units_by_id):
     return int(match.group(1)) if match else None
 
 
+def unknown_by(rows):
+    counts = Counter()
+    for row in rows:
+        if row.get("usage") is not None or row.get("footer_tokens") is not None:
+            continue
+        model, backend = str(row.get("model") or "").lower(), row.get("backend")
+        family = "zc" if backend == "zcode" or model.startswith(("zcode", "zc-")) else \
+            "claude" if backend == "claude" or model.startswith("claude-") else \
+            "luna" if "luna" in model else "terra" if "terra" in model else backend or "unknown"
+        reason = "no-session" if row.get("json_stream") and row.get("session") is None else \
+            "no-resume-baseline" if row.get("need_base") else \
+            "no-usage-snapshot" if row.get("json_stream") and row.get("last") is None else \
+            "no-provider-usage" if backend == "claude" else \
+            "no-result-usage" if backend == "zcode" or model.startswith(("zcode", "zc-")) else "no-footer"
+        counts[f"{family}-{reason}"] += 1
+    return ",".join(f"{reason}:{count}" for reason, count in
+                    sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:3]) or "none"
+
+
 def aggregate(rows, units, now):
     """Rows grouped by unit, ticket, phase and backend, plus the last-24h totals.
 
@@ -395,6 +482,195 @@ def aggregate(rows, units, now):
             "by_backend": {k: _finish(v) for k, v in sorted(by_backend.items())},
             "last_24h": _finish(window),
             "unknown_runs": sum(t["unknown_runs"] for t in by_unit.values())}
+
+
+def token_efficiency_kpis(rows, units, now):
+    """Seven-day completed-unit token KPIs from the cost ledger and full unit history.
+
+    The window selects units by their merge/terminal history event. Each selected unit carries
+    its lifetime worker spend; token KPIs include only units whose runs are fully measured. Raw PR-number
+    keys resolve through the unit's PR; ambiguous or missing keys stay in 未归属.
+    """
+    stop = now if isinstance(now, datetime) else datetime.fromtimestamp(now, timezone.utc)
+    if stop.tzinfo is None:
+        stop = stop.replace(tzinfo=timezone.utc)
+    stop = stop.astimezone(timezone.utc)
+    start = stop - timedelta(days=7)
+    ledger = aggregate(rows, units, stop.timestamp())
+
+    by_id = {str(u.get("id")): u for u in units if isinstance(u, dict) and u.get("id")}
+    by_pr, by_issue = {}, {}
+    issue_ids = {}
+    for unit_id, unit in by_id.items():
+        pr = unit.get("pr")
+        if pr is not None:
+            by_pr.setdefault(str(pr), unit)
+        issue = unit.get("issue")
+        if issue is not None:
+            issue_ids.setdefault(str(issue), set()).add(unit_id)
+    for issue, unit_ids in issue_ids.items():
+        if len(unit_ids) == 1:
+            by_issue[issue] = by_id[next(iter(unit_ids))]
+
+    def resolve(key, ticket=None):
+        key = str(key or "")
+        if key in by_id:
+            return by_id[key]
+        if key.startswith("pr-"):
+            return by_pr.get(key[3:])
+        if key.isdigit():
+            return by_pr.get(key) or by_issue.get(key)
+        if ticket is not None:
+            return by_issue.get(str(ticket))
+        return None
+
+    unit_cost = {}
+    unattributed = []
+    for item in ledger["by_unit"]:
+        unit = resolve(item.get("unit"), item.get("ticket"))
+        if unit is None:
+            unattributed.append(item)
+            continue
+        total = unit_cost.setdefault(str(unit["id"]), {
+            "tokens": 0, "raw": 0, "fresh": 0, "fresh_known": True,
+            "unknown_runs": 0, "ledger_keys": 0,
+        })
+        total["tokens"] += item.get("tokens") or 0
+        total["raw"] += item.get("raw") or 0
+        total["unknown_runs"] += item.get("unknown_runs") or 0
+        total["ledger_keys"] += 1
+        if item.get("fresh") is None or item.get("unknown_runs"):
+            total["fresh_known"] = False
+        else:
+            total["fresh"] += item["fresh"]
+
+    merged_ids, waste_ids = set(), set()
+    first_pass_ids = set()
+    merge_stages = {"merged", "landed"}
+    waste_stages = {"closed", "parked"}
+    for unit_id, unit in by_id.items():
+        history = [event for event in (unit.get("history") or []) if isinstance(event, dict)]
+        parsed = []
+        for event in history:
+            value = event.get("at")
+            try:
+                at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if at.tzinfo is not None:
+                    parsed.append((at.astimezone(timezone.utc), event.get("stage") or ""))
+            except (TypeError, ValueError, OverflowError):
+                continue
+        merge_events = [(at, stage) for at, stage in parsed if stage in merge_stages]
+        if any(start <= at <= stop for at, _ in merge_events):
+            merged_ids.add(unit_id)
+            if not any(event.get("stage") in ("review-request-changes", "review-block") for event in history):
+                first_pass_ids.add(unit_id)
+        elif not merge_events:
+            stage = str(unit.get("stage") or "")
+            end_at = max((at for at, _ in parsed), default=None)
+            if (stage in waste_stages or stage.startswith("blocked")) and end_at and start <= end_at <= stop:
+                waste_ids.add(unit_id)
+
+    cohort_ids = merged_ids | waste_ids
+
+    def coverage(ids, fresh=False):
+        cohort = [r for r in rows if (u := resolve(r.get("unit"))) is not None and str(u["id"]) in ids]
+        known = sum(r.get("usage") is not None and (not fresh or r["usage"].fresh is not None)
+                    or not fresh and r.get("footer_tokens") is not None for r in cohort)
+        return round(100 * known / len(cohort), 1) if cohort else 0.0
+
+    fresh_coverage, token_coverage = coverage(merged_ids, True), coverage(cohort_ids)
+    measured_merged_ids = {u for u in merged_ids if u in unit_cost and unit_cost[u]["fresh_known"]}
+    measured_cohort_ids = {u for u in cohort_ids if u in unit_cost and not unit_cost[u]["unknown_runs"]}
+    measured_merged = len(measured_merged_ids)
+    merged_fresh_known = sum(unit_cost.get(unit_id, {}).get("fresh", 0)
+                             for unit_id in measured_merged_ids)
+    merged_tokens = sum(unit_cost.get(unit_id, {}).get("tokens", 0) for unit_id in merged_ids)
+    merged_raw = merged_tokens
+    merged_tokens_complete = all(
+        unit_cost.get(unit_id, {}).get("unknown_runs", 0) == 0 for unit_id in merged_ids
+    )
+    measured_waste_ids = measured_cohort_ids & waste_ids
+    window_tokens = sum(unit_cost.get(unit_id, {}).get("tokens", 0)
+                        for unit_id in measured_cohort_ids)
+    waste_tokens = sum(unit_cost.get(unit_id, {}).get("tokens", 0)
+                       for unit_id in measured_waste_ids)
+    repair_tokens = sum(
+        row["usage"].raw if row.get("usage") is not None else row["footer_tokens"] or 0
+        for row in rows
+        if (unit := resolve(row.get("unit"))) is not None
+        and str(unit["id"]) in measured_cohort_ids and row.get("phase") == "repair"
+    )
+    fresh_available = fresh_coverage >= TOKEN_EFFICIENCY_MIN_DISPLAY_COVERAGE_PCT and measured_merged > 0
+    token_metrics_available = token_coverage >= TOKEN_EFFICIENCY_MIN_DISPLAY_COVERAGE_PCT and bool(measured_cohort_ids)
+    coverage_pct = {"fresh_tokens_per_merged": fresh_coverage,
+                    "waste_pct": token_coverage, "repair_pct": token_coverage}
+    coverage_status = {
+        key: "NO-DATA" if value < TOKEN_EFFICIENCY_MIN_DISPLAY_COVERAGE_PCT
+        else "WARN" if value < TOKEN_EFFICIENCY_MIN_COVERAGE_PCT else None
+        for key, value in coverage_pct.items()
+    }
+    coverage_label = {key: f"覆盖 {value:.1f}%" for key, value in coverage_pct.items()}
+
+    all_tokens = sum(item.get("tokens") or 0 for item in ledger["by_unit"])
+    unattributed_fresh = sum(item.get("fresh") or 0 for item in unattributed)
+    unattributed_fresh_known = sum(item.get("fresh") is not None for item in unattributed)
+    unattributed_count = len(unattributed)
+    merged_count = len(merged_ids)
+    return {
+        "window_days": 7,
+        "window_start": start.isoformat().replace("+00:00", "Z"),
+        "window_end": stop.isoformat().replace("+00:00", "Z"),
+        "merged_units": merged_count,
+        "merged_fresh_tokens": merged_fresh_known if measured_merged else None,
+        "merged_fresh_known_tokens": merged_fresh_known,
+        "merged_fresh_measured_units": measured_merged,
+        "fresh_tokens_per_merged": merged_fresh_known / measured_merged if fresh_available else None,
+        "coverage_pct": coverage_pct,
+        "coverage_status": coverage_status,
+        "coverage_label": coverage_label,
+        "unknown_by": unknown_by(rows),
+        "merged_raw_tokens": merged_tokens if merged_tokens_complete else None,
+        "raw_tokens_per_merged": merged_raw / merged_count if merged_count and merged_tokens_complete else None,
+        "waste_units": len(waste_ids),
+        "waste_tokens": waste_tokens,
+        "window_tokens": window_tokens,
+        "waste_pct": 100 * waste_tokens / window_tokens if token_metrics_available and window_tokens
+        else (0.0 if token_metrics_available else None),
+        "first_pass_units": len(first_pass_ids),
+        "first_pass_pct": 100 * len(first_pass_ids) / merged_count if merged_count else None,
+        "repair_tokens": repair_tokens,
+        "repair_pct": 100 * repair_tokens / window_tokens if token_metrics_available and window_tokens
+        else (0.0 if token_metrics_available else None),
+        "matched_ledger_tokens": all_tokens - sum(item.get("tokens") or 0 for item in unattributed),
+        "all_ledger_tokens": all_tokens,
+        "unattributed": {
+            "ledger_keys": unattributed_count,
+            "tokens": sum(item.get("tokens") or 0 for item in unattributed),
+            "raw_tokens": sum(item.get("tokens") or 0 for item in unattributed),
+            "fresh_tokens": unattributed_fresh if unattributed_fresh_known == unattributed_count else None,
+            "fresh_measured_keys": unattributed_fresh_known,
+        },
+    }
+
+
+TOKEN_EFFICIENCY_CRITERIA = {
+    "efficiency.fresh_tokens_per_merged_7d": ("efficiency", "fresh tokens per merged unit, rolling 7 d", 800_000, 4_800_000, False),
+    "efficiency.unmerged_waste_pct_7d": ("efficiency", "tokens on unmerged terminal units / terminal cohort tokens, rolling 7 d %", 35, 50, False),
+    "efficiency.first_pass_yield_pct_7d": ("efficiency", "merged units with no review changes or blocks, rolling 7 d %", 65, 50, True),
+    "efficiency.repair_phase_pct_7d": ("efficiency", "repair phase share of terminal cohort tokens, rolling 7 d %", 30, 45, False),
+}
+TOKEN_EFFICIENCY_MEANING = {
+    "efficiency.fresh_tokens_per_merged_7d": "近 7 天合并单元中所有 run 均测得的单元，其生命周期 fresh token（未缓存输入 + 输出）均值；run 覆盖率低于 90% 时为 NO-DATA，90% ≤ 覆盖率 < 95% 时展示并标 WARN，95% 及以上按完整数据判定。健康线沿用工作单 fresh token p90 的静态尺度 800k，异常线为历史 p90 的两倍 4.8M。",
+    "efficiency.unmerged_waste_pct_7d": "近 7 天终态单元中所有 run 均测得的单元里，closed / parked / blocked 且从未合并的 token 占比；run 覆盖率低于 90% 时为 NO-DATA，90% ≤ 覆盖率 < 95% 时展示并标 WARN，95% 及以上按完整数据判定，越低越好。健康线 35% 要比已测匹配台账 43% 少 8 个百分点；50% 比基线高 7 个百分点，作为异常线。",
+    "efficiency.first_pass_yield_pct_7d": "近 7 天合并单元中，历史从未出现 review-request-changes 或 review-block 的比例；高说明少返工。健康线 65% 接近最近窗口的 67% / 前一窗口的 71%；异常线 50% 低于 58% 的全时基线。",
+    "efficiency.repair_phase_pct_7d": "近 7 天终态单元中所有 run 均测得的单元里，repair phase token ÷ 全部 token；run 覆盖率低于 90% 时为 NO-DATA，90% ≤ 覆盖率 < 95% 时展示并标 WARN，95% 及以上按完整数据判定，越低越好。健康线 30% 比已测全时 36.4% 少 6.4 个百分点；45% 高于基线 8.6 个百分点，作为异常线。",
+}
+TOKEN_EFFICIENCY_SOURCE = {
+    "efficiency.fresh_tokens_per_merged_7d": "cost_ledger.by_unit 的 lifetime fresh（缓存读取除外）按 units.json + units-archive.json 的 merged/landed 历史事件筛选近 7 天，再除以窗口合并单元数。",
+    "efficiency.unmerged_waste_pct_7d": "cost_ledger.by_unit 按 units.json + units-archive.json 的终态历史筛选近 7 天；从未合并的 closed / parked / blocked token ÷ 同 cohort 全部 token。未归属 key 单列，不并入分子或分母。",
+    "efficiency.first_pass_yield_pct_7d": "units.json + units-archive.json 的 merged/landed 事件筛选近 7 天；合并单元全历史中没有 review-request-changes / review-block 的比例。",
+    "efficiency.repair_phase_pct_7d": "worker_cost repair phase 用量 + units.json / units-archive.json 的近 7 天终态单元 cohort；repair token ÷ 同 cohort cost_ledger token。",
+}
 
 
 def ticket_spend(rows, units):

@@ -486,8 +486,10 @@ assert_eq "tracker parents cost no GitHub read" 0 "$(grep -cE '^issue view 716[0
 assert_eq "admissible issue behind trackers is still admitted" "needs-triage" \
   "$(jq -r '.[] | select(.number == 7175) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
 assert_eq "confirmed roadmap container is remembered as tracker" "tracker" "$(state_read 7172 | jq -r '.state')"
-assert_eq "container is not given the needs-triage label" "" \
-  "$(jq -r '.[] | select(.number == 7172) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "confirmed roadmap container gets the tracker label" "tracker" \
+  "$(jq -r '.[] | select(.number == 7172) | [.labels[].name] | sort | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "container is not given the needs-triage label" false \
+  "$(jq -r '.[] | select(.number == 7172) | any(.labels[]; .name == "needs-triage")' "$FAKE_ISSUES_FILE")"
 : > "$FAKE_GH_LOG"
 intake_admit_unlabeled_issues >/dev/null 2>&1 || true
 assert_eq "remembered container is not re-read next tick" 0 "$(grep -cE '^issue view 7172 ' "$FAKE_GH_LOG" || true)"

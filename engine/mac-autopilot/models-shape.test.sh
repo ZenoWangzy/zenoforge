@@ -7,7 +7,7 @@ fixture="$test_env_root/models-shape"
 repo="$fixture/repo"
 sup="$fixture/supervisor"
 runtime="$sup/autopi"
-mkdir -p "$repo" "$runtime/alerts" "$fixture/bin" "$fixture/sessions"
+mkdir -p "$repo" "$runtime/alerts" "$fixture/bin" "$fixture/sessions" "$fixture/worker-scratch/luna"
 git init -q -b main "$repo"
 
 cat > "$fixture/bin/gh" <<'SH'
@@ -26,7 +26,7 @@ chmod +x "$fixture/bin/gh" "$fixture/bin/ssh" "$fixture/bin/systemctl"
 
 export MAC_AUTOPILOT_ROOT="$repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$sup"
 export MAC_AUTOPILOT_RUNTIME_DIR="$runtime" MAC_AUTOPILOT_DASHBOARD_OUTPUT="$fixture/dashboard.data.js"
-export MAC_AUTOPILOT_COST_CACHE="$fixture/cost-cache.json" CODEX_SESSIONS_DIR="$fixture/sessions"
+export MAC_AUTOPILOT_COST_CACHE="$fixture/cost-cache.json" CODEX_SESSIONS_DIR="$fixture/sessions" WORKER_SCRATCH_ROOT="$fixture/worker-scratch"
 export PATH="$fixture/bin:$PATH"
 printf '{"units":[]}\n' > "$runtime/units.json"
 # Keep the synthetic worker alive so the rendered worker module exercises its review role.
@@ -66,6 +66,36 @@ CFG="$(jq '.models.implement_share={zcode:50,codex:50}
 pick_configured_model review || fail 'review fallback was not selected after skipping a non-array tuple'
 [[ "$PICK_MODEL" == gpt-6-luna ]] || fail "unexpected fallback model: $PICK_MODEL"
 if grep -Fq 'jqf error' "$LOG"; then fail "named tuple lookup logged a jq error: $(grep -F 'jqf error' "$LOG" | head -1)"; fi
+
+# Hard repairs keep the configured terra identity until its shared model-not-found cache says to use luna max.
+saved_policy="$SCHED_MODEL_POLICY_JSON"
+saved_model_policy_file="${MODEL_POLICY_FILE:-}"
+SCHED_MODEL_POLICY_JSON="$(jq '.roles.production.model="gpt-6.1-terra" | .roles.production.effort="high"' "$script_dir/../model-policy.default.json")"
+MODEL_POLICY_FILE="$fixture/review-model-policy.json"
+printf '%s\n' '{"allow_roles":{"sonnet":["review_fallback"]}}' > "$MODEL_POLICY_FILE"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture/bin/claude"
+chmod +x "$fixture/bin/claude"
+CFG="$(jq '.models.hard=null | .models.implement_hotfix=["gpt-6.1-terra","high"]
+  | .models.review_fallback=["claude-sonnet-5-5","high"]' "$template")"
+cache="$WORKER_SCRATCH_ROOT/luna/model-not-found.cache"; rm -f "$cache"
+pick_implementer '{"id":"terra-hard-repair","hard_escalated":true}' || fail 'hard repair has no configured model without a cache'
+[[ "$PICK_MODEL" == gpt-6.1-terra && "$PICK_EFFORT" == high ]] || fail "hard repair changed its configured model without a cache ($PICK_MODEL/$PICK_EFFORT)"
+printf 'gpt-6.1-terra\t%s\n' "$(( $(date +%s) + 86400 ))" > "$cache"
+pick_implementer '{"id":"terra-hard-repair","hard_escalated":true}' || fail 'cached hard repair model was not selectable'
+[[ "$PICK_MODEL" == gpt-6-luna && "$PICK_EFFORT" == max ]] || fail "cached terra hard repair must use luna max ($PICK_MODEL/$PICK_EFFORT)"
+grep -Fq 'model-not-found cache swap hard-tier from=gpt-6.1-terra to=gpt-6-luna effort=max' "$LOG" || fail 'hard repair cache swap was not logged'
+printf 'gpt-6.1-terra\t%s\n' "$(( $(date +%s) - 1 ))" > "$cache"
+pick_implementer '{"id":"terra-hard-repair","hard_escalated":true}' || fail 'expired hard repair cache blocked the configured model'
+[[ "$PICK_MODEL" == gpt-6.1-terra && "$PICK_EFFORT" == high ]] || fail "expired cache must restore the configured terra tuple ($PICK_MODEL/$PICK_EFFORT)"
+rm -f "$cache"
+printf '%s\n' '{"error":{"code":"model_not_found"}}' > "$sup/terra.worker.log"
+jq -cn --argjson pid "$$" '{workers:[{pid:$pid,unit:"terra-hard-repair",type:"repair",log:"terra.worker.log",report:"terra-worker.md",started:"2026-11-09T00:00:00Z",provider:"codex",model:"gpt-6.1-terra"}]}' > "$WORKERS"
+harvest_workers
+awk -F '\t' -v now="$(date +%s)" '$1 == "gpt-6.1-terra" && $2 ~ /^[0-9]+$/ && $2 > now && $2 <= now + 86400 {found=1} END {exit !found}' "$cache" \
+  || fail 'hard repair model_not_found must append the shared model/epoch TSV cache entry'
+SCHED_MODEL_POLICY_JSON="$saved_policy"
+if [[ -n "$saved_model_policy_file" ]]; then MODEL_POLICY_FILE="$saved_model_policy_file"; else unset MODEL_POLICY_FILE; fi
+printf '{"workers":[{"pid":%s,"unit":"synthetic","type":"review","log":"missing.log"}]}\n' "$$" > "$WORKERS"
 
 # The Python generator must carry object-shaped implement_share through its normal config output.
 jq '.models.implement_share={zcode:50,codex:50}' "$template" > "$runtime/config.json"

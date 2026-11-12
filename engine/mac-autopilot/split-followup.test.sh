@@ -64,4 +64,14 @@ SA_ACTUAL=28; rc=0; size_admission_write_start issue-60 "$sa/wt" "$sa_unit" || r
 SA_ACTUAL=900; rc=0; size_admission_write_start issue-60 "$sa/wt" "$sa_unit" || rc=$?
 [[ "$rc" == 1 && "$(jqf -r '[.units[0].history[] | select(.stage=="size-split-admitted")] | length' "$UNITS")" == 1 ]] \
   || fail "an oversized real diff must still be refused, and the admission is once only (rc=$rc)"
+# Repair-pending (issue 5374 live shape): an 802-line repair head is refused, then admitted once on the same refused head, then refused again.
+printf '%s\n' '{"units":[{"id":"issue-61","issue":61,"stage":"repair-pending","history":['"$sa_hist"']}]}' > "$UNITS"
+rc=0; size_admission_reject issue-61 802 agent/issue-61 "repair-pending before dispatch" "$sa_head" "" 802 admission 800 || rc=$?
+[[ "$rc" == 1 && "$(jqf -r '.units[0].stage' "$UNITS")" == supervisor-review ]] || fail "first repair refusal must reach the arbiter (rc=$rc)"
+rc=0; size_admission_reject issue-61 802 agent/issue-61 "repair-pending before dispatch" "$sa_head" "" 802 admission 800 || rc=$?
+[[ "$rc" == 0 && "$(jqf -r '[.units[0].history[] | select(.stage=="size-split-admitted")] | length' "$UNITS")" == 1 ]] \
+  || fail "a repair refused on the same head was not admitted once (rc=$rc)"
+rc=0; size_admission_reject issue-61 802 agent/issue-61 "repair-pending before dispatch" "$sa_head" "" 802 admission 800 || rc=$?
+[[ "$rc" == 1 && "$(jqf -r '[.units[0].history[] | select(.stage=="size-split-admitted")] | length' "$UNITS")" == 1 ]] \
+  || fail "a still-oversized repair after the one admission must be refused (rc=$rc)"
 echo "split-followup.test.sh: all assertions passed"

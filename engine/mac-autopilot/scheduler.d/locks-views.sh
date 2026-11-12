@@ -1,3 +1,4 @@
+lock_us_now() { LOCK_US="${EPOCHREALTIME:-0}"; LOCK_US="${LOCK_US//[.,]/}"; } # microseconds since the epoch; 0 where bash has no EPOCHREALTIME
 acquire_scheduler_lock() {
   local old owner="$BASHPID"
   if ! mkdir "$SCHED_LOCK" 2>/dev/null; then
@@ -8,6 +9,7 @@ acquire_scheduler_lock() {
   fi
   echo "$owner" > "$SCHED_LOCK/pid"
   SCHED_LOCK_HELD=true
+  lock_us_now; SCHED_LOCK_AT_US=$LOCK_US # the existing-walk station sums holds and waits per pass
   chain_exit_trap 'release_scheduler_lock'
 }
 release_scheduler_lock() {
@@ -15,6 +17,7 @@ release_scheduler_lock() {
   if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$BASHPID" ]]; then
     rm -rf -- "$SCHED_LOCK"
   fi
+  lock_us_now; LOCK_HOLD_US=$((${LOCK_HOLD_US:-0} + LOCK_US - ${SCHED_LOCK_AT_US:-$LOCK_US}))
   SCHED_LOCK_HELD=false
 }
 # A refill waits for the ledger lock only until its own deadline, like a lock_timeout under a statement deadline: the full tick holds the lock for
@@ -32,10 +35,15 @@ refill_stopped() {
 acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it the wait returns 1 and the caller decides
   local t0=$SECONDS
   refill_stopped && return 1
+  lock_us_now; local w0=$LOCK_US
   until acquire_scheduler_lock; do
+    lock_us_now; LOCK_WAIT_US=$((${LOCK_WAIT_US:-0} + LOCK_US - w0)); w0=$LOCK_US # waited so far, to the last refused try
     if refill_lock_wait_spent; then
       : > "$A/.refill-stop"
-      say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): the refill limit is near, the refill ends here and the next one resumes"
+      local holder holder_phase
+      holder="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"; holder="${holder:-none}"
+      holder_phase="$(cat "$A/.tick-phase" 2>/dev/null || true)"; holder_phase="${holder_phase:-unknown}"
+      say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): holder=$holder holder_phase=$holder_phase: the refill limit is near, the refill ends here and the next one resumes"
       return 1
     fi
     if [[ -n "${1:-}" ]] && (( SECONDS - t0 >= $1 )); then return 1; fi
@@ -89,7 +97,7 @@ views_entry() { # scheduler.sh --views <mode>：分离进程入口，自己持�
     mkdir "$VIEWS_LOCK" 2>/dev/null || return 0
   fi
   echo "$$" > "$VIEWS_LOCK/pid"
-  chain_exit_trap 'rm -rf "$VIEWS_LOCK"'
+  chain_exit_trap 'if [[ "$(cat "$VIEWS_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then rm -rf -- "$VIEWS_LOCK"; fi'
   run_views "${1:-dashboard}"
 }
 launch_views() { # mode；AUTOPI_VIEWS_INLINE=true 时就地跑完（测试与排障）
@@ -109,7 +117,7 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut ref [guidance]：记裁�
   [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock <ref> [guidance]" >&2; return 64; }
   restore_archived_unit "$1" || :
   [[ -n "$(unit_field "$1" .id)" ]] || { echo "rule: no unit $1" >&2; return 1; }
-  local issue
+  local issue stage
   case "$2" in
     reblock) issue="${5:-$(unit_field "$1" '.blocked_on // empty')}" # back to dependency wait; $5 names the blocker when the unit has none
       [[ "$issue" =~ ^[0-9]+$ ]] || { echo "rule: $1 has no blocker; pass --blocked-on N" >&2; return 1; }
@@ -121,8 +129,12 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut ref [guidance]：记裁�
       set_unit "$1" "$(hist supervisor-recut "supervisor ruling: $3") | .stage=\"closed\" | .note=$(js "supervisor ruling sent issue #$issue to recut: $3")" ;;
     reroute) [[ "$(unit_field "$1" .stage)" != closed ]] || { echo "rule: $1 is closed" >&2; return 1; }
       supervisor_requeue_unit "$1" reroute "supervisor ruling $3: ${4:-see ruling}" null ;; # releases blocked_on and moves the unit back to its work stage, parked or not
-    *) if [[ "$(unit_field "$1" .stage)" == parked && "$2" == requeue ]]; then
-         supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null
+    *) if [[ "$2" == requeue ]]; then
+         stage="$(unit_field "$1" .stage)"
+         case "$stage" in
+           parked|supervisor-review) supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null ;;
+           *) echo "rule: $1 is in $stage; use --reroute to move it" >&2; return 1 ;;
+         esac
        else
          set_unit "$1" "$(hist "supervisor-$2" "supervisor ruling via hold.sh --rule: $3")"
        fi ;;

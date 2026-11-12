@@ -86,6 +86,10 @@ grep -qF '(( existing_only )) || ! intake_reopen_refused_recut' "$engine_dir/mac
 cu_unit() { # issue stage last-history-stage [extra jq]
   jq -n --argjson n "$1" --arg stage "$2" --arg last "$3" '{id:("issue-"+($n|tostring)),issue:$n,branch:("agent/issue-"+($n|tostring)),stage:$stage,history:[{stage:$last,at:"2026-01-02T00:00:00Z"}]}'
 }
+cu_recut_requeue_pr_closed() {
+  cu_unit "$1" closed supervisor-cap-triage-recut \
+    | jq '.history += [{stage:"supervisor-requeue",at:"2026-01-02T00:01:00Z"},{stage:"pr-closed",at:"2026-01-02T00:02:00Z"}]'
+}
 cu_state() { jq -n --argjson extra "${3:-{\}}" --arg from "$2" '{state:"ready-for-agent",state_changed_from:$from,state_changed_at:"2026-01-01T00:00:00Z"} + $extra' > "$AGENT_HOME/state/$1.json"; }
 cu_episode() { jq -r '.scheduler_handoff.episode // "none"' "$AGENT_HOME/state/$1.json"; }
 { cu_unit 21 merged merged; cu_unit 22 closed supervisor-cap-triage-recut; cu_unit 23 closed obsolete; cu_unit 24 merged merged
@@ -119,4 +123,16 @@ cu_state 25 needs-hold
 intake_closed_unit_rows 25
 [[ "$(cu_episode 25)" == "ruling-$STAMP" ]] || fail "an issue whose hold is gone must act again"
 grep -qF 'intake_closed_unit_rows "${intake_terminal_rows[@]}"' "$engine_dir/mac-autopilot/scheduler.d/intake.sh" || fail "intake call site missing"
+# A recut closes its own PR; a later supervisor-requeue may be followed by the PR-close observation.
+{ cu_recut_requeue_pr_closed 29; cu_unit 30 closed pr-closed; } | jq -s '{units:.}' > "$UNITS"
+cu_state 29 needs-hold
+cu_state 30 needs-hold
+intake_closed_unit_rows 29 30
+[[ "$(cu_episode 29)" == "ruling-$STAMP" ]] || fail "a recut followed by requeue and pr-closed must restore once"
+[[ "$(unit_json issue-29 | jq -r '.closed_units_restored_at // "none"')" == "$STAMP" ]] || fail "recut restore must be recorded"
+[[ "$(cu_episode 30)" == none && "$(unit_json issue-30 | jq -r .stage)" == closed ]] || fail "pr-closed without a recut must stay closed"
+set_unit issue-29 '.stage = "closed"'
+cu_state 29 needs-hold
+intake_closed_unit_rows 29
+[[ "$(cu_episode 29)" == none && "$(unit_json issue-29 | jq -r '.closed_units_restore_refused // false')" == true ]] || fail "recut restore must not happen twice"
 echo "recut-reopen.test.sh ok"

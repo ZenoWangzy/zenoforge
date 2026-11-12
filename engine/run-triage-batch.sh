@@ -366,7 +366,11 @@ else
 fi
 STATUS=$?
 set -e
-TOKENS_USED="$(codex_tokens_used "$TRANSCRIPT_FILE")"
+if [ "$BATCH_ON_CLAUDE" = 1 ]; then
+  TOKENS_USED="$(claude_tokens_used < "$TRANSCRIPT_FILE")"
+else
+  TOKENS_USED="$(codex_tokens_used "$TRANSCRIPT_FILE")"
+fi
 BATCH_TAG="batch:$(IFS=,; echo "${INCLUDED_IDS[*]}")"
 record_premium_spend triage "$BATCH_IDENTITY" "$BATCH_TAG" "" "" "$TOKENS_USED" \
   || echo "run-triage-batch: could not persist batch token usage" >&2

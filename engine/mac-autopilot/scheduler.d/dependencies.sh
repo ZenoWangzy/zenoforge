@@ -58,7 +58,7 @@ unit_body_blockers() { # unit-json → stored full-body IDs, or fallback IDs fro
 }
 dep_delivered_snapshot() {
   local dep pr sha
-  DEP_DELIVERED_CACHE=() DEP_DELIVERED_PR=()
+  DEP_DELIVERED_CACHE=() DEP_DELIVERED_PR=() TRACKER_KIDS=()
   while IFS=$'\t' read -r dep pr sha; do
     [[ "$dep" =~ ^[0-9]+$ ]] || continue
     DEP_DELIVERED_CACHE["$dep"]=1
@@ -80,6 +80,30 @@ dep_cache_info() { # predecessor issue → cached {state,labels} or {}
 unit_body_declares_dependency() { # unit predecessor-issue → true when the issue body explicitly names this prerequisite
   unit_body_blockers "$1" | grep -Fxq "$2"
 }
+declare -A TRACKER_KIDS=() # blocker → its recut_children, "-" when it is no tracker parent; one state read per blocker per tick (dep_delivered_snapshot resets it)
+# A tracker counts as delivered only when every recut child is, so a child that names its own parent as blocker waits on itself forever (#5714 on #5712),
+# and a latched real_wait skipped the one path that knows trackers (#2511 on #2510). Wait on the OTHER children only; no other children = cleared.
+tracker_dep_cleared() { # blocker blocked-issue → 0 when the blocker is a tracker parent and every recut child but the blocked issue is delivered or closed
+  local dep="$1" issue="$2" st kids c s
+  [[ "$dep" =~ ^[0-9]+$ ]] || return 1
+  if [[ -z "${TRACKER_KIDS[$dep]:-}" ]]; then
+    kids=""
+    # shortcut: the text test skips jq for the common non-tracker blocker (the release pass must not grow its jq runs with blocked units); pretty or compact JSON both match
+    if st="$(scheduler_issue_state "$dep" 2>/dev/null)" && [[ "$st" == *'"recut_children"'* ]]; then
+      kids="$(jqf -r 'if (.state == "tracker" or .tracker_parent == true) and ((.recut_children | type) == "array") then [.recut_children[] | select(type == "number")] | join(" ") else empty end' <<<"$st")"
+    fi
+    TRACKER_KIDS["$dep"]="${kids:--}"
+  fi
+  [[ "${TRACKER_KIDS[$dep]}" != - ]] || return 1
+  for c in ${TRACKER_KIDS[$dep]}; do
+    [[ "$c" != "$issue" ]] || continue
+    dep_delivered_in_ledger "$c" && continue
+    s="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$c")")"
+    [[ "$s" == CLOSED || "$s" == MERGED ]] || return 1
+  done
+  [[ " ${TRACKER_KIDS[$dep]} " != *" $issue "* ]] || say "issue #$issue waits on tracker #$dep, its own parent: dependency rewritten to its sibling children, all delivered"
+  return 0
+}
 dep_cleared() { # unit-json predecessor → 0 when the ledger and the cached GitHub state already count it as cleared
   local info state labels
   dep_delivered_in_ledger "$2" && return 0
@@ -89,7 +113,7 @@ dep_cleared() { # unit-json predecessor → 0 when the ledger and the cached Git
   [[ "$state" == CLOSED || "$state" == MERGED ]] && return 0
   labels="$(jqf -r '.labels // ""' <<<"$info")"
   [[ "$state" == OPEN && ",$labels," =~ ,roadmap(-epic|-theme)?, ]] && return 0
-  return 1
+  tracker_dep_cleared "$2" "$(jqf -r '.issue // empty' <<<"$1")"
 }
 blocking_body_dependency() { # unit-json → first predecessor not yet delivered/cleared by the local cache
   local dep
@@ -124,6 +148,7 @@ dep_marker_open() { # unit-json → the marked predecessor while it is undeliver
   state="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$dep")")"
   [[ "$state" != MERGED ]] || return 1
   [[ "$state" != CLOSED ]] || dep_has_unit "$dep" || return 1
+  ! tracker_dep_cleared "$dep" "$(jqf -r '.issue // empty' <<<"$1")" || return 1
   printf '%s' "$dep"
 }
 dep_has_unit() { # issue → 0 when the ledger has rows and none is settled: with no delivery, a closed state there is work given up or a stale read, not work done. A wontfix, duplicate, done or parked row will not move on its own, and the sweep could never prove it.
@@ -137,6 +162,7 @@ park_if_body_blocked() { # unit-json → 0 当按正文前置停住（不派发�
   local id dep
   id="$(jqf -r .id <<<"$1")"
   dep="$(blocking_body_dependency "$1")" || return 1
+  [[ "$dep" =~ ^[0-9]+$ ]] || return 1
   park_blocked "$id" "$dep"
 }
 # 前置状态每 DEP_CHECK_SECONDS（默认 600）向 GitHub 刷新一次，同一前置每拍只查一次：逐单元 gh issue view
@@ -147,7 +173,7 @@ dep_states() { # issue/PR 号… → 每行 "号<TAB>STATE<TAB>标签,…"；一
   (( $# > 0 )) || return 0
   local q="" d
   for d in "$@"; do
-    q+=" i$d: issueOrPullRequest(number: $d) { ... on Issue { state stateReason labels(first: 30) { nodes { name } } } ... on PullRequest { state labels(first: 30) { nodes { name } } } }"
+    q+=" i$d: issueOrPullRequest(number: $d) { ... on Issue { state stateReason updatedAt labels(first: 30) { nodes { name } } } ... on PullRequest { state updatedAt labels(first: 30) { nodes { name } } } }"
     q+=" p$d: pullRequests(headRefName: \"agent/issue-$d\", states: MERGED, first: 1) { totalCount }"
   done
   # awaiting-release is only set after a verified merge into main (AGENTS.md), so it counts as delivered here too, whatever the PR branch is called.
@@ -155,7 +181,7 @@ dep_states() { # issue/PR 号… → 每行 "号<TAB>STATE<TAB>标签,…"；一
   # （10-22 #3122/#3431 已合并、后继仍停着）。流水线的实现分支是 agent/issue-N：它的 PR 合并即交付。
   gh api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q } }" \
     --jq '.data.repository | . as $r | to_entries[] | select((.key | startswith("i")) and .value != null) | .key[1:] as $d
-      | "\($d)\t\(if ($r["p" + $d].totalCount // 0) > 0 or ([.value.labels.nodes[].name] | index("awaiting-release")) != null then "MERGED" else .value.state end)\t\([.value.labels.nodes[].name] | join(","))\t\(.value.state)\t\(.value.stateReason // "")"' 2>/dev/null
+      | "\($d)\t\(if ($r["p" + $d].totalCount // 0) > 0 or ([.value.labels.nodes[].name] | index("awaiting-release")) != null then "MERGED" else .value.state end)\t\([.value.labels.nodes[].name] | join(","))\t\(.value.state)\t\(.value.stateReason // "")\t\(.value.updatedAt // "")"' 2>/dev/null
 }
 stack_pilot_label() { jqf -r 'if .stacking.enabled == false then "" else (.stacking.pilot_label // "stack-pilot") end' <<<"$CFG"; }
 unit_has_stack_pilot() { # unit-json
@@ -338,7 +364,7 @@ release_dependency_blocks() {
     done < <(jqf -r '[.units[] | select((.stage=="blocked-external" or (.stage=="parked" and (.parked_reason == null or .parked_reason == "waiting-predecessor"))) and .blocked_on != null) | .blocked_on | numbers] | unique | .[]' "$UNITS")
     while IFS= read -r dep; do # 自己的 issue 已关的单元要能被收掉（带 PR 的也查，not_planned 时关 PR）：并入同一次批量查询
       [[ "$dep" =~ ^[0-9]+$ ]] && deps+=("$dep")
-    done < <(jqf -r '.units[] | select((.stage=="blocked-external" or .stage=="parked") and (.issue | type)=="number") | .issue' "$UNITS")
+    done < <(jqf -r '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review") and (.issue | type)=="number") | .issue' "$UNITS")
     # a blocked unit goes pending this tick: its other predecessors must already be cached, or it blocks on one that is closed.
     # Two jq runs for all units: stored body lists as numbers, and the saved task text of an older unit without a list (RS-separated; awk parses it).
     while IFS= read -r dep; do
@@ -359,12 +385,13 @@ release_dependency_blocks() {
       dep_results="$(dep_states "${unique_deps[@]}" 2>/dev/null || true)"
       dep_states_json="$(printf '%s\n' "$dep_results" | jqf -Rn '
         [inputs | split("\t") | select(length >= 2 and .[0] != "" and .[1] != "")]
-        | map({key:.[0],value:{state:.[1],labels:(.[2] // ""),issue_state:(.[3] // ""),state_reason:(.[4] // "")}}) | from_entries')"
+        | map({key:.[0],value:({state:.[1],labels:(.[2] // ""),issue_state:(.[3] // ""),state_reason:(.[4] // "")}
+          + (if (.[5] // "") == "" then {} else {updated_at:.[5]} end))}) | from_entries')"
     else
       dep_states_json='{}'
     fi
-    jqf -cn --argjson epoch "$NOW_EPOCH" --slurpfile states <(printf '%s' "$dep_states_json") \
-      '{epoch:$epoch,states:$states[0]}' > "$dep_cache_file.tmp" && mv "$dep_cache_file.tmp" "$dep_cache_file"
+    sched_dep_cache_refresh_merge "$dep_cache_file" "$NOW_EPOCH" "$dep_states_json" \
+      || say "dep cache refresh failed; preserving the prior snapshot"
   fi
   intake_mark gh_batch
   dep_cache="$(jqf_optional_file "$dep_cache_file" -c 'if (.states|type)=="object" then .states else {} end' 2>/dev/null || echo '{}')"
@@ -372,7 +399,7 @@ release_dependency_blocks() {
   while IFS=$'\t' read -r id issue; do # 自己的 issue 已关或已交付：单元作废（2026-10-30 issue-3681 等 5 个）
     set_unit "$id" "$(hist issue-closed "issue #$issue already closed on GitHub") | .stage=\"closed\" | del(.blocked_on) | .note=null"
     say "unit=$id issue #$issue already closed on GitHub; retired"
-  done < <(jqf -r --slurpfile c <(printf '%s' "$dep_cache") '.units[] | select((.stage=="blocked-external" or .stage=="parked") and .pr == null and (.issue | type)=="number"
+  done < <(jqf -r --slurpfile c <(printf '%s' "$dep_cache") '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review") and .pr == null and (.issue | type)=="number"
     and ((($c[0][(.issue | tostring)].state) // "") | IN("CLOSED","MERGED"))) | [.id, .issue] | @tsv' "$UNITS")
   dep_q_flush
   intake_mark retire_closed
@@ -413,6 +440,11 @@ release_dependency_blocks() {
       dep_blocker_forget "$issue" "$dep"
       if [[ "$state" == MERGED ]]; then dep_release_delivered "$id" "$dep" "$has_note"; else unblock_unit "$id" "#$dep delivered"; fi
       continue
+    fi
+    # A tracker whose other children are all delivered is delivered for this unit, even when real_wait latched (dead_blocker_resolve below only runs without it).
+    if [[ "$state" == OPEN ]] && tracker_dep_cleared "$dep" "$issue"; then
+      dep_blocker_forget "$issue" "$dep"
+      unblock_unit "$id" "#$dep tracker: every other child delivered"; continue
     fi
     if [[ "$state" == OPEN && "$real_wait" != true ]] && dead_blocker_resolve "$id" "$dep" "$issue"; then
       dep_blocker_forget "$issue" "$dep"; continue
@@ -458,10 +490,18 @@ release_dependency_blocks() {
   dep_q_flush
   DEP_ROWS_PASS=0 SET_UNIT_QUEUE=0
   intake_mark parked_release
-  # 停在 blocked-external 却没有前置号的单元没有任何机制会放开它（issue-2536）：交 supervisor。
-  for id in $(jqf -r '.units[] | select(.stage=="blocked-external" and .blocked_on == null and .size_recut_pending != true) | .id' "$UNITS"); do
-    to_supervisor "$id" "blocked-external without a predecessor: nothing can release it"
-  done
+  # A ready issue without a recorded predecessor has no release event to wait for. If GitHub
+  # still labels it ready, release it; keep non-ready issues on the supervisor route.
+  while IFS="$US" read -r id ready; do
+    if [[ "$ready" == true ]]; then
+      unblock_unit "$id" "no predecessor recorded; issue remains ready-for-agent"
+    else
+      to_supervisor "$id" "blocked-external without a predecessor: nothing can release it"
+    fi
+  done < <(jqf -r --slurpfile c <(printf '%s' "$dep_cache") '.units[]
+    | select(.stage=="blocked-external" and .blocked_on == null and .size_recut_pending != true)
+    | [ .id, (((($c[0][(.issue | tostring)].labels // "") | split(",")) | index("ready-for-agent")) != null) ]
+    | map(tostring) | join("\u001f")' "$UNITS")
   intake_mark no_blocker_escalate
   dep_hold_parked; intake_mark hold_parked
   if (( gh_due )); then
@@ -516,31 +556,38 @@ dep_predecessor_dead() { # waiter-unit-json predecessor
   printf 'predecessor #%s can never deliver (%s), no open PR, no live worker, no live child; branches:%s' \
     "$dep" "$(jqf -r 'if length == 0 then "open tracker with no unit" else "unit closed undelivered: " + (last.note // "no note" | .[0:200]) end' <<<"$rows")" "$branches"
 }
-dep_dead_sweep() { # at most one marked unit per sweep reaches the arbiter; no state, so nothing can wedge it
+dep_dead_sweep() { # at most one unit per sweep reaches the arbiter; no state, so nothing can wedge it
   local u id dep evidence
   while IFS= read -r u; do
-    id="$(jqf -r .id <<<"$u")"; dep="$(jqf -r .dep_wait_delivery <<<"$u")"
+    id="$(jqf -r .id <<<"$u")"; dep="$(jqf -r '.dep_wait_delivery // .blocked_on' <<<"$u")"
     evidence="$(dep_predecessor_dead "$u" "$dep")" || continue
     if [[ "$(jqf -r '.dep_dead_proved // empty' <<<"$u")" == "$dep" ]] && ! dep_stopped_waiting_on "$id" "$dep"; then
       dep_stop_waiting "$id" "$dep" "dead predecessor blocked it again after arbitration"
       echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=released reason=repeat" >> "$A/alerts/events.md"
     elif [[ "$(jqf -r '.dep_dead_proved // empty' <<<"$u")" == "$dep" ]]; then
-      set_unit "$id" "$(hist supervisor-park "blocked on dead predecessor #$dep again after arbitration") | del(.blocked_on) | .stage=\"parked\" | .parked_reason=\"dep-dead-repeat\" | .note=$(js "$evidence") | .unpark_condition=$(js "#$dep delivered in the ledger or closed on GitHub")"
+      set_unit "$id" "$(hist supervisor-park "blocked on dead predecessor #$dep again after arbitration") | .dep_wait_delivery=$dep | del(.blocked_on) | .stage=\"parked\" | .parked_reason=\"dep-dead-repeat\" | .note=$(js "$evidence") | .unpark_condition=$(js "#$dep delivered in the ledger")"
       echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=parked reason=repeat" >> "$A/alerts/events.md"
     else
-      set_unit "$id" "$(hist dep-dead-proved "#$dep") | .dep_dead_proved=$dep | del(.blocked_on)"
+      set_unit "$id" "$(hist dep-dead-proved "#$dep") | .dep_dead_proved=$dep | .dep_wait_delivery=$dep | del(.blocked_on, .unpark_condition)"
       to_supervisor "$id" "$evidence. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #$dep"
     fi
     return 0
-  done < <(jqf -c '[.units[] | select(.stage=="blocked-external" and .size_recut_pending != true and .dep_wait_delivery != null and .dep_wait_delivery == .blocked_on)] | sort_by(-.issue) | .[]' "$UNITS")
+  done < <(jqf -c '[.units[] | select(.size_recut_pending != true and ((.stage=="blocked-external" and .dep_wait_delivery != null and .dep_wait_delivery == .blocked_on) or (.stage=="parked" and .parked_reason=="waiting-predecessor" and (.blocked_on | type)=="number")))] | sort_by(-.issue) | .[]' "$UNITS")
 }
-dep_dead_unpark() { # a unit parked dep-dead-repeat before the one release existed (#609) is owed it; one that already had it stays parked, or a refusing worker loops
+dep_dead_unpark() { # delivery clears every repeat park; a dead undelivered blocker gets only the one pre-repeat release, so a refusing worker cannot loop
   local u id dep
   while IFS= read -r u; do
     id="$(jqf -r .id <<<"$u")"; dep="$(jqf -r .dep_wait_delivery <<<"$u")"
+    if dep_delivered_in_ledger "$dep"; then
+      set_unit "$id" ".blocked_on=$dep | del(.parked_reason, .unpark_condition)"
+      dep_release_delivered "$id" "$dep" true
+      (( ! DEP_SWEEP )) || dep_rows_prime # a released waiter can be another waiter's predecessor row
+      echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=released reason=delivered" >> "$A/alerts/events.md"
+      continue
+    fi
     dep_stopped_waiting_on "$id" "$dep" && continue
     dep_predecessor_dead "$u" "$dep" >/dev/null || continue # fail closed: closed on GitHub is not delivered, and not proven dead stays parked
-    set_unit "$id" 'del(.parked_reason, .unpark_condition)'
+    set_unit "$id" ".blocked_on=$dep | del(.parked_reason, .unpark_condition)"
     dep_stop_waiting "$id" "$dep" "it was closed without delivering, its work is not in main"
     (( ! DEP_SWEEP )) || dep_rows_prime # a released waiter can be another waiter's predecessor row
     echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=released reason=parked-before-release" >> "$A/alerts/events.md"

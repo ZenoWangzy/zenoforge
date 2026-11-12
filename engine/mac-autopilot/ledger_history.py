@@ -8,9 +8,94 @@ both places), then the archive. Duplicate ids collapse to the live row.
 """
 import json
 import os
-from datetime import timedelta
+import re
+from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
 
 LEDGER_FILES = ("units.json", "units-archive.json")
+SCHEDULER_LINE_RE = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\]")
+SCHEDULER_FUTURE_TOLERANCE = timedelta(seconds=300)
+
+
+def scheduler_log_lines(path, now):
+    """Read scheduler rows, skipping stamps over five minutes ahead; return rows and the skip count."""
+    rows, future_stamped = [], 0
+    try:
+        with open(path, errors="ignore") as source:
+            for raw in source:
+                match = SCHEDULER_LINE_RE.match(raw)
+                if match:
+                    try:
+                        at = datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        at = None
+                    if at and at > now + SCHEDULER_FUTURE_TOLERANCE:
+                        future_stamped += 1
+                        continue
+                rows.append(raw)
+    except OSError:
+        return None, 0
+    return rows, future_stamped
+
+
+def latest_scheduler_tick(path, now):
+    """Return the newest retained scheduler timestamp, or an empty string."""
+    rows, _ = scheduler_log_lines(path, now)
+    tick = ""
+    for raw in rows or []:
+        match = SCHEDULER_LINE_RE.match(raw)
+        if match:
+            tick = match.group(1)
+    return tick
+
+
+RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{7,40}) closed=\[([0-9,\s]*)\]")
+_SCHEDULER_ROWS_UNSET = object()
+
+
+def _scheduler_event_time(raw):
+    if not raw.startswith("["):
+        return None
+    try:
+        return datetime.strptime(raw[1:21], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def release_acceptances(runtime, now=None, scheduler_rows=_SCHEDULER_ROWS_UNSET):
+    """Read batch close events from event notes and the filtered scheduler log."""
+    now = now or datetime.now(timezone.utc)
+    scheduler_path = os.path.join(runtime, "scheduler.log")
+    paths = [os.path.join(runtime, "alerts", "events.md"), scheduler_path]
+    events, seen = [], set()
+    found_source = False
+    for path in paths:
+        try:
+            if path == scheduler_path:
+                rows = scheduler_rows
+                if rows is _SCHEDULER_ROWS_UNSET:
+                    rows, _ = scheduler_log_lines(path, now)
+                if rows is None:
+                    continue
+                source = nullcontext(rows)
+            else:
+                source = open(path, errors="ignore")
+            with source as lines:
+                found_source = True
+                for raw in lines:
+                    match = RELEASE_CLOSER_RE.search(raw)
+                    at = _scheduler_event_time(raw)
+                    if not match or not at or at > now + SCHEDULER_FUTURE_TOLERANCE:
+                        continue
+                    for number in re.findall(r"\d+", match.group(2)):
+                        event = {"issue": int(number), "sha": match.group(1), "at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}
+                        key = (event["issue"], event["sha"], event["at"])
+                        if key not in seen:
+                            seen.add(key)
+                            events.append(event)
+        except OSError:
+            continue
+    return events if found_source else None
 
 
 def load_units(runtime_dir):
@@ -83,9 +168,9 @@ MEANING = {ID: "PR 开出到第一个评审结论的 p90 分钟，滚动 7 天�
 SOURCE = {ID: "units.json 每个 pr-opened → 之后第一个 review-approve / review-request-changes / review-block；停在 review-pending 的最新 PR 按 now 计"}
 
 
-def first_review_waits(units, now, ts):
+def first_review_waits(units, now, ts, window_hours=None):
     """Minutes from each pr-opened to its first review verdict over 7 days; a PR still in review-pending counts its age."""
-    since, waits = now - timedelta(days=7), []
+    since, waits = now - (timedelta(hours=window_hours) if window_hours else timedelta(days=7)), []
     for u in units:
         kinds = sorted((ts(h["at"]), h.get("stage") or "") for h in u.get("history") or [] if ts(h.get("at")))
         opens = [i for i, (_, k) in enumerate(kinds) if k == "pr-opened"]
@@ -106,9 +191,9 @@ MEANING[UNCHANGED] = "过去 24 小时内，返工运行里「PR head 没有变�
 SOURCE[UNCHANGED] = "units.json（含 units-archive.json）单元历史里 repair-delivered / repair-no-push 事件的 head_class 与 fresh_tokens（harvest 写入：派发时记的 PR head 对比结束时 origin 分支 head），事件时间固定滚动 24h；没有 head_class 的旧事件不读"
 
 
-def unchanged_head_token_pct(units, now, ts):
+def unchanged_head_token_pct(units, now, ts, window_hours=None):
     """Share of fresh tokens spent on repair runs whose PR head did not move; None while no run in the window is classified."""
-    since, spent, wasted = now - timedelta(hours=24), 0, 0
+    since, spent, wasted = now - timedelta(hours=window_hours or 24), 0, 0
     for u in units:
         for h in u.get("history") or []:
             tokens, at = h.get("fresh_tokens"), ts(h.get("at"))
@@ -119,7 +204,9 @@ def unchanged_head_token_pct(units, now, ts):
     return 100 * wasted / spent if spent else None
 
 
-def metrics(units, now, ts):
-    waits = sorted(first_review_waits(units, now, ts))
+def metrics(units, now, ts, window_hours=None, sample_counts=None):
+    waits = sorted(first_review_waits(units, now, ts, window_hours))
+    if sample_counts is not None:
+        sample_counts[ID] = len(waits)
     return {ID: waits[min(len(waits) - 1, int(round(.9 * (len(waits) - 1))))] if waits else None,
-            UNCHANGED: unchanged_head_token_pct(units, now, ts)}
+            UNCHANGED: unchanged_head_token_pct(units, now, ts, window_hours)}

@@ -8,6 +8,12 @@ export REPO_DIR="$test_env_root/repo"
 export MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/autopi"
 eval "$(sed -n '/^maintenance_record_deferred_step() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p; /^maintenance_clear_deferred_step() {/,/^}/p; /^maintenance_now_epoch_ms() {/,/^}/p; /^maintenance_set_optional_deadline() {/,/^}/p; /^maintenance_restore_slice_deadline() {/,/^}/p; /^maintenance_defer_optional_step() {/,/^}/p; /^maintenance_run_optional_step() {/,/^}/p; /^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 
+# Deadline math and assertions share a clock driven by the test's SECONDS.
+MAINTENANCE_TEST_EPOCH_MS=1700000000000
+maintenance_now_epoch_ms() {
+  printf '%s\n' "$((MAINTENANCE_TEST_EPOCH_MS + SECONDS * 1000))"
+}
+
 if [[ "${1:-}" == --plant-old ]]; then
   PLANT_OLD_ORDER=1
   # The pre-fix scheduler checked the same cutoff before every step and put

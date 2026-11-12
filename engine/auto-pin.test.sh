@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
-# tools/auto-pin.sh: the pass pins oldest first, one commit per pass; a failed pin neither exits nor loops on the same commit.
+# tools/auto-pin.sh: a pass pins main's newest commit (a batch is pinned once); a failed pin neither exits nor loops on the same commit.
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/auto-pin-test.XXXXXX"); trap 'kill $(jobs -p) 2>/dev/null || :; rm -rf "$tmp"' EXIT
 fail() { echo "auto-pin.test.sh: $*" >&2; exit 1; }
@@ -24,6 +24,22 @@ export PIN_CALLS=$tmp/calls PIN_RC=$tmp/rc
 mkdir -p "$ZF_AUTO_PIN_HOME/auto-pin-logs"; echo "$c1" > "$ZF_AUTO_PIN_HOME/auto-pin.last"; : > "$PIN_CALLS"
 source "$repo/tools/auto-pin.sh"; set +e  # the daemon runs without -e
 last() { cat "$ZF_AUTO_PIN_HOME/auto-pin.last"; }
+wait_for_pin_calls() {
+  local commit=$1 expected=$2
+  for _ in {1..200}; do
+    [[ $(grep -Fc "$commit" "$PIN_CALLS" 2>/dev/null || :) -ge $expected ]] && return 0
+    sleep 0.05
+  done
+  return 1
+}
+wait_for_pass_exit() {
+  local pass=$1
+  for _ in {1..200}; do
+    kill -0 "$pass" 2>/dev/null || return 0
+    sleep 0.05
+  done
+  return 1
+}
 
 # a failed pin waits in place while main stays put: the pass does not return, state does not move
 c2=$(commit two); echo 1 > "$PIN_RC"
@@ -31,15 +47,19 @@ auto_pin_pass > "$tmp/out" & pass=$!
 sleep 2
 kill -0 "$pass" 2>/dev/null || fail 'daemon exited after a failed pin'
 [[ $(last) == "$c1" ]] || fail 'state moved before main advanced'
-# main advances twice: the waiting pass moves on, then each later pass pins exactly one commit, oldest first
+# main advances twice: the waiting pass moves on, then one pass pins main's head; the commit between is not pinned on its own
 c3=$(commit three); c4=$(commit four); echo 0 > "$PIN_RC"
 wait "$pass" || fail 'pass returned non-zero'
 grep -q PIN-FAILED "$tmp/out" || fail 'no PIN-FAILED line'
 [[ $(last) == "$c2" ]] || fail "failed commit not skipped: $(last)"
-auto_pin_pass > /dev/null; [[ $(last) == "$c3" ]] || fail "second pass did not pin the oldest: $(last)"
-auto_pin_pass > /dev/null; [[ $(last) == "$c4" ]] || fail "third pass did not pin the next: $(last)"
+auto_pin_pass > /dev/null; [[ $(last) == "$c4" ]] || fail "second pass did not pin main's head: $(last)"
 auto_pin_pass > /dev/null; [[ $(last) == "$c4" ]] || fail 'idle pass moved state'
-[[ $(tr '\n' ' ' < "$PIN_CALLS") == "$c2 $c3 converge $c4 converge " ]] || fail "calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+[[ $(tr '\n' ' ' < "$PIN_CALLS") == "$c2 $c4 converge " ]] || fail "calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+# a batch of three merges since the last pin is pinned once, at the newest (ruling zenoforge-batch-land-2026-11-08)
+: > "$PIN_CALLS"; b1=$(commit batch1); b2=$(commit batch2); b3=$(commit batch3)
+auto_pin_pass > /dev/null; [[ $(last) == "$b3" ]] || fail "batch pass did not pin the newest: $(last)"
+[[ $(tr '\n' ' ' < "$PIN_CALLS") == "$b3 converge " ]] || fail "batch calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+c4=$b3  # later cases continue from the batch head
 
 # a pin refused for a dirty checkout is retried once the tree clears, with no new main commit
 g -C "$tmp/agent/checkout" init -q
@@ -72,6 +92,61 @@ kill -0 "$pass" 2>/dev/null || fail 'a second refusal retried again instead of w
 [[ $(grep -c "$c6" "$PIN_CALLS") == 2 ]] || fail "row retry calls: $(tr '\n' ' ' < "$PIN_CALLS")"
 kill "$pass" 2>/dev/null || :
 wait "$pass" 2>/dev/null
+
+# A VectA checkout move after a refusal retries this same main commit once.
+# The next failure at that moved head waits until another head or main change.
+cat > "$tmp/clone/tools/pin-vecta.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "$1" >> "$PIN_CALLS"; exit "$(cat "$PIN_RC" 2>/dev/null || echo 0)"
+STUB
+: > "$PIN_CALLS"; c7=$(commit vecta-move-retry); echo 1 > "$PIN_RC"
+vecta_before=$(g -C "$tmp/agent/checkout" rev-parse HEAD)
+auto_pin_pass > "$tmp/out" & pass=$!
+wait_for_pin_calls "$c7" 1 || fail 'VectA move case did not start its failed pin'
+vecta_after=$(echo moved > "$tmp/agent/checkout/vecta-state"; g -C "$tmp/agent/checkout" add -A; g -C "$tmp/agent/checkout" commit -qm moved; g -C "$tmp/agent/checkout" rev-parse HEAD)
+wait_for_pass_exit "$pass" || fail 'VectA checkout head move did not return to retry the same commit'
+wait "$pass" || fail 'VectA move retry signal returned non-zero'
+[[ $(last) == "$c5" ]] || fail 'state moved before the VectA move retry pinned'
+grep -Fq "RETRY-VECTA-HEAD from=$vecta_before to=$vecta_after commit=$c7" "$tmp/out" || fail 'VectA retry log did not name both heads'
+echo 0 > "$PIN_RC"
+auto_pin_pass > /dev/null
+[[ $(last) == "$c7" ]] || fail 'VectA move retry did not pin the same commit'
+[[ $(grep -Fc "$c7" "$PIN_CALLS") == 2 ]] || fail "VectA move calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+
+# With no VectA head movement, a refusal waits and is not retried.
+: > "$PIN_CALLS"; c8=$(commit vecta-stays-put); echo 1 > "$PIN_RC"
+auto_pin_pass > "$tmp/out" & pass=$!
+wait_for_pin_calls "$c8" 1 || fail 'unchanged-head case did not start its failed pin'
+sleep 0.5
+kill -0 "$pass" 2>/dev/null || fail 'a refusal with no VectA head move ended the wait'
+[[ $(grep -Fc "$c8" "$PIN_CALLS") == 1 ]] || fail 'a refusal with no VectA head move retried'
+c9=$(commit advance-main-after-vecta-wait)
+wait "$pass" || fail 'unchanged-head wait did not end after main advanced'
+[[ $(last) == "$c8" ]] || fail 'unchanged-head failure was not skipped when main advanced'
+echo 0 > "$PIN_RC"
+auto_pin_pass > /dev/null
+[[ $(last) == "$c9" ]] || fail 'main advance after unchanged-head failure did not pin'
+
+# A second failure at the same moved VectA head does not retry until that head changes again.
+: > "$PIN_CALLS"; c10=$(commit vecta-second-failure); echo 1 > "$PIN_RC"
+vecta_before=$(g -C "$tmp/agent/checkout" rev-parse HEAD)
+auto_pin_pass > "$tmp/out" & pass=$!
+wait_for_pin_calls "$c10" 1 || fail 'second-failure case did not start its first pin'
+vecta_after=$(echo moved-again > "$tmp/agent/checkout/vecta-state"; g -C "$tmp/agent/checkout" add -A; g -C "$tmp/agent/checkout" commit -qm moved-again; g -C "$tmp/agent/checkout" rev-parse HEAD)
+wait_for_pass_exit "$pass" || fail 'first VectA head move did not request a retry'
+wait "$pass" || fail 'first VectA head retry signal returned non-zero'
+grep -Fq "RETRY-VECTA-HEAD from=$vecta_before to=$vecta_after commit=$c10" "$tmp/out" || fail 'first VectA retry log did not name both heads'
+auto_pin_pass > "$tmp/out" & pass=$!
+wait_for_pin_calls "$c10" 2 || fail 'second failure at the moved head did not run'
+sleep 0.5
+kill -0 "$pass" 2>/dev/null || fail 'second failure at the same moved head retried again'
+[[ $(grep -Fc "$c10" "$PIN_CALLS") == 2 ]] || fail 'same moved VectA head caused more than one retry'
+c11=$(commit advance-main-after-second-failure)
+wait "$pass" || fail 'second-failure wait did not end after main advanced'
+[[ $(last) == "$c10" ]] || fail 'second failure was not skipped when main advanced'
+echo 0 > "$PIN_RC"
+auto_pin_pass > /dev/null
+[[ $(last) == "$c11" ]] || fail 'main advance after second failure did not pin'
 
 # A clone script that differs from the running copy ends the daemon after its pass, so systemd reinstalls it.
 echo 0 > "$PIN_RC"

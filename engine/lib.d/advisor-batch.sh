@@ -1,5 +1,32 @@
 _AGENT_LIB_DIR="${_AGENT_LIB_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}" # a module sourced without lib.sh (land snapshot) still finds the lib dir
 
+# Stored verdict ages exclude time under the Codex account hold.
+advisor_pending_verdict_age_seconds() {
+  local computed_at epoch now
+  computed_at="$(jq -r '.pending_advisor_verdict.computed_at // empty' <<< "$1" 2>/dev/null || true)"
+  [ -n "$computed_at" ] || return 1
+  epoch="$(agent_epoch -u "$computed_at" 2>/dev/null)" || return 1
+  now="$(date +%s)"
+  echo $(( now - epoch - $(codex_hold_overlap "$epoch" "$now") ))
+}
+
+# advisor_held_codex_unavailable -> 0 after one log line while head's hold is active.
+advisor_held_codex_unavailable() {
+  local until
+  until="$(codex_unavailable_until)" || return 1
+  echo "advisor held: codex-unavailable-until $(date -u -d "@$until" +%Y-%m-%dT%H:%M:%SZ)" >&2
+}
+
+# Record the hold interval since the previous tick whenever either endpoint was held.
+advisor_hold_clock() {
+  local now prev_at prev_held=0 held=0
+  now="$(date +%s)"
+  read -r prev_at prev_held < "$CODEX_UNAVAILABLE_TICK_FILE" 2>/dev/null || prev_at="$now"
+  codex_unavailable && held=1
+  if [ "$held" = 1 ] || [ "$prev_held" = 1 ]; then printf '%s %s\n' "$prev_at" "$now" >> "$CODEX_UNAVAILABLE_HOLD_LEDGER"; fi
+  printf '%s %s\n' "$now" "$held" > "$CODEX_UNAVAILABLE_TICK_FILE"
+}
+
 # --- advisor leg helpers shared between run-advisor.sh (one ticket) and ----
 # --- run-advisor-batch.sh (many tickets in one call) -----------------------
 # Both moved here 2026-09-16 when the batch sweep was built: they were

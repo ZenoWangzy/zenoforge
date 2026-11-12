@@ -52,7 +52,22 @@ def read_states(agent_home):
             yield int(os.path.basename(path)[:-5]), state
 
 
-def waiting(units, states):
+def intake_open(runtime, now, bound):
+    """Issue numbers intake's last candidate walk kept (open, ready-for-agent, no skip label). None when the cache is
+    absent or older than the intake stall bound (intake itself stopped writing it), so the count falls back to every
+    ready-for-agent state file: a dead intake must still raise its stall."""
+    try:
+        doc = json.load(open(os.path.join(runtime, "intake-candidates.json")))
+        written = datetime.fromtimestamp(float(doc["created_at"]), timezone.utc)
+        rows = doc.get("rows") or ""
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if minutes(now, written) > bound:
+        return None
+    return {int(line.split("\t", 1)[0]) for line in rows.splitlines() if line.split("\t", 1)[0].isdigit()}
+
+
+def waiting(units, states, candidates=None):
     """station -> list of times each waiting item entered its buffer (None when unknown)."""
     out = {s: [] for s in STATIONS}
     has_unit = set()
@@ -72,13 +87,14 @@ def waiting(units, states):
             out[STATE_BUFFER[kind]].append(ts(st.get("state_changed_at")))
         elif kind == "awaiting-release" and st.get("deploy_state") != "deployed":
             out["release"].append(ts(st.get("state_changed_at")))
-        elif kind == "ready-for-agent" and n not in has_unit:
+        elif kind == "ready-for-agent" and n not in has_unit and (candidates is None or n in candidates):
             out["intake"].append(ts(st.get("state_changed_at")))
     return out
 
 
-def outs(units, runtime, agent_home):
+def outs(units, runtime, agent_home, now=None, scheduler_lines=None):
     """station -> sorted [(time, count)] of items that left the station."""
+    now = now or datetime.now(timezone.utc)
     ev = {s: [] for s in STATIONS}
     for u in units:
         rows = history(u)
@@ -110,7 +126,13 @@ def outs(units, runtime, agent_home):
             ev["advisor"].append((ts(r["recorded_at"]), int(r["applied_count"])))
     for name in ("alerts/events.md", "scheduler.log"):
         try:
-            for raw in open(os.path.join(runtime, name), errors="ignore"):
+            if name == "scheduler.log":
+                if scheduler_lines is None:
+                    scheduler_lines, _ = ledger_history.scheduler_log_lines(os.path.join(runtime, name), now)
+                lines = scheduler_lines
+            else:
+                lines = open(os.path.join(runtime, name), errors="ignore")
+            for raw in lines or []:
                 m = RELEASE_RE.match(raw)
                 if m and ts(m.group(1)):
                     ev["release"].append((ts(m.group(1)), len(re.findall(r"\d+", m.group(2))) or 1))
@@ -121,7 +143,7 @@ def outs(units, runtime, agent_home):
     return {s: sorted(v, key=lambda x: x[0]) for s, v in ev.items()}
 
 
-def admission_gaps(units, runtime, since):
+def admission_gaps(units, runtime, since, now=None, scheduler_lines=None):
     """Minutes an item sat before a worker took it: the history entry before write-start / ci-ready, and for review
     the latest entry before the dispatch line in scheduler.log. Review had no start event before this."""
     gaps = {"implement": [], "repair": [], "ci": [], "review": []}
@@ -134,11 +156,10 @@ def admission_gaps(units, runtime, since):
                 gaps[WORK_OUT[h["work_type"]]].append(minutes(t, rows[i - 1][0]))
             elif i and t >= since and h["stage"] == "ci-ready":
                 gaps["ci"].append(minutes(t, rows[i - 1][0]))
-    try:
-        lines = open(os.path.join(runtime, "scheduler.log"), errors="ignore")
-    except OSError:
-        lines = []
-    for raw in lines:
+    now = now or datetime.now(timezone.utc)
+    if scheduler_lines is None:
+        scheduler_lines, _ = ledger_history.scheduler_log_lines(os.path.join(runtime, "scheduler.log"), now)
+    for raw in scheduler_lines or []:
         m = DISPATCH_RE.match(raw)
         t = m and ts(m.group(1))
         if not t or t < since:
@@ -181,6 +202,8 @@ def render(doc):
         old = "-" if r["oldest_wait_min"] is None else f"{r['oldest_wait_min']:.0f}m"
         lines.append(f"{s:<10}{r['status']:<9}{r['waiting']:>5}{old:>8}{r['out_1h']:>6}{r['out_24h']:>7}"
                      f"{r['stall_min']:>7.0f}m{r['stall_bound_min']:>6}m  {r['last_out'] or '-'}")
+    if doc.get("future_stamped"):
+        lines.append(f"future_stamped={doc['future_stamped']}")
     lines.append("admission gap before a worker takes the item, minutes (24h): " + "; ".join(
         f"{k} n={g['n']} p50={'-' if g['p50'] is None else round(g['p50'], 1)} p90={'-' if g['p90'] is None else round(g['p90'], 1)}"
         for k, g in doc["admission_gaps"].items()))
@@ -222,15 +245,18 @@ def main():
     bounds = dict(DEFAULT_STALL_MINUTES)
     bounds.update({k: v for k, v in (cfg.get("stall_minutes") or {}).items() if k in bounds and isinstance(v, (int, float))})
     units = ledger_history.load_units(args.runtime)
+    scheduler_lines, future_stamped = ledger_history.scheduler_log_lines(os.path.join(args.runtime, "scheduler.log"), now)
     try:
         held_since = ts(open(os.path.join(args.runtime, "intake-held-since")).read().strip())
     except OSError:
         held_since = None
     paused = os.path.exists(args.pause_file)
     doc = {"at": f"{now:%Y-%m-%dT%H:%M:%SZ}", "paused": paused,
-           "stations": station_rows(waiting(units, list(read_states(args.agent_home))), outs(units, args.runtime, args.agent_home),
+           "future_stamped": future_stamped,
+           "stations": station_rows(waiting(units, list(read_states(args.agent_home)), intake_open(args.runtime, now, bounds["intake"])),
+                                    outs(units, args.runtime, args.agent_home, now, scheduler_lines),
                                     now, bounds, paused, held_since),
-           "admission_gaps": admission_gaps(units, args.runtime, now - timedelta(hours=24))}
+           "admission_gaps": admission_gaps(units, args.runtime, now - timedelta(hours=24), now, scheduler_lines)}
     for name, body in (("station-health.json", json.dumps(doc, ensure_ascii=False)), ("station-health.txt", render(doc))):
         tmp = os.path.join(args.runtime, name + ".tmp")
         with open(tmp, "w") as out:

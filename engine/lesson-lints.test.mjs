@@ -4,7 +4,22 @@ import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
-import { entryCheckFailures, exactSecondFailures } from './lesson-lints.mjs';
+import { entryCheckFailures, exactSecondFailures, utcStampFailures } from './lesson-lints.mjs';
+
+test('a Z stamp formatted in local time fails; a line with date -u, TZ=UTC0 or no Z passes', () => {
+  const sources = {
+    'engine/a.sh': [
+      "printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1",
+      "hit=1; printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1",
+      'stamp=$(date +%Y-%m-%dT%H:%M:%SZ)',
+      'stamp=$(date -d "@$t" +%FT%TZ)',
+      'now=$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+      "TZ=UTC0 printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1",
+      'n=$(date +%s)',
+    ].join('\n'),
+  };
+  assert.deepEqual(utcStampFailures(Object.keys(sources), (file) => sources[file]), ['engine/a.sh:1', 'engine/a.sh:2', 'engine/a.sh:3', 'engine/a.sh:4']);
+});
 
 test('exact-second grep on an elapsed-seconds message fails; a regex over [0-9]+s passes', () => {
   const sources = {

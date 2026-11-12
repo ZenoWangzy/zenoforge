@@ -17,10 +17,10 @@ loop_rounds() { # 只数最近一次 supervisor 裁决（requeue/approve）或�
 }
 
 # 止损预算（#4363）：自最近一次裁决（supervisor requeue/approve 或顾问裁决）起，
-# 已花费的 implement/repair 轮数（每个有效 write-start 一轮）与第一轮至今的墙钟。经记录确认的空发现、同 head 无推送修复不计轮；
+# 已花费的 implement/repair 轮数（每个有效 write-start 一轮）与第一轮至今的墙钟。经记录确认的空发现、同 head 无推送修复和测试 shim 拒绝不计轮；
 # 裁决重置预算，让既有顾问收敛通道完整跑完；没有任何裁决拦得住的单元才止损转 supervisor。
 # 预算内输出空；超轮数输出 "rounds N of B"，超墙钟输出 "wall Xmin of Ymin after N rounds"。
-effective_write_starts_since_ruling() { # unit-json ruling-stages-json → write-start records excluding verified empty repair no-ops
+effective_write_starts_since_ruling() { # unit-json ruling-stages-json → billable starts, excluding empty no-ops and shim refusals
   jqf -c --argjson ruling_stages "$2" '
     def empty_findings_noop($index; $history; $records):
       ([$history | to_entries[]
@@ -47,7 +47,7 @@ effective_write_starts_since_ruling() { # unit-json ruling-stages-json → write
         | select(.value.stage as $stage | ($ruling_stages | index($stage)) != null)
         | .key] | max // -1) as $ruling
     | [$history | to_entries[]
-      | select(.key > $ruling and .value.stage == "write-start")
+      | select(.key > $ruling and .value.stage == "write-start" and .value.worker_guard_refused != true)
       | select(.value.work_type != "repair" or (empty_findings_noop(.key; $history; $records) | not))
       | .value]
   ' <<<"$1"
@@ -85,18 +85,42 @@ ticket_budget_reason() { # unit-json
 # 同一失败重复（行 90：24h 内 37 次 stop-loss 转 arbiter，前面是同一个 self-check-red/ci-test-red 的，requeue 交付 0 of 4）：
 # 自最近一次裁决（与 ticket_budget_reason 同一组 ruling 阶段）起，单元最前面的事件是红（ci-test-red/ci-red/self-check-red），
 # 且它的 (阶段, 规整后的 result) 与更早一轮的红相同。规整同 ~/.zenoforge/state/work/90/v2.py：长十六进制串和数字都换成 N。
-stop_loss_same_failure() { # unit-json → prints the failure's check label (the red event's result) when it repeats an earlier round's; rc 1 otherwise
-  jqf -er '
+# The scheduler's own fresh-signal requeue (stop_loss_fresh_requeue) is not a ruling here: the window runs on across it, so the same signal
+# coming back after that requeue is a repeat. A merge conflict or a review request-changes repeats when the requeue named it.
+STOP_LOSS_FRESH_PREFIX='scheduler fresh-signal requeue: '
+STOP_LOSS_FRESH_METRIC=supervisor.fresh_requeue_delivery_24h
+STOP_LOSS_WINDOW_JQ='
+    def sched: .stage == "supervisor-requeue" and ((.result // "") | startswith($prefix));
     def norm: tostring | gsub("\\b(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\\b"; "N") | gsub("[0-9]+"; "N") | gsub("\\s+"; " ");
     def red: .stage | IN("ci-test-red", "ci-red", "self-check-red");
     (.history // []) as $h
-    | ([$h | to_entries[] | select(.value.stage | IN("supervisor-requeue", "supervisor-approve", "supervisor-cap-budget-refill", "advisor-ruling")) | .key] | max // -1) as $ruling
+    | ([$h | to_entries[] | select((.value.stage | IN("supervisor-requeue", "supervisor-approve", "supervisor-cap-budget-refill", "advisor-ruling")) and (.value | sched | not)) | .key] | max // -1) as $ruling
     | $h[($ruling + 1):] as $w
     | ([$w[] | select(.stage | IN("ci-test-red", "ci-red", "self-check-red", "merge-conflict", "review-request-changes", "review-block", "review-approve", "ci-ready",
         "repair-no-push", "worker-no-output", "implement-no-push", "implement-no-changes", "size-recut"))] | last // null) as $front
-    | ([$w[] | select(red) | [.stage, (.result | norm), (.result // "" | tostring | gsub("\\s+"; " "))]]) as $reds
-    | select($front != null and ($front | red) and (($reds[-1]) as $c | $reds[:-1] | any(.[0] == $c[0] and .[1] == $c[1])))
-    | $reds[-1][2]' <<<"$1" 2>/dev/null
+    | ([$w[] | select(red) | [.stage, (.result | norm), (.result // "" | tostring | gsub("\\s+"; " "))]]) as $reds'
+stop_loss_same_failure() { # unit-json → prints the failure's check label (the red event's result) when it repeats an earlier round's; rc 1 otherwise
+  jqf -er --arg prefix "$STOP_LOSS_FRESH_PREFIX" "$STOP_LOSS_WINDOW_JQ"'
+    | select($front != null and (if $front | red then ($reds[-1]) as $c | $reds[:-1] | any(.[0] == $c[0] and .[1] == $c[1])
+        else ($front.stage | IN("merge-conflict", "review-request-changes")) and any($w[] | select(sched); (.result | ltrimstr($prefix)) == $front.stage) end))
+    | if $front | red then $reds[-1][2] else $front.stage end' <<<"$1" 2>/dev/null
+}
+
+# A fresh signal (a first-time red check, a merge conflict, a review request-changes) at the round budget: row 90 saw the arbiter requeue 30 of 31
+# of them and 16 of 22 delivered, so the scheduler requeues without a model run, at most twice since the last real ruling (a repeat of the first
+# signal is stop_loss_same_failure, the other route). While the fresh requeues' own delivery rate sits under 50% on at least 6 outcomes
+# (the scorecard value is null below 6), they go back to the arbiter. rc 0 when it requeued.
+stop_loss_fresh_requeue() { # id unit-json budget-reason
+  local id="$1" signal count rate
+  [[ "$3" == rounds* ]] && ! stop_loss_same_failure "$2" >/dev/null || return 1
+  IFS=$'\t' read -r signal count < <(jqf -er --arg prefix "$STOP_LOSS_FRESH_PREFIX" "$STOP_LOSS_WINDOW_JQ"'
+    | select($front != null and (($front.stage | IN("ci-test-red", "ci-red", "self-check-red", "merge-conflict"))
+        or ($front.stage == "review-request-changes" and ([$w[] | select(.stage == "review-request-changes")] | length) == 1)))
+    | [(if $front | red then $reds[-1][0] + " " + $reds[-1][2][0:100] else $front.stage end), ([$w[] | select(sched)] | length)] | @tsv' <<<"$2" 2>/dev/null) || return 1
+  (( count < 2 )) || return 1
+  rate="$(jqf -r --arg id "$STOP_LOSS_FRESH_METRIC" '.metrics[]? | select(.id == $id) | .value // empty' "$A/node-health.json" 2>/dev/null || true)"
+  [[ -z "$rate" ]] || jqf -en --argjson rate "$rate" '$rate >= 50' >/dev/null 2>&1 || return 1
+  set_unit "$id" "$(hist supervisor-requeue "$STOP_LOSS_FRESH_PREFIX$signal")" && say "stop-loss fresh signal unit=$id requeued once in the scheduler: $signal"
 }
 
 # A repeated failure whose check is red on main belongs to main, not to the unit (main-red units come from health-release; their SHAs'
@@ -176,7 +200,8 @@ record_run_spend() { # → one spend_runs record on the unit of each finished wo
   rm -f -- "$err"
   [[ -n "$out" ]] || return 0
   units_update --slurpfile runs <(printf '%s\n' "$out") 'reduce $runs[] as $r (.;
-    (.units[] | select(.id == $r.unit)) |= (.spend_runs = (if any((.spend_runs // [])[]; .log == $r.run.log) then .spend_runs else (.spend_runs // []) + [$r.run] end)))' \
+    (.units[] | select(.id == $r.unit)) |= (.spend_runs = (if any((.spend_runs // [])[]; .log == $r.run.log) then .spend_runs else (.spend_runs // []) + [$r.run] end)
+      | .history = [(.history // [])[] | if .stage == "write-start" and .attempt == $r.run.log then . + {fresh_tokens: $r.run.fresh_tokens, raw_tokens: $r.run.raw_tokens} else . end]))' \
     && say "spend ledger recorded $(grep -c . <<<"$out") run(s)" || say "spend ledger write failed"
 }
 
@@ -380,19 +405,27 @@ repair_head_class() { # unit workdir -> "<class> <head before the run>": changed
   elif repair_unchanged_expected "$u" "$base"; then echo "unchanged-expected $base"
   else echo "unchanged $base"; fi
 }
-repair_run_filter() { # unit class head fresh-tokens -> jq filter: record the run; an unchanged head is repair-no-push, retried twice per head, then to the arbiter route
-  local stage=rereview-pending n
+# A no-push round whose worker log or report shows the backend died (auth, quota, model_not_found, a failed turn): not the work's fault.
+repair_backend_failure() { # worker-log report → the first matching line, empty when none
+  # The worker's own classifier (bin/worker fatal_reason) prints "worker: fatal stderr pattern: ..."; prose about auth or quota in agent output does not match.
+  { grep -hE -m1 '^(worker: )?(fatal stderr pattern|both backends failed)|model_not_found|AI_APICallError' "$1" 2>/dev/null
+    grep -hE -m1 '^(worker: )?(fatal stderr pattern|both backends failed)|model_not_found' "$2" 2>/dev/null; } | head -1 | cut -c1-200
+}
+repair_run_filter() { # unit class head fresh-tokens [worker-log report delivered-head] -> jq filter: record the run; an unchanged head is repair-no-push, retried twice per head, then to the arbiter route
+  local stage=rereview-pending n bf="" delivered_head="${7:-}" head_update=""
   if [[ "$2" == unchanged ]]; then
     n="$(jqf -r --arg id "$1" --arg h "head $3 " '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage=="repair-no-push" and ((.result // "") | startswith($h)))] | length' "$UNITS")"
     (( n < 2 )) && stage=repair-pending
-    echo "$(hist repair-no-push "head $3 unchanged after repair") | .history[-1].head_class=\"unchanged\" | .history[-1].fresh_tokens=${4:-null} | .stage=\"$stage\""
+    bf="$(repair_backend_failure "${5:-/dev/null}" "${6:-/dev/null}")"
+    echo "$(hist repair-no-push "head $3 unchanged after repair") | .history[-1].head_class=\"unchanged\" | .history[-1].fresh_tokens=${4:-null}${bf:+ | .history[-1].backend_failure=$(js "$bf")} | .stage=\"$stage\""
   else
-    echo "$(hist repair-delivered) | .history[-1].head_class=$(js "$2") | .history[-1].fresh_tokens=${4:-null} | .repair_hint=null | .stage=\"$stage\""
+    [[ "$delivered_head" =~ $SHA_RE ]] && head_update=" | .history[-1].head=$(js "$delivered_head")"
+    echo "$(hist repair-delivered) | .history[-1].head_class=$(js "$2") | .history[-1].fresh_tokens=${4:-null}$head_update | .repair_hint=null | .stage=\"$stage\""
   fi
 }
 # Circuit breaker on repeated identical outcomes (Nygard, Release It!): REPAIR_BREAKER_RUNS repair runs in a row that end on one
-# head leave a further run nothing new to try (issue-5573: four terra repairs on e145d3f0, none pushed), so the unit parks and
-# one supervisor inbox entry carries the head, the run count and the last evidence line of the final report.
+# head leave a further run nothing new to try (issue-5573: four terra repairs on e145d3f0, none pushed), so the unit parks for
+# the next automatic arbiter pass, with the head, run count and final report evidence in its ledger note.
 REPAIR_BREAKER_RUNS="${REPAIR_BREAKER_RUNS:-2}"
 repair_breaker() { # unit report-file → parks the unit when its last repair runs all ended repair-no-push on the same head
   local u head n evidence result
@@ -406,8 +439,6 @@ repair_breaker() { # unit report-file → parks the unit when its last repair ru
   result="head $head: $n consecutive repair runs ended on it without a push; last evidence: ${evidence:-none recorded}"
   cap_set_unit "$1" park "$result" "" "$(hist repair-breaker "$result") | .stage=\"parked\" | .parked_reason=\"repair-breaker\" | .unpark_condition=\"a supervisor decision\" | .note=$(js "$result")" || return 1
   say "repair breaker unit=$1 head=${head:0:12} runs=$n -> parked"
-  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "repair-breaker:$1:$head" "repair-breaker unit=$1: $result") \
-    || say "repair breaker unit=$1: inbox entry not delivered"
 }
 # Admission: a repair on package code runs the Dagger gate, which needs the host's container runtime. The probe is the
 # env-fault ledger's own (env:test-gate:docker); rc 1 or 127 means missing, anything else (unknown, timeout) admits. The

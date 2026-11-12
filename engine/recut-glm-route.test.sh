@@ -102,7 +102,7 @@ assert_true "every recorded failure reaches the lane check" grep -q 'model_polic
 
 # Every ZCode launch: new paths must strip too. stage-call.sh and bin/zc unset at the top of the script.
 for launch in engine/lib.d/model-calls.sh engine/mac-autopilot/scheduler.d/worker-command.sh engine/night/dispatch.sh; do
-  assert_true "$launch strips the token at launch" grep -Eq 'env -u GH_TOKEN -u GITHUB_TOKEN .*zcode -p ' "$SCRIPT_DIR/../$launch"
+  assert_true "$launch strips the token at launch" grep -Eq 'env -u GH_TOKEN -u GITHUB_TOKEN .*zcode_cmd.*-p |env -u GH_TOKEN -u GITHUB_TOKEN .*zcode -p ' "$SCRIPT_DIR/../$launch"
 done
 for launch in engine/bin/zc engine/eval/stage-call.sh; do
   assert_true "$launch unsets the token" grep -Eq '^unset GH_TOKEN GITHUB_TOKEN$' "$SCRIPT_DIR/../$launch"

@@ -53,5 +53,28 @@ assert set(ss.CRITERIA) <= set(values), sorted(set(ss.CRITERIA) - set(values))
 for mid, v in values.items():
     assert v is None or isinstance(v, (int, float)), (mid, v)
 assert all(values[f"{s}.out_per_day"] == 0 for s in station_health.STATIONS), values
+# The long station value stays on its 24 h window while the same ledger samples expose a
+# recovering one-hour value and its difference from the previous hour.
+now = datetime(2026, 11, 7, 12, 0, tzinfo=timezone.utc)
+def at(minutes):
+    from datetime import timedelta
+    return (now - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+units = [
+    {"history": [{"stage": "ci-ready", "at": at(7 * 60)}, {"stage": "merged", "at": at(6 * 60)}]},
+    {"history": [{"stage": "ci-ready", "at": at(5 * 60)}, {"stage": "merged", "at": at(4 * 60)}]},
+    {"history": [{"stage": "ci-ready", "at": at(175)}, {"stage": "merged", "at": at(115)}]},
+    {"history": [{"stage": "ci-ready", "at": at(40)}, {"stage": "merged", "at": at(30)}]},
+]
+long_values = ss.collect(now, units, [], sys.argv[2], sys.argv[2])
+windows = ss.collect_windows(now, units, [], sys.argv[2], sys.argv[2])
+assert long_values["merge.wait_p50_min"] == 60, long_values
+assert windows["merge.wait_p50_min"]["value_1h"] == 10, windows
+assert windows["merge.wait_p50_min"]["trend_1h"] == {"delta": -50, "direction": "down"}, windows
+assert windows["merge.wait_p50_min"]["short_window"] == "1h", windows
+fallback = ss.collect_windows(now, units[:3], [], sys.argv[2], sys.argv[2])
+assert fallback["merge.wait_p50_min"]["value_1h"] == 60, fallback
+assert fallback["merge.wait_p50_min"]["short_window"] == "6h", fallback
+empty = ss.collect_windows(now, [], [], sys.argv[2], sys.argv[2])
+assert all(row["value_1h"] is None and row["short_window"] is None for row in empty.values()), empty
 print("station-standards ok: %d stations, %d metrics" % (len(ss.MATRIX), len(ss.CRITERIA)))
 PY

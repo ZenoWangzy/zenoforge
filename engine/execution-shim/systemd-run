@@ -28,6 +28,14 @@ if ((command_at>=0 && command_at<${#args[@]})); then
   # Index refresh scopes have generated unit names. Ordinary graph reads stay reads.
   if [[ "${args[command_at]##*/}" == gitnexus* && "${args[command_at+1]:-}" == analyze ]]; then execution=1; fi
 fi
+# Poll-only advisor batches only harvest or reap a saved provider job; they do
+# not start a model call and must be able to run while execution admission is
+# holding fresh work for the resource floor.
+if [[ "$unit" == "${UNIT_PREFIX_TRANSIENT}-advisor-batch" ]] && ((command_at>=0)); then
+  for arg in "${args[@]:command_at}"; do
+    [[ "$arg" != --poll-only ]] || { execution=0; break; }
+  done
+fi
 real="${ZF_SYSTEMD_RUN_REAL:-}"
 if [[ -z "$real" ]]; then
   shim_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"

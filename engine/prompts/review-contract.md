@@ -57,6 +57,10 @@ compare the base and the candidate and record `introduced_by`: `candidate`
 or `unknown` (say what prevents attribution). `pre_existing` and `unknown`
 findings are reported with their severity but do not block.
 
+When the prompt includes a copied implementation report, read its `## decision-log`.
+Mark entries whose verification is weak or whose choice is risky in the optional
+`decision_log_flags` field, quoting the entry and giving a short reason.
+
 If the diff adds a persisted copy of mutable data, the contract must name the
 source of truth, the invalidation trigger, and a drift test. If any is missing,
 report a finding. Immutable keys (for example, SHA pairs) are exempt.
@@ -83,9 +87,9 @@ info string is `review-findings`, describing the same findings as your prose:
 {"findings":[],"dispositions":[]}
 ```
 
-The block is one JSON object with exactly the keys `findings` and
-`dispositions`, both arrays (use empty arrays when there is nothing to list;
-add no other keys). Each finding has exactly these fields and no others:
+The block is one JSON object with required `findings` and `dispositions` arrays,
+and may include `decision_log_flags`; add no other keys. Use empty arrays when
+there is nothing to list. Each finding has exactly these fields and no others:
 
 - `id`: `F1`, `F2`, ... (keep IDs across rounds)
 - `severity`: `P0`, `P1`, `P2`, or `P3`
@@ -105,6 +109,11 @@ fields `id`, `disposition` (`fixed`, `disproved`, `intentional`, or
 `out-of-scope`), and `reason` (one non-empty line). Example:
 `{"id":"F1","disposition":"fixed","reason":"The query now binds the authenticated tenant before returning records."}`.
 IDs must be unique within each array.
+
+`decision_log_flags` is an optional array. Each entry has exactly `entry` and
+`reason`, both non-empty single-line strings. Quote the marked decision-log
+entry in `entry`; explain the weak verification or risk in `reason`. Omit the
+field or use `[]` when no entry needs attention.
 
 ## Targeted re-review
 

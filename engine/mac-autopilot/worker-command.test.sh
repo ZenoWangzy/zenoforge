@@ -60,6 +60,7 @@ WORKER_OUTPUT_CAP_KB=junk build_codex_command repair gpt-6-luna max review-1 're
 contains_arg " ${CODEX_COMMAND[*]} " '-c tool_output_token_limit=16384' \
   || fail "invalid cap did not fall back to 64 KB: ${CODEX_COMMAND[*]}"
 # ZCode counts characters in BASH_MAX_OUTPUT_LENGTH (native default 30000), so the cap never loosens it.
+zf_zcode_bin_argv() { printf '%s\n' "$test_env_bin/zcode"; }
 provider_of() { printf zcode; }
 build_codex_command repair glm-5.3 max review-1 'zcode prompt' '' "$test_env_root" zcode
 contains_arg " ${CODEX_COMMAND[*]} " 'BASH_MAX_OUTPUT_LENGTH=30000' \
