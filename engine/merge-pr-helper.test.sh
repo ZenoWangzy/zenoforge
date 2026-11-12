@@ -44,9 +44,10 @@ PR_CHILDREN='[]'
 PR_CI_VIEW_ERROR=0
 PR_CI_VIEW_OUTPUT=''
 PR_FILES_API_ERROR=0
-PR_CHECKS_GRAPHQL_ERROR=0
+PR_GRAPHQL_DOWN=0
 PR_REST_RUNS='{"check_runs":[]}'
 PR_REST_STATUS='{"statuses":[]}'
+PR_REST_ACTIONS='{"workflow_runs":[]}'
 gh() {
   case "$1 $2" in
     'pr view')
@@ -55,6 +56,10 @@ gh() {
         return
       fi
       printf 'view:%s\n' "$*" >> "$fixture/gh-calls"
+      if [[ "$PR_GRAPHQL_DOWN" == 1 && "$*" == *headRefOid* ]]; then
+        printf 'GraphQL: API rate limit already exceeded\n' >&2
+        return 1
+      fi
       if [[ "$*" == *headRefOid,statusCheckRollup* ]]; then
         [[ "$PR_CI_VIEW_ERROR" == 0 ]] || return 1
         if [[ -n "$PR_CI_VIEW_OUTPUT" ]]; then printf '%s\n' "$PR_CI_VIEW_OUTPUT"; return; fi
@@ -75,7 +80,7 @@ gh() {
         printf "no checks reported on the 'parent-branch' branch\n" >&2
         return 1
       fi
-      if [[ "$PR_CHECKS_GRAPHQL_ERROR" == 1 ]]; then
+      if [[ "$PR_GRAPHQL_DOWN" == 1 ]]; then
         printf 'GraphQL: API rate limit already exceeded\n' >&2
         return 1
       fi
@@ -130,6 +135,9 @@ gh() {
         'repos/{owner}/{repo}/commits/'*'/status')
           printf '%s\n' "$PR_REST_STATUS"
           ;;
+        'repos/{owner}/{repo}/actions/runs?head_sha='*)
+          printf '%s\n' "$PR_REST_ACTIONS"
+          ;;
         'repos/{owner}/{repo}/pulls?'*)
           [[ "${PR_LIST_ERROR:-}" != 1 ]] || return 1
           printf '%s\n' "$PR_LIST"
@@ -179,6 +187,31 @@ merge_pr_gate 17 "$sha" "$repo" >/dev/null
 [[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
+# GraphQL refuses the head and `gh pr checks` (shared-account rate limit): the head, the checks and the squash merge all come from REST.
+PR_GRAPHQL_DOWN=1
+PR_REST_RUNS='{"check_runs":[{"name":"unit","check_suite":{"id":11},"status":"completed","conclusion":"success","started_at":"2026-11-12T10:00:00Z"}]}'
+PR_REST_STATUS='{"statuses":[{"context":"cla","state":"success"}]}'
+PR_REST_ACTIONS='{"workflow_runs":[{"check_suite_id":11,"name":"cli-tests"}]}'
+: > "$fixture/gh-calls"
+merge_pr_gate 17 "$sha" "$repo" >"$fixture/rest-gate-output" 2>&1 || fail "green PR did not merge with GraphQL down: $(cat "$fixture/rest-gate-output")"
+grep -q '^merge:pr merge 17 --squash --delete-branch' "$fixture/gh-calls" || fail "REST-only green PR did not squash merge: $(cat "$fixture/gh-calls")"
+PR_GRAPHQL_DOWN=0
+PR_REST_RUNS='{"check_runs":[]}'
+PR_REST_STATUS='{"statuses":[]}'
+PR_REST_ACTIONS='{"workflow_runs":[]}'
+
+# The engine gate needs every shard from its workflow: with GraphQL down the workflow name comes from the Actions run that owns each check suite.
+PR_GRAPHQL_DOWN=1
+PR_REST_RUNS="$(jq -cn '{check_runs: ([range(0;8) | {name: "suites (\(.))", check_suite: {id: (100 + .)}, status: "completed", conclusion: "success", started_at: "2026-11-12T10:00:00Z"}] + [{name: "cli", check_suite: {id: 99}, status: "completed", conclusion: "success", started_at: "2026-11-12T10:00:00Z"}])}')"
+PR_REST_ACTIONS="$(jq -cn '{workflow_runs: ([range(0;8) | {check_suite_id: (100 + .), name: "engine-tests"}] + [{check_suite_id: 99, name: "cli-tests"}])}')"
+count="$(merge_pr_ci_green_check_count 17 "$sha" true 2>"$fixture/ci-count-error")" || fail "REST rollup did not count the engine gate: $(cat "$fixture/ci-count-error")"
+[[ "$count" == 9 ]] || fail "REST engine gate counted $count checks, want 9"
+PR_REST_RUNS="$(jq -c '.check_runs[3].conclusion = "failure"' <<<"$PR_REST_RUNS")"
+if merge_pr_ci_green_check_count 17 "$sha" true >/dev/null 2>&1; then fail 'a failed shard passed the REST engine gate'; fi
+PR_GRAPHQL_DOWN=0
+PR_REST_RUNS='{"check_runs":[]}'
+PR_REST_ACTIONS='{"workflow_runs":[]}'
+
 # Stacked child: deleting the parent's head branch closes open PRs based on it, so the child is retargeted before the merge.
 PR_CHILDREN='[{"number":21}]'
 : > "$fixture/gh-calls"
@@ -225,8 +258,9 @@ fi
 check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'could not read PR checks as JSON'* ]] \
   || fail "gh pr checks error was not reported: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == 'checks:pr checks 17 --json bucket,name' ]] \
-  || fail "gh pr checks error reached merge: $(cat "$fixture/gh-calls")"
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json headRefOid' ]] \
+  || fail "gh pr checks error made unexpected gh calls: $(cat "$fixture/gh-calls")"
+! grep -q '^merge:' "$fixture/gh-calls" || fail 'gh pr checks error reached merge'
 
 # Checks that register late: "no checks reported" twice, then JSON, must proceed to merge.
 sleep() { printf 'sleep:%s\n' "$1" >> "$fixture/sleep-calls"; }
@@ -768,7 +802,7 @@ if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail 'an ove
 PR_FILE_STATUSES='[]'
 
 # GraphQL refuses `gh pr checks` under a shared-account rate limit: the checks come from REST check runs and statuses for the head.
-PR_CHECKS_GRAPHQL_ERROR=1
+PR_GRAPHQL_DOWN=1
 PR_REST_RUNS='{"check_runs":[{"name":"unit","status":"completed","conclusion":"success","started_at":"2026-11-12T10:00:00Z"}]}'
 PR_REST_STATUS='{"statuses":[{"context":"cla","state":"success"}]}'
 : > "$fixture/gh-calls"
@@ -780,7 +814,7 @@ PR_REST_RUNS='{"check_runs":[{"name":"unit","status":"completed","conclusion":"f
 if check_output="$(merge_pr_checks_and_merge 17 2>&1)"; then fail 'a failed REST check run merged after the GraphQL refusal'; fi
 [[ "$check_output" == *'refusing to merge PR #17: failed checks: unit'* ]] || fail "failed REST check run did not refuse with its name: $check_output"
 ! grep -q '^merge:' "$fixture/gh-calls" || fail 'a failed REST check run reached merge'
-PR_CHECKS_GRAPHQL_ERROR=0
+PR_GRAPHQL_DOWN=0
 PR_REST_RUNS='{"check_runs":[]}'
 
 echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, applies exact named overrides, requires a prior-art section unless test-only or overridden, and requires a green test receipt for the PR head unless the PR is Markdown-only'

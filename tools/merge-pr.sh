@@ -106,7 +106,7 @@ merge_pr_prior_art_ok() {
 # (merge_pr_main) is itself a receipt.
 merge_pr_ci_green_check_count() {
   local pr="$1" head_sha="$2" success_only="${3:-false}" view count files path
-  view="$(gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null)" || return 1
+  view="$(gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null)" || view="$(merge_pr_rollup_rest "$pr" 2>/dev/null)" || return 1
   files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" -q '.[].filename' 2>/dev/null)" || return 1
   [[ -n "$files" ]] || return 1
   while IFS= read -r path; do
@@ -157,8 +157,7 @@ merge_pr_test_receipt_ok() {
   if jq -e 'all(.files[].path; test("\\.md$"))' <<<"$view" >/dev/null 2>&1; then
     return 0
   fi
-  head_sha="$(gh pr view "$pr" --json headRefOid 2>/dev/null \
-    | jq -er '.headRefOid | select(type == "string")' 2>/dev/null)" || {
+  head_sha="$(merge_pr_head_sha "$pr")" || {
     merge_pr_refuse "$pr" 'could not read the PR head for the test receipt'
     return 1
   }
@@ -225,7 +224,7 @@ merge_pr_size_ok() {
     return 1
   }
   over="$({ bash "$root/tools/size-ratchet.sh" 2>&1 || true; } | grep '^FAIL ')" || return 0
-  [[ "$(git -C "$root" rev-parse HEAD 2>/dev/null)" == "$(gh pr view "$pr" --json headRefOid 2>/dev/null | jq -r .headRefOid)" ]] || return 0
+  [[ "$(git -C "$root" rev-parse HEAD 2>/dev/null)" == "$(merge_pr_head_sha "$pr" 2>/dev/null)" ]] || return 0
   files="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq -r '.files[].path')"
   # Exact path match: every FAIL line also names tools/size-baseline.txt.
   over="$(awk 'NR == FNR { own[$0] = 1; next } $2 in own' <(printf '%s\n' "$files") - <<<"$over")"
@@ -264,7 +263,7 @@ merge_pr_scheduler_prelude_ok() {
     return 1
   fi
   (( touched > 0 )) || return 0
-  if head_sha="$(gh pr view "$pr" --json headRefOid 2>/dev/null | jq -er '.headRefOid | select(type == "string" and length >= 12)' 2>/dev/null)" \
+  if head_sha="$(merge_pr_head_sha "$pr")" \
     && green="$(merge_pr_ci_green_check_count "$pr" "$head_sha" true)"; then
     printf 'prelude: ci-green %s checks at %.12s\n' "$green" "$head_sha"
     return 0
@@ -450,7 +449,7 @@ merge_pr_gate_ci_ok() {
 # A merged PR's own CI proves nothing the main run will not, and it holds hosted slots through a merge burst.
 merge_pr_cancel_ci() {
   local pr="$1" sha id
-  sha="$(gh pr view "$pr" --json headRefOid 2>/dev/null | jq -r .headRefOid)" || return 0
+  sha="$(merge_pr_head_sha "$pr")" || return 0
   gh run list --commit "$sha" --json databaseId,status 2>/dev/null \
     | jq -r '.[] | select(.status != "completed") | .databaseId' \
     | while read -r id; do gh run cancel "$id" >/dev/null 2>&1 || true; done
@@ -489,20 +488,38 @@ merge_pr_checks_valid() {
       type == "object" and (.name | type == "string" and length > 0)
       and (.bucket | type == "string"))' <<<"$1" >/dev/null 2>&1
 }
+# Head SHA: GraphQL first, REST pulls/<n> when GraphQL refuses (shared-account rate limit).
+merge_pr_head_sha() {
+  local pr="$1" sha
+  if sha="$(gh pr view "$pr" --json headRefOid 2>/dev/null | jq -er '.headRefOid | select(type == "string")' 2>/dev/null)" && [[ -n "$sha" ]]; then
+    printf '%s\n' "$sha"; return 0
+  fi
+  sha="$(gh api "repos/{owner}/{repo}/pulls/$pr" -q .head.sha 2>/dev/null)" || return 1
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+  printf '%s\n' "$sha"
+}
+# GraphQL-shaped rollup for the head from REST: CheckRun nodes take workflowName from the Actions run that owns their check suite.
+merge_pr_rollup_rest() {
+  local pr="$1" sha runs checks statuses
+  sha="$(merge_pr_head_sha "$pr")" || return 1
+  runs="$(gh api --paginate "repos/{owner}/{repo}/actions/runs?head_sha=$sha&per_page=100" 2>/dev/null)" || return 1
+  checks="$(gh api --paginate "repos/{owner}/{repo}/commits/$sha/check-runs?per_page=100" 2>/dev/null)" || return 1
+  statuses="$(gh api "repos/{owner}/{repo}/commits/$sha/status" 2>/dev/null)" || return 1
+  printf '%s\n%s\n%s\n' "$runs" "$checks" "$statuses" | jq -se --arg sha "$sha" '
+    ([.[] | .workflow_runs[]? | {key: (.check_suite_id | tostring), value: .name}] | from_entries) as $wf
+    | ([.[] | .check_runs[]? | {__typename: "CheckRun", name, workflowName: ($wf[(.check_suite.id | tostring)] // ""),
+          status: (.status | ascii_upcase), conclusion: ((.conclusion // "") | ascii_upcase), startedAt: .started_at}]
+      | group_by([.workflowName, .name]) | map(max_by(.startedAt // "")))
+    + ([.[] | .statuses[]? | {__typename: "StatusContext", context, state: (.state | ascii_upcase)}])
+    | {headRefOid: $sha, statusCheckRollup: .}'
+}
+# Same {name, bucket} list as `gh pr checks --json bucket,name`, from the REST rollup.
 merge_pr_checks_rest() {
-  local pr="$1" head runs statuses
-  head="$(gh api "repos/{owner}/{repo}/pulls/$pr" -q .head.sha 2>/dev/null)" || return 1
-  [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
-  runs="$(gh api --paginate "repos/{owner}/{repo}/commits/$head/check-runs?per_page=100" 2>/dev/null)" || return 1
-  statuses="$(gh api "repos/{owner}/{repo}/commits/$head/status" 2>/dev/null)" || return 1
-  printf '%s\n%s\n' "$runs" "$statuses" | jq -se '
-    ([.[] | .check_runs? // empty | .[]] | group_by(.name) | map(max_by(.started_at // ""))
-      | map({name, bucket: (if .status != "completed" then "pending"
-          else (.conclusion | if . == "success" then "pass" elif . == "neutral" or . == "skipped" then "skipping"
-            elif . == "cancelled" then "cancel" else "fail" end) end)}))
-    + ([.[] | .statuses? // empty | .[]] | map({name: .context, bucket: (if .state == "success" then "pass"
-          elif .state == "pending" then "pending" else "fail" end)}))
-    | if length == 0 then error("no checks") else . end'
+  merge_pr_rollup_rest "$1" | jq -e '.statusCheckRollup | if length == 0 then error("no checks") else . end
+    | map({name: (.name // .context), bucket: (if .__typename == "CheckRun"
+        then (if .status != "COMPLETED" then "pending" else (.conclusion | if . == "SUCCESS" then "pass"
+          elif . == "NEUTRAL" or . == "SKIPPED" then "skipping" elif . == "CANCELLED" then "cancel" else "fail" end) end)
+        else (.state | if . == "SUCCESS" then "pass" elif . == "PENDING" then "pending" else "fail" end) end)})'
 }
 
 merge_pr_checks_and_merge() {
@@ -634,12 +651,8 @@ merge_pr_gate() {
     fi
     return 1
   fi
-  if ! head_json="$(gh pr view "$pr" --json headRefOid 2>&1)"; then
-    merge_pr_refuse "$pr" "could not read the PR head: $head_json"
-    return 1
-  fi
-  head_sha="$(jq -er '.headRefOid | select(type == "string")' <<<"$head_json" 2>/dev/null)" || {
-    merge_pr_refuse "$pr" 'GitHub did not return a PR head SHA'
+  head_sha="$(merge_pr_head_sha "$pr")" || {
+    merge_pr_refuse "$pr" 'could not read the PR head'
     return 1
   }
   if [[ "$head_sha" != "$sha" ]]; then
