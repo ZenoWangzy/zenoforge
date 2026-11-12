@@ -76,6 +76,14 @@ if (/class="ov-vd s-(warn|bad)"/.test(ndHtml)) throw new Error("NO-DATA alone mu
 // 行本身仍可见：在健康标准模块里，无数据行不进「正常」折叠
 const ndHealth = dash.MODULES.find(m => m.id === "health").render(ndOnly);
 if (!ndHealth.includes("测试无数据行") || /class="okfold"[\s\S]*测试无数据行/.test(ndHealth)) throw new Error("a blank row must stay visible, not folded into 正常");
+// 等人处理：问题在前；等提单人与已合并等发布的票按等待时长排，最久在前；每行给时长与链接
+const waitFx = {...calm, live_workers: {...calm.live_workers, mem_avail_mb: 1000}, front: {stages: [
+  {label: "needs-info", name: "等提单人回复", count: 2, items: [{number: 11, title: "新", updated_at: new Date(now - 2 * 3600e3).toISOString()}, {number: 9, title: "旧", updated_at: new Date(now - 30 * 86400e3).toISOString()}]},
+  {label: "awaiting-release", name: "已合并等发布", count: 1, items: [{number: 5, title: "中", updated_at: new Date(now - 10 * 3600e3).toISOString()}]}]}};
+const wrows = dash.problems(waitFx, now);
+eq("problems above waiting, waiting oldest first", wrows.map(r => r.kind + " " + r.what), ["mem 可用内存", "person #9 旧", "person #5 中", "person #11 新"]);
+eq("waiting rule and age", wrows.slice(1).map(r => [r.rule, r.val]), [["等提单人回复", "30 天"], ["已合并等发布", "10 时"], ["等提单人回复", "2 时"]]);
+if (!wrows[1].href.endsWith("/issues/9")) throw new Error("waiting row must link its issue: " + wrows[1].href);
 console.log("attention ok");
 JS
 echo "dashboard-attention.test.sh: PASS"
