@@ -526,3 +526,25 @@ release_deployment_record_readable() {
   echo "issue-pipeline: production Deployment record is unreadable; release batch not dispatched" >&2
   return 75
 }
+
+
+# An admission deferral reaches scheduler.log (head-watch reads it); the journal keeps its own copy.
+pipeline_batch_launch() { # <batch kind> <issue IDs> <command...>
+  local kind="$1" issues="$2" launch_err launch_status reason
+  shift 2
+  launch_err="$(mktemp)" || return 1
+  if "$@" 2>"$launch_err"; then
+    cat -- "$launch_err" >&2
+    rm -f -- "$launch_err"
+    return 0
+  else
+    launch_status=$?
+  fi
+  cat -- "$launch_err" >&2
+  if [ "$launch_status" -eq 75 ]; then
+    reason="$(sed -n 's/^.*execution admission deferred: //p' "$launch_err" | tail -n 1)"
+    maintenance_scheduler_log "$kind batch admission deferred reason=${reason:-unknown} issues=${issues// /,}"
+  fi
+  rm -f -- "$launch_err"
+  return "$launch_status"
+}

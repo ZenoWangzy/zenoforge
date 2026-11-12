@@ -787,18 +787,11 @@ dispatch_release_batch() {
   fi
 }
 
-# An admission deferral reaches scheduler.log (head-watch reads it); the journal keeps its own copy.
-admission_deferral_log() { # <batch kind> <launch stderr file> <issue ids...>
-  local reason issues="${*:3}"
-  reason="$(sed -n 's/^.*execution admission deferred: //p' "$2" | tail -n 1)"
-  maintenance_scheduler_log "$1 batch admission deferred reason=${reason:-unknown} issues=${issues// /,}"
-}
-
 # A fresh batch receives this tick's filtered issue snapshot; a poll-only
 # batch keeps its persisted member list. Unit name still shares the advisor
 # capacity ledger.
 dispatch_advisor_batch() {
-  local script="" poll_only="${1:-0}" canary_scopes="${2:-}" n budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status launch_err
+  local script="" poll_only="${1:-0}" canary_scopes="${2:-}" n budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status
   local -a issue_ids=()
   if ! script="$(zf_advisor_batch_runner)"; then
     echo "issue-pipeline: advisor batch runner is invalid in advisor.json -- not dispatching" >&2
@@ -848,22 +841,16 @@ dispatch_advisor_batch() {
       return 75
     fi
   fi
-  launch_err="$(mktemp)"
-  if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect \
+  if pipeline_batch_launch advisor "${issue_ids[*]}" guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect \
     "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" -E "ZF_QUARANTINE_CANARY_SCOPES=$canary_scopes" \
     -p "RuntimeMaxSec=$ADVISOR_RUNTIME_MAX_SEC" \
-    "$script" $([ "$poll_only" = 1 ] && echo --poll-only) --scheduled "${issue_ids[@]}" 2>"$launch_err"; then
-    cat -- "$launch_err" >&2
-    rm -f -- "$launch_err"
+    "$script" $([ "$poll_only" = 1 ] && echo --poll-only) --scheduled "${issue_ids[@]}"; then
     if [ "${#issue_ids[@]}" -gt 0 ]; then
       pipeline_batch_claim_keep "$claim_owner" "$claim_unit" "${issue_ids[@]}" || return $?
     fi
     return 0
   else
     local launch_status=$?
-    cat -- "$launch_err" >&2
-    if [ "$launch_status" -eq 75 ]; then admission_deferral_log advisor "$launch_err" "${issue_ids[@]}"; fi
-    rm -f -- "$launch_err"
     if [ "${#issue_ids[@]}" -gt 0 ]; then
       pipeline_batch_claim_drop "$claim_owner" "${issue_ids[@]}"
     fi
@@ -880,7 +867,7 @@ dispatch_advisor_batch() {
 # One transient unit carries the selected issue IDs; the batch wrapper owns
 # one Codex call and isolates result application per issue.
 dispatch_triage_batch() {
-  local script="$ZF_ENGINE_DIR/run-triage-batch.sh" active_tmp="" issues_json="" n memory_max oom_count consume_status budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status launch_err
+  local script="$ZF_ENGINE_DIR/run-triage-batch.sh" active_tmp="" issues_json="" n memory_max oom_count consume_status budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status
   local -a issue_ids=() memory_args=() result_args=()
   for n in "$@"; do
     [[ "$n" =~ ^[0-9]+$ ]] || continue
@@ -939,20 +926,14 @@ dispatch_triage_batch() {
       return 1
     fi
   fi
-  launch_err="$(mktemp)"
-  if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-triage-batch --collect \
+  if pipeline_batch_launch triage "${issue_ids[*]}" guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-triage-batch --collect \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE \
     -p "RuntimeMaxSec=$TRIAGE_RUNTIME_MAX_SEC" \
     "${memory_args[@]}" "${result_args[@]}" \
-    "$script" --scheduled "${issue_ids[@]}" 2>"$launch_err"; then
-    cat -- "$launch_err" >&2
-    rm -f -- "$launch_err"
+    "$script" --scheduled "${issue_ids[@]}"; then
     if declare -F quarantine_mark_stage_dispatch_canaries >/dev/null; then quarantine_mark_stage_dispatch_canaries triage || echo "issue-pipeline: canary mark failed after triage start" >&2; else echo "issue-pipeline: canary marker missing after triage start" >&2; fi; pipeline_batch_claim_keep "$claim_owner" "$claim_unit" "${issue_ids[@]}"
   else
     local launch_status=$?
-    cat -- "$launch_err" >&2
-    if [ "$launch_status" -eq 75 ]; then admission_deferral_log triage "$launch_err" "${issue_ids[@]}"; fi
-    rm -f -- "$launch_err"
     [ -z "$active_tmp" ] || rm -f "$AGENT_HOME/triage-batch-active.json"
     pipeline_batch_claim_drop "$claim_owner" "${issue_ids[@]}"
     if [ "$launch_status" -eq 75 ]; then

@@ -1843,7 +1843,7 @@ run_batch_admission_case() (
   ADVISOR_RUNTIME_MAX_SEC=60
   TRIAGE_RUNTIME_MAX_SEC=60
   IMPLEMENT_RUNTIME_MAX_SEC=60
-  eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p; /^dispatch_advisor_batch() {/,/^}/p; /^dispatch_triage_batch() {/,/^}/p; /^admission_deferral_log() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p' "$PIPELINE_SRC")"
+  eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p; /^dispatch_advisor_batch() {/,/^}/p; /^dispatch_triage_batch() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p' "$PIPELINE_SRC")"
   systemctl() { return 3; }
   hand_agent_issue_is_live_owned() { return 1; }
   issue_spend_budget_status() { printf 'clear\t0\t0\n'; }
