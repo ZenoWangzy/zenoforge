@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-source "$SCRIPT_DIR/test-env.sh"
 
 test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
@@ -52,7 +52,7 @@ number="$(jq -r '.issue.number' <<< "$state")"
 case "$number" in
   11) decision='{"priority":"priority:top","route":"101","duplicate":false,"duplicateCandidates":[],"stale":false}'; confidence=0.95 ;;
   12) decision='{"priority":"priority:high","route":"102","duplicate":true,"duplicateCandidates":[11],"stale":false}'; confidence=0.96 ;;
-  13) decision='{"priority":"priority:low","needsTriage":true,"route":"none-fits","duplicate":false,"duplicateCandidates":[],"stale":true}'; confidence=0.85 ;;
+  13) decision='{"priority":"priority:low","unsure":"priority:unsure","route":"none-fits","duplicate":false,"duplicateCandidates":[],"stale":true}'; confidence=0.85 ;;
   *) exit 3 ;;
 esac
 jq -cn --arg decision "$decision" --argjson confidence "$confidence" \
@@ -75,7 +75,7 @@ report="$(cat "$test_root/report.json")"
 [[ "$(jq -r '.duplicate_candidates[0].candidates[0].number' <<< "$report")" == 11 ]]
 [[ "$(jq -r '.stale_candidates[0].issue' <<< "$report")" == 13 ]]
 [[ "$(jq -r '.low_confidence_count' <<< "$report")" == 1 ]]
-[[ "$(grep -F 'issue list' "$INTAKE_BACKLOG_GH_LOG")" == *'--json number,title,body,labels,comments --jq'* ]]
+[[ "$(grep -F 'issue list' "$INTAKE_BACKLOG_GH_LOG")" == *'--json number,title,body,labels'* ]]
 [[ "$(grep -E '^(issue edit|label create)' "$INTAKE_BACKLOG_GH_LOG" 2>/dev/null || true)" == '' ]]
 [[ "$(wc -l < "$INTAKE_BACKLOG_JUDGE_LOG")" == 3 ]]
 

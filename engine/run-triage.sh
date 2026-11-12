@@ -710,7 +710,9 @@ if [ "$STATE" = "ready-for-agent" ] && [ "$PRECUT" != "1" ] \
 
 $BRIEF"
   fi
-fi; INTAKE_PRIORITY_RESULT="$(printf '%s\n' "$ISSUE_JSON" | bash "$SCRIPT_DIR/intake-priority.sh" triage "$N" "$STATE" "$REPO")" || INTAKE_PRIORITY_RESULT=""; [ "$INTAKE_PRIORITY_RESULT" != needs-triage ] || STATE=needs-triage
+fi
+# Intake priority only adds labels; it never changes STATE.
+printf '%s\n' "$ISSUE_JSON" | bash "$SCRIPT_DIR/intake-priority.sh" triage "$N" "$STATE" "$REPO" || true
 
 if [ "$DRY_RUN" = "1" ]; then
   cat <<VERDICT

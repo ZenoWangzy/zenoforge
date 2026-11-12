@@ -146,6 +146,9 @@ case "$sub" in
     if [ -e "${FAKE_GH_LOG}.founder-test" ]; then
       labels="$(jq -c '. + [{name:"founder-test"}]' <<< "$labels")"
     fi
+    if [ -n "${FAKE_PRIORITY_LABEL:-}" ]; then
+      labels="$(jq -c --arg l "$FAKE_PRIORITY_LABEL" '. + [{name:$l}]' <<< "$labels")"
+    fi
     if [ "$view_count" -gt 1 ]; then
       case "${FAKE_TRIAGE_STALE_MODE:-}" in
         closed)
@@ -393,7 +396,7 @@ cat > "$FAKE_TS_JUDGE" <<'EOF'
 printf '%s\n' "$1" >> "$INTAKE_PRIORITY_TEST_CALLS"
 if [ "$1" = intake-priority ]; then
   cat > "$INTAKE_PRIORITY_TEST_STATE"
-  printf '%s\n' '{"status":"answered","adopted":true,"confidence":0.85,"decision":"{\"priority\":\"priority:top\",\"needsTriage\":true,\"route\":\"902\",\"duplicate\":false,\"duplicateCandidates\":[],\"stale\":false}"}'
+  printf '%s\n' '{"status":"answered","adopted":true,"confidence":0.85,"decision":"{\"priority\":\"priority:top\",\"needsTriage\":true,\"unsure\":\"priority:unsure\",\"route\":\"902\",\"duplicate\":false,\"duplicateCandidates\":[],\"stale\":false}"}'
 else
   cat >/dev/null
   printf '%s\n' '{"status":"answered","adopted":false,"decision":"ready-for-agent"}'
@@ -426,11 +429,21 @@ assert_eq "adopted intake priority exposes its roadmap containers to the judge" 
 assert_contains "adopted intake priority applies its configured priority label" "$GH_LOG_CONTENT" '--add-label priority:top'
 assert_contains "adopted intake priority applies its selected roadmap route" "$GH_LOG_CONTENT" '--add-label route:902'
 assert_contains "adopted intake priority places the issue under its selected roadmap epic" "$GH_LOG_CONTENT" 'repos/test/repo/issues/902/sub_issues --method POST'
-INTAKE_PRIORITY_LABEL_WRITE="$(grep -F -- '--add-label priority:top' <<< "$GH_LOG_CONTENT" | head -n 1)"
-assert_not_contains "intake priority updater leaves needs-triage to the state transition" "$INTAKE_PRIORITY_LABEL_WRITE" '--add-label needs-triage'
-assert_contains "low-confidence intake reaches the existing needs-triage state writer" "$GH_LOG_CONTENT" '--add-label needs-triage'
-assert_eq "low-confidence adopted intake moves through the triage state" needs-triage "$(jq -r '.state' <<< "$STATE_CONTENT")"
+assert_contains "low-confidence intake adds the unsure marker" "$GH_LOG_CONTENT" '--add-label priority:unsure'
+assert_not_contains "low-confidence intake never adds the needs-triage state label" "$GH_LOG_CONTENT" '--add-label needs-triage'
+assert_eq "low-confidence intake leaves the triage state unchanged" ready-for-agent "$(jq -r '.state' <<< "$STATE_CONTENT")"
 if [[ "$GH_LOG_CONTENT" != *'--add-label priority:top'* ]]; then printf 'intake-priority apply stderr:\n%s\n' "$RUN_STDERR_CONTENT" >&2; fi
+export TYPESAFE_API_KEY=fixture-only
+export FAKE_PRIORITY_LABEL=priority:normal
+: > "$INTAKE_PRIORITY_TEST_CALLS"
+run_once "$RAW_BODY"
+unset TYPESAFE_API_KEY FAKE_PRIORITY_LABEL
+assert_eq "already-labeled issue makes no intake judge call" triage-size "$(cat "$INTAKE_PRIORITY_TEST_CALLS")"
+assert_contains "already-labeled issue logs its skip" "$RUN_STDERR_CONTENT" 'intake-priority: skipped (already-labeled)'
+jq -n '{intake_priority:{enabled:true,labels:{needs_triage:"needs-triage"}}}' > "$ZF_CONFIG_ROOT/night.json"
+INTAKE_CONFIG_RC=0
+bash "$SCRIPT_DIR/intake-priority.sh" config > /dev/null 2>&1 || INTAKE_CONFIG_RC=$?
+assert_eq "a pipeline state label as the intake marker is rejected" 1 "$INTAKE_CONFIG_RC"
 jq -n '{intake_priority:{enabled:false}}' > "$ZF_CONFIG_ROOT/night.json"
 unset ZF_TS_JUDGE_SCRIPT INTAKE_PRIORITY_TEST_CALLS
 if [ -n "$SAVED_ZF_TS_JUDGE_SCRIPT" ]; then export ZF_TS_JUDGE_SCRIPT="$SAVED_ZF_TS_JUDGE_SCRIPT"; fi

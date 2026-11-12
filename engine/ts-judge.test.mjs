@@ -204,7 +204,7 @@ test("all requested question types expose bounded answers and confidence", () =>
   assert.equal(questionFor("recut", {}).questions.accept.type, "noul");
 });
 
-test("intake priority asks four bounded questions and sends low confidence to needs-triage", () => {
+test("intake priority asks four bounded questions and marks low confidence with the unsure label", () => {
   const questionSet = questionFor("intake-priority", {
     issue: { number: 51, title: "Improve release checks", body: "Protect production data." },
     roadmapContainers: [{ number: 901, title: "Release reliability" }],
@@ -216,7 +216,7 @@ test("intake priority asks four bounded questions and sends low confidence to ne
         high: "priority:high",
         normal: "priority:normal",
         low: "priority:low",
-        needsTriage: "needs-triage",
+        needsTriage: "priority:unsure",
         routePrefix: "route:",
       },
       scoreThresholds: { normal: 0.5, high: 1.5, top: 2.5 },
@@ -243,9 +243,17 @@ test("intake priority asks four bounded questions and sends low confidence to ne
   });
   const answer = JSON.parse(extracted.answer);
   assert.equal(answer.priority, "priority:top");
-  assert.equal(answer.needsTriage, true);
+  assert.equal(answer.unsure, "priority:unsure");
   assert.equal(answer.route, "901");
   assert.equal(answer.duplicate, false);
   assert.equal(answer.stale, false);
   assert.equal(extracted.confidence, 0.85);
+
+  const sure = questionSet.extract({
+    priority: { score: 3, confidence: 0.95 },
+    route: { choice: "901", confidence: 0.95 },
+    duplicate: { noul: 0.1 },
+    stale: { noul: 0.05 },
+  });
+  assert.strictEqual(JSON.parse(sure.answer).unsure, null);
 });

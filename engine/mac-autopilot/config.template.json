@@ -58,7 +58,7 @@
       "high": "priority:high",
       "normal": "priority:normal",
       "low": "priority:low",
-      "needs_triage": "needs-triage",
+      "needs_triage": "priority:unsure",
       "route_prefix": "route:"
     },
     "score_thresholds": {"normal": 0.5, "high": 1.5, "top": 2.5},

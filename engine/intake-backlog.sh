@@ -108,7 +108,7 @@ for number in "${issue_numbers[@]}"; do
        confidence:($result.confidence // null),
        adopted:($result.status == "answered" and $result.adopted == true),
        low_confidence:(($result.confidence == null) or ($result.confidence < $config.minimum_confidence)
-         or ($decision.needsTriage == true)),
+         or ($decision.unsure != null)),
        duplicate:($decision.duplicate // false),
        duplicate_candidates:(if ($decision.duplicate // false) then
          [($decision.duplicateCandidates // [])[] as $number | $candidates[] | select(.number == $number) | {number,title}]

@@ -32,6 +32,11 @@ intake_priority_config() {
       and ($thresholds.normal <= $thresholds.high and $thresholds.high <= $thresholds.top)
       and ($minimum | type == "number" and . >= 0 and . <= 1)
   ' <<< "$merged" >/dev/null || return 1
+  # A label that is also a pipeline state would re-enter triage on every tick.
+  jq -ce --argjson states "$(printf '%s\n' "${ALL_STATE_LABELS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" '
+    [.labels.top, .labels.high, .labels.normal, .labels.low, .labels.needs_triage]
+    | any(. as $label | $states | index($label) != null) | not
+  ' <<< "$merged" >/dev/null || return 1
   printf '%s\n' "$merged"
 }
 
@@ -191,7 +196,7 @@ intake_priority_ensure_labels() {
 }
 
 intake_priority_apply_result() {
-  local repo="$1" issue_file="$2" result="$3" config decision issue_json issue_number priority route route_label prefix top high normal low low_confidence needs_triage labels label
+  local repo="$1" issue_file="$2" result="$3" config decision issue_json issue_number priority route route_label prefix top high normal low unsure_label unsure labels label
   local -a edit_args=() ensure_labels=()
   config="$(intake_priority_config)" || return 1
   jq -e '.status == "answered" and .adopted == true' <<< "$result" >/dev/null || return 0
@@ -202,11 +207,12 @@ intake_priority_apply_result() {
   high="$(jq -r '.labels.high' <<< "$config")"
   normal="$(jq -r '.labels.normal' <<< "$config")"
   low="$(jq -r '.labels.low' <<< "$config")"
-  low_confidence="$(jq -r '.labels.needs_triage' <<< "$config")"
+  unsure_label="$(jq -r '.labels.needs_triage' <<< "$config")"
   prefix="$(jq -r '.labels.route_prefix' <<< "$config")"
   priority="$(jq -er '.priority | select(type == "string")' <<< "$decision")" || return 1
   route="$(jq -er '.route | select(type == "string")' <<< "$decision")" || return 1
-  needs_triage="$(jq -r '.needsTriage == true' <<< "$decision")"
+  unsure="$(jq -r '.unsure // empty' <<< "$decision")"
+  [[ -z "$unsure" || "$unsure" == "$unsure_label" ]] || return 1
   [[ "$priority" == "$top" || "$priority" == "$high" || "$priority" == "$normal" || "$priority" == "$low" ]] || return 1
   if [[ "$route" != none-fits ]]; then
     jq -e --arg route "$route" 'any(.intake_context.roadmap_containers[]?; (.number | tostring) == $route)' <<< "$result" >/dev/null || return 1
@@ -231,9 +237,9 @@ intake_priority_apply_result() {
     edit_args+=(--add-label "$route_label")
     ensure_labels+=("$route_label")
   fi
-  if [[ "$needs_triage" == true ]] && ! jq -e --arg label "$low_confidence" 'index($label) != null' <<< "$labels" >/dev/null; then
-    edit_args+=(--add-label "$low_confidence")
-    ensure_labels+=("$low_confidence")
+  if [[ -n "$unsure" ]] && ! jq -e --arg label "$unsure_label" 'index($label) != null' <<< "$labels" >/dev/null; then
+    edit_args+=(--add-label "$unsure_label")
+    ensure_labels+=("$unsure_label")
   fi
   if (( ${#edit_args[@]} == 0 )); then return 0; fi
   intake_priority_ensure_labels "$repo" "${ensure_labels[@]}" || return 1
@@ -254,6 +260,15 @@ intake_priority_triage() {
   fi
   issue_file="$(mktemp)" || return 0
   cat > "$issue_file"
+  if jq -e --argjson config "$config" '
+    [.labels[]? | if type == "string" then . else .name // "" end] as $names
+    | [$config.labels.top, $config.labels.high, $config.labels.normal, $config.labels.low, $config.labels.needs_triage]
+    | any(. as $label | $names | index($label) != null)
+  ' "$issue_file" >/dev/null; then
+    echo 'intake-priority: skipped (already-labeled)' >&2
+    rm -f -- "$issue_file"
+    return 0
+  fi
   if ! result="$(intake_priority_judge "$repo" "$issue_file" "$triage_state" false)"; then
     rm -f -- "$issue_file"
     echo "intake-priority: no adopted answer for issue #$issue_number" >&2
@@ -264,9 +279,6 @@ intake_priority_triage() {
       decision="$(jq -r '.decision | fromjson' <<< "$result")"
       priority="$(jq -r '.priority' <<< "$decision")"
       echo "intake-priority: applied issue=#$issue_number priority=$priority route=$(jq -r '.route' <<< "$decision")" >&2
-      if [[ "$(jq -r '.needsTriage == true' <<< "$decision")" == true ]]; then
-        printf 'needs-triage\n'
-      fi
     else
       echo "intake-priority: label update failed for issue #$issue_number" >&2
     fi
