@@ -162,7 +162,7 @@ There are two worker paths. The unit loop is the main one.
 - Fresh runs use `codex exec` with the model and reasoning effort from `config.json`, under the `models` key (`[model, effort]`).
 - Resumed runs use `codex exec resume <session>` when the unit already has a session.
 - A Claude model runs as `claude -p` with no write permission. The dispatcher saves its report from stdout. Review workers use this path, with the read-only tool allowlist `CLAUDE_REVIEW_TOOLS` and `--permission-mode dontAsk`.
-- **Host gate.** Before a start (not a review or rereview), `room_for` in `scheduler.d/self-check.sh` runs the same `box_has_room` check as `bin/luna`, from `engine/bin/luna-capacity.sh`, with the unit's priority. A refused start stays pending and logs `dispatch why ... gate=host-capacity`. It is not a failure.
+- **Host gate.** Before a start, `room_for` in `scheduler.d/self-check.sh` runs the same `box_has_room` check as `bin/luna`, from `engine/bin/luna-capacity.sh`, with the unit's priority. A refused start stays pending and logs `dispatch why ... gate=host-capacity`. It is not a failure. Review, rereview and report-only resumes are exempt. The gate is off when `/proc/meminfo` is unreadable (for example on macOS), so there it keeps the pre-gate behaviour until the portable host readers in issue #9 land.
 
 `pick <role>` (`scheduler.sh`) chooses the model. It tries `<role>_hotfix` first for units with the `hotfix` label, then `<role>`, then `<role>_fallback`. It skips any model whose provider is cooling down.
 

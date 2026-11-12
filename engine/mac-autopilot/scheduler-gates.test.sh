@@ -3350,6 +3350,7 @@ room_for issue-9 implement "" true false && fail 'a normal start with no waiter 
 grep -q 'dispatch why unit=issue-9 gate=host-capacity' "$A/scheduler.log" || fail 'host-capacity deferral left no dispatch why line'
 printf 'MemAvailable: 6291456 kB\n' > "$host_meminfo"
 room_for issue-9 implement "" true false || fail 'a normal start was refused with ample memory'
+rm -f "$host_meminfo"; room_for issue-9 implement "" true false || fail 'a host without /proc/meminfo refused a normal start (the gate must stay off there)'
 unset LUNA_PROC_MEMINFO LUNA_PROC_PSI_MEMORY LUNA_MIN LUNA_MAX LUNA_ADMIT_AVAIL_MB LUNA_CPU_TARGET
 eval "$host_runs_fn"; eval "$host_cpu_fn"
 

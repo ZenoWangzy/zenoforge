@@ -110,5 +110,10 @@ echo 1 > "$fixture/probe-rc"; units_with '["docs/a.md"]'; admit || fail 'a docs-
 units_with '["packages/a/x.ts"]'; repair_cap_admission() { return 0; }; priority_admission_has_room() { return 0; }; TICK_CONTAINER_RUNTIME=""; echo 1 > "$fixture/probe-rc"
 room_for issue-9 repair || fail 'room_for must admit the repair on a host with no container runtime'
 [[ "${TICK_DISPATCH_SKIPS[repair-runtime]:-0}" == 0 ]] || fail 'no repair-runtime skip may be counted'
+# room_for: a refused host gate holds a repair start but not a report-only resume, which would otherwise fall through to review with the stale report.
+priority_admission_has_room() { return 1; }
+room_for issue-9 repair "" true false true || fail 'the host gate must not refuse a report-only resume'
+room_for issue-9 repair "" true false && fail 'the host gate must still hold a repair start'
+grep -q 'host capacity' "$LOG" || fail 'the held repair start left no host capacity line'
 
 echo 'repair-breaker.test.sh: ok'
