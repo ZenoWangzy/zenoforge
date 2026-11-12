@@ -1379,4 +1379,35 @@ supervisor_cap_exhausted_sweep
 [[ "$(cx_stage issue-674)" == parked && "$(cx_reason issue-674)" == supervisor-cap-exhausted && ! -s "$hold_calls" && ! -s "$route2" ]] \
   || fail "inside the six-hour wait the cap-exhausted park must stay put: $(jq -c '.units[0]' "$UNITS")"
 
+# ---- session-owned PR parked over the lifetime cap: durable close, the PR stays with its session (logged) ----
+sx_unit() { # id issue pr runs state → a session-owned park over the cap
+  jq -cn --arg id "$1" --argjson issue "$2" --argjson pr "$3" --argjson n "$4" --arg st "$5" \
+    '{units:[{id:$id,issue:$issue,pr:$pr,stage:"parked",parked_reason:"session-owned",unpark_condition:"the owning session lands the PR",
+      history:[range($n) | {stage:"supervisor-arbiter",result:"dispatched",at:"2026-10-26T00:00:00Z"}]}]}'
+}
+scheduler_issue_state() { printf '{"state":"%s"}\n' "$SX_STATE"; }
+SX_STATE=ready-for-agent; PR_STATE="OPEN session-owned,factory"
+units "$(sx_unit issue-681 681 6812 4 ready-for-agent)"
+: > "$hold_calls"; : > "$pr_calls"
+supervisor_cap_session_owned_sweep
+[[ "$(cx_stage issue-681)" == closed ]] || fail "a session-owned PR over the cap must reach closed: $(jq -c '.units[0]' "$UNITS")"
+grep -q '^hold --hold 681 ' "$hold_calls" || fail "the session-owned cap close must hold issue 681: $(cat "$hold_calls")"
+[[ ! -s "$pr_calls" ]] || fail "the session-owned PR must stay open: $(cat "$pr_calls")"
+grep -q 'supervisor close unit=issue-681 reason=session-owned-cap: PR #6812 kept open, session-owned' "$LOG" || fail "the kept session PR must log its unit and reason"
+
+# under the cap: nothing moves
+units "$(sx_unit issue-682 682 6822 2 ready-for-agent)"
+: > "$hold_calls"
+supervisor_cap_session_owned_sweep
+[[ "$(cx_stage issue-682)" == parked && ! -s "$hold_calls" ]] || fail "a session-owned park under the cap must stay put: $(jq -c '.units[0]' "$UNITS")"
+
+# an on-hold issue and an issue in a release in flight are never closed by this path
+SX_STATE=on-hold; units "$(sx_unit issue-683 683 6832 4 on-hold)"; : > "$hold_calls"
+supervisor_cap_session_owned_sweep
+[[ "$(cx_stage issue-683)" == parked && ! -s "$hold_calls" ]] || fail "an on-hold issue must not be closed by the session-owned exit"
+SX_STATE=awaiting-release; units "$(sx_unit issue-684 684 6842 4 awaiting-release)"
+supervisor_cap_session_owned_sweep
+[[ "$(cx_stage issue-684)" == parked ]] || fail "an issue in a release in flight must not be closed by the session-owned exit"
+SX_STATE=ready-for-agent
+
 echo 'supervisor-arbiter.test.sh: all assertions passed'

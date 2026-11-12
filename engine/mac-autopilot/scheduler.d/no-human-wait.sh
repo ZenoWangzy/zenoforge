@@ -79,6 +79,26 @@ supervisor_cap_exhausted_sweep() { # each tick
     fi
   done < <(jqf -r '.units[] | select(.stage == "parked" and .parked_reason == "supervisor-cap-exhausted" and (.cap_exhausted_by // "") != "no-answer" and any((.history // [])[]?; .stage == "supervisor-cap-exhausted"))
     | [.id, ([(.history // [])[] | select(.stage == "supervisor-cap-exhausted") | .at] | last)] | @tsv' "$UNITS")
+  supervisor_cap_session_owned_sweep
+  return 0
+}
+# A session-owned PR parked over the lifetime cap has no candidate path (release_session_pr_units parks it; the arbiter skips that reason), so it never
+# left. The same durable close as a second cap; supervisor_cap_close_pr keeps the session's PR open and logs it. An on-hold issue or one in a release stays.
+supervisor_cap_session_owned_sweep() { # each tick
+  local id u issue raw state
+  while IFS= read -r id; do
+    u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+    [[ -n "$u" && "$u" != null ]] || continue
+    (( "$(supervisor_arbiter_lifetime_runs "$u")" >= SUPERVISOR_ARBITER_UNIT_CAP )) || continue
+    issue="$(jqf -r '.issue // empty' <<<"$u")"
+    if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+      raw="$(scheduler_issue_state "$issue" 2>/dev/null)" || continue
+      state="$(jqf -r '.state // empty' <<<"$raw")" || continue
+      [[ ! "$state" =~ ^(on-hold|awaiting-release|released)$ ]] || continue
+    fi
+    supervisor_cap_second_close "$id" session-owned-cap "session-owned PR over the arbitration cap: the owning session lands or closes it" \
+      "$(decision_entry 'Supervisor cap close' 'session-owned PR over the arbitration cap, no ruling possible' 'supervisor-arbiter history events' '[]' scheduler)" || :
+  done < <(jqf -r '.units[] | select(.stage == "parked" and .parked_reason == "session-owned") | .id' "$UNITS")
   return 0
 }
 # Close the open PR under its issue hold unless session-owned or cited by an open issue; one state/label/body read per close, no polling.

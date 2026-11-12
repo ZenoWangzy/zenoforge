@@ -192,6 +192,19 @@ same_failure = n.CRITERIA["supervisor.stop_loss_same_failure_parked"]
 assert all(n.status_of(v, same_failure[2], same_failure[3], same_failure[4]) == "OK" for v in (0, 1, 99))
 assert n.MEANING["supervisor.stop_loss_same_failure_parked"] and n.SOURCE["supervisor.stop_loss_same_failure_parked"]
 assert "supervisor.stop_loss_same_failure_parked" in open(sys.argv[1] + "/NODE-HEALTH.md").read()
+# Units parked over the arbitration cap: count and oldest age (hours), a current snapshot; under the cap or not parked, nothing counts.
+over_cap = [
+  {"id": "s1", "stage": "parked", "parked_reason": "session-owned", "history": [{"stage": "supervisor-arbiter", "at": "2026-11-09T07:00:00Z"}] * 4},
+  {"id": "s2", "stage": "parked", "parked_reason": "supervisor-arbitration-cap", "history": [{"stage": "supervisor-arbiter", "at": "2026-11-11T12:00:00Z"}] * 4},
+  {"id": "s3", "stage": "parked", "parked_reason": "session-owned", "history": [{"stage": "supervisor-arbiter", "at": "2026-11-11T12:00:00Z"}] * 2},
+  {"id": "s4", "stage": "supervisor-review", "history": [{"stage": "supervisor-arbiter", "at": "2026-11-09T07:00:00Z"}] * 4},
+]
+cap_now = n.ts("2026-11-12T12:00:00Z")
+over = n.ledger_metrics(over_cap, cap_now - dt.timedelta(hours=5), cap_now)
+assert over["supervisor.parked_over_cap"] == 2 and over["supervisor.parked_over_cap_oldest_h"] == 77.0, over  # s1 parked since 11-09 07:00
+assert n.ledger_metrics([], cap_now - dt.timedelta(hours=5), cap_now)["supervisor.parked_over_cap"] == 0
+assert n.MEANING["supervisor.parked_over_cap"] and n.SOURCE["supervisor.parked_over_cap_oldest_h"]
+assert "supervisor.parked_over_cap_oldest_h" in open(sys.argv[1] + "/NODE-HEALTH.md").read()
 print("node_health supervisor arbitration metrics: PASS")
 CHECK
 python3 - "$script_dir" <<'CHECK' || fail 'fresh-signal requeue delivery metric wrong at the seam'
