@@ -35,6 +35,98 @@ function mainRedCandidates(state) {
   return criteria;
 }
 
+function intakePriorityQuestions(state) {
+  const policy = state.policy ?? {};
+  const labels = policy.labels ?? {};
+  const thresholds = policy.scoreThresholds ?? {};
+  const priorityLabels = [labels.low, labels.normal, labels.high, labels.top, labels.needsTriage];
+  if (priorityLabels.some((label) => typeof label !== "string" || label.length === 0)
+    || typeof labels.routePrefix !== "string" || labels.routePrefix.length === 0
+    || !Number.isFinite(policy.minimumConfidence) || policy.minimumConfidence < 0 || policy.minimumConfidence > 1
+    || !Number.isFinite(thresholds.normal) || !Number.isFinite(thresholds.high) || !Number.isFinite(thresholds.top)) {
+    throw new Error("invalid intake priority policy");
+  }
+
+  const containers = Array.isArray(state.roadmapContainers) ? state.roadmapContainers.slice(0, 254) : [];
+  const routeOptions = Object.fromEntries(containers.flatMap((container) => {
+    if (!Number.isSafeInteger(container?.number) || container.number < 1 || typeof container.title !== "string") return [];
+    return [[String(container.number), `Roadmap epic: ${container.title}`]];
+  }));
+  routeOptions["none-fits"] = "No listed roadmap epic fits this issue.";
+
+  const duplicateCandidates = (Array.isArray(state.duplicateCandidates) ? state.duplicateCandidates : [])
+    .slice(0, 10)
+    .filter((candidate) => Number.isSafeInteger(candidate?.number) && candidate.number > 0 && typeof candidate.title === "string");
+  const duplicateSummary = duplicateCandidates.map(({ number, title }) => `#${number} ${title}`).join("\n") || "No open issue candidates were found.";
+  const recentMainSubjects = (Array.isArray(state.recentMainSubjects) ? state.recentMainSubjects : [])
+    .slice(0, 20)
+    .filter((subject) => typeof subject === "string" && subject.length > 0);
+
+  return {
+    questions: {
+      priority: score(
+        "Score this issue's priority using the ordered levels low, normal, high, and top. Consider founder-facing impact, whether it is a release blocker, the established customer path, and production data safety.",
+        [
+          "Low: useful work with limited near-term impact and no release or production-data risk.",
+          "Normal: worthwhile work on the ordinary product path without an urgent release blocker.",
+          "High: materially affects founder-facing work, a customer path, or a planned release.",
+          "Top: blocks a release or puts production data safety at immediate risk.",
+        ],
+      ),
+      route: choice(
+        "Choose the roadmap epic that best fits this issue. Use the issue text and the listed roadmap containers; choose none-fits when none is a good route.",
+        routeOptions,
+      ),
+      duplicate: noul(
+        `Is this issue a duplicate of one of these open issues? Compare the issue in state with these candidates:\n${duplicateSummary}`,
+      ),
+      stale: noul(
+        `Is this issue already obsolete given current main? Compare the issue in state with the recent main subjects:\n${recentMainSubjects.join("\n") || "No recent main subjects were available."}`,
+      ),
+    },
+    extract: (answers) => {
+      const priorityScore = answers.priority.score;
+      const route = answers.route.choice;
+      const duplicateProbability = answers.duplicate.noul;
+      const staleProbability = answers.stale.noul;
+      const confidences = [
+        answers.priority.confidence,
+        answers.route.confidence,
+        Math.max(duplicateProbability, 1 - duplicateProbability),
+        Math.max(staleProbability, 1 - staleProbability),
+      ];
+      const confidence = Math.min(...confidences);
+      if (!Number.isFinite(priorityScore) || priorityScore < 0 || priorityScore > 3
+        || !Object.hasOwn(routeOptions, route)
+        || !Number.isFinite(duplicateProbability) || duplicateProbability < 0 || duplicateProbability > 1
+        || !Number.isFinite(staleProbability) || staleProbability < 0 || staleProbability > 1
+        || !Number.isFinite(confidence)) {
+        throw new Error("invalid intake priority answer");
+      }
+
+      let priority = labels.low;
+      if (priorityScore >= thresholds.top) priority = labels.top;
+      else if (priorityScore >= thresholds.high) priority = labels.high;
+      else if (priorityScore >= thresholds.normal) priority = labels.normal;
+      const unsure = confidence < policy.minimumConfidence ? labels.needsTriage : null;
+
+      const answer = {
+        priority,
+        unsure,
+        route,
+        duplicate: duplicateProbability >= 0.5,
+        duplicateCandidates: duplicateProbability >= 0.5 ? duplicateCandidates.map(({ number }) => number) : [],
+        stale: staleProbability >= 0.5,
+      };
+      return {
+        answer: JSON.stringify(answer),
+        confidence,
+        score: priorityScore,
+      };
+    },
+  };
+}
+
 export function questionFor(questionSet, state) {
   switch (questionSet) {
     case "ci-failure":
@@ -95,6 +187,8 @@ export function questionFor(questionSet, state) {
           score: answers.size.score,
         }),
       };
+    case "intake-priority":
+      return intakePriorityQuestions(state);
     case "recut":
       return {
         questions: {

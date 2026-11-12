@@ -434,31 +434,51 @@ roadmap_ledger_add() {
 }
 
 roadmap_place_issue() {
-  local cache_file="$1" number="$2" issue_json="$3" source="${4:-}" tree flat existing selected epic milestone placed_file linked_file sub_issue_id link_out
+  local cache_file="$1" number="$2" issue_json="$3" source="${4:-}" explicit_epic="${5:-}" tree flat existing existing_parent selected epic milestone placed_file linked_file sub_issue_id link_out
   [[ "$number" =~ ^[1-9][0-9]*$ && -r "$cache_file" ]] || return 64
+  [[ -z "$explicit_epic" || "$explicit_epic" =~ ^[1-9][0-9]*$ ]] || return 64
   tree="$(cat -- "$cache_file")" || return 1
   roadmap_tree_is_valid "$tree" || return 1
   flat="$(roadmap_flatten "$tree")" || return 1
+  if [[ -n "$explicit_epic" ]]; then
+    selected="$(jq -ce --argjson epic "$explicit_epic" '
+      [.[] | select(.number == $epic and .depth == 2 and ((.state // "") | ascii_downcase) == "open"
+        and (.labels | index("roadmap-epic") != null))][0]
+      | select(. != null) | {epic:.number,milestone:.theme_milestone}
+    ' <<< "$flat")" || { echo "roadmap: selected route #$explicit_epic is not an open epic" >&2; return 1; }
+  fi
   if existing="$(jq -ce --argjson number "$number" '[.[] | select(.number == $number)][0] // empty' <<< "$flat")"; then
     if jq -e 'any(.children[]?; ((.state // "OPEN") | ascii_downcase) == "open")
       or any(.labels[]?; . == "roadmap" or . == "roadmap-theme" or . == "roadmap-epic")' <<< "$existing" >/dev/null; then
       echo "roadmap: refusing to place container #$number as a ticket" >&2
       return 1
     fi
-    milestone="$(jq -r '.theme_milestone // empty' <<< "$existing")" || return 1
-    if [[ -n "$milestone" && "$(jq -r '.milestone // empty' <<< "$existing")" != "$milestone" ]]; then
-      guarded_write gh issue edit "$number" --repo "$REPO" --milestone "$milestone" || return 1
+    existing_parent="$(jq -r '.parent // empty' <<< "$existing")" || return 1
+    if [[ -z "$explicit_epic" ]]; then
+      milestone="$(jq -r '.theme_milestone // empty' <<< "$existing")" || return 1
+      if [[ -n "$milestone" && "$(jq -r '.milestone // empty' <<< "$existing")" != "$milestone" ]]; then
+        guarded_write gh issue edit "$number" --repo "$REPO" --milestone "$milestone" || return 1
+      fi
+      return 0
     fi
-    return 0
+    if [[ "$existing_parent" == "$explicit_epic" ]]; then
+      milestone="$(jq -r '.milestone // empty' <<< "$selected")" || return 1
+      if [[ -n "$milestone" && "$(jq -r '.milestone // empty' <<< "$existing")" != "$milestone" ]]; then
+        guarded_write gh issue edit "$number" --repo "$REPO" --milestone "$milestone" || return 1
+      fi
+      return 0
+    fi
   fi
   placed_file="$cache_file.placed"
-  if [ -r "$placed_file" ] && grep -Fqx -- "$number" "$placed_file"; then return 0; fi
+  if [[ -z "$explicit_epic" ]] && [ -r "$placed_file" ] && grep -Fqx -- "$number" "$placed_file"; then return 0; fi
   linked_file="$cache_file.linked"
-  [[ "$source" =~ ^[1-9][0-9]*$ ]] || source="$(roadmap_source_issue "$issue_json")"
-  selected="$(roadmap_choose_epic "$tree" "$issue_json" "$source")" || return 1
+  if [[ -z "$explicit_epic" ]]; then
+    [[ "$source" =~ ^[1-9][0-9]*$ ]] || source="$(roadmap_source_issue "$issue_json")"
+    selected="$(roadmap_choose_epic "$tree" "$issue_json" "$source")" || return 1
+  fi
   epic="$(jq -er '.epic | select(type == "number" and . > 0)' <<< "$selected")" || { echo "roadmap: no epic number chosen for #$number" >&2; return 1; }
   milestone="$(jq -r '.milestone // empty' <<< "$selected")" || return 1
-  if ! grep -Fqx -- "$number" "$linked_file" 2>/dev/null; then
+  if [[ -n "$explicit_epic" ]] || ! grep -Fqx -- "$number" "$linked_file" 2>/dev/null; then
     sub_issue_id="$(gh api "repos/$REPO/issues/$number" --jq '.id | select(type == "number" and . > 0)')" || { echo "roadmap: could not read the id of #$number" >&2; return 1; }
     [[ "$sub_issue_id" =~ ^[1-9][0-9]*$ ]] || { echo "roadmap: invalid id for #$number" >&2; return 1; }
     # "duplicate sub-issues" = already under this epic (stale tree cache): goal met.

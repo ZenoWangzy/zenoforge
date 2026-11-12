@@ -51,6 +51,19 @@
     "supervisor_owned": true
   },
   "auto_triage_new_issues": false,
+  "intake_priority": {
+    "enabled": false,
+    "labels": {
+      "top": "priority:top",
+      "high": "priority:high",
+      "normal": "priority:normal",
+      "low": "priority:low",
+      "needs_triage": "priority:unsure",
+      "route_prefix": "route:"
+    },
+    "score_thresholds": {"normal": 0.5, "high": 1.5, "top": 2.5},
+    "minimum_confidence": 0.9
+  },
   "focus_mode": "all",
   "budget_meter": "sessions_dir",
   "daily_token_budget": 10000000,

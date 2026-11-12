@@ -10,7 +10,7 @@ labels='needs-triage|needs-info|ready-for-agent|ready-for-human|needs-owner|chec
 audit_raw_edits() {
   awk '
     /^[[:space:]]*#/ { next }
-    /gh issue edit/ && $0 !~ /edit_args=\(gh issue edit/ && $0 !~ /guarded_write gh issue edit "\$N" --repo "\$REPO" "\$\{CATEGORY_EDIT_ARGS\[@\]\}"/ && $0 !~ /--milestone/ && $0 !~ /--add-blocked-by|--remove-blocked-by/ && $0 !~ /--add-label opt-lane([[:space:]]|$)/ && $0 !~ /--add-label "\$pipeline_label"/ && $0 !~ /--add-label pipeline-system([[:space:];]|$)/ && $0 !~ /--add-label founder-test([[:space:]]|$)/ && !(FILENAME == "engine/lib.d/sweeps.sh" && /\$\{edit_args\[@\]\}/) { print FILENAME ":" FNR ":" $0; bad=1 }
+    /gh issue edit/ && $0 !~ /edit_args=\(gh issue edit/ && $0 !~ /guarded_write gh issue edit "\$N" --repo "\$REPO" "\$\{CATEGORY_EDIT_ARGS\[@\]\}"/ && $0 !~ /--milestone/ && $0 !~ /--add-blocked-by|--remove-blocked-by/ && $0 !~ /--add-label opt-lane([[:space:]]|$)/ && $0 !~ /--add-label "\$pipeline_label"/ && $0 !~ /--add-label pipeline-system([[:space:];]|$)/ && $0 !~ /--add-label founder-test([[:space:]]|$)/ && !(FILENAME == "engine/lib.d/sweeps.sh" && /\$\{edit_args\[@\]\}/) && !(FILENAME == "engine/intake-priority.sh" && /guarded_write gh issue edit "\$issue_number" --repo "\$repo" "\$\{edit_args\[@\]\}"/) { print FILENAME ":" FNR ":" $0; bad=1 }
     END { exit bad }
   ' "$@"
 }
