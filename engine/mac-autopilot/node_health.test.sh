@@ -872,6 +872,34 @@ assert metrics["values"]["delivery.revert_rate_30d_pct"] == 100, metrics
 print("node_health Git revert markers: PASS")
 CHECK
 
+# Without MAC_AUTOPILOT_ROOT, the revert root comes from the runtime dir, so the live engine-live layout still reads markers.
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'revert markers unread when MAC_AUTOPILOT_ROOT is unset'
+import os, pathlib, subprocess, sys
+sys.path.insert(0, sys.argv[1]); import node_health as n
+os.environ.pop("MAC_AUTOPILOT_ROOT", None)
+base = pathlib.Path(sys.argv[2]) / "revert-root-fallback"
+root = base / "checkout"; runtime = root / ".scratch-supervisor" / "autopi"; runtime.mkdir(parents=True)
+here = base / "engine-live" / "mac-autopilot"
+def git(*args, env=None):
+    return subprocess.run(["git", *args], cwd=root, check=True, text=True, capture_output=True, env=env)
+git("init", "-b", "main")
+git("config", "user.name", "fixture")
+git("config", "user.email", "fixture@example.test")
+(root / "change.txt").write_text("accepted change\n")
+git("add", "change.txt")
+commit_env = dict(os.environ, GIT_AUTHOR_DATE="2026-10-24T12:00:00Z", GIT_COMMITTER_DATE="2026-10-24T12:00:00Z")
+git("commit", "-m", "accepted change", env=commit_env)
+merge_sha = git("rev-parse", "HEAD").stdout.strip()
+revert_env = dict(os.environ, GIT_AUTHOR_DATE="2026-10-25T12:00:00Z", GIT_COMMITTER_DATE="2026-10-25T12:00:00Z")
+git("revert", "--no-edit", merge_sha, env=revert_env)
+git("update-ref", "refs/remotes/origin/main", "HEAD")
+found = n.revert_root(str(runtime), str(here))
+assert pathlib.Path(found) == root, found
+reverted = n.git_revert_times(found, "refs/remotes/origin/main")
+assert reverted and merge_sha in reverted, reverted
+print("node_health revert root without MAC_AUTOPILOT_ROOT: PASS")
+CHECK
+
 # The release-closer log writes a 9- or 12-character sha: the acceptance regex must read it, or 30 d delivery stays empty.
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'short release-closer sha not read as an acceptance'
 import pathlib, sys
