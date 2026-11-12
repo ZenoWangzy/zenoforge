@@ -281,6 +281,18 @@ shim_run "$shim_output" "$shim_dir/bash" -lc 'node a/x.test.mjs' || shim_status=
   || { cat "$shim_output" >&2; echo "nested node test execution was not refused by the node shim (rc=$shim_status)" >&2; exit 1; }
 echo 'ok - bash/sh -c scripts skip outer test-file scanning while nested commands stay guarded'
 
+# A multi-line prompt argv that mentions a test file is prompt text, not a test-file run (#1070).
+shim_status=0
+shim_prompt=$'Worker brief line one\nDo not run *.test.* files; see engine/x/y.test.sh'
+shim_run "$shim_output" "$shim_dir/bash" "$shim_prompt" || shim_status=$?
+[[ "$shim_status" != 78 ]] && ! grep -Fq 'reason=test-file' "$shim_output" \
+  || { cat "$shim_output" >&2; echo "multi-line prompt argv was refused as a test file (rc=$shim_status)" >&2; exit 1; }
+shim_status=0
+shim_run "$shim_output" "$shim_dir/bash" engine/x/y.test.sh || shim_status=$?
+[[ "$shim_status" == 78 ]] && grep -Fq 'command=bash reason=test-file' "$shim_output" \
+  || { cat "$shim_output" >&2; echo "plain test-file argv was not refused (rc=$shim_status)" >&2; exit 1; }
+echo 'ok - multi-line prompt argv naming a test file is not refused; plain test-file argv still is'
+
 guard_run guard-first.log bash
 jq -e '.units[0] | .stage == "review-pending" and ([.history[] | select(.stage == "worker-guard-refused" and (.result | startswith("command=bash reason=test-file")))] | length == 1) and ([.history[] | select(.stage == "worker-no-output")] | length == 0)' "$UNITS" >/dev/null \
   || { echo 'guard refusal was not recorded as an explicit worker outcome' >&2; exit 1; }
