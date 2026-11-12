@@ -153,6 +153,46 @@ BELL_AUTOPI_DIR="$pause_autopi" AGENT_HOME="$pause_agent" AUTOPILOT_LOOP_UNIT=fi
 grep -Fxq -- '--user restart fixture-loop.service' "$BELL_TEST_SYSTEMCTL_CALLS" || { echo 'bell.test.sh: unpaused loop was not restarted' >&2; exit 1; }
 mv "$BELL_TEST_SYSTEMCTL_CALLS" "$tmp/pause-systemctl-calls"
 
+# #122: the restart ledger caps stale-tick restarts at 3 per hour and backs off between them (no restart while paused is counted).
+ledger_autopi="$tmp/ledger-autopi"; ledger_agent="$tmp/ledger-agent"
+mkdir -p "$ledger_autopi/alerts" "$ledger_agent"
+cp "$autopi/config.json" "$ledger_autopi/config.json"
+printf 'window.DASH={};\n' > "$ledger_autopi/dashboard.data.js"
+printf '%s\n' '{"units":[]}' > "$ledger_autopi/units.json"
+printf '%s\n' '{"workers":[]}' > "$ledger_autopi/workers.json"
+printf '[%s] tick done units=0 live=0\n' "$old_tick" > "$ledger_autopi/scheduler.log"
+touch -d "@$(( $(date +%s) - 420 ))" "$ledger_autopi/scheduler.log"
+run_ledger() { # $1=scheduler_restarts epochs as a JSON array
+  rm -f "$tmp/ledger-systemctl.log"
+  jq -n --argjson r "$1" '{monitor_initialized:true,scheduler_lines:1,alert_mtimes:{},merge_events:{},signatures:{},pending:[],scheduler_restarts:$r}' > "$ledger_autopi/bell-state.json"
+  BELL_TEST_SYSTEMCTL_CALLS="$tmp/ledger-systemctl.log" BELL_AUTOPI_DIR="$ledger_autopi" AGENT_HOME="$ledger_agent" AUTOPILOT_LOOP_UNIT=fixture-loop.service bash "$bell"
+}
+ledger_now="$(date +%s)"
+run_ledger "[$((ledger_now - 1500)),$((ledger_now - 900)),$((ledger_now - 100))]"
+[[ ! -s "$tmp/ledger-systemctl.log" ]] || { echo 'bell.test.sh: 4th restart in an hour was not capped' >&2; exit 1; }
+grep -Fq 'restart cap: 3 per hour' "$ledger_autopi/BELL-QUEUE.md" || { echo 'bell.test.sh: capped restart is not a critical event' >&2; exit 1; }
+run_ledger "[$((ledger_now - 100))]"
+[[ ! -s "$tmp/ledger-systemctl.log" ]] || { echo 'bell.test.sh: restart inside the 300s backoff was not held' >&2; exit 1; }
+run_ledger "[$((ledger_now - 1500))]"
+grep -Fxq -- '--user restart fixture-loop.service' "$tmp/ledger-systemctl.log" || { echo 'bell.test.sh: restart after backoff was not allowed' >&2; exit 1; }
+jq -e '.scheduler_restarts | length == 2' "$ledger_autopi/bell-state.json" >/dev/null || { echo 'bell.test.sh: restart ledger was not recorded' >&2; exit 1; }
+
+# #542: a dead worker whose log was written in the last 10 minutes is not worker-died yet; a stale log is.
+grace_autopi="$tmp/grace-autopi"; grace_sup="$tmp/grace-sup"
+mkdir -p "$grace_autopi/alerts" "$grace_sup"
+cp "$autopi/config.json" "$grace_autopi/config.json"
+printf 'window.DASH={};\n' > "$grace_autopi/dashboard.data.js"
+printf '%s\n' '{"units":[{"id":"unit-grace","stage":"review","history":[]}]}' > "$grace_autopi/units.json"
+printf '%s\n' '{"workers":[{"pid":99999999,"unit":"unit-grace","type":"implement","log":"grace-worker.log","report":"grace-worker.md","harvested":false}]}' > "$grace_autopi/workers.json"
+printf '[%s] tick done units=0 live=0\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$grace_autopi/scheduler.log"
+jq -n '{monitor_initialized:true,scheduler_lines:1,alert_mtimes:{},merge_events:{},signatures:{},pending:[]}' > "$grace_autopi/bell-state.json"
+printf 'still writing\n' > "$grace_sup/grace-worker.log"
+BELL_AUTOPI_DIR="$grace_autopi" BELL_SUPERVISOR_DIR="$grace_sup" AGENT_HOME="$ledger_agent" bash "$bell"
+! grep -Fq 'worker-died unit=unit-grace' "$grace_autopi/BELL-QUEUE.md" || { echo 'bell.test.sh: worker-died raised while its log was fresh' >&2; exit 1; }
+touch -d "@$(( $(date +%s) - 1200 ))" "$grace_sup/grace-worker.log"
+BELL_AUTOPI_DIR="$grace_autopi" BELL_SUPERVISOR_DIR="$grace_sup" AGENT_HOME="$ledger_agent" bash "$bell"
+grep -Fq 'worker-died unit=unit-grace' "$grace_autopi/BELL-QUEUE.md" || { echo 'bell.test.sh: worker-died not raised after the log went quiet' >&2; exit 1; }
+
 bash "$bell"
 grep -Fq 'worker-died unit=unit-worker' "$autopi/BELL-QUEUE.md"
 ! grep -Fq 'tick done' "$autopi/BELL-QUEUE.md" || { echo 'bell.test.sh: a tick summary line was queued as an event' >&2; exit 1; }
