@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Shared Codex identity: flags may move; shell text mentioning Codex is not an owner.
+declare -F pid_live >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/proc.sh"
 hand_codex_parse_processes() {
   local with_pid="${1:-0}" nul="${2:-0}"
   awk -v with_pid="$with_pid" -v nul="$nul" '
@@ -31,12 +32,9 @@ hand_codex_worktrees() {
 }
 
 hand_codex_pid_matches() {
-  local pid="$1" worktree="$2" stat_line rest
+  local pid="$1" worktree="$2"
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  IFS= read -r stat_line < "/proc/$pid/stat" 2>/dev/null || return 1
-  rest="${stat_line##*) }"
-  [[ "$rest" != Z\ * ]] || return 1
+  pid_live "$pid" || return 1
   # /proc confines identity to this PID; never match ps/grep/brief text from another process.
   hand_codex_parse_processes 0 1 < "/proc/$pid/cmdline" 2>/dev/null | grep -qxF -- "$worktree"
 }
