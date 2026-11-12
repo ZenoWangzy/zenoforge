@@ -4,9 +4,10 @@
 
 delivery_metrics_writer_id() {
   local boot ticks pid="${1:-$$}"
+  declare -F pid_start_id >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/proc.sh" # lazy: the light observer copy has no proc.sh
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-  boot="$(cat /proc/sys/kernel/random/boot_id)" || return 1
-  ticks="$(sed 's/^.*) //' "/proc/$pid/stat" | awk '{print $20}')" || return 1
+  boot="$(host_boot_id)" || return 1
+  ticks="$(pid_start_id "$pid")" || return 1
   [[ "$boot" =~ ^[0-9a-f-]{36}$ && "$ticks" =~ ^[0-9]+$ ]] || return 1
   printf '%s:%s:%s\n' "$boot" "$pid" "$ticks"
 }
