@@ -396,7 +396,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
                      fi
                      echo "[$STAMP] fast-landed unit=$unit $land_result" >> "$A/alerts/merge.md" ;;
             *"not eligible"*)
-              if [[ -z "$(unit_field "$unit" .pr)" ]]; then to_supervisor "$unit" "NEEDS-PR: $land_result"
+              if [[ -z "$(unit_field "$unit" .pr)" ]]; then unit_to_pr_lane "$unit" "NEEDS-PR: $land_result"
               else set_unit "$unit" "$(hist land-refused "$land_result") | .lane=\"pr\" | .stage=\"ready-to-merge\""; fi ;;
             *"head moved"*) set_unit "$unit" "$(hist land-refused "$land_result") | .approved_sha=null | .stage=\"rereview-pending\"" ;;
             FAILED\ POST-LAND*)

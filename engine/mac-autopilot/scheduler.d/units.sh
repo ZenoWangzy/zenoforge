@@ -317,6 +317,15 @@ to_supervisor() { # id note：升级到 supervisor；cap triage acts after the t
   fi
 }
 
+# NEEDS-PR（直落车道判断要改产品/工作流路径）：同一单元转 PR 车道重做，不转人工。harvest 落地被拒与直落实现报告两处共用。
+unit_to_pr_lane() { # unit reason-line
+  local issue; issue="$(unit_field "$1" .issue)"
+  set_unit "$1" "$(hist needs-pr "$2") | .lane=\"pr\" | .branch=\"agent/${issue:+issue-}${issue:-$1}\" | .task += ($(js "
+
+上一轮在直落车道判断：$2。本轮走 PR 车道，可以改产品/工作流路径。")) | .stage=\"implement-pending\""
+  say "unit $1 needs a PR -> PR lane"
+}
+
 # #4369：supervisor-review 不再等人。第 1、2 次升级派一个裁决 worker（terra，见 dispatch_supervisor_arbiters）；
 # 用尽后 needs-info 是唯一回到人的出口。entries 数两种历史标记：to_supervisor 的 supervisor-escalated
 # 与合并车道门禁直接写的 supervisor-review（2288/2315 一带）。

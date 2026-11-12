@@ -118,11 +118,7 @@ harvest_prless_implement() { # unit report-path [local-only]
       [[ "${3:-false}" != true ]] || return 1
       obsolete_unit_close "$1" "$issue" "$first"; return 0 ;;
     NEEDS-PR:*)
-      # 要改产品或工作流路径：转 PR 车道重做（PR 车道可以改这些路径，CI 与评审照常把关）。
-      set_unit "$1" "$(hist needs-pr "$first") | .lane=\"pr\" | .branch=\"agent/${issue:+issue-}${issue:-$1}\" | .task += ($(js "
-
-上一轮在直落车道判断：${first}。本轮走 PR 车道，可以改产品/工作流路径。")) | .stage=\"implement-pending\""
-      say "unit $1 needs a PR -> PR lane"; return 0 ;;
+      unit_to_pr_lane "$1" "$first"; return 0 ;;
   esac
   local_head="$(git -C "$dir" rev-parse -q --verify "refs/heads/$branch" 2>/dev/null)"
   if [[ "$local_head" =~ $SHA_RE ]] && [[ -n "$(git -C "$dir" rev-list -n1 "refs/remotes/origin/main..$local_head" 2>/dev/null)" ]]; then
