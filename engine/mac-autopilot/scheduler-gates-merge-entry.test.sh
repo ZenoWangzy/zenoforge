@@ -36,7 +36,7 @@ gh() { [[ "$1 $2" != "pr merge" ]] || HELD_AT_MERGE="${SCHED_LOCK_HELD:-false}";
 # A spent refill budget: merge_refill_budget_spent fires only when TICK_LOCAL_REFILL is set, which --merge never sets.
 SECONDS=290; AUTOPI_REFILL_LIMIT_SECONDS=300
 
-grep -Eq '^  --merge\) merge_entry ;;' "$script_dir/scheduler.sh" || fail 'scheduler.sh has no --merge entry in its table'
+grep -Eq '^  --merge\) SCHED_STATION=true; merge_entry ;;' "$script_dir/scheduler.sh" || fail 'scheduler.sh has no --merge entry in its table'
 grep -Fq '"${1:-}" != --merge' "$script_dir/scheduler.sh" || fail '--merge is not exempt from the full tick config reconcile'
 
 units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-clean",pr:21,stage:"ready-to-merge",approved_sha:$sha,history:[]}]}')"

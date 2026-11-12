@@ -141,7 +141,7 @@ intake_census_prime
   || fail "census prime wrong: $HANDOFF_PR_CENSUS partial=$HANDOFF_CENSUS_PARTIAL wait=$HANDOFF_WAIT_PRS"
 
 # --- case 9: scheduler.sh routes --existing-walk to the pass without reading the tick's runtime config first; loop.sh launches it on its cadence. ---
-grep -Fq -- '--existing-walk) existing_walk_tick ;;' "$engine_dir/mac-autopilot/scheduler.sh" || fail 'scheduler.sh does not route --existing-walk'
+grep -Fq -- '--existing-walk) SCHED_STATION=true; existing_walk_tick ;;' "$engine_dir/mac-autopilot/scheduler.sh" || fail 'scheduler.sh does not route --existing-walk'
 grep -Fq '"${1:-}" != --existing-walk' "$engine_dir/mac-autopilot/scheduler.sh" || fail 'a station pass would reconcile the tick runtime config'
 hl="$fixture/loop"; mkdir -p "$hl/live" "$hl/state"
 cat > "$hl/live/scheduler.sh" <<'SH'
