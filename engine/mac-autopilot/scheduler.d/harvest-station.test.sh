@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The harvest group runs as its own station (scheduler.sh --harvest-station), not as the first phases of the 800-1500 s full tick.
-# Replays: the station harvests with no tick running, takes the ledger lock one worker at a time, never harvests one worker twice,
+# Replays: the station harvests with no tick running, snapshots and commits under short ledger locks, never harvests one worker twice,
 # defers instead of racing a lock holder, excludes a second pass, writes its heartbeat; the tick skips the group only while that
 # heartbeat is fresh; live workers are visited once per sweep window; the dashboard row is computed from the pass lines.
 set -euo pipefail
@@ -32,32 +32,41 @@ git() { :; } # the fixture root is not a repository
 two_workers() { printf '%s\n' '{"workers":[{"pid":4101,"unit":"pr-1","type":"review"},{"pid":4102,"unit":"pr-2","type":"repair"}]}' > "$WORKERS"; }
 calls="$td/calls"
 harvest_worker_alive() { return 1; } # both workers have finished
-# The real harvest_workers needs reports, usage logs and GitHub; the station's contract is how it calls it and under which lock.
+# The real harvest_workers needs reports, usage logs and GitHub; the station calls it unlocked and commits its ledger writes separately.
 harvest_workers() {
-  [[ "${SCHED_LOCK_HELD:-false}" == true && "$(cat "$SCHED_LOCK/pid")" == "$BASHPID" ]] || { echo "harvest_workers ran without the ledger lock" >> "$calls"; return 1; }
+  [[ "${SCHED_LOCK_HELD:-false}" != true && ! -e "$SCHED_LOCK" ]] || { echo "harvest_workers ran with the ledger lock" >> "$calls"; return 1; }
   printf 'harvest local_only=%s only=%s\n' "$1" "${2:-}" >> "$calls"
   [[ -n "${2:-}" ]] || return 0
-  jqf --argjson pid "${2%%:*}" --arg unit "${2#*:}" '(.workers[] | select(.pid == $pid and .unit == $unit)) |= (.harvested = true)' "$WORKERS" | write_state "$WORKERS"
+  if declare -F workers_update >/dev/null; then
+    workers_update --argjson pid "${2%%:*}" --arg unit "${2#*:}" '(.workers[] | select(.pid == $pid and .unit == $unit)) |= (.harvested = true)'
+  else
+    jqf --argjson pid "${2%%:*}" --arg unit "${2#*:}" '(.workers[] | select(.pid == $pid and .unit == $unit)) |= (.harvested = true)' "$WORKERS" | write_state "$WORKERS"
+  fi
 }
+coord_reconcile_systemd_real="$(declare -f coord_reconcile_systemd_workers)"
 for f in coord_reap_expired coord_reconcile_systemd_workers coord_reconcile_scheduler_workers self_check_harvest precheck_harvest recover_orphans; do
-  eval "$f() { echo $f >> \"\$calls\"; [[ \"\${SCHED_LOCK_HELD:-false}\" == true ]] || echo '$f ran without the ledger lock' >> \"\$calls\"; }"
+  if [[ "$f" =~ ^(coord_reap_expired|self_check_harvest|precheck_harvest|recover_orphans)$ ]]; then
+    eval "$f() { echo $f >> \"\$calls\"; [[ \"\${SCHED_LOCK_HELD:-false}\" == true ]] || echo '$f ran without the ledger lock' >> \"\$calls\"; }"
+  else
+    eval "$f() { echo $f >> \"\$calls\"; [[ \"\${SCHED_LOCK_HELD:-false}\" != true ]] || echo '$f ran with the ledger lock' >> \"\$calls\"; }"
+  fi
 done
 reset() { rm -rf "$SCHED_LOCK" "$HARVEST_STATION_LOCK" "$A/.harvest-station-epoch" "$A/.harvest-live-epoch" "$PAUSE_FILE"; : > "$calls"; : > "$LOG"; two_workers; }
 
-# --- case 1: no tick anywhere, one pass harvests both workers, each under the ledger lock, then runs the follow-ups. ---
+# --- case 1: no tick anywhere, harvest runs unlocked, commits each worker under a short lock, then runs the follow-ups. ---
 reset
 harvest_station_tick
 [[ "$(grep -c '^harvest ' "$calls")" == 2 ]] || fail "expected one harvest per worker: $(cat "$calls")"
 grep -Fxq 'harvest local_only=false only=4101:pr-1' "$calls" && grep -Fxq 'harvest local_only=false only=4102:pr-2' "$calls" \
   || fail "each worker must be harvested on its own: $(cat "$calls")"
-! grep -q 'without the ledger lock' "$calls" || fail "a harvest step ran unlocked: $(cat "$calls")"
+! grep -q 'ran with the ledger lock' "$calls" || fail "a slow step ran while the ledger lock was held: $(cat "$calls")"
 for f in coord_reap_expired coord_reconcile_systemd_workers coord_reconcile_scheduler_workers self_check_harvest precheck_harvest recover_orphans; do
   grep -Fxq "$f" "$calls" || fail "follow-up $f did not run"
 done
 [[ "$(jq '[.workers[] | select(.harvested == true)] | length' "$WORKERS")" == 2 ]] || fail 'workers left unharvested'
 [[ ! -e "$SCHED_LOCK" && ! -e "$HARVEST_STATION_LOCK" ]] || fail 'a finished pass left a lock'
 line="$(grep 'harvest-station done' "$LOG")"
-[[ "$line" =~ secs=[0-9]+\ gh_calls=[0-9]+\ lock_wait=[0-9]+\ lock_hold=[0-9]+\ workers=2\ harvested=2\ deferred=0\ limit=240s\ ended=[0-9:]+Z\ phases=harvest_workers:[0-9]+s/[0-9]+gh,coord_sweeps: ]] \
+[[ "$line" =~ secs=[0-9]+\ gh_calls=[0-9]+\ lock_wait=[0-9]+\ lock_hold=[0-9]+\ workers=2\ harvested=2\ deferred=0\ limit=240s\ ended=[0-9:]+Z\ phases=harvest_workers:[0-9]+s/[0-9]+gh,coord_reap:[0-9]+s/[0-9]+gh,coord_systemd: ]] \
   || fail "the pass line lacks its measured fields: $line"
 
 # --- case 2: a worker another pass harvested after the list was read is not harvested twice. ---
@@ -74,7 +83,7 @@ mkdir "$SCHED_LOCK"; printf '%s\n' "$$" > "$SCHED_LOCK/pid"
 AUTOPI_HARVEST_STATION_LIMIT_SECONDS=2 harvest_station_tick
 [[ "$(cat "$SCHED_LOCK/pid")" == "$$" ]] || fail 'the station took or released a lock it did not own'
 ! grep -q '^harvest ' "$calls" || fail "the station harvested while the tick held the ledger lock: $(cat "$calls")"
-grep -Eq 'harvest-station done .*workers=2 harvested=0 deferred=2 ' "$LOG" || fail "deferred workers not logged: $(cat "$LOG")"
+grep -Eq 'harvest-station done .*workers=0 harvested=0 deferred=1 ' "$LOG" || fail "busy-lock pass did not defer before reading the worker ledger: $(cat "$LOG")"
 grep -Eq 'lock_wait=[1-9]' "$LOG" || fail "the lock wait was not measured: $(cat "$LOG")"
 rm -rf "$SCHED_LOCK"
 
@@ -92,17 +101,17 @@ rm -f "$td/hold"; wait "$first"
 eval "$harvest_workers_real"
 [[ ! -e "$HARVEST_STATION_LOCK" && ! -e "$SCHED_LOCK" ]] || fail 'locks left behind after the first pass'
 
-# --- case 5: the ledger lock is free between two workers' harvests. ---
+# --- case 5: both worker harvests run outside the ledger lock. ---
 reset
 between="$td/between"; : > "$between"
 harvest_workers_inner="$(declare -f harvest_workers)"
-harvest_workers() { # at the second worker's start the first worker's hold is gone: only this call owns the lock
-  [[ -d "$SCHED_LOCK" ]] && printf 'held-by=%s\n' "$(cat "$SCHED_LOCK/pid")" >> "$between"
+harvest_workers() {
+  [[ ! -e "$SCHED_LOCK" ]] && echo unlocked >> "$between"
   eval "${harvest_workers_inner#harvest_workers ()}"
 }
 harvest_station_tick
 eval "$harvest_workers_inner"
-[[ "$(grep -c '^held-by=' "$between")" == 2 ]] || fail "expected the lock held once per worker, saw: $(cat "$between")"
+[[ "$(grep -c '^unlocked$' "$between")" == 2 ]] || fail "both worker harvests must run unlocked: $(cat "$between")"
 
 # --- case 6: PAUSE does not stop the station (the paused tick harvests too); a stale epoch heals. ---
 reset; touch "$PAUSE_FILE"
@@ -214,4 +223,58 @@ chmod +x "$rf/live/scheduler.sh"
 [[ "$(wc -l < "$rf/refill-calls")" == 1 ]] || fail 'a slow refill was started more than once while it remained in flight'
 grep -Fxq -- '--harvest-station' "$rf/calls" || fail 'the harvest station launch was not recorded'
 
-echo 'harvest-station.test.sh: pass (station harvests without a tick, one lock hold per worker, no double harvest, defers on a busy lock, one pass at a time, tick gate, loop cadence)'
+# --- case 11: slow harvest I/O runs unlocked, and a concurrent unit move survives its delayed write. ---
+reset
+echo '{"units":[{"id":"pr-1","stage":"review","note":"before"}]}' > "$UNITS"
+echo '{"workers":[{"pid":4101,"unit":"pr-1","type":"review"}]}' > "$WORKERS"
+slow_started="$td/slow-started"; slow_lock="$td/slow-lock"; slow_changed="$td/slow-changed"; changed_during="$td/changed-during"
+harvest_workers_saved="$(declare -f harvest_workers)"
+harvest_workers() {
+  if [[ -e "$SCHED_LOCK" ]]; then echo held > "$slow_lock"; else echo free > "$slow_lock"; fi
+  : > "$slow_started"
+  for _ in $(seq 50); do [[ -e "$slow_changed" ]] && break; command sleep 0.05; done
+  if [[ -e "$slow_changed" ]]; then : > "$changed_during"; printf '%s\n' "$(unit_field pr-1 .note)" > "$td/snapshot-note"; fi
+  set_unit pr-1 '.stage="supervisor-review"' || :
+}
+(
+  SCHED_LOCK_HELD=false HARVEST_STATION_ACTIVE=false
+  unset HARVEST_CAS_ACTIVE HARVEST_CAS_UNIT HARVEST_CAS_EXPECTED HARVEST_CAS_STALE
+  for _ in $(seq 100); do [[ -e "$slow_started" ]] && break; command sleep 0.01; done
+  [[ -e "$slow_started" ]] || exit 2
+  until acquire_scheduler_lock; do command sleep 0.05; done
+  jqf --arg id pr-1 '.units |= map(if .id==$id then .stage="ready-to-merge" | .note="concurrent" else . end)' "$UNITS" | write_state "$UNITS"
+  release_scheduler_lock
+  : > "$slow_changed"
+) & writer=$!
+harvest_station_tick
+wait "$writer" || fail 'the concurrent ledger writer did not finish'
+eval "$harvest_workers_saved"
+[[ "$(cat "$slow_lock")" == free ]] || fail 'the slow harvest step held the ledger lock'
+[[ -e "$changed_during" ]] || fail 'the concurrent ledger change did not finish during the slow step'
+[[ "$(cat "$td/snapshot-note")" == before ]] || fail 'harvest read the moved unit row outside its captured snapshot'
+[[ "$(jqf -r '.units[0].stage' "$UNITS")" == ready-to-merge ]] || fail 'the delayed harvest write overwrote the concurrent unit stage'
+[[ "$(jqf -r '.units[0].note' "$UNITS")" == concurrent ]] || fail 'the delayed harvest write dropped a concurrent unit field'
+
+# --- case 12: coordinator I/O is unlocked, then its claim mutation takes the ledger lock first. ---
+reset
+COORD_DIR="$td/claims"; COORD_LEASE_SECONDS=900
+coord_acquire station-systemd owner-systemd systemd-worker ticket fake.service review || fail 'could not create coordinator fixture'
+coord_calls="$td/coord-calls"; : > "$coord_calls"
+systemctl() {
+  [[ "${SCHED_LOCK_HELD:-false}" != true && ! -e "$SCHED_LOCK" ]] || fail 'systemd state read held the ledger lock'
+  echo systemd-unlocked >> "$coord_calls"
+  printf 'active\n'
+}
+coord_renew_real="$(declare -f coord_renew)"; eval "${coord_renew_real/coord_renew/coord_renew_real}"
+coord_renew() {
+  [[ "${SCHED_LOCK_HELD:-false}" == true && -e "$SCHED_LOCK" ]] || fail 'claim renewal did not hold the ledger lock first'
+  echo renew-ledger-locked >> "$coord_calls"
+  coord_renew_real "$@"
+}
+eval "$coord_reconcile_systemd_real"
+coord_reconcile_systemd_workers || fail 'systemd claim reconciliation failed'
+grep -Fxq systemd-unlocked "$coord_calls" || fail 'systemd state was not read'
+grep -Fxq renew-ledger-locked "$coord_calls" || fail 'claim renewal was not serialized with the ledger'
+[[ ! -e "$SCHED_LOCK" ]] || fail 'coordinator reconciliation left the ledger lock held'
+
+echo 'harvest-station.test.sh: pass (unlocked harvest, short CAS ledger writes, no double harvest, bounded deferral, one pass at a time, tick gate, loop cadence, ordered coordinator locks)'
