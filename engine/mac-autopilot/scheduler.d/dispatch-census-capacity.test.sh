@@ -191,12 +191,13 @@ ticket_budget_reason() { :; }
 footprint_calls=0
 _footprint_room() { footprint_calls=$((footprint_calls + 1)); return 1; }
 saved_cfg="$CFG"; CFG="$(jq -c '.issue_intake.refill_max_footprint_candidates = 2' <<<"$CFG")"
+host_gate_saved="$(declare -f priority_admission_has_room)"; priority_admission_has_room() { return 0; } # host readings are not this case's subject
 : > "$LOG"; SECONDS=0
 dispatch_pending true
 [[ "$footprint_calls" == 2 ]] || fail "footprint work ran for $footprint_calls candidates, want the cap of 2"
 [[ "$(grep -c 'dispatch walk stopped at cap 2' "$LOG")" == 1 ]] || fail "no single cap line: $(cat "$LOG")"
 [[ "$(dispatch_skip_summary)" == *footprint-cap:1* ]] || fail "the cap was not counted: $(dispatch_skip_summary)"
-CFG="$saved_cfg"
+CFG="$saved_cfg"; eval "$host_gate_saved"
 
 # Active footprint waiters do not spend the refill cap ahead of a free unit.
 (

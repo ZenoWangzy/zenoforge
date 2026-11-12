@@ -107,7 +107,7 @@ echo 0 > "$fixture/probe-rc"; admit || fail 'a ready runtime must admit'
 echo 2 > "$fixture/probe-rc"; admit || fail 'an unknown probe result must admit'
 echo 1 > "$fixture/probe-rc"; units_with '["docs/a.md"]'; admit || fail 'a docs-only repair needs no container runtime'
 # room_for: a no-runtime host still dispatches the repair (no repair-runtime skip).
-units_with '["packages/a/x.ts"]'; repair_cap_admission() { return 0; }; TICK_CONTAINER_RUNTIME=""; echo 1 > "$fixture/probe-rc"
+units_with '["packages/a/x.ts"]'; repair_cap_admission() { return 0; }; priority_admission_has_room() { return 0; }; TICK_CONTAINER_RUNTIME=""; echo 1 > "$fixture/probe-rc"
 room_for issue-9 repair || fail 'room_for must admit the repair on a host with no container runtime'
 [[ "${TICK_DISPATCH_SKIPS[repair-runtime]:-0}" == 0 ]] || fail 'no repair-runtime skip may be counted'
 

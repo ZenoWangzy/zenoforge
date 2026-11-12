@@ -162,6 +162,7 @@ There are two worker paths. The unit loop is the main one.
 - Fresh runs use `codex exec` with the model and reasoning effort from `config.json`, under the `models` key (`[model, effort]`).
 - Resumed runs use `codex exec resume <session>` when the unit already has a session.
 - A Claude model runs as `claude -p` with no write permission. The dispatcher saves its report from stdout. Review workers use this path, with the read-only tool allowlist `CLAUDE_REVIEW_TOOLS` and `--permission-mode dontAsk`.
+- **Host gate.** Before a start (not a review or rereview), `room_for` in `scheduler.d/self-check.sh` runs the same `box_has_room` check as `bin/luna`, from `engine/bin/luna-capacity.sh`, with the unit's priority. A refused start stays pending and logs `dispatch why ... gate=host-capacity`. It is not a failure.
 
 `pick <role>` (`scheduler.sh`) chooses the model. It tries `<role>_hotfix` first for units with the `hotfix` label, then `<role>`, then `<role>_fallback`. It skips any model whose provider is cooling down.
 
@@ -204,7 +205,7 @@ Capacity is enforced in two layers.
 Two more guards sit above these:
 
 - In `run-tick.sh`, if `git fetch` times out while the 1-minute load is above `AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER` (default 2) times the CPU count, the tick refuses with `fetch-starved` and dispatches nothing.
-- In the unit loop, `max_workers` (10) and `implement_cap` (8) in `config.template.json` bound concurrency.
+- In the unit loop, `max_workers` (10) and `implement_cap` (8) in `config.template.json` bound concurrency. The host gate in section 3.1 also applies to unit starts.
 
 ## 5. Review by a different provider
 
