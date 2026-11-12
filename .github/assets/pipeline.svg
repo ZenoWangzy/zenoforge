@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-labelledby="t d">
+  <title id="t">Zenoforge pipeline</title>
+  <desc id="d">An issue enters as needs-triage, is triaged, optionally recut into child issues, then implemented, opened as a PR, reviewed, repaired and merged. The issue loop decides stage changes and never merges; the unit loop runs the workers and owns the serial merge queue. When main goes red, main-red-bisect reverts the culprit with a revert PR that goes back through the merge queue.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1218"/>
+      <stop offset="1" stop-color="#0a0d12"/>
+    </linearGradient>
+    <linearGradient id="ember" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff4d1a"/>
+      <stop offset="0.55" stop-color="#ff8a1f"/>
+      <stop offset="1" stop-color="#ffc23d"/>
+    </linearGradient>
+    <marker id="ah" viewBox="0 0 12 12" refX="9" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M1 1 L10 6 L1 11 Z" fill="#ff9a2e"/>
+    </marker>
+    <marker id="ahr" viewBox="0 0 12 12" refX="9" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M1 1 L10 6 L1 11 Z" fill="#ff6b6b"/>
+    </marker>
+    <pattern id="dots" width="32" height="32" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.5" fill="#ffffff" fill-opacity="0.06"/>
+    </pattern>
+  </defs>
+  <style>
+    .sans{font-family:ui-sans-serif,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .n{font-size:24px;fill:#f1f3f7;text-anchor:middle}
+    .l{font-size:22px;fill:#aab3c2}
+    .band{fill:#121720;stroke:#2a3140;stroke-width:2}
+    .node{fill:#1a212d;stroke:#3a4354;stroke-width:2}
+    .arrow{fill:none;stroke:#ff9a2e;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round}
+    .flow{stroke-dasharray:9 12;animation:flow 1.4s linear infinite}
+    @keyframes flow{to{stroke-dashoffset:-42}}
+    @media (prefers-reduced-motion:reduce){.flow{animation:none}}
+  </style>
+
+  <rect width="1280" height="640" rx="28" fill="url(#bg)"/>
+  <rect width="1280" height="640" rx="28" fill="url(#dots)"/>
+
+  <!-- bands -->
+  <rect class="band" x="70" y="24" width="1186" height="212" rx="22"/>
+  <rect class="band" x="70" y="340" width="1186" height="276" rx="22"/>
+  <text class="sans" x="100" y="72" font-size="22" font-weight="800" letter-spacing="3" fill="#ff8a1f">ISSUE LOOP</text>
+  <text class="sans l" x="296" y="72">decides stage changes, never merges · every 5 min</text>
+  <text class="sans" x="100" y="388" font-size="22" font-weight="800" letter-spacing="3" fill="#ff8a1f">UNIT LOOP</text>
+  <text class="sans l" x="296" y="388">runs the workers, owns the serial merge queue</text>
+
+  <!-- connectors: top row -->
+  <path class="arrow" marker-end="url(#ah)" d="M310 160 H372"/>
+  <path class="arrow" marker-end="url(#ah)" d="M540 160 H642"/>
+  <text class="sans l" x="596" y="136" text-anchor="middle" font-size="22">too big</text>
+
+  <!-- triage and recut drop to the implement lane -->
+  <path class="arrow" d="M460 196 V288"/>
+  <path class="arrow" d="M720 196 V288 H36 V520 H92" marker-end="url(#ah)"/>
+  <text class="sans l" x="476" y="266" font-size="22">ready-for-agent</text>
+  <text class="sans l" x="736" y="266" font-size="22">child issues</text>
+
+  <circle cx="460" cy="288" r="6" fill="#ff9a2e"/>
+
+  <!-- connectors: unit row -->
+  <path class="arrow" marker-end="url(#ah)" d="M280 520 H355"/>
+  <path class="arrow" marker-end="url(#ah)" d="M483 520 H557"/>
+  <path class="arrow" marker-end="url(#ah)" d="M705 520 H780"/>
+  <path class="arrow" marker-end="url(#ah)" d="M928 520 H1002"/>
+
+  <!-- main goes red / revert loop -->
+  <path class="arrow flow" stroke="#ff6b6b" marker-end="url(#ahr)" d="M1042 484 V204"/>
+  <path class="arrow flow" marker-end="url(#ah)" d="M1128 196 V476"/>
+  <text class="sans l" x="1030" y="296" text-anchor="end" font-size="22" fill="#ff8f8f">main goes red</text>
+  <text class="sans l" x="1142" y="296" font-size="22">revert PR</text>
+
+  <!-- nodes: top -->
+  <rect class="node" x="100" y="124" width="210" height="72" rx="36"/>
+  <text class="mono n" x="205" y="170">needs-triage</text>
+  <rect class="node" x="380" y="124" width="160" height="72" rx="14"/>
+  <text class="mono n" x="460" y="170">triage</text>
+  <rect class="node" x="650" y="124" width="140" height="72" rx="14"/>
+  <text class="mono n" x="720" y="170">recut</text>
+  <rect class="node" x="950" y="124" width="270" height="72" rx="14" stroke="#ff6b6b"/>
+  <text class="mono n" x="1085" y="170">main-red-bisect</text>
+
+  <!-- nodes: bottom -->
+  <rect class="node" x="100" y="484" width="180" height="72" rx="14"/>
+  <text class="mono n" x="190" y="530">implement</text>
+  <rect class="node" x="363" y="484" width="120" height="72" rx="36"/>
+  <text class="mono n" x="423" y="530">PR</text>
+  <rect class="node" x="565" y="484" width="140" height="72" rx="14"/>
+  <text class="mono n" x="635" y="530">review</text>
+  <rect class="node" x="788" y="484" width="140" height="72" rx="14"/>
+  <text class="mono n" x="858" y="530">repair</text>
+  <rect x="1010" y="484" width="150" height="72" rx="14" fill="url(#ember)"/>
+  <text class="mono n" x="1085" y="530" style="fill:#1a0d04;font-weight:700">merge</text>
+
+  <rect x="1" y="1" width="1278" height="638" rx="27" fill="none" stroke="#2a3140" stroke-width="2"/>
+</svg>
