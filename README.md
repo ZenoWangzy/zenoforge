@@ -71,7 +71,7 @@ Two loops share GitHub labels and per-issue state. The issue loop (`engine/run-t
 ## What it does
 
 - **Takes an issue to a merge.** Issues move through a fixed stage chain: triage, recut, implement, self-check, review, repair, and merge. GitHub labels carry the state.
-- **Works the Matt Pocock way.** Every stage follows [Matt Pocock's skills](https://github.com/mattpocock/skills), entered through `ask-matt`: triage, to-tickets, implement with tdd, diagnosing-bugs, code-review. They are vendored byte-identical under `.agents/skills/` and stay MIT ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); see [Architecture](docs/architecture.md#23-method-matt-skills).
+- **Uses Matt Pocock's skills as its method.** Every stage follows [Matt Pocock's skills](https://github.com/mattpocock/skills), entered through `ask-matt`: triage, to-tickets, implement with tdd, diagnosing-bugs, code-review. They are vendored byte-identical under `.agents/skills/` and stay MIT ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); see [Architecture](docs/architecture.md#23-method-matt-skills).
 - **Reviews across providers.** Review is meant to use a different model provider from the implementer; when none is available, the fallback is recorded. The shipped unit-loop config uses Claude for review.
 - **Keeps working when a quota runs out.** One worker interface over two coding-agent CLIs, Codex and ZCode, with circuit breakers, failover, and escalation to a stronger model after repeated failures.
 - **Starts work only when the host can take it.** Capacity admission checks CPU and memory before a worker starts, so the host is not overloaded.
