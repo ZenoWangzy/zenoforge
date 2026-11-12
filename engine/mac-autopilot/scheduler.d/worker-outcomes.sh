@@ -1,13 +1,15 @@
 handle_worker_guard_refusal() { # unit refusal-file head work-type attempt → requeue twice; escalate a third same-head refusal unless delivered
   local unit="$1" refusal_file="$2" head="${3:-}" work_type="${4:-}" attempt="${5:-}" marker signature refusals re pending_stage filter
-  re="^non-product-test-guard: refused unit=$unit command=[[:alnum:]_-]+ reason=[[:alnum:]_-]+ recorded=[01]$"
+  re="^non-product-test-guard: refused unit=$unit command=[[:alnum:]_-]+ reason=[[:alnum:]_-]+( path=[^[:space:]]+)? recorded=[01]$"
   marker="$(grep -E "$re" "$refusal_file" 2>/dev/null | tail -n 1 || true)"
   [[ -n "$marker" ]] || return 1
   signature="${marker#* unit=$unit }"; signature="${signature% recorded=*}"
+  # A supervisor ruling starts the refusal count over, as it does for stop-loss rounds (stop-loss.sh repair_rounds_since_ruling).
   refusals="$(jqf -r --arg id "$unit" --arg head "$head" '
     [.units[] | select(.id==$id) | (.history // []) as $history
       | ([$history | to_entries[] | select(.value.stage=="repair-delivered" and (.value.head // "")==$head) | .key] | last // -1) as $delivery
-      | [$history | to_entries[] | select(.key > $delivery and .value.stage=="worker-guard-refused" and (.value.head // "")==$head)] | length
+      | ([$history | to_entries[] | select(.value.stage | IN("supervisor-arbiter","supervisor-arbiter-round","supervisor-requeue","supervisor-approve","advisor-ruling","review-approve")) | .key] | max // -1) as $ruling
+      | [$history | to_entries[] | select(.key > $delivery and .key > $ruling and .value.stage=="worker-guard-refused" and (.value.head // "")==$head)] | length
     ] | first // 0' "$UNITS")"
   filter="$(hist worker-guard-refused "$signature") | .history[-1].head=$(js "$head")"
   [[ -z "$work_type" ]] || filter+=" | .history[-1].work_type=$(js "$work_type")"

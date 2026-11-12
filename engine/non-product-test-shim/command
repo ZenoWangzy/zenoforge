@@ -6,6 +6,7 @@ import re
 import shlex
 import subprocess
 import sys
+from urllib.parse import quote
 
 
 SHIM_FILE = Path(__file__).resolve()
@@ -122,6 +123,12 @@ def login_shell_script_index():
     return None
 
 
+def refused_path():
+    # The matched test file, percent-encoded so the marker stays one token; "-" when no file was named (node --test).
+    value = next((arg for arg in ARGS if test_file(arg)), "")
+    return quote(value, safe="/._-+@:") or "-"
+
+
 def record_violation(reason):
     reporter = SHIM_DIR.parent / "execution-admission.py"
     command_name = COMMAND if COMMAND in {"node", "pnpm", "bash", "sh", "python", "python3"} else "unknown"
@@ -137,7 +144,7 @@ if os.environ.get("ZF_NON_PRODUCT_UNIT") == "1":
     if reason:
         recorded = record_violation(reason)
         unit = os.environ.get("ZF_PIPELINE_UNIT", "unknown")
-        line = f"non-product-test-guard: refused unit={unit} command={COMMAND} reason={reason} recorded={int(recorded)}"
+        line = f"non-product-test-guard: refused unit={unit} command={COMMAND} reason={reason} path={refused_path()} recorded={int(recorded)}"
         if guard_file := os.environ.get("ZF_NON_PRODUCT_GUARD_FILE"):
             try:
                 with open(guard_file, "a", encoding="utf-8") as stream:

@@ -416,7 +416,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
                 to_supervisor "$unit" "fast land failed twice: $land_result (log ${report}.land.log)"
               fi ;;
             *) # 冲突、预检失败、落地卡死：改动本身要修，交给 repair 并附落地日志
-               set_unit "$unit" "$(hist land-failed "$land_result") | .approved_sha=null | .repair_hint=$(js "直落 main 失败：${land_result}。落地日志 $SUP/${report}.land.log；与 main 冲突就 merge origin/main 解决；检查失败或卡死就修复根因并补回归测试。") | .stage=\"repair-pending\"" ;;
+               set_unit "$unit" "$(hist land-failed "$land_result") | .approved_sha=null | .land_log=$(js "${report}.land.log") | .repair_hint=$(js "直落 main 失败：${land_result}。落地日志 $SUP/${report}.land.log；与 main 冲突就 merge origin/main 解决；检查失败或卡死就修复根因。") | .stage=\"repair-pending\"" ;;
           esac ;;
         implement|triage) harvest_implement_worker_result "$unit" "$wtype" "$rep" "$report" "$local_only" ;;
       esac

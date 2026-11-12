@@ -282,7 +282,7 @@ shim_run "$shim_output" "$shim_dir/bash" -lc 'node a/x.test.mjs' || shim_status=
 echo 'ok - bash/sh -c scripts skip outer test-file scanning while nested commands stay guarded'
 
 guard_run guard-first.log bash
-jq -e '.units[0] | .stage == "review-pending" and ([.history[] | select(.stage == "worker-guard-refused" and .result == "command=bash reason=test-file")] | length == 1) and ([.history[] | select(.stage == "worker-no-output")] | length == 0)' "$UNITS" >/dev/null \
+jq -e '.units[0] | .stage == "review-pending" and ([.history[] | select(.stage == "worker-guard-refused" and (.result | startswith("command=bash reason=test-file")))] | length == 1) and ([.history[] | select(.stage == "worker-no-output")] | length == 0)' "$UNITS" >/dev/null \
   || { echo 'guard refusal was not recorded as an explicit worker outcome' >&2; exit 1; }
 jq -e '.workers[0].harvested == true' "$WORKERS" >/dev/null \
   || { echo 'guard refusal was counted as a worker death or left unharvested' >&2; exit 1; }
@@ -304,7 +304,7 @@ jq -e --arg head "$delivered_guard_head" '.stage == "rereview-pending" and .hist
 jq -n '{units:[{id:"issue-guard",stage:"review",lane:"direct-main",history:[]}]}' > "$UNITS"
 guard_run guard-repeat-first.log bash keep
 guard_run guard-repeat-second.log python3 keep
-jq -e '.units[0] | .stage == "review-pending" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 2) and any(.history[]; .stage == "worker-guard-refused" and .result == "command=bash reason=test-file") and any(.history[]; .stage == "worker-guard-refused" and .result == "command=python3 reason=test-file") and ([.history[] | select(.stage == "supervisor-escalated")] | length == 0) and all(.history[]; .stage != "worker-no-output")' "$UNITS" >/dev/null \
+jq -e '.units[0] | .stage == "review-pending" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 2) and any(.history[]; .stage == "worker-guard-refused" and (.result | startswith("command=bash reason=test-file"))) and any(.history[]; .stage == "worker-guard-refused" and (.result | startswith("command=python3 reason=test-file"))) and ([.history[] | select(.stage == "supervisor-escalated")] | length == 0) and all(.history[]; .stage != "worker-no-output")' "$UNITS" >/dev/null \
   || { echo 'the second same-head guard refusal escalated instead of requeueing' >&2; exit 1; }
 guard_run guard-repeat-third.log bash keep
 jq -e '.units[0] | .stage == "supervisor-review" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 3) and ([.history[] | select(.stage == "supervisor-escalated")] | length == 1) and any(.history[]; .stage == "supervisor-escalated" and ((.result // "") | contains("test-shim refusal loop"))) and all(.history[]; .stage != "worker-no-output")' "$UNITS" >/dev/null \
@@ -348,6 +348,18 @@ guard_repair_budget_unchanged 'head change second refusal'
 guard_run guard-repair-new-head-third.log bash keep "$next_refusal_head" repair
 jq -e --arg head "$next_refusal_head" '.units[0] | .stage == "supervisor-review" and ([.history[] | select(.stage == "worker-guard-refused" and .head == $head)] | length == 3) and any(.history[]; .stage == "supervisor-escalated" and ((.result // "") | contains("test-shim refusal loop")))' "$UNITS" >/dev/null \
   || { echo 'refusals on different heads were combined or the third refusal on the new head did not escalate' >&2; exit 1; }
+
+# A supervisor ruling starts the refusal count over: three refusals before it and one after must not park, and a park names the refused test path.
+jq -n '{units:[{id:"issue-guard",stage:"repair-pending",lane:"direct-main",history:[]}]}' > "$UNITS"
+guard_run guard-ruled-first.log bash keep "$next_refusal_head" repair
+guard_run guard-ruled-second.log bash keep "$next_refusal_head" repair
+guard_run guard-ruled-third.log bash keep "$next_refusal_head" repair
+jq -e '.units[0] | .stage == "supervisor-review" and any(.history[]; .stage == "supervisor-escalated" and ((.result // "") | contains("path=") and contains("harvest-late-report.test.sh")))' "$UNITS" >/dev/null \
+  || { echo "third refusal did not park with the refused test path: $(jq -c '.units[0]' "$UNITS")" >&2; exit 1; }
+jq --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.units[0].stage = "repair-pending" | .units[0].history += [{stage:"supervisor-requeue",at:$now}]' "$UNITS" > "$UNITS.ruled" && mv "$UNITS.ruled" "$UNITS"
+guard_run guard-ruled-fourth.log bash keep "$next_refusal_head" repair
+jq -e '.units[0] | .stage == "repair-pending" and ([.history[] | select(.stage == "worker-guard-refused")] | length == 4) and ([.history[] | select(.stage == "supervisor-escalated")] | length == 1)' "$UNITS" >/dev/null \
+  || { echo "one refusal after a supervisor ruling parked again: $(jq -c '.units[0]' "$UNITS")" >&2; exit 1; }
 
 guard_review_rule="$(lane_rule direct-main test-head)"
 [[ "$guard_review_rule" == *'评审阶段不得运行测试命令'* && "$guard_review_rule" == *'测试文件可只读检查'* && "$guard_review_rule" == *'Focused 检查在 land 后的 Pipeline 运行'* && "$guard_review_rule" == *'test evidence: not run, post-land'* ]] \
