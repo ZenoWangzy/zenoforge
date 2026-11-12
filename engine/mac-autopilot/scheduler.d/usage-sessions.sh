@@ -15,6 +15,20 @@ update_budget() { # 当日 Codex 用量记录；读不出来写 unavailable 记�
   python3 "$USAGE_READER" codex-day "$SESSIONS_DIR" "$TODAY" "$SESSION_TZ" "$A/budget.json" "$A/budget-cache.json" \
     "${CLAUDE_PROJECTS_DIR:-${HOME:-/tmp}/.claude/projects}" "$WT_ROOT"
 }
+budget_meter_scan() { # ok|fail: 连续失败计数；达到阈值写一行 BUDGET-ALERT（直到恢复前不再写），恢复写 recovered 并清零
+  local streak_file="$A/budget-meter-streak" streak=0
+  [[ -f "$streak_file" ]] && streak="$(cat "$streak_file")"
+  [[ "$streak" =~ ^[0-9]+$ ]] || streak=0
+  if [[ "$1" == ok ]]; then
+    if (( streak > 0 )); then echo "[$STAMP] BUDGET-METER-RECOVERED after=$streak failed scans" >> "$A/alerts/waste.md"; fi
+    rm -f "$streak_file"; return 0
+  fi
+  streak=$((streak + 1)); printf '%s\n' "$streak" > "$streak_file"
+  echo "[$STAMP] BUDGET-METER-ERROR sessions_dir scan failed; dispatch continues" >> "$A/alerts/waste.md"
+  if (( streak == BUDGET_METER_FAIL_THRESHOLD )); then
+    echo "[$STAMP] BUDGET-ALERT meter-failed consecutive=$streak threshold=$BUDGET_METER_FAIL_THRESHOLD: budget guard is off until the meter recovers (dispatch continues)" >> "$A/alerts/waste.md"
+  fi
+}
 session_file_for_id() { python3 "$USAGE_READER" codex-session-file "$SESSIONS_DIR" "$1"; }
 
 session_usage_for_id() { # cumulative counters plus raw and fresh, or null when unavailable (never zero)
