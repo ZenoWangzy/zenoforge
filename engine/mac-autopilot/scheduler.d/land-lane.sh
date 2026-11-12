@@ -106,6 +106,15 @@ needs_direct_route() { # unit first-report-line
 上一轮在 PR 车道判断：$2。本轮走直落车道：在本地分支提交，不 push、不开 PR；只能改非产品路径。")) | .stage=\"implement-pending\""
   say "unit $1 needs direct-main -> direct-main lane"
 }
+# NEEDS-PR（直落车道判断要改产品/工作流路径）：同一单元转 PR 车道重做，不转人工。harvest 落地被拒与直落实现报告两处共用。
+unit_to_pr_lane() { # unit reason-line
+  local issue; issue="$(unit_field "$1" .issue)"
+  set_unit "$1" "$(hist needs-pr "$2") | .lane=\"pr\" | .branch=\"agent/${issue:+issue-}${issue:-$1}\" | .task += ($(js "
+
+上一轮在直落车道判断：$2。本轮走 PR 车道，可以改产品/工作流路径。")) | .stage=\"implement-pending\""
+  say "unit $1 needs a PR -> PR lane"
+}
+
 # 无 PR 的直落实现：本地提交 → 评审本地提交 → 直落 main；OBSOLETE 直接结案，NEEDS-PR 转人工开 PR。
 harvest_prless_implement() { # unit report-path [local-only]
   local first issue branch dir local_head
@@ -118,11 +127,7 @@ harvest_prless_implement() { # unit report-path [local-only]
       [[ "${3:-false}" != true ]] || return 1
       obsolete_unit_close "$1" "$issue" "$first"; return 0 ;;
     NEEDS-PR:*)
-      # 要改产品或工作流路径：转 PR 车道重做（PR 车道可以改这些路径，CI 与评审照常把关）。
-      set_unit "$1" "$(hist needs-pr "$first") | .lane=\"pr\" | .branch=\"agent/${issue:+issue-}${issue:-$1}\" | .task += ($(js "
-
-上一轮在直落车道判断：${first}。本轮走 PR 车道，可以改产品/工作流路径。")) | .stage=\"implement-pending\""
-      say "unit $1 needs a PR -> PR lane"; return 0 ;;
+      unit_to_pr_lane "$1" "$first"; return 0 ;;
   esac
   local_head="$(git -C "$dir" rev-parse -q --verify "refs/heads/$branch" 2>/dev/null)"
   if [[ "$local_head" =~ $SHA_RE ]] && [[ -n "$(git -C "$dir" rev-list -n1 "refs/remotes/origin/main..$local_head" 2>/dev/null)" ]]; then
