@@ -456,13 +456,18 @@ roadmap_place_issue() {
     existing_parent="$(jq -r '.parent // empty' <<< "$existing")" || return 1
     if [[ -z "$explicit_epic" ]]; then
       milestone="$(jq -r '.theme_milestone // empty' <<< "$existing")" || return 1
-    else
+      if [[ -n "$milestone" && "$(jq -r '.milestone // empty' <<< "$existing")" != "$milestone" ]]; then
+        guarded_write gh issue edit "$number" --repo "$REPO" --milestone "$milestone" || return 1
+      fi
+      return 0
+    fi
+    if [[ "$existing_parent" == "$explicit_epic" ]]; then
       milestone="$(jq -r '.milestone // empty' <<< "$selected")" || return 1
+      if [[ -n "$milestone" && "$(jq -r '.milestone // empty' <<< "$existing")" != "$milestone" ]]; then
+        guarded_write gh issue edit "$number" --repo "$REPO" --milestone "$milestone" || return 1
+      fi
+      return 0
     fi
-    if [[ -n "$milestone" && "$(jq -r '.milestone // empty' <<< "$existing")" != "$milestone" ]]; then
-      guarded_write gh issue edit "$number" --repo "$REPO" --milestone "$milestone" || return 1
-    fi
-    if [[ -z "$explicit_epic" || "$existing_parent" == "$explicit_epic" ]]; then return 0; fi
   fi
   placed_file="$cache_file.placed"
   if [[ -z "$explicit_epic" ]] && [ -r "$placed_file" ] && grep -Fqx -- "$number" "$placed_file"; then return 0; fi

@@ -115,6 +115,10 @@ fi
 if [ "${1:-}" = api ] && [[ "${2:-}" =~ ^repos/.*/issues/[0-9]+$ ]]; then
   related="${2##*/}"
   [ "${FAKE_TRIAGE_RELATED_404:-}" = "$related" ] && exit 1
+  if [[ "$*" == *"--jq"* ]]; then
+    printf '%s\n' "$((related * 10))"
+    exit 0
+  fi
   jq -n --argjson related "$related" '{id:($related * 10),number:$related,state:"open"}'
   exit 0
 fi

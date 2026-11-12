@@ -180,7 +180,7 @@ assert_eq 'sub-issue API receives the issue database id' 'api repos/fixture/repo
 : > "$ROADMAP_GH_CALLS"
 roadmap_place_issue "$test_tmp/tree.json" 106 '{"title":"Domain pack intake"}' '' 904
 assert_eq 'adopted route reparents an existing ticket to the selected epic' \
-  'gh api repos/fixture/repo/issues/904/sub_issues --method POST -F sub_issue_id=10106 -F replace_parent=true' \
+  $'gh api repos/fixture/repo/issues/904/sub_issues --method POST -F sub_issue_id=10106 -F replace_parent=true\ngh issue edit 106 --repo fixture/repo --milestone UX 2026' \
   "$(cat "$ROADMAP_COMMANDS")"
 assert_eq 'selected route still reads the issue database id before reparenting' \
   'api repos/fixture/repo/issues/106 --jq .id | select(type == "number" and . > 0)' \
