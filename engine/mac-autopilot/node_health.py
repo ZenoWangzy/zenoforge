@@ -178,7 +178,7 @@ MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **existing_walk_h
     "workorders.ticket_tokens_p90": "每张 ticket 生命周期 worker fresh token（未缓存输入 + 输出）的 p90，只统计有缓存拆分的票；取最近 7 天关闭的票，阈值来自之前 30 天有缓存拆分的已关票 p50×1.5（健康）与 p90×2（异常），没有可用历史时回退到静态 800k / 4.8M。升高 = 现在这批票比历史更烧钱，去单元表里找是哪张。",
     "workorders.ticket_wall_p90": "每张 ticket 生命周期 worker 墙钟（分钟）的 p90，取最近 7 天关闭的票；阈值同上取历史 p50×1.5 / p90×2。",
     "loop.advisor_fail_pct": "第 2 次评审打回后问顾问（拆票 / 定范围 / 修复方向），没拿到裁决的比例。高 = 顾问 provider 不可用。",
-    "advisor.last_answer_age_hours": "needs-advisor 队列非空时，距最近一次成功 advisor 回答的小时数。高 = 顾问死了而没人发现（10-28 21:17 PDT 起约 30 小时无产出）。队列为空记 0。",
+    "advisor.last_answer_age_hours": "needs-advisor 队列非空时，距最近一次成功 advisor 批次（logs/advisor-batch-*.result.json，outcome 为 completed）的小时数。高 = 顾问死了而没人发现（10-28 21:17 PDT 起约 30 小时无产出）。队列为空记 0。",
     "review.findings_missing_pct": "打回报告里缺结构化发现块（或块畸形）的比例。缺块 = 这一轮的发现没记进台账，同文件复发规则就看不见它；Claude 评审员不带 review skill，10-20 起 81% 的打回报告没有块。",
     "host.prereqs_missing": "WSL 主机上流水线依赖的服务（测试库、代理等）有几个没响应。非 0 时看体检输出里列出的名字；10-17 重装后这些缺失要几天后才以浪费的形式暴露。",
     "host.github_net_failures_per_hour": "每小时连不上 GitHub 的次数（fetch 最终失败、API TLS 握手超时）。WSL 上 GitHub 只能走 egress 代理，单元缺代理就静默超时：10-22 三个定时单元没有代理 drop-in，6 小时约 1,600 次，没有任何数字显示。",
@@ -246,7 +246,7 @@ SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **existing_walk_heal
     "landing.post_land_runs_ratio": "land-queue/requests/*.json：direct_landing 且 state=landed、finished_epoch 在固定滚动 24h 内的数量为落地数；GitHub pipeline-suites.yml 在 main 上 display_title 以 “Pipeline suites post-land ” 开头的 run 数（含取消）为运行数；比值=运行数÷落地数。24h 内没有落地，或 gh 读不到 run 列表时显示 N/A。",
     "review.large_pr_pct": "pr-sizes.json（ci_spend.py 取 PR 非测试新增行；测试路径包括名为 test、tests、__tests__、fixture、fixtures、__snapshots__ 的目录，以及名称以 eval 开头且后续只含小写字母、连字符或下划线的目录；文件名含 .test.、.spec. 或以 .snap 结尾也排除）对照最近 30 天有台账活动的 PR；无历史的在途单也计入，缺尺寸时显示无数据",
     "loop.advisor_fail_pct": "units.json：advisor-unavailable ÷（advisor-ruling + advisor-unavailable），24 h 窗口",
-    "advisor.last_answer_age_hours": "web-advisor-provider-jobs/*/answer.err 中不含 FAIL: 的最新 mtime；needs-advisor 数来自 gh issue list",
+    "advisor.last_answer_age_hours": "logs/advisor-batch-*.result.json 中 outcome 为 completed 的最新 mtime；needs-advisor 数来自 REST gh api repos/<repo>/issues（排除 PR）",
     "review.findings_missing_pct": "units.json 每单的 review_findings：窗口内 block=missing 的打回 ÷ 全部打回（调度器收割打回报告时写入）",
     "host.prereqs_missing": "host-prereqs.json 里每项每次体检做一次 TCP 连接或 HTTP 200 探测",
     "host.github_net_failures_per_hour": "journalctl --user 窗口内的最终失败行（origin fetch failed、git fetch: timed out after、api.github.com TLS handshake timeout）÷ 小时；没有 journal（Mac）为空",
@@ -901,11 +901,15 @@ def ledger_metrics(units, since, now, window_hours=None, sample_counts=None):
 
 
 def advisor_answer_age_hours(agent_home, repo, now):
-    """Dead-man: age of the newest successful advisor job, only while tickets wait for it."""
-    queue = _gh_json(["issue", "list", "--repo", repo, "--label", "needs-advisor", "--state", "open",
-                      "--limit", "1", "--json", "number"], 60)
-    if queue is None:
+    """Dead-man: age of the newest successful advisor job, only while tickets wait for it. Queue via REST (GraphQL was NO-DATA, #1038)."""
+    try:
+        result = subprocess.run(["gh", "api", f"repos/{repo}/issues?labels=needs-advisor&state=open&per_page=100"], capture_output=True, text=True, timeout=60)
+        items = json.loads(result.stdout or "[]") if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        items = None
+    if not isinstance(items, list):
         return None
+    queue = [item for item in items if "pull_request" not in item]
     if not queue:
         return 0.0
     newest = 0.0

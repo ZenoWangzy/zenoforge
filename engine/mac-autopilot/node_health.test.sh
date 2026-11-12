@@ -1807,13 +1807,24 @@ CHECK
 
 python3 - "$script_dir" <<'CHECK2'
 import json, os, sys, tempfile, datetime; sys.path.insert(0, sys.argv[1]); import node_health as n
-n._gh_json = lambda *a, **k: [{"number": 1}]
 home = tempfile.mkdtemp(); os.makedirs(home + "/logs"); os.makedirs(home + "/web-advisor-provider-jobs/j1")
 open(home + "/web-advisor-provider-jobs/j1/answer.err", "w").write("model_policy: boom\n")  # failed early, no FAIL: line, no answer.txt
+# fake gh on PATH: prints $FAKE_GH_JSON (exit 1 when FAKE_GH_FAIL is set) and logs its args
+fake_bin = tempfile.mkdtemp(); fake_gh = fake_bin + "/gh"; calls = home + "/gh.calls"
+open(fake_gh, "w").write('#!/bin/sh\necho "$@" >> "$FAKE_GH_CALLS"\n[ -n "$FAKE_GH_FAIL" ] && exit 1\nprintf "%s" "$FAKE_GH_JSON"\n')
+os.chmod(fake_gh, 0o755); os.environ["PATH"] = fake_bin + os.pathsep + os.environ["PATH"]; os.environ["FAKE_GH_CALLS"] = calls
 now = datetime.datetime.now(datetime.timezone.utc)
+os.environ["FAKE_GH_JSON"] = '[{"number": 1}]'  # non-empty queue, but no completed batch yet
 assert n.advisor_answer_age_hours(home, "r", now) == 9999.0
+assert "api repos/r/issues?labels=needs-advisor&state=open" in open(calls).read()
 json.dump({"outcome": "completed"}, open(home + "/logs/advisor-batch-x.result.json", "w"))
 assert n.advisor_answer_age_hours(home, "r", now) < 1
+os.environ["FAKE_GH_JSON"] = '[{"number": 2, "pull_request": {"url": "x"}}]'  # queue holds only a PR: count 0 -> 0.0
+assert n.advisor_answer_age_hours(home, "r", now) == 0.0
+os.environ["FAKE_GH_JSON"] = "[]"
+assert n.advisor_answer_age_hours(home, "r", now) == 0.0
+os.environ["FAKE_GH_FAIL"] = "1"  # read error -> None (NO-DATA)
+assert n.advisor_answer_age_hours(home, "r", now) is None
 print("node_health advisor answer age: PASS")
 CHECK2
 # 实施/返工耗时看 24 h：一张 13 h 前交报告的开发轮（5 h 窗口外）必须进 implement.wall_p50
