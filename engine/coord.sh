@@ -2,6 +2,8 @@
 # Single-host ticket claims shared by the issue feeder and autopilot scheduler.
 # Source through lib.sh; writes are serialized by flock and published by rename.
 
+declare -F pid_start_id >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/proc.sh" # lazy: tests source coord.sh alone
+
 COORD_DIR="${AGENT_HOME:?AGENT_HOME must be set before loading coord.sh}/coord/claims"
 COORD_LEASE_SECONDS="${ZF_COORD_LEASE_SECONDS:-900}"
 # Keep released claims briefly for inspection; readers treat them as absent and sweeps scan every claim file.
