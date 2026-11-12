@@ -7,7 +7,7 @@ unset ZF_REPO ZF_GH_REPO
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 script="$script_dir/prompt-observer-compare.sh"
 tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 repo="$tmp/repo"
 git init -q -b main "$repo"
 git -C "$repo" remote add origin https://github.com/test/repo.git
