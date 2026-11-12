@@ -126,6 +126,12 @@ reset; closed_state CLOSED; printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20 | 
 [[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'an unmarked unit keeps the old release on a closed predecessor'
 reset; closed_state CLOSED; printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20 | jq -c '.stage="parked"')" > "$UNITS"; release_dependency_blocks
 [[ "$(field issue-20 .stage)" == parked ]] || fail 'a parked marked unit must not read a closed undelivered predecessor as delivered'
+# The parked-waiter loop frees a marked unit on a stale closed cache with no unit row only after a fresh CLOSED read (#536).
+parked_marked() { printf '{"units":[%s]}\n' "$(marked 20 | jq -c '.stage="parked" | .parked_reason="waiting-predecessor"')" > "$UNITS"; }
+reset; nounit; parked_marked; closed_state CLOSED; CHILD=OPEN; release_dependency_blocks
+[[ "$(field issue-20 .stage):$(field issue-20 .dep_wait_delivery)" == parked:10 ]] || fail "a fresh OPEN read must keep a parked marked waiter on a stale closed cache: $(field issue-20 .stage)"
+reset; nounit; parked_marked; closed_state CLOSED; release_dependency_blocks
+[[ "$(field issue-20 .stage)" == implement-pending ]] || fail "a fresh CLOSED read must release a parked marked waiter with no unit row: $(field issue-20 .stage)"
 rm -f "$A/dep-check.cache.json" "$A/dep-check.epoch"
 
 # Proof is the only way past the marker, including a body dependency on the same predecessor.

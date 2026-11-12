@@ -490,7 +490,7 @@ release_dependency_blocks() {
   # supervisor 搁置（park）的单元仍带着 .blocked_on，却没有任何机制在前置交付后放开它；只放有前置号、无其它 parked_reason 的
   # （cap/stop-loss/founder 问题的搁置不点名前置，保持搁置）。
   while IFS="$US" read -r id dep marked state; do
-    if [[ "$marked" == "$dep" ]] && ! dep_delivered_in_ledger "$dep" && dep_has_unit "$dep" && [[ "$state" != MERGED ]]; then continue; fi
+    if [[ "$marked" == "$dep" ]] && ! dep_delivered_in_ledger "$dep" && { dep_has_unit "$dep" || { [[ "$state" == CLOSED ]] && ! dep_fresh_closed "$dep"; }; } && [[ "$state" != MERGED ]]; then continue; fi
     if dep_delivered_in_ledger "$dep" || [[ "$state" =~ ^(CLOSED|MERGED)$ ]]; then
       unblock_unit "$id" "parked on #$dep, which is delivered"
     fi
