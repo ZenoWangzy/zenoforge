@@ -35,10 +35,20 @@ review_findings_with_contract_relation() { # normalized findings JSON → enrich
 # rule plus the first six summary words stands in for it.
 # shortcut: summary wording drifts between reviews, so near-duplicates may miss; upgrade when the review prompt emits `class`.
 review_finding_class_key() { # normalized finding JSON → stable slug, at most 50 chars
-  jq -r 'if (.class|type)=="string" and (.class|test("^[a-z0-9][a-z0-9-]{0,49}$")) then .class
-    else ((.rule // "finding") + " " + ((.summary // "") | sub("^\\[contract: (in|out)\\] "; "") | split(" ") | .[0:6] | join(" ")))
-      | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "") | .[0:50] | gsub("-+$"; "")
-    end' <<<"$1" 2>/dev/null
+  local finding="$1" slug
+  slug="$(jq -r '. as $f
+    | (($f.summary // "") | sub("^\\[contract: (in|out)\\] "; "") | split(" ") | .[0:6] | join(" ")
+      | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "")) as $words
+    | if ($f.class|type)=="string" and ($f.class|test("^[a-z0-9][a-z0-9-]{0,49}$")) then $f.class
+      elif $words == "" then ""
+      else ((($f.rule // "finding") | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "")) + "-" + $words)
+        | gsub("^-+|-+$"; "") | .[0:50] | gsub("-+$"; "")
+      end' <<<"$finding" 2>/dev/null)" || return 0
+  # A summary with no ASCII words (e.g. Chinese-only) gives no slug; hash the rule and summary so distinct findings stay distinct.
+  if [[ -z "$slug" ]]; then
+    slug="finding-$(jq -r '(.rule // "") + "|" + (.summary // "")' <<<"$finding" 2>/dev/null | sha1sum | cut -c1-12)"
+  fi
+  printf '%s\n' "$slug"
 }
 
 # Counts each class once per review in the state file. The second sighting opens one rule ticket through

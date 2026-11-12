@@ -71,6 +71,11 @@ daily_html="$(jq -r '.html' <<<"$daily_html")"
 
 recur_finding='{"id":"F4","severity":"P1","file":"src/d.ts","line":3,"rule":"Defect","status":"open","summary":"[contract: out] Null guard missing on the write path."}'
 [[ "$(review_finding_class_key "$recur_finding")" == defect-null-guard-missing-on-the-write ]] || fail 'class key was not derived from the rule and summary words'
+zh_a='{"id":"Z1","severity":"P1","rule":"Defect","status":"open","summary":"空指针：写入路径缺少判空"}'
+zh_b='{"id":"Z2","severity":"P1","rule":"Defect","status":"open","summary":"并发写入没有加锁"}'
+[[ "$(review_finding_class_key "$zh_a")" == finding-* ]] || fail 'a Chinese-only summary did not get a hashed class key'
+[[ "$(review_finding_class_key "$zh_a")" != "$(review_finding_class_key "$zh_b")" ]] || fail 'two Chinese-only findings share one class key'
+[[ "$(review_finding_class_key "$zh_a")" == "$(review_finding_class_key "$zh_a")" ]] || fail 'the hashed class key is not stable'
 recur_findings="[$recur_finding,{\"id\":\"F5\",\"severity\":\"P2\",\"rule\":\"Defect\",\"status\":\"open\",\"summary\":\"Minor naming nit.\"}]"
 recur_state="$tmp/recur/state.json"
 recur_upsert="$tmp/recur/upsert.sh"
@@ -99,6 +104,9 @@ if review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$re
 rm -f "$tmp/recur/fail"
 review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$recur_upsert" unit-f || fail 'retry after a failed write did not open the ticket'
 [[ "$(wc -l <"$recur_log")" == 2 ]] || fail 'retry after a failed write did not open exactly one ticket'
+
+review_findings_record_classes "[$zh_a,$zh_b]" "$tmp/recur/zh.json" "$recur_upsert" unit-g || fail 'Chinese-only findings did not record'
+[[ "$(jq -r 'keys|length' "$tmp/recur/zh.json")" == 2 ]] || fail 'distinct Chinese-only findings were counted as one class'
 
 # Review prompt ownership and scheduler wiring are exercised by scheduler-gates.test.sh.
 
