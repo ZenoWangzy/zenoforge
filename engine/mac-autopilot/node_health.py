@@ -14,7 +14,7 @@ pipeline repairs itself; at most once per REFILE_HOURS per metric (state in node
 issue body routes the worker to the behavioural root cause (#4487); an issue closed during the current
 unhealthy episode (triaged onto a root-cause ticket) is not re-filed until the metric recovers and relapses.
 """
-import argparse, glob, json, os, re, socket, subprocess, urllib.parse, urllib.request
+import argparse, glob, json, os, re, socket, subprocess, sys, urllib.parse, urllib.request
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -1122,15 +1122,28 @@ def _merge_time(unit):
     return max(times) if times else None
 
 
+def revert_root(runtime, here):
+    """Repo root for Git reads: MAC_AUTOPILOT_ROOT, else two levels above <root>/.scratch-supervisor/autopi."""
+    root = os.environ.get("MAC_AUTOPILOT_ROOT")
+    if root:
+        return root
+    runtime = os.path.abspath(runtime)
+    if os.path.basename(runtime) == "autopi" and os.path.basename(os.path.dirname(runtime)) == ".scratch-supervisor":
+        return os.path.dirname(os.path.dirname(runtime))
+    return os.path.abspath(os.path.join(here, "..", "..", ".."))
+
+
 def git_revert_times(root, tip="HEAD"):
     """Map reverted merge SHAs to their newest revert commit time on a Git tip."""
     try:
         result = subprocess.run(
             ["git", "-C", root, "log", "--format=%ct%x00%B%x1e", "--grep=This reverts commit", tip],
             capture_output=True, text=True, timeout=20)
-        if result.returncode != 0:
-            return None
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"node_health: revert markers unread in {root}: {exc}", file=sys.stderr)
+        return None
+    if result.returncode != 0:
+        print(f"node_health: revert markers unread, git log rc={result.returncode} in {root}: {result.stderr.strip()[:200]}", file=sys.stderr)
         return None
     reverted = {}
     for record in result.stdout.split("\x1e"):
@@ -1460,7 +1473,7 @@ def main():
     release_events = ledger_history.release_acceptances(a, now=now, scheduler_rows=log_rows)
     issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events)
     incidents = load_prod_incidents(agent_home)
-    repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
+    repo_root = revert_root(a, here)
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")})
     delivery_windows = metric_windows.delivery(delivery_metrics, (units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)); short_windows = {**station_windows, **ledger_windows, **delivery_windows}
