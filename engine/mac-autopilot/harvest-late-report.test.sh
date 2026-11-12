@@ -292,6 +292,12 @@ shim_run "$shim_output" "$shim_dir/bash" engine/x/y.test.sh || shim_status=$?
 [[ "$shim_status" == 78 ]] && grep -Fq 'command=bash reason=test-file' "$shim_output" \
   || { cat "$shim_output" >&2; echo "plain test-file argv was not refused (rc=$shim_status)" >&2; exit 1; }
 echo 'ok - multi-line prompt argv naming a test file is not refused; plain test-file argv still is'
+# A test file inside a spaced -c string is still refused by the nested command's own shim (#1070 review).
+shim_status=0
+shim_run "$shim_output" "$shim_dir/bash" -c 'node engine/x/y.test.mjs' || shim_status=$?
+[[ "$shim_status" == 78 ]] && grep -Fq 'command=node reason=test-file' "$shim_output" \
+  || { cat "$shim_output" >&2; echo "bash -c 'node <test file>' was not refused (rc=$shim_status)" >&2; exit 1; }
+echo 'ok - bash -c running a test file is refused by the nested shim'
 
 guard_run guard-first.log bash
 jq -e '.units[0] | .stage == "review-pending" and ([.history[] | select(.stage == "worker-guard-refused" and (.result | startswith("command=bash reason=test-file")))] | length == 1) and ([.history[] | select(.stage == "worker-no-output")] | length == 0)' "$UNITS" >/dev/null \
