@@ -1,5 +1,13 @@
+# A size recut that recut refuses (recut_refused_at) comes back ready-for-agent and is resumed, then admission sends it to recut
+# again: #6292 looped that way for hours. Count the round trips on the unit, like intake_guarded_recut_roundtrip; past
+# SIZE_RECUT_RESUME_MAX the unit goes to the supervisor instead of another resume.
+SIZE_RECUT_RESUME_MAX="${SIZE_RECUT_RESUME_MAX:-1}"
+size_recut_sizes() { # unit-json → "lines limit" from the latest size-recut entry, or "unknown unknown"
+  jqf -r '[(.history // [])[] | select(.stage == "size-recut") | (.result // "")] | last // ""
+    | (capture("(?<x>[0-9]+) lines exceed (?<y>[0-9]+)") // {x: "unknown", y: "unknown"}) | "\(.x) \(.y)"' <<<"$1"
+}
 reconcile_size_recuts() {
-  local u id issue state hold_note reconcile_note k i n cursor=0 deadline
+  local u id issue state hold_note reconcile_note k i n cursor=0 deadline rt refused sizes extra
   local -a pending=()
   # The budget is checked between units, so a unit already running may finish past it. A stopped walk resumes at its unit next tick, so no unit starves.
   deadline=$((SECONDS + ${SIZE_RECUT_RECONCILE_SECONDS:-300}))
@@ -32,7 +40,18 @@ reconcile_size_recuts() {
     elif jqf -e '.state == "ready-for-agent"' <<<"$state" >/dev/null; then
       # Refusal, advisor recovery, and release-hold all requeue through the
       # shared issue state machine. Resume the existing unit, not a duplicate.
-      set_unit "$id" "$(hist size-recut-resumed "issue #$issue returned to implementation") | .stage=\"implement-pending\" | .note=null | del(.size_recut_pending)"
+      rt="$(jqf -r '(.size_recut_roundtrips // 0) + 1' <<<"$u")"
+      refused=false; jqf -e 'has("recut_refused_at")' <<<"$state" >/dev/null && refused=true
+      if [[ "$refused" == true ]] && (( rt > SIZE_RECUT_RESUME_MAX )); then
+        sizes="$(size_recut_sizes "$u")"
+        set_unit "$id" ".size_recut_roundtrips = $rt"
+        to_supervisor "$id" "recut refused $rt times; size estimate ${sizes% *} > limit ${sizes#* }" \
+          'Stop size-recut loop' "recut refused $rt times" "${sizes% *} lines over ${sizes#* }" '["Resume the unit again at the same scope"]'
+        say "size-recut-cap unit=$id issue=#$issue round trip $rt of $SIZE_RECUT_RESUME_MAX: sent to supervisor, not resumed"
+        continue
+      fi
+      extra=""; [[ "$refused" == true ]] && extra=" | .size_recut_roundtrips = $rt"
+      set_unit "$id" "$(hist size-recut-resumed "issue #$issue returned to implementation") | .stage=\"implement-pending\" | .note=null | del(.size_recut_pending)$extra"
     elif jqf -e '.state == "needs-recut" and (has("recut_children") or has("recut_refused_at"))' <<<"$state" >/dev/null; then
       # A label-write failure can leave a completed marker in the active
       # queue, whose prefilter will never dispatch it again. Park until the

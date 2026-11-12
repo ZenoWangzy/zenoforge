@@ -302,7 +302,7 @@ reconcile_recut_parent_children() {
   if ((${#live_children[@]} == 0)); then
     # A parent requeued after its last child closed still has its own work
     # (issue 1397: reclosed five minutes after a supervisor requeue).
-    local requeued_at child_json child_closed_at last_child_closed_at="" all_released=1 any_released=0 duplicate_children=""
+    local requeued_at child_json child_closed_at last_child_closed_at="" all_released=1 any_released=0 duplicate_children="" wontfix_children=""
     requeued_at="$(state_read "$n" | jq -r '.requeued_at // empty')" \
       || { blocker_root_fail "umbrella requeue timestamp read failed for #$n"; return 1; }
     while IFS= read -r child; do
@@ -317,6 +317,8 @@ reconcile_recut_parent_children() {
         if jq -e '(.labels // []) | index("released") != null' <<< "$native_child_json" >/dev/null; then any_released=1; else all_released=0; fi
         ! jq -e '(.labels // []) | index("duplicate") != null' <<< "$native_child_json" >/dev/null \
           || duplicate_children+=" #$child"
+        ! jq -e '(.labels // []) | index("wontfix") != null' <<< "$native_child_json" >/dev/null \
+          || wontfix_children+=" #$child"
       else
         child_json="$(gh issue view "$child" --repo "$REPO" --json closedAt,labels 2>/dev/null)" \
           || { blocker_root_fail "umbrella child #$child closure view failed for #$n"; return 1; }
@@ -325,11 +327,13 @@ reconcile_recut_parent_children() {
         if jq -e 'any(.labels[]?; .name == "released")' <<< "$child_json" >/dev/null; then any_released=1; else all_released=0; fi
         ! jq -e 'any(.labels[]?; .name == "duplicate")' <<< "$child_json" >/dev/null \
           || duplicate_children+=" #$child"
+        ! jq -e 'any(.labels[]?; .name == "wontfix")' <<< "$child_json" >/dev/null \
+          || wontfix_children+=" #$child"
       fi
       [[ "$child_closed_at" > "$last_child_closed_at" ]] && last_child_closed_at="$child_closed_at"
     done < <(jq -r '.[]' <<< "$children_json")
     if [ -n "$requeued_at" ] && [[ "$requeued_at" > "$last_child_closed_at" ]]; then
-      state_merge "$n" 'del(.recut_children, .native_subissue_parent) | .recut_comment_scanned = true' \
+      state_merge "$n" 'del(.recut_children, .native_subissue_parent, .recut_escalated_children) | .recut_comment_scanned = true' \
         || { blocker_root_fail "umbrella keep-after-requeue write failed for #$n"; return 1; }
       echo "issue-pipeline: recut-parent issue=#$n action=kept reason=requeued-after-children requeued_at=$requeued_at last_child_closed_at=$last_child_closed_at" >&2
       return 0
@@ -344,6 +348,19 @@ reconcile_recut_parent_children() {
     fi
     child_list="$(jq -r 'map("#" + tostring) | join(", ")' <<< "$children_json")" \
       || { blocker_root_fail "umbrella child list build failed for #$n"; return 1; }
+    # A wontfix child never gets `released`, so the parent would wait forever with no owner. Escalate once per
+    # episode and keep it open: wontfix does not prove the parent's own work was delivered.
+    if [ "$all_released" != 1 ] && [ -n "$wontfix_children" ]; then
+      if ! jq -e '.recut_escalated_children == true' <<< "$(state_read "$n")" >/dev/null 2>&1; then
+        supervisor_inbox_append_once "recut-wontfix-child issue=#$n children=${wontfix_children# }" \
+          "recut-wontfix-child issue=#$n children=${wontfix_children# } parent kept open for the arbiter to rule" \
+          || { blocker_root_fail "umbrella wontfix escalation inbox append failed for #$n"; return 1; }
+        state_merge "$n" '.recut_escalated_children = true' \
+          || { blocker_root_fail "umbrella wontfix escalation write failed for #$n"; return 1; }
+      fi
+      echo "issue-pipeline: recut-parent issue=#$n action=kept reason=child-closed-wontfix children=$child_list" >&2
+      return 0
+    fi
     if [ "$all_released" != 1 ]; then
       # Closed children that never got the released label delivered nothing here; a native-child parent keeps
       # its old path, since the tracker guard refuses an active move while native children exist.
