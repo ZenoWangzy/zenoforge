@@ -151,6 +151,30 @@ intake_priority_judge() {
     '. + {intake_context:{duplicate_candidates:$duplicates,roadmap_containers:$containers}}' <<< "$result"
 }
 
+intake_priority_place_route() {
+  local REPO="$1" issue_file="$2" issue_number="$3" route="$4" cache_file="${ZF_ROADMAP_TREE_CACHE_FILE:-}" tree='' temp_dir='' rc
+  [[ "$route" == none-fits ]] && return 0
+  if [[ -n "$cache_file" && -r "$cache_file" ]]; then
+    tree="$(cat -- "$cache_file")" || tree=''
+  fi
+  if [[ -z "$tree" ]] || ! roadmap_tree_is_valid "$tree"; then
+    temp_dir="$(mktemp -d)" || return 1
+    cache_file="$temp_dir/tree.json"
+    if ! ZF_ROADMAP_SNAPSHOT_FILE="$temp_dir/snapshot.json" roadmap_fetch_tree "$cache_file" "$REPO"; then
+      rm -rf -- "$temp_dir"
+      echo 'intake-priority: roadmap tree fetch failed for selected route' >&2
+      return 1
+    fi
+  fi
+  if roadmap_place_issue "$cache_file" "$issue_number" "$(cat -- "$issue_file")" '' "$route"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [[ -n "$temp_dir" ]] && rm -rf -- "$temp_dir"
+  return "$rc"
+}
+
 intake_priority_ensure_labels() {
   local repo="$1"; shift
   local known label description
@@ -167,7 +191,7 @@ intake_priority_ensure_labels() {
 }
 
 intake_priority_apply_result() {
-  local repo="$1" issue_file="$2" result="$3" config decision issue_json issue_number priority route route_label prefix top high normal low low_confidence labels label
+  local repo="$1" issue_file="$2" result="$3" config decision issue_json issue_number priority route route_label prefix top high normal low low_confidence needs_triage labels label
   local -a edit_args=() ensure_labels=()
   config="$(intake_priority_config)" || return 1
   jq -e '.status == "answered" and .adopted == true' <<< "$result" >/dev/null || return 0
@@ -182,10 +206,12 @@ intake_priority_apply_result() {
   prefix="$(jq -r '.labels.route_prefix' <<< "$config")"
   priority="$(jq -er '.priority | select(type == "string")' <<< "$decision")" || return 1
   route="$(jq -er '.route | select(type == "string")' <<< "$decision")" || return 1
-  [[ "$priority" == "$top" || "$priority" == "$high" || "$priority" == "$normal" || "$priority" == "$low" || "$priority" == "$low_confidence" ]] || return 1
+  needs_triage="$(jq -r '.needsTriage == true' <<< "$decision")"
+  [[ "$priority" == "$top" || "$priority" == "$high" || "$priority" == "$normal" || "$priority" == "$low" ]] || return 1
   if [[ "$route" != none-fits ]]; then
     jq -e --arg route "$route" 'any(.intake_context.roadmap_containers[]?; (.number | tostring) == $route)' <<< "$result" >/dev/null || return 1
   fi
+  intake_priority_place_route "$repo" "$issue_file" "$issue_number" "$route" || return 1
   route_label="$prefix$route"
   labels="$(jq -c '[.labels[]? | if type == "string" then . else .name // "" end]' <<< "$issue_json")"
   for label in "$top" "$high" "$normal" "$low"; do
@@ -204,6 +230,10 @@ intake_priority_apply_result() {
   if [[ -n "$route_label" ]] && ! jq -e --arg label "$route_label" 'index($label) != null' <<< "$labels" >/dev/null; then
     edit_args+=(--add-label "$route_label")
     ensure_labels+=("$route_label")
+  fi
+  if [[ "$needs_triage" == true ]] && ! jq -e --arg label "$low_confidence" 'index($label) != null' <<< "$labels" >/dev/null; then
+    edit_args+=(--add-label "$low_confidence")
+    ensure_labels+=("$low_confidence")
   fi
   if (( ${#edit_args[@]} == 0 )); then return 0; fi
   intake_priority_ensure_labels "$repo" "${ensure_labels[@]}" || return 1
@@ -234,7 +264,7 @@ intake_priority_triage() {
       decision="$(jq -r '.decision | fromjson' <<< "$result")"
       priority="$(jq -r '.priority' <<< "$decision")"
       echo "intake-priority: applied issue=#$issue_number priority=$priority route=$(jq -r '.route' <<< "$decision")" >&2
-      if [[ "$priority" == "$(jq -r '.labels.needs_triage' <<< "$config")" ]]; then
+      if [[ "$(jq -r '.needsTriage == true' <<< "$decision")" == true ]]; then
         printf 'needs-triage\n'
       fi
     else

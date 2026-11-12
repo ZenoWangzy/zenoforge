@@ -46,7 +46,7 @@ number="$(jq -r '.issue.number' <<< "$state")"
 case "$number" in
   11) decision='{"priority":"priority:top","route":"101","duplicate":false,"duplicateCandidates":[],"stale":false}'; confidence=0.95 ;;
   12) decision='{"priority":"priority:high","route":"102","duplicate":true,"duplicateCandidates":[11],"stale":false}'; confidence=0.96 ;;
-  13) decision='{"priority":"needs-triage","route":"none-fits","duplicate":false,"duplicateCandidates":[],"stale":true}'; confidence=0.85 ;;
+  13) decision='{"priority":"priority:low","needsTriage":true,"route":"none-fits","duplicate":false,"duplicateCandidates":[],"stale":true}'; confidence=0.85 ;;
   *) exit 3 ;;
 esac
 jq -cn --arg decision "$decision" --argjson confidence "$confidence" \
@@ -60,7 +60,8 @@ report="$(cat "$test_root/report.json")"
 [[ "$(jq -r '.scanned' <<< "$report")" == 3 ]]
 [[ "$(jq -r '.priority_counts["priority:top"]' <<< "$report")" == 1 ]]
 [[ "$(jq -r '.priority_counts["priority:high"]' <<< "$report")" == 1 ]]
-[[ "$(jq -r '.priority_counts["needs-triage"]' <<< "$report")" == 1 ]]
+[[ "$(jq -r '.priority_counts["priority:low"]' <<< "$report")" == 1 ]]
+[[ "$(jq -r '.issues[] | select(.number == 13) | .low_confidence' <<< "$report")" == true ]]
 [[ "$(jq -r '.route_counts["101"]' <<< "$report")" == 1 ]]
 [[ "$(jq -r '.route_counts["102"]' <<< "$report")" == 1 ]]
 [[ "$(jq -r '.route_counts["none-fits"]' <<< "$report")" == 1 ]]

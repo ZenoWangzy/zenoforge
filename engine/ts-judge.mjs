@@ -108,10 +108,11 @@ function intakePriorityQuestions(state) {
       if (priorityScore >= thresholds.top) priority = labels.top;
       else if (priorityScore >= thresholds.high) priority = labels.high;
       else if (priorityScore >= thresholds.normal) priority = labels.normal;
-      if (confidence < policy.minimumConfidence) priority = labels.needsTriage;
+      const needsTriage = confidence < policy.minimumConfidence;
 
       const answer = {
         priority,
+        needsTriage,
         route,
         duplicate: duplicateProbability >= 0.5,
         duplicateCandidates: duplicateProbability >= 0.5 ? duplicateCandidates.map(({ number }) => number) : [],

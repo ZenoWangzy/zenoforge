@@ -242,7 +242,8 @@ test("intake priority asks four bounded questions and sends low confidence to ne
     stale: { noul: 0.05 },
   });
   const answer = JSON.parse(extracted.answer);
-  assert.equal(answer.priority, "needs-triage");
+  assert.equal(answer.priority, "priority:top");
+  assert.equal(answer.needsTriage, true);
   assert.equal(answer.route, "901");
   assert.equal(answer.duplicate, false);
   assert.equal(answer.stale, false);

@@ -99,7 +99,10 @@ TMP_DIRS+=("$FAKE_BIN")
 cat > "$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 # Native sub-issue reads (issue 2046): these fixtures have none.
-if [ "${1:-}" = api ] && [[ "${2:-}" == */sub_issues* ]]; then echo '[]'; exit 0; fi
+if [ "${1:-}" = api ] && [[ "${2:-}" == */sub_issues* ]]; then
+  if [[ "$*" == *'--method POST'* ]]; then echo "gh $*" >> "$FAKE_GH_LOG"; else echo '[]'; fi
+  exit 0
+fi
 if [ "${1:-}" = api ] && [[ "${2:-}" == *'/comments?per_page=100'* ]]; then echo '[]'; exit 0; fi
 if [ "${1:-}" = api ] && [[ "$*" == *'/relates_to'* ]]; then
   if [[ " $* " == *' --method POST '* ]]; then
@@ -385,7 +388,7 @@ cat > "$FAKE_TS_JUDGE" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$1" >> "$INTAKE_PRIORITY_TEST_CALLS"
 if [ "$1" = intake-priority ]; then
-  printf '%s\n' '{"status":"answered","adopted":true,"confidence":0.95,"decision":"{\"priority\":\"priority:top\",\"route\":\"902\",\"duplicate\":false,\"duplicateCandidates\":[],\"stale\":false}"}'
+  printf '%s\n' '{"status":"answered","adopted":true,"confidence":0.95,"decision":"{\"priority\":\"priority:top\",\"needsTriage\":false,\"route\":\"902\",\"duplicate\":false,\"duplicateCandidates\":[],\"stale\":false}"}'
 else
   printf '%s\n' '{"status":"answered","adopted":false,"decision":"ready-for-agent"}'
 fi
@@ -414,6 +417,7 @@ unset TYPESAFE_API_KEY
 assert_eq "adopted intake priority calls both judge sets through the stub" $'triage-size\nintake-priority' "$(cat "$INTAKE_PRIORITY_TEST_CALLS")"
 assert_contains "adopted intake priority applies its configured priority label" "$GH_LOG_CONTENT" '--add-label priority:top'
 assert_contains "adopted intake priority applies its selected roadmap route" "$GH_LOG_CONTENT" '--add-label route:902'
+assert_contains "adopted intake priority places the issue under its selected roadmap epic" "$GH_LOG_CONTENT" 'repos/fixture/repo/issues/902/sub_issues --method POST'
 jq -n '{intake_priority:{enabled:false}}' > "$ZF_CONFIG_ROOT/night.json"
 unset ZF_TS_JUDGE_SCRIPT INTAKE_PRIORITY_TEST_CALLS
 if [ -n "$SAVED_ZF_TS_JUDGE_SCRIPT" ]; then export ZF_TS_JUDGE_SCRIPT="$SAVED_ZF_TS_JUDGE_SCRIPT"; fi
