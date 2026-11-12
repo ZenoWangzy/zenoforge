@@ -151,6 +151,8 @@ case "$sub" in
     jq -n --arg body "${FAKE_ISSUE_BODY:-}" --arg author "${FAKE_AUTHOR:-testuser}" \
       --arg state "$state" --arg updated_at "${FAKE_ISSUE_UPDATED_AT:-2026-01-01T00:00:00Z}" --argjson labels "$labels" \
       '{number: 1, title: "triage test issue", body: $body, author: {login: $author}, comments: [], createdAt: "2026-01-01T00:00:00Z", updatedAt: $updated_at, state: $state, labels: $labels}' ;;
+  "issue list") printf '%s\n' '[]' ;;
+  "label list") printf '%s\n' '[]' ;;
   "pr list") printf '%s\n' "${FAKE_PR_LIST_JSON:-[]}" ;;
   "pr view")
     [ -n "${FAKE_PR_VIEW_JSON:-}" ] || exit 1
@@ -376,6 +378,45 @@ verdict() {
     --argjson advisor_reason "$reason_json" --argjson related "${6:-[]}" --argjson cause "${7:-null}" \
     '{category: $c, state: $s, risk_class: $r, level: $l, entry_surface: "Web /chat/", acceptor: "maintainer", brief_md: "**Summary:** 测量简报。", notes_md: "有几个问题想确认。", expected_packages: ["packages/react-example"], expected_paths: [], related:$related, suspected_shared_cause:$cause, estimated_changed_lines: 0, external_deliverable: {required:false, location:"", reason:""}} + (if $advisor_reason == null then {} else {advisor_reason: $advisor_reason} end)'
 }
+
+FAKE_TS_JUDGE="$FAKE_BIN/ts-judge.sh"
+SAVED_ZF_TS_JUDGE_SCRIPT="${ZF_TS_JUDGE_SCRIPT:-}"
+cat > "$FAKE_TS_JUDGE" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$INTAKE_PRIORITY_TEST_CALLS"
+if [ "$1" = intake-priority ]; then
+  printf '%s\n' '{"status":"answered","adopted":true,"confidence":0.95,"decision":"{\"priority\":\"priority:top\",\"route\":\"902\",\"duplicate\":false,\"duplicateCandidates\":[],\"stale\":false}"}'
+else
+  printf '%s\n' '{"status":"answered","adopted":false,"decision":"ready-for-agent"}'
+fi
+EOF
+chmod +x "$FAKE_TS_JUDGE"
+export ZF_TS_JUDGE_SCRIPT="$FAKE_TS_JUDGE"
+export INTAKE_PRIORITY_TEST_CALLS="$test_env_root/intake-priority-calls.txt"
+rm -f "$INTAKE_PRIORITY_TEST_CALLS"
+jq -n '{intake_priority:{enabled:false}}' > "$ZF_CONFIG_ROOT/night.json"
+unset TYPESAFE_API_KEY TYPESAFE_ENV_FILE
+export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L1)"
+run_once "$RAW_BODY"
+assert_eq "disabled intake priority does not invoke the TypeSafe judge" "" "$(cat "$INTAKE_PRIORITY_TEST_CALLS" 2>/dev/null || true)"
+INTAKE_SKIP_COUNT="$(grep -Fc 'intake-priority: skipped (disabled)' <<< "$RUN_STDERR_CONTENT" || true)"
+assert_eq "disabled intake priority logs its skip once" 1 "$INTAKE_SKIP_COUNT"
+[ "$INTAKE_SKIP_COUNT" = 1 ] || exit 1
+
+INTAKE_PRIORITY_TREE="$test_env_root/intake-priority-roadmap.json"
+jq -n '{roots:[{number:900,title:"Roadmap",state:"open",labels:["roadmap"],children:[{number:901,title:"Theme",state:"open",labels:["roadmap-theme"],children:[{number:902,title:"Release epic",state:"open",labels:["roadmap-epic"],children:[]}]}]}]}' > "$INTAKE_PRIORITY_TREE"
+export ZF_ROADMAP_TREE_CACHE_FILE="$INTAKE_PRIORITY_TREE"
+export TYPESAFE_API_KEY=fixture-only
+jq -n '{intake_priority:{enabled:true}}' > "$ZF_CONFIG_ROOT/night.json"
+: > "$INTAKE_PRIORITY_TEST_CALLS"
+run_once "$RAW_BODY"
+unset TYPESAFE_API_KEY
+assert_eq "adopted intake priority calls both judge sets through the stub" $'triage-size\nintake-priority' "$(cat "$INTAKE_PRIORITY_TEST_CALLS")"
+assert_contains "adopted intake priority applies its configured priority label" "$GH_LOG_CONTENT" '--add-label priority:top'
+assert_contains "adopted intake priority applies its selected roadmap route" "$GH_LOG_CONTENT" '--add-label route:902'
+jq -n '{intake_priority:{enabled:false}}' > "$ZF_CONFIG_ROOT/night.json"
+unset ZF_TS_JUDGE_SCRIPT INTAKE_PRIORITY_TEST_CALLS
+if [ -n "$SAVED_ZF_TS_JUDGE_SCRIPT" ]; then export ZF_TS_JUDGE_SCRIPT="$SAVED_ZF_TS_JUDGE_SCRIPT"; fi
 
 # --- precut, model says ready-for-human (the #1193 shape): measured, never -
 # --- parked -- the ladder decides, and P1/L3 is the advisor rung ----------

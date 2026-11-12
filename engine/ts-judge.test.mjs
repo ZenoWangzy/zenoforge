@@ -203,3 +203,48 @@ test("all requested question types expose bounded answers and confidence", () =>
   assert.equal(questionFor("triage-size", {}).questions.size.type, "score");
   assert.equal(questionFor("recut", {}).questions.accept.type, "noul");
 });
+
+test("intake priority asks four bounded questions and sends low confidence to needs-triage", () => {
+  const questionSet = questionFor("intake-priority", {
+    issue: { number: 51, title: "Improve release checks", body: "Protect production data." },
+    roadmapContainers: [{ number: 901, title: "Release reliability" }],
+    duplicateCandidates: [{ number: 42, title: "Existing release check" }],
+    recentMainSubjects: ["Harden release checks"],
+    policy: {
+      labels: {
+        top: "priority:top",
+        high: "priority:high",
+        normal: "priority:normal",
+        low: "priority:low",
+        needsTriage: "needs-triage",
+        routePrefix: "route:",
+      },
+      scoreThresholds: { normal: 0.5, high: 1.5, top: 2.5 },
+      minimumConfidence: 0.9,
+    },
+  });
+
+  assert.equal(Object.keys(questionSet.questions).length, 4);
+  assert.equal(questionSet.questions.priority.type, "score");
+  assert.equal(questionSet.questions.route.type, "choice");
+  assert.ok(questionSet.questions.route.criteria["none-fits"]);
+  assert.equal(questionSet.questions.duplicate.type, "noul");
+  assert.equal(questionSet.questions.stale.type, "noul");
+  assert.match(questionSet.questions.priority.instructions, /founder-facing impact/);
+  assert.match(questionSet.questions.priority.instructions, /release blocker/);
+  assert.match(questionSet.questions.priority.instructions, /customer path/);
+  assert.match(questionSet.questions.priority.instructions, /production data safety/);
+
+  const extracted = questionSet.extract({
+    priority: { score: 3, confidence: 0.85 },
+    route: { choice: "901", confidence: 0.95 },
+    duplicate: { noul: 0.1 },
+    stale: { noul: 0.05 },
+  });
+  const answer = JSON.parse(extracted.answer);
+  assert.equal(answer.priority, "needs-triage");
+  assert.equal(answer.route, "901");
+  assert.equal(answer.duplicate, false);
+  assert.equal(answer.stale, false);
+  assert.equal(extracted.confidence, 0.85);
+});
