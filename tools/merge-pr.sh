@@ -479,11 +479,11 @@ merge_pr_cancel_ci() {
 
 # GraphQL gh pr merge refused: squash over REST pinned to the head read here, then drop the head ref.
 merge_pr_squash() {
-  local pr="$1" sha head_ref
-  gh pr merge "$pr" --squash --delete-branch && return 0
-  sha="$(merge_pr_head_sha "$pr")" || return 1
+  local pr="$1" sha="$2" head_ref out
+  gh pr merge "$pr" --squash --delete-branch --match-head-commit "$sha" && return 0
   head_ref="$(merge_pr_view "$pr" headRefName 2>/dev/null | jq -er '.headRefName | select(type == "string" and length > 0)')" || return 1
-  gh api -X PUT "repos/{owner}/{repo}/pulls/$pr/merge" -f merge_method=squash -f sha="$sha" >/dev/null || return 1
+  out="$(gh api -X PUT "repos/{owner}/{repo}/pulls/$pr/merge" -f merge_method=squash -f sha="$sha" 2>&1)" \
+    || { [[ "$out" != *409* ]] || merge_pr_refuse "$pr" "head moved after the gate: $sha is no longer the head, not merged"; return 1; }
   gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/$head_ref" >/dev/null 2>&1 || true
 }
 
@@ -551,11 +551,16 @@ merge_pr_checks_rest() {
 }
 
 merge_pr_checks_and_merge() {
-  local pr="${1:-}" checks_json check_name override_name matched
+  local pr="${1:-}" gate_sha="${2:-}" checks_json check_name override_name matched
   local -a override_names=() failed_names=() blocked_names=() overridden_names=()
-  if [[ $# -ne 1 || ! "$pr" =~ ^[0-9]+$ ]]; then
+  if [[ $# -lt 1 || $# -gt 2 || ! "$pr" =~ ^[0-9]+$ ]]; then
     printf 'usage: tools/merge-pr.sh <pr-number>\n' >&2
     return 2
+  fi
+  # The merge pins the head the gate started with, not a re-read at merge time.
+  if [[ -z "$gate_sha" ]] && ! gate_sha="$(merge_pr_head_sha "$pr")"; then
+    merge_pr_refuse "$pr" 'could not read the PR head to pin the merge'
+    return 1
   fi
 
   # gh pr checks exits non-zero when checks are failed or pending. The JSON
@@ -644,7 +649,7 @@ merge_pr_checks_and_merge() {
   fi
 
   merge_pr_retarget_children "$pr" || return 1
-  merge_pr_squash "$pr" || return
+  merge_pr_squash "$pr" "$gate_sha" || return
   merge_pr_cancel_ci "$pr" || true
 }
 
@@ -688,7 +693,7 @@ merge_pr_gate() {
     return 1
   fi
   printf 'full local suites are green for %s and PR #%s still points to that SHA; checking PR checks before merge\n' "$sha" "$pr"
-  merge_pr_checks_and_merge "$pr"
+  merge_pr_checks_and_merge "$pr" "$sha"
 }
 
 merge_pr_main() {

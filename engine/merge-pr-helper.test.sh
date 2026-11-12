@@ -120,7 +120,7 @@ gh() {
     'api '*)
       case "$*" in
         *'-X PATCH'*) printf 'edit-rest:%s\n' "$*" >> "$fixture/gh-calls"; [[ "${PR_EDIT_ERROR:-}" != 1 ]] || return 1; return ;;
-        *'-X PUT'*) printf 'merge:rest %s\n' "$*" >> "$fixture/gh-calls"; return ;;
+        *'-X PUT'*) printf 'merge:rest %s\n' "$*" >> "$fixture/gh-calls"; [[ "${PR_MERGE_409:-0}" != 1 ]] || { printf 'HTTP 409: Head branch was modified\n' >&2; return 1; }; return ;;
         *'-X DELETE'*) printf 'delete-ref:%s\n' "$*" >> "$fixture/gh-calls"; return ;;
       esac
       if [[ "$*" == *' -q .head.sha' ]]; then
@@ -214,7 +214,7 @@ assert_refuses "PR head $PR_HEAD does not match tested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
 # GraphQL refuses the head and `gh pr checks` (shared-account rate limit): the head, the checks and the squash merge all come from REST.
@@ -232,6 +232,20 @@ PR_GRAPHQL_DOWN=0
 PR_REST_RUNS='{"check_runs":[]}'
 PR_REST_STATUS='{"statuses":[]}'
 PR_REST_ACTIONS='{"workflow_runs":[]}'
+
+# The head moved to B after the gate checked A: the pinned squash carries A, GitHub answers 409, and the merge is refused without deleting the branch.
+PR_GRAPHQL_DOWN=1
+PR_MERGE_409=1
+PR_REST_RUNS='{"check_runs":[{"name":"unit","check_suite":{"id":11},"status":"completed","conclusion":"success","started_at":"2026-11-12T10:00:00Z"}]}'
+PR_REST_ACTIONS='{"workflow_runs":[]}'
+: > "$fixture/gh-calls"
+if merge_pr_gate 17 "$sha" "$repo" >"$fixture/moved-output" 2>&1; then fail 'a PR whose head moved after the gate merged'; fi
+[[ "$(cat "$fixture/moved-output")" == *'refusing to merge PR #17: head moved after the gate'* ]] || fail "moved head did not refuse with its reason: $(cat "$fixture/moved-output")"
+grep -q "^merge:rest .*sha=$sha" "$fixture/gh-calls" || fail "the pinned squash did not carry the gate SHA: $(cat "$fixture/gh-calls")"
+! grep -q '^delete-ref:' "$fixture/gh-calls" || fail 'the head ref was deleted after a 409'
+PR_MERGE_409=0
+PR_GRAPHQL_DOWN=0
+PR_REST_RUNS='{"check_runs":[]}'
 
 # The engine gate needs every shard from its workflow: with GraphQL down the workflow name comes from the Actions run that owns each check suite.
 PR_GRAPHQL_DOWN=1
@@ -259,7 +273,7 @@ PR_FILES='["tools/quick-land.sh"]'
 PR_CHILDREN='[{"number":21}]'
 : > "$fixture/gh-calls"
 merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1 || fail "stacked parent did not merge: $(cat "$fixture/check-output")"
-[[ "$(cat "$fixture/gh-calls")" == *$'edit:pr edit 21 --base main\nmerge:pr merge 17 --squash --delete-branch'* ]] \
+[[ "$(cat "$fixture/gh-calls")" == *$'edit:pr edit 21 --base main\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$''* ]] \
   || fail "child PR was not retargeted before the squash merge: $(cat "$fixture/gh-calls")"
 [[ "$(cat "$fixture/check-output")" == *'retargeted child PR #21 from parent-branch to main'* ]] \
   || fail "retarget was not logged: $(cat "$fixture/check-output")"
@@ -281,7 +295,7 @@ fi
 check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'failed checks: cla, unit'* && "$check_output" == *'checks without a matching ZF_MERGE_OVERRIDE: unit'* ]] \
   || fail "failed check names or unmatched override were not reported: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
   || fail "an unmatched failed check reached merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -290,7 +304,7 @@ check_output="$(ZF_MERGE_OVERRIDE=cla merge_pr_checks_and_merge 17 2>&1)" \
   || fail "named failed-check override did not allow the merge: $check_output"
 [[ "$check_output" == *'explicit ZF_MERGE_OVERRIDE allows failed checks: cla'* ]] \
   || fail "merge did not print the failed check covered by its override: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
   || fail "pending check or named override did not reach squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS=gh-error
@@ -301,7 +315,7 @@ fi
 check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'could not read PR checks as JSON'* ]] \
   || fail "gh pr checks error was not reported: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json headRefOid' ]] \
   || fail "gh pr checks error made unexpected gh calls: $(cat "$fixture/gh-calls")"
 ! grep -q '^merge:' "$fixture/gh-calls" || fail 'gh pr checks error reached merge'
 
