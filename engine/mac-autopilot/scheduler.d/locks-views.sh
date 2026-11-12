@@ -140,8 +140,8 @@ closed_unit_refusal() { # id：已关闭单元的拒绝语只指向本环节能�
   else echo "rule: $1 is closed; use --recut to route its issue to recut" >&2; fi
 }
 
-rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff ref [guidance]：记裁决历史（预算自此重算）；parked 单元按动作放回环节
-  [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff <ref> [guidance]" >&2; return 64; }
+rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready ref [guidance]：记裁决历史（预算自此重算）；parked 单元按动作放回环节
+  [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready <ref> [guidance]" >&2; return 64; }
   restore_archived_unit "$1" || :
   [[ -n "$(unit_field "$1" .id)" ]] || { echo "rule: no unit $1" >&2; return 1; }
   local issue stage
