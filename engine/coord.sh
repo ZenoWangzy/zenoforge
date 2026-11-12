@@ -26,7 +26,7 @@ coord_new_owner() {
 coord_process_start_ticks() { # pid -> /proc start ticks, distinguishing a reused PID
   local pid="${1:-}" ticks
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-  ticks="$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $20}')" || return 1
+  ticks="$(pid_start_id "$pid" 2>/dev/null)" || return 1
   [[ "$ticks" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$ticks"
 }
