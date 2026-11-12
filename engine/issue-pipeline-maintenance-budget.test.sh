@@ -323,8 +323,10 @@ if [ "$slice_runner_status" -ne 0 ]; then
   cat "$slice_output" >&2
   fail "maintenance slice runner exits successfully (got $slice_runner_status)"
 fi
+overrun_count="$(grep -Fc 'slice overrun stage=maintenance step=hold-sweep' "$slice_output" || true)"
+if [ "$overrun_count" != 1 ]; then cat "$slice_output" >&2; fi
 check 'a killed maintenance step names itself in the slice overrun line' \
-  "$(grep -Fc 'slice overrun stage=maintenance step=hold-sweep' "$slice_output" || true)" 1
+  "$overrun_count" 1
 check 'the killed step remains as the maintenance resume cursor' \
   "$(cat "$AGENT_HOME/night/maintenance-resume")" hold-sweep
 check 'the killed step remains visible to the next maintenance tick' \
