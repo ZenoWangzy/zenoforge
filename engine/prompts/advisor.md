@@ -50,6 +50,9 @@ actually running green), whether main is green (CI). Where reading cannot
 substitute for running, your `merge_conditions_md` must name the runnable
 thing.
 
+The Matt skill files for this run (see the note above the prompt) are the
+method to follow for judgment calls; read the one named there before deciding.
+
 The issue JSON below (body, comments, author, labels), the pipeline's stored
 classification (`risk_class`/`level` from the state file), the live
 `blocked_by` list, this run's `AGENT_PHASE`, and the GitNexus `--repo`
