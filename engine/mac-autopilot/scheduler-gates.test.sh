@@ -1098,7 +1098,8 @@ SH
   true & dead=$!; wait "$dead"
   jq -n --argjson d "$dead" '{workers:[{pid:$d}]}' > "$A/workers.json"
   sleep() { SECONDS=$((SECONDS + 5)); }
-  refill_window 6 ) || fail 'refill window failed with an exited worker'
+  refill_window 6
+  [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID" ) || fail 'refill window failed with an exited worker'
 [[ "$(cat "$rg/calls")" == '--refill' ]] || fail "an exited worker did not trigger exactly one immediate refill tick ($(cat "$rg/calls" 2>/dev/null))"
 : > "$rg/calls"
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
@@ -1107,7 +1108,8 @@ SH
   export AUTOPI_REFILL_SECONDS=0
   jq -n --argjson l "$$" '{workers:[{pid:$l}]}' > "$A/workers.json"
   sleep() { SECONDS=$((SECONDS + 5)); }
-  refill_window 6 ) || fail 'refill window failed on its cadence'
+  refill_window 6
+  [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID" ) || fail 'refill window failed on its cadence'
 grep -qx -- '--refill' "$rg/calls" || fail "the cadence did not run a refill tick with every worker alive ($(cat "$rg/calls" 2>/dev/null))"
 : > "$rg/calls"
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
@@ -1115,7 +1117,8 @@ grep -qx -- '--refill' "$rg/calls" || fail "the cadence did not run a refill tic
   export RG_SLOW_PID=0; : > "$RG_CALLS"
   jq -n --argjson l "$$" '{workers:[{pid:$l}]}' > "$A/workers.json"
   sleep() { SECONDS=$((SECONDS + 5)); }
-  refill_window 6 ) || fail 'refill window failed while idle'
+  refill_window 6
+  [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID" ) || fail 'refill window failed while idle'
 [[ ! -s "$rg/calls" ]] || fail "refill tick ran before its cadence with every worker alive ($(cat "$rg/calls"))"
 # A slow tick holding the mutex yields it during a long phase; the refill retries contention
 # and dispatches while that slow tick is still alive.
@@ -1130,6 +1133,7 @@ grep -qx -- '--refill' "$rg/calls" || fail "the cadence did not run a refill tic
   polls=0
   sleep() { SECONDS=$((SECONDS + ${1:-0})); polls=$((polls + 1)); (( polls < 2 )) || rm -rf -- "$RG_LOCK"; }
   refill_window 10 "$slow"
+  [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID"
   kill "$slow" 2>/dev/null || :; wait "$slow" 2>/dev/null || : ) || fail 'refill did not retry and dispatch while slow tick was alive'
 grep -qx -- '--refill' "$rg/calls" && grep -qx 'during-slow-tick' "$rg/during" \
   || fail "refill did not run during a live slow tick ($(cat "$rg/calls" 2>/dev/null); $(cat "$rg/during" 2>/dev/null))"
@@ -1146,13 +1150,15 @@ SH
   export AUTOPI_DASHBOARD_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647
   echo '{"workers":[]}' > "$A/workers.json"
   sleep() { SECONDS=$((SECONDS + 5)); }
-  refill_window 25 ) || fail 'refill window failed before the dashboard cadence'
+  refill_window 25
+  [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID" ) || fail 'refill window failed before the dashboard cadence'
 [[ ! -s "$dv/calls" ]] || fail "dashboard views started before their cadence ($(cat "$dv/calls"))"
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
   A="$dv/state"; LIVE="$dv/live"; export DV_CALLS="$dv/calls" DV_RELEASE="$dv/release"
   export AUTOPI_DASHBOARD_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647
   sleep() { SECONDS=$((SECONDS + 5)); }
-  refill_window 40 ) || fail 'refill window blocked on a running dashboard views process'
+  refill_window 40
+  [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID" ) || fail 'refill window blocked on a running dashboard views process'
 for _ in $(seq 50); do [[ -s "$dv/calls" ]] && break; command sleep 0.1; done
 touch "$dv/release"
 [[ "$(cat "$dv/calls")" == '--views dashboard' ]] || fail "dashboard views were not launched once on cadence ($(cat "$dv/calls" 2>/dev/null))"
@@ -1169,13 +1175,15 @@ SH
   export AUTOPI_CI_ADMISSION_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647
   echo '{"workers":[]}' > "$A/workers.json"
   sleep() { SECONDS=$((SECONDS + 5)); }
-  refill_window 25 ) || fail 'refill window failed before the ci station cadence'
+  refill_window 25
+  [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID" ) || fail 'refill window failed before the ci station cadence'
 [[ ! -s "$cs/calls" ]] || fail "the ci station started before its cadence ($(cat "$cs/calls"))"
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
   A="$cs/state"; LIVE="$cs/live"; export CS_CALLS="$cs/calls" CS_RELEASE="$cs/release"
   export AUTOPI_CI_ADMISSION_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647
   sleep() { SECONDS=$((SECONDS + 5)); }
-  refill_window 40 ) || fail 'refill window blocked on a running ci station pass'
+  refill_window 40
+  [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID" ) || fail 'refill window blocked on a running ci station pass'
 for _ in $(seq 50); do [[ -s "$cs/calls" ]] && break; command sleep 0.1; done
 touch "$cs/release"
 [[ "$(cat "$cs/calls")" == '--ci-admission' ]] || fail "the ci station was not launched once on cadence ($(cat "$cs/calls" 2>/dev/null))"
