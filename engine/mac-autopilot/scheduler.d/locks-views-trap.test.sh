@@ -74,4 +74,25 @@ kill -TERM "$child" 2>/dev/null || :
 [[ -d "$fixture/killed.lock" ]] || { echo 'locks-views-trap.test.sh: SIGKILL unexpectedly ran views cleanup' >&2; exit 1; }
 SCHED_DIR="$script_dir" VIEWS_LOCK="$fixture/killed.lock" bash "$views"
 [[ ! -e "$fixture/killed.lock" ]] || { echo 'locks-views-trap.test.sh: next views entry did not clear killed run lock' >&2; exit 1; }
+# A scheduler lock whose pid is alive but whose start ticks name another process is a reused pid: reclaimed and logged.
+# A live owner with its own start ticks still refuses the second tick.
+reuse="$fixture/reuse.sh"
+cat > "$reuse" <<'REUSE'
+set -euo pipefail
+source "$SCHED_DIR/core.sh"
+source "$SCHED_DIR/../../coord.sh"
+source "$SCHED_DIR/locks-views.sh"
+sleep 30 & holder=$!
+mkdir "$SCHED_LOCK"; printf '%s\n' "$holder" > "$SCHED_LOCK/pid"
+printf '%s\n' "$(( $(coord_process_start_ticks "$holder") + WRONG_START ))" > "$SCHED_LOCK/start"
+if acquire_scheduler_lock; then echo acquired; else echo refused; fi
+kill "$holder" 2>/dev/null || :; wait "$holder" 2>/dev/null || :
+REUSE
+reused="$(AGENT_HOME="$fixture" SCHED_DIR="$script_dir" SCHED_LOCK="$fixture/reuse.lock" LOG="$fixture/reuse.log" STAMP=test WRONG_START=1 bash "$reuse")"
+[[ "$reused" == acquired ]] || { echo "locks-views-trap.test.sh: lock of a reused pid blocked the tick: $reused" >&2; exit 1; }
+grep -q 'reclaimed from pid .* (pid reused)' "$fixture/reuse.log" || { echo 'locks-views-trap.test.sh: reclaim of a reused pid was not logged' >&2; exit 1; }
+[[ ! -e "$fixture/reuse.lock" ]] || { echo 'locks-views-trap.test.sh: reclaimed lock survived exit' >&2; exit 1; }
+live="$(AGENT_HOME="$fixture" SCHED_DIR="$script_dir" SCHED_LOCK="$fixture/live.lock" LOG="$fixture/live.log" STAMP=test WRONG_START=0 bash "$reuse")"
+[[ "$live" == refused ]] || { echo "locks-views-trap.test.sh: live owner did not block a second tick: $live" >&2; exit 1; }
+[[ ! -e "$fixture/live.log" ]] || { echo 'locks-views-trap.test.sh: live owner was reclaimed' >&2; exit 1; }
 echo 'locks-views-trap.test.sh: all assertions passed'
