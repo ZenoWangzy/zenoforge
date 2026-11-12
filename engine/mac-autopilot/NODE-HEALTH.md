@@ -400,8 +400,10 @@ over the `--hours` window of worker runs.
 A value past its unhealthy bound appends a `STATION-OVER station=... metric=... side=... value=... bound=... items=...` line to
 `alerts/node-health.md` (once per metric per hour), only on the `--alert` run; a report or `--now` replay writes none.
 `side=over` is a time or token value at or above its bound; `side=under` is a throughput value at or below its bound (starved). Its `root-cause=required` marks the alert open: a root-cause record
-and a guard are needed before it is closed. Closing is manual; nothing in code tracks the record yet. Throughput lines
-name no items (`station_health.outs` keeps counts only).
+and a guard are needed before it is closed. Closing is manual; nothing in code tracks the record yet. Ledger throughput lines
+(intake, implement, repair, review, merge, ci, approve, rereview runs) name the unit ids; triage, advisor and release
+throughput name `-` (their batch logs, result JSON and release lines keep counts only). Triage token lines name the batch log
+basenames, because batch logs record no issue ids.
 
 | Station | Dimension | Metric (id) | Healthy | Unhealthy | Source (live, window, n) |
 |---|---|---|---|---|---|

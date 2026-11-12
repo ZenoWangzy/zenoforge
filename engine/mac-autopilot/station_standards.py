@@ -170,11 +170,6 @@ def triage_tokens_per_issue(agent_home, since, now):
     return out
 
 
-def event_times(units, names):
-    """Times of every ledger event named in `names`, across all units."""
-    return [t for unit in units for t, h in _history(unit) if h["stage"] in names]
-
-
 def count_between(times, since, now):
     return sum(1 for t in times if since <= t <= now)
 
@@ -184,14 +179,37 @@ def out_count(events, now, hours=WINDOW_HOURS):
     return sum(c for t, c in events if since <= t <= now)
 
 
+def unit_outs(units, since, until):
+    """station -> unit ids of the ledger outs station_health.outs counts in the window (same rules, with ids)."""
+    from station_health import UNIT_OUT, WORK_OUT  # lazy: station_health imports node_health, which imports this module
+    out = {}
+    for unit in units:
+        uid = _item(unit.get("id") or unit.get("issue"))
+        rows = _history(unit)
+        found = [("intake", rows[0][0])] if rows else []
+        started = None
+        for t, h in rows:
+            if h["stage"] == "write-start":
+                started = h.get("work_type")
+            elif h["stage"] == "write-end" and started in WORK_OUT:
+                found.append((WORK_OUT[started], t))
+            elif h["stage"] in UNIT_OUT:
+                found.append((UNIT_OUT[h["stage"]], t))
+        for station, t in found:
+            if since <= t <= until:
+                out.setdefault(station, []).append(uid)
+    return out
+
+
 def _window_values(until, hours, units, runs, runtime, agent_home, cost_rows, outs):
     since = until - timedelta(hours=hours)
     scale = 24 / hours
     values, samples, items = {}, {}, {}
+    ids = unit_outs(units, since, until)
     for station in STATIONS:
         events = [(t, c) for t, c in outs[station] if since <= t <= until]
         key = f"{station}.out_per_day"
-        values[key], samples[key] = sum(c for _, c in events) * scale, len(events)
+        values[key], samples[key], items[key] = sum(c for _, c in events) * scale, len(events), ids.get(station, [])
     for key, event_names in (("merge.wait_p50_min", GAP_EVENTS["merge"]),
                              ("ci.admission_p50_min", GAP_EVENTS["ci"])):
         rows = gap_samples(units, since, until, event_names)
@@ -208,10 +226,12 @@ def _window_values(until, hours, units, runs, runtime, agent_home, cost_rows, ou
     rows = triage_tokens_per_issue(agent_home, since, until)
     values["triage.tokens_per_issue_p50"], samples["triage.tokens_per_issue_p50"] = _pct([v for v, _ in rows], .5), len(rows)
     items["triage.tokens_per_issue_p50"] = [name for _, name in rows]
-    approvals = [t for t in event_times(units, ("review-approve",)) if since <= t <= until]
-    values["approve.out_per_day"], samples["approve.out_per_day"] = len(approvals) * scale, len(approvals)
+    approvals = [_item(u.get("id") or u.get("issue")) for u in units for t, h in _history(u)
+                 if h["stage"] == "review-approve" and since <= t <= until]
+    values["approve.out_per_day"], samples["approve.out_per_day"], items["approve.out_per_day"] = len(approvals) * scale, len(approvals), approvals
     rereviews = [r for r in cost_rows if r["phase"] == "rereview" and since <= r["start"] <= until]
     values["rereview.runs_per_day"], samples["rereview.runs_per_day"] = len(rereviews) * scale, len(rereviews)
+    items["rereview.runs_per_day"] = [_item(r.get("unit")) for r in rereviews]
     rereview = [r for r in window_runs if r["node"] == "rereview"]
     for key, rows in (("rereview.wall_p50", [(r["minutes"], _item(r.get("unit"))) for r in rereview if r["output"]]),
                       ("rereview.tokens_p50", run_tokens(window_runs, "rereview"))):
@@ -222,7 +242,8 @@ def _window_values(until, hours, units, runs, runtime, agent_home, cost_rows, ou
 def over_bound(runtime, now, values, items):
     """One STATION-OVER line per metric past its unhealthy bound, once per metric per hour, naming its items.
 
-    shortcut: throughput lines name no items (station_health.outs keeps counts, not ids), add ids when outs keeps them.
+    shortcut: triage, advisor and release throughput lines name no items (their batch logs, result JSON and release lines
+    feed station_health.outs as counts only), add ids when those sources keep them.
     """
     path = os.path.join(runtime, "alerts", "node-health.md")
     try:

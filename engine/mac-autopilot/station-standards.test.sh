@@ -104,6 +104,13 @@ ss.over_bound(os.path.join(sys.argv[2], "under"), now, {"intake.out_per_day": 20
 ss.over_bound(os.path.join(sys.argv[2], "under"), now, {"intake.out_per_day": 20}, {})
 under = [l for l in alerts("under").splitlines() if "metric=intake.out_per_day " in l]
 assert len(under) == 1 and "side=under" in under[0] and "value=20 bound=25" in under[0], alerts("under")
+# A starved ledger throughput (2 implement write-ends, 24 h, bound 12) names the unit ids that left the station.
+work = [{"id": "issue-201", "history": [{"stage": "write-start", "work_type": "implement", "at": at(90)}, {"stage": "write-end", "at": at(80)}]},
+        {"id": "issue-202", "history": [{"stage": "write-start", "work_type": "implement", "at": at(70)}, {"stage": "write-end", "at": at(60)}]}]
+ss.collect(now, work, [], os.path.join(sys.argv[2], "starved"), sys.argv[2], alert=True)
+starved = [l for l in alerts("starved").splitlines() if "metric=implement.out_per_day " in l]
+assert len(starved) == 1 and "side=under" in starved[0] and "value=2 bound=12" in starved[0] \
+    and "items=issue-201,issue-202" in starved[0], alerts("starved")
 assert "side=over" in line[0], line[0]
 print("station-standards ok: %d stations, %d metrics" % (len(ss.MATRIX), len(ss.CRITERIA)))
 PY
