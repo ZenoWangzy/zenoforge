@@ -112,7 +112,7 @@ merge_pr_export_suites() { # pr dir paths...: copy the PR head's version of each
   done
 }
 merge_pr_bootstrap_ok() {
-  local pr="$1" root tree path out files_bad hint rc=0
+  local pr="$1" root tree path out bare='' files_bad hint rc=0
   local files
   local -a suites=() present=()
   files="$(gh pr view "$pr" --json body,files,commits 2>/dev/null | jq -r '.files[].path')" || {
@@ -138,8 +138,13 @@ merge_pr_bootstrap_ok() {
   done
   if (( ${#present[@]} > 0 )); then
     out="$(cd "$tree" && bash "$root/engine/test-bootstrap-check.sh" "${present[@]}" 2>&1)" || rc=$?
+    bare="$(cd "$tree" && bash "$root/engine/test-exit-trap-check.sh" "${present[@]}")"
   fi
   rm -rf -- "$tree"
+  if (( rc == 0 )) && [[ -n "$bare" ]]; then
+    merge_pr_refuse "$pr" "test suite EXIT trap must name \"\$test_env_root\": $(paste -sd' ' - <<<"$bare")"
+    return 1
+  fi
   (( rc == 0 )) && return 0
   files_bad="$(sed -n 's/^invalid test bootstrap: //p' <<<"$out" | paste -sd' ' -)"
   hint='source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"'
