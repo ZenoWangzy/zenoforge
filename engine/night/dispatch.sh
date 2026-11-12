@@ -27,6 +27,7 @@ INDEX_ROOT="${ZF_CODE_INTELLIGENCE_ROOT:-${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/../
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
 WORKTREE_ROOT="${ZF_WORKTREE_ROOT:-$HOME/wt}"
 source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/lib.d/codex-mcp.sh"
 # Resolve the tier before any admission gate: the gate reads LUNA_PRIORITY
 # (#4621 hotfix > opt > ordinary pipeline), so a priority-blind preflight must
 # not defer a hotfix/opt dispatch under pipeline load first.
@@ -367,7 +368,7 @@ if [ "$PROVIDER" = codex ]; then
       [ -z "$service_tier" ] || service_tier_args=(-c "service_tier=\"$service_tier\"")
       started="$(date +%s)"
       status=0
-      codex exec --json --cd "$worktree" -m "$model" \
+      codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json --cd "$worktree" -m "$model" \
         -c "model_reasoning_effort=\"$effort\"" "${service_tier_args[@]}" \
         -s danger-full-access \
         -c sandbox_workspace_write.network_access=true \
