@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { realpathSync, existsSync } from 'node:fs';
+import { realpathSync, existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from "node:child_process";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
@@ -227,6 +227,17 @@ function redactState(state, apiKey) {
   return redactValue(serializable);
 }
 
+// Reads only the TYPESAFE_API_KEY= line from the env file named by TYPESAFE_ENV_FILE; never logs the value.
+function typesafeKeyFromEnvFile(file = process.env.TYPESAFE_ENV_FILE) {
+  if (!file) return "";
+  try {
+    const line = readFileSync(file, "utf8").split(/\r?\n/).find((item) => item.startsWith("TYPESAFE_API_KEY="));
+    return line ? line.slice("TYPESAFE_API_KEY=".length).trim().replace(/^(["'])(.*)\1$/, "$2") : "";
+  } catch {
+    return "";
+  }
+}
+
 function logPath() {
   if (process.env.TYPESAFE_JUDGE_LOG) return process.env.TYPESAFE_JUDGE_LOG;
   const agentHome = process.env.AGENT_HOME || path.join(os.homedir(), ".zenoforge");
@@ -335,7 +346,7 @@ async function recordAdoption({ questionSet, eventId, candidate, confidence, fil
 export async function judge({
   questionSet,
   state,
-  apiKey = process.env.TYPESAFE_API_KEY,
+  apiKey = process.env.TYPESAFE_API_KEY || typesafeKeyFromEnvFile(),
   client,
   file = logPath(),
   now = new Date(),

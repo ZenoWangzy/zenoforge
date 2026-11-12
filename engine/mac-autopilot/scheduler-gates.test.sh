@@ -3349,4 +3349,22 @@ release_session_pr_units
 jq -e 'any(.units[]; .pr == 34) | not' "$UNITS" >/dev/null || fail 'orphan pass adopted a session PR'
 CFG="$cfg_saved"; eval "$tick_prs_saved"
 
+# merge-prep 的 TypeSafe 分类：key 已设但端点不可达时，必须回落到原有 CI 分类，结果与无 key 相同
+classify_ci_failure() { # $1 = TYPESAFE_API_KEY value, empty for no key
+  (
+    jqf() { command jq "$@"; }
+    main_gate_workflow() { echo ci; }
+    main_red_failed_checks() { echo '[]'; }
+    gh() { printf 'FAILED suite=fixture.test.sh\n'; }
+    source <(sed -n '/^ci_classify_run() {/,/^}/p' "$script_dir/scheduler.d/merge-prep.sh")
+    ZF_ENGINE_DIR="$script_dir/.."
+    if [[ -n "$1" ]]; then export TYPESAFE_API_KEY="$1" TYPESAFE_BASE_URL=http://127.0.0.1:9; else unset TYPESAFE_API_KEY TYPESAFE_ENV_FILE; fi
+    ci_classify_run '{"databaseId":9001,"attempt":1,"headSha":"'"$(printf 'a%.0s' {1..40})"'","status":"completed","conclusion":"failure"}' "$(printf 'a%.0s' {1..40})"
+    printf '%s\n' "$CI_CLASS"
+  )
+}
+ci_no_key="$(classify_ci_failure '')"
+ci_unreachable="$(classify_ci_failure test-unreachable-key)"
+[[ -n "$ci_no_key" && "$ci_unreachable" == "$ci_no_key" ]] || fail "merge-prep TypeSafe fallback changed CI class: no-key=$ci_no_key unreachable=$ci_unreachable"
+
 echo 'scheduler-gates.test.sh: PASS'

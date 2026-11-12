@@ -52,7 +52,7 @@
   },
   "auto_triage_new_issues": false,
   "intake_priority": {
-    "enabled": false,
+    "enabled": true,
     "labels": {
       "top": "priority:top",
       "high": "priority:high",
