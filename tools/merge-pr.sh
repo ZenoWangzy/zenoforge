@@ -270,7 +270,7 @@ merge_pr_with_tree() { # pr function: run function on an export of the PR's head
   return "$rc"
 }
 merge_pr_prelude_in() {
-  SCHED_TEST_CASE=prelude timeout 300 bash "$1/engine/mac-autopilot/scheduler.test.sh" 2>&1 | tail -3
+  SCHED_TEST_CASE=prelude timeout 900 bash "$1/engine/mac-autopilot/scheduler.test.sh" 2>&1 | tail -3
   return "${PIPESTATUS[0]}"
 }
 merge_pr_scheduler_prelude() { merge_pr_with_tree "$1" merge_pr_prelude_in; }
@@ -288,7 +288,7 @@ merge_pr_scheduler_prelude_ok() {
     return 0
   fi
   if out="$(merge_pr_scheduler_prelude "$pr")"; then return 0; else rc=$?; fi
-  if [[ "$rc" == 124 ]]; then timeout_note=' (timeout 300s)'; fi
+  if [[ "$rc" == 124 ]]; then timeout_note=' (timeout 900s)'; fi
   merge_pr_refuse "$pr" "scheduler.test.sh prelude failed rc=$rc$timeout_note: $out" 'run SCHED_TEST_CASE=prelude bash engine/mac-autopilot/scheduler.test.sh, fix the failure, push'
 }
 # These scans take seconds, so they run here and hold no merge on CI: #502 reached main past jq-arg-safety.

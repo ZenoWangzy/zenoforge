@@ -683,7 +683,7 @@ for path in .github/workflows/engine-tests.yml tools/run-engine-tests.sh .zenofo
   [[ -s "$fixture/prelude-calls" ]] || fail "CI suite-selection file $path incorrectly skipped the prelude"
 done
 
-# A real prelude timeout reports its exit code and the 300-second bound.
+# A real prelude timeout reports its exit code and the 900-second bound.
 (
   source "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh"
   merge_pr_root() { printf '%s\n' "$repo"; }
@@ -693,7 +693,7 @@ done
   git -C "$repo" remote add origin "$repo"
   git -C "$repo" update-ref refs/pull/17/head "$sha"
   if merge_pr_scheduler_prelude_ok 17 >"$fixture/check-output" 2>&1; then fail 'a timed-out prelude did not refuse the merge'; fi
-  [[ "$(cat "$fixture/check-output")" == *'scheduler.test.sh prelude failed rc=124 (timeout 300s):'* ]] || fail "prelude refusal lost its rc or timeout: $(cat "$fixture/check-output")"
+  [[ "$(cat "$fixture/check-output")" == *'scheduler.test.sh prelude failed rc=124 (timeout 900s):'* ]] || fail "prelude refusal lost its rc or timeout: $(cat "$fixture/check-output")"
   git -C "$repo" remote remove origin
 )
 
