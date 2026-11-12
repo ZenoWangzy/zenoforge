@@ -110,6 +110,23 @@ dispatch_if_room issue-9 implement implement r.log r.md GPT-5 high "prompt" "" "
 dispatch_if_room issue-8 repair repair r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex || fail 'PR-less repair dispatch failed'
 [[ "$(field issue-8 '.history[0].pr_head // "none"')" == none ]] || fail 'a PR-less repair recorded a start head'
 
+# 8b. Pre-dispatch refresh (write-start): a PR-less unit whose issue is closed (a) or whose fix merged (b) retires before any worker starts; an open issue dispatches.
+printf '%s\n' '{"states":{"21":{"state":"CLOSED","issue_state":"CLOSED","state_reason":"COMPLETED","merged_closer":""},"22":{"state":"MERGED","issue_state":"OPEN","state_reason":"","merged_closer":""},"23":{"state":"OPEN","issue_state":"OPEN","state_reason":"","merged_closer":"3849"},"24":{"state":"OPEN","issue_state":"OPEN","state_reason":"","merged_closer":""}}}' > "$sup/autopi/dep-check.cache.json"
+printf '%s\n' '{"units":[{"id":"issue-21","issue":21,"lane":"pr","stage":"implement-pending","history":[]},{"id":"issue-22","issue":22,"lane":"pr","stage":"implement-pending","history":[]},{"id":"issue-23","issue":23,"lane":"pr","stage":"implement-pending","history":[]},{"id":"issue-24","issue":24,"lane":"pr","stage":"implement-pending","history":[]}]}' > "$UNITS"
+retired_before_write() { # unit reason evidence: retired as obsolete with no write-start, and one pre-dispatch log line
+  [[ "$(field "$1" .stage)" == closed && "$(field "$1" '.history[-1].stage')" == obsolete && "$(field "$1" '[.history[] | select(.stage=="write-start")] | length')" == 0 ]] \
+    || fail "$1 was not retired before write-start ($(field "$1" '.history | tojson'))"
+  [[ "$(grep -c "pre-dispatch skip unit=$1 reason=$2 evidence=$3\$" "$LOG")" == 1 ]] || fail "$1 lacks its one pre-dispatch log line for $2 ($3)"
+}
+if dispatch_if_room issue-21 implement implement r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex; then fail 'a unit with a closed issue was dispatched'; fi
+retired_before_write issue-21 a-issue-closed issue#21
+if dispatch_if_room issue-22 implement implement r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex; then fail 'a unit whose fix merged was dispatched'; fi
+retired_before_write issue-22 b-linked-fix-merged issue#22
+if dispatch_if_room issue-23 implement implement r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex; then fail 'a unit with a merged closing PR was dispatched'; fi
+retired_before_write issue-23 b-linked-fix-merged PR#3849
+dispatch_if_room issue-24 implement implement r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex || fail 'an open issue with no merged fix did not dispatch'
+[[ "$(field issue-24 .stage)" == implement && "$(field issue-24 '[.history[] | select(.stage=="write-start")] | length')" == 1 ]] || fail "open issue did not reach write-start ($(field issue-24 '.history | tojson'))"
+
 # 9. A repair that pushed an over-limit head is recut, not escalated to the supervisor (the harvest passes the repaired head to the recheck).
 source "$script_dir/scheduler.d/size-admission.sh"   # restore the real recheck over this file's no-op stub
 size_admission_exempt_unit() { return 1; }; changed_lines_of() { echo 900; }; changed_files_of() { echo '[]'; }

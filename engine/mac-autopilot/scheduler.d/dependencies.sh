@@ -173,7 +173,7 @@ dep_states() { # issue/PR 号… → 每行 "号<TAB>STATE<TAB>标签,…"；一
   (( $# > 0 )) || return 0
   local q="" d
   for d in "$@"; do
-    q+=" i$d: issueOrPullRequest(number: $d) { ... on Issue { state stateReason updatedAt labels(first: 30) { nodes { name } } } ... on PullRequest { state updatedAt labels(first: 30) { nodes { name } } } }"
+    q+=" i$d: issueOrPullRequest(number: $d) { ... on Issue { state stateReason updatedAt labels(first: 30) { nodes { name } } closedByPullRequestsReferences(first: 10) { nodes { number merged } } } ... on PullRequest { state updatedAt labels(first: 30) { nodes { name } } } }"
     q+=" p$d: pullRequests(headRefName: \"agent/issue-$d\", states: MERGED, first: 1) { totalCount }"
   done
   # awaiting-release is only set after a verified merge into main (AGENTS.md), so it counts as delivered here too, whatever the PR branch is called.
@@ -181,7 +181,7 @@ dep_states() { # issue/PR 号… → 每行 "号<TAB>STATE<TAB>标签,…"；一
   # （10-22 #3122/#3431 已合并、后继仍停着）。流水线的实现分支是 agent/issue-N：它的 PR 合并即交付。
   gh api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q } }" \
     --jq '.data.repository | . as $r | to_entries[] | select((.key | startswith("i")) and .value != null) | .key[1:] as $d
-      | "\($d)\t\(if ($r["p" + $d].totalCount // 0) > 0 or ([.value.labels.nodes[].name] | index("awaiting-release")) != null then "MERGED" else .value.state end)\t\([.value.labels.nodes[].name] | join(","))\t\(.value.state)\t\(.value.stateReason // "")\t\(.value.updatedAt // "")"' 2>/dev/null
+      | "\($d)\t\(if ($r["p" + $d].totalCount // 0) > 0 or ([.value.labels.nodes[].name] | index("awaiting-release")) != null then "MERGED" else .value.state end)\t\([.value.labels.nodes[].name] | join(","))\t\(.value.state)\t\(.value.stateReason // "")\t\(.value.updatedAt // "")\t\(([.value.closedByPullRequestsReferences.nodes[]? | select(.merged) | .number] | first) // "")"' 2>/dev/null
 }
 stack_pilot_label() { jqf -r 'if .stacking.enabled == false then "" else (.stacking.pilot_label // "stack-pilot") end' <<<"$CFG"; }
 unit_has_stack_pilot() { # unit-json
@@ -364,7 +364,7 @@ release_dependency_blocks() {
     done < <(jqf -r '[.units[] | select((.stage=="blocked-external" or (.stage=="parked" and (.parked_reason == null or .parked_reason == "waiting-predecessor"))) and .blocked_on != null) | .blocked_on | numbers] | unique | .[]' "$UNITS")
     while IFS= read -r dep; do # 自己的 issue 已关的单元要能被收掉（带 PR 的也查，not_planned 时关 PR）：并入同一次批量查询
       [[ "$dep" =~ ^[0-9]+$ ]] && deps+=("$dep")
-    done < <(jqf -r '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review") and (.issue | type)=="number") | .issue' "$UNITS")
+    done < <(jqf -r '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review" or .stage=="implement-pending") and (.issue | type)=="number") | .issue' "$UNITS")
     # a blocked unit goes pending this tick: its other predecessors must already be cached, or it blocks on one that is closed.
     # Two jq runs for all units: stored body lists as numbers, and the saved task text of an older unit without a list (RS-separated; awk parses it).
     while IFS= read -r dep; do
@@ -386,7 +386,8 @@ release_dependency_blocks() {
       dep_states_json="$(printf '%s\n' "$dep_results" | jqf -Rn '
         [inputs | split("\t") | select(length >= 2 and .[0] != "" and .[1] != "")]
         | map({key:.[0],value:({state:.[1],labels:(.[2] // ""),issue_state:(.[3] // ""),state_reason:(.[4] // "")}
-          + (if (.[5] // "") == "" then {} else {updated_at:.[5]} end))}) | from_entries')"
+          + (if (.[5] // "") == "" then {} else {updated_at:.[5]} end)
+          + (if (.[6] // "") == "" then {} else {merged_closer:.[6]} end))}) | from_entries')"
     else
       dep_states_json='{}'
     fi

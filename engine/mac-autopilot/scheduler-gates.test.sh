@@ -2174,11 +2174,16 @@ gate_units() { # extra-ledger-json → 覆盖 UNITS：issue-42（正文带 Block
   jq -cn --arg task "$gate_task" --argjson extra "${1:-[]}" \
     '{units:([{id:"issue-42",issue:42,lane:"direct-main",branch:"agent/auto-issue-42",stage:"implement-pending",task:$task,history:[]}] + $extra)}'
 }
-gate_gh() { # state —— graphql 桩：按查询里的前置号逐行回答 state，并记录查过谁
+gate_gh() { # state —— graphql 桩：按查询里的 issue 号逐行回答 state，分别记录本单与前置
   local n labels="${BODY_GATE_LABELS:-bug}"
-  for n in $(grep -oE 'number: [0-9]+' <<<"$*" | grep -oE '[0-9]+'); do echo "$n" >> "$fixture/body-gate-views"; printf '%s\t%s\t%s\n' "$n" "$1" "$labels"; done
+  for n in $(grep -oE 'number: [0-9]+' <<<"$*" | grep -oE '[0-9]+'); do
+    if [[ "$n" == 42 ]]; then echo "$n" >> "$fixture/body-gate-self-refreshes"
+    else echo "$n" >> "$fixture/body-gate-views"; fi
+    printf '%s\t%s\t%s\n' "$n" "$1" "$labels"
+  done
 }
 : > "$fixture/body-gate-views"
+: > "$fixture/body-gate-self-refreshes"
 gh() { case "$1 $2" in "api graphql") gate_gh OPEN "$@" ;; *) eval "${gh_issue_stub/gh ()/gh_i ()}"; gh_i "$@" ;; esac; }
 DISPATCHED=()
 units "$(gate_units)"
@@ -2188,6 +2193,7 @@ dispatch_pending || :
 [[ "$(field issue-42 .stage):$(field issue-42 .blocked_on)" == "blocked-external:43" ]] || fail "open body predecessor did not park before dispatch ($(field issue-42 .stage))"
 [[ "$(field issue-42 '[.history[].stage] | join(",")')" == blocked-on ]] || fail "parked unit reached write-start: $(field issue-42 '[.history[].stage] | join(",")')"
 [[ "$(sort -u "$fixture/body-gate-views" | tr '\n' ' ')" == "43 " ]] || fail "gate queried references outside the Blocked by section: $(tr '\n' ' ' < "$fixture/body-gate-views")"
+[[ "$(sort -u "$fixture/body-gate-self-refreshes" | tr '\n' ' ')" == "42 " ]] || fail "pre-dispatch refresh did not query only the unit issue: $(tr '\n' ' ' < "$fixture/body-gate-self-refreshes")"
 # 前置在台账已交付：照常派发，且不再查 GitHub
 DISPATCHED=(); : > "$fixture/body-gate-views"
 units "$(gate_units '[{"id":"issue-43","issue":43,"stage":"landed","history":[]}]')"

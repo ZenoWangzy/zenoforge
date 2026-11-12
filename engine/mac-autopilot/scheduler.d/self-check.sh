@@ -543,6 +543,26 @@ dispatch_attempt_fields() { # log model unit-json → jq fields for the write-st
     "$(js "$(basename "$1")")" "$(js "$2")" "$est" "$(js "$band")"
 }
 
+# 开工前复查（write-start）：PR-less 单元的 issue 已关、或它的修复已合并，就退役而不派 worker（row 161：这类单元烧掉 2100 万 raw token）。
+# 只读派发门禁的依赖缓存（dep_cache_info，DEP_CHECK_SECONDS 批量刷新），不逐单元调 GitHub。
+# shortcut: 未覆盖 c 姊妹 PR、d 事件签名、e 事件源/严重度（缓存与单元里没有这些数据）; upgrade when a per-issue timeline or signature field exists.
+pre_dispatch_skip() { # unit-json → 0 when retired (one log line), 1 to dispatch
+  local id issue reason evidence issue_state state closer f=()
+  id="$(jqf -r '.id // empty' <<<"$1")"; issue="$(jqf -r '.issue // empty' <<<"$1")"
+  [[ -n "$id" && "$issue" =~ ^[0-9]+$ ]] || return 1
+  mapfile -t f < <(jqf -r '(.issue_state // ""), (.state // ""), (.merged_closer // "")' <<<"$(dep_cache_info "$issue")")
+  issue_state="${f[0]:-}"; state="${f[1]:-}"; closer="${f[2]:-}"
+  if [[ "$issue_state" == CLOSED ]]; then
+    reason=a-issue-closed; evidence="issue#$issue"
+  elif [[ -n "$closer" || "$state" == MERGED ]]; then
+    reason=b-linked-fix-merged; evidence="issue#$issue"; [[ -z "$closer" ]] || evidence="PR#$closer"
+  else
+    return 1
+  fi
+  set_unit "$id" "$(hist obsolete "pre-dispatch $reason $evidence") | .stage=\"closed\""
+  say "pre-dispatch skip unit=$id reason=$reason evidence=$evidence"
+}
+
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider] [worker-context-json]
   local ledger_filter="" unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter repair_head \
     check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
@@ -555,6 +575,7 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
   fi
   prompt="$(incident_worker_prompt "$3" "$unit_json" "$prompt")"
   [[ "$report_only" != true ]] || failure_prompt="$prompt"
+  if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]] && jqf -e '.pr == null' <<<"$unit_json" >/dev/null && pre_dispatch_skip "$unit_json"; then return 1; fi
   room_for "$1" "$3" "$unit_json" true "$check_footprint" "$report_only" || return 1
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     size_admission_write_start "$1" "${10:-}" "$unit_json" || { dispatch_why "$1" size-admission-start; return 1; }
