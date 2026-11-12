@@ -53,5 +53,5 @@ Code and tests enforce the engine's gates. `docs/enforced-rules.md` lists each r
 
 - A pipeline unit never changes the protected paths in `engine/state/rule-files.json`.
 - A source file over 800 lines may shrink but not grow, and a new file stays at or under 800 (`tools/size-ratchet.sh`).
-- A Markdown-only change of at most 30 lines may land with `bash tools/quick-land.sh "<subject>"`.
+- An ordinary change lands on main in one command, no PR: `bash tools/quick-land.sh --test "<cmd>" --prior-art "<URL or no external prior art: reason>" "<subject>"` (repeat `--test`). Code needs `--prior-art` and at least one `--test`; a Markdown-only change needs neither. Gate files, rule files and VectA override files still go through a PR.
 - `pnpm`, `npm` and `corepack` installs are refused while a `node_modules` in the work tree is a symlink.
