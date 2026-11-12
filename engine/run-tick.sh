@@ -511,6 +511,10 @@ run_tick() {
   done <"$timer_list"
 
   export ZF_REPO_DIR="$repo_dir"
+  # One deployment-status cache per tick, as scheduler.d/core.sh sets. lib.sh sets none (release wrappers must not cache).
+  ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR="$AGENT_HOME/deployment-status.$$"
+  rm -rf -- "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR" 2>/dev/null || :
+  export ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR
   # 2026-09-15: no longer `exec`. exec replaces this process's own image, so
   # any non-zero exit from issue-pipeline.sh (it has no ERR trap of its own
   # -- only `set -euo pipefail`) landed nowhere: refuse()'s counter/alert

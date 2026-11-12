@@ -131,18 +131,6 @@ release_feature_evidence_valid() {
   return 0
 }
 
-# Give every lib.sh-owned production reader call one cache for this process
-# tick. The scheduler sets its own tick directory; issue-pipeline and the
-# release wrappers source lib.sh and use this process-owned fallback.
-if [[ -z "${ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR+x}" && -n "${REPO_DIR:-}" ]]; then
-  _zf_deployment_cache_root="${MAC_AUTOPILOT_RUNTIME_DIR:-$REPO_DIR/.scratch-supervisor/autopi}"
-  _zf_deployment_cache_dir="$_zf_deployment_cache_root/deployment-status.$BASHPID"
-  ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR="$_zf_deployment_cache_dir"
-  export ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR
-  unset _zf_deployment_cache_root _zf_deployment_cache_dir
-fi
-
-
 # Close-contract refusals depend on ticket revision; acceptance depends on SHA.
 release_close_state_revision() {
   jq -c '[.state, .requeued_at, .run.implement_started_at, .run.concluded_at,

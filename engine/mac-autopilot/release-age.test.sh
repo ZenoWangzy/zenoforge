@@ -11,11 +11,29 @@ fail() { echo "release-age.test.sh: $*" >&2; exit 1; }
 work="$test_env_root/release-age"
 rm -rf "$work"
 mkdir -p "$work/repo" "$work/agent" "$work/runtime/alerts" "$work/fakebin" "$work/gh"
-cache_dir="$(env -u ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR REPO_DIR="$work/repo" MAC_AUTOPILOT_RUNTIME_DIR="$work/runtime/autopi" \
-  bash -ec 'source "$1"; printf "%s" "${ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR:-}"' _ "$script_dir/../lib.d/release-close.sh")" \
-  || fail 'release reader cache path setup failed'
-[[ -n "$cache_dir" ]] || fail 'release reader cache path was not configured'
-[[ ! -e "$cache_dir" ]] || fail "sourcing lib.sh created the production deployment cache directory: $cache_dir"
+# Sourcing lib.sh sets no deployment cache: a long-lived process must re-read statuses, not keep a stale read.
+probe="$(env -u ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR REPO_DIR="$work/repo" MAC_AUTOPILOT_RUNTIME_DIR="$work/runtime/autopi" \
+  bash -ec 'source "$1"; printf "%s" "${ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR-unset}"' _ "$script_dir/../lib.d/release-close.sh")" \
+  || fail 'release reader cache probe failed'
+[[ "$probe" == unset ]] || fail "sourcing lib.sh set a process-lifetime deployment cache: $probe"
+# Regression: one lib.sh process reads a deployment while it is in_progress, then again after success.
+seq_bin="$work/seqbin"; seq_count="$work/seq-count"; mkdir -p "$seq_bin"
+cat > "$seq_bin/gh" <<'SH'
+#!/usr/bin/env bash
+case "$2" in
+  repos/*/deployments/*/statuses)
+    n=$(( $(cat "$SEQ_COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$SEQ_COUNT"
+    if (( n == 1 )); then echo '[{"state":"in_progress","created_at":"2026-11-07T12:00:00Z"}]'; else echo '[{"state":"success","created_at":"2026-11-07T12:01:00Z"}]'; fi ;;
+  repos/*/deployments\?*) echo '[{"id":501,"sha":"2d75caf3a0000000000000000000000000000000","created_at":"2026-11-07T12:00:00Z","payload":{}}]' ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$seq_bin/gh"
+regress="$(env -u ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR SEQ_COUNT="$seq_count" PATH="$seq_bin:$PATH" REPO_DIR="$work/repo" MAC_AUTOPILOT_RUNTIME_DIR="$work/runtime/autopi" \
+  bash -ec 'source "$1"; bash "$2" "$3" >/dev/null; bash "$2" "$3"' _ "$script_dir/../lib.d/release-close.sh" "$script_dir/../production-deployment-read.sh" REPO)" \
+  || fail 'lib.sh reader second read failed'
+jq -e 'length == 1 and .[0].id == 501' <<< "$regress" >/dev/null || fail "second read kept the in_progress status: $regress"
+cache_dir="$work/deployment-status.tick-one"
 export ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR="$cache_dir"
 # Fake gh: serves the deployment list and each record's statuses from FAKE_GH_DIR; FAKE_GH_FAIL=1 makes it fail.
 cat > "$work/fakebin/gh" <<'SH'
