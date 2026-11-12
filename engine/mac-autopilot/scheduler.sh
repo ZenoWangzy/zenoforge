@@ -155,6 +155,9 @@ SHARED_APPEND="$(jqf -c '.footprint_mutex.shared_append // []' <<<"$CFG")"
 # 默认关：早期 stale-base 路由只在 ticket 11 的回放确认零误判后由配置打开
 STALE_BASE_ROUTING="$(jqf -r '.stale_base_routing // false' <<<"$CFG")"
 BUDGET_METER="$(jqf -r '.budget_meter // "sessions_dir"' <<<"$CFG")"
+# 用量表连续扫描失败达到此次数时写 BUDGET-ALERT（仍派发）；成功扫描清零。
+BUDGET_METER_FAIL_THRESHOLD="$(jqf -r '.budget_meter_fail_threshold // 3' <<<"$CFG")"
+[[ "$BUDGET_METER_FAIL_THRESHOLD" =~ ^[1-9][0-9]*$ ]] || BUDGET_METER_FAIL_THRESHOLD=3
 WT_ROOT="$(jqf -r '.worktree_root // empty' <<<"$CFG")"
 WT_ROOT="${WT_ROOT:-${AGENT_HOME:-${HOME:-/tmp}/.zenoforge}/autopilot-wt}"
 LOOP_BREAKER_ROUNDS="$(jqf -r '.loop_breaker_rounds // 5' <<<"$CFG")"
@@ -656,9 +659,10 @@ main() {
   phase_mark opening # steps before the first phase; a name left by the last tick or by lock_wait must not stand for them
   rotate_logs
   if update_budget >/dev/null; then
+    budget_meter_scan ok
     budget_alert_if_needed
   else
-    echo "[$STAMP] BUDGET-METER-ERROR sessions_dir scan failed; dispatch continues" >> "$A/alerts/waste.md"
+    budget_meter_scan fail
     say "budget meter scan failed; dispatch continues"
   fi
   if git -C "$ROOT" fetch -q origin main 2>/dev/null; then

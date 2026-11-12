@@ -85,6 +85,20 @@ budget_alert_if_needed; grep -q 'BUDGET-ALERT date=2026-10-20 fresh_tokens=90000
   || fail 'partial lower-bound spike did not identify its coverage'
 rm -f "$sup/autopi/budget-history.json" "$sup/autopi/alerts/waste.md"; update_budget >/dev/null
 
+# A broken sessions_dir scan alerts once at the threshold, and the next good scan clears the streak.
+BUDGET_METER_FAIL_THRESHOLD=3; STAMP=meter; waste="$sup/autopi/alerts/waste.md"; rm -f "$waste" "$sup/autopi/budget-meter-streak"
+for _ in 1 2; do budget_meter_scan fail; done
+! grep -q 'BUDGET-ALERT' "$waste" || fail 'meter alarmed before the threshold'
+for _ in 1 2 3; do budget_meter_scan fail; done
+[[ "$(grep -c 'BUDGET-METER-ERROR' "$waste")" == 5 ]] || fail "meter failures not logged per scan: $(cat "$waste")"
+[[ "$(grep -c 'BUDGET-ALERT meter-failed consecutive=3' "$waste")" == 1 ]] || fail "threshold did not raise exactly one alert: $(cat "$waste")"
+budget_meter_scan ok
+grep -q 'BUDGET-METER-RECOVERED after=5 failed scans' "$waste" || fail 'meter recovery not recorded'
+[[ ! -e "$sup/autopi/budget-meter-streak" ]] || fail 'recovery kept the failure streak'
+for _ in 1 2 3 4; do budget_meter_scan fail; done
+[[ "$(grep -c 'BUDGET-ALERT meter-failed' "$waste")" == 2 ]] || fail "a new failure run did not alarm once after recovery: $(cat "$waste")"
+rm -f "$waste" "$sup/autopi/budget-meter-streak"
+
 # Consumption already observed survives the completed log being removed.
 rm -- "$running"
 update_budget >/dev/null || fail 'removed log made the day unavailable'
