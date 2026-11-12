@@ -312,6 +312,49 @@ if main_merge_clear >/dev/null 2>&1; then GATE_GREEN=clear; else GATE_GREEN=held
 assert_eq "later green Postsubmit releases ordinary merges" clear "$GATE_GREEN"
 assert_not_contains "no supervisor event fired on the happy path" "$(cat "$EVENTS")" "event main-red-bisect"
 
+# --- Revert then red: a red after the landed revert alerts once, opens no rerun or second revert, and keeps the gate held.
+commit "chore: after the revert"
+AFTER_REVERT_SHA="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" push -q origin main
+: > "$FAKE_GH_STATE/actions.log"
+: > "$FAKE_GH_STATE/calls.log"
+: > "$EVENTS"
+jq -cn --arg green "$REVERTED_MAIN_SHA" --arg red "$RED_SHA" --arg after "$AFTER_REVERT_SHA" \
+  '{workflow_runs:[
+    {id:400,head_sha:$red,head_branch:"main",event:"push",status:"completed",conclusion:"failure",created_at:"2026-10-27T10:00:00Z"},
+    {id:700,head_sha:$green,head_branch:"main",event:"push",status:"completed",conclusion:"success",created_at:"2026-10-27T12:00:00Z"},
+    {id:703,head_sha:$after,head_branch:"main",event:"push",status:"completed",conclusion:"failure",created_at:"2026-10-27T13:00:00Z"}]}' \
+  > "$FAKE_GH_STATE/completed-runs.json"
+maintenance_tick
+maintenance_tick
+assert_eq "a red after the revert is recorded unattributed" unattributed \
+  "$(jq -r .status "$AGENT_HOME/main-red/$AFTER_REVERT_SHA.json")"
+assert_eq "a red after the revert sends one escalation event" 1 \
+  "$(grep -c 'status=unattributed reason=red-after-revert' "$EVENTS")"
+assert_not_contains "a red after the revert requests no rerun" "$(cat "$FAKE_GH_STATE/actions.log")" "rerun 703"
+assert_not_contains "a red after the revert dispatches no probe" "$(cat "$FAKE_GH_STATE/actions.log")" "dispatch"
+assert_not_contains "a red after the revert opens no revert PR" "$(cat "$FAKE_GH_STATE/calls.log")" "pr create"
+if main_merge_clear >/dev/null 2>&1; then GATE_AFTER=clear; else GATE_AFTER=held; fi
+assert_eq "a red after the revert keeps the merge lane held" held "$GATE_AFTER"
+
+# --- Revert then no suite run within the bound: one revert-unverified event, lane held.
+jq -cn --arg green "$GREEN_SHA" --arg red "$RED_SHA" \
+  '{workflow_runs:[
+    {id:400,head_sha:$red,head_branch:"main",event:"push",status:"completed",conclusion:"failure",created_at:"2026-10-27T10:00:00Z"},
+    {id:401,head_sha:$green,head_branch:"main",event:"push",status:"completed",conclusion:"success",created_at:"2026-10-27T09:00:00Z"}]}' \
+  > "$FAKE_GH_STATE/completed-runs.json"
+: > "$EVENTS"
+MAIN_RED_REVERT_VERIFY_SECONDS=0
+maintenance_tick
+maintenance_tick
+MAIN_RED_REVERT_VERIFY_SECONDS=7200
+assert_eq "a revert with no suite run sends one revert-unverified event" 1 \
+  "$(grep -c "status=revert-unverified revert=${REVERTED_MAIN_SHA:0:12}" "$EVENTS")"
+assert_eq "the revert-unverified event is never repeated" reverted \
+  "$(session_json | jq -r .status)"
+if main_merge_clear >/dev/null 2>&1; then GATE_UNVERIFIED=clear; else GATE_UNVERIFIED=held; fi
+assert_eq "an unverified revert keeps the merge lane held" held "$GATE_UNVERIFIED"
+
 # --- Flaky: the same SHA reruns green; no revert, no bisect.
 FLAKY_RED="$test_root/flaky"
 rm -rf "$AGENT_HOME/main-red"
