@@ -75,6 +75,29 @@ jq_arg_file() {
 
 state_file() { echo "$STATE_DIR/$1.json"; }
 
+# Take the per-issue state lock into fd_var. Re-entrant for nested callers in the
+# same process tree: flock(2) locks an open file description, so a second open of
+# <n>.json.lock waits on the lock its own ancestor holds. The holder exports its fd
+# as ZF_STATE_LOCK_FD_<n>; reuse it only when it still refers to this lock file.
+state_lock_take() {
+  local n="$1" fd_var="$2" f held fd
+  # Keys are not always numeric (gmail-credential); a name collision is safe because of the -ef check.
+  held="ZF_STATE_LOCK_FD_${n//[^A-Za-z0-9]/_}"
+  f="$(state_file "$n")" || return 1
+  if [[ "${!held:-}" =~ ^[0-9]+$ ]] && [ "/dev/fd/${!held}" -ef "$f.lock" ] 2>/dev/null; then
+    # Re-lock: a no-op while the holder still has it, a fresh wait if it was flock -u'd.
+    flock -x "${!held}" || return 1
+    printf -v "$fd_var" '%s' "${!held}"
+    return 0
+  fi
+  exec {fd}>"$f.lock" || return 1
+  flock -x "$fd" || { exec {fd}>&-; return 1; }
+  printf -v "$fd_var" '%s' "$fd"
+  # Exported so a child bash process (hold.sh, a script) can reuse the fd too.
+  printf -v "$held" '%s' "$fd"
+  export "$held"
+}
+
 
 # Prints the issue's state JSON, defaulting to attempts=0 if none exists yet.
 state_read() {
@@ -393,11 +416,7 @@ state_merge() (
     return 64
   fi
   if [ "$lock_mode" != __issue_transition_lock_held ]; then
-    if ! exec {lock_fd}>"$f.lock"; then
-      echo "state_merge: could not open state lock for issue #$n -- state file $f NOT written" >&2
-      return 1
-    fi
-    if ! flock -x "$lock_fd"; then
+    if ! state_lock_take "$n" lock_fd; then
       echo "state_merge: could not lock state for issue #$n -- state file $f NOT written" >&2
       return 1
     fi
@@ -694,8 +713,7 @@ issue_transition() (
   f="$(state_file "$n")" || { echo "issue_transition: no state file path for #$n" >&2; return 1; }
   mkdir -p -- "$STATE_DIR" || { echo "issue_transition: could not create state directory for #$n" >&2; return 1; }
   if [ "$lock_mode" != __issue_transition_lock_held ]; then
-    exec {transition_lock_fd}>"$f.lock" || { echo "issue_transition: could not open state lock for #$n" >&2; return 1; }
-    flock -x "$transition_lock_fd" || { echo "issue_transition: could not lock state for #$n" >&2; return 1; }
+    state_lock_take "$n" transition_lock_fd || { echo "issue_transition: could not lock state for #$n" >&2; return 1; }
   fi
   [ -f "$f" ] && had_state=1
   before="$(state_read "$n")" || { echo "issue_transition: could not read state for #$n" >&2; return 1; }

@@ -403,8 +403,7 @@ supervisor_ops_acceptance_handoff() (
   local n="$1" state="$2" reason="$3" expected_hold="${4:-}" sha location condition lock_fd f
   if [ -n "$expected_hold" ]; then
     f="$(state_file "$n")" || return 1
-    exec {lock_fd}>"$f.lock" || return 1
-    flock -x "$lock_fd" || return 1
+    state_lock_take "$n" lock_fd || return 1
     state="$(state_read "$n")" || return 1
     jq -e --argjson expected "$expected_hold" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$state" >/dev/null || return 1
   fi

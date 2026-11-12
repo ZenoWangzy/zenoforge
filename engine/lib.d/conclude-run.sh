@@ -478,7 +478,7 @@ $needs_md
       (
         local f fd current
         f="$(state_file "$n")" || exit 1
-        exec {fd}>"$f.lock" && flock -x "$fd" || exit 1
+        state_lock_take "$n" fd || exit 1
         current="$(state_read "$n")" || exit 1
         jq -e --argjson expected "$expected_hold" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$current" >/dev/null || exit 1
         if [ "$issue_state" != "CLOSED" ]; then guarded_write gh issue close "$n" --repo "$REPO" || exit 1; fi
