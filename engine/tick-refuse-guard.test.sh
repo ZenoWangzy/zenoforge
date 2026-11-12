@@ -119,6 +119,11 @@ for leg in run-triage.sh run-advisor.sh run-recut.sh; do
     assert_eq "$leg $stray exits 64 with usage" "64:usage" "$leg_rc:$(grep -o usage <<< "$leg_out" | head -1)"
   done
 done
+# run-release passes positional args (anchor and merge SHA) through, so only option words are refused.
+for stray in --help --bogus; do
+  leg_out="$(bash "$SCRIPT_DIR/run-release.sh" "$stray" 2>&1)" && leg_rc=0 || leg_rc=$?
+  assert_eq "run-release.sh $stray exits 64 with usage" "64:usage" "$leg_rc:$(grep -o usage <<< "$leg_out" | head -1)"
+done
 assert_eq 'refused stray arguments made no gh call' "0" "$(wc -l < "$GH_LOG" | tr -d ' ')"
 assert_eq 'refused stray arguments wrote nothing under AGENT_HOME' "$before_tree" "$(find "$AGENT_HOME" | LC_ALL=C sort | md5sum)"
 
