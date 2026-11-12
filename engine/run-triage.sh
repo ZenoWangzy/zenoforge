@@ -699,8 +699,7 @@ if [ "$STATE" = "ready-for-agent" ] && [ "$PRECUT" != "1" ] \
       --slurpfile issue "$TRIAGE_JUDGE_ISSUE_FILE" --slurpfile triage "$TRIAGE_JUDGE_RESULT_FILE" \
       '{event_id:$event_id,currentDecision:$current,issue:{title:$issue[0].title,body:$issue[0].body},triage:{risk_class:$risk,level:$level,brief_md:$triage[0].brief_md,expected_packages:$triage[0].expected_packages,expected_paths:$triage[0].expected_paths}}')"
     rm -f -- "$TRIAGE_JUDGE_ISSUE_FILE" "$TRIAGE_JUDGE_RESULT_FILE"
-    TRIAGE_JUDGE_ISSUE_FILE=""
-    TRIAGE_JUDGE_RESULT_FILE=""
+    TRIAGE_JUDGE_ISSUE_FILE=""; TRIAGE_JUDGE_RESULT_FILE=""
     TRIAGE_SIZE_JUDGE="$(printf '%s\n' "$TRIAGE_SIZE_INPUT" | bash "${ZF_TS_JUDGE_SCRIPT:-$SCRIPT_DIR/ts-judge.sh}" triage-size 2>/dev/null || true)"
   fi
   TRIAGE_SIZE_DECISION="$(jq -r 'select(.status=="answered" and .adopted==true) | .decision // empty' <<<"$TRIAGE_SIZE_JUDGE" 2>/dev/null || true)"
@@ -711,7 +710,6 @@ if [ "$STATE" = "ready-for-agent" ] && [ "$PRECUT" != "1" ] \
 $BRIEF"
   fi
 fi
-# Intake priority only adds labels; it never changes STATE.
 printf '%s\n' "$ISSUE_JSON" | bash "$SCRIPT_DIR/intake-priority.sh" triage "$N" "$STATE" "$REPO" || true
 
 if [ "$DRY_RUN" = "1" ]; then

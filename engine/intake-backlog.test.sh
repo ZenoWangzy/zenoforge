@@ -4,7 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 test_root="$(mktemp -d)"
-trap 'rm -rf -- "$test_root"' EXIT
+trap 'rm -rf -- "$test_root" "$test_env_root"' EXIT
 mkdir -p "$test_root/bin" "$test_root/config"
 export ZF_CONFIG_ROOT="$test_root/config"
 export ZF_REPO_DIR="$(git rev-parse --show-toplevel)"

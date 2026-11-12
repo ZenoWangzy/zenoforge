@@ -92,16 +92,18 @@ for number in "${issue_numbers[@]}"; do
 done
 for pid in "${pids[@]}"; do wait "$pid" || true; done
 
-records='[]'
+records_file="$temp_dir/records.jsonl"
+: > "$records_file"
 for number in "${issue_numbers[@]}"; do
-  issue_json="$(cat -- "$temp_dir/$number.issue.json")"
   result="$(cat -- "$temp_dir/$number.result.json")"
   decision="$(jq -c '
     def decode: if type == "string" then try fromjson catch {} elif type == "object" then . else {} end;
     (.candidate // .decision // null) as $raw | if $raw == null then {} else ($raw | decode) end
   ' <<< "$result")"
-  record="$(jq -cn --argjson issue "$issue_json" --argjson result "$result" --argjson decision "$decision" --argjson config "$config" '
-    ($result.intake_context.duplicate_candidates // []) as $candidates
+  printf '%s' "$decision" > "$temp_dir/$number.decision.json"
+  record="$(jq -cn --slurpfile issue_rows "$temp_dir/$number.issue.json" --argjson result "$result" --slurpfile decision_rows "$temp_dir/$number.decision.json" --argjson config "$config" '
+    $issue_rows[0] as $issue | $decision_rows[0] as $decision
+    | ($result.intake_context.duplicate_candidates // []) as $candidates
     | {number:$issue.number,title:$issue.title,
        priority:($decision.priority // $config.labels.needs_triage),
        route:($decision.route // "none-fits"),
@@ -115,14 +117,14 @@ for number in "${issue_numbers[@]}"; do
          else [] end),
        stale:($decision.stale // false)}
   ')"
-  records="$(jq -cn --argjson rows "$records" --argjson record "$record" '$rows + [$record]')"
+  printf '%s\n' "$record" >> "$records_file"
   if (( apply == 1 )); then
     bash "$SCRIPT_DIR/intake-priority.sh" apply --repo "$repo" --issue-file "$temp_dir/$number.issue.json" --result-file "$temp_dir/$number.result.json" \
       || echo "intake-backlog: label update failed for issue #$number" >&2
   fi
 done
 
-report="$(jq -cn --arg repo "$repo" --argjson limit "$limit" --argjson rows "$records" '
+report="$(jq -cn --arg repo "$repo" --argjson limit "$limit" --slurpfile rows "$records_file" '
   ($rows | group_by(.priority) | map({key:.[0].priority,value:length}) | from_entries) as $priorities
   | ($rows | group_by(.route) | map({key:.[0].route,value:length}) | from_entries) as $routes
   | {repo:$repo,scanned:($rows | length),limit:$limit,

@@ -105,7 +105,7 @@ intake_priority_recent_main_subjects() {
 }
 
 intake_priority_prepare_state() {
-  local repo="$1" issue_file="$2" triage_state="$3" config="$4" issue_json policy route_context duplicate_candidates recent baseline_priority baseline_duplicate baseline_stale current_decision event_id
+  local repo="$1" issue_file="$2" triage_state="$3" config="$4" issue_json policy route_context duplicate_candidates recent baseline_priority baseline_duplicate baseline_stale current_decision event_id issue_arg duplicates_arg rc=0
   issue_json="$(jq -ce 'select(type == "object" and (.number | type == "number" and . > 0) and (.title | type == "string"))' "$issue_file")" || return 1
   policy="$(intake_priority_judge_policy "$config")" || return 1
   route_context="$(intake_priority_route_context "$repo" "$issue_json")" || return 1
@@ -128,11 +128,17 @@ intake_priority_prepare_state() {
     --argjson duplicate "$baseline_duplicate" --argjson stale "$baseline_stale" \
     '{priority:$priority,route:$route,duplicate:$duplicate,duplicateCandidates:[],stale:$stale}')" || return 1
   event_id="intake-priority:$(jq -r '.number' <<< "$issue_json"):$(date +%s%N):$RANDOM"
-  jq -cn --arg event_id "$event_id" --arg current "$current_decision" --argjson issue "$issue_json" \
+  # The issue and duplicate list are untrusted-size, so they reach jq as files, not argv.
+  issue_arg="$(jq_arg_file "$issue_json")" || return 1
+  duplicates_arg="$(jq_arg_file "$duplicate_candidates")" || { rm -f "$issue_arg"; return 1; }
+  jq -cn --arg event_id "$event_id" --arg current "$current_decision" --slurpfile issue_rows "$issue_arg" \
     --argjson containers "$(jq -c '.containers' <<< "$route_context")" \
-    --argjson duplicates "$duplicate_candidates" --argjson recent "$recent" --argjson policy "$policy" \
-    '{event_id:$event_id,currentDecision:$current,issue:{number:$issue.number,title:$issue.title,body:($issue.body // "")},
-      roadmapContainers:$containers,duplicateCandidates:$duplicates,recentMainSubjects:$recent,policy:$policy}'
+    --slurpfile duplicate_rows "$duplicates_arg" --argjson recent "$recent" --argjson policy "$policy" \
+    '$issue_rows[0] as $issue | $duplicate_rows[0] as $duplicates
+      | {event_id:$event_id,currentDecision:$current,issue:{number:$issue.number,title:$issue.title,body:($issue.body // "")},
+      roadmapContainers:$containers,duplicateCandidates:$duplicates,recentMainSubjects:$recent,policy:$policy}' || rc=$?
+  rm -f "$issue_arg" "$duplicates_arg"
+  return "$rc"
 }
 
 intake_priority_judge() {
@@ -246,6 +252,7 @@ intake_priority_apply_result() {
   guarded_write gh issue edit "$issue_number" --repo "$repo" "${edit_args[@]}"
 }
 
+# Called by run-triage after its verdict. Intake priority only adds labels; it never changes STATE.
 intake_priority_triage() {
   local issue_number="$1" triage_state="$2" repo="$3" config enabled issue_file result decision priority
   config="$(intake_priority_config)" || { echo 'intake-priority: skipped (invalid-config)' >&2; return 0; }
