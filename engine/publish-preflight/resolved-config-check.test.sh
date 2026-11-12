@@ -41,6 +41,30 @@ grep -Fq "intended-changes: ignoring stale row prompts/guide.md (sha missing, ne
   && grep -q 'CHANGED prompts/guide.md' <<<"$out" || { echo "FAIL: legacy row was not warned and ignored: $out"; exit 1; }
 cp "$t/base/engine/state/item.json" "$t/repo/.zenoforge/state/item.json" && git -C "$t/repo" commit -qam fix
 run "$t/intended.tsv" >/dev/null || { echo "FAIL: fixed tree flagged"; exit 1; }
+# Content rows approve by the sha256 of the new resolved file, whatever the engine SHA.
+resolved_hash=$(sha256sum "$t/repo/.zenoforge/prompts/guide.md" | cut -d' ' -f1)
+printf 'prompts/guide.md\tcontent approval\tsha256:%s\n' "${resolved_hash:0:12}" > "$t/content.tsv"
+out=$(run "$t/content.tsv" 2>&1) || { echo "FAIL: matching content row refused: $out"; exit 1; }
+grep -q 'changed as intended prompts/guide.md' <<<"$out" || { echo "FAIL: content row not reported as intended: $out"; exit 1; }
+printf 'prompts/guide.md\tcontent approval\tsha256:%s\n' "$resolved_hash" > "$t/content-full.tsv"
+run "$t/content-full.tsv" >/dev/null 2>&1 || { echo "FAIL: full-length content row refused"; exit 1; }
+printf 'prompts/guide.md\twrong content\tsha256:ffffffffffff\n' > "$t/content-wrong.tsv"
+out=$(run "$t/content-wrong.tsv" 2>&1) && { echo "FAIL: non-matching content row approved a change"; exit 1; }
+grep -Fq "intended-changes: ignoring stale row prompts/guide.md (sha sha256:ffffffffffff, new engine $engine_sha, new hash ${resolved_hash:0:12})" <<<"$out" \
+  && grep -q 'CHANGED prompts/guide.md' <<<"$out" || { echo "FAIL: wrong content row was not warned and ignored: $out"; exit 1; }
+printf 'prompts/guide.md\ttoo short\tsha256:%s\n' "${resolved_hash:0:11}" > "$t/content-short.tsv"
+run "$t/content-short.tsv" >/dev/null 2>&1 && { echo "FAIL: 11-hex content prefix approved a change"; exit 1; }
+printf 'prompts/guide.md\t\tsha256:%s\n' "${resolved_hash:0:12}" > "$t/content-noreason.tsv"
+rc=0; run "$t/content-noreason.tsv" >/dev/null 2>&1 || rc=$?
+[[ $rc == 2 ]] || { echo "FAIL: content row without reason accepted (rc=$rc)"; exit 1; }
+# The hash is over the resolved file: the target overlay wins over the engine source, so a prefix of the engine-only bytes does not approve it.
+echo 'engine source content' > "$t/new/engine/prompts/guide.md"
+engine_only_hash=$(sha256sum "$t/new/engine/prompts/guide.md" | cut -d' ' -f1)
+printf 'prompts/guide.md\tengine bytes\tsha256:%s\n' "${engine_only_hash:0:12}" > "$t/content-engine.tsv"
+out=$(run "$t/content-engine.tsv" 2>&1) && { echo "FAIL: row for engine-only bytes approved an overlaid file"; exit 1; }
+grep -q 'CHANGED prompts/guide.md' <<<"$out" && grep -Fq "new hash ${resolved_hash:0:12}" <<<"$out" || { echo "FAIL: overlay case: $out"; exit 1; }
+run "$t/content.tsv" >/dev/null 2>&1 || { echo "FAIL: resolved-hash row refused once an engine copy exists"; exit 1; }
+rm "$t/new/engine/prompts/guide.md"
 printf 'prompts/guide.md\t\n' > "$t/bad.tsv"
 rc=0; run "$t/bad.tsv" >/dev/null 2>&1 || rc=$?
 [[ $rc == 2 ]] || { echo "FAIL: entry without reason accepted (rc=$rc)"; exit 1; }
