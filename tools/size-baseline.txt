@@ -19,7 +19,7 @@
 1618	engine/night/maintainer-health-mail.sh
 1391	engine/night/outcomes-audit.sh
 2180	engine/notify.sh
-1945	engine/run-advisor-batch.sh
+1943	engine/run-advisor-batch.sh
 1140	engine/run-advisor.sh
 899	engine/run-triage.sh
 1373	engine/supervise-pipeline.sh
