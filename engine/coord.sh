@@ -233,6 +233,21 @@ coord_release_many() { # owner issue...; conditional release of every batch memb
   return "$status"
 }
 
+coord_with_scheduler_lock() { # run a short ledger read or claim mutation without reversing ledger -> claim lock order
+  local own_lock=false station_lock=false rc=0
+  if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then
+    if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]] && declare -F hs_lock >/dev/null; then
+      hs_lock || return 3; own_lock=true; station_lock=true
+    elif declare -F acquire_scheduler_lock_wait >/dev/null; then
+      acquire_scheduler_lock_wait || return 3; own_lock=true
+    fi
+  fi
+  "$@" || rc=$?
+  if [[ "$own_lock" == true ]]; then
+    if [[ "$station_lock" == true ]]; then hs_unlock; else release_scheduler_lock; fi
+  fi
+  return "$rc"
+}
 coord_reconcile_systemd_workers() { # heartbeat active issue-pipeline transient units; release inactive ones
   local file key rc record kind unit state owner stage unknown=0
   mkdir -p -- "$COORD_DIR" || return 3
@@ -255,12 +270,12 @@ coord_reconcile_systemd_workers() { # heartbeat active issue-pipeline transient 
     state="$(systemctl --user show "$unit" --property=ActiveState --value 2>/dev/null)" || { unknown=1; continue; }
     case "$state" in
       active|activating|deactivating|reloading)
-        coord_renew "$key" "$owner" || { rc=$?; (( rc == 3 )) && unknown=1; }
+        coord_with_scheduler_lock coord_renew "$key" "$owner" || { rc=$?; (( rc == 3 )) && unknown=1; }
         ;;
       inactive|failed|dead)
         # A claim is taken before systemd-run starts the unit (admission can queue it ~20s); 07:46Z 10-30 a concurrent tick released the advisor-batch claim in that gap.
         (( $(date +%s) - $(jq -r '.renewed_at // 0' <<<"$record") < 120 )) && continue
-        coord_release "$key" "$owner" || { rc=$?; (( rc == 3 )) && unknown=1; }
+        coord_with_scheduler_lock coord_release "$key" "$owner" || { rc=$?; (( rc == 3 )) && unknown=1; }
         ;;
       *) unknown=1 ;;
     esac

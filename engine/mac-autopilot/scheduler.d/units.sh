@@ -115,13 +115,12 @@ retire_terminal_units() {
 set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）
   [[ "${SET_UNIT_QUEUE:-0}" != 1 ]] || { dep_q_enqueue "$@"; return 0; } # release_dependency_blocks batches its writes, see dep_q_flush
   local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage=""
-  if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then
-    acquire_scheduler_lock_wait || return 1
-    own_lock=true
-  fi
+  if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_lock || return 1; else acquire_scheduler_lock_wait || return 1; fi; own_lock=true; fi
+  if declare -F harvest_unit_cas_check >/dev/null; then harvest_unit_cas_check "$1" || { if [[ "$own_lock" == true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_unlock; else release_scheduler_lock; fi; fi; return 1; }; fi
   [[ "$2" == *".stage"* ]] && old_stage="$(unit_field "$1" '.stage')"
   jqf --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" | write_state "$UNITS" || rc=$?
-  if [[ "$own_lock" == true ]]; then release_scheduler_lock; fi
+  if (( rc == 0 )) && declare -F harvest_unit_cas_advance >/dev/null; then harvest_unit_cas_advance "$1" || rc=$?; fi
+  if [[ "$own_lock" == true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_unlock; else release_scheduler_lock; fi; fi
   elapsed=$((SECONDS - started))
   [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || (( elapsed < 2 )) || say "dispatch detail ledger_write unit=$1 secs=${elapsed}s"
   if (( rc == 0 )) && [[ -n "$old_stage" ]] && declare -F footprint_owner_transition >/dev/null; then
@@ -202,7 +201,10 @@ intake_parent_unverified() { # issue, check rc, issue JSON, check reason
     say "intake issue #$n deferred: could not verify parent status rc=$rc step=$parent_step"
   fi
 }
-unit_field() { jqf -r --arg id "$1" "[.units[] | select(.id==\$id) | ($2 // empty)][0] // empty" "$UNITS"; }
+unit_field() {
+  if [[ "${HARVEST_CAS_ACTIVE:-false}" == true && "$1" == "${HARVEST_CAS_UNIT:-}" ]]; then jqf -r "($2 // empty)" <<<"$HARVEST_CAS_UNIT_SNAPSHOT"
+  else jqf -r --arg id "$1" "[.units[] | select(.id==\$id) | ($2 // empty)][0] // empty" "$UNITS"; fi
+}
 # hold_handoff_waiting outlives its hold when the issue leaves ready-for-agent (tracker, closed) with its episode unconsumed:
 # register_new_issues clears the flag only for ready-for-agent rows, so such a unit never dispatches again.
 handoff_wait_stale() { # unit id -> 0 after clearing the flag when no issue it waits on still has a live handoff episode
