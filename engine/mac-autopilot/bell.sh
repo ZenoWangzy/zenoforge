@@ -10,6 +10,7 @@ EXPLICIT_AGENT_HOME="${AGENT_HOME:-}"
 source "$HERE/runtime-env.sh"
 ROOT="$MAC_AUTOPILOT_ROOT"
 ENGINE_DIR="${ZF_ENGINE_DIR:-$ROOT/engine}"
+source "$HERE/incident-fingerprint.sh"
 source "$ENGINE_DIR/lib.d/transport.sh"
 source "$ENGINE_DIR/lib.d/ci-checks.sh"; source "$HERE/pin-lag.sh"; source "$HERE/zf-main-ci.sh"; source "$HERE/bell-guards.sh"; source "$HERE/bell-history.sh"
 A="${BELL_AUTOPI_DIR:-$MAC_AUTOPILOT_RUNTIME_DIR}"
@@ -139,17 +140,6 @@ mtime_epoch() {
 import os,sys
 print(int(os.stat(sys.argv[1]).st_mtime))
 PY
-}
-
-incident_class() {
-  local raw="$1" slug hash
-  slug="$(printf '%s' "$raw" | LC_ALL=C tr '[:upper:]_' '[:lower:]-' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-|-$//g')"
-  [[ -n "$slug" ]] || slug=incident
-  if ((${#slug} > 64)); then
-    hash="$(printf '%s' "$raw" | shasum -a 256 | awk '{print substr($1,1,8)}')"
-    slug="${slug:0:55}-$hash"
-  fi
-  printf '%s\n' "$slug"
 }
 
 scheduler_signature_class() {
@@ -421,7 +411,7 @@ queue_incident_filing() {
   local severity="$1" raw="$2" summary="$3" evidence="$4"
   local class first_seen occurrence_count stats
   (( $(severity_rank "$severity") >= FILE_MIN_SEVERITY_RANK )) || return 0
-  class="$(incident_class "$raw")"
+  class="$(incident_class "$(incident_fingerprint "$raw")")"
   # 一次读取 first_seen/count；逐字段读会把整个（MB 级）状态各解析一遍。
   stats="$(jq -r --arg c "$class" '(.incident_stats[$c] // {}) as $s | [($s.first_seen // ""), ($s.count // 0 | tostring)] | @tsv' <<<"$STATE_JSON" 2>/dev/null || true)"
   IFS=$'\t' read -r first_seen occurrence_count <<<"$stats"
