@@ -42,6 +42,12 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
   red_run_id="$(jq -r '.id // empty' <<< "$run")"
   session="$(main_red_session_read "$red_sha" 2>/dev/null || true)"
   if [ -z "$session" ]; then
+    # A red at or after a landed revert is never attributed again: one event, then terminal.
+    if main_red_revert_covers "$red_sha"; then
+      main_red_session_write "$red_sha" unattributed || return 0
+      main_red_supervisor_event "$red_sha" "status=unattributed reason=red-after-revert workflow=$workflow run=$red_run_id"
+      return 0
+    fi
     # First red at this SHA: rerun the failed jobs once. A rerun already in
     # flight removes the run from the completed list, so the next completed
     # sighting of this SHA is the rerun's own verdict.
@@ -492,6 +498,70 @@ main_red_rerun_retry() { # red_sha session_json
 }
 
 
+# The culprit's revert commit on origin/main, empty until it has landed.
+main_red_revert_commit() { # culprit_sha
+  git -C "$REPO_DIR" log -1 --format=%H origin/main --grep="This reverts commit ${1}." 2>/dev/null
+}
+
+
+# 0 when a landed revert of an earlier culprit is at or before red_sha.
+main_red_revert_covers() { # red_sha
+  local red_sha="$1" file session culprit revert_sha
+  [ -d "$MAIN_RED_DIR" ] || return 1
+  while IFS= read -r file; do
+    session="$(main_red_session_read_for_file "$file" 2>/dev/null || true)"
+    [ "$(jq -r '.status // empty' <<< "$session")" = reverted ] || continue
+    culprit="$(jq -r '.culprit // empty' <<< "$session")"
+    [[ "$culprit" =~ ^[0-9a-f]{40}$ ]] || continue
+    revert_sha="$(main_red_revert_commit "$culprit")"
+    [[ "$revert_sha" =~ ^[0-9a-f]{40}$ ]] || continue
+    git -C "$REPO_DIR" merge-base --is-ancestor "$revert_sha" "$red_sha" 2>/dev/null && return 0
+  done < <(printf '%s\n' "$MAIN_RED_DIR"/*.json)
+  return 1
+}
+
+
+# A landed revert with no completed suite run on it or a later main commit
+# within MAIN_RED_REVERT_VERIFY_SECONDS: one event; the lane stays held.
+main_red_revert_verify_sweep() { # completed_runs_json
+  local runs="$1" file session red_sha culprit revert_sha landed idle sha verified covered_since covered_epoch
+  [ -d "$MAIN_RED_DIR" ] || return 0
+  # The read is the newest 50 runs per workflow. A revert older than the oldest
+  # run of either page cannot be verified from it: skip it, never flag it.
+  covered_since="$(jq -r '[.workflow_runs[]? | select(.created_at) | {w: .red_workflow, t: .created_at}] | group_by(.w) | map(map(.t) | min) | max // empty' <<< "$runs")"
+  [ -n "$covered_since" ] || return 0
+  covered_epoch="$(date -u -d "$covered_since" +%s 2>/dev/null)" || return 0
+  while IFS= read -r file; do
+    session="$(main_red_session_read_for_file "$file" 2>/dev/null || true)"
+    [ "$(jq -r '.status // empty' <<< "$session")" = reverted ] || continue
+    [ "$(jq -r '.revert_unverified // false' <<< "$session")" = true ] && continue
+    red_sha="$(jq -r '.red_sha // empty' <<< "$session")"
+    culprit="$(jq -r '.culprit // empty' <<< "$session")"
+    [[ "$red_sha" =~ ^[0-9a-f]{40}$ && "$culprit" =~ ^[0-9a-f]{40}$ ]] || continue
+    revert_sha="$(main_red_revert_commit "$culprit")"
+    [[ "$revert_sha" =~ ^[0-9a-f]{40}$ ]] || continue
+    # Clock starts at the revert commit's time, not the session file's last write.
+    landed="$(git -C "$REPO_DIR" log -1 --format=%ct "$revert_sha" 2>/dev/null)" || continue
+    [[ "$landed" =~ ^[0-9]+$ ]] || continue
+    [ "$landed" -ge "$covered_epoch" ] || continue
+    idle=$(( $(date +%s) - landed ))
+    [ "$idle" -ge "$MAIN_RED_REVERT_VERIFY_SECONDS" ] || continue
+    verified=0
+    while IFS= read -r sha; do
+      [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || continue
+      if git -C "$REPO_DIR" merge-base --is-ancestor "$revert_sha" "$sha" 2>/dev/null; then
+        verified=1
+        break
+      fi
+    done < <(jq -r '.workflow_runs[]? | select(.conclusion == "success" or .conclusion == "failure") | .head_sha // empty' <<< "$runs" | sort -u)
+    [ "$verified" = 1 ] && continue
+    main_red_session_write "$red_sha" reverted '.revert_unverified = true' || continue
+    main_red_supervisor_event "$red_sha" \
+      "status=revert-unverified revert=${revert_sha:0:12} idle_seconds=$idle"
+  done < <(printf '%s\n' "$MAIN_RED_DIR"/*.json)
+}
+
+
 # The tick's maintenance entry point: if the latest completed main validation
 # run is red, advance that red's session by one bounded step;
 # then close any rerun-requested session whose same-SHA rerun went green
@@ -532,6 +602,7 @@ main_red_bisect_sweep() {
       main_red_step_session "$sha" "$run" "$runs"
     fi
   fi
+  main_red_revert_verify_sweep "$runs"
   [ -d "$MAIN_RED_DIR" ] || return 0
   while IFS= read -r session_file; do
     [ -n "$session_file" ] || continue

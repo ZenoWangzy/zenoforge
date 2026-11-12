@@ -862,7 +862,10 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/open-pr-collision.sh"
 #                    suites-only red does not change that gate.
 #   reverted        the direct revert landed or the revert PR merged; the
 #                    existing Postsubmit merge gate still owns ordinary merge
-#                    admission.
+#                    admission. A red at or after that revert is unattributed
+#                    (reason=red-after-revert: no second revert); a revert with
+#                    no completed run within MAIN_RED_REVERT_VERIFY_SECONDS
+#                    sends one status=revert-unverified event.
 #   flaky           terminal record of a red that reran green.
 #   unattributed    terminal: no culprit could be named. A Postsubmit red
 #                   stays behind its merge gate; every unattributed red sends
@@ -870,6 +873,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/open-pr-collision.sh"
 MAIN_RED_PROBE_DISPATCH_ATTEMPTS=2
 MAIN_RED_PROBE_RETRY_DELAY_SECONDS=600
 MAIN_RED_REVERT_ATTEMPTS=3
+MAIN_RED_REVERT_VERIFY_SECONDS="${MAIN_RED_REVERT_VERIFY_SECONDS:-7200}"
 MAIN_RED_MAX_RUN_AGE_SECONDS="${MAIN_RED_MAX_RUN_AGE_SECONDS:-86400}"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/main-red-bisect.sh"
