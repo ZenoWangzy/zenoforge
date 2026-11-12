@@ -2,6 +2,7 @@
 # Keeps the PR CI gate in step: the gate regex in tools/merge-pr.sh (merge_pr_gate_ci_ok) and the
 # pull_request paths of engine-tests.yml and cli-tests.yml must agree, and both must keep push-to-main.
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 fail() { echo "pr-ci-gate-paths.test.sh: $*" >&2; exit 1; }
 
