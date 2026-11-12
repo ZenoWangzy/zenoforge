@@ -5,15 +5,21 @@
 # Target-repo specifics come from state/deploy-culprit.json through the config seam ({ migration_path: "dir/%s.sql",
 # infrastructure_signatures: [...] }): the target's config root first, then pack values retained during migration;
 # without either the generic defaults apply (migrations at migrations/<stage>.sql, only the built-in infrastructure signatures).
+# attributable_sqlstate_classes overrides the SQLSTATE class prefixes a migration failure may attribute (default 22, 23, 42).
+# A missing config logs and uses the defaults; an undefined zf_config_file or an unreadable config fails loud.
 deploy_culprit_pack_value() {
   local file
-  file="$(zf_config_file state/deploy-culprit.json 2>/dev/null)" || file=/dev/null
-  jq -r -n --slurpfile pack "$file" "(\$pack[0] // {}) | $1"
+  declare -F zf_config_file >/dev/null || { echo "deploy-culprit: zf_config_file is undefined; source lib.sh first" >&2; return 1; }
+  if ! file="$(zf_config_file state/deploy-culprit.json)"; then
+    echo "deploy-culprit: no state/deploy-culprit.json in target, pack or engine; using default values" >&2
+    file=/dev/null
+  fi
+  jq -r -n --slurpfile pack "$file" "(\$pack[0] // {}) | $1" || { echo "deploy-culprit: cannot read or parse $file" >&2; return 1; }
 }
 # shellcheck disable=SC2153 # REPO is set by lib.sh before this file is sourced.
 deploy_culprit() {
   local repo="$1" range="$2" kind="$3" detail="$4" path="" image=""
-  local sha subject changed commits owner="" culprit="" matches=0
+  local sha subject changed commits owner="" culprit="" matches=0 classes cls allowed
   case "$kind" in
     migration)
       # Missing credentials and SQL privilege/connection failures describe
@@ -21,10 +27,14 @@ deploy_culprit() {
       [[ "$detail" != *MIGRATION_DATABASE_URL* ]] || return 1
       [[ "$detail" != *code=42501* && "$detail" != *SQLSTATE\ 42501* ]] || return 1
       [[ "$detail" =~ stage=([A-Za-z0-9_-]+)-[0-9]+[[:space:]]code=([A-Za-z0-9_-]+) ]] || return 1
-      case "${BASH_REMATCH[2]}" in
-        08*|28*|42501|wrong-role|missing|unknown) return 1 ;;
-      esac
-      path="$(deploy_culprit_pack_value '.migration_path // "migrations/%s.sql"')"
+      # Allow-list: an unlisted code (57P01, 40001, ECONNRESET...) is not attributable, so it blocks and notifies.
+      classes="$(deploy_culprit_pack_value '.attributable_sqlstate_classes // ["22","23","42"] | .[]')" || return 1
+      allowed=0
+      while IFS= read -r cls; do
+        if [[ -n "$cls" && "${BASH_REMATCH[2]}" == "$cls"* ]]; then allowed=1; fi
+      done <<< "$classes"
+      [ "$allowed" -eq 1 ] || return 1
+      path="$(deploy_culprit_pack_value '.migration_path // "migrations/%s.sql"')" || return 1
       path="${path//%s/${BASH_REMATCH[1]}}"
       ;;
     service) image="$detail" ;;
