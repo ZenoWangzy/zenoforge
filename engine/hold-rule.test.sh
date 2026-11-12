@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-# hold.sh --rule refuses a hold that is not scheduler-stop-loss and a non-owner comment.
+# hold.sh --rule refuses a hold that is neither scheduler-stop-loss nor on the supervisor/head allowlist, and a non-owner comment.
 export ZF_REPO=test/repo ZF_REPO_DIR="$MODEL_POLICY_TEST_REPO" AGENT_DRY_RUN=0
 source "$SCRIPT_DIR/lib.sh"
 cat > "$test_env_bin/gh" <<'EOT'
@@ -61,6 +61,44 @@ EOT
     exit 1
   }
   printf 'ok - hold --rule remains non-zero when scheduler requeue fails\n'
+  # An allowlisted (holder, kind) pair is released by an owner ruling and recorded; every other holder stays refused.
+  cat > "$fixture_bin/gh" <<'EOT'
+#!/usr/bin/env bash
+case "${2:-}" in
+  repos/test/repo/issues/comments/9) a=OWNER ;;
+  repos/test/repo/issues/comments/10) a=NONE ;;
+  *) exit 64 ;;
+esac
+printf '%s\n' "{\"issue_url\":\"https://api.github.com/repos/test/repo/issues/7\",\"author_association\":\"$a\",\"html_url\":\"https://github.com/test/repo/issues/7#issuecomment-9\",\"body\":\"requeue\"}"
+EOT
+  unset HOLD_RULE_FAKE_FAIL
+  release_calls="$test_env_root/hold-rule-release.calls"
+  state_requeue() { printf '%s\n' "$1 $2" >> "$release_calls"; jq "$4 | .state = \"ready-for-agent\" | .hold = null" "$AGENT_HOME/state/$1.json" > "$AGENT_HOME/state/$1.json.tmp"; mv "$AGENT_HOME/state/$1.json.tmp" "$AGENT_HOME/state/$1.json"; }
+  allow_case() { # holder kind comment expect(released|refused|foreign)
+    : > "$release_calls"
+    jq -cn --arg h "$1" --arg k "$2" '{state:"on-hold",hold:{holder:$h,kind:$k,release_condition:"why held",created_at:"before"},recut_children:[]}' > "$AGENT_HOME/state/7.json"
+    printf '%s\n' '{"units":[{"id":"issue-7","issue":7,"stage":"supervisor-review","pr":12,"lane":"pr","branch":"agent/issue-7","history":[{"stage":"review-request-changes"}]}]}' > "$fixture_runtime/units.json"
+    rc=0; hold_rule 7 requeue "$3" > "$test_env_root/hold-rule-allow.out" 2>&1 || rc=$?
+    case "$4" in
+      released)
+        [ "$rc" = 0 ] && [ "$(cat "$release_calls")" = "7 release-hold" ] \
+          && jq -e --arg h "$1" --arg k "$2" '.state == "ready-for-agent" and .hold == null and .hold_release_rulings[0].holder == $h and .hold_release_rulings[0].kind == $k and .hold_release_rulings[0].reason == "why held" and .hold_release_rulings[0].comment_id == 9' "$AGENT_HOME/state/7.json" >/dev/null \
+          && jq -e '.units[0].stage == "rereview-pending" and .units[0].history[-1].stage == "supervisor-requeue"' "$fixture_runtime/units.json" >/dev/null || { echo "FAIL: $1/$2 hold not released, recorded and ruled" >&2; cat "$test_env_root/hold-rule-allow.out" >&2; exit 1; } ;;
+      *)
+        [ "$rc" -ne 0 ] && [ ! -s "$release_calls" ] && jq -e --arg h "$1" '.state == "on-hold" and .hold.holder == $h and (has("hold_release_rulings") | not)' "$AGENT_HOME/state/7.json" >/dev/null \
+          && jq -e '.units[0].stage == "supervisor-review"' "$fixture_runtime/units.json" >/dev/null || { echo "FAIL: $1/$2 with comment $3 was not refused untouched" >&2; cat "$test_env_root/hold-rule-allow.out" >&2; exit 1; }
+        [ "$4" != foreign ] || grep -Fq 'is held by someone other than scheduler-stop-loss' "$test_env_root/hold-rule-allow.out" || { echo "FAIL: $1/$2 refusal message changed" >&2; exit 1; } ;;
+    esac
+  }
+  for pair in supervisor:production-access supervisor:guarded-recut-repeat supervisor:manual head:manual; do allow_case "${pair%%:*}" "${pair#*:}" 9 released; done
+  for pair in supervisor:production-access head:manual; do allow_case "${pair%%:*}" "${pair#*:}" 10 refused; done
+  for pair in founder:manual unknown:production-access supervisor:external-deliverable head:production-access vecta-aa:manual supervisor-inbox:supervisor-inbox; do allow_case "${pair%%:*}" "${pair#*:}" 9 foreign; done
+  # scheduler-stop-loss: today's path, the fixture scheduler releases the hold and no ruling record or state_requeue is written.
+  : > "$release_calls"
+  printf '%s\n' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss","kind":"conclusion","created_at":"before"},"recut_children":[]}' > "$AGENT_HOME/state/7.json"
+  printf '%s\n' '{"units":[{"id":"issue-7","issue":7,"stage":"supervisor-review","pr":12,"lane":"pr","branch":"agent/issue-7","history":[{"stage":"review-request-changes"}]}]}' > "$fixture_runtime/units.json"
+  hold_rule 7 requeue 9 >/dev/null 2>&1 && [ ! -s "$release_calls" ] && jq -e '.hold == null and (has("hold_release_rulings") | not)' "$AGENT_HOME/state/7.json" >/dev/null || { echo "FAIL: stop-loss release changed" >&2; exit 1; }
+  printf 'ok - hold --rule releases allowlisted supervisor/head holds on an owner comment and refuses every other holder\n'
 )
 printf 'ok - hold --rule refuses foreign holds and non-owner comments\n'
 # --reblock returns a unit to dependency wait, naming the blocker when the unit has none.
