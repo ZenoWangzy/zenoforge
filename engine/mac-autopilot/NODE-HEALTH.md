@@ -57,6 +57,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | scheduler | minutes since the last merge pass while ready-to-merge units wait (`scheduler.merge_pass_gap_min`; the pass is `run_merge_lane` holding the lane, run by the merge station, the refill or the tick; the time is `.merge-pass-epoch`; 0 when no unit the lane would take is ready, NO-DATA until the first pass is recorded). TENTATIVE bounds, 10/30 min from the merge station's 60 s cadence plus up to one 300 s refill that can delay a launch; no live samples yet, re-measure after 10 days of data | no merge pass ran 10:11Z-after on 2026-11-08 with two CLEAN PRs waiting | ≤ 10 | ≥ 30 | — |
 | scheduler | seconds between harvest station pass starts p50 (`scheduler.harvest_gap_p50`); the station's stall bound | — | ≤ 120 | ≥ 300 | — |
 | scheduler | seconds between existing-walk station pass starts p50 (`scheduler.existing_walk_gap_p50`); the station's stall bound | — | ≤ 120 | ≥ 300 | — |
+| scheduler | seconds between release-deps station pass starts p50 (`scheduler.release_deps_gap_p50`); the station's stall bound | — | ≤ 120 | ≥ 300 | — |
 | release | current release batch wait in hours, not yet deployed (`release.hours_waiting`; 0 once a `release-retained` deploy came after the batch started) | elite: deploy on demand, lead time < 1 day [4] | ≤ 4 | ≥ 12 | — |
 | release | minutes of the latest release batch, unit start to its verdict (`release.batch_minutes`; the first release-retained or release-closer line after the start; a batch still running reads its age so far; a batch that ended with no verdict is not counted) | two 2 h batch cycles per release (ruling `release-overdue-2026-11-07`); TENTATIVE bounds from head 2026-11-08, re-derive after 10 batches with a verdict | ≤ 120 | ≥ 240 | — |
 | release | failed release batch runs with no verdict that started after the latest verdict (`release.batch_failed_no_verdict`; the field beside `release.batch_minutes`, from the same journal read: a batch start with no verdict whose run ends with `Failed with result`; `Deactivated successfully` is ok; the 14-day count is info only, in `release_batch_info.failed_14d` of node-health.json, and a window with no verdict counts the whole window; a count of 1 or more is UNHEALTHY and the node-health alert names it) | a batch that ends with no verdict and no failure is a run that released nothing; a failed run is never expected, and one that a later verdict follows is history | 0 | ≥ 1 | — |
@@ -249,6 +250,13 @@ Its bounds are 120 / 300 as for the harvest station (the pass runs every 60 s, s
 re-measure on the first 7 live days, and change them only with that measurement and this table. Before the split the walk was the
 first `register_new_issues` phase of the full tick: 43 s median, 104 s p90 over 95 ticks (38 rows, always a full lap), and a row waited
 a tick gap for its next walk (636 s median, 1151 s p90), measured 2026-11-08 07:34Z to 2026-11-09 07:34Z.
+
+The dependency release is a station too (`scheduler.d/release-deps-station.sh`, `scheduler.sh --release-deps`): `loop.sh` starts a
+detached pass every 60 s (`AUTOPI_RELEASE_DEPS_SECONDS`, minimum 30, kill at 600 s) that runs `release_dependency_blocks` with no scheduler
+lock held across it, as the tick already runs it. The full tick runs the pass itself only while no pass started within 600 s
+(`AUTOPI_RELEASE_DEPS_FRESH_SECONDS`). Each pass logs `release-deps done secs= gh_calls= rc= ended=` (the stamp is the pass start);
+`scheduler.release_deps_gap_p50` is the median gap between those stamps. Its bounds are 120 / 300, not measured: re-measure on the first
+7 live days. Before the split the pass took 101-129 s of each full tick, and 341 s with 39 gh calls on 2026-11-12 10:45Z, when the tick was killed in it.
 
 A pinned `autopi-live/loop.sh` change takes effect at the next tick boundary.
 Status: `STALLED` when the buffer is not empty and the stall exceeds the bound, `PAUSED` while the pipeline pause

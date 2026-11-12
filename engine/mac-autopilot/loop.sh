@@ -82,6 +82,16 @@ launch_existing_walk() {
   EXISTING_WALK_NEXT=$((SECONDS + every))
   setsid timeout -k 30 "${AUTOPI_EXISTING_WALK_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --existing-walk >> "$A/loop.out" 2>&1 < /dev/null &
 }
+# The dependency release as its own station (scheduler.sh --release-deps): blocked units must not wait for the 800-1500 s tick to be freed.
+# Same pacing and fallback as the existing-walk station; the tick runs the pass itself while no pass started recently.
+launch_release_deps() {
+  local every="${AUTOPI_RELEASE_DEPS_SECONDS:-60}"
+  [[ "$every" =~ ^[0-9]+$ ]] && (( every >= 30 )) || every=60
+  RELEASE_DEPS_NEXT="${RELEASE_DEPS_NEXT:-$((SECONDS + every))}"
+  (( SECONDS >= RELEASE_DEPS_NEXT )) || return 0
+  RELEASE_DEPS_NEXT=$((SECONDS + every))
+  setsid timeout -k 30 "${AUTOPI_RELEASE_DEPS_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --release-deps >> "$A/loop.out" 2>&1 < /dev/null &
+}
 # #4628: the slow tick runs beside the refill controller. The scheduler yields the same ledger lock
 # around slow GitHub phases; a busy refill returns 75 and is retried five seconds later. Refills run
 # in the background so this five-second loop keeps launching the independent stations while they run.
@@ -110,6 +120,7 @@ refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一�
     launch_merge_station
     launch_harvest_station
     launch_existing_walk
+    launch_release_deps
     signature="$(exited_worker_signature "$A/workers.json")"
     [[ -n "$signature" ]] || REFILL_LAST_EXIT=""
     if [[ -n "$REFILL_PID" ]] && ! refill_running; then
