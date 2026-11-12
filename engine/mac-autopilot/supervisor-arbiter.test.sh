@@ -717,6 +717,16 @@ printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor
 )
 [[ "$(cat "$route_calls")" == 'route ' && "$(field pr-651 .stage)" == parked ]] || fail "a retry without recut children must retry the route and keep the PR open on failure: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
 
+# A throttled gh on the cap recut route is not a refusal: no park, the unit stays at supervisor-review with a cap retry pending.
+: > "$route_calls"; rm -f "$route_done"
+printf '%s\n' "$(jq -cn '{units:[{id:"pr-651",issue:651,pr:651,stage:"supervisor-review",history:[]}]}')" > "$UNITS"
+(
+  scheduler_route_to_recut() { printf 'route ' >> "$route_calls"; echo 'GraphQL: API rate limit already exceeded for user ID 1' >&2; return 1; }
+  supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
+)
+[[ "$(cat "$route_calls")" == 'route ' && "$(field pr-651 .stage)" == supervisor-review && "$(field pr-651 .supervisor_cap_retry)" == pending ]] \
+  || fail "a rate-limited cap recut route must stay at supervisor-review with a pending retry: calls=$(cat "$route_calls") unit=$(jq -c '.units[0]' "$UNITS")"
+
 # ---- 终身仲裁上限（supervisor_arbiter.unit_cap，默认 4）：触顶不派模型，调度器当拍自己给默认决定 ----
 # 上限按整份历史数 supervisor-arbiter 事件（忽略 supervisor-arbiter-round 轮标记），先于两轮预算与
 # 每日天花板；已给过默认决定（历史有 supervisor-cap-default）的单元不再来第二次。
