@@ -3,6 +3,41 @@ on:
   push:
     branches: [main]
   pull_request:
+    # Gate files only. Must equal the gate regex in tools/merge-pr.sh (merge_pr_gate_ci_ok); engine/pr-ci-gate-paths.test.sh checks it.
+    paths:
+      - tools/merge-pr.sh
+      - tools/pin-vecta.sh
+      - tools/auto-pin.sh
+      - engine/eval/**
+      - engine/mac-autopilot/bell.sh
+      - engine/mac-autopilot/bell-loop.sh
+      - engine/mac-autopilot/pin-lag.sh
+      - engine/lib.d/main-red.sh
+      - engine/lib.d/main-red-bisect.sh
+      - engine/deploy-culprit.sh
+      - engine/worktree-lifecycle.sh
+      - engine/mac-autopilot/rescued_gc.sh
+      - engine/mac-autopilot/scheduler.d/cleanup.sh
+      - engine/mac-autopilot/scheduler.d/units.sh
+      - engine/mac-autopilot/scheduler.d/review-rules.sh
+      - engine/prompts/review-contract.md
+      - engine/notify.sh
+      - engine/ts-judge.sh
+      - engine/redact-secrets.sh
+      - engine/night/authorization-readonly.sh
+      - engine/night/production-tenant-marker-readonly.sh
+      - engine/night/node-health-rules.sh
+      - engine/night/maintainer-health-mail.sh
+      - engine/night/acceptance-login-probe.mjs
+      - engine/systemd/zenoforge-agent.service
+      - engine/systemd/zenoforge-daily-perf-report.service
+      - engine/systemd/zenoforge-health-mail.service
+      - engine/systemd/zenoforge-health-maintenance.service
+      - engine/systemd/zenoforge-label-churn.service
+      - engine/systemd/zenoforge-memory-check.service
+      - engine/systemd/zenoforge-owner-report-causes.service
+      - engine/systemd/zenoforge-roi-collector.service
+      - engine/systemd/zenoforge-supervisor.service
   workflow_dispatch:
 
 # main: one run plus the newest waiting, so a merge burst still gets a verdict. PRs: the latest push wins.
