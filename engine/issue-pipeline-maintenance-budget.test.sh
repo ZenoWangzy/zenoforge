@@ -331,7 +331,12 @@ check 'the killed step remains visible to the next maintenance tick' \
   "$(cat "$AGENT_HOME/night/maintenance-current-step")" hold-sweep
 HOLD_SWEEP_SLEEPS=0; export HOLD_SWEEP_SLEEPS
 : > "$AGENT_HOME/night/slice-calls"
-run_pipeline_slices "$slice_scheduler" triage > "$slice_output" 2>&1
+slice_runner_status=0
+run_pipeline_slices "$slice_scheduler" triage > "$slice_output" 2>&1 || slice_runner_status=$?
+if [ "$slice_runner_status" -ne 0 ]; then
+  cat "$slice_output" >&2
+  fail "resumed maintenance slice runner exits successfully (got $slice_runner_status)"
+fi
 check 'the next tick logs its one-time skip for the killed step' \
   "$(grep -Fc 'maintenance skipped killed step=hold-sweep' "$slice_output" || true)" 1
 check 'the next tick continues with the following prefix step' \
