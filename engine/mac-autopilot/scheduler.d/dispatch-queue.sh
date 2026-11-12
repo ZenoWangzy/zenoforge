@@ -119,6 +119,7 @@ dispatch_pending() {
     dispatch_capacity_free && tick_prs_prime
   fi
   dmark census
+  [[ "$local_refill" == true ]] || ready_changes_requested_sweep
   dispatch_why_load
   TICK_DISPATCH_LOCAL_REFILL="$local_refill"
   if [[ "$local_refill" != true ]] && declare -F advisor_harvest >/dev/null; then
@@ -375,6 +376,7 @@ dispatch_pending() {
         rep="impl-${key}-fix-${TAG}.md"
         dcapture failure failure_prompt repair_failure_prompt "$u" "$prev_report" || { to_supervisor "$id" "repair-pending: cannot read the failure evidence ($prev_report)"; continue; }
         hint="$(jqf -r '.repair_hint // empty' <<<"$u")"
+        hint+="$(human_feedback_block "$pr_num" "$(last_dispatch_at "$u")")"
         [[ -n "$hint" ]] && hint="
 本轮额外阻断（优先处理；评审报告若已 READY，只需处理这一条）：$hint"
         if [[ "$lane" == direct-main ]]; then

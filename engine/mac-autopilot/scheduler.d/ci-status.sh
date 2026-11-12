@@ -498,7 +498,7 @@ gated_demote_unapproved() { # 门控 PR 已 ready 但单元不在 ready-to-merge
       and (.stage | IN("review-pending", "review", "rereview-pending", "rereview", "repair-pending", "repair", "blocked-external"))) | [.id, .branch, .stage] | @tsv' "$UNITS")
 }
 tick_prs() {
-  [[ -n "$TICK_PRS" ]] || TICK_PRS="$(gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,body,statusCheckRollup,mergeable,createdAt 2>/dev/null)" || { TICK_PRS=""; return 1; }
+  [[ -n "$TICK_PRS" ]] || TICK_PRS="$(gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,body,statusCheckRollup,mergeable,createdAt,reviewDecision 2>/dev/null)" || { TICK_PRS=""; return 1; }
   jqf -e 'type == "array"' <<<"$TICK_PRS" >/dev/null || { TICK_PRS=""; return 1; }
   printf '%s' "$TICK_PRS"
 }
