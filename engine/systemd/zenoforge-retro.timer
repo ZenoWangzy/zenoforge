@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily unattended retro: candidate environment fixes from finished worker sessions
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
