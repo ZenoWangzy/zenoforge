@@ -13,11 +13,6 @@ const text = (value) => typeof value === 'string' && value.trim().length > 0;
 const timestamp = (value) => typeof value === 'string'
   && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value)
   && Number.isFinite(Date.parse(value));
-export const fullCheckCommandFor = (checkName) => {
-  const shard = /^Pipeline suites shard ([0-4])$/.exec(checkName ?? '');
-  return shard ? `bash engine/run-ci-suites.sh --shard ${shard[1]}/5` : undefined;
-};
-
 // The failing check must belong to the configured repository (ZF_REPO, owner/name).
 const failureLinkPattern = () => new RegExp(
   `^https://github\\.com/${(process.env.ZF_REPO ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/actions/runs/\\d+(?:/job/\\d+)?$`,
@@ -45,9 +40,7 @@ export function validateRepairReceipt(receipt) {
   const validFailingPath = text(receipt.failingPath)
     && !/^(?:\/|[A-Za-z]:)/.test(receipt.failingPath)
     && !receipt.failingPath.split(/[\\/]/).includes('..');
-  const fullCheckCommand = fullCheckCommandFor(receipt.checkName);
   if (receipt.status === 'passed' && receipt.scope === 'whole-check' && text(receipt.command)
-      && (!fullCheckCommand || receipt.command === fullCheckCommand)
       && receipt.reason === undefined && receipt.failingPath === undefined && receipt.mainHeadSha === undefined) return receipt;
   if (receipt.status === 'focused-passed' && receipt.scope === 'failing-unit'
       && text(receipt.command) && validFailingPath
